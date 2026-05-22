@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"numind-server/internal/pkg/errno"
@@ -386,20 +387,30 @@ func TestExtractCOSObjectKey(t *testing.T) {
 // guard. Without the presign step, the HEAD against a bare COS URL would 403
 // and the test would fail with "HEAD returned HTTP 403". With the fix, the
 // presignFn rewrites the URL to a httptest endpoint that accepts the request.
+//
+// ALSO locks the method-bound signing contract (bug-from-customer 2026-05-22
+// take 2): presignFn is called TWICE — once with method=HEAD for the probe
+// and once with method=GET for the parser fetch. COS signed URLs are method-
+// bound; a GET URL hit with HEAD returns 403.
 func TestFileReadTool_Execute_COSURL_UsesPresignedURL(t *testing.T) {
 	// httptest server doubles as the "signed-URL endpoint" that returns 200.
 	srv := newHeadServer(t, 200, "application/pdf", 2048)
 
-	// In production, presignFn calls COS SDK and produces an https URL with
-	// query-string signature. Here we redirect any object key to the test
-	// server, capturing what key was asked for.
-	var capturedKey string
-	presign := func(_ context.Context, objectKey string, _ int64) (string, error) {
-		capturedKey = objectKey
-		return srv.URL + "/signed/" + objectKey, nil
+	// Track every presignFn invocation so we can assert HEAD and GET were
+	// both signed and that they produced DIFFERENT URLs (real COS signatures
+	// differ by method; the test stub mimics that).
+	type call struct {
+		method string
+		key    string
+	}
+	var calls []call
+	presign := func(_ context.Context, method, objectKey string, _ int64) (string, error) {
+		calls = append(calls, call{method: method, key: objectKey})
+		return fmt.Sprintf("%s/signed-%s/%s", srv.URL, method, objectKey), nil
 	}
 
-	// Track that the parser sees the signed URL too, not the original.
+	// Track that the parser sees the GET-signed URL, not the HEAD-signed one
+	// (parser internally issues GET; HEAD-signed URL would 403).
 	var parserSawURL string
 	parser := &recordingParser{
 		content: "PDF body",
@@ -418,18 +429,32 @@ func TestFileReadTool_Execute_COSURL_UsesPresignedURL(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if capturedKey != "agent-attachments/123/x.pdf" {
-		t.Errorf("presignFn should be called with object key 'agent-attachments/123/x.pdf'; got %q", capturedKey)
+	// Both methods must be signed (HEAD first, then GET).
+	if len(calls) != 2 {
+		t.Fatalf("presignFn should be called exactly twice (HEAD + GET); got %d calls: %+v", len(calls), calls)
 	}
-	if parserSawURL == cosURL {
-		t.Error("parser must NOT receive the bare COS URL; it must receive the presigned URL")
+	if calls[0].method != http.MethodHead {
+		t.Errorf("first presign call must be for HEAD; got %q", calls[0].method)
 	}
-	if parserSawURL == "" || parserSawURL[:len(srv.URL)] != srv.URL {
-		t.Errorf("parser must receive a URL pointing at the presign endpoint; got %q", parserSawURL)
+	if calls[1].method != http.MethodGet {
+		t.Errorf("second presign call must be for GET; got %q", calls[1].method)
+	}
+	for _, c := range calls {
+		if c.key != "agent-attachments/123/x.pdf" {
+			t.Errorf("presign called with wrong key: got %q want %q", c.key, "agent-attachments/123/x.pdf")
+		}
 	}
 
-	// FileName must come from the ORIGINAL URL, not the presigned one — users
-	// expect to see "x.pdf", not "/signed/agent-attachments/123/x.pdf".
+	// Parser must receive the GET-signed URL specifically.
+	if parserSawURL == cosURL {
+		t.Error("parser must NOT receive the bare COS URL; it must receive the GET-signed URL")
+	}
+	wantParserURL := fmt.Sprintf("%s/signed-GET/agent-attachments/123/x.pdf", srv.URL)
+	if parserSawURL != wantParserURL {
+		t.Errorf("parser URL mismatch: got %q want %q", parserSawURL, wantParserURL)
+	}
+
+	// FileName must come from the ORIGINAL URL, not the presigned one.
 	var out fileReadOutput
 	_ = json.Unmarshal(result, &out)
 	if out.FileName != "x.pdf" {
@@ -445,7 +470,7 @@ func TestFileReadTool_Execute_NonCOSURL_BypassesPresign(t *testing.T) {
 	srv := newHeadServer(t, 200, "application/pdf", 1024)
 
 	presignCalled := false
-	presign := func(_ context.Context, _ string, _ int64) (string, error) {
+	presign := func(_ context.Context, _, _ string, _ int64) (string, error) {
 		presignCalled = true
 		return "should-not-be-used", nil
 	}
@@ -471,7 +496,7 @@ func TestFileReadTool_Execute_NonCOSURL_BypassesPresign(t *testing.T) {
 // TestFileReadTool_Execute_COSURL_PresignFails surfaces presign errors as
 // ErrAIProviderError instead of letting them slip silently into a HEAD 403.
 func TestFileReadTool_Execute_COSURL_PresignFails(t *testing.T) {
-	presign := func(_ context.Context, _ string, _ int64) (string, error) {
+	presign := func(_ context.Context, _, _ string, _ int64) (string, error) {
 		return "", fmt.Errorf("cos creds missing")
 	}
 
@@ -491,6 +516,44 @@ func TestFileReadTool_Execute_COSURL_PresignFails(t *testing.T) {
 	}
 	if e.Code != errno.ErrAIProviderError.Code {
 		t.Errorf("expected ErrAIProviderError, got %q", e.Code)
+	}
+}
+
+// TestFileReadTool_Execute_COSURL_GetSignFails covers the second signing call
+// failing while HEAD signing succeeded — must surface as ErrAIProviderError,
+// not crash or silently fall back to the unsigned URL.
+func TestFileReadTool_Execute_COSURL_GetSignFails(t *testing.T) {
+	callCount := 0
+	presign := func(_ context.Context, method, _ string, _ int64) (string, error) {
+		callCount++
+		if method == http.MethodGet {
+			return "", fmt.Errorf("cos GET sign rate-limited")
+		}
+		return "https://signed.example/head", nil
+	}
+
+	tool := &fileReadTool{
+		headFn:    http.Head,
+		presignFn: presign,
+	}
+	cosURL := "https://b.cos.ap-x.myqcloud.com/agent-attachments/123/x.pdf"
+	input, _ := json.Marshal(fileReadInput{FileURL: cosURL})
+	_, err := tool.Execute(ctxUser123(), ToolInput(input))
+	if err == nil {
+		t.Fatal("expected error when GET sign fails")
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 presign calls (HEAD ok, GET fails); got %d", callCount)
+	}
+	var e *errno.Errno
+	if !errors.As(err, &e) {
+		t.Fatalf("expected *errno.Errno, got %T: %v", err, err)
+	}
+	if e.Code != errno.ErrAIProviderError.Code {
+		t.Errorf("expected ErrAIProviderError, got %q", e.Code)
+	}
+	if !strings.Contains(e.Message, "GET") {
+		t.Errorf("error message should identify the GET signing step; got %q", e.Message)
 	}
 }
 
