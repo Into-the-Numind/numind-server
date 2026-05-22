@@ -70,11 +70,6 @@ func TestWebFetch_Metadata(t *testing.T) {
 
 func TestWebFetch_ImplementsFullTool(t *testing.T) {
 	var _ FullTool = (*webFetchTool)(nil) // compile-time assertion
-	// runtime check
-	var tool FullTool = &webFetchTool{}
-	if tool == nil {
-		t.Fatal("webFetchTool should implement FullTool")
-	}
 }
 
 // ── TestWebFetch_HappyPath ────────────────────────────────────────────────────

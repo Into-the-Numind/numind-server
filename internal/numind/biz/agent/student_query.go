@@ -101,7 +101,6 @@ type runEnrichment struct {
 	agentEmoji    string
 	creditsUsed   int
 	creditsBudget int
-	previewText   string
 }
 
 // runToSummary converts a model.AgentRun to a RunSummary without enrichment.
@@ -527,17 +526,4 @@ func transformMessages(raw []byte, runID uint64, startedAt time.Time, endedAt *t
 		msgs = append(msgs, msg)
 	}
 	return msgs
-}
-
-// ---------------------------------------------------------------------------
-// helpers (unchanged from original)
-// ---------------------------------------------------------------------------
-
-func toSummaries(runs []model.AgentRun) []*RunSummary {
-	out := make([]*RunSummary, len(runs))
-	for i, r := range runs {
-		s := runToSummary(r)
-		out[i] = &s
-	}
-	return out
 }

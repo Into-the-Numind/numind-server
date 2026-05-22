@@ -53,10 +53,5 @@ func (t *askUserQuestionTool) Execute(_ context.Context, input ToolInput) (ToolR
 	if len([]rune(in.Header)) > 12 {
 		return nil, errno.ErrInvalidInput.SetMessage("ask_user_question: header exceeds 12 chars (got %d)", len([]rune(in.Header)))
 	}
-	return nil, &yieldError{Payload: YieldPayload{
-		Question:    in.Question,
-		Options:     in.Options,
-		Header:      in.Header,
-		MultiSelect: in.MultiSelect,
-	}}
+	return nil, &yieldError{Payload: YieldPayload(in)}
 }
