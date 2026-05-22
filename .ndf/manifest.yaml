@@ -95,21 +95,22 @@ features:
   ndf_version: '3.0'
   description: 'Dev 部署 agent-mode web_search 工具发现 Tavily API key 为空 — config_dev.yaml 的 web_search.tavily.api_key 是 "", 而 deploy-remote.sh 没注入 NUMIND_WEB_SEARCH_TAVILY_API_KEY env var。Root cause: viper 的 AutomaticEnv + EnvPrefix("NUMIND") + EnvKeyReplacer 在 helper.go 已设置好（能 pick up env var），但部署链路从未提供 env var → viper fall back 到 config 空字符串 → Tavily HTTP 401。修复（运维向，非 Go 代码）：deploy-remote.sh 加可选 /opt/numind/<env>/secrets.env (server target only) 通过 docker --env-file 注入；文件不存在 = no-op，prod 自动 fallback 不影响。同时把 viper binding setup 抽到 config.SetupViperEnvBindings 让 regression test 真正 guard 契约。'
   track: hotfix
-  stage: H3-pending-deploy
+  stage: completed
+  merged_commit: 3aa1495c
+  dev_image: develop-3aa1495c
+  merged_at: '2026-05-22T18:30:00+08:00'
   classification_reason: 'Hotfix Triage 5 条全满足 — (1) 无 DB schema 变更 (2) 无新 API 端点 (3) 无新外部服务集成（Tavily 在 agent-mode-p0-tools T1 02054be8 已集成） (4) 影响 5 文件（envbinding.go 新建 / helper.go 1-line 改 / web_search_test.go 改测试 / deploy-remote.sh 改 + chmod 600 / .gitignore），超 ≤3 是因为 P1 reviewer 反馈要求 binding 抽 helper（refactor 收益 > 文件数惩罚） (5) 非支付/权限/会员高风险业务，但生产前必须验证 prod 不会回归（prod 无 secrets.env → ENV_FILE_FLAG 空 → docker run 不挂 --env-file → 老行为）。非 customer bug，Rule 11 复现测试不严格适用；regression 测试 (TestWebSearch_EnvVarBinding) 仍然作为 contract guard 落地。'
-  last_updated_by: ai-h2-reviewer-pass-2nd-round
-  last_updated_at: '2026-05-22T18:10:00+08:00'
+  last_updated_by: ai-h3-dev-validated
+  last_updated_at: '2026-05-22T18:30:00+08:00'
   repos:
   - numind-server
   branches:
-    numind-server: fix/tavily-api-key-env-binding
-  worktree:
-    numind-server: /private/tmp/wt-tavily-api-key-env-binding-numind-server
+    numind-server: fix/tavily-api-key-env-binding (deleted after ndf-done)
   progress:
     total_tasks: 2
     completed_tasks: 2
     reviewed_tasks: 2
-    current_task: 'H2 完成 + 两阶段 reviewer 二轮 PASS（spec + code-quality 都零 P0/P1）。2 commits: 2add1c6f 初次 + 6c36e5c6 P1/P2 修复。等用户提供 Tavily API key → SSH dev 部署机写 /opt/numind/dev/secrets.env → /deploy-dev server → 在 dev 让 agent 实测 web_search 工具调用真实 Tavily。'
+    current_task: 'H3 完成。Develop 3aa1495c 部署到 dev 容器 develop-3aa1495c，healthy。/opt/numind/dev/secrets.env 已写入 (root:600)，容器 env NUMIND_WEB_SEARCH_TAVILY_API_KEY 注入成功 (len=41 tvly-d... 匹配)。Container 内 curl Tavily POST /search HTTP 200 + 2 real results (Reuters AI / Crescendo 2026 AI)，证明 env→viper→aiservice→Tavily 全链路通。tool_definition seed 含 web_search，platform-builtin factory 加载 12 工具。无 prod 改动（用户明确禁止）。'
   decisions:
   - 'H2-D1: 抽 viper binding setup 到 internal/numind/config/envbinding.go::SetupViperEnvBindings，helper.go 和 web_search_test.go 都调用同一函数。理由：reviewer P1 #6 指出 test 用 viper.New() 隔离实例不能 guard helper.go 全局 viper 契约；抽 helper 后 test 和 production 共享同一 binding 调用，删除任一 viper 调用同时破坏两边。代价：超出 Hotfix ≤3 文件限制（5 文件），但 contract enforcement 收益 > 文件数惩罚，已记录到 classification_reason。'
   - 'H2-D2: secrets.env 注入用 docker --env-file 而非 -e 显式注入。理由：未来其他 secrets（OCR key、其他 provider 等）只要加到 secrets.env 即生效，不需要改 deploy-remote.sh。等价于通用机制。'
