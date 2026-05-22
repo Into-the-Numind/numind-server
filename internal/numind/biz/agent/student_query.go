@@ -249,16 +249,27 @@ func (s *StudentQueryService) ListAllHistorySessions(ctx context.Context, userID
 	return s.toEnrichedSummaries(ctx, runs)
 }
 
-// GetSessionSnapshot returns the full run (messages + compact_summary) for resume.
-// Returns errno.ErrForbidden if the run belongs to a different user.
-func (s *StudentQueryService) GetSessionSnapshot(ctx context.Context, userID uint, runID uint64) (*SessionSnapshot, error) {
-	run, err := s.runStore.Get(ctx, runID)
+// GetSessionSnapshot returns the latest run in the session (messages +
+// compact_summary) for the learner-facing resume flow.
+//
+// Lookup is by agent_run.session_id (UUID string), NOT agent_run.id. The
+// URL contract is /v1/sessions/:id/snapshot and the frontend passes the
+// UUID surfaced via RunSummary.session_id. Picks the most recent run via
+// ListBySession (ordered by created_at DESC) — today every session is 1:1
+// with a run, but a multi-run resume in the future will naturally return
+// the freshest state.
+//
+// Returns errno.ErrAgentRunNotFound if no runs match the session_id, and
+// errno.ErrForbidden if the session belongs to a different user.
+func (s *StudentQueryService) GetSessionSnapshot(ctx context.Context, userID uint, sessionID string) (*SessionSnapshot, error) {
+	runs, _, err := s.runStore.ListBySession(ctx, sessionID, 0, 1)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) || isNotFoundErr(err) {
-			return nil, errno.ErrAgentRunNotFound
-		}
-		return nil, fmt.Errorf("StudentQueryService.GetSessionSnapshot get: %w", err)
+		return nil, fmt.Errorf("StudentQueryService.GetSessionSnapshot list: %w", err)
 	}
+	if len(runs) == 0 {
+		return nil, errno.ErrAgentRunNotFound
+	}
+	run := &runs[0]
 	if run.UserID != userID {
 		return nil, errno.ErrForbidden.SetMessage("access to another user's session is not allowed")
 	}
