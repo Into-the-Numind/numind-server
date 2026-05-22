@@ -107,9 +107,11 @@ do_cleanup_build_cache() {
     docker system df
     echo
     echo "Pruning builder cache (--filter until=72h)..."
-    docker builder prune -af --filter "until=72h"    echo
+    docker builder prune -af --filter "until=72h"
+    echo
     echo "Pruning unused images (--filter until=72h)..."
-    docker image prune -af --filter "until=72h"    echo
+    docker image prune -af --filter "until=72h"
+    echo
     echo "After cleanup:"
     docker system df
   '; then
