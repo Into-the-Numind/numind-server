@@ -429,12 +429,18 @@ func NewBiz(ds store.IStore) *biz {
 	)
 
 	// #14 BETA: student-facing run lifecycle service.
+	// narrationProv is wired alongside the buffer so StudentRunService can
+	// bridge Provider.Emit → Buffer per run (without it PollNarration returns
+	// [] forever and the learner UI sees no tool-call narration even when the
+	// run works end-to-end). narrationProv may be nil if YAML init failed
+	// earlier in this function; the bridge handles that gracefully.
 	narrationBuf := agent.NewNarrationBuffer(256, 30*time.Minute)
 	b.studentRunSvc = agent.NewStudentRunService(
 		b.agentRunner,
 		ds.AgentRuns(),
 		ds.AgentDefinitions(),
 		pricingCalc,
+		narrationProv,
 		narrationBuf,
 	)
 
