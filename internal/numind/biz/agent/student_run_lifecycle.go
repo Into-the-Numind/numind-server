@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -213,11 +214,11 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 	}
 
 	// Build the input: combine message + attachment URLs if any.
-	input := req.Message
-	if len(req.AttachmentURLs) > 0 {
-		attachJSON, _ := json.Marshal(req.AttachmentURLs)
-		input = fmt.Sprintf("%s\n\n[attachments: %s]", req.Message, string(attachJSON))
-	}
+	// buildAgentInput emits an explicit Chinese instruction telling the LLM to
+	// use the file_read tool. Without that instruction the LLM tends to ignore
+	// a bare URL list and reply "you didn't upload anything" — see bug-from-
+	// customer 2026-05-22 (#14-followup agent-attachment-flow).
+	input := buildAgentInput(req.Message, req.AttachmentURLs)
 
 	// Resolve tool names from ToolFlags JSON.
 	toolNames := toolNamesFromFlags(ad.ToolFlags)
@@ -271,6 +272,38 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 		RunID:     preRun.ID,
 		SessionID: sessionID,
 	}, nil
+}
+
+// buildAgentInput composes the LLM-facing user-message text from the human's
+// message plus any uploaded attachment COS URLs.
+//
+// When attachments are present, an unconditional Chinese imperative is appended
+// telling the agent to invoke the file_read tool with each URL. The previous
+// implementation emitted "[attachments: <JSON>]" which the LLM frequently
+// ignored — it would reply "you didn't upload anything" despite the URLs
+// being in the prompt.
+//
+// Phrasing notes (locked by tests, do NOT soften):
+//   - "请立即调用" (imperative, no opt-out) — earlier "如需查看" gave thinking
+//     models like deepseek-v4-pro an out and they would skip the tool call.
+//   - The hint MUST come AFTER the user message, not before. Hoisting it to
+//     the top changes the ack-then-act priming; tests assert the position.
+//   - "然后再回答用户" makes the tool call a prerequisite, not optional.
+//
+// Returns the bare message unchanged if attachmentURLs is empty.
+func buildAgentInput(message string, attachmentURLs []string) string {
+	if len(attachmentURLs) == 0 {
+		return message
+	}
+	var b strings.Builder
+	b.WriteString(message)
+	b.WriteString("\n\n【系统提示】用户上传了以下附件，请立即调用 file_read 工具读取它们的内容（传入对应的 file_url 参数），然后再回答用户的问题：\n")
+	for _, u := range attachmentURLs {
+		b.WriteString("- ")
+		b.WriteString(u)
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 // ---------------------------------------------------------------------------
