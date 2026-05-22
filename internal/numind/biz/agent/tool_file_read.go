@@ -13,6 +13,7 @@ import (
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/middleware"
+	"numind-server/internal/pkg/util"
 )
 
 // fileReadInput is the JSON input for the file_read tool.
@@ -45,6 +46,13 @@ type fileReadTool struct {
 	textParser  fileParser // text/plain, text/markdown
 	// headFn is the HTTP HEAD function; swapped in tests to avoid network calls.
 	headFn func(url string) (*http.Response, error)
+	// presignFn signs a COS object key for transient anonymous fetch. The COS
+	// bucket is private — without a presigned URL, every downstream HEAD/GET
+	// (HEAD here, qwen-long server fetch, OCR fetch, text http.Get) returns
+	// 403, surfacing as "model_error" with no actionable state_reason.
+	// Swapped to a stub in tests to avoid touching COS. nil = bypass (any
+	// non-COS URL flows through unchanged).
+	presignFn func(ctx context.Context, objectKey string, expirySeconds int64) (string, error)
 }
 
 // NewFileReadTool constructs a fileReadTool with injected parsers.
@@ -55,6 +63,7 @@ func NewFileReadTool(pdf, img, txt fileParser) FullTool {
 		imageParser: img,
 		textParser:  txt,
 		headFn:      http.Head,
+		presignFn:   util.GenerateSignedURL,
 	}
 }
 
@@ -77,6 +86,27 @@ const fileReadMaxBytes = 200 * 1024
 
 // attachmentPathRE matches /agent-attachments/<userID>/ in a URL path.
 var attachmentPathRE = regexp.MustCompile(`/agent-attachments/(\d+)/`)
+
+// cosURLPathRE matches a Tencent COS attachment URL and captures the object
+// key (everything after the host).
+//
+//	https://numind-dev-xxx.cos.ap-chengdu.myqcloud.com/agent-attachments/1/x.pdf
+//	  → captured group: "agent-attachments/1/x.pdf"
+//
+// Non-COS URLs (httptest fixtures, public CDN links pasted by an admin, etc.)
+// will NOT match — Execute treats them as pass-through and skips presigning.
+var cosURLPathRE = regexp.MustCompile(`^https?://[^/]+\.cos\.[^/]+\.myqcloud\.com/(.+)$`)
+
+// extractCOSObjectKey returns the COS object key for a COS bucket URL and a
+// boolean indicating whether the URL was recognized as COS. The recognized
+// form matches cosURLPathRE — bucket.cos.region.myqcloud.com hosts.
+func extractCOSObjectKey(fileURL string) (string, bool) {
+	m := cosURLPathRE.FindStringSubmatch(fileURL)
+	if len(m) < 2 {
+		return "", false
+	}
+	return m[1], true
+}
 
 // Execute reads the file at the given URL, verifies ownership, detects MIME type,
 // dispatches to the appropriate parser, and returns structured JSON output.
@@ -115,12 +145,30 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		defer func() { langfuse.EndSpan(traceID, spanID) }()
 	}
 
+	// Translate private COS URLs into time-bounded presigned URLs so that the
+	// HEAD here AND every downstream fetch (qwen-long, OCR, text http.Get) can
+	// authenticate with an opaque signature. The customer-facing canonical URL
+	// (in.FileURL) is preserved for filename / output, but fetchURL is what
+	// actually hits the wire. Non-COS URLs short-circuit (admin-pasted public
+	// links must keep working).
+	fetchURL := in.FileURL
+	if objectKey, ok := extractCOSObjectKey(in.FileURL); ok && t.presignFn != nil {
+		// 1h validity is comfortably longer than any single tool call. The
+		// agent re-presigns on every Execute, so cached-URL expiry is not a
+		// concern even for long-running sessions that re-read the same file.
+		signed, signErr := t.presignFn(ctx, objectKey, 3600)
+		if signErr != nil {
+			return nil, errno.ErrAIProviderError.SetMessage("file_read: presign COS URL: %s", signErr.Error())
+		}
+		fetchURL = signed
+	}
+
 	// HEAD the file to detect content type and byte size without downloading.
 	headFn := t.headFn
 	if headFn == nil {
 		headFn = http.Head
 	}
-	headResp, err := headFn(in.FileURL)
+	headResp, err := headFn(fetchURL)
 	if err != nil {
 		return nil, errno.ErrAIProviderError.SetMessage("file_read: HEAD request failed: %s", err.Error())
 	}
@@ -136,6 +184,9 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	byteSize := int(headResp.ContentLength)
 
 	// Dispatch to the appropriate parser by MIME type.
+	// Parsers receive fetchURL (presigned) — they each issue their own
+	// downstream fetch (qwen-long server-side fetch / OCR fetch / text GET)
+	// and would 403 against bare private COS URLs.
 	var content string
 	var pageCount int
 	var truncated bool
@@ -145,17 +196,17 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		if t.pdfParser == nil {
 			return nil, errno.ErrAIProviderError.SetMessage("file_read: PDF parser not configured")
 		}
-		content, pageCount, truncated, err = t.pdfParser.Parse(ctx, in.FileURL, in.Prompt)
+		content, pageCount, truncated, err = t.pdfParser.Parse(ctx, fetchURL, in.Prompt)
 	case strings.HasPrefix(mimeType, "image/"):
 		if t.imageParser == nil {
 			return nil, errno.ErrAIProviderError.SetMessage("file_read: image parser not configured")
 		}
-		content, _, truncated, err = t.imageParser.Parse(ctx, in.FileURL, in.Prompt)
+		content, _, truncated, err = t.imageParser.Parse(ctx, fetchURL, in.Prompt)
 	case mimeType == "text/plain" || mimeType == "text/markdown":
 		if t.textParser == nil {
 			return nil, errno.ErrAIProviderError.SetMessage("file_read: text parser not configured")
 		}
-		content, _, truncated, err = t.textParser.Parse(ctx, in.FileURL, in.Prompt)
+		content, _, truncated, err = t.textParser.Parse(ctx, fetchURL, in.Prompt)
 	default:
 		return nil, errno.ErrUnsupportedFileType.SetMessage(
 			"file_read: unsupported MIME type %q (supported: application/pdf, image/*, text/plain, text/markdown)",
@@ -166,6 +217,8 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		return nil, errno.ErrAIProviderError.SetMessage("file_read: parse error: %s", err.Error())
 	}
 
+	// FileName comes from the canonical URL (not the presigned one), so the
+	// user sees "report.pdf" instead of a long query-string-decorated key.
 	out, _ := json.Marshal(fileReadOutput{
 		FileName:  path.Base(in.FileURL),
 		MimeType:  mimeType,
