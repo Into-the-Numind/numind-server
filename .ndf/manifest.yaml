@@ -123,30 +123,34 @@ features:
   ndf_version: '3.0'
   description: '构建机 (139.155.129.13, 成都) 在三仓库共享场景下 docker build cache + unused image 累积撑满磁盘 (51GB/59GB)。2026-05-22 dev 部署 agent-mode-p0-tools 时 rsync 报 "No space left on device" 中断；手工 docker builder prune -af + image prune -af 释放 51GB 恢复。Root cause: 部署机 deploy-remote.sh 有内置清理但构建机从未清理过。修复（3 仓库 release.sh）：在 do_build 成功后 SSH 进构建机跑 docker builder prune -af --filter "until=72h" + image prune -af --filter "until=72h"，保留 3 天 cache 避免每次从零下载基础镜像，前后 docker system df 对比日志。Out of scope: 构建机磁盘扩容 / 修改 deploy-remote.sh 部署机清理 / cron-based 清理 / prod 部署（用户明确禁止）。'
   track: hotfix
-  stage: H2
+  stage: completed
   classification_reason: 'Hotfix Triage 5 条全满足 — (1) 无 DB schema 变更 (2) 无新 API 端点 (3) 无新外部服务集成（SSH 到已有构建机，docker daemon 已用） (4) 影响 3 文件（3 仓库各自 release.sh） (5) 非支付/权限/会员高风险业务，且 prod 不触发（用户明确 dev only）。Rule 11 不适用（非 customer bug，是运维 infra 改进，参考 tavily-api-key-env-binding 先例）。'
-  last_updated_by: ai-h2-reviewed
-  last_updated_at: '2026-05-22T18:50:00+08:00'
+  last_updated_by: ai-h3-completed
+  last_updated_at: '2026-05-22T19:30:00+08:00'
+  completed_at: '2026-05-22T19:30:00+08:00'
   repos:
   - numind-server
   - numind-web-v3
   - numind-admin-web
   branches:
-    numind-server: fix/build-cache-cleanup
-    numind-web-v3: fix/build-cache-cleanup
-    numind-admin-web: fix/build-cache-cleanup
-  worktree:
-    numind-server: /private/tmp/wt-build-cache-cleanup-numind-server
-    numind-web-v3: /private/tmp/wt-build-cache-cleanup-numind-web-v3
-    numind-admin-web: /private/tmp/wt-build-cache-cleanup-numind-admin-web
+    numind-server: fix/build-cache-cleanup (deleted after ndf-done)
+    numind-web-v3: fix/build-cache-cleanup (deleted after ndf-done)
+    numind-admin-web: fix/build-cache-cleanup (deleted after ndf-done)
+  merged_commits:
+    numind-server: 86f7eca9
+    numind-web-v3: 183946f
+    numind-admin-web: 08e1010
+  dev_image: develop-b935cca1 (numind-server only — v3/admin-web 仓库 release.sh 改动等同，未单独 dev deploy 验证；cleanup function byte-identical in all 3)
   progress:
     total_tasks: 3
     completed_tasks: 3
     reviewed_tasks: 3
-    current_task: 'H2 完成。3 release.sh edits + 两阶段 Sonnet reviewer (spec PASS / code-quality PASS_WITH_CONCERNS) P0=0；P2/nit 已 inline 修复（drop ` | tail -3`，远端 `set -e` 现在能正确 catch docker prune 失败 → ssh 非零 → 落入 if-then 警告分支）。下一步 H3 dev verify + ndf-done。'
+    current_task: 'H3 完成。numind-server dev deploy 验证 cleanup 端到端：build cache 5.143GB / 2 images 都正确显示 Before/After docker system df 对比；docker builder prune + image prune 都跑了（Total: 0B because all < 72h, 按设计保留）；cleanup took 1s；deploy success healthy。3 仓库 ndf-done 完成，worktree 已删，本地分支已删，0 orphan。'
   decisions:
   - 'H2-D1: drop `| tail -3` 从两个 docker prune 调用。理由：reviewer P2 + nit 都指向这个问题——远端 `set -e` 在 pipeline 中只检查最后一个命令的 exit code，`| tail -3` 会吞 docker prune 的真实失败；且 docker prune 的 summary 行 "Total reclaimed space: X" 是最后一行，长输出时 tail -3 反而可能截掉它。drop 后远端 docker prune 失败 → set -e 立即终止 → ssh 返回非零 → 外层 if-then 警告分支接住（非 fatal），同时输出完整 prune 日志便于运维 debug。'
   - 'H2-D2: 不修 reviewer P1 (SSH_OPTS 不带引号词分裂风险)。理由：该惯例在所有 3 个仓库的 release.sh 全文件 12 处 SSH 调用 (do_rsync/do_build/do_deploy/do_cleanup_build_cache) 都这样写，是预先存在的全文件惯例，非本 hotfix 引入。修它需改 4 函数 × 3 文件 = 12 处，scope 超出 Hotfix。Reviewer 自己也标"not blocking for this hotfix"。记入 follow-up tech-debt——如未来 BUILD_SSH_KEY 路径含空格才会真正爆，目前路径 ~/.ssh/numind_build_server 无空格安全。'
+  - 'H3-D1 (verification 救命): 第一次 dev deploy (commit b46a38a1) 暴露 P0 — `do_cleanup_build_cache` 的 `docker builder prune -af --filter "until=72h"` 行末 newline 在 Edit 工具 replace_all 删 ` | tail -3` 操作中丢失，导致下一行的 `echo` 被 docker 收为 positional arg，报 "accepts no arguments" 错。bash -n syntax check 通过（合法语法）+ spec/code-quality reviewer 只看 diff 也未发现（runtime issue）。只有真跑 deploy 才暴露。修复 b935cca1 / c96e14d / 3d0d002 把 newline 还原。第二次 deploy (commit b935cca1) 验证通过。教训：multi-line shell 改动后必须真跑，不能只靠 syntax check + diff review。'
+  - 'H3-D2: 用户决策 "保持 72h time-based"（A 方案）。我列了 A/B/C/D 四个保留策略（72h / 24h / --keep-storage / 次数+混合）；用户选 A 保持不动。理由：原 51GB 撑满事故中 40GB 是 build cache、11GB 是 images，docker 不支持 cache 按次数保留（多次 build 共享同一 cache layer 是 buildx 核心优化）；只能 image 按次数（需 ~20 行脚本），但 image 不是大头问题。下次部署后观察 72h 实际节奏下 GB 体量再调。'
   related_features:
   - 'tavily-api-key-env-binding (merged 3aa1495c — 同样是 deploy infra hotfix；本 feature 复用其 Rule 11 不适用论证 + manifest 风格)'
   blockers: []
