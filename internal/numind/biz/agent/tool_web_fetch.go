@@ -73,19 +73,44 @@ func (t *webFetchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	}
 
 	// Reject COS agent-attachment URLs — they are private uploads, not web
-	// pages. Hitting them with anonymous GET gives 403 and the LLM was
-	// observed (2026-05-22) burning ReAct turns re-trying web_fetch after
-	// already calling file_read successfully.
+	// pages. Hitting them with anonymous GET gives 403.
 	//
-	// The error string is deliberately phrased as a tool-routing instruction
-	// so the LLM corrects course on its next turn rather than retrying with
-	// the same URL.
+	// IMPORTANT — soft reject via successful ToolResult:
+	//
+	// Returning a Go error here would propagate to Eino as a NodeRunError,
+	// which TERMINATES the agent run (state_reason=model_error) before the
+	// LLM ever sees the message. Eino v0.8.13 has no tool-error → tool-
+	// message hook; Go errors are fatal. We observed this directly:
+	// commit 5c0f64da (hard reject) produced the routing-hint error string
+	// correctly, but the LLM never saw it — Eino terminated the run after
+	// 4 steps (file_read ✓ ✓, web_fetch ✗ ✗).
+	//
+	// Workaround: return ToolResult SUCCESS with the routing instruction as
+	// the content. Eino feeds this back to the LLM as a normal tool message,
+	// and the LLM self-corrects on the next ReAct turn. This is a contract
+	// violation (the tool "succeeded" but actually delivered an error), but
+	// it is the only path that gets the message in front of the LLM.
+	//
+	// A more principled fix is a ToolCallMiddleware that converts any Go
+	// error into a tool-result message globally — tracked as follow-up.
 	if isAgentAttachmentURL(in.URL) {
-		return nil, errno.ErrInvalidInput.SetMessage(
-			"web_fetch: %q is an uploaded attachment, not a public web page. "+
-				"Use the file_read tool with parameter file_url to read its contents.",
-			in.URL,
+		msg := fmt.Sprintf(
+			"ERROR: %q is an uploaded attachment in private storage, not a "+
+				"public web page. Do NOT call web_fetch on uploaded attachments. "+
+				"Call the file_read tool instead, passing parameter "+
+				"file_url=%q. If you have already called file_read on this "+
+				"URL in this conversation, use the existing result and do "+
+				"NOT call any tool on this URL again.",
+			in.URL, in.URL,
 		)
+		out, _ := json.Marshal(webFetchOutput{
+			Title:     "Wrong tool — use file_read for uploaded attachments",
+			ContentMD: msg,
+			ByteSize:  len(msg),
+			Truncated: false,
+			FetchedAt: time.Now().UTC().Format(time.RFC3339),
+		})
+		return ToolResult(out), nil
 	}
 
 	// URL validation: scheme check always runs; DNS/IP check skipped in tests

@@ -529,33 +529,49 @@ func TestIsAgentAttachmentURL(t *testing.T) {
 	}
 }
 
-// TestWebFetch_RejectsAgentAttachmentURL is the primary regression guard. The
-// LLM must see an error that names file_read explicitly so its next turn
-// routes correctly.
+// TestWebFetch_RejectsAgentAttachmentURL is the primary regression guard.
+//
+// Critical contract (after 2026-05-22 take 2): rejection MUST be returned as
+// a successful ToolResult with the routing instruction in ContentMD — NOT a
+// Go error. Eino v0.8.13 turns Go errors into NodeRunError which terminates
+// the run before the LLM sees the message. We observed this directly with
+// commit 5c0f64da (hard reject) — the routing-hint error was generated
+// correctly but Eino killed the run after 4 steps, LLM never saw it.
+//
+// Returning success + putting the instruction in the body is the only path
+// that puts the message in front of the LLM so it can self-correct.
 func TestWebFetch_RejectsAgentAttachmentURL(t *testing.T) {
 	tool := &webFetchTool{skipSSRFCheck: true}
 	cosURL := "https://numind-dev-1334169463.cos.ap-chengdu.myqcloud.com/agent-attachments/1/1779-report.pdf"
 
 	in, _ := json.Marshal(webFetchInput{URL: cosURL})
-	_, err := tool.Execute(context.Background(), ToolInput(in))
-	if err == nil {
-		t.Fatal("expected error rejecting agent-attachment URL")
+	raw, err := tool.Execute(context.Background(), ToolInput(in))
+
+	// MUST be a successful return — if this is non-nil, Eino terminates run.
+	if err != nil {
+		t.Fatalf("expected success ToolResult (NOT Go error — Eino would "+
+			"terminate run on error before LLM sees the message); got err=%v", err)
 	}
-	var e *errno.Errno
-	if !errors.As(err, &e) {
-		t.Fatalf("expected *errno.Errno, got %T: %v", err, err)
-	}
-	if e.Code != errno.ErrInvalidInput.Code {
-		t.Errorf("expected ErrInvalidInput; got code %q", e.Code)
+	if raw == nil {
+		t.Fatal("expected non-nil ToolResult content carrying the routing hint")
 	}
 
-	// Critical: the error message must name file_read AND file_url so the
-	// LLM's next turn can self-correct. Without these tokens the LLM may
-	// just retry the same web_fetch and burn budget.
-	for _, must := range []string{"file_read", "file_url", "attachment"} {
-		if !strings.Contains(e.Message, must) {
-			t.Errorf("error message should contain %q for LLM self-correction; got %q", must, e.Message)
+	// Parse the result and verify it carries the routing instruction.
+	var out webFetchOutput
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("ToolResult must be valid webFetchOutput JSON; got %v", err)
+	}
+
+	// Critical: the message must name file_read AND file_url so the LLM's
+	// next turn can self-correct. The "Do NOT" phrase makes the negative
+	// instruction explicit (LLM weak models miss subtle suggestions).
+	for _, must := range []string{"file_read", "file_url", "attachment", "Do NOT"} {
+		if !strings.Contains(out.ContentMD, must) {
+			t.Errorf("ContentMD should contain %q for LLM self-correction; got %q", must, out.ContentMD)
 		}
+	}
+	if out.Title == "" {
+		t.Error("Title should be set so LLM sees a clear summary in the result preview")
 	}
 }
 
