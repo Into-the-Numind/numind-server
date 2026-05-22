@@ -13,12 +13,14 @@ func TestUserGlobalMemory_TableName(t *testing.T) {
 	assert.Equal(t, "user_global_memory", UserGlobalMemory{}.TableName())
 }
 
-// TestUserGlobalMemory_AutoMigrate 验证 AutoMigrate 能创建 user_global_memory 表。
-func TestUserGlobalMemory_AutoMigrate(t *testing.T) {
+// TestUserGlobalMemory_CreateTable 验证 SQLiteCreateUserGlobalMemoryDDL 能创建 user_global_memory 表。
+// Note: AutoMigrate cannot be used in SQLite tests because the model uses
+// `default:CURRENT_TIMESTAMP(3)` for MySQL ms precision (not SQLite-parseable).
+func TestUserGlobalMemory_CreateTable(t *testing.T) {
 	db := newTestDB(t)
-	require.NoError(t, db.AutoMigrate(&UserGlobalMemory{}))
+	require.NoError(t, db.Exec(SQLiteCreateUserGlobalMemoryDDL).Error)
 	assert.True(t, db.Migrator().HasTable(&UserGlobalMemory{}),
-		"table user_global_memory should exist after AutoMigrate")
+		"table user_global_memory should exist after creating via raw DDL")
 }
 
 // TestUserGlobalMemory_Create_ConfidenceZero 验证 GORM default:1.0 zero-value gotcha
@@ -34,7 +36,7 @@ func TestUserGlobalMemory_AutoMigrate(t *testing.T) {
 //   - biz 层 notepad.Write：opts.Confidence==nil 时默认 1.0；传 *float64=0.0 时存 0.0（P2-2）。
 func TestUserGlobalMemory_Create_ConfidenceZero(t *testing.T) {
 	db := newTestDB(t)
-	require.NoError(t, db.AutoMigrate(&UserGlobalMemory{}))
+	require.NoError(t, db.Exec(SQLiteCreateUserGlobalMemoryDDL).Error)
 
 	m := &UserGlobalMemory{
 		UserID:     1,
@@ -71,7 +73,7 @@ func TestUserGlobalMemory_Create_ConfidenceZero(t *testing.T) {
 // TestUserGlobalMemory_Create_ConfidenceNonZero 验证 Confidence=0.85 正常写入（对照测试）。
 func TestUserGlobalMemory_Create_ConfidenceNonZero(t *testing.T) {
 	db := newTestDB(t)
-	require.NoError(t, db.AutoMigrate(&UserGlobalMemory{}))
+	require.NoError(t, db.Exec(SQLiteCreateUserGlobalMemoryDDL).Error)
 
 	m := &UserGlobalMemory{
 		UserID:     2,
@@ -93,7 +95,7 @@ func TestUserGlobalMemory_Create_ConfidenceNonZero(t *testing.T) {
 // 相同 user_id + key_name 重复插入应报错。
 func TestUserGlobalMemory_UniqueKey_userAndKeyName(t *testing.T) {
 	db := newTestDB(t)
-	require.NoError(t, db.AutoMigrate(&UserGlobalMemory{}))
+	require.NoError(t, db.Exec(SQLiteCreateUserGlobalMemoryDDL).Error)
 
 	m1 := &UserGlobalMemory{
 		UserID:     10,
@@ -121,7 +123,7 @@ func TestUserGlobalMemory_UniqueKey_userAndKeyName(t *testing.T) {
 // 写入后仍为 NULL。
 func TestUserGlobalMemory_Create_NullableFields(t *testing.T) {
 	db := newTestDB(t)
-	require.NoError(t, db.AutoMigrate(&UserGlobalMemory{}))
+	require.NoError(t, db.Exec(SQLiteCreateUserGlobalMemoryDDL).Error)
 
 	m := &UserGlobalMemory{
 		UserID:                  20,

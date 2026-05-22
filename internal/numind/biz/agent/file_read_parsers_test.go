@@ -63,12 +63,13 @@ func TestTextParserImpl_Parse_ServerError(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	parser := &textParserImpl{}
-	// A 500 from the server still results in a successful HTTP round-trip;
-	// the body will contain the error text. We validate no network error occurs.
+	// textParserImpl returns an error for HTTP status >= 400 (added in T5 reviewer fix).
 	_, _, _, err := parser.Parse(context.Background(), srv.URL+"/file.txt", "")
-	// err should be nil — the 500 body is just text; we don't parse status.
-	if err != nil {
-		t.Fatalf("unexpected error from textParserImpl on 500: %v", err)
+	if err == nil {
+		t.Fatal("expected error from textParserImpl on HTTP 500, got nil")
+	}
+	if !strings.Contains(err.Error(), "HTTP 500") {
+		t.Fatalf("expected HTTP 500 in error message, got: %v", err)
 	}
 }
 

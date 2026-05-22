@@ -35,3 +35,19 @@ const (
 	DecisionSanitize    = "sanitize"
 	DecisionPassthrough = "passthrough"
 )
+
+// SQLiteCreateComplianceAuditLogDDL is a SQLite-compatible CREATE TABLE for unit tests.
+// Production uses `default:CURRENT_TIMESTAMP(3)` for MySQL ms precision (SQLite rejects).
+const SQLiteCreateComplianceAuditLogDDL = `
+CREATE TABLE IF NOT EXISTS compliance_audit_log (
+	id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+	agent_run_id        INTEGER,
+	parent_user_id      INTEGER NOT NULL,
+	agent_definition_id INTEGER,
+	rule_layer          TEXT    NOT NULL,
+	rule_id             INTEGER,
+	decision            TEXT    NOT NULL,
+	triggered_text      TEXT,
+	reason              TEXT,
+	created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+)`

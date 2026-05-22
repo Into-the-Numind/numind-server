@@ -20,6 +20,7 @@ import (
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/agent"
 	"numind-server/internal/numind/biz/ali"
+	"numind-server/internal/numind/biz/attachment"
 	chatbotbiz "numind-server/internal/numind/biz/chatbot"
 	"numind-server/internal/numind/biz/config"
 	"numind-server/internal/numind/biz/credit"
@@ -29,6 +30,7 @@ import (
 	"numind-server/internal/numind/biz/monitor"
 	"numind-server/internal/numind/biz/payment"
 	"numind-server/internal/numind/biz/salesrag"
+	skillbiz "numind-server/internal/numind/biz/skill"
 	sopbiz "numind-server/internal/numind/biz/sop"
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/biz/volc"
@@ -120,6 +122,12 @@ func (b *realBizOnlyCustomers) Chatbot() chatbotbiz.IChatbotBiz        { return 
 func (b *realBizOnlyCustomers) LLMRouter() *llmrouter.Router           { return nil }
 func (b *realBizOnlyCustomers) Agents() agent.AgentRunner              { return nil }
 func (b *realBizOnlyCustomers) AgentTools() agent.AgentToolRegistry    { return nil }
+func (b *realBizOnlyCustomers) Skill() skillbiz.Service                { return nil }
+func (b *realBizOnlyCustomers) StudentQuery() *agent.StudentQueryService {
+	return nil
+}
+func (b *realBizOnlyCustomers) StudentRun() *agent.StudentRunService  { return nil }
+func (b *realBizOnlyCustomers) Attachment() *attachment.UploadService { return nil }
 
 // compile-time guard: this test struct must satisfy biz.IBiz or tests fail here.
 var _ biz.IBiz = (*realBizOnlyCustomers)(nil)

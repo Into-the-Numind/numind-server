@@ -65,17 +65,22 @@ func newStudentQueryTestService(t *testing.T) (Service, *model.User, *model.User
 }
 
 // ---------------------------------------------------------------------------
-// TestAvailableForStudent_Parent_Empty
+// TestAvailableForStudent_Parent_SeesOwnAgents
 // ---------------------------------------------------------------------------
 
-// TestAvailableForStudent_Parent_Empty verifies that a parent account (no
-// ParentUserID) receives an empty slice — not an error.
-func TestAvailableForStudent_Parent_Empty(t *testing.T) {
+// TestAvailableForStudent_Parent_SeesOwnAgents verifies that a parent account
+// (ParentUserID nil) sees their own active agents — enables 试聊 / trial chat
+// flow where admin clicks "试聊" on an agent and lands in student view.
+// Behavior change: fix(agent-student) commit b3beb2f8 (2026-05-22).
+func TestAvailableForStudent_Parent_SeesOwnAgents(t *testing.T) {
 	svc, parent, _ := newStudentQueryTestService(t)
 
 	got, err := svc.AvailableForStudent(context.Background(), parent.ID)
 	require.NoError(t, err)
-	assert.Empty(t, got, "parent account should see 0 agents via AvailableForStudent")
+	assert.Len(t, got, 2, "parent account should see their 2 active agents (试聊 flow)")
+	for _, ad := range got {
+		assert.True(t, ad.IsActive, "all returned agents must be active")
+	}
 }
 
 // ---------------------------------------------------------------------------

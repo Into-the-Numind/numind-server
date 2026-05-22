@@ -16,7 +16,7 @@ func TestComplianceRule_TableName(t *testing.T) {
 func TestComplianceRule_AutoMigrate(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&ComplianceRule{}))
+	require.NoError(t, db.Exec(SQLiteCreateComplianceRuleDDL).Error)
 
 	// Verify the table exists with the right columns
 	var tableInfo []map[string]interface{}
@@ -46,7 +46,7 @@ func TestComplianceRule_AutoMigrate(t *testing.T) {
 func TestComplianceRule_CreateWithIsActiveFalse(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&ComplianceRule{}))
+	require.NoError(t, db.Exec(SQLiteCreateComplianceRuleDDL).Error)
 
 	rule := &ComplianceRule{
 		ParentUserID: 1,

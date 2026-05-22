@@ -24,3 +24,17 @@ const (
 	ComplianceRuleTypeForbidPhrase = "forbid_phrase"
 	ComplianceRuleTypeCustom       = "custom"
 )
+
+// SQLiteCreateComplianceRuleDDL is a SQLite-compatible CREATE TABLE for unit tests.
+// Production uses `default:CURRENT_TIMESTAMP(3)` for MySQL ms precision (SQLite rejects).
+const SQLiteCreateComplianceRuleDDL = `
+CREATE TABLE IF NOT EXISTS compliance_rule (
+	id             INTEGER PRIMARY KEY AUTOINCREMENT,
+	parent_user_id INTEGER NOT NULL,
+	rule_type      TEXT    NOT NULL,
+	rule_text      TEXT    NOT NULL,
+	priority       INTEGER NOT NULL DEFAULT 100,
+	is_active      INTEGER NOT NULL DEFAULT 1,
+	created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+)`

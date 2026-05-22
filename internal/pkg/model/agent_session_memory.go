@@ -22,3 +22,24 @@ type AgentSessionMemory struct {
 }
 
 func (AgentSessionMemory) TableName() string { return "agent_session_memory" }
+
+// SQLiteCreateAgentSessionMemoryDDL is a SQLite-compatible CREATE TABLE statement
+// for unit tests. Production uses `default:CURRENT_TIMESTAMP(3)` for ms precision
+// on MySQL, which SQLite rejects. Use db.Exec(SQLiteCreateAgentSessionMemoryDDL)
+// instead of AutoMigrate in SQLite tests.
+const SQLiteCreateAgentSessionMemoryDDL = `
+CREATE TABLE IF NOT EXISTS agent_session_memory (
+	id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+	user_id                    INTEGER NOT NULL,
+	agent_definition_id        INTEGER NOT NULL,
+	kind                       TEXT    NOT NULL,
+	content                    TEXT    NOT NULL,
+	embedding                  BLOB,
+	score                      REAL    NOT NULL DEFAULT 1.0,
+	source_type                TEXT    NOT NULL DEFAULT 'agent',
+	source_agent_definition_id INTEGER,
+	recency_at                 DATETIME NOT NULL,
+	expires_at                 DATETIME,
+	created_at                 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at                 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+)`

@@ -15,6 +15,10 @@ import (
 
 // newTestDB 创建 SQLite 内存 DB 并 AutoMigrate agent_definition / history 模型。
 // 使用文件 DB（非 :memory:）保证并发 goroutine 共享同一连接。
+//
+// Models that use `gorm:"default:CURRENT_TIMESTAMP(3)"` (MySQL ms precision) are
+// intercepted and created via raw SQLite-compat DDL instead of AutoMigrate.
+// Current set: UserGlobalMemory, AgentSessionMemory, ComplianceRule, ComplianceAuditLog.
 func newTestDB(t *testing.T, models ...interface{}) *gorm.DB {
 	t.Helper()
 	tmp := t.TempDir()
@@ -23,7 +27,24 @@ func newTestDB(t *testing.T, models ...interface{}) *gorm.DB {
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(models...))
+	var passthrough []interface{}
+	for _, m := range models {
+		switch m.(type) {
+		case *model.UserGlobalMemory:
+			require.NoError(t, db.Exec(model.SQLiteCreateUserGlobalMemoryDDL).Error)
+		case *model.AgentSessionMemory:
+			require.NoError(t, db.Exec(model.SQLiteCreateAgentSessionMemoryDDL).Error)
+		case *model.ComplianceRule:
+			require.NoError(t, db.Exec(model.SQLiteCreateComplianceRuleDDL).Error)
+		case *model.ComplianceAuditLog:
+			require.NoError(t, db.Exec(model.SQLiteCreateComplianceAuditLogDDL).Error)
+		default:
+			passthrough = append(passthrough, m)
+		}
+	}
+	if len(passthrough) > 0 {
+		require.NoError(t, db.AutoMigrate(passthrough...))
+	}
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })

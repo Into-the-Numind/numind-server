@@ -26,7 +26,8 @@ func newMemoryWriteTestDB(t *testing.T) *gorm.DB {
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&model.UserGlobalMemory{}))
+	// SQLite-compat raw DDL: UserGlobalMemory uses CURRENT_TIMESTAMP(3) for MySQL ms precision.
+	require.NoError(t, db.Exec(model.SQLiteCreateUserGlobalMemoryDDL).Error)
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
