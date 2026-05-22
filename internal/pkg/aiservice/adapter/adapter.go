@@ -131,6 +131,13 @@ type oaiMessage struct {
 	Content    interface{}   `json:"content"` // string OR []oaiContentPart for vision
 	ToolCallID string        `json:"tool_call_id,omitempty"`
 	ToolCalls  []oaiToolCall `json:"tool_calls,omitempty"`
+	// ReasoningContent echoes thinking-mode chain-of-thought from the previous
+	// assistant turn. Required by DMXAPI (deepseek-v4-pro intrinsic thinking)
+	// and AiHubMix reasoning models on every follow-up turn — provider returns
+	// HTTP 400 "The reasoning_content in the thinking mode must be passed back"
+	// otherwise. Non-thinking providers ignore it; omitempty drops the field
+	// for non-Agent callers to keep wire shape stable.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 // oaiContentPart is a single part in a multipart (vision) message.
@@ -353,6 +360,9 @@ func buildOAIMessage(m aiservice.ChatMessage) oaiMessage {
 	out := oaiMessage{Role: string(m.Role)}
 	if m.ToolCallID != "" {
 		out.ToolCallID = m.ToolCallID
+	}
+	if m.ReasoningContent != "" {
+		out.ReasoningContent = m.ReasoningContent
 	}
 	if len(m.ToolCalls) > 0 {
 		out.ToolCalls = make([]oaiToolCall, 0, len(m.ToolCalls))
