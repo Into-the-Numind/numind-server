@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/viper"
 
+	"numind-server/internal/numind/config"
 	"numind-server/internal/pkg/errno"
 )
 
@@ -157,6 +158,34 @@ func TestWebSearch_HTTP429(t *testing.T) {
 	}
 	if !errors.Is(err, errno.ErrAIProviderError) {
 		t.Errorf("expected ErrAIProviderError for 429, got: %v", err)
+	}
+}
+
+// TestWebSearch_EnvVarBinding asserts that config.SetupViperEnvBindings (called
+// from internal/numind/helper.go::initConfig at process start) correctly maps
+// the nested config key "web_search.tavily.api_key" to the env var
+// NUMIND_WEB_SEARCH_TAVILY_API_KEY.
+//
+// Regression guard: on 2026-05-22, the dev deployment was missing the Tavily
+// api_key because config_dev.yaml had api_key:"" and the deploy pipeline did
+// not inject any env var. The operational fix injects the env var via
+// deploy-remote.sh secrets file; this test pins the Go-side binding contract
+// that operations rely on.
+//
+// The test calls the SAME function that helper.go calls, so removing
+// AutomaticEnv / SetEnvPrefix / SetEnvKeyReplacer from
+// config.SetupViperEnvBindings will break BOTH the production env-var pathway
+// AND this test — exactly the regression coupling we want.
+func TestWebSearch_EnvVarBinding(t *testing.T) {
+	v := viper.New()
+	config.SetupViperEnvBindings(v)
+
+	t.Setenv("NUMIND_WEB_SEARCH_TAVILY_API_KEY", "from-env-tk-test-123")
+
+	got := v.GetString("web_search.tavily.api_key")
+	if got != "from-env-tk-test-123" {
+		t.Fatalf("env-var binding broken: expected %q from NUMIND_WEB_SEARCH_TAVILY_API_KEY, got %q (dev deployment depends on this mapping)",
+			"from-env-tk-test-123", got)
 	}
 }
 

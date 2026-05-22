@@ -54,15 +54,10 @@ func initConfig() {
 		viper.SetConfigName(defaultConfigName)
 	}
 
-	// 读取匹配的环境变量
-	viper.AutomaticEnv()
-
-	// 读取环境变量的前缀为 MINIBLOG，如果是 miniblog，将自动转变为大写。
-	viper.SetEnvPrefix("NUMIND")
-
-	// 以下 2 行，将 viper.Get(key) key 字符串中 '.' 和 '-' 替换为 '_'
-	replacer := strings.NewReplacer(".", "_")
-	viper.SetEnvKeyReplacer(replacer)
+	// viper env binding: AutomaticEnv + EnvPrefix("NUMIND") + dot-to-underscore
+	// replacer. Extracted to config.SetupViperEnvBindings so the regression test
+	// in internal/pkg/aiservice/web_search_test.go pins the same contract.
+	config.SetupViperEnvBindings(viper.GetViper())
 
 	// 读取配置文件。如果指定了配置文件名，则使用指定的配置文件，否则在注册的搜索路径中搜索
 	if err := viper.ReadInConfig(); err != nil {
