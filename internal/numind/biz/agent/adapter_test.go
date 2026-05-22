@@ -169,6 +169,73 @@ func TestConvertToAiserviceRequest_EmptyModelName(t *testing.T) {
 	}
 }
 
+// TestConvertToAiserviceRequest_PropagatesToolCallID is the Eino-side half of
+// the hotfix aiservice-tool-message-roundtrip regression. Before the fix,
+// schema.Message.ToolCallID was silently dropped when converting to
+// aiservice.ChatMessage. The ReAct loop's tool-result message then arrived
+// at the OAI adapter with no id, the upstream provider rejected the request
+// with HTTP 400, and the run terminated as model_error. This test catches
+// any future code path that re-introduces the drop.
+func TestConvertToAiserviceRequest_PropagatesToolCallID(t *testing.T) {
+	a := &aiserviceAdapter{modelName: "", taskID: "agent.run"}
+	req := a.convertToAiserviceRequest([]*schema.Message{
+		{
+			Role:       schema.Tool,
+			Content:    `{"weather":"sunny"}`,
+			ToolCallID: "call_xyz789",
+		},
+	})
+	if len(req.Messages) != 1 {
+		t.Fatalf("messages: got %d, want 1", len(req.Messages))
+	}
+	if req.Messages[0].ToolCallID != "call_xyz789" {
+		t.Errorf("ToolCallID: got %q, want call_xyz789 (root cause: DMXAPI 400 on missing field)", req.Messages[0].ToolCallID)
+	}
+	if req.Messages[0].Role != aiservice.MessageRoleTool {
+		t.Errorf("Role: got %v, want tool", req.Messages[0].Role)
+	}
+}
+
+// TestConvertToAiserviceRequest_PropagatesToolCalls is the assistant-turn
+// companion: when Eino reposts the assistant message that requested the
+// tool call (so the provider can correlate the upcoming tool result), the
+// tool_calls array must survive.
+func TestConvertToAiserviceRequest_PropagatesToolCalls(t *testing.T) {
+	a := &aiserviceAdapter{modelName: "", taskID: "agent.run"}
+	req := a.convertToAiserviceRequest([]*schema.Message{
+		{
+			Role:    schema.Assistant,
+			Content: "",
+			ToolCalls: []schema.ToolCall{
+				{
+					ID:   "call_xyz789",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "web_search",
+						Arguments: `{"query":"weather"}`,
+					},
+				},
+			},
+		},
+	})
+	if len(req.Messages) != 1 {
+		t.Fatalf("messages: got %d, want 1", len(req.Messages))
+	}
+	if len(req.Messages[0].ToolCalls) != 1 {
+		t.Fatalf("ToolCalls: got %d, want 1", len(req.Messages[0].ToolCalls))
+	}
+	tc := req.Messages[0].ToolCalls[0]
+	if tc.ID != "call_xyz789" {
+		t.Errorf("ToolCalls[0].ID: got %q, want call_xyz789", tc.ID)
+	}
+	if tc.Function.Name != "web_search" {
+		t.Errorf("ToolCalls[0].Function.Name: got %q, want web_search", tc.Function.Name)
+	}
+	if tc.Function.Arguments != `{"query":"weather"}` {
+		t.Errorf("ToolCalls[0].Function.Arguments: got %q, want JSON args", tc.Function.Arguments)
+	}
+}
+
 // TestConvertRole verifies all role mappings.
 func TestConvertRole(t *testing.T) {
 	cases := []struct {

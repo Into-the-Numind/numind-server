@@ -143,10 +143,33 @@ func (a *aiserviceAdapter) convertToAiserviceRequest(in []*schema.Message) aiser
 		})
 	}
 	for _, m := range in {
-		msgs = append(msgs, aiservice.ChatMessage{
+		am := aiservice.ChatMessage{
 			Role:    convertRole(m.Role),
 			Content: aiservice.MessageContent{Text: m.Content},
-		})
+		}
+		// ReAct loop: when Eino reposts a tool-result message back to the model,
+		// the upstream OpenAI-compatible API requires tool_call_id. When the
+		// previous assistant turn requested tool invocations, the tool_calls
+		// array must be re-sent so the provider can correlate the response.
+		// Without these, DMXAPI / Ali / Volc return HTTP 400 and runner terminates
+		// with model_error before any tool result ever lands.
+		if m.ToolCallID != "" {
+			am.ToolCallID = m.ToolCallID
+		}
+		if len(m.ToolCalls) > 0 {
+			am.ToolCalls = make([]aiservice.ToolCall, 0, len(m.ToolCalls))
+			for _, tc := range m.ToolCalls {
+				am.ToolCalls = append(am.ToolCalls, aiservice.ToolCall{
+					ID:   tc.ID,
+					Type: tc.Type,
+					Function: aiservice.ToolCallFunction{
+						Name:      tc.Function.Name,
+						Arguments: tc.Function.Arguments,
+					},
+				})
+			}
+		}
+		msgs = append(msgs, am)
 	}
 
 	req := aiservice.ChatRequest{

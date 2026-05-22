@@ -90,9 +90,25 @@ type ToolCall struct {
 }
 
 // ChatMessage is a single turn in a conversation.
+//
+// For role=assistant messages that requested tool invocations, ToolCalls carries
+// the parsed tool_calls array — the LLM-side function-call structure. For role=tool
+// messages that report a tool's execution result back to the model, ToolCallID
+// must reference the assistant message's tool_calls[N].id; OpenAI-compatible
+// providers (DMXAPI / Ali / Volc) return HTTP 400 when a role=tool message is
+// posted without this field set.
+//
+// Both fields use json:omitempty so non-tool turns marshal identically to the
+// pre-Agent-mode wire shape (preserves SOP / chatbot byte-for-byte).
 type ChatMessage struct {
 	Role    MessageRole    `json:"role"`
 	Content MessageContent `json:"content"`
+	// ToolCallID is the id of the tool_call this message responds to. Required
+	// for role=tool, ignored on all other roles.
+	ToolCallID string `json:"tool_call_id,omitempty"`
+	// ToolCalls is the assistant's requested tool invocations (role=assistant).
+	// Empty / nil on any other role.
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 
 // TokenUsage reports the token consumption of a Chat call.
