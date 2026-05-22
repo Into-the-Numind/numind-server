@@ -58,11 +58,31 @@ esac
 
 HEALTH_URL="http://localhost:${HEALTH_PORT}${HEALTH_PATH}"
 
+# Optional secrets file at /opt/numind/<env>/secrets.env, server target only.
+# Format: KEY=value per line, no quotes. Used to inject runtime secrets that
+# must NOT live in config_*.yaml or the image (e.g. NUMIND_WEB_SEARCH_TAVILY_API_KEY).
+# File is owned by deploy server admin; deploy script reads it only — never writes.
+# Absence is fine: docker --env-file is skipped, and viper falls back to the
+# config_<env>.yaml value (typically empty string for secrets).
+ENV_FILE_FLAG=""
+if [ "$TARGET" = "server" ]; then
+  SECRETS_FILE="/opt/numind/${ENV}/secrets.env"
+  if [ -f "$SECRETS_FILE" ]; then
+    ENV_FILE_FLAG="--env-file $SECRETS_FILE"
+    SECRETS_INFO="$SECRETS_FILE (loaded)"
+  else
+    SECRETS_INFO="$SECRETS_FILE (not present, skipping)"
+  fi
+else
+  SECRETS_INFO="n/a (admin target)"
+fi
+
 echo "==============================================="
 echo "Deploy: $CONTAINER"
 echo "  Image  : $IMAGE"
 echo "  Env    : $ENV"
 echo "  Health : $HEALTH_URL"
+echo "  Secrets: $SECRETS_INFO"
 echo "==============================================="
 
 OLD_IMAGE=""
@@ -96,6 +116,7 @@ start_container() {
     --network numind-network \
     $PORTS \
     -e "APP_ENV=${ENV}" \
+    $ENV_FILE_FLAG \
     $VOLUMES \
     $EXTRA_RUN_FLAGS \
     --log-driver json-file \

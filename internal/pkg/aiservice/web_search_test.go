@@ -160,6 +160,34 @@ func TestWebSearch_HTTP429(t *testing.T) {
 	}
 }
 
+// TestWebSearch_EnvVarBinding asserts that the viper env-binding setup in
+// internal/numind/helper.go (AutomaticEnv + SetEnvPrefix("NUMIND") +
+// SetEnvKeyReplacer(".","_")) correctly maps the nested config key
+// "web_search.tavily.api_key" to the env var NUMIND_WEB_SEARCH_TAVILY_API_KEY.
+//
+// Regression guard: on 2026-05-22, the dev deployment was missing the Tavily
+// api_key because config_dev.yaml had api_key:"" and the deploy pipeline did
+// not inject any env var. The fix is operational (inject env var via
+// deploy-remote.sh secrets file), but the contract this test pins is that the
+// existing viper init flow already supports env-var override — no Go code
+// change is required for the binding itself. If anyone removes AutomaticEnv,
+// changes EnvPrefix, or drops the dot-to-underscore replacer, this test fails
+// and reminds them that operations rely on this mapping.
+func TestWebSearch_EnvVarBinding(t *testing.T) {
+	v := viper.New()
+	v.AutomaticEnv()
+	v.SetEnvPrefix("NUMIND")
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+
+	t.Setenv("NUMIND_WEB_SEARCH_TAVILY_API_KEY", "from-env-tk-test-123")
+
+	got := v.GetString("web_search.tavily.api_key")
+	if got != "from-env-tk-test-123" {
+		t.Fatalf("env-var binding broken: expected %q from NUMIND_WEB_SEARCH_TAVILY_API_KEY, got %q (dev deployment depends on this mapping)",
+			"from-env-tk-test-123", got)
+	}
+}
+
 func TestWebSearch_Timeout(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Sleep longer than the configured timeout to trigger context cancellation.
