@@ -52,7 +52,13 @@ type UserMemoryFact struct {
 	Importance        float64    `gorm:"type:decimal(3,2);not null;default:0.50" json:"importance"`
 	SourceSessionID   string     `gorm:"size:64;not null;default:''" json:"source_session_id"`
 	SourceMessageUUID string     `gorm:"size:64;not null;default:''" json:"source_message_uuid"`
-	SourceExtractedAt time.Time  `gorm:"not null;default:CURRENT_TIMESTAMP" json:"source_extracted_at"`
+	// SourceExtractedAt: zero-value falls back to GORM autoCreateTime (set on Create).
+	// Caller (biz layer) typically sets this explicitly to the message timestamp.
+	// NOTE: We removed `default:CURRENT_TIMESTAMP` because GORM AutoMigrate generates
+	// `datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP` which MySQL strict mode rejects
+	// with error 1067 — precision mismatch (datetime(3) wants CURRENT_TIMESTAMP(3)).
+	// autoCreateTime sets the field in Go before INSERT, avoiding the DB default entirely.
+	SourceExtractedAt time.Time  `gorm:"not null;autoCreateTime" json:"source_extracted_at"`
 	LastUsedAt        *time.Time `json:"last_used_at"`
 	UseCount          int        `gorm:"not null;default:0" json:"use_count"`
 	EmbeddingHash     string     `gorm:"size:64;not null;default:''" json:"embedding_hash"`
