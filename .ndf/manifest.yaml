@@ -1959,10 +1959,10 @@ features:
   ndf_version: '3.0'
   description: 'Agent Mode v2 第 2 个 feature（v2 三件套之二）— 运行时让 Agent 真的能"调用" Skill。本 feature 范围：(1) 新增 platform tool use_skill(name string) 注册到 biz/agent/tool 系统，让 LLM 主动 emit tool-call 调用；(2) runner.go system prompt 扩展段位 [3] body 注入 "## 可用技能" 目录（不新增段位保 6 段 invariant，仅 name + description + when_to_use 元数据，节省 token，懒加载 body）；(3) use_skill 调用时载入 Skill.body_md 到 turn 上下文（具体 role 由 S2 拍板）；(4) turn-scope tool whitelist：runner 启动时预注册所有 binding 的 allowed_tools 并集 + 通过新机制默认拒绝非基础白名单工具（不新增 hook chain slot，S2 选 permission validator 或 EinoToolWrapper），use_skill 调用后把该 Skill 的 allowed_tools 加入 turn-scope 允许集合，下一个 user 输入到来撤销；(5) narration provider 加 skill_use SSE event，前端 chat 流渲染 "📚 调用技能：{name}" 气泡；(6) use_skill 计入 BudgetTracker，hard cap 3 次/turn；(7) dual-read 兜底：runtime 优先按 agent_skill_binding 走新路径；Agent 无任何 binding 时回退到 v1 行为读 agent_definition.generated_skill_body/custom_skill_body，保 v1 Agent 零回归。Out of scope: DB schema/CRUD/UI（全是 #1 的事）；marketplace（#3）；Skill scripts 子目录执行；删 deprecated 字段；prod 部署；admin-web 改动；意图分类器自动 routing（LLM 自主决策）。'
   track: standard
-  stage: S3
+  stage: S4
   classification_reason: 'Standard 触发 — (1) DB schema 变更：否（#1 已建表本 feature 只读） (2) 新增 API 端点：否（use_skill 是 Agent 内部工具不暴露 REST） (3) 新外部服务集成：否 (4) 影响文件数 >3（biz/agent/tool_use_skill.go 新建 + runner.go 改 + budgetgate hook 改 + narration provider 改 + 前端 ToolBubble 改 + 测试） (5) 高风险业务逻辑：是（动 runner.go 影响所有 Agent 运行；dual-read 写错 = 全平台 Agent 行为异常；tool 白名单 hook 写错 = 工具权限失控）。条件 4+5 触发 Standard 强制（高风险 runner.go 改造 Hotfix 不适用）。'
-  last_updated_by: ai-s3-reviewer-pass-with-concerns-fixed
-  last_updated_at: '2026-05-24T01:10:00+08:00'
+  last_updated_by: ai-s4-t01-verified
+  last_updated_at: '2026-05-24T01:40:00+08:00'
   repos:
   - numind-server
   - numind-web-v3
@@ -1981,7 +1981,7 @@ features:
     total_tasks: 9
     completed_tasks: 0
     reviewed_tasks: 0
-    current_task: 'S3 plan + Sonnet reviewer PASS_WITH_CONCERNS（0 P0 + 2 P1 + 2 P2 全已修）。9 task DAG (T01 verify #1 → T02-T05 W2 disjoint → T03 → T06 runner → T07 biz.go wire → T08 frontend Tier 2 cross-repo → T09 S5 验证策略 NDF Rule 10)；估时 8d + S5 执行 1d。autopilot 跳 S3 硬门禁 → S3→S4 阻塞检查 (#1 land develop 验证)，最多 7 天轮询 / 1800s 间隔。'
+    current_task: 'S4: T01 verify PASS (轮询第 2 次 2026-05-24 01:40 — #1 已 land 80667115)。worktree rebase 含 #1 全部代码 + 我的 S0-S3 工件。下一步 W2 dispatch (T02/T04/T05 numind-server Tier 3 disjoint + T08 numind-web-v3 Tier 2 cross-repo)。spec 关键调整 (代码事实校准): BindingService.ListByAgent 已返回 []model.Skill (join 已做单次调用) / 无 GetByName 或 GetByIDs (改用 runner-cached SkillByName + SkillByID 双 map) / ID 类型 uint 非 uint64 / BodyMd 字段名 / AllowedTools 是 datatypes.JSON / 无 Name UNIQUE 约束 (S1-D13 防御 check 是唯一防线)。'
   decisions:
   - 'S0-D1 (parent 2026-05-24 cold-start): 终态 = "agent 是 agent，agent 有自己的提示词约束和其它 harness 约束，而 skills 是可以被单独管理、编写的技能型文件，可以被 agent 调用"。本 feature 实现关键动词"被 agent 调用"——Skill 不是 system prompt 静态拼接，是 runtime 按需载入的资产。'
   - 'S0-D2 (ai 2026-05-24): use_skill 是 platform tool（与 8 个内置 AgentTool 同构），参数 schema { "name": string }；invoke 行为 = lookup skill → append body_md 到 turn → 合并 allowed_tools 到 turn-scope → narration "📚 调用技能：{name}" → 返回 result。'
@@ -2008,6 +2008,7 @@ features:
   - 'S3-D23 (ai 2026-05-24): Task DAG = 9 task。W1 T01 (verify #1 接口) → W2 T02+T04+T05 Tier 3 disjoint + T08 Tier 2 cross-repo 并行 → W3 T03 (use_skill Invoke full) → W4 T06 (runner.go 改造, 2d 最大 task, 独占 runner.go) → W5 T07 (biz.go wire) → W6 T09 (S5 验证策略, NDF Rule 10)。'
   - 'S3-D24 (ai 2026-05-24): T06 runner.go 改造 ~150 LOC 不拆——按"逻辑独立单元"原则。拆开会导致 runner.go 半成品 (字段新增但消费逻辑不全, go build fail)。S3 reviewer 赞同此判断。'
   - 'S3-D25 (sonnet-reviewer 2026-05-24): T08 frontend 起步 grep 失败时触发 Pause and Ask 协议 (不自行猜路径)。T09 起步必跑 agent-student.spec.ts baseline 验证 (防 #1 改动静默破坏 v1 fixture)。T06 验收加 grep CtxKeySkillBindings 检查 (spec §3.7 预留 key 易漏写)。T09 估时 1d + 0.5d AC-11 手工统计 buffer。'
+  - 'S4-D26 (ai+code-verified 2026-05-24 01:40): T01 验证 #1 已 land develop (merge 80667115)。spec 调整: (1) BindingService.ListByAgent(parentUserID, agentID uint) ([]model.Skill, error) 已做 join 单次调用够，无需 spec §3.6 "ListByAgent + GetByIDs 双查" 模式；(2) 无 GetByName/GetByIDs — 改用 runner-cached UseSkillTurnState.SkillByName (map[string]*model.Skill) + SkillByID (map[uint]*model.Skill) 双 map，use_skill lookup 0 DB 调用；(3) 所有 ID uint 非 uint64；(4) 字段名 BodyMd (lowercase d) AllowedTools datatypes.JSON SourceTemplateID *uint；(5) 无 (parent_user_id, name) UNIQUE 约束，S1-D13 runner defensive check 是同名唯一防线；(6) errno.ErrSkillArtifactNotFound 检测用 errors.Is；(7) Service/BindingService 不是 interface 是 struct，runner 直接持有 *Service / *BindingService 指针。'
   related_features:
   - 'agent-mode-v2-skill-as-artifact (#1 v2 三件套之一，本 feature 硬依赖 — 需要 skill 表 / agent_skill_binding 表 / biz/skill 包就位才能进 S4)'
   - 'agent-mode-v2-skill-marketplace (#3 v2 三件套之三，本 feature 阻塞它 — 跨租户脱敏发布订阅依赖本 feature 的 use_skill 运行时模型)'
