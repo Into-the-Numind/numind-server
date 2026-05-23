@@ -2083,27 +2083,31 @@ features:
     spec: numind-server/docs/superpowers/specs/2026-05-24-agent-mode-v2-skill-marketplace-design.md
     plan: numind-server/docs/superpowers/plans/2026-05-24-agent-mode-v2-skill-marketplace-plan.md
     architecture_blueprint: docs/agent-mode/architecture-v1.md
+  stage: S4
   progress:
     total_tasks: 12
-    completed_tasks: 0
-    reviewed_tasks: 0
-    current_task: 'S3 完成 (plan 12 task DAG，T12 = S5 验证策略独立 task)；plan reviewer dispatch (Sonnet) 结论 PASS_WITH_CONCERNS（0 P0/P1，5 P2 全部已修：T3 Langfuse mock 断言精确化 / T4 列出 spec §10.1 七条安全规则 / T6 移除 task dev smoke check 改 go build / T11 加 Pause-and-Ask gate 要求 4 个新 E2E envvar / T9 锁 package.json 所有权防 Tier 4）。S3→S4 阻塞门检测：v2 #1 stage:S4 但还在 feature 分支（develop 上 pkg/model/skill.go 不存在 + 无 v2-skill 相关 commit）。ScheduleWakeup 1800s loop 等 #1 land develop，最多等 7 天（336 次轮询）。期间 status quo，不主动 mock #1 接口避免后续 rework。'
+    completed_tasks: 1
+    reviewed_tasks: 1
+    current_task: 'T1 完成 (commit 3d477eb4 + ea3af75f P2 fix on worktree feature/agent-mode-v2-skill-marketplace)。双 reviewer (Sonnet 并行) PASS_WITH_CONCERNS / 0 P0/P1 / 8 P2 — 2 个 P2 已 inline 修 (autoCreateTime tags + IsPublic 注释)，其余 6 个 P2 作为 conscious deviation 跟随 #1 约定（spec §2.3 写 uint64 实现 uint / 单文件 migration / allowed_tools 加 NOT NULL / FK 全省略软约束 / _rollback.sql 下划线 / helper.go %v 与项目一致）。下一步：T2 store layer 启动。'
   decisions:
   - 'S0-D1 (parent 2026-05-24, 继承自 #1 D4): v2 三件套 #1+#2+#3 串行交付。本 feature 是 #3，#1 land develop 才能进 S4（依赖 skill 表 + biz/skill.Service.Create 写副本）。'
-  - 'S0-D2 (ai 2026-05-24): 订阅 = 复制副本语义（不是引用）。订阅时刻调 biz/skill.Service.Create 给订阅方租户新建 skill 行（source_type=''subscribed''，需在 #1 source_type 枚举加 — 通过 20260524_120200_skill_add_subscribed_source_type.sql migration），同时写 skill_subscription 关联。发布方后续编辑原 skill 不影响订阅方副本。'
-  - 'S0-D3 (ai 2026-05-24): 脱敏两阶段 — 正则黑名单（邮箱/手机号/身份证/银行卡 + 发布方已配置的竞品名黑名单 forbidden_competitor_names）+ LLM 实体识别（aiservice.Chat qwen-turbo，prompt 走 langfuse.FetchPrompt 5min cache + 内联 fallback）。发布前**前端 diff 视图强制人工 review gate**；LLM 失败 → 发布按钮 disable 不允许绕过。'
+  - 'S0-D2 (ai 2026-05-24, REVISED post-#1-investigation): 订阅 = 复制副本语义。订阅时刻调 artifact.Service.Create (NOT skill.Service.Create — actual package is biz/skill/artifact) 给订阅方租户新建 skill 行 (source_type=imported_from_marketplace，#1 已预留 ENUM 值无需 ALTER COLUMN)，同时写 skill_subscription 关联。发布方后续编辑原 skill 不影响订阅方副本。'
+  - 'S0-D3 (ai 2026-05-24, REVISED post-#1-investigation): 脱敏改为单阶段（PII 正则）+ LLM 实体识别。原 spec 第二个 regex 阶段（竞品名黑名单读 forbidden_competitor_names JSON）DROPPED — agent_permission_config 实际无此字段，schema 用 generic rule_type/rule_key/rule_value 行。LLM prompt 已覆盖具体产品/课程名 → [产品]，前端 diff 人工 review gate 是最终防线。'
   - 'S0-D4 (ai 2026-05-24): 跨租户隔离硬约束 — biz 层从 JWT 取 subscriber_user_id 不接受参数；publisher_user_id != subscriber_user_id biz 层校验；父账户独占 marketplace 权限，子账户访问任意 marketplace 端点返回 403 + ErrChildAccountCannotAccessMarketplace。'
   - 'S0-D5 (ai 2026-05-24): marketplace item 独立存活 — 发布方软删原 skill 不级联下架 marketplace；admin 后续可手动下架（is_public=0）。'
   - 'S2-D1 (ai 2026-05-24): uniqueness on (source_skill_id, is_public=1) enforced in biz layer via SELECT inside transaction. MySQL 8 lacks partial unique index; full UNIQUE blocks re-publish-after-unpublish.'
   - 'S2-D2 (ai 2026-05-24): publish endpoint receives confirmed_sanitized_body from frontend but does NOT trust blindly. Re-runs sanitize internally and compares normalized hash; mismatch within 5% character delta tolerated, larger mismatch rejected as ErrSanitizeConfirmationMismatch.'
-  - 'S2-D3 (ai 2026-05-24): clone path requires skill.Service.CreateInTx from #1. Option A (preferred): post-#1-land, send small PR adding CreateInTx. Option B (fallback): two-phase commit in clone.go. Decision deferred until S4 entry inspection of what #1 actually shipped.'
+  - 'S2-D3 (ai 2026-05-24, REVISED post-#1-investigation): #1 actually shipped artifact.Service.Create (concrete struct, package biz/skill/artifact) without CreateInTx variant. Resolution = nested db.Transaction (MySQL InnoDB savepoint): Subscribe opens outer tx; artifactSvc.Create internally opens its own db.Transaction which becomes a savepoint; outer rollback rolls back savepoint too. No PR to #1 needed. Validated via commit 9a6c622c spec §11 revised D-COORD.'
+  - 'S4-T1-D1 (ai 2026-05-24): T1 跟随 #1 skill_artifact 约定的 conscious deviations from spec：(a) Go struct ID uint not uint64 — INT UNSIGNED 4B 范围对 marketplace 充足，与 #1 一致；(b) 单 migration 文件 create_skill_marketplace_tables.sql 含两表 — 仿 #1 create_skill_artifact_tables.sql；(c) 文件名 _rollback.sql 下划线（项目实际约定）；(d) FK 全省略 — 项目 zero-FK 约定，软约束在 biz 层；(e) helper.go err 用 %v not %w — 与其它 AutoMigrate block 一致。这些都是 reviewer 标的 P2 但有 valid 理由不改。'
   - 'S3-D1 (ai 2026-05-24): plan reviewer (Sonnet, independent) verdict PASS_WITH_CONCERNS — 0 P0/P1, 5 P2 全部已修 (T3 Langfuse mock 断言精确化 / T4 列出 spec §10.1 七条安全规则 / T6 移除 task dev smoke check 改 go build / T11 加 Pause-and-Ask gate / T9 锁 package.json 所有权).'
   - 'S3-D2 (ai 2026-05-24): S5 validation strategy = Playwright E2E for cross-tenant flows AC-1..AC-6 (high-risk, requires persistent regression) + gstack /qa for visual QA + Langfuse dashboard manual inspection. 高风险跨租户安全 gate 必须 Playwright 不允许仅 gstack /qa。'
   related_features:
   - 'agent-mode-v2-skill-as-artifact (v2 #1，硬依赖 — 必须先 land develop。当前在 S4 feature 分支上)'
   - 'agent-mode-v2-skill-invocation (v2 #2，软依赖 — 订阅功能落地不必等 #2，但 UI 引导文案假设 Skill 可被 Agent 装载使用)'
   - 'agent-mode-v15-memory-layer-a (merged b0fa0cf2 — Langfuse prompt 管理 + FetchPrompt cache 模式参考)'
-  - 'agent-mode-skill-system (#5/14, merged e05498b6 — agent_permission_config.forbidden_competitor_names 字段来源)'
-  blockers:
-  - 'BLOCKER-1: v2 #1 agent-mode-v2-skill-as-artifact 未 land develop。ScheduleWakeup 1800s loop 监控，最多 7 天 / 336 次轮询。'
+  - 'agent-mode-skill-system (#5/14, merged e05498b6 — agent_permission_config table 来源，但 forbidden_competitor_names JSON 字段假设错误 已 dropped)'
+  blockers: []
+  commits:
+  - '3d477eb4 (worktree): feat(agent-mode-v2-marketplace): T1 migrations + GORM models + AutoMigrate — Sonnet spec PASS_WITH_CONCERNS / quality PASS_WITH_CONCERNS, 0 P0/P1, 8 P2'
+  - 'ea3af75f (worktree): fix(agent-mode-v2-marketplace): T1 P2 — autoCreateTime tags + IsPublic doc comment'
   created_at: '2026-05-24T00:00:00+08:00'
