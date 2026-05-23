@@ -92,3 +92,30 @@ SELECT
   0
 FROM ai_service s
 WHERE s.model_key = 'qwen3-vl-flash';
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 3. Register attachment.pdf_extract ai_service_route (P1 #4 fix, task 1.2 review)
+--
+-- PDF text extraction uses qwen-long, which is a dedicated long-context model.
+-- This corrects a bug where generatePDF was misusing profile.AgentRun +
+-- ModelOverride which mixes PDF extraction costs with the ReAct agent budget.
+--
+-- qwen-long is registered in ai_service with model_key='qwen-long'
+-- (inserted by migration 20260419_230000 or equivalent).
+-- ─────────────────────────────────────────────────────────────────────────────
+
+-- Guard: qwen-long must exist in ai_service.
+SELECT 1 / (
+  SELECT COUNT(*) FROM ai_service WHERE model_key = 'qwen-long'
+) AS guard_qwen_long_must_exist;
+
+INSERT IGNORE INTO task_profile (task_id, display_name, description, service_type, default_service_id, user_selectable)
+SELECT
+  'attachment.pdf_extract',
+  '附件PDF提取',
+  '上传PDF时异步用 qwen-long 提取全文文字，供单模态模型 fallback 使用',
+  'llm',
+  s.id,
+  0
+FROM ai_service s
+WHERE s.model_key = 'qwen-long';

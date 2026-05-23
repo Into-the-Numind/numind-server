@@ -25,3 +25,8 @@ const VLMSystemPrompt = `你是AI工作台的视觉分析员，负责将图片�
 // VLMUserPromptTemplate is a fmt-style template for the user turn of the VLM
 // request. The caller substitutes %s with the image URL.
 const VLMUserPromptTemplate = "请描述这张图片的内容。"
+
+// PDFExtractPrompt is the user-turn prompt for attachment.pdf_extract (qwen-long).
+// It instructs the model to extract all text from a PDF URL without summarising.
+// The caller appends the PDF URL to this string before sending.
+const PDFExtractPrompt = "请提取以下PDF文档的全部文字内容，只输出提取的文字，不做摘要或分析：\n"

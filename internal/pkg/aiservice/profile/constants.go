@@ -56,6 +56,12 @@ const (
 	// of an uploaded image for use as a text fallback when the active model is
 	// single-modal. Routed to qwen3-vl-flash (D2 decision). (V1.5 task 1.2)
 	AttachmentVisionDescribe = "attachment.vision_describe"
+
+	// AttachmentPDFExtract is the LLM task that extracts full text from a PDF
+	// document using qwen-long's file URL API. Separate from agent.run to avoid
+	// misattributing PDF extraction costs to the ReAct agent budget (P1 #4 fix,
+	// task 1.2 review). (V1.5 task 1.2)
+	AttachmentPDFExtract = "attachment.pdf_extract"
 )
 
 // allTaskIDsList is the canonical ordered list of all task IDs.
@@ -85,6 +91,7 @@ var allTaskIDsList = []string{
 	AgentPermissionCheck,
 	// V1.5 additions (task 1.2 + board 3 profiles added as implemented)
 	AttachmentVisionDescribe,
+	AttachmentPDFExtract,
 }
 
 // AllTaskIDs returns all task ID strings in a stable order.

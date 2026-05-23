@@ -9,6 +9,7 @@ import (
 	_ "image/gif"  // register GIF decoder
 	_ "image/jpeg" // register JPEG decoder
 	_ "image/png"  // register PNG decoder
+	"math/rand"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/profile"
+	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 )
@@ -80,6 +82,12 @@ type FallbackService interface {
 	// callers can inspect FallbackError.
 	WaitReady(ctx context.Context, attID uint64, timeout time.Duration) (*model.AgentAttachment, error)
 
+	// GetStatusForUser returns the attachment row only if it belongs to userID.
+	// This is the biz-layer API for the GET /v1/agent-attachments/:id/status
+	// handler so that the controller does not bypass the biz layer by calling
+	// the store directly (P1 #1 fix — biz layer enforcement).
+	GetStatusForUser(ctx context.Context, attID uint64, userID uint) (*model.AgentAttachment, error)
+
 	// GenerateNow executes fallback generation synchronously (bypasses queue).
 	// Intended for tests and admin-triggered retries.
 	GenerateNow(ctx context.Context, att *model.AgentAttachment) error
@@ -132,6 +140,7 @@ type fallbackPool struct {
 	perUserSem map[uint]*semaphore.Weighted
 	semMu      sync.Mutex // protects perUserSem map
 	workers    int
+	workerCtx  context.Context // retained so degraded goroutines can be cancelled on shutdown
 }
 
 // NewFallbackService constructs a FallbackService backed by the given store.
@@ -157,7 +166,10 @@ func (p *fallbackPool) semFor(userID uint) *semaphore.Weighted {
 }
 
 // Start launches worker goroutines and runs until ctx is cancelled.
+// It also stores ctx so degraded goroutines (queue-full path) can be cancelled
+// on server shutdown (P1 #2 fix: no more orphan goroutines with context.Background()).
 func (p *fallbackPool) Start(ctx context.Context) {
+	p.workerCtx = ctx
 	for i := 0; i < p.workers; i++ {
 		go func() {
 			for {
@@ -184,14 +196,22 @@ func (p *fallbackPool) Enqueue(_ context.Context, attID uint64) error {
 		return nil
 	default:
 		// Channel full — degrade to async goroutine.
+		// Use workerCtx so the goroutine is cancelled on server shutdown (P1 #2).
 		log.Warnw("fallback queue full, degrading to ad-hoc goroutine", "att_id", attID)
-		go p.processJob(context.Background(), attID)
+		degradeCtx := p.workerCtx
+		if degradeCtx == nil {
+			degradeCtx = context.Background() // safety: Start not yet called
+		}
+		go p.processJob(degradeCtx, attID)
 		return nil
 	}
 }
 
 // WaitReady polls the DB until the attachment's fallback_ready is true or
 // the timeout elapses. Returns the most recent attachment state.
+// Poll interval is 100ms + up to 30ms random jitter to reduce thundering-herd
+// when many callers poll the same attachment simultaneously (P2 #3).
+// Respects ctx cancellation (P1 #3 fix).
 func (p *fallbackPool) WaitReady(ctx context.Context, attID uint64, timeout time.Duration) (*model.AgentAttachment, error) {
 	deadline := time.Now().Add(timeout)
 	var last *model.AgentAttachment
@@ -204,9 +224,27 @@ func (p *fallbackPool) WaitReady(ctx context.Context, attID uint64, timeout time
 		if att.FallbackReady {
 			return att, nil
 		}
-		time.Sleep(100 * time.Millisecond)
+		// 100ms base poll + up to 30ms jitter (spec §"7. WaitReady 行为" D4 decision).
+		jitter := time.Duration(rand.Intn(30)) * time.Millisecond //nolint:gosec // jitter, not crypto
+		select {
+		case <-ctx.Done():
+			return last, ctx.Err()
+		case <-time.After(100*time.Millisecond + jitter):
+			// continue next poll
+		}
 	}
 	return last, ErrFallbackTimeout
+}
+
+// GetStatusForUser returns the attachment row only if it belongs to userID.
+// Satisfies FallbackService.GetStatusForUser so controllers call biz, not store
+// directly (P1 #1 biz layer enforcement fix).
+func (p *fallbackPool) GetStatusForUser(ctx context.Context, attID uint64, userID uint) (*model.AgentAttachment, error) {
+	att, err := p.store.GetByIDAndUser(ctx, attID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("fallbackPool.GetStatusForUser att=%d user=%d: %w", attID, userID, err)
+	}
+	return att, nil
 }
 
 // GenerateNow executes generation synchronously without queuing.
@@ -236,6 +274,8 @@ func (p *fallbackPool) RecoverPending(ctx context.Context) error {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // processJob fetches the attachment row and calls generate with retry logic.
+// It injects a Langfuse trace so that VLM/OCR/ASR aiservice calls produce
+// generation records in Langfuse (P0 fix: no more silent AI calls).
 func (p *fallbackPool) processJob(ctx context.Context, attID uint64) {
 	att, err := p.store.GetByID(ctx, attID)
 	if err != nil {
@@ -258,6 +298,22 @@ func (p *fallbackPool) processJob(ctx context.Context, attID uint64) {
 		return
 	}
 
+	// ── P0: Inject Langfuse trace ─────────────────────────────────────────────
+	// System-triggered worker (not HTTP request) still needs observability.
+	// langfuse.CreateTrace is a no-op when Langfuse is disabled (C == nil or !enabled).
+	traceID := langfuse.TraceID()
+	langfuse.CreateTrace(traceID, "attachment.fallback",
+		langfuse.WithUserID(att.UserID),
+		langfuse.WithTraceTags("attachment_fallback", att.Modality),
+		langfuse.WithTraceInput(map[string]interface{}{
+			"attachment_id": attID,
+			"modality":      att.Modality,
+			"filename":      att.Filename,
+			"size_kb":       att.Size / 1024,
+		}),
+	)
+	ctx = langfuse.WithTrace(ctx, traceID)
+
 	// Acquire per-user concurrency slot.
 	sem := p.semFor(att.UserID)
 	if err := sem.Acquire(ctx, 1); err != nil {
@@ -272,16 +328,19 @@ func (p *fallbackPool) processJob(ctx context.Context, attID uint64) {
 }
 
 // generate runs the generation loop with exponential retry.
+// Total attempts = maxRetries+1 (initial + maxRetries retries).
+// Delays between attempts: retryDelays[0]=1s, retryDelays[1]=4s, retryDelays[2]=16s (P2 #5 fix).
 func (p *fallbackPool) generate(ctx context.Context, att *model.AgentAttachment) error {
-	// Mark started.
+	// Mark started — omit no-op retry_count write (P2 #1 fix).
 	now := time.Now()
 	_ = p.store.UpdateFallback(ctx, att.ID, map[string]interface{}{
 		"fallback_started_at": now,
-		"retry_count":         att.RetryCount,
 	})
 
 	var lastErr error
-	for attempt := 0; attempt < maxRetries; attempt++ {
+	// attempt=0 is the initial try; attempts 1..maxRetries are retries.
+	// retryDelays[0/1/2] are applied before attempts 1/2/3 respectively.
+	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			delay := retryDelays[attempt-1]
 			select {
@@ -297,7 +356,7 @@ func (p *fallbackPool) generate(ctx context.Context, att *model.AgentAttachment)
 		}
 
 		log.Warnw("fallback: attempt failed, will retry", "att_id", att.ID,
-			"attempt", attempt+1, "error", lastErr)
+			"attempt", attempt+1, "max_attempts", maxRetries+1, "error", lastErr)
 
 		// Update retry count.
 		_ = p.store.UpdateFallback(ctx, att.ID, map[string]interface{}{
@@ -451,22 +510,22 @@ func (p *fallbackPool) generatePDF(ctx context.Context, att *model.AgentAttachme
 		return nil // not a retry-able failure
 	}
 
-	// Use qwen-long via the aiservice Chat interface.
-	// The model accepts a file URL in the message content.
+	// Use qwen-long via the attachment.pdf_extract task profile (P1 #4 fix:
+	// was incorrectly using agent.run + ModelOverride, which misattributes
+	// PDF extraction to the ReAct agent budget and bypasses proper routing).
 	pdfCtx, pdfCancel := context.WithTimeout(ctx, pdfTimeout)
 	defer pdfCancel()
 
-	resp, err := aiservice.Chat(pdfCtx, profile.AgentRun, aiservice.ChatRequest{
+	resp, err := aiservice.Chat(pdfCtx, profile.AttachmentPDFExtract, aiservice.ChatRequest{
 		Messages: []aiservice.ChatMessage{
 			{
 				Role: aiservice.MessageRoleUser,
 				Content: aiservice.MessageContent{
-					Text: fmt.Sprintf("请提取以下PDF文档的全部文字内容，只输出提取的文字，不做摘要或分析：\n%s", att.URL),
+					Text: PDFExtractPrompt + att.URL,
 				},
 			},
 		},
-		MaxTokens:     8000,
-		ModelOverride: "qwen-long",
+		MaxTokens: 8000,
 	})
 	if err != nil {
 		return fmt.Errorf("generatePDF chat: %w", err)

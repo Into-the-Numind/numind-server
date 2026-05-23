@@ -409,8 +409,9 @@ func installNumindRouters(g *gin.Engine) error {
 	agentcontroller.RegisterStudentQueryRoutes(authGroup, skillbiz.NewService(store.S), b.StudentQuery())
 
 	// #14 BETA student-facing run lifecycle endpoints
-	// V1.5 task 1.2: pass store.S.AgentAttachments() for GetAttachmentStatus handler.
-	agentcontroller.RegisterStudentRunRoutes(authGroup, b, store.S.AgentAttachments())
+	// V1.5 task 1.2 (P1 #1 fix): controller calls biz.AttachmentFallback().GetStatusForUser
+	// instead of store directly — no longer pass the store here.
+	agentcontroller.RegisterStudentRunRoutes(authGroup, b)
 
 	// 支付回调（无需鉴权）
 	{

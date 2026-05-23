@@ -1,3 +1,8 @@
+// TODO(post-1.2): inject aiservice mock interface to cover OCRFailVLMOK +
+// VLMFail_RetriesThenFinalError code paths. Currently these paths are only
+// covered by the terminal-error path test (TestGenerate_Image_ErrorFallbackReady).
+// Adding coverage requires a mockable aiservice seam in fallbackPool (e.g.
+// optional chatFn/ocrFn fields set in tests). Tracked as tech debt.
 package attachment_test
 
 import (

@@ -13,9 +13,9 @@ import (
 
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/agent"
+	agentatt "numind-server/internal/numind/biz/agent/attachment"
 	"numind-server/internal/numind/biz/attachment"
 	"numind-server/internal/numind/biz/narration"
-	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/middleware"
@@ -23,9 +23,9 @@ import (
 
 // StudentRunController handles the learner-facing run lifecycle and attachment endpoints.
 type StudentRunController struct {
-	runSvc    *agent.StudentRunService
-	attachSvc *attachment.UploadService
-	attStore  store.IAgentAttachmentStore // for GetAttachmentStatus (V1.5 task 1.2)
+	runSvc      *agent.StudentRunService
+	attachSvc   *attachment.UploadService
+	fallbackSvc agentatt.FallbackService // for GetAttachmentStatus via biz (P1 #1 fix)
 }
 
 // NewStudentRunController constructs a StudentRunController from IBiz.
@@ -36,21 +36,22 @@ func NewStudentRunController(b biz.IBiz) *StudentRunController {
 	}
 }
 
-// NewStudentRunControllerWithStore constructs a StudentRunController with access
-// to the agent_attachment store for the GetAttachmentStatus handler (V1.5 task 1.2).
-func NewStudentRunControllerWithStore(b biz.IBiz, attStore store.IAgentAttachmentStore) *StudentRunController {
+// NewStudentRunControllerWithFallback constructs a StudentRunController with access
+// to the biz-layer FallbackService for GetAttachmentStatus (V1.5 task 1.2).
+// P1 #1 fix: controller now calls biz (GetStatusForUser) instead of store directly.
+func NewStudentRunControllerWithFallback(b biz.IBiz) *StudentRunController {
 	return &StudentRunController{
-		runSvc:    b.StudentRun(),
-		attachSvc: b.Attachment(),
-		attStore:  attStore,
+		runSvc:      b.StudentRun(),
+		attachSvc:   b.Attachment(),
+		fallbackSvc: b.AttachmentFallback(),
 	}
 }
 
 // RegisterStudentRunRoutes registers all learner-facing endpoints on authGroup.
 // Must be called AFTER all other agentcontroller route registrations to avoid
 // path conflicts with the /agent-runs prefix.
-func RegisterStudentRunRoutes(authGroup *gin.RouterGroup, b biz.IBiz, attStore store.IAgentAttachmentStore) {
-	c := NewStudentRunControllerWithStore(b, attStore)
+func RegisterStudentRunRoutes(authGroup *gin.RouterGroup, b biz.IBiz) {
+	c := NewStudentRunControllerWithFallback(b)
 	authGroup.POST("/agent-runs/estimate", c.Estimate)
 	authGroup.POST("/agent-runs", c.Create)
 	authGroup.GET("/agent-runs/:id/narration", c.PollNarration)
@@ -238,7 +239,8 @@ func (h *StudentRunController) UploadAttachment(c *gin.Context) {
 
 // GetAttachmentStatus handles GET /v1/agent-attachments/:id/status.
 // Returns the current fallback generation status for the given attachment.
-// Only the owning user can query status (ownership enforced at store layer).
+// Only the owning user can query status (ownership enforced in biz layer).
+// P1 #1 fix: calls h.fallbackSvc.GetStatusForUser (biz) instead of h.attStore directly.
 func (h *StudentRunController) GetAttachmentStatus(c *gin.Context) {
 	user := middleware.GetCurrentUser(c)
 	if user == nil {
@@ -253,12 +255,12 @@ func (h *StudentRunController) GetAttachmentStatus(c *gin.Context) {
 		return
 	}
 
-	if h.attStore == nil {
-		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("attachment store not configured"), nil)
+	if h.fallbackSvc == nil {
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("attachment service not configured"), nil)
 		return
 	}
 
-	att, err := h.attStore.GetByIDAndUser(c.Request.Context(), attID, user.ID)
+	att, err := h.fallbackSvc.GetStatusForUser(c.Request.Context(), attID, user.ID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			core.WriteResponse(c, errno.ErrPageNotFound.SetMessage("attachment not found"), nil)

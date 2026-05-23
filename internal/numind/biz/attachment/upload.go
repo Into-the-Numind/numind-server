@@ -17,6 +17,7 @@ import (
 
 	agentatt "numind-server/internal/numind/biz/agent/attachment"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/util"
 )
@@ -164,7 +165,9 @@ func (s *UploadService) Upload(ctx context.Context, userID uint, file multipart.
 			// Non-fatal: log the error but still return the upload result.
 			// The fallback worker will not be invoked, but the URL is valid.
 			// This matches the "fire-and-forget" philosophy: upload must succeed.
-			_ = err // caller gets result, loss of DB row is visible via monitoring
+			// P1 #5 fix: replaced silent `_ = err` with a visible Warnw log.
+			log.Warnw("attachment: DB persist failed (non-fatal, fallback skipped)",
+				"user_id", userID, "url", url, "error", err)
 		} else {
 			attID = att.ID
 			// Enqueue async fallback generation (fire-and-forget).
