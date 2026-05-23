@@ -10,6 +10,12 @@ import (
 // a sanitized Skill copy; subscribers see it and can clone into their own tenant.
 // The sanitized_body_md is an independent snapshot — publisher's later edits to the
 // source Skill do not affect this row.
+//
+// is_public has default:1 (GORM default:true bool gotcha — see .claude/rules/database.md §6).
+// T4/T5 Publish path constructing rows with IsPublic=false MUST follow wantPublic pattern or
+// use db.Select("*").Create() to bypass DEFAULT TRUE — otherwise Go zero-value false silently
+// becomes true on INSERT. In normal Publish flow IsPublic is always true at creation, so the
+// gotcha is theoretical here, but consistency with #1's Skill struct comment style.
 type SkillMarketplace struct {
 	ID                    uint           `gorm:"primaryKey;autoIncrement" json:"id"`
 	PublisherUserID       uint           `gorm:"type:int unsigned;not null;index:idx_marketplace_publisher,priority:1" json:"publisher_user_id"`
@@ -23,8 +29,8 @@ type SkillMarketplace struct {
 	IsPublic              bool           `gorm:"type:tinyint(1);not null;default:1;index:idx_marketplace_publisher,priority:2" json:"is_public"`
 	IsPlatformRecommended bool           `gorm:"type:tinyint(1);not null;default:0;index:idx_marketplace_recommended,priority:1" json:"is_platform_recommended"`
 	SubscribeCount        uint           `gorm:"type:int unsigned;not null;default:0;index:idx_marketplace_recommended,priority:2" json:"subscribe_count"`
-	CreatedAt             time.Time      `gorm:"not null;default:CURRENT_TIMESTAMP;index:idx_marketplace_recommended,priority:3" json:"created_at"`
-	UpdatedAt             time.Time      `gorm:"not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
+	CreatedAt             time.Time      `gorm:"type:datetime;not null;default:CURRENT_TIMESTAMP;autoCreateTime;index:idx_marketplace_recommended,priority:3" json:"created_at"`
+	UpdatedAt             time.Time      `gorm:"type:datetime;not null;default:CURRENT_TIMESTAMP;autoUpdateTime" json:"updated_at"`
 }
 
 func (SkillMarketplace) TableName() string { return "skill_marketplace" }
@@ -38,7 +44,7 @@ type SkillSubscription struct {
 	SubscriberUserID uint      `gorm:"type:int unsigned;not null;uniqueIndex:uk_subscription_user_marketplace,priority:1;index:idx_subscription_subscriber,priority:1" json:"subscriber_user_id"`
 	MarketplaceID    uint      `gorm:"type:int unsigned;not null;uniqueIndex:uk_subscription_user_marketplace,priority:2;index:idx_subscription_marketplace" json:"marketplace_id"`
 	ClonedSkillID    uint      `gorm:"type:int unsigned;not null" json:"cloned_skill_id"`
-	SubscribedAt     time.Time `gorm:"not null;default:CURRENT_TIMESTAMP;index:idx_subscription_subscriber,priority:2,sort:desc" json:"subscribed_at"`
+	SubscribedAt     time.Time `gorm:"type:datetime;not null;default:CURRENT_TIMESTAMP;autoCreateTime;index:idx_subscription_subscriber,priority:2,sort:desc" json:"subscribed_at"`
 }
 
 func (SkillSubscription) TableName() string { return "skill_subscription" }
