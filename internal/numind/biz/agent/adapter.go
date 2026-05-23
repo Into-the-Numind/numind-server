@@ -49,6 +49,12 @@ type aiserviceAdapter struct {
 	tools        []*schema.ToolInfo // immutable after construction
 	systemPrompt string             // #5 skill-system: injected by runner.Run; prepended as messages[0] when set
 	usageStore   *sync.Map          // keyed by call-id string → Usage
+
+	// V1.5 v2-compact-adapter-integration — V2 compact hook（适配 Eino per-ReAct-round
+	// 的 Generate 调用层）。nil → V2 prevention chain 不启用，行为退化为"直通 LLM"。
+	// 由 runner.go 在 useCompactV2 == true 时注入；通过 WithTools 复制实例时共享指针
+	// （保 per-Run 状态一致性，与 usageStore 同理）。
+	compactor *adapterCompactor
 }
 
 // Compile-time assertion: aiserviceAdapter must satisfy model.ToolCallingChatModel.
@@ -78,6 +84,7 @@ func (a *aiserviceAdapter) WithTools(tools []*schema.ToolInfo) (einomodel.ToolCa
 		tools:        cloned,
 		systemPrompt: a.systemPrompt,
 		usageStore:   a.usageStore, // shared pointer — safe per-run isolation
+		compactor:    a.compactor,  // shared per-Run state (consecutiveFailures 等)
 	}, nil
 }
 
@@ -91,9 +98,46 @@ func (a *aiserviceAdapter) WithTools(tools []*schema.ToolInfo) (einomodel.ToolCa
 // This is a defence-in-depth layer; it triggers only when the capability matrix
 // (Task 1.1) has a gap for the active model.
 func (a *aiserviceAdapter) Generate(ctx context.Context, in []*schema.Message, opts ...einomodel.Option) (*schema.Message, error) {
+	// V1.5 v2-compact-adapter-integration — PRE-CALL V2 compact：
+	// 每一轮 ReAct 调 LLM 之前评估 in 的 token 用量，达 85% → 跑 L3 autocompact
+	// 替换 in 成 [system, summary, recent 5]；达 95% + 连续 3 次失败 → ErrContextExhausted。
+	// V2 prevention 真正生效的位置就是这里（之前在 runner outer loop 因 run.Messages
+	// 为空而长期 dormant）。
+	//
+	// compactor == nil 时整段跳过 → 行为完全等价于 V2 集成前。
+	if a.compactor != nil {
+		compacted, didCompact, cerr := a.compactor.MaybeCompact(ctx, in)
+		if cerr != nil {
+			// ErrContextExhausted 或其他不可恢复错误 → 上抛让 runner terminate
+			return nil, cerr
+		}
+		if didCompact {
+			in = compacted
+		}
+	}
+
 	req := a.convertToAiserviceRequest(in)
 	// Task 1.5: use the strip-retry wrapper instead of bare chatFn.
 	resp, err := callAIServiceWithStripRetry(ctx, a.taskID, req, a.modelName)
+
+	// V1.5 v2-compact-adapter-integration — POST-CALL PTL recovery：
+	// aiservice 返回 prompt_too_long → 强制 autocompact 一次 + retry。
+	// 这是替代已删的 V1 ReactiveCompact 链的唯一恢复机制；MaybeCompact 的 85%
+	// prevention 失败（如 contextWindow 配错或 char/4 估算严重偏差）时这里兜底。
+	if err != nil && a.compactor != nil && isPromptTooLongErr(err) {
+		recovered, didCompact, rerr := a.compactor.ForcePTLRecover(ctx, in)
+		if rerr != nil {
+			// PTL recovery 自己失败（如 ErrContextExhausted）→ 上抛 recovery error
+			return nil, rerr
+		}
+		if didCompact {
+			// 用 compact 后的 in 重试一次
+			req = a.convertToAiserviceRequest(recovered)
+			resp, err = callAIServiceWithStripRetry(ctx, a.taskID, req, a.modelName)
+		}
+		// 重试仍失败 → 让原 err 冒泡（保持错误链可追溯）
+	}
+
 	if err != nil {
 		return nil, err
 	}
