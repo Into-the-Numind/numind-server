@@ -112,11 +112,8 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 	// V1.5 output-skills task 4.4: invoke_skill (Layer 2, sandbox-based skill framework).
 	// Only registered when both skill registry and skill pool are available.
 	// Nil guard preserves the nil-ds unit test that expects exactly 17 base tools.
+	// Reuses the attStore already resolved above (no redundant f.ds.AgentAttachments() call).
 	if f.skillRegistry != nil && f.skillPool != nil {
-		var attStore store.IAgentAttachmentStore
-		if f.ds != nil {
-			attStore = f.ds.AgentAttachments()
-		}
 		tools = append(tools, NewInvokeSkillTool(f.skillRegistry, f.skillPool, attStore))
 	}
 	metadata := []ToolMetadata{
