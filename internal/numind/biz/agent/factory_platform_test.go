@@ -38,8 +38,9 @@ func TestPlatformToolFactory_LoadTools(t *testing.T) {
 	f := NewPlatformToolFactory(nil, nil)
 	tools, metadata, err := f.LoadTools(context.Background())
 	require.NoError(t, err)
-	assert.Len(t, tools, 10)
-	assert.Len(t, metadata, 10)
+	// V1.5 task 1.4: base tool count increased from 10 to 12 (added analyze_image + annotate_image).
+	assert.Len(t, tools, 12)
+	assert.Len(t, metadata, 12)
 	expected := []string{
 		"kb_search",
 		"learner_data_query",
@@ -51,6 +52,8 @@ func TestPlatformToolFactory_LoadTools(t *testing.T) {
 		"web_fetch",
 		"ask_user_question",
 		"file_read",
+		"analyze_image",
+		"annotate_image",
 	}
 	for i, want := range expected {
 		assert.Equal(t, want, tools[i].Name(), "tool[%d]", i)
@@ -64,10 +67,12 @@ func TestPlatformToolFactory_LoadTools_WithDS_8Tools(t *testing.T) {
 	f := NewPlatformToolFactory(nil, ds)
 	tools, metadata, err := f.LoadTools(context.Background())
 	require.NoError(t, err)
-	assert.Len(t, tools, 12, "non-nil ds should produce 12 tools (10 base + memory_write + memory_read)")
-	assert.Len(t, metadata, 12, "non-nil ds should produce 12 metadata entries")
+	// V1.5 task 1.4: base count is now 12 (10 + analyze_image + annotate_image);
+	// with ds, memory_write + memory_read are appended → total 14.
+	assert.Len(t, tools, 14, "non-nil ds should produce 14 tools (12 base + memory_write + memory_read)")
+	assert.Len(t, metadata, 14, "non-nil ds should produce 14 metadata entries")
 
-	// Verify the first 10 are unchanged.
+	// Verify the first 12 are unchanged.
 	baseExpected := []string{
 		"kb_search",
 		"learner_data_query",
@@ -79,34 +84,37 @@ func TestPlatformToolFactory_LoadTools_WithDS_8Tools(t *testing.T) {
 		"web_fetch",
 		"ask_user_question",
 		"file_read",
+		"analyze_image",
+		"annotate_image",
 	}
 	for i, want := range baseExpected {
 		assert.Equal(t, want, tools[i].Name(), "tool[%d] name", i)
 	}
 
-	// Verify memory tools are appended at indices 10 and 11.
-	assert.Equal(t, "memory_write", tools[10].Name(), "tools[10] should be memory_write")
-	assert.Equal(t, "memory_read", tools[11].Name(), "tools[11] should be memory_read")
+	// Verify memory tools are appended at indices 12 and 13.
+	assert.Equal(t, "memory_write", tools[12].Name(), "tools[12] should be memory_write")
+	assert.Equal(t, "memory_read", tools[13].Name(), "tools[13] should be memory_read")
 }
 
-func TestPlatformToolFactory_LoadTools_WithDS_Metadata12(t *testing.T) {
+func TestPlatformToolFactory_LoadTools_WithDS_Metadata14(t *testing.T) {
 	db := newFactoryTestDB(t)
 	ds := store.NewTestStore(db)
 	f := NewPlatformToolFactory(nil, ds)
 	_, metadata, err := f.LoadTools(context.Background())
 	require.NoError(t, err)
-	require.Len(t, metadata, 12)
+	// V1.5 task 1.4: total is 14 (12 base + memory_write + memory_read).
+	require.Len(t, metadata, 14)
 
-	// memory_write metadata at index 10.
-	mw := metadata[10]
+	// memory_write metadata at index 12.
+	mw := metadata[12]
 	assert.Equal(t, "memory_write", mw.ToolName)
 	assert.Equal(t, "记忆写入", mw.DisplayName)
 	assert.Equal(t, "platform", mw.Source)
 	assert.Equal(t, "记忆", mw.Category)
 	assert.Equal(t, "moderate", mw.RiskLevel)
 
-	// memory_read metadata at index 11.
-	mr := metadata[11]
+	// memory_read metadata at index 13.
+	mr := metadata[13]
 	assert.Equal(t, "memory_read", mr.ToolName)
 	assert.Equal(t, "记忆读取", mr.DisplayName)
 	assert.Equal(t, "platform", mr.Source)

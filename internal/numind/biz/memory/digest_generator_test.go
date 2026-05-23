@@ -51,6 +51,10 @@ func newDigestTestStores(t *testing.T) (
 
 	// Explicit agent_run DDL — mirrors store/agent_run_test.go pattern so SQLite
 	// doesn't choke on the MySQL `datetime(3)` precision syntax from the GORM tag.
+	// V1.5 板块 2 task 2.1 — context-management V2 columns
+	// (compact_state_v2 / total_tokens_used_v2 / use_compact_v2 /
+	// context_window_limit_v2) must be present in the test DDL to mirror the
+	// production schema after Track 1's merge.
 	require.NoError(t, db.Exec(`
 		CREATE TABLE IF NOT EXISTS agent_run (
 			id                        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,6 +73,10 @@ func newDigestTestStores(t *testing.T) (
 			agent_definition_id       INTEGER,
 			pending_question_json     TEXT,
 			pending_question_at       DATETIME,
+			compact_state_v2          TEXT,
+			total_tokens_used_v2      INTEGER NOT NULL DEFAULT 0,
+			use_compact_v2            INTEGER NOT NULL DEFAULT 0,
+			context_window_limit_v2   INTEGER,
 			created_at                DATETIME,
 			updated_at                DATETIME
 		)`).Error)

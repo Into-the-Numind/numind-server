@@ -328,7 +328,8 @@ func (ctrl *AIServiceController) UpdateService(c *gin.Context) {
 	}
 
 	actorID, actorName := actorFromContext(c)
-	if bizErr = ctrl.biz.UpdateService(c.Request.Context(), &svc, actorID, actorName); bizErr != nil {
+	caps, bizErr := ctrl.biz.UpdateService(c.Request.Context(), &svc, actorID, actorName)
+	if bizErr != nil {
 		if isErrno(bizErr) {
 			core.WriteResponse(c, bizErr, nil)
 			return
@@ -338,7 +339,14 @@ func (ctrl *AIServiceController) UpdateService(c *gin.Context) {
 		return
 	}
 
-	core.WriteResponse(c, nil, nil)
+	// Spec §"Admin API": PUT /v1/admin/ai/services/:id response includes
+	// { data: { capabilities: {...} } }. If the post-save capability lookup failed
+	// (biz returns nil caps), we still return 200 — the save succeeded.
+	var responseData interface{}
+	if caps != nil {
+		responseData = gin.H{"capabilities": caps}
+	}
+	core.WriteResponse(c, nil, responseData)
 }
 
 // ----------------------------------------------------------------------------

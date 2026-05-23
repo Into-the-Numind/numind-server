@@ -1,5 +1,164 @@
 schema_version: '2.0'
 features:
+- id: agent-mode-v15-multimodal
+  ndf_version: '3.0'
+  description: '有数 Agent Mode V1.5 板块 1 — 多模态 fallback。让 agent 在同一会话切换不同 modality 模型时（GLM 5.1 / MiniMax M2.7 / Qwen 3.7 Max 单模态 + qwen-vl / Kimi K2.6 / MiMo V2.5 等多模态），用户上传的图片/PDF 不再静默挂掉。4 层防护：(1) Layer 1 上传时双模态固化 — 异步跑 VLM + OCR 生 vision_description + ocr_text + text_fallback 字段（attachment.vision_describe profile / qwen3-vl-flash）；(2) Layer 2 capability matrix 路由 — 查 ai_service.capability_json 的 accepts_image_inline / accepts_pdf_inline 字段，决定 inline 直送或文本 fallback；(3) Layer 3 vision 工具放大镜 — 永远注册 analyze_image + annotate_image 工具（D2 决策），任何主模型都可主动调 vision 专家模型做精细分析；(4) Layer 4 Runtime 错误剥离 — 识别 provider "multimodal not supported" 错误自动剥图重试 1 次。5 个 sub-task：(1.1) capability matrix Go helper + admin PATCH；(1.2) attachment 双模态固化 worker pool；(1.3) buildAgentInput capability-aware 路由；(1.4) vision 工具实现；(1.5) runtime 剥图兜底。新增 task profile attachment.vision_describe（D1）。Out of scope: 音频/视频处理；entity 三元组；prod 部署；前端 UI 改动（注：web-v3 worktree 仅用于 dev 部署验证联调，本 feature 不改前端代码）。'
+  track: standard
+  stage: S5
+  classification_reason: 'Standard Triage 5/5 多条违反 — (1) DB schema 变更：是（agent_attachment 加 9 列 + 2 idx；ai_service.capability_json seed） (2) 新增 API 端点：是（GET /v1/agent-attachments/:id/status，admin PATCH 已有不算新增） (3) 新外部服务集成：否（VLM/OCR/ASR 复用 aiservice 入口） (4) 影响文件数 >3（capability/ 包 3 文件 + attachment/ 包 3 文件 + multimodal.go + tool_*.go 5 文件 + errors/ 2 文件 + runner_strip_retry.go + upload.go + router.go + constants.go + admin_aiservice.go + 2 migration + 多个测试） (5) 高风险业务逻辑：是（capability 路由错会让付费用户失败；runtime 剥图绕过破坏 agent 状态机；新 task profile 进稳定列表）。条件 1+4+5 触发 Standard 强制。'
+  last_updated_by: ai-implementer-track1-wave-end
+  last_updated_at: '2026-05-23T16:55:00+08:00'
+  repos:
+  - numind-server
+  - numind-web-v3
+  branches:
+    numind-server: feature/agent-mode-v15-multimodal
+    numind-web-v3: feature/agent-mode-v15-multimodal
+  worktree:
+    numind-server: /private/tmp/wt-agent-mode-v15-multimodal-numind-server
+    numind-web-v3: /private/tmp/wt-agent-mode-v15-multimodal-numind-web-v3
+  artifacts:
+    spec_root: docs/superpowers/specs/2026-05-23-agent-mode-v15-multimodal/
+    context: docs/superpowers/specs/2026-05-23-agent-mode-v15-multimodal/context.md
+    track_overview: docs/superpowers/specs/2026-05-23-agent-mode-v15-multimodal/01-multimodal/README.md
+    task_1_1_capability: docs/superpowers/specs/2026-05-23-agent-mode-v15-multimodal/01-multimodal/task-01-capability-matrix.md
+    task_1_2_attachment: docs/superpowers/specs/2026-05-23-agent-mode-v15-multimodal/01-multimodal/task-02-attachment-fallback.md
+    task_1_3_routing: docs/superpowers/specs/2026-05-23-agent-mode-v15-multimodal/01-multimodal/task-03-routing-layer.md
+    task_1_4_vision_tools: docs/superpowers/specs/2026-05-23-agent-mode-v15-multimodal/01-multimodal/task-04-tool-gating.md
+    task_1_5_runtime: docs/superpowers/specs/2026-05-23-agent-mode-v15-multimodal/01-multimodal/task-05-error-recovery.md
+  progress:
+    total_tasks: 5
+    completed_tasks: 5
+    reviewed_tasks: 5
+    current_task: 'S5: ready for ndf-done + dev deploy + 5-scenario verification. All tasks merged to feature/agent-mode-v15-multimodal: 1.1 wave1⊥1.2, 1.3 wave2⊥1.4, 1.5 wave3 serial. Each underwent dual-review (spec+quality) + fix + re-review APPROVED. go test -race PASS全包。'
+  decisions:
+  - 'D1 (parent): 新加 attachment.vision_describe task profile — 用于 task 1.2 上传时跑 VLM 生图片画面描述；profile 列表从 21 → 26（含板块 2/3 加的 4 个）；DB Registry 加 ai_service 行路由到 qwen3-vl-flash。'
+  - 'D2 (parent): 要做放大镜 — V1.5 必交付 analyze_image / annotate_image vision 工具，不是 V2 占位；不论主模型单/多模态都注册（RequiresVision=false），让 agent 主动调专家工具做精细分析。'
+  - '1.1-D1: capability 字段放 ai_service.capability_json 现有 JSON 字段（已有，零 migration cost），不新建 ai_service_capability 关联表。'
+  - '1.1-D2: cache 用进程内 sync.Map + 5min TTL；admin PATCH 后立刻 InvalidateCache。多实例间 5min 延迟接受，V2 加 Redis pub/sub。'
+  - '1.2-D1: 异步 fallback 用进程内 worker pool（10 worker + per-user semaphore 3 并发），不引入 Kafka/Redis Stream；进程重启时扫表 RecoverPending。'
+  - '1.2-D2: VLM 副模型用 qwen3-vl-flash（D2 推荐，价格便宜质量够），通过新 attachment.vision_describe profile 走 aiservice 入口，禁止业务直接 import provider 包。'
+  - '1.2-D3: text_fallback 模板固定（image / pdf / audio 三种），fallback 生成失败兜底文案 "[图片：{filename}，描述生成失败：{error}]"，避免 WaitReady 死等。'
+  - '1.3-D1: buildAgentInput 改为 buildAgentInputForModel 返回 []ChatMessage 而非 string；旧函数移除；caller 传完整 *model.AgentAttachment 列表而非 URL 字符串数组。'
+  - '1.3-D2: waitForFallback 轮询 100ms × 15 次 = max 1500ms；超时注入"[图片：{filename}，描述生成中，请稍后重试]"占位文字，不阻塞 agent run。'
+  - '1.4-D1: 缓存复用 — analyze_image 命中 attachment 表预生成 vision_description / ocr_text（fallback_ready=true 且 question 不在 bypass 关键词列表），annotate_image 始终不走缓存。'
+  - '1.4-D2: graceful error — 工具内部失败不返 error 给 Eino（防 fatal NodeRunError），返回结构化失败描述 + nil error 让 agent 自己决定。每 run 配额 analyze 10 / annotate 5。'
+  - '1.5-D1: 8 个正则 pattern 覆盖 5 provider + 通用关键词；最多剥图重试 1 次（避免死循环）；每次触发都告警，提示 capability 数据漏 seed。'
+  - '主控-D1: Wave 切分策略 — Wave 1 并行 1.1+1.2（disjoint 验证通过），Waves 2-4 串行 1.3 → 1.4 → 1.5（都触碰 runner.go 不同位置，ndf-check-disjoint 会 FAIL，按 Tier 4 规则强制串行）。'
+  related_features:
+  - 'agent-mode-v15-context-v2 (S3 并发 — Track 2 上下文管理 V2，独立 worktree 无冲突，板块 1 完成后才能在多模态切换场景中测试 autocompact)'
+  - 'agent-mode-p0-tools (S3 已完成 b2f747c1 — 提供 attachment.UploadService 基础设施，本 feature task 1.2 在其上扩展 fallback 字段)'
+  blockers: []
+  created_at: '2026-05-23T13:15:00+08:00'
+- id: agent-mode-v15-context-v2
+  ndf_version: '3.0'
+  description: '有数 Agent Mode V1.5 板块 2 — 上下文管理 V2（平行重做）。让 agent 长会话 + 多轮 ReAct + 大 tool result 不爆 context。D3 决策：V1 包 internal/numind/biz/compact/ 完全不动，新建独立包 internal/numind/biz/compactv2/。agent mode 通过 RunRequest.UseCompactV2=true 走 V2；SOP/SalesRAG/监控等其他场景继续 V1。5 个 sub-task：(2.1) DB schema 改造 — agent_run 加 4 个 V2 字段（compact_state_v2 / total_tokens_used_v2 / use_compact_v2 / context_window_limit_v2）+ 新建 agent_tool_artifact 表 + 新 store 接口（不动现有 IAgentRunStore）；(2.2) L0 tool artifact 写盘 — 超 16KB tool result 写盘 + 元数据入库，messages 留 <persisted-output ref="..." preview="..."/> 引用 + 新 read_tool_artifact 工具供 LLM 翻页；(2.3) L1 prune + L2 microcompact — 50% / 70% 阈值不调 LLM 廉价处理（PruneOldToolResults + MicrocompactByToolName + EstimateMessagesTokens）；(2.4) L3 autocompact — 85% 触发 LLM 12 段固定模板压缩，<reference-only data-internal="true">...</reference-only> XML 包裹（D5），保最近 5 messages + 95% hard limit + 3 fail breaker→context_exhausted；(2.5) Streaming Context Scrubber — token-level state machine 过滤 LLM stream 输出中的 <memory>/<context>/<reference-only>/<system-reminder>/<persisted-output> data-internal="true" 标签 + [Personal Memory:]/[Context:] 行内 marker。Out of scope: V1 → V2 数据迁移；替换 SOP/SalesRAG/监控的 V1 调用；prod 部署；前端改动；跨会话 memory（板块 3）。'
+  track: standard
+  stage: S6
+  classification_reason: 'Standard Triage 5/5 多条违反 — (1) DB schema 变更：是（agent_run 加 4 列 + 新建 agent_tool_artifact 表）(2) 新增 API 端点：否（read_tool_artifact 是 Eino 工具，不是 HTTP endpoint） (3) 新外部服务集成：否 (4) 影响文件数 >3（新增 compactv2 包 ~10 文件 + runner.go 多处 V2 hook + 2 个 store + migration + cron 注册） (5) 高风险业务逻辑：是（autocompact LLM call + tool_call/result 配对切割 + scrubber 误伤用户输入 → 都可能破坏 ReAct 链或泄露内部记忆）。条件 1+4+5 触发 Standard 强制。'
+  last_updated_by: ai-implementer-track2-start
+  last_updated_at: '2026-05-23T13:10:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: feature/agent-mode-v15-context-v2
+  worktree:
+    numind-server: /private/tmp/wt-agent-mode-v15-context-v2-numind-server
+  artifacts:
+    spec_root: /Users/zhiyuchen/Downloads/有数-Agent-Mode-V1.5-NDF-spec/
+    context: /Users/zhiyuchen/Downloads/有数-Agent-Mode-V1.5-NDF-spec/context.md
+    track_overview: /Users/zhiyuchen/Downloads/有数-Agent-Mode-V1.5-NDF-spec/02-context/README.md
+    task_2_1_schema: /Users/zhiyuchen/Downloads/有数-Agent-Mode-V1.5-NDF-spec/02-context/task-01-schema.md
+    task_2_2_artifact: /Users/zhiyuchen/Downloads/有数-Agent-Mode-V1.5-NDF-spec/02-context/task-02-tool-artifact.md
+    task_2_3_prune: /Users/zhiyuchen/Downloads/有数-Agent-Mode-V1.5-NDF-spec/02-context/task-03-prune-microcompact.md
+    task_2_4_autocompact: /Users/zhiyuchen/Downloads/有数-Agent-Mode-V1.5-NDF-spec/02-context/task-04-autocompact.md
+    task_2_5_scrubber: /Users/zhiyuchen/Downloads/有数-Agent-Mode-V1.5-NDF-spec/02-context/task-05-streaming-scrubber.md
+  progress:
+    total_tasks: 5
+    completed_tasks: 5
+    reviewed_tasks: 5
+    current_task: 'S6 ndf-done + /deploy-dev server + 7 自测 + V1 回归'
+  commits:
+  - '234d45d7: feat(compactv2): add V2 schema + compactv2 package skeleton (Task 2.1) — spec PASS / code PASS, P1+P2 修复 (dead branch / IF NOT EXISTS / PascalCase consts / AutoMigrate HasColumn test)'
+  - '17d3516f: feat(scrubber): add Streaming Context Scrubber package (Task 2.5) — spec PASS (P2×2) / code PASS (P1 fixes: README + 单引号 regex + SoT 校验)'
+  - 'e9b68dac: feat(compactv2): add L0 tool artifact write-to-disk + read_tool_artifact (Task 2.2) — spec PASS / code PASS, P1 fixes: biz.go WithCompactV2Deps wiring + WriteFile 失败测试 + V1/V2 routing gate 表格测试; import cycle 通过结构性接口解耦 (deps.go)'
+  - '25200644: feat(compactv2): add L1 prune + L2 microcompact compactor (Task 2.3) — spec PASS / code PASS, P1 fix: TurnIndex==0 防御性跳过 (避免 runner 未填 turn 时误剪所有 tool result); P2 fix: L2 CompactedAt 同步'
+  - '3952eb8b: feat(compactv2): add L3 autocompact (Task 2.4) — spec FAIL→PASS / code FAIL→PASS, P1 fix: ErrContextExhausted sentinel + runner break loop + 跳过 final UpdateState (避免 st.TerminalReason 覆盖 "context_exhausted" DB 状态); P2 fixes: Autocompact err 透传 caller diagnostics + 测试同步'
+  decisions:
+  - 'D3 (parent): 平行重做 — V1 internal/numind/biz/compact/ 完全保留不动，新建 internal/numind/biz/compactv2/ 独立包。agent mode 通过 RunRequest.UseCompactV2=true 走 V2，SOP/SalesRAG/监控等其他场景继续 V1。V2 跑稳 6 个月后再讨论替换 V1（不在 V1.5 范围）。'
+  - 'D4 (parent): dialectic / autocompact 用 qwen-plus 或 deepseek-v3-2（不要 thinking model）。V2 复用现有 agent.compact profile（DB Registry 路由）。'
+  - 'D5 (parent): autocompact summary 整段用 <reference-only data-internal="true">...12 段...</reference-only> XML 包裹，替代旧 [REFERENCE ONLY] 文本前缀。Scrubber 同步识别 data-internal="true" 标识做白名单（用户裸写 <reference-only> 不剥）。'
+  - '2.1-D1: V2 字段命名一律带 _v2 后缀（DB 列名、Go struct 字段、store 方法名），让代码读起来就能区分双轨。use_compact_v2 BOOL default FALSE，run 创建时冻结，runner 层保证不切换。'
+  - '2.2-D1: TOOL_ARTIFACT_SIZE_LIMIT=16KB / PREVIEW=1KB / EXPIRES=30d / READ_MAX_LIMIT=16KB。data_dir 默认 local（<numind-server-root>/data/agent_artifacts/<run_id>/<uuid>）。'
+  - '2.5-D1: scrubber 集成 runner stream emit 由主控（最后 wiring step）做，不让 task 2.2 / 2.5 同时改 runner.go 导致 Tier 3 冲突。'
+  blockers: []
+  created_at: '2026-05-23T13:10:00+08:00'
+- id: agent-mode-v15-memory-layer-a
+  ndf_version: '3.0'
+  description: '有数 Agent Mode V1.5 板块 3 — 记忆管理（V1.5 仅 Layer A：对使用 agent 的真实 user 本人画像，不对会话关注对象画像，subject_id 字段 NULL 预留 V2 Layer B）。8 个 sub-task：(3.1) AGENT.md 2 级 cascade — 部署级 /etc/numind/AGENT.md + 用户全局 <user_data>/users/<user_id>/AGENT.md，注入 system prompt Memories 段（D6 简化为 2 层，路径 3-6 V2 扩展）；(3.2) memory schema — 建 user_memory_profile + user_memory_facts 两表 + GORM model + store interface（subject_id VARCHAR(64) NULL V2 预留；V1.5 store 层强制拒绝非 NULL 写入；D7 父子账户完全隔离，schema 不加 parent_user_id 字段）；(3.3) LLM extraction 异步 pipeline — agent.memory_extract profile (deepseek-v3-2/qwen-turbo) + 30s debounce + 5 worker pool + confidence ≥0.7 入库 + hash dedup + narrative rebuild；(3.4) Top-5 side-query selector — agent.memory_select profile + LRU cache + ≤5 短路 + fallback to confidence top-5；(3.5) MySQL 8 FULLTEXT ngram 中文搜索 — agent_message_search 表 + diff-by-uuid 异步索引 + snippet 高亮 + GET /v1/agent-runs/search + 前端搜索框；(3.6) trivial 短路 + cadence — IsTrivial 纯函数 (中英文 + emoji) + CadenceService.ShouldRunDialectic (5min cooldown / 30min 兜底 / 3 new facts 触发)；(3.7) Dialectic Layer A 推理 — agent.dialectic profile (qwen-plus, 不 thinking) + 后台 goroutine + cached_insight + extraction hook + 多元场景画像 (销售/数据分析/SOP/PPT 均覆盖)；(3.8) 分层时间感知 — 4 张 digest 表 (daily/weekly/monthly/quarterly) + 4 robfig/cron job + Redis SETNX lock + 时间词正则 + agent.digest profile。新增 4 个 task profile (agent.memory_extract / agent.memory_select / agent.dialectic / agent.digest)，加进 constants.go::allTaskIDsList（21 → 25，attachment.vision_describe 由 Track 1 加，全板块合计 26）。Out of scope: V2 Layer B (对会话关注对象画像) / Entity 三元组 / Honcho SaaS / Vector embedding (facts<1000 不需) / Memory Tree (OpenHuman bucket-seal) / prod 部署。'
+  track: standard
+  stage: S4
+  classification_reason: 'Standard Triage 5/5 多条违反 — (1) DB schema 变更：是（user_memory_profile / user_memory_facts / agent_message_search + 4 张 digest 表，合计 7 张新表 + FK CASCADE + FULLTEXT ngram index + composite indexes）(2) 新增 API 端点：是（GET /v1/agent-runs/search + admin memory facts 读端点）(3) 新外部服务集成：否（dialectic/extraction/digest 都走 aiservice 统一入口 + 4 新 task profile 走 DB Registry）(4) 影响文件数 >3（agentmd 包 2 文件 + memory 包 ~10 文件 + 4 digest cron + temporal_keywords + 7 张表 migration + store ~5 文件 + runner.go 多处 hook + constants.go + helper.go + 4 个 yaml + 前端搜索框 ~3 文件 + 1.2 个 admin endpoint）(5) 高风险业务逻辑：是（B2B2C 父子完全隔离硬约束 / Layer A vs Layer B 边界 / cadence 错配会让 dialectic 频跑烧钱 / FTS5 写并发 / Redis lock 防多实例双跑）。条件 1+2+4+5 全触发 Standard 强制。'
+  last_updated_by: ai-orchestrator-track3-wave1-done
+  last_updated_at: '2026-05-23T15:00:00+08:00'
+  repos:
+  - numind-server
+  - numind-web-v3
+  branches:
+    numind-server: feature/agent-mode-v15-memory-layer-a
+    numind-web-v3: feature/agent-mode-v15-memory-layer-a
+  worktree:
+    numind-server: /private/tmp/wt-agent-mode-v15-memory-layer-a-numind-server
+    numind-web-v3: /private/tmp/wt-agent-mode-v15-memory-layer-a-numind-web-v3
+  artifacts:
+    spec_root: /Users/zhiyuchen/Downloads/有数-Agent-Mode-V1.5-NDF-spec/
+    context: /Users/zhiyuchen/Downloads/有数-Agent-Mode-V1.5-NDF-spec/context.md
+    track_overview: /Users/zhiyuchen/Downloads/有数-Agent-Mode-V1.5-NDF-spec/03-memory/README.md
+    task_3_1_agentmd: /Users/zhiyuchen/Downloads/有数-Agent-Mode-V1.5-NDF-spec/03-memory/task-01-agent-md-cascade.md
+    task_3_2_schema: /Users/zhiyuchen/Downloads/有数-Agent-Mode-V1.5-NDF-spec/03-memory/task-02-memory-schema.md
+    task_3_3_extract: /Users/zhiyuchen/Downloads/有数-Agent-Mode-V1.5-NDF-spec/03-memory/task-03-llm-extraction.md
+    task_3_4_selector: /Users/zhiyuchen/Downloads/有数-Agent-Mode-V1.5-NDF-spec/03-memory/task-04-top5-selector.md
+    task_3_5_fts5: /Users/zhiyuchen/Downloads/有数-Agent-Mode-V1.5-NDF-spec/03-memory/task-05-fts5-search.md
+    task_3_6_trivial: /Users/zhiyuchen/Downloads/有数-Agent-Mode-V1.5-NDF-spec/03-memory/task-06-trivial-shortcut.md
+    task_3_7_dialectic: /Users/zhiyuchen/Downloads/有数-Agent-Mode-V1.5-NDF-spec/03-memory/task-07-dialectic.md
+    task_3_8_temporal: /Users/zhiyuchen/Downloads/有数-Agent-Mode-V1.5-NDF-spec/03-memory/task-08-temporal-tree.md
+  progress:
+    total_tasks: 8
+    completed_tasks: 7
+    reviewed_tasks: 7
+    current_task: 'Wave 4b done (3.7 dialectic Layer A reviewed + 3 P2 fixed). Layer A 边界完美 (prompt 多元场景，不滑向 V2 Layer B 客户/数据集画像). Moving to Wave 5 (final): 3.8 temporal tree (4 张 digest 表 + 4 cron + Redis SETNX lock，3-5d 最长 task).'
+  commits:
+  - '78d78026: feat(agent-memory): Task 3.1 AGENT.md cascade loader — spec PASS_WITH_P1 / quality PASS_WITH_P1'
+  - 'f9bac2d6: feat(agent-memory): Task 3.2 memory schema + GORM + store — spec PASS / quality PASS'
+  - '163193bf: chore(agent-memory): Task 3.2 P2 fix (UpdateCachedInsight 注释 / ListOpts test cleanup + total_facts 断言 / idx_user_subject_confidence trade-off 文档化)'
+  - '8279d631: fix(agent-memory): Task 3.1 P1+P2 fix (## Memories header 段位明确 / runner_agentmd_test.go 集成测试 / io.LimitedReader OOM 防护 / strings.ToValidUTF8 UTF-8 边界修复 / TotalCap test / ctx cancellation / TotalChars docstring)'
+  - '0c1c1624: feat(agent-memory): Task 3.3 LLM extraction async pipeline (5-worker pool + 30s debounce + hash dedup + narrative rebuild + agent.memory_extract profile 22 / atomic metrics / Langfuse memory.extract trace) — spec PASS_WITH_P1 / quality PASS_WITH_P1'
+  - 'e23eb839: fix(agent-memory): Task 3.3 P1+P2 fix (Enqueue stopCtx guard 防 send-on-closed / biz.CloseMemoryExtractor shutdown wire / persistFacts EscapeForStorage / short-circuit omit assistant msg / chat seam mutex / 多个 docstring 说明)'
+  - '69a7884c: feat(agent-memory): Task 3.4 Top-5 side-query selector (LRU cache 30s/1024 + ≤5 短路 + 3-layer fallback + UpdateUsage batch + agent.memory_select profile 23 / metrics 5 labels / Langfuse memory.select trace / <personal_context> tag 协议 with Track 2 Scrubber) — spec PASS (1 P2) / quality PASS (4 P2)'
+  - 'ec055dcb: fix(agent-memory): Task 3.4 P2 fix (selector userInput 1000-rune cap / GetByIDs cross-user WHERE user_id 防御 / TTL expiry refetch test / GetByIDs docstring / selector_test.go integration coverage note)'
+  - 'bc704884: feat(agent-search): Task 3.5 backend FTS5 ngram 中文搜索 (agent_message_search 表 + diff-by-uuid 索引 + snippet 算法 html.EscapeString 后 <mark> 包裹 + GET /v1/agent-runs/search + backfill CLI + B2B2C user_id 强制隔离) — spec PASS / quality PASS (4 P2)'
+  - '99089bb (web-v3): feat(agent-search): Task 3.5 frontend (agentSearch.ts + AgentHistorySearchView.vue + router + AgentHistoryView 搜索按钮 + 4 状态完整 + v-html 含 server-escaped snippet)'
+  - 'e4d4d145: feat(agent-memory): Task 3.6 trivial + cadence + Wave 4a wire-up (IsTrivial 纯函数 + CadenceService.ShouldRunDialectic + 替换 runner.go 2 处 isTrivial=false TODO / biz.go wire SearchService + CadenceService + IBiz.MemoryCadence/SearchService getter / metrics trivial+dialectic counters / yaml memory 段) — spec PASS (1 P2) / quality PASS (3 P2)'
+  - '96f17709: fix(agent-memory): Wave 4a P2 fix (Q1: IndexAgentRun goroutine 化避免请求 hot path 同步 DB / Q2: extractSearchRows 10MB 上限防 OOM / Q3: TestService_Search_AsciiSnippet 补 SQLite 覆盖 / P3.6.1: TrivialConfig + atomic.Value 替代 IsTrivial 每次 viper.GetInt + biz.NewBiz 4 个 viper.SetDefault / P3.6.2: ExactlyMinNewFacts 精确边界 test / P3.6.3: isEmojiRune 注释精确化)'
+  - '77821f6 (web-v3): fix(agent-search): Task 3.5 frontend P2 (@keyup + handleEnter wrapper 改为 @keyup.enter 直接绑定 doSearch)'
+  - 'bd1b56da: feat(agent-memory): Task 3.7 Dialectic Layer A 推理 (DialecticService + qwen-plus 不 thinking + async goroutine + cached_insight + cadence gated by 3.6 + extraction hook + system prompt Memories 段 dialecticBlock 注入 + agent.dialectic profile 24 + 4 metrics counter + Langfuse memory.dialectic trace) — spec PASS / quality PASS (3 P2)'
+  - '5ebd2268: fix(agent-memory): Task 3.7 P2 fix (cached_insight EscapeForStorage 注释解释 LLM-vs-user-input asymmetry / TestMaybeRecompute_UpsertFallback_UpsertFails / 50ms sleep 改 200ms polling loop 防 CI 抖动)'
+  decisions:
+  - 'D6 (parent): AGENT.md cascade 只激活 2 层（部署级 + 用户全局），路径 3-6 V2 扩展（仅注释 hook）。'
+  - 'D7 (parent): B2B2C 父子账户 memory 完全隔离 — schema 不加 parent_user_id 字段，store interface 只接受 userID 参数，父账户不会看到/聚合子账户 memory（团队聚合需求走管理后台报表，不污染 memory 系统）。'
+  - 'D4 (parent): dialectic / extraction / digest 用 qwen-plus 或 deepseek-v3-2 (不 thinking)。'
+  - 'D8 (parent): V1.5 新增 4 个 agent.* task profile (memory_extract / memory_select / dialectic / digest)，加进 constants.go::allTaskIDsList。'
+  - 'D9 (parent): 中文搜索用 MySQL 8 FULLTEXT + ngram parser (n=2)，量大再升 ES。'
+  - 'V1.5 Layer A only: dialectic 推理对象是"使用 agent 的真实 user 本人"画像，不是使用者关注的客户/数据集/产线等业务对象。subject_id VARCHAR(64) NULL 字段 V1.5 全 NULL，store 层强制拒绝非 NULL 写入返回 ErrLayerBNotSupported。'
+  - '3.1-D1: agentMdBlock 注入位置在 body 与 memoryDisclaimerBlock 之间 + `\n\n## Memories\n\n` 段标题明确段位归属。'
+  - '3.1-D2: readIfExists 用 os.Open + io.LimitedReader 限读 maxBytes+1 字节防 OOM；byte-slice 截断后 strings.ToValidUTF8 修剪 invalid UTF-8 尾字节（CJK 安全）。'
+  - '3.2-D1: 应用层维护 total_facts（不用 trigger）— Create/BatchCreate/Archive/BulkArchive 同事务调 incrTotalFactsOnTx；Archive 用 First 检 IsArchived 防 double-decrement；每日凌晨 cron 对账（task-03 实施）。'
+  - '3.2-D2: user_id 类型 INT UNSIGNED（与 user.id 匹配，FK CASCADE 才能建），不是 spec 默认的 BIGINT UNSIGNED。is_archived TINYINT(1) 显式（与现有 migration 一致）。'
+  related_features:
+  - 'agent-mode-v15-multimodal (Track 1 板块 1，独立 worktree，无文件冲突)'
+  - 'agent-mode-v15-context-v2 (Track 2 板块 2，独立 worktree，Track 3 task-04/3-7/3-8 注入的 <personal_context>/<temporal_context> 标签 data-internal="true" 由 Track 2 task 2.5 Scrubber 在输出时剥离 — 协议约定的标签格式)'
+  blockers: []
+  created_at: '2026-05-23T15:00:00+08:00'
 - id: agent-mode-configurator-relocate
   ndf_version: '3.0'
   description: '修复 #10 agent-mode-configurator-ux (fdebd7b) 严重产品定位错误：把配置者 UX 从 numind-admin-web 搬到 numind-web-v3。蓝本 §5 的"配置者"实际指父账户（B 端机构主），不是 Numind 公司员工；admin-web 跟 web-v3 有独立账号体系 + 独立 JWT 鉴权，父账户根本登录不进 admin-web，#10 落地后产品链路是断的。本 feature: (1) admin-web 删 7 个 builder view (AgentList/AgentCreateChoose/TemplateGallery/AgentBuilder/AgentDetail/AgentEdit/AgentAdvancedEdit) + 11 个 components + 4 个单测 + 9 个 parent endpoint (agent.ts) + agent store + AdminSidebar "AI 助手" 菜单 + router /agents/* 路由；保留 AgentMonitoring.vue + 2 个真 admin endpoint (listAgentRunsApi/cancelAgentRunApi) + 合规规则 + AdminSidebar "Agent 监控" 菜单（Numind 员工功能）。(2) web-v3 新增 /views/config/agents/ 目录搬入 7 view + 11 component + 单测 + 新建 agentBuilder API/store + ConfigLayout 加 "AI 助手" tab + router /config/agents/* + 父账户判定路由守卫（isParentUser=true 可见，否则 redirect）。后端 API #5 9 endpoint 不动（本来就 user_token，是 admin-web 用错位置）。Out of scope: 后端 API 改 / prod 部署 / 真 e2e 跨账户 / 新功能。'

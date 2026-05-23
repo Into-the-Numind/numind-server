@@ -16,11 +16,13 @@ import (
 	"github.com/spf13/viper"
 
 	"numind-server/internal/numind/biz"
+	"numind-server/internal/numind/biz/compactv2"
 	cbbiz "numind-server/internal/numind/biz/contextbudget"
 	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/adapter"
+	"numind-server/internal/pkg/aiservice/capability"
 	aimw "numind-server/internal/pkg/aiservice/middleware"
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/billing"
@@ -132,6 +134,10 @@ func run() error {
 	reg := registry.New(store.S.DB())
 	gateway := aiservice.Build(aiservice.Deps{Registry: reg})
 
+	// 初始化 capability matrix 查询（V1.5 multimodal routing helper）
+	// 必须在 gateway 初始化之后、路由注册之前调用，确保 task 1.3/1.4 可以查询 capability。
+	capability.Init(store.S.DB())
+
 	// Wire middleware chain (done here to avoid import cycle: aiservice ↛ middleware).
 	usageStore := aimw.NewDBUsageStore(store.S.DB())
 
@@ -224,6 +230,16 @@ func run() error {
 
 	// bizLayer was created above for context budget wiring; reuse it for cron tasks.
 
+	// V1.5 task 1.2: start attachment fallback worker pool + recover interrupted jobs.
+	// The pool drains when workerCtx is cancelled (same context as summaryWorker).
+	if fallbackSvc := bizLayer.AttachmentFallback(); fallbackSvc != nil {
+		fallbackSvc.Start(workerCtx)
+		if err := fallbackSvc.RecoverPending(context.Background()); err != nil {
+			log.Warnw("Attachment fallback RecoverPending failed (non-fatal)", "error", err)
+		}
+		log.Infow("Attachment fallback worker pool started")
+	}
+
 	// 启动博主监控 cron 调度器
 	go func() {
 		if err := bizLayer.Monitor().StartScheduler(context.Background()); err != nil {
@@ -246,6 +262,36 @@ func run() error {
 		for range ticker.C {
 			if err := bizLayer.Sop().CleanupDraftRuns(context.Background(), 8*time.Hour); err != nil {
 				log.Errorw("Draft cleanup failed", "error", err)
+			}
+		}
+	}()
+
+	// Agent Mode V1.5 板块 2 task 2.2 — agent_tool_artifact cleanup cron。
+	// 每 24h 扫一次过期 artifact（>30天）：物理删文件 + DB 标 is_expired=true。
+	// 同 SOP cleanup 模式：启动时立即跑一次，然后 ticker 24h 一轮。
+	// TODO: 当前不是严格 03:00 触发；如果运维需要避开高峰，可改成 sleep until next 03:00 模式。
+	go func() {
+		artifactStore := store.S.ToolArtifact()
+		dataDir := viper.GetString("agent.artifact_dir")
+		if dataDir == "" {
+			// fallback：相对当前工作目录的 data 子目录（生产部署应当显式配置 agent.artifact_dir）
+			dataDir = "data"
+			log.Warnw("agent.artifact_dir not configured; using fallback 'data/' (set in config_*.yaml for prod)",
+				"dataDir", dataDir)
+		}
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+
+		log.Infow("agent_tool_artifact cleanup task started", "interval", "24 hours", "data_dir", dataDir)
+
+		// 启动时立即跑一次（避免长服务漂移）
+		if _, err := compactv2.RunArtifactCleanup(context.Background(), artifactStore, dataDir); err != nil {
+			log.Errorw("Initial agent_tool_artifact cleanup failed", "error", err)
+		}
+
+		for range ticker.C {
+			if _, err := compactv2.RunArtifactCleanup(context.Background(), artifactStore, dataDir); err != nil {
+				log.Errorw("Periodic agent_tool_artifact cleanup failed", "error", err)
 			}
 		}
 	}()

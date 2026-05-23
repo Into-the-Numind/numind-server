@@ -53,6 +53,10 @@ type IStore interface {
 	UserMemoryDigests() IMemoryDigestStore          // agent-mode-v15-memory-layer-a (Task 3.8) 4 张 daily/weekly/monthly/quarterly digest
 	AgentMessageSearches() IAgentMessageSearchStore // agent-mode-v15-memory-layer-a (Task 3.5) FULLTEXT search 索引
 	Compliance() IComplianceStore                   // #13 agent-mode-compliance-3layer
+	// V1.5 板块 2 task 2.1（context-management V2）— 平行重做，V1 IAgentRunStore 不动
+	CompactV2() IAgentCompactV2Store
+	ToolArtifact() IAgentToolArtifactStore
+	AgentAttachments() IAgentAttachmentStore // V1.5 multimodal fallback task 1.2
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -261,7 +265,24 @@ func (ds *datastore) AgentMessageSearches() IAgentMessageSearchStore {
 	return NewAgentMessageSearchStore(ds.db)
 }
 
+// AgentAttachments 返回一个实现了 IAgentAttachmentStore 接口的实例（V1.5 task 1.2）。
+func (ds *datastore) AgentAttachments() IAgentAttachmentStore {
+	return newAgentAttachmentStore(ds.db)
+}
+
 // Compliance 返回一个实现了 IComplianceStore 接口的实例（#13 agent-mode-compliance-3layer）。
 func (ds *datastore) Compliance() IComplianceStore {
 	return newCompliance(ds.db)
+}
+
+// CompactV2 返回 IAgentCompactV2Store 实现（V1.5 板块 2 task 2.1 — context-management V2）。
+// 平行重做：V1 `AgentRuns()` 完全保留不动，本方法只读写 *_v2 列。
+func (ds *datastore) CompactV2() IAgentCompactV2Store {
+	return newAgentCompactV2Store(ds.db)
+}
+
+// ToolArtifact 返回 IAgentToolArtifactStore 实现（V1.5 板块 2 task 2.1）。
+// task 2.2 起会被 L0 tool result 写盘代码使用。
+func (ds *datastore) ToolArtifact() IAgentToolArtifactStore {
+	return newAgentToolArtifactStore(ds.db)
 }

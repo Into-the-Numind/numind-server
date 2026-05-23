@@ -314,6 +314,22 @@ func autoMigrate(db *gorm.DB) error {
 		return fmt.Errorf("failed to migrate compliance tables: %v", err)
 	}
 
+	// Agent Mode V1.5 板块 2 task 2.1 — context-management V2（平行重做 D3）
+	// agent_run 表 4 个 V2 新列（compact_state_v2 / total_tokens_used_v2 / use_compact_v2 /
+	// context_window_limit_v2）由 AutoMigrate 自动 ALTER（V1 字段不动）。
+	// agent_tool_artifact 是 V2 专用新表。
+	if err := db.AutoMigrate(&model.AgentToolArtifact{}); err != nil {
+		return fmt.Errorf("failed to migrate agent_tool_artifact: %v", err)
+	}
+
+	// Agent attachment 上传记录表（V1.5 multimodal fallback task 1.2）
+	// Migration 20260523_120000_agent_attachment_fallback.sql handles the initial
+	// CREATE TABLE with proper indexes. AutoMigrate here adds any new columns that
+	// appear in future model changes.
+	if err := db.AutoMigrate(&model.AgentAttachment{}); err != nil {
+		return fmt.Errorf("failed to migrate agent_attachment: %v", err)
+	}
+
 	log.Infow("All database schema migration completed")
 
 	// 3. 迁移后验证字符集

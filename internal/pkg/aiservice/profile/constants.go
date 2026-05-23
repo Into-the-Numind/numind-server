@@ -2,7 +2,8 @@
 // the Capability Matching algorithm used by the AI Gateway.
 package profile
 
-// Task ID constants for all 25 supported task profiles (14 base + 7 agent-mode #14 + 4 V1.5 memory).
+// Task ID constants for all 27 supported task profiles
+// (14 base + 7 agent-mode #14 + 2 V1.5 attachment + 4 V1.5 memory).
 // Business layers should reference these constants (e.g. profile.SopText) rather
 // than raw string literals to gain IDE completion and compile-time typo detection.
 const (
@@ -49,6 +50,22 @@ const (
 	AgentInjectionCheck = "agent.injection_check"
 	// AgentPermissionCheck is the Agent permission L3 auto-mode classifier (#14).
 	AgentPermissionCheck = "agent.permission_check"
+
+	// ── V1.5 attachment profiles (task 1.2 / board 3) ────────────────────────
+
+	// AttachmentVisionDescribe is the VLM task that generates a textual description
+	// of an uploaded image for use as a text fallback when the active model is
+	// single-modal. Routed to qwen3-vl-flash (D2 decision). (V1.5 task 1.2)
+	AttachmentVisionDescribe = "attachment.vision_describe"
+
+	// AttachmentPDFExtract is the LLM task that extracts full text from a PDF
+	// document using qwen-long's file URL API. Separate from agent.run to avoid
+	// misattributing PDF extraction costs to the ReAct agent budget (P1 #4 fix,
+	// task 1.2 review). (V1.5 task 1.2)
+	AttachmentPDFExtract = "attachment.pdf_extract"
+
+	// ── V1.5 memory profiles (Layer A — Task 3.x) ────────────────────────────
+
 	// AgentMemoryExtract is the Agent V1.5 memory async extraction task (Task 3.3).
 	// Reads last 5-10 turns from agent_run.messages, identifies long-term-useful
 	// facts about the agent's *user* (Layer A — sales rep, analyst, SOP operator,
@@ -119,6 +136,9 @@ var allTaskIDsList = []string{
 	AgentNarrationFallback,
 	AgentInjectionCheck,
 	AgentPermissionCheck,
+	// V1.5 additions
+	AttachmentVisionDescribe,
+	AttachmentPDFExtract,
 	AgentMemoryExtract,
 	AgentMemorySelect,
 	AgentDialectic,

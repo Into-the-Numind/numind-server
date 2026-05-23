@@ -36,6 +36,15 @@ type AgentRun struct {
 	PendingQuestionAt *time.Time `gorm:"column:pending_question_at" json:"pending_question_at,omitempty"`
 	CreatedAt         time.Time  `gorm:"type:datetime(3);autoCreateTime" json:"created_at"`
 	UpdatedAt         time.Time  `gorm:"type:datetime(3);autoUpdateTime" json:"updated_at"`
+	// V2 字段（compactv2 包专用，V1 包不读写）— Agent Mode V1.5 板块 2 Task 2.1。
+	// 平行重做策略（D3）：现有 CompactState / CompactSummary 字段完全保留不动。
+	// agent mode 通过 RunRequest.UseCompactV2=true feature flag 进入 V2 路径，
+	// 其他场景（SOP / SalesRAG / 监控）继续走 V1。
+	// 注意：BOOL default false，不踩 database.md §6 的 default:true 坑。
+	CompactStateV2       datatypes.JSON `gorm:"type:json;column:compact_state_v2" json:"compact_state_v2,omitempty"`
+	TotalTokensUsedV2    int64          `gorm:"column:total_tokens_used_v2;not null;default:0" json:"total_tokens_used_v2,omitempty"`
+	UseCompactV2         bool           `gorm:"column:use_compact_v2;not null;default:false" json:"use_compact_v2,omitempty"`
+	ContextWindowLimitV2 *int           `gorm:"column:context_window_limit_v2" json:"context_window_limit_v2,omitempty"`
 }
 
 func (AgentRun) TableName() string { return "agent_run" }

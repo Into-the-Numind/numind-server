@@ -17,6 +17,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"numind-server/internal/pkg/aiservice/capability"
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/errno"
@@ -279,8 +280,12 @@ type IAIServiceAdminBiz interface {
 	// Audit log entries are written for BOTH service.create and route.create.
 	CreateServiceWithRoute(ctx context.Context, req CreateServiceWithRouteRequest, actorID uint64, actorName string) (*CreateServiceWithRouteResult, error)
 
-	// UpdateService updates an existing AI service.
-	UpdateService(ctx context.Context, svc *model.AIService, actorID uint64, actorName string) error
+	// UpdateService updates an existing AI service. On success it invalidates the
+	// in-process capability cache and returns the refreshed Capabilities so the
+	// caller can include them in the HTTP response without a separate round-trip.
+	// If the capability lookup fails after a successful save, caps may be nil;
+	// callers should handle nil gracefully (log warn, still return 200).
+	UpdateService(ctx context.Context, svc *model.AIService, actorID uint64, actorName string) (*capability.Capabilities, error)
 
 	// DeprecateService soft-deletes an AI service.
 	DeprecateService(ctx context.Context, id uint64, actorID uint64, actorName string, reason string) error
@@ -611,20 +616,41 @@ func (b *aiServiceAdminBiz) CreateServiceWithRoute(ctx context.Context, req Crea
 // capability_json fields (context_window, max_output_tokens). Delegates to
 // the registry SaveService on success.
 // The caller is responsible for loading the existing record and merging fields.
-func (b *aiServiceAdminBiz) UpdateService(ctx context.Context, svc *model.AIService, actorID uint64, actorName string) error {
+//
+// After a successful save, UpdateService invalidates the in-process capability
+// cache (so downstream callers see the new values immediately) and returns the
+// refreshed Capabilities. If the post-save GetCapabilities lookup fails, the
+// returned caps is nil; the save itself has already succeeded and callers must
+// not treat a nil caps as a save failure.
+func (b *aiServiceAdminBiz) UpdateService(ctx context.Context, svc *model.AIService, actorID uint64, actorName string) (*capability.Capabilities, error) {
 	if err := validateServiceType(svc.ServiceType); err != nil {
-		return err
+		return nil, err
 	}
 	if svc.ServiceType == "llm" {
 		cap := parseCapabilityJSON(svc.CapabilityJSON)
 		if err := validateLLMCapability(cap); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if err := b.reg.SaveService(ctx, svc, actorID, actorName); err != nil {
-		return fmt.Errorf("aiservice_admin.UpdateService: %w", err)
+		return nil, fmt.Errorf("aiservice_admin.UpdateService: %w", err)
 	}
-	return nil
+
+	// Invalidate the in-process capability cache so downstream callers
+	// (buildAgentInput, tool gating, etc.) see the updated value immediately
+	// rather than waiting for the 5-minute TTL to expire.
+	capability.InvalidateCache(svc.ModelKey)
+
+	// Return refreshed capabilities for the admin response body (spec §"Admin API":
+	// PUT /v1/admin/ai/services/:id → { code:0, data:{ capabilities:{...} } }).
+	// A lookup error here does NOT indicate a save failure — log warn and return nil caps.
+	caps, capsErr := capability.GetCapabilities(svc.ModelKey)
+	if capsErr != nil {
+		log.C(ctx).Warnw("aiservice_admin.UpdateService: capability lookup after save failed, response data will omit capabilities",
+			"model_key", svc.ModelKey, "error", capsErr)
+		return nil, nil
+	}
+	return caps, nil
 }
 
 // DeprecateService soft-deletes the service by setting deprecated_at.

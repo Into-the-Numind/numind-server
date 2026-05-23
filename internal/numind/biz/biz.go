@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"numind-server/internal/numind/biz/agent"
+	agentatt "numind-server/internal/numind/biz/agent/attachment"
 	"numind-server/internal/numind/biz/agent/budgetgate"
 	"numind-server/internal/numind/biz/agent/compliancegate"
 	"numind-server/internal/numind/biz/agent/search"
@@ -16,7 +17,6 @@ import (
 	"numind-server/internal/numind/biz/attachment"
 	"numind-server/internal/numind/biz/budget"
 	chatbotbiz "numind-server/internal/numind/biz/chatbot"
-	"numind-server/internal/numind/biz/compact"
 	"numind-server/internal/numind/biz/compliance"
 	"numind-server/internal/numind/biz/config"
 	"numind-server/internal/numind/biz/credit"
@@ -63,25 +63,26 @@ type IBiz interface {
 	Ali() ali.AliBiz
 	Volc() volc.VolcBiz
 	Configs() config.ConfigBiz
-	Sop() sopbiz.ISopBiz                      // SOP服务
-	Customers() customerbiz.ICustomerBiz      // 客户管理服务
-	SalesRAG() salesrag.SalesRAGBiz           // 销售 RAG 服务
-	Credit() credit.ICreditBiz                // 积分服务
-	CreditService() credit.ICreditService     // credits-system ICreditService 统一入口
-	Pricing() pricing.ICalculator             // pricing 同步成本计算
-	Payment() payment.IPaymentBiz             // 支付服务
-	Monitor() monitor.IMonitorBiz             // 博主监控服务
-	KnowledgeBase() kbbiz.IKnowledgeBaseBiz   // 知识库服务
-	Chatbot() chatbotbiz.IChatbotBiz          // 智能体服务
-	LLMRouter() *llmrouter.Router             // LLM 路由服务
-	Agents() agent.AgentRunner                // Agent Runtime（agent-mode #2）
-	AgentTools() agent.AgentToolRegistry      // Agent Tool Registry（agent-mode #3）
-	Skill() skillbiz.Service                  // Agent Skill CRUD（#5/14 skill-system）
-	StudentQuery() *agent.StudentQueryService // Student-facing agent query (#14 follow-up ALPHA)
-	StudentRun() *agent.StudentRunService     // Student-facing run lifecycle (#14 BETA)
-	Attachment() *attachment.UploadService    // File attachment upload (#14 BETA)
-	MemoryCadence() *memory.CadenceService    // Task 3.6 dialectic cadence gate (Task 3.7 caller)
-	SearchService() search.Service            // Task 3.5 FULLTEXT search (router.go consumer)
+	Sop() sopbiz.ISopBiz                          // SOP服务
+	Customers() customerbiz.ICustomerBiz          // 客户管理服务
+	SalesRAG() salesrag.SalesRAGBiz               // 销售 RAG 服务
+	Credit() credit.ICreditBiz                    // 积分服务
+	CreditService() credit.ICreditService         // credits-system ICreditService 统一入口
+	Pricing() pricing.ICalculator                 // pricing 同步成本计算
+	Payment() payment.IPaymentBiz                 // 支付服务
+	Monitor() monitor.IMonitorBiz                 // 博主监控服务
+	KnowledgeBase() kbbiz.IKnowledgeBaseBiz       // 知识库服务
+	Chatbot() chatbotbiz.IChatbotBiz              // 智能体服务
+	LLMRouter() *llmrouter.Router                 // LLM 路由服务
+	Agents() agent.AgentRunner                    // Agent Runtime（agent-mode #2）
+	AgentTools() agent.AgentToolRegistry          // Agent Tool Registry（agent-mode #3）
+	Skill() skillbiz.Service                      // Agent Skill CRUD（#5/14 skill-system）
+	StudentQuery() *agent.StudentQueryService     // Student-facing agent query (#14 follow-up ALPHA)
+	StudentRun() *agent.StudentRunService         // Student-facing run lifecycle (#14 BETA)
+	Attachment() *attachment.UploadService        // File attachment upload (#14 BETA)
+	AttachmentFallback() agentatt.FallbackService // Async fallback generation (V1.5 task 1.2)
+	MemoryCadence() *memory.CadenceService        // Task 3.6 dialectic cadence gate (Task 3.7 caller)
+	SearchService() search.Service                // Task 3.5 FULLTEXT search (router.go consumer)
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -113,6 +114,8 @@ type biz struct {
 	searchService     search.Service             // Task 3.5 FULLTEXT ngram search (also wired into AgentRunner via WithSearchService)
 	studentQuerySvc   *agent.StudentQueryService // #14 follow-up ALPHA student-facing queries
 	studentRunSvc     *agent.StudentRunService   // #14 BETA student-facing run lifecycle
+	attachFallbackSvc agentatt.FallbackService   // V1.5 multimodal fallback (task 1.2)
+	uploadSvc         *attachment.UploadService  // wired with fallback (V1.5 task 1.2)
 }
 
 // NewBiz 创建一个 IBiz 类型的实例.
@@ -527,14 +530,24 @@ func NewBiz(ds store.IStore) *biz {
 	)
 	b.searchService = searchService
 
+	// V1.5 板块 2 task 2.2 — V2 路径 artifact deps：写盘目录 + ArtifactStore。
+	// 仅当 agent_run.use_compact_v2=true 时生效（runner.go 内有 gate）；
+	// 默认 false → 行为与 V1.5 之前完全一致。
+	artifactDir := viper.GetString("agent.artifact_dir")
+	if artifactDir == "" {
+		artifactDir = "data"
+		log.Warnw("biz.NewBiz: agent.artifact_dir not configured; using relative ./data — set in config_*.yaml for prod")
+	}
+
 	b.agentRunner = agent.NewAgentRunner(
 		ds.AgentRuns(),
 		agentToolRegistry,
 		agent.WithDefaultHooks(wrappedHooks),        // #6: permission → sandbox chain
 		agent.WithSkillStore(ds.AgentDefinitions()), // #5 skill-system
-		// #14/A4 (commit 5035d4b7): real LLM compact via aiservice.Chat.
-		agent.WithCompactProvider(compact.NewAIServiceCompactProvider(compact.DefaultConfig())),
-		// WithCompactConfig omitted — DefaultConfig (qwen-plus) applies.
+		// V1.5 compact-v1-removal — WithCompactProvider/WithCompactConfig removed.
+		// V2 (compactv2) now handles all context-window management; legacy V1
+		// recovery helpers (PTL chain + max_output escalation) were removed
+		// because their prevention-first replacement covers the same cases.
 		agent.WithNarrationProvider(narrationProv), // #8 narration-layer (nil if init failed)
 		agent.WithMemoryProvider(memoryProvider),   // #7 memory-system
 		agent.WithBudgetTracker(budgetTracker),     // #12 agent-mode-billing-integration
@@ -544,6 +557,10 @@ func NewBiz(ds store.IStore) *biz {
 		agent.WithMemoryDialectic(memoryDialectic), // Task 3.7 Layer A cached_insight injection
 		agent.WithMemoryTemporal(memoryTemporal),   // Task 3.8 temporal digest injection (4 granularities)
 		agent.WithSearchService(searchService),     // Task 3.5 FULLTEXT ngram indexing hook
+		// V1.5 板块 2 task 2.2 — V2 L0 artifact deps（artifactStore + dataDir 必填，否则 runner 内 gate 自动退化到 V1）。
+		agent.WithCompactV2Deps(ds.ToolArtifact(), artifactDir),
+		// V1.5 板块 2 task 2.3 — V2 messages / token usage store（maybeCompactV2 L1/L2 写盘 + 累加 tokens）。
+		agent.WithCompactV2Store(ds.CompactV2()),
 	)
 
 	// 初始化知识库服务
@@ -618,6 +635,10 @@ func NewBiz(ds store.IStore) *biz {
 		narrationProv,
 		narrationBuf,
 	)
+
+	// V1.5 task 1.2: wire attachment fallback service + upload service with fallback.
+	b.attachFallbackSvc = agentatt.NewFallbackService(ds.AgentAttachments())
+	b.uploadSvc = attachment.NewUploadServiceWithFallback(ds.AgentAttachments(), b.attachFallbackSvc)
 
 	// 设置全局单例，供 middleware/cron 等无法注入 biz 的代码路径使用。
 	// 确保 store.S 已在 numind.go 中完成初始化后才调用 NewBiz。
@@ -721,8 +742,11 @@ func (b *biz) StudentRun() *agent.StudentRunService {
 	return b.studentRunSvc
 }
 
-// Attachment 返回文件上传服务实例（#14 BETA）。
+// Attachment 返回文件上传服务实例（#14 BETA → V1.5 task 1.2 升级带 fallback）。
 func (b *biz) Attachment() *attachment.UploadService {
+	if b.uploadSvc != nil {
+		return b.uploadSvc
+	}
 	return attachment.NewUploadService()
 }
 
@@ -741,6 +765,11 @@ func (b *biz) MemoryCadence() *memory.CadenceService {
 // agent-mode-v15-memory-layer-a Task 3.5.
 func (b *biz) SearchService() search.Service {
 	return b.searchService
+}
+
+// AttachmentFallback 返回异步 fallback 生成服务实例（V1.5 task 1.2）。
+func (b *biz) AttachmentFallback() agentatt.FallbackService {
+	return b.attachFallbackSvc
 }
 
 // PermissionGate 返回 Permission 网关实例（agent-mode #6 permission-pipeline）。
