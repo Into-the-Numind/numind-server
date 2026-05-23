@@ -40,6 +40,7 @@ require (
 	github.com/pkoukk/tiktoken-go v0.1.8
 	github.com/redis/go-redis/v9 v9.16.0
 	github.com/robfig/cron/v3 v3.0.1
+	github.com/sergi/go-diff v1.3.1
 	github.com/smartwalle/alipay/v3 v3.2.29
 	github.com/volcengine/volc-sdk-golang v1.0.235
 	github.com/wechatpay-apiv3/wechatpay-go v0.2.21
