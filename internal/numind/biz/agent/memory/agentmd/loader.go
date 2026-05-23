@@ -26,6 +26,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -50,10 +51,13 @@ type Source struct {
 // the system prompt's Memories section. It is "" when no file is found,
 // the loader is disabled, or all candidates fail to load.
 type LoadResult struct {
-	Content    string   // concatenated text with section labels + "\n\n---\n\n" separators
-	Sources    []Source // successfully loaded files, in cascade order (low → high priority)
-	TotalChars int      // total characters across all sections (after per-file truncation)
-	Truncated  bool     // true if any file exceeded MaxPerFileChars or total exceeded MaxTotalChars
+	Content string   // concatenated text with section labels + "\n\n---\n\n" separators
+	Sources []Source // successfully loaded files, in cascade order (low → high priority)
+	// TotalChars is the sum of section lengths actually included in Content
+	// (includes section labels + path headers + separators, not raw content only).
+	// It is compared against MaxTotalChars to decide whether to drop further sections.
+	TotalChars int
+	Truncated  bool // true if any file exceeded MaxPerFileChars or total exceeded MaxTotalChars
 }
 
 // Config holds loader behaviour read from viper.
@@ -165,7 +169,18 @@ func LoadAgentMd(ctx context.Context, userID uint) (*LoadResult, error) {
 	truncated := false
 
 	for _, c := range candidates {
-		content, ok := readIfExists(c.Path)
+		// Honor ctx cancellation between candidates (run-cancel / deadline).
+		// V1.5 file I/O is bounded by MaxPerFileChars so synchronous reads are
+		// acceptable; the per-candidate check is a cheap cooperative cancel point.
+		if err := ctx.Err(); err != nil {
+			log.Warnw("agent_md load aborted by ctx",
+				"user_id", userID,
+				"loaded_so_far", len(sources),
+				"error", err)
+			break
+		}
+
+		content, ok := readIfExists(c.Path, cfg.MaxPerFileChars)
 		if !ok {
 			continue
 		}
@@ -173,12 +188,18 @@ func LoadAgentMd(ctx context.Context, userID uint) (*LoadResult, error) {
 		// Normalize CRLF / CR → LF for consistent rendering across platforms.
 		content = normalizeLineEndings(content)
 
-		// Per-file size cap (in characters, not bytes — Go strings are UTF-8 byte
-		// slices; we treat len() as character count for ASCII-dominant cases.
-		// For mixed CJK content this slightly under-counts characters but
-		// over-counts bytes, which is the conservative bias we want for prompts).
+		// Per-file size cap (in bytes — Go string length is in bytes).
+		// For ASCII-dominant content this equals character count; for CJK content
+		// the byte length over-counts characters, which is the conservative bias
+		// we want for prompt budgeting.
 		if len(content) > cfg.MaxPerFileChars {
-			content = content[:cfg.MaxPerFileChars] +
+			truncatedRaw := content[:cfg.MaxPerFileChars]
+			// Byte-slice truncation can split a multi-byte UTF-8 rune at the boundary
+			// (CJK = 3 bytes/rune). strings.ToValidUTF8 drops any trailing invalid
+			// sequence so downstream consumers (LLM serialization, log) never see
+			// malformed UTF-8.
+			truncatedRaw = strings.ToValidUTF8(truncatedRaw, "")
+			content = truncatedRaw +
 				"\n\n[truncated: original > " +
 				strconv.Itoa(cfg.MaxPerFileChars) + " chars]"
 			truncated = true
@@ -271,20 +292,44 @@ func buildCandidates(cfg Config, userID uint) []candidate {
 // readable, or "" and false otherwise. Logs WARN for permission errors;
 // silently skips on os.IsNotExist (which is the dominant case — most users
 // never write an AGENT.md).
-func readIfExists(path string) (string, bool) {
-	data, err := os.ReadFile(path)
-	if err == nil {
-		return string(data), true
-	}
-	// File-not-exist is the expected case for most paths; do not log it.
-	if errors.Is(err, fs.ErrNotExist) {
+//
+// maxBytes bounds the read at (maxBytes + 1) bytes — the extra byte lets the
+// caller detect "was the file actually larger than the cap?" so truncation
+// can be flagged. A misconfigured or malicious AGENT.md (e.g. multi-MB blob)
+// will not OOM the agent process; the caller's truncation logic handles the
+// extra byte.
+func readIfExists(path string, maxBytes int) (string, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		// File-not-exist is the expected case for most paths; do not log it.
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", false
+		}
+		// Permission denied, I/O error, etc. — log and skip without failing the run.
+		log.Warnw("agent_md open failed; skipping candidate",
+			"path", path,
+			"error", err)
 		return "", false
 	}
-	// Permission denied, I/O error, etc. — log and skip without failing the run.
-	log.Warnw("agent_md read failed; skipping candidate",
-		"path", path,
-		"error", err)
-	return "", false
+	defer f.Close()
+
+	// Bound read at maxBytes+1: the extra byte signals "file was larger than cap"
+	// so per-file truncation in LoadAgentMd fires correctly. Non-positive
+	// maxBytes (defensive) falls back to a generous but bounded read (1MB) so
+	// we never read a file unbounded.
+	limit := int64(maxBytes) + 1
+	if limit <= 1 {
+		limit = 1 << 20 // 1 MB defensive ceiling
+	}
+	lr := &io.LimitedReader{R: f, N: limit}
+	data, err := io.ReadAll(lr)
+	if err != nil {
+		log.Warnw("agent_md read failed; skipping candidate",
+			"path", path,
+			"error", err)
+		return "", false
+	}
+	return string(data), true
 }
 
 // normalizeLineEndings converts CRLF and lone CR sequences to LF.

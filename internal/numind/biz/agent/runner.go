@@ -343,14 +343,23 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		agentMdBlock = "\n\n## Agent Rules (developer-defined)\n" + agentMdResult.Content + "\n"
 	}
 
+	// P1.1 review-fix: 段 3 (Memories) 显式 header — 让 LLM 明确识别"这里开始是
+	// Memories 段"。Memories 段 = AGENT.md cascade (rules) + memorySystemBlock (facts)。
+	// 任一非空时挂前导 `## Memories` header；两者都空则整段省略。
+	var memoriesSectionHeader string
+	if agentMdBlock != "" || memorySystemBlock != "" {
+		memoriesSectionHeader = "\n\n## Memories\n"
+	}
+
 	// 段位 1 + 2 + 3 + (disclaimer + 4) + 5 + 6（蓝本 §4.3.9）
 	// disclaimer 与 memorySystemBlock 同进同退；空字符串时整体段位省略。
-	// V1.5 task 3.1: agentMdBlock 是段 3（Memories）的"开发者规则"前缀，独立于
-	// memorySystemBlock（"auto-learned facts"），二者均挂在 body 与 disclaimer 之间。
+	// V1.5 task 3.1: memoriesSectionHeader 是段 3（Memories）的开头标记，
+	// agentMdBlock（开发者规则）和 memorySystemBlock（auto-learned facts）是该段子内容。
 	// agentMdBlock 自带前导 \n\n 和 markdown header，空字符串时无副作用。
 	req.SystemPrompt = skill.PlatformBasePrompt +
 		tenantHardRulesPlaceholder +
 		body +
+		memoriesSectionHeader +
 		agentMdBlock +
 		memoryDisclaimerBlock +
 		memorySystemBlock +

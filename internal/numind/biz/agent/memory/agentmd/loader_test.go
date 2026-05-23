@@ -277,6 +277,131 @@ func TestLoadAgentMd_UserIDZero(t *testing.T) {
 	assert.NotContains(t, res.Content, "LEAKED_USER_ZERO", "userID=0 must not read users/0/AGENT.md")
 }
 
+// TestLoadAgentMd_TotalCapExceeded: when MaxTotalChars is small enough that
+// the second candidate would push the running total past the cap, the loader
+// must drop the second section (and any remaining) while keeping the first.
+// Verifies Truncated==true and Sources length 1.
+//
+// Justification: V1.5 has only 2 levels × 12KB = 24KB max, well under the
+// 50KB default total cap, so this branch never fires in production with
+// default config. The test pins down the defensive code path so a future
+// V2 expansion (4-6 additional candidates) keeps working.
+//
+// Test mechanics: Section format = "[Label] (full-path)\nCONTENT" — on a
+// macOS tmpdir the path alone is ~120 bytes, so a "small" 1KB MaxTotalChars
+// still has headroom for one section but blocks the second.
+func TestLoadAgentMd_TotalCapExceeded(t *testing.T) {
+	tmpEtc := t.TempDir()
+	tmpUserData := t.TempDir()
+	// MaxTotalChars sized to fit first section comfortably but block second.
+	// On macOS, t.TempDir() paths are ~80 chars; with "(path)\n" + label that's
+	// ~120 chars overhead per section. Two 600-byte content sections + their
+	// path overhead would be ~1.4KB, so MaxTotalChars=1024 blocks the second.
+	withTestConfig(t, map[string]any{
+		"agent.memory.agent_md.enabled":            true,
+		"agent.memory.agent_md.etc_dir":            tmpEtc,
+		"agent.memory.agent_md.user_data_dir":      tmpUserData,
+		"agent.memory.agent_md.max_per_file_chars": 12288,
+		"agent.memory.agent_md.max_total_chars":    1024,
+	})
+
+	// Both files 600 bytes — first section fits within 1024 cap, second pushes over.
+	deployContent := strings.Repeat("a", 600)
+	require.NoError(t, os.WriteFile(filepath.Join(tmpEtc, "AGENT.md"), []byte(deployContent), 0o644))
+
+	userID := uint(11)
+	userDir := filepath.Join(tmpUserData, "users", "11")
+	require.NoError(t, os.MkdirAll(userDir, 0o755))
+	userContent := strings.Repeat("b", 600)
+	require.NoError(t, os.WriteFile(filepath.Join(userDir, "AGENT.md"), []byte(userContent), 0o644))
+
+	res, err := LoadAgentMd(context.Background(), userID)
+	require.NoError(t, err)
+	require.NotNil(t, res)
+
+	// Only the first section loaded; second dropped due to total cap.
+	require.Len(t, res.Sources, 1, "second source must be dropped when its section pushes total past cap")
+	assert.Equal(t, "[Deployment-level]", res.Sources[0].Label)
+	assert.True(t, res.Truncated, "Truncated must be true when total cap drops a section")
+	assert.Contains(t, res.Content, strings.Repeat("a", 600))
+	assert.NotContains(t, res.Content, strings.Repeat("b", 600), "dropped section content must not leak into result")
+}
+
+// TestLoadAgentMd_CtxCanceled: when ctx is already canceled before the load
+// loop runs, the loader should abort cooperatively without panicking.
+// Documents the P2.2 ctx-honor fix.
+func TestLoadAgentMd_CtxCanceled(t *testing.T) {
+	tmpEtc := t.TempDir()
+	tmpUserData := t.TempDir()
+	withTestConfig(t, map[string]any{
+		"agent.memory.agent_md.enabled":       true,
+		"agent.memory.agent_md.etc_dir":       tmpEtc,
+		"agent.memory.agent_md.user_data_dir": tmpUserData,
+	})
+	// Place a file that would otherwise be loaded.
+	require.NoError(t, os.WriteFile(filepath.Join(tmpEtc, "AGENT.md"), []byte("DEPLOY_CONTENT"), 0o644))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel
+
+	res, err := LoadAgentMd(ctx, 0)
+	// Loader does not propagate ctx err as Go error (it never errs; see spec).
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	// All candidates skipped due to cancellation — empty result.
+	assert.Len(t, res.Sources, 0, "ctx-canceled load must skip all candidates")
+	assert.Equal(t, "", res.Content)
+}
+
+// TestLoadAgentMd_OversizeUTF8BoundarySplit: a CJK-only file that exceeds
+// MaxPerFileChars and would be truncated at a byte boundary mid-rune. The
+// loader must strip the invalid trailing bytes via strings.ToValidUTF8 so
+// downstream consumers never see malformed UTF-8.
+// Documents the P1.4 byte-slice truncation fix.
+func TestLoadAgentMd_OversizeUTF8BoundarySplit(t *testing.T) {
+	tmpEtc := t.TempDir()
+	tmpUserData := t.TempDir()
+	// Set cap at 7 bytes — slicing at byte 7 of repeated 3-byte CJK runes
+	// ("中" = 0xE4 0xB8 0xAD) splits the 3rd rune mid-byte.
+	withTestConfig(t, map[string]any{
+		"agent.memory.agent_md.enabled":            true,
+		"agent.memory.agent_md.etc_dir":            tmpEtc,
+		"agent.memory.agent_md.user_data_dir":      tmpUserData,
+		"agent.memory.agent_md.max_per_file_chars": 7,
+		"agent.memory.agent_md.max_total_chars":    51200,
+	})
+
+	cjkContent := strings.Repeat("中", 10) // 30 bytes, well over 7-byte cap
+	require.NoError(t, os.WriteFile(filepath.Join(tmpEtc, "AGENT.md"), []byte(cjkContent), 0o644))
+
+	res, err := LoadAgentMd(context.Background(), 0)
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	require.Len(t, res.Sources, 1)
+	assert.True(t, res.Truncated)
+
+	// Verify result is valid UTF-8 (no replacement char, no invalid sequence
+	// embedded). The truncated body should contain only complete runes (n × "中")
+	// plus the truncation marker.
+	body := res.Content
+	assert.True(t, isValidUTF8(body), "truncated content must be valid UTF-8 after ToValidUTF8 strip")
+	// 7 bytes / 3 bytes-per-rune = 2 complete runes (= "中中"), 1 byte stripped.
+	assert.Contains(t, body, "中中")
+	assert.Contains(t, body, "[truncated: original >")
+}
+
+// isValidUTF8 is a tiny wrapper used by the boundary-split test.
+func isValidUTF8(s string) bool {
+	for _, r := range s {
+		if r == 0xFFFD && !strings.Contains(s, "�") {
+			// replacement char from invalid byte → not valid
+			return false
+		}
+	}
+	// Stronger check: explicit verifier
+	return strings.ToValidUTF8(s, "") == s
+}
+
 // TestLoadAgentMd_Disabled: cfg.Enabled=false returns an empty result without
 // touching the filesystem. Loader should be a fast no-op when disabled.
 func TestLoadAgentMd_Disabled(t *testing.T) {
