@@ -244,20 +244,14 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 	// serialised to string via MessagesToInputString for RunRequest.Input.
 	var input string
 	if len(req.AttachmentIDs) > 0 && s.attachmentStore != nil {
-		atts, loadErr := loadAttachmentsByIDs(ctx, s.attachmentStore, req.AttachmentIDs, userID)
-		if loadErr != nil {
-			log.Warnw("StudentRunService.Create: attachment load failed, falling back to URL path",
-				"user_id", userID, "error", loadErr)
+		atts := loadAttachmentsByIDs(ctx, s.attachmentStore, req.AttachmentIDs, userID)
+		msgs, buildErr := buildAgentInputForModel(ctx, req.Message, atts, req.ModelKey, s.attachmentStore)
+		if buildErr != nil {
+			log.Warnw("StudentRunService.Create: buildAgentInputForModel failed, falling back",
+				"user_id", userID, "error", buildErr)
 			input = buildAgentInput(req.Message, req.AttachmentURLs)
 		} else {
-			msgs, buildErr := buildAgentInputForModel(ctx, req.Message, atts, req.ModelKey, s.attachmentStore)
-			if buildErr != nil {
-				log.Warnw("StudentRunService.Create: buildAgentInputForModel failed, falling back",
-					"user_id", userID, "error", buildErr)
-				input = buildAgentInput(req.Message, req.AttachmentURLs)
-			} else {
-				input = MessagesToInputString(msgs)
-			}
+			input = MessagesToInputString(msgs)
 		}
 	} else {
 		// Legacy path: use plain URL list (no capability routing).
@@ -265,6 +259,10 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 		// use the file_read tool. Without that instruction the LLM tends to ignore
 		// a bare URL list and reply "you didn't upload anything" — see bug-from-
 		// customer 2026-05-22 (#14-followup agent-attachment-flow).
+		if len(req.AttachmentIDs) > 0 && s.attachmentStore == nil {
+			log.Warnw("StudentRunService.Create: attachmentStore not configured, AttachmentIDs ignored",
+				"user_id", userID, "attachment_ids", req.AttachmentIDs)
+		}
 		input = buildAgentInput(req.Message, req.AttachmentURLs)
 	}
 
@@ -325,6 +323,9 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 // buildAgentInput composes the LLM-facing user-message text from the human's
 // message plus any uploaded attachment COS URLs.
 //
+// Deprecated: use buildAgentInputForModel. Will be removed when task 1.5
+// completes multimodal wiring (runner.go accepts InputMessages natively).
+//
 // When attachments are present, an unconditional Chinese imperative is appended
 // telling the agent to invoke the file_read tool with each URL. The previous
 // implementation emitted "[attachments: <JSON>]" which the LLM frequently
@@ -358,6 +359,11 @@ func buildAgentInput(message string, attachmentURLs []string) string {
 // enforcing that each row belongs to userID. Rows that fail the ownership
 // check or cannot be fetched are skipped (logged as warnings).
 //
+// Silent skip is intentional: a single attachment fetch failure should not
+// abort the entire run. The run continues with whichever attachments loaded
+// successfully. Callers that need strict all-or-nothing semantics should not
+// use this function.
+//
 // This is the biz-layer bridge for task 1.3: the HTTP handler binds
 // CreateRunRequest.AttachmentIDs from the frontend; this function resolves
 // them to full entities for buildAgentInputForModel.
@@ -366,7 +372,7 @@ func loadAttachmentsByIDs(
 	attStore store.IAgentAttachmentStore,
 	ids []uint64,
 	userID uint,
-) ([]*model.AgentAttachment, error) {
+) []*model.AgentAttachment {
 	var results []*model.AgentAttachment
 	for _, id := range ids {
 		att, err := attStore.GetByIDAndUser(ctx, id, userID)
@@ -377,7 +383,7 @@ func loadAttachmentsByIDs(
 		}
 		results = append(results, att)
 	}
-	return results, nil
+	return results
 }
 
 // ---------------------------------------------------------------------------

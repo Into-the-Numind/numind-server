@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,6 +40,7 @@ func makeAtt(id uint64, modality string, ready bool, fallbackText string) *model
 // ---------------------------------------------------------------------------
 
 type stubAttachmentStore struct {
+	mu   sync.RWMutex
 	rows map[uint64]*model.AgentAttachment
 	// readyAfter: for a given att ID, signal readiness after this delay
 	readyAfterDelay map[uint64]time.Duration
@@ -57,17 +60,21 @@ func newStubStore(atts ...*model.AgentAttachment) *stubAttachmentStore {
 }
 
 func (s *stubAttachmentStore) GetByID(_ context.Context, id uint64) (*model.AgentAttachment, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	att, ok := s.rows[id]
 	if !ok {
 		return nil, errors.New("not found")
 	}
 	// If a readyAfterDelay is configured, check if we should return ready now.
-	// (Tests drive this by modifying rows directly in goroutines.)
+	// (Tests drive this by modifying rows directly in goroutines — protected by mu.)
 	cp := *att // return a copy
 	return &cp, nil
 }
 
 func (s *stubAttachmentStore) GetByIDAndUser(_ context.Context, id uint64, userID uint) (*model.AgentAttachment, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	att, ok := s.rows[id]
 	if !ok || att.UserID != userID {
 		return nil, errors.New("not found or not owned")
@@ -77,11 +84,15 @@ func (s *stubAttachmentStore) GetByIDAndUser(_ context.Context, id uint64, userI
 }
 
 func (s *stubAttachmentStore) Create(_ context.Context, att *model.AgentAttachment) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.rows[att.ID] = att
 	return nil
 }
 
 func (s *stubAttachmentStore) UpdateFallback(_ context.Context, id uint64, fields map[string]interface{}) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	att, ok := s.rows[id]
 	if !ok {
 		return errors.New("not found")
@@ -117,6 +128,12 @@ func (s *stubAttachmentStore) ListPendingFallback(_ context.Context, _ time.Time
 // if available, otherwise we use model keys that the production lookup will resolve
 // to conservative defaults (all inline=false) — which is fine because the test
 // assertions are about routing behaviour, not DB state.
+//
+// TODO(V1.5-follow-up/P2#1): The unit tests cannot cover capability routing path A
+// (inline multimodal) because capability.GetCapabilities requires a DB to seed.
+// A future improvement would expose a SeedTestCapabilities(modelKey, caps) test
+// helper in the capability package (_test.go only) to allow path A coverage
+// without a DB. For now, path A is covered by the task 1.3 dev integration test.
 //
 // For "inline" assertions we use model keys whose conservative default is false
 // but we override the attachment modality so the test can verify the routing logic
@@ -191,7 +208,7 @@ func TestBuildAgentInputForModel_UnknownModel_AllFallback(t *testing.T) {
 	}
 	// The fallback texts should be present.
 	combined := partsText(msg.Content.Parts)
-	if !containsStr(combined, "[图片：") && !containsStr(combined, "[PDF：") {
+	if !strings.Contains(combined, "[图片：") && !strings.Contains(combined, "[PDF：") {
 		t.Errorf("expected fallback text blocks, got parts: %+v", msg.Content.Parts)
 	}
 }
@@ -206,7 +223,7 @@ func TestBuildAgentInputForModel_FallbackReady_True_TextInjected(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	combined := partsText(msgs[0].Content.Parts)
-	if !containsStr(combined, expected) {
+	if !strings.Contains(combined, expected) {
 		t.Errorf("expected fallback text %q in parts, got: %s", expected, combined)
 	}
 }
@@ -231,7 +248,7 @@ func TestBuildAgentInputForModel_FallbackNotReady_Timeout_Placeholder(t *testing
 	}
 	combined := partsText(msgs[0].Content.Parts)
 	// Should inject a placeholder (ComposePendingFallback output).
-	if !containsStr(combined, att.Filename) {
+	if !strings.Contains(combined, att.Filename) {
 		t.Errorf("expected placeholder containing filename %q, got: %s", att.Filename, combined)
 	}
 }
@@ -246,9 +263,11 @@ func TestBuildAgentInputForModel_FallbackBecomesReady_WhilePolling(t *testing.T)
 	// Goroutine sets ready after 200ms.
 	go func() {
 		time.Sleep(200 * time.Millisecond)
+		st.mu.Lock()
 		st.rows[30].FallbackReady = true
 		ready := "[图片：file.jpg，VLM描述完成]"
 		st.rows[30].TextFallback = &ready
+		st.mu.Unlock()
 	}()
 
 	// Give enough timeout (1500ms default would work, but use a 900ms ctx to
@@ -261,10 +280,10 @@ func TestBuildAgentInputForModel_FallbackBecomesReady_WhilePolling(t *testing.T)
 		t.Fatalf("unexpected error: %v", err)
 	}
 	combined := partsText(msgs[0].Content.Parts)
-	if !containsStr(combined, "VLM描述完成") {
+	if !strings.Contains(combined, "VLM描述完成") {
 		// Acceptable: the goroutine may have raced. If the combined text contains
 		// the filename placeholder that's also OK (race with short poll interval).
-		if !containsStr(combined, att.Filename) {
+		if !strings.Contains(combined, att.Filename) {
 			t.Errorf("expected either VLM text or placeholder, got: %s", combined)
 		}
 	}
@@ -279,7 +298,7 @@ func TestBuildAgentInputForModel_NilAttachmentSkipped(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	combined := partsText(msgs[0].Content.Parts)
-	if !containsStr(combined, "[图片：") {
+	if !strings.Contains(combined, "[图片：") {
 		t.Errorf("nil attachments should be skipped, valid one should appear, got: %s", combined)
 	}
 }
@@ -385,7 +404,7 @@ func TestBuildAttachmentReminderSegment_WithFallback(t *testing.T) {
 	if seg == "" {
 		t.Error("expected non-empty reminder segment when fallback attachments present")
 	}
-	if !containsStr(seg, "附件说明") {
+	if !strings.Contains(seg, "附件说明") {
 		t.Errorf("reminder segment should contain 附件说明, got: %q", seg)
 	}
 }
@@ -434,10 +453,10 @@ func TestMessagesToInputString_MultiPart(t *testing.T) {
 		},
 	}
 	got := MessagesToInputString(msgs)
-	if !containsStr(got, "用户问题") {
+	if !strings.Contains(got, "用户问题") {
 		t.Errorf("expected user text in output, got %q", got)
 	}
-	if !containsStr(got, "https://example.com/img.jpg") {
+	if !strings.Contains(got, "https://example.com/img.jpg") {
 		t.Errorf("expected image URL represented in output, got %q", got)
 	}
 }
@@ -520,16 +539,4 @@ func partsText(parts []aiservice.MessagePart) string {
 		}
 	}
 	return s
-}
-
-func containsStr(haystack, needle string) bool {
-	return len(needle) > 0 && len(haystack) >= len(needle) &&
-		func() bool {
-			for i := 0; i <= len(haystack)-len(needle); i++ {
-				if haystack[i:i+len(needle)] == needle {
-					return true
-				}
-			}
-			return false
-		}()
 }

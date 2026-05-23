@@ -140,7 +140,7 @@ func buildAgentInputForModel(
 				// Timeout or ctx cancelled → inject pending placeholder.
 				log.Warnw("buildAgentInputForModel: fallback wait failed, injecting placeholder",
 					"att_id", att.ID, "error", err)
-				text = attachment.ComposePendingFallback(att.Filename)
+				text = pendingFallbackTextFor(att)
 			}
 			parts = append(parts, aiservice.MessagePart{
 				Type: aiservice.MessagePartTypeText,
@@ -168,9 +168,12 @@ func buildAgentInputForModel(
 // Fast path: if att.FallbackReady is already true in the in-memory struct,
 // the DB is not consulted.
 //
-// If FallbackError is set (terminal generation failure), the pre-composed
-// error fallback from TextFallback is returned (non-nil TextFallback is
-// guaranteed by the fallback worker in that case).
+// FallbackError convention: this function does NOT explicitly check
+// FallbackError. When the fallback worker sets a terminal error, it also sets
+// FallbackReady=true and writes a pre-composed error message into TextFallback
+// (e.g. "[图片：file.jpg，处理失败：<reason>]"). So the polling loop exits
+// normally (FallbackReady=true) and textFallbackOf returns the error message
+// as the text. No separate FallbackError branch is needed here.
 //
 // On timeout: returns ("", ErrFallbackTimeout).
 // On ctx cancellation: returns ("", ctx.Err()).
@@ -225,7 +228,30 @@ func textFallbackOf(att *model.AgentAttachment) string {
 		return *att.TextFallback
 	}
 	// Defensive: should not reach here with FallbackReady=true.
-	return attachment.ComposePendingFallback(att.Filename)
+	return pendingFallbackTextFor(att)
+}
+
+// pendingFallbackTextFor composes a user-visible "pending" placeholder for an
+// attachment whose fallback is not yet ready. The prefix is modality-specific
+// so that image/PDF/audio contexts are not confused. This is used by
+// buildAgentInputForModel when waitForFallback times out or the ctx is cancelled.
+//
+// Note: attachment/templates.go ComposePendingFallback always uses "图片" prefix
+// regardless of modality — this function corrects that by switching on att.Modality.
+// We intentionally do NOT modify templates.go (task 1.2 owned file).
+func pendingFallbackTextFor(att *model.AgentAttachment) string {
+	var prefix string
+	switch att.Modality {
+	case attachment.ModalityImage:
+		prefix = "图片"
+	case attachment.ModalityPDF:
+		prefix = "PDF"
+	case attachment.ModalityAudio:
+		prefix = "音频"
+	default:
+		prefix = "附件"
+	}
+	return fmt.Sprintf("[%s：%s，描述生成中，请稍后重试或切换到多模态模型]", prefix, att.Filename)
 }
 
 // ---------------------------------------------------------------------------
@@ -309,11 +335,18 @@ func HasFallbackAttachments(msgs []aiservice.ChatMessage) bool {
 }
 
 // looksLikeFallbackText returns true when text matches a composed fallback
-// block prefix (image / PDF / audio).
+// block prefix (image / PDF / audio / generic attachment).
+//
+// Known limitation: this is a prefix heuristic. Any user message that starts
+// with one of these patterns (e.g., "[图片：some note]") would be detected as
+// a fallback block, causing HasFallbackAttachments to return true spuriously.
+// In practice this is extremely unlikely in Chinese UI chat, but callers should
+// be aware that this is a best-effort heuristic, not a structural check.
 func looksLikeFallbackText(text string) bool {
 	return strings.HasPrefix(text, "[图片：") ||
 		strings.HasPrefix(text, "[PDF：") ||
-		strings.HasPrefix(text, "[音频：")
+		strings.HasPrefix(text, "[音频：") ||
+		strings.HasPrefix(text, "[附件：")
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +376,8 @@ func BuildAttachmentReminderSegment(msgs []aiservice.ChatMessage) string {
 //
 // This is a transitional helper for student_run_lifecycle.go until runner.go
 // (task 1.5) accepts InputMessages []aiservice.ChatMessage natively.
+//
+// TODO(task-1.5): remove once runner.go accepts InputMessages natively.
 //
 // Serialisation strategy:
 //   - Single user message, text-only (no attachments): return text as-is.
