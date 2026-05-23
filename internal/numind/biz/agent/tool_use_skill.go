@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/model"
 )
 
@@ -136,18 +137,22 @@ func SkillBindingsFromCtx(ctx context.Context) ([]model.AgentSkillBinding, bool)
 	return b, ok
 }
 
-// ── useSkillTool skeleton (T02 — Execute 是 stub，T03 替换为完整 Invoke) ────────
+// ── useSkillTool (T03 完整 Invoke) ────────────────────────────────────────
 
 // useSkillTool 实现 FullTool interface（嵌入 BaseTool 用默认行为）。
+//
+// T03 设计简化（vs spec §3.1 11 步）：runner 启动时 batchGet 把所有 binding
+// 的 Skill 缓存到 turn.SkillByName + SkillByID 双 map。useSkillTool 完全
+// 不依赖 skillService / bindingService — 所有 lookup 走 turn state（0 DB
+// 调用）。bound check 隐式（不在 SkillByName 即未装载）。narration emit 由
+// adapter_full_to_eino 在 PreToolCall/PostToolCall 自动按 tool name
+// "use_skill" 查 tool-display.yaml 模板（T04 已加 entry），Execute 内不调。
 type useSkillTool struct {
 	BaseTool
-	// T03 会注入 skillService *artifact.Service / bindingService *artifact.BindingService
-	// T02 阶段只放 stub，Execute 返回 "not implemented yet"
+	// 无依赖字段 — 所有运行时状态走 ctx.UseSkillTurnState
 }
 
-// NewUseSkillTool constructs the use_skill FullTool (T02 skeleton).
-// T03 will replace the signature to accept skillService / bindingService deps;
-// Execute will switch from stub to the full 11-step Invoke logic per spec §3.1.
+// NewUseSkillTool constructs the use_skill FullTool.
 func NewUseSkillTool() FullTool {
 	return &useSkillTool{}
 }
@@ -184,14 +189,128 @@ func (t *useSkillTool) InputSchema() json.RawMessage {
 }`)
 }
 
-// Execute — T02 阶段是 stub；T03 替换为完整 Invoke 逻辑。
-// 当前 stub 永远返回 error tool result（status=error，让 LLM 知道未就绪）。
-func (t *useSkillTool) Execute(_ context.Context, _ ToolInput) (ToolResult, error) {
-	stub := map[string]string{
-		"status": "error",
-		"error":  "use_skill not implemented yet (T02 stub — T03 will replace with full Invoke)",
+// Execute 实现 use_skill 的核心逻辑（spec §3.1，T03 完整实现）。
+//
+// 8 步：
+//  1. JSON unmarshal & validate name
+//  2. 取 ctx 注入的 turn state（runner 维护）
+//  3. cap check（默认 ≤3 次/turn）
+//  4. lookup Skill via turn.SkillByName（runner 缓存，0 DB 调用；不在 map = 未装载或不存在）
+//  5. business validate（IsActive / BodyMd 非空）
+//  6. merge allowed_tools 到 turn-scope set（去重）
+//  7. 写 turn.PendingBody / PendingSkillName / PendingSkillVersion
+//     （runner 在下次 LLM Generate 前消费，包 system-reminder user msg 注入）
+//  8. InvocationCount++ + 返回 acknowledgement JSON
+//
+// 永不返回非 nil error — 所有错误用 tool result 表达让 LLM 优雅恢复。
+// Langfuse span 记录 skill metadata（spec §7）。
+func (t *useSkillTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
+	// 1. JSON unmarshal
+	var p struct {
+		Name string `json:"name"`
 	}
-	out, _ := json.Marshal(stub)
+	if err := json.Unmarshal(input, &p); err != nil {
+		return ToolResult(jsonErr("use_skill 参数解析失败：%s", err.Error())), nil
+	}
+	if p.Name == "" {
+		return ToolResult(jsonErr("name 参数不能为空")), nil
+	}
+
+	// 2. 取 ctx 注入的 turn state
+	turn, ok := UseSkillTurnFromCtx(ctx)
+	if !ok {
+		// runner 未注入 turn state — 本 Agent 没有 binding 走 legacy 路径
+		// use_skill 不应注册到 toolMap，但防御性返回 error tool result
+		return ToolResult(jsonErr("use_skill 未启用（本 Agent 无任何技能装载，请联系配置者）")), nil
+	}
+
+	// Langfuse span 起 — 即使中途错误也记录（spec §7）
+	var traceID, spanID string
+	resultStatus := "loaded"
+	resultError := ""
+	defer func() {
+		if traceID == "" || spanID == "" {
+			return
+		}
+		langfuse.EndSpan(traceID, spanID,
+			langfuse.WithSpanOutput(map[string]any{
+				"status": resultStatus,
+				"error":  resultError,
+			}),
+		)
+	}()
+	if tc := langfuse.FromContext(ctx); tc != nil {
+		traceID = tc.TraceID
+		spanID = langfuse.SpanID()
+		langfuse.CreateSpan(traceID, spanID, "tool.use_skill",
+			langfuse.WithSpanParent(tc.ParentObservationID),
+			langfuse.WithSpanInput(map[string]any{
+				"skill_name":          p.Name,
+				"turn_invocation_pre": turn.InvocationCount,
+				"turn_cap":            turn.Cap,
+			}),
+		)
+	}
+
+	// 3. cap check
+	if turn.InvocationCount >= turn.Cap {
+		resultStatus = "error"
+		resultError = "turn_cap_exceeded"
+		return ToolResult(jsonErr("已达本轮技能调用上限 (%d 次)，本轮无法再调用其他技能", turn.Cap)), nil
+	}
+
+	// 4. lookup via turn.SkillByName (0 DB 调用，由 runner 启动时 batchGet 缓存)
+	sk, found := turn.SkillByName[p.Name]
+	if !found || sk == nil {
+		resultStatus = "error"
+		resultError = "skill_not_bound"
+		return ToolResult(jsonErr("技能 '%s' 不存在或未装载到本 Agent", p.Name)), nil
+	}
+
+	// 5. business validation
+	if !sk.IsActive {
+		resultStatus = "error"
+		resultError = "skill_inactive"
+		return ToolResult(jsonErr("技能 '%s' 已被禁用", p.Name)), nil
+	}
+	if sk.BodyMd == "" {
+		resultStatus = "error"
+		resultError = "skill_body_empty"
+		return ToolResult(jsonErr("技能 '%s' 内容为空，请联系配置者更新", p.Name)), nil
+	}
+
+	// 6. merge allowed_tools 到 turn-scope set
+	var allowedTools []string
+	if len(sk.AllowedTools) > 0 {
+		if err := json.Unmarshal(sk.AllowedTools, &allowedTools); err != nil {
+			// allowed_tools JSON malformed — log via langfuse but continue (空白名单也合法)
+			resultError = "allowed_tools_unmarshal_warn:" + err.Error()
+			allowedTools = nil
+		}
+	}
+	for _, toolName := range allowedTools {
+		turn.AllowedTools[toolName] = struct{}{}
+	}
+
+	// 7. 写 PendingBody — runner 在下次 LLM Generate 前消费
+	turn.PendingBody = sk.BodyMd
+	turn.PendingSkillName = sk.Name
+	turn.PendingSkillVersion = int(sk.Version)
+
+	// 8. count++ + 返回 acknowledgement
+	turn.InvocationCount++
+
+	ack := map[string]any{
+		"status":              "loaded",
+		"skill_name":          sk.Name,
+		"skill_version":       sk.Version,
+		"body_length":         len(sk.BodyMd),
+		"allowed_tools_added": allowedTools,
+		"turn_invocation":     turn.InvocationCount,
+		"turn_cap":            turn.Cap,
+		"message":             fmt.Sprintf("技能 '%s' 已载入对话上下文，请根据技能指引完成任务", sk.Name),
+	}
+	out, _ := json.Marshal(ack)
 	return ToolResult(out), nil
 }
 
