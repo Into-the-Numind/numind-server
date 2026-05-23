@@ -2087,9 +2087,9 @@ features:
   stage: S4
   progress:
     total_tasks: 12
-    completed_tasks: 7
-    reviewed_tasks: 7
-    current_task: 'T7 完成 (commits 7de6f876 + 126cb946 P1 fix). 子任务 A: internal/pkg/errno/skill_marketplace.go 10 个 &Errno{HTTP,Code,Message} (RFC 7231 — 409/422/503/404/403/400 精确语义); 子任务 B: biz/marketplace 9 个 sentinels → errno alias (errors.Is 链兼容); 子任务 C: controller mapBizError 删除 28 行 → 9 callsite 直传 err; 子任务 D: migrations/20260524_130000_register_skill_marketplace_sanitize_profile.sql INSERT IGNORE 注册 task_profile route 到 qwen-turbo. 双 reviewer (Sonnet) 1 P1 + 多 P2 — P1 真 bug: errno.Decode 之前 type switch 不能 unwrap fmt.wrapError → SanitizeUnavailable 生产路径 500 而非 503; 已修 errno.Decode 改 errors.As (项目级修复) + 加 wrap regression 测试 + 清理 stale godoc. T6 reviewer 标的 3 个 P2 (409 vs 400 / mapBizError / sentinel→errno) 全部由 T7 自动修. 85 tests 全 PASS. 下一步：T8 前端 API + Pinia store (切换到 numind-web-v3 worktree).'
+    completed_tasks: 8
+    reviewed_tasks: 8
+    current_task: 'T8 完成 (web-v3 worktree commits c7ed1c5 + 955c2a4 P1 fix). 前端 API + Pinia store + 13 vitest 测试. 双 reviewer (Sonnet) 1 P1 (setRecommended 用 user_token 调 admin endpoint 会运行时 401; spec §1 admin-web 不动) + 多 P2. P1 修：删除 setRecommended export + setItemRecommended action + 相关测试 (web-v3 完全不持有 admin endpoint). P2 修：queryPage 命名对齐 spec §8.1 (双向 alias page) + subscribe/sanitizePreview JSDoc 加 "throws to caller" 警示 + 删除 vi.mock setRecommended entry. 13 tests PASS (新增 queryPage alias 测试). 下一步：T9 前端 4 个 view (Browse / Detail / Subscribed / Publish) + vue-diff 依赖.'
   decisions:
   - 'S0-D1 (parent 2026-05-24, 继承自 #1 D4): v2 三件套 #1+#2+#3 串行交付。本 feature 是 #3，#1 land develop 才能进 S4（依赖 skill 表 + biz/skill.Service.Create 写副本）。'
   - 'S0-D2 (ai 2026-05-24, REVISED post-#1-investigation): 订阅 = 复制副本语义。订阅时刻调 artifact.Service.Create (NOT skill.Service.Create — actual package is biz/skill/artifact) 给订阅方租户新建 skill 行 (source_type=imported_from_marketplace，#1 已预留 ENUM 值无需 ALTER COLUMN)，同时写 skill_subscription 关联。发布方后续编辑原 skill 不影响订阅方副本。'
