@@ -18,6 +18,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"numind-server/internal/numind/biz/aiservice_admin"
+	"numind-server/internal/pkg/aiservice/capability"
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
@@ -327,6 +328,9 @@ func (ctrl *AIServiceController) UpdateService(c *gin.Context) {
 		svc.IsActive = *req.IsActive
 	}
 
+	// Capture whether capability_json was part of this update (before merge).
+	capabilityUpdated := req.CapabilityJSON != nil
+
 	actorID, actorName := actorFromContext(c)
 	if bizErr = ctrl.biz.UpdateService(c.Request.Context(), &svc, actorID, actorName); bizErr != nil {
 		if isErrno(bizErr) {
@@ -336,6 +340,15 @@ func (ctrl *AIServiceController) UpdateService(c *gin.Context) {
 		log.C(c).Errorw("Failed to update AI service", "id", id, "error", bizErr)
 		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("更新失败，请稍后重试"), nil)
 		return
+	}
+
+	// Invalidate the capability cache for this model so that downstream callers
+	// (buildAgentInput, tool gating, etc.) see the updated capability immediately
+	// rather than waiting for the 5-minute TTL to expire.
+	if capabilityUpdated {
+		capability.InvalidateCache(svc.ModelKey)
+		log.C(c).Infow("Invalidated capability cache after admin update",
+			"model_key", svc.ModelKey)
 	}
 
 	core.WriteResponse(c, nil, nil)
