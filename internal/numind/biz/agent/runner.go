@@ -460,6 +460,22 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		modelName:    "",
 		taskID:       profile.AgentRun,
 		systemPrompt: req.SystemPrompt, // #7 memory-system: assembled by Step 4 6-segment formula (PlatformBase + tenantRules + body + disclaimer + memory + tools + Footer)
+		// usageStore intentionally nil here (pre-existing legacy state — budgetgate
+		// A8b silently degrades to "no usage data"; fixing is out of scope for this
+		// task. See aiserviceAdapter.LookupUsage nil-guard.)
+	}
+	// V1.5 v2-compact-adapter-integration — V2 compact 接入 Eino per-ReAct-round
+	// LLM 调用层。useCompactV2 true 时注入 compactor；nil → adapter.Generate 中所有
+	// V2 逻辑跳过，行为完全等同集成前（防御性 nil-check 在 adapter.Generate 内部）。
+	//
+	// contextWindow 取 run 冻结的 V2 限值，无值时用 adapterCompactor 自身的 32K 兜底
+	// （待板块 1 capability matrix 落地后改为按 modelKey 查真值）。
+	if useCompactV2 {
+		ctxWindow := defaultContextWindowLimitV2
+		if run.ContextWindowLimitV2 != nil && *run.ContextWindowLimitV2 > 0 {
+			ctxWindow = *run.ContextWindowLimitV2
+		}
+		einoAdapter.compactor = newAdapterCompactor(ctxWindow)
 	}
 	// Backward compat: if no tools resolved (test scenarios with nil registry or
 	// empty ToolNames), preserve the pre-#14 short-circuit. Real production runs
