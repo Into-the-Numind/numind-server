@@ -15,6 +15,25 @@ import (
 	"numind-server/internal/pkg/model"
 )
 
+// Digest is the spec §2 contract type for a single granularity-scoped activity
+// digest for one user. V1.5 InjectDigests builds <temporal_context> blocks
+// directly from the underlying model rows (UserMemoryDigestDaily / Weekly /
+// Monthly / Quarterly) without going through this type — Digest is the
+// abstraction documented in the spec for the future DigestGenerator API and
+// V2 admin surfaces (raw digest export, cross-granularity timeline UI).
+//
+// Keeping this type defined preserves spec contract compliance and gives
+// downstream consumers (V2 admin / reporting / data warehouse export) a
+// granularity-agnostic shape to depend on without reaching into the per-table
+// GORM models.
+type Digest struct {
+	UserID    uint
+	Gran      Granularity
+	Label     string   // human-readable period label, e.g. "昨日(2026-05-22)" / "上周(W21)"
+	Summary   string   // generated summary text
+	KeyTopics []string // optional extracted topics
+}
+
 // TemporalService is the Task 3.8 user-turn-side temporal digest injector.
 //
 // Lifecycle: stateless service constructed once at startup; no Start/Stop.

@@ -65,9 +65,14 @@ type IMemoryDigestStore interface {
 	GetUsersActiveInRange(ctx context.Context, from, to time.Time) ([]uint, error)
 
 	// ListAgentRunsByUserDateRange 返回某 user 在 [from, to) (start-inclusive,
-	// end-exclusive) 时间窗口内的 agent_run 列表 (按 started_at ASC).
-	// 用于 daily digest 阶段 2: 取昨日所有 agent_run 喂给 LLM 总结.
+	// end-exclusive) 时间窗口内**已完成 (status='terminated')** 的 agent_run 列表
+	// (按 started_at ASC).
+	// 用于 daily digest 阶段 2: 取昨日所有已完成 agent_run 喂给 LLM 总结.
 	// 限制: 单 user 单日 ≤ 200 个 run (超过 truncate, 防 pathological 用户).
+	//
+	// 仅返回 status='terminated' 的 run (spec §Daily-digest-输入构造):
+	// 未完成的 running / cancelled / failed 状态 run 不应进入 daily digest, 否则
+	// summary 会基于不完整对话 (例如 mid-stream 中断的 message 列表).
 	ListAgentRunsByUserDateRange(ctx context.Context, userID uint, from, to time.Time) ([]*model.AgentRun, error)
 }
 
@@ -321,7 +326,11 @@ func (s *memoryDigestStore) ListAgentRunsByUserDateRange(ctx context.Context, us
 	var runs []*model.AgentRun
 	if err := s.db.WithContext(ctx).
 		Model(&model.AgentRun{}).
-		Where("user_id = ? AND started_at >= ? AND started_at < ?", userID, from, to).
+		// status='terminated' filter: spec §Daily-digest-输入构造 requires only
+		// completed runs feed the daily summary. Aligns with the canonical
+		// terminal status string used throughout biz/agent/runner.go.
+		Where("user_id = ? AND status = ? AND started_at >= ? AND started_at < ?",
+			userID, "terminated", from, to).
 		Order("started_at ASC").
 		Limit(digestMaxRunsPerUserPerDay).
 		Find(&runs).Error; err != nil {

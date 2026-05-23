@@ -85,25 +85,27 @@ type timeKW struct {
 // (no whitespace splitting needed). Regex uses `|` alternation — the
 // longest-match heuristic is not needed since each keyword is short and
 // non-overlapping.
+// Note: English alternatives use the `(?i)` flag so "Today" / "TODAY" / "Q1" /
+// "q1" all match. Chinese characters are case-insensitive by definition.
 var timeKWs = []timeKW{
 	// daily
-	{regexp.MustCompile(`今天|今日|today`), GranDaily, 0, "今日"},
-	{regexp.MustCompile(`昨天|昨日|yesterday`), GranDaily, -1, "昨日"},
-	{regexp.MustCompile(`前天|day before yesterday`), GranDaily, -2, "前日"},
+	{regexp.MustCompile(`(?i)今天|今日|today`), GranDaily, 0, "今日"},
+	{regexp.MustCompile(`(?i)昨天|昨日|yesterday`), GranDaily, -1, "昨日"},
+	{regexp.MustCompile(`(?i)前天|day before yesterday`), GranDaily, -2, "前日"},
 	// weekly
-	{regexp.MustCompile(`本周|这周|this week|本礼拜`), GranWeekly, 0, "本周"},
-	{regexp.MustCompile(`上周|上礼拜|last week|过去一周`), GranWeekly, -1, "上周"},
+	{regexp.MustCompile(`(?i)本周|这周|this week|本礼拜`), GranWeekly, 0, "本周"},
+	{regexp.MustCompile(`(?i)上周|上礼拜|last week|过去一周`), GranWeekly, -1, "上周"},
 	// monthly
-	{regexp.MustCompile(`本月|这个月|当月|this month`), GranMonthly, 0, "本月"},
-	{regexp.MustCompile(`上月|上个月|last month`), GranMonthly, -1, "上月"},
+	{regexp.MustCompile(`(?i)本月|这个月|当月|this month`), GranMonthly, 0, "本月"},
+	{regexp.MustCompile(`(?i)上月|上个月|last month`), GranMonthly, -1, "上月"},
 	// quarterly
-	{regexp.MustCompile(`本季度|这季度|当季|this quarter`), GranQuarterly, 0, "本季度"},
-	{regexp.MustCompile(`上季度|上一季|last quarter`), GranQuarterly, -1, "上季度"},
+	{regexp.MustCompile(`(?i)本季度|这季度|当季|this quarter`), GranQuarterly, 0, "本季度"},
+	{regexp.MustCompile(`(?i)上季度|上一季|last quarter`), GranQuarterly, -1, "上季度"},
 	// quarterly absolute (offset=-99 triggers "past 4 quarters, most recent match")
-	{regexp.MustCompile(`Q1|第一季度`), GranQuarterly, timeKWOffsetAbsoluteQuarter, "Q1"},
-	{regexp.MustCompile(`Q2|第二季度`), GranQuarterly, timeKWOffsetAbsoluteQuarter, "Q2"},
-	{regexp.MustCompile(`Q3|第三季度`), GranQuarterly, timeKWOffsetAbsoluteQuarter, "Q3"},
-	{regexp.MustCompile(`Q4|第四季度`), GranQuarterly, timeKWOffsetAbsoluteQuarter, "Q4"},
+	{regexp.MustCompile(`(?i)Q1|第一季度`), GranQuarterly, timeKWOffsetAbsoluteQuarter, "Q1"},
+	{regexp.MustCompile(`(?i)Q2|第二季度`), GranQuarterly, timeKWOffsetAbsoluteQuarter, "Q2"},
+	{regexp.MustCompile(`(?i)Q3|第三季度`), GranQuarterly, timeKWOffsetAbsoluteQuarter, "Q3"},
+	{regexp.MustCompile(`(?i)Q4|第四季度`), GranQuarterly, timeKWOffsetAbsoluteQuarter, "Q4"},
 }
 
 // TimeKeywordMatch is a resolved match — keyword pattern hit, but the actual

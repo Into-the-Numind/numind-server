@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // ─── Keyword match table ─────────────────────────────────────────────────────
@@ -85,6 +86,37 @@ func TestMatchTimeKeywords_DedupSameGranOffset(t *testing.T) {
 	if assert.Len(t, hits, 1) {
 		assert.Equal(t, GranDaily, hits[0].Gran)
 		assert.Equal(t, 0, hits[0].Offset)
+	}
+}
+
+// TestMatchTimeKeywords_EnglishCaseInsensitive verifies "Today" / "TODAY" /
+// "q1" / "Q1" all match (regex uses (?i)). Chinese characters are case-
+// insensitive by definition; this guard is specifically for the English
+// alternatives — without (?i) "Today" would silently miss.
+func TestMatchTimeKeywords_EnglishCaseInsensitive(t *testing.T) {
+	cases := []struct {
+		input    string
+		wantGran Granularity
+		wantOff  int
+	}{
+		{"What about Today's plan?", GranDaily, 0},
+		{"TODAY recap please", GranDaily, 0},
+		{"Yesterday's call notes", GranDaily, -1},
+		{"YESTERDAY summary", GranDaily, -1},
+		{"This Week status", GranWeekly, 0},
+		{"LAST WEEK customers", GranWeekly, -1},
+		{"q1 numbers", GranQuarterly, timeKWOffsetAbsoluteQuarter},
+		{"Q1 numbers", GranQuarterly, timeKWOffsetAbsoluteQuarter},
+		{"q3 vs Q3", GranQuarterly, timeKWOffsetAbsoluteQuarter}, // dedup → 1 hit
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.input, func(t *testing.T) {
+			hits := MatchTimeKeywords(c.input)
+			require.NotEmpty(t, hits, "expected ≥1 hit for %q (case-insensitive match)", c.input)
+			assert.Equal(t, c.wantGran, hits[0].Gran)
+			assert.Equal(t, c.wantOff, hits[0].Offset)
+		})
 	}
 }
 

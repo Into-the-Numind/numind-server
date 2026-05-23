@@ -182,6 +182,44 @@ func TestGenerateDaily_NoActivity_StillReturnsDigest(t *testing.T) {
 	assert.Contains(t, d.Summary, "无 substantive")
 }
 
+// TestGenerateDaily_OnlyTerminatedRunsCounted verifies the spec
+// §Daily-digest-输入构造 rule: only status='terminated' runs contribute to the
+// digest. running / cancelled / failed runs in the window are excluded so the
+// summary doesn't see incomplete conversation threads.
+func TestGenerateDaily_OnlyTerminatedRunsCounted(t *testing.T) {
+	digestStore, factStore, _, db := newDigestTestStores(t)
+	ctx := context.Background()
+	loc := shanghaiLoc
+	const uid uint = 1099
+	day := time.Date(2026, 5, 22, 10, 0, 0, 0, loc)
+
+	// 1 terminated run (should count).
+	seedAgentRun(t, db, uid, "sess-done", day)
+	// 1 running + 1 cancelled in same window (should NOT count).
+	for _, st := range []string{"running", "cancelled"} {
+		msgs := []map[string]any{{"role": "user", "content": "wip"}}
+		raw, _ := json.Marshal(msgs)
+		require.NoError(t, db.Create(&model.AgentRun{
+			UserID:    uid,
+			SessionID: "sess-" + st,
+			Status:    st,
+			Messages:  datatypes.JSON(raw),
+			StartedAt: day.Add(1 * time.Hour),
+		}).Error)
+	}
+
+	mc := newMockDigestChat(func(_ int, _ aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
+		return &aiservice.ChatResponse{Content: validDigestJSON, Model: "mock"}, nil
+	})
+	gen := NewDigestGenerator(digestStore, factStore, DefaultDigestConfig(), WithDigestChatFn(mc.fn()))
+
+	d, err := gen.GenerateDaily(ctx, uid, day)
+	require.NoError(t, err)
+	require.NotNil(t, d)
+	assert.Equal(t, 1, d.SessionCount, "only the 1 terminated session counts")
+	assert.Equal(t, 2, d.MessageCount, "only the terminated run's 2 messages counted (1-msg WIPs excluded)")
+}
+
 // ─── GenerateWeekly aggregates from daily ─────────────────────────────────────
 
 func TestGenerateWeekly_AggregatesFromDaily(t *testing.T) {

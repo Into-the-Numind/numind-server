@@ -214,9 +214,9 @@ func (g *digestGenerator) GenerateDaily(ctx context.Context, userID uint, date t
 	messageCount := countMessages(runs)
 	factsCount := 0
 	if g.factStore != nil {
-		// Best-effort: count facts created in the window (use source_extracted_at).
-		// We compute via fact list + filter to avoid adding a dedicated CountByRange
-		// method to the store interface for this single use.
+		// DB-side date filter via dedicated count method — pushes the date
+		// predicate to the index instead of fetching up-to-1000 rows per user
+		// and filtering client-side (P2 follow-up, scales to 10K active users).
 		factsCount = countFactsInWindow(ctx, g.factStore, userID, start, end)
 	}
 
@@ -516,25 +516,15 @@ func countMessages(runs []*model.AgentRun) int {
 	return total
 }
 
-// countFactsInWindow lists facts for the user in the window and returns the
-// count. Best-effort: store errors return 0. Uses a single List call with a
-// large limit (1000) since fact creation rate per user per day is bounded by
-// extractor cadence (≤ few dozen).
+// countFactsInWindow counts facts whose source_extracted_at falls in [from, to)
+// for the given user. Pushes the date predicate to the DB index (vs. fetching
+// up-to-1000 rows then client-side filtering). Best-effort: store errors return 0.
 func countFactsInWindow(ctx context.Context, factStore store.IUserMemoryFactStore, userID uint, from, to time.Time) int {
-	facts, err := factStore.List(ctx, userID, store.ListFactOpts{
-		OrderBy: "recency",
-		Limit:   1000,
-	})
+	n, err := factStore.CountFactsByUserInRange(ctx, userID, from, to)
 	if err != nil {
 		return 0
 	}
-	count := 0
-	for _, f := range facts {
-		if !f.SourceExtractedAt.Before(from) && f.SourceExtractedAt.Before(to) {
-			count++
-		}
-	}
-	return count
+	return int(n)
 }
 
 // isoWeekStart returns the Monday 00:00:00 (Asia/Shanghai) of the given ISO

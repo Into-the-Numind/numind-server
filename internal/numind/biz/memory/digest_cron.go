@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -112,12 +113,36 @@ func LoadDigestCronConfigFromViper(v digestCronViperGetter) DigestCronConfig {
 
 // ─── digestCron implementation ───────────────────────────────────────────────
 
-// redisClient is the minimal Redis surface we use (Set NX + Get + Del).
+// redisClient is the minimal Redis surface we use (SetNX + Del + Eval).
 // Decoupled from *redis.Client so tests can use miniredis or a stub.
+//
+// Eval is required for the compare-and-delete (CAS) lock release path —
+// see releaseLockCASScript and acquireLock for why a plain Del is unsafe
+// when the lock TTL has expired and another instance has acquired the lock.
 type redisClient interface {
 	SetNX(ctx context.Context, key string, value any, ttl time.Duration) *redis.BoolCmd
 	Del(ctx context.Context, keys ...string) *redis.IntCmd
+	Eval(ctx context.Context, script string, keys []string, args ...interface{}) *redis.Cmd
 }
+
+// releaseLockCASScript is a Lua compare-and-delete: only delete the key when
+// its current value matches the caller's expected instance ID. Returns 1 on
+// successful delete, 0 when the key has a different owner (or has expired).
+//
+// Without this CAS check, an unlucky timing window can occur:
+//  1. Instance A acquires lock, but its run runs longer than LockTTL.
+//  2. Lock expires → instance B acquires it (same key, new value).
+//  3. Instance A finishes and calls Del → would delete B's lock.
+//
+// The CAS check eliminates that race. The TTL still serves as the safety net
+// for crash / panic paths that bypass the release defer.
+const releaseLockCASScript = `
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("DEL", KEYS[1])
+else
+    return 0
+end
+`
 
 // digestCron is the production DigestCron implementation.
 type digestCron struct {
@@ -181,10 +206,12 @@ func NewDigestCron(
 	return c
 }
 
-// defaultInstanceID returns a process-unique identifier. Uses pid + start time
-// (avoids dependency on os.Hostname which can fail in containers).
+// defaultInstanceID returns a process-unique identifier. Uses pid + a single
+// nanosecond timestamp (avoids dependency on os.Hostname which can fail in
+// containers). The pid+timestamp pair is unique across container restarts and
+// across replicas on the same host.
 func defaultInstanceID() string {
-	return fmt.Sprintf("pid-%d-%d", time.Now().UnixNano(), time.Now().Unix()%100000)
+	return fmt.Sprintf("pid-%d-%d", os.Getpid(), time.Now().UnixNano())
 }
 
 // ─── RunDailyDigest ──────────────────────────────────────────────────────────
@@ -430,8 +457,10 @@ func (c *digestCron) runOne(
 // releaseFn). When rdb is nil (single-instance mode), always returns
 // (true, no-op release).
 //
-// Lock value = c.instanceID; we DEL only when our own instance ID still holds
-// the key (best-effort via re-check; not atomic — TTL is the real safety net).
+// Lock value = c.instanceID; on release we use a Lua compare-and-delete
+// (see releaseLockCASScript) so we never accidentally delete a lock that
+// has expired and been re-acquired by another instance. TTL still backstops
+// crash / panic paths that bypass the release defer entirely.
 func (c *digestCron) acquireLock(ctx context.Context, key string) (bool, func()) {
 	if c.rdb == nil {
 		return true, func() {}
@@ -448,11 +477,20 @@ func (c *digestCron) acquireLock(ctx context.Context, key string) (bool, func())
 		return false, func() {}
 	}
 	release := func() {
-		// Best-effort delete on completion. TTL is the safety net for crash /
-		// panic paths that bypass this defer.
-		if _, derr := c.rdb.Del(ctx, key).Result(); derr != nil {
-			log.Warnw("memory.digest cron lock DEL failed; relying on TTL",
+		// CAS delete: only delete when our instance still owns the lock.
+		// Eliminates the "lock expired → another instance acquired → we deleted
+		// their lock" race. TTL is the safety net for crash / panic paths.
+		res, derr := c.rdb.Eval(ctx, releaseLockCASScript, []string{key}, c.instanceID).Result()
+		if derr != nil {
+			log.Warnw("memory.digest cron lock CAS release failed; relying on TTL",
 				"lock_key", key, "error", derr)
+			return
+		}
+		// Eval returns int64(0) when the key was not deleted (owner mismatch /
+		// already expired). Not an error — just an audit signal.
+		if n, _ := res.(int64); n != 1 {
+			log.Warnw("memory.digest cron lock not released by CAS — already expired or owned by another instance",
+				"lock_key", key, "result", res)
 		}
 	}
 	return true, release

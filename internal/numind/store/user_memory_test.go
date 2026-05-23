@@ -686,3 +686,48 @@ func TestUserMemory_Archive_Idempotent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, p.TotalFacts, "second archive must NOT decrement again (idempotent)")
 }
+
+// ─── Case 13: CountFactsByUserInRange (Task 3.8 daily digest) ────────────────
+
+// TestUserMemory_CountFactsByUserInRange verifies the date-windowed count
+// excludes facts outside the window, archived facts, and other users' facts.
+// Used by daily digest to compute extracted_facts_count efficiently
+// (DB-side filter, no List+client-side scan).
+func TestUserMemory_CountFactsByUserInRange(t *testing.T) {
+	_, fs, db := newTestUserMemoryStores(t)
+	ctx := context.Background()
+
+	base := time.Date(2026, 5, 22, 0, 0, 0, 0, time.UTC)
+
+	// Seed 4 alive facts for user 50 at well-spaced timestamps so each lives in
+	// a distinct hour bucket — easy to verify range slicing.
+	mkFact := func(uuid string, userID uint, at time.Time, archived bool) {
+		f := sampleFact(userID, uuid, "content", "knowledge", 0.85)
+		f.SourceExtractedAt = at
+		f.IsArchived = archived
+		// Bypass Create to set IsArchived directly (Create defaults to false).
+		require.NoError(t, db.Create(f).Error)
+	}
+	mkFact("u50-08", 50, base.Add(8*time.Hour), false)   // 08:00 — in window
+	mkFact("u50-10", 50, base.Add(10*time.Hour), false)  // 10:00 — in window
+	mkFact("u50-22", 50, base.Add(22*time.Hour), false)  // 22:00 — in window
+	mkFact("u50-arc", 50, base.Add(11*time.Hour), true)  // 11:00 — archived (excluded)
+	mkFact("u51-09", 51, base.Add(9*time.Hour), false)   // wrong user (excluded)
+	mkFact("u50-pre", 50, base.Add(-1*time.Hour), false) // before window
+	mkFact("u50-pst", 50, base.Add(25*time.Hour), false) // after window
+
+	// Window: full target day [base, base+24h).
+	n, err := fs.CountFactsByUserInRange(ctx, 50, base, base.Add(24*time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), n, "3 alive in-window facts for user 50")
+
+	// Narrower window: [base+9h, base+12h) → only the 10:00 fact (08:00 below, 11:00 archived, 22:00 above).
+	n, err = fs.CountFactsByUserInRange(ctx, 50, base.Add(9*time.Hour), base.Add(12*time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n, "only u50-10 falls in [09:00, 12:00)")
+
+	// User without facts → 0.
+	n, err = fs.CountFactsByUserInRange(ctx, 99, base, base.Add(24*time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), n)
+}

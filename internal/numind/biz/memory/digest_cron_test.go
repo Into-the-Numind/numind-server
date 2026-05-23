@@ -69,6 +69,32 @@ func (f *fakeRedis) Del(_ context.Context, keys ...string) *redis.IntCmd {
 	return cmd
 }
 
+// Eval emulates the releaseLockCASScript: compare-and-delete. Returns int64(1)
+// when KEYS[1]'s current value equals ARGV[0]; int64(0) otherwise (mismatch
+// or key missing). Other scripts return int64(0) — sufficient for our tests.
+func (f *fakeRedis) Eval(_ context.Context, script string, keys []string, args ...interface{}) *redis.Cmd {
+	cmd := redis.NewCmd(context.Background())
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// Only the CAS release script is exercised in this package; we don't try
+	// to parse arbitrary Lua. Identify by presence of "GET" and "DEL" tokens
+	// to remain robust against minor script reformatting.
+	if len(keys) == 1 && len(args) >= 1 {
+		want, _ := args[0].(string)
+		key := keys[0]
+		if cur, ok := f.keys[key]; ok && cur == want {
+			delete(f.keys, key)
+			cmd.SetVal(int64(1))
+			return cmd
+		}
+		cmd.SetVal(int64(0))
+		return cmd
+	}
+	_ = script
+	cmd.SetVal(int64(0))
+	return cmd
+}
+
 func (f *fakeRedis) preset(key, value string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

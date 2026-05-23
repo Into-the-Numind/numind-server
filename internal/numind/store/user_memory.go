@@ -83,6 +83,11 @@ type IUserMemoryFactStore interface {
 	BulkArchiveByConfidence(ctx context.Context, userID uint, threshold float64) (int, error)
 	// CountByUser 统计某用户 fact 数；includeArchived=false 时仅计 alive。
 	CountByUser(ctx context.Context, userID uint, includeArchived bool) (int, error)
+	// CountFactsByUserInRange 统计某用户在 [from, to) 时间窗口内 (按 source_extracted_at
+	// 过滤) 的 alive fact 数。供 daily digest 用 — 在 DB 层做 date filter 避免每用户
+	// 拉取全部 fact 后再 client-side filter (Task 3.8 P2 优化, 10K user × 1000 facts
+	// 的 IO 成本不可接受).
+	CountFactsByUserInRange(ctx context.Context, userID uint, from, to time.Time) (int64, error)
 	// FindByEmbedHash 按 (user_id, embedding_hash) 查重（dedup 用）；
 	// 不存在返回 gorm.ErrRecordNotFound。仅查 alive 行。
 	FindByEmbedHash(ctx context.Context, userID uint, hash string) (*model.UserMemoryFact, error)
@@ -514,6 +519,23 @@ func (s *userMemoryFactStore) CountByUser(ctx context.Context, userID uint, incl
 		return 0, fmt.Errorf("userMemoryFactStore.CountByUser(userID=%d): %w", userID, err)
 	}
 	return int(count), nil
+}
+
+// CountFactsByUserInRange 统计 [from, to) (start-inclusive, end-exclusive) 内
+// source_extracted_at 落入的 alive fact 数. is_archived=true 行不计入.
+// 在 DB 层利用 idx_user_extracted_at 索引 (若存在) 做 range count, 避免 List+
+// client-side filter 在大用户基 (10K+) 下的 IO 浪费.
+func (s *userMemoryFactStore) CountFactsByUserInRange(ctx context.Context, userID uint, from, to time.Time) (int64, error) {
+	var count int64
+	if err := s.db.WithContext(ctx).
+		Model(&model.UserMemoryFact{}).
+		Where("user_id = ? AND source_extracted_at >= ? AND source_extracted_at < ? AND is_archived = ?",
+			userID, from, to, false).
+		Count(&count).Error; err != nil {
+		return 0, fmt.Errorf("userMemoryFactStore.CountFactsByUserInRange(userID=%d, %s..%s): %w",
+			userID, from.Format(time.RFC3339), to.Format(time.RFC3339), err)
+	}
+	return count, nil
 }
 
 // FindByEmbedHash 按 (user_id, embedding_hash) 查重；仅查 alive。
