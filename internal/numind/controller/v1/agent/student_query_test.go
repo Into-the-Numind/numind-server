@@ -75,7 +75,12 @@ func newCtrlTestDB(t *testing.T) *gorm.DB {
 			pending_question_json     TEXT,
 			pending_question_at       DATETIME,
 			created_at                DATETIME,
-			updated_at                DATETIME
+			updated_at                DATETIME,
+			-- V1.5 板块 2 task 2.1 — context-management V2 columns
+			compact_state_v2          TEXT,
+			total_tokens_used_v2      INTEGER NOT NULL DEFAULT 0,
+			use_compact_v2            INTEGER NOT NULL DEFAULT 0,
+			context_window_limit_v2   INTEGER
 		)`).Error)
 	require.NoError(t, db.AutoMigrate(
 		&model.AgentDefinition{},

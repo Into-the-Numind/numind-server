@@ -49,6 +49,9 @@ type IStore interface {
 	AgentSessionMemories() IAgentSessionMemoryStore // #7 memory-system L1 短期记忆
 	UserGlobalMemories() IUserGlobalMemoryStore     // #7 memory-system L2 长期记忆 Notepad
 	Compliance() IComplianceStore                   // #13 agent-mode-compliance-3layer
+	// V1.5 板块 2 task 2.1（context-management V2）— 平行重做，V1 IAgentRunStore 不动
+	CompactV2() IAgentCompactV2Store
+	ToolArtifact() IAgentToolArtifactStore
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -236,4 +239,16 @@ func (ds *datastore) UserGlobalMemories() IUserGlobalMemoryStore {
 // Compliance 返回一个实现了 IComplianceStore 接口的实例（#13 agent-mode-compliance-3layer）。
 func (ds *datastore) Compliance() IComplianceStore {
 	return newCompliance(ds.db)
+}
+
+// CompactV2 返回 IAgentCompactV2Store 实现（V1.5 板块 2 task 2.1 — context-management V2）。
+// 平行重做：V1 `AgentRuns()` 完全保留不动，本方法只读写 *_v2 列。
+func (ds *datastore) CompactV2() IAgentCompactV2Store {
+	return newAgentCompactV2Store(ds.db)
+}
+
+// ToolArtifact 返回 IAgentToolArtifactStore 实现（V1.5 板块 2 task 2.1）。
+// task 2.2 起会被 L0 tool result 写盘代码使用。
+func (ds *datastore) ToolArtifact() IAgentToolArtifactStore {
+	return newAgentToolArtifactStore(ds.db)
 }
