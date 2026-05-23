@@ -2021,10 +2021,10 @@ features:
   ndf_version: '3.0'
   description: 'Agent Mode v2 第 1 个 feature（v2 三件套之首）— 把 Skill 从 agent_definition 嵌入字段升级为独立资产（markdown + frontmatter 文件型）。终态见父账户 2026-05-24 对话："agent 是 agent 有自己的提示词约束和 harness 约束，skills 是可以被单独管理、编写的技能型文件，可以被 agent 调用"。本 feature 范围：(1) 新增 skill / skill_history / agent_skill_binding 3 张表 + agent_definition.generated_skill_body/custom_skill_body/tool_flags 标 deprecated 不删；(2) biz/skill/artifact 子包（5 文件 service/binding/frontmatter/versioning/store）；(3) /v1/skills/* 8 端点 + /v1/agents/:id/skills/* 3 端点；(4) 数据迁移走 Go CLI（cmd/numind migrate-skill-from-agent）避免 SQL JOIN race；(5) 前端 numind-web-v3 新增 /config/skills/* 5 个 view + Agent 编辑器加 "已装载 Skill" 区块。Out of scope: runtime 改造（use_skill tool）→ v2 #2；marketplace → v2 #3；Skill scripts 子目录 → v2.5；prod 部署；admin-web 改动。'
   track: standard
-  stage: S4
+  stage: S6-dev-deploying
   classification_reason: 'Standard 5 条多条触发 — (1) DB schema 变更：是（3 张新表 + Go CLI 数据迁移） (2) 新增 API 端点：是（11 个新端点） (3) 新外部服务集成：否 (4) 影响文件数 >>3（biz/skill/artifact 5 文件 + cmd/numind + controller + router + model + 2 migration + 前端 5 view + store + api + 编辑器 spike + 单测 + e2e） (5) 高风险业务逻辑：是（数据迁移影响所有现有 Agent）。1+2+4+5 触发 Standard 强制。'
-  last_updated_by: ai-s4-impl
-  last_updated_at: '2026-05-24T01:00:00+08:00'
+  last_updated_by: ai-s6-dev-deploy
+  last_updated_at: '2026-05-24T03:00:00+08:00'
   repos:
   - numind-server
   - numind-web-v3
@@ -2041,9 +2041,9 @@ features:
     plan: numind-server/docs/superpowers/plans/2026-05-24-agent-mode-v2-skill-as-artifact-plan.md
   progress:
     total_tasks: 18
-    completed_tasks: 0
-    reviewed_tasks: 0
-    current_task: 'S4 启动：开始 W1 T01 model + AutoMigrate + migration DDL'
+    completed_tasks: 14
+    reviewed_tasks: 14
+    current_task: 'S6 dev 部署进行中。S4 完成 T01-T14（10 backend commits + 6 frontend commits）：T01 model+DDL → T02 frontmatter+fuzz → T08 errno → T03-T05 biz service/versioning/binding → T06 migrate CLI → T07 controller+router → T09-T13 frontend api/store/views/components → T14 router+menu. W2/W3 reviewer PASS（W3 P1-4 修复后 24b44ed2 Service delegate methods）。Deferred 到 follow-up micro: T15 E2E specs（AC-1/3/6/7/8/9/10 长期回归保护）+ T16 测试覆盖率聚合 + T17/T18 acceptance 文档。已 ndf-done merge develop 80667115（numind-server）+ ae35722（numind-web-v3），origin/develop 已 push。剩 1 步: dev 部署完后 SSH 跑 `numind migrate-skill-from-agent`。'
   decisions:
   - 'S0-D1 (parent 2026-05-24): 终态 = Claude Code 风格 Skill 模型。Skill 是独立 markdown 文件资产，Agent 是 harness，Agent 通过 LLM tool-call use_skill(name) 按需调用 Skill。不引入路由层（蓝本 v2 Multi-Skill 路由方案被本设计吸收消失）。'
   - 'S0-D2 (parent 2026-05-24): 调用机制 = LLM tool-call use_skill(name)。Skill list 仅 name+desc 注入 system prompt，懒加载 body。本 feature 只做数据资产，runtime 改造在 v2 #2。'
