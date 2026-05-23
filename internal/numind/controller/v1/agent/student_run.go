@@ -4,24 +4,28 @@
 package agent
 
 import (
+	"errors"
 	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/agent"
 	"numind-server/internal/numind/biz/attachment"
 	"numind-server/internal/numind/biz/narration"
+	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/middleware"
 )
 
-// StudentRunController handles the 6 learner-facing run lifecycle endpoints.
+// StudentRunController handles the learner-facing run lifecycle and attachment endpoints.
 type StudentRunController struct {
 	runSvc    *agent.StudentRunService
 	attachSvc *attachment.UploadService
+	attStore  store.IAgentAttachmentStore // for GetAttachmentStatus (V1.5 task 1.2)
 }
 
 // NewStudentRunController constructs a StudentRunController from IBiz.
@@ -32,11 +36,21 @@ func NewStudentRunController(b biz.IBiz) *StudentRunController {
 	}
 }
 
+// NewStudentRunControllerWithStore constructs a StudentRunController with access
+// to the agent_attachment store for the GetAttachmentStatus handler (V1.5 task 1.2).
+func NewStudentRunControllerWithStore(b biz.IBiz, attStore store.IAgentAttachmentStore) *StudentRunController {
+	return &StudentRunController{
+		runSvc:    b.StudentRun(),
+		attachSvc: b.Attachment(),
+		attStore:  attStore,
+	}
+}
+
 // RegisterStudentRunRoutes registers all learner-facing endpoints on authGroup.
 // Must be called AFTER all other agentcontroller route registrations to avoid
 // path conflicts with the /agent-runs prefix.
-func RegisterStudentRunRoutes(authGroup *gin.RouterGroup, b biz.IBiz) {
-	c := NewStudentRunController(b)
+func RegisterStudentRunRoutes(authGroup *gin.RouterGroup, b biz.IBiz, attStore store.IAgentAttachmentStore) {
+	c := NewStudentRunControllerWithStore(b, attStore)
 	authGroup.POST("/agent-runs/estimate", c.Estimate)
 	authGroup.POST("/agent-runs", c.Create)
 	authGroup.GET("/agent-runs/:id/narration", c.PollNarration)
@@ -45,6 +59,8 @@ func RegisterStudentRunRoutes(authGroup *gin.RouterGroup, b biz.IBiz) {
 	// T4 ask_user_question answer endpoint.
 	authGroup.POST("/agent-runs/:id/answer", c.Answer)
 	authGroup.POST("/agent-attachments", c.UploadAttachment)
+	// V1.5 task 1.2: fallback status polling.
+	authGroup.GET("/agent-attachments/:id/status", c.GetAttachmentStatus)
 }
 
 // ---------------------------------------------------------------------------
@@ -179,6 +195,13 @@ func (h *StudentRunController) ExtendBudget(c *gin.Context) {
 // ---------------------------------------------------------------------------
 
 // UploadAttachment handles POST /v1/agent-attachments (multipart/form-data).
+//
+// Response (V1.5 task 1.2):
+//
+//	{"id": N, "url": "...", "modality": "image|pdf|audio|unknown", "fallback_ready": false}
+//
+// fallback_ready is always false at upload time. Clients may poll
+// GET /v1/agent-attachments/:id/status to track readiness.
 func (h *StudentRunController) UploadAttachment(c *gin.Context) {
 	user := middleware.GetCurrentUser(c)
 	if user == nil {
@@ -194,7 +217,66 @@ func (h *StudentRunController) UploadAttachment(c *gin.Context) {
 	defer file.Close()
 
 	result, err := h.attachSvc.Upload(c.Request.Context(), user.ID, file, hdr)
-	core.WriteResponse(c, err, result)
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+	core.WriteResponse(c, nil, gin.H{
+		"id":             result.ID,
+		"url":            result.URL,
+		"filename":       result.Filename,
+		"mime_type":      result.MimeType,
+		"size":           result.Size,
+		"modality":       result.Modality,
+		"fallback_ready": result.FallbackReady,
+	})
+}
+
+// ---------------------------------------------------------------------------
+// GetAttachmentStatus — GET /v1/agent-attachments/:id/status
+// ---------------------------------------------------------------------------
+
+// GetAttachmentStatus handles GET /v1/agent-attachments/:id/status.
+// Returns the current fallback generation status for the given attachment.
+// Only the owning user can query status (ownership enforced at store layer).
+func (h *StudentRunController) GetAttachmentStatus(c *gin.Context) {
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	raw := c.Param("id")
+	attID, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil || attID == 0 {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("invalid attachment id: %s", raw), nil)
+		return
+	}
+
+	if h.attStore == nil {
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("attachment store not configured"), nil)
+		return
+	}
+
+	att, err := h.attStore.GetByIDAndUser(c.Request.Context(), attID, user.ID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			core.WriteResponse(c, errno.ErrPageNotFound.SetMessage("attachment not found"), nil)
+			return
+		}
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("get attachment: %s", err.Error()), nil)
+		return
+	}
+
+	resp := gin.H{
+		"id":             att.ID,
+		"fallback_ready": att.FallbackReady,
+		"modality":       att.Modality,
+	}
+	if att.FallbackError != nil {
+		resp["fallback_error"] = *att.FallbackError
+	}
+	core.WriteResponse(c, nil, resp)
 }
 
 // ---------------------------------------------------------------------------
