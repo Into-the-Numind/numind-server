@@ -377,7 +377,9 @@ func TestCache_MissAfterTTLExpiry(t *testing.T) {
 // TestGetCapabilities_NilDB verifies an informative error (not panic) when
 // the package DB has not been initialised.
 func TestGetCapabilities_NilDB(t *testing.T) {
+	origDB := packageDB
 	packageDB = nil
+	t.Cleanup(func() { packageDB = origDB })
 	capabilityCache.Delete("any-model")
 
 	caps, err := GetCapabilities("any-model")

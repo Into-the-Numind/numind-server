@@ -18,7 +18,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"numind-server/internal/numind/biz/aiservice_admin"
-	"numind-server/internal/pkg/aiservice/capability"
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
@@ -328,11 +327,9 @@ func (ctrl *AIServiceController) UpdateService(c *gin.Context) {
 		svc.IsActive = *req.IsActive
 	}
 
-	// Capture whether capability_json was part of this update (before merge).
-	capabilityUpdated := req.CapabilityJSON != nil
-
 	actorID, actorName := actorFromContext(c)
-	if bizErr = ctrl.biz.UpdateService(c.Request.Context(), &svc, actorID, actorName); bizErr != nil {
+	caps, bizErr := ctrl.biz.UpdateService(c.Request.Context(), &svc, actorID, actorName)
+	if bizErr != nil {
 		if isErrno(bizErr) {
 			core.WriteResponse(c, bizErr, nil)
 			return
@@ -342,16 +339,14 @@ func (ctrl *AIServiceController) UpdateService(c *gin.Context) {
 		return
 	}
 
-	// Invalidate the capability cache for this model so that downstream callers
-	// (buildAgentInput, tool gating, etc.) see the updated capability immediately
-	// rather than waiting for the 5-minute TTL to expire.
-	if capabilityUpdated {
-		capability.InvalidateCache(svc.ModelKey)
-		log.C(c).Infow("Invalidated capability cache after admin update",
-			"model_key", svc.ModelKey)
+	// Spec §"Admin API": PUT /v1/admin/ai/services/:id response includes
+	// { data: { capabilities: {...} } }. If the post-save capability lookup failed
+	// (biz returns nil caps), we still return 200 — the save succeeded.
+	var responseData interface{}
+	if caps != nil {
+		responseData = gin.H{"capabilities": caps}
 	}
-
-	core.WriteResponse(c, nil, nil)
+	core.WriteResponse(c, nil, responseData)
 }
 
 // ----------------------------------------------------------------------------

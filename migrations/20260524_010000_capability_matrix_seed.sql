@@ -2,9 +2,25 @@
 -- Feature: agent-mode-v15-multimodal task 1.1 (Capability Matrix 重构)
 -- Idempotent: UPDATE uses WHERE clause on model_key; INSERT uses ON DUPLICATE KEY UPDATE.
 -- NOTE: capability_json uses MySQL JSON column syntax; SQLite not supported here.
+--
+-- Rollback (manual):
+--   UPDATE ai_service SET capability_json = NULL
+--     WHERE model_key IN (
+--       'qwen3-vl-flash-2026-01-22', 'qwen-vl-plus', 'doubao-seed-1-8-251228',
+--       'qwen-long', 'qwen-turbo', 'qwen-turbo-latest', 'qwen-plus',
+--       'deepseek-v3-2-251201', 'deepseek-v3-250324', 'glm-4-7-251222',
+--       'doubao-seed-2-0-lite-260215', 'doubao-seed-1-6-flash-250828'
+--     );
+--   DELETE FROM ai_service
+--     WHERE model_key IN (
+--       'mimo-v2-5-pro', 'kimi-k2-5', 'kimi-k2-6',
+--       'glm-5-1', 'minimax-m2-7', 'qwen-3-7-max'
+--     );
 
 -- ============================================================================
--- Part 1: UPDATE existing 11 models with structured capability_json
+-- Part 1: UPDATE existing 12 models with structured capability_json
+-- (spec text says "11 existing models"; actual count is 12 because qwen-turbo-latest
+-- via DMXAPI is included alongside qwen-turbo. 6 new model stubs in Part 2.)
 -- ============================================================================
 
 -- Multimodal vision models: accepts images inline (20 MB limit, base64 format)

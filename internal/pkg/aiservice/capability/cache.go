@@ -19,6 +19,10 @@ type cacheEntry struct {
 // sync.Map is used for thread safety with minimal contention on reads.
 // Multiple concurrent misses for the same key are accepted (each triggers
 // its own DB lookup); the cost is negligible for admin-frequency updates.
+//
+// NOTE: InvalidateCache only affects this process's cache. In multi-instance
+// deployments, other instances will serve stale data until TTL expires (max 5 min).
+// Accepted per V1.5 spec; V2 may add Redis pub/sub invalidation.
 var capabilityCache sync.Map
 
 // cacheGet returns the cached capabilities for modelKey if present and not expired.

@@ -34,6 +34,12 @@ func Init(db *gorm.DB) {
 // capability_json parse errors are logged at WARN and fall back to the
 // conservative default (backward-compatible with old rows that have no
 // capability_json or a partial document).
+//
+// TODO(task-1.3): Accept ctx context.Context parameter so DB lookups can be
+// cancelled when the parent request times out. Currently uses context.Background()
+// internally (via lookupCapabilities). Change signature to
+// GetCapabilities(ctx context.Context, modelKey string) when task 1.3 integrates
+// capability checks into the agent request path.
 func GetCapabilities(modelKey string) (*Capabilities, error) {
 	// 1. Cache hit.
 	if caps, ok := cacheGet(modelKey); ok {
