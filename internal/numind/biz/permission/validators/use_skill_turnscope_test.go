@@ -135,3 +135,27 @@ func TestUseSkillTurnScope_ID_Stable(t *testing.T) {
 		t.Errorf("ID() = %q, want %q", got, "UseSkillTurnScope")
 	}
 }
+
+// TestUseSkillTurnScope_BaseAndTurnComposite_Passthrough — 复合矩阵：
+// base 白名单存在但不含工具 + turn state 含该工具 → 走 turn-scope 分支 Passthrough。
+// 验证两个并存 ctx key 时 base 判定不短路到 deny，决策分支链完整跑到 turn-scope。
+// (T05 code-quality reviewer P2 补强)
+func TestUseSkillTurnScope_BaseAndTurnComposite_Passthrough(t *testing.T) {
+	v := NewUseSkillTurnScope()
+
+	turn := &agent.UseSkillTurnState{
+		AllowedTools: map[string]struct{}{"chart_render": {}},
+	}
+	// base 白名单存在且非空，但不含 chart_render — 让"base 白名单存在"分支被命中但 miss
+	ctx := context.WithValue(context.Background(), agent.CtxKeyAgentBaseToolNames, []string{"bash_exec", "kb_search"})
+	ctx = context.WithValue(ctx, agent.CtxKeyUseSkillTurn, turn)
+
+	req := permission.PermissionRequest{
+		Tool:      newFakeTool("chart_render"),
+		InputJSON: `{}`,
+	}
+	got := v.Validate(ctx, req)
+	if got.Behavior != permission.BehaviorPassthrough {
+		t.Errorf("want passthrough (turn-scope allowed despite base whitelist miss), got %q (msg=%q)", got.Behavior, got.Message)
+	}
+}

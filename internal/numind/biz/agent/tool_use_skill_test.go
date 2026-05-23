@@ -11,7 +11,7 @@ import (
 
 // ── UseSkillTurnState 构造 ─────────────────────────────────────────────────────
 
-func TestNewUseSkillTurnState_DefaultCap(t *testing.T) {
+func TestUseSkillTurn_NewState_DefaultCap(t *testing.T) {
 	s := NewUseSkillTurnState(0) // 0 → default
 	if s.Cap != UseSkillTurnCapDefault {
 		t.Errorf("default cap = %d, want %d", s.Cap, UseSkillTurnCapDefault)
@@ -30,14 +30,14 @@ func TestNewUseSkillTurnState_DefaultCap(t *testing.T) {
 	}
 }
 
-func TestNewUseSkillTurnState_ExplicitCap(t *testing.T) {
+func TestUseSkillTurn_NewState_ExplicitCap(t *testing.T) {
 	s := NewUseSkillTurnState(5)
 	if s.Cap != 5 {
 		t.Errorf("explicit cap = %d, want 5", s.Cap)
 	}
 }
 
-func TestNewUseSkillTurnState_NegativeCap_FallsToDefault(t *testing.T) {
+func TestUseSkillTurn_NewState_NegativeCap_FallsToDefault(t *testing.T) {
 	s := NewUseSkillTurnState(-1)
 	if s.Cap != UseSkillTurnCapDefault {
 		t.Errorf("negative cap should fall to default %d, got %d", UseSkillTurnCapDefault, s.Cap)
@@ -46,7 +46,7 @@ func TestNewUseSkillTurnState_NegativeCap_FallsToDefault(t *testing.T) {
 
 // ── ctx helpers (round trip) ───────────────────────────────────────────────────
 
-func TestWithUseSkillTurn_RoundTrip(t *testing.T) {
+func TestUseSkillTurn_WithCtx_RoundTrip(t *testing.T) {
 	want := NewUseSkillTurnState(3)
 	want.SkillByName["销售话术训练"] = &model.Skill{ID: 42, Name: "销售话术训练"}
 
@@ -80,7 +80,7 @@ func TestUseSkillTurnFromCtx_NilValue_NotOK(t *testing.T) {
 	}
 }
 
-func TestWithAgentBaseToolNames_RoundTrip(t *testing.T) {
+func TestUseSkillTurn_WithAgentBaseToolNames_RoundTrip(t *testing.T) {
 	want := []string{"bash_exec", "kb_search", "web_search"}
 	ctx := WithAgentBaseToolNames(context.Background(), want)
 	got, ok := AgentBaseToolNamesFromCtx(ctx)
@@ -97,14 +97,14 @@ func TestWithAgentBaseToolNames_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestAgentBaseToolNamesFromCtx_EmptyCtx_NotOK(t *testing.T) {
+func TestUseSkillTurn_AgentBaseToolNamesFromCtx_EmptyCtx_NotOK(t *testing.T) {
 	_, ok := AgentBaseToolNamesFromCtx(context.Background())
 	if ok {
 		t.Error("empty ctx should return ok=false")
 	}
 }
 
-func TestWithSkillBindings_RoundTrip(t *testing.T) {
+func TestUseSkillTurn_WithSkillBindings_RoundTrip(t *testing.T) {
 	want := []model.AgentSkillBinding{
 		{ID: 1, AgentID: 100, SkillID: 200, SortOrder: 0},
 		{ID: 2, AgentID: 100, SkillID: 201, SortOrder: 1},
@@ -121,7 +121,7 @@ func TestWithSkillBindings_RoundTrip(t *testing.T) {
 
 // ── useSkillTool skeleton ───────────────────────────────────────────────────────
 
-func TestUseSkillTool_Skeleton_Metadata(t *testing.T) {
+func TestUseSkillTurn_Tool_Skeleton_Metadata(t *testing.T) {
 	tool := NewUseSkillTool()
 
 	if tool.Name() != UseSkillToolName {
@@ -161,7 +161,7 @@ func TestUseSkillTool_Skeleton_Metadata(t *testing.T) {
 	}
 }
 
-func TestUseSkillTool_Skeleton_Execute_StubReturnsError(t *testing.T) {
+func TestUseSkillTurn_Tool_Skeleton_Execute_StubReturnsError(t *testing.T) {
 	// T02 stub: Execute always returns error tool result (let LLM see status=error)
 	tool := NewUseSkillTool()
 	out, err := tool.Execute(context.Background(), ToolInput(`{"name":"x"}`))
@@ -182,7 +182,7 @@ func TestUseSkillTool_Skeleton_Execute_StubReturnsError(t *testing.T) {
 
 // ── jsonErr 辅助 ────────────────────────────────────────────────────────────
 
-func TestJsonErr_FormatString(t *testing.T) {
+func TestUseSkillTurn_JsonErr_FormatString(t *testing.T) {
 	got := jsonErr("technical error: %s (code %d)", "DB down", 500)
 	var parsed map[string]string
 	if err := json.Unmarshal([]byte(got), &parsed); err != nil {

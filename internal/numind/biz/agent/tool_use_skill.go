@@ -51,6 +51,7 @@ type ctxKeySkillBindingsT struct{}
 
 // CtxKeySkillBindings — 由 runner.Run 注入，spec §3.7 预留扩展用；
 // 主路径走 turn.SkillByID / SkillByName，不需要从 ctx 取 binding 列表。
+// TODO(T03/T06): 评估实际是否注入；若 W3/W4 编码未触达，删此 ctx key + 配套 helpers。
 // 值类型: []model.AgentSkillBinding
 var CtxKeySkillBindings = ctxKeySkillBindingsT{}
 
@@ -144,7 +145,9 @@ type useSkillTool struct {
 	// T02 阶段只放 stub，Execute 返回 "not implemented yet"
 }
 
-// NewUseSkillTool 工厂（T03 改造为接收 skillService / bindingService 依赖）。
+// NewUseSkillTool constructs the use_skill FullTool (T02 skeleton).
+// T03 will replace the signature to accept skillService / bindingService deps;
+// Execute will switch from stub to the full 11-step Invoke logic per spec §3.1.
 func NewUseSkillTool() FullTool {
 	return &useSkillTool{}
 }
@@ -183,14 +186,12 @@ func (t *useSkillTool) InputSchema() json.RawMessage {
 
 // Execute — T02 阶段是 stub；T03 替换为完整 Invoke 逻辑。
 // 当前 stub 永远返回 error tool result（status=error，让 LLM 知道未就绪）。
-func (t *useSkillTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
+func (t *useSkillTool) Execute(_ context.Context, _ ToolInput) (ToolResult, error) {
 	stub := map[string]string{
 		"status": "error",
 		"error":  "use_skill not implemented yet (T02 stub — T03 will replace with full Invoke)",
 	}
 	out, _ := json.Marshal(stub)
-	_ = ctx
-	_ = input
 	return ToolResult(out), nil
 }
 
