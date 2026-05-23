@@ -9,6 +9,12 @@ import (
 	"regexp"
 )
 
+// ErrMultimodalNotSupported is the canonical sentinel for provider-specific
+// structured errors. Providers that ship typed errors should wrap this sentinel
+// so IsMultimodalNotSupportedError can detect them via errors.Is chain.
+// TODO: implement once a provider ships a typed multimodal error.
+var ErrMultimodalNotSupported = errors.New("multimodal not supported")
+
 // multimodalNotSupportedPatterns is the ordered list of regular expressions that
 // match "this model does not accept image input" error messages across all
 // supported providers.
@@ -95,6 +101,14 @@ func IsMultimodalNotSupportedError(err error) bool {
 		}
 	}
 
+	// Priority 3: errors.Is chain (future extension point).
+	// Providers that wrap ErrMultimodalNotSupported in their typed errors will be
+	// detected here once they adopt the sentinel. Currently always false because no
+	// provider ships a typed multimodal error yet.
+	if errors.Is(err, ErrMultimodalNotSupported) {
+		return true
+	}
+
 	return false
 }
 
@@ -105,6 +119,9 @@ func IsMultimodalNotSupportedError(err error) bool {
 type MultimodalStripRetryMetric struct {
 	// ModelKey is the model identifier used for the failing call (e.g. "glm-4-7-251222").
 	ModelKey string `json:"model_key"`
+	// ProviderID is the numeric DB ID of the AI service provider that returned the error.
+	// Set to 0 when provider context is not available (see TODO in runner_strip_retry.go).
+	ProviderID int64 `json:"provider_id"`
 	// StrippedCount is the number of image MessageParts removed from the messages.
 	StrippedCount int `json:"stripped_count"`
 	// OrigPromptKB is the rough prompt size in kilobytes before stripping.

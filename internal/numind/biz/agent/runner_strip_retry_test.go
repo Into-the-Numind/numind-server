@@ -81,7 +81,7 @@ func TestStripImagesFromMessages_WithImages(t *testing.T) {
 	if parts[0].Text != "分析这张图" {
 		t.Errorf("first part text mismatch: %q", parts[0].Text)
 	}
-	if !strings.Contains(parts[1].Text, "图片已自动剥离") {
+	if !strings.Contains(parts[1].Text, "图片内容不可用") {
 		t.Errorf("placeholder text missing: %q", parts[1].Text)
 	}
 }
@@ -123,7 +123,11 @@ func TestStripImagesFromMessages_Empty(t *testing.T) {
 
 // scenario1: first call returns multimodal error, second call succeeds.
 func TestCallAIServiceWithStripRetry_HappyRetry(t *testing.T) {
-	defer withChatFn(nil)() // placeholder; replaced below
+	// withChatFn(nil) is used here purely for its cleanup side-effect: the returned
+	// func restores savedChatFn at the end of the test. The nil value set by
+	// withChatFn is immediately overwritten by the chatFn assignment below.
+	// Prefer using withChatFn(actualFn) directly to avoid this two-step pattern.
+	defer withChatFn(nil)()
 
 	callCount := 0
 	imageErrMsg := "Invalid value: 'image_url' is not supported for this model"

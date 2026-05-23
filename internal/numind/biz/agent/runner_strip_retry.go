@@ -35,20 +35,25 @@ import (
 //
 // This constant is package-internal; it is surfaced through runner.go where
 // runner.Run appends it to toolsSectionPlaceholder conditionally.
+//
+// Note: the body text must remain semantically consistent with
+// multimodal.go::BuildAttachmentReminderSegment — both describe the same
+// situation (attachments converted to text). This constant adds surrounding
+// newlines for system-prompt formatting; BuildAttachmentReminderSegment omits
+// them (callers handle their own spacing). Any wording change must be mirrored
+// in both places.
 const attachmentReminderText = "\n【附件说明】用户上传的图片/PDF 已转为文字描述。请基于描述内容回答用户问题。\n"
 
-// stripImagesFromMessages removes all image_url MessageParts from every message
-// in msgs. Text parts, tool_call_id, tool_calls, and role are preserved.
+// stripImagesFromMessages walks the message list and replaces each image-type
+// MessagePart with a single placeholder text part. Image parts are NOT dropped —
+// they're replaced with a neutral text marker so the LLM keeps positional context
+// of where an image used to be. Returns (newMsgs, stripped_count).
 //
-// The function returns a new slice (the original slice and its elements are not
-// mutated) and n, the total count of image parts removed.
+// Text parts, tool_call_id, tool_calls, role, and ReasoningContent are preserved.
+// The original slice and its elements are not mutated.
 //
 // When n == 0 the caller should not retry — either there were no images to strip
 // or the error is not due to image content, so retrying would be pointless.
-//
-// Replacement text for stripped image slots: none — image parts are simply
-// dropped. A user-visible notice is injected separately via the system prompt
-// attachment reminder segment (Task 1.5 §"Work 2").
 func stripImagesFromMessages(msgs []aiservice.ChatMessage) ([]aiservice.ChatMessage, int) {
 	n := 0
 	out := make([]aiservice.ChatMessage, 0, len(msgs))
@@ -71,10 +76,12 @@ func stripImagesFromMessages(msgs []aiservice.ChatMessage) ([]aiservice.ChatMess
 		kept := make([]aiservice.MessagePart, 0, len(msg.Content.Parts))
 		for _, part := range msg.Content.Parts {
 			if part.Type == aiservice.MessagePartTypeImageURL {
-				// Inject placeholder so the model knows something was stripped.
+				// Inject neutral placeholder so the model retains positional context
+				// of where an image used to be, without instructing the user to take
+				// any action (which the LLM might echo back, breaking Layer 4 transparency).
 				kept = append(kept, aiservice.MessagePart{
 					Type: aiservice.MessagePartTypeText,
-					Text: "[图片已自动剥离：当前模型不支持图片输入。请切换到支持视觉的模型重新分析。]",
+					Text: "[图片内容不可用：当前模型不支持图片输入，此图片已被移除。]",
 				})
 				n++
 			} else {
@@ -132,6 +139,7 @@ func callAIServiceWithStripRetry(
 	stripped, n := stripImagesFromMessages(req.Messages)
 	metric := &aierrors.MultimodalStripRetryMetric{
 		ModelKey:       modelKey,
+		ProviderID:     0, // TODO: thread from aiservice gateway when provider context becomes available
 		StrippedCount:  n,
 		OrigPromptKB:   estimatePromptKB(req.Messages),
 		RetrySucceeded: false,
@@ -140,12 +148,13 @@ func callAIServiceWithStripRetry(
 	if n == 0 {
 		// No images were present — the error is being misclassified or there is
 		// nothing to strip. Skipping retry to avoid pointless duplication.
+		// No strip-retry event is emitted here (n==0 means nothing was stripped;
+		// emitting would add noise with zero signal for capability-matrix operators).
 		log.Warnw("strip_retry_exhausted: multimodal error but no images to strip",
 			"model_key", modelKey,
 			"task_id", taskID,
 			"error", err.Error(),
 		)
-		emitStripRetryEvent(ctx, metric)
 		return nil, err
 	}
 
@@ -184,6 +193,7 @@ func emitStripRetryEvent(ctx context.Context, metric *aierrors.MultimodalStripRe
 	// Structured log is always emitted (for non-Langfuse environments).
 	log.Warnw("agent.runtime.strip_image_retry",
 		"model_key", metric.ModelKey,
+		"provider_id", metric.ProviderID,
 		"stripped_count", metric.StrippedCount,
 		"orig_prompt_kb", metric.OrigPromptKB,
 		"retry_succeeded", metric.RetrySucceeded,
@@ -196,6 +206,7 @@ func emitStripRetryEvent(ctx context.Context, metric *aierrors.MultimodalStripRe
 			langfuse.WithSpanParent(tc.ParentObservationID),
 			langfuse.WithSpanInput(map[string]any{
 				"model_key":      metric.ModelKey,
+				"provider_id":    metric.ProviderID,
 				"stripped_count": metric.StrippedCount,
 				"orig_prompt_kb": metric.OrigPromptKB,
 			}),
@@ -206,6 +217,9 @@ func emitStripRetryEvent(ctx context.Context, metric *aierrors.MultimodalStripRe
 		langfuse.EndSpan(tc.TraceID, spanID)
 	}
 }
+
+// bytesPerKB is the divisor used to convert byte counts to kilobytes in telemetry.
+const bytesPerKB = 1024 // 1 KiB = 1024 bytes
 
 // estimatePromptKB computes a rough byte-size estimate of the messages in
 // kilobytes, used only for telemetry.
@@ -220,5 +234,5 @@ func estimatePromptKB(msgs []aiservice.ChatMessage) int {
 			}
 		}
 	}
-	return total / 1024
+	return total / bytesPerKB
 }

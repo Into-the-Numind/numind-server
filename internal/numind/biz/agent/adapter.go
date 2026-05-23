@@ -126,6 +126,10 @@ func (a *aiserviceAdapter) LookupUsage(callID string) (Usage, bool) {
 
 // Stream converts Eino []*schema.Message → aiservice.ChatRequest, calls aiservice.ChatStream,
 // and wraps the returned channel into an Eino *schema.StreamReader[*schema.Message].
+//
+// Note: strip-retry is not applied to Stream because Eino ReAct uses Generate only.
+// If Stream is ever wired to ReAct in the future, wrap with
+// callAIServiceWithStripRetry to maintain Layer 4 defense.
 func (a *aiserviceAdapter) Stream(ctx context.Context, in []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
 	req := a.convertToAiserviceRequest(in)
 	ch, err := aiservice.ChatStream(ctx, a.taskID, req)
