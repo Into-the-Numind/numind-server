@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"numind-server/internal/pkg/aiservice"
+	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
@@ -385,4 +386,104 @@ func TestGateway_ASR_Dispatch(t *testing.T) {
 	if resp.Text != "hello world" {
 		t.Errorf("unexpected Text: %q", resp.Text)
 	}
+}
+
+// ─── ResolveTask (added by v2-context-window-real-value hotfix) ──────────────
+
+// TestGateway_ResolveTask_Success: registry returns a route → Gateway exposes it.
+func TestGateway_ResolveTask_Success(t *testing.T) {
+	want := &registry.ResolvedRoute{
+		TaskID:     "agent.run",
+		ServiceKey: "deepseek-v4-pro",
+		Capability: profileCapability(1_000_000),
+	}
+	reg := &mockRegistry{primary: want}
+	gw := aiservice.Build(aiservice.Deps{Registry: reg})
+
+	got, err := gw.ResolveTask(context.Background(), "agent.run")
+	if err != nil {
+		t.Fatalf("ResolveTask err: %v", err)
+	}
+	if got == nil || got.ServiceKey != "deepseek-v4-pro" {
+		t.Errorf("got %+v; want ServiceKey=deepseek-v4-pro", got)
+	}
+	if got.Capability.ContextWindow != 1_000_000 {
+		t.Errorf("ContextWindow = %d, want 1_000_000", got.Capability.ContextWindow)
+	}
+}
+
+// TestGateway_ResolveTask_NilRegistry: gateway without registry returns error.
+func TestGateway_ResolveTask_NilRegistry(t *testing.T) {
+	gw := aiservice.Build(aiservice.Deps{}) // no Registry
+	_, err := gw.ResolveTask(context.Background(), "agent.run")
+	if err == nil {
+		t.Error("expected error from nil registry, got nil")
+	}
+}
+
+// TestGateway_ResolveTask_RegistryError: registry returns error → bubbled up wrapped.
+func TestGateway_ResolveTask_RegistryError(t *testing.T) {
+	reg := &mockRegistry{err: errors.New("not found")}
+	gw := aiservice.Build(aiservice.Deps{Registry: reg})
+	_, err := gw.ResolveTask(context.Background(), "agent.unknown")
+	if err == nil {
+		t.Fatal("expected error from registry, got nil")
+	}
+	if !contains(err.Error(), "ResolveTask") || !contains(err.Error(), "not found") {
+		t.Errorf("error should wrap registry err with ResolveTask context; got %v", err)
+	}
+}
+
+// TestPackageResolveTask_NoDefault: package helper returns error (NOT panic) when SetDefault not called.
+func TestPackageResolveTask_NoDefault(t *testing.T) {
+	t.Cleanup(func() { aiservice.SetDefault(nil) })
+	aiservice.SetDefault(nil)
+
+	_, err := aiservice.ResolveTask(context.Background(), "agent.run")
+	if err == nil {
+		t.Error("expected error when no default gateway; got nil (would panic in production?)")
+	}
+}
+
+// TestPackageResolveTask_UsesDefault: after SetDefault, package helper delegates.
+func TestPackageResolveTask_UsesDefault(t *testing.T) {
+	t.Cleanup(func() { aiservice.SetDefault(nil) })
+
+	want := &registry.ResolvedRoute{
+		TaskID:     "agent.run",
+		ServiceKey: "qwen-plus",
+		Capability: profileCapability(32_000),
+	}
+	reg := &mockRegistry{primary: want}
+	gw := aiservice.Build(aiservice.Deps{Registry: reg})
+	aiservice.SetDefault(gw)
+
+	got, err := aiservice.ResolveTask(context.Background(), "agent.run")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got.ServiceKey != "qwen-plus" || got.Capability.ContextWindow != 32_000 {
+		t.Errorf("delegation broke: got %+v", got)
+	}
+}
+
+// ─── helpers for ResolveTask tests ───────────────────────────────────────────
+
+// profileCapability builds a minimal ServiceCapability with just the ContextWindow
+// field populated. Imported indirectly via registry.ResolvedRoute → profile.ServiceCapability.
+func profileCapability(ctxWindow int) profile.ServiceCapability {
+	return profile.ServiceCapability{
+		ServiceType:   "llm",
+		ContextWindow: ctxWindow,
+	}
+}
+
+func contains(s, sub string) bool { return len(s) >= len(sub) && (s == sub || stringContains(s, sub)) }
+func stringContains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }
