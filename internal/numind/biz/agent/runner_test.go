@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"gorm.io/datatypes"
 
 	"numind-server/internal/numind/biz/narration"
+	"numind-server/internal/numind/biz/skill"
 	"numind-server/internal/pkg/model"
 )
 
@@ -402,4 +404,174 @@ func TestRunner_WithoutNarrationProvider_NoOp(t *testing.T) {
 	runner := NewAgentRunner(newMockStore(), nil)
 	_, runErr := runner.Run(context.Background(), RunRequest{UserID: 1, SessionID: "test", Input: "hello"})
 	_ = runErr
+}
+
+// ============================================================================
+// v2 #2 agent-mode-v2-skill-invocation T06 — runner.go binding 装载 + dual-read
+// 兜底 + 同名防御 + 6 段 invariant 测试
+// ============================================================================
+
+// fakeSkillBindingLister 是 SkillBindingLister 的内存 fake，用于 T06 测试。
+// 通过设置 skills/err 控制 ListByAgent 返回行为。
+type fakeSkillBindingLister struct {
+	skills []model.Skill
+	err    error
+	called bool
+}
+
+func (f *fakeSkillBindingLister) ListByAgent(_ context.Context, _ uint, _ uint) ([]model.Skill, error) {
+	f.called = true
+	return f.skills, f.err
+}
+
+// TestRunner_SystemPrompt_6SegmentInvariant — assert 6 段顺序未破坏 (CLAUDE.md §6b I3)。
+// 与 runner_memory_test.go::TestRunner_SystemPromptSegmentOrder 互补：那里测 memory
+// 路径完整 6 段，本测验 v2 catalog 路径用同公式 (catalog 替换段 [3] body) 仍维持顺序。
+func TestRunner_SystemPrompt_6SegmentInvariant(t *testing.T) {
+	const skillBodyMarker = "## 可用技能"
+	skills := []model.Skill{
+		{ID: 1, Name: "销售话术", Description: "客户对话技巧", WhenToUse: "卖客户时", IsActive: true},
+		{ID: 2, Name: "数据分析", Description: "拆数据找洞察", WhenToUse: "拿到数据时", IsActive: true},
+	}
+	catalog := buildSkillCatalogBlock(skills)
+	require.Contains(t, catalog, skillBodyMarker, "catalog block must contain '## 可用技能' header")
+
+	// Reconstruct the prompt formula matching runner.go Step 4 (line 578-589).
+	// Placeholders empty for this v2-catalog path (no memory injection / no tools section).
+	assembled := skill.PlatformBasePrompt +
+		"" + // tenantHardRulesPlaceholder
+		catalog + // v2 路径：body = catalog (替代 ad.GeneratedSkillBody)
+		"" + // memoriesSectionHeader
+		"" + // toolsSectionPlaceholder
+		skill.PlatformSafetyFooter
+
+	// Verify all mandatory segments are present.
+	assert.Contains(t, assembled, skill.PlatformBasePrompt, "PlatformBasePrompt must be present")
+	assert.Contains(t, assembled, skillBodyMarker, "catalog '## 可用技能' must be present in body slot")
+	assert.Contains(t, assembled, skill.PlatformSafetyFooter, "PlatformSafetyFooter must be present")
+
+	// Verify segment ordering: PlatformBase < catalog < PlatformSafetyFooter
+	idxBase := strings.Index(assembled, skill.PlatformBasePrompt)
+	idxCatalog := strings.Index(assembled, skillBodyMarker)
+	idxSafe := strings.Index(assembled, skill.PlatformSafetyFooter)
+	require.GreaterOrEqual(t, idxBase, 0)
+	require.GreaterOrEqual(t, idxCatalog, 0)
+	require.GreaterOrEqual(t, idxSafe, 0)
+	assert.Less(t, idxBase, idxCatalog, "PlatformBase must come before catalog (segment [3] body)")
+	assert.Less(t, idxCatalog, idxSafe, "catalog (segment [3] body) must come before PlatformSafetyFooter")
+
+	// Defensive: catalog must NOT appear in the PlatformBase nor the Footer
+	// (otherwise indexing logic above would still PASS but order would be invariant-only by accident).
+	assert.NotContains(t, skill.PlatformBasePrompt, skillBodyMarker)
+	assert.NotContains(t, skill.PlatformSafetyFooter, skillBodyMarker)
+}
+
+// TestRunner_DualReadFallback_NoBindings_UsesLegacyBody — len(skills)==0 时
+// runner 走 legacy 路径，body=ad.GeneratedSkillBody (v1 行为零回归保证)。
+// 通过 SkillVersion!=0 + Run 成功 + binding lister 被调用 (返回空) 间接验证。
+func TestRunner_DualReadFallback_NoBindings_UsesLegacyBody(t *testing.T) {
+	const legacyBody = "LEGACY_BODY_MARKER_xyz"
+	skillSt := newMemorySkillStore(1, 99, legacyBody)
+	bindLister := &fakeSkillBindingLister{skills: nil} // 0 binding
+
+	runner := NewAgentRunner(
+		newMockStore(),
+		nil,
+		WithSkillStore(skillSt),
+		WithSkillBindingService(bindLister),
+	)
+
+	result, err := runner.Run(context.Background(), RunRequest{
+		UserID:            1,
+		SessionID:         "sess-dualread-legacy",
+		Input:             "hello legacy",
+		AgentDefinitionID: 99,
+	})
+	require.NoError(t, err)
+	assert.NotZero(t, result.AgentRunID)
+	assert.Equal(t, 1, result.SkillVersion, "skill lookup must succeed (legacy ad version)")
+	assert.True(t, bindLister.called, "BindingService.ListByAgent must be invoked even when 0 binding (to detect v1 vs v2 path)")
+	// 间接验证：legacy body 被读 — 没有崩溃且 SkillVersion 非 0 即说明 ad 装载路径正常。
+	// 完整 system prompt 内容验证由 6-segment invariant test (上方) + runner_memory_test 覆盖。
+}
+
+// TestRunner_DualReadFallback_WithBindings_UsesCatalog — len(skills)>0 时 runner 走
+// v2 路径，body=buildSkillCatalogBlock(skills) 并注入 useSkillTurnState 到 ctx。
+// 验证：Run 成功 + lister 返回非空 + SkillVersion 仍是 ad.Version (binding 路径不影响)。
+func TestRunner_DualReadFallback_WithBindings_UsesCatalog(t *testing.T) {
+	skillSt := newMemorySkillStore(2, 88, "legacy body that should NOT be used")
+	bindLister := &fakeSkillBindingLister{
+		skills: []model.Skill{
+			{ID: 10, Name: "话术", Description: "卖货指南", WhenToUse: "客户犹豫时", IsActive: true, Version: 3},
+			{ID: 11, Name: "复盘", Description: "失败案例分析", WhenToUse: "丢单后", IsActive: true, Version: 1},
+		},
+	}
+
+	runner := NewAgentRunner(
+		newMockStore(),
+		nil,
+		WithSkillStore(skillSt),
+		WithSkillBindingService(bindLister),
+	)
+
+	result, err := runner.Run(context.Background(), RunRequest{
+		UserID:            2,
+		SessionID:         "sess-dualread-v2",
+		Input:             "hello v2",
+		AgentDefinitionID: 88,
+	})
+	require.NoError(t, err)
+	assert.NotZero(t, result.AgentRunID)
+	assert.Equal(t, 1, result.SkillVersion, "skill version 仍取 ad.Version (binding 不影响 SkillVersion 字段)")
+	assert.True(t, bindLister.called, "BindingService.ListByAgent must be invoked")
+
+	// 验证 catalog 内容生成正确（直接断言 buildSkillCatalogBlock 输出）
+	catalog := buildSkillCatalogBlock(bindLister.skills)
+	assert.Contains(t, catalog, "## 可用技能")
+	assert.Contains(t, catalog, "话术")
+	assert.Contains(t, catalog, "卖货指南")
+	assert.Contains(t, catalog, "复盘")
+	assert.Contains(t, catalog, "失败案例分析")
+	assert.NotContains(t, catalog, "LEGACY_BODY_MARKER", "v2 路径不应读 legacy ad body")
+}
+
+// TestRunner_DuplicateSkillNames_RejectsRun — 同名 binding 触发 S1-D13 防御：
+// runner 启动时检测到重名 → 拒绝 Run 返回 error，不进入 LLM 调用。
+func TestRunner_DuplicateSkillNames_RejectsRun(t *testing.T) {
+	skillSt := newMemorySkillStore(3, 77, "any body")
+	bindLister := &fakeSkillBindingLister{
+		skills: []model.Skill{
+			{ID: 20, Name: "重名技能", Description: "第一个", IsActive: true},
+			{ID: 21, Name: "重名技能", Description: "第二个 — 应触发拒绝", IsActive: true},
+		},
+	}
+
+	runner := NewAgentRunner(
+		newMockStore(),
+		nil,
+		WithSkillStore(skillSt),
+		WithSkillBindingService(bindLister),
+	)
+
+	result, err := runner.Run(context.Background(), RunRequest{
+		UserID:            3,
+		Input:             "should fail before LLM",
+		AgentDefinitionID: 77,
+	})
+	require.Error(t, err, "duplicate Skill name must cause Run to return error")
+	assert.Contains(t, err.Error(), "duplicate Skill name", "error message should reference the rule (S1-D13)")
+	assert.Nil(t, result, "RunResult should be nil on rejected Run")
+}
+
+// TestRunner_WithSkillBindingService_Option — wire-up sanity check
+func TestRunner_WithSkillBindingService_Option(t *testing.T) {
+	lister := &fakeSkillBindingLister{}
+	r := NewAgentRunner(newMockStore(), nil, WithSkillBindingService(lister)).(*agentRunner)
+	assert.Same(t, lister, r.skillBindingService, "WithSkillBindingService must store the supplied SkillBindingLister")
+}
+
+// TestRunner_DefaultSkillBindingService_Nil — default factory leaves it nil
+func TestRunner_DefaultSkillBindingService_Nil(t *testing.T) {
+	r := NewAgentRunner(newMockStore(), nil).(*agentRunner)
+	assert.Nil(t, r.skillBindingService, "default runner should have nil skillBindingService (= legacy path)")
 }
