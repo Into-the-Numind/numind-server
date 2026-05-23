@@ -1,6 +1,8 @@
 // Package attachment provides agent attachment upload functionality.
 // Files are validated for MIME type and size, then uploaded to Tencent COS
-// via the existing util.UploadBytesToCOS helper.
+// via the existing util.UploadBytesToCOS helper. After a successful upload the
+// attachment record is persisted to agent_attachment and the fallback service
+// is notified asynchronously (V1.5 task 1.2).
 package attachment
 
 import (
@@ -13,6 +15,10 @@ import (
 	"strings"
 	"time"
 
+	agentatt "numind-server/internal/numind/biz/agent/attachment"
+	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/log"
+	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/util"
 )
 
@@ -25,31 +31,51 @@ var allowedMIMEPrefixes = []string{
 	"application/pdf",
 	"text/plain",
 	"text/markdown",
+	"audio/",
 }
 
-// UploadService handles agent attachment uploads to COS.
-type UploadService struct{}
+// UploadService handles agent attachment uploads to COS and persists records
+// to agent_attachment.
+type UploadService struct {
+	attStore    store.IAgentAttachmentStore
+	fallbackSvc agentatt.FallbackService
+}
 
 // NewUploadService constructs an UploadService.
-// The service relies on the package-level util.UploadBytesToCOS singleton
-// (configured via viper cos.* keys), so no explicit COS client is required
-// at construction time.
+// attStore and fallbackSvc may be nil for backwards compatibility (legacy
+// callers that do not need DB persistence). When non-nil, uploaded files are
+// persisted and enqueued for fallback generation.
 func NewUploadService() *UploadService {
 	return &UploadService{}
 }
 
+// NewUploadServiceWithFallback constructs an UploadService with DB persistence
+// and async fallback generation wired in (V1.5 task 1.2).
+func NewUploadServiceWithFallback(attStore store.IAgentAttachmentStore, fallbackSvc agentatt.FallbackService) *UploadService {
+	return &UploadService{
+		attStore:    attStore,
+		fallbackSvc: fallbackSvc,
+	}
+}
+
 // UploadResult is returned from Upload on success.
 type UploadResult struct {
-	URL       string    `json:"url"`
-	Size      int64     `json:"size"`
-	MimeType  string    `json:"mime_type"`
-	Filename  string    `json:"filename"`
-	CreatedAt time.Time `json:"created_at"`
+	// ID is the primary key of the persisted agent_attachment row.
+	// Zero when DB persistence is not configured.
+	ID            uint64    `json:"id"`
+	URL           string    `json:"url"`
+	Size          int64     `json:"size"`
+	MimeType      string    `json:"mime_type"`
+	Filename      string    `json:"filename"`
+	Modality      string    `json:"modality"`
+	FallbackReady bool      `json:"fallback_ready"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // Upload reads the multipart file, validates size and MIME type, uploads to
-// COS under agent-attachments/<userID>/<timestamp>-<filename>, and returns
-// the public URL.
+// COS under agent-attachments/<userID>/<timestamp>-<filename>, persists to DB
+// (if attStore is configured), enqueues fallback generation (if fallbackSvc is
+// configured), and returns the result.
 //
 // Validation errors return a descriptive error whose message is safe to relay
 // to the caller (no internal details).
@@ -78,12 +104,19 @@ func (s *UploadService) Upload(ctx context.Context, userID uint, file multipart.
 		// Also allow based on file extension for common text types that DetectContentType
 		// may return as "application/octet-stream" (e.g., .md, .txt files).
 		ext := strings.ToLower(filepath.Ext(hdr.Filename))
-		if ext == ".md" || ext == ".txt" {
+		switch ext {
+		case ".md", ".txt":
 			mimeType = "text/plain"
-		} else if ext == ".pdf" {
+		case ".pdf":
 			mimeType = "application/pdf"
-		} else {
-			return nil, fmt.Errorf("attachment.Upload: unsupported file type '%s' (allowed: images, pdf, plain text)", mimeType)
+		case ".mp3":
+			mimeType = "audio/mpeg"
+		case ".wav":
+			mimeType = "audio/wav"
+		case ".m4a":
+			mimeType = "audio/m4a"
+		default:
+			return nil, fmt.Errorf("attachment.Upload: unsupported file type '%s' (allowed: images, pdf, audio, plain text)", mimeType)
 		}
 	}
 
@@ -103,12 +136,56 @@ func (s *UploadService) Upload(ctx context.Context, userID uint, file multipart.
 		url = fmt.Sprintf("/local-uploads/%s", objectKey)
 	}
 
+	fileSize := int64(len(data))
+
+	// ── Detect modality ──────────────────────────────────────────────────────
+	modality := agentatt.DetectModality(mimeType)
+
+	// ── Detect image dimensions ──────────────────────────────────────────────
+	var width, height *int
+	if modality == agentatt.ModalityImage {
+		width, height = agentatt.DecodeImageDimensionsFromBytes(data)
+	}
+
+	// ── Persist to DB (if configured) ────────────────────────────────────────
+	var attID uint64
+	if s.attStore != nil {
+		att := &model.AgentAttachment{
+			UserID:    userID,
+			URL:       url,
+			Filename:  hdr.Filename,
+			MimeType:  mimeType,
+			Size:      fileSize,
+			Modality:  modality,
+			Width:     width,
+			Height:    height,
+			CreatedAt: ts,
+		}
+		if err := s.attStore.Create(ctx, att); err != nil {
+			// Non-fatal: log the error but still return the upload result.
+			// The fallback worker will not be invoked, but the URL is valid.
+			// This matches the "fire-and-forget" philosophy: upload must succeed.
+			// P1 #5 fix: replaced silent `_ = err` with a visible Warnw log.
+			log.Warnw("attachment: DB persist failed (non-fatal, fallback skipped)",
+				"user_id", userID, "url", url, "error", err)
+		} else {
+			attID = att.ID
+			// Enqueue async fallback generation (fire-and-forget).
+			if s.fallbackSvc != nil && modality != agentatt.ModalityUnknown {
+				_ = s.fallbackSvc.Enqueue(ctx, att.ID)
+			}
+		}
+	}
+
 	return &UploadResult{
-		URL:       url,
-		Size:      int64(len(data)),
-		MimeType:  mimeType,
-		Filename:  hdr.Filename,
-		CreatedAt: ts,
+		ID:            attID,
+		URL:           url,
+		Size:          fileSize,
+		MimeType:      mimeType,
+		Filename:      hdr.Filename,
+		Modality:      modality,
+		FallbackReady: false, // always false at upload time; poll /status
+		CreatedAt:     ts,
 	}, nil
 }
 

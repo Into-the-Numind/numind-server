@@ -229,6 +229,16 @@ func run() error {
 
 	// bizLayer was created above for context budget wiring; reuse it for cron tasks.
 
+	// V1.5 task 1.2: start attachment fallback worker pool + recover interrupted jobs.
+	// The pool drains when workerCtx is cancelled (same context as summaryWorker).
+	if fallbackSvc := bizLayer.AttachmentFallback(); fallbackSvc != nil {
+		fallbackSvc.Start(workerCtx)
+		if err := fallbackSvc.RecoverPending(context.Background()); err != nil {
+			log.Warnw("Attachment fallback RecoverPending failed (non-fatal)", "error", err)
+		}
+		log.Infow("Attachment fallback worker pool started")
+	}
+
 	// 启动博主监控 cron 调度器
 	go func() {
 		if err := bizLayer.Monitor().StartScheduler(context.Background()); err != nil {

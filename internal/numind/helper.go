@@ -310,6 +310,14 @@ func autoMigrate(db *gorm.DB) error {
 		return fmt.Errorf("failed to migrate compliance tables: %v", err)
 	}
 
+	// Agent attachment 上传记录表（V1.5 multimodal fallback task 1.2）
+	// Migration 20260523_120000_agent_attachment_fallback.sql handles the initial
+	// CREATE TABLE with proper indexes. AutoMigrate here adds any new columns that
+	// appear in future model changes.
+	if err := db.AutoMigrate(&model.AgentAttachment{}); err != nil {
+		return fmt.Errorf("failed to migrate agent_attachment: %v", err)
+	}
+
 	log.Infow("All database schema migration completed")
 
 	// 3. 迁移后验证字符集
