@@ -4,13 +4,28 @@
 -- Rollback: 20260523_151000_register_memory_extract_profile_rollback.sql
 --
 -- Task 3.3 ExtractorService 异步抽取 facts 时通过 aiservice.Chat(ctx, "agent.memory_extract", req)
--- 调小 LLM (deepseek-v3-2 / qwen-turbo). 本 SQL 占位写一行 task_profile, 真实的 ai_service_route
--- 绑定由管理端 (admin) CRUD 配 (deepseek-v3-2 主路 + qwen-turbo fallback).
+-- 调小 LLM. 写入 task_profile 表 (主表) 定义任务. task_profile_service (M:N
+-- 关联表) 把 task_profile 绑到具体 ai_service (主路 + fallback), 由管理端 CRUD 配.
 --
 -- D3 决策 (context.md): "推荐 deepseek-v3-2 / qwen-turbo — 便宜异步后台跑, 中文好".
 --
--- Idempotent: ON DUPLICATE KEY UPDATE updated_at only.
+-- ⚠️ 历史修正 (2026-05-23): 原 SQL 用 model_route 列名是 implementer 假设错误。
+-- 真实 schema 是 task_profile(task_id, display_name, description, service_type,
+-- requirements, default_service_id, user_selectable). default_service_id 是
+-- ai_service.id 的 FK。本 SQL 用 qwen-turbo (model_key='qwen-turbo') 的 id 做
+-- 默认服务；管理端可后续 fine-tune fallback 路由。
+--
+-- Idempotent: INSERT IGNORE (UNIQUE on task_id 拦重复).
 
-INSERT INTO task_profile (task_id, model_route, description, created_at, updated_at) VALUES
-  ('agent.memory_extract', 'deepseek-v3-2', 'V1.5 memory async extraction (Layer A — user-self facts) 30s debounce + threshold 0.7', NOW(), NOW())
-ON DUPLICATE KEY UPDATE updated_at = VALUES(updated_at);
+INSERT IGNORE INTO task_profile (task_id, display_name, description, service_type, requirements, default_service_id, user_selectable)
+SELECT
+  'agent.memory_extract',
+  'Agent Memory Extract',
+  'V1.5 Task 3.3 memory async extraction (Layer A — facts about the user themselves) 30s debounce + threshold 0.7. D3: 推荐 deepseek-v3-2 / qwen-turbo.',
+  'llm',
+  JSON_OBJECT(),
+  id,
+  0
+FROM ai_service
+WHERE model_key = 'qwen-turbo'
+LIMIT 1;

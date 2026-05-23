@@ -291,7 +291,23 @@ func autoMigrate(db *gorm.DB) error {
 		return fmt.Errorf("failed to migrate agent memory tables: %v", err)
 	}
 	// Agent Mode V1.5 Layer A memory schema 两表（agent-mode-v15-memory-layer-a Task 3.2）
-	if err := db.AutoMigrate(&model.UserMemoryProfile{}, &model.UserMemoryFact{}); err != nil {
+	// V1.5 Track 3 memory tables — added in sequence:
+	//   Task 3.2: UserMemoryProfile / UserMemoryFact (per-user profile + fact list)
+	//   Task 3.5: AgentMessageSearch (FULLTEXT ngram 中文搜索索引表)
+	//   Task 3.8: 4 digest tables (daily / weekly / monthly / quarterly)
+	// All share user_id BIGINT UNSIGNED FK to user.id (CASCADE on user delete).
+	// Note: AutoMigrate creates base tables + simple indexes only; rich indexes
+	// (composite, FULLTEXT ngram, CHECK constraints) require running the spec
+	// migration SQL files in migrations/20260523_*.sql + 20260524_*.sql.
+	if err := db.AutoMigrate(
+		&model.UserMemoryProfile{},
+		&model.UserMemoryFact{},
+		&model.AgentMessageSearch{},
+		&model.UserMemoryDigestDaily{},
+		&model.UserMemoryDigestWeekly{},
+		&model.UserMemoryDigestMonthly{},
+		&model.UserMemoryDigestQuarterly{},
+	); err != nil {
 		return fmt.Errorf("failed to migrate agent v1.5 memory tables: %v", err)
 	}
 	if err := db.AutoMigrate(&model.AgentDefinitionHistory{}); err != nil {

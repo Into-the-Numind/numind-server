@@ -25,9 +25,10 @@
 --             UNIQUE KEY per-user-period 支持 ON DUPLICATE KEY UPDATE (cron 重跑覆盖)
 -- FK: ON DELETE CASCADE 自动清理用户注销时的 digest (GDPR)
 --
--- user_id 类型: INT UNSIGNED (匹配 user.id; task 3.2 同款 deviation —— spec 写
---               BIGINT UNSIGNED 但 user.id 实际是 INT UNSIGNED via gorm.Model;
---               FK 类型必须匹配, 否则 InnoDB 拒绝创建外键)
+-- user_id 类型: BIGINT UNSIGNED (匹配 user.id; ⚠️ 历史修正 2026-05-23:
+--               原 implementer 误判 user.id 为 INT UNSIGNED, 实际是 BIGINT UNSIGNED
+--               via gorm.Model. dev 数据库验证 SHOW COLUMNS FROM user WHERE Field='id'.
+--               FK 类型必须严格匹配, 否则 InnoDB ERROR 3780 拒绝创建外键)
 
 -- ============================================================
 -- Table 1: user_memory_digest_daily
@@ -35,7 +36,7 @@
 -- ============================================================
 CREATE TABLE IF NOT EXISTS user_memory_digest_daily (
     id                    BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-    user_id               INT UNSIGNED NOT NULL                       COMMENT 'FK 到 user.id',
+    user_id               BIGINT UNSIGNED NOT NULL                    COMMENT 'FK 到 user.id',
     digest_date           DATE NOT NULL                                COMMENT '日期 (Asia/Shanghai 时区)',
     session_count         INT NOT NULL DEFAULT 0                       COMMENT '当日 session 数',
     message_count         INT NOT NULL DEFAULT 0                       COMMENT '当日 message 总数',
@@ -57,7 +58,7 @@ CREATE TABLE IF NOT EXISTS user_memory_digest_daily (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS user_memory_digest_weekly (
     id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-    user_id         INT UNSIGNED NOT NULL                       COMMENT 'FK 到 user.id',
+    user_id         BIGINT UNSIGNED NOT NULL                    COMMENT 'FK 到 user.id',
     iso_year        INT NOT NULL                                 COMMENT 'ISO 年 (可能跨自然年, e.g. 2026-01-01 → 2026-W01)',
     iso_week        TINYINT NOT NULL                             COMMENT 'ISO 周 1-53',
     week_start_date DATE NOT NULL                                COMMENT '本 ISO 周一日期 (Asia/Shanghai)',
@@ -78,7 +79,7 @@ CREATE TABLE IF NOT EXISTS user_memory_digest_weekly (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS user_memory_digest_monthly (
     id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-    user_id      INT UNSIGNED NOT NULL                       COMMENT 'FK 到 user.id',
+    user_id      BIGINT UNSIGNED NOT NULL                    COMMENT 'FK 到 user.id',
     year         INT NOT NULL                                 COMMENT '自然年',
     month        TINYINT NOT NULL                             COMMENT '月 1-12',
     summary      TEXT                                         COMMENT 'LLM 综合归纳 200-300 字',
@@ -96,7 +97,7 @@ CREATE TABLE IF NOT EXISTS user_memory_digest_monthly (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS user_memory_digest_quarterly (
     id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-    user_id      INT UNSIGNED NOT NULL                       COMMENT 'FK 到 user.id',
+    user_id      BIGINT UNSIGNED NOT NULL                    COMMENT 'FK 到 user.id',
     year         INT NOT NULL                                 COMMENT '自然年',
     quarter      TINYINT NOT NULL                             COMMENT '季度 1-4',
     summary      TEXT                                         COMMENT 'LLM 综合归纳 200-300 字',

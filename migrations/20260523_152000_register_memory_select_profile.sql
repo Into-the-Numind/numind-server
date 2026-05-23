@@ -4,15 +4,27 @@
 -- Rollback: 20260523_152000_register_memory_select_profile_rollback.sql
 --
 -- Task 3.4 SelectorService per-turn 选 ≤5 个最相关 fact 时通过
--- aiservice.Chat(ctx, "agent.memory_select", req) 调小 LLM (qwen-turbo /
--- deepseek-v3-2). 本 SQL 占位写一行 task_profile, 真实的 ai_service_route
--- 绑定由管理端 (admin) CRUD 配 (qwen-turbo 主路 + deepseek-v3-2 fallback).
+-- aiservice.Chat(ctx, "agent.memory_select", req) 调小 LLM. task_profile_service
+-- (M:N) 把任务绑到 ai_service (qwen-turbo 主路 + deepseek-v3-2 fallback), 管理端 CRUD 配.
 --
 -- D4 决策 (context.md): "推荐 qwen-turbo / deepseek-v3-2 — 每次 user turn 前
 -- 调用要快, 任务简单 (选 5 个最相关 fact id)".
 --
--- Idempotent: ON DUPLICATE KEY UPDATE updated_at only.
+-- ⚠️ 历史修正 (2026-05-23): 原 SQL 用 model_route 列名是 implementer 假设错误。
+-- 真实 schema 是 task_profile(task_id, display_name, description, service_type,
+-- requirements, default_service_id, user_selectable).
+--
+-- Idempotent: INSERT IGNORE (UNIQUE on task_id 拦重复).
 
-INSERT INTO task_profile (task_id, model_route, description, created_at, updated_at) VALUES
-  ('agent.memory_select', 'qwen-turbo', 'V1.5 memory side-query selector (Layer A — pick top-5 user-self facts per turn) cache 30s + ≤5 shortcircuit + 3-layer fallback', NOW(), NOW())
-ON DUPLICATE KEY UPDATE updated_at = VALUES(updated_at);
+INSERT IGNORE INTO task_profile (task_id, display_name, description, service_type, requirements, default_service_id, user_selectable)
+SELECT
+  'agent.memory_select',
+  'Agent Memory Selector',
+  'V1.5 Task 3.4 memory side-query selector (Layer A — pick top-5 user-self facts per turn) LRU cache 30s/1024 + ≤5 shortcircuit + 3-layer fallback. D4: 推荐 qwen-turbo / deepseek-v3-2.',
+  'llm',
+  JSON_OBJECT(),
+  id,
+  0
+FROM ai_service
+WHERE model_key = 'qwen-turbo'
+LIMIT 1;
