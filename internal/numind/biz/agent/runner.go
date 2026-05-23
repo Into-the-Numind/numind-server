@@ -606,7 +606,12 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 
 		if runErr == nil {
 			st.TerminalReason = TerminalCompleted
-			finalText = output.Content
+			// V1.5 task 2.5 wiring：通过 Streaming Scrubber 过滤 LLM 输出里被 echo 出来的
+			// 内部注入标签（<memory data-internal="true">/<reference-only data-internal="true">/
+			// <system-reminder>/<persisted-output>/[Personal Memory:]/[Context:] 等）。
+			// fast path（无 `<` 无 `[`）几乎零开销，O(n) 单次扫描；用户裸写不带 data-internal
+			// 的同名标签不会被剥（白名单约定）。详见 internal/numind/biz/compactv2/scrubber/README.md
+			finalText = scrubFinalAnswer(output.Content)
 			break
 		}
 
