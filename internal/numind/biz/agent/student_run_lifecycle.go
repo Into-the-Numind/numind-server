@@ -243,6 +243,7 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 	// Until runner.go (task 1.5) accepts InputMessages natively, the result is
 	// serialised to string via MessagesToInputString for RunRequest.Input.
 	var input string
+	var hasFallbackAttachments bool
 	if len(req.AttachmentIDs) > 0 && s.attachmentStore != nil {
 		atts := loadAttachmentsByIDs(ctx, s.attachmentStore, req.AttachmentIDs, userID)
 		msgs, buildErr := buildAgentInputForModel(ctx, req.Message, atts, req.ModelKey, s.attachmentStore)
@@ -251,6 +252,10 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 				"user_id", userID, "error", buildErr)
 			input = buildAgentInput(req.Message, req.AttachmentURLs)
 		} else {
+			// Task 1.5 (task 1.3 deferral): detect whether any attachment used the
+			// text-fallback path so that runner.Run can inject the attachment reminder
+			// into system prompt segment 5.
+			hasFallbackAttachments = HasFallbackAttachments(msgs)
 			input = MessagesToInputString(msgs)
 		}
 	} else {
@@ -285,13 +290,14 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 	}
 
 	runReq := RunRequest{
-		UserID:            userID,
-		SessionID:         sessionID,
-		Input:             input,
-		ToolNames:         toolNames,
-		AgentDefinitionID: req.AgentDefinitionID,
-		EnableMemory:      true,
-		ExistingRunID:     preRun.ID,
+		UserID:                userID,
+		SessionID:             sessionID,
+		Input:                 input,
+		ToolNames:             toolNames,
+		AgentDefinitionID:     req.AgentDefinitionID,
+		EnableMemory:          true,
+		ExistingRunID:         preRun.ID,
+		AttachmentHasFallback: hasFallbackAttachments,
 	}
 
 	// Bridge narration events: Provider.Emit pushes events to an in-memory
