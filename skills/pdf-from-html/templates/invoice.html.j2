@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>发票 {{ invoice_number }}</title>
+<style>
+  /* ── Reset ── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  /* ── Page / Print ── */
+  /* Note: @page base rules (size / margins) are injected by renderer.py.
+     These rules add page-number footer and first-page header suppression. */
+  @page {
+    @bottom-center {
+      content: "第 " counter(page) " 页，共 " counter(pages) " 页";
+      font-size: 8pt;
+      color: #94A3B8;
+    }
+  }
+  @page :first {
+    @bottom-center { content: none; }
+  }
+
+  /* ── Typography ── */
+  body {
+    font-size: 10pt;
+    color: #1E293B;
+    line-height: 1.5;
+  }
+
+  /* ── Layout ── */
+  .page-wrapper { padding: 0; }
+
+  /* ── Header ── */
+  .doc-header {
+    display: table;
+    width: 100%;
+    margin-bottom: 2em;
+  }
+  .doc-header-left { display: table-cell; vertical-align: top; width: 60%; }
+  .doc-header-right { display: table-cell; vertical-align: top; text-align: right; width: 40%; }
+
+  .company-name { font-size: 18pt; font-weight: bold; color: #1E293B; }
+  .company-sub  { font-size: 9pt; color: #64748B; margin-top: 0.2em; }
+  .doc-logo     { max-height: 50px; max-width: 160px; }
+
+  .invoice-title-block { margin-top: 0.5em; }
+  .invoice-title-block h1 {
+    font-size: 22pt;
+    font-weight: 700;
+    color: #1E293B;
+    letter-spacing: 0.15em;
+  }
+  .invoice-number { font-size: 9pt; color: #64748B; margin-top: 0.2em; }
+
+  /* ── Divider ── */
+  hr.divider { border: none; border-top: 2px solid #1E293B; margin: 1.5em 0; }
+
+  /* ── Meta table (client + dates) ── */
+  .meta-table { width: 100%; border-collapse: collapse; margin-bottom: 1.5em; }
+  .meta-table th {
+    text-align: left;
+    font-weight: normal;
+    color: #64748B;
+    font-size: 9pt;
+    padding: 0.15em 0.5em 0.15em 0;
+    width: 7em;
+  }
+  .meta-table td { font-size: 10pt; padding: 0.15em 0; }
+  .meta-table td.date-val { text-align: right; }
+
+  /* ── Items table ── */
+  table.items-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1em 0 1.5em 0;
+    font-size: 9.5pt;
+  }
+  table.items-table thead tr th {
+    background: #1E293B;
+    color: #FFFFFF;
+    padding: 0.5em 0.6em;
+    text-align: left;
+    font-weight: 600;
+  }
+  table.items-table thead tr th.num { text-align: right; }
+  table.items-table tbody tr td {
+    padding: 0.4em 0.6em;
+    border-bottom: 1px solid #E2E8F0;
+    vertical-align: top;
+  }
+  table.items-table tbody tr:nth-child(even) td { background: #F8FAFC; }
+  table.items-table tbody tr td.num { text-align: right; }
+
+  /* Page-break: do not split a row across pages */
+  table.items-table tbody tr { page-break-inside: avoid; }
+
+  /* ── Totals block ── */
+  .totals-wrapper {
+    /* float-right equivalent using table positioning */
+    display: table;
+    margin-left: auto;
+    margin-right: 0;
+    width: 42%;
+    margin-bottom: 2em;
+  }
+  table.totals-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 10pt;
+  }
+  table.totals-table td { padding: 0.3em 0.4em; }
+  table.totals-table td.label { color: #64748B; }
+  table.totals-table td.amount { text-align: right; }
+  table.totals-table tr.grand-total td {
+    font-weight: bold;
+    font-size: 11pt;
+    border-top: 2px solid #1E293B;
+    padding-top: 0.5em;
+  }
+
+  /* ── Notes / footer text ── */
+  .notes-section {
+    font-size: 9pt;
+    color: #475569;
+    border-top: 1px solid #E2E8F0;
+    padding-top: 0.8em;
+    margin-top: 1em;
+    clear: both;
+  }
+  .notes-section strong { color: #1E293B; }
+
+  /* ── Legal disclaimer ── */
+  .legal-notice {
+    font-size: 7.5pt;
+    color: #94A3B8;
+    margin-top: 1.5em;
+    border-top: 1px dashed #CBD5E1;
+    padding-top: 0.5em;
+  }
+</style>
+</head>
+<body>
+<div class="page-wrapper">
+
+  <!-- Header: company identity (left) + invoice title (right) -->
+  <div class="doc-header">
+    <div class="doc-header-left">
+      {% if logo_path is defined and logo_path %}
+        <img class="doc-logo" src="{{ logo_path }}" alt="{{ company_name }} logo">
+      {% else %}
+        <div class="company-name">{{ company_name }}</div>
+        {% if company_address is defined and company_address %}
+          <div class="company-sub">{{ company_address }}</div>
+        {% endif %}
+        {% if company_tax_id is defined and company_tax_id %}
+          <div class="company-sub">纳税人识别号：{{ company_tax_id }}</div>
+        {% endif %}
+      {% endif %}
+    </div>
+    <div class="doc-header-right">
+      <div class="invoice-title-block">
+        <h1>发&nbsp;&nbsp;票</h1>
+        <div class="invoice-number">单号：{{ invoice_number }}</div>
+      </div>
+    </div>
+  </div>
+
+  <hr class="divider">
+
+  <!-- Client + date metadata -->
+  <table class="meta-table">
+    <tr>
+      <th>客户：</th>
+      <td>{{ client_name }}</td>
+      <th style="text-align:right; padding-right:0.5em;">开票日期：</th>
+      <td class="date-val">{{ issue_date | date_cn }}</td>
+    </tr>
+    {% if client_address is defined and client_address %}
+    <tr>
+      <th>地址：</th>
+      <td>{{ client_address }}</td>
+      <th style="text-align:right; padding-right:0.5em;">付款截止：</th>
+      <td class="date-val">{{ due_date | date_cn }}</td>
+    </tr>
+    {% else %}
+    <tr>
+      <th></th><td></td>
+      <th style="text-align:right; padding-right:0.5em;">付款截止：</th>
+      <td class="date-val">{{ due_date | date_cn }}</td>
+    </tr>
+    {% endif %}
+  </table>
+
+  <!-- Line items -->
+  <table class="items-table">
+    <thead>
+      <tr>
+        <th style="width:50%;">项目描述</th>
+        <th class="num" style="width:10%;">数量</th>
+        <th class="num" style="width:20%;">单价</th>
+        <th class="num" style="width:20%;">金额</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in items %}
+      <tr>
+        <td>{{ item.description }}</td>
+        <td class="num">{{ item.qty }}</td>
+        <td class="num">{{ item.unit_price | currency }}</td>
+        <td class="num">{{ (item.qty * item.unit_price) | currency }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <!-- Totals (right-aligned block) -->
+  {%- set ns = namespace(subtotal=0) %}
+  {%- for item in items %}
+    {%- set ns.subtotal = ns.subtotal + item.qty * item.unit_price %}
+  {%- endfor %}
+  {%- set tax_amount = ns.subtotal * tax_rate %}
+  {%- set grand_total = ns.subtotal + tax_amount %}
+
+  <div class="totals-wrapper">
+    <table class="totals-table">
+      <tr>
+        <td class="label">小计</td>
+        <td class="amount">{{ ns.subtotal | currency }}</td>
+      </tr>
+      <tr>
+        <td class="label">税额（{{ (tax_rate * 100) | int }}%）</td>
+        <td class="amount">{{ tax_amount | currency }}</td>
+      </tr>
+      <tr class="grand-total">
+        <td class="label">合&nbsp;&nbsp;计</td>
+        <td class="amount">{{ grand_total | currency }}</td>
+      </tr>
+    </table>
+  </div>
+
+  <!-- Notes / remarks -->
+  {% if notes is defined and notes %}
+  <div class="notes-section">
+    <strong>备注：</strong>{{ notes }}
+  </div>
+  {% endif %}
+
+  <!-- Legal disclaimer -->
+  <div class="legal-notice">
+    本文件为格式报价单/收据，不具有税务发票法律效力。正式增值税发票请通过税务局系统开具。
+  </div>
+
+</div>
+</body>
+</html>

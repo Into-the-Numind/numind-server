@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>{{ title }}</title>
+<style>
+  /* ── Reset ── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  /* ── Page / Print rules ── */
+  /* Base size/margin rules injected by renderer.py */
+  @page {
+    @top-center {
+      /* Static header — rendered in CSS (not Jinja2) context.
+         Dynamic title is set via injected <style> in main.py. */
+      font-size: 8pt;
+      color: #64748B;
+    }
+    @bottom-left {
+      font-size: 8pt;
+      color: #94A3B8;
+    }
+    @bottom-right {
+      content: "第 " counter(page) " 页，共 " counter(pages) " 页";
+      font-size: 8pt;
+      color: #94A3B8;
+    }
+  }
+  /* Cover page: no header / footer */
+  @page :first {
+    @top-center { content: none; }
+    @bottom-left { content: none; }
+    @bottom-right { content: none; }
+  }
+
+  /* ── Typography ── */
+  body {
+    font-size: 10.5pt;
+    color: #1E293B;
+    line-height: 1.7;
+  }
+
+  /* ── Cover page ── */
+  .cover {
+    text-align: center;
+    padding: 4cm 1cm 3cm 1cm;
+    page-break-after: always;
+  }
+  .cover .report-title {
+    font-size: 26pt;
+    font-weight: bold;
+    color: #0F172A;
+    margin-bottom: 0.5em;
+    line-height: 1.3;
+  }
+  .cover .report-subtitle {
+    font-size: 14pt;
+    color: #475569;
+    margin-bottom: 2em;
+  }
+  .cover .cover-meta {
+    font-size: 10pt;
+    color: #64748B;
+    line-height: 2;
+  }
+  .cover hr {
+    border: none;
+    border-top: 3px solid #1E293B;
+    width: 60%;
+    margin: 1.5em auto;
+  }
+
+  /* ── Abstract ── */
+  .abstract-block {
+    background: #F1F5F9;
+    border-left: 4px solid #1E293B;
+    padding: 1em 1.2em;
+    margin: 1.5em 0;
+    font-size: 10pt;
+    color: #334155;
+    page-break-inside: avoid;
+  }
+  .abstract-block .abstract-label {
+    font-weight: bold;
+    font-size: 11pt;
+    margin-bottom: 0.4em;
+    display: block;
+  }
+
+  /* ── Section headings (CSS counter for auto-numbering) ── */
+  body { counter-reset: section; }
+  h1.section-heading {
+    counter-increment: section;
+    font-size: 15pt;
+    font-weight: bold;
+    color: #0F172A;
+    margin-top: 2em;
+    margin-bottom: 0.6em;
+    border-bottom: 2px solid #E2E8F0;
+    padding-bottom: 0.3em;
+    page-break-after: avoid;
+  }
+  h1.section-heading::before {
+    content: counter(section) ". ";
+    color: #64748B;
+  }
+
+  /* Sub-section headings */
+  h2.subsection-heading {
+    font-size: 12pt;
+    font-weight: 600;
+    color: #1E293B;
+    margin-top: 1.2em;
+    margin-bottom: 0.4em;
+    page-break-after: avoid;
+  }
+
+  /* ── Body text ── */
+  p.section-content {
+    text-indent: 2em;
+    margin-bottom: 0.8em;
+  }
+
+  /* ── Figure / image placeholder ── */
+  figure.report-figure {
+    text-align: center;
+    margin: 1.5em 0;
+    page-break-inside: avoid;
+  }
+  figure.report-figure img {
+    max-width: 100%;
+    height: auto;
+  }
+  figcaption {
+    font-size: 9pt;
+    color: #64748B;
+    margin-top: 0.4em;
+  }
+
+  /* ── Table ── */
+  table.report-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1em 0;
+    font-size: 9.5pt;
+  }
+  table.report-table th {
+    background: #1E293B;
+    color: #FFF;
+    padding: 0.4em 0.6em;
+    text-align: left;
+  }
+  table.report-table td {
+    border-bottom: 1px solid #E2E8F0;
+    padding: 0.35em 0.6em;
+  }
+  table.report-table tbody tr:nth-child(even) td { background: #F8FAFC; }
+  table.report-table tbody tr { page-break-inside: avoid; }
+
+  /* ── Footer note ── */
+  .footer-note {
+    font-size: 8pt;
+    color: #94A3B8;
+    border-top: 1px dashed #CBD5E1;
+    padding-top: 0.5em;
+    margin-top: 3em;
+  }
+</style>
+</head>
+<body>
+
+<!-- Cover page -->
+<div class="cover">
+  <div class="report-title">{{ title }}</div>
+  {% if subtitle is defined and subtitle %}
+  <div class="report-subtitle">{{ subtitle }}</div>
+  {% endif %}
+  <hr>
+  <div class="cover-meta">
+    作者：{{ author }}<br>
+    生成日期：{{ generated_date | date_cn }}<br>
+    {% if department is defined and department %}
+    部门：{{ department }}<br>
+    {% endif %}
+    {% if version is defined and version %}
+    版本：{{ version }}
+    {% endif %}
+  </div>
+</div>
+
+<!-- Abstract -->
+{% if abstract is defined and abstract %}
+<div class="abstract-block">
+  <span class="abstract-label">摘要</span>
+  {{ abstract }}
+</div>
+{% endif %}
+
+<!-- Report sections -->
+{% for section in sections %}
+<h1 class="section-heading">{{ section.heading }}</h1>
+
+{% if section.content is defined and section.content %}
+<p class="section-content">{{ section.content | safe }}</p>
+{% endif %}
+
+{% if section.image_path is defined and section.image_path %}
+<figure class="report-figure">
+  <img src="{{ section.image_path }}" alt="{{ section.heading }}">
+  {% if section.image_caption is defined and section.image_caption %}
+  <figcaption>{{ section.image_caption }}</figcaption>
+  {% endif %}
+</figure>
+{% endif %}
+
+{% if section.table is defined and section.table %}
+<table class="report-table">
+  {% if section.table.headers is defined %}
+  <thead>
+    <tr>
+      {% for h in section.table.headers %}
+      <th>{{ h }}</th>
+      {% endfor %}
+    </tr>
+  </thead>
+  {% endif %}
+  <tbody>
+    {% for row in section.table.rows %}
+    <tr>
+      {% for cell in row %}
+      <td>{{ cell }}</td>
+      {% endfor %}
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if section.subsections is defined and section.subsections %}
+{% for sub in section.subsections %}
+<h2 class="subsection-heading">{{ sub.heading }}</h2>
+{% if sub.content is defined and sub.content %}
+<p class="section-content">{{ sub.content | safe }}</p>
+{% endif %}
+{% endfor %}
+{% endif %}
+
+{% endfor %}
+
+<!-- Footer note -->
+{% if footer_note is defined and footer_note %}
+<div class="footer-note">{{ footer_note }}</div>
+{% endif %}
+
+</body>
+</html>
