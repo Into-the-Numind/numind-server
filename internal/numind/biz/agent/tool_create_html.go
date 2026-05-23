@@ -34,7 +34,8 @@ func (t *createHTMLTool) Name() string { return "create_html" }
 func (t *createHTMLTool) Description() string {
 	return "Render an HTML page from content or a template and upload it to cloud storage. " +
 		"Returns a download URL. Use for formatted reports, dashboards, or styled documents. " +
-		"Content is HTML-escaped by default for safety."
+		"Content is HTML-escaped by default for safety. " +
+		"For multi-axis or complex static charts, prefer the invoke_skill path."
 }
 func (t *createHTMLTool) UserFacingName() string      { return "生成 HTML 页面" }
 func (t *createHTMLTool) NarrationVerb() string       { return "生成" }
@@ -88,16 +89,23 @@ func (t *createHTMLTool) Execute(ctx context.Context, input ToolInput) (ToolResu
 	}
 
 	// Determine template data.
+	// SECURITY: use plain string fields so html/template automatically HTML-escapes
+	// {{.Title}} and {{.Body}} at render time. Using template.HTML would bypass escaping
+	// and allow XSS if LLM-generated or user-supplied content contains script tags.
+	// If a caller genuinely needs raw HTML injection (trusted internal use only),
+	// they must provide a custom template that explicitly wraps the value with
+	// the template.HTML cast — that is a conscious decision by the template author.
 	var renderData interface{}
 	switch v := in.Content.(type) {
 	case string:
 		// When content is a plain string, inject into default template variables.
+		// Both Title and Body are plain strings — html/template will escape them.
 		renderData = struct {
-			Title template.HTML
-			Body  template.HTML
+			Title string
+			Body  string
 		}{
-			Title: template.HTML(in.Title), //nolint:gosec // Title comes from the caller; escaping handled by html/template
-			Body:  template.HTML(v),        //nolint:gosec // Body content — html/template escapes unless explicitly marked safe
+			Title: in.Title,
+			Body:  v,
 		}
 	default:
 		// Map or other complex type — pass directly as template data.

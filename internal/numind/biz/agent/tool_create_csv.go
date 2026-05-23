@@ -64,15 +64,24 @@ func (t *createCSVTool) Execute(ctx context.Context, input ToolInput) (ToolResul
 	var buf bytes.Buffer
 	w := csv.NewWriter(&buf)
 
-	if len(in.Headers) > 0 {
-		if err := w.Write(in.Headers); err != nil {
+	// Escape headers to prevent formula injection.
+	escapedHeaders := make([]string, len(in.Headers))
+	for i, h := range in.Headers {
+		escapedHeaders[i] = escapeCSVFormula(h)
+	}
+	if len(escapedHeaders) > 0 {
+		if err := w.Write(escapedHeaders); err != nil {
 			return nil, fmt.Errorf("create_csv: write headers: %w", err)
 		}
 	}
 	for _, row := range in.Data {
 		// Rows with > 100 columns are permitted — warn-only log is deferred to avoid
 		// importing the log package; wide tables are unusual but valid.
-		if err := w.Write(row); err != nil {
+		escapedRow := make([]string, len(row))
+		for j, cell := range row {
+			escapedRow[j] = escapeCSVFormula(cell)
+		}
+		if err := w.Write(escapedRow); err != nil {
 			return nil, fmt.Errorf("create_csv: write row: %w", err)
 		}
 	}
@@ -86,4 +95,21 @@ func (t *createCSVTool) Execute(ctx context.Context, input ToolInput) (ToolResul
 	data := append(bom, buf.Bytes()...)
 
 	return uploadGeneratedFile(ctx, data, "text/csv; charset=utf-8", filename, "csv")
+}
+
+// escapeCSVFormula prevents CSV formula injection by prefixing cells that start
+// with formula-trigger characters (=, +, -, @) with a single quote. This forces
+// Excel / LibreOffice to treat the cell as a text literal rather than a formula.
+//
+// This mitigates attacks where a cell value like =HYPERLINK("http://evil.com","click")
+// would be executed by a spreadsheet application when the file is opened.
+func escapeCSVFormula(s string) string {
+	if len(s) == 0 {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@':
+		return "'" + s
+	}
+	return s
 }

@@ -99,7 +99,7 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		{ToolName: "create_png_chart", DisplayName: "图表生成（PNG）", Description: "Generate a static PNG chart from structured data.", Source: "platform", RiskLevel: "safe", Category: "可视化"},
 	}
 	// Append memory tools only when a real store is available (nil guard preserves
-	// the nil-ds unit test that expects exactly 12 tools).
+	// the nil-ds unit test that expects exactly 17 tools).
 	if f.ds != nil {
 		np := memory.NewNotepad(f.ds.UserGlobalMemories())
 		tools = append(tools,

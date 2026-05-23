@@ -120,3 +120,33 @@ func TestCreateCSVTool_IsReadOnly(t *testing.T) {
 	tool := &createCSVTool{}
 	assert.False(t, tool.IsReadOnly(), "file generation tools are not read-only")
 }
+
+// TestCreateCSVTool_FormulaInjection verifies that cells starting with formula-trigger
+// characters (=, +, -, @) are prefixed with a single quote to prevent spreadsheet
+// formula injection attacks (e.g. =HYPERLINK(...)  executed by Excel/LibreOffice).
+func TestCreateCSVTool_FormulaInjection(t *testing.T) {
+	cases := []struct {
+		input   string
+		escaped bool
+	}{
+		{`=HYPERLINK("http://evil.com","click")`, true},
+		{`+1`, true},
+		{`-1`, true},
+		{`@SUM(A1:A10)`, true},
+		{`normal value`, false},
+		{``, false},
+		{`100`, false},
+	}
+	for _, tc := range cases {
+		got := escapeCSVFormula(tc.input)
+		if tc.escaped {
+			assert.True(t, len(got) > 0 && got[0] == '\'',
+				"cell %q should be prefixed with single quote, got %q", tc.input, got)
+			assert.Equal(t, "'"+tc.input, got,
+				"escaped cell content mismatch for %q", tc.input)
+		} else {
+			assert.Equal(t, tc.input, got,
+				"safe cell %q must not be modified", tc.input)
+		}
+	}
+}
