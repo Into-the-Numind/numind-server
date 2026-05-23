@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image/color"
+	"math"
 
 	chart "github.com/wcharczuk/go-chart/v2"
 	"gonum.org/v1/plot"
@@ -104,7 +105,8 @@ func (t *createPNGChartTool) Description() string {
 	return "Generate a static PNG chart (bar, line, pie, or scatter) from structured data and upload it. " +
 		"Returns a download URL. Use for data visualization in reports, analysis summaries, or presentation slides. " +
 		"Labels must be in English or ASCII for correct rendering (Chinese labels may not render in V1; use V2 when available). " +
-		"For interactive HTML charts, use the create_interactive_chart skill instead."
+		"For interactive HTML charts, use the create_interactive_chart skill instead. " +
+		"For multi-axis or complex static charts, prefer the invoke_skill path."
 }
 
 func (t *createPNGChartTool) UserFacingName() string { return "生成图表（PNG）" }
@@ -219,6 +221,12 @@ func (t *createPNGChartTool) Execute(ctx context.Context, input ToolInput) (Tool
 		return chartFriendlyError("create_png_chart: render failed: " + renderErr.Error()), nil
 	}
 
+	// Guard against unexpectedly large PNG outputs (e.g. huge canvas with many data points).
+	const maxPNGSizeBytes = 10 * 1024 * 1024 // 10 MB
+	if int64(len(pngBytes)) > maxPNGSizeBytes {
+		return chartFriendlyError("create_png_chart: 生成的 PNG 文件超过 10MB 限制，请减少数据量或降低图表分辨率"), nil
+	}
+
 	// Determine output filename.
 	outFilename := req.Filename
 	if outFilename == "" {
@@ -262,7 +270,9 @@ const (
 	chartDefaultWidth  = 800
 	chartDefaultHeight = 600
 	chartMinDim        = 100
-	chartMaxDim        = 4096
+	// chartMaxDim caps image dimensions to prevent memory exhaustion.
+	// Override spec §5 max 4000 → 4096 (power of 2, equivalent practical limit).
+	chartMaxDim = 4096
 )
 
 // resolveChartDimensions extracts width/height from options with clamping.
@@ -376,6 +386,12 @@ func renderBarChart(req createPNGChartInput, w, h int) ([]byte, error) {
 	barWidth := vg.Points(barWidthFrac * 40) // scale to vg points
 
 	for i, s := range series {
+		if len(s.Values) == 0 {
+			return nil, fmt.Errorf("renderBarChart: series[%d] %q has empty Values", i, s.Name)
+		}
+		if err := validateSeriesValues(s.Values, i, s.Name); err != nil {
+			return nil, fmt.Errorf("renderBarChart: %w", err)
+		}
 		vals := alignValues(s.Values, labels)
 		bars, err := plotter.NewBarChart(plotter.Values(vals), barWidth)
 		if err != nil {
@@ -410,6 +426,12 @@ func renderLineChart(req createPNGChartInput, w, h int) ([]byte, error) {
 	labels := req.Data.Labels
 
 	for i, s := range series {
+		if len(s.Values) == 0 {
+			return nil, fmt.Errorf("renderLineChart: series[%d] %q has empty Values", i, s.Name)
+		}
+		if err := validateSeriesValues(s.Values, i, s.Name); err != nil {
+			return nil, fmt.Errorf("renderLineChart: %w", err)
+		}
 		vals := alignValues(s.Values, labels)
 		pts := make(plotter.XYs, len(vals))
 		for j, v := range vals {
@@ -451,6 +473,15 @@ func renderScatterChart(req createPNGChartInput, w, h int) ([]byte, error) {
 	series := req.Data.Series
 
 	for i, s := range series {
+		if len(s.Values) == 0 {
+			return nil, fmt.Errorf("renderScatterChart: series[%d] %q has empty Values", i, s.Name)
+		}
+		if err := validateSeriesValues(s.Values, i, s.Name); err != nil {
+			return nil, fmt.Errorf("renderScatterChart: %w", err)
+		}
+		if err := validateSeriesValues(s.XValues, i, s.Name); err != nil {
+			return nil, fmt.Errorf("renderScatterChart XValues: %w", err)
+		}
 		if len(s.XValues) > 0 && len(s.XValues) != len(s.Values) {
 			return nil, fmt.Errorf(
 				"renderScatterChart series[%d] %q: x_values length (%d) != values length (%d)",
@@ -498,14 +529,13 @@ func renderPieChart(req createPNGChartInput, w, h int) ([]byte, error) {
 	if len(series) == 1 {
 		// Standard case: one series, labels are slice names.
 		s := series[0]
+		if err := validateSeriesValues(s.Values, 0, s.Name); err != nil {
+			return nil, fmt.Errorf("renderPieChart: %w", err)
+		}
 		for j, v := range s.Values {
-			lbl := ""
+			lbl := fmt.Sprintf("Slice %d", j+1)
 			if j < len(labels) {
 				lbl = labels[j]
-			} else if j < len(req.Data.Labels) {
-				lbl = fmt.Sprintf("Slice %d", j+1)
-			} else {
-				lbl = fmt.Sprintf("Slice %d", j+1)
 			}
 			if v > 0 { // go-chart/v2 drops zero values anyway, be explicit
 				values = append(values, chart.Value{Label: lbl, Value: v})
@@ -514,6 +544,9 @@ func renderPieChart(req createPNGChartInput, w, h int) ([]byte, error) {
 	} else {
 		// Multi-series: use series names as labels, sum or first value per series.
 		for i, s := range series {
+			if err := validateSeriesValues(s.Values, i, s.Name); err != nil {
+				return nil, fmt.Errorf("renderPieChart: %w", err)
+			}
 			var sum float64
 			for _, v := range s.Values {
 				sum += v
@@ -550,6 +583,21 @@ func renderPieChart(req createPNGChartInput, w, h int) ([]byte, error) {
 }
 
 // ── Utility ──────────────────────────────────────────────────────────────────
+
+// validateSeriesValues checks each value in a series for NaN or Inf, returning
+// a descriptive error if any are found. This must be called before passing values
+// to gonum/plot or go-chart/v2 which can panic or produce invalid PNGs.
+func validateSeriesValues(values []float64, seriesIdx int, seriesName string) error {
+	for i, v := range values {
+		if math.IsNaN(v) {
+			return fmt.Errorf("series[%d] %q value[%d] is NaN — all values must be finite numbers", seriesIdx, seriesName, i)
+		}
+		if math.IsInf(v, 0) {
+			return fmt.Errorf("series[%d] %q value[%d] is Inf — all values must be finite numbers", seriesIdx, seriesName, i)
+		}
+	}
+	return nil
+}
 
 // alignValues truncates or pads s.Values to match the length of labels.
 // Per spec: "warn + truncate to shorter" for bar/line/pie (no error).

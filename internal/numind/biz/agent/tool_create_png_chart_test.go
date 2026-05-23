@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -41,9 +42,6 @@ func executeChart(t *testing.T, req createPNGChartInput) (chartCreateOutput, err
 	}
 	return out, nil
 }
-
-// _ is a package-level reference to ensure "fmt" import is used by this file.
-var _ = fmt.Errorf
 
 // ── Bar chart tests ──────────────────────────────────────────────────────────
 
@@ -354,4 +352,75 @@ func TestRenderScatterChart_ProducesValidPNG(t *testing.T) {
 	require.NoError(t, err)
 	require.Greater(t, len(pngBytes), 0)
 	imageDecodeValidPNG(t, pngBytes)
+}
+
+// ── 4.3 review fix tests ─────────────────────────────────────────────────────
+
+// TestRenderPieChart_AllZeroValues verifies that renderPieChart returns an error
+// when all values are zero (no positive slices to display).
+func TestRenderPieChart_AllZeroValues(t *testing.T) {
+	req := createPNGChartInput{
+		ChartType: "pie",
+		Data: pngChartData{
+			Labels: []string{"A", "B", "C"},
+			Series: []pngChartSeries{{Values: []float64{0, 0, 0}}},
+		},
+	}
+	_, err := renderPieChart(req, 400, 400)
+	require.Error(t, err, "renderPieChart with all-zero values must return an error")
+	assert.Contains(t, err.Error(), "no positive values")
+}
+
+// TestRenderBarChart_EmptySeriesValues verifies that renderBarChart returns an
+// error when a series has empty Values (not nil, but len == 0).
+func TestRenderBarChart_EmptySeriesValues(t *testing.T) {
+	req := createPNGChartInput{
+		ChartType: "bar",
+		Data: pngChartData{
+			Labels: []string{"X", "Y"},
+			Series: []pngChartSeries{
+				{Name: "empty series", Values: []float64{}},
+			},
+		},
+	}
+	_, err := renderBarChart(req, 400, 300)
+	require.Error(t, err, "renderBarChart with empty Values must return an error")
+	assert.Contains(t, err.Error(), "empty Values")
+}
+
+// TestRenderBarChart_NaNValues verifies that NaN values in series data produce
+// an error rather than panicking or producing invalid PNG.
+// Note: JSON does not support NaN/Inf, so these tests bypass the JSON input
+// path and call the render functions directly.
+func TestRenderBarChart_NaNValues(t *testing.T) {
+	req := createPNGChartInput{
+		ChartType: "bar",
+		Data: pngChartData{
+			Labels: []string{"A", "B"},
+			Series: []pngChartSeries{
+				{Name: "with NaN", Values: []float64{1.0, math.NaN()}},
+			},
+		},
+	}
+	_, err := renderBarChart(req, 400, 300)
+	require.Error(t, err, "renderBarChart must return error for NaN values")
+	assert.Contains(t, err.Error(), "NaN")
+}
+
+// TestRenderLineChart_InfValues verifies that Inf values produce an error.
+// Note: JSON does not support NaN/Inf, so these tests bypass the JSON input
+// path and call the render functions directly.
+func TestRenderLineChart_InfValues(t *testing.T) {
+	req := createPNGChartInput{
+		ChartType: "line",
+		Data: pngChartData{
+			Labels: []string{"A", "B"},
+			Series: []pngChartSeries{
+				{Name: "with Inf", Values: []float64{math.Inf(1), 2.0}},
+			},
+		},
+	}
+	_, err := renderLineChart(req, 400, 300)
+	require.Error(t, err, "renderLineChart must return error for Inf values")
+	assert.Contains(t, err.Error(), "Inf")
 }
