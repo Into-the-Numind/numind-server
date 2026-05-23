@@ -75,14 +75,22 @@ type ListOptions struct {
 
 // SubscriptionWithMarketplace 是 ListMySubscriptions 的 JOIN 结果（应用层组装，
 // 不走 SQL JOIN — SQLite 测试更稳，code 也好读）。
+//
+// AgentCount 由 biz 层负责填充（JOIN agent_skill_binding 数订阅方装载该 cloned_skill
+// 的 agent 数量）；store 返回时此字段恒为 0。spec §3.1 ListMySubscriptions 响应类型
+// 含 agent_count，biz 层 hydration 后才完整。
 type SubscriptionWithMarketplace struct {
 	Subscription model.SkillSubscription `json:"subscription"`
 	Marketplace  model.SkillMarketplace  `json:"marketplace"`
+	AgentCount   int                     `json:"agent_count"` // hydrated by biz/marketplace.ListMySubscriptions
 }
 
 type marketplaceStore struct {
 	db *gorm.DB
 }
+
+// 编译期接口实现断言（与 agent_definition.go 等现有 store 模式一致）。
+var _ IMarketplaceStore = (*marketplaceStore)(nil)
 
 // NewMarketplaceStore 构造 marketplace store。
 func NewMarketplaceStore(db *gorm.DB) IMarketplaceStore {
@@ -103,7 +111,21 @@ func (s *marketplaceStore) Create(ctx context.Context, mp *model.SkillMarketplac
 	if mp == nil {
 		return errors.New("marketplaceStore.Create: nil input")
 	}
-	return s.db.WithContext(ctx).Create(mp).Error
+	// database.md §6 default:true bool gotcha — SkillMarketplace.IsPublic has default:1.
+	// If caller wants IsPublic=false, the zero-value false is treated by GORM as "field not
+	// set" and DDL DEFAULT TRUE wins. Save caller's intent before Create and fix up after.
+	// Pattern mirrors agentDefinitionStore.CreateTx (agent_definition.go).
+	wantPublic := mp.IsPublic
+	if err := s.db.WithContext(ctx).Create(mp).Error; err != nil {
+		return err
+	}
+	if !wantPublic && mp.IsPublic {
+		if err := s.db.WithContext(ctx).Model(mp).UpdateColumn("is_public", false).Error; err != nil {
+			return fmt.Errorf("marketplaceStore.Create: is_public fixup failed: %w", err)
+		}
+		mp.IsPublic = false
+	}
+	return nil
 }
 
 func (s *marketplaceStore) GetByID(ctx context.Context, id uint) (*model.SkillMarketplace, error) {

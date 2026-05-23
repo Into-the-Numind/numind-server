@@ -395,6 +395,81 @@ func TestMarketplaceStore_ListMySubscriptions_CrossTenantIsolation(t *testing.T)
 	assert.Empty(t, itemsC)
 }
 
+func TestMarketplaceStore_Create_WantPublicFalse_HonoredDespiteDefaultTrue(t *testing.T) {
+	// Regression for database.md §6 default:true gotcha — IsPublic=false must persist
+	// despite SkillMarketplace.IsPublic GORM tag default:1.
+	s, _ := newTestMarketplaceStore(t)
+	ctx := context.Background()
+
+	mp := sampleMarketplace("DraftHidden")
+	mp.IsPublic = false
+	require.NoError(t, s.Create(ctx, mp))
+
+	got, err := s.GetByID(ctx, mp.ID)
+	require.NoError(t, err)
+	assert.False(t, got.IsPublic, "wantPublic=false must persist; DEFAULT TRUE must not silently flip")
+	assert.False(t, mp.IsPublic, "in-memory struct must reflect persisted value")
+}
+
+func TestMarketplaceStore_UpdateIsPublic_HappyToggle(t *testing.T) {
+	s, _ := newTestMarketplaceStore(t)
+	ctx := context.Background()
+
+	mp := sampleMarketplace("Item-A")
+	require.NoError(t, s.Create(ctx, mp))
+	assert.True(t, mp.IsPublic)
+
+	require.NoError(t, s.UpdateIsPublic(ctx, mp.ID, false))
+	got, _ := s.GetByID(ctx, mp.ID)
+	assert.False(t, got.IsPublic)
+
+	require.NoError(t, s.UpdateIsPublic(ctx, mp.ID, true))
+	got, _ = s.GetByID(ctx, mp.ID)
+	assert.True(t, got.IsPublic)
+}
+
+func TestMarketplaceStore_List_CategoryFilter_SkippedOnSQLite(t *testing.T) {
+	// JSON_CONTAINS / JSON_QUOTE require SQLite JSON1 extension, which isn't loaded
+	// in the GORM sqlite driver build used by tests. In production (MySQL 8) this
+	// branch is exercised; covered by S5 dev integration test (Playwright AC-11 →
+	// browse page 搜索 "销售调研" must hit JSON_CONTAINS path indirectly via List).
+	t.Skip("JSON_CONTAINS requires MySQL JSON or SQLite JSON1 extension; verify in dev integration")
+}
+
+func TestMarketplaceStore_List_PopularSort(t *testing.T) {
+	s, _ := newTestMarketplaceStore(t)
+	ctx := context.Background()
+
+	a := sampleMarketplace("A")
+	require.NoError(t, s.Create(ctx, a))
+	b := sampleMarketplace("B")
+	require.NoError(t, s.Create(ctx, b))
+	c := sampleMarketplace("C")
+	require.NoError(t, s.Create(ctx, c))
+
+	require.NoError(t, s.IncrementSubscribeCount(ctx, nil, b.ID, 10))
+	require.NoError(t, s.IncrementSubscribeCount(ctx, nil, c.ID, 5))
+	require.NoError(t, s.IncrementSubscribeCount(ctx, nil, a.ID, 3))
+
+	items, _, err := s.List(ctx, ListOptions{Sort: "popular", Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, items, 3)
+	assert.Equal(t, b.ID, items[0].ID, "highest subscribe_count first")
+	assert.Equal(t, c.ID, items[1].ID)
+	assert.Equal(t, a.ID, items[2].ID)
+}
+
+func TestMarketplaceStore_IncrementSubscribeCount_ZeroDeltaNoop(t *testing.T) {
+	s, _ := newTestMarketplaceStore(t)
+	ctx := context.Background()
+
+	mp := sampleMarketplace("Item-A")
+	require.NoError(t, s.Create(ctx, mp))
+	require.NoError(t, s.IncrementSubscribeCount(ctx, nil, mp.ID, 0))
+	got, _ := s.GetByID(ctx, mp.ID)
+	assert.Equal(t, uint(0), got.SubscribeCount)
+}
+
 func TestMarketplaceStore_ListMySubscriptions_Pagination(t *testing.T) {
 	s, _ := newTestMarketplaceStore(t)
 	ctx := context.Background()
