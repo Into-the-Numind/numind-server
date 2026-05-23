@@ -4,6 +4,7 @@ import (
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/credit"
 	customerbiz "numind-server/internal/numind/biz/customer"
+	marketplacebiz "numind-server/internal/numind/biz/marketplace"
 	"numind-server/internal/numind/biz/membership"
 	skillbiz "numind-server/internal/numind/biz/skill"
 	artifactbiz "numind-server/internal/numind/biz/skill/artifact"
@@ -14,6 +15,7 @@ import (
 	creditcontroller "numind-server/internal/numind/controller/v1/credit"
 	customercontroller "numind-server/internal/numind/controller/v1/customer"
 	llmcontroller "numind-server/internal/numind/controller/v1/llm"
+	marketplacecontroller "numind-server/internal/numind/controller/v1/marketplace"
 	monitorcontroller "numind-server/internal/numind/controller/v1/monitor"
 	ordercontroller "numind-server/internal/numind/controller/v1/order"
 	paymentcontroller "numind-server/internal/numind/controller/v1/payment"
@@ -432,6 +434,34 @@ func installNumindRouters(g *gin.Engine) error {
 			agentsV2.POST("", artifactCtrl.AttachSkill)
 			agentsV2.DELETE("/:skill_id", artifactCtrl.DetachSkill)
 			agentsV2.PUT("/reorder", artifactCtrl.ReorderSkills)
+		}
+	}
+
+	// Skill marketplace 系统 v2 (agent-mode-v2-skill-marketplace, spec §6.1)
+	//   - /v1/marketplace/* — 跨租户 Skill 发布/浏览/订阅
+	// 全部 user_token middleware；父账户专属（biz 层 verifyParent 拦子账户 → 403）。
+	// 依赖 #1 artifact biz（订阅时 clone skill 到订阅方租户）。
+	{
+		mpSvc := marketplacebiz.NewService(
+			store.S.Marketplaces(),
+			artifactbiz.NewService(store.S.DB()),
+			store.S.Users(),
+			store.S.DB(),
+		)
+		mpCtrl := marketplacecontroller.NewController(mpSvc)
+
+		mp := authGroup.Group("/marketplace")
+		{
+			mp.POST("/sanitize-preview", mpCtrl.SanitizePreview)
+			mp.POST("/publish", mpCtrl.Publish)
+			mp.GET("/list", mpCtrl.List)
+			// /my-subscriptions MUST be registered BEFORE /:id so Gin doesn't
+			// capture it as the id path parameter (spec §6.1 Gin path order).
+			mp.GET("/my-subscriptions", mpCtrl.ListMySubscriptions)
+			mp.GET("/:id", mpCtrl.Get)
+			mp.POST("/:id/unpublish", mpCtrl.Unpublish)
+			mp.POST("/:id/subscribe", mpCtrl.Subscribe)
+			mp.DELETE("/:id/unsubscribe", mpCtrl.Unsubscribe)
 		}
 	}
 

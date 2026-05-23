@@ -57,6 +57,7 @@ type IStore interface {
 	// 删了 IAgentCompactV2Store，V2 prevention 状态在 adapter compactor 内存里自管）。
 	ToolArtifact() IAgentToolArtifactStore
 	AgentAttachments() IAgentAttachmentStore // V1.5 multimodal fallback task 1.2
+	Marketplaces() IMarketplaceStore         // agent-mode-v2-skill-marketplace — skill_marketplace + skill_subscription
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -268,6 +269,12 @@ func (ds *datastore) AgentMessageSearches() IAgentMessageSearchStore {
 // AgentAttachments 返回一个实现了 IAgentAttachmentStore 接口的实例（V1.5 task 1.2）。
 func (ds *datastore) AgentAttachments() IAgentAttachmentStore {
 	return newAgentAttachmentStore(ds.db)
+}
+
+// Marketplaces 返回一个实现了 IMarketplaceStore 接口的实例
+// （agent-mode-v2-skill-marketplace — skill_marketplace + skill_subscription）。
+func (ds *datastore) Marketplaces() IMarketplaceStore {
+	return NewMarketplaceStore(ds.db)
 }
 
 // Compliance 返回一个实现了 IComplianceStore 接口的实例（#13 agent-mode-compliance-3layer）。
