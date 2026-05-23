@@ -122,14 +122,16 @@ features:
     task_3_8_temporal: /Users/zhiyuchen/Downloads/有数-Agent-Mode-V1.5-NDF-spec/03-memory/task-08-temporal-tree.md
   progress:
     total_tasks: 8
-    completed_tasks: 2
-    reviewed_tasks: 2
-    current_task: 'Wave 1 done (3.1 + 3.2 reviewed + P1/P2 fixed). Moving to Wave 2: task 3.3 LLM extraction async pipeline.'
+    completed_tasks: 3
+    reviewed_tasks: 3
+    current_task: 'Wave 2 done (3.3 reviewed + 4 P1 + 4 P2 fixed). Moving to Wave 3: task 3.4 Top-5 side-query selector.'
   commits:
   - '78d78026: feat(agent-memory): Task 3.1 AGENT.md cascade loader — spec PASS_WITH_P1 / quality PASS_WITH_P1'
   - 'f9bac2d6: feat(agent-memory): Task 3.2 memory schema + GORM + store — spec PASS / quality PASS'
   - '163193bf: chore(agent-memory): Task 3.2 P2 fix (UpdateCachedInsight 注释 / ListOpts test cleanup + total_facts 断言 / idx_user_subject_confidence trade-off 文档化)'
   - '8279d631: fix(agent-memory): Task 3.1 P1+P2 fix (## Memories header 段位明确 / runner_agentmd_test.go 集成测试 / io.LimitedReader OOM 防护 / strings.ToValidUTF8 UTF-8 边界修复 / TotalCap test / ctx cancellation / TotalChars docstring)'
+  - '0c1c1624: feat(agent-memory): Task 3.3 LLM extraction async pipeline (5-worker pool + 30s debounce + hash dedup + narrative rebuild + agent.memory_extract profile 22 / atomic metrics / Langfuse memory.extract trace) — spec PASS_WITH_P1 / quality PASS_WITH_P1'
+  - 'e23eb839: fix(agent-memory): Task 3.3 P1+P2 fix (Enqueue stopCtx guard 防 send-on-closed / biz.CloseMemoryExtractor shutdown wire / persistFacts EscapeForStorage / short-circuit omit assistant msg / chat seam mutex / 多个 docstring 说明)'
   decisions:
   - 'D6 (parent): AGENT.md cascade 只激活 2 层（部署级 + 用户全局），路径 3-6 V2 扩展（仅注释 hook）。'
   - 'D7 (parent): B2B2C 父子账户 memory 完全隔离 — schema 不加 parent_user_id 字段，store interface 只接受 userID 参数，父账户不会看到/聚合子账户 memory（团队聚合需求走管理后台报表，不污染 memory 系统）。'
