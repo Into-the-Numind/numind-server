@@ -2,14 +2,78 @@ package memory
 
 import (
 	"strings"
+	"sync/atomic"
 	"unicode"
-
-	"github.com/spf13/viper"
 )
 
 // TrivialMaxCharsDefault is the rune-length cap above which inputs are never
 // considered trivial. Spec §关键参数 default = 8 runes.
 const TrivialMaxCharsDefault = 8
+
+// TrivialConfig holds the trivial-detector tuning knobs. Loaded from viper at
+// NewBiz boot via LoadTrivialConfigFromViper + SetTrivialConfig, so the
+// per-request hot path (IsTrivial) never touches viper's RWMutex.
+//
+// Mirrors CadenceConfig pattern (sibling: cadence.go).
+type TrivialConfig struct {
+	// MaxChars is the upper bound on rune count for the all-emoji trivial
+	// branch. Inputs longer than this rune count are never considered
+	// trivial (an emoji-only message of 9+ runes is presumed substantive
+	// reaction, not a thumbs-up). Default = TrivialMaxCharsDefault (8).
+	MaxChars int
+}
+
+// DefaultTrivialConfig returns the spec-defined defaults.
+func DefaultTrivialConfig() TrivialConfig {
+	return TrivialConfig{MaxChars: TrivialMaxCharsDefault}
+}
+
+// LoadTrivialConfigFromViper reads the trivial config from a viperGetter,
+// falling back to DefaultTrivialConfig values for any unset / non-positive key.
+//
+// Config layout (config_*.yaml):
+//
+//	agent:
+//	  memory:
+//	    trivial_max_chars: 8
+func LoadTrivialConfigFromViper(v viperGetter) TrivialConfig {
+	cfg := DefaultTrivialConfig()
+	if n := v.GetInt("agent.memory.trivial_max_chars"); n > 0 {
+		cfg.MaxChars = n
+	}
+	return cfg
+}
+
+// trivialCfg holds the active TrivialConfig. Stored as an atomic.Value so
+// IsTrivial (per-request hot path) reads without taking viper's RWMutex. Wire
+// once at NewBiz via SetTrivialConfig; safe to call SetTrivialConfig multiple
+// times during tests.
+var trivialCfg atomic.Value // holds TrivialConfig
+
+func init() {
+	trivialCfg.Store(DefaultTrivialConfig())
+}
+
+// SetTrivialConfig replaces the active trivial config. Intended for one-shot
+// wiring at NewBiz time. Concurrent-safe via atomic.Value.
+//
+// Tests can call this with custom values before invoking IsTrivial; production
+// code calls it exactly once in biz.NewBiz.
+func SetTrivialConfig(cfg TrivialConfig) {
+	if cfg.MaxChars <= 0 {
+		cfg.MaxChars = TrivialMaxCharsDefault
+	}
+	trivialCfg.Store(cfg)
+}
+
+// getTrivialCfg loads the current trivial config without contention.
+func getTrivialCfg() TrivialConfig {
+	v, ok := trivialCfg.Load().(TrivialConfig)
+	if !ok {
+		return DefaultTrivialConfig()
+	}
+	return v
+}
 
 // trivialExactRuneLimit caps the rune count for the exact-match path. Set
 // generously so the longest map key ("thanks" = 6 runes) plus a small safety
@@ -105,12 +169,15 @@ func isAsciiSymbolNoise(r rune) bool {
 //
 // Blocks covered (per Unicode 15):
 //
-//	0x1F000–0x1FFFF — Supplementary Symbols and Pictographs
-//	0x2600–0x27BF   — Miscellaneous Symbols & Dingbats (e.g. ✅, ☀, ✔)
+//	0x1F000–0x1FFFF — Supplementary Symbols and Pictographs. This SINGLE wide
+//	                  range subsumes Regional Indicator Symbols (0x1F1E6–0x1F1FF,
+//	                  i.e. flags 🇨🇳🇺🇸 etc.) so they don't need a separate clause.
+//	0x2600–0x27BF   — Miscellaneous Symbols & Dingbats (e.g. ✅, ☀, ✔). NOTE:
+//	                  also includes non-emoji like ★ (U+2605) and ☆ (U+2606); we
+//	                  accept these as cheap false positives — see godoc above.
 //	0x2300–0x23FF   — Misc Technical (e.g. ⏰)
 //	0xFE0F          — Variation Selector-16 (emoji presentation modifier)
 //	0x200D          — Zero Width Joiner (compound emoji like 👨‍👩‍👧)
-//	0x1F1E6–0x1F1FF — Regional Indicator Symbols (flags)
 func isEmojiRune(r rune) bool {
 	if r >= 0x1F000 && r <= 0x1FFFF {
 		return true
@@ -196,10 +263,8 @@ func IsTrivial(userInput string) bool {
 	}
 
 	// Step 4: short all-emoji input (≤ trivial_max_chars) → trivial.
-	maxChars := TrivialMaxCharsDefault
-	if v := viper.GetInt("agent.memory.trivial_max_chars"); v > 0 {
-		maxChars = v
-	}
+	// Hot path: read via atomic.Value (no viper RWMutex contention).
+	maxChars := getTrivialCfg().MaxChars
 	if n <= maxChars && isAllEmojiOrCommon(norm) {
 		return true
 	}

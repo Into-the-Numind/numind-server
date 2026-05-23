@@ -524,11 +524,21 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 			log.Warnw("AgentRunner.Run WriteTurn failed on short-circuit", "agent_run_id", run.ID, "error", wErr)
 		}
 		// Task 3.5: index messages for FULLTEXT search. Hook is failure-tolerant
-		// internally — never blocks the run.
+		// internally — never blocks the run. Runs in a detached goroutine with a
+		// background context (request ctx cancel must not abort indexing — search
+		// rows are derived data and best-effort). Two DB round-trips inside
+		// IndexAgentRun would otherwise add to p99 latency of large runs.
 		if r.searchService != nil {
 			scRun := *run
 			scRun.Messages = datatypes.JSON(shortCircuitMessages)
-			r.searchService.IndexAgentRun(ctx, scRun)
+			go func() {
+				defer func() {
+					if rec := recover(); rec != nil {
+						log.Errorw("AgentRunner search.IndexAgentRun panic on short-circuit", "agent_run_id", scRun.ID, "panic", rec)
+					}
+				}()
+				r.searchService.IndexAgentRun(context.Background(), scRun)
+			}()
 		}
 		// Hook action propagation on short-circuit path (preserves TestRunner_Run_RegistryStopPropagatesToTerminalReason).
 		shortTerminalReason := TerminalCompleted
@@ -784,11 +794,21 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		log.Warnw("AgentRunner.Run WriteTurn failed", "agent_run_id", run.ID, "error", err)
 	}
 	// Task 3.5: index messages for FULLTEXT search. Hook is failure-tolerant
-	// internally — never blocks the run.
+	// internally — never blocks the run. Runs in a detached goroutine with a
+	// background context (request ctx cancel must not abort indexing — search
+	// rows are derived data and best-effort). Two DB round-trips inside
+	// IndexAgentRun would otherwise add to p99 latency of large runs.
 	if r.searchService != nil {
 		mainRun := *run
 		mainRun.Messages = datatypes.JSON(finalMessages)
-		r.searchService.IndexAgentRun(ctx, mainRun)
+		go func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					log.Errorw("AgentRunner search.IndexAgentRun panic", "agent_run_id", mainRun.ID, "panic", rec)
+				}
+			}()
+			r.searchService.IndexAgentRun(context.Background(), mainRun)
+		}()
 	}
 
 	// M-A3 wire: async SyncTurn after successful completion.

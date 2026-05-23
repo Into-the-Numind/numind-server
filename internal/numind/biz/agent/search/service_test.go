@@ -378,6 +378,43 @@ func TestService_Search_UserIDRequired(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestService_Search_AsciiSnippet exercises the Service.Search → snippet path
+// under SQLite's LIKE fallback (SQLite does not support MySQL FULLTEXT
+// MATCH AGAINST). ASCII content + ASCII query both survive the LIKE %query%
+// match, so we can assert end-to-end snippet wrapping behavior in local CI
+// without touching MySQL.
+//
+// Complements TestService_Search_WithSnippet (Chinese case, often skipped under
+// SQLite when LIKE happens to miss). This is a guaranteed pass under SQLite.
+//
+// Snippet assertion: makeSnippet tokenizes the query into ngrams (n=2 to
+// mirror MySQL ngram_token_size), so "John" → ["Jo","oh","hn"]. We assert at
+// least one wrapped ngram + that the original "John" characters survive once
+// the <mark> tags are stripped — same pattern as TestSnippet_MultiTokenChinese.
+func TestService_Search_AsciiSnippet(t *testing.T) {
+	st, db := newTestStore(t)
+	now := time.Now()
+	seedSearchRow(t, db, 1, 100, "s1", "u1", "user",
+		"contract follow-up with John Smith from XYZ Corp", now)
+
+	svc := NewService(st, nil)
+	results, total, err := svc.Search(context.Background(), SearchOpts{
+		UserID: 1, Query: "John", Limit: 10,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, total, "ASCII LIKE %John% must find the seeded row under SQLite fallback")
+	require.Len(t, results, 1)
+
+	snippet := results[0].Snippet
+	assert.Contains(t, snippet, "<mark>", "snippet must include at least one <mark> wrap")
+	hasNgram := strings.Contains(snippet, "<mark>Jo</mark>") ||
+		strings.Contains(snippet, "<mark>oh</mark>") ||
+		strings.Contains(snippet, "<mark>hn</mark>")
+	assert.Truef(t, hasNgram, "expected at least one ngram-wrapped match; got %q", snippet)
+	stripped := strings.NewReplacer("<mark>", "", "</mark>", "").Replace(snippet)
+	assert.Contains(t, stripped, "John", "original 'John' characters must survive ngram wrapping")
+}
+
 // ─── BulkInsert + IndexAgentRun smoke ─────────────────────────────────────
 
 func TestService_BulkInsert_EmptyNoOp(t *testing.T) {

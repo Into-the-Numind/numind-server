@@ -383,6 +383,21 @@ func NewBiz(ds store.IStore) *biz {
 	// + 3-layer fallback (LLM err / parse err / store err) keep cost ≈ ¥0.001/turn.
 	memorySelector := memory.NewSelectorService(ds.UserMemoryFacts())
 
+	// Task 3.6 (agent-mode-v15-memory-layer-a): register explicit defaults for
+	// the memory cadence + trivial knobs so config_*.yaml callers see the
+	// spec-defined fallback values without each consumer hard-coding them.
+	// Spec Step 1 explicit requirement; sibling Load* helpers also fall back
+	// gracefully when keys are missing, so the SetDefault is defense-in-depth.
+	viper.SetDefault("agent.memory.dialectic_cooldown_seconds", int(memory.DefaultDialecticCooldown/time.Second))
+	viper.SetDefault("agent.memory.dialectic_max_cooldown_seconds", int(memory.DefaultDialecticMaxCooldown/time.Second))
+	viper.SetDefault("agent.memory.dialectic_min_new_facts", memory.DefaultDialecticMinNewFacts)
+	viper.SetDefault("agent.memory.trivial_max_chars", memory.TrivialMaxCharsDefault)
+
+	// Task 3.6 trivial-detector hot-path config wire: load once from viper +
+	// stash via SetTrivialConfig so IsTrivial reads through atomic.Value
+	// (no viper RWMutex contention on the request path).
+	memory.SetTrivialConfig(memory.LoadTrivialConfigFromViper(viper.GetViper()))
+
 	// Task 3.6 (agent-mode-v15-memory-layer-a): construct CadenceService — the
 	// dialectic-cadence gate. Read-only over user_memory_profile; consumed by
 	// the Task 3.7 dialectic service via b.MemoryCadence() (no AgentRunner wire,

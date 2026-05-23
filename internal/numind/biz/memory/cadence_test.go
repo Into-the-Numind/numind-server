@@ -103,6 +103,22 @@ func TestShouldRunDialectic(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "ExactlyMinNewFacts", // sinceLast=7min, newFacts=3 (== threshold) → true
+			// Boundary pinned by spec §设计要点 "3 new facts 触发":
+			// the comparison is `>=`, so exactly 3 new facts must trigger.
+			// Off-by-one regression would flip this to false.
+			setupProfile: func(t *testing.T, ps store.IUserMemoryProfileStore) {
+				at := now.Add(-7 * time.Minute)
+				require.NoError(t, ps.Upsert(context.Background(), &model.UserMemoryProfile{
+					UserID:                 uid,
+					TotalFacts:             13, // 10 cached + 3 new = exact threshold
+					CachedInsightFactCount: 10,
+					CachedInsightAt:        &at,
+				}))
+			},
+			want: true,
+		},
+		{
 			name: "NotEnoughNewFacts", // sinceLast=7min, newFacts=1 → false
 			setupProfile: func(t *testing.T, ps store.IUserMemoryProfileStore) {
 				at := now.Add(-7 * time.Minute)

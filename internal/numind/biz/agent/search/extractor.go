@@ -3,8 +3,18 @@ package search
 import (
 	"encoding/json"
 
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 )
+
+// maxIndexableMessagesBytes caps run.Messages size before extractor will
+// attempt full JSON unmarshal. Above this, we skip indexing (search remains
+// best-effort; the search index missing one outlier run is acceptable, but
+// allocating tens of MB on the request hot path is not).
+//
+// Chosen at 10 MiB: a normal multi-turn run is < 200 KB; runs above this
+// threshold are almost certainly pathological (runaway tool output, etc.).
+const maxIndexableMessagesBytes = 10 << 20 // 10 MiB
 
 // messageEnvelope is the minimal shape of one entry in agent_run.messages JSON.
 // We only deserialize the fields needed for indexing. Unknown fields are ignored.
@@ -33,6 +43,17 @@ type messageEnvelope struct {
 // The returned slice is safe to feed to IAgentMessageSearchStore.BulkInsert.
 func extractSearchRows(run model.AgentRun) []model.AgentMessageSearch {
 	if len(run.Messages) == 0 {
+		return nil
+	}
+	// Guard: full JSON unmarshal of run.Messages can allocate hundreds of MB
+	// for pathological runs (runaway tool output). Skip indexing above the
+	// size cap — log so operators notice the outlier run.
+	if len(run.Messages) > maxIndexableMessagesBytes {
+		log.Warnw("agent_message_search: run.Messages exceeds index size limit; skipping",
+			"agent_run_id", run.ID,
+			"user_id", run.UserID,
+			"size_bytes", len(run.Messages),
+			"limit_bytes", maxIndexableMessagesBytes)
 		return nil
 	}
 	var envelopes []messageEnvelope
