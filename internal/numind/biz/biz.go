@@ -373,6 +373,11 @@ func NewBiz(ds store.IStore) *biz {
 	// stores; numind.go shutdown calls CloseMemoryExtractor via the biz handle).
 	b.memoryExtractor = memoryExtractor
 
+	// Task 3.4 (agent-mode-v15-memory-layer-a): construct SelectorService for
+	// per-turn top-5 fact selection. Cache TTL 30s + ≤5-candidate shortcircuit
+	// + 3-layer fallback (LLM err / parse err / store err) keep cost ≈ ¥0.001/turn.
+	memorySelector := memory.NewSelectorService(ds.UserMemoryFacts())
+
 	b.agentRunner = agent.NewAgentRunner(
 		ds.AgentRuns(),
 		agentToolRegistry,
@@ -386,6 +391,7 @@ func NewBiz(ds store.IStore) *biz {
 		agent.WithBudgetTracker(budgetTracker),     // #12 agent-mode-billing-integration
 		agent.WithComplianceGate(b.complianceGate), // #13 agent-mode-compliance-3layer
 		agent.WithMemoryExtractor(memoryExtractor), // Task 3.3 LLM extraction async pipeline
+		agent.WithMemorySelector(memorySelector),   // Task 3.4 top-5 side-query selector
 	)
 
 	// 初始化知识库服务

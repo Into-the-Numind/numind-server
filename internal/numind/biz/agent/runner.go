@@ -90,6 +90,7 @@ type agentRunner struct {
 	budgetTracker     budget.BudgetTracker        // #12 agent-mode-billing-integration: wired by biz.go via WithBudgetTracker; may be nil
 	complianceGate    compliance.ComplianceGate   // #13 agent-mode-compliance-3layer: wired by biz.go via WithComplianceGate; may be nil
 	memoryExtractor   *memory.ExtractorService    // Task 3.3 LLM extraction async pipeline; wired by biz.go via WithMemoryExtractor; may be nil
+	memorySelector    memory.SelectorService      // Task 3.4 top-5 side-query selector; wired by biz.go via WithMemorySelector; may be nil
 }
 
 var _ AgentRunner = (*agentRunner)(nil)
@@ -188,6 +189,22 @@ func WithComplianceGate(g compliance.ComplianceGate) RunnerOption {
 func WithMemoryExtractor(e *memory.ExtractorService) RunnerOption {
 	return func(r *agentRunner) {
 		r.memoryExtractor = e
+	}
+}
+
+// WithMemorySelector injects the Task 3.4 top-5 side-query selector.
+// nil (default) = no fact injection beyond AGENT.md cascade + L1/L2 (preserves
+// minimal-wire test callers).
+//
+// When set, runner.Run calls selector.SelectTop5 + BuildMemorySection at
+// system-prompt assembly time and injects the resulting <personal_context …>
+// block into the Memories segment between agentMdBlock (developer rules) and
+// memorySystemBlock (existing L1/L2 dialog memory).
+//
+// Layer A only — selected facts are always about the agent's *user themselves*.
+func WithMemorySelector(s memory.SelectorService) RunnerOption {
+	return func(r *agentRunner) {
+		r.memorySelector = s
 	}
 }
 
@@ -358,24 +375,57 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		agentMdBlock = "\n\n## Agent Rules (developer-defined)\n" + agentMdResult.Content + "\n"
 	}
 
+	// V1.5 板块 3 task 3.4: top-5 side-query selector — 每个 user turn 前用小 LLM
+	// 选 ≤5 个最相关的 user-self fact 注入到 Memories 段。
+	//
+	// 拼接顺序（spec §System prompt 集成）：
+	//   agentMdBlock              (## Agent Rules — task 3.1, developer-defined)
+	//   selectorBlock             (<personal_context …> — task 3.4, per-turn LLM-selected facts)
+	//   memoryDisclaimerBlock     (warning header — pre-existing L1/L2 path)
+	//   memorySystemBlock         (existing memory.SystemPromptBlock — L1/L2 dialog memory)
+	//
+	// Trivial-turn 短路（task 3.6）：未着陆前 isTrivial 硬编码为 false（TODO 同样标注在
+	// 下方 memoryExtractor 调用处）。trivial=true 时 selector 应被跳过避免无谓 LLM 调用。
+	var selectorBlock string
+	if r.memorySelector != nil && req.UserID != 0 {
+		// TODO(task-3.6): replace `false` with trivial.IsTrivial(req.Input).
+		isTrivial := false
+		if !isTrivial {
+			facts, selErr := r.memorySelector.SelectTop5(ctx, req.UserID, req.Input)
+			if selErr != nil {
+				// SelectTop5 errors are non-fatal — log and continue with no
+				// injection. The selector itself uses fallbacks for LLM /
+				// parse failures, so reaching this branch means a deeper
+				// (store-layer) failure.
+				log.Warnw("memorySelector.SelectTop5 failed; continuing without injection",
+					"agent_run_id", run.ID, "user_id", req.UserID, "error", selErr)
+			} else if len(facts) > 0 {
+				selectorBlock = "\n\n" + r.memorySelector.BuildMemorySection(facts)
+			}
+		}
+	}
+
 	// P1.1 review-fix: 段 3 (Memories) 显式 header — 让 LLM 明确识别"这里开始是
-	// Memories 段"。Memories 段 = AGENT.md cascade (rules) + memorySystemBlock (facts)。
-	// 任一非空时挂前导 `## Memories` header；两者都空则整段省略。
+	// Memories 段"。Memories 段 = AGENT.md cascade (rules) + selectorBlock (per-turn
+	// LLM-selected facts, task 3.4) + memorySystemBlock (existing L1/L2 facts)。
+	// 任一非空时挂前导 `## Memories` header；全部为空则整段省略。
 	var memoriesSectionHeader string
-	if agentMdBlock != "" || memorySystemBlock != "" {
+	if agentMdBlock != "" || selectorBlock != "" || memorySystemBlock != "" {
 		memoriesSectionHeader = "\n\n## Memories\n"
 	}
 
 	// 段位 1 + 2 + 3 + (disclaimer + 4) + 5 + 6（蓝本 §4.3.9）
 	// disclaimer 与 memorySystemBlock 同进同退；空字符串时整体段位省略。
-	// V1.5 task 3.1: memoriesSectionHeader 是段 3（Memories）的开头标记，
-	// agentMdBlock（开发者规则）和 memorySystemBlock（auto-learned facts）是该段子内容。
-	// agentMdBlock 自带前导 \n\n 和 markdown header，空字符串时无副作用。
+	// V1.5 task 3.1 / 3.4: memoriesSectionHeader 是段 3（Memories）的开头标记。
+	// 段内顺序：agentMdBlock (开发者规则) → selectorBlock (task 3.4 selected facts) →
+	// memoryDisclaimerBlock + memorySystemBlock (L1/L2 dialog memory)。
+	// agentMdBlock 和 selectorBlock 自带前导 \n\n，空字符串时无副作用。
 	req.SystemPrompt = skill.PlatformBasePrompt +
 		tenantHardRulesPlaceholder +
 		body +
 		memoriesSectionHeader +
 		agentMdBlock +
+		selectorBlock +
 		memoryDisclaimerBlock +
 		memorySystemBlock +
 		toolsSectionPlaceholder +

@@ -2,7 +2,7 @@
 // the Capability Matching algorithm used by the AI Gateway.
 package profile
 
-// Task ID constants for all 22 supported task profiles (14 base + 7 agent-mode #14 + 1 V1.5 memory).
+// Task ID constants for all 23 supported task profiles (14 base + 7 agent-mode #14 + 2 V1.5 memory).
 // Business layers should reference these constants (e.g. profile.SopText) rather
 // than raw string literals to gain IDE completion and compile-time typo detection.
 const (
@@ -56,6 +56,14 @@ const (
 	// confidence ≥ 0.7, dedups by content hash, persists to user_memory_facts.
 	// Recommended route: deepseek-v3-2 / qwen-turbo (cheap async background job).
 	AgentMemoryExtract = "agent.memory_extract"
+	// AgentMemorySelect is the Agent V1.5 memory side-query selector (Task 3.4).
+	// Per-turn pre-LLM selector that picks ≤5 most-relevant facts from up to 50
+	// candidates and returns just their ext IDs as a JSON array. Fast + cheap
+	// (small LLM, MaxTokens=100, Temperature=0.2). Layer A: facts are always
+	// about the agent's *user themselves* — never the customer/subject they
+	// discuss. Recommended route: qwen-turbo (cost-efficient + good Chinese) →
+	// deepseek-v3-2 (fallback). Spec: 03-memory/task-04-top5-selector.md.
+	AgentMemorySelect = "agent.memory_select"
 )
 
 // allTaskIDsList is the canonical ordered list of all task IDs.
@@ -84,6 +92,7 @@ var allTaskIDsList = []string{
 	AgentInjectionCheck,
 	AgentPermissionCheck,
 	AgentMemoryExtract,
+	AgentMemorySelect,
 }
 
 // AllTaskIDs returns all task ID strings in a stable order.

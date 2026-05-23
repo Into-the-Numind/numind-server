@@ -441,6 +441,46 @@ func TestUserMemory_ConcurrentIncrTotalFacts(t *testing.T) {
 	assert.Equal(t, N, count, "actual row count matches counter")
 }
 
+// ─── Case 11b: GetByIDs (Task 3.4 selector cache hit path) ───────────────────
+
+// TestUserMemory_GetByIDs verifies the new batch-fetch method used by Task 3.4
+// SelectorService when a 30s LRU cache hit returns a set of fact IDs.
+// Spec: 03-memory/task-04-top5-selector.md §Step 1.
+func TestUserMemory_GetByIDs(t *testing.T) {
+	_, fs, _ := newTestUserMemoryStores(t)
+	ctx := context.Background()
+
+	// Seed 5 facts.
+	created := make([]uint64, 0, 5)
+	for i := 0; i < 5; i++ {
+		f := sampleFact(77, fmt.Sprintf("g-%d", i), fmt.Sprintf("content-%d", i), "context", 0.85-float64(i)*0.05)
+		require.NoError(t, fs.Create(ctx, f))
+		created = append(created, f.ID)
+	}
+
+	// Case A: empty ids → empty slice (no SQL).
+	got, err := fs.GetByIDs(ctx, nil)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+
+	// Case B: exact ids preserve order.
+	wantOrder := []uint64{created[3], created[0], created[4], created[1]}
+	got, err = fs.GetByIDs(ctx, wantOrder)
+	require.NoError(t, err)
+	require.Len(t, got, 4)
+	for i, id := range wantOrder {
+		assert.Equal(t, id, got[i].ID, "order must match input ids")
+	}
+
+	// Case C: mix of known + unknown — unknown silently dropped.
+	mixed := []uint64{created[2], 99999, created[0]}
+	got, err = fs.GetByIDs(ctx, mixed)
+	require.NoError(t, err)
+	require.Len(t, got, 2, "unknown IDs silently dropped")
+	assert.Equal(t, created[2], got[0].ID)
+	assert.Equal(t, created[0], got[1].ID)
+}
+
 // ─── Case 12: Category CHECK constraint (MySQL only — skipped in SQLite) ─────
 
 // TestUserMemory_CategoryCheckConstraint_MySQLOnly documents the CHECK constraint
