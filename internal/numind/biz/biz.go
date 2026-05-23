@@ -357,6 +357,15 @@ func NewBiz(ds store.IStore) *biz {
 		memory.WithEmbedder(memory.NewAIServiceEmbedder()),
 	)
 
+	// V1.5 板块 2 task 2.2 — V2 路径 artifact deps：写盘目录 + ArtifactStore。
+	// 仅当 agent_run.use_compact_v2=true 时生效（runner.go 内有 gate）；
+	// 默认 false → 行为与 V1.5 之前完全一致。
+	artifactDir := viper.GetString("agent.artifact_dir")
+	if artifactDir == "" {
+		artifactDir = "data"
+		log.Warnw("biz.NewBiz: agent.artifact_dir not configured; using relative ./data — set in config_*.yaml for prod")
+	}
+
 	b.agentRunner = agent.NewAgentRunner(
 		ds.AgentRuns(),
 		agentToolRegistry,
@@ -369,6 +378,8 @@ func NewBiz(ds store.IStore) *biz {
 		agent.WithMemoryProvider(memoryProvider),   // #7 memory-system
 		agent.WithBudgetTracker(budgetTracker),     // #12 agent-mode-billing-integration
 		agent.WithComplianceGate(b.complianceGate), // #13 agent-mode-compliance-3layer
+		// V1.5 板块 2 task 2.2 — V2 L0 artifact deps（artifactStore + dataDir 必填，否则 runner 内 gate 自动退化到 V1）。
+		agent.WithCompactV2Deps(ds.ToolArtifact(), artifactDir),
 	)
 
 	// 初始化知识库服务

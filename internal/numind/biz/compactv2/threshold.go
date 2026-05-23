@@ -21,4 +21,14 @@ const (
 	// 超时的 artifact 由 cleanup cron（task 2.2 实现）按 is_expired 标记 + 物理删除。
 	// 已 cleanup 的 artifact 在 LLM read_tool_artifact 时返回 "[Artifact expired]"。
 	ArtifactDefaultTTLDays = 30
+
+	// ToolArtifactReadMaxLimit 是 read_tool_artifact 单次返回的字节上限。
+	// 与写盘阈值 ToolArtifactSizeLimit 对齐：避免 read_tool_artifact 自己返回 >16KB
+	// 反过来撑爆 LLM context（导致整个 L0 写盘机制失效）。
+	// 客户端传入的 limit 若超过此值会被 clamp。
+	ToolArtifactReadMaxLimit = 16 * 1024
+
+	// ArtifactCleanupBatchSize 是 cleanup cron 单次扫描的最大行数。
+	// 防止单次 run 时间过长锁表；剩余的 expired artifact 留待下一轮 cron。
+	ArtifactCleanupBatchSize = 10000
 )

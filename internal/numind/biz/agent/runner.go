@@ -19,6 +19,7 @@ import (
 	"numind-server/internal/numind/biz/agent/callctx"
 	"numind-server/internal/numind/biz/budget"
 	"numind-server/internal/numind/biz/compact"
+	"numind-server/internal/numind/biz/compactv2"
 	"numind-server/internal/numind/biz/compliance"
 	"numind-server/internal/numind/biz/memory"
 	"numind-server/internal/numind/biz/narration"
@@ -88,6 +89,13 @@ type agentRunner struct {
 	memoryProvider    memory.MemoryProvider       // #7 memory-system: wired by biz.go via WithMemoryProvider; may be nil
 	budgetTracker     budget.BudgetTracker        // #12 agent-mode-billing-integration: wired by biz.go via WithBudgetTracker; may be nil
 	complianceGate    compliance.ComplianceGate   // #13 agent-mode-compliance-3layer: wired by biz.go via WithComplianceGate; may be nil
+
+	// V1.5 板块 2 task 2.2 — context-management V2 deps（仅 run.UseCompactV2==true 时使用）。
+	// 三者要么全部为 nil（V2 路径完全停用），要么必须同时配齐；半配置组合 runner 会 warn 并退化到 V1 行为。
+	// artifactStore: agent_tool_artifact 表存取
+	// dataDir: 文件落盘根目录（与 numind.go cleanup cron 用相同值）
+	artifactStore store.IAgentToolArtifactStore
+	artifactDir   string
 }
 
 var _ AgentRunner = (*agentRunner)(nil)
@@ -172,6 +180,19 @@ func WithBudgetTracker(t budget.BudgetTracker) RunnerOption {
 func WithComplianceGate(g compliance.ComplianceGate) RunnerOption {
 	return func(r *agentRunner) {
 		r.complianceGate = g
+	}
+}
+
+// WithCompactV2Deps injects the V2 context-management dependencies — used only
+// when `run.UseCompactV2 == true`. Both args must be non-zero for V2 path to
+// engage; nil store / empty dataDir = V2 disabled (runner falls back to V1).
+//
+// Agent Mode V1.5 板块 2 task 2.2 — wired by biz.go via WithCompactV2Deps.
+// V1 path (use_compact_v2=false) ignores these deps entirely.
+func WithCompactV2Deps(artifactStore store.IAgentToolArtifactStore, dataDir string) RunnerOption {
+	return func(r *agentRunner) {
+		r.artifactStore = artifactStore
+		r.artifactDir = dataDir
 	}
 }
 
@@ -316,6 +337,21 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	var memorySystemBlock string       // PLACEHOLDER: memory.SystemBlock (#7 fills below)
 	var toolsSectionPlaceholder string // PLACEHOLDER: tools_section (#14 will fill)
 
+	// V1.5 板块 2 task 2.2 — V2 路径门控：DB flag use_compact_v2=true 且 runner 注入了 V2 deps。
+	// 若任一不满足，useCompactV2 视为 false：保持 V1 行为（adaptFullToEinoTool 原样、不注入
+	// read_tool_artifact、不追加 system prompt addendum）。这样 V1 测试 / 历史 run 完全不受影响。
+	useCompactV2 := run.UseCompactV2 && r.artifactStore != nil && r.artifactDir != ""
+	if run.UseCompactV2 && !useCompactV2 {
+		log.Warnw("AgentRunner.Run: run.UseCompactV2=true but V2 deps not configured; degrading to V1 path",
+			"agent_run_id", run.ID,
+			"has_artifact_store", r.artifactStore != nil,
+			"has_artifact_dir", r.artifactDir != "")
+	}
+	if useCompactV2 {
+		// system prompt 第 2 段 Tools 描述末尾追加 read_tool_artifact 使用说明（中英双语）。
+		toolsSectionPlaceholder += compactv2.ReadArtifactSystemPromptAddendum
+	}
+
 	if req.EnableMemory && r.memoryProvider != nil {
 		block, err := r.memoryProvider.SystemPromptBlock(ctx, req.UserID, req.AgentDefinitionID, req.SessionID)
 		if err != nil {
@@ -368,10 +404,22 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	if r.registry != nil {
 		for _, name := range req.ToolNames {
 			if ft, ok := r.registry.GetTool(name); ok {
-				einoTools = append(einoTools, adaptFullToEinoTool(ft, effectiveHooks))
+				base := adaptFullToEinoTool(ft, effectiveHooks)
+				if useCompactV2 {
+					// V2 路径：包一层 L0 artifact 处理。InvokableRun 返回 output 若超过阈值，
+					// 写盘 + 把 output 替换为 <persisted-output ref="..." /> 引用。
+					base = wrapToolWithV2ArtifactProcessing(base, ft.Name(), run.ID, r.artifactStore, r.artifactDir)
+				}
+				einoTools = append(einoTools, base)
 				toolMap[name] = ft
 			}
 		}
+	}
+	// V1.5 板块 2 task 2.2 — V2 路径 always-inject 系统级 read_tool_artifact 工具。
+	// 不受 agent_definition.tool_flags 控制，因为它是 LLM 自救手段（看到 <persisted-output ref="..."/>
+	// 时唯一能读到全文的入口）。如果 LLM 不调用它，没事；但工具必须存在。
+	if useCompactV2 {
+		einoTools = append(einoTools, compactv2.NewReadArtifactTool(r.artifactStore, r.runStore, r.artifactDir, middleware.UserIDFromCtx))
 	}
 	// #6 permission-pipeline: stash FullTool map into ctx，
 	// 供 WrapHooks.buildRequest 反查每个工具的 FullTool 实例（取 IsDestructive 等元数据）。
