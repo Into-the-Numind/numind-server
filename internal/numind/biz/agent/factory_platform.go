@@ -33,15 +33,16 @@ func (f *platformToolFactory) DisplayName() string { return "平台内置工具"
 // Tools constructed with nil deps will panic only if Execute is called; LoadTools itself
 // must never panic.
 //
-// Base tools (always present, ds=nil or ds!=nil): 16 tools
+// Base tools (always present, ds=nil or ds!=nil): 17 tools
 //
 //	kb_search, learner_data_query, document_generate, image_gen, bash_exec,
 //	get_current_date, web_search, web_fetch, ask_user_question, file_read,
 //	analyze_image, annotate_image,
 //	create_csv, create_html, create_json, create_text  (V1.5 output-skills task 4.2)
+//	create_png_chart                                    (V1.5 output-skills task 4.3)
 //
 // When f.ds is non-nil, two additional memory tools (memory_write, memory_read) are
-// appended, bringing the total to 18 tools.
+// appended, bringing the total to 19 tools.
 func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMetadata, error) {
 	var usersGetter userByIDGetter
 	var attStore store.IAgentAttachmentStore
@@ -71,6 +72,8 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		&createHTMLTool{},
 		&createJSONTool{},
 		&createTextTool{},
+		// V1.5 output-skills task 4.3: PNG chart tool (Layer 1, gonum/plot + go-chart/v2).
+		&createPNGChartTool{},
 	}
 	metadata := []ToolMetadata{
 		{ToolName: "kb_search", DisplayName: "知识库检索", Description: "Search the knowledge base.", Source: "platform", Category: "RAG"},
@@ -92,6 +95,8 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		{ToolName: "create_html", DisplayName: "生成 HTML 页面", Description: "Render an HTML page from content or a template.", Source: "platform", RiskLevel: "safe", Category: "文件生成"},
 		{ToolName: "create_json", DisplayName: "生成 JSON 文件", Description: "Serialize data to a JSON file.", Source: "platform", RiskLevel: "safe", Category: "文件生成"},
 		{ToolName: "create_text", DisplayName: "生成文本文件", Description: "Write plain text content to a .txt file.", Source: "platform", RiskLevel: "safe", Category: "文件生成"},
+		// V1.5 output-skills task 4.3: PNG chart tool.
+		{ToolName: "create_png_chart", DisplayName: "图表生成（PNG）", Description: "Generate a static PNG chart from structured data.", Source: "platform", RiskLevel: "safe", Category: "可视化"},
 	}
 	// Append memory tools only when a real store is available (nil guard preserves
 	// the nil-ds unit test that expects exactly 12 tools).

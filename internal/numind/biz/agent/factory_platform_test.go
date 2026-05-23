@@ -38,9 +38,9 @@ func TestPlatformToolFactory_LoadTools(t *testing.T) {
 	f := NewPlatformToolFactory(nil, nil)
 	tools, metadata, err := f.LoadTools(context.Background())
 	require.NoError(t, err)
-	// V1.5 task 4.2: base tool count increased from 12 to 16 (added create_csv/html/json/text).
-	assert.Len(t, tools, 16)
-	assert.Len(t, metadata, 16)
+	// V1.5 task 4.2 + 4.3: base tool count is now 17 (12 + 4 create + 1 chart).
+	assert.Len(t, tools, 17)
+	assert.Len(t, metadata, 17)
 	expected := []string{
 		"kb_search",
 		"learner_data_query",
@@ -58,6 +58,7 @@ func TestPlatformToolFactory_LoadTools(t *testing.T) {
 		"create_html",
 		"create_json",
 		"create_text",
+		"create_png_chart",
 	}
 	for i, want := range expected {
 		assert.Equal(t, want, tools[i].Name(), "tool[%d]", i)
@@ -71,12 +72,12 @@ func TestPlatformToolFactory_LoadTools_WithDS_8Tools(t *testing.T) {
 	f := NewPlatformToolFactory(nil, ds)
 	tools, metadata, err := f.LoadTools(context.Background())
 	require.NoError(t, err)
-	// V1.5 task 4.2: base count is now 16 (12 + create_csv/html/json/text);
-	// with ds, memory_write + memory_read are appended → total 18.
-	assert.Len(t, tools, 18, "non-nil ds should produce 18 tools (16 base + memory_write + memory_read)")
-	assert.Len(t, metadata, 18, "non-nil ds should produce 18 metadata entries")
+	// V1.5 task 4.2 + 4.3: base count is now 17 (12 + 4 create + 1 chart);
+	// with ds, memory_write + memory_read are appended → total 19.
+	assert.Len(t, tools, 19, "non-nil ds should produce 19 tools (17 base + memory_write + memory_read)")
+	assert.Len(t, metadata, 19, "non-nil ds should produce 19 metadata entries")
 
-	// Verify the first 16 are unchanged.
+	// Verify the first 17 are unchanged.
 	baseExpected := []string{
 		"kb_search",
 		"learner_data_query",
@@ -94,14 +95,15 @@ func TestPlatformToolFactory_LoadTools_WithDS_8Tools(t *testing.T) {
 		"create_html",
 		"create_json",
 		"create_text",
+		"create_png_chart",
 	}
 	for i, want := range baseExpected {
 		assert.Equal(t, want, tools[i].Name(), "tool[%d] name", i)
 	}
 
-	// Verify memory tools are appended at indices 16 and 17.
-	assert.Equal(t, "memory_write", tools[16].Name(), "tools[16] should be memory_write")
-	assert.Equal(t, "memory_read", tools[17].Name(), "tools[17] should be memory_read")
+	// Verify memory tools are appended at indices 17 and 18.
+	assert.Equal(t, "memory_write", tools[17].Name(), "tools[17] should be memory_write")
+	assert.Equal(t, "memory_read", tools[18].Name(), "tools[18] should be memory_read")
 }
 
 func TestPlatformToolFactory_LoadTools_WithDS_Metadata14(t *testing.T) {
@@ -110,19 +112,19 @@ func TestPlatformToolFactory_LoadTools_WithDS_Metadata14(t *testing.T) {
 	f := NewPlatformToolFactory(nil, ds)
 	_, metadata, err := f.LoadTools(context.Background())
 	require.NoError(t, err)
-	// V1.5 task 4.2: total is 18 (16 base + memory_write + memory_read).
-	require.Len(t, metadata, 18)
+	// V1.5 task 4.2 + 4.3: total is 19 (17 base + memory_write + memory_read).
+	require.Len(t, metadata, 19)
 
-	// memory_write metadata at index 16.
-	mw := metadata[16]
+	// memory_write metadata at index 17.
+	mw := metadata[17]
 	assert.Equal(t, "memory_write", mw.ToolName)
 	assert.Equal(t, "记忆写入", mw.DisplayName)
 	assert.Equal(t, "platform", mw.Source)
 	assert.Equal(t, "记忆", mw.Category)
 	assert.Equal(t, "moderate", mw.RiskLevel)
 
-	// memory_read metadata at index 17.
-	mr := metadata[17]
+	// memory_read metadata at index 18.
+	mr := metadata[18]
 	assert.Equal(t, "memory_read", mr.ToolName)
 	assert.Equal(t, "记忆读取", mr.DisplayName)
 	assert.Equal(t, "platform", mr.Source)
@@ -151,6 +153,30 @@ func TestPlatformToolFactory_LoadTools_IncludesSimpleCreateTools(t *testing.T) {
 		assert.True(t, tool.IsEnabled(ToolConfig{}), "%s.IsEnabled must be true", name)
 		assert.False(t, tool.IsReadOnly(), "%s.IsReadOnly must be false (file generation writes)", name)
 	}
+}
+
+// TestPlatformToolFactory_LoadTools_IncludesPNGChartTool verifies that the task-4.3
+// create_png_chart tool is registered in the platform factory.
+func TestPlatformToolFactory_LoadTools_IncludesPNGChartTool(t *testing.T) {
+	f := NewPlatformToolFactory(nil, nil)
+	tools, metadata, err := f.LoadTools(context.Background())
+	require.NoError(t, err)
+
+	var found FullTool
+	var foundMeta *ToolMetadata
+	for i, tool := range tools {
+		if tool.Name() == "create_png_chart" {
+			found = tool
+			foundMeta = &metadata[i]
+			break
+		}
+	}
+	require.NotNil(t, found, "create_png_chart must be registered")
+	require.NotNil(t, foundMeta)
+	assert.True(t, found.IsEnabled(ToolConfig{}), "create_png_chart.IsEnabled must be true")
+	assert.False(t, found.IsReadOnly(), "create_png_chart writes (not read-only)")
+	assert.Equal(t, "可视化", foundMeta.Category)
+	assert.Equal(t, "safe", foundMeta.RiskLevel)
 }
 
 func TestPlatformToolFactory_Metadata(t *testing.T) {
