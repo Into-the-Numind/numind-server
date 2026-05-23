@@ -2086,9 +2086,9 @@ features:
   stage: S4
   progress:
     total_tasks: 12
-    completed_tasks: 1
-    reviewed_tasks: 1
-    current_task: 'T1 完成 (commit 3d477eb4 + ea3af75f P2 fix on worktree feature/agent-mode-v2-skill-marketplace)。双 reviewer (Sonnet 并行) PASS_WITH_CONCERNS / 0 P0/P1 / 8 P2 — 2 个 P2 已 inline 修 (autoCreateTime tags + IsPublic 注释)，其余 6 个 P2 作为 conscious deviation 跟随 #1 约定（spec §2.3 写 uint64 实现 uint / 单文件 migration / allowed_tools 加 NOT NULL / FK 全省略软约束 / _rollback.sql 下划线 / helper.go %v 与项目一致）。下一步：T2 store layer 启动。'
+    completed_tasks: 2
+    reviewed_tasks: 2
+    current_task: 'T2 完成 (commits 747deb82 + b4e4fa8c P1+P2 fix). 双 reviewer (Sonnet) spec PASS_WITH_CONCERNS / code PASS_WITH_CONCERNS — 1 P1 (Create wantPublic fixup pattern, database.md §6 default:true gotcha) 已 inline 修 + 4 P2 已 inline 修 (UpdateIsPublic happy toggle / popular sort / IncrementSubscribeCount delta=0 / CategoryFilter→Skip SQLite 无 JSON1 extension). 接口断言 + AgentCount field for biz layer hydration 也已加. 28 测试 26 PASS + 2 SKIP (FULLTEXT MATCH AGAINST + JSON_CONTAINS 都需 MySQL，S5 Playwright AC-11 dev 集成测试覆盖). 下一步：T3 sanitize.go (PII regex + qwen-turbo via aiservice + Langfuse generation).'
   decisions:
   - 'S0-D1 (parent 2026-05-24, 继承自 #1 D4): v2 三件套 #1+#2+#3 串行交付。本 feature 是 #3，#1 land develop 才能进 S4（依赖 skill 表 + biz/skill.Service.Create 写副本）。'
   - 'S0-D2 (ai 2026-05-24, REVISED post-#1-investigation): 订阅 = 复制副本语义。订阅时刻调 artifact.Service.Create (NOT skill.Service.Create — actual package is biz/skill/artifact) 给订阅方租户新建 skill 行 (source_type=imported_from_marketplace，#1 已预留 ENUM 值无需 ALTER COLUMN)，同时写 skill_subscription 关联。发布方后续编辑原 skill 不影响订阅方副本。'
@@ -2099,6 +2099,7 @@ features:
   - 'S2-D2 (ai 2026-05-24): publish endpoint receives confirmed_sanitized_body from frontend but does NOT trust blindly. Re-runs sanitize internally and compares normalized hash; mismatch within 5% character delta tolerated, larger mismatch rejected as ErrSanitizeConfirmationMismatch.'
   - 'S2-D3 (ai 2026-05-24, REVISED post-#1-investigation): #1 actually shipped artifact.Service.Create (concrete struct, package biz/skill/artifact) without CreateInTx variant. Resolution = nested db.Transaction (MySQL InnoDB savepoint): Subscribe opens outer tx; artifactSvc.Create internally opens its own db.Transaction which becomes a savepoint; outer rollback rolls back savepoint too. No PR to #1 needed. Validated via commit 9a6c622c spec §11 revised D-COORD.'
   - 'S4-T1-D1 (ai 2026-05-24): T1 跟随 #1 skill_artifact 约定的 conscious deviations from spec：(a) Go struct ID uint not uint64 — INT UNSIGNED 4B 范围对 marketplace 充足，与 #1 一致；(b) 单 migration 文件 create_skill_marketplace_tables.sql 含两表 — 仿 #1 create_skill_artifact_tables.sql；(c) 文件名 _rollback.sql 下划线（项目实际约定）；(d) FK 全省略 — 项目 zero-FK 约定，软约束在 biz 层；(e) helper.go err 用 %v not %w — 与其它 AutoMigrate block 一致。这些都是 reviewer 标的 P2 但有 valid 理由不改。'
+  - 'S4-T2-D1 (ai 2026-05-24): T2 store 接口设计加 2 个 spec 没有的字段满足实际需要：(a) ListOptions.PublisherUserID + IncludeUnpublished 支持发布方"我发布过哪些"管理视图；(b) SubscriptionWithMarketplace.AgentCount int 字段（biz 层 ListMySubscriptions hydration 时 JOIN agent_skill_binding 填充，store 返回时恒为 0）。JSON_CONTAINS Category filter 测试用 t.Skip — SQLite 没 JSON1 extension，S5 Playwright AC-11 在 MySQL dev 覆盖。store 接口未注册到 IStore — 推迟到 T6 controller wiring 时一起做。'
   - 'S3-D1 (ai 2026-05-24): plan reviewer (Sonnet, independent) verdict PASS_WITH_CONCERNS — 0 P0/P1, 5 P2 全部已修 (T3 Langfuse mock 断言精确化 / T4 列出 spec §10.1 七条安全规则 / T6 移除 task dev smoke check 改 go build / T11 加 Pause-and-Ask gate / T9 锁 package.json 所有权).'
   - 'S3-D2 (ai 2026-05-24): S5 validation strategy = Playwright E2E for cross-tenant flows AC-1..AC-6 (high-risk, requires persistent regression) + gstack /qa for visual QA + Langfuse dashboard manual inspection. 高风险跨租户安全 gate 必须 Playwright 不允许仅 gstack /qa。'
   related_features:
@@ -2110,4 +2111,6 @@ features:
   commits:
   - '3d477eb4 (worktree): feat(agent-mode-v2-marketplace): T1 migrations + GORM models + AutoMigrate — Sonnet spec PASS_WITH_CONCERNS / quality PASS_WITH_CONCERNS, 0 P0/P1, 8 P2'
   - 'ea3af75f (worktree): fix(agent-mode-v2-marketplace): T1 P2 — autoCreateTime tags + IsPublic doc comment'
+  - '747deb82 (worktree): feat(agent-mode-v2-marketplace): T2 store layer + 23 unit tests — IMarketplaceStore 11 methods + ListOptions / SubscriptionWithMarketplace types + nested tx support + cross-tenant isolation test'
+  - 'b4e4fa8c (worktree): fix(agent-mode-v2-marketplace): T2 P1 (Create wantPublic fixup) + 4 P2 (UpdateIsPublic happy toggle + popular sort + zeroDelta noop + CategoryFilter→Skip SQLite + interface assertion + AgentCount field)'
   created_at: '2026-05-24T00:00:00+08:00'
