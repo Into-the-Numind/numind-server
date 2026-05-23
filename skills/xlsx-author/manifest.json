@@ -1,0 +1,19 @@
+{
+  "name": "xlsx-author",
+  "version": "1.0.0",
+  "description": "Generate Excel files (.xlsx) with optional charts, styled cells, and pandas-friendly data export.",
+  "categories": ["document", "data-analysis"],
+  "required_libs": [
+    "openpyxl>=3.1",
+    "pandas>=2.0",
+    "matplotlib>=3.7",
+    "pillow>=10.0"
+  ],
+  "output_mime_types": [
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  ],
+  "max_runtime_seconds": 30,
+  "max_output_size_mb": 50,
+  "input_dir": "/workspace/input",
+  "output_dir": "/output"
+}
