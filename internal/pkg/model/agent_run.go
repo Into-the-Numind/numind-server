@@ -19,9 +19,9 @@ type AgentRun struct {
 	ReservationID    *uint64        `json:"reservation_id,omitempty"`
 	StartedAt        time.Time      `gorm:"type:datetime(3);not null;index:idx_ar_user_started;index:idx_ar_status_started" json:"started_at"`
 	EndedAt          *time.Time     `gorm:"type:datetime(3)" json:"ended_at,omitempty"`
-	// #9 compact: tracks compaction state per run and stores latest summary for resume.
-	CompactState   datatypes.JSON `gorm:"type:json" json:"compact_state,omitempty"`
-	CompactSummary string         `gorm:"type:longtext" json:"compact_summary,omitempty"`
+	// CompactState / CompactSummary 字段（legacy V1 compact 包）于 compact-v1-removal feature
+	// 删除（commit 04cf5c07），对应 DB 列 compact_state / compact_summary 于 compact-dead-schema-cleanup
+	// （migration 20260523_180000）DROP。AutoMigrate 不再有 V1 字段，schema 与代码对齐。
 	// CancellationRequestedAt is set when POST /v1/admin/agent-runs/:id/cancel
 	// fires. Nullable: nil means run was not admin-cancelled (#14 Phase C C3).
 	CancellationRequestedAt *time.Time `gorm:"column:cancellation_requested_at" json:"cancellation_requested_at,omitempty"`
@@ -36,15 +36,13 @@ type AgentRun struct {
 	PendingQuestionAt *time.Time `gorm:"column:pending_question_at" json:"pending_question_at,omitempty"`
 	CreatedAt         time.Time  `gorm:"type:datetime(3);autoCreateTime" json:"created_at"`
 	UpdatedAt         time.Time  `gorm:"type:datetime(3);autoUpdateTime" json:"updated_at"`
-	// V2 字段（compactv2 包专用，V1 包不读写）— Agent Mode V1.5 板块 2 Task 2.1。
-	// 平行重做策略（D3）：现有 CompactState / CompactSummary 字段完全保留不动。
-	// agent mode 通过 RunRequest.UseCompactV2=true feature flag 进入 V2 路径，
-	// 其他场景（SOP / SalesRAG / 监控）继续走 V1。
-	// 注意：BOOL default false，不踩 database.md §6 的 default:true 坑。
-	CompactStateV2       datatypes.JSON `gorm:"type:json;column:compact_state_v2" json:"compact_state_v2,omitempty"`
-	TotalTokensUsedV2    int64          `gorm:"column:total_tokens_used_v2;not null;default:0" json:"total_tokens_used_v2,omitempty"`
-	UseCompactV2         bool           `gorm:"column:use_compact_v2;not null;default:false" json:"use_compact_v2,omitempty"`
-	ContextWindowLimitV2 *int           `gorm:"column:context_window_limit_v2" json:"context_window_limit_v2,omitempty"`
+	// V2 compact feature flag — 由 v2-compact-adapter-integration feature 接入
+	// adapter.Generate 层；compact-dead-schema-cleanup（migration 20260523_180000）
+	// 把死字段 compact_state_v2 / total_tokens_used_v2 / context_window_limit_v2 删
+	// 了，仅留这个 bool 作为 V2 全局 kill switch（runner 构造 adapter 时读）。
+	// 注意：BOOL default false，不踩 database.md §6 的 default:true 坑；
+	// 实际生产 runner.go Create 显式置 UseCompactV2: true。
+	UseCompactV2 bool `gorm:"column:use_compact_v2;not null;default:false" json:"use_compact_v2,omitempty"`
 }
 
 func (AgentRun) TableName() string { return "agent_run" }

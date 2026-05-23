@@ -557,10 +557,9 @@ func NewBiz(ds store.IStore) *biz {
 		agent.WithMemoryDialectic(memoryDialectic), // Task 3.7 Layer A cached_insight injection
 		agent.WithMemoryTemporal(memoryTemporal),   // Task 3.8 temporal digest injection (4 granularities)
 		agent.WithSearchService(searchService),     // Task 3.5 FULLTEXT ngram indexing hook
-		// V1.5 板块 2 task 2.2 — V2 L0 artifact deps（artifactStore + dataDir 必填，否则 runner 内 gate 自动退化到 V1）。
+		// V1.5 v2-compact-adapter-integration — V2 L0 工具写盘 deps（adapter compactor
+		// 自管 prevention 状态，不再需要 IAgentCompactV2Store）。
 		agent.WithCompactV2Deps(ds.ToolArtifact(), artifactDir),
-		// V1.5 板块 2 task 2.3 — V2 messages / token usage store（maybeCompactV2 L1/L2 写盘 + 累加 tokens）。
-		agent.WithCompactV2Store(ds.CompactV2()),
 	)
 
 	// 初始化知识库服务

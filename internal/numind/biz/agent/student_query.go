@@ -24,16 +24,17 @@ const defaultCreditBudget = 200
 // Full messages are omitted to keep list payloads small.
 // JSON field names align with web-v3 src/types/agent.ts AgentRun / RecentSession contract.
 type RunSummary struct {
-	ID                uint64     `json:"id"`
-	UserID            uint       `json:"user_id"`
-	SessionID         string     `json:"session_id"`
-	AgentDefinitionID uint64     `json:"agent_skill_id,omitempty"`
-	Status            string     `json:"status"`
-	StateReason       string     `json:"state_reason,omitempty"`
-	CompactSummary    string     `json:"compact_summary,omitempty"`
-	StartedAt         time.Time  `json:"started_at"`
-	EndedAt           *time.Time `json:"ended_at,omitempty"`
-	CreatedAt         time.Time  `json:"created_at"`
+	ID                uint64 `json:"id"`
+	UserID            uint   `json:"user_id"`
+	SessionID         string `json:"session_id"`
+	AgentDefinitionID uint64 `json:"agent_skill_id,omitempty"`
+	Status            string `json:"status"`
+	StateReason       string `json:"state_reason,omitempty"`
+	// V1.5 compact-dead-schema-cleanup — CompactSummary 字段（legacy V1）已删；
+	// 前端向后兼容：API JSON 体不再含 compact_summary 键（之前永远是空串，下线无感）。
+	StartedAt time.Time  `json:"started_at"`
+	EndedAt   *time.Time `json:"ended_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
 
 	// Fix 2: enriched identity fields (from agent_definition).
 	AgentName  string `json:"agent_name,omitempty"`
@@ -120,7 +121,6 @@ func runToSummary(r model.AgentRun) RunSummary {
 		AgentDefinitionID:     r.AgentDefinitionID,
 		Status:                frontendStatus(r.Status, r.StateReason),
 		StateReason:           r.StateReason,
-		CompactSummary:        r.CompactSummary,
 		StartedAt:             r.StartedAt,
 		EndedAt:               r.EndedAt,
 		CreatedAt:             r.CreatedAt,
@@ -174,11 +174,12 @@ func truncateRunes(s string, n int) string {
 
 // SessionSnapshot is returned by GetSessionSnapshot for resume flows.
 // Messages is the transformed frontend-shaped array (see transformMessages).
-// CompactSummary is the latest compact summary (may be empty).
+//
+// V1.5 compact-dead-schema-cleanup — CompactSummary 字段（legacy V1）已删；
+// 前端 resume flow 不再依赖此字段（之前永远是空串）。
 type SessionSnapshot struct {
-	Run            RunSummary  `json:"run"`
-	Messages       interface{} `json:"messages"`        // frontend-shaped AgentMessage array
-	CompactSummary string      `json:"compact_summary"` // from agent_run.compact_summary
+	Run      RunSummary  `json:"run"`
+	Messages interface{} `json:"messages"` // frontend-shaped AgentMessage array
 }
 
 // FeedbackRequest carries a 👍/👎 verdict and optional text from the learner.
@@ -281,8 +282,7 @@ func (s *StudentQueryService) GetSessionSnapshot(ctx context.Context, userID uin
 	runSummary := *summaries[0]
 
 	snap := &SessionSnapshot{
-		Run:            runSummary,
-		CompactSummary: run.CompactSummary,
+		Run: runSummary,
 	}
 	// Fix 3: transform raw messages JSON into frontend-shaped AgentMessage array.
 	snap.Messages = transformMessages(run.Messages, run.ID, run.StartedAt, run.EndedAt, run.Status, run.StateReason)

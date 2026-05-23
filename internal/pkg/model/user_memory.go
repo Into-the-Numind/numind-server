@@ -45,13 +45,13 @@ type UserMemoryFact struct {
 	UUID   string `gorm:"size:64;uniqueIndex;not null;column:uuid" json:"uuid"`
 	UserID uint   `gorm:"not null;index" json:"user_id"`
 	// V2 Layer B 预留: V1.5 必须全 NULL (store 层 Create/BatchCreate 拒绝非 NULL 写入)
-	SubjectID         *string    `gorm:"size:64;column:subject_id" json:"subject_id,omitempty"`
-	Content           string     `gorm:"type:text;not null" json:"content"`
-	Category          string     `gorm:"size:32;not null" json:"category"`
-	Confidence        float64    `gorm:"type:decimal(3,2);not null" json:"confidence"`
-	Importance        float64    `gorm:"type:decimal(3,2);not null;default:0.50" json:"importance"`
-	SourceSessionID   string     `gorm:"size:64;not null;default:''" json:"source_session_id"`
-	SourceMessageUUID string     `gorm:"size:64;not null;default:''" json:"source_message_uuid"`
+	SubjectID         *string `gorm:"size:64;column:subject_id" json:"subject_id,omitempty"`
+	Content           string  `gorm:"type:text;not null" json:"content"`
+	Category          string  `gorm:"size:32;not null" json:"category"`
+	Confidence        float64 `gorm:"type:decimal(3,2);not null" json:"confidence"`
+	Importance        float64 `gorm:"type:decimal(3,2);not null;default:0.50" json:"importance"`
+	SourceSessionID   string  `gorm:"size:64;not null;default:''" json:"source_session_id"`
+	SourceMessageUUID string  `gorm:"size:64;not null;default:''" json:"source_message_uuid"`
 	// SourceExtractedAt: zero-value falls back to GORM autoCreateTime (set on Create).
 	// Caller (biz layer) typically sets this explicitly to the message timestamp.
 	// NOTE: We removed `default:CURRENT_TIMESTAMP` because GORM AutoMigrate generates

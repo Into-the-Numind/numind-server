@@ -1,7 +1,6 @@
 package model
 
 import (
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -64,69 +63,11 @@ func TestAgentRun_TableName_returnsAgentRun(t *testing.T) {
 	assert.Equal(t, "agent_run", got)
 }
 
-func TestAgentRun_CompactColumnsRoundTrip(t *testing.T) {
-	db := newAgentRunTestDB(t)
-
-	stateJSON, err := json.Marshal(map[string]any{
-		"last_compact_at":          "2026-05-21T00:00:00Z",
-		"last_boundary_message_id": "msg_001",
-		"total_compact_attempts":   2,
-		"consecutive_failures":     0,
-		"summary_token_count":      3840,
-		"strategy_used":            "reactive_compact",
-	})
-	require.NoError(t, err)
-
-	run := &AgentRun{
-		UserID:         42,
-		SessionID:      "sess-compact",
-		Status:         "running",
-		Messages:       datatypes.JSON(`[]`),
-		StartedAt:      time.Now(),
-		CompactState:   datatypes.JSON(stateJSON),
-		CompactSummary: "v1 placeholder summary",
-	}
-	require.NoError(t, db.Create(run).Error)
-	require.NotZero(t, run.ID)
-
-	var got AgentRun
-	require.NoError(t, db.First(&got, run.ID).Error)
-	assert.Equal(t, "v1 placeholder summary", got.CompactSummary)
-	assert.JSONEq(t, string(stateJSON), string(got.CompactState))
-}
-
-func TestAgentRun_CompactStateNullable(t *testing.T) {
-	db := newAgentRunTestDB(t)
-	run := &AgentRun{
-		UserID:    1,
-		Status:    "running",
-		Messages:  datatypes.JSON(`[]`),
-		StartedAt: time.Now(),
-		// no CompactState set → should persist as NULL/zero
-	}
-	require.NoError(t, db.Create(run).Error)
-
-	var got AgentRun
-	require.NoError(t, db.First(&got, run.ID).Error)
-	// zero datatypes.JSON is empty bytes → marshals to empty/null
-	assert.True(t, len(got.CompactState) == 0 || string(got.CompactState) == "null" || string(got.CompactState) == "")
-}
-
-func TestAgentRun_CompactSummaryNullable(t *testing.T) {
-	db := newAgentRunTestDB(t)
-	run := &AgentRun{
-		UserID:    1,
-		Status:    "running",
-		Messages:  datatypes.JSON(`[]`),
-		StartedAt: time.Now(),
-		// no CompactSummary set → should persist as ""
-	}
-	require.NoError(t, db.Create(run).Error)
-
-	var got AgentRun
-	require.NoError(t, db.First(&got, run.ID).Error)
-	assert.Equal(t, "", got.CompactSummary)
-}
+// V1.5 compact-dead-schema-cleanup — TestAgentRun_CompactColumnsRoundTrip /
+// CompactStateNullable / CompactSummaryNullable 三个 V1 compact 列测试删除：
+// compact_state / compact_summary 列于 migration 20260523_180000 被 DROP，
+// model 字段同步删除（compact-v1-removal feature 已删 V1 包，本次 cleanup
+// 收尾对应的死字段 + 死列）。
 
 // TestAgentRun_NoDefaultTrueBoolFields documents the database.md §6 audit:
 // AgentRun model has no `default:true` bool field. This test exists to keep the
@@ -198,11 +139,11 @@ func TestAgentRun_CancellationRequestedAt_NullableRoundTrip(t *testing.T) {
 		"non-nil CancellationRequestedAt should round-trip")
 }
 
-// TestAgentRun_V2ColumnsPresent verifies that GORM AutoMigrate on a fresh
-// schema produces all 4 V2 columns on agent_run and creates the new
-// agent_tool_artifact table — matching task 2.1 spec §验证策略 case (9).
-// V1 columns (compact_state / compact_summary) are also asserted unchanged
-// to guard the D3 平行重做 invariant.
+// TestAgentRun_V2ColumnsPresent verifies the AgentRun schema after the
+// compact-dead-schema-cleanup feature: legacy V1 compact_state / compact_summary
+// AND half-dead V2 compact_state_v2 / total_tokens_used_v2 / context_window_limit_v2
+// columns were all dropped (migration 20260523_180000). Only `use_compact_v2`
+// remains as the V2 kill switch, plus the agent_tool_artifact table for L0.
 func TestAgentRun_V2ColumnsPresent(t *testing.T) {
 	tmp := t.TempDir()
 	dsn := tmp + "/agent_run_automigrate_test.db?_busy_timeout=5000&_journal_mode=WAL"
@@ -215,22 +156,21 @@ func TestAgentRun_V2ColumnsPresent(t *testing.T) {
 
 	mig := db.Migrator()
 
-	// V1 columns must still exist (D3 — V1 fields zero-diff).
-	assert.True(t, mig.HasColumn(&AgentRun{}, "compact_state"),
-		"V1 compact_state column must still exist (D3 invariant)")
-	assert.True(t, mig.HasColumn(&AgentRun{}, "compact_summary"),
-		"V1 compact_summary column must still exist (D3 invariant)")
-
-	// All 4 V2 columns must be present after AutoMigrate.
+	// All legacy V1 + half-dead V2 columns must be absent after cleanup.
 	for _, col := range []string{
-		"compact_state_v2",
-		"total_tokens_used_v2",
-		"use_compact_v2",
-		"context_window_limit_v2",
+		"compact_state",           // V1, dead
+		"compact_summary",         // V1, dead
+		"compact_state_v2",        // V2 half-dead
+		"total_tokens_used_v2",    // V2 half-dead
+		"context_window_limit_v2", // V2 half-dead (never written)
 	} {
-		assert.True(t, mig.HasColumn(&AgentRun{}, col),
-			"V2 column %q must be present after AutoMigrate", col)
+		assert.False(t, mig.HasColumn(&AgentRun{}, col),
+			"Legacy compact column %q should have been removed by cleanup migration", col)
 	}
+
+	// V2 kill switch column must remain.
+	assert.True(t, mig.HasColumn(&AgentRun{}, "use_compact_v2"),
+		"use_compact_v2 (V2 kill switch) must still exist")
 
 	// agent_tool_artifact table must be created.
 	assert.True(t, mig.HasTable(&AgentToolArtifact{}),
