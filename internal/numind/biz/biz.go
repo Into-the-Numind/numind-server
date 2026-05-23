@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"numind-server/internal/numind/biz/agent"
+	agentatt "numind-server/internal/numind/biz/agent/attachment"
 	"numind-server/internal/numind/biz/agent/budgetgate"
 	"numind-server/internal/numind/biz/agent/compliancegate"
 	"numind-server/internal/numind/biz/ali"
@@ -59,23 +60,24 @@ type IBiz interface {
 	Ali() ali.AliBiz
 	Volc() volc.VolcBiz
 	Configs() config.ConfigBiz
-	Sop() sopbiz.ISopBiz                      // SOP服务
-	Customers() customerbiz.ICustomerBiz      // 客户管理服务
-	SalesRAG() salesrag.SalesRAGBiz           // 销售 RAG 服务
-	Credit() credit.ICreditBiz                // 积分服务
-	CreditService() credit.ICreditService     // credits-system ICreditService 统一入口
-	Pricing() pricing.ICalculator             // pricing 同步成本计算
-	Payment() payment.IPaymentBiz             // 支付服务
-	Monitor() monitor.IMonitorBiz             // 博主监控服务
-	KnowledgeBase() kbbiz.IKnowledgeBaseBiz   // 知识库服务
-	Chatbot() chatbotbiz.IChatbotBiz          // 智能体服务
-	LLMRouter() *llmrouter.Router             // LLM 路由服务
-	Agents() agent.AgentRunner                // Agent Runtime（agent-mode #2）
-	AgentTools() agent.AgentToolRegistry      // Agent Tool Registry（agent-mode #3）
-	Skill() skillbiz.Service                  // Agent Skill CRUD（#5/14 skill-system）
-	StudentQuery() *agent.StudentQueryService // Student-facing agent query (#14 follow-up ALPHA)
-	StudentRun() *agent.StudentRunService     // Student-facing run lifecycle (#14 BETA)
-	Attachment() *attachment.UploadService    // File attachment upload (#14 BETA)
+	Sop() sopbiz.ISopBiz                          // SOP服务
+	Customers() customerbiz.ICustomerBiz          // 客户管理服务
+	SalesRAG() salesrag.SalesRAGBiz               // 销售 RAG 服务
+	Credit() credit.ICreditBiz                    // 积分服务
+	CreditService() credit.ICreditService         // credits-system ICreditService 统一入口
+	Pricing() pricing.ICalculator                 // pricing 同步成本计算
+	Payment() payment.IPaymentBiz                 // 支付服务
+	Monitor() monitor.IMonitorBiz                 // 博主监控服务
+	KnowledgeBase() kbbiz.IKnowledgeBaseBiz       // 知识库服务
+	Chatbot() chatbotbiz.IChatbotBiz              // 智能体服务
+	LLMRouter() *llmrouter.Router                 // LLM 路由服务
+	Agents() agent.AgentRunner                    // Agent Runtime（agent-mode #2）
+	AgentTools() agent.AgentToolRegistry          // Agent Tool Registry（agent-mode #3）
+	Skill() skillbiz.Service                      // Agent Skill CRUD（#5/14 skill-system）
+	StudentQuery() *agent.StudentQueryService     // Student-facing agent query (#14 follow-up ALPHA)
+	StudentRun() *agent.StudentRunService         // Student-facing run lifecycle (#14 BETA)
+	Attachment() *attachment.UploadService        // File attachment upload (#14 BETA)
+	AttachmentFallback() agentatt.FallbackService // Async fallback generation (V1.5 task 1.2)
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -101,6 +103,8 @@ type biz struct {
 	complianceAudit   *compliance.AuditLogger    // #13 agent-mode-compliance-3layer (Stop on shutdown)
 	studentQuerySvc   *agent.StudentQueryService // #14 follow-up ALPHA student-facing queries
 	studentRunSvc     *agent.StudentRunService   // #14 BETA student-facing run lifecycle
+	attachFallbackSvc agentatt.FallbackService   // V1.5 multimodal fallback (task 1.2)
+	uploadSvc         *attachment.UploadService  // wired with fallback (V1.5 task 1.2)
 }
 
 // NewBiz 创建一个 IBiz 类型的实例.
@@ -457,6 +461,10 @@ func NewBiz(ds store.IStore) *biz {
 		narrationBuf,
 	)
 
+	// V1.5 task 1.2: wire attachment fallback service + upload service with fallback.
+	b.attachFallbackSvc = agentatt.NewFallbackService(ds.AgentAttachments())
+	b.uploadSvc = attachment.NewUploadServiceWithFallback(ds.AgentAttachments(), b.attachFallbackSvc)
+
 	// 设置全局单例，供 middleware/cron 等无法注入 biz 的代码路径使用。
 	// 确保 store.S 已在 numind.go 中完成初始化后才调用 NewBiz。
 	B = b
@@ -559,9 +567,17 @@ func (b *biz) StudentRun() *agent.StudentRunService {
 	return b.studentRunSvc
 }
 
-// Attachment 返回文件上传服务实例（#14 BETA）。
+// Attachment 返回文件上传服务实例（#14 BETA → V1.5 task 1.2 升级带 fallback）。
 func (b *biz) Attachment() *attachment.UploadService {
+	if b.uploadSvc != nil {
+		return b.uploadSvc
+	}
 	return attachment.NewUploadService()
+}
+
+// AttachmentFallback 返回异步 fallback 生成服务实例（V1.5 task 1.2）。
+func (b *biz) AttachmentFallback() agentatt.FallbackService {
+	return b.attachFallbackSvc
 }
 
 // PermissionGate 返回 Permission 网关实例（agent-mode #6 permission-pipeline）。

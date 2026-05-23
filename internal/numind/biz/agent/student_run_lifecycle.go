@@ -16,6 +16,7 @@ import (
 	"numind-server/internal/numind/biz/narration"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/pricing"
 )
@@ -23,12 +24,13 @@ import (
 // StudentRunService handles learner-facing agent run lifecycle operations.
 // Spec: #14 follow-up BETA — 6 run lifecycle endpoints.
 type StudentRunService struct {
-	runner        AgentRunner
-	runStore      store.IAgentRunStore
-	skillStore    store.IAgentDefinitionStore
-	pricingCalc   pricing.ICalculator
-	narrationProv *narration.Provider
-	narrationBuf  *NarrationBuffer
+	runner          AgentRunner
+	runStore        store.IAgentRunStore
+	skillStore      store.IAgentDefinitionStore
+	pricingCalc     pricing.ICalculator
+	narrationProv   *narration.Provider
+	narrationBuf    *NarrationBuffer
+	attachmentStore store.IAgentAttachmentStore // task 1.3: capability-aware routing
 }
 
 // NewStudentRunService constructs a StudentRunService.
@@ -54,6 +56,14 @@ func NewStudentRunService(
 		narrationProv: narrationProv,
 		narrationBuf:  narrationBuf,
 	}
+}
+
+// WithAttachmentStore wires the IAgentAttachmentStore so that capability-aware
+// routing (task 1.3) can load AgentAttachment entities for fallback polling.
+// Call this at biz.go wiring time alongside WithNarrationProvider.
+func (s *StudentRunService) WithAttachmentStore(attStore store.IAgentAttachmentStore) *StudentRunService {
+	s.attachmentStore = attStore
+	return s
 }
 
 // forwardNarration drains the narration provider's per-runID channel into the
@@ -177,6 +187,16 @@ type CreateRunRequest struct {
 	SessionID         string   `json:"session_id,omitempty"` // empty → new session
 	Message           string   `json:"input_text" binding:"required"`
 	AttachmentURLs    []string `json:"attachment_urls,omitempty"`
+	// AttachmentIDs is the task-1.3 field: the frontend sends DB row IDs for
+	// uploaded attachments so that buildAgentInputForModel can load the full
+	// AgentAttachment entity (incl. Modality, TextFallback, FallbackReady) and
+	// apply capability-aware routing. Takes precedence over AttachmentURLs when
+	// both are present.
+	AttachmentIDs []uint64 `json:"attachment_ids,omitempty"`
+	// ModelKey is the user-selected model identifier (from the model picker in
+	// the UI). When non-empty, buildAgentInputForModel uses it to determine
+	// capability routing. When empty, conservative defaults apply (full fallback).
+	ModelKey string `json:"model_key,omitempty"`
 }
 
 // CreateRunResponse is returned from POST /v1/agent-runs.
@@ -213,12 +233,43 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 		sessionID = uuid.New().String()
 	}
 
-	// Build the input: combine message + attachment URLs if any.
-	// buildAgentInput emits an explicit Chinese instruction telling the LLM to
-	// use the file_read tool. Without that instruction the LLM tends to ignore
-	// a bare URL list and reply "you didn't upload anything" — see bug-from-
-	// customer 2026-05-22 (#14-followup agent-attachment-flow).
-	input := buildAgentInput(req.Message, req.AttachmentURLs)
+	// Build the input: combine message + attachments using capability-aware routing
+	// (task 1.3). When AttachmentIDs is populated the system loads full AgentAttachment
+	// entities and routes inline vs fallback per the active model's capability matrix.
+	//
+	// Legacy path: AttachmentURLs (no DB entity) → buildAgentInput (plain text hint).
+	// New path:    AttachmentIDs → buildAgentInputForModel → MessagesToInputString.
+	//
+	// Until runner.go (task 1.5) accepts InputMessages natively, the result is
+	// serialised to string via MessagesToInputString for RunRequest.Input.
+	var input string
+	var hasFallbackAttachments bool
+	if len(req.AttachmentIDs) > 0 && s.attachmentStore != nil {
+		atts := loadAttachmentsByIDs(ctx, s.attachmentStore, req.AttachmentIDs, userID)
+		msgs, buildErr := buildAgentInputForModel(ctx, req.Message, atts, req.ModelKey, s.attachmentStore)
+		if buildErr != nil {
+			log.Warnw("StudentRunService.Create: buildAgentInputForModel failed, falling back",
+				"user_id", userID, "error", buildErr)
+			input = buildAgentInput(req.Message, req.AttachmentURLs)
+		} else {
+			// Task 1.5 (task 1.3 deferral): detect whether any attachment used the
+			// text-fallback path so that runner.Run can inject the attachment reminder
+			// into system prompt segment 5.
+			hasFallbackAttachments = HasFallbackAttachments(msgs)
+			input = MessagesToInputString(msgs)
+		}
+	} else {
+		// Legacy path: use plain URL list (no capability routing).
+		// buildAgentInput emits an explicit Chinese instruction telling the LLM to
+		// use the file_read tool. Without that instruction the LLM tends to ignore
+		// a bare URL list and reply "you didn't upload anything" — see bug-from-
+		// customer 2026-05-22 (#14-followup agent-attachment-flow).
+		if len(req.AttachmentIDs) > 0 && s.attachmentStore == nil {
+			log.Warnw("StudentRunService.Create: attachmentStore not configured, AttachmentIDs ignored",
+				"user_id", userID, "attachment_ids", req.AttachmentIDs)
+		}
+		input = buildAgentInput(req.Message, req.AttachmentURLs)
+	}
 
 	// Resolve tool names from ToolFlags JSON.
 	toolNames := toolNamesFromFlags(ad.ToolFlags)
@@ -241,13 +292,14 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 	}
 
 	runReq := RunRequest{
-		UserID:            userID,
-		SessionID:         sessionID,
-		Input:             input,
-		ToolNames:         toolNames,
-		AgentDefinitionID: req.AgentDefinitionID,
-		EnableMemory:      true,
-		ExistingRunID:     preRun.ID,
+		UserID:                userID,
+		SessionID:             sessionID,
+		Input:                 input,
+		ToolNames:             toolNames,
+		AgentDefinitionID:     req.AgentDefinitionID,
+		EnableMemory:          true,
+		ExistingRunID:         preRun.ID,
+		AttachmentHasFallback: hasFallbackAttachments,
 	}
 
 	// Bridge narration events: Provider.Emit pushes events to an in-memory
@@ -279,6 +331,9 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 // buildAgentInput composes the LLM-facing user-message text from the human's
 // message plus any uploaded attachment COS URLs.
 //
+// Deprecated: use buildAgentInputForModel. Will be removed when task 1.5
+// completes multimodal wiring (runner.go accepts InputMessages natively).
+//
 // When attachments are present, an unconditional Chinese imperative is appended
 // telling the agent to invoke the file_read tool with each URL. The previous
 // implementation emitted "[attachments: <JSON>]" which the LLM frequently
@@ -306,6 +361,37 @@ func buildAgentInput(message string, attachmentURLs []string) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// loadAttachmentsByIDs fetches AgentAttachment entities for the given IDs,
+// enforcing that each row belongs to userID. Rows that fail the ownership
+// check or cannot be fetched are skipped (logged as warnings).
+//
+// Silent skip is intentional: a single attachment fetch failure should not
+// abort the entire run. The run continues with whichever attachments loaded
+// successfully. Callers that need strict all-or-nothing semantics should not
+// use this function.
+//
+// This is the biz-layer bridge for task 1.3: the HTTP handler binds
+// CreateRunRequest.AttachmentIDs from the frontend; this function resolves
+// them to full entities for buildAgentInputForModel.
+func loadAttachmentsByIDs(
+	ctx context.Context,
+	attStore store.IAgentAttachmentStore,
+	ids []uint64,
+	userID uint,
+) []*model.AgentAttachment {
+	var results []*model.AgentAttachment
+	for _, id := range ids {
+		att, err := attStore.GetByIDAndUser(ctx, id, userID)
+		if err != nil {
+			log.Warnw("loadAttachmentsByIDs: skipping attachment",
+				"att_id", id, "user_id", userID, "error", err)
+			continue
+		}
+		results = append(results, att)
+	}
+	return results
 }
 
 // ---------------------------------------------------------------------------

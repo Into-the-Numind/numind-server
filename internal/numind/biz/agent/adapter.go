@@ -85,9 +85,15 @@ func (a *aiserviceAdapter) WithTools(tools []*schema.ToolInfo) (einomodel.ToolCa
 // and converts the result back to *schema.Message. Langfuse trace in ctx is forwarded
 // transparently through aiservice.
 // After a successful call, stashes Usage keyed by the call-id injected via callctx.
+//
+// Task 1.5: the aiservice.Chat call is wrapped by callAIServiceWithStripRetry which
+// detects "multimodal not supported" errors and retries once with image parts stripped.
+// This is a defence-in-depth layer; it triggers only when the capability matrix
+// (Task 1.1) has a gap for the active model.
 func (a *aiserviceAdapter) Generate(ctx context.Context, in []*schema.Message, opts ...einomodel.Option) (*schema.Message, error) {
 	req := a.convertToAiserviceRequest(in)
-	resp, err := chatFn(ctx, a.taskID, req)
+	// Task 1.5: use the strip-retry wrapper instead of bare chatFn.
+	resp, err := callAIServiceWithStripRetry(ctx, a.taskID, req, a.modelName)
 	if err != nil {
 		return nil, err
 	}
@@ -120,6 +126,10 @@ func (a *aiserviceAdapter) LookupUsage(callID string) (Usage, bool) {
 
 // Stream converts Eino []*schema.Message → aiservice.ChatRequest, calls aiservice.ChatStream,
 // and wraps the returned channel into an Eino *schema.StreamReader[*schema.Message].
+//
+// Note: strip-retry is not applied to Stream because Eino ReAct uses Generate only.
+// If Stream is ever wired to ReAct in the future, wrap with
+// callAIServiceWithStripRetry to maintain Layer 4 defense.
 func (a *aiserviceAdapter) Stream(ctx context.Context, in []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
 	req := a.convertToAiserviceRequest(in)
 	ch, err := aiservice.ChatStream(ctx, a.taskID, req)

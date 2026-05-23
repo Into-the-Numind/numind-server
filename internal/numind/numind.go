@@ -22,6 +22,7 @@ import (
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/adapter"
+	"numind-server/internal/pkg/aiservice/capability"
 	aimw "numind-server/internal/pkg/aiservice/middleware"
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/billing"
@@ -133,6 +134,10 @@ func run() error {
 	reg := registry.New(store.S.DB())
 	gateway := aiservice.Build(aiservice.Deps{Registry: reg})
 
+	// 初始化 capability matrix 查询（V1.5 multimodal routing helper）
+	// 必须在 gateway 初始化之后、路由注册之前调用，确保 task 1.3/1.4 可以查询 capability。
+	capability.Init(store.S.DB())
+
 	// Wire middleware chain (done here to avoid import cycle: aiservice ↛ middleware).
 	usageStore := aimw.NewDBUsageStore(store.S.DB())
 
@@ -224,6 +229,16 @@ func run() error {
 	httpsrv := startInsecureServer(g)
 
 	// bizLayer was created above for context budget wiring; reuse it for cron tasks.
+
+	// V1.5 task 1.2: start attachment fallback worker pool + recover interrupted jobs.
+	// The pool drains when workerCtx is cancelled (same context as summaryWorker).
+	if fallbackSvc := bizLayer.AttachmentFallback(); fallbackSvc != nil {
+		fallbackSvc.Start(workerCtx)
+		if err := fallbackSvc.RecoverPending(context.Background()); err != nil {
+			log.Warnw("Attachment fallback RecoverPending failed (non-fatal)", "error", err)
+		}
+		log.Infow("Attachment fallback worker pool started")
+	}
 
 	// 启动博主监控 cron 调度器
 	go func() {
