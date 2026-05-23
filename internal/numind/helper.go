@@ -317,6 +317,15 @@ func autoMigrate(db *gorm.DB) error {
 		return fmt.Errorf("failed to migrate skill_template: %v", err)
 	}
 
+	// Agent Mode V2 Skill-as-Artifact 三表（agent-mode-v2-skill-as-artifact T01）
+	// 把 v1 嵌入式 Skill 升级为独立文件型资产 + binding 多对多。
+	// 数据迁移走独立 CLI（cmd/numind migrate-skill-from-agent），不在 AutoMigrate 内跑。
+	// v1 agent_definition.generated_skill_body/custom_skill_body/tool_flags 标 deprecated
+	// 但不删，runtime 暂仍读这些字段（v2 #2 接管后切换到 binding + skill 表）。
+	if err := db.AutoMigrate(&model.Skill{}, &model.SkillHistory{}, &model.AgentSkillBinding{}); err != nil {
+		return fmt.Errorf("failed to migrate skill artifact tables: %v", err)
+	}
+
 	// Agent permission pipeline 两表（agent-mode-permission-pipeline #6）
 	if err := db.AutoMigrate(&model.AgentPermissionConfig{}); err != nil {
 		return fmt.Errorf("failed to migrate agent_permission_config: %v", err)
