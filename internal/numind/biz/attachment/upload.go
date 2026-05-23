@@ -171,8 +171,17 @@ func (s *UploadService) Upload(ctx context.Context, userID uint, file multipart.
 		} else {
 			attID = att.ID
 			// Enqueue async fallback generation (fire-and-forget).
+			// V1.5 dev verification: temporarily log enqueue path to verify wiring.
+			log.Infow("attachment: enqueue decision",
+				"att_id", att.ID, "modality", string(modality),
+				"fallbackSvc_nil", s.fallbackSvc == nil)
 			if s.fallbackSvc != nil && modality != agentatt.ModalityUnknown {
-				_ = s.fallbackSvc.Enqueue(ctx, att.ID)
+				if err := s.fallbackSvc.Enqueue(ctx, att.ID); err != nil {
+					log.Warnw("attachment: Enqueue failed",
+						"att_id", att.ID, "error", err)
+				} else {
+					log.Infow("attachment: Enqueue succeeded", "att_id", att.ID)
+				}
 			}
 		}
 	}
