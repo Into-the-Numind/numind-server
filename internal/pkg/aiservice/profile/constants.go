@@ -2,7 +2,7 @@
 // the Capability Matching algorithm used by the AI Gateway.
 package profile
 
-// Task ID constants for all 24 supported task profiles (14 base + 7 agent-mode #14 + 3 V1.5 memory).
+// Task ID constants for all 25 supported task profiles (14 base + 7 agent-mode #14 + 4 V1.5 memory).
 // Business layers should reference these constants (e.g. profile.SopText) rather
 // than raw string literals to gain IDE completion and compile-time typo detection.
 const (
@@ -77,6 +77,21 @@ const (
 	// primary + deepseek-v3-2 fallback (D4: NO thinking models — output must be
 	// stable + consistent, not divergent). Spec: 03-memory/task-07-dialectic.md.
 	AgentDialectic = "agent.dialectic"
+	// AgentDigest is the Agent V1.5 temporal-tree digest task (Task 3.8).
+	// Shared by 4 cron jobs (daily / weekly / monthly / quarterly), each with
+	// its own prompt template:
+	//   - daily:     summarises yesterday's agent_runs + messages (cron 04:00 daily)
+	//   - weekly:    aggregates the 7 daily digests covering an ISO week (Mon 04:30)
+	//   - monthly:   aggregates the weekly digests covering a calendar month (1st 04:30)
+	//   - quarterly: aggregates the 3 monthly digests covering Q1-Q4 (quarter start 04:30)
+	// Output is strict JSON {"summary":"...","key_topics":[...]}; the digest_generator
+	// retries once on parse failure then falls back to a canned "（LLM 解析失败）" summary.
+	// Layer A only — the digest summarises the agent user themselves (cross-session
+	// aggregate), not any customer/subject they discuss.
+	// Recommended route: qwen-plus primary + deepseek-v3-2 fallback (D4: NO thinking
+	// model — digest is structured aggregation, not divergent reasoning).
+	// Spec: 03-memory/task-08-temporal-tree.md.
+	AgentDigest = "agent.digest"
 )
 
 // allTaskIDsList is the canonical ordered list of all task IDs.
@@ -107,6 +122,7 @@ var allTaskIDsList = []string{
 	AgentMemoryExtract,
 	AgentMemorySelect,
 	AgentDialectic,
+	AgentDigest,
 }
 
 // AllTaskIDs returns all task ID strings in a stable order.

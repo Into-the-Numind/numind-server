@@ -47,7 +47,9 @@ import (
 	"numind-server/internal/pkg/log"
 	docparser "numind-server/internal/pkg/parser"
 	"numind-server/internal/pkg/pricing"
+	redispkg "numind-server/internal/pkg/redis"
 
+	goredis "github.com/redis/go-redis/v9"
 	"github.com/spf13/viper"
 )
 
@@ -106,6 +108,8 @@ type biz struct {
 	memoryExtractor   *memory.ExtractorService   // Task 3.3 LLM extraction (Stop on shutdown)
 	memoryCadence     *memory.CadenceService     // Task 3.6 dialectic cadence gate (read-only)
 	memoryDialectic   memory.DialecticService    // Task 3.7 Layer A dialectic insight provider (background goroutine-based)
+	memoryTemporal    memory.TemporalService     // Task 3.8 temporal digest injector (per-turn read-only, 4 granularities)
+	memoryDigestCron  *memory.CronRunner         // Task 3.8 cron scheduler (4 jobs: daily/weekly/monthly/quarterly); Stop on shutdown
 	searchService     search.Service             // Task 3.5 FULLTEXT ngram search (also wired into AgentRunner via WithSearchService)
 	studentQuerySvc   *agent.StudentQueryService // #14 follow-up ALPHA student-facing queries
 	studentRunSvc     *agent.StudentRunService   // #14 BETA student-facing run lifecycle
@@ -446,6 +450,72 @@ func NewBiz(ds store.IStore) *biz {
 	// post-wire.
 	memoryExtractor.SetDialecticService(memoryDialectic)
 
+	// Task 3.8 (agent-mode-v15-memory-layer-a): construct TemporalService +
+	// DigestGenerator + DigestCron + CronRunner — the 分层时间感知 ("temporal
+	// tree") stack. 4 cron jobs (daily/weekly/monthly/quarterly) run on
+	// Asia/Shanghai schedules; per-turn injection scans user input for time
+	// keywords and pulls the matching digest into the system prompt.
+	//
+	// Lifecycle: CronRunner.Start spawns the scheduler; shutdown via
+	// CloseDigestCron (b.memoryDigestCron.Stop) drains in-flight jobs.
+	//
+	// Layer A only: all digests are per-user, never aggregated across
+	// parent/child accounts (D7 isolation).
+
+	// Register digest-related viper defaults so any caller path
+	// (LoadDigestCronConfigFromViper etc.) sees the spec-defined values
+	// even when the yaml is silent.
+	viper.SetDefault("agent.memory.digest.enabled", true)
+	viper.SetDefault("agent.memory.digest.timezone", memory.ShanghaiTZ)
+	viper.SetDefault("agent.memory.digest.daily_cron", memory.DefaultDailyCron)
+	viper.SetDefault("agent.memory.digest.weekly_cron", memory.DefaultWeeklyCron)
+	viper.SetDefault("agent.memory.digest.monthly_cron", memory.DefaultMonthlyCron)
+	viper.SetDefault("agent.memory.digest.quarterly_cron", memory.DefaultQuarterlyCron)
+	viper.SetDefault("agent.memory.digest.worker_concurrency", memory.DefaultDigestWorkerConcurrency)
+	viper.SetDefault("agent.memory.digest.redis_lock_ttl_seconds", int(memory.DefaultDigestLockTTL/time.Second))
+	viper.SetDefault("agent.memory.digest.per_user_timeout_seconds", int(memory.DefaultDigestPerUserTimeout/time.Second))
+	viper.SetDefault("agent.memory.digest.max_output_tokens", memory.DefaultDigestMaxOutputTokens)
+	viper.SetDefault("agent.memory.digest.temperature", memory.DefaultDigestTemperature)
+	viper.SetDefault("agent.memory.digest.call_timeout_seconds", int(memory.DefaultDigestCallTimeout/time.Second))
+
+	// TemporalService: per-turn injector (read-only, no LLM).
+	memoryTemporal := memory.NewTemporalService(ds.UserMemoryDigests())
+	b.memoryTemporal = memoryTemporal
+
+	// DigestGenerator: pulls source data (agent_run / lower digests) + calls
+	// aiservice.Chat(profile.AgentDigest) with 1 retry + fallback.
+	digestGen := memory.NewDigestGenerator(
+		ds.UserMemoryDigests(),
+		ds.UserMemoryFacts(),
+		memory.LoadDigestConfigFromViper(viper.GetViper()),
+	)
+
+	// DigestCron: enumerates active users + worker pool + per-user generate +
+	// upsert + Redis SETNX lock (rdb may be nil = single-instance mode).
+	digestCronOpts := []memory.DigestCronOption{}
+	if rdb := redisPkgClient(); rdb != nil {
+		// Wrap *redis.Client in a typed accessor — passing a typed-nil
+		// *redis.Client directly through the interface seam confuses the
+		// downstream nil-check (typed nil != nil interface).
+		digestCronOpts = append(digestCronOpts, memory.WithDigestCronRedisClient(rdb))
+	}
+	digestCron := memory.NewDigestCron(
+		ds.UserMemoryDigests(),
+		digestGen,
+		memory.LoadDigestCronConfigFromViper(viper.GetViper()),
+		digestCronOpts...,
+	)
+
+	// CronRunner: robfig/cron scheduler with the 4 jobs (daily / weekly /
+	// monthly / quarterly) — Asia/Shanghai timezone, spec cron exprs.
+	cronCfg := memory.LoadCronRunnerConfigFromViper(viper.GetViper())
+	digestRunner := memory.NewCronRunner(digestCron, cronCfg)
+	if err := digestRunner.Start(); err != nil {
+		log.Errorw("memory.digest CronRunner.Start failed; cron disabled for this process",
+			"error", err)
+	}
+	b.memoryDigestCron = digestRunner
+
 	// Task 3.5 (agent-mode-v15-memory-layer-a): construct FULLTEXT search
 	// service. Indexes diff-by-uuid on every AgentRunner.WriteTurn via the
 	// failure-tolerant IndexAgentRun hook (search rows are derived data —
@@ -472,6 +542,7 @@ func NewBiz(ds store.IStore) *biz {
 		agent.WithMemoryExtractor(memoryExtractor), // Task 3.3 LLM extraction async pipeline
 		agent.WithMemorySelector(memorySelector),   // Task 3.4 top-5 side-query selector
 		agent.WithMemoryDialectic(memoryDialectic), // Task 3.7 Layer A cached_insight injection
+		agent.WithMemoryTemporal(memoryTemporal),   // Task 3.8 temporal digest injection (4 granularities)
 		agent.WithSearchService(searchService),     // Task 3.5 FULLTEXT ngram indexing hook
 	)
 
@@ -711,6 +782,29 @@ func (b *biz) CloseMemoryExtractor(_ context.Context) {
 	if b.memoryExtractor != nil {
 		b.memoryExtractor.Stop()
 	}
+}
+
+// CloseDigestCron 优雅停止 Task 3.8 memory digest 的 4 个 cron job
+// (daily/weekly/monthly/quarterly). Stop 等待 in-flight job 完成 (worker pool
+// drain + Redis lock release best-effort). Idempotent.
+// 与 CloseMemoryExtractor 同 shutdown 模式: 未调时进程退出 robfig/cron 随之结束;
+// in-flight LLM 调用可能被中断 (无 DB 一致性风险 — UPSERT 幂等, 下次 cron 重跑覆盖).
+// agent-mode-v15-memory-layer-a Task 3.8.
+func (b *biz) CloseDigestCron(_ context.Context) {
+	if b.memoryDigestCron != nil {
+		b.memoryDigestCron.Stop()
+	}
+}
+
+// redisPkgClient returns the package-level *redis.Client, or nil if Redis was
+// not initialised (e.g. tests, single-instance dev without redis). The
+// memory.WithDigestCronRedisClient option accepts the minimal interface
+// (SetNX + Del); *redis.Client structurally satisfies it.
+//
+// nil = "no lock" mode — DigestCron will skip the Redis SETNX gate and run
+// every scheduled tick. Safe for single-instance deploys.
+func redisPkgClient() *goredis.Client {
+	return redispkg.GetClient()
 }
 
 // LLMRouter 返回 LLM 路由服务实例.

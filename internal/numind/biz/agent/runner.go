@@ -94,6 +94,7 @@ type agentRunner struct {
 	memoryExtractor   *memory.ExtractorService    // Task 3.3 LLM extraction async pipeline; wired by biz.go via WithMemoryExtractor; may be nil
 	memorySelector    memory.SelectorService      // Task 3.4 top-5 side-query selector; wired by biz.go via WithMemorySelector; may be nil
 	memoryDialectic   memory.DialecticService     // Task 3.7 Layer A dialectic cached_insight provider; wired by biz.go via WithMemoryDialectic; may be nil
+	memoryTemporal    memory.TemporalService      // Task 3.8 temporal digest injector (4 granularities); wired by biz.go via WithMemoryTemporal; may be nil
 	searchService     search.Service              // Task 3.5 FULLTEXT ngram indexing hook; wired by biz.go via WithSearchService; may be nil
 }
 
@@ -249,6 +250,34 @@ func WithMemorySelector(s memory.SelectorService) RunnerOption {
 func WithMemoryDialectic(d memory.DialecticService) RunnerOption {
 	return func(r *agentRunner) {
 		r.memoryDialectic = d
+	}
+}
+
+// WithMemoryTemporal injects the Task 3.8 temporal digest service.
+// nil (default) = no temporal digest injection (preserves test-only / minimal-wire
+// callers; Task 3.1 + 3.4 + 3.7 paths still work).
+//
+// When set, runner.Run scans req.Input for time keywords (today / yesterday /
+// 上周 / 本月 / Q3 / ...). If matched, fetches the corresponding daily / weekly
+// / monthly / quarterly digest from user_memory_digest_* and injects the
+// resulting <temporal_context …> block(s) into the Memories segment AFTER
+// dialecticInsightBlock and BEFORE memoryDisclaimerBlock:
+//
+//	agentMdBlock              (## Agent Rules — task 3.1, developer-defined)
+//	selectorBlock             (<personal_context …> — task 3.4, per-turn facts)
+//	dialecticInsightBlock     (<personal_context …> — task 3.7, cached_insight)
+//	temporalBlock             (<temporal_context …> — task 3.8, time-scoped digest)
+//	memoryDisclaimerBlock + memorySystemBlock (L1/L2 dialog memory)
+//
+// Layer A only — the digest summarises the agent user themselves (cross-session
+// activity), never any customer/subject they discuss (V2 Layer B scope).
+//
+// Trivial-turn short-circuit: when memory.IsTrivial(req.Input) returns true,
+// temporal injection is skipped (no time keywords in "好的"/"👍" inputs anyway,
+// and skipping the regex scan saves a few microseconds).
+func WithMemoryTemporal(t memory.TemporalService) RunnerOption {
+	return func(r *agentRunner) {
+		r.memoryTemporal = t
 	}
 }
 
@@ -467,23 +496,37 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		}
 	}
 
+	// V1.5 板块 3 task 3.8: 分层时间感知 — 扫 req.Input 时间词 (今天/昨天/上周/本月/
+	// Q3/...)，命中则从 user_memory_digest_* 取对应粒度 digest 注入。
+	// 最多 2 个 digest (spec §设计要点 cap, 避免 prompt 膨胀)。
+	// 空 / 无关键词 / 数据缺失时返回空, 整段省略.
+	// 拼接顺序 (spec §System prompt 集成): 在 dialecticInsightBlock 之后、
+	// memoryDisclaimerBlock 之前. trivial turn 跳过 (短输入不会有时间词, 且省 regex 扫).
+	var temporalBlock string
+	if r.memoryTemporal != nil && req.UserID != 0 && !isTrivial {
+		if block := r.memoryTemporal.InjectDigests(ctx, req.UserID, req.Input); block != "" {
+			temporalBlock = "\n\n" + block
+		}
+	}
+
 	// P1.1 review-fix: 段 3 (Memories) 显式 header — 让 LLM 明确识别"这里开始是
 	// Memories 段"。Memories 段 = AGENT.md cascade (rules) + selectorBlock (per-turn
 	// LLM-selected facts, task 3.4) + dialecticInsightBlock (cached_insight, task 3.7)
-	// + memorySystemBlock (existing L1/L2 facts)。任一非空时挂前导 `## Memories` header；
-	// 全部为空则整段省略。
+	// + temporalBlock (time-scoped digest, task 3.8) + memorySystemBlock
+	// (existing L1/L2 facts)。任一非空时挂前导 `## Memories` header；全部为空则整段省略。
 	var memoriesSectionHeader string
-	if agentMdBlock != "" || selectorBlock != "" || dialecticInsightBlock != "" || memorySystemBlock != "" {
+	if agentMdBlock != "" || selectorBlock != "" || dialecticInsightBlock != "" || temporalBlock != "" || memorySystemBlock != "" {
 		memoriesSectionHeader = "\n\n## Memories\n"
 	}
 
 	// 段位 1 + 2 + 3 + (disclaimer + 4) + 5 + 6（蓝本 §4.3.9）
 	// disclaimer 与 memorySystemBlock 同进同退；空字符串时整体段位省略。
-	// V1.5 task 3.1 / 3.4 / 3.7: memoriesSectionHeader 是段 3（Memories）的开头标记。
+	// V1.5 task 3.1 / 3.4 / 3.7 / 3.8: memoriesSectionHeader 是段 3（Memories）的开头标记。
 	// 段内顺序：agentMdBlock (开发者规则) → selectorBlock (task 3.4 selected facts) →
 	// dialecticInsightBlock (task 3.7 cached_insight) →
+	// temporalBlock (task 3.8 time-scoped digest) →
 	// memoryDisclaimerBlock + memorySystemBlock (L1/L2 dialog memory)。
-	// agentMdBlock / selectorBlock / dialecticInsightBlock 自带前导 \n\n，空字符串时无副作用。
+	// agentMdBlock / selectorBlock / dialecticInsightBlock / temporalBlock 自带前导 \n\n，空字符串时无副作用。
 	req.SystemPrompt = skill.PlatformBasePrompt +
 		tenantHardRulesPlaceholder +
 		body +
@@ -491,6 +534,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		agentMdBlock +
 		selectorBlock +
 		dialecticInsightBlock +
+		temporalBlock +
 		memoryDisclaimerBlock +
 		memorySystemBlock +
 		toolsSectionPlaceholder +

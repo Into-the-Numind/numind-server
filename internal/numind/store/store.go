@@ -50,6 +50,7 @@ type IStore interface {
 	UserGlobalMemories() IUserGlobalMemoryStore     // #7 memory-system L2 长期记忆 Notepad
 	UserMemoryProfiles() IUserMemoryProfileStore    // agent-mode-v15-memory-layer-a (Task 3.2) per-user 画像 + dialectic cache
 	UserMemoryFacts() IUserMemoryFactStore          // agent-mode-v15-memory-layer-a (Task 3.2) per-user fact 列表
+	UserMemoryDigests() IMemoryDigestStore          // agent-mode-v15-memory-layer-a (Task 3.8) 4 张 daily/weekly/monthly/quarterly digest
 	AgentMessageSearches() IAgentMessageSearchStore // agent-mode-v15-memory-layer-a (Task 3.5) FULLTEXT search 索引
 	Compliance() IComplianceStore                   // #13 agent-mode-compliance-3layer
 }
@@ -246,6 +247,12 @@ func (ds *datastore) UserMemoryProfiles() IUserMemoryProfileStore {
 // （agent-mode-v15-memory-layer-a Task 3.2）。
 func (ds *datastore) UserMemoryFacts() IUserMemoryFactStore {
 	return NewUserMemoryFactStore(ds.db)
+}
+
+// UserMemoryDigests 返回一个实现了 IMemoryDigestStore 接口的实例
+// （agent-mode-v15-memory-layer-a Task 3.8 分层时间感知 daily/weekly/monthly/quarterly 4 张表）。
+func (ds *datastore) UserMemoryDigests() IMemoryDigestStore {
+	return NewMemoryDigestStore(ds.db)
 }
 
 // AgentMessageSearches 返回一个实现了 IAgentMessageSearchStore 接口的实例

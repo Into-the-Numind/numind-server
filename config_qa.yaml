@@ -161,3 +161,17 @@ agent:
     dialectic_max_output_tokens: 600        # LLM 输出上限（300-500 字中文 ≈ 450-750 tokens）
     dialectic_temperature: 0.4              # 略稳定（不发散）但保留推理弹性
     dialectic_call_timeout_seconds: 30      # LLM 调用 wall-clock 上限（qwen-plus 平均 4-8s）
+    # Task 3.8: 分层时间感知 (4 cron jobs + per-turn temporal injection)
+    digest:
+      enabled: true                         # qa 跑 cron — 验证多实例 Redis lock
+      timezone: "Asia/Shanghai"
+      daily_cron: "0 0 4 * * *"
+      weekly_cron: "0 30 4 * * 1"
+      monthly_cron: "0 30 4 1 * *"
+      quarterly_cron: "0 30 4 1 1,4,7,10 *"
+      worker_concurrency: 20
+      redis_lock_ttl_seconds: 3600
+      per_user_timeout_seconds: 120
+      max_output_tokens: 800
+      temperature: 0.3
+      call_timeout_seconds: 30

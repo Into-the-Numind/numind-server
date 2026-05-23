@@ -81,7 +81,18 @@ const (
 	MemoryDialecticFailed MemoryDialecticResult = "failed"
 )
 
-// memoryMetrics holds all Task 3.3 + 3.4 + 3.6 + 3.7 counters + 1 gauge + 1 histogram.
+// MemoryDigestGranularity labels memory_digest_job_runs_total per cron tier.
+// Stable string values mirror the JSON enum in Granularity (biz/memory/temporal_keywords.go).
+type MemoryDigestGranularity string
+
+const (
+	MemoryDigestGranDaily     MemoryDigestGranularity = "daily"
+	MemoryDigestGranWeekly    MemoryDigestGranularity = "weekly"
+	MemoryDigestGranMonthly   MemoryDigestGranularity = "monthly"
+	MemoryDigestGranQuarterly MemoryDigestGranularity = "quarterly"
+)
+
+// memoryMetrics holds all Task 3.3 + 3.4 + 3.6 + 3.7 + 3.8 counters + 1 gauge + 1 histogram.
 // Internal to the package; access via the public helper functions below.
 type memoryMetrics struct {
 	mu                  sync.RWMutex
@@ -89,10 +100,12 @@ type memoryMetrics struct {
 	factsExtractedTotal atomic.Int64
 	dedupHitsTotal      atomic.Int64
 	queueDepth          atomic.Int64
-	selectRuns          map[MemorySelectResult]*atomic.Int64    // labelled counter (task 3.4)
-	selectFactsInjected atomic.Int64                            // task 3.4 — total facts injected into prompts
-	trivialCount        atomic.Int64                            // task 3.6 — trivial-input short-circuits
-	dialecticRuns       map[MemoryDialecticResult]*atomic.Int64 // labelled counter (task 3.6, ext by task 3.7)
+	selectRuns          map[MemorySelectResult]*atomic.Int64      // labelled counter (task 3.4)
+	selectFactsInjected atomic.Int64                              // task 3.4 — total facts injected into prompts
+	trivialCount        atomic.Int64                              // task 3.6 — trivial-input short-circuits
+	dialecticRuns       map[MemoryDialecticResult]*atomic.Int64   // labelled counter (task 3.6, ext by task 3.7)
+	digestJobRuns       map[MemoryDigestGranularity]*atomic.Int64 // task 3.8 — cron run count per granularity
+	digestJobFails      map[MemoryDigestGranularity]*atomic.Int64 // task 3.8 — cron failure count per granularity
 	// Task 3.7 dialectic duration histogram. Bucket boundaries (seconds): 1, 2,
 	// 5, 10, 20, 30 (spec §观测). Stored as parallel slice of atomic.Int64 —
 	// bucket i counts observations ≤ dialecticDurationBuckets[i]. Final +Inf
@@ -116,6 +129,8 @@ func newMemoryMetrics() *memoryMetrics {
 		extractionRuns:                make(map[MemoryExtractionResult]*atomic.Int64, 4),
 		selectRuns:                    make(map[MemorySelectResult]*atomic.Int64, 5),
 		dialecticRuns:                 make(map[MemoryDialecticResult]*atomic.Int64, 3),
+		digestJobRuns:                 make(map[MemoryDigestGranularity]*atomic.Int64, 4),
+		digestJobFails:                make(map[MemoryDigestGranularity]*atomic.Int64, 4),
 		dialecticDurationBucketCounts: make([]*atomic.Int64, len(dialecticDurationBuckets)),
 	}
 	for i := range dialecticDurationBuckets {
@@ -148,6 +163,16 @@ func newMemoryMetrics() *memoryMetrics {
 	} {
 		var c atomic.Int64
 		m.dialecticRuns[r] = &c
+	}
+	for _, g := range []MemoryDigestGranularity{
+		MemoryDigestGranDaily,
+		MemoryDigestGranWeekly,
+		MemoryDigestGranMonthly,
+		MemoryDigestGranQuarterly,
+	} {
+		var run, fail atomic.Int64
+		m.digestJobRuns[g] = &run
+		m.digestJobFails[g] = &fail
 	}
 	return m
 }
@@ -236,6 +261,38 @@ func MemoryDialecticSkipCountInc() { MemoryDialecticRunsInc(MemoryDialecticSkip)
 // recovery — anything that prevents a valid insight from landing in cache.
 func MemoryDialecticFailedCountInc() { MemoryDialecticRunsInc(MemoryDialecticFailed) }
 
+// MemoryDigestJobRunInc increments numind_memory_digest_job_runs_total{granularity=...}.
+// Task 3.8 — incremented once per DigestCron.Run*Digest invocation regardless
+// of how many users are processed (job-level counter, not per-user).
+// Accepts the granularity as a string (e.g. "daily" / "weekly" / "monthly" /
+// "quarterly") to keep the caller decoupled from the metrics package's
+// MemoryDigestGranularity type — unknown labels are no-op.
+func MemoryDigestJobRunInc(granularity string) {
+	g := MemoryDigestGranularity(granularity)
+	memoryReg.mu.RLock()
+	c, ok := memoryReg.digestJobRuns[g]
+	memoryReg.mu.RUnlock()
+	if !ok {
+		return
+	}
+	c.Add(1)
+}
+
+// MemoryDigestJobFailedInc increments numind_memory_digest_job_failures_total{granularity=...}.
+// Task 3.8 — incremented when a DigestCron job has at least one per-user
+// failure (DB / LLM / panic). Job-level counter; for per-user error rate,
+// derive via job_runs / job_failures ratio.
+func MemoryDigestJobFailedInc(granularity string) {
+	g := MemoryDigestGranularity(granularity)
+	memoryReg.mu.RLock()
+	c, ok := memoryReg.digestJobFails[g]
+	memoryReg.mu.RUnlock()
+	if !ok {
+		return
+	}
+	c.Add(1)
+}
+
 // MemoryDialecticDurationObserve records one dialectic-pipeline wall-clock
 // observation into the numind_memory_dialectic_duration_seconds histogram.
 //
@@ -258,11 +315,11 @@ func MemoryDialecticDurationObserve(d time.Duration) {
 	}
 }
 
-// MemorySnapshot is a point-in-time view of all Task 3.3 + 3.4 + 3.6 + 3.7 metrics.
+// MemorySnapshot is a point-in-time view of all Task 3.3 + 3.4 + 3.6 + 3.7 + 3.8 metrics.
 //
 // Useful for tests (assert deltas around extract() / SelectTop5() / IsTrivial /
-// MaybeRecompute) and for future /metrics handler implementation (one big
-// JSON dump).
+// MaybeRecompute / RunDailyDigest) and for future /metrics handler
+// implementation (one big JSON dump).
 type MemorySnapshot struct {
 	ExtractionRuns      map[MemoryExtractionResult]int64
 	FactsExtractedTotal int64
@@ -277,9 +334,12 @@ type MemorySnapshot struct {
 	DialecticDurationBucketCounts []int64   // observations ≤ buckets[i]; len == len(buckets)
 	DialecticDurationCount        int64     // total observations (use to derive +Inf bucket = count - last bucket)
 	DialecticDurationSumSeconds   float64   // sum of observed durations in seconds
+	// Task 3.8 digest cron counters.
+	DigestJobRuns   map[MemoryDigestGranularity]int64
+	DigestJobFailed map[MemoryDigestGranularity]int64
 }
 
-// MemoryGetSnapshot returns a consistent snapshot of all Task 3.3 + 3.4 + 3.6 + 3.7
+// MemoryGetSnapshot returns a consistent snapshot of all Task 3.3 + 3.4 + 3.6 + 3.7 + 3.8
 // metrics.
 //
 // Snapshot is consistent per-counter (atomic load) but the relative ordering
@@ -289,6 +349,8 @@ func MemoryGetSnapshot() MemorySnapshot {
 		ExtractionRuns:                make(map[MemoryExtractionResult]int64, 4),
 		SelectRuns:                    make(map[MemorySelectResult]int64, 5),
 		DialecticRuns:                 make(map[MemoryDialecticResult]int64, 3),
+		DigestJobRuns:                 make(map[MemoryDigestGranularity]int64, 4),
+		DigestJobFailed:               make(map[MemoryDigestGranularity]int64, 4),
 		DialecticDurationBuckets:      append([]float64(nil), dialecticDurationBuckets...),
 		DialecticDurationBucketCounts: make([]int64, len(dialecticDurationBuckets)),
 	}
@@ -301,6 +363,12 @@ func MemoryGetSnapshot() MemorySnapshot {
 	}
 	for label, c := range memoryReg.dialecticRuns {
 		out.DialecticRuns[label] = c.Load()
+	}
+	for label, c := range memoryReg.digestJobRuns {
+		out.DigestJobRuns[label] = c.Load()
+	}
+	for label, c := range memoryReg.digestJobFails {
+		out.DigestJobFailed[label] = c.Load()
 	}
 	memoryReg.mu.RUnlock()
 	out.FactsExtractedTotal = memoryReg.factsExtractedTotal.Load()
@@ -317,8 +385,8 @@ func MemoryGetSnapshot() MemorySnapshot {
 	return out
 }
 
-// MemoryResetForTest resets all Task 3.3 + 3.4 + 3.6 + 3.7 counters. INTENDED
-// FOR TESTS ONLY — production code must never call this.
+// MemoryResetForTest resets all Task 3.3 + 3.4 + 3.6 + 3.7 + 3.8 counters.
+// INTENDED FOR TESTS ONLY — production code must never call this.
 func MemoryResetForTest() {
 	memoryReg.mu.Lock()
 	for _, c := range memoryReg.extractionRuns {
@@ -328,6 +396,12 @@ func MemoryResetForTest() {
 		c.Store(0)
 	}
 	for _, c := range memoryReg.dialecticRuns {
+		c.Store(0)
+	}
+	for _, c := range memoryReg.digestJobRuns {
+		c.Store(0)
+	}
+	for _, c := range memoryReg.digestJobFails {
 		c.Store(0)
 	}
 	for _, c := range memoryReg.dialecticDurationBucketCounts {
