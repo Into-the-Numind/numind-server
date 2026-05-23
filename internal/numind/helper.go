@@ -80,6 +80,34 @@ func logOptions() *log.Options {
 	}
 }
 
+// LogOptionsForCLI 为 cmd/numind 一次性 CLI 子命令导出 logOptions().
+// CLI 子命令不走 run()/runAdmin()，但仍需统一日志配置。
+func LogOptionsForCLI() *log.Options { return logOptions() }
+
+// OpenDBForCLI 为 cmd/numind 一次性 CLI 子命令打开 MySQL gorm.DB 并初始化
+// store.S（不跑 autoMigrate / Redis / 系统配置同步等重操作）。
+//
+// CLI 退出即关闭连接；不适合长时间运行的服务。
+func OpenDBForCLI() (*gorm.DB, error) {
+	dbOptions := &db.MySQLOptions{
+		Host:                  viper.GetString("db.host"),
+		Username:              viper.GetString("db.username"),
+		Password:              viper.GetString("db.password"),
+		Database:              viper.GetString("db.database"),
+		MaxIdleConnections:    viper.GetInt("db.max-idle-connections"),
+		MaxOpenConnections:    viper.GetInt("db.max-open-connections"),
+		MaxConnectionLifeTime: viper.GetDuration("db.max-connection-life-time"),
+		LogLevel:              viper.GetInt("db.log-level"),
+	}
+	ins, err := db.NewMySQL(dbOptions)
+	if err != nil {
+		return nil, fmt.Errorf("OpenDBForCLI: %w", err)
+	}
+	// 初始化 store.S 单例，让走 store.S.DB() 路径的代码可用
+	store.NewStore(ins)
+	return ins, nil
+}
+
 // initStore 读取 db 配置，创建 gorm.DB 实例，并初始化 miniblog store 层.
 func initStore() error {
 	dbOptions := &db.MySQLOptions{
