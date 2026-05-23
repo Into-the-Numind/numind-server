@@ -45,7 +45,12 @@ func newAgentRunTestDB(t *testing.T) *gorm.DB {
 			pending_question_json TEXT,
 			pending_question_at   DATETIME,
 			created_at      DATETIME,
-			updated_at      DATETIME
+			updated_at      DATETIME,
+			-- V1.5 板块 2 task 2.1 — context-management V2 columns
+			compact_state_v2        TEXT,
+			total_tokens_used_v2    INTEGER NOT NULL DEFAULT 0,
+			use_compact_v2          INTEGER NOT NULL DEFAULT 0,
+			context_window_limit_v2 INTEGER
 		)`).Error)
 
 	sqlDB, err := db.DB()
@@ -191,6 +196,52 @@ func TestAgentRun_CancellationRequestedAt_NullableRoundTrip(t *testing.T) {
 	require.NotNil(t, got2.CancellationRequestedAt)
 	assert.WithinDuration(t, now, *got2.CancellationRequestedAt, time.Second,
 		"non-nil CancellationRequestedAt should round-trip")
+}
+
+// TestAgentRun_V2ColumnsPresent verifies that GORM AutoMigrate on a fresh
+// schema produces all 4 V2 columns on agent_run and creates the new
+// agent_tool_artifact table — matching task 2.1 spec §验证策略 case (9).
+// V1 columns (compact_state / compact_summary) are also asserted unchanged
+// to guard the D3 平行重做 invariant.
+func TestAgentRun_V2ColumnsPresent(t *testing.T) {
+	tmp := t.TempDir()
+	dsn := tmp + "/agent_run_automigrate_test.db?_busy_timeout=5000&_journal_mode=WAL"
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, db.AutoMigrate(&AgentRun{}, &AgentToolArtifact{}))
+
+	mig := db.Migrator()
+
+	// V1 columns must still exist (D3 — V1 fields zero-diff).
+	assert.True(t, mig.HasColumn(&AgentRun{}, "compact_state"),
+		"V1 compact_state column must still exist (D3 invariant)")
+	assert.True(t, mig.HasColumn(&AgentRun{}, "compact_summary"),
+		"V1 compact_summary column must still exist (D3 invariant)")
+
+	// All 4 V2 columns must be present after AutoMigrate.
+	for _, col := range []string{
+		"compact_state_v2",
+		"total_tokens_used_v2",
+		"use_compact_v2",
+		"context_window_limit_v2",
+	} {
+		assert.True(t, mig.HasColumn(&AgentRun{}, col),
+			"V2 column %q must be present after AutoMigrate", col)
+	}
+
+	// agent_tool_artifact table must be created.
+	assert.True(t, mig.HasTable(&AgentToolArtifact{}),
+		"agent_tool_artifact table must be created by AutoMigrate")
+
+	// Spot-check key artifact columns to guard against tag regressions.
+	for _, col := range []string{"uuid", "agent_run_id", "tool_call_id", "tool_name",
+		"size_bytes", "file_path", "is_expired", "expires_at"} {
+		assert.True(t, mig.HasColumn(&AgentToolArtifact{}, col),
+			"agent_tool_artifact column %q must be present", col)
+	}
 }
 
 // TestAgentRun_AgentDefinitionID_DefaultZero verifies AgentDefinitionID is 0

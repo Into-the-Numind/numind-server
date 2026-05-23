@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/viper"
 
 	"numind-server/internal/numind/biz"
+	"numind-server/internal/numind/biz/compactv2"
 	cbbiz "numind-server/internal/numind/biz/contextbudget"
 	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/store"
@@ -246,6 +247,36 @@ func run() error {
 		for range ticker.C {
 			if err := bizLayer.Sop().CleanupDraftRuns(context.Background(), 8*time.Hour); err != nil {
 				log.Errorw("Draft cleanup failed", "error", err)
+			}
+		}
+	}()
+
+	// Agent Mode V1.5 板块 2 task 2.2 — agent_tool_artifact cleanup cron。
+	// 每 24h 扫一次过期 artifact（>30天）：物理删文件 + DB 标 is_expired=true。
+	// 同 SOP cleanup 模式：启动时立即跑一次，然后 ticker 24h 一轮。
+	// TODO: 当前不是严格 03:00 触发；如果运维需要避开高峰，可改成 sleep until next 03:00 模式。
+	go func() {
+		artifactStore := store.S.ToolArtifact()
+		dataDir := viper.GetString("agent.artifact_dir")
+		if dataDir == "" {
+			// fallback：相对当前工作目录的 data 子目录（生产部署应当显式配置 agent.artifact_dir）
+			dataDir = "data"
+			log.Warnw("agent.artifact_dir not configured; using fallback 'data/' (set in config_*.yaml for prod)",
+				"dataDir", dataDir)
+		}
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+
+		log.Infow("agent_tool_artifact cleanup task started", "interval", "24 hours", "data_dir", dataDir)
+
+		// 启动时立即跑一次（避免长服务漂移）
+		if _, err := compactv2.RunArtifactCleanup(context.Background(), artifactStore, dataDir); err != nil {
+			log.Errorw("Initial agent_tool_artifact cleanup failed", "error", err)
+		}
+
+		for range ticker.C {
+			if _, err := compactv2.RunArtifactCleanup(context.Background(), artifactStore, dataDir); err != nil {
+				log.Errorw("Periodic agent_tool_artifact cleanup failed", "error", err)
 			}
 		}
 	}()
