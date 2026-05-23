@@ -85,9 +85,15 @@ func (a *aiserviceAdapter) WithTools(tools []*schema.ToolInfo) (einomodel.ToolCa
 // and converts the result back to *schema.Message. Langfuse trace in ctx is forwarded
 // transparently through aiservice.
 // After a successful call, stashes Usage keyed by the call-id injected via callctx.
+//
+// Task 1.5: the aiservice.Chat call is wrapped by callAIServiceWithStripRetry which
+// detects "multimodal not supported" errors and retries once with image parts stripped.
+// This is a defence-in-depth layer; it triggers only when the capability matrix
+// (Task 1.1) has a gap for the active model.
 func (a *aiserviceAdapter) Generate(ctx context.Context, in []*schema.Message, opts ...einomodel.Option) (*schema.Message, error) {
 	req := a.convertToAiserviceRequest(in)
-	resp, err := chatFn(ctx, a.taskID, req)
+	// Task 1.5: use the strip-retry wrapper instead of bare chatFn.
+	resp, err := callAIServiceWithStripRetry(ctx, a.taskID, req, a.modelName)
 	if err != nil {
 		return nil, err
 	}
