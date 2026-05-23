@@ -99,14 +99,14 @@ func TestScanOutput_NormalXLSX_Pass(t *testing.T) {
 	// A clean xlsx (zip archive with a workbook entry, no macro).
 	data := makeMinimalZip(t, "xl/workbook.xml", []byte(`<?xml version="1.0"?><workbook/>`))
 	path := writeTestFile(t, "report.xlsx", data)
-	if err := ScanOutput(path, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); err != nil {
+	if err := ScanOutput(path, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 0); err != nil {
 		t.Errorf("ScanOutput normal xlsx = %v; want nil", err)
 	}
 }
 
 func TestScanOutput_FileTooLarge_ErrOutputTooLarge(t *testing.T) {
 	// Create a file exactly 1 byte over the 50 MB limit.
-	size := maxOutputSizeBytes + 1
+	size := defaultMaxOutputSizeBytes + 1
 	// We don't actually need to write that many bytes — os.Truncate can
 	// create a sparse file that stats as the right size. BUT os.Stat will
 	// report the logical size, and our check uses info.Size(). Sparse files
@@ -123,7 +123,7 @@ func TestScanOutput_FileTooLarge_ErrOutputTooLarge(t *testing.T) {
 	}
 	f.Close()
 
-	if err := ScanOutput(path, ""); err == nil {
+	if err := ScanOutput(path, "", 0); err == nil {
 		t.Error("ScanOutput 50MB+1 = nil; want ErrOutputTooLarge")
 	} else if err != ErrOutputTooLarge {
 		t.Errorf("ScanOutput 50MB+1 = %v; want ErrOutputTooLarge", err)
@@ -133,7 +133,7 @@ func TestScanOutput_FileTooLarge_ErrOutputTooLarge(t *testing.T) {
 func TestScanOutput_ZipBomb_ErrZipBomb(t *testing.T) {
 	data := makeBigZip(t) // skipped in -short
 	path := writeTestFile(t, "bomb.zip", data)
-	if err := ScanOutput(path, ""); err == nil {
+	if err := ScanOutput(path, "", 0); err == nil {
 		t.Error("ScanOutput zip-bomb = nil; want ErrZipBomb")
 	} else if err != ErrZipBomb {
 		t.Errorf("ScanOutput zip-bomb = %v; want ErrZipBomb", err)
@@ -149,7 +149,7 @@ func TestScanOutput_MimeMismatch_ErrMimeMismatch(t *testing.T) {
 	padded := make([]byte, 512)
 	copy(padded, pngMagic)
 	path := writeTestFile(t, "fake.xlsx", padded)
-	err := ScanOutput(path, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	err := ScanOutput(path, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 0)
 	if err == nil {
 		t.Error("ScanOutput MIME mismatch = nil; want ErrMimeMismatch")
 	} else if err != ErrMimeMismatch {
@@ -161,7 +161,7 @@ func TestScanOutput_NonZipFile_SkipsZipBombCheck(t *testing.T) {
 	// A plain text CSV — not a zip, so zip-bomb check should be skipped.
 	data := []byte("col1,col2\nval1,val2\n")
 	path := writeTestFile(t, "data.csv", data)
-	if err := ScanOutput(path, "text/csv"); err != nil {
+	if err := ScanOutput(path, "text/csv", 0); err != nil {
 		// text/csv vs detected text/plain — that's compatible.
 		// Accept ErrMimeMismatch only if the detection truly differs.
 		// In practice Go's DetectContentType returns text/plain for CSV.
@@ -178,7 +178,7 @@ func TestScanOutput_EmptyDeclaredMime_SkipsMimeCheck(t *testing.T) {
 	padded := make([]byte, 512)
 	copy(padded, pngMagic)
 	path := writeTestFile(t, "image.png", padded)
-	if err := ScanOutput(path, ""); err != nil {
+	if err := ScanOutput(path, "", 0); err != nil {
 		t.Errorf("ScanOutput empty mime = %v; want nil", err)
 	}
 }

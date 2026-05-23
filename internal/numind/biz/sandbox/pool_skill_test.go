@@ -45,7 +45,7 @@ func makeSkillDir(t *testing.T, p *agentSandboxPool, skillName string) {
 
 func TestAcquireForSkill_DisabledPool_ErrSandboxDisabled(t *testing.T) {
 	p := &disabledPool{}
-	_, err := p.AcquireForSkill(context.Background(), "xlsx-author")
+	_, err := p.AcquireForSkill(context.Background(), "xlsx-author", 0)
 	if !errors.Is(err, ErrSandboxDisabled) {
 		t.Errorf("disabled pool AcquireForSkill = %v; want ErrSandboxDisabled", err)
 	}
@@ -54,7 +54,7 @@ func TestAcquireForSkill_DisabledPool_ErrSandboxDisabled(t *testing.T) {
 func TestAcquireForSkill_SkillNotFound_ErrSkillNotFound(t *testing.T) {
 	p, _ := makeDockerPool(t)
 	p.cfg.SkillsRoot = t.TempDir() // empty dir — no skills
-	_, err := p.AcquireForSkill(context.Background(), "nonexistent-skill")
+	_, err := p.AcquireForSkill(context.Background(), "nonexistent-skill", 0)
 	if !errors.Is(err, ErrSkillNotFound) {
 		t.Errorf("AcquireForSkill missing skill = %v; want ErrSkillNotFound", err)
 	}
@@ -64,7 +64,7 @@ func TestAcquireForSkill_Happy(t *testing.T) {
 	p, mock := makeDockerPool(t)
 	makeSkillDir(t, p, "xlsx-author")
 
-	sess, err := p.AcquireForSkill(context.Background(), "xlsx-author")
+	sess, err := p.AcquireForSkill(context.Background(), "xlsx-author", 42)
 	if err != nil {
 		t.Fatalf("AcquireForSkill err = %v", err)
 	}
@@ -92,7 +92,7 @@ func TestAcquireForSkill_Happy(t *testing.T) {
 func TestCopyFileIn_FilenameUnsafe_ErrUnsafeFilename(t *testing.T) {
 	p, _ := makeDockerPool(t)
 	makeSkillDir(t, p, "xlsx-author")
-	sess, _ := p.AcquireForSkill(context.Background(), "xlsx-author")
+	sess, _ := p.AcquireForSkill(context.Background(), "xlsx-author", 0)
 	defer p.ReturnSkillSession(sess, 1, "test cleanup")
 
 	err := p.CopyFileIn(context.Background(), sess, "../../../etc/passwd", []byte("evil"))
@@ -104,7 +104,7 @@ func TestCopyFileIn_FilenameUnsafe_ErrUnsafeFilename(t *testing.T) {
 func TestCopyFileIn_FileTooLarge_ErrInputTooLarge(t *testing.T) {
 	p, _ := makeDockerPool(t)
 	makeSkillDir(t, p, "xlsx-author")
-	sess, _ := p.AcquireForSkill(context.Background(), "xlsx-author")
+	sess, _ := p.AcquireForSkill(context.Background(), "xlsx-author", 0)
 	defer p.ReturnSkillSession(sess, 1, "test cleanup")
 
 	big := make([]byte, MaxInputFileSizeBytes+1)
@@ -117,7 +117,7 @@ func TestCopyFileIn_FileTooLarge_ErrInputTooLarge(t *testing.T) {
 func TestCopyFileIn_Happy(t *testing.T) {
 	p, mock := makeDockerPool(t)
 	makeSkillDir(t, p, "xlsx-author")
-	sess, _ := p.AcquireForSkill(context.Background(), "xlsx-author")
+	sess, _ := p.AcquireForSkill(context.Background(), "xlsx-author", 0)
 	defer p.ReturnSkillSession(sess, 0, "")
 
 	content := []byte("col1,col2\nval1,val2\n")
@@ -140,7 +140,7 @@ func TestCopyFileIn_Happy(t *testing.T) {
 func TestCollectOutputs_EmptyOutput_ReturnsEmpty(t *testing.T) {
 	p, mock := makeDockerPool(t)
 	makeSkillDir(t, p, "xlsx-author")
-	sess, _ := p.AcquireForSkill(context.Background(), "xlsx-author")
+	sess, _ := p.AcquireForSkill(context.Background(), "xlsx-author", 0)
 	defer p.ReturnSkillSession(sess, 0, "")
 
 	// Mock returns no files from CopyFromContainer (CopyFromFiles is empty).
@@ -158,7 +158,7 @@ func TestCollectOutputs_EmptyOutput_ReturnsEmpty(t *testing.T) {
 func TestCollectOutputs_ScanFails_OutputDropped(t *testing.T) {
 	p, mock := makeDockerPool(t)
 	makeSkillDir(t, p, "xlsx-author")
-	sess, _ := p.AcquireForSkill(context.Background(), "xlsx-author")
+	sess, _ := p.AcquireForSkill(context.Background(), "xlsx-author", 0)
 	defer p.ReturnSkillSession(sess, 0, "")
 
 	// Provide a file that is too large (will fail ScanOutput).
@@ -184,7 +184,7 @@ func TestCollectOutputs_ScanFails_OutputDropped(t *testing.T) {
 func TestReturnSkillSession_Idempotent(t *testing.T) {
 	p, _ := makeDockerPool(t)
 	makeSkillDir(t, p, "xlsx-author")
-	sess, _ := p.AcquireForSkill(context.Background(), "xlsx-author")
+	sess, _ := p.AcquireForSkill(context.Background(), "xlsx-author", 0)
 
 	if err := p.ReturnSkillSession(sess, 0, ""); err != nil {
 		t.Errorf("first ReturnSkillSession = %v; want nil", err)
@@ -205,7 +205,7 @@ func TestReturnSkillSession_NilSession_NoOp(t *testing.T) {
 func TestReturnSkillSession_CleansOutputDir(t *testing.T) {
 	p, _ := makeDockerPool(t)
 	makeSkillDir(t, p, "xlsx-author")
-	sess, _ := p.AcquireForSkill(context.Background(), "xlsx-author")
+	sess, _ := p.AcquireForSkill(context.Background(), "xlsx-author", 0)
 
 	outputDir := sess.OutputDir
 	// Write a file into the output dir to confirm removal.
@@ -225,7 +225,7 @@ func TestReturnSkillSession_CleansOutputDir(t *testing.T) {
 func TestDisabledPool_SkillMethods_AllDisabled(t *testing.T) {
 	p := &disabledPool{}
 
-	if _, err := p.AcquireForSkill(context.Background(), "xlsx-author"); !errors.Is(err, ErrSandboxDisabled) {
+	if _, err := p.AcquireForSkill(context.Background(), "xlsx-author", 0); !errors.Is(err, ErrSandboxDisabled) {
 		t.Errorf("disabledPool.AcquireForSkill = %v; want ErrSandboxDisabled", err)
 	}
 	if err := p.CopyFileIn(context.Background(), nil, "f", nil); !errors.Is(err, ErrSandboxDisabled) {

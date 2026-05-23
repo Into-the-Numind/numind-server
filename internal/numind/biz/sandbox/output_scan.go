@@ -8,9 +8,10 @@ import (
 	"strings"
 )
 
-// maxOutputSizeBytes is the absolute hard ceiling for a single sandbox output
-// file. The config's OutputMaxSizeMB can only lower this, not raise it.
-const maxOutputSizeBytes = 50 * 1024 * 1024 // 50 MB
+// defaultMaxOutputSizeBytes is the absolute hard ceiling for a single sandbox
+// output file when no maxBytes is specified by the caller.
+// The config's OutputMaxSizeMB can only lower this, not raise it.
+const defaultMaxOutputSizeBytes = 50 * 1024 * 1024 // 50 MB
 
 // zipBombExpandedCeiling is the hard-coded maximum allowed decompressed size
 // for a zip/docx/xlsx/pptx archive. Not configurable — this is a security
@@ -20,20 +21,30 @@ const zipBombExpandedCeiling = 500 * 1024 * 1024 // 500 MB
 // ScanOutput performs output-side security checks on a sandbox-produced file.
 //
 // Checks (in order):
-//  1. File size > maxOutputSizeMB (default 50 MB hard cap) → ErrOutputTooLarge
+//  1. File size > maxBytes (hard ceiling 50 MB) → ErrOutputTooLarge
 //  2. Zip-bomb: for zip-family files (zip/docx/xlsx/pptx), decompressed
 //     size > 500 MB → ErrZipBomb
 //  3. MIME mismatch: detected content type vs declaredMime → ErrMimeMismatch
 //
+// maxBytes controls the per-file size ceiling. If maxBytes <= 0 the default
+// (50 MB) is used. The ceiling cannot be raised above 50 MB — values above
+// defaultMaxOutputSizeBytes are silently capped.
+//
 // declaredMime may be empty; if so, the MIME check is skipped.
-func ScanOutput(path string, declaredMime string) error {
+func ScanOutput(path string, declaredMime string, maxBytes int64) error {
+	// Resolve effective size limit.
+	effectiveMax := maxBytes
+	if effectiveMax <= 0 || effectiveMax > defaultMaxOutputSizeBytes {
+		effectiveMax = defaultMaxOutputSizeBytes
+	}
+
 	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("ScanOutput: stat %s: %w", path, err)
 	}
 
 	// 1. File size check.
-	if info.Size() > maxOutputSizeBytes {
+	if info.Size() > effectiveMax {
 		return ErrOutputTooLarge
 	}
 
@@ -47,7 +58,7 @@ func ScanOutput(path string, declaredMime string) error {
 	header := make([]byte, 512)
 	n, _ := f.Read(header)
 	header = header[:n]
-	f.Close() // nolint:errcheck — read-only, closing early is fine
+	// NOTE: no explicit f.Close() here — defer f.Close() above handles cleanup.
 
 	// Detect actual MIME from file content (not from extension or caller).
 	detectedMime := http.DetectContentType(header)
@@ -149,7 +160,9 @@ func mimeCompatible(detected, declared string) bool {
 		return true
 	}
 	// text/plain is often detected for CSV, markdown, etc.
-	if detected == "text/plain; charset=utf-8" || detected == "text/plain" {
+	// Note: normaliseMime already strips "; charset=..." so detected will
+	// never be "text/plain; charset=utf-8" here — only "text/plain".
+	if detected == "text/plain" {
 		if strings.HasPrefix(declared, "text/") {
 			return true
 		}

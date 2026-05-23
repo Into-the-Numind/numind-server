@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -24,6 +25,10 @@ type SkillSession struct {
 
 	// SkillName is the skill mounted in this session (e.g. "xlsx-author").
 	SkillName string
+
+	// UserID is the owning user's ID — used for COS multi-tenant path isolation
+	// and for disambiguating the host-side temp directory name.
+	UserID uint
 
 	// InputFiles lists the filenames successfully injected into
 	// the container's /workdir/input/ directory via CopyFileIn.
@@ -50,10 +55,12 @@ type SkillPool interface {
 	Pool
 
 	// AcquireForSkill borrows a container from the warm pool, prepares
-	// /workdir/input and /workdir/output inside the container, and bind-mounts
-	// the skill directory read-only at /skills/<skillName>/. Returns
-	// ErrSkillNotFound if cfg.SkillsRoot/<skillName>/ does not exist.
-	AcquireForSkill(ctx context.Context, skillName string) (*SkillSession, error)
+	// /workdir/input and /workdir/output inside the container, copies the
+	// skill directory into /skills/<skillName>/ inside the container, and
+	// returns a SkillSession. Returns ErrSkillNotFound if
+	// cfg.SkillsRoot/<skillName>/ does not exist.
+	// userID is stored in the session for COS path isolation and temp-dir naming.
+	AcquireForSkill(ctx context.Context, skillName string, userID uint) (*SkillSession, error)
 
 	// CopyFileIn injects a file into the container's /workdir/input/<filename>.
 	// The filename is sanitized (SanitizeInputFile) before injection.
@@ -82,26 +89,16 @@ var _ SkillPool = (*agentSandboxPool)(nil)
 // Sequence:
 //  1. Validate skill directory exists under cfg.SkillsRoot.
 //  2. Borrow a container from the warm pool (may block up to PoolMaxWaitMs).
-//  3. Create /workdir/input and /workdir/output inside the container.
-//  4. Create a host-side temp directory for CollectOutputs.
-//  5. Wrap in SkillSession and return.
+//  3. Create /workdir/input, /workdir/output, /skills/<skillName> inside the container.
+//  4. COPY all files from the host skill directory into /skills/<skillName>/ in the container.
+//  5. Create a host-side temp directory (named with userID) for CollectOutputs.
+//  6. Wrap in SkillSession and return.
 //
-// Note: bind-mounting the skill directory is done at Spawn time (step 3 of
-// spawnOne). For the current warm-pool design, containers are pre-spawned
-// without skill mounts; we skip the bind-mount here and rely on the caller
-// to use ExecCommand to access /skills via a previously-established bind
-// (or the skills are available via a global bind added in spawnOne via cfg).
-//
-// Since warm-pool containers are generic (no skill-specific mount), we use
-// the alternative approach: read skill files into the container via CopyToContainer.
-// The skills_root is available on the host and a read-only bind is added to
-// the SpawnConfig; however, warm-pool containers were spawned before the
-// skill name was known.
-//
-// Decision (pragmatic v1): We COPY the skill directory into the container at
-// acquire time via CopyToContainer. For v2 we can switch to named profiles.
-// The bind-mount path (/skills/<skillName>/) is created as a regular directory.
-func (p *agentSandboxPool) AcquireForSkill(ctx context.Context, skillName string) (*SkillSession, error) {
+// Decision (pragmatic v1): Since warm-pool containers are pre-spawned without
+// skill mounts, we COPY the skill directory into the container at acquire time
+// via CopyToContainer (filepath.WalkDir + dc.CopyToContainer per file).
+// For v2 we can switch to named profiles / bind mounts.
+func (p *agentSandboxPool) AcquireForSkill(ctx context.Context, skillName string, userID uint) (*SkillSession, error) {
 	// 1. Validate skill exists.
 	skillDir := filepath.Join(p.cfg.SkillsRoot, skillName)
 	if _, err := os.Stat(skillDir); os.IsNotExist(err) {
@@ -127,8 +124,43 @@ func (p *agentSandboxPool) AcquireForSkill(ctx context.Context, skillName string
 		return nil, fmt.Errorf("AcquireForSkill: prepare container dirs: %w", err)
 	}
 
-	// 4. Create host-side output temp directory.
-	outputDir, err := os.MkdirTemp("", fmt.Sprintf("sandbox-output-%d-*", time.Now().UnixNano()))
+	// 4. Copy skill files into the container at /skills/<skillName>/.
+	// Walk all files under the host-side skill directory and CopyToContainer each one.
+	walkErr := filepath.WalkDir(skillDir, func(hostPath string, d fs.DirEntry, walkDirErr error) error {
+		if walkDirErr != nil {
+			return walkDirErr
+		}
+		if d.IsDir() {
+			// Ensure the directory exists inside the container (mkdir -p).
+			rel, relErr := filepath.Rel(skillDir, hostPath)
+			if relErr != nil {
+				return fmt.Errorf("WalkDir rel: %w", relErr)
+			}
+			if rel == "." {
+				return nil // root already created in step 3
+			}
+			containerDir := "/skills/" + skillName + "/" + filepath.ToSlash(rel)
+			return p.dc.ExecMkdir(ctx, sess.ContainerID, containerDir)
+		}
+		// Regular file — read and copy.
+		data, readErr := os.ReadFile(hostPath)
+		if readErr != nil {
+			return fmt.Errorf("AcquireForSkill: read skill file %s: %w", hostPath, readErr)
+		}
+		rel, relErr := filepath.Rel(skillDir, hostPath)
+		if relErr != nil {
+			return fmt.Errorf("AcquireForSkill: rel skill file: %w", relErr)
+		}
+		containerPath := "/skills/" + skillName + "/" + filepath.ToSlash(rel)
+		return p.dc.CopyToContainer(ctx, sess.ContainerID, containerPath, bytes.NewReader(data))
+	})
+	if walkErr != nil {
+		_ = p.Return(sess, 1, "copy skill files failed: "+walkErr.Error())
+		return nil, fmt.Errorf("AcquireForSkill: copy skill files: %w", walkErr)
+	}
+
+	// 5. Create host-side output temp directory — name includes userID for traceability.
+	outputDir, err := os.MkdirTemp("", fmt.Sprintf("sandbox-output-u%d-%d-*", userID, time.Now().UnixNano()))
 	if err != nil {
 		_ = p.Return(sess, 1, "output tmpdir failed: "+err.Error())
 		return nil, fmt.Errorf("AcquireForSkill: create output tmpdir: %w", err)
@@ -137,6 +169,7 @@ func (p *agentSandboxPool) AcquireForSkill(ctx context.Context, skillName string
 	return &SkillSession{
 		Session:   sess,
 		SkillName: skillName,
+		UserID:    userID,
 		OutputDir: outputDir,
 	}, nil
 }
@@ -215,8 +248,9 @@ func (p *agentSandboxPool) CollectOutputs(ctx context.Context, sess *SkillSessio
 			mimeType = strings.TrimSpace(mimeType[:idx])
 		}
 
-		// 2a. Run ScanOutput.
-		if scanErr := ScanOutput(localPath, ""); scanErr != nil {
+		// 2a. Run ScanOutput with configurable maxBytes and detected MIME for validation.
+		maxBytes := int64(p.cfg.OutputMaxSizeMB) * 1024 * 1024
+		if scanErr := ScanOutput(localPath, mimeType, maxBytes); scanErr != nil {
 			p.logger.Warnw("CollectOutputs: scan failed, dropping file",
 				"filename", entry.Name(), "error", scanErr)
 			// Drop this file — continue to next.
@@ -326,7 +360,7 @@ func (p *agentSandboxPool) ReturnSkillSession(sess *SkillSession, exitCode int, 
 
 var _ SkillPool = (*disabledPool)(nil)
 
-func (p *disabledPool) AcquireForSkill(_ context.Context, _ string) (*SkillSession, error) {
+func (p *disabledPool) AcquireForSkill(_ context.Context, _ string, _ uint) (*SkillSession, error) {
 	return nil, ErrSandboxDisabled
 }
 
