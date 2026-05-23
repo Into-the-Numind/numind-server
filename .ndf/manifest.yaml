@@ -1961,8 +1961,8 @@ features:
   track: standard
   stage: S4
   classification_reason: 'Standard 触发 — (1) DB schema 变更：否（#1 已建表本 feature 只读） (2) 新增 API 端点：否（use_skill 是 Agent 内部工具不暴露 REST） (3) 新外部服务集成：否 (4) 影响文件数 >3（biz/agent/tool_use_skill.go 新建 + runner.go 改 + budgetgate hook 改 + narration provider 改 + 前端 ToolBubble 改 + 测试） (5) 高风险业务逻辑：是（动 runner.go 影响所有 Agent 运行；dual-read 写错 = 全平台 Agent 行为异常；tool 白名单 hook 写错 = 工具权限失控）。条件 4+5 触发 Standard 强制（高风险 runner.go 改造 Hotfix 不适用）。'
-  last_updated_by: ai-s4-t01-verified
-  last_updated_at: '2026-05-24T01:40:00+08:00'
+  last_updated_by: ai-s4-w2-reviewed-and-cleaned
+  last_updated_at: '2026-05-24T02:10:00+08:00'
   repos:
   - numind-server
   - numind-web-v3
@@ -1979,9 +1979,9 @@ features:
     plan: numind-server/docs/superpowers/plans/2026-05-24-agent-mode-v2-skill-invocation-plan.md
   progress:
     total_tasks: 9
-    completed_tasks: 0
-    reviewed_tasks: 0
-    current_task: 'S4: T01 verify PASS (轮询第 2 次 2026-05-24 01:40 — #1 已 land 80667115)。worktree rebase 含 #1 全部代码 + 我的 S0-S3 工件。下一步 W2 dispatch (T02/T04/T05 numind-server Tier 3 disjoint + T08 numind-web-v3 Tier 2 cross-repo)。spec 关键调整 (代码事实校准): BindingService.ListByAgent 已返回 []model.Skill (join 已做单次调用) / 无 GetByName 或 GetByIDs (改用 runner-cached SkillByName + SkillByID 双 map) / ID 类型 uint 非 uint64 / BodyMd 字段名 / AllowedTools 是 datatypes.JSON / 无 Name UNIQUE 约束 (S1-D13 防御 check 是唯一防线)。'
+    completed_tasks: 3
+    reviewed_tasks: 3
+    current_task: 'S4 W2 完成: T01 verify (commit 087f4810) + T02 types/skeleton (3d1cbe1d) + T04 narration yaml (760a9f70) + T05 validator (aee66d82) + W2 P1/P2 cleanup (9597afce)。6 个 reviewer (T02+T04+T05 各 spec+code) 并行 dispatch 完成，全 0 P0：T02 PWC 2P1+3P2 / T04 PWC 0P1+2P2 / T05 PASS 0/0/2。P1/P2 全已修：T02 Execute signature + 测试函数重命名 + godoc + TODO 注释；T05 加复合矩阵测试；spec §3.1 uint64→uint 4 处；plan T08 wire 格式校正（tool_name+state 不是 kind+phase）。下一步 W3 T03: use_skill Invoke full 实现（11 步）+ Langfuse span + narration emit。'
   decisions:
   - 'S0-D1 (parent 2026-05-24 cold-start): 终态 = "agent 是 agent，agent 有自己的提示词约束和其它 harness 约束，而 skills 是可以被单独管理、编写的技能型文件，可以被 agent 调用"。本 feature 实现关键动词"被 agent 调用"——Skill 不是 system prompt 静态拼接，是 runtime 按需载入的资产。'
   - 'S0-D2 (ai 2026-05-24): use_skill 是 platform tool（与 8 个内置 AgentTool 同构），参数 schema { "name": string }；invoke 行为 = lookup skill → append body_md 到 turn → 合并 allowed_tools 到 turn-scope → narration "📚 调用技能：{name}" → 返回 result。'

@@ -322,17 +322,34 @@ grep -rn "ToolBubble\|tool-bubble\|kind ===" src/components/ | head -10
 grep -rn "narration\|EventSource\|SSE.*tool" src/api/ src/stores/ | head -10
 ```
 
-**Vue case 模板**（spec §8）：
+**⚠ wire 格式校正（T04 reviewer P2 发现）**：spec §8 / §2.3 早期假设的 `event.kind === 'skill_use'` + `event.phase` 字段在实际 narration package wire 中**不存在**。实际格式（见 `internal/numind/biz/narration/event.go::Event`）：
+
+```json
+{
+  "run_id": 123,
+  "tool_call_id": "...",
+  "tool_name": "use_skill",     // ← 用这个识别，不是 kind
+  "state": "use|result|error",  // ← 用这个取代 phase: loading|loaded|error
+  "verb": "调用技能",
+  "detail": "销售话术训练",      // ← Skill name 在 detail 字段
+  "icon": "📚",
+  "message": "📚 正在加载技能：销售话术训练",  // ← 由 tool-display.yaml 模板渲染
+  "reason": "",                  // ← error 时填错误说明
+  "timestamp": "..."
+}
+```
+
+**T08 实际实现模板**（适配真实 wire）：
 ```vue
-<div v-else-if="event.kind === 'skill_use'" class="tool-bubble skill-use">
-  <span class="icon">📚</span>
-  <span v-if="event.phase === 'loading'">正在加载技能：{{ event.skill_name }}…</span>
-  <span v-else-if="event.phase === 'loaded'">已调用技能：{{ event.skill_name }}</span>
-  <span v-else-if="event.phase === 'error'" class="error">⚠ 技能加载失败：{{ event.error_message }}</span>
+<div v-else-if="event.tool_name === 'use_skill'" class="tool-bubble skill-use">
+  <span class="icon">{{ event.icon || '📚' }}</span>
+  <span :class="{ error: event.state === 'error' }">{{ event.message }}</span>
 </div>
 ```
 
-**默认 fallback**（spec §S1 风险 8）：在 ToolBubble.vue 加 default case + `console.warn('Unknown narration kind:', event.kind)` 防静默无显示。
+直接渲染 `event.message`（已含 icon + Skill name），无需在前端拼装。所需 phase→state 映射：loading=`use`、loaded=`result`、error=`error`。
+
+**默认 fallback**（spec §S1 风险 8）：在 ToolBubble.vue 加 default case + `console.warn('Unknown narration tool_name:', event.tool_name)` 防静默无显示。
 
 **单元测试**：vitest 渲染测试 3 phase × loaded/loading/error。
 

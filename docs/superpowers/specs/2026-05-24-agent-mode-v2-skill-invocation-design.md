@@ -128,7 +128,7 @@ type UseSkillTurnState struct {
     PendingBody          string              // 待注入下次 LLM 调用的 Skill body
     PendingSkillName     string              // 配套 PendingBody
     PendingSkillVersion  int                 // 配套 PendingBody
-    SkillByID            map[uint64]*model.Skill // runner 启动时 batchGet，复用给 use_skill bound check（解 P0-1 N+1）
+    SkillByID            map[uint]*model.Skill // runner 启动时 batchGet，复用给 use_skill bound check（解 P0-1 N+1）
 }
 
 type useSkillTool struct {
@@ -268,7 +268,7 @@ var body string
 var ad *model.AgentDefinition
 var useSkillTurnState *UseSkillTurnState        // nil 走 legacy
 var skillBindings []*model.AgentSkillBinding    // cache to Run scope
-var skillByID map[uint64]*model.Skill           // §3.6 batchGet 产出，复用给 catalog + tool wire + use_skill bound check
+var skillByID map[uint]*model.Skill           // §3.6 batchGet 产出，复用给 catalog + tool wire + use_skill bound check
 
 if req.AgentDefinitionID > 0 && r.skillStore != nil {
     ad, _ = r.skillStore.GetByIDIncludeInactive(ctx, req.AgentDefinitionID)
@@ -483,7 +483,7 @@ var skillIDs []uint64
 for _, b := range skillBindings {
     skillIDs = append(skillIDs, b.SkillID)
 }
-skillByID := make(map[uint64]*model.Skill, len(skillIDs))
+skillByID := make(map[uint]*model.Skill, len(skillIDs))
 if len(skillIDs) > 0 && r.skillService != nil {
     skills, err := r.skillService.GetByIDs(ctx, skillIDs)
     if err != nil {
@@ -520,7 +520,7 @@ body = buildSkillCatalogBlockFromMap(skillBindings, skillByID)
 更新 `buildSkillCatalogBlockFromMap`（与 §3.2 原 buildSkillCatalogBlock 签名不同）：
 
 ```go
-func buildSkillCatalogBlockFromMap(bindings []*model.AgentSkillBinding, byID map[uint64]*model.Skill) string {
+func buildSkillCatalogBlockFromMap(bindings []*model.AgentSkillBinding, byID map[uint]*model.Skill) string {
     if len(bindings) == 0 { return "" }
     var sb strings.Builder
     sb.WriteString("\n\n## 可用技能\n\n")
