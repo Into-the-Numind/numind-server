@@ -16,6 +16,7 @@ import (
 
 	"numind-server/internal/numind/biz/aiservice_admin"
 	admin_ai "numind-server/internal/numind/controller/v1/admin_ai"
+	"numind-server/internal/pkg/aiservice/capability"
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/model"
@@ -47,7 +48,7 @@ func (s *stubBiz) CreateService(_ context.Context, _ *model.AIService, _ uint64,
 func (s *stubBiz) CreateServiceWithRoute(_ context.Context, _ aiservice_admin.CreateServiceWithRouteRequest, _ uint64, _ string) (*aiservice_admin.CreateServiceWithRouteResult, error) {
 	panic("not implemented")
 }
-func (s *stubBiz) UpdateService(_ context.Context, _ *model.AIService, _ uint64, _ string) error {
+func (s *stubBiz) UpdateService(_ context.Context, _ *model.AIService, _ uint64, _ string) (*capability.Capabilities, error) {
 	panic("not implemented")
 }
 func (s *stubBiz) DeprecateService(_ context.Context, _ uint64, _ uint64, _ string, _ string) error {
