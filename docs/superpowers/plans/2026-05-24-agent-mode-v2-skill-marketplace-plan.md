@@ -87,11 +87,10 @@ T1 (migrations + models + AutoMigrate) [server]
 - `internal/numind/biz/marketplace/sanitize_test.go` (new)
 - `internal/numind/biz/marketplace/types.go` (new — shared types like `SanitizeResult`, `PublishRequest`, `BrowseQuery`)
 
-**Description**: Implement two-stage pipeline per [spec §3.2](../specs/2026-05-24-agent-mode-v2-skill-marketplace-design.md). Stage 1: regex blacklist with hardcoded PII patterns + tenant competitor list from `userStore.GetForbiddenCompetitors(ctx, publisherUserID)` (must exist via v1 #5; if missing, add stub method to userStore that reads `agent_permission_config.forbidden_competitor_names`). Stage 2: `aiservice.Chat` with `qwen-turbo` per [ai-service.md §0-2](../../../.claude/rules/ai-service.md). Langfuse generation per [ai-service.md §1](../../../.claude/rules/ai-service.md) — uses `langfuse.FromContext`, `langfuse.CreateGeneration`, `langfuse.EndGeneration`. Failure mode: return error wrapped with `errno.ErrSanitizeUnavailable`.
+**Description**: Implement two-stage pipeline per [spec §3.2](../specs/2026-05-24-agent-mode-v2-skill-marketplace-design.md). **POST-INVESTIGATION 2026-05-24**: original plan called for a regex competitor-name stage reading `agent_permission_config.forbidden_competitor_names` — that column doesn't exist in actual schema; **DROPPED** competitor-regex stage entirely (LLM prompt already covers "具体产品名/课程名 → [产品]" which targets competitor mentions; mandatory frontend diff review gate is the final human check). Stage 1: PII regex only (email/phone/id-card/bank-card). Stage 2: `aiservice.Chat` with `qwen-turbo` per [ai-service.md §0-2](../../../.claude/rules/ai-service.md). Langfuse generation per [ai-service.md §1](../../../.claude/rules/ai-service.md) — uses `langfuse.FromContext`, `langfuse.CreateGeneration`, `langfuse.EndGeneration`. Failure mode: return error wrapped with `errno.ErrSanitizeUnavailable`.
 
 **Acceptance**:
 - Unit test: PII regex covers email/phone/id-card/bank-card with realistic Chinese inputs
-- Unit test: tenant competitor list applied case-sensitively
 - Unit test: mock `aiservice.Chat` success → returns sanitized body + token counts
 - Unit test: mock `aiservice.Chat` failure → returns wrapped `ErrSanitizeUnavailable`
 - Unit test: mock `langfuse.FetchPrompt` failure → uses fallback inline prompt
@@ -150,10 +149,10 @@ T1 (migrations + models + AutoMigrate) [server]
 - `internal/numind/biz/marketplace/clone_test.go` (new)
 - `internal/numind/biz/marketplace/search_test.go` (new)
 
-**Description**: Three helpers wired into Service. Clone calls `skill.Service.CreateInTx` (or fallback two-phase per [spec §11](../specs/2026-05-24-agent-mode-v2-skill-marketplace-design.md) D-COORD if #1 doesn't expose tx variant). Search builds GORM query for FULLTEXT match + JSON_CONTAINS + sort. Admin SetRecommended is a 3-line method (verify exists + UPDATE).
+**Description**: Three helpers wired into Service. **POST-INVESTIGATION 2026-05-24**: Clone calls `artifact.Service.Create` directly (not CreateInTx — that method doesn't exist on #1). Subscribe path opens `s.db.Transaction(func(tx){ ... })` around the cloneToSubscriber call + subscription insert + subscribe_count update. `artifactSvc.Create` internally opens its own `db.Transaction` which GORM v2 treats as a SAVEPOINT within our outer tx; outer rollback rolls back savepoint too (MySQL InnoDB supports). See [spec §11 revised D-COORD](../specs/2026-05-24-agent-mode-v2-skill-marketplace-design.md). Search builds GORM query for FULLTEXT match + JSON_CONTAINS + sort. Admin SetRecommended is a 3-line method (verify exists + UPDATE).
 
 **Acceptance**:
-- Unit test: cloneToSubscriber writes skill with source_type='subscribed' + enriched description
+- Unit test: cloneToSubscriber writes skill with source_type='imported_from_marketplace' + enriched description
 - Unit test: cloneToSubscriber Langfuse span created
 - Unit test: search booleanModeQuery escapes special chars correctly
 - Unit test: search applies correct ORDER BY for each sort mode
@@ -369,8 +368,8 @@ Increment `completed_tasks` and `reviewed_tasks` per NDF Rule 6 — every task's
 
 | Risk | Trigger | Mitigation |
 |---|---|---|
-| `skill.Service.CreateInTx` not exposed by v2 #1 | T5 implementation | Fallback to two-phase commit (spec §11 Option B); send tiny PR to #1 maintainers post-S4 to add proper tx variant |
-| `userStore.GetForbiddenCompetitors` missing | T3 implementation | Add new method to userStore reading agent_permission_config.forbidden_competitor_names; fallback to empty list if config row missing |
+| ~~`skill.Service.CreateInTx` not exposed by v2 #1~~ | RESOLVED 2026-05-24 | Use nested `db.Transaction()` → MySQL InnoDB savepoint (no PR to #1 needed) |
+| ~~`userStore.GetForbiddenCompetitors` missing~~ | RESOLVED 2026-05-24 | Dropped competitor-regex stage entirely (LLM prompt covers it; diff review gate is final check) |
 | `langfuse.FetchPrompt` returns empty on first call (Langfuse not seeded) | T3 implementation | sanitizeFallbackPrompt inline constant guarantees behavior; manually seed Langfuse before S5 verification |
 | Rebase conflicts on router.go / helper.go with #1 | S4 entry | Rebase as first S4 act; resolve manually; run `task lint` + `go build` after rebase before any new code |
 | FULLTEXT BOOLEAN MODE behavior different SQLite vs MySQL | T2 store tests | Mark FULLTEXT test as `t.Skip("FULLTEXT requires MySQL; verify in dev integration")` |
