@@ -2087,9 +2087,9 @@ features:
   stage: S4
   progress:
     total_tasks: 12
-    completed_tasks: 8
-    reviewed_tasks: 8
-    current_task: 'T8 完成 (web-v3 worktree commits c7ed1c5 + 955c2a4 P1 fix). 前端 API + Pinia store + 13 vitest 测试. 双 reviewer (Sonnet) 1 P1 (setRecommended 用 user_token 调 admin endpoint 会运行时 401; spec §1 admin-web 不动) + 多 P2. P1 修：删除 setRecommended export + setItemRecommended action + 相关测试 (web-v3 完全不持有 admin endpoint). P2 修：queryPage 命名对齐 spec §8.1 (双向 alias page) + subscribe/sanitizePreview JSDoc 加 "throws to caller" 警示 + 删除 vi.mock setRecommended entry. 13 tests PASS (新增 queryPage alias 测试). 下一步：T9 前端 4 个 view (Browse / Detail / Subscribed / Publish) + vue-diff 依赖.'
+    completed_tasks: 9
+    reviewed_tasks: 9
+    current_task: 'T9 完成 (web-v3 worktree commits 74c75f6 + ff79802 P1 fix). 5 个 view 文件 (MarketplaceBrowse / MarketplaceDetail / MarketplaceSubscribed / MarketplacePublish / CategoryMultiSelect). 双 reviewer (Sonnet) 2 真 P1: (1) Detail.subscribed 本地 ref 刷新后丢状态 UI 显示错按钮 → 改 computed from store.mySubscriptions 派生 + Promise.all 加载; (2) Subscribed loading 被 stale error 遮蔽 → 状态顺序改 loading → error → empty → success + load() 清 stale error. 多 P2 留 T10/T11 (publisher_display_name 后端 hydrate / vue-diff E2E 断言 / router meta requiresParent 推迟). S4-T9-D1: vue-diff dropped 用 side-by-side <pre> (Vue3 兼容+包体). S4-T9-D2: router meta T10 加. S4-T9-D3: 后端 GET /:id 未 hydrate i_subscribed/publisher_display_name/my_cloned_skill_id (T6 controller 直 return mp object) — 前端 mySubscriptions 派生 subscribed; 长期后端 hydrate. vite build 19.6s 通过; vue-tsc/eslint marketplace 0 errors. 下一步：T10 SkillEditor 按钮 + SkillList 徽章 + AppLayout 菜单 + router 注册.'
   decisions:
   - 'S0-D1 (parent 2026-05-24, 继承自 #1 D4): v2 三件套 #1+#2+#3 串行交付。本 feature 是 #3，#1 land develop 才能进 S4（依赖 skill 表 + biz/skill.Service.Create 写副本）。'
   - 'S0-D2 (ai 2026-05-24, REVISED post-#1-investigation): 订阅 = 复制副本语义。订阅时刻调 artifact.Service.Create (NOT skill.Service.Create — actual package is biz/skill/artifact) 给订阅方租户新建 skill 行 (source_type=imported_from_marketplace，#1 已预留 ENUM 值无需 ALTER COLUMN)，同时写 skill_subscription 关联。发布方后续编辑原 skill 不影响订阅方副本。'
