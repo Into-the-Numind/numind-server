@@ -21,6 +21,7 @@ package aiservice
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -440,4 +441,40 @@ func Default() *Gateway {
 		panic("aiservice.Default() called before SetDefault() — check startup order")
 	}
 	return g
+}
+
+// ResolveTask exposes the registry's task-routing resolution to callers that
+// need to know which model a taskID will route to *before* issuing the Chat
+// call — e.g. compactv2 adapter needs route.Capability.ContextWindow to size
+// the prevention threshold (85% / 95%) against the actual model.
+//
+// Returns the primary route. Does not return the fallback list — callers that
+// care about fallback (Fallback middleware does) get it during the actual Chat
+// invocation.
+//
+// NOTE: this is a read-only side-channel into the same routing that Chat /
+// ChatStream / Embed / etc go through; the result is consistent with what the
+// next Chat call would route to (modulo a ModelOverride from the caller, which
+// only kicks in inside the Chat path).
+func (g *Gateway) ResolveTask(ctx context.Context, taskID string) (*registry.ResolvedRoute, error) {
+	if g.registry == nil {
+		return nil, errors.New("gateway: no registry configured")
+	}
+	primary, _, err := g.registry.ResolveTask(ctx, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("gateway.ResolveTask(%s): %w", taskID, err)
+	}
+	return primary, nil
+}
+
+// ResolveTask is a package-level helper around (*Gateway).ResolveTask using
+// the Default() singleton. Returns an error (not panic) when no default has
+// been set yet, so callers (e.g. unit tests of components that opportunistically
+// read the route) can degrade gracefully.
+func ResolveTask(ctx context.Context, taskID string) (*registry.ResolvedRoute, error) {
+	g := defaultGateway.Load()
+	if g == nil {
+		return nil, errors.New("aiservice: default gateway not initialized")
+	}
+	return g.ResolveTask(ctx, taskID)
 }

@@ -25,6 +25,7 @@ import (
 	"numind-server/internal/numind/biz/narration"
 	"numind-server/internal/numind/biz/skill"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
@@ -659,13 +660,23 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	// LLM 调用层。useCompactV2 true 时注入 compactor；nil → adapter.Generate 中所有
 	// V2 逻辑跳过，行为完全等同集成前（防御性 nil-check 在 adapter.Generate 内部）。
 	//
-	// contextWindow 取 run 冻结的 V2 限值，无值时用 adapterCompactor 自身的 32K 兜底
-	// （待板块 1 capability matrix 落地后改为按 modelKey 查真值）。
+	// contextWindow 查 aiservice 当前 task profile 路由的 model 的真实 context window
+	// （复用早已存在的 profile.ServiceCapability.ContextWindow，由 ai_service.capability_json
+	// seed）。查询失败 / route 无效 → 传 0 给 newAdapterCompactor → 内部 32K 兜底。
+	//
+	// 收益：真实 200K Claude / 1M deepseek-v4-pro 不再被错误地按 32K 触发 autocompact；
+	// 用户长会话信息完整度大幅提升。
 	if useCompactV2 {
-		// V1.5 compact-dead-schema-cleanup — context_window_limit_v2 列已删
-		// （从未被写入过的 override 字段）；newAdapterCompactor 内自带 32K 兜底，
-		// 待板块 1 capability matrix 落地后改为按 modelKey 查真值。
-		einoAdapter.compactor = newAdapterCompactor(0)
+		ctxWindow := 0
+		if route, rErr := aiservice.ResolveTask(queryCtx, profile.AgentRun); rErr == nil && route != nil {
+			ctxWindow = route.Capability.ContextWindow
+			log.Infow("AgentRunner.Run: resolved real ContextWindow for V2 compact threshold",
+				"agent_run_id", run.ID, "model_key", route.ServiceKey, "context_window", ctxWindow)
+		} else if rErr != nil {
+			log.Warnw("AgentRunner.Run: ResolveTask failed; V2 compactor falls back to 32K default",
+				"agent_run_id", run.ID, "task_id", profile.AgentRun, "error", rErr)
+		}
+		einoAdapter.compactor = newAdapterCompactor(ctxWindow)
 	}
 	// Backward compat: if no tools resolved (test scenarios with nil registry or
 	// empty ToolNames), preserve the pre-#14 short-circuit. Real production runs
