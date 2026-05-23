@@ -45,8 +45,10 @@ type annotateImageOutput struct {
 	ModelUsed   string                    `json:"model_used"`
 }
 
-// annotateImageMaxRegions caps the number of regions per call to prevent
-// runaway LLM costs on a single invocation.
+// annotateImageMaxRegions is the max regions per single annotate_image invocation
+// (each region triggers one VLM call). Distinct from annotateImageMaxPerRun
+// (max invocations per agent run, defined in tool_vision_quota.go).
+// Worst case: per-run VLM calls = annotateImageMaxPerRun * annotateImageMaxRegions = 50
 const annotateImageMaxRegions = 10
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -203,7 +205,7 @@ func (t *annotateImageTool) analyzeRegion(
 			},
 		},
 		Temperature: 0.2,
-		MaxTokens:   512,
+		MaxTokens:   1024,
 	})
 	if err != nil {
 		log.Warnw("annotate_image: region vision call failed",

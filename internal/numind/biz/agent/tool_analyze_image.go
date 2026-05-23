@@ -215,26 +215,16 @@ type cachedAttachmentData struct {
 	ocrText     string
 }
 
-// tryLoadCache attempts to find a matching attachment row by URL and returns
-// cached vision_description + ocr_text when available (fallback_ready=true).
-// Returns (data, true) on hit; (zero, false) on miss or error.
+// tryLoadCache attempts to return pre-computed VLM data from agent_attachment.vision_description.
+//
+// TODO(task-1.2-followup): Currently this is a stub returning (nil, false) because
+// IAgentAttachmentStore has no GetByURL method. Until that's added, every analyze_image
+// call hits the vision LLM regardless of cache state, and the bypassCacheKeywords
+// logic is effectively dead code (kept for forward compatibility).
 func (t *analyzeImageTool) tryLoadCache(ctx context.Context, url string) (cachedAttachmentData, bool) {
 	if t.attStore == nil {
 		return cachedAttachmentData{}, false
 	}
-	// The attachment store can be queried by URL via a linear scan in tests, but in
-	// production we rely on the URL being unique per upload (object key is random UUID).
-	// Since the IAgentAttachmentStore interface only exposes GetByID, we cannot directly
-	// look up by URL here. Cache lookup is therefore only enabled when the caller
-	// provides the attachment ID via a separate path (future enhancement).
-	//
-	// For V1.5: cache is not hit when attStore is the production store because we
-	// lack a GetByURL method. The attachment fallback data is still valuable — it's
-	// surfaced to the main LLM via the multimodal buildAgentInput path (task 1.3).
-	// This tool's cache shortcut will be wired up in a follow-up when GetByURL
-	// is added to IAgentAttachmentStore.
-	//
-	// For test purposes, callers can inject a custom attStore implementation.
 	return cachedAttachmentData{}, false
 }
 

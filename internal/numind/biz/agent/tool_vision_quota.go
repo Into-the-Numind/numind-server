@@ -71,9 +71,9 @@ func checkAndIncVisionQuota(runID uint64, toolName string) error {
 		return fmt.Errorf("vision tool quota exceeded: %s is limited to %d calls per run (current: %d)",
 			toolName, limit, current)
 	}
-	// Increment. There is a tiny race window between Load and Add, but for
-	// cost-control purposes an occasional over-quota call is acceptable.
-	// A strict CAS loop would be the alternative if we need hard enforcement.
+	// NOTE: Load + Add is not atomic — under concurrent calls for the same runID,
+	// quota may overshoot by up to (N concurrent callers - 1). Acceptable for
+	// cost-control use case in V1.5.
 	atomic.AddInt64(counter, 1)
 	return nil
 }

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -333,8 +332,6 @@ func TestAnalyzeImage_EmptyQuestion_UsesDefaultPrompt(t *testing.T) {
 func TestAnalyzeImage_ResponseModelFromChatResponse(t *testing.T) {
 	const runID = uint64(2098)
 	resetVisionQuota(runID, "analyze_image")
-	_ = time.Now() // silence unused import if removed
-
 	installMockChat(t, func(_ context.Context, _ string, _ aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
 		return &aiservice.ChatResponse{
 			Content:      "detailed description",
