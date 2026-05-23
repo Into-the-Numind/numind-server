@@ -211,6 +211,16 @@ func (s *Service) ListBoundAgents(ctx context.Context, parentUserID, skillID uin
 	return s.store.ListBoundAgents(ctx, parentUserID, skillID)
 }
 
+// ListHistory 委托到 versioning（让 controller 可只持 *Service 一个依赖）。
+func (s *Service) ListHistory(ctx context.Context, parentUserID, skillID uint) ([]HistoryItem, error) {
+	return s.versioning.ListHistory(ctx, parentUserID, skillID)
+}
+
+// Restore 委托到 versioning。
+func (s *Service) Restore(ctx context.Context, parentUserID, skillID, version uint) (*model.Skill, error) {
+	return s.versioning.Restore(ctx, parentUserID, skillID, version)
+}
+
 // marshalTools 把 []string allowedTools 序列化为 datatypes.JSON。
 // 当 tools 为 nil 或空时返回 `[]` 而非 `null`（DB 列默认 JSON_ARRAY()，保持语义一致）。
 func marshalTools(tools []string) (datatypes.JSON, error) {
