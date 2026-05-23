@@ -50,6 +50,7 @@ type IStore interface {
 	UserGlobalMemories() IUserGlobalMemoryStore     // #7 memory-system L2 长期记忆 Notepad
 	UserMemoryProfiles() IUserMemoryProfileStore    // agent-mode-v15-memory-layer-a (Task 3.2) per-user 画像 + dialectic cache
 	UserMemoryFacts() IUserMemoryFactStore          // agent-mode-v15-memory-layer-a (Task 3.2) per-user fact 列表
+	AgentMessageSearches() IAgentMessageSearchStore // agent-mode-v15-memory-layer-a (Task 3.5) FULLTEXT search 索引
 	Compliance() IComplianceStore                   // #13 agent-mode-compliance-3layer
 }
 
@@ -245,6 +246,12 @@ func (ds *datastore) UserMemoryProfiles() IUserMemoryProfileStore {
 // （agent-mode-v15-memory-layer-a Task 3.2）。
 func (ds *datastore) UserMemoryFacts() IUserMemoryFactStore {
 	return NewUserMemoryFactStore(ds.db)
+}
+
+// AgentMessageSearches 返回一个实现了 IAgentMessageSearchStore 接口的实例
+// （agent-mode-v15-memory-layer-a Task 3.5 FULLTEXT 中文搜索）。
+func (ds *datastore) AgentMessageSearches() IAgentMessageSearchStore {
+	return NewAgentMessageSearchStore(ds.db)
 }
 
 // Compliance 返回一个实现了 IComplianceStore 接口的实例（#13 agent-mode-compliance-3layer）。

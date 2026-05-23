@@ -411,6 +411,10 @@ func installNumindRouters(g *gin.Engine) error {
 	// #14 BETA student-facing run lifecycle endpoints
 	agentcontroller.RegisterStudentRunRoutes(authGroup, b)
 
+	// Task 3.5 (agent-mode-v15-memory-layer-a): FULLTEXT 中文消息搜索
+	// GET /v1/agent-runs/search — user_token middleware; 跨 user 严格隔离在 store 层 WHERE。
+	agentcontroller.RegisterAgentSearchRoutes(authGroup, b.SearchService())
+
 	// 支付回调（无需鉴权）
 	{
 		paymentCtrl := paymentcontroller.New(b.Payment())
