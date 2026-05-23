@@ -2,22 +2,23 @@ package marketplace
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/profile"
+	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
 )
 
-// ErrSanitizeUnavailable is the sentinel surfaced when Stage 2 (LLM) fails.
-// T7 will move this to internal/pkg/errno/skill_marketplace.go with the proper
-// &Errno{HTTP:503, Code:"Marketplace.SanitizeUnavailable", Message:...} shape;
-// the biz layer wraps the underlying cause via fmt.Errorf("%w: %s", ...) so
-// callers can errors.Is to detect this category.
-var ErrSanitizeUnavailable = errors.New("marketplace: sanitize service unavailable")
+// ErrSanitizeUnavailable aliases the canonical errno (T7). Existing callers
+// (controller mapBizError + tests via errors.Is) keep working because the
+// alias is the SAME *Errno pointer — errors.Is comparing the wrapped chain
+// against either name resolves to the same identity. The biz layer wraps the
+// underlying cause via fmt.Errorf("%w: %s", ...) so callers can still detect
+// the category via errors.Is(err, ErrSanitizeUnavailable).
+var ErrSanitizeUnavailable error = errno.ErrSanitizeUnavailable
 
 // SanitizeResult records the output of the two-stage sanitization pipeline.
 type SanitizeResult struct {

@@ -9,7 +9,6 @@
 package marketplace
 
 import (
-	"errors"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -58,35 +57,12 @@ func parseUintParam(ctx *gin.Context, name string) (uint, bool) {
 	return uint(id), true
 }
 
-// mapBizError maps marketplace sentinel errors to project errno types so
-// core.WriteResponse emits the correct HTTP status + business code.
-// T7 (errno + DB seed) will replace this helper by moving sentinels to
-// internal/pkg/errno/skill_marketplace.go as &Errno{...} literals.
-func mapBizError(err error) error {
-	switch {
-	case errors.Is(err, bizmarketplace.ErrChildAccountCannotAccessMarketplace):
-		return errno.ErrChildAccountForbidden
-	case errors.Is(err, bizmarketplace.ErrSkillNotOwned):
-		return errno.ErrForbidden
-	case errors.Is(err, bizmarketplace.ErrSkillAlreadyPublished):
-		return errno.ErrBind.SetMessage("该技能已上架，请先下架再重新发布")
-	case errors.Is(err, bizmarketplace.ErrSelfSubscribeForbidden):
-		return errno.ErrBind.SetMessage("不能订阅自己发布的技能")
-	case errors.Is(err, bizmarketplace.ErrAlreadySubscribed):
-		return errno.ErrBind.SetMessage("已订阅该技能")
-	case errors.Is(err, bizmarketplace.ErrMarketplaceNotFound):
-		return errno.ErrPageNotFound.SetMessage("市场项目不存在或已下架")
-	case errors.Is(err, bizmarketplace.ErrSubscriptionNotFound):
-		return errno.ErrPageNotFound.SetMessage("订阅记录不存在")
-	case errors.Is(err, bizmarketplace.ErrSanitizeUnavailable):
-		return errno.ErrInternalServer.SetMessage("脱敏服务暂不可用，请稍后重试")
-	case errors.Is(err, bizmarketplace.ErrSanitizeConfirmationMismatch):
-		return errno.ErrBind.SetMessage("脱敏内容与确认不符，请重新预览")
-	case errors.Is(err, bizmarketplace.ErrSkillBodyEmpty):
-		return errno.ErrBind.SetMessage("技能正文为空，无法发布")
-	}
-	return err // unknown → core.WriteResponse defaults to 500
-}
+// T6 introduced mapBizError to translate biz package sentinel errors (plain
+// errors.New) to project errno types. T7 replaced biz sentinels with aliases
+// to errno.Err*, so unwrapping the error chain via errors.Unwrap naturally
+// surfaces a *errno.Errno that core.WriteResponse → errno.Decode reads HTTP /
+// Code / Message from. mapBizError is therefore no longer needed — handlers
+// pass err directly to core.WriteResponse.
 
 // ---------------------------------------------------------------------------
 // User endpoints — /v1/marketplace/*
@@ -110,7 +86,7 @@ func (c *Controller) SanitizePreview(ctx *gin.Context) {
 	}
 	res, err := c.svc.SanitizePreview(ctx.Request.Context(), userID, req.SkillID)
 	if err != nil {
-		core.WriteResponse(ctx, mapBizError(err), nil)
+		core.WriteResponse(ctx, err, nil)
 		return
 	}
 	core.WriteResponse(ctx, nil, gin.H{
@@ -136,7 +112,7 @@ func (c *Controller) Publish(ctx *gin.Context) {
 	}
 	mp, err := c.svc.Publish(ctx.Request.Context(), userID, req)
 	if err != nil {
-		core.WriteResponse(ctx, mapBizError(err), nil)
+		core.WriteResponse(ctx, err, nil)
 		return
 	}
 	core.WriteResponse(ctx, nil, mp)
@@ -153,7 +129,7 @@ func (c *Controller) Unpublish(ctx *gin.Context) {
 		return
 	}
 	if err := c.svc.Unpublish(ctx.Request.Context(), userID, id); err != nil {
-		core.WriteResponse(ctx, mapBizError(err), nil)
+		core.WriteResponse(ctx, err, nil)
 		return
 	}
 	core.WriteResponse(ctx, nil, nil)
@@ -173,7 +149,7 @@ func (c *Controller) List(ctx *gin.Context) {
 	}
 	items, total, err := c.svc.List(ctx.Request.Context(), q)
 	if err != nil {
-		core.WriteResponse(ctx, mapBizError(err), nil)
+		core.WriteResponse(ctx, err, nil)
 		return
 	}
 	core.WriteResponse(ctx, nil, gin.H{
@@ -208,7 +184,7 @@ func (c *Controller) ListMySubscriptions(ctx *gin.Context) {
 
 	items, total, err := c.svc.ListMySubscriptions(ctx.Request.Context(), userID, offset, pageSize)
 	if err != nil {
-		core.WriteResponse(ctx, mapBizError(err), nil)
+		core.WriteResponse(ctx, err, nil)
 		return
 	}
 	core.WriteResponse(ctx, nil, gin.H{
@@ -231,7 +207,7 @@ func (c *Controller) Get(ctx *gin.Context) {
 	}
 	mp, err := c.svc.Get(ctx.Request.Context(), id, userID)
 	if err != nil {
-		core.WriteResponse(ctx, mapBizError(err), nil)
+		core.WriteResponse(ctx, err, nil)
 		return
 	}
 	core.WriteResponse(ctx, nil, mp)
@@ -249,7 +225,7 @@ func (c *Controller) Subscribe(ctx *gin.Context) {
 	}
 	clonedID, subID, err := c.svc.Subscribe(ctx.Request.Context(), userID, id)
 	if err != nil {
-		core.WriteResponse(ctx, mapBizError(err), nil)
+		core.WriteResponse(ctx, err, nil)
 		return
 	}
 	core.WriteResponse(ctx, nil, gin.H{
@@ -269,7 +245,7 @@ func (c *Controller) Unsubscribe(ctx *gin.Context) {
 		return
 	}
 	if err := c.svc.Unsubscribe(ctx.Request.Context(), userID, id); err != nil {
-		core.WriteResponse(ctx, mapBizError(err), nil)
+		core.WriteResponse(ctx, err, nil)
 		return
 	}
 	core.WriteResponse(ctx, nil, nil)
@@ -295,7 +271,7 @@ func (c *Controller) SetRecommended(ctx *gin.Context) {
 		return
 	}
 	if err := c.svc.SetRecommended(ctx.Request.Context(), id, req.Recommended); err != nil {
-		core.WriteResponse(ctx, mapBizError(err), nil)
+		core.WriteResponse(ctx, err, nil)
 		return
 	}
 	core.WriteResponse(ctx, nil, nil)

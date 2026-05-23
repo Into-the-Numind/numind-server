@@ -12,6 +12,7 @@ import (
 
 	"numind-server/internal/numind/biz/skill/artifact"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
@@ -65,18 +66,21 @@ type ArtifactService interface {
 	Delete(ctx context.Context, parentUserID, skillID uint) (int64, error)
 }
 
-// Sentinel errors (T7 will replace with internal/pkg/errno/skill_marketplace.go
-// &Errno{HTTP, Code, Message} struct literals per spec §4.3 revised).
+// Error aliases — point to canonical errno package values (T7). Each alias is
+// the SAME *Errno pointer; existing callers (`errors.Is(err, biz.ErrXxx)`) still
+// match because errno.Errno doesn't implement Is() and errors.Is falls back to
+// pointer identity. core.WriteResponse → errno.Decode unwraps the chain and
+// reads HTTP / Code / Message from the *Errno.
 var (
-	ErrChildAccountCannotAccessMarketplace = errors.New("marketplace: child account forbidden")
-	ErrSkillNotOwned                       = errors.New("marketplace: skill not owned by caller")
-	ErrSkillAlreadyPublished               = errors.New("marketplace: skill already published")
-	ErrSelfSubscribeForbidden              = errors.New("marketplace: cannot subscribe to your own publication")
-	ErrAlreadySubscribed                   = errors.New("marketplace: already subscribed")
-	ErrMarketplaceNotFound                 = errors.New("marketplace: item not found")
-	ErrSubscriptionNotFound                = errors.New("marketplace: subscription not found")
-	ErrSanitizeConfirmationMismatch        = errors.New("marketplace: confirmed_sanitized_body differs substantially from re-run sanitize output")
-	ErrSkillBodyEmpty                      = errors.New("marketplace: skill body is empty")
+	ErrChildAccountCannotAccessMarketplace error = errno.ErrChildAccountCannotAccessMarketplace
+	ErrSkillNotOwned                       error = errno.ErrSkillNotOwned
+	ErrSkillAlreadyPublished               error = errno.ErrSkillAlreadyPublished
+	ErrSelfSubscribeForbidden              error = errno.ErrSelfSubscribeForbidden
+	ErrAlreadySubscribed                   error = errno.ErrAlreadySubscribed
+	ErrMarketplaceNotFound                 error = errno.ErrMarketplaceNotFound
+	ErrSubscriptionNotFound                error = errno.ErrSubscriptionNotFound
+	ErrSanitizeConfirmationMismatch        error = errno.ErrSanitizeConfirmationMismatch
+	ErrSkillBodyEmpty                      error = errno.ErrSkillBodyEmpty
 )
 
 // confirmationDeltaTolerance (S2-D2): publisher's frontend echoes back what they

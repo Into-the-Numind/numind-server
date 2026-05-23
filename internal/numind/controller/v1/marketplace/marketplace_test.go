@@ -197,7 +197,7 @@ func TestPublish_HappyPath(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
-func TestPublish_SanitizeUnavailable_500(t *testing.T) {
+func TestPublish_SanitizeUnavailable_503(t *testing.T) {
 	svc := &fakeService{publishErr: bizmarketplace.ErrSanitizeUnavailable}
 	r := newRouter(t, svc, 1, true)
 
@@ -207,10 +207,10 @@ func TestPublish_SanitizeUnavailable_500(t *testing.T) {
 		"confirmed_sanitized_body": "x",
 	}
 	w := doJSON(t, r, http.MethodPost, "/v1/marketplace/publish", body)
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code, "T7: 503 reflects LLM provider down, not internal server bug")
 }
 
-func TestPublish_ConfirmationMismatch_400(t *testing.T) {
+func TestPublish_ConfirmationMismatch_422(t *testing.T) {
 	svc := &fakeService{publishErr: bizmarketplace.ErrSanitizeConfirmationMismatch}
 	r := newRouter(t, svc, 1, true)
 
@@ -220,7 +220,7 @@ func TestPublish_ConfirmationMismatch_400(t *testing.T) {
 		"confirmed_sanitized_body": "tampered",
 	}
 	w := doJSON(t, r, http.MethodPost, "/v1/marketplace/publish", body)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code, "T7: 422 reflects well-formed but semantically invalid request")
 }
 
 func TestGet_NotFound_404(t *testing.T) {
@@ -245,20 +245,20 @@ func TestGet_ZeroID_400(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code, ":id=0 → 400")
 }
 
-func TestSubscribe_SelfSubscribe_400(t *testing.T) {
+func TestSubscribe_SelfSubscribe_409(t *testing.T) {
 	svc := &fakeService{subscribeErr: bizmarketplace.ErrSelfSubscribeForbidden}
 	r := newRouter(t, svc, 1, true)
 
 	w := doJSON(t, r, http.MethodPost, "/v1/marketplace/123/subscribe", nil)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Equal(t, http.StatusConflict, w.Code, "T7: 409 reflects publisher == subscriber state conflict")
 }
 
-func TestSubscribe_AlreadySubscribed_400(t *testing.T) {
+func TestSubscribe_AlreadySubscribed_409(t *testing.T) {
 	svc := &fakeService{subscribeErr: bizmarketplace.ErrAlreadySubscribed}
 	r := newRouter(t, svc, 1, true)
 
 	w := doJSON(t, r, http.MethodPost, "/v1/marketplace/123/subscribe", nil)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Equal(t, http.StatusConflict, w.Code, "T7: 409 reflects duplicate subscription resource state")
 }
 
 func TestSubscribe_HappyPath(t *testing.T) {
@@ -343,15 +343,16 @@ func TestSentinelMapping_KnownErrorsAllMapped(t *testing.T) {
 		sentinel error
 		expected int
 	}{
+		// T7: HTTP codes from errno package match RFC 7231 semantics.
 		{"ChildAccount", bizmarketplace.ErrChildAccountCannotAccessMarketplace, http.StatusForbidden},
 		{"SkillNotOwned", bizmarketplace.ErrSkillNotOwned, http.StatusForbidden},
-		{"AlreadyPublished", bizmarketplace.ErrSkillAlreadyPublished, http.StatusBadRequest},
-		{"SelfSubscribe", bizmarketplace.ErrSelfSubscribeForbidden, http.StatusBadRequest},
-		{"AlreadySubscribed", bizmarketplace.ErrAlreadySubscribed, http.StatusBadRequest},
+		{"AlreadyPublished", bizmarketplace.ErrSkillAlreadyPublished, http.StatusConflict}, // 409 — resource state conflict
+		{"SelfSubscribe", bizmarketplace.ErrSelfSubscribeForbidden, http.StatusConflict},   // 409 — state conflict
+		{"AlreadySubscribed", bizmarketplace.ErrAlreadySubscribed, http.StatusConflict},    // 409 — duplicate subscription
 		{"MarketplaceNotFound", bizmarketplace.ErrMarketplaceNotFound, http.StatusNotFound},
 		{"SubscriptionNotFound", bizmarketplace.ErrSubscriptionNotFound, http.StatusNotFound},
-		{"SanitizeUnavailable", bizmarketplace.ErrSanitizeUnavailable, http.StatusInternalServerError},
-		{"ConfirmMismatch", bizmarketplace.ErrSanitizeConfirmationMismatch, http.StatusBadRequest},
+		{"SanitizeUnavailable", bizmarketplace.ErrSanitizeUnavailable, http.StatusServiceUnavailable},       // 503 — LLM down
+		{"ConfirmMismatch", bizmarketplace.ErrSanitizeConfirmationMismatch, http.StatusUnprocessableEntity}, // 422 — well-formed but unprocessable
 		{"SkillBodyEmpty", bizmarketplace.ErrSkillBodyEmpty, http.StatusBadRequest},
 	}
 	for _, tc := range cases {
