@@ -80,6 +80,34 @@ func logOptions() *log.Options {
 	}
 }
 
+// LogOptionsForCLI 为 cmd/numind 一次性 CLI 子命令导出 logOptions().
+// CLI 子命令不走 run()/runAdmin()，但仍需统一日志配置。
+func LogOptionsForCLI() *log.Options { return logOptions() }
+
+// OpenDBForCLI 为 cmd/numind 一次性 CLI 子命令打开 MySQL gorm.DB 并初始化
+// store.S（不跑 autoMigrate / Redis / 系统配置同步等重操作）。
+//
+// CLI 退出即关闭连接；不适合长时间运行的服务。
+func OpenDBForCLI() (*gorm.DB, error) {
+	dbOptions := &db.MySQLOptions{
+		Host:                  viper.GetString("db.host"),
+		Username:              viper.GetString("db.username"),
+		Password:              viper.GetString("db.password"),
+		Database:              viper.GetString("db.database"),
+		MaxIdleConnections:    viper.GetInt("db.max-idle-connections"),
+		MaxOpenConnections:    viper.GetInt("db.max-open-connections"),
+		MaxConnectionLifeTime: viper.GetDuration("db.max-connection-life-time"),
+		LogLevel:              viper.GetInt("db.log-level"),
+	}
+	ins, err := db.NewMySQL(dbOptions)
+	if err != nil {
+		return nil, fmt.Errorf("OpenDBForCLI: %w", err)
+	}
+	// 初始化 store.S 单例，让走 store.S.DB() 路径的代码可用
+	store.NewStore(ins)
+	return ins, nil
+}
+
 // initStore 读取 db 配置，创建 gorm.DB 实例，并初始化 miniblog store 层.
 func initStore() error {
 	dbOptions := &db.MySQLOptions{
@@ -315,6 +343,15 @@ func autoMigrate(db *gorm.DB) error {
 	}
 	if err := db.AutoMigrate(&model.SkillTemplate{}); err != nil {
 		return fmt.Errorf("failed to migrate skill_template: %v", err)
+	}
+
+	// Agent Mode V2 Skill-as-Artifact 三表（agent-mode-v2-skill-as-artifact T01）
+	// 把 v1 嵌入式 Skill 升级为独立文件型资产 + binding 多对多。
+	// 数据迁移走独立 CLI（cmd/numind migrate-skill-from-agent），不在 AutoMigrate 内跑。
+	// v1 agent_definition.generated_skill_body/custom_skill_body/tool_flags 标 deprecated
+	// 但不删，runtime 暂仍读这些字段（v2 #2 接管后切换到 binding + skill 表）。
+	if err := db.AutoMigrate(&model.Skill{}, &model.SkillHistory{}, &model.AgentSkillBinding{}); err != nil {
+		return fmt.Errorf("failed to migrate skill artifact tables: %v", err)
 	}
 
 	// Agent permission pipeline 两表（agent-mode-permission-pipeline #6）

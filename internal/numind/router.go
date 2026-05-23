@@ -6,6 +6,7 @@ import (
 	customerbiz "numind-server/internal/numind/biz/customer"
 	"numind-server/internal/numind/biz/membership"
 	skillbiz "numind-server/internal/numind/biz/skill"
+	artifactbiz "numind-server/internal/numind/biz/skill/artifact"
 	agentcontroller "numind-server/internal/numind/controller/v1/agent"
 	"numind-server/internal/numind/controller/v1/ali"
 	chatbotcontroller "numind-server/internal/numind/controller/v1/chatbot"
@@ -401,6 +402,36 @@ func installNumindRouters(g *gin.Engine) error {
 				skills.POST("/:id/advanced-toggle", skillCtrl.AdvancedToggle)
 			}
 			agentGroup.GET("/skill-templates", skillCtrl.ListTemplates)
+		}
+	}
+
+	// Skill artifact 系统 v2（agent-mode-v2-skill-as-artifact, spec §4）
+	//   - /v1/skills/*          独立 Skill 资产 CRUD + 历史/回滚
+	//   - /v1/agents/:id/skills/*  Agent ↔ Skill 装载关系
+	// 全部 user_token middleware；父账户专属，子账户在 controller 顶部 403。
+	// 与上方 /v1/agent/skills/*（v1 内嵌式）并存，v2 #2 接管 runtime 后才下线 v1。
+	{
+		skillArtifactSvc := artifactbiz.NewService(store.S.DB())
+		skillBindingSvc := artifactbiz.NewBindingService(store.S.DB())
+		artifactCtrl := agentcontroller.NewSkillArtifactController(skillArtifactSvc, skillBindingSvc)
+
+		skillsV2 := authGroup.Group("/skills")
+		{
+			skillsV2.POST("", artifactCtrl.CreateSkill)
+			skillsV2.GET("", artifactCtrl.ListSkills)
+			skillsV2.GET("/:id", artifactCtrl.GetSkill)
+			skillsV2.PUT("/:id", artifactCtrl.UpdateSkill)
+			skillsV2.DELETE("/:id", artifactCtrl.DeleteSkill)
+			skillsV2.GET("/:id/history", artifactCtrl.ListSkillHistory)
+			skillsV2.POST("/:id/restore/:version", artifactCtrl.RestoreSkill)
+			skillsV2.GET("/:id/agents", artifactCtrl.ListSkillBoundAgents)
+		}
+
+		agentsV2 := authGroup.Group("/agents/:id/skills")
+		{
+			agentsV2.POST("", artifactCtrl.AttachSkill)
+			agentsV2.DELETE("/:skill_id", artifactCtrl.DetachSkill)
+			agentsV2.PUT("/reorder", artifactCtrl.ReorderSkills)
 		}
 	}
 
