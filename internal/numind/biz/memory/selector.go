@@ -68,6 +68,14 @@ const SelectorCacheTTL = 30 * time.Second
 // even under heavy multi-user load the cache stays under O(N=1024) RAM.
 const SelectorCacheSize = 1024
 
+// selectorMaxUserInputRunes caps the userInput rune count fed into the selector
+// LLM prompt. ~1000 runes ≈ ~2000 tokens for Chinese-heavy input, leaving the
+// remaining ~2000-token budget for the 50-candidate list (spec §关键参数:
+// 4000-token total prompt). Users pasting a long contract/email past this cap
+// have the tail elided — selection quality degrades gracefully rather than
+// blowing the token budget or triggering provider truncation mid-prompt.
+const selectorMaxUserInputRunes = 1000
+
 // ─── selectorService ─────────────────────────────────────────────────────────
 
 // selectorChatFn is the LLM-call seam — production wires aiservice.Chat;
@@ -185,11 +193,17 @@ func (s *selectorService) loadChatFn() selectorChatFn {
 // UpdateUsage failures are non-fatal (warn log, continue) — they delay the
 // "least-recently-used" signal by one turn, not a correctness issue.
 func (s *selectorService) SelectTop5(ctx context.Context, userID uint, userInput string) ([]model.UserMemoryFact, error) {
+	// Step 0 — rune-safe userInput cap. Protects the selector prompt's
+	// ~4000-token budget when callers pass multi-thousand-rune pastes
+	// (contracts, emails, transcripts). Done before cache key build so
+	// truncated and non-truncated inputs sharing a tail still share a key.
+	userInput = capUserInputForSelector(userInput)
+
 	// Step 1 — cache.
 	cacheKey := buildCacheKey(userID, userInput)
 	if entry, ok := s.cache.Get(cacheKey); ok {
 		if time.Now().Before(entry.expiresAt) {
-			facts, err := s.factStore.GetByIDs(ctx, entry.factIDs)
+			facts, err := s.factStore.GetByIDs(ctx, userID, entry.factIDs)
 			if err != nil {
 				log.Warnw("memory.selector cache GetByIDs failed; falling through to fresh select",
 					"user_id", userID, "error", err)
@@ -373,6 +387,19 @@ func factIDsOf(facts []model.UserMemoryFact) []uint64 {
 		out[i] = f.ID
 	}
 	return out
+}
+
+// capUserInputForSelector caps userInput at selectorMaxUserInputRunes on a
+// rune boundary so the selector LLM prompt stays inside its ~4000-token budget
+// (spec §关键参数). Returns input unchanged when ≤ the cap. Appends an
+// "…(truncated)" sentinel so prompt readers (and Langfuse traces) can see the
+// elision happened.
+func capUserInputForSelector(userInput string) string {
+	r := []rune(userInput)
+	if len(r) <= selectorMaxUserInputRunes {
+		return userInput
+	}
+	return string(r[:selectorMaxUserInputRunes]) + "…(truncated)"
 }
 
 // truncateForTrace caps a string at n chars so Langfuse trace inputs don't

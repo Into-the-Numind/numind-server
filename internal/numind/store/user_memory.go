@@ -67,8 +67,10 @@ type IUserMemoryFactStore interface {
 	// List 按 user_id + opts 过滤排序分页返回 facts。
 	List(ctx context.Context, userID uint, opts ListFactOpts) ([]model.UserMemoryFact, error)
 	// GetByIDs 批量按 ID 取 facts，结果按入参 ids 顺序返回（task-04 selector cache hit 后用）。
-	// 未找到的 id 在返回切片中被跳过（不报错）；空入参直接返回空切片。
-	GetByIDs(ctx context.Context, ids []uint64) ([]model.UserMemoryFact, error)
+	// 强制 user_id 过滤：跨用户 id 静默 drop（defense-in-depth，避免 cache hit 路径外的
+	// 调用方直接传入未经 List(userID,...) 隔离过滤的 IDs 时跨 user 取数）。
+	// 未找到或不属于该 user 的 id 在返回切片中被跳过（不报错）；空入参直接返回空切片。
+	GetByIDs(ctx context.Context, userID uint, ids []uint64) ([]model.UserMemoryFact, error)
 	// UpdateUsage 批量更新 last_used_at=NOW 且 use_count++（task-04 selector 用）。
 	// 空 IDs 直接 no-op，不生成无效 SQL。
 	UpdateUsage(ctx context.Context, factIDs []uint64) error
@@ -367,18 +369,20 @@ func (s *userMemoryFactStore) List(ctx context.Context, userID uint, opts ListFa
 }
 
 // GetByIDs 批量按 ID 取 facts，结果按入参 ids 顺序返回。
-// 未找到的 id 在返回切片中被跳过（不报错）；空入参直接返回空切片。
-// 调用方负责传入已经经过权限校验的 ids（task-04 selector 在 cache hit 路径上
-// cache 的 key 包含 userID，确保返回 fact 仍属同一 user — V1.5 D7 隔离不变）。
-func (s *userMemoryFactStore) GetByIDs(ctx context.Context, ids []uint64) ([]model.UserMemoryFact, error) {
+// 用 Find 实现，不存在的 id 静默 drop（不触发 gorm.ErrRecordNotFound）。返回切片
+// 按调用方传入 ids 顺序排列，未知 ids 不出现在结果中。
+// 强制 user_id 过滤：SQL `WHERE user_id = ? AND id IN ?`，跨用户 ids 被静默 drop
+// — defense-in-depth，与 selector cache key 含 userID 的过滤构成双保险。
+// 空入参直接返回空切片。
+func (s *userMemoryFactStore) GetByIDs(ctx context.Context, userID uint, ids []uint64) ([]model.UserMemoryFact, error) {
 	if len(ids) == 0 {
 		return []model.UserMemoryFact{}, nil
 	}
 	var rows []model.UserMemoryFact
 	if err := s.db.WithContext(ctx).
-		Where("id IN ?", ids).
+		Where("user_id = ? AND id IN ?", userID, ids).
 		Find(&rows).Error; err != nil {
-		return nil, fmt.Errorf("userMemoryFactStore.GetByIDs(n=%d): %w", len(ids), err)
+		return nil, fmt.Errorf("userMemoryFactStore.GetByIDs(userID=%d, n=%d): %w", userID, len(ids), err)
 	}
 	// 保持入参 ids 顺序（caller 用 selector LLM 选出的相关度排序，顺序有语义）。
 	byID := make(map[uint64]model.UserMemoryFact, len(rows))

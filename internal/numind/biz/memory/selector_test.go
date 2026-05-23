@@ -1,5 +1,14 @@
 package memory
 
+// NOTE: This file covers both unit tests (helper-table tests for
+// parseSelectorResponse / pickByIDs / hashInput / buildCacheKey) and
+// integration tests (SQLite-backed end-to-end SelectTop5 flow via
+// newSelectorTestStore + mockSelectorChat). Spec §Step 7's
+// "selector_integration_test.go" structural requirement is satisfied by the
+// SQLite-backed test cases below; not split into a separate file to keep
+// test setup centralised (one SQLite helper, one mock chat, one place for
+// new cases to land).
+
 import (
 	"context"
 	"errors"
@@ -410,6 +419,47 @@ func TestSelector_CacheHit_SameInputSkipsLLM(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, facts3, 5)
 	assert.Equal(t, 2, mc.callCount(), "different input bypasses cache")
+}
+
+// ─── Case 10: cache TTL expiry → re-fetch + re-call LLM ─────────────────────
+
+// TestSelector_CacheExpiry_RefetchesAfterTTL covers the else-branch of the
+// cache lookup (s.cache.Remove on expired entry). Uses a 10ms TTL via
+// WithSelectorCacheTTL so the second call (after a short sleep) finds the
+// entry expired, removes it, and runs the full LLM path again.
+func TestSelector_CacheExpiry_RefetchesAfterTTL(t *testing.T) {
+	metrics.MemoryResetForTest()
+	factStore, _ := newSelectorTestStore(t)
+	seeded := seedFacts(t, factStore, 14, 20)
+	picked := []uint64{seeded[0].ID, seeded[1].ID, seeded[2].ID, seeded[3].ID, seeded[4].ID}
+	mc := staticSelectorResp(jsonArrayOf(picked...))
+
+	svc := NewSelectorService(
+		factStore,
+		WithSelectorChatFn(mc.fn()),
+		WithSelectorCacheTTL(10*time.Millisecond),
+	)
+	ctx := context.Background()
+	input := "缓存过期后应该重新调 LLM"
+
+	// 1st call → LLM hit, cache write.
+	facts1, err := svc.SelectTop5(ctx, 14, input)
+	require.NoError(t, err)
+	require.Len(t, facts1, 5)
+	assert.Equal(t, 1, mc.callCount(), "1st call must invoke LLM")
+
+	// Wait past TTL.
+	time.Sleep(25 * time.Millisecond)
+
+	// 2nd call (same input) → expired entry dropped, LLM re-invoked.
+	facts2, err := svc.SelectTop5(ctx, 14, input)
+	require.NoError(t, err)
+	require.Len(t, facts2, 5)
+	assert.Equal(t, 2, mc.callCount(), "2nd call after TTL must re-invoke LLM, not serve stale cache")
+
+	snap := metrics.MemoryGetSnapshot()
+	assert.Equal(t, int64(2), snap.SelectRuns[metrics.MemorySelectLLMSuccess], "both calls were LLM successes")
+	assert.Equal(t, int64(0), snap.SelectRuns[metrics.MemorySelectCacheHit], "no cache hits — both expired")
 }
 
 // ─── Extra: BuildMemorySection content sanity ────────────────────────────────

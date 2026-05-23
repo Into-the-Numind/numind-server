@@ -450,7 +450,7 @@ func TestUserMemory_GetByIDs(t *testing.T) {
 	_, fs, _ := newTestUserMemoryStores(t)
 	ctx := context.Background()
 
-	// Seed 5 facts.
+	// Seed 5 facts for user 77.
 	created := make([]uint64, 0, 5)
 	for i := 0; i < 5; i++ {
 		f := sampleFact(77, fmt.Sprintf("g-%d", i), fmt.Sprintf("content-%d", i), "context", 0.85-float64(i)*0.05)
@@ -459,13 +459,13 @@ func TestUserMemory_GetByIDs(t *testing.T) {
 	}
 
 	// Case A: empty ids → empty slice (no SQL).
-	got, err := fs.GetByIDs(ctx, nil)
+	got, err := fs.GetByIDs(ctx, 77, nil)
 	require.NoError(t, err)
 	assert.Empty(t, got)
 
 	// Case B: exact ids preserve order.
 	wantOrder := []uint64{created[3], created[0], created[4], created[1]}
-	got, err = fs.GetByIDs(ctx, wantOrder)
+	got, err = fs.GetByIDs(ctx, 77, wantOrder)
 	require.NoError(t, err)
 	require.Len(t, got, 4)
 	for i, id := range wantOrder {
@@ -474,11 +474,56 @@ func TestUserMemory_GetByIDs(t *testing.T) {
 
 	// Case C: mix of known + unknown — unknown silently dropped.
 	mixed := []uint64{created[2], 99999, created[0]}
-	got, err = fs.GetByIDs(ctx, mixed)
+	got, err = fs.GetByIDs(ctx, 77, mixed)
 	require.NoError(t, err)
 	require.Len(t, got, 2, "unknown IDs silently dropped")
 	assert.Equal(t, created[2], got[0].ID)
 	assert.Equal(t, created[0], got[1].ID)
+}
+
+// TestUserMemory_GetByIDs_CrossUserIsolation verifies the defense-in-depth
+// user_id filter on GetByIDs: passing IDs that belong to another user must
+// silently drop them, not leak cross-user facts.
+//
+// Reason: cache key in SelectorService already binds (userID:inputHash), so
+// the cache-hit path is safe today. But this test pins the contract — future
+// callers that pass GetByIDs(ctx, X, fromSomewhereElse) get cross-user defense
+// for free.
+func TestUserMemory_GetByIDs_CrossUserIsolation(t *testing.T) {
+	_, fs, _ := newTestUserMemoryStores(t)
+	ctx := context.Background()
+
+	// Seed user 100 with 2 facts.
+	u100 := []uint64{}
+	for i := 0; i < 2; i++ {
+		f := sampleFact(100, fmt.Sprintf("u100-%d", i), fmt.Sprintf("u100 content %d", i), "context", 0.80)
+		require.NoError(t, fs.Create(ctx, f))
+		u100 = append(u100, f.ID)
+	}
+	// Seed user 200 with 2 facts.
+	u200 := []uint64{}
+	for i := 0; i < 2; i++ {
+		f := sampleFact(200, fmt.Sprintf("u200-%d", i), fmt.Sprintf("u200 content %d", i), "context", 0.80)
+		require.NoError(t, fs.Create(ctx, f))
+		u200 = append(u200, f.ID)
+	}
+
+	// Caller passes user 100's id list but with userID=200 → must return empty.
+	got, err := fs.GetByIDs(ctx, 200, u100)
+	require.NoError(t, err)
+	assert.Empty(t, got, "user 200 must not see user 100's facts")
+
+	// Caller mixes user 100 and user 200 ids, queries as user 100 → only 100's facts.
+	mixed := []uint64{u100[0], u200[0], u100[1], u200[1]}
+	got, err = fs.GetByIDs(ctx, 100, mixed)
+	require.NoError(t, err)
+	require.Len(t, got, 2, "user 100 only sees own facts in mixed query")
+	for _, f := range got {
+		assert.Equal(t, uint(100), f.UserID, "row must belong to user 100")
+	}
+	// Order preserved: u100[0] first, u100[1] second.
+	assert.Equal(t, u100[0], got[0].ID)
+	assert.Equal(t, u100[1], got[1].ID)
 }
 
 // ─── Case 12: Category CHECK constraint (MySQL only — skipped in SQLite) ─────
