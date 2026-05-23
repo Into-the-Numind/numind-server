@@ -65,6 +65,10 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		// NOT need vision capability — even single-modal models can call these tools.
 		NewAnalyzeImageTool(attStore),
 		NewAnnotateImageTool(),
+		// v2 #2 agent-mode-v2-skill-invocation: use_skill platform tool — runner 在 Agent
+		// 有 binding 时按需注册到该 Run 的工具集；无 binding 走 legacy 路径不触发。
+		// factory 层 AlwaysLoad=false 保证 LoadAll 仅装 registry，单 Run 是否暴露由 runner 控制。
+		NewUseSkillTool(),
 	}
 	metadata := []ToolMetadata{
 		{ToolName: "kb_search", DisplayName: "知识库检索", Description: "Search the knowledge base.", Source: "platform", Category: "RAG"},
@@ -81,6 +85,7 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		// both tools work with any main model because vision is handled internally.
 		{ToolName: "analyze_image", DisplayName: "图像分析", Description: "Analyze an image in detail using a vision specialist model.", Source: "platform", RiskLevel: "moderate", Category: "视觉"},
 		{ToolName: "annotate_image", DisplayName: "图像区域标注", Description: "Analyze specific regions within an image using a vision specialist model.", Source: "platform", RiskLevel: "moderate", Category: "视觉"},
+		{ToolName: UseSkillToolName, DisplayName: "调用技能", Description: "Call a Skill bound to this Agent; loads body into conversation context and temporarily enables Skill's required tools.", Source: "platform", RiskLevel: "safe", Category: "技能"},
 	}
 	// Append memory tools only when a real store is available (nil guard preserves
 	// the nil-ds unit test that expects exactly 12 tools).

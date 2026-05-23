@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -105,6 +106,26 @@ type agentRunner struct {
 	// runner 会 warn 并跳过 L0（其他 V2 prevention 不受影响）。
 	artifactStore store.IAgentToolArtifactStore
 	artifactDir   string
+
+	// v2 #2 agent-mode-v2-skill-invocation: BindingService 用来 runner 启动时
+	// ListByAgent 拿到该 Agent 装载的全部 Skill (已 join sort_order asc)。
+	// biz.go T07 wire 时通过 WithSkillBindingService 注入；nil 时 → 走 legacy
+	// 路径（dual-read 兜底, 与 v1 行为完全一致）。
+	//
+	// 抽象为 SkillBindingLister interface 而非直接持有 *artifact.BindingService
+	// struct，方便 runner_test.go 用 fake 实现单元测试 (T06)；生产 wire 注入
+	// 真正的 *artifact.BindingService（实现此接口）。
+	skillBindingService SkillBindingLister
+}
+
+// SkillBindingLister 抽象 *artifact.BindingService.ListByAgent 一个方法，
+// 给 runner_test.go 用 fake 实现做单元测试。生产由 biz.go 注入真正的
+// *artifact.BindingService (实现此接口)。
+//
+// 返回 sort_order asc 的活跃 Skill 列表（join 已在 BindingService 内做）。
+// 失败时返回 (nil, err); 0 binding 时返回 (empty slice, nil)。
+type SkillBindingLister interface {
+	ListByAgent(ctx context.Context, parentUserID, agentID uint) ([]model.Skill, error)
 }
 
 var _ AgentRunner = (*agentRunner)(nil)
@@ -300,6 +321,21 @@ func WithCompactV2Deps(artifactStore store.IAgentToolArtifactStore, dataDir stri
 // migration 20260523_180000. V2 compact state lives on adapterCompactor
 // (per-Run in-memory) — no DB persistence needed for prevention semantics.
 
+// WithSkillBindingService wires the v2 #2 BindingService — required to enable
+// runtime use_skill path. When nil / 不调用此 option → runner 走 legacy
+// path (dual-read 兜底，读 ad.GeneratedSkillBody / CustomSkillBody，与 v1
+// 行为完全一致 — agent-student.spec.ts 零回归)。
+//
+// 接口 SkillBindingLister 而非具体 struct，方便测试 fake；生产 biz.go T07
+// wire *artifact.BindingService（满足 interface）。
+//
+// v2 #2 agent-mode-v2-skill-invocation.
+func WithSkillBindingService(s SkillBindingLister) RunnerOption {
+	return func(r *agentRunner) {
+		r.skillBindingService = s
+	}
+}
+
 // NewAgentRunner 工厂。
 func NewAgentRunner(runStore store.IAgentRunStore, registry AgentToolRegistry, opts ...RunnerOption) AgentRunner {
 	r := &agentRunner{
@@ -390,9 +426,12 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 
 	// 4. #5 skill-system: 装载 agent_definition 并组装 SystemPrompt（若指定了 AgentDefinitionID）。
 	// #12 agent-mode-billing-integration: ad 在 if 块外可见，供下方 budget tracker 读取 limits（reviewer S3-P0-1 fix）。
+	// v2 #2: useSkillTurnState 在 if 块外可见，供下方工具装配 (§3.6) + PendingBody
+	//        injection (§3.3) + ctx propagation 使用。
 	var skillVer int
 	var body string
 	var ad *model.AgentDefinition
+	var useSkillTurnState *UseSkillTurnState // v2 #2: nil = 走 legacy 路径; non-nil = v2 路径
 	if req.AgentDefinitionID > 0 && r.skillStore != nil {
 		var skillErr error
 		ad, skillErr = r.skillStore.GetByIDIncludeInactive(ctx, req.AgentDefinitionID)
@@ -406,9 +445,59 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 			// 不暴露存在性：跨用户访问当作 NotFound 返回
 			return nil, errno.ErrSkillNotFound
 		}
-		body = ad.GeneratedSkillBody
-		if ad.AdvancedMode {
-			body = ad.CustomSkillBody
+
+		// v2 #2 agent-mode-v2-skill-invocation: 查 Agent binding 列表。
+		// BindingService.ListByAgent 已 join 返回 sort_order asc 的 *活跃* Skill 列表。
+		// 失败 (DB down 等) → 降级 legacy (skills 为空)，写 warn log 不阻塞 Run。
+		var skills []model.Skill
+		if r.skillBindingService != nil {
+			var bindErr error
+			skills, bindErr = r.skillBindingService.ListByAgent(ctx, ad.ParentUserID, uint(req.AgentDefinitionID))
+			if bindErr != nil {
+				log.Warnw("AgentRunner.Run: skillBindingService.ListByAgent failed; falling back to legacy path",
+					"agent_id", req.AgentDefinitionID, "parent_user_id", ad.ParentUserID, "error", bindErr)
+				skills = nil
+			}
+		}
+
+		if len(skills) > 0 {
+			// v2 路径：catalog 占据段位 [3] body (不读 ad.GeneratedSkillBody/CustomSkillBody)
+			// 设计意图 (S2-D22)：父账户用 binding 模型时不应再编辑 ad.body — binding 表是新 SoT。
+
+			// 同名防御 (S1-D13)：无 (parent_user_id, name) UNIQUE DB 约束 (S4-D26)，
+			// 由 runner defensive check 兜底。发现重名拒绝启动 Run，避免 LLM 调用歧义。
+			nameSeen := make(map[string]uint, len(skills))
+			for i := range skills {
+				sk := &skills[i]
+				if existing, dup := nameSeen[sk.Name]; dup {
+					log.Errorw("AgentRunner.Run: duplicate Skill name in bindings (S1-D13)",
+						"agent_id", req.AgentDefinitionID, "skill_name", sk.Name,
+						"skill_ids", []uint{existing, sk.ID})
+					return nil, fmt.Errorf("AgentRunner.Run: duplicate Skill name %q in bindings (rule S1-D13)", sk.Name)
+				}
+				nameSeen[sk.Name] = sk.ID
+			}
+
+			// 构造 turn state — runner cache 给 use_skill tool (T03) 用 (O(1) lookup, 0 DB)。
+			useSkillTurnState = NewUseSkillTurnState(UseSkillTurnCapDefault)
+			for i := range skills {
+				sk := &skills[i]
+				useSkillTurnState.SkillByID[sk.ID] = sk
+				useSkillTurnState.SkillByName[sk.Name] = sk
+			}
+
+			// body = catalog block (v2 SoT) — segment [3] 的全部内容
+			body = buildSkillCatalogBlock(skills)
+			ctx = WithUseSkillTurn(ctx, useSkillTurnState)
+			// spec §3.7 预留 ctx key — 注入实际 skills 切片 (S4-D26 类型校正为 []model.Skill)
+			// 主路径走 turn.SkillByID/SkillByName, 本 key 供未来扩展 (admin/observability) 使用
+			ctx = WithSkillBindings(ctx, skills)
+		} else {
+			// legacy 路径 (dual-read 兜底, S2-D5 + §9 协议)
+			body = ad.GeneratedSkillBody
+			if ad.AdvancedMode {
+				body = ad.CustomSkillBody
+			}
 		}
 		skillVer = int(ad.Version)
 		// #6 permission-pipeline: 注入 agent_definition_id + parent_user_id 到 ctx，
@@ -616,6 +705,10 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 
 	var einoTools []einotool.BaseTool
 	toolMap := make(map[string]FullTool)
+	// v2 #2: 深拷贝 req.ToolNames 供 ctx 注入 (UseSkillTurnScope validator 读) — 拒绝
+	// runner 后续逻辑误改 req.ToolNames 影响白名单判定的潜在 bug。
+	basicToolNames := make([]string, len(req.ToolNames))
+	copy(basicToolNames, req.ToolNames)
 	if r.registry != nil {
 		for _, name := range req.ToolNames {
 			if ft, ok := r.registry.GetTool(name); ok {
@@ -636,6 +729,58 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	if useCompactV2 {
 		einoTools = append(einoTools, compactv2.NewReadArtifactTool(r.artifactStore, r.runStore, r.artifactDir, middleware.UserIDFromCtx))
 	}
+	// v2 #2 agent-mode-v2-skill-invocation: 装载 use_skill + binding allowed_tools 并集。
+	// 仅在有 binding (useSkillTurnState != nil) 时启用，保 v1 Agent 零回归。
+	// turn-scope 限制由 UseSkillTurnScope permission validator (T05) 在 PreToolCall 强制：
+	// 默认 deny 非 base 工具，只有 use_skill 调用后才把对应 Skill 的 allowed_tools 加入
+	// turn.AllowedTools set，下一个 user input 由 runner.Run 新调用重置 turn state。
+	if useSkillTurnState != nil && r.registry != nil {
+		// (1) use_skill 本身 — LLM 通过 tool-call 主动调用入口
+		if ft, ok := r.registry.GetTool(UseSkillToolName); ok {
+			einoTools = append(einoTools, adaptFullToEinoTool(ft, effectiveHooks))
+			toolMap[UseSkillToolName] = ft
+		} else {
+			log.Errorw("AgentRunner.Run: use_skill tool not registered — Agent has bindings but tool missing (biz.go T07 wire may be incomplete)",
+				"agent_id", req.AgentDefinitionID)
+		}
+		// (2) 收集所有 binding 的 allowed_tools 并集 (复用 turn.SkillByID 解 N+1, S2-D19)
+		//     去重 + 排除已在 base 集合的工具 (避免重复注册到 Eino)
+		extraTools := make(map[string]struct{})
+		for _, sk := range useSkillTurnState.SkillByID {
+			if sk == nil || len(sk.AllowedTools) == 0 {
+				continue
+			}
+			var allowed []string
+			if err := json.Unmarshal(sk.AllowedTools, &allowed); err != nil {
+				log.Warnw("AgentRunner.Run: Skill.AllowedTools JSON malformed; 视为空",
+					"agent_id", req.AgentDefinitionID, "skill_id", sk.ID, "skill_name", sk.Name, "error", err)
+				continue
+			}
+			for _, t := range allowed {
+				if _, dup := extraTools[t]; dup {
+					continue
+				}
+				if _, base := toolMap[t]; base {
+					continue
+				}
+				extraTools[t] = struct{}{}
+			}
+		}
+		// (3) 注册并集工具到 Eino tool list — 运行期由 UseSkillTurnScope validator 在
+		//     未 use_skill 前 deny；use_skill 后 turn.AllowedTools 含 set 名时 allow。
+		for name := range extraTools {
+			if ft, ok := r.registry.GetTool(name); ok {
+				einoTools = append(einoTools, adaptFullToEinoTool(ft, effectiveHooks))
+				toolMap[name] = ft
+			} else {
+				log.Warnw("AgentRunner.Run: binding allowed_tool not registered in factory",
+					"agent_id", req.AgentDefinitionID, "tool_name", name)
+			}
+		}
+	}
+	// v2 #2: 注入 Agent 基础工具白名单到 ctx — UseSkillTurnScope validator (T05) 读，
+	// 判定 "该工具是 Agent 原生 base 工具吗?" (Passthrough vs Deny 决策依据)
+	ctx = WithAgentBaseToolNames(ctx, basicToolNames)
 	// #6 permission-pipeline: stash FullTool map into ctx，
 	// 供 WrapHooks.buildRequest 反查每个工具的 FullTool 实例（取 IsDestructive 等元数据）。
 	ctx = WithFullToolMap(ctx, toolMap)
@@ -830,6 +975,34 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		callID := callctx.NewCallID()
 		attemptCtx := callctx.WithCallID(queryCtx, callID)
 		_ = callID // budgetgate A8b lookup happens via PostToolCall hooks, not here
+
+		// v2 #2 agent-mode-v2-skill-invocation §3.3: 若 use_skill (T03) 写了
+		// PendingBody，本次 Generate 前消费一次 — 把 body 包成 <system-reminder>
+		// user msg 追加到 einoMessages，让 LLM 在下一次 generate 看到 Skill 指引。
+		//
+		// 注：Eino ReAct 内层多轮 generate 由 Eino 自己驱动，runner 看不到中间步骤；
+		// 本注入点仅在 outer-loop attempt 边界 (实际单 attempt) 生效。S4-D27 设计
+		// trade-off: use_skill 在 inner ReAct 触发时 PendingBody 必须由 tool 返回的
+		// 直接消费路径 (ack 内嵌 body, 后续 task 简化) 兜底；此 outer-loop 注入是
+		// spec 文字契约 + 未来 outer-retry 场景的 hook 保留。
+		//
+		// 即使 dormant，CtxKeyUseSkillTurn 的写读一致性必须保证 — 多次消费安全
+		// (consume 后置空 PendingBody, 不会重复注入)。
+		if useSkillTurnState != nil && useSkillTurnState.PendingBody != "" {
+			pendingBody := useSkillTurnState.PendingBody
+			pendingName := useSkillTurnState.PendingSkillName
+			pendingVer := useSkillTurnState.PendingSkillVersion
+			einoMessages = append(einoMessages, &schema.Message{
+				Role: schema.User,
+				Content: fmt.Sprintf(
+					"<system-reminder>\n以下是你刚调用的技能 '%s' 的详细指引（v%d）。请按这些指引继续完成用户的任务：\n\n%s\n</system-reminder>",
+					pendingName, pendingVer, pendingBody),
+			})
+			// consume — 防止重复 append (多 attempt 场景 / 未来重入)
+			useSkillTurnState.PendingBody = ""
+			useSkillTurnState.PendingSkillName = ""
+			useSkillTurnState.PendingSkillVersion = 0
+		}
 
 		output, runErr = einoAgent.Generate(attemptCtx, einoMessages)
 
@@ -1182,3 +1355,39 @@ func buildEinoMessages(req RunRequest) []*schema.Message {
 // the now-removed PTL recovery + tryPreLLMCompact helpers. The runner now
 // passes []*schema.Message directly to einoAgent.Generate without any
 // V1-format detour.
+
+// ── v2 #2 agent-mode-v2-skill-invocation helpers ────────────────────────────
+
+// buildSkillCatalogBlock 为 v2 #2 路径生成 system prompt 段位 [3] body 的
+// "## 可用技能" 目录段。返回字符串包前导 "\n\n" 以与段 [2] tenantHardRules
+// 自然分隔；调用方直接赋给 body 变量（替代 ad.GeneratedSkillBody）。
+//
+// 设计约束（S1-D10 + CLAUDE.md §6b I3）：catalog 扩展进段位 [3] body 而非新增
+// 段位，保 6 段 system prompt invariant 不破坏。
+//
+// 内容（按 sort_order asc）：每条 Skill 一行 markdown bullet "name: description"，
+// 若 when_to_use 非空再加二级 bullet "何时使用：..."。LLM 根据这些元信息决定
+// 是否 emit use_skill(name="...") tool-call；Skill body 不进 catalog (节省 token,
+// 走 use_skill 懒加载, S0-D3)。
+//
+// 过滤：跳过 !IsActive 的 Skill (双重防御 — BindingService.ListByAgent 应已过滤,
+// 但 runner 层兜底避免上游漏掉)。
+func buildSkillCatalogBlock(skills []model.Skill) string {
+	if len(skills) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("\n\n## 可用技能\n\n")
+	sb.WriteString(fmt.Sprintf("你装载了以下技能。当对话需要某个技能时，使用 `use_skill(name=\"<技能名>\")` 工具调用它。工具会把技能详细指引载入对话上下文，并临时启用该技能需要的额外工具。每轮对话最多可调用 %d 次技能。\n\n", UseSkillTurnCapDefault))
+	for i := range skills {
+		sk := &skills[i]
+		if !sk.IsActive {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("- **%s**：%s\n", sk.Name, sk.Description))
+		if sk.WhenToUse != "" {
+			sb.WriteString(fmt.Sprintf("  - 何时使用：%s\n", sk.WhenToUse))
+		}
+	}
+	return sb.String()
+}
