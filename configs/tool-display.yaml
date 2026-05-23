@@ -113,6 +113,16 @@ tools:
     error_template: "记录中断，{{ .reason_friendly }}"
     rejected_template: "记忆写入被规则拦截"
 
+  # use_skill: agent-mode v2 #2 新增的 platform AgentTool。允许 LLM 主动调用
+  # 已装载的 Skill。input.name 是技能名（中文），detail 直接渲染该字段。
+  use_skill:
+    verb: "调用技能"
+    detail_template: "{{ .input.name }}"
+    use_template: "📚 正在加载技能：{{ .input.name }}"
+    result_template: "📚 已调用技能：{{ .input.name }}"
+    error_template: "⚠ 技能加载失败：{{ .reason_friendly }}"
+    rejected_template: "技能调用被拒绝"
+
   # ask_user_question 是 yield 式工具：narration 会 emit StateUse 然后
   # tool_call_yield 事件被前端转成 question_prompt 消息分支处理。这里给
   # 一个兜底文案，避免极少数情况下 yield 之外的状态走 defaults。
