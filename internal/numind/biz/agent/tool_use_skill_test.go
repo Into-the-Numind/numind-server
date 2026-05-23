@@ -367,6 +367,39 @@ func TestUseSkillTurn_Execute_MultipleCalls_CountIncrementsToCap(t *testing.T) {
 	}
 }
 
+// AllowedTools JSON 字段格式错误时仍应载入 Skill（happy path），allowedTools
+// 视为空白名单。ack JSON 中 status 仍 "loaded"（LLM 视角技能就绪），span output
+// 通过 status=warn + error 字段记录此非致命警告（不影响 LLM 行为）。
+func TestUseSkillTurn_Execute_MalformedAllowedTools_WarnButLoaded(t *testing.T) {
+	sk := fixedSkill(42, "格式异常技能", "## 指引...", `not valid json [`)
+	ctx, turn := buildTurnWithSkills(t, sk)
+
+	tool := NewUseSkillTool()
+	out, err := tool.Execute(ctx, ToolInput(`{"name":"格式异常技能"}`))
+	if err != nil {
+		t.Fatalf("malformed allowed_tools should not abort, got Go error %v", err)
+	}
+	var parsed map[string]any
+	if jerr := json.Unmarshal(out, &parsed); jerr != nil {
+		t.Fatalf("ack not valid JSON: %v", jerr)
+	}
+	// LLM 视角技能仍载入成功
+	if parsed["status"] != "loaded" {
+		t.Errorf("ack status should be 'loaded' (warn 不影响 LLM 流程), got %v", parsed["status"])
+	}
+	// Skill body 已写入 PendingBody，turn.InvocationCount++
+	if turn.PendingBody != sk.BodyMd {
+		t.Error("PendingBody should be set even with malformed allowed_tools")
+	}
+	if turn.InvocationCount != 1 {
+		t.Errorf("InvocationCount = %d, want 1 (cap should be consumed)", turn.InvocationCount)
+	}
+	// allowed_tools merge 视为空 — turn.AllowedTools 不应包含任何条目
+	if len(turn.AllowedTools) != 0 {
+		t.Errorf("AllowedTools should be empty when JSON malformed, got %v", turn.AllowedTools)
+	}
+}
+
 // (note: package-level `contains` helper is defined in tool_document_generate_test.go; we reuse it.)
 
 // ── jsonErr 辅助 ────────────────────────────────────────────────────────────

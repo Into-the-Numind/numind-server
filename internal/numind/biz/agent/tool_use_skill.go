@@ -27,6 +27,11 @@ const (
 
 	// UseSkillTurnCapDefault 是单 turn 内 use_skill 最大调用次数 (S0-D6)。
 	UseSkillTurnCapDefault = 3
+
+	// Tool result status enum (Langfuse span output + ack JSON 复用，避免魔法字符串)
+	toolStatusLoaded = "loaded"
+	toolStatusError  = "error"
+	toolStatusWarn   = "warn" // happy path 但有 non-fatal 警告（如 allowed_tools JSON malformed）
 )
 
 // ── ctx keys (typed struct{}, 避免 string-key 冲突) ──────────────────────────
@@ -226,7 +231,9 @@ func (t *useSkillTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 
 	// Langfuse span 起 — 即使中途错误也记录（spec §7）
 	var traceID, spanID string
-	resultStatus := "loaded"
+	var skillIDForSpan uint
+	var bodyLenForSpan int
+	resultStatus := toolStatusLoaded
 	resultError := ""
 	defer func() {
 		if traceID == "" || spanID == "" {
@@ -234,8 +241,10 @@ func (t *useSkillTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		}
 		langfuse.EndSpan(traceID, spanID,
 			langfuse.WithSpanOutput(map[string]any{
-				"status": resultStatus,
-				"error":  resultError,
+				"status":           resultStatus,
+				"error":            resultError,
+				"skill_id":         skillIDForSpan,
+				"body_token_count": bodyLenForSpan, // 近似：bytes ≈ tokens / 1.5；S5 verify aligns
 			}),
 		)
 	}()
@@ -254,7 +263,7 @@ func (t *useSkillTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 
 	// 3. cap check
 	if turn.InvocationCount >= turn.Cap {
-		resultStatus = "error"
+		resultStatus = toolStatusError
 		resultError = "turn_cap_exceeded"
 		return ToolResult(jsonErr("已达本轮技能调用上限 (%d 次)，本轮无法再调用其他技能", turn.Cap)), nil
 	}
@@ -262,29 +271,33 @@ func (t *useSkillTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	// 4. lookup via turn.SkillByName (0 DB 调用，由 runner 启动时 batchGet 缓存)
 	sk, found := turn.SkillByName[p.Name]
 	if !found || sk == nil {
-		resultStatus = "error"
+		resultStatus = toolStatusError
 		resultError = "skill_not_bound"
 		return ToolResult(jsonErr("技能 '%s' 不存在或未装载到本 Agent", p.Name)), nil
 	}
+	skillIDForSpan = sk.ID
+	bodyLenForSpan = len(sk.BodyMd)
 
 	// 5. business validation
 	if !sk.IsActive {
-		resultStatus = "error"
+		resultStatus = toolStatusError
 		resultError = "skill_inactive"
 		return ToolResult(jsonErr("技能 '%s' 已被禁用", p.Name)), nil
 	}
 	if sk.BodyMd == "" {
-		resultStatus = "error"
+		resultStatus = toolStatusError
 		resultError = "skill_body_empty"
 		return ToolResult(jsonErr("技能 '%s' 内容为空，请联系配置者更新", p.Name)), nil
 	}
 
 	// 6. merge allowed_tools 到 turn-scope set
 	var allowedTools []string
+	allowedToolsWarn := ""
 	if len(sk.AllowedTools) > 0 {
 		if err := json.Unmarshal(sk.AllowedTools, &allowedTools); err != nil {
-			// allowed_tools JSON malformed — log via langfuse but continue (空白名单也合法)
-			resultError = "allowed_tools_unmarshal_warn:" + err.Error()
+			// allowed_tools JSON malformed — log to span output (warn 不阻塞 happy path)
+			// resultStatus 改用独立 warn 状态而非污染 error 字段，区别于"加载失败"
+			allowedToolsWarn = err.Error()
 			allowedTools = nil
 		}
 	}
@@ -300,8 +313,13 @@ func (t *useSkillTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	// 8. count++ + 返回 acknowledgement
 	turn.InvocationCount++
 
+	if allowedToolsWarn != "" {
+		resultStatus = toolStatusWarn
+		resultError = "allowed_tools_unmarshal:" + allowedToolsWarn
+	}
+
 	ack := map[string]any{
-		"status":              "loaded",
+		"status":              toolStatusLoaded, // ack 永远 "loaded"——LLM 视角 Skill 已就绪
 		"skill_name":          sk.Name,
 		"skill_version":       sk.Version,
 		"body_length":         len(sk.BodyMd),
@@ -310,7 +328,11 @@ func (t *useSkillTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		"turn_cap":            turn.Cap,
 		"message":             fmt.Sprintf("技能 '%s' 已载入对话上下文，请根据技能指引完成任务", sk.Name),
 	}
-	out, _ := json.Marshal(ack)
+	out, err := json.Marshal(ack)
+	if err != nil || len(out) == 0 {
+		// 防御：成功路径 Marshal 永不应失败，万一失败也要返回非空 fallback
+		out = []byte(fmt.Sprintf(`{"status":"loaded","skill_name":%q,"message":"技能已载入"}`, sk.Name))
+	}
 	return ToolResult(out), nil
 }
 
@@ -319,6 +341,6 @@ func (t *useSkillTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 // jsonErr 构造统一的 error tool result JSON。
 func jsonErr(format string, args ...interface{}) string {
 	msg := fmt.Sprintf(format, args...)
-	b, _ := json.Marshal(map[string]string{"status": "error", "error": msg})
+	b, _ := json.Marshal(map[string]string{"status": toolStatusError, "error": msg})
 	return string(b)
 }
