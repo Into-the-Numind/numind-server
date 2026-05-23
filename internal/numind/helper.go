@@ -290,6 +290,10 @@ func autoMigrate(db *gorm.DB) error {
 	if err := db.AutoMigrate(&model.AgentSessionMemory{}, &model.UserGlobalMemory{}); err != nil {
 		return fmt.Errorf("failed to migrate agent memory tables: %v", err)
 	}
+	// Agent Mode V1.5 Layer A memory schema 两表（agent-mode-v15-memory-layer-a Task 3.2）
+	if err := db.AutoMigrate(&model.UserMemoryProfile{}, &model.UserMemoryFact{}); err != nil {
+		return fmt.Errorf("failed to migrate agent v1.5 memory tables: %v", err)
+	}
 	if err := db.AutoMigrate(&model.AgentDefinitionHistory{}); err != nil {
 		return fmt.Errorf("failed to migrate agent_definition_history: %v", err)
 	}

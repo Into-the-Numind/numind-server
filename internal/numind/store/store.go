@@ -48,6 +48,8 @@ type IStore interface {
 	AgentPermissions() IAgentPermissionStore
 	AgentSessionMemories() IAgentSessionMemoryStore // #7 memory-system L1 短期记忆
 	UserGlobalMemories() IUserGlobalMemoryStore     // #7 memory-system L2 长期记忆 Notepad
+	UserMemoryProfiles() IUserMemoryProfileStore    // agent-mode-v15-memory-layer-a (Task 3.2) per-user 画像 + dialectic cache
+	UserMemoryFacts() IUserMemoryFactStore          // agent-mode-v15-memory-layer-a (Task 3.2) per-user fact 列表
 	Compliance() IComplianceStore                   // #13 agent-mode-compliance-3layer
 }
 
@@ -231,6 +233,18 @@ func (ds *datastore) AgentSessionMemories() IAgentSessionMemoryStore {
 // UserGlobalMemories 返回一个实现了 IUserGlobalMemoryStore 接口的实例（#7 memory-system）。
 func (ds *datastore) UserGlobalMemories() IUserGlobalMemoryStore {
 	return NewUserGlobalMemoryStore(ds.db)
+}
+
+// UserMemoryProfiles 返回一个实现了 IUserMemoryProfileStore 接口的实例
+// （agent-mode-v15-memory-layer-a Task 3.2）。
+func (ds *datastore) UserMemoryProfiles() IUserMemoryProfileStore {
+	return NewUserMemoryProfileStore(ds.db)
+}
+
+// UserMemoryFacts 返回一个实现了 IUserMemoryFactStore 接口的实例
+// （agent-mode-v15-memory-layer-a Task 3.2）。
+func (ds *datastore) UserMemoryFacts() IUserMemoryFactStore {
+	return NewUserMemoryFactStore(ds.db)
 }
 
 // Compliance 返回一个实现了 IComplianceStore 接口的实例（#13 agent-mode-compliance-3layer）。
