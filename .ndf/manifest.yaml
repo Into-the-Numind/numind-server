@@ -54,7 +54,7 @@ features:
   ndf_version: '3.0'
   description: '有数 Agent Mode V1.5 板块 2 — 上下文管理 V2（平行重做）。让 agent 长会话 + 多轮 ReAct + 大 tool result 不爆 context。D3 决策：V1 包 internal/numind/biz/compact/ 完全不动，新建独立包 internal/numind/biz/compactv2/。agent mode 通过 RunRequest.UseCompactV2=true 走 V2；SOP/SalesRAG/监控等其他场景继续 V1。5 个 sub-task：(2.1) DB schema 改造 — agent_run 加 4 个 V2 字段（compact_state_v2 / total_tokens_used_v2 / use_compact_v2 / context_window_limit_v2）+ 新建 agent_tool_artifact 表 + 新 store 接口（不动现有 IAgentRunStore）；(2.2) L0 tool artifact 写盘 — 超 16KB tool result 写盘 + 元数据入库，messages 留 <persisted-output ref="..." preview="..."/> 引用 + 新 read_tool_artifact 工具供 LLM 翻页；(2.3) L1 prune + L2 microcompact — 50% / 70% 阈值不调 LLM 廉价处理（PruneOldToolResults + MicrocompactByToolName + EstimateMessagesTokens）；(2.4) L3 autocompact — 85% 触发 LLM 12 段固定模板压缩，<reference-only data-internal="true">...</reference-only> XML 包裹（D5），保最近 5 messages + 95% hard limit + 3 fail breaker→context_exhausted；(2.5) Streaming Context Scrubber — token-level state machine 过滤 LLM stream 输出中的 <memory>/<context>/<reference-only>/<system-reminder>/<persisted-output> data-internal="true" 标签 + [Personal Memory:]/[Context:] 行内 marker。Out of scope: V1 → V2 数据迁移；替换 SOP/SalesRAG/监控的 V1 调用；prod 部署；前端改动；跨会话 memory（板块 3）。'
   track: standard
-  stage: S3
+  stage: S6
   classification_reason: 'Standard Triage 5/5 多条违反 — (1) DB schema 变更：是（agent_run 加 4 列 + 新建 agent_tool_artifact 表）(2) 新增 API 端点：否（read_tool_artifact 是 Eino 工具，不是 HTTP endpoint） (3) 新外部服务集成：否 (4) 影响文件数 >3（新增 compactv2 包 ~10 文件 + runner.go 多处 V2 hook + 2 个 store + migration + cron 注册） (5) 高风险业务逻辑：是（autocompact LLM call + tool_call/result 配对切割 + scrubber 误伤用户输入 → 都可能破坏 ReAct 链或泄露内部记忆）。条件 1+4+5 触发 Standard 强制。'
   last_updated_by: ai-implementer-track2-start
   last_updated_at: '2026-05-23T13:10:00+08:00'
@@ -75,13 +75,15 @@ features:
     task_2_5_scrubber: /Users/zhiyuchen/Downloads/有数-Agent-Mode-V1.5-NDF-spec/02-context/task-05-streaming-scrubber.md
   progress:
     total_tasks: 5
-    completed_tasks: 3
-    reviewed_tasks: 3
-    current_task: 'S4 wave 3: task 2.3 prune + microcompact (L1/L2，不调 LLM)'
+    completed_tasks: 5
+    reviewed_tasks: 5
+    current_task: 'S6 ndf-done + /deploy-dev server + 7 自测 + V1 回归'
   commits:
   - '234d45d7: feat(compactv2): add V2 schema + compactv2 package skeleton (Task 2.1) — spec PASS / code PASS, P1+P2 修复 (dead branch / IF NOT EXISTS / PascalCase consts / AutoMigrate HasColumn test)'
   - '17d3516f: feat(scrubber): add Streaming Context Scrubber package (Task 2.5) — spec PASS (P2×2) / code PASS (P1 fixes: README + 单引号 regex + SoT 校验)'
   - 'e9b68dac: feat(compactv2): add L0 tool artifact write-to-disk + read_tool_artifact (Task 2.2) — spec PASS / code PASS, P1 fixes: biz.go WithCompactV2Deps wiring + WriteFile 失败测试 + V1/V2 routing gate 表格测试; import cycle 通过结构性接口解耦 (deps.go)'
+  - '25200644: feat(compactv2): add L1 prune + L2 microcompact compactor (Task 2.3) — spec PASS / code PASS, P1 fix: TurnIndex==0 防御性跳过 (避免 runner 未填 turn 时误剪所有 tool result); P2 fix: L2 CompactedAt 同步'
+  - '3952eb8b: feat(compactv2): add L3 autocompact (Task 2.4) — spec FAIL→PASS / code FAIL→PASS, P1 fix: ErrContextExhausted sentinel + runner break loop + 跳过 final UpdateState (避免 st.TerminalReason 覆盖 "context_exhausted" DB 状态); P2 fixes: Autocompact err 透传 caller diagnostics + 测试同步'
   decisions:
   - 'D3 (parent): 平行重做 — V1 internal/numind/biz/compact/ 完全保留不动，新建 internal/numind/biz/compactv2/ 独立包。agent mode 通过 RunRequest.UseCompactV2=true 走 V2，SOP/SalesRAG/监控等其他场景继续 V1。V2 跑稳 6 个月后再讨论替换 V1（不在 V1.5 范围）。'
   - 'D4 (parent): dialectic / autocompact 用 qwen-plus 或 deepseek-v3-2（不要 thinking model）。V2 复用现有 agent.compact profile（DB Registry 路由）。'
