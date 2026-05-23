@@ -10,6 +10,7 @@ import (
 	_ "image/jpeg" // register JPEG decoder
 	_ "image/png"  // register PNG decoder
 	"math/rand"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -23,7 +24,41 @@ import (
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/util"
 )
+
+// cosURLPathRE matches a Tencent COS object URL and captures the object key
+// (everything after the host). Used to presign URLs before handing them to
+// downstream AI providers — COS buckets are private by default, so a raw
+// public URL returns HTTP 403.
+//
+//	https://numind-dev-1334169463.cos.ap-chengdu.myqcloud.com/agent-attachments/1/file.png
+//	  → captured group: "agent-attachments/1/file.png"
+var cosURLPathRE = regexp.MustCompile(`^https?://[^/]+\.cos\.[^/]+\.myqcloud\.com/(.+)$`)
+
+// presignedExpiry is how long downstream providers have to fetch the asset.
+// 15 minutes covers retry chains (1s + 4s + 16s + VLM/OCR call times) with
+// plenty of headroom.
+const presignedExpiry int64 = 15 * 60
+
+// presignIfCOS returns a signed GET URL when the input is a Tencent COS bucket
+// URL, and passes through otherwise. Signing failures degrade to the original
+// URL with a warning — downstream call may then 403, which is the existing
+// retry/error pipeline.
+func presignIfCOS(ctx context.Context, rawURL string) string {
+	m := cosURLPathRE.FindStringSubmatch(rawURL)
+	if len(m) < 2 {
+		return rawURL // not a COS URL, pass through
+	}
+	objectKey := m[1]
+	signed, err := util.GenerateSignedURL(ctx, objectKey, presignedExpiry)
+	if err != nil {
+		log.Warnw("attachment fallback: presign failed, using raw URL",
+			"object_key", objectKey, "error", err)
+		return rawURL
+	}
+	return signed
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Modality constants
@@ -402,6 +437,11 @@ func (p *fallbackPool) generateOnce(ctx context.Context, att *model.AgentAttachm
 func (p *fallbackPool) generateImage(ctx context.Context, att *model.AgentAttachment) error {
 	filesizeKB := att.Size / 1024
 
+	// ── Presign URL for downstream providers ────────────────────────────────
+	// COS buckets are private; raw URLs return 403 to Ali VLM / Baidu OCR.
+	// Generate a signed GET URL valid for 15 minutes (covers retries + LLM time).
+	imageURL := presignIfCOS(ctx, att.URL)
+
 	// ── Width/Height detection ──────────────────────────────────────────────
 	// We try to decode image dimensions from the URL if not already set.
 	// For COS-hosted images we cannot re-download bytes cheaply here, so we
@@ -414,7 +454,7 @@ func (p *fallbackPool) generateImage(ctx context.Context, att *model.AgentAttach
 	defer ocrCancel()
 
 	ocrResp, ocrErr := aiservice.OCR(ocrCtx, profile.OcrBaidu, aiservice.OCRRequest{
-		ImageURL: att.URL,
+		ImageURL: imageURL,
 	})
 	if ocrErr != nil {
 		// OCR failure is soft: log and continue with empty string.
@@ -448,7 +488,7 @@ func (p *fallbackPool) generateImage(ctx context.Context, att *model.AgentAttach
 							},
 							{
 								Type:     aiservice.MessagePartTypeImageURL,
-								ImageURL: &aiservice.ImageURL{URL: att.URL},
+								ImageURL: &aiservice.ImageURL{URL: imageURL},
 							},
 						},
 					},
@@ -521,7 +561,7 @@ func (p *fallbackPool) generatePDF(ctx context.Context, att *model.AgentAttachme
 			{
 				Role: aiservice.MessageRoleUser,
 				Content: aiservice.MessageContent{
-					Text: PDFExtractPrompt + att.URL,
+					Text: PDFExtractPrompt + presignIfCOS(ctx, att.URL),
 				},
 			},
 		},
@@ -557,7 +597,7 @@ func (p *fallbackPool) generateAudio(ctx context.Context, att *model.AgentAttach
 	audioFmt := audioFormatFromMIME(att.MimeType)
 
 	resp, err := aiservice.ASR(asrCtx, profile.MonitorTranscribe, aiservice.ASRRequest{
-		AudioURL:    att.URL,
+		AudioURL:    presignIfCOS(ctx, att.URL),
 		AudioFormat: audioFmt,
 		Language:    "zh",
 	})
