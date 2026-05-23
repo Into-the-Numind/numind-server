@@ -1979,9 +1979,9 @@ features:
     plan: numind-server/docs/superpowers/plans/2026-05-24-agent-mode-v2-skill-invocation-plan.md
   progress:
     total_tasks: 9
-    completed_tasks: 7
-    reviewed_tasks: 7
-    current_task: 'S4 W6 进行中: T08 frontend ToolBubble (numind-web-v3 跨 repo, use_skill case + 未知 tool 名 warn fallback) + T09 S5 验证策略 task (Eino integration test + budgetgate test + Playwright E2E specs + qa-report 模板)。W3-W5 已完成: T03 (5646cc3c+a7cb5d50) + T06 (c44973c5+21858cab) + T07 (92d4397f) reviewers 全 0 P0，P1/P2 全已修 (T07 review 已完成, manifest reviewed_tasks 同步)。关键设计简化回顾: T03 走 turn.SkillByName 0 DB 查询; T06 用 SkillBindingLister interface 抽象; S4-D27 use_skill ack JSON 加 body 字段 (含 <system-reminder> 包装) — LLM 通过 tool result 必读 (spec §3.3 路径 b 绕过 Eino outer-loop 难题); T07 PlatformToolFactory 注册 use_skill (12→13 base tools) + biz.go WithSkillBindingService(NewBindingService(ds.DB())) 注入 runner。'
+    completed_tasks: 9
+    reviewed_tasks: 9
+    current_task: 'S4 全 9 task 完成! 13 commits 累计: T01(087f4810) T02(3d1cbe1d) T04(760a9f70) T05(aee66d82) W2-P1/P2(9597afce) T03(5646cc3c+a7cb5d50) T06(c44973c5+21858cab) T07(92d4397f) T08(bdace25+bf10631) T09-backend(84064ec9) T09-frontend(eee2d28)。reviewer 累计 8 个 (T02/T04/T05 各 spec+code + T03 dual + T06 dual + T08/T09 combined) 全 0 P0; P1/P2 全已修。关键设计调整: S4-D26 (uint vs uint64 + BindingService.ListByAgent 单次 join + 走 SkillByName cache) + S4-D27 (use_skill ack body 字段绕过 Eino outer-loop 难题)。BudgetTracker P1 验证 PASS (snap.Credits=15 真实记账)。Playwright specs 已就位待 fixture seed; qa-report 模板就位; Langfuse trace 截图留 S5。下一步: S5 本地验收 → S6 ndf-done + /deploy-dev (S7 prod 跳过)。'
   decisions:
   - 'S0-D1 (parent 2026-05-24 cold-start): 终态 = "agent 是 agent，agent 有自己的提示词约束和其它 harness 约束，而 skills 是可以被单独管理、编写的技能型文件，可以被 agent 调用"。本 feature 实现关键动词"被 agent 调用"——Skill 不是 system prompt 静态拼接，是 runtime 按需载入的资产。'
   - 'S0-D2 (ai 2026-05-24): use_skill 是 platform tool（与 8 个内置 AgentTool 同构），参数 schema { "name": string }；invoke 行为 = lookup skill → append body_md 到 turn → 合并 allowed_tools 到 turn-scope → narration "📚 调用技能：{name}" → 返回 result。'
