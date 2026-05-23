@@ -31,4 +31,31 @@ const (
 	// ArtifactCleanupBatchSize 是 cleanup cron 单次扫描的最大行数。
 	// 防止单次 run 时间过长锁表；剩余的 expired artifact 留待下一轮 cron。
 	ArtifactCleanupBatchSize = 10000
+
+	// ── Task 2.3: L1 prune + L2 microcompact 阈值 ─────────────────────────────
+	// （`AutocompactThreshold = 0.85` 由 task 2.4 追加，不在本 task 范围）
+
+	// PruneThresholdRatio 是 L1 prune 触发的 token usage 比例阈值（estimated / context_window）。
+	// 到达 50% 时仅跑 L1 prune（清旧 tool result placeholder，不调 LLM）。
+	PruneThresholdRatio = 0.50
+
+	// MicrocompactThreshold 是 L1 + L2 同时触发的 token usage 比例阈值。
+	// 到达 70% 时先跑 L2 microcompact（同名 tool 合并），再跑 L1 prune（旧 tool result）。
+	MicrocompactThreshold = 0.70
+
+	// PruneMinAgeTurns 是 L1 prune 的最低 age（currentTurn - msg.TurnIndex）。
+	// 仅 ≥5 轮前的 tool result 才可能被 prune；保护近期推理链。
+	PruneMinAgeTurns = 5
+
+	// PruneProtectRecentTurns 是 L1 prune 的"绝对保护窗口"。
+	// 最近 3 轮无论 age 如何都不被 prune（即使 age >= 5 也跳过；常发生在重启后 currentTurn 跳跃场景）。
+	PruneProtectRecentTurns = 3
+
+	// MicrocompactKeepPerTool 是 L2 microcompact 每个 tool name 至少保留的最新 envelope 个数。
+	// 同名 tool 超过 3 个 envelope 时，把"较旧的多余 envelope"替换为 placeholder。
+	MicrocompactKeepPerTool = 3
+
+	// NumCharsPerToken 是 token 粗估系数（content 字符数 / 4 ≈ token 数）。
+	// 对中文偏低估 ~20%，由 `max(estimated, actual)` + provider usage 校准兜底。
+	NumCharsPerToken = 4
 )

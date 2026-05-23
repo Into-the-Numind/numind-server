@@ -94,8 +94,10 @@ type agentRunner struct {
 	// 三者要么全部为 nil（V2 路径完全停用），要么必须同时配齐；半配置组合 runner 会 warn 并退化到 V1 行为。
 	// artifactStore: agent_tool_artifact 表存取
 	// dataDir: 文件落盘根目录（与 numind.go cleanup cron 用相同值）
-	artifactStore store.IAgentToolArtifactStore
-	artifactDir   string
+	// compactV2Store: V2 messages / token usage 持久化（task 2.3 maybeCompactV2 调用）
+	artifactStore  store.IAgentToolArtifactStore
+	artifactDir    string
+	compactV2Store store.IAgentCompactV2Store
 }
 
 var _ AgentRunner = (*agentRunner)(nil)
@@ -193,6 +195,19 @@ func WithCompactV2Deps(artifactStore store.IAgentToolArtifactStore, dataDir stri
 	return func(r *agentRunner) {
 		r.artifactStore = artifactStore
 		r.artifactDir = dataDir
+	}
+}
+
+// WithCompactV2Store injects the V2 messages / token usage store. Used by
+// task 2.3 maybeCompactV2 (L1 prune + L2 microcompact) and task 2.4 autocompact
+// to read / write `agent_run.messages` (V2 schema) plus token usage state.
+//
+// V1.5 板块 2 task 2.3 — wired by biz.go via WithCompactV2Store(ds.CompactV2()).
+// When nil (default), maybeCompactV2 is a no-op even if run.UseCompactV2=true
+// (runner.go gates this and logs a warning, like the artifactStore gate).
+func WithCompactV2Store(s store.IAgentCompactV2Store) RunnerOption {
+	return func(r *agentRunner) {
+		r.compactV2Store = s
 	}
 }
 
@@ -340,12 +355,14 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	// V1.5 板块 2 task 2.2 — V2 路径门控：DB flag use_compact_v2=true 且 runner 注入了 V2 deps。
 	// 若任一不满足，useCompactV2 视为 false：保持 V1 行为（adaptFullToEinoTool 原样、不注入
 	// read_tool_artifact、不追加 system prompt addendum）。这样 V1 测试 / 历史 run 完全不受影响。
-	useCompactV2 := run.UseCompactV2 && r.artifactStore != nil && r.artifactDir != ""
+	// task 2.3 起 compactV2Store 也加入门控（maybeCompactV2 需要写 messages_v2 + 累加 tokens）。
+	useCompactV2 := run.UseCompactV2 && r.artifactStore != nil && r.artifactDir != "" && r.compactV2Store != nil
 	if run.UseCompactV2 && !useCompactV2 {
 		log.Warnw("AgentRunner.Run: run.UseCompactV2=true but V2 deps not configured; degrading to V1 path",
 			"agent_run_id", run.ID,
 			"has_artifact_store", r.artifactStore != nil,
-			"has_artifact_dir", r.artifactDir != "")
+			"has_artifact_dir", r.artifactDir != "",
+			"has_compact_v2_store", r.compactV2Store != nil)
 	}
 	if useCompactV2 {
 		// system prompt 第 2 段 Tools 描述末尾追加 read_tool_artifact 使用说明（中英双语）。
@@ -538,11 +555,38 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 			break
 		}
 
+		// V1.5 板块 2 task 2.3 — maybeCompactV2 在每轮 LLM 调用前跑（仅 V2 路径）。
+		// L1 prune (≥50%) / L2 microcompact (≥70%) 都是纯字符串操作，不调 LLM；
+		// ≥85% 走 autocompact stub（task 2.4 实现真正的 LLM summarize，本 task 留 TODO）。
+		// 失败 fail-open：只 warn log 不阻塞 run（reviewer S2 — 不破坏 V1 路径）。
+		if useCompactV2 {
+			if err := r.maybeCompactV2(queryCtx, run); err != nil {
+				log.Warnw("AgentRunner.Run maybeCompactV2 failed; continuing without compact",
+					"agent_run_id", run.ID, "attempt", attempt, "error", err)
+			}
+		}
+
 		// Per-attempt callID injection for A8b/adapter.LookupUsage correlation.
 		callID := callctx.NewCallID()
 		attemptCtx := callctx.WithCallID(queryCtx, callID)
 
 		output, runErr = einoAgent.Generate(attemptCtx, compactMessagesToEino(compactMessages))
+
+		// V1.5 板块 2 task 2.3 — Provider usage 校准（仅 V2 路径）：
+		// adapter 已在 Generate 内 stash 了 Usage by callID；这里 LookupUsage + 累加到 total_tokens_used_v2。
+		// 下轮 maybeCompactV2 用 max(estimated, actual) 触发阈值更准（spec §校准机制）。
+		if useCompactV2 {
+			if u, ok := einoAdapter.LookupUsage(callID); ok && u.PromptTokens > 0 {
+				if incErr := r.compactV2Store.IncrementTokensUsedV2(queryCtx, run.ID, int64(u.PromptTokens)); incErr != nil {
+					log.Warnw("AgentRunner.Run IncrementTokensUsedV2 failed",
+						"agent_run_id", run.ID, "attempt", attempt, "prompt_tokens", u.PromptTokens, "error", incErr)
+				} else {
+					// 同时 in-memory 同步，避免下轮重读 DB（maybeCompactV2 从 run.TotalTokensUsedV2 取）
+					run.TotalTokensUsedV2 += int64(u.PromptTokens)
+				}
+			}
+		}
+
 		if runErr == nil {
 			st.TerminalReason = TerminalCompleted
 			finalText = output.Content
@@ -896,6 +940,128 @@ func (r *agentRunner) handleMaxOutputError(
 	default:
 		return "", 0, true, TerminalModelError
 	}
+}
+
+// ── V1.5 板块 2 task 2.3 V2 compact helpers ──────────────────────────────────
+
+// defaultContextWindowLimitV2 是 V2 路径上 agent_run.context_window_limit_v2 为 nil 时的
+// 兜底值。本 task 不引入新的 capability ContextWindow 字段（属于板块 1 范围），保守取
+// 32000 tokens（多数 chat 模型的 default context window）。
+//
+// TODO(task 板块 1)：把 ContextWindow 字段加入 capability.AgentModelCapability 后，
+// 此 fallback 改为读 `capability.GetCapabilities(modelKey).ContextWindow`，run 启动时
+// 调 SetContextWindowLimitV2 冻结，runner 不再有兜底。
+const defaultContextWindowLimitV2 = 32000
+
+// maybeCompactV2 在每轮 LLM 调用前评估 token usage，按阈值触发 L1 / L2 / L3 compact。
+//
+// 仅 V2 路径调用（caller 已做 useCompactV2 gate）。如下兜底：
+//   - run.UseCompactV2=false → 直接返回 nil（caller 不该调，但兜底）
+//   - run.ContextWindowLimitV2=nil → 用 defaultContextWindowLimitV2 (32000) 兜底
+//   - messages JSON 解析失败 → 返回 err（caller fail-open warn）
+//   - ratio < PruneThresholdRatio (0.50) → no-op（直接返回 nil）
+//
+// 触发路由：
+//   - ratio >= AutocompactThreshold (0.85, task 2.4) → autocompactV2 stub（本 task 留 TODO）
+//   - ratio >= MicrocompactThreshold (0.70) → L2 先跑、L1 后跑 → UpdateMessagesV2
+//   - ratio >= PruneThresholdRatio (0.50) → 仅 L1 → UpdateMessagesV2
+//
+// 注：currentTurn 用 `len(messagesV2)` 作为代理（task 2.1 schema 未规定全局 turn 计数器，
+// runner 当前也未填 Meta.TurnIndex；len 是稳定单调的近似值，且 MinAge/ProtectRecent
+// 都是相对距离，绝对 turn 值无影响）。
+func (r *agentRunner) maybeCompactV2(ctx context.Context, run *model.AgentRun) error {
+	if run == nil || !run.UseCompactV2 || r.compactV2Store == nil {
+		return nil
+	}
+	// 读 messages
+	var raws []json.RawMessage
+	if len(run.Messages) > 0 {
+		if err := json.Unmarshal(run.Messages, &raws); err != nil {
+			return fmt.Errorf("maybeCompactV2 unmarshal messages: %w", err)
+		}
+	}
+	if len(raws) == 0 {
+		return nil // 初始 run，没什么可 compact
+	}
+	// V2 解析（NewMessageFromJSON 兜底 transient uuid + meta nil）
+	msgs := make([]compactv2.MessageV2, 0, len(raws))
+	for _, raw := range raws {
+		m, err := compactv2.NewMessageFromJSON(raw)
+		if err != nil {
+			return fmt.Errorf("maybeCompactV2 NewMessageFromJSON: %w", err)
+		}
+		msgs = append(msgs, m)
+	}
+
+	// Token usage 估算 → ratio
+	estimated := compactv2.EstimateMessagesTokens(msgs)
+	actual := run.TotalTokensUsedV2
+	used := estimated
+	if actual > used {
+		used = actual // spec §设计要点边界 ⑥ — max(estimated, actual)
+	}
+
+	limit := defaultContextWindowLimitV2
+	if run.ContextWindowLimitV2 != nil && *run.ContextWindowLimitV2 > 0 {
+		limit = *run.ContextWindowLimitV2
+	}
+	ratio := float64(used) / float64(limit)
+	if ratio < compactv2.PruneThresholdRatio {
+		return nil // 50% 以下 no-op
+	}
+
+	// currentTurn 用 len(msgs) 兜底（runner 暂未填 Meta.TurnIndex；任 L1 算法识别 relative age）
+	currentTurn := len(msgs)
+	now := time.Now()
+
+	// 路由
+	switch {
+	// TODO(task 2.4): replace 0.85 with compactv2.AutocompactThreshold once defined.
+	case ratio >= 0.85:
+		// task 2.4 实现 L3 autocompact（调 LLM 12 段固定模板）。
+		// 本 task 留 stub：log + return nil 不阻塞 run。
+		// TODO(task 2.4): r.autocompactV2(ctx, run)
+		log.Infow("AgentRunner.maybeCompactV2: autocompact threshold hit (stub, task 2.4 will implement)",
+			"agent_run_id", run.ID, "ratio", ratio, "used", used, "limit", limit)
+		return nil
+
+	case ratio >= compactv2.MicrocompactThreshold:
+		// L2 先跑（合并同名 tool）→ L1 后扫（旧 tool result）
+		updated, l2n := compactv2.MicrocompactByToolName(msgs, now)
+		updated, l1n := compactv2.PruneOldToolResults(updated, currentTurn, now)
+		log.Infow("AgentRunner.maybeCompactV2: L1+L2 compact",
+			"agent_run_id", run.ID, "ratio", ratio, "used", used, "limit", limit,
+			"l1_pruned", l1n, "l2_compacted", l2n, "messages_count", len(updated))
+		if l1n == 0 && l2n == 0 {
+			return nil // 没改动，跳过 DB 写
+		}
+		if err := r.compactV2Store.UpdateMessagesV2(ctx, run.ID, updated); err != nil {
+			return fmt.Errorf("maybeCompactV2 UpdateMessagesV2 (L1+L2): %w", err)
+		}
+		// in-memory 同步：run.Messages 也要更新，下轮 compact 看到的是 compacted 版本
+		if newRaw, err := json.Marshal(updated); err == nil {
+			run.Messages = datatypes.JSON(newRaw)
+		}
+		return nil
+
+	case ratio >= compactv2.PruneThresholdRatio:
+		// 仅 L1
+		updated, l1n := compactv2.PruneOldToolResults(msgs, currentTurn, now)
+		log.Infow("AgentRunner.maybeCompactV2: L1 prune only",
+			"agent_run_id", run.ID, "ratio", ratio, "used", used, "limit", limit,
+			"l1_pruned", l1n, "messages_count", len(updated))
+		if l1n == 0 {
+			return nil
+		}
+		if err := r.compactV2Store.UpdateMessagesV2(ctx, run.ID, updated); err != nil {
+			return fmt.Errorf("maybeCompactV2 UpdateMessagesV2 (L1): %w", err)
+		}
+		if newRaw, err := json.Marshal(updated); err == nil {
+			run.Messages = datatypes.JSON(newRaw)
+		}
+		return nil
+	}
+	return nil
 }
 
 // ── M-A1 helpers ─────────────────────────────────────────────────────────────

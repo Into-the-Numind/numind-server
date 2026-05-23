@@ -380,6 +380,8 @@ func NewBiz(ds store.IStore) *biz {
 		agent.WithComplianceGate(b.complianceGate), // #13 agent-mode-compliance-3layer
 		// V1.5 板块 2 task 2.2 — V2 L0 artifact deps（artifactStore + dataDir 必填，否则 runner 内 gate 自动退化到 V1）。
 		agent.WithCompactV2Deps(ds.ToolArtifact(), artifactDir),
+		// V1.5 板块 2 task 2.3 — V2 messages / token usage store（maybeCompactV2 L1/L2 写盘 + 累加 tokens）。
+		agent.WithCompactV2Store(ds.CompactV2()),
 	)
 
 	// 初始化知识库服务
