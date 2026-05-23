@@ -124,9 +124,9 @@ features:
     task_3_8_temporal: /Users/zhiyuchen/Downloads/有数-Agent-Mode-V1.5-NDF-spec/03-memory/task-08-temporal-tree.md
   progress:
     total_tasks: 8
-    completed_tasks: 4
-    reviewed_tasks: 4
-    current_task: 'Wave 3 done (3.4 reviewed + 5 P2 fixed). Moving to Wave 4a (parallel): 3.5 FTS5 ⊥ 3.6 trivial+cadence. Wave 4b sequential: 3.7 dialectic (deps 3.6 CadenceService).'
+    completed_tasks: 6
+    reviewed_tasks: 6
+    current_task: 'Wave 4a done (3.5 + 3.6 reviewed + 8 P2 fixed across 2 commits backend/frontend). Recovered from 2 crashed implementers via wire-up subagent. Moving to Wave 4b: 3.7 dialectic Layer A.'
   commits:
   - '78d78026: feat(agent-memory): Task 3.1 AGENT.md cascade loader — spec PASS_WITH_P1 / quality PASS_WITH_P1'
   - 'f9bac2d6: feat(agent-memory): Task 3.2 memory schema + GORM + store — spec PASS / quality PASS'
@@ -136,6 +136,11 @@ features:
   - 'e23eb839: fix(agent-memory): Task 3.3 P1+P2 fix (Enqueue stopCtx guard 防 send-on-closed / biz.CloseMemoryExtractor shutdown wire / persistFacts EscapeForStorage / short-circuit omit assistant msg / chat seam mutex / 多个 docstring 说明)'
   - '69a7884c: feat(agent-memory): Task 3.4 Top-5 side-query selector (LRU cache 30s/1024 + ≤5 短路 + 3-layer fallback + UpdateUsage batch + agent.memory_select profile 23 / metrics 5 labels / Langfuse memory.select trace / <personal_context> tag 协议 with Track 2 Scrubber) — spec PASS (1 P2) / quality PASS (4 P2)'
   - 'ec055dcb: fix(agent-memory): Task 3.4 P2 fix (selector userInput 1000-rune cap / GetByIDs cross-user WHERE user_id 防御 / TTL expiry refetch test / GetByIDs docstring / selector_test.go integration coverage note)'
+  - 'bc704884: feat(agent-search): Task 3.5 backend FTS5 ngram 中文搜索 (agent_message_search 表 + diff-by-uuid 索引 + snippet 算法 html.EscapeString 后 <mark> 包裹 + GET /v1/agent-runs/search + backfill CLI + B2B2C user_id 强制隔离) — spec PASS / quality PASS (4 P2)'
+  - '99089bb (web-v3): feat(agent-search): Task 3.5 frontend (agentSearch.ts + AgentHistorySearchView.vue + router + AgentHistoryView 搜索按钮 + 4 状态完整 + v-html 含 server-escaped snippet)'
+  - 'e4d4d145: feat(agent-memory): Task 3.6 trivial + cadence + Wave 4a wire-up (IsTrivial 纯函数 + CadenceService.ShouldRunDialectic + 替换 runner.go 2 处 isTrivial=false TODO / biz.go wire SearchService + CadenceService + IBiz.MemoryCadence/SearchService getter / metrics trivial+dialectic counters / yaml memory 段) — spec PASS (1 P2) / quality PASS (3 P2)'
+  - '96f17709: fix(agent-memory): Wave 4a P2 fix (Q1: IndexAgentRun goroutine 化避免请求 hot path 同步 DB / Q2: extractSearchRows 10MB 上限防 OOM / Q3: TestService_Search_AsciiSnippet 补 SQLite 覆盖 / P3.6.1: TrivialConfig + atomic.Value 替代 IsTrivial 每次 viper.GetInt + biz.NewBiz 4 个 viper.SetDefault / P3.6.2: ExactlyMinNewFacts 精确边界 test / P3.6.3: isEmojiRune 注释精确化)'
+  - '77821f6 (web-v3): fix(agent-search): Task 3.5 frontend P2 (@keyup + handleEnter wrapper 改为 @keyup.enter 直接绑定 doSearch)'
   decisions:
   - 'D6 (parent): AGENT.md cascade 只激活 2 层（部署级 + 用户全局），路径 3-6 V2 扩展（仅注释 hook）。'
   - 'D7 (parent): B2B2C 父子账户 memory 完全隔离 — schema 不加 parent_user_id 字段，store interface 只接受 userID 参数，父账户不会看到/聚合子账户 memory（团队聚合需求走管理后台报表，不污染 memory 系统）。'
