@@ -36,6 +36,15 @@ type IUserMemoryProfileStore interface {
 	// IncrTotalFacts 原子地把 total_facts 加 delta（可正可负）。
 	// 应用层在 fact Create/BatchCreate/Archive/BulkArchive 内同事务调用。
 	IncrTotalFacts(ctx context.Context, userID uint, delta int) error
+	// IncrementExtractionCount 原子自增 extraction_count_since_rebuild 并返回新值
+	// (Task 3.3 ExtractorService 用)。若 profile 行不存在则懒创建一行 (零值字段).
+	IncrementExtractionCount(ctx context.Context, userID uint) (int, error)
+	// ResetExtractionCount 把 extraction_count_since_rebuild 置 0
+	// (Task 3.3 RebuildNarrative 完成后调用).
+	ResetExtractionCount(ctx context.Context, userID uint) error
+	// UpdateNarrative 单事务更新 work_context / personal_context / top_of_mind 三字段
+	// (Task 3.3 RebuildNarrative 用). profile 行不存在则 Upsert 创建。
+	UpdateNarrative(ctx context.Context, userID uint, work, personal, topOfMind string) error
 }
 
 // IUserMemoryFactStore 定义 user_memory_facts 的存取接口。
@@ -47,6 +56,9 @@ type IUserMemoryFactStore interface {
 	// Create 写一条 fact + 同事务把 user_memory_profile.total_facts +1。
 	// V1.5 校验：fact.SubjectID 非 nil 时返回 errno.ErrLayerBNotSupported。
 	Create(ctx context.Context, fact *model.UserMemoryFact) error
+	// UpdateConfidence 单条更新 confidence (Task 3.3 hash dedup 用,
+	// 命中同 hash 老 fact 时把 confidence 提升为 max(old, new)).
+	UpdateConfidence(ctx context.Context, factID uint64, newConf float64) error
 	// BatchCreate 批量写 facts + 同事务把 total_facts += len(facts)。
 	// V1.5 校验：任一 fact.SubjectID 非 nil 整批拒绝。
 	BatchCreate(ctx context.Context, facts []model.UserMemoryFact) error
@@ -147,6 +159,81 @@ func (s *userMemoryProfileStore) UpdateCachedInsight(ctx context.Context, userID
 // 若 profile 不存在自动 Upsert 一个空行（INSERT ON DUPLICATE KEY UPDATE 风格）后再加。
 func (s *userMemoryProfileStore) IncrTotalFacts(ctx context.Context, userID uint, delta int) error {
 	return incrTotalFactsOnTx(ctx, s.db, userID, delta)
+}
+
+// IncrementExtractionCount 原子自增 extraction_count_since_rebuild 并返回新值。
+// 若 profile 行不存在自动 ON CONFLICT DO NOTHING 创建零值行后再加 (与 IncrTotalFacts 风格一致).
+//
+// Task 3.3 ExtractorService 在每次成功抽取 facts (无论新增/dedup) 后调用一次,
+// 计数达 ExtractionCountRebuildThreshold (默认 5) 时触发 RebuildNarrative.
+func (s *userMemoryProfileStore) IncrementExtractionCount(ctx context.Context, userID uint) (int, error) {
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.WithContext(ctx).
+			Clauses(clause.OnConflict{DoNothing: true}).
+			Create(&model.UserMemoryProfile{UserID: userID}).Error; err != nil {
+			return fmt.Errorf("ensure-profile(userID=%d): %w", userID, err)
+		}
+		if err := tx.WithContext(ctx).
+			Model(&model.UserMemoryProfile{}).
+			Where("user_id = ?", userID).
+			UpdateColumn("extraction_count_since_rebuild", gorm.Expr("extraction_count_since_rebuild + ?", 1)).Error; err != nil {
+			return fmt.Errorf("increment(userID=%d): %w", userID, err)
+		}
+		return nil
+	}); err != nil {
+		return 0, fmt.Errorf("userMemoryProfileStore.IncrementExtractionCount: %w", err)
+	}
+	// SELECT-after-update: 返回当前值给调用方阈值判断.
+	var p model.UserMemoryProfile
+	if err := s.db.WithContext(ctx).
+		Select("extraction_count_since_rebuild").
+		Where("user_id = ?", userID).
+		First(&p).Error; err != nil {
+		return 0, fmt.Errorf("userMemoryProfileStore.IncrementExtractionCount select-after: %w", err)
+	}
+	return p.ExtractionCountSinceRebuild, nil
+}
+
+// ResetExtractionCount 把 extraction_count_since_rebuild 置 0
+// (Task 3.3 RebuildNarrative 成功完成后调用).
+// 若 profile 行不存在返回 gorm.ErrRecordNotFound (rebuild 路径理论上不会触发,
+// 因为 IncrementExtractionCount 已经保证 profile 存在).
+func (s *userMemoryProfileStore) ResetExtractionCount(ctx context.Context, userID uint) error {
+	res := s.db.WithContext(ctx).
+		Model(&model.UserMemoryProfile{}).
+		Where("user_id = ?", userID).
+		UpdateColumn("extraction_count_since_rebuild", 0)
+	if res.Error != nil {
+		return fmt.Errorf("userMemoryProfileStore.ResetExtractionCount(userID=%d): %w", userID, res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return fmt.Errorf("userMemoryProfileStore.ResetExtractionCount(userID=%d): %w", userID, gorm.ErrRecordNotFound)
+	}
+	return nil
+}
+
+// UpdateNarrative 单事务更新 work_context / personal_context / top_of_mind 三字段
+// (Task 3.3 RebuildNarrative 用). 若 profile 行不存在则 ON CONFLICT DO NOTHING 创建零值
+// 后再写入 (rebuild 之前应当已存在,但 defensive).
+func (s *userMemoryProfileStore) UpdateNarrative(ctx context.Context, userID uint, work, personal, topOfMind string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.WithContext(ctx).
+			Clauses(clause.OnConflict{DoNothing: true}).
+			Create(&model.UserMemoryProfile{UserID: userID}).Error; err != nil {
+			return fmt.Errorf("userMemoryProfileStore.UpdateNarrative ensure-profile(userID=%d): %w", userID, err)
+		}
+		if err := tx.WithContext(ctx).
+			Model(&model.UserMemoryProfile{}).
+			Where("user_id = ?", userID).
+			Updates(map[string]interface{}{
+				"work_context":     work,
+				"personal_context": personal,
+				"top_of_mind":      topOfMind,
+			}).Error; err != nil {
+			return fmt.Errorf("userMemoryProfileStore.UpdateNarrative(userID=%d): %w", userID, err)
+		}
+		return nil
+	})
 }
 
 // incrTotalFactsOnTx 是 IncrTotalFacts 的事务实现，供 fact store 在同事务里复用。
@@ -290,6 +377,23 @@ func (s *userMemoryFactStore) UpdateUsage(ctx context.Context, factIDs []uint64)
 			"use_count":    gorm.Expr("use_count + ?", 1),
 		}).Error; err != nil {
 		return fmt.Errorf("userMemoryFactStore.UpdateUsage(n=%d): %w", len(factIDs), err)
+	}
+	return nil
+}
+
+// UpdateConfidence 单条更新 confidence (Task 3.3 hash dedup 用).
+// 不动 importance / use_count / source_*; 仅刷 confidence + updated_at (autoUpdateTime).
+// factID 不存在返回 gorm.ErrRecordNotFound.
+func (s *userMemoryFactStore) UpdateConfidence(ctx context.Context, factID uint64, newConf float64) error {
+	res := s.db.WithContext(ctx).
+		Model(&model.UserMemoryFact{}).
+		Where("id = ?", factID).
+		Update("confidence", newConf)
+	if res.Error != nil {
+		return fmt.Errorf("userMemoryFactStore.UpdateConfidence(id=%d): %w", factID, res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return fmt.Errorf("userMemoryFactStore.UpdateConfidence(id=%d): %w", factID, gorm.ErrRecordNotFound)
 	}
 	return nil
 }

@@ -2,7 +2,7 @@
 // the Capability Matching algorithm used by the AI Gateway.
 package profile
 
-// Task ID constants for all 21 supported task profiles (14 base + 7 agent-mode #14).
+// Task ID constants for all 22 supported task profiles (14 base + 7 agent-mode #14 + 1 V1.5 memory).
 // Business layers should reference these constants (e.g. profile.SopText) rather
 // than raw string literals to gain IDE completion and compile-time typo detection.
 const (
@@ -49,6 +49,13 @@ const (
 	AgentInjectionCheck = "agent.injection_check"
 	// AgentPermissionCheck is the Agent permission L3 auto-mode classifier (#14).
 	AgentPermissionCheck = "agent.permission_check"
+	// AgentMemoryExtract is the Agent V1.5 memory async extraction task (Task 3.3).
+	// Reads last 5-10 turns from agent_run.messages, identifies long-term-useful
+	// facts about the agent's *user* (Layer A — sales rep, analyst, SOP operator,
+	// PPT clerk, etc. — never the customer/subject the user discusses), filters
+	// confidence ≥ 0.7, dedups by content hash, persists to user_memory_facts.
+	// Recommended route: deepseek-v3-2 / qwen-turbo (cheap async background job).
+	AgentMemoryExtract = "agent.memory_extract"
 )
 
 // allTaskIDsList is the canonical ordered list of all task IDs.
@@ -76,9 +83,10 @@ var allTaskIDsList = []string{
 	AgentNarrationFallback,
 	AgentInjectionCheck,
 	AgentPermissionCheck,
+	AgentMemoryExtract,
 }
 
-// AllTaskIDs returns all 21 task ID strings in a stable order.
+// AllTaskIDs returns all task ID strings in a stable order.
 // Useful for validation, seeding, or iterating over all known profiles.
 // Returns a copy — callers may not modify the returned slice.
 func AllTaskIDs() []string {

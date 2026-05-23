@@ -357,6 +357,17 @@ func NewBiz(ds store.IStore) *biz {
 		memory.WithEmbedder(memory.NewAIServiceEmbedder()),
 	)
 
+	// Task 3.3 (agent-mode-v15-memory-layer-a): construct ExtractorService for
+	// async LLM extraction of Layer A user-self facts. Start launches 5 workers
+	// that drain a buffered queue and persist confidence≥0.7 facts via aiservice
+	// (profile.AgentMemoryExtract → deepseek-v3-2 / qwen-turbo).
+	memoryExtractor := memory.NewExtractorService(
+		ds.UserMemoryFacts(),
+		ds.UserMemoryProfiles(),
+	)
+	// Use a long-lived background context — Stop() on shutdown drains cleanly.
+	memoryExtractor.Start(context.Background())
+
 	b.agentRunner = agent.NewAgentRunner(
 		ds.AgentRuns(),
 		agentToolRegistry,
@@ -369,6 +380,7 @@ func NewBiz(ds store.IStore) *biz {
 		agent.WithMemoryProvider(memoryProvider),   // #7 memory-system
 		agent.WithBudgetTracker(budgetTracker),     // #12 agent-mode-billing-integration
 		agent.WithComplianceGate(b.complianceGate), // #13 agent-mode-compliance-3layer
+		agent.WithMemoryExtractor(memoryExtractor), // Task 3.3 LLM extraction async pipeline
 	)
 
 	// 初始化知识库服务

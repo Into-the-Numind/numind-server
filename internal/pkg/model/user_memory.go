@@ -10,18 +10,21 @@ import "time"
 //
 // 所有 bool 字段都用 zero-value false（无 `default:true` 陷阱，见 .claude/rules/database.md §6）。
 type UserMemoryProfile struct {
-	UserID                  uint       `gorm:"primaryKey;not null" json:"user_id"`
-	WorkContext             string     `gorm:"type:text" json:"work_context"`
-	PersonalContext         string     `gorm:"type:text" json:"personal_context"`
-	TopOfMind               string     `gorm:"type:text" json:"top_of_mind"`
-	CachedInsight           string     `gorm:"type:text" json:"cached_insight"`
-	CachedInsightAt         *time.Time `json:"cached_insight_at"`
-	CachedInsightFactCount  int        `gorm:"not null;default:0" json:"cached_insight_fact_count"`
-	TotalFacts              int        `gorm:"not null;default:0" json:"total_facts"`
-	LastExtractionAt        *time.Time `json:"last_extraction_at"`
-	LastExtractionSessionID string     `gorm:"size:64;not null;default:''" json:"last_extraction_session_id"`
-	CreatedAt               time.Time  `gorm:"not null;autoCreateTime" json:"created_at"`
-	UpdatedAt               time.Time  `gorm:"not null;autoUpdateTime" json:"updated_at"`
+	UserID                 uint       `gorm:"primaryKey;not null" json:"user_id"`
+	WorkContext            string     `gorm:"type:text" json:"work_context"`
+	PersonalContext        string     `gorm:"type:text" json:"personal_context"`
+	TopOfMind              string     `gorm:"type:text" json:"top_of_mind"`
+	CachedInsight          string     `gorm:"type:text" json:"cached_insight"`
+	CachedInsightAt        *time.Time `json:"cached_insight_at"`
+	CachedInsightFactCount int        `gorm:"not null;default:0" json:"cached_insight_fact_count"`
+	TotalFacts             int        `gorm:"not null;default:0" json:"total_facts"`
+	// ExtractionCountSinceRebuild 由 Task 3.3 ExtractorService 在每次成功抽取后自增 1.
+	// 累计到 ExtractionCountRebuildThreshold (默认 5) 时触发 RebuildNarrative, 重置 0.
+	ExtractionCountSinceRebuild int        `gorm:"not null;default:0" json:"extraction_count_since_rebuild"`
+	LastExtractionAt            *time.Time `json:"last_extraction_at"`
+	LastExtractionSessionID     string     `gorm:"size:64;not null;default:''" json:"last_extraction_session_id"`
+	CreatedAt                   time.Time  `gorm:"not null;autoCreateTime" json:"created_at"`
+	UpdatedAt                   time.Time  `gorm:"not null;autoUpdateTime" json:"updated_at"`
 }
 
 // TableName overrides GORM's default plural naming.

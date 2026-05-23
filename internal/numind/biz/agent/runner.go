@@ -89,6 +89,7 @@ type agentRunner struct {
 	memoryProvider    memory.MemoryProvider       // #7 memory-system: wired by biz.go via WithMemoryProvider; may be nil
 	budgetTracker     budget.BudgetTracker        // #12 agent-mode-billing-integration: wired by biz.go via WithBudgetTracker; may be nil
 	complianceGate    compliance.ComplianceGate   // #13 agent-mode-compliance-3layer: wired by biz.go via WithComplianceGate; may be nil
+	memoryExtractor   *memory.ExtractorService    // Task 3.3 LLM extraction async pipeline; wired by biz.go via WithMemoryExtractor; may be nil
 }
 
 var _ AgentRunner = (*agentRunner)(nil)
@@ -173,6 +174,20 @@ func WithBudgetTracker(t budget.BudgetTracker) RunnerOption {
 func WithComplianceGate(g compliance.ComplianceGate) RunnerOption {
 	return func(r *agentRunner) {
 		r.complianceGate = g
+	}
+}
+
+// WithMemoryExtractor injects the Task 3.3 LLM extraction async pipeline.
+// nil (default) = no async extraction (preserves test-only / minimal-wire callers).
+// When set, runner.Run.handleTerminated calls extractor.Enqueue at every
+// terminal state to harvest user-self facts for the L2 store.
+//
+// Layer A only: enqueued facts are about the agent user themselves
+// (sales rep / SOP operator / data analyst / etc.), never about a
+// customer/subject the user discusses.
+func WithMemoryExtractor(e *memory.ExtractorService) RunnerOption {
+	return func(r *agentRunner) {
+		r.memoryExtractor = e
 	}
 }
 
@@ -460,6 +475,19 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		case scPermDetail = <-permDenialSink:
 		default:
 		}
+		// Task 3.3: also enqueue on short-circuit path so terminated turns with
+		// no tool calls still produce facts. Same non-blocking contract.
+		if r.memoryExtractor != nil && req.UserID != 0 {
+			// TODO(task-3.6): wire trivial detection.
+			scSession := req.SessionID
+			if scSession == "" {
+				scSession = fmt.Sprintf("run-%d", run.ID)
+			}
+			r.memoryExtractor.Enqueue(req.UserID, scSession, []memory.ChatMessage{
+				{Role: "user", Content: req.Input},
+				{Role: "assistant", Content: req.Input},
+			}, false)
+		}
 		return &RunResult{
 			AgentRunID:       run.ID,
 			TerminalReason:   shortTerminalReason,
@@ -683,6 +711,25 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 				log.Warnw("AgentRunner.Run memory SyncTurn failed", "agent_run_id", run.ID, "error", syncErr)
 			}
 		}()
+	}
+
+	// Task 3.3: async LLM extraction (Layer A — user-self facts).
+	// Fires on *any* terminal reason per spec § 设计要点 ("agent_run.status 变为
+	// terminated（任一 TerminalReason）→ enqueue"). Trivial-turn detection lives
+	// in task 3.6 (not yet landed); for now isTrivial is hardcoded false (TODO).
+	//
+	// Enqueue is non-blocking by contract — queue-full path drops + warns, so
+	// this CANNOT delay the runner return. No goroutine wrap needed.
+	if r.memoryExtractor != nil && req.UserID != 0 {
+		// TODO(task-3.6): replace `false` with trivial.IsTrivial(req.Input).
+		// task 3.6 will expose `func IsTrivial(text string) bool` from a new
+		// internal/numind/biz/memory/trivial.go file; wire here on landing.
+		isTrivial := false
+		extractMsgs := []memory.ChatMessage{
+			{Role: "user", Content: req.Input},
+			{Role: "assistant", Content: finalText},
+		}
+		r.memoryExtractor.Enqueue(req.UserID, sessionID, extractMsgs, isTrivial)
 	}
 
 	endedAt := time.Now()
