@@ -345,6 +345,17 @@ func run() error {
 	// 优雅关闭博主监控调度器
 	bizLayer.Monitor().StopScheduler()
 
+	// 优雅关闭 Task 3.3 memory extractor（停止 5 worker goroutine + drain queue）。
+	// 在 httpsrv.Shutdown 之后调用：HTTP 已经停了，没有新的 agentRunner.Run 会再次
+	// 触发 Enqueue；此处 Stop close(jobQueue) + ctx cancel 让 worker 干净退出。
+	bizLayer.CloseMemoryExtractor(ctx)
+
+	// 优雅关闭 Task 3.8 memory digest cron (4 个 job: daily/weekly/monthly/quarterly).
+	// 等待 in-flight job drain (worker pool + Redis lock release best-effort).
+	// 与 CloseMemoryExtractor 同模式: 未调时进程退出 robfig/cron 随之结束;
+	// in-flight LLM 调用中断无 DB 一致性风险 (UPSERT 幂等, 下次 cron 重跑覆盖).
+	bizLayer.CloseDigestCron(ctx)
+
 	// 优雅关闭 Langfuse 客户端
 	langfuse.C.Stop()
 

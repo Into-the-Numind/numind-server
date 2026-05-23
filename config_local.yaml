@@ -177,3 +177,41 @@ web_search:
     base_url: "https://api.tavily.com"
     timeout_seconds: 5
     cache_ttl_seconds: 300
+
+# Agent Memory 配置（V1.5 板块 3）
+agent:
+  memory:
+    # Task 3.1: AGENT.md 2 级 cascade loader（部署级 + 用户全局）
+    # 路径 3-6（workspace 维度）V1.5 不实施，等 V2 扩展。
+    agent_md:
+      enabled: true
+      etc_dir: "/etc/numind"                # 部署级路径根（可指向 tmpdir 用于测试）
+      user_data_dir: "/opt/numind/dev/user_files"  # 拼接 users/<user_id>/AGENT.md
+      max_per_file_chars: 12288             # 12KB，单文件上限
+      max_total_chars: 51200                # 50KB，所有文件合计上限
+    # Task 3.6: trivial 短路 + Cadence 控制（dialectic 节流）
+    dialectic_cooldown_seconds: 300         # 5 min — 同用户 dialectic 最小重跑间隔
+    dialectic_max_cooldown_seconds: 1800    # 30 min — 兜底重跑（防 insight 过老）
+    dialectic_min_new_facts: 3              # cooldown 内有 ≥3 新 fact 时立即重跑
+    trivial_max_chars: 8                    # 全 emoji 短串判 trivial 的上限（rune 数）
+    # Task 3.7: Layer A dialectic LLM-call tunables
+    # D4：用 qwen-plus / deepseek-v3-2，不要 thinking model（DB Registry 配路由）
+    dialectic_top_facts_limit: 20           # 候选 fact 上限（importance DESC 排序后取前 N）
+    dialectic_max_output_tokens: 600        # LLM 输出上限（300-500 字中文 ≈ 450-750 tokens）
+    dialectic_temperature: 0.4              # 略稳定（不发散）但保留推理弹性
+    dialectic_call_timeout_seconds: 30      # LLM 调用 wall-clock 上限（qwen-plus 平均 4-8s）
+    # Task 3.8: 分层时间感知 (4 cron jobs + per-turn temporal injection)
+    # D4: 用 qwen-plus / deepseek-v3-2, 不要 thinking model (cron 后台跑, 不需发散)
+    digest:
+      enabled: false                        # local dev 默认关 — 避免本地跑 cron 浪费
+      timezone: "Asia/Shanghai"              # 所有日期边界以 Asia/Shanghai 计算
+      daily_cron: "0 0 4 * * *"             # 每日 04:00
+      weekly_cron: "0 30 4 * * 1"           # 每周一 04:30
+      monthly_cron: "0 30 4 1 * *"          # 每月 1 号 04:30
+      quarterly_cron: "0 30 4 1 1,4,7,10 *" # 季度首日 04:30
+      worker_concurrency: 20                # 每 cron 一次的 worker 数 (并行 user)
+      redis_lock_ttl_seconds: 3600          # Redis SETNX lock TTL (防多实例双跑, 1h 兜底)
+      per_user_timeout_seconds: 120         # 单 user 总时长 budget (generate + upsert)
+      max_output_tokens: 800                # LLM 输出上限 (summary ≤300字 + topics ≈600 tokens)
+      temperature: 0.3                      # 低随机性, 结构化 JSON 输出
+      call_timeout_seconds: 30              # 单 LLM call wall-clock 上限

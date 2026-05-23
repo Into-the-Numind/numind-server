@@ -20,6 +20,7 @@ import (
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/agent"
 	agentatt "numind-server/internal/numind/biz/agent/attachment"
+	"numind-server/internal/numind/biz/agent/search"
 	"numind-server/internal/numind/biz/ali"
 	"numind-server/internal/numind/biz/attachment"
 	chatbotbiz "numind-server/internal/numind/biz/chatbot"
@@ -28,6 +29,7 @@ import (
 	customerbiz "numind-server/internal/numind/biz/customer"
 	kbbiz "numind-server/internal/numind/biz/knowledgebase"
 	"numind-server/internal/numind/biz/llmrouter"
+	"numind-server/internal/numind/biz/memory"
 	"numind-server/internal/numind/biz/monitor"
 	"numind-server/internal/numind/biz/payment"
 	"numind-server/internal/numind/biz/salesrag"
@@ -130,6 +132,8 @@ func (b *realBizOnlyCustomers) StudentQuery() *agent.StudentQueryService {
 func (b *realBizOnlyCustomers) StudentRun() *agent.StudentRunService         { return nil }
 func (b *realBizOnlyCustomers) Attachment() *attachment.UploadService        { return nil }
 func (b *realBizOnlyCustomers) AttachmentFallback() agentatt.FallbackService { return nil }
+func (b *realBizOnlyCustomers) MemoryCadence() *memory.CadenceService        { return nil }
+func (b *realBizOnlyCustomers) SearchService() search.Service                { return nil }
 
 // compile-time guard: this test struct must satisfy biz.IBiz or tests fail here.
 var _ biz.IBiz = (*realBizOnlyCustomers)(nil)

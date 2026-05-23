@@ -2,7 +2,8 @@
 // the Capability Matching algorithm used by the AI Gateway.
 package profile
 
-// Task ID constants for all 26 supported task profiles (21 existing + 5 new V1.5).
+// Task ID constants for all 27 supported task profiles
+// (14 base + 7 agent-mode #14 + 2 V1.5 attachment + 4 V1.5 memory).
 // Business layers should reference these constants (e.g. profile.SopText) rather
 // than raw string literals to gain IDE completion and compile-time typo detection.
 const (
@@ -50,7 +51,7 @@ const (
 	// AgentPermissionCheck is the Agent permission L3 auto-mode classifier (#14).
 	AgentPermissionCheck = "agent.permission_check"
 
-	// ── V1.5 new task profiles (task 1.2 / board 3) ──────────────────────────
+	// ── V1.5 attachment profiles (task 1.2 / board 3) ────────────────────────
 
 	// AttachmentVisionDescribe is the VLM task that generates a textual description
 	// of an uploaded image for use as a text fallback when the active model is
@@ -62,6 +63,52 @@ const (
 	// misattributing PDF extraction costs to the ReAct agent budget (P1 #4 fix,
 	// task 1.2 review). (V1.5 task 1.2)
 	AttachmentPDFExtract = "attachment.pdf_extract"
+
+	// ── V1.5 memory profiles (Layer A — Task 3.x) ────────────────────────────
+
+	// AgentMemoryExtract is the Agent V1.5 memory async extraction task (Task 3.3).
+	// Reads last 5-10 turns from agent_run.messages, identifies long-term-useful
+	// facts about the agent's *user* (Layer A — sales rep, analyst, SOP operator,
+	// PPT clerk, etc. — never the customer/subject the user discusses), filters
+	// confidence ≥ 0.7, dedups by content hash, persists to user_memory_facts.
+	// Recommended route: deepseek-v3-2 / qwen-turbo (cheap async background job).
+	AgentMemoryExtract = "agent.memory_extract"
+	// AgentMemorySelect is the Agent V1.5 memory side-query selector (Task 3.4).
+	// Per-turn pre-LLM selector that picks ≤5 most-relevant facts from up to 50
+	// candidates and returns just their ext IDs as a JSON array. Fast + cheap
+	// (small LLM, MaxTokens=100, Temperature=0.2). Layer A: facts are always
+	// about the agent's *user themselves* — never the customer/subject they
+	// discuss. Recommended route: qwen-turbo (cost-efficient + good Chinese) →
+	// deepseek-v3-2 (fallback). Spec: 03-memory/task-04-top5-selector.md.
+	AgentMemorySelect = "agent.memory_select"
+	// AgentDialectic is the Agent V1.5 dialectic Layer A reasoning task (Task 3.7).
+	// Background goroutine reads top-N (≤20) Layer A facts (subject_id IS NULL —
+	// always about the agent's *user themselves*: sales rep, SOP operator, data
+	// analyst, PPT clerk, etc., NEVER about a customer/dataset/subject they
+	// discuss) and produces a 100–800-rune Chinese narrative insight describing
+	// (1) who the user is, (2) how to interact with them, (3) any personalised
+	// guidance for the current session. Cached in user_memory_profile.cached_insight
+	// + read at user-turn start to inject the Memories segment of the system prompt.
+	// Run gating is delegated to CadenceService (Task 3.6) — this profile is only
+	// hit when ShouldRunDialectic returns true. Recommended route: qwen-plus
+	// primary + deepseek-v3-2 fallback (D4: NO thinking models — output must be
+	// stable + consistent, not divergent). Spec: 03-memory/task-07-dialectic.md.
+	AgentDialectic = "agent.dialectic"
+	// AgentDigest is the Agent V1.5 temporal-tree digest task (Task 3.8).
+	// Shared by 4 cron jobs (daily / weekly / monthly / quarterly), each with
+	// its own prompt template:
+	//   - daily:     summarises yesterday's agent_runs + messages (cron 04:00 daily)
+	//   - weekly:    aggregates the 7 daily digests covering an ISO week (Mon 04:30)
+	//   - monthly:   aggregates the weekly digests covering a calendar month (1st 04:30)
+	//   - quarterly: aggregates the 3 monthly digests covering Q1-Q4 (quarter start 04:30)
+	// Output is strict JSON {"summary":"...","key_topics":[...]}; the digest_generator
+	// retries once on parse failure then falls back to a canned "（LLM 解析失败）" summary.
+	// Layer A only — the digest summarises the agent user themselves (cross-session
+	// aggregate), not any customer/subject they discuss.
+	// Recommended route: qwen-plus primary + deepseek-v3-2 fallback (D4: NO thinking
+	// model — digest is structured aggregation, not divergent reasoning).
+	// Spec: 03-memory/task-08-temporal-tree.md.
+	AgentDigest = "agent.digest"
 )
 
 // allTaskIDsList is the canonical ordered list of all task IDs.
@@ -89,9 +136,13 @@ var allTaskIDsList = []string{
 	AgentNarrationFallback,
 	AgentInjectionCheck,
 	AgentPermissionCheck,
-	// V1.5 additions (task 1.2 + board 3 profiles added as implemented)
+	// V1.5 additions
 	AttachmentVisionDescribe,
 	AttachmentPDFExtract,
+	AgentMemoryExtract,
+	AgentMemorySelect,
+	AgentDialectic,
+	AgentDigest,
 }
 
 // AllTaskIDs returns all task ID strings in a stable order.

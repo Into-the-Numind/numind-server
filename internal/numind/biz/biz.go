@@ -12,6 +12,7 @@ import (
 	agentatt "numind-server/internal/numind/biz/agent/attachment"
 	"numind-server/internal/numind/biz/agent/budgetgate"
 	"numind-server/internal/numind/biz/agent/compliancegate"
+	"numind-server/internal/numind/biz/agent/search"
 	"numind-server/internal/numind/biz/ali"
 	"numind-server/internal/numind/biz/attachment"
 	"numind-server/internal/numind/biz/budget"
@@ -46,7 +47,9 @@ import (
 	"numind-server/internal/pkg/log"
 	docparser "numind-server/internal/pkg/parser"
 	"numind-server/internal/pkg/pricing"
+	redispkg "numind-server/internal/pkg/redis"
 
+	goredis "github.com/redis/go-redis/v9"
 	"github.com/spf13/viper"
 )
 
@@ -78,6 +81,8 @@ type IBiz interface {
 	StudentRun() *agent.StudentRunService         // Student-facing run lifecycle (#14 BETA)
 	Attachment() *attachment.UploadService        // File attachment upload (#14 BETA)
 	AttachmentFallback() agentatt.FallbackService // Async fallback generation (V1.5 task 1.2)
+	MemoryCadence() *memory.CadenceService        // Task 3.6 dialectic cadence gate (Task 3.7 caller)
+	SearchService() search.Service                // Task 3.5 FULLTEXT search (router.go consumer)
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -101,6 +106,12 @@ type biz struct {
 	permissionGate    *permission.PermissionGate // #6 agent-mode-permission-pipeline
 	complianceGate    compliance.ComplianceGate  // #13 agent-mode-compliance-3layer
 	complianceAudit   *compliance.AuditLogger    // #13 agent-mode-compliance-3layer (Stop on shutdown)
+	memoryExtractor   *memory.ExtractorService   // Task 3.3 LLM extraction (Stop on shutdown)
+	memoryCadence     *memory.CadenceService     // Task 3.6 dialectic cadence gate (read-only)
+	memoryDialectic   memory.DialecticService    // Task 3.7 Layer A dialectic insight provider (background goroutine-based)
+	memoryTemporal    memory.TemporalService     // Task 3.8 temporal digest injector (per-turn read-only, 4 granularities)
+	memoryDigestCron  *memory.CronRunner         // Task 3.8 cron scheduler (4 jobs: daily/weekly/monthly/quarterly); Stop on shutdown
+	searchService     search.Service             // Task 3.5 FULLTEXT ngram search (also wired into AgentRunner via WithSearchService)
 	studentQuerySvc   *agent.StudentQueryService // #14 follow-up ALPHA student-facing queries
 	studentRunSvc     *agent.StudentRunService   // #14 BETA student-facing run lifecycle
 	attachFallbackSvc agentatt.FallbackService   // V1.5 multimodal fallback (task 1.2)
@@ -360,6 +371,165 @@ func NewBiz(ds store.IStore) *biz {
 		memory.WithEmbedder(memory.NewAIServiceEmbedder()),
 	)
 
+	// Task 3.3 (agent-mode-v15-memory-layer-a): construct ExtractorService for
+	// async LLM extraction of Layer A user-self facts. Start launches 5 workers
+	// that drain a buffered queue and persist confidence≥0.7 facts via aiservice
+	// (profile.AgentMemoryExtract → deepseek-v3-2 / qwen-turbo).
+	memoryExtractor := memory.NewExtractorService(
+		ds.UserMemoryFacts(),
+		ds.UserMemoryProfiles(),
+	)
+	// Use a long-lived background context — Stop() on shutdown drains cleanly.
+	memoryExtractor.Start(context.Background())
+	// P1.B: stash the service on the biz struct so the shutdown sequence can
+	// reach Stop() — mirrors complianceAudit lifecycle (NewBiz constructs +
+	// stores; numind.go shutdown calls CloseMemoryExtractor via the biz handle).
+	b.memoryExtractor = memoryExtractor
+
+	// Task 3.4 (agent-mode-v15-memory-layer-a): construct SelectorService for
+	// per-turn top-5 fact selection. Cache TTL 30s + ≤5-candidate shortcircuit
+	// + 3-layer fallback (LLM err / parse err / store err) keep cost ≈ ¥0.001/turn.
+	memorySelector := memory.NewSelectorService(ds.UserMemoryFacts())
+
+	// Task 3.6 (agent-mode-v15-memory-layer-a): register explicit defaults for
+	// the memory cadence + trivial knobs so config_*.yaml callers see the
+	// spec-defined fallback values without each consumer hard-coding them.
+	// Spec Step 1 explicit requirement; sibling Load* helpers also fall back
+	// gracefully when keys are missing, so the SetDefault is defense-in-depth.
+	viper.SetDefault("agent.memory.dialectic_cooldown_seconds", int(memory.DefaultDialecticCooldown/time.Second))
+	viper.SetDefault("agent.memory.dialectic_max_cooldown_seconds", int(memory.DefaultDialecticMaxCooldown/time.Second))
+	viper.SetDefault("agent.memory.dialectic_min_new_facts", memory.DefaultDialecticMinNewFacts)
+	viper.SetDefault("agent.memory.trivial_max_chars", memory.TrivialMaxCharsDefault)
+
+	// Task 3.7 (agent-mode-v15-memory-layer-a): register dialectic LLM-call
+	// tunables. Production overrides land in config_local / dev / qa yaml; the
+	// LoadDialecticConfigFromViper helper also falls back to the
+	// DefaultDialectic* constants when any key is unset.
+	viper.SetDefault("agent.memory.dialectic_top_facts_limit", memory.DefaultDialecticTopFactsLimit)
+	viper.SetDefault("agent.memory.dialectic_max_output_tokens", memory.DefaultDialecticMaxOutputTokens)
+	viper.SetDefault("agent.memory.dialectic_temperature", memory.DefaultDialecticTemperature)
+	viper.SetDefault("agent.memory.dialectic_call_timeout_seconds", int(memory.DefaultDialecticCallTimeout/time.Second))
+
+	// Task 3.6 trivial-detector hot-path config wire: load once from viper +
+	// stash via SetTrivialConfig so IsTrivial reads through atomic.Value
+	// (no viper RWMutex contention on the request path).
+	memory.SetTrivialConfig(memory.LoadTrivialConfigFromViper(viper.GetViper()))
+
+	// Task 3.6 (agent-mode-v15-memory-layer-a): construct CadenceService — the
+	// dialectic-cadence gate. Read-only over user_memory_profile; consumed by
+	// the Task 3.7 dialectic service via b.MemoryCadence() (no AgentRunner wire,
+	// since Run-time selector/extractor cost gating uses memory.IsTrivial pure
+	// func, not the cadence gate).
+	memoryCadence := memory.NewCadenceService(
+		ds.UserMemoryProfiles(),
+		memory.LoadCadenceConfigFromViper(viper.GetViper()),
+	)
+	b.memoryCadence = memoryCadence
+
+	// Task 3.7 (agent-mode-v15-memory-layer-a): construct DialecticService —
+	// the Layer A "use agent.dialectic LLM to summarise the user themselves"
+	// background recompute pipeline. Goroutine-detached + cadence-gated by
+	// memoryCadence so per-user cost stays under ¥0.05/day. cached_insight
+	// is read synchronously at user-turn start via GetCachedInsight (no LLM
+	// call on the request hot path).
+	//
+	// Wire ordering: dialectic needs the same stores as cadence + the cadence
+	// service itself; constructed after memoryCadence and BEFORE the
+	// ExtractorService.SetDialecticService hookup below.
+	memoryDialectic := memory.NewDialecticService(
+		ds.UserMemoryFacts(),
+		ds.UserMemoryProfiles(),
+		memoryCadence,
+		memory.LoadDialecticConfigFromViper(viper.GetViper()),
+	)
+	b.memoryDialectic = memoryDialectic
+
+	// Hook the dialectic recompute into the ExtractorService: every successful
+	// persistFacts will fire MaybeRecompute(userID) (cadence-gated, non-
+	// blocking). This is a setter (not a constructor argument) because
+	// ExtractorService is constructed earlier in the wire order — the dialectic
+	// service depends on memoryCadence which itself depends on profile-store
+	// readiness via biz init; cleanest decoupling is the SetDialecticService
+	// post-wire.
+	memoryExtractor.SetDialecticService(memoryDialectic)
+
+	// Task 3.8 (agent-mode-v15-memory-layer-a): construct TemporalService +
+	// DigestGenerator + DigestCron + CronRunner — the 分层时间感知 ("temporal
+	// tree") stack. 4 cron jobs (daily/weekly/monthly/quarterly) run on
+	// Asia/Shanghai schedules; per-turn injection scans user input for time
+	// keywords and pulls the matching digest into the system prompt.
+	//
+	// Lifecycle: CronRunner.Start spawns the scheduler; shutdown via
+	// CloseDigestCron (b.memoryDigestCron.Stop) drains in-flight jobs.
+	//
+	// Layer A only: all digests are per-user, never aggregated across
+	// parent/child accounts (D7 isolation).
+
+	// Register digest-related viper defaults so any caller path
+	// (LoadDigestCronConfigFromViper etc.) sees the spec-defined values
+	// even when the yaml is silent.
+	viper.SetDefault("agent.memory.digest.enabled", true)
+	viper.SetDefault("agent.memory.digest.timezone", memory.ShanghaiTZ)
+	viper.SetDefault("agent.memory.digest.daily_cron", memory.DefaultDailyCron)
+	viper.SetDefault("agent.memory.digest.weekly_cron", memory.DefaultWeeklyCron)
+	viper.SetDefault("agent.memory.digest.monthly_cron", memory.DefaultMonthlyCron)
+	viper.SetDefault("agent.memory.digest.quarterly_cron", memory.DefaultQuarterlyCron)
+	viper.SetDefault("agent.memory.digest.worker_concurrency", memory.DefaultDigestWorkerConcurrency)
+	viper.SetDefault("agent.memory.digest.redis_lock_ttl_seconds", int(memory.DefaultDigestLockTTL/time.Second))
+	viper.SetDefault("agent.memory.digest.per_user_timeout_seconds", int(memory.DefaultDigestPerUserTimeout/time.Second))
+	viper.SetDefault("agent.memory.digest.max_output_tokens", memory.DefaultDigestMaxOutputTokens)
+	viper.SetDefault("agent.memory.digest.temperature", memory.DefaultDigestTemperature)
+	viper.SetDefault("agent.memory.digest.call_timeout_seconds", int(memory.DefaultDigestCallTimeout/time.Second))
+
+	// TemporalService: per-turn injector (read-only, no LLM).
+	memoryTemporal := memory.NewTemporalService(ds.UserMemoryDigests())
+	b.memoryTemporal = memoryTemporal
+
+	// DigestGenerator: pulls source data (agent_run / lower digests) + calls
+	// aiservice.Chat(profile.AgentDigest) with 1 retry + fallback.
+	digestGen := memory.NewDigestGenerator(
+		ds.UserMemoryDigests(),
+		ds.UserMemoryFacts(),
+		memory.LoadDigestConfigFromViper(viper.GetViper()),
+	)
+
+	// DigestCron: enumerates active users + worker pool + per-user generate +
+	// upsert + Redis SETNX lock (rdb may be nil = single-instance mode).
+	digestCronOpts := []memory.DigestCronOption{}
+	if rdb := redisPkgClient(); rdb != nil {
+		// Wrap *redis.Client in a typed accessor — passing a typed-nil
+		// *redis.Client directly through the interface seam confuses the
+		// downstream nil-check (typed nil != nil interface).
+		digestCronOpts = append(digestCronOpts, memory.WithDigestCronRedisClient(rdb))
+	}
+	digestCron := memory.NewDigestCron(
+		ds.UserMemoryDigests(),
+		digestGen,
+		memory.LoadDigestCronConfigFromViper(viper.GetViper()),
+		digestCronOpts...,
+	)
+
+	// CronRunner: robfig/cron scheduler with the 4 jobs (daily / weekly /
+	// monthly / quarterly) — Asia/Shanghai timezone, spec cron exprs.
+	cronCfg := memory.LoadCronRunnerConfigFromViper(viper.GetViper())
+	digestRunner := memory.NewCronRunner(digestCron, cronCfg)
+	if err := digestRunner.Start(); err != nil {
+		log.Errorw("memory.digest CronRunner.Start failed; cron disabled for this process",
+			"error", err)
+	}
+	b.memoryDigestCron = digestRunner
+
+	// Task 3.5 (agent-mode-v15-memory-layer-a): construct FULLTEXT search
+	// service. Indexes diff-by-uuid on every AgentRunner.WriteTurn via the
+	// failure-tolerant IndexAgentRun hook (search rows are derived data —
+	// errors log warn and never block the run). BackfillFromAgentRun (CLI +
+	// repair) needs the AgentRuns store handle to fetch source messages.
+	searchService := search.NewService(
+		ds.AgentMessageSearches(),
+		ds.AgentRuns(),
+	)
+	b.searchService = searchService
+
 	// V1.5 板块 2 task 2.2 — V2 路径 artifact deps：写盘目录 + ArtifactStore。
 	// 仅当 agent_run.use_compact_v2=true 时生效（runner.go 内有 gate）；
 	// 默认 false → 行为与 V1.5 之前完全一致。
@@ -382,6 +552,11 @@ func NewBiz(ds store.IStore) *biz {
 		agent.WithMemoryProvider(memoryProvider),   // #7 memory-system
 		agent.WithBudgetTracker(budgetTracker),     // #12 agent-mode-billing-integration
 		agent.WithComplianceGate(b.complianceGate), // #13 agent-mode-compliance-3layer
+		agent.WithMemoryExtractor(memoryExtractor), // Task 3.3 LLM extraction async pipeline
+		agent.WithMemorySelector(memorySelector),   // Task 3.4 top-5 side-query selector
+		agent.WithMemoryDialectic(memoryDialectic), // Task 3.7 Layer A cached_insight injection
+		agent.WithMemoryTemporal(memoryTemporal),   // Task 3.8 temporal digest injection (4 granularities)
+		agent.WithSearchService(searchService),     // Task 3.5 FULLTEXT ngram indexing hook
 		// V1.5 板块 2 task 2.2 — V2 L0 artifact deps（artifactStore + dataDir 必填，否则 runner 内 gate 自动退化到 V1）。
 		agent.WithCompactV2Deps(ds.ToolArtifact(), artifactDir),
 		// V1.5 板块 2 task 2.3 — V2 messages / token usage store（maybeCompactV2 L1/L2 写盘 + 累加 tokens）。
@@ -575,6 +750,23 @@ func (b *biz) Attachment() *attachment.UploadService {
 	return attachment.NewUploadService()
 }
 
+// MemoryCadence 返回 Task 3.6 dialectic cadence gate 实例。
+// Task 3.7 dialectic service 通过本 getter 在每轮 dialectic 决策前问
+// ShouldRunDialectic，决定跑实际 LLM 调用还是用缓存 insight。
+// agent-mode-v15-memory-layer-a Task 3.6.
+func (b *biz) MemoryCadence() *memory.CadenceService {
+	return b.memoryCadence
+}
+
+// SearchService 返回 Task 3.5 FULLTEXT 搜索服务实例。
+// router.go 通过本 getter 拿到 search service 实例注册
+// GET /v1/agent-runs/search 路由；同 service 已通过 WithSearchService 注入
+// AgentRunner 用于 WriteTurn 后的 IndexAgentRun 钩子。
+// agent-mode-v15-memory-layer-a Task 3.5.
+func (b *biz) SearchService() search.Service {
+	return b.searchService
+}
+
 // AttachmentFallback 返回异步 fallback 生成服务实例（V1.5 task 1.2）。
 func (b *biz) AttachmentFallback() agentatt.FallbackService {
 	return b.attachFallbackSvc
@@ -606,6 +798,42 @@ func (b *biz) CloseComplianceAudit(ctx context.Context) {
 				"error", err, "drop_count", b.complianceAudit.DropCount())
 		}
 	}
+}
+
+// CloseMemoryExtractor 优雅停止 Task 3.3 ExtractorService 的 5 worker goroutine
+// （context cancel + close queue + wg.Wait）。
+// 与 ClosePermissionGate / CloseComplianceAudit 同 shutdown 模式：未调时进程退出
+// goroutine 随之结束，但 in-flight LLM 调用可能被中断（无 DB 一致性风险 —— 失败
+// 的 extract 不重试，下一轮 turn 自然再触发）。Stop 是 idempotent。
+// Stop 内部已处理 ctx — 此方法接受 ctx 参数仅为接口对齐 CloseComplianceAudit 风格。
+// agent-mode-v15-memory-layer-a Task 3.3.
+func (b *biz) CloseMemoryExtractor(_ context.Context) {
+	if b.memoryExtractor != nil {
+		b.memoryExtractor.Stop()
+	}
+}
+
+// CloseDigestCron 优雅停止 Task 3.8 memory digest 的 4 个 cron job
+// (daily/weekly/monthly/quarterly). Stop 等待 in-flight job 完成 (worker pool
+// drain + Redis lock release best-effort). Idempotent.
+// 与 CloseMemoryExtractor 同 shutdown 模式: 未调时进程退出 robfig/cron 随之结束;
+// in-flight LLM 调用可能被中断 (无 DB 一致性风险 — UPSERT 幂等, 下次 cron 重跑覆盖).
+// agent-mode-v15-memory-layer-a Task 3.8.
+func (b *biz) CloseDigestCron(_ context.Context) {
+	if b.memoryDigestCron != nil {
+		b.memoryDigestCron.Stop()
+	}
+}
+
+// redisPkgClient returns the package-level *redis.Client, or nil if Redis was
+// not initialised (e.g. tests, single-instance dev without redis). The
+// memory.WithDigestCronRedisClient option accepts the minimal interface
+// (SetNX + Del); *redis.Client structurally satisfies it.
+//
+// nil = "no lock" mode — DigestCron will skip the Redis SETNX gate and run
+// every scheduled tick. Safe for single-instance deploys.
+func redisPkgClient() *goredis.Client {
+	return redispkg.GetClient()
 }
 
 // LLMRouter 返回 LLM 路由服务实例.

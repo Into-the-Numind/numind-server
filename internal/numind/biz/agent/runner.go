@@ -16,6 +16,8 @@ import (
 	"gorm.io/gorm"
 
 	"numind-server/internal/numind/biz/agent/callctx"
+	"numind-server/internal/numind/biz/agent/memory/agentmd"
+	"numind-server/internal/numind/biz/agent/search"
 	"numind-server/internal/numind/biz/budget"
 	"numind-server/internal/numind/biz/compactv2"
 	"numind-server/internal/numind/biz/compliance"
@@ -29,6 +31,7 @@ import (
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
+	"numind-server/internal/pkg/metrics"
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
 )
@@ -92,6 +95,11 @@ type agentRunner struct {
 	memoryProvider    memory.MemoryProvider       // #7 memory-system: wired by biz.go via WithMemoryProvider; may be nil
 	budgetTracker     budget.BudgetTracker        // #12 agent-mode-billing-integration: wired by biz.go via WithBudgetTracker; may be nil
 	complianceGate    compliance.ComplianceGate   // #13 agent-mode-compliance-3layer: wired by biz.go via WithComplianceGate; may be nil
+	memoryExtractor   *memory.ExtractorService    // Task 3.3 LLM extraction async pipeline; wired by biz.go via WithMemoryExtractor; may be nil
+	memorySelector    memory.SelectorService      // Task 3.4 top-5 side-query selector; wired by biz.go via WithMemorySelector; may be nil
+	memoryDialectic   memory.DialecticService     // Task 3.7 Layer A dialectic cached_insight provider; wired by biz.go via WithMemoryDialectic; may be nil
+	memoryTemporal    memory.TemporalService      // Task 3.8 temporal digest injector (4 granularities); wired by biz.go via WithMemoryTemporal; may be nil
+	searchService     search.Service              // Task 3.5 FULLTEXT ngram indexing hook; wired by biz.go via WithSearchService; may be nil
 
 	// V1.5 板块 2 task 2.2 — context-management V2 deps（仅 run.UseCompactV2==true 时使用）。
 	// 三者要么全部为 nil（V2 路径完全停用），要么必须同时配齐；半配置组合 runner 会 warn 并退化到 V1 行为。
@@ -176,6 +184,104 @@ func WithBudgetTracker(t budget.BudgetTracker) RunnerOption {
 func WithComplianceGate(g compliance.ComplianceGate) RunnerOption {
 	return func(r *agentRunner) {
 		r.complianceGate = g
+	}
+}
+
+// WithMemoryExtractor injects the Task 3.3 LLM extraction async pipeline.
+// nil (default) = no async extraction (preserves test-only / minimal-wire callers).
+// When set, runner.Run.handleTerminated calls extractor.Enqueue at every
+// terminal state to harvest user-self facts for the L2 store.
+//
+// Layer A only: enqueued facts are about the agent user themselves
+// (sales rep / SOP operator / data analyst / etc.), never about a
+// customer/subject the user discusses.
+func WithMemoryExtractor(e *memory.ExtractorService) RunnerOption {
+	return func(r *agentRunner) {
+		r.memoryExtractor = e
+	}
+}
+
+// WithSearchService injects the Task 3.5 FULLTEXT search indexing service.
+// nil (default) = no search indexing (preserves test-only / minimal-wire callers).
+// When set, runner.Run.handleTerminated calls searchService.IndexAgentRun after
+// the final WriteTurn so search index stays in sync with agent_run.messages.
+//
+// The hook is failure-tolerant — IndexAgentRun internally logs + swallows errors
+// so search indexing never blocks the run.
+func WithSearchService(s search.Service) RunnerOption {
+	return func(r *agentRunner) {
+		r.searchService = s
+	}
+}
+
+// WithMemorySelector injects the Task 3.4 top-5 side-query selector.
+// nil (default) = no fact injection beyond AGENT.md cascade + L1/L2 (preserves
+// minimal-wire test callers).
+//
+// When set, runner.Run calls selector.SelectTop5 + BuildMemorySection at
+// system-prompt assembly time and injects the resulting <personal_context …>
+// block into the Memories segment between agentMdBlock (developer rules) and
+// memorySystemBlock (existing L1/L2 dialog memory).
+//
+// Layer A only — selected facts are always about the agent's *user themselves*.
+func WithMemorySelector(s memory.SelectorService) RunnerOption {
+	return func(r *agentRunner) {
+		r.memorySelector = s
+	}
+}
+
+// WithMemoryDialectic injects the Task 3.7 Layer A dialectic insight provider.
+// nil (default) = no insight block injected (preserves test-only / minimal-wire
+// callers; Task 3.1 + 3.4 paths still work).
+//
+// When set, runner.Run calls dialectic.GetCachedInsight + BuildInsightSection
+// at system-prompt assembly time and injects the resulting
+// <personal_context …> block into the Memories segment AFTER selectorBlock
+// (per-turn fact list) and BEFORE memoryDisclaimerBlock (L1/L2 dialog memory):
+//
+//	agentMdBlock              (## Agent Rules — task 3.1, developer-defined)
+//	selectorBlock             (<personal_context …> — task 3.4, per-turn facts)
+//	dialecticInsightBlock     (<personal_context …> — task 3.7, cached_insight)
+//	memoryDisclaimerBlock + memorySystemBlock (L1/L2 dialog memory)
+//
+// Layer A only — the cached_insight describes the agent's *user themselves*,
+// never the customer/dataset/subject they discuss (V2 Layer B scope; subject_id
+// schema-reserved but unused in V1.5).
+//
+// Trivial-turn short-circuit: when memory.IsTrivial(req.Input) returns true,
+// the insight block is skipped (matches selector + extractor pattern — no
+// reason to inject personal context for "好的" / "👍" inputs).
+func WithMemoryDialectic(d memory.DialecticService) RunnerOption {
+	return func(r *agentRunner) {
+		r.memoryDialectic = d
+	}
+}
+
+// WithMemoryTemporal injects the Task 3.8 temporal digest service.
+// nil (default) = no temporal digest injection (preserves test-only / minimal-wire
+// callers; Task 3.1 + 3.4 + 3.7 paths still work).
+//
+// When set, runner.Run scans req.Input for time keywords (today / yesterday /
+// 上周 / 本月 / Q3 / ...). If matched, fetches the corresponding daily / weekly
+// / monthly / quarterly digest from user_memory_digest_* and injects the
+// resulting <temporal_context …> block(s) into the Memories segment AFTER
+// dialecticInsightBlock and BEFORE memoryDisclaimerBlock:
+//
+//	agentMdBlock              (## Agent Rules — task 3.1, developer-defined)
+//	selectorBlock             (<personal_context …> — task 3.4, per-turn facts)
+//	dialecticInsightBlock     (<personal_context …> — task 3.7, cached_insight)
+//	temporalBlock             (<temporal_context …> — task 3.8, time-scoped digest)
+//	memoryDisclaimerBlock + memorySystemBlock (L1/L2 dialog memory)
+//
+// Layer A only — the digest summarises the agent user themselves (cross-session
+// activity), never any customer/subject they discuss (V2 Layer B scope).
+//
+// Trivial-turn short-circuit: when memory.IsTrivial(req.Input) returns true,
+// temporal injection is skipped (no time keywords in "好的"/"👍" inputs anyway,
+// and skipping the regex scan saves a few microseconds).
+func WithMemoryTemporal(t memory.TemporalService) RunnerOption {
+	return func(r *agentRunner) {
+		r.memoryTemporal = t
 	}
 }
 
@@ -377,6 +483,92 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		}
 	}
 
+	// V1.5 板块 3 task 3.1: AGENT.md 2 级 cascade loader.
+	// 开发者写的规则（部署级 + 用户全局），是 Memories 段（第 3 段）的静态前缀部分，
+	// 与 memorySystemBlock 内的"自学到的 facts"互补。
+	// 无 LLM 调用 → 不接 Langfuse；任意 file 读失败 → 加载器内部 WARN + 跳过，不 fatal。
+	// 拼接顺序：AGENT.md cascade（开发者规则）→ memorySystemBlock（auto-learned facts）。
+	// 二者均挂在段 3 内，先 rules 后 facts（spec §R4，让 LLM 先吸收规则再吸收事实）。
+	var agentMdBlock string
+	if agentMdResult, err := agentmd.LoadAgentMd(ctx, req.UserID); err != nil {
+		// LoadAgentMd 当前不返回 error（spec 保证），保留分支为未来扩展防御。
+		log.Warnw("agentmd.LoadAgentMd failed; continuing without developer rules",
+			"agent_run_id", run.ID, "error", err)
+	} else if agentMdResult != nil && agentMdResult.Content != "" {
+		agentMdBlock = "\n\n## Agent Rules (developer-defined)\n" + agentMdResult.Content + "\n"
+	}
+
+	// V1.5 板块 3 task 3.4: top-5 side-query selector — 每个 user turn 前用小 LLM
+	// 选 ≤5 个最相关的 user-self fact 注入到 Memories 段。
+	//
+	// 拼接顺序（spec §System prompt 集成）：
+	//   agentMdBlock              (## Agent Rules — task 3.1, developer-defined)
+	//   selectorBlock             (<personal_context …> — task 3.4, per-turn LLM-selected facts)
+	//   memoryDisclaimerBlock     (warning header — pre-existing L1/L2 path)
+	//   memorySystemBlock         (existing memory.SystemPromptBlock — L1/L2 dialog memory)
+	//
+	// Trivial-turn 短路（task 3.6）：memory.IsTrivial(req.Input) 判定纯函数 —
+	// 全 input 都是 trivial token 时（"好的"/"thanks!"/"👍"）跳过 selector LLM 调用
+	// 和后续 extractor enqueue，省钱 + 体验流畅。trivial 决策在两处都用同一份
+	// memory.IsTrivial 结果以保持一致性（避免 selector 跳过但 extractor 入队的
+	// 不对齐场景）。
+	isTrivial := memory.IsTrivial(req.Input)
+	if isTrivial {
+		metrics.MemoryTrivialCountInc()
+	}
+
+	var selectorBlock string
+	if r.memorySelector != nil && req.UserID != 0 && !isTrivial {
+		facts, selErr := r.memorySelector.SelectTop5(ctx, req.UserID, req.Input)
+		if selErr != nil {
+			// SelectTop5 errors are non-fatal — log and continue with no
+			// injection. The selector itself uses fallbacks for LLM /
+			// parse failures, so reaching this branch means a deeper
+			// (store-layer) failure.
+			log.Warnw("memorySelector.SelectTop5 failed; continuing without injection",
+				"agent_run_id", run.ID, "user_id", req.UserID, "error", selErr)
+		} else if len(facts) > 0 {
+			selectorBlock = "\n\n" + r.memorySelector.BuildMemorySection(facts)
+		}
+	}
+
+	// V1.5 板块 3 task 3.7: Layer A dialectic cached_insight 注入。
+	// 同步只读 user_memory_profile.cached_insight；空 / 不存在 / DB 错误时返回 ""
+	// （BuildInsightSection 处理空字符串，整体段位省略）。Layer A invariant：cached_insight
+	// 描述使用 agent 的真实 user 本人，**不**是会话讨论的客户 / 数据集 / 对象。
+	// 拼接顺序（spec §System prompt 集成）：在 selectorBlock 之后、memoryDisclaimerBlock
+	// 之前。trivial turn 跳过，与 selector 行为对齐（短输入无个人化收益）。
+	var dialecticInsightBlock string
+	if r.memoryDialectic != nil && req.UserID != 0 && !isTrivial {
+		insight := r.memoryDialectic.GetCachedInsight(ctx, req.UserID)
+		if section := r.memoryDialectic.BuildInsightSection(insight); section != "" {
+			dialecticInsightBlock = "\n\n" + section
+		}
+	}
+
+	// V1.5 板块 3 task 3.8: 分层时间感知 — 扫 req.Input 时间词 (今天/昨天/上周/本月/
+	// Q3/...)，命中则从 user_memory_digest_* 取对应粒度 digest 注入。
+	// 最多 2 个 digest (spec §设计要点 cap, 避免 prompt 膨胀)。
+	// 空 / 无关键词 / 数据缺失时返回空, 整段省略.
+	// 拼接顺序 (spec §System prompt 集成): 在 dialecticInsightBlock 之后、
+	// memoryDisclaimerBlock 之前. trivial turn 跳过 (短输入不会有时间词, 且省 regex 扫).
+	var temporalBlock string
+	if r.memoryTemporal != nil && req.UserID != 0 && !isTrivial {
+		if block := r.memoryTemporal.InjectDigests(ctx, req.UserID, req.Input); block != "" {
+			temporalBlock = "\n\n" + block
+		}
+	}
+
+	// P1.1 review-fix: 段 3 (Memories) 显式 header — 让 LLM 明确识别"这里开始是
+	// Memories 段"。Memories 段 = AGENT.md cascade (rules) + selectorBlock (per-turn
+	// LLM-selected facts, task 3.4) + dialecticInsightBlock (cached_insight, task 3.7)
+	// + temporalBlock (time-scoped digest, task 3.8) + memorySystemBlock
+	// (existing L1/L2 facts)。任一非空时挂前导 `## Memories` header；全部为空则整段省略。
+	var memoriesSectionHeader string
+	if agentMdBlock != "" || selectorBlock != "" || dialecticInsightBlock != "" || temporalBlock != "" || memorySystemBlock != "" {
+		memoriesSectionHeader = "\n\n## Memories\n"
+	}
+
 	// Task 1.5 (task 1.3 deferral): inject attachment reminder into segment 5
 	// ("System reminders") when at least one attachment was routed through the
 	// text-fallback path. The caller (student_run_lifecycle.go) sets
@@ -388,9 +580,20 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 
 	// 段位 1 + 2 + 3 + (disclaimer + 4) + 5 + 6（蓝本 §4.3.9）
 	// disclaimer 与 memorySystemBlock 同进同退；空字符串时整体段位省略。
+	// V1.5 task 3.1 / 3.4 / 3.7 / 3.8: memoriesSectionHeader 是段 3（Memories）的开头标记。
+	// 段内顺序：agentMdBlock (开发者规则) → selectorBlock (task 3.4 selected facts) →
+	// dialecticInsightBlock (task 3.7 cached_insight) →
+	// temporalBlock (task 3.8 time-scoped digest) →
+	// memoryDisclaimerBlock + memorySystemBlock (L1/L2 dialog memory)。
+	// agentMdBlock / selectorBlock / dialecticInsightBlock / temporalBlock 自带前导 \n\n，空字符串时无副作用。
 	req.SystemPrompt = skill.PlatformBasePrompt +
 		tenantHardRulesPlaceholder +
 		body +
+		memoriesSectionHeader +
+		agentMdBlock +
+		selectorBlock +
+		dialecticInsightBlock +
+		temporalBlock +
 		memoryDisclaimerBlock +
 		memorySystemBlock +
 		toolsSectionPlaceholder +
@@ -496,6 +699,23 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		if wErr := r.runStore.WriteTurn(ctx, run.ID, json.RawMessage(shortCircuitMessages)); wErr != nil {
 			log.Warnw("AgentRunner.Run WriteTurn failed on short-circuit", "agent_run_id", run.ID, "error", wErr)
 		}
+		// Task 3.5: index messages for FULLTEXT search. Hook is failure-tolerant
+		// internally — never blocks the run. Runs in a detached goroutine with a
+		// background context (request ctx cancel must not abort indexing — search
+		// rows are derived data and best-effort). Two DB round-trips inside
+		// IndexAgentRun would otherwise add to p99 latency of large runs.
+		if r.searchService != nil {
+			scRun := *run
+			scRun.Messages = datatypes.JSON(shortCircuitMessages)
+			go func() {
+				defer func() {
+					if rec := recover(); rec != nil {
+						log.Errorw("AgentRunner search.IndexAgentRun panic on short-circuit", "agent_run_id", scRun.ID, "panic", rec)
+					}
+				}()
+				r.searchService.IndexAgentRun(context.Background(), scRun)
+			}()
+		}
 		// Hook action propagation on short-circuit path (preserves TestRunner_Run_RegistryStopPropagatesToTerminalReason).
 		shortTerminalReason := TerminalCompleted
 		if effectiveHooks != nil && effectiveHooks.Registry != nil {
@@ -517,6 +737,27 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		select {
 		case scPermDetail = <-permDenialSink:
 		default:
+		}
+		// Task 3.3: also enqueue on short-circuit path so terminated turns with
+		// no tool calls still produce facts. Same non-blocking contract.
+		// P1.D: omit the assistant message — short-circuit means the LLM never
+		// actually produced a reply (the line above writes req.Input back as the
+		// assistant slot only to satisfy WriteTurn schema). Passing both with
+		// identical content would make the extractor see "user and assistant
+		// said the same thing" and bias facts accordingly. Send only the user
+		// message; the extractor handles single-role inputs.
+		if r.memoryExtractor != nil && req.UserID != 0 {
+			// Task 3.6: trivial inputs skip extraction (no facts to learn from
+			// "ok"/"👍"/"thanks"); preserves cost + queue depth. isTrivial is
+			// computed once above and reused here to keep selector + extractor
+			// decisions aligned for this turn.
+			scSession := req.SessionID
+			if scSession == "" {
+				scSession = fmt.Sprintf("run-%d", run.ID)
+			}
+			r.memoryExtractor.Enqueue(req.UserID, scSession, []memory.ChatMessage{
+				{Role: "user", Content: req.Input},
+			}, isTrivial)
 		}
 		return &RunResult{
 			AgentRunID:       run.ID,
@@ -760,6 +1001,23 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	if err := r.runStore.WriteTurn(ctx, run.ID, json.RawMessage(finalMessages)); err != nil {
 		log.Warnw("AgentRunner.Run WriteTurn failed", "agent_run_id", run.ID, "error", err)
 	}
+	// Task 3.5: index messages for FULLTEXT search. Hook is failure-tolerant
+	// internally — never blocks the run. Runs in a detached goroutine with a
+	// background context (request ctx cancel must not abort indexing — search
+	// rows are derived data and best-effort). Two DB round-trips inside
+	// IndexAgentRun would otherwise add to p99 latency of large runs.
+	if r.searchService != nil {
+		mainRun := *run
+		mainRun.Messages = datatypes.JSON(finalMessages)
+		go func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					log.Errorw("AgentRunner search.IndexAgentRun panic", "agent_run_id", mainRun.ID, "panic", rec)
+				}
+			}()
+			r.searchService.IndexAgentRun(context.Background(), mainRun)
+		}()
+	}
 
 	// M-A3 wire: async SyncTurn after successful completion.
 	// Runs in a detached goroutine with a background context so cancellation of
@@ -773,6 +1031,23 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 				log.Warnw("AgentRunner.Run memory SyncTurn failed", "agent_run_id", run.ID, "error", syncErr)
 			}
 		}()
+	}
+
+	// Task 3.3: async LLM extraction (Layer A — user-self facts).
+	// Fires on *any* terminal reason per spec § 设计要点 ("agent_run.status 变为
+	// terminated（任一 TerminalReason）→ enqueue"). Task 3.6 trivial-turn
+	// detection is wired via the `isTrivial` local computed near the top of
+	// Run (memory.IsTrivial(req.Input)); same value reused here keeps the
+	// selector / extractor decisions aligned for the turn.
+	//
+	// Enqueue is non-blocking by contract — queue-full path drops + warns, so
+	// this CANNOT delay the runner return. No goroutine wrap needed.
+	if r.memoryExtractor != nil && req.UserID != 0 {
+		extractMsgs := []memory.ChatMessage{
+			{Role: "user", Content: req.Input},
+			{Role: "assistant", Content: finalText},
+		}
+		r.memoryExtractor.Enqueue(req.UserID, sessionID, extractMsgs, isTrivial)
 	}
 
 	endedAt := time.Now()
