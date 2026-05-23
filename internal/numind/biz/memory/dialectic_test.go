@@ -446,6 +446,101 @@ func TestMaybeRecompute_PanicRecovered(t *testing.T) {
 	assert.Equal(t, int64(1), snap.DialecticRuns[metrics.MemoryDialecticFailed], "panic must register a failed run")
 }
 
+// ─── Case 8b: Upsert fallback failure → counted + no panic ──────────────────
+
+// failingUpsertProfileStore wraps a real IUserMemoryProfileStore but forces
+// Upsert to return an error. Used to exercise the inner branch of
+// recomputeInsightSafe where UpdateCachedInsight returns ErrRecordNotFound
+// AND the defence-in-depth Upsert fallback ALSO fails — previously untested.
+type failingUpsertProfileStore struct {
+	store.IUserMemoryProfileStore
+	upsertErr error
+}
+
+func (f *failingUpsertProfileStore) Upsert(_ context.Context, _ *model.UserMemoryProfile) error {
+	return f.upsertErr
+}
+
+// TestMaybeRecompute_UpsertFallback_UpsertFails verifies the failure-path
+// branch when:
+//  1. UpdateCachedInsight returns gorm.ErrRecordNotFound (profile row absent)
+//  2. The Upsert fallback also fails (DB write error)
+//
+// Expected: failed counter +1, no panic, no profile row created.
+// Setting: facts are inserted directly via raw DB to bypass IUserMemoryFactStore.Create
+// (which lazy-upserts a profile row through IncrTotalFacts). The profile row
+// stays absent → UpdateCachedInsight hits "Where user_id=? + RowsAffected==0"
+// → returns ErrRecordNotFound → triggers the Upsert fallback path.
+func TestMaybeRecompute_UpsertFallback_UpsertFails(t *testing.T) {
+	metrics.MemoryResetForTest()
+	factStore, profileStore, db := newDialecticTestStores(t)
+	ctx := context.Background()
+	const uid uint = 9001
+
+	// Bypass factStore.Create — its tx contains IncrTotalFacts → OnConflict
+	// DoNothing Create on user_memory_profile, which would seed a profile
+	// row and defeat the NotFound branch we're trying to exercise. Raw insert
+	// touches user_memory_facts only.
+	for i := 0; i < 5; i++ {
+		conf := 0.95 - float64(i)*0.01
+		f := &model.UserMemoryFact{
+			UUID:              fmt.Sprintf("dial-uf-%d-%d", uid, i),
+			UserID:            uid,
+			Content:           fmt.Sprintf("使用者背景 fact #%d", i),
+			Category:          model.MemoryFactCategoryContext,
+			Confidence:        conf,
+			Importance:        0.50,
+			SourceSessionID:   "sess-uf-test",
+			SourceMessageUUID: fmt.Sprintf("msg-uf-%d", i),
+			SourceExtractedAt: time.Now(),
+			EmbeddingHash:     fmt.Sprintf("uf-hash-%d-%d", uid, i),
+			IsArchived:        false,
+		}
+		require.NoError(t, db.WithContext(ctx).Create(f).Error)
+	}
+	// Sanity-check: facts visible via List, profile row absent.
+	rows, err := factStore.List(ctx, uid, store.ListFactOpts{OrderBy: "confidence", Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, rows, 5)
+	_, err = profileStore.Get(ctx, uid)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound, "test setup: profile must NOT exist")
+
+	// Wrap real profile store with one whose Upsert always errors.
+	wrapped := &failingUpsertProfileStore{
+		IUserMemoryProfileStore: profileStore,
+		upsertErr:               errors.New("simulated db write failure"),
+	}
+
+	mc := staticDialecticResp(validInsightText)
+	cadenceSvc := NewCadenceService(wrapped, DefaultCadenceConfig())
+	svc := NewDialecticService(
+		factStore, wrapped, cadenceSvc,
+		DefaultDialecticConfig(),
+		WithDialecticChatFn(mc.fn()),
+		WithDialecticExecutor(SyncDialecticExecutor),
+	)
+
+	// Must not panic even though both persist paths fail.
+	require.NotPanics(t, func() {
+		svc.MaybeRecompute(ctx, uid)
+	})
+
+	// LLM still got called once — failure is on the persist tail.
+	assert.Equal(t, 1, mc.callCount(), "cadence ready & valid response should reach LLM exactly once")
+
+	// Profile row should NOT exist (real Upsert never ran, fake one errored).
+	_, err = profileStore.Get(ctx, uid)
+	assert.ErrorIs(t, err, gorm.ErrRecordNotFound, "wrapped Upsert failed → no row persisted")
+
+	snap := metrics.MemoryGetSnapshot()
+	assert.Equal(t, int64(0), snap.DialecticRuns[metrics.MemoryDialecticRun],
+		"failed Upsert fallback must NOT count as a successful run")
+	assert.Equal(t, int64(1), snap.DialecticRuns[metrics.MemoryDialecticFailed],
+		"failed Upsert fallback must register a failed run")
+	assert.Equal(t, int64(1), snap.DialecticDurationCount,
+		"duration histogram observes even failed-persist runs")
+}
+
 // ─── Case 9: GetCachedInsight returns "" when empty ──────────────────────────
 
 func TestGetCachedInsight_Empty_ReturnsEmptyString(t *testing.T) {
@@ -778,7 +873,18 @@ func TestExtractor_DialecticHook_NotFiredWhenZeroFacts(t *testing.T) {
 
 	svc.Enqueue(78, "sess-zero", sampleMsgs(), false)
 	waitForChatCalls(t, mc, 1, 2*time.Second)
-	time.Sleep(50 * time.Millisecond)
+
+	// Polling negative-assertion: under CI load 50ms can be too tight to
+	// reliably confirm the goroutine didn't fire. Walk a 200ms window and
+	// fail fast the moment any unexpected call lands. Final assertion
+	// after the window catches the steady-state "no call ever happened".
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if rec.callCount() > 0 {
+			t.Fatalf("dialectic hook was called for zero-facts extraction (count=%d)", rec.callCount())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	assert.Equal(t, 0, rec.callCount(), "0-fact extraction must NOT fire dialectic hook")
 }

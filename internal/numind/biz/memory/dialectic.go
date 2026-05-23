@@ -425,6 +425,15 @@ func (s *dialecticService) recomputeInsightSafe(userID uint) {
 	// hook on persistFacts success), so the profile row exists by construction.
 	// For defence-in-depth, on NotFound we Upsert a fresh row with the
 	// insight + try once more.
+	//
+	// Note: insight is LLM-generated (not user input); EscapeForStorage is
+	// intentionally omitted here. Task 3.3 EscapeForStorage applies to extracted
+	// facts because those come from user/assistant turn content where the LLM
+	// could be tricked into echoing injection payloads. Dialectic insight is
+	// written by our own dialectic LLM call with a tightly-controlled prompt;
+	// the Track 2 Scrubber strips the <personal_context> wrapping tags on
+	// LLM output before user-facing emit. If V2 ever surfaces insight to UI
+	// directly (bypassing the system-prompt-only injection path), revisit.
 	if err := s.profileStore.UpdateCachedInsight(ctx, userID, insight, len(candidates)); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Recover via Upsert — write a full profile row carrying the new
