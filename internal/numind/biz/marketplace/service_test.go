@@ -495,7 +495,7 @@ func TestSubscribe_Phase1FailureNoOrphan(t *testing.T) {
 	art.failNextCreate = true
 	_, err := svc.Subscribe(ctx, 2, mp.ID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "clone skill")
+	assert.Contains(t, err.Error(), "cloneToSubscriber")
 
 	// No subscription written.
 	var count int64
