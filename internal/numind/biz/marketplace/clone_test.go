@@ -3,7 +3,6 @@ package marketplace
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 
@@ -115,6 +114,6 @@ func TestUnsubscribeCleanup_DeleteFailure_WrapsError(t *testing.T) {
 
 	err := s.unsubscribeCleanup(context.Background(), 2, 200, 999)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unsubscribeCleanup:")
-	assert.True(t, errors.Is(err, err) || strings.Contains(err.Error(), "forced delete failure"))
+	assert.Contains(t, err.Error(), "unsubscribeCleanup:", "wrapped with caller name")
+	assert.Contains(t, err.Error(), "forced delete failure", "underlying provider cause preserved")
 }
