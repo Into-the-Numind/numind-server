@@ -36,7 +36,7 @@ import (
 	"numind-server/internal/pkg/model"
 )
 
-// ArtifactDeps 封装 ProcessToolResult 需要的外部依赖，方便测试时注入 fake。
+// ArtifactDeps 封装 ProcessToolResult 需要的外部依赖，方便测试注入 fake。
 //
 // Store 必填；DataDir 必填（cleanup cron 会读相同路径，必须一致）；
 // Now 可选（默认 time.Now，测试时注入固定时间）。
@@ -62,13 +62,13 @@ func (d ArtifactDeps) now() time.Time {
 // ProcessToolResult 是 L0 tool result 处理的统一入口。
 //
 // 决策：
-//  1. len(output) <= ToolArtifactSizeLimit → 返回单条 MessageV2（content 原文）
-//  2. 超过阈值 → 写盘 + 入库 + 返回单条 MessageV2（content 为 <persisted-output> 引用）
+//  1. len(output) <= ToolArtifactSizeLimit → 返回原文（不写盘）
+//  2. 超过阈值 → 写盘 + 入库 + 返回 <persisted-output ref="..."/> 引用字符串
 //  3. 写盘 / DB 任何一步失败 → fallback inline 截断（前 16KB + 警告字符串），
 //     **不返回 error**，保证 agent run 继续。
 //
-// 注意：返回 []MessageV2 是为了未来扩展（比如想拆成 system + tool 两条），
-// 当前实现总是返回长度为 1 的切片。
+// 返回值：直接是要塞进 Eino tool message Content 的字符串（不再包 MessageV2，
+// 元数据全在 agent_tool_artifact 表行里查 ArtifactRef → 详细信息）。
 //
 // runID==0 / toolCallID=="" / toolName=="" 容错：写到 unknown/ 目录，元数据用占位串。
 func ProcessToolResult(
@@ -78,14 +78,10 @@ func ProcessToolResult(
 	toolCallID string,
 	toolName string,
 	output string,
-) ([]MessageV2, error) {
-	// 1. 小输出 → 不写盘
+) (string, error) {
+	// 1. 小输出 → 不写盘，原样返回
 	if len(output) <= ToolArtifactSizeLimit {
-		return []MessageV2{{
-			Role:       "tool",
-			ToolCallID: toolCallID,
-			Content:    output,
-		}}, nil
+		return output, nil
 	}
 
 	// 2. 大输出 → 写盘 + 入库 + 返回引用
@@ -111,12 +107,12 @@ func ProcessToolResult(
 	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
 		log.Warnw("compactv2.ProcessToolResult: MkdirAll failed; falling back to inline truncation",
 			"agent_run_id", runID, "tool_call_id", toolCallID, "tool_name", toolName, "error", err)
-		return fallbackInlineTruncated(toolCallID, output, totalSize), nil
+		return fallbackInlineTruncated(output, totalSize), nil
 	}
 	if err := os.WriteFile(absPath, bodyToWrite, 0o644); err != nil {
 		log.Warnw("compactv2.ProcessToolResult: WriteFile failed; falling back to inline truncation",
 			"agent_run_id", runID, "tool_call_id", toolCallID, "tool_name", toolName, "path", absPath, "error", err)
-		return fallbackInlineTruncated(toolCallID, output, totalSize), nil
+		return fallbackInlineTruncated(output, totalSize), nil
 	}
 
 	// preview 用 UTF-8 safe 截断。
@@ -142,47 +138,27 @@ func ProcessToolResult(
 		log.Warnw("compactv2.ProcessToolResult: ArtifactDeps.Store is nil; falling back to inline truncation",
 			"agent_run_id", runID, "tool_call_id", toolCallID, "tool_name", toolName)
 		_ = os.Remove(absPath)
-		return fallbackInlineTruncated(toolCallID, output, totalSize), nil
+		return fallbackInlineTruncated(output, totalSize), nil
 	}
 	if err := deps.Store.Create(ctx, art); err != nil {
 		log.Warnw("compactv2.ProcessToolResult: store.Create failed; cleaning up file + falling back to inline truncation",
 			"agent_run_id", runID, "tool_call_id", toolCallID, "tool_name", toolName, "uuid", artifactUUID, "error", err)
 		_ = os.Remove(absPath)
-		return fallbackInlineTruncated(toolCallID, output, totalSize), nil
+		return fallbackInlineTruncated(output, totalSize), nil
 	}
 
-	// 成功 → 拼 <persisted-output> 引用消息
-	refContent := formatPersistedOutputRef(artifactUUID, toolName, totalSize, preview)
-	return []MessageV2{{
-		Role:       "tool",
-		ToolCallID: toolCallID,
-		Content:    refContent,
-		Meta: &MessageMetaV2{
-			IsCompacted:       true,
-			CompactionPhase:   "L0",
-			OriginalSizeBytes: int64(totalSize),
-			ArtifactRef:       artifactUUID,
-			Preview:           preview,
-			CompactedAt:       deps.now(),
-			ToolName:          toolName,
-		},
-	}}, nil
+	// 成功 → 拼 <persisted-output> 引用字符串
+	return formatPersistedOutputRef(artifactUUID, toolName, totalSize, preview), nil
 }
 
-// fallbackInlineTruncated 在写盘 / DB 失败时返回一个截断版的 tool 消息。
+// fallbackInlineTruncated 在写盘 / DB 失败时返回截断版字符串。
 // 取前 ToolArtifactSizeLimit 字节（按 rune 边界回退）+ 警告 footer。
-// 不返回 error，让 agent run 继续。
-func fallbackInlineTruncated(toolCallID string, output string, totalSize int) []MessageV2 {
+func fallbackInlineTruncated(output string, totalSize int) string {
 	truncated := safePreviewUTF8(output, ToolArtifactSizeLimit)
-	content := fmt.Sprintf(
+	return fmt.Sprintf(
 		"%s\n[Output truncated due to artifact write failure; %d bytes total, only first %d bytes returned]",
 		truncated, totalSize, len(truncated),
 	)
-	return []MessageV2{{
-		Role:       "tool",
-		ToolCallID: toolCallID,
-		Content:    content,
-	}}
 }
 
 // formatPersistedOutputRef 构造 messages 里的 <persisted-output> XML 引用文本。

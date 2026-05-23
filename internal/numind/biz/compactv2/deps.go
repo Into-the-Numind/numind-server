@@ -9,8 +9,9 @@ import (
 
 // Local store-shaped interfaces.
 //
-// 平行重做（D3）下 store 包已经 import compactv2 来引用 CompactStateV2 / MessageV2 等类型；
-// 如果再让 compactv2 直接 import store 就会形成 import cycle。
+// compactv2 不能直接 import internal/numind/store —— store 通过 ToolArtifact()
+// getter import compactv2.ArtifactStore 这个接口（结构性满足），让 store 把
+// IAgentToolArtifactStore 暴露给本包；若反向 import 会形成 import cycle。
 //
 // 解决：在本包定义"compactv2 需要的 store 行为子集"接口，让 caller（runner / biz / cmd）
 // 把具体 store 注入进来。store.IAgentToolArtifactStore / store.IAgentRunStore 在 method
