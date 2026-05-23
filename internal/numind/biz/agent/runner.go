@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -18,7 +17,6 @@ import (
 
 	"numind-server/internal/numind/biz/agent/callctx"
 	"numind-server/internal/numind/biz/budget"
-	"numind-server/internal/numind/biz/compact"
 	"numind-server/internal/numind/biz/compactv2"
 	"numind-server/internal/numind/biz/compliance"
 	"numind-server/internal/numind/biz/memory"
@@ -85,8 +83,6 @@ type agentRunner struct {
 	mu                sync.Mutex
 	defaultHooks      *RunHooks                   // #4 sandbox-integration: wired by biz.go via WithDefaultHooks
 	skillStore        store.IAgentDefinitionStore // #5 skill-system: wired by biz.go via WithSkillStore; may be nil
-	compactProvider   compact.CompactProvider     // #9 compact: wired by biz.go via WithCompactProvider; may be nil
-	compactConfig     compact.Config              // #9 compact: defaults to compact.DefaultConfig() in NewAgentRunner
 	narrationProvider *narration.Provider         // #8 narration-layer: wired by biz.go via WithNarrationProvider; may be nil
 	memoryProvider    memory.MemoryProvider       // #7 memory-system: wired by biz.go via WithMemoryProvider; may be nil
 	budgetTracker     budget.BudgetTracker        // #12 agent-mode-billing-integration: wired by biz.go via WithBudgetTracker; may be nil
@@ -127,25 +123,16 @@ func WithSkillStore(s store.IAgentDefinitionStore) RunnerOption {
 	}
 }
 
-// WithCompactProvider sets the CompactProvider used by PTL / pre-LLM compact
-// helpers. #14 wires a real aiservice.Chat-backed provider; v1 uses
-// compact.MockCompactProvider so helpers stay testable in #9 isolation.
-// When nil, helpers no-op (tryPreLLMCompact returns input unchanged;
-// handlePTLError step 2 returns a terminal error).
-func WithCompactProvider(p compact.CompactProvider) RunnerOption {
-	return func(r *agentRunner) {
-		r.compactProvider = p
-	}
-}
-
-// WithCompactConfig overrides the qwen-plus defaults set by NewAgentRunner.
-// Use this when tuning AutoCompactThreshold / MaxConsecutiveAutoCompactFailures
-// for a different model.
-func WithCompactConfig(cfg compact.Config) RunnerOption {
-	return func(r *agentRunner) {
-		r.compactConfig = cfg
-	}
-}
+// V1.5 compact-v1-removal — V1 compact package was deleted in commit XXX.
+// The legacy WithCompactProvider / WithCompactConfig options were removed
+// because their entire raison d'être (PTL recovery + max_output escalation
+// + CollapseDrain head-drop + AttachmentReinjector + Restore) was either:
+//   - subsumed by V2 (compactv2 L0-L4 prevention-first design); or
+//   - a speculative recovery layer that never ran in prod and added
+//     maintenance overhead. See CLAUDE.md §6b for the decision context.
+//
+// agent runs are now compactv2-only by default (run.UseCompactV2 defaults
+// to true at the runner.Run Create site).
 
 // WithNarrationProvider installs a *narration.Provider to enable learner-facing
 // narration event emission. When set, runner.Run attaches the provider to the
@@ -216,10 +203,9 @@ func WithCompactV2Store(s store.IAgentCompactV2Store) RunnerOption {
 // NewAgentRunner 工厂。
 func NewAgentRunner(runStore store.IAgentRunStore, registry AgentToolRegistry, opts ...RunnerOption) AgentRunner {
 	r := &agentRunner{
-		runStore:      runStore,
-		registry:      registry,
-		cancels:       make(map[uint64]context.CancelFunc),
-		compactConfig: compact.DefaultConfig(), // #9 compact: qwen-plus default; overridable via WithCompactConfig
+		runStore: runStore,
+		registry: registry,
+		cancels:  make(map[uint64]context.CancelFunc),
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -254,6 +240,10 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 			Status:            "running",
 			Messages:          datatypes.JSON([]byte("[]")),
 			StartedAt:         startTime,
+			// V1.5 compact-v1-removal — V1 compact 包已删，所有新 run 默认走 V2
+			// (maybeCompactV2 L0-L4 prevention chain)。如果未来需要灰度回退，
+			// 由 SetUseCompactV2(false) 显式关闭单个 run。
+			UseCompactV2: true,
 		}
 		if err := r.runStore.Create(ctx, run); err != nil {
 			return nil, fmt.Errorf("AgentRunner.Run: %w", err)
@@ -533,20 +523,21 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	// Build initial Eino messages from the user request.
 	einoMessages := buildEinoMessages(req)
 
-	// Track compact state for PTL recovery (convert between Eino ↔ compact.Message formats).
-	compactMessages := einoMessagesToCompact(einoMessages)
-
 	st := &LoopState{}
 	// TerminalReason is left empty here; the loop sets it on success (TerminalCompleted)
 	// or on error (various terminal reasons). IsTerminal() checks TerminalReason != "" —
 	// do NOT set an optimistic default before the loop or the first iteration will be skipped.
 
-	// currentMaxTokens tracks escalation through handleMaxOutputError.
-	currentMaxTokens := compact.DefaultMaxTokens
-
-	// Bounded retry loop: MaxPTLRetries + MaxOutputRetriesLimit combined.
-	// Each attempt gets a fresh callID so budgetgate A8b can correlate token usage.
-	const maxAttempts = MaxPTLRetries + MaxOutputRetriesLimit + 2 // generous ceiling
+	// Bounded outer-loop ceiling for the LLM call.
+	//
+	// V1.5 compact-v1-removal: V1's PTL recovery + max_output escalation retry
+	// chain was removed (compactv2 prevention chain at 50%/70%/85% thresholds
+	// makes these recovery layers redundant; the recovery code itself never
+	// ran in prod). The outer loop is now effectively single-attempt — Eino
+	// drives the inner ReAct iterations; the outer attempts only re-enter
+	// on hook-driven yields (e.g. ask_user_question, which returns via the
+	// yieldErr branch before reaching the retry cases).
+	const maxAttempts = 2
 	var (
 		output    *schema.Message
 		runErr    error
@@ -587,7 +578,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		callID := callctx.NewCallID()
 		attemptCtx := callctx.WithCallID(queryCtx, callID)
 
-		output, runErr = einoAgent.Generate(attemptCtx, compactMessagesToEino(compactMessages))
+		output, runErr = einoAgent.Generate(attemptCtx, einoMessages)
 
 		// V1.5 板块 2 task 2.3 — Provider usage 校准（仅 V2 路径）：
 		// adapter 已在 Generate 内 stash 了 Usage by callID；这里 LookupUsage + 累加到 total_tokens_used_v2。
@@ -683,41 +674,25 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		// Classify error and drive state machine.
 		event := HandleLLMError(st, runErr)
 
+		// V1.5 compact-v1-removal: PTL recovery + max_output escalation removed.
+		// LLM error → terminate via state machine (no retry chain).
+		//
+		// PTL prevention is now handled by compactv2's L3 autocompact at 85%
+		// threshold + L4 hard limit at 95%; if PTL still fires after that, it
+		// means token estimation is severely off and retrying with the same
+		// estimation won't help — fail fast and let observability surface it.
+		//
+		// max_output should be handled by setting adequate max_tokens in the
+		// profile config (DB Registry); runtime escalation is no longer needed.
 		switch event {
 		case LoopEventLLMErrPTL:
-			cont, newMsgs, isTerm, term, herr := r.handlePTLError(attemptCtx, st, compactMessages)
-			if isTerm {
-				st.TerminalReason = term
-				if herr != nil {
-					log.Warnw("AgentRunner.Run handlePTLError terminal", "agent_run_id", run.ID,
-						"terminal", term, "error", herr)
-				}
-				break
-			}
-			_ = cont
-			compactMessages = newMsgs
-			// continue loop with updated messages
-
+			st.TerminalReason = TerminalPromptTooLong
 		case LoopEventLLMErrMaxOutput:
-			cont, newMax, isTerm, term := r.handleMaxOutputError(attemptCtx, st, currentMaxTokens)
-			if isTerm {
-				st.TerminalReason = term
-				break
-			}
-			_ = cont
-			currentMaxTokens = newMax
-			// continue loop; einoAgent does not accept max_tokens directly — the
-			// escalation is informational (adapter uses aiservice routing defaults);
-			// the important effect is PTLRetries / MaxOutputRetries counter advance
-			// which guards against infinite loops.
-
+			st.TerminalReason = TerminalErrorMaxBudget
 		default:
-			// All other events (model error, image error, context canceled, etc.)
-			// produce a terminal state via the state machine directly.
 			if term, _, isTerm := st.Transition(event); isTerm {
 				st.TerminalReason = term
 			} else {
-				// Unknown continue event — should not happen; guard defensively.
 				st.TerminalReason = TerminalModelError
 			}
 		}
@@ -850,125 +825,16 @@ func isRefusal(st *LoopState) bool {
 	return false
 }
 
-// #9 compact helpers — wired in by biz.go via WithCompactProvider/WithCompactConfig.
+// V1.5 compact-v1-removal — V1 compact helpers (tryPreLLMCompact /
+// handlePTLError / handleMaxOutputError) removed in commit XXX. PTL recovery
+// and max_output escalation are now handled by:
+//   - compactv2 L3 autocompact at 85% threshold (prevention, see below)
+//   - compactv2 L4 hard limit at 95% → terminate (no retry)
+//   - profile config in DB Registry should set adequate max_tokens (no
+//     runtime escalation needed)
 //
-// These helpers are intentionally NOT called from Run() in #9. #2 mock Run()
-// remains unchanged. #14 ReAct loop will wire the helpers into the real
-// agent.Generate fail/retry chain.
-//
-// Concurrency: caller is responsible for ensuring *LoopState is not shared
-// across goroutines. Within a single Run() the loop is single-threaded; across
-// independent Run() invocations each has its own LoopState.
-
-// tryPreLLMCompact estimates total tokens across `messages`. When the estimate
-// exceeds the configured AutoCompactThreshold, it triggers ReactiveCompact and
-// returns (summary || collapsed) as the new message slice. Returns the input
-// unchanged with didCompact=false when the threshold is not hit, when the
-// CompactProvider is nil, or when ReactiveCompact fails (err is propagated).
-//
-// Uses ReactiveCompact's finalMessages (the actually-fed slice) for the
-// CollapseDrain so the summary and the trailing tail describe the same scope
-// (S2 reviewer P1 fix).
-func (r *agentRunner) tryPreLLMCompact(ctx context.Context, messages []compact.Message) ([]compact.Message, bool, error) {
-	if r.compactProvider == nil {
-		return messages, false, nil
-	}
-	// Use strings.Builder to avoid O(n²) allocation — compact triggers exactly
-	// when the message list is large, so naive += would be the worst case.
-	var sb strings.Builder
-	for _, m := range messages {
-		sb.WriteString(m.Content)
-		sb.WriteByte('\n')
-	}
-	tokens := compact.EstimateTokens(sb.String())
-	if tokens < r.compactConfig.AutoCompactThreshold {
-		return messages, false, nil
-	}
-	result, finalMessages, err := compact.ReactiveCompact(ctx, r.compactProvider, messages, r.compactConfig)
-	if err != nil {
-		return messages, false, err
-	}
-	collapsed := compact.CollapseDrain(finalMessages, r.compactConfig.PTLCollapseKeepTurns)
-	summary := compact.Message{
-		Role:          "system",
-		Content:       result.Summary,
-		IsCompactMark: true,
-	}
-	return append([]compact.Message{summary}, collapsed...), true, nil
-}
-
-// handlePTLError consumes one st.Transition(LoopEventLLMErrPTL). Returns the
-// ContinueReason that the state machine produced plus the new messages slice
-// the caller should send to the next LLM attempt; or, when the state machine
-// terminated the run, isTerminal=true and the TerminalReason.
-//
-// The caller MUST NOT call st.Transition again on the returned ContinueReason —
-// the helper has already advanced PTLRetries. Calling Transition twice would
-// double-count and trip MaxPTLRetries early (S1 reviewer P1 fix).
-//
-// Step 1 (PTLRetries=1) → CollapseDrain only (no LLM call).
-// Step 2 (PTLRetries=2) → ReactiveCompact (real LLM call via provider) and
-// then CollapseDrain on the actually-fed message set (S2 reviewer P1 fix).
-// Step 3+ (PTLRetries>2) → TerminalPromptTooLong.
-func (r *agentRunner) handlePTLError(
-	ctx context.Context, st *LoopState, messages []compact.Message,
-) (cont ContinueReason, newMessages []compact.Message, isTerminal bool, terminal TerminalReason, err error) {
-	term, c, isTerm := st.Transition(LoopEventLLMErrPTL)
-	if isTerm {
-		return "", nil, true, term, nil
-	}
-	switch c {
-	case ContinueCollapseDrainRetry:
-		collapsed := compact.CollapseDrain(messages, r.compactConfig.PTLCollapseKeepTurns)
-		return c, collapsed, false, "", nil
-	case ContinueReactiveCompactRetry:
-		if r.compactProvider == nil {
-			return "", nil, true, TerminalPromptTooLong, fmt.Errorf("handlePTLError: nil compactProvider, cannot reactive_compact")
-		}
-		result, finalMessages, rerr := compact.ReactiveCompact(ctx, r.compactProvider, messages, r.compactConfig)
-		if rerr != nil {
-			return "", nil, true, TerminalPromptTooLong, rerr
-		}
-		summary := compact.Message{
-			Role:          "system",
-			Content:       result.Summary,
-			IsCompactMark: true,
-		}
-		collapsed := compact.CollapseDrain(finalMessages, r.compactConfig.PTLCollapseKeepTurns)
-		return c, append([]compact.Message{summary}, collapsed...), false, "", nil
-	default:
-		return "", nil, true, TerminalModelError, fmt.Errorf("handlePTLError: unexpected continue reason %s", c)
-	}
-}
-
-// handleMaxOutputError consumes one st.Transition(LoopEventLLMErrMaxOutput).
-// Returns the ContinueReason plus the max_tokens the caller should use on the
-// next attempt, or isTerminal=true with TerminalErrorMaxBudget once the
-// recovery budget is exhausted.
-//
-// Same no-double-counting rule as handlePTLError (S1 reviewer P1 fix).
-//
-// Escalate stage (MaxOutputRetries=1) → EscalatedMaxTokens (65536).
-// Recovery stage (MaxOutputRetries=2) → currentMaxTokens preserved; the LLM
-// should be allowed to exhaust its budget (S1 reviewer P2 fix — recovery does
-// not call EscalateMaxTokens).
-// Beyond limit (MaxOutputRetries>2) → TerminalErrorMaxBudget.
-func (r *agentRunner) handleMaxOutputError(
-	ctx context.Context, st *LoopState, currentMaxTokens int,
-) (cont ContinueReason, newMaxTokens int, isTerminal bool, terminal TerminalReason) {
-	term, c, isTerm := st.Transition(LoopEventLLMErrMaxOutput)
-	if isTerm {
-		return "", 0, true, term
-	}
-	switch c {
-	case ContinueMaxOutputEscalate:
-		return c, compact.EscalateMaxTokens(currentMaxTokens), false, ""
-	case ContinueMaxOutputRecovery:
-		return c, currentMaxTokens, false, ""
-	default:
-		return "", 0, true, TerminalModelError
-	}
-}
+// If LLM still errors out (prompt_too_long / max_output) → terminate fast.
+// See runner main loop switch on LoopEventLLMErrPTL / LoopEventLLMErrMaxOutput.
 
 // ── V1.5 板块 2 task 2.3 V2 compact helpers ──────────────────────────────────
 
@@ -1216,44 +1082,9 @@ func buildEinoMessages(req RunRequest) []*schema.Message {
 	}
 }
 
-// einoMessagesToCompact converts []*schema.Message to []compact.Message for
-// PTL recovery helpers (handlePTLError / tryPreLLMCompact). Only role + content
-// are mapped; tool_calls are serialised as JSON into the compact.Message.ToolCalls
-// field if present.
-func einoMessagesToCompact(msgs []*schema.Message) []compact.Message {
-	out := make([]compact.Message, 0, len(msgs))
-	for _, m := range msgs {
-		if m == nil {
-			continue
-		}
-		cm := compact.Message{
-			Role:    string(m.Role),
-			Content: m.Content,
-		}
-		if len(m.ToolCalls) > 0 {
-			if b, err := json.Marshal(m.ToolCalls); err == nil {
-				cm.ToolCalls = b
-			}
-		}
-		if m.ToolCallID != "" {
-			cm.ToolCallID = m.ToolCallID
-		}
-		out = append(out, cm)
-	}
-	return out
-}
-
-// compactMessagesToEino converts []compact.Message back to []*schema.Message for
-// passing to einoAgent.Generate after PTL recovery rewrites the message list.
-func compactMessagesToEino(msgs []compact.Message) []*schema.Message {
-	out := make([]*schema.Message, 0, len(msgs))
-	for _, m := range msgs {
-		em := &schema.Message{
-			Role:       schema.RoleType(m.Role),
-			Content:    m.Content,
-			ToolCallID: m.ToolCallID,
-		}
-		out = append(out, em)
-	}
-	return out
-}
+// V1.5 compact-v1-removal — einoMessagesToCompact / compactMessagesToEino
+// adapters removed in commit XXX. They served as bidirectional bridges
+// between Eino's *schema.Message and the V1 compact.Message struct, used by
+// the now-removed PTL recovery + tryPreLLMCompact helpers. The runner now
+// passes []*schema.Message directly to einoAgent.Generate without any
+// V1-format detour.

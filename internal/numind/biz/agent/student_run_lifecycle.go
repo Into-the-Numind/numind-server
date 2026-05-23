@@ -233,6 +233,8 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 		Status:            "running",
 		Messages:          datatypes.JSON([]byte("[]")),
 		StartedAt:         startedAt,
+		// V1.5 compact-v1-removal — V1 包已删，所有新 run 默认走 V2 (maybeCompactV2)。
+		UseCompactV2: true,
 	}
 	if err := s.runStore.Create(ctx, preRun); err != nil {
 		return nil, fmt.Errorf("StudentRunService.Create pre-create row: %w", err)

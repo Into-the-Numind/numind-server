@@ -15,7 +15,6 @@ import (
 	"numind-server/internal/numind/biz/attachment"
 	"numind-server/internal/numind/biz/budget"
 	chatbotbiz "numind-server/internal/numind/biz/chatbot"
-	"numind-server/internal/numind/biz/compact"
 	"numind-server/internal/numind/biz/compliance"
 	"numind-server/internal/numind/biz/config"
 	"numind-server/internal/numind/biz/credit"
@@ -371,9 +370,10 @@ func NewBiz(ds store.IStore) *biz {
 		agentToolRegistry,
 		agent.WithDefaultHooks(wrappedHooks),        // #6: permission → sandbox chain
 		agent.WithSkillStore(ds.AgentDefinitions()), // #5 skill-system
-		// #14/A4 (commit 5035d4b7): real LLM compact via aiservice.Chat.
-		agent.WithCompactProvider(compact.NewAIServiceCompactProvider(compact.DefaultConfig())),
-		// WithCompactConfig omitted — DefaultConfig (qwen-plus) applies.
+		// V1.5 compact-v1-removal — WithCompactProvider/WithCompactConfig removed.
+		// V2 (compactv2) now handles all context-window management; legacy V1
+		// recovery helpers (PTL chain + max_output escalation) were removed
+		// because their prevention-first replacement covers the same cases.
 		agent.WithNarrationProvider(narrationProv), // #8 narration-layer (nil if init failed)
 		agent.WithMemoryProvider(memoryProvider),   // #7 memory-system
 		agent.WithBudgetTracker(budgetTracker),     // #12 agent-mode-billing-integration

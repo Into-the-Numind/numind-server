@@ -184,26 +184,20 @@ func TestRunner_RealReAct_HappyPath(t *testing.T) {
 	require.NotNil(t, got.EndedAt)
 }
 
-// TestRunner_PTLChain_Triggered verifies that a prompt_too_long error on the first
-// attempt triggers handlePTLError (CollapseRetry path, PTLRetries=1), and a
-// subsequent success produces TerminalCompleted.
-func TestRunner_PTLChain_Triggered(t *testing.T) {
+// TestRunner_PTL_TerminatesFast verifies the V1.5 compact-v1-removal behavior:
+// a prompt_too_long error from the LLM terminates the run with
+// TerminalPromptTooLong (no retry). V1's collapse+reactive_compact recovery
+// chain was removed because compactv2's L3 autocompact at 85% threshold +
+// L4 hard limit at 95% prevent this case in practice; if PTL still fires it
+// means token estimation is severely off and retrying with the same
+// estimation won't help.
+func TestRunner_PTL_TerminatesFast(t *testing.T) {
 	callCount := 0
 	orig := chatFn
 	t.Cleanup(func() { chatFn = orig })
 	chatFn = func(_ context.Context, _ string, _ aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
 		callCount++
-		if callCount == 1 {
-			// First call: simulate PTL error.
-			return nil, errors.New("prompt_too_long: context window exceeded")
-		}
-		// Second call: success.
-		return &aiservice.ChatResponse{
-			Content:      "recovered answer",
-			FinishReason: "stop",
-			Model:        "test-model",
-			Provider:     "test",
-		}, nil
+		return nil, errors.New("prompt_too_long: context window exceeded")
 	}
 
 	store := newMockStore()
@@ -211,32 +205,21 @@ func TestRunner_PTLChain_Triggered(t *testing.T) {
 
 	result, err := runner.Run(context.Background(), newReActRequest(toolName, "long input"))
 	require.NoError(t, err)
-	assert.Equal(t, TerminalCompleted, result.TerminalReason,
-		"after PTL recovery, run should complete successfully")
-	assert.Equal(t, "recovered answer", result.FinalOutput)
-	assert.GreaterOrEqual(t, callCount, 2, "chatFn should have been called at least twice (PTL retry)")
+	assert.Equal(t, TerminalPromptTooLong, result.TerminalReason,
+		"PTL error should terminate run directly (no V1 retry chain)")
+	assert.Equal(t, 1, callCount, "chatFn should be called exactly once (no retry)")
 }
 
-// TestRunner_MaxOutputChain_Triggered verifies that a max_output error on the first
-// attempt triggers handleMaxOutputError (escalation path, MaxOutputRetries=1), and
-// a subsequent success produces TerminalCompleted.
-func TestRunner_MaxOutputChain_Triggered(t *testing.T) {
+// TestRunner_MaxOutput_TerminatesFast verifies that a max_output error
+// terminates with TerminalErrorMaxBudget. V1's escalation chain was removed
+// — profile config should set adequate max_tokens upstream in DB Registry.
+func TestRunner_MaxOutput_TerminatesFast(t *testing.T) {
 	callCount := 0
 	orig := chatFn
 	t.Cleanup(func() { chatFn = orig })
 	chatFn = func(_ context.Context, _ string, _ aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
 		callCount++
-		if callCount == 1 {
-			// First call: simulate max_output error.
-			return nil, errors.New("max_output_tokens: response was truncated")
-		}
-		// Second call: success.
-		return &aiservice.ChatResponse{
-			Content:      "complete answer",
-			FinishReason: "stop",
-			Model:        "test-model",
-			Provider:     "test",
-		}, nil
+		return nil, errors.New("max_output_tokens: response was truncated")
 	}
 
 	store := newMockStore()
@@ -244,10 +227,9 @@ func TestRunner_MaxOutputChain_Triggered(t *testing.T) {
 
 	result, err := runner.Run(context.Background(), newReActRequest(toolName, "generate something long"))
 	require.NoError(t, err)
-	assert.Equal(t, TerminalCompleted, result.TerminalReason,
-		"after max_output escalation, run should complete successfully")
-	assert.Equal(t, "complete answer", result.FinalOutput)
-	assert.GreaterOrEqual(t, callCount, 2, "chatFn should have been called at least twice (max_output retry)")
+	assert.Equal(t, TerminalErrorMaxBudget, result.TerminalReason,
+		"max_output error should terminate run directly (no V1 escalation chain)")
+	assert.Equal(t, 1, callCount, "chatFn should be called exactly once (no retry)")
 }
 
 // TestRunner_UnrecoverableError verifies that a context.DeadlineExceeded error
