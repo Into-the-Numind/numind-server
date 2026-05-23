@@ -33,17 +33,20 @@ func (f *platformToolFactory) DisplayName() string { return "平台内置工具"
 // Tools constructed with nil deps will panic only if Execute is called; LoadTools itself
 // must never panic.
 //
-// Base tools (always present, ds=nil or ds!=nil): 10 tools
+// Base tools (always present, ds=nil or ds!=nil): 12 tools
 //
 //	kb_search, learner_data_query, document_generate, image_gen, bash_exec,
-//	get_current_date, web_search, web_fetch, ask_user_question, file_read
+//	get_current_date, web_search, web_fetch, ask_user_question, file_read,
+//	analyze_image, annotate_image
 //
 // When f.ds is non-nil, two additional memory tools (memory_write, memory_read) are
-// appended, bringing the total to 12 tools.
+// appended, bringing the total to 14 tools.
 func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMetadata, error) {
 	var usersGetter userByIDGetter
+	var attStore store.IAgentAttachmentStore
 	if f.ds != nil {
 		usersGetter = f.ds.Users()
+		attStore = f.ds.AgentAttachments()
 	}
 	tools := []FullTool{
 		&kbSearchTool{rag: f.rag},
@@ -56,6 +59,12 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		NewWebFetchTool(),
 		NewAskUserQuestionTool(),
 		NewFileReadTool(&pdfParserImpl{}, &imageParserImpl{}, &textParserImpl{}),
+		// V1.5 multimodal vision tools (task 1.4):
+		// RequiresVision=false: these tools internally call a vision specialist model
+		// (qwen3-vl-plus via profile.AttachmentVisionDescribe), so the main LLM does
+		// NOT need vision capability — even single-modal models can call these tools.
+		NewAnalyzeImageTool(attStore),
+		NewAnnotateImageTool(),
 	}
 	metadata := []ToolMetadata{
 		{ToolName: "kb_search", DisplayName: "知识库检索", Description: "Search the knowledge base.", Source: "platform", Category: "RAG"},
@@ -68,9 +77,13 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		{ToolName: "web_fetch", DisplayName: "网页读取", Description: "Fetch a URL and return its contents as Markdown.", Source: "platform", RiskLevel: "moderate", Category: "网络"},
 		{ToolName: "ask_user_question", DisplayName: "反问学员", Description: "Ask the user a clarifying question with structured options. Yields the run.", Source: "platform", RiskLevel: "safe", Category: "交互"},
 		{ToolName: "file_read", DisplayName: "读取文件", Description: "Read an uploaded file's contents by URL.", Source: "platform", RiskLevel: "moderate", Category: "文件"},
+		// V1.5 vision tools — RequiresVision intentionally absent (not in ToolMetadata struct);
+		// both tools work with any main model because vision is handled internally.
+		{ToolName: "analyze_image", DisplayName: "图像分析", Description: "Analyze an image in detail using a vision specialist model.", Source: "platform", RiskLevel: "moderate", Category: "视觉"},
+		{ToolName: "annotate_image", DisplayName: "图像区域标注", Description: "Analyze specific regions within an image using a vision specialist model.", Source: "platform", RiskLevel: "moderate", Category: "视觉"},
 	}
 	// Append memory tools only when a real store is available (nil guard preserves
-	// the nil-ds unit test that expects exactly 10 tools).
+	// the nil-ds unit test that expects exactly 12 tools).
 	if f.ds != nil {
 		np := memory.NewNotepad(f.ds.UserGlobalMemories())
 		tools = append(tools,
