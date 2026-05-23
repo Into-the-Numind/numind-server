@@ -25,8 +25,6 @@ import (
 	"numind-server/internal/numind/biz/narration"
 	"numind-server/internal/numind/biz/skill"
 	"numind-server/internal/numind/store"
-	"numind-server/internal/pkg/aiservice"
-	aismw "numind-server/internal/pkg/aiservice/middleware"
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
@@ -101,14 +99,11 @@ type agentRunner struct {
 	memoryTemporal    memory.TemporalService      // Task 3.8 temporal digest injector (4 granularities); wired by biz.go via WithMemoryTemporal; may be nil
 	searchService     search.Service              // Task 3.5 FULLTEXT ngram indexing hook; wired by biz.go via WithSearchService; may be nil
 
-	// V1.5 板块 2 task 2.2 — context-management V2 deps（仅 run.UseCompactV2==true 时使用）。
-	// 三者要么全部为 nil（V2 路径完全停用），要么必须同时配齐；半配置组合 runner 会 warn 并退化到 V1 行为。
-	// artifactStore: agent_tool_artifact 表存取
-	// dataDir: 文件落盘根目录（与 numind.go cleanup cron 用相同值）
-	// compactV2Store: V2 messages / token usage 持久化（task 2.3 maybeCompactV2 调用）
-	artifactStore  store.IAgentToolArtifactStore
-	artifactDir    string
-	compactV2Store store.IAgentCompactV2Store
+	// V1.5 v2-compact-adapter-integration — V2 L0 工具写盘 deps（adapter compactor
+	// 不依赖 store，per-Run 内存状态自管）。两者要么同时配齐要么 nil；半配置组合
+	// runner 会 warn 并跳过 L0（其他 V2 prevention 不受影响）。
+	artifactStore store.IAgentToolArtifactStore
+	artifactDir   string
 }
 
 var _ AgentRunner = (*agentRunner)(nil)
@@ -298,18 +293,11 @@ func WithCompactV2Deps(artifactStore store.IAgentToolArtifactStore, dataDir stri
 	}
 }
 
-// WithCompactV2Store injects the V2 messages / token usage store. Used by
-// task 2.3 maybeCompactV2 (L1 prune + L2 microcompact) and task 2.4 autocompact
-// to read / write `agent_run.messages` (V2 schema) plus token usage state.
-//
-// V1.5 板块 2 task 2.3 — wired by biz.go via WithCompactV2Store(ds.CompactV2()).
-// When nil (default), maybeCompactV2 is a no-op even if run.UseCompactV2=true
-// (runner.go gates this and logs a warning, like the artifactStore gate).
-func WithCompactV2Store(s store.IAgentCompactV2Store) RunnerOption {
-	return func(r *agentRunner) {
-		r.compactV2Store = s
-	}
-}
+// V1.5 compact-dead-schema-cleanup — WithCompactV2Store option removed.
+// IAgentCompactV2Store interface + impl + all 6 store methods deleted along with
+// the dead DB columns (compact_state_v2 / total_tokens_used_v2 / ...) in
+// migration 20260523_180000. V2 compact state lives on adapterCompactor
+// (per-Run in-memory) — no DB persistence needed for prevention semantics.
 
 // NewAgentRunner 工厂。
 func NewAgentRunner(runStore store.IAgentRunStore, registry AgentToolRegistry, opts ...RunnerOption) AgentRunner {
@@ -458,14 +446,14 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	// V1.5 板块 2 task 2.2 — V2 路径门控：DB flag use_compact_v2=true 且 runner 注入了 V2 deps。
 	// 若任一不满足，useCompactV2 视为 false：保持 V1 行为（adaptFullToEinoTool 原样、不注入
 	// read_tool_artifact、不追加 system prompt addendum）。这样 V1 测试 / 历史 run 完全不受影响。
-	// task 2.3 起 compactV2Store 也加入门控（maybeCompactV2 需要写 messages_v2 + 累加 tokens）。
-	useCompactV2 := run.UseCompactV2 && r.artifactStore != nil && r.artifactDir != "" && r.compactV2Store != nil
+	// V1.5 compact-dead-schema-cleanup — compactV2Store 字段已删（store 接口与列都
+	// 在 migration 20260523_180000 移除），gate 仅检查 V2 L0 写盘必备的 artifact deps。
+	useCompactV2 := run.UseCompactV2 && r.artifactStore != nil && r.artifactDir != ""
 	if run.UseCompactV2 && !useCompactV2 {
-		log.Warnw("AgentRunner.Run: run.UseCompactV2=true but V2 deps not configured; degrading to V1 path",
+		log.Warnw("AgentRunner.Run: run.UseCompactV2=true but L0 artifact deps not configured; V2 will skip L0 tool write-to-disk (other V2 features unaffected)",
 			"agent_run_id", run.ID,
 			"has_artifact_store", r.artifactStore != nil,
-			"has_artifact_dir", r.artifactDir != "",
-			"has_compact_v2_store", r.compactV2Store != nil)
+			"has_artifact_dir", r.artifactDir != "")
 	}
 	if useCompactV2 {
 		// system prompt 第 2 段 Tools 描述末尾追加 read_tool_artifact 使用说明（中英双语）。
@@ -674,11 +662,10 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	// contextWindow 取 run 冻结的 V2 限值，无值时用 adapterCompactor 自身的 32K 兜底
 	// （待板块 1 capability matrix 落地后改为按 modelKey 查真值）。
 	if useCompactV2 {
-		ctxWindow := defaultContextWindowLimitV2
-		if run.ContextWindowLimitV2 != nil && *run.ContextWindowLimitV2 > 0 {
-			ctxWindow = *run.ContextWindowLimitV2
-		}
-		einoAdapter.compactor = newAdapterCompactor(ctxWindow)
+		// V1.5 compact-dead-schema-cleanup — context_window_limit_v2 列已删
+		// （从未被写入过的 override 字段）；newAdapterCompactor 内自带 32K 兜底，
+		// 待板块 1 capability matrix 落地后改为按 modelKey 查真值。
+		einoAdapter.compactor = newAdapterCompactor(0)
 	}
 	// Backward compat: if no tools resolved (test scenarios with nil registry or
 	// empty ToolNames), preserve the pre-#14 short-circuit. Real production runs
@@ -823,47 +810,30 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 			break
 		}
 
-		// V1.5 板块 2 — maybeCompactV2 在每轮 LLM 调用前跑（仅 V2 路径）。
-		// L1 prune (≥50%) / L2 microcompact (≥70%) 都是纯字符串操作，不调 LLM；
-		// ≥85% 走 autocompact (task 2.4) 调 LLM 12 段固定模板压缩历史；
-		// ≥95% + 连续失败 3 次 → terminate (state_reason="context_exhausted")。
-		// 普通失败 fail-open：只 warn log 不阻塞 run（reviewer S2 — 不破坏 V1 路径）。
-		if useCompactV2 {
-			if err := r.maybeCompactV2(queryCtx, run); err != nil {
-				if errors.Is(err, compactv2.ErrContextExhausted) {
-					// task 2.4 review P1 fix：autocompactV2 已通过 terminateRunContextExhausted
-					// 写 DB run.state_reason="context_exhausted"。这里 break 主循环 + 设
-					// alreadyTerminated=true 跳过最终的 UpdateState（line 753），避免被后续
-					// st.TerminalReason 覆盖。
-					log.Infow("AgentRunner.Run maybeCompactV2 signaled context_exhausted; breaking loop",
-						"agent_run_id", run.ID, "attempt", attempt)
-					contextExhausted = true
-					break
-				}
-				log.Warnw("AgentRunner.Run maybeCompactV2 failed; continuing without compact",
-					"agent_run_id", run.ID, "attempt", attempt, "error", err)
-			}
-		}
+		// V1.5 compact-dead-schema-cleanup — outer-loop maybeCompactV2 + token 校准都
+		// 已删除（adapter.Generate PRE-call MaybeCompact 接管真实 ReAct 对话压缩，
+		// outer loop 读 run.Messages 看到的永远是空 [] → 长期 dormant）。
+		// adapter 返回 compactv2.ErrContextExhausted 时在下方 runErr 分支显式终止。
 
 		// Per-attempt callID injection for A8b/adapter.LookupUsage correlation.
 		callID := callctx.NewCallID()
 		attemptCtx := callctx.WithCallID(queryCtx, callID)
+		_ = callID // budgetgate A8b lookup happens via PostToolCall hooks, not here
 
 		output, runErr = einoAgent.Generate(attemptCtx, einoMessages)
 
-		// V1.5 板块 2 task 2.3 — Provider usage 校准（仅 V2 路径）：
-		// adapter 已在 Generate 内 stash 了 Usage by callID；这里 LookupUsage + 累加到 total_tokens_used_v2。
-		// 下轮 maybeCompactV2 用 max(estimated, actual) 触发阈值更准（spec §校准机制）。
-		if useCompactV2 {
-			if u, ok := einoAdapter.LookupUsage(callID); ok && u.PromptTokens > 0 {
-				if incErr := r.compactV2Store.IncrementTokensUsedV2(queryCtx, run.ID, int64(u.PromptTokens)); incErr != nil {
-					log.Warnw("AgentRunner.Run IncrementTokensUsedV2 failed",
-						"agent_run_id", run.ID, "attempt", attempt, "prompt_tokens", u.PromptTokens, "error", incErr)
-				} else {
-					// 同时 in-memory 同步，避免下轮重读 DB（maybeCompactV2 从 run.TotalTokensUsedV2 取）
-					run.TotalTokensUsedV2 += int64(u.PromptTokens)
-				}
+		// V1.5 v2-compact-adapter-integration — adapter 在 hard limit + 3 fails 时
+		// 返回 ErrContextExhausted；这里截获并以 "context_exhausted" 状态终止。
+		// terminateRunContextExhausted 写 DB + 设 contextExhausted flag 跳过最终
+		// UpdateState（避免被 st.TerminalReason 覆盖）。
+		if runErr != nil && errors.Is(runErr, compactv2.ErrContextExhausted) {
+			log.Warnw("AgentRunner.Run einoAgent.Generate returned ErrContextExhausted; terminating run",
+				"agent_run_id", run.ID, "attempt", attempt)
+			if tErr := r.terminateRunContextExhausted(ctx, run); tErr != nil {
+				log.Warnw("AgentRunner.Run terminateRunContextExhausted persist failed", "agent_run_id", run.ID, "error", tErr)
 			}
+			contextExhausted = true
+			break
 		}
 
 		if runErr == nil {
@@ -1150,212 +1120,20 @@ func isRefusal(st *LoopState) bool {
 // TODO(task 板块 1)：把 ContextWindow 字段加入 capability.AgentModelCapability 后，
 // 此 fallback 改为读 `capability.GetCapabilities(modelKey).ContextWindow`，run 启动时
 // 调 SetContextWindowLimitV2 冻结，runner 不再有兜底。
-const defaultContextWindowLimitV2 = 32000
-
-// maybeCompactV2 在每轮 LLM 调用前评估 token usage，按阈值触发 L1 / L2 / L3 compact。
+// V1.5 compact-dead-schema-cleanup — defaultContextWindowLimitV2 / maybeCompactV2 /
+// autocompactV2 全部删除。
 //
-// 仅 V2 路径调用（caller 已做 useCompactV2 gate）。如下兜底：
-//   - run.UseCompactV2=false → 直接返回 nil（caller 不该调，但兜底）
-//   - run.ContextWindowLimitV2=nil → 用 defaultContextWindowLimitV2 (32000) 兜底
-//   - messages JSON 解析失败 → 返回 err（caller fail-open warn）
-//   - ratio < PruneThresholdRatio (0.50) → no-op（直接返回 nil）
+// 这些函数最初放在 runner outer loop（每轮 ReAct 前评估 token，按阈值跑 L1/L2/L3），
+// 但它们读 run.Messages 字段，而该字段在 Run 期间始终是空 []（只在 WriteTurn 最后写
+// 一次 [user, assistant]）—— 整套逻辑长期 dormant，从未真正触发过。
 //
-// 触发路由：
-//   - ratio >= AutocompactThreshold (0.85, task 2.4) → autocompactV2 stub（本 task 留 TODO）
-//   - ratio >= MicrocompactThreshold (0.70) → L2 先跑、L1 后跑 → UpdateMessagesV2
-//   - ratio >= PruneThresholdRatio (0.50) → 仅 L1 → UpdateMessagesV2
+// V2 prevention 的真实接入点是 aiserviceAdapter.Generate (adapter_compactv2.go)，
+// Eino 每跑一个 ReAct round 都会调它，in 是完整累积对话。adapter compactor 在 PRE-call
+// 时跑 L3 autocompact (>=85%) + Hard limit terminate (>=95% + 3 fails)，POST-call
+// 跑 PTL recovery。所有 V2 prevention 在 adapter 层真正生效。
 //
-// 注：currentTurn 用 `len(messagesV2)` 作为代理（task 2.1 schema 未规定全局 turn 计数器，
-// runner 当前也未填 Meta.TurnIndex；len 是稳定单调的近似值，且 MinAge/ProtectRecent
-// 都是相对距离，绝对 turn 值无影响）。
-func (r *agentRunner) maybeCompactV2(ctx context.Context, run *model.AgentRun) error {
-	if run == nil || !run.UseCompactV2 || r.compactV2Store == nil {
-		return nil
-	}
-	// 读 messages
-	var raws []json.RawMessage
-	if len(run.Messages) > 0 {
-		if err := json.Unmarshal(run.Messages, &raws); err != nil {
-			return fmt.Errorf("maybeCompactV2 unmarshal messages: %w", err)
-		}
-	}
-	if len(raws) == 0 {
-		return nil // 初始 run，没什么可 compact
-	}
-	// V2 解析（NewMessageFromJSON 兜底 transient uuid + meta nil）
-	msgs := make([]compactv2.MessageV2, 0, len(raws))
-	for _, raw := range raws {
-		m, err := compactv2.NewMessageFromJSON(raw)
-		if err != nil {
-			return fmt.Errorf("maybeCompactV2 NewMessageFromJSON: %w", err)
-		}
-		msgs = append(msgs, m)
-	}
-
-	// Token usage 估算 → ratio
-	estimated := compactv2.EstimateMessagesTokens(msgs)
-	actual := run.TotalTokensUsedV2
-	used := estimated
-	if actual > used {
-		used = actual // spec §设计要点边界 ⑥ — max(estimated, actual)
-	}
-
-	limit := defaultContextWindowLimitV2
-	if run.ContextWindowLimitV2 != nil && *run.ContextWindowLimitV2 > 0 {
-		limit = *run.ContextWindowLimitV2
-	}
-	ratio := float64(used) / float64(limit)
-	if ratio < compactv2.PruneThresholdRatio {
-		return nil // 50% 以下 no-op
-	}
-
-	// currentTurn 用 len(msgs) 兜底（runner 暂未填 Meta.TurnIndex；任 L1 算法识别 relative age）
-	currentTurn := len(msgs)
-	now := time.Now()
-
-	// 路由
-	switch {
-	case ratio >= compactv2.HardLimitRatio:
-		// V1.5 板块 2 task 2.4 — Hard limit (95%) 分支：
-		// 如果之前已连续失败 3 次 → 直接 terminate（不再尝试 autocompact，避免无限重试）
-		// 否则继续走 autocompact 让它再试一次（85-95% 区间 autocompact 已尝试，95%+ 是最后机会）
-		state, sErr := r.compactV2Store.GetCompactStateV2(ctx, run.ID)
-		if sErr != nil {
-			log.Warnw("AgentRunner.maybeCompactV2 hard-limit GetCompactStateV2 failed; falling through to autocompact",
-				"agent_run_id", run.ID, "error", sErr)
-		} else if state != nil && state.ConsecutiveAutocompactFailures >= compactv2.MaxConsecutiveAutocompactFailures {
-			log.Warnw("AgentRunner.maybeCompactV2: hard limit hit + 3 consecutive failures; terminating run",
-				"agent_run_id", run.ID, "ratio", ratio, "used", used, "limit", limit,
-				"consecutive_failures", state.ConsecutiveAutocompactFailures)
-			if tErr := r.terminateRunContextExhausted(ctx, run); tErr != nil {
-				log.Warnw("AgentRunner.maybeCompactV2: terminateRunContextExhausted persist failed; still emitting ErrContextExhausted",
-					"agent_run_id", run.ID, "error", tErr)
-			}
-			// review P1 fix：返回 sentinel error 让主循环 break，避免后续 Generate 覆盖 state_reason
-			return compactv2.ErrContextExhausted
-		}
-		// fallthrough → 走 autocompact 路径
-		fallthrough
-
-	case ratio >= compactv2.AutocompactThreshold:
-		// V1.5 板块 2 task 2.4 — L3 autocompact（调 LLM 12 段固定模板）
-		log.Infow("AgentRunner.maybeCompactV2: autocompact threshold hit",
-			"agent_run_id", run.ID, "ratio", ratio, "used", used, "limit", limit)
-		return r.autocompactV2(ctx, run)
-
-	case ratio >= compactv2.MicrocompactThreshold:
-		// L2 先跑（合并同名 tool）→ L1 后扫（旧 tool result）
-		updated, l2n := compactv2.MicrocompactByToolName(msgs, now)
-		updated, l1n := compactv2.PruneOldToolResults(updated, currentTurn, now)
-		log.Infow("AgentRunner.maybeCompactV2: L1+L2 compact",
-			"agent_run_id", run.ID, "ratio", ratio, "used", used, "limit", limit,
-			"l1_pruned", l1n, "l2_compacted", l2n, "messages_count", len(updated))
-		if l1n == 0 && l2n == 0 {
-			return nil // 没改动，跳过 DB 写
-		}
-		if err := r.compactV2Store.UpdateMessagesV2(ctx, run.ID, updated); err != nil {
-			return fmt.Errorf("maybeCompactV2 UpdateMessagesV2 (L1+L2): %w", err)
-		}
-		// in-memory 同步：run.Messages 也要更新，下轮 compact 看到的是 compacted 版本
-		if newRaw, err := json.Marshal(updated); err == nil {
-			run.Messages = datatypes.JSON(newRaw)
-		}
-		return nil
-
-	case ratio >= compactv2.PruneThresholdRatio:
-		// 仅 L1
-		updated, l1n := compactv2.PruneOldToolResults(msgs, currentTurn, now)
-		log.Infow("AgentRunner.maybeCompactV2: L1 prune only",
-			"agent_run_id", run.ID, "ratio", ratio, "used", used, "limit", limit,
-			"l1_pruned", l1n, "messages_count", len(updated))
-		if l1n == 0 {
-			return nil
-		}
-		if err := r.compactV2Store.UpdateMessagesV2(ctx, run.ID, updated); err != nil {
-			return fmt.Errorf("maybeCompactV2 UpdateMessagesV2 (L1): %w", err)
-		}
-		if newRaw, err := json.Marshal(updated); err == nil {
-			run.Messages = datatypes.JSON(newRaw)
-		}
-		return nil
-	}
-	return nil
-}
-
-// autocompactV2 是 task 2.4 L3 autocompact 在 runner 内的封装。
-//
-// 仅由 maybeCompactV2 在 ratio >= AutocompactThreshold 时调用；caller 已做 useCompactV2 gate。
-//
-// 行为：
-//   - 调 compactv2.Autocompact 跑 LLM summarize（profile.AgentCompact 路由）
-//   - 成功：log info；messages 已被 store 替换；in-memory run.Messages 同步
-//   - LLM 失败（包括 XML 校验失败）：Autocompact 内部 ConsecutiveFailures++；本函数返回 nil 不阻塞 run
-//   - 累计失败 3 次（compactv2 内部累计后返回 TerminalReason="context_exhausted"）：
-//     调 terminateRunContextExhausted 设 run.Status="terminated" / state_reason="context_exhausted"
-//   - 其他 error（DB 写失败等）：返回 wrapped error，caller fail-open warn
-//
-// 注意：不新增 TerminalReason 枚举，复用字符串字面值 "context_exhausted"（CLAUDE.md §6b agent-mode I2）。
-func (r *agentRunner) autocompactV2(ctx context.Context, run *model.AgentRun) error {
-	// Langfuse 追踪：runner.Run line 282 已在 ctx 里建好 trace；aiservice.Chat 走
-	// middleware/tracing.go 时自动创建 Generation 挂在该 trace 下。此处注入
-	// feature_ref 让 Generation metadata 携带业务字段，仪表盘可按 operation=autocompact
-	// filter / 看 agent_run_id 追踪具体 run / 看 previous_failures 找连续失败趋势。
-	//
-	// 这步必须在 runner 层做：compactv2 不能 import aiservice/middleware
-	// （会形成 import cycle: middleware → credit → store → compactv2 → middleware）。
-	tracedCtx := aismw.WithFeatureRef(ctx, map[string]interface{}{
-		"operation":    "autocompact",
-		"phase":        "L3",
-		"agent_run_id": run.ID,
-	})
-
-	// 注入 deps：Chat closure（aiservice.Chat）+ CompactV2Store
-	deps := compactv2.AutocompactDeps{
-		Chat:           aiservice.Chat,
-		CompactV2Store: r.compactV2Store,
-		Metrics:        compactv2.NoopMetrics{}, // TODO: prom collector wiring 留作下一 task
-	}
-
-	result, err := compactv2.Autocompact(tracedCtx, run, deps)
-	if err != nil {
-		return fmt.Errorf("autocompactV2 Autocompact: %w", err)
-	}
-
-	if result.TerminalReason != "" {
-		// 连续 3 次失败：context_exhausted → terminate
-		log.Warnw("AgentRunner.autocompactV2: terminal reason returned; terminating run",
-			"agent_run_id", run.ID,
-			"terminal_reason", result.TerminalReason,
-			"summary_uuid", result.SummaryUUID,
-		)
-		if tErr := r.terminateRunContextExhausted(ctx, run); tErr != nil {
-			// terminate DB 写失败仍要返回 sentinel error 让 runner 主循环退出；
-			// state_reason 暂时 stale 但状态机不再继续推进，避免污染更糟。
-			log.Warnw("AgentRunner.autocompactV2: terminateRunContextExhausted persist failed; still emitting ErrContextExhausted",
-				"agent_run_id", run.ID, "error", tErr)
-		}
-		// 返回 sentinel error 让 runner 主循环 errors.Is 检测后 break loop +
-		// 跳过最终的 UpdateState（review P1 fix — 否则 st.TerminalReason 会覆盖 "context_exhausted"）。
-		return compactv2.ErrContextExhausted
-	}
-
-	if result.Triggered {
-		log.Infow("AgentRunner.autocompactV2: success",
-			"agent_run_id", run.ID,
-			"original_msg_count", result.OriginalMsgCount,
-			"compacted_msg_count", result.CompactedMsgCount,
-			"summary_uuid", result.SummaryUUID,
-			"compression_ratio", result.CompressionRatio,
-		)
-		// in-memory 同步：autocompact 已写 DB，但 run.Messages 还指向旧 raw；
-		// 重新从 store 读一次以保持一致。autocompact 频率低，DB 读成本可接受。
-		if fresh, gErr := r.runStore.Get(ctx, run.ID); gErr == nil && fresh != nil {
-			run.Messages = fresh.Messages
-		}
-	}
-	// Triggered=false：messages 太短或 LLM 单次失败，本轮继续 ReAct（下轮 ratio 再判）
-	return nil
-}
+// terminateRunContextExhausted 保留，由 runner 主循环在 einoAgent.Generate 返回
+// compactv2.ErrContextExhausted 时调用（adapter compactor 触发的 hard limit）。
 
 // terminateRunContextExhausted 把 run 标记为 terminated + state_reason="context_exhausted"。
 //
