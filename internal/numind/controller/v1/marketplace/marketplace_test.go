@@ -11,7 +11,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -22,7 +21,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	bizmarketplace "numind-server/internal/numind/biz/marketplace"
-	"numind-server/internal/numind/biz/skill/artifact"
 	mpctrl "numind-server/internal/numind/controller/v1/marketplace"
 	"numind-server/internal/pkg/model"
 )
@@ -35,8 +33,9 @@ type fakeService struct {
 	publishErr  error
 	publishMP   *model.SkillMarketplace
 
-	subscribeID  uint
-	subscribeErr error
+	subscribeID    uint
+	subscribeSubID uint
+	subscribeErr   error
 
 	getMP  *model.SkillMarketplace
 	getErr error
@@ -46,8 +45,16 @@ type fakeService struct {
 	setRecommendedErr    error
 }
 
-func (f *fakeService) SanitizePreview(ctx context.Context, _ uint, _ uint) (string, error) {
-	return f.sanitizeOut, f.sanitizeErr
+func (f *fakeService) SanitizePreview(ctx context.Context, _ uint, _ uint) (*bizmarketplace.SanitizeResult, error) {
+	if f.sanitizeErr != nil {
+		return nil, f.sanitizeErr
+	}
+	return &bizmarketplace.SanitizeResult{
+		SanitizedBodyMD:  f.sanitizeOut,
+		Stages:           []string{"regex", "llm"},
+		PromptTokens:     123,
+		CompletionTokens: 45,
+	}, nil
 }
 func (f *fakeService) Publish(ctx context.Context, _ uint, _ bizmarketplace.PublishRequest) (*model.SkillMarketplace, error) {
 	return f.publishMP, f.publishErr
@@ -59,8 +66,8 @@ func (f *fakeService) List(ctx context.Context, _ bizmarketplace.BrowseQuery) ([
 func (f *fakeService) Get(ctx context.Context, _ uint, _ uint) (*model.SkillMarketplace, error) {
 	return f.getMP, f.getErr
 }
-func (f *fakeService) Subscribe(ctx context.Context, _ uint, _ uint) (uint, error) {
-	return f.subscribeID, f.subscribeErr
+func (f *fakeService) Subscribe(ctx context.Context, _ uint, _ uint) (uint, uint, error) {
+	return f.subscribeID, f.subscribeSubID, f.subscribeErr
 }
 func (f *fakeService) Unsubscribe(ctx context.Context, _ uint, _ uint) error { return nil }
 func (f *fakeService) ListMySubscriptions(ctx context.Context, _ uint, _, _ int) ([]bizmarketplace.SubscriptionItem, int64, error) {
@@ -255,7 +262,7 @@ func TestSubscribe_AlreadySubscribed_400(t *testing.T) {
 }
 
 func TestSubscribe_HappyPath(t *testing.T) {
-	svc := &fakeService{subscribeID: 777}
+	svc := &fakeService{subscribeID: 777, subscribeSubID: 321}
 	r := newRouter(t, svc, 1, true)
 
 	w := doJSON(t, r, http.MethodPost, "/v1/marketplace/123/subscribe", nil)
@@ -266,7 +273,7 @@ func TestSubscribe_HappyPath(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, float64(777), resp.Data["cloned_skill_id"])
-	assert.Equal(t, float64(123), resp.Data["marketplace_id"])
+	assert.Equal(t, float64(321), resp.Data["subscription_id"], "spec §4.1 requires subscription_id, not marketplace_id")
 }
 
 func TestUnsubscribe_HappyPath(t *testing.T) {
@@ -360,7 +367,3 @@ func TestSentinelMapping_KnownErrorsAllMapped(t *testing.T) {
 
 // Compile-time guard: fakeService implements the Service interface.
 var _ bizmarketplace.Service = (*fakeService)(nil)
-
-// Suppress unused 'errors' import warning if the file evolves (currently used implicitly).
-var _ = errors.New
-var _ artifact.CreateRequest // ensure import is reachable even after refactors

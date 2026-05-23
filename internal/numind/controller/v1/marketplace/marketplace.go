@@ -108,12 +108,19 @@ func (c *Controller) SanitizePreview(ctx *gin.Context) {
 		core.WriteResponse(ctx, errno.ErrBind.SetMessage("%s", err.Error()), nil)
 		return
 	}
-	out, err := c.svc.SanitizePreview(ctx.Request.Context(), userID, req.SkillID)
+	res, err := c.svc.SanitizePreview(ctx.Request.Context(), userID, req.SkillID)
 	if err != nil {
 		core.WriteResponse(ctx, mapBizError(err), nil)
 		return
 	}
-	core.WriteResponse(ctx, nil, gin.H{"sanitized_body_md": out})
+	core.WriteResponse(ctx, nil, gin.H{
+		"sanitized_body_md": res.SanitizedBodyMD,
+		"stages_applied":    res.Stages,
+		"llm_tokens": gin.H{
+			"prompt":     res.PromptTokens,
+			"completion": res.CompletionTokens,
+		},
+	})
 }
 
 // Publish handles POST /v1/marketplace/publish.
@@ -240,14 +247,14 @@ func (c *Controller) Subscribe(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	clonedID, err := c.svc.Subscribe(ctx.Request.Context(), userID, id)
+	clonedID, subID, err := c.svc.Subscribe(ctx.Request.Context(), userID, id)
 	if err != nil {
 		core.WriteResponse(ctx, mapBizError(err), nil)
 		return
 	}
 	core.WriteResponse(ctx, nil, gin.H{
 		"cloned_skill_id": clonedID,
-		"marketplace_id":  id,
+		"subscription_id": subID,
 	})
 }
 

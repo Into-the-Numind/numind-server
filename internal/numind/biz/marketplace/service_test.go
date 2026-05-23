@@ -195,7 +195,7 @@ func TestSanitizePreview_HappyPath(t *testing.T) {
 
 	out, err := svc.SanitizePreview(context.Background(), 1, 10)
 	require.NoError(t, err)
-	assert.Equal(t, "脱敏后正文", out)
+	assert.Equal(t, "脱敏后正文", out.SanitizedBodyMD)
 }
 
 func TestSanitizePreview_ChildBlocked(t *testing.T) {
@@ -419,7 +419,7 @@ func TestSubscribe_HappyPath_WritesToSubscriberTenant(t *testing.T) {
 	mp, _ := svc.Publish(ctx, 1, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "脱敏后正文"})
 
 	// user 2 subscribes
-	clonedID, err := svc.Subscribe(ctx, 2, mp.ID)
+	clonedID, _, err := svc.Subscribe(ctx, 2, mp.ID)
 	require.NoError(t, err)
 	require.NotZero(t, clonedID)
 
@@ -444,7 +444,7 @@ func TestSubscribe_ChildBlocked(t *testing.T) {
 	ctx := context.Background()
 	mp, _ := svc.Publish(ctx, 1, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "脱敏后正文"})
 
-	_, err := svc.Subscribe(ctx, 3, mp.ID)
+	_, _, err := svc.Subscribe(ctx, 3, mp.ID)
 	assert.ErrorIs(t, err, ErrChildAccountCannotAccessMarketplace)
 }
 
@@ -455,7 +455,7 @@ func TestSubscribe_SelfSubscribeForbidden(t *testing.T) {
 	ctx := context.Background()
 	mp, _ := svc.Publish(ctx, 1, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "脱敏后正文"})
 
-	_, err := svc.Subscribe(ctx, 1, mp.ID) // user 1 = publisher
+	_, _, err := svc.Subscribe(ctx, 1, mp.ID) // user 1 = publisher
 	assert.ErrorIs(t, err, ErrSelfSubscribeForbidden)
 }
 
@@ -466,10 +466,10 @@ func TestSubscribe_AlreadySubscribed(t *testing.T) {
 	ctx := context.Background()
 	mp, _ := svc.Publish(ctx, 1, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "脱敏后正文"})
 
-	_, err := svc.Subscribe(ctx, 2, mp.ID)
+	_, _, err := svc.Subscribe(ctx, 2, mp.ID)
 	require.NoError(t, err)
 
-	_, err = svc.Subscribe(ctx, 2, mp.ID)
+	_, _, err = svc.Subscribe(ctx, 2, mp.ID)
 	assert.ErrorIs(t, err, ErrAlreadySubscribed)
 }
 
@@ -481,7 +481,7 @@ func TestSubscribe_UnpublishedNotSubscribable(t *testing.T) {
 	mp, _ := svc.Publish(ctx, 1, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "脱敏后正文"})
 	require.NoError(t, svc.Unpublish(ctx, 1, mp.ID))
 
-	_, err := svc.Subscribe(ctx, 2, mp.ID)
+	_, _, err := svc.Subscribe(ctx, 2, mp.ID)
 	assert.ErrorIs(t, err, ErrMarketplaceNotFound, "unpublished should appear as not-found to subscribers")
 }
 
@@ -493,7 +493,7 @@ func TestSubscribe_Phase1FailureNoOrphan(t *testing.T) {
 	mp, _ := svc.Publish(ctx, 1, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "脱敏后正文"})
 
 	art.failNextCreate = true
-	_, err := svc.Subscribe(ctx, 2, mp.ID)
+	_, _, err := svc.Subscribe(ctx, 2, mp.ID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cloneToSubscriber")
 
@@ -516,7 +516,7 @@ func TestUnsubscribe_HappyPath(t *testing.T) {
 	realStubChat(t)
 	ctx := context.Background()
 	mp, _ := svc.Publish(ctx, 1, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "脱敏后正文"})
-	clonedID, _ := svc.Subscribe(ctx, 2, mp.ID)
+	clonedID, _, _ := svc.Subscribe(ctx, 2, mp.ID)
 
 	require.NoError(t, svc.Unsubscribe(ctx, 2, mp.ID))
 
@@ -553,7 +553,7 @@ func TestUnsubscribe_NotOwnedByCaller(t *testing.T) {
 	realStubChat(t)
 	ctx := context.Background()
 	mp, _ := svc.Publish(ctx, 1, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "脱敏后正文"})
-	_, _ = svc.Subscribe(ctx, 2, mp.ID)
+	_, _, _ = svc.Subscribe(ctx, 2, mp.ID)
 
 	// user 1 (publisher, not subscriber) cannot unsubscribe user 2's subscription
 	err := svc.Unsubscribe(ctx, 1, mp.ID)
@@ -574,7 +574,7 @@ func TestListMySubscriptions_EmptyAndPopulated(t *testing.T) {
 	assert.Empty(t, items)
 
 	mp, _ := svc.Publish(ctx, 1, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "脱敏后正文"})
-	_, _ = svc.Subscribe(ctx, 2, mp.ID)
+	_, _, _ = svc.Subscribe(ctx, 2, mp.ID)
 
 	items, total, err = svc.ListMySubscriptions(ctx, 2, 0, 10)
 	require.NoError(t, err)
@@ -590,7 +590,7 @@ func TestListMySubscriptions_AgentCountHydrated(t *testing.T) {
 	realStubChat(t)
 	ctx := context.Background()
 	mp, _ := svc.Publish(ctx, 1, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "脱敏后正文"})
-	clonedID, _ := svc.Subscribe(ctx, 2, mp.ID)
+	clonedID, _, _ := svc.Subscribe(ctx, 2, mp.ID)
 
 	// Insert 2 agent_skill_binding rows for cloned skill — simulate user 2
 	// loaded the cloned skill into 2 agents.

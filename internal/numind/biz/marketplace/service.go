@@ -33,12 +33,16 @@ import (
 //  7. Subscribe writes cloned skill with parent_user_id=subscriberUserID via
 //     artifactSvc.Create (#1 enforces parent_user_id strictly).
 type Service interface {
-	SanitizePreview(ctx context.Context, publisherUserID, skillID uint) (sanitizedBodyMD string, err error)
+	// SanitizePreview returns the full sanitize result (body + stages + token usage)
+	// so the frontend diff view can show debug info if desired (spec §4.1 sanitize-preview response).
+	SanitizePreview(ctx context.Context, publisherUserID, skillID uint) (*SanitizeResult, error)
 	Publish(ctx context.Context, publisherUserID uint, req PublishRequest) (*model.SkillMarketplace, error)
 	Unpublish(ctx context.Context, publisherUserID, marketplaceID uint) error
 	List(ctx context.Context, query BrowseQuery) (items []*model.SkillMarketplace, total int64, err error)
 	Get(ctx context.Context, marketplaceID, callerUserID uint) (*model.SkillMarketplace, error)
-	Subscribe(ctx context.Context, subscriberUserID, marketplaceID uint) (clonedSkillID uint, err error)
+	// Subscribe returns both the cloned skill ID and the subscription row ID
+	// (spec §4.1 subscribe response: {cloned_skill_id, subscription_id}).
+	Subscribe(ctx context.Context, subscriberUserID, marketplaceID uint) (clonedSkillID, subscriptionID uint, err error)
 	Unsubscribe(ctx context.Context, subscriberUserID, marketplaceID uint) error
 	ListMySubscriptions(ctx context.Context, subscriberUserID uint, offset, limit int) ([]SubscriptionItem, int64, error)
 	SetRecommended(ctx context.Context, marketplaceID uint, recommended bool) error
@@ -184,7 +188,7 @@ func startMarketplaceTrace(ctx context.Context, name string, userID uint, input 
 
 // ---- public methods ----
 
-func (s *service) SanitizePreview(ctx context.Context, publisherUserID, skillID uint) (sanitizedBodyMD string, err error) {
+func (s *service) SanitizePreview(ctx context.Context, publisherUserID, skillID uint) (res *SanitizeResult, err error) {
 	ctx, finalize := startMarketplaceTrace(ctx, "skill-marketplace-sanitize-preview", publisherUserID, map[string]interface{}{
 		"publisher_user_id": publisherUserID,
 		"skill_id":          skillID,
@@ -192,20 +196,16 @@ func (s *service) SanitizePreview(ctx context.Context, publisherUserID, skillID 
 	defer finalize(&err)
 
 	if err = s.verifyParent(ctx, publisherUserID); err != nil {
-		return "", err
+		return nil, err
 	}
 	sk, err := s.artifactSvc.Get(ctx, publisherUserID, skillID)
 	if err != nil {
-		return "", fmt.Errorf("SanitizePreview: get skill: %w", err)
+		return nil, fmt.Errorf("SanitizePreview: get skill: %w", err)
 	}
 	if sk.BodyMd == "" {
-		return "", ErrSkillBodyEmpty
+		return nil, ErrSkillBodyEmpty
 	}
-	res, err := Sanitize(ctx, sk.BodyMd)
-	if err != nil {
-		return "", err
-	}
-	return res.SanitizedBodyMD, nil
+	return Sanitize(ctx, sk.BodyMd)
 }
 
 func (s *service) Publish(ctx context.Context, publisherUserID uint, req PublishRequest) (mp *model.SkillMarketplace, err error) {
@@ -352,7 +352,7 @@ func (s *service) Get(ctx context.Context, marketplaceID, callerUserID uint) (*m
 // but don't override the original error — the orphan is a soft-deleted skill
 // (is_active=0) that doesn't bind to any agent, so the customer-facing impact
 // is minimal.
-func (s *service) Subscribe(ctx context.Context, subscriberUserID, marketplaceID uint) (clonedSkillID uint, err error) {
+func (s *service) Subscribe(ctx context.Context, subscriberUserID, marketplaceID uint) (clonedSkillID, subscriptionID uint, err error) {
 	ctx, finalize := startMarketplaceTrace(ctx, "skill-marketplace-subscribe", subscriberUserID, map[string]interface{}{
 		"subscriber_user_id": subscriberUserID,
 		"marketplace_id":     marketplaceID,
@@ -360,34 +360,34 @@ func (s *service) Subscribe(ctx context.Context, subscriberUserID, marketplaceID
 	defer finalize(&err)
 
 	if err = s.verifyParent(ctx, subscriberUserID); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	mp, err := s.store.GetByID(ctx, marketplaceID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return 0, ErrMarketplaceNotFound
+			return 0, 0, ErrMarketplaceNotFound
 		}
-		return 0, fmt.Errorf("Subscribe: get marketplace: %w", err)
+		return 0, 0, fmt.Errorf("Subscribe: get marketplace: %w", err)
 	}
 	if !mp.IsPublic {
-		return 0, ErrMarketplaceNotFound
+		return 0, 0, ErrMarketplaceNotFound
 	}
 	if mp.PublisherUserID == subscriberUserID {
-		return 0, ErrSelfSubscribeForbidden
+		return 0, 0, ErrSelfSubscribeForbidden
 	}
 
 	// UNIQUE pre-check (race-tolerant; final UNIQUE constraint at DB is the
 	// authoritative guard).
 	if _, subErr := s.store.GetSubscription(ctx, subscriberUserID, marketplaceID); subErr == nil {
-		return 0, ErrAlreadySubscribed
+		return 0, 0, ErrAlreadySubscribed
 	} else if !errors.Is(subErr, gorm.ErrRecordNotFound) {
-		return 0, fmt.Errorf("Subscribe: pre-check existing: %w", subErr)
+		return 0, 0, fmt.Errorf("Subscribe: pre-check existing: %w", subErr)
 	}
 
 	// Phase 1: clone skill in subscriber's tenant (wrapped in Langfuse span by clone.go).
 	clonedID, err := s.cloneToSubscriber(ctx, mp, subscriberUserID)
 	if err != nil {
-		return 0, fmt.Errorf("Subscribe: %w", err)
+		return 0, 0, fmt.Errorf("Subscribe: %w", err)
 	}
 
 	// Phase 2: tx for subscription + subscribe_count.
@@ -413,9 +413,9 @@ func (s *service) Subscribe(ctx context.Context, subscriberUserID, marketplaceID
 				"compensation_error", delErr.Error(),
 			)
 		}
-		return 0, fmt.Errorf("Subscribe: phase2 tx: %w", err)
+		return 0, 0, fmt.Errorf("Subscribe: phase2 tx: %w", err)
 	}
-	return clonedID, nil
+	return clonedID, sub.ID, nil
 }
 
 // Unsubscribe deletes the subscription + soft-deletes the cloned skill.
