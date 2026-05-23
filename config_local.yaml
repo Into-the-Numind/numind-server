@@ -215,3 +215,28 @@ agent:
       max_output_tokens: 800                # LLM 输出上限 (summary ≤300字 + topics ≈600 tokens)
       temperature: 0.3                      # 低随机性, 结构化 JSON 输出
       call_timeout_seconds: 30              # 单 LLM call wall-clock 上限
+
+# Sandbox 本地开发配置（Track 4 扩展）
+sandbox:
+  backend: docker
+  pool_min: 2
+  pool_max_wait_ms: 30000
+  image_tag: python:3.11-slim
+  memory_limit_mb: 512
+  cpu_quota: 1.0
+  pids_limit: 64
+  timeout_seconds: 30
+  session_timeout_seconds: 300
+  network_policy: none
+  workdir_size_mb: 512
+  read_only_rootfs: true
+  user_spec: "1000:1000"
+  capabilities:
+    - NET_BIND_SERVICE
+  apparmor_profile: docker-default
+  seccomp_profile: seccomp.json
+  # Track 4: Skill / invoke_skill extensions
+  skills_root: "/opt/numind/skills"         # 宿主机 skills 根目录（bind-mount 只读）
+  output_max_size_mb: 50                    # 单个输出文件大小上限
+  output_zip_bomb_threshold_mb: 500         # zip 展开大小告警阈值
+  cos_upload_concurrency: 3                 # CollectOutputs 上传 COS 并发数

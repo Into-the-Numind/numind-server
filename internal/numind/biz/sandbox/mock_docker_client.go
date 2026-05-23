@@ -3,6 +3,9 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,18 +25,32 @@ type MockDockerClient struct {
 	containers  map[string]string // id → image_tag
 	execResults map[string]ExecResult
 
+	// CopiedFiles tracks files written via CopyToContainer (dstPath → bytes).
+	CopiedFiles map[string][]byte
+	// CopiedFromDirs tracks (containerID+srcPath → hostDstDir) calls for verification.
+	CopiedFromDirs []string
+
 	// SpawnErr, ExecErr, DestroyErr: when non-nil, the corresponding
 	// method returns this error instead of the normal mocked behavior.
-	SpawnErr   error
-	ExecErr    error
-	DestroyErr error
+	SpawnErr     error
+	ExecErr      error
+	DestroyErr   error
+	CopyToErr    error
+	CopyFromErr  error
+	ExecMkdirErr error
+
+	// CopyFromFiles: if non-nil, CopyFromContainer copies these files into hostDstDir.
+	// map key is filename, value is content.
+	CopyFromFiles map[string][]byte
 }
 
 // NewMockDockerClient returns a fresh MockDockerClient with empty state.
 func NewMockDockerClient() *MockDockerClient {
 	return &MockDockerClient{
-		containers:  make(map[string]string),
-		execResults: make(map[string]ExecResult),
+		containers:    make(map[string]string),
+		execResults:   make(map[string]ExecResult),
+		CopiedFiles:   make(map[string][]byte),
+		CopyFromFiles: make(map[string][]byte),
 	}
 }
 
@@ -111,4 +128,42 @@ func (m *MockDockerClient) CountAliveContainers() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.containers)
+}
+
+// CopyToContainer records the bytes written into CopiedFiles[dstPath].
+func (m *MockDockerClient) CopyToContainer(_ context.Context, _ string, dstPath string, content io.Reader) error {
+	if m.CopyToErr != nil {
+		return m.CopyToErr
+	}
+	data, _ := io.ReadAll(content)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.CopiedFiles[dstPath] = data
+	return nil
+}
+
+// CopyFromContainer writes CopyFromFiles entries into hostDstDir for testing.
+func (m *MockDockerClient) CopyFromContainer(_ context.Context, _ string, _ string, hostDstDir string) error {
+	if m.CopyFromErr != nil {
+		return m.CopyFromErr
+	}
+	m.mu.Lock()
+	files := m.CopyFromFiles
+	m.mu.Unlock()
+
+	for filename, data := range files {
+		dst := filepath.Join(hostDstDir, filename)
+		if err := os.WriteFile(dst, data, 0o644); err != nil {
+			return fmt.Errorf("mock CopyFromContainer: write %s: %w", dst, err)
+		}
+	}
+	m.mu.Lock()
+	m.CopiedFromDirs = append(m.CopiedFromDirs, hostDstDir)
+	m.mu.Unlock()
+	return nil
+}
+
+// ExecMkdir is a no-op in the mock (directories don't exist in memory).
+func (m *MockDockerClient) ExecMkdir(_ context.Context, _ string, _ ...string) error {
+	return m.ExecMkdirErr
 }

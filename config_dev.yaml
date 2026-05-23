@@ -210,6 +210,11 @@ sandbox:
     - NET_BIND_SERVICE
   apparmor_profile: docker-default
   seccomp_profile: seccomp.json
+  # Track 4: Skill / invoke_skill extensions
+  skills_root: "/opt/numind/skills"         # 宿主机 skills 根目录（bind-mount 只读）
+  output_max_size_mb: 50                    # 单个输出文件大小上限 (hard cap=50MB)
+  output_zip_bomb_threshold_mb: 500         # zip 展开大小告警阈值 (hard-coded)
+  cos_upload_concurrency: 3                 # CollectOutputs 上传 COS 并发数
 
 # Agent Memory 配置（V1.5 板块 3）
 agent:
