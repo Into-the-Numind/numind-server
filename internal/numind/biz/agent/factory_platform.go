@@ -33,14 +33,15 @@ func (f *platformToolFactory) DisplayName() string { return "平台内置工具"
 // Tools constructed with nil deps will panic only if Execute is called; LoadTools itself
 // must never panic.
 //
-// Base tools (always present, ds=nil or ds!=nil): 12 tools
+// Base tools (always present, ds=nil or ds!=nil): 16 tools
 //
 //	kb_search, learner_data_query, document_generate, image_gen, bash_exec,
 //	get_current_date, web_search, web_fetch, ask_user_question, file_read,
-//	analyze_image, annotate_image
+//	analyze_image, annotate_image,
+//	create_csv, create_html, create_json, create_text  (V1.5 output-skills task 4.2)
 //
 // When f.ds is non-nil, two additional memory tools (memory_write, memory_read) are
-// appended, bringing the total to 14 tools.
+// appended, bringing the total to 18 tools.
 func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMetadata, error) {
 	var usersGetter userByIDGetter
 	var attStore store.IAgentAttachmentStore
@@ -65,6 +66,11 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		// NOT need vision capability — even single-modal models can call these tools.
 		NewAnalyzeImageTool(attStore),
 		NewAnnotateImageTool(),
+		// V1.5 output-skills task 4.2: simple file generation tools (Layer 1, no sandbox).
+		&createCSVTool{},
+		&createHTMLTool{},
+		&createJSONTool{},
+		&createTextTool{},
 	}
 	metadata := []ToolMetadata{
 		{ToolName: "kb_search", DisplayName: "知识库检索", Description: "Search the knowledge base.", Source: "platform", Category: "RAG"},
@@ -81,6 +87,11 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		// both tools work with any main model because vision is handled internally.
 		{ToolName: "analyze_image", DisplayName: "图像分析", Description: "Analyze an image in detail using a vision specialist model.", Source: "platform", RiskLevel: "moderate", Category: "视觉"},
 		{ToolName: "annotate_image", DisplayName: "图像区域标注", Description: "Analyze specific regions within an image using a vision specialist model.", Source: "platform", RiskLevel: "moderate", Category: "视觉"},
+		// V1.5 output-skills task 4.2: simple file generation tools.
+		{ToolName: "create_csv", DisplayName: "生成 CSV 文件", Description: "Generate a CSV file from tabular data.", Source: "platform", RiskLevel: "safe", Category: "文件生成"},
+		{ToolName: "create_html", DisplayName: "生成 HTML 页面", Description: "Render an HTML page from content or a template.", Source: "platform", RiskLevel: "safe", Category: "文件生成"},
+		{ToolName: "create_json", DisplayName: "生成 JSON 文件", Description: "Serialize data to a JSON file.", Source: "platform", RiskLevel: "safe", Category: "文件生成"},
+		{ToolName: "create_text", DisplayName: "生成文本文件", Description: "Write plain text content to a .txt file.", Source: "platform", RiskLevel: "safe", Category: "文件生成"},
 	}
 	// Append memory tools only when a real store is available (nil guard preserves
 	// the nil-ds unit test that expects exactly 12 tools).
