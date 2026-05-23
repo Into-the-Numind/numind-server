@@ -1,0 +1,581 @@
+package attachment
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"image"
+	_ "image/gif"  // register GIF decoder
+	_ "image/jpeg" // register JPEG decoder
+	_ "image/png"  // register PNG decoder
+	"strings"
+	"time"
+
+	"golang.org/x/sync/semaphore"
+	"gorm.io/gorm"
+
+	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
+	"numind-server/internal/pkg/aiservice/profile"
+	"numind-server/internal/pkg/log"
+	"numind-server/internal/pkg/model"
+)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Modality constants
+// ─────────────────────────────────────────────────────────────────────────────
+
+const (
+	ModalityImage   = "image"
+	ModalityPDF     = "pdf"
+	ModalityAudio   = "audio"
+	ModalityUnknown = "unknown"
+
+	// DetectModality helpers
+	mimeImagePrefix = "image/"
+	mimePDF         = "application/pdf"
+	mimeAudioPrefix = "audio/"
+	mimeMP3         = "audio/mpeg"
+)
+
+// DetectModality maps a MIME type to one of the four modality constants.
+func DetectModality(mimeType string) string {
+	// Strip parameters (e.g. "image/jpeg; charset=..." → "image/jpeg").
+	if idx := strings.Index(mimeType, ";"); idx != -1 {
+		mimeType = strings.TrimSpace(mimeType[:idx])
+	}
+	mimeType = strings.ToLower(mimeType)
+	switch {
+	case strings.HasPrefix(mimeType, mimeImagePrefix):
+		return ModalityImage
+	case mimeType == mimePDF:
+		return ModalityPDF
+	case strings.HasPrefix(mimeType, mimeAudioPrefix), mimeType == mimeMP3:
+		return ModalityAudio
+	default:
+		return ModalityUnknown
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Service interface
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ErrFallbackTimeout is returned by WaitReady when the attachment's fallback
+// is still not ready after the caller-supplied deadline.
+var ErrFallbackTimeout = errors.New("fallback timeout: attachment not ready yet")
+
+// FallbackService manages the async fallback generation lifecycle.
+type FallbackService interface {
+	// Enqueue schedules fallback generation for the given attachment ID.
+	// It is designed for fire-and-forget — the HTTP handler calls it and
+	// returns immediately. If the internal channel is full, generation is
+	// executed synchronously in a goroutine (degraded path).
+	Enqueue(ctx context.Context, attID uint64) error
+
+	// WaitReady blocks until the attachment's fallback is ready or timeout
+	// expires. Returns the latest attachment state in either case so that
+	// callers can inspect FallbackError.
+	WaitReady(ctx context.Context, attID uint64, timeout time.Duration) (*model.AgentAttachment, error)
+
+	// GenerateNow executes fallback generation synchronously (bypasses queue).
+	// Intended for tests and admin-triggered retries.
+	GenerateNow(ctx context.Context, att *model.AgentAttachment) error
+
+	// RecoverPending re-enqueues attachment rows whose fallback generation
+	// was interrupted (started_at older than 5 minutes and still not ready).
+	// Must be called once on server startup.
+	RecoverPending(ctx context.Context) error
+
+	// Start launches the worker goroutines. Must be called once before Enqueue.
+	// The pool drains gracefully when ctx is cancelled.
+	Start(ctx context.Context)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Configuration & pool
+// ─────────────────────────────────────────────────────────────────────────────
+
+const (
+	defaultWorkers    = 10
+	defaultQueueSize  = 1000
+	maxRetries        = 3
+	perUserMaxConcur  = 3
+	staleFallbackMins = 5
+
+	// Per-modality single-call timeouts.
+	vlmTimeout = 60 * time.Second
+	ocrTimeout = 30 * time.Second
+	asrTimeout = 90 * time.Second
+	pdfTimeout = 90 * time.Second
+
+	// Exponential backoff delays between retries: 1s, 4s, 16s.
+	retryDelay1 = 1 * time.Second
+	retryDelay2 = 4 * time.Second
+	retryDelay3 = 16 * time.Second
+
+	// Large image threshold: skip VLM for files > 20MB (cost guard).
+	largeImageThreshold = 20 * 1024 * 1024 // 20MB in bytes
+
+	// PDF size limit for direct Bailian upload (MVP constraint).
+	maxPDFBytes = 10 * 1024 * 1024 // 10MB
+)
+
+var retryDelays = [maxRetries]time.Duration{retryDelay1, retryDelay2, retryDelay3}
+
+// fallbackPool is the concrete FallbackService implementation.
+type fallbackPool struct {
+	store      store.IAgentAttachmentStore
+	jobs       chan uint64 // buffered; capacity = defaultQueueSize
+	perUserSem map[uint]*semaphore.Weighted
+	semMu      chan struct{} // mutex over perUserSem map (capacity 1)
+	workers    int
+}
+
+// NewFallbackService constructs a FallbackService backed by the given store.
+func NewFallbackService(attStore store.IAgentAttachmentStore) FallbackService {
+	return &fallbackPool{
+		store:      attStore,
+		jobs:       make(chan uint64, defaultQueueSize),
+		perUserSem: make(map[uint]*semaphore.Weighted),
+		semMu:      make(chan struct{}, 1), // binary semaphore
+		workers:    defaultWorkers,
+	}
+}
+
+// semFor returns the per-user semaphore, creating it on first access.
+func (p *fallbackPool) semFor(userID uint) *semaphore.Weighted {
+	p.semMu <- struct{}{} // lock
+	defer func() { <-p.semMu }()
+	if s, ok := p.perUserSem[userID]; ok {
+		return s
+	}
+	s := semaphore.NewWeighted(perUserMaxConcur)
+	p.perUserSem[userID] = s
+	return s
+}
+
+// Start launches worker goroutines and runs until ctx is cancelled.
+func (p *fallbackPool) Start(ctx context.Context) {
+	// Initialise the mutex channel.
+	p.semMu <- struct{}{}
+	<-p.semMu
+	p.semMu <- struct{}{}
+
+	for i := 0; i < p.workers; i++ {
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case attID, ok := <-p.jobs:
+					if !ok {
+						return
+					}
+					p.processJob(ctx, attID)
+				}
+			}
+		}()
+	}
+}
+
+// Enqueue adds attID to the internal job channel.
+// If the channel is full (queue backpressure), it falls back to launching a
+// goroutine that will eventually process the job (best-effort).
+func (p *fallbackPool) Enqueue(_ context.Context, attID uint64) error {
+	select {
+	case p.jobs <- attID:
+		return nil
+	default:
+		// Channel full — degrade to async goroutine.
+		log.Warnw("fallback queue full, degrading to ad-hoc goroutine", "att_id", attID)
+		go p.processJob(context.Background(), attID)
+		return nil
+	}
+}
+
+// WaitReady polls the DB until the attachment's fallback_ready is true or
+// the timeout elapses. Returns the most recent attachment state.
+func (p *fallbackPool) WaitReady(ctx context.Context, attID uint64, timeout time.Duration) (*model.AgentAttachment, error) {
+	deadline := time.Now().Add(timeout)
+	var last *model.AgentAttachment
+	for time.Now().Before(deadline) {
+		att, err := p.store.GetByID(ctx, attID)
+		if err != nil {
+			return nil, fmt.Errorf("fallbackPool.WaitReady: %w", err)
+		}
+		last = att
+		if att.FallbackReady {
+			return att, nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return last, ErrFallbackTimeout
+}
+
+// GenerateNow executes generation synchronously without queuing.
+func (p *fallbackPool) GenerateNow(ctx context.Context, att *model.AgentAttachment) error {
+	return p.generate(ctx, att)
+}
+
+// RecoverPending re-enqueues rows that were started but never finished
+// (i.e., process crashed during generation). Stale threshold = 5 minutes ago.
+func (p *fallbackPool) RecoverPending(ctx context.Context) error {
+	stale := time.Now().Add(-staleFallbackMins * time.Minute)
+	rows, err := p.store.ListPendingFallback(ctx, stale, defaultQueueSize)
+	if err != nil {
+		return fmt.Errorf("fallbackPool.RecoverPending: %w", err)
+	}
+	for _, r := range rows {
+		if err := p.Enqueue(ctx, r.ID); err != nil {
+			log.Warnw("RecoverPending: enqueue failed", "att_id", r.ID, "error", err)
+		}
+	}
+	log.Infow("fallback RecoverPending complete", "recovered", len(rows))
+	return nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Internal job processor
+// ─────────────────────────────────────────────────────────────────────────────
+
+// processJob fetches the attachment row and calls generate with retry logic.
+func (p *fallbackPool) processJob(ctx context.Context, attID uint64) {
+	att, err := p.store.GetByID(ctx, attID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			log.Warnw("fallback: attachment not found, skipping", "att_id", attID)
+			return
+		}
+		log.Errorw("fallback: GetByID failed", "att_id", attID, "error", err)
+		return
+	}
+
+	// Already done (idempotency guard).
+	if att.FallbackReady {
+		return
+	}
+
+	// Unknown modality: skip entirely, leave fallback_ready=false.
+	if att.Modality == ModalityUnknown || att.Modality == "" {
+		log.Infow("fallback: unknown modality, skipping", "att_id", attID, "mime", att.MimeType)
+		return
+	}
+
+	// Acquire per-user concurrency slot.
+	sem := p.semFor(att.UserID)
+	if err := sem.Acquire(ctx, 1); err != nil {
+		log.Warnw("fallback: semaphore acquire cancelled", "att_id", attID)
+		return
+	}
+	defer sem.Release(1)
+
+	if err := p.generate(ctx, att); err != nil {
+		log.Errorw("fallback: generate failed after retries", "att_id", attID, "error", err)
+	}
+}
+
+// generate runs the generation loop with exponential retry.
+func (p *fallbackPool) generate(ctx context.Context, att *model.AgentAttachment) error {
+	// Mark started.
+	now := time.Now()
+	_ = p.store.UpdateFallback(ctx, att.ID, map[string]interface{}{
+		"fallback_started_at": now,
+		"retry_count":         att.RetryCount,
+	})
+
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			delay := retryDelays[attempt-1]
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+
+		lastErr = p.generateOnce(ctx, att)
+		if lastErr == nil {
+			return nil
+		}
+
+		log.Warnw("fallback: attempt failed, will retry", "att_id", att.ID,
+			"attempt", attempt+1, "error", lastErr)
+
+		// Update retry count.
+		_ = p.store.UpdateFallback(ctx, att.ID, map[string]interface{}{
+			"retry_count": uint8(attempt + 1),
+		})
+	}
+
+	// Terminal failure.
+	errMsg := lastErr.Error()
+	fallbackText := composeErrorFallback(att.Filename, att.Modality, errMsg)
+	completed := time.Now()
+	_ = p.store.UpdateFallback(ctx, att.ID, map[string]interface{}{
+		"fallback_ready":       true,
+		"fallback_error":       errMsg,
+		"text_fallback":        fallbackText,
+		"fallback_completed_at": completed,
+	})
+	return fmt.Errorf("generate att %d: %w", att.ID, lastErr)
+}
+
+// generateOnce performs a single attempt for the attachment's modality.
+func (p *fallbackPool) generateOnce(ctx context.Context, att *model.AgentAttachment) error {
+	switch att.Modality {
+	case ModalityImage:
+		return p.generateImage(ctx, att)
+	case ModalityPDF:
+		return p.generatePDF(ctx, att)
+	case ModalityAudio:
+		return p.generateAudio(ctx, att)
+	default:
+		return fmt.Errorf("unsupported modality: %s", att.Modality)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Modality-specific generators
+// ─────────────────────────────────────────────────────────────────────────────
+
+// generateImage handles the image modality:
+//  1. OCR via Baidu (soft failure — empty string on error is acceptable)
+//  2. VLM description via attachment.vision_describe (hard failure if >20MB skipped)
+//  3. Compose text_fallback from both
+func (p *fallbackPool) generateImage(ctx context.Context, att *model.AgentAttachment) error {
+	filesizeKB := att.Size / 1024
+
+	// ── Width/Height detection ──────────────────────────────────────────────
+	// We try to decode image dimensions from the URL if not already set.
+	// For COS-hosted images we cannot re-download bytes cheaply here, so we
+	// skip dimension extraction if already blank and leave Width/Height nil.
+	// (The controller can set them at upload time if it has the raw bytes.)
+
+	// ── OCR (soft failure) ──────────────────────────────────────────────────
+	var ocrText string
+	ocrCtx, ocrCancel := context.WithTimeout(ctx, ocrTimeout)
+	defer ocrCancel()
+
+	ocrResp, ocrErr := aiservice.OCR(ocrCtx, profile.OcrBaidu, aiservice.OCRRequest{
+		ImageURL: att.URL,
+	})
+	if ocrErr != nil {
+		// OCR failure is soft: log and continue with empty string.
+		log.Warnw("fallback OCR failed (soft)", "att_id", att.ID, "error", ocrErr)
+	} else if ocrResp != nil {
+		ocrText = ocrResp.Text
+	}
+
+	// ── VLM description ─────────────────────────────────────────────────────
+	var visDesc string
+	if att.Size > largeImageThreshold {
+		// Large image: skip VLM to avoid cost spike; use OCR-only template.
+		log.Infow("fallback: large image, skipping VLM", "att_id", att.ID, "size_mb", att.Size/1024/1024)
+	} else {
+		vlmCtx, vlmCancel := context.WithTimeout(ctx, vlmTimeout)
+		defer vlmCancel()
+
+		vlmResp, vlmErr := aiservice.Chat(vlmCtx, profile.AttachmentVisionDescribe, aiservice.ChatRequest{
+			Messages: []aiservice.ChatMessage{
+				{
+					Role:    aiservice.MessageRoleSystem,
+					Content: aiservice.MessageContent{Text: VLMSystemPrompt},
+				},
+				{
+					Role: aiservice.MessageRoleUser,
+					Content: aiservice.MessageContent{
+						Parts: []aiservice.MessagePart{
+							{
+								Type: aiservice.MessagePartTypeText,
+								Text: VLMUserPromptTemplate,
+							},
+							{
+								Type:     aiservice.MessagePartTypeImageURL,
+								ImageURL: &aiservice.ImageURL{URL: att.URL},
+							},
+						},
+					},
+				},
+			},
+			MaxTokens: 512,
+		})
+		if vlmErr != nil {
+			// VLM is a hard failure (we retry the whole attempt).
+			return fmt.Errorf("generateImage VLM: %w", vlmErr)
+		}
+		if vlmResp != nil {
+			visDesc = strings.TrimSpace(vlmResp.Content)
+		}
+	}
+
+	// ── Compose fallback text ────────────────────────────────────────────────
+	td := imageTemplateData{
+		Filename:          att.Filename,
+		Width:             att.Width,
+		Height:            att.Height,
+		FilesizeKB:        filesizeKB,
+		VisionDescription: visDesc,
+		OCRText:           ocrText,
+	}
+	fallbackText := composeImageFallback(td)
+
+	// ── Persist ─────────────────────────────────────────────────────────────
+	completed := time.Now()
+	fields := map[string]interface{}{
+		"ocr_text":             nilIfEmpty(ocrText),
+		"vision_description":   nilIfEmpty(visDesc),
+		"text_fallback":        fallbackText,
+		"fallback_ready":       true,
+		"fallback_completed_at": completed,
+	}
+	if err := p.store.UpdateFallback(ctx, att.ID, fields); err != nil {
+		return fmt.Errorf("generateImage UpdateFallback: %w", err)
+	}
+	return nil
+}
+
+// generatePDF handles the PDF modality using qwen-long file API.
+// MVP constraint: only PDFs ≤ 10MB are processed; larger ones fail gracefully.
+func (p *fallbackPool) generatePDF(ctx context.Context, att *model.AgentAttachment) error {
+	filesizeKB := att.Size / 1024
+
+	if att.Size > maxPDFBytes {
+		// MVP: large PDFs are not supported. Record a friendly error fallback.
+		errMsg := "PDF too large for extraction (max 10MB in MVP)"
+		fallbackText := composePDFFallback(att.Filename, filesizeKB, "")
+		completed := time.Now()
+		_ = p.store.UpdateFallback(ctx, att.ID, map[string]interface{}{
+			"fallback_ready":       true,
+			"fallback_error":       errMsg,
+			"text_fallback":        fallbackText,
+			"fallback_completed_at": completed,
+		})
+		return nil // not a retry-able failure
+	}
+
+	// Use qwen-long via the aiservice Chat interface.
+	// The model accepts a file URL in the message content.
+	pdfCtx, pdfCancel := context.WithTimeout(ctx, pdfTimeout)
+	defer pdfCancel()
+
+	resp, err := aiservice.Chat(pdfCtx, profile.AgentRun, aiservice.ChatRequest{
+		Messages: []aiservice.ChatMessage{
+			{
+				Role: aiservice.MessageRoleUser,
+				Content: aiservice.MessageContent{
+					Text: fmt.Sprintf("请提取以下PDF文档的全部文字内容，只输出提取的文字，不做摘要或分析：\n%s", att.URL),
+				},
+			},
+		},
+		MaxTokens:     8000,
+		ModelOverride: "qwen-long",
+	})
+	if err != nil {
+		return fmt.Errorf("generatePDF chat: %w", err)
+	}
+
+	extractedText := ""
+	if resp != nil {
+		extractedText = strings.TrimSpace(resp.Content)
+	}
+
+	fallbackText := composePDFFallback(att.Filename, filesizeKB, extractedText)
+	completed := time.Now()
+	if err := p.store.UpdateFallback(ctx, att.ID, map[string]interface{}{
+		"text_fallback":        fallbackText,
+		"fallback_ready":       true,
+		"fallback_completed_at": completed,
+	}); err != nil {
+		return fmt.Errorf("generatePDF UpdateFallback: %w", err)
+	}
+	return nil
+}
+
+// generateAudio handles the audio modality using the ASR service.
+func (p *fallbackPool) generateAudio(ctx context.Context, att *model.AgentAttachment) error {
+	asrCtx, asrCancel := context.WithTimeout(ctx, asrTimeout)
+	defer asrCancel()
+
+	// Detect audio format from MIME type for the ASR hint.
+	audioFmt := audioFormatFromMIME(att.MimeType)
+
+	resp, err := aiservice.ASR(asrCtx, profile.MonitorTranscribe, aiservice.ASRRequest{
+		AudioURL:    att.URL,
+		AudioFormat: audioFmt,
+		Language:    "zh",
+	})
+	if err != nil {
+		return fmt.Errorf("generateAudio ASR: %w", err)
+	}
+
+	transcript := ""
+	durationSec := 0.0
+	if resp != nil {
+		transcript = strings.TrimSpace(resp.Text)
+		durationSec = resp.DurationSeconds
+	}
+
+	fallbackText := composeAudioFallback(att.Filename, durationSec, transcript)
+	completed := time.Now()
+	if err := p.store.UpdateFallback(ctx, att.ID, map[string]interface{}{
+		"text_fallback":        fallbackText,
+		"fallback_ready":       true,
+		"fallback_completed_at": completed,
+	}); err != nil {
+		return fmt.Errorf("generateAudio UpdateFallback: %w", err)
+	}
+	return nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+// nilIfEmpty returns nil if s is empty, else &s.
+// Used when updating optional text fields in the DB so that empty strings
+// result in SQL NULL rather than an empty string.
+func nilIfEmpty(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// audioFormatFromMIME extracts a short format hint from a MIME type string.
+func audioFormatFromMIME(mimeType string) string {
+	mimeType = strings.ToLower(mimeType)
+	switch {
+	case strings.Contains(mimeType, "wav"):
+		return "wav"
+	case strings.Contains(mimeType, "mp3"), strings.Contains(mimeType, "mpeg"):
+		return "mp3"
+	case strings.Contains(mimeType, "m4a"), strings.Contains(mimeType, "mp4"):
+		return "m4a"
+	case strings.Contains(mimeType, "ogg"):
+		return "ogg"
+	case strings.Contains(mimeType, "webm"):
+		return "webm"
+	default:
+		return ""
+	}
+}
+
+// decodeImageDimensions reads width and height from raw image bytes without
+// fully decoding the image. Returns (nil, nil) if decoding fails.
+func decodeImageDimensions(data []byte) (*int, *int) {
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, nil
+	}
+	w, h := cfg.Width, cfg.Height
+	return &w, &h
+}
+
+// DecodeImageDimensionsFromBytes is the exported wrapper used by upload.go
+// at upload time to record image dimensions in the attachment row.
+func DecodeImageDimensionsFromBytes(data []byte) (*int, *int) {
+	return decodeImageDimensions(data)
+}
