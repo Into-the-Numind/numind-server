@@ -92,12 +92,11 @@ func (w *v2ArtifactWrappedTool) InvokableRun(ctx context.Context, args string, o
 	// 由调用方注入 ctx value 即可（向 task 2.3/2.4 留扩展空间）。
 	const toolCallIDFromCtx = ""
 
-	msgs, perr := compactv2.ProcessToolResult(ctx, w.deps, w.runID, toolCallIDFromCtx, w.toolName, output)
-	if perr != nil || len(msgs) == 0 {
+	content, perr := compactv2.ProcessToolResult(ctx, w.deps, w.runID, toolCallIDFromCtx, w.toolName, output)
+	if perr != nil {
 		log.Warnw("v2ArtifactWrappedTool: ProcessToolResult error; returning raw output",
 			"tool", w.toolName, "run_id", w.runID, "error", perr)
 		return output, nil
 	}
-	// ProcessToolResult 总是返回长度 1 的切片（spec 注释），但为了健壮性显式取第一条。
-	return msgs[0].Content, nil
+	return content, nil
 }
