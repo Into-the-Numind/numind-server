@@ -66,17 +66,18 @@ func (f *platformToolFactory) DisplayName() string { return "平台内置工具"
 // Tools constructed with nil deps will panic only if Execute is called; LoadTools itself
 // must never panic.
 //
-// Base tools (always present, ds=nil or ds!=nil): 17 tools
+// Base tools (always present, ds=nil or ds!=nil): 18 tools
 //
 //	kb_search, learner_data_query, document_generate, image_gen, bash_exec,
 //	get_current_date, web_search, web_fetch, ask_user_question, file_read,
 //	analyze_image, annotate_image,
 //	create_csv, create_html, create_json, create_text  (V1.5 output-skills task 4.2)
 //	create_png_chart                                    (V1.5 output-skills task 4.3)
+//	run_python                                          (V1.5 output-skills task 4.9)
 //
 // When f.skillRegistry and f.skillPool are non-nil, invoke_skill is appended:
-// 18 base tools total. When f.ds is also non-nil, memory_write + memory_read are
-// appended (20 tools with skills, 19 without).
+// 19 base tools total. When f.ds is also non-nil, memory_write + memory_read are
+// appended (21 tools with skills, 20 without).
 func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMetadata, error) {
 	var usersGetter userByIDGetter
 	var attStore store.IAgentAttachmentStore
@@ -108,6 +109,8 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		&createTextTool{},
 		// V1.5 output-skills task 4.3: PNG chart tool (Layer 1, gonum/plot + go-chart/v2).
 		&createPNGChartTool{},
+		// V1.5 output-skills task 4.9: run_python (Layer 3, last-resort sandbox Python execution).
+		&runPythonTool{},
 	}
 	// V1.5 output-skills task 4.4: invoke_skill (Layer 2, sandbox-based skill framework).
 	// Only registered when both skill registry and skill pool are available.
@@ -138,6 +141,8 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		{ToolName: "create_text", DisplayName: "生成文本文件", Description: "Write plain text content to a .txt file.", Source: "platform", RiskLevel: "safe", Category: "文件生成"},
 		// V1.5 output-skills task 4.3: PNG chart tool.
 		{ToolName: "create_png_chart", DisplayName: "图表生成（PNG）", Description: "Generate a static PNG chart from structured data.", Source: "platform", RiskLevel: "safe", Category: "可视化"},
+		// V1.5 output-skills task 4.9: run_python (Layer 3 last-resort).
+		{ToolName: "run_python", DisplayName: "Python 代码执行（文件生成）", Description: "Execute Python 3 code in an isolated sandbox to generate files in long-tail formats. LAST RESORT — use only when Layer 1 (create_csv/html/json/text/png_chart) and Layer 2 (invoke_skill) cannot produce the required format.", Source: "platform", RiskLevel: "dangerous", Category: "代码", RequiresSandbox: true},
 	}
 	// Append invoke_skill metadata when skill registry is available.
 	if f.skillRegistry != nil && f.skillPool != nil {

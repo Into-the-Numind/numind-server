@@ -382,7 +382,7 @@ func TestInvokeSkillFactory_InvokeSkillRegistered(t *testing.T) {
 		}
 	}
 	assert.True(t, foundMeta, "invoke_skill metadata must be registered")
-	// Base 17 + invoke_skill = 18
-	assert.Len(t, tools, 18, "with skill registry: should be 18 tools")
-	assert.Len(t, metadata, 18)
+	// Base 18 (task 4.9 added run_python) + invoke_skill = 19
+	assert.Len(t, tools, 19, "with skill registry: should be 19 tools")
+	assert.Len(t, metadata, 19)
 }
