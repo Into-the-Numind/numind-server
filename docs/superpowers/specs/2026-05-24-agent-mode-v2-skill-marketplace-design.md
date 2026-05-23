@@ -467,11 +467,16 @@ import (
     "numind-server/internal/pkg/model"
 )
 
-// cloneToSubscriber is called INSIDE s.db.Transaction(func(tx){...}) by Subscribe.
-// It delegates the cloned-skill creation to #1's artifactSvc.Create which opens its
-// OWN nested db.Transaction — GORM v2 turns this into a SAVEPOINT inside our outer tx
-// (MySQL InnoDB supports savepoint). On outer rollback, the savepoint also rolls back.
-// So we get atomicity without #1 having to expose a tx-variant API.
+// cloneToSubscriber is Phase 1 of Subscribe's two-phase commit (S4-T4-D1 revised).
+// It is called OUTSIDE any transaction by Subscribe. The cloned skill is committed
+// immediately via artifactSvc.Create (which uses its OWN db.Transaction internally,
+// independent of any caller-controlled tx). If Subscribe's Phase 2 (subscription
+// row insert + count increment) fails, Subscribe is responsible for invoking the
+// compensating artifactSvc.Delete to soft-remove this clone.
+//
+// Originally spec §11 assumed GORM v2 would treat the inner Create as a SAVEPOINT
+// of our outer tx (nested-tx behavior). This is wrong — nested-tx detection is
+// per-*gorm.DB-instance, and artifactSvc holds its own db reference. See S4-T4-D1.
 func (s *service) cloneToSubscriber(ctx context.Context, mp *model.SkillMarketplace, subscriberUserID uint) (uint, error) {
     tc := langfuse.FromContext(ctx)
     var spanID string
