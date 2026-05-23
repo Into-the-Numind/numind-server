@@ -489,9 +489,9 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 			// body = catalog block (v2 SoT) — segment [3] 的全部内容
 			body = buildSkillCatalogBlock(skills)
 			ctx = WithUseSkillTurn(ctx, useSkillTurnState)
-			// spec §3.7 预留 ctx key (CtxKeySkillBindings) — 主路径走 turn.SkillByID，
-			// 但写一份方便扩展，并满足 S3 reviewer P2-1 grep 检查 (T06 grep 验证项)
-			ctx = WithSkillBindings(ctx, nil)
+			// spec §3.7 预留 ctx key — 注入实际 skills 切片 (S4-D26 类型校正为 []model.Skill)
+			// 主路径走 turn.SkillByID/SkillByName, 本 key 供未来扩展 (admin/observability) 使用
+			ctx = WithSkillBindings(ctx, skills)
 		} else {
 			// legacy 路径 (dual-read 兜底, S2-D5 + §9 协议)
 			body = ad.GeneratedSkillBody

@@ -106,17 +106,29 @@ func TestUseSkillTurn_AgentBaseToolNamesFromCtx_EmptyCtx_NotOK(t *testing.T) {
 }
 
 func TestUseSkillTurn_WithSkillBindings_RoundTrip(t *testing.T) {
-	want := []model.AgentSkillBinding{
-		{ID: 1, AgentID: 100, SkillID: 200, SortOrder: 0},
-		{ID: 2, AgentID: 100, SkillID: 201, SortOrder: 1},
+	want := []model.Skill{
+		{ID: 200, Name: "话术", ParentUserID: 100},
+		{ID: 201, Name: "画像", ParentUserID: 100},
 	}
 	ctx := WithSkillBindings(context.Background(), want)
 	got, ok := SkillBindingsFromCtx(ctx)
 	if !ok {
-		t.Fatal("SkillBindingsFromCtx should find injected bindings")
+		t.Fatal("SkillBindingsFromCtx should find injected skills")
 	}
-	if len(got) != 2 || got[0].SkillID != 200 || got[1].SortOrder != 1 {
-		t.Errorf("binding round trip mismatch: %+v", got)
+	if len(got) != 2 || got[0].ID != 200 || got[1].Name != "画像" {
+		t.Errorf("skills round trip mismatch: %+v", got)
+	}
+}
+
+// 空/nil 切片明确返回 ok=false (P2-2 fix)
+func TestUseSkillTurn_WithSkillBindings_EmptySlice_NotOK(t *testing.T) {
+	ctx := WithSkillBindings(context.Background(), nil)
+	if _, ok := SkillBindingsFromCtx(ctx); ok {
+		t.Error("nil skills should return ok=false")
+	}
+	ctx2 := WithSkillBindings(context.Background(), []model.Skill{})
+	if _, ok := SkillBindingsFromCtx(ctx2); ok {
+		t.Error("empty skills should return ok=false")
 	}
 }
 
@@ -212,6 +224,11 @@ func TestUseSkillTurn_Execute_HappyPath_LoadsBodyAndAllowedTools(t *testing.T) {
 	}
 	if parsed["skill_name"] != "销售话术训练" {
 		t.Errorf("skill_name = %v, want '销售话术训练'", parsed["skill_name"])
+	}
+	// S4-D27: body 字段必须含 system-reminder 包装的全文 (tool result 通道，LLM 必读)
+	bodyStr, _ := parsed["body"].(string)
+	if bodyStr == "" || !contains(bodyStr, "<system-reminder>") || !contains(bodyStr, sk.BodyMd) {
+		t.Errorf("ack body should contain <system-reminder> wrapped full body, got %q", bodyStr)
 	}
 
 	// turn state mutation 检查

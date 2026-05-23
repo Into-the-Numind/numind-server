@@ -56,9 +56,9 @@ var CtxKeyAgentBaseToolNames = ctxKeyAgentBaseToolNamesT{}
 type ctxKeySkillBindingsT struct{}
 
 // CtxKeySkillBindings — 由 runner.Run 注入，spec §3.7 预留扩展用；
-// 主路径走 turn.SkillByID / SkillByName，不需要从 ctx 取 binding 列表。
-// TODO(T03/T06): 评估实际是否注入；若 W3/W4 编码未触达，删此 ctx key + 配套 helpers。
-// 值类型: []model.AgentSkillBinding
+// 主路径走 turn.SkillByID / SkillByName，未来扩展（如 admin debug / observability）
+// 可直接从 ctx 取已 join 的 Skill 列表（与 BindingService.ListByAgent 返回类型一致）。
+// 值类型: []model.Skill（S4-D26 校正 — 不是 spec 原假设的 []AgentSkillBinding）
 var CtxKeySkillBindings = ctxKeySkillBindingsT{}
 
 // ── UseSkillTurnState ────────────────────────────────────────────────────────
@@ -131,15 +131,16 @@ func AgentBaseToolNamesFromCtx(ctx context.Context) ([]string, bool) {
 	return n, ok
 }
 
-// WithSkillBindings 把 binding 列表写入 ctx（spec §3.7 预留，主路径未使用）。
-func WithSkillBindings(ctx context.Context, bindings []model.AgentSkillBinding) context.Context {
-	return context.WithValue(ctx, CtxKeySkillBindings, bindings)
+// WithSkillBindings 把 runner 启动时查到的 Skill 列表写入 ctx（spec §3.7 预留 + S4-D26 校正）。
+// 主路径走 turn.SkillByID / SkillByName，本 key 供未来扩展使用（admin / observability）。
+func WithSkillBindings(ctx context.Context, skills []model.Skill) context.Context {
+	return context.WithValue(ctx, CtxKeySkillBindings, skills)
 }
 
-// SkillBindingsFromCtx 从 ctx 取 binding 列表；不存在时 ok=false。
-func SkillBindingsFromCtx(ctx context.Context) ([]model.AgentSkillBinding, bool) {
-	b, ok := ctx.Value(CtxKeySkillBindings).([]model.AgentSkillBinding)
-	return b, ok
+// SkillBindingsFromCtx 从 ctx 取 Skill 列表；不存在 / 空 / nil 均返回 ok=false。
+func SkillBindingsFromCtx(ctx context.Context) ([]model.Skill, bool) {
+	s, ok := ctx.Value(CtxKeySkillBindings).([]model.Skill)
+	return s, ok && len(s) > 0
 }
 
 // ── useSkillTool (T03 完整 Invoke) ────────────────────────────────────────
@@ -305,12 +306,15 @@ func (t *useSkillTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		turn.AllowedTools[toolName] = struct{}{}
 	}
 
-	// 7. 写 PendingBody — runner 在下次 LLM Generate 前消费
+	// 7. 写 PendingBody — runner outer-loop 在下次 attempt 的 Generate 前可消费 (备用通道)
+	// 注意 (S4-D27): Eino 单 attempt 场景下 outer-loop 注入对本 turn 不生效；
+	// 实际 body 通过 ack JSON 的 body 字段直接给 LLM (tool result 通道 LLM 必读)。
+	// PendingBody 保留为多 attempt / 未来 Eino hook 扩展兼容。
 	turn.PendingBody = sk.BodyMd
 	turn.PendingSkillName = sk.Name
 	turn.PendingSkillVersion = int(sk.Version)
 
-	// 8. count++ + 返回 acknowledgement
+	// 8. count++ + 返回 acknowledgement (含完整 body 包 system-reminder，S4-D27 主通道)
 	turn.InvocationCount++
 
 	if allowedToolsWarn != "" {
@@ -318,11 +322,17 @@ func (t *useSkillTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		resultError = "allowed_tools_unmarshal:" + allowedToolsWarn
 	}
 
+	// system-reminder 包装的 body 直接放进 ack — LLM 通过 tool result 必读，
+	// 不依赖 runner outer-loop attempt 注入（spec §3.3 路径 b: tool result）。
+	bodyWrapped := fmt.Sprintf("<system-reminder>\n以下是你刚调用的技能 '%s' 的详细指引（v%d）。请按这些指引继续完成用户的任务：\n\n%s\n</system-reminder>",
+		sk.Name, sk.Version, sk.BodyMd)
+
 	ack := map[string]any{
 		"status":              toolStatusLoaded, // ack 永远 "loaded"——LLM 视角 Skill 已就绪
 		"skill_name":          sk.Name,
 		"skill_version":       sk.Version,
 		"body_length":         len(sk.BodyMd),
+		"body":                bodyWrapped, // S4-D27: 完整 body in tool result (LLM 必读)
 		"allowed_tools_added": allowedTools,
 		"turn_invocation":     turn.InvocationCount,
 		"turn_cap":            turn.Cap,
