@@ -105,6 +105,7 @@ type biz struct {
 	complianceAudit   *compliance.AuditLogger    // #13 agent-mode-compliance-3layer (Stop on shutdown)
 	memoryExtractor   *memory.ExtractorService   // Task 3.3 LLM extraction (Stop on shutdown)
 	memoryCadence     *memory.CadenceService     // Task 3.6 dialectic cadence gate (read-only)
+	memoryDialectic   memory.DialecticService    // Task 3.7 Layer A dialectic insight provider (background goroutine-based)
 	searchService     search.Service             // Task 3.5 FULLTEXT ngram search (also wired into AgentRunner via WithSearchService)
 	studentQuerySvc   *agent.StudentQueryService // #14 follow-up ALPHA student-facing queries
 	studentRunSvc     *agent.StudentRunService   // #14 BETA student-facing run lifecycle
@@ -393,6 +394,15 @@ func NewBiz(ds store.IStore) *biz {
 	viper.SetDefault("agent.memory.dialectic_min_new_facts", memory.DefaultDialecticMinNewFacts)
 	viper.SetDefault("agent.memory.trivial_max_chars", memory.TrivialMaxCharsDefault)
 
+	// Task 3.7 (agent-mode-v15-memory-layer-a): register dialectic LLM-call
+	// tunables. Production overrides land in config_local / dev / qa yaml; the
+	// LoadDialecticConfigFromViper helper also falls back to the
+	// DefaultDialectic* constants when any key is unset.
+	viper.SetDefault("agent.memory.dialectic_top_facts_limit", memory.DefaultDialecticTopFactsLimit)
+	viper.SetDefault("agent.memory.dialectic_max_output_tokens", memory.DefaultDialecticMaxOutputTokens)
+	viper.SetDefault("agent.memory.dialectic_temperature", memory.DefaultDialecticTemperature)
+	viper.SetDefault("agent.memory.dialectic_call_timeout_seconds", int(memory.DefaultDialecticCallTimeout/time.Second))
+
 	// Task 3.6 trivial-detector hot-path config wire: load once from viper +
 	// stash via SetTrivialConfig so IsTrivial reads through atomic.Value
 	// (no viper RWMutex contention on the request path).
@@ -408,6 +418,33 @@ func NewBiz(ds store.IStore) *biz {
 		memory.LoadCadenceConfigFromViper(viper.GetViper()),
 	)
 	b.memoryCadence = memoryCadence
+
+	// Task 3.7 (agent-mode-v15-memory-layer-a): construct DialecticService —
+	// the Layer A "use agent.dialectic LLM to summarise the user themselves"
+	// background recompute pipeline. Goroutine-detached + cadence-gated by
+	// memoryCadence so per-user cost stays under ¥0.05/day. cached_insight
+	// is read synchronously at user-turn start via GetCachedInsight (no LLM
+	// call on the request hot path).
+	//
+	// Wire ordering: dialectic needs the same stores as cadence + the cadence
+	// service itself; constructed after memoryCadence and BEFORE the
+	// ExtractorService.SetDialecticService hookup below.
+	memoryDialectic := memory.NewDialecticService(
+		ds.UserMemoryFacts(),
+		ds.UserMemoryProfiles(),
+		memoryCadence,
+		memory.LoadDialecticConfigFromViper(viper.GetViper()),
+	)
+	b.memoryDialectic = memoryDialectic
+
+	// Hook the dialectic recompute into the ExtractorService: every successful
+	// persistFacts will fire MaybeRecompute(userID) (cadence-gated, non-
+	// blocking). This is a setter (not a constructor argument) because
+	// ExtractorService is constructed earlier in the wire order — the dialectic
+	// service depends on memoryCadence which itself depends on profile-store
+	// readiness via biz init; cleanest decoupling is the SetDialecticService
+	// post-wire.
+	memoryExtractor.SetDialecticService(memoryDialectic)
 
 	// Task 3.5 (agent-mode-v15-memory-layer-a): construct FULLTEXT search
 	// service. Indexes diff-by-uuid on every AgentRunner.WriteTurn via the
@@ -434,6 +471,7 @@ func NewBiz(ds store.IStore) *biz {
 		agent.WithComplianceGate(b.complianceGate), // #13 agent-mode-compliance-3layer
 		agent.WithMemoryExtractor(memoryExtractor), // Task 3.3 LLM extraction async pipeline
 		agent.WithMemorySelector(memorySelector),   // Task 3.4 top-5 side-query selector
+		agent.WithMemoryDialectic(memoryDialectic), // Task 3.7 Layer A cached_insight injection
 		agent.WithSearchService(searchService),     // Task 3.5 FULLTEXT ngram indexing hook
 	)
 

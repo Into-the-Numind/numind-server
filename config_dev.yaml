@@ -227,3 +227,9 @@ agent:
     dialectic_max_cooldown_seconds: 1800    # 30 min — 兜底重跑（防 insight 过老）
     dialectic_min_new_facts: 3              # cooldown 内有 ≥3 新 fact 时立即重跑
     trivial_max_chars: 8                    # 全 emoji 短串判 trivial 的上限（rune 数）
+    # Task 3.7: Layer A dialectic LLM-call tunables
+    # D4：用 qwen-plus / deepseek-v3-2，不要 thinking model（DB Registry 配路由）
+    dialectic_top_facts_limit: 20           # 候选 fact 上限（importance DESC 排序后取前 N）
+    dialectic_max_output_tokens: 600        # LLM 输出上限（300-500 字中文 ≈ 450-750 tokens）
+    dialectic_temperature: 0.4              # 略稳定（不发散）但保留推理弹性
+    dialectic_call_timeout_seconds: 30      # LLM 调用 wall-clock 上限（qwen-plus 平均 4-8s）

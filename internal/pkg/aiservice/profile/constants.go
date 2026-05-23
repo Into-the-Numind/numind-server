@@ -2,7 +2,7 @@
 // the Capability Matching algorithm used by the AI Gateway.
 package profile
 
-// Task ID constants for all 23 supported task profiles (14 base + 7 agent-mode #14 + 2 V1.5 memory).
+// Task ID constants for all 24 supported task profiles (14 base + 7 agent-mode #14 + 3 V1.5 memory).
 // Business layers should reference these constants (e.g. profile.SopText) rather
 // than raw string literals to gain IDE completion and compile-time typo detection.
 const (
@@ -64,6 +64,19 @@ const (
 	// discuss. Recommended route: qwen-turbo (cost-efficient + good Chinese) →
 	// deepseek-v3-2 (fallback). Spec: 03-memory/task-04-top5-selector.md.
 	AgentMemorySelect = "agent.memory_select"
+	// AgentDialectic is the Agent V1.5 dialectic Layer A reasoning task (Task 3.7).
+	// Background goroutine reads top-N (≤20) Layer A facts (subject_id IS NULL —
+	// always about the agent's *user themselves*: sales rep, SOP operator, data
+	// analyst, PPT clerk, etc., NEVER about a customer/dataset/subject they
+	// discuss) and produces a 100–800-rune Chinese narrative insight describing
+	// (1) who the user is, (2) how to interact with them, (3) any personalised
+	// guidance for the current session. Cached in user_memory_profile.cached_insight
+	// + read at user-turn start to inject the Memories segment of the system prompt.
+	// Run gating is delegated to CadenceService (Task 3.6) — this profile is only
+	// hit when ShouldRunDialectic returns true. Recommended route: qwen-plus
+	// primary + deepseek-v3-2 fallback (D4: NO thinking models — output must be
+	// stable + consistent, not divergent). Spec: 03-memory/task-07-dialectic.md.
+	AgentDialectic = "agent.dialectic"
 )
 
 // allTaskIDsList is the canonical ordered list of all task IDs.
@@ -93,6 +106,7 @@ var allTaskIDsList = []string{
 	AgentPermissionCheck,
 	AgentMemoryExtract,
 	AgentMemorySelect,
+	AgentDialectic,
 }
 
 // AllTaskIDs returns all task ID strings in a stable order.

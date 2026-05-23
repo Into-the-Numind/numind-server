@@ -103,6 +103,16 @@ type ExtractorService struct {
 	chatMu sync.Mutex
 	chat   extractorChatFn
 
+	// dialecticSvc is the Task 3.7 Layer A dialectic hook — when set, extract()
+	// fires MaybeRecompute(userID) after a successful persistFacts so the
+	// background dialectic pipeline can refresh cached_insight per cadence
+	// gating. Read under dialecticMu (lock-free for production where the
+	// service is wired once at startup; mu only matters for tests that swap).
+	// nil = no dialectic refresh (Task 3.3 standalone callers preserve their
+	// existing behaviour).
+	dialecticMu  sync.Mutex
+	dialecticSvc DialecticService
+
 	// debounceWindow / minConfidence / rebuildThreshold are settable via With* opts.
 	debounceWindow   time.Duration
 	minConfidence    float64
@@ -120,6 +130,24 @@ func (s *ExtractorService) loadChatFn() extractorChatFn {
 	s.chatMu.Lock()
 	defer s.chatMu.Unlock()
 	return s.chat
+}
+
+// SetDialecticService installs (or replaces) the Task 3.7 dialectic hook
+// after construction. Useful when the dialectic service depends on the
+// extractor's stores (forward-declaration ordering issue in biz.go wiring).
+// Concurrency-safe — workers read through loadDialecticSvc on every extract.
+func (s *ExtractorService) SetDialecticService(svc DialecticService) {
+	s.dialecticMu.Lock()
+	defer s.dialecticMu.Unlock()
+	s.dialecticSvc = svc
+}
+
+// loadDialecticSvc reads the dialectic hook under dialecticMu so SetDialecticService
+// can swap without racing the worker pool.
+func (s *ExtractorService) loadDialecticSvc() DialecticService {
+	s.dialecticMu.Lock()
+	defer s.dialecticMu.Unlock()
+	return s.dialecticSvc
 }
 
 // swapChatFnForTest replaces the LLM seam at runtime. Test-only — production
@@ -180,6 +208,23 @@ func WithExtractorMinConfidence(c float64) ExtractorOption {
 // WithExtractorRebuildThreshold overrides ExtractionCountRebuildThreshold.
 func WithExtractorRebuildThreshold(n int) ExtractorOption {
 	return func(s *ExtractorService) { s.rebuildThreshold = n }
+}
+
+// WithExtractorDialecticService installs a Task 3.7 DialecticService so that
+// every successful persistFacts call (≥ 1 fact inserted or deduped) triggers
+// dialecticSvc.MaybeRecompute(userID). The dialectic service decides — via
+// its embedded CadenceService — whether to actually run the LLM, so calling
+// MaybeRecompute on every extraction is cheap (no LLM cost when cadence gate
+// says "skip").
+//
+// nil (default) preserves Task 3.3-only behaviour where no dialectic
+// recompute is scheduled. Set this in production wire-up (biz.go).
+//
+// Layer A only: the recompute targets user_memory_profile.cached_insight for
+// the agent **user** themselves — never the customer / subject / dataset they
+// happen to be discussing.
+func WithExtractorDialecticService(svc DialecticService) ExtractorOption {
+	return func(s *ExtractorService) { s.dialecticSvc = svc }
 }
 
 // NewExtractorService constructs an ExtractorService with sane production defaults.
@@ -430,6 +475,20 @@ func (s *ExtractorService) extract(ctx context.Context, job ExtractionJob) {
 	// Step 6 — Increment per-user counter, maybe trigger profile rebuild.
 	if persisted+deduped > 0 {
 		s.maybeRebuildProfile(ctx, job.UserID)
+	}
+
+	// Step 7 (Task 3.7) — notify dialectic service that new facts landed.
+	// MaybeRecompute is non-blocking and internally cadence-gated; safe to
+	// call on every successful turn. Only fire when at least one fact was
+	// persisted or deduped (no-fact turns leave the cached_insight valid).
+	//
+	// Layer A: the dialectic refresh targets the agent user's cached_insight;
+	// no fact written to user_memory_facts can carry a non-nil subject_id in
+	// V1.5 (store-layer invariant — see user_memory.go:282/302).
+	if persisted+deduped > 0 {
+		if dial := s.loadDialecticSvc(); dial != nil {
+			dial.MaybeRecompute(ctx, job.UserID)
+		}
 	}
 
 	log.Infow("memory.extractor turn complete",

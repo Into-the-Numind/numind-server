@@ -93,6 +93,7 @@ type agentRunner struct {
 	complianceGate    compliance.ComplianceGate   // #13 agent-mode-compliance-3layer: wired by biz.go via WithComplianceGate; may be nil
 	memoryExtractor   *memory.ExtractorService    // Task 3.3 LLM extraction async pipeline; wired by biz.go via WithMemoryExtractor; may be nil
 	memorySelector    memory.SelectorService      // Task 3.4 top-5 side-query selector; wired by biz.go via WithMemorySelector; may be nil
+	memoryDialectic   memory.DialecticService     // Task 3.7 Layer A dialectic cached_insight provider; wired by biz.go via WithMemoryDialectic; may be nil
 	searchService     search.Service              // Task 3.5 FULLTEXT ngram indexing hook; wired by biz.go via WithSearchService; may be nil
 }
 
@@ -221,6 +222,33 @@ func WithSearchService(s search.Service) RunnerOption {
 func WithMemorySelector(s memory.SelectorService) RunnerOption {
 	return func(r *agentRunner) {
 		r.memorySelector = s
+	}
+}
+
+// WithMemoryDialectic injects the Task 3.7 Layer A dialectic insight provider.
+// nil (default) = no insight block injected (preserves test-only / minimal-wire
+// callers; Task 3.1 + 3.4 paths still work).
+//
+// When set, runner.Run calls dialectic.GetCachedInsight + BuildInsightSection
+// at system-prompt assembly time and injects the resulting
+// <personal_context …> block into the Memories segment AFTER selectorBlock
+// (per-turn fact list) and BEFORE memoryDisclaimerBlock (L1/L2 dialog memory):
+//
+//	agentMdBlock              (## Agent Rules — task 3.1, developer-defined)
+//	selectorBlock             (<personal_context …> — task 3.4, per-turn facts)
+//	dialecticInsightBlock     (<personal_context …> — task 3.7, cached_insight)
+//	memoryDisclaimerBlock + memorySystemBlock (L1/L2 dialog memory)
+//
+// Layer A only — the cached_insight describes the agent's *user themselves*,
+// never the customer/dataset/subject they discuss (V2 Layer B scope; subject_id
+// schema-reserved but unused in V1.5).
+//
+// Trivial-turn short-circuit: when memory.IsTrivial(req.Input) returns true,
+// the insight block is skipped (matches selector + extractor pattern — no
+// reason to inject personal context for "好的" / "👍" inputs).
+func WithMemoryDialectic(d memory.DialecticService) RunnerOption {
+	return func(r *agentRunner) {
+		r.memoryDialectic = d
 	}
 }
 
@@ -425,27 +453,44 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		}
 	}
 
+	// V1.5 板块 3 task 3.7: Layer A dialectic cached_insight 注入。
+	// 同步只读 user_memory_profile.cached_insight；空 / 不存在 / DB 错误时返回 ""
+	// （BuildInsightSection 处理空字符串，整体段位省略）。Layer A invariant：cached_insight
+	// 描述使用 agent 的真实 user 本人，**不**是会话讨论的客户 / 数据集 / 对象。
+	// 拼接顺序（spec §System prompt 集成）：在 selectorBlock 之后、memoryDisclaimerBlock
+	// 之前。trivial turn 跳过，与 selector 行为对齐（短输入无个人化收益）。
+	var dialecticInsightBlock string
+	if r.memoryDialectic != nil && req.UserID != 0 && !isTrivial {
+		insight := r.memoryDialectic.GetCachedInsight(ctx, req.UserID)
+		if section := r.memoryDialectic.BuildInsightSection(insight); section != "" {
+			dialecticInsightBlock = "\n\n" + section
+		}
+	}
+
 	// P1.1 review-fix: 段 3 (Memories) 显式 header — 让 LLM 明确识别"这里开始是
 	// Memories 段"。Memories 段 = AGENT.md cascade (rules) + selectorBlock (per-turn
-	// LLM-selected facts, task 3.4) + memorySystemBlock (existing L1/L2 facts)。
-	// 任一非空时挂前导 `## Memories` header；全部为空则整段省略。
+	// LLM-selected facts, task 3.4) + dialecticInsightBlock (cached_insight, task 3.7)
+	// + memorySystemBlock (existing L1/L2 facts)。任一非空时挂前导 `## Memories` header；
+	// 全部为空则整段省略。
 	var memoriesSectionHeader string
-	if agentMdBlock != "" || selectorBlock != "" || memorySystemBlock != "" {
+	if agentMdBlock != "" || selectorBlock != "" || dialecticInsightBlock != "" || memorySystemBlock != "" {
 		memoriesSectionHeader = "\n\n## Memories\n"
 	}
 
 	// 段位 1 + 2 + 3 + (disclaimer + 4) + 5 + 6（蓝本 §4.3.9）
 	// disclaimer 与 memorySystemBlock 同进同退；空字符串时整体段位省略。
-	// V1.5 task 3.1 / 3.4: memoriesSectionHeader 是段 3（Memories）的开头标记。
+	// V1.5 task 3.1 / 3.4 / 3.7: memoriesSectionHeader 是段 3（Memories）的开头标记。
 	// 段内顺序：agentMdBlock (开发者规则) → selectorBlock (task 3.4 selected facts) →
+	// dialecticInsightBlock (task 3.7 cached_insight) →
 	// memoryDisclaimerBlock + memorySystemBlock (L1/L2 dialog memory)。
-	// agentMdBlock 和 selectorBlock 自带前导 \n\n，空字符串时无副作用。
+	// agentMdBlock / selectorBlock / dialecticInsightBlock 自带前导 \n\n，空字符串时无副作用。
 	req.SystemPrompt = skill.PlatformBasePrompt +
 		tenantHardRulesPlaceholder +
 		body +
 		memoriesSectionHeader +
 		agentMdBlock +
 		selectorBlock +
+		dialecticInsightBlock +
 		memoryDisclaimerBlock +
 		memorySystemBlock +
 		toolsSectionPlaceholder +
