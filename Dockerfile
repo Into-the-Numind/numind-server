@@ -33,7 +33,7 @@ RUN go mod download
 # 第 2 层：复制源码并编译（非缓存层，每次重新构建）
 COPY . .
 # CGO_ENABLED=1 是必须的，因为使用了 go-fitz (libmupdf) 和 sqlite-vec
-RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o numind cmd/numind/main.go
+RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o numind ./cmd/numind
 
 # 运行阶段
 FROM ubuntu:22.04
