@@ -204,6 +204,15 @@ func Autocompact(ctx context.Context, run *model.AgentRun, deps AutocompactDeps)
 	}
 
 	// 5. 调 LLM
+	//
+	// Langfuse 追踪：aiservice 的 Tracing 中间件（chain.go line 206 注册的外层 mw）
+	// 自动为本次 Chat 调用创建一个 Generation，挂在 ctx 里 runner.Run line 282 创建的
+	// trace 下；model / prompt_tokens / completion_tokens / input / output 均由 SDK
+	// 自动填入，无需在本包重复 langfuse.CreateGeneration。
+	//
+	// feature_ref（agent_run_id / phase / 之前 fail 次数 等）由 caller (runner.go
+	// autocompactV2) 在 ctx 里注入；compactv2 不能直接 import aiservice/middleware
+	// （会形成 import cycle: middleware → credit → store → compactv2 → middleware）。
 	summary, serializedLen, llmErr := callLLMForSummary(ctx, deps.Chat, toCompact)
 	if llmErr != nil {
 		// LLM 失败或 XML 校验失败 → ConsecutiveFailures++

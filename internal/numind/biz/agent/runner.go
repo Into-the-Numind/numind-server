@@ -26,6 +26,7 @@ import (
 	"numind-server/internal/numind/biz/skill"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"
+	aismw "numind-server/internal/pkg/aiservice/middleware"
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
@@ -1119,6 +1120,19 @@ func (r *agentRunner) maybeCompactV2(ctx context.Context, run *model.AgentRun) e
 //
 // 注意：不新增 TerminalReason 枚举，复用字符串字面值 "context_exhausted"（CLAUDE.md §6b agent-mode I2）。
 func (r *agentRunner) autocompactV2(ctx context.Context, run *model.AgentRun) error {
+	// Langfuse 追踪：runner.Run line 282 已在 ctx 里建好 trace；aiservice.Chat 走
+	// middleware/tracing.go 时自动创建 Generation 挂在该 trace 下。此处注入
+	// feature_ref 让 Generation metadata 携带业务字段，仪表盘可按 operation=autocompact
+	// filter / 看 agent_run_id 追踪具体 run / 看 previous_failures 找连续失败趋势。
+	//
+	// 这步必须在 runner 层做：compactv2 不能 import aiservice/middleware
+	// （会形成 import cycle: middleware → credit → store → compactv2 → middleware）。
+	tracedCtx := aismw.WithFeatureRef(ctx, map[string]interface{}{
+		"operation":    "autocompact",
+		"phase":        "L3",
+		"agent_run_id": run.ID,
+	})
+
 	// 注入 deps：Chat closure（aiservice.Chat）+ CompactV2Store
 	deps := compactv2.AutocompactDeps{
 		Chat:           aiservice.Chat,
@@ -1126,7 +1140,7 @@ func (r *agentRunner) autocompactV2(ctx context.Context, run *model.AgentRun) er
 		Metrics:        compactv2.NoopMetrics{}, // TODO: prom collector wiring 留作下一 task
 	}
 
-	result, err := compactv2.Autocompact(ctx, run, deps)
+	result, err := compactv2.Autocompact(tracedCtx, run, deps)
 	if err != nil {
 		return fmt.Errorf("autocompactV2 Autocompact: %w", err)
 	}
