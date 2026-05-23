@@ -2,7 +2,7 @@
 // the Capability Matching algorithm used by the AI Gateway.
 package profile
 
-// Task ID constants for all 21 supported task profiles (14 base + 7 agent-mode #14).
+// Task ID constants for all 26 supported task profiles (21 existing + 5 new V1.5).
 // Business layers should reference these constants (e.g. profile.SopText) rather
 // than raw string literals to gain IDE completion and compile-time typo detection.
 const (
@@ -49,6 +49,13 @@ const (
 	AgentInjectionCheck = "agent.injection_check"
 	// AgentPermissionCheck is the Agent permission L3 auto-mode classifier (#14).
 	AgentPermissionCheck = "agent.permission_check"
+
+	// ── V1.5 new task profiles (task 1.2 / board 3) ──────────────────────────
+
+	// AttachmentVisionDescribe is the VLM task that generates a textual description
+	// of an uploaded image for use as a text fallback when the active model is
+	// single-modal. Routed to qwen3-vl-flash (D2 decision). (V1.5 task 1.2)
+	AttachmentVisionDescribe = "attachment.vision_describe"
 )
 
 // allTaskIDsList is the canonical ordered list of all task IDs.
@@ -76,9 +83,11 @@ var allTaskIDsList = []string{
 	AgentNarrationFallback,
 	AgentInjectionCheck,
 	AgentPermissionCheck,
+	// V1.5 additions (task 1.2 + board 3 profiles added as implemented)
+	AttachmentVisionDescribe,
 }
 
-// AllTaskIDs returns all 21 task ID strings in a stable order.
+// AllTaskIDs returns all task ID strings in a stable order.
 // Useful for validation, seeding, or iterating over all known profiles.
 // Returns a copy — callers may not modify the returned slice.
 func AllTaskIDs() []string {
