@@ -37,6 +37,7 @@ import (
 	salesragservice "numind-server/internal/numind/biz/salesrag/service"
 	"numind-server/internal/numind/biz/sandbox"
 	skillbiz "numind-server/internal/numind/biz/skill"
+	skillartifact "numind-server/internal/numind/biz/skill/artifact"
 	sopbiz "numind-server/internal/numind/biz/sop"
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/biz/volc"
@@ -539,11 +540,17 @@ func NewBiz(ds store.IStore) *biz {
 		log.Warnw("biz.NewBiz: agent.artifact_dir not configured; using relative ./data — set in config_*.yaml for prod")
 	}
 
+	// v2 #2 agent-mode-v2-skill-invocation: BindingService 让 runner.Run 启动时
+	// 通过 ListByAgent (已 join sort_order asc) 拿到 Agent 装载的 Skill 列表。
+	// nil 时 runner 走 legacy 路径 (dual-read 兜底，v1 Agent 行为零回归)。
+	skillBindingSvc := skillartifact.NewBindingService(ds.DB())
+
 	b.agentRunner = agent.NewAgentRunner(
 		ds.AgentRuns(),
 		agentToolRegistry,
-		agent.WithDefaultHooks(wrappedHooks),        // #6: permission → sandbox chain
-		agent.WithSkillStore(ds.AgentDefinitions()), // #5 skill-system
+		agent.WithDefaultHooks(wrappedHooks),           // #6: permission → sandbox chain
+		agent.WithSkillStore(ds.AgentDefinitions()),    // #5 skill-system
+		agent.WithSkillBindingService(skillBindingSvc), // v2 #2 agent-mode-v2-skill-invocation
 		// V1.5 compact-v1-removal — WithCompactProvider/WithCompactConfig removed.
 		// V2 (compactv2) now handles all context-window management; legacy V1
 		// recovery helpers (PTL chain + max_output escalation) were removed
