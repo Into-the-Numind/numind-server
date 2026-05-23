@@ -19,12 +19,14 @@
 --   - use_compact_v2          (BOOL)      — runner gate 仍读，作为 V2 全局 kill switch
 --   - agent_tool_artifact     (TABLE)     — L0 工具写盘表，活跃
 --
--- 用 `DROP COLUMN IF EXISTS` 保 idempotent（MySQL 8.0.29+，与项目惯例
--- 20260523_120000_context_management_v2_schema.sql 一致）。
+-- 注意：MySQL 8.4.2 不支持 `DROP COLUMN IF EXISTS` 语法（虽然支持
+-- ADD COLUMN IF NOT EXISTS）；本 migration 用 plain DROP COLUMN。
+-- 一次性 historical migration：新建 dev DB 走 GORM AutoMigrate 不会产生这些列
+-- （model 字段已删），所以本文件只在已有数据库上跑一次即可。
 
 ALTER TABLE agent_run
-  DROP COLUMN IF EXISTS compact_state,
-  DROP COLUMN IF EXISTS compact_summary,
-  DROP COLUMN IF EXISTS compact_state_v2,
-  DROP COLUMN IF EXISTS total_tokens_used_v2,
-  DROP COLUMN IF EXISTS context_window_limit_v2;
+  DROP COLUMN compact_state,
+  DROP COLUMN compact_summary,
+  DROP COLUMN compact_state_v2,
+  DROP COLUMN total_tokens_used_v2,
+  DROP COLUMN context_window_limit_v2;
