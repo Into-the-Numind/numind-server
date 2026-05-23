@@ -2089,7 +2089,7 @@ features:
     total_tasks: 12
     completed_tasks: 10
     reviewed_tasks: 10
-    current_task: 'T10 完成 (web-v3 worktree commits 07b6d9c + b1c1c10 P1 fix). 4 文件编辑 cross-cutting UI: router/index.ts 4 marketplace routes + AppSidebar 加 技能市场菜单 (父账户 only) + SkillEditor edit 模式加 发布到市场 按钮 + SkillList 加 已发布徽章 (listMarketplace + client filter publisher==my.id). 双 reviewer 1 P1 真 bug (SkillList publisher_user_id === myID 严格相等可能 string/number 不匹配静默失效) + 多 P2. P1 修: Number() 强转 + isFinite 守卫. P2 修: router beforeEach 通知文案按 path 分支 (marketplace 用 "技能市场仅父账户可访问" 不再用 "AI 助手配置..." 混淆). 推迟 T11 P2: fetchPublishedIds refetch on fetchList / my-published backend endpoint. 复用现有 router beforeEach requiresParent guard 自动 redirect 子账户. type-check / lint 0 marketplace errors. 下一步：T11 Playwright E2E marketplace.spec.ts (需要 4 个 envvar 配置 per S3-D1 Pause-and-Ask gate).'
+    current_task: 'T11 BLOCKED on envvar gate (S3-D1). Required 4 envvars: E2E_USERNAME_B + E2E_PASSWORD_B (second parent account for cross-tenant subscribe AC-1..AC-4) + E2E_CHILD_USERNAME + E2E_CHILD_PASSWORD (child account for AC-6 cross-tenant 403 verification, spec §10.1 rule 2). Currently only E2E_CHILD_PASSWORD is set in .claude/settings.local.json (value e2e_test_pass_2026). Missing E2E_USERNAME_B / E2E_PASSWORD_B / E2E_CHILD_USERNAME. Per S3-D1 NO test files written yet — gate is mandatory. User must populate envvars in .claude/settings.local.json env block to unblock. ScheduleWakeup 1800s polling until configured, max 7 days then escalate. T11 will then implement marketplace.spec.ts with 5+ cross-tenant flows (AC-1 publish / AC-2 browse / AC-3 subscribe→cloned skill in B tenant / AC-4 unsubscribe softdelete / AC-6 child 403).'
   decisions:
   - 'S0-D1 (parent 2026-05-24, 继承自 #1 D4): v2 三件套 #1+#2+#3 串行交付。本 feature 是 #3，#1 land develop 才能进 S4（依赖 skill 表 + biz/skill.Service.Create 写副本）。'
   - 'S0-D2 (ai 2026-05-24, REVISED post-#1-investigation): 订阅 = 复制副本语义。订阅时刻调 artifact.Service.Create (NOT skill.Service.Create — actual package is biz/skill/artifact) 给订阅方租户新建 skill 行 (source_type=imported_from_marketplace，#1 已预留 ENUM 值无需 ALTER COLUMN)，同时写 skill_subscription 关联。发布方后续编辑原 skill 不影响订阅方副本。'
@@ -2121,7 +2121,8 @@ features:
   - 'agent-mode-v2-skill-invocation (v2 #2，软依赖 — 订阅功能落地不必等 #2，但 UI 引导文案假设 Skill 可被 Agent 装载使用)'
   - 'agent-mode-v15-memory-layer-a (merged b0fa0cf2 — Langfuse prompt 管理 + FetchPrompt cache 模式参考)'
   - 'agent-mode-skill-system (#5/14, merged e05498b6 — agent_permission_config table 来源，但 forbidden_competitor_names JSON 字段假设错误 已 dropped)'
-  blockers: []
+  blockers:
+  - 'BLOCKER-2 (T11 envvar gate per S3-D1): 4 个 E2E envvar 未配置 → marketplace.spec.ts 无法写。Required: E2E_USERNAME_B + E2E_PASSWORD_B + E2E_CHILD_USERNAME + E2E_CHILD_PASSWORD. Currently only E2E_CHILD_PASSWORD present. User action: 在 .claude/settings.local.json env block 加 4 个新条目（值参考现有 admin / e2e_test_pass_2026 命名风格；CHILD_USERNAME_FREE 类似已有 child 账号可复用 username）。ScheduleWakeup 1800s polling, max 7 days.'
   commits:
   - '3d477eb4 (worktree): feat(agent-mode-v2-marketplace): T1 migrations + GORM models + AutoMigrate — Sonnet spec PASS_WITH_CONCERNS / quality PASS_WITH_CONCERNS, 0 P0/P1, 8 P2'
   - 'ea3af75f (worktree): fix(agent-mode-v2-marketplace): T1 P2 — autoCreateTime tags + IsPublic doc comment'
