@@ -1,7 +1,9 @@
 // Package marketplace_test — HTTP-level smoke tests for marketplace.Controller.
 //
-// Validates: handler ↔ biz wiring, JSON binding, path param parsing, sentinel
-// error → errno mapping (mapBizError). Business rules already covered by
+// Validates: handler ↔ biz wiring, JSON binding, path param parsing, and
+// biz-error → HTTP-status propagation via errno.Decode (T7 removed the
+// mapBizError helper; biz sentinels alias errno.Err* now, and Decode walks
+// the wrap chain via errors.As). Business rules already covered by
 // biz/marketplace/*_test.go. Auth middleware not exercised here — handlers
 // rely on middleware.GetCurrentUser; tests inject *model.User into ctx via
 // a tiny middleware shim.
@@ -11,6 +13,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -210,6 +213,24 @@ func TestPublish_SanitizeUnavailable_503(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code, "T7: 503 reflects LLM provider down, not internal server bug")
 }
 
+// Regression for T7 P1: biz/marketplace/sanitize.Sanitize wraps the underlying
+// LLM error via fmt.Errorf("%w: %s", ErrSanitizeUnavailable, cause). errno.Decode
+// must unwrap via errors.As to surface 503 (pre-T7, type-switch matched only the
+// bare *Errno and fell back to 500).
+func TestPublish_SanitizeUnavailable_Wrapped_503(t *testing.T) {
+	wrappedErr := fmt.Errorf("Sanitize: %w: provider quota exceeded", bizmarketplace.ErrSanitizeUnavailable)
+	svc := &fakeService{publishErr: wrappedErr}
+	r := newRouter(t, svc, 1, true)
+
+	body := map[string]any{
+		"skill_id":                 10,
+		"category_tags":            []string{"销售"},
+		"confirmed_sanitized_body": "x",
+	}
+	w := doJSON(t, r, http.MethodPost, "/v1/marketplace/publish", body)
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code, "wrap chain must propagate 503 via errors.As")
+}
+
 func TestPublish_ConfirmationMismatch_422(t *testing.T) {
 	svc := &fakeService{publishErr: bizmarketplace.ErrSanitizeConfirmationMismatch}
 	r := newRouter(t, svc, 1, true)
@@ -333,9 +354,10 @@ func TestSetRecommended_NotFound_404(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
-// Sanity: the sentinel-to-errno mapping is exhaustive — any unmapped
-// marketplace sentinel returns 500 (caller should add to mapBizError). We
-// verify the known set is covered by hitting each through a route.
+// Sanity: every marketplace sentinel maps to its expected HTTP status when
+// returned by the biz service (covered via Subscribe funnel for brevity).
+// T7 removed mapBizError; this exercises the errno.Decode wrap-chain path
+// the controller now relies on.
 func TestSentinelMapping_KnownErrorsAllMapped(t *testing.T) {
 	// Build a mapping table; iterate and assert each maps to expected HTTP.
 	cases := []struct {

@@ -1,6 +1,7 @@
 package errno
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -52,13 +53,15 @@ func TestMarketplaceErrnos_UniqueCodes(t *testing.T) {
 		ErrSanitizeConfirmationMismatch,
 		ErrSkillBodyEmpty,
 	}
-	seen := map[string]string{}
+	// Track full prior entry so duplicate diagnostics print the actual conflicting
+	// HTTP code instead of all[0]'s HTTP (T7 P2 from code-quality reviewer).
+	seen := map[string]*Errno{}
 	for _, e := range all {
 		if prior, ok := seen[e.Code]; ok {
-			t.Fatalf("duplicate errno Code %q (HTTP %d, Message %q) — already used by HTTP %d / Message %q",
-				e.Code, e.HTTP, e.Message, all[0].HTTP, prior)
+			t.Fatalf("duplicate errno Code %q — current entry HTTP %d / Message %q — already used by HTTP %d / Message %q",
+				e.Code, e.HTTP, e.Message, prior.HTTP, prior.Message)
 		}
-		seen[e.Code] = e.Message
+		seen[e.Code] = e
 	}
 	// Spot-check namespace.
 	for _, e := range all {
@@ -66,4 +69,24 @@ func TestMarketplaceErrnos_UniqueCodes(t *testing.T) {
 			e.Code[:len("Marketplace.")] == "Marketplace.",
 			"Code %q must start with 'Marketplace.' namespace", e.Code)
 	}
+}
+
+// TestDecode_UnwrapsErrnoFromWrappedError verifies the project-wide Decode
+// improvement (T7 P1 fix): fmt.Errorf("...: %w", errno.ErrXxx) chains must
+// surface the *Errno's HTTP/Code/Message — previously the type-switch missed
+// wrap targets and fell back to 500.
+//
+// Regression protection for the SanitizeUnavailable production path which
+// wraps via biz/marketplace/sanitize.go's Sanitize() helper.
+func TestDecode_UnwrapsErrnoFromWrappedError(t *testing.T) {
+	wrapped := fmt.Errorf("sanitize call: %w", ErrSanitizeUnavailable)
+	http, code, _ := Decode(wrapped)
+	assert.Equal(t, ErrSanitizeUnavailable.HTTP, http, "wrapped *Errno HTTP must propagate")
+	assert.Equal(t, ErrSanitizeUnavailable.Code, code, "wrapped *Errno Code must propagate")
+
+	// Nested wrap (two levels deep) — errors.As walks the chain.
+	nested := fmt.Errorf("outer: %w", fmt.Errorf("inner: %w", ErrMarketplaceNotFound))
+	http2, code2, _ := Decode(nested)
+	assert.Equal(t, ErrMarketplaceNotFound.HTTP, http2, "nested wrap *Errno HTTP must propagate")
+	assert.Equal(t, ErrMarketplaceNotFound.Code, code2, "nested wrap *Errno Code must propagate")
 }
