@@ -2087,9 +2087,9 @@ features:
   stage: S4
   progress:
     total_tasks: 12
-    completed_tasks: 5
-    reviewed_tasks: 5
-    current_task: 'T4 + T5 完成 (T4 commits ee3b8b2f + 724ecf0e P2 / T5 commits e010cb27 + ebdbfa1b P2). T4 关键修订 S4-T4-D1: spec §11 "nested savepoint" 假设事实错误（GORM v2 per-*gorm.DB-instance 检测），改用 Option B 两阶段 commit + compensating action. T4 双 reviewer 0 P0/P1 + 5 P2 (3 inline 修 + 2 推迟). T5 抽提 clone.go/search.go/admin.go + S4-T4-D4 Langfuse tech debt 全补 (6 公共方法都起 trace + cloneToSubscriber/unsubscribeCleanup 包 span). T5 双 reviewer 0 P0/P1 + 4 P2 (3 inline 修 含真 bug tautology / 1 booleanModeQuery 包级 Replacer). 49 测试全 PASS (sanitize 15 + service 30 + search 8 + clone 6). 下一步：T6 controller + router register.'
+    completed_tasks: 6
+    reviewed_tasks: 6
+    current_task: 'T6 完成 (commits 32294b9a + 55e58564 P2 spec align). controller package /v1/marketplace/marketplace.go 9 handlers (8 user + 1 admin) + 21 smoke tests + router.go /v1/marketplace block + admin_router.go /v1/admin/marketplace + IStore.Marketplaces() (S4-T2-D1 推迟项关闭). 双 reviewer (Sonnet) PASS_WITH_CONCERNS / 0 P0/P1 / 6 P2 — 3 关键 inline 修 (Subscribe biz 签名加 subscriptionID 返回 / SanitizePreview biz 返回 *SanitizeResult / 清理 test anchor 残留) + 3 推迟 T7 (409 vs 400 status code / middleware key 耦合 / ADR 文件结构). 70 tests 全 PASS. 下一步：T7 errno + DB seed migration.'
   decisions:
   - 'S0-D1 (parent 2026-05-24, 继承自 #1 D4): v2 三件套 #1+#2+#3 串行交付。本 feature 是 #3，#1 land develop 才能进 S4（依赖 skill 表 + biz/skill.Service.Create 写副本）。'
   - 'S0-D2 (ai 2026-05-24, REVISED post-#1-investigation): 订阅 = 复制副本语义。订阅时刻调 artifact.Service.Create (NOT skill.Service.Create — actual package is biz/skill/artifact) 给订阅方租户新建 skill 行 (source_type=imported_from_marketplace，#1 已预留 ENUM 值无需 ALTER COLUMN)，同时写 skill_subscription 关联。发布方后续编辑原 skill 不影响订阅方副本。'
