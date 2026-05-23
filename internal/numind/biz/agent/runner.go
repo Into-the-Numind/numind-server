@@ -18,6 +18,7 @@ import (
 
 	"numind-server/internal/numind/biz/agent/callctx"
 	"numind-server/internal/numind/biz/agent/memory/agentmd"
+	"numind-server/internal/numind/biz/agent/search"
 	"numind-server/internal/numind/biz/budget"
 	"numind-server/internal/numind/biz/compact"
 	"numind-server/internal/numind/biz/compliance"
@@ -29,6 +30,7 @@ import (
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
+	"numind-server/internal/pkg/metrics"
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
 )
@@ -91,6 +93,7 @@ type agentRunner struct {
 	complianceGate    compliance.ComplianceGate   // #13 agent-mode-compliance-3layer: wired by biz.go via WithComplianceGate; may be nil
 	memoryExtractor   *memory.ExtractorService    // Task 3.3 LLM extraction async pipeline; wired by biz.go via WithMemoryExtractor; may be nil
 	memorySelector    memory.SelectorService      // Task 3.4 top-5 side-query selector; wired by biz.go via WithMemorySelector; may be nil
+	searchService     search.Service              // Task 3.5 FULLTEXT ngram indexing hook; wired by biz.go via WithSearchService; may be nil
 }
 
 var _ AgentRunner = (*agentRunner)(nil)
@@ -189,6 +192,19 @@ func WithComplianceGate(g compliance.ComplianceGate) RunnerOption {
 func WithMemoryExtractor(e *memory.ExtractorService) RunnerOption {
 	return func(r *agentRunner) {
 		r.memoryExtractor = e
+	}
+}
+
+// WithSearchService injects the Task 3.5 FULLTEXT search indexing service.
+// nil (default) = no search indexing (preserves test-only / minimal-wire callers).
+// When set, runner.Run.handleTerminated calls searchService.IndexAgentRun after
+// the final WriteTurn so search index stays in sync with agent_run.messages.
+//
+// The hook is failure-tolerant — IndexAgentRun internally logs + swallows errors
+// so search indexing never blocks the run.
+func WithSearchService(s search.Service) RunnerOption {
+	return func(r *agentRunner) {
+		r.searchService = s
 	}
 }
 
@@ -384,24 +400,28 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	//   memoryDisclaimerBlock     (warning header — pre-existing L1/L2 path)
 	//   memorySystemBlock         (existing memory.SystemPromptBlock — L1/L2 dialog memory)
 	//
-	// Trivial-turn 短路（task 3.6）：未着陆前 isTrivial 硬编码为 false（TODO 同样标注在
-	// 下方 memoryExtractor 调用处）。trivial=true 时 selector 应被跳过避免无谓 LLM 调用。
+	// Trivial-turn 短路（task 3.6）：memory.IsTrivial(req.Input) 判定纯函数 —
+	// 全 input 都是 trivial token 时（"好的"/"thanks!"/"👍"）跳过 selector LLM 调用
+	// 和后续 extractor enqueue，省钱 + 体验流畅。trivial 决策在两处都用同一份
+	// memory.IsTrivial 结果以保持一致性（避免 selector 跳过但 extractor 入队的
+	// 不对齐场景）。
+	isTrivial := memory.IsTrivial(req.Input)
+	if isTrivial {
+		metrics.MemoryTrivialCountInc()
+	}
+
 	var selectorBlock string
-	if r.memorySelector != nil && req.UserID != 0 {
-		// TODO(task-3.6): replace `false` with trivial.IsTrivial(req.Input).
-		isTrivial := false
-		if !isTrivial {
-			facts, selErr := r.memorySelector.SelectTop5(ctx, req.UserID, req.Input)
-			if selErr != nil {
-				// SelectTop5 errors are non-fatal — log and continue with no
-				// injection. The selector itself uses fallbacks for LLM /
-				// parse failures, so reaching this branch means a deeper
-				// (store-layer) failure.
-				log.Warnw("memorySelector.SelectTop5 failed; continuing without injection",
-					"agent_run_id", run.ID, "user_id", req.UserID, "error", selErr)
-			} else if len(facts) > 0 {
-				selectorBlock = "\n\n" + r.memorySelector.BuildMemorySection(facts)
-			}
+	if r.memorySelector != nil && req.UserID != 0 && !isTrivial {
+		facts, selErr := r.memorySelector.SelectTop5(ctx, req.UserID, req.Input)
+		if selErr != nil {
+			// SelectTop5 errors are non-fatal — log and continue with no
+			// injection. The selector itself uses fallbacks for LLM /
+			// parse failures, so reaching this branch means a deeper
+			// (store-layer) failure.
+			log.Warnw("memorySelector.SelectTop5 failed; continuing without injection",
+				"agent_run_id", run.ID, "user_id", req.UserID, "error", selErr)
+		} else if len(facts) > 0 {
+			selectorBlock = "\n\n" + r.memorySelector.BuildMemorySection(facts)
 		}
 	}
 
@@ -503,6 +523,13 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		if wErr := r.runStore.WriteTurn(ctx, run.ID, json.RawMessage(shortCircuitMessages)); wErr != nil {
 			log.Warnw("AgentRunner.Run WriteTurn failed on short-circuit", "agent_run_id", run.ID, "error", wErr)
 		}
+		// Task 3.5: index messages for FULLTEXT search. Hook is failure-tolerant
+		// internally — never blocks the run.
+		if r.searchService != nil {
+			scRun := *run
+			scRun.Messages = datatypes.JSON(shortCircuitMessages)
+			r.searchService.IndexAgentRun(ctx, scRun)
+		}
 		// Hook action propagation on short-circuit path (preserves TestRunner_Run_RegistryStopPropagatesToTerminalReason).
 		shortTerminalReason := TerminalCompleted
 		if effectiveHooks != nil && effectiveHooks.Registry != nil {
@@ -534,14 +561,17 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		// said the same thing" and bias facts accordingly. Send only the user
 		// message; the extractor handles single-role inputs.
 		if r.memoryExtractor != nil && req.UserID != 0 {
-			// TODO(task-3.6): wire trivial detection.
+			// Task 3.6: trivial inputs skip extraction (no facts to learn from
+			// "ok"/"👍"/"thanks"); preserves cost + queue depth. isTrivial is
+			// computed once above and reused here to keep selector + extractor
+			// decisions aligned for this turn.
 			scSession := req.SessionID
 			if scSession == "" {
 				scSession = fmt.Sprintf("run-%d", run.ID)
 			}
 			r.memoryExtractor.Enqueue(req.UserID, scSession, []memory.ChatMessage{
 				{Role: "user", Content: req.Input},
-			}, false)
+			}, isTrivial)
 		}
 		return &RunResult{
 			AgentRunID:       run.ID,
@@ -753,6 +783,13 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	if err := r.runStore.WriteTurn(ctx, run.ID, json.RawMessage(finalMessages)); err != nil {
 		log.Warnw("AgentRunner.Run WriteTurn failed", "agent_run_id", run.ID, "error", err)
 	}
+	// Task 3.5: index messages for FULLTEXT search. Hook is failure-tolerant
+	// internally — never blocks the run.
+	if r.searchService != nil {
+		mainRun := *run
+		mainRun.Messages = datatypes.JSON(finalMessages)
+		r.searchService.IndexAgentRun(ctx, mainRun)
+	}
 
 	// M-A3 wire: async SyncTurn after successful completion.
 	// Runs in a detached goroutine with a background context so cancellation of
@@ -770,16 +807,14 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 
 	// Task 3.3: async LLM extraction (Layer A — user-self facts).
 	// Fires on *any* terminal reason per spec § 设计要点 ("agent_run.status 变为
-	// terminated（任一 TerminalReason）→ enqueue"). Trivial-turn detection lives
-	// in task 3.6 (not yet landed); for now isTrivial is hardcoded false (TODO).
+	// terminated（任一 TerminalReason）→ enqueue"). Task 3.6 trivial-turn
+	// detection is wired via the `isTrivial` local computed near the top of
+	// Run (memory.IsTrivial(req.Input)); same value reused here keeps the
+	// selector / extractor decisions aligned for the turn.
 	//
 	// Enqueue is non-blocking by contract — queue-full path drops + warns, so
 	// this CANNOT delay the runner return. No goroutine wrap needed.
 	if r.memoryExtractor != nil && req.UserID != 0 {
-		// TODO(task-3.6): replace `false` with trivial.IsTrivial(req.Input).
-		// task 3.6 will expose `func IsTrivial(text string) bool` from a new
-		// internal/numind/biz/memory/trivial.go file; wire here on landing.
-		isTrivial := false
 		extractMsgs := []memory.ChatMessage{
 			{Role: "user", Content: req.Input},
 			{Role: "assistant", Content: finalText},

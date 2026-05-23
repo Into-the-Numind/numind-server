@@ -11,6 +11,7 @@ import (
 	"numind-server/internal/numind/biz/agent"
 	"numind-server/internal/numind/biz/agent/budgetgate"
 	"numind-server/internal/numind/biz/agent/compliancegate"
+	"numind-server/internal/numind/biz/agent/search"
 	"numind-server/internal/numind/biz/ali"
 	"numind-server/internal/numind/biz/attachment"
 	"numind-server/internal/numind/biz/budget"
@@ -77,6 +78,8 @@ type IBiz interface {
 	StudentQuery() *agent.StudentQueryService // Student-facing agent query (#14 follow-up ALPHA)
 	StudentRun() *agent.StudentRunService     // Student-facing run lifecycle (#14 BETA)
 	Attachment() *attachment.UploadService    // File attachment upload (#14 BETA)
+	MemoryCadence() *memory.CadenceService    // Task 3.6 dialectic cadence gate (Task 3.7 caller)
+	SearchService() search.Service            // Task 3.5 FULLTEXT search (router.go consumer)
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -101,6 +104,8 @@ type biz struct {
 	complianceGate    compliance.ComplianceGate  // #13 agent-mode-compliance-3layer
 	complianceAudit   *compliance.AuditLogger    // #13 agent-mode-compliance-3layer (Stop on shutdown)
 	memoryExtractor   *memory.ExtractorService   // Task 3.3 LLM extraction (Stop on shutdown)
+	memoryCadence     *memory.CadenceService     // Task 3.6 dialectic cadence gate (read-only)
+	searchService     search.Service             // Task 3.5 FULLTEXT ngram search (also wired into AgentRunner via WithSearchService)
 	studentQuerySvc   *agent.StudentQueryService // #14 follow-up ALPHA student-facing queries
 	studentRunSvc     *agent.StudentRunService   // #14 BETA student-facing run lifecycle
 }
@@ -378,6 +383,28 @@ func NewBiz(ds store.IStore) *biz {
 	// + 3-layer fallback (LLM err / parse err / store err) keep cost ≈ ¥0.001/turn.
 	memorySelector := memory.NewSelectorService(ds.UserMemoryFacts())
 
+	// Task 3.6 (agent-mode-v15-memory-layer-a): construct CadenceService — the
+	// dialectic-cadence gate. Read-only over user_memory_profile; consumed by
+	// the Task 3.7 dialectic service via b.MemoryCadence() (no AgentRunner wire,
+	// since Run-time selector/extractor cost gating uses memory.IsTrivial pure
+	// func, not the cadence gate).
+	memoryCadence := memory.NewCadenceService(
+		ds.UserMemoryProfiles(),
+		memory.LoadCadenceConfigFromViper(viper.GetViper()),
+	)
+	b.memoryCadence = memoryCadence
+
+	// Task 3.5 (agent-mode-v15-memory-layer-a): construct FULLTEXT search
+	// service. Indexes diff-by-uuid on every AgentRunner.WriteTurn via the
+	// failure-tolerant IndexAgentRun hook (search rows are derived data —
+	// errors log warn and never block the run). BackfillFromAgentRun (CLI +
+	// repair) needs the AgentRuns store handle to fetch source messages.
+	searchService := search.NewService(
+		ds.AgentMessageSearches(),
+		ds.AgentRuns(),
+	)
+	b.searchService = searchService
+
 	b.agentRunner = agent.NewAgentRunner(
 		ds.AgentRuns(),
 		agentToolRegistry,
@@ -392,6 +419,7 @@ func NewBiz(ds store.IStore) *biz {
 		agent.WithComplianceGate(b.complianceGate), // #13 agent-mode-compliance-3layer
 		agent.WithMemoryExtractor(memoryExtractor), // Task 3.3 LLM extraction async pipeline
 		agent.WithMemorySelector(memorySelector),   // Task 3.4 top-5 side-query selector
+		agent.WithSearchService(searchService),     // Task 3.5 FULLTEXT ngram indexing hook
 	)
 
 	// 初始化知识库服务
@@ -572,6 +600,23 @@ func (b *biz) StudentRun() *agent.StudentRunService {
 // Attachment 返回文件上传服务实例（#14 BETA）。
 func (b *biz) Attachment() *attachment.UploadService {
 	return attachment.NewUploadService()
+}
+
+// MemoryCadence 返回 Task 3.6 dialectic cadence gate 实例。
+// Task 3.7 dialectic service 通过本 getter 在每轮 dialectic 决策前问
+// ShouldRunDialectic，决定跑实际 LLM 调用还是用缓存 insight。
+// agent-mode-v15-memory-layer-a Task 3.6.
+func (b *biz) MemoryCadence() *memory.CadenceService {
+	return b.memoryCadence
+}
+
+// SearchService 返回 Task 3.5 FULLTEXT 搜索服务实例。
+// router.go 通过本 getter 拿到 search service 实例注册
+// GET /v1/agent-runs/search 路由；同 service 已通过 WithSearchService 注入
+// AgentRunner 用于 WriteTurn 后的 IndexAgentRun 钩子。
+// agent-mode-v15-memory-layer-a Task 3.5.
+func (b *biz) SearchService() search.Service {
+	return b.searchService
 }
 
 // PermissionGate 返回 Permission 网关实例（agent-mode #6 permission-pipeline）。

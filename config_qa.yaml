@@ -150,3 +150,8 @@ agent:
       user_data_dir: "/opt/numind/qa/user_files"   # 拼接 users/<user_id>/AGENT.md
       max_per_file_chars: 12288             # 12KB，单文件上限
       max_total_chars: 51200                # 50KB，所有文件合计上限
+    # Task 3.6: trivial 短路 + Cadence 控制（dialectic 节流）
+    dialectic_cooldown_seconds: 300         # 5 min — 同用户 dialectic 最小重跑间隔
+    dialectic_max_cooldown_seconds: 1800    # 30 min — 兜底重跑（防 insight 过老）
+    dialectic_min_new_facts: 3              # cooldown 内有 ≥3 新 fact 时立即重跑
+    trivial_max_chars: 8                    # 全 emoji 短串判 trivial 的上限（rune 数）
