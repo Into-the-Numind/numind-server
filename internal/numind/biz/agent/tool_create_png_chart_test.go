@@ -166,8 +166,8 @@ func TestCreatePNGChartTool_Execute_ScatterMismatchedXY(t *testing.T) {
 		Data: pngChartData{
 			Series: []pngChartSeries{
 				{
-					XValues: []float64{1.0, 2.0, 3.0},    // length 3
-					Values:  []float64{1.5, 2.5},          // length 2 — mismatch
+					XValues: []float64{1.0, 2.0, 3.0}, // length 3
+					Values:  []float64{1.5, 2.5},      // length 2 — mismatch
 				},
 			},
 		},
