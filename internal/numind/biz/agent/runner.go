@@ -25,6 +25,7 @@ import (
 	"numind-server/internal/numind/biz/narration"
 	"numind-server/internal/numind/biz/skill"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
@@ -549,18 +550,33 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		output    *schema.Message
 		runErr    error
 		finalText string
+		// V1.5 task 2.4 review P1 fix：maybeCompactV2 触发 context_exhausted 后，
+		// 主循环 break 并设此 flag → 最终的 UpdateState (line ~753) 跳过 (DB 已被
+		// terminateRunContextExhausted 写过 "context_exhausted"，再写会被 st.TerminalReason 覆盖)。
+		contextExhausted bool
 	)
 	for attempt := 0; attempt <= maxAttempts; attempt++ {
 		if st.IsTerminal() {
 			break
 		}
 
-		// V1.5 板块 2 task 2.3 — maybeCompactV2 在每轮 LLM 调用前跑（仅 V2 路径）。
+		// V1.5 板块 2 — maybeCompactV2 在每轮 LLM 调用前跑（仅 V2 路径）。
 		// L1 prune (≥50%) / L2 microcompact (≥70%) 都是纯字符串操作，不调 LLM；
-		// ≥85% 走 autocompact stub（task 2.4 实现真正的 LLM summarize，本 task 留 TODO）。
-		// 失败 fail-open：只 warn log 不阻塞 run（reviewer S2 — 不破坏 V1 路径）。
+		// ≥85% 走 autocompact (task 2.4) 调 LLM 12 段固定模板压缩历史；
+		// ≥95% + 连续失败 3 次 → terminate (state_reason="context_exhausted")。
+		// 普通失败 fail-open：只 warn log 不阻塞 run（reviewer S2 — 不破坏 V1 路径）。
 		if useCompactV2 {
 			if err := r.maybeCompactV2(queryCtx, run); err != nil {
+				if errors.Is(err, compactv2.ErrContextExhausted) {
+					// task 2.4 review P1 fix：autocompactV2 已通过 terminateRunContextExhausted
+					// 写 DB run.state_reason="context_exhausted"。这里 break 主循环 + 设
+					// alreadyTerminated=true 跳过最终的 UpdateState（line 753），避免被后续
+					// st.TerminalReason 覆盖。
+					log.Infow("AgentRunner.Run maybeCompactV2 signaled context_exhausted; breaking loop",
+						"agent_run_id", run.ID, "attempt", attempt)
+					contextExhausted = true
+					break
+				}
 				log.Warnw("AgentRunner.Run maybeCompactV2 failed; continuing without compact",
 					"agent_run_id", run.ID, "attempt", attempt, "error", err)
 			}
@@ -749,7 +765,13 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	}
 
 	endedAt := time.Now()
-	if err := r.runStore.UpdateState(ctx, run.ID, "terminated", string(st.TerminalReason), &endedAt); err != nil {
+	// V1.5 task 2.4 review P1 fix：context_exhausted 时跳过 UpdateState（DB 已由
+	// terminateRunContextExhausted 写过 "context_exhausted" + ended_at），否则
+	// 会被 st.TerminalReason（可能为空 / TerminalCompleted）覆盖。
+	if contextExhausted {
+		log.Infow("AgentRunner.Run skipping final UpdateState (context_exhausted already persisted)",
+			"agent_run_id", run.ID)
+	} else if err := r.runStore.UpdateState(ctx, run.ID, "terminated", string(st.TerminalReason), &endedAt); err != nil {
 		log.Warnw("AgentRunner.Run UpdateState failed", "agent_run_id", run.ID, "error", err)
 	}
 
@@ -1016,14 +1038,33 @@ func (r *agentRunner) maybeCompactV2(ctx context.Context, run *model.AgentRun) e
 
 	// 路由
 	switch {
-	// TODO(task 2.4): replace 0.85 with compactv2.AutocompactThreshold once defined.
-	case ratio >= 0.85:
-		// task 2.4 实现 L3 autocompact（调 LLM 12 段固定模板）。
-		// 本 task 留 stub：log + return nil 不阻塞 run。
-		// TODO(task 2.4): r.autocompactV2(ctx, run)
-		log.Infow("AgentRunner.maybeCompactV2: autocompact threshold hit (stub, task 2.4 will implement)",
+	case ratio >= compactv2.HardLimitRatio:
+		// V1.5 板块 2 task 2.4 — Hard limit (95%) 分支：
+		// 如果之前已连续失败 3 次 → 直接 terminate（不再尝试 autocompact，避免无限重试）
+		// 否则继续走 autocompact 让它再试一次（85-95% 区间 autocompact 已尝试，95%+ 是最后机会）
+		state, sErr := r.compactV2Store.GetCompactStateV2(ctx, run.ID)
+		if sErr != nil {
+			log.Warnw("AgentRunner.maybeCompactV2 hard-limit GetCompactStateV2 failed; falling through to autocompact",
+				"agent_run_id", run.ID, "error", sErr)
+		} else if state != nil && state.ConsecutiveAutocompactFailures >= compactv2.MaxConsecutiveAutocompactFailures {
+			log.Warnw("AgentRunner.maybeCompactV2: hard limit hit + 3 consecutive failures; terminating run",
+				"agent_run_id", run.ID, "ratio", ratio, "used", used, "limit", limit,
+				"consecutive_failures", state.ConsecutiveAutocompactFailures)
+			if tErr := r.terminateRunContextExhausted(ctx, run); tErr != nil {
+				log.Warnw("AgentRunner.maybeCompactV2: terminateRunContextExhausted persist failed; still emitting ErrContextExhausted",
+					"agent_run_id", run.ID, "error", tErr)
+			}
+			// review P1 fix：返回 sentinel error 让主循环 break，避免后续 Generate 覆盖 state_reason
+			return compactv2.ErrContextExhausted
+		}
+		// fallthrough → 走 autocompact 路径
+		fallthrough
+
+	case ratio >= compactv2.AutocompactThreshold:
+		// V1.5 板块 2 task 2.4 — L3 autocompact（调 LLM 12 段固定模板）
+		log.Infow("AgentRunner.maybeCompactV2: autocompact threshold hit",
 			"agent_run_id", run.ID, "ratio", ratio, "used", used, "limit", limit)
-		return nil
+		return r.autocompactV2(ctx, run)
 
 	case ratio >= compactv2.MicrocompactThreshold:
 		// L2 先跑（合并同名 tool）→ L1 后扫（旧 tool result）
@@ -1061,6 +1102,86 @@ func (r *agentRunner) maybeCompactV2(ctx context.Context, run *model.AgentRun) e
 		}
 		return nil
 	}
+	return nil
+}
+
+// autocompactV2 是 task 2.4 L3 autocompact 在 runner 内的封装。
+//
+// 仅由 maybeCompactV2 在 ratio >= AutocompactThreshold 时调用；caller 已做 useCompactV2 gate。
+//
+// 行为：
+//   - 调 compactv2.Autocompact 跑 LLM summarize（profile.AgentCompact 路由）
+//   - 成功：log info；messages 已被 store 替换；in-memory run.Messages 同步
+//   - LLM 失败（包括 XML 校验失败）：Autocompact 内部 ConsecutiveFailures++；本函数返回 nil 不阻塞 run
+//   - 累计失败 3 次（compactv2 内部累计后返回 TerminalReason="context_exhausted"）：
+//     调 terminateRunContextExhausted 设 run.Status="terminated" / state_reason="context_exhausted"
+//   - 其他 error（DB 写失败等）：返回 wrapped error，caller fail-open warn
+//
+// 注意：不新增 TerminalReason 枚举，复用字符串字面值 "context_exhausted"（CLAUDE.md §6b agent-mode I2）。
+func (r *agentRunner) autocompactV2(ctx context.Context, run *model.AgentRun) error {
+	// 注入 deps：Chat closure（aiservice.Chat）+ CompactV2Store
+	deps := compactv2.AutocompactDeps{
+		Chat:           aiservice.Chat,
+		CompactV2Store: r.compactV2Store,
+		Metrics:        compactv2.NoopMetrics{}, // TODO: prom collector wiring 留作下一 task
+	}
+
+	result, err := compactv2.Autocompact(ctx, run, deps)
+	if err != nil {
+		return fmt.Errorf("autocompactV2 Autocompact: %w", err)
+	}
+
+	if result.TerminalReason != "" {
+		// 连续 3 次失败：context_exhausted → terminate
+		log.Warnw("AgentRunner.autocompactV2: terminal reason returned; terminating run",
+			"agent_run_id", run.ID,
+			"terminal_reason", result.TerminalReason,
+			"summary_uuid", result.SummaryUUID,
+		)
+		if tErr := r.terminateRunContextExhausted(ctx, run); tErr != nil {
+			// terminate DB 写失败仍要返回 sentinel error 让 runner 主循环退出；
+			// state_reason 暂时 stale 但状态机不再继续推进，避免污染更糟。
+			log.Warnw("AgentRunner.autocompactV2: terminateRunContextExhausted persist failed; still emitting ErrContextExhausted",
+				"agent_run_id", run.ID, "error", tErr)
+		}
+		// 返回 sentinel error 让 runner 主循环 errors.Is 检测后 break loop +
+		// 跳过最终的 UpdateState（review P1 fix — 否则 st.TerminalReason 会覆盖 "context_exhausted"）。
+		return compactv2.ErrContextExhausted
+	}
+
+	if result.Triggered {
+		log.Infow("AgentRunner.autocompactV2: success",
+			"agent_run_id", run.ID,
+			"original_msg_count", result.OriginalMsgCount,
+			"compacted_msg_count", result.CompactedMsgCount,
+			"summary_uuid", result.SummaryUUID,
+			"compression_ratio", result.CompressionRatio,
+		)
+		// in-memory 同步：autocompact 已写 DB，但 run.Messages 还指向旧 raw；
+		// 重新从 store 读一次以保持一致。autocompact 频率低，DB 读成本可接受。
+		if fresh, gErr := r.runStore.Get(ctx, run.ID); gErr == nil && fresh != nil {
+			run.Messages = fresh.Messages
+		}
+	}
+	// Triggered=false：messages 太短或 LLM 单次失败，本轮继续 ReAct（下轮 ratio 再判）
+	return nil
+}
+
+// terminateRunContextExhausted 把 run 标记为 terminated + state_reason="context_exhausted"。
+//
+// 不新增 TerminalReason 枚举（CLAUDE.md §6b agent-mode I2）。直接用字面字符串 "context_exhausted"
+// 写入 agent_run.state_reason。与 spec §设计要点 - 复用 19 list 中的 context_exhausted 一致。
+//
+// 调用方：autocompactV2 在收到 result.TerminalReason 时调用；或 maybeCompactV2 hard-limit + 3-failure
+// 分支直接调用（不再 attempt autocompact）。
+func (r *agentRunner) terminateRunContextExhausted(ctx context.Context, run *model.AgentRun) error {
+	endedAt := time.Now()
+	if err := r.runStore.UpdateState(ctx, run.ID, "terminated", "context_exhausted", &endedAt); err != nil {
+		return fmt.Errorf("terminateRunContextExhausted UpdateState: %w", err)
+	}
+	// in-memory 同步：避免后续 Run 主流程继续 ReAct（caller 应检查 run.Status 退出 loop）
+	run.Status = "terminated"
+	run.EndedAt = &endedAt
 	return nil
 }
 
