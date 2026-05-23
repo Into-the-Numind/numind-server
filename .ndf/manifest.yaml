@@ -1,5 +1,55 @@
 schema_version: '2.0'
 features:
+- id: agent-mode-v15-multimodal
+  ndf_version: '3.0'
+  description: '有数 Agent Mode V1.5 板块 1 — 多模态 fallback。让 agent 在同一会话切换不同 modality 模型时（GLM 5.1 / MiniMax M2.7 / Qwen 3.7 Max 单模态 + qwen-vl / Kimi K2.6 / MiMo V2.5 等多模态），用户上传的图片/PDF 不再静默挂掉。4 层防护：(1) Layer 1 上传时双模态固化 — 异步跑 VLM + OCR 生 vision_description + ocr_text + text_fallback 字段（attachment.vision_describe profile / qwen3-vl-flash）；(2) Layer 2 capability matrix 路由 — 查 ai_service.capability_json 的 accepts_image_inline / accepts_pdf_inline 字段，决定 inline 直送或文本 fallback；(3) Layer 3 vision 工具放大镜 — 永远注册 analyze_image + annotate_image 工具（D2 决策），任何主模型都可主动调 vision 专家模型做精细分析；(4) Layer 4 Runtime 错误剥离 — 识别 provider "multimodal not supported" 错误自动剥图重试 1 次。5 个 sub-task：(1.1) capability matrix Go helper + admin PATCH；(1.2) attachment 双模态固化 worker pool；(1.3) buildAgentInput capability-aware 路由；(1.4) vision 工具实现；(1.5) runtime 剥图兜底。新增 task profile attachment.vision_describe（D1）。Out of scope: 音频/视频处理；entity 三元组；prod 部署；前端 UI 改动（注：web-v3 worktree 仅用于 dev 部署验证联调，本 feature 不改前端代码）。'
+  track: standard
+  stage: S3
+  classification_reason: 'Standard Triage 5/5 多条违反 — (1) DB schema 变更：是（agent_attachment 加 9 列 + 2 idx；ai_service.capability_json seed） (2) 新增 API 端点：是（GET /v1/agent/attachments/:id/status，admin PATCH 已有不算新增） (3) 新外部服务集成：否（VLM/OCR/ASR 复用 aiservice 入口） (4) 影响文件数 >3（capability/ 包 3 文件 + attachment/ 包 3 文件 + multimodal.go + tools/ 3 文件 + errors/ 1 文件 + runner.go + upload.go + router.go + constants.go + admin_aiservice.go + 2 migration + 多个测试） (5) 高风险业务逻辑：是（capability 路由错会让付费用户失败；runtime 剥图绕过破坏 agent 状态机；新 task profile 进 26 个稳定列表）。条件 1+4+5 触发 Standard 强制。'
+  last_updated_by: ai-implementer-track1-start
+  last_updated_at: '2026-05-23T13:15:00+08:00'
+  repos:
+  - numind-server
+  - numind-web-v3
+  branches:
+    numind-server: feature/agent-mode-v15-multimodal
+    numind-web-v3: feature/agent-mode-v15-multimodal
+  worktree:
+    numind-server: /private/tmp/wt-agent-mode-v15-multimodal-numind-server
+    numind-web-v3: /private/tmp/wt-agent-mode-v15-multimodal-numind-web-v3
+  artifacts:
+    spec_root: docs/superpowers/specs/2026-05-23-agent-mode-v15-multimodal/
+    context: docs/superpowers/specs/2026-05-23-agent-mode-v15-multimodal/context.md
+    track_overview: docs/superpowers/specs/2026-05-23-agent-mode-v15-multimodal/01-multimodal/README.md
+    task_1_1_capability: docs/superpowers/specs/2026-05-23-agent-mode-v15-multimodal/01-multimodal/task-01-capability-matrix.md
+    task_1_2_attachment: docs/superpowers/specs/2026-05-23-agent-mode-v15-multimodal/01-multimodal/task-02-attachment-fallback.md
+    task_1_3_routing: docs/superpowers/specs/2026-05-23-agent-mode-v15-multimodal/01-multimodal/task-03-routing-layer.md
+    task_1_4_vision_tools: docs/superpowers/specs/2026-05-23-agent-mode-v15-multimodal/01-multimodal/task-04-tool-gating.md
+    task_1_5_runtime: docs/superpowers/specs/2026-05-23-agent-mode-v15-multimodal/01-multimodal/task-05-error-recovery.md
+  progress:
+    total_tasks: 5
+    completed_tasks: 0
+    reviewed_tasks: 0
+    current_task: 'S4 wave 1: task 1.1 capability matrix ⊥ task 1.2 attachment fallback (并行 Tier 3 sub-worktree)'
+  decisions:
+  - 'D1 (parent): 新加 attachment.vision_describe task profile — 用于 task 1.2 上传时跑 VLM 生图片画面描述；profile 列表从 21 → 26（含板块 2/3 加的 4 个）；DB Registry 加 ai_service 行路由到 qwen3-vl-flash。'
+  - 'D2 (parent): 要做放大镜 — V1.5 必交付 analyze_image / annotate_image vision 工具，不是 V2 占位；不论主模型单/多模态都注册（RequiresVision=false），让 agent 主动调专家工具做精细分析。'
+  - '1.1-D1: capability 字段放 ai_service.capability_json 现有 JSON 字段（已有，零 migration cost），不新建 ai_service_capability 关联表。'
+  - '1.1-D2: cache 用进程内 sync.Map + 5min TTL；admin PATCH 后立刻 InvalidateCache。多实例间 5min 延迟接受，V2 加 Redis pub/sub。'
+  - '1.2-D1: 异步 fallback 用进程内 worker pool（10 worker + per-user semaphore 3 并发），不引入 Kafka/Redis Stream；进程重启时扫表 RecoverPending。'
+  - '1.2-D2: VLM 副模型用 qwen3-vl-flash（D2 推荐，价格便宜质量够），通过新 attachment.vision_describe profile 走 aiservice 入口，禁止业务直接 import provider 包。'
+  - '1.2-D3: text_fallback 模板固定（image / pdf / audio 三种），fallback 生成失败兜底文案 "[图片：{filename}，描述生成失败：{error}]"，避免 WaitReady 死等。'
+  - '1.3-D1: buildAgentInput 改为 buildAgentInputForModel 返回 []ChatMessage 而非 string；旧函数移除；caller 传完整 *model.AgentAttachment 列表而非 URL 字符串数组。'
+  - '1.3-D2: waitForFallback 轮询 100ms × 15 次 = max 1500ms；超时注入"[图片：{filename}，描述生成中，请稍后重试]"占位文字，不阻塞 agent run。'
+  - '1.4-D1: 缓存复用 — analyze_image 命中 attachment 表预生成 vision_description / ocr_text（fallback_ready=true 且 question 不在 bypass 关键词列表），annotate_image 始终不走缓存。'
+  - '1.4-D2: graceful error — 工具内部失败不返 error 给 Eino（防 fatal NodeRunError），返回结构化失败描述 + nil error 让 agent 自己决定。每 run 配额 analyze 10 / annotate 5。'
+  - '1.5-D1: 8 个正则 pattern 覆盖 5 provider + 通用关键词；最多剥图重试 1 次（避免死循环）；每次触发都告警，提示 capability 数据漏 seed。'
+  - '主控-D1: Wave 切分策略 — Wave 1 并行 1.1+1.2（disjoint 验证通过），Waves 2-4 串行 1.3 → 1.4 → 1.5（都触碰 runner.go 不同位置，ndf-check-disjoint 会 FAIL，按 Tier 4 规则强制串行）。'
+  related_features:
+  - 'agent-mode-v15-context-v2 (S3 并发 — Track 2 上下文管理 V2，独立 worktree 无冲突，板块 1 完成后才能在多模态切换场景中测试 autocompact)'
+  - 'agent-mode-p0-tools (S3 已完成 b2f747c1 — 提供 attachment.UploadService 基础设施，本 feature task 1.2 在其上扩展 fallback 字段)'
+  blockers: []
+  created_at: '2026-05-23T13:15:00+08:00'
 - id: agent-mode-v15-context-v2
   ndf_version: '3.0'
   description: '有数 Agent Mode V1.5 板块 2 — 上下文管理 V2（平行重做）。让 agent 长会话 + 多轮 ReAct + 大 tool result 不爆 context。D3 决策：V1 包 internal/numind/biz/compact/ 完全不动，新建独立包 internal/numind/biz/compactv2/。agent mode 通过 RunRequest.UseCompactV2=true 走 V2；SOP/SalesRAG/监控等其他场景继续 V1。5 个 sub-task：(2.1) DB schema 改造 — agent_run 加 4 个 V2 字段（compact_state_v2 / total_tokens_used_v2 / use_compact_v2 / context_window_limit_v2）+ 新建 agent_tool_artifact 表 + 新 store 接口（不动现有 IAgentRunStore）；(2.2) L0 tool artifact 写盘 — 超 16KB tool result 写盘 + 元数据入库，messages 留 <persisted-output ref="..." preview="..."/> 引用 + 新 read_tool_artifact 工具供 LLM 翻页；(2.3) L1 prune + L2 microcompact — 50% / 70% 阈值不调 LLM 廉价处理（PruneOldToolResults + MicrocompactByToolName + EstimateMessagesTokens）；(2.4) L3 autocompact — 85% 触发 LLM 12 段固定模板压缩，<reference-only data-internal="true">...</reference-only> XML 包裹（D5），保最近 5 messages + 95% hard limit + 3 fail breaker→context_exhausted；(2.5) Streaming Context Scrubber — token-level state machine 过滤 LLM stream 输出中的 <memory>/<context>/<reference-only>/<system-reminder>/<persisted-output> data-internal="true" 标签 + [Personal Memory:]/[Context:] 行内 marker。Out of scope: V1 → V2 数据迁移；替换 SOP/SalesRAG/监控的 V1 调用；prod 部署；前端改动；跨会话 memory（板块 3）。'
