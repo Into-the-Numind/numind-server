@@ -122,7 +122,8 @@ func (s *userMemoryProfileStore) Upsert(ctx context.Context, profile *model.User
 }
 
 // UpdateCachedInsight 仅更新 dialectic cache 三字段（不动其它列）。
-// 若 profile 行不存在则 RowsAffected=0；调用方需先 Upsert profile。
+// 若 profile 行不存在返回 gorm.ErrRecordNotFound。
+// 调用方可用 errors.Is(err, gorm.ErrRecordNotFound) 判断后决定 Upsert 或忽略。
 func (s *userMemoryProfileStore) UpdateCachedInsight(ctx context.Context, userID uint, insight string, factCount int) error {
 	now := time.Now()
 	res := s.db.WithContext(ctx).

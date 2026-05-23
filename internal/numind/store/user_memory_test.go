@@ -125,7 +125,7 @@ func TestUserMemory_FactCRUD_TotalFactsIncrement(t *testing.T) {
 
 // TestUserMemory_ListOpts verifies category / confidence filters and archived hiding.
 func TestUserMemory_ListOpts(t *testing.T) {
-	_, fs, _ := newTestUserMemoryStores(t)
+	ps, fs, _ := newTestUserMemoryStores(t)
 	ctx := context.Background()
 
 	// 10 facts, mixed confidence (0.60-0.95), 3 categories.
@@ -143,6 +143,11 @@ func TestUserMemory_ListOpts(t *testing.T) {
 	}
 	require.NoError(t, fs.BatchCreate(ctx, facts))
 
+	// Sanity: total_facts == 10 after BatchCreate
+	p, err := ps.Get(ctx, 1)
+	require.NoError(t, err)
+	assert.Equal(t, 10, p.TotalFacts, "total_facts must be 10 after BatchCreate(10)")
+
 	// MinConfidence=0.80 → 5 hits (0.90, 0.80, 0.95, 0.88, 0.92)
 	hi, err := fs.List(ctx, 1, ListFactOpts{MinConfidence: 0.80})
 	require.NoError(t, err)
@@ -159,12 +164,9 @@ func TestUserMemory_ListOpts(t *testing.T) {
 		assert.Equal(t, "preference", f.Category)
 	}
 
-	// IncludeArchived=false (default) hides archived rows
-	// First archive one fact
-	require.NoError(t, fs.Archive(ctx, facts[0].ID)) // sample facts copied into slice; need to look up real ID via UUID
-	// (The Archive above uses the original slice ID which was assigned by GORM during BatchCreate;
-	// note: BatchCreate writes back IDs into the passed slice; verify this assumption below.)
-	// Defensive: do another archive by UUID lookup.
+	// IncludeArchived=false (default) hides archived rows.
+	// Archive one fact via UUID lookup (single source of truth for the row's ID).
+	// idempotency tested separately in TestUserMemory_Archive_Idempotent.
 	first, err := fs.GetByUUID(ctx, "u-01")
 	require.NoError(t, err)
 	require.NoError(t, fs.Archive(ctx, first.ID))
@@ -178,6 +180,11 @@ func TestUserMemory_ListOpts(t *testing.T) {
 	allInc, err := fs.List(ctx, 1, ListFactOpts{IncludeArchived: true, Limit: 100})
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, len(allInc), len(all)+1, "IncludeArchived=true should include archived rows")
+
+	// total_facts must decrement by exactly 1 after archiving 1 alive row.
+	p, err = ps.Get(ctx, 1)
+	require.NoError(t, err)
+	assert.Equal(t, 9, p.TotalFacts, "total_facts must be 10-1=9 after archiving one alive fact")
 }
 
 // ─── Case 4: OrderBy whitelist (defense in depth against SQL injection) ──────

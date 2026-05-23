@@ -70,7 +70,10 @@ CREATE TABLE IF NOT EXISTS user_memory_facts (
     updated_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     UNIQUE KEY uk_uuid (uuid),
-    -- 复合 index 包含 subject_id 字段，V1.5 全 NULL 不影响查询；V2 启用后可直接 hit
+    -- V2 Layer B 兼容性复合 index（user_id, subject_id, confidence DESC）
+    -- V1.5 内：subject_id 全 NULL，本 index 不参与查询路由（其他 index 处理）
+    -- 接受 V1.5 写放大（per-row index maintenance）换取 V2 启用 Layer B 时零破坏性 ALTER
+    -- 见 task-02-memory-schema.md §D-7
     KEY idx_user_subject_confidence (user_id, subject_id, confidence DESC),
     KEY idx_user_confidence         (user_id, confidence DESC, is_archived),
     KEY idx_user_category           (user_id, category, is_archived),
