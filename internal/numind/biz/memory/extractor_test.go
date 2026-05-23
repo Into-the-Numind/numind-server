@@ -354,7 +354,9 @@ func TestExtract_LLMFailure_NoRetry(t *testing.T) {
 
 	// Worker should still be alive — enqueue another and confirm.
 	mc2 := staticResp(`[]`)
-	svc.chat = mc2.fn() // swap mock mid-flight (test-only seam)
+	// P2.C: use swapChatFnForTest (chatMu-protected) instead of direct field
+	// write to keep -race detector quiet.
+	svc.swapChatFnForTest(mc2.fn())
 	svc.Enqueue(47, "sess-2", sampleMsgs(), false)
 	waitForChatCalls(t, mc2, 1, 2*time.Second)
 }

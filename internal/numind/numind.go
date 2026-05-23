@@ -299,6 +299,11 @@ func run() error {
 	// 优雅关闭博主监控调度器
 	bizLayer.Monitor().StopScheduler()
 
+	// 优雅关闭 Task 3.3 memory extractor（停止 5 worker goroutine + drain queue）。
+	// 在 httpsrv.Shutdown 之后调用：HTTP 已经停了，没有新的 agentRunner.Run 会再次
+	// 触发 Enqueue；此处 Stop close(jobQueue) + ctx cancel 让 worker 干净退出。
+	bizLayer.CloseMemoryExtractor(ctx)
+
 	// 优雅关闭 Langfuse 客户端
 	langfuse.C.Stop()
 

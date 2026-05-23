@@ -477,6 +477,12 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		}
 		// Task 3.3: also enqueue on short-circuit path so terminated turns with
 		// no tool calls still produce facts. Same non-blocking contract.
+		// P1.D: omit the assistant message — short-circuit means the LLM never
+		// actually produced a reply (the line above writes req.Input back as the
+		// assistant slot only to satisfy WriteTurn schema). Passing both with
+		// identical content would make the extractor see "user and assistant
+		// said the same thing" and bias facts accordingly. Send only the user
+		// message; the extractor handles single-role inputs.
 		if r.memoryExtractor != nil && req.UserID != 0 {
 			// TODO(task-3.6): wire trivial detection.
 			scSession := req.SessionID
@@ -485,7 +491,6 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 			}
 			r.memoryExtractor.Enqueue(req.UserID, scSession, []memory.ChatMessage{
 				{Role: "user", Content: req.Input},
-				{Role: "assistant", Content: req.Input},
 			}, false)
 		}
 		return &RunResult{

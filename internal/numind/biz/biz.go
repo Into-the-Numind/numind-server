@@ -100,6 +100,7 @@ type biz struct {
 	permissionGate    *permission.PermissionGate // #6 agent-mode-permission-pipeline
 	complianceGate    compliance.ComplianceGate  // #13 agent-mode-compliance-3layer
 	complianceAudit   *compliance.AuditLogger    // #13 agent-mode-compliance-3layer (Stop on shutdown)
+	memoryExtractor   *memory.ExtractorService   // Task 3.3 LLM extraction (Stop on shutdown)
 	studentQuerySvc   *agent.StudentQueryService // #14 follow-up ALPHA student-facing queries
 	studentRunSvc     *agent.StudentRunService   // #14 BETA student-facing run lifecycle
 }
@@ -367,6 +368,10 @@ func NewBiz(ds store.IStore) *biz {
 	)
 	// Use a long-lived background context — Stop() on shutdown drains cleanly.
 	memoryExtractor.Start(context.Background())
+	// P1.B: stash the service on the biz struct so the shutdown sequence can
+	// reach Stop() — mirrors complianceAudit lifecycle (NewBiz constructs +
+	// stores; numind.go shutdown calls CloseMemoryExtractor via the biz handle).
+	b.memoryExtractor = memoryExtractor
 
 	b.agentRunner = agent.NewAgentRunner(
 		ds.AgentRuns(),
@@ -588,6 +593,19 @@ func (b *biz) CloseComplianceAudit(ctx context.Context) {
 			log.Warnw("compliance audit logger stop timed out",
 				"error", err, "drop_count", b.complianceAudit.DropCount())
 		}
+	}
+}
+
+// CloseMemoryExtractor 优雅停止 Task 3.3 ExtractorService 的 5 worker goroutine
+// （context cancel + close queue + wg.Wait）。
+// 与 ClosePermissionGate / CloseComplianceAudit 同 shutdown 模式：未调时进程退出
+// goroutine 随之结束，但 in-flight LLM 调用可能被中断（无 DB 一致性风险 —— 失败
+// 的 extract 不重试，下一轮 turn 自然再触发）。Stop 是 idempotent。
+// Stop 内部已处理 ctx — 此方法接受 ctx 参数仅为接口对齐 CloseComplianceAudit 风格。
+// agent-mode-v15-memory-layer-a Task 3.3.
+func (b *biz) CloseMemoryExtractor(_ context.Context) {
+	if b.memoryExtractor != nil {
+		b.memoryExtractor.Stop()
 	}
 }
 

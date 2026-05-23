@@ -87,7 +87,9 @@ const rebuilderLLMTemperature = 0.2
 //   - All LLM calls go through aiservice.Chat with profile.AgentMemoryExtract
 //
 // Concurrency safety: jobQueue is a buffered chan; debounceMap is sync.Map;
-// workerCount + chatFn + storeRefs are immutable after construction.
+// workerCount + storeRefs are immutable after construction. The `chat` seam is
+// guarded by chatMu so tests can hot-swap mid-flight via swapChatFnForTest
+// without racing the workers.
 type ExtractorService struct {
 	factStore    store.IUserMemoryFactStore
 	profileStore store.IUserMemoryProfileStore
@@ -97,7 +99,9 @@ type ExtractorService struct {
 	workerCount int
 
 	// chat is the LLM-call seam — production wires aiservice.Chat; tests inject a mock.
-	chat extractorChatFn
+	// Guarded by chatMu (P2.C: tests may swap mid-flight; workers read concurrently).
+	chatMu sync.Mutex
+	chat   extractorChatFn
 
 	// debounceWindow / minConfidence / rebuildThreshold are settable via With* opts.
 	debounceWindow   time.Duration
@@ -109,6 +113,23 @@ type ExtractorService struct {
 	wg         sync.WaitGroup
 	startOnce  sync.Once
 	stopOnce   sync.Once
+}
+
+// loadChatFn reads the chat seam under chatMu. Called by workers each job.
+func (s *ExtractorService) loadChatFn() extractorChatFn {
+	s.chatMu.Lock()
+	defer s.chatMu.Unlock()
+	return s.chat
+}
+
+// swapChatFnForTest replaces the LLM seam at runtime. Test-only — production
+// constructs the final chat fn via WithExtractorChatFn before Start.
+// Lower-case unexported on purpose: outside callers should use With* options
+// at construction, not mutate a running service.
+func (s *ExtractorService) swapChatFnForTest(fn extractorChatFn) {
+	s.chatMu.Lock()
+	defer s.chatMu.Unlock()
+	s.chat = fn
 }
 
 // extractorChatFn is the seam used by ExtractorService to call aiservice.Chat.
@@ -206,6 +227,15 @@ func (s *ExtractorService) Start(ctx context.Context) {
 }
 
 // Stop signals all workers to drain and waits for them. Idempotent.
+//
+// Drain semantics: only the worker goroutines (workerCount of them) are tracked
+// by s.wg, so Stop returns once every worker exits. Detached rebuild goroutines
+// fired by maybeRebuildProfile (60s timeout each, runs on context.Background)
+// are NOT in the wg — they may outlive Stop() by up to 60 s. Acceptable given
+// the in-flight count is bounded (at most #users-hitting-threshold-near-shutdown)
+// and rebuild does write-side work only (UpdateNarrative / ResetExtractionCount).
+// Tightening to a full drain would require coupling the rebuild timeout to a
+// shutdown ctx — beyond Task 3.3 scope.
 func (s *ExtractorService) Stop() {
 	s.stopOnce.Do(func() {
 		if s.stopCancel != nil {
@@ -229,6 +259,12 @@ func (s *ExtractorService) Stop() {
 //     still skip the older job at pull time via WorkerStaleSkipDelta check
 //   - Queue full → metrics + log warn + drop
 //
+// Note: We always enqueue and rely on worker-side stale-skip (WorkerStaleSkipDelta=25s)
+// for debounce. This is equivalent to spec's "skip enqueue within 30s" semantics:
+// same-user rapid enqueues all get stale-skipped at worker time except the most recent.
+// Trade-off: a few extra queue slots used briefly (1-2 per user), but simpler than
+// fingerprint-based per-user de-queue check.
+//
 // Callers (AgentRunner.handleTerminated) MUST NOT block on this — the call
 // returns immediately even on the drop path.
 func (s *ExtractorService) Enqueue(userID uint, sessionID string, msgs []ChatMessage, isTrivial bool) {
@@ -238,6 +274,14 @@ func (s *ExtractorService) Enqueue(userID uint, sessionID string, msgs []ChatMes
 	}
 	if userID == 0 {
 		// Unauthenticated context — nothing to do.
+		return
+	}
+	// P1.A: guard against send-on-closed-channel during shutdown. Stop() calls
+	// close(s.jobQueue) after cancelling s.stopCtx; any concurrent Enqueue from
+	// in-flight agentRunner.Run would otherwise panic with "send on closed
+	// channel". The select's `default` branch only catches a *full* open chan,
+	// not a closed one. Drop silently — Enqueue contract is best-effort.
+	if s.stopCtx != nil && s.stopCtx.Err() != nil {
 		return
 	}
 	now := time.Now()
@@ -343,7 +387,9 @@ func (s *ExtractorService) extract(ctx context.Context, job ExtractionJob) {
 		langfuse.WithGenInput(promptUser),
 	)
 
-	resp, err := s.chat(ctx, profile.AgentMemoryExtract, aiservice.ChatRequest{
+	// P2.C: read chat seam through chatMu so swapChatFnForTest is race-free.
+	chatFn := s.loadChatFn()
+	resp, err := chatFn(ctx, profile.AgentMemoryExtract, aiservice.ChatRequest{
 		Messages: []aiservice.ChatMessage{
 			{Role: aiservice.MessageRoleSystem, Content: aiservice.MessageContent{Text: ExtractionPromptSystem}},
 			{Role: aiservice.MessageRoleUser, Content: aiservice.MessageContent{Text: promptUser}},
@@ -468,11 +514,18 @@ func (s *ExtractorService) persistFacts(ctx context.Context, job ExtractionJob, 
 			metrics.MemoryDedupHitsInc()
 		case errors.Is(err, gorm.ErrRecordNotFound):
 			// Miss — INSERT new fact.
+			// P1.C: EscapeForStorage matches the L1 sync-turn invariant
+			// (provider.go:156). FenceRenderer.RenderMemoryBlock assumes DB
+			// content is already escaped — when future code wires this L2
+			// store into the system-prompt memory-context fence, unescaped
+			// `<`/`>`/`&` from LLM-derived fact content would break the XML
+			// structure (or enable prompt injection). Apply at the write
+			// boundary so the invariant holds regardless of consumer wiring.
 			row := &model.UserMemoryFact{
 				UUID:              uuid.New().String(),
 				UserID:            job.UserID,
 				SubjectID:         nil, // V1.5 Layer A: always nil
-				Content:           strings.TrimSpace(f.Content),
+				Content:           EscapeForStorage(strings.TrimSpace(f.Content)),
 				Category:          f.Category,
 				Confidence:        f.Confidence,
 				Importance:        0.50,
@@ -566,6 +619,9 @@ func (s *ExtractorService) maybeRebuildProfile(ctx context.Context, userID uint)
 	}
 	// Threshold hit — fire rebuild in detached goroutine. Use background ctx so
 	// caller cancellation doesn't kill the rebuild mid-flight.
+	// P2.C: snapshot chat seam through chatMu before goroutine launch so the
+	// detached call doesn't race with swapChatFnForTest.
+	rebuildChatFn := s.loadChatFn()
 	go func() {
 		bgCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
@@ -575,7 +631,7 @@ func (s *ExtractorService) maybeRebuildProfile(ctx context.Context, userID uint)
 					"user_id", userID, "panic", fmt.Sprintf("%v", r))
 			}
 		}()
-		if rerr := RebuildNarrative(bgCtx, s.factStore, s.profileStore, s.chat, userID); rerr != nil {
+		if rerr := RebuildNarrative(bgCtx, s.factStore, s.profileStore, rebuildChatFn, userID); rerr != nil {
 			log.Warnw("memory.extractor RebuildNarrative failed",
 				"user_id", userID, "error", rerr)
 			// Do NOT reset counter on failure — retry on next extraction.
