@@ -75,11 +75,13 @@ features:
     task_2_5_scrubber: /Users/zhiyuchen/Downloads/有数-Agent-Mode-V1.5-NDF-spec/02-context/task-05-streaming-scrubber.md
   progress:
     total_tasks: 5
-    completed_tasks: 1
-    reviewed_tasks: 1
-    current_task: 'S4 wave 2: task 2.2 (artifact write) ⊥ task 2.5 (scrubber) 并行 dispatch'
+    completed_tasks: 3
+    reviewed_tasks: 3
+    current_task: 'S4 wave 3: task 2.3 prune + microcompact (L1/L2，不调 LLM)'
   commits:
   - '234d45d7: feat(compactv2): add V2 schema + compactv2 package skeleton (Task 2.1) — spec PASS / code PASS, P1+P2 修复 (dead branch / IF NOT EXISTS / PascalCase consts / AutoMigrate HasColumn test)'
+  - '17d3516f: feat(scrubber): add Streaming Context Scrubber package (Task 2.5) — spec PASS (P2×2) / code PASS (P1 fixes: README + 单引号 regex + SoT 校验)'
+  - 'e9b68dac: feat(compactv2): add L0 tool artifact write-to-disk + read_tool_artifact (Task 2.2) — spec PASS / code PASS, P1 fixes: biz.go WithCompactV2Deps wiring + WriteFile 失败测试 + V1/V2 routing gate 表格测试; import cycle 通过结构性接口解耦 (deps.go)'
   decisions:
   - 'D3 (parent): 平行重做 — V1 internal/numind/biz/compact/ 完全保留不动，新建 internal/numind/biz/compactv2/ 独立包。agent mode 通过 RunRequest.UseCompactV2=true 走 V2，SOP/SalesRAG/监控等其他场景继续 V1。V2 跑稳 6 个月后再讨论替换 V1（不在 V1.5 范围）。'
   - 'D4 (parent): dialectic / autocompact 用 qwen-plus 或 deepseek-v3-2（不要 thinking model）。V2 复用现有 agent.compact profile（DB Registry 路由）。'
