@@ -13,12 +13,17 @@ import (
 	"numind-server/internal/pkg/aiservice/profile"
 )
 
-// stubChat returns a chatFn that always returns the given output (and counts calls).
+// chatFnSig is the function signature of aiservice.Chat (used for test mocks).
+type chatFnSig = func(ctx context.Context, taskID string, req aiservice.ChatRequest) (*aiservice.ChatResponse, error)
+
+// chatCall records the args of one chatFn invocation for test assertions.
 type chatCall struct {
 	TaskID string
 	Req    aiservice.ChatRequest
 }
 
+// stubChat returns a chatFn that always returns the given output and records call args.
+// Returns the fn AND a *[]chatCall so the test can inspect what was called.
 func stubChat(t *testing.T, output string, promptTokens, completionTokens int) (chatFnSig, *[]chatCall) {
 	t.Helper()
 	calls := make([]chatCall, 0, 2)
@@ -26,6 +31,7 @@ func stubChat(t *testing.T, output string, promptTokens, completionTokens int) (
 		calls = append(calls, chatCall{TaskID: taskID, Req: req})
 		return &aiservice.ChatResponse{
 			Content: output,
+			Model:   "qwen-turbo", // mimic what aiservice adapter sets on success
 			Usage: aiservice.TokenUsage{
 				PromptTokens:     promptTokens,
 				CompletionTokens: completionTokens,
@@ -43,10 +49,11 @@ func errChat(err error) chatFnSig {
 	}
 }
 
-// chatFnSig is the function signature of aiservice.Chat (used for test mocks).
-type chatFnSig = func(ctx context.Context, taskID string, req aiservice.ChatRequest) (*aiservice.ChatResponse, error)
-
 // withChatFn swaps the package-level chatFn for the duration of the test.
+//
+// NOTE: not safe for t.Parallel — chatFn is a package-level var, parallel tests
+// would race on it. Same applies to withPromptFn. Add sync.Mutex or move to
+// per-test injection if parallelism is needed later.
 func withChatFn(t *testing.T, fn chatFnSig) {
 	t.Helper()
 	old := chatFn
@@ -55,6 +62,7 @@ func withChatFn(t *testing.T, fn chatFnSig) {
 }
 
 // withPromptFn swaps the package-level promptFn for the duration of the test.
+// See withChatFn for the t.Parallel caveat.
 func withPromptFn(t *testing.T, fn func(name, fallback string) (string, int)) {
 	t.Helper()
 	old := promptFn

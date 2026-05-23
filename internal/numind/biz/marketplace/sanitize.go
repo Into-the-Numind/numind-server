@@ -148,7 +148,12 @@ func callSanitizeLLM(ctx context.Context, body string) (sanitized string, prompt
 	completionTokens = resp.Usage.CompletionTokens
 
 	if tc != nil {
+		// WithGenModel(resp.Model) — Adapter resolves the actual model that handled
+		// the call (qwen-turbo, qwen-turbo-fallback-X, etc.); Langfuse uses this for
+		// per-model cost aggregation. Pattern matches biz/memory/extractor.go and
+		// biz/memory/selector.go success-path EndGeneration.
 		langfuse.EndGeneration(tc.TraceID, genID,
+			langfuse.WithGenModel(resp.Model),
 			langfuse.WithGenOutput(sanitized),
 			langfuse.WithGenUsage(promptTokens, completionTokens),
 		)
