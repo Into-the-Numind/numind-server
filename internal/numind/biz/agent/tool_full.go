@@ -69,6 +69,10 @@ type FullTool interface {
 type ToolConfig struct {
 	EnableSandbox  bool
 	EnableImageGen bool
+	// EnableSkills enables the invoke_skill tool (V1.5 Track 4 task 4.4).
+	// Requires EnableSandbox=true to have effect. Controlled by the agent_definition
+	// tool_flags JSON key "enable_skills". Defaults to false (prod-safe).
+	EnableSkills bool
 	// 后续 feature 按需扩展
 }
 
