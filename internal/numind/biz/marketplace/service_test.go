@@ -642,6 +642,65 @@ func TestSetRecommended_NotFound(t *testing.T) {
 	assert.ErrorIs(t, err, ErrMarketplaceNotFound)
 }
 
+// ---- additional Publish/sanitize tests ----
+
+func TestPublish_SanitizeLLMFailure_NoDBWrite(t *testing.T) {
+	// When sanitize LLM (Stage 2) fails, Publish must return error and write
+	// NOTHING to skill_marketplace. spec §10.2 "LLM down → publish disabled".
+	svc, art, _, _, db := newTestService(t)
+	seedSkill(t, art, 10, 1, "raw body")
+
+	// Inject LLM failure into the sanitize.go chatFn.
+	withChatFn(t, errChat(errors.New("provider quota exceeded")))
+	withPromptFn(t, func(name, fallback string) (string, int) { return fallback, 0 })
+
+	_, err := svc.Publish(context.Background(), 1, PublishRequest{
+		SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "anything",
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrSanitizeUnavailable, "must propagate sanitize failure as ErrSanitizeUnavailable")
+
+	// DB must have ZERO marketplace rows.
+	var count int64
+	require.NoError(t, db.Model(&model.SkillMarketplace{}).Count(&count).Error)
+	assert.Equal(t, int64(0), count, "no marketplace row when sanitize failed")
+}
+
+func TestCharDelta_FivePercentBoundary(t *testing.T) {
+	// S2-D2 tolerance = 0.05. Test the edge.
+	hundred := strings.Repeat("a", 100)
+	fiveDiff := strings.Repeat("a", 95)                          // 5% delta
+	sixDiff := strings.Repeat("a", 94)                           // 6% delta
+	assert.InDelta(t, 0.05, charDelta(hundred, fiveDiff), 0.001) // exactly tolerance
+	assert.InDelta(t, 0.06, charDelta(hundred, sixDiff), 0.001)  // over tolerance
+	assert.True(t, charDelta(hundred, fiveDiff) <= confirmationDeltaTolerance, "5% should NOT exceed tolerance")
+	assert.True(t, charDelta(hundred, sixDiff) > confirmationDeltaTolerance, "6% MUST exceed tolerance")
+}
+
+func TestPublish_ConfirmationWithinTolerance_Accepted(t *testing.T) {
+	// Stub returns "脱敏后正文ABCDE" (10 chars). User echoes "脱敏后正文ABCD" (9 chars)
+	// — delta = 1/10 = 10%, OVER 5% tolerance. Use a longer body to keep delta within.
+	// Server stub returns "abcdefghij" (10 chars). User echoes the same plus 0 extra
+	// → 0% delta, must pass.
+	svc, art, _, _, db := newTestService(t)
+	seedSkill(t, art, 10, 1, "body")
+
+	stub, _ := stubChat(t, "abcdefghij", 1, 1)
+	withChatFn(t, stub)
+	withPromptFn(t, func(name, fallback string) (string, int) { return "%s", 0 })
+
+	// User echoes identical string — 0% delta, accepted.
+	mp, err := svc.Publish(context.Background(), 1, PublishRequest{
+		SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "abcdefghij",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, mp)
+
+	var count int64
+	require.NoError(t, db.Model(&model.SkillMarketplace{}).Count(&count).Error)
+	assert.Equal(t, int64(1), count)
+}
+
 // ---- helpers used in normalize/delta test ----
 
 func TestNormalizeForCompare_CollapsesWhitespace(t *testing.T) {
