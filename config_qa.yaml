@@ -138,3 +138,15 @@ web_search:
     base_url: "https://api.tavily.com"
     timeout_seconds: 5
     cache_ttl_seconds: 300
+
+# Agent Memory 配置（V1.5 板块 3）
+agent:
+  memory:
+    # Task 3.1: AGENT.md 2 级 cascade loader（部署级 + 用户全局）
+    # 路径 3-6（workspace 维度）V1.5 不实施，等 V2 扩展。
+    agent_md:
+      enabled: true
+      etc_dir: "/etc/numind"                # 部署级路径根
+      user_data_dir: "/opt/numind/qa/user_files"   # 拼接 users/<user_id>/AGENT.md
+      max_per_file_chars: 12288             # 12KB，单文件上限
+      max_total_chars: 51200                # 50KB，所有文件合计上限

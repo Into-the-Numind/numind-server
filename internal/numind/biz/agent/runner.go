@@ -17,6 +17,7 @@ import (
 	"gorm.io/gorm"
 
 	"numind-server/internal/numind/biz/agent/callctx"
+	"numind-server/internal/numind/biz/agent/memory/agentmd"
 	"numind-server/internal/numind/biz/budget"
 	"numind-server/internal/numind/biz/compact"
 	"numind-server/internal/numind/biz/compliance"
@@ -327,11 +328,30 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		}
 	}
 
+	// V1.5 板块 3 task 3.1: AGENT.md 2 级 cascade loader.
+	// 开发者写的规则（部署级 + 用户全局），是 Memories 段（第 3 段）的静态前缀部分，
+	// 与 memorySystemBlock 内的"自学到的 facts"互补。
+	// 无 LLM 调用 → 不接 Langfuse；任意 file 读失败 → 加载器内部 WARN + 跳过，不 fatal。
+	// 拼接顺序：AGENT.md cascade（开发者规则）→ memorySystemBlock（auto-learned facts）。
+	// 二者均挂在段 3 内，先 rules 后 facts（spec §R4，让 LLM 先吸收规则再吸收事实）。
+	var agentMdBlock string
+	if agentMdResult, err := agentmd.LoadAgentMd(ctx, req.UserID); err != nil {
+		// LoadAgentMd 当前不返回 error（spec 保证），保留分支为未来扩展防御。
+		log.Warnw("agentmd.LoadAgentMd failed; continuing without developer rules",
+			"agent_run_id", run.ID, "error", err)
+	} else if agentMdResult != nil && agentMdResult.Content != "" {
+		agentMdBlock = "\n\n## Agent Rules (developer-defined)\n" + agentMdResult.Content + "\n"
+	}
+
 	// 段位 1 + 2 + 3 + (disclaimer + 4) + 5 + 6（蓝本 §4.3.9）
 	// disclaimer 与 memorySystemBlock 同进同退；空字符串时整体段位省略。
+	// V1.5 task 3.1: agentMdBlock 是段 3（Memories）的"开发者规则"前缀，独立于
+	// memorySystemBlock（"auto-learned facts"），二者均挂在 body 与 disclaimer 之间。
+	// agentMdBlock 自带前导 \n\n 和 markdown header，空字符串时无副作用。
 	req.SystemPrompt = skill.PlatformBasePrompt +
 		tenantHardRulesPlaceholder +
 		body +
+		agentMdBlock +
 		memoryDisclaimerBlock +
 		memorySystemBlock +
 		toolsSectionPlaceholder +
