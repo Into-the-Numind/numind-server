@@ -10,6 +10,7 @@ import (
 	_ "image/jpeg" // register JPEG decoder
 	_ "image/png"  // register PNG decoder
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sync/semaphore"
@@ -129,7 +130,7 @@ type fallbackPool struct {
 	store      store.IAgentAttachmentStore
 	jobs       chan uint64 // buffered; capacity = defaultQueueSize
 	perUserSem map[uint]*semaphore.Weighted
-	semMu      chan struct{} // mutex over perUserSem map (capacity 1)
+	semMu      sync.Mutex // protects perUserSem map
 	workers    int
 }
 
@@ -139,15 +140,14 @@ func NewFallbackService(attStore store.IAgentAttachmentStore) FallbackService {
 		store:      attStore,
 		jobs:       make(chan uint64, defaultQueueSize),
 		perUserSem: make(map[uint]*semaphore.Weighted),
-		semMu:      make(chan struct{}, 1), // binary semaphore
 		workers:    defaultWorkers,
 	}
 }
 
 // semFor returns the per-user semaphore, creating it on first access.
 func (p *fallbackPool) semFor(userID uint) *semaphore.Weighted {
-	p.semMu <- struct{}{} // lock
-	defer func() { <-p.semMu }()
+	p.semMu.Lock()
+	defer p.semMu.Unlock()
 	if s, ok := p.perUserSem[userID]; ok {
 		return s
 	}
@@ -158,11 +158,6 @@ func (p *fallbackPool) semFor(userID uint) *semaphore.Weighted {
 
 // Start launches worker goroutines and runs until ctx is cancelled.
 func (p *fallbackPool) Start(ctx context.Context) {
-	// Initialise the mutex channel.
-	p.semMu <- struct{}{}
-	<-p.semMu
-	p.semMu <- struct{}{}
-
 	for i := 0; i < p.workers; i++ {
 		go func() {
 			for {
@@ -315,9 +310,9 @@ func (p *fallbackPool) generate(ctx context.Context, att *model.AgentAttachment)
 	fallbackText := composeErrorFallback(att.Filename, att.Modality, errMsg)
 	completed := time.Now()
 	_ = p.store.UpdateFallback(ctx, att.ID, map[string]interface{}{
-		"fallback_ready":       true,
-		"fallback_error":       errMsg,
-		"text_fallback":        fallbackText,
+		"fallback_ready":        true,
+		"fallback_error":        errMsg,
+		"text_fallback":         fallbackText,
 		"fallback_completed_at": completed,
 	})
 	return fmt.Errorf("generate att %d: %w", att.ID, lastErr)
@@ -425,10 +420,10 @@ func (p *fallbackPool) generateImage(ctx context.Context, att *model.AgentAttach
 	// ── Persist ─────────────────────────────────────────────────────────────
 	completed := time.Now()
 	fields := map[string]interface{}{
-		"ocr_text":             nilIfEmpty(ocrText),
-		"vision_description":   nilIfEmpty(visDesc),
-		"text_fallback":        fallbackText,
-		"fallback_ready":       true,
+		"ocr_text":              nilIfEmpty(ocrText),
+		"vision_description":    nilIfEmpty(visDesc),
+		"text_fallback":         fallbackText,
+		"fallback_ready":        true,
 		"fallback_completed_at": completed,
 	}
 	if err := p.store.UpdateFallback(ctx, att.ID, fields); err != nil {
@@ -448,9 +443,9 @@ func (p *fallbackPool) generatePDF(ctx context.Context, att *model.AgentAttachme
 		fallbackText := composePDFFallback(att.Filename, filesizeKB, "")
 		completed := time.Now()
 		_ = p.store.UpdateFallback(ctx, att.ID, map[string]interface{}{
-			"fallback_ready":       true,
-			"fallback_error":       errMsg,
-			"text_fallback":        fallbackText,
+			"fallback_ready":        true,
+			"fallback_error":        errMsg,
+			"text_fallback":         fallbackText,
 			"fallback_completed_at": completed,
 		})
 		return nil // not a retry-able failure
@@ -485,8 +480,8 @@ func (p *fallbackPool) generatePDF(ctx context.Context, att *model.AgentAttachme
 	fallbackText := composePDFFallback(att.Filename, filesizeKB, extractedText)
 	completed := time.Now()
 	if err := p.store.UpdateFallback(ctx, att.ID, map[string]interface{}{
-		"text_fallback":        fallbackText,
-		"fallback_ready":       true,
+		"text_fallback":         fallbackText,
+		"fallback_ready":        true,
 		"fallback_completed_at": completed,
 	}); err != nil {
 		return fmt.Errorf("generatePDF UpdateFallback: %w", err)
@@ -521,8 +516,8 @@ func (p *fallbackPool) generateAudio(ctx context.Context, att *model.AgentAttach
 	fallbackText := composeAudioFallback(att.Filename, durationSec, transcript)
 	completed := time.Now()
 	if err := p.store.UpdateFallback(ctx, att.ID, map[string]interface{}{
-		"text_fallback":        fallbackText,
-		"fallback_ready":       true,
+		"text_fallback":         fallbackText,
+		"fallback_ready":        true,
 		"fallback_completed_at": completed,
 	}); err != nil {
 		return fmt.Errorf("generateAudio UpdateFallback: %w", err)

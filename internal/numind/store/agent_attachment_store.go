@@ -44,6 +44,12 @@ func newAgentAttachmentStore(db *gorm.DB) IAgentAttachmentStore {
 	return &agentAttachmentStore{db: db}
 }
 
+// NewAgentAttachmentStoreForTest constructs an IAgentAttachmentStore for use
+// in external test packages (bypasses the package-private constructor).
+func NewAgentAttachmentStoreForTest(db *gorm.DB) IAgentAttachmentStore {
+	return newAgentAttachmentStore(db)
+}
+
 var _ IAgentAttachmentStore = (*agentAttachmentStore)(nil)
 
 // Create inserts att into agent_attachment and fills att.ID on success.

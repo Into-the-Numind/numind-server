@@ -36,8 +36,8 @@ var allowedMIMEPrefixes = []string{
 // UploadService handles agent attachment uploads to COS and persists records
 // to agent_attachment.
 type UploadService struct {
-	attStore      store.IAgentAttachmentStore
-	fallbackSvc   agentatt.FallbackService
+	attStore    store.IAgentAttachmentStore
+	fallbackSvc agentatt.FallbackService
 }
 
 // NewUploadService constructs an UploadService.
@@ -61,14 +61,14 @@ func NewUploadServiceWithFallback(attStore store.IAgentAttachmentStore, fallback
 type UploadResult struct {
 	// ID is the primary key of the persisted agent_attachment row.
 	// Zero when DB persistence is not configured.
-	ID           uint64    `json:"id"`
-	URL          string    `json:"url"`
-	Size         int64     `json:"size"`
-	MimeType     string    `json:"mime_type"`
-	Filename     string    `json:"filename"`
-	Modality     string    `json:"modality"`
-	FallbackReady bool     `json:"fallback_ready"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID            uint64    `json:"id"`
+	URL           string    `json:"url"`
+	Size          int64     `json:"size"`
+	MimeType      string    `json:"mime_type"`
+	Filename      string    `json:"filename"`
+	Modality      string    `json:"modality"`
+	FallbackReady bool      `json:"fallback_ready"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // Upload reads the multipart file, validates size and MIME type, uploads to
@@ -175,14 +175,14 @@ func (s *UploadService) Upload(ctx context.Context, userID uint, file multipart.
 	}
 
 	return &UploadResult{
-		ID:           attID,
-		URL:          url,
-		Size:         fileSize,
-		MimeType:     mimeType,
-		Filename:     hdr.Filename,
-		Modality:     modality,
+		ID:            attID,
+		URL:           url,
+		Size:          fileSize,
+		MimeType:      mimeType,
+		Filename:      hdr.Filename,
+		Modality:      modality,
 		FallbackReady: false, // always false at upload time; poll /status
-		CreatedAt:    ts,
+		CreatedAt:     ts,
 	}, nil
 }
 

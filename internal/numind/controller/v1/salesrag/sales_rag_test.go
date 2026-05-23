@@ -127,8 +127,8 @@ func (b *realBizOnlyCustomers) Skill() skillbiz.Service                { return 
 func (b *realBizOnlyCustomers) StudentQuery() *agent.StudentQueryService {
 	return nil
 }
-func (b *realBizOnlyCustomers) StudentRun() *agent.StudentRunService        { return nil }
-func (b *realBizOnlyCustomers) Attachment() *attachment.UploadService      { return nil }
+func (b *realBizOnlyCustomers) StudentRun() *agent.StudentRunService         { return nil }
+func (b *realBizOnlyCustomers) Attachment() *attachment.UploadService        { return nil }
 func (b *realBizOnlyCustomers) AttachmentFallback() agentatt.FallbackService { return nil }
 
 // compile-time guard: this test struct must satisfy biz.IBiz or tests fail here.

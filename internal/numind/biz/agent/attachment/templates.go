@@ -15,6 +15,16 @@ type imageTemplateData struct {
 	OCRText           string // may be empty
 }
 
+// ImageTemplateDataExported is the exported alias of imageTemplateData for use
+// in external test packages (package attachment_test).
+type ImageTemplateDataExported = imageTemplateData
+
+// ComposeImageFallbackExported is the exported wrapper around composeImageFallback
+// for use in external test packages.
+func ComposeImageFallbackExported(d imageTemplateData) string {
+	return composeImageFallback(d)
+}
+
 // composeImageFallback builds the text_fallback string for an image attachment.
 // The template respects spec §3:
 //   - Both VLM and OCR present → include both sections
@@ -81,8 +91,10 @@ func composeErrorFallback(filename, modality, errMsg string) string {
 	}
 }
 
-// composePendingFallback is inserted by buildAgentInput (task 1.3) when
+// ComposePendingFallback is inserted by buildAgentInput (task 1.3) when
 // WaitReady times out — the file is still being processed.
-func composePendingFallback(filename string) string {
+// Exported so that task 1.3 (biz/agent/input.go) can call it without
+// duplicating the template string.
+func ComposePendingFallback(filename string) string {
 	return fmt.Sprintf("[图片：%s，描述正在生成中，请稍后重试或切换到多模态模型]", filename)
 }

@@ -61,7 +61,7 @@ type AgentAttachment struct {
 	// attempt failed, FallbackReady is set true and FallbackError recorded.
 	RetryCount uint8 `gorm:"default:0" json:"retry_count"`
 
-	CreatedAt time.Time `gorm:"type:datetime(3);autoCreateTime" json:"created_at"`
+	CreatedAt time.Time `gorm:"autoCreateTime" json:"created_at"`
 }
 
 // TableName returns the MySQL table name for GORM.
