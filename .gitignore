@@ -79,3 +79,9 @@ scripts/parse_eval/.pytest_cache/
 
 # NDF v3 per-worktree state file (lives in worktree root, never committed)
 .ndf-active
+
+# Python (V1.5 Track 4 — skills dir)
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/

@@ -1,0 +1,32 @@
+# =============================================================================
+# Layer 2: libs — All skill Python dependencies pre-installed
+#
+# Tag: ccr.ccs.tencentyun.com/youshunumind/sandbox-skill:libs-v1.5.0
+#
+# Rebuild when:
+#   - A new skill requires a new Python package not in requirements.txt
+#   - An existing dependency has a security patch
+#
+# Build:
+#   docker build -f Dockerfile.libs \
+#     --build-arg BASE_TAG=base-v1.5.0 \
+#     -t ccr.ccs.tencentyun.com/youshunumind/sandbox-skill:libs-v1.5.0 .
+# =============================================================================
+
+ARG BASE_TAG=base-v1.5.0
+FROM ccr.ccs.tencentyun.com/youshunumind/sandbox-skill:${BASE_TAG} AS libs
+
+# Switch to root temporarily for pip install.
+USER root
+
+# Copy pinned requirements for reproducible builds (T13 decision).
+COPY requirements.txt /tmp/requirements.txt
+
+# Install all skill dependencies in one layer to minimise image size.
+# --no-cache-dir: avoid pip's write cache (saves ~200 MB in the image).
+# --no-deps: not used — dependencies of dependencies are needed.
+RUN pip install --no-cache-dir -r /tmp/requirements.txt && \
+    rm /tmp/requirements.txt
+
+# Return to sandbox user.
+USER sandboxuser

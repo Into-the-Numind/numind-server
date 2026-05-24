@@ -103,6 +103,8 @@ Note: v2 #1 `skill.Delete` is soft (is_active=0), so the third CASCADE rarely tr
 
 > ⚠️ **Superseded by ADR [0002](../../../.ndf/decisions/agent-mode-v2-skill-marketplace/0002-source-type-imported-from-marketplace.md)**: `skill.source_type` 不再扩展。v2 #1 (skill-as-artifact) 已预留 `'imported_from_marketplace'` 作为 ENUM 第 4 值，订阅克隆直接使用。下文的 "add 'subscribed'" + §11 D-COORD migration 都不再需要。
 
+**POST-INVESTIGATION 2026-05-24 (after #1 land)**: `skill` table (v2 #1) `source_type` ENUM 已预留 `imported_from_marketplace`（4 个值：`'generated','custom','imported_from_template','imported_from_marketplace'`）。**#3 无需 ALTER COLUMN**，复制副本时 `SourceType="imported_from_marketplace"` 直接生效。`biz/skill/artifact.CreateRequest.SourceType` 的 binding tag oneof 当前不含此值，但我们走 **Go 程序内部调用** 而非 HTTP binding，binding tag 只在 HTTP 入参校验时生效，对程序构造的 struct 不阻拦。DDL ENUM + Service 内部接受。
+
 `skill` table (v2 #1): ~~add `'subscribed'` to `source_type` enum or CHECK constraint. **Coordination with v2 #1**: see §11 D-COORD — handled via separate forward-only migration that runs **after** #1 land and **before** our migrations apply.~~（superseded — 见上）
 
 ### §2.3 GORM Models
@@ -180,8 +182,7 @@ Three files, all idempotent and reversible:
 | `20260524_120000_create_skill_marketplace.rollback.sql` | rollback | DROP TABLE IF EXISTS skill_marketplace |
 | `20260524_120100_create_skill_subscription.sql` | forward | CREATE TABLE skill_subscription |
 | `20260524_120100_create_skill_subscription.rollback.sql` | rollback | DROP TABLE IF EXISTS skill_subscription |
-| `20260524_120200_skill_add_subscribed_source_type.sql` | forward | ALTER TABLE skill MODIFY COLUMN source_type ENUM('generated','custom','subscribed') NOT NULL; — depends on #1's source_type column type |
-| `20260524_120200_skill_add_subscribed_source_type.rollback.sql` | rollback | ALTER TABLE skill MODIFY COLUMN source_type ENUM('generated','custom') NOT NULL; |
+| ~~`20260524_120200_skill_add_subscribed_source_type.sql`~~ | **DROPPED** | **POST-INVESTIGATION 2026-05-24 (after #1 land)**: #1 已在 `migrations/20260526_120000_create_skill_artifact_tables.sql` 第 14 行 DDL 中预留 `imported_from_marketplace` 作为 ENUM 第 4 值，#3 无需 ALTER。我们的 source_type 用 `imported_from_marketplace`（非原 spec 起草时假设的 `subscribed`）|
 
 **Migration safety**: per CLAUDE.md memory `project_dev_deploy_migration_gap`, CI does not run migrations. S6 ndf-done after deploy, AI manually SSH dev to apply: `ssh -i $BUILD_SSH_KEY $BUILD_SSH_USER@$DEV_SSH_HOST 'mysql ... < migration.sql'`.
 
@@ -243,18 +244,20 @@ type SubscriptionWithMarketplace struct {
 
 type service struct {
     store        store.IMarketplaceStore
-    skillSvc     skill.Service     // v2 #1 dependency
-    skillStore   store.ISkillStore // v2 #1 dependency
+    artifactSvc  *artifact.Service       // v2 #1 dependency — biz/skill/artifact/service.go (concrete struct, not interface)
+    skillStore   store.ISkillArtifactStore  // v2 #1 dependency (per investigation 2026-05-24)
     userStore    store.IUserStore
+    db           *gorm.DB                // for outer tx control (nested tx → savepoint per Subscribe path)
 }
 
 func NewService(
     s store.IMarketplaceStore,
-    skillSvc skill.Service,
-    skillStore store.ISkillStore,
+    artifactSvc *artifact.Service,
+    skillStore store.ISkillArtifactStore,
     userStore store.IUserStore,
+    db *gorm.DB,
 ) Service {
-    return &service{store: s, skillSvc: skillSvc, skillStore: skillStore, userStore: userStore}
+    return &service{store: s, artifactSvc: artifactSvc, skillStore: skillStore, userStore: userStore, db: db}
 }
 ```
 
@@ -296,19 +299,19 @@ func NewService(
 2. Load marketplace row, verify `is_public=1`
 3. Verify `publisher_user_id != subscriberUserID` (no self-subscribe)
 4. Check UNIQUE violation pre-check (subscription already exists) → `errno.ErrAlreadySubscribed`
-5. **In transaction (the atomicity gate)**:
-   - Call `s.skillSvc.Create(ctx, subscriberUserID, skill.CreateRequest{Name: mp.Name, Description: mp.Description, WhenToUse: mp.WhenToUse, AllowedTools: mp.AllowedTools, BodyMD: mp.SanitizedBodyMD, SourceType: "subscribed"})` — yields `clonedSkill.ID`
-   - Insert SkillSubscription `{SubscriberUserID, MarketplaceID, ClonedSkillID}`
-   - UPDATE marketplace SET `subscribe_count = subscribe_count + 1`
+5. **In transaction (the atomicity gate)** — nested tx via `s.db.Transaction(func(tx *gorm.DB) error { ... })`:
+   - Call `s.artifactSvc.Create(ctx, subscriberUserID, subscriberUserID, artifact.CreateRequest{Name: mp.Name, Description: enrichedDesc, WhenToUse: mp.WhenToUse, AllowedTools: mp.AllowedTools, BodyMd: mp.SanitizedBodyMD, SourceType: "imported_from_marketplace"})` — yields `clonedSkill.ID`. **Note**: `artifactSvc.Create` opens its own internal `db.Transaction` — GORM v2 treats this as a SAVEPOINT inside our outer tx (MySQL InnoDB supports), so on outer rollback the savepoint also rolls back. No need to add `CreateInTx` to #1.
+   - Insert SkillSubscription `{SubscriberUserID, MarketplaceID, ClonedSkillID}` via `store.CreateSubscription(ctx, tx, sub)`
+   - UPDATE marketplace SET `subscribe_count = subscribe_count + 1` via `store.IncrementSubscribeCount(ctx, tx, mp.ID, +1)`
 6. Return clonedSkillID
 7. **Langfuse**: trace "skill-marketplace-subscribe", span "clone-to-subscriber"
 
 **`Unsubscribe`**:
 1. Find subscription by `(subscriberUserID, marketplaceID)` → 404 if missing
-2. **In transaction**:
-   - Soft-delete cloned skill via `s.skillSvc.Delete(ctx, sub.ClonedSkillID)` (is_active=0, bindings cascade per #1)
-   - Delete SkillSubscription row (hard delete)
-   - UPDATE marketplace SET `subscribe_count = GREATEST(subscribe_count - 1, 0)` (defensive against double-decrement)
+2. **In transaction** — nested tx via `s.db.Transaction(func(tx *gorm.DB) error { ... })`:
+   - Soft-delete cloned skill via `s.artifactSvc.Delete(ctx, subscriberUserID, sub.ClonedSkillID)` (is_active=0, bindings cascade per #1 implementation)
+   - Delete SkillSubscription row (hard delete) via `store.DeleteSubscription(ctx, tx, subscriberUserID, marketplaceID)`
+   - UPDATE marketplace SET `subscribe_count = GREATEST(subscribe_count - 1, 0)` via `store.IncrementSubscribeCount(ctx, tx, marketplaceID, -1)` (defensive against double-decrement)
 3. Return success
 
 **`ListMySubscriptions`**: JOIN skill_subscription + skill_marketplace, LEFT JOIN agent_skill_binding count agent count, ORDER BY subscribed_at DESC, pagination.
@@ -366,10 +369,10 @@ const sanitizeFallbackPrompt = `你是脱敏助手。请识别以下 markdown �
 ---原文结束---`
 
 func (s *service) sanitize(ctx context.Context, body string, publisherUserID uint) (SanitizeResult, error) {
-    // Stage 1: regex blacklist (PII + tenant competitor names)
-    stage1 := applyRegexBlacklist(ctx, body, publisherUserID, s.userStore)
+    // Stage 1: PII regex blacklist
+    stage1 := applyPIIRegex(body)
 
-    // Stage 2: LLM entity recognition
+    // Stage 2: LLM entity recognition (covers org names, product/course names, competitor names)
     stage2, tokens, err := s.callSanitizeLLM(ctx, stage1)
     if err != nil {
         return SanitizeResult{}, fmt.Errorf("sanitize: %w", err)
@@ -382,22 +385,22 @@ func (s *service) sanitize(ctx context.Context, body string, publisherUserID uin
     }, nil
 }
 
-func applyRegexBlacklist(ctx context.Context, body string, publisherUserID uint, userStore store.IUserStore) string {
-    // PII patterns
+func applyPIIRegex(body string) string {
     out := body
     for _, p := range rePII {
         out = p.Pattern.ReplaceAllString(out, p.Replace)
     }
-    // Tenant competitor list (from agent_permission_config.forbidden_competitor_names)
-    competitors, err := userStore.GetForbiddenCompetitors(ctx, publisherUserID)
-    if err == nil {
-        for _, name := range competitors {
-            if name == "" { continue }
-            out = strings.ReplaceAll(out, name, "[竞品]")
-        }
-    }
     return out
 }
+
+// POST-INVESTIGATION 2026-05-24 (after #1 land): Original spec assumed agent_permission_config
+// would carry a `forbidden_competitor_names JSON` column to feed a regex stage. Actual schema
+// (see internal/pkg/model/agent_permission.go) uses generic rule_type/rule_key/rule_value rows,
+// no JSON aggregate field. Decision: DROP the competitor regex stage. LLM entity recognition
+// already covers competitor mentions (prompt includes "具体产品名/课程名 → [产品]"), and the
+// mandatory frontend diff review gate is the final human check. Simpler pipeline, less DB
+// coupling, no degradation of safety guarantees (LLM + human > regex + LLM + human at marginal
+// cost since LLM call happens anyway).
 
 func (s *service) callSanitizeLLM(ctx context.Context, body string) (sanitized string, tokens struct{ Prompt, Completion int }, err error) {
     // Wrap in Langfuse span if trace context exists
@@ -453,7 +456,7 @@ func (s *service) callSanitizeLLM(ctx context.Context, body string) (sanitized s
 **Key design decisions**:
 
 - **D-UNIQ**: Uniqueness on `(source_skill_id, is_public=1)` enforced in biz layer via SELECT inside transaction. Rationale: MySQL 8 lacks partial unique index; full UNIQUE blocks re-publish-after-unpublish. The race window between SELECT and INSERT is acceptable for low-frequency publish; if double-publish slips through, admin can manually unpublish the dup.
-- **D-TENANT-COMP**: tenant competitor list fetched from `agent_permission_config.forbidden_competitor_names` JSON field (v1 #5 existing). Falls back to empty list if user has no permission config row.
+- ~~**D-TENANT-COMP**~~ **DROPPED 2026-05-24 post #1 investigation**: original design read `agent_permission_config.forbidden_competitor_names` JSON, but actual schema (per `internal/pkg/model/agent_permission.go`) uses generic `rule_type/rule_key/rule_value` rows with no JSON aggregate. LLM stage's prompt already targets "具体产品名/课程名 → [产品]" which covers competitor names. Frontend diff review gate is the final human check. Dropping the regex stage costs nothing because the LLM call happens anyway, and avoids a brittle coupling to the permission schema.
 - **D-PROMPT**: prompt template stored in Langfuse with key `skill-marketplace-sanitize-v1`; falls back to inline if Langfuse fetch fails (matches existing `agent.dialectic` prompt pattern from v1.5 memory layer).
 - **D-LLM-FAIL**: LLM call failure → return error, publish path returns `errno.ErrSanitizeUnavailable` → frontend disables publish button. **No bypass**.
 - **D-CONFIRM**: Publish endpoint receives `confirmed_sanitized_body` from frontend but does NOT trust it blindly. Re-runs sanitize internally and compares (lossy hash: normalize whitespace, then SHA-256). Mismatch within 5% character delta tolerated (LLM non-determinism); larger mismatch rejected as tampering → `errno.ErrSanitizeConfirmationMismatch`.
@@ -466,13 +469,23 @@ package marketplace
 import (
     "context"
     "fmt"
-    "gorm.io/gorm"
-    "numind-server/internal/numind/biz/skill"
+    "time"
+    "numind-server/internal/numind/biz/skill/artifact"
     "numind-server/internal/pkg/langfuse"
     "numind-server/internal/pkg/model"
 )
 
-func (s *service) cloneToSubscriber(ctx context.Context, tx *gorm.DB, mp *model.SkillMarketplace, subscriberUserID uint) (uint64, error) {
+// cloneToSubscriber is Phase 1 of Subscribe's two-phase commit (S4-T4-D1 revised).
+// It is called OUTSIDE any transaction by Subscribe. The cloned skill is committed
+// immediately via artifactSvc.Create (which uses its OWN db.Transaction internally,
+// independent of any caller-controlled tx). If Subscribe's Phase 2 (subscription
+// row insert + count increment) fails, Subscribe is responsible for invoking the
+// compensating artifactSvc.Delete to soft-remove this clone.
+//
+// Originally spec §11 assumed GORM v2 would treat the inner Create as a SAVEPOINT
+// of our outer tx (nested-tx behavior). This is wrong — nested-tx detection is
+// per-*gorm.DB-instance, and artifactSvc holds its own db reference. See S4-T4-D1.
+func (s *service) cloneToSubscriber(ctx context.Context, mp *model.SkillMarketplace, subscriberUserID uint) (uint, error) {
     tc := langfuse.FromContext(ctx)
     var spanID string
     if tc != nil {
@@ -492,31 +505,33 @@ func (s *service) cloneToSubscriber(ctx context.Context, tx *gorm.DB, mp *model.
     enrichedDesc := fmt.Sprintf("%s\n\n[订阅自市场 / marketplace_id=%d / 订阅时间 %s]",
         mp.Description, mp.ID, time.Now().Format("2006-01-02"))
 
-    createReq := skill.CreateRequest{
+    var allowedTools []string
+    if mp.AllowedTools != nil {
+        _ = json.Unmarshal(mp.AllowedTools, &allowedTools)
+    }
+
+    createReq := artifact.CreateRequest{
         Name:         mp.Name,
         Description:  enrichedDesc,
         WhenToUse:    mp.WhenToUse,
-        AllowedTools: mp.AllowedTools,
-        BodyMD:       mp.SanitizedBodyMD,
-        SourceType:   "subscribed",
+        AllowedTools: allowedTools,
+        BodyMd:       mp.SanitizedBodyMD,
+        SourceType:   "imported_from_marketplace",
+        // Note: artifactSvc.Create binding tag oneof DOES NOT include "imported_from_marketplace".
+        // The tag fires only at HTTP layer via Gin ShouldBindJSON. Our internal Go call constructs
+        // the struct directly, so binding is bypassed; the DDL ENUM accepts the value. Verified
+        // against #1's migration 20260526_120000_create_skill_artifact_tables.sql line 14.
     }
-    // Use the transaction-bound store path on skill.Service if available; else fall back to non-tx and accept potential orphan window (mitigated by §6 cleanup cron)
-    clonedID, err := s.skillSvc.CreateInTx(ctx, tx, subscriberUserID, createReq)
+
+    cloned, err := s.artifactSvc.Create(ctx, subscriberUserID, subscriberUserID, createReq)
     if err != nil {
-        return 0, fmt.Errorf("skill.Service.CreateInTx: %w", err)
+        return 0, fmt.Errorf("artifact.Service.Create: %w", err)
     }
-    return clonedID, nil
+    return cloned.ID, nil
 }
 ```
 
-**Dependency on v2 #1**: requires `skill.Service.CreateInTx(ctx, tx, userID, req)` method that participates in caller's transaction. If #1 only exposes `Create(ctx, userID, req)` (no tx parameter), we need a coordination patch (see §11 D-COORD).
-
-**Fallback if #1 has no Tx variant**: split into two-phase commit:
-1. Create cloned skill outside tx (yields clonedID)
-2. Start tx: insert subscription row + update subscribe_count
-3. On tx rollback: defer-call `skill.Delete(clonedID)` to clean up orphan
-
-Two-phase is acceptable but riskier — prefer pushing `CreateInTx` into #1 via PR.
+**Dependency on v2 #1 (POST-INVESTIGATION 2026-05-24 — original §11 D-COORD revised)**: `artifact.Service.Create(ctx, parentUserID, createdBy, req)` exists and uses its own internal `db.Transaction`. Nested-tx semantics (savepoint) provide the atomicity we need. **No new method required on #1**. See §11 (revised) for full rationale and the alternative considered.
 
 ### §3.4 `search.go` — browse query builder
 
@@ -759,24 +774,28 @@ All endpoints require user_token JWT + biz-layer parent-account check.
 **Auth**: admin_token middleware
 **Errors**: 404
 
-### §4.3 Errno additions (`internal/pkg/errno/`)
+### §4.3 Errno additions (`internal/pkg/errno/skill_marketplace.go`)
+
+**POST-INVESTIGATION 2026-05-24 (after #1 land)**: Original spec assumed `NewErrno(401xxx, ...)` numeric-code pattern. The actual project errno system uses `&Errno{HTTP: int, Code: string, Message: string}` struct literal style with HTTP status codes (not numeric registry). See `internal/pkg/errno/skill_artifact.go` for canonical example.
 
 ```go
-// Marketplace errors
+package errno
+
+// Marketplace errors — Code strings prefixed Marketplace.
 var (
-    ErrChildAccountCannotAccessMarketplace = NewErrno(401001, "子账户无法访问技能市场")
-    ErrSkillNotOwned                       = NewErrno(401002, "无权操作此技能")
-    ErrSkillAlreadyPublished               = NewErrno(401003, "该技能已上架，请先下架再重新发布")
-    ErrSelfSubscribeForbidden              = NewErrno(401004, "不能订阅自己发布的技能")
-    ErrAlreadySubscribed                   = NewErrno(401005, "已订阅该技能")
-    ErrMarketplaceNotFound                 = NewErrno(401006, "市场项目不存在或已下架")
-    ErrSubscriptionNotFound                = NewErrno(401007, "订阅记录不存在")
-    ErrSanitizeUnavailable                 = NewErrno(401008, "脱敏服务暂不可用，请稍后重试")
-    ErrSanitizeConfirmationMismatch        = NewErrno(401009, "脱敏内容与确认不符，请重新预览")
+    ErrChildAccountCannotAccessMarketplace = &Errno{HTTP: 403, Code: "Marketplace.ChildAccountForbidden", Message: "子账户无法访问技能市场"}
+    ErrSkillNotOwned                       = &Errno{HTTP: 403, Code: "Marketplace.SkillNotOwned", Message: "无权操作此技能"}
+    ErrSkillAlreadyPublished               = &Errno{HTTP: 409, Code: "Marketplace.SkillAlreadyPublished", Message: "该技能已上架，请先下架再重新发布"}
+    ErrSelfSubscribeForbidden              = &Errno{HTTP: 409, Code: "Marketplace.SelfSubscribeForbidden", Message: "不能订阅自己发布的技能"}
+    ErrAlreadySubscribed                   = &Errno{HTTP: 409, Code: "Marketplace.AlreadySubscribed", Message: "已订阅该技能"}
+    ErrMarketplaceNotFound                 = &Errno{HTTP: 404, Code: "Marketplace.NotFound", Message: "市场项目不存在或已下架"}
+    ErrSubscriptionNotFound                = &Errno{HTTP: 404, Code: "Marketplace.SubscriptionNotFound", Message: "订阅记录不存在"}
+    ErrSanitizeUnavailable                 = &Errno{HTTP: 503, Code: "Marketplace.SanitizeUnavailable", Message: "脱敏服务暂不可用，请稍后重试"}
+    ErrSanitizeConfirmationMismatch        = &Errno{HTTP: 422, Code: "Marketplace.SanitizeConfirmationMismatch", Message: "脱敏内容与确认不符，请重新预览"}
 )
 ```
 
-Error code range 401xxx is the marketplace block (per existing errno conventions — search for nearest unused range during S4).
+HTTP status codes mapped per error semantics (403 / 404 / 409 / 422 / 503). Code strings use `Marketplace.` namespace prefix to match the project convention (e.g., `skill_artifact.go` uses `SkillArtifact.NotFound`). The existing test pattern in errno package detects duplicate Code strings; T7 inherits that test.
 
 ---
 
@@ -1128,34 +1147,46 @@ All traces include `user_id` metadata. Sanitize generations include `model="qwen
 
 ---
 
-## §11 Coordination with v2 #1 (D-COORD)
+## §11 Coordination with v2 #1 (D-COORD) — REVISED POST-LAND 2026-05-24
 
-**Problem**: this feature depends on v2 #1's `skill` table, `biz/skill.Service.Create`, and `agent_skill_binding` table — none of which exist yet on develop.
+**Status**: v2 #1 `agent-mode-v2-skill-as-artifact` landed develop at merge commit `80667115` on 2026-05-24. T01-T07 of #1's plan all shipped. Hard dependency satisfied.
 
-**Strategy**:
+**Resolved divergences** (vs original spec assumptions, from investigation 2026-05-24):
 
-1. **S0-S3 (artifact authoring)**: no code touched, no dependency
-2. **S3→S4 hard gate**: explicit check (see [task #5](../../../numind-server/scripts/ndf/) — we'll inline the check):
+1. **Skill table name**: assumed `skill`, actual `skill`. ✅ Match.
+2. **Skill model path**: assumed `internal/pkg/model/skill.go`, actual `internal/pkg/model/skill_artifact.go` (struct still `model.Skill`). ✅ Spec code samples use `model.Skill` correctly; import path is the only delta.
+3. **biz/skill/artifact package**: actual path `internal/numind/biz/skill/artifact/` (not `internal/numind/biz/skill/`). ✅ Spec §3.3 import updated.
+4. **`source_type` ENUM**: assumed needs ALTER to add `'subscribed'`, actual #1 pre-shipped `'imported_from_marketplace'` in 4-value ENUM. ✅ NO ALTER migration needed. Spec §2.2 and §2.5 updated.
+5. **`CreateInTx(ctx, tx, ...)` method**: assumed must be added to #1. Actual: not present. ✅ Resolution: use nested `db.Transaction()` → MySQL InnoDB SAVEPOINT. `artifactSvc.Create` internally calls `db.Transaction(...)`; nested call yields savepoint behavior. On outer tx rollback, savepoint rolls back. **No PR to #1 required**.
+6. **`CreateRequest.SourceType` binding tag oneof**: actual binding constraint does NOT include `imported_from_marketplace`. ✅ Resolution: irrelevant for our path because we call `artifactSvc.Create` programmatically via Go struct construction, not Gin HTTP binding. Binding tag only fires on HTTP entry. DDL ENUM accepts the value. Spec §3.3 documents this clearly.
+7. **`agent_permission_config.forbidden_competitor_names` JSON column**: assumed present. Actual: schema uses generic `rule_type/rule_key/rule_value` rows, no JSON aggregate column. ✅ Resolution: drop the competitor regex stage entirely. LLM prompt already covers "具体产品名/课程名 → [产品]" and human review gate is the final check. Spec §3.2 simplified to PII-regex + LLM only.
+8. **errno format**: assumed `NewErrno(401xxx, ...)`. Actual: struct literal `&Errno{HTTP: ..., Code: "Marketplace.X", Message: "..."}` per `skill_artifact.go` precedent. ✅ Spec §4.3 rewritten.
+
+**S4 entry checklist** (revised):
+
+1. `cd /private/tmp/wt-agent-mode-v2-skill-marketplace-numind-server`
+2. `git fetch origin develop && git rebase origin/develop` — pulls in #1's T01-T07 + their post-S4 fixes
+3. After rebase, run:
    ```bash
-   cd numind-server && git fetch origin develop
-   # #1 land detection: requires skill table migration AND biz/skill/service.go
-   git log origin/develop --oneline | grep -E "skill-as-artifact|create.*skill.*table" | head -3
-   git show origin/develop:internal/numind/biz/skill/service.go 2>&1 | head -3
-   git show origin/develop:internal/pkg/model/skill.go 2>&1 | head -3
+   git show HEAD:internal/numind/biz/skill/artifact/service.go | head -50  # confirm artifact.Service signature
+   git show HEAD:internal/pkg/model/skill_artifact.go | head -80           # confirm Skill struct fields
    ```
-   - All present → proceed to S4
-   - Missing → ScheduleWakeup 1800s loop, max 7 days, then Pause and Ask
+4. Update spec §2.4 / §3.1 / §3.3 import paths to actual `internal/numind/biz/skill/artifact`
+5. Begin T1 (migrations + models + AutoMigrate)
 
-3. **S4 entry**: in worktree, `git fetch origin develop && git rebase origin/develop` — pulls in #1's changes; conflicts only in shared files (router.go, helper.go) which we'll address one by one
+**Shared files at rebase** (Tier 3 / disjoint-check required):
 
-4. **`skill.Service.CreateInTx` requirement**: if #1 only exposes `Create(ctx, userID, req)` without tx parameter, we need to add `CreateInTx(ctx, tx, userID, req)`. Options:
-   - **Option A (preferred)**: post-land-#1, send a small PR to add `CreateInTx` to #1's package — clean separation
-   - **Option B (fallback)**: implement two-phase commit in clone.go (create skill outside tx, then tx for subscription + cleanup defer) — works but has window for orphan rows
-   - S4 task ordering: detect which #1 actually shipped, then pick A or B
+| File | Owner conflict risk | Mitigation |
+|---|---|---|
+| `numind-server/internal/numind/router.go` | #1 added /v1/skills group; we add /v1/marketplace group | Append-only, no overlap if blocks are contiguous |
+| `numind-server/internal/numind/admin_router.go` | #1 maybe added admin endpoint; we add /v1/admin/marketplace | Append-only |
+| `numind-server/internal/numind/helper.go` | #1 added 3 model AutoMigrate; we add 2 model AutoMigrate | Append-only |
+| `numind-web-v3/src/router/index.ts` | #1 added /config/skills routes; we add /marketplace routes | Append-only |
+| `numind-web-v3/src/views/config/skills/SkillEditor.vue` | #1 created file; we add "发布到市场" button | True edit overlap — must rebase and add button after #1 land confirmed |
+| `numind-web-v3/src/views/config/skills/SkillList.vue` | #1 created file; we add "已发布" badge | True edit overlap |
+| `numind-web-v3/src/layouts/AppLayout.vue` | (no #1 conflict) we add "技能市场" menu item | Solo |
 
-5. **`skill.source_type` ENUM extension**: write a forward-only migration `20260524_120200_skill_add_subscribed_source_type.sql` to ALTER COLUMN to add `'subscribed'` to enum. Idempotent via `INFORMATION_SCHEMA.COLUMNS` check.
-
-6. **Shared files in S4**: rebase carefully on `numind-server/internal/numind/router.go` (add /v1/marketplace group), `numind-server/internal/numind/helper.go` (AutoMigrate registration), `numind-web-v3/src/router/index.ts` (add /marketplace routes), `numind-web-v3/src/views/config/skills/SkillEditor.vue` (add publish button). Use `ndf-check-disjoint.sh` after rebase to confirm no file overlap with other live features (per NDF Rule 12, Tier 3).
+Run `numind-server/scripts/ndf/ndf-check-disjoint.sh` against the file lists if any other concurrent feature (e.g., v2 #2 skill-invocation) overlaps the shared files during our S4. If overlap, downgrade to Tier 4 serial; otherwise Tier 3 OK.
 
 ---
 
