@@ -77,12 +77,13 @@ const sanitizeFallbackPrompt = `你是脱敏助手。请识别以下 markdown �
 
 // Sanitize runs the two-stage pipeline on a Skill body and returns the result.
 // Stage 1: deterministic PII regex (email/phone/id-card/bank-card).
-// Stage 2: LLM entity recognition via aiservice.Chat (qwen-turbo through DB
-// Registry; profile=skill.marketplace.sanitize). Stage 2 failure returns an
-// error wrapping ErrSanitizeUnavailable.
+// Stage 2: LLM entity recognition via aiservice.Chat (deepseek-v4-pro via DMXAPI
+// — see ADR 0001-sanitize-llm-deepseek-v4-pro.md; profile=skill.marketplace.sanitize).
+// Stage 2 failure returns an error wrapping ErrSanitizeUnavailable.
 //
-// All LLM calls record a Langfuse generation (name=sanitize-skill-body,
-// model=qwen-turbo) when a TraceCtx is present in ctx (langfuse.FromContext).
+// All LLM calls record a Langfuse generation (name=sanitize-skill-body) when a
+// TraceCtx is present in ctx (langfuse.FromContext). The actual model name is
+// resolved by adapter.resp.Model and set on EndGeneration (per-route accuracy).
 // Disabled Langfuse: no-op, business continues.
 func Sanitize(ctx context.Context, body string) (*SanitizeResult, error) {
 	stage1 := applyPIIRegex(body)
@@ -115,10 +116,13 @@ func callSanitizeLLM(ctx context.Context, body string) (sanitized string, prompt
 	var genID string
 	if tc != nil {
 		genID = langfuse.SpanID()
+		// model is resolved on EndGeneration via resp.Model — adapter knows the
+		// actual route chosen (deepseek-v4-pro via DMXAPI today; see ADR 0001).
+		// We don't pin a starting hint here so Langfuse UI doesn't display a
+		// model that disagrees with the resolved one.
 		langfuse.CreateGeneration(tc.TraceID, genID,
 			langfuse.WithGenParent(tc.ParentObservationID),
 			langfuse.WithGenName("sanitize-skill-body"),
-			langfuse.WithGenModel("qwen-turbo"),
 			langfuse.WithGenInput(map[string]string{"body": body}),
 		)
 	}

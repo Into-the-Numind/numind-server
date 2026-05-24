@@ -30,4 +30,6 @@ SELECT
   0
 FROM ai_service
 WHERE model_key = 'deepseek-v3.2'
+  AND is_active = 1
+  AND deprecated_at IS NULL
 LIMIT 1;
