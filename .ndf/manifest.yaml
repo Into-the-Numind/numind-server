@@ -2065,10 +2065,10 @@ features:
   ndf_version: '3.0'
   description: 'Agent Mode v2 第 3 个 feature（v2 三件套之末）— 把 Skill 跨租户流通起来。机构父账户可把自己设计的 Skill 脱敏发布到平台市场；其他父账户订阅后，副本拷贝进自己租户的 skill 表，再装载到 Agent 使用。本 feature 范围：(1) 新增 skill_marketplace + skill_subscription 2 张表 + FK + FULLTEXT(ngram) 索引；(2) biz/marketplace 子包（service / sanitize / clone / search / admin 5 文件）；(3) 用户端 /v1/marketplace/* 7 端点（sanitize-preview / publish / unpublish / list / detail / subscribe / unsubscribe / my-subscriptions）+ 管理端 /v1/admin/marketplace/:id/recommend 1 端点；(4) 脱敏管道：正则黑名单（PII + 已配置竞品名）+ aiservice.Chat qwen-turbo 实体识别（人名/机构/产品）+ 前端 diff 人工 review gate 强制确认 + 后端 confirmed_sanitized_body 哈希校验防篡改；(5) 订阅复制语义：订阅时打快照写副本到订阅方 skill 表（独立副本不引用，发布方后续编辑不影响订阅方），cloned_skill_id + subscription 关联两边；(6) 前端 numind-web-v3 新增 /marketplace/* 4 view（Browse / Detail / Subscribed / Publish）+ SkillEditor 加"发布到市场"按钮 + SkillList 加"已发布"徽章 + 顶部菜单加"技能市场"入口。Out of scope: runtime 调用 Skill（v2 #2）；付费/收益分成；prod 部署；C 端学员看市场；Skill scripts 跨租户共享（v2.5）；版本同步推送；发布前 Skill 沙箱验证；管理端批量管理 UI；平台预置 Skill。'
   track: standard
-  stage: S3
+  stage: S5-validation-passed
   classification_reason: 'Standard 4 条触发 — (1) DB schema 变更：是（2 张新表 + 双向 migration + FK + FULLTEXT ngram 索引 + 给 #1 skill.source_type ENUM 加 subscribed） (2) 新增 API 端点：是（8 个：用户端 7 + admin 1） (3) 新外部服务集成：否（脱敏调 aiservice 已有 qwen-turbo 路由） (4) 影响文件数 >>3（biz/marketplace 5 文件 + 2 controller + 2 router 改 + 2 model + 3 migration + 前端 4 view + store + api + AppLayout 菜单 + SkillEditor 加按钮 + SkillList 加徽章 + 单测 + e2e） (5) 高风险业务逻辑：是（跨租户脱敏漏机构信息 = 数据泄漏；订阅复制错租户 = 跨租户污染；recommend 权限错位 = 平台公信力受损）。1+2+4+5 触发 Standard 强制。'
-  last_updated_by: ai-s3-complete-blocked-on-1
-  last_updated_at: '2026-05-24T01:30:00+08:00'
+  last_updated_by: ai-s5-validation-passed
+  last_updated_at: '2026-05-24T12:50:00+08:00'
   repos:
   - numind-server
   - numind-web-v3
@@ -2084,12 +2084,11 @@ features:
     spec: numind-server/docs/superpowers/specs/2026-05-24-agent-mode-v2-skill-marketplace-design.md
     plan: numind-server/docs/superpowers/plans/2026-05-24-agent-mode-v2-skill-marketplace-plan.md
     architecture_blueprint: docs/agent-mode/architecture-v1.md
-  stage: S4
   progress:
     total_tasks: 12
-    completed_tasks: 10
-    reviewed_tasks: 10
-    current_task: 'T11 BLOCKED on envvar gate (S3-D1). Required 4 envvars: E2E_USERNAME_B + E2E_PASSWORD_B (second parent account for cross-tenant subscribe AC-1..AC-4) + E2E_CHILD_USERNAME + E2E_CHILD_PASSWORD (child account for AC-6 cross-tenant 403 verification, spec §10.1 rule 2). Currently only E2E_CHILD_PASSWORD is set in .claude/settings.local.json (value e2e_test_pass_2026). Missing E2E_USERNAME_B / E2E_PASSWORD_B / E2E_CHILD_USERNAME. Per S3-D1 NO test files written yet — gate is mandatory. User must populate envvars in .claude/settings.local.json env block to unblock. ScheduleWakeup 1800s polling until configured, max 7 days then escalate. T11 will then implement marketplace.spec.ts with 5+ cross-tenant flows (AC-1 publish / AC-2 browse / AC-3 subscribe→cloned skill in B tenant / AC-4 unsubscribe softdelete / AC-6 child 403).'
+    completed_tasks: 11
+    reviewed_tasks: 11
+    current_task: 'S5 全部验收通过. 后端 T1-T7+AC-6 patch 全 commit (go test PASS, task lint PASS); 前端 T8/T9/T10 全 commit (npm lint 0 errors, type-check PASS); T11 Playwright e2e 6/6 通过 (1 setup + AC-1/2/3/4/6, envvar gate BLOCKER-2 已解 — 4 个 E2E envvar 均已配). Reviewer dispatch (Sonnet x2): spec-compliance 提 P1x2 (sanitize model spec 偏离 / source_type 表述偏离) + P2x1 (Langfuse hint), code-quality PASS + P2x2 (sibling migration guard). 所有 P1/P2 已修 (commit b16f2bf1): 新建 ADR 0001 (sanitize=deepseek-v4-pro via DMXAPI, 原因 阿里云 free-tier-only 模式 qwen 全 403) + ADR 0002 (source_type=imported_from_marketplace, #1 已预留 enum 第 4 值不需新 migration); spec/plan 加 superseded 横幅指向 ADR; sanitize.go 移除 stale Langfuse model hint; 4 sibling migration 加 deprecated_at guard. T12 是 S5 验证策略 meta task (plan-time 决策, 不计 reviewed). 进 S6 ndf-done.'
   decisions:
   - 'S0-D1 (parent 2026-05-24, 继承自 #1 D4): v2 三件套 #1+#2+#3 串行交付。本 feature 是 #3，#1 land develop 才能进 S4（依赖 skill 表 + biz/skill.Service.Create 写副本）。'
   - 'S0-D2 (ai 2026-05-24, REVISED post-#1-investigation): 订阅 = 复制副本语义。订阅时刻调 artifact.Service.Create (NOT skill.Service.Create — actual package is biz/skill/artifact) 给订阅方租户新建 skill 行 (source_type=imported_from_marketplace，#1 已预留 ENUM 值无需 ALTER COLUMN)，同时写 skill_subscription 关联。发布方后续编辑原 skill 不影响订阅方副本。'
@@ -2121,19 +2120,5 @@ features:
   - 'agent-mode-v2-skill-invocation (v2 #2，软依赖 — 订阅功能落地不必等 #2，但 UI 引导文案假设 Skill 可被 Agent 装载使用)'
   - 'agent-mode-v15-memory-layer-a (merged b0fa0cf2 — Langfuse prompt 管理 + FetchPrompt cache 模式参考)'
   - 'agent-mode-skill-system (#5/14, merged e05498b6 — agent_permission_config table 来源，但 forbidden_competitor_names JSON 字段假设错误 已 dropped)'
-  blockers:
-  - 'BLOCKER-2 (T11 envvar gate per S3-D1): 4 个 E2E envvar 未配置 → marketplace.spec.ts 无法写。Required: E2E_USERNAME_B + E2E_PASSWORD_B + E2E_CHILD_USERNAME + E2E_CHILD_PASSWORD. Currently only E2E_CHILD_PASSWORD present. User action: 在 .claude/settings.local.json env block 加 4 个新条目（值参考现有 admin / e2e_test_pass_2026 命名风格；CHILD_USERNAME_FREE 类似已有 child 账号可复用 username）。ScheduleWakeup 1800s polling, max 7 days.'
-  commits:
-  - '3d477eb4 (worktree): feat(agent-mode-v2-marketplace): T1 migrations + GORM models + AutoMigrate — Sonnet spec PASS_WITH_CONCERNS / quality PASS_WITH_CONCERNS, 0 P0/P1, 8 P2'
-  - 'ea3af75f (worktree): fix(agent-mode-v2-marketplace): T1 P2 — autoCreateTime tags + IsPublic doc comment'
-  - '747deb82 (worktree): feat(agent-mode-v2-marketplace): T2 store layer + 23 unit tests — IMarketplaceStore 11 methods + ListOptions / SubscriptionWithMarketplace types + nested tx support + cross-tenant isolation test'
-  - 'b4e4fa8c (worktree): fix(agent-mode-v2-marketplace): T2 P1 (Create wantPublic fixup) + 4 P2 (UpdateIsPublic happy toggle + popular sort + zeroDelta noop + CategoryFilter→Skip SQLite + interface assertion + AgentCount field)'
-  - 'c7301f59 (worktree): feat(agent-mode-v2-marketplace): T3 sanitize pipeline + Langfuse trace + 15 tests — applyPIIRegex (4 patterns with \b 边界 防误吞) + callSanitizeLLM (aiservice.Chat profile=SkillMarketplaceSanitize qwen-turbo + langfuse.FetchPrompt fallback + WithGen* full instrumentation) + ErrSanitizeUnavailable sentinel. profile.SkillMarketplaceSanitize + allTaskIDsList 注册. 包级 var chatFn/promptFn mock 注入'
-  - '20ab7ac0 (worktree): fix(agent-mode-v2-marketplace): T3 P1 (成功 EndGeneration 加 WithGenModel(resp.Model)) + 2 P2 (chatFnSig 类型顺序 + withChatFn/withPromptFn t.Parallel 不安全注释)'
-  - 'ee3b8b2f (worktree): feat(agent-mode-v2-marketplace): T4 service orchestration + 27 tests — Service interface 9 方法 + 两阶段 commit Subscribe/Unsubscribe + 跨租户 7 安全规则全测覆盖 + ArtifactService interface 抽象 + AgentCount hydration via direct GORM count'
-  - '724ecf0e (worktree): fix(agent-mode-v2-marketplace): T4 P2 — 3 added tests (TestPublish_SanitizeLLMFailure_NoDBWrite + TestCharDelta_FivePercentBoundary + TestPublish_ConfirmationWithinTolerance_Accepted)'
-  - 'e010cb27 (worktree): feat(agent-mode-v2-marketplace): T5 clone/search/admin split + Langfuse trace (S4-T4-D4 tech debt 关闭) — startMarketplaceTrace helper + 6 公共方法起 trace + cloneToSubscriber/unsubscribeCleanup 包 span + booleanModeQuery escape + 14 tests'
-  - 'ebdbfa1b (worktree): fix(agent-mode-v2-marketplace): T5 P2 — clone_test tautology 真 bug (errors.Is(err,err)永远 true 遮盖断言) + search.go booleanModeOperatorCleaner 提到包级单例 + spec §3.3 cloneToSubscriber docstring 同步更新'
-  - 'ee3b8b2f (worktree): feat(agent-mode-v2-marketplace): T4 service orchestration + 27 tests — Service interface 9 方法 + 两阶段 commit Subscribe/Unsubscribe + 跨租户 7 安全规则全测覆盖 + ArtifactService interface 抽象 + AgentCount hydration via direct GORM count'
-  - '724ecf0e (worktree): fix(agent-mode-v2-marketplace): T4 P2 — 3 added tests (TestPublish_SanitizeLLMFailure_NoDBWrite + TestCharDelta_FivePercentBoundary + TestPublish_ConfirmationWithinTolerance_Accepted)'
+  blockers: []
   created_at: '2026-05-24T00:00:00+08:00'

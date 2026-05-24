@@ -354,6 +354,14 @@ func autoMigrate(db *gorm.DB) error {
 		return fmt.Errorf("failed to migrate skill artifact tables: %v", err)
 	}
 
+	// agent-mode-v2-skill-marketplace 两表：发布市场 + 订阅关系。
+	// skill_marketplace.sanitized_body_md 是独立副本（发布方编辑原 skill 不影响订阅方）；
+	// skill_subscription UNIQUE(subscriber_user_id, marketplace_id) 防重复订阅。
+	// 跨租户安全在 biz/marketplace 层强制（从 JWT 取 subscriber_user_id 不接受参数）。
+	if err := db.AutoMigrate(&model.SkillMarketplace{}, &model.SkillSubscription{}); err != nil {
+		return fmt.Errorf("failed to migrate skill marketplace tables: %v", err)
+	}
+
 	// Agent permission pipeline 两表（agent-mode-permission-pipeline #6）
 	if err := db.AutoMigrate(&model.AgentPermissionConfig{}); err != nil {
 		return fmt.Errorf("failed to migrate agent_permission_config: %v", err)

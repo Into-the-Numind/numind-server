@@ -101,7 +101,11 @@ Note: v2 #1 `skill.Delete` is soft (is_active=0), so the third CASCADE rarely tr
 
 ### §2.2 Existing Table Touches
 
+> ⚠️ **Superseded by ADR [0002](../../../.ndf/decisions/agent-mode-v2-skill-marketplace/0002-source-type-imported-from-marketplace.md)**: `skill.source_type` 不再扩展。v2 #1 (skill-as-artifact) 已预留 `'imported_from_marketplace'` 作为 ENUM 第 4 值，订阅克隆直接使用。下文的 "add 'subscribed'" + §11 D-COORD migration 都不再需要。
+
 **POST-INVESTIGATION 2026-05-24 (after #1 land)**: `skill` table (v2 #1) `source_type` ENUM 已预留 `imported_from_marketplace`（4 个值：`'generated','custom','imported_from_template','imported_from_marketplace'`）。**#3 无需 ALTER COLUMN**，复制副本时 `SourceType="imported_from_marketplace"` 直接生效。`biz/skill/artifact.CreateRequest.SourceType` 的 binding tag oneof 当前不含此值，但我们走 **Go 程序内部调用** 而非 HTTP binding，binding tag 只在 HTTP 入参校验时生效，对程序构造的 struct 不阻拦。DDL ENUM + Service 内部接受。
+
+`skill` table (v2 #1): ~~add `'subscribed'` to `source_type` enum or CHECK constraint. **Coordination with v2 #1**: see §11 D-COORD — handled via separate forward-only migration that runs **after** #1 land and **before** our migrations apply.~~（superseded — 见上）
 
 ### §2.3 GORM Models
 
@@ -189,6 +193,8 @@ Three files, all idempotent and reversible:
 Five files in `numind-server/internal/numind/biz/marketplace/`:
 
 ### §3.1 `service.go` — public orchestration
+
+> ⚠️ **`SourceType: "subscribed"` superseded by ADR [0002-source-type-imported-from-marketplace](../../../.ndf/decisions/agent-mode-v2-skill-marketplace/0002-source-type-imported-from-marketplace.md)**: 订阅克隆使用 #1 (skill-as-artifact) 预留的 enum 值 `'imported_from_marketplace'`，不再需要扩展 enum。
 
 ```go
 package marketplace
@@ -315,6 +321,8 @@ func NewService(
 2. UPDATE `is_platform_recommended = ?`
 
 ### §3.2 `sanitize.go` — sanitization pipeline
+
+> ⚠️ **Superseded by ADR [0001-sanitize-llm-deepseek-v4-pro](../../../.ndf/decisions/agent-mode-v2-skill-marketplace/0001-sanitize-llm-deepseek-v4-pro.md)**: Stage 2 LLM 实际使用 `deepseek-v4-pro` (DMXAPI)，不是本节文本中的 `qwen-turbo`。原因：阿里云 DashScope 账户 free-tier-only 模式下 qwen 系列全部 403。
 
 ```go
 package marketplace
@@ -1087,6 +1095,9 @@ Uses `vue-diff` npm package for left-right diff rendering.
 ---
 
 ## §9 Langfuse Trace Topology (Per `ai-service.md` §1-3)
+
+> ⚠️ **本节内 `qwen-turbo` model 标注 superseded by ADR [0001](../../../.ndf/decisions/agent-mode-v2-skill-marketplace/0001-sanitize-llm-deepseek-v4-pro.md)**: 实际 sanitize generation 的 model 由 adapter `resp.Model` 决定，当前为 `deepseek-v4-pro`。生成时不再传 starting hint。
+
 
 | Trace | When | Generations | Spans |
 |---|---|---|---|

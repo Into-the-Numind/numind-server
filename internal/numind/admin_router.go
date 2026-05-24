@@ -13,7 +13,9 @@ import (
 	"numind-server/internal/numind/biz/compliance"
 	bizcb "numind-server/internal/numind/biz/contextbudget"
 	"numind-server/internal/numind/biz/credit"
+	marketplacebiz "numind-server/internal/numind/biz/marketplace"
 	"numind-server/internal/numind/biz/membership"
+	artifactbiz "numind-server/internal/numind/biz/skill/artifact"
 	"numind-server/internal/numind/controller/v1/admin"
 	"numind-server/internal/numind/controller/v1/admin_ai"
 	"numind-server/internal/numind/controller/v1/admin_b2b"
@@ -25,6 +27,7 @@ import (
 	"numind-server/internal/numind/controller/v1/admin_order"
 	"numind-server/internal/numind/controller/v1/admin_sop"
 	"numind-server/internal/numind/controller/v1/admin_user"
+	marketplacecontroller "numind-server/internal/numind/controller/v1/marketplace"
 	monitorcontroller "numind-server/internal/numind/controller/v1/monitor"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice/registry"
@@ -273,6 +276,21 @@ func installAdminRouters(g *gin.Engine) error {
 		adminGroup.PUT("/context-budget/policies/:operation", cbCtrl.UpsertPolicy)
 		adminGroup.POST("/context-budget/preview", cbCtrl.Preview)
 		adminGroup.GET("/context-budget/events", cbCtrl.ListEvents)
+	}
+
+	// Skill marketplace 管理端 (agent-mode-v2-skill-marketplace, spec §6.2)
+	//   POST /v1/admin/marketplace/:id/recommend — toggle is_platform_recommended
+	// admin_token middleware 已在 adminGroup 上挂载 (AdminAuthMiddleware)，
+	// 无需父账户校验（admin 平台操作不受租户规则约束）。
+	{
+		mpSvc := marketplacebiz.NewService(
+			store.S.Marketplaces(),
+			artifactbiz.NewService(store.S.DB()),
+			store.S.Users(),
+			store.S.DB(),
+		)
+		mpCtrl := marketplacecontroller.NewController(mpSvc)
+		adminGroup.POST("/marketplace/:id/recommend", mpCtrl.SetRecommended)
 	}
 
 	return nil

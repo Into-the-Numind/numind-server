@@ -109,6 +109,15 @@ const (
 	// model — digest is structured aggregation, not divergent reasoning).
 	// Spec: 03-memory/task-08-temporal-tree.md.
 	AgentDigest = "agent.digest"
+	// SkillMarketplaceSanitize is the agent-mode-v2-skill-marketplace (T3) sanitize task.
+	// Used when a publisher requests preview-then-publish on the marketplace; the LLM
+	// strips PII / org / product names that the deterministic regex stage cannot detect.
+	// Spec: numind-server/docs/superpowers/specs/2026-05-24-agent-mode-v2-skill-marketplace-design.md §3.2.
+	// Recommended route: qwen-turbo (cheap; <5KB body; latency budget < 3s).
+	// **Requires DB seed migration to register ai_service route** before sanitize succeeds
+	// in dev/prod; missing route returns error and surfaces as ErrSanitizeUnavailable to
+	// the user. Seed migration bundled with T7 errno (agent-mode-v2-skill-marketplace plan).
+	SkillMarketplaceSanitize = "skill.marketplace.sanitize"
 )
 
 // allTaskIDsList is the canonical ordered list of all task IDs.
@@ -143,6 +152,8 @@ var allTaskIDsList = []string{
 	AgentMemorySelect,
 	AgentDialectic,
 	AgentDigest,
+	// v2 additions
+	SkillMarketplaceSanitize,
 }
 
 // AllTaskIDs returns all task ID strings in a stable order.
