@@ -2064,10 +2064,10 @@ features:
   ndf_version: '3.0'
   description: 'Agent Mode v2 第 3 个 feature（v2 三件套之末）— 把 Skill 跨租户流通起来。机构父账户可把自己设计的 Skill 脱敏发布到平台市场；其他父账户订阅后，副本拷贝进自己租户的 skill 表，再装载到 Agent 使用。本 feature 范围：(1) 新增 skill_marketplace + skill_subscription 2 张表 + FK + FULLTEXT(ngram) 索引；(2) biz/marketplace 子包（service / sanitize / clone / search / admin 5 文件）；(3) 用户端 /v1/marketplace/* 7 端点（sanitize-preview / publish / unpublish / list / detail / subscribe / unsubscribe / my-subscriptions）+ 管理端 /v1/admin/marketplace/:id/recommend 1 端点；(4) 脱敏管道：正则黑名单（PII + 已配置竞品名）+ aiservice.Chat qwen-turbo 实体识别（人名/机构/产品）+ 前端 diff 人工 review gate 强制确认 + 后端 confirmed_sanitized_body 哈希校验防篡改；(5) 订阅复制语义：订阅时打快照写副本到订阅方 skill 表（独立副本不引用，发布方后续编辑不影响订阅方），cloned_skill_id + subscription 关联两边；(6) 前端 numind-web-v3 新增 /marketplace/* 4 view（Browse / Detail / Subscribed / Publish）+ SkillEditor 加"发布到市场"按钮 + SkillList 加"已发布"徽章 + 顶部菜单加"技能市场"入口。Out of scope: runtime 调用 Skill（v2 #2）；付费/收益分成；prod 部署；C 端学员看市场；Skill scripts 跨租户共享（v2.5）；版本同步推送；发布前 Skill 沙箱验证；管理端批量管理 UI；平台预置 Skill。'
   track: standard
-  stage: S3
+  stage: S5-validation-passed
   classification_reason: 'Standard 4 条触发 — (1) DB schema 变更：是（2 张新表 + 双向 migration + FK + FULLTEXT ngram 索引 + 给 #1 skill.source_type ENUM 加 subscribed） (2) 新增 API 端点：是（8 个：用户端 7 + admin 1） (3) 新外部服务集成：否（脱敏调 aiservice 已有 qwen-turbo 路由） (4) 影响文件数 >>3（biz/marketplace 5 文件 + 2 controller + 2 router 改 + 2 model + 3 migration + 前端 4 view + store + api + AppLayout 菜单 + SkillEditor 加按钮 + SkillList 加徽章 + 单测 + e2e） (5) 高风险业务逻辑：是（跨租户脱敏漏机构信息 = 数据泄漏；订阅复制错租户 = 跨租户污染；recommend 权限错位 = 平台公信力受损）。1+2+4+5 触发 Standard 强制。'
-  last_updated_by: ai-s3-complete-blocked-on-1
-  last_updated_at: '2026-05-24T01:30:00+08:00'
+  last_updated_by: ai-s5-validation-passed
+  last_updated_at: '2026-05-24T12:50:00+08:00'
   repos:
   - numind-server
   - numind-web-v3
@@ -2085,9 +2085,9 @@ features:
     architecture_blueprint: docs/agent-mode/architecture-v1.md
   progress:
     total_tasks: 12
-    completed_tasks: 0
-    reviewed_tasks: 0
-    current_task: 'S3 完成 (plan 12 task DAG，T12 = S5 验证策略独立 task)；plan reviewer dispatch (Sonnet) 结论 PASS_WITH_CONCERNS（0 P0/P1，5 P2 全部已修：T3 Langfuse mock 断言精确化 / T4 列出 spec §10.1 七条安全规则 / T6 移除 task dev smoke check 改 go build / T11 加 Pause-and-Ask gate 要求 4 个新 E2E envvar / T9 锁 package.json 所有权防 Tier 4）。S3→S4 阻塞门检测：v2 #1 stage:S4 但还在 feature 分支（develop 上 pkg/model/skill.go 不存在 + 无 v2-skill 相关 commit）。ScheduleWakeup 1800s loop 等 #1 land develop，最多等 7 天（336 次轮询）。期间 status quo，不主动 mock #1 接口避免后续 rework。'
+    completed_tasks: 11
+    reviewed_tasks: 11
+    current_task: 'S5 全部验收通过. 后端 T1-T7+AC-6 patch 全 commit (go test PASS, task lint PASS); 前端 T8/T9/T10 全 commit (npm lint 0 errors, type-check PASS); T11 Playwright e2e 6/6 通过 (1 setup + AC-1/2/3/4/6). Reviewer dispatch (Sonnet x2): spec-compliance 提 P1x2 (sanitize model spec 偏离 / source_type 表述偏离) + P2x1 (Langfuse hint), code-quality PASS + P2x2 (sibling migration guard). 所有 P1/P2 已修 (commit b16f2bf1): 新建 ADR 0001 (sanitize=deepseek-v4-pro via DMXAPI, 原因 阿里云 free-tier-only 模式 qwen 全 403) + ADR 0002 (source_type=imported_from_marketplace, #1 已预留 enum 第 4 值不需新 migration); spec/plan 加 superseded 横幅指向 ADR; sanitize.go 移除 stale Langfuse model hint; 4 sibling migration 加 deprecated_at guard. T12 是 S5 验证策略 meta task (plan-time 决策, 不计 reviewed). 进 S6 ndf-done.'
   decisions:
   - 'S0-D1 (parent 2026-05-24, 继承自 #1 D4): v2 三件套 #1+#2+#3 串行交付。本 feature 是 #3，#1 land develop 才能进 S4（依赖 skill 表 + biz/skill.Service.Create 写副本）。'
   - 'S0-D2 (ai 2026-05-24): 订阅 = 复制副本语义（不是引用）。订阅时刻调 biz/skill.Service.Create 给订阅方租户新建 skill 行（source_type=''subscribed''，需在 #1 source_type 枚举加 — 通过 20260524_120200_skill_add_subscribed_source_type.sql migration），同时写 skill_subscription 关联。发布方后续编辑原 skill 不影响订阅方副本。'
@@ -2104,6 +2104,5 @@ features:
   - 'agent-mode-v2-skill-invocation (v2 #2，软依赖 — 订阅功能落地不必等 #2，但 UI 引导文案假设 Skill 可被 Agent 装载使用)'
   - 'agent-mode-v15-memory-layer-a (merged b0fa0cf2 — Langfuse prompt 管理 + FetchPrompt cache 模式参考)'
   - 'agent-mode-skill-system (#5/14, merged e05498b6 — agent_permission_config.forbidden_competitor_names 字段来源)'
-  blockers:
-  - 'BLOCKER-1: v2 #1 agent-mode-v2-skill-as-artifact 未 land develop。ScheduleWakeup 1800s loop 监控，最多 7 天 / 336 次轮询。'
+  blockers: []
   created_at: '2026-05-24T00:00:00+08:00'
