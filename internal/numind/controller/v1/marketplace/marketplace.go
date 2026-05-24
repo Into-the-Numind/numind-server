@@ -135,11 +135,12 @@ func (c *Controller) Unpublish(ctx *gin.Context) {
 	core.WriteResponse(ctx, nil, nil)
 }
 
-// List handles GET /v1/marketplace/list. Public browse — auth required (per spec
-// "only parent accounts can use marketplace UI"), but biz layer doesn't gate
-// because List doesn't fall under cross-tenant rule 2 (read-only).
+// List handles GET /v1/marketplace/list. Auth required; biz layer enforces
+// parent-account-only (spec §10.1 rule 2 — applies to read endpoints too;
+// AC-6 in spec §14 requires child accounts → 403 here).
 func (c *Controller) List(ctx *gin.Context) {
-	if _, ok := c.resolveCallerUserID(ctx); !ok {
+	userID, ok := c.resolveCallerUserID(ctx)
+	if !ok {
 		return
 	}
 	var q bizmarketplace.BrowseQuery
@@ -147,7 +148,7 @@ func (c *Controller) List(ctx *gin.Context) {
 		core.WriteResponse(ctx, errno.ErrBind.SetMessage("%s", err.Error()), nil)
 		return
 	}
-	items, total, err := c.svc.List(ctx.Request.Context(), q)
+	items, total, err := c.svc.List(ctx.Request.Context(), userID, q)
 	if err != nil {
 		core.WriteResponse(ctx, err, nil)
 		return

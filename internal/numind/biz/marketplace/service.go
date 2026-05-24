@@ -39,7 +39,7 @@ type Service interface {
 	SanitizePreview(ctx context.Context, publisherUserID, skillID uint) (*SanitizeResult, error)
 	Publish(ctx context.Context, publisherUserID uint, req PublishRequest) (*model.SkillMarketplace, error)
 	Unpublish(ctx context.Context, publisherUserID, marketplaceID uint) error
-	List(ctx context.Context, query BrowseQuery) (items []*model.SkillMarketplace, total int64, err error)
+	List(ctx context.Context, callerUserID uint, query BrowseQuery) (items []*model.SkillMarketplace, total int64, err error)
 	Get(ctx context.Context, marketplaceID, callerUserID uint) (*model.SkillMarketplace, error)
 	// Subscribe returns both the cloned skill ID and the subscription row ID
 	// (spec §4.1 subscribe response: {cloned_skill_id, subscription_id}).
@@ -304,7 +304,12 @@ func (s *service) Unpublish(ctx context.Context, publisherUserID, marketplaceID 
 	return nil
 }
 
-func (s *service) List(ctx context.Context, query BrowseQuery) ([]*model.SkillMarketplace, int64, error) {
+func (s *service) List(ctx context.Context, callerUserID uint, query BrowseQuery) ([]*model.SkillMarketplace, int64, error) {
+	// spec §10.1 rule 2: every biz method must verify parent. Read endpoints
+	// included (§14 AC-6 requires child → 403 on /v1/marketplace/list).
+	if err := s.verifyParent(ctx, callerUserID); err != nil {
+		return nil, 0, err
+	}
 	if query.PageSize <= 0 {
 		query.PageSize = 20
 	}
@@ -327,6 +332,10 @@ func (s *service) List(ctx context.Context, query BrowseQuery) ([]*model.SkillMa
 }
 
 func (s *service) Get(ctx context.Context, marketplaceID, callerUserID uint) (*model.SkillMarketplace, error) {
+	// spec §10.1 rule 2: every biz method must verify parent (read endpoints included).
+	if err := s.verifyParent(ctx, callerUserID); err != nil {
+		return nil, err
+	}
 	mp, err := s.store.GetByID(ctx, marketplaceID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

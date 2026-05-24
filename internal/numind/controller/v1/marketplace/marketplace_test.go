@@ -63,7 +63,7 @@ func (f *fakeService) Publish(ctx context.Context, _ uint, _ bizmarketplace.Publ
 	return f.publishMP, f.publishErr
 }
 func (f *fakeService) Unpublish(ctx context.Context, _ uint, _ uint) error { return nil }
-func (f *fakeService) List(ctx context.Context, _ bizmarketplace.BrowseQuery) ([]*model.SkillMarketplace, int64, error) {
+func (f *fakeService) List(ctx context.Context, _ uint, _ bizmarketplace.BrowseQuery) ([]*model.SkillMarketplace, int64, error) {
 	return []*model.SkillMarketplace{}, 0, nil
 }
 func (f *fakeService) Get(ctx context.Context, _ uint, _ uint) (*model.SkillMarketplace, error) {

@@ -359,18 +359,37 @@ func TestList_DefaultsAndPagination(t *testing.T) {
 	_, err = svc.Publish(ctx, 1, PublishRequest{SkillID: 11, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "脱敏后正文"})
 	require.NoError(t, err)
 
-	items, total, err := svc.List(ctx, BrowseQuery{Page: 1, PageSize: 10, Sort: "recent"})
+	items, total, err := svc.List(ctx, 1, BrowseQuery{Page: 1, PageSize: 10, Sort: "recent"})
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), total)
 	assert.Len(t, items, 2)
 
 	// page_size 0 → default 20
-	_, _, err = svc.List(ctx, BrowseQuery{Sort: "recent"})
+	_, _, err = svc.List(ctx, 1, BrowseQuery{Sort: "recent"})
 	require.NoError(t, err)
 
 	// page_size > 100 capped
-	_, _, err = svc.List(ctx, BrowseQuery{Page: 1, PageSize: 999, Sort: "recent"})
+	_, _, err = svc.List(ctx, 1, BrowseQuery{Page: 1, PageSize: 999, Sort: "recent"})
 	require.NoError(t, err)
+}
+
+// spec §10.1 rule 2 + §14 AC-6: child accounts (parent_user_id NOT NULL) must
+// receive ErrChildAccountCannotAccessMarketplace from read endpoints too.
+func TestList_ChildBlocked(t *testing.T) {
+	svc, _, _, _, _ := newTestService(t)
+	_, _, err := svc.List(context.Background(), 3, BrowseQuery{Page: 1, PageSize: 10, Sort: "recent"})
+	assert.ErrorIs(t, err, ErrChildAccountCannotAccessMarketplace)
+}
+
+func TestGet_ChildBlocked(t *testing.T) {
+	svc, art, _, _, _ := newTestService(t)
+	seedSkill(t, art, 10, 1, "body")
+	realStubChat(t)
+	ctx := context.Background()
+	mp, _ := svc.Publish(ctx, 1, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "脱敏后正文"})
+
+	_, err := svc.Get(ctx, mp.ID, 3)
+	assert.ErrorIs(t, err, ErrChildAccountCannotAccessMarketplace)
 }
 
 func TestGet_Public(t *testing.T) {
