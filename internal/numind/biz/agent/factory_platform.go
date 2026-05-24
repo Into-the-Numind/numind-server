@@ -3,19 +3,52 @@ package agent
 import (
 	"context"
 
+	"numind-server/internal/numind/biz/agent/skills"
 	"numind-server/internal/numind/biz/memory"
 	"numind-server/internal/numind/biz/salesrag"
+	"numind-server/internal/numind/biz/sandbox"
 	"numind-server/internal/numind/store"
 )
 
 type platformToolFactory struct {
-	rag salesrag.SalesRAGBiz
-	ds  store.IStore
+	rag           salesrag.SalesRAGBiz
+	ds            store.IStore
+	skillRegistry skills.Registry   // optional; nil = invoke_skill not registered
+	skillPool     sandbox.SkillPool // optional; nil = invoke_skill not registered
 }
 
 // NewPlatformToolFactory returns a ToolFactory that loads all platform built-in tools.
 func NewPlatformToolFactory(rag salesrag.SalesRAGBiz, ds store.IStore) ToolFactory {
 	return &platformToolFactory{rag: rag, ds: ds}
+}
+
+// NewPlatformToolFactoryWithSkills returns a ToolFactory that includes all platform
+// built-in tools plus the invoke_skill tool (V1.5 Track 4 task 4.4).
+// Both reg and pool must be non-nil for invoke_skill to be registered; if either
+// is nil the factory silently falls back to NewPlatformToolFactory behavior.
+func NewPlatformToolFactoryWithSkills(
+	rag salesrag.SalesRAGBiz,
+	ds store.IStore,
+	reg skills.Registry,
+	pool sandbox.SkillPool,
+) ToolFactory {
+	return &platformToolFactory{
+		rag:           rag,
+		ds:            ds,
+		skillRegistry: reg,
+		skillPool:     pool,
+	}
+}
+
+// WithSkillRegistry injects a skills.Registry and sandbox.SkillPool into the factory.
+// When set, invoke_skill is appended to LoadTools. Both must be non-nil for
+// invoke_skill to be registered; if either is nil the tool is silently omitted.
+//
+// Call this after NewPlatformToolFactory but before LoadAll.
+func (f *platformToolFactory) WithSkillRegistry(reg skills.Registry, pool sandbox.SkillPool) *platformToolFactory {
+	f.skillRegistry = reg
+	f.skillPool = pool
+	return f
 }
 
 // Compile-time assertion.
@@ -33,14 +66,18 @@ func (f *platformToolFactory) DisplayName() string { return "平台内置工具"
 // Tools constructed with nil deps will panic only if Execute is called; LoadTools itself
 // must never panic.
 //
-// Base tools (always present, ds=nil or ds!=nil): 12 tools
+// Base tools (always present, ds=nil or ds!=nil): 18 tools
 //
 //	kb_search, learner_data_query, document_generate, image_gen, bash_exec,
 //	get_current_date, web_search, web_fetch, ask_user_question, file_read,
-//	analyze_image, annotate_image
+//	analyze_image, annotate_image,
+//	create_csv, create_html, create_json, create_text  (V1.5 output-skills task 4.2)
+//	create_png_chart                                    (V1.5 output-skills task 4.3)
+//	run_python                                          (V1.5 output-skills task 4.9)
 //
-// When f.ds is non-nil, two additional memory tools (memory_write, memory_read) are
-// appended, bringing the total to 14 tools.
+// When f.skillRegistry and f.skillPool are non-nil, invoke_skill is appended:
+// 19 base tools total. When f.ds is also non-nil, memory_write + memory_read are
+// appended (21 tools with skills, 20 without).
 func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMetadata, error) {
 	var usersGetter userByIDGetter
 	var attStore store.IAgentAttachmentStore
@@ -65,10 +102,26 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		// NOT need vision capability — even single-modal models can call these tools.
 		NewAnalyzeImageTool(attStore),
 		NewAnnotateImageTool(),
-		// v2 #2 agent-mode-v2-skill-invocation: use_skill platform tool — runner 在 Agent
+		// v2 agent-mode-v2-skill-invocation: use_skill platform tool — runner 在 Agent
 		// 有 binding 时按需注册到该 Run 的工具集；无 binding 走 legacy 路径不触发。
 		// factory 层 AlwaysLoad=false 保证 LoadAll 仅装 registry，单 Run 是否暴露由 runner 控制。
 		NewUseSkillTool(),
+		// V1.5 output-skills task 4.2: simple file generation tools (Layer 1, no sandbox).
+		&createCSVTool{},
+		&createHTMLTool{},
+		&createJSONTool{},
+		&createTextTool{},
+		// V1.5 output-skills task 4.3: PNG chart tool (Layer 1, gonum/plot + go-chart/v2).
+		&createPNGChartTool{},
+		// V1.5 output-skills task 4.9: run_python (Layer 3, last-resort sandbox Python execution).
+		&runPythonTool{},
+	}
+	// V1.5 output-skills task 4.4: invoke_skill (Layer 2, sandbox-based skill framework).
+	// Only registered when both skill registry and skill pool are available.
+	// Nil guard preserves the nil-ds unit test that expects exactly N base tools.
+	// Reuses the attStore already resolved above (no redundant f.ds.AgentAttachments() call).
+	if f.skillRegistry != nil && f.skillPool != nil {
+		tools = append(tools, NewInvokeSkillTool(f.skillRegistry, f.skillPool, attStore))
 	}
 	metadata := []ToolMetadata{
 		{ToolName: "kb_search", DisplayName: "知识库检索", Description: "Search the knowledge base.", Source: "platform", Category: "RAG"},
@@ -86,9 +139,30 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		{ToolName: "analyze_image", DisplayName: "图像分析", Description: "Analyze an image in detail using a vision specialist model.", Source: "platform", RiskLevel: "moderate", Category: "视觉"},
 		{ToolName: "annotate_image", DisplayName: "图像区域标注", Description: "Analyze specific regions within an image using a vision specialist model.", Source: "platform", RiskLevel: "moderate", Category: "视觉"},
 		{ToolName: UseSkillToolName, DisplayName: "调用技能", Description: "Call a Skill bound to this Agent; loads body into conversation context and temporarily enables Skill's required tools.", Source: "platform", RiskLevel: "safe", Category: "技能"},
+		// V1.5 output-skills task 4.2: simple file generation tools.
+		{ToolName: "create_csv", DisplayName: "生成 CSV 文件", Description: "Generate a CSV file from tabular data.", Source: "platform", RiskLevel: "safe", Category: "文件生成"},
+		{ToolName: "create_html", DisplayName: "生成 HTML 页面", Description: "Render an HTML page from content or a template.", Source: "platform", RiskLevel: "safe", Category: "文件生成"},
+		{ToolName: "create_json", DisplayName: "生成 JSON 文件", Description: "Serialize data to a JSON file.", Source: "platform", RiskLevel: "safe", Category: "文件生成"},
+		{ToolName: "create_text", DisplayName: "生成文本文件", Description: "Write plain text content to a .txt file.", Source: "platform", RiskLevel: "safe", Category: "文件生成"},
+		// V1.5 output-skills task 4.3: PNG chart tool.
+		{ToolName: "create_png_chart", DisplayName: "图表生成（PNG）", Description: "Generate a static PNG chart from structured data.", Source: "platform", RiskLevel: "safe", Category: "可视化"},
+		// V1.5 output-skills task 4.9: run_python (Layer 3 last-resort).
+		{ToolName: "run_python", DisplayName: "Python 代码执行（文件生成）", Description: "Execute Python 3 code in an isolated sandbox to generate files in long-tail formats. LAST RESORT — use only when Layer 1 (create_csv/html/json/text/png_chart) and Layer 2 (invoke_skill) cannot produce the required format.", Source: "platform", RiskLevel: "dangerous", Category: "代码", RequiresSandbox: true},
+	}
+	// Append invoke_skill metadata when skill registry is available.
+	if f.skillRegistry != nil && f.skillPool != nil {
+		metadata = append(metadata, ToolMetadata{
+			ToolName:        "invoke_skill",
+			DisplayName:     "Skill 文件生成",
+			Description:     "调用声明式 Skill 在沙箱中生成结构化文件（Excel/Word/PPT/PDF 等）。复杂格式（xlsx/docx/pptx/pdf）走此工具；简单格式用 create_csv/create_html/create_json/create_text/create_png_chart。",
+			Source:          "platform",
+			RiskLevel:       "moderate",
+			Category:        "文件生成",
+			RequiresSandbox: true,
+		})
 	}
 	// Append memory tools only when a real store is available (nil guard preserves
-	// the nil-ds unit test that expects exactly 12 tools).
+	// the nil-ds unit test that expects exactly 17 tools).
 	if f.ds != nil {
 		np := memory.NewNotepad(f.ds.UserGlobalMemories())
 		tools = append(tools,

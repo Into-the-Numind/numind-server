@@ -1,0 +1,18 @@
+{
+  "name": "pptx-author",
+  "version": "1.0.0",
+  "description": "Generate PowerPoint presentations (.pptx) with structured slides, charts, images, and configurable brand identity (logo/colors/fonts).",
+  "categories": ["document", "presentation"],
+  "required_libs": [
+    "python-pptx>=1.0",
+    "pillow>=10.0",
+    "matplotlib>=3.7"
+  ],
+  "output_mime_types": [
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+  ],
+  "max_runtime_seconds": 45,
+  "max_output_size_mb": 50,
+  "input_dir": "/workspace/input",
+  "output_dir": "/output"
+}

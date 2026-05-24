@@ -1,0 +1,16 @@
+{
+  "name": "docx-author",
+  "version": "1.0.0",
+  "description": "Generate Word documents (.docx) with structured sections, headings, tables, images, and styled paragraphs.",
+  "categories": ["document"],
+  "required_libs": ["python-docx>=1.1"],
+  "output_mime_types": [
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  ],
+  "max_runtime_seconds": 30,
+  "max_output_size_mb": 50,
+  "input_dir": "/workspace/input",
+  "output_dir": "/output",
+  "template_dir": "/skills/docx-author/templates",
+  "supports_templates": ["general-report"]
+}

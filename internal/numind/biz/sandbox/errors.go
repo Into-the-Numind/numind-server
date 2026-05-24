@@ -45,3 +45,38 @@ var ErrAllowlistNotImplemented = errors.New("network allowlist policy not implem
 // Lives in this package so both the sandbox subpackage tests and the
 // image_gen tool can reference the same sentinel.
 var ErrImageGenProviderNotConfigured = errors.New("image generation provider not configured; please contact admin")
+
+// --- Track 4 (Skill / invoke_skill) sentinel errors ---
+
+// ErrInputTooLarge is returned by CopyFileIn / sanitizeInputFile when the
+// supplied file exceeds the 50 MB input size limit.
+var ErrInputTooLarge = errors.New("sandbox input file exceeds 50 MB limit")
+
+// ErrUnsafeFilename is returned by CopyFileIn / sanitizeInputFile when the
+// filename contains path traversal sequences or disallowed characters.
+var ErrUnsafeFilename = errors.New("sandbox input filename is unsafe (path traversal or disallowed chars)")
+
+// ErrMacroDetected is returned by sanitizeInputFile when an Office file
+// (.docx / .xlsx) contains an embedded VBA macro (vbaProject.bin).
+var ErrMacroDetected = errors.New("sandbox input file contains embedded macro (vbaProject.bin)")
+
+// ErrOutputTooLarge is returned by ScanOutput when an output file exceeds
+// the configured output_max_size_mb (hard ceiling 50 MB).
+var ErrOutputTooLarge = errors.New("sandbox output file exceeds maximum size limit")
+
+// ErrZipBomb is returned by ScanOutput when a zip/docx/xlsx/pptx file
+// expands to more than 500 MB when decompressed (hard-coded safety ceiling).
+var ErrZipBomb = errors.New("sandbox output file is a zip bomb (expanded size > 500 MB)")
+
+// ErrMimeMismatch is returned by ScanOutput when the file's content (magic
+// bytes) does not match the declared MIME type.
+var ErrMimeMismatch = errors.New("sandbox output file MIME type does not match declared type")
+
+// ErrSkillNotFound is returned by AcquireForSkill when the requested skill
+// directory does not exist under SandboxConfig.SkillsRoot.
+var ErrSkillNotFound = errors.New("skill not found in skills_root")
+
+// ErrCOSUploadFailed is returned by CollectOutputs when one or more output
+// files cannot be uploaded to COS. The temporary files are preserved for
+// retry; the session is still returned to the pool.
+var ErrCOSUploadFailed = errors.New("sandbox output COS upload failed")

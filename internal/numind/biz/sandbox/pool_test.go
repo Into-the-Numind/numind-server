@@ -228,15 +228,56 @@ func TestExecCommand_NilSession(t *testing.T) {
 	}
 }
 
-func TestWriteFile_ReturnsErrNotImplemented(t *testing.T) {
-	if err := WriteFile(context.Background(), &Session{}, "/x", []byte{}, NewMockDockerClient()); !errors.Is(err, ErrNotImplemented) {
-		t.Errorf("WriteFile = %v; want ErrNotImplemented", err)
+func TestWriteFile_CopiesIntoContainer(t *testing.T) {
+	mock := NewMockDockerClient()
+	id, _ := mock.Spawn(context.Background(), SpawnConfig{ImageTag: "python:3.11-slim"})
+	sess := &Session{
+		ContainerID: id,
+		Config:      DefaultSandboxConfig,
+		BorrowedAt:  time.Now(),
+	}
+	content := []byte("print('hello')")
+	if err := WriteFile(context.Background(), sess, "run.py", content, mock); err != nil {
+		t.Fatalf("WriteFile err = %v", err)
+	}
+	if got, ok := mock.CopiedFiles["/workdir/run.py"]; !ok {
+		t.Error("WriteFile did not record file in MockDockerClient.CopiedFiles")
+	} else if string(got) != string(content) {
+		t.Errorf("WriteFile content = %q; want %q", got, content)
 	}
 }
 
-func TestReadFile_ReturnsErrNotImplemented(t *testing.T) {
-	if _, err := ReadFile(context.Background(), &Session{}, "/x", NewMockDockerClient()); !errors.Is(err, ErrNotImplemented) {
-		t.Errorf("ReadFile = %v; want ErrNotImplemented", err)
+func TestWriteFile_NilSession_ReturnsErrSandboxDisabled(t *testing.T) {
+	if err := WriteFile(context.Background(), nil, "/x", []byte{}, NewMockDockerClient()); !errors.Is(err, ErrSandboxDisabled) {
+		t.Errorf("WriteFile(nil sess) = %v; want ErrSandboxDisabled", err)
+	}
+}
+
+func TestReadFile_ReadsFromContainer(t *testing.T) {
+	mock := NewMockDockerClient()
+	id, _ := mock.Spawn(context.Background(), SpawnConfig{ImageTag: "python:3.11-slim"})
+	sess := &Session{
+		ContainerID: id,
+		Config:      DefaultSandboxConfig,
+		BorrowedAt:  time.Now(),
+	}
+	// Pre-register the exec result that cat /workdir/result.json would produce.
+	mock.RegisterExecResult(id, []string{"cat", "/workdir/result.json"}, ExecResult{
+		Stdout:   `{"ok":true}`,
+		ExitCode: 0,
+	})
+	data, err := ReadFile(context.Background(), sess, "result.json", mock)
+	if err != nil {
+		t.Fatalf("ReadFile err = %v", err)
+	}
+	if string(data) != `{"ok":true}` {
+		t.Errorf("ReadFile data = %q; want {\"ok\":true}", string(data))
+	}
+}
+
+func TestReadFile_NilSession_ReturnsErrSandboxDisabled(t *testing.T) {
+	if _, err := ReadFile(context.Background(), nil, "/x", NewMockDockerClient()); !errors.Is(err, ErrSandboxDisabled) {
+		t.Errorf("ReadFile(nil sess) = %v; want ErrSandboxDisabled", err)
 	}
 }
 

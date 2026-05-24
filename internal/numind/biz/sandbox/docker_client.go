@@ -3,6 +3,8 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -17,6 +19,22 @@ type DockerClient interface {
 	Exec(ctx context.Context, containerID string, cmd []string, opts ExecOpts) (ExecResult, error)
 	Destroy(ctx context.Context, containerID string) error
 	Inspect(ctx context.Context, containerID string) (InspectResult, error)
+
+	// CopyToContainer writes `content` into the container at `dstPath`.
+	// Implemented via "docker cp - <containerID>:<dstPath>" (tar stream).
+	// Track 4: used by CopyFileIn to inject input files into /input/.
+	CopyToContainer(ctx context.Context, containerID, dstPath string, content io.Reader) error
+
+	// CopyFromContainer reads `srcPath` from the container into a temp dir on
+	// the host, returning the path of the written file(s). The caller is
+	// responsible for removing the temp dir when done.
+	// Implemented via "docker cp <containerID>:<srcPath> <tmpDir>".
+	// Track 4: used by CollectOutputs to pull /workdir/output/ files.
+	CopyFromContainer(ctx context.Context, containerID, srcPath, hostDstDir string) error
+
+	// ExecMkdir creates a directory inside the container via docker exec.
+	// Used by AcquireForSkill to prepare /input and /output under /workdir.
+	ExecMkdir(ctx context.Context, containerID string, dirs ...string) error
 }
 
 // SpawnConfig is the set of docker run flags BuildSpawnConfig assembles
@@ -34,6 +52,10 @@ type SpawnConfig struct {
 	Tmpfs        []string // ["/workdir:size=512m,uid=1000,gid=1000"]
 	Network      string   // "none"
 	Detached     bool     // true for pool (sleep loop holds container alive)
+	// Volumes holds bind-mount specs in "host:container:options" form.
+	// Track 4: AcquireForSkill appends skill read-only mounts here.
+	// Example: "/opt/numind/skills/xlsx-author:/skills/xlsx-author:ro"
+	Volumes []string
 }
 
 // ExecOpts describes the runtime parameters for a single docker exec call.
@@ -135,6 +157,9 @@ func buildSpawnArgs(cfg SpawnConfig) []string {
 	}
 	if cfg.Network != "" {
 		args = append(args, "--network="+cfg.Network)
+	}
+	for _, v := range cfg.Volumes {
+		args = append(args, "--volume", v)
 	}
 	args = append(args, cfg.ImageTag)
 	// Hold the container alive so subsequent docker exec calls can attach.
@@ -238,6 +263,72 @@ func (c *dockerCLIClient) Inspect(ctx context.Context, containerID string) (Insp
 		ExitCode:  exit,
 		OOMKilled: parts[2] == "true",
 	}, nil
+}
+
+// CopyToContainer writes the content of `content` (a tar stream or raw bytes)
+// to `dstPath` inside the container by piping through "docker cp - containerID:dstPath".
+// The caller provides raw file bytes; this method wraps them in a minimal tar
+// archive so docker cp can unpack them correctly.
+func (c *dockerCLIClient) CopyToContainer(ctx context.Context, containerID, dstPath string, content io.Reader) error {
+	// Write content to a temp file so we can docker cp it.
+	tmp, err := os.CreateTemp("", "sandbox-cp-in-*")
+	if err != nil {
+		return fmt.Errorf("docker cp to container: create temp: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	data, err := io.ReadAll(content)
+	if err != nil {
+		tmp.Close()
+		return fmt.Errorf("docker cp to container: read content: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return fmt.Errorf("docker cp to container: write temp: %w", err)
+	}
+	tmp.Close()
+
+	// docker cp <hostFile> <containerID>:<dstPath>
+	cmd := exec.CommandContext(ctx, dockerBinary, "cp", tmpPath, containerID+":"+dstPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker cp to container: %w (output=%s)", err, string(out))
+	}
+	return nil
+}
+
+// CopyFromContainer copies `srcPath` from the container to `hostDstDir` on
+// the host via "docker cp <containerID>:<srcPath> <hostDstDir>". The caller
+// owns the destination directory and is responsible for cleanup.
+func (c *dockerCLIClient) CopyFromContainer(ctx context.Context, containerID, srcPath, hostDstDir string) error {
+	// docker cp <containerID>:<srcPath> <hostDstDir>
+	cmd := exec.CommandContext(ctx, dockerBinary, "cp", containerID+":"+srcPath, hostDstDir)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		s := string(out)
+		// Treat "no such file" as empty (not an error) — output dir may be
+		// legitimately empty when the Python script produced nothing.
+		if strings.Contains(s, "No such file") || strings.Contains(s, "no such file") {
+			return nil
+		}
+		return fmt.Errorf("docker cp from container: %w (output=%s)", err, s)
+	}
+	return nil
+}
+
+// ExecMkdir creates `dirs` inside the container using docker exec mkdir -p.
+func (c *dockerCLIClient) ExecMkdir(ctx context.Context, containerID string, dirs ...string) error {
+	if len(dirs) == 0 {
+		return nil
+	}
+	args := append([]string{"exec", containerID, "mkdir", "-p"}, dirs...)
+	cmd := exec.CommandContext(ctx, dockerBinary, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker exec mkdir: %w (output=%s)", err, string(out))
+	}
+	return nil
 }
 
 // captureStderr extracts the Stderr field from an *exec.ExitError if present.

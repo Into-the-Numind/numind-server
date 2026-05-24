@@ -1,0 +1,20 @@
+{
+  "name": "pdf-from-html",
+  "version": "1.0.0",
+  "description": "Generate PDF documents from HTML templates using weasyprint. Supports CSS styling, embedded images, custom fonts, and dynamic content via Jinja2.",
+  "categories": ["document", "pdf"],
+  "required_libs": [
+    "weasyprint>=62.0,<63.0",
+    "jinja2>=3.1.0,<4.0"
+  ],
+  "system_deps_note": "Requires system libs pre-installed in sandbox image: libpango1.0-0, libpangocairo-1.0-0, libcairo2, libgdk-pixbuf-2.0-0, libffi-dev, shared-mime-info, fonts-wqy-zenhei (see T15 in DECISIONS.md)",
+  "output_mime_types": [
+    "application/pdf"
+  ],
+  "max_runtime_seconds": 30,
+  "max_output_size_mb": 50,
+  "input_dir": "/workspace/input",
+  "output_dir": "/output",
+  "template_dir": "/skills/pdf-from-html/templates",
+  "supports_templates": ["invoice", "report", "certificate"]
+}

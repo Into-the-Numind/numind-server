@@ -533,6 +533,10 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	var memorySystemBlock string       // PLACEHOLDER: memory.SystemBlock (#7 fills below)
 	var toolsSectionPlaceholder string // PLACEHOLDER: tools_section (#14 will fill)
 
+	// V1.5 Track 4: 输出文件工具优先级引导（Layer 1 Go → Layer 2 skill → Layer 3 run_python 兜底）。
+	// 总是追加 — Layer 1/2/3 工具在 V1.5 后均默认注册，引导不破坏 6 段顺序（仍属段 2 Tools 内）。
+	toolsSectionPlaceholder += OutputToolsPriorityAddendum
+
 	// V1.5 板块 2 task 2.2 — V2 路径门控：DB flag use_compact_v2=true 且 runner 注入了 V2 deps。
 	// 若任一不满足，useCompactV2 视为 false：保持 V1 行为（adaptFullToEinoTool 原样、不注入
 	// read_tool_artifact、不追加 system prompt addendum）。这样 V1 测试 / 历史 run 完全不受影响。

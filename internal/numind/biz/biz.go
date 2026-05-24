@@ -13,6 +13,7 @@ import (
 	"numind-server/internal/numind/biz/agent/budgetgate"
 	"numind-server/internal/numind/biz/agent/compliancegate"
 	"numind-server/internal/numind/biz/agent/search"
+	"numind-server/internal/numind/biz/agent/skills"
 	"numind-server/internal/numind/biz/ali"
 	"numind-server/internal/numind/biz/attachment"
 	"numind-server/internal/numind/biz/budget"
@@ -255,17 +256,11 @@ func NewBiz(ds store.IStore) *biz {
 	// 初始化 Agent Tool Registry + AgentRunner（agent-mode #2 + #3 + #4）
 	// 顺序敏感：必须在 salesRAGService 之后（PlatformToolFactory 依赖 salesRAGService）
 	agentToolRegistry := agent.NewAgentToolRegistry(ds.ToolDefinitions(), ds.ToolFactoryRegistries())
-	if err := agentToolRegistry.RegisterFactory(agent.NewPlatformToolFactory(b.salesRAGService, ds)); err != nil {
-		log.Warnw("AgentToolRegistry.RegisterFactory failed", "error", err)
-	}
-	if err := agentToolRegistry.LoadAll(context.Background()); err != nil {
-		log.Warnw("AgentToolRegistry.LoadAll failed", "error", err)
-	}
-	b.agentToolRegistry = agentToolRegistry
 
-	// #4 sandbox-integration: SandboxConfig from viper + DockerClient + Pool +
-	// SandboxHookManager wire. Default backend (no `sandbox:` config section)
-	// is BackendDisabled → Pool is a no-op disabledPool → prod safe.
+	// V1.5 Track 4 task 4.4: Skill Registry + platform factory construction.
+	// Build sandbox pool first so it can be wired into the platform factory before LoadAll.
+	// skills_root from viper; if absent or the directory does not exist, invoke_skill is
+	// simply not registered (graceful degradation, no server boot failure).
 	sandboxLogger := &sandboxZapLogger{}
 	sandboxConfig := sandbox.LoadFromViper(viper.GetViper())
 	dockerClient := sandbox.NewDockerCLIClient(sandboxLogger)
@@ -276,6 +271,38 @@ func NewBiz(ds store.IStore) *biz {
 		"backend", string(sandboxConfig.Backend),
 		"pool_min", sandboxConfig.PoolMin,
 		"image_tag", sandboxConfig.ImageTag)
+
+	// V1.5 Track 4 task 4.4: build Skill Registry and wire into platform factory.
+	// skills_root from viper; if absent or the directory does not exist, invoke_skill
+	// is silently omitted (prod-safe default).
+	var platformFactory agent.ToolFactory
+	skillsRoot := viper.GetString("sandbox.skills_root")
+	if skillsRoot != "" {
+		if skillReg, skillRegErr := skills.NewRegistry(skillsRoot); skillRegErr != nil {
+			log.Warnw("skills.NewRegistry failed; invoke_skill tool will not be available",
+				"skills_root", skillsRoot, "error", skillRegErr)
+			platformFactory = agent.NewPlatformToolFactory(b.salesRAGService, ds)
+		} else {
+			log.Infow("skills.Registry initialised", "skills_root", skillsRoot, "count", len(skillReg.List()))
+			if sp, ok := sandboxPool.(sandbox.SkillPool); ok {
+				platformFactory = agent.NewPlatformToolFactoryWithSkills(b.salesRAGService, ds, skillReg, sp)
+				log.Infow("invoke_skill tool registered with skill registry")
+			} else {
+				log.Warnw("sandbox.Pool does not implement SkillPool; invoke_skill not registered")
+				platformFactory = agent.NewPlatformToolFactory(b.salesRAGService, ds)
+			}
+		}
+	} else {
+		platformFactory = agent.NewPlatformToolFactory(b.salesRAGService, ds)
+	}
+
+	if err := agentToolRegistry.RegisterFactory(platformFactory); err != nil {
+		log.Warnw("AgentToolRegistry.RegisterFactory failed", "error", err)
+	}
+	if err := agentToolRegistry.LoadAll(context.Background()); err != nil {
+		log.Warnw("AgentToolRegistry.LoadAll failed", "error", err)
+	}
+	b.agentToolRegistry = agentToolRegistry
 
 	// #6 agent-mode-permission-pipeline: PermissionGate + 7 Validators + WrapHooks
 	// 顺序：permission → sandbox（避免 deny 时白启容器；S0 P0 reviewer fix）

@@ -1,0 +1,37 @@
+# =============================================================================
+# Layer 3: skills — Top-most layer; just labels + runtime comments.
+#
+# Tag: ccr.ccs.tencentyun.com/youshunumind/sandbox-skill:skills-v1.5.0
+#
+# The actual skill files live at /opt/numind/skills/ on the HOST (T3 decision:
+# reside in a host-side directory, bind-mounted read-only into containers at
+# runtime). This layer does NOT COPY skill files — it only documents the
+# expected mount point and serves as the tagging layer for the runtime image.
+#
+# At runtime, AcquireForSkill calls:
+#   docker exec <containerID> mkdir -p /skills/<skillName>
+# then uses CopyToContainer to inject the skill helper files.
+# (v1 pragmatic approach; v2 will use proper bind-mounts via SpawnConfig.Volumes)
+#
+# Build:
+#   docker build -f Dockerfile.skills \
+#     --build-arg LIBS_TAG=libs-v1.5.0 \
+#     -t ccr.ccs.tencentyun.com/youshunumind/sandbox-skill:skills-v1.5.0 .
+# =============================================================================
+
+ARG LIBS_TAG=libs-v1.5.0
+FROM ccr.ccs.tencentyun.com/youshunumind/sandbox-skill:${LIBS_TAG} AS skills
+
+# Labels for traceability.
+LABEL org.opencontainers.image.title="numind-sandbox-skill"
+LABEL org.opencontainers.image.description="Numind V1.5 Skill sandbox image — Python libs + CJK fonts"
+LABEL org.opencontainers.image.vendor="Numind (有数 AI)"
+LABEL org.opencontainers.image.version="1.5.0"
+
+# /skills is the well-known bind-mount point for skill directories.
+# The container user has read access; it is NOT writable (read-only mount at runtime).
+VOLUME ["/skills"]
+
+USER sandboxuser
+WORKDIR /workdir
+CMD ["/bin/sh", "-c", "sleep 600"]

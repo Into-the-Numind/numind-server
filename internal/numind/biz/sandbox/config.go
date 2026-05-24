@@ -56,6 +56,30 @@ type SandboxConfig struct {
 	SeccompProfile  string // file name relative to package dir, or absolute path
 	AppArmorProfile string
 	UserSpec        string
+
+	// Track 4: Skill / invoke_skill extensions.
+
+	// SkillsRoot is the host-side directory containing skill subdirectories
+	// (e.g. /opt/numind/skills). Each skill dir is bind-mounted read-only
+	// into the container at /skills/<skillName>/. Defaults to
+	// "/opt/numind/skills" if unset.
+	SkillsRoot string
+
+	// OutputMaxSizeMB is the per-file size ceiling for sandbox output files.
+	// ScanOutput rejects files larger than this. The hard ceiling is 50 MB;
+	// this config value can only lower it, never raise it above 50.
+	// Defaults to 50.
+	OutputMaxSizeMB int
+
+	// OutputZipBombThresholdMB is the zip decompressed-size threshold above
+	// which ScanOutput reports ErrZipBomb. Hard-coded to 500 MB in ScanOutput;
+	// this field is kept for documentation / future tunability.
+	// Defaults to 500.
+	OutputZipBombThresholdMB int
+
+	// COSUploadConcurrency controls how many CollectOutputs COS upload
+	// goroutines run in parallel. Defaults to 3.
+	COSUploadConcurrency int
 }
 
 // DefaultSandboxConfig is the prod-safe baseline: Backend=disabled.
@@ -79,6 +103,12 @@ var DefaultSandboxConfig = SandboxConfig{
 	SeccompProfile:  "seccomp.json",
 	AppArmorProfile: "docker-default",
 	UserSpec:        "1000:1000",
+
+	// Track 4 defaults.
+	SkillsRoot:               "/opt/numind/skills",
+	OutputMaxSizeMB:          50,
+	OutputZipBombThresholdMB: 500,
+	COSUploadConcurrency:     3,
 }
 
 // viperLike is the subset of *viper.Viper the LoadFromViper helper needs.
@@ -172,6 +202,19 @@ func LoadFromViper(v viperLike) SandboxConfig {
 	}
 	if v.IsSet("sandbox.user_spec") {
 		cfg.UserSpec = v.GetString("sandbox.user_spec")
+	}
+	// Track 4 new fields.
+	if v.IsSet("sandbox.skills_root") {
+		cfg.SkillsRoot = v.GetString("sandbox.skills_root")
+	}
+	if v.IsSet("sandbox.output_max_size_mb") {
+		cfg.OutputMaxSizeMB = v.GetInt("sandbox.output_max_size_mb")
+	}
+	if v.IsSet("sandbox.output_zip_bomb_threshold_mb") {
+		cfg.OutputZipBombThresholdMB = v.GetInt("sandbox.output_zip_bomb_threshold_mb")
+	}
+	if v.IsSet("sandbox.cos_upload_concurrency") {
+		cfg.COSUploadConcurrency = v.GetInt("sandbox.cos_upload_concurrency")
 	}
 	return cfg
 }

@@ -1,0 +1,42 @@
+# =============================================================================
+# Layer 1: base — Debian Slim + Python 3.11 + system-level dependencies
+#
+# Tag: ccr.ccs.tencentyun.com/youshunumind/sandbox-skill:base-v1.5.0
+#
+# This layer changes rarely (only when new apt dependencies are needed).
+# All skill-specific Python libraries are in Dockerfile.libs (Layer 2).
+#
+# Build:
+#   docker build -f Dockerfile.base -t ccr.ccs.tencentyun.com/youshunumind/sandbox-skill:base-v1.5.0 .
+# =============================================================================
+
+FROM python:3.11-slim AS base
+
+# System dependencies required by skills:
+#   - libpango / libcairo / libgdk-pixbuf-2.0-0 / shared-mime-info: weasyprint (PDF from HTML)
+#   - libffi-dev: cffi / cryptography builds
+#   - fonts-wqy-zenhei: CJK font support for PDF/chart generation (T12/T15 decisions)
+#   - curl: minimal network tool (sandbox is --network=none; here for image-build-time only)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libpango1.0-0 \
+        libcairo2 \
+        libgdk-pixbuf-2.0-0 \
+        libffi-dev \
+        shared-mime-info \
+        fonts-wqy-zenhei \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create the sandbox user (nobody at uid/gid 65534 on Alpine; use 1000:1000 on Debian).
+# uid 1000 matches SandboxConfig.UserSpec default.
+RUN groupadd -g 1000 sandboxuser && useradd -u 1000 -g 1000 -s /bin/false sandboxuser
+
+# Prepare directory structure.
+# /workdir — tmpfs mount point (from docker run --tmpfs).
+# /input   — injected input files (under /workdir at runtime).
+# /output  — generated output files (under /workdir at runtime).
+# /skills  — bind-mounted skill directories (read-only at runtime).
+RUN mkdir -p /workdir /input /output /skills && \
+    chown sandboxuser:sandboxuser /workdir /input /output
+
+USER sandboxuser
+WORKDIR /workdir

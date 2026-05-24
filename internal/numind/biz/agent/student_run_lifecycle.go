@@ -559,13 +559,15 @@ var safeToolBaseline = []string{
 // categoryToTools 把 frontend AgentAdvancedEdit.vue 的 3 个 risk-category 开关
 // 展开为受限工具（这些工具默认 OFF，必须通过 category 显式启用）。
 //
-//	code_sandbox → bash_exec      (RequiresSandbox=true)
-//	media        → image_gen      (Category="多媒体")
-//	dangerous    → bash_exec      (RiskLevel="dangerous" 别名)
+//	code_sandbox  → bash_exec      (RequiresSandbox=true)
+//	media         → image_gen      (Category="多媒体")
+//	dangerous     → bash_exec      (RiskLevel="dangerous" 别名)
+//	enable_skills → invoke_skill   (V1.5 Track 4 task 4.4; requires code_sandbox for IsEnabled to pass)
 var categoryToTools = map[string][]string{
-	"code_sandbox": {"bash_exec"},
-	"media":        {"image_gen"},
-	"dangerous":    {"bash_exec"}, // alias of code_sandbox for now
+	"code_sandbox":  {"bash_exec"},
+	"media":         {"image_gen"},
+	"dangerous":     {"bash_exec"},    // alias of code_sandbox for now
+	"enable_skills": {"invoke_skill"}, // V1.5 Track 4: invoke_skill skill framework
 }
 
 // toolNamesFromFlags resolves agent_definition.ToolFlags JSON to []string of
