@@ -483,15 +483,55 @@ func TestGrantMembership_Idempotency_Conflict_Returns409(t *testing.T) {
 // Self-purchase guard
 // ---------------------------------------------------------------------------
 
-// TestGrantMembership_SelfPurchase_Returns403 verifies that a parent trying to
-// grant a monthly subscription to themselves is rejected (§B2B2C constraint).
-func TestGrantMembership_SelfPurchase_Returns403(t *testing.T) {
+// TestGrantMembership_SelfPurchase_SelfGrantAllowed verifies that a parent user
+// legitimately granting a monthly subscription to themselves is allowed (returns 200).
+func TestGrantMembership_SelfPurchase_SelfGrantAllowed(t *testing.T) {
 	db := newMembershipTestDB(t)
-	// Self-grant (parent==child) bypasses the parent-child auth check by design;
-	// rejection comes from MembershipService.ErrMembershipSelfPurchaseDisabled.
-	ctrl := makeGrantCtrl(db, membership.NewMembershipService(db))
-	// parent ID = 700; child ID = 700 (same) → ErrMembershipSelfPurchaseDisabled.
+	seedParentUser(t, db, 700) // Ensure the user exists in DB as well
+	svc := membership.NewMembershipService(db)
+	ctrl := makeGrantCtrl(db, svc)
+
+	// caller is 700, target is 700 (parent self-grant)
 	r := newGrantRouter(t, ctrl, makeUser(700), "idem-self-001")
+
+	w := postGrant(t, r, 700, map[string]interface{}{
+		"product_type": "monthly",
+		"months":       1,
+	})
+
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+
+	var env struct {
+		Code int `json:"code"`
+		Data struct {
+			ChildUserID uint64 `json:"child_user_id"`
+			ProductType string `json:"product_type"`
+			EventType   string `json:"event_type"`
+			Scenario    string `json:"scenario"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&env))
+	assert.Equal(t, 0, env.Code)
+	assert.Equal(t, uint64(700), env.Data.ChildUserID)
+	assert.Equal(t, "monthly", env.Data.ProductType)
+	assert.Equal(t, "sub_granted", env.Data.EventType)
+	assert.Equal(t, "new", env.Data.Scenario)
+}
+
+// TestGrantMembership_SelfPurchase_ChildSelfGrantForbidden verifies that a child user (non-parent)
+// trying to grant a monthly subscription to themselves is rejected with HTTP 403.
+func TestGrantMembership_SelfPurchase_ChildSelfGrantForbidden(t *testing.T) {
+	db := newMembershipTestDB(t)
+	seedChildUser(t, db, 1, 700) // User 700 has a parent (user 1), so he is a child user
+	svc := membership.NewMembershipService(db)
+	ctrl := makeGrantCtrl(db, svc)
+
+	// caller is 700, who has parent 1
+	pid := uint(1)
+	childCaller := makeUser(700)
+	childCaller.ParentUserID = &pid
+
+	r := newGrantRouter(t, ctrl, childCaller, "idem-self-002")
 
 	w := postGrant(t, r, 700, map[string]interface{}{
 		"product_type": "monthly",
