@@ -118,8 +118,12 @@ func (c *CreditController) GrantMembership(ctx *gin.Context) {
 		})
 
 	case "monthly":
+		var finalParentID uint64 = parentID
+		if parentID == childID64 && parent.ParentUserID == nil {
+			finalParentID = 0
+		}
 		res, err := c.membershipSvc.GrantOrRenewSubscription(ctx, membership.GrantSubscriptionRequest{
-			ParentUserID:   parentID,
+			ParentUserID:   finalParentID,
 			UserID:         childID64,
 			ProductType:    "monthly",
 			Months:         req.Months,

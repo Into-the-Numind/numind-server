@@ -11,6 +11,8 @@ set -euo pipefail
 : "${TARGET:?TARGET must be set}"
 : "${IMAGE:?IMAGE must be set}"
 
+EXTRA_RUN_FLAGS=""
+
 case "$TARGET" in
   server)
     case "$ENV" in
