@@ -273,8 +273,32 @@ func (c *SkillArtifactController) ListSkillBoundAgents(ctx *gin.Context) {
 }
 
 // ---------------------------------------------------------------------------
-// /v1/agents/:id/skills/* — Agent-Skill 装载关系（3 endpoints）
+// /v1/agents/:id/skills/* — Agent-Skill 装载关系（4 endpoints）
 // ---------------------------------------------------------------------------
+
+// ListAgentSkills handles GET /v1/agents/:id/skills.
+//
+// 列出指定 Agent 装载的所有活跃 Skill，按 sort_order ASC 排序。
+func (c *SkillArtifactController) ListAgentSkills(ctx *gin.Context) {
+	parentUserID, ok := c.resolveParentUserID(ctx)
+	if !ok {
+		return
+	}
+	agentID, ok := parseUintParam(ctx, "id")
+	if !ok {
+		return
+	}
+
+	skills, err := c.bindingSvc.ListByAgent(ctx.Request.Context(), parentUserID, agentID)
+	if err != nil {
+		core.WriteResponse(ctx, err, nil)
+		return
+	}
+	if skills == nil {
+		skills = []model.Skill{}
+	}
+	core.WriteResponse(ctx, nil, gin.H{"list": skills, "total": len(skills)})
+}
 
 // attachSkillRequest 是 POST /v1/agents/:id/skills 的 body。
 type attachSkillRequest struct {

@@ -164,6 +164,7 @@ func newArtifactTestEngine(t *testing.T, db *gorm.DB) *gin.Engine {
 	}
 	agents := engine.Group("/v1/agents/:id/skills")
 	{
+		agents.GET("", ctrl.ListAgentSkills)
 		agents.POST("", ctrl.AttachSkill)
 		agents.DELETE("/:skill_id", ctrl.DetachSkill)
 		agents.PUT("/reorder", ctrl.ReorderSkills)
@@ -390,4 +391,47 @@ func TestSkillArtifact_Delete_HappyPath_ReturnsAffectedBindings(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(resp.Data, &data))
 	assert.Equal(t, int64(0), data.AffectedBindings) // 没装载过任何 agent
+}
+
+// TestSkillArtifact_ListAgentSkills_HappyPath 验证 GET /v1/agents/:id/skills 正确获取当前 agent 所装载的活跃 skills 列表。
+func TestSkillArtifact_ListAgentSkills_HappyPath(t *testing.T) {
+	db := newArtifactTestDB(t)
+	seedArtifactUsers(t, db)
+	engine := newArtifactTestEngine(t, db)
+
+	// 1. 创建 2 个 skills
+	createStatus1, createResp1 := doArtifactRequest(t, engine, http.MethodPost, "/v1/skills", minimalCreateBody(), withUser(100))
+	require.Equal(t, http.StatusOK, createStatus1)
+	var sk1 model.Skill
+	require.NoError(t, json.Unmarshal(createResp1.Data, &sk1))
+
+	createStatus2, createResp2 := doArtifactRequest(t, engine, http.MethodPost, "/v1/skills", minimalCreateBody(), withUser(100))
+	require.Equal(t, http.StatusOK, createStatus2)
+	var sk2 model.Skill
+	require.NoError(t, json.Unmarshal(createResp2.Data, &sk2))
+
+	// 2. 插入一条 agent 数据
+	require.NoError(t, db.Exec(
+		`INSERT INTO agent_definition (id, parent_user_id, name, created_by) VALUES (42, 100, 'My Agent', 100)`).Error)
+
+	// 3. 装载这两个 skills 到 agent 42
+	statusAttach1, respAttach1 := doArtifactRequest(t, engine, http.MethodPost, "/v1/agents/42/skills", map[string]interface{}{"skill_id": sk1.ID, "sort_order": 1}, withUser(100))
+	require.Equal(t, http.StatusOK, statusAttach1, "attach1 err: %+v", respAttach1)
+	statusAttach2, respAttach2 := doArtifactRequest(t, engine, http.MethodPost, "/v1/agents/42/skills", map[string]interface{}{"skill_id": sk2.ID, "sort_order": 2}, withUser(100))
+	require.Equal(t, http.StatusOK, statusAttach2, "attach2 err: %+v", respAttach2)
+
+	// 4. 获取列表，并验证排序和数量
+	statusList, respList := doArtifactRequest(t, engine, http.MethodGet, "/v1/agents/42/skills", nil, withUser(100))
+	require.Equal(t, http.StatusOK, statusList)
+	assert.Equal(t, 0, respList.Code)
+
+	var listData struct {
+		List  []model.Skill `json:"list"`
+		Total int           `json:"total"`
+	}
+	require.NoError(t, json.Unmarshal(respList.Data, &listData))
+	assert.Equal(t, 2, listData.Total)
+	require.Len(t, listData.List, 2)
+	assert.Equal(t, sk1.ID, listData.List[0].ID)
+	assert.Equal(t, sk2.ID, listData.List[1].ID)
 }
