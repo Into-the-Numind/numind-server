@@ -431,6 +431,7 @@ func installNumindRouters(g *gin.Engine) error {
 
 		agentsV2 := authGroup.Group("/agents/:id/skills")
 		{
+			agentsV2.GET("", artifactCtrl.ListAgentSkills)
 			agentsV2.POST("", artifactCtrl.AttachSkill)
 			agentsV2.DELETE("/:skill_id", artifactCtrl.DetachSkill)
 			agentsV2.PUT("/reorder", artifactCtrl.ReorderSkills)
