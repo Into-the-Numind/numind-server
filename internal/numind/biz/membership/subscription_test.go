@@ -154,6 +154,12 @@ func TestGrantSub_ReopenCleansStaleCycles(t *testing.T) {
 	nowReal := ts(2026, 4, 1)
 	seedStaleCycles(t, db, svc, parentID, childID, nowReal)
 
+	// Force set the initial subscription.source to self_purchase and granter_user_id to nil
+	// to simulate the legacy/migration data situation in production.
+	require.NoError(t, db.Model(&model.Subscription{}).
+		Where("user_id = ?", childID).
+		Updates(map[string]any{"source": "self_purchase", "granter_user_id": nil}).Error)
+
 	// Verify there's a stale cycle in DB.
 	var cycleCount int64
 	require.NoError(t, db.Model(&model.CreditCycle{}).Where("user_id = ?", childID).Count(&cycleCount).Error)
@@ -170,6 +176,13 @@ func TestGrantSub_ReopenCleansStaleCycles(t *testing.T) {
 	var afterCount int64
 	require.NoError(t, db.Model(&model.CreditCycle{}).Where("user_id = ?", childID).Count(&afterCount).Error)
 	assert.Equal(t, int64(0), afterCount)
+
+	// Verify that subscription.source and granter_user_id are corrected on reopen to prevent underbilling.
+	var subAfter model.Subscription
+	require.NoError(t, db.Where("user_id = ?", childID).Take(&subAfter).Error)
+	assert.Equal(t, "b2b_grant", string(subAfter.Source))
+	require.NotNil(t, subAfter.GranterUserID)
+	assert.Equal(t, parentID, *subAfter.GranterUserID)
 
 	// first_started_at preserved from original grant.
 	assert.True(t, res.FirstStartedAt.Before(nowReopen))
