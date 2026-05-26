@@ -174,6 +174,8 @@ func (s *MembershipService) GrantOrRenewSubscription(ctx context.Context, req Gr
 			sub.CurrentStartedAt = now
 			sub.TotalMonthsPurchased = months
 			sub.ExpiresAt = util.AnchorAddMonths(now, months)
+			sub.Source = model.SourceB2BGrant
+			sub.GranterUserID = req.GranterUserID
 			sub.UpdatedAt = now
 			if err := s.store.Subscriptions().Update(ctx, tx, sub); err != nil {
 				return err
