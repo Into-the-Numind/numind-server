@@ -54,6 +54,7 @@ type PatchRequest struct {
 	ToolFlags            *map[string]bool            `json:"tool_flags"`
 	CreditCapPerSession  *uint                       `json:"credit_cap_per_session"`
 	DailyCreditCap       *uint                       `json:"daily_credit_cap"`
+	CustomSkillBody      *string                     `json:"custom_skill_body"`
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +175,7 @@ func (c *SkillController) Patch(ctx *gin.Context) {
 		ToolFlags:            req.ToolFlags,
 		CreditCapPerSession:  req.CreditCapPerSession,
 		DailyCreditCap:       req.DailyCreditCap,
+		CustomSkillBody:      req.CustomSkillBody,
 	})
 	core.WriteResponse(ctx, err, ad)
 }
