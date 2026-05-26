@@ -89,7 +89,7 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		&kbSearchTool{rag: f.rag},
 		&learnerDataQueryTool{users: usersGetter},
 		&documentGenerateTool{},
-		&imageGenTool{},
+		&imageGenTool{ds: f.ds},
 		&bashExecTool{},
 		&getCurrentDateTool{},
 		NewWebSearchToolFromConfig(),
