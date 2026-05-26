@@ -40,6 +40,7 @@ type PatchRequest struct {
 	ToolFlags            *map[string]bool
 	CreditCapPerSession  *uint
 	DailyCreditCap       *uint
+	CustomSkillBody      *string
 }
 
 // Service 定义 biz/skill 层的 9 个业务方法。
@@ -317,6 +318,12 @@ func (s *service) Patch(ctx context.Context, userID uint, id uint64, req PatchRe
 	}
 	if req.DailyCreditCap != nil {
 		ad.DailyCreditCap = req.DailyCreditCap
+	}
+	if req.CustomSkillBody != nil {
+		if !ad.AdvancedMode {
+			return nil, errno.ErrInvalidParameter.SetMessage("问卷模式不允许直接编辑 SKILL.md")
+		}
+		ad.CustomSkillBody = *req.CustomSkillBody
 	}
 
 	// Rebuild GeneratedSkillBody whenever questionnaire or top-level Q fields change.

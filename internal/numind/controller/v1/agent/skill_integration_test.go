@@ -598,3 +598,67 @@ func TestListTemplates_Empty(t *testing.T) {
 	require.NoError(t, json.Unmarshal(resp.Data, &data))
 	assert.Equal(t, 0, data.Total)
 }
+
+// TestPatch_CustomSkillBody_AdvancedMode_Success 验证在高级模式下，修改并保存 custom_skill_body 可以持久化成功。
+func TestPatch_CustomSkillBody_AdvancedMode_Success(t *testing.T) {
+	db := newTestDB(t)
+	seedUsers(t, db)
+	engine := newTestEngine(t, db)
+
+	// 1. 创建 Agent
+	_, createResp := doRequest(t, engine, http.MethodPost, "/v1/agent/skills", validCreateBody(), withParent())
+	var created model.AgentDefinition
+	require.NoError(t, json.Unmarshal(createResp.Data, &created))
+	idPath := "/v1/agent/skills/" + strconv.FormatUint(created.ID, 10)
+
+	// 2. 切换为高级模式
+	statusToggle, respToggle := doRequest(t, engine, http.MethodPost, idPath+"/advanced-toggle", nil, withParent())
+	require.Equal(t, http.StatusOK, statusToggle)
+	var toggled model.AgentDefinition
+	require.NoError(t, json.Unmarshal(respToggle.Data, &toggled))
+	require.True(t, toggled.AdvancedMode)
+
+	// 3. 在高级模式下 PATCH custom_skill_body
+	newBody := "# My Custom Skill\nEdited by user."
+	patchBody := map[string]interface{}{"custom_skill_body": newBody}
+	statusPatch, respPatch := doRequest(t, engine, http.MethodPatch, idPath, patchBody, withParent())
+	require.Equal(t, http.StatusOK, statusPatch)
+	assert.Equal(t, 0, respPatch.Code)
+
+	var patched model.AgentDefinition
+	require.NoError(t, json.Unmarshal(respPatch.Data, &patched))
+	assert.Equal(t, newBody, patched.CustomSkillBody)
+
+	// 4. 从 DB 重新读取，并验证 history 版本快照
+	var dbAd model.AgentDefinition
+	require.NoError(t, db.First(&dbAd, created.ID).Error)
+	assert.Equal(t, newBody, dbAd.CustomSkillBody)
+
+	var histories []model.AgentDefinitionHistory
+	require.NoError(t, db.Where("agent_definition_id = ?", created.ID).Order("version desc").Find(&histories).Error)
+	require.NotEmpty(t, histories)
+	
+	var snapshot model.AgentDefinition
+	require.NoError(t, json.Unmarshal(histories[0].Snapshot, &snapshot))
+	assert.Equal(t, newBody, snapshot.CustomSkillBody)
+}
+
+// TestPatch_CustomSkillBody_QuestionnaireMode_Failed 验证在问卷模式下，尝试修改 custom_skill_body 会被拒绝并返回 400 错误。
+func TestPatch_CustomSkillBody_QuestionnaireMode_Failed(t *testing.T) {
+	db := newTestDB(t)
+	seedUsers(t, db)
+	engine := newTestEngine(t, db)
+
+	// 1. 创建 Agent (默认为问卷模式)
+	_, createResp := doRequest(t, engine, http.MethodPost, "/v1/agent/skills", validCreateBody(), withParent())
+	var created model.AgentDefinition
+	require.NoError(t, json.Unmarshal(createResp.Data, &created))
+	require.False(t, created.AdvancedMode)
+	idPath := "/v1/agent/skills/" + strconv.FormatUint(created.ID, 10)
+
+	// 2. 尝试 PATCH custom_skill_body -> 应返回 400 Bad Request
+	patchBody := map[string]interface{}{"custom_skill_body": "hack prompt"}
+	statusPatch, respPatch := doRequest(t, engine, http.MethodPatch, idPath, patchBody, withParent())
+	assert.Equal(t, http.StatusBadRequest, statusPatch)
+	assert.NotEqual(t, 0, respPatch.Code)
+}
