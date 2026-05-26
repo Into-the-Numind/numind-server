@@ -250,32 +250,30 @@ func (s *StudentQueryService) ListAllHistorySessions(ctx context.Context, userID
 	return s.toEnrichedSummaries(ctx, runs)
 }
 
-// GetSessionSnapshot returns the latest run in the session (messages +
-// compact_summary) for the learner-facing resume flow.
+// GetSessionSnapshot returns all messages across all runs in the session
+// (ordered chronologically) for the learner-facing resume flow.
 //
-// Lookup is by agent_run.session_id (UUID string), NOT agent_run.id. The
-// URL contract is /v1/sessions/:id/snapshot and the frontend passes the
-// UUID surfaced via RunSummary.session_id. Picks the most recent run via
-// ListBySession (ordered by created_at DESC) — today every session is 1:1
-// with a run, but a multi-run resume in the future will naturally return
-// the freshest state.
+// Lookup is by agent_run.session_id (UUID string), NOT agent_run.id.
+// Fetches up to 100 runs to reconstruct full multi-turn chat history.
 //
 // Returns errno.ErrAgentRunNotFound if no runs match the session_id, and
 // errno.ErrForbidden if the session belongs to a different user.
 func (s *StudentQueryService) GetSessionSnapshot(ctx context.Context, userID uint, sessionID string) (*SessionSnapshot, error) {
-	runs, _, err := s.runStore.ListBySession(ctx, sessionID, 0, 1)
+	runs, _, err := s.runStore.ListBySession(ctx, sessionID, 0, 100)
 	if err != nil {
 		return nil, fmt.Errorf("StudentQueryService.GetSessionSnapshot list: %w", err)
 	}
 	if len(runs) == 0 {
 		return nil, errno.ErrAgentRunNotFound
 	}
-	run := &runs[0]
-	if run.UserID != userID {
+
+	// Use the newest run to represent the session's current status and metadata
+	latestRun := &runs[0]
+	if latestRun.UserID != userID {
 		return nil, errno.ErrForbidden.SetMessage("access to another user's session is not allowed")
 	}
 
-	summaries, err := s.toEnrichedSummaries(ctx, []model.AgentRun{*run})
+	summaries, err := s.toEnrichedSummaries(ctx, []model.AgentRun{*latestRun})
 	if err != nil {
 		return nil, fmt.Errorf("StudentQueryService.GetSessionSnapshot enrich: %w", err)
 	}
@@ -284,8 +282,15 @@ func (s *StudentQueryService) GetSessionSnapshot(ctx context.Context, userID uin
 	snap := &SessionSnapshot{
 		Run: runSummary,
 	}
-	// Fix 3: transform raw messages JSON into frontend-shaped AgentMessage array.
-	snap.Messages = transformMessages(run.Messages, run.ID, run.StartedAt, run.EndedAt, run.Status, run.StateReason)
+
+	// Concatenate all messages chronologically (ListBySession yields DESC, so process in reverse)
+	var allMessages []agentMessage
+	for i := len(runs) - 1; i >= 0; i-- {
+		runMessages := transformMessages(runs[i].Messages, runs[i].ID, runs[i].StartedAt, runs[i].EndedAt, runs[i].Status, runs[i].StateReason)
+		allMessages = append(allMessages, runMessages...)
+	}
+
+	snap.Messages = allMessages
 	return snap, nil
 }
 
