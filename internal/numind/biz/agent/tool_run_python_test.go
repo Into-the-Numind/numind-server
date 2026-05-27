@@ -477,9 +477,9 @@ func TestRunPythonTool_Execute_ExecMkdirError(t *testing.T) {
 	tool := &runPythonTool{}
 
 	res, err := tool.Execute(ctx, []byte(`{"code":"pass"}`))
-	// ExecMkdir failure is surfaced as a Go error (infrastructure failure)
-	if err == nil {
-		t.Fatalf("Execute should return Go error when mkdir fails; res=%s", string(res))
+	// ExecMkdir failure is surfaced as a soft-reject (nil Go error) to prevent session collapse
+	if err != nil {
+		t.Fatalf("Execute returned error: %v; want nil for sandboxed exec error (soft reject)", err)
 	}
 	if !strings.Contains(string(res), "error") {
 		t.Errorf("mkdir failure should return error JSON; got %s", string(res))

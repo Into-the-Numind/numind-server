@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"gorm.io/gorm"
+
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/model"
 )
@@ -33,6 +35,14 @@ func (t *imageGenTool) UserFacingName() string        { return "图像生成" }
 func (t *imageGenTool) NarrationVerb() string         { return "生成" }
 func (t *imageGenTool) IsEnabled(cfg ToolConfig) bool { return cfg.EnableImageGen }
 
+func (t *imageGenTool) returnSoftError(format string, args ...any) (ToolResult, error) {
+	msg := fmt.Sprintf(format, args...)
+	out, _ := json.Marshal(map[string]string{
+		"error": "ERROR: " + msg,
+	})
+	return ToolResult(out), nil
+}
+
 func (t *imageGenTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	// 1. 解析 Tool 输入
 	var inp struct {
@@ -50,17 +60,24 @@ func (t *imageGenTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	if ds == nil {
 		ds = store.S
 	}
-	if ds == nil {
-		return nil, errors.New("store context is not configured")
+	var db *gorm.DB
+	if ds != nil {
+		func() {
+			defer func() { _ = recover() }()
+			db = ds.DB()
+		}()
+	}
+	if db == nil {
+		return t.returnSoftError("database store context is not configured")
 	}
 
 	// 3. 从数据库中查询 dmxapi 供应源配置
 	var provider model.LLMProvider
-	if err := ds.DB().WithContext(ctx).Where("name = ?", "dmxapi").First(&provider).Error; err != nil {
-		return nil, fmt.Errorf("failed to retrieve 'dmxapi' provider config: %w", err)
+	if err := db.WithContext(ctx).Where("name = ?", "dmxapi").First(&provider).Error; err != nil {
+		return t.returnSoftError("failed to retrieve 'dmxapi' provider config: %v", err)
 	}
 	if provider.APIKey == "" {
-		return nil, errors.New("dmxapi provider API key is not configured in DB")
+		return t.returnSoftError("dmxapi provider API key is not configured in DB")
 	}
 
 	// 4. 计算并装配标准的 API Endpoint URL
@@ -119,14 +136,14 @@ func (t *imageGenTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("http request failed: %w", err)
+		return t.returnSoftError("http request failed: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		var errBuffer bytes.Buffer
 		_, _ = errBuffer.ReadFrom(resp.Body)
-		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, errBuffer.String())
+		return t.returnSoftError("API request failed with status %d: %s", resp.StatusCode, errBuffer.String())
 	}
 
 	// 7. 解析包含 Base64 数据的 JSON 响应结构
@@ -143,7 +160,7 @@ func (t *imageGenTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode response payload: %w", err)
+		return t.returnSoftError("failed to decode response payload: %v", err)
 	}
 
 	// 8. 过滤并提取 Base64 原始数据
@@ -158,16 +175,20 @@ func (t *imageGenTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	}
 
 	if base64Data == "" {
-		return nil, errors.New("no image base64 data returned from API response")
+		return t.returnSoftError("no image base64 data returned from API response (possibly blocked by safety filters)")
 	}
 
 	// 9. 解码 Base64 为二进制图像流
 	imgBytes, err := base64.StdEncoding.DecodeString(base64Data)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode base64 image data: %w", err)
+		return t.returnSoftError("failed to decode base64 image data: %v", err)
 	}
 
 	// 10. 上传文件并将其以标准的 fileCreateOutput 结构体回传给大模型工具链作为 Result
 	filename := fmt.Sprintf("gemini-image-%d.png", time.Now().Unix())
-	return uploadGeneratedFile(ctx, imgBytes, "image/png", filename, "png")
+	res, uploadErr := uploadGeneratedFile(ctx, imgBytes, "image/png", filename, "png")
+	if uploadErr != nil {
+		return t.returnSoftError("failed to upload generated image: %v", uploadErr)
+	}
+	return res, nil
 }

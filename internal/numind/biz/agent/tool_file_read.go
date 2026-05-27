@@ -111,6 +111,18 @@ func extractCOSObjectKey(fileURL string) (string, bool) {
 	return m[1], true
 }
 
+func (t *fileReadTool) returnSoftError(fileName, format string, args ...any) (ToolResult, error) {
+	msg := fmt.Sprintf(format, args...)
+	out, _ := json.Marshal(fileReadOutput{
+		FileName:  fileName,
+		MimeType:  "application/octet-stream",
+		Content:   "ERROR: " + msg,
+		ByteSize:  len(msg) + 7,
+		Truncated: false,
+	})
+	return ToolResult(out), nil
+}
+
 // Execute reads the file at the given URL, verifies ownership, detects MIME type,
 // dispatches to the appropriate parser, and returns structured JSON output.
 func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
@@ -161,11 +173,11 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		// 1h validity is comfortably longer than any single tool call.
 		signedHead, signErr := t.presignFn(ctx, http.MethodHead, objectKey, 3600)
 		if signErr != nil {
-			return nil, errno.ErrAIProviderError.SetMessage("file_read: presign COS URL (HEAD): %s", signErr.Error())
+			return t.returnSoftError(path.Base(in.FileURL), "presign COS URL (HEAD) failed: %v", signErr)
 		}
 		signedGet, signErr := t.presignFn(ctx, http.MethodGet, objectKey, 3600)
 		if signErr != nil {
-			return nil, errno.ErrAIProviderError.SetMessage("file_read: presign COS URL (GET): %s", signErr.Error())
+			return t.returnSoftError(path.Base(in.FileURL), "presign COS URL (GET) failed: %v", signErr)
 		}
 		headURL = signedHead
 		fetchURL = signedGet
@@ -178,11 +190,11 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	}
 	headResp, err := headFn(headURL)
 	if err != nil {
-		return nil, errno.ErrAIProviderError.SetMessage("file_read: HEAD request failed: %s", err.Error())
+		return t.returnSoftError(path.Base(in.FileURL), "HEAD request failed: %v", err)
 	}
 	defer headResp.Body.Close()
 	if headResp.StatusCode >= 400 {
-		return nil, errno.ErrAIProviderError.SetMessage("file_read: HEAD returned HTTP %d", headResp.StatusCode)
+		return t.returnSoftError(path.Base(in.FileURL), "HEAD returned HTTP status %d", headResp.StatusCode)
 	}
 
 	mimeType := headResp.Header.Get("Content-Type")
@@ -202,27 +214,24 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	switch {
 	case mimeType == "application/pdf":
 		if t.pdfParser == nil {
-			return nil, errno.ErrAIProviderError.SetMessage("file_read: PDF parser not configured")
+			return t.returnSoftError(path.Base(in.FileURL), "PDF parser not configured")
 		}
 		content, pageCount, truncated, err = t.pdfParser.Parse(ctx, fetchURL, in.Prompt)
 	case strings.HasPrefix(mimeType, "image/"):
 		if t.imageParser == nil {
-			return nil, errno.ErrAIProviderError.SetMessage("file_read: image parser not configured")
+			return t.returnSoftError(path.Base(in.FileURL), "image parser not configured")
 		}
 		content, _, truncated, err = t.imageParser.Parse(ctx, fetchURL, in.Prompt)
 	case mimeType == "text/plain" || mimeType == "text/markdown":
 		if t.textParser == nil {
-			return nil, errno.ErrAIProviderError.SetMessage("file_read: text parser not configured")
+			return t.returnSoftError(path.Base(in.FileURL), "text parser not configured")
 		}
 		content, _, truncated, err = t.textParser.Parse(ctx, fetchURL, in.Prompt)
 	default:
-		return nil, errno.ErrUnsupportedFileType.SetMessage(
-			"file_read: unsupported MIME type %q (supported: application/pdf, image/*, text/plain, text/markdown)",
-			mimeType,
-		)
+		return t.returnSoftError(path.Base(in.FileURL), "unsupported MIME type %q (supported: application/pdf, image/*, text/plain, text/markdown)", mimeType)
 	}
 	if err != nil {
-		return nil, errno.ErrAIProviderError.SetMessage("file_read: parse error: %s", err.Error())
+		return t.returnSoftError(path.Base(in.FileURL), "parse error: %v", err)
 	}
 
 	// FileName comes from the canonical URL (not the presigned one), so the

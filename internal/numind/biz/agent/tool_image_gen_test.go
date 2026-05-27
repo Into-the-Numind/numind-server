@@ -2,10 +2,9 @@ package agent
 
 import (
 	"context"
-	"errors"
+	"encoding/json"
+	"strings"
 	"testing"
-
-	"numind-server/internal/numind/biz/sandbox"
 )
 
 func TestImageGenTool_Name(t *testing.T) {
@@ -32,8 +31,15 @@ func TestImageGenTool_IsEnabled(t *testing.T) {
 
 func TestImageGenTool_Execute_ReturnsProviderNotConfigured(t *testing.T) {
 	tool := &imageGenTool{}
-	_, err := tool.Execute(context.Background(), []byte(`{"prompt":"a cat"}`))
-	if !errors.Is(err, sandbox.ErrImageGenProviderNotConfigured) {
-		t.Errorf("err = %v; want ErrImageGenProviderNotConfigured", err)
+	res, err := tool.Execute(context.Background(), []byte(`{"prompt":"a cat"}`))
+	if err != nil {
+		t.Fatalf("expected nil error (soft reject), got: %v", err)
+	}
+	var out map[string]string
+	if err := json.Unmarshal(res, &out); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if !strings.Contains(out["error"], "database store context is not configured") {
+		t.Errorf("expected soft error message, got: %s", out["error"])
 	}
 }

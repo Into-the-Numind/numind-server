@@ -154,16 +154,16 @@ func TestFileReadTool_Execute_UnsupportedMIME(t *testing.T) {
 
 	tool := &fileReadTool{headFn: http.Head}
 	input, _ := json.Marshal(fileReadInput{FileURL: baseURL(srv.URL)})
-	_, err := tool.Execute(ctxUser123(), ToolInput(input))
-	if err == nil {
-		t.Fatal("expected error for unsupported MIME type")
+	res, err := tool.Execute(ctxUser123(), ToolInput(input))
+	if err != nil {
+		t.Fatalf("expected nil error (soft reject), got: %v", err)
 	}
-	var e *errno.Errno
-	if !errors.As(err, &e) {
-		t.Fatalf("expected *errno.Errno, got %T: %v", err, err)
+	var out fileReadOutput
+	if err := json.Unmarshal(res, &out); err != nil {
+		t.Fatalf("invalid json: %v", err)
 	}
-	if e.Code != errno.ErrUnsupportedFileType.Code {
-		t.Errorf("expected ErrUnsupportedFileType code, got %q", e.Code)
+	if !strings.Contains(out.Content, "ERROR: unsupported MIME type") {
+		t.Errorf("expected soft error in content, got: %s", out.Content)
 	}
 }
 
@@ -247,9 +247,16 @@ func TestFileReadTool_Execute_HeadHTTPError(t *testing.T) {
 
 	tool := &fileReadTool{headFn: http.Head}
 	input, _ := json.Marshal(fileReadInput{FileURL: baseURL(srv.URL)})
-	_, err := tool.Execute(ctxUser123(), ToolInput(input))
-	if err == nil {
-		t.Fatal("expected error for HEAD 404")
+	res, err := tool.Execute(ctxUser123(), ToolInput(input))
+	if err != nil {
+		t.Fatalf("expected nil error (soft reject), got: %v", err)
+	}
+	var out fileReadOutput
+	if err := json.Unmarshal(res, &out); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if !strings.Contains(out.Content, "ERROR: HEAD returned HTTP status 404") {
+		t.Errorf("expected soft error in content, got: %s", out.Content)
 	}
 }
 
@@ -260,9 +267,16 @@ func TestFileReadTool_Execute_ParserError(t *testing.T) {
 	tool := &fileReadTool{pdfParser: parser, headFn: http.Head}
 
 	input, _ := json.Marshal(fileReadInput{FileURL: baseURL(srv.URL)})
-	_, err := tool.Execute(ctxUser123(), ToolInput(input))
-	if err == nil {
-		t.Fatal("expected error when parser returns error")
+	res, err := tool.Execute(ctxUser123(), ToolInput(input))
+	if err != nil {
+		t.Fatalf("expected nil error (soft reject), got: %v", err)
+	}
+	var out fileReadOutput
+	if err := json.Unmarshal(res, &out); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if !strings.Contains(out.Content, "ERROR: parse error: parse failed") {
+		t.Errorf("expected soft error in content, got: %s", out.Content)
 	}
 }
 
@@ -493,8 +507,7 @@ func TestFileReadTool_Execute_NonCOSURL_BypassesPresign(t *testing.T) {
 	}
 }
 
-// TestFileReadTool_Execute_COSURL_PresignFails surfaces presign errors as
-// ErrAIProviderError instead of letting them slip silently into a HEAD 403.
+// TestFileReadTool_Execute_COSURL_PresignFails surfaces presign errors as soft reject instead of ErrAIProviderError.
 func TestFileReadTool_Execute_COSURL_PresignFails(t *testing.T) {
 	presign := func(_ context.Context, _, _ string, _ int64) (string, error) {
 		return "", fmt.Errorf("cos creds missing")
@@ -506,22 +519,21 @@ func TestFileReadTool_Execute_COSURL_PresignFails(t *testing.T) {
 	}
 	cosURL := "https://b.cos.ap-x.myqcloud.com/agent-attachments/123/x.pdf"
 	input, _ := json.Marshal(fileReadInput{FileURL: cosURL})
-	_, err := tool.Execute(ctxUser123(), ToolInput(input))
-	if err == nil {
-		t.Fatal("expected error when presign fails")
+	res, err := tool.Execute(ctxUser123(), ToolInput(input))
+	if err != nil {
+		t.Fatalf("expected nil error (soft reject), got: %v", err)
 	}
-	var e *errno.Errno
-	if !errors.As(err, &e) {
-		t.Fatalf("expected *errno.Errno, got %T: %v", err, err)
+	var out fileReadOutput
+	if err := json.Unmarshal(res, &out); err != nil {
+		t.Fatalf("invalid json: %v", err)
 	}
-	if e.Code != errno.ErrAIProviderError.Code {
-		t.Errorf("expected ErrAIProviderError, got %q", e.Code)
+	if !strings.Contains(out.Content, "ERROR: presign COS URL (HEAD) failed: cos creds missing") {
+		t.Errorf("expected soft error in content, got: %s", out.Content)
 	}
 }
 
 // TestFileReadTool_Execute_COSURL_GetSignFails covers the second signing call
-// failing while HEAD signing succeeded — must surface as ErrAIProviderError,
-// not crash or silently fall back to the unsigned URL.
+// failing while HEAD signing succeeded — must surface as soft reject instead of ErrAIProviderError.
 func TestFileReadTool_Execute_COSURL_GetSignFails(t *testing.T) {
 	callCount := 0
 	presign := func(_ context.Context, method, _ string, _ int64) (string, error) {
@@ -538,22 +550,19 @@ func TestFileReadTool_Execute_COSURL_GetSignFails(t *testing.T) {
 	}
 	cosURL := "https://b.cos.ap-x.myqcloud.com/agent-attachments/123/x.pdf"
 	input, _ := json.Marshal(fileReadInput{FileURL: cosURL})
-	_, err := tool.Execute(ctxUser123(), ToolInput(input))
-	if err == nil {
-		t.Fatal("expected error when GET sign fails")
+	res, err := tool.Execute(ctxUser123(), ToolInput(input))
+	if err != nil {
+		t.Fatalf("expected nil error (soft reject), got: %v", err)
 	}
 	if callCount != 2 {
 		t.Errorf("expected 2 presign calls (HEAD ok, GET fails); got %d", callCount)
 	}
-	var e *errno.Errno
-	if !errors.As(err, &e) {
-		t.Fatalf("expected *errno.Errno, got %T: %v", err, err)
+	var out fileReadOutput
+	if err := json.Unmarshal(res, &out); err != nil {
+		t.Fatalf("invalid json: %v", err)
 	}
-	if e.Code != errno.ErrAIProviderError.Code {
-		t.Errorf("expected ErrAIProviderError, got %q", e.Code)
-	}
-	if !strings.Contains(e.Message, "GET") {
-		t.Errorf("error message should identify the GET signing step; got %q", e.Message)
+	if !strings.Contains(out.Content, "ERROR: presign COS URL (GET) failed: cos GET sign rate-limited") {
+		t.Errorf("expected soft error in content, got: %s", out.Content)
 	}
 }
 
