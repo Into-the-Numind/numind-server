@@ -226,3 +226,24 @@ func TestBuildUserContextSection_DisclaimerOnlyImpossible(t *testing.T) {
 		t.Errorf("disclaimer 不应在判定 block 全空时出现在输出，但 found in %q", got)
 	}
 }
+
+// TestBuildSystemPromptV2_DropsLegacyBodyWhenNoSkillCatalog 验证 D11：
+// V2 路径调用 BuildInstitutionSection 时，调用方应在 skills 空时传 skillCatalog=""。
+// 此处直接测试 BuildInstitutionSection 在 skillCatalog="" 时只渲染 systemPrompt + toolsHint，
+// 不混入任何 "legacy junk"。
+func TestBuildSystemPromptV2_DropsLegacyBodyWhenNoSkillCatalog(t *testing.T) {
+	got := BuildInstitutionSection(
+		"你是销售助手", // systemPrompt
+		"",       // skillCatalog 空（模拟 D11 决策：runner 在 len(skills)==0 时传空）
+		"## 工具优先级\n...",
+	)
+	if strings.Contains(got, "legacy") {
+		t.Errorf("BuildInstitutionSection 不应包含 legacy 内容; got=%q", got)
+	}
+	if !strings.Contains(got, "你是销售助手") {
+		t.Errorf("BuildInstitutionSection 应包含 systemPrompt; got=%q", got)
+	}
+	if !strings.Contains(got, "## 工具优先级") {
+		t.Errorf("BuildInstitutionSection 应包含 toolsHint; got=%q", got)
+	}
+}
