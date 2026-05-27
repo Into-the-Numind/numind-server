@@ -25,6 +25,7 @@ type Skill struct {
 	BodyMd           string         `gorm:"type:mediumtext;not null" json:"body_md"`
 	SourceType       string         `gorm:"type:enum('generated','custom','imported_from_template','imported_from_marketplace');not null;default:'custom'" json:"source_type"`
 	SourceTemplateID *uint          `gorm:"type:int unsigned;index:idx_skill_source_template" json:"source_template_id"`
+	OriginType       string         `gorm:"type:enum('official','tenant','user');not null;default:'user'" json:"origin_type"`
 	Version          uint           `gorm:"type:int unsigned;not null;default:1" json:"version"`
 	IsActive         bool           `gorm:"type:tinyint(1);not null;default:1;index:idx_skill_parent_active,priority:2" json:"is_active"`
 	CreatedBy        uint           `gorm:"type:int unsigned;not null" json:"created_by"`

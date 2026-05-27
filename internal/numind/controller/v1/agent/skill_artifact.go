@@ -98,6 +98,28 @@ func (c *SkillArtifactController) CreateSkill(ctx *gin.Context) {
 	core.WriteResponse(ctx, err, sk)
 }
 
+// ImportTemplateRequest 从官方模板一键克隆的 JSON Body。
+type ImportTemplateRequest struct {
+	TemplateID uint64 `json:"template_id" binding:"required"`
+}
+
+// ImportTemplate handles POST /v1/skills/import-template.
+func (c *SkillArtifactController) ImportTemplate(ctx *gin.Context) {
+	parentUserID, ok := c.resolveParentUserID(ctx)
+	if !ok {
+		return
+	}
+
+	var req ImportTemplateRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(ctx, errno.ErrBind.SetMessage("%s", err.Error()), nil)
+		return
+	}
+
+	sk, err := c.skillSvc.ImportTemplate(ctx.Request.Context(), parentUserID, parentUserID, req.TemplateID)
+	core.WriteResponse(ctx, err, sk)
+}
+
 // listSkillsQuery 是 GET /v1/skills 的 query 参数。
 type listSkillsQuery struct {
 	Page     int    `form:"page"`

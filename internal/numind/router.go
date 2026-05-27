@@ -420,6 +420,7 @@ func installNumindRouters(g *gin.Engine) error {
 		skillsV2 := authGroup.Group("/skills")
 		{
 			skillsV2.POST("", artifactCtrl.CreateSkill)
+			skillsV2.POST("/import-template", artifactCtrl.ImportTemplate)
 			skillsV2.GET("", artifactCtrl.ListSkills)
 			skillsV2.GET("/:id", artifactCtrl.GetSkill)
 			skillsV2.PUT("/:id", artifactCtrl.UpdateSkill)

@@ -64,6 +64,7 @@ func newArtifactTestDB(t *testing.T) *gorm.DB {
 			body_md             TEXT    NOT NULL DEFAULT '',
 			source_type         TEXT    NOT NULL DEFAULT 'custom',
 			source_template_id  INTEGER,
+			origin_type         TEXT    NOT NULL DEFAULT 'user',
 			version             INTEGER NOT NULL DEFAULT 1,
 			is_active           INTEGER NOT NULL DEFAULT 1,
 			created_by          INTEGER NOT NULL,
@@ -111,6 +112,19 @@ func newArtifactTestDB(t *testing.T) *gorm.DB {
 			created_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
+		`CREATE TABLE skill_template (
+			id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+			name                   TEXT    NOT NULL,
+			description            TEXT,
+			icon_url               TEXT,
+			category_tags          TEXT,
+			questionnaire_answers  TEXT    NOT NULL,
+			default_tool_flags     TEXT,
+			display_order          INTEGER NOT NULL DEFAULT 100,
+			is_active              INTEGER NOT NULL DEFAULT 1,
+			created_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
 	}
 	for _, ddl := range ddls {
 		require.NoError(t, db.Exec(ddl).Error)
@@ -154,6 +168,7 @@ func newArtifactTestEngine(t *testing.T, db *gorm.DB) *gin.Engine {
 	skills := engine.Group("/v1/skills")
 	{
 		skills.POST("", ctrl.CreateSkill)
+		skills.POST("/import-template", ctrl.ImportTemplate)
 		skills.GET("", ctrl.ListSkills)
 		skills.GET("/:id", ctrl.GetSkill)
 		skills.PUT("/:id", ctrl.UpdateSkill)
@@ -434,4 +449,35 @@ func TestSkillArtifact_ListAgentSkills_HappyPath(t *testing.T) {
 	require.Len(t, listData.List, 2)
 	assert.Equal(t, sk1.ID, listData.List[0].ID)
 	assert.Equal(t, sk2.ID, listData.List[1].ID)
+}
+
+// TestSkillArtifact_ImportTemplate_HappyPath 验证一键从官方模板克隆/导入为本租户独立技能。
+func TestSkillArtifact_ImportTemplate_HappyPath(t *testing.T) {
+	db := newArtifactTestDB(t)
+	seedArtifactUsers(t, db)
+	engine := newArtifactTestEngine(t, db)
+
+	// 1. 种入一个 skill_template
+	require.NoError(t, db.Exec(
+		`INSERT INTO skill_template (id, name, description, questionnaire_answers, default_tool_flags) VALUES (1, '爆款分析师', '分析小红书', '{"q6":["analyze_data"],"q7":["text"],"q12":"friendly"}', '{"code_sandbox":true}')`).Error)
+
+	// 2. 模拟请求
+	body := map[string]interface{}{
+		"template_id": 1,
+	}
+	status, resp := doArtifactRequest(t, engine, http.MethodPost, "/v1/skills/import-template", body, withUser(100))
+	require.Equal(t, http.StatusOK, status, "body=%+v", resp)
+	assert.Equal(t, 0, resp.Code)
+
+	var created model.Skill
+	require.NoError(t, json.Unmarshal(resp.Data, &created))
+	assert.Equal(t, "爆款分析师", created.Name)
+	assert.Equal(t, "imported_from_template", created.SourceType)
+	assert.Equal(t, "official", created.OriginType)
+	assert.NotZero(t, created.SourceTemplateID)
+	assert.Equal(t, uint(1), *created.SourceTemplateID)
+
+	// 3. 验证编译出的 BodyMd 中包含核心要素
+	assert.Contains(t, created.BodyMd, "分析小红书")
+	assert.Contains(t, created.BodyMd, "任务类型")
 }
