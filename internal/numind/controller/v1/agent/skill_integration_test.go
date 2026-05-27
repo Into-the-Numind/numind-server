@@ -637,7 +637,7 @@ func TestPatch_CustomSkillBody_AdvancedMode_Success(t *testing.T) {
 	var histories []model.AgentDefinitionHistory
 	require.NoError(t, db.Where("agent_definition_id = ?", created.ID).Order("version desc").Find(&histories).Error)
 	require.NotEmpty(t, histories)
-	
+
 	var snapshot model.AgentDefinition
 	require.NoError(t, json.Unmarshal(histories[0].Snapshot, &snapshot))
 	assert.Equal(t, newBody, snapshot.CustomSkillBody)

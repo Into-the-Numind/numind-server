@@ -307,15 +307,12 @@ func TestWebFetch_HTTP404(t *testing.T) {
 	t.Cleanup(func() { srv.Close() })
 
 	tool := newTestWebFetchTool(srv)
-	_, err := execWebFetch(t, tool, srv.URL+"/not-found", "")
-	if err == nil {
-		t.Fatal("expected error for 404 response, got nil")
+	out, err := execWebFetch(t, tool, srv.URL+"/not-found", "")
+	if err != nil {
+		t.Fatalf("expected nil error for 404 response (soft-reject), got: %v", err)
 	}
-	if !errors.Is(err, errno.ErrExternalAPI) {
-		t.Errorf("expected ErrExternalAPI, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "404") {
-		t.Errorf("error should mention HTTP status, got: %v", err)
+	if !strings.Contains(out.ContentMD, "404") {
+		t.Errorf("content_md should mention HTTP status 404, got: %q", out.ContentMD)
 	}
 }
 
@@ -326,12 +323,28 @@ func TestWebFetch_HTTP500(t *testing.T) {
 	t.Cleanup(func() { srv.Close() })
 
 	tool := newTestWebFetchTool(srv)
-	_, err := execWebFetch(t, tool, srv.URL, "")
-	if err == nil {
-		t.Fatal("expected error for 500 response, got nil")
+	out, err := execWebFetch(t, tool, srv.URL, "")
+	if err != nil {
+		t.Fatalf("expected nil error for 500 response (soft-reject), got: %v", err)
 	}
-	if !errors.Is(err, errno.ErrExternalAPI) {
-		t.Errorf("expected ErrExternalAPI, got: %v", err)
+	if !strings.Contains(out.ContentMD, "500") {
+		t.Errorf("content_md should mention HTTP status 500, got: %q", out.ContentMD)
+	}
+}
+
+func TestWebFetch_HTTP403_SoftReject(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}))
+	t.Cleanup(func() { srv.Close() })
+
+	tool := newTestWebFetchTool(srv)
+	out, err := execWebFetch(t, tool, srv.URL, "")
+	if err != nil {
+		t.Fatalf("expected nil error for 403 response (soft-reject), got: %v", err)
+	}
+	if !strings.Contains(out.ContentMD, "403") {
+		t.Errorf("content_md should mention HTTP status 403, got: %q", out.ContentMD)
 	}
 }
 
@@ -360,14 +373,17 @@ func TestWebFetch_Timeout(t *testing.T) {
 
 	tool := newTestWebFetchTool(srv)
 	in, _ := json.Marshal(webFetchInput{URL: srv.URL})
-	_, err := tool.Execute(ctx, ToolInput(in))
+	raw, err := tool.Execute(ctx, ToolInput(in))
 
-	if err == nil {
-		t.Fatal("expected timeout/cancellation error, got nil")
+	if err != nil {
+		t.Fatalf("expected nil error for timeout (soft-reject), got: %v", err)
 	}
-	// context.DeadlineExceeded wraps into ErrTimeout or ErrExternalAPI depending on timing.
-	if !errors.Is(err, errno.ErrTimeout) && !errors.Is(err, errno.ErrExternalAPI) {
-		t.Errorf("expected ErrTimeout or ErrExternalAPI, got: %v (type %T)", err, err)
+	var out webFetchOutput
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if !strings.Contains(out.ContentMD, "timeout") && !strings.Contains(out.ContentMD, "deadline") && !strings.Contains(out.ContentMD, "canceled") {
+		t.Errorf("content_md should mention timeout, got: %q", out.ContentMD)
 	}
 }
 

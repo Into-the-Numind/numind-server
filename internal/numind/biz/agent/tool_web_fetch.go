@@ -66,6 +66,18 @@ func (t *webFetchTool) IsReadOnly() bool            { return true }
 func (t *webFetchTool) IsSearchOrReadCommand() bool { return true }
 func (t *webFetchTool) AlwaysLoad() bool            { return true }
 
+func (t *webFetchTool) returnSoftError(title, format string, args ...any) (ToolResult, error) {
+	msg := fmt.Sprintf(format, args...)
+	out, _ := json.Marshal(webFetchOutput{
+		Title:     title,
+		ContentMD: "ERROR: " + msg,
+		ByteSize:  len(msg) + 7,
+		Truncated: false,
+		FetchedAt: time.Now().UTC().Format(time.RFC3339),
+	})
+	return ToolResult(out), nil
+}
+
 func (t *webFetchTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	var in webFetchInput
 	if err := json.Unmarshal(input, &in); err != nil {
@@ -157,10 +169,13 @@ func (t *webFetchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 				langfuse.EndSpan(tc.TraceID, spanID, langfuse.WithSpanError(err.Error()))
 			}
 		}
+		var finalErr error
 		if errors.Is(err, context.DeadlineExceeded) || isTimeoutError(err) {
-			return nil, errno.ErrTimeout.SetMessage("web_fetch: timeout after %s", webFetchTimeout)
+			finalErr = errno.ErrTimeout.SetMessage("web_fetch: timeout after %s", webFetchTimeout)
+		} else {
+			finalErr = errno.ErrExternalAPI.SetMessage("web_fetch: %s", err.Error())
 		}
-		return nil, errno.ErrExternalAPI.SetMessage("web_fetch: %s", err.Error())
+		return t.returnSoftError("网页请求失败", "%s", finalErr.Error())
 	}
 	defer resp.Body.Close()
 
@@ -174,7 +189,7 @@ func (t *webFetchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 				}), langfuse.WithSpanError(fmt.Sprintf("HTTP %d", resp.StatusCode)))
 			}
 		}
-		return nil, errno.ErrExternalAPI.SetMessage("web_fetch: HTTP %d from %s", resp.StatusCode, targetURL)
+		return t.returnSoftError("网页请求拒绝", "web_fetch: HTTP %d from %s", resp.StatusCode, targetURL)
 	}
 
 	// Read body with cap to detect truncation.
@@ -185,7 +200,7 @@ func (t *webFetchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 				langfuse.EndSpan(tc.TraceID, spanID, langfuse.WithSpanError(err.Error()))
 			}
 		}
-		return nil, errno.ErrExternalAPI.SetMessage("web_fetch: read body: %s", err.Error())
+		return t.returnSoftError("读取网页内容失败", "web_fetch: read body: %s", err.Error())
 	}
 	truncated := len(body) > webFetchMaxBytes
 	if truncated {
