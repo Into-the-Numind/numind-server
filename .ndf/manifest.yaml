@@ -4,7 +4,7 @@ features:
   ndf_version: '3.0'
   description: 'Agent 聊天页面流式化（Phase C 深度重构）— dev 上 agent_run 41/40/38/42 model_error 暴露的根因之二：体验落后竞品。Hotfix b4349bf5 已把 dmxapi ResponseHeaderTimeout 60s→180s 缓解 timeout 误判，但用户仍然看到的是「转圈几分钟然后蹦出一坨答案」的轮询体验。本 feature 把 agent 聊天页面改造成 Manus 风格：LLM token-level 流式 + 工具调用实时露出 + 状态变化即时反馈。架构上参考 Claude Code 源码（/Users/zhiyuchen/Downloads/ClaudeCode/src）的 async-generator-based ReAct loop（query.ts → QueryEngine.ts → component-per-event-type 渲染）。R1 risk 已收敛：Eino v0.8.13 react.Agent.Stream() 原生支持（react.go:485），不需要 fallback 到 step-end-level 降级方案。R4 决策：后开者轮询降级（单订阅锁，第二个标签收 409 → 自动 fallback 到现有 GET /v1/agent-runs/:id 轮询）。新增 SSE endpoint POST /v1/agent-runs?stream=1，14 种事件类型协议（token_delta / reasoning_delta / assistant_message / tool_call_start|progress|result|error / step_done / state_change / question_prompt / terminal / error / ping），后端 agentRunner.RunStream 是 Run 的姊妹方法（hook 链 / TerminalReason / compactv2 / Langfuse trace 完全一致），前端 useAgentStream composable 配合现有 agentChat.ts 增量 store 更新。Out of scope: admin-web 监控（明确排除）/ multi-pod 分布式锁（暂 single-pod）/ ali/volc adapter streaming 同步升级 / SSE event seq 续接断点续传。'
   track: standard
-  stage: S2
+  stage: S3
   classification_reason: 'Standard Triage 5 条 — (1) DB schema 变更：否 (2) 新增 API 端点：是（POST /v1/agent-runs?stream=1 SSE）(3) 新外部服务集成：否 (4) 影响文件数 >3（10-15 个：后端 stream/ 包 + runner.go + controller + router + errno + 前端 store + composable + view + 组件）(5) 高风险业务逻辑：否（不动支付/权限/积分）。条件 2+4 触发 Standard。'
   last_updated_by: ai-orchestrator-s2-spec-landed
   last_updated_at: '2026-05-27T13:00:00+08:00'
@@ -21,8 +21,9 @@ features:
     requirement_card: requirements/agent-react-streaming.md
     proposal: proposals/agent-react-streaming-proposal.md
     spec: docs/superpowers/specs/2026-05-27-agent-react-streaming-design.md
+    plan: docs/superpowers/plans/agent-react-streaming-plan.md
   progress:
-    total_tasks: 0
+    total_tasks: 16
     completed_tasks: 0
     reviewed_tasks: 0
   decisions:
@@ -35,6 +36,8 @@ features:
   - 'S2-D1 (ai 2026-05-27): TerminalReason 新增 aborted_streaming 状态（用户中途取消时）。沿用 I2 19 值——这个值已存在于现有 enum，不破坏 invariant。'
   - 'S2-D2 (ai 2026-05-27): 事件协议 seq 字段仅占位，本 feature 不实现 SSE 断点续传。占位为未来 event replay / debugging 留接口。'
   - 'S2-D3 (ai 2026-05-27): S5 验证策略 = Playwright E2E（agent-streaming.spec.ts 覆盖 5 个关键场景：普通流 / 中止 / 多标签 / 断流恢复 / question_prompt） + 后端 Go test（event protocol / consumeEinoStream / SubscriptionLock / hook 触发 / ctx cancel 不泄露 / terminal_metadata 一致性）+ Langfuse 人工验证。不仅 gstack /qa——agent 流式涉及时序敏感行为，需精确控制 fetch reader / EventSource 的回归保护。'
+  - 'S3-D1 (ai 2026-05-27): plan reviewer (Sonnet, independent) verdict PASS_WITH_CONCERNS — Pass 1 FAIL 找出 3 P1 (T05 AgentRunner interface gap / T07 缺 student_run_lifecycle.go / T10-T11 倒序导致 type-check 失败); 全部修正后 Pass 2 PASS_WITH_CONCERNS 引入 1 P2 + 2 P3 (T07 stale Tier 标注 / T12-T13 依赖未列 T11 / T16 措辞)，per NDF Rule 7 全部 in-place 修复。'
+  - 'S3-D2 (ai 2026-05-27): 16 atomic tasks 分解 — Batch 1 BE 4 并行 (T01-T03 + T06)，BE 串行链 T04→T05→T07，FE 串行链 T08→T09→T10(store)→T11(composable)→T14(view) + Batch 2 T12/T13 并行；T15 (S5 strategy doc) Tier 1 独立，T16 (S5 impl) 最后等所有任务完成。T05 split 两 commit：refactor-only (finalizeRun extract) 然后 additive (RunStream + interface extension)。'
   related_features:
   - 'dmxapi-llm-timeout (b4349bf5, merged 2026-05-27 — Hotfix 缓解 timeout 误判，与本 feature 互补不冲突)'
   - 'model-error-recovery (57bf4ebe, merged 2026-05-27 — terminal_metadata 已落库，本 feature 的 SSE terminal payload 直接复用)'
