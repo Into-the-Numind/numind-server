@@ -2184,10 +2184,10 @@ features:
   ndf_version: '3.0'
   description: '机构方建 agent 时把所有 AI 设定塞到一个大文本框（agent_definition.system_prompt 字段）。重构 6+ 段 prompt 为 4 段（platform_head / institution / end_user_context / platform_safety_footer）。Legacy 路径 1:1 保留兼容老 agent。本期不串通 cache_control（拆出独立 feature aiservice-prompt-cache-plumbing）；不删 OutputToolsPriorityAddendum（S1 误读，纠正为保留工具路由引导）。'
   track: standard
-  stage: S3
+  stage: S5
   classification_reason: 'Standard Triage 5 条 — (1) DB schema 变更：是（agent_definition 新增 system_prompt 字段）(2) 新增 API 端点：否 (3) 新外部服务集成：否 (4) 影响文件数 >3（~12 文件：migration + model + errno + biz service + runner + 新拼装函数 + 测试 + 前端 builder + api + types）(5) 高风险业务逻辑：否（不动支付/权限/积分）。条件 1+4 触发 Standard。'
-  last_updated_by: ai-orchestrator-s3-plan-landed
-  last_updated_at: '2026-05-28T01:00:00+08:00'
+  last_updated_by: ai-orchestrator-s4-complete-s5-verified
+  last_updated_at: '2026-05-28T02:30:00+08:00'
   repos:
   - numind-server
   - numind-web-v3
@@ -2204,8 +2204,8 @@ features:
     plan: docs/superpowers/plans/agent-prompt-simplification-plan.md
   progress:
     total_tasks: 6
-    completed_tasks: 0
-    reviewed_tasks: 0
+    completed_tasks: 6
+    reviewed_tasks: 6
   decisions:
   - 'D6: cache_control 拆出本 feature，留给独立 feature aiservice-prompt-cache-plumbing 后做'
   - 'D7: 旧拼装 1:1 搬到 BuildSystemPromptLegacy，不改语义'
