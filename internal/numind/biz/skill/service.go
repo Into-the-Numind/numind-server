@@ -126,32 +126,26 @@ func marshalJSON(v any) (datatypes.JSON, error) {
 //
 // 等 #15+ frontend questionnaire 加 "工具选择" step 后可放弃本默认。
 func deriveDefaultToolFlags(qa QuestionnaireAnswers) map[string]bool {
-	hasMaterial := func(t string) bool {
-		for _, v := range qa.Q7 {
-			if v == t {
-				return true
-			}
-		}
-		return false
-	}
-	allowSearch := qa.Q9 == "allow_search"
 	return map[string]bool{
-		// 永远开 — 基础读取 / 记忆 / 反问 / 时间
+		// 基础读取 / 记忆 / 反问 / 时间
 		"kb_search":          true,
 		"learner_data_query": true,
 		"memory_read":        true,
 		"memory_write":       true,
 		"get_current_date":   true,
 		"ask_user_question":  true,
-		// q9 driven
-		"web_search": allowSearch,
-		"web_fetch":  allowSearch,
-		// q7 driven — 学员可能上传的材料类型
-		"file_read": hasMaterial("text") || hasMaterial("csv") || hasMaterial("image"),
-		// 危险 / stub 类默认 OFF
-		"bash_exec":         false,
-		"image_gen":         false,
-		"document_generate": false,
+		// 网络搜索与抓取
+		"web_search": true,
+		"web_fetch":  true,
+		// 学员材料文件读取
+		"file_read": true,
+		// 高级及高危工具
+		"bash_exec":         true,
+		"image_gen":         true,
+		"document_generate": true,
+		"code_sandbox":      true,
+		"media":             true,
+		"dangerous":         true,
 	}
 }
 
