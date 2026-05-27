@@ -14,12 +14,16 @@ import (
 	"numind-server/internal/pkg/model"
 )
 
+// SystemPromptMaxLen is the maximum allowed byte length for system_prompt (64KB).
+const SystemPromptMaxLen = 64 * 1024
+
 // CreateRequest 包含创建 agent_definition 所需的所有字段。
 type CreateRequest struct {
 	Name                 string
 	Description          string
 	IconURL              string
 	WelcomeMessage       string
+	SystemPrompt         string
 	Starters             []string
 	QuestionnaireAnswers QuestionnaireAnswers
 	ToolFlags            map[string]bool
@@ -35,6 +39,7 @@ type PatchRequest struct {
 	Description          *string
 	IconURL              *string
 	WelcomeMessage       *string
+	SystemPrompt         *string
 	Starters             *[]string
 	QuestionnaireAnswers *QuestionnaireAnswers
 	ToolFlags            *map[string]bool
@@ -154,6 +159,10 @@ func (s *service) Create(ctx context.Context, userID uint, req CreateRequest) (*
 		return nil, err
 	}
 
+	if len(req.SystemPrompt) > SystemPromptMaxLen {
+		return nil, errno.ErrSystemPromptTooLong
+	}
+
 	qaJSON, err := marshalJSON(req.QuestionnaireAnswers)
 	if err != nil {
 		return nil, fmt.Errorf("Create marshal questionnaire: %w", err)
@@ -178,6 +187,7 @@ func (s *service) Create(ctx context.Context, userID uint, req CreateRequest) (*
 		Description:          req.Description,
 		IconURL:              req.IconURL,
 		WelcomeMessage:       req.WelcomeMessage,
+		SystemPrompt:         req.SystemPrompt,
 		Starters:             startersJSON,
 		QuestionnaireAnswers: qaJSON,
 		ToolFlags:            toolFlagsJSON,
@@ -260,6 +270,10 @@ func (s *service) Patch(ctx context.Context, userID uint, id uint64, req PatchRe
 		return nil, err
 	}
 
+	if req.SystemPrompt != nil && len(*req.SystemPrompt) > SystemPromptMaxLen {
+		return nil, errno.ErrSystemPromptTooLong
+	}
+
 	ad, err := s.skillStore.GetByIDIncludeInactive(ctx, id)
 	if err != nil {
 		if isNotFound(err) {
@@ -285,6 +299,9 @@ func (s *service) Patch(ctx context.Context, userID uint, id uint64, req PatchRe
 	}
 	if req.WelcomeMessage != nil {
 		ad.WelcomeMessage = *req.WelcomeMessage
+	}
+	if req.SystemPrompt != nil {
+		ad.SystemPrompt = *req.SystemPrompt
 	}
 	if req.Starters != nil {
 		b, err := marshalJSON(*req.Starters)

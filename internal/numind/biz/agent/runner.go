@@ -436,6 +436,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	var skillVer int
 	var body string
 	var ad *model.AgentDefinition
+	var skills []model.Skill                 // v2 #2: 提升到外部作用域供下方主拼装分叉读取 len(skills)
 	var useSkillTurnState *UseSkillTurnState // v2 #2: nil = 走 legacy 路径; non-nil = v2 路径
 	if req.AgentDefinitionID > 0 && r.skillStore != nil {
 		var skillErr error
@@ -454,7 +455,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		// v2 #2 agent-mode-v2-skill-invocation: 查 Agent binding 列表。
 		// BindingService.ListByAgent 已 join 返回 sort_order asc 的 *活跃* Skill 列表。
 		// 失败 (DB down 等) → 降级 legacy (skills 为空)，写 warn log 不阻塞 Run。
-		var skills []model.Skill
+		// skills 已在外部作用域声明 — 此处直接赋值供下方主拼装读 len(skills)。
 		if r.skillBindingService != nil {
 			var bindErr error
 			skills, bindErr = r.skillBindingService.ListByAgent(ctx, ad.ParentUserID, uint(req.AgentDefinitionID))
@@ -673,18 +674,48 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	// temporalBlock (task 3.8 time-scoped digest) →
 	// memoryDisclaimerBlock + memorySystemBlock (L1/L2 dialog memory)。
 	// agentMdBlock / selectorBlock / dialecticInsightBlock / temporalBlock 自带前导 \n\n，空字符串时无副作用。
-	req.SystemPrompt = skill.PlatformBasePrompt +
-		tenantHardRulesPlaceholder +
-		body +
-		memoriesSectionHeader +
-		agentMdBlock +
-		selectorBlock +
-		dialecticInsightBlock +
-		temporalBlock +
-		memoryDisclaimerBlock +
-		memorySystemBlock +
-		toolsSectionPlaceholder +
-		skill.PlatformSafetyFooter
+	if ShouldUseV2Prompt(ad) {
+		// 新 V2 路径（system_prompt 非空 = 机构方已用大文本框定义 agent）
+		//
+		// body 的语义按 skills 是否有绑定来分支：
+		//   - len(skills) > 0：body = buildSkillCatalogBlock 输出（v2 catalog）
+		//   - len(skills) == 0：body = ad.GeneratedSkillBody / CustomSkillBody（v1 legacy）
+		//
+		// **决策（D11，见 spec §0）**：在新 V2 prompt 路径下，仅当 skills 非空时把 body 当作
+		// skill catalog 拼到 §2 institution；skills 为空时丢弃 body（不把 v1 legacy 内容
+		// 注入 V2 prompt）。理由：user 写了 system_prompt 即视为 agent 行为的唯一权威源，
+		// 不再叠加 v1 legacy。
+		var skillCatalog string
+		if len(skills) > 0 {
+			skillCatalog = body
+		}
+		institutionSection := BuildInstitutionSection(
+			ad.SystemPrompt,
+			skillCatalog,
+			toolsSectionPlaceholder,
+		)
+		userContext := BuildUserContextSection(
+			agentMdBlock, selectorBlock, dialecticInsightBlock, temporalBlock,
+			memoryDisclaimerBlock, memorySystemBlock,
+		)
+		req.SystemPrompt = BuildSystemPromptV2(institutionSection, userContext)
+	} else {
+		// Legacy 路径，字面顺序与重构前一致；body 不论 v1/v2 都直接传入。
+		req.SystemPrompt = BuildSystemPromptLegacy(
+			skill.PlatformBasePrompt,
+			tenantHardRulesPlaceholder,
+			body,
+			memoriesSectionHeader,
+			agentMdBlock,
+			selectorBlock,
+			dialecticInsightBlock,
+			temporalBlock,
+			memoryDisclaimerBlock,
+			memorySystemBlock,
+			toolsSectionPlaceholder,
+			skill.PlatformSafetyFooter,
+		)
+	}
 
 	// 5. 从 registry 装配 Eino 工具列表
 	// #4 sandbox-integration: 选 effectiveHooks — RunRequest.Hooks 优先，

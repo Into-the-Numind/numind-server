@@ -666,3 +666,90 @@ func TestService_Patch_otherUserAgent_returns404(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errno.ErrSkillNotFound)
 }
+
+// ---------------------------------------------------------------------------
+// SystemPrompt validation (T2)
+// ---------------------------------------------------------------------------
+
+func TestCreateAgent_SystemPromptTooLong(t *testing.T) {
+	svc, db := newTestService(t)
+	parentID := seedParentUserID(db)
+
+	// Construct a system_prompt that exceeds 64KB.
+	req := minCreateReq()
+	req.SystemPrompt = string(make([]byte, SystemPromptMaxLen+1))
+
+	_, err := svc.Create(context.Background(), parentID, req)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errno.ErrSystemPromptTooLong)
+}
+
+func TestCreateAgent_SystemPromptOK(t *testing.T) {
+	svc, db := newTestService(t)
+	parentID := seedParentUserID(db)
+
+	// 1KB system_prompt — well within the 64KB cap.
+	req := minCreateReq()
+	req.SystemPrompt = string(make([]byte, 1024))
+
+	ad, err := svc.Create(context.Background(), parentID, req)
+	require.NoError(t, err)
+	assert.Len(t, ad.SystemPrompt, 1024, "system_prompt should be persisted as-is")
+
+	// Verify DB row has the value.
+	var row model.AgentDefinition
+	require.NoError(t, db.First(&row, ad.ID).Error)
+	assert.Len(t, row.SystemPrompt, 1024, "DB row should store system_prompt")
+}
+
+func TestPatchAgent_SystemPromptTooLong(t *testing.T) {
+	svc, db := newTestService(t)
+	parentID := seedParentUserID(db)
+
+	// Create a valid agent first.
+	ad, err := svc.Create(context.Background(), parentID, minCreateReq())
+	require.NoError(t, err)
+
+	// Attempt to patch with an oversized system_prompt.
+	oversized := string(make([]byte, SystemPromptMaxLen+1))
+	_, err = svc.Patch(context.Background(), parentID, ad.ID, PatchRequest{SystemPrompt: &oversized})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errno.ErrSystemPromptTooLong)
+}
+
+func TestPatchAgent_SystemPromptOK(t *testing.T) {
+	svc, db := newTestService(t)
+	parentID := seedParentUserID(db)
+
+	// Create a valid agent first.
+	ad, err := svc.Create(context.Background(), parentID, minCreateReq())
+	require.NoError(t, err)
+
+	// Patch with a valid 2KB system_prompt.
+	prompt := string(make([]byte, 2048))
+	updated, err := svc.Patch(context.Background(), parentID, ad.ID, PatchRequest{SystemPrompt: &prompt})
+	require.NoError(t, err)
+	assert.Len(t, updated.SystemPrompt, 2048, "updated system_prompt should be returned")
+
+	// Verify DB row.
+	var row model.AgentDefinition
+	require.NoError(t, db.First(&row, ad.ID).Error)
+	assert.Len(t, row.SystemPrompt, 2048, "DB row should have updated system_prompt")
+}
+
+func TestPatchAgent_SystemPromptNil_unchanged(t *testing.T) {
+	svc, db := newTestService(t)
+	parentID := seedParentUserID(db)
+
+	// Create agent with a specific system_prompt.
+	req := minCreateReq()
+	req.SystemPrompt = "original prompt"
+	ad, err := svc.Create(context.Background(), parentID, req)
+	require.NoError(t, err)
+
+	// Patch with SystemPrompt = nil → should not change system_prompt.
+	newName := "updated name"
+	updated, err := svc.Patch(context.Background(), parentID, ad.ID, PatchRequest{Name: &newName})
+	require.NoError(t, err)
+	assert.Equal(t, "original prompt", updated.SystemPrompt, "nil system_prompt patch should leave field unchanged")
+}

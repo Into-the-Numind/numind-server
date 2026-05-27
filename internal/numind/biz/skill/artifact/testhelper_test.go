@@ -90,6 +90,7 @@ func newTestDB(t *testing.T) *gorm.DB {
 			generated_skill_body   TEXT,
 			advanced_mode          INTEGER NOT NULL DEFAULT 0,
 			custom_skill_body      TEXT,
+			system_prompt          TEXT,
 			tool_flags             TEXT,
 			credit_cap_per_session INTEGER,
 			daily_credit_cap       INTEGER,

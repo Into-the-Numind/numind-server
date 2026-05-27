@@ -34,6 +34,7 @@ type CreateRequest struct {
 	Description          string                     `json:"description"`
 	IconURL              string                     `json:"icon_url"`
 	WelcomeMessage       string                     `json:"welcome_message"`
+	SystemPrompt         string                     `json:"system_prompt"`
 	Starters             []string                   `json:"starters"`
 	QuestionnaireAnswers skill.QuestionnaireAnswers `json:"questionnaire_answers"`
 	ToolFlags            map[string]bool            `json:"tool_flags"`
@@ -49,6 +50,7 @@ type PatchRequest struct {
 	Description          *string                     `json:"description"`
 	IconURL              *string                     `json:"icon_url"`
 	WelcomeMessage       *string                     `json:"welcome_message"`
+	SystemPrompt         *string                     `json:"system_prompt"`
 	Starters             *[]string                   `json:"starters"`
 	QuestionnaireAnswers *skill.QuestionnaireAnswers `json:"questionnaire_answers"`
 	ToolFlags            *map[string]bool            `json:"tool_flags"`
@@ -95,6 +97,7 @@ func (c *SkillController) Create(ctx *gin.Context) {
 		Description:          req.Description,
 		IconURL:              req.IconURL,
 		WelcomeMessage:       req.WelcomeMessage,
+		SystemPrompt:         req.SystemPrompt,
 		Starters:             req.Starters,
 		QuestionnaireAnswers: req.QuestionnaireAnswers,
 		ToolFlags:            req.ToolFlags,
@@ -170,6 +173,7 @@ func (c *SkillController) Patch(ctx *gin.Context) {
 		Description:          req.Description,
 		IconURL:              req.IconURL,
 		WelcomeMessage:       req.WelcomeMessage,
+		SystemPrompt:         req.SystemPrompt,
 		Starters:             req.Starters,
 		QuestionnaireAnswers: req.QuestionnaireAnswers,
 		ToolFlags:            req.ToolFlags,
