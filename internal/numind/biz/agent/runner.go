@@ -1146,6 +1146,39 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		}
 	}
 
+	return r.finalizeRun(ctx, run, st, startTime, finalText, output, contextExhausted, skillVer, isTrivial, req, permDenialSink, runErr, sessionID)
+}
+
+// finalizeRun performs the persistence and clean-up work shared between Run and
+// RunStream. It is called after the ReAct loop (or streaming consumer) has
+// settled on a TerminalReason. Semantics are unchanged from the original
+// inlined block in Run(); this extraction enables RunStream to reuse the same
+// logic without code duplication.
+//
+// Parameters match the local variables that the original block read in Run():
+//   - finalText: scrubbed assistant final output (empty on error paths)
+//   - output: the raw *schema.Message returned by einoAgent.Generate (may be nil)
+//   - contextExhausted: flag set when compactv2 ErrContextExhausted terminated the loop
+//   - skillVer: agent_definition.version loaded at Run start (0 = fall-through)
+//   - isTrivial: memory.IsTrivial(req.Input) result from Run setup
+//   - permDenialSink: per-Run channel populated by permission wrapper
+//   - runErr: the last error returned by the LLM call (nil on success)
+//   - sessionID: resolved session ID (may differ from req.SessionID when auto-generated)
+func (r *agentRunner) finalizeRun(
+	ctx context.Context,
+	run *model.AgentRun,
+	st *LoopState,
+	startTime time.Time,
+	finalText string,
+	output *schema.Message,
+	contextExhausted bool,
+	skillVer int,
+	isTrivial bool,
+	req RunRequest,
+	permDenialSink <-chan *PermissionDenialDetail,
+	runErr error,
+	sessionID string,
+) (*RunResult, error) {
 	// Write turn to agent_run.messages.
 	userInput := req.Input
 	assistantContent := finalText
@@ -1237,9 +1270,11 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 
 	// #6 permission-pipeline: non-blocking read of sink → fill RunResult.PermissionDenial.
 	var permDetail *PermissionDenialDetail
-	select {
-	case permDetail = <-permDenialSink:
-	default:
+	if permDenialSink != nil {
+		select {
+		case permDetail = <-permDenialSink:
+		default:
+		}
 	}
 
 	// A9 log-based observability: structured run completion log for operator grep
