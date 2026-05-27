@@ -217,7 +217,9 @@ export interface AgentStreamEvent<T = unknown> {
   data?: T
 }
 
-// 各 payload 类型与后端字段一一对应（snake_case → camelCase 转换在 API 层完成）
+// 各 payload 类型与后端字段一一对应。**SSE 流式事件直接保留 snake_case** —— 不做 camelCase
+// 转换。后端 Go json tag 与 TS interface 字段名 1:1 匹配，前端 readSSEStream 直接 JSON.parse
+// 不经转换层。这与 sales.ts 的 SSE 处理一致；REST 请求/响应仍走 axios + 项目通用 camelCase 转换。
 ```
 
 ---

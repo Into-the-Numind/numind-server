@@ -10,36 +10,29 @@ import (
 
 // StartSSESpan creates a Langfuse span named "sse.connection" that covers the
 // lifetime of one SSE subscriber connection for an agent run. It records:
-//   - first_byte_ms  — milliseconds from span creation to the first call of
-//     the returned finalize function (caller should call finalize at least once
-//     after sending the first event)
-//   - event_count    — total number of events sent over the connection
+//   - event_count       — total number of events sent over the connection
 //   - disconnect_reason — human-readable reason the connection closed
+//
+// This simple variant does NOT track first_byte_ms. For accurate first-byte
+// timing (required by spec §7), use StartSSESpanWithFirstByte instead. SSE
+// controllers should default to the WithFirstByte variant; this variant is
+// kept for callers that only need begin/end markers without per-event timing.
 //
 // The function is intentionally side-effect-free when Langfuse is not
 // configured: if langfuse.FromContext(ctx) returns nil, a no-op finalize is
 // returned and no Langfuse calls are made.
 //
-// traceID and runID are both uint64 because that matches the rest of the
-// agent runner (traceID here refers to the Langfuse trace ID string, passed
-// in as a uint64 that will be formatted to string). The caller provides the
-// numeric trace ID already stored in agent_run.langfuse_trace_id (or similar).
-//
 // Usage:
 //
-//	spanID, finalize := StartSSESpan(ctx, traceIDString, runID)
+//	spanID, finalize := StartSSESpan(ctx, traceID, runID)
 //	defer finalize(totalEvents, "client_disconnect")
 func StartSSESpan(ctx context.Context, traceID string, runID uint64) (spanID string, finalize func(eventCount int, disconnectReason string)) {
 	tc := langfuse.FromContext(ctx)
 	if tc == nil || traceID == "" {
-		// Langfuse not enabled or no trace context — return no-op finalize.
 		return "", func(_ int, _ string) {}
 	}
 
 	spanID = langfuse.SpanID()
-	startTime := time.Now()
-	var firstByteTime time.Time
-	firstByteSent := false
 
 	langfuse.CreateSpan(traceID, spanID, "sse.connection",
 		langfuse.WithSpanParent(tc.ParentObservationID),
@@ -49,32 +42,13 @@ func StartSSESpan(ctx context.Context, traceID string, runID uint64) (spanID str
 	)
 
 	finalize = func(eventCount int, disconnectReason string) {
-		var firstByteMs int64
-		if firstByteSent && !firstByteTime.IsZero() {
-			firstByteMs = firstByteTime.Sub(startTime).Milliseconds()
-		}
-
 		langfuse.EndSpan(traceID, spanID,
 			langfuse.WithSpanOutput(map[string]any{
 				"event_count":       eventCount,
 				"disconnect_reason": disconnectReason,
-				"first_byte_ms":     firstByteMs,
 			}),
 		)
 	}
-
-	// Wrap finalize to capture first-byte timing transparently.
-	// The caller notifies us of the first event via RecordFirstByte (see below).
-	// However, to keep the API simple (callers call finalize, not multiple
-	// functions), we embed the tracking in a closure that the caller can use.
-	//
-	// The returned spanID can be used by the caller to call RecordFirstByte
-	// on this package — but for simplicity we provide a lightweight pattern:
-	// the first time finalize is called with eventCount >= 1, we treat that as
-	// "first byte sent". For accurate first-byte timing the caller should use
-	// the RecordFirstByte variant below.
-	_ = firstByteSent
-	_ = firstByteTime
 
 	return spanID, finalize
 }
@@ -83,6 +57,13 @@ func StartSSESpan(ctx context.Context, traceID string, runID uint64) (spanID str
 // returns a recordFirstByte callback. The caller should invoke recordFirstByte
 // after writing the very first SSE data frame (before Flush) to capture
 // accurate first_byte_ms latency in the Langfuse span metadata.
+//
+// PRECONDITION: recordFirstByte and finalize must be called from the same
+// goroutine (or otherwise externally synchronized). The shared firstByteMs
+// is not protected by sync/atomic; the documented call pattern is the
+// controller's SSE write loop calling recordFirstByte on first event and
+// finalize via defer on the same goroutine. If you need cross-goroutine
+// invocation, wrap firstByteMs in sync/atomic.Int64 here.
 //
 // Example:
 //

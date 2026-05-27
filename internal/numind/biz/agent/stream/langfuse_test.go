@@ -150,6 +150,28 @@ func TestStartSSESpanWithFirstByte_CreatesSpanAndMetadata(t *testing.T) {
 	if (*events)[1].Type != "span-update" {
 		t.Errorf("expected span-update, got %q", (*events)[1].Type)
 	}
+
+	// Verify first_byte_ms was actually recorded (>=0; for an instant test it
+	// may legitimately be 0 because time.Since rounds to whole ms — assert that
+	// the key is PRESENT in the output to guard against regressing the dead-code
+	// bug where StartSSESpan silently emitted missing first_byte_ms).
+	spanBody, ok := (*events)[1].Body.(*langfuse.SpanBody)
+	if !ok {
+		t.Fatalf("expected span-update body to be *langfuse.SpanBody, got %T", (*events)[1].Body)
+	}
+	output, ok := spanBody.Output.(map[string]any)
+	if !ok {
+		t.Fatalf("expected SpanBody.Output to be map[string]any, got %T", spanBody.Output)
+	}
+	if _, present := output["first_byte_ms"]; !present {
+		t.Error("expected first_byte_ms key in span output (regression guard for dead-code bug)")
+	}
+	if output["event_count"] != 50 {
+		t.Errorf("expected event_count=50 in span output, got %v", output["event_count"])
+	}
+	if output["disconnect_reason"] != "terminal" {
+		t.Errorf("expected disconnect_reason='terminal' in span output, got %v", output["disconnect_reason"])
+	}
 }
 
 // eventTypes extracts Type strings for easier assertion messages.

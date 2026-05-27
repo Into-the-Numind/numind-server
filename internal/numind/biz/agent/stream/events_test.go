@@ -259,7 +259,7 @@ func TestRoundTrip_QuestionPrompt(t *testing.T) {
 func TestRoundTrip_Terminal(t *testing.T) {
 	p := TerminalPayload{
 		Reason:      "completed",
-		Duration:    12345,
+		DurationMs:  12345,
 		StepCount:   3,
 		FinalOutput: "Done!",
 	}
@@ -273,8 +273,8 @@ func TestRoundTrip_Terminal(t *testing.T) {
 	if decoded.Reason != p.Reason {
 		t.Errorf("Reason: got %q, want %q", decoded.Reason, p.Reason)
 	}
-	if decoded.Duration != p.Duration {
-		t.Errorf("Duration: got %d, want %d", decoded.Duration, p.Duration)
+	if decoded.DurationMs != p.DurationMs {
+		t.Errorf("DurationMs: got %d, want %d", decoded.DurationMs, p.DurationMs)
 	}
 }
 

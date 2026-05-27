@@ -5,6 +5,7 @@ package stream
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -93,7 +94,7 @@ func Encode(t EventType, payload any, seq uint64, runID uint64, step int) (Event
 	if payload != nil {
 		b, err := json.Marshal(payload)
 		if err != nil {
-			return Event{}, err
+			return Event{}, fmt.Errorf("stream.Encode(%s): marshal payload: %w", t, err)
 		}
 		ev.Data = json.RawMessage(b)
 	}
@@ -174,9 +175,13 @@ type StateChangePayload struct {
 }
 
 // QuestionPromptPayload is emitted when the agent yields an ask_user_question.
+//
+// Options uses omitempty: a nil slice would marshal to JSON `null`, but the
+// frontend treats this field as a list and expects an empty array when no
+// options exist. Omitting the key entirely lets the parser default to [].
 type QuestionPromptPayload struct {
 	Question    string   `json:"question"`
-	Options     []string `json:"options"`
+	Options     []string `json:"options,omitempty"`
 	Header      string   `json:"header,omitempty"`
 	MultiSelect bool     `json:"multi_select"`
 }
@@ -184,7 +189,7 @@ type QuestionPromptPayload struct {
 // TerminalPayload signals the end of the stream and carries run summary data.
 type TerminalPayload struct {
 	Reason           string         `json:"reason"`
-	Duration         int64          `json:"duration_ms"`
+	DurationMs       int64          `json:"duration_ms"`
 	StepCount        int            `json:"step_count"`
 	FinalOutput      string         `json:"final_output,omitempty"`
 	TerminalMetadata map[string]any `json:"terminal_metadata,omitempty"`

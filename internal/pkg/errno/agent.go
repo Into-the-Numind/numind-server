@@ -7,7 +7,7 @@ var (
 	// ErrAgentStreamAlreadyAttached is returned (HTTP 409) when a second SSE
 	// subscriber attempts to connect to an agent run that already has an active
 	// streaming connection. The frontend should fall back to polling in this case.
-	ErrAgentStreamAlreadyAttached = &Errno{HTTP: 409, Code: "FailedOperation.AgentStreamAlreadyAttached", Message: "agent stream already attached for this run"}
+	ErrAgentStreamAlreadyAttached = &Errno{HTTP: 409, Code: "FailedOperation.AgentStreamAlreadyAttached", Message: "Agent stream already attached for this run."}
 
 	// ErrAgentRunNotCancellable is returned when a cancel is attempted on an
 	// already-terminal agent run (completed / failed / cancelled / error).
