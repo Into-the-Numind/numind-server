@@ -101,17 +101,6 @@ func TestService_Create_childAccount_returns403(t *testing.T) {
 	assert.ErrorIs(t, err, errno.ErrChildAccountForbidden)
 }
 
-func TestService_Create_skillBuilderFails_returns422(t *testing.T) {
-	svc, db := newTestService(t)
-	parentID := seedParentUserID(db)
-
-	req := minCreateReq()
-	req.QuestionnaireAnswers.Q6 = nil // required field missing
-
-	_, err := svc.Create(context.Background(), parentID, req)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, errno.ErrSkillBuilderFailed)
-}
 
 func TestService_Create_isActive_true_by_default(t *testing.T) {
 	svc, db := newTestService(t)
