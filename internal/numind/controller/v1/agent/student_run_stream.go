@@ -32,6 +32,7 @@ import (
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 )
 
@@ -79,7 +80,15 @@ func (h *StudentRunController) CreateStream(c *gin.Context) {
 		return
 	}
 	if !acquired {
-		core.WriteResponse(c, errno.ErrAgentStreamAlreadyAttached, gin.H{"run_id": runID})
+		// P1 fix (T07): core.WriteResponse always sets Data:nil when err != nil, so the
+		// gin.H{"run_id": runID} was silently discarded. Bypass WriteResponse and write
+		// the full structured response directly so the frontend can resume polling
+		// the existing run ID.
+		c.JSON(http.StatusConflict, gin.H{
+			"code":    errno.ErrAgentStreamAlreadyAttached.Code,
+			"message": errno.ErrAgentStreamAlreadyAttached.Message,
+			"data":    gin.H{"run_id": runID},
+		})
 		return
 	}
 	defer h.runSvc.ReleaseStreamLock(runID)
@@ -146,7 +155,9 @@ func (h *StudentRunController) CreateStream(c *gin.Context) {
 
 			data, marshalErr := json.Marshal(ev)
 			if marshalErr != nil {
-				// Marshal failure is a programming error; log and skip.
+				// P2 fix: log the marshal failure before skipping.
+				log.C(ctx).Warnw("CreateStream: marshal event failed",
+					"event_type", ev.Type, "error", marshalErr)
 				continue
 			}
 

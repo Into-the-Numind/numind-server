@@ -1234,7 +1234,14 @@ func (r *agentRunner) finalizeRun(
 	// M-A3 wire: async SyncTurn after successful completion.
 	// Runs in a detached goroutine with a background context so cancellation of
 	// the run context does not abort the memory write.
-	if r.memoryProvider != nil && st.TerminalReason == TerminalCompleted && output != nil {
+	//
+	// P0 fix (T05-2): gate on TerminalCompleted only — NOT output != nil.
+	// RunStream always passes nil output (text is accumulated via streaming chunks
+	// into finalText; there is no single *schema.Message). Gating on output != nil
+	// caused SyncTurn to silently never fire for streaming completions, breaking
+	// the memory pipeline. Run() callers always set finalText on completion, so
+	// removing the output gate is safe for both code paths.
+	if r.memoryProvider != nil && st.TerminalReason == TerminalCompleted {
 		userMsg := memory.Message{Role: "user", Content: req.Input}
 		asstMsg := memory.Message{Role: "assistant", Content: finalText}
 		go func() {

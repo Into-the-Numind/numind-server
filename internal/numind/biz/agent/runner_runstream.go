@@ -473,6 +473,11 @@ func (r *agentRunner) RunStream(
 	sr, streamErr := einoAgent.Stream(attemptCtx, einoMessages)
 
 	if streamErr != nil {
+		// P1 fix (T05-2): both error branches must emit EventError + EventTerminal so
+		// the SSE client can distinguish "runner failed before first byte" from a clean
+		// EOF. Previously these paths returned immediately without emitting anything,
+		// causing a silent connection close the client could not interpret.
+
 		// V1.5 compact: ErrContextExhausted from Stream setup.
 		if errors.Is(streamErr, compactv2.ErrContextExhausted) {
 			log.Warnw("AgentRunner.RunStream einoAgent.Stream returned ErrContextExhausted",
@@ -480,8 +485,8 @@ func (r *agentRunner) RunStream(
 			if tErr := r.terminateRunContextExhausted(ctx, run); tErr != nil {
 				log.Warnw("AgentRunner.RunStream terminateRunContextExhausted persist failed", "agent_run_id", run.ID, "error", tErr)
 			}
-			// terminateRunContextExhausted persists "context_exhausted" to DB.
-			// Return with model_error TerminalReason (same semantics as Run contextExhausted path).
+			// Emit error + terminal so the SSE client sees a clean close.
+			emitStreamErrorEvents(ch, run.ID, streamErr, TerminalModelError, startTime)
 			return &RunResult{
 				AgentRunID:     run.ID,
 				TerminalReason: TerminalModelError,
@@ -494,6 +499,8 @@ func (r *agentRunner) RunStream(
 		if uerr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalModelError), &endedAt); uerr != nil {
 			log.Warnw("AgentRunner.RunStream UpdateState failed on Stream error", "agent_run_id", run.ID, "error", uerr)
 		}
+		// Emit error + terminal so the SSE client sees a clean close.
+		emitStreamErrorEvents(ch, run.ID, streamErr, TerminalModelError, startTime)
 		return nil, fmt.Errorf("AgentRunner.RunStream einoAgent.Stream: %w", streamErr)
 	}
 
@@ -508,17 +515,8 @@ func (r *agentRunner) RunStream(
 		if result != nil {
 			finalText = result.FinalOutput
 		}
-		// Hook action override (same as Run).
-		if effectiveHooks != nil && effectiveHooks.Registry != nil {
-			if last := effectiveHooks.Registry.LastAction(); last != HookActionContinue {
-				if ev := HookActionToLoopEvent(last); ev != LoopEventInvalid {
-					hookSt := &LoopState{}
-					if term, _, isTerminal := hookSt.Transition(ev); isTerminal {
-						st.TerminalReason = term
-					}
-				}
-			}
-		}
+		// P1 fix (T05-2): use extracted applyHookOverride helper (3 occurrences → 1).
+		applyHookOverride(effectiveHooks, st)
 		// Ensure TerminalReason is set.
 		if st.TerminalReason == "" {
 			st.TerminalReason = TerminalModelError
@@ -536,17 +534,8 @@ func (r *agentRunner) RunStream(
 		finalText = result.FinalOutput
 	}
 
-	// Hook action override (same as Run).
-	if effectiveHooks != nil && effectiveHooks.Registry != nil {
-		if last := effectiveHooks.Registry.LastAction(); last != HookActionContinue {
-			if ev := HookActionToLoopEvent(last); ev != LoopEventInvalid {
-				hookSt := &LoopState{}
-				if term, _, isTerminal := hookSt.Transition(ev); isTerminal {
-					st.TerminalReason = term
-				}
-			}
-		}
-	}
+	// P1 fix (T05-2): use extracted applyHookOverride helper.
+	applyHookOverride(effectiveHooks, st)
 
 	// Ensure TerminalReason is set (consumeEinoStream should always set it).
 	if st.TerminalReason == "" {
@@ -554,4 +543,54 @@ func (r *agentRunner) RunStream(
 	}
 
 	return r.finalizeRun(ctx, run, st, startTime, finalText, nil, false, skillVer, isTrivial, req, permDenialSink, nil, sessionID)
+}
+
+// applyHookOverride checks if the effectiveHooks.Registry recorded a non-Continue
+// action and, if so, overrides st.TerminalReason via the LoopState machine.
+// This mirrors the hook-override block in Run() and was previously duplicated 3×
+// inside RunStream. Extracted to a private helper per T05-2 P1 review finding.
+func applyHookOverride(effectiveHooks *RunHooks, st *LoopState) {
+	if effectiveHooks == nil || effectiveHooks.Registry == nil {
+		return
+	}
+	if last := effectiveHooks.Registry.LastAction(); last != HookActionContinue {
+		if ev := HookActionToLoopEvent(last); ev != LoopEventInvalid {
+			hookSt := &LoopState{}
+			if term, _, isTerminal := hookSt.Transition(ev); isTerminal {
+				st.TerminalReason = term
+			}
+		}
+	}
+}
+
+// emitStreamErrorEvents sends an EventError + EventTerminal pair onto ch (non-blocking
+// via buffered send). Used when einoAgent.Stream returns an error before any chunks
+// are emitted, so the SSE client receives a structured close rather than a silent EOF.
+// The seq argument is always 1 (first event in a new stream).
+func emitStreamErrorEvents(ch chan<- stream.Event, runID uint64, err error, reason TerminalReason, startTime time.Time) {
+	errEv, encErr := stream.Encode(stream.EventError, stream.ErrorPayload{
+		Code:    "model_error",
+		Message: err.Error(),
+	}, 1, runID, 0)
+	if encErr == nil {
+		select {
+		case ch <- errEv:
+		default:
+		}
+	}
+
+	termEv, encErr := stream.Encode(stream.EventTerminal, stream.TerminalPayload{
+		Reason:     string(reason),
+		DurationMs: time.Since(startTime).Milliseconds(),
+		StepCount:  0,
+		TerminalMetadata: map[string]any{
+			"error_message": err.Error(),
+		},
+	}, 2, runID, 0)
+	if encErr == nil {
+		select {
+		case ch <- termEv:
+		default:
+		}
+	}
 }

@@ -60,6 +60,11 @@ func (r *agentRunner) consumeEinoStream(
 
 	// emit safely writes an event to ch. If ctx is already done, the send is
 	// skipped to avoid blocking forever on a full or unread channel.
+	//
+	// P1 fix (T04): seq++ fires ONLY inside the successful send branch. Previously
+	// seq++ ran unconditionally before the select, so a ctx.Done() win (dropped
+	// event) still advanced seq — producing monotonic-sequence gaps that the SSE
+	// client would interpret as lost events.
 	emit := func(t stream.EventType, payload any) {
 		ev, err := stream.Encode(t, payload, seq+1, run.ID, stepIdx)
 		if err != nil {
@@ -67,9 +72,9 @@ func (r *agentRunner) consumeEinoStream(
 				"agent_run_id", run.ID, "event_type", t, "error", err)
 			return
 		}
-		seq++
 		select {
 		case ch <- ev:
+			seq++
 			if !firstByteSent {
 				firstByteSent = true
 			}
@@ -111,11 +116,15 @@ func (r *agentRunner) consumeEinoStream(
 			event := HandleLLMError(st, err)
 
 			// Map the event to a terminal reason string for the error payload.
+			// P2 fix (T04): ErrorPayload.Code must be one of the spec §3.1 valid values
+			// ("model_error" / "permission" / "internal"). "image_error" is not a valid
+			// ErrorPayload.Code. Use "model_error" here; the EventTerminal below still
+			// carries the precise TerminalImageError reason so the FE can distinguish.
 			var errCode string
 			switch event {
 			case LoopEventLLMErrImage:
 				st.TerminalReason = TerminalImageError
-				errCode = "image_error"
+				errCode = "model_error"
 			case LoopEventLLMErrPTL:
 				st.TerminalReason = TerminalPromptTooLong
 				errCode = "model_error"

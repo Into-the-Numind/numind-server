@@ -75,7 +75,12 @@ func (h *testStreamController) CreateStream(c *gin.Context) {
 		return
 	}
 	if !acquired {
-		c.JSON(http.StatusConflict, gin.H{"code": 409, "run_id": runID, "message": "stream already attached"})
+		// Mirror the real CreateStream 409 body shape (P1 fix: data.run_id, not top-level run_id).
+		c.JSON(http.StatusConflict, gin.H{
+			"code":    "FailedOperation.AgentStreamAlreadyAttached",
+			"message": "Agent stream already attached for this run.",
+			"data":    gin.H{"run_id": runID},
+		})
 		return
 	}
 	defer h.svc.ReleaseStreamLock(runID)
@@ -237,12 +242,28 @@ func TestCreateStream_409WhenLockNotAcquired(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("unmarshal 409 body: %v", err)
 	}
-	runIDVal, ok := body["run_id"]
+	// Per spec §6.1 the 409 body shape is {code, message, data: {run_id}}.
+	// P1 fix: assert data.run_id is present and correct, not top-level run_id
+	// (the original assertion was broken — core.WriteResponse + non-nil err
+	// silently drops the Data param, so the real controller never wrote
+	// top-level run_id).
+	dataVal, ok := body["data"]
 	if !ok {
-		t.Errorf("expected run_id field in 409 response, got: %v", body)
+		t.Fatalf("expected data field in 409 response, got: %v", body)
+	}
+	dataMap, ok := dataVal.(map[string]any)
+	if !ok {
+		t.Fatalf("expected data to be object, got %T", dataVal)
+	}
+	runIDVal, ok := dataMap["run_id"]
+	if !ok {
+		t.Errorf("expected data.run_id field in 409 response, got: %v", body)
 	}
 	if int(runIDVal.(float64)) != 77 {
-		t.Errorf("expected run_id=77, got %v", runIDVal)
+		t.Errorf("expected data.run_id=77, got %v", runIDVal)
+	}
+	if body["code"] != "FailedOperation.AgentStreamAlreadyAttached" {
+		t.Errorf("expected code=FailedOperation.AgentStreamAlreadyAttached, got %v", body["code"])
 	}
 }
 

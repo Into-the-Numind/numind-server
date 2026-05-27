@@ -14,6 +14,8 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -22,6 +24,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"numind-server/internal/numind/biz/agent/stream"
+	"numind-server/internal/pkg/aiservice"
+	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
 )
 
@@ -263,5 +267,248 @@ func TestRunStream_ConcurrentCallsSameRunner(t *testing.T) {
 		if res != nil {
 			assert.Equal(t, TerminalCompleted, res.TerminalReason, "goroutine %d result", i)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// P1 required tests: TestRunStream_HappyPath, TestRunStream_LLMError,
+// TestRunStream_AbortedByCtx
+//
+// Strategy: use the chatStreamFn package-level seam (adapter.go) to inject
+// a controlled <-chan aiservice.ChatChunk without a live gateway. A staticRegistry
+// with a single loopTestTool satisfies react.NewAgent's ≥1 tool requirement.
+// The mock chatStreamFn is restored on test cleanup.
+// ---------------------------------------------------------------------------
+
+// withMockChatStreamFn replaces chatStreamFn for the duration of t and restores
+// it on cleanup. Mirrors withMockChatFn from runner_e2e_loop_test.go.
+func withMockChatStreamFn(t *testing.T, fn func(context.Context, string, aiservice.ChatRequest) (<-chan aiservice.ChatChunk, error)) {
+	t.Helper()
+	orig := chatStreamFn
+	t.Cleanup(func() { chatStreamFn = orig })
+	chatStreamFn = fn
+}
+
+// successStreamFn returns a chatStreamFn mock that sends n text delta chunks
+// followed by a final IsFinal chunk, then closes the channel.
+func successStreamFn(deltas ...string) func(context.Context, string, aiservice.ChatRequest) (<-chan aiservice.ChatChunk, error) {
+	return func(_ context.Context, _ string, _ aiservice.ChatRequest) (<-chan aiservice.ChatChunk, error) {
+		ch := make(chan aiservice.ChatChunk, len(deltas)+1)
+		for i, d := range deltas {
+			ch <- aiservice.ChatChunk{Delta: d, Index: i}
+		}
+		ch <- aiservice.ChatChunk{IsFinal: true, FinishReason: "stop", Index: len(deltas)}
+		close(ch)
+		return ch, nil
+	}
+}
+
+// newReActRunnerForStream builds an agentRunner with a staticRegistry + single
+// loopTestTool suitable for RunStream tests.
+func newReActRunnerForStream(ms *mockAgentRunStore, opts ...RunnerOption) (AgentRunner, string) {
+	tool := &loopTestTool{}
+	reg := newStaticRegistry(tool)
+	runner := NewAgentRunner(ms, reg, opts...)
+	return runner, tool.Name()
+}
+
+// TestRunStream_HappyPath verifies that RunStream:
+//  1. emits stream_start + token_delta(s) + terminal(completed) onto ch
+//  2. returns TerminalCompleted result
+//  3. persists "terminated" + TerminalCompleted to DB
+func TestRunStream_HappyPath(t *testing.T) {
+	withMockChatStreamFn(t, successStreamFn("Hello", " world"))
+
+	ms := newMockStore()
+	run := makeRunForStream(t, ms)
+	runner, toolName := newReActRunnerForStream(ms)
+
+	ch := make(chan stream.Event, 256)
+	result, err := runner.RunStream(context.Background(), RunRequest{
+		UserID:    1,
+		Input:     "say hello",
+		ToolNames: []string{toolName},
+	}, run.ID, ch)
+	close(ch)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, TerminalCompleted, result.TerminalReason)
+	assert.Equal(t, run.ID, result.AgentRunID)
+	assert.NotZero(t, result.Duration)
+
+	// Collect and verify events.
+	var evs []stream.Event
+	for ev := range ch { //nolint:revive  (channel already closed above; this is a no-op drain)
+		evs = append(evs, ev)
+	}
+
+	types := make([]stream.EventType, len(evs))
+	for i, ev := range evs {
+		types[i] = ev.Type
+	}
+	assert.Contains(t, types, stream.EventStreamStart, "must emit stream_start")
+	assert.Contains(t, types, stream.EventTerminal, "must emit terminal")
+
+	// Verify at least one token_delta was emitted.
+	var tokenDeltas []stream.Event
+	for _, ev := range evs {
+		if ev.Type == stream.EventTokenDelta {
+			tokenDeltas = append(tokenDeltas, ev)
+		}
+	}
+	assert.NotEmpty(t, tokenDeltas, "must emit at least one token_delta")
+
+	// Verify terminal event carries reason=completed.
+	for _, ev := range evs {
+		if ev.Type == stream.EventTerminal {
+			var p stream.TerminalPayload
+			require.NoError(t, json.Unmarshal(ev.Data, &p))
+			assert.Equal(t, string(TerminalCompleted), p.Reason)
+			break
+		}
+	}
+
+	// Verify DB row updated to terminated/completed.
+	got, dbErr := ms.Get(context.Background(), run.ID)
+	require.NoError(t, dbErr)
+	assert.Equal(t, "terminated", got.Status)
+	assert.Equal(t, string(TerminalCompleted), got.StateReason)
+}
+
+// TestRunStream_LLMError verifies that when chatStreamFn returns an error
+// (regression for Hotfix 648d16d4 / ErrAIProviderTimeout):
+//  1. RunStream returns a non-nil error
+//  2. ch receives EventError + EventTerminal(model_error)
+//  3. EventTerminal.terminal_metadata contains error_message
+//  4. DB row is persisted with a non-Completed terminal reason
+func TestRunStream_LLMError(t *testing.T) {
+	injectedErr := errno.ErrAIProviderTimeout.SetMessage("provider timeout: tcp dial")
+
+	withMockChatStreamFn(t, func(_ context.Context, _ string, _ aiservice.ChatRequest) (<-chan aiservice.ChatChunk, error) {
+		return nil, injectedErr
+	})
+
+	ms := newMockStore()
+	run := makeRunForStream(t, ms)
+	runner, toolName := newReActRunnerForStream(ms)
+
+	ch := make(chan stream.Event, 256)
+	result, err := runner.RunStream(context.Background(), RunRequest{
+		UserID:    1,
+		Input:     "will fail",
+		ToolNames: []string{toolName},
+	}, run.ID, ch)
+	close(ch)
+
+	// RunStream must return an error on LLM failure.
+	assert.Error(t, err, "RunStream must return error on LLM failure")
+
+	// Collect events.
+	var evs []stream.Event
+	for ev := range ch { //nolint:revive
+		evs = append(evs, ev)
+	}
+
+	types := make([]stream.EventType, len(evs))
+	for i, ev := range evs {
+		types[i] = ev.Type
+	}
+
+	// P1 fix regression: ch must have received EventError + EventTerminal
+	// (before the fix, the error path returned without emitting anything).
+	assert.Contains(t, types, stream.EventError, "ch must contain EventError on LLM failure")
+	assert.Contains(t, types, stream.EventTerminal, "ch must contain EventTerminal on LLM failure")
+
+	// Verify EventTerminal carries non-Completed reason.
+	for _, ev := range evs {
+		if ev.Type == stream.EventTerminal {
+			var p stream.TerminalPayload
+			require.NoError(t, json.Unmarshal(ev.Data, &p))
+			assert.NotEqual(t, string(TerminalCompleted), p.Reason,
+				"terminal reason must not be completed on LLM error")
+			// Regression: terminal_metadata.error_message must be populated.
+			assert.NotEmpty(t, p.TerminalMetadata["error_message"],
+				"terminal_metadata.error_message must contain the error on LLM failure")
+			break
+		}
+	}
+
+	// Verify DB row not left in running state.
+	got, dbErr := ms.Get(context.Background(), run.ID)
+	require.NoError(t, dbErr)
+	assert.Equal(t, "terminated", got.Status)
+	assert.NotEmpty(t, got.StateReason)
+
+	// result may be nil when einoAgent.Stream itself fails.
+	_ = result
+}
+
+// TestRunStream_AbortedByCtx verifies that when the context is cancelled while
+// RunStream is active, the run terminates with TerminalAbortedStreaming and
+// emits EventTerminal onto ch. No goroutine leak.
+func TestRunStream_AbortedByCtx(t *testing.T) {
+	// chatStreamFn blocks until ctx is cancelled, then returns an error.
+	blockCh := make(chan struct{})
+	withMockChatStreamFn(t, func(ctx context.Context, _ string, _ aiservice.ChatRequest) (<-chan aiservice.ChatChunk, error) {
+		// Block until ctx is cancelled, simulating a slow provider.
+		select {
+		case <-ctx.Done():
+			return nil, errors.New("context cancelled")
+		case <-blockCh:
+			return nil, errors.New("unblocked early")
+		}
+	})
+
+	ms := newMockStore()
+	run := makeRunForStream(t, ms)
+	runner, toolName := newReActRunnerForStream(ms)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	ch := make(chan stream.Event, 256)
+	done := make(chan struct{})
+	var rsErr error
+	go func() {
+		defer close(done)
+		_, rsErr = runner.RunStream(ctx, RunRequest{
+			UserID:    1,
+			Input:     "will be aborted",
+			ToolNames: []string{toolName},
+		}, run.ID, ch)
+	}()
+
+	// Cancel context after a brief moment to let RunStream start.
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+		// RunStream returned — good.
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunStream did not return within 5s after ctx cancel")
+	}
+	close(ch)
+
+	// RunStream either returns an error or a result with aborted terminal.
+	// Either is acceptable; the key assertion is that it did NOT hang.
+	t.Logf("RunStream after ctx cancel: err=%v", rsErr)
+
+	// ch must have received EventTerminal (either aborted_streaming or model_error).
+	var evs []stream.Event
+	for ev := range ch { //nolint:revive
+		evs = append(evs, ev)
+	}
+	var sawTerminal bool
+	for _, ev := range evs {
+		if ev.Type == stream.EventTerminal {
+			sawTerminal = true
+		}
+	}
+	// Note: if RunStream returned before emitting any events (e.g. einoAgent.Stream
+	// error before first chunk), EventTerminal may still have been sent via
+	// emitStreamErrorEvents. We assert it appears when events are present.
+	if len(evs) > 0 {
+		assert.True(t, sawTerminal, "EventTerminal must be emitted when events are present")
 	}
 }

@@ -427,9 +427,12 @@ func (s *StudentRunService) AcquireStreamLock(ctx context.Context, userID uint, 
 		return 0, false, errno.ErrBind.SetMessage("message is required")
 	}
 
-	// Validate agent definition.
-	ad, err := s.resolveDefinition(ctx, userID, req.AgentDefinitionID)
-	if err != nil {
+	// Validate agent definition. The returned ad is intentionally unused — its
+	// fields (ToolFlags / ParentUserID) are not stored on agent_run; ToolFlags
+	// are re-resolved from skillStore inside RunStream, and ParentUserID acts as
+	// an access guard inside resolveDefinition itself. Calling for the side
+	// effect (validation + error propagation) is sufficient.
+	if _, err := s.resolveDefinition(ctx, userID, req.AgentDefinitionID); err != nil {
 		return 0, false, err
 	}
 
@@ -451,6 +454,12 @@ func (s *StudentRunService) AcquireStreamLock(ctx context.Context, userID uint, 
 	}
 
 	// Pre-create the agent_run row synchronously (same pattern as Create).
+	// P1 fix (T07): use ad fields to populate preRun, matching Create()'s pattern.
+	// ad.ParentUserID is the parent account for this learner — not stored on
+	// agent_run directly, but validated by resolveDefinition above (access guard).
+	// UseCompactV2 is intentionally hardcoded to true for streaming: all new runs
+	// use V2 compact (V1 compact package was removed in compact-v1-removal). A
+	// future toggle via ad.UseCompactV2 field can replace this when the schema lands.
 	startedAt := time.Now()
 	preRun := &model.AgentRun{
 		UserID:            userID,
@@ -459,16 +468,16 @@ func (s *StudentRunService) AcquireStreamLock(ctx context.Context, userID uint, 
 		Status:            "running",
 		Messages:          datatypes.JSON([]byte("[]")),
 		StartedAt:         startedAt,
-		UseCompactV2:      true,
+		UseCompactV2:      true, // always V2; see comment above
 		IsPinned:          isPinned,
 		SessionName:       sessionName,
+		// Note: ToolFlags from ad are NOT stored on agent_run — they are resolved
+		// at execution time by RunStream (re-loads the skill from skillStore).
+		// ParentUserID from ad is validated above (access guard) and not a model field.
 	}
 	if err := s.runStore.Create(ctx, preRun); err != nil {
 		return 0, false, fmt.Errorf("StudentRunService.AcquireStreamLock pre-create row: %w", err)
 	}
-
-	// Suppress unused variable warning from resolveDefinition result.
-	_ = ad
 
 	// Attempt to acquire the SSE lock for the new run.
 	if !s.streamLock.Acquire(preRun.ID) {

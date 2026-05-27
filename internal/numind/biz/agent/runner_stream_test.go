@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"testing"
@@ -185,16 +186,16 @@ func TestConsumeEinoStream_MultiStep(t *testing.T) {
 	asMsgs := allEventsOfType(evs, stream.EventAssistantMessage)
 	assert.Len(t, asMsgs, 2)
 
-	// Verify the message IDs differ
+	// Verify the message IDs differ (P2 fix: was unmarshalling into itself — dead assertion).
 	if len(asMsgs) == 2 {
 		type msgPayload struct {
 			MessageID string `json:"message_id"`
 		}
 		var p1, p2 msgPayload
-		require.NoError(t, asMsgs[0].Data.UnmarshalJSON(asMsgs[0].Data))
-		_ = p1
-		_ = p2
-		// Just verify they're present; message ID uniqueness guaranteed by uuid.NewString()
+		require.NoError(t, json.Unmarshal(asMsgs[0].Data, &p1))
+		require.NoError(t, json.Unmarshal(asMsgs[1].Data, &p2))
+		assert.NotEqual(t, p1.MessageID, p2.MessageID,
+			"each step boundary must produce a fresh UUID message_id")
 	}
 }
 
