@@ -184,7 +184,7 @@ func (t *runPythonTool) Execute(ctx context.Context, input ToolInput) (ToolResul
 
 	// Step 1: Create directory structure inside sandbox
 	if err := dc.ExecMkdir(ctx, sess.ContainerID, "/workspace/input", "/output"); err != nil {
-		return runPythonFriendlyError(fmt.Sprintf("run_python: 沙箱目录初始化失败: %v", err)), err
+		return runPythonFriendlyError(fmt.Sprintf("run_python: 沙箱目录初始化失败: %v", err)), nil
 	}
 
 	// Step 2: Download and mount input files
@@ -195,24 +195,24 @@ func (t *runPythonTool) Execute(ctx context.Context, input ToolInput) (ToolResul
 		}
 		data, err := t.downloadInputFile(ctx, fileURL)
 		if err != nil {
-			return runPythonFriendlyError(fmt.Sprintf("run_python: 下载输入文件失败 (%s): %v", fileURL, err)), err
+			return runPythonFriendlyError(fmt.Sprintf("run_python: 下载输入文件失败 (%s): %v", fileURL, err)), nil
 		}
 		containerPath := "/workspace/input/" + sanitizeOutputFilename(filename)
 		if err := t.writeFileToSandbox(ctx, sess, containerPath, data, dc); err != nil {
-			return runPythonFriendlyError(fmt.Sprintf("run_python: 写入输入文件失败 (%s): %v", filename, err)), err
+			return runPythonFriendlyError(fmt.Sprintf("run_python: 写入输入文件失败 (%s): %v", filename, err)), nil
 		}
 	}
 
 	// Step 3: Write Python code to /workdir/run.py
 	if err := t.writeFileToSandbox(ctx, sess, "/workdir/run.py", []byte(in.Code), dc); err != nil {
-		return runPythonFriendlyError(fmt.Sprintf("run_python: 写入 Python 代码失败: %v", err)), err
+		return runPythonFriendlyError(fmt.Sprintf("run_python: 写入 Python 代码失败: %v", err)), nil
 	}
 
 	// Step 4: Execute the Python script
 	cmd := fmt.Sprintf("timeout %ds python3 /workdir/run.py", timeoutSecs)
 	execRes, execErr := sandbox.ExecCommand(ctx, sess, cmd, dc)
 	if execErr != nil {
-		return runPythonFriendlyError(fmt.Sprintf("run_python: 沙箱执行失败: %v", execErr)), execErr
+		return runPythonFriendlyError(fmt.Sprintf("run_python: 沙箱执行失败: %v", execErr)), nil
 	}
 
 	durationMs := time.Since(start).Milliseconds()
@@ -220,7 +220,7 @@ func (t *runPythonTool) Execute(ctx context.Context, input ToolInput) (ToolResul
 	// Step 5: Collect output files
 	files, collectErr := t.collectOutputFiles(ctx, sess, dc, in.ExpectedOutputFiles)
 	if collectErr != nil {
-		return runPythonFriendlyError(fmt.Sprintf("run_python: 收集输出文件失败: %v", collectErr)), collectErr
+		return runPythonFriendlyError(fmt.Sprintf("run_python: 收集输出文件失败: %v", collectErr)), nil
 	}
 
 	// Build result
@@ -233,7 +233,7 @@ func (t *runPythonTool) Execute(ctx context.Context, input ToolInput) (ToolResul
 	}
 	b, err := json.Marshal(out)
 	if err != nil {
-		return nil, fmt.Errorf("run_python: marshal output: %w", err)
+		return runPythonFriendlyError("run_python: marshal output: " + err.Error()), nil
 	}
 	return b, nil
 }

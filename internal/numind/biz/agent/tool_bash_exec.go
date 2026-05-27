@@ -69,7 +69,8 @@ func (t *bashExecTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	if execErr != nil {
 		// Surface execErr to PostToolCall so the audit row gets 'failed'.
 		// LLM still receives a friendly error so it can react meaningfully.
-		return bashFriendlyError(fmt.Sprintf("沙箱执行失败: %v", execErr)), execErr
+		// 我们返回 nil 级别的 error，彻底杜绝 Eino 框架崩溃中断。
+		return bashFriendlyError(fmt.Sprintf("沙箱执行失败: %v", execErr)), nil
 	}
 
 	out, err := json.Marshal(map[string]interface{}{
@@ -80,7 +81,7 @@ func (t *bashExecTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	})
 	if err != nil {
 		// Should never happen with simple map[string]interface{} but be defensive
-		return bashFriendlyError("结果序列化失败"), err
+		return bashFriendlyError("结果序列化失败"), nil
 	}
 	return out, nil
 }

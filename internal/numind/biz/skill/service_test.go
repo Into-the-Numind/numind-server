@@ -101,7 +101,6 @@ func TestService_Create_childAccount_returns403(t *testing.T) {
 	assert.ErrorIs(t, err, errno.ErrChildAccountForbidden)
 }
 
-
 func TestService_Create_isActive_true_by_default(t *testing.T) {
 	svc, db := newTestService(t)
 	parentID := seedParentUserID(db)

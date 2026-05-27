@@ -30,6 +30,7 @@ type webSearchOutput struct {
 	Results  []aiservice.WebSearchResult `json:"results"`
 	CacheHit bool                        `json:"cache_hit"`
 	Provider string                      `json:"provider"`
+	Error    string                      `json:"error,omitempty"`
 }
 
 // cacheEntry holds a cached WebSearchResponse and its expiry time.
@@ -82,6 +83,17 @@ func (t *webSearchTool) NarrationVerb() string       { return "搜索网络" }
 func (t *webSearchTool) IsReadOnly() bool            { return true }
 func (t *webSearchTool) IsSearchOrReadCommand() bool { return true }
 func (t *webSearchTool) AlwaysLoad() bool            { return true }
+
+func (t *webSearchTool) returnSoftError(format string, args ...any) (ToolResult, error) {
+	msg := fmt.Sprintf(format, args...)
+	out, _ := json.Marshal(webSearchOutput{
+		Results:  []aiservice.WebSearchResult{},
+		CacheHit: false,
+		Provider: "tavily",
+		Error:    "ERROR: " + msg,
+	})
+	return ToolResult(out), nil
+}
 
 // Execute validates input, checks cache, calls Tavily via aiservice, and caches the result.
 func (t *webSearchTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
@@ -150,7 +162,8 @@ func (t *webSearchTool) Execute(ctx context.Context, input ToolInput) (ToolResul
 	})
 	if err != nil {
 		// P1-2: wrap provider errors with errno.ErrAIProviderError.
-		return nil, errno.ErrAIProviderError.SetMessage("web_search: provider error: %v", err)
+		// 我们采用软拒绝机制，彻底避免直接抛 Go fatal 错误引发 Eino 智能体崩溃崩溃。
+		return t.returnSoftError("web_search: provider error: %v", err)
 	}
 
 	nResults = len(resp.Results)

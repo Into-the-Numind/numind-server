@@ -193,8 +193,8 @@ func TestBashExecTool_Execute_DockerExecError(t *testing.T) {
 	tool := &bashExecTool{}
 	ctx := WithRunID(context.Background(), 100)
 	res, err := tool.Execute(ctx, []byte(`{"command":"echo hi"}`))
-	if err == nil {
-		t.Fatalf("Execute should surface execErr; got nil")
+	if err != nil {
+		t.Fatalf("Execute err = %v; want nil for sandboxed exec error (soft reject)", err)
 	}
 	if !containsErrorString(t, res, "沙箱执行失败") {
 		t.Errorf("result should contain '沙箱执行失败'; got %s", string(res))
