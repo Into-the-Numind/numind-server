@@ -19,6 +19,7 @@ import (
 	"numind-server/internal/numind/biz/agent/callctx"
 	"numind-server/internal/numind/biz/agent/memory/agentmd"
 	"numind-server/internal/numind/biz/agent/search"
+	"numind-server/internal/numind/biz/agent/stream"
 	"numind-server/internal/numind/biz/budget"
 	"numind-server/internal/numind/biz/compactv2"
 	"numind-server/internal/numind/biz/compliance"
@@ -81,6 +82,10 @@ type RunResult struct {
 // AgentRunner 是 Agent 运行时主接口（蓝本 §4.1.9）。
 type AgentRunner interface {
 	Run(ctx context.Context, req RunRequest) (*RunResult, error)
+	// RunStream executes the agent in streaming mode. Events are sent on ch
+	// (buffered by caller; ownership transfers to RunStream — it does NOT close ch).
+	// ch is closed by the caller (controller) after RunStream returns.
+	RunStream(ctx context.Context, req RunRequest, runID uint64, ch chan<- stream.Event) (*RunResult, error)
 	Cancel(runID uint64) bool
 }
 

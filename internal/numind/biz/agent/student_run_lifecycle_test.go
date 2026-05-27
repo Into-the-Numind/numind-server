@@ -11,6 +11,7 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
+	"numind-server/internal/numind/biz/agent/stream"
 	"numind-server/internal/numind/biz/narration"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
@@ -28,6 +29,9 @@ type lifecycleRunner struct {
 }
 
 func (m *lifecycleRunner) Run(_ context.Context, _ RunRequest) (*RunResult, error) {
+	return m.runResult, m.runErr
+}
+func (m *lifecycleRunner) RunStream(_ context.Context, _ RunRequest, _ uint64, _ chan<- stream.Event) (*RunResult, error) {
 	return m.runResult, m.runErr
 }
 func (m *lifecycleRunner) Cancel(runID uint64) bool {
