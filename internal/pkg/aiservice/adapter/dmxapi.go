@@ -16,6 +16,17 @@ import (
 // Note: HTTP error helpers (wrapHTTPClientErr, wrapHTTPStatusErr, isTimeoutErr)
 // are defined in ali.go (same package) and shared across all three adapters.
 
+// dmxapiPostMaxRetries is the per-request retry budget for non-streaming DMXAPI
+// calls (doPost). Set to 3 because dmxapi.cn is a third-party aggregator that
+// occasionally has transient header-timeout blips lasting <30s — single-attempt
+// was too brittle (see dev incident: agent_run 41/40/38 terminated immediately
+// on the first timeout). 3 retries with httpclient's exponential backoff
+// (~1s + 2s + 4s) recovers from transient blips without unbounded waiting.
+//
+// doStream still uses 0 because partial SSE bodies cannot be safely replayed
+// once chunks have been forwarded to the caller (see doStream comment).
+const dmxapiPostMaxRetries = 3
+
 // Compile-time interface checks.
 var _ ChatAdapter = (*DMXAPIAdapter)(nil)
 var _ EmbedAdapter = (*DMXAPIAdapter)(nil)
@@ -340,7 +351,7 @@ func (d *DMXAPIAdapter) doPost(ctx context.Context, route *registry.ResolvedRout
 			"Authorization": "Bearer " + route.Provider.APIKey,
 			"Content-Type":  "application/json",
 		},
-		RetryPolicy: &httpclient.RetryPolicy{MaxRetries: 0},
+		RetryPolicy: &httpclient.RetryPolicy{MaxRetries: dmxapiPostMaxRetries},
 	})
 	if err != nil {
 		return nil, wrapHTTPClientErr(fmt.Sprintf("doPost %s", path), err)
