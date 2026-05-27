@@ -62,9 +62,15 @@ type DMXAPIAdapter struct {
 }
 
 // NewDMXAPIAdapter creates a DMXAPIAdapter backed by the shared httpclient pool.
+//
+// Uses httpclient.LLMConfig (180s ResponseHeaderTimeout) instead of DefaultConfig
+// because dmxapi's deepseek-v4-pro thinking-mode header TTFB is routinely
+// 90-120s on large prompts (dev incident 2026-05-27: agent_run 42 timed out
+// at 60s while dmxapi was still computing; manual repro measured 97.9s TTFB
+// on a 24k-token fresh prompt with max_tokens=8000).
 func NewDMXAPIAdapter() *DMXAPIAdapter {
 	return &DMXAPIAdapter{
-		client: httpclient.NewClient(nil), // uses DefaultConfig
+		client: httpclient.NewClient(httpclient.LLMConfig()),
 	}
 }
 
