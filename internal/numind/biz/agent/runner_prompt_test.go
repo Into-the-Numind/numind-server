@@ -192,14 +192,14 @@ func TestBuildUserContextSection_SomeSet(t *testing.T) {
 
 	// 只有 memorySystem（+ disclaimer 同时挂上，因 disclaimer 与 memorySystem 同进同退）
 	got = BuildUserContextSection("", "", "", "", "免责声明：", "用户偏好 A")
-	want = "## Memories\n" + "" + "" + "" + "" + "免责声明：" + "用户偏好 A"
+	want = "## Memories\n免责声明：用户偏好 A"
 	if got != want {
 		t.Errorf("memorySystem + disclaimer:\n  want: %q\n  got:  %q", want, got)
 	}
 
 	// 所有 5 个 block 都非空 — 顺序：agentMd → selector → dialectic → temporal → disclaimer → memorySystem
 	got = BuildUserContextSection("A", "S", "D", "T", "Disc", "M")
-	want = "## Memories\n" + "A" + "S" + "D" + "T" + "Disc" + "M"
+	want = "## Memories\nASDTDiscM"
 	if got != want {
 		t.Errorf("all blocks set:\n  want: %q\n  got:  %q", want, got)
 	}

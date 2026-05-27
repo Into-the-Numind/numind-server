@@ -73,6 +73,9 @@ func BuildInstitutionSection(systemPrompt, skillCatalog, toolsHint string) strin
 // 注意：memoryDisclaimer 与 memorySystem 同进同退（disclaimer 自身不计入 hasAny 判定）；
 // 仅当 5 个判定 block（agentMd/selector/dialectic/temporal/memorySystem）任一非空时
 // 才挂 header — 保留旧路径语义。
+//
+// 各 block 内容由调用方保证已含所需换行（旧 inline 拼装里这些字符串都自带前导 \n\n
+// 或 \n，本函数不额外插入分隔符，避免双空行 / 空段尾随空行等不一致）。
 func BuildUserContextSection(
 	agentMd, selector, dialectic, temporal, memoryDisclaimer, memorySystem string,
 ) string {

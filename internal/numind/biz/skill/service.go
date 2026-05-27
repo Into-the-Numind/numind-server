@@ -14,6 +14,9 @@ import (
 	"numind-server/internal/pkg/model"
 )
 
+// SystemPromptMaxLen is the maximum allowed byte length for system_prompt (64KB).
+const SystemPromptMaxLen = 64 * 1024
+
 // CreateRequest 包含创建 agent_definition 所需的所有字段。
 type CreateRequest struct {
 	Name                 string
@@ -150,9 +153,6 @@ func deriveDefaultToolFlags(qa QuestionnaireAnswers) map[string]bool {
 		"dangerous":         true,
 	}
 }
-
-// SystemPromptMaxLen is the maximum allowed byte length for system_prompt (64KB).
-const SystemPromptMaxLen = 64 * 1024
 
 func (s *service) Create(ctx context.Context, userID uint, req CreateRequest) (*model.AgentDefinition, error) {
 	if err := s.requireParentAccount(ctx, userID); err != nil {

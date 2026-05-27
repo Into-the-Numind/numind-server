@@ -88,6 +88,7 @@ func newMigrationTestDB(t *testing.T) *gorm.DB {
 			generated_skill_body   TEXT    NOT NULL DEFAULT '',
 			advanced_mode          INTEGER NOT NULL DEFAULT 0,
 			custom_skill_body      TEXT    NOT NULL DEFAULT '',
+			system_prompt          TEXT    NOT NULL DEFAULT '',
 			tool_flags             TEXT,
 			credit_cap_per_session INTEGER,
 			daily_credit_cap       INTEGER,
