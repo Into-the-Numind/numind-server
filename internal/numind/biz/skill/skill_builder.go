@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
 )
 
@@ -23,17 +22,6 @@ func Build(ad *model.AgentDefinition) (string, error) {
 		}
 	}
 
-	// 必填校验 — 比 unmarshal 后做（让 nil/empty 都走同一路径）
-	if len(qa.Q6) == 0 {
-		return "", errno.ErrSkillBuilderFailed.SetMessage("questionnaire.q6 required")
-	}
-	if len(qa.Q7) == 0 {
-		return "", errno.ErrSkillBuilderFailed.SetMessage("questionnaire.q7 required")
-	}
-	if qa.Q12 == "" {
-		return "", errno.ErrSkillBuilderFailed.SetMessage("questionnaire.q12 required")
-	}
-
 	var b strings.Builder
 
 	b.WriteString("## 角色定义\n你的名字是「")
@@ -42,25 +30,31 @@ func Build(ad *model.AgentDefinition) (string, error) {
 	b.WriteString(ad.Description)
 	b.WriteString("\n\n")
 
-	b.WriteString("## 任务类型\n")
-	for _, t := range qa.Q6 {
-		b.WriteString("- ")
-		b.WriteString(taskTypeDisplay(t))
+	if len(qa.Q6) > 0 {
+		b.WriteString("## 任务类型\n")
+		for _, t := range qa.Q6 {
+			b.WriteString("- ")
+			b.WriteString(taskTypeDisplay(t))
+			b.WriteString("\n")
+		}
 		b.WriteString("\n")
 	}
-	b.WriteString("\n")
 
-	b.WriteString("## 输入材料类型\n")
-	for _, m := range qa.Q7 {
-		b.WriteString("- ")
-		b.WriteString(materialTypeDisplay(m))
+	if len(qa.Q7) > 0 {
+		b.WriteString("## 输入材料类型\n")
+		for _, m := range qa.Q7 {
+			b.WriteString("- ")
+			b.WriteString(materialTypeDisplay(m))
+			b.WriteString("\n")
+		}
 		b.WriteString("\n")
 	}
-	b.WriteString("\n")
 
-	b.WriteString("## 语气风格\n")
-	b.WriteString(styleDisplay(qa.Q12))
-	b.WriteString("\n\n")
+	if qa.Q12 != "" {
+		b.WriteString("## 语气风格\n")
+		b.WriteString(styleDisplay(qa.Q12))
+		b.WriteString("\n\n")
+	}
 
 	if qa.Q10 != "" {
 		b.WriteString("## 禁区（软规则）\n")

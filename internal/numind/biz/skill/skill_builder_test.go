@@ -39,64 +39,63 @@ func TestBuild_MinimalRequiredFields_succeeds(t *testing.T) {
 	assert.NotEmpty(t, body)
 }
 
-// TestBuild_MissingQ6_returnsErrSkillBuilderFailed verifies that empty Q6 returns
-// ErrSkillBuilderFailed with appropriate message.
-func TestBuild_MissingQ6_returnsErrSkillBuilderFailed(t *testing.T) {
+// TestBuild_MissingQ6_succeedsAndOmitsSection verifies that empty Q6 succeeds and
+// does not render the 任务类型 section.
+func TestBuild_MissingQ6_succeedsAndOmitsSection(t *testing.T) {
 	ad := makeAD("助手", "描述", &QuestionnaireAnswers{
 		Q6:  []string{}, // empty
 		Q7:  []string{"text"},
 		Q12: "professional",
 	})
 
-	_, err := Build(ad)
-	require.Error(t, err)
-	assert.True(t, errors.Is(err, errno.ErrSkillBuilderFailed), "expected ErrSkillBuilderFailed, got: %v", err)
-	assert.Contains(t, err.Error(), "q6")
+	body, err := Build(ad)
+	require.NoError(t, err)
+	assert.NotContains(t, body, "## 任务类型")
 }
 
-// TestBuild_MissingQ7_returnsErrSkillBuilderFailed verifies that empty Q7 returns
-// ErrSkillBuilderFailed with appropriate message.
-func TestBuild_MissingQ7_returnsErrSkillBuilderFailed(t *testing.T) {
+// TestBuild_MissingQ7_succeedsAndOmitsSection verifies that empty Q7 succeeds and
+// does not render the 输入材料类型 section.
+func TestBuild_MissingQ7_succeedsAndOmitsSection(t *testing.T) {
 	ad := makeAD("助手", "描述", &QuestionnaireAnswers{
 		Q6:  []string{"answer_questions"},
 		Q7:  []string{}, // empty
 		Q12: "encouraging",
 	})
 
-	_, err := Build(ad)
-	require.Error(t, err)
-	assert.True(t, errors.Is(err, errno.ErrSkillBuilderFailed), "expected ErrSkillBuilderFailed, got: %v", err)
-	assert.Contains(t, err.Error(), "q7")
+	body, err := Build(ad)
+	require.NoError(t, err)
+	assert.NotContains(t, body, "## 输入材料类型")
 }
 
-// TestBuild_MissingQ12_returnsErrSkillBuilderFailed verifies that empty Q12 returns
-// ErrSkillBuilderFailed with appropriate message.
-func TestBuild_MissingQ12_returnsErrSkillBuilderFailed(t *testing.T) {
+// TestBuild_MissingQ12_succeedsAndOmitsSection verifies that empty Q12 succeeds and
+// does not render the 语气风格 section.
+func TestBuild_MissingQ12_succeedsAndOmitsSection(t *testing.T) {
 	ad := makeAD("助手", "描述", &QuestionnaireAnswers{
 		Q6:  []string{"make_plan"},
 		Q7:  []string{"csv"},
 		Q12: "", // empty
 	})
 
-	_, err := Build(ad)
-	require.Error(t, err)
-	assert.True(t, errors.Is(err, errno.ErrSkillBuilderFailed), "expected ErrSkillBuilderFailed, got: %v", err)
-	assert.Contains(t, err.Error(), "q12")
+	body, err := Build(ad)
+	require.NoError(t, err)
+	assert.NotContains(t, body, "## 语气风格")
 }
 
-// TestBuild_NilQuestionnaireAnswers_returnsErrSkillBuilderFailed verifies that
-// ad.QuestionnaireAnswers = nil results in all-zero QuestionnaireAnswers,
-// triggering Q6 required validation failure with ErrSkillBuilderFailed.
-func TestBuild_NilQuestionnaireAnswers_returnsErrSkillBuilderFailed(t *testing.T) {
+// TestBuild_NilQuestionnaireAnswers_succeeds verifies that
+// ad.QuestionnaireAnswers = nil results in a successful build with basic role definition only.
+func TestBuild_NilQuestionnaireAnswers_succeeds(t *testing.T) {
 	ad := &model.AgentDefinition{
 		Name:                 "无问卷助手",
 		Description:          "描述",
 		QuestionnaireAnswers: nil, // not set
 	}
 
-	_, err := Build(ad)
-	require.Error(t, err)
-	assert.True(t, errors.Is(err, errno.ErrSkillBuilderFailed), "nil questionnaire should trigger q6 required")
+	body, err := Build(ad)
+	require.NoError(t, err)
+	assert.Contains(t, body, "## 角色定义")
+	assert.NotContains(t, body, "## 任务类型")
+	assert.NotContains(t, body, "## 输入材料类型")
+	assert.NotContains(t, body, "## 语气风格")
 }
 
 // TestBuild_InvalidJSON_returnsParseError verifies that malformed JSON in
