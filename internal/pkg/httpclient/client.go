@@ -51,6 +51,22 @@ func DefaultConfig() *Config {
 	}
 }
 
+// LLMConfig 为 LLM provider 调用定制的配置。
+//
+// 与 DefaultConfig 的差异：ResponseHeaderTimeout 60s → 180s。
+//
+// 原因：non-streaming LLM chat 在 thinking 模型 + 大 prompt + 大 max_tokens
+// 场景下，header 经常 90-120s 才返回（服务器要等推理 + 输出全部完成才发
+// header）。dev 实测 dmxapi/deepseek-v4-pro 24k fresh prompt + max_tokens=8000
+// 的 header TTFB = 97.9s。60s 默认会把本来能成功的请求当作 timeout 砍掉，
+// 引发 agent_run 误报 model_error（dev incident 2026-05-27 run 41/40/38/42）。
+// 180s 给 ~80% 缓冲；真到 180s 还没回那确实是上游故障了。
+func LLMConfig() *Config {
+	c := DefaultConfig()
+	c.ResponseHeaderTimeout = 180 * time.Second
+	return c
+}
+
 // Client 优化的HTTP客户端
 type Client struct {
 	config *Config
