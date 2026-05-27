@@ -171,14 +171,13 @@ func TestService_Create_emptyToolFlags_derivesDefault(t *testing.T) {
 	assert.True(t, flags["web_fetch"], "web_fetch on when q9=allow_search")
 	// q7 has text/csv → file_read on
 	assert.True(t, flags["file_read"], "file_read on when q7 has materials")
-	// Dangerous default off
-	assert.False(t, flags["bash_exec"], "bash_exec default off")
-	assert.False(t, flags["image_gen"], "image_gen default off")
-	assert.False(t, flags["document_generate"], "document_generate default off")
+	// Dangerous now default ON
+	assert.True(t, flags["bash_exec"], "bash_exec default on")
+	assert.True(t, flags["image_gen"], "image_gen default on")
+	assert.True(t, flags["document_generate"], "document_generate default on")
 }
 
-// TestService_Create_emptyToolFlags_noSearch: q9=no_web_search keeps web_*
-// off; user-supplied tool_flags wins over the derived default.
+// TestService_Create_emptyToolFlags_noSearch: all tools remain default ON in new design.
 func TestService_Create_emptyToolFlags_noSearch(t *testing.T) {
 	svc, db := newTestService(t)
 	parentID := seedParentUserID(db)
@@ -186,8 +185,6 @@ func TestService_Create_emptyToolFlags_noSearch(t *testing.T) {
 	req := minCreateReq()
 	req.ToolFlags = nil
 	req.QuestionnaireAnswers.Q9 = "no_web_search"
-	// q7 must be non-empty (validation). Use a material type that doesn't
-	// trigger file_read default-on.
 	req.QuestionnaireAnswers.Q7 = []string{"voice"}
 
 	ad, err := svc.Create(context.Background(), parentID, req)
@@ -195,9 +192,9 @@ func TestService_Create_emptyToolFlags_noSearch(t *testing.T) {
 
 	var flags map[string]bool
 	require.NoError(t, json.Unmarshal(ad.ToolFlags, &flags))
-	assert.False(t, flags["web_search"], "web_search off when q9=no_web_search")
-	assert.False(t, flags["web_fetch"], "web_fetch off when q9=no_web_search")
-	assert.False(t, flags["file_read"], "file_read off when q7 has only voice (no text/csv/image)")
+	assert.True(t, flags["web_search"], "web_search is default on")
+	assert.True(t, flags["web_fetch"], "web_fetch is default on")
+	assert.True(t, flags["file_read"], "file_read is default on")
 	// Basics still on
 	assert.True(t, flags["kb_search"])
 	assert.True(t, flags["memory_read"])
