@@ -57,6 +57,9 @@ type IAgentRunStore interface {
 	// DB transaction. Replaces the separate AppendUserMessage + ClearPendingQuestion
 	// pair used in earlier iterations. Used by Answer biz method (T4 P2 fix).
 	AnswerAndClear(ctx context.Context, id uint64, userMessage string) error
+	UpdateSessionPinned(ctx context.Context, sessionID string, isPinned bool) error
+	UpdateSessionName(ctx context.Context, sessionID string, name string) error
+	UpdateSessionDeleted(ctx context.Context, sessionID string, isDeleted bool) error
 }
 
 type agentRunStore struct {
@@ -181,19 +184,35 @@ func (s *agentRunStore) ListByParentUserIDAndStatus(ctx context.Context, parentU
 	return runs, total, nil
 }
 
-// ListByUser returns runs for a specific user ordered by started_at DESC.
-// If sinceTime is non-nil only rows with started_at >= sinceTime are returned.
+// ListByUser returns the latest run for each non-deleted session for a specific user,
+// ordered by is_pinned DESC and started_at DESC.
+// If sinceTime is non-nil, only runs with started_at >= sinceTime are evaluated.
 // limit <= 0 defaults to 20.
 func (s *agentRunStore) ListByUser(ctx context.Context, userID uint, sinceTime *time.Time, limit int) ([]model.AgentRun, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	base := s.db.WithContext(ctx).Model(&model.AgentRun{}).Where("user_id = ?", userID)
+
+	// 1. 子查询：分组取得该用户所有未逻辑删除会话的最大 started_at
+	subQuery := s.db.Model(&model.AgentRun{}).
+		Select("session_id, MAX(started_at) as max_started_at").
+		Where("user_id = ? AND is_deleted = false", userID)
+	
 	if sinceTime != nil {
-		base = base.Where("started_at >= ?", *sinceTime)
+		subQuery = subQuery.Where("started_at >= ?", *sinceTime)
 	}
+	subQuery = subQuery.Group("session_id")
+
 	var runs []model.AgentRun
-	if err := base.Order("started_at DESC").Limit(limit).Find(&runs).Error; err != nil {
+	// 2. 主查询：JOIN 子查询，并执行 order 排序
+	err := s.db.WithContext(ctx).Model(&model.AgentRun{}).
+		Joins("JOIN (?) as latest ON agent_run.session_id = latest.session_id AND agent_run.started_at = latest.max_started_at", subQuery).
+		Where("agent_run.user_id = ? AND agent_run.is_deleted = false", userID).
+		Order("agent_run.is_pinned DESC, agent_run.started_at DESC").
+		Limit(limit).
+		Find(&runs).Error
+
+	if err != nil {
 		return nil, fmt.Errorf("agentRunStore.ListByUser(userID=%d): %w", userID, err)
 	}
 	return runs, nil
@@ -373,4 +392,34 @@ func (s *agentRunStore) ListBySession(ctx context.Context, sessionID string, off
 		return nil, 0, fmt.Errorf("agentRunStore.ListBySession.Find: %w", err)
 	}
 	return runs, total, nil
+}
+
+func (s *agentRunStore) UpdateSessionPinned(ctx context.Context, sessionID string, isPinned bool) error {
+	result := s.db.WithContext(ctx).Model(&model.AgentRun{}).
+		Where("session_id = ?", sessionID).
+		Update("is_pinned", isPinned)
+	if result.Error != nil {
+		return fmt.Errorf("agentRunStore.UpdateSessionPinned(sessionID=%s): %w", sessionID, result.Error)
+	}
+	return nil
+}
+
+func (s *agentRunStore) UpdateSessionName(ctx context.Context, sessionID string, name string) error {
+	result := s.db.WithContext(ctx).Model(&model.AgentRun{}).
+		Where("session_id = ?", sessionID).
+		Update("session_name", name)
+	if result.Error != nil {
+		return fmt.Errorf("agentRunStore.UpdateSessionName(sessionID=%s): %w", sessionID, result.Error)
+	}
+	return nil
+}
+
+func (s *agentRunStore) UpdateSessionDeleted(ctx context.Context, sessionID string, isDeleted bool) error {
+	result := s.db.WithContext(ctx).Model(&model.AgentRun{}).
+		Where("session_id = ?", sessionID).
+		Update("is_deleted", isDeleted)
+	if result.Error != nil {
+		return fmt.Errorf("agentRunStore.UpdateSessionDeleted(sessionID=%s): %w", sessionID, result.Error)
+	}
+	return nil
 }

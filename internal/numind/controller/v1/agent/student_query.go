@@ -47,6 +47,12 @@ func RegisterStudentQueryRoutes(authGroup *gin.RouterGroup, skillSvc skill.Servi
 	authGroup.POST("/agent-runs/:id/feedback", ctrl.WriteFeedback)
 	// 7. GET /v1/tenant-settings/support-contact
 	authGroup.GET("/tenant-settings/support-contact", ctrl.GetSupportContact)
+	// 8. POST /v1/agent-sessions/:id/pin
+	authGroup.POST("/agent-sessions/:id/pin", ctrl.PinSession)
+	// 9. POST /v1/agent-sessions/:id/rename
+	authGroup.POST("/agent-sessions/:id/rename", ctrl.RenameSession)
+	// 10. POST /v1/agent-sessions/:id/delete
+	authGroup.POST("/agent-sessions/:id/delete", ctrl.DeleteSession)
 }
 
 // ---------------------------------------------------------------------------
@@ -206,4 +212,70 @@ func (h *StudentQueryController) GetSupportContact(c *gin.Context) {
 		"phone":  "",
 		"note":   "联系您的购买方获取支持",
 	})
+}
+
+type pinSessionRequest struct {
+	IsPinned bool `json:"is_pinned"`
+}
+
+type renameSessionRequest struct {
+	Name string `json:"name" binding:"required"`
+}
+
+// PinSession handles POST /v1/agent-sessions/:id/pin.
+func (h *StudentQueryController) PinSession(c *gin.Context) {
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+	sessionID := c.Param("id")
+	if sessionID == "" || len(sessionID) > 64 {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("invalid session id: %q", sessionID), nil)
+		return
+	}
+	var req pinSessionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("%s", err.Error()), nil)
+		return
+	}
+	err := h.querySvc.PinSession(c.Request.Context(), user.ID, sessionID, req.IsPinned)
+	core.WriteResponse(c, err, gin.H{"success": err == nil})
+}
+
+// RenameSession handles POST /v1/agent-sessions/:id/rename.
+func (h *StudentQueryController) RenameSession(c *gin.Context) {
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+	sessionID := c.Param("id")
+	if sessionID == "" || len(sessionID) > 64 {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("invalid session id: %q", sessionID), nil)
+		return
+	}
+	var req renameSessionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("%s", err.Error()), nil)
+		return
+	}
+	err := h.querySvc.RenameSession(c.Request.Context(), user.ID, sessionID, req.Name)
+	core.WriteResponse(c, err, gin.H{"success": err == nil})
+}
+
+// DeleteSession handles POST /v1/agent-sessions/:id/delete.
+func (h *StudentQueryController) DeleteSession(c *gin.Context) {
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+	sessionID := c.Param("id")
+	if sessionID == "" || len(sessionID) > 64 {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("invalid session id: %q", sessionID), nil)
+		return
+	}
+	err := h.querySvc.DeleteSession(c.Request.Context(), user.ID, sessionID)
+	core.WriteResponse(c, err, gin.H{"success": err == nil})
 }

@@ -50,6 +50,10 @@ type RunSummary struct {
 	CreditsUsed           int    `json:"credits_used"`
 	CreditsBudget         int    `json:"credits_budget"`
 	CreditsThresholdState string `json:"credits_threshold_state"` // 'under_60' | 'warning_60' | 'blocked_100'
+
+	// 会话管理字段
+	IsPinned    bool   `json:"is_pinned"`
+	SessionName string `json:"session_name"`
 }
 
 // frontendStatus maps backend agent_run.status + state_reason to the AgentRunStatus
@@ -127,6 +131,8 @@ func runToSummary(r model.AgentRun) RunSummary {
 		LastActiveAt:          lastActive.UTC().Format(time.RFC3339),
 		PreviewText:           extractPreviewText(r.Messages),
 		CreditsThresholdState: "under_60", // will be overwritten by enrichSummary
+		IsPinned:              r.IsPinned,
+		SessionName:           r.SessionName,
 	}
 }
 
@@ -542,4 +548,43 @@ func transformMessages(raw []byte, runID uint64, startedAt time.Time, endedAt *t
 		msgs = append(msgs, msg)
 	}
 	return msgs
+}
+
+// PinSession logic-pins the whole session for the user.
+func (s *StudentQueryService) PinSession(ctx context.Context, userID uint, sessionID string, isPinned bool) error {
+	if err := s.verifySessionOwnership(ctx, userID, sessionID); err != nil {
+		return err
+	}
+	return s.runStore.UpdateSessionPinned(ctx, sessionID, isPinned)
+}
+
+// RenameSession updates the session display name for the user.
+func (s *StudentQueryService) RenameSession(ctx context.Context, userID uint, sessionID string, name string) error {
+	if err := s.verifySessionOwnership(ctx, userID, sessionID); err != nil {
+		return err
+	}
+	return s.runStore.UpdateSessionName(ctx, sessionID, name)
+}
+
+// DeleteSession logical-deletes the whole session (and all its runs) for the user.
+func (s *StudentQueryService) DeleteSession(ctx context.Context, userID uint, sessionID string) error {
+	if err := s.verifySessionOwnership(ctx, userID, sessionID); err != nil {
+		return err
+	}
+	return s.runStore.UpdateSessionDeleted(ctx, sessionID, true)
+}
+
+// verifySessionOwnership checks if the first run in this session belongs to the userID.
+func (s *StudentQueryService) verifySessionOwnership(ctx context.Context, userID uint, sessionID string) error {
+	runs, _, err := s.runStore.ListBySession(ctx, sessionID, 0, 1)
+	if err != nil {
+		return fmt.Errorf("StudentQueryService.verifySessionOwnership check list: %w", err)
+	}
+	if len(runs) == 0 {
+		return errno.ErrAgentRunNotFound
+	}
+	if runs[0].UserID != userID {
+		return errno.ErrForbidden.SetMessage("access to another user's session is not allowed")
+	}
+	return nil
 }

@@ -96,6 +96,15 @@ func (s *answerRunStore) AnswerAndClear(_ context.Context, id uint64, _ string) 
 	s.answerAndClearCalls = append(s.answerAndClearCalls, id)
 	return s.answerAndClearErr
 }
+func (s *answerRunStore) UpdateSessionPinned(_ context.Context, _ string, _ bool) error {
+	return nil
+}
+func (s *answerRunStore) UpdateSessionName(_ context.Context, _ string, _ string) error {
+	return nil
+}
+func (s *answerRunStore) UpdateSessionDeleted(_ context.Context, _ string, _ bool) error {
+	return nil
+}
 
 // answerRunner is a no-op runner for Answer tests.
 type answerRunner struct{ runCalled bool }
