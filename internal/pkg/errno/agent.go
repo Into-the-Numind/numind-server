@@ -28,4 +28,7 @@ var (
 	// ErrUnsupportedFileType is returned when file_read receives a MIME type that
 	// none of the registered parsers can handle.
 	ErrUnsupportedFileType = &Errno{HTTP: 400, Code: "InvalidParameter.UnsupportedFileType", Message: "unsupported file type"}
+
+	// ErrSystemPromptTooLong is returned when agent.system_prompt exceeds the 64KB cap.
+	ErrSystemPromptTooLong = &Errno{HTTP: 400, Code: "InvalidParameter.SystemPromptTooLong", Message: "智能体行为指引文本过长（上限 64KB）"}
 )
