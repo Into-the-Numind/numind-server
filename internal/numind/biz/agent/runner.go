@@ -1152,6 +1152,22 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	if assistantContent == "" && runErr != nil {
 		assistantContent = fmt.Sprintf("[error: %s]", st.TerminalReason)
 	}
+
+	// Persist the underlying LLM/provider error to agent_run.terminal_metadata so
+	// frontend / admin can surface the real cause (HTTP timeout, 4xx, etc.)
+	// without grepping server logs. Pre-fix only state_reason was written, so
+	// users saw a bare "model_error" with no clue what failed (e.g. dmxapi
+	// header timeout). Use Merge so we do not clobber BudgetGate's prior write.
+	if runErr != nil && st.TerminalReason != TerminalCompleted {
+		patch := map[string]interface{}{
+			"error_message": runErr.Error(),
+			"error_class":   string(st.TerminalReason),
+		}
+		if mErr := r.runStore.MergeTerminalMetadata(ctx, run.ID, patch); mErr != nil {
+			log.Warnw("AgentRunner.Run MergeTerminalMetadata failed",
+				"agent_run_id", run.ID, "error", mErr)
+		}
+	}
 	finalMessages, _ := json.Marshal([]map[string]any{
 		{"role": "user", "content": userInput},
 		{"role": "assistant", "content": assistantContent},
