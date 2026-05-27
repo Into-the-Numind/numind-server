@@ -674,7 +674,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	// temporalBlock (task 3.8 time-scoped digest) →
 	// memoryDisclaimerBlock + memorySystemBlock (L1/L2 dialog memory)。
 	// agentMdBlock / selectorBlock / dialecticInsightBlock / temporalBlock 自带前导 \n\n，空字符串时无副作用。
-	if ad != nil && strings.TrimSpace(ad.SystemPrompt) != "" {
+	if ShouldUseV2Prompt(ad) {
 		// 新 V2 路径（system_prompt 非空 = 机构方已用大文本框定义 agent）
 		//
 		// body 的语义按 skills 是否有绑定来分支：

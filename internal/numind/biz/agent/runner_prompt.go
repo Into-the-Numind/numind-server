@@ -4,7 +4,15 @@ import (
 	"strings"
 
 	"numind-server/internal/numind/biz/skill"
+	"numind-server/internal/pkg/model"
 )
+
+// ShouldUseV2Prompt 决定是否走新 4 段 prompt 拼装路径。
+// nil-safe：ad 为 nil 时返回 false（fallback Legacy）。
+// 仅当机构方在 AgentBuilder 填了非空白行为指引时启用 V2 路径。
+func ShouldUseV2Prompt(ad *model.AgentDefinition) bool {
+	return ad != nil && strings.TrimSpace(ad.SystemPrompt) != ""
+}
 
 // PromptSegment 一段 system prompt，附带语义标签。
 // 未来切到 message-blocks + cache_control 时，可按 Name 决定 cache_control 注入位置。

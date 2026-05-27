@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"numind-server/internal/numind/biz/skill"
+	"numind-server/internal/pkg/model"
 )
 
 // 本文件是 T6 集成测试 — 验证拼装层（BuildSystemPromptV2 / BuildSystemPromptLegacy /
@@ -192,5 +193,55 @@ func TestPrompt_V2Path_SystemPromptOnly_NoSkills(t *testing.T) {
 	// userContext 全空 → "## Memories" header 不应出现
 	if strings.Contains(got, "## Memories") {
 		t.Error("V2 prompt with empty userContext should NOT contain '## Memories' header")
+	}
+}
+
+// TestPrompt_ShouldUseV2Prompt_ForkDecision 覆盖 runner.go:677 V2/Legacy 分叉判定。
+// 4 种 (SystemPrompt × skills 状态被 ad 字段单独决定的部分)：
+//   - nil ad → Legacy
+//   - SystemPrompt = "" → Legacy
+//   - SystemPrompt = 纯空白 "  \n\t  " → Legacy（trim 后空）
+//   - SystemPrompt = "你是 XX" → V2
+//
+// 注意：skills 与否不影响 ShouldUseV2Prompt 自身——它是 D11 的前提判定，
+// skills 维度由 runner.go 内部 len(skills) 决策叠加（在已选 V2 路径后决定 skillCatalog 是否传 body）。
+func TestPrompt_ShouldUseV2Prompt_ForkDecision(t *testing.T) {
+	cases := []struct {
+		name string
+		ad   *model.AgentDefinition
+		want bool
+	}{
+		{"nil_ad", nil, false},
+		{"empty_string", &model.AgentDefinition{SystemPrompt: ""}, false},
+		{"only_whitespace", &model.AgentDefinition{SystemPrompt: "  \n\t  \r\n  "}, false},
+		{"non_empty", &model.AgentDefinition{SystemPrompt: "你是销售助手"}, true},
+		{"non_empty_with_leading_whitespace", &model.AgentDefinition{SystemPrompt: "  你是 XX  "}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ShouldUseV2Prompt(tc.ad)
+			if got != tc.want {
+				t.Errorf("ShouldUseV2Prompt(%+v) = %v, want %v", tc.ad, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPrompt_V2Path_EmptyAfterTrim_FallsBackToLegacy 是 spec §9 case 4 的覆盖。
+// 验证 SystemPrompt = "  \n\t  " 时通过 ShouldUseV2Prompt 应走 Legacy 路径。
+// runner.go:677 用 ShouldUseV2Prompt(ad) 做决策——本测试断言决策结果正确。
+func TestPrompt_V2Path_EmptyAfterTrim_FallsBackToLegacy(t *testing.T) {
+	ad := &model.AgentDefinition{SystemPrompt: "  \n\t  "}
+	if ShouldUseV2Prompt(ad) {
+		t.Errorf("纯空白 SystemPrompt 应走 Legacy 路径（ShouldUseV2Prompt 应返回 false），但返回 true")
+	}
+	// 同时验证 Legacy 出口产出仍然以 PlatformBasePrompt 起头（即使 SystemPrompt 是空白字符串，
+	// Legacy 路径完全不参考此字段）。
+	got := BuildSystemPromptLegacy(
+		skill.PlatformBasePrompt,
+		"", "[body]", "", "", "", "", "", "", "", "", skill.PlatformSafetyFooter,
+	)
+	if !strings.HasPrefix(got, skill.PlatformBasePrompt) {
+		t.Error("Legacy 路径出口应以 PlatformBasePrompt 起头")
 	}
 }
