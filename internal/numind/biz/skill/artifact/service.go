@@ -8,6 +8,7 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
+	"numind-server/internal/numind/biz/skill"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
 )
@@ -32,7 +33,7 @@ type CreateRequest struct {
 	WhenToUse        string   `json:"when_to_use" binding:"max=500"`
 	AllowedTools     []string `json:"allowed_tools"`
 	BodyMd           string   `json:"body_md" binding:"required,max=204800"`
-	SourceType       string   `json:"source_type" binding:"omitempty,oneof=custom generated imported_from_template"`
+	SourceType       string   `json:"source_type" binding:"omitempty,oneof=custom generated imported_from_template imported_from_marketplace"`
 	SourceTemplateID *uint    `json:"source_template_id,omitempty"`
 }
 
@@ -82,6 +83,16 @@ func (s *Service) Create(ctx context.Context, parentUserID, createdBy uint, req 
 		srcType = "custom"
 	}
 
+	var originType string
+	switch srcType {
+	case "imported_from_template":
+		originType = "official"
+	case "imported_from_marketplace":
+		originType = "tenant"
+	default:
+		originType = "user"
+	}
+
 	sk := &model.Skill{
 		ParentUserID:     parentUserID,
 		Name:             req.Name,
@@ -91,6 +102,7 @@ func (s *Service) Create(ctx context.Context, parentUserID, createdBy uint, req 
 		BodyMd:           req.BodyMd,
 		SourceType:       srcType,
 		SourceTemplateID: req.SourceTemplateID,
+		OriginType:       originType,
 		Version:          1,
 		IsActive:         true,
 		CreatedBy:        createdBy,
@@ -176,6 +188,14 @@ func (s *Service) Update(ctx context.Context, parentUserID, skillID uint, req Cr
 	sk.BodyMd = req.BodyMd
 	if req.SourceType != "" {
 		sk.SourceType = req.SourceType
+		switch req.SourceType {
+		case "imported_from_template":
+			sk.OriginType = "official"
+		case "imported_from_marketplace":
+			sk.OriginType = "tenant"
+		default:
+			sk.OriginType = "user"
+		}
 	}
 	sk.SourceTemplateID = req.SourceTemplateID
 	sk.Version++
@@ -232,4 +252,51 @@ func marshalTools(tools []string) (datatypes.JSON, error) {
 		return nil, err
 	}
 	return datatypes.JSON(b), nil
+}
+
+// ImportTemplate 一键从官方模板克隆/导入为本租户独立技能。
+func (s *Service) ImportTemplate(ctx context.Context, parentUserID, createdBy uint, templateID uint64) (*model.Skill, error) {
+	if parentUserID == 0 {
+		return nil, errno.ErrPermissionDenied
+	}
+
+	var tpl model.SkillTemplate
+	if err := s.db.WithContext(ctx).First(&tpl, templateID).Error; err != nil {
+		return nil, errno.ErrTemplateNotFound.SetMessage("技能模板未找到 (id=%d)", templateID)
+	}
+
+	ad := &model.AgentDefinition{
+		Name:                 tpl.Name,
+		Description:          tpl.Description,
+		QuestionnaireAnswers: tpl.QuestionnaireAnswers,
+	}
+	bodyMd, err := skill.Build(ad)
+	if err != nil {
+		return nil, fmt.Errorf("ImportTemplate compile body: %w", err)
+	}
+
+	var allowedTools []string
+	if len(tpl.DefaultToolFlags) > 0 {
+		var flags map[string]bool
+		if err := json.Unmarshal(tpl.DefaultToolFlags, &flags); err == nil {
+			for k, v := range flags {
+				if v {
+					allowedTools = append(allowedTools, k)
+				}
+			}
+		}
+	}
+
+	tplID := uint(templateID)
+	req := CreateRequest{
+		Name:             tpl.Name,
+		Description:      tpl.Description,
+		WhenToUse:        "",
+		AllowedTools:     allowedTools,
+		BodyMd:           bodyMd,
+		SourceType:       "imported_from_template",
+		SourceTemplateID: &tplID,
+	}
+
+	return s.Create(ctx, parentUserID, createdBy, req)
 }
