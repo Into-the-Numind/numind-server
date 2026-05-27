@@ -274,6 +274,17 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 	// Resolve tool names from ToolFlags JSON.
 	toolNames := toolNamesFromFlags(ad.ToolFlags)
 
+	// 继承旧会话的 is_pinned 和 session_name
+	var isPinned bool
+	var sessionName string
+	if sessionID != "" {
+		runs, _, err := s.runStore.ListBySession(ctx, sessionID, 0, 1)
+		if err == nil && len(runs) > 0 {
+			isPinned = runs[0].IsPinned
+			sessionName = runs[0].SessionName
+		}
+	}
+
 	// Pre-create the agent_run row synchronously so the HTTP response can
 	// return a real run_id to the frontend (which polls GET /agent-runs/:id).
 	startedAt := time.Now()
@@ -286,6 +297,8 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 		StartedAt:         startedAt,
 		// V1.5 compact-v1-removal — V1 包已删，所有新 run 默认走 V2 (maybeCompactV2)。
 		UseCompactV2: true,
+		IsPinned:     isPinned,
+		SessionName:  sessionName,
 	}
 	if err := s.runStore.Create(ctx, preRun); err != nil {
 		return nil, fmt.Errorf("StudentRunService.Create pre-create row: %w", err)

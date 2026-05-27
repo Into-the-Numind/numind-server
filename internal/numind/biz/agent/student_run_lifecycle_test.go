@@ -124,8 +124,16 @@ func (s *lifecycleRunStore) AppendUserMessage(_ context.Context, _ uint64, _ str
 	return nil
 }
 
-// AnswerAndClear — T4 reviewer-fix atomic answer flow mock impl.
 func (s *lifecycleRunStore) AnswerAndClear(_ context.Context, _ uint64, _ string) error {
+	return nil
+}
+func (s *lifecycleRunStore) UpdateSessionPinned(_ context.Context, _ string, _ bool) error {
+	return nil
+}
+func (s *lifecycleRunStore) UpdateSessionName(_ context.Context, _ string, _ string) error {
+	return nil
+}
+func (s *lifecycleRunStore) UpdateSessionDeleted(_ context.Context, _ string, _ bool) error {
 	return nil
 }
 

@@ -166,6 +166,15 @@ func (m *mockAgentRunStore) AppendUserMessage(_ context.Context, _ uint64, _ str
 func (m *mockAgentRunStore) AnswerAndClear(_ context.Context, _ uint64, _ string) error {
 	return nil
 }
+func (m *mockAgentRunStore) UpdateSessionPinned(_ context.Context, _ string, _ bool) error {
+	return nil
+}
+func (m *mockAgentRunStore) UpdateSessionName(_ context.Context, _ string, _ string) error {
+	return nil
+}
+func (m *mockAgentRunStore) UpdateSessionDeleted(_ context.Context, _ string, _ bool) error {
+	return nil
+}
 
 // ---
 

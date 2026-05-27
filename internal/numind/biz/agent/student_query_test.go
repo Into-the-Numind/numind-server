@@ -81,7 +81,11 @@ func newSQTestDB(t *testing.T) *gorm.DB {
 			compact_state_v2          TEXT,
 			total_tokens_used_v2      INTEGER NOT NULL DEFAULT 0,
 			use_compact_v2            INTEGER NOT NULL DEFAULT 0,
-			context_window_limit_v2   INTEGER
+			context_window_limit_v2   INTEGER,
+			-- 会话管理字段
+			is_pinned                 INTEGER NOT NULL DEFAULT 0,
+			session_name              TEXT NOT NULL DEFAULT '',
+			is_deleted                INTEGER NOT NULL DEFAULT 0
 		)`).Error)
 	return db
 }

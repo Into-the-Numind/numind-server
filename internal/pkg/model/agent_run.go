@@ -43,6 +43,12 @@ type AgentRun struct {
 	// 注意：BOOL default false，不踩 database.md §6 的 default:true 坑；
 	// 实际生产 runner.go Create 显式置 UseCompactV2: true。
 	UseCompactV2 bool `gorm:"column:use_compact_v2;not null;default:false" json:"use_compact_v2,omitempty"`
+	// 置顶功能
+	IsPinned bool `gorm:"column:is_pinned;not null;default:false;index:idx_ar_pinned" json:"is_pinned"`
+	// 会话重命名功能
+	SessionName string `gorm:"column:session_name;size:255;not null;default:''" json:"session_name"`
+	// 会话删除功能
+	IsDeleted bool `gorm:"column:is_deleted;not null;default:false;index:idx_ar_deleted" json:"is_deleted"`
 }
 
 func (AgentRun) TableName() string { return "agent_run" }
