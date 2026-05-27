@@ -12,6 +12,7 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
+	"numind-server/internal/numind/biz/agent/stream"
 	"numind-server/internal/numind/biz/budget"
 	"numind-server/internal/numind/biz/narration"
 	"numind-server/internal/numind/store"
@@ -31,6 +32,7 @@ type StudentRunService struct {
 	narrationProv   *narration.Provider
 	narrationBuf    *NarrationBuffer
 	attachmentStore store.IAgentAttachmentStore // task 1.3: capability-aware routing
+	streamLock      *stream.SubscriptionLock    // T07: SSE single-subscriber guard
 }
 
 // NewStudentRunService constructs a StudentRunService.
@@ -55,6 +57,7 @@ func NewStudentRunService(
 		pricingCalc:   pricingCalc,
 		narrationProv: narrationProv,
 		narrationBuf:  narrationBuf,
+		streamLock:    stream.NewSubscriptionLock(),
 	}
 }
 
@@ -405,6 +408,147 @@ func loadAttachmentsByIDs(
 		results = append(results, att)
 	}
 	return results
+}
+
+// ---------------------------------------------------------------------------
+// T07 — SSE streaming: AcquireStreamLock / ReleaseStreamLock / RunStream
+// ---------------------------------------------------------------------------
+
+// AcquireStreamLock creates the agent_run row (reusing the same pre-create
+// logic as Create) and then tries to acquire a single-subscriber SSE lock on
+// it.  Only one SSE connection per run is allowed; a second caller gets
+// acquired=false with the existing runID so it can surface a 409 with the ID.
+//
+// If acquired=false the agent_run row is NOT rolled back — it has been written
+// to DB and the caller must NOT try to clean it up (the row may already have
+// been picked up by a background runner in a concurrent CreateStream request).
+func (s *StudentRunService) AcquireStreamLock(ctx context.Context, userID uint, req CreateRunRequest) (runID uint64, acquired bool, err error) {
+	if req.Message == "" {
+		return 0, false, errno.ErrBind.SetMessage("message is required")
+	}
+
+	// Validate agent definition.
+	ad, err := s.resolveDefinition(ctx, userID, req.AgentDefinitionID)
+	if err != nil {
+		return 0, false, err
+	}
+
+	// Generate session ID if not provided.
+	sessionID := req.SessionID
+	if sessionID == "" {
+		sessionID = uuid.New().String()
+	}
+
+	// Inherit is_pinned / session_name from prior session runs.
+	var isPinned bool
+	var sessionName string
+	if sessionID != "" {
+		runs, _, listErr := s.runStore.ListBySession(ctx, sessionID, 0, 1)
+		if listErr == nil && len(runs) > 0 {
+			isPinned = runs[0].IsPinned
+			sessionName = runs[0].SessionName
+		}
+	}
+
+	// Pre-create the agent_run row synchronously (same pattern as Create).
+	startedAt := time.Now()
+	preRun := &model.AgentRun{
+		UserID:            userID,
+		SessionID:         sessionID,
+		AgentDefinitionID: req.AgentDefinitionID,
+		Status:            "running",
+		Messages:          datatypes.JSON([]byte("[]")),
+		StartedAt:         startedAt,
+		UseCompactV2:      true,
+		IsPinned:          isPinned,
+		SessionName:       sessionName,
+	}
+	if err := s.runStore.Create(ctx, preRun); err != nil {
+		return 0, false, fmt.Errorf("StudentRunService.AcquireStreamLock pre-create row: %w", err)
+	}
+
+	// Suppress unused variable warning from resolveDefinition result.
+	_ = ad
+
+	// Attempt to acquire the SSE lock for the new run.
+	if !s.streamLock.Acquire(preRun.ID) {
+		// Another subscriber already holds this run's lock (extremely unlikely for
+		// a brand-new run, but the interface contract must be upheld).
+		return preRun.ID, false, nil
+	}
+	return preRun.ID, true, nil
+}
+
+// ReleaseStreamLock releases the SSE single-subscriber lock for runID.
+// It is idempotent — safe to call via defer even if AcquireStreamLock was
+// never called or returned acquired=false.
+func (s *StudentRunService) ReleaseStreamLock(runID uint64) {
+	s.streamLock.Release(runID)
+}
+
+// RunStream executes the agent in streaming mode, emitting stream.Event values
+// onto ch. The caller must have already called AcquireStreamLock (which
+// pre-creates the agent_run row and acquires the SSE lock).
+//
+// RunStream does NOT close ch; the controller goroutine that spawns RunStream
+// closes ch after RunStream returns so that the SSE pump can drain all
+// remaining events.
+//
+// The req.SessionID / req.AgentDefinitionID fields are used to build the
+// runner's RunRequest; the session ID is re-derived from the existing row to
+// ensure consistency.
+func (s *StudentRunService) RunStream(ctx context.Context, userID uint, req CreateRunRequest, runID uint64, ch chan<- stream.Event) (*RunResult, error) {
+	// Load the pre-created run to get the canonical sessionID from DB.
+	run, err := s.runStore.Get(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("StudentRunService.RunStream: load run: %w", err)
+	}
+
+	// Build capability-aware input (same logic as Create).
+	var input string
+	var hasFallbackAttachments bool
+	if len(req.AttachmentIDs) > 0 && s.attachmentStore != nil {
+		atts := loadAttachmentsByIDs(ctx, s.attachmentStore, req.AttachmentIDs, userID)
+		msgs, buildErr := buildAgentInputForModel(ctx, req.Message, atts, req.ModelKey, s.attachmentStore)
+		if buildErr != nil {
+			log.Warnw("StudentRunService.RunStream: buildAgentInputForModel failed, falling back",
+				"user_id", userID, "error", buildErr)
+			input = buildAgentInput(req.Message, req.AttachmentURLs)
+		} else {
+			hasFallbackAttachments = HasFallbackAttachments(msgs)
+			input = MessagesToInputString(msgs)
+		}
+	} else {
+		if len(req.AttachmentIDs) > 0 && s.attachmentStore == nil {
+			log.Warnw("StudentRunService.RunStream: attachmentStore not configured, AttachmentIDs ignored",
+				"user_id", userID, "attachment_ids", req.AttachmentIDs)
+		}
+		input = buildAgentInput(req.Message, req.AttachmentURLs)
+	}
+
+	toolNames := toolNamesFromFlags(nil) // tool flags resolved from the loaded run's definition below
+	if s.skillStore != nil {
+		ad, adErr := s.skillStore.GetByIDIncludeInactive(ctx, run.AgentDefinitionID)
+		if adErr == nil {
+			toolNames = toolNamesFromFlags(ad.ToolFlags)
+		}
+	}
+
+	runReq := RunRequest{
+		UserID:                userID,
+		SessionID:             run.SessionID,
+		Input:                 input,
+		ToolNames:             toolNames,
+		AgentDefinitionID:     run.AgentDefinitionID,
+		EnableMemory:          true,
+		ExistingRunID:         runID,
+		AttachmentHasFallback: hasFallbackAttachments,
+	}
+
+	// Bridge narration events (same as Create).
+	go s.forwardNarration(runID)
+
+	return s.runner.RunStream(ctx, runReq, runID, ch)
 }
 
 // ---------------------------------------------------------------------------
