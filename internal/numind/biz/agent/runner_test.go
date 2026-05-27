@@ -108,7 +108,27 @@ func (m *mockAgentRunStore) ListByUser(_ context.Context, _ uint, _ *time.Time, 
 	return nil, nil
 }
 
-func (m *mockAgentRunStore) MergeTerminalMetadata(_ context.Context, _ uint64, _ map[string]interface{}) error {
+func (m *mockAgentRunStore) MergeTerminalMetadata(_ context.Context, id uint64, patch map[string]interface{}) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.runs[id]
+	if !ok {
+		return errors.New("not found")
+	}
+	merged := map[string]interface{}{}
+	if len(r.TerminalMetadata) > 0 && string(r.TerminalMetadata) != "null" {
+		if err := json.Unmarshal(r.TerminalMetadata, &merged); err != nil {
+			return fmt.Errorf("mockAgentRunStore.MergeTerminalMetadata unmarshal: %w", err)
+		}
+	}
+	for k, v := range patch {
+		merged[k] = v
+	}
+	b, err := json.Marshal(merged)
+	if err != nil {
+		return fmt.Errorf("mockAgentRunStore.MergeTerminalMetadata marshal: %w", err)
+	}
+	r.TerminalMetadata = b
 	return nil
 }
 
