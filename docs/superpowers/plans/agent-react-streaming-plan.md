@@ -83,7 +83,7 @@ FE 串行链（与 BE Batch 1 之后跨仓库并行 — Tier 2）：
 
 **验收**:
 - [ ] 14 个 EventType 全部声明
-- [ ] 13 个 payload struct 字段与 spec §3.1 一致
+- [ ] 12 个 payload struct 字段与 spec §3.1 一致
 - [ ] `go test ./internal/numind/biz/agent/stream/ -run TestEvent` 全绿
 - [ ] `task lint` 通过
 

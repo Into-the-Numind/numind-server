@@ -197,7 +197,7 @@ func (s *agentRunStore) ListByUser(ctx context.Context, userID uint, sinceTime *
 	subQuery := s.db.Model(&model.AgentRun{}).
 		Select("session_id, MAX(started_at) as max_started_at").
 		Where("user_id = ? AND is_deleted = false", userID)
-	
+
 	if sinceTime != nil {
 		subQuery = subQuery.Where("started_at >= ?", *sinceTime)
 	}

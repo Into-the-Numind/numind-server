@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"numind-server/internal/numind/biz/agent/stream"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
 )
@@ -111,6 +112,9 @@ type answerRunner struct{ runCalled bool }
 
 func (r *answerRunner) Run(_ context.Context, _ RunRequest) (*RunResult, error) {
 	r.runCalled = true
+	return &RunResult{}, nil
+}
+func (r *answerRunner) RunStream(_ context.Context, _ RunRequest, _ uint64, _ chan<- stream.Event) (*RunResult, error) {
 	return &RunResult{}, nil
 }
 func (r *answerRunner) Cancel(_ uint64) bool { return false }

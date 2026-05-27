@@ -54,6 +54,9 @@ func RegisterStudentRunRoutes(authGroup *gin.RouterGroup, b biz.IBiz) {
 	c := NewStudentRunControllerWithFallback(b)
 	authGroup.POST("/agent-runs/estimate", c.Estimate)
 	authGroup.POST("/agent-runs", c.Create)
+	// T07: SSE streaming endpoint — must be registered BEFORE /agent-runs/:id
+	// sub-routes to avoid path conflicts with the exact-match "/agent-runs/stream".
+	authGroup.POST("/agent-runs/stream", c.CreateStream)
 	authGroup.GET("/agent-runs/:id/narration", c.PollNarration)
 	authGroup.POST("/agent-runs/:id/cancel", c.Cancel)
 	authGroup.POST("/agent-runs/:id/extend-budget", c.ExtendBudget)

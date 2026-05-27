@@ -16,6 +16,11 @@ import (
 // starting a live gateway. Production code leaves this pointing at aiservice.Chat.
 var chatFn = aiservice.Chat
 
+// chatStreamFn is the package-level seam used by tests to mock aiservice.ChatStream
+// without starting a live gateway. Production code leaves this pointing at
+// aiservice.ChatStream. Mirrors the chatFn pattern.
+var chatStreamFn = aiservice.ChatStream
+
 // Usage records token consumption from a single aiservice.Chat call.
 // Stashed by Generate keyed by call-id (from callctx.CallIDFromCtx).
 // budgetgate.PostToolCall (#14/A8b) reads via LookupUsage to drive RecordUsage.
@@ -176,7 +181,7 @@ func (a *aiserviceAdapter) LookupUsage(callID string) (Usage, bool) {
 // callAIServiceWithStripRetry to maintain Layer 4 defense.
 func (a *aiserviceAdapter) Stream(ctx context.Context, in []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
 	req := a.convertToAiserviceRequest(in)
-	ch, err := aiservice.ChatStream(ctx, a.taskID, req)
+	ch, err := chatStreamFn(ctx, a.taskID, req)
 	if err != nil {
 		return nil, err
 	}
