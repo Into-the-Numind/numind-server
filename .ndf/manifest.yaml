@@ -17,7 +17,7 @@ features:
   progress:
     total_tasks: 1
     completed_tasks: 1
-    reviewed_tasks: 0
+    reviewed_tasks: 1
   decisions:
   - 'H1-D1 (ai 2026-05-29): skill 文件放镜像 (`COPY skills /app/skills`) 而非 host bind-mount。理由：(a) skills 是代码工件随版本绑定，host bind-mount 让 dev/qa/prod 三套 host 都得 rsync 同步，运维负担大；(b) prod host 已 host-mount /opt/numind/${ENV}/* 但不含 skills 子树，要让 host bind-mount 生效需改 deploy-remote.sh + 在 3 个 host 各放一份 skills，比 COPY 改动大且易漏；(c) 主容器只需 stat + WalkDir 读 skills 文件再 CopyToContainer 到 sandbox 子容器（见 pool_skill.go:80-130），不需要 host-side 路径语义；(d) `/app/skills` 跟 `/app/configs` `/app/dict` 同一层，命名连贯。'
   - 'H1-D2 (ai 2026-05-29): .dockerignore 用 `!skills/**/*.md` 例外保 SKILL.md。理由：原规则 `*.md` 会把 SKILL.md 也排除，进镜像后 registry.go:141 stat SKILL.md 失败 → WARN 日志 → invoke_skill prompt 退化成 manifest.description（degraded UX）。最小例外只放行 skills/ 下的 md，不影响顶层 README.md 等。'

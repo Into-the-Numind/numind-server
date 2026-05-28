@@ -54,7 +54,7 @@ type SpawnConfig struct {
 	Detached     bool     // true for pool (sleep loop holds container alive)
 	// Volumes holds bind-mount specs in "host:container:options" form.
 	// Track 4: AcquireForSkill appends skill read-only mounts here.
-	// Example: "/opt/numind/skills/xlsx-author:/skills/xlsx-author:ro"
+	// Example: "/app/skills/xlsx-author:/skills/xlsx-author:ro"
 	Volumes []string
 }
 
