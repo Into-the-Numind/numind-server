@@ -107,6 +107,16 @@ func (t *createHTMLTool) Execute(ctx context.Context, input ToolInput) (ToolResu
 			Title: in.Title,
 			Body:  v,
 		}
+	case map[string]interface{}:
+		// Case-insensitive fallback for maps: map lowercase keys "title" and "body" to uppercase
+		// "Title" and "Body" to play nicely with Go's case-sensitive html/template.
+		if title, exists := v["title"]; exists && v["Title"] == nil {
+			v["Title"] = title
+		}
+		if body, exists := v["body"]; exists && v["Body"] == nil {
+			v["Body"] = body
+		}
+		renderData = v
 	default:
 		// Map or other complex type — pass directly as template data.
 		renderData = in.Content
