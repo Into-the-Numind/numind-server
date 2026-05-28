@@ -1,5 +1,33 @@
 schema_version: '2.0'
 features:
+- id: qa422-questionnaire-validation
+  ndf_version: '3.0'
+  description: 'TestCreate_MissingQuestionnaire_422 fails on develop: POST /v1/agent/skills with empty questionnaire_answers map returns 200 instead of expected 422. Root cause: biz/skill/service.Create never validates required Q6/Q7/Q12 fields. The Build() doc comment claims "q6/q7/q12 必填字段缺失 → ErrSkillBuilderFailed", but Build()''s unit tests (TestBuild_MissingQ6/Q7/Q12_succeedsAndOmitsSection, TestBuild_NilQuestionnaireAnswers_succeeds) deliberately enforce that Build is a pure transformer that succeeds and omits sections when fields are missing. So the validation business rule belongs in biz/skill/service.Create (creation-time check), not in Build. Fix: add validateRequiredQuestionnaire helper called from Create, returning errno.ErrSkillBuilderFailed (already HTTP 422, doc already says "如必填题缺失"). Update stale Build doc comment to match reality. Out of scope: Patch-time QA-downgrade validation (separate concern); Build() validation (would break 4 deliberate unit tests).'
+  track: hotfix
+  stage: H3
+  classification_reason: 'Hotfix Triage 5/5 — (1) 无 DB schema 变更 (2) 无新 API 端点（修复现有 POST /v1/agent/skills 行为） (3) 无新外部服务集成 (4) 影响 ≤3 文件（service.go + service_test.go + skill_builder.go doc comment） (5) 非支付/权限/会员高风险业务（agent definition 创建时必填校验，不动 credit/membership/payment）。非 bug-from-customer：失败的测试本身就是预期复现 — TestCreate_MissingQuestionnaire_422 已在代码库内，无需新增复现测试。'
+  last_updated_by: ai-h2-reviewed
+  last_updated_at: '2026-05-28T11:30:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: fix/qa422-questionnaire-validation
+  worktrees:
+    numind-server: /private/tmp/wt-qa422-questionnaire-validation-numind-server
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  commits:
+  - 'b79bf740: fix(skill): validate required q6/q7/q12 on agent skill Create'
+  - '9ee7532e: chore(skill): apply P3 review fixes from H2 review'
+  decisions:
+  - 'H1-D1 (ai 2026-05-28): 校验位置选 biz/skill/service.Create 而非 Build()。理由：(a) 4 个 Build 单测 (TestBuild_MissingQ6/Q7/Q12_succeedsAndOmitsSection + TestBuild_NilQuestionnaireAnswers_succeeds) 明确把 Build 设计为纯 transformer（缺字段则省段），改 Build 会破坏 4 个故意行为 (b) "必填" 是创建期业务规则，归 biz 层不归 builder (c) Patch 部分更新场景不应每次都强制重发完整问卷，校验只在 Create 触发。复用 errno.ErrSkillBuilderFailed（HTTP 422，doc 已写 "如必填题缺失"）保持错误码语义稳定。详见 decisions/qa422-questionnaire-validation/0001-validation-location.md。'
+  - 'H2-D1 (reviewers 2026-05-28): 并行 dispatch 两个 Sonnet reviewer subagent — Spec Compliance PASS（仅 1 P3 — validator order，cosmetic 不动）+ Code Quality PASS（2 P3 — docstring 中段冗余 + test count assertion 不变量化，两个全部 in-place 修复在 commit 9ee7532e）。无 P0/P1/P2 findings。整改后所有 biz/skill + controller/v1/agent tests 仍 PASS。'
+  - 'H2-D2 (ai 2026-05-28): 跑全量 biz/skill 时另有 2 个 artifact pkg 测试失败（origin_type column missing），已确认 develop HEAD 上同样失败，与本 hotfix 无关，留 out-of-scope（用户提示后可独立排查或归入后续 micro）。'
+  related_features: []
+  blockers: []
+  created_at: '2026-05-28T10:55:47+08:00'
 - id: agent-stream-firstbyte-and-userbubble
   ndf_version: '3.0'
   stage_hint: 'H1 gate passed (lint+type-check+CreateStream tests green; 2 pre-existing failures spawned as independent task); both Sonnet reviewers PASS_WITH_CONCERNS, P1+cheap P2 fixed in 2 follow-up commits.'

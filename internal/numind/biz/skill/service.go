@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
@@ -85,6 +86,31 @@ func NewService(ds store.IStore) Service {
 	}
 }
 
+// validateRequiredQuestionnaireForCreate 校验创建新 AgentDefinition 时问卷必填项
+// Q6（任务类型）/ Q7（材料类型）/ Q12（说话风格）是否齐全。缺失任一项返回
+// errno.ErrSkillBuilderFailed（HTTP 422，errno doc 已写 "如必填题缺失"），错误
+// 消息列出具体缺失字段。
+//
+// 仅在 Create 触发；Patch 部分更新不调用——允许 caller 不带 questionnaire（caller
+// 主动清空 QA 属另一类问题，本函数不覆盖）。Build()（skill_builder.go）作为纯
+// transformer 故意不做此校验，详见其 doc。
+func validateRequiredQuestionnaireForCreate(qa QuestionnaireAnswers) error {
+	var missing []string
+	if len(qa.Q6) == 0 {
+		missing = append(missing, "q6 (任务类型)")
+	}
+	if len(qa.Q7) == 0 {
+		missing = append(missing, "q7 (材料类型)")
+	}
+	if qa.Q12 == "" {
+		missing = append(missing, "q12 (说话风格)")
+	}
+	if len(missing) > 0 {
+		return errno.ErrSkillBuilderFailed.SetMessage("问卷必填项缺失：%s", strings.Join(missing, "、"))
+	}
+	return nil
+}
+
 // requireParentAccount 校验 userID 对应的 user 是父账户（ParentUserID == nil）。
 // 子账户返回 ErrChildAccountForbidden；用户不存在返回包装后的 store 错误。
 func (s *service) requireParentAccount(ctx context.Context, userID uint) error {
@@ -156,6 +182,10 @@ func deriveDefaultToolFlags(qa QuestionnaireAnswers) map[string]bool {
 
 func (s *service) Create(ctx context.Context, userID uint, req CreateRequest) (*model.AgentDefinition, error) {
 	if err := s.requireParentAccount(ctx, userID); err != nil {
+		return nil, err
+	}
+
+	if err := validateRequiredQuestionnaireForCreate(req.QuestionnaireAnswers); err != nil {
 		return nil, err
 	}
 
