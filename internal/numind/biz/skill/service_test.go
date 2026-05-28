@@ -101,6 +101,55 @@ func TestService_Create_childAccount_returns403(t *testing.T) {
 	assert.ErrorIs(t, err, errno.ErrChildAccountForbidden)
 }
 
+func TestService_Create_emptyQuestionnaire_returnsBuilderFailed(t *testing.T) {
+	svc, db := newTestService(t)
+	parentID := seedParentUserID(db)
+
+	cases := []struct {
+		name        string
+		qa          QuestionnaireAnswers
+		wantMissing []string
+	}{
+		{
+			name:        "all empty",
+			qa:          QuestionnaireAnswers{},
+			wantMissing: []string{"q6", "q7", "q12"},
+		},
+		{
+			name:        "q6 missing",
+			qa:          QuestionnaireAnswers{Q7: []string{"text"}, Q12: "friendly"},
+			wantMissing: []string{"q6"},
+		},
+		{
+			name:        "q7 missing",
+			qa:          QuestionnaireAnswers{Q6: []string{"analyze_data"}, Q12: "friendly"},
+			wantMissing: []string{"q7"},
+		},
+		{
+			name:        "q12 missing",
+			qa:          QuestionnaireAnswers{Q6: []string{"analyze_data"}, Q7: []string{"text"}},
+			wantMissing: []string{"q12"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := minCreateReq()
+			req.QuestionnaireAnswers = tc.qa
+
+			_, err := svc.Create(context.Background(), parentID, req)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, errno.ErrSkillBuilderFailed)
+			for _, field := range tc.wantMissing {
+				assert.Contains(t, err.Error(), field, "error message should list missing field %q", field)
+			}
+
+			var count int64
+			require.NoError(t, db.Model(&model.AgentDefinition{}).Count(&count).Error)
+			assert.Equal(t, int64(0), count, "no AgentDefinition should be persisted when validation fails")
+		})
+	}
+}
+
 func TestService_Create_isActive_true_by_default(t *testing.T) {
 	svc, db := newTestService(t)
 	parentID := seedParentUserID(db)

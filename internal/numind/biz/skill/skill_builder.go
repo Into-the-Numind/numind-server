@@ -11,9 +11,13 @@ import (
 // Build 把 agent_definition 的 questionnaire_answers JSON + 直接字段（name/description）
 // 组装为 SKILL.md（generated_skill_body）。
 //
+// Build 是纯 transformer——Q6/Q7/Q12 等字段缺失时对应段落省略不渲染，不返回必填
+// 校验错误（参见 TestBuild_MissingQ6/Q7/Q12_succeedsAndOmitsSection 与
+// TestBuild_NilQuestionnaireAnswers_succeeds）。必填业务规则在
+// biz/skill/service.Create 触发（参见 validateRequiredQuestionnaireForCreate）。
+//
 // 错误：
 //   - questionnaire_answers JSON parse fail → wrapped error
-//   - q6/q7/q12 必填字段缺失 → errno.ErrSkillBuilderFailed.SetMessage("...")
 func Build(ad *model.AgentDefinition) (string, error) {
 	var qa QuestionnaireAnswers
 	if len(ad.QuestionnaireAnswers) > 0 {
