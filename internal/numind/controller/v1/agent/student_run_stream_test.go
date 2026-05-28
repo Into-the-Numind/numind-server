@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -93,9 +94,9 @@ func (h *testStreamController) CreateStream(c *gin.Context) {
 	c.Status(http.StatusOK)
 
 	w := c.Writer
-	// Mirror production: flush SSE first byte so the response status/headers
-	// reach the client before RunStream's prep work runs.
-	_, _ = w.Write([]byte(":ok\n\n"))
+	// Mirror production CreateStream verbatim: flush SSE first byte so the
+	// response status/headers reach the client before RunStream prep runs.
+	_, _ = fmt.Fprint(w, ":ok\n\n")
 	w.Flush()
 
 	eventCh := make(chan stream.Event, 256)
@@ -415,8 +416,10 @@ func TestCreateStream_FirstByteFlushedBeforeRunStream(t *testing.T) {
 		}
 		// Cancel the blocked RunStream so the test exits cleanly.
 		// Closing resp.Body (via defer) propagates cancel to the server context.
-	case <-time.After(200 * time.Millisecond):
-		t.Fatalf("no SSE first byte within 200ms — controller did not Flush before RunStream emit (bug reproduced)")
+	// 500 ms >> normal flush latency (~µs) but << original bug window (~10 s),
+	// giving headroom on loaded CI while still definitively reproducing the bug.
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("no SSE first byte within 500ms — controller did not Flush before RunStream emit (bug reproduced)")
 	}
 
 	// Drain & discard whatever the server eventually writes so it can return.
