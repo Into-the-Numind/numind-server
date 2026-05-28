@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -328,6 +329,93 @@ func (s *blockingStreamSvc) ReleaseStreamLock(_ uint64) {}
 func (s *blockingStreamSvc) RunStream(ctx context.Context, _ uint, _ agentbiz.CreateRunRequest, _ uint64, _ chan<- stream.Event) (*agentbiz.RunResult, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
+}
+
+// TestCreateStream_FirstByteFlushedBeforeRunStream REPRODUCES the bug observed
+// on dev 2026-05-28 (agent_run 43/44): RunStream's ~450 lines of prep work
+// (skill load / prompt build / memory load / model resolve) run BEFORE any
+// event is emitted into the SSE channel. During that prep window the
+// controller has called c.Status(200) but never Flushed, so the client's
+// fetch() reader sees the TCP connection idle. After ~10s some layer
+// (browser / OS / proxy) closes the connection and the user sees nothing.
+//
+// Contract: the controller MUST write at least one byte to the response
+// (e.g. an SSE comment line ":ok\n\n") and Flush it BEFORE the first
+// runtime event arrives, so the HTTP response status line + headers are
+// pushed to the client immediately.
+//
+// Test strategy: blockingStreamSvc holds RunStream until ctx is cancelled
+// (never emits an event). We use httptest.NewServer to get a real socket so
+// the response body is streamed (httptest.NewRecorder buffers everything
+// until the handler returns, which would hide the bug). Then we read the
+// first chunk from resp.Body with a 200 ms deadline and assert that at
+// least one byte arrived.
+func TestCreateStream_FirstByteFlushedBeforeRunStream(t *testing.T) {
+	svc := &blockingStreamSvc{acquireRunID: 123}
+	ctrl := &testStreamController{svc: svc}
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.POST("/v1/agent-runs/stream", ctrl.CreateStream)
+
+	server := httptest.NewServer(r)
+	defer server.Close()
+
+	body, _ := json.Marshal(map[string]any{
+		"agent_skill_id": 1,
+		"input_text":     "hello",
+	})
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/agent-runs/stream", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Read with a 200ms deadline. If first byte is never flushed before
+	// RunStream produces output (and RunStream is blocked indefinitely),
+	// this read will be empty (n=0) by the deadline → bug reproduced.
+	type readResult struct {
+		n   int
+		err error
+	}
+	resCh := make(chan readResult, 1)
+	buf := make([]byte, 64)
+	go func() {
+		n, err := resp.Body.Read(buf)
+		resCh <- readResult{n: n, err: err}
+	}()
+
+	select {
+	case r := <-resCh:
+		if r.n == 0 {
+			t.Fatalf("first read returned 0 bytes — controller did not flush first byte before RunStream emit; err=%v", r.err)
+		}
+		// Sanity: the first chunk should be an SSE comment (starts with ':') or
+		// an SSE data frame (starts with 'd' for "data:"). Anything else means
+		// the wire format is wrong.
+		first := buf[0]
+		if first != ':' && first != 'd' {
+			t.Errorf("first byte should be SSE comment ':' or data line 'd', got %q (chunk=%q)", first, buf[:r.n])
+		}
+		// Cancel the blocked RunStream so the test exits cleanly.
+		// Closing resp.Body (via defer) propagates cancel to the server context.
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("no SSE first byte within 200ms — controller did not Flush before RunStream emit (bug reproduced)")
+	}
+
+	// Drain & discard whatever the server eventually writes so it can return.
+	go io.Copy(io.Discard, resp.Body)
 }
 
 // TestCreateStream_ErrorEventTerminatesLoop verifies that an EventError frame
