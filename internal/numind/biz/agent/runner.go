@@ -502,10 +502,10 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 				userBody = ad.CustomSkillBody
 			}
 			body = userBody + buildSkillCatalogBlock(skills)
-			ctx = WithUseSkillTurn(ctx, useSkillTurnState)
+			queryCtx = WithUseSkillTurn(queryCtx, useSkillTurnState)
 			// spec §3.7 预留 ctx key — 注入实际 skills 切片 (S4-D26 类型校正为 []model.Skill)
 			// 主路径走 turn.SkillByID/SkillByName, 本 key 供未来扩展 (admin/observability) 使用
-			ctx = WithSkillBindings(ctx, skills)
+			queryCtx = WithSkillBindings(queryCtx, skills)
 		} else {
 			// legacy 路径 (dual-read 兜底, S2-D5 + §9 协议)
 			body = ad.GeneratedSkillBody
@@ -516,10 +516,10 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		skillVer = int(ad.Version)
 		// #6 permission-pipeline: 注入 agent_definition_id + parent_user_id 到 ctx，
 		// 供 ToolFlag / TenantAdminRule validator 读取。
-		ctx = WithAgentDefCtx(ctx, req.AgentDefinitionID, ad.ParentUserID)
+		queryCtx = WithAgentDefCtx(queryCtx, req.AgentDefinitionID, ad.ParentUserID)
 		// #7 memory-system: 注入 agent_definition_id 到 ctx，供 memory_write 工具读取。
 		// 注：sessionID 通过 SystemPromptBlock 参数传递，不入 ctx（P2-3 决议）。
-		ctx = middleware.NewContextWithAgentDefinitionID(ctx, req.AgentDefinitionID)
+		queryCtx = middleware.NewContextWithAgentDefinitionID(queryCtx, req.AgentDefinitionID)
 	}
 
 	// 4.1. #12 agent-mode-billing-integration: BudgetTracker 4 维 Start/Close per Run。
@@ -828,10 +828,10 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	}
 	// v2 #2: 注入 Agent 基础工具白名单到 ctx — UseSkillTurnScope validator (T05) 读，
 	// 判定 "该工具是 Agent 原生 base 工具吗?" (Passthrough vs Deny 决策依据)
-	ctx = WithAgentBaseToolNames(ctx, basicToolNames)
+	queryCtx = WithAgentBaseToolNames(queryCtx, basicToolNames)
 	// #6 permission-pipeline: stash FullTool map into ctx，
 	// 供 WrapHooks.buildRequest 反查每个工具的 FullTool 实例（取 IsDestructive 等元数据）。
-	ctx = WithFullToolMap(ctx, toolMap)
+	queryCtx = WithFullToolMap(queryCtx, toolMap)
 
 	// 6. 构造 adapter + Eino ReAct Agent
 	// taskID 必须是 task_profile 表里 seed 的固定 key (profile.AgentRun = "agent.run").
