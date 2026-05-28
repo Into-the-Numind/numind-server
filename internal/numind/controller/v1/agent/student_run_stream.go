@@ -143,14 +143,44 @@ func (h *StudentRunController) CreateStream(c *gin.Context) {
 	defer pingTicker.Stop()
 
 	firstByteRecorded := false
+	// terminalSeen flips true once we've emitted a terminal/error frame. After
+	// that we MUST keep selecting on eventCh until it's closed by the RunStream
+	// goroutine's deferred close — because finalizeRun (which persists
+	// agent_run.messages + status to the DB) still runs after the terminal
+	// event is pushed. Returning here would fire defer runCancel() and
+	// cancel the runCtx mid-WriteTurn, leaving messages empty in the DB and
+	// the user seeing an empty session on reload (dev agent_run 45, 2026-05-28).
+	terminalSeen := false
+	// doneCh is a swappable handle on c.Request.Context().Done(). We nil it
+	// out after a client disconnect arrives during drain mode so the select
+	// stops firing on it (a closed channel is always-ready); otherwise we'd
+	// spin and re-cancel runCtx on every iteration.
+	doneCh := c.Request.Context().Done()
 
 	for {
 		select {
-		case <-c.Request.Context().Done():
+		case <-doneCh:
+			if terminalSeen {
+				// Client disconnected after the terminal frame was emitted but
+				// before finalizeRun completed. Returning here would cancel the
+				// runCtx that finalizeRun's WriteTurn / UpdateState use to
+				// persist agent_run.messages — exactly the empty-session bug
+				// we're fixing, just triggered by client drop instead of an
+				// early controller return. Disable this case (nil channel) and
+				// keep draining until eventCh closes.
+				disconnectReason = "client_disconnect_during_drain"
+				doneCh = nil
+				continue
+			}
 			disconnectReason = "client_disconnect"
 			return
 
 		case <-pingTicker.C:
+			if terminalSeen {
+				// Stream is past terminal — client has already (likely) closed.
+				// Don't write keepalives that could fail; just keep draining.
+				continue
+			}
 			if _, writeErr := fmt.Fprint(w, ":ping\n\n"); writeErr != nil {
 				disconnectReason = "write_error"
 				return
@@ -159,8 +189,14 @@ func (h *StudentRunController) CreateStream(c *gin.Context) {
 
 		case ev, ok := <-eventCh:
 			if !ok {
-				// Channel closed — RunStream returned.
+				// Channel closed — RunStream goroutine returned (incl. finalize).
 				return
+			}
+			if terminalSeen {
+				// Drain mode: don't write post-terminal events to the client
+				// (it's already finishing or finished reading). Just wait for
+				// channel close so finalizeRun's DB writes complete.
+				continue
 			}
 
 			data, marshalErr := json.Marshal(ev)
@@ -183,9 +219,10 @@ func (h *StudentRunController) CreateStream(c *gin.Context) {
 			}
 			eventCount++
 
-			// Terminal events signal end of stream.
+			// Terminal/error event: switch to drain mode. The runner goroutine
+			// is still doing finalizeRun work; we wait for channel close.
 			if ev.Type == stream.EventTerminal || ev.Type == stream.EventError {
-				return
+				terminalSeen = true
 			}
 		}
 	}
