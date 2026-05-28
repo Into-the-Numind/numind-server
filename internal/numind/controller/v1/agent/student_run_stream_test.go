@@ -93,6 +93,11 @@ func (h *testStreamController) CreateStream(c *gin.Context) {
 	c.Status(http.StatusOK)
 
 	w := c.Writer
+	// Mirror production: flush SSE first byte so the response status/headers
+	// reach the client before RunStream's prep work runs.
+	_, _ = w.Write([]byte(":ok\n\n"))
+	w.Flush()
+
 	eventCh := make(chan stream.Event, 256)
 
 	runCtx, runCancel := context.WithCancel(c.Request.Context())

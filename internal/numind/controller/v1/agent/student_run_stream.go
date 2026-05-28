@@ -102,6 +102,16 @@ func (h *StudentRunController) CreateStream(c *gin.Context) {
 
 	w := c.Writer
 
+	// Push HTTP response status + headers to the client immediately via an SSE
+	// comment line (the ":<text>\n\n" frame is silently ignored by EventSource
+	// and parseAgentSseChunk). Without this, RunStream's ~450 lines of prep
+	// (skill load / prompt build / memory load / model resolve) run before the
+	// channel has anything to emit, the response stays buffered, and fetch()
+	// readers time out after ~10 s with an empty UI. See test
+	// TestCreateStream_FirstByteFlushedBeforeRunStream.
+	_, _ = fmt.Fprint(w, ":ok\n\n")
+	w.Flush()
+
 	// Langfuse SSE span: track first_byte_ms + total event count.
 	ctx := c.Request.Context()
 	traceID := ""
