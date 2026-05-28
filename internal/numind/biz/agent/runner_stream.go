@@ -56,6 +56,13 @@ func (r *agentRunner) consumeEinoStream(
 		stepIdx       int
 		seq           uint64
 		firstByteSent bool
+		// lastStepContent stashes currentText.String() right before each
+		// step-done Reset() so EOF emit terminal + RunResult.FinalOutput
+		// carry the last step's accumulated content. Without this the
+		// terminal payload + result read currentText AFTER reset (= ""),
+		// agent_run.messages.assistant.content goes in empty, and reload
+		// returns an empty history (dev 2026-05-28 multiple runs).
+		lastStepContent string
 	)
 
 	// emit safely writes an event to ch. If ctx is already done, the send is
@@ -235,6 +242,13 @@ func (r *agentRunner) consumeEinoStream(
 				StopReason: msg.ResponseMeta.FinishReason,
 			})
 
+			// Stash the just-emitted assistant content BEFORE Reset so EOF can
+			// recover it as the final answer (single-step or last step of
+			// multi-step ReAct). Without this stash, the terminal payload +
+			// RunResult would read currentText AFTER reset and get an empty
+			// string.
+			lastStepContent = currentText.String()
+
 			// Rotate state for the next step.
 			stepIdx++
 			st.StepCount = stepIdx
@@ -247,18 +261,28 @@ func (r *agentRunner) consumeEinoStream(
 	// Normal EOF: stream completed successfully.
 	st.TerminalReason = TerminalCompleted
 
+	// Determine the final assistant content. Prefer lastStepContent (stashed
+	// before every step-done Reset()). Fallback to currentText.String() in
+	// the edge case where the LLM streamed content but never emitted
+	// FinishReason — no step-done fired, so nothing was stashed and
+	// currentText still holds the un-reset accumulation.
+	finalContent := lastStepContent
+	if finalContent == "" && currentText.Len() > 0 {
+		finalContent = currentText.String()
+	}
+
 	// Emit terminal.
 	emit(stream.EventTerminal, stream.TerminalPayload{
 		Reason:      string(TerminalCompleted),
 		DurationMs:  time.Since(startTime).Milliseconds(),
 		StepCount:   st.StepCount,
-		FinalOutput: currentText.String(),
+		FinalOutput: finalContent,
 	})
 
 	return &RunResult{
 		AgentRunID:     run.ID,
 		TerminalReason: TerminalCompleted,
-		FinalOutput:    currentText.String(),
+		FinalOutput:    finalContent,
 		StepCount:      st.StepCount,
 		Duration:       time.Since(startTime),
 	}, nil
