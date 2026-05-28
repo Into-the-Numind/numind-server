@@ -208,6 +208,14 @@ type ChatChunk struct {
 	FinishReason string `json:"finish_reason,omitempty"`
 	// IsFinal marks the last chunk in the stream.
 	IsFinal bool `json:"is_final"`
+	// ToolCalls carries assembled tool invocations the model requested.
+	// OpenAI-compatible providers stream tool_calls as deltas: id + name + type
+	// in the first chunk per index, arguments split across subsequent chunks.
+	// The adapter accumulates the fragments and surfaces the completed
+	// ToolCalls slice on the IsFinal=true chunk (when FinishReason="tool_calls"
+	// or whichever chunk closes the stream after a tool-call sequence).
+	// Empty for content-only streams.
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 	// Usage is populated on the final chunk (IsFinal=true). Pointer so that
 	// the field is omitted from JSON on non-final chunks (struct zero value
 	// does not satisfy omitempty for a non-pointer struct).

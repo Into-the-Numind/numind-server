@@ -168,6 +168,21 @@ type oaiStreamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
 }
 
+// oaiToolCallDelta is the partial tool_call shape that appears inside
+// `choices[].delta.tool_calls[]` on streaming responses. The first chunk for
+// a given Index carries ID + Type + Function.Name; subsequent chunks carry
+// only Index + Function.Arguments fragments that the consumer must
+// concatenate to rebuild the original JSON arguments string.
+type oaiToolCallDelta struct {
+	Index    int    `json:"index"`
+	ID       string `json:"id,omitempty"`
+	Type     string `json:"type,omitempty"`
+	Function struct {
+		Name      string `json:"name,omitempty"`
+		Arguments string `json:"arguments,omitempty"`
+	} `json:"function,omitempty"`
+}
+
 // oaiResponseFormat is the OpenAI-compatible response_format wire shape.
 // Currently supports {"type":"json_object"} (and implicit default "text").
 type oaiResponseFormat struct {
@@ -209,18 +224,28 @@ type oaiChatResponse struct {
 	Error *oaiError `json:"error,omitempty"`
 }
 
+// oaiStreamChoiceDelta is the `choices[].delta` shape on OAI-compatible SSE
+// chunks. Named (not anonymous-inline) so test fixture builders and adapters
+// can construct it without re-stating the struct layout — adding a field
+// (e.g. ToolCalls) otherwise breaks every literal site.
+type oaiStreamChoiceDelta struct {
+	Content          string             `json:"content"`
+	ReasoningContent string             `json:"reasoning_content"`
+	ToolCalls        []oaiToolCallDelta `json:"tool_calls,omitempty"`
+}
+
+// oaiStreamChoice is one item in `choices[]` on OAI-compatible SSE chunks.
+type oaiStreamChoice struct {
+	Delta        oaiStreamChoiceDelta `json:"delta"`
+	FinishReason string               `json:"finish_reason"`
+}
+
 // oaiStreamChunk is a single OpenAI-compatible SSE chunk.
 type oaiStreamChunk struct {
-	ID      string `json:"id"`
-	Model   string `json:"model"`
-	Choices []struct {
-		Delta struct {
-			Content          string `json:"content"`
-			ReasoningContent string `json:"reasoning_content"`
-		} `json:"delta"`
-		FinishReason string `json:"finish_reason"`
-	} `json:"choices"`
-	Usage *oaiUsage `json:"usage,omitempty"`
+	ID      string            `json:"id"`
+	Model   string            `json:"model"`
+	Choices []oaiStreamChoice `json:"choices"`
+	Usage   *oaiUsage         `json:"usage,omitempty"`
 }
 
 // oaiUsage maps to the "usage" field in OpenAI-compatible responses.
