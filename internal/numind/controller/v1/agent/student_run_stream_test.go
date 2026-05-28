@@ -132,10 +132,15 @@ func (h *testStreamController) CreateStream(c *gin.Context) {
 
 	// Mirror production: drain mode after terminal/error so finalizeRun can finish.
 	terminalSeen := false
+	doneCh := c.Request.Context().Done()
 
 	for {
 		select {
-		case <-c.Request.Context().Done():
+		case <-doneCh:
+			if terminalSeen {
+				doneCh = nil
+				continue
+			}
 			return
 		case <-pingTicker.C:
 			if terminalSeen {
@@ -535,12 +540,15 @@ func TestCreateStream_WaitsForRunStreamToFinalize(t *testing.T) {
 }
 
 // TestCreateStream_ErrorEventTerminatesLoop verifies that an EventError frame
-// causes the controller to close the connection immediately.
+// switches the controller to drain mode (no longer written to the client) so
+// the goroutine's deferred close(eventCh) is the sole return signal.
 func TestCreateStream_ErrorEventTerminatesLoop(t *testing.T) {
 	events := []stream.Event{
 		{Type: stream.EventTokenDelta, Seq: 1, RunID: 5},
 		{Type: stream.EventError, Seq: 2, RunID: 5},
-		// This event should NOT be sent — loop exits on EventError.
+		// This event IS read from the channel but is dropped (drain mode):
+		// the controller no longer writes post-terminal/error frames to the
+		// client, even though it keeps draining the channel until close.
 		{Type: stream.EventTokenDelta, Seq: 3, RunID: 5},
 	}
 	svc := &stubStreamSvc{

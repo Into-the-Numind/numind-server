@@ -151,10 +151,27 @@ func (h *StudentRunController) CreateStream(c *gin.Context) {
 	// cancel the runCtx mid-WriteTurn, leaving messages empty in the DB and
 	// the user seeing an empty session on reload (dev agent_run 45, 2026-05-28).
 	terminalSeen := false
+	// doneCh is a swappable handle on c.Request.Context().Done(). We nil it
+	// out after a client disconnect arrives during drain mode so the select
+	// stops firing on it (a closed channel is always-ready); otherwise we'd
+	// spin and re-cancel runCtx on every iteration.
+	doneCh := c.Request.Context().Done()
 
 	for {
 		select {
-		case <-c.Request.Context().Done():
+		case <-doneCh:
+			if terminalSeen {
+				// Client disconnected after the terminal frame was emitted but
+				// before finalizeRun completed. Returning here would cancel the
+				// runCtx that finalizeRun's WriteTurn / UpdateState use to
+				// persist agent_run.messages — exactly the empty-session bug
+				// we're fixing, just triggered by client drop instead of an
+				// early controller return. Disable this case (nil channel) and
+				// keep draining until eventCh closes.
+				disconnectReason = "client_disconnect_during_drain"
+				doneCh = nil
+				continue
+			}
 			disconnectReason = "client_disconnect"
 			return
 
