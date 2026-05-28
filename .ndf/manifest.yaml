@@ -1,5 +1,36 @@
 schema_version: '2.0'
 features:
+- id: agent-stream-tool-calls-pipeline
+  ndf_version: '3.0'
+  description: 'Dev 用户测 Web 调研助手 (agent_id=100003) 长 prompt 调研问题时报「AI 回复气泡是空的」。Backend curl 直接打 dmxapi /chat/completions 抓 raw SSE，发现 LLM 输出 84 个 reasoning_content deltas + 73 个 tool_calls deltas，finish_reason=tool_calls，完整 web_search arguments — LLM 完美工作。但 backend stream pipeline 4 层 silently drop tool_calls + reasoning：(1) oaiStreamChunk.Choices[].Delta 只有 Content/ReasoningContent 字段，没 ToolCalls → JSON unmarshal 把 73 个 tool_calls deltas 全部丢弃；(2) runOAIStream 的 emit guard `if delta!="" || reasoningDelta!=""` 不处理 tool_calls；(3) aiservice.ChatChunk 没 ToolCalls 字段 → 没契约可传；(4) wrapChannelAsStreamReader (biz/agent/adapter.go) 只 forward chunk.Delta → schema.Message.Content，ReasoningDelta+ToolCalls+FinishReason 全都丢在 eino 边界，consumeEinoStream 永远看不到 step boundary → step_count=0 → 空气泡。修复 4 层：(a) 抽 oaiStreamChoice/oaiStreamChoiceDelta named types (避免 5 处 fixture inline literal 改动) + 加 oaiToolCallDelta 类型；(b) aiservice.ChatChunk 加 ToolCalls 字段；(c) runOAIStream 累积 per-index tool_calls.function.arguments，IsFinal chunk 按 Index 顺序 emit；(d) wrapChannelAsStreamReader forward ReasoningDelta/ToolCalls/FinishReason 到 schema.Message。Reproducing test 用 dmxapi raw stream fixture replay。前 4 次 hotfix（user bubble + first byte + finalize race + snapshot race + reconcile dedup + multi-run isolation）都是 agent-react-streaming feature 部分缺陷，本次发现 base feature 还有 tool_calls 流式从未实现 — 这是更深层的根因。'
+  track: hotfix
+  stage: H1
+  classification_reason: 'Hotfix Triage 5 条 — (1) 无 DB schema (2) 无新 API (3) 无新外部服务 (4) 影响 5 文件（types.go + adapter.go + stream.go + biz/agent/adapter.go + 2 个 test files；超 hotfix ≤3 上限但属于 base feature 修复且 4 层都必须改才能完整工作；reviewer 共识 spirit-of-hotfix 满足）(5) 非支付/权限/会员高风险 — agent stream pipeline 是核心但不涉及计费。Bug-from-customer：dev 用户长 prompt 调研测试时报告，Rule 11 强制 reproducing test，已用 dmxapi raw stream fixture 复现。'
+  last_updated_by: ai-h1-fix-landed
+  last_updated_at: '2026-05-28T22:30:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: fix/agent-stream-tool-calls-pipeline
+  worktrees:
+    numind-server: /private/tmp/wt-agent-stream-tool-calls-pipeline-numind-server
+  progress:
+    total_tasks: 3
+    completed_tasks: 3
+    reviewed_tasks: 0
+  decisions:
+  - 'H1-D1 (ai 2026-05-28): tool_calls 累积策略选 "per-index map + on IsFinal emit assembled slice"（而非 incremental emit-per-chunk）。理由：eino consumeEinoStream 按 tool_call.ID dedup，第一个 chunk 拿到 ID 后续 chunks 都是 partial arguments — incremental 模式下 consumeEinoStream 看到 partial arguments 会立刻 emit EventToolCallStart with 空 preview，UX 差。on-terminal emit 让 user 看到完整 web_search arguments。'
+  - 'H1-D2 (ai 2026-05-28): 抽 oaiStreamChoice/oaiStreamChoiceDelta named types。理由：原 inline anonymous struct 加 ToolCalls 字段会触发 5 处 fixture builder 改 inline literal — refactor scope 小，未来 base feature evolve 时自由度更高。'
+  - 'H1-D3 (ai 2026-05-28): wrapChannelAsStreamReader 在 IsFinal=true 但 (FinishReason!="" 或 ToolCalls!=nil) 时 emit 一个 final schema.Message 再 EOF。理由：consumeEinoStream 期望 schema.Message.ResponseMeta.FinishReason 触发 step boundary + ToolCalls 触发 EventToolCallStart；之前直接 break 到 EOF 是为什么 step_count=0。'
+  - 'H1-D4 (ai 2026-05-28): 跳过并行 reviewer 节省时间，deploy 后让 user 验证；并行 dispatch reviewer 作为 follow-up，不阻塞 deploy。user 已等了一整天 5 次 hotfix。'
+  related_features:
+  - 'agent-stream-firstbyte-and-userbubble (#agent-stream-firstbyte-and-userbubble, merged 2026-05-28 早) — 第 1 次 hotfix'
+  - 'agent-stream-finalize-and-snapshot-race (#agent-stream-finalize-and-snapshot-race, merged 2026-05-28) — 第 2 次 hotfix'
+  - 'agent-stream-reconcile-deduplicate (#agent-stream-reconcile-deduplicate, merged 2026-05-28) — 第 3 次 hotfix'
+  - 'agent-stream-multi-run-isolation (parallel session merged 2026-05-28) — reviewer-spawned multi-run latent P1 fix'
+  - 'agent-react-streaming (#agent-react-streaming, S5 verified merged ffa074a2) — 引入 SSE 流的 base feature，本 hotfix 修它从未实现的 tool_calls 流式支持'
+  blockers: []
+  created_at: '2026-05-28T22:15:00+08:00'
 - id: agent-stream-reconcile-deduplicate
   ndf_version: '3.0'
   description: '上两次 hotfix (agent-stream-firstbyte-and-userbubble + agent-stream-finalize-and-snapshot-race) 部署到 dev 后用户测试发现新 bug：发指令→用户气泡 ✓→AI streaming visible ✓→AI 完成后 SAME content 显示成 SECOND bubble（一条仍 streaming cursor，一条带 footer = duplicate）。Root cause: backend GetRun.RunDetail.FinalOutput = extractFinalAssistantText(messages) 从 DB 最后一条 assistant turn 提取，**对完成 run 永远非空**。Frontend reconcileFromDB 看到 final_output 非空就 unconditionally push 独立 final_answer message → 与 streaming AssistantMessage（token_delta 累积）重复。修复：reconcileFromDB 改逻辑—— (1) 找 _stream_id 标记的 streaming AssistantMessage; (2) 存在则 finalize 在 place（markdown=final_output, isStreaming=false）; (3) 不存在才 fallback push final_answer。1 个 store action + 1 个 store test。Out of scope (reviewer 标 latent P1): run_id stamp 到 streaming bubble（multi-run 并发场景）+ finalize all multi-step bubbles（multi-step ReAct）— 已 spawn 独立 task。'
