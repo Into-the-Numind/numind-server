@@ -74,18 +74,9 @@ func writeChatStream(w http.ResponseWriter, content, model string, promptToks, c
 	chunk := oaiStreamChunk{
 		ID:    "chatcmpl-test",
 		Model: model,
-		Choices: []struct {
-			Delta struct {
-				Content          string `json:"content"`
-				ReasoningContent string `json:"reasoning_content"`
-			} `json:"delta"`
-			FinishReason string `json:"finish_reason"`
-		}{
+		Choices: []oaiStreamChoice{
 			{
-				Delta: struct {
-					Content          string `json:"content"`
-					ReasoningContent string `json:"reasoning_content"`
-				}{Content: content},
+				Delta:        oaiStreamChoiceDelta{Content: content},
 				FinishReason: "stop",
 			},
 		},
@@ -593,18 +584,9 @@ func writeChatStreamWithSeparateFinish(w http.ResponseWriter, content, model str
 	delta := oaiStreamChunk{
 		ID:    "chatcmpl-test",
 		Model: model,
-		Choices: []struct {
-			Delta struct {
-				Content          string `json:"content"`
-				ReasoningContent string `json:"reasoning_content"`
-			} `json:"delta"`
-			FinishReason string `json:"finish_reason"`
-		}{
+		Choices: []oaiStreamChoice{
 			{
-				Delta: struct {
-					Content          string `json:"content"`
-					ReasoningContent string `json:"reasoning_content"`
-				}{Content: content},
+				Delta: oaiStreamChoiceDelta{Content: content},
 			},
 		},
 	}
@@ -615,13 +597,7 @@ func writeChatStreamWithSeparateFinish(w http.ResponseWriter, content, model str
 	finish := oaiStreamChunk{
 		ID:    "chatcmpl-test",
 		Model: model,
-		Choices: []struct {
-			Delta struct {
-				Content          string `json:"content"`
-				ReasoningContent string `json:"reasoning_content"`
-			} `json:"delta"`
-			FinishReason string `json:"finish_reason"`
-		}{
+		Choices: []oaiStreamChoice{
 			{
 				FinishReason: "stop",
 			},
@@ -652,17 +628,8 @@ func writeChatStreamWithLateUsage(w http.ResponseWriter, content, model string, 
 	delta := oaiStreamChunk{
 		ID:    "chatcmpl-test",
 		Model: model,
-		Choices: []struct {
-			Delta struct {
-				Content          string `json:"content"`
-				ReasoningContent string `json:"reasoning_content"`
-			} `json:"delta"`
-			FinishReason string `json:"finish_reason"`
-		}{
-			{Delta: struct {
-				Content          string `json:"content"`
-				ReasoningContent string `json:"reasoning_content"`
-			}{Content: content}},
+		Choices: []oaiStreamChoice{
+			{Delta: oaiStreamChoiceDelta{Content: content}},
 		},
 	}
 	b, _ := json.Marshal(delta)
@@ -672,13 +639,7 @@ func writeChatStreamWithLateUsage(w http.ResponseWriter, content, model string, 
 	finish := oaiStreamChunk{
 		ID:    "chatcmpl-test",
 		Model: model,
-		Choices: []struct {
-			Delta struct {
-				Content          string `json:"content"`
-				ReasoningContent string `json:"reasoning_content"`
-			} `json:"delta"`
-			FinishReason string `json:"finish_reason"`
-		}{
+		Choices: []oaiStreamChoice{
 			{FinishReason: "stop"},
 		},
 	}
