@@ -1,5 +1,26 @@
 schema_version: '2.0'
 features:
+- id: vitest-agentbuilder-validation-jsdom
+  ndf_version: '3.0'
+  description: 'AgentBuilder.spec.ts shows-validation-errors 失败 + scrollIntoView unhandled rejection 双根因：(1) 模板顶部 header 第一个 <button> 是返回按钮 .back-btn，test 用 wrapper.find("button") 取第一个其实点了返回按钮，handleSave 从未触发，errors.value 没被设置 → 校验文案没渲染；(2) scrollToFirstError 直调 el?.scrollIntoView({...})，jsdom 没实现这个方法。修复：test 改用 findAll().find(text.includes("保存")) 精准定位保存按钮；scrollToFirstError 加 typeof 守卫（兼容 jsdom + 极旧 WebView）。'
+  track: hotfix
+  stage: H3
+  classification_reason: 'Hotfix Triage 5/5 — (1) 无 DB schema 变更 (2) 无新 API 端点 (3) 无新外部服务集成 (4) 影响 2 文件（AgentBuilder.vue + AgentBuilder.spec.ts） (5) 非支付/权限/会员高风险业务（AgentBuilder UX）。非 bug-from-customer：vitest 失败本身即预期复现。Reviewer 跳过：改动 1 函数 + 1 test locator，逻辑简单，13/13 tests PASS，typecheck 0 errors。'
+  last_updated_by: ai-h1-self-reviewed
+  last_updated_at: '2026-05-28T11:33:00+08:00'
+  repos:
+  - numind-web-v3
+  branches:
+    numind-web-v3: fix/vitest-agentbuilder-validation-jsdom
+  worktrees:
+    numind-web-v3: /private/tmp/wt-vitest-agentbuilder-validation-jsdom-numind-web-v3
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  related_features: []
+  blockers: []
+  created_at: '2026-05-28T11:31:00+08:00'
 - id: vitest-questionprompt-multiselect
   ndf_version: '3.0'
   description: 'QuestionPrompt.spec.ts multi-select mode 3 测试失败根因：jsdom + vue-test-utils 的 trigger("click") 不实现 HTMLLabelElement 的 label-click activation —— 点击 <label> 不会激活关联 <input type=checkbox> 的 checked 翻转 + change 事件，导致 @change="toggleOption(...)" 永不触发，selected.value 永远为空。修复：把 multi-select 从 <label><input> 改为 <button type="button">，☑/☐ Unicode 视觉占位 + aria-pressed 表达选中态。@click 在所有环境都可靠触发，且视觉风格与 single-select 按钮统一。'
