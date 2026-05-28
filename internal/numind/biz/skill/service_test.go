@@ -136,6 +136,9 @@ func TestService_Create_emptyQuestionnaire_returnsBuilderFailed(t *testing.T) {
 			req := minCreateReq()
 			req.QuestionnaireAnswers = tc.qa
 
+			var beforeCount int64
+			require.NoError(t, db.Model(&model.AgentDefinition{}).Count(&beforeCount).Error)
+
 			_, err := svc.Create(context.Background(), parentID, req)
 			require.Error(t, err)
 			assert.ErrorIs(t, err, errno.ErrSkillBuilderFailed)
@@ -143,9 +146,9 @@ func TestService_Create_emptyQuestionnaire_returnsBuilderFailed(t *testing.T) {
 				assert.Contains(t, err.Error(), field, "error message should list missing field %q", field)
 			}
 
-			var count int64
-			require.NoError(t, db.Model(&model.AgentDefinition{}).Count(&count).Error)
-			assert.Equal(t, int64(0), count, "no AgentDefinition should be persisted when validation fails")
+			var afterCount int64
+			require.NoError(t, db.Model(&model.AgentDefinition{}).Count(&afterCount).Error)
+			assert.Equal(t, beforeCount, afterCount, "no new AgentDefinition row should be persisted when validation fails")
 		})
 	}
 }

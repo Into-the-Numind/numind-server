@@ -91,11 +91,9 @@ func NewService(ds store.IStore) Service {
 // errno.ErrSkillBuilderFailed（HTTP 422，errno doc 已写 "如必填题缺失"），错误
 // 消息列出具体缺失字段。
 //
-// 注意：Build()（skill_builder.go）是纯 transformer，缺字段时对应段落省略不报错，
-// 这是 4 个 Build 单测明确强制的行为。必填业务规则归本函数（biz 层创建期约束）。
-//
-// Patch 不调本函数：部分更新允许 caller 不带 questionnaire；如 caller 主动把 QA
-// 改成空，那是另一类问题，本函数不覆盖。
+// 仅在 Create 触发；Patch 部分更新不调用——允许 caller 不带 questionnaire（caller
+// 主动清空 QA 属另一类问题，本函数不覆盖）。Build()（skill_builder.go）作为纯
+// transformer 故意不做此校验，详见其 doc。
 func validateRequiredQuestionnaireForCreate(qa QuestionnaireAnswers) error {
 	var missing []string
 	if len(qa.Q6) == 0 {
