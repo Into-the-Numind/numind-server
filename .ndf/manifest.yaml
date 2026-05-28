@@ -1,5 +1,26 @@
 schema_version: '2.0'
 features:
+- id: vitest-questionprompt-multiselect
+  ndf_version: '3.0'
+  description: 'QuestionPrompt.spec.ts multi-select mode 3 测试失败根因：jsdom + vue-test-utils 的 trigger("click") 不实现 HTMLLabelElement 的 label-click activation —— 点击 <label> 不会激活关联 <input type=checkbox> 的 checked 翻转 + change 事件，导致 @change="toggleOption(...)" 永不触发，selected.value 永远为空。修复：把 multi-select 从 <label><input> 改为 <button type="button">，☑/☐ Unicode 视觉占位 + aria-pressed 表达选中态。@click 在所有环境都可靠触发，且视觉风格与 single-select 按钮统一。'
+  track: hotfix
+  stage: H3
+  classification_reason: 'Hotfix Triage 5/5 — (1) 无 DB schema 变更 (2) 无新 API 端点 (3) 无新外部服务集成 (4) 影响 1 文件（QuestionPrompt.vue），spec 不改 (5) 非支付/权限/会员高风险业务（agent ask_user_question UI）。非 bug-from-customer：vitest 失败本身即预期复现。Reviewer 跳过：改动 ≤20 行模板 + ≤15 行 CSS，模式对齐既有 single-select button，tests 8/8 PASS，typecheck 0 errors。'
+  last_updated_by: ai-h1-self-reviewed
+  last_updated_at: '2026-05-28T11:30:00+08:00'
+  repos:
+  - numind-web-v3
+  branches:
+    numind-web-v3: fix/vitest-questionprompt-multiselect
+  worktrees:
+    numind-web-v3: /private/tmp/wt-vitest-questionprompt-multiselect-numind-web-v3
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  related_features: []
+  blockers: []
+  created_at: '2026-05-28T11:28:00+08:00'
 - id: vitest-agentlist-uiux-compliance
   ndf_version: '3.0'
   description: 'numind-web-v3 develop 上 AgentList.spec.ts 7 个测试失败的根因：(1) AgentList.vue 用 raw <table> 违反 ui-ux.md §1 hard rule（管理端必须用 DataTable）。(2) 按钮文案"删除"与业务语义错位（store.softDelete 是软删除/下架，"删除"误导）。(3) 缺少 .agent-list__error-banner UI（500/503/403 错误统一银行带重试按钮）。(4) AgentList.spec.ts 用 ConfirmModal 旧 prop visible/danger（实际 ConfirmModal v-model API 用 modelValue + variant）+ 空态文案 stale "助手"。修复：AgentList.vue refactor 到 <DataTable> + columns/cell slots + ConfirmModal v-model 双向绑定（顺手修 Esc/overlay close latent bug）；"删除"→"下架" 全链路（按钮 + confirm title + toast + message）；加 .agent-list__error-banner；spec 同步 modelValue/variant + "暂无智能体"。Out of scope: AgentAdvancedEdit.spec.ts 内 9 个新暴露的 drift 失败（独立 Group 7 vitest-agentadvancededit-drift）。'
