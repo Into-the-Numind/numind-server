@@ -332,8 +332,22 @@ func convertToolInfos(infos []*schema.ToolInfo) []aiservice.Tool {
 }
 
 // wrapChannelAsStreamReader wraps a <-chan aiservice.ChatChunk into a
+
 // *schema.StreamReader[*schema.Message] via an Eino Pipe. A goroutine reads
 // from the channel and forwards chunks; io.EOF signals normal stream end.
+//
+// Forwarded fields (consumeEinoStream reads all four):
+//   - chunk.Delta            -> msg.Content
+//   - chunk.ReasoningDelta   -> msg.ReasoningContent
+//   - chunk.ToolCalls        -> msg.ToolCalls (assembled on terminal chunk)
+//   - chunk.FinishReason     -> msg.ResponseMeta.FinishReason
+//
+// Before the 2026-05-28 fix this only forwarded chunk.Delta — so any LLM
+// response that emitted reasoning_content (thinking models) or tool_calls
+// (function-calling) instead of plain content was silently dropped at the
+// eino boundary. react.Agent.Stream() received zero schema.Message chunks,
+// the SSE consumer terminated with step_count=0, and the frontend showed an
+// empty assistant bubble (dev agent_run 48/54, agent_id=100003 web_search).
 func wrapChannelAsStreamReader(ch <-chan aiservice.ChatChunk) *schema.StreamReader[*schema.Message] {
 	sr, sw := schema.Pipe[*schema.Message](16)
 	go func() {
@@ -343,12 +357,44 @@ func wrapChannelAsStreamReader(ch <-chan aiservice.ChatChunk) *schema.StreamRead
 				sw.Send(nil, chunk.Err)
 				return
 			}
+
+			// Terminal chunk carries finish_reason + assembled tool_calls.
+			// Forward both as a final schema.Message so consumeEinoStream can
+			// dispatch tool calls and observe the step boundary before EOF.
 			if chunk.IsFinal {
+				if chunk.FinishReason == "" && len(chunk.ToolCalls) == 0 {
+					break
+				}
+				finalMsg := &schema.Message{Role: schema.Assistant}
+				if chunk.FinishReason != "" {
+					finalMsg.ResponseMeta = &schema.ResponseMeta{FinishReason: chunk.FinishReason}
+				}
+				if len(chunk.ToolCalls) > 0 {
+					finalMsg.ToolCalls = make([]schema.ToolCall, 0, len(chunk.ToolCalls))
+					for _, tc := range chunk.ToolCalls {
+						finalMsg.ToolCalls = append(finalMsg.ToolCalls, schema.ToolCall{
+							ID:   tc.ID,
+							Type: tc.Type,
+							Function: schema.FunctionCall{
+								Name:      tc.Function.Name,
+								Arguments: tc.Function.Arguments,
+							},
+						})
+					}
+				}
+				_ = sw.Send(finalMsg, nil)
 				break
 			}
+
+			// Interim chunk — skip if neither content nor reasoning carried
+			// data so we don't emit no-op messages downstream.
+			if chunk.Delta == "" && chunk.ReasoningDelta == "" {
+				continue
+			}
 			msg := &schema.Message{
-				Role:    schema.Assistant,
-				Content: chunk.Delta,
+				Role:             schema.Assistant,
+				Content:          chunk.Delta,
+				ReasoningContent: chunk.ReasoningDelta,
 			}
 			if closed := sw.Send(msg, nil); closed {
 				// Consumer closed the reader early; drain channel to avoid goroutine leak.

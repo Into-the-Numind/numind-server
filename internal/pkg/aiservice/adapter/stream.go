@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"numind-server/internal/pkg/aiservice"
@@ -62,6 +63,12 @@ func runOAIStream(
 	// finishReason is captured from whichever chunk reports it; emitted on the
 	// terminal chunk after the loop.
 	finishReason := ""
+	// pendingToolCalls accumulates the per-index tool_call deltas. OpenAI-
+	// compatible providers emit the id+name+type in the first chunk for a
+	// given index, then split function.arguments JSON across subsequent
+	// chunks. We concatenate the arguments fragments and surface the
+	// assembled slice on the terminal chunk.
+	pendingToolCalls := map[int]*aiservice.ToolCall{}
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -126,9 +133,32 @@ func runOAIStream(
 			finishReason = choice.FinishReason
 		}
 
+		// Accumulate tool_call deltas per index. The first chunk for a given
+		// index carries id+name+type; subsequent chunks carry partial
+		// function.arguments fragments that concatenate to the full JSON.
+		for _, tcd := range choice.Delta.ToolCalls {
+			existing, ok := pendingToolCalls[tcd.Index]
+			if !ok {
+				existing = &aiservice.ToolCall{}
+				pendingToolCalls[tcd.Index] = existing
+			}
+			if tcd.ID != "" {
+				existing.ID = tcd.ID
+			}
+			if tcd.Type != "" {
+				existing.Type = tcd.Type
+			}
+			if tcd.Function.Name != "" {
+				existing.Function.Name = tcd.Function.Name
+			}
+			if tcd.Function.Arguments != "" {
+				existing.Function.Arguments += tcd.Function.Arguments
+			}
+		}
+
 		// Emit content chunks with IsFinal=false; the terminal chunk is
-		// emitted once below after the stream ends, carrying finish_reason
-		// and the final usage together.
+		// emitted once below after the stream ends, carrying finish_reason,
+		// final usage, and any assembled tool_calls together.
 		if delta != "" || reasoningDelta != "" {
 			ch <- aiservice.ChatChunk{
 				Delta:          delta,
@@ -157,8 +187,8 @@ func runOAIStream(
 	}
 
 	// Terminal chunk: always emit exactly one IsFinal=true chunk with the
-	// aggregated finish_reason and usage.
-	ch <- aiservice.ChatChunk{
+	// aggregated finish_reason, usage, and any assembled tool_calls.
+	terminal := aiservice.ChatChunk{
 		Index:         index,
 		FinishReason:  finishReason,
 		IsFinal:       true,
@@ -167,4 +197,17 @@ func runOAIStream(
 		Model:         resolvedModel,
 		TraceMetadata: traceMeta,
 	}
+	if len(pendingToolCalls) > 0 {
+		indexes := make([]int, 0, len(pendingToolCalls))
+		for i := range pendingToolCalls {
+			indexes = append(indexes, i)
+		}
+		sort.Ints(indexes)
+		tcs := make([]aiservice.ToolCall, 0, len(indexes))
+		for _, i := range indexes {
+			tcs = append(tcs, *pendingToolCalls[i])
+		}
+		terminal.ToolCalls = tcs
+	}
+	ch <- terminal
 }

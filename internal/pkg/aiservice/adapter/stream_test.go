@@ -81,6 +81,111 @@ func TestRunOAIStream_TransportsReasoningTokens(t *testing.T) {
 	}
 }
 
+// TestRunOAIStream_StreamsToolCallsAndReasoningDelta REPRODUCES the bug
+// observed on dev 2026-05-28 (agent_run 48/54): when the LLM (deepseek-v4-pro
+// via dmxapi) decides to invoke a tool (e.g. web_search), it emits a stream
+// of:
+//  1. reasoning_content deltas (thinking phase, 84 chunks)
+//  2. tool_calls deltas with incremental function.arguments JSON fragments
+//     (73 chunks)
+//  3. finish_reason=tool_calls (with empty content/reasoning final chunk)
+//  4. [DONE]
+//
+// Direct curl against dmxapi /chat/completions confirms the wire protocol.
+// But the backend's runOAIStream:
+//   - oaiStreamChunk.Choices[].Delta has NO ToolCalls field — JSON unmarshal
+//     silently drops all 73 tool_calls deltas.
+//   - emit logic `if delta != "" || reasoningDelta != ""` ignores tool_calls.
+//   - ChatChunk has no ToolCalls field anyway.
+//
+// Result: eino agent receives 0 schema.Message chunks → react loop terminates
+// immediately with step_count=0 → frontend shows an empty assistant bubble.
+//
+// Contract: runOAIStream MUST forward both reasoning_content deltas (as
+// ReasoningDelta) AND accumulate tool_calls.function.arguments across chunks,
+// emitting the completed ToolCall(s) on the terminal chunk (or whichever chunk
+// carries finish_reason="tool_calls").
+func TestRunOAIStream_StreamsToolCallsAndReasoningDelta(t *testing.T) {
+	// Synthetic stream that mirrors the real dmxapi shape captured 2026-05-28.
+	// Three reasoning chunks, then 4 tool_calls chunks (id+name in first,
+	// arguments split across the rest), then finish_reason=tool_calls.
+	sse := strings.Join([]string{
+		`data: {"id":"r1","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":""}}]}`,
+		``,
+		`data: {"id":"r1","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"content":null,"reasoning_content":"用户"}}]}`,
+		``,
+		`data: {"id":"r1","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"content":null,"reasoning_content":"需要调研"}}]}`,
+		``,
+		`data: {"id":"r1","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"web_search","arguments":""}}]}}]}`,
+		``,
+		`data: {"id":"r1","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"que"}}]}}]}`,
+		``,
+		`data: {"id":"r1","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ry\":\""}}]}}]}`,
+		``,
+		`data: {"id":"r1","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"教培 AI\"}"}}]}}]}`,
+		``,
+		`data: {"id":"r1","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"content":"","reasoning_content":null},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":100,"completion_tokens":40,"total_tokens":140}}`,
+		``,
+		`data: [DONE]`,
+		``,
+		``,
+	}, "\n")
+
+	r := io.NopCloser(strings.NewReader(sse))
+	ch := make(chan aiservice.ChatChunk, 32)
+	go runOAIStream(r, ch, "dmxapi", "deepseek-v4-pro", nil)
+
+	var (
+		reasoningChunks []aiservice.ChatChunk
+		toolCallChunks  []aiservice.ChatChunk
+		terminal        aiservice.ChatChunk
+		sawTerminal     bool
+	)
+	for c := range ch {
+		switch {
+		case c.IsFinal:
+			terminal = c
+			sawTerminal = true
+		case c.ReasoningDelta != "":
+			reasoningChunks = append(reasoningChunks, c)
+		case len(c.ToolCalls) > 0:
+			toolCallChunks = append(toolCallChunks, c)
+		}
+	}
+
+	if !sawTerminal {
+		t.Fatal("no IsFinal=true chunk emitted")
+	}
+	if len(reasoningChunks) == 0 {
+		t.Errorf("expected at least one reasoning_delta chunk, got 0")
+	}
+
+	// Either an interim chunk OR the terminal chunk MUST carry the assembled
+	// tool_calls so the eino consumer can dispatch the function call.
+	var assembled []aiservice.ToolCall
+	if len(toolCallChunks) > 0 {
+		assembled = toolCallChunks[len(toolCallChunks)-1].ToolCalls
+	} else if len(terminal.ToolCalls) > 0 {
+		assembled = terminal.ToolCalls
+	}
+	if len(assembled) == 0 {
+		t.Fatalf("no tool_calls forwarded — runOAIStream dropped them silently (bug). reasoningChunks=%d toolCallChunks=%d terminal.ToolCalls=%v",
+			len(reasoningChunks), len(toolCallChunks), terminal.ToolCalls)
+	}
+	if assembled[0].Function.Name != "web_search" {
+		t.Errorf("tool_call[0].function.name = %q; want %q", assembled[0].Function.Name, "web_search")
+	}
+	if assembled[0].Function.Arguments != `{"query":"教培 AI"}` {
+		t.Errorf("tool_call[0].function.arguments = %q; want %q", assembled[0].Function.Arguments, `{"query":"教培 AI"}`)
+	}
+	if assembled[0].ID != "call_abc" {
+		t.Errorf("tool_call[0].id = %q; want %q", assembled[0].ID, "call_abc")
+	}
+	if terminal.FinishReason != "tool_calls" {
+		t.Errorf("terminal.FinishReason = %q; want %q", terminal.FinishReason, "tool_calls")
+	}
+}
+
 // TestRunOAIStream_NilTraceMeta verifies that callers who do not populate
 // TraceMetadata (ali, volc) can safely pass nil. The terminal chunk must
 // have TraceMetadata=nil and no panic occurs during stream processing.
