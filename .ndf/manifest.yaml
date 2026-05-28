@@ -1,5 +1,31 @@
 schema_version: '2.0'
 features:
+- id: agent-stream-reconcile-deduplicate
+  ndf_version: '3.0'
+  description: '上两次 hotfix (agent-stream-firstbyte-and-userbubble + agent-stream-finalize-and-snapshot-race) 部署到 dev 后用户测试发现新 bug：发指令→用户气泡 ✓→AI streaming visible ✓→AI 完成后 SAME content 显示成 SECOND bubble（一条仍 streaming cursor，一条带 footer = duplicate）。Root cause: backend GetRun.RunDetail.FinalOutput = extractFinalAssistantText(messages) 从 DB 最后一条 assistant turn 提取，**对完成 run 永远非空**。Frontend reconcileFromDB 看到 final_output 非空就 unconditionally push 独立 final_answer message → 与 streaming AssistantMessage（token_delta 累积）重复。修复：reconcileFromDB 改逻辑—— (1) 找 _stream_id 标记的 streaming AssistantMessage; (2) 存在则 finalize 在 place（markdown=final_output, isStreaming=false）; (3) 不存在才 fallback push final_answer。1 个 store action + 1 个 store test。Out of scope (reviewer 标 latent P1): run_id stamp 到 streaming bubble（multi-run 并发场景）+ finalize all multi-step bubbles（multi-step ReAct）— 已 spawn 独立 task。'
+  track: hotfix
+  stage: H1
+  classification_reason: 'Hotfix Triage 5 条全满足 — (1) 无 DB schema (2) 无新 API (3) 无新外部服务 (4) 影响 2 文件（agentChat.ts + agentChat-streaming.spec.ts）(5) 非支付/权限/会员高风险。Bug-from-customer：dev 用户报告，Rule 11 强制 reproducing test first commit 满足。'
+  last_updated_by: ai-h1-reviewed
+  last_updated_at: '2026-05-28T20:55:00+08:00'
+  repos:
+  - numind-web-v3
+  branches:
+    numind-web-v3: fix/agent-stream-reconcile-deduplicate
+  worktrees:
+    numind-web-v3: /private/tmp/wt-agent-stream-reconcile-deduplicate-numind-web-v3
+  progress:
+    total_tasks: 3
+    completed_tasks: 3
+    reviewed_tasks: 3
+  decisions:
+  - 'H1-D1 (ai 2026-05-28): reconcileFromDB 选 "in-place finalize 现有 streaming bubble" 而非 "push final_answer + 删 streaming bubble"。理由：finalize 在 place 保留 streaming UI 已 rendered 的位置；fallback push 仅 for edge case（backend 没 emit token_delta）保留 backward compat。'
+  - 'H1-D2 (reviewer 2026-05-28): 单 Sonnet reviewer 给 PASS_WITH_CONCERNS，2 P1 latent (multi-run run_id guard / multi-step finalize all)。Reviewer 自己建议 "Recommend landing with P1s tracked as follow-on hotfix"。Pragmatic 决策：deploy 当前修复给等待的用户，spawn 独立 task 追 latent P1 (按 Rule 7 推迟理由：multi-run 并发场景当前 product 不存在；multi-step ReAct 当前 user 还没用)。'
+  related_features:
+  - 'agent-stream-firstbyte-and-userbubble (#agent-stream-firstbyte-and-userbubble, merged 2026-05-28) — 同日第 1 个 hotfix'
+  - 'agent-stream-finalize-and-snapshot-race (#agent-stream-finalize-and-snapshot-race, merged 2026-05-28) — 同日第 2 个 hotfix，让 stream 真跑完到 terminal 才暴露本 hotfix 修的 reconcile 重复 bug'
+  blockers: []
+  created_at: '2026-05-28T20:45:00+08:00'
 - id: agent-stream-finalize-and-snapshot-race
   ndf_version: '3.0'
   description: 'Dev 用户测 agent-stream-firstbyte-and-userbubble hotfix 后报新 bug：发指令→用户气泡 ✓→AI thinking ✓→"页面刷新"→所有气泡消失→后续无反应；刷新页面看到空 session。两个 interlocking 根因：(A) Backend controller 在 SSE emit terminal/error event 后立刻 return → defer runCancel() → runCtx 取消 → RunStream goroutine 的 finalizeRun (WriteTurn 持久化 messages，UpdateState 写 status/ended_at) 失败 "context canceled" → agent_run.messages=[] 永远不入库。(B) Frontend SSE terminal → reconcileFromDB → store.currentRun set (含 real session_id) → AgentChatView watcher → router.replace(`/chat/<uuid>`) → props.sessionId 从 "new" 变 real-uuid → 另一个 watcher → store.loadSessionSnapshot 用空 backend snapshot 覆盖 store.messages → 用户看到气泡瞬间消失。修复：(1) Backend controller 加 terminalSeen flag，emit terminal 后进 drain mode 等 channel close 才 return；client disconnect 期间 drain 时 nil-out doneCh 防止重新触发 runCancel。(2) Frontend 抽 AgentChatView sessionId watcher 逻辑到 session-watchers.ts helper，handleSessionIdTransition 在 oldSessionId === "new" 时 skip loadSnapshot。Out of scope: drain timeout、frontend Playwright-first 规则、currentRun.session_id watcher 链路重设计。'
