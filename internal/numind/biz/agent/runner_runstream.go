@@ -156,7 +156,15 @@ func (r *agentRunner) RunStream(
 				useSkillTurnState.SkillByName[sk.Name] = sk
 			}
 
-			body = buildSkillCatalogBlock(skills)
+			// body = user-defined role block (问卷模式 generated, advanced 自定义)
+			// + skill catalog block. Pre-2026-05-28 fix this only set the
+			// catalog block and dropped the user-written prompt entirely.
+			// Mirrored from runner.go (Run path).
+			userBody := ad.GeneratedSkillBody
+			if ad.AdvancedMode {
+				userBody = ad.CustomSkillBody
+			}
+			body = userBody + buildSkillCatalogBlock(skills)
 			ctx = WithUseSkillTurn(ctx, useSkillTurnState)
 			ctx = WithSkillBindings(ctx, skills)
 		} else {

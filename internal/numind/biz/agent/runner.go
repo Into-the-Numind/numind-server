@@ -492,8 +492,16 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 				useSkillTurnState.SkillByName[sk.Name] = sk
 			}
 
-			// body = catalog block (v2 SoT) — segment [3] 的全部内容
-			body = buildSkillCatalogBlock(skills)
+			// body = user-defined role block (问卷模式 generated, advanced 自定义)
+			// + skill catalog block. Pre-2026-05-28 fix this only set the
+			// catalog block and silently dropped the user-written prompt,
+			// so an agent owner could not steer the LLM at all once the
+			// agent had any skill binding (dev 2026-05-28 Web 调研助手 case).
+			userBody := ad.GeneratedSkillBody
+			if ad.AdvancedMode {
+				userBody = ad.CustomSkillBody
+			}
+			body = userBody + buildSkillCatalogBlock(skills)
 			ctx = WithUseSkillTurn(ctx, useSkillTurnState)
 			// spec §3.7 预留 ctx key — 注入实际 skills 切片 (S4-D26 类型校正为 []model.Skill)
 			// 主路径走 turn.SkillByID/SkillByName, 本 key 供未来扩展 (admin/observability) 使用
