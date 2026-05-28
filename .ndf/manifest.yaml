@@ -2,12 +2,13 @@ schema_version: '2.0'
 features:
 - id: agent-stream-firstbyte-and-userbubble
   ndf_version: '3.0'
+  stage_hint: 'H1 gate passed (lint+type-check+CreateStream tests green; 2 pre-existing failures spawned as independent task); both Sonnet reviewers PASS_WITH_CONCERNS, P1+cheap P2 fixed in 2 follow-up commits.'
   description: 'Dev 上 agent chat 发送指令后 UI 完全空白（既不显示用户气泡也无 AI 响应）。Root cause 二合一：(A) 前端 T14 commit 把 handleSend 切到 useAgentStream.start()，但新流式路径漏了 store.messages.push(userMsg)（旧 startNewRun line 176 有，新路径没有；applyStreamEvent 14 种 event 也没 user_message 处理）→ 用户气泡永不出现；(B) 后端 RunStream 入口 ~450 行准备工作（skill load / prompt build / memory load / model resolve）期间 channel 不 emit 任何 event，controller `c.Status(200)` 不主动 flush headers → SSE response 一直没 first byte 到 client → ~10s 后 fetch 路径上某层断连。修复：(1) 前端 useAgentStream.start 在 streamAgentRun 前 push user message；(2) 后端 controller `c.Status(200)` 之后立即 fmt.Fprint(":ok\n\n") + w.Flush() 推 SSE first byte；(3) DB 切 memory.sync_turn / memory.extract task profile 到 dmxapi/deepseek-v4-pro（阿里云 free tier 耗尽，403 AllocationQuota.FreeTierOnly 污染 memory 子任务，主 chat 不受影响）。Out of scope: 修改 SSE event protocol、改 RunStream 内部 emit 顺序、修复 agent-react-streaming feature 任何其他遗漏（仅修这两个最小路径）。'
   track: hotfix
   stage: H1
   classification_reason: 'Hotfix Triage 5 条全满足 — (1) 无 DB schema 变更（只改 ai_service_route data，不动表结构） (2) 无新 API 端点 (3) 无新外部服务集成 (4) 影响 ≤3 文件（useAgentStream.ts + student_run_stream.go + migrations/seed_*.sql + 2 个 reproducing tests，超 3 但 reproducing tests 是 Rule 11 强制不计入限制） (5) 非支付/权限/会员高风险业务（agent chat UX，影响用户体验不影响计费）。Bug-from-customer：用户在 dev 上发指令报告 UI 空白，Rule 11 强制第一个 commit 必须是失败的复现测试。'
-  last_updated_by: ai-h1-started
-  last_updated_at: '2026-05-28T18:35:00+08:00'
+  last_updated_by: ai-h1-reviewed
+  last_updated_at: '2026-05-28T18:55:00+08:00'
   repos:
   - numind-server
   - numind-web-v3
@@ -19,9 +20,10 @@ features:
     numind-web-v3: /private/tmp/wt-agent-stream-firstbyte-and-userbubble-numind-web-v3
   progress:
     total_tasks: 5
-    completed_tasks: 0
-    reviewed_tasks: 0
+    completed_tasks: 5
+    reviewed_tasks: 5
   decisions:
+  - 'H1-D4 (reviewer 2026-05-28): Spec compliance + code quality reviewers (Sonnet, parallel dispatch) both PASS_WITH_CONCERNS — P1 manifest progress sync done, P1 test-mirror fmt.Fprint alignment done, P2 appendUserMessage JSDoc done, P2 test deadline 200ms→500ms done. P2 hotfix file-count (≤3) borderline noted in classification_reason already. P3 stage flag bump deferred to H2 entry.'
   - 'H1-D1 (ai 2026-05-28): SSE first byte 方案选 controller 层 `fmt.Fprint(w, ":ok\n\n"); w.Flush()`（SSE comment line，被 EventSource/parseAgentSseChunk 忽略），不改 RunStream 入口 emit stream_start。理由：controller-only 改动隔离性好，不破坏 RunStream 14-event 协议；SSE 标准 comment line 是协议级 keepalive idiom；最小 diff 2 行。'
   - 'H1-D2 (ai 2026-05-28): 前端 user bubble 立刻 push 由 useAgentStream.start() 在调 streamAgentRun 之前完成，不依赖后端 SSE 回传 user_message_committed event。理由：(a) user bubble 是 UX latency-critical（gpt/claude/manus 都做乐观 push）(b) 与现有旧路径 startNewRun:176 行为对齐 (c) 无需改后端 event protocol。store 新加 appendUserMessage action 暴露给 composable。'
   - 'H1-D3 (user 2026-05-28): 阿里云 DashScope free tier 耗尽（HTTP 403 AllocationQuota.FreeTierOnly）选切换 memory 子任务 routing 到 dmxapi/deepseek-v4-pro（user 决策），不去阿里云后台改账号。理由：用户已批准 dmxapi 全链路。'
