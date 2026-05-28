@@ -1,5 +1,28 @@
 schema_version: '2.0'
 features:
+- id: vitest-agentlist-uiux-compliance
+  ndf_version: '3.0'
+  description: 'numind-web-v3 develop 上 AgentList.spec.ts 7 个测试失败的根因：(1) AgentList.vue 用 raw <table> 违反 ui-ux.md §1 hard rule（管理端必须用 DataTable）。(2) 按钮文案"删除"与业务语义错位（store.softDelete 是软删除/下架，"删除"误导）。(3) 缺少 .agent-list__error-banner UI（500/503/403 错误统一银行带重试按钮）。(4) AgentList.spec.ts 用 ConfirmModal 旧 prop visible/danger（实际 ConfirmModal v-model API 用 modelValue + variant）+ 空态文案 stale "助手"。修复：AgentList.vue refactor 到 <DataTable> + columns/cell slots + ConfirmModal v-model 双向绑定（顺手修 Esc/overlay close latent bug）；"删除"→"下架" 全链路（按钮 + confirm title + toast + message）；加 .agent-list__error-banner；spec 同步 modelValue/variant + "暂无智能体"。Out of scope: AgentAdvancedEdit.spec.ts 内 9 个新暴露的 drift 失败（独立 Group 7 vitest-agentadvancededit-drift）。'
+  track: hotfix
+  stage: H3
+  classification_reason: 'Hotfix Triage 5/5 — (1) 无 DB schema 变更 (2) 无新 API 端点（沿用现有 store.softDelete） (3) 无新外部服务集成 (4) 影响 2 文件（AgentList.vue + AgentList.spec.ts） (5) 非支付/权限/会员高风险业务（agent 列表 UI 重构）。非 bug-from-customer：vitest 自身失败测试即预期复现，无需新增复现测试。'
+  last_updated_by: ai-h2-reviewed
+  last_updated_at: '2026-05-28T11:27:00+08:00'
+  repos:
+  - numind-web-v3
+  branches:
+    numind-web-v3: fix/vitest-agentlist-uiux-compliance
+  worktrees:
+    numind-web-v3: /private/tmp/wt-vitest-agentlist-uiux-compliance-numind-web-v3
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H2-D1 (reviewer 2026-05-28): 单 Sonnet reviewer PASS_WITH_CONCERNS — 2 P1 + 2 P2 + 1 P3 valid。P1 #1（''已被删除'' 文案 stale）+ P2（confirmDanger ref 冗余）+ P3（v-model 双向 binding 修 Esc/overlay close latent bug）已 in-place 修。P1 #2（spec asserts agentApi.deleteAgent 而非 store.softDelete 是抽象层错位）不修——整个仓库 spec 一致采用 mock @/api/* + 真 Pinia store 范式，单独改本测试破坏一致性。'
+  related_features: []
+  blockers: []
+  created_at: '2026-05-28T11:20:00+08:00'
 - id: qa422-questionnaire-validation
   ndf_version: '3.0'
   description: 'TestCreate_MissingQuestionnaire_422 fails on develop: POST /v1/agent/skills with empty questionnaire_answers map returns 200 instead of expected 422. Root cause: biz/skill/service.Create never validates required Q6/Q7/Q12 fields. The Build() doc comment claims "q6/q7/q12 必填字段缺失 → ErrSkillBuilderFailed", but Build()''s unit tests (TestBuild_MissingQ6/Q7/Q12_succeedsAndOmitsSection, TestBuild_NilQuestionnaireAnswers_succeeds) deliberately enforce that Build is a pure transformer that succeeds and omits sections when fields are missing. So the validation business rule belongs in biz/skill/service.Create (creation-time check), not in Build. Fix: add validateRequiredQuestionnaire helper called from Create, returning errno.ErrSkillBuilderFailed (already HTTP 422, doc already says "如必填题缺失"). Update stale Build doc comment to match reality. Out of scope: Patch-time QA-downgrade validation (separate concern); Build() validation (would break 4 deliberate unit tests).'
