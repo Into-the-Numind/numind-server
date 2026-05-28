@@ -111,6 +111,55 @@ func TestConsumeEinoStream_PureText(t *testing.T) {
 	assert.Equal(t, TerminalCompleted, st.TerminalReason)
 }
 
+// TestConsumeEinoStream_FinalOutputCapturedAfterStepDoneReset REPRODUCES the
+// dev 2026-05-28 bug: each step boundary (FinishReason chunk) calls
+// currentText.Reset() to prepare for the next step. EOF afterwards emits the
+// terminal event with `FinalOutput: currentText.String()` — but currentText
+// was just reset, so FinalOutput is empty. The same empty string is then
+// returned as RunResult.FinalOutput → finalizeRun writes assistant content=""
+// to agent_run.messages. UI flow works (token_delta accumulated in the
+// frontend store) but page reload / loadSessionSnapshot returns empty
+// history.
+//
+// Contract: result.FinalOutput must equal the last step's accumulated content.
+func TestConsumeEinoStream_FinalOutputCapturedAfterStepDoneReset(t *testing.T) {
+	r := makeRunner()
+	run := makeRun(99)
+	st := &LoopState{}
+
+	msgs := []*schema.Message{
+		{Role: schema.Assistant, Content: "Hello"},
+		{Role: schema.Assistant, Content: " world"},
+		{Role: schema.Assistant, Content: "!"},
+		// Step-done chunk: currentText was "Hello world!", now FinishReason
+		// triggers Reset. Pre-fix: result.FinalOutput is read AFTER reset and
+		// comes back as "". Post-fix: lastStepContent stashes the string
+		// before reset and EOF uses it.
+		{Role: schema.Assistant, Content: "", ResponseMeta: &schema.ResponseMeta{FinishReason: "stop"}},
+	}
+	sr := makeStreamReader(msgs)
+
+	ch := make(chan stream.Event, 32)
+	result, err := r.consumeEinoStream(context.Background(), run, sr, ch, st, time.Now())
+	close(ch)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.Equal(t, "Hello world!", result.FinalOutput,
+		"result.FinalOutput must carry the last step's content; currentText.Reset() at the step boundary must NOT clobber the final answer")
+
+	// The terminal event also carries FinalOutput — decode the JSON RawMessage
+	// and assert it matches.
+	terminals := allEventsOfType(collectEvents(ch), stream.EventTerminal)
+	if len(terminals) > 0 {
+		var payload stream.TerminalPayload
+		if jsonErr := json.Unmarshal(terminals[0].Data, &payload); jsonErr == nil {
+			assert.Equal(t, "Hello world!", payload.FinalOutput,
+				"EventTerminal.FinalOutput must also carry last step content")
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test: single tool call
 // ---------------------------------------------------------------------------
