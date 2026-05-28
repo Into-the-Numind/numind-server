@@ -143,6 +143,14 @@ func (h *StudentRunController) CreateStream(c *gin.Context) {
 	defer pingTicker.Stop()
 
 	firstByteRecorded := false
+	// terminalSeen flips true once we've emitted a terminal/error frame. After
+	// that we MUST keep selecting on eventCh until it's closed by the RunStream
+	// goroutine's deferred close — because finalizeRun (which persists
+	// agent_run.messages + status to the DB) still runs after the terminal
+	// event is pushed. Returning here would fire defer runCancel() and
+	// cancel the runCtx mid-WriteTurn, leaving messages empty in the DB and
+	// the user seeing an empty session on reload (dev agent_run 45, 2026-05-28).
+	terminalSeen := false
 
 	for {
 		select {
@@ -151,6 +159,11 @@ func (h *StudentRunController) CreateStream(c *gin.Context) {
 			return
 
 		case <-pingTicker.C:
+			if terminalSeen {
+				// Stream is past terminal — client has already (likely) closed.
+				// Don't write keepalives that could fail; just keep draining.
+				continue
+			}
 			if _, writeErr := fmt.Fprint(w, ":ping\n\n"); writeErr != nil {
 				disconnectReason = "write_error"
 				return
@@ -159,8 +172,14 @@ func (h *StudentRunController) CreateStream(c *gin.Context) {
 
 		case ev, ok := <-eventCh:
 			if !ok {
-				// Channel closed — RunStream returned.
+				// Channel closed — RunStream goroutine returned (incl. finalize).
 				return
+			}
+			if terminalSeen {
+				// Drain mode: don't write post-terminal events to the client
+				// (it's already finishing or finished reading). Just wait for
+				// channel close so finalizeRun's DB writes complete.
+				continue
 			}
 
 			data, marshalErr := json.Marshal(ev)
@@ -183,9 +202,10 @@ func (h *StudentRunController) CreateStream(c *gin.Context) {
 			}
 			eventCount++
 
-			// Terminal events signal end of stream.
+			// Terminal/error event: switch to drain mode. The runner goroutine
+			// is still doing finalizeRun work; we wait for channel close.
 			if ev.Type == stream.EventTerminal || ev.Type == stream.EventError {
-				return
+				terminalSeen = true
 			}
 		}
 	}

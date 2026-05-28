@@ -130,22 +130,31 @@ func (h *testStreamController) CreateStream(c *gin.Context) {
 	pingTicker := time.NewTicker(ssePingInterval)
 	defer pingTicker.Stop()
 
+	// Mirror production: drain mode after terminal/error so finalizeRun can finish.
+	terminalSeen := false
+
 	for {
 		select {
 		case <-c.Request.Context().Done():
 			return
 		case <-pingTicker.C:
+			if terminalSeen {
+				continue
+			}
 			_, _ = w.Write([]byte(":ping\n\n"))
 			w.Flush()
 		case ev, ok := <-eventCh:
 			if !ok {
 				return
 			}
+			if terminalSeen {
+				continue
+			}
 			data, _ := json.Marshal(ev)
 			_, _ = w.Write([]byte("data: " + string(data) + "\n\n"))
 			w.Flush()
 			if ev.Type == stream.EventTerminal || ev.Type == stream.EventError {
-				return
+				terminalSeen = true
 			}
 		}
 	}
