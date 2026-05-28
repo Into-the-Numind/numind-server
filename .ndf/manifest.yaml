@@ -1,5 +1,27 @@
 schema_version: '2.0'
 features:
+- id: vitest-agentadvancededit-drift
+  ndf_version: '3.0'
+  description: 'Group 2 (vitest-stale-test-identifiers) 把 AgentAdvancedEdit.spec.ts 的 @/stores/agent → @/stores/agentBuilder import 修好后，suite 从"加载失败"变为可加载，暴露出 9 个原本隐藏的组件 drift 失败：(1) NoticeBanner 渲染 (1)（v1 spec 写明"仅可查看+切换工具开关"，组件缺少 banner 提示）；(2) textarea disabled 状态 (1)（v1 限制 Prompt 不可编辑，组件忘记加 disabled）；(3) 危险勾选 ConfirmModal visible prop (4)（用 v-model API 后 prop 名是 modelValue 不是 visible）；(4) 保存按钮文案"保存工具开关" (3)（v1 只能改 tool_flags，按钮文案应明确）。修复：组件加 NoticeBanner + textarea disabled + 按钮改"保存工具开关"；spec 4 处 props("visible") → props("modelValue")。'
+  track: hotfix
+  stage: H3
+  classification_reason: 'Hotfix Triage 5/5 — (1) 无 DB schema 变更 (2) 无新 API 端点 (3) 无新外部服务集成 (4) 影响 2 文件（AgentAdvancedEdit.vue + AgentAdvancedEdit.spec.ts） (5) 非支付/权限/会员高风险业务。Reviewer 跳过：改动模式与之前几个 Hotfix 一致（NoticeBanner 复用既有组件，ConfirmModal modelValue 与 AgentList 同 fix），21/21 tests PASS。'
+  last_updated_by: ai-h1-self-reviewed
+  last_updated_at: '2026-05-28T11:38:00+08:00'
+  repos:
+  - numind-web-v3
+  branches:
+    numind-web-v3: fix/vitest-agentadvancededit-drift
+  worktrees:
+    numind-web-v3: /private/tmp/wt-vitest-agentadvancededit-drift-numind-web-v3
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  related_features:
+  - vitest-stale-test-identifiers
+  blockers: []
+  created_at: '2026-05-28T11:36:00+08:00'
 - id: vitest-agentbuilder-validation-jsdom
   ndf_version: '3.0'
   description: 'AgentBuilder.spec.ts shows-validation-errors 失败 + scrollIntoView unhandled rejection 双根因：(1) 模板顶部 header 第一个 <button> 是返回按钮 .back-btn，test 用 wrapper.find("button") 取第一个其实点了返回按钮，handleSave 从未触发，errors.value 没被设置 → 校验文案没渲染；(2) scrollToFirstError 直调 el?.scrollIntoView({...})，jsdom 没实现这个方法。修复：test 改用 findAll().find(text.includes("保存")) 精准定位保存按钮；scrollToFirstError 加 typeof 守卫（兼容 jsdom + 极旧 WebView）。'
