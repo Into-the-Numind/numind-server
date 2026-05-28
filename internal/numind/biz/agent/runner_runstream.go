@@ -1,37 +1,19 @@
 package agent
 
-// RunStream implements the streaming variant of AgentRunner.Run.
-//
-// Architecture (spec §4.2):
-//   - Shares ALL of Run's setup code (ctx injection, skill lookup, tool assembly,
-//     budget tracker, compliance, memory, system prompt construction).
-//   - Diverges at the LLM call: calls einoAgent.Stream instead of .Generate.
-//   - Drains the StreamReader via consumeEinoStream (T04), which emits stream.Event
-//     values onto ch.
-//   - Calls finalizeRun (T05-Commit-1) for shared persistence / memory / search
-//     indexing — identical to Run's finalization path.
-//
-// ch ownership: RunStream does NOT close ch. The caller (controller) closes it
-// after RunStream returns so the SSE pump can drain all remaining events.
-//
-// Invariants preserved (I2/I3/I5/I6/I7):
-//   - Same 19 TerminalReason values.
-//   - Same hook chain (effectiveHooks / Registry / HookActionToLoopEvent).
-//   - Same Langfuse trace wiring.
-//   - Same budget tracker lifetime.
-
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/flow/agent/react"
 	"github.com/cloudwego/eino/schema"
+	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
@@ -51,6 +33,28 @@ import (
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
 )
+
+// 共享 SSE 流式发射器与全局状态机制，用于彻底击穿 Eino 框架中
+// StreamToolCallChecker 对流的提前消耗和截留问题 (实现真正的流式)
+type streamStateKey struct{}
+
+type StreamSessionState struct {
+	Ch              chan<- stream.Event
+	RunID           uint64
+	CurrentMsgID    string
+	LastStepContent string
+	StepIdx         int
+	Seq             uint64
+}
+
+func WithStreamState(ctx context.Context, state *StreamSessionState) context.Context {
+	return context.WithValue(ctx, streamStateKey{}, state)
+}
+
+func StreamStateFromContext(ctx context.Context) (*StreamSessionState, bool) {
+	state, ok := ctx.Value(streamStateKey{}).(*StreamSessionState)
+	return state, ok
+}
 
 // RunStream executes the agent in streaming mode, emitting stream.Event values
 // onto ch. ch must be buffered (256 recommended); RunStream does NOT close it.
@@ -488,6 +492,14 @@ func (r *agentRunner) RunStream(
 	attemptCtx := callctx.WithCallID(queryCtx, callID)
 	_ = callID
 
+	// 注入 stream state 到 context 传递给 StreamToolCallChecker，以实现真正的流式直通
+	sharedState := &StreamSessionState{
+		Ch:           ch,
+		RunID:        run.ID,
+		CurrentMsgID: uuid.NewString(),
+	}
+	attemptCtx = WithStreamState(attemptCtx, sharedState)
+
 	// 12. Call einoAgent.Stream — this is the key divergence from Run.
 	sr, streamErr := einoAgent.Stream(attemptCtx, einoMessages)
 
@@ -634,18 +646,94 @@ func emitStreamErrorEvents(ch chan<- stream.Event, runID uint64, err error, reas
 //
 // Contract per react.go:175: this handler MUST close the stream before
 // returning. defer sr.Close() satisfies that.
-func streamScanToolCallChecker(_ context.Context, sr *schema.StreamReader[*schema.Message]) (bool, error) {
+func streamScanToolCallChecker(ctx context.Context, sr *schema.StreamReader[*schema.Message]) (bool, error) {
 	defer sr.Close()
+	state, hasState := StreamStateFromContext(ctx)
+
+	var (
+		currentMsgID  = uuid.NewString()
+		currentText   strings.Builder
+		currentReason strings.Builder
+		hasToolCalls  bool
+	)
+	if hasState && state.CurrentMsgID != "" {
+		currentMsgID = state.CurrentMsgID
+	}
+
+	// 声明局部 emit 闭包，负责在扫描流期间实时分发
+	emit := func(t stream.EventType, payload any) {
+		if !hasState || state.Ch == nil {
+			return
+		}
+		state.Seq++
+		ev, err := stream.Encode(t, payload, state.Seq, state.RunID, state.StepIdx)
+		if err != nil {
+			return
+		}
+		select {
+		case state.Ch <- ev:
+		case <-ctx.Done():
+		}
+	}
+
 	for {
 		msg, err := sr.Recv()
 		if errors.Is(err, io.EOF) {
-			return false, nil
+			break
 		}
 		if err != nil {
 			return false, err
 		}
-		if msg != nil && len(msg.ToolCalls) > 0 {
-			return true, nil
+		if msg == nil {
+			continue
+		}
+
+		if len(msg.ToolCalls) > 0 {
+			hasToolCalls = true
+		}
+
+		// 实时泵送 TokenDelta / ReasoningDelta 到共享 SSE 通道，彻底突破 Eino 缓冲瓶颈
+		if hasState && msg.Role == schema.Assistant {
+			if msg.Content != "" {
+				currentText.WriteString(msg.Content)
+				emit(stream.EventTokenDelta, stream.TokenDeltaPayload{
+					MessageID: currentMsgID,
+					Text:      msg.Content,
+				})
+			}
+			if msg.ReasoningContent != "" {
+				currentReason.WriteString(msg.ReasoningContent)
+				emit(stream.EventReasoningDelta, stream.ReasoningDeltaPayload{
+					MessageID: currentMsgID,
+					Text:      msg.ReasoningContent,
+				})
+			}
+		}
+
+		// 推进单步边界：如果已经生成完本步骤的文字，且这步确定没有任何工具调用 (代表直接回答用户)
+		if msg.ResponseMeta != nil && msg.ResponseMeta.FinishReason != "" {
+			if hasState {
+				// 主动发出这一步的最终文本和状态事件
+				emit(stream.EventAssistantMessage, stream.AssistantMessagePayload{
+					MessageID:        currentMsgID,
+					Content:          currentText.String(),
+					ReasoningContent: currentReason.String(),
+					HasToolCalls:     hasToolCalls,
+				})
+				emit(stream.EventStepDone, stream.StepDonePayload{
+					StepIndex:  state.StepIdx,
+					StopReason: msg.ResponseMeta.FinishReason,
+				})
+
+				// 缓存最终文本，供 consumeEinoStream 的 Terminal 兜底直接提取
+				state.LastStepContent = currentText.String()
+
+				// 自动推进到下一步的 state 状态，为后续 ReAct 循环迭代铺路
+				state.StepIdx++
+				state.CurrentMsgID = uuid.NewString()
+			}
 		}
 	}
+
+	return hasToolCalls, nil
 }

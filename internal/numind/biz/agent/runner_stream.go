@@ -48,6 +48,8 @@ func (r *agentRunner) consumeEinoStream(
 ) (*RunResult, error) {
 	defer sr.Close()
 
+	state, hasState := StreamStateFromContext(ctx)
+
 	var (
 		currentMsgID  = uuid.NewString()
 		currentText   strings.Builder
@@ -64,6 +66,10 @@ func (r *agentRunner) consumeEinoStream(
 		// returns an empty history (dev 2026-05-28 multiple runs).
 		lastStepContent string
 	)
+	if hasState && state.CurrentMsgID != "" {
+		currentMsgID = state.CurrentMsgID
+		stepIdx = state.StepIdx
+	}
 
 	// emit safely writes an event to ch. If ctx is already done, the send is
 	// skipped to avoid blocking forever on a full or unread channel.
@@ -267,8 +273,15 @@ func (r *agentRunner) consumeEinoStream(
 	// FinishReason — no step-done fired, so nothing was stashed and
 	// currentText still holds the un-reset accumulation.
 	finalContent := lastStepContent
+	if finalContent == "" && hasState && state.LastStepContent != "" {
+		finalContent = state.LastStepContent
+	}
 	if finalContent == "" && currentText.Len() > 0 {
 		finalContent = currentText.String()
+	}
+
+	if hasState {
+		seq = state.Seq
 	}
 
 	// Emit terminal.
