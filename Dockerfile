@@ -124,6 +124,15 @@ COPY config_${ENV}.yaml ./
 # 学员侧看不到「正在调用 web_search」之类工具调用进度。
 COPY configs /app/configs
 
+# 复制 skills/ 目录（pptx-author / docx-author / xlsx-author / pdf-from-html）。
+# skills.NewRegistry 在启动时读 sandbox.skills_root，AcquireForSkill 在运行时
+# WalkDir 该目录再 CopyToContainer 到 sandbox 子容器。skill 是代码工件，
+# 与版本绑定，COPY 进镜像；config_*.yaml 的 skills_root 改为 /app/skills。
+# 历史教训（2026-05-28）：之前 skills_root 默认指向 host 路径 /opt/numind/skills，
+# 但部署机 bind-mount 是 /opt/numind/${ENV}:/opt/numind/${ENV}，容器内 /opt/numind/skills
+# 不存在，导致 invoke_skill 静默失败，Agent 调 pptx-author 时 PPT 生成报错。
+COPY skills /app/skills
+
 # 从构建阶段复制编译好的二进制文件
 COPY --from=builder /app/numind /app/numind
 COPY scripts /app/scripts

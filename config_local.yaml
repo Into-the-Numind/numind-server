@@ -236,7 +236,7 @@ sandbox:
   apparmor_profile: docker-default
   seccomp_profile: seccomp.json
   # Track 4: Skill / invoke_skill extensions
-  skills_root: "/opt/numind/skills"         # 宿主机 skills 根目录（bind-mount 只读）
+  skills_root: "/app/skills"                # 镜像内置 skills 根目录（COPY 至镜像，随版本绑定）
   skills_enabled: true                      # invoke_skill 总开关（prod 默认 false，dev 为 true）
   output_max_size_mb: 50                    # 单个输出文件大小上限
   output_zip_bomb_threshold_mb: 500         # zip 展开大小告警阈值

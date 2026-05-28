@@ -1,5 +1,32 @@
 schema_version: '2.0'
 features:
+- id: fix-skills-bake-into-image
+  ndf_version: '3.0'
+  description: 'Dev 容器内 /opt/numind/skills 不存在 → biz.go:282 启动报 skills.NewRegistry failed → invoke_skill 工具拒登记 → Agent 调 pptx-author 静默失败 PPT 生成失败。Root cause: config_*.yaml 把 skills_root 写成宿主机路径 /opt/numind/skills + 部署机 bind-mount 只覆盖 /opt/numind/${ENV}（不含 skills），容器内根本看不到 skill 文件。Fix: skills/ 是代码工件不是部署机数据，COPY 进镜像 /app/skills 跟版本走；config_dev/local.yaml + sandbox.config.go DefaultConfig 都改成 /app/skills；.dockerignore 加 `!skills/**/*.md` 例外保 SKILL.md 进镜像；registry.go / sandbox/config.go 注释顺手更新避免误导后人。'
+  track: hotfix
+  stage: H1
+  classification_reason: 'Hotfix Triage 5 条全满足 — (1) 无 DB schema (2) 无新 API (3) 无新外部服务 (4) 影响 6 文件（Dockerfile + .dockerignore + 2 config + 2 注释更新都是同根问题的修复 + 周边清理，且代码改动只有 sandbox.config.go DefaultConfig 一行）(5) 非支付/权限/会员高风险。Bug-from-user-report：刚才 user 用 Agent 模式生 PPT 失败，dev 日志直接证据 `skills.NewRegistry failed; ... open /opt/numind/skills: no such file or directory`。Rule 11 escape: 修复纯路径 + 镜像构建，复现是「容器 ls /opt/numind/skills → no such file」，回归保护通过 sandbox/skills 现有 unit test + deploy 后日志 INFO `skills.Registry initialised` 验证；不写 dedicated reproducing go test（go 单测无法 fake docker image layout）。'
+  last_updated_by: ai-h1-pending-merge
+  last_updated_at: '2026-05-29T00:05:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: fix/fix-skills-bake-into-image
+  worktrees:
+    numind-server: /private/tmp/wt-fix-skills-bake-into-image-numind-server
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 0
+  decisions:
+  - 'H1-D1 (ai 2026-05-29): skill 文件放镜像 (`COPY skills /app/skills`) 而非 host bind-mount。理由：(a) skills 是代码工件随版本绑定，host bind-mount 让 dev/qa/prod 三套 host 都得 rsync 同步，运维负担大；(b) prod host 已 host-mount /opt/numind/${ENV}/* 但不含 skills 子树，要让 host bind-mount 生效需改 deploy-remote.sh + 在 3 个 host 各放一份 skills，比 COPY 改动大且易漏；(c) 主容器只需 stat + WalkDir 读 skills 文件再 CopyToContainer 到 sandbox 子容器（见 pool_skill.go:80-130），不需要 host-side 路径语义；(d) `/app/skills` 跟 `/app/configs` `/app/dict` 同一层，命名连贯。'
+  - 'H1-D2 (ai 2026-05-29): .dockerignore 用 `!skills/**/*.md` 例外保 SKILL.md。理由：原规则 `*.md` 会把 SKILL.md 也排除，进镜像后 registry.go:141 stat SKILL.md 失败 → WARN 日志 → invoke_skill prompt 退化成 manifest.description（degraded UX）。最小例外只放行 skills/ 下的 md，不影响顶层 README.md 等。'
+  - 'H1-D3 (ai 2026-05-29): sandbox/config.go DefaultConfig 也改 `/app/skills`。理由：config_prod.yaml / config_qa.yaml 完全没写 sandbox.* 块（验证过 grep），走代码默认值；要让 prod 将来开 skills_enabled 时直接生效，默认值必须跟 dev/local 一致。'
+  - 'H1-D4 (ai 2026-05-29): 不写 reproducing go test (Rule 11 escape)。理由：bug 是「镜像 + bind-mount 配置错位」，go test 没法 fake docker image layout / volume mount。等 deploy 后 dev 容器日志 INFO `skills.Registry initialised, count=4` + Agent 重试 pptx-author 成 PPT 验证 fix 生效。文档级回归保护在 manifest 这条决策里。'
+  related_features:
+  - 'agent-stream-followups-batch (H1 landed 2026-05-29) — 前一个 hotfix 修了 buildSkillCatalogBlock 拼接逻辑，假设 skill registry 工作正常；本 hotfix 修了 registry 不工作的根因'
+  blockers: []
+  created_at: '2026-05-29T00:00:00+08:00'
 - id: agent-stream-followups-batch
   ndf_version: '3.0'
   description: '今天 8 次 hotfix 后 user 让一次性把剩 3 个 follow-up 修完。(1) Backend runner_stream.go 的 currentText.Reset() 在 step-done 后才 reset，但 EOF emit terminal 还用 currentText.String() = "" → agent_run.messages.assistant.content 写空 → 刷新页面看不到 AI 历史回复。Fix: 在 Reset() 前 stash lastStepContent，EOF 优先用它，fallback 到 un-reset currentText。(2) Backend buildSkillCatalogBlock 完全覆盖 user 写的 agent prompt — agent 有 skill binding 时 LLM 看不到 user 配置的 system prompt，只看到 "装载了 X skill，需要时调 use_skill"，无法被引导调工具/输出风格。Fix: body = userBody (GeneratedSkillBody / CustomSkillBody by advanced_mode) + buildSkillCatalogBlock(skills) 拼接，user prompt 重新进 system prompt。runner.go + runner_runstream.go 双路径都改。(3) Frontend AgentToolCallItem 的 status badge `:title` attribute 让 native HTML tooltip 跟 inline `<span class="status-label">` 文字在某些浏览器+IME 状态下重叠产生 ghost text doubling — user 截图清楚看到 "排队中" 文字重影。Fix: 去掉 :title，aria-label 保留 SR 可访问性。spec assertion 同步更新。'
