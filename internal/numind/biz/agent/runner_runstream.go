@@ -169,8 +169,8 @@ func (r *agentRunner) RunStream(
 				userBody = ad.CustomSkillBody
 			}
 			body = userBody + buildSkillCatalogBlock(skills)
-			ctx = WithUseSkillTurn(ctx, useSkillTurnState)
-			ctx = WithSkillBindings(ctx, skills)
+			queryCtx = WithUseSkillTurn(queryCtx, useSkillTurnState)
+			queryCtx = WithSkillBindings(queryCtx, skills)
 		} else {
 			body = ad.GeneratedSkillBody
 			if ad.AdvancedMode {
@@ -178,8 +178,8 @@ func (r *agentRunner) RunStream(
 			}
 		}
 		skillVer = int(ad.Version)
-		ctx = WithAgentDefCtx(ctx, req.AgentDefinitionID, ad.ParentUserID)
-		ctx = middleware.NewContextWithAgentDefinitionID(ctx, req.AgentDefinitionID)
+		queryCtx = WithAgentDefCtx(queryCtx, req.AgentDefinitionID, ad.ParentUserID)
+		queryCtx = middleware.NewContextWithAgentDefinitionID(queryCtx, req.AgentDefinitionID)
 	}
 
 	// 4.1. #12 agent-mode-billing-integration: BudgetTracker Start/Close per Run.
@@ -355,8 +355,8 @@ func (r *agentRunner) RunStream(
 			}
 		}
 	}
-	ctx = WithAgentBaseToolNames(ctx, basicToolNames)
-	ctx = WithFullToolMap(ctx, toolMap)
+	queryCtx = WithAgentBaseToolNames(queryCtx, basicToolNames)
+	queryCtx = WithFullToolMap(queryCtx, toolMap)
 
 	// 6. Short-circuit when no tools resolved (same as Run).
 	if len(einoTools) == 0 {
