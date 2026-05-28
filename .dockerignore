@@ -7,6 +7,8 @@
 README.md
 *.md
 docs/
+# 例外：skills/ 下的 SKILL.md 是 invoke_skill 运行时必读文件，必须进镜像
+!skills/**/*.md
 
 # IDE
 .idea/

@@ -59,10 +59,11 @@ type SandboxConfig struct {
 
 	// Track 4: Skill / invoke_skill extensions.
 
-	// SkillsRoot is the host-side directory containing skill subdirectories
-	// (e.g. /opt/numind/skills). Each skill dir is bind-mounted read-only
-	// into the container at /skills/<skillName>/. Defaults to
-	// "/opt/numind/skills" if unset.
+	// SkillsRoot is the directory (inside the numind-server container) holding
+	// per-skill subdirectories. Default `/app/skills` is the in-image path baked
+	// by the runtime Dockerfile. AcquireForSkill reads files from here and
+	// CopyToContainer them into sandbox children at /skills/<skillName>/.
+	// Override via sandbox.skills_root only if you bind-mount an alternate tree.
 	SkillsRoot string
 
 	// OutputMaxSizeMB is the per-file size ceiling for sandbox output files.
@@ -105,7 +106,10 @@ var DefaultSandboxConfig = SandboxConfig{
 	UserSpec:        "1000:1000",
 
 	// Track 4 defaults.
-	SkillsRoot:               "/opt/numind/skills",
+	// SkillsRoot points at the in-image skill dir baked by the runtime
+	// Dockerfile (`COPY skills /app/skills`). Override in config_*.yaml only
+	// if you bind-mount an alternate skills tree at runtime.
+	SkillsRoot:               "/app/skills",
 	OutputMaxSizeMB:          50,
 	OutputZipBombThresholdMB: 500,
 	COSUploadConcurrency:     3,

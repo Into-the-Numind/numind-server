@@ -49,8 +49,8 @@ func testEntry(name string) *skills.SkillEntry {
 			MaxRuntimeSeconds: 30,
 			MaxOutputSizeMB:   50,
 		},
-		SkillMDPath: "/opt/numind/skills/" + name + "/SKILL.md",
-		RootDir:     "/opt/numind/skills/" + name,
+		SkillMDPath: "/app/skills/" + name + "/SKILL.md",
+		RootDir:     "/app/skills/" + name,
 	}
 }
 

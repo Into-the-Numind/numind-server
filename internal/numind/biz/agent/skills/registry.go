@@ -16,14 +16,14 @@ type SkillEntry struct {
 	// Manifest is the parsed manifest.json for this skill.
 	Manifest SkillManifest
 
-	// SkillMDPath is the absolute host-side path to the SKILL.md file
-	// (e.g. /opt/numind/skills/xlsx-author/SKILL.md).
-	// invoke_skill reads this file via docker exec cat to inject into the
+	// SkillMDPath is the absolute path (inside the numind-server container) to
+	// the SKILL.md file, e.g. /app/skills/xlsx-author/SKILL.md when skills are
+	// baked into the image. invoke_skill reads this file to inject into the
 	// code-gen prompt. The path may not exist at registration time (WARN logged).
 	SkillMDPath string
 
-	// RootDir is the absolute host-side path to the skill directory
-	// (e.g. /opt/numind/skills/xlsx-author/).
+	// RootDir is the absolute path (inside the numind-server container) to the
+	// skill directory, e.g. /app/skills/xlsx-author/.
 	RootDir string
 }
 
