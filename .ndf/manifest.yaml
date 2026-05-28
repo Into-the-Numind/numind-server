@@ -2250,10 +2250,10 @@ features:
   ndf_version: '3.0'
   description: 'migrations/20260521_190000_seed_e2e_test_agent_rollback.sql 第 3 行 DELETE 使用了不存在的列 `agent_definition_id`；agent_definition_history 表实际列名是 `agent_id`（见 migrations/20260522_220100_create_agent_definition_history.sql:7 + internal/pkg/model/agent_definition_history.go:13）。author 大概率从其他表（agent_run / agent_session_memory，都用 agent_definition_id 命名）muscle-memory 误写。该 rollback 几乎不会跑（DEV ONLY seed），但一旦跑会 ERROR 1054。Up-migration 不需要新增 agent_definition_history INSERT — history 由 biz/skill/versioning.go 在 app 层运行时生成，seed 写时该表尚未创建（seed 时间戳 20260521_190000 早于 history 表 20260522_220100），DELETE 是防御性清理（E2E 编辑产生的 history 行）。'
   track: hotfix
-  stage: H1
-  classification_reason: 'Hotfix Triage 5 条全满足 — (1) 不动 DB schema（只是修 SQL 文件的列引用，非 DDL） (2) 无新 API (3) 无新外部服务 (4) 影响 1 个文件 (5) 非支付/权限风险。Micro 本应更合适（一个 identifier rename）但 ndf-done Micro 边界检查硬拒绝 migrations/ 路径 → 升 Hotfix。Not customer-reported（用户自己发现的 latent failure），Rule 11 不适用。'
-  last_updated_by: ai-h1-implemented
-  last_updated_at: '2026-05-28T22:00:00+08:00'
+  stage: 'H1 gate passed (2 Sonnet reviewers parallel: spec PASS_WITH_CONCERNS, code-quality PASS; P2 static regression test added in commit 2 — migrations/check_consistency_test.go, asserts no SQL statement combines agent_definition_history + agent_definition_id; verified positive PASS on fixed state, negative FAIL when typo reintroduced).'
+  classification_reason: 'Hotfix Triage 5 条全满足 — (1) 不动 DB schema（只是修 SQL 文件的列引用，非 DDL） (2) 无新 API (3) 无新外部服务 (4) 影响 2 个文件（rollback SQL + 静态守卫测试） (5) 非支付/权限风险。Micro 本应更合适（一个 identifier rename）但 ndf-done Micro 边界检查硬拒绝 migrations/ 路径 → 升 Hotfix。Not customer-reported（用户自己发现的 latent failure），Rule 11 不适用。'
+  last_updated_by: ai-h1-reviewed
+  last_updated_at: '2026-05-28T22:30:00+08:00'
   repos:
   - numind-server
   branches:
@@ -2263,9 +2263,9 @@ features:
   progress:
     total_tasks: 1
     completed_tasks: 1
-    reviewed_tasks: 0
+    reviewed_tasks: 1
   decisions:
-  - 'D1 (ai): 不给 up-migration 加 agent_definition_history INSERT。Up-migration 写于 2026-05-21，history 表创建于 2026-05-22；seed 仅负责 agent_definition；history 由 biz/skill/versioning.go 在 app 层运行时写入。Rollback 的 DELETE 是防御性清理（E2E 测试期间 agent 99999 被编辑会生成 history 行），列名修对即可，不需要 restructure。'
-  - 'D2 (ai): 跳过 H1 强制新增测试。代价：写 docker MySQL 测试 harness（包括 schema apply + seed + rollback 验证）远超 1 个 identifier 修复的价值。改为一次性外部验证 /tmp/verify-rollback.sh（连 dev MySQL 创隔离 verify_rollback_$$ 测试 DB，apply 两个 schema + seed + 旧 rollback 报 ERROR 1054 + 新 rollback 成功 1→0 删两行 + drop test DB），证据已收集。Reviewer 可挑战。'
+  - 'D1 (ai): 不给 up-migration 加 agent_definition_history INSERT。Up-migration 写于 2026-05-21，history 表创建于 2026-05-22；seed 仅负责 agent_definition；history 由 biz/skill/versioning.go 在 app 层运行时写入。Rollback 的 DELETE 是防御性清理（E2E 测试期间 agent 99999 被编辑会生成 history 行），列名修对即可，不需要 restructure。Spec reviewer confirmed: GetHistoryByVersion 缺行 → ErrSkillVersionNotFound（domain error, 非 panic）；agent 99999 加载不查 history；defensive cleanup 合理。'
+  - 'D2 (ai, 修正于 reviewer P2): 原计划跳过 H1 强制测试。Spec reviewer P2 提议加 10-line 静态测试（regexp on rollback SQL）成本极低 → 接受建议，commit 2 加 migrations/check_consistency_test.go，asserts 任何 SQL 语句不能同时出现 agent_definition_history 表 + agent_definition_id 列引用。验证：fix 状态 PASS / 旧 typo 注入回 FAIL（同 commit 在 worktree 内 negative-control 验证过）。原 /tmp/verify-rollback.sh 已收集 end-to-end MySQL 证据但是一次性、CI 不可见，新静态测试是 CI-可达的持久回归保护。'
   blockers: []
   created_at: '2026-05-28T22:00:00+08:00'
