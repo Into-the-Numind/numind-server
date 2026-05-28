@@ -39,6 +39,15 @@ type stubStreamSvc struct {
 	events []stream.Event
 	// runStreamErr is returned from RunStream (after events)
 	runStreamErr error
+	// postEventsBlock simulates finalizeRun work (WriteTurn / UpdateState) that
+	// continues running inside the RunStream goroutine AFTER the terminal event
+	// has been pushed to the channel. The channel is only closed when RunStream
+	// returns (via deferred close in the handler goroutine), so a correctly
+	// implemented controller should NOT return until this block elapses.
+	postEventsBlock time.Duration
+	// returnedAt records when RunStream returned (i.e. just before close(ch) runs).
+	// Used by tests to assert handler ServeHTTP did not return before this point.
+	returnedAt chan time.Time
 }
 
 func (s *stubStreamSvc) AcquireStreamLock(_ context.Context, _ uint, _ agentbiz.CreateRunRequest) (uint64, bool, error) {
@@ -48,6 +57,15 @@ func (s *stubStreamSvc) ReleaseStreamLock(_ uint64) {}
 func (s *stubStreamSvc) RunStream(_ context.Context, _ uint, _ agentbiz.CreateRunRequest, _ uint64, ch chan<- stream.Event) (*agentbiz.RunResult, error) {
 	for _, ev := range s.events {
 		ch <- ev
+	}
+	if s.postEventsBlock > 0 {
+		time.Sleep(s.postEventsBlock)
+	}
+	if s.returnedAt != nil {
+		select {
+		case s.returnedAt <- time.Now():
+		default:
+		}
 	}
 	return nil, s.runStreamErr
 }
@@ -424,6 +442,87 @@ func TestCreateStream_FirstByteFlushedBeforeRunStream(t *testing.T) {
 
 	// Drain & discard whatever the server eventually writes so it can return.
 	go io.Copy(io.Discard, resp.Body)
+}
+
+// TestCreateStream_WaitsForRunStreamToFinalize REPRODUCES the bug observed on
+// dev 2026-05-28 (agent_run 45): after the terminal event is emitted into the
+// channel, the controller returns immediately, defers fire (runCancel + Release),
+// and the runCtx is cancelled. But inside the runner goroutine, RunStream is
+// still doing finalizeRun work (WriteTurn writes agent_run.messages to the DB,
+// UpdateState writes status=completed/ended_at). Because the context was just
+// cancelled by the controller's defer, the GORM .Save() call fails with
+// "context canceled" — and `agent_run.messages` stays []. The user then sees
+// an empty session on reload.
+//
+// Contract: the controller MUST wait for RunStream's goroutine to close the
+// event channel before returning. Receiving a terminal event must NOT cause an
+// immediate `return` — the controller must continue selecting on the channel
+// (drain mode) until eventCh closes, so finalizeRun's DB writes complete with
+// a live context.
+//
+// Test strategy: stubStreamSvc emits a terminal event, then sleeps for 200 ms
+// (simulating finalizeRun.WriteTurn DB work), then RunStream returns and
+// `defer close(ch)` fires. We use httptest.NewServer to read the response
+// stream to EOF, then assert the handler returned AFTER RunStream returned.
+// Pre-fix: handler returns ~0 ms after the terminal frame, well before
+// RunStream's 200 ms block ends — test FAILs.
+func TestCreateStream_WaitsForRunStreamToFinalize(t *testing.T) {
+	returnedAt := make(chan time.Time, 1)
+	svc := &stubStreamSvc{
+		acquireRunID: 100,
+		acquiredOK:   true,
+		events: []stream.Event{
+			{Type: stream.EventTokenDelta, Seq: 1, RunID: 100},
+			{Type: stream.EventTerminal, Seq: 2, RunID: 100},
+		},
+		postEventsBlock: 200 * time.Millisecond,
+		returnedAt:      returnedAt,
+	}
+	ctrl := &testStreamController{svc: svc}
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.POST("/v1/agent-runs/stream", ctrl.CreateStream)
+
+	server := httptest.NewServer(r)
+	defer server.Close()
+
+	body, _ := json.Marshal(map[string]any{
+		"agent_skill_id": 1,
+		"input_text":     "hello",
+	})
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/agent-runs/stream", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Read until EOF — this returns when the server closes the connection,
+	// i.e. when the handler's ServeHTTP returns.
+	_, _ = io.Copy(io.Discard, resp.Body)
+	handlerReturnedAt := time.Now()
+
+	// Confirm RunStream goroutine actually ran to completion.
+	var runStreamReturnedAt time.Time
+	select {
+	case runStreamReturnedAt = <-returnedAt:
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunStream goroutine did not return — channel was never closed")
+	}
+
+	// Handler must return AFTER RunStream's finalize block ends. With a 200 ms
+	// block, allow up to 50 ms scheduler jitter on the lower bound.
+	if handlerReturnedAt.Before(runStreamReturnedAt) {
+		t.Fatalf("handler returned BEFORE RunStream finalize completed — finalizeRun.WriteTurn would have raced with ctx cancel. handlerReturned=%v runStreamReturned=%v",
+			handlerReturnedAt.Format(time.RFC3339Nano), runStreamReturnedAt.Format(time.RFC3339Nano))
+	}
 }
 
 // TestCreateStream_ErrorEventTerminatesLoop verifies that an EventError frame
