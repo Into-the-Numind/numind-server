@@ -720,6 +720,12 @@ var safeToolBaseline = []string{
 	"web_search",         // 网络搜索（Tavily）
 	"web_fetch",          // URL → Markdown
 	"file_read",          // PDF/图/文本
+	"create_csv",         // CSV 生成
+	"create_html",        // HTML 生成
+	"create_json",        // JSON 生成
+	"create_text",        // 文本生成
+	"create_png_chart",   // 图表生成
+	"invoke_skill",       // 沙箱技能执行（生成 PPT/Word/Excel/PDF）
 }
 
 // categoryToTools 把 frontend AgentAdvancedEdit.vue 的 3 个 risk-category 开关
