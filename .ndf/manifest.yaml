@@ -1,5 +1,30 @@
 schema_version: '2.0'
 features:
+- id: agent-stream-tool-call-checker
+  ndf_version: '3.0'
+  description: '上次 agent-stream-tool-calls-pipeline hotfix 让 reasoning_delta + token_delta + tool_call_start events 都通了 SSE，但 user 报 "已运行 N 步后 UI 卡住"。完整 SSE 流：reasoning(29) + token_delta(30) + tool_call_start(1) + step_done(stop_reason=tool_calls) + terminal(step_count=1)，**0 个 tool_call_result**。Root cause 在 eino 的 default StreamToolCallChecker (react.go:218 firstChunkStreamToolCallChecker)：只看 stream 第一个非空 chunk，若是 content text 直接 return false → graph 走 END 跳过 tools node → react.Agent.Stream 在 emit 完 LLM call 后立刻 terminate，不 dispatch tool。Eino 自己文档(react.go:177)承认 "default does not work well with Claude, which typically outputs tool calls after text content" — deepseek-v4-pro thinking 模型同样行为。修复：在 react.AgentConfig 加 custom StreamToolCallChecker 扫整个 stream 找 ToolCalls 再决定 branch。'
+  track: hotfix
+  stage: H1
+  classification_reason: 'Hotfix Triage 5 条全满足 — (1) 无 DB schema (2) 无新 API (3) 无新外部服务 (4) 影响 2 文件（runner_runstream.go + test）(5) 非支付/权限/会员高风险。Bug-from-customer: user 截图"已运行 N 步后卡住"+ SSE 流证据(无 tool_call_result)。Rule 11 reproducing test 用 schema.Pipe 构造 content-first-tool_call-last 流，证明 fix 行为对'
+  last_updated_by: ai-h1-landed
+  last_updated_at: '2026-05-28T23:30:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: fix/agent-stream-tool-call-checker
+  worktrees:
+    numind-server: /private/tmp/wt-agent-stream-tool-call-checker-numind-server
+  progress:
+    total_tasks: 2
+    completed_tasks: 2
+    reviewed_tasks: 0
+  decisions:
+  - 'H1-D1 (ai 2026-05-28): 修复策略选 custom checker 扫全流，而非「change LLM prompt 让 LLM 先 emit tool_call 再 content」。理由：prompt-level workaround 在每个 thinking 模型 agent 重复一次；config-level checker 一次修一劳永逸（覆盖 deepseek/Claude/未来 thinking 模型）。Eino 文档明确建议这种 case 自定义 checker。'
+  - 'H1-D2 (ai 2026-05-28): checker 实现简单 drain 整流 + 找 ToolCalls。理由：trade-off 是必须读完 stream 才能决定 branch（增加 first-tool-dispatch 延迟），但 stream 大小受 LLM 输出 bounded（典型 100-300 chunks），实际延迟约 100ms 级，可接受。'
+  related_features:
+  - 'agent-stream-tool-calls-pipeline (#agent-stream-tool-calls-pipeline, merged 2026-05-28) — 前置 hotfix 修了 aiservice→eino 边界的 tool_calls 字段丢失，让 SSE 能 emit tool_call_start；本 hotfix 修 eino 内部 graph branch 让 tool 真被 dispatch'
+  blockers: []
+  created_at: '2026-05-28T23:00:00+08:00'
 - id: agent-stream-tool-calls-pipeline
   ndf_version: '3.0'
   description: 'Dev 用户测 Web 调研助手 (agent_id=100003) 长 prompt 调研问题时报「AI 回复气泡是空的」。Backend curl 直接打 dmxapi /chat/completions 抓 raw SSE，发现 LLM 输出 84 个 reasoning_content deltas + 73 个 tool_calls deltas，finish_reason=tool_calls，完整 web_search arguments — LLM 完美工作。但 backend stream pipeline 4 层 silently drop tool_calls + reasoning：(1) oaiStreamChunk.Choices[].Delta 只有 Content/ReasoningContent 字段，没 ToolCalls → JSON unmarshal 把 73 个 tool_calls deltas 全部丢弃；(2) runOAIStream 的 emit guard `if delta!="" || reasoningDelta!=""` 不处理 tool_calls；(3) aiservice.ChatChunk 没 ToolCalls 字段 → 没契约可传；(4) wrapChannelAsStreamReader (biz/agent/adapter.go) 只 forward chunk.Delta → schema.Message.Content，ReasoningDelta+ToolCalls+FinishReason 全都丢在 eino 边界，consumeEinoStream 永远看不到 step boundary → step_count=0 → 空气泡。修复 4 层：(a) 抽 oaiStreamChoice/oaiStreamChoiceDelta named types (避免 5 处 fixture inline literal 改动) + 加 oaiToolCallDelta 类型；(b) aiservice.ChatChunk 加 ToolCalls 字段；(c) runOAIStream 累积 per-index tool_calls.function.arguments，IsFinal chunk 按 Index 顺序 emit；(d) wrapChannelAsStreamReader forward ReasoningDelta/ToolCalls/FinishReason 到 schema.Message。Reproducing test 用 dmxapi raw stream fixture replay。前 4 次 hotfix（user bubble + first byte + finalize race + snapshot race + reconcile dedup + multi-run isolation）都是 agent-react-streaming feature 部分缺陷，本次发现 base feature 还有 tool_calls 流式从未实现 — 这是更深层的根因。'
