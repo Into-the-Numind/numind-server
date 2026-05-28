@@ -1,5 +1,36 @@
 schema_version: '2.0'
 features:
+- id: agent-stream-finalize-and-snapshot-race
+  ndf_version: '3.0'
+  description: 'Dev 用户测 agent-stream-firstbyte-and-userbubble hotfix 后报新 bug：发指令→用户气泡 ✓→AI thinking ✓→"页面刷新"→所有气泡消失→后续无反应；刷新页面看到空 session。两个 interlocking 根因：(A) Backend controller 在 SSE emit terminal/error event 后立刻 return → defer runCancel() → runCtx 取消 → RunStream goroutine 的 finalizeRun (WriteTurn 持久化 messages，UpdateState 写 status/ended_at) 失败 "context canceled" → agent_run.messages=[] 永远不入库。(B) Frontend SSE terminal → reconcileFromDB → store.currentRun set (含 real session_id) → AgentChatView watcher → router.replace(`/chat/<uuid>`) → props.sessionId 从 "new" 变 real-uuid → 另一个 watcher → store.loadSessionSnapshot 用空 backend snapshot 覆盖 store.messages → 用户看到气泡瞬间消失。修复：(1) Backend controller 加 terminalSeen flag，emit terminal 后进 drain mode 等 channel close 才 return；client disconnect 期间 drain 时 nil-out doneCh 防止重新触发 runCancel。(2) Frontend 抽 AgentChatView sessionId watcher 逻辑到 session-watchers.ts helper，handleSessionIdTransition 在 oldSessionId === "new" 时 skip loadSnapshot。Out of scope: drain timeout、frontend Playwright-first 规则、currentRun.session_id watcher 链路重设计。'
+  track: hotfix
+  stage: H1
+  classification_reason: 'Hotfix Triage 5 条 — (1) 无 DB schema 变更 (2) 无新 API 端点 (3) 无新外部服务集成 (4) 影响 5 文件（be: controller + test，fe: AgentChatView + session-watchers + spec，含强制 reproducing tests）(5) 非支付/权限/会员高风险业务。Bug-from-customer：dev 用户验收上次 hotfix 时报告，Rule 11 强制第一个 commit 失败复现测试，两个仓库均满足。'
+  last_updated_by: ai-h1-reviewed
+  last_updated_at: '2026-05-28T20:15:00+08:00'
+  repos:
+  - numind-server
+  - numind-web-v3
+  branches:
+    numind-server: fix/agent-stream-finalize-and-snapshot-race
+    numind-web-v3: fix/agent-stream-finalize-and-snapshot-race
+  worktrees:
+    numind-server: /private/tmp/wt-agent-stream-finalize-and-snapshot-race-numind-server
+    numind-web-v3: /private/tmp/wt-agent-stream-finalize-and-snapshot-race-numind-web-v3
+  progress:
+    total_tasks: 5
+    completed_tasks: 5
+    reviewed_tasks: 5
+  decisions:
+  - 'H1-D1 (ai 2026-05-28): Backend drain mode 方案选 terminalSeen flag + 继续 select 等 channel close（minimal diff，~15 行）。channel close 是 finalizeRun 完成的天然信号；不需要改 RunStream 接口。'
+  - 'H1-D2 (ai 2026-05-28): Frontend 抽 AgentChatView watcher 逻辑到 session-watchers.ts pure helper（而非 inline 2 行 fix）。AgentChatView.spec.ts 注释明确说 mount-based test "proved infeasible to set up reliably"，watcher 内联不能被 unit test enforce → Rule 11 复现测试无处落地。抽 helper 让 fix 可测。'
+  - 'H1-D3 (reviewer 2026-05-28): 两个 Sonnet reviewer 并行 dispatch (spec + code quality)，都 PASS_WITH_CONCERNS，共识 P1：drain mode 期间 c.Request.Context().Done() 没 guard → client 断在 finalize 完成前 → 同 bug 不同 trigger。修复 nil-channel trick (doneCh = nil after disconnect during drain)。'
+  - 'H1-D4 (deferred 2026-05-28): 多个 P2 留作 follow-up — drain timeout, eventCount terminal 含与否, "new"→"new" 双 reset, frontend Playwright-first 规则违反。reviewer 共识不阻塞上线。'
+  related_features:
+  - 'agent-stream-firstbyte-and-userbubble (#agent-stream-firstbyte-and-userbubble, merged f5103afa/34004f5 2026-05-28 — 上一个 hotfix 修了 user bubble + SSE first byte 但暴露了本 hotfix 的两个 race。两次 hotfix 必须叠加部署。)'
+  - 'agent-react-streaming (#agent-react-streaming, S5 verified merged e984c505/ffa074a2 — 引入 SSE 协议的 base feature。)'
+  blockers: []
+  created_at: '2026-05-28T19:30:00+08:00'
 - id: vitest-agentadvancededit-drift
   ndf_version: '3.0'
   description: 'Group 2 (vitest-stale-test-identifiers) 把 AgentAdvancedEdit.spec.ts 的 @/stores/agent → @/stores/agentBuilder import 修好后，suite 从"加载失败"变为可加载，暴露出 9 个原本隐藏的组件 drift 失败：(1) NoticeBanner 渲染 (1)（v1 spec 写明"仅可查看+切换工具开关"，组件缺少 banner 提示）；(2) textarea disabled 状态 (1)（v1 限制 Prompt 不可编辑，组件忘记加 disabled）；(3) 危险勾选 ConfirmModal visible prop (4)（用 v-model API 后 prop 名是 modelValue 不是 visible）；(4) 保存按钮文案"保存工具开关" (3)（v1 只能改 tool_flags，按钮文案应明确）。修复：组件加 NoticeBanner + textarea disabled + 按钮改"保存工具开关"；spec 4 处 props("visible") → props("modelValue")。'
