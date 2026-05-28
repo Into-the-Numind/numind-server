@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -511,4 +512,56 @@ func TestRunStream_AbortedByCtx(t *testing.T) {
 	if len(evs) > 0 {
 		assert.True(t, sawTerminal, "EventTerminal must be emitted when events are present")
 	}
+}
+
+// TestStreamScanToolCallChecker_FindsToolCallAfterContent REPRODUCES the bug
+// observed on dev 2026-05-28 (agent_run 56/57/58): a thinking model
+// (deepseek-v4-pro) emits reasoning_content + content text first, then a final
+// chunk with tool_calls. Eino's default firstChunkStreamToolCallChecker reads
+// only until the first non-empty chunk: if that chunk is content text, it
+// returns false ("no tool call"), and react.Agent.Stream routes to END
+// without dispatching the tool — frontend sees step_done with
+// stop_reason="tool_calls" followed by terminal step_count=1 and a frozen UI.
+//
+// Contract: streamScanToolCallChecker must drain the entire stream looking
+// for ANY ToolCalls payload before deciding.
+func TestStreamScanToolCallChecker_FindsToolCallAfterContent(t *testing.T) {
+	// Construct an eino schema.StreamReader that yields:
+	//   1) two content-only chunks (mimicking reasoning + text)
+	//   2) one chunk with tool_calls (mimicking deepseek-v4-pro's final delta)
+	//   3) EOF
+	sr, sw := schema.Pipe[*schema.Message](4)
+	go func() {
+		defer sw.Close()
+		sw.Send(&schema.Message{Role: schema.Assistant, Content: "好的，"}, nil)
+		sw.Send(&schema.Message{Role: schema.Assistant, Content: "我直接开始调研。"}, nil)
+		sw.Send(&schema.Message{
+			Role: schema.Assistant,
+			ToolCalls: []schema.ToolCall{
+				{ID: "call_xyz", Type: "function", Function: schema.FunctionCall{Name: "web_search", Arguments: `{"query":"教培 AI"}`}},
+			},
+		}, nil)
+	}()
+
+	isToolCall, err := streamScanToolCallChecker(context.Background(), sr)
+	require.NoError(t, err)
+	assert.True(t, isToolCall,
+		"streamScanToolCallChecker MUST detect the tool_call chunk even though it follows content chunks; "+
+			"eino's default firstChunkStreamToolCallChecker fails this case and is the root cause of the dev 2026-05-28 frozen-UI bug")
+}
+
+// TestStreamScanToolCallChecker_ContentOnlyReturnsFalse verifies the negative
+// case: a stream that only emits content (no tool_calls anywhere) correctly
+// returns false so the react agent routes to END.
+func TestStreamScanToolCallChecker_ContentOnlyReturnsFalse(t *testing.T) {
+	sr, sw := schema.Pipe[*schema.Message](2)
+	go func() {
+		defer sw.Close()
+		sw.Send(&schema.Message{Role: schema.Assistant, Content: "Hello."}, nil)
+		sw.Send(&schema.Message{Role: schema.Assistant, Content: " World."}, nil)
+	}()
+
+	isToolCall, err := streamScanToolCallChecker(context.Background(), sr)
+	require.NoError(t, err)
+	assert.False(t, isToolCall, "content-only stream must NOT be classified as a tool call")
 }

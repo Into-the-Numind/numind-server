@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	einotool "github.com/cloudwego/eino/components/tool"
@@ -429,6 +430,16 @@ func (r *agentRunner) RunStream(
 			Tools: einoTools,
 		},
 		MaxStep: 30,
+		// Custom StreamToolCallChecker: scan the entire stream for tool_calls
+		// rather than only inspecting the first chunk. deepseek-v4-pro (and
+		// Claude, per eino's own docs at react.go:177) emit text/reasoning
+		// FIRST and tool_calls LAST in streaming mode; eino's default
+		// firstChunkStreamToolCallChecker misclassifies such streams as
+		// "content only -> END" and skips the tools node entirely, so
+		// react.Agent.Stream terminates after one step with the tool intent
+		// dropped on the floor (dev 2026-05-28 agent_run 56/57/58 step_done
+		// stop_reason=tool_calls then immediate terminal).
+		StreamToolCallChecker: streamScanToolCallChecker,
 	})
 	if err != nil {
 		endedAt := time.Now()
@@ -591,6 +602,42 @@ func emitStreamErrorEvents(ch chan<- stream.Event, runID uint64, err error, reas
 		select {
 		case ch <- termEv:
 		default:
+		}
+	}
+}
+
+// streamScanToolCallChecker reads the entire model output stream looking for
+// any chunk that carries tool_calls. Used as react.AgentConfig
+// .StreamToolCallChecker — required for thinking models (deepseek-v4-pro,
+// Claude) that emit reasoning_content + content FIRST and tool_calls LAST in
+// streaming mode.
+//
+// Eino's default firstChunkStreamToolCallChecker (react.go:218) only inspects
+// the first non-empty chunk: if that chunk is content (text) it returns false
+// and the graph routes to END without dispatching tools — react.Agent.Stream
+// then terminates after one step with the LLM's tool intent silently dropped.
+// Eino's own docs (react.go:177) acknowledge "the default implementation does
+// not work well with Claude, which typically outputs tool calls after text
+// content."
+//
+// Symptom observed dev 2026-05-28 (agent_run 56/57/58): step_done with
+// stop_reason="tool_calls" followed immediately by terminal step_count=1,
+// no tool_call_result emitted — user sees "已运行 N 步" then UI freezes.
+//
+// Contract per react.go:175: this handler MUST close the stream before
+// returning. defer sr.Close() satisfies that.
+func streamScanToolCallChecker(_ context.Context, sr *schema.StreamReader[*schema.Message]) (bool, error) {
+	defer sr.Close()
+	for {
+		msg, err := sr.Recv()
+		if errors.Is(err, io.EOF) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if msg != nil && len(msg.ToolCalls) > 0 {
+			return true, nil
 		}
 	}
 }
