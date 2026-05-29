@@ -1,5 +1,32 @@
 schema_version: '2.0'
 features:
+- id: sandbox-agent-html-artifact
+  ndf_version: '3.0'
+  description: '安全加固（code-review 残留风险，非客户 bug）。fix-agent-file-generation（已 merge develop 167a37e7）让 create_html 把 agent 生成的 HTML 原样(raw)发布到 COS（agent-outputs/<userID>/，24h 预签名 URL，text/html）。若 agent 被 prompt-injection（web_search/RAG 内容）注入 <script>，用户打开 artifact 时脚本执行。COS 是独立 origin（无 app cookie/session），仍需加固。前端 numind-web-v3 把 HTML artifact 从「下载按钮（跨域 <a download> 被忽略 → 顶层导航到 raw COS URL 渲染，脚本在 COS origin 执行）」改为「fully-sandboxed iframe 内预览」：空 sandbox（无 allow-scripts → 注入脚本永不执行；无 allow-same-origin → opaque origin，无法读 cookie/localStorage/DOM/opener）+ referrerpolicy=no-referrer + role=dialog/ESC/loading-error 兜底 + download 改 new-tab+noopener。HTML+CSS 仍正常渲染。配套 numind-server Micro（create-html-threat-note）在 tool_create_html.go renderHTML threat-model 注释加指针 + CSP-on-COS evaluated-deferred。'
+  track: hotfix
+  stage: H2
+  classification_reason: 'Hotfix Triage 5 条全满足 —(1) 无 DB schema (2) 无新 API 端点（纯前端组件 + sandboxed iframe 预览，无新路由/后端端点）(3) 无新外部服务（COS 已集成）(4) 影响 2 文件（AgentArtifactItem.vue + 新增 AgentArtifactItem.spec.ts；后端注释走独立 Micro）(5) 非支付/权限/会员高风险（XSS 加固）。来源=code-review 残留风险（非客户 bug）→ Rule 11 复现测试不适用；H1 强制 ≥1 测试 → Vitest 组件测试（8 例）断言 iframe sandbox===空串 + 关闭/ESC/error 兜底。User 确认：static report（无 allow-scripts）+ 后端注释折叠。'
+  last_updated_by: ai-h2
+  last_updated_at: '2026-05-29T12:50:00+08:00'
+  repos:
+  - numind-web-v3
+  branches:
+    numind-web-v3: fix/sandbox-agent-html-artifact
+  worktrees:
+    numind-web-v3: /private/tmp/wt-sandbox-agent-html-artifact-numind-web-v3
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-D1 (ai 2026-05-29): in-app sandboxed iframe 预览，非继续顶层导航 raw COS URL，也不用后端 CSP 响应头。空 sandbox（无 allow-scripts/allow-same-origin）让注入脚本根本不执行，完全满足验收；CSP-on-COS 评估不可行（腾讯 COS 不支持 per-object 存任意 CSP 响应头，只能 CDN/bucket 级=infra 改动，且 sandbox 已中和风险）→ evaluated-and-deferred。'
+  - 'H1-D2 (ai 2026-05-29): sandbox 取空值（无 allow-scripts）=static report（user 确认；tool description 也把程序化图表引导到 invoke_skill）；保留 download（显式用户动作，后端 threat model 已接受打开 first-party artifact）。'
+  - 'H1-D3 (ai 2026-05-29): 双 reviewer（security + code-quality, sonnet）。security PASS（sandbox 配置正确，opaque origin 隔离）；code-quality FAIL 3 P1（role=dialog/aria-modal、ESC-close、iframe loading/error 兜底=ui-ux Rule 2）全修后 re-review PASS 0 must-fix。2 P2 deferred：(a) X-Frame-Options 致 iframe 空白时 spinner 不消失—COS 默认不设 XFO 属理论路径，header download 永远可用兜底；(b) modal 缺 focus-trap—与现有 image modal 同基线，应作项目级 a11y 统一处理。'
+  related_features:
+  - 'fix-agent-file-generation (hotfix, numind-server, merged 2026-05-29 167a37e7) — 后端 create_html raw-HTML 发布；本前端 hotfix 是其 code-review 残留 XSS 风险的 deferred mitigation'
+  - 'create-html-threat-note (micro, numind-server) — 配套后端 threat-model 注释指针 + CSP 评估记录'
+  blockers: []
+  created_at: '2026-05-29T12:30:00+08:00'
 - id: fix-skill-image-sandbox-env
   ndf_version: '3.0'
   description: 'fix-agent-file-generation 部署后 dev 验证发现 skill 镜像在锁死沙箱里跑不动 office libs。numpy（经 Pillow→python-pptx）拉起 OpenBLAS，OpenBLAS 试图 spawn 4 线程，被 sandbox 的 seccomp/pids-limit/cap-drop ALL 挡掉（pthread_create Operation not permitted），import 卡住超时；matplotlib/fontconfig 又因 --read-only rootfs 写不了 /home/sandboxuser 缓存。Fix: 把运行期 env 烤进 skill 镜像 libs 层——OPENBLAS_NUM_THREADS=1 + OMP_NUM_THREADS=1（单线程 BLAS，import 秒过）+ HOME=/workdir + MPLCONFIGDIR + XDG_CACHE_HOME 指向唯一可写挂载 /workdir tmpfs。重 tag skills-v1.5.1，config_dev/local 同步。dev 验证：pool 容器无 -e import 全 office libs rc=0，真实生成 28KB .pptx rc=0。'
