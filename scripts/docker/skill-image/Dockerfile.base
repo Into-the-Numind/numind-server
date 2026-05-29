@@ -17,6 +17,15 @@
 # Debian base family.
 FROM python:3.11-slim-bookworm AS base
 
+# Use a China Debian mirror (Tsinghua TUNA) — the build server is in Chengdu and
+# deb.debian.org routes internationally (downloads stall for minutes). Covers both
+# the deb822 (.sources) and legacy (sources.list) layouts across base-image versions.
+RUN set -eux; \
+    sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g; s|security.debian.org|mirrors.tuna.tsinghua.edu.cn|g' \
+        /etc/apt/sources.list.d/debian.sources 2>/dev/null || true; \
+    sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g; s|security.debian.org|mirrors.tuna.tsinghua.edu.cn|g' \
+        /etc/apt/sources.list 2>/dev/null || true
+
 # System dependencies required by skills:
 #   - libpango / libcairo / libgdk-pixbuf-2.0-0 / shared-mime-info: weasyprint (PDF from HTML)
 #   - libffi-dev: cffi / cryptography builds
