@@ -223,7 +223,7 @@ sandbox:
   pool_max_wait_ms: 30000
   # Match dev: the skill image bakes the office libs invoke_skill needs (pptx/docx/
   # xlsx/pdf). Plain python:3.11-slim lacks them. Pull once: docker pull <tag>.
-  image_tag: ccr.ccs.tencentyun.com/youshunumind/sandbox-skill:skills-v1.5.0
+  image_tag: ccr.ccs.tencentyun.com/youshunumind/sandbox-skill:skills-v1.5.1
   memory_limit_mb: 512
   cpu_quota: 1.0
   pids_limit: 64

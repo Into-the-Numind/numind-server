@@ -200,7 +200,7 @@ sandbox:
   # python-docx, weasyprint, reportlab, pandas, Pillow, matplotlib) baked in. Required
   # for invoke_skill (pptx/docx/xlsx/pdf) — plain python:3.11-slim lacks these libs so
   # skills failed at import. Built+pushed via scripts/docker/skill-image/build.sh --push.
-  image_tag: ccr.ccs.tencentyun.com/youshunumind/sandbox-skill:skills-v1.5.0
+  image_tag: ccr.ccs.tencentyun.com/youshunumind/sandbox-skill:skills-v1.5.1
   memory_limit_mb: 512
   cpu_quota: 1.0
   pids_limit: 64
