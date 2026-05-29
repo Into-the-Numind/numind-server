@@ -82,7 +82,7 @@
 - **推荐轨道：Standard**
 - **分类理由（5 条标准）**：
   1. 数据库 schema 变更：**否**（skill 注册/manifest 已经在 `ai_service` 表，但本次重构是 invoke_skill 调用语义，不动表）
-  2. 新增 API 端点：**可能否**（核心改动在 agent 内部 tool 实现；如果"skill registry list" 想暴露给前端可能需要新端点，待 S2 决定）
+  2. 新增 API 端点：**否**（skill registry 不暴露新端点；前端可见性改动若需要，独立归入 micro/hotfix，不挂在本 Standard 下）
   3. 新外部服务集成：**否**（继续用现有 sandbox + run_python；不引入外部 service）
   4. 影响文件数：**>3**（核心改动至少 4 文件：`tool_invoke_skill.go` 重构 / `pptx-author/SKILL.md` 重写 / `tool_run_python.go` 可能需新 capability / `runner.go` 可能需 sub-agent dispatch；下游 xlsx/docx/pdf-from-html 的 SKILL.md 也要重写。预计 ≥6 文件）
   5. 高风险业务逻辑（支付/权限）：**否**（不涉及支付/会员/积分。但是 sandbox 安全模型本身有一定风险——LLM 写的代码在 docker 里跑——已有的 sandbox 隔离继续维持即可，不引入新风险）
@@ -96,6 +96,11 @@
 - `pptx-author/SKILL.md` 改成 Codex/Claude Code 风格
 - skill registry 加载方式
 - `run_python` tool 与 skill 工作流的耦合（如果选 Codex 风格：agent 写 python → 用 run_python 执行；如果选 Claude Code 风格：sub-agent fork + sub-agent 自己用 run_python）
+
+**Hard constraints（贯穿 S2/S4，不可妥协）：**
+- **sandbox 隔离必须维持** —— 所有 LLM 生成的 Python 仍只在 docker 容器内执行；Codex 风格和 Claude Code 风格的设计均不得改变此 invariant
+- **aiservice 入口唯一性（I5）维持** —— 任何新增 LLM 调用都走 aiservice，langfuse trace/generation 不能丢
+- **HookAction enum 5 个值 / TerminalReason enum 19 个值 / LoopEvent enum 19 个值** 不新增（agent 核心 invariant，I6/I2/I7）
 
 **Out of scope：**
 - 添加新 skill（xlsx/docx/pdf-from-html 的 SKILL.md 重写在 S4 内可顺手做，但新增 skill 类别如「视频生成」「图表交互式编辑」不在本次）
