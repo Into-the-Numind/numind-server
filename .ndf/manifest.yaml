@@ -1,5 +1,30 @@
 schema_version: '2.0'
 features:
+- id: fix-skill-image-sandbox-env
+  ndf_version: '3.0'
+  description: 'fix-agent-file-generation 部署后 dev 验证发现 skill 镜像在锁死沙箱里跑不动 office libs。numpy（经 Pillow→python-pptx）拉起 OpenBLAS，OpenBLAS 试图 spawn 4 线程，被 sandbox 的 seccomp/pids-limit/cap-drop ALL 挡掉（pthread_create Operation not permitted），import 卡住超时；matplotlib/fontconfig 又因 --read-only rootfs 写不了 /home/sandboxuser 缓存。Fix: 把运行期 env 烤进 skill 镜像 libs 层——OPENBLAS_NUM_THREADS=1 + OMP_NUM_THREADS=1（单线程 BLAS，import 秒过）+ HOME=/workdir + MPLCONFIGDIR + XDG_CACHE_HOME 指向唯一可写挂载 /workdir tmpfs。重 tag skills-v1.5.1，config_dev/local 同步。dev 验证：pool 容器无 -e import 全 office libs rc=0，真实生成 28KB .pptx rc=0。'
+  track: hotfix
+  stage: H3
+  classification_reason: 'Hotfix Triage 全满足 — (1) 无 DB (2) 无新 API (3) 无新外部服务（skill 镜像已激活，仅加 ENV）(4) 1 build 文件 Dockerfile.libs + 2 config (5) 非高风险业务。fix-agent-file-generation 部署验证的直接 follow-on：那个 hotfix 让沙箱跑起来 + 切到 skill 镜像，本 hotfix 修了 skill 镜像在锁死沙箱里实际跑 office libs 的运行期约束。'
+  last_updated_by: ai-h3-landed-dev-verified
+  last_updated_at: '2026-05-29T12:40:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: fix/fix-skill-image-sandbox-env
+  worktrees: {}
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-D1 (ai 2026-05-29): env 烤进镜像而非沙箱 ExecOpts 注入。理由：这是「该镜像在受限沙箱跑这些库」的固有属性，镜像应自描述运行期需求；docker exec 默认继承镜像 ENV，warm 容器 + exec 都覆盖；无需改 Go exec 路径。'
+  - 'H1-D2 (ai 2026-05-29): 版本 bump v1.5.0→v1.5.1 而非复用同 tag。理由：镜像内容变了（加 ENV），复用 mutable tag 是反模式；bump 让 config 改动与镜像原子对应，dev host 明确 re-pull。'
+  - 'H1-D3 (ai 2026-05-29): 一次性 prune 了 dev host 900 个旧 python:3.11-slim exited orphan（pre-fix 无 label，reaper 不管）。运维清理，非代码。'
+  related_features:
+  - 'fix-agent-file-generation (merged 2026-05-29) — 父 hotfix；本 hotfix 是其 dev 验证阶段发现的 OpenBLAS/缓存运行期约束修复'
+  blockers: []
+  created_at: '2026-05-29T12:30:00+08:00'
 - id: fix-agent-file-generation
   ndf_version: '3.0'
   description: '续 fix-skills-bake-into-image：user 再次用 Agent 生 PPT+HTML，两个新 bug。(1) create_html 把 LLM 写的完整 HTML 文档当纯文本走 html/template {{.Body}} 转义+套通用 wrapper → 浏览器显示源码而非渲染页（user 下载的 2 个 html 全是 &lt;!DOCTYPE...）。Root cause 是之前一次 "XSS fix" 过度转义。Fix: string content 视为 agent 写的原始 HTML——完整文档 verbatim，片段 template.HTML 原样包裹，custom template 仍转义（保留 opt-in）。(2) 沙箱"完全不可用"：所有 invoke_skill/run_python 报 docker exec container not running。Root cause: warm pool 容器 sleep 600，空闲 10min 后退出，Borrow 不做存活检查直接发尸体。Fix: Borrow 加 Inspect 存活检查（死的 destroy+重 spawn 重试）+ keepalive sleep infinity + 容器 label + 启动 reaper 清上轮 orphan。(3) pptx skill 即使容器活也跑不了：image_tag=python:3.11-slim 缺 python-pptx 等库。Fix: 构建从未构建过的 skill 镜像 sandbox-skill:skills-v1.5.0（base 顺手 pin bookworm，python:3.11-slim 已 float 到 trixie 致 libpango1.0-0 改名 apt 失败）推 TCR，config_dev/local image_tag 切过去。'
