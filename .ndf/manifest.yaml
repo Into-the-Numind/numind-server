@@ -1,5 +1,32 @@
 schema_version: '2.0'
 features:
+- id: bump-eino-maxstep
+  ndf_version: '3.0'
+  description: 'sandbox-copy-via-tar 部署后 user 又跑 Agent 生 PPT，沙箱真的好了——但前面那个用户报错 [GraphRunError] exceeds max steps 暴露出新约束：dev agent_run 76 整段日志（3 分钟、~30 个 web_search+web_fetch 调用、全程未到 invoke_skill）的根本原因是两个耦合 cap 都太紧：(1) eino react.AgentConfig.MaxStep 在 runner.go 和 runner_runstream.go 硬编码 30，比我们自己的 budget MaxTurns=50 还低 → eino 先 trip → 框架抛 GraphRunError「exceeds max steps」→ caller 把它当成 TerminalModelError，把"超预算"的信号完全丢了，DB state_reason 记成 model_error。(2) budget.DefaultLimits().MaxTurns=50 对一个 research-heavy + 双产物（HTML+PPT）的任务太紧。user 要 100，bump 双 cap：MaxTurns 50→100、eino MaxStep 30→120（保持严格 > MaxTurns，让权威终止理由始终走我们的 budget gate）。成本仍由 MaxCredits(800/run) 和 MaxDailyCredits(2000) 兜底，MaxWallTime(900s) 兜 stuck 任务。'
+  track: hotfix
+  stage: H3
+  classification_reason: 'Hotfix — (1) 无 DB (2) 无新 API (3) 无新外部服务 (4) 4 文件（runner.go + runner_runstream.go + dimensions.go + dimensions_test.go），都是常量值改动 (5) 非高风险（放宽 stuck-loop guard，其余 3 维仍兜底）。Bug-from-user-report：用户 explicitly ask 把 limitation 提到 100；同时 dev agent_run 76 终止时机的直接证据（state_reason=model_error，~30 calls，未到 invoke_skill）暴露 eino MaxStep<MaxTurns 的不变量违反。'
+  last_updated_by: ai-h3-landed-pending-user-retest
+  last_updated_at: '2026-05-29T16:25:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: fix/bump-eino-maxstep
+  worktrees: {}
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-D1 (ai 2026-05-29): 双 cap 必须一起 bump，否则只动一边等于把限制平移。raise eino 不 raise budget = budget 在 50 trip；raise budget 不 raise eino = eino 在 30 trip + 错误类型丢失。'
+  - 'H1-D2 (ai 2026-05-29): eino MaxStep = 120 而非精确 = MaxTurns。理由：eino step 计数语义和我们 turn 计数略不同（每个 LLM 调用 + 每个 tool 节点都可能算一步），留 20 步缓冲保证 budget gate 一定先 trip，权威终止理由（TerminalMaxTurns）不被 eino GraphRunError 抢走。'
+  - 'H1-D3 (ai 2026-05-29): MaxTurns = 100（user explicit ask），不是再大数。100 turn × ~2-5s/turn ≈ 3-8 min wall time，离 MaxWallTime=900s 还远；离 MaxCredits=800 也有余量。是合理的 stuck-loop 上限。'
+  - 'H1-D4 (ai 2026-05-29 已声明非本 hotfix 范围): agent 在 dev run 76 的行为本身（一直 research 不进入 PPT 阶段）是 prompt design 问题，本 hotfix 仅扩 cap 给 agent 真实空间完成任务，不解决"agent 是否高效"。如果 user 后续 retest 仍未在 100 turn 完成多产物任务，要走 prompt 优化路径而非继续加 cap。'
+  related_features:
+  - 'sandbox-copy-via-tar (merged 2026-05-29) — 沙箱真坏掉的根因；本 hotfix 是它部署后暴露的下一层 cap 问题'
+  - 'bump-agent-walltime-budget (merged 2026-05-29) — wall-time 300s→900s；本 hotfix 是它的姐妹问题：同样是 budget 维度 cap 太紧'
+  blockers: []
+  created_at: '2026-05-29T16:20:00+08:00'
 - id: sandbox-copy-via-tar
   ndf_version: '3.0'
   description: '前几轮沙箱修复后 user 再跑 Agent 生 PPT，HTML 成功了但 PPT 仍"沙箱资源紧张 4 次重试失败"。dev 日志真错误：AcquireForSkill: copy skill files: docker cp to container: exit status 1, "Could not find the file /skills/pptx-author in container"。前一轮加 /skills tmpfs 后 mkdir 已通，这次 docker cp 拷文件进 tmpfs 又失败——同一个新错误。在 dev 直接复现：docker exec mkdir /skills/pptx-author 成功，但 docker cp host_file <CID>:/skills/pptx-author/SKILL.md 报"Could not find the file"。对 /workdir 同样失败（也是 tmpfs）。对 /tmp（read-only rootfs）报"read-only filesystem"——不同 daemon 路径。docker cp 反向（CollectOutputs）也坏，从 tmpfs 拷出 /workdir/output 同样报"Could not find the file"。结论：**Docker 28.x 的 docker cp 对 --read-only rootfs 下的 tmpfs mount 双向坏掉**，docker exec 用不同 daemon code path 正常。这是前几轮所有"沙箱不可用"事故的真正根因——前面的修复（liveness/skill image/walltime/tmpfs ownership）每个都是真 bug，但都掩盖了下面这一层。Fix: docker_client.go CopyToContainer 改用 `docker exec -i <CID> tar -xf - -C <dir>` + in-memory tar；CopyFromContainer 改用 `docker exec <CID> tar -cf - -C <p> <e>` → host tar -xf；保留 docker cp 的 /. 后缀语义。Dev e2e 已实跑 mkdir→stage skill.py→python3 生成 28273 字节 .pptx→tar 拷回 host，file 命令确认是 Microsoft PowerPoint 2007+ 真文件。'
