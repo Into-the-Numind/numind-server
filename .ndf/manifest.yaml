@@ -1,5 +1,34 @@
 schema_version: '2.0'
 features:
+- id: stream-emit-toolcall-events
+  ndf_version: '3.0'
+  description: 'agent-filegen-progress-ux 部署后 user 反馈生成 PPT/HTML/读网页时仍无文案、无计时器、连流式光标都没有，像卡死。按硬规则用 gstack browse 在 dev 实机诊断（非静态推理）：登录→跑 web_search 任务→hook window.fetch 抓 SSE 帧。决定性证据——后端跑了 web_search（4 步）但浏览器只收到 reasoning_delta/token_delta/assistant_message/step_done，零个 tool_call_*。Root cause: 真正生效的流式路径是 RunStream→runner_runstream.go 的 streamScanToolCallChecker，它只扫 model OUTPUT 流、emit token/reasoning/assistant/step，从不 emit tool_call_start/result/error。（老的 runner_stream.go 有 emit 但不是 controller 调的活路径。）所以前端永远不知道有工具在跑→无 tool-call 卡片、无 narration 文案、无计时器→invoke_skill 那 30-60s 就是干等。这也解释了为什么 agent-filegen-progress-ux 的计时器"看不到"——它挂在 tool-call-item 上，而 item 从不渲染。Fix: 在 tool adapter（fullToolEinoAdapter.InvokableRun）emit 这三个事件——start 在 StateUse 之后/Execute 之前，result/error 在 Execute 之后。adapter 每个工具调用恰好跑一次、拿得到真实 tool name+input、与模型如何流式 tool_calls 无关。toolCallID 用合成 UUID 在 start/result 间保持一致供前端关联。emit 从 ctx 取 SSE channel（WithStreamState），非流式 Run 路径与无 state 的测试里静默 no-op。'
+  track: hotfix
+  stage: H3
+  classification_reason: 'Hotfix — (1) 无 DB (2) 无新 API (3) 无新外部服务 (4) 1 文件 adapter_full_to_eino.go + 测试 (5) 非高风险（新增 SSE emit，非流式路径 no-op，行为兼容）。Bug-from-customer：user 报"仍然像卡死"。Rule 11：用 gstack browse 抓 SSE 帧作为运行时复现证据（reasoning/token 有、tool_call 全无），并落 4 个回归测试（adapter 成功 emit start+result、失败 emit start+error、无 state no-op、input_preview 带 skill_name）。'
+  last_updated_by: ai-h3-landed-dev-browser-verified
+  last_updated_at: '2026-05-29T18:00:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: fix/stream-emit-toolcall-events
+  worktrees: {}
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-D1 (ai 2026-05-29): emit 点选 tool adapter InvokableRun，而非给 streamScanToolCallChecker 补 emit。理由：(a) checker 只扫 model output，看得到 tool_call 但看不到 tool result（result 是 tools 节点产物，不在 model 输出流）；adapter 同时拿得到 start 时机和 result/error。(b) adapter 每工具一次、模型无关（不受 deepseek/Claude 先 content 后 tool_calls 的流式怪癖影响）。(c) 一处覆盖所有工具 + invoke_skill。'
+  - 'H1-D2 (ai 2026-05-29): toolCallID 用合成 UUID（在一次 InvokableRun 内 start/result 共用），不强求等于模型给的 tool_call_id。前端只用它做内部关联，无需匹配模型 id。'
+  - 'H1-D3 (ai 2026-05-29): Seq 自增不加锁。tool 执行与 model-output 扫描在一步内是顺序的（model 流完→checker 返回→tools 节点跑），无真并发，沿用既有 emit 闭包的无锁约定。'
+  - 'H1-D4 (ai 2026-05-29, 诊断方法): 严守"前端 bug 先 Playwright/browser 诊断禁静态推理"硬规则——先确认我的代码已部署进 live bundle（grep 容器 assets），再 hook fetch 抓 SSE 帧定位到后端不 emit。避免了在前端瞎改（前端其实是对的）。'
+  - 'H1-D5 (ai 2026-05-29): 实机验证 fix 后：tool_call_start→t=3s 渲染出"正在搜索网络..."卡片 badge"执行中"，tool_call_result→t=4s badge"已完成"。web_search 太快（~1s）没触发 ≥2s 计时器阈值（设计如此，快工具不闪计时器）；invoke_skill(60s) 会显示"已用时 N 秒"。'
+  related_features:
+  - 'agent-filegen-progress-ux (merged 2026-05-29) — 加了 narration 文案 + 计时器，但都挂在 tool-call-item 上；本 hotfix 让 tool-call 事件真正流到前端，前者才可见。两者合起来才完整。'
+  - 'agent-stream-tool-call-checker / agent-stream-tool-calls-pipeline (merged 2026-05-28) — 之前修 eino tool-call branch + aiservice tool_calls 字段；本 hotfix 修的是 SSE 层从未 emit tool_call 生命周期事件（不同层）。'
+  known_issues: '#2（user 另报）：生成 PPT 时第一次 invoke_skill 失败 AI 说"环境初始化遇到问题"然后重试成功（agent_run 78：17:24:58 首试→17:27:11 重试→17:28:34 成功 82s）。沙箱/skill 执行层日志过少无法精确定位，判断为 LLM 生成的 pptx 代码首次有误、AI 换简化英文指令重试自愈。非阻塞（最终成功）。若复现频繁需给 skill 错误路径补 stderr 日志单独排查。'
+  blockers: []
+  created_at: '2026-05-29T17:40:00+08:00'
 - id: agent-filegen-progress-ux
   ndf_version: '3.0'
   description: 'PPT/HTML 全链路打通后 user 反馈：生成文件时（invoke_skill/run_python 在沙箱跑 30-60s）前端没有任何进度提示，看起来像卡死。诊断：进度反馈链路（SSE 事件 + AgentToolCallItem 状态徽章 + spinner 动画）都已搭好，但三个断点叠加——(1) 后端 tool-display.yaml 缺 9 个文件生成工具的 narration entry → 落 defaults → 泛化"正在处理 操作"；(2) 前端 agentChat.ts actionLabels 也缺 invoke_skill/create_* → 泛化"正在调用工具"；(3) 核心：后端只在工具开始/结束各 emit 一次，中间 30-60s 零事件 → 工具卡在 use 态（静止蓝点，连 spinner 都不转，spinner 只在 progress 态），文字也不动 → 完全像死了。用户选型（推荐档）：纯客户端实时计时器 + 具体文案，就在工具调用行内。Fix: 前端 AgentToolCallItem.vue 加客户端 elapsed 计时器（锚定 card 首次进入 in-flight 态，skew-free，每秒跳，≥2s 才显示，离开 in-flight 即停），+ 把文件生成工具加进 KNOWN_TOOL_NAMES 消除 spurious console.warn；agentChat.ts tool_call_start 给文件生成工具具体文案 + 从 invoke_skill 的 input_preview.skill_name 推导 PPT/Word/Excel/PDF 格式；后端 tool-display.yaml 补 9 个工具的 narration 模板（polling fallback 路径 + 完成态文案 + 消除 boot warning）。'
