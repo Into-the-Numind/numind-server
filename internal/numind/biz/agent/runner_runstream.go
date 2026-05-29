@@ -441,7 +441,13 @@ func (r *agentRunner) RunStream(
 		ToolsConfig: compose.ToolsNodeConfig{
 			Tools: einoTools,
 		},
-		MaxStep: 30,
+		// Kept > budget.DefaultLimits().MaxTurns (=100) so termination reason
+		// flows through our budget gate instead of eino's generic GraphRunError.
+		// See runner.go for the full rationale; raised 30 → 120 on 2026-05-29
+		// after dev agent_run 76 hit eino's cap mid-research with the budget
+		// untouched, then bumped together with MaxTurns 50 → 100 so the agent
+		// has real headroom for research+HTML+PPT in one run.
+		MaxStep: 120,
 		// Custom StreamToolCallChecker: scan the entire stream for tool_calls
 		// rather than only inspecting the first chunk. deepseek-v4-pro (and
 		// Claude, per eino's own docs at react.go:177) emit text/reasoning

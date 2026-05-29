@@ -965,7 +965,15 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		ToolsConfig: compose.ToolsNodeConfig{
 			Tools: einoTools,
 		},
-		MaxStep: 30,
+		// MaxStep is eino's per-graph node-traversal cap. Kept > budget's
+		// MaxTurns (now 100) so the authoritative termination reason flows
+		// through our budget gate (TerminalMaxTurns) rather than eino's
+		// generic GraphRunError "exceeds max steps" (the caller code ~line
+		// 970 below maps eino errors to TerminalModelError, losing context).
+		// Raised 30 → 120 on 2026-05-29 alongside MaxTurns 50 → 100: a
+		// research+HTML+PPT run wedged at eino step 30 mid-research while
+		// the (then 50-turn) budget was nowhere near exhausted.
+		MaxStep: 120,
 	})
 	if err != nil {
 		endedAt := time.Now()
