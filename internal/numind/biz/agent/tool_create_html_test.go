@@ -1,10 +1,8 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"html/template"
 	"strings"
 	"testing"
 
@@ -95,32 +93,73 @@ func TestCreateHTMLTool_Execute_AutoFilename(t *testing.T) {
 	assert.True(t, strings.HasSuffix(out.Filename, ".html"), "auto-generated filename should end with .html; got %q", out.Filename)
 }
 
-// TestCreateHTMLTool_XSSEscape verifies that script tags in the content body are
-// HTML-escaped and not rendered as raw script elements.
+// TestRenderHTML_FullDocumentVerbatim verifies that a complete HTML document
+// passed as string content is served byte-for-byte, NOT escaped or wrapped.
 //
-// This is the regression test for the P0 XSS fix: template.HTML was previously
-// used for Body/Title, bypassing html/template's automatic escaping. The fix
-// changes both fields to plain string so html/template escapes them at render time.
-func TestCreateHTMLTool_XSSEscape(t *testing.T) {
-	xssPayload := `<script>alert(1)</script>`
+// This is the regression test for the 2026-05-29 bug: create_html previously ran
+// all string content through html/template's {{.Body}} (plain string), which
+// HTML-escaped a full document and nested it inside a generic wrapper — the
+// browser then showed the page SOURCE as literal text instead of rendering it.
+// create_html's purpose is to publish agent-authored HTML; see the threat-model
+// note on renderHTML for why raw output is correct and safe here.
+func TestRenderHTML_FullDocumentVerbatim(t *testing.T) {
+	doc := `<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><title>报告</title>
+<style>body{background:#0d1117;color:#c9d1d9}</style></head>
+<body><h1>GitHub 周榜</h1><div class="card">内容</div></body>
+</html>`
 
-	// Verify directly via html/template that plain string fields are escaped.
-	// This mirrors the renderData struct now used inside tool_create_html.go.
-	tmplStr := `<!DOCTYPE html><html><body>{{.Body}}</body></html>`
-	tmpl, err := template.New("xss_test").Parse(tmplStr)
+	out, err := renderHTML(createHTMLInput{Content: doc})
 	require.NoError(t, err)
+	rendered := string(out)
 
-	data := struct {
-		Title string
-		Body  string
-	}{Title: "XSS Test", Body: xssPayload}
+	// Served verbatim: identical bytes, no escaping, no extra wrapper.
+	assert.Equal(t, doc, rendered, "full HTML document must be served byte-for-byte")
+	assert.NotContains(t, rendered, "&lt;", "document must NOT be HTML-escaped")
+	assert.Contains(t, rendered, "<style>body{background:#0d1117", "CSS must survive intact")
+	// The generic wrapper's hard-coded body{max-width:900px} style must NOT be injected.
+	assert.NotContains(t, rendered, "max-width:900px", "full document must not be re-wrapped")
+}
 
-	var buf bytes.Buffer
-	require.NoError(t, tmpl.Execute(&buf, data))
-	rendered := buf.String()
+// TestRenderHTML_FragmentWrappedRaw verifies that a bare fragment is wrapped in
+// the default styled document and rendered as real HTML (not escaped).
+func TestRenderHTML_FragmentWrappedRaw(t *testing.T) {
+	out, err := renderHTML(createHTMLInput{Title: "标题", Content: `<h1>Hello</h1><p>世界</p>`})
+	require.NoError(t, err)
+	rendered := string(out)
+
+	assert.Contains(t, rendered, "<!DOCTYPE html>", "fragment must be wrapped in a full document")
+	assert.Contains(t, rendered, "<title>标题</title>", "title must populate the wrapper")
+	assert.Contains(t, rendered, "<h1>Hello</h1>", "fragment markup must render raw, not escaped")
+	assert.NotContains(t, rendered, "&lt;h1&gt;", "fragment must NOT be HTML-escaped")
+}
+
+// TestRenderHTML_CustomTemplateEscapes verifies the escaping opt-in is preserved:
+// a caller-supplied template still escapes interpolated variables via html/template.
+func TestRenderHTML_CustomTemplateEscapes(t *testing.T) {
+	out, err := renderHTML(createHTMLInput{
+		Template: `<!DOCTYPE html><html><body>{{.Body}}</body></html>`,
+		Content:  `<script>alert(1)</script>`,
+	})
+	require.NoError(t, err)
+	rendered := string(out)
 
 	assert.NotContains(t, rendered, "<script>alert(1)</script>",
-		"raw <script> tag must not appear in rendered HTML — XSS escaping failed")
+		"custom template must escape interpolated variables")
 	assert.Contains(t, rendered, "&lt;script&gt;",
-		"<script> must be HTML-escaped as &lt;script&gt; in rendered output")
+		"<script> must be escaped as &lt;script&gt; under the custom-template path")
+}
+
+// TestRenderHTML_MapWithoutTemplate verifies a {title, body} map (case-insensitive)
+// is wrapped in the default document with a raw body.
+func TestRenderHTML_MapWithoutTemplate(t *testing.T) {
+	out, err := renderHTML(createHTMLInput{
+		Content: map[string]interface{}{"title": "地图标题", "body": "<section>正文</section>"},
+	})
+	require.NoError(t, err)
+	rendered := string(out)
+
+	assert.Contains(t, rendered, "<title>地图标题</title>")
+	assert.Contains(t, rendered, "<section>正文</section>", "map body must render raw")
 }
