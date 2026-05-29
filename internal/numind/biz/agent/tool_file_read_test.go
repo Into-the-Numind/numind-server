@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/middleware"
 )
 
@@ -167,57 +166,132 @@ func TestFileReadTool_Execute_UnsupportedMIME(t *testing.T) {
 	}
 }
 
-func TestFileReadTool_Execute_UserIDMismatch(t *testing.T) {
+// All early-validation paths return a soft error (ToolResult with ERROR content,
+// nil Go error). Returning a Go error would propagate to Eino as a NodeRunError
+// and TERMINATE the agent run before the LLM ever sees the message — see
+// tool_web_fetch.go:80-95 for the canonical rationale. The reference projects
+// confirm: Codex `RespondToModel` vs `Fatal` (function_call_error.rs);
+// Claude Code `ValidationResult { result: false, message, errorCode }`
+// surfaced as a tool_result block (FileReadTool.ts).
+
+func TestFileReadTool_Execute_UserIDMismatch_ReturnsSoftError(t *testing.T) {
 	srv := newHeadServer(t, 200, "application/pdf", 1024)
 
 	tool := &fileReadTool{headFn: http.Head}
 	// URL has user 123; context has user 999.
 	ctx := middleware.NewContextWithUserID(context.Background(), 999)
 	input, _ := json.Marshal(fileReadInput{FileURL: baseURL(srv.URL)})
-	_, err := tool.Execute(ctx, ToolInput(input))
-	if err == nil {
-		t.Fatal("expected permission error for user ID mismatch")
+	res, err := tool.Execute(ctx, ToolInput(input))
+	if err != nil {
+		t.Fatalf("expected nil error (soft reject), got: %v", err)
 	}
-	var e *errno.Errno
-	if !errors.As(err, &e) {
-		t.Fatalf("expected *errno.Errno, got %T: %v", err, err)
+	var out fileReadOutput
+	if err := json.Unmarshal(res, &out); err != nil {
+		t.Fatalf("invalid json: %v", err)
 	}
-	if e.Code != errno.ErrPermissionDenied.Code {
-		t.Errorf("expected ErrPermissionDenied code, got %q", e.Code)
+	if !strings.Contains(out.Content, "ERROR: file not owned by current user") {
+		t.Errorf("expected soft error in content about ownership, got: %s", out.Content)
 	}
 }
 
-func TestFileReadTool_Execute_URLFormatInvalid(t *testing.T) {
+func TestFileReadTool_Execute_URLFormatInvalid_ReturnsSoftError(t *testing.T) {
 	tool := &fileReadTool{headFn: http.Head}
-	// URL does not contain /agent-attachments/<id>/ segment.
+	// URL does not contain /agent-(attachments|outputs)/<id>/ segment.
 	input, _ := json.Marshal(fileReadInput{FileURL: "https://cdn.example.com/uploads/file.pdf"})
-	_, err := tool.Execute(ctxUser123(), ToolInput(input))
-	if err == nil {
-		t.Fatal("expected error for invalid URL format")
+	res, err := tool.Execute(ctxUser123(), ToolInput(input))
+	if err != nil {
+		t.Fatalf("expected nil error (soft reject), got: %v", err)
 	}
-	var e *errno.Errno
-	if !errors.As(err, &e) {
-		t.Fatalf("expected *errno.Errno, got %T: %v", err, err)
+	var out fileReadOutput
+	if err := json.Unmarshal(res, &out); err != nil {
+		t.Fatalf("invalid json: %v", err)
 	}
-	if e.Code != errno.ErrInvalidParameter.Code {
-		t.Errorf("expected ErrInvalidParameter code, got %q", e.Code)
+	if !strings.Contains(out.Content, "ERROR:") || !strings.Contains(out.Content, "agent-") {
+		t.Errorf("expected soft error mentioning agent- path format, got: %s", out.Content)
 	}
 }
 
-func TestFileReadTool_Execute_EmptyFileURL(t *testing.T) {
+func TestFileReadTool_Execute_EmptyFileURL_ReturnsSoftError(t *testing.T) {
 	tool := &fileReadTool{headFn: http.Head}
 	input, _ := json.Marshal(fileReadInput{FileURL: ""})
-	_, err := tool.Execute(ctxUser123(), ToolInput(input))
-	if err == nil {
-		t.Fatal("expected error for empty file_url")
+	res, err := tool.Execute(ctxUser123(), ToolInput(input))
+	if err != nil {
+		t.Fatalf("expected nil error (soft reject), got: %v", err)
+	}
+	var out fileReadOutput
+	if err := json.Unmarshal(res, &out); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if !strings.Contains(out.Content, "ERROR: file_url is required") {
+		t.Errorf("expected soft error about missing file_url, got: %s", out.Content)
 	}
 }
 
-func TestFileReadTool_Execute_BadInputJSON(t *testing.T) {
+func TestFileReadTool_Execute_BadInputJSON_ReturnsSoftError(t *testing.T) {
 	tool := &fileReadTool{headFn: http.Head}
-	_, err := tool.Execute(ctxUser123(), ToolInput([]byte("not-json")))
-	if err == nil {
-		t.Fatal("expected JSON parse error")
+	res, err := tool.Execute(ctxUser123(), ToolInput([]byte("not-json")))
+	if err != nil {
+		t.Fatalf("expected nil error (soft reject), got: %v", err)
+	}
+	var out fileReadOutput
+	if err := json.Unmarshal(res, &out); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if !strings.Contains(out.Content, "ERROR: invalid input JSON") {
+		t.Errorf("expected soft error about invalid JSON, got: %s", out.Content)
+	}
+}
+
+func TestFileReadTool_Execute_Unauthenticated_ReturnsSoftError(t *testing.T) {
+	srv := newHeadServer(t, 200, "application/pdf", 1024)
+
+	tool := &fileReadTool{headFn: http.Head}
+	// context.Background carries no userID → middleware.UserIDFromCtx returns ok=false.
+	input, _ := json.Marshal(fileReadInput{FileURL: baseURL(srv.URL)})
+	res, err := tool.Execute(context.Background(), ToolInput(input))
+	if err != nil {
+		t.Fatalf("expected nil error (soft reject), got: %v", err)
+	}
+	var out fileReadOutput
+	if err := json.Unmarshal(res, &out); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if !strings.Contains(out.Content, "ERROR: user not authenticated") {
+		t.Errorf("expected soft error about authentication, got: %s", out.Content)
+	}
+}
+
+// TestFileReadTool_Execute_AgentOutputsURL_ReadsSuccessfully covers the
+// bug reported on 2026-05-29 (agent_run_id=83): LLM tried to read back its
+// own generated artifact at /agent-outputs/<userID>/..., and file_read rejected
+// it because the regex only accepted /agent-attachments/. Generated artifacts
+// from create_text/create_csv/create_html/create_json/run_python all live
+// under /agent-outputs/<userID>/ (see tool_create_helpers.go:90) and are
+// legitimately owned by the same user — file_read MUST accept them.
+func TestFileReadTool_Execute_AgentOutputsURL_ReadsSuccessfully(t *testing.T) {
+	srv := newHeadServer(t, 200, "text/plain", 256)
+
+	parser := &mockFileParser{content: "previously generated content", truncated: false}
+	tool := &fileReadTool{textParser: parser, headFn: http.Head}
+
+	// URL contains /agent-outputs/123/ — same user as ctxUser123().
+	input, _ := json.Marshal(fileReadInput{
+		FileURL: srv.URL + "/agent-outputs/123/20260529-185416-generated_report.txt",
+	})
+	result, err := tool.Execute(ctxUser123(), ToolInput(input))
+	if err != nil {
+		t.Fatalf("unexpected error reading agent-outputs URL: %v", err)
+	}
+
+	var out fileReadOutput
+	if err := json.Unmarshal(result, &out); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+	if strings.HasPrefix(out.Content, "ERROR:") {
+		t.Errorf("agent-outputs URL should be accepted, got soft error: %s", out.Content)
+	}
+	if out.Content != parser.content {
+		t.Errorf("expected content %q, got %q", parser.content, out.Content)
 	}
 }
 
@@ -307,9 +381,12 @@ func TestExtractUserIDFromURL(t *testing.T) {
 		wantID  uint
 		wantErr bool
 	}{
-		{"valid", "https://cdn.example.com/agent-attachments/42/file.pdf", 42, false},
+		{"valid-attachments", "https://cdn.example.com/agent-attachments/42/file.pdf", 42, false},
+		{"valid-outputs", "https://cdn.example.com/agent-outputs/42/20260529-x.txt", 42, false},
+		{"valid-outputs-deep", "https://b.cos.ap-x.myqcloud.com/agent-outputs/7/sub/dir/file.csv", 7, false},
 		{"no-segment", "https://cdn.example.com/uploads/file.pdf", 0, true},
-		{"zero-id", "https://cdn.example.com/agent-attachments/0/file.pdf", 0, false},
+		{"zero-id-attachments", "https://cdn.example.com/agent-attachments/0/file.pdf", 0, false},
+		{"zero-id-outputs", "https://cdn.example.com/agent-outputs/0/file.pdf", 0, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
