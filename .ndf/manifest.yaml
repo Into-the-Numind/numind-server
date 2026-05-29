@@ -1,5 +1,31 @@
 schema_version: '2.0'
 features:
+- id: fix-sandbox-skills-mount
+  ndf_version: '3.0'
+  description: 'wall-time 修复部署后 user 再跑 Agent 生 PPT 又失败：AI narration 报 "PPTX skill 不可用 sandbox unavailable"，反复重试后 [GraphRunError] exceeds max steps。真错误（dev 日志）：AcquireForSkill: prepare container dirs: docker exec mkdir: cannot create directory /skills/pptx-author: Permission denied。Root cause: AcquireForSkill 用 v1 copy 方式装载 skill——mkdir /skills/<name> 再 copy 文件进去。但沙箱 --read-only + uid 1000 运行，而 skill 镜像的 /skills 是 root 所有（Dockerfile.base 只 chown /workdir|/input|/output，漏了 /skills）→ mkdir EACCES，所有 skill（pptx/docx/xlsx/pdf）都挂。前面 liveness 修复让容器活着了，这是同一条路径的下一个 blocker。Fix: 把 /skills 挂成 tmpfs（uid=1000, 64m），与 /workdir 并列——可写 + sandboxuser 所有 + 短命。显式 mount 还顺带覆盖镜像的 VOLUME ["/skills"]，那个 directive 之前每 spawn 一个容器就泄漏一个匿名卷（dev 上发现 49 个）。纯 spawn-config 改动，无需重建镜像。'
+  track: hotfix
+  stage: H3
+  classification_reason: 'Hotfix — (1) 无 DB (2) 无新 API (3) 无新外部服务 (4) 1 文件 security.go + 测试 (5) 非高风险。Bug-from-user：Agent 生成又失败，dev 日志 docker exec mkdir EACCES /skills/pptx-author 直接证据。属沙箱 fix 链条第 4 环——容器活了(liveness)→镜像有库(skill image)→时间够(walltime)→现在 skill 装载目录可写(本修复)。'
+  last_updated_by: ai-h3-landed-dev-verified
+  last_updated_at: '2026-05-29T15:35:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: fix/fix-sandbox-skills-mount
+  worktrees: {}
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-D1 (ai 2026-05-29): /skills 挂 tmpfs 而非「在镜像 Dockerfile.base chown /skills 给 sandboxuser」。理由：(a) 即使 chown，--read-only rootfs 下 /skills 仍可能不可写（取决于 VOLUME 语义）；tmpfs 显式可写最稳。(b) tmpfs 显式 mount 覆盖 VOLUME ["/skills"]，根除匿名卷泄漏（每容器一个，dev 已积 49 个）。(c) 纯 Go spawn-config 改动，不用重建+重推 skill 镜像，部署更快。(d) 与现有 /workdir tmpfs 模式一致。'
+  - 'H1-D2 (ai 2026-05-29): 部署前先在 dev host 用一次性 docker run（相同 flags + /skills tmpfs）验证 uid 1000 能 mkdir /skills/pptx-author + 写文件，再实施，避免又一次 deploy-then-fail。部署后又在真实 pool 容器复现完整 AcquireForSkill 路径（mkdir + stage + 生成 27KB pptx）确认。'
+  - 'H1-D3 (ai 2026-05-29): docker volume prune -f 清掉 49 个泄漏匿名卷（mysql/redis 在用卷不受影响）。运维清理。'
+  related_features:
+  - 'bump-agent-walltime-budget (merged 2026-05-29) — 同一 incident 链上一环；wall-time 放开后任务真正跑到 invoke_skill 才暴露 /skills 不可写'
+  - 'fix-skill-image-sandbox-env (merged 2026-05-29) — skill 镜像 OpenBLAS/缓存 env；本修复解决 skill 文件「装载目录」可写性，与镜像「运行期 env」互补'
+  blockers: []
+  created_at: '2026-05-29T15:25:00+08:00'
 - id: bump-agent-walltime-budget
   ndf_version: '3.0'
   description: 'fix-skill-image-sandbox-env 部署后 user 重跑 Agent 生 PPT+HTML 又失败，但这次不是沙箱/skill bug：报 [NodeRunError] tool execution stopped by hook: action=4。action=4 = HookActionBudgetExceeded → TerminalErrorMaxBudget。agent_run#73 terminal_metadata = {budget_dimension: max_wall_time, limit: 300000, used: 303876} —— 整个 agent run（web 研究 + 完整 HTML 报告 + 多页 PPT via sandbox skill）真实跑了刚过 5 分钟，撞上 300s wall-clock 预算上限被 kill。之前的 run 都 fail-fast 所以没碰到这个 cap。Fix: budget.DefaultLimits().MaxWallTime 300s→900s。MaxWallTime 无 per-agent override（LimitsFromAgentDef 只映射 credits），全 run 共用此 default。成本/runaway 仍由 MaxTurns(50)+MaxCredits(800/run)+MaxDailyCredits(2000) 兜底，wall-time 只是 stuck-run guard，放宽到 900s 给真实多步任务 headroom。'
