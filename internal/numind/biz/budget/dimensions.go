@@ -21,13 +21,20 @@ const (
 // Values:
 //   - MaxTurns        = 50  (蓝本 §4.1.8 step limit default)
 //   - MaxCredits      = 800 (蓝本 §6.6 default 配置上限)
-//   - MaxWallTime     = 300s
+//   - MaxWallTime     = 900s
 //   - MaxDailyCredits = 2000
+//
+// MaxWallTime was 300s, but a single multi-artifact run (web research + a full
+// HTML report + a multi-slide PPT via the sandbox skill) legitimately runs just
+// over 5 min and was being killed mid-flight (action=4 / TerminalErrorMaxBudget,
+// dimension=max_wall_time). Cost/runaway are still bounded by MaxTurns(50),
+// MaxCredits(800/run) and MaxDailyCredits(2000); wall-time is only a stuck-run
+// guard, so 900s gives real multi-step tasks headroom without risking blowout.
 func DefaultLimits() Limits {
 	return Limits{
 		MaxTurns:        50,
 		MaxCredits:      800,
-		MaxWallTime:     300 * time.Second,
+		MaxWallTime:     900 * time.Second,
 		MaxDailyCredits: 2000,
 	}
 }

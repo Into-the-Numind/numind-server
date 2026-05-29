@@ -13,7 +13,7 @@ func TestDefaultLimits(t *testing.T) {
 	d := DefaultLimits()
 	assert.Equal(t, 50, d.MaxTurns)
 	assert.Equal(t, int64(800), d.MaxCredits)
-	assert.Equal(t, 300*time.Second, d.MaxWallTime)
+	assert.Equal(t, 900*time.Second, d.MaxWallTime)
 	assert.Equal(t, int64(2000), d.MaxDailyCredits)
 }
 
@@ -58,5 +58,5 @@ func TestLimitsFromAgentDef_NonZeroPointers(t *testing.T) {
 	assert.Equal(t, int64(5000), got.MaxDailyCredits)
 	// 未配置的字段走 default
 	assert.Equal(t, 50, got.MaxTurns)
-	assert.Equal(t, 300*time.Second, got.MaxWallTime)
+	assert.Equal(t, 900*time.Second, got.MaxWallTime)
 }
