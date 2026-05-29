@@ -372,6 +372,8 @@ func (t *invokeSkillTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 		return skillErrorJSON(args.SkillName, "LLM failed to generate code: "+codeErr.Error(), "", warning), nil
 	}
 	if strings.TrimSpace(pythonCode) == "" {
+		log.Warnw("invoke_skill: LLM returned empty code",
+			"skill", args.SkillName, "instructions_len", len(args.Instructions))
 		return skillErrorJSON(args.SkillName, "LLM failed to generate code (empty response)", "", warning), nil
 	}
 
@@ -379,6 +381,8 @@ func (t *invokeSkillTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 	// Use WriteFile (via sandbox.WriteFile) to inject skill_run.py into /workdir/.
 	// This avoids shell escape issues with -c execution.
 	if writeErr := sandbox.WriteFile(ctx, sess.Session, "skill_run.py", []byte(pythonCode), dc); writeErr != nil {
+		log.Warnw("invoke_skill: write skill code to container failed",
+			"skill", args.SkillName, "error", writeErr, "code_len", len(pythonCode))
 		return skillErrorJSON(args.SkillName, "failed to write skill code to container: "+writeErr.Error(), "", warning), nil
 	}
 
@@ -388,12 +392,37 @@ func (t *invokeSkillTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 		dc,
 	)
 	if execErr != nil {
+		// Observability: the stderr/exit here were previously only handed to the
+		// LLM (which paraphrases them, e.g. "环境初始化遇到问题"), leaving zero
+		// server-side trace. Log the full picture so recurring first-attempt
+		// failures (2026-05-29 PPT retry) are diagnosable: the Python traceback
+		// (stderr) plus a preview of the LLM-generated code that produced it.
+		log.Warnw("invoke_skill: sandbox execution error",
+			"skill", args.SkillName,
+			"error", execErr,
+			"exit_code", execResult.ExitCode,
+			"stderr", truncateRunes(execResult.Stderr, 2000),
+			"stdout", truncateRunes(execResult.Stdout, 500),
+			"code_len", len(pythonCode),
+			"code_preview", truncateRunes(pythonCode, 1200),
+		)
 		return skillErrorJSON(args.SkillName,
 			"sandbox execution failed: "+execErr.Error(),
 			execResult.Stderr, warning,
 		), execErr
 	}
 	if execResult.ExitCode != 0 {
+		// The common failure mode: LLM-generated Python raised an exception
+		// (exit 1). stderr holds the traceback — log it + the code preview so we
+		// can see exactly which line/library call failed.
+		log.Warnw("invoke_skill: skill code exited non-zero",
+			"skill", args.SkillName,
+			"exit_code", execResult.ExitCode,
+			"stderr", truncateRunes(execResult.Stderr, 2000),
+			"stdout", truncateRunes(execResult.Stdout, 500),
+			"code_len", len(pythonCode),
+			"code_preview", truncateRunes(pythonCode, 1200),
+		)
 		return skillErrorJSON(args.SkillName,
 			fmt.Sprintf("skill ran but returned exit code %d", execResult.ExitCode),
 			execResult.Stderr, warning,
@@ -408,6 +437,13 @@ func (t *invokeSkillTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 		// Fall through — outputs may be non-empty even on partial error.
 	}
 	if len(outputs) == 0 {
+		log.Warnw("invoke_skill: skill ran but produced no output files",
+			"skill", args.SkillName,
+			"exit_code", execResult.ExitCode,
+			"stdout", truncateRunes(execResult.Stdout, 500),
+			"stderr", truncateRunes(execResult.Stderr, 1000),
+			"code_len", len(pythonCode),
+		)
 		return skillErrorJSON(
 			args.SkillName,
 			"skill ran successfully but produced no output files",
