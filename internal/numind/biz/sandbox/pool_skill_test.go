@@ -238,3 +238,74 @@ func TestDisabledPool_SkillMethods_AllDisabled(t *testing.T) {
 		t.Errorf("disabledPool.ReturnSkillSession = %v; want nil", err)
 	}
 }
+
+// TestMimeTypeForOutput_OfficeFilesNotZip is the regression test for the
+// 2026-05-29 incident: a skill-generated .pptx was uploaded to COS with
+// Content-Type "application/zip" (because http.DetectContentType returns
+// that for Office Open XML files, which ARE zip archives internally), and
+// macOS Safari then expanded the download into a folder of XML. Any
+// future refactor that goes back to raw content-sniffing must trip these
+// assertions.
+func TestMimeTypeForOutput_OfficeFilesNotZip(t *testing.T) {
+	// "PK\x03\x04" is the zip magic number — what every .pptx/.docx/.xlsx
+	// starts with at the byte level. http.DetectContentType on this returns
+	// "application/zip". mimeTypeForOutput MUST override that based on the
+	// file extension; otherwise browsers auto-expand the download.
+	zipMagic := []byte("PK\x03\x04rest of pptx bytes…")
+
+	cases := []struct {
+		name     string
+		filename string
+		want     string
+	}{
+		{
+			"pptx must NOT be application/zip",
+			"deck.pptx",
+			"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+		},
+		{
+			"docx must NOT be application/zip",
+			"report.docx",
+			"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		},
+		{
+			"xlsx must NOT be application/zip",
+			"sheet.xlsx",
+			"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+		},
+		{
+			"pdf maps to application/pdf",
+			"doc.pdf",
+			"application/pdf",
+		},
+		{
+			"case-insensitive extension",
+			"Report.PPTX",
+			"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mimeTypeForOutput(tc.filename, zipMagic)
+			if got != tc.want {
+				t.Errorf("mimeTypeForOutput(%q) = %q; want %q (NOT application/zip — that triggers Safari auto-expand)",
+					tc.filename, got, tc.want)
+			}
+			if got == "application/zip" {
+				t.Errorf("mimeTypeForOutput(%q) returned application/zip — this re-introduces the 2026-05-29 .pptx-becomes-folder bug",
+					tc.filename)
+			}
+		})
+	}
+}
+
+// TestMimeTypeForOutput_UnknownExtensionFallsBack verifies the content-sniff
+// fallback still works for extensions not in the explicit map.
+func TestMimeTypeForOutput_UnknownExtensionFallsBack(t *testing.T) {
+	// PNG header bytes — DetectContentType recognises these as image/png.
+	pngHeader := []byte("\x89PNG\r\n\x1a\nfake png body bytes …")
+	got := mimeTypeForOutput("mystery.weirdext", pngHeader)
+	if got != "image/png" {
+		t.Errorf("unknown extension fall-back: got %q; want image/png from sniff", got)
+	}
+}
