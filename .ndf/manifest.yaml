@@ -1,5 +1,32 @@
 schema_version: '2.0'
 features:
+- id: fix-skill-output-mime
+  ndf_version: '3.0'
+  description: 'bump-eino-maxstep 部署后 user 终于完整跑通 Agent 生 PPT—但下载下来的 .pptx 是一个文件夹（[Content_Types].xml + _rels/ + docProps/ + ppt/slides/slide{1..5}.xml…），里面的内容其实是合法 PPTX 的 zip 内部结构。Root cause: pool_skill.go CollectOutputs 用 http.DetectContentType(data) 检测 MIME → Office Open XML（.pptx/.docx/.xlsx）字节层就是 zip → 检测结果 "application/zip" → COS 上传时这个 MIME 进 Content-Type 头 → macOS Safari 看见 application/zip 自动用 Archive Utility 解压 → 用户看到的"文件夹" = 被解开的 PPTX 内容。Fix: 新增 mimeTypeForOutput(filename, data) 按扩展名映射规范 MIME（.pptx → application/vnd.openxmlformats-officedocument.presentationml.presentation，.docx/.xlsx/.pdf 同理），未知扩展回退 http.DetectContentType。CollectOutputs 改调它而非裸 sniff。'
+  track: hotfix
+  stage: H3
+  classification_reason: 'Hotfix — (1) 无 DB (2) 无新 API (3) 无新外部服务 (4) 1 文件 pool_skill.go + 测试 (5) 非高风险（扩展名→MIME 映射，行为契约扩展性兼容）。Bug-from-user：下载的 .pptx 是一个文件夹，sandbox/skill 完全工作但 Content-Type 错误致浏览器误解。这是沙箱链条的最后一公里——生成对了，传错了。'
+  last_updated_by: ai-h3-landed-pending-user-retest
+  last_updated_at: '2026-05-29T16:55:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: fix/fix-skill-output-mime
+  worktrees: {}
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-D1 (ai 2026-05-29): 扩展名优先 + 内容嗅探回退，而非"嗅探优先 + 扩展名校验"。理由：(a) 我们的 skill 产出文件名总是可控（由 skill 自己定，遵循约定）。(b) Office Open XML 的真 MIME 在标准内是唯一的，扩展名→MIME 映射是 1:1 确定的。(c) 嗅探无法区分 .pptx/.docx/.xlsx（它们字节层都是 zip），扩展名是唯一信号源。(d) 未知扩展嗅探兜底保证扩展性不丢。'
+  - 'H1-D2 (ai 2026-05-29): 修 pool_skill.go 而非 cos_uploader.go。理由：CollectOutputs 是真相之源（知道 filename 和 data 两者），cos_uploader 只是中间层。在源头决定 MIME 让所有上传路径（invoke_skill + 未来其他）一致。'
+  - 'H1-D3 (ai 2026-05-29): 不动 tool_run_python.go 路径。它用 mime.TypeByExtension（标准库 mime 数据库），返回空时 fallback 到 application/octet-stream——后者浏览器不会自动解压（不像 application/zip）。是不同失败模式，本 hotfix 不扩展范围。可单独优化但非用户阻塞。'
+  - 'H1-D4 (ai 2026-05-29): 强回归测试。TestMimeTypeForOutput_OfficeFilesNotZip 用 PK 魔术字节作为 input 模拟真实 .pptx，断言返回值「NEVER == application/zip」。这是把"未来谁要是改回 sniff，office 文件又会变 zip"这个失败模式钉死的契约测试。'
+  related_features:
+  - 'bump-eino-maxstep (merged 2026-05-29) — 让 agent 跑完整任务到 invoke_skill，本 hotfix 是产出回传最后一环'
+  - 'sandbox-copy-via-tar (merged 2026-05-29) — docker cp tmpfs bug 修复让 CollectOutputs 真能拿到文件，本 hotfix 修拿到后的标签'
+  blockers: []
+  created_at: '2026-05-29T16:45:00+08:00'
 - id: bump-eino-maxstep
   ndf_version: '3.0'
   description: 'sandbox-copy-via-tar 部署后 user 又跑 Agent 生 PPT，沙箱真的好了——但前面那个用户报错 [GraphRunError] exceeds max steps 暴露出新约束：dev agent_run 76 整段日志（3 分钟、~30 个 web_search+web_fetch 调用、全程未到 invoke_skill）的根本原因是两个耦合 cap 都太紧：(1) eino react.AgentConfig.MaxStep 在 runner.go 和 runner_runstream.go 硬编码 30，比我们自己的 budget MaxTurns=50 还低 → eino 先 trip → 框架抛 GraphRunError「exceeds max steps」→ caller 把它当成 TerminalModelError，把"超预算"的信号完全丢了，DB state_reason 记成 model_error。(2) budget.DefaultLimits().MaxTurns=50 对一个 research-heavy + 双产物（HTML+PPT）的任务太紧。user 要 100，bump 双 cap：MaxTurns 50→100、eino MaxStep 30→120（保持严格 > MaxTurns，让权威终止理由始终走我们的 budget gate）。成本仍由 MaxCredits(800/run) 和 MaxDailyCredits(2000) 兜底，MaxWallTime(900s) 兜 stuck 任务。'
