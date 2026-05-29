@@ -21,7 +21,7 @@ import (
 // ===========================================================================
 
 // runPythonTool implements FullTool. It executes arbitrary Python 3 code
-// inside an isolated Docker sandbox and uploads any files written to /output/
+// inside an isolated Docker sandbox and uploads any files written to /workdir/output/
 // to COS, returning their presigned URLs.
 //
 // Use ONLY when Layer 1 (create_csv/html/json/text/png_chart) and Layer 2
@@ -54,7 +54,7 @@ Do NOT use run_python when:
   - You need PDF → use create_pdf skill instead.
   - You just want to run arbitrary Python logic without file output → this is the wrong tool; reconsider your approach.
 
-Input files (COS URLs) are mounted read-only at /workspace/input/<filename>. Output files must be written to /output/. Execution timeout: 30s default (max 120s). Resource limits: 256MB RAM, 1 CPU. Returns list of COS URLs for each generated output file.`
+Input files (COS URLs) are mounted read-only at /workdir/input/<filename>. Output files must be written to /workdir/output/. Execution timeout: 30s default (max 120s). Resource limits: 256MB RAM, 1 CPU. Returns list of COS URLs for each generated output file.`
 }
 
 func (t *runPythonTool) UserFacingName() string        { return "Python 代码执行（文件生成）" }
@@ -71,17 +71,17 @@ func (t *runPythonTool) InputSchema() json.RawMessage {
 		"properties": {
 			"code": {
 				"type": "string",
-				"description": "Python 3 code to execute. Write output files to /output/ directory. Example: open('/output/result.ical','w').write(...)."
+				"description": "Python 3 code to execute. Write output files to /workdir/workdir/output/ directory. Example: open('/workdir/output/result.ical','w').write(...)."
 			},
 			"input_files": {
 				"type": "array",
 				"items": {"type": "string", "format": "uri"},
-				"description": "Optional list of COS URLs to download as inputs. Available as /workspace/input/<filename> inside the sandbox."
+				"description": "Optional list of COS URLs to download as inputs. Available as /workdir/input/<filename> inside the sandbox."
 			},
 			"expected_output_files": {
 				"type": "array",
 				"items": {"type": "string"},
-				"description": "Expected output filenames under /output/. If empty, all files in /output/ are collected."
+				"description": "Expected output filenames under /workdir/output/. If empty, all files in /workdir/output/ are collected."
 			},
 			"timeout_seconds": {
 				"type": "integer",
@@ -100,13 +100,13 @@ func (t *runPythonTool) InputSchema() json.RawMessage {
 // ===========================================================================
 
 type runPythonInput struct {
-	// Python 3 code to execute. Write output files to /output/.
+	// Python 3 code to execute. Write output files to /workdir/output/.
 	Code string `json:"code"`
 
-	// Optional COS URLs to download into /workspace/input/<filename>.
+	// Optional COS URLs to download into /workdir/input/<filename>.
 	InputFiles []string `json:"input_files,omitempty"`
 
-	// Expected filenames under /output/. If empty, collect all files.
+	// Expected filenames under /workdir/output/. If empty, collect all files.
 	ExpectedOutputFiles []string `json:"expected_output_files,omitempty"`
 
 	// Timeout in seconds; 0 = default 30s; max 120s.
@@ -183,7 +183,7 @@ func (t *runPythonTool) Execute(ctx context.Context, input ToolInput) (ToolResul
 	start := time.Now()
 
 	// Step 1: Create directory structure inside sandbox
-	if err := dc.ExecMkdir(ctx, sess.ContainerID, "/workspace/input", "/output"); err != nil {
+	if err := dc.ExecMkdir(ctx, sess.ContainerID, "/workdir/input", "/workdir/output"); err != nil {
 		return runPythonFriendlyError(fmt.Sprintf("run_python: 沙箱目录初始化失败: %v", err)), nil
 	}
 
@@ -197,7 +197,7 @@ func (t *runPythonTool) Execute(ctx context.Context, input ToolInput) (ToolResul
 		if err != nil {
 			return runPythonFriendlyError(fmt.Sprintf("run_python: 下载输入文件失败 (%s): %v", fileURL, err)), nil
 		}
-		containerPath := "/workspace/input/" + sanitizeOutputFilename(filename)
+		containerPath := "/workdir/input/" + sanitizeOutputFilename(filename)
 		if err := t.writeFileToSandbox(ctx, sess, containerPath, data, dc); err != nil {
 			return runPythonFriendlyError(fmt.Sprintf("run_python: 写入输入文件失败 (%s): %v", filename, err)), nil
 		}
@@ -248,11 +248,11 @@ func (t *runPythonTool) Execute(ctx context.Context, input ToolInput) (ToolResul
 // workaround for arbitrary paths.
 func (t *runPythonTool) writeFileToSandbox(ctx context.Context, sess *sandbox.Session, containerPath string, data []byte, dc sandbox.DockerClient) error {
 	// sandbox.WriteFile prepends /workdir/ to relative paths; use CopyToContainer directly
-	// for absolute paths (e.g. /workspace/input/ or /workdir/run.py).
+	// for absolute paths (e.g. /workdir/input/ or /workdir/run.py).
 	return dc.CopyToContainer(ctx, sess.ContainerID, containerPath, strings.NewReader(string(data)))
 }
 
-// collectOutputFiles pulls files from /output/ inside the sandbox using
+// collectOutputFiles pulls files from /workdir/output/ inside the sandbox using
 // CopyFromContainer to a temp dir, then uploads each to COS.
 func (t *runPythonTool) collectOutputFiles(
 	ctx context.Context,
@@ -260,10 +260,10 @@ func (t *runPythonTool) collectOutputFiles(
 	dc sandbox.DockerClient,
 	expectedFiles []string,
 ) ([]runPythonFileResult, error) {
-	// List files in /output/
-	lsRes, err := sandbox.ExecCommand(ctx, sess, "ls /output/ 2>/dev/null || true", dc)
+	// List files in /workdir/output/
+	lsRes, err := sandbox.ExecCommand(ctx, sess, "ls /workdir/output/ 2>/dev/null || true", dc)
 	if err != nil {
-		return nil, fmt.Errorf("ls /output/: %w", err)
+		return nil, fmt.Errorf("ls /workdir/output/: %w", err)
 	}
 	rawNames := strings.Fields(lsRes.Stdout)
 
@@ -299,9 +299,9 @@ func (t *runPythonTool) collectOutputFiles(
 	}
 	defer os.RemoveAll(tmpDir)
 
-	// CopyFromContainer copies /output/ directory contents to tmpDir
-	if err := dc.CopyFromContainer(ctx, sess.ContainerID, "/output/.", tmpDir); err != nil {
-		return nil, fmt.Errorf("CopyFromContainer /output/: %w", err)
+	// CopyFromContainer copies /workdir/output/ directory contents to tmpDir
+	if err := dc.CopyFromContainer(ctx, sess.ContainerID, "/workdir/output/.", tmpDir); err != nil {
+		return nil, fmt.Errorf("CopyFromContainer /workdir/output/: %w", err)
 	}
 
 	// Upload each file to COS
