@@ -52,7 +52,10 @@ func newTestAgentRunStore(t *testing.T) IAgentRunStore {
 			compact_state_v2          TEXT,
 			total_tokens_used_v2      INTEGER NOT NULL DEFAULT 0,
 			use_compact_v2            INTEGER NOT NULL DEFAULT 0,
-			context_window_limit_v2   INTEGER
+			context_window_limit_v2   INTEGER,
+			is_pinned                 INTEGER NOT NULL DEFAULT 0,
+			session_name              TEXT    NOT NULL DEFAULT '',
+			is_deleted                INTEGER NOT NULL DEFAULT 0
 		)`).Error)
 
 	sqlDB, err := db.DB()
@@ -269,7 +272,10 @@ func newTestAgentRunStoreFull(t *testing.T) IAgentRunStore {
 			compact_state_v2          TEXT,
 			total_tokens_used_v2      INTEGER NOT NULL DEFAULT 0,
 			use_compact_v2            INTEGER NOT NULL DEFAULT 0,
-			context_window_limit_v2   INTEGER
+			context_window_limit_v2   INTEGER,
+			is_pinned                 INTEGER NOT NULL DEFAULT 0,
+			session_name              TEXT    NOT NULL DEFAULT '',
+			is_deleted                INTEGER NOT NULL DEFAULT 0
 		)`).Error)
 
 	sqlDB, err := db.DB()
