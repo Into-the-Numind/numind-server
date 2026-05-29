@@ -89,13 +89,19 @@ func (m *SandboxHookManager) preToolCall(ctx context.Context, t einotool.BaseToo
 		log.Warnw("SandboxHook.PreToolCall: tool.Info failed", "error", err)
 		return HookActionContinue, nil
 	}
-	if info.Name != "bash_exec" {
+	// 2026-05-29 hotfix: borrow a sandbox session for any tool that needs one.
+	// Was bash_exec only; run_python was added in V1.5 task 4.9 but never
+	// wired here, so sandboxSessionForCurrentCall("run_python") always
+	// returned nil and the tool reported "沙箱当前不可用". Dev /qa caught it
+	// while verifying skill-progressive-loader end-to-end.
+	if !toolNeedsSandbox(info.Name) {
 		return HookActionContinue, nil
 	}
 
 	runID := RunIDFromContext(ctx)
 	if runID == 0 {
-		log.Warnw("SandboxHook.PreToolCall: no runID in ctx; bash_exec without runID — skip sandbox audit")
+		log.Warnw("SandboxHook.PreToolCall: no runID in ctx; sandbox tool without runID — skip audit",
+			"tool", info.Name)
 		return HookActionContinue, nil
 	}
 
@@ -146,7 +152,7 @@ func (m *SandboxHookManager) postToolCall(ctx context.Context, t einotool.BaseTo
 		log.Warnw("SandboxHook.PostToolCall: tool.Info failed", "error", err)
 		return HookActionContinue, nil
 	}
-	if info.Name != "bash_exec" {
+	if !toolNeedsSandbox(info.Name) {
 		return HookActionContinue, nil
 	}
 	runID := RunIDFromContext(ctx)
@@ -189,6 +195,19 @@ func (m *SandboxHookManager) postToolCall(ctx context.Context, t einotool.BaseTo
 			"error", err)
 	}
 	return HookActionContinue, nil
+}
+
+// toolNeedsSandbox returns true for tools whose Execute requires a borrowed
+// sandbox.Session via sandboxSessionForCurrentCall. Keep this list in sync
+// with the tools that actually call sandboxSessionForCurrentCall — currently
+// bash_exec and run_python. Adding a new sandbox-using tool means adding it
+// here AND making it surface a friendly soft error when the session is nil.
+func toolNeedsSandbox(toolName string) bool {
+	switch toolName {
+	case "bash_exec", "run_python":
+		return true
+	}
+	return false
 }
 
 func intDeref(p *int) int {
