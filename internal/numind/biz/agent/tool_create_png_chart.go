@@ -106,7 +106,7 @@ func (t *createPNGChartTool) Description() string {
 		"Returns a download URL. Use for data visualization in reports, analysis summaries, or presentation slides. " +
 		"Labels must be in English or ASCII for correct rendering (Chinese labels may not render in V1; use V2 when available). " +
 		"For interactive HTML charts, use the create_interactive_chart skill instead. " +
-		"For multi-axis or complex static charts, prefer the invoke_skill path."
+		"For multi-axis or complex static charts, prefer the read_skill → run_python path."
 }
 
 func (t *createPNGChartTool) UserFacingName() string { return "生成图表（PNG）" }

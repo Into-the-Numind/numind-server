@@ -41,7 +41,7 @@ func (t *createHTMLTool) Description() string {
 		"A bare fragment is wrapped in a minimal styled page. " +
 		"Content is treated as HTML (NOT escaped), so write real markup, not escaped text. " +
 		"Use for formatted reports, dashboards, or styled documents. " +
-		"For programmatic charts or office formats (pptx/docx/xlsx/pdf), prefer the invoke_skill path."
+		"For programmatic charts or office formats (pptx/docx/xlsx/pdf), prefer the read_skill → run_python path."
 }
 func (t *createHTMLTool) UserFacingName() string      { return "生成 HTML 页面" }
 func (t *createHTMLTool) NarrationVerb() string       { return "生成" }

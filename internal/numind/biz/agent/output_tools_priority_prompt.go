@@ -1,15 +1,20 @@
 package agent
 
-// OutputToolsPriorityAddendum 是 V1.5 Track 4 引入的固定段落，
-// 引导 LLM 按"简单 → 复杂 → 兜底"三层架构选择文件生成工具：
+// OutputToolsPriorityAddendum 是 V1.5 Track 4 引入、2026-05-29 skill-progressive-loader
+// 重构后的固定段落，引导 LLM 按"简单 → 复杂 → 兜底"三层架构选择文件生成工具：
 //
 //	Layer 1 — Go 简单工具（无 sandbox 开销）：create_csv/html/json/text/png_chart
-//	Layer 2 — Python skill（沙箱内运行）：invoke_skill(xlsx/docx/pptx/pdf-from-html)
-//	Layer 3 — 兜底 Python（最后选项）：run_python（长尾 / 奇怪格式）
+//	Layer 2 — Python skill（沙箱内运行，progressive disclosure 范式）：
+//	         先 read_skill 拿 SKILL.md 指南，再 run_python 执行真实代码
+//	Layer 3 — 兜底裸 Python（最后选项）：run_python（长尾 / 奇怪格式，无 skill 指南）
 //
 // runner 在装配 system prompt 时把它追加到 toolsSectionPlaceholder（段 2 Tools 内，
 // 与现有 6 段顺序兼容，不新增段位）。中英双语避免 DeepSeek / Doubao / qwen-plus
 // 等不同 LLM 后端的偏好差异导致引导被忽略。
+//
+// 注意：Layer 2 改为两步流后（read_skill → run_python），不再有旧的单工具入口。
+// 与 skill_catalog.go 的 RenderSkillCatalog 输出协调一致（catalog 列举具体 skill 名，
+// 此 addendum 解释何时该用 skill vs 别的层）。
 const OutputToolsPriorityAddendum = `
 
 # Output File Tool Selection Priority
@@ -23,13 +28,17 @@ When the user asks you to generate a file, prefer tools in this order:
    - .txt / .md → create_text
    - simple chart (.png, bar/line/pie/scatter) → create_png_chart
 
-2. COMPLEX formats — use invoke_skill (Layer 2, Python in sandbox, stable output):
-   - .xlsx → invoke_skill(skill_name="xlsx-author")
-   - .docx → invoke_skill(skill_name="docx-author")
-   - .pptx → invoke_skill(skill_name="pptx-author")
-   - .pdf  → invoke_skill(skill_name="pdf-from-html")
+2. COMPLEX formats — use the skill workflow (Layer 2, Python in sandbox):
+   STEP A: read_skill({"skill_name": "<chosen>"}) to get the SKILL.md guidance.
+   STEP B: run_python({"code": "<Python following the guidance>", "input_files": [...]}) to execute.
+   Available skills:
+   - .xlsx → skill_name="xlsx-author"
+   - .docx → skill_name="docx-author"
+   - .pptx → skill_name="pptx-author"
+   - .pdf  → skill_name="pdf-from-html"
+   IMPORTANT: do NOT skip STEP A — without the SKILL.md you will write wrong imports.
 
-3. RARE / LONG-TAIL formats — use run_python (Layer 3, last resort):
+3. RARE / LONG-TAIL formats — use run_python directly (Layer 3, last resort):
    - .ical, .vcf, .yaml, .xml, mermaid rendering, .gpx, .midi, etc.
    - ONLY when no Layer 1 or Layer 2 tool fits.
 
@@ -44,11 +53,15 @@ When the user asks you to generate a file, prefer tools in this order:
    - .txt / .md → create_text
    - 简单图表 (.png，柱状 / 折线 / 饼图 / 散点) → create_png_chart
 
-2. 复杂格式必须用专属 skill（产物质量稳定，Python 沙箱）：
-   - .xlsx → invoke_skill(skill_name="xlsx-author")
-   - .docx → invoke_skill(skill_name="docx-author")
-   - .pptx → invoke_skill(skill_name="pptx-author")
-   - .pdf  → invoke_skill(skill_name="pdf-from-html")
+2. 复杂格式按 skill 两步流执行（Python 沙箱）：
+   步骤 A: read_skill({"skill_name": "<选定>"}) 获取 SKILL.md 指南。
+   步骤 B: run_python({"code": "<按指南写的真实代码>", "input_files": [...]}) 执行。
+   可用 skill:
+   - .xlsx → skill_name="xlsx-author"
+   - .docx → skill_name="docx-author"
+   - .pptx → skill_name="pptx-author"
+   - .pdf  → skill_name="pdf-from-html"
+   **重要**: 不要跳过步骤 A——不读 SKILL.md 直接写代码会用错 import。
 
-3. 奇怪格式 / 长尾需求：run_python（最后兜底，仅当上述工具都不适用时使用）
+3. 奇怪格式 / 长尾需求：直接用 run_python（最后兜底，仅当上述层都不适用时使用，无对应 SKILL.md 指南）
 `

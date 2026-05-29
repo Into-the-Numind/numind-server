@@ -69,9 +69,12 @@ type FullTool interface {
 type ToolConfig struct {
 	EnableSandbox  bool
 	EnableImageGen bool
-	// EnableSkills enables the invoke_skill tool (V1.5 Track 4 task 4.4).
-	// Requires EnableSandbox=true to have effect. Controlled by the agent_definition
-	// tool_flags JSON key "enable_skills". Defaults to false (prod-safe).
+	// EnableSkills enables the read_skill tool (2026-05-29 skill-progressive-loader;
+	// was V1.5 Track 4 task 4.4 invoke_skill — Go field name retained, semantic
+	// shifted to gate Codex-style progressive disclosure of platform skills).
+	// Controlled by the agent_definition tool_flags JSON key "enable_skills"
+	// (key name retained for zero-migration backwards compat). Defaults to
+	// false (prod-safe).
 	EnableSkills bool
 	// 后续 feature 按需扩展
 }
