@@ -242,11 +242,13 @@ func (p *agentSandboxPool) CollectOutputs(ctx context.Context, sess *SkillSessio
 			continue
 		}
 
-		// Detect MIME type.
-		mimeType := http.DetectContentType(data)
-		if idx := strings.Index(mimeType, ";"); idx != -1 {
-			mimeType = strings.TrimSpace(mimeType[:idx])
-		}
+		// Determine MIME type. Extension-aware (NOT raw http.DetectContentType)
+		// because Office Open XML files (.pptx/.docx/.xlsx) are zip archives at
+		// the byte level — DetectContentType returns "application/zip" for them.
+		// Uploading with that Content-Type made macOS Safari treat downloaded
+		// .pptx as a zip and auto-expand it into a folder (the 2026-05-29
+		// "the PPT I downloaded is a folder of XML" symptom).
+		mimeType := mimeTypeForOutput(entry.Name(), data)
 
 		// 2a. Run ScanOutput with configurable maxBytes and detected MIME for validation.
 		maxBytes := int64(p.cfg.OutputMaxSizeMB) * 1024 * 1024
@@ -401,4 +403,48 @@ func sanitiseOutputFilename(name string) string {
 		return ""
 	}
 	return result
+}
+
+// mimeTypeForOutput returns the canonical Content-Type for a sandbox-produced
+// output file. Extension-aware because the relevant special case (Office Open
+// XML: .pptx / .docx / .xlsx) is a zip archive at the byte level — Go's
+// http.DetectContentType therefore returns "application/zip" for these, and
+// uploading them to COS with that Content-Type causes macOS Safari (and other
+// browsers' archive utilities) to treat the download as a zip and auto-expand
+// it. Users then see a folder of XML instead of an openable .pptx. Extensions
+// are explicit and reliable for files our skills emit; the sniff fallback
+// stays for everything else.
+//
+// Regression: see TestMimeTypeForOutput_OfficeFilesNotZip.
+func mimeTypeForOutput(filename string, data []byte) string {
+	switch strings.ToLower(filepath.Ext(filename)) {
+	case ".pptx":
+		return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+	case ".docx":
+		return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	case ".xlsx":
+		return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	case ".pdf":
+		return "application/pdf"
+	case ".csv":
+		return "text/csv; charset=utf-8"
+	case ".html", ".htm":
+		return "text/html; charset=utf-8"
+	case ".json":
+		return "application/json; charset=utf-8"
+	case ".txt", ".md":
+		return "text/plain; charset=utf-8"
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".svg":
+		return "image/svg+xml"
+	}
+	// Unknown extension: fall back to content sniffing.
+	m := http.DetectContentType(data)
+	if idx := strings.Index(m, ";"); idx != -1 {
+		m = strings.TrimSpace(m[:idx])
+	}
+	return m
 }
