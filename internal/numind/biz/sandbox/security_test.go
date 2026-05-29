@@ -75,6 +75,24 @@ func TestBuildSpawnConfig_FromDefaults_PassesChecklist(t *testing.T) {
 	if sc.PIDsLimit != 64 {
 		t.Errorf("PIDsLimit = %d; want 64", sc.PIDsLimit)
 	}
+	// Both /workdir and /skills must be writable tmpfs owned by uid 1000.
+	// /skills is required by AcquireForSkill (mkdir + copy skill files); without
+	// it the read-only rootfs + root-owned image /skills makes the mkdir fail.
+	var hasWorkdir, hasSkills bool
+	for _, m := range sc.Tmpfs {
+		if strings.HasPrefix(m, "/workdir:") && strings.Contains(m, "uid=1000") {
+			hasWorkdir = true
+		}
+		if strings.HasPrefix(m, "/skills:") && strings.Contains(m, "uid=1000") {
+			hasSkills = true
+		}
+	}
+	if !hasWorkdir {
+		t.Errorf("Tmpfs missing writable /workdir (uid=1000); got %v", sc.Tmpfs)
+	}
+	if !hasSkills {
+		t.Errorf("Tmpfs missing writable /skills (uid=1000); got %v", sc.Tmpfs)
+	}
 }
 
 func TestValidateSecurityChecklist_MissingSeccomp(t *testing.T) {

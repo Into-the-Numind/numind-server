@@ -75,6 +75,15 @@ func BuildSpawnConfig(cfg SandboxConfig, absSeccompPath string) SpawnConfig {
 		ReadOnly:     cfg.ReadOnlyRootfs,
 		Tmpfs: []string{
 			fmt.Sprintf("/workdir:size=%dm,uid=1000,gid=1000", cfg.WorkdirSizeMB),
+			// /skills must be writable + owned by the sandbox user (uid 1000):
+			// AcquireForSkill does `mkdir /skills/<name>` + copies the skill files in
+			// (v1 copy approach). With --read-only rootfs and the image's root-owned
+			// /skills (the Dockerfile chowns /workdir|/input|/output but NOT /skills),
+			// that mkdir failed with EACCES — the 2026-05-29 "sandbox unavailable"
+			// (action exhausted → max steps) symptom. An explicit tmpfs mount also
+			// overrides the image's `VOLUME ["/skills"]`, which was otherwise leaking
+			// one anonymous volume per spawned container. 64m is ample for skill code.
+			"/skills:size=64m,uid=1000,gid=1000",
 		},
 		Network:  network,
 		Detached: true,
