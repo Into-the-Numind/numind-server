@@ -1,5 +1,32 @@
 schema_version: '2.0'
 features:
+- id: skill-progressive-loader
+  ndf_version: '3.0'
+  description: 'Standard NDF — refactor invoke_skill architecture. Current design has TWO LLMs (outer agent calls invoke_skill tool → inner LLM reads SKILL.md and writes Python). pptx-author SKILL.md teaches outer-agent declarative invocation pseudo-code (`import invoke_skill; invoke_skill("pptx-author", {...})`), inner LLM mistakes it for real code → ModuleNotFoundError. Two reference projects both use single-loop progressive disclosure (Codex codex-rs/core-skills/src/loader.rs) or forked sub-agent with real tool names (Claude Code SkillTool.ts). Decision between the two patterns deferred to S2. Affects pptx-author + xlsx-author + docx-author + pdf-from-html.'
+  track: standard
+  stage: S0
+  classification_reason: 'Standard — (1) 无 DB schema 变更 (2) 可能涉及 skill registry list endpoint，S2 决定 (3) 无新外部服务（继续用 sandbox + run_python） (4) >3 文件（核心 invoke_skill 重构 + 4 个 SKILL.md 重写 + 可能 runner/sub-agent dispatch） (5) 非高风险业务。Bug-from-customer (dev agent_run_id=83 PPT 失败，Rule 11 强制复现测试 commit)。User 2026-05-29 明确选 Standard，理由：架构错配根因不解决则下一个 skill 仍踩。'
+  last_updated_by: ai-s0-requirement-drafted
+  last_updated_at: '2026-05-29T20:15:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: feature/skill-progressive-loader
+  worktrees:
+    numind-server: /private/tmp/wt-skill-progressive-loader-numind-server
+  progress:
+    total_tasks: 0
+    completed_tasks: 0
+    reviewed_tasks: 0
+  decisions:
+  - 'S0-D1 (ai 2026-05-29): 不在 requirement card 阶段决定 Codex-style vs Claude-Code-style 取舍。两个范式都验证过、各有优势，是 S2 设计阶段的核心。S0 只锁定问题边界和业务目标。'
+  related_features:
+  - 'file-read-accept-outputs-soft-errors (merged 2026-05-29) — 同源 bug-from-customer 的伴随 Hotfix。'
+  - 'stream-emit-toolcall-events (merged 2026-05-29) — manifest known_issues 字段 superseded（误判"LLM 偶尔出错"，实际是 deterministic SKILL.md 错配）。本 feature 完成后回去更新那条 known_issues。'
+  superseded_judgements:
+  - 'stream-emit-toolcall-events.known_issues (2026-05-29): "判断为 LLM 生成的 pptx 代码首次有误、AI 换简化英文指令重试自愈。非阻塞（最终成功）。" → 根因调查推翻：是 SKILL.md 教错对象的 deterministic 失败，非"偶发"。'
+  blockers: []
+
 - id: file-read-accept-outputs-soft-errors
   ndf_version: '3.0'
   progress_note: 'H1 complete (repro test+fix landed, lint+test green, parallel Sonnet review PASS with 2 P2 inline-fixed); stage→H2 before ndf-done.'
