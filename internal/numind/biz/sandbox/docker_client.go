@@ -1,11 +1,13 @@
 package sandbox
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -21,14 +23,15 @@ type DockerClient interface {
 	Inspect(ctx context.Context, containerID string) (InspectResult, error)
 
 	// CopyToContainer writes `content` into the container at `dstPath`.
-	// Implemented via "docker cp - <containerID>:<dstPath>" (tar stream).
-	// Track 4: used by CopyFileIn to inject input files into /input/.
+	// Implemented via `docker exec -i <CID> tar -xf - -C <dir>` (NOT `docker cp` —
+	// see the impl comment for the Docker 28.x tmpfs bug). Track 4: used by
+	// CopyFileIn to inject input files into /workdir/input/ and by AcquireForSkill
+	// to stage skill files into /skills/<name>/.
 	CopyToContainer(ctx context.Context, containerID, dstPath string, content io.Reader) error
 
-	// CopyFromContainer reads `srcPath` from the container into a temp dir on
-	// the host, returning the path of the written file(s). The caller is
-	// responsible for removing the temp dir when done.
-	// Implemented via "docker cp <containerID>:<srcPath> <tmpDir>".
+	// CopyFromContainer copies `srcPath` from the container into `hostDstDir`.
+	// Implemented via `docker exec <CID> tar -cf -` piped through host `tar -xf -`
+	// (NOT `docker cp` — same Docker 28.x tmpfs bug applies in both directions).
 	// Track 4: used by CollectOutputs to pull /workdir/output/ files.
 	CopyFromContainer(ctx context.Context, containerID, srcPath, hostDstDir string) error
 
@@ -307,54 +310,116 @@ func (c *dockerCLIClient) ListByLabel(ctx context.Context, label string) ([]stri
 	return ids, nil
 }
 
-// CopyToContainer writes the content of `content` (a tar stream or raw bytes)
-// to `dstPath` inside the container by piping through "docker cp - containerID:dstPath".
-// The caller provides raw file bytes; this method wraps them in a minimal tar
-// archive so docker cp can unpack them correctly.
+// CopyToContainer writes `content` as a file at `dstPath` inside the container.
+//
+// Implementation uses `docker exec -i <CID> tar -xf - -C <dir>` with an in-memory
+// tar archive on stdin. This deliberately AVOIDS `docker cp`, which in Docker 28.x
+// is broken for tmpfs mounts under `--read-only` rootfs: it fails with
+// `Error response from daemon: Could not find the file <path> in container`
+// even when the path exists and is writable via `docker exec`. Verified on dev
+// 2026-05-29 — both /workdir and /skills (the sandbox's writable tmpfs mounts)
+// trigger the bug. `docker exec` uses a different daemon code path and works.
+//
+// The parent directory of dstPath must already exist in the container; callers
+// stage it via ExecMkdir.
 func (c *dockerCLIClient) CopyToContainer(ctx context.Context, containerID, dstPath string, content io.Reader) error {
-	// Write content to a temp file so we can docker cp it.
-	tmp, err := os.CreateTemp("", "sandbox-cp-in-*")
-	if err != nil {
-		return fmt.Errorf("docker cp to container: create temp: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-
 	data, err := io.ReadAll(content)
 	if err != nil {
-		tmp.Close()
 		return fmt.Errorf("docker cp to container: read content: %w", err)
 	}
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return fmt.Errorf("docker cp to container: write temp: %w", err)
-	}
-	tmp.Close()
 
-	// docker cp <hostFile> <containerID>:<dstPath>
-	cmd := exec.CommandContext(ctx, dockerBinary, "cp", tmpPath, containerID+":"+dstPath)
+	buf, err := buildSingleFileTar(path.Base(dstPath), data)
+	if err != nil {
+		return fmt.Errorf("docker cp to container: %w", err)
+	}
+
+	cmd := exec.CommandContext(ctx, dockerBinary,
+		"exec", "-i", containerID,
+		"tar", "-xf", "-", "-C", path.Dir(dstPath),
+	)
+	cmd.Stdin = buf
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("docker cp to container: %w (output=%s)", err, string(out))
+		return fmt.Errorf("docker cp to container: exec tar: %w (output=%s)", err, string(out))
 	}
 	return nil
 }
 
-// CopyFromContainer copies `srcPath` from the container to `hostDstDir` on
-// the host via "docker cp <containerID>:<srcPath> <hostDstDir>". The caller
-// owns the destination directory and is responsible for cleanup.
+// buildSingleFileTar returns a tar archive containing one regular file at
+// `name` (relative path) with the given bytes. Extracted via `tar -xf - -C <dir>`,
+// the file lands at <dir>/<name>. Extracted for unit-test reachability of the
+// tar-encoding logic without invoking docker.
+func buildSingleFileTar(name string, data []byte) (*bytes.Buffer, error) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{
+		Name:    name,
+		Mode:    0o644,
+		Size:    int64(len(data)),
+		ModTime: time.Now(),
+	}); err != nil {
+		return nil, fmt.Errorf("tar header: %w", err)
+	}
+	if _, err := tw.Write(data); err != nil {
+		return nil, fmt.Errorf("tar body: %w", err)
+	}
+	if err := tw.Close(); err != nil {
+		return nil, fmt.Errorf("tar close: %w", err)
+	}
+	return &buf, nil
+}
+
+// CopyFromContainer copies `srcPath` from the container into `hostDstDir`.
+//
+// Like CopyToContainer, this uses `docker exec <CID> tar -cf -` + a host-side
+// `tar -xf -` instead of `docker cp`, which is broken for tmpfs mounts under
+// `--read-only` rootfs in Docker 28.x (fails in BOTH directions — verified on
+// dev 2026-05-29 with `/workdir/output` and `/skills/*`).
+//
+// Mirrors docker cp's "/." suffix semantics:
+//   - srcPath = "/workdir/output"   → hostDstDir/output/<files>  (dir wrapped)
+//   - srcPath = "/workdir/output/." → hostDstDir/<files>         (contents only)
+//
+// A missing srcPath returns nil (the caller — eg CollectOutputs — treats an
+// empty output directory as legitimate when the Python script produced nothing).
 func (c *dockerCLIClient) CopyFromContainer(ctx context.Context, containerID, srcPath, hostDstDir string) error {
-	// docker cp <containerID>:<srcPath> <hostDstDir>
-	cmd := exec.CommandContext(ctx, dockerBinary, "cp", containerID+":"+srcPath, hostDstDir)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		s := string(out)
-		// Treat "no such file" as empty (not an error) — output dir may be
-		// legitimately empty when the Python script produced nothing.
+	var tarSrcDir, tarSrcEntry string
+	if strings.HasSuffix(srcPath, "/.") {
+		tarSrcDir = strings.TrimSuffix(srcPath, "/.")
+		tarSrcEntry = "."
+	} else {
+		tarSrcDir = path.Dir(srcPath)
+		tarSrcEntry = path.Base(srcPath)
+	}
+
+	// Produce the tar stream inside the container.
+	var stdoutBuf, stderrBuf bytes.Buffer
+	produce := exec.CommandContext(ctx, dockerBinary,
+		"exec", containerID,
+		"tar", "-cf", "-", "-C", tarSrcDir, tarSrcEntry,
+	)
+	produce.Stdout = &stdoutBuf
+	produce.Stderr = &stderrBuf
+	if err := produce.Run(); err != nil {
+		s := stderrBuf.String()
 		if strings.Contains(s, "No such file") || strings.Contains(s, "no such file") {
 			return nil
 		}
-		return fmt.Errorf("docker cp from container: %w (output=%s)", err, s)
+		return fmt.Errorf("docker cp from container: source tar: %w (stderr=%s)", err, s)
+	}
+
+	// Empty stdout = nothing to extract. Avoids invoking host tar with empty input,
+	// which on some implementations errors with "This does not look like a tar archive".
+	if stdoutBuf.Len() == 0 {
+		return nil
+	}
+
+	// Extract the tar stream into hostDstDir using the host's `tar` binary
+	// (present in both Ubuntu base images we run — numind-server runtime + dev/qa/prod hosts).
+	extract := exec.CommandContext(ctx, "tar", "-xf", "-", "-C", hostDstDir)
+	extract.Stdin = &stdoutBuf
+	if out, err := extract.CombinedOutput(); err != nil {
+		return fmt.Errorf("docker cp from container: extract tar: %w (output=%s)", err, string(out))
 	}
 	return nil
 }

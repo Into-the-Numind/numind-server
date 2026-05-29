@@ -1,8 +1,11 @@
 package sandbox
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 )
@@ -144,5 +147,46 @@ func TestBuildSpawnArgs_NoSecurityOptsWhenEmpty(t *testing.T) {
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "--security-opt") {
 		t.Errorf("--security-opt should be absent when SecurityOpts empty; got %s", joined)
+	}
+}
+
+// TestBuildSingleFileTar_RoundTrip locks the wire format CopyToContainer puts
+// on `docker exec -i tar -xf -`'s stdin: a single regular-file entry whose
+// extracted path is the basename passed in. This is the regression test for
+// the 2026-05-29 incident where `docker cp` was silently broken for tmpfs
+// mounts in Docker 28.x — CopyToContainer was rewritten to pipe a tar archive
+// through `docker exec` instead, and this test asserts the encoded bytes are
+// the contract `tar -xf` will expect.
+func TestBuildSingleFileTar_RoundTrip(t *testing.T) {
+	payload := []byte("hello, skill files — also non-ascii: 中文 + binary \x00\x01\xff")
+	buf, err := buildSingleFileTar("SKILL.md", payload)
+	if err != nil {
+		t.Fatalf("buildSingleFileTar err = %v", err)
+	}
+
+	tr := tar.NewReader(buf)
+	hdr, err := tr.Next()
+	if err != nil {
+		t.Fatalf("tar.Next first entry err = %v; archive must contain one entry", err)
+	}
+	if hdr.Name != "SKILL.md" {
+		t.Errorf("entry name = %q; want SKILL.md (`tar -xf - -C <dir>` lands it at <dir>/SKILL.md)", hdr.Name)
+	}
+	if hdr.Size != int64(len(payload)) {
+		t.Errorf("entry size = %d; want %d", hdr.Size, len(payload))
+	}
+	if hdr.Mode&0o777 != 0o644 {
+		t.Errorf("entry mode = %o; want 0644", hdr.Mode&0o777)
+	}
+	body, err := io.ReadAll(tr)
+	if err != nil {
+		t.Fatalf("read entry body err = %v", err)
+	}
+	if !bytes.Equal(body, payload) {
+		t.Errorf("body round-trip mismatch:\n got %q\nwant %q", body, payload)
+	}
+
+	if _, err := tr.Next(); err != io.EOF {
+		t.Errorf("expected EOF after single entry, got err=%v (archive must contain exactly one file)", err)
 	}
 }
