@@ -52,19 +52,28 @@ func TestRegression_NoInvokeSkillInProgressiveLoaderSurfaces(t *testing.T) {
 		}
 	}
 
-	// (2) safeToolBaseline must include read_skill (so SSE narration / progress
-	// surfaces it) and must not include the deleted invoke_skill.
-	var seenRead, seenInvoke bool
+	// (2) safeToolBaseline must include BOTH read_skill (loads SKILL.md) and
+	// run_python (executes the Python the LLM authors from it). Without
+	// run_python in the baseline, the agent crashes with
+	// `tool run_python not found in toolsNode indexes` after a successful
+	// read_skill call (dev QA 2026-05-29 follow-on hotfix). Must not include
+	// the deleted invoke_skill.
+	var seenRead, seenRun, seenInvoke bool
 	for _, n := range safeToolBaseline {
 		switch n {
 		case "read_skill":
 			seenRead = true
+		case "run_python":
+			seenRun = true
 		case "invoke_skill":
 			seenInvoke = true
 		}
 	}
 	if !seenRead {
 		t.Error("safeToolBaseline must include read_skill")
+	}
+	if !seenRun {
+		t.Error("safeToolBaseline must include run_python (the read_skill executor)")
 	}
 	if seenInvoke {
 		t.Error("safeToolBaseline must NOT include the deleted invoke_skill")

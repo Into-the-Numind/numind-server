@@ -726,6 +726,7 @@ var safeToolBaseline = []string{
 	"create_text",        // 文本生成
 	"create_png_chart",   // 图表生成
 	"read_skill",         // 2026-05-29 skill-progressive-loader: 替换 invoke_skill，外层 agent 读 SKILL.md 自写 Python 后 run_python 执行
+	"run_python",         // 2026-05-29 hotfix: read_skill is useless without an executor. The OutputToolsPriorityAddendum already promises every agent the read_skill→run_python path; baseline must match the promise. run_python is sandbox-isolated (docker), so the risk surface is the sandbox image itself, not the agent permission flag.
 }
 
 // categoryToTools 把 frontend AgentAdvancedEdit.vue 的 3 个 risk-category 开关
