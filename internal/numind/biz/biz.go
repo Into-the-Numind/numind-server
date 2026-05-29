@@ -259,8 +259,8 @@ func NewBiz(ds store.IStore) *biz {
 
 	// V1.5 Track 4 task 4.4: Skill Registry + platform factory construction.
 	// Build sandbox pool first so it can be wired into the platform factory before LoadAll.
-	// skills_root from viper; if absent or the directory does not exist, invoke_skill is
-	// simply not registered (graceful degradation, no server boot failure).
+	// skills_root from viper; if absent or the directory does not exist, the read_skill
+	// tool is simply not registered (graceful degradation, no server boot failure).
 	sandboxLogger := &sandboxZapLogger{}
 	sandboxConfig := sandbox.LoadFromViper(viper.GetViper())
 	dockerClient := sandbox.NewDockerCLIClient(sandboxLogger)
@@ -272,25 +272,29 @@ func NewBiz(ds store.IStore) *biz {
 		"pool_min", sandboxConfig.PoolMin,
 		"image_tag", sandboxConfig.ImageTag)
 
-	// V1.5 Track 4 task 4.4: build Skill Registry and wire into platform factory.
-	// skills_root from viper; if absent or the directory does not exist, invoke_skill
-	// is silently omitted (prod-safe default).
+	// 2026-05-29 skill-progressive-loader: build Skill Registry and wire into
+	// platform factory. read_skill reads SKILL.md from disk via the registry —
+	// it does NOT use the sandbox SkillPool. Previous SkillPool type-assertion
+	// gate removed: a registry alone is sufficient to register read_skill.
+	// The outer agent LLM uses run_python (which has its own sandbox.Pool
+	// wiring through the run_python tool) to execute the Python it authors
+	// based on the SKILL.md guidance.
 	var platformFactory agent.ToolFactory
+	var platformSkillReg skills.Registry // captured for WithPlatformSkillRegistry below
 	skillsRoot := viper.GetString("sandbox.skills_root")
 	if skillsRoot != "" {
 		if skillReg, skillRegErr := skills.NewRegistry(skillsRoot); skillRegErr != nil {
-			log.Warnw("skills.NewRegistry failed; invoke_skill tool will not be available",
+			log.Warnw("skills.NewRegistry failed; read_skill tool will not be available",
 				"skills_root", skillsRoot, "error", skillRegErr)
 			platformFactory = agent.NewPlatformToolFactory(b.salesRAGService, ds)
 		} else {
 			log.Infow("skills.Registry initialised", "skills_root", skillsRoot, "count", len(skillReg.List()))
-			if sp, ok := sandboxPool.(sandbox.SkillPool); ok {
-				platformFactory = agent.NewPlatformToolFactoryWithSkills(b.salesRAGService, ds, skillReg, sp)
-				log.Infow("invoke_skill tool registered with skill registry")
-			} else {
-				log.Warnw("sandbox.Pool does not implement SkillPool; invoke_skill not registered")
-				platformFactory = agent.NewPlatformToolFactory(b.salesRAGService, ds)
-			}
+			// SkillPool type assertion retained for forward compat (run_python
+			// still uses sandboxPool); nil-safe even if assertion fails.
+			sp, _ := sandboxPool.(sandbox.SkillPool)
+			platformFactory = agent.NewPlatformToolFactoryWithSkills(b.salesRAGService, ds, skillReg, sp)
+			platformSkillReg = skillReg
+			log.Infow("read_skill tool registered with skill registry")
 		}
 	} else {
 		platformFactory = agent.NewPlatformToolFactory(b.salesRAGService, ds)
@@ -575,9 +579,10 @@ func NewBiz(ds store.IStore) *biz {
 	b.agentRunner = agent.NewAgentRunner(
 		ds.AgentRuns(),
 		agentToolRegistry,
-		agent.WithDefaultHooks(wrappedHooks),           // #6: permission → sandbox chain
-		agent.WithSkillStore(ds.AgentDefinitions()),    // #5 skill-system
-		agent.WithSkillBindingService(skillBindingSvc), // v2 #2 agent-mode-v2-skill-invocation
+		agent.WithDefaultHooks(wrappedHooks),              // #6: permission → sandbox chain
+		agent.WithSkillStore(ds.AgentDefinitions()),       // #5 skill-system
+		agent.WithSkillBindingService(skillBindingSvc),    // v2 #2 agent-mode-v2-skill-invocation
+		agent.WithPlatformSkillRegistry(platformSkillReg), // 2026-05-29 skill-progressive-loader (nil if skills_root unset)
 		// V1.5 compact-v1-removal — WithCompactProvider/WithCompactConfig removed.
 		// V2 (compactv2) now handles all context-window management; legacy V1
 		// recovery helpers (PTL chain + max_output escalation) were removed

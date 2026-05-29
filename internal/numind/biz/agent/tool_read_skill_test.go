@@ -318,6 +318,46 @@ func TestAvailableSkillNames_EmptyRegistry(t *testing.T) {
 	}
 }
 
+// TestPlatformFactory_ReadSkillRegisteredWhenRegistryProvided verifies the
+// Task 4 wire: NewPlatformToolFactoryWithSkills must register read_skill (and
+// the corresponding metadata entry) whenever a non-nil registry is provided.
+// SkillPool may be nil — read_skill does not depend on sandbox.
+func TestPlatformFactory_ReadSkillRegisteredWhenRegistryProvided(t *testing.T) {
+	entry := writeSkillFixture(t, "pptx-author", "Generate PowerPoint", "# pptx-author\n", 30)
+	reg := newRegistryWith(entry)
+
+	f := NewPlatformToolFactoryWithSkills(nil, nil, reg, nil) // pool nil to assert read_skill no longer requires it
+	tools, metadata, err := f.LoadTools(context.Background())
+	if err != nil {
+		t.Fatalf("LoadTools: %v", err)
+	}
+
+	var foundTool bool
+	for _, tl := range tools {
+		if tl.Name() == "read_skill" {
+			foundTool = true
+			break
+		}
+	}
+	if !foundTool {
+		t.Errorf("read_skill must be in LoadTools result when registry provided")
+	}
+
+	var foundMeta bool
+	for _, m := range metadata {
+		if m.ToolName == "read_skill" {
+			foundMeta = true
+			if m.Category != "技能" {
+				t.Errorf("read_skill metadata category = %q, want '技能'", m.Category)
+			}
+			break
+		}
+	}
+	if !foundMeta {
+		t.Errorf("read_skill metadata must be present")
+	}
+}
+
 func TestAvailableSkillNames_DeterministicOrder(t *testing.T) {
 	// Even if inserted in non-alphabetical order, output must be sorted.
 	reg := newRegistryWith(

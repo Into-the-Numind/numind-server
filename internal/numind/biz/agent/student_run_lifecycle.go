@@ -725,7 +725,7 @@ var safeToolBaseline = []string{
 	"create_json",        // JSON 生成
 	"create_text",        // 文本生成
 	"create_png_chart",   // 图表生成
-	"invoke_skill",       // 沙箱技能执行（生成 PPT/Word/Excel/PDF）
+	"read_skill",         // 2026-05-29 skill-progressive-loader: 替换 invoke_skill，外层 agent 读 SKILL.md 自写 Python 后 run_python 执行
 }
 
 // categoryToTools 把 frontend AgentAdvancedEdit.vue 的 3 个 risk-category 开关
@@ -734,12 +734,12 @@ var safeToolBaseline = []string{
 //	code_sandbox  → bash_exec      (RequiresSandbox=true)
 //	media         → image_gen      (Category="多媒体")
 //	dangerous     → bash_exec      (RiskLevel="dangerous" 别名)
-//	enable_skills → invoke_skill   (V1.5 Track 4 task 4.4; requires code_sandbox for IsEnabled to pass)
+//	enable_skills → read_skill     (2026-05-29 skill-progressive-loader: was invoke_skill; semantic flag-name retained for backwards compat with existing agent_definition.tool_flags JSON; same gating intent: enable Layer-2 file-generation skill workflow)
 var categoryToTools = map[string][]string{
 	"code_sandbox":  {"bash_exec"},
 	"media":         {"image_gen"},
-	"dangerous":     {"bash_exec"},    // alias of code_sandbox for now
-	"enable_skills": {"invoke_skill"}, // V1.5 Track 4: invoke_skill skill framework
+	"dangerous":     {"bash_exec"},  // alias of code_sandbox for now
+	"enable_skills": {"read_skill"}, // 2026-05-29: invoke_skill → read_skill (Codex-style progressive disclosure)
 }
 
 // toolNamesFromFlags resolves agent_definition.ToolFlags JSON to []string of

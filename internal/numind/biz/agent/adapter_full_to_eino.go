@@ -79,7 +79,7 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 	// EMIT SSE tool_call_start. The active streaming path (runner_runstream.go's
 	// streamScanToolCallChecker) scans only MODEL OUTPUT and never emits
 	// tool-call lifecycle events, so without this the student UI shows no sign a
-	// tool is running — during a 30–60s invoke_skill it looks frozen (2026-05-29
+	// tool is running — during a 30–60s run_python it looks frozen (2026-05-29
 	// bug). Emitting here (the tool lifecycle boundary) fires exactly once per
 	// call, carries the real tool name + input, and works for every model
 	// regardless of how it streams tool_calls. toolCallID is synthetic but stable

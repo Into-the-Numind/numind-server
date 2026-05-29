@@ -351,38 +351,11 @@ func TestExtractFilenameFromURL(t *testing.T) {
 	}
 }
 
-// TestInvokeSkillFactory_InvokeSkillRegistered verifies that NewPlatformToolFactoryWithSkills
-// registers invoke_skill in the tool list.
-func TestInvokeSkillFactory_InvokeSkillRegistered(t *testing.T) {
-	reg := &mockSkillRegistry{entries: map[string]*skills.SkillEntry{
-		"xlsx-author": testEntry("xlsx-author"),
-	}}
-	pool := &mockSkillPool{}
-
-	f := NewPlatformToolFactoryWithSkills(nil, nil, reg, pool)
-	tools, metadata, err := f.LoadTools(context.Background())
-	require.NoError(t, err)
-
-	var found bool
-	for _, tool := range tools {
-		if tool.Name() == "invoke_skill" {
-			found = true
-			break
-		}
-	}
-	assert.True(t, found, "invoke_skill must be registered when skill registry and pool are non-nil")
-
-	var foundMeta bool
-	for _, m := range metadata {
-		if m.ToolName == "invoke_skill" {
-			foundMeta = true
-			assert.Equal(t, "moderate", m.RiskLevel)
-			assert.True(t, m.RequiresSandbox)
-			break
-		}
-	}
-	assert.True(t, foundMeta, "invoke_skill metadata must be registered")
-	// Base 19 (V1.5 vision + v2 use_skill + Track 4 create/chart/run_python) + invoke_skill = 20
-	assert.Len(t, tools, 20, "with skill registry: should be 20 tools")
-	assert.Len(t, metadata, 20)
-}
+// TestInvokeSkillFactory_InvokeSkillRegistered was deleted by S4 Task 4
+// (2026-05-29 skill-progressive-loader). Replaced by Task 6's deletion of this
+// whole file together with a Task 4-era equivalent inside
+// tool_read_skill_test.go that asserts read_skill is registered. Stub kept here
+// only so other callers in this file (mocks) still compile until Task 6 deletes
+// the file entirely; this function is unused.
+//
+// var _ = TestInvokeSkillFactory_InvokeSkillRegistered_removed_in_task_4

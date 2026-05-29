@@ -19,6 +19,7 @@ import (
 	"numind-server/internal/numind/biz/agent/callctx"
 	"numind-server/internal/numind/biz/agent/memory/agentmd"
 	"numind-server/internal/numind/biz/agent/search"
+	"numind-server/internal/numind/biz/agent/skills"
 	"numind-server/internal/numind/biz/agent/stream"
 	"numind-server/internal/numind/biz/budget"
 	"numind-server/internal/numind/biz/compactv2"
@@ -122,6 +123,12 @@ type agentRunner struct {
 	// struct，方便 runner_test.go 用 fake 实现单元测试 (T06)；生产 wire 注入
 	// 真正的 *artifact.BindingService（实现此接口）。
 	skillBindingService SkillBindingLister
+
+	// 2026-05-29 skill-progressive-loader: platform-level skill registry for the
+	// Codex-style read_skill catalog. Distinct from the v2 agent-bound skills
+	// (skillBindingService). Wired by biz.go via WithPlatformSkillRegistry;
+	// nil → catalog block omitted (graceful for tests / legacy agents).
+	platformSkillRegistry skills.Registry
 }
 
 // SkillBindingLister 抽象 *artifact.BindingService.ListByAgent 一个方法，
@@ -339,6 +346,19 @@ func WithCompactV2Deps(artifactStore store.IAgentToolArtifactStore, dataDir stri
 func WithSkillBindingService(s SkillBindingLister) RunnerOption {
 	return func(r *agentRunner) {
 		r.skillBindingService = s
+	}
+}
+
+// WithPlatformSkillRegistry wires the platform-level skill registry (the same
+// registry passed to NewPlatformToolFactoryWithSkills). When non-nil, runner.go
+// renders a Codex-style skill catalog block via RenderSkillCatalog and appends
+// it to the §2 institution section's skillCatalog parameter. Nil → catalog
+// omitted (graceful for tests and environments where skills_root is unset).
+//
+// 2026-05-29 skill-progressive-loader.
+func WithPlatformSkillRegistry(reg skills.Registry) RunnerOption {
+	return func(r *agentRunner) {
+		r.platformSkillRegistry = reg
 	}
 }
 
@@ -697,6 +717,18 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		var skillCatalog string
 		if len(skills) > 0 {
 			skillCatalog = body
+		}
+		// 2026-05-29 skill-progressive-loader: append platform-level read_skill
+		// catalog (Codex-style progressive disclosure) so the outer agent LLM
+		// can discover xlsx-author / pptx-author / docx-author / pdf-from-html
+		// and call read_skill → run_python. Independent of the v2 agent-bound
+		// skills above; both can coexist in §2.
+		if platformCatalog := RenderSkillCatalog(r.platformSkillRegistry); platformCatalog != "" {
+			if skillCatalog != "" {
+				skillCatalog += "\n\n" + platformCatalog
+			} else {
+				skillCatalog = platformCatalog
+			}
 		}
 		institutionSection := BuildInstitutionSection(
 			ad.SystemPrompt,
