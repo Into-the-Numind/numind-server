@@ -58,15 +58,20 @@
 | `internal/numind/biz/agent/skill_catalog.go` | skill catalog 字符串渲染（给 BuildInstitutionSection） | ~80 |
 | `internal/numind/biz/agent/skill_catalog_test.go` | 渲染测试 | ~100 |
 
-### 1.2 修改文件（≤6 个 .go + 4 个 SKILL.md）
+### 1.2 修改文件
 
 | 文件 | 改动概述 | 估算净 LOC |
 |---|---|---|
 | `internal/numind/biz/agent/tool_full.go` | `EnableSkills` 字段保留但 doc-comment 改为 "gate read_skill"；注释 invoke_skill 字样改成 read_skill | ~10 |
-| `internal/numind/biz/agent/factory_platform.go` | `LoadTools` 删除 `NewInvokeSkillTool` 注册 + 添加 `NewReadSkillTool(f.skillRegistry)` 注册；注释 `enable_skills → read_skill` | +25 / -30 |
+| `internal/numind/biz/agent/factory_platform.go` | `LoadTools` 删除 `NewInvokeSkillTool` 注册 + 添加 `NewReadSkillTool(f.skillRegistry)` 注册；**ToolMetadata 列表里把 invoke_skill 改 read_skill**；**run_python ToolMetadata 描述里 "（invoke_skill）" 改 "（read_skill → run_python）"**；可选移除 `skillPool` 参数（dead param）| +25 / -30 |
 | `internal/numind/biz/agent/student_run_lifecycle.go` | line 742 `"enable_skills": {"invoke_skill"}` 改为 `"enable_skills": {"read_skill"}` | ~3 |
 | `internal/numind/biz/agent/runner.go` | line 697-700 skillCatalog 填充改为调用新 `RenderSkillCatalog(f.skillRegistry)`，传给 BuildInstitutionSection；旧的 skill body 填充逻辑（若有）删 | +10 / -20 |
-| `internal/numind/biz/agent/tool_invoke_skill.go` | **整文件删除**（含 aiserviceSkillLLMCaller、GenerateCode、Execute、所有 helper）；保留 `SkillLLMCaller` interface 如有其他 caller 引用（grep 验证 — S4 task） | -550 |
+| `internal/numind/biz/biz.go` | line 282/289/291 log message `invoke_skill` → `read_skill`；**删除 `SkillPool` gate**（`if sp, ok := sandboxPool.(sandbox.SkillPool); ok`）—— read_skill 不依赖 SkillPool，只需 registry；移除 SkillPool 参数从 `NewPlatformToolFactoryWithSkills` call-site | +5 / -10 |
+| `internal/numind/biz/agent/output_tools_priority_prompt.go` | **关键**：constant `OutputToolsPriorityAddendum` 含 8 处 invoke_skill 引用，会被注入 system prompt — 全部改写为「使用 read_skill 读取技能指南后用 run_python 执行」的两步流。否则 LLM 同时收到 catalog 教它用 read_skill + addendum 教它用 invoke_skill 的矛盾指令 | ~40 改写 |
+| `internal/numind/biz/agent/tool_create_html.go` | description 字符串 line 44 含 "invoke_skill path"，改为 "read_skill → run_python path"（LLM 看 tool description 时不能看到已删除工具名）| ~3 |
+| `internal/numind/biz/agent/tool_create_png_chart.go` | description 字符串 line 109 同上 | ~3 |
+| `internal/numind/biz/agent/adapter_full_to_eino.go` | line 82 stale comment `// during a 30–60s invoke_skill it looks frozen` → 改为 `// during a 30–60s run_python it looks frozen` | ~1 |
+| `internal/numind/biz/agent/tool_invoke_skill.go` | **整文件删除**（含 aiserviceSkillLLMCaller、GenerateCode、Execute、SkillLLMCaller interface — 已 grep 确认无外部 caller、所有 helper） | -550 |
 | `internal/numind/biz/agent/tool_invoke_skill_test.go` | **整文件删除**（旧 11 个 test 不再适用） | -380 |
 | `skills/pptx-author/SKILL.md` | 重写 ≤4KB 真实 python-pptx 教程 | -350 lines |
 | `skills/xlsx-author/SKILL.md` | 重写 ≤4KB（如存在） | -varies |
@@ -116,6 +121,8 @@ type readSkillOutput struct {
 ```
 
 ### 2.3 Execute 流程
+
+> **构造时 nil 容忍约定**：`NewReadSkillTool(nil)` 允许；工具注册不 panic；但每次 Execute 都返回 "skill registry not configured" soft error。这样测试可独立构造工具而不需要 mock registry。
 
 ```
 1. JSON unmarshal input → soft error if invalid（Codex pattern）
@@ -188,7 +195,7 @@ func RenderSkillCatalog(reg skills.Registry) string
 - 按 name 字母排序保证 deterministic 输出
 - 每个 entry 取 manifest.json 的 `description` 字段（如缺则用 fallback）
 - description 超过 200 字符截断 + ellipsis（防单个 skill description 异常长撑大 catalog）
-- 总长度软上限 2000 字符（如 catalog 整体超过 → log warn + 截断尾部 skill）
+- 总长度软上限 2000 字符（**包含 header boilerplate 约 300 字符**，即 skill entry 部分约 1700 字符。如 catalog 整体超过 → log warn + 截断尾部 skill）
 
 ## 4. SKILL.md 重写约束（4 份各自一个 S4 task）
 
