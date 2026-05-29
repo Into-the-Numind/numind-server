@@ -35,7 +35,17 @@ type DockerClient interface {
 	// ExecMkdir creates a directory inside the container via docker exec.
 	// Used by AcquireForSkill to prepare /input and /output under /workdir.
 	ExecMkdir(ctx context.Context, containerID string, dirs ...string) error
+
+	// ListByLabel returns the IDs of ALL containers (running or stopped)
+	// carrying the given "key=value" label. Used by the pool's startup reaper
+	// to clean up orphaned sandbox containers left by a previous process.
+	ListByLabel(ctx context.Context, label string) ([]string, error)
 }
+
+// SandboxContainerLabel is stamped on every pool-spawned sandbox container so
+// the startup reaper can find and destroy orphans left by a previous process
+// run. Format is "key=value" as docker --label / --filter label= expects.
+const SandboxContainerLabel = "numind.sandbox=1"
 
 // SpawnConfig is the set of docker run flags BuildSpawnConfig assembles
 // from SandboxConfig + V5 ADR Q2 hardening list (see security.go).
@@ -56,6 +66,9 @@ type SpawnConfig struct {
 	// Track 4: AcquireForSkill appends skill read-only mounts here.
 	// Example: "/app/skills/xlsx-author:/skills/xlsx-author:ro"
 	Volumes []string
+	// Labels are stamped via docker run --label (each "key=value"). The pool
+	// sets SandboxContainerLabel so its startup reaper can find orphans.
+	Labels []string
 }
 
 // ExecOpts describes the runtime parameters for a single docker exec call.
@@ -161,11 +174,20 @@ func buildSpawnArgs(cfg SpawnConfig) []string {
 	for _, v := range cfg.Volumes {
 		args = append(args, "--volume", v)
 	}
+	for _, l := range cfg.Labels {
+		args = append(args, "--label", l)
+	}
 	args = append(args, cfg.ImageTag)
 	// Hold the container alive so subsequent docker exec calls can attach.
-	// "sleep 600" matches the SandboxConfig.SessionTimeout default (300s)
-	// with margin; Pool.Return destroys long before this expires.
-	args = append(args, "/bin/sh", "-c", "sleep 600")
+	// Use "sleep infinity" (not a fixed duration): a warm container may sit idle
+	// in the pool for hours/overnight. The previous "sleep 600" meant idle warm
+	// containers EXITED after 10 min, and Borrow then handed out dead containers
+	// ("container is not running" on every exec) — the root cause of the
+	// 2026-05-29 "sandbox completely unavailable" incident. Lifecycle is now
+	// owned explicitly: Pool.Return destroys borrowed containers, Borrow's
+	// liveness check discards any that died unexpectedly, and the startup reaper
+	// (SandboxContainerLabel) cleans orphans left by a crashed/restarted process.
+	args = append(args, "/bin/sh", "-c", "sleep infinity")
 	return args
 }
 
@@ -263,6 +285,26 @@ func (c *dockerCLIClient) Inspect(ctx context.Context, containerID string) (Insp
 		ExitCode:  exit,
 		OOMKilled: parts[2] == "true",
 	}, nil
+}
+
+// ListByLabel returns the IDs of all containers (running or stopped) carrying
+// the given "key=value" label, via "docker ps -aq --filter label=<label>".
+func (c *dockerCLIClient) ListByLabel(ctx context.Context, label string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, dockerBinary,
+		"ps", "-aq", "--no-trunc",
+		"--filter", "label="+label,
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("docker ps --filter label=%s: %w (stderr=%s)", label, err, captureStderr(err))
+	}
+	ids := make([]string, 0)
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if id := strings.TrimSpace(line); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
 }
 
 // CopyToContainer writes the content of `content` (a tar stream or raw bytes)

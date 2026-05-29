@@ -78,6 +78,7 @@ func BuildSpawnConfig(cfg SandboxConfig, absSeccompPath string) SpawnConfig {
 		},
 		Network:  network,
 		Detached: true,
+		Labels:   []string{SandboxContainerLabel},
 	}
 }
 

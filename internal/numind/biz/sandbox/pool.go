@@ -77,13 +77,21 @@ func NewPool(cfg SandboxConfig, dc DockerClient, logger Logger) Pool {
 		spawnReq: make(chan struct{}, cfg.PoolMin*4),
 	}
 	go p.spawnWorker()
-	// Prime the warm pool asynchronously (don't block NewPool caller).
-	for i := 0; i < cfg.PoolMin; i++ {
-		select {
-		case p.spawnReq <- struct{}{}:
-		default:
+	// Reap orphans from a previous process run, THEN prime the warm pool — both
+	// async so NewPool doesn't block startup. Ordering matters: the reaper must
+	// finish before any spawnReq is sent, otherwise it could destroy the very
+	// containers we just primed. Running both in one goroutine guarantees that
+	// order without a lock. The current process has spawned nothing yet, so the
+	// reaper only ever touches genuine orphans.
+	go func() {
+		p.reapOrphans()
+		for i := 0; i < cfg.PoolMin; i++ {
+			select {
+			case p.spawnReq <- struct{}{}:
+			default:
+			}
 		}
-	}
+	}()
 	return p
 }
 
@@ -132,6 +140,14 @@ func (p *agentSandboxPool) DockerClient() DockerClient { return p.dc }
 
 // Borrow waits up to cfg.PoolMaxWaitMs for a warm container.
 // If none arrive in time, returns ErrPoolExhausted.
+//
+// Each candidate pulled from the warm pool is liveness-checked before being
+// handed out: a container may have died while idle (keepalive elapsed, OOM,
+// host restart, manual kill). Handing out a dead container makes every
+// downstream `docker exec` fail with "container is not running" — the root
+// cause of the 2026-05-29 "sandbox completely unavailable" incident. Dead
+// candidates are discarded (destroyed + replacement requested) and the next
+// one is tried within the same deadline.
 func (p *agentSandboxPool) Borrow(ctx context.Context) (*Session, error) {
 	timeout := time.Duration(p.cfg.PoolMaxWaitMs) * time.Millisecond
 	if timeout <= 0 {
@@ -140,18 +156,78 @@ func (p *agentSandboxPool) Borrow(ctx context.Context) (*Session, error) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
-	select {
-	case sess, ok := <-p.warm:
-		if !ok {
-			return nil, ErrSandboxDisabled // pool closed
+	for {
+		select {
+		case sess, ok := <-p.warm:
+			if !ok {
+				return nil, ErrSandboxDisabled // pool closed
+			}
+			if !p.isAlive(sess.ContainerID) {
+				p.logger.Warnw("sandbox.Pool.Borrow: discarding dead warm container",
+					"container_id", sess.ContainerID)
+				p.discardDead(sess)
+				continue // try the next candidate within the deadline
+			}
+			sess.BorrowedAt = time.Now()
+			return sess, nil
+		case <-timer.C:
+			return nil, ErrPoolExhausted
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
-		sess.BorrowedAt = time.Now()
-		return sess, nil
-	case <-timer.C:
-		return nil, ErrPoolExhausted
-	case <-ctx.Done():
-		return nil, ctx.Err()
 	}
+}
+
+// isAlive reports whether the container is currently running. Any inspect
+// error (e.g. container removed) is treated as "not alive".
+func (p *agentSandboxPool) isAlive(containerID string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := p.dc.Inspect(ctx, containerID)
+	if err != nil {
+		return false
+	}
+	return res.Status == "running"
+}
+
+// discardDead destroys a dead container (idempotent rm -f) and requests a
+// replacement spawn so the warm pool refills toward PoolMin.
+func (p *agentSandboxPool) discardDead(sess *Session) {
+	destroyCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = p.dc.Destroy(destroyCtx, sess.ContainerID)
+	select {
+	case p.spawnReq <- struct{}{}:
+	default:
+	}
+}
+
+// reapOrphans destroys sandbox containers left behind by a previous process
+// run (identified by SandboxContainerLabel). With "sleep infinity" keepalive,
+// a crashed or redeployed server would otherwise leak its warm containers
+// indefinitely. Best-effort: errors are logged, never fatal.
+func (p *agentSandboxPool) reapOrphans() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	ids, err := p.dc.ListByLabel(ctx, SandboxContainerLabel)
+	if err != nil {
+		p.logger.Warnw("sandbox.Pool.reapOrphans: list failed", "error", err)
+		return
+	}
+	if len(ids) == 0 {
+		return
+	}
+	reaped := 0
+	for _, id := range ids {
+		if err := p.dc.Destroy(ctx, id); err != nil {
+			p.logger.Warnw("sandbox.Pool.reapOrphans: destroy failed", "container_id", id, "error", err)
+			continue
+		}
+		reaped++
+	}
+	p.logger.Infow("sandbox.Pool.reapOrphans: cleaned orphaned sandbox containers",
+		"found", len(ids), "reaped", reaped)
 }
 
 // Return destroys the container and requests a spawn-replacement. Safe to

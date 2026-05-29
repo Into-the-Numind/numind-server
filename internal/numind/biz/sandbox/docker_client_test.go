@@ -121,7 +121,7 @@ func TestBuildSpawnArgs_ContainsKeyFlags(t *testing.T) {
 		"--network=none",
 		"python:3.11-slim",
 		"/bin/sh",
-		"sleep 600",
+		"sleep infinity",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("buildSpawnArgs missing %q in: %s", want, joined)
