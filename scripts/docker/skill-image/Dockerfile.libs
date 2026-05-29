@@ -34,5 +34,21 @@ RUN pip install --no-cache-dir \
         -r /tmp/requirements.txt && \
     rm /tmp/requirements.txt
 
+# Runtime env for the locked-down sandbox (--read-only rootfs, seccomp, pids-limit,
+# cap-drop ALL, --network=none). Verified on dev 2026-05-29:
+#  - OPENBLAS_NUM_THREADS/OMP_NUM_THREADS=1: numpy (via Pillow→python-pptx) pulls in
+#    OpenBLAS, which tries to spawn 4 worker threads. The seccomp/pids hardening
+#    blocks pthread_create ("Operation not permitted"); OpenBLAS then retries and
+#    the import STALLS — long enough to blow a skill's runtime budget. Forcing
+#    single-threaded BLAS makes the import fast and warning-free.
+#  - HOME/MPLCONFIGDIR/XDG_CACHE_HOME under /workdir: /home/sandboxuser is on the
+#    read-only rootfs, so matplotlib (.config) and fontconfig (.cache) fail to write
+#    their caches. /workdir is the only writable mount (tmpfs), so point caches there.
+ENV OPENBLAS_NUM_THREADS=1 \
+    OMP_NUM_THREADS=1 \
+    HOME=/workdir \
+    MPLCONFIGDIR=/workdir/.mplconfig \
+    XDG_CACHE_HOME=/workdir/.cache
+
 # Return to sandbox user.
 USER sandboxuser
