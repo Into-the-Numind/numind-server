@@ -65,6 +65,7 @@ func (r *agentRunner) consumeEinoStream(
 		// agent_run.messages.assistant.content goes in empty, and reload
 		// returns an empty history (dev 2026-05-28 multiple runs).
 		lastStepContent string
+		lastStepReasoning string
 	)
 	if hasState && state.CurrentMsgID != "" {
 		currentMsgID = state.CurrentMsgID
@@ -164,6 +165,7 @@ func (r *agentRunner) consumeEinoStream(
 			return &RunResult{
 				AgentRunID:     run.ID,
 				TerminalReason: st.TerminalReason,
+				FinalReasoning: currentReason.String(),
 				StepCount:      st.StepCount,
 				Duration:       time.Since(startTime),
 			}, err
@@ -254,6 +256,7 @@ func (r *agentRunner) consumeEinoStream(
 			// RunResult would read currentText AFTER reset and get an empty
 			// string.
 			lastStepContent = currentText.String()
+			lastStepReasoning = currentReason.String()
 
 			// Rotate state for the next step.
 			stepIdx++
@@ -280,6 +283,11 @@ func (r *agentRunner) consumeEinoStream(
 		finalContent = currentText.String()
 	}
 
+	finalReasoning := lastStepReasoning
+	if finalReasoning == "" && currentReason.Len() > 0 {
+		finalReasoning = currentReason.String()
+	}
+
 	if hasState {
 		seq = state.Seq
 	}
@@ -296,6 +304,7 @@ func (r *agentRunner) consumeEinoStream(
 		AgentRunID:     run.ID,
 		TerminalReason: TerminalCompleted,
 		FinalOutput:    finalContent,
+		FinalReasoning: finalReasoning,
 		StepCount:      st.StepCount,
 		Duration:       time.Since(startTime),
 	}, nil

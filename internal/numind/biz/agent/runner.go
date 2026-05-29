@@ -70,6 +70,7 @@ type RunResult struct {
 	AgentRunID     uint64
 	TerminalReason TerminalReason
 	FinalOutput    string
+	FinalReasoning string // 最后一步的思考过程，用于持久化
 	StepCount      int
 	Duration       time.Duration
 	// SkillVersion 是本次 Run 装载的 agent_definition.version；0 表示未注入 Skill（fall through）。
@@ -1198,7 +1199,12 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		}
 	}
 
-	return r.finalizeRun(ctx, run, st, startTime, finalText, output, contextExhausted, skillVer, isTrivial, req, permDenialSink, runErr, sessionID)
+	var reasoning string
+	if output != nil && output.ReasoningContent != "" {
+		reasoning = output.ReasoningContent
+	}
+
+	return r.finalizeRun(ctx, run, st, startTime, finalText, reasoning, output, contextExhausted, skillVer, isTrivial, req, permDenialSink, runErr, sessionID)
 }
 
 // finalizeRun performs the persistence and clean-up work shared between Run and
@@ -1209,6 +1215,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 //
 // Parameters match the local variables that the original block read in Run():
 //   - finalText: scrubbed assistant final output (empty on error paths)
+//   - finalReasoning: accumulated or final step reasoning/thinking content
 //   - output: the raw *schema.Message returned by einoAgent.Generate (may be nil)
 //   - contextExhausted: flag set when compactv2 ErrContextExhausted terminated the loop
 //   - skillVer: agent_definition.version loaded at Run start (0 = fall-through)
@@ -1222,6 +1229,7 @@ func (r *agentRunner) finalizeRun(
 	st *LoopState,
 	startTime time.Time,
 	finalText string,
+	finalReasoning string,
 	output *schema.Message,
 	contextExhausted bool,
 	skillVer int,
@@ -1255,7 +1263,7 @@ func (r *agentRunner) finalizeRun(
 	}
 	finalMessages, _ := json.Marshal([]map[string]any{
 		{"role": "user", "content": userInput},
-		{"role": "assistant", "content": assistantContent},
+		{"role": "assistant", "content": assistantContent, "reasoning": finalReasoning},
 	})
 	if err := r.runStore.WriteTurn(ctx, run.ID, json.RawMessage(finalMessages)); err != nil {
 		log.Warnw("AgentRunner.Run WriteTurn failed", "agent_run_id", run.ID, "error", err)
@@ -1351,6 +1359,7 @@ func (r *agentRunner) finalizeRun(
 		AgentRunID:       run.ID,
 		TerminalReason:   st.TerminalReason,
 		FinalOutput:      finalText,
+		FinalReasoning:   finalReasoning,
 		StepCount:        st.StepCount,
 		Duration:         time.Since(startTime),
 		SkillVersion:     skillVer,
