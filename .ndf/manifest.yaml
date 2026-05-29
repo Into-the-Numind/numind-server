@@ -2638,3 +2638,31 @@ features:
   - 'D2 (ai, 修正于 reviewer P2): 原计划跳过 H1 强制测试。Spec reviewer P2 提议加 10-line 静态测试（regexp on rollback SQL）成本极低 → 接受建议，commit 2 加 migrations/check_consistency_test.go，asserts 任何 SQL 语句不能同时出现 agent_definition_history 表 + agent_definition_id 列引用。验证：fix 状态 PASS / 旧 typo 注入回 FAIL（同 commit 在 worktree 内 negative-control 验证过）。原 /tmp/verify-rollback.sh 已收集 end-to-end MySQL 证据但是一次性、CI 不可见，新静态测试是 CI-可达的持久回归保护。'
   blockers: []
   created_at: '2026-05-28T22:00:00+08:00'
+
+- id: tcr-push-silent-success
+  ndf_version: '3.0'
+  description: '2026-05-29 dev 部署：release.sh 打印 ✅ Release complete 且 exit 0，但 docker push 实际被 TCR 拒绝（repo 满 100-tag 上限，denied: ...tag has reached its limit(100)...）。新镜像从未进 registry，dev 容器仍跑旧镜像，healthz 在旧容器上通过——静默 no-op 部署。根因：3 个仓库的 build-and-push.sh 里 `docker push` 是裸调用；TCR tag-limit 拒绝时 docker push 仍返回 exit 0，set -euo pipefail 抓不到 exit-0 失败。修复：在 build-and-push.sh 包一层 push_image()，既查真实 rc 又 grep 输出里的拒绝模式（denied/reached its limit/quota/unauthorized）→ 命中即非零退出 + 明确 TCR tag-limit 指引（清理 TCR 控制台旧 develop-<sha> tag）。release.sh/deploy.sh 已有 set -e 且 ssh 正确传递退出码，无需功能改动。'
+  track: hotfix
+  classification_reason: 'Hotfix Triage 5 条全满足 — (1) 不动 DB schema (2) 无新 API 端点 (3) 无新外部服务 (4) 影响 ≤3 核心文件（3 个 build-and-push.sh，每仓一个）+ 配套 repro 测试 (5) 非支付/权限风险（cicd shell 工具链）。Micro 不适用（是逻辑改动，非文案/样式/rename）。Bug-from-operation：first commit 写失败的 repro 测试（stub docker 返回 TCR 拒绝 + exit 0，断言脚本非零退出且不打印 Release complete）。'
+  last_updated_by: ai-h1-start
+  last_updated_at: '2026-05-29T00:00:00+08:00'
+  repos:
+  - numind-server
+  - numind-web-v3
+  - numind-admin-web
+  branches:
+    numind-server: fix/tcr-push-silent-success
+    numind-web-v3: fix/tcr-push-silent-success
+    numind-admin-web: fix/tcr-push-silent-success
+  worktrees:
+    numind-server: /private/tmp/wt-tcr-push-silent-success-numind-server
+    numind-web-v3: /private/tmp/wt-tcr-push-silent-success-numind-web-v3
+    numind-admin-web: /private/tmp/wt-tcr-push-silent-success-numind-admin-web
+  progress:
+    total_tasks: 1
+    completed_tasks: 0
+    reviewed_tasks: 0
+  decisions:
+  - 'D1 (ai): 经读全部 3 仓 cicd 脚本，确认 release.sh/build-and-push.sh/deploy.sh 都已有 set -euo pipefail（memory project_tcr_100_tag_limit_silent_deploy 的"release.sh likely lacks set -e"假设有误）。真正缺口是 docker push 在 TCR tag-limit 拒绝时返回 exit 0，set -e 抓不到。故功能修复仅落在 build-and-push.sh ×3，用 rc 检查 + 输出 grep 双保险。'
+  blockers: []
+  created_at: '2026-05-29T00:00:00+08:00'
