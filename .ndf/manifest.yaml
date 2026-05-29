@@ -1,5 +1,34 @@
 schema_version: '2.0'
 features:
+- id: fix-agent-file-generation
+  ndf_version: '3.0'
+  description: '续 fix-skills-bake-into-image：user 再次用 Agent 生 PPT+HTML，两个新 bug。(1) create_html 把 LLM 写的完整 HTML 文档当纯文本走 html/template {{.Body}} 转义+套通用 wrapper → 浏览器显示源码而非渲染页（user 下载的 2 个 html 全是 &lt;!DOCTYPE...）。Root cause 是之前一次 "XSS fix" 过度转义。Fix: string content 视为 agent 写的原始 HTML——完整文档 verbatim，片段 template.HTML 原样包裹，custom template 仍转义（保留 opt-in）。(2) 沙箱"完全不可用"：所有 invoke_skill/run_python 报 docker exec container not running。Root cause: warm pool 容器 sleep 600，空闲 10min 后退出，Borrow 不做存活检查直接发尸体。Fix: Borrow 加 Inspect 存活检查（死的 destroy+重 spawn 重试）+ keepalive sleep infinity + 容器 label + 启动 reaper 清上轮 orphan。(3) pptx skill 即使容器活也跑不了：image_tag=python:3.11-slim 缺 python-pptx 等库。Fix: 构建从未构建过的 skill 镜像 sandbox-skill:skills-v1.5.0（base 顺手 pin bookworm，python:3.11-slim 已 float 到 trixie 致 libpango1.0-0 改名 apt 失败）推 TCR，config_dev/local image_tag 切过去。'
+  track: hotfix
+  stage: H1
+  classification_reason: 'Hotfix Triage — Bug-from-user-report（刚才 Agent 生 PPT+HTML 失败，dev 日志直接证据）。(1) 无 DB schema (2) 无新 API 端点 (3) skill 镜像非"新外部服务"，是已设计但从未激活的内部基础设施 (4) 影响文件数偏多（create_html + sandbox pool/docker_client/security/mock + 2 config + Dockerfile.base + 测试）但都是同一 incident「Agent 文件生成全链路坏」的修复，分 4 commit 原子化 (5) 非支付/权限/会员高风险。打包成 1 个 hotfix 而非拆 3 个：user 在等，三个 bug 在同一次 Agent run 中暴露、互相耦合（沙箱不修则 skill 镜像无意义；skill 镜像不修则沙箱活了 pptx 仍挂）。'
+  last_updated_by: ai-h1-review-passed-pending-merge
+  last_updated_at: '2026-05-29T12:05:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: fix/fix-agent-file-generation
+  worktrees:
+    numind-server: /private/tmp/wt-fix-agent-file-generation-numind-server
+  progress:
+    total_tasks: 3
+    completed_tasks: 3
+    reviewed_tasks: 3
+  decisions:
+  - 'H1-D1 (ai 2026-05-29): create_html 改回输出原始 HTML（撤销之前的转义"XSS fix"）。威胁模型：产出上传 COS agent-outputs/<userID>/，以 24h 预签名 URL 在对象存储域名（非 app 同源、无 app cookie）回给用户本人查看，是用户主动让 agent 生成的第一方工件，类比 run_python 写文件。转义让工具完全无用（源码当文本显示）。需要转义插值的调用方仍可传 custom template。'
+  - 'H1-D2 (ai 2026-05-29): 沙箱生命周期改为显式拥有，而非靠 sleep 自然到期。Borrow 加存活检查（核心修复，单独就能解"完全不可用"）+ sleep infinity（空闲不死）+ label + 启动 reaper（清上轮 orphan，因 sleep infinity 不再自清）。reaper 在 prime 前跑，只碰真正的 orphan。'
+  - 'H1-D3 (ai 2026-05-29): 沙箱镜像切到 skill 镜像（设计于 scripts/docker/skill-image 但从未构建/推送）。base 从 python:3.11-slim pin 到 bookworm——unqualified tag 已 float 到 Debian trixie，libpango1.0-0 改名致 apt exit 100。skill 镜像是 python:3.11-slim 超集，run_python 仍兼容。'
+  - 'H1-D4 (ai 2026-05-29, 评审采纳): 安全评审对 create_html raw HTML 提 BLOCK（COS 同源 XSS）。判定降级不阻断：建议的 Content-Disposition:attachment 会重新弄坏 user 报的 feature（变下载不渲染）；raw HTML 是该工具原始设计，残余风险低（隔离对象存储域名、无 app cookie、仅 prompt-injection 向量），正确修法是前端 sandboxed-iframe 渲染而非后端转义。已 spawn 前端加固 follow-up task。'
+  - 'H1-D5 (ai 2026-05-29, Rule 11): bug-from-customer 复现保护以回归测试形式落库而非 pre-fix failing commit——TestRenderHTML_FullDocumentVerbatim（旧转义代码必 fail）、TestBorrow_DiscardsDeadWarmContainer、TestReapOrphans、TestBuildSpawnArgs_LabelAndKeepAlive。沙箱 image/mount 类 bug 无法用 go test fake docker layout，运行时验证靠 dev 部署后日志 + 重跑 Agent。'
+  related_features:
+  - 'fix-skills-bake-into-image (merged 2026-05-29) — 前一个 hotfix 把 skills/ COPY 进镜像让 registry 起来；本 hotfix 修了 registry 起来后下一层的三个坏点（沙箱 borrow 死容器 / 镜像缺库 / create_html 转义）'
+  review_findings: '2 个 Sonnet reviewer 并行。spec：VERDICT BLOCK（COS XSS，已 H1-D4 判定降级 + follow-up），P2 config_local 未同步（已修）、Rule 11 标注（已 H1-D5 文档化）。code-quality：VERDICT PASS，P1 isAlive transient inspect error 致全池误杀（已加一次重试）、P2 BOM 未 strip（已修）、P2 borrow timer overrun（已知低风险）、P2 测试硬编码 mock id（已改断言真实不变量）。'
+  blockers: []
+  created_at: '2026-05-29T11:35:00+08:00'
 - id: fix-skills-bake-into-image
   ndf_version: '3.0'
   description: 'Dev 容器内 /opt/numind/skills 不存在 → biz.go:282 启动报 skills.NewRegistry failed → invoke_skill 工具拒登记 → Agent 调 pptx-author 静默失败 PPT 生成失败。Root cause: config_*.yaml 把 skills_root 写成宿主机路径 /opt/numind/skills + 部署机 bind-mount 只覆盖 /opt/numind/${ENV}（不含 skills），容器内根本看不到 skill 文件。Fix: skills/ 是代码工件不是部署机数据，COPY 进镜像 /app/skills 跟版本走；config_dev/local.yaml + sandbox.config.go DefaultConfig 都改成 /app/skills；.dockerignore 加 `!skills/**/*.md` 例外保 SKILL.md 进镜像；registry.go / sandbox/config.go 注释顺手更新避免误导后人。'

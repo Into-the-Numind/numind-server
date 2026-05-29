@@ -25,7 +25,13 @@ COPY requirements.txt /tmp/requirements.txt
 # Install all skill dependencies in one layer to minimise image size.
 # --no-cache-dir: avoid pip's write cache (saves ~200 MB in the image).
 # --no-deps: not used — dependencies of dependencies are needed.
-RUN pip install --no-cache-dir -r /tmp/requirements.txt && \
+# Tsinghua PyPI mirror: build server is in China; default PyPI stalls (same
+# reason Dockerfile.base uses the TUNA Debian mirror and the main image uses
+# Tsinghua pip).
+RUN pip install --no-cache-dir \
+        -i https://pypi.tuna.tsinghua.edu.cn/simple \
+        --trusted-host pypi.tuna.tsinghua.edu.cn \
+        -r /tmp/requirements.txt && \
     rm /tmp/requirements.txt
 
 # Return to sandbox user.

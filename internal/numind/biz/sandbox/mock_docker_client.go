@@ -22,7 +22,8 @@ import (
 type MockDockerClient struct {
 	mu          sync.Mutex
 	nextID      atomic.Uint64
-	containers  map[string]string // id → image_tag
+	containers  map[string]string   // id → image_tag
+	labels      map[string][]string // id → labels (from SpawnConfig.Labels)
 	execResults map[string]ExecResult
 
 	// CopiedFiles tracks files written via CopyToContainer (dstPath → bytes).
@@ -48,6 +49,7 @@ type MockDockerClient struct {
 func NewMockDockerClient() *MockDockerClient {
 	return &MockDockerClient{
 		containers:    make(map[string]string),
+		labels:        make(map[string][]string),
 		execResults:   make(map[string]ExecResult),
 		CopiedFiles:   make(map[string][]byte),
 		CopyFromFiles: make(map[string][]byte),
@@ -64,6 +66,7 @@ func (m *MockDockerClient) Spawn(_ context.Context, cfg SpawnConfig) (string, er
 	id := fmt.Sprintf("mock-%d", m.nextID.Add(1))
 	m.mu.Lock()
 	m.containers[id] = cfg.ImageTag
+	m.labels[id] = append([]string(nil), cfg.Labels...)
 	m.mu.Unlock()
 	return id, nil
 }
@@ -99,6 +102,7 @@ func (m *MockDockerClient) Destroy(_ context.Context, containerID string) error 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.containers, containerID)
+	delete(m.labels, containerID)
 	return nil
 }
 
@@ -166,4 +170,31 @@ func (m *MockDockerClient) CopyFromContainer(_ context.Context, _ string, _ stri
 // ExecMkdir is a no-op in the mock (directories don't exist in memory).
 func (m *MockDockerClient) ExecMkdir(_ context.Context, _ string, _ ...string) error {
 	return m.ExecMkdirErr
+}
+
+// ListByLabel returns the IDs of tracked containers carrying the given label.
+func (m *MockDockerClient) ListByLabel(_ context.Context, label string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ids := make([]string, 0)
+	for id, labels := range m.labels {
+		for _, l := range labels {
+			if l == label {
+				ids = append(ids, id)
+				break
+			}
+		}
+	}
+	return ids, nil
+}
+
+// MarkExited simulates a container dying out-of-band (keepalive elapsed, OOM,
+// manual kill) WITHOUT removing it from tracking — so a stale Session handle
+// still references it. After this, Inspect reports "exited". Test-only helper
+// for the pool liveness check.
+func (m *MockDockerClient) MarkExited(containerID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.containers, containerID)
+	// keep m.labels so ListByLabel still finds the corpse (reaper test)
 }

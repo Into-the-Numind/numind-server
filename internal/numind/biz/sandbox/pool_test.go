@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -295,4 +296,83 @@ func waitForSize(t *testing.T, p Pool, want int, timeout time.Duration) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("Pool size never reached %d (final=%d)", want, p.Size())
+}
+
+// TestBorrow_DiscardsDeadWarmContainer is the regression test for the 2026-05-29
+// "sandbox completely unavailable" incident: warm containers that died while
+// idle (keepalive elapsed / host restart) were handed out by Borrow, and every
+// downstream `docker exec` then failed with "container is not running". Borrow
+// must liveness-check each candidate, discard corpses, and return a live one.
+func TestBorrow_DiscardsDeadWarmContainer(t *testing.T) {
+	cfg := DefaultSandboxConfig
+	cfg.Backend = BackendDocker
+	cfg.PoolMin = 2
+	cfg.PoolMaxWaitMs = 5000
+	mock := NewMockDockerClient()
+	p := NewPool(cfg, mock, nil)
+	t.Cleanup(func() { _ = p.Close() })
+
+	waitForSize(t, p, 2, 2*time.Second)
+
+	// Both warm containers die out-of-band while still referenced by Session
+	// handles sitting in the warm channel.
+	mock.MarkExited("mock-1")
+	mock.MarkExited("mock-2")
+
+	sess, err := p.Borrow(context.Background())
+	if err != nil {
+		t.Fatalf("Borrow err = %v; want a live replacement container", err)
+	}
+	// The borrowed container must be live (the real invariant — not a specific ID).
+	res, err := mock.Inspect(context.Background(), sess.ContainerID)
+	if err != nil || res.Status != "running" {
+		t.Fatalf("Borrow returned non-running container %s (status=%s err=%v)",
+			sess.ContainerID, res.Status, err)
+	}
+	// And the dead corpses must have been destroyed, not leaked.
+	for _, dead := range []string{"mock-1", "mock-2"} {
+		if r, _ := mock.Inspect(context.Background(), dead); r.Status == "running" {
+			t.Fatalf("dead container %s was not discarded", dead)
+		}
+		if sess.ContainerID == dead {
+			t.Fatalf("Borrow handed out a known-dead container %s", dead)
+		}
+	}
+}
+
+// TestReapOrphans_DestroysLabeledContainers verifies the startup reaper removes
+// sandbox containers left labeled by a previous process run. Required because
+// the "sleep infinity" keepalive means orphans no longer self-terminate.
+func TestReapOrphans_DestroysLabeledContainers(t *testing.T) {
+	mock := NewMockDockerClient()
+	spawnCfg := BuildSpawnConfig(DefaultSandboxConfig, "")
+	for i := 0; i < 3; i++ {
+		if _, err := mock.Spawn(context.Background(), spawnCfg); err != nil {
+			t.Fatalf("setup spawn: %v", err)
+		}
+	}
+	if ids, _ := mock.ListByLabel(context.Background(), SandboxContainerLabel); len(ids) != 3 {
+		t.Fatalf("setup: want 3 labeled containers, got %d", len(ids))
+	}
+
+	p := &agentSandboxPool{cfg: DefaultSandboxConfig, dc: mock, logger: nopLogger{}}
+	p.reapOrphans()
+
+	if ids, _ := mock.ListByLabel(context.Background(), SandboxContainerLabel); len(ids) != 0 {
+		t.Fatalf("after reap: want 0 labeled containers, got %d", len(ids))
+	}
+}
+
+// TestBuildSpawnArgs_LabelAndKeepAlive locks the two spawn-arg invariants behind
+// the incident fix: every sandbox container is labeled (for the reaper) and held
+// alive with "sleep infinity" (so idle warm containers don't exit and rot).
+func TestBuildSpawnArgs_LabelAndKeepAlive(t *testing.T) {
+	args := buildSpawnArgs(BuildSpawnConfig(DefaultSandboxConfig, ""))
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--label "+SandboxContainerLabel) {
+		t.Errorf("spawn args missing label %q; got: %s", SandboxContainerLabel, joined)
+	}
+	if !strings.HasSuffix(joined, "sleep infinity") {
+		t.Errorf("spawn args must keep the container alive with 'sleep infinity'; got: %s", joined)
+	}
 }
