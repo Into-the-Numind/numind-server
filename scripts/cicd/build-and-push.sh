@@ -95,7 +95,12 @@ push_image() {
   local img="$1" out rc
   if out="$(docker push "$img" 2>&1)"; then rc=0; else rc=$?; fi
   printf '%s\n' "$out"
-  if [ "$rc" -ne 0 ] || printf '%s\n' "$out" | grep -Eqi 'denied|reached its limit|too many|quota|unauthorized|forbidden'; then
+  # Abort on a real failure (non-zero) OR a registry denial that `docker push`
+  # reported with exit 0 (TCR does this at the 100-tag limit). The patterns are
+  # words that never appear in a successful push; `too many` is anchored to
+  # registry quota signals so a benign "too many open connections" retry notice
+  # can't trip a false abort of a good deploy.
+  if [ "$rc" -ne 0 ] || printf '%s\n' "$out" | grep -Eqi 'denied|reached its limit|too many (requests|tags|images)|toomanyrequests|quota|unauthorized|forbidden'; then
     echo >&2
     echo "ERROR: docker push FAILED for $img (exit=$rc)" >&2
     if printf '%s\n' "$out" | grep -Eqi 'reached its limit|limit\(100\)|too many tags'; then
@@ -106,6 +111,7 @@ push_image() {
 >>> (${REGISTRY} -> ${NAMESPACE}/${IMAGE_NAME} -> 版本管理), then redeploy.
 EOF
     fi
+    # exit (not return): a denied push must abort the entire deploy.
     exit 1
   fi
 }
