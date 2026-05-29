@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 
-	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/util"
@@ -87,8 +86,15 @@ func (t *fileReadTool) AlwaysLoad() bool            { return true }
 // fileReadMaxBytes is the maximum content size returned per file read.
 const fileReadMaxBytes = 200 * 1024
 
-// attachmentPathRE matches /agent-attachments/<userID>/ in a URL path.
-var attachmentPathRE = regexp.MustCompile(`/agent-attachments/(\d+)/`)
+// attachmentPathRE matches /agent-attachments/<userID>/ OR /agent-outputs/<userID>/
+// in a URL path. Both prefixes are user-owned: agent-attachments holds files the
+// user uploaded (biz/attachment/upload.go:126), agent-outputs holds files generated
+// by tools like create_text / create_csv / create_html / create_json / run_python
+// during the same agent run (tool_create_helpers.go:90). file_read accepts both so
+// the LLM can read back its own generated artifacts within the same conversation.
+// The ownership check downstream (ctxUserID == urlUserID) is unchanged — only the
+// recognised URL surface widens.
+var attachmentPathRE = regexp.MustCompile(`/agent-(?:attachments|outputs)/(\d+)/`)
 
 // cosURLPathRE matches a Tencent COS attachment URL and captures the object
 // key (everything after the host).
@@ -125,26 +131,33 @@ func (t *fileReadTool) returnSoftError(fileName, format string, args ...any) (To
 
 // Execute reads the file at the given URL, verifies ownership, detects MIME type,
 // dispatches to the appropriate parser, and returns structured JSON output.
+//
+// All validation failures are returned as soft errors (ToolResult with "ERROR:"
+// content + nil Go error). Returning a Go error here would propagate to Eino as
+// a NodeRunError which TERMINATES the agent run before the LLM ever sees the
+// message — see tool_web_fetch.go:80-95 for the canonical rationale. Aligns with
+// Codex `RespondToModel` (codex-rs/tools/src/function_call_error.rs) and Claude
+// Code `ValidationResult` (FileReadTool.ts) patterns.
 func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	var in fileReadInput
 	if err := json.Unmarshal(input, &in); err != nil {
-		return nil, errno.ErrBind.SetMessage("file_read: invalid input JSON: %s", err.Error())
+		return t.returnSoftError("", "invalid input JSON: %s", err.Error())
 	}
 	if in.FileURL == "" {
-		return nil, errno.ErrInvalidParameter.SetMessage("file_read: file_url is required")
+		return t.returnSoftError("", "file_url is required")
 	}
 
 	// Verify the file belongs to the requesting user.
 	ctxUserID, ok := middleware.UserIDFromCtx(ctx)
 	if !ok || ctxUserID == 0 {
-		return nil, errno.ErrPermissionDenied.SetMessage("file_read: user not authenticated")
+		return t.returnSoftError(path.Base(in.FileURL), "user not authenticated")
 	}
 	urlUserID, err := extractUserIDFromURL(in.FileURL)
 	if err != nil {
-		return nil, errno.ErrInvalidParameter.SetMessage("file_read: %s", err.Error())
+		return t.returnSoftError(path.Base(in.FileURL), "%s", err.Error())
 	}
 	if ctxUserID != urlUserID {
-		return nil, errno.ErrPermissionDenied.SetMessage("file_read: file not owned by current user")
+		return t.returnSoftError(path.Base(in.FileURL), "file not owned by current user")
 	}
 
 	// Langfuse span for the full tool execution.
@@ -248,11 +261,11 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 }
 
 // extractUserIDFromURL extracts the user ID from a URL path of the form
-// /agent-attachments/<userID>/...
+// /agent-attachments/<userID>/... or /agent-outputs/<userID>/...
 func extractUserIDFromURL(fileURL string) (uint, error) {
 	m := attachmentPathRE.FindStringSubmatch(fileURL)
 	if len(m) < 2 {
-		return 0, fmt.Errorf("URL does not match agent-attachments path format")
+		return 0, fmt.Errorf("URL must contain /agent-attachments/<userID>/ or /agent-outputs/<userID>/ path segment (got %q) — file_read only accepts URLs to your uploaded files or files you generated via create_text/create_csv/create_html/create_json/run_python in this conversation", fileURL)
 	}
 	id, err := strconv.ParseUint(m[1], 10, 32)
 	if err != nil {

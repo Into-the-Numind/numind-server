@@ -1,5 +1,33 @@
 schema_version: '2.0'
 features:
+- id: file-read-accept-outputs-soft-errors
+  ndf_version: '3.0'
+  progress_note: 'H1 complete (repro test+fix landed, lint+test green, parallel Sonnet review PASS with 2 P2 inline-fixed); stage→H2 before ndf-done.'
+  description: 'Bug-from-customer: user 在 dev 跑 "找最近一周最热门 AI 创业项目并出 PPT" 任务时，agent 中途崩溃，前端报 `[NodeRunError] failed to stream tool call ...: file_read: URL does not match agent-attachments path format ------------------------ node path: [tools]`。dev 日志 agent_run_id=83（2026-05-29 18:54:30）锁定根因：LLM 调用 `file_read(file_url=".../agent-outputs/1/20260529-185416-generated_*.txt")` 想读回自己之前 create_text 生成的 artifact，但 tool_file_read.go:91 的 `attachmentPathRE = /agent-attachments/(\d+)/` 不匹配 `/agent-outputs/`，:144 把校验失败包成 `errno.ErrInvalidParameter` Go error 返回。按 tool_web_fetch.go:80-95 的注释（Eino v0.8.13 把 Go error 转 NodeRunError 终止整个 run，LLM 永远看不到错误内容），这是 agent loop 被杀的精确路径。Fix: (a) 扩展 regex 接受 /agent-(attachments|outputs)/<userID>/（generated artifacts 是 user 自己的，ownership 检查照旧）；(b) 5 个早期校验路径（lines 131/134/140/144/147）改用 returnSoftError 模式，对齐 Codex `RespondToModel` / Claude Code `ValidationResult` 范式，让 LLM 看到错误自己 self-correct。'
+  track: hotfix
+  stage: H3
+  classification_reason: 'Hotfix — (1) 无 DB schema 变更 (2) 无新 API 端点 (3) 无新外部服务 (4) 2 文件: tool_file_read.go + tool_file_read_test.go (5) 非高风险（ownership 校验逻辑不变，仅扩展可接受 URL 范围 + 改错误返回形式；无支付/权限/会员等级动作）。Bug-from-customer：dev 用户测试时撞到，Rule 11 强制先写失败的复现测试 commit。两个参考实现验证方向：Codex codex-rs/tools/src/function_call_error.rs 的 RespondToModel vs Fatal 区分；Claude Code FileReadTool.ts 校验失败返 ValidationResult 不杀 loop。'
+  last_updated_by: ai-h3-ready-for-merge
+  last_updated_at: '2026-05-29T20:00:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: fix/file-read-accept-outputs-soft-errors
+  worktrees:
+    numind-server: /private/tmp/wt-file-read-accept-outputs-soft-errors-numind-server
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-D1 (ai 2026-05-29): regex 改为 `/agent-(attachments|outputs)/(\d+)/` 而非新写两个独立 regex。理由：两个路径前缀完全对称（都是 `<prefix>/<userID>/<path>`），共享同一 capture group，正则只多 12 字符，可读性反而比双 regex 更清楚。'
+  - 'H1-D2 (ai 2026-05-29): 5 个早期校验路径全部改 returnSoftError，不部分保留 hard error。详见 .ndf/decisions/file-read-accept-outputs-soft-errors/0001-soft-error-all-paths.md'
+  - 'H1-D3 (ai 2026-05-29): unauthenticated 也走 soft error。理由：context 缺 userID 通常是 LLM 在非 agent flow 误调用（test harness、admin tool 借用）；hard error 杀 run 没好处，soft 让 LLM 看到 "user not authenticated" 字面信息更利于 debug。'
+  related_features:
+  - 'stream-emit-toolcall-events (merged 2026-05-29) — 同一 user session 撞到的另一个 bug；那个 fix 让 tool_call_start/result/error 流到前端。这个 fix 让 file_read 校验失败不再杀 run，互补。'
+  - 'pptx-author-skill-md-refactor (待启动 Standard) — 同一次测试中暴露的 PPT 失败问题（"PPT 技能环境有问题" = invoke_skill ModuleNotFoundError）。Root cause: SKILL.md 教内层 LLM 写 `import invoke_skill` 伪代码。修复完此 hotfix 后开下一个 Standard。'
+  blockers: []
+
 - id: stream-emit-toolcall-events
   ndf_version: '3.0'
   description: 'agent-filegen-progress-ux 部署后 user 反馈生成 PPT/HTML/读网页时仍无文案、无计时器、连流式光标都没有，像卡死。按硬规则用 gstack browse 在 dev 实机诊断（非静态推理）：登录→跑 web_search 任务→hook window.fetch 抓 SSE 帧。决定性证据——后端跑了 web_search（4 步）但浏览器只收到 reasoning_delta/token_delta/assistant_message/step_done，零个 tool_call_*。Root cause: 真正生效的流式路径是 RunStream→runner_runstream.go 的 streamScanToolCallChecker，它只扫 model OUTPUT 流、emit token/reasoning/assistant/step，从不 emit tool_call_start/result/error。（老的 runner_stream.go 有 emit 但不是 controller 调的活路径。）所以前端永远不知道有工具在跑→无 tool-call 卡片、无 narration 文案、无计时器→invoke_skill 那 30-60s 就是干等。这也解释了为什么 agent-filegen-progress-ux 的计时器"看不到"——它挂在 tool-call-item 上，而 item 从不渲染。Fix: 在 tool adapter（fullToolEinoAdapter.InvokableRun）emit 这三个事件——start 在 StateUse 之后/Execute 之前，result/error 在 Execute 之后。adapter 每个工具调用恰好跑一次、拿得到真实 tool name+input、与模型如何流式 tool_calls 无关。toolCallID 用合成 UUID 在 start/result 间保持一致供前端关联。emit 从 ctx 取 SSE channel（WithStreamState），非流式 Run 路径与无 state 的测试里静默 no-op。'

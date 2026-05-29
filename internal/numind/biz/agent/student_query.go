@@ -481,8 +481,8 @@ type agentMessage struct {
 	Text      string `json:"text,omitempty"`     // for type='user'
 	Markdown  string `json:"markdown,omitempty"` // for type='assistant' | 'final_answer'
 	Reasoning string `json:"reasoning,omitempty"`
-	RunID     uint64 `json:"run_id,omitempty"`   // for type='final_answer'
-	Timestamp string `json:"timestamp"`          // RFC3339
+	RunID     uint64 `json:"run_id,omitempty"` // for type='final_answer'
+	Timestamp string `json:"timestamp"`        // RFC3339
 }
 
 // transformMessages converts the raw [{role,content}] turn array stored in

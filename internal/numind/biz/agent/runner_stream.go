@@ -64,7 +64,7 @@ func (r *agentRunner) consumeEinoStream(
 		// terminal payload + result read currentText AFTER reset (= ""),
 		// agent_run.messages.assistant.content goes in empty, and reload
 		// returns an empty history (dev 2026-05-28 multiple runs).
-		lastStepContent string
+		lastStepContent   string
 		lastStepReasoning string
 	)
 	if hasState && state.CurrentMsgID != "" {
