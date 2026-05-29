@@ -1,5 +1,35 @@
 schema_version: '2.0'
 features:
+- id: sandbox-copy-via-tar
+  ndf_version: '3.0'
+  description: '前几轮沙箱修复后 user 再跑 Agent 生 PPT，HTML 成功了但 PPT 仍"沙箱资源紧张 4 次重试失败"。dev 日志真错误：AcquireForSkill: copy skill files: docker cp to container: exit status 1, "Could not find the file /skills/pptx-author in container"。前一轮加 /skills tmpfs 后 mkdir 已通，这次 docker cp 拷文件进 tmpfs 又失败——同一个新错误。在 dev 直接复现：docker exec mkdir /skills/pptx-author 成功，但 docker cp host_file <CID>:/skills/pptx-author/SKILL.md 报"Could not find the file"。对 /workdir 同样失败（也是 tmpfs）。对 /tmp（read-only rootfs）报"read-only filesystem"——不同 daemon 路径。docker cp 反向（CollectOutputs）也坏，从 tmpfs 拷出 /workdir/output 同样报"Could not find the file"。结论：**Docker 28.x 的 docker cp 对 --read-only rootfs 下的 tmpfs mount 双向坏掉**，docker exec 用不同 daemon code path 正常。这是前几轮所有"沙箱不可用"事故的真正根因——前面的修复（liveness/skill image/walltime/tmpfs ownership）每个都是真 bug，但都掩盖了下面这一层。Fix: docker_client.go CopyToContainer 改用 `docker exec -i <CID> tar -xf - -C <dir>` + in-memory tar；CopyFromContainer 改用 `docker exec <CID> tar -cf - -C <p> <e>` → host tar -xf；保留 docker cp 的 /. 后缀语义。Dev e2e 已实跑 mkdir→stage skill.py→python3 生成 28273 字节 .pptx→tar 拷回 host，file 命令确认是 Microsoft PowerPoint 2007+ 真文件。'
+  track: hotfix
+  stage: H3
+  classification_reason: 'Hotfix — (1) 无 DB (2) 无新 API (3) 无新外部服务 (4) 1 文件 docker_client.go + 测试 (5) 非高风险（架构层 I/O 原语替换，行为契约不变）。Bug-from-user：第 5 次跑 Agent 仍失败。本修复在前 4 个 hotfix 的所有「沙箱不可用」剧情下游——所有之前的 fix（liveness/skill image/walltime/tmpfs）都是真问题，但每个都解锁了下一层的 docker cp tmpfs 失败，直到这里才到根。'
+  last_updated_by: ai-h3-landed-dev-e2e-verified
+  last_updated_at: '2026-05-29T16:05:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: fix/sandbox-copy-via-tar
+  worktrees: {}
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-D1 (ai 2026-05-29): 部署前先在 dev daemon 用一次性 docker run + docker exec/cp 对比验证 docker cp 对 tmpfs 失败（双向），再确认 docker exec tar 通（双向）——花 5 分钟做组件级因果隔离，避免再一次猜错根因。前几轮我每次都修了「真问题」但都没追到这一层，本质是没有先做组件级隔离实验。'
+  - 'H1-D2 (ai 2026-05-29): tar via exec 而非 (a) 升级 docker daemon（infra 改动 + 全局影响）(b) 移除 read-only rootfs（重大安全回退）(c) 把 /workdir/skills 改成 named volume（持久化语义改变，跨容器隔离破坏）。docker exec tar 是接口层 drop-in 替换，调用方代码完全不动。'
+  - 'H1-D3 (ai 2026-05-29): in-memory bytes.Buffer 而非 io.Pipe 流式。理由：output_max_size_mb=50 已 cap 输出大小，POOL_MIN=5 最坏 ~250MB 缓冲可控；流式 Pipe 控制流复杂（producer/consumer 协调 SIGPIPE）；简单优先。'
+  - 'H1-D4 (ai 2026-05-29): 保留 /. 后缀语义（srcPath 结尾 "/." → 内容拷贝 vs srcPath 不含 → 包裹目录）。docker cp 原语义被 pool_skill.go CollectOutputs 和 tool_run_python.go /output/. 调用方依赖，behavior-preserving 切换。'
+  - 'H1-D5 (ai 2026-05-29): 端到端在真实 pool 容器跑完整 invoke_skill 路径（mkdir→stage→run→retrieve），不是组件级 smoke test。`file` 命令验证产物是 Microsoft PowerPoint 2007+ 格式。这是前几轮缺失的「contract test」。'
+  related_features:
+  - 'fix-sandbox-skills-mount (merged 2026-05-29) — 给 /skills 加 tmpfs 让 mkdir 通；本修复解了 docker cp 进/出 tmpfs 的双向 daemon bug。两者互补：tmpfs 让目录可写，tar via exec 让文件传输不撞 docker cp 漏洞。'
+  - 'fix-skill-image-sandbox-env (merged 2026-05-29) — skill 镜像 OpenBLAS env'
+  - 'bump-agent-walltime-budget (merged 2026-05-29) — wall-time 300s→900s'
+  - 'fix-agent-file-generation (merged 2026-05-29) — Borrow liveness + skill 镜像切换 + create_html raw HTML'
+  blockers: []
+  created_at: '2026-05-29T15:50:00+08:00'
 - id: fix-sandbox-skills-mount
   ndf_version: '3.0'
   description: 'wall-time 修复部署后 user 再跑 Agent 生 PPT 又失败：AI narration 报 "PPTX skill 不可用 sandbox unavailable"，反复重试后 [GraphRunError] exceeds max steps。真错误（dev 日志）：AcquireForSkill: prepare container dirs: docker exec mkdir: cannot create directory /skills/pptx-author: Permission denied。Root cause: AcquireForSkill 用 v1 copy 方式装载 skill——mkdir /skills/<name> 再 copy 文件进去。但沙箱 --read-only + uid 1000 运行，而 skill 镜像的 /skills 是 root 所有（Dockerfile.base 只 chown /workdir|/input|/output，漏了 /skills）→ mkdir EACCES，所有 skill（pptx/docx/xlsx/pdf）都挂。前面 liveness 修复让容器活着了，这是同一条路径的下一个 blocker。Fix: 把 /skills 挂成 tmpfs（uid=1000, 64m），与 /workdir 并列——可写 + sandboxuser 所有 + 短命。显式 mount 还顺带覆盖镜像的 VOLUME ["/skills"]，那个 directive 之前每 spawn 一个容器就泄漏一个匿名卷（dev 上发现 49 个）。纯 spawn-config 改动，无需重建镜像。'
