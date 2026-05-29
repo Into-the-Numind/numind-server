@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
+	"github.com/google/uuid"
 
+	"numind-server/internal/numind/biz/agent/stream"
 	"numind-server/internal/numind/biz/narration"
 	"numind-server/internal/pkg/log"
 )
@@ -73,6 +76,18 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 	// EMIT USE: after PreToolCall Continue, before Execute (S0 D2 timing contract).
 	a.emitNarration(ctx, narration.StateUse, input, nil, nil, "")
 
+	// EMIT SSE tool_call_start. The active streaming path (runner_runstream.go's
+	// streamScanToolCallChecker) scans only MODEL OUTPUT and never emits
+	// tool-call lifecycle events, so without this the student UI shows no sign a
+	// tool is running — during a 30–60s invoke_skill it looks frozen (2026-05-29
+	// bug). Emitting here (the tool lifecycle boundary) fires exactly once per
+	// call, carries the real tool name + input, and works for every model
+	// regardless of how it streams tool_calls. toolCallID is synthetic but stable
+	// across this call's start/result/error so the frontend can correlate them.
+	toolCallID := uuid.NewString()
+	startedAt := time.Now()
+	a.emitStreamToolStart(ctx, toolCallID, args)
+
 	// Execute the underlying tool
 	result, execErr := a.ft.Execute(ctx, input)
 	var output string
@@ -105,10 +120,13 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 	}
 
 	// EMIT RESULT or ERROR (based on effectiveErr — what caller sees).
+	durationMs := time.Since(startedAt).Milliseconds()
 	if effectiveErr != nil {
 		a.emitNarration(ctx, narration.StateError, input, nil, effectiveErr, "")
+		a.emitStreamToolError(ctx, toolCallID, effectiveErr, durationMs)
 	} else {
 		a.emitNarration(ctx, narration.StateResult, input, result, nil, "")
+		a.emitStreamToolResult(ctx, toolCallID, output, durationMs)
 	}
 
 	if effectiveErr != nil {
@@ -134,5 +152,65 @@ func (a *fullToolEinoAdapter) emitNarration(ctx context.Context, st narration.St
 		Result: json.RawMessage(result),
 		Err:    execErr,
 		Reason: reason,
+	})
+}
+
+// emitStream sends one SSE event onto the shared streaming channel pulled from
+// ctx (injected by RunStream via WithStreamState). No-op when there is no
+// stream state (e.g. the non-streaming Run path or unit tests) — so the
+// adapter stays usable in both modes. Seq is owned by the single in-flight
+// step; tool execution is sequential with the model-output scanner, so the
+// unsynchronised increment matches the existing emit closure's contract.
+func (a *fullToolEinoAdapter) emitStream(ctx context.Context, t stream.EventType, payload any) {
+	state, ok := StreamStateFromContext(ctx)
+	if !ok || state == nil || state.Ch == nil {
+		return
+	}
+	state.Seq++
+	ev, err := stream.Encode(t, payload, state.Seq, state.RunID, state.StepIdx)
+	if err != nil {
+		return
+	}
+	select {
+	case state.Ch <- ev:
+	case <-ctx.Done():
+	}
+}
+
+// emitStreamToolStart emits tool_call_start with the tool name + a truncated
+// input preview (so the frontend can show e.g. the skill's concrete format).
+func (a *fullToolEinoAdapter) emitStreamToolStart(ctx context.Context, toolCallID, args string) {
+	var inputPreview map[string]any
+	if args != "" {
+		_ = json.Unmarshal([]byte(args), &inputPreview)
+		inputPreview = truncateMapValues(inputPreview, 500)
+	}
+	a.emitStream(ctx, stream.EventToolCallStart, stream.ToolCallStartPayload{
+		ToolCallID:   toolCallID,
+		ToolName:     a.ft.Name(),
+		InputDigest:  inputSHA(args),
+		InputPreview: inputPreview,
+	})
+}
+
+// emitStreamToolResult emits tool_call_result with a truncated output preview.
+func (a *fullToolEinoAdapter) emitStreamToolResult(ctx context.Context, toolCallID, output string, durationMs int64) {
+	a.emitStream(ctx, stream.EventToolCallResult, stream.ToolCallResultPayload{
+		ToolCallID: toolCallID,
+		Preview:    truncateRunes(output, 500),
+		DurationMs: durationMs,
+	})
+}
+
+// emitStreamToolError emits tool_call_error when the tool (or its post-hook) failed.
+func (a *fullToolEinoAdapter) emitStreamToolError(ctx context.Context, toolCallID string, err error, durationMs int64) {
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	a.emitStream(ctx, stream.EventToolCallError, stream.ToolCallErrorPayload{
+		ToolCallID: toolCallID,
+		Error:      truncateRunes(msg, 500),
+		DurationMs: durationMs,
 	})
 }

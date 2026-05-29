@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"numind-server/internal/numind/biz/agent/stream"
 	"numind-server/internal/numind/biz/narration"
 	"sync/atomic"
 	"testing"
@@ -412,4 +413,98 @@ func TestAdapter_NoNarrationProvider_LegacyBehaviorPreserved(t *testing.T) {
 	assert.Equal(t, `{"ok":true}`, out)
 	assert.Equal(t, int64(1), rec.preCalls.Load(), "PreToolCall should fire once")
 	assert.Equal(t, int64(1), rec.postCalls.Load(), "PostToolCall should fire once")
+}
+
+// ── tests: SSE tool-call event emission (2026-05-29 "frozen UI" fix) ─────────
+//
+// The active streaming path (runner_runstream.go) never emitted tool_call_*
+// events, so the student UI showed no sign a tool was running — a 30–60s
+// invoke_skill looked frozen. The adapter now emits tool_call_start before
+// Execute and tool_call_result / tool_call_error after. These tests lock that
+// contract: with a StreamState in ctx, InvokableRun must put the right events
+// on the channel; without one, it must be a silent no-op (non-streaming path).
+
+func drainEventTypes(ch chan stream.Event) []stream.EventType {
+	var types []stream.EventType
+	for {
+		select {
+		case ev := <-ch:
+			types = append(types, ev.Type)
+		default:
+			return types
+		}
+	}
+}
+
+func TestAdapter_InvokableRun_EmitsToolCallStartAndResult(t *testing.T) {
+	ft := &fakeFullTool{name: "web_search", out: []byte(`{"results":["a","b"]}`)}
+	eino := adaptFullToEinoTool(ft, nil) // nil hooks: stream emission is independent of hooks
+
+	ch := make(chan stream.Event, 16)
+	st := &StreamSessionState{Ch: ch, RunID: 42, StepIdx: 1}
+	ctx := WithStreamState(context.Background(), st)
+
+	out, err := eino.InvokableRun(ctx, `{"query":"github trending"}`)
+	require.NoError(t, err)
+	assert.Equal(t, `{"results":["a","b"]}`, out)
+
+	types := drainEventTypes(ch)
+	assert.Contains(t, types, stream.EventToolCallStart,
+		"tool_call_start must be emitted before Execute (the 'a tool is running' signal)")
+	assert.Contains(t, types, stream.EventToolCallResult,
+		"tool_call_result must be emitted after a successful Execute")
+	assert.NotContains(t, types, stream.EventToolCallError)
+}
+
+func TestAdapter_InvokableRun_EmitsToolCallError(t *testing.T) {
+	ft := &fakeFullTool{name: "invoke_skill", err: errors.New("sandbox boom")}
+	eino := adaptFullToEinoTool(ft, nil)
+
+	ch := make(chan stream.Event, 16)
+	ctx := WithStreamState(context.Background(), &StreamSessionState{Ch: ch, RunID: 7, StepIdx: 0})
+
+	_, err := eino.InvokableRun(ctx, `{"skill_name":"pptx-author"}`)
+	require.Error(t, err)
+
+	types := drainEventTypes(ch)
+	assert.Contains(t, types, stream.EventToolCallStart)
+	assert.Contains(t, types, stream.EventToolCallError,
+		"a failing tool must emit tool_call_error, not tool_call_result")
+	assert.NotContains(t, types, stream.EventToolCallResult)
+}
+
+func TestAdapter_InvokableRun_NoStreamState_NoPanic(t *testing.T) {
+	// Non-streaming path (Run, not RunStream): no StreamState in ctx → silent no-op.
+	ft := &fakeFullTool{name: "x", out: []byte(`ok`)}
+	eino := adaptFullToEinoTool(ft, nil)
+	out, err := eino.InvokableRun(context.Background(), `{"a":1}`)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", out)
+}
+
+func TestAdapter_ToolCallStart_CarriesInputPreview(t *testing.T) {
+	// invoke_skill's skill_name must survive into input_preview so the frontend
+	// can render a format-specific label ("正在生成 PPT 演示文稿").
+	ft := &fakeFullTool{name: "invoke_skill", out: []byte(`{}`)}
+	eino := adaptFullToEinoTool(ft, nil)
+	ch := make(chan stream.Event, 16)
+	ctx := WithStreamState(context.Background(), &StreamSessionState{Ch: ch, RunID: 1, StepIdx: 0})
+
+	_, err := eino.InvokableRun(ctx, `{"skill_name":"pptx-author","instructions":"make a deck"}`)
+	require.NoError(t, err)
+
+	var start *stream.Event
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Type == stream.EventToolCallStart {
+				e := ev
+				start = &e
+			}
+			continue
+		default:
+		}
+		break
+	}
+	require.NotNil(t, start, "expected a tool_call_start event")
 }
