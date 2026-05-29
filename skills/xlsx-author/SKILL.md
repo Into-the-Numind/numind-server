@@ -7,15 +7,15 @@ Generate .xlsx Excel files via `openpyxl` inside `run_python`.
 You are the agent. After `read_skill({"skill_name":"xlsx-author"})` returns this
 guide, write Python following one of the templates below and run it via
 `run_python({"code": "...", "input_files": [...optional CSV/source URLs...]})`.
-`run_python` collects everything in `/output/` and gives you back a COS URL —
+`run_python` collects everything in `/workdir/output/` and gives you back a COS URL —
 embed that URL in your final answer to the user.
 
 Pre-installed: `openpyxl>=3.1`, `pandas>=2.0`, `matplotlib>=3.7`.
 
 ## Paths
 
-- Input files → `/workspace/input/<filename>`
-- Output → `/output/<your_filename>.xlsx`
+- Input files → `/workdir/input/<filename>`
+- Output → `/workdir/output/<your_filename>.xlsx`
 
 ## Template 1 — Single-sheet summary
 
@@ -34,7 +34,7 @@ for cell in ws[1]:
     cell.alignment = Alignment(horizontal="center")
 for col in "ABCDE":
     ws.column_dimensions[col].width = 14
-wb.save("/output/summary_demo.xlsx")
+wb.save("/workdir/output/summary_demo.xlsx")
 ```
 
 ## Template 2 — Multi-sheet with an index
@@ -51,7 +51,7 @@ for name, desc in sections:
     ws = wb.create_sheet(name)
     ws.append(["Header A", "Header B", "Header C"])
     ws.append([100, 200, 300])
-wb.save("/output/multisheet_demo.xlsx")
+wb.save("/workdir/output/multisheet_demo.xlsx")
 ```
 
 ## Template 3 — Data + embedded line chart
@@ -70,7 +70,7 @@ cats = Reference(ws, min_col=1, min_row=2, max_row=5)
 chart.add_data(data, titles_from_data=True)
 chart.set_categories(cats)
 ws.add_chart(chart, "D2")
-wb.save("/output/chart_demo.xlsx")
+wb.save("/workdir/output/chart_demo.xlsx")
 ```
 
 ## Template 4 — Conditional formatting table
@@ -93,14 +93,14 @@ rule = ColorScaleRule(
     end_type="max", end_color="63BE7B",
 )
 ws.conditional_formatting.add("B2:E5", rule)
-wb.save("/output/heatmap_demo.xlsx")
+wb.save("/workdir/output/heatmap_demo.xlsx")
 ```
 
 ## Tips
 
 - For Chinese headers, openpyxl handles UTF-8 natively — no special config.
-- Use `pandas.read_csv("/workspace/input/<name>.csv").to_excel(...)` to convert
+- Use `pandas.read_csv("/workdir/input/<name>.csv").to_excel(...)` to convert
   user-uploaded CSVs to formatted xlsx quickly.
 - Number formats: `cell.number_format = "0.0%"` or `"#,##0"`.
 - Freeze header row: `ws.freeze_panes = "A2"`.
-- Always save under `/output/` so `run_python` collects + uploads it.
+- Always save under `/workdir/output/` so `run_python` collects + uploads it.

@@ -246,7 +246,7 @@ func TestRunPythonTool_Execute_TimeoutClamp(t *testing.T) {
 	// Register the python exec result using the CLAMPED timeout (120s)
 	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "timeout 120s python3 /workdir/run.py"},
 		sandbox.ExecResult{Stdout: "", Stderr: "", ExitCode: 0, Duration: 1 * time.Millisecond})
-	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "ls /output/ 2>/dev/null || true"},
+	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "ls /workdir/output/ 2>/dev/null || true"},
 		sandbox.ExecResult{Stdout: "", Stderr: "", ExitCode: 0})
 
 	ctx := wiredRunPythonCtx(t, mockDC, sess)
@@ -285,7 +285,7 @@ func TestRunPythonTool_Execute_TimeoutDefault(t *testing.T) {
 	// Register using DEFAULT timeout (30s)
 	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "timeout 30s python3 /workdir/run.py"},
 		sandbox.ExecResult{Stdout: "ok", Stderr: "", ExitCode: 0, Duration: 1 * time.Millisecond})
-	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "ls /output/ 2>/dev/null || true"},
+	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "ls /workdir/output/ 2>/dev/null || true"},
 		sandbox.ExecResult{Stdout: "", Stderr: "", ExitCode: 0})
 
 	ctx := wiredRunPythonCtx(t, mockDC, sess)
@@ -323,7 +323,7 @@ func TestRunPythonTool_Execute_PythonRuntimeError(t *testing.T) {
 			ExitCode: 1,
 			Duration: 2 * time.Millisecond,
 		})
-	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "ls /output/ 2>/dev/null || true"},
+	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "ls /workdir/output/ 2>/dev/null || true"},
 		sandbox.ExecResult{Stdout: "", Stderr: "", ExitCode: 0})
 
 	ctx := wiredRunPythonCtx(t, mockDC, sess)
@@ -352,7 +352,7 @@ func TestRunPythonTool_Execute_PythonRuntimeError(t *testing.T) {
 	}
 }
 
-// TestRunPythonTool_Execute_NoOutputFiles verifies that when /output/ is
+// TestRunPythonTool_Execute_NoOutputFiles verifies that when /workdir/output/ is
 // empty, Execute returns files=[] and exit_code=0 without Go error.
 func TestRunPythonTool_Execute_NoOutputFiles(t *testing.T) {
 	mockDC := sandbox.NewMockDockerClient()
@@ -365,7 +365,7 @@ func TestRunPythonTool_Execute_NoOutputFiles(t *testing.T) {
 
 	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "timeout 30s python3 /workdir/run.py"},
 		sandbox.ExecResult{Stdout: "done", Stderr: "", ExitCode: 0, Duration: 1 * time.Millisecond})
-	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "ls /output/ 2>/dev/null || true"},
+	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "ls /workdir/output/ 2>/dev/null || true"},
 		sandbox.ExecResult{Stdout: "", Stderr: "", ExitCode: 0})
 
 	ctx := wiredRunPythonCtx(t, mockDC, sess)
@@ -403,7 +403,7 @@ func TestRunPythonTool_Execute_StdoutTruncated(t *testing.T) {
 	longStdout := strings.Repeat("A", 5000)
 	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "timeout 30s python3 /workdir/run.py"},
 		sandbox.ExecResult{Stdout: longStdout, Stderr: "", ExitCode: 0, Duration: 1 * time.Millisecond})
-	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "ls /output/ 2>/dev/null || true"},
+	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "ls /workdir/output/ 2>/dev/null || true"},
 		sandbox.ExecResult{Stdout: "", Stderr: "", ExitCode: 0})
 
 	ctx := wiredRunPythonCtx(t, mockDC, sess)

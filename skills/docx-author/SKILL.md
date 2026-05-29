@@ -7,15 +7,15 @@ Generate .docx Word files via `python-docx` inside `run_python`.
 You are the agent. After `read_skill({"skill_name":"docx-author"})` returns this
 guide, write Python following one of the templates below and run it via
 `run_python({"code": "...", "input_files": [...optional image URLs...]})`.
-`run_python` collects everything in `/output/` and gives you back a COS URL —
+`run_python` collects everything in `/workdir/output/` and gives you back a COS URL —
 embed that URL in your final answer to the user.
 
 Pre-installed: `python-docx>=1.1`, `pillow>=10`.
 
 ## Paths
 
-- Input files → `/workspace/input/<filename>`
-- Output → `/output/<your_filename>.docx`
+- Input files → `/workdir/input/<filename>`
+- Output → `/workdir/output/<your_filename>.docx`
 
 ## Template 1 — Multi-level headings + body
 
@@ -32,7 +32,7 @@ doc.add_heading("三、执行步骤", level=1)
 for step in ["发布新版本", "客户回访", "复盘"]:
     p = doc.add_paragraph(step, style="List Number")
     p.runs[0].font.size = Pt(11)
-doc.save("/output/headings_demo.docx")
+doc.save("/workdir/output/headings_demo.docx")
 ```
 
 ## Template 2 — Inline image
@@ -43,10 +43,10 @@ from docx.shared import Inches
 doc = Document()
 doc.add_heading("产品截图汇总", level=0)
 doc.add_paragraph("以下截图来自最新构建：")
-# image at /workspace/input/screenshot.png (user-uploaded; substitute filename)
-doc.add_picture("/workspace/input/screenshot.png", width=Inches(5.5))
+# image at /workdir/input/screenshot.png (user-uploaded; substitute filename)
+doc.add_picture("/workdir/input/screenshot.png", width=Inches(5.5))
 doc.add_paragraph("图 1：主页面")
-doc.save("/output/image_demo.docx")
+doc.save("/workdir/output/image_demo.docx")
 ```
 
 ## Template 3 — Table
@@ -68,7 +68,7 @@ data = [(1, "Hark", "Series A", "$700M"),
 for r, row in enumerate(data, start=1):
     for c, v in enumerate(row):
         table.rows[r].cells[c].text = str(v)
-doc.save("/output/table_demo.docx")
+doc.save("/workdir/output/table_demo.docx")
 ```
 
 ## Template 4 — Header + footer + sections
@@ -88,7 +88,7 @@ doc.add_paragraph("日期：2026-09-01")
 doc.add_section(WD_SECTION.NEW_PAGE)
 doc.add_heading("正文章节", level=1)
 doc.add_paragraph("第二节从新页开始，沿用顶部页眉与底部页脚。")
-doc.save("/output/sections_demo.docx")
+doc.save("/workdir/output/sections_demo.docx")
 ```
 
 ## Tips
@@ -97,4 +97,4 @@ doc.save("/output/sections_demo.docx")
 - Page break: `doc.add_page_break()`.
 - Bold a run inline: `p.add_run("important").bold = True`.
 - Bullet list: `doc.add_paragraph("...", style="List Bullet")`.
-- Always save under `/output/` so `run_python` collects + uploads it.
+- Always save under `/workdir/output/` so `run_python` collects + uploads it.

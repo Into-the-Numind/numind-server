@@ -7,7 +7,7 @@ Generate .pptx PowerPoint files via `python-pptx` inside `run_python`.
 You are the agent. After `read_skill({"skill_name":"pptx-author"})` returns this
 guide, write Python following one of the templates below and run it via
 `run_python({"code": "...", "input_files": [...optional logo URLs...]})`.
-`run_python` collects everything in `/output/` and gives you back a COS URL —
+`run_python` collects everything in `/workdir/output/` and gives you back a COS URL —
 embed that URL in your final answer to the user.
 
 Pre-installed in the sandbox: `python-pptx>=1.0`, `pillow>=10`, `matplotlib>=3.7`.
@@ -15,8 +15,8 @@ Font `Noto Sans CJK SC` is available for Chinese.
 
 ## Paths
 
-- Input files (uploaded attachments) → `/workspace/input/<filename>`
-- Output → `/output/<your_filename>.pptx`
+- Input files (uploaded attachments) → `/workdir/input/<filename>`
+- Output → `/workdir/output/<your_filename>.pptx`
 
 ## Template 1 — Cover slide
 
@@ -34,7 +34,7 @@ p.font.size = Pt(54); p.font.bold = True
 p.font.color.rgb = RGBColor(0x1E, 0x40, 0xAF)
 sub = s.shapes.add_textbox(Inches(0.8), Inches(4.5), Inches(11.7), Inches(1))
 sub.text_frame.text = "战略部 · 2026-09-01"
-prs.save("/output/cover_demo.pptx")
+prs.save("/workdir/output/cover_demo.pptx")
 ```
 
 ## Template 2 — Title + bullets
@@ -50,7 +50,7 @@ body = s.placeholders[1].text_frame
 body.text = "具身智能进入量产期"
 for bullet in ["算力基建持续加码", "端侧 AI 走向消费"]:
     p = body.add_paragraph(); p.text = bullet; p.font.size = Pt(24)
-prs.save("/output/bullets_demo.pptx")
+prs.save("/workdir/output/bullets_demo.pptx")
 ```
 
 ## Template 3 — Title + table
@@ -73,7 +73,7 @@ data = [(1,"Hark","A","$700M"),(2,"Nscale","-","$2B"),
 for r, row in enumerate(data, start=1):
     for c, v in enumerate(row):
         tbl.cell(r, c).text = str(v)
-prs.save("/output/table_demo.pptx")
+prs.save("/workdir/output/table_demo.pptx")
 ```
 
 ## Template 4 — Title + bar chart (PNG via matplotlib)
@@ -93,7 +93,7 @@ prs.slide_width = Inches(13.33); prs.slide_height = Inches(7.5)
 s = prs.slides.add_slide(prs.slide_layouts[5])
 s.shapes.title.text = "季度营收趋势"
 s.shapes.add_picture("/tmp/chart.png", Inches(1), Inches(1.5), Inches(11), Inches(5))
-prs.save("/output/chart_demo.pptx")
+prs.save("/workdir/output/chart_demo.pptx")
 ```
 
 ## Tips
@@ -101,5 +101,5 @@ prs.save("/output/chart_demo.pptx")
 - Chinese text: set `font.name = "Noto Sans CJK SC"` on the run.
 - Hex colors: `RGBColor.from_string("2563EB")` (no `#`).
 - Multi-slide deck: build a list of slide dicts and reuse the templates above.
-- User-uploaded logo: read from `/workspace/input/<name>` and pass to `add_picture`.
-- Always save under `/output/` so `run_python` collects + uploads it.
+- User-uploaded logo: read from `/workdir/input/<name>` and pass to `add_picture`.
+- Always save under `/workdir/output/` so `run_python` collects + uploads it.

@@ -7,15 +7,15 @@ Generate .pdf files by rendering HTML/CSS via `weasyprint` inside `run_python`.
 You are the agent. After `read_skill({"skill_name":"pdf-from-html"})` returns
 this guide, write Python following one of the templates below and run it via
 `run_python({"code": "...", "input_files": [...optional logo/image URLs...]})`.
-`run_python` collects everything in `/output/` and gives you back a COS URL —
+`run_python` collects everything in `/workdir/output/` and gives you back a COS URL —
 embed that URL in your final answer to the user.
 
 Pre-installed: `weasyprint>=60`, `pillow>=10`. Fonts: `Noto Sans CJK SC` for Chinese.
 
 ## Paths
 
-- Input files → `/workspace/input/<filename>`
-- Output → `/output/<your_filename>.pdf`
+- Input files → `/workdir/input/<filename>`
+- Output → `/workdir/output/<your_filename>.pdf`
 
 ## Template 1 — Plain Chinese report
 
@@ -35,14 +35,14 @@ html = """
 <ul><li>产品新增 4 个核心功能</li><li>客户 NPS 升至 58</li></ul>
 </body></html>
 """
-HTML(string=html).write_pdf("/output/report_demo.pdf")
+HTML(string=html).write_pdf("/workdir/output/report_demo.pdf")
 ```
 
 ## Template 2 — Cover page with logo
 
 ```python
 from weasyprint import HTML
-# user-uploaded logo at /workspace/input/logo.png (substitute the real filename)
+# user-uploaded logo at /workdir/input/logo.png (substitute the real filename)
 html = """
 <html><head><meta charset="utf-8">
 <style>
@@ -54,13 +54,13 @@ html = """
   .cover .sub{font-size:18px;margin-top:12px;opacity:.85}
 </style></head><body>
 <div class="cover">
-  <img src="file:///workspace/input/logo.png" alt="logo"/>
+  <img src="file:///workdir/input/logo.png" alt="logo"/>
   <h1>2026 Q3 业务方案</h1>
   <div class="sub">有数科技 · 2026-09-01</div>
 </div>
 </body></html>
 """
-HTML(string=html).write_pdf("/output/cover_demo.pdf")
+HTML(string=html).write_pdf("/workdir/output/cover_demo.pdf")
 ```
 
 ## Template 3 — Multi-page with page numbers
@@ -76,14 +76,14 @@ html = """
   h1{color:#1E40AF}
   .break{page-break-before:always}
 </style></head><body>
-<h1>章节 1：背景</h1><p>……（正文内容）</p>
+<h1>章节 1：背景</h1><p>正文</p>
 <div class="break"></div>
-<h1>章节 2：方案</h1><p>……（正文内容）</p>
+<h1>章节 2：方案</h1><p>正文</p>
 <div class="break"></div>
-<h1>章节 3：结论</h1><p>……（正文内容）</p>
+<h1>章节 3：结论</h1><p>正文</p>
 </body></html>
 """
-HTML(string=html).write_pdf("/output/paged_demo.pdf")
+HTML(string=html).write_pdf("/workdir/output/paged_demo.pdf")
 ```
 
 ## Template 4 — Invoice with table
@@ -111,12 +111,12 @@ html = f"""
 <div class="total">合计：¥{total:,}</div>
 </body></html>
 """
-HTML(string=html).write_pdf("/output/invoice_demo.pdf")
+HTML(string=html).write_pdf("/workdir/output/invoice_demo.pdf")
 ```
 
 ## Tips
 
 - Chinese: `font-family:"Noto Sans CJK SC"` in CSS.
-- Local images: `file:///workspace/input/<name>`.
+- Local images: `file:///workdir/input/<name>`.
 - `@page{size:A4;margin:36px;@bottom-center{content:counter(page)}}` for headers/footers.
-- Always save under `/output/`.
+- Always save under `/workdir/output/`.
