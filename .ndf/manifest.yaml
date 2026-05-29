@@ -20,7 +20,7 @@ features:
     reviewed_tasks: 0
   decisions:
   - 'H1-D1 (ai 2026-05-29): regex 改为 `/agent-(attachments|outputs)/(\d+)/` 而非新写两个独立 regex。理由：两个路径前缀完全对称（都是 `<prefix>/<userID>/<path>`），共享同一 capture group，正则只多 12 字符，可读性反而比双 regex 更清楚。'
-  - 'H1-D2 (ai 2026-05-29): 5 个早期校验路径全部改 returnSoftError（包括 invalid-JSON、missing file_url、unauthenticated、URL-pattern-mismatch、user-ID-mismatch），不部分保留 hard error。理由：参考 Codex view_image.rs 的实现，全部 6 处校验失败都用 RespondToModel；保留 hard error 唯一合理路径是 harness invariant violation（"tool 被以不兼容 payload 调用" 之类），但本工具没有这种调用方。Eino runner 上对应的 Fatal 是 returnGoError，对应的 RespondToModel 是 returnSoftError。'
+  - 'H1-D2 (ai 2026-05-29): 5 个早期校验路径全部改 returnSoftError，不部分保留 hard error。详见 .ndf/decisions/file-read-accept-outputs-soft-errors/0001-soft-error-all-paths.md'
   - 'H1-D3 (ai 2026-05-29): unauthenticated 也走 soft error。理由：context 缺 userID 通常是 LLM 在非 agent flow 误调用（test harness、admin tool 借用）；hard error 杀 run 没好处，soft 让 LLM 看到 "user not authenticated" 字面信息更利于 debug。'
   related_features:
   - 'stream-emit-toolcall-events (merged 2026-05-29) — 同一 user session 撞到的另一个 bug；那个 fix 让 tool_call_start/result/error 流到前端。这个 fix 让 file_read 校验失败不再杀 run，互补。'

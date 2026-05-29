@@ -239,13 +239,17 @@ func (t *webFetchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 // and must NOT be fetched by web_fetch. They must be read through file_read,
 // which handles ownership verification and presigning.
 //
-// Two indicators are checked (either is sufficient — defence in depth):
+// Two indicators are checked (BOTH must combine for a "true" positive —
+// defence in depth via shape-AND-path):
 //   - COS bucket host shape (bucket.cos.region.myqcloud.com)
-//   - /agent-attachments/<userID>/ path segment
+//   - /agent-attachments/<userID>/ OR /agent-outputs/<userID>/ path segment
+//     (attachmentPathRE is shared with tool_file_read.go and matches both
+//     prefixes — uploads and tool-generated artifacts are both user-owned
+//     private COS objects that web_fetch must route to file_read.)
 //
-// Both must combine for a "true" positive (a public CDN that happens to have
-// a path like /agent-attachments/ is still considered web-fetchable). But in
-// practice both signals come together for our uploads.
+// A public CDN that happens to have a path like /agent-attachments/ is still
+// considered web-fetchable (host check rejects it). In practice both signals
+// come together for our private uploads and generated artifacts.
 func isAgentAttachmentURL(rawURL string) bool {
 	_, isCOS := extractCOSObjectKey(rawURL)
 	hasAttachmentPath := attachmentPathRE.MatchString(rawURL)
