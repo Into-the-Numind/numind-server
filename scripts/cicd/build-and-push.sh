@@ -86,8 +86,38 @@ docker build \
 BUILD_DONE=$(date +%s)
 echo "Build took $((BUILD_DONE - START))s"
 
-docker push "$IMG_ROLLING"
-docker push "$IMG_SHA"
+# Push to TCR. CRITICAL: TCR may DENY a push (e.g. repo at its 100-tag limit,
+# "denied: ...tag has reached its limit(100)...") while `docker push` still
+# returns exit 0 — so a bare push slips past `set -euo pipefail` and the deploy
+# reports success having shipped nothing. push_image() checks BOTH the real exit
+# code AND the output for denial patterns, and aborts loudly on either.
+push_image() {
+  local img="$1" out rc
+  if out="$(docker push "$img" 2>&1)"; then rc=0; else rc=$?; fi
+  printf '%s\n' "$out"
+  # Abort on a real failure (non-zero) OR a registry denial that `docker push`
+  # reported with exit 0 (TCR does this at the 100-tag limit). The patterns are
+  # words that never appear in a successful push; `too many` is anchored to
+  # registry quota signals so a benign "too many open connections" retry notice
+  # can't trip a false abort of a good deploy.
+  if [ "$rc" -ne 0 ] || printf '%s\n' "$out" | grep -Eqi 'denied|reached its limit|too many (requests|tags|images)|toomanyrequests|quota|unauthorized|forbidden'; then
+    echo >&2
+    echo "ERROR: docker push FAILED for $img (exit=$rc)" >&2
+    if printf '%s\n' "$out" | grep -Eqi 'reached its limit|limit\(100\)|too many tags'; then
+      cat >&2 <<EOF
+>>> TCR tag-limit reached: ${NAMESPACE}/${IMAGE_NAME} is at its 100-tag cap, so
+>>> the image was NOT pushed (TCR returns "denied" but docker push exits 0).
+>>> Clear old '${ROLLING_TAG}-<sha>' tags in the Tencent TCR console
+>>> (${REGISTRY} -> ${NAMESPACE}/${IMAGE_NAME} -> 版本管理), then redeploy.
+EOF
+    fi
+    # exit (not return): a denied push must abort the entire deploy.
+    exit 1
+  fi
+}
+
+push_image "$IMG_ROLLING"
+push_image "$IMG_SHA"
 
 PUSH_DONE=$(date +%s)
 echo "Push took $((PUSH_DONE - BUILD_DONE))s"
