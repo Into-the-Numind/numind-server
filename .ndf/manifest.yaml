@@ -4,7 +4,7 @@ features:
   ndf_version: '3.0'
   description: 'Standard NDF — refactor invoke_skill architecture. Current design has TWO LLMs (outer agent calls invoke_skill tool → inner LLM reads SKILL.md and writes Python). pptx-author SKILL.md teaches outer-agent declarative invocation pseudo-code (`import invoke_skill; invoke_skill("pptx-author", {...})`), inner LLM mistakes it for real code → ModuleNotFoundError. Two reference projects both use single-loop progressive disclosure (Codex codex-rs/core-skills/src/loader.rs) or forked sub-agent with real tool names (Claude Code SkillTool.ts). Decision between the two patterns deferred to S2. Affects pptx-author + xlsx-author + docx-author + pdf-from-html.'
   track: standard
-  stage: S0
+  stage: S1
   classification_reason: 'Standard — (1) 无 DB schema 变更 (2) 可能涉及 skill registry list endpoint，S2 决定 (3) 无新外部服务（继续用 sandbox + run_python） (4) >3 文件（核心 invoke_skill 重构 + 4 个 SKILL.md 重写 + 可能 runner/sub-agent dispatch） (5) 非高风险业务。Bug-from-customer (dev agent_run_id=83 PPT 失败，Rule 11 强制复现测试 commit)。User 2026-05-29 明确选 Standard，理由：架构错配根因不解决则下一个 skill 仍踩。'
   last_updated_by: ai-s0-passed-s1-pending
   last_updated_at: '2026-05-29T20:20:00+08:00'
