@@ -30,8 +30,21 @@ func TestRegression_NoInvokeSkillInProgressiveLoaderSurfaces(t *testing.T) {
 	if !ok {
 		t.Fatal("categoryToTools['enable_skills'] is missing — backward-compat flag must remain")
 	}
-	if len(got) != 1 || got[0] != "read_skill" {
-		t.Errorf("categoryToTools['enable_skills'] = %v, want [read_skill]", got)
+	// 2026-05-29 hotfix: the progressive-disclosure flow needs BOTH tools
+	// wired through the same flag — read_skill loads SKILL.md, run_python
+	// executes the Python the LLM authors from it. Dev QA caught the missing
+	// run_python when the agent successfully called read_skill but crashed
+	// with `tool run_python not found in toolsNode indexes` because the
+	// agent_definition's enable_skills=true only exposed read_skill.
+	wantSet := map[string]bool{"read_skill": true, "run_python": true}
+	gotSet := map[string]bool{}
+	for _, n := range got {
+		gotSet[n] = true
+	}
+	for want := range wantSet {
+		if !gotSet[want] {
+			t.Errorf("categoryToTools['enable_skills'] missing %q (got %v)", want, got)
+		}
 	}
 	for _, name := range got {
 		if name == "invoke_skill" {

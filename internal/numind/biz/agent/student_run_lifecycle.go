@@ -734,12 +734,19 @@ var safeToolBaseline = []string{
 //	code_sandbox  → bash_exec      (RequiresSandbox=true)
 //	media         → image_gen      (Category="多媒体")
 //	dangerous     → bash_exec      (RiskLevel="dangerous" 别名)
-//	enable_skills → read_skill     (2026-05-29 skill-progressive-loader: was invoke_skill; semantic flag-name retained for backwards compat with existing agent_definition.tool_flags JSON; same gating intent: enable Layer-2 file-generation skill workflow)
+//	enable_skills → read_skill + run_python   (2026-05-29 skill-progressive-loader:
+//	  was {invoke_skill}; the Codex-style two-step flow needs BOTH tools — read_skill
+//	  loads SKILL.md, run_python executes the Python the LLM authors from it. Same
+//	  flag-name retained for zero-migration backward compat with existing
+//	  agent_definition.tool_flags JSON.)
 var categoryToTools = map[string][]string{
-	"code_sandbox":  {"bash_exec"},
-	"media":         {"image_gen"},
-	"dangerous":     {"bash_exec"},  // alias of code_sandbox for now
-	"enable_skills": {"read_skill"}, // 2026-05-29: invoke_skill → read_skill (Codex-style progressive disclosure)
+	"code_sandbox": {"bash_exec"},
+	"media":        {"image_gen"},
+	"dangerous":    {"bash_exec"}, // alias of code_sandbox for now
+	// Codex-style progressive disclosure: catalog → read_skill → run_python.
+	// Both tools must be reachable or the agent crashes mid-flow with
+	// `tool run_python not found in toolsNode indexes` (dev QA 2026-05-29).
+	"enable_skills": {"read_skill", "run_python"},
 }
 
 // toolNamesFromFlags resolves agent_definition.ToolFlags JSON to []string of
