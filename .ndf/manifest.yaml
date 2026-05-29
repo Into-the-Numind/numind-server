@@ -1,5 +1,36 @@
 schema_version: '2.0'
 features:
+- id: agent-filegen-progress-ux
+  ndf_version: '3.0'
+  description: 'PPT/HTML 全链路打通后 user 反馈：生成文件时（invoke_skill/run_python 在沙箱跑 30-60s）前端没有任何进度提示，看起来像卡死。诊断：进度反馈链路（SSE 事件 + AgentToolCallItem 状态徽章 + spinner 动画）都已搭好，但三个断点叠加——(1) 后端 tool-display.yaml 缺 9 个文件生成工具的 narration entry → 落 defaults → 泛化"正在处理 操作"；(2) 前端 agentChat.ts actionLabels 也缺 invoke_skill/create_* → 泛化"正在调用工具"；(3) 核心：后端只在工具开始/结束各 emit 一次，中间 30-60s 零事件 → 工具卡在 use 态（静止蓝点，连 spinner 都不转，spinner 只在 progress 态），文字也不动 → 完全像死了。用户选型（推荐档）：纯客户端实时计时器 + 具体文案，就在工具调用行内。Fix: 前端 AgentToolCallItem.vue 加客户端 elapsed 计时器（锚定 card 首次进入 in-flight 态，skew-free，每秒跳，≥2s 才显示，离开 in-flight 即停），+ 把文件生成工具加进 KNOWN_TOOL_NAMES 消除 spurious console.warn；agentChat.ts tool_call_start 给文件生成工具具体文案 + 从 invoke_skill 的 input_preview.skill_name 推导 PPT/Word/Excel/PDF 格式；后端 tool-display.yaml 补 9 个工具的 narration 模板（polling fallback 路径 + 完成态文案 + 消除 boot warning）。'
+  track: hotfix
+  stage: H3
+  classification_reason: 'Hotfix — (1) 无 DB (2) 无新 API (3) 无新外部服务 (4) 跨 2 仓库共 4 文件（前端组件+store+测试 / 后端 yaml），但都是同一 UX 改动紧耦合、0 高风险 (5) 非支付/权限/会员。UX 增强（非 bug），用户明确要求"重新设计这一点"。先 investigate（读后端 narration + Explore 前端渲染链路）→ AskUserQuestion 对齐方向（计时器+行内）→ 实施。'
+  last_updated_by: ai-h3-landed-dev-deployed
+  last_updated_at: '2026-05-29T17:20:00+08:00'
+  repos:
+  - numind-server
+  - numind-web-v3
+  branches:
+    numind-server: fix/agent-filegen-progress-ux
+    numind-web-v3: fix/agent-filegen-progress-ux
+  worktrees: {}
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-D1 (ai 2026-05-29): 纯客户端计时器锚定"card 首次看到 in-flight 态"的本地时刻，而非 event 的 server timestamp。理由：server-client 时钟偏差可能数分钟（用户机器时钟不准），用 server timestamp 算 elapsed 会负数/跳变；本地锚点 = 用户感知的"等了多久"，skew-free。配合 SSE ping 保活 + terminal 检测，足以证明真在干活。'
+  - 'H1-D2 (ai 2026-05-29): ≥2s 才显示计时器。快工具（web_search ~1s）不闪计时器保持干净，只有真正在等的长操作才显示。'
+  - 'H1-D3 (ai 2026-05-29 评审采纳): reviewer 确认计时器生命周期正确（组件按 tool_call_id keyed，每个 tool call 独立 mount/unmount，startedAtMs 不会串；stopTicker 在 isInFlight→false 和 onUnmounted 双重清理，无 interval 泄漏）。补了 P2：analyze_image/annotate_image 也加进 actionLabels。'
+  - 'H1-D4 (ai 2026-05-29): 后端 yaml detail 全 static（不读 .input）。这些工具未实现 BackfillObservableInput，读 .input.* 渲染空串。SSE 流式路径前端给更细文案（含格式+计时器），yaml 是 polling fallback + 完成态兜底。'
+  - 'H1-D5 (ai 2026-05-29): 未做后端阶段心跳（用户选了"够用就行"的计时器档）。如果未来要更丰富（准备环境→生成→打包），需改 invoke_skill emit 中间 narration，是独立增强。'
+  review_findings: '1 个 Sonnet reviewer（跨双仓库 diff）。VERDICT PASS。重点查计时器生命周期（最高风险）→ 确认无泄漏、无 stale anchor（keyed 组件）、Math.max 防负数、?? vs || 改动正确。P2 analyze_image/annotate_image actionLabels 缺失已修。前端 23 个组件测试（含 4 个新计时器 fake-timer 测试）全过，type-check + eslint 干净；后端 narration 测试过 + boot warning 已消除（dev 验证）。'
+  known_issues: 'agentChat-streaming.spec.ts 有 4 个 PRE-EXISTING 失败（current_state queued vs use / 事件计数），在 base develop df49baa 上即失败，与本改动无关——是并行 session 的 fix/tcr-push-silent-success 合并引入的 stale 测试。已 spawn task 单独修，不在本 hotfix 动（避免 clobber 并行 session 的在途区域）。'
+  related_features:
+  - 'fix-skill-output-mime / sandbox-copy-via-tar / bump-eino-maxstep / fix-skill-image-sandbox-env / fix-sandbox-skills-mount / fix-agent-file-generation（均 merged 2026-05-29）— 沙箱文件生成链路系列修复；本 feature 是链路打通后的 UX 收尾'
+  blockers: []
+  created_at: '2026-05-29T17:00:00+08:00'
 - id: fix-skill-output-mime
   ndf_version: '3.0'
   description: 'bump-eino-maxstep 部署后 user 终于完整跑通 Agent 生 PPT—但下载下来的 .pptx 是一个文件夹（[Content_Types].xml + _rels/ + docProps/ + ppt/slides/slide{1..5}.xml…），里面的内容其实是合法 PPTX 的 zip 内部结构。Root cause: pool_skill.go CollectOutputs 用 http.DetectContentType(data) 检测 MIME → Office Open XML（.pptx/.docx/.xlsx）字节层就是 zip → 检测结果 "application/zip" → COS 上传时这个 MIME 进 Content-Type 头 → macOS Safari 看见 application/zip 自动用 Archive Utility 解压 → 用户看到的"文件夹" = 被解开的 PPTX 内容。Fix: 新增 mimeTypeForOutput(filename, data) 按扩展名映射规范 MIME（.pptx → application/vnd.openxmlformats-officedocument.presentationml.presentation，.docx/.xlsx/.pdf 同理），未知扩展回退 http.DetectContentType。CollectOutputs 改调它而非裸 sniff。'
