@@ -134,6 +134,83 @@ tools:
     error_template: "问题处理中断，{{ .reason_friendly }}"
     rejected_template: "提问被规则拦截"
 
+  # 2026-05-29: 补齐文件生成类工具。这些工具在沙箱里跑数十秒，之前全部落到
+  # defaults block，学员只看到泛化的「正在处理 操作」+ 漫长静默 → 像卡死。
+  # detail 全部 static（不读 .input）—— 这些工具未实现 BackfillObservableInput，
+  # 读 .input.* 会渲染成空字符串。SSE 流式路径前端会给更细的文案（含 PPT/Word
+  # 等具体格式 + 实时计时器）；此处是 polling fallback 路径与完成态文案的兜底。
+  invoke_skill:
+    verb: "正在生成"
+    detail_template: "文件"
+    use_template: "正在生成文件（可能需要稍等）"
+    result_template: "文件已生成"
+    error_template: "文件生成中断，{{ .reason_friendly }}"
+    rejected_template: "文件生成被规则拦截"
+
+  run_python:
+    verb: "正在生成"
+    detail_template: "文件"
+    use_template: "正在运行代码生成文件"
+    result_template: "文件已生成"
+    error_template: "代码执行中断，{{ .reason_friendly }}"
+    rejected_template: "代码执行被规则拦截"
+
+  create_html:
+    verb: "正在生成"
+    detail_template: "网页"
+    use_template: "{{ .verb }} {{ .detail }}"
+    result_template: "网页已生成"
+    error_template: "网页生成中断，{{ .reason_friendly }}"
+    rejected_template: "网页生成被规则拦截"
+
+  create_csv:
+    verb: "正在生成"
+    detail_template: "CSV 表格"
+    use_template: "{{ .verb }} {{ .detail }}"
+    result_template: "CSV 表格已生成"
+    error_template: "表格生成中断，{{ .reason_friendly }}"
+    rejected_template: "表格生成被规则拦截"
+
+  create_json:
+    verb: "正在生成"
+    detail_template: "JSON 文件"
+    use_template: "{{ .verb }} {{ .detail }}"
+    result_template: "JSON 文件已生成"
+    error_template: "JSON 生成中断，{{ .reason_friendly }}"
+    rejected_template: "JSON 生成被规则拦截"
+
+  create_text:
+    verb: "正在生成"
+    detail_template: "文本文件"
+    use_template: "{{ .verb }} {{ .detail }}"
+    result_template: "文本文件已生成"
+    error_template: "文本生成中断，{{ .reason_friendly }}"
+    rejected_template: "文本生成被规则拦截"
+
+  create_png_chart:
+    verb: "正在生成"
+    detail_template: "图表"
+    use_template: "{{ .verb }} {{ .detail }}"
+    result_template: "图表已生成"
+    error_template: "图表生成中断，{{ .reason_friendly }}"
+    rejected_template: "图表生成被规则拦截"
+
+  analyze_image:
+    verb: "正在分析"
+    detail_template: "图片"
+    use_template: "{{ .verb }} {{ .detail }}"
+    result_template: "图片分析完成"
+    error_template: "图片分析中断，{{ .reason_friendly }}"
+    rejected_template: "图片分析被规则拦截"
+
+  annotate_image:
+    verb: "正在标注"
+    detail_template: "图片"
+    use_template: "{{ .verb }} {{ .detail }}"
+    result_template: "图片标注完成"
+    error_template: "图片标注中断，{{ .reason_friendly }}"
+    rejected_template: "图片标注被规则拦截"
+
 defaults:
   verb: "正在处理"
   detail_template: "操作"
