@@ -5,20 +5,30 @@
 ## Task 依赖图
 
 ```
-Task 1 (read_skill 工具 + 测试) ──────────┐
-                                          │
-Task 2 (skill_catalog 渲染 + 测试) ───────┤
-                                          ├──→ Task 4 (wire 到 runner + factory) ──┐
-Task 3 (system prompt addendum 改写) ─────┤                                          │
-                                          │                                          ├──→ Task 7 (S5 验证策略)
-Task 5 (4 份 SKILL.md 重写) ──────────────┤                                          │
-                                          │                                          │
-Task 6 (删除 invoke_skill + tests) ───────┘                                          │
+Wave 1 (并行):
+  Task 1 (read_skill 工具 + 测试) ─┐
+  Task 2 (skill_catalog 渲染 + 测试) ┤
+  Task 3 (system prompt addendum 改写) ┘
+                                       │
+                                       ▼
+Wave 2:
+  Task 4 (wire: factory + biz + runner + lifecycle + tool_create_* + adapter 注释)
+                                       │
+                                       ▼
+Wave 3:
+  Bug-from-customer 复现测试 commit
+  Task 5a (pptx-author SKILL.md) ──┐
+  Task 5b (xlsx-author SKILL.md) ──┤  并行
+  Task 5c (docx-author SKILL.md) ──┤
+  Task 5d (pdf-from-html SKILL.md) ─┘
+                                       │
+                                       ▼
+Wave 4:
+  Task 6 (删除 invoke_skill + tests)
+  Task 7 (s5-strategy.md)
 ```
 
-Task 1-3, 5, 6 可独立做（无 cross-file 依赖；6 删除文件最后做避免 build 期间引用）。
-Task 4 依赖 1, 2, 3 完成（wire 步骤）。
-Task 7 是 S5 验证策略，本身写文档不是代码。
+**关键约束**: Task 6（删除 invoke_skill）必须 **晚于** Task 4（wire 改 factory）+ 复现测试 commit + 所有 Task 5 子任务，否则 Wave 3 重写 SKILL.md 时无法用旧 invoke_skill 路径做对照测试。Task 5/6 与 Task 1-3 **不可同 wave 并行**。
 
 ## Task 列表
 
@@ -79,13 +89,15 @@ Task 7 是 S5 验证策略，本身写文档不是代码。
 - `go test ./internal/numind/biz/agent/...` 通过（旧 tool_invoke_skill_test.go 仍能跑因为文件还在）
 - `task lint` 通过
 
+**Task 4 commit 后系统的一致性声明**：此 commit 后系统处于 **deployable consistent state**。Factory `LoadTools` 不再注册 `invoke_skill`，agent runtime 看不到该工具；`tool_invoke_skill.go` 源文件仍在 disk 上 — Go 不会因不被引用而报错，旧 unit test 仍能编译运行（mock 直接 new `&invokeSkillTool{}`）。即使在 Task 6 删文件之前部署到 dev，行为也是「invoke_skill 工具不存在 + read_skill 工具可用」的目标稳定状态。
+
 ### Task 5: 4 份 SKILL.md 重写 — 每份单独 commit 单独 review
 
 子任务：
-- **Task 5a**: `skills/pptx-author/SKILL.md` 重写 ≤4KB
-- **Task 5b**: `skills/xlsx-author/SKILL.md` 重写 ≤4KB
-- **Task 5c**: `skills/docx-author/SKILL.md` 重写 ≤4KB
-- **Task 5d**: `skills/pdf-from-html/SKILL.md` 重写 ≤4KB
+- **Task 5a**: `skills/pptx-author/SKILL.md` 重写 ≤4KB — 4 个模板: 封面+标题 / 标题+列表 / 标题+表格 / 标题+柱形图
+- **Task 5b**: `skills/xlsx-author/SKILL.md` 重写 ≤4KB — 4 个模板: 单 sheet summary / 多 sheet+index / 含 chart 的数据表 / 条件格式 table
+- **Task 5c**: `skills/docx-author/SKILL.md` 重写 ≤4KB — 4 个模板: 多级标题正文 / 内嵌图片 / 表格 / 页眉页脚分节
+- **Task 5d**: `skills/pdf-from-html/SKILL.md` 重写 ≤4KB — 4 个模板: 中文报告 / 带 logo 封面 / 分页页码 / 带表格的发票样式
 
 每个子任务的验收 gate（per S2 §4.3 + PRD AC-6b/AC-6c）：
 - `wc -c <file>` ≤ 4096
@@ -138,10 +150,10 @@ TestE2E_PPTGenerationViaReadSkillAndRunPython:
 ```
 
 这个测试：
-- 在当前 code 上 **会 PASS**（因为 read_skill 不存在 → 测试编译失败 = 视为 FAIL）
-- Task 1 完成 read_skill 后部分 PASS
+- 在当前 code 上 **无法编译**（read_skill 类型不存在），等价于 Rule 11 要求的 "FAIL"（测试不可运行 = 不通过）— commit 该测试时分支处于 build-broken 状态是 Rule 11 重复测试约定的可接受形式（参考 `feedback_review_each_stage.md`：复现测试早于 fix，fix 才让它能跑）
+- Task 1 完成 read_skill 后测试可编译，但 mock 链未完整时部分 PASS
 - Task 4 完成 wire 后全 PASS
-- 后续如果有人想恢复 invoke_skill 路径，此测试断言"无 import invoke_skill"会 FAIL，回归保护成立
+- 后续如果有人想恢复 invoke_skill 路径，此测试断言「无 import invoke_skill」会 FAIL，回归保护成立
 
 **commit message 前缀**: `test(qa): reproduce invoke_skill ModuleNotFoundError via skill-loader e2e harness`
 
