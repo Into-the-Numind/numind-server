@@ -1,5 +1,29 @@
 schema_version: '2.0'
 features:
+- id: bump-agent-walltime-budget
+  ndf_version: '3.0'
+  description: 'fix-skill-image-sandbox-env 部署后 user 重跑 Agent 生 PPT+HTML 又失败，但这次不是沙箱/skill bug：报 [NodeRunError] tool execution stopped by hook: action=4。action=4 = HookActionBudgetExceeded → TerminalErrorMaxBudget。agent_run#73 terminal_metadata = {budget_dimension: max_wall_time, limit: 300000, used: 303876} —— 整个 agent run（web 研究 + 完整 HTML 报告 + 多页 PPT via sandbox skill）真实跑了刚过 5 分钟，撞上 300s wall-clock 预算上限被 kill。之前的 run 都 fail-fast 所以没碰到这个 cap。Fix: budget.DefaultLimits().MaxWallTime 300s→900s。MaxWallTime 无 per-agent override（LimitsFromAgentDef 只映射 credits），全 run 共用此 default。成本/runaway 仍由 MaxTurns(50)+MaxCredits(800/run)+MaxDailyCredits(2000) 兜底，wall-time 只是 stuck-run guard，放宽到 900s 给真实多步任务 headroom。'
+  track: hotfix
+  stage: H3
+  classification_reason: 'Hotfix — (1) 无 DB (2) 无新 API (3) 无新外部服务 (4) 1 文件 dimensions.go + 配套测试 (5) 非高风险（放宽 stuck-run guard，成本仍由其他 3 维兜底）。Bug-from-user：Agent 生成又失败，dev agent_run#73 terminal_metadata 直接证据 used=303876 > limit=300000。属 fix-skill-image-sandbox-env 部署后验证的连锁发现——沙箱修好后 run 真正干活才暴露 wall-time cap 太紧。'
+  last_updated_by: ai-h3-landed-pending-dev-redeploy
+  last_updated_at: '2026-05-29T13:50:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: fix/bump-agent-walltime-budget
+  worktrees: {}
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-D1 (ai 2026-05-29): bump 全局 default 300s→900s，而非加 agent_definition.max_wall_time 字段（要 DB migration，超 hotfix 范围）。900s = 撞限的 304s 的约 3x headroom；其他 3 个预算维度仍兜底成本。'
+  - 'H1-D2 (ai 2026-05-29): trivial 单值常量改动 + 测试 + 直接生产 telemetry 佐证（used vs limit），省略 heavyweight 双 reviewer dispatch，按 hotfix 务实处理。'
+  related_features:
+  - 'fix-skill-image-sandbox-env (merged 2026-05-29) — 沙箱修好后 agent run 真正完成多产物工作才暴露 wall-time cap 过紧；本 hotfix 是该链条的第 3 个连锁修复'
+  blockers: []
+  created_at: '2026-05-29T13:45:00+08:00'
 - id: sandbox-agent-html-artifact
   ndf_version: '3.0'
   description: '安全加固（code-review 残留风险，非客户 bug）。fix-agent-file-generation（已 merge develop 167a37e7）让 create_html 把 agent 生成的 HTML 原样(raw)发布到 COS（agent-outputs/<userID>/，24h 预签名 URL，text/html）。若 agent 被 prompt-injection（web_search/RAG 内容）注入 <script>，用户打开 artifact 时脚本执行。COS 是独立 origin（无 app cookie/session），仍需加固。前端 numind-web-v3 把 HTML artifact 从「下载按钮（跨域 <a download> 被忽略 → 顶层导航到 raw COS URL 渲染，脚本在 COS origin 执行）」改为「fully-sandboxed iframe 内预览」：空 sandbox（无 allow-scripts → 注入脚本永不执行；无 allow-same-origin → opaque origin，无法读 cookie/localStorage/DOM/opener）+ referrerpolicy=no-referrer + role=dialog/ESC/loading-error 兜底 + download 改 new-tab+noopener。HTML+CSS 仍正常渲染。配套 numind-server Micro（create-html-threat-note）在 tool_create_html.go renderHTML threat-model 注释加指针 + CSP-on-COS evaluated-deferred。'
