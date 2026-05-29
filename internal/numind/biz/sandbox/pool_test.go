@@ -323,13 +323,20 @@ func TestBorrow_DiscardsDeadWarmContainer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Borrow err = %v; want a live replacement container", err)
 	}
+	// The borrowed container must be live (the real invariant — not a specific ID).
 	res, err := mock.Inspect(context.Background(), sess.ContainerID)
 	if err != nil || res.Status != "running" {
 		t.Fatalf("Borrow returned non-running container %s (status=%s err=%v)",
 			sess.ContainerID, res.Status, err)
 	}
-	if sess.ContainerID == "mock-1" || sess.ContainerID == "mock-2" {
-		t.Fatalf("Borrow handed out a known-dead container %s", sess.ContainerID)
+	// And the dead corpses must have been destroyed, not leaked.
+	for _, dead := range []string{"mock-1", "mock-2"} {
+		if r, _ := mock.Inspect(context.Background(), dead); r.Status == "running" {
+			t.Fatalf("dead container %s was not discarded", dead)
+		}
+		if sess.ContainerID == dead {
+			t.Fatalf("Borrow handed out a known-dead container %s", dead)
+		}
 	}
 }
 

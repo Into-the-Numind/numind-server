@@ -178,16 +178,24 @@ func (p *agentSandboxPool) Borrow(ctx context.Context) (*Session, error) {
 	}
 }
 
-// isAlive reports whether the container is currently running. Any inspect
-// error (e.g. container removed) is treated as "not alive".
+// isAlive reports whether the container is currently running. Inspect is
+// retried once on error to ride out a transient docker-daemon hiccup: without
+// the retry, a brief daemon blip would make every warm container look dead and
+// trigger a full pool wipe + respawn storm. A container that is genuinely gone
+// keeps erroring and is correctly treated as dead after the retry.
 func (p *agentSandboxPool) isAlive(containerID string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	res, err := p.dc.Inspect(ctx, containerID)
-	if err != nil {
-		return false
+	for attempt := 0; attempt < 2; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		res, err := p.dc.Inspect(ctx, containerID)
+		cancel()
+		if err == nil {
+			return res.Status == "running"
+		}
+		if attempt == 0 {
+			time.Sleep(200 * time.Millisecond)
+		}
 	}
-	return res.Status == "running"
+	return false
 }
 
 // discardDead destroys a dead container (idempotent rm -f) and requests a

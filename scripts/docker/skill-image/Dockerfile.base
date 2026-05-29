@@ -10,7 +10,12 @@
 #   docker build -f Dockerfile.base -t ccr.ccs.tencentyun.com/youshunumind/sandbox-skill:base-v1.5.0 .
 # =============================================================================
 
-FROM python:3.11-slim AS base
+# Pin to bookworm (Debian 12 stable). The unqualified python:3.11-slim now
+# floats to trixie (Debian 13), where libpango1.0-0 was renamed (→ libpango-1.0-0)
+# and the apt install below fails with "Unable to locate package libpango1.0-0".
+# Bookworm carries the exact package names used here and matches the main image's
+# Debian base family.
+FROM python:3.11-slim-bookworm AS base
 
 # System dependencies required by skills:
 #   - libpango / libcairo / libgdk-pixbuf-2.0-0 / shared-mime-info: weasyprint (PDF from HTML)

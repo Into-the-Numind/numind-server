@@ -141,9 +141,10 @@ func renderHTML(in createHTMLInput) ([]byte, error) {
 }
 
 // isFullHTMLDocument reports whether s looks like a standalone HTML document
-// (so it should be served verbatim rather than wrapped).
+// (so it should be served verbatim rather than wrapped). A leading UTF-8 BOM
+// is stripped first so a BOM-prefixed full document isn't mis-wrapped.
 func isFullHTMLDocument(s string) bool {
-	low := strings.ToLower(strings.TrimSpace(s))
+	low := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(s, "\ufeff")))
 	return strings.HasPrefix(low, "<!doctype") || strings.HasPrefix(low, "<html")
 }
 
