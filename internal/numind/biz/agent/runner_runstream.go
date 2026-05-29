@@ -558,7 +558,11 @@ func (r *agentRunner) RunStream(
 		if st.TerminalReason == "" {
 			st.TerminalReason = TerminalModelError
 		}
-		finalResult, finalErr := r.finalizeRun(ctx, run, st, startTime, finalText, nil, false, skillVer, isTrivial, req, permDenialSink, consumeErr, sessionID)
+		finalReasoning := ""
+		if result != nil {
+			finalReasoning = result.FinalReasoning
+		}
+		finalResult, finalErr := r.finalizeRun(ctx, run, st, startTime, finalText, finalReasoning, nil, false, skillVer, isTrivial, req, permDenialSink, consumeErr, sessionID)
 		if finalErr != nil {
 			return finalResult, finalErr
 		}
@@ -579,7 +583,11 @@ func (r *agentRunner) RunStream(
 		st.TerminalReason = TerminalCompleted
 	}
 
-	return r.finalizeRun(ctx, run, st, startTime, finalText, nil, false, skillVer, isTrivial, req, permDenialSink, nil, sessionID)
+	finalReasoning := ""
+	if result != nil {
+		finalReasoning = result.FinalReasoning
+	}
+	return r.finalizeRun(ctx, run, st, startTime, finalText, finalReasoning, nil, false, skillVer, isTrivial, req, permDenialSink, nil, sessionID)
 }
 
 // applyHookOverride checks if the effectiveHooks.Registry recorded a non-Continue

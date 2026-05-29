@@ -480,6 +480,7 @@ type agentMessage struct {
 	Type      string `json:"type"`               // 'user' | 'assistant' | 'final_answer'
 	Text      string `json:"text,omitempty"`     // for type='user'
 	Markdown  string `json:"markdown,omitempty"` // for type='assistant' | 'final_answer'
+	Reasoning string `json:"reasoning,omitempty"`
 	RunID     uint64 `json:"run_id,omitempty"`   // for type='final_answer'
 	Timestamp string `json:"timestamp"`          // RFC3339
 }
@@ -533,6 +534,8 @@ func transformMessages(raw []byte, runID uint64, startedAt time.Time, endedAt *t
 			msg.Type = "user"
 			msg.Text = content
 		case "assistant":
+			reasoning, _ := turn["reasoning"].(string)
+			msg.Reasoning = reasoning
 			if i == lastAssistantIdx && isTerminalSuccess && content != "" {
 				msg.Type = "final_answer"
 				msg.Markdown = content
