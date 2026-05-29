@@ -51,11 +51,14 @@ S0 阶段 user 已明确否决「短期治标」方向，理由是「架构错�
 | 风险 | 严重度 | 缓解 |
 |---|---|---|
 | 外层 LLM 写的 python-pptx 代码质量比内层 LLM 差 | 中 | SKILL.md 重写时给出**完整可拷贝代码模板**（封面/标题/图表/表格四类示例完整），LLM 抄模板成功率应≥当前内层 LLM；S5 用 gstack /qa 在 dev 跑真任务验收 |
-| 删除 invoke_skill 后，已存在的 agent run 历史 messages 含 `invoke_skill` 工具调用引用，重放/导出可能 break | 低 | 历史 messages 不变（DB 已存的 tool_call_name=invoke_skill 仍能渲染显示），只是新对话不会再生成 invoke_skill 调用；不写 migration |
+| 删除 invoke_skill 后，已存在的 agent run 历史 messages 含 `invoke_skill` 工具调用引用，重放/导出可能 break | 低 | 历史 messages 不变（DB 已存的 tool_call_name=invoke_skill 仍能渲染显示，前端 `AgentToolCallItem.vue:115` `KNOWN_TOOL_NAMES` 已含 `'invoke_skill'`，保留不动）；不写 migration |
+| **agent_definition.tool_flags.enable_skills 已 gate invoke_skill 在 runtime**（证据：tool_invoke_skill.go:210 `cfg.EnableSandbox && cfg.EnableSkills`；student_run_lifecycle.go:742 `"enable_skills": {"invoke_skill"}`）| **中**（强相关）| **复用同一 flag**：把 `enable_skills` → `invoke_skill` 的映射改为 `enable_skills` → `read_skill`（新工具）。所有现存 agent_definition row 的 `tool_flags.enable_skills=true` 自动获得 `read_skill`。**零 migration、零 DB 改动、零前端配置 UI 改动**。`ToolConfig.EnableSkills` Go 字段名保留（语义改为 gate read_skill），向后兼容字段名 |
 | `read_skill` 工具读 disk 文件，从 server 容器（不是 sandbox）读，需注意 path traversal | 中 | input 只接 skill_name 字符串，与 registry 中已知 name 做白名单匹配（`registry.Get(name)`），不接受任意 path |
 | Token 增量：4 skill × 200 字符 catalog = ~800 字符进 system prompt | 低 | 当前 system prompt ~6KB，800 字符增量 = ~13% — 可接受 |
+| **多 SKILL.md 累积进 context**（最坏情况：一次任务里 read_skill PPT + xlsx + docx + pdf-from-html = 4 × 13KB = 52KB 进 history） | **中** | **硬约束**：每份 SKILL.md 重写时压到 **≤4KB**（去掉冗余文字+折叠示例）。4 × 4KB = 16KB 最坏，相对 system prompt 6KB 是 ~3× 而非 8×。**S4 任务验收门：SKILL.md 文件大小≤4096 bytes**（pptx-author 当前 13KB → 必须削掉 70%）。Codex 在 SkillMetadata 只存路径不存 body 也是同思路（progressive disclosure 的核心约束）。LRU 驱逐不在本次 scope（如未来 skill 数量 > 10 再做） |
 | 外层 LLM 偷懒不 read_skill 直接写 Python（无 SKILL.md 指导可能写错） | 中 | system prompt 明确「必须先 read_skill 再写代码」；若 LLM 不调 read_skill 直接错误地 `run_python`，sandbox 报错 LLM 会自纠正（H A 已让校验 soft error） |
-| 4 份 SKILL.md 重写工作量集中 | 低 | S4 内一个 task 一份，可串行；xlsx/docx/pdf-from-html 三个工作量类似 pptx-author，每份 ~2-3 小时 |
+| **部署期间 in-flight agent run 撞 invoke_skill 被删** | 低 | dev/prod 都用 docker 滚动替换，sandbox `30s grace` 已覆盖；P0 用户全程持续在线的运行极少；deploy 时段建议在低峰（已是惯例） |
+| 4 份 SKILL.md 重写工作量集中 — pptx-author 当前 13KB/359 行，削到 4KB 是非平凡工作 | **中** | S3 plan 把 SKILL.md 重写拆为独立的 4 个 S4 子任务，每份独立审查通过；总工时上修为 **S4 8-12h**（替换原 6-10h），全 feature **12-17h**（替换原 10-15h） |
 
 ## 5. 验收范围
 
@@ -69,9 +72,9 @@ S0 阶段 user 已明确否决「短期治标」方向，理由是「架构错�
 |---|---|
 | S2 spec | 1-2h |
 | S3 plan | 1h |
-| S4 实现（5 个原子 task：read_skill 新工具 + skill catalog 注入 + invoke_skill 移除 + 4 份 SKILL.md 重写 + 测试更新） | 6-10h |
+| S4 实现（5+ 个原子 task：read_skill 新工具 + skill catalog 注入 + invoke_skill 移除 + 4 份 SKILL.md 独立重写（每份必须 ≤4KB）+ 测试更新） | **8-12h**（修上调，反映 SKILL.md 4 份 × 2-3h 真实工作量） |
 | S5 验证 | 1-2h |
-| **总** | **10-15h** |
+| **总** | **12-17h** |
 
 ## 7. 下一步
 

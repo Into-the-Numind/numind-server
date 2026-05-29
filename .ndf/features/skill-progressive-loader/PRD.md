@@ -32,6 +32,8 @@
 | AC-4 | 现有非 invoke_skill 测试全部通过（go test ./internal/numind/biz/agent/...） | go test | 0 失败 |
 | AC-5 | 新增 `read_skill` 工具的单元测试覆盖：skill 存在/不存在/path traversal 尝试/SKILL.md 不可读 | go test | ≥ 4 个 test |
 | AC-6 | pptx-author SKILL.md 提供至少 4 个完整可运行 python-pptx 代码模板（封面/列表/表格/图表） | 人工检查 | 4 个示例都能 copy 直接 run |
+| AC-6b | **每份重写后的 SKILL.md 文件 ≤4096 bytes**（防多 SKILL.md context 累积） | `wc -c` | 4 份 SKILL.md 全 ≤4KB |
+| AC-6c | 前端 `AgentToolCallItem.vue::KNOWN_TOOL_NAMES` 仍含 `'invoke_skill'`（保历史 run 渲染无 console 警告） | grep 检查 | 不删除 |
 | AC-7 | 部署后 dev 容器健康检查 200 OK，旧 `invoke_skill` agent run 历史的展示页面不报错（兼容） | curl + 前端检查 | 健康 + 0 控制台错误 |
 | AC-8 | task lint 通过 | task lint | exit 0 |
 
