@@ -2,12 +2,13 @@ schema_version: '2.0'
 features:
 - id: file-read-accept-outputs-soft-errors
   ndf_version: '3.0'
+  progress_note: 'H1 complete (repro test+fix landed, lint+test green, parallel Sonnet review PASS with 2 P2 inline-fixed); stage→H2 before ndf-done.'
   description: 'Bug-from-customer: user 在 dev 跑 "找最近一周最热门 AI 创业项目并出 PPT" 任务时，agent 中途崩溃，前端报 `[NodeRunError] failed to stream tool call ...: file_read: URL does not match agent-attachments path format ------------------------ node path: [tools]`。dev 日志 agent_run_id=83（2026-05-29 18:54:30）锁定根因：LLM 调用 `file_read(file_url=".../agent-outputs/1/20260529-185416-generated_*.txt")` 想读回自己之前 create_text 生成的 artifact，但 tool_file_read.go:91 的 `attachmentPathRE = /agent-attachments/(\d+)/` 不匹配 `/agent-outputs/`，:144 把校验失败包成 `errno.ErrInvalidParameter` Go error 返回。按 tool_web_fetch.go:80-95 的注释（Eino v0.8.13 把 Go error 转 NodeRunError 终止整个 run，LLM 永远看不到错误内容），这是 agent loop 被杀的精确路径。Fix: (a) 扩展 regex 接受 /agent-(attachments|outputs)/<userID>/（generated artifacts 是 user 自己的，ownership 检查照旧）；(b) 5 个早期校验路径（lines 131/134/140/144/147）改用 returnSoftError 模式，对齐 Codex `RespondToModel` / Claude Code `ValidationResult` 范式，让 LLM 看到错误自己 self-correct。'
   track: hotfix
-  stage: H1
+  stage: H3
   classification_reason: 'Hotfix — (1) 无 DB schema 变更 (2) 无新 API 端点 (3) 无新外部服务 (4) 2 文件: tool_file_read.go + tool_file_read_test.go (5) 非高风险（ownership 校验逻辑不变，仅扩展可接受 URL 范围 + 改错误返回形式；无支付/权限/会员等级动作）。Bug-from-customer：dev 用户测试时撞到，Rule 11 强制先写失败的复现测试 commit。两个参考实现验证方向：Codex codex-rs/tools/src/function_call_error.rs 的 RespondToModel vs Fatal 区分；Claude Code FileReadTool.ts 校验失败返 ValidationResult 不杀 loop。'
-  last_updated_by: ai-h1-started
-  last_updated_at: '2026-05-29T19:36:00+08:00'
+  last_updated_by: ai-h3-ready-for-merge
+  last_updated_at: '2026-05-29T20:00:00+08:00'
   repos:
   - numind-server
   branches:
@@ -16,8 +17,8 @@ features:
     numind-server: /private/tmp/wt-file-read-accept-outputs-soft-errors-numind-server
   progress:
     total_tasks: 1
-    completed_tasks: 0
-    reviewed_tasks: 0
+    completed_tasks: 1
+    reviewed_tasks: 1
   decisions:
   - 'H1-D1 (ai 2026-05-29): regex 改为 `/agent-(attachments|outputs)/(\d+)/` 而非新写两个独立 regex。理由：两个路径前缀完全对称（都是 `<prefix>/<userID>/<path>`），共享同一 capture group，正则只多 12 字符，可读性反而比双 regex 更清楚。'
   - 'H1-D2 (ai 2026-05-29): 5 个早期校验路径全部改 returnSoftError，不部分保留 hard error。详见 .ndf/decisions/file-read-accept-outputs-soft-errors/0001-soft-error-all-paths.md'
