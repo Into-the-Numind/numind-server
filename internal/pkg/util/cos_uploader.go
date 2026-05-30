@@ -173,6 +173,68 @@ func GenerateSignedURLForMethod(ctx context.Context, method, objectKey string, e
 	return signed, nil
 }
 
+// GenerateSignedDownloadURL returns a presigned GET URL that asks Tencent COS
+// to reflect a Content-Disposition: attachment header on the response. This is
+// the URL to hand to a browser when the user clicks a download button.
+//
+// Without response-content-disposition, COS serves objects inline (no
+// Content-Disposition header). When the browser is on https://youshu.asia and
+// the download target is on https://*.cos.<region>.myqcloud.com, Chrome's
+// cross-site-download safety heuristic flags the programmatic download as
+// "不安全 (无法验证此文件来源)". Reflecting attachment + filename* fixes that.
+//
+// The filename is percent-encoded per RFC 5987 (filename*=UTF-8”...) so
+// non-ASCII names (Chinese, spaces) round-trip correctly through HTTP headers.
+//
+// For non-download flows (inline images, files fetched by the LLM, etc.) keep
+// using GenerateSignedURL / GenerateSignedURLForMethod — forcing attachment
+// would break inline display.
+func GenerateSignedDownloadURL(ctx context.Context, objectKey, filename string, expirySeconds int64) (string, error) {
+	cosClient, err := getCOSClient()
+	if err != nil {
+		return "", err
+	}
+	if !cosClient.enabled || cosClient.client == nil {
+		return "", fmt.Errorf("cos not enabled")
+	}
+	objectKey = strings.TrimPrefix(objectKey, "/")
+	objectKey = path.Clean(objectKey)
+
+	// Defense in depth: strip CR/LF from filename before percent-encoding so a
+	// caller passing a hostile filename can't smuggle bytes into the reflected
+	// Content-Disposition header. The double-encoding chain (PathEscape →
+	// url.Values.Encode → COS decodes once) already prevents raw CRLF from
+	// reaching the wire, but stripping is cheap and removes ambiguity.
+	cleanName := strings.Map(func(r rune) rune {
+		if r == '\r' || r == '\n' {
+			return -1
+		}
+		return r
+	}, filename)
+	disp := "attachment; filename*=UTF-8''" + url.PathEscape(cleanName)
+	opt := &cos.PresignedURLOptions{
+		Query: &url.Values{
+			"response-content-disposition": []string{disp},
+		},
+	}
+
+	u, err := cosClient.client.Object.GetPresignedURL(
+		ctx,
+		http.MethodGet,
+		objectKey,
+		viper.GetString("cos.secret_id"),
+		viper.GetString("cos.secret_key"),
+		timeDurationSeconds(expirySeconds),
+		opt,
+	)
+	if err != nil {
+		log.Errorw("COS generate signed download URL failed", "key", objectKey, "error", err)
+		return "", err
+	}
+	log.Debugw("COS signed download URL generated", "key", objectKey, "filename", filename, "expiresIn", expirySeconds)
+	return u.String(), nil
+}
+
 // timeDurationSeconds converts seconds to time.Duration safely.
 func timeDurationSeconds(sec int64) time.Duration {
 	if sec <= 0 {

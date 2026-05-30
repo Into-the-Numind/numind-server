@@ -332,8 +332,10 @@ func (t *runPythonTool) collectOutputFiles(
 		if rawURL == "" {
 			rawURL = fmt.Sprintf("/local-uploads/%s", objectKey)
 		} else {
+			// Python-tool output URLs are surfaced as user-clickable downloads,
+			// so use the download-flavored helper to set Content-Disposition.
 			const presignExpiry = 24 * 60 * 60 // 86400s per decision T4
-			signed, signErr := util.GenerateSignedURL(ctx, objectKey, presignExpiry)
+			signed, signErr := util.GenerateSignedDownloadURL(ctx, objectKey, name, presignExpiry)
 			if signErr == nil && signed != "" {
 				rawURL = signed
 			}

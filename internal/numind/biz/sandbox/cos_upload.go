@@ -39,8 +39,10 @@ func UploadOutputFile(ctx context.Context, cfg COSUploadConfig, localPath string
 		return fmt.Sprintf("/local-uploads/%s", objectKey), nil
 	}
 
-	// Generate 24-hour presigned GET URL (T4 decision: private bucket + presign).
-	presigned, err := util.GenerateSignedURL(ctx, objectKey, int64(24*time.Hour/time.Second))
+	// Generate 24-hour presigned GET URL with response-content-disposition=attachment
+	// so the cross-origin download from https://youshu.asia doesn't get flagged as
+	// "不安全" by Chrome (cf. cos_download_content_disposition hotfix).
+	presigned, err := util.GenerateSignedDownloadURL(ctx, objectKey, filename, int64(24*time.Hour/time.Second))
 	if err != nil {
 		// Fallback: return the public URL (non-signed) so the caller isn't blocked.
 		// This can happen if COS signing keys are temporarily unavailable.
