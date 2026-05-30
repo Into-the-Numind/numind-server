@@ -1,5 +1,30 @@
 schema_version: '2.0'
 features:
+- id: cos-download-content-disposition
+  ndf_version: '3.0'
+  description: 'Bug-from-customer: 用户点击 agent 生成的文件下载时浏览器弹"不安全"警告。Root cause: sandbox.UploadOutputFile / tool_create_helpers.uploadGeneratedFile / tool_run_python 输出 artifact 时调用 util.GenerateSignedURL 生成 presigned URL，但既没在上传时设 Content-Disposition 也没在 URL query 注入 response-content-disposition，COS 默认 inline 服务文件，触发 Chrome cross-site-download safety heuristic ("无法验证此文件来源")。Fix: 新增 util.GenerateSignedDownloadURL helper 在 query 注入 response-content-disposition=attachment;filename*=UTF-8''<encoded>，filename 走 RFC 5987 percent-encode + CRLF strip (defense in depth)；切换 3 个 user-download call sites (sandbox/cos_upload.go, tool_create_helpers.go, tool_run_python.go) 到新 helper，剩余 8 个 inline-display / LLM 消费 call sites 保持原 GenerateSignedURL 不变（加 attachment 会破坏 inline 渲染）。'
+  track: hotfix
+  stage: H3
+  classification_reason: 'Hotfix — (1) 无 DB schema 变更 (2) 无新 API 端点 (3) 无新外部服务（继续用 tencentyun/cos-go-sdk-v5）(4) 4 source files + 1 test，技术上超 ≤3 上限但 3 个 call-site 切换是 round-1 review 发现的同一概念 fix 平铺到平行路径，不算 scope creep — 2nd-round spec reviewer 显式 PASS 该 trade-off (5) 非高风险（无支付/权限/会员动作）。Bug-from-customer rule 11 强制 test(repro) 前缀首 commit。'
+  last_updated_by: ai-h3-ready-for-merge
+  last_updated_at: '2026-05-30T11:48:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: fix/cos-download-content-disposition
+  worktrees:
+    numind-server: /private/tmp/wt-cos-download-content-disposition-numind-server
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-D1 (ai 2026-05-30): 新增 GenerateSignedDownloadURL 而非修改 GenerateSignedURL 签名。理由：14 个现有 call sites 中绝大多数是 inline 显示 / LLM 消费（image_path / salesrag OCR / multimodal vision / file_read tool / attachment fallback），加 Content-Disposition: attachment 会破坏 inline 渲染。新函数仅 download path 使用，blast radius 最小。'
+  - 'H1-D2 (ai 2026-05-30): filename 用 RFC 5987 `filename*=UTF-8''` 单一形式，省 RFC 6266 `filename=` 兼容 fallback。理由：Chrome/Firefox/Safari/Edge 自 ~2014 全支持 filename*，Numind 是 B2B SaaS 无 IE/legacy 浏览器暴露。2nd-round code-quality reviewer 显式认可该 trade-off。'
+  - 'H2.5-D3 (ai 2026-05-30): round-1 code-quality reviewer 发现 2 个漏改 call sites (tool_create_helpers.go:102, tool_run_python.go:336) + 1 个 CRLF defense-in-depth gap。第 3 个 commit 一并修。round-2 review 双 PASS。'
+  related_features:
+  - 'file-read-accept-outputs-soft-errors (merged 2026-05-29) — 同源 agent download / artifact 流；那个修 file_read 校验 soft error，这个修 download URL header。'
+
 - id: skill-progressive-loader
   ndf_version: '3.0'
   description: 'Standard NDF — refactor invoke_skill architecture. Current design has TWO LLMs (outer agent calls invoke_skill tool → inner LLM reads SKILL.md and writes Python). pptx-author SKILL.md teaches outer-agent declarative invocation pseudo-code (`import invoke_skill; invoke_skill("pptx-author", {...})`), inner LLM mistakes it for real code → ModuleNotFoundError. Two reference projects both use single-loop progressive disclosure (Codex codex-rs/core-skills/src/loader.rs) or forked sub-agent with real tool names (Claude Code SkillTool.ts). Decision between the two patterns deferred to S2. Affects pptx-author + xlsx-author + docx-author + pdf-from-html.'
