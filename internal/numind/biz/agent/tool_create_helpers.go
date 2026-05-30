@@ -98,8 +98,11 @@ func uploadGeneratedFile(
 		rawURL = fmt.Sprintf("/local-uploads/%s", objectKey)
 	} else {
 		// COS is enabled — use a 24-hour presigned URL per decision T4.
+		// Use the download-flavored helper so the response carries
+		// Content-Disposition: attachment; without it Chrome flags the
+		// cross-site download from https://youshu.asia as "不安全".
 		const presignExpiry = 24 * 60 * 60 // 86400 seconds
-		signed, signErr := util.GenerateSignedURL(ctx, objectKey, presignExpiry)
+		signed, signErr := util.GenerateSignedDownloadURL(ctx, objectKey, filename, presignExpiry)
 		if signErr == nil && signed != "" {
 			rawURL = signed
 		}

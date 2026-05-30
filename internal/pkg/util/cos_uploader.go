@@ -200,7 +200,18 @@ func GenerateSignedDownloadURL(ctx context.Context, objectKey, filename string, 
 	objectKey = strings.TrimPrefix(objectKey, "/")
 	objectKey = path.Clean(objectKey)
 
-	disp := "attachment; filename*=UTF-8''" + url.PathEscape(filename)
+	// Defense in depth: strip CR/LF from filename before percent-encoding so a
+	// caller passing a hostile filename can't smuggle bytes into the reflected
+	// Content-Disposition header. The double-encoding chain (PathEscape →
+	// url.Values.Encode → COS decodes once) already prevents raw CRLF from
+	// reaching the wire, but stripping is cheap and removes ambiguity.
+	cleanName := strings.Map(func(r rune) rune {
+		if r == '\r' || r == '\n' {
+			return -1
+		}
+		return r
+	}, filename)
+	disp := "attachment; filename*=UTF-8''" + url.PathEscape(cleanName)
 	opt := &cos.PresignedURLOptions{
 		Query: &url.Values{
 			"response-content-disposition": []string{disp},
