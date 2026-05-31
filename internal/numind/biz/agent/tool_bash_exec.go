@@ -36,6 +36,18 @@ func (t *bashExecTool) IsReadOnly() bool              { return false }
 func (t *bashExecTool) IsEnabled(cfg ToolConfig) bool { return cfg.EnableSandbox }
 func (t *bashExecTool) InterruptBehavior() string     { return "cancel" }
 
+// InputSchema returns the JSON Schema describing this tool's parameters,
+// so the LLM receives a structured function-calling contract (not just prose).
+func (t *bashExecTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"command": {"type": "string", "description": "The shell command to run inside the isolated sandbox."}
+		},
+		"required": ["command"]
+	}`)
+}
+
 func (t *bashExecTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	var args struct {
 		Command string `json:"command"`

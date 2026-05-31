@@ -61,6 +61,19 @@ func (t *memoryReadTool) NarrationVerb() string { return "查阅" }
 // Execute parses the input, extracts userID from context, then queries the
 // Notepad by key (single entry) or kind (list).  Values are HTML-unescaped
 // before being returned so the LLM receives the original content.
+// InputSchema returns the JSON Schema describing this tool's parameters,
+// so the LLM receives a structured function-calling contract (not just prose).
+func (t *memoryReadTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"key":   {"type": "string", "description": "Read a single memory entry by exact key. Takes precedence over kind."},
+			"kind":  {"type": "string", "description": "List memory entries of this kind (used when key is omitted)."},
+			"limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Max entries when listing by kind (1-50, default 10)."}
+		}
+	}`)
+}
+
 func (t *memoryReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	var in memoryReadToolInput
 	if err := json.Unmarshal(input, &in); err != nil {
