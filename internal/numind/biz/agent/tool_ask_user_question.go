@@ -31,9 +31,6 @@ func (t *askUserQuestionTool) NarrationVerb() string  { return "反问" }
 func (t *askUserQuestionTool) IsReadOnly() bool       { return true }
 func (t *askUserQuestionTool) AlwaysLoad() bool       { return true }
 
-// Execute validates the input and returns a *yieldError to pause the run.
-// The runner.go yield handler detects the sentinel via errors.As and drives the
-// state machine to TerminalWaitingForUserChoice.
 // InputSchema returns the JSON Schema describing this tool's parameters,
 // so the LLM receives a structured function-calling contract (not just prose).
 func (t *askUserQuestionTool) InputSchema() json.RawMessage {
@@ -63,6 +60,9 @@ func (t *askUserQuestionTool) InputSchema() json.RawMessage {
 	}`)
 }
 
+// Execute validates the input and returns a *yieldError to pause the run.
+// The runner.go yield handler detects the sentinel via errors.As and drives the
+// state machine to TerminalWaitingForUserChoice.
 func (t *askUserQuestionTool) Execute(_ context.Context, input ToolInput) (ToolResult, error) {
 	var in askUserQuestionInput
 	if err := json.Unmarshal(input, &in); err != nil {

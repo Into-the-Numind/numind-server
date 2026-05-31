@@ -42,7 +42,7 @@ func (t *kbSearchTool) InputSchema() json.RawMessage {
 		"type": "object",
 		"properties": {
 			"query":   {"type": "string", "description": "The knowledge-base search query."},
-			"doc_ids": {"type": "array", "items": {"type": "integer"}, "description": "Optional list of document IDs to restrict the search to."}
+			"doc_ids": {"type": "array", "items": {"type": "integer", "minimum": 0}, "description": "Optional list of document IDs to restrict the search to."}
 		},
 		"required": ["query"]
 	}`)

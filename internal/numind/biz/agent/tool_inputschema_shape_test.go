@@ -78,7 +78,7 @@ func TestToolInputSchemas_MatchExecuteContract(t *testing.T) {
 
 		// ── Task 3: read ──
 		{"web_search", (&webSearchTool{}).InputSchema(),
-			[]string{"query", "max_results", "allowed_domains"}, []string{"query"}},
+			[]string{"query", "max_results", "allowed_domains"}, []string{"query", "max_results"}},
 		{"web_fetch", (&webFetchTool{}).InputSchema(),
 			[]string{"url", "prompt"}, []string{"url"}},
 		{"kb_search", (&kbSearchTool{}).InputSchema(),
@@ -118,6 +118,7 @@ func TestToolInputSchemas_MatchExecuteContract(t *testing.T) {
 // TestPreexistingSchemas_AreValidObjectSchemas guards the 7 tools that already
 // shipped InputSchema() before this feature: they must remain valid object
 // schemas so the adapter feeds them to the LLM (regression for the keystone).
+// use_skill's InputSchema() uses no struct state, so a zero-value receiver is safe.
 func TestPreexistingSchemas_AreValidObjectSchemas(t *testing.T) {
 	cases := []struct {
 		name string
@@ -129,6 +130,7 @@ func TestPreexistingSchemas_AreValidObjectSchemas(t *testing.T) {
 		{"create_html", (&createHTMLTool{}).InputSchema()},
 		{"create_png_chart", (&createPNGChartTool{}).InputSchema()},
 		{"run_python", (&runPythonTool{}).InputSchema()},
+		{"use_skill", (&useSkillTool{}).InputSchema()},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

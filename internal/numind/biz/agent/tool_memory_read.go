@@ -58,9 +58,6 @@ func (t *memoryReadTool) UserFacingName() string { return "记忆读取" }
 // NarrationVerb returns the verb used in run narration messages.
 func (t *memoryReadTool) NarrationVerb() string { return "查阅" }
 
-// Execute parses the input, extracts userID from context, then queries the
-// Notepad by key (single entry) or kind (list).  Values are HTML-unescaped
-// before being returned so the LLM receives the original content.
 // InputSchema returns the JSON Schema describing this tool's parameters,
 // so the LLM receives a structured function-calling contract (not just prose).
 func (t *memoryReadTool) InputSchema() json.RawMessage {
@@ -74,6 +71,9 @@ func (t *memoryReadTool) InputSchema() json.RawMessage {
 	}`)
 }
 
+// Execute parses the input, extracts userID from context, then queries the
+// Notepad by key (single entry) or kind (list).  Values are HTML-unescaped
+// before being returned so the LLM receives the original content.
 func (t *memoryReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	var in memoryReadToolInput
 	if err := json.Unmarshal(input, &in); err != nil {

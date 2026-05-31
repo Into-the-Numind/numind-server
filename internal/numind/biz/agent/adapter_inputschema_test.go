@@ -135,17 +135,27 @@ func TestAdapterInfo_FallbackMalformedSchema(t *testing.T) {
 }
 
 // TestParamsOneOfFromInputSchema_NeverNil guards the helper's invariant directly.
+// Each case is named so a failure points at the exact input.
 func TestParamsOneOfFromInputSchema_NeverNil(t *testing.T) {
-	cases := []json.RawMessage{
-		nil,
-		json.RawMessage(""),
-		json.RawMessage("   "),
-		json.RawMessage(`{"type":`), // malformed
-		json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"}}}`),
+	cases := []struct {
+		name string
+		raw  json.RawMessage
+	}{
+		{"nil", nil},
+		{"empty", json.RawMessage("")},
+		{"whitespace", json.RawMessage("   ")},
+		{"malformed", json.RawMessage(`{"type":`)},
+		// JSON null parses into a zero-value schema (non-empty ParamsOneOf, empty
+		// schema) — distinct from the empty-params fallback but still never nil.
+		// No tool returns null today; this guards the invariant regardless.
+		{"json_null", json.RawMessage("null")},
+		{"valid", json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"}}}`)},
 	}
-	for i, c := range cases {
-		if got := paramsOneOfFromInputSchema("case", c); got == nil {
-			t.Fatalf("case %d: paramsOneOfFromInputSchema returned nil", i)
-		}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := paramsOneOfFromInputSchema("case_"+c.name, c.raw); got == nil {
+				t.Fatalf("case %q: paramsOneOfFromInputSchema returned nil", c.name)
+			}
+		})
 	}
 }

@@ -76,7 +76,7 @@ func NewWebSearchToolFromConfig() FullTool {
 
 func (t *webSearchTool) Name() string { return "web_search" }
 func (t *webSearchTool) Description() string {
-	return "Search the web for real-time information. Input: { query: string, max_results?: number (1-10, default 5), allowed_domains?: string[] }. Returns relevant web search results."
+	return "Search the web for real-time information. Input: { query: string, max_results: number (required, 1-10), allowed_domains?: string[] }. Returns relevant web search results."
 }
 func (t *webSearchTool) UserFacingName() string      { return "网络搜索" }
 func (t *webSearchTool) NarrationVerb() string       { return "搜索网络" }
@@ -95,7 +95,6 @@ func (t *webSearchTool) returnSoftError(format string, args ...any) (ToolResult,
 	return ToolResult(out), nil
 }
 
-// Execute validates input, checks cache, calls Tavily via aiservice, and caches the result.
 // InputSchema returns the JSON Schema describing this tool's parameters,
 // so the LLM receives a structured function-calling contract (not just prose).
 func (t *webSearchTool) InputSchema() json.RawMessage {
@@ -103,13 +102,14 @@ func (t *webSearchTool) InputSchema() json.RawMessage {
 		"type": "object",
 		"properties": {
 			"query":           {"type": "string", "description": "The web search query."},
-			"max_results":     {"type": "integer", "minimum": 1, "maximum": 10, "description": "Number of results to return (1-10, default 5)."},
+			"max_results":     {"type": "integer", "minimum": 1, "maximum": 10, "description": "Number of results to return; must be between 1 and 10."},
 			"allowed_domains": {"type": "array", "items": {"type": "string"}, "description": "Optional whitelist of domains to restrict results to."}
 		},
-		"required": ["query"]
+		"required": ["query", "max_results"]
 	}`)
 }
 
+// Execute validates input, checks cache, calls Tavily via aiservice, and caches the result.
 func (t *webSearchTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	start := time.Now()
 

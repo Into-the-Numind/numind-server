@@ -39,7 +39,7 @@ func (t *learnerDataQueryTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"user_id": {"type": "integer", "description": "ID of the learner whose data to query."},
+			"user_id": {"type": "integer", "minimum": 0, "description": "ID of the learner whose data to query."},
 			"field":   {"type": "string", "description": "Optional specific field to return; omit to return all available fields."}
 		},
 		"required": ["user_id"]

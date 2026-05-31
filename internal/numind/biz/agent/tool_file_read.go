@@ -129,15 +129,6 @@ func (t *fileReadTool) returnSoftError(fileName, format string, args ...any) (To
 	return ToolResult(out), nil
 }
 
-// Execute reads the file at the given URL, verifies ownership, detects MIME type,
-// dispatches to the appropriate parser, and returns structured JSON output.
-//
-// All validation failures are returned as soft errors (ToolResult with "ERROR:"
-// content + nil Go error). Returning a Go error here would propagate to Eino as
-// a NodeRunError which TERMINATES the agent run before the LLM ever sees the
-// message — see tool_web_fetch.go:80-95 for the canonical rationale. Aligns with
-// Codex `RespondToModel` (codex-rs/tools/src/function_call_error.rs) and Claude
-// Code `ValidationResult` (FileReadTool.ts) patterns.
 // InputSchema returns the JSON Schema describing this tool's parameters,
 // so the LLM receives a structured function-calling contract (not just prose).
 func (t *fileReadTool) InputSchema() json.RawMessage {
@@ -151,6 +142,15 @@ func (t *fileReadTool) InputSchema() json.RawMessage {
 	}`)
 }
 
+// Execute reads the file at the given URL, verifies ownership, detects MIME type,
+// dispatches to the appropriate parser, and returns structured JSON output.
+//
+// All validation failures are returned as soft errors (ToolResult with "ERROR:"
+// content + nil Go error). Returning a Go error here would propagate to Eino as
+// a NodeRunError which TERMINATES the agent run before the LLM ever sees the
+// message — see tool_web_fetch.go:80-95 for the canonical rationale. Aligns with
+// Codex `RespondToModel` (codex-rs/tools/src/function_call_error.rs) and Claude
+// Code `ValidationResult` (FileReadTool.ts) patterns.
 func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	var in fileReadInput
 	if err := json.Unmarshal(input, &in); err != nil {

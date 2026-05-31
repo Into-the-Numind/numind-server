@@ -100,9 +100,6 @@ func (t *analyzeImageTool) IsReadOnly() bool            { return true }
 func (t *analyzeImageTool) IsSearchOrReadCommand() bool { return true }
 func (t *analyzeImageTool) AlwaysLoad() bool            { return true }
 
-// Execute parses the input JSON, optionally returns cached data, otherwise
-// calls the vision model and returns structured output. It never returns a
-// non-nil error (graceful degradation — see spec §5).
 // InputSchema returns the JSON Schema describing this tool's parameters,
 // so the LLM receives a structured function-calling contract (not just prose).
 func (t *analyzeImageTool) InputSchema() json.RawMessage {
@@ -116,6 +113,9 @@ func (t *analyzeImageTool) InputSchema() json.RawMessage {
 	}`)
 }
 
+// Execute parses the input JSON, optionally returns cached data, otherwise
+// calls the vision model and returns structured output. It never returns a
+// non-nil error (graceful degradation — see spec §5).
 func (t *analyzeImageTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	var in analyzeImageInput
 	if err := json.Unmarshal(input, &in); err != nil {

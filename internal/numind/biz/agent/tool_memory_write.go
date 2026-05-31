@@ -46,8 +46,6 @@ func (t *memoryWriteTool) UserFacingName() string { return "记忆写入" }
 // NarrationVerb returns the verb used in run narration messages.
 func (t *memoryWriteTool) NarrationVerb() string { return "记忆" }
 
-// Execute validates the input, extracts userID + agentDefID from context, and
-// calls Notepad.Write to upsert the L2 memory entry.
 // InputSchema returns the JSON Schema describing this tool's parameters,
 // so the LLM receives a structured function-calling contract (not just prose).
 func (t *memoryWriteTool) InputSchema() json.RawMessage {
@@ -62,6 +60,8 @@ func (t *memoryWriteTool) InputSchema() json.RawMessage {
 	}`)
 }
 
+// Execute validates the input, extracts userID + agentDefID from context, and
+// calls Notepad.Write to upsert the L2 memory entry.
 func (t *memoryWriteTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	var in memoryWriteToolInput
 	if err := json.Unmarshal(input, &in); err != nil {

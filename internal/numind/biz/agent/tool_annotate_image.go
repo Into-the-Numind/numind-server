@@ -84,9 +84,6 @@ func (t *annotateImageTool) IsReadOnly() bool            { return true }
 func (t *annotateImageTool) IsSearchOrReadCommand() bool { return true }
 func (t *annotateImageTool) AlwaysLoad() bool            { return true }
 
-// Execute parses the input JSON and calls the vision model once per region
-// (serial, to avoid blowing the provider QPS limit). Returns structured
-// annotations. Never returns a non-nil error (graceful degradation — spec §5).
 // InputSchema returns the JSON Schema describing this tool's parameters,
 // so the LLM receives a structured function-calling contract (not just prose).
 func (t *annotateImageTool) InputSchema() json.RawMessage {
@@ -114,6 +111,9 @@ func (t *annotateImageTool) InputSchema() json.RawMessage {
 	}`)
 }
 
+// Execute parses the input JSON and calls the vision model once per region
+// (serial, to avoid blowing the provider QPS limit). Returns structured
+// annotations. Never returns a non-nil error (graceful degradation — spec §5).
 func (t *annotateImageTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	var in annotateImageInput
 	if err := json.Unmarshal(input, &in); err != nil {
