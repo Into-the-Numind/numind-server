@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
+	"github.com/eino-contrib/jsonschema"
 	"github.com/google/uuid"
 
 	"numind-server/internal/numind/biz/agent/stream"
@@ -36,13 +38,44 @@ type fullToolEinoAdapter struct {
 var _ einotool.InvokableTool = (*fullToolEinoAdapter)(nil)
 
 // Info returns the Eino ToolInfo derived from the wrapped FullTool's metadata.
-// ParamsOneOf is left empty for now; a future task can populate it from ft.InputSchema().
+// ParamsOneOf is built from ft.InputSchema() so the LLM receives the tool's real
+// function-calling parameter schema instead of an empty object. Tools that do not
+// declare a schema (BaseTool default returns nil) fall back to empty params — the
+// historical behavior — so this change is zero-regression.
 func (a *fullToolEinoAdapter) Info(_ context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name:        a.ft.Name(),
 		Desc:        a.ft.Description(),
-		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{}),
+		ParamsOneOf: paramsOneOfFromInputSchema(a.ft.Name(), a.ft.InputSchema()),
 	}, nil
+}
+
+// emptyParamsOneOf is the historical empty-params value (a parameterless object
+// schema). Used as the defensive fallback whenever a tool has no usable schema.
+func emptyParamsOneOf() *schema.ParamsOneOf {
+	return schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{})
+}
+
+// paramsOneOfFromInputSchema converts a tool's JSON Schema (json.RawMessage, as
+// returned by FullTool.InputSchema()) into an Eino *schema.ParamsOneOf.
+//
+// Defensive fallback (ZERO regression): on nil / empty / unparseable input it
+// returns emptyParamsOneOf(), so a tool with no schema (or a malformed one)
+// behaves exactly as before this change. Info() therefore never errors and never
+// panics on account of a tool's schema. toolName is used only for log context.
+func paramsOneOfFromInputSchema(toolName string, raw json.RawMessage) *schema.ParamsOneOf {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return emptyParamsOneOf()
+	}
+	var js jsonschema.Schema
+	if err := json.Unmarshal(raw, &js); err != nil {
+		// A tool authored an invalid InputSchema(). Log and fall back rather than
+		// breaking the agent run — the LLM still gets the tool, just without params.
+		log.Warnw("paramsOneOfFromInputSchema: invalid InputSchema JSON, falling back to empty params",
+			"tool", toolName, "err", err)
+		return emptyParamsOneOf()
+	}
+	return schema.NewParamsOneOfByJSONSchema(&js)
 }
 
 // InvokableRun delegates to the wrapped FullTool.Execute, with optional
