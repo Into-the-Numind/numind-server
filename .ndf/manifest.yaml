@@ -68,8 +68,9 @@ features:
     numind-server: /private/tmp/wt-agent-mode-open-tools-skill-as-guidance-numind-server
   progress:
     total_tasks: 2
-    completed_tasks: 0
-    reviewed_tasks: 0
+    completed_tasks: 1
+    reviewed_tasks: 1
+    t1_review: 'T1 (full-open + delete dead permission layer, commit d381ee9c) — both Sonnet reviewers PASS (spec-compliance + code-quality). Both runner paths identical, filter excludes document_generate, dead code fully removed, build/test/lint green. P2 carried to T2: buildSkillCatalogBlock 临时启用 text (replaced by unified catalog), use_skill metadata (deleted), req.ToolNames no-tools-resolved log/comment vestige (fix in T2).'
   decisions:
   - 'S0-D1 (user 2026-05-31): scope = permission removal + use_skill/read_skill merge + allowed_tools recommendation semantics. doc-generation防错 hardening (ADR 0001 items) KEPT SEPARATE (skill-progressive-loader remaining track) — premise shifted because single-loop overlap already landed 2026-05-29, so less reason to merge. AskUserQuestion confirmed "keep separate".'
   - 'S0-D2 (ai 2026-05-31): cold-start brief premise corrected — "改单 loop / 废双 LLM invoke_skill" already done on develop (skill_progressive_loader_regression_test.go pins it); PendingBody overwrite bug already fixed (commit 94910336). This feature is pure permission-removal + tool-merge, narrower than briefed.'
