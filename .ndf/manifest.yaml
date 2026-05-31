@@ -4,10 +4,10 @@ features:
   ndf_version: '3.0'
   description: 'Standard NDF — Eino adapter Info() (adapter_full_to_eino.go:40-46) hard-codes empty tool params, so LLMs never receive function-calling parameter schemas and must guess args from Description() prose; weak fallback models (doubao-seed-2-0-lite/qwen-turbo) misconstruct args, and OpenAI structured-outputs strict mode is blocked. Root cause (verified this session): FullTool already declares InputSchema() json.RawMessage + BaseTool defaults nil + 8 tools already implement it, but adapter Info() ignores InputSchema() and always returns empty params. Step A (keystone): Info() converts InputSchema() via schema.NewParamsOneOfByJSONSchema, falling back to empty params on nil/empty/invalid (zero regression). Step B: backfill InputSchema() for the remaining 14 tools by risk tier (bash_exec/memory_write/ask_user_question -> web_*/kb_search/file_read/memory_read -> analyze/annotate/image_gen/learner/document/read_skill; get_current_date stays paramless).'
   track: standard
-  stage: S3
+  stage: S6
   classification_reason: 'Standard — no DB/API/external-service change; >3 files (adapter + ~14 tool_*.go + tests); not payment/permission risk but touches the agent tool-call hot path (adapter Info()). User confirmed Standard at dispatch.'
-  last_updated_by: ai-s3-plan-ready
-  last_updated_at: '2026-05-31T15:25:00+08:00'
+  last_updated_by: ai-s6-ready-for-merge
+  last_updated_at: '2026-06-01T00:45:00+08:00'
   repos:
   - numind-server
   branches:
@@ -16,10 +16,13 @@ features:
     numind-server: /private/tmp/wt-agent-tool-schema-infra-numind-server
   progress:
     total_tasks: 4
-    completed_tasks: 0
-    reviewed_tasks: 0
+    completed_tasks: 4
+    reviewed_tasks: 4
   decisions:
   - 'S0-D1 (ai 2026-05-31): keep InputSchema() json.RawMessage signature (do NOT change to *schema.ParamsOneOf). Interface + BaseTool default already exist; changing the signature would touch tool_full.go/base_tool.go + all 22 tools and collide hard with parallel feature agent-mode-open-tools-skill-as-guidance. Keeping json.RawMessage => this feature only edits adapter_full_to_eino.go + the 14 schema-less tool_*.go (each colocated) + tests; near-zero overlap (read_skill is the only file the parallel feature also touches, and it owns the reconciliation when it rebases on top of this).'
+  - 'S4-D2 (ai 2026-06-01): web_search max_results P1 (code-quality reviewer). Schema declared it optional but Execute rejects <1 (a prior feature locked TestWebSearchTool_MaxResultsOutOfRange asserting 0 -> error). Resolved by marking max_results required in schema + Description (NOT applying a default in Execute, which would revert the other feature decision and break its test). Zero behavior change; schema now tells the truth.'
+  - 'S4-D3 (ai 2026-06-01): schema = runtime-truth contract. Encoded memory kind enum (5 MemoryKind.Valid values learning/decision/issue/fact/preference), annotate_image regions maxItems=10 (matches annotateImageMaxRegions truncation), minimum:0 on uint-backed integer fields.'
+  - 'S6-D4 (ai 2026-06-01): dual Sonnet review — round 1 spec-compliance PASS, code-quality FAIL (1 P1 + P2); all fixed; round 2 both PASS. task lint exit 0; full agent pkg + 9 subpkgs go test green. 6 code commits on feature/agent-tool-schema-infra.'
   related_features:
   - 'agent-mode-open-tools-skill-as-guidance (parallel Standard, other session) — deletes the permission layer + merges use_skill/read_skill->load_skill + edits runner.go registration. This infra feature lands first; parallel rebases on top. Only shared file is tool_read_skill.go (parallel rewrites it). git fetch + recheck before ndf-done.'
   blockers: []
