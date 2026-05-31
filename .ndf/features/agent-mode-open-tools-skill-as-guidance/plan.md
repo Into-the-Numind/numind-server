@@ -64,6 +64,15 @@ Defines the S5 verification (Playwright E2E mandatory + Go suite), key user path
 
 ---
 
+## S3 gate refinements (folded — authoritative; CHANGES-REQUIRED resolved)
+
+Definitive reference list confirmed by grep in worktree. T1 MUST clean ALL of these to stay compile-green:
+- **R-P0 — orphaned `basicToolNames`**: T1 deletes the `WithAgentBaseToolNames` injection; also delete its only feeder — `basicToolNames := make([]string, len(req.ToolNames))` + `copy(...)` at `runner.go:791-792` AND `runner_runstream.go:305-306` (else "declared and not used" compile error). `req.ToolNames` itself stays (still read by the `len(einoTools)==0` log).
+- **R-P1 — `tool_use_skill_test.go` (pkg agent) `turn.AllowedTools` refs**: T1 deletes the struct field, so update in T1: `:23-24` (`TestUseSkillTurn_NewState_DefaultCap` — drop the `AllowedTools` non-nil check), `:207/250-254` (`...HappyPath_LoadsBodyAndAllowedTools` — drop AllowedTools assertions, rename test), `:460-484` (`...MalformedAllowedTools_WarnButLoaded` — drop AllowedTools-empty assertion; keep "still loads" check). NOTE `:203` is `model.Skill.AllowedTools` (the DB JSON field) — KEEP.
+- **R-P2 — `eino_skill_integration_test.go` scenario (a)** `:80-81` asserts `turn.AllowedTools` — remove in T1 (spec §9b F4); `:62/138` are `model.Skill.AllowedTools` DB field (keep as fixtures). Scenario (c) `:129-186` tests the deleted validator → delete in T1.
+- **R-P2 — T2 `tool_use_skill_test.go` cleanup**: when T2 removes `useSkillTool`+Execute, delete the Execute-path tests entirely; keep only ctx-helper / `NewUseSkillTurnState` (sans AllowedTools) tests for the retained helpers.
+- **R-P2 — s5-strategy P3**: gstack fallback can't see tool-call sequence in-browser — P3/P4 require backend `agent_run`/Langfuse trace inspection (SSH dev) in addition to screenshots. (Folded into S5 execution.)
+
 ## Sequencing & parallelism
 - **Serial T1 → T2** (Tier 4): both touch `runner.go`/`runner_runstream.go`/`tool_use_skill.go` — overlapping files, T2 depends on T1's compile-green base. No Tier-3 parallel split.
 - After each task: commit → **parallel** 2× Sonnet reviewer (spec-compliance + code-quality) → fix P0/P1 (P2 inline) → `reviewed_tasks += 1` → next.
