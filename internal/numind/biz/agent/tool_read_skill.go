@@ -91,6 +91,18 @@ func (t *readSkillTool) returnSoftError(skillName, format string, args ...any) (
 // the LLM sees the message and can self-correct, mirroring the soft-error
 // pattern used by file_read post-2026-05-29-Hotfix-A. Codex equivalent:
 // codex-rs/tools/src/function_call_error.rs `RespondToModel` vs `Fatal`.
+// InputSchema returns the JSON Schema describing this tool's parameters,
+// so the LLM receives a structured function-calling contract (not just prose).
+func (t *readSkillTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"skill_name": {"type": "string", "description": "Name of the platform skill whose SKILL.md guidance to load."}
+		},
+		"required": ["skill_name"]
+	}`)
+}
+
 func (t *readSkillTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	var in readSkillInput
 	if err := json.Unmarshal(input, &in); err != nil {

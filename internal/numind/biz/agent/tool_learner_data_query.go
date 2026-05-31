@@ -33,6 +33,19 @@ func (t *learnerDataQueryTool) UserFacingName() string { return "学员档案" }
 func (t *learnerDataQueryTool) NarrationVerb() string  { return "查询" }
 func (t *learnerDataQueryTool) IsReadOnly() bool       { return true }
 
+// InputSchema returns the JSON Schema describing this tool's parameters,
+// so the LLM receives a structured function-calling contract (not just prose).
+func (t *learnerDataQueryTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"user_id": {"type": "integer", "description": "ID of the learner whose data to query."},
+			"field":   {"type": "string", "description": "Optional specific field to return; omit to return all available fields."}
+		},
+		"required": ["user_id"]
+	}`)
+}
+
 func (t *learnerDataQueryTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	var in learnerDataQueryInput
 	if err := json.Unmarshal(input, &in); err != nil {
