@@ -108,6 +108,7 @@ permission 层**唯一独占作用** = 「塑造 agent 人设边界」（让销�
 5. ❌ **admin-web / 配置 UI 改动**：父账户配 skill 的 `allowed_tools` 输入框继续工作（运行时含义变了）。UI 文案是否需从「工具白名单」改措辞为「推荐工具」→ S1 评估，**倾向另开 micro，不进本 feature**。
 6. ❌ **numind-web-v3 前端改动**：narration 已渲染工具调用气泡；`load_skill` 沿用现有 `use_skill`/`read_skill` 的 narration 通道（tool-display.yaml 加 `load_skill` entry 属本 feature 后端配置，不算前端代码改动）。S2 确认。
 7. ❌ **prod 部署**：高风险改动，dev 收尾，prod 等用户验收。
+8. ❌ **历史 `agent_run` 记录的旧工具名 narration 重渲染**：历史记录里 `use_skill`/`read_skill` 的 tool-call 在前端时间线落 `tool-display.yaml` 的 `defaults` 兜底，可接受（纯展示、历史数据）。是否给旧名保留 alias entry 由 S2 定（见 Risk #10）。
 
 ---
 
@@ -122,7 +123,7 @@ permission 层**唯一独占作用** = 「塑造 agent 人设边界」（让销�
 | # | 标准 | 验证方式 |
 |---|---|---|
 | AC-1 | **全开**：一个**未加载任何 skill** 的 agent 能直接调用之前被 gate 的工具（如 `get_current_date`、`run_python`）——不再返回「工具未启用，请先 use_skill」 | Go unit test（validator 删除后无 deny）+ Playwright E2E |
-| AC-2 | **行为一致性**：一个典型业务 agent（如销售 FAQ）改动前后对**同一输入**的核心行为一致（不因全开而行为漂移到答非所问） | Playwright E2E 前后对比 |
+| AC-2 | **行为不漂移（行为式断言，非逐字对比）**：一个典型业务 agent（如销售 FAQ）给定标准输入（如「客户问优惠策略怎么回复」）仍返回**相关领域**回答，且**不主动**在无要求时 emit `run_python`/`bash_exec`。断言落在 Langfuse trace 的 tool-call 序列（机械可判），**不**做逐字文本对比（LLM 非确定性会 flaky）。改动前后的对比是「工具调用模式一致 + 领域相关」，非「输出相同」 | Playwright E2E + Langfuse trace tool-call 断言 |
 | AC-3 | **skill 指引生效**：`load_skill("X")` 后，X 的 body（含 `allowed_tools` 渲染出的「推荐工具」行）出现在下一次 LLM generation 输入中 | Go unit test on runner + Langfuse trace |
 | AC-4 | **现有 B2B skill 配置不破**：DB 中带 `allowed_tools` JSON 的现有 skill 行继续被 `load_skill` 加载（now as 推荐），不因 schema/语义变更报错 | Go unit test（用现有 skill 行 fixture） |
 | AC-5 | **两工具合一**：`use_skill` 与 `read_skill` 不再各自注册；`load_skill` 同时能加载 DB 业务 skill 与磁盘平台 skill | Go unit test（两类 skill 各加载一次） |
@@ -133,7 +134,7 @@ permission 层**唯一独占作用** = 「塑造 agent 人设边界」（让销�
 ### 非功能性
 - 现有 `e2e/` agent 测试零回归。
 - runtime 启动延迟不增加（删 union 收集，反而略减）。
-- `load_skill` 平均延迟 ≤ 50ms（纯 DB/磁盘读 + memory append）。
+- `load_skill` 平均延迟 ≤ 50ms，**含 fallback 路径**（DB cache 命中 → 内存 lookup；未命中 → 磁盘 `os.ReadFile`）。两条路径单独都远低于 50ms。
 
 ### S5 验证策略雏形（NDF Rule 10：S0/S1 留候选给 S3 定）
 - **验证方式：Playwright E2E 强制**（本改动影响**所有 agent** 且涉及权限/skill，属高风险，不能只 gstack 一次性 QA——需持久化回归保护）。
@@ -169,7 +170,7 @@ permission 层**唯一独占作用** = 「塑造 agent 人设边界」（让销�
 
 | # | 风险 | 概率 | 影响 | 缓解 |
 |---|------|------|------|------|
-| 1 | **【唯一真实取舍】prompt injection 爆炸半径变大**：今天「销售 FAQ」agent 够不到 bash → 物理免疫「注入驱动代码执行」；全开后够得到 | 确定发生 | 中 | sandbox + 8 P0 bashvalidator 仍管住**代码能干啥**；compliancegate 仍过滤内容；budgetgate 仍封顶成本。注入最多让 agent 多调工具，干不了沙箱外的事。**B2B SaaS 可接受，用户 2026-05-31 明确知情并接受**。这是 S0 必须写进卡的取舍 |
+| 1 | **【唯一真实取舍】prompt injection 爆炸半径变大**：今天「销售 FAQ」agent 够不到 bash → 物理免疫「注入驱动代码执行」；全开后够得到全部注册工具 | 确定发生 | 中 | sandbox + 8 P0 bashvalidator 仍管住**代码执行类工具能干啥**（`run_python`/`bash_exec`）；compliancegate 仍过滤内容；budgetgate 仍封顶成本。**但需诚实补全（S0 review P2）：`web_fetch`/`web_search`/`memory_write`/`learner_data_query`/`kb_search` 等工具不经沙箱**——全开后被注入的 agent 理论上可经 `web_fetch` 把对话上下文外泄到攻击者 URL、或经 `memory_write` 污染持久记忆。代码执行被沙箱封住，但网络/记忆类副作用不被封。**完整取舍 = agent 可调任意注册工具（含网络/记忆类），不止代码执行类。B2B SaaS 可接受，用户 2026-05-31 知情并接受**（S1 应把这版完整描述再过一遍用户）。这是 S0 必须写进卡的核心取舍 |
 | 2 | **跨 feature 冲突 `agent-tool-schema-infra`**：触碰同一批文件（runner 注册段 / tool_full / base_tool / tool_use_skill） | 高 | 中 | 对方是基础设施，**建议先 land**；本 feature S4 前 `git fetch` + 检查对方动了哪些文件，rebase 到其上；S2 spec 标注交叠文件清单 |
 | 3 | **删 validator 破坏 hook chain 注册/顺序**（其余 7 个 validator 依赖位置） | 中 | 高 | S2 实读 hook chain 注册代码；只摘 `UseSkillTurnScope`，其余 7 个 validator 顺序不动；S4 集成测试验证 chain 仍工作 |
 | 4 | **`load_skill` 合并：DB skill 与磁盘 skill 命名冲突 / 优先级歧义** | 中 | 中 | S2 设计命名空间/优先级（倾向 DB 业务 skill 优先，磁盘平台 skill 兜底；冲突时 warn log）；统一目录渲染去重 |
@@ -177,6 +178,8 @@ permission 层**唯一独占作用** = 「塑造 agent 人设边界」（让销�
 | 6 | **全开后某些 agent「靠工具受限塑造人设」的预期被打破**（配置者本意是「这个 agent 只该用 X」） | 中 | 低 | 这是**本 feature 的预期改动**，非 bug；文档说明；AC-2 在代表性 agent 上验证行为不漂移；人设约束应由 system prompt 表达，非工具 deny |
 | 7 | **配置 UI 仍把 `allowed_tools` 叫「白名单」→ 配置者困惑** | 低 | 低 | S1 评估是否改 UI 文案（倾向另开 micro）；运行时不依赖 UI 文案，功能不破 |
 | 8 | **「全开」范围误判**（全部注册表工具 vs agent 配置 ∪ skill 工具） | 中 | 中 | S2 明确定义；倾向「全部注册表工具」（真全开，与 Codex 一致）；E2E AC-1 验证 |
+| 9 | **【S0 review P1 catch】`ToolFlag` validator 删 `UseSkillTurnScope` 后成为唯一工具门禁**：`ToolFlag`（`biz.go:321` `NewToolFlag(ds.AgentDefinitions())`，读 `agent_definition.tool_flags`）仍在 hook chain。若它继续 deny 某些工具，则结果不是「全开」而是「ToolFlag-开」——AC-1（agent 直接调 `get_current_date`）可能**静默失败**（若该 agent 的 tool_flags 没勾对应 flag） | 高 | 高 | **S2 必须明确定义**：全开是否也绕过 ToolFlag？倾向：移除 `UseSkillTurnScope` 后，审计 ToolFlag 是否会 re-deny 本应暴露的工具；若 ToolFlag 仍 gate，需决定保留它做第二层约束 vs 一并放开。这是「删层 + 幸存层」最可能的实现陷阱（S0 review 列为头号开放问题） |
+| 10 | **历史 `agent_run` narration 用旧工具名**（`use_skill`/`read_skill`）：`tool-display.yaml` 按工具名 key，历史记录在前端时间线渲染时落 `defaults` 兜底 | 低 | 低 | 可接受（历史、纯展示）。S2 决定 `tool-display.yaml` 是删旧 entry 还是保留作 alias；新增 `load_skill` entry。归入 §2 Out of scope item 8 |
 
 ---
 
@@ -200,6 +203,8 @@ permission 层**唯一独占作用** = 「塑造 agent 人设边界」（让销�
 7. **`allowed_tools` → 推荐工具的渲染格式与位置**（body 末尾一行 vs 独立段）。
 8. **turn state 删 `AllowedTools` 后的最终 struct** + 所有读写点清理。
 9. **配置 UI 文案**是否进本 feature（倾向不进，另开 micro）。
+10. **【S0 review P1】测试更新清单必须显式点名 `eino_skill_integration_test.go`**：其 scenario (c)（`BehaviorDeny` 断言 @ line 154，「use_skill 前 deny」）随本 feature 失效需重写；scenario (d)（turn-cap 耗尽 @ line 188+）仍有效需保留。S2 spec 必须把此文件与 `use_skill_turnscope_test.go` 一起列入「删/改测试清单」，连同 AC-7 的 `skill_progressive_loader_regression_test.go` 断言更新。
+11. **【S0 review 头号开放问题】`ToolFlag` validator 与全开的交互**（见 Risk #9）：S2 必须审计 `ToolFlag` 是否会 re-deny 本应全开暴露的工具，决定全开是否绕过 ToolFlag。这是删层后最可能的实现陷阱，AC-1 的成立依赖此问题的解。
 
 ---
 

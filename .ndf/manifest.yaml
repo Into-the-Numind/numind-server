@@ -4,10 +4,17 @@ features:
   ndf_version: '3.0'
   description: 'Standard NDF — switch agent-mode tool-permission model from deny-by-default (UseSkillTurnScope validator + turn.AllowedTools, tools gated behind use_skill) to Codex full-open: every agent defaults to ALL registered tools, picks autonomously per task. Skills are demoted to pure guidance docs (help the LLM use existing capabilities well), no longer gate/unlock tools. Three changes: (1) delete the permission layer — UseSkillTurnScope deny logic + turn.AllowedTools + WithAgentBaseToolNames/WithFullToolMap ctx injection; turn keeps only cap counting + loaded-skill list. (2) allowed_tools field kept but re-semanticized whitelist→recommendation (rendered into skill body tail as a hint), ZERO data migration. (3) merge use_skill (DB business skills) + read_skill (disk platform skills) into one load_skill tool + one unified §2 catalog — after permission removal use_skill''s only unique function (tool unlock) vanishes, making it homogeneous with read_skill. NOTE: the single-loop refactor (delete invoke_skill double-LLM) is NOT in scope — already landed 2026-05-29; this feature only ensures the merge does not regress it. The ONE real tradeoff (accepted by user 2026-05-31): prompt-injection blast radius grows (a sales-FAQ agent can now reach bash) — but sandbox+8 P0 bashvalidator still constrain WHAT code runs, compliance gates content, budget caps cost. B2B SaaS acceptable.'
   track: standard
-  stage: S0
+  stage: S1
   classification_reason: 'Standard — (1) no DB schema change (allowed_tools kept, zero migration) (2) no new API endpoint (load_skill is internal agent tool) (3) no new external service (4) >3 files (runner.go tool registration + use_skill_turnscope.go + tool_use_skill.go + tool_read_skill.go + skill_catalog.go + state + regression test + tool-display.yaml + new load_skill) (5) HIGH RISK — touches runner.go = all agents; removing the tool-permission layer is security/permission-adjacent; an error = platform-wide agent behavior anomaly or tool gating failure. Conditions 4+5 force Standard. User 2026-05-31 explicitly chose Standard via cold-start decision. NOT bug-from-customer (deliberate architecture decision) → Rule 11 N/A.'
-  last_updated_by: ai-s0-card-drafted
+  last_updated_by: ai-s0-passed-s1-pending
   last_updated_at: '2026-05-31T00:00:00+08:00'
+  s0_review:
+    verdict: PASS-WITH-NITS
+    reviewer: sonnet-s0-gate
+    p1_findings_addressed: 1  # eino_skill_integration_test.go named in test-update list (req §7.10)
+    p2_findings_addressed: 5  # ToolFlag-validator interaction (Risk#9 + §7.11), AC-2 behavioral rephrase, blast-radius completion (web_fetch/memory_write not sandbox-contained), historical narration (oos#8/Risk#10), load_skill latency fallback path
+    top_open_question: 'ToolFlag validator (biz.go:321) vs full-open — S2 must resolve whether full-open bypasses ToolFlag; AC-1 (agent can call get_current_date) depends on it'
+    next_stage: S1 (proposal + PRD)
   repos:
   - numind-server
   branches:
