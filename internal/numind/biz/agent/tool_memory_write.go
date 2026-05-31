@@ -52,7 +52,7 @@ func (t *memoryWriteTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"kind":  {"type": "string", "description": "Memory kind/category bucket this entry belongs to."},
+			"kind":  {"type": "string", "enum": ["learning", "decision", "issue", "fact", "preference"], "description": "Memory kind/category bucket. Must be one of the five canonical kinds."},
 			"key":   {"type": "string", "description": "Unique key identifying this memory entry (upsert by key)."},
 			"value": {"type": "string", "description": "The value to remember."}
 		},

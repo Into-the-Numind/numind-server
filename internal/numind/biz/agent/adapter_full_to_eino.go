@@ -75,6 +75,9 @@ func paramsOneOfFromInputSchema(toolName string, raw json.RawMessage) *schema.Pa
 			"tool", toolName, "err", err)
 		return emptyParamsOneOf()
 	}
+	// Note: a raw value of "null" unmarshals into a zero-value jsonschema.Schema
+	// (no type, no properties); NewParamsOneOfByJSONSchema accepts that and yields
+	// an empty-but-non-nil ParamsOneOf, so the never-nil invariant still holds.
 	return schema.NewParamsOneOfByJSONSchema(&js)
 }
 

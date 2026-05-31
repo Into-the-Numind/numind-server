@@ -65,7 +65,7 @@ func (t *memoryReadTool) InputSchema() json.RawMessage {
 		"type": "object",
 		"properties": {
 			"key":   {"type": "string", "description": "Read a single memory entry by exact key. Takes precedence over kind."},
-			"kind":  {"type": "string", "description": "List memory entries of this kind (used when key is omitted)."},
+			"kind":  {"type": "string", "enum": ["learning", "decision", "issue", "fact", "preference"], "description": "List memory entries of this kind (used when key is omitted)."},
 			"limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Max entries when listing by kind (1-50, default 10)."}
 		}
 	}`)

@@ -93,7 +93,9 @@ func (t *annotateImageTool) InputSchema() json.RawMessage {
 			"attachment_url": {"type": "string", "format": "uri", "description": "URL of the image to annotate."},
 			"regions": {
 				"type": "array",
-				"description": "Rectangular regions of interest to analyze/label.",
+				"minItems": 1,
+				"maxItems": 10,
+				"description": "Rectangular regions of interest to analyze/label (1-10 regions per call; extra regions beyond 10 are dropped).",
 				"items": {
 					"type": "object",
 					"properties": {

@@ -48,6 +48,8 @@ func (t *kbSearchTool) InputSchema() json.RawMessage {
 	}`)
 }
 
+// Execute parses {"query":..., "doc_ids":...} and retrieves matching knowledge-base
+// snippets via the SalesRAG retriever (userID read from context).
 func (t *kbSearchTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	var in kbSearchInput
 	if err := json.Unmarshal(input, &in); err != nil {

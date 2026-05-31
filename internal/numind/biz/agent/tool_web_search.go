@@ -21,7 +21,7 @@ import (
 // webSearchInput is the LLM-facing input schema for web_search.
 type webSearchInput struct {
 	Query          string   `json:"query"`
-	MaxResults     int      `json:"max_results,omitempty"`
+	MaxResults     int      `json:"max_results"`
 	AllowedDomains []string `json:"allowed_domains,omitempty"`
 }
 

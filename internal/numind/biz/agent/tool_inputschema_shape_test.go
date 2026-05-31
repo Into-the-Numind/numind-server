@@ -72,7 +72,7 @@ func TestToolInputSchemas_MatchExecuteContract(t *testing.T) {
 		{"memory_write", (&memoryWriteTool{}).InputSchema(),
 			[]string{"kind", "key", "value"}, []string{"kind", "key", "value"}},
 		{"memory_read", (&memoryReadTool{}).InputSchema(),
-			[]string{"key", "kind", "limit"}, nil},
+			[]string{"key", "kind", "limit"}, nil}, // kind carries an enum; properties match struct
 		{"ask_user_question", (&askUserQuestionTool{}).InputSchema(),
 			[]string{"question", "options", "header", "multi_select"}, []string{"question", "options"}},
 

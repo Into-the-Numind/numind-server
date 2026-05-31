@@ -46,6 +46,8 @@ func (t *learnerDataQueryTool) InputSchema() json.RawMessage {
 	}`)
 }
 
+// Execute parses {"user_id":..., "field":...} and returns the sanitized learner
+// profile data (optionally narrowed to a single field).
 func (t *learnerDataQueryTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	var in learnerDataQueryInput
 	if err := json.Unmarshal(input, &in); err != nil {
