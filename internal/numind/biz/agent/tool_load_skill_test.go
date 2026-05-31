@@ -141,6 +141,30 @@ func TestLoadSkill_DiskOnly_NoTurnState_NoCap(t *testing.T) {
 	}
 }
 
+// Regression for the same-turn accumulation bug (originally
+// fix-use-skill-pending-body-overwrite, commit 94910336): loading A→B→C in one turn
+// must keep ALL three in PendingSkills. A single-field overwrite would lose A+B and
+// the LLM (on the outer-loop injection path) would only ever see the last skill.
+func TestLoadSkill_MultipleCalls_PendingSkillsAccumulate(t *testing.T) {
+	skA := fixedSkill(1, "技能A", "bodyA", `[]`)
+	skB := fixedSkill(2, "技能B", "bodyB", `[]`)
+	skC := fixedSkill(3, "技能C", "bodyC", `[]`)
+	ctx, turn := buildTurnWithSkills(t, skA, skB, skC) // cap defaults to 3
+
+	tool := NewLoadSkillTool(nil)
+	for _, name := range []string{"技能A", "技能B", "技能C"} {
+		ack := execLoadSkill(t, tool, ctx, name)
+		assert.Equal(t, "loaded", ack["status"], "load %q", name)
+	}
+	require.Len(t, turn.PendingSkills, 3, "all three same-turn loads must accumulate (no overwrite)")
+	assert.Equal(t, "技能A", turn.PendingSkills[0].Name)
+	assert.Equal(t, "技能B", turn.PendingSkills[1].Name)
+	assert.Equal(t, "技能C", turn.PendingSkills[2].Name)
+	assert.Contains(t, turn.PendingSkills[0].Body, "bodyA")
+	assert.Contains(t, turn.PendingSkills[2].Body, "bodyC")
+	assert.Equal(t, 3, turn.InvocationCount)
+}
+
 func TestLoadSkill_InactiveSkill_SoftError(t *testing.T) {
 	sk := fixedSkill(9, "禁用技能", "body", `[]`)
 	sk.IsActive = false

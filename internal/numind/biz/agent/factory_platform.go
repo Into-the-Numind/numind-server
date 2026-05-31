@@ -13,8 +13,8 @@ import (
 type platformToolFactory struct {
 	rag           salesrag.SalesRAGBiz
 	ds            store.IStore
-	skillRegistry skills.Registry   // optional; nil = read_skill not registered
-	skillPool     sandbox.SkillPool // retained for forward compat (run_python uses sandbox.Pool, not SkillPool; read_skill does not need sandbox)
+	skillRegistry skills.Registry   // disk platform skills; nil = load_skill serves DB-bound skills only
+	skillPool     sandbox.SkillPool // retained for forward compat (run_python uses sandbox.Pool, not SkillPool; load_skill does not need sandbox)
 }
 
 // NewPlatformToolFactory returns a ToolFactory that loads all platform built-in tools.
@@ -23,14 +23,15 @@ func NewPlatformToolFactory(rag salesrag.SalesRAGBiz, ds store.IStore) ToolFacto
 }
 
 // NewPlatformToolFactoryWithSkills returns a ToolFactory that includes all platform
-// built-in tools plus the read_skill tool (Codex-style progressive disclosure;
-// 2026-05-29 skill-progressive-loader refactor replaces V1.5's invoke_skill).
+// built-in tools and wires a disk skill registry into load_skill (open-tools-skill-
+// as-guidance merged read_skill into load_skill; single-loop progressive disclosure).
 //
-// reg must be non-nil for read_skill to be registered. pool is accepted for
-// API compatibility — read_skill reads SKILL.md from disk and does NOT use the
-// sandbox, so a nil pool no longer prevents skill features from working. The
-// outer agent uses run_python (which has its own sandbox.Pool wiring) to
-// execute the Python the LLM authors from the SKILL.md guidance.
+// reg is the disk platform skill registry. load_skill is registered REGARDLESS of reg
+// (it always serves DB-bound skills); a non-nil reg additionally lets load_skill resolve
+// disk SKILL.md skills (xlsx/docx/pptx/pdf-author). pool is accepted for API compat —
+// load_skill reads SKILL.md from disk and does NOT use the sandbox, so a nil pool no
+// longer prevents skill features from working. The agent uses run_python (which has its
+// own sandbox.Pool wiring) to execute the Python the LLM authors from the guidance.
 func NewPlatformToolFactoryWithSkills(
 	rag salesrag.SalesRAGBiz,
 	ds store.IStore,
@@ -45,9 +46,10 @@ func NewPlatformToolFactoryWithSkills(
 	}
 }
 
-// WithSkillRegistry injects a skills.Registry into the factory. When non-nil,
-// read_skill is appended to LoadTools. The pool argument is retained for API
-// compatibility but is no longer consulted by read_skill (which reads disk).
+// WithSkillRegistry injects a disk skills.Registry into the factory. load_skill is
+// always registered by LoadTools; a non-nil registry lets it additionally resolve disk
+// platform skills. The pool argument is retained for API compatibility but is no longer
+// consulted (load_skill reads SKILL.md from disk).
 //
 // Call this after NewPlatformToolFactory but before LoadAll.
 func (f *platformToolFactory) WithSkillRegistry(reg skills.Registry, pool sandbox.SkillPool) *platformToolFactory {
@@ -75,18 +77,18 @@ func (f *platformToolFactory) DisplayName() string { return "平台内置工具"
 // Tools constructed with nil deps will panic only if Execute is called; LoadTools itself
 // must never panic.
 //
-// Base tools (always present, ds=nil or ds!=nil): 18 tools
+// Base tools (always present, ds=nil or ds!=nil): 19 tools, including load_skill
+// (open-tools-skill-as-guidance: always registered; f.skillRegistry only controls
+// whether disk platform skills are resolvable, not whether load_skill exists):
 //
 //	kb_search, learner_data_query, document_generate, image_gen, bash_exec,
 //	get_current_date, web_search, web_fetch, ask_user_question, file_read,
-//	analyze_image, annotate_image,
+//	analyze_image, annotate_image, load_skill,
 //	create_csv, create_html, create_json, create_text  (V1.5 output-skills task 4.2)
 //	create_png_chart                                    (V1.5 output-skills task 4.3)
 //	run_python                                          (V1.5 output-skills task 4.9)
 //
-// When f.skillRegistry is non-nil, read_skill is appended (Codex-style
-// progressive disclosure; 19 base tools total). When f.ds is also non-nil,
-// memory_write + memory_read are appended (21 tools with skills, 20 without).
+// When f.ds is non-nil, memory_write + memory_read are appended (21 tools, else 19).
 func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMetadata, error) {
 	var usersGetter userByIDGetter
 	var attStore store.IAgentAttachmentStore

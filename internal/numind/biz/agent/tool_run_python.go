@@ -17,7 +17,7 @@ import (
 )
 
 // ===========================================================================
-// runPythonTool — sandboxed Python for office docs (via read_skill) + long-tail
+// runPythonTool — sandboxed Python for office docs (via load_skill) + long-tail
 // ===========================================================================
 
 // runPythonTool implements FullTool. It executes Python 3 code inside an
@@ -25,7 +25,7 @@ import (
 // COS, returning their presigned URLs.
 //
 // Two legitimate uses (see Description):
-//   - Office docs (xlsx/docx/pptx/pdf): the agent first calls read_skill to get
+//   - Office docs (xlsx/docx/pptx/pdf): the agent first calls load_skill to get
 //     the SKILL.md code guidance, then calls run_python to execute it.
 //   - Long-tail formats not covered by Layer 1 Go tools (create_csv/html/json/
 //     text/png_chart): the agent writes the Python directly.

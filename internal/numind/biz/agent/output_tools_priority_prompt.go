@@ -13,7 +13,7 @@ package agent
 // 等不同 LLM 后端的偏好差异导致引导被忽略。
 //
 // 注意：Layer 2 改为两步流后（load_skill → run_python），不再有旧的单工具入口。
-// 与 skill_catalog.go 的 RenderSkillCatalog 输出协调一致（catalog 列举具体 skill 名，
+// 与 skill_catalog.go 的 buildUnifiedSkillCatalog 输出协调一致（catalog 列举具体 skill 名，
 // 此 addendum 解释何时该用 skill vs 别的层）。
 const OutputToolsPriorityAddendum = `
 

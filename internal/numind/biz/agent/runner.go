@@ -123,8 +123,8 @@ type agentRunner struct {
 	// 真正的 *artifact.BindingService（实现此接口）。
 	skillBindingService SkillBindingLister
 
-	// 2026-05-29 skill-progressive-loader: platform-level skill registry for the
-	// Codex-style read_skill catalog. Distinct from the v2 agent-bound skills
+	// platform-level disk skill registry, surfaced via load_skill + the unified
+	// catalog. Distinct from the v2 agent-bound (DB) skills
 	// (skillBindingService). Wired by biz.go via WithPlatformSkillRegistry;
 	// nil → catalog block omitted (graceful for tests / legacy agents).
 	platformSkillRegistry skills.Registry
@@ -349,10 +349,10 @@ func WithSkillBindingService(s SkillBindingLister) RunnerOption {
 }
 
 // WithPlatformSkillRegistry wires the platform-level skill registry (the same
-// registry passed to NewPlatformToolFactoryWithSkills). When non-nil, runner.go
-// renders a Codex-style skill catalog block via RenderSkillCatalog and appends
-// it to the §2 institution section's skillCatalog parameter. Nil → catalog
-// omitted (graceful for tests and environments where skills_root is unset).
+// registry passed to NewPlatformToolFactoryWithSkills). runner.go renders the
+// unified skill catalog block via buildUnifiedSkillCatalog (DB-bound + disk skills)
+// and appends it to the §2 institution section's skillCatalog parameter. Nil →
+// disk skills omitted from the catalog (graceful when skills_root is unset).
 //
 // 2026-05-29 skill-progressive-loader.
 func WithPlatformSkillRegistry(reg skills.Registry) RunnerOption {
@@ -1028,7 +1028,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		// 直接消费路径 (ack 内嵌 body, 后续 task 简化) 兜底；此 outer-loop 注入是
 		// spec 文字契约 + 未来 outer-retry 场景的 hook 保留。
 		//
-		// 全量消费而非取首条：同 turn 内 LLM 可串调 use_skill(A)→use_skill(B)（cap=3），
+		// 全量消费而非取首条：同 turn 内 LLM 可串调 load_skill(A)→load_skill(B)（cap=3），
 		// 任何一条丢失都会破坏 LLM 对已加载技能的认知（spec §3.3 路径 a 启用时表现为
 		// "只看到最后一条"的 latent bug）。
 		//
