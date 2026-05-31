@@ -31,6 +31,35 @@ func (t *askUserQuestionTool) NarrationVerb() string  { return "反问" }
 func (t *askUserQuestionTool) IsReadOnly() bool       { return true }
 func (t *askUserQuestionTool) AlwaysLoad() bool       { return true }
 
+// InputSchema returns the JSON Schema describing this tool's parameters,
+// so the LLM receives a structured function-calling contract (not just prose).
+func (t *askUserQuestionTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"question": {"type": "string", "description": "The clarifying question to ask the user."},
+			"options": {
+				"type": "array",
+				"minItems": 2,
+				"maxItems": 4,
+				"description": "2-4 answer choices the user can pick from.",
+				"items": {
+					"type": "object",
+					"properties": {
+						"key":         {"type": "string", "description": "Stable machine identifier for this option."},
+						"label":       {"type": "string", "description": "Human-readable option text shown to the user."},
+						"description": {"type": "string", "description": "Optional longer explanation of the option."}
+					},
+					"required": ["key", "label"]
+				}
+			},
+			"header":       {"type": "string", "description": "Optional short chip label (max 12 characters)."},
+			"multi_select": {"type": "boolean", "description": "Allow selecting more than one option (default false)."}
+		},
+		"required": ["question", "options"]
+	}`)
+}
+
 // Execute validates the input and returns a *yieldError to pause the run.
 // The runner.go yield handler detects the sentinel via errors.As and drives the
 // state machine to TerminalWaitingForUserChoice.

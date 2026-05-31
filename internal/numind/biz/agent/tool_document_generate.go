@@ -46,6 +46,19 @@ func (t *documentGenerateTool) MaxResultSizeChars() int { return 50000 }
 // 待 #12 注册 taskID 后改回默认 true 或受新 cfg 字段控制。
 func (t *documentGenerateTool) IsEnabled(_ ToolConfig) bool { return false }
 
+// InputSchema returns the JSON Schema describing this tool's parameters,
+// so the LLM receives a structured function-calling contract (not just prose).
+func (t *documentGenerateTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"prompt": {"type": "string", "description": "Description of the document content to generate."},
+			"format": {"type": "string", "description": "Optional output format hint (e.g. markdown, html)."}
+		},
+		"required": ["prompt"]
+	}`)
+}
+
 func (t *documentGenerateTool) Execute(_ context.Context, input ToolInput) (ToolResult, error) {
 	// 即使 IsEnabled=false 防护被绕过，Execute 也返回明确 error。
 	var in documentGenerateInput

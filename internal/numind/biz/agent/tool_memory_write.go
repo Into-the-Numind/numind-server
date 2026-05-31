@@ -46,6 +46,20 @@ func (t *memoryWriteTool) UserFacingName() string { return "记忆写入" }
 // NarrationVerb returns the verb used in run narration messages.
 func (t *memoryWriteTool) NarrationVerb() string { return "记忆" }
 
+// InputSchema returns the JSON Schema describing this tool's parameters,
+// so the LLM receives a structured function-calling contract (not just prose).
+func (t *memoryWriteTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"kind":  {"type": "string", "enum": ["learning", "decision", "issue", "fact", "preference"], "description": "Memory kind/category bucket. Must be one of the five canonical kinds."},
+			"key":   {"type": "string", "description": "Unique key identifying this memory entry (upsert by key)."},
+			"value": {"type": "string", "description": "The value to remember."}
+		},
+		"required": ["kind", "key", "value"]
+	}`)
+}
+
 // Execute validates the input, extracts userID + agentDefID from context, and
 // calls Notepad.Write to upsert the L2 memory entry.
 func (t *memoryWriteTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {

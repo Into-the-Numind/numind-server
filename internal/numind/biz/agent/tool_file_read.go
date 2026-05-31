@@ -129,6 +129,19 @@ func (t *fileReadTool) returnSoftError(fileName, format string, args ...any) (To
 	return ToolResult(out), nil
 }
 
+// InputSchema returns the JSON Schema describing this tool's parameters,
+// so the LLM receives a structured function-calling contract (not just prose).
+func (t *fileReadTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"file_url": {"type": "string", "format": "uri", "description": "URL of the uploaded file to read (e.g. an agent attachment)."},
+			"prompt":   {"type": "string", "description": "Optional instruction describing what to extract from the file."}
+		},
+		"required": ["file_url"]
+	}`)
+}
+
 // Execute reads the file at the given URL, verifies ownership, detects MIME type,
 // dispatches to the appropriate parser, and returns structured JSON output.
 //
