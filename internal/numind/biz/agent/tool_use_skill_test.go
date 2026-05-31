@@ -26,8 +26,8 @@ func TestUseSkillTurn_NewState_DefaultCap(t *testing.T) {
 	if s.SkillByID == nil || s.SkillByName == nil {
 		t.Error("SkillByID and SkillByName maps should be non-nil")
 	}
-	if s.PendingBody != "" || s.PendingSkillName != "" || s.PendingSkillVersion != 0 {
-		t.Error("Pending fields should be zero-valued")
+	if len(s.PendingSkills) != 0 {
+		t.Errorf("PendingSkills should be empty, got %d entries", len(s.PendingSkills))
 	}
 }
 
@@ -232,14 +232,17 @@ func TestUseSkillTurn_Execute_HappyPath_LoadsBodyAndAllowedTools(t *testing.T) {
 	}
 
 	// turn state mutation 检查
-	if turn.PendingBody != sk.BodyMd {
-		t.Errorf("PendingBody should be set to skill body, got %q", turn.PendingBody)
+	if len(turn.PendingSkills) != 1 {
+		t.Fatalf("PendingSkills should have 1 entry, got %d", len(turn.PendingSkills))
 	}
-	if turn.PendingSkillName != sk.Name {
-		t.Errorf("PendingSkillName = %q, want %q", turn.PendingSkillName, sk.Name)
+	if turn.PendingSkills[0].Body != sk.BodyMd {
+		t.Errorf("PendingSkills[0].Body should be set to skill body, got %q", turn.PendingSkills[0].Body)
 	}
-	if turn.PendingSkillVersion != int(sk.Version) {
-		t.Errorf("PendingSkillVersion = %d, want %d", turn.PendingSkillVersion, sk.Version)
+	if turn.PendingSkills[0].Name != sk.Name {
+		t.Errorf("PendingSkills[0].Name = %q, want %q", turn.PendingSkills[0].Name, sk.Name)
+	}
+	if turn.PendingSkills[0].Version != int(sk.Version) {
+		t.Errorf("PendingSkills[0].Version = %d, want %d", turn.PendingSkills[0].Version, sk.Version)
 	}
 	if turn.InvocationCount != 1 {
 		t.Errorf("InvocationCount = %d, want 1", turn.InvocationCount)
@@ -267,8 +270,8 @@ func TestUseSkillTurn_Execute_NameNotFound_ReturnsError(t *testing.T) {
 		t.Errorf("error msg should mention '不存在', got %q", parsed["error"])
 	}
 	// turn state 不应被 mutate
-	if turn.PendingBody != "" {
-		t.Error("PendingBody should not be set when lookup fails")
+	if len(turn.PendingSkills) != 0 {
+		t.Errorf("PendingSkills should be empty when lookup fails, got %d entries", len(turn.PendingSkills))
 	}
 	if turn.InvocationCount != 0 {
 		t.Errorf("InvocationCount should remain 0, got %d", turn.InvocationCount)
@@ -384,6 +387,73 @@ func TestUseSkillTurn_Execute_MultipleCalls_CountIncrementsToCap(t *testing.T) {
 	}
 }
 
+// 同 turn 串调 use_skill(A) → use_skill(B) → use_skill(C)：PendingSkills 必须按调用序
+// append 全部三条；任何一条丢失 = outer-loop 注入路径启用时 LLM 漏看 Skill 指引
+// (fix/fix-use-skill-pending-body-overwrite — 修复前是单字段覆盖)。
+func TestUseSkillTurn_Execute_MultipleCalls_PendingSkillsAccumulate(t *testing.T) {
+	// Version 1/2/3 + body/name 都互不相同，确保 == 比较能完整区分三条
+	// (顺序错乱 / 字段错配 都会被抓)。
+	skA := &model.Skill{ID: 1, ParentUserID: 100, Name: "SkillA", BodyMd: "bodyA-detailed-guide", Version: 1, IsActive: true, AllowedTools: []byte(`["toolA"]`)}
+	skB := &model.Skill{ID: 2, ParentUserID: 100, Name: "SkillB", BodyMd: "bodyB-detailed-guide", Version: 2, IsActive: true, AllowedTools: []byte(`["toolB"]`)}
+	skC := &model.Skill{ID: 3, ParentUserID: 100, Name: "SkillC", BodyMd: "bodyC-detailed-guide", Version: 3, IsActive: true, AllowedTools: []byte(`[]`)}
+	ctx, turn := buildTurnWithSkills(t, skA, skB, skC)
+
+	tool := NewUseSkillTool()
+	for _, name := range []string{"SkillA", "SkillB", "SkillC"} {
+		_, err := tool.Execute(ctx, ToolInput(fmt.Sprintf(`{"name":%q}`, name)))
+		if err != nil {
+			t.Fatalf("Execute(%s) returned Go error: %v", name, err)
+		}
+	}
+
+	// 核心断言：PendingSkills.len == invocation_count，证明无覆盖
+	if len(turn.PendingSkills) != turn.InvocationCount {
+		t.Fatalf("PendingSkills len = %d, want == InvocationCount %d (no entries should be overwritten)",
+			len(turn.PendingSkills), turn.InvocationCount)
+	}
+	if len(turn.PendingSkills) != 3 {
+		t.Fatalf("PendingSkills len = %d, want 3", len(turn.PendingSkills))
+	}
+
+	// 按调用顺序断言 — 顺序错乱也是 latent bug
+	want := []PendingSkill{
+		{Name: "SkillA", Version: 1, Body: "bodyA-detailed-guide"},
+		{Name: "SkillB", Version: 2, Body: "bodyB-detailed-guide"},
+		{Name: "SkillC", Version: 3, Body: "bodyC-detailed-guide"},
+	}
+	for i, w := range want {
+		if turn.PendingSkills[i] != w {
+			t.Errorf("PendingSkills[%d] = %+v, want %+v", i, turn.PendingSkills[i], w)
+		}
+	}
+}
+
+// 成功调用 → 失败调用：失败 (NameNotFound) 不应破坏已 append 的 PendingSkills slice
+// (append 路径的典型回归场景：早返回前若 mutate slice 就会污染)。
+func TestUseSkillTurn_Execute_SuccessThenNotFound_DoesNotMutateExisting(t *testing.T) {
+	sk := &model.Skill{ID: 1, ParentUserID: 100, Name: "GoodSkill", BodyMd: "good-body", Version: 5, IsActive: true, AllowedTools: []byte(`[]`)}
+	ctx, turn := buildTurnWithSkills(t, sk)
+
+	tool := NewUseSkillTool()
+	if _, err := tool.Execute(ctx, ToolInput(`{"name":"GoodSkill"}`)); err != nil {
+		t.Fatalf("first Execute Go error: %v", err)
+	}
+	if _, err := tool.Execute(ctx, ToolInput(`{"name":"DoesNotExist"}`)); err != nil {
+		t.Fatalf("second Execute Go error: %v", err)
+	}
+
+	if len(turn.PendingSkills) != 1 {
+		t.Fatalf("PendingSkills len = %d, want 1 (failed lookup must not mutate)", len(turn.PendingSkills))
+	}
+	want := PendingSkill{Name: "GoodSkill", Version: 5, Body: "good-body"}
+	if turn.PendingSkills[0] != want {
+		t.Errorf("PendingSkills[0] = %+v, want %+v", turn.PendingSkills[0], want)
+	}
+	if turn.InvocationCount != 1 {
+		t.Errorf("InvocationCount = %d, want 1 (failed lookup must not count)", turn.InvocationCount)
+	}
+}
+
 // AllowedTools JSON 字段格式错误时仍应载入 Skill（happy path），allowedTools
 // 视为空白名单。ack JSON 中 status 仍 "loaded"（LLM 视角技能就绪），span output
 // 通过 status=warn + error 字段记录此非致命警告（不影响 LLM 行为）。
@@ -404,9 +474,9 @@ func TestUseSkillTurn_Execute_MalformedAllowedTools_WarnButLoaded(t *testing.T) 
 	if parsed["status"] != "loaded" {
 		t.Errorf("ack status should be 'loaded' (warn 不影响 LLM 流程), got %v", parsed["status"])
 	}
-	// Skill body 已写入 PendingBody，turn.InvocationCount++
-	if turn.PendingBody != sk.BodyMd {
-		t.Error("PendingBody should be set even with malformed allowed_tools")
+	// Skill body 已写入 PendingSkills，turn.InvocationCount++
+	if len(turn.PendingSkills) != 1 || turn.PendingSkills[0].Body != sk.BodyMd {
+		t.Error("PendingSkills[0].Body should be set even with malformed allowed_tools")
 	}
 	if turn.InvocationCount != 1 {
 		t.Errorf("InvocationCount = %d, want 1 (cap should be consumed)", turn.InvocationCount)

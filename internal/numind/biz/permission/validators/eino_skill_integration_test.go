@@ -79,8 +79,9 @@ func TestEinoSkillIntegration_ChineseSkillName_Execute(t *testing.T) {
 	assert.Equal(t, 1, turn.InvocationCount, "InvocationCount should be bumped to 1")
 	assert.Contains(t, turn.AllowedTools, "crm_search",
 		"AllowedTools should have crm_search after use_skill")
-	assert.Equal(t, "销售话术训练", turn.PendingSkillName)
-	assert.Equal(t, 7, turn.PendingSkillVersion)
+	require.Len(t, turn.PendingSkills, 1, "PendingSkills should have 1 entry after one Execute")
+	assert.Equal(t, "销售话术训练", turn.PendingSkills[0].Name)
+	assert.Equal(t, 7, turn.PendingSkills[0].Version)
 }
 
 // ── Test (b): ack body 含 system-reminder 包装 + 完整 BodyMd ────────────────────
@@ -109,7 +110,7 @@ func TestEinoSkillIntegration_AckBody_HasSystemReminderWrapper(t *testing.T) {
 	// S4-D27 critical contract: LLM reads tool result; body MUST be a
 	// system-reminder wrapper containing the full Skill body verbatim.
 	// Without this, the Skill body never reaches the LLM (Eino single-attempt
-	// outer-loop doesn't re-inject PendingBody).
+	// outer-loop doesn't re-inject PendingSkills entries).
 	assert.True(t, strings.HasPrefix(body, "<system-reminder>"),
 		"body must start with <system-reminder> tag (S4-D27 path b: tool result)")
 	assert.True(t, strings.HasSuffix(body, "</system-reminder>"),

@@ -452,7 +452,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 
 	// 4. #5 skill-system: 装载 agent_definition 并组装 SystemPrompt（若指定了 AgentDefinitionID）。
 	// #12 agent-mode-billing-integration: ad 在 if 块外可见，供下方 budget tracker 读取 limits（reviewer S3-P0-1 fix）。
-	// v2 #2: useSkillTurnState 在 if 块外可见，供下方工具装配 (§3.6) + PendingBody
+	// v2 #2: useSkillTurnState 在 if 块外可见，供下方工具装配 (§3.6) + PendingSkills
 	//        injection (§3.3) + ctx propagation 使用。
 	var skillVer int
 	var body string
@@ -1066,31 +1066,35 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		_ = callID // budgetgate A8b lookup happens via PostToolCall hooks, not here
 
 		// v2 #2 agent-mode-v2-skill-invocation §3.3: 若 use_skill (T03) 写了
-		// PendingBody，本次 Generate 前消费一次 — 把 body 包成 <system-reminder>
-		// user msg 追加到 einoMessages，让 LLM 在下一次 generate 看到 Skill 指引。
+		// PendingSkills，本次 Generate 前一次性全量消费 — 每条包成 <system-reminder>
+		// user msg 按调用序追加到 einoMessages，让 LLM 在下一次 generate 看到所有
+		// Skill 指引。
 		//
 		// 注：Eino ReAct 内层多轮 generate 由 Eino 自己驱动，runner 看不到中间步骤；
 		// 本注入点仅在 outer-loop attempt 边界 (实际单 attempt) 生效。S4-D27 设计
-		// trade-off: use_skill 在 inner ReAct 触发时 PendingBody 必须由 tool 返回的
+		// trade-off: use_skill 在 inner ReAct 触发时 PendingSkills 必须由 tool 返回的
 		// 直接消费路径 (ack 内嵌 body, 后续 task 简化) 兜底；此 outer-loop 注入是
 		// spec 文字契约 + 未来 outer-retry 场景的 hook 保留。
 		//
+		// 全量消费而非取首条：同 turn 内 LLM 可串调 use_skill(A)→use_skill(B)（cap=3），
+		// 任何一条丢失都会破坏 LLM 对已加载技能的认知（spec §3.3 路径 a 启用时表现为
+		// "只看到最后一条"的 latent bug）。
+		//
 		// 即使 dormant，CtxKeyUseSkillTurn 的写读一致性必须保证 — 多次消费安全
-		// (consume 后置空 PendingBody, 不会重复注入)。
-		if useSkillTurnState != nil && useSkillTurnState.PendingBody != "" {
-			pendingBody := useSkillTurnState.PendingBody
-			pendingName := useSkillTurnState.PendingSkillName
-			pendingVer := useSkillTurnState.PendingSkillVersion
-			einoMessages = append(einoMessages, &schema.Message{
-				Role: schema.User,
-				Content: fmt.Sprintf(
-					"<system-reminder>\n以下是你刚调用的技能 '%s' 的详细指引（v%d）。请按这些指引继续完成用户的任务：\n\n%s\n</system-reminder>",
-					pendingName, pendingVer, pendingBody),
-			})
+		// (consume 后清空 slice, 不会重复注入)。
+		if useSkillTurnState != nil && len(useSkillTurnState.PendingSkills) > 0 {
+			// range value copy: ps.Body 可达 KB，但 len ≤ UseSkillTurnCapDefault (3)，可接受。
+			// 若未来 cap 提升或 body 显著增大，改 `for i := range` + &PendingSkills[i]。
+			for _, ps := range useSkillTurnState.PendingSkills {
+				einoMessages = append(einoMessages, &schema.Message{
+					Role: schema.User,
+					Content: fmt.Sprintf(
+						"<system-reminder>\n以下是你刚调用的技能 '%s' 的详细指引（v%d）。请按这些指引继续完成用户的任务：\n\n%s\n</system-reminder>",
+						ps.Name, ps.Version, ps.Body),
+				})
+			}
 			// consume — 防止重复 append (多 attempt 场景 / 未来重入)
-			useSkillTurnState.PendingBody = ""
-			useSkillTurnState.PendingSkillName = ""
-			useSkillTurnState.PendingSkillVersion = 0
+			useSkillTurnState.PendingSkills = nil
 		}
 
 		output, runErr = einoAgent.Generate(attemptCtx, einoMessages)

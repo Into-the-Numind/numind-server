@@ -477,20 +477,20 @@ func (r *agentRunner) RunStream(
 	// 9. Build initial Eino messages.
 	einoMessages := buildEinoMessages(req)
 
-	// 10. Inject pending skill body (v2 #2 §3.3) if present.
-	if useSkillTurnState != nil && useSkillTurnState.PendingBody != "" {
-		pendingBody := useSkillTurnState.PendingBody
-		pendingName := useSkillTurnState.PendingSkillName
-		pendingVer := useSkillTurnState.PendingSkillVersion
-		einoMessages = append(einoMessages, &schema.Message{
-			Role: schema.User,
-			Content: fmt.Sprintf(
-				"<system-reminder>\n以下是你刚调用的技能 '%s' 的详细指引（v%d）。请按这些指引继续完成用户的任务：\n\n%s\n</system-reminder>",
-				pendingName, pendingVer, pendingBody),
-		})
-		useSkillTurnState.PendingBody = ""
-		useSkillTurnState.PendingSkillName = ""
-		useSkillTurnState.PendingSkillVersion = 0
+	// 10. Inject pending skill bodies (v2 #2 §3.3) — 全量按调用序消费，与 runner.go
+	// 主循环消费点保持一致。同 turn 多次 use_skill (cap=3) 时每条都注入，
+	// 否则 outer-loop 注入路径启用时漏 Skill 指引（覆盖式赋值时只剩最后一条）。
+	if useSkillTurnState != nil && len(useSkillTurnState.PendingSkills) > 0 {
+		// range value copy: ps.Body 可达 KB，cap ≤ 3 可接受，与 runner.go 消费点对称。
+		for _, ps := range useSkillTurnState.PendingSkills {
+			einoMessages = append(einoMessages, &schema.Message{
+				Role: schema.User,
+				Content: fmt.Sprintf(
+					"<system-reminder>\n以下是你刚调用的技能 '%s' 的详细指引（v%d）。请按这些指引继续完成用户的任务：\n\n%s\n</system-reminder>",
+					ps.Name, ps.Version, ps.Body),
+			})
+		}
+		useSkillTurnState.PendingSkills = nil
 	}
 
 	// 11. per-attempt callID (for A8b usage correlation).

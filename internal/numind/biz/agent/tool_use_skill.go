@@ -63,6 +63,15 @@ var CtxKeySkillBindings = ctxKeySkillBindingsT{}
 
 // ── UseSkillTurnState ────────────────────────────────────────────────────────
 
+// PendingSkill 记录一次 use_skill Execute 的待注入快照（body + 元数据）。
+// 多次调用 → append 多条；runner outer-loop 一次性按调用序消费全部并清空。
+// 字段顺序遵循"细节→宽载荷"惯例：Name/Version 是身份元数据，Body 是大字符串负载放末尾。
+type PendingSkill struct {
+	Name    string
+	Version int
+	Body    string
+}
+
 // UseSkillTurnState 是一次 runner.Run() 调用的 turn-scope 状态。
 //
 // Lifetime: runner.Run 在装载 binding 成功后构造，注入 ctx，Eino 内层多轮
@@ -72,8 +81,11 @@ var CtxKeySkillBindings = ctxKeySkillBindingsT{}
 //   - InvocationCount: 本 turn 已 use_skill 调用次数，每次 +1，超 Cap 拒绝
 //   - AllowedTools: turn 内由 use_skill 累计添加的 Skill 工具白名单（去重 set）
 //   - Cap: use_skill 调用上限（默认 UseSkillTurnCapDefault = 3）
-//   - PendingBody/Name/Version: use_skill Execute 写入；runner 在下次 LLM
-//     Generate 前消费，把 body 包装在 <system-reminder> user msg 注入 messages
+//   - PendingSkills: use_skill Execute 顺序 append 的待注入快照列表；runner
+//     在下次 LLM Generate 前一次性消费全部并清空，每条包成 <system-reminder>
+//     user msg 注入。同 turn 多次调用必须全部保留——单字段会被后调用覆盖、
+//     丢失先调用的 body（latent bug：tool_result 通道为主时不可见，outer-loop
+//     注入路径 spec §3.3 路径 a 启用时丢 body）。
 //   - SkillByID: runner 启动时 batchGet 缓存（spec §3.6 解 N+1）
 //     use_skill 内部做 bound check（O(1) map lookup）
 //   - SkillByName: 由 SkillByID 派生的反向索引（spec §S4-D26 调整 — 无 GetByName API）
@@ -82,14 +94,12 @@ var CtxKeySkillBindings = ctxKeySkillBindingsT{}
 // 同名防御：runner 在 init 此 state 前已做 checkDuplicateSkillNames，
 // 保证 SkillByName 1:1 不冲突（S1-D13）。
 type UseSkillTurnState struct {
-	InvocationCount     int
-	AllowedTools        map[string]struct{}
-	Cap                 int
-	PendingBody         string
-	PendingSkillName    string
-	PendingSkillVersion int
-	SkillByID           map[uint]*model.Skill
-	SkillByName         map[string]*model.Skill
+	InvocationCount int
+	AllowedTools    map[string]struct{}
+	Cap             int
+	PendingSkills   []PendingSkill
+	SkillByID       map[uint]*model.Skill
+	SkillByName     map[string]*model.Skill
 }
 
 // NewUseSkillTurnState 工厂——零值字段不会让 runner 启动崩 nil-deref。
@@ -204,8 +214,8 @@ func (t *useSkillTool) InputSchema() json.RawMessage {
 //  4. lookup Skill via turn.SkillByName（runner 缓存，0 DB 调用；不在 map = 未装载或不存在）
 //  5. business validate（IsActive / BodyMd 非空）
 //  6. merge allowed_tools 到 turn-scope set（去重）
-//  7. 写 turn.PendingBody / PendingSkillName / PendingSkillVersion
-//     （runner 在下次 LLM Generate 前消费，包 system-reminder user msg 注入）
+//  7. append turn.PendingSkills（同 turn 内串调累积保留所有，不覆盖；
+//     runner 在下次 LLM Generate 前一次性消费，每条包 system-reminder user msg 注入）
 //  8. InvocationCount++ + 返回 acknowledgement JSON
 //
 // 永不返回非 nil error — 所有错误用 tool result 表达让 LLM 优雅恢复。
@@ -306,13 +316,17 @@ func (t *useSkillTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		turn.AllowedTools[toolName] = struct{}{}
 	}
 
-	// 7. 写 PendingBody — runner outer-loop 在下次 attempt 的 Generate 前可消费 (备用通道)
+	// 7. append PendingSkill — runner outer-loop 在下次 attempt 的 Generate 前可消费 (备用通道)
 	// 注意 (S4-D27): Eino 单 attempt 场景下 outer-loop 注入对本 turn 不生效；
 	// 实际 body 通过 ack JSON 的 body 字段直接给 LLM (tool result 通道 LLM 必读)。
-	// PendingBody 保留为多 attempt / 未来 Eino hook 扩展兼容。
-	turn.PendingBody = sk.BodyMd
-	turn.PendingSkillName = sk.Name
-	turn.PendingSkillVersion = int(sk.Version)
+	// PendingSkills 保留为多 attempt / 未来 Eino hook 扩展兼容。
+	// 必须 append 而非覆盖：同 turn 内 LLM 可串调 use_skill(A) → use_skill(B)，
+	// 若覆盖则 B 顶掉 A 的 body，outer-loop 注入启用时只看到 B (latent bug)。
+	turn.PendingSkills = append(turn.PendingSkills, PendingSkill{
+		Name:    sk.Name,
+		Version: int(sk.Version),
+		Body:    sk.BodyMd,
+	})
 
 	// 8. count++ + 返回 acknowledgement (含完整 body 包 system-reminder，S4-D27 主通道)
 	turn.InvocationCount++
