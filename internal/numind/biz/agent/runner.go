@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -522,7 +521,10 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 			if ad.AdvancedMode {
 				userBody = ad.CustomSkillBody
 			}
-			body = userBody + buildSkillCatalogBlock(skills)
+			// open-tools-skill-as-guidance: one unified catalog (DB-bound + disk
+			// platform skills), instructing load_skill. Replaces the former
+			// buildSkillCatalogBlock (DB only) + RenderSkillCatalog (disk only) split.
+			body = userBody + buildUnifiedSkillCatalog(skills, r.platformSkillRegistry)
 			queryCtx = WithUseSkillTurn(queryCtx, useSkillTurnState)
 			// spec §3.7 预留 ctx key — 注入实际 skills 切片 (S4-D26 类型校正为 []model.Skill)
 			// 主路径走 turn.SkillByID/SkillByName, 本 key 供未来扩展 (admin/observability) 使用
@@ -714,21 +716,16 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		// skill catalog 拼到 §2 institution；skills 为空时丢弃 body（不把 v1 legacy 内容
 		// 注入 V2 prompt）。理由：user 写了 system_prompt 即视为 agent 行为的唯一权威源，
 		// 不再叠加 v1 legacy。
+		// open-tools-skill-as-guidance: §2 catalog.
+		//   - bound agent: body already = userBody + unified catalog (DB+disk), set above.
+		//   - unbound agent: still expose the disk platform skills via the unified
+		//     renderer with no DB skills (so every agent can load_skill the platform
+		//     skills like pptx-author).
 		var skillCatalog string
 		if len(skills) > 0 {
 			skillCatalog = body
-		}
-		// 2026-05-29 skill-progressive-loader: append platform-level read_skill
-		// catalog (Codex-style progressive disclosure) so the outer agent LLM
-		// can discover xlsx-author / pptx-author / docx-author / pdf-from-html
-		// and call read_skill → run_python. Independent of the v2 agent-bound
-		// skills above; both can coexist in §2.
-		if platformCatalog := RenderSkillCatalog(r.platformSkillRegistry); platformCatalog != "" {
-			if skillCatalog != "" {
-				skillCatalog += "\n\n" + platformCatalog
-			} else {
-				skillCatalog = platformCatalog
-			}
+		} else {
+			skillCatalog = buildUnifiedSkillCatalog(nil, r.platformSkillRegistry)
 		}
 		institutionSection := BuildInstitutionSection(
 			ad.SystemPrompt,
@@ -791,11 +788,13 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	// filter drops hard stubs (document_generate returns false unconditionally) while
 	// keeping sandbox/skill/image tools (their IsEnabled reads a ToolConfig flag we set
 	// true here). Skills no longer gate tools; the old req.ToolNames whitelist + the
-	// dead UseSkillTurnScope deny are gone. use_skill stays binding-gated below.
+	// dead UseSkillTurnScope deny are gone. load_skill flows through here too
+	// (IsEnabled=EnableSkills); it reads the per-run turn state from ctx, so it serves
+	// both DB-bound skills (when present) and disk platform skills with no binding gate.
 	if r.registry != nil {
 		fullCfg := FullyEnabledToolConfig()
 		for _, ft := range r.registry.ListAllTools() {
-			if !ft.IsEnabled(fullCfg) || ft.Name() == UseSkillToolName {
+			if !ft.IsEnabled(fullCfg) {
 				continue
 			}
 			base := adaptFullToEinoTool(ft, effectiveHooks)
@@ -813,19 +812,6 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	// 时唯一能读到全文的入口）。如果 LLM 不调用它，没事；但工具必须存在。
 	if useCompactV2 {
 		einoTools = append(einoTools, compactv2.NewReadArtifactTool(r.artifactStore, r.runStore, r.artifactDir, middleware.UserIDFromCtx))
-	}
-	// open-tools-skill-as-guidance: use_skill stays binding-gated (it soft-errors
-	// without a turn state, so we don't expose it to skill-less agents). The dead
-	// UseSkillTurnScope deny + the binding allowed_tools union are gone — full-open
-	// above already registers every other tool, so skills no longer unlock anything.
-	if useSkillTurnState != nil && r.registry != nil {
-		if ft, ok := r.registry.GetTool(UseSkillToolName); ok {
-			einoTools = append(einoTools, adaptFullToEinoTool(ft, effectiveHooks))
-			toolMap[UseSkillToolName] = ft
-		} else {
-			log.Errorw("AgentRunner.Run: use_skill tool not registered — Agent has bindings but tool missing",
-				"agent_id", req.AgentDefinitionID)
-		}
 	}
 	// #6 permission-pipeline: stash FullTool map into ctx，
 	// 供 WrapHooks.buildRequest 反查每个工具的 FullTool 实例（取 IsDestructive 等元数据）。
@@ -869,14 +855,15 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		}
 		einoAdapter.compactor = newAdapterCompactor(ctxWindow)
 	}
-	// Backward compat: if no tools resolved (test scenarios with nil registry or
-	// empty ToolNames), preserve the pre-#14 short-circuit. Real production runs
+	// Backward compat: if no tools resolved (test scenarios with a nil/empty
+	// registry — open-tools-skill-as-guidance full-open registers from the registry,
+	// not req.ToolNames), preserve the pre-#14 short-circuit. Real production runs
 	// always have tools resolved from the registry; the new ReAct loop below is
 	// the production path. react.NewAgent requires at least one tool so we must
 	// gate before calling it.
 	if len(einoTools) == 0 {
 		log.Warnw("AgentRunner.Run: no tools resolved from registry; using pre-ReAct short-circuit",
-			"agent_run_id", run.ID, "requested_tools", req.ToolNames)
+			"agent_run_id", run.ID, "registry_nil", r.registry == nil)
 		endedAt := time.Now()
 		if uerr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalCompleted), &endedAt); uerr != nil {
 			log.Warnw("AgentRunner.Run UpdateState failed on short-circuit", "agent_run_id", run.ID, "error", uerr)
@@ -1480,38 +1467,6 @@ func buildEinoMessages(req RunRequest) []*schema.Message {
 // passes []*schema.Message directly to einoAgent.Generate without any
 // V1-format detour.
 
-// ── v2 #2 agent-mode-v2-skill-invocation helpers ────────────────────────────
-
-// buildSkillCatalogBlock 为 v2 #2 路径生成 system prompt 段位 [3] body 的
-// "## 可用技能" 目录段。返回字符串包前导 "\n\n" 以与段 [2] tenantHardRules
-// 自然分隔；调用方直接赋给 body 变量（替代 ad.GeneratedSkillBody）。
-//
-// 设计约束（S1-D10 + CLAUDE.md §6b I3）：catalog 扩展进段位 [3] body 而非新增
-// 段位，保 6 段 system prompt invariant 不破坏。
-//
-// 内容（按 sort_order asc）：每条 Skill 一行 markdown bullet "name: description"，
-// 若 when_to_use 非空再加二级 bullet "何时使用：..."。LLM 根据这些元信息决定
-// 是否 emit use_skill(name="...") tool-call；Skill body 不进 catalog (节省 token,
-// 走 use_skill 懒加载, S0-D3)。
-//
-// 过滤：跳过 !IsActive 的 Skill (双重防御 — BindingService.ListByAgent 应已过滤,
-// 但 runner 层兜底避免上游漏掉)。
-func buildSkillCatalogBlock(skills []model.Skill) string {
-	if len(skills) == 0 {
-		return ""
-	}
-	var sb strings.Builder
-	sb.WriteString("\n\n## 可用技能\n\n")
-	sb.WriteString(fmt.Sprintf("你装载了以下技能。当对话需要某个技能时，使用 `use_skill(name=\"<技能名>\")` 工具调用它。工具会把技能详细指引载入对话上下文，并临时启用该技能需要的额外工具。每轮对话最多可调用 %d 次技能。\n\n", UseSkillTurnCapDefault))
-	for i := range skills {
-		sk := &skills[i]
-		if !sk.IsActive {
-			continue
-		}
-		sb.WriteString(fmt.Sprintf("- **%s**：%s\n", sk.Name, sk.Description))
-		if sk.WhenToUse != "" {
-			sb.WriteString(fmt.Sprintf("  - 何时使用：%s\n", sk.WhenToUse))
-		}
-	}
-	return sb.String()
-}
+// open-tools-skill-as-guidance: buildSkillCatalogBlock (DB-only) was merged into
+// buildUnifiedSkillCatalog (skill_catalog.go), which renders DB-bound + disk
+// platform skills in one §2 block and instructs load_skill.

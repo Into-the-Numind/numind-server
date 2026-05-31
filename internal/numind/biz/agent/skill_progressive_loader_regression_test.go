@@ -17,26 +17,26 @@ import (
 //	`ModuleNotFoundError: No module named 'invoke_skill'`.
 //
 // The refactor deleted the inner LLM by replacing the invoke_skill tool with
-// read_skill + run_python (Codex-style progressive disclosure). This test
+// load_skill + run_python (Codex-style progressive disclosure). This test
 // pins the load-bearing surfaces so a future rollback / accidental edit
 // can't quietly restore the broken architecture.
 //
 // If this test fails the right fix is to investigate, not to update the
 // assertions.
 func TestRegression_NoInvokeSkillInProgressiveLoaderSurfaces(t *testing.T) {
-	// (1) tool_flag → tool-name mapping must point at read_skill, not the
+	// (1) tool_flag → tool-name mapping must point at load_skill, not the
 	// deleted invoke_skill.
 	got, ok := categoryToTools["enable_skills"]
 	if !ok {
 		t.Fatal("categoryToTools['enable_skills'] is missing — backward-compat flag must remain")
 	}
 	// 2026-05-29 hotfix: the progressive-disclosure flow needs BOTH tools
-	// wired through the same flag — read_skill loads SKILL.md, run_python
+	// wired through the same flag — load_skill loads SKILL.md, run_python
 	// executes the Python the LLM authors from it. Dev QA caught the missing
-	// run_python when the agent successfully called read_skill but crashed
+	// run_python when the agent successfully called load_skill but crashed
 	// with `tool run_python not found in toolsNode indexes` because the
-	// agent_definition's enable_skills=true only exposed read_skill.
-	wantSet := map[string]bool{"read_skill": true, "run_python": true}
+	// agent_definition's enable_skills=true only exposed load_skill.
+	wantSet := map[string]bool{"load_skill": true, "run_python": true}
 	gotSet := map[string]bool{}
 	for _, n := range got {
 		gotSet[n] = true
@@ -52,16 +52,16 @@ func TestRegression_NoInvokeSkillInProgressiveLoaderSurfaces(t *testing.T) {
 		}
 	}
 
-	// (2) safeToolBaseline must include BOTH read_skill (loads SKILL.md) and
+	// (2) safeToolBaseline must include BOTH load_skill (loads SKILL.md) and
 	// run_python (executes the Python the LLM authors from it). Without
 	// run_python in the baseline, the agent crashes with
 	// `tool run_python not found in toolsNode indexes` after a successful
-	// read_skill call (dev QA 2026-05-29 follow-on hotfix). Must not include
+	// load_skill call (dev QA 2026-05-29 follow-on hotfix). Must not include
 	// the deleted invoke_skill.
 	var seenRead, seenRun, seenInvoke bool
 	for _, n := range safeToolBaseline {
 		switch n {
-		case "read_skill":
+		case "load_skill":
 			seenRead = true
 		case "run_python":
 			seenRun = true
@@ -70,20 +70,20 @@ func TestRegression_NoInvokeSkillInProgressiveLoaderSurfaces(t *testing.T) {
 		}
 	}
 	if !seenRead {
-		t.Error("safeToolBaseline must include read_skill")
+		t.Error("safeToolBaseline must include load_skill")
 	}
 	if !seenRun {
-		t.Error("safeToolBaseline must include run_python (the read_skill executor)")
+		t.Error("safeToolBaseline must include run_python (the load_skill executor)")
 	}
 	if seenInvoke {
 		t.Error("safeToolBaseline must NOT include the deleted invoke_skill")
 	}
 
-	// (3) OutputToolsPriorityAddendum must teach the read_skill → run_python
+	// (3) OutputToolsPriorityAddendum must teach the load_skill → run_python
 	// two-step flow and must not reference invoke_skill (which would
 	// contradict the skill catalog injected in §2 of the system prompt).
-	if !strings.Contains(OutputToolsPriorityAddendum, "read_skill") {
-		t.Error("OutputToolsPriorityAddendum must teach read_skill")
+	if !strings.Contains(OutputToolsPriorityAddendum, "load_skill") {
+		t.Error("OutputToolsPriorityAddendum must teach load_skill")
 	}
 	if !strings.Contains(OutputToolsPriorityAddendum, "run_python") {
 		t.Error("OutputToolsPriorityAddendum must teach run_python")
@@ -92,16 +92,35 @@ func TestRegression_NoInvokeSkillInProgressiveLoaderSurfaces(t *testing.T) {
 		t.Error("OutputToolsPriorityAddendum must not mention the deleted invoke_skill")
 	}
 
-	// (4) Skill catalog header instructs the LLM to use read_skill — not to
+	// (4) Skill catalog header instructs the LLM to use load_skill — not to
 	// write Python directly without consulting SKILL.md (the precise mistake
 	// the inner LLM made in the original bug).
-	if !strings.Contains(skillCatalogHeader, "read_skill") {
-		t.Error("skill catalog header must instruct the LLM to call read_skill")
+	if !strings.Contains(skillCatalogHeader, "load_skill") {
+		t.Error("skill catalog header must instruct the LLM to call load_skill")
 	}
 	if !strings.Contains(skillCatalogHeader, "不要直接编写 Python") &&
 		!strings.Contains(skillCatalogHeader, "do NOT") {
 		// One of the bilingual guards must remain.
-		t.Error("skill catalog header must warn against writing Python without read_skill")
+		t.Error("skill catalog header must warn against writing Python without load_skill")
+	}
+
+	// (5) open-tools-skill-as-guidance: the merged tool is load_skill; the former
+	// use_skill / read_skill must NOT survive in any mapping/baseline/prompt.
+	deletedTools := []string{"use_skill", "read_skill"}
+	survivors := append(append([]string{}, safeToolBaseline...), categoryToTools["enable_skills"]...)
+	for _, n := range survivors {
+		for _, dead := range deletedTools {
+			if n == dead {
+				t.Errorf("deleted tool %q must not appear in baseline/categoryToTools (merged into load_skill)", dead)
+			}
+		}
+	}
+	if strings.Contains(OutputToolsPriorityAddendum, "read_skill") ||
+		strings.Contains(OutputToolsPriorityAddendum, "use_skill") {
+		t.Error("OutputToolsPriorityAddendum must reference load_skill, not the deleted read_skill/use_skill")
+	}
+	if strings.Contains(skillCatalogHeader, "read_skill") || strings.Contains(skillCatalogHeader, "use_skill") {
+		t.Error("skill catalog header must reference load_skill, not the deleted read_skill/use_skill")
 	}
 }
 

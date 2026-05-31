@@ -111,10 +111,13 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		// NOT need vision capability — even single-modal models can call these tools.
 		NewAnalyzeImageTool(attStore),
 		NewAnnotateImageTool(),
-		// v2 agent-mode-v2-skill-invocation: use_skill platform tool — runner 在 Agent
-		// 有 binding 时按需注册到该 Run 的工具集；无 binding 走 legacy 路径不触发。
-		// factory 层 AlwaysLoad=false 保证 LoadAll 仅装 registry，单 Run 是否暴露由 runner 控制。
-		NewUseSkillTool(),
+		// open-tools-skill-as-guidance: load_skill — the unified skill-loading tool
+		// (merges the former use_skill DB-skills tool + read_skill disk-skills tool).
+		// Always registered; f.skillRegistry may be nil (then only DB-bound skills
+		// resolve). IsEnabled=EnableSkills, so the runner's full-open loop exposes it
+		// to every agent. Resolves DB-bound skills (via ctx turn state) DB-first, then
+		// disk platform skills (SKILL.md). No binding-gated conditional needed.
+		NewLoadSkillTool(f.skillRegistry),
 		// V1.5 output-skills task 4.2: simple file generation tools (Layer 1, no sandbox).
 		&createCSVTool{},
 		&createHTMLTool{},
@@ -124,16 +127,6 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		&createPNGChartTool{},
 		// V1.5 output-skills task 4.9: run_python (Layer 3, last-resort sandbox Python execution).
 		&runPythonTool{},
-	}
-	// 2026-05-29 skill-progressive-loader: read_skill (Codex-style progressive
-	// disclosure, no sandbox). Replaces the V1.5 invoke_skill tool. Only the
-	// registry is needed — sandbox.SkillPool is no longer a precondition since
-	// SKILL.md is read from the numind-server container's disk. The outer agent
-	// LLM uses run_python (which has its own sandbox.Pool) to execute the
-	// Python it authors from the SKILL.md guidance.
-	_ = attStore // retained reference (unused after invoke_skill removal); silences lint.
-	if f.skillRegistry != nil {
-		tools = append(tools, NewReadSkillTool(f.skillRegistry))
 	}
 	metadata := []ToolMetadata{
 		{ToolName: "kb_search", DisplayName: "知识库检索", Description: "Search the knowledge base.", Source: "platform", Category: "RAG"},
@@ -150,7 +143,7 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		// both tools work with any main model because vision is handled internally.
 		{ToolName: "analyze_image", DisplayName: "图像分析", Description: "Analyze an image in detail using a vision specialist model.", Source: "platform", RiskLevel: "moderate", Category: "视觉"},
 		{ToolName: "annotate_image", DisplayName: "图像区域标注", Description: "Analyze specific regions within an image using a vision specialist model.", Source: "platform", RiskLevel: "moderate", Category: "视觉"},
-		{ToolName: UseSkillToolName, DisplayName: "调用技能", Description: "Call a Skill bound to this Agent; loads body into conversation context and temporarily enables Skill's required tools.", Source: "platform", RiskLevel: "safe", Category: "技能"},
+		{ToolName: LoadSkillToolName, DisplayName: "加载技能", Description: "Load a skill's guidance into the conversation — DB-bound business skills or disk platform skills (xlsx-author / docx-author / pptx-author / pdf-from-html). Pair with run_python to execute the code a structured-file skill teaches.", Source: "platform", RiskLevel: "safe", Category: "技能"},
 		// V1.5 output-skills task 4.2: simple file generation tools.
 		{ToolName: "create_csv", DisplayName: "生成 CSV 文件", Description: "Generate a CSV file from tabular data.", Source: "platform", RiskLevel: "safe", Category: "文件生成"},
 		{ToolName: "create_html", DisplayName: "生成 HTML 页面", Description: "Render an HTML page from content or a template.", Source: "platform", RiskLevel: "safe", Category: "文件生成"},
@@ -159,18 +152,7 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		// V1.5 output-skills task 4.3: PNG chart tool.
 		{ToolName: "create_png_chart", DisplayName: "图表生成（PNG）", Description: "Generate a static PNG chart from structured data.", Source: "platform", RiskLevel: "safe", Category: "可视化"},
 		// V1.5 output-skills task 4.9: run_python (Layer 3 last-resort).
-		{ToolName: "run_python", DisplayName: "Python 代码执行（文件生成）", Description: "Execute Python 3 code in an isolated sandbox to generate files. Use directly for long-tail formats; for xlsx/docx/pptx/pdf use the read_skill → run_python two-step (Layer 2).", Source: "platform", RiskLevel: "dangerous", Category: "代码", RequiresSandbox: true},
-	}
-	// 2026-05-29 skill-progressive-loader: replace invoke_skill metadata with read_skill.
-	if f.skillRegistry != nil {
-		metadata = append(metadata, ToolMetadata{
-			ToolName:    "read_skill",
-			DisplayName: "读取技能指南",
-			Description: "Read SKILL.md guidance for a registered skill (xlsx-author / docx-author / pptx-author / pdf-from-html). Pair with run_python to execute the code the guidance teaches.",
-			Source:      "platform",
-			RiskLevel:   "safe",
-			Category:    "技能",
-		})
+		{ToolName: "run_python", DisplayName: "Python 代码执行（文件生成）", Description: "Execute Python 3 code in an isolated sandbox to generate files. Use directly for long-tail formats; for xlsx/docx/pptx/pdf use the load_skill → run_python two-step (Layer 2).", Source: "platform", RiskLevel: "dangerous", Category: "代码", RequiresSandbox: true},
 	}
 	// Append memory tools only when a real store is available (nil guard preserves
 	// the nil-ds unit test that expects exactly 17 tools).

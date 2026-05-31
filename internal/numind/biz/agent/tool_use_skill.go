@@ -1,15 +1,11 @@
-// v2 #2 agent-mode-v2-skill-invocation:
-// use_skill platform tool — 让 Agent 的 LLM 主动调用已装载的 Skill。
+// Skill turn-state + ctx helpers shared by the load_skill tool.
 //
-// 设计权威：docs/superpowers/specs/2026-05-24-agent-mode-v2-skill-invocation-design.md §3.1 + §3.7
-//
-// T02 范围（本文件）：types + ctx helpers + tool skeleton（Execute 是 stub）。
-// T03 在此基础上替换 Execute 为完整 Invoke 逻辑（11 步）。
-//
-// 重要：T01 验证 v2 #1 实装时发现 spec 假设有调整（详见 manifest S4-D26）：
-//   - 无 Service.GetByName / GetByIDs — 改用 runner-cached SkillByName + SkillByID 双 map
-//   - ID 类型 uint（非 uint64）
-//   - 无 Name UNIQUE 约束 — runner defensive check 是同名唯一防线（S1-D13）
+// Originally introduced by agent-mode-v2-skill-invocation for use_skill; after
+// open-tools-skill-as-guidance merged use_skill + read_skill into load_skill, the
+// use_skill tool itself moved to tool_load_skill.go. This file retains the
+// per-run turn state (cap counting + loaded-skill snapshots + the runner skill
+// cache) and the ctx helpers load_skill reads. Struct/const names keep their
+// "UseSkill" prefix to bound the rename churn (internal-only).
 package agent
 
 import (
@@ -17,15 +13,11 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/model"
 )
 
 const (
-	// UseSkillToolName 是平台 tool 的标识，注册到 AgentToolRegistry。
-	UseSkillToolName = "use_skill"
-
-	// UseSkillTurnCapDefault 是单 turn 内 use_skill 最大调用次数 (S0-D6)。
+	// UseSkillTurnCapDefault 是单 turn 内 load_skill 最大调用次数 (S0-D6)。
 	UseSkillTurnCapDefault = 3
 
 	// Tool result status enum (Langfuse span output + ack JSON 复用，避免魔法字符串)
@@ -127,191 +119,6 @@ func WithSkillBindings(ctx context.Context, skills []model.Skill) context.Contex
 func SkillBindingsFromCtx(ctx context.Context) ([]model.Skill, bool) {
 	s, ok := ctx.Value(CtxKeySkillBindings).([]model.Skill)
 	return s, ok && len(s) > 0
-}
-
-// ── useSkillTool (T03 完整 Invoke) ────────────────────────────────────────
-
-// useSkillTool 实现 FullTool interface（嵌入 BaseTool 用默认行为）。
-//
-// T03 设计简化（vs spec §3.1 11 步）：runner 启动时 batchGet 把所有 binding
-// 的 Skill 缓存到 turn.SkillByName + SkillByID 双 map。useSkillTool 完全
-// 不依赖 skillService / bindingService — 所有 lookup 走 turn state（0 DB
-// 调用）。bound check 隐式（不在 SkillByName 即未装载）。narration emit 由
-// adapter_full_to_eino 在 PreToolCall/PostToolCall 自动按 tool name
-// "use_skill" 查 tool-display.yaml 模板（T04 已加 entry），Execute 内不调。
-type useSkillTool struct {
-	BaseTool
-	// 无依赖字段 — 所有运行时状态走 ctx.UseSkillTurnState
-}
-
-// NewUseSkillTool constructs the use_skill FullTool.
-func NewUseSkillTool() FullTool {
-	return &useSkillTool{}
-}
-
-// 编译期断言
-var _ FullTool = (*useSkillTool)(nil)
-
-func (t *useSkillTool) Name() string { return UseSkillToolName }
-
-func (t *useSkillTool) Description() string {
-	return "Call a Skill that is bound to this Agent. The Skill's detailed guide will be loaded into the conversation context. Input: {\"name\": string} — the Skill name (must be one listed in the '可用技能' section of system prompt)."
-}
-
-func (t *useSkillTool) UserFacingName() string { return "调用技能" }
-
-func (t *useSkillTool) NarrationVerb() string { return "调用技能" }
-
-func (t *useSkillTool) IsReadOnly() bool { return true } // 不改 DB，只 read Skill + 改 turn state
-
-func (t *useSkillTool) IsDestructive() bool { return false }
-
-func (t *useSkillTool) AlwaysLoad() bool { return false } // 只在 Agent 有 binding 时由 runner 显式注入
-
-func (t *useSkillTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{
-  "type": "object",
-  "properties": {
-    "name": {
-      "type": "string",
-      "description": "要调用的技能名称（必须是已装载的技能之一）"
-    }
-  },
-  "required": ["name"]
-}`)
-}
-
-// Execute 实现 use_skill 的核心逻辑（spec §3.1，T03 完整实现）。
-//
-// 7 步：
-//  1. JSON unmarshal & validate name
-//  2. 取 ctx 注入的 turn state（runner 维护）
-//  3. cap check（默认 ≤3 次/turn）
-//  4. lookup Skill via turn.SkillByName（runner 缓存，0 DB 调用；不在 map = 未装载或不存在）
-//  5. business validate（IsActive / BodyMd 非空）
-//  6. append turn.PendingSkills（同 turn 内串调累积保留所有，不覆盖；
-//     runner 在下次 LLM Generate 前一次性消费，每条包 system-reminder user msg 注入）
-//  7. InvocationCount++ + 返回 acknowledgement JSON
-//
-// 永不返回非 nil error — 所有错误用 tool result 表达让 LLM 优雅恢复。
-// Langfuse span 记录 skill metadata（spec §7）。
-func (t *useSkillTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
-	// 1. JSON unmarshal
-	var p struct {
-		Name string `json:"name"`
-	}
-	if err := json.Unmarshal(input, &p); err != nil {
-		return ToolResult(jsonErr("use_skill 参数解析失败：%s", err.Error())), nil
-	}
-	if p.Name == "" {
-		return ToolResult(jsonErr("name 参数不能为空")), nil
-	}
-
-	// 2. 取 ctx 注入的 turn state
-	turn, ok := UseSkillTurnFromCtx(ctx)
-	if !ok {
-		// runner 未注入 turn state — 本 Agent 没有 binding 走 legacy 路径
-		// use_skill 不应注册到 toolMap，但防御性返回 error tool result
-		return ToolResult(jsonErr("use_skill 未启用（本 Agent 无任何技能装载，请联系配置者）")), nil
-	}
-
-	// Langfuse span 起 — 即使中途错误也记录（spec §7）
-	var traceID, spanID string
-	var skillIDForSpan uint
-	var bodyLenForSpan int
-	resultStatus := toolStatusLoaded
-	resultError := ""
-	defer func() {
-		if traceID == "" || spanID == "" {
-			return
-		}
-		langfuse.EndSpan(traceID, spanID,
-			langfuse.WithSpanOutput(map[string]any{
-				"status":           resultStatus,
-				"error":            resultError,
-				"skill_id":         skillIDForSpan,
-				"body_token_count": bodyLenForSpan, // 近似：bytes ≈ tokens / 1.5；S5 verify aligns
-			}),
-		)
-	}()
-	if tc := langfuse.FromContext(ctx); tc != nil {
-		traceID = tc.TraceID
-		spanID = langfuse.SpanID()
-		langfuse.CreateSpan(traceID, spanID, "tool.use_skill",
-			langfuse.WithSpanParent(tc.ParentObservationID),
-			langfuse.WithSpanInput(map[string]any{
-				"skill_name":          p.Name,
-				"turn_invocation_pre": turn.InvocationCount,
-				"turn_cap":            turn.Cap,
-			}),
-		)
-	}
-
-	// 3. cap check
-	if turn.InvocationCount >= turn.Cap {
-		resultStatus = toolStatusError
-		resultError = "turn_cap_exceeded"
-		return ToolResult(jsonErr("已达本轮技能调用上限 (%d 次)，本轮无法再调用其他技能", turn.Cap)), nil
-	}
-
-	// 4. lookup via turn.SkillByName (0 DB 调用，由 runner 启动时 batchGet 缓存)
-	sk, found := turn.SkillByName[p.Name]
-	if !found || sk == nil {
-		resultStatus = toolStatusError
-		resultError = "skill_not_bound"
-		return ToolResult(jsonErr("技能 '%s' 不存在或未装载到本 Agent", p.Name)), nil
-	}
-	skillIDForSpan = sk.ID
-	bodyLenForSpan = len(sk.BodyMd)
-
-	// 5. business validation
-	if !sk.IsActive {
-		resultStatus = toolStatusError
-		resultError = "skill_inactive"
-		return ToolResult(jsonErr("技能 '%s' 已被禁用", p.Name)), nil
-	}
-	if sk.BodyMd == "" {
-		resultStatus = toolStatusError
-		resultError = "skill_body_empty"
-		return ToolResult(jsonErr("技能 '%s' 内容为空，请联系配置者更新", p.Name)), nil
-	}
-
-	// 6. append PendingSkill — runner outer-loop 在下次 attempt 的 Generate 前可消费 (备用通道)
-	// 注意 (S4-D27): Eino 单 attempt 场景下 outer-loop 注入对本 turn 不生效；
-	// 实际 body 通过 ack JSON 的 body 字段直接给 LLM (tool result 通道 LLM 必读)。
-	// PendingSkills 保留为多 attempt / 未来 Eino hook 扩展兼容。
-	// 必须 append 而非覆盖：同 turn 内 LLM 可串调 use_skill(A) → use_skill(B)，
-	// 若覆盖则 B 顶掉 A 的 body，outer-loop 注入启用时只看到 B (latent bug)。
-	turn.PendingSkills = append(turn.PendingSkills, PendingSkill{
-		Name:    sk.Name,
-		Version: int(sk.Version),
-		Body:    sk.BodyMd,
-	})
-
-	// 7. count++ + 返回 acknowledgement (含完整 body 包 system-reminder，S4-D27 主通道)
-	turn.InvocationCount++
-
-	// system-reminder 包装的 body 直接放进 ack — LLM 通过 tool result 必读，
-	// 不依赖 runner outer-loop attempt 注入（spec §3.3 路径 b: tool result）。
-	bodyWrapped := fmt.Sprintf("<system-reminder>\n以下是你刚调用的技能 '%s' 的详细指引（v%d）。请按这些指引继续完成用户的任务：\n\n%s\n</system-reminder>",
-		sk.Name, sk.Version, sk.BodyMd)
-
-	ack := map[string]any{
-		"status":          toolStatusLoaded, // ack 永远 "loaded"——LLM 视角 Skill 已就绪
-		"skill_name":      sk.Name,
-		"skill_version":   sk.Version,
-		"body_length":     len(sk.BodyMd),
-		"body":            bodyWrapped, // S4-D27: 完整 body in tool result (LLM 必读)
-		"turn_invocation": turn.InvocationCount,
-		"turn_cap":        turn.Cap,
-		"message":         fmt.Sprintf("技能 '%s' 已载入对话上下文，请根据技能指引完成任务", sk.Name),
-	}
-	out, err := json.Marshal(ack)
-	if err != nil || len(out) == 0 {
-		// 防御：成功路径 Marshal 永不应失败，万一失败也要返回非空 fallback
-		out = []byte(fmt.Sprintf(`{"status":"loaded","skill_name":%q,"message":"技能已载入"}`, sk.Name))
-	}
-	return ToolResult(out), nil
 }
 
 // ── 辅助函数（T03 也会用）──────────────────────────────────────────────────

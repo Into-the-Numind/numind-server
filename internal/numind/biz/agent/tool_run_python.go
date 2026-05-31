@@ -45,7 +45,7 @@ func (t *runPythonTool) Description() string {
 	return `Execute Python 3 code inside an isolated sandbox to generate files.
 
 WHEN TO USE:
-  - Office documents (.xlsx/.docx/.pptx/.pdf): FIRST call read_skill (e.g. read_skill({"skill_name":"pptx-author"})) to get the SKILL.md code guidance, THEN call run_python with the Python you wrote following that guidance.
+  - Office documents (.xlsx/.docx/.pptx/.pdf): FIRST call load_skill (e.g. load_skill({"name":"pptx-author"})) to get the SKILL.md code guidance, THEN call run_python with the Python you wrote following that guidance.
   - Long-tail / unusual formats (.ical, .vcf, .yaml, .xml, Mermaid rendering, .gpx, .midi, etc.): write the Python directly.
 
 Do NOT use run_python for simple formats that have a dedicated Layer-1 tool — those are faster and have no sandbox cost:

@@ -168,7 +168,11 @@ func (r *agentRunner) RunStream(
 			if ad.AdvancedMode {
 				userBody = ad.CustomSkillBody
 			}
-			body = userBody + buildSkillCatalogBlock(skills)
+			// open-tools-skill-as-guidance: unified catalog (DB-bound + disk platform
+			// skills), instructing load_skill. Replaces buildSkillCatalogBlock (DB only);
+			// disk platform skills also remain discoverable for unbound agents via
+			// OutputToolsPriorityAddendum (appended to the tools section above).
+			body = userBody + buildUnifiedSkillCatalog(skills, r.platformSkillRegistry)
 			queryCtx = WithUseSkillTurn(queryCtx, useSkillTurnState)
 			queryCtx = WithSkillBindings(queryCtx, skills)
 		} else {
@@ -305,11 +309,13 @@ func (r *agentRunner) RunStream(
 	// open-tools-skill-as-guidance: full-open registration (mirrors runner.go Run).
 	// Every agent gets every registry tool enabled under a fully-enabled config;
 	// IsEnabled drops hard stubs (document_generate). Skills no longer gate tools;
-	// the dead UseSkillTurnScope deny + the allowed_tools union are gone.
+	// the dead UseSkillTurnScope deny + the allowed_tools union are gone. load_skill
+	// flows through here too (IsEnabled=EnableSkills); it reads the per-run turn state
+	// from ctx, serving DB-bound + disk platform skills with no binding gate.
 	if r.registry != nil {
 		fullCfg := FullyEnabledToolConfig()
 		for _, ft := range r.registry.ListAllTools() {
-			if !ft.IsEnabled(fullCfg) || ft.Name() == UseSkillToolName {
+			if !ft.IsEnabled(fullCfg) {
 				continue
 			}
 			base := adaptFullToEinoTool(ft, effectiveHooks)
@@ -323,22 +329,13 @@ func (r *agentRunner) RunStream(
 	if useCompactV2 {
 		einoTools = append(einoTools, compactv2.NewReadArtifactTool(r.artifactStore, r.runStore, r.artifactDir, middleware.UserIDFromCtx))
 	}
-	// use_skill stays binding-gated (soft-errors without a turn state).
-	if useSkillTurnState != nil && r.registry != nil {
-		if ft, ok := r.registry.GetTool(UseSkillToolName); ok {
-			einoTools = append(einoTools, adaptFullToEinoTool(ft, effectiveHooks))
-			toolMap[UseSkillToolName] = ft
-		} else {
-			log.Errorw("AgentRunner.RunStream: use_skill tool not registered",
-				"agent_id", req.AgentDefinitionID)
-		}
-	}
 	queryCtx = WithFullToolMap(queryCtx, toolMap)
 
-	// 6. Short-circuit when no tools resolved (same as Run).
+	// 6. Short-circuit when no tools resolved (same as Run; nil/empty registry only —
+	// full-open registers from the registry, not req.ToolNames).
 	if len(einoTools) == 0 {
 		log.Warnw("AgentRunner.RunStream: no tools resolved from registry; using pre-ReAct short-circuit",
-			"agent_run_id", run.ID, "requested_tools", req.ToolNames)
+			"agent_run_id", run.ID, "registry_nil", r.registry == nil)
 		endedAt := time.Now()
 		if uerr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalCompleted), &endedAt); uerr != nil {
 			log.Warnw("AgentRunner.RunStream UpdateState failed on short-circuit", "agent_run_id", run.ID, "error", uerr)

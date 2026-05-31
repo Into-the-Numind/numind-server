@@ -113,8 +113,19 @@ tools:
     error_template: "记录中断，{{ .reason_friendly }}"
     rejected_template: "记忆写入被规则拦截"
 
-  # use_skill: agent-mode v2 #2 新增的 platform AgentTool。允许 LLM 主动调用
-  # 已装载的 Skill。input.name 是技能名（中文），detail 直接渲染该字段。
+  # load_skill: open-tools-skill-as-guidance 合并 use_skill + read_skill 后的统一
+  # 技能加载工具。input.name 是技能名（DB 业务技能中文名 或 磁盘平台技能英文名）。
+  load_skill:
+    verb: "加载技能"
+    detail_template: "{{ .input.name }}"
+    use_template: "📚 正在加载技能：{{ .input.name }}"
+    result_template: "📚 已加载技能：{{ .input.name }}"
+    error_template: "⚠ 技能加载失败：{{ .reason_friendly }}"
+    rejected_template: "技能加载被拒绝"
+
+  # use_skill / read_skill: tombstone entries for historical agent_run narration
+  # (open-tools-skill-as-guidance merged both into load_skill). Kept so old run
+  # timelines still render a meaningful label instead of the generic defaults block.
   use_skill:
     verb: "调用技能"
     detail_template: "{{ .input.name }}"
@@ -122,6 +133,13 @@ tools:
     result_template: "📚 已调用技能：{{ .input.name }}"
     error_template: "⚠ 技能加载失败：{{ .reason_friendly }}"
     rejected_template: "技能调用被拒绝"
+  read_skill:
+    verb: "查阅技能"
+    detail_template: "{{ .input.skill_name }}"
+    use_template: "📖 正在查阅技能指南：{{ .input.skill_name }}"
+    result_template: "📖 已查阅技能指南"
+    error_template: "⚠ 技能指南读取失败：{{ .reason_friendly }}"
+    rejected_template: "技能查阅被拒绝"
 
   # ask_user_question 是 yield 式工具：narration 会 emit StateUse 然后
   # tool_call_yield 事件被前端转成 question_prompt 消息分支处理。这里给
