@@ -193,6 +193,18 @@ KEEP: `WithFullToolMap` (live, used by permission/compliance WrapHooks), `WithSk
 | `skill_progressive_loader_regression_test.go` (updated) | load_skill in catalog/addendum/baseline; no use_skill/read_skill/invoke_skill | AC-7 |
 | prompt-string test | OutputToolsPriorityAddendum + skillCatalogHeader contain "load_skill", not "read_skill" | S1-P2 |
 
+## 9b. S2 gate refinements (folded — authoritative; supersede where they conflict)
+
+S2 reviewer (PASS-WITH-NITS) verified D1/D5/both-paths/load_skill-contract/cap against code. Fold these 5:
+
+- **F1 (P1) — RunStream catalog asymmetry**: `runner_runstream.go` has **no V2-prompt branch** and **never calls `RenderSkillCatalog`** — line 171 only builds the DB catalog into `body` via `buildSkillCatalogBlock`; disk skills reach the live path only through `OutputToolsPriorityAddendum`, not a catalog. So in `runner_runstream.go`, replacing line 171 with `body = userBody + buildUnifiedSkillCatalog(skills, r.platformSkillRegistry)` is correct AND must be verified to flow into the prompt string assembly (read `runner_runstream.go` ~line 270-290 in S4). Net effect: disk skills gain a proper catalog entry on the live path (improvement). S4 must read the runstream prompt assembly directly — do NOT blind-replace. `runner.go` keeps its two sites (line 525 DB-only `body`; lines 717-732 the V2 `BuildInstitutionSection` concat) — unify both to `buildUnifiedSkillCatalog`.
+- **F2 (P1) — `internal/numind/biz/narration/use_skill_template_test.go`**: asserts `tool-display.yaml` has a `use_skill` entry. When the yaml key is renamed/added, update this test to assert `load_skill` (keep a tombstone `use_skill` entry in the yaml so historical narration + this test's old-name path still resolve). ➕ to change manifest.
+- **F3 (P2) — `internal/numind/biz/agent/skill_catalog_test.go`**: asserts `read_skill` + `必须先调用 read_skill` in catalog output. Update assertions to `load_skill` after `buildUnifiedSkillCatalog` lands. ➕ to change manifest.
+- **F4 (P2) — `eino_skill_integration_test.go` scenario (a)** (`...ChineseSkillName_Execute`): asserts `turn.AllowedTools["crm_search"]` — a field being DELETED. The migrated `tool_load_skill_test.go` version must drop the `AllowedTools` assertion and instead assert the recommendation line appears in the wrapped body + `PendingSkills`/`InvocationCount`. (Not a move — a rewrite.)
+- **F5 (P2) — DB-only deployment guard**: in the D5 `load_skill` registration block (both paths), if `useSkillTurnState != nil` but `r.registry.GetTool(LoadSkillToolName)` returns false (factory built without skills registry, `reg==nil`), `log.Errorw(...)` — mirror the existing `use_skill` log.Error at runner.go:824 / runner_runstream.go:327. Prod always wires `NewPlatformToolFactoryWithSkills` so this is a safety net, not a normal path.
+
+§7 test plan additions: `skill_catalog_test.go` (F3), `narration/use_skill_template_test.go` (F2), `FullyEnabledToolConfig()` trivial test optional.
+
 ## 8. Out of scope / deferred
 doc-gen防错; bash/run_python agent gate (ToolFlag is its future hook); admin/web-v3 UI copy ("allowed_tools"→"recommended"); `tool_definition` stale-row cleanup (optional micro); `UseSkillTurnState`→`SkillTurnState` rename.
 

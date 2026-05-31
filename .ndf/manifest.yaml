@@ -27,7 +27,7 @@ features:
   ndf_version: '3.0'
   description: 'Standard NDF — switch agent-mode tool-permission model from deny-by-default (UseSkillTurnScope validator + turn.AllowedTools, tools gated behind use_skill) to Codex full-open: every agent defaults to ALL registered tools, picks autonomously per task. Skills are demoted to pure guidance docs (help the LLM use existing capabilities well), no longer gate/unlock tools. Three changes: (1) delete the permission layer — UseSkillTurnScope deny logic + turn.AllowedTools + WithAgentBaseToolNames/WithFullToolMap ctx injection; turn keeps only cap counting + loaded-skill list. (2) allowed_tools field kept but re-semanticized whitelist→recommendation (rendered into skill body tail as a hint), ZERO data migration. (3) merge use_skill (DB business skills) + read_skill (disk platform skills) into one load_skill tool + one unified §2 catalog — after permission removal use_skill''s only unique function (tool unlock) vanishes, making it homogeneous with read_skill. NOTE: the single-loop refactor (delete invoke_skill double-LLM) is NOT in scope — already landed 2026-05-29; this feature only ensures the merge does not regress it. The ONE real tradeoff (accepted by user 2026-05-31): prompt-injection blast radius grows (a sales-FAQ agent can now reach bash) — but sandbox+8 P0 bashvalidator still constrain WHAT code runs, compliance gates content, budget caps cost. B2B SaaS acceptable.'
   track: standard
-  stage: S2
+  stage: S3
   classification_reason: 'Standard — (1) no DB schema change (allowed_tools kept, zero migration) (2) no new API endpoint (load_skill is internal agent tool) (3) no new external service (4) >3 files (runner.go tool registration + use_skill_turnscope.go + tool_use_skill.go + tool_read_skill.go + skill_catalog.go + state + regression test + tool-display.yaml + new load_skill) (5) HIGH RISK — touches runner.go = all agents; removing the tool-permission layer is security/permission-adjacent; an error = platform-wide agent behavior anomaly or tool gating failure. Conditions 4+5 force Standard. User 2026-05-31 explicitly chose Standard via cold-start decision. NOT bug-from-customer (deliberate architecture decision) → Rule 11 N/A.'
   last_updated_by: ai-s1-resolved-s2-drafted
   last_updated_at: '2026-06-01T00:00:00+08:00'
@@ -44,6 +44,14 @@ features:
     claims_verified: 'R1 (UseSkillTurnScope dead code, never wired), R2 (get_current_date already in safeToolBaseline), R3 (ToolFlag inert for category-key configs), R4 (runner.go + runner_runstream.go duplicate; RunStream is the live controller path), AgentToolRegistry.ListAllTools() exists — ALL confirmed against code'
     required_changes_resolved_in_s2: 'P1-1 ListAllTools exposes hard-stub document_generate (IsEnabled=false) → spec D1 IsEnabled(allFlagsTrue) filter; P1-2 read_skill hardcoded in output_tools_priority_prompt.go / skill_catalog.go / tool_run_python.go / tool_create_html.go / tool_create_png_chart.go / biz.go logs → spec §1 manifest + §7 prompt-string test; P2 ToolFlag-inert assertion → spec D6 + tool_flag test; P2 DB/disk name collision → spec D3 (DB wins + WARN); P2 document_generate risk → spec D1 turns it into a handled exclusion'
     note: 'agent-tool-schema-infra (parallel, now S3) narrowed its scope to keep InputSchema()=json.RawMessage → overlap shrinks to tool_read_skill.go (this feature deletes it). They land first; rebase at S4 pre-flight / S6.'
+  s2_review:
+    verdict: PASS-WITH-NITS
+    reviewer: sonnet-s2-gate
+    claims_verified: 'D1 full-open filter (document_generate only hard-false; bash/run_python/image_gen/skills true under allTrue; BaseTool default true), D5 load_skill registration (platformSkillRegistry real field both paths), both-runner edit sites, load_skill DB-wrap/disk-raw contract, cap (read_skill was uncapped → no regression) — all confirmed against code'
+    nits_folded_in_spec_9b: 'F1 RunStream has no V2-prompt/RenderSkillCatalog — unified catalog must flow via body into prompt assembly ~L277 (read directly in S4); F2 narration/use_skill_template_test.go keyed on use_skill yaml entry; F3 skill_catalog_test.go asserts read_skill; F4 eino scenario (a) asserts deleted AllowedTools → rewrite not move; F5 DB-only deployment guard log.Error when load_skill missing but turn state present'
+  s3_plan:
+    tasks: 'T1 Moves A+B (delete dead permission layer + full-open registration), T2 Moves C+D (use_skill+read_skill→load_skill merge + allowed_tools recommendation + unified catalog + string renames), T3 S5 strategy (planning artifact). Serial T1→T2 (Tier 4, overlapping runner files). Rule 11 N/A.'
+    s5_strategy: 'Layer 1 Go suite = persistent regression (both runner paths, all ACs); Layer 2 dev E2E (Playwright-persistent if agent-mode UI E2E-reachable, else gstack /qa one-shot — Go suite is the net since backend-only). Credentials E2E_USERNAME/E2E_PASSWORD. No prod.'
   repos:
   - numind-server
   branches:
@@ -51,7 +59,7 @@ features:
   worktrees:
     numind-server: /private/tmp/wt-agent-mode-open-tools-skill-as-guidance-numind-server
   progress:
-    total_tasks: 0
+    total_tasks: 2
     completed_tasks: 0
     reviewed_tasks: 0
   decisions:
