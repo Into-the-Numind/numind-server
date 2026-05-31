@@ -39,7 +39,7 @@ func TestPlatformToolFactory_LoadTools(t *testing.T) {
 	tools, metadata, err := f.LoadTools(context.Background())
 	require.NoError(t, err)
 	// V1.5 task 1.4: 12 vision-equipped base tools.
-	// v2 marketplace: +1 use_skill.
+	// v2 marketplace: +1 load_skill.
 	// V1.5 Track 4 task 4.2/4.3/4.9: +4 create + 1 chart + 1 run_python = +6.
 	// Total base tool count: 12 + 1 + 6 = 19.
 	assert.Len(t, tools, 19)
@@ -57,7 +57,7 @@ func TestPlatformToolFactory_LoadTools(t *testing.T) {
 		"file_read",
 		"analyze_image",
 		"annotate_image",
-		"use_skill", // v2 agent-mode-v2-skill-invocation
+		"load_skill", // v2 agent-mode-v2-skill-invocation
 		"create_csv",
 		"create_html",
 		"create_json",
@@ -77,7 +77,7 @@ func TestPlatformToolFactory_LoadTools_WithDS_8Tools(t *testing.T) {
 	f := NewPlatformToolFactory(nil, ds)
 	tools, metadata, err := f.LoadTools(context.Background())
 	require.NoError(t, err)
-	// V1.5 + v2 marketplace + Track 4: base count is now 19 (12 + use_skill + 4 create + chart + run_python);
+	// V1.5 + v2 marketplace + Track 4: base count is now 19 (12 + load_skill + 4 create + chart + run_python);
 	// with ds, memory_write + memory_read are appended → total 21.
 	assert.Len(t, tools, 21, "non-nil ds should produce 21 tools (19 base + memory_write + memory_read)")
 	assert.Len(t, metadata, 21, "non-nil ds should produce 21 metadata entries")
@@ -96,7 +96,7 @@ func TestPlatformToolFactory_LoadTools_WithDS_8Tools(t *testing.T) {
 		"file_read",
 		"analyze_image",
 		"annotate_image",
-		"use_skill",
+		"load_skill",
 		"create_csv",
 		"create_html",
 		"create_json",

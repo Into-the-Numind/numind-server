@@ -17,7 +17,7 @@ import (
 )
 
 // ===========================================================================
-// runPythonTool — sandboxed Python for office docs (via read_skill) + long-tail
+// runPythonTool — sandboxed Python for office docs (via load_skill) + long-tail
 // ===========================================================================
 
 // runPythonTool implements FullTool. It executes Python 3 code inside an
@@ -25,7 +25,7 @@ import (
 // COS, returning their presigned URLs.
 //
 // Two legitimate uses (see Description):
-//   - Office docs (xlsx/docx/pptx/pdf): the agent first calls read_skill to get
+//   - Office docs (xlsx/docx/pptx/pdf): the agent first calls load_skill to get
 //     the SKILL.md code guidance, then calls run_python to execute it.
 //   - Long-tail formats not covered by Layer 1 Go tools (create_csv/html/json/
 //     text/png_chart): the agent writes the Python directly.
@@ -45,7 +45,7 @@ func (t *runPythonTool) Description() string {
 	return `Execute Python 3 code inside an isolated sandbox to generate files.
 
 WHEN TO USE:
-  - Office documents (.xlsx/.docx/.pptx/.pdf): FIRST call read_skill (e.g. read_skill({"skill_name":"pptx-author"})) to get the SKILL.md code guidance, THEN call run_python with the Python you wrote following that guidance.
+  - Office documents (.xlsx/.docx/.pptx/.pdf): FIRST call load_skill (e.g. load_skill({"name":"pptx-author"})) to get the SKILL.md code guidance, THEN call run_python with the Python you wrote following that guidance.
   - Long-tail / unusual formats (.ical, .vcf, .yaml, .xml, Mermaid rendering, .gpx, .midi, etc.): write the Python directly.
 
 Do NOT use run_python for simple formats that have a dedicated Layer-1 tool — those are faster and have no sandbox cost:

@@ -107,8 +107,8 @@ func TestRunPythonTool_Description_GuidesTooling(t *testing.T) {
 	if !strings.Contains(desc, "create_csv") {
 		t.Error("Description must redirect simple formats to Layer-1 create_csv")
 	}
-	if !strings.Contains(desc, "read_skill") {
-		t.Error("Description must point office docs (xlsx/docx/pptx/pdf) at the read_skill flow")
+	if !strings.Contains(desc, "load_skill") {
+		t.Error("Description must point office docs (xlsx/docx/pptx/pdf) at the load_skill flow")
 	}
 }
 

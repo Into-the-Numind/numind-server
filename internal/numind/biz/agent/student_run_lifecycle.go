@@ -725,8 +725,8 @@ var safeToolBaseline = []string{
 	"create_json",        // JSON 生成
 	"create_text",        // 文本生成
 	"create_png_chart",   // 图表生成
-	"read_skill",         // 2026-05-29 skill-progressive-loader: 替换 invoke_skill，外层 agent 读 SKILL.md 自写 Python 后 run_python 执行
-	"run_python",         // 2026-05-29 hotfix: read_skill is useless without an executor. The OutputToolsPriorityAddendum already promises every agent the read_skill→run_python path; baseline must match the promise. run_python is sandbox-isolated (docker), so the risk surface is the sandbox image itself, not the agent permission flag.
+	"load_skill",         // open-tools-skill-as-guidance: merged use_skill+read_skill — loads DB-bound + disk platform skill guidance; agent writes Python then run_python executes
+	"run_python",         // 2026-05-29 hotfix: load_skill is useless without an executor. The OutputToolsPriorityAddendum already promises every agent the load_skill→run_python path; baseline must match the promise. run_python is sandbox-isolated (docker), so the risk surface is the sandbox image itself, not the agent permission flag.
 }
 
 // categoryToTools 把 frontend AgentAdvancedEdit.vue 的 3 个 risk-category 开关
@@ -735,19 +735,21 @@ var safeToolBaseline = []string{
 //	code_sandbox  → bash_exec      (RequiresSandbox=true)
 //	media         → image_gen      (Category="多媒体")
 //	dangerous     → bash_exec      (RiskLevel="dangerous" 别名)
-//	enable_skills → read_skill + run_python   (2026-05-29 skill-progressive-loader:
-//	  was {invoke_skill}; the Codex-style two-step flow needs BOTH tools — read_skill
-//	  loads SKILL.md, run_python executes the Python the LLM authors from it. Same
-//	  flag-name retained for zero-migration backward compat with existing
-//	  agent_definition.tool_flags JSON.)
+//	enable_skills → load_skill + run_python   (open-tools-skill-as-guidance merged
+//	  use_skill+read_skill into load_skill; the two-step flow needs BOTH tools —
+//	  load_skill loads the SKILL.md guidance, run_python executes the Python the LLM
+//	  authors from it. Same flag-name retained for zero-migration backward compat
+//	  with existing agent_definition.tool_flags JSON. Note: load_skill is also in
+//	  safeToolBaseline, so it is registered regardless of this flag; the entry is
+//	  kept so the flag's documented contract stays consistent.)
 var categoryToTools = map[string][]string{
 	"code_sandbox": {"bash_exec"},
 	"media":        {"image_gen"},
 	"dangerous":    {"bash_exec"}, // alias of code_sandbox for now
-	// Codex-style progressive disclosure: catalog → read_skill → run_python.
+	// Single-loop progressive disclosure: catalog → load_skill → run_python.
 	// Both tools must be reachable or the agent crashes mid-flow with
 	// `tool run_python not found in toolsNode indexes` (dev QA 2026-05-29).
-	"enable_skills": {"read_skill", "run_python"},
+	"enable_skills": {"load_skill", "run_python"},
 }
 
 // toolNamesFromFlags resolves agent_definition.ToolFlags JSON to []string of

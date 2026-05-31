@@ -259,8 +259,9 @@ func NewBiz(ds store.IStore) *biz {
 
 	// V1.5 Track 4 task 4.4: Skill Registry + platform factory construction.
 	// Build sandbox pool first so it can be wired into the platform factory before LoadAll.
-	// skills_root from viper; if absent or the directory does not exist, the read_skill
-	// tool is simply not registered (graceful degradation, no server boot failure).
+	// skills_root from viper; if absent or the directory does not exist, the load_skill
+	// tool still registers (it always does) but serves only DB-bound skills — the disk
+	// platform skills (xlsx/docx/pptx/pdf-author) are unavailable (graceful degradation).
 	sandboxLogger := &sandboxZapLogger{}
 	sandboxConfig := sandbox.LoadFromViper(viper.GetViper())
 	dockerClient := sandbox.NewDockerCLIClient(sandboxLogger)
@@ -273,10 +274,9 @@ func NewBiz(ds store.IStore) *biz {
 		"image_tag", sandboxConfig.ImageTag)
 
 	// 2026-05-29 skill-progressive-loader: build Skill Registry and wire into
-	// platform factory. read_skill reads SKILL.md from disk via the registry —
-	// it does NOT use the sandbox SkillPool. Previous SkillPool type-assertion
-	// gate removed: a registry alone is sufficient to register read_skill.
-	// The outer agent LLM uses run_python (which has its own sandbox.Pool
+	// platform factory. The disk SKILL.md is read by load_skill (open-tools-skill-as-
+	// guidance merged read_skill into it) via the registry — it does NOT use the
+	// sandbox SkillPool. The agent LLM uses run_python (which has its own sandbox.Pool
 	// wiring through the run_python tool) to execute the Python it authors
 	// based on the SKILL.md guidance.
 	var platformFactory agent.ToolFactory
@@ -284,7 +284,7 @@ func NewBiz(ds store.IStore) *biz {
 	skillsRoot := viper.GetString("sandbox.skills_root")
 	if skillsRoot != "" {
 		if skillReg, skillRegErr := skills.NewRegistry(skillsRoot); skillRegErr != nil {
-			log.Warnw("skills.NewRegistry failed; read_skill tool will not be available",
+			log.Warnw("skills.NewRegistry failed; load_skill will serve DB-bound skills only (no disk platform skills)",
 				"skills_root", skillsRoot, "error", skillRegErr)
 			platformFactory = agent.NewPlatformToolFactory(b.salesRAGService, ds)
 		} else {
@@ -294,7 +294,7 @@ func NewBiz(ds store.IStore) *biz {
 			sp, _ := sandboxPool.(sandbox.SkillPool)
 			platformFactory = agent.NewPlatformToolFactoryWithSkills(b.salesRAGService, ds, skillReg, sp)
 			platformSkillReg = skillReg
-			log.Infow("read_skill tool registered with skill registry")
+			log.Infow("load_skill: disk platform skill registry wired", "count", len(skillReg.List()))
 		}
 	} else {
 		platformFactory = agent.NewPlatformToolFactory(b.salesRAGService, ds)

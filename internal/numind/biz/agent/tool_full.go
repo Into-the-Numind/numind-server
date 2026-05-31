@@ -69,14 +69,25 @@ type FullTool interface {
 type ToolConfig struct {
 	EnableSandbox  bool
 	EnableImageGen bool
-	// EnableSkills enables the read_skill tool (2026-05-29 skill-progressive-loader;
-	// was V1.5 Track 4 task 4.4 invoke_skill — Go field name retained, semantic
-	// shifted to gate Codex-style progressive disclosure of platform skills).
+	// EnableSkills enables the load_skill tool (open-tools-skill-as-guidance merged
+	// use_skill+read_skill; Go field name retained from the V1.5 invoke_skill era for
+	// zero-migration tool_flags compat — semantically gates single-loop skill loading).
 	// Controlled by the agent_definition tool_flags JSON key "enable_skills"
 	// (key name retained for zero-migration backwards compat). Defaults to
 	// false (prod-safe).
 	EnableSkills bool
 	// 后续 feature 按需扩展
+}
+
+// FullyEnabledToolConfig returns a ToolConfig with every gate ON. It is the
+// "full-open" filter input (open-tools-skill-as-guidance): the runner registers
+// every registry tool whose IsEnabled(FullyEnabledToolConfig()) is true. Tools that
+// gate on a ToolConfig flag (bash_exec/run_python via EnableSandbox, image_gen via
+// EnableImageGen, skills via EnableSkills) pass; hard stubs whose IsEnabled returns
+// false unconditionally (document_generate) are excluded. Default-true BaseTool
+// tools (kb_search, web_*, memory_*, create_*, get_current_date, …) also pass.
+func FullyEnabledToolConfig() ToolConfig {
+	return ToolConfig{EnableSandbox: true, EnableImageGen: true, EnableSkills: true}
 }
 
 // ToolInput / ToolResult：通用 JSON 结构

@@ -5,6 +5,55 @@ import (
 	"testing"
 )
 
+// TestLoadSkill_RenderFromYAML verifies the production tool-display.yaml ships an
+// entry for the merged `load_skill` AgentTool (open-tools-skill-as-guidance) and that
+// its use/result/error templates render the expected user-facing copy. The use_skill /
+// read_skill entries are retained as tombstones for historical agent_run narration.
+func TestLoadSkill_RenderFromYAML(t *testing.T) {
+	r, err := NewRendererFromPath("../../../../configs/tool-display.yaml")
+	if err != nil {
+		t.Fatalf("NewRendererFromPath: %v", err)
+	}
+	if r.tools["load_skill"] == nil {
+		t.Fatal("load_skill entry missing from configs/tool-display.yaml")
+	}
+	// tombstones must remain so historical use_skill/read_skill runs still render.
+	if r.tools["use_skill"] == nil || r.tools["read_skill"] == nil {
+		t.Error("use_skill/read_skill tombstone entries must be retained for historical narration")
+	}
+
+	const skillName = "pptx-author"
+	input := map[string]any{"name": skillName}
+	cases := []struct {
+		state      State
+		wantSubstr []string
+	}{
+		{StateUse, []string{"📚", "正在加载技能", skillName}},
+		{StateResult, []string{"📚", "已加载技能", skillName}},
+		{StateError, []string{"⚠", "技能加载失败"}},
+	}
+	for _, tc := range cases {
+		verb, detail, msg := r.Render(renderRequest{
+			ToolName:       "load_skill",
+			State:          tc.state,
+			Input:          input,
+			Result:         map[string]any{},
+			ReasonFriendly: "网络异常",
+		})
+		if verb != "加载技能" {
+			t.Errorf("verb: want 加载技能, got %q", verb)
+		}
+		if detail != skillName {
+			t.Errorf("detail: want %q, got %q", skillName, detail)
+		}
+		for _, want := range tc.wantSubstr {
+			if !strings.Contains(msg, want) {
+				t.Errorf("state %v message missing %q; got %q", tc.state, want, msg)
+			}
+		}
+	}
+}
+
 // TestUseSkill_RenderFromYAML verifies that the production tool-display.yaml
 // ships an entry for the `use_skill` AgentTool (agent-mode v2 #2) and that the
 // use/result/error templates render the expected user-facing copy with the

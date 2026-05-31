@@ -463,7 +463,7 @@ func TestRunner_SystemPrompt_6SegmentInvariant(t *testing.T) {
 		{ID: 1, Name: "销售话术", Description: "客户对话技巧", WhenToUse: "卖客户时", IsActive: true},
 		{ID: 2, Name: "数据分析", Description: "拆数据找洞察", WhenToUse: "拿到数据时", IsActive: true},
 	}
-	catalog := buildSkillCatalogBlock(skills)
+	catalog := buildUnifiedSkillCatalog(skills, nil)
 	require.Contains(t, catalog, skillBodyMarker, "catalog block must contain '## 可用技能' header")
 
 	// Reconstruct the prompt formula matching runner.go Step 4 (line 578-589).
@@ -555,8 +555,8 @@ func TestRunner_DualReadFallback_WithBindings_UsesCatalog(t *testing.T) {
 	assert.Equal(t, 1, result.SkillVersion, "skill version 仍取 ad.Version (binding 不影响 SkillVersion 字段)")
 	assert.True(t, bindLister.called, "BindingService.ListByAgent must be invoked")
 
-	// 验证 catalog 内容生成正确（直接断言 buildSkillCatalogBlock 输出）
-	catalog := buildSkillCatalogBlock(bindLister.skills)
+	// 验证 catalog 内容生成正确（直接断言 buildUnifiedSkillCatalog 输出）
+	catalog := buildUnifiedSkillCatalog(bindLister.skills, nil)
 	assert.Contains(t, catalog, "## 可用技能")
 	assert.Contains(t, catalog, "话术")
 	assert.Contains(t, catalog, "卖货指南")
@@ -614,10 +614,10 @@ func TestRunner_DualReadFallback_BindingListerErr_DegradesToLegacy(t *testing.T)
 		skills: nil,
 		err:    fmt.Errorf("db timeout (simulated infra blip)"),
 	}
-	skills := buildSkillCatalogBlock([]model.Skill{
+	skills := buildUnifiedSkillCatalog([]model.Skill{
 		{ID: 1, Name: "should not appear", Description: "d", IsActive: true},
-	})
-	_ = skills // just to use buildSkillCatalogBlock symbol; legacy path doesn't call it
+	}, nil)
+	_ = skills // just to use buildUnifiedSkillCatalog symbol; legacy path doesn't call it
 
 	// 验证 ListByAgent 真的被调用了 (而非短路)
 	r := NewAgentRunner(newMockStore(), nil, WithSkillBindingService(bindLister)).(*agentRunner)

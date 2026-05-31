@@ -1,10 +1,13 @@
-// v2 #2 agent-mode-v2-skill-invocation T02 — types + ctx helpers + skeleton tests.
+// Skill turn-state + ctx-helper tests (originally agent-mode-v2-skill-invocation).
+// open-tools-skill-as-guidance moved the tool itself to tool_load_skill.go, so the
+// per-tool Execute tests now live in tool_load_skill_test.go. This file keeps the
+// turn-state constructor + ctx helpers + jsonErr tests, plus the shared fixtures
+// (buildTurnWithSkills / fixedSkill) reused by tool_load_skill_test.go.
 package agent
 
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"testing"
 
 	"numind-server/internal/pkg/model"
@@ -19,9 +22,6 @@ func TestUseSkillTurn_NewState_DefaultCap(t *testing.T) {
 	}
 	if s.InvocationCount != 0 {
 		t.Errorf("InvocationCount should start at 0, got %d", s.InvocationCount)
-	}
-	if s.AllowedTools == nil {
-		t.Error("AllowedTools map should be non-nil")
 	}
 	if s.SkillByID == nil || s.SkillByName == nil {
 		t.Error("SkillByID and SkillByName maps should be non-nil")
@@ -81,30 +81,6 @@ func TestUseSkillTurnFromCtx_NilValue_NotOK(t *testing.T) {
 	}
 }
 
-func TestUseSkillTurn_WithAgentBaseToolNames_RoundTrip(t *testing.T) {
-	want := []string{"bash_exec", "kb_search", "web_search"}
-	ctx := WithAgentBaseToolNames(context.Background(), want)
-	got, ok := AgentBaseToolNamesFromCtx(ctx)
-	if !ok {
-		t.Fatal("AgentBaseToolNamesFromCtx should find injected list")
-	}
-	if len(got) != len(want) {
-		t.Errorf("got len %d, want %d", len(got), len(want))
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("got[%d] = %q, want %q", i, got[i], want[i])
-		}
-	}
-}
-
-func TestUseSkillTurn_AgentBaseToolNamesFromCtx_EmptyCtx_NotOK(t *testing.T) {
-	_, ok := AgentBaseToolNamesFromCtx(context.Background())
-	if ok {
-		t.Error("empty ctx should return ok=false")
-	}
-}
-
 func TestUseSkillTurn_WithSkillBindings_RoundTrip(t *testing.T) {
 	want := []model.Skill{
 		{ID: 200, Name: "话术", ParentUserID: 100},
@@ -120,7 +96,6 @@ func TestUseSkillTurn_WithSkillBindings_RoundTrip(t *testing.T) {
 	}
 }
 
-// 空/nil 切片明确返回 ok=false (P2-2 fix)
 func TestUseSkillTurn_WithSkillBindings_EmptySlice_NotOK(t *testing.T) {
 	ctx := WithSkillBindings(context.Background(), nil)
 	if _, ok := SkillBindingsFromCtx(ctx); ok {
@@ -132,52 +107,10 @@ func TestUseSkillTurn_WithSkillBindings_EmptySlice_NotOK(t *testing.T) {
 	}
 }
 
-// ── useSkillTool skeleton ───────────────────────────────────────────────────────
+// ── shared fixtures (also used by tool_load_skill_test.go) ──────────────────────
 
-func TestUseSkillTurn_Tool_Skeleton_Metadata(t *testing.T) {
-	tool := NewUseSkillTool()
-
-	if tool.Name() != UseSkillToolName {
-		t.Errorf("Name() = %q, want %q", tool.Name(), UseSkillToolName)
-	}
-	if tool.Description() == "" {
-		t.Error("Description should not be empty")
-	}
-	if tool.UserFacingName() != "调用技能" {
-		t.Errorf("UserFacingName = %q, want '调用技能'", tool.UserFacingName())
-	}
-	if tool.NarrationVerb() != "调用技能" {
-		t.Errorf("NarrationVerb = %q, want '调用技能'", tool.NarrationVerb())
-	}
-	if !tool.IsReadOnly() {
-		t.Error("use_skill should be IsReadOnly = true (no DB write, only turn state mutation)")
-	}
-	if tool.IsDestructive() {
-		t.Error("use_skill should NOT be destructive")
-	}
-	if tool.AlwaysLoad() {
-		t.Error("use_skill should NOT AlwaysLoad — runner conditionally adds based on bindings")
-	}
-
-	// InputSchema 必须是合法 JSON 且含 name required
-	schema := tool.InputSchema()
-	if len(schema) == 0 {
-		t.Fatal("InputSchema should not be empty")
-	}
-	var parsed map[string]interface{}
-	if err := json.Unmarshal(schema, &parsed); err != nil {
-		t.Fatalf("InputSchema is not valid JSON: %v", err)
-	}
-	required, _ := parsed["required"].([]interface{})
-	if len(required) != 1 || required[0] != "name" {
-		t.Errorf("InputSchema required should be ['name'], got %v", required)
-	}
-}
-
-// ── T03 Execute full Invoke 8-step tests ────────────────────────────────
-
-// buildTurnWithSkills 是 T03 测试 helper —
-// 构造含 2 个 Skill 的 turn state 注入 ctx，返回 ctx + state（断言用）。
+// buildTurnWithSkills constructs a turn state pre-seeded with the given skills and
+// injects it into a ctx, returning both (the state for assertions).
 func buildTurnWithSkills(t *testing.T, skills ...*model.Skill) (context.Context, *UseSkillTurnState) {
 	t.Helper()
 	turn := NewUseSkillTurnState(UseSkillTurnCapDefault)
@@ -189,7 +122,7 @@ func buildTurnWithSkills(t *testing.T, skills ...*model.Skill) (context.Context,
 	return ctx, turn
 }
 
-// fixedSkill 返回一个合法可载入的 Skill (IsActive + 非空 BodyMd)
+// fixedSkill returns a loadable DB Skill (IsActive + non-empty BodyMd).
 func fixedSkill(id uint, name, body string, allowedToolsJSON string) *model.Skill {
 	return &model.Skill{
 		ID:           id,
@@ -203,291 +136,6 @@ func fixedSkill(id uint, name, body string, allowedToolsJSON string) *model.Skil
 		AllowedTools: []byte(allowedToolsJSON),
 	}
 }
-
-func TestUseSkillTurn_Execute_HappyPath_LoadsBodyAndAllowedTools(t *testing.T) {
-	sk := fixedSkill(42, "销售话术训练", "## 销售技巧\n详细指引...", `["web_search","chart_render"]`)
-	ctx, turn := buildTurnWithSkills(t, sk)
-
-	tool := NewUseSkillTool()
-	out, err := tool.Execute(ctx, ToolInput(`{"name":"销售话术训练"}`))
-	if err != nil {
-		t.Fatalf("Execute should not return error, got %v", err)
-	}
-	var parsed map[string]any
-	if jerr := json.Unmarshal(out, &parsed); jerr != nil {
-		t.Fatalf("output not valid JSON: %v", jerr)
-	}
-
-	// acknowledgement 检查
-	if parsed["status"] != "loaded" {
-		t.Errorf("status = %v, want 'loaded'", parsed["status"])
-	}
-	if parsed["skill_name"] != "销售话术训练" {
-		t.Errorf("skill_name = %v, want '销售话术训练'", parsed["skill_name"])
-	}
-	// S4-D27: body 字段必须含 system-reminder 包装的全文 (tool result 通道，LLM 必读)
-	bodyStr, _ := parsed["body"].(string)
-	if bodyStr == "" || !contains(bodyStr, "<system-reminder>") || !contains(bodyStr, sk.BodyMd) {
-		t.Errorf("ack body should contain <system-reminder> wrapped full body, got %q", bodyStr)
-	}
-
-	// turn state mutation 检查
-	if len(turn.PendingSkills) != 1 {
-		t.Fatalf("PendingSkills should have 1 entry, got %d", len(turn.PendingSkills))
-	}
-	if turn.PendingSkills[0].Body != sk.BodyMd {
-		t.Errorf("PendingSkills[0].Body should be set to skill body, got %q", turn.PendingSkills[0].Body)
-	}
-	if turn.PendingSkills[0].Name != sk.Name {
-		t.Errorf("PendingSkills[0].Name = %q, want %q", turn.PendingSkills[0].Name, sk.Name)
-	}
-	if turn.PendingSkills[0].Version != int(sk.Version) {
-		t.Errorf("PendingSkills[0].Version = %d, want %d", turn.PendingSkills[0].Version, sk.Version)
-	}
-	if turn.InvocationCount != 1 {
-		t.Errorf("InvocationCount = %d, want 1", turn.InvocationCount)
-	}
-	if _, ok := turn.AllowedTools["web_search"]; !ok {
-		t.Error("AllowedTools should contain 'web_search'")
-	}
-	if _, ok := turn.AllowedTools["chart_render"]; !ok {
-		t.Error("AllowedTools should contain 'chart_render'")
-	}
-}
-
-func TestUseSkillTurn_Execute_NameNotFound_ReturnsError(t *testing.T) {
-	sk := fixedSkill(42, "销售话术训练", "body", `[]`)
-	ctx, turn := buildTurnWithSkills(t, sk)
-
-	tool := NewUseSkillTool()
-	out, _ := tool.Execute(ctx, ToolInput(`{"name":"不存在的技能"}`))
-	var parsed map[string]string
-	_ = json.Unmarshal(out, &parsed)
-	if parsed["status"] != "error" {
-		t.Errorf("status = %q, want 'error'", parsed["status"])
-	}
-	if parsed["error"] == "" || !contains(parsed["error"], "不存在") {
-		t.Errorf("error msg should mention '不存在', got %q", parsed["error"])
-	}
-	// turn state 不应被 mutate
-	if len(turn.PendingSkills) != 0 {
-		t.Errorf("PendingSkills should be empty when lookup fails, got %d entries", len(turn.PendingSkills))
-	}
-	if turn.InvocationCount != 0 {
-		t.Errorf("InvocationCount should remain 0, got %d", turn.InvocationCount)
-	}
-}
-
-func TestUseSkillTurn_Execute_InactiveSkill_ReturnsError(t *testing.T) {
-	sk := fixedSkill(42, "禁用技能", "body", `[]`)
-	sk.IsActive = false // 已禁用
-	ctx, turn := buildTurnWithSkills(t, sk)
-
-	tool := NewUseSkillTool()
-	out, _ := tool.Execute(ctx, ToolInput(`{"name":"禁用技能"}`))
-	var parsed map[string]string
-	_ = json.Unmarshal(out, &parsed)
-	if parsed["status"] != "error" || !contains(parsed["error"], "禁用") {
-		t.Errorf("expected 禁用 error, got %v", parsed)
-	}
-	if turn.InvocationCount != 0 {
-		t.Error("inactive skill should not count toward cap")
-	}
-}
-
-func TestUseSkillTurn_Execute_EmptyBody_ReturnsError(t *testing.T) {
-	sk := fixedSkill(42, "空内容技能", "" /* empty body */, `[]`)
-	ctx, _ := buildTurnWithSkills(t, sk)
-
-	tool := NewUseSkillTool()
-	out, _ := tool.Execute(ctx, ToolInput(`{"name":"空内容技能"}`))
-	var parsed map[string]string
-	_ = json.Unmarshal(out, &parsed)
-	if parsed["status"] != "error" || !contains(parsed["error"], "内容为空") {
-		t.Errorf("expected 内容为空 error, got %v", parsed)
-	}
-}
-
-func TestUseSkillTurn_Execute_CapExceeded_ReturnsError(t *testing.T) {
-	sk := fixedSkill(42, "正常技能", "body", `[]`)
-	ctx, turn := buildTurnWithSkills(t, sk)
-	turn.InvocationCount = turn.Cap // 已达 cap
-
-	tool := NewUseSkillTool()
-	out, _ := tool.Execute(ctx, ToolInput(`{"name":"正常技能"}`))
-	var parsed map[string]string
-	_ = json.Unmarshal(out, &parsed)
-	if parsed["status"] != "error" || !contains(parsed["error"], "上限") {
-		t.Errorf("expected 上限 error, got %v", parsed)
-	}
-	if turn.InvocationCount != turn.Cap {
-		t.Errorf("InvocationCount should remain at cap=%d, got %d", turn.Cap, turn.InvocationCount)
-	}
-}
-
-func TestUseSkillTurn_Execute_NoTurnState_ReturnsError(t *testing.T) {
-	// 没有 inject turn state — 模拟 legacy Agent 误调用
-	tool := NewUseSkillTool()
-	out, _ := tool.Execute(context.Background(), ToolInput(`{"name":"X"}`))
-	var parsed map[string]string
-	_ = json.Unmarshal(out, &parsed)
-	if parsed["status"] != "error" || !contains(parsed["error"], "未启用") {
-		t.Errorf("expected 未启用 error, got %v", parsed)
-	}
-}
-
-func TestUseSkillTurn_Execute_EmptyName_ReturnsError(t *testing.T) {
-	ctx, _ := buildTurnWithSkills(t, fixedSkill(42, "x", "y", `[]`))
-	tool := NewUseSkillTool()
-	out, _ := tool.Execute(ctx, ToolInput(`{"name":""}`))
-	var parsed map[string]string
-	_ = json.Unmarshal(out, &parsed)
-	if parsed["status"] != "error" || !contains(parsed["error"], "不能为空") {
-		t.Errorf("expected 不能为空 error, got %v", parsed)
-	}
-}
-
-func TestUseSkillTurn_Execute_MalformedJSON_ReturnsError(t *testing.T) {
-	ctx, _ := buildTurnWithSkills(t, fixedSkill(42, "x", "y", `[]`))
-	tool := NewUseSkillTool()
-	out, _ := tool.Execute(ctx, ToolInput(`{not valid json`))
-	var parsed map[string]string
-	_ = json.Unmarshal(out, &parsed)
-	if parsed["status"] != "error" || !contains(parsed["error"], "解析失败") {
-		t.Errorf("expected 解析失败 error, got %v", parsed)
-	}
-}
-
-func TestUseSkillTurn_Execute_MultipleCalls_CountIncrementsToCap(t *testing.T) {
-	sk1 := fixedSkill(1, "S1", "b1", `[]`)
-	sk2 := fixedSkill(2, "S2", "b2", `[]`)
-	sk3 := fixedSkill(3, "S3", "b3", `[]`)
-	sk4 := fixedSkill(4, "S4", "b4", `[]`)
-	ctx, turn := buildTurnWithSkills(t, sk1, sk2, sk3, sk4)
-
-	tool := NewUseSkillTool()
-	for i, name := range []string{"S1", "S2", "S3"} {
-		out, _ := tool.Execute(ctx, ToolInput(fmt.Sprintf(`{"name":%q}`, name)))
-		var parsed map[string]any
-		_ = json.Unmarshal(out, &parsed)
-		if parsed["status"] != "loaded" {
-			t.Fatalf("call #%d (%s) should succeed, got %v", i+1, name, parsed)
-		}
-	}
-	if turn.InvocationCount != turn.Cap {
-		t.Errorf("after 3 calls InvocationCount = %d, want cap=%d", turn.InvocationCount, turn.Cap)
-	}
-
-	// 第 4 次必须被 cap 拒绝
-	out, _ := tool.Execute(ctx, ToolInput(`{"name":"S4"}`))
-	var parsed map[string]string
-	_ = json.Unmarshal(out, &parsed)
-	if parsed["status"] != "error" || !contains(parsed["error"], "上限") {
-		t.Errorf("4th call should hit cap, got %v", parsed)
-	}
-}
-
-// 同 turn 串调 use_skill(A) → use_skill(B) → use_skill(C)：PendingSkills 必须按调用序
-// append 全部三条；任何一条丢失 = outer-loop 注入路径启用时 LLM 漏看 Skill 指引
-// (fix/fix-use-skill-pending-body-overwrite — 修复前是单字段覆盖)。
-func TestUseSkillTurn_Execute_MultipleCalls_PendingSkillsAccumulate(t *testing.T) {
-	// Version 1/2/3 + body/name 都互不相同，确保 == 比较能完整区分三条
-	// (顺序错乱 / 字段错配 都会被抓)。
-	skA := &model.Skill{ID: 1, ParentUserID: 100, Name: "SkillA", BodyMd: "bodyA-detailed-guide", Version: 1, IsActive: true, AllowedTools: []byte(`["toolA"]`)}
-	skB := &model.Skill{ID: 2, ParentUserID: 100, Name: "SkillB", BodyMd: "bodyB-detailed-guide", Version: 2, IsActive: true, AllowedTools: []byte(`["toolB"]`)}
-	skC := &model.Skill{ID: 3, ParentUserID: 100, Name: "SkillC", BodyMd: "bodyC-detailed-guide", Version: 3, IsActive: true, AllowedTools: []byte(`[]`)}
-	ctx, turn := buildTurnWithSkills(t, skA, skB, skC)
-
-	tool := NewUseSkillTool()
-	for _, name := range []string{"SkillA", "SkillB", "SkillC"} {
-		_, err := tool.Execute(ctx, ToolInput(fmt.Sprintf(`{"name":%q}`, name)))
-		if err != nil {
-			t.Fatalf("Execute(%s) returned Go error: %v", name, err)
-		}
-	}
-
-	// 核心断言：PendingSkills.len == invocation_count，证明无覆盖
-	if len(turn.PendingSkills) != turn.InvocationCount {
-		t.Fatalf("PendingSkills len = %d, want == InvocationCount %d (no entries should be overwritten)",
-			len(turn.PendingSkills), turn.InvocationCount)
-	}
-	if len(turn.PendingSkills) != 3 {
-		t.Fatalf("PendingSkills len = %d, want 3", len(turn.PendingSkills))
-	}
-
-	// 按调用顺序断言 — 顺序错乱也是 latent bug
-	want := []PendingSkill{
-		{Name: "SkillA", Version: 1, Body: "bodyA-detailed-guide"},
-		{Name: "SkillB", Version: 2, Body: "bodyB-detailed-guide"},
-		{Name: "SkillC", Version: 3, Body: "bodyC-detailed-guide"},
-	}
-	for i, w := range want {
-		if turn.PendingSkills[i] != w {
-			t.Errorf("PendingSkills[%d] = %+v, want %+v", i, turn.PendingSkills[i], w)
-		}
-	}
-}
-
-// 成功调用 → 失败调用：失败 (NameNotFound) 不应破坏已 append 的 PendingSkills slice
-// (append 路径的典型回归场景：早返回前若 mutate slice 就会污染)。
-func TestUseSkillTurn_Execute_SuccessThenNotFound_DoesNotMutateExisting(t *testing.T) {
-	sk := &model.Skill{ID: 1, ParentUserID: 100, Name: "GoodSkill", BodyMd: "good-body", Version: 5, IsActive: true, AllowedTools: []byte(`[]`)}
-	ctx, turn := buildTurnWithSkills(t, sk)
-
-	tool := NewUseSkillTool()
-	if _, err := tool.Execute(ctx, ToolInput(`{"name":"GoodSkill"}`)); err != nil {
-		t.Fatalf("first Execute Go error: %v", err)
-	}
-	if _, err := tool.Execute(ctx, ToolInput(`{"name":"DoesNotExist"}`)); err != nil {
-		t.Fatalf("second Execute Go error: %v", err)
-	}
-
-	if len(turn.PendingSkills) != 1 {
-		t.Fatalf("PendingSkills len = %d, want 1 (failed lookup must not mutate)", len(turn.PendingSkills))
-	}
-	want := PendingSkill{Name: "GoodSkill", Version: 5, Body: "good-body"}
-	if turn.PendingSkills[0] != want {
-		t.Errorf("PendingSkills[0] = %+v, want %+v", turn.PendingSkills[0], want)
-	}
-	if turn.InvocationCount != 1 {
-		t.Errorf("InvocationCount = %d, want 1 (failed lookup must not count)", turn.InvocationCount)
-	}
-}
-
-// AllowedTools JSON 字段格式错误时仍应载入 Skill（happy path），allowedTools
-// 视为空白名单。ack JSON 中 status 仍 "loaded"（LLM 视角技能就绪），span output
-// 通过 status=warn + error 字段记录此非致命警告（不影响 LLM 行为）。
-func TestUseSkillTurn_Execute_MalformedAllowedTools_WarnButLoaded(t *testing.T) {
-	sk := fixedSkill(42, "格式异常技能", "## 指引...", `not valid json [`)
-	ctx, turn := buildTurnWithSkills(t, sk)
-
-	tool := NewUseSkillTool()
-	out, err := tool.Execute(ctx, ToolInput(`{"name":"格式异常技能"}`))
-	if err != nil {
-		t.Fatalf("malformed allowed_tools should not abort, got Go error %v", err)
-	}
-	var parsed map[string]any
-	if jerr := json.Unmarshal(out, &parsed); jerr != nil {
-		t.Fatalf("ack not valid JSON: %v", jerr)
-	}
-	// LLM 视角技能仍载入成功
-	if parsed["status"] != "loaded" {
-		t.Errorf("ack status should be 'loaded' (warn 不影响 LLM 流程), got %v", parsed["status"])
-	}
-	// Skill body 已写入 PendingSkills，turn.InvocationCount++
-	if len(turn.PendingSkills) != 1 || turn.PendingSkills[0].Body != sk.BodyMd {
-		t.Error("PendingSkills[0].Body should be set even with malformed allowed_tools")
-	}
-	if turn.InvocationCount != 1 {
-		t.Errorf("InvocationCount = %d, want 1 (cap should be consumed)", turn.InvocationCount)
-	}
-	// allowed_tools merge 视为空 — turn.AllowedTools 不应包含任何条目
-	if len(turn.AllowedTools) != 0 {
-		t.Errorf("AllowedTools should be empty when JSON malformed, got %v", turn.AllowedTools)
-	}
-}
-
-// (note: package-level `contains` helper is defined in tool_document_generate_test.go; we reuse it.)
 
 // ── jsonErr 辅助 ────────────────────────────────────────────────────────────
 

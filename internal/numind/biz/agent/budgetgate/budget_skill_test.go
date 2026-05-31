@@ -1,12 +1,12 @@
-// v2 #2 agent-mode-v2-skill-invocation T09 — AC-6: use_skill tool invocations
+// v2 #2 agent-mode-v2-skill-invocation T09 — AC-6: load_skill tool invocations
 // pass through BudgetGate hook chain just like any other tool.
 //
 // Why this test exists separately from gate_wrap_hooks_test.go:
 // gate_wrap_hooks_test.go uses a *mockTool stub that's only loosely tied to
-// real platform tools. This file proves that use_skill — the NEW platform
+// real platform tools. This file proves that load_skill — the NEW platform
 // tool from this feature — is structurally a einotool.BaseTool that flows
 // through PreToolCall + PostToolCall just like file_read or kb_search,
-// satisfying AC-6 "use_skill 计入 BudgetTracker" without requiring a real
+// satisfying AC-6 "load_skill 计入 BudgetTracker" without requiring a real
 // Eino ReAct loop.
 //
 // Degraded note: the original plan considered mocking BudgetTracker itself
@@ -14,9 +14,9 @@
 // gate_wrap_hooks_test.go infrastructure uses a REAL budget.NewTracker which
 // is more representative of production, so we follow that pattern. We assert
 // that:
-//   1. Pre/Post are invoked exactly once per use_skill simulated tool-call
+//   1. Pre/Post are invoked exactly once per load_skill simulated tool-call
 //   2. RecordUsage is observable via tracker.Snapshot delta
-//   3. Budget exhaustion short-circuits use_skill same as any other tool
+//   3. Budget exhaustion short-circuits load_skill same as any other tool
 
 package budgetgate
 
@@ -35,17 +35,17 @@ import (
 	"numind-server/internal/numind/biz/budget"
 )
 
-// useSkillToolFacade — einotool.BaseTool facade that names itself "use_skill"
+// useSkillToolFacade — einotool.BaseTool facade that names itself "load_skill"
 // to prove BudgetGate treats it identically to other platform tools. We don't
 // actually invoke the real agent.useSkillTool.Execute here — only its
 // einotool.BaseTool interface footprint (Name + Info) matters for hook chain
-// admission. This isolates the "BudgetGate doesn't special-case use_skill"
-// contract from the orthogonal "use_skill Execute logic" already covered by
-// eino_skill_integration_test.go and tool_use_skill_test.go.
+// admission. This isolates the "BudgetGate doesn't special-case load_skill"
+// contract from the orthogonal "load_skill Execute logic" already covered by
+// eino_skill_integration_test.go and tool_load_skill_test.go.
 type useSkillToolFacade struct{}
 
 func (u *useSkillToolFacade) Info(ctx context.Context) (*schema.ToolInfo, error) {
-	return &schema.ToolInfo{Name: agent.UseSkillToolName}, nil
+	return &schema.ToolInfo{Name: agent.LoadSkillToolName}, nil
 }
 
 var _ einotool.BaseTool = (*useSkillToolFacade)(nil)
@@ -59,15 +59,15 @@ func TestBudget_UseSkill_PreAndPostBothInvoked(t *testing.T) {
 	base := &agent.RunHooks{
 		PreToolCall: func(ctx context.Context, tl einotool.BaseTool, input string) (agent.HookAction, error) {
 			info, _ := tl.Info(ctx)
-			assert.Equal(t, agent.UseSkillToolName, info.Name,
-				"base PreToolCall must see use_skill tool name (no special-case stripping)")
+			assert.Equal(t, agent.LoadSkillToolName, info.Name,
+				"base PreToolCall must see load_skill tool name (no special-case stripping)")
 			preCalled.Add(1)
 			return agent.HookActionContinue, nil
 		},
 		PostToolCall: func(ctx context.Context, tl einotool.BaseTool, output string, err error) (agent.HookAction, error) {
 			info, _ := tl.Info(ctx)
-			assert.Equal(t, agent.UseSkillToolName, info.Name,
-				"base PostToolCall must see use_skill tool name (no special-case stripping)")
+			assert.Equal(t, agent.LoadSkillToolName, info.Name,
+				"base PostToolCall must see load_skill tool name (no special-case stripping)")
 			postCalled.Add(1)
 			return agent.HookActionContinue, nil
 		},
@@ -84,7 +84,7 @@ func TestBudget_UseSkill_PreAndPostBothInvoked(t *testing.T) {
 	assert.Equal(t, agent.HookActionContinue, preAction)
 	assert.Equal(t, int32(1), preCalled.Load(), "PreToolCall must be invoked exactly once")
 
-	// PostToolCall — simulate ack JSON from use_skill Execute (contains body field
+	// PostToolCall — simulate ack JSON from load_skill Execute (contains body field
 	// per S4-D27, but for BudgetTracker only "usage" matters for token recording).
 	output := `{"status":"loaded","skill_name":"销售话术训练","body":"<system-reminder>...</system-reminder>","usage":{"total_tokens":15}}`
 	postAction, postErr := wrapped.PostToolCall(ctx, tool, output, nil)
@@ -92,10 +92,10 @@ func TestBudget_UseSkill_PreAndPostBothInvoked(t *testing.T) {
 	assert.Equal(t, agent.HookActionContinue, postAction)
 	assert.Equal(t, int32(1), postCalled.Load(), "PostToolCall must be invoked exactly once")
 
-	// Verify BudgetTracker recorded the usage (use_skill counts the same as any tool)
+	// Verify BudgetTracker recorded the usage (load_skill counts the same as any tool)
 	snap := tr.Snapshot(context.Background(), 7)
 	assert.Equal(t, int64(15), snap.Credits,
-		"use_skill output tokens (15) must be recorded by tracker.RecordUsage (AC-6)")
+		"load_skill output tokens (15) must be recorded by tracker.RecordUsage (AC-6)")
 }
 
 func TestBudget_UseSkill_BudgetExceededShortCircuits(t *testing.T) {
@@ -128,16 +128,16 @@ func TestBudget_UseSkill_BudgetExceededShortCircuits(t *testing.T) {
 	action, err := wrapped.PreToolCall(ctx, tool, `{"name":"销售话术训练"}`)
 	require.NoError(t, err)
 	assert.Equal(t, agent.HookActionBudgetExceeded, action,
-		"use_skill must be short-circuited by budget exhaustion, identical to other tools")
+		"load_skill must be short-circuited by budget exhaustion, identical to other tools")
 	assert.False(t, preCalled.Load(),
-		"base PreToolCall must NOT be invoked when budget exceeded (use_skill is not special-cased)")
+		"base PreToolCall must NOT be invoked when budget exceeded (load_skill is not special-cased)")
 	assert.Equal(t, agent.HookActionBudgetExceeded, reg.LastAction(),
-		"Registry must record budget exceeded action for use_skill")
+		"Registry must record budget exceeded action for load_skill")
 }
 
 func TestBudget_UseSkill_PostBeforeRecordUsage_OrderingContract(t *testing.T) {
 	// Verifies the documented order: forward to base.PostToolCall FIRST,
-	// then RecordUsage. Important because base.PostToolCall on use_skill might
+	// then RecordUsage. Important because base.PostToolCall on load_skill might
 	// emit narration ("📚 已调用技能：..."); if we recorded usage first and the
 	// recording overflowed budget, narration would never fire — bad UX.
 	tr := budget.NewTracker(nil)
@@ -165,5 +165,5 @@ func TestBudget_UseSkill_PostBeforeRecordUsage_OrderingContract(t *testing.T) {
 
 	// Snapshot proves RecordUsage ran AFTER base.Post (else credit would be 0)
 	snap := tr.Snapshot(context.Background(), 11)
-	assert.Equal(t, int64(42), snap.Credits, "RecordUsage must run for use_skill after base.Post")
+	assert.Equal(t, int64(42), snap.Credits, "RecordUsage must run for load_skill after base.Post")
 }
