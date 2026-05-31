@@ -94,17 +94,21 @@ func TestRunPythonTool_InputSchema_ValidJSON(t *testing.T) {
 	}
 }
 
-func TestRunPythonTool_Description_ContainsLastResort(t *testing.T) {
+// TestRunPythonTool_Description_GuidesTooling verifies the run_python
+// description steers the LLM correctly. Updated 2026-05-31 (run-python-stateless-
+// guidance): the old "LAST RESORT ONLY" + "create_excel_xlsx" framing predated
+// the skill-progressive-loader refactor and was wrong — office docs now legitimately
+// flow through read_skill → run_python, so run_python is no longer a last resort
+// for them. The description must instead point simple formats at the Layer-1 tools
+// (anti-lazy redirect) and point office docs at the read_skill flow.
+func TestRunPythonTool_Description_GuidesTooling(t *testing.T) {
 	tool := &runPythonTool{}
 	desc := tool.Description()
-	if !strings.Contains(desc, "LAST RESORT") {
-		t.Error("Description must contain 'LAST RESORT' anti-lazy guidance")
-	}
 	if !strings.Contains(desc, "create_csv") {
-		t.Error("Description must mention create_csv as Layer 1 alternative")
+		t.Error("Description must redirect simple formats to Layer-1 create_csv")
 	}
-	if !strings.Contains(desc, "create_excel_xlsx") {
-		t.Error("Description must mention create_excel_xlsx as Layer 2 alternative")
+	if !strings.Contains(desc, "read_skill") {
+		t.Error("Description must point office docs (xlsx/docx/pptx/pdf) at the read_skill flow")
 	}
 }
 

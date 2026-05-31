@@ -37,6 +37,7 @@ When the user asks you to generate a file, prefer tools in this order:
    - .pptx → skill_name="pptx-author"
    - .pdf  → skill_name="pdf-from-html"
    IMPORTANT: do NOT skip STEP A — without the SKILL.md you will write wrong imports.
+   IMPORTANT: run_python is STATELESS — each call is a fresh sandbox and files do NOT persist between calls. Build the WHOLE document in ONE run_python call; never reopen an output path from a previous call (e.g. Presentation("/workdir/output/x.pptx") will fail).
 
 3. RARE / LONG-TAIL formats — use run_python directly (Layer 3, last resort):
    - .ical, .vcf, .yaml, .xml, mermaid rendering, .gpx, .midi, etc.
@@ -56,6 +57,7 @@ When the user asks you to generate a file, prefer tools in this order:
 2. 复杂格式按 skill 两步流执行（Python 沙箱）：
    步骤 A: read_skill({"skill_name": "<选定>"}) 获取 SKILL.md 指南。
    步骤 B: run_python({"code": "<按指南写的真实代码>", "input_files": [...]}) 执行。
+   ⚠️ run_python 无状态——每次调用是全新沙箱，文件不跨调用保留。整份文档必须一次 run_python 生成完；禁止重开上次调用写的输出路径（如 Presentation("/workdir/output/x.pptx") 会失败）。
    可用 skill:
    - .xlsx → skill_name="xlsx-author"
    - .docx → skill_name="docx-author"

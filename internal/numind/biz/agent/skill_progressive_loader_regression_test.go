@@ -104,3 +104,72 @@ func TestRegression_NoInvokeSkillInProgressiveLoaderSurfaces(t *testing.T) {
 		t.Error("skill catalog header must warn against writing Python without read_skill")
 	}
 }
+
+// TestRegression_RunPythonStatelessGuidance is the permanent guard for the
+// 2026-05-31 bug-from-customer found in dev gstack /qa (agent_run_id=92).
+//
+// The LLM built a multi-slide deck across TWO run_python calls: call #1 did
+// `prs = Presentation()` → saved → COS-uploaded a valid 34KB .pptx; call #2 did
+// `prs = Presentation("/workdir/output/ai_acquisition_report.pptx")` to reopen
+// and extend it. Call #2 failed because run_python is STATELESS — each call gets
+// a fresh tmpfs container that is destroyed on return (sandbox/pool.go Return →
+// Destroy; /workdir is a per-container tmpfs per security.go), so call #1's file
+// does not exist in call #2's container. The LLM misread the failure as
+// "file corrupted or locked."
+//
+// The fix is guidance: run_python's tool Description and the system-prompt
+// OutputToolsPriorityAddendum must both tell the LLM run_python is stateless and
+// the whole file must be built in one call. This test pins that guidance so a
+// future edit can't silently drop it (same invariant-guard pattern as the
+// skill-progressive-loader test above). If this fails, investigate — don't
+// weaken the assertions.
+func TestRegression_RunPythonStatelessGuidance(t *testing.T) {
+	desc := (&runPythonTool{}).Description()
+	for _, want := range []string{"STATELESS", "ONE single run_python call", "NEVER reopen"} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("run_python Description must mention %q (stateless contract). Got:\n%s", want, desc)
+		}
+	}
+	// The system-prompt addendum must also carry the stateless warning so every
+	// agent — not only those that read a SKILL.md — gets it.
+	if !strings.Contains(OutputToolsPriorityAddendum, "STATELESS") {
+		t.Error("OutputToolsPriorityAddendum must warn that run_python is STATELESS (English section)")
+	}
+	if !strings.Contains(OutputToolsPriorityAddendum, "无状态") {
+		t.Error("OutputToolsPriorityAddendum must warn that run_python is 无状态 (Chinese section)")
+	}
+	// No double-prefix path typo may creep back into the schema/description.
+	if strings.Contains(desc, "/workdir/workdir/") {
+		t.Error("run_python Description has a /workdir/workdir/ double-prefix typo")
+	}
+	if strings.Contains(string((&runPythonTool{}).InputSchema()), "/workdir/workdir/") {
+		t.Error("run_python InputSchema has a /workdir/workdir/ double-prefix typo")
+	}
+}
+
+// TestReopensOutputPath covers the stateless-reopen detector that drives the
+// post-failure hint. It must catch the document-library open-by-path patterns
+// on /workdir/output/ and must NOT fire on the normal create-fresh-then-save
+// pattern (which would otherwise spam a misleading hint on every success).
+func TestReopensOutputPath(t *testing.T) {
+	cases := []struct {
+		name string
+		code string
+		want bool
+	}{
+		{"pptx reopen double-quote", `prs = Presentation("/workdir/output/x.pptx")`, true},
+		{"pptx reopen single-quote", `prs = Presentation('/workdir/output/x.pptx')`, true},
+		{"xlsx reopen", `wb = load_workbook("/workdir/output/x.xlsx")`, true},
+		{"docx reopen", `doc = Document('/workdir/output/x.docx')`, true},
+		{"create fresh + save (normal)", "prs = Presentation()\nprs.save('/workdir/output/x.pptx')", false},
+		{"reads input not output", `Presentation("/workdir/input/template.pptx")`, false},
+		{"no workdir path at all", `prs = Presentation()`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := reopensOutputPath(tc.code); got != tc.want {
+				t.Errorf("reopensOutputPath(%q) = %v, want %v", tc.code, got, tc.want)
+			}
+		})
+	}
+}

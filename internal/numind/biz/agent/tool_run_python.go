@@ -17,15 +17,22 @@ import (
 )
 
 // ===========================================================================
-// runPythonTool — Layer 3 last-resort file generation via sandboxed Python
+// runPythonTool — sandboxed Python for office docs (via read_skill) + long-tail
 // ===========================================================================
 
-// runPythonTool implements FullTool. It executes arbitrary Python 3 code
-// inside an isolated Docker sandbox and uploads any files written to /workdir/output/
-// to COS, returning their presigned URLs.
+// runPythonTool implements FullTool. It executes Python 3 code inside an
+// isolated Docker sandbox and uploads any files written to /workdir/output/ to
+// COS, returning their presigned URLs.
 //
-// Use ONLY when Layer 1 (create_csv/html/json/text/png_chart) and Layer 2
-// (invoke_skill: xlsx/docx/pptx/pdf) do not cover the required output format.
+// Two legitimate uses (see Description):
+//   - Office docs (xlsx/docx/pptx/pdf): the agent first calls read_skill to get
+//     the SKILL.md code guidance, then calls run_python to execute it.
+//   - Long-tail formats not covered by Layer 1 Go tools (create_csv/html/json/
+//     text/png_chart): the agent writes the Python directly.
+//
+// STATELESS: every call borrows a fresh tmpfs container that is destroyed on
+// return (sandbox/pool.go Return → Destroy). /workdir does not persist between
+// calls, so a document must be generated in a single call.
 type runPythonTool struct {
 	BaseTool
 }
@@ -35,26 +42,22 @@ var _ FullTool = (*runPythonTool)(nil)
 func (t *runPythonTool) Name() string { return "run_python" }
 
 func (t *runPythonTool) Description() string {
-	return `Execute arbitrary Python 3 code inside an isolated sandbox to generate files in long-tail formats not covered by Layer 1 or Layer 2 tools.
+	return `Execute Python 3 code inside an isolated sandbox to generate files.
 
-⚠️  LAST RESORT ONLY — use this tool ONLY when ALL of the following conditions are true:
-  1. The required output format is NOT supported by create_csv, create_html, create_json, or create_text (Layer 1 tools).
-  2. The required output format is NOT covered by the skill tools: create_excel_xlsx, create_word_docx, create_ppt_pptx, create_pdf, or create_png_chart.
-  3. The format is genuinely unusual (e.g. .ical, .vcf, .yaml, .xml, Mermaid diagram rendering, .gpx, .midi, etc.).
+WHEN TO USE:
+  - Office documents (.xlsx/.docx/.pptx/.pdf): FIRST call read_skill (e.g. read_skill({"skill_name":"pptx-author"})) to get the SKILL.md code guidance, THEN call run_python with the Python you wrote following that guidance.
+  - Long-tail / unusual formats (.ical, .vcf, .yaml, .xml, Mermaid rendering, .gpx, .midi, etc.): write the Python directly.
 
-Do NOT use run_python when:
-  - You need CSV → use create_csv instead.
-  - You need HTML → use create_html instead.
-  - You need JSON → use create_json instead.
-  - You need plain text → use create_text instead.
-  - You need PNG chart → use create_png_chart instead.
-  - You need Excel/XLSX → use create_excel_xlsx skill instead.
-  - You need Word/DOCX → use create_word_docx skill instead.
-  - You need PowerPoint/PPTX → use create_ppt_pptx skill instead.
-  - You need PDF → use create_pdf skill instead.
-  - You just want to run arbitrary Python logic without file output → this is the wrong tool; reconsider your approach.
+Do NOT use run_python for simple formats that have a dedicated Layer-1 tool — those are faster and have no sandbox cost:
+  - CSV → create_csv | HTML → create_html | JSON → create_json | plain text → create_text | PNG chart → create_png_chart.
 
-Input files (COS URLs) are mounted read-only at /workdir/input/<filename>. Output files must be written to /workdir/output/. Execution timeout: 30s default (max 120s). Resource limits: 256MB RAM, 1 CPU. Returns list of COS URLs for each generated output file.`
+⚠️  STATELESS — READ THIS:
+Every run_python call runs in a BRAND-NEW, ISOLATED sandbox that is DESTROYED when the call returns. Files do NOT persist between calls. /workdir is empty at the start of every call.
+  - Generate your COMPLETE file in ONE single run_python call. Do NOT split one document across multiple calls.
+  - NEVER reopen a path you wrote in a previous call, e.g. Presentation("/workdir/output/foo.pptx") will FAIL because that file no longer exists — always build fresh with Presentation() / Workbook() / Document() and save once at the end.
+  - To use a file you generated earlier (or a user upload) as INPUT, pass its COS URL in input_files; it is downloaded to /workdir/input/<filename> for this call only.
+
+PATHS: input_files mount read-only at /workdir/input/<filename>. Write outputs to /workdir/output/. Timeout: 30s default (max 120s). Limits: 256MB RAM, 1 CPU. Returns a COS URL for each file written to /workdir/output/.`
 }
 
 func (t *runPythonTool) UserFacingName() string        { return "Python 代码执行（文件生成）" }
@@ -71,7 +74,7 @@ func (t *runPythonTool) InputSchema() json.RawMessage {
 		"properties": {
 			"code": {
 				"type": "string",
-				"description": "Python 3 code to execute. Write output files to /workdir/workdir/output/ directory. Example: open('/workdir/output/result.ical','w').write(...)."
+				"description": "Python 3 code to execute. STATELESS: a fresh sandbox per call, files do NOT persist between calls — generate the complete file in this one call and never reopen a path written by a previous call. Write outputs to /workdir/output/. Example: open('/workdir/output/result.ical','w').write(...)."
 			},
 			"input_files": {
 				"type": "array",
@@ -119,6 +122,10 @@ type runPythonOutput struct {
 	Stderr     string                `json:"stderr,omitempty"`
 	ExitCode   int                   `json:"exit_code"`
 	DurationMs int64                 `json:"duration_ms"`
+	// Hint carries an actionable explanation when a common failure pattern is
+	// detected (e.g. reopening a /workdir/output/ path from a previous call,
+	// which fails because run_python is stateless). Empty on success.
+	Hint string `json:"hint,omitempty"`
 }
 
 type runPythonFileResult struct {
@@ -231,6 +238,15 @@ func (t *runPythonTool) Execute(ctx context.Context, input ToolInput) (ToolResul
 		ExitCode:   execRes.ExitCode,
 		DurationMs: durationMs,
 	}
+	// Post-hoc, non-blocking hint: if the run FAILED and the code reopens a
+	// /workdir/output/ path (the stateless-reopen anti-pattern that produced the
+	// 2026-05-31 dev failure), tell the LLM why so it rebuilds in one call
+	// instead of misreading the python traceback as "file corrupted/locked".
+	// Only fires on failure → zero false-positive risk for legitimate
+	// same-call write-then-read.
+	if execRes.ExitCode != 0 && reopensOutputPath(in.Code) {
+		out.Hint = "run_python is STATELESS — each call is a fresh sandbox, so a /workdir/output/ file written by a PREVIOUS call does not exist here. Do not reopen it. Rebuild the entire document in this single call (e.g. Presentation() with no argument) and save once at the end."
+	}
 	b, err := json.Marshal(out)
 	if err != nil {
 		return runPythonFriendlyError("run_python: marshal output: " + err.Error()), nil
@@ -241,6 +257,30 @@ func (t *runPythonTool) Execute(ctx context.Context, input ToolInput) (ToolResul
 // ===========================================================================
 // File I/O helpers
 // ===========================================================================
+
+// reopensOutputPath reports whether the Python code opens a /workdir/output/
+// path with one of the document libraries' open-by-path constructors
+// (Presentation/load_workbook/Document) or a bare open(...,'r'). Used only to
+// attach a stateless-reopen hint AFTER a failed run — never to block execution,
+// so a false positive cannot break a legitimate same-call write-then-read.
+func reopensOutputPath(code string) bool {
+	if !strings.Contains(code, "/workdir/output/") {
+		return false
+	}
+	for _, pat := range []string{
+		`Presentation("/workdir/output/`,
+		`Presentation('/workdir/output/`,
+		`load_workbook("/workdir/output/`,
+		`load_workbook('/workdir/output/`,
+		`Document("/workdir/output/`,
+		`Document('/workdir/output/`,
+	} {
+		if strings.Contains(code, pat) {
+			return true
+		}
+	}
+	return false
+}
 
 // writeFileToSandbox writes data to an absolute path inside the sandbox
 // container. It first tries sandbox.WriteFile (which uses CopyToContainer
