@@ -35,6 +35,19 @@ func (t *kbSearchTool) IsReadOnly() bool            { return true }
 func (t *kbSearchTool) IsSearchOrReadCommand() bool { return true }
 func (t *kbSearchTool) AlwaysLoad() bool            { return true }
 
+// InputSchema returns the JSON Schema describing this tool's parameters,
+// so the LLM receives a structured function-calling contract (not just prose).
+func (t *kbSearchTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"query":   {"type": "string", "description": "The knowledge-base search query."},
+			"doc_ids": {"type": "array", "items": {"type": "integer"}, "description": "Optional list of document IDs to restrict the search to."}
+		},
+		"required": ["query"]
+	}`)
+}
+
 func (t *kbSearchTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	var in kbSearchInput
 	if err := json.Unmarshal(input, &in); err != nil {

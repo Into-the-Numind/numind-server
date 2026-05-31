@@ -96,6 +96,20 @@ func (t *webSearchTool) returnSoftError(format string, args ...any) (ToolResult,
 }
 
 // Execute validates input, checks cache, calls Tavily via aiservice, and caches the result.
+// InputSchema returns the JSON Schema describing this tool's parameters,
+// so the LLM receives a structured function-calling contract (not just prose).
+func (t *webSearchTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"query":           {"type": "string", "description": "The web search query."},
+			"max_results":     {"type": "integer", "minimum": 1, "maximum": 10, "description": "Number of results to return (1-10, default 5)."},
+			"allowed_domains": {"type": "array", "items": {"type": "string"}, "description": "Optional whitelist of domains to restrict results to."}
+		},
+		"required": ["query"]
+	}`)
+}
+
 func (t *webSearchTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	start := time.Now()
 

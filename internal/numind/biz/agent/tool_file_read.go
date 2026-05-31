@@ -138,6 +138,19 @@ func (t *fileReadTool) returnSoftError(fileName, format string, args ...any) (To
 // message — see tool_web_fetch.go:80-95 for the canonical rationale. Aligns with
 // Codex `RespondToModel` (codex-rs/tools/src/function_call_error.rs) and Claude
 // Code `ValidationResult` (FileReadTool.ts) patterns.
+// InputSchema returns the JSON Schema describing this tool's parameters,
+// so the LLM receives a structured function-calling contract (not just prose).
+func (t *fileReadTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"file_url": {"type": "string", "format": "uri", "description": "URL of the uploaded file to read (e.g. an agent attachment)."},
+			"prompt":   {"type": "string", "description": "Optional instruction describing what to extract from the file."}
+		},
+		"required": ["file_url"]
+	}`)
+}
+
 func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	var in fileReadInput
 	if err := json.Unmarshal(input, &in); err != nil {
