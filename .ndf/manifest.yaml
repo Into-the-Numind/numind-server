@@ -1,5 +1,34 @@
 schema_version: '2.0'
 features:
+- id: agent-mode-open-tools-skill-as-guidance
+  ndf_version: '3.0'
+  description: 'Standard NDF — switch agent-mode tool-permission model from deny-by-default (UseSkillTurnScope validator + turn.AllowedTools, tools gated behind use_skill) to Codex full-open: every agent defaults to ALL registered tools, picks autonomously per task. Skills are demoted to pure guidance docs (help the LLM use existing capabilities well), no longer gate/unlock tools. Three changes: (1) delete the permission layer — UseSkillTurnScope deny logic + turn.AllowedTools + WithAgentBaseToolNames/WithFullToolMap ctx injection; turn keeps only cap counting + loaded-skill list. (2) allowed_tools field kept but re-semanticized whitelist→recommendation (rendered into skill body tail as a hint), ZERO data migration. (3) merge use_skill (DB business skills) + read_skill (disk platform skills) into one load_skill tool + one unified §2 catalog — after permission removal use_skill''s only unique function (tool unlock) vanishes, making it homogeneous with read_skill. NOTE: the single-loop refactor (delete invoke_skill double-LLM) is NOT in scope — already landed 2026-05-29; this feature only ensures the merge does not regress it. The ONE real tradeoff (accepted by user 2026-05-31): prompt-injection blast radius grows (a sales-FAQ agent can now reach bash) — but sandbox+8 P0 bashvalidator still constrain WHAT code runs, compliance gates content, budget caps cost. B2B SaaS acceptable.'
+  track: standard
+  stage: S0
+  classification_reason: 'Standard — (1) no DB schema change (allowed_tools kept, zero migration) (2) no new API endpoint (load_skill is internal agent tool) (3) no new external service (4) >3 files (runner.go tool registration + use_skill_turnscope.go + tool_use_skill.go + tool_read_skill.go + skill_catalog.go + state + regression test + tool-display.yaml + new load_skill) (5) HIGH RISK — touches runner.go = all agents; removing the tool-permission layer is security/permission-adjacent; an error = platform-wide agent behavior anomaly or tool gating failure. Conditions 4+5 force Standard. User 2026-05-31 explicitly chose Standard via cold-start decision. NOT bug-from-customer (deliberate architecture decision) → Rule 11 N/A.'
+  last_updated_by: ai-s0-card-drafted
+  last_updated_at: '2026-05-31T00:00:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: feature/agent-mode-open-tools-skill-as-guidance
+  worktrees:
+    numind-server: /private/tmp/wt-agent-mode-open-tools-skill-as-guidance-numind-server
+  progress:
+    total_tasks: 0
+    completed_tasks: 0
+    reviewed_tasks: 0
+  decisions:
+  - 'S0-D1 (user 2026-05-31): scope = permission removal + use_skill/read_skill merge + allowed_tools recommendation semantics. doc-generation防错 hardening (ADR 0001 items) KEPT SEPARATE (skill-progressive-loader remaining track) — premise shifted because single-loop overlap already landed 2026-05-29, so less reason to merge. AskUserQuestion confirmed "keep separate".'
+  - 'S0-D2 (ai 2026-05-31): cold-start brief premise corrected — "改单 loop / 废双 LLM invoke_skill" already done on develop (skill_progressive_loader_regression_test.go pins it); PendingBody overwrite bug already fixed (commit 94910336). This feature is pure permission-removal + tool-merge, narrower than briefed.'
+  dependencies:
+  - 'SOFT dep on agent-tool-schema-infra (parallel Standard, another session): touches same files (runner.go registration / tool_full.go / base_tool.go / tool_use_skill.go). Suggested: let it land first, rebase onto it. As of S0 draft it is NOT in manifest and has NO branch (nothing landed yet). S4 pre-flight: git fetch + check.'
+  related_features:
+  - 'agent-mode-v2-skill-invocation (merged 2026-05-24) — this feature REVERSES its AC-3 (turn-scope allowed_tools) + AC-10 (deny-by-default base whitelist). Those ACs become obsolete.'
+  - 'skill-progressive-loader (S1, stale) — its CORE single-loop work already landed; remaining doc-gen防错 is a separate track. This feature owns the use_skill/read_skill MERGE.'
+  blockers: []
+  created_at: '2026-05-31T00:00:00+08:00'
+
 - id: cos-download-content-disposition
   ndf_version: '3.0'
   description: 'Bug-from-customer: 用户点击 agent 生成的文件下载时浏览器弹"不安全"警告。Root cause: sandbox.UploadOutputFile / tool_create_helpers.uploadGeneratedFile / tool_run_python 输出 artifact 时调用 util.GenerateSignedURL 生成 presigned URL，但既没在上传时设 Content-Disposition 也没在 URL query 注入 response-content-disposition，COS 默认 inline 服务文件，触发 Chrome cross-site-download safety heuristic ("无法验证此文件来源")。Fix: 新增 util.GenerateSignedDownloadURL helper 在 query 注入 response-content-disposition=attachment;filename*=UTF-8''<encoded>，filename 走 RFC 5987 percent-encode + CRLF strip (defense in depth)；切换 3 个 user-download call sites (sandbox/cos_upload.go, tool_create_helpers.go, tool_run_python.go) 到新 helper，剩余 8 个 inline-display / LLM 消费 call sites 保持原 GenerateSignedURL 不变（加 attachment 会破坏 inline 渲染）。'
@@ -27,6 +56,7 @@ features:
 
 - id: skill-progressive-loader
   ndf_version: '3.0'
+  progress_note: 'CORRECTION 2026-05-31 (by agent-mode-open-tools-skill-as-guidance S0): the CORE single-loop refactor (delete invoke_skill double-LLM → read_skill + run_python) ALREADY LANDED on develop 2026-05-29 — see internal/numind/biz/agent/skill_progressive_loader_regression_test.go (permanent guard) + commits ~58275150 / 242b7b11. This S1 entry is STALE (no worktree, no live branch). Remaining scope under THIS feature = doc-generation防错 hardening ONLY (ADR 0001 action items #1-3: SKILL.md pseudo-code cleanup / render-back loop / xlsx recalc). The use_skill/read_skill MERGE + permission removal is owned by agent-mode-open-tools-skill-as-guidance, NOT here. User 2026-05-31 chose to keep doc-gen防错 as a SEPARATE track.'
   description: 'Standard NDF — refactor invoke_skill architecture. Current design has TWO LLMs (outer agent calls invoke_skill tool → inner LLM reads SKILL.md and writes Python). pptx-author SKILL.md teaches outer-agent declarative invocation pseudo-code (`import invoke_skill; invoke_skill("pptx-author", {...})`), inner LLM mistakes it for real code → ModuleNotFoundError. Two reference projects both use single-loop progressive disclosure (Codex codex-rs/core-skills/src/loader.rs) or forked sub-agent with real tool names (Claude Code SkillTool.ts). Decision between the two patterns deferred to S2. Affects pptx-author + xlsx-author + docx-author + pdf-from-html.'
   track: standard
   stage: S1
