@@ -786,22 +786,26 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 
 	var einoTools []einotool.BaseTool
 	toolMap := make(map[string]FullTool)
-	// v2 #2: 深拷贝 req.ToolNames 供 ctx 注入 (UseSkillTurnScope validator 读) — 拒绝
-	// runner 后续逻辑误改 req.ToolNames 影响白名单判定的潜在 bug。
-	basicToolNames := make([]string, len(req.ToolNames))
-	copy(basicToolNames, req.ToolNames)
+	// open-tools-skill-as-guidance: full-open registration. Every agent gets every
+	// registered tool that is enabled under a fully-enabled config — the IsEnabled
+	// filter drops hard stubs (document_generate returns false unconditionally) while
+	// keeping sandbox/skill/image tools (their IsEnabled reads a ToolConfig flag we set
+	// true here). Skills no longer gate tools; the old req.ToolNames whitelist + the
+	// dead UseSkillTurnScope deny are gone. use_skill stays binding-gated below.
 	if r.registry != nil {
-		for _, name := range req.ToolNames {
-			if ft, ok := r.registry.GetTool(name); ok {
-				base := adaptFullToEinoTool(ft, effectiveHooks)
-				if useCompactV2 {
-					// V2 路径：包一层 L0 artifact 处理。InvokableRun 返回 output 若超过阈值，
-					// 写盘 + 把 output 替换为 <persisted-output ref="..." /> 引用。
-					base = wrapToolWithV2ArtifactProcessing(base, ft.Name(), run.ID, r.artifactStore, r.artifactDir)
-				}
-				einoTools = append(einoTools, base)
-				toolMap[name] = ft
+		fullCfg := FullyEnabledToolConfig()
+		for _, ft := range r.registry.ListAllTools() {
+			if !ft.IsEnabled(fullCfg) || ft.Name() == UseSkillToolName {
+				continue
 			}
+			base := adaptFullToEinoTool(ft, effectiveHooks)
+			if useCompactV2 {
+				// V2 路径：包一层 L0 artifact 处理。InvokableRun 返回 output 若超过阈值，
+				// 写盘 + 把 output 替换为 <persisted-output ref="..." /> 引用。
+				base = wrapToolWithV2ArtifactProcessing(base, ft.Name(), run.ID, r.artifactStore, r.artifactDir)
+			}
+			einoTools = append(einoTools, base)
+			toolMap[ft.Name()] = ft
 		}
 	}
 	// V1.5 板块 2 task 2.2 — V2 路径 always-inject 系统级 read_tool_artifact 工具。
@@ -810,58 +814,19 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	if useCompactV2 {
 		einoTools = append(einoTools, compactv2.NewReadArtifactTool(r.artifactStore, r.runStore, r.artifactDir, middleware.UserIDFromCtx))
 	}
-	// v2 #2 agent-mode-v2-skill-invocation: 装载 use_skill + binding allowed_tools 并集。
-	// 仅在有 binding (useSkillTurnState != nil) 时启用，保 v1 Agent 零回归。
-	// turn-scope 限制由 UseSkillTurnScope permission validator (T05) 在 PreToolCall 强制：
-	// 默认 deny 非 base 工具，只有 use_skill 调用后才把对应 Skill 的 allowed_tools 加入
-	// turn.AllowedTools set，下一个 user input 由 runner.Run 新调用重置 turn state。
+	// open-tools-skill-as-guidance: use_skill stays binding-gated (it soft-errors
+	// without a turn state, so we don't expose it to skill-less agents). The dead
+	// UseSkillTurnScope deny + the binding allowed_tools union are gone — full-open
+	// above already registers every other tool, so skills no longer unlock anything.
 	if useSkillTurnState != nil && r.registry != nil {
-		// (1) use_skill 本身 — LLM 通过 tool-call 主动调用入口
 		if ft, ok := r.registry.GetTool(UseSkillToolName); ok {
 			einoTools = append(einoTools, adaptFullToEinoTool(ft, effectiveHooks))
 			toolMap[UseSkillToolName] = ft
 		} else {
-			log.Errorw("AgentRunner.Run: use_skill tool not registered — Agent has bindings but tool missing (biz.go T07 wire may be incomplete)",
+			log.Errorw("AgentRunner.Run: use_skill tool not registered — Agent has bindings but tool missing",
 				"agent_id", req.AgentDefinitionID)
 		}
-		// (2) 收集所有 binding 的 allowed_tools 并集 (复用 turn.SkillByID 解 N+1, S2-D19)
-		//     去重 + 排除已在 base 集合的工具 (避免重复注册到 Eino)
-		extraTools := make(map[string]struct{})
-		for _, sk := range useSkillTurnState.SkillByID {
-			if sk == nil || len(sk.AllowedTools) == 0 {
-				continue
-			}
-			var allowed []string
-			if err := json.Unmarshal(sk.AllowedTools, &allowed); err != nil {
-				log.Warnw("AgentRunner.Run: Skill.AllowedTools JSON malformed; 视为空",
-					"agent_id", req.AgentDefinitionID, "skill_id", sk.ID, "skill_name", sk.Name, "error", err)
-				continue
-			}
-			for _, t := range allowed {
-				if _, dup := extraTools[t]; dup {
-					continue
-				}
-				if _, base := toolMap[t]; base {
-					continue
-				}
-				extraTools[t] = struct{}{}
-			}
-		}
-		// (3) 注册并集工具到 Eino tool list — 运行期由 UseSkillTurnScope validator 在
-		//     未 use_skill 前 deny；use_skill 后 turn.AllowedTools 含 set 名时 allow。
-		for name := range extraTools {
-			if ft, ok := r.registry.GetTool(name); ok {
-				einoTools = append(einoTools, adaptFullToEinoTool(ft, effectiveHooks))
-				toolMap[name] = ft
-			} else {
-				log.Warnw("AgentRunner.Run: binding allowed_tool not registered in factory",
-					"agent_id", req.AgentDefinitionID, "tool_name", name)
-			}
-		}
 	}
-	// v2 #2: 注入 Agent 基础工具白名单到 ctx — UseSkillTurnScope validator (T05) 读，
-	// 判定 "该工具是 Agent 原生 base 工具吗?" (Passthrough vs Deny 决策依据)
-	queryCtx = WithAgentBaseToolNames(queryCtx, basicToolNames)
 	// #6 permission-pipeline: stash FullTool map into ctx，
 	// 供 WrapHooks.buildRequest 反查每个工具的 FullTool 实例（取 IsDestructive 等元数据）。
 	queryCtx = WithFullToolMap(queryCtx, toolMap)

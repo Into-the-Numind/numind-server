@@ -79,6 +79,17 @@ type ToolConfig struct {
 	// 后续 feature 按需扩展
 }
 
+// FullyEnabledToolConfig returns a ToolConfig with every gate ON. It is the
+// "full-open" filter input (open-tools-skill-as-guidance): the runner registers
+// every registry tool whose IsEnabled(FullyEnabledToolConfig()) is true. Tools that
+// gate on a ToolConfig flag (bash_exec/run_python via EnableSandbox, image_gen via
+// EnableImageGen, skills via EnableSkills) pass; hard stubs whose IsEnabled returns
+// false unconditionally (document_generate) are excluded. Default-true BaseTool
+// tools (kb_search, web_*, memory_*, create_*, get_current_date, …) also pass.
+func FullyEnabledToolConfig() ToolConfig {
+	return ToolConfig{EnableSandbox: true, EnableImageGen: true, EnableSkills: true}
+}
+
 // ToolInput / ToolResult：通用 JSON 结构
 type ToolInput = json.RawMessage
 type ToolResult = json.RawMessage

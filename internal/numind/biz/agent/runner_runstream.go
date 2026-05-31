@@ -302,23 +302,28 @@ func (r *agentRunner) RunStream(
 
 	var einoTools []einotool.BaseTool
 	toolMap := make(map[string]FullTool)
-	basicToolNames := make([]string, len(req.ToolNames))
-	copy(basicToolNames, req.ToolNames)
+	// open-tools-skill-as-guidance: full-open registration (mirrors runner.go Run).
+	// Every agent gets every registry tool enabled under a fully-enabled config;
+	// IsEnabled drops hard stubs (document_generate). Skills no longer gate tools;
+	// the dead UseSkillTurnScope deny + the allowed_tools union are gone.
 	if r.registry != nil {
-		for _, name := range req.ToolNames {
-			if ft, ok := r.registry.GetTool(name); ok {
-				base := adaptFullToEinoTool(ft, effectiveHooks)
-				if useCompactV2 {
-					base = wrapToolWithV2ArtifactProcessing(base, ft.Name(), run.ID, r.artifactStore, r.artifactDir)
-				}
-				einoTools = append(einoTools, base)
-				toolMap[name] = ft
+		fullCfg := FullyEnabledToolConfig()
+		for _, ft := range r.registry.ListAllTools() {
+			if !ft.IsEnabled(fullCfg) || ft.Name() == UseSkillToolName {
+				continue
 			}
+			base := adaptFullToEinoTool(ft, effectiveHooks)
+			if useCompactV2 {
+				base = wrapToolWithV2ArtifactProcessing(base, ft.Name(), run.ID, r.artifactStore, r.artifactDir)
+			}
+			einoTools = append(einoTools, base)
+			toolMap[ft.Name()] = ft
 		}
 	}
 	if useCompactV2 {
 		einoTools = append(einoTools, compactv2.NewReadArtifactTool(r.artifactStore, r.runStore, r.artifactDir, middleware.UserIDFromCtx))
 	}
+	// use_skill stays binding-gated (soft-errors without a turn state).
 	if useSkillTurnState != nil && r.registry != nil {
 		if ft, ok := r.registry.GetTool(UseSkillToolName); ok {
 			einoTools = append(einoTools, adaptFullToEinoTool(ft, effectiveHooks))
@@ -327,35 +332,7 @@ func (r *agentRunner) RunStream(
 			log.Errorw("AgentRunner.RunStream: use_skill tool not registered",
 				"agent_id", req.AgentDefinitionID)
 		}
-		extraTools := make(map[string]struct{})
-		for _, sk := range useSkillTurnState.SkillByID {
-			if sk == nil || len(sk.AllowedTools) == 0 {
-				continue
-			}
-			var allowed []string
-			if jsonErr := json.Unmarshal(sk.AllowedTools, &allowed); jsonErr != nil {
-				log.Warnw("AgentRunner.RunStream: Skill.AllowedTools JSON malformed",
-					"agent_id", req.AgentDefinitionID, "skill_id", sk.ID, "error", jsonErr)
-				continue
-			}
-			for _, t := range allowed {
-				if _, dup := extraTools[t]; dup {
-					continue
-				}
-				if _, base := toolMap[t]; base {
-					continue
-				}
-				extraTools[t] = struct{}{}
-			}
-		}
-		for name := range extraTools {
-			if ft, ok := r.registry.GetTool(name); ok {
-				einoTools = append(einoTools, adaptFullToEinoTool(ft, effectiveHooks))
-				toolMap[name] = ft
-			}
-		}
 	}
-	queryCtx = WithAgentBaseToolNames(queryCtx, basicToolNames)
 	queryCtx = WithFullToolMap(queryCtx, toolMap)
 
 	// 6. Short-circuit when no tools resolved (same as Run).

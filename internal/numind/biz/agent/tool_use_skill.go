@@ -31,7 +31,6 @@ const (
 	// Tool result status enum (Langfuse span output + ack JSON 复用，避免魔法字符串)
 	toolStatusLoaded = "loaded"
 	toolStatusError  = "error"
-	toolStatusWarn   = "warn" // happy path 但有 non-fatal 警告（如 allowed_tools JSON malformed）
 )
 
 // ── ctx keys (typed struct{}, 避免 string-key 冲突) ──────────────────────────
@@ -40,17 +39,8 @@ const (
 type ctxKeyUseSkillTurnT struct{}
 
 // CtxKeyUseSkillTurn — 由 runner.Run 在装载 binding 成功后注入；
-// use_skill tool 和 UseSkillTurnScope permission validator 都从 ctx 读
-// 这个 key 取 *UseSkillTurnState。
+// use_skill tool 从 ctx 读这个 key 取 *UseSkillTurnState。
 var CtxKeyUseSkillTurn = ctxKeyUseSkillTurnT{}
-
-// ctxKeyAgentBaseToolNamesT — runner 注入 Agent 基础工具白名单 []string 的 ctx key 类型
-type ctxKeyAgentBaseToolNamesT struct{}
-
-// CtxKeyAgentBaseToolNames — 由 runner.Run 在装载工具后注入，
-// UseSkillTurnScope validator 读取做 "是不是 Agent 原生白名单工具" 的判断。
-// 值类型: []string
-var CtxKeyAgentBaseToolNames = ctxKeyAgentBaseToolNamesT{}
 
 // ctxKeySkillBindingsT — runner 注入 binding 列表的 ctx key 类型（预留）
 type ctxKeySkillBindingsT struct{}
@@ -79,7 +69,6 @@ type PendingSkill struct {
 //
 // 字段：
 //   - InvocationCount: 本 turn 已 use_skill 调用次数，每次 +1，超 Cap 拒绝
-//   - AllowedTools: turn 内由 use_skill 累计添加的 Skill 工具白名单（去重 set）
 //   - Cap: use_skill 调用上限（默认 UseSkillTurnCapDefault = 3）
 //   - PendingSkills: use_skill Execute 顺序 append 的待注入快照列表；runner
 //     在下次 LLM Generate 前一次性消费全部并清空，每条包成 <system-reminder>
@@ -95,7 +84,6 @@ type PendingSkill struct {
 // 保证 SkillByName 1:1 不冲突（S1-D13）。
 type UseSkillTurnState struct {
 	InvocationCount int
-	AllowedTools    map[string]struct{}
 	Cap             int
 	PendingSkills   []PendingSkill
 	SkillByID       map[uint]*model.Skill
@@ -110,7 +98,6 @@ func NewUseSkillTurnState(cap int) *UseSkillTurnState {
 	}
 	return &UseSkillTurnState{
 		InvocationCount: 0,
-		AllowedTools:    make(map[string]struct{}),
 		Cap:             cap,
 		SkillByID:       make(map[uint]*model.Skill),
 		SkillByName:     make(map[string]*model.Skill),
@@ -128,17 +115,6 @@ func WithUseSkillTurn(ctx context.Context, s *UseSkillTurnState) context.Context
 func UseSkillTurnFromCtx(ctx context.Context) (*UseSkillTurnState, bool) {
 	s, ok := ctx.Value(CtxKeyUseSkillTurn).(*UseSkillTurnState)
 	return s, ok && s != nil
-}
-
-// WithAgentBaseToolNames 把 Agent 基础工具白名单写入 ctx（v2 #2 permission validator 用）。
-func WithAgentBaseToolNames(ctx context.Context, names []string) context.Context {
-	return context.WithValue(ctx, CtxKeyAgentBaseToolNames, names)
-}
-
-// AgentBaseToolNamesFromCtx 从 ctx 取基础工具白名单；不存在时 ok=false。
-func AgentBaseToolNamesFromCtx(ctx context.Context) ([]string, bool) {
-	n, ok := ctx.Value(CtxKeyAgentBaseToolNames).([]string)
-	return n, ok
 }
 
 // WithSkillBindings 把 runner 启动时查到的 Skill 列表写入 ctx（spec §3.7 预留 + S4-D26 校正）。
@@ -179,7 +155,7 @@ var _ FullTool = (*useSkillTool)(nil)
 func (t *useSkillTool) Name() string { return UseSkillToolName }
 
 func (t *useSkillTool) Description() string {
-	return "Call a Skill that is bound to this Agent. The Skill's detailed guide will be loaded into the conversation context, and the Skill's required tools will be temporarily enabled for this turn. Input: {\"name\": string} — the Skill name (must be one listed in the '可用技能' section of system prompt)."
+	return "Call a Skill that is bound to this Agent. The Skill's detailed guide will be loaded into the conversation context. Input: {\"name\": string} — the Skill name (must be one listed in the '可用技能' section of system prompt)."
 }
 
 func (t *useSkillTool) UserFacingName() string { return "调用技能" }
@@ -207,16 +183,15 @@ func (t *useSkillTool) InputSchema() json.RawMessage {
 
 // Execute 实现 use_skill 的核心逻辑（spec §3.1，T03 完整实现）。
 //
-// 8 步：
+// 7 步：
 //  1. JSON unmarshal & validate name
 //  2. 取 ctx 注入的 turn state（runner 维护）
 //  3. cap check（默认 ≤3 次/turn）
 //  4. lookup Skill via turn.SkillByName（runner 缓存，0 DB 调用；不在 map = 未装载或不存在）
 //  5. business validate（IsActive / BodyMd 非空）
-//  6. merge allowed_tools 到 turn-scope set（去重）
-//  7. append turn.PendingSkills（同 turn 内串调累积保留所有，不覆盖；
+//  6. append turn.PendingSkills（同 turn 内串调累积保留所有，不覆盖；
 //     runner 在下次 LLM Generate 前一次性消费，每条包 system-reminder user msg 注入）
-//  8. InvocationCount++ + 返回 acknowledgement JSON
+//  7. InvocationCount++ + 返回 acknowledgement JSON
 //
 // 永不返回非 nil error — 所有错误用 tool result 表达让 LLM 优雅恢复。
 // Langfuse span 记录 skill metadata（spec §7）。
@@ -301,22 +276,7 @@ func (t *useSkillTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		return ToolResult(jsonErr("技能 '%s' 内容为空，请联系配置者更新", p.Name)), nil
 	}
 
-	// 6. merge allowed_tools 到 turn-scope set
-	var allowedTools []string
-	allowedToolsWarn := ""
-	if len(sk.AllowedTools) > 0 {
-		if err := json.Unmarshal(sk.AllowedTools, &allowedTools); err != nil {
-			// allowed_tools JSON malformed — log to span output (warn 不阻塞 happy path)
-			// resultStatus 改用独立 warn 状态而非污染 error 字段，区别于"加载失败"
-			allowedToolsWarn = err.Error()
-			allowedTools = nil
-		}
-	}
-	for _, toolName := range allowedTools {
-		turn.AllowedTools[toolName] = struct{}{}
-	}
-
-	// 7. append PendingSkill — runner outer-loop 在下次 attempt 的 Generate 前可消费 (备用通道)
+	// 6. append PendingSkill — runner outer-loop 在下次 attempt 的 Generate 前可消费 (备用通道)
 	// 注意 (S4-D27): Eino 单 attempt 场景下 outer-loop 注入对本 turn 不生效；
 	// 实际 body 通过 ack JSON 的 body 字段直接给 LLM (tool result 通道 LLM 必读)。
 	// PendingSkills 保留为多 attempt / 未来 Eino hook 扩展兼容。
@@ -328,13 +288,8 @@ func (t *useSkillTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		Body:    sk.BodyMd,
 	})
 
-	// 8. count++ + 返回 acknowledgement (含完整 body 包 system-reminder，S4-D27 主通道)
+	// 7. count++ + 返回 acknowledgement (含完整 body 包 system-reminder，S4-D27 主通道)
 	turn.InvocationCount++
-
-	if allowedToolsWarn != "" {
-		resultStatus = toolStatusWarn
-		resultError = "allowed_tools_unmarshal:" + allowedToolsWarn
-	}
 
 	// system-reminder 包装的 body 直接放进 ack — LLM 通过 tool result 必读，
 	// 不依赖 runner outer-loop attempt 注入（spec §3.3 路径 b: tool result）。
@@ -342,15 +297,14 @@ func (t *useSkillTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		sk.Name, sk.Version, sk.BodyMd)
 
 	ack := map[string]any{
-		"status":              toolStatusLoaded, // ack 永远 "loaded"——LLM 视角 Skill 已就绪
-		"skill_name":          sk.Name,
-		"skill_version":       sk.Version,
-		"body_length":         len(sk.BodyMd),
-		"body":                bodyWrapped, // S4-D27: 完整 body in tool result (LLM 必读)
-		"allowed_tools_added": allowedTools,
-		"turn_invocation":     turn.InvocationCount,
-		"turn_cap":            turn.Cap,
-		"message":             fmt.Sprintf("技能 '%s' 已载入对话上下文，请根据技能指引完成任务", sk.Name),
+		"status":          toolStatusLoaded, // ack 永远 "loaded"——LLM 视角 Skill 已就绪
+		"skill_name":      sk.Name,
+		"skill_version":   sk.Version,
+		"body_length":     len(sk.BodyMd),
+		"body":            bodyWrapped, // S4-D27: 完整 body in tool result (LLM 必读)
+		"turn_invocation": turn.InvocationCount,
+		"turn_cap":        turn.Cap,
+		"message":         fmt.Sprintf("技能 '%s' 已载入对话上下文，请根据技能指引完成任务", sk.Name),
 	}
 	out, err := json.Marshal(ack)
 	if err != nil || len(out) == 0 {

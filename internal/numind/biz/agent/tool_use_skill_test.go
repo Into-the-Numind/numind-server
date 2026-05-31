@@ -20,9 +20,6 @@ func TestUseSkillTurn_NewState_DefaultCap(t *testing.T) {
 	if s.InvocationCount != 0 {
 		t.Errorf("InvocationCount should start at 0, got %d", s.InvocationCount)
 	}
-	if s.AllowedTools == nil {
-		t.Error("AllowedTools map should be non-nil")
-	}
 	if s.SkillByID == nil || s.SkillByName == nil {
 		t.Error("SkillByID and SkillByName maps should be non-nil")
 	}
@@ -78,30 +75,6 @@ func TestUseSkillTurnFromCtx_NilValue_NotOK(t *testing.T) {
 	_, ok := UseSkillTurnFromCtx(ctx)
 	if ok {
 		t.Error("explicit nil should return ok=false (defensive guard)")
-	}
-}
-
-func TestUseSkillTurn_WithAgentBaseToolNames_RoundTrip(t *testing.T) {
-	want := []string{"bash_exec", "kb_search", "web_search"}
-	ctx := WithAgentBaseToolNames(context.Background(), want)
-	got, ok := AgentBaseToolNamesFromCtx(ctx)
-	if !ok {
-		t.Fatal("AgentBaseToolNamesFromCtx should find injected list")
-	}
-	if len(got) != len(want) {
-		t.Errorf("got len %d, want %d", len(got), len(want))
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("got[%d] = %q, want %q", i, got[i], want[i])
-		}
-	}
-}
-
-func TestUseSkillTurn_AgentBaseToolNamesFromCtx_EmptyCtx_NotOK(t *testing.T) {
-	_, ok := AgentBaseToolNamesFromCtx(context.Background())
-	if ok {
-		t.Error("empty ctx should return ok=false")
 	}
 }
 
@@ -204,7 +177,7 @@ func fixedSkill(id uint, name, body string, allowedToolsJSON string) *model.Skil
 	}
 }
 
-func TestUseSkillTurn_Execute_HappyPath_LoadsBodyAndAllowedTools(t *testing.T) {
+func TestUseSkillTurn_Execute_HappyPath_LoadsBody(t *testing.T) {
 	sk := fixedSkill(42, "销售话术训练", "## 销售技巧\n详细指引...", `["web_search","chart_render"]`)
 	ctx, turn := buildTurnWithSkills(t, sk)
 
@@ -246,12 +219,6 @@ func TestUseSkillTurn_Execute_HappyPath_LoadsBodyAndAllowedTools(t *testing.T) {
 	}
 	if turn.InvocationCount != 1 {
 		t.Errorf("InvocationCount = %d, want 1", turn.InvocationCount)
-	}
-	if _, ok := turn.AllowedTools["web_search"]; !ok {
-		t.Error("AllowedTools should contain 'web_search'")
-	}
-	if _, ok := turn.AllowedTools["chart_render"]; !ok {
-		t.Error("AllowedTools should contain 'chart_render'")
 	}
 }
 
@@ -454,10 +421,10 @@ func TestUseSkillTurn_Execute_SuccessThenNotFound_DoesNotMutateExisting(t *testi
 	}
 }
 
-// AllowedTools JSON 字段格式错误时仍应载入 Skill（happy path），allowedTools
-// 视为空白名单。ack JSON 中 status 仍 "loaded"（LLM 视角技能就绪），span output
-// 通过 status=warn + error 字段记录此非致命警告（不影响 LLM 行为）。
-func TestUseSkillTurn_Execute_MalformedAllowedTools_WarnButLoaded(t *testing.T) {
+// open-tools-skill-as-guidance: use_skill no longer reads allowed_tools (skills
+// don't gate/unlock tools anymore — full-open). A malformed allowed_tools DB field
+// is simply ignored; the skill still loads (status "loaded", body + PendingSkills set).
+func TestUseSkillTurn_Execute_MalformedAllowedToolsIgnored_StillLoaded(t *testing.T) {
 	sk := fixedSkill(42, "格式异常技能", "## 指引...", `not valid json [`)
 	ctx, turn := buildTurnWithSkills(t, sk)
 
@@ -480,10 +447,6 @@ func TestUseSkillTurn_Execute_MalformedAllowedTools_WarnButLoaded(t *testing.T) 
 	}
 	if turn.InvocationCount != 1 {
 		t.Errorf("InvocationCount = %d, want 1 (cap should be consumed)", turn.InvocationCount)
-	}
-	// allowed_tools merge 视为空 — turn.AllowedTools 不应包含任何条目
-	if len(turn.AllowedTools) != 0 {
-		t.Errorf("AllowedTools should be empty when JSON malformed, got %v", turn.AllowedTools)
 	}
 }
 
