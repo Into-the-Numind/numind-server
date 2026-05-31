@@ -84,6 +84,35 @@ func (t *annotateImageTool) IsReadOnly() bool            { return true }
 func (t *annotateImageTool) IsSearchOrReadCommand() bool { return true }
 func (t *annotateImageTool) AlwaysLoad() bool            { return true }
 
+// InputSchema returns the JSON Schema describing this tool's parameters,
+// so the LLM receives a structured function-calling contract (not just prose).
+func (t *annotateImageTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"attachment_url": {"type": "string", "format": "uri", "description": "URL of the image to annotate."},
+			"regions": {
+				"type": "array",
+				"minItems": 1,
+				"maxItems": 10,
+				"description": "Rectangular regions of interest to analyze/label (1-10 regions per call; extra regions beyond 10 are dropped).",
+				"items": {
+					"type": "object",
+					"properties": {
+						"x":      {"type": "integer", "description": "Left pixel coordinate of the region."},
+						"y":      {"type": "integer", "description": "Top pixel coordinate of the region."},
+						"width":  {"type": "integer", "description": "Region width in pixels."},
+						"height": {"type": "integer", "description": "Region height in pixels."},
+						"label":  {"type": "string",  "description": "Optional caller-provided label for the region."}
+					},
+					"required": ["x", "y", "width", "height"]
+				}
+			}
+		},
+		"required": ["attachment_url", "regions"]
+	}`)
+}
+
 // Execute parses the input JSON and calls the vision model once per region
 // (serial, to avoid blowing the provider QPS limit). Returns structured
 // annotations. Never returns a non-nil error (graceful degradation — spec §5).

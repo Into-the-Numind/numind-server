@@ -78,6 +78,19 @@ func (t *webFetchTool) returnSoftError(title, format string, args ...any) (ToolR
 	return ToolResult(out), nil
 }
 
+// InputSchema returns the JSON Schema describing this tool's parameters,
+// so the LLM receives a structured function-calling contract (not just prose).
+func (t *webFetchTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"url":    {"type": "string", "format": "uri", "description": "The public web page URL to fetch. Do NOT use for uploaded attachments — use file_read for those."},
+			"prompt": {"type": "string", "description": "Optional instruction describing what to extract from the page."}
+		},
+		"required": ["url"]
+	}`)
+}
+
 func (t *webFetchTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	var in webFetchInput
 	if err := json.Unmarshal(input, &in); err != nil {

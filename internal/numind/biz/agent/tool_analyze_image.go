@@ -100,6 +100,19 @@ func (t *analyzeImageTool) IsReadOnly() bool            { return true }
 func (t *analyzeImageTool) IsSearchOrReadCommand() bool { return true }
 func (t *analyzeImageTool) AlwaysLoad() bool            { return true }
 
+// InputSchema returns the JSON Schema describing this tool's parameters,
+// so the LLM receives a structured function-calling contract (not just prose).
+func (t *analyzeImageTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"attachment_url": {"type": "string", "format": "uri", "description": "URL of the image to analyze."},
+			"question":       {"type": "string", "description": "Optional question to focus the analysis (e.g. 'what text is in this image?')."}
+		},
+		"required": ["attachment_url"]
+	}`)
+}
+
 // Execute parses the input JSON, optionally returns cached data, otherwise
 // calls the vision model and returns structured output. It never returns a
 // non-nil error (graceful degradation — see spec §5).

@@ -32,6 +32,7 @@ require (
 	github.com/asg017/sqlite-vec-go-bindings v0.1.6
 	github.com/cloudwego/eino v0.8.13
 	github.com/disintegration/imaging v1.6.2
+	github.com/eino-contrib/jsonschema v1.0.3
 	github.com/gen2brain/go-fitz v1.24.15
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/hashicorp/golang-lru/v2 v2.0.7
@@ -75,7 +76,6 @@ require (
 	github.com/dlclark/regexp2 v1.10.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/ebitengine/purego v0.8.4 // indirect
-	github.com/eino-contrib/jsonschema v1.0.3 // indirect
 	github.com/fatih/color v1.13.0 // indirect
 	github.com/fsnotify/fsnotify v1.8.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.9 // indirect

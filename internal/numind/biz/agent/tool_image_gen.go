@@ -43,6 +43,18 @@ func (t *imageGenTool) returnSoftError(format string, args ...any) (ToolResult, 
 	return ToolResult(out), nil
 }
 
+// InputSchema returns the JSON Schema describing this tool's parameters,
+// so the LLM receives a structured function-calling contract (not just prose).
+func (t *imageGenTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"prompt": {"type": "string", "description": "Text description of the image to generate."}
+		},
+		"required": ["prompt"]
+	}`)
+}
+
 func (t *imageGenTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	// 1. 解析 Tool 输入
 	var inp struct {

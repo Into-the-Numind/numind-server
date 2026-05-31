@@ -85,6 +85,18 @@ func (t *readSkillTool) returnSoftError(skillName, format string, args ...any) (
 	return ToolResult(out), nil
 }
 
+// InputSchema returns the JSON Schema describing this tool's parameters,
+// so the LLM receives a structured function-calling contract (not just prose).
+func (t *readSkillTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"skill_name": {"type": "string", "description": "Name of the platform skill whose SKILL.md guidance to load."}
+		},
+		"required": ["skill_name"]
+	}`)
+}
+
 // Execute returns the SKILL.md body for the requested skill.
 //
 // All validation failures return (ToolResult, nil) with "ERROR: ..." content so
