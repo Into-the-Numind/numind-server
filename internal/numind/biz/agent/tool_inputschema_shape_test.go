@@ -97,8 +97,8 @@ func TestToolInputSchemas_MatchExecuteContract(t *testing.T) {
 			[]string{"user_id", "field"}, []string{"user_id"}},
 		{"document_generate", (&documentGenerateTool{}).InputSchema(),
 			[]string{"prompt", "format"}, []string{"prompt"}},
-		{"read_skill", (&readSkillTool{}).InputSchema(),
-			[]string{"skill_name"}, []string{"skill_name"}},
+		{"load_skill", (&loadSkillTool{}).InputSchema(),
+			[]string{"name"}, []string{"name"}},
 	}
 
 	for _, c := range cases {
@@ -118,7 +118,7 @@ func TestToolInputSchemas_MatchExecuteContract(t *testing.T) {
 // TestPreexistingSchemas_AreValidObjectSchemas guards the 7 tools that already
 // shipped InputSchema() before this feature: they must remain valid object
 // schemas so the adapter feeds them to the LLM (regression for the keystone).
-// use_skill's InputSchema() uses no struct state, so a zero-value receiver is safe.
+// (load_skill, the merged skill tool, is covered by the new-schema test above.)
 func TestPreexistingSchemas_AreValidObjectSchemas(t *testing.T) {
 	cases := []struct {
 		name string
@@ -130,7 +130,6 @@ func TestPreexistingSchemas_AreValidObjectSchemas(t *testing.T) {
 		{"create_html", (&createHTMLTool{}).InputSchema()},
 		{"create_png_chart", (&createPNGChartTool{}).InputSchema()},
 		{"run_python", (&runPythonTool{}).InputSchema()},
-		{"use_skill", (&useSkillTool{}).InputSchema()},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
