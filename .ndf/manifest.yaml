@@ -4,10 +4,10 @@ features:
   ndf_version: '3.0'
   description: 'Standard NDF — 用户端「额度消耗记录」。面向所有账户（每个登录用户看自己），入口在设置页，以点击弹窗形态呈现一份积分消耗流水，每条展示 动作 / 时间 / 消耗数量，且只呈现「平账后的真实记录」（Reserve/Reconcile 两阶段对账完成后的最终真实消耗，非 reserve 预扣估算中间态）。数据源 credit_transaction（amount<0=消耗；operation 机读值如 reserve:sop_run；created_at；source_type）。store 方法 ListTransactionsByUser 已存在可复用。与现有 GET /v1/credits/balance（只给三池聚合余额）互补——余额答「还剩多少」，本功能答「花在哪了」。'
   track: standard
-  stage: S2
+  stage: S3
   classification_reason: 'Standard — 无 DB schema 变更（credit_transaction 表及字段已存在）；但新增用户端 API 端点（balance 接口只聚合余额无明细流水）；跨两仓库 >3 文件；属计费 SOT 高风险域 + 需严格「只看自己」越权隔离。用户 2026-06-01 档位判定确认 Standard。'
-  last_updated_by: ai-s2-spec
-  last_updated_at: '2026-06-01T13:27:17+08:00'
+  last_updated_by: ai-s3-plan
+  last_updated_at: '2026-06-01T13:40:46+08:00'
   created_at: '2026-06-01T13:10:46+08:00'
   decisions:
   - 'S0-D1 (user 2026-06-01): 受众=所有账户（不分父/子），每个登录用户看自己的消耗。入口=设置页内点击弹窗（modal），非独立页面。展示三要素=动作/时间/消耗数量。数据口径=仅平账后真实记录。'
@@ -16,6 +16,7 @@ features:
   - 'S2-D4 (ai 2026-06-01, 代码核实): 数据源=credit_reservation（非 credit_transaction 聚合，因 deduction 行无 reservation_id grouping key）；消耗值=ActualCostCents（status=reconciled AND actual_cost_cents>0；恒等 ReservedCredits+Delta）。'
   - 'S2-D5 (ai 2026-06-01): 动作机读 operation→中文名映射后端维护，未知 operation 回退展示裸值。API=GET /v1/credits/consumption-log?page&page_size (user_token)；resp {list:[{id,action,action_label,credits,created_at}],total}。'
   - 'S2-D6 (ai 2026-06-01): 前端新建独立 stores/consumptionLog.ts；弹窗复用 ConfirmModal 模式 + DataTable。'
+  - 'S3-D7 (ai 2026-06-01, 代码核实): biz 方法落 biz/credit 的 creditService（实现 ICreditService），非 spec 初稿的 biz/membership——MembershipService 用 membershipstore 无 reservation 访问，creditService 持 store.IStore 且 controller 经 b.CreditService() 可达。已同步修正 spec §4.2/§4.3。API 契约/行为不变。'
   repos:
   - numind-server
   - numind-web-v3
@@ -29,8 +30,9 @@ features:
     requirement: requirements/credit-consumption-log.md
     proposal: proposals/credit-consumption-log-proposal.md
     spec: docs/superpowers/specs/2026-06-01-credit-consumption-log-design.md
+    plan: docs/superpowers/plans/2026-06-01-credit-consumption-log.md
   progress:
-    total_tasks: 0
+    total_tasks: 6
     completed_tasks: 0
     reviewed_tasks: 0
   blockers: []

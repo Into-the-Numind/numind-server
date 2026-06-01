@@ -91,7 +91,10 @@ func (s *creditStore) ListReconciledReservationsByUser(
 - 加进 `IXxxStore` 接口（若 creditStore 有 interface 定义则同步）。
 
 ### 4.2 biz 层（新增方法）
-包 `internal/numind/biz/membership/`（与 `GetBalance` 同包，`state.go`）。新增（建议新文件 `consumption_log.go`）：
+
+> **S3-D7 修正（2026-06-01 代码核实）**：方法落 `internal/numind/biz/credit` 的 **`creditService`**（实现 `ICreditService`），**不是** `biz/membership`。原因：`MembershipService` 用 `membershipstore.IMembershipStore`（无 reservation 访问），而 `credit_reservation` 查询与 `store.IStore` 访问（`Reconcile` 等）都在 `creditService`（`store store.IStore` → `s.store.Credits()`），且 controller 经 `b.CreditService()` 可达。API 契约/行为不变。
+
+包 `internal/numind/biz/credit`（`creditService`，与 `Reconcile` 同 service）。新增文件 `consumption_log.go`：
 ```go
 type ConsumptionLogItem struct {
     ID          uint64    // reservation id
@@ -101,9 +104,9 @@ type ConsumptionLogItem struct {
     CreatedAt   time.Time
 }
 
-func (s *MembershipService) ListConsumptionLog(
+func (s *creditService) ListConsumptionLog(
     ctx context.Context, userID uint, page, pageSize int,
-) (items []ConsumptionLogItem, total int64, err error)
+) (items []ConsumptionLogItem, total int64, err error)  // 同时加入 ICreditService 接口
 ```
 - 归一化分页：`page<1→1`；`pageSize<1→20`；`pageSize>100→100`；`offset=(page-1)*pageSize`。
 - 调 store → 逐行映射，`ActionLabel = operationLabel(Operation)`（§5）；`Credits = *ActualCostCents`（reconciled 行必非 nil；防御性 nil→跳过/0）。
@@ -114,9 +117,9 @@ func (s *MembershipService) ListConsumptionLog(
 ```go
 func (c *CreditController) ListConsumptionLog(ctx *gin.Context)
 ```
-- `userID := ctx.GetUint("userID")`（**仅从 auth 上下文取，绝不接受客户端传 id**）。
-- 绑定 `page` / `page_size`（`ShouldBindQuery` 或 `Query`+`strconv.Atoi`，失败用默认值不报错）。
-- 调 `membershipSvc.ListConsumptionLog(...)` → `core.WriteResponse(ctx, err, gin.H{"list": items, "total": total})`。
+- `user := middleware.GetCurrentUser(ctx)`（与 `GetBalance` 一致；`uint(user.ID)` 即 auth 上下文用户，**绝不接受客户端传 id**）。
+- 绑定 `page` / `page_size`（`Query`+`strconv.Atoi`，失败=0 交给 biz 归一化，不报错）。
+- 调 `creditSvc.ListConsumptionLog(...)`（controller 已持有 `creditSvc ICreditService`）→ `core.WriteResponse(ctx, nil, gin.H{"list": items, "total": total})`。
 - 错误分支不向 C 端泄露内部 err 细节（通用文案）。
 
 ### 4.4 router
