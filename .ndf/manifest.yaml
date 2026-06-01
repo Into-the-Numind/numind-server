@@ -34,8 +34,8 @@ features:
     plan: docs/superpowers/plans/2026-06-01-credit-log-task-names.md
   progress:
     total_tasks: 4
-    completed_tasks: 3
-    reviewed_tasks: 3
+    completed_tasks: 4
+    reviewed_tasks: 4
   blockers: []
 - id: credit-consumption-log
   ndf_version: '3.0'
