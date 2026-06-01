@@ -58,6 +58,10 @@ type BudgetReservationInput struct {
 	// does NOT read this field — it is forwarded to UsageRecord/billing layer
 	// by the caller (Gateway middleware), not by ReserveBudget itself.
 	Metadata map[string]string
+	// ReferenceID, when non-empty, is written verbatim into
+	// credit_reservation.reference_id (self-describing, e.g. "sop_run:5:9").
+	// Additive metadata only — does NOT affect amount/routing/trace.
+	ReferenceID string
 }
 
 // ReservationStatus 预扣记录状态机：reserved → reconciled | refunded | expired

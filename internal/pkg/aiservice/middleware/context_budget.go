@@ -730,6 +730,7 @@ func doReserveBudget(
 	reserveIn := credit.BudgetReservationInput{
 		BudgetPrecheckInput: precheckIn,
 		EstimatedCredits:    precheck.EstimatedCredits,
+		ReferenceID:         ReservationRefFromCtx(ctx), // additive: business ref (empty if absent)
 	}
 	rsv, err := deps.CreditService.ReserveBudget(ctx, user, reserveIn)
 	if err != nil {
