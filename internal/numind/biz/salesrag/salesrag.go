@@ -2141,6 +2141,7 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 	var streamModel, streamProvider string
 	var streamErr error
 
+	ctx = aismw.WithReservationRef(ctx, fmt.Sprintf("sales_session:%d", sessionID))
 	err = b.RetrieveStream(ctx, retrievalQuery, query, ocrTexts, history, sessionDocIDs, allOpinionDocIDs, docCategoryMap, deepThinking, chatMode, session.CustomerProfile, session.SalesStage, func(eventType string, data interface{}) error {
 		switch eventType {
 		case "verdict":

@@ -314,6 +314,7 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 	ctx = langfuse.WithTraceAndParent(ctx, traceID, "")
 	// 注入 skip-legacy-billing：Gateway 已统一记账，防止旧 billing 路径双记
 	ctx = aiservice.WithSkipLegacyBilling(ctx)
+	ctx = aismw.WithReservationRef(ctx, fmt.Sprintf("chatbot_session:%d", sessionID))
 
 	// 将 messages ([]map[string]interface{}) 转换为 []aiservice.ChatMessage
 	aiMessages := make([]aiservice.ChatMessage, 0, len(messages))

@@ -1178,6 +1178,9 @@ func (c *creditsImpl) reserveBudgetRow(
 	if idempotencyKey != nil {
 		rsvRow.ReferenceID = *idempotencyKey
 	}
+	if input.ReferenceID != "" { // business reference takes precedence over idempotency key
+		rsvRow.ReferenceID = input.ReferenceID
+	}
 	// Populate optional nullable FK fields only when non-zero.
 	if input.TokenProfileID != 0 {
 		v := input.TokenProfileID
