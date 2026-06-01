@@ -409,9 +409,14 @@ func TestRuleA_NewAnnualSubscriber_HuiHui(t *testing.T) {
 }
 
 func TestRuleA_SandyManualOverride(t *testing.T) {
-	// Real-world: sandy (user 435) opened annual + 2 monthly grants on 5-18 (14 months total),
-	// but operator reduced subscription.total_months_purchased to 1 due to customer error report.
-	// Expectation: report uses subscription.total = 1 → ¥99, ignoring the 3 events' 14-month sum.
+	// sandy opened annual + 2 monthly grants on 5-18 (3 real actions), and an operator
+	// later reduced subscription.total_months_purchased to 1 via a silent edit.
+	//
+	// Post b2b-billing-action-month: billing is per-ACTION (event-driven), so all 3 May
+	// actions are billed (¥949 + ¥99 + ¥99 = ¥1147). The silent total override is NOT
+	// honored. Verified against prod (2026-06-01): 0 live accounts have real-event-months
+	// > total_months_purchased, so this affects no real settlement; genuine corrections
+	// must be expressed as explicit (refund/calibration) events, not a silent total edit.
 	db := newB2BTestDB(t)
 	ds := store.NewTestStore(db)
 	biz := New(ds)
@@ -430,8 +435,8 @@ func TestRuleA_SandyManualOverride(t *testing.T) {
 	r, err := biz.GetBillingReport(context.Background(), "2026-05")
 	require.NoError(t, err)
 	require.Len(t, r.ByParent, 1)
-	assert.Equal(t, 1, r.ByParent[0].GrantsCount, "manual override collapses to one row")
-	assert.EqualValues(t, 9900, r.ByParent[0].AmountCents, "subscription.total=1 wins; ¥99 not ¥1147")
+	assert.Equal(t, 3, r.ByParent[0].GrantsCount, "3 grant actions in May (per-action)")
+	assert.EqualValues(t, 94900+9900+9900, r.ByParent[0].AmountCents, "per-action: ¥949+¥99+¥99 = ¥1147")
 }
 
 func TestRuleA_MixedMonthlyPlusAnnualSameMonth(t *testing.T) {
@@ -514,9 +519,11 @@ func TestRuleB_OldAnnualUserNoActivityInMonth(t *testing.T) {
 	require.NoError(t, res.Error)
 
 	// Migration placeholder events: April sub_granted + 11 future sub_renewed
+	// (the full annual spread — N=12 collapses to ¥949 in the sub_granted month).
 	insertMigrationPlaceholderEvent(t, db, parent, guo, 1, apr29, membershipModel.EventTypeSubGranted, 72)
-	insertMigrationPlaceholderEvent(t, db, parent, guo, 1, apr29.AddDate(0, 1, 0), membershipModel.EventTypeSubRenewed, 73)
-	insertMigrationPlaceholderEvent(t, db, parent, guo, 1, apr29.AddDate(0, 2, 0), membershipModel.EventTypeSubRenewed, 74)
+	for i := 0; i < 11; i++ {
+		insertMigrationPlaceholderEvent(t, db, parent, guo, 1, apr29.AddDate(0, i+1, 0), membershipModel.EventTypeSubRenewed, 73+i)
+	}
 
 	// April: Rule A → ¥949 (annual)
 	r, err := biz.GetBillingReport(context.Background(), "2026-04")
@@ -666,9 +673,11 @@ func TestIntegrationMay2026_ProdLikeShape(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, r.ByParent, 1)
 
-	expectedCents := int64(5*9900 + 94900 + 9900 + 990)
+	// Per-action: sandy bills all 3 May actions (¥949+¥99+¥99=¥1147), not the silently
+	// overridden ¥99. guo's annual was granted in April → ¥0 in May.
+	expectedCents := int64(5*9900 + 94900 + (94900 + 9900 + 9900) + 990)
 	assert.EqualValues(t, expectedCents, r.ByParent[0].AmountCents,
-		"5 monthly + 1 annual + 1 sandy-override-monthly + 1 trial = ¥1543.90")
+		"5×¥99 + annual ¥949 + sandy(¥949+¥99+¥99) + trial ¥9.9 = ¥2600.90")
 }
 
 // --------------------------------------------------------------------------
@@ -840,4 +849,82 @@ func TestGetBillingReportForParent_InvalidMonth(t *testing.T) {
 		_, err := biz.GetBillingReportForParent(context.Background(), bad, parent)
 		assert.Error(t, err, "bad month %q must error", bad)
 	}
+}
+
+// --------------------------------------------------------------------------
+// Bug repro (b2b-billing-action-month hotfix, reported by product owner 2026-06-01)
+//
+// Standard (per owner): bill each grant ACTION in the natural month its action
+// occurred; price per action (1-11 mo → mo×¥99; 12 mo → ¥949). The old Rule A
+// "Case 1" instead attributed subscription.total_months_purchased (a cumulative
+// value that grows with LATER renewals) to the first_started_at month, so an
+// account whose April original is a 4-30 migration placeholder and that renewed
+// in May got billed 2 months in April (and the May renewal billed AGAIN in May).
+//
+// These tests encode the CORRECT behaviour and FAIL on the pre-fix code.
+// --------------------------------------------------------------------------
+
+// 326 pattern: April original = migration placeholder (1 mo); +1 mo renewal in May.
+func TestActionMonth_326_MigratedOriginalPlusMayRenewal(t *testing.T) {
+	db := newB2BTestDB(t)
+	ds := store.NewTestStore(db)
+	biz := New(ds)
+	parent := insertB2BUser(t, db, "user_moxiaopai")
+	c326 := insertB2BUser(t, db, "600901k")
+
+	apr20 := time.Date(2026, 4, 20, 14, 39, 23, 0, time.UTC)
+	may19 := time.Date(2026, 5, 19, 10, 18, 24, 0, time.UTC)
+
+	// Subscription seeded with total=1 (original April month); renewal bumps to 2.
+	require.NoError(t, db.Exec(`INSERT INTO subscription (user_id, first_started_at, current_started_at,
+		expires_at, total_months_purchased, source, granter_user_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c326, apr20, apr20, apr20.AddDate(0, 1, 0), 1,
+		membershipModel.SourceB2BGrant, uint64(parent), apr20, apr20).Error)
+	// April original exists ONLY as a 4-30 migration placeholder (1 month).
+	insertMigrationPlaceholderEvent(t, db, parent, c326, 1, apr20, membershipModel.EventTypeSubGranted, 4)
+	// Real renewal action in MAY (also bumps subscription.total to 2).
+	insertSubRenewal(t, db, parent, c326, 1, may19)
+
+	apr, err := biz.GetBillingReportForParent(context.Background(), "2026-04", parent)
+	require.NoError(t, err)
+	assert.EqualValues(t, 9900, apr.TotalAmountCents, "April = 1 month ¥99 (original grant action only)")
+	require.Len(t, apr.Details, 1)
+	assert.Equal(t, 1, apr.Details[0].Months)
+
+	may, err := biz.GetBillingReportForParent(context.Background(), "2026-05", parent)
+	require.NoError(t, err)
+	assert.EqualValues(t, 9900, may.TotalAmountCents, "May = 1 month ¥99 (renewal action)")
+}
+
+// 355 pattern: April original = migration placeholder (1 mo); two more actions in May.
+func TestActionMonth_355_MigratedOriginalPlusTwoMayActions(t *testing.T) {
+	db := newB2BTestDB(t)
+	ds := store.NewTestStore(db)
+	biz := New(ds)
+	parent := insertB2BUser(t, db, "user_moxiaopai")
+	c355 := insertB2BUser(t, db, "moxiaopai6")
+
+	apr20 := time.Date(2026, 4, 20, 14, 31, 53, 0, time.UTC)
+	may21 := time.Date(2026, 5, 21, 13, 17, 46, 0, time.UTC)
+	may28 := time.Date(2026, 5, 28, 14, 40, 37, 0, time.UTC)
+
+	require.NoError(t, db.Exec(`INSERT INTO subscription (user_id, first_started_at, current_started_at,
+		expires_at, total_months_purchased, source, granter_user_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c355, apr20, apr20, apr20.AddDate(0, 1, 0), 1,
+		membershipModel.SourceB2BGrant, uint64(parent), apr20, apr20).Error)
+	insertMigrationPlaceholderEvent(t, db, parent, c355, 1, apr20, membershipModel.EventTypeSubGranted, 3)
+	insertSubRenewal(t, db, parent, c355, 1, may21) // real May action #1
+	insertSubRenewal(t, db, parent, c355, 1, may28) // real May action #2
+
+	apr, err := biz.GetBillingReportForParent(context.Background(), "2026-04", parent)
+	require.NoError(t, err)
+	assert.EqualValues(t, 9900, apr.TotalAmountCents, "April = 1 month ¥99 (migrated original only)")
+	require.Len(t, apr.Details, 1)
+
+	may, err := biz.GetBillingReportForParent(context.Background(), "2026-05", parent)
+	require.NoError(t, err)
+	assert.EqualValues(t, 19800, may.TotalAmountCents, "May = 2 months ¥198 (two May actions)")
+	assert.Len(t, may.Details, 2)
 }
