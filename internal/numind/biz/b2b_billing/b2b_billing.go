@@ -147,6 +147,13 @@ func NewWithCutover(ds store.IStore, cutover time.Time) IB2BBillingBiz {
 // monthRegex enforces strict YYYY-MM format (zero-padded month).
 var monthRegex = regexp.MustCompile(`^(\d{4})-(0[1-9]|1[0-2])$`)
 
+// IsValidMonth reports whether s is a valid zero-padded YYYY-MM month string.
+// Exported so callers (e.g. controllers) can pre-validate against the single
+// canonical pattern instead of duplicating the regex.
+func IsValidMonth(s string) bool {
+	return monthRegex.MatchString(s)
+}
+
 // chooseSource always returns "new_only" after T9 cleanup.
 //
 // T9 (credits-cleanup): the legacy_only and cutover_split branches have been
