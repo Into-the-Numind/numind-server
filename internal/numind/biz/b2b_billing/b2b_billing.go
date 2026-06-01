@@ -45,6 +45,7 @@ package b2b_billing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -54,6 +55,8 @@ import (
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/model"
 	membershipModel "numind-server/internal/pkg/model/membership"
+
+	"gorm.io/gorm"
 )
 
 // migrationKeyPrefix identifies idempotency_key values written by the
@@ -61,6 +64,10 @@ import (
 // this prefix are placeholders (future-dated for annual subscriptions or
 // historical fill-ins) and must NEVER count toward monthly settlement.
 const migrationKeyPrefix = "migration-%"
+
+// ErrNotParentAccount is returned by GetBillingReportForParent when the caller
+// is not a parent account (User.ParentUserID != nil). Controllers map this to 403.
+var ErrNotParentAccount = errors.New("b2b_billing: not a parent account")
 
 // B2BBillingReport is the top-level response for a single month.
 type B2BBillingReport struct {
@@ -92,6 +99,17 @@ type GrantDetail struct {
 	GrantedAt     time.Time `json:"granted_at"`
 }
 
+// ParentBillingReport is one parent's own monthly settlement view (self-service).
+// Unlike B2BBillingReport it is flat (no by-parent grouping) since it is always
+// scoped to a single parent.
+type ParentBillingReport struct {
+	Month            string        `json:"month"`
+	ParentUserID     uint          `json:"parent_user_id"`
+	GrantsCount      int           `json:"grants_count"`
+	TotalAmountCents int64         `json:"total_amount_cents"`
+	Details          []GrantDetail `json:"details"`
+}
+
 // grantEvent is the internal normalised representation for billing events.
 type grantEvent struct {
 	granterUserID uint
@@ -105,6 +123,7 @@ type grantEvent struct {
 // IB2BBillingBiz is the business interface.
 type IB2BBillingBiz interface {
 	GetBillingReport(ctx context.Context, month string) (*B2BBillingReport, error)
+	GetBillingReportForParent(ctx context.Context, month string, parentUserID uint) (*ParentBillingReport, error)
 }
 
 type b2bBillingBiz struct {
@@ -371,6 +390,93 @@ func (b *b2bBillingBiz) realEventsByUser(ctx context.Context, userIDs []uint64, 
 	return out, nil
 }
 
+// lookupUsernames returns id→username for the given user IDs (Select id,username only).
+func (b *b2bBillingBiz) lookupUsernames(ctx context.Context, ids []uint) (map[uint]string, error) {
+	out := make(map[uint]string, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	var users []model.User
+	if err := b.ds.DB().WithContext(ctx).
+		Select("id, username").Where("id IN ?", ids).Find(&users).Error; err != nil {
+		return nil, fmt.Errorf("lookupUsernames: %w", err)
+	}
+	for _, u := range users {
+		out[u.ID] = u.Username
+	}
+	return out, nil
+}
+
+// GetBillingReportForParent assembles the self-service monthly settlement view
+// for one parent account. Reuses computeBilling with a granter filter so the
+// amounts are byte-for-byte consistent with the admin settlement report.
+//
+// Returns ErrNotParentAccount if parentUserID is not a parent account.
+func (b *b2bBillingBiz) GetBillingReportForParent(ctx context.Context, month string, parentUserID uint) (*ParentBillingReport, error) {
+	start, end, err := parseMonth(month)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parent-account gate: query parent_user_id only (matches package query style;
+	// avoids SELECT * coupling to the full user schema).
+	var row struct {
+		ParentUserID *uint `gorm:"column:parent_user_id"`
+	}
+	if err := b.ds.DB().WithContext(ctx).
+		Table("user").Select("parent_user_id").
+		Where("id = ?", parentUserID).
+		Take(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotParentAccount
+		}
+		return nil, fmt.Errorf("GetBillingReportForParent: lookup user %d: %w", parentUserID, err)
+	}
+	if row.ParentUserID != nil {
+		return nil, ErrNotParentAccount
+	}
+
+	events, err := b.computeBilling(ctx, start, end, &parentUserID)
+	if err != nil {
+		return nil, fmt.Errorf("GetBillingReportForParent month=%s parent=%d: %w", month, parentUserID, err)
+	}
+
+	report := &ParentBillingReport{
+		Month:        month,
+		ParentUserID: parentUserID,
+		Details:      []GrantDetail{},
+	}
+	if len(events) == 0 {
+		return report, nil
+	}
+
+	childIDSet := make(map[uint]struct{}, len(events))
+	for _, e := range events {
+		childIDSet[e.childUserID] = struct{}{}
+	}
+	childIDs := make([]uint, 0, len(childIDSet))
+	for id := range childIDSet {
+		childIDs = append(childIDs, id)
+	}
+	usernameByID, err := b.lookupUsernames(ctx, childIDs)
+	if err != nil {
+		return nil, fmt.Errorf("GetBillingReportForParent: %w", err)
+	}
+	for _, e := range events {
+		report.Details = append(report.Details, GrantDetail{
+			ChildUserID:   e.childUserID,
+			ChildUsername: usernameByID[e.childUserID],
+			ProductType:   e.productType,
+			Months:        e.months,
+			AmountCents:   e.amountCents,
+			GrantedAt:     e.grantedAt,
+		})
+		report.TotalAmountCents += e.amountCents
+	}
+	report.GrantsCount = len(report.Details)
+	return report, nil
+}
+
 // buildReport converts a flat []grantEvent into a B2BBillingReport.
 func (b *b2bBillingBiz) buildReport(ctx context.Context, month, source string, events []grantEvent) (*B2BBillingReport, error) {
 	if len(events) == 0 {
@@ -393,16 +499,9 @@ func (b *b2bBillingBiz) buildReport(ctx context.Context, month, source string, e
 		userIDs = append(userIDs, id)
 	}
 
-	var users []model.User
-	if err := b.ds.DB().WithContext(ctx).
-		Select("id, username").
-		Where("id IN ?", userIDs).
-		Find(&users).Error; err != nil {
-		return nil, fmt.Errorf("buildReport: lookup usernames: %w", err)
-	}
-	usernameByID := make(map[uint]string, len(users))
-	for _, u := range users {
-		usernameByID[u.ID] = u.Username
+	usernameByID, err := b.lookupUsernames(ctx, userIDs)
+	if err != nil {
+		return nil, fmt.Errorf("buildReport: %w", err)
 	}
 
 	// Group by parent.
@@ -533,7 +632,7 @@ func (b *b2bBillingBiz) getLegacyEvents(ctx context.Context, start, end time.Tim
 func parseMonth(month string) (time.Time, time.Time, error) {
 	m := monthRegex.FindStringSubmatch(month)
 	if m == nil {
-		return time.Time{}, time.Time{}, fmt.Errorf("GetBillingReport: invalid month format %q (expected YYYY-MM)", month)
+		return time.Time{}, time.Time{}, fmt.Errorf("parseMonth: invalid month format %q (expected YYYY-MM)", month)
 	}
 	y, _ := strconv.Atoi(m[1])
 	mo, _ := strconv.Atoi(m[2])
