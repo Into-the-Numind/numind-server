@@ -2,6 +2,7 @@ package numind
 
 import (
 	"numind-server/internal/numind/biz"
+	"numind-server/internal/numind/biz/b2b_billing"
 	"numind-server/internal/numind/biz/credit"
 	customerbiz "numind-server/internal/numind/biz/customer"
 	marketplacebiz "numind-server/internal/numind/biz/marketplace"
@@ -18,6 +19,7 @@ import (
 	marketplacecontroller "numind-server/internal/numind/controller/v1/marketplace"
 	monitorcontroller "numind-server/internal/numind/controller/v1/monitor"
 	ordercontroller "numind-server/internal/numind/controller/v1/order"
+	parentbillingcontroller "numind-server/internal/numind/controller/v1/parent_billing"
 	paymentcontroller "numind-server/internal/numind/controller/v1/payment"
 	pdfcontroller "numind-server/internal/numind/controller/v1/pdf"
 	"numind-server/internal/numind/controller/v1/salesrag"
@@ -284,6 +286,12 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.POST("/users/children/:child_id/grant-membership",
 			importMw.RequireIdempotencyKey(),
 			creditCtrl.GrantMembership)
+
+		// 父账户自助费用对账（parent-billing-report）。
+		// 父账户校验在 biz 层（GetBillingReportForParent → ErrNotParentAccount → 403），
+		// 非中间件，故此处无 ParentUserOnly()。越权隔离由 biz SQL granter 过滤保证。
+		parentBillingCtrl := parentbillingcontroller.New(b2b_billing.New(store.S))
+		authGroup.GET("/users/me/billing-report", parentBillingCtrl.GetMyBillingReport)
 	}
 
 	// 自助配置中心（B端，需要主账号 + 功能权限）

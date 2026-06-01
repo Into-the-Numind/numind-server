@@ -1,18 +1,61 @@
 schema_version: '2.0'
 features:
+- id: credit-consumption-log
+  ndf_version: '3.0'
+  description: 'Standard NDF — 用户端「额度消耗记录」。面向所有账户（每个登录用户看自己），入口在设置页，以点击弹窗形态呈现一份积分消耗流水，每条展示 动作 / 时间 / 消耗数量，且只呈现「平账后的真实记录」（Reserve/Reconcile 两阶段对账完成后的最终真实消耗，非 reserve 预扣估算中间态）。数据源 credit_transaction（amount<0=消耗；operation 机读值如 reserve:sop_run；created_at；source_type）。store 方法 ListTransactionsByUser 已存在可复用。与现有 GET /v1/credits/balance（只给三池聚合余额）互补——余额答「还剩多少」，本功能答「花在哪了」。'
+  track: standard
+  stage: S5
+  classification_reason: 'Standard — 无 DB schema 变更（credit_transaction 表及字段已存在）；但新增用户端 API 端点（balance 接口只聚合余额无明细流水）；跨两仓库 >3 文件；属计费 SOT 高风险域 + 需严格「只看自己」越权隔离。用户 2026-06-01 档位判定确认 Standard。'
+  last_updated_by: ai-s5-e2e-passed
+  last_updated_at: '2026-06-01T17:51:55+08:00'
+  created_at: '2026-06-01T13:10:46+08:00'
+  decisions:
+  - 'S0-D1 (user 2026-06-01): 受众=所有账户（不分父/子），每个登录用户看自己的消耗。入口=设置页内点击弹窗（modal），非独立页面。展示三要素=动作/时间/消耗数量。数据口径=仅平账后真实记录。'
+  - 'S1-D2 (user 2026-06-01): 「平账后真实记录」口径=每动作聚合为一行（方案 A）。'
+  - 'S2-D3 (user 2026-06-01): 入口放设置页「积分与加量包」section 头右侧，文案=「积分消耗记录」，点击弹窗。'
+  - 'S2-D4 (ai 2026-06-01, 代码核实): 数据源=credit_reservation（非 credit_transaction 聚合，因 deduction 行无 reservation_id grouping key）；消耗值=ActualCostCents（status=reconciled AND actual_cost_cents>0；恒等 ReservedCredits+Delta）。'
+  - 'S2-D5 (ai 2026-06-01): 动作机读 operation→中文名映射后端维护，未知 operation 回退展示裸值。API=GET /v1/credits/consumption-log?page&page_size (user_token)；resp {list:[{id,action,action_label,credits,created_at}],total}。'
+  - 'S2-D6 (ai 2026-06-01): 前端新建独立 stores/consumptionLog.ts；弹窗复用 ConfirmModal 模式 + DataTable。'
+  - 'S3-D7 (ai 2026-06-01, 代码核实): biz 方法落 biz/credit 的 creditService（实现 ICreditService），非 spec 初稿的 biz/membership——MembershipService 用 membershipstore 无 reservation 访问，creditService 持 store.IStore 且 controller 经 b.CreditService() 可达。已同步修正 spec §4.2/§4.3。API 契约/行为不变。'
+  - 'S3-D8 (independent sonnet reviewer 2026-06-01): plan 原子性审查 VERDICT=PASS_WITH_FIXES（6 task 依赖无环、后端先于前端、每 task commit 后可编译、spec 全覆盖、代码符号逐一核实、S5 Playwright E2E 对高风险计费域合理）。已修 2 P1（LedgerTruth 改用既有 setupReservation 替换不存在的 seedUserWithCredits；biz 测试 store.NewStore→NewTestStore 保隔离 + 移未用 credit import）+ 1 P2（前端 store error 补 useNotificationsStore toast，满足 spec §8.4/§8.5 四状态）。'
+  - 'S4-DONE (ai 2026-06-01): 6/6 task 实现 + 每 task 双 reviewer 全 PASS（P0/P1=0，P2 全部当场修）+ 终态端到端集成审查 PASS（字段契约逐一核对、越权隔离、build/test/type-check 绿）。commits: server 542bb227/387c2bc3/52e8e715，web-v3 820a347/ae9511c/5605913/d262ad5。旁路修复前端遗留 lint（micro fix-marketplace-lint → develop e3bbc53）。'
+  - 'S5-D9 (ai 2026-06-01): E2E 回归 spec 已写并提交（numind-web-v3 e2e/credit-consumption-log.spec.ts，commit 23881a0；eslint 干净）。覆盖：入口位置/打开弹窗/三列表头/数据-or-空态/ESC·关闭按钮·遮罩关闭。'
+  - 'S5-PASS (ai 2026-06-01): 本地实跑 E2E **7 passed (11.0s)** —— 本地 build feature 后端跑 :9192 连 dev 库（config_local 指向 dev MySQL/Redis；端点只读、安全），Playwright 前端 VITE_PROXY_TARGET=:9192 真打 feature 后端。后端日志确认正是设计查询 `credit_reservation WHERE user_id=? AND status=reconciled AND actual_cost_cents>0 ORDER BY created_at DESC,id DESC LIMIT 20`，测试账号真有 3 条记录（走数据分支非空态假通过）。后端 race 单测（store/credit/controller，含对账一致性 + 越权）全绿。临时后端已拆。S5 PASS。'
+  repos:
+  - numind-server
+  - numind-web-v3
+  branches:
+    numind-server: feature/credit-consumption-log
+    numind-web-v3: feature/credit-consumption-log
+  worktrees:
+    numind-server: /private/tmp/wt-credit-consumption-log-numind-server
+    numind-web-v3: /private/tmp/wt-credit-consumption-log-numind-web-v3
+  artifacts:
+    requirement: requirements/credit-consumption-log.md
+    proposal: proposals/credit-consumption-log-proposal.md
+    spec: docs/superpowers/specs/2026-06-01-credit-consumption-log-design.md
+    plan: docs/superpowers/plans/2026-06-01-credit-consumption-log.md
+  progress:
+    total_tasks: 6
+    completed_tasks: 6
+    reviewed_tasks: 6
+  blockers: []
 - id: parent-billing-report
   ndf_version: '3.0'
   description: 'Standard NDF — 父账户自助费用对账页面。面向用户端父账户（parent_user_id IS NULL），按月展示自己通过「帮开通会员」给名下子账号开通的会员明细（子账号 / 产品类型 trial|monthly / 月数 / 价格 / 开通时间）+ 本月合计，方便对账。本质是现有 admin `GET /v1/admin/b2b-billing-report`（按父账户聚合，财务对公用）的父账户自助版——同一数据源（membership_event/subscription/trial_grant），作用域收窄到当前登录父账户自己。高复用 biz/b2b_billing（ParentBillingRow/GrantDetail 结构已覆盖所需字段；价格用 PriceForMonths 重算）。'
   track: standard
-  stage: S3
+  stage: S6
   classification_reason: 'Standard — 无 DB schema 变更（数据已存在）；但新增用户端 API 端点（admin 版是 admin_token 作用域，C 端访问不到）；跨两仓库 >3 文件；属会员/计费高风险域 + 需父账户越权隔离。用户 2026-06-01 档位判定确认 Standard。'
-  last_updated_by: ai-s3-plan
-  last_updated_at: '2026-06-01T12:08:51+08:00'
+  last_updated_by: ai-s6-merged
+  last_updated_at: '2026-06-01T13:30:00+08:00'
   decisions:
   - 'S0-D1 (user 2026-06-01): 时间范围=单月查看（选月份，默认当月），与 admin ?month=YYYY-MM 口径一致，不做多月历史列表。'
   - 'S0-D2 (user 2026-06-01): 入口=放进用户端「客户管理」页面内跳转内页查看，不做独立顶级页面。'
   - 'S2-D3 (user+ai 2026-06-01): 后端方案 A=参数化复用 computeBilling(granterUserID *uint)，单一真相源，作用域 SQL 下推；新增用户端 GET /v1/users/me/billing-report (user_token, 父账户专属); 非父账户 403 (ErrForbidden, biz 层 sentinel); 内页形态=子路由 /customers/billing。完整设计见 spec docs/superpowers/specs/2026-06-01-parent-billing-report-design.md。'
   - 'S3-D4 (independent sonnet reviewer 2026-06-01): plan 原子性审查 VERDICT=PASS（6 task 依赖无环、后端先于前端、每 task commit 后可编译、S5 Playwright E2E 对高风险计费域合理）。已修 1 P1（controller 500 分支勿向 C 端泄露 err.Error()→改通用文案）+ 4 P2（必加 gorm import / 金额字面量可读性 / 前端复合 key / Task1 commit msg）。'
+  - 'S4-D5 (ai 2026-06-01): 5 实现 task 全部 subagent-driven + 并行双 Sonnet review（均 PASS）。修 P1（Task5 code-quality 误报"后端端点不存在"=跨仓库误判驳回；error message 提取顺序按 request.ts 拦截器分析驳回反向建议，改简化）+ 多个 P2（regex 去重导出 IsValidMonth / 共享 MembershipProductType 类型 / formatDate 抽取 / radius token / guard 文案 / !important 去除）。task lint exit0、b2b_billing 24 测试全绿、前端 type-check 0、4 文件 lint 净。cmd-numind/biz-memory 失败确认 develop pre-existing。'
+  - 'S5-D6 (user 2026-06-01): 验证策略=写 Playwright E2E spec 入库（e2e/parent-billing-report.spec.ts，4 test：入口导航/合计=行金额求和不变式/空月/error+retry，mock-based 确定性）+ 浏览器实跑放 dev（用户选实用路径）。后端金额归因/越权/口径一致由 b2b_billing Go 单测永久覆盖。E2E --list 已确认 4 test 正确解析。'
+  - 'S6-D7 (ai 2026-06-01): ndf-done 成功，双仓库 merge→develop→push origin。numind-server 534471f8..9f2a1311；numind-web-v3 bf2e996..3dd8df6。worktree+本地分支已删。下一步 /deploy-dev 部署 dev 后人工验收（需 dev 上有 B2B 开通数据的父账户测试号）。'
   created_at: '2026-06-01T12:08:51+08:00'
   repos:
   - numind-server
@@ -30,8 +73,8 @@ features:
     plan: docs/superpowers/plans/2026-06-01-parent-billing-report.md
   progress:
     total_tasks: 5
-    completed_tasks: 2
-    reviewed_tasks: 2
+    completed_tasks: 5
+    reviewed_tasks: 5
   blockers: []
 - id: agent-tool-schema-infra
   ndf_version: '3.0'
