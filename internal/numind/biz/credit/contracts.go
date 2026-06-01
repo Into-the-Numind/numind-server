@@ -111,4 +111,9 @@ type ICreditService interface {
 	// refund>0 → AdminTestConsumer.Refund; refund<0 → top up via Consume; both atomic.
 	// Returns error if reservation is not agent_test or already reconciled.
 	ReconcileAgentTest(ctx context.Context, reservationID uint64, actualCostCents int64) error
+
+	// ListConsumptionLog 返回用户「平账后真实消耗」流水（每动作一行，数据源
+	// credit_reservation status=reconciled）。page 1-based、pageSize 默认 20 上限
+	// 100（方法内归一化），返回总数。只读。
+	ListConsumptionLog(ctx context.Context, userID uint, page, pageSize int) ([]ConsumptionLogItem, int64, error)
 }
