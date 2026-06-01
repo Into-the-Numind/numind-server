@@ -4,7 +4,7 @@ features:
   ndf_version: '3.0'
   description: 'Standard NDF（快车）— 「积分消耗记录」弹窗：表头「动作」→「任务」，每条从通用名（SOP 执行/销售对话/智能对话）改为具体实体名（哪个 SOP 的哪个步骤 / SOP 对话显示 SOP 名 / 智能对话显示智能体名）。关键约束（S0 调研）：credit_reservation.reference_id 在生产 aiservice 网关路径上为空，名字本身好查（sop_template.name/sop_node.name/sales_session.title/chatbot_config.name）但缺指针 → 必须在 reserve 时把业务 id 穿过 aiservice 计费网关中间件写进 reference_id（高风险信任边界，跨 SOP/销售/对话/网关/billing 5 域），且历史行无法回填只能回退通用名。'
   track: standard
-  stage: S3
+  stage: S4
   classification_reason: 'Standard（用户指定走快车=精简流程的 Standard）— 无 DB schema 变更 + 无新端点（复用 consumption-log 接口改响应）；但改 biz/credit + store（批量查名）+ aiservice 网关中间件（reserve 写 reference_id，计费信任边界高风险）+ 三调用方 biz；>3 文件跨 5 域。Micro 不可（ndf-done 边界检查硬拦 biz/store 改动）。用户 2026-06-01 确认。'
   last_updated_by: ai-s3-plan-reviewed
   last_updated_at: '2026-06-01T19:22:01+08:00'
