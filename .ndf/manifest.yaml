@@ -22,6 +22,7 @@ features:
   - 'S5-D9 (ai 2026-06-01): E2E 回归 spec 已写并提交（numind-web-v3 e2e/credit-consumption-log.spec.ts，commit 23881a0；eslint 干净）。覆盖：入口位置/打开弹窗/三列表头/数据-or-空态/ESC·关闭按钮·遮罩关闭。'
   - 'S5-PASS (ai 2026-06-01): 本地实跑 E2E **7 passed (11.0s)** —— 本地 build feature 后端跑 :9192 连 dev 库（config_local 指向 dev MySQL/Redis；端点只读、安全），Playwright 前端 VITE_PROXY_TARGET=:9192 真打 feature 后端。后端日志确认正是设计查询 `credit_reservation WHERE user_id=? AND status=reconciled AND actual_cost_cents>0 ORDER BY created_at DESC,id DESC LIMIT 20`，测试账号真有 3 条记录（走数据分支非空态假通过）。后端 race 单测（store/credit/controller，含对账一致性 + 越权）全绿。临时后端已拆。S5 PASS。'
   - 'S6-MERGED (ai 2026-06-01): ndf-done 原子完成 —— 先同步 develop→两 feature 分支（router.go 两路由 /credits/consumption-log + parent-billing /users/me/billing-report 由 git 自动合并无冲突；合并后 server build+lint+race 单测、web-v3 type-check+全仓 lint 全绿），再 merge 两 feature→develop + 推 origin/develop（server d22dea61 / web-v3 003f419），worktree+本地分支已清。下一步 /deploy-dev + dev 验收（S6 硬门禁人工确认）。'
+  - 'S6-DEPLOYED (ai 2026-06-01): 已 /deploy-dev 两仓库到 dev（新链路 rsync→构建机→TCR→部署机）。构建机 SSH 偶发 kex「Connection closed」(MaxStartups+扫描器噪音，非封禁/非资源；构建机已查健康)，靠重试通过（server 第 3 次、web-v3 自动重试第 1 次成功）。结果：numind-server-dev healthy + /healthz ok + GET /v1/credits/consumption-log=401(端点上线、auth 门正常)；numind-web-v3-dev healthy + :9200/health=200 + 站点 200。镜像 server:develop-36e35772 / web-v3:develop-003f419。**待 S6 硬门禁：用户在 dev 人工验收产品可用**。'
   repos:
   - numind-server
   - numind-web-v3
