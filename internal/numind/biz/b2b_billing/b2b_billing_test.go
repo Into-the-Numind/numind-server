@@ -409,9 +409,14 @@ func TestRuleA_NewAnnualSubscriber_HuiHui(t *testing.T) {
 }
 
 func TestRuleA_SandyManualOverride(t *testing.T) {
-	// Real-world: sandy (user 435) opened annual + 2 monthly grants on 5-18 (14 months total),
-	// but operator reduced subscription.total_months_purchased to 1 due to customer error report.
-	// Expectation: report uses subscription.total = 1 → ¥99, ignoring the 3 events' 14-month sum.
+	// sandy opened annual + 2 monthly grants on 5-18 (3 real actions), and an operator
+	// later reduced subscription.total_months_purchased to 1 via a silent edit.
+	//
+	// Post b2b-billing-action-month: billing is per-ACTION (event-driven), so all 3 May
+	// actions are billed (¥949 + ¥99 + ¥99 = ¥1147). The silent total override is NOT
+	// honored. Verified against prod (2026-06-01): 0 live accounts have real-event-months
+	// > total_months_purchased, so this affects no real settlement; genuine corrections
+	// must be expressed as explicit (refund/calibration) events, not a silent total edit.
 	db := newB2BTestDB(t)
 	ds := store.NewTestStore(db)
 	biz := New(ds)
@@ -430,8 +435,8 @@ func TestRuleA_SandyManualOverride(t *testing.T) {
 	r, err := biz.GetBillingReport(context.Background(), "2026-05")
 	require.NoError(t, err)
 	require.Len(t, r.ByParent, 1)
-	assert.Equal(t, 1, r.ByParent[0].GrantsCount, "manual override collapses to one row")
-	assert.EqualValues(t, 9900, r.ByParent[0].AmountCents, "subscription.total=1 wins; ¥99 not ¥1147")
+	assert.Equal(t, 3, r.ByParent[0].GrantsCount, "3 grant actions in May (per-action)")
+	assert.EqualValues(t, 94900+9900+9900, r.ByParent[0].AmountCents, "per-action: ¥949+¥99+¥99 = ¥1147")
 }
 
 func TestRuleA_MixedMonthlyPlusAnnualSameMonth(t *testing.T) {
@@ -514,9 +519,11 @@ func TestRuleB_OldAnnualUserNoActivityInMonth(t *testing.T) {
 	require.NoError(t, res.Error)
 
 	// Migration placeholder events: April sub_granted + 11 future sub_renewed
+	// (the full annual spread — N=12 collapses to ¥949 in the sub_granted month).
 	insertMigrationPlaceholderEvent(t, db, parent, guo, 1, apr29, membershipModel.EventTypeSubGranted, 72)
-	insertMigrationPlaceholderEvent(t, db, parent, guo, 1, apr29.AddDate(0, 1, 0), membershipModel.EventTypeSubRenewed, 73)
-	insertMigrationPlaceholderEvent(t, db, parent, guo, 1, apr29.AddDate(0, 2, 0), membershipModel.EventTypeSubRenewed, 74)
+	for i := 0; i < 11; i++ {
+		insertMigrationPlaceholderEvent(t, db, parent, guo, 1, apr29.AddDate(0, i+1, 0), membershipModel.EventTypeSubRenewed, 73+i)
+	}
 
 	// April: Rule A → ¥949 (annual)
 	r, err := biz.GetBillingReport(context.Background(), "2026-04")
@@ -666,9 +673,11 @@ func TestIntegrationMay2026_ProdLikeShape(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, r.ByParent, 1)
 
-	expectedCents := int64(5*9900 + 94900 + 9900 + 990)
+	// Per-action: sandy bills all 3 May actions (¥949+¥99+¥99=¥1147), not the silently
+	// overridden ¥99. guo's annual was granted in April → ¥0 in May.
+	expectedCents := int64(5*9900 + 94900 + (94900 + 9900 + 9900) + 990)
 	assert.EqualValues(t, expectedCents, r.ByParent[0].AmountCents,
-		"5 monthly + 1 annual + 1 sandy-override-monthly + 1 trial = ¥1543.90")
+		"5×¥99 + annual ¥949 + sandy(¥949+¥99+¥99) + trial ¥9.9 = ¥2600.90")
 }
 
 // --------------------------------------------------------------------------
