@@ -151,7 +151,7 @@ func (b *b2bBillingBiz) GetBillingReport(ctx context.Context, month string) (*B2
 
 	source := chooseSource(start, end, b.cutoverDate)
 
-	events, err := b.computeBilling(ctx, start, end)
+	events, err := b.computeBilling(ctx, start, end, nil)
 	if err != nil {
 		return nil, fmt.Errorf("GetBillingReport month=%s source=%s: %w", month, source, err)
 	}
@@ -162,9 +162,17 @@ func (b *b2bBillingBiz) GetBillingReport(ctx context.Context, month string) (*B2
 // computeBilling applies Rule A + Rule B + trial path to assemble the
 // settlement events for the half-open [start, end) month window.
 //
+// granterUserID scopes the report to a single parent account:
+//
+//	nil  → all parent accounts (admin settlement report; unchanged behaviour)
+//	&id  → only grants made by that parent (parent self-service report)
+//
+// When set, an additional `granter_user_id = ?` predicate is ANDed onto the
+// Rule A / Rule B / trial queries so cross-parent rows never load into memory.
+//
 // Performance: bulk-loads membership_event rows for all candidate users in
 // one query instead of issuing one query per subscriber (avoids N+1).
-func (b *b2bBillingBiz) computeBilling(ctx context.Context, start, end time.Time) ([]grantEvent, error) {
+func (b *b2bBillingBiz) computeBilling(ctx context.Context, start, end time.Time, granterUserID *uint) ([]grantEvent, error) {
 	var events []grantEvent
 
 	// ── Rule A: first-month subscribers ──────────────────────────────────────
@@ -172,10 +180,13 @@ func (b *b2bBillingBiz) computeBilling(ctx context.Context, start, end time.Time
 	// subscription.first_started_at ∈ [start, end) AND source = b2b_grant AND
 	// granter_user_id IS NOT NULL.
 	var subsA []membershipModel.Subscription
-	if err := b.ds.DB().WithContext(ctx).
+	qA := b.ds.DB().WithContext(ctx).
 		Where("source = ? AND first_started_at >= ? AND first_started_at < ? AND granter_user_id IS NOT NULL",
-			membershipModel.SourceB2BGrant, start, end).
-		Find(&subsA).Error; err != nil {
+			membershipModel.SourceB2BGrant, start, end)
+	if granterUserID != nil {
+		qA = qA.Where("granter_user_id = ?", *granterUserID)
+	}
+	if err := qA.Find(&subsA).Error; err != nil {
 		return nil, fmt.Errorf("computeBilling: query subs rule A: %w", err)
 	}
 
@@ -191,10 +202,13 @@ func (b *b2bBillingBiz) computeBilling(ctx context.Context, start, end time.Time
 	// events, the update came from admin_calibration or similar non-grant
 	// activity and contributes 0 to settlement.
 	var subsB []membershipModel.Subscription
-	if err := b.ds.DB().WithContext(ctx).
+	qB := b.ds.DB().WithContext(ctx).
 		Where("source = ? AND first_started_at < ? AND updated_at >= ? AND updated_at < ? AND granter_user_id IS NOT NULL",
-			membershipModel.SourceB2BGrant, start, start, end).
-		Find(&subsB).Error; err != nil {
+			membershipModel.SourceB2BGrant, start, start, end)
+	if granterUserID != nil {
+		qB = qB.Where("granter_user_id = ?", *granterUserID)
+	}
+	if err := qB.Find(&subsB).Error; err != nil {
 		return nil, fmt.Errorf("computeBilling: query subs rule B: %w", err)
 	}
 
@@ -275,10 +289,13 @@ func (b *b2bBillingBiz) computeBilling(ctx context.Context, start, end time.Time
 	// trial_grant.granted_at ∈ [start, end) AND source = b2b_grant AND
 	// granter_user_id IS NOT NULL.
 	var trials []membershipModel.TrialGrant
-	if err := b.ds.DB().WithContext(ctx).
+	qT := b.ds.DB().WithContext(ctx).
 		Where("source = ? AND granted_at >= ? AND granted_at < ? AND granter_user_id IS NOT NULL",
-			membershipModel.SourceB2BGrant, start, end).
-		Find(&trials).Error; err != nil {
+			membershipModel.SourceB2BGrant, start, end)
+	if granterUserID != nil {
+		qT = qT.Where("granter_user_id = ?", *granterUserID)
+	}
+	if err := qT.Find(&trials).Error; err != nil {
 		return nil, fmt.Errorf("computeBilling: query trials: %w", err)
 	}
 
