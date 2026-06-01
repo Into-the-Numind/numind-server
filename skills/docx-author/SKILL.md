@@ -4,7 +4,7 @@ Generate .docx Word files via `python-docx` inside `run_python`.
 
 ## How you use this
 
-You are the agent. After `read_skill({"skill_name":"docx-author"})` returns this
+You are the agent. After `load_skill({"name":"docx-author"})` returns this
 guide, write Python following one of the templates below and run it via
 `run_python({"code": "...", "input_files": [...optional image URLs...]})`.
 `run_python` collects everything in `/workdir/output/` and gives you back a COS URL —
