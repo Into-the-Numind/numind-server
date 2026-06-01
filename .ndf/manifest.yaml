@@ -4,10 +4,13 @@ features:
   ndf_version: '3.0'
   description: 'Standard NDF — 父账户自助费用对账页面。面向用户端父账户（parent_user_id IS NULL），按月展示自己通过「帮开通会员」给名下子账号开通的会员明细（子账号 / 产品类型 trial|monthly / 月数 / 价格 / 开通时间）+ 本月合计，方便对账。本质是现有 admin `GET /v1/admin/b2b-billing-report`（按父账户聚合，财务对公用）的父账户自助版——同一数据源（membership_event/subscription/trial_grant），作用域收窄到当前登录父账户自己。高复用 biz/b2b_billing（ParentBillingRow/GrantDetail 结构已覆盖所需字段；价格用 PriceForMonths 重算）。'
   track: standard
-  stage: S0
+  stage: S1
   classification_reason: 'Standard — 无 DB schema 变更（数据已存在）；但新增用户端 API 端点（admin 版是 admin_token 作用域，C 端访问不到）；跨两仓库 >3 文件；属会员/计费高风险域 + 需父账户越权隔离。用户 2026-06-01 档位判定确认 Standard。'
-  last_updated_by: ai-s0-requirement
+  last_updated_by: ai-s1-proposal
   last_updated_at: '2026-06-01T12:08:51+08:00'
+  decisions:
+  - 'S0-D1 (user 2026-06-01): 时间范围=单月查看（选月份，默认当月），与 admin ?month=YYYY-MM 口径一致，不做多月历史列表。'
+  - 'S0-D2 (user 2026-06-01): 入口=放进用户端「客户管理」页面内跳转内页查看，不做独立顶级页面。'
   created_at: '2026-06-01T12:08:51+08:00'
   repos:
   - numind-server
@@ -20,11 +23,11 @@ features:
     numind-web-v3: /private/tmp/wt-parent-billing-report-numind-web-v3
   artifacts:
     requirement: requirements/parent-billing-report.md
+    proposal: proposals/parent-billing-report-proposal.md
   progress:
     total_tasks: 0
     completed_tasks: 0
     reviewed_tasks: 0
-  decisions: []
   blockers: []
 - id: agent-tool-schema-infra
   ndf_version: '3.0'
