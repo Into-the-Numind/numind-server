@@ -44,6 +44,10 @@ type CreditStore interface {
 	UpdateUserTypeConfig(ctx context.Context, userType string, updates map[string]interface{}) error
 	CreateTransaction(ctx context.Context, tx *gorm.DB, txn *model.CreditTransaction) error
 	ListTransactionsByUser(ctx context.Context, userID uint, offset, limit int) ([]model.CreditTransaction, int64, error)
+	// ListReconciledReservationsByUser 返回某用户已平账（status=reconciled 且
+	// actual_cost_cents>0）的预扣记录，按 created_at DESC（次级 id DESC）分页，
+	// 返回过滤下的总数。用户端「积分消耗记录」数据源。只读。
+	ListReconciledReservationsByUser(ctx context.Context, userID uint, offset, limit int) ([]model.CreditReservation, int64, error)
 	// SumByReservationIDs sums credit_transaction.amount (negated to positive = spent)
 	// for each reservation ID in the input slice. Returns a map[reservationID]→totalSpent.
 	// Used by student-facing agent run list endpoints to compute credits_used per run.
@@ -240,6 +244,25 @@ func (s *creditStore) ListTransactionsByUser(ctx context.Context, userID uint, o
 		return nil, 0, err
 	}
 	return transactions, total, nil
+}
+
+// ListReconciledReservationsByUser 见接口注释。只读，使用 GORM query builder。
+func (s *creditStore) ListReconciledReservationsByUser(ctx context.Context, userID uint, offset, limit int) ([]model.CreditReservation, int64, error) {
+	var rows []model.CreditReservation
+	var total int64
+
+	const cond = "user_id = ? AND status = ? AND actual_cost_cents > ?"
+	countDB := s.db.WithContext(ctx).Model(&model.CreditReservation{}).Where(cond, userID, "reconciled", 0)
+	if err := countDB.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	findDB := s.db.WithContext(ctx).Where(cond, userID, "reconciled", 0)
+	if err := findDB.Order("created_at DESC").Order("id DESC").
+		Offset(offset).Limit(limit).Find(&rows).Error; err != nil {
+		return nil, 0, err
+	}
+	return rows, total, nil
 }
 
 // SumByReservationIDs returns the total credits spent (sum of negative amounts, negated)
