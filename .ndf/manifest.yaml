@@ -40,15 +40,18 @@ features:
   ndf_version: '3.0'
   description: 'Standard NDF — 父账户自助费用对账页面。面向用户端父账户（parent_user_id IS NULL），按月展示自己通过「帮开通会员」给名下子账号开通的会员明细（子账号 / 产品类型 trial|monthly / 月数 / 价格 / 开通时间）+ 本月合计，方便对账。本质是现有 admin `GET /v1/admin/b2b-billing-report`（按父账户聚合，财务对公用）的父账户自助版——同一数据源（membership_event/subscription/trial_grant），作用域收窄到当前登录父账户自己。高复用 biz/b2b_billing（ParentBillingRow/GrantDetail 结构已覆盖所需字段；价格用 PriceForMonths 重算）。'
   track: standard
-  stage: S3
+  stage: S6
   classification_reason: 'Standard — 无 DB schema 变更（数据已存在）；但新增用户端 API 端点（admin 版是 admin_token 作用域，C 端访问不到）；跨两仓库 >3 文件；属会员/计费高风险域 + 需父账户越权隔离。用户 2026-06-01 档位判定确认 Standard。'
-  last_updated_by: ai-s3-plan
-  last_updated_at: '2026-06-01T12:08:51+08:00'
+  last_updated_by: ai-s6-merged
+  last_updated_at: '2026-06-01T13:30:00+08:00'
   decisions:
   - 'S0-D1 (user 2026-06-01): 时间范围=单月查看（选月份，默认当月），与 admin ?month=YYYY-MM 口径一致，不做多月历史列表。'
   - 'S0-D2 (user 2026-06-01): 入口=放进用户端「客户管理」页面内跳转内页查看，不做独立顶级页面。'
   - 'S2-D3 (user+ai 2026-06-01): 后端方案 A=参数化复用 computeBilling(granterUserID *uint)，单一真相源，作用域 SQL 下推；新增用户端 GET /v1/users/me/billing-report (user_token, 父账户专属); 非父账户 403 (ErrForbidden, biz 层 sentinel); 内页形态=子路由 /customers/billing。完整设计见 spec docs/superpowers/specs/2026-06-01-parent-billing-report-design.md。'
   - 'S3-D4 (independent sonnet reviewer 2026-06-01): plan 原子性审查 VERDICT=PASS（6 task 依赖无环、后端先于前端、每 task commit 后可编译、S5 Playwright E2E 对高风险计费域合理）。已修 1 P1（controller 500 分支勿向 C 端泄露 err.Error()→改通用文案）+ 4 P2（必加 gorm import / 金额字面量可读性 / 前端复合 key / Task1 commit msg）。'
+  - 'S4-D5 (ai 2026-06-01): 5 实现 task 全部 subagent-driven + 并行双 Sonnet review（均 PASS）。修 P1（Task5 code-quality 误报"后端端点不存在"=跨仓库误判驳回；error message 提取顺序按 request.ts 拦截器分析驳回反向建议，改简化）+ 多个 P2（regex 去重导出 IsValidMonth / 共享 MembershipProductType 类型 / formatDate 抽取 / radius token / guard 文案 / !important 去除）。task lint exit0、b2b_billing 24 测试全绿、前端 type-check 0、4 文件 lint 净。cmd-numind/biz-memory 失败确认 develop pre-existing。'
+  - 'S5-D6 (user 2026-06-01): 验证策略=写 Playwright E2E spec 入库（e2e/parent-billing-report.spec.ts，4 test：入口导航/合计=行金额求和不变式/空月/error+retry，mock-based 确定性）+ 浏览器实跑放 dev（用户选实用路径）。后端金额归因/越权/口径一致由 b2b_billing Go 单测永久覆盖。E2E --list 已确认 4 test 正确解析。'
+  - 'S6-D7 (ai 2026-06-01): ndf-done 成功，双仓库 merge→develop→push origin。numind-server 534471f8..9f2a1311；numind-web-v3 bf2e996..3dd8df6。worktree+本地分支已删。下一步 /deploy-dev 部署 dev 后人工验收（需 dev 上有 B2B 开通数据的父账户测试号）。'
   created_at: '2026-06-01T12:08:51+08:00'
   repos:
   - numind-server
@@ -66,8 +69,8 @@ features:
     plan: docs/superpowers/plans/2026-06-01-parent-billing-report.md
   progress:
     total_tasks: 5
-    completed_tasks: 2
-    reviewed_tasks: 2
+    completed_tasks: 5
+    reviewed_tasks: 5
   blockers: []
 - id: agent-tool-schema-infra
   ndf_version: '3.0'
