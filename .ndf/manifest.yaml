@@ -4,9 +4,9 @@ features:
   ndf_version: '3.0'
   description: 'Standard NDF — 用户端「额度消耗记录」。面向所有账户（每个登录用户看自己），入口在设置页，以点击弹窗形态呈现一份积分消耗流水，每条展示 动作 / 时间 / 消耗数量，且只呈现「平账后的真实记录」（Reserve/Reconcile 两阶段对账完成后的最终真实消耗，非 reserve 预扣估算中间态）。数据源 credit_transaction（amount<0=消耗；operation 机读值如 reserve:sop_run；created_at；source_type）。store 方法 ListTransactionsByUser 已存在可复用。与现有 GET /v1/credits/balance（只给三池聚合余额）互补——余额答「还剩多少」，本功能答「花在哪了」。'
   track: standard
-  stage: S5
+  stage: S6
   classification_reason: 'Standard — 无 DB schema 变更（credit_transaction 表及字段已存在）；但新增用户端 API 端点（balance 接口只聚合余额无明细流水）；跨两仓库 >3 文件；属计费 SOT 高风险域 + 需严格「只看自己」越权隔离。用户 2026-06-01 档位判定确认 Standard。'
-  last_updated_by: ai-s5-e2e-passed
+  last_updated_by: ai-s6-merged
   last_updated_at: '2026-06-01T17:51:55+08:00'
   created_at: '2026-06-01T13:10:46+08:00'
   decisions:
@@ -21,6 +21,7 @@ features:
   - 'S4-DONE (ai 2026-06-01): 6/6 task 实现 + 每 task 双 reviewer 全 PASS（P0/P1=0，P2 全部当场修）+ 终态端到端集成审查 PASS（字段契约逐一核对、越权隔离、build/test/type-check 绿）。commits: server 542bb227/387c2bc3/52e8e715，web-v3 820a347/ae9511c/5605913/d262ad5。旁路修复前端遗留 lint（micro fix-marketplace-lint → develop e3bbc53）。'
   - 'S5-D9 (ai 2026-06-01): E2E 回归 spec 已写并提交（numind-web-v3 e2e/credit-consumption-log.spec.ts，commit 23881a0；eslint 干净）。覆盖：入口位置/打开弹窗/三列表头/数据-or-空态/ESC·关闭按钮·遮罩关闭。'
   - 'S5-PASS (ai 2026-06-01): 本地实跑 E2E **7 passed (11.0s)** —— 本地 build feature 后端跑 :9192 连 dev 库（config_local 指向 dev MySQL/Redis；端点只读、安全），Playwright 前端 VITE_PROXY_TARGET=:9192 真打 feature 后端。后端日志确认正是设计查询 `credit_reservation WHERE user_id=? AND status=reconciled AND actual_cost_cents>0 ORDER BY created_at DESC,id DESC LIMIT 20`，测试账号真有 3 条记录（走数据分支非空态假通过）。后端 race 单测（store/credit/controller，含对账一致性 + 越权）全绿。临时后端已拆。S5 PASS。'
+  - 'S6-MERGED (ai 2026-06-01): ndf-done 原子完成 —— 先同步 develop→两 feature 分支（router.go 两路由 /credits/consumption-log + parent-billing /users/me/billing-report 由 git 自动合并无冲突；合并后 server build+lint+race 单测、web-v3 type-check+全仓 lint 全绿），再 merge 两 feature→develop + 推 origin/develop（server d22dea61 / web-v3 003f419），worktree+本地分支已清。下一步 /deploy-dev + dev 验收（S6 硬门禁人工确认）。'
   repos:
   - numind-server
   - numind-web-v3
