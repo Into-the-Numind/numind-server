@@ -129,6 +129,7 @@ git add internal/numind/biz/b2b_billing/b2b_billing.go
 git commit -m "refactor(b2b_billing): add optional granterUserID filter to computeBilling
 
 nil = all parents (admin, unchanged); &id = single parent (parent self-service).
+Update sole caller GetBillingReport to pass nil (unchanged behaviour).
 Pure refactor, existing suite green."
 ```
 
@@ -245,6 +246,8 @@ func (b *b2bBillingBiz) lookupUsernames(ctx context.Context, ids []uint) (map[ui
 （注意：`buildReport` 已 `return nil, fmt.Errorf(...)` 用过 err 变量，确认 err 已声明；若未声明改用 `:=`。）
 
 - [ ] **Step 5: 实现 `GetBillingReportForParent` + 接口声明**
+
+> ⚠️ **必须追加** `"gorm.io/gorm"` 到 import 块——现有 `b2b_billing.go`（第 46-57 行 import）**不含**此 import，否则 `gorm.ErrRecordNotFound` 会 undefined、编译失败。
 
 在 `IB2BBillingBiz` 接口加方法：
 
@@ -385,7 +388,7 @@ func TestGetBillingReportForParent_TrialAndMonthly(t *testing.T) {
 	r, err := biz.GetBillingReportForParent(context.Background(), "2026-05", parent)
 	require.NoError(t, err)
 	require.Len(t, r.Details, 2)
-	assert.EqualValues(t, 198_00+9_90, r.TotalAmountCents)
+	assert.EqualValues(t, 19800+990, r.TotalAmountCents) // 2×¥99 + ¥9.9 = 20790 cents
 	// trial detail has Months==0, monthly has Months>0
 	var sawTrial, sawMonthly bool
 	for _, d := range r.Details {
@@ -503,8 +506,9 @@ func (ctrl *ParentBillingController) GetMyBillingReport(c *gin.Context) {
 			core.WriteResponse(c, errno.ErrForbidden.SetMessage("仅父账户可查看费用对账"), nil)
 			return
 		}
+		// P1 (S3 review): 不向 C 端泄露内部错误详情（SQL/表名/userID）。err 仅入日志。
 		log.C(c).Errorw("Failed to get parent billing report", "month", month, "userID", userID, "err", err)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("内部错误，请稍后重试"), nil)
 		return
 	}
 
@@ -731,7 +735,7 @@ onMounted(load)
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(d, i) in report.details" :key="i">
+          <tr v-for="d in report.details" :key="`${d.child_user_id}-${d.granted_at}`">
             <td>{{ d.child_username }}</td>
             <td>{{ productLabel(d.product_type) }}</td>
             <td>{{ durationLabel(d) }}</td>
