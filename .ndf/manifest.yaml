@@ -20,6 +20,7 @@ features:
   - 'S3-D8 (independent sonnet reviewer 2026-06-01): plan 原子性审查 VERDICT=PASS_WITH_FIXES。**核实「additive 不影响金额」成立**（reference_id 在 reserveBudgetRow 金额计算之后写入，独立于 ReservedCredits/DeductCreditsTx/路由/trace；ctxKeyReservationRef 与 billingCtxKey 是不同 struct key，WithBilling 不覆盖）+ DAG 无环 + 代码符号核实。已修 2 P1（T1 金额安全网测试改为显式 control reserve 比对；T3 enricher 文档化 sop_chat 双格式容错解析 parts[1]=runID）+ 1 P2（T3 测试补 AutoMigrate 查名表）。'
   - 'S4-DONE (ai 2026-06-01): 4/4 task 实现 + 每 task 双 reviewer 全 PASS（P0/P1=0，P2 全部当场修）+ 终态端到端集成审查 PASS（4 个 write→parse 前缀逐字匹配、detail_name 契约一致、billing additive、ctx key 不冲突、越权 sales 按 user_id + chatbot 注入前已校验归属、build/test/type-check 绿）。commits: server 0576fb11/9ab8db2f/de36adb1，web-v3 d7092b2，e2e 头 动作→任务 4679343。'
   - 'S5 (ai 2026-06-01): 后端 race 单测（biz/credit + aiservice/middleware）全绿——含金额安全网（control reserve 比对，ReferenceID 不改金额）、各 entity detail_name 富集、越权、解析容错；前端 lint+type-check 绿；e2e spec 头断言已更 任务。**E2E 全量跑被 dev-DB 测试账号登录失败阻断**（后端日志确认 admin 用户查到 rows:1 但密码校验失败——会话中途 admin 凭据在 dev 库被改/锁，影响所有连 dev 库的后端，非本功能代码；模态渲染回归低风险，本会话早先的 consumption-log E2E 已证模态可渲染，本次改动仅表头文案+lint/type 已验）。具体名端到端需在 dev 触发真实 SOP/销售/对话操作验证（新记录显示具体名，历史回退通用名）。'
+  - 'S6-DEPLOYED (ai 2026-06-01): ndf-done 原子合并两仓库→develop（server 253e86be / web-v3 b55005a，无冲突）+ 推 origin。已 /deploy-dev 两仓库：numind-server-dev healthy + /healthz ok + GET /v1/credits/consumption-log=401（端点上线）；numind-web-v3-dev healthy + :9200/health=200 + 站点 200。用户授权「跑到 deploy dev、不碰 prod」——S7 上线未做。**待 S6 人工验收 + S7（需先解决 dev admin 登录/凭据问题才能在 dev 点验）**。'
   repos:
   - numind-server
   - numind-web-v3
