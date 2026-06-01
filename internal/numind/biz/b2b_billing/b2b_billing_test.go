@@ -841,3 +841,81 @@ func TestGetBillingReportForParent_InvalidMonth(t *testing.T) {
 		assert.Error(t, err, "bad month %q must error", bad)
 	}
 }
+
+// --------------------------------------------------------------------------
+// Bug repro (b2b-billing-action-month hotfix, reported by product owner 2026-06-01)
+//
+// Standard (per owner): bill each grant ACTION in the natural month its action
+// occurred; price per action (1-11 mo → mo×¥99; 12 mo → ¥949). The old Rule A
+// "Case 1" instead attributed subscription.total_months_purchased (a cumulative
+// value that grows with LATER renewals) to the first_started_at month, so an
+// account whose April original is a 4-30 migration placeholder and that renewed
+// in May got billed 2 months in April (and the May renewal billed AGAIN in May).
+//
+// These tests encode the CORRECT behaviour and FAIL on the pre-fix code.
+// --------------------------------------------------------------------------
+
+// 326 pattern: April original = migration placeholder (1 mo); +1 mo renewal in May.
+func TestActionMonth_326_MigratedOriginalPlusMayRenewal(t *testing.T) {
+	db := newB2BTestDB(t)
+	ds := store.NewTestStore(db)
+	biz := New(ds)
+	parent := insertB2BUser(t, db, "user_moxiaopai")
+	c326 := insertB2BUser(t, db, "600901k")
+
+	apr20 := time.Date(2026, 4, 20, 14, 39, 23, 0, time.UTC)
+	may19 := time.Date(2026, 5, 19, 10, 18, 24, 0, time.UTC)
+
+	// Subscription seeded with total=1 (original April month); renewal bumps to 2.
+	require.NoError(t, db.Exec(`INSERT INTO subscription (user_id, first_started_at, current_started_at,
+		expires_at, total_months_purchased, source, granter_user_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c326, apr20, apr20, apr20.AddDate(0, 1, 0), 1,
+		membershipModel.SourceB2BGrant, uint64(parent), apr20, apr20).Error)
+	// April original exists ONLY as a 4-30 migration placeholder (1 month).
+	insertMigrationPlaceholderEvent(t, db, parent, c326, 1, apr20, membershipModel.EventTypeSubGranted, 4)
+	// Real renewal action in MAY (also bumps subscription.total to 2).
+	insertSubRenewal(t, db, parent, c326, 1, may19)
+
+	apr, err := biz.GetBillingReportForParent(context.Background(), "2026-04", parent)
+	require.NoError(t, err)
+	assert.EqualValues(t, 9900, apr.TotalAmountCents, "April = 1 month ¥99 (original grant action only)")
+	require.Len(t, apr.Details, 1)
+	assert.Equal(t, 1, apr.Details[0].Months)
+
+	may, err := biz.GetBillingReportForParent(context.Background(), "2026-05", parent)
+	require.NoError(t, err)
+	assert.EqualValues(t, 9900, may.TotalAmountCents, "May = 1 month ¥99 (renewal action)")
+}
+
+// 355 pattern: April original = migration placeholder (1 mo); two more actions in May.
+func TestActionMonth_355_MigratedOriginalPlusTwoMayActions(t *testing.T) {
+	db := newB2BTestDB(t)
+	ds := store.NewTestStore(db)
+	biz := New(ds)
+	parent := insertB2BUser(t, db, "user_moxiaopai")
+	c355 := insertB2BUser(t, db, "moxiaopai6")
+
+	apr20 := time.Date(2026, 4, 20, 14, 31, 53, 0, time.UTC)
+	may21 := time.Date(2026, 5, 21, 13, 17, 46, 0, time.UTC)
+	may28 := time.Date(2026, 5, 28, 14, 40, 37, 0, time.UTC)
+
+	require.NoError(t, db.Exec(`INSERT INTO subscription (user_id, first_started_at, current_started_at,
+		expires_at, total_months_purchased, source, granter_user_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c355, apr20, apr20, apr20.AddDate(0, 1, 0), 1,
+		membershipModel.SourceB2BGrant, uint64(parent), apr20, apr20).Error)
+	insertMigrationPlaceholderEvent(t, db, parent, c355, 1, apr20, membershipModel.EventTypeSubGranted, 3)
+	insertSubRenewal(t, db, parent, c355, 1, may21) // real May action #1
+	insertSubRenewal(t, db, parent, c355, 1, may28) // real May action #2
+
+	apr, err := biz.GetBillingReportForParent(context.Background(), "2026-04", parent)
+	require.NoError(t, err)
+	assert.EqualValues(t, 9900, apr.TotalAmountCents, "April = 1 month ¥99 (migrated original only)")
+	require.Len(t, apr.Details, 1)
+
+	may, err := biz.GetBillingReportForParent(context.Background(), "2026-05", parent)
+	require.NoError(t, err)
+	assert.EqualValues(t, 19800, may.TotalAmountCents, "May = 2 months ¥198 (two May actions)")
+	assert.Len(t, may.Details, 2)
+}
