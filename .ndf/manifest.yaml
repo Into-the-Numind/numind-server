@@ -1,5 +1,33 @@
 schema_version: '2.0'
 features:
+- id: credit-log-task-names
+  ndf_version: '3.0'
+  description: 'Standard NDF（快车）— 「积分消耗记录」弹窗：表头「动作」→「任务」，每条从通用名（SOP 执行/销售对话/智能对话）改为具体实体名（哪个 SOP 的哪个步骤 / SOP 对话显示 SOP 名 / 智能对话显示智能体名）。关键约束（S0 调研）：credit_reservation.reference_id 在生产 aiservice 网关路径上为空，名字本身好查（sop_template.name/sop_node.name/sales_session.title/chatbot_config.name）但缺指针 → 必须在 reserve 时把业务 id 穿过 aiservice 计费网关中间件写进 reference_id（高风险信任边界，跨 SOP/销售/对话/网关/billing 5 域），且历史行无法回填只能回退通用名。'
+  track: standard
+  stage: S0
+  classification_reason: 'Standard（用户指定走快车=精简流程的 Standard）— 无 DB schema 变更 + 无新端点（复用 consumption-log 接口改响应）；但改 biz/credit + store（批量查名）+ aiservice 网关中间件（reserve 写 reference_id，计费信任边界高风险）+ 三调用方 biz；>3 文件跨 5 域。Micro 不可（ndf-done 边界检查硬拦 biz/store 改动）。用户 2026-06-01 确认。'
+  last_updated_by: ai-s0-requirement
+  last_updated_at: '2026-06-01T19:22:01+08:00'
+  created_at: '2026-06-01T19:22:01+08:00'
+  decisions:
+  - 'S0-D1 (user 2026-06-01): 表头改「任务」+ 每条显示具体模块/步骤/对话名（sop_run=SOP名·步骤名；sop_chat=SOP名；salesrag_chat=会话/场景名；chatbot_chat=智能体名；其它回退通用名）。用户指定 Standard 走快车。'
+  - 'S0-D2 (ai 2026-06-01, 调研结论): reference_id 生产路径为空 → 必须贯通 aiservice 计费网关写业务 id；历史记录无法回填、回退通用名（已与用户沟通的产品取舍）。'
+  repos:
+  - numind-server
+  - numind-web-v3
+  branches:
+    numind-server: feature/credit-log-task-names
+    numind-web-v3: feature/credit-log-task-names
+  worktrees:
+    numind-server: /private/tmp/wt-credit-log-task-names-numind-server
+    numind-web-v3: /private/tmp/wt-credit-log-task-names-numind-web-v3
+  artifacts:
+    requirement: requirements/credit-log-task-names.md
+  progress:
+    total_tasks: 0
+    completed_tasks: 0
+    reviewed_tasks: 0
+  blockers: []
 - id: credit-consumption-log
   ndf_version: '3.0'
   description: 'Standard NDF — 用户端「额度消耗记录」。面向所有账户（每个登录用户看自己），入口在设置页，以点击弹窗形态呈现一份积分消耗流水，每条展示 动作 / 时间 / 消耗数量，且只呈现「平账后的真实记录」（Reserve/Reconcile 两阶段对账完成后的最终真实消耗，非 reserve 预扣估算中间态）。数据源 credit_transaction（amount<0=消耗；operation 机读值如 reserve:sop_run；created_at；source_type）。store 方法 ListTransactionsByUser 已存在可复用。与现有 GET /v1/credits/balance（只给三池聚合余额）互补——余额答「还剩多少」，本功能答「花在哪了」。'
