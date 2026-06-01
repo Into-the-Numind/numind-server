@@ -13,6 +13,7 @@ import (
 
 	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/store"
+	aismw "numind-server/internal/pkg/aiservice/middleware"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
@@ -782,6 +783,7 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	traceID := langfuse.TraceID()
 	ctx = billing.WithBillingMeta(ctx, run.UserID, "sop_node_execute",
 		billing.Metadata("run_id", billing.FormatUint(runID), "node_id", billing.FormatUint(nodeID), "trace_id", traceID))
+	ctx = aismw.WithReservationRef(ctx, fmt.Sprintf("sop_run:%d:%d", runID, nodeID))
 	// 创建 Langfuse trace
 	langfuse.CreateTrace(traceID, "sop_execute",
 		langfuse.WithUserID(run.UserID),
@@ -1537,6 +1539,7 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 	// 注入计费上下文
 	ctx = billing.WithBillingMeta(ctx, userID, "sop_chat_stream",
 		billing.Metadata("run_id", billing.FormatUint(runID), "conversation_id", conversationID, "trace_id", traceID))
+	ctx = aismw.WithReservationRef(ctx, fmt.Sprintf("sop_chat:%d", runID))
 
 	// ===== Phase 2 Task 2.1: Reserve → LLM → Reconcile 控制流 =====
 	// 与 ExecuteNodeStream 同构（operation=OpSopChat）。idempKey 基于 run + 新 user message seq
