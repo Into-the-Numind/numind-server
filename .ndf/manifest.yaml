@@ -4,7 +4,7 @@ features:
   ndf_version: '3.0'
   description: 'Standard NDF — 用户端「额度消耗记录」。面向所有账户（每个登录用户看自己），入口在设置页，以点击弹窗形态呈现一份积分消耗流水，每条展示 动作 / 时间 / 消耗数量，且只呈现「平账后的真实记录」（Reserve/Reconcile 两阶段对账完成后的最终真实消耗，非 reserve 预扣估算中间态）。数据源 credit_transaction（amount<0=消耗；operation 机读值如 reserve:sop_run；created_at；source_type）。store 方法 ListTransactionsByUser 已存在可复用。与现有 GET /v1/credits/balance（只给三池聚合余额）互补——余额答「还剩多少」，本功能答「花在哪了」。'
   track: standard
-  stage: S3
+  stage: S4
   classification_reason: 'Standard — 无 DB schema 变更（credit_transaction 表及字段已存在）；但新增用户端 API 端点（balance 接口只聚合余额无明细流水）；跨两仓库 >3 文件；属计费 SOT 高风险域 + 需严格「只看自己」越权隔离。用户 2026-06-01 档位判定确认 Standard。'
   last_updated_by: ai-s3-plan-reviewed
   last_updated_at: '2026-06-01T13:52:33+08:00'
@@ -34,8 +34,8 @@ features:
     plan: docs/superpowers/plans/2026-06-01-credit-consumption-log.md
   progress:
     total_tasks: 6
-    completed_tasks: 0
-    reviewed_tasks: 0
+    completed_tasks: 1
+    reviewed_tasks: 1
   blockers: []
 - id: parent-billing-report
   ndf_version: '3.0'
