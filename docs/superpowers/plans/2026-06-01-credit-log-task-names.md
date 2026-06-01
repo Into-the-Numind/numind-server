@@ -31,15 +31,26 @@ worktree：后端 `/private/tmp/wt-credit-log-task-names-numind-server`，前端
 - [ ] **Step 1: 失败测试（落库 + 金额不变）**
 在 `internal/numind/biz/credit/` 加测试（用既有 `newCreditReserveTestDB`/`newCreditServiceWithMembership` 或 reserveBudgetRow 直测）：断言 `BudgetReservationInput{ReferenceID:"sop_run:5:9"}` 经 `ReserveBudget` 后，写出的 `credit_reservation.reference_id == "sop_run:5:9"`；且 `ReservedCredits`（金额）与未传 ReferenceID 时**完全一致**（金额不受影响）；`IdempotencyKey` 为空时不回退覆盖。
 ```go
+// BudgetPrecheckInput/svc 的最小可用构造，复制本包既有 budget-reserve 测试
+// （credit_service_reserve_test.go 里 ReserveBudget 的用法），勿臆造字段。
 func TestReserveBudget_WritesReferenceID(t *testing.T) {
-  // setup creditService (newCreditReserveTestDB + ds + svc) + a credits user
-  // call svc.ReserveBudget(ctx, user, credit.BudgetReservationInput{
-  //   BudgetPrecheckInput: <minimal valid>, EstimatedCredits: N, ReferenceID: "sop_run:5:9"})
-  // assert reservation row .ReferenceID == "sop_run:5:9"
-  // assert .ReservedCredits == <same as a control reserve without ReferenceID>
+  // setup: newCreditReserveTestDB + ds + newCreditServiceWithMembership + 有余额的 credits user(们)
+  // 用同一份 precheckIn(EstimatedCredits=N)做两次 reserve：
+  // control（不带 ReferenceID）
+  rsvCtl, err := svc.ReserveBudget(ctx, userCtl, credit.BudgetReservationInput{BudgetPrecheckInput: precheckIn, EstimatedCredits: N})
+  require.NoError(t, err)
+  // with ReferenceID
+  rsvRef, err := svc.ReserveBudget(ctx, userRef, credit.BudgetReservationInput{BudgetPrecheckInput: precheckIn, EstimatedCredits: N, ReferenceID: "sop_run:5:9"})
+  require.NoError(t, err)
+  // 🔑 金额安全网：带 ReferenceID 不改变扣减金额（与 control 相等，不是与输入 N 相等）
+  assert.Equal(t, rsvCtl.ReservedCredits, rsvRef.ReservedCredits, "ReferenceID must not affect reserved amount")
+  // 落库
+  var row model.CreditReservation
+  require.NoError(t, ds.DB().First(&row, rsvRef.ID).Error)
+  assert.Equal(t, "sop_run:5:9", row.ReferenceID)
 }
 ```
-（若 ReserveBudget 的 BudgetPrecheckInput 构造复杂，参考本包既有 budget reserve 测试的构造方式。）
+（必须真调一次 **control** reserve 比对 ReservedCredits——金额安全网；不能只断言等于输入值 N。两个 user 各有足够余额，或同一 user 余额够两次。）
 
 - [ ] **Step 2: Run → FAIL**（`ReferenceID` 字段不存在 / 未写入）
 `cd <server-wt> && go test ./internal/numind/biz/credit/ -run TestReserveBudget_WritesReferenceID -v`
@@ -136,7 +147,7 @@ func ReservationRefFromCtx(ctx context.Context) string {
 **Files:** Modify `biz/credit/consumption_log.go`; Test `biz/credit/consumption_log_test.go`.
 
 - [ ] **Step 1: 失败测试**
-在 `consumption_log_test.go` 加：seed `credit_reservation`（reconciled, actual_cost_cents>0）行带 reference_id（`sop_run:<run>:<node>`/`sales_session:<id>`/`chatbot_session:<id>`/空），并 seed 对应 sop_template/sop_node/sop_run/sales_session/chatbot_session/chatbot_config 行；断言 `ListConsumptionLog` 返回的 item.DetailName：sop_run=「<模板名> · <节点名>」、sales=会话 title、chatbot=智能体名、空引用/未知=""（回退）；并断言查名 query 次数有界（每域≤1，可用 gorm 日志或计数器验证「无 N+1」——简化为：20 行同类型只触发 1 次 IN 查询，断言结果正确即可）。越权：另一个 user 的 session 不被解析（sales 查名带 user_id）。
+在 `consumption_log_test.go` 加：seed `credit_reservation`（reconciled, actual_cost_cents>0）行带 reference_id（`sop_run:<run>:<node>`/`sales_session:<id>`/`chatbot_session:<id>`/空），并 seed 对应 sop_template/sop_node/sop_run/sales_session/chatbot_session/chatbot_config 行。**先确认 `newCreditReserveTestDB` 已 AutoMigrate 这些查名表（sop_template/sop_node/sop_run/sales_session/chatbot_session/chatbot_config）；若没有，在测试内 `db.AutoMigrate(&model.SopTemplate{}, &model.SopNode{}, &model.SopRun{}, &model.SalesSession{}, &model.ChatbotSession{}, &model.ChatbotConfig{})` 补建**（注意若这些 model 含 MySQL ENUM 列，参考 reservation 表的 hand-roll DDL 方式）。断言 `ListConsumptionLog` 返回的 item.DetailName：sop_run=「<模板名> · <节点名>」、sales=会话 title、chatbot=智能体名、空引用/未知=""（回退）；并断言查名 query 次数有界（每域≤1，可用 gorm 日志或计数器验证「无 N+1」——简化为：20 行同类型只触发 1 次 IN 查询，断言结果正确即可）。越权：另一个 user 的 session 不被解析（sales 查名带 user_id）。
 
 - [ ] **Step 2: Run → FAIL**（DetailName 不存在）
 
@@ -155,7 +166,11 @@ func ReservationRefFromCtx(ctx context.Context) string {
 //    chatbotNames:= map[uint]string (sales chain: chatbot_session.id->chatbot_id->chatbot_config.name；可两步 IN 或 join)
 // 3. detailName(refID) → 拼装；缺失返回 ""
 ```
-实现一个包内 helper `func (s *creditService) enrichDetailNames(ctx, userID uint, rows []model.CreditReservation) map[uint64]string`（reservationID->detailName），在 map items 时 `DetailName: detailMap[r.ID]`。解析失败/查不到 → ""（前端回退）。GORM 例：
+实现一个包内 helper `func (s *creditService) enrichDetailNames(ctx, userID uint, rows []model.CreditReservation) map[uint64]string`（reservationID->detailName），在 map items 时 `DetailName: detailMap[r.ID]`。解析失败/查不到 → ""（前端回退）。
+
+**解析容错（重要）**：`parts := strings.Split(refID, ":")`，按 `parts[0]` prefix 分派；sop_run 取 `parts[1]`=runID、`parts[2]`=nodeID；**sop_chat 取 `parts[1]`=runID，兼容旧 R2 格式 `sop_chat:<runID>:<seq>`**（多出的 seq 忽略）；sales_session/chatbot_session 取 `parts[1]`=id。`len(parts)` 不足或 `Atoi` 失败 → 该行 detail_name=""。
+
+GORM 例：
 ```go
 var tpls []struct{ ID uint; Name string }
 s.store.DB().WithContext(ctx).Model(&model.SopTemplate{}).Where("id IN ?", tplIDs).Select("id","name").Scan(&tpls)

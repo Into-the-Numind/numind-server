@@ -6,7 +6,7 @@ features:
   track: standard
   stage: S3
   classification_reason: 'Standard（用户指定走快车=精简流程的 Standard）— 无 DB schema 变更 + 无新端点（复用 consumption-log 接口改响应）；但改 biz/credit + store（批量查名）+ aiservice 网关中间件（reserve 写 reference_id，计费信任边界高风险）+ 三调用方 biz；>3 文件跨 5 域。Micro 不可（ndf-done 边界检查硬拦 biz/store 改动）。用户 2026-06-01 确认。'
-  last_updated_by: ai-s3-plan
+  last_updated_by: ai-s3-plan-reviewed
   last_updated_at: '2026-06-01T19:22:01+08:00'
   created_at: '2026-06-01T19:22:01+08:00'
   decisions:
@@ -17,6 +17,7 @@ features:
   - 'S2-D5 (ai 2026-06-01): reference_id 自描述编码 sop_run:<run>:<node> / sop_chat:<run> / sales_session:<id> / chatbot_session:<id>（沿用 legacy SOP 格式）。注入点：sop.go ~783/1538、salesrag ChatWithSession ~2144、chatbot ChatStream ~310。'
   - 'S2-D6 (ai 2026-06-01): 响应 ConsumptionLogItem 加 detail_name（保留 action/action_label）；前端「动作」→「任务」、列文本 detail_name||action_label。读取端批量查名（每域≤1 query 防 N+1），新增 store 批量方法。'
   - 'S2-D7 (ai 2026-06-01): 只增不改 billing（写入仅 reserveBudgetRow 一处 + 三调用方注入，不碰金额/路由/trace）；越权靠 ids 来自本用户 reservation + sales/chatbot 查名带 userID；S5 必验扣费金额不变 + trace 正常 + reference_id 落库。'
+  - 'S3-D8 (independent sonnet reviewer 2026-06-01): plan 原子性审查 VERDICT=PASS_WITH_FIXES。**核实「additive 不影响金额」成立**（reference_id 在 reserveBudgetRow 金额计算之后写入，独立于 ReservedCredits/DeductCreditsTx/路由/trace；ctxKeyReservationRef 与 billingCtxKey 是不同 struct key，WithBilling 不覆盖）+ DAG 无环 + 代码符号核实。已修 2 P1（T1 金额安全网测试改为显式 control reserve 比对；T3 enricher 文档化 sop_chat 双格式容错解析 parts[1]=runID）+ 1 P2（T3 测试补 AutoMigrate 查名表）。'
   repos:
   - numind-server
   - numind-web-v3
