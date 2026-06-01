@@ -714,3 +714,130 @@ func TestBoundary_LastSecondOfMonth(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, r.ByParent, 1)
 }
+
+// --------------------------------------------------------------------------
+// GetBillingReportForParent tests
+// --------------------------------------------------------------------------
+
+// insertChildUser inserts a user whose parent_user_id is set (a non-parent / child account).
+func insertChildUser(t *testing.T, db *gorm.DB, username string, parentID uint) uint {
+	t.Helper()
+	res := db.Exec(
+		`INSERT INTO user (created_at, updated_at, username, parent_user_id) VALUES (?, ?, ?, ?)`,
+		time.Now(), time.Now(), username, parentID,
+	)
+	require.NoError(t, res.Error)
+	var id uint
+	require.NoError(t, db.Raw("SELECT last_insert_rowid()").Scan(&id).Error)
+	return id
+}
+
+func TestGetBillingReportForParent_ScopedToParent(t *testing.T) {
+	db := newB2BTestDB(t)
+	ds := store.NewTestStore(db)
+	biz := New(ds)
+
+	parentA := insertB2BUser(t, db, "parentA")
+	parentB := insertB2BUser(t, db, "parentB")
+	childA := insertB2BUser(t, db, "childA")
+	childB := insertB2BUser(t, db, "childB")
+
+	may := time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC)
+	insertSubGrant(t, db, parentA, childA, 1, may) // ¥99 by parentA
+	insertSubGrant(t, db, parentB, childB, 3, may) // ¥297 by parentB
+
+	r, err := biz.GetBillingReportForParent(context.Background(), "2026-05", parentA)
+	require.NoError(t, err)
+	assert.EqualValues(t, parentA, r.ParentUserID)
+	assert.Equal(t, 1, r.GrantsCount, "parentA only sees own 1 grant")
+	assert.EqualValues(t, 9900, r.TotalAmountCents)
+	require.Len(t, r.Details, 1)
+	assert.EqualValues(t, childA, r.Details[0].ChildUserID, "must NOT see parentB's child")
+}
+
+func TestGetBillingReportForParent_AmountMatchesAdmin(t *testing.T) {
+	db := newB2BTestDB(t)
+	ds := store.NewTestStore(db)
+	biz := New(ds)
+
+	parent := insertB2BUser(t, db, "parent")
+	c1 := insertB2BUser(t, db, "c1")
+	c2 := insertB2BUser(t, db, "c2")
+	may := time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC)
+	insertSubGrant(t, db, parent, c1, 12, may)  // annual ¥949
+	insertTrialGrantRow(t, db, parent, c2, may) // trial ¥9.9
+
+	admin, err := biz.GetBillingReport(context.Background(), "2026-05")
+	require.NoError(t, err)
+	require.Len(t, admin.ByParent, 1)
+
+	self, err := biz.GetBillingReportForParent(context.Background(), "2026-05", parent)
+	require.NoError(t, err)
+	assert.Equal(t, admin.ByParent[0].AmountCents, self.TotalAmountCents, "口径必须一致")
+	assert.Equal(t, admin.ByParent[0].GrantsCount, self.GrantsCount)
+}
+
+func TestGetBillingReportForParent_EmptyMonth(t *testing.T) {
+	db := newB2BTestDB(t)
+	ds := store.NewTestStore(db)
+	biz := New(ds)
+	parent := insertB2BUser(t, db, "parent")
+
+	r, err := biz.GetBillingReportForParent(context.Background(), "2026-05", parent)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, r.TotalAmountCents)
+	assert.Equal(t, 0, r.GrantsCount)
+	assert.NotNil(t, r.Details)
+	assert.Len(t, r.Details, 0)
+}
+
+func TestGetBillingReportForParent_TrialAndMonthly(t *testing.T) {
+	db := newB2BTestDB(t)
+	ds := store.NewTestStore(db)
+	biz := New(ds)
+	parent := insertB2BUser(t, db, "parent")
+	c1 := insertB2BUser(t, db, "c1")
+	c2 := insertB2BUser(t, db, "c2")
+	may := time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC)
+	insertSubGrant(t, db, parent, c1, 2, may)                  // 2 months ¥198
+	insertTrialGrantRow(t, db, parent, c2, may.Add(time.Hour)) // trial ¥9.9
+
+	r, err := biz.GetBillingReportForParent(context.Background(), "2026-05", parent)
+	require.NoError(t, err)
+	require.Len(t, r.Details, 2)
+	assert.EqualValues(t, 19800+990, r.TotalAmountCents) // 2×¥99 + ¥9.9 = 20790 cents
+	var sawTrial, sawMonthly bool
+	for _, d := range r.Details {
+		if d.ProductType == membershipModel.ProductTypeTrial {
+			sawTrial = true
+			assert.Equal(t, 0, d.Months)
+		}
+		if d.ProductType == membershipModel.ProductTypeMonthly {
+			sawMonthly = true
+			assert.Equal(t, 2, d.Months)
+		}
+	}
+	assert.True(t, sawTrial && sawMonthly)
+}
+
+func TestGetBillingReportForParent_NotParentAccount(t *testing.T) {
+	db := newB2BTestDB(t)
+	ds := store.NewTestStore(db)
+	biz := New(ds)
+	parent := insertB2BUser(t, db, "parent")
+	child := insertChildUser(t, db, "child", parent)
+
+	_, err := biz.GetBillingReportForParent(context.Background(), "2026-05", child)
+	assert.ErrorIs(t, err, ErrNotParentAccount)
+}
+
+func TestGetBillingReportForParent_InvalidMonth(t *testing.T) {
+	db := newB2BTestDB(t)
+	ds := store.NewTestStore(db)
+	biz := New(ds)
+	parent := insertB2BUser(t, db, "parent")
+	for _, bad := range []string{"2026-13", "2026-1", "2026/05", "bad", ""} {
+		_, err := biz.GetBillingReportForParent(context.Background(), bad, parent)
+		assert.Error(t, err, "bad month %q must error", bad)
+	}
+}
