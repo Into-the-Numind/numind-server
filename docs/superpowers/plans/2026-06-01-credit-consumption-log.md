@@ -218,10 +218,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/model"
 )
+// 注：本文件在 package credit_test，经 svc(ICreditService) + 既有 helper 间接用被测包，
+// 不直接 import biz/credit（无 credit.X 裸引用，避免 unused import 编译错误）。
 
 func i64p(v int64) *int64 { return &v }
 
@@ -230,7 +231,7 @@ func i64p(v int64) *int64 { return &v }
 func TestListConsumptionLog_MappingFilterPaging(t *testing.T) {
 	ctx := context.Background()
 	db := newCreditReserveTestDB(t)
-	ds := store.NewStore(db)
+	ds := store.NewTestStore(db) // NewTestStore（非 NewStore 单例）保证测试隔离
 	svc := newCreditServiceWithMembership(ds, db, nil)
 
 	base := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
@@ -369,40 +370,38 @@ Expected: PASS。
 
 - [ ] **Step 6: Add the 对账一致性 (ledger truth) test**
 
-在 `consumption_log_test.go` 追加（走真实 Reserve→Reconcile，验证展示数字 = 账本真实扣减）：
+在 `consumption_log_test.go` 追加（走真实 Reserve→Reconcile，验证展示数字 = 账本真实扣减）。**复用本包既有 `setupReservation(t, userID, estimated, []seedPackage{...})`**（见 `credit_service_reconcile_test.go` happy-path：它 seed 用户+订阅池、构建 svc 并完成一次 Reserve，返回 `(svc, ds, rsv)`）——无需新造 helper：
 ```go
 // TestListConsumptionLog_LedgerTruth 跑真实 Reserve→Reconcile，断言展示的 credits
 // == reservation.actual_cost_cents == 该用户 credit_transaction 净扣减绝对值。
 // 这是「数字必须真实可信」的核心保证（spec §9 测试 2）。
 func TestListConsumptionLog_LedgerTruth(t *testing.T) {
 	ctx := context.Background()
-	db := newCreditReserveTestDB(t)
-	ds := store.NewStore(db)
-	svc := newCreditServiceWithMembership(ds, db, nil)
+	now := time.Now()
+	// setupReservation: userID=505, estimated(reserved)=120, 订阅池 1000 credits；
+	// 内部已 Reserve，返回 svc(ICreditService) / ds(store.IStore) / rsv(*Reservation)。
+	svc, ds, rsv := setupReservation(t, 505, 120, []seedPackage{
+		{Type: model.CreditTypeSubscription, TotalCredits: 1000, RemainCredits: 1000,
+			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
+	})
+	// Reconcile actual=95（< reserved 120 → 退 25；净真实消耗 = 95）。
+	require.NoError(t, svc.Reconcile(ctx, rsv.ID, 95))
 
-	// 按本包既有 Reconcile 测试（credit_service_reconcile_test.go::
-	// TestFinalizeReservation_HappyPath_Reconciles）同样的方式 seed 一个有余额的用户、
-	// Reserve(estimated=20) → Reconcile(actual=18)，得到一条 reconciled reservation。
-	user := seedUserWithCredits(t, db, ds, 1000) // 见下方 helper 说明
-	rsv, err := svc.Reserve(ctx, user, credit.OpSopRun, 20, 0, nil)
-	require.NoError(t, err)
-	require.NoError(t, svc.Reconcile(ctx, rsv.ID, 18))
-
-	items, total, err := svc.ListConsumptionLog(ctx, uint(user.ID), 1, 20)
+	items, total, err := svc.ListConsumptionLog(ctx, 505, 1, 20)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), total)
 	require.Len(t, items, 1)
-	assert.Equal(t, int64(18), items[0].Credits, "展示额 = actual_cost_cents")
+	assert.Equal(t, int64(95), items[0].Credits, "展示额 = actual_cost_cents (= reserved+delta)")
 
-	// 账本对账：该用户所有 credit_transaction.amount 之和（负数）取反 == 展示额。
+	// 账本对账：该用户所有 credit_transaction.amount 之和（负）取反 == 展示额。
 	var ledgerSum int64
-	require.NoError(t, db.Model(&model.CreditTransaction{}).
-		Where("user_id = ?", user.ID).
+	require.NoError(t, ds.DB().Model(&model.CreditTransaction{}).
+		Where("user_id = ?", 505).
 		Select("COALESCE(SUM(amount),0)").Scan(&ledgerSum).Error)
 	assert.Equal(t, items[0].Credits, -ledgerSum, "展示额必须等于账本真实净扣减")
 }
 ```
-> **Helper 说明（非占位符）**：`seedUserWithCredits` 已是本测试包惯例之一——若本包尚无同名 helper，复用 `credit_service_reconcile_test.go` 中 happy-path reconcile 测试构造「有余额用户 + 注入 subscription/credit_cycle」的同段代码（`newCreditServiceWithMembership` 已 AutoMigrate/DDL 了 subscription + credit_cycle + trial_grant + user_booster_balance）。把那段 inline 成本任务的 `seedUserWithCredits(t, db, ds, credits)` 返回 `*model.User`。实现者照搬既有 reconcile happy-path 的 seed 逻辑即可，勿新造扣费路径。
+> 说明：`setupReservation` / `seedPackage` / `model.CreditTypeSubscription` 均为本测试包既有符号（`credit_service_reconcile_test.go` happy-path 同款），直接复用。`setupReservation` 内部已用 `newCreditReserveTestDB`（含 credit_reservation + credit_transaction 表）。
 
 - [ ] **Step 7: Run full credit pkg tests**
 
@@ -542,6 +541,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
 import { getConsumptionLog, type ConsumptionLogItem, type ConsumptionLogResp } from '@/api/credits'
+import { useNotificationsStore } from '@/stores/notifications'
 
 export const useConsumptionLogStore = defineStore('consumptionLog', () => {
   const records = ref<ConsumptionLogItem[]>([])
@@ -563,6 +563,7 @@ export const useConsumptionLogStore = defineStore('consumptionLog', () => {
     } catch {
       error.value = true
       records.value = []
+      useNotificationsStore().error('加载积分消耗记录失败，请重试') // spec §8.4/§8.5 四状态：error toast
     } finally {
       loading.value = false
     }

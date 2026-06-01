@@ -6,8 +6,8 @@ features:
   track: standard
   stage: S3
   classification_reason: 'Standard — 无 DB schema 变更（credit_transaction 表及字段已存在）；但新增用户端 API 端点（balance 接口只聚合余额无明细流水）；跨两仓库 >3 文件；属计费 SOT 高风险域 + 需严格「只看自己」越权隔离。用户 2026-06-01 档位判定确认 Standard。'
-  last_updated_by: ai-s3-plan
-  last_updated_at: '2026-06-01T13:40:46+08:00'
+  last_updated_by: ai-s3-plan-reviewed
+  last_updated_at: '2026-06-01T13:52:33+08:00'
   created_at: '2026-06-01T13:10:46+08:00'
   decisions:
   - 'S0-D1 (user 2026-06-01): 受众=所有账户（不分父/子），每个登录用户看自己的消耗。入口=设置页内点击弹窗（modal），非独立页面。展示三要素=动作/时间/消耗数量。数据口径=仅平账后真实记录。'
@@ -17,6 +17,7 @@ features:
   - 'S2-D5 (ai 2026-06-01): 动作机读 operation→中文名映射后端维护，未知 operation 回退展示裸值。API=GET /v1/credits/consumption-log?page&page_size (user_token)；resp {list:[{id,action,action_label,credits,created_at}],total}。'
   - 'S2-D6 (ai 2026-06-01): 前端新建独立 stores/consumptionLog.ts；弹窗复用 ConfirmModal 模式 + DataTable。'
   - 'S3-D7 (ai 2026-06-01, 代码核实): biz 方法落 biz/credit 的 creditService（实现 ICreditService），非 spec 初稿的 biz/membership——MembershipService 用 membershipstore 无 reservation 访问，creditService 持 store.IStore 且 controller 经 b.CreditService() 可达。已同步修正 spec §4.2/§4.3。API 契约/行为不变。'
+  - 'S3-D8 (independent sonnet reviewer 2026-06-01): plan 原子性审查 VERDICT=PASS_WITH_FIXES（6 task 依赖无环、后端先于前端、每 task commit 后可编译、spec 全覆盖、代码符号逐一核实、S5 Playwright E2E 对高风险计费域合理）。已修 2 P1（LedgerTruth 改用既有 setupReservation 替换不存在的 seedUserWithCredits；biz 测试 store.NewStore→NewTestStore 保隔离 + 移未用 credit import）+ 1 P2（前端 store error 补 useNotificationsStore toast，满足 spec §8.4/§8.5 四状态）。'
   repos:
   - numind-server
   - numind-web-v3
