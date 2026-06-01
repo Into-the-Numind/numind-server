@@ -30,8 +30,8 @@ features:
     plan: docs/superpowers/plans/2026-06-01-parent-billing-report.md
   progress:
     total_tasks: 5
-    completed_tasks: 1
-    reviewed_tasks: 1
+    completed_tasks: 2
+    reviewed_tasks: 2
   blockers: []
 - id: agent-tool-schema-infra
   ndf_version: '3.0'
