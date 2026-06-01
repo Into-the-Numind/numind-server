@@ -64,4 +64,9 @@ type ICreditService interface {
 	// coefficient_id=NULL, and the token-profile/event metadata from BudgetReservationInput.
 	// Spec §6.1.2.
 	ReserveBudget(ctx context.Context, user *model.User, input BudgetReservationInput) (*Reservation, error)
+
+	// ListConsumptionLog 返回用户「平账后真实消耗」流水（每动作一行，数据源
+	// credit_reservation status=reconciled）。page 1-based、pageSize 默认 20 上限
+	// 100（方法内归一化），返回总数。只读。
+	ListConsumptionLog(ctx context.Context, userID uint, page, pageSize int) ([]ConsumptionLogItem, int64, error)
 }

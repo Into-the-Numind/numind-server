@@ -77,6 +77,12 @@ func (s *stubCreditSvc) ReserveBudget(_ context.Context, _ *model.User, _ credit
 	return nil, nil
 }
 
+// ListConsumptionLog: stub returns (nil, 0, nil) for tests that don't exercise
+// the consumption log endpoint.
+func (s *stubCreditSvc) ListConsumptionLog(_ context.Context, _ uint, _, _ int) ([]creditbiz.ConsumptionLogItem, int64, error) {
+	return nil, 0, nil
+}
+
 // stubPromptEstimator always returns a fixed (chars, model, provider).
 type stubPromptEstimator struct {
 	chars    int

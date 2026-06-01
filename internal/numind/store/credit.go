@@ -44,6 +44,10 @@ type CreditStore interface {
 	UpdateUserTypeConfig(ctx context.Context, userType string, updates map[string]interface{}) error
 	CreateTransaction(ctx context.Context, tx *gorm.DB, txn *model.CreditTransaction) error
 	ListTransactionsByUser(ctx context.Context, userID uint, offset, limit int) ([]model.CreditTransaction, int64, error)
+	// ListReconciledReservationsByUser 返回某用户已平账（status=reconciled 且
+	// actual_cost_cents>0）的预扣记录，按 created_at DESC（次级 id DESC）分页，
+	// 返回过滤下的总数。用户端「积分消耗记录」数据源。只读。
+	ListReconciledReservationsByUser(ctx context.Context, userID uint, offset, limit int) ([]model.CreditReservation, int64, error)
 	ListAllAccountsWithBalance(ctx context.Context, offset, limit int) ([]model.CreditAccount, int64, error)
 	GetQuotaBreakdown(ctx context.Context, userID uint) (subTotal, subRemain, boosterTotal, boosterRemain int64, err error)
 	GetLatestCreditExpiry(ctx context.Context, userID uint) (string, error)
@@ -237,6 +241,24 @@ func (s *creditStore) ListTransactionsByUser(ctx context.Context, userID uint, o
 	return transactions, total, nil
 }
 
+// ListReconciledReservationsByUser 见接口注释。只读，使用 GORM query builder。
+func (s *creditStore) ListReconciledReservationsByUser(ctx context.Context, userID uint, offset, limit int) ([]model.CreditReservation, int64, error) {
+	var rows []model.CreditReservation
+	var total int64
+
+	const cond = "user_id = ? AND status = ? AND actual_cost_cents > ?"
+	countDB := s.db.WithContext(ctx).Model(&model.CreditReservation{}).Where(cond, userID, "reconciled", 0)
+	if err := countDB.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	findDB := s.db.WithContext(ctx).Where(cond, userID, "reconciled", 0)
+	if err := findDB.Order("created_at DESC").Order("id DESC").
+		Offset(offset).Limit(limit).Find(&rows).Error; err != nil {
+		return nil, 0, err
+	}
+	return rows, total, nil
+}
 // T11 (credits-cleanup): UpdateBalance and RecalculateBalance have been deleted.
 // credit_account.balance column was dropped in migration 20260515_200000_t11.
 // The three-pool SOT (credit_cycle + user_booster_balance + trial_grant) is the
