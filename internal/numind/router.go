@@ -228,7 +228,8 @@ func installNumindRouters(g *gin.Engine) error {
 	).WithMembershipSvc(membershipSvc)
 	{
 		authGroup.GET("/credits/balance", creditCtrl.GetBalance)
-		authGroup.POST("/credits/estimate", creditCtrl.Estimate) // Phase 2 T2.3：运行前估算（spec §3.11 + §4.3）
+		authGroup.POST("/credits/estimate", creditCtrl.Estimate)                 // Phase 2 T2.3：运行前估算（spec §3.11 + §4.3）
+		authGroup.GET("/credits/consumption-log", creditCtrl.ListConsumptionLog) // 积分消耗流水（平账后真实记录）
 		// T9: GET /v1/credits/packages deleted — credit_package dead route removed
 	}
 
