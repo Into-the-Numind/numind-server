@@ -19,7 +19,7 @@ type Session struct {
     ImageTag    string
     Config      SpawnConfig
     BorrowedAt  time.Time
-    SpawnedAt   time.Time   // 新增：用于最大存活上限判定
+    SpawnedAt   time.Time   // 新增：用于最大存活上限判定。★在 spawnOne() 设一次，之后永不覆写（与 BorrowedAt 不同——后者每次 Borrow 刷新）。S2 reviewer P2-H：现 code 在 spawn 时设 BorrowedAt、Borrow 时覆写它；SpawnedAt 要 spawn 设、Borrow 不碰。
     runID       uint64      // 新增：停泊归属（0 = 未绑定，走旧无状态路径）
     lastUsedAt  time.Time   // 新增：用于空闲 TTL 判定
     mu          sync.Mutex
@@ -61,8 +61,16 @@ type agentSandboxPool struct {
 ## 3. Pool 改造（pool.go）
 
 ### 3.1 Borrow 增加 runID 参数 + 复用分支
+
+> **接口 blast radius（S2 reviewer P1-D，必修否则编译报错）**：`Pool.Borrow(ctx)` → `Borrow(ctx, runID)` 改了 `Pool` 接口，**三个调用方必须同步改**：
+> 1. `factory_sandbox_hooks.go:108`（主调用方，传真实 runID）
+> 2. **`pool_skill.go:111` `AcquireForSkill`（S2 漏掉的第二调用方！invoke_skill 天生无状态，传 `runID=0`）** — S3 plan 必须列为独立 task，漏了必编译失败
+> 3. `disabledPool.Borrow` + `MockDockerClient` 相关 mock — 同步改签名
+>
+> **另注（S2 reviewer P2-F）**：现有 `Borrow` 的 `for{select{<-warm ...}}` **死容器重试循环**（pool.go:160-178，借到死容器丢弃再试）必须**原样保留**在 warm-channel 分支内，复用分支加在它**之前**。
+
 ```go
-// 接口签名变更：Borrow(ctx) → Borrow(ctx, runID)。runID=0 表示无状态调用（flag off 或非 agent 场景）。
+// 接口签名变更：Borrow(ctx) → Borrow(ctx, runID)。runID=0 表示无状态调用（flag off / invoke_skill / 非 agent 场景）。
 func (p *agentSandboxPool) Borrow(ctx context.Context, runID uint64) (*Session, error) {
     if runID != 0 {  // stateful 路径
         p.parkedMu.Lock()
@@ -125,6 +133,7 @@ func (p *agentSandboxPool) ReleaseRun(runID uint64) {
     if ok { go p.destroyAndReplace(sess, 0, "run terminal") }
 }
 ```
+> **ReleaseRun vs Return 竞态（S2 reviewer P1-B）**：tool call 结束的 `Return`（停泊）与 run 终态的 `ReleaseRun` 可能几乎同时触发。两者都短暂持 `parkedMu`，谁先拿到 `*Session`、另一方查到空 map → no-op。若某 error/flag-off 路径 `Return` 走了 `destroyAndReplace` 而 `ReleaseRun` 也触发，会对**同一容器 Destroy 两次**——**安全**：`dockerCLIClient.Destroy` 幂等（吞 "No such container"）。`Session.returned` 只守 `Return` 自身的双调用；`ReleaseRun` 是**有意与之竞态的独立路径**，靠 Destroy 幂等兜底，不靠 returned 标志。
 
 ## 4. Hook 层改造（factory_sandbox_hooks.go）
 
@@ -141,7 +150,7 @@ func (p *agentSandboxPool) ReleaseRun(runID uint64) {
 ## 6. 多租户威胁分析（S1 P0 要求 — 决策关键）
 
 ### 6.1 不变量（必须 100% 守住）
-- **跨 run/跨用户隔离**：`parked` key=run_id，复用前校验 `sess.runID == 请求 runID`。一容器物理上只跑过一个 run 的代码。这条破了 = 数据泄漏 = review FAIL 红线。
+- **跨 run/跨用户隔离**：隔离**由 `parked` 的 map key=run_id 结构性保证**——`Borrow(ctx, runID)` 只可能从 `parked[runID]` 取到本 run 自己停泊的容器，物理上一容器只跑过一个 run 的代码。（S2 reviewer P1-A 澄清：这是 **map-key 结构保证**，不是运行时字段比较；之前写的"校验 sess.runID==请求 runID"是冗余/误导措辞——map 查找本身已等价于该校验。复用前仍可 `assert sess.runID==runID` 作 panic-guard，但它永真、不作安全依据。）这条破了 = 数据泄漏 = review FAIL 红线。
 - 容器仍 network-restricted（`NetworkPolicy`）、资源限额（mem/cpu/pids）、`/workdir` tmpfs 有 size 上限。这些不变。
 
 ### 6.2 新增面：容器寿命秒级 → 对话级
@@ -168,14 +177,27 @@ func (p *agentSandboxPool) ReleaseRun(runID uint64) {
 ## 8. 池满降级策略（S1 PRD AC-8）
 
 - max_containers 上限内：按需 spawn。
-- 超上限：`Borrow(ctx, runID)` 等 `PoolMaxWaitMs`（现 30s）拿不到 → **降级为该次调用无状态**（借不到就这次不停泊、用完即毁），**run 不失败**，只是这一刻失去续写能力。LLM 行为退回"一次做完"。
+- 超上限：`Borrow(ctx, runID)` 等 `PoolMaxWaitMs`（现 30s）拿不到 → **降级为该次调用无状态**（借不到就这次不停泊、用完即毁），**run 不失败**。
 - 不做复杂排队，避免引入新死锁面。
+
+### 8.1 中途降级的 LLM 困惑（S2 reviewer P1-C，决策阻塞项 — 已定）
+**风险**：若 run 的 call 1/2 是有状态的（容器停泊、`/workdir` 攒了状态），call 3 撞池满降级到全新空容器，LLM 仍以为"上次的文件还在"，去重开会失败。这比"全程无状态"更迷惑，因为前几步**真的成功攒了状态**。
+
+**决定：降级时给 LLM 发显式信号，不静默。** 复用我们已建的 `run_python` `Hint` 字段机制（来自 `run-python-stateless-guidance` hotfix）——降级那次调用的返回里附：
+> `Hint: 本次因沙箱繁忙使用了一个全新的工作空间，之前调用写入 /workdir 的文件在这一次不可用。请把这一步需要的文件在本次调用内重新生成，不要依赖之前的产物。`
+
+- 这样 LLM **看得见**状态被重置，能当场调整（重新生成而非重开），而不是撞一个看不懂的 traceback 再误判。
+- 实现：hook 层在降级路径（Borrow 返回的 session.runID==0 但本应有状态）给 run_python 的结果注入该 Hint。复用既有 Hint 通道，零新机制。
+- 这条配套测试见 §11 `TestPool_MidRunDegrade_SignalsLLM`。
 
 ## 9. Feature flag + config + guidance
 
 - `sandbox.persistent_session: false`（默认）→ 完全现状无状态。
 - config 新增：`idle_ttl_seconds`(120) / `max_lifetime_seconds`(1800) / `max_containers`(20)。
 - guidance 反转（flag on 时）：`tool_run_python.go` Description + `output_tools_priority_prompt.go` 把"STATELESS / 一次做完 / NEVER reopen" 换成"本对话内 /workdir 持久，可分步搭建、可重开 output 续写"。**flag 联动**（同一个 flag 既切池子行为又切提示文本），不能错位。
+
+### 9.1 Prod 上线硬门禁（S2 reviewer P2-G）
+**`sandbox.persistent_session` 在 prod 永不开启，直到 §6 多租户安全评审独立通过。** 本 feature 只让 **dev 架构就绪**（dev 可开 flag 验收）。S3/S4 实施时这条作为显式 go-live gate 写进部署清单，不只躺在 §13 用户决策项里。
 
 ## 10. DB 决定
 
@@ -198,6 +220,9 @@ func (p *agentSandboxPool) ReleaseRun(runID uint64) {
 | `TestHook_RunScopedBorrow` | bash_exec + run_python 同 run 共享一个容器（key=runID） |
 | `TestPool_InputCleanedOutputKept` | 每次调用清 /workdir/input、保留 /workdir/output（§6.2 决定） |
 | `TestRestart_ParkedEvicted` | 重启驱逐停泊容器、不残留（AC-6b） |
+| `TestPool_MidRunDegrade_SignalsLLM` | 中途池满降级到新容器时，结果带 Hint 告知 LLM workdir 已重置（§8.1，S2 P1-C） |
+| `TestPool_DoubleReleaseRun_Idempotent` | 同 runID 连调两次 ReleaseRun 不 panic、不双错（S2 P2-I） |
+| `TestPool_BorrowSignature_SkillCallerZeroRunID` | pool_skill.go AcquireForSkill 传 runID=0 走无状态路径（S2 P1-D 回归） |
 
 ## 12. 实施分期（若 go）
 
