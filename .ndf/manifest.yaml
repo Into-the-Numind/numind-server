@@ -3161,3 +3161,27 @@ features:
   - '(optional) 在 build-and-push.sh 成功 push 后查询 TCR tags/list?n=500，tag 数接近 100 时主动告警，提前清理。需先在构建机上验证 TCR v2 token-auth 流程。'
   blockers: []
   created_at: '2026-05-29T00:00:00+08:00'
+- id: text-column-default-fix
+  ndf_version: '3.0'
+  description: '修复 agent_definition.SystemPrompt 的 gorm tag `type:mediumtext;not null;default:'''''''' —— MySQL 不允许 TEXT/BLOB/JSON 列带字面 DEFAULT。已存在该表的库（dev）AutoMigrate 不重建故不报错；但全新库（prod）首次 CREATE TABLE 报 Error 1101 → 服务启动失败（2026-06-02 部署 develop admin 后端到 prod 回滚根因）。去掉 ;default 子句对齐 chatbot.go SystemPrompt（longtext;not null）。GORM 对非指针 string 仍写空串满足 NOT NULL，行为不变。为将来整包（agent-mode 等）部署 prod 扫清前置障碍之一。'
+  track: hotfix
+  stage: completed
+  classification_reason: 'Hotfix（5 条 triage 全满足）：无 migration SQL（仅改 struct tag 影响 fresh-create DDL）+ 无新端点 + 无新外部服务 + 1 文件改动（+1 守卫测试）+ 不涉及支付/权限高风险逻辑。Micro 不可（功能性 bug 非文案/样式）。用户 2026-06-02 确认 Hotfix + 静态 tag 守卫测试。'
+  repos:
+  - numind-server
+  branches:
+    numind-server: fix/text-column-default-fix
+  worktrees:
+    numind-server: /private/tmp/wt-text-column-default-fix-numind-server
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'D1 (ai 2026-06-02, 复现测试策略): bug 是 MySQL-specific（SQLite 允许 TEXT 列带 default，单测 DB 不复现）。复现/回归守卫采用源码扫描 Go 测试 TestModelTags_NoTextColumnHasLiteralDefault：正则遍历 model 包全部 .go，断言无 TEXT-family 列带字面 default。与人工巡检 grep 同源，确定性、覆盖全包及将来新增 model，无需 DB。修复前 FAIL（命中 agent_definition.go:28），修复后 PASS，永久留库。'
+  - 'D2 (ai 2026-06-02, 守卫即全表证明): 守卫已证明修复后整个 model 包无任何 TEXT+default —— 即 Error 1101 失败类在全部 ~22 张表上被消除（grep 确认全库仅此一处雷）。'
+  - 'D3 (ai 2026-06-02, 真实 MySQL fresh-create 验证, 用户授权): 因 dev MySQL(:13306) 不可从 Mac 直连、构建机无 host Go，写一次性 pure-Go migrator（仅 import model 包，CGO_ENABLED=0 Mac 交叉编译 linux 静态二进制；agent-mode 全部模型为 scalar-only 无 FK 关联，故仅迁该列表即可忠实复现各 CREATE TABLE）→ scp 构建机 → 临时 mysql:8.0 容器空库跑真实 AutoMigrate（镜像 helper.go 顺序）。结果：28/28 表全部 fresh-create 成功，0 失败；agent_definition.system_prompt DDL = mediumtext NOT NULL DEFAULT NULL（无字面 default）。临时容器/镜像/二进制全部清理，无 dev/prod/TCR 副作用。一次性 migrator 不入库（依赖外部 MySQL，违反 testing.md）。'
+  artifacts:
+    regression_test: internal/pkg/model/text_column_default_guard_test.go
+  blockers: []
+  created_at: '2026-06-02T00:00:00+08:00'
