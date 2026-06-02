@@ -1,5 +1,30 @@
 schema_version: '2.0'
 features:
+- id: remove-permission-backdoor
+  ndf_version: '3.0'
+  description: 'Security backdoor removal: internal/numind/biz/permission/gate.go:106-121 的 PermissionGate.Check 含硬编码生产后门（commit 14754a39 "feat(permission): force release all permissions globally"）。仅当 flag.Lookup("test.v")!=nil（即 go test 下）才跑真实 validator pipeline (g.pipeline.Check)；dev/prod 一律无条件返回 BehaviorAllow + DecisionReasonOther + ValidatorID="ForceAllowAllGate"。后果：biz.go:313-327 wire 的 7 个 validator（PlatformHardRule、SandboxOverride、TenantAdminRule L2 租户黑名单、WorkingDir、ToolFlag per-agent 工具开关、UserSessionRule、AutoModeLLMValidator）在生产全是死代码，每个 agent tool call 被无条件放行。现有 gate_test.go 6 个测试因走 test.v 分支跑 pipeline 而全绿，恰好掩盖 prod 行为。Fix: 删除 test.v 分支让 pipeline 在所有环境运行；保留全局 override 但改由显式 config flag agent.permission.enforce 控制（默认 true=enforce；viper.SetDefault 兜底使 prod 无需改 config_prod.yaml；enforce=false 时才走 force-allow override 且 loud-warn 日志）。'
+  track: hotfix
+  stage: H1
+  classification_reason: 'Hotfix — (1) 无 DB schema 变更 (2) 无新 API 端点 (3) 无新外部服务 (4) 3 代码文件: gate.go + gate_test.go + biz.go (+ config_dev/local.yaml 文档化，可选) (5) **涉及权限高危逻辑——严格 triage 第 5 条失败本应 Standard**。User 2026-06-02 基于「线上正在生效的安全后门紧急性 + 改动小且是恢复既有 pipeline 而非设计新权限语义」明确选 Hotfix 快车道（H2 仍含单 reviewer + 失败复现测试）。Security-finding（非客户报告），按 Rule 11 精神：首 commit 为失败复现测试（test(qa): reproduce 前缀）证明非测试构建路径 force-allow，再用 fix 转 PASS，测试永久留库做回归保护。'
+  last_updated_by: ai-h1-start
+  last_updated_at: '2026-06-02T16:10:54+08:00'
+  created_at: '2026-06-02T16:10:54+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: fix/remove-permission-backdoor
+  worktrees:
+    numind-server: /private/tmp/wt-remove-permission-backdoor-numind-server
+  progress:
+    total_tasks: 1
+    completed_tasks: 0
+    reviewed_tasks: 0
+  decisions:
+  - 'H1-D1 (ai 2026-06-02): 移除 test.v 分支，全局 override 改由 config flag agent.permission.enforce 控制（默认 enforce=true）。理由：环境检测 (flag.Lookup) 做权限旁路是反模式——把"是否跑测试"耦合成"是否执行安全策略"；显式 config 是 auditable、default-safe、可运营的逃生舱。'
+  - 'H1-D2 (ai 2026-06-02): enforce 字段加在 PermissionGate 上 + WithEnforce(bool) Option，NewPermissionGate 默认 true（zero-value-safe：在 apply options 前置 true）。biz.go wire 时 viper.SetDefault("agent.permission.enforce", true) + WithEnforce(viper.GetBool(...))。这样现有 gate_test.go（直接 NewPermissionGate 不设 config）默认 enforce 跑 pipeline，全部仍 PASS。'
+  - 'H1-D3 (ai 2026-06-02): config_prod.yaml 禁止修改（项目硬规则）；靠 viper.SetDefault 默认 true 保证 prod 自动 enforce。仅在 config_dev.yaml/config_local.yaml 文档化该 key（标注默认 enforce）。'
+  blockers: []
+
 - id: credit-log-task-names
   ndf_version: '3.0'
   description: 'Standard NDF（快车）— 「积分消耗记录」弹窗：表头「动作」→「任务」，每条从通用名（SOP 执行/销售对话/智能对话）改为具体实体名（哪个 SOP 的哪个步骤 / SOP 对话显示 SOP 名 / 智能对话显示智能体名）。关键约束（S0 调研）：credit_reservation.reference_id 在生产 aiservice 网关路径上为空，名字本身好查（sop_template.name/sop_node.name/sales_session.title/chatbot_config.name）但缺指针 → 必须在 reserve 时把业务 id 穿过 aiservice 计费网关中间件写进 reference_id（高风险信任边界，跨 SOP/销售/对话/网关/billing 5 域），且历史行无法回填只能回退通用名。'
