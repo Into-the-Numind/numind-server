@@ -200,7 +200,7 @@ docker logs --tail 50 "$CONTAINER" || true
 
 if [ "$ENV" = "prod" ] && [ -n "$OLD_IMAGE" ]; then
   echo "🔄 Rolling back to $OLD_IMAGE..."
-  remove_container
+  remove_container || { echo "❌ Rollback aborted: could not release container name '$CONTAINER'" >&2; exit 1; }
   start_container "$OLD_IMAGE"
   for i in $(seq 1 "$MAX_TRIES"); do
     if curl -sf "$HEALTH_URL" >/dev/null 2>&1; then

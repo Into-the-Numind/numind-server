@@ -40,18 +40,26 @@ mkdir -p "$STATE" "$TMP/bin" || die "mkdir"
 
 # Seed: a container of the target name already exists and is running, as if a
 # previous deploy left it and `--restart always` brought it back. This is the
-# precondition that drives the replace path (and the race).
-touch "$STATE/container"
+# precondition that drives the replace path (and the race). The name is unknown
+# to the test (it differs per repo/env), so the seeded container matches
+# whatever name the script asks about; once `docker run --name X` (re-)creates
+# it, the fake tracks it by that exact name so the `-f name=^X$` poll filter is
+# genuinely exercised.
+: > "$STATE/name"
 
 # --- Fake `docker` modelling the --restart-always name-conflict race. ---
 cat > "$TMP/bin/docker" <<'DOCKER' || die "write fake docker"
 #!/usr/bin/env bash
 STATE="${FAKE_DOCKER_STATE:?}"
-exists() { [ -f "$STATE/container" ]; }
+NAMEFILE="$STATE/name"
+exists() { [ -f "$NAMEFILE" ]; }
+cur() { cat "$NAMEFILE" 2>/dev/null; }
+# Empty name file = seeded container, matches any queried name; a non-empty
+# file (set by `docker run --name`) matches only that exact name.
+matches() { local c; c="$(cur)"; [ -z "$c" ] || [ "$c" = "$1" ]; }
 sub="${1:-}"; shift || true
 case "$sub" in
-  pull|network|rmi|logs|tag|image) exit 0 ;;
-  images) exit 0 ;;                              # no old images to clean up
+  pull|network|rmi|logs|tag|image|images) exit 0 ;;   # benign; no old images to clean
   inspect)
     exists && echo "sha256:fakeimageid"          # cleanup_old_images / OLD_IMAGE probe
     exit 0 ;;
@@ -60,28 +68,38 @@ case "$sub" in
     # daemon keeps/brings it back, so it still exists afterwards.
     exit 0 ;;
   rm)
-    if [ "${1:-}" = "-f" ]; then
-      rm -f "$STATE/container"; exit 0           # force always removes
+    force=0; name=""
+    for a in "$@"; do
+      case "$a" in -f) force=1 ;; -*) : ;; *) name="$a" ;; esac
+    done
+    if [ "$force" = 1 ]; then
+      exists && matches "$name" && rm -f "$NAMEFILE"   # force always removes
+      exit 0
     fi
-    if exists; then                              # un-forced rm races the restart
+    if exists && matches "$name"; then           # un-forced rm races the restart
       echo "Error response from daemon: cannot remove container: container is running" >&2
       exit 1                                      # policy and fails on the live one
     fi
     exit 0 ;;
   run)
+    name=""; prev=""
+    for a in "$@"; do [ "$prev" = "--name" ] && name="$a"; prev="$a"; done
     if exists; then
-      echo 'docker: Error response from daemon: Conflict. The container name "/<name>" is already in use by another container.' >&2
+      echo "docker: Error response from daemon: Conflict. The container name \"/$name\" is already in use by another container." >&2
       exit 125                                    # the exact failure we guard against
     fi
-    touch "$STATE/container"; exit 0 ;;
+    printf '%s' "$name" > "$NAMEFILE"; exit 0 ;;
   ps)
+    aq=0; want=""
     for a in "$@"; do
-      if [ "$a" = "-aq" ]; then                   # poll: list container ids
-        exists && echo "fakecontainerid"
-        exit 0
-      fi
+      [ "$a" = "-aq" ] && aq=1
+      case "$a" in name=*) want="${a#name=}"; want="${want#^}"; want="${want%\$}" ;; esac
     done
-    exists && echo "fake-container  Up 1 second  0.0.0.0:80->80/tcp"   # formatted ps
+    if [ "$aq" = 1 ]; then                        # poll: honor the -f name=^X$ filter
+      exists && matches "$want" && echo "fakecontainerid"
+      exit 0
+    fi
+    exists && echo "$(cur)  Up 1 second  0.0.0.0:80->80/tcp"   # formatted ps on success
     exit 0 ;;
   *) exit 0 ;;
 esac
@@ -101,6 +119,9 @@ chmod +x "$TMP/bin/getent" || die "chmod fake getent"
 
 run_deploy() {
   (
+    # TARGET is read only by numind-server's deploy-remote.sh (server target);
+    # the frontend repos' scripts ignore it. Set here so this one test file is
+    # identical across all three repos, mirroring the near-identical scripts.
     PATH="$TMP/bin:$PATH" \
     FAKE_DOCKER_STATE="$STATE" \
     ENV="dev" TARGET="server" \
