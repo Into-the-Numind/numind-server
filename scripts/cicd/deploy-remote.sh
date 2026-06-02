@@ -134,6 +134,28 @@ start_container() {
     "$img"
 }
 
+# Force-remove any existing container of this name and wait until the name is
+# released before re-creating it. A plain `docker stop` + `docker rm` (no -f)
+# races the `--restart always` policy: the daemon can restart the container
+# between stop and rm, the un-forced rm then fails on the running container
+# (its `|| true` hides that), and the next `docker run` aborts with exit 125
+# "Conflict. The container name is already in use". `docker rm -f` kills and
+# removes in one step so the restart policy can't intervene; the poll guards
+# against the daemon releasing the name slightly after rm returns.
+remove_container() {
+  docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+  local tries=0
+  while [ -n "$(docker ps -aq -f "name=^${CONTAINER}\$" 2>/dev/null)" ]; do
+    if [ "$tries" -ge 10 ]; then
+      echo "ERROR: container '$CONTAINER' still present after force-remove; aborting" >&2
+      return 1
+    fi
+    docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+    tries=$((tries + 1))
+    sleep 1
+  done
+}
+
 # Keep only the image of the currently-running container; remove all older
 # images of the same repository. Safe to call after a successful deploy or
 # successful rollback (it inspects the live container's image id).
@@ -150,8 +172,7 @@ cleanup_old_images() {
   docker image prune -f >/dev/null 2>&1 || true
 }
 
-docker stop "$CONTAINER" 2>/dev/null || true
-docker rm "$CONTAINER" 2>/dev/null || true
+remove_container
 start_container "$IMAGE"
 
 MAX_TRIES=72; SLEEP_INT=5
@@ -179,8 +200,7 @@ docker logs --tail 50 "$CONTAINER" || true
 
 if [ "$ENV" = "prod" ] && [ -n "$OLD_IMAGE" ]; then
   echo "🔄 Rolling back to $OLD_IMAGE..."
-  docker stop "$CONTAINER" 2>/dev/null || true
-  docker rm "$CONTAINER" 2>/dev/null || true
+  remove_container || { echo "❌ Rollback aborted: could not release container name '$CONTAINER'" >&2; exit 1; }
   start_container "$OLD_IMAGE"
   for i in $(seq 1 "$MAX_TRIES"); do
     if curl -sf "$HEALTH_URL" >/dev/null 2>&1; then
