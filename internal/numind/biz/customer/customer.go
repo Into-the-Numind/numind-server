@@ -107,21 +107,41 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 	// 转换为响应格式
 	subUsers := make([]v1.SubUserInfo, 0, len(users))
 	for _, user := range users {
-		// "已授权模板" = SOP active + chatbot active + 销售智能体 (0/1)。
-		// Why: 前端列只展示一个数字，业务含义是"该子账号可使用的全部 AI 资产数"，三类
-		// 授权（SOP / chatbot / salesrag agent）都需计入。三个 store 调用都走 COUNT
-		// 查询（不 fetch 完整记录），任一失败 warn-log + 该项归零，不阻塞整个列表。
-		sopCount, err := c.ds.Customers().CountActiveAuthorizedSopTemplates(ctx, user.ID)
-		if err != nil {
-			log.C(ctx).Warnw("CountActiveAuthorizedSopTemplates failed, falling back to 0",
-				"user_id", user.ID, "err", err)
-			sopCount = 0
-		}
-		chatbotCount, err := c.ds.Customers().CountActiveAuthorizedChatbots(ctx, user.ID)
-		if err != nil {
-			log.C(ctx).Warnw("CountActiveAuthorizedChatbots failed, falling back to 0",
-				"user_id", user.ID, "err", err)
-			chatbotCount = 0
+		// "已授权模板" = SOP + chatbot + 销售智能体 (0/1)，业务含义是"该账号可使用的全部
+		// AI 资产数"。计数口径按账号类型分流：
+		//   - 子账号：白名单计数（user_template_permission / user_chatbot_permission）。
+		//   - 父账号：父账号 bypass 所有运行权限、不持有白名单行，按"全部可用"计数——
+		//     与 C 端 /v1/sop/templates、/v1/chatbot/list（即权限弹窗的全部条目）口径一致：
+		//     自己创建的可见 SOP（ListVisibleTemplates 的 total）+ 名下 published chatbot。
+		//     否则父账号行会恒显示 0+0+sales_agent=1（本次客户上报的 bug）。
+		// 任一 store 调用失败 warn-log + 该项归零，不阻塞整个列表。
+		var sopCount, chatbotCount int64
+		if user.ParentUserID == nil {
+			if total, terr := c.ds.Sop().CountVisibleTemplates(ctx, user.ID); terr != nil {
+				log.C(ctx).Warnw("CountVisibleTemplates failed, falling back to 0",
+					"user_id", user.ID, "err", terr)
+			} else {
+				sopCount = total
+			}
+			if bots, berr := c.ds.ChatbotConfig().ListPublishedByOwner(ctx, user.ID); berr != nil {
+				log.C(ctx).Warnw("ListPublishedByOwner failed, falling back to 0",
+					"user_id", user.ID, "err", berr)
+			} else {
+				chatbotCount = int64(len(bots))
+			}
+		} else {
+			if sc, serr := c.ds.Customers().CountActiveAuthorizedSopTemplates(ctx, user.ID); serr != nil {
+				log.C(ctx).Warnw("CountActiveAuthorizedSopTemplates failed, falling back to 0",
+					"user_id", user.ID, "err", serr)
+			} else {
+				sopCount = sc
+			}
+			if cc, cerr := c.ds.Customers().CountActiveAuthorizedChatbots(ctx, user.ID); cerr != nil {
+				log.C(ctx).Warnw("CountActiveAuthorizedChatbots failed, falling back to 0",
+					"user_id", user.ID, "err", cerr)
+			} else {
+				chatbotCount = cc
+			}
 		}
 		activeTemplateCount := int(sopCount) + int(chatbotCount)
 		// 销售智能体是 0/1 整体授权（双层 AND），通过即 +1。

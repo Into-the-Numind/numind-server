@@ -72,10 +72,99 @@ func newBizTestDB(t *testing.T) *gorm.DB {
             greeting_message TEXT DEFAULT ''
         )`).Error)
 
+	// sop_template —— ListVisibleTemplates(creator_user_id, status, publish_status) +
+	// CountActiveAuthorizedSopTemplates(JOIN on template_id, status='active')。
+	require.NoError(t, db.Exec(`
+        CREATE TABLE sop_template (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at      DATETIME,
+            updated_at      DATETIME,
+            deleted_at      DATETIME,
+            creator_user_id INTEGER,
+            name            TEXT NOT NULL DEFAULT '',
+            description     TEXT DEFAULT '',
+            status          TEXT NOT NULL DEFAULT 'active',
+            publish_status  TEXT NOT NULL DEFAULT 'published'
+        )`).Error)
+
+	// user_template_permission —— 子账户 SOP 白名单（CountActiveAuthorizedSopTemplates）。
+	require.NoError(t, db.Exec(`
+        CREATE TABLE user_template_permission (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at     DATETIME,
+            updated_at     DATETIME,
+            deleted_at     DATETIME,
+            parent_user_id INTEGER,
+            sub_user_id    INTEGER NOT NULL,
+            template_id    INTEGER NOT NULL
+        )`).Error)
+
+	// user_feature_permission —— 子账户 sales_agent Layer 1（CheckSubUserFeatureGrant）。
+	require.NoError(t, db.Exec(`
+        CREATE TABLE user_feature_permission (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at     DATETIME,
+            updated_at     DATETIME,
+            deleted_at     DATETIME,
+            parent_user_id INTEGER,
+            sub_user_id    INTEGER NOT NULL,
+            feature_key    TEXT NOT NULL
+        )`).Error)
+
+	// sales_agent_owner —— sales_agent Layer 0（SalesAgentOwners().Exists）。
+	require.NoError(t, db.Exec(`
+        CREATE TABLE sales_agent_owner (
+            parent_user_id INTEGER PRIMARY KEY,
+            created_at     DATETIME
+        )`).Error)
+
+	// sop_run / chatbot_session —— GetSubUserRunCounts 聚合（缺表会 fallback，建出来避免噪音）。
+	require.NoError(t, db.Exec(`
+        CREATE TABLE sop_run (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at DATETIME,
+            deleted_at DATETIME,
+            user_id    INTEGER NOT NULL
+        )`).Error)
+	require.NoError(t, db.Exec(`
+        CREATE TABLE chatbot_session (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at DATETIME,
+            updated_at DATETIME,
+            deleted_at DATETIME,
+            user_id    INTEGER NOT NULL
+        )`).Error)
+
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	return db
+}
+
+// insertBizSopTemplate 插入 sop_template 行（返回 id）。
+func insertBizSopTemplate(t *testing.T, db *gorm.DB, creatorID uint, name, status, publishStatus string) uint {
+	t.Helper()
+	now := time.Now()
+	res := db.Exec(
+		`INSERT INTO sop_template (created_at, updated_at, creator_user_id, name, status, publish_status)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+		now, now, creatorID, name, status, publishStatus,
+	)
+	require.NoError(t, res.Error)
+	var id uint
+	require.NoError(t, db.Raw("SELECT last_insert_rowid()").Scan(&id).Error)
+	return id
+}
+
+// grantBizTemplate 给子账户写一条 SOP 白名单。
+func grantBizTemplate(t *testing.T, db *gorm.DB, parentID, subID, templateID uint) {
+	t.Helper()
+	now := time.Now()
+	require.NoError(t, db.Exec(
+		`INSERT INTO user_template_permission (created_at, updated_at, parent_user_id, sub_user_id, template_id)
+         VALUES (?, ?, ?, ?, ?)`,
+		now, now, parentID, subID, templateID,
+	).Error)
 }
 
 // insertBizUser 插入 user 行（返回 id）。parentID=nil 表示父账号。
@@ -646,4 +735,68 @@ func TestCheckFeaturePermission_UserNotFound(t *testing.T) {
 	ok, err := biz.CheckFeaturePermission(ctx, 99999, model.FeatureKeySalesAgent)
 	assert.Error(t, err, "用户不存在时应返回错误")
 	assert.False(t, ok)
+}
+
+// ----------------------------------------------------------------------------
+// ListSubUsers —— 父账户行「已授权模板」计数（parent-self-template-count）
+// ----------------------------------------------------------------------------
+
+// TestListSubUsers_ParentRowCountsAllAvailable 复现并锁定：父账户那一行的「已授权
+// 模板」应等于其全部可用资产数（自己创建的可见 SOP + 名下 published chatbot +
+// sales_agent 0/1），而非白名单计数。父账户 bypass、无白名单行，修复前为
+// 0(SOP) + 0(chatbot) + 1(sales_agent) = 1。
+func TestListSubUsers_ParentRowCountsAllAvailable(t *testing.T) {
+	db, biz := newBizUnderTest(t)
+	parent := insertBizUser(t, db, nil)
+	_ = insertBizUser(t, db, &parent) // 一个子账户，验证 self 置顶
+
+	// 父账户创建 3 个 active+published SOP；draft 的不计入
+	insertBizSopTemplate(t, db, parent, "sop1", "active", "published")
+	insertBizSopTemplate(t, db, parent, "sop2", "active", "published")
+	insertBizSopTemplate(t, db, parent, "sop3", "active", "published")
+	insertBizSopTemplate(t, db, parent, "sopDraft", "active", "draft")
+	// 父账户名下 2 个 published chatbot；draft 的不计入
+	insertBizChatbot(t, db, parent, "bot1", "published")
+	insertBizChatbot(t, db, parent, "bot2", "published")
+	insertBizChatbot(t, db, parent, "botDraft", "draft")
+	// 父账户拥有 sales_agent（Layer 0）
+	insertSalesAgentOwner(t, db, parent)
+
+	resp, err := biz.ListSubUsers(context.Background(), parent, 0, 10)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(resp.SubUsers), 1)
+
+	parentRow := resp.SubUsers[0] // store ORDER BY CASE WHEN id=parent THEN 0 → 父账户置顶
+	require.Equal(t, parent, parentRow.UserID, "父账户应置顶为第一行")
+	// 期望 3 SOP + 2 chatbot + 1 sales_agent = 6（修复前 0+0+1=1 → FAIL）
+	assert.Equal(t, 6, parentRow.AuthorizedTemplates,
+		"父账户行应显示全部可用资产数（全部可见 SOP + 名下 chatbot + sales_agent）")
+}
+
+// TestListSubUsers_ChildRowStaysWhitelist 守卫：子账户行仍按白名单计数，不受父账户
+// 分支影响。子账户被授权 1 个 SOP，无 chatbot 白名单、无 sales_agent → 计数为 1。
+func TestListSubUsers_ChildRowStaysWhitelist(t *testing.T) {
+	db, biz := newBizUnderTest(t)
+	parent := insertBizUser(t, db, nil)
+	child := insertBizUser(t, db, &parent)
+
+	// 父账户创建 3 个 SOP（父全部可用，但子账户只被授权其中 1 个）
+	tpl1 := insertBizSopTemplate(t, db, parent, "sop1", "active", "published")
+	insertBizSopTemplate(t, db, parent, "sop2", "active", "published")
+	insertBizSopTemplate(t, db, parent, "sop3", "active", "published")
+	grantBizTemplate(t, db, parent, child, tpl1)
+
+	resp, err := biz.ListSubUsers(context.Background(), parent, 0, 10)
+	require.NoError(t, err)
+
+	childIdx := -1
+	for i := range resp.SubUsers {
+		if resp.SubUsers[i].UserID == child {
+			childIdx = i
+			break
+		}
+	}
+	require.GreaterOrEqual(t, childIdx, 0, "应能在列表中找到子账户行")
+	assert.Equal(t, 1, resp.SubUsers[childIdx].AuthorizedTemplates,
+		"子账户行应按白名单计数（仅被授权的 1 个 SOP）")
 }
