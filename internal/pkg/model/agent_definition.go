@@ -25,7 +25,7 @@ type AgentDefinition struct {
 	// 非空时走新 4 段拼装（BuildSystemPromptV2）；空字符串时 fallback 到
 	// BuildSystemPromptLegacy（沿用现有 6+ 段拼装逻辑）。
 	// 上限：64KB（后端 biz 层校验），DB 列 MEDIUMTEXT 16MB 仅兜底。
-	SystemPrompt        string         `gorm:"type:mediumtext;not null;default:''" json:"system_prompt"`
+	SystemPrompt        string         `gorm:"type:mediumtext;not null" json:"system_prompt"`
 	ToolFlags           datatypes.JSON `json:"tool_flags"`
 	CreditCapPerSession *uint          `gorm:"type:int unsigned" json:"credit_cap_per_session"`
 	DailyCreditCap      *uint          `gorm:"type:int unsigned" json:"daily_credit_cap"`
