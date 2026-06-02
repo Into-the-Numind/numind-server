@@ -4,10 +4,10 @@ features:
   ndf_version: '3.0'
   description: 'DESIGN-ONLY (S0→S2, no S3/S4 coding). Upgrade the agent sandbox from stateless (fresh container destroyed per tool call) to per-agent-run persistent (one container bound to a conversation, /workdir persists across calls). Removes the "huge document cannot be split" ceiling and aligns with Claude Code/Codex (both use a persistent filesystem + per-command security sandbox, never tell the model to "finish in one call"). Triggered by user architecture questions after run-python-stateless-guidance hotfix. Subagents/parallel-sandboxes explicitly OUT of scope (separate future initiative).'
   track: standard
-  stage: S0
-  classification_reason: 'Standard — (1) maybe DB (agent_sandbox_session lifecycle tracking, S2 decides) (2) no new API (3) no new external service (4) >3 files (pool.go pool redesign + factory_sandbox_hooks.go lifecycle + runner.go terminal cleanup + run_python/bash_exec session reuse + guidance reversal) (5) HIGH RISK — sandbox security surface changes from second-scale to conversation-scale container lifetime; attack surface, resource leak, cross-run isolation all need re-argument. User chose design-evaluation only: produce S0-S2 (proposal/risk/effort), STOP before S3/S4, decide after review.'
-  last_updated_by: ai-s0-drafted
-  last_updated_at: '2026-06-01T00:00:00+08:00'
+  stage: S2-design-complete-awaiting-go-no-go
+  classification_reason: 'Standard — (1) NO DB (S2 §10 collapsed to no-migration; parking is in-memory) (2) no new API (3) no new external service (4) >3 files (pool.go park/reuse/reaper + factory_sandbox_hooks.go run-scoped borrow + runner.go terminal release + guidance reversal + pool_skill.go signature) (5) HIGH RISK — container lifetime second-scale to conversation-scale; multi-tenant threat analyzed in S2 §6. User chose design-evaluation only: S0-S2 produced + gate-reviewed (S0 2 P1 fixed, S1 1 P0+3 P1 fixed, S2 4 P1 fixed), STOPPED before S3/S4 awaiting user go/no-go.'
+  last_updated_by: ai-s2-complete-paused-for-decision
+  last_updated_at: '2026-06-01T12:00:00+08:00'
   repos:
   - numind-server
   branches:
