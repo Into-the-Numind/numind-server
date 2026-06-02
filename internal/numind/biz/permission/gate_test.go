@@ -39,6 +39,71 @@ func (s *stubAllowValidator) Validate(_ context.Context, _ PermissionRequest) Pe
 	return Allow("StubAllow", DecisionReasonOther, "")
 }
 
+// stubDenyValidator 总是 deny — 用于验证 enforce 模式下 pipeline 的 Deny 被 honor。
+type stubDenyValidator struct{}
+
+func (s *stubDenyValidator) ID() string { return "StubDeny" }
+func (s *stubDenyValidator) Validate(_ context.Context, _ PermissionRequest) PermissionResult {
+	return Deny("StubDeny", DecisionReasonRule, "denied by stub")
+}
+
+// TestGate_Check_EnforceFlagGovernsPipeline 是权限生产后门（commit 14754a39
+// "force release all permissions globally"）的回归保护测试。
+//
+// 后门：Check 仅在 flag.Lookup("test.v") != nil（即 go test 下）才跑真实 pipeline，
+// dev/prod 一律 force-allow（ValidatorID="ForceAllowAllGate"），使 biz.go wire 的
+// 7 个 validator 在生产沦为死代码。该后门专门在测试环境走正确路径，所以纯行为断言
+// 在 go test 下永远 PASS、无法复现 —— 这正是它隐蔽的根源。
+//
+// Fix 移除环境嗅探，把任何全局 override 收敛到显式 enforce 开关（默认 true=enforce）。
+// 本测试钉住三条不变量：
+//  1. 默认 gate（无 WithEnforce）enforce：注入的 Deny validator 被 honor
+//  2. WithEnforce(true) enforce：Deny 被 honor
+//  3. WithEnforce(false) 是显式全局 override：即使 pipeline Deny 也 force-allow
+//
+// commit 1（本测试）引用尚未实现的 WithEnforce → 编译失败=RED；
+// commit 2（fix）实现后三个子用例全 GREEN，测试永久留库做回归保护。
+func TestGate_Check_EnforceFlagGovernsPipeline(t *testing.T) {
+	cases := []struct {
+		name          string
+		opts          []Option
+		wantBehavior  string
+		wantValidator string
+	}{
+		{
+			name:          "default gate enforces pipeline (Deny honored)",
+			opts:          []Option{WithValidators(&stubDenyValidator{})},
+			wantBehavior:  BehaviorDeny,
+			wantValidator: "StubDeny",
+		},
+		{
+			name:          "WithEnforce(true) enforces pipeline (Deny honored)",
+			opts:          []Option{WithValidators(&stubDenyValidator{}), WithEnforce(true)},
+			wantBehavior:  BehaviorDeny,
+			wantValidator: "StubDeny",
+		},
+		{
+			name:          "WithEnforce(false) is explicit global override (force-allow)",
+			opts:          []Option{WithValidators(&stubDenyValidator{}), WithEnforce(false)},
+			wantBehavior:  BehaviorAllow,
+			wantValidator: "ForceAllowAllGate",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewPermissionGate(tc.opts...)
+			defer g.Close()
+			got := g.Check(context.Background(), PermissionRequest{AgentRunID: 1})
+			if got.Behavior != tc.wantBehavior {
+				t.Errorf("Behavior = %q, want %q", got.Behavior, tc.wantBehavior)
+			}
+			if got.ValidatorID != tc.wantValidator {
+				t.Errorf("ValidatorID = %q, want %q", got.ValidatorID, tc.wantValidator)
+			}
+		})
+	}
+}
+
 func TestGate_Check_AuditWritten(t *testing.T) {
 	logger := &syncCountLogger{}
 	g := NewPermissionGate(
