@@ -203,11 +203,12 @@ develop 上非 agent 功能与 agent 是**交织开发**的。回植时**不能�
 | 日期 | 操作 | 结果 / tag / commit | 操作人 |
 |------|------|---------------------|--------|
 | 2026-06-02 | 决策 + 本文档归档 | 选定方案 A；文档落 `docs/deployment/` | user + AI |
-| _待填_ | server 回植 v2.1.34 | | |
-| _待填_ | `/deploy-prod server` | | |
+| 2026-06-03 | SSH 核验线上基线 | 实测 prod 用户 API=`17ff3ee2`、管理 API=`c41bbb01`、web-v3=`v1.0.28`、admin-web=`v1.4.8`，与 git tag 推断一致 | AI |
+| 2026-06-03 | server 回植 | `release-no-agent-v2.1.34`（基线 `c41bbb01` + 7 commit，HEAD `31bf6ece`，tag `v2.1.34`）；4 cherry-pick（消耗流水/任务名/模板数/账单清理）+ 手工（父账户对账+订阅记账+errno 解包）；build+test(46 pass/0 fail)+lint 全绿；agent 零泄漏、`store/customer.go` 未引用 agent_run | AI |
+| 2026-06-03 | `/deploy-prod server` | ✅ 成功；镜像 `numind-server:v2.1.34-31bf6ece` healthy；回滚目标 `17ff3ee2`（旧镜像保留）；tag+分支已推 origin | AI |
+| 2026-06-03 | prod 验证（用户 API） | `/healthz`=200；`GET /v1/credits/consumption-log`=401、`GET /v1/users/me/billing-report`=401（路由已上线）；回归 `/v1/credits/balance`=401；`/v1/agent/skills`=404（agent 确认在外）| AI |
 | _待填_ | web-v3 回植 + 部署 | | |
-| _待填_ | 手动迁移 clean_migrated_billing_records | | |
-| _待填_ | prod 验证 | | |
+| _待填_ | 手动迁移 clean_migrated_billing_records（可选）| | |
 
 ---
 
