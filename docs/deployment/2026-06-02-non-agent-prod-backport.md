@@ -207,8 +207,8 @@ develop 上非 agent 功能与 agent 是**交织开发**的。回植时**不能�
 | 2026-06-03 | server 回植 | `release-no-agent-v2.1.34`（基线 `c41bbb01` + 7 commit，HEAD `31bf6ece`，tag `v2.1.34`）；4 cherry-pick（消耗流水/任务名/模板数/账单清理）+ 手工（父账户对账+订阅记账+errno 解包）；build+test(46 pass/0 fail)+lint 全绿；agent 零泄漏、`store/customer.go` 未引用 agent_run | AI |
 | 2026-06-03 | `/deploy-prod server` | ✅ 成功；镜像 `numind-server:v2.1.34-31bf6ece` healthy；回滚目标 `17ff3ee2`（旧镜像保留）；tag+分支已推 origin | AI |
 | 2026-06-03 | prod 验证（用户 API） | `/healthz`=200；`GET /v1/credits/consumption-log`=401、`GET /v1/users/me/billing-report`=401（路由已上线）；回归 `/v1/credits/balance`=401；`/v1/agent/skills`=404（agent 确认在外）| AI |
-| _待填_ | web-v3 回植 + 部署 | | |
-| _待填_ | 手动迁移 clean_migrated_billing_records（可选）| | |
+| 2026-06-03 | web-v3 回植 + 部署 | `release-no-agent-v1.0.29`（基线 `v1.0.28` + 12 cherry-pick，HEAD `a1d2143`，tag `v1.0.29`）：消耗流水弹窗(+任务名/类型列/悬停) + 父账户对账页(`/customers/billing`, parentOnly 守卫) + 父账户权限显示/取消授权修正 + 设置入口 + 权限弹窗标签改名(SOP→AI 工作流/智能体→AI 助手，用户确认保留)；lint+type-check+build 全绿；**agent UI 零泄漏**（router 无 agent 路由、HomeView/AppSidebar/ConfigLayout 未动、无 agent/marketplace/skill 文件）。`/deploy-prod`：✅ 镜像 `numind-web-v3:v1.0.29-a1d2143` healthy，回滚目标 `v1.0.28-cca28a5`；nginx/health=200、SPA index 200、index.html 引用新 bundle hash 匹配本地构建；公网 youshu.asia=200；tag+分支已推 origin | AI |
+| _待填_ | 手动迁移 clean_migrated_billing_records（可选，独立于代码部署）| 消耗流水/对账均不依赖；待用户决定是否单独跑 | |
 
 ---
 
