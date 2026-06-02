@@ -77,6 +77,14 @@ func frontendStatus(status, stateReason string) string {
 			return "timeout"
 		case "cancelled", "aborted_streaming", "aborted_tools":
 			return "cancelled"
+		case "waiting_for_user_choice":
+			// Run is paused awaiting an ask_user_question answer. Surface as
+			// active "running" rather than the default "failed" so the chat
+			// header / cancel / input-disable logic stay correct while the
+			// question is pending; the frontend distinguishes the paused
+			// sub-state via state_reason (isWaitingForUser). Applies to both
+			// the streaming and polling resume paths.
+			return "running"
 		default:
 			return "failed"
 		}
