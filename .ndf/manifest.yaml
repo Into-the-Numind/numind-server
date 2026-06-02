@@ -25,6 +25,31 @@ features:
   - 'H1-D3 (ai 2026-06-02): config_prod.yaml 禁止修改（项目硬规则）；靠 viper.SetDefault 默认 true 保证 prod 自动 enforce。仅在 config_dev.yaml/config_local.yaml 文档化该 key（标注默认 enforce）。'
   blockers: []
 
+- id: docker-ml-base-image
+  ndf_version: '3.0'
+  description: 'numind-server Dockerfile runtime stage (FROM ubuntu:22.04) 的两个重型 pip 层——torch CPU (pytorch.org 跨境下载, 数 GB) + sentence-transformers/pymupdf/markitdown 等功能库——在构建机 (139.155.129.13, 成都) 上因 BuildKit 构建缓存按体积 LRU 淘汰大层而每次部署 cache miss 重新执行，torch 一度 8KB/s 跨境重下，单次部署多花约 3-5 min（2026-06-03 部署 v2.1.34 实测；小 apt 层 CACHED 但两个大 pip 层未命中）。Root cause: 大层是 GC 首要回收对象 + --no-cache-dir 无本地 wheel 缓存 → 重建即从网络重下。Fix（方案 A）：把这些重型且极少变的 ML/系统依赖固化成独立 base 镜像 ccr.ccs.tencentyun.com/youshunumind/numind-ml-base:<date> 推到 TCR；业务 Dockerfile runtime stage 改 FROM 该 base 并删除两个 pip 层。base 几乎不重建 → torch 永不跨境重下，业务构建只从 TCR 国内骨干网 pull 预构建层。Out of scope: prod 部署（先 dev 验证提速 + 服务正常再议）；不改 config_prod.yaml；不碰业务逻辑；方案 B(registry cache)/C(GC 调参) 已评估不选（见 decisions）。'
+  track: hotfix
+  stage: H1
+  classification_reason: 'Hotfix Triage 5 条全满足 — (1) 无 DB schema 变更 (2) 无新 API 端点 (3) 无新外部服务集成（TCR 已接入，仅在同 registry 新增一个 image repo） (4) 影响 3 文件: Dockerfile(改) + Dockerfile.ml-base(新) + scripts/cicd/build-ml-base.sh(新)，附 scripts/cicd/verify-ml-base.sh 烟雾测试 (5) 非支付/权限/会员高风险业务，纯构建/部署 infra。Rule 11 不适用（非 customer bug，是部署 infra 优化；复用 build-cache-cleanup / tavily-api-key-env-binding 先例论证）。User 2026-06-03 确认方案 A + Hotfix 档。'
+  last_updated_by: ai-h1-start
+  last_updated_at: '2026-06-03T01:05:46+08:00'
+  created_at: '2026-06-03T01:05:46+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: fix/docker-ml-base-image
+  worktrees:
+    numind-server: /private/tmp/wt-docker-ml-base-image-numind-server
+  progress:
+    total_tasks: 1
+    completed_tasks: 0
+    reviewed_tasks: 0
+  decisions:
+  - 'H1-D1 (user 2026-06-03): 选方案 A（预构建 base 镜像）而非 B（registry cache）/ C（BuildKit GC 调参）。理由：B 需在构建机配 docker buildx docker-container driver 才能 --cache-to=type=registry,mode=max（默认 docker driver 导不出多阶段 registry cache），且每次构建往 TCR 推数 GB buildcache；构建机目前朴素 docker，A 用普通 docker build 即可，零 builder 基础设施改动。C 治标，磁盘满时 ML 层照样被 GC 淘汰（参 build-cache-cleanup 51GB 撑满事故）。A 把"跨境重下 torch"一次性转成"intranet 从 TCR pull 预构建层"。'
+  - 'H1-D2 (ai 2026-06-03): base 镜像 env-agnostic（torch/sentence-transformers/pymupdf 等 dev/qa/prod 完全一致），仅含系统依赖 (ca-certificates/curl/tzdata/python3/python3-pip/antiword/libgomp1) + 两个 pip 层。WITH_DOCKER_CLI(dev only) + config_${ENV} + binary/skills/configs/dict COPY + 用户创建 + 权限设置全留在业务 Dockerfile。base tag 用日期 (numind-ml-base:20260603)，业务 Dockerfile 用 ARG ML_BASE_TAG 默认值 pin，依赖变更时重建 base + bump 默认值（两步成本，但 ML 依赖几乎不变）。'
+  - 'H1-D3 (ai 2026-06-03): H1 强制测试 = scripts/cicd/verify-ml-base.sh 烟雾测试（docker run base python3 -c "import torch, sentence_transformers, fitz, docx, markitdown" + numpy/fastapi/uvicorn 断言关键包可导入且 torch 为 CPU 版）。构建提速无法单测，由 H2 dev deploy gate 实测验证。遵 build-cache-cleanup H3-D1 教训：multi-line shell / Docker 改动必须真跑端到端，不能只靠 bash -n + diff review。'
+  blockers: []
+
 - id: credit-log-task-names
   ndf_version: '3.0'
   description: 'Standard NDF（快车）— 「积分消耗记录」弹窗：表头「动作」→「任务」，每条从通用名（SOP 执行/销售对话/智能对话）改为具体实体名（哪个 SOP 的哪个步骤 / SOP 对话显示 SOP 名 / 智能对话显示智能体名）。关键约束（S0 调研）：credit_reservation.reference_id 在生产 aiservice 网关路径上为空，名字本身好查（sop_template.name/sop_node.name/sales_session.title/chatbot_config.name）但缺指针 → 必须在 reserve 时把业务 id 穿过 aiservice 计费网关中间件写进 reference_id（高风险信任边界，跨 SOP/销售/对话/网关/billing 5 域），且历史行无法回填只能回退通用名。'
