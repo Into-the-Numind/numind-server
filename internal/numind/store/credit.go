@@ -259,6 +259,7 @@ func (s *creditStore) ListReconciledReservationsByUser(ctx context.Context, user
 	}
 	return rows, total, nil
 }
+
 // T11 (credits-cleanup): UpdateBalance and RecalculateBalance have been deleted.
 // credit_account.balance column was dropped in migration 20260515_200000_t11.
 // The three-pool SOT (credit_cycle + user_booster_balance + trial_grant) is the
