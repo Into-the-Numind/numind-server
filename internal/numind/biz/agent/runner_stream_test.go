@@ -540,6 +540,9 @@ func TestConsumeEinoStream_EmptyStream(t *testing.T) {
 func TestConsumeEinoStream_YieldViaPendingState(t *testing.T) {
 	r := makeRunner()
 	run := makeRun(77)
+	// Register the run so UpdatePendingQuestion hits the success path (not the
+	// not-found warn fallback) — lets us assert the question was persisted.
+	r.runStore.(*mockAgentRunStore).runs[run.ID] = run
 	st := &LoopState{}
 
 	ch := make(chan stream.Event, 32)
@@ -582,6 +585,10 @@ func TestConsumeEinoStream_YieldViaPendingState(t *testing.T) {
 
 	// A pause is not a failure — no error event.
 	assert.Empty(t, allEventsOfType(evs, stream.EventError))
+
+	// Pending question persisted for the /answer resume path.
+	persisted := r.runStore.(*mockAgentRunStore).runs[run.ID]
+	assert.NotEmpty(t, persisted.PendingQuestionJSON, "yield must persist pending_question for the resume path")
 }
 
 // Yield sentinel propagating as a stream error (no PendingYield set): the error

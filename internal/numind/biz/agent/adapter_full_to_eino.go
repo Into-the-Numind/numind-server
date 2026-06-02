@@ -123,7 +123,15 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 	// across this call's start/result/error so the frontend can correlate them.
 	toolCallID := uuid.NewString()
 	startedAt := time.Now()
-	a.emitStreamToolStart(ctx, toolCallID, args)
+	// ask_user_question yields (never returns a tool result/error), so emitting a
+	// tool_call_start here would create a streaming tool card that never resolves
+	// ("正在准备提问..." stuck in 'use'). The yield surfaces instead as a
+	// question_prompt event (consumeEinoStream), which IS the user-facing UI for
+	// it. Skip the start to avoid the orphan card. The StateUse narration above
+	// still fires for the polling path.
+	if a.ft.Name() != "ask_user_question" {
+		a.emitStreamToolStart(ctx, toolCallID, args)
+	}
 
 	// Execute the underlying tool
 	result, execErr := a.ft.Execute(ctx, input)

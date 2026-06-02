@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"numind-server/internal/numind/biz/agent/stream"
+	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 )
@@ -120,6 +121,15 @@ func (r *agentRunner) consumeEinoStream(
 			log.Warnw("consumeEinoStream: UpdatePendingQuestion failed",
 				"agent_run_id", run.ID, "error", pErr)
 		}
+		// Langfuse span for observability parity with runner.go's Run yield path.
+		if tc := langfuse.FromContext(ctx); tc != nil {
+			spanID := langfuse.SpanID()
+			langfuse.CreateSpan(tc.TraceID, spanID, "tool.ask_user_question.yield",
+				langfuse.WithSpanParent(tc.ParentObservationID),
+				langfuse.WithSpanInput(p),
+			)
+			langfuse.EndSpan(tc.TraceID, spanID)
+		}
 		opts := make([]stream.QuestionOption, 0, len(p.Options))
 		for _, o := range p.Options {
 			opts = append(opts, stream.QuestionOption{Label: o.Label, Description: o.Description})
@@ -130,7 +140,9 @@ func (r *agentRunner) consumeEinoStream(
 			Header:      p.Header,
 			MultiSelect: p.MultiSelect,
 		})
-		st.TerminalReason = TerminalWaitingForUserChoice
+		// Drive the state machine (parity with runner.go's Run yield path) —
+		// this sets st.TerminalReason = TerminalWaitingForUserChoice.
+		st.Transition(LoopEventAskUserPaused)
 		emit(stream.EventTerminal, stream.TerminalPayload{
 			Reason:     string(TerminalWaitingForUserChoice),
 			DurationMs: time.Since(startTime).Milliseconds(),

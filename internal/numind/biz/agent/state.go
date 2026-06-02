@@ -46,9 +46,9 @@ var _ = [7]ContinueReason{
 	ContinueMaxOutputEscalate, ContinueMaxOutputRecovery, ContinueStopHookBlocking, ContinueTokenBudgetContinue,
 }
 
-// Compile-time invariant: LoopEvent iota must reach 20 (0=Invalid, 1..19 are defined events).
+// Compile-time invariant: LoopEvent iota must reach 20 (0=Invalid, 1..20 are defined events).
 // If you add a new event, increment the array size.
-var _ = [20]LoopEvent{
+var _ = [21]LoopEvent{
 	LoopEventInvalid,
 	LoopEventLLMOKWithToolCall,
 	LoopEventLLMOKNoToolCall,
@@ -69,6 +69,7 @@ var _ = [20]LoopEvent{
 	LoopEventMaxOutputEscalate,
 	LoopEventPermissionDenied,
 	LoopEventErrorMaxBudget,
+	LoopEventAskUserPaused,
 }
 
 // LoopEvent 是状态机的输入事件枚举。
