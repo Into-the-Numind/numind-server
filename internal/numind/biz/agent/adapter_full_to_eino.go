@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -122,7 +123,15 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 	// across this call's start/result/error so the frontend can correlate them.
 	toolCallID := uuid.NewString()
 	startedAt := time.Now()
-	a.emitStreamToolStart(ctx, toolCallID, args)
+	// ask_user_question yields (never returns a tool result/error), so emitting a
+	// tool_call_start here would create a streaming tool card that never resolves
+	// ("正在准备提问..." stuck in 'use'). The yield surfaces instead as a
+	// question_prompt event (consumeEinoStream), which IS the user-facing UI for
+	// it. Skip the start to avoid the orphan card. The StateUse narration above
+	// still fires for the polling path.
+	if a.ft.Name() != "ask_user_question" {
+		a.emitStreamToolStart(ctx, toolCallID, args)
+	}
 
 	// Execute the underlying tool
 	result, execErr := a.ft.Execute(ctx, input)
@@ -157,7 +166,19 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 
 	// EMIT RESULT or ERROR (based on effectiveErr — what caller sees).
 	durationMs := time.Since(startedAt).Milliseconds()
-	if effectiveErr != nil {
+	// ask_user_question pauses the run via a yield sentinel error. On the
+	// streaming path, capture the payload into the shared stream state so
+	// consumeEinoStream surfaces a question_prompt + waiting_for_user_choice
+	// terminal — and suppress the error narration / tool_call_error SSE, because
+	// a yield is a pause, not a tool failure. The sentinel is still returned so
+	// the eino graph stops. The non-stream Run path has no stream state, so it
+	// falls through to the normal error branch (unchanged; yield handled in
+	// runner.go after Generate).
+	var yErr *yieldError
+	if streamState, hasStream := StreamStateFromContext(ctx); errors.As(effectiveErr, &yErr) && hasStream && streamState != nil {
+		p := yErr.Payload
+		streamState.PendingYield = &p
+	} else if effectiveErr != nil {
 		a.emitNarration(ctx, narration.StateError, input, nil, effectiveErr, "")
 		a.emitStreamToolError(ctx, toolCallID, effectiveErr, durationMs)
 	} else {

@@ -526,3 +526,96 @@ func TestConsumeEinoStream_EmptyStream(t *testing.T) {
 	terminals := allEventsOfType(evs, stream.EventTerminal)
 	assert.Len(t, terminals, 1)
 }
+
+// ---------------------------------------------------------------------------
+// T3 (agent-stream-interactivity): ask_user_question yield on the STREAMING
+// path. Before this fix the yield sentinel was classified as model_error and
+// the user saw "任务失败" instead of the clarifying question; the run never
+// reached waiting_for_user_choice and could not be answered/resumed.
+// ---------------------------------------------------------------------------
+
+// Yield captured into stream state by the tool adapter, surfacing as a clean
+// EOF (sentinel did not propagate as a stream error). The EOF branch must
+// detect PendingYield and emit question_prompt + waiting terminal, NOT completed.
+func TestConsumeEinoStream_YieldViaPendingState(t *testing.T) {
+	r := makeRunner()
+	run := makeRun(77)
+	// Register the run so UpdatePendingQuestion hits the success path (not the
+	// not-found warn fallback) — lets us assert the question was persisted.
+	r.runStore.(*mockAgentRunStore).runs[run.ID] = run
+	st := &LoopState{}
+
+	ch := make(chan stream.Event, 32)
+	state := &StreamSessionState{
+		Ch:    ch,
+		RunID: run.ID,
+		PendingYield: &YieldPayload{
+			Question:    "你想要哪种格式?",
+			Options:     []YieldOption{{Key: "pdf", Label: "PDF"}, {Key: "csv", Label: "CSV 表格"}},
+			MultiSelect: false,
+		},
+	}
+	ctx := WithStreamState(context.Background(), state)
+	sr := makeStreamReader([]*schema.Message{}) // empty → clean EOF
+
+	result, err := r.consumeEinoStream(ctx, run, sr, ch, st, time.Now())
+	close(ch)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.Equal(t, TerminalWaitingForUserChoice, result.TerminalReason)
+	assert.Equal(t, TerminalWaitingForUserChoice, st.TerminalReason)
+
+	evs := collectEvents(ch)
+	qps := allEventsOfType(evs, stream.EventQuestionPrompt)
+	require.Len(t, qps, 1, "exactly one question_prompt must be emitted")
+
+	var qp stream.QuestionPromptPayload
+	require.NoError(t, json.Unmarshal(qps[0].Data, &qp))
+	assert.Equal(t, "你想要哪种格式?", qp.Question)
+	require.Len(t, qp.Options, 2, "structured options must be forwarded (not dropped/stringified)")
+	assert.Equal(t, "PDF", qp.Options[0].Label)
+	assert.Equal(t, "CSV 表格", qp.Options[1].Label)
+
+	terms := allEventsOfType(evs, stream.EventTerminal)
+	require.Len(t, terms, 1)
+	var tp stream.TerminalPayload
+	require.NoError(t, json.Unmarshal(terms[0].Data, &tp))
+	assert.Equal(t, string(TerminalWaitingForUserChoice), tp.Reason)
+
+	// A pause is not a failure — no error event.
+	assert.Empty(t, allEventsOfType(evs, stream.EventError))
+
+	// Pending question persisted for the /answer resume path.
+	persisted := r.runStore.(*mockAgentRunStore).runs[run.ID]
+	assert.NotEmpty(t, persisted.PendingQuestionJSON, "yield must persist pending_question for the resume path")
+}
+
+// Yield sentinel propagating as a stream error (no PendingYield set): the error
+// branch's errors.As fallback must still surface the question, not model_error.
+func TestConsumeEinoStream_YieldViaStreamError(t *testing.T) {
+	r := makeRunner()
+	run := makeRun(78)
+	st := &LoopState{}
+
+	ch := make(chan stream.Event, 32)
+	state := &StreamSessionState{Ch: ch, RunID: run.ID} // no PendingYield
+	ctx := WithStreamState(context.Background(), state)
+
+	sr, sw := schema.Pipe[*schema.Message](4)
+	_ = sw.Send(nil, &yieldError{Payload: YieldPayload{
+		Question: "继续吗?",
+		Options:  []YieldOption{{Key: "y", Label: "继续"}, {Key: "n", Label: "停止"}},
+	}})
+	sw.Close()
+
+	result, err := r.consumeEinoStream(ctx, run, sr, ch, st, time.Now())
+	close(ch)
+	require.NoError(t, err) // yield is a pause, not an error outcome
+	require.NotNil(t, result)
+	assert.Equal(t, TerminalWaitingForUserChoice, result.TerminalReason)
+
+	evs := collectEvents(ch)
+	require.Len(t, allEventsOfType(evs, stream.EventQuestionPrompt), 1)
+	assert.Empty(t, allEventsOfType(evs, stream.EventError))
+}

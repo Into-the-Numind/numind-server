@@ -45,6 +45,12 @@ type StreamSessionState struct {
 	LastStepContent string
 	StepIdx         int
 	Seq             uint64
+	// PendingYield is set by the tool adapter (fullToolEinoAdapter.InvokableRun)
+	// when ask_user_question returns its yield sentinel during streaming. The
+	// stream drain (consumeEinoStream) reads it to surface a question_prompt +
+	// waiting_for_user_choice terminal instead of treating the sentinel as a
+	// model error. nil on every non-yielding run.
+	PendingYield *YieldPayload
 }
 
 func WithStreamState(ctx context.Context, state *StreamSessionState) context.Context {
@@ -541,6 +547,19 @@ func (r *agentRunner) RunStream(
 			return finalResult, finalErr
 		}
 		return finalResult, consumeErr
+	}
+
+	// Yield: ask_user_question paused the run. consumeEinoStream already
+	// persisted pending_question + emitted question_prompt/terminal. Mirror
+	// runner.go's Run yield path: persist terminated/waiting state and return
+	// WITHOUT finalizeRun — no WriteTurn / memory extractor / search index on a
+	// paused run (the answer endpoint writes the turn on resume).
+	if result != nil && result.TerminalReason == TerminalWaitingForUserChoice {
+		endedAt := time.Now()
+		if uErr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalWaitingForUserChoice), &endedAt); uErr != nil {
+			log.Warnw("AgentRunner.RunStream yield UpdateState failed", "agent_run_id", run.ID, "error", uErr)
+		}
+		return result, nil
 	}
 
 	// Normal (EOF) completion — consumeEinoStream set st.TerminalReason = TerminalCompleted.
