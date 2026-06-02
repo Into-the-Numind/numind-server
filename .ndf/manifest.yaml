@@ -3209,4 +3209,35 @@ features:
   artifacts:
     regression_test: internal/pkg/model/text_column_default_guard_test.go
   blockers: []
+
+- id: deploy-container-name-conflict
+  ndf_version: '3.0'
+  description: 'Hotfix — scripts/cicd/deploy-remote.sh (三仓库近一致) 在 `docker run` 步骤可 exit 125 "Conflict. The container name /<name> is already in use"，尽管前面已 `docker stop` + `docker rm`（均无 -f）。2026-06-02 部署 numind-web-v3 到 dev 观测：deploy 报 exit 125 名字冲突，但容器最终 Up+healthy 跑在新镜像（develop-3521366，digest 已核）——终态正确但脚本返回失败，是良性但误导的竞态，且 prod 上 spurious failure 可能触发不必要 rollback。根因：容器 `--restart always`，`docker stop` 后 `docker rm`（无 -f）会与 restart policy / daemon 状态竞态，容器在 `docker run` 前重新抢占名字。Fix：把 stop+rm 替换为 remove_container() helper（`docker rm -f` 强制移除 + 轮询直到 `docker ps -aq -f name=^<name>$` 为空才 run），主部署路径与 prod rollback 路径共用。'
+  track: hotfix
+  stage: H1
+  classification_reason: 'Hotfix — (1) 无 DB schema 变更 (2) 无新 API 端点 (3) 无新外部服务 (4) 仅改 deploy 脚本（每仓库 deploy-remote.sh + 配套回归测试，纯 infra tooling 非 app code）(5) 不涉及支付/权限业务逻辑。跨 3 仓库因脚本近一致需同步修。User 2026-06-02 明确指定 Hotfix + 「deploy to dev twice」验证。Bug 为内部部署时观测（非客户报告），按 Rule 11 精神仍以失败复现测试打头（test(qa): reproduce 前缀，沿用既有 test-push-guard.sh 的 fake-docker-on-PATH 模式）。'
+  last_updated_by: ai-h1-start
+  last_updated_at: '2026-06-02T00:00:00+08:00'
+  created_at: '2026-06-02T00:00:00+08:00'
+  repos:
+  - numind-server
+  - numind-web-v3
+  - numind-admin-web
+  branches:
+    numind-server: fix/deploy-container-name-conflict
+    numind-web-v3: fix/deploy-container-name-conflict
+    numind-admin-web: fix/deploy-container-name-conflict
+  worktrees:
+    numind-server: /private/tmp/wt-deploy-container-name-conflict-numind-server
+    numind-web-v3: /private/tmp/wt-deploy-container-name-conflict-numind-web-v3
+    numind-admin-web: /private/tmp/wt-deploy-container-name-conflict-numind-admin-web
+  progress:
+    total_tasks: 1
+    completed_tasks: 0
+    reviewed_tasks: 0
+  decisions:
+  - 'H1-D1 (ai 2026-06-02, fix 选型): 三选项评估 —— Option 2 `docker run --replace` 否决（--replace 是 Podman flag，Docker Engine 的 docker run 不支持，实机会硬报错）；Option 3 幂等「已在目标镜像即视为成功」否决（增加分支复杂度且可能掩盖真卡住的旧容器）；选 Option 1 `docker rm -f` + 轮询直到名字释放（直击根因：rm -f 一步 kill+remove，restart policy 无法在 stop/rm 间隙重抢名字；轮询兜底 daemon 在 rm 返回后稍晚才释放名字）。抽成 remove_container() helper 供主路径与 rollback 路径共用。'
+  - 'H1-D2 (ai 2026-06-02, 自包含约束): deploy.sh 仅 scp 单个 deploy-remote.sh 到部署机 (/tmp/numind-deploy-remote.sh)，故 fix 必须自包含在该单文件内——禁止抽 sourced helper 到独立文件（部署机不会有它）。'
+  - 'H1-D3 (ai 2026-06-02, 复现测试策略): 沿用 numind-server/scripts/cicd/test-push-guard.sh 的 fake-docker-on-PATH 模式，全脚本端到端跑 deploy-remote.sh：fake docker 建模 --restart-always 竞态（无 -f 的 docker rm 在容器存在时失败、docker rm -f 必成功、容器仍存在时 docker run exit 125 名字冲突）+ fake curl 让 health 通过。旧逻辑(stop+rm)下脚本因 125 经 set -e 退出=RED；新逻辑(remove_container)强制移除后 run 成功=GREEN。三仓库各自 scripts/cicd/ 加一份测试。'
+  blockers: []
   created_at: '2026-06-02T00:00:00+08:00'
