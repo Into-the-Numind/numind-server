@@ -117,8 +117,8 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 		// 任一 store 调用失败 warn-log + 该项归零，不阻塞整个列表。
 		var sopCount, chatbotCount int64
 		if user.ParentUserID == nil {
-			if _, total, terr := c.ds.Sop().ListVisibleTemplates(ctx, user.ID, 0, 1); terr != nil {
-				log.C(ctx).Warnw("ListVisibleTemplates failed, falling back to 0",
+			if total, terr := c.ds.Sop().CountVisibleTemplates(ctx, user.ID); terr != nil {
+				log.C(ctx).Warnw("CountVisibleTemplates failed, falling back to 0",
 					"user_id", user.ID, "err", terr)
 			} else {
 				sopCount = total

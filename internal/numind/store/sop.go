@@ -20,6 +20,9 @@ type ISopStore interface {
 	// 多租户隔离 (spec D1): WHERE creator_user_id = ownerParentUserID.
 	// 防御性 (spec D7): 列表永不返回 creator_user_id IS NULL 行.
 	ListVisibleTemplates(ctx context.Context, ownerParentUserID uint, offset, limit int) ([]model.SopTemplate, int64, error)
+	// CountVisibleTemplates 返回指定父账户租户下 C 端可见模板数（与 ListVisibleTemplates
+	// 同 WHERE，仅 COUNT，不拉行）。供需要"数量"而非"列表"的调用方（如客户列表父账户行计数）。
+	CountVisibleTemplates(ctx context.Context, ownerParentUserID uint) (int64, error)
 	UpdateTemplate(id uint, updates map[string]interface{}) error
 	DeleteTemplate(id uint) error
 
@@ -160,6 +163,18 @@ func (s *sopStore) ListVisibleTemplates(ctx context.Context, ownerParentUserID u
 	}
 
 	return templates, total, nil
+}
+
+// CountVisibleTemplates 见接口注释：与 ListVisibleTemplates 同 WHERE，仅 COUNT。
+func (s *sopStore) CountVisibleTemplates(ctx context.Context, ownerParentUserID uint) (int64, error) {
+	var total int64
+	err := s.db.WithContext(ctx).Model(&model.SopTemplate{}).
+		Where("creator_user_id = ?", ownerParentUserID).
+		Where("creator_user_id IS NOT NULL"). // 防御性 (spec D7)
+		Where("status = ?", "active").
+		Where("publish_status = ?", model.SopPublishStatusPublished).
+		Count(&total).Error
+	return total, err
 }
 
 func (s *sopStore) UpdateTemplate(id uint, updates map[string]interface{}) error {
