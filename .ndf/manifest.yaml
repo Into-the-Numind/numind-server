@@ -3260,8 +3260,8 @@ features:
     numind-admin-web: /private/tmp/wt-deploy-container-name-conflict-numind-admin-web
   progress:
     total_tasks: 1
-    completed_tasks: 0
-    reviewed_tasks: 0
+    completed_tasks: 1
+    reviewed_tasks: 1
   decisions:
   - 'H1-D1 (ai 2026-06-02, fix 选型): 三选项评估 —— Option 2 `docker run --replace` 否决（--replace 是 Podman flag，Docker Engine 的 docker run 不支持，实机会硬报错）；Option 3 幂等「已在目标镜像即视为成功」否决（增加分支复杂度且可能掩盖真卡住的旧容器）；选 Option 1 `docker rm -f` + 轮询直到名字释放（直击根因：rm -f 一步 kill+remove，restart policy 无法在 stop/rm 间隙重抢名字；轮询兜底 daemon 在 rm 返回后稍晚才释放名字）。抽成 remove_container() helper 供主路径与 rollback 路径共用。'
   - 'H1-D2 (ai 2026-06-02, 自包含约束): deploy.sh 仅 scp 单个 deploy-remote.sh 到部署机 (/tmp/numind-deploy-remote.sh)，故 fix 必须自包含在该单文件内——禁止抽 sourced helper 到独立文件（部署机不会有它）。'
