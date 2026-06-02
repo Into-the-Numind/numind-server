@@ -174,16 +174,26 @@ type StateChangePayload struct {
 	PreviousState string `json:"previous_state,omitempty"`
 }
 
+// QuestionOption is a single ask_user_question choice as sent to the client.
+// Mirrors the frontend QuestionPromptOption ({label, description}). The backend
+// YieldOption also carries a machine `key`, but the client identifies options by
+// label (matching the narration/polling path), so key is intentionally not
+// forwarded over SSE.
+type QuestionOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
 // QuestionPromptPayload is emitted when the agent yields an ask_user_question.
 //
 // Options uses omitempty: a nil slice would marshal to JSON `null`, but the
 // frontend treats this field as a list and expects an empty array when no
 // options exist. Omitting the key entirely lets the parser default to [].
 type QuestionPromptPayload struct {
-	Question    string   `json:"question"`
-	Options     []string `json:"options,omitempty"`
-	Header      string   `json:"header,omitempty"`
-	MultiSelect bool     `json:"multi_select"`
+	Question    string           `json:"question"`
+	Options     []QuestionOption `json:"options,omitempty"`
+	Header      string           `json:"header,omitempty"`
+	MultiSelect bool             `json:"multi_select"`
 }
 
 // TerminalPayload signals the end of the stream and carries run summary data.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -157,7 +158,19 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 
 	// EMIT RESULT or ERROR (based on effectiveErr — what caller sees).
 	durationMs := time.Since(startedAt).Milliseconds()
-	if effectiveErr != nil {
+	// ask_user_question pauses the run via a yield sentinel error. On the
+	// streaming path, capture the payload into the shared stream state so
+	// consumeEinoStream surfaces a question_prompt + waiting_for_user_choice
+	// terminal — and suppress the error narration / tool_call_error SSE, because
+	// a yield is a pause, not a tool failure. The sentinel is still returned so
+	// the eino graph stops. The non-stream Run path has no stream state, so it
+	// falls through to the normal error branch (unchanged; yield handled in
+	// runner.go after Generate).
+	var yErr *yieldError
+	if streamState, hasStream := StreamStateFromContext(ctx); errors.As(effectiveErr, &yErr) && hasStream && streamState != nil {
+		p := yErr.Payload
+		streamState.PendingYield = &p
+	} else if effectiveErr != nil {
 		a.emitNarration(ctx, narration.StateError, input, nil, effectiveErr, "")
 		a.emitStreamToolError(ctx, toolCallID, effectiveErr, durationMs)
 	} else {

@@ -96,6 +96,54 @@ func (r *agentRunner) consumeEinoStream(
 		}
 	}
 
+	// handleYield surfaces an ask_user_question pause: persist the question,
+	// emit a question_prompt + a waiting_for_user_choice terminal, and return a
+	// non-error RunResult. Streaming counterpart of runner.go's Run yield
+	// handler. Reached when the tool adapter captured a yield into stream state
+	// (PendingYield) or the sentinel propagated as a stream error.
+	handleYield := func(p YieldPayload) (*RunResult, error) {
+		payloadJSON, mErr := json.Marshal(p)
+		if mErr != nil {
+			log.Errorw("consumeEinoStream: marshal yield payload failed",
+				"agent_run_id", run.ID, "error", mErr)
+			st.TerminalReason = TerminalModelError
+			emit(stream.EventTerminal, stream.TerminalPayload{
+				Reason:     string(TerminalModelError),
+				DurationMs: time.Since(startTime).Milliseconds(),
+				StepCount:  st.StepCount,
+			})
+			return &RunResult{AgentRunID: run.ID, TerminalReason: TerminalModelError, StepCount: st.StepCount, Duration: time.Since(startTime)}, nil
+		}
+		if pErr := r.runStore.UpdatePendingQuestion(ctx, run.ID, payloadJSON); pErr != nil {
+			// Non-fatal: still surface the question; the answer endpoint's
+			// pending-json guard rejects resume if it truly failed to persist.
+			log.Warnw("consumeEinoStream: UpdatePendingQuestion failed",
+				"agent_run_id", run.ID, "error", pErr)
+		}
+		opts := make([]stream.QuestionOption, 0, len(p.Options))
+		for _, o := range p.Options {
+			opts = append(opts, stream.QuestionOption{Label: o.Label, Description: o.Description})
+		}
+		emit(stream.EventQuestionPrompt, stream.QuestionPromptPayload{
+			Question:    p.Question,
+			Options:     opts,
+			Header:      p.Header,
+			MultiSelect: p.MultiSelect,
+		})
+		st.TerminalReason = TerminalWaitingForUserChoice
+		emit(stream.EventTerminal, stream.TerminalPayload{
+			Reason:     string(TerminalWaitingForUserChoice),
+			DurationMs: time.Since(startTime).Milliseconds(),
+			StepCount:  st.StepCount,
+		})
+		return &RunResult{
+			AgentRunID:     run.ID,
+			TerminalReason: TerminalWaitingForUserChoice,
+			StepCount:      st.StepCount,
+			Duration:       time.Since(startTime),
+		}, nil
+	}
+
 	// Emit stream_start immediately.
 	emit(stream.EventStreamStart, map[string]any{
 		"session_id": run.SessionID,
@@ -126,6 +174,17 @@ func (r *agentRunner) consumeEinoStream(
 			break
 		}
 		if err != nil {
+			// ask_user_question pause takes priority over error classification:
+			// the tool adapter captured the yield payload into stream state, and
+			// the sentinel may also have propagated as this stream error. Surface
+			// the question instead of a model_error terminal.
+			if hasState && state.PendingYield != nil {
+				return handleYield(*state.PendingYield)
+			}
+			var yErr *yieldError
+			if errors.As(err, &yErr) {
+				return handleYield(yErr.Payload)
+			}
 			// Classify via the same HandleLLMError logic as Run().
 			event := HandleLLMError(st, err)
 
@@ -265,6 +324,12 @@ func (r *agentRunner) consumeEinoStream(
 			currentText.Reset()
 			currentReason.Reset()
 		}
+	}
+
+	// ask_user_question pause may surface as a clean EOF (the sentinel did not
+	// propagate as a stream error) with the payload captured in stream state.
+	if hasState && state.PendingYield != nil {
+		return handleYield(*state.PendingYield)
 	}
 
 	// Normal EOF: stream completed successfully.

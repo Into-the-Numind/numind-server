@@ -239,7 +239,7 @@ func TestRoundTrip_StateChange(t *testing.T) {
 func TestRoundTrip_QuestionPrompt(t *testing.T) {
 	p := QuestionPromptPayload{
 		Question:    "Which format?",
-		Options:     []string{"PDF", "CSV"},
+		Options:     []QuestionOption{{Label: "PDF"}, {Label: "CSV", Description: "comma-separated"}},
 		Header:      "Please choose",
 		MultiSelect: false,
 	}
