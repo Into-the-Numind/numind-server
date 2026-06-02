@@ -1,3 +1,11 @@
+# numind-server 业务镜像
+# ML_BASE_TAG: 运行阶段 FROM 的 numind-ml-base 镜像 tag。
+# 必须在「第一个 FROM」之前声明 —— Docker 规则：只有首个 FROM 之前的 global ARG
+# 才能在后续 FROM 行展开。若声明在 builder stage 内会被 scope 到该 stage，runtime
+# FROM 取不到 → 展开成空 → "invalid reference format" 构建失败。
+# 依赖变更重建 base 后 bump 这里；或 docker build --build-arg ML_BASE_TAG=<tag> 覆盖。
+ARG ML_BASE_TAG=20260603
+
 # 构建阶段 - 在容器内编译源码
 FROM golang:1.24-bookworm AS builder
 
@@ -39,9 +47,8 @@ RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o numind ./cmd/numind
 # 系统依赖（ca-certificates/curl/tzdata/python3/antiword/libgomp1）+ torch CPU +
 # sentence-transformers/pymupdf/markitdown 等已固化在 base，业务构建不再每次部署
 # 跨境重下（详见 Dockerfile.ml-base + scripts/cicd/build-ml-base.sh）。
-# 依赖变更时：重建 base（build-ml-base.sh）→ bump 下方 ML_BASE_TAG 默认值
-# （或 docker build --build-arg ML_BASE_TAG=<tag> 覆盖）。
-ARG ML_BASE_TAG=20260603
+# ML_BASE_TAG 在本文件顶部以 global ARG 声明（须在首个 FROM 之前才能在此展开）；
+# 依赖变更时：重建 base（build-ml-base.sh）→ bump 顶部 ML_BASE_TAG 默认值。
 FROM ccr.ccs.tencentyun.com/youshunumind/numind-ml-base:${ML_BASE_TAG}
 
 # 设置环境变量避免交互式安装（base 已设，此处冗余保留以兼容下方可选的 docker CLI apt 块）

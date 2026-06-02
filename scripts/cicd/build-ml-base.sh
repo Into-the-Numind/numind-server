@@ -58,6 +58,14 @@ printf '%s\n' "$out"
 if [ "$rc" -ne 0 ] || printf '%s\n' "$out" | grep -Eqi 'denied|reached its limit|too many (requests|tags|images)|toomanyrequests|quota|unauthorized|forbidden'; then
   echo >&2
   echo "ERROR: docker push FAILED for $IMG (exit=$rc)" >&2
+  if printf '%s\n' "$out" | grep -Eqi 'reached its limit|limit\(100\)|too many tags'; then
+    cat >&2 <<EOF
+>>> TCR tag-limit reached: ${NAMESPACE}/${IMAGE_NAME} is at its 100-tag cap, so
+>>> the base image was NOT pushed (TCR returns "denied" but docker push exits 0).
+>>> Clear old tags in the Tencent TCR console
+>>> (${REGISTRY} -> ${NAMESPACE}/${IMAGE_NAME} -> 版本管理), then re-run.
+EOF
+  fi
   exit 1
 fi
 

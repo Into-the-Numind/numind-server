@@ -34,6 +34,11 @@ import markitdown
 assert not torch.cuda.is_available(), "torch reports CUDA available — expected CPU-only build"
 assert "+cu" not in torch.__version__, f"torch {torch.__version__} looks like a CUDA build"
 
+# 3) system runtime deps the stack needs (Python imports alone won't catch these)
+import shutil, ctypes
+assert shutil.which("antiword"), "antiword binary not on PATH (.doc parsing)"
+ctypes.CDLL("libgomp.so.1")  # OpenMP runtime for torch / sentence-transformers
+
 print("OK: torch", torch.__version__,
       "| sentence-transformers", sentence_transformers.__version__,
       "| numpy", numpy.__version__)
