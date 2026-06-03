@@ -97,6 +97,7 @@ type agentRunner struct {
 	mu                sync.Mutex
 	defaultHooks      *RunHooks                   // #4 sandbox-integration: wired by biz.go via WithDefaultHooks
 	skillStore        store.IAgentDefinitionStore // #5 skill-system: wired by biz.go via WithSkillStore; may be nil
+	userStore         userByIDGetter              // b2b2c-student-agent-access: wired by biz.go via WithUserStore; nil → agent access falls back to parent-only fast-path
 	narrationProvider *narration.Provider         // #8 narration-layer: wired by biz.go via WithNarrationProvider; may be nil
 	memoryProvider    memory.MemoryProvider       // #7 memory-system: wired by biz.go via WithMemoryProvider; may be nil
 	budgetTracker     budget.BudgetTracker        // #12 agent-mode-billing-integration: wired by biz.go via WithBudgetTracker; may be nil
@@ -162,6 +163,17 @@ func WithDefaultHooks(h *RunHooks) RunnerOption {
 func WithSkillStore(s store.IAgentDefinitionStore) RunnerOption {
 	return func(r *agentRunner) {
 		r.skillStore = s
+	}
+}
+
+// WithUserStore installs the user store used to resolve a caller's
+// parent_user_id for B2B2C agent-definition access checks (agentTenantAccess).
+// store.UserStore satisfies the narrow userByIDGetter the runner needs. When
+// nil (default), access falls back to the parent-only fast-path, so a child
+// account cannot run a parent-configured agent — the pre-change behavior.
+func WithUserStore(s store.UserStore) RunnerOption {
+	return func(r *agentRunner) {
+		r.userStore = s
 	}
 }
 
@@ -467,9 +479,11 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 			}
 			return nil, fmt.Errorf("AgentRunner.Run skill lookup: %w", skillErr)
 		}
-		if ad.ParentUserID != req.UserID {
-			// 不暴露存在性：跨用户访问当作 NotFound 返回
-			return nil, errno.ErrSkillNotFound
+		// b2b2c-student-agent-access: allow the owning parent OR a child of that
+		// parent (active agents only for children, R9). Denials map to
+		// ErrSkillNotFound so existence is never revealed across tenants.
+		if err := agentTenantAccess(ctx, r.userStore, req.UserID, ad); err != nil {
+			return nil, err
 		}
 
 		// v2 #2 agent-mode-v2-skill-invocation: 查 Agent binding 列表。

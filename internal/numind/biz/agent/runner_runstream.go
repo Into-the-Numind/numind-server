@@ -131,8 +131,10 @@ func (r *agentRunner) RunStream(
 			}
 			return nil, fmt.Errorf("AgentRunner.RunStream skill lookup: %w", skillErr)
 		}
-		if ad.ParentUserID != req.UserID {
-			return nil, errno.ErrSkillNotFound
+		// b2b2c-student-agent-access: parent OR child-of-parent (active only for
+		// children, R9); cross-tenant → ErrSkillNotFound. Production streaming path.
+		if err := agentTenantAccess(ctx, r.userStore, req.UserID, ad); err != nil {
+			return nil, err
 		}
 
 		var skills []model.Skill

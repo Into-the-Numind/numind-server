@@ -581,6 +581,7 @@ func NewBiz(ds store.IStore) *biz {
 		agentToolRegistry,
 		agent.WithDefaultHooks(wrappedHooks),              // #6: permission → sandbox chain
 		agent.WithSkillStore(ds.AgentDefinitions()),       // #5 skill-system
+		agent.WithUserStore(ds.Users()),                   // b2b2c-student-agent-access: resolve caller parent_user_id for tenant access
 		agent.WithSkillBindingService(skillBindingSvc),    // v2 #2 agent-mode-v2-skill-invocation
 		agent.WithPlatformSkillRegistry(platformSkillReg), // 2026-05-29 skill-progressive-loader (nil if skills_root unset)
 		// V1.5 compact-v1-removal — WithCompactProvider/WithCompactConfig removed.
@@ -672,7 +673,7 @@ func NewBiz(ds store.IStore) *biz {
 		pricingCalc,
 		narrationProv,
 		narrationBuf,
-	)
+	).WithUserStore(ds.Users()) // b2b2c-student-agent-access: resolve caller parent_user_id for tenant access
 
 	// V1.5 task 1.2: wire attachment fallback service + upload service with fallback.
 	b.attachFallbackSvc = agentatt.NewFallbackService(ds.AgentAttachments())
