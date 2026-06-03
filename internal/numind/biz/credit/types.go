@@ -42,6 +42,12 @@ type BudgetPrecheckInput struct {
 	Model                     string
 	TokenProfileID            uint64 // 0 = no profile id
 	ContextBudgetEventID      uint64 // 0 = no event id yet
+	// Pool selects the credit pool: "" = default three-pool (trial→cycle→booster);
+	// "admin_test" = parent-account Builder 试聊 pool (credit_admin_test_grant).
+	// Wired in T3 (doReserveBudget reads middleware.BillingPoolFromCtx → here →
+	// ReserveBudget/CheckAndEstimateBudget branch). Additive — empty value
+	// preserves existing three-pool behaviour for SOP/chatbot/salesrag.
+	Pool string
 }
 
 // BudgetReservationInput extends BudgetPrecheckInput with reservation-only
