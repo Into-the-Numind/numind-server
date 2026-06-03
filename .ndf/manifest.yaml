@@ -30,9 +30,9 @@ features:
   ndf_version: '3.0'
   description: 'B2B2C 子账户无法使用父账户配置的 agent（go-live blocker，prod-readiness §0.1 附加红线 + §5.1 USR-CRIT）。现状：agent run 路径 3 个访问校验点全部要求 ad.ParentUserID==调用者userID — resolveDefinition (student_run_lifecycle.go:683, estimate/create/stream 入口)、agentRunner.Run (runner.go:470, 非流式)、agentRunner.RunStream (runner_runstream.go:134, 生产默认流式) — 子账户 id≠agent拥有者(父账户)id → 必然 ErrSkillNotFound。list 路径 AvailableForStudent (biz/skill/student_query.go:16) 已修复（含 parent/child/inactive 测试），子账户能看到但不能跑。Fix: 把访问规则从「调用者必须是 agent 的 ParentUserID 本人」改为「调用者属于该 agent 的租户」——caller 能用 ad ⟺ ad.ParentUserID==caller.id (父账户本人) OR ad.ParentUserID==caller.parent_user_id (该父账户的子账户)。R9 附加：子账户禁止跑 is_active=false 的 agent（父账户本人不变，保留试聊草稿）。共享 helper agentTenantAccess(ctx,userStore,callerID,ad) 三处复用。务必保持 run/session/feedback 归属严格 per-userID（只放开 agent 定义访问，绝不放开别人的 run/session）。不跨租户。计费：run 仍以子账户 userID 发起（不改），扣子账户积分池。'
   track: standard
-  stage: S4
+  stage: S5
   classification_reason: 'Standard（精简：S1+S2 合并，User 2026-06-03 选「精简 Standard」——需求与设计已由 brief 明确）— Triage 第 4 条（>3 文件：3 校验点 + biz.go 布线 + 共享 helper + 测试）+ 第 5 条（权限/访问控制高风险业务逻辑）均失败 → 不可降级 Hotfix。1 无 DB schema 变更 2 无新 API 端点 3 无新外部服务 4 影响文件数 >3 5 高风险=是（访问控制）。User 2026-06-03 经 AskUserQuestion 确认 Standard。'
-  last_updated_by: ai-s4-code
+  last_updated_by: ai-s5-verify
   last_updated_at: '2026-06-03T10:26:38+08:00'
   created_at: '2026-06-03T10:26:38+08:00'
   repos:
@@ -49,7 +49,9 @@ features:
     requirement: requirements/b2b2c-student-agent-access.md
     spec: docs/superpowers/specs/2026-06-03-b2b2c-student-agent-access-design.md
     plan: docs/superpowers/plans/b2b2c-student-agent-access-plan.md
+    qa: .ndf/features/b2b2c-student-agent-access/qa-report.md
   decisions:
+  - 'S5-D9 (ai 2026-06-03): S5 后端验证 ALL_PASS——访问矩阵全单测绿（helper 11 例 + 3 gate × {允许/R9/跨租户/nil-store 对照} + Answer-resume + de-list 陷阱）、task lint exit 0、真实 cmd/numind 二进制编译进 WithUserStore wiring。全仓库 go test 仅 cmd/numind+biz/memory 预存失败（clean develop 复测确认无关）。dev 子账户 live smoke 列 S6（需 merge→dev 部署 + parent-agent/child 夹具，spec §6 记 422 create bug 坑）。'
   - 'S3-D8 (ai 2026-06-03): plan = 2 task 串行（Tier 4 同包耦合）。T1 helper+test (TDD/Rule11 repro，首 commit test(repro): case3 子+active 复现)。T2 接线 userStore + 三 gate 改用 helper + 集成测试。S3 原子性审查 (sonnet) PASS_WITH_CONCERNS 已并：P1 修正 RED 集描述（真正 FAIL 仅 case3/4/5 非 nil-store 子路径；7b/9 在 stub 下本就 GREEN）；P2 gate#3 RunStream 必加独立单测用例 10b（不靠 dev e2e 兜底回归）；P2 测试文件归位（answer_test.go=gate#2 用例10 / runner_runstream_test.go=gate#3 用例10b）。审查确认原子性/可编译/spec 覆盖/隔离安全。'
   - 'S2-D1 (ai 2026-06-03): 访问规则 = caller 能用 ad ⟺ ad.ParentUserID==caller.id (父本人) OR ad.ParentUserID==caller.parent_user_id (子账户)；子账户额外受 R9 限 is_active=true。统一为包级 helper agentTenantAccess(ctx,userStore,callerID,ad)，三个校验点 (resolveDefinition / runner.Run / runner.RunStream) 复用，单一真相源。'
   - 'S2-D2 (ai 2026-06-03): 性能——快路径 ad.ParentUserID==callerID 不读 user（父账户/试聊 0 额外查询），仅子账户慢路径 GetByID（主键 get，无 N+1）。'
