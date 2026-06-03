@@ -33,3 +33,24 @@ func BillingPoolFromCtx(ctx context.Context) string {
 	}
 	return ""
 }
+
+// ctxKeyGatewayBillingOnly marks a request as "bill, but do NOT compress or
+// replace Messages". Used by the agent runner: agent mode manages its own
+// context (adapter_compactv2) and its ReAct messages carry tool_calls /
+// tool_call_id / reasoning_content that the fragment renderer would drop —
+// running them through Prepare's render-and-replace breaks tool-calling
+// (HTTP 400). In bill-only mode ContextBudgetCredits estimates tokens directly
+// from chatReq.Messages and runs Reserve/Reconcile, leaving Messages untouched.
+type ctxKeyGatewayBillingOnly struct{}
+
+// WithGatewayBillingOnly flags ctx so ContextBudgetCredits bills without
+// compressing/replacing Messages.
+func WithGatewayBillingOnly(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeyGatewayBillingOnly{}, true)
+}
+
+// GatewayBillingOnlyFromCtx reports whether bill-only mode is active.
+func GatewayBillingOnlyFromCtx(ctx context.Context) bool {
+	v, _ := ctx.Value(ctxKeyGatewayBillingOnly{}).(bool)
+	return v
+}

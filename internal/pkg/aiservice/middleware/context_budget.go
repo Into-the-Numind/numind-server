@@ -392,10 +392,16 @@ func ContextBudgetCredits(deps Deps) Middleware {
 				return next(ctx, route, req)
 			}
 
+			// bill-only mode (agent-mode-billing): the agent manages its own
+			// context; its ReAct messages carry tool_calls/tool_call_id/
+			// reasoning_content that the fragment renderer would drop. Bill from a
+			// direct estimate WITHOUT compressing or replacing Messages.
+			billOnly := GatewayBillingOnlyFromCtx(ctx)
+
 			// ----------------------------------------------------------------
-			// Step 1: if no fragments, passthrough (non-migrated caller).
+			// Step 1: if no fragments AND not bill-only, passthrough.
 			// ----------------------------------------------------------------
-			if len(chatReq.ContextFragments) == 0 {
+			if !billOnly && len(chatReq.ContextFragments) == 0 {
 				return next(ctx, route, req)
 			}
 
@@ -414,31 +420,45 @@ func ContextBudgetCredits(deps Deps) Middleware {
 			}
 
 			// ----------------------------------------------------------------
-			// Step 3: call service.Prepare.
+			// Step 3: obtain a PrepareResult.
+			//   - bill-only: synthesize (no compression; Messages=nil so Step 4
+			//     keeps the agent's original tool-structured messages).
+			//   - default:   deps.ContextBudget.Prepare (compress + render).
 			// ----------------------------------------------------------------
-			prepIn := PrepareInput{
-				Operation:       operation,
-				UserID:          userID,
-				Route:           route,
-				Fragments:       chatReq.ContextFragments,
-				ContextWindow:   route.Capability.ContextWindow,
-				MaxOutputTokens: route.Capability.MaxOutputTokens,
-				TaskID:          route.TaskID,
-			}
-			if bc != nil {
-				prepIn.Metadata = bc.Meta
-			}
-
-			result, err := deps.ContextBudget.Prepare(ctx, prepIn)
-			if err != nil {
-				// Typed budget errors propagate before provider call.
-				return nil, fmt.Errorf("ContextBudgetCredits: %w", err)
-			}
-
-			// SkipBudget means this is a migrated operation with no fragments
-			// (already handled in Step 1, but defence-in-depth).
-			if result.SkipBudget {
-				return next(ctx, route, req)
+			var result *PrepareResult
+			var err error
+			if billOnly {
+				// Anomaly guard: agent bill-only callers never set fragments. If
+				// some caller sets both, fragments are silently ignored below —
+				// surface it rather than dropping context unobserved.
+				if len(chatReq.ContextFragments) > 0 {
+					deps.warnw("ContextBudgetCredits: bill-only mode with non-empty ContextFragments; fragments ignored",
+						"operation", operation, "user_id", userID)
+				}
+				result = synthBillOnlyResult(operation, route, chatReq.Messages)
+			} else {
+				prepIn := PrepareInput{
+					Operation:       operation,
+					UserID:          userID,
+					Route:           route,
+					Fragments:       chatReq.ContextFragments,
+					ContextWindow:   route.Capability.ContextWindow,
+					MaxOutputTokens: route.Capability.MaxOutputTokens,
+					TaskID:          route.TaskID,
+				}
+				if bc != nil {
+					prepIn.Metadata = bc.Meta
+				}
+				result, err = deps.ContextBudget.Prepare(ctx, prepIn)
+				if err != nil {
+					// Typed budget errors propagate before provider call.
+					return nil, fmt.Errorf("ContextBudgetCredits: %w", err)
+				}
+				// SkipBudget means this is a migrated operation with no fragments
+				// (already handled in Step 1, but defence-in-depth).
+				if result.SkipBudget {
+					return next(ctx, route, req)
+				}
 			}
 
 			// ----------------------------------------------------------------
@@ -531,8 +551,8 @@ func ContextBudgetCredits(deps Deps) Middleware {
 				ReservedOutputTokens:      result.Policy.ReservedOutputTokens,
 				ReservationID:             reservationID,
 				PolicyID:                  result.PolicyID,
-				ContextWindow:             prepIn.ContextWindow,
-				MaxOutputTokens:           prepIn.MaxOutputTokens,
+				ContextWindow:             route.Capability.ContextWindow,
+				MaxOutputTokens:           route.Capability.MaxOutputTokens,
 				SafeRatio:                 result.Policy.SafeRatio,
 				FixedOverheadTokens:       result.Policy.FixedOverheadTokens,
 				DroppedFragmentCount:      droppedCount,
@@ -684,6 +704,52 @@ func effectiveCompletionTokens(ctx context.Context, deps Deps, route *registry.R
 		return reservedOutputTokens
 	}
 	return tokens
+}
+
+// synthBillOnlyResult builds a PrepareResult for bill-only mode: no compression,
+// no message replacement (Messages=nil → Step 4 keeps the caller's original
+// messages), ChargeUser=true, and a direct token estimate. The estimate is
+// approximate; Reconcile corrects it against the provider's actual token usage.
+func synthBillOnlyResult(operation string, route *registry.ResolvedRoute, messages []aiservice.ChatMessage) *PrepareResult {
+	reserved := route.Capability.MaxOutputTokens / 2
+	if reserved <= 0 {
+		reserved = 2048
+	}
+	return &PrepareResult{
+		NormalizedOp:   operation,
+		EstimatedAfter: billOnlyPromptEstimate(messages),
+		Policy: contextbudget.BudgetPolicy{
+			Operation:            operation,
+			ReservedOutputTokens: reserved,
+			ChargeUser:           true,
+		},
+		// Messages nil → Step 4 keeps original tool-structured messages.
+		// Plan zero-value → Step 6 metadata renders "ok".
+	}
+}
+
+// billOnlyPromptEstimate is a rough prompt-token estimate from message text,
+// counting plain text, multipart text, tool-call names+arguments (JSON, often
+// large in a ReAct loop), and reasoning content. ~2 chars/token (conservative
+// for Chinese-heavy content). This is only the pre-charge size; the
+// authoritative charge comes from Reconcile using the provider's reported usage.
+func billOnlyPromptEstimate(messages []aiservice.ChatMessage) int {
+	runes := 0
+	for _, m := range messages {
+		runes += len([]rune(m.Content.Text))
+		for _, p := range m.Content.Parts {
+			runes += len([]rune(p.Text))
+		}
+		for _, tc := range m.ToolCalls {
+			runes += len([]rune(tc.Function.Name)) + len([]rune(tc.Function.Arguments))
+		}
+		runes += len([]rune(m.ReasoningContent))
+	}
+	est := runes / 2
+	if est < 1 {
+		est = 1
+	}
+	return est
 }
 
 // doReserveBudget performs the credit precheck and reserves the budget.
