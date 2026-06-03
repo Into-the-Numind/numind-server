@@ -105,6 +105,7 @@ type agentRunner struct {
 	narrationProvider *narration.Provider         // #8 narration-layer: wired by biz.go via WithNarrationProvider; may be nil
 	memoryProvider    memory.MemoryProvider       // #7 memory-system: wired by biz.go via WithMemoryProvider; may be nil
 	budgetTracker     budget.BudgetTracker        // #12 agent-mode-billing-integration: wired by biz.go via WithBudgetTracker; may be nil
+	callUsageStore    *sync.Map                   // agent-mode-billing T6: shared callID→Usage; written by adapters, read by budgetgate; may be nil
 	complianceGate    compliance.ComplianceGate   // #13 agent-mode-compliance-3layer: wired by biz.go via WithComplianceGate; may be nil
 	memoryExtractor   *memory.ExtractorService    // Task 3.3 LLM extraction async pipeline; wired by biz.go via WithMemoryExtractor; may be nil
 	memorySelector    memory.SelectorService      // Task 3.4 top-5 side-query selector; wired by biz.go via WithMemorySelector; may be nil
@@ -220,6 +221,35 @@ func WithMemoryProvider(p memory.MemoryProvider) RunnerOption {
 func WithBudgetTracker(t budget.BudgetTracker) RunnerOption {
 	return func(r *agentRunner) {
 		r.budgetTracker = t
+	}
+}
+
+// WithCallUsageStore injects the process-level callID→Usage store (agent-mode-billing
+// T6). Each per-run adapter writes real LLM token Usage into it; budgetgate reads
+// it (via WithUsageLookup over the same store) to feed RecordUsage → MaxCredits.
+func WithCallUsageStore(m *sync.Map) RunnerOption {
+	return func(r *agentRunner) {
+		r.callUsageStore = m
+	}
+}
+
+// adapterUsageStore returns the shared callID→Usage store for adapter construction,
+// or a throwaway local map when unwired (tests). When unwired, budgetgate's
+// usageLookup sees nothing and falls back to tokensFromOutput — pre-T6 behaviour.
+func (r *agentRunner) adapterUsageStore() *sync.Map {
+	if r.callUsageStore != nil {
+		return r.callUsageStore
+	}
+	return &sync.Map{}
+}
+
+// deleteCallUsage drops a stashed callID from the shared store. The final
+// (non-streaming) ReAct turn stashes usage that no PostToolCall ever reads
+// (a final answer is followed by no tool call), so the runner cleans it up
+// after Generate returns to keep the process-level store bounded.
+func (r *agentRunner) deleteCallUsage(callID string) {
+	if r.callUsageStore != nil && callID != "" {
+		r.callUsageStore.Delete(callID)
 	}
 }
 
@@ -851,9 +881,9 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		modelName:    "",
 		taskID:       profile.AgentRun,
 		systemPrompt: req.SystemPrompt, // #7 memory-system: assembled by Step 4 6-segment formula (PlatformBase + tenantRules + body + disclaimer + memory + tools + Footer)
-		// usageStore intentionally nil here (pre-existing legacy state — budgetgate
-		// A8b silently degrades to "no usage data"; fixing is out of scope for this
-		// task. See aiserviceAdapter.LookupUsage nil-guard.)
+		// agent-mode-billing T6: shared callID→Usage store so budgetgate's
+		// WithUsageLookup sees real token counts (MaxCredits). nil-safe via helper.
+		usageStore: r.adapterUsageStore(),
 	}
 	// V1.5 v2-compact-adapter-integration — V2 compact 接入 Eino per-ReAct-round
 	// LLM 调用层。useCompactV2 true 时注入 compactor；nil → adapter.Generate 中所有
@@ -1072,6 +1102,9 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		}
 
 		output, runErr = einoAgent.Generate(attemptCtx, einoMessages)
+		// T6: drop this attempt's stashed usage that no PostToolCall consumed
+		// (the final-answer turn has no following tool call) — bounds the store.
+		r.deleteCallUsage(callID)
 
 		// V1.5 v2-compact-adapter-integration — adapter 在 hard limit + 3 fails 时
 		// 返回 ErrContextExhausted；这里截获并以 "context_exhausted" 状态终止。

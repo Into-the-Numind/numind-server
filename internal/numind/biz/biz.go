@@ -340,7 +340,14 @@ func NewBiz(ds store.IStore) *biz {
 	budgetAdminConsumer := budget.NewAdminTestConsumer(ds)
 	budgetGate := budgetgate.NewBudgetGate(budgetTracker, budgetAdminConsumer, ds.AgentRuns())
 
-	budgetWrappedHooks := budgetGate.WrapHooks(sandboxHookManager.AsRunHooks())
+	// agent-mode-billing T6: a single process-level callID→Usage store shared by
+	// the per-run adapters (writers) and budgetgate (reader) so RecordUsage sees
+	// real LLM token counts → MaxCredits dimension works.
+	callUsageStore := agent.NewCallUsageStore()
+	budgetWrappedHooks := budgetGate.WrapHooks(
+		sandboxHookManager.AsRunHooks(),
+		budgetgate.WithUsageLookup(agent.NewCallUsageLookup(callUsageStore)),
+	)
 	permWrappedHooks := permission.WrapHooks(budgetWrappedHooks, b.permissionGate)
 
 	// #13 agent-mode-compliance-3layer: construct 3-layer compliance gate.
@@ -591,6 +598,7 @@ func NewBiz(ds store.IStore) *biz {
 		agent.WithNarrationProvider(narrationProv), // #8 narration-layer (nil if init failed)
 		agent.WithMemoryProvider(memoryProvider),   // #7 memory-system
 		agent.WithBudgetTracker(budgetTracker),     // #12 agent-mode-billing-integration
+		agent.WithCallUsageStore(callUsageStore),   // agent-mode-billing T6: shared usage store (MaxCredits)
 		agent.WithComplianceGate(b.complianceGate), // #13 agent-mode-compliance-3layer
 		agent.WithMemoryExtractor(memoryExtractor), // Task 3.3 LLM extraction async pipeline
 		agent.WithMemorySelector(memorySelector),   // Task 3.4 top-5 side-query selector

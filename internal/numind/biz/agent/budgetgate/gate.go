@@ -109,6 +109,10 @@ func (g *BudgetGate) WrapHooks(base *agent.RunHooks, opts ...WrapHooksOption) *a
 			if runID == 0 || g.tracker == nil {
 				return forwardPre(ctx, base, t, input)
 			}
+			// agent-mode-billing T6: count this ReAct turn so the MaxTurns
+			// dimension actually advances (RecordStep had no caller before).
+			// Recorded before CanProceed so the Nth turn trips the limit.
+			g.tracker.RecordStep(ctx, runID)
 			exceeded, dim, detail := g.tracker.CanProceed(ctx, runID)
 			if exceeded {
 				if reg := registryFromBase(base); reg != nil {

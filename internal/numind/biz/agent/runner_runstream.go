@@ -408,6 +408,8 @@ func (r *agentRunner) RunStream(
 		modelName:    "",
 		taskID:       profile.AgentRun,
 		systemPrompt: req.SystemPrompt,
+		// agent-mode-billing T6: shared callID→Usage store (MaxCredits via budgetgate).
+		usageStore: r.adapterUsageStore(),
 	}
 	if useCompactV2 {
 		ctxWindow := 0
