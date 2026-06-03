@@ -2,11 +2,31 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	aismw "numind-server/internal/pkg/aiservice/middleware"
 	"numind-server/internal/pkg/billing"
 )
+
+// T7 (agent-mode-billing): CreateRunRequest.IsTest binds from the "is_test"
+// JSON field (Builder 试聊 → admin_test pool). Guards the wire-contract tag.
+func TestCreateRunRequest_IsTestJSONBinding(t *testing.T) {
+	var req CreateRunRequest
+	body := `{"agent_skill_id":1,"input_text":"hi","is_test":true}`
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !req.IsTest {
+		t.Error("is_test=true not bound to CreateRunRequest.IsTest")
+	}
+	// default (absent) must be false (three-pool).
+	var req2 CreateRunRequest
+	_ = json.Unmarshal([]byte(`{"agent_skill_id":1,"input_text":"hi"}`), &req2)
+	if req2.IsTest {
+		t.Error("is_test absent should default false")
+	}
+}
 
 // T5 (agent-mode-billing): injectAgentBillingCtx wires billing for an agent run
 // so every aiservice.Chat call bills via ContextBudgetCredits bill-only mode,
