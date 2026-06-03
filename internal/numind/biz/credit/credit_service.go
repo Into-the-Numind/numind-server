@@ -264,6 +264,8 @@ var budgetOperationMap = map[string]Operation{
 	"salesrag_analyze_profile":      OpSalesragChat,
 	"salesrag_analyze_profile_text": OpSalesragChat,
 	"salesrag_chat_style_text":      OpSalesragChat,
+	"agent_run":                     OpAgentRun,
+	"image_gen":                     OpImageGen,
 }
 
 // CheckAndEstimateBudget is the budget-aware precheck entry point. It

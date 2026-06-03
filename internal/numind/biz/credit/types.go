@@ -15,6 +15,8 @@ const (
 	OpFileParse       Operation = "file_parse"
 	OpStyleAnalysis   Operation = "style_analysis"
 	OpOCR             Operation = "ocr"
+	OpAgentRun        Operation = "agent_run" // agent ReAct 每次 LLM 调用（主循环 chat + vision 工具 + compaction）
+	OpImageGen        Operation = "image_gen" // agent image_gen 文生图（扁平 per-image 计费）
 )
 
 // BudgetPrecheckInput holds the token-based inputs for CheckAndEstimateBudget.
