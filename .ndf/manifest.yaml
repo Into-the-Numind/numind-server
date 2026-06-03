@@ -100,17 +100,21 @@ features:
   ndf_version: '3.0'
   description: 'numind-server Dockerfile runtime stage (FROM ubuntu:22.04) 的两个重型 pip 层——torch CPU (pytorch.org 跨境下载, 数 GB) + sentence-transformers/pymupdf/markitdown 等功能库——在构建机 (139.155.129.13, 成都) 上因 BuildKit 构建缓存按体积 LRU 淘汰大层而每次部署 cache miss 重新执行，torch 一度 8KB/s 跨境重下，单次部署多花约 3-5 min（2026-06-03 部署 v2.1.34 实测；小 apt 层 CACHED 但两个大 pip 层未命中）。Root cause: 大层是 GC 首要回收对象 + --no-cache-dir 无本地 wheel 缓存 → 重建即从网络重下。Fix（方案 A）：把这些重型且极少变的 ML/系统依赖固化成独立 base 镜像 ccr.ccs.tencentyun.com/youshunumind/numind-ml-base:<date> 推到 TCR；业务 Dockerfile runtime stage 改 FROM 该 base 并删除两个 pip 层。base 几乎不重建 → torch 永不跨境重下，业务构建只从 TCR 国内骨干网 pull 预构建层。Out of scope: prod 部署（先 dev 验证提速 + 服务正常再议）；不改 config_prod.yaml；不碰业务逻辑；方案 B(registry cache)/C(GC 调参) 已评估不选（见 decisions）。'
   track: hotfix
-  stage: H2
+  stage: completed
   classification_reason: 'Hotfix Triage 5 条全满足 — (1) 无 DB schema 变更 (2) 无新 API 端点 (3) 无新外部服务集成（TCR 已接入，仅在同 registry 新增一个 image repo） (4) 影响 3 文件: Dockerfile(改) + Dockerfile.ml-base(新) + scripts/cicd/build-ml-base.sh(新)，附 scripts/cicd/verify-ml-base.sh 烟雾测试 (5) 非支付/权限/会员高风险业务，纯构建/部署 infra。Rule 11 不适用（非 customer bug，是部署 infra 优化；复用 build-cache-cleanup / tavily-api-key-env-binding 先例论证）。User 2026-06-03 确认方案 A + Hotfix 档。'
-  last_updated_by: ai-h2-verify
-  last_updated_at: '2026-06-03T01:25:10+08:00'
+  last_updated_by: ai-h3-completed
+  last_updated_at: '2026-06-03T17:00:20+08:00'
+  completed_at: '2026-06-03T17:00:20+08:00'
   created_at: '2026-06-03T01:05:46+08:00'
   repos:
   - numind-server
   branches:
-    numind-server: fix/docker-ml-base-image
+    numind-server: fix/docker-ml-base-image (deleted after ndf-done)
   worktrees:
-    numind-server: /private/tmp/wt-docker-ml-base-image-numind-server
+    numind-server: /private/tmp/wt-docker-ml-base-image-numind-server (removed after ndf-done)
+  merged_commits:
+    numind-server: a96bfe62 (merge commit 6c428950 on develop)
+  dev_image: develop-a96bfe62 (deployed + healthy; live /healthz ok; runtime ML deps verified in business image)
   progress:
     total_tasks: 1
     completed_tasks: 1
@@ -121,6 +125,7 @@ features:
   - 'H1-D3 (ai 2026-06-03): H1 强制测试 = scripts/cicd/verify-ml-base.sh 烟雾测试（docker run base python3 -c "import torch, sentence_transformers, fitz, docx, markitdown" + numpy/fastapi/uvicorn 断言关键包可导入且 torch 为 CPU 版）。构建提速无法单测，由 H2 dev deploy gate 实测验证。遵 build-cache-cleanup H3-D1 教训：multi-line shell / Docker 改动必须真跑端到端，不能只靠 bash -n + diff review。'
   - 'H2-D1 (review 2026-06-03): 双 reviewer（Sonnet 并行）抓到 1 个 P0——ARG ML_BASE_TAG 原声明在 golang builder FROM 之后，被 scope 到该 stage，runtime FROM 取不到 → ${ML_BASE_TAG} 展开成空 → "invalid reference format" 每次部署必崩。Docker 规则：只有「第一个 FROM 之前」的 global ARG 才能在后续 FROM 行展开。修复 commit a96bfe62 把 ARG 移到文件顶部 global 作用域。注：第二个 reviewer 误判该处 PASS——印证双 reviewer + 真跑构建的价值。另修两个 P2：build-ml-base.sh 加 TCR tag-limit 提示；verify-ml-base.sh 加 antiword/libgomp1 系统依赖检查。'
   - 'H2-D2 (verify 2026-06-03): base 镜像构建命中关键洞察——Dockerfile.ml-base 的 apt/torch/功能 pip 三个 RUN 与旧业务 Dockerfile 字节一致，BuildKit 按 content-hash 命中构建机现存缓存层 → 三层全 CACHED，秒级完成 + push 到 TCR 时 layer 全 "Mounted from" 去重（近零新增存储）。等于把「当前已缓存但迟早被 GC 淘汰的 ML 层」固化成 TCR 命名镜像。烟雾测试通过（torch CPU/sentence-transformers/pymupdf/python-docx/numpy/fastapi/uvicorn/multipart/markitdown 全 import + antiword + libgomp1）。业务构建 stage-1 FROM numind-ml-base:20260603 在 0.1s resolve，runtime stage 已无任何 torch/pip 层——P0 修复 + 提速双重验证。'
+  - 'H3-D1 (completed 2026-06-03): /deploy-dev server（从 worktree 跑 release.sh）端到端成功——Build 177s（Go 编译 156s 主导 + dev-only docker.io apt 62s 并行，torch 下载 0；旧链路此处还要跨境下 torch 3-5 min）/ Push 32s / 部署 numind-server-dev healthy / 旧镜像自动清理。复核：live http://49.233.219.254:9091/healthz → {"status":"ok"}；deployed 业务镜像内 torch 2.12.0+cpu + sentence-transformers/pymupdf/python-docx/numpy/fastapi/uvicorn/multipart/markitdown 全 import + libgomp1 + antiword 均在。ndf-done 原子化 merge→develop（6c428950）+ push + 删 worktree/branch，0 orphan。Prod 未动（独立 no-agent 发布线，仍用旧 inline-pip Dockerfile）——按 user scope「先 dev 验证再考虑 prod」，prod 回植留作独立任务（base 镜像 20260603 已在 TCR 备好）。GC-resilience 说明：torch 跨境重下已从业务构建路径结构性移除（runtime stage 无 pip 层，已验证）；本地缓存被 GC 淘汰后业务 FROM 改为从 TCR intranet pull base（数百 MB/秒级）而非 pytorch.org 跨境重下（分钟级）——机制确定，未强制 evict-rebuild 实测计时。'
   blockers: []
 
 - id: credit-log-task-names
