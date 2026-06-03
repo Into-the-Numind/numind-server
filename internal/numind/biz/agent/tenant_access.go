@@ -27,10 +27,12 @@ import (
 // owner / 试聊 case with zero extra queries); only the child branch reads the
 // caller record via an indexed primary-key get (no N+1).
 //
-// `users` is the narrow userByIDGetter slice of store.UserStore. When nil (unit
+// `users` is the narrow userByIDGetter subset of store.UserStore. When nil (unit
 // tests that don't wire it), only the parent fast-path is available and every
 // other caller is denied — preserving the pre-change behavior for callers that
 // never wired a user store.
+//
+// Precondition: ad != nil (the caller owns the agent_definition store lookup).
 func agentTenantAccess(ctx context.Context, users userByIDGetter, callerID uint, ad *model.AgentDefinition) error {
 	// Owning parent — always allowed, including their own inactive drafts.
 	if ad.ParentUserID == callerID {

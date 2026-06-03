@@ -27,6 +27,10 @@ func TestAgentTenantAccess(t *testing.T) {
 	const childID = uint(20)
 	const otherParentID = uint(99)
 
+	// NOTE: mockUserByIDGetter.GetByID ignores its userID argument and returns
+	// the wired user verbatim, so each case below pins the intended caller record
+	// directly (the helper's branch logic, not the lookup key, is under test).
+	//
 	// childUser is a learner whose parent is parentID.
 	childUser := &model.User{ParentUserID: uptr(parentID)}
 	childUser.ID = childID
