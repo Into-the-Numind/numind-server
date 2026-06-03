@@ -4,10 +4,10 @@ features:
   ndf_version: '3.0'
   description: 'Agent run 不扣真实积分（go-live blocker，prod-readiness §0.1 BLK-2）。根因两处：(1) 真实扣费链路从未接通——平台唯一真实扣减积分（Reserve/Reconcile 两阶段，写 credit_reservation/credit_cycle/user_booster_balance/trial_grant）的入口是 aiservice 网关 ContextBudgetCredits 中间件（context_budget.go:398 第一行 len(ContextFragments)==0 即透传短路）；agent 适配器 convertToAiserviceRequest（adapter.go:191-253）只设 Messages/Tools 从不设 ContextFragments，run 入口（runner.go/runner_runstream.go）只 NewContextWithUserID 不注入 billing operation → 每次 agent LLM 调用被透传，不 Reserve 不 Reconcile，三池余额纹丝不动；工具内 aiservice.Chat（analyze_image/annotate_image/compaction）同样缺 ContextFragments；image_gen 裸 HTTP 打 DMXAPI 绕过 aiservice。(2) 内存 BudgetTracker 的 MaxCredits/MaxTurns 维度生产恒 0——budgetgate.WrapHooks（biz.go:343）没传 WithUsageLookup → usageLookup nil → RecordUsage(0)；adapter 在 runner 用 struct 字面量构造致 usageStore nil；RecordStep 全仓库无 caller；仅 wall_time 900s 兜底。Fix：方向 A（初判）让适配器设 ContextFragments + run 入口注入 billing operation ctx 使 ContextBudgetCredits 自动 Reserve/Reconcile per LLM call（工具内调用一并接通），vs 方向 B（runner 显式包 Reserve/Reconcile）——S2 二选一并论证；并接通 BudgetTracker（WithUsageLookup + 修 usageStore + RecordStep）。扣减对象=发起 run 的 agent_run.user_id（子账户跑扣子账户自己，对齐 b2b2c-student-agent-access），非 agent ParentUserID。难点：一 run 多次 LLM 调用 per-call 扣费、detached context.Background 致 HTTP cancel 不传播退款依赖 reservation_sweeper 兜底、Reserve 预扣 Reconcile 多退少补、余额不足优雅终止。待决：image_gen 收编 aiservice、admin 试聊 ReserveAgentTest/ReconcileAgentTest 是否纳入（S1/S2）。先例：credit-log-task-names 用 aismw.WithReservationRef 穿过同一网关，S2-D4 坑——billing.WithBilling 覆盖 BillingCtx 须用专用 ctx key。'
   track: standard
-  stage: S1
-  classification_reason: 'Standard — Triage 第 5 条（支付高风险：直接扣减用户真实积分，信任边界跨 agent/aiservice 网关/billing/credit 多域）+ 第 4 条（>3 文件：adapter.go/runner.go/runner_runstream.go/biz.go/budgetgate/工具若干+测试）失败 → 不可降级。1 DB schema 变更：可能（reference_id/operation 枚举，S2 定）2 无新 API 端点 3 无新外部服务（image_gen 若纳入是收编非新集成）4 文件数 >3 5 高风险=是。任务交付说明已预判 Standard，与 triage 一致。'
-  last_updated_by: ai-s1-proposal
-  last_updated_at: '2026-06-03T11:30:00+08:00'
+  stage: S2
+  classification_reason: 'Standard — Triage 第 5 条（支付高风险：直接扣减用户真实积分，信任边界跨 agent/aiservice 网关/billing/credit 多域）+ 第 4 条（>3 文件：adapter.go/runner.go/runner_runstream.go/biz.go/budgetgate/工具若干+测试）失败 → 不可降级。1 DB schema 变更：是（M1 image pricing rule + M2 agent_run.is_test）2 无新 API 端点 3 无新外部服务（image_gen 收编非新集成）4 文件数 >3 5 高风险=是。'
+  last_updated_by: ai-s2-spec
+  last_updated_at: '2026-06-03T12:00:00+08:00'
   created_at: '2026-06-03T11:00:00+08:00'
   repos:
   - numind-server
@@ -22,7 +22,12 @@ features:
   artifacts:
     requirement: requirements/agent-mode-billing.md
     proposal: proposals/agent-mode-billing-proposal.md
+    spec: docs/superpowers/specs/2026-06-03-agent-mode-billing-design.md
   decisions:
+  - 'S2-D5 (ai 2026-06-03, FINAL 方向): 混合方案——chat-shaped(主循环+analyze/annotate/compaction)走方向 A(adapter 设 ContextFragments + runner 注入 billing op/ref/pool ctx → ContextBudgetCredits 自动 per-call Reserve/Reconcile, 复用流式 cancel 退款 + sweeper); image_gen(非chat)走显式 Reserve/Reconcile + 收编 aiservice.ImageGen + 新 pricing rule。否决纯A(覆盖不到非chat image)/纯B(重复实现退款/cancel/幂等高出错面)。'
+  - 'S2-D6 (ai 2026-06-03): pool-selector 落 credit biz 层(非 shared 中间件)——新 ctx key WithBillingPool/BillingPoolFromCtx(专用 key 防 billing.WithBilling 覆盖); doReserveBudget 读 → BudgetReservationInput.Pool; ReserveBudget/CheckAndEstimateBudget/Reconcile/Refund 内部按 Pool / row.Operation="agent_test" 哨兵分支(admin_test vs 三池)。默认无 pool=三池 ⇒ SOP/chatbot/salesrag 零行为变更(安全网)。admin试聊由 pool 分支统一接通(复用既有 adminConsumer/ReserveAgentTest 逻辑, 20260521 migration 已就位 source_type admin_test)。'
+  - 'S2-D7 (ai 2026-06-03): BudgetTracker 接通——进程级 CallUsageStore(callID→Usage,读后删/TTL 防 §3.7 无GC增长) 注入 adapter(修 runner.go:828/runner_runstream.go:401 nil usageStore)+ budgetgate.WrapHooks(WithUsageLookup)(修 biz.go:343); ReAct 每步调 RecordStep ⇒ MaxTurns; LookupUsage 拿真实 token ⇒ MaxCredits。BudgetTracker=per-run 内存安全帽, 与三池真实扣减互补。'
+  - 'S2-D8 (ai 2026-06-03, migrations): M1 pricing_rule image_gen/dmxapi/gemini-2.5-flash-image flat per-call(价格待运营定,S4 占位+注释); M2(推荐) agent_run.is_test BOOL default false(审计); source_type admin_test 已存在(20260521)无需新 migration。'
   - 'S0-D1 (ai 2026-06-03): 扣减对象=发起 run 的 agent_run.user_id（与并行 feature b2b2c-student-agent-access 对齐：「run 仍以子账户 userID 发起，扣子账户积分池」），绝不扣 agent.ParentUserID。'
   - 'S0-D2 (ai 2026-06-03, 文件冲突预警): 本 feature 与 b2b2c-student-agent-access 同时改 runner.go/runner_runstream.go/biz.go/student_run_lifecycle.go — S4 合并需串行协调（Tier 4 if 同时活跃），两 feature 各自 worktree 独立 merge 到 develop，冲突在 merge 解。'
   - 'S1-D3 (user 2026-06-03, 范围确认): image_gen 必须纳入（「所有调用大模型服务的都要计费」）→ 收编 aiservice（新 ImageGen 入口满足唯一入口硬规则）+ pricing rule + 计费；admin 试聊纳入（ReserveAgentTest/admin_test 池接通）。'
