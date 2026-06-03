@@ -1,5 +1,29 @@
 schema_version: '2.0'
 features:
+- id: b2b2c-student-agent-access
+  ndf_version: '3.0'
+  description: 'B2B2C 子账户无法使用父账户配置的 agent（go-live blocker，prod-readiness §0.1 附加红线 + §5.1 USR-CRIT）。现状：agent run 路径 3 个访问校验点全部要求 ad.ParentUserID==调用者userID — resolveDefinition (student_run_lifecycle.go:683, estimate/create/stream 入口)、agentRunner.Run (runner.go:470, 非流式)、agentRunner.RunStream (runner_runstream.go:134, 生产默认流式) — 子账户 id≠agent拥有者(父账户)id → 必然 ErrSkillNotFound。list 路径 AvailableForStudent (biz/skill/student_query.go:16) 已修复（含 parent/child/inactive 测试），子账户能看到但不能跑。Fix: 把访问规则从「调用者必须是 agent 的 ParentUserID 本人」改为「调用者属于该 agent 的租户」——caller 能用 ad ⟺ ad.ParentUserID==caller.id (父账户本人) OR ad.ParentUserID==caller.parent_user_id (该父账户的子账户)。R9 附加：子账户禁止跑 is_active=false 的 agent（父账户本人不变，保留试聊草稿）。共享 helper agentTenantAccess(ctx,userStore,callerID,ad) 三处复用。务必保持 run/session/feedback 归属严格 per-userID（只放开 agent 定义访问，绝不放开别人的 run/session）。不跨租户。计费：run 仍以子账户 userID 发起（不改），扣子账户积分池。'
+  track: standard
+  stage: S0
+  classification_reason: 'Standard — Triage 第 4 条（>3 文件：3 校验点 + biz.go 布线 + 共享 helper + 测试）+ 第 5 条（权限/访问控制高风险业务逻辑）均失败 → 不可降级 Hotfix。1 无 DB schema 变更 2 无新 API 端点 3 无新外部服务 4 影响文件数 >3 5 高风险=是（访问控制）。User 2026-06-03 经 AskUserQuestion 确认 Standard。'
+  last_updated_by: ai-s0-start
+  last_updated_at: '2026-06-03T10:26:38+08:00'
+  created_at: '2026-06-03T10:26:38+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: feature/b2b2c-student-agent-access
+  worktrees:
+    numind-server: /private/tmp/wt-b2b2c-student-agent-access-numind-server
+  progress:
+    total_tasks: 0
+    completed_tasks: 0
+    reviewed_tasks: 0
+  artifacts:
+    requirement: requirements/b2b2c-student-agent-access.md
+  decisions: []
+  blockers: []
+
 - id: remove-permission-backdoor
   ndf_version: '3.0'
   description: 'Security backdoor removal: internal/numind/biz/permission/gate.go:106-121 的 PermissionGate.Check 含硬编码生产后门（commit 14754a39 "feat(permission): force release all permissions globally"）。仅当 flag.Lookup("test.v")!=nil（即 go test 下）才跑真实 validator pipeline (g.pipeline.Check)；dev/prod 一律无条件返回 BehaviorAllow + DecisionReasonOther + ValidatorID="ForceAllowAllGate"。后果：biz.go:313-327 wire 的 7 个 validator（PlatformHardRule、SandboxOverride、TenantAdminRule L2 租户黑名单、WorkingDir、ToolFlag per-agent 工具开关、UserSessionRule、AutoModeLLMValidator）在生产全是死代码，每个 agent tool call 被无条件放行。现有 gate_test.go 6 个测试因走 test.v 分支跑 pipeline 而全绿，恰好掩盖 prod 行为。Fix: 删除 test.v 分支让 pipeline 在所有环境运行；保留全局 override 但改由显式 config flag agent.permission.enforce 控制（默认 true=enforce；viper.SetDefault 兜底使 prod 无需改 config_prod.yaml；enforce=false 时才走 force-allow override 且 loud-warn 日志）。'
