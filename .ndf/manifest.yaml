@@ -17,8 +17,8 @@ features:
     numind-server: /private/tmp/wt-agent-mode-billing-numind-server
   progress:
     total_tasks: 13
-    completed_tasks: 7
-    reviewed_tasks: 7
+    completed_tasks: 9
+    reviewed_tasks: 9
   artifacts:
     requirement: requirements/agent-mode-billing.md
     proposal: proposals/agent-mode-billing-proposal.md
