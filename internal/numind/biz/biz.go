@@ -300,6 +300,9 @@ func NewBiz(ds store.IStore) *biz {
 		platformFactory = agent.NewPlatformToolFactory(b.salesRAGService, ds)
 	}
 
+	// agent-mode-billing T9: wire creditService so image_gen Reserves/Reconciles real credits.
+	agent.SetFactoryCreditService(platformFactory, creditSvc)
+
 	if err := agentToolRegistry.RegisterFactory(platformFactory); err != nil {
 		log.Warnw("AgentToolRegistry.RegisterFactory failed", "error", err)
 	}

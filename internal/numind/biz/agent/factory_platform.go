@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"numind-server/internal/numind/biz/agent/skills"
+	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/biz/memory"
 	"numind-server/internal/numind/biz/salesrag"
 	"numind-server/internal/numind/biz/sandbox"
@@ -13,8 +14,18 @@ import (
 type platformToolFactory struct {
 	rag           salesrag.SalesRAGBiz
 	ds            store.IStore
-	skillRegistry skills.Registry   // disk platform skills; nil = load_skill serves DB-bound skills only
-	skillPool     sandbox.SkillPool // retained for forward compat (run_python uses sandbox.Pool, not SkillPool; load_skill does not need sandbox)
+	skillRegistry skills.Registry       // disk platform skills; nil = load_skill serves DB-bound skills only
+	skillPool     sandbox.SkillPool     // retained for forward compat (run_python uses sandbox.Pool, not SkillPool; load_skill does not need sandbox)
+	creditService credit.ICreditService // agent-mode-billing T9: image_gen explicit Reserve/Reconcile; nil = no billing (tests)
+}
+
+// SetFactoryCreditService injects the credit service into a platform tool factory
+// (agent-mode-billing T9) so image_gen can Reserve/Reconcile real credits. No-op
+// for non-platform factories. Call after construction, before LoadAll.
+func SetFactoryCreditService(f ToolFactory, cs credit.ICreditService) {
+	if pf, ok := f.(*platformToolFactory); ok {
+		pf.creditService = cs
+	}
 }
 
 // NewPlatformToolFactory returns a ToolFactory that loads all platform built-in tools.
@@ -100,7 +111,7 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		&kbSearchTool{rag: f.rag},
 		&learnerDataQueryTool{users: usersGetter},
 		&documentGenerateTool{},
-		&imageGenTool{ds: f.ds},
+		&imageGenTool{ds: f.ds, creditService: f.creditService},
 		&bashExecTool{},
 		&getCurrentDateTool{},
 		NewWebSearchToolFromConfig(),
