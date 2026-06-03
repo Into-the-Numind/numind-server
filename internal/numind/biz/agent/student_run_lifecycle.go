@@ -318,6 +318,7 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 		UseCompactV2: true,
 		IsPinned:     isPinned,
 		SessionName:  sessionName,
+		IsTest:       req.IsTest, // agent-mode-billing T10: persist 试聊审计标记
 	}
 	if err := s.runStore.Create(ctx, preRun); err != nil {
 		return nil, fmt.Errorf("StudentRunService.Create pre-create row: %w", err)
@@ -486,6 +487,7 @@ func (s *StudentRunService) AcquireStreamLock(ctx context.Context, userID uint, 
 		Messages:          datatypes.JSON([]byte("[]")),
 		StartedAt:         startedAt,
 		UseCompactV2:      true, // always V2; see comment above
+		IsTest:            req.IsTest, // agent-mode-billing T10: persist 试聊审计标记
 		IsPinned:          isPinned,
 		SessionName:       sessionName,
 		// Note: ToolFlags from ad are NOT stored on agent_run — they are resolved

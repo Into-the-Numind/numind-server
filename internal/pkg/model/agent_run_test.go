@@ -52,7 +52,8 @@ func newAgentRunTestDB(t *testing.T) *gorm.DB {
 			context_window_limit_v2 INTEGER,
 			is_pinned               INTEGER NOT NULL DEFAULT 0,
 			session_name            TEXT    NOT NULL DEFAULT '',
-			is_deleted              INTEGER NOT NULL DEFAULT 0
+			is_deleted              INTEGER NOT NULL DEFAULT 0,
+			is_test                 INTEGER NOT NULL DEFAULT 0
 		)`).Error)
 
 	sqlDB, err := db.DB()
@@ -77,14 +78,14 @@ func TestAgentRun_TableName_returnsAgentRun(t *testing.T) {
 // claim verifiable in CI — if a future change adds such a field without the
 // UpdateColumn fixup pattern, the test will fail when extended.
 func TestAgentRun_NoDefaultTrueBoolFields(t *testing.T) {
-	// AgentRun fields (per #9 spec audit):
-	// - ID uint64 / UserID uint / SessionID string / Status string (default:'running' — not bool)
-	// - StateReason string / TerminalMetadata datatypes.JSON / Messages datatypes.JSON / ReservationID *uint64
-	// - StartedAt time.Time / EndedAt *time.Time
-	// - CompactState datatypes.JSON / CompactSummary string (#9 — no bool)
-	// - CreatedAt time.Time / UpdatedAt time.Time
-	// No bool field exists → no `default:true` gotcha (database.md §6) risk.
-	t.Log("AgentRun audit: zero bool fields, zero default:true gotcha risk")
+	// AgentRun bool fields — ALL use `default:false` (the zero value), so none
+	// trigger the database.md §6 `default:true` Create gotcha:
+	//   - UseCompactV2 / IsPinned / IsDeleted / IsTest (agent-mode-billing T10)
+	// A `default:false` bool persists `false` via DB-DEFAULT (Create omits zero)
+	// and `true` explicitly (Create includes non-zero) — both correct, no
+	// UpdateColumn fixup needed. If a future change adds a `default:true` bool,
+	// this audit must add the fixup pattern.
+	t.Log("AgentRun audit: all bool fields default:false → no default:true gotcha risk")
 }
 
 func TestAgentRun_TerminalMetadata_JSONRoundtrip(t *testing.T) {
@@ -226,4 +227,29 @@ func TestAgentRun_AgentDefinitionID_DefaultZero(t *testing.T) {
 	require.NoError(t, db.First(&gotWithID, runWithID.ID).Error)
 	assert.Equal(t, uint64(42), gotWithID.AgentDefinitionID,
 		"AgentDefinitionID=42 should persist and round-trip correctly")
+}
+
+// T10 (agent-mode-billing): is_test persists (Builder 试聊 audit marker).
+func TestAgentRun_IsTestPersists(t *testing.T) {
+	db := newAgentRunTestDB(t)
+	row := &AgentRun{
+		UserID:    7,
+		SessionID: "s1",
+		Status:    "running",
+		Messages:  datatypes.JSON([]byte("[]")),
+		StartedAt: time.Now(),
+		IsTest:    true,
+	}
+	require.NoError(t, db.Create(row).Error)
+
+	var got AgentRun
+	require.NoError(t, db.First(&got, row.ID).Error)
+	assert.True(t, got.IsTest, "is_test=true must persist (admin_test audit marker)")
+
+	// Default false for a normal run.
+	normal := &AgentRun{UserID: 8, Status: "running", Messages: datatypes.JSON([]byte("[]")), StartedAt: time.Now()}
+	require.NoError(t, db.Create(normal).Error)
+	var got2 AgentRun
+	require.NoError(t, db.First(&got2, normal.ID).Error)
+	assert.False(t, got2.IsTest, "is_test default must be false")
 }
