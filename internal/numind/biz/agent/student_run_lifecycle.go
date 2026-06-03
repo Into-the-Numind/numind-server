@@ -33,6 +33,7 @@ type StudentRunService struct {
 	narrationBuf    *NarrationBuffer
 	attachmentStore store.IAgentAttachmentStore // task 1.3: capability-aware routing
 	streamLock      *stream.SubscriptionLock    // T07: SSE single-subscriber guard
+	userStore       userByIDGetter              // b2b2c-student-agent-access: wired via WithUserStore; nil → parent-only access
 }
 
 // NewStudentRunService constructs a StudentRunService.
@@ -66,6 +67,16 @@ func NewStudentRunService(
 // Call this at biz.go wiring time alongside WithNarrationProvider.
 func (s *StudentRunService) WithAttachmentStore(attStore store.IAgentAttachmentStore) *StudentRunService {
 	s.attachmentStore = attStore
+	return s
+}
+
+// WithUserStore wires the user store so resolveDefinition can resolve a caller's
+// parent_user_id for B2B2C access (a child running a parent-configured agent).
+// store.UserStore satisfies the narrow userByIDGetter. When nil, access falls
+// back to the parent-only fast-path (pre-change behavior). Call at biz.go wiring
+// time alongside WithAttachmentStore.
+func (s *StudentRunService) WithUserStore(userStore store.UserStore) *StudentRunService {
+	s.userStore = userStore
 	return s
 }
 
@@ -660,14 +671,16 @@ func (s *StudentRunService) ExtendBudget(ctx context.Context, userID uint, runID
 // ---------------------------------------------------------------------------
 
 // resolveDefinition looks up the agent_definition by ID and validates that
-// userID has access to it.
+// userID has access to it under the B2B2C tenant model.
 //
-// Access rule: the learner's parent_user_id must match ad.ParentUserID.
-// For simplicity in v1, we check that the run's user is directly the parent
-// (same as runner.go line 262). Sub-user access validation would require
-// reading the user record; deferred to a future auth middleware pass.
+// Access rule (agentTenantAccess): the caller may use the agent iff it owns it
+// (caller is the agent's parent account) OR it is a child/learner of the owning
+// parent. Children may run active agents only (R9); the owning parent retains
+// access to their own inactive drafts. Cross-tenant / unknown callers get
+// ErrSkillNotFound so existence is never revealed.
 //
-// Returns ErrSkillNotFound (404) for missing or cross-tenant definitions.
+// Returns ErrSkillNotFound (404) for missing, cross-tenant, or de-listed (for a
+// child) definitions.
 func (s *StudentRunService) resolveDefinition(ctx context.Context, userID uint, agentDefID uint64) (*model.AgentDefinition, error) {
 	if s.skillStore == nil {
 		return nil, fmt.Errorf("StudentRunService: skillStore not configured")
@@ -679,9 +692,8 @@ func (s *StudentRunService) resolveDefinition(ctx context.Context, userID uint, 
 		}
 		return nil, fmt.Errorf("StudentRunService.resolveDefinition: %w", err)
 	}
-	// Expose existence only to the owning parent (same policy as runner.go).
-	if ad.ParentUserID != userID {
-		return nil, errno.ErrSkillNotFound
+	if err := agentTenantAccess(ctx, s.userStore, userID, ad); err != nil {
+		return nil, err
 	}
 	return ad, nil
 }

@@ -239,6 +239,74 @@ func TestStudentRunService_Estimate_WrongOwner(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// B2B2C tenant-access tests — gate #1 (resolveDefinition via Estimate)
+// ---------------------------------------------------------------------------
+
+// childRec builds a learner User whose parent is parentID.
+func childRec(childID, parentID uint) *model.User {
+	u := &model.User{ParentUserID: &parentID}
+	u.ID = childID
+	return u
+}
+
+// TestStudentRunService_Estimate_ChildOfParent_Allowed is the gate #1 form of
+// the core fix: a child account may run its parent's active agent.
+func TestStudentRunService_Estimate_ChildOfParent_Allowed(t *testing.T) {
+	skillStore := newLifecycleSkillStore()
+	const parentID, childID = uint(10), uint(20)
+	adID := uint64(3)
+	skillStore.defs[adID] = &model.AgentDefinition{ID: adID, ParentUserID: parentID, IsActive: true}
+
+	svc := NewStudentRunService(nil, nil, skillStore, nil, nil, nil)
+	svc.userStore = &mockUserByIDGetter{user: childRec(childID, parentID)}
+
+	resp, err := svc.Estimate(context.Background(), childID, EstimateRunRequest{
+		AgentDefinitionID: adID,
+		Message:           "Hello from a learner",
+	})
+	if err != nil {
+		t.Fatalf("expected child to access parent agent, got error: %v", err)
+	}
+	if resp == nil || resp.Min <= 0 {
+		t.Fatalf("expected a valid estimate, got %+v", resp)
+	}
+}
+
+// TestStudentRunService_Estimate_ChildTenantDenials covers R9 (inactive) and
+// cross-tenant denial through gate #1, plus the unwired-store contrast.
+func TestStudentRunService_Estimate_ChildTenantDenials(t *testing.T) {
+	const parentID, childID, otherParent = uint(10), uint(20), uint(99)
+	adID := uint64(4)
+
+	cases := []struct {
+		name      string
+		adParent  uint
+		adActive  bool
+		userStore userByIDGetter
+	}{
+		{"child + inactive agent (R9)", parentID, false, &mockUserByIDGetter{user: childRec(childID, parentID)}},
+		{"child + other tenant", otherParent, true, &mockUserByIDGetter{user: childRec(childID, parentID)}},
+		{"child + active but userStore unwired", parentID, true, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			skillStore := newLifecycleSkillStore()
+			skillStore.defs[adID] = &model.AgentDefinition{ID: adID, ParentUserID: tc.adParent, IsActive: tc.adActive}
+			svc := NewStudentRunService(nil, nil, skillStore, nil, nil, nil)
+			svc.userStore = tc.userStore
+
+			_, err := svc.Estimate(context.Background(), childID, EstimateRunRequest{
+				AgentDefinitionID: adID,
+				Message:           "x",
+			})
+			if !errors.Is(err, errno.ErrSkillNotFound) {
+				t.Fatalf("expected ErrSkillNotFound, got %v", err)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Cancel tests
 // ---------------------------------------------------------------------------
 
