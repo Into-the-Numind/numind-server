@@ -15,9 +15,8 @@ Reviewer 永远 Tier 1 并行（每 task 后双 Sonnet reviewer）。
 ```
 T1(enums) ─┐
 T2(pool ctx+fields) ─┬─→ T3(credit pool 分支) ─┐
-T4(adapter fragments, 主循环) ──────────────────┤
-T4b(vision/compaction fragments) ───────────────┤
-T5(RunRequest.IsTest + runner ctx 注入) ←T2 ───┼─→ T12(集成/回归)
+T4(中间件 bill-only 模式) ←T2 ──────────────────┤
+T5(RunRequest.IsTest + runner ctx 注入+bill-only) ←T2,T4 ─┼─→ T12(集成/回归)
 T6(BudgetTracker 接通) ─────────────────────────┤
 T7(controller IsTest 透传, 仅 RunRequest) ←T5 ──┤
 T8(aiservice.ImageGen 收编) ─┐                  │
@@ -27,10 +26,10 @@ T11(cancelable ctx) ←T5 ──────────────────
 T13(S5 验证策略) ← 全部
 ```
 
-建议串行顺序：T1 → T2 → T3 → T4 → T4b → T5 → T7 → T6 → T10 → T8 → T9 → T11 → T12 → T13。
-**总 task 数：14**（T1–T13 + T4b）。
+建议串行顺序：T1 → T2 → T3 → T4 → T5 → T7 → T6 → T10 → T8 → T9 → T11 → T12 → T13。
+**总 task 数：13**（T1–T13；S4 设计修正后 T4=bill-only 中间件、T4b 取消）。
 
-> **S3 独立 reviewer（Sonnet）VERDICT=PASS_WITH_FIXES**，已修 5 项：P1（T9 缺 factory/biz.go 接线 creditService）+ P1（vision/compaction 自建 ChatRequest 无 fragments → 加 T4b）+ P2（T6 RunnerOption 显式）+ P2（T7/T10 顺序：T7 仅 RunRequest、T10 加 model+populate）+ P2（T3 加 Refund(admin_test) 验收）。
+> **S3 独立 reviewer（Sonnet）VERDICT=PASS_WITH_FIXES**，已修 5 项。**S4 设计修正（用户确认）**：方向 A 的「设 ContextFragments」破 ReAct tool 结构 → 改 bill-only 网关模式（spec §3.0）；T4 重定义为中间件 bill-only，T4b 取消。
 
 ---
 
@@ -58,22 +57,22 @@ T13(S5 验证策略) ← 全部
 
 ## T4 — 适配器设 ContextFragments（解短路关键）
 - **描述**：`convertToAiserviceRequest` 从 `[]*schema.Message` 构造 `ContextFragments`（system→NewImmutableSystemFragment；最后 user→NewCriticalUserFragment；其余→NewDurable*Fragment），照搬 `buildSOPGatewayFragments` 模式；保留 Messages（fallback）+ Tools。
-- **涉及文件**：`biz/agent/adapter.go`、`biz/agent/adapter_test.go`。
-- **验收**：测试断言转换后 `len(req.ContextFragments)>0`、各 role 映射正确、最后一条 user 为 Critical、Messages 仍在。`go test ./internal/numind/biz/agent/...` 绿。
-- **TDD**：RED 断言 fragments 非空（当前为空 → FAIL）→ GREEN 构造。
-- **注意（S3 reviewer P1）**：T4 只覆盖 ReAct **主循环**（经 adapter.Generate）。vision 工具 + compaction **自建 ChatRequest 不走 adapter** → 由 T4b 覆盖。
+> **⚠ T4/T4b 重做（S4 设计修正，见 spec §3.0）**：原「适配器/工具设 ContextFragments」会让中间件渲染替换 Messages
+> → 丢 ReAct tool 结构 → HTTP 400。用户确认改 **bill-only 网关模式**。T4 重定义为中间件 bill-only 模式；**T4b 取消**
+> （bill-only 标志经 ctx 继承自动覆盖 vision/compaction，无需各自建 fragments）。total_tasks 14→13。
 
-## T4b — vision 工具 + compaction 设 ContextFragments（S3 reviewer P1 补）
-- **描述**：`tool_analyze_image.go`(~:218)、`tool_annotate_image.go`(~:180)、`adapter_compactv2.go::summarizeEinoViaLLM` 三处自建 `aiservice.ChatRequest{Messages:...}` 当前**无 ContextFragments** → 被 `context_budget.go:398` 短路不计费。各自补 fragments（system→NewImmutableSystemFragment；user/待摘要内容→NewCriticalUserFragment），保留 Messages。
-- **涉及文件**：`biz/agent/tool_analyze_image.go`、`biz/agent/tool_annotate_image.go`、`biz/agent/adapter_compactv2.go`、对应 `_test.go`。
-- **验收**：三处 ChatRequest 均 `len(ContextFragments)>0`；测试断言（mock aiservice 捕获 req）。`go test ./internal/numind/biz/agent/...` 绿。**满足用户硬要求「所有调用大模型服务的都要计费」**——这三处的 billing ctx 已由 T5 经 run ctx 继承，加 fragments 后即过 gate 真实扣费。
-- **TDD**：RED 三处 fragments 为空断言 FAIL → GREEN 补 fragments。依赖 T4（fragment helper 用法一致）。
+## T4 — 中间件 bill-only 网关模式（取代原 adapter/T4b fragments）
+- **描述**：`ContextBudgetCredits` 加 ctx 标志 `WithGatewayBillingOnly`/`gatewayBillingOnlyFromCtx`（middleware）。bill-only 时：在 Step1 短路之前判定 → **跳过 Prepare（不压缩/不渲染/不替换 Messages）** → 从 `chatReq.Messages` rune 数估算 prompt token → 合成 `PrepareResult{Messages:nil, Policy{ChargeUser:true, ReservedOutputTokens:route.MaxOut/2}, EstimatedAfter:估算, NormalizedOp:operation}` → 复用既有 Step4-7（Messages=nil ⇒ 保留 agent 原 messages；Plan 空 ⇒ "ok"）→ Reserve/Reconcile（含 T3 pool 路由）。估算函数 `billOnlyPromptEstimate(messages)`（Σrune/2，保守，Reconcile 校正）。
+- **涉及文件**：`internal/pkg/aiservice/middleware/context_budget.go`、`internal/pkg/aiservice/middleware/billing_pool.go`（加 flag helper）、`*_test.go`。
+- **验收**：测试：bill-only ctx + 带 tool_calls 的 messages → 中间件**不改 Messages**（tool 结构保留）+ Reserve 被调用（mock CreditService 捕获）+ Reconcile 用实际 token；非 bill-only 路径走 Prepare 不变（回归）。`go test ./internal/pkg/aiservice/middleware/ -race` 绿。
+- **TDD**：RED bill-only 下 Messages 被改/未 Reserve → GREEN bill-only 分支。**默认无标志 = Prepare 路径逐字不变（SOP/chatbot 回归）**。
 
-## T5 — RunRequest.IsTest + runner billing ctx 注入
-- **描述**：`RunRequest` 加 `IsTest bool`；`runner.go::Run`（~:396/398，post-b2b2c）与 `runner_runstream.go::RunStream`（~:80）在 `NewContextWithUserID` 后注入 `billing.WithBillingMeta(ctx, req.UserID, "agent_run", Metadata("run_id",...))` + `aismw.WithReservationRef(ctx,"agent_run:<runID>")` + `aismw.WithBillingPool(ctx, poolFromIsTest(req.IsTest))`。
+## T5 — RunRequest.IsTest + runner billing ctx 注入（含 bill-only 标志）
+- **描述**：`RunRequest` 加 `IsTest bool`；`runner.go::Run`（~:396/398，post-b2b2c）与 `runner_runstream.go::RunStream`（~:80）在 `NewContextWithUserID` 后注入 `billing.WithBillingMeta(ctx, req.UserID, "agent_run", Metadata("run_id",...))` + `aismw.WithReservationRef(ctx,"agent_run:<runID>")` + `aismw.WithBillingPool(ctx, poolFromIsTest(req.IsTest))` + **`aismw.WithGatewayBillingOnly(ctx)`**（关键：使 agent 走 bill-only）。标志经 run ctx → attemptCtx → 工具 ctx 继承 ⇒ 主循环 + vision + compaction 统一计费。
 - **涉及文件**：`biz/agent/runner.go`、`biz/agent/runner_runstream.go`、`biz/agent/*_test.go`。
-- **验收**：测试用 mock aiservice（捕获 ctx）断言一次 run 内的 Chat 调用 ctx 携带 operation=agent_run + ref=agent_run:<id> + pool（IsTest 时 admin_test）。`go test` 绿。**与 b2b2c 改动同函数 → merge 后核对注入点未被冲突破坏**。
-- **TDD**：RED ctx 缺 billing 字段断言 FAIL → GREEN 注入。
+- **验收**：测试用 mock aiservice（捕获 ctx）断言一次 run 内的 Chat 调用 ctx 携带 operation=agent_run + ref=agent_run:<id> + pool（IsTest 时 admin_test）+ bill-only 标志。`go test` 绿。**与 b2b2c 改动同函数 → merge 后核对注入点未被冲突破坏**。
+- **TDD**：RED ctx 缺 billing 字段/bill-only 标志断言 FAIL → GREEN 注入。
+- **验证子项（原 T-verify）**：S5 须验工具内 aiservice.Chat（vision/compaction）的 ctx 确实派生自 billing+bill-only ctx（否则漏计费）。
 
 ## T6 — BudgetTracker 接通（MaxCredits/MaxTurns）
 - **描述**：新增进程级 `CallUsageStore`（callID→Usage，读后删/TTL）。**接线（S3 reviewer P2 显式化）**：`biz.go` 构造**一份** CallUsageStore 实例，同时传给 (1) `budgetgate.WrapHooks(..., WithUsageLookup(store))`（biz.go:343）和 (2) `agent.NewAgentRunner(..., WithCallUsageStore(store))`——需**新增 `WithCallUsageStore(CallUsageStore) RunnerOption` + `agentRunner.callUsageStore` 字段**；`runner.go`（~:849 adapter 构造）与 `runner_runstream.go`（~:401）改用 `r.callUsageStore` 替代当前 nil `usageStore`。ReAct 主循环每步调 `budgetTracker.RecordStep(ctx, runID)`。callID 全局唯一 ⇒ 进程级单例 store 跨 run 不串；PostToolCall 读后删 key ⇒ 有界。
