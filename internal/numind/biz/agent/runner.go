@@ -63,6 +63,10 @@ type RunRequest struct {
 	// runner.Run 在 System reminders（第 5 段）中注入附件说明，提示 LLM 图片/PDF 已转为文字描述。
 	// Task 1.5: task 1.3 deferral — system prompt wiring.
 	AttachmentHasFallback bool
+	// IsTest 为 true 时表示父账户在 Builder「试聊」自己的 agent（非终端学员真实使用）。
+	// agent-mode-billing: 计费路由到 admin_test 池（credit_admin_test_grant）而非三池，
+	// 供 B2B 月末对公结算。由 student_run_lifecycle 从 CreateRunRequest.IsTest 透传。
+	IsTest bool
 }
 
 // RunResult 是 AgentRunner.Run 的输出。
@@ -454,6 +458,10 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		langfuse.WithTraceTags("agent-runtime-skeleton"),
 	)
 	ctx = langfuse.WithTrace(ctx, traceID)
+
+	// 2.5. agent-mode-billing: wire billing ctx (bill-only) so every LLM call
+	// under this run is Reserved/Reconciled against the initiator's credits.
+	ctx = injectAgentBillingCtx(ctx, req, run.ID)
 
 	// 3. AbortController 三层 + 注册 cancel
 	queryCtx, queryCancel := DeriveQueryCtx(ctx)

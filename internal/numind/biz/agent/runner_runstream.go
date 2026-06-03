@@ -111,6 +111,10 @@ func (r *agentRunner) RunStream(
 	)
 	ctx = langfuse.WithTrace(ctx, traceID)
 
+	// 2.5. agent-mode-billing: wire billing ctx (bill-only) so every LLM call
+	// (main loop + tool-internal) bills against the initiator's credits.
+	ctx = injectAgentBillingCtx(ctx, req, run.ID)
+
 	// 3. AbortController three-layer + register cancel.
 	queryCtx, queryCancel := DeriveQueryCtx(ctx)
 	r.registerCancel(run.ID, queryCancel)
