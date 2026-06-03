@@ -49,6 +49,11 @@ type AgentRun struct {
 	SessionName string `gorm:"column:session_name;size:255;not null;default:''" json:"session_name"`
 	// 会话删除功能
 	IsDeleted bool `gorm:"column:is_deleted;not null;default:false;index:idx_ar_deleted" json:"is_deleted"`
+	// IsTest marks a parent-account Builder 试聊 run (agent-mode-billing T10) for
+	// admin monitoring/audit. Billing routing keys off RunRequest.IsTest → the
+	// admin_test pool; this column is the persisted audit marker. default:false →
+	// GORM default:true Create gotcha does not apply (false is the zero value).
+	IsTest bool `gorm:"column:is_test;not null;default:false;index:idx_ar_is_test" json:"is_test"`
 }
 
 func (AgentRun) TableName() string { return "agent_run" }

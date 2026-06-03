@@ -85,7 +85,8 @@ func newSQTestDB(t *testing.T) *gorm.DB {
 			-- 会话管理字段
 			is_pinned                 INTEGER NOT NULL DEFAULT 0,
 			session_name              TEXT NOT NULL DEFAULT '',
-			is_deleted                INTEGER NOT NULL DEFAULT 0
+			is_deleted                INTEGER NOT NULL DEFAULT 0,
+			is_test                INTEGER NOT NULL DEFAULT 0
 		)`).Error)
 	return db
 }

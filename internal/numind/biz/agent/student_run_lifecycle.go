@@ -211,6 +211,11 @@ type CreateRunRequest struct {
 	// the UI). When non-empty, buildAgentInputForModel uses it to determine
 	// capability routing. When empty, conservative defaults apply (full fallback).
 	ModelKey string `json:"model_key,omitempty"`
+	// IsTest marks a parent-account Builder「试聊」(test-chat) run. When true,
+	// agent-mode-billing routes the run's credit charges to the admin_test pool
+	// (credit_admin_test_grant) instead of the three-pool. Propagated to
+	// RunRequest.IsTest → injectAgentBillingCtx → middleware pool selector.
+	IsTest bool `json:"is_test,omitempty"`
 }
 
 // CreateRunResponse is returned from POST /v1/agent-runs.
@@ -313,6 +318,7 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 		UseCompactV2: true,
 		IsPinned:     isPinned,
 		SessionName:  sessionName,
+		IsTest:       req.IsTest, // agent-mode-billing T10: persist 试聊审计标记
 	}
 	if err := s.runStore.Create(ctx, preRun); err != nil {
 		return nil, fmt.Errorf("StudentRunService.Create pre-create row: %w", err)
@@ -327,6 +333,7 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 		EnableMemory:          true,
 		ExistingRunID:         preRun.ID,
 		AttachmentHasFallback: hasFallbackAttachments,
+		IsTest:                req.IsTest, // admin_test pool routing (agent-mode-billing)
 	}
 
 	// Bridge narration events: Provider.Emit pushes events to an in-memory
@@ -479,7 +486,8 @@ func (s *StudentRunService) AcquireStreamLock(ctx context.Context, userID uint, 
 		Status:            "running",
 		Messages:          datatypes.JSON([]byte("[]")),
 		StartedAt:         startedAt,
-		UseCompactV2:      true, // always V2; see comment above
+		UseCompactV2:      true,       // always V2; see comment above
+		IsTest:            req.IsTest, // agent-mode-billing T10: persist 试聊审计标记
 		IsPinned:          isPinned,
 		SessionName:       sessionName,
 		// Note: ToolFlags from ad are NOT stored on agent_run — they are resolved
@@ -563,6 +571,7 @@ func (s *StudentRunService) RunStream(ctx context.Context, userID uint, req Crea
 		EnableMemory:          true,
 		ExistingRunID:         runID,
 		AttachmentHasFallback: hasFallbackAttachments,
+		IsTest:                req.IsTest, // admin_test pool routing (agent-mode-billing)
 	}
 
 	// Bridge narration events (same as Create).

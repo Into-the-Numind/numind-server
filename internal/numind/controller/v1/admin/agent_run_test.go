@@ -62,7 +62,8 @@ func newARTestDB(t *testing.T) *gorm.DB {
 			context_window_limit_v2    INTEGER,
 			is_pinned                  INTEGER NOT NULL DEFAULT 0,
 			session_name               TEXT    NOT NULL DEFAULT '',
-			is_deleted                 INTEGER NOT NULL DEFAULT 0
+			is_deleted                 INTEGER NOT NULL DEFAULT 0,
+			is_test                 INTEGER NOT NULL DEFAULT 0
 		)`).Error)
 
 	require.NoError(t, db.Exec(`
