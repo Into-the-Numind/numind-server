@@ -37,13 +37,50 @@ func (c *poolCapturingCreditService) FinalizeReservation(context.Context, uint64
 }
 func (c *poolCapturingCreditService) Refund(context.Context, uint64, string) error { return nil }
 
+// ctxCheckingCreditService records the ctx error seen by Refund — to prove the
+// settle write runs on a non-cancelled ctx (agent-mode-billing T11).
+type ctxCheckingCreditService struct {
+	poolCapturingCreditService
+	refundCalled bool
+	refundCtxErr error
+}
+
+func (c *ctxCheckingCreditService) Refund(ctx context.Context, _ uint64, _ string) error {
+	c.refundCalled = true
+	c.refundCtxErr = ctx.Err()
+	return nil
+}
+
+// T11 fix: finalizeReservationIfNeeded settles on a non-cancelled ctx so that a
+// refund triggered by a cancelled request still PERSISTS promptly (not stuck
+// until the 1h sweeper).
+func TestFinalizeReservation_RefundPersistsOnCancelledCtx(t *testing.T) {
+	cs := &ctxCheckingCreditService{}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel() // request ctx already cancelled (user/admin cancel / disconnect)
+
+	finalizeReservationIfNeeded(cancelled, Deps{CreditService: cs, Logger: &mockLogger{}},
+		FinalizeInput{ReservationID: 7, Refund: true, ErrorCode: "user_cancelled"})
+
+	if !cs.refundCalled {
+		t.Fatal("Refund should be called on cancel")
+	}
+	if cs.refundCtxErr != nil {
+		t.Errorf("Refund must run on a non-cancelled ctx, got ctx.Err()=%v", cs.refundCtxErr)
+	}
+}
+
 // T12 (agent-mode-billing): integration of T2+T3-input+T4+T5 — a bill-only agent
 // request with pool=admin_test in ctx threads the pool all the way to
 // ReserveBudget, preserves tool-structured messages, and bills PER CALL.
 func TestBillOnly_Integration_PoolThreadingAndPerCallBilling(t *testing.T) {
 	cs := &poolCapturingCreditService{}
+	// prepareResult is never consulted in bill-only mode (synthBillOnlyResult is
+	// used instead); the mock only needs to be non-nil so ContextBudget != nil
+	// avoids the passthrough short-circuit, and so Finalize is counted.
+	budgetSvc := &mockContextBudgetService{prepareResult: makePrepareResult(nil, true)}
 	deps := Deps{
-		ContextBudget: &mockContextBudgetService{prepareResult: makePrepareResult(nil, true)},
+		ContextBudget: budgetSvc,
 		CreditService: cs,
 		Logger:        &mockLogger{},
 		Clock:         fixedClock{t: time.Now()},
@@ -82,7 +119,10 @@ func TestBillOnly_Integration_PoolThreadingAndPerCallBilling(t *testing.T) {
 		t.Errorf("per-call Reserve: got %d, want 2", cs.reserveCalls)
 	}
 	if cs.finalizeCalls != 2 {
-		t.Errorf("per-call Finalize: got %d, want 2", cs.finalizeCalls)
+		t.Errorf("per-call credit Finalize: got %d, want 2", cs.finalizeCalls)
+	}
+	if got := budgetSvc.finalizeCallCount(); got != 2 {
+		t.Errorf("per-call ContextBudget.Finalize: got %d, want 2", got)
 	}
 	for i, p := range cs.pools {
 		if p != BillingPoolAdminTest {

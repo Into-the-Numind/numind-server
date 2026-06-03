@@ -52,14 +52,19 @@ func TestInjectAgentBillingCtx_StudentRun(t *testing.T) {
 	}
 }
 
-// T11 (agent-mode-billing): prompt refund-on-cancel is already provided by the
-// existing cancel registry — queryCtx (DeriveQueryCtx = WithCancel) derives FROM
-// the billing-injected ctx and is registered via registerCancel. So r.Cancel(runID)
-// → queryCancel → the billing-carrying ctx (and the in-flight LLM call ctx derived
-// from it) is Done → the aiservice middleware refunds the reservation. No separate
-// "cancelable detached ctx" is needed; the detached context.Background() parent is
-// intentional (async runs survive HTTP disconnect; explicit cancel still refunds;
-// process crash falls back to the 1h reservation sweeper).
+// T11 (agent-mode-billing): prompt refund-on-cancel. The cancel DECISION uses the
+// existing registry — queryCtx (DeriveQueryCtx = WithCancel) derives FROM the
+// billing-injected ctx and is registered via registerCancel, so r.Cancel(runID) →
+// queryCancel → the in-flight LLM call ctx is Done → the middleware takes its
+// refund path. The refund PERSISTENCE is made prompt by the companion fix in
+// finalizeReservationIfNeeded (context_budget.go), which settles on a
+// context.WithoutCancel ctx — otherwise the refund DB write would fail on the
+// cancelled ctx and fall back to the 1h sweeper. No separate "cancelable detached
+// ctx" is needed; the detached context.Background() parent is intentional (async
+// runs survive HTTP disconnect; explicit cancel refunds promptly; process crash
+// falls back to the sweeper). This test asserts the ctx-value preservation +
+// cancelability half; TestFinalizeReservation_RefundPersistsOnCancelledCtx
+// (middleware pkg) asserts the persistence half.
 func TestQueryCtx_PreservesBillingAndIsCancelable(t *testing.T) {
 	base := injectAgentBillingCtx(context.Background(), RunRequest{UserID: 7}, 42)
 	qctx, cancel := DeriveQueryCtx(base)

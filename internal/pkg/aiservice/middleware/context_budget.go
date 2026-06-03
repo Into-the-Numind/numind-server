@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/pkg/aiservice"
@@ -641,6 +642,16 @@ func finalizeReservationIfNeeded(ctx context.Context, deps Deps, fi FinalizeInpu
 	if fi.ReservationID == 0 || deps.CreditService == nil {
 		return
 	}
+	// Settle (Refund/Reconcile) on a non-cancelled ctx: this path runs precisely
+	// when the request ctx may already be cancelled (user/admin cancel, client
+	// disconnect). Using the cancelled ctx would make the settle DB write fail
+	// with context.Canceled, leaving the reservation stuck in 'reserved' until
+	// the 1h sweeper. context.WithoutCancel keeps values (trace, etc.) but drops
+	// cancellation/deadline so the refund/reconcile persists PROMPTLY. A short
+	// timeout guards against a hung DB. (agent-mode-billing T11.)
+	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	ctx = settleCtx
 	if fi.Refund {
 		reason := fi.ErrorCode
 		if reason == "" {
