@@ -30,9 +30,9 @@ features:
   ndf_version: '3.0'
   description: 'B2B2C 子账户无法使用父账户配置的 agent（go-live blocker，prod-readiness §0.1 附加红线 + §5.1 USR-CRIT）。现状：agent run 路径 3 个访问校验点全部要求 ad.ParentUserID==调用者userID — resolveDefinition (student_run_lifecycle.go:683, estimate/create/stream 入口)、agentRunner.Run (runner.go:470, 非流式)、agentRunner.RunStream (runner_runstream.go:134, 生产默认流式) — 子账户 id≠agent拥有者(父账户)id → 必然 ErrSkillNotFound。list 路径 AvailableForStudent (biz/skill/student_query.go:16) 已修复（含 parent/child/inactive 测试），子账户能看到但不能跑。Fix: 把访问规则从「调用者必须是 agent 的 ParentUserID 本人」改为「调用者属于该 agent 的租户」——caller 能用 ad ⟺ ad.ParentUserID==caller.id (父账户本人) OR ad.ParentUserID==caller.parent_user_id (该父账户的子账户)。R9 附加：子账户禁止跑 is_active=false 的 agent（父账户本人不变，保留试聊草稿）。共享 helper agentTenantAccess(ctx,userStore,callerID,ad) 三处复用。务必保持 run/session/feedback 归属严格 per-userID（只放开 agent 定义访问，绝不放开别人的 run/session）。不跨租户。计费：run 仍以子账户 userID 发起（不改），扣子账户积分池。'
   track: standard
-  stage: S0
-  classification_reason: 'Standard — Triage 第 4 条（>3 文件：3 校验点 + biz.go 布线 + 共享 helper + 测试）+ 第 5 条（权限/访问控制高风险业务逻辑）均失败 → 不可降级 Hotfix。1 无 DB schema 变更 2 无新 API 端点 3 无新外部服务 4 影响文件数 >3 5 高风险=是（访问控制）。User 2026-06-03 经 AskUserQuestion 确认 Standard。'
-  last_updated_by: ai-s0-start
+  stage: S2
+  classification_reason: 'Standard（精简：S1+S2 合并，User 2026-06-03 选「精简 Standard」——需求与设计已由 brief 明确）— Triage 第 4 条（>3 文件：3 校验点 + biz.go 布线 + 共享 helper + 测试）+ 第 5 条（权限/访问控制高风险业务逻辑）均失败 → 不可降级 Hotfix。1 无 DB schema 变更 2 无新 API 端点 3 无新外部服务 4 影响文件数 >3 5 高风险=是（访问控制）。User 2026-06-03 经 AskUserQuestion 确认 Standard。'
+  last_updated_by: ai-s2-design
   last_updated_at: '2026-06-03T10:26:38+08:00'
   created_at: '2026-06-03T10:26:38+08:00'
   repos:
@@ -47,7 +47,15 @@ features:
     reviewed_tasks: 0
   artifacts:
     requirement: requirements/b2b2c-student-agent-access.md
-  decisions: []
+    spec: docs/superpowers/specs/2026-06-03-b2b2c-student-agent-access-design.md
+  decisions:
+  - 'S2-D1 (ai 2026-06-03): 访问规则 = caller 能用 ad ⟺ ad.ParentUserID==caller.id (父本人) OR ad.ParentUserID==caller.parent_user_id (子账户)；子账户额外受 R9 限 is_active=true。统一为包级 helper agentTenantAccess(ctx,userStore,callerID,ad)，三个校验点 (resolveDefinition / runner.Run / runner.RunStream) 复用，单一真相源。'
+  - 'S2-D2 (ai 2026-06-03): 性能——快路径 ad.ParentUserID==callerID 不读 user（父账户/试聊 0 额外查询），仅子账户慢路径 GetByID（主键 get，无 N+1）。'
+  - 'S2-D3 (ai 2026-06-03): 非破坏布线——agentRunner 加 WithUserStore RunnerOption；StudentRunService 加 WithUserStore 链式方法（仿 WithAttachmentStore，避免改 6 参数构造函数 + ~10 处 nil 调用点）。nil userStore 降级=仅快路径生效，旧单测全绿。'
+  - 'S2-D4 (设计审查 P1, sonnet 2026-06-03): caller.ParentUserID 是 *uint，父账户为 nil。helper 慢路径必须先判 nil 再解引用，否则父账户跑别父账户 agent 会 panic（run goroutine 用 context.Background 崩后台）。已在 spec §3.1 固化守卫写法 + 测试用例 9。'
+  - 'S2-D5 (设计审查 P2, sonnet 2026-06-03): ask_user_question Answer/resume 路径 (answer.go:95→runner.Run) 由 gate #2 覆盖，无需单独改；S5 测试矩阵补「子账户 Answer 续跑」用例 10。'
+  - 'S2-D6 (设计审查 P2, sonnet 2026-06-03): 中途下架陷阱（子账户 run waiting_for_user_choice 时父账户下架→Answer 被 R9 拒卡住，Cancel 仍可用）v1 接受并文档化；不为 Answer-resume 豁免 R9。'
+  - 'S2-D7 (设计审查确认, sonnet 2026-06-03): 隔离已验证——run 以 child userID 建（lifecycle.go:295 / runner.go:398），verifyRunOwnership 等全 per-userID 不动；下游 ad.ParentUserID（skillBinding/WithAgentDefCtx/compliance）用拥有者 id 正确。与并行 feature agent-mode-billing 同改 runner.go/runner_runstream.go/biz.go/student_run_lifecycle.go，merge 时串行解冲突（各自 worktree 独立）。'
   blockers: []
 
 - id: remove-permission-backdoor
