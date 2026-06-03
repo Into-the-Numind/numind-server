@@ -17,12 +17,13 @@ features:
     numind-server: /private/tmp/wt-agent-mode-billing-numind-server
   progress:
     total_tasks: 13
-    completed_tasks: 9
-    reviewed_tasks: 9
+    completed_tasks: 12
+    reviewed_tasks: 12
   artifacts:
     requirement: requirements/agent-mode-billing.md
     proposal: proposals/agent-mode-billing-proposal.md
     spec: docs/superpowers/specs/2026-06-03-agent-mode-billing-design.md
+    s5_strategy: .ndf/features/agent-mode-billing/s5-strategy.md
     plan: docs/superpowers/plans/2026-06-03-agent-mode-billing-plan.md
   decisions:
   - 'S3-D9 (independent sonnet reviewer 2026-06-03): plan 原子性审查 VERDICT=PASS_WITH_FIXES。已修 5: P1 T9 缺 factory_platform.go/biz.go 接线 creditService(imageGenTool 无 credit 依赖); P1 vision/compaction(tool_analyze_image:218/tool_annotate_image:180/adapter_compactv2)自建 ChatRequest 无 ContextFragments → T4 只覆盖主循环, 新增 T4b 覆盖三处(否则不计费, 违反用户硬要求); P2 T6 显式 WithCallUsageStore RunnerOption(单例 store 从 biz.go 同时给 WrapHooks+NewAgentRunner); P2 T7 仅透传 RunRequest(不碰 model 避免依赖 T10)+T10 populate preRun.IsTest; P2 T3 加 Refund(agent_test)→adminConsumer.Refund 验收(Refund:843 只懂三池 items)。DAG 无环确认; S5 充分(Rule 10 Go 持久回归)。14 task。'
