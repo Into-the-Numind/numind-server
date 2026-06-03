@@ -52,7 +52,30 @@ admin_test 池是平台级 B2B 概念。经 ctx 注入 pool hint（沿用 `WithR
 
 ## §3 详细设计
 
-### 3.1 chat-shaped 计费（方向 A）
+### 3.0 ⚠ S4 设计修正（D5-refined）：bill-only 网关模式（取代「适配器设 ContextFragments」）
+
+**S4 实测发现 S2 原方向 A 致命缺陷**：`ContextBudgetCredits` 经 `Prepare`（contextbudget/biz.go:270）**总是**把
+fragments 渲染成 messages → `chatReq.Messages = result.Messages`（context_budget.go:448），且
+`RenderContextFragments` 只产 `{Role,Text}`、**丢 tool_call_id/tool_calls/reasoning_content**、且跳过空 content 消息。
+⇒ agent ReAct 主循环（带 tool 结构）首个 tool turn 即 HTTP 400 → run 崩。中间件把**计费**与**上下文压缩**耦合，
+而 agent 自管上下文（adapter_compactv2），只需要计费。
+
+**修正（用户 2026-06-03 确认 bill-only 网关模式）**：给 `ContextBudgetCredits` 加 ctx 标志
+`WithGatewayBillingOnly`。bill-only 时中间件：**跳过 Prepare（不压缩、不渲染、不替换 Messages）**，
+直接从 `chatReq.Messages` rune 数估算 prompt token → 合成 `PrepareResult{Messages:nil, Policy.ChargeUser:true,
+EstimatedAfter:估算}` → 复用既有 Step4-7（Messages=nil ⇒ 保留 agent 原 messages；Plan 空 ⇒ metadata "ok"）→
+Reserve/Reconcile（含 pool 路由 T3）+ 流式 cancel 退款 + sweeper 全照旧。bill-only 标志在 Step1 短路之前判定
+（agent 不带 fragments 也能进计费）。
+
+**收益**：① agent 原始带 tool 结构 messages 原样发 provider（不破 ReAct）；② **无需适配器/工具建 fragments**
+（原 T4/T4b 取消）；③ 标志经 run ctx 继承 ⇒ 主循环 + vision + compaction 所有 agent aiservice.Chat **统一计费**；
+④ 估算粗（rune/2）但 Reconcile 按 provider 实际 token 校正（内层 Billing 中间件经 finalCostHolder 回传真实 cost）。
+**默认（无标志）= 既有 Prepare 压缩路径，SOP/chatbot/salesrag 逐字零变更。**
+
+> 原 §3.1（适配器设 ContextFragments）+ T4b（vision/compaction 设 fragments）**作废**，由本 bill-only 模式取代。
+> 下方 §3.1 保留作历史记录（strikethrough 语义），实际实现以 §3.0 为准。
+
+### ~~3.1 chat-shaped 计费（方向 A）~~（作废，见 §3.0）
 
 **(a) 适配器设 ContextFragments** — `biz/agent/adapter.go::convertToAiserviceRequest`
 照搬 `buildSOPGatewayFragments`（sop_fragments.go:133）模式，从 `[]*schema.Message` 构造 fragments：
