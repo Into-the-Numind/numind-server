@@ -1,5 +1,31 @@
 schema_version: '2.0'
 features:
+- id: agent-mode-billing
+  ndf_version: '3.0'
+  description: 'Agent run 不扣真实积分（go-live blocker，prod-readiness §0.1 BLK-2）。根因两处：(1) 真实扣费链路从未接通——平台唯一真实扣减积分（Reserve/Reconcile 两阶段，写 credit_reservation/credit_cycle/user_booster_balance/trial_grant）的入口是 aiservice 网关 ContextBudgetCredits 中间件（context_budget.go:398 第一行 len(ContextFragments)==0 即透传短路）；agent 适配器 convertToAiserviceRequest（adapter.go:191-253）只设 Messages/Tools 从不设 ContextFragments，run 入口（runner.go/runner_runstream.go）只 NewContextWithUserID 不注入 billing operation → 每次 agent LLM 调用被透传，不 Reserve 不 Reconcile，三池余额纹丝不动；工具内 aiservice.Chat（analyze_image/annotate_image/compaction）同样缺 ContextFragments；image_gen 裸 HTTP 打 DMXAPI 绕过 aiservice。(2) 内存 BudgetTracker 的 MaxCredits/MaxTurns 维度生产恒 0——budgetgate.WrapHooks（biz.go:343）没传 WithUsageLookup → usageLookup nil → RecordUsage(0)；adapter 在 runner 用 struct 字面量构造致 usageStore nil；RecordStep 全仓库无 caller；仅 wall_time 900s 兜底。Fix：方向 A（初判）让适配器设 ContextFragments + run 入口注入 billing operation ctx 使 ContextBudgetCredits 自动 Reserve/Reconcile per LLM call（工具内调用一并接通），vs 方向 B（runner 显式包 Reserve/Reconcile）——S2 二选一并论证；并接通 BudgetTracker（WithUsageLookup + 修 usageStore + RecordStep）。扣减对象=发起 run 的 agent_run.user_id（子账户跑扣子账户自己，对齐 b2b2c-student-agent-access），非 agent ParentUserID。难点：一 run 多次 LLM 调用 per-call 扣费、detached context.Background 致 HTTP cancel 不传播退款依赖 reservation_sweeper 兜底、Reserve 预扣 Reconcile 多退少补、余额不足优雅终止。待决：image_gen 收编 aiservice、admin 试聊 ReserveAgentTest/ReconcileAgentTest 是否纳入（S1/S2）。先例：credit-log-task-names 用 aismw.WithReservationRef 穿过同一网关，S2-D4 坑——billing.WithBilling 覆盖 BillingCtx 须用专用 ctx key。'
+  track: standard
+  stage: S0
+  classification_reason: 'Standard — Triage 第 5 条（支付高风险：直接扣减用户真实积分，信任边界跨 agent/aiservice 网关/billing/credit 多域）+ 第 4 条（>3 文件：adapter.go/runner.go/runner_runstream.go/biz.go/budgetgate/工具若干+测试）失败 → 不可降级。1 DB schema 变更：可能（reference_id/operation 枚举，S2 定）2 无新 API 端点 3 无新外部服务（image_gen 若纳入是收编非新集成）4 文件数 >3 5 高风险=是。任务交付说明已预判 Standard，与 triage 一致。'
+  last_updated_by: ai-s0-start
+  last_updated_at: '2026-06-03T11:00:00+08:00'
+  created_at: '2026-06-03T11:00:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: feature/agent-mode-billing
+  worktrees:
+    numind-server: /private/tmp/wt-agent-mode-billing-numind-server
+  progress:
+    total_tasks: 0
+    completed_tasks: 0
+    reviewed_tasks: 0
+  artifacts:
+    requirement: requirements/agent-mode-billing.md
+  decisions:
+  - 'S0-D1 (ai 2026-06-03): 扣减对象=发起 run 的 agent_run.user_id（与并行 feature b2b2c-student-agent-access 对齐：「run 仍以子账户 userID 发起，扣子账户积分池」），绝不扣 agent.ParentUserID。'
+  - 'S0-D2 (ai 2026-06-03, 文件冲突预警): 本 feature 与 b2b2c-student-agent-access 同时改 runner.go/runner_runstream.go/biz.go/student_run_lifecycle.go — S4 合并需串行协调（Tier 4 if 同时活跃），两 feature 各自 worktree 独立 merge 到 develop，冲突在 merge 解。'
+  blockers: []
+
 - id: b2b2c-student-agent-access
   ndf_version: '3.0'
   description: 'B2B2C 子账户无法使用父账户配置的 agent（go-live blocker，prod-readiness §0.1 附加红线 + §5.1 USR-CRIT）。现状：agent run 路径 3 个访问校验点全部要求 ad.ParentUserID==调用者userID — resolveDefinition (student_run_lifecycle.go:683, estimate/create/stream 入口)、agentRunner.Run (runner.go:470, 非流式)、agentRunner.RunStream (runner_runstream.go:134, 生产默认流式) — 子账户 id≠agent拥有者(父账户)id → 必然 ErrSkillNotFound。list 路径 AvailableForStudent (biz/skill/student_query.go:16) 已修复（含 parent/child/inactive 测试），子账户能看到但不能跑。Fix: 把访问规则从「调用者必须是 agent 的 ParentUserID 本人」改为「调用者属于该 agent 的租户」——caller 能用 ad ⟺ ad.ParentUserID==caller.id (父账户本人) OR ad.ParentUserID==caller.parent_user_id (该父账户的子账户)。R9 附加：子账户禁止跑 is_active=false 的 agent（父账户本人不变，保留试聊草稿）。共享 helper agentTenantAccess(ctx,userStore,callerID,ad) 三处复用。务必保持 run/session/feedback 归属严格 per-userID（只放开 agent 定义访问，绝不放开别人的 run/session）。不跨租户。计费：run 仍以子账户 userID 发起（不改），扣子账户积分池。'
