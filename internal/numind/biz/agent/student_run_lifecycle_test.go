@@ -242,15 +242,9 @@ func TestStudentRunService_Estimate_WrongOwner(t *testing.T) {
 // B2B2C tenant-access tests — gate #1 (resolveDefinition via Estimate)
 // ---------------------------------------------------------------------------
 
-// childRec builds a learner User whose parent is parentID.
-func childRec(childID, parentID uint) *model.User {
-	u := &model.User{ParentUserID: &parentID}
-	u.ID = childID
-	return u
-}
-
 // TestStudentRunService_Estimate_ChildOfParent_Allowed is the gate #1 form of
 // the core fix: a child account may run its parent's active agent.
+// (childUserRec helper lives in runner_tenant_access_test.go, same package.)
 func TestStudentRunService_Estimate_ChildOfParent_Allowed(t *testing.T) {
 	skillStore := newLifecycleSkillStore()
 	const parentID, childID = uint(10), uint(20)
@@ -258,7 +252,7 @@ func TestStudentRunService_Estimate_ChildOfParent_Allowed(t *testing.T) {
 	skillStore.defs[adID] = &model.AgentDefinition{ID: adID, ParentUserID: parentID, IsActive: true}
 
 	svc := NewStudentRunService(nil, nil, skillStore, nil, nil, nil)
-	svc.userStore = &mockUserByIDGetter{user: childRec(childID, parentID)}
+	svc.userStore = &mockUserByIDGetter{user: childUserRec(childID, parentID)}
 
 	resp, err := svc.Estimate(context.Background(), childID, EstimateRunRequest{
 		AgentDefinitionID: adID,
@@ -284,8 +278,8 @@ func TestStudentRunService_Estimate_ChildTenantDenials(t *testing.T) {
 		adActive  bool
 		userStore userByIDGetter
 	}{
-		{"child + inactive agent (R9)", parentID, false, &mockUserByIDGetter{user: childRec(childID, parentID)}},
-		{"child + other tenant", otherParent, true, &mockUserByIDGetter{user: childRec(childID, parentID)}},
+		{"child + inactive agent (R9)", parentID, false, &mockUserByIDGetter{user: childUserRec(childID, parentID)}},
+		{"child + other tenant", otherParent, true, &mockUserByIDGetter{user: childUserRec(childID, parentID)}},
 		{"child + active but userStore unwired", parentID, true, nil},
 	}
 	for _, tc := range cases {

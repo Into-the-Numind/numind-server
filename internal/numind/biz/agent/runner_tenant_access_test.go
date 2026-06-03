@@ -103,6 +103,58 @@ func TestRun_TenantAccessDenials(t *testing.T) {
 	}
 }
 
+// TestRun_ChildResume_AccessGate covers the ask_user_question Answer/resume path
+// (spec §5 case 10): answer.go re-enters runner.Run with ExistingRunID set, so
+// the gate fires again on resume. Confirms a child resumes an active parent
+// agent, and the documented mid-session de-list trap (S2-D6): R9 still denies
+// resume of a now-inactive agent (Cancel — not exercised here — remains the
+// child's escape since it skips the access gate).
+func TestRun_ChildResume_AccessGate(t *testing.T) {
+	const adID = uint64(9)
+	childUsers := func() userByIDGetter {
+		return &mockUserByIDGetter{user: childUserRec(taChildID, taParentID)}
+	}
+
+	t.Run("active parent agent → resume allowed", func(t *testing.T) {
+		ms := newMockStore()
+		run := makeStreamRun(t, ms, taChildID)
+		r := &agentRunner{
+			runStore:   ms,
+			cancels:    make(map[uint64]context.CancelFunc),
+			skillStore: gateSkillStore(adID, taParentID, true),
+			userStore:  childUsers(),
+		}
+		result, err := r.Run(context.Background(), RunRequest{
+			UserID:            taChildID,
+			AgentDefinitionID: adID,
+			ExistingRunID:     run.ID,
+			Input:             "my answer",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, TerminalCompleted, result.TerminalReason)
+	})
+
+	t.Run("de-listed mid-session → resume denied (R9 trap)", func(t *testing.T) {
+		ms := newMockStore()
+		run := makeStreamRun(t, ms, taChildID)
+		r := &agentRunner{
+			runStore:   ms,
+			cancels:    make(map[uint64]context.CancelFunc),
+			skillStore: gateSkillStore(adID, taParentID, false),
+			userStore:  childUsers(),
+		}
+		_, err := r.Run(context.Background(), RunRequest{
+			UserID:            taChildID,
+			AgentDefinitionID: adID,
+			ExistingRunID:     run.ID,
+			Input:             "my answer",
+		})
+		if !errors.Is(err, errno.ErrSkillNotFound) {
+			t.Fatalf("expected R9 denial resuming a de-listed agent, got %v", err)
+		}
+	})
+}
+
 // ---- gate #3: agentRunner.RunStream (production streaming path) ----
 
 func makeStreamRun(t *testing.T, ms *mockAgentRunStore, userID uint) *model.AgentRun {

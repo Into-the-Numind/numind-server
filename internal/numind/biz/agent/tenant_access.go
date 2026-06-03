@@ -11,6 +11,12 @@ import (
 	"numind-server/internal/pkg/model"
 )
 
+// All agent-definition access gates on the run path must call agentTenantAccess
+// (single source of truth). The three call sites are:
+//   - resolveDefinition       (student_run_lifecycle.go) — estimate/create/stream entry
+//   - agentRunner.Run         (runner.go)               — non-stream + ask_user_question resume
+//   - agentRunner.RunStream   (runner_runstream.go)     — production streaming path
+//
 // agentTenantAccess reports whether callerID may use the given agent definition
 // under the B2B2C tenant model (spec 2026-06-03-b2b2c-student-agent-access §2).
 //
