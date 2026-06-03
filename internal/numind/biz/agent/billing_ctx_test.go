@@ -52,6 +52,40 @@ func TestInjectAgentBillingCtx_StudentRun(t *testing.T) {
 	}
 }
 
+// T11 (agent-mode-billing): prompt refund-on-cancel is already provided by the
+// existing cancel registry — queryCtx (DeriveQueryCtx = WithCancel) derives FROM
+// the billing-injected ctx and is registered via registerCancel. So r.Cancel(runID)
+// → queryCancel → the billing-carrying ctx (and the in-flight LLM call ctx derived
+// from it) is Done → the aiservice middleware refunds the reservation. No separate
+// "cancelable detached ctx" is needed; the detached context.Background() parent is
+// intentional (async runs survive HTTP disconnect; explicit cancel still refunds;
+// process crash falls back to the 1h reservation sweeper).
+func TestQueryCtx_PreservesBillingAndIsCancelable(t *testing.T) {
+	base := injectAgentBillingCtx(context.Background(), RunRequest{UserID: 7}, 42)
+	qctx, cancel := DeriveQueryCtx(base)
+
+	// Billing values survive the query-ctx derivation (so a cancelled call refunds
+	// against the right user/operation/reservation).
+	if bc := billing.FromContext(qctx); bc == nil || bc.UserID != 7 || bc.Operation != "agent_run" {
+		t.Fatalf("billing ctx lost through DeriveQueryCtx: %+v", bc)
+	}
+	if got := aismw.ReservationRefFromCtx(qctx); got != "agent_run:42" {
+		t.Fatalf("reservation ref lost: %q", got)
+	}
+	if !aismw.GatewayBillingOnlyFromCtx(qctx) {
+		t.Fatal("bill-only flag lost through DeriveQueryCtx")
+	}
+
+	// Cancel propagates Done → in-flight LLM call ctx (derived from qctx) cancels →
+	// middleware refund path fires.
+	cancel()
+	select {
+	case <-qctx.Done():
+	default:
+		t.Fatal("queryCtx should be Done after cancel (refund-on-cancel chain)")
+	}
+}
+
 func TestInjectAgentBillingCtx_TestRunUsesAdminTestPool(t *testing.T) {
 	ctx := injectAgentBillingCtx(context.Background(), RunRequest{UserID: 8, IsTest: true}, 43)
 	if got := aismw.BillingPoolFromCtx(ctx); got != aismw.BillingPoolAdminTest {
