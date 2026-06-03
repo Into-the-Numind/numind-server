@@ -1,0 +1,61 @@
+# numind-ml-base — 预构建 ML / 系统依赖 base 镜像
+# =====================================================
+# 目的：把 torch CPU + sentence-transformers / pymupdf / markitdown 等
+# 「重型且极少变更」的依赖固化进一个独立 base 镜像，推到 TCR。
+#
+# 业务 Dockerfile 的 runtime stage 改 FROM 本镜像后，torch 不再每次部署
+# 从 pytorch.org 跨境重下（构建机 BuildKit GC 按体积淘汰大层 + --no-cache-dir
+# 无本地 wheel 缓存 → 重建即重下；一度只有 8 KB/s，单次部署多花 3-5 min）。
+# 固化进 base 后，业务构建只从 TCR 国内骨干网 pull 这些预构建层。
+# 详见 manifest feature docker-ml-base-image。
+#
+# 何时重建：仅当下方依赖清单变化时。构建 / 推送见 scripts/cicd/build-ml-base.sh，
+# 校验见 scripts/cicd/verify-ml-base.sh。
+# 重建后必须同步 bump 业务 Dockerfile 的 `ARG ML_BASE_TAG` 默认值到新 tag。
+#
+# 注意：本镜像 env-agnostic（dev/qa/prod 依赖完全一致），不含任何环境配置、
+# 业务二进制或 skills——那些留在业务 Dockerfile。
+# =====================================================
+FROM ubuntu:22.04
+
+# 设置环境变量避免交互式安装
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Shanghai
+
+# 系统依赖（稳定，极少变）：
+#   ca-certificates / curl — TLS + 运行期 healthcheck
+#   tzdata                 — 时区
+#   python3 / python3-pip  — 运行 markitdown / sentence-transformers（pip 装完即移除）
+#   antiword               — .doc 解析
+#   libgomp1               — torch / sentence-transformers 的 OpenMP 运行时
+# 注意: libmupdf-dev 不需要 — go-fitz 使用自带的预编译静态库，MuPDF 已嵌入 Go 二进制
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    tzdata \
+    python3 \
+    python3-pip \
+    antiword \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 重型层 1：torch CPU（强制 CPU 版减小体积；pytorch.org 跨境，固化在此只下一次）
+RUN pip3 install --no-cache-dir --upgrade pip && \
+    pip3 install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
+# 重型层 2：功能库
+# 使用清华大学 PyPI 镜像（中国境内构建提速 200x+，全球可访问，无副作用）
+# 装完后移除 pip / setuptools 缩小镜像（与业务历史行为一致；运行期不需要 pip）
+RUN pip3 install --no-cache-dir \
+    --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+    --trusted-host pypi.tuna.tsinghua.edu.cn \
+    pymupdf \
+    python-docx \
+    sentence-transformers \
+    numpy \
+    fastapi \
+    uvicorn \
+    python-multipart \
+    "markitdown[all]" && \
+    pip3 uninstall -y pip setuptools && \
+    rm -rf /usr/lib/python3/dist-packages/pip /usr/lib/python3/dist-packages/setuptools

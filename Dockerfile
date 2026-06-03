@@ -1,3 +1,11 @@
+# numind-server 业务镜像
+# ML_BASE_TAG: 运行阶段 FROM 的 numind-ml-base 镜像 tag。
+# 必须在「第一个 FROM」之前声明 —— Docker 规则：只有首个 FROM 之前的 global ARG
+# 才能在后续 FROM 行展开。若声明在 builder stage 内会被 scope 到该 stage，runtime
+# FROM 取不到 → 展开成空 → "invalid reference format" 构建失败。
+# 依赖变更重建 base 后 bump 这里；或 docker build --build-arg ML_BASE_TAG=<tag> 覆盖。
+ARG ML_BASE_TAG=20260603
+
 # 构建阶段 - 在容器内编译源码
 FROM golang:1.24-bookworm AS builder
 
@@ -35,25 +43,17 @@ COPY . .
 # CGO_ENABLED=1 是必须的，因为使用了 go-fitz (libmupdf) 和 sqlite-vec
 RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o numind ./cmd/numind
 
-# 运行阶段
-FROM ubuntu:22.04
+# 运行阶段 — FROM 预构建 ML base 镜像
+# 系统依赖（ca-certificates/curl/tzdata/python3/antiword/libgomp1）+ torch CPU +
+# sentence-transformers/pymupdf/markitdown 等已固化在 base，业务构建不再每次部署
+# 跨境重下（详见 Dockerfile.ml-base + scripts/cicd/build-ml-base.sh）。
+# ML_BASE_TAG 在本文件顶部以 global ARG 声明（须在首个 FROM 之前才能在此展开）；
+# 依赖变更时：重建 base（build-ml-base.sh）→ bump 顶部 ML_BASE_TAG 默认值。
+FROM ccr.ccs.tencentyun.com/youshunumind/numind-ml-base:${ML_BASE_TAG}
 
-# 设置环境变量避免交互式安装
+# 设置环境变量避免交互式安装（base 已设，此处冗余保留以兼容下方可选的 docker CLI apt 块）
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
-
-# 安装系统依赖
-# 注意: libmupdf-dev 不需要 — go-fitz 使用自带的预编译静态库，MuPDF 已嵌入 Go 二进制
-# 注意: python3-pip 仅在下方 pip install 阶段需要，安装完成后移除以节省空间
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    tzdata \
-    python3 \
-    python3-pip \
-    antiword \
-    libgomp1 \
-    && rm -rf /var/lib/apt/lists/*
 
 # (agent-mode-sandbox-integration #4) docker CLI for the DooD pattern.
 # WITH_DOCKER_CLI=true is passed by the dev build script; prod default
@@ -67,26 +67,10 @@ RUN if [ "$WITH_DOCKER_CLI" = "true" ]; then \
         rm -rf /var/lib/apt/lists/*; \
     fi
 
-# 安装 Python 依赖 - 第一层：基础核心库 (变化频率低，体积大)
-# 强制使用 CPU 版本以减小镜像体积
-RUN pip3 install --no-cache-dir --upgrade pip && \
-    pip3 install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
-
-# 安装 Python 依赖 - 第二层：功能库
-# 使用清华大学 PyPI 镜像（中国境内构建提速 200x+，全球可访问，无副作用）
-RUN pip3 install --no-cache-dir \
-    --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
-    --trusted-host pypi.tuna.tsinghua.edu.cn \
-    pymupdf \
-    python-docx \
-    sentence-transformers \
-    numpy \
-    fastapi \
-    uvicorn \
-    python-multipart \
-    "markitdown[all]" && \
-    pip3 uninstall -y pip setuptools && \
-    rm -rf /usr/lib/python3/dist-packages/pip /usr/lib/python3/dist-packages/setuptools
+# Python ML 依赖（torch CPU + sentence-transformers/pymupdf/python-docx/numpy/
+# fastapi/uvicorn/python-multipart/markitdown[all]）已在 Dockerfile.ml-base 中
+# 固化进 base 镜像，此处不再 pip install——避免每次部署从 pytorch.org / PyPI 重下。
+# 校验 base 含这些依赖：scripts/cicd/verify-ml-base.sh
 
 # 第三层：预下载语义切分模型 (实现 99.9% 可用性)
 # 将模型固化在镜像中，避免由于网络问题导致的生产环境失效
