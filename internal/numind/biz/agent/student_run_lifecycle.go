@@ -486,7 +486,7 @@ func (s *StudentRunService) AcquireStreamLock(ctx context.Context, userID uint, 
 		Status:            "running",
 		Messages:          datatypes.JSON([]byte("[]")),
 		StartedAt:         startedAt,
-		UseCompactV2:      true, // always V2; see comment above
+		UseCompactV2:      true,       // always V2; see comment above
 		IsTest:            req.IsTest, // agent-mode-billing T10: persist 试聊审计标记
 		IsPinned:          isPinned,
 		SessionName:       sessionName,
