@@ -96,12 +96,22 @@ func (s *creditService) Reserve(ctx context.Context, user *model.User, op Operat
 // Since legacy_tier never creates reservations, any reservation that reaches
 // Reconcile is a credits-mode reservation.
 func (s *creditService) Reconcile(ctx context.Context, reservationID uint64, actualCostCents int64) error {
+	// admin_test reservations (operation="agent_test") settle against the
+	// credit_admin_test_grant pool, NOT the three-pool reconcile.
+	if s.isAgentTestReservation(ctx, reservationID) {
+		return s.ReconcileAgentTest(ctx, reservationID, actualCostCents)
+	}
 	return s.credits.Reconcile(ctx, reservationID, actualCostCents)
 }
 
 // Refund has the same dispatch rationale as Reconcile — reservations only
 // exist in credits mode.
 func (s *creditService) Refund(ctx context.Context, reservationID uint64, reason string) error {
+	// admin_test reservations refund the full reserved amount back to the
+	// credit_admin_test_grant pool — must NOT touch three-pool items.
+	if s.isAgentTestReservation(ctx, reservationID) {
+		return s.refundAgentTest(ctx, reservationID, reason)
+	}
 	return s.credits.Refund(ctx, reservationID, reason)
 }
 
@@ -217,7 +227,9 @@ func (s *creditService) ReconcileAgentTest(ctx context.Context, reservationID ui
 		return fmt.Errorf("ReconcileAgentTest: reservation %d is not agent_test (got %s)", reservationID, rsv.Operation)
 	}
 	if rsv.Status != "reserved" {
-		return fmt.Errorf("ReconcileAgentTest: reservation %d already %s", reservationID, rsv.Status)
+		// Idempotent: wrap ErrAlreadyFinalized so a double-call (streaming retry /
+		// sweeper) is recognised via errors.Is, matching three-pool Reconcile.
+		return fmt.Errorf("ReconcileAgentTest: reservation %d already %s: %w", reservationID, rsv.Status, ErrAlreadyFinalized)
 	}
 	var origTxID uint64
 	if _, err := fmt.Sscanf(rsv.ReferenceID, "admin_test_tx:%d", &origTxID); err != nil {
@@ -241,6 +253,140 @@ func (s *creditService) ReconcileAgentTest(ctx context.Context, reservationID ui
 		"actual_cost_cents": actualCostCents,
 		"delta":             delta,
 		"reconciled_at":     now,
+	}).Error
+}
+
+// ---------------------------------------------------------------------------
+// Pool routing (#agent-mode-billing T3): admin_test (parent Builder 试聊) vs
+// the default three-pool. The selector flows in via BudgetPrecheckInput.Pool
+// (set from middleware.BillingPoolFromCtx). Default "" preserves the existing
+// three-pool behaviour for SOP/chatbot/salesrag — zero behaviour change.
+// ---------------------------------------------------------------------------
+
+// PoolAdminTest is the BudgetPrecheckInput.Pool value selecting the parent
+// account's Builder 试聊 pool (credit_admin_test_grant). MUST equal
+// middleware.BillingPoolAdminTest (string contract; credit cannot import
+// middleware — that would be an import cycle).
+const PoolAdminTest = "admin_test"
+
+// estimateBudgetCredits computes the pool-independent token→credit estimate.
+// Uses the pricing calculator when wired; falls back to the flat table.
+func (s *creditService) estimateBudgetCredits(ctx context.Context, op Operation, input BudgetPrecheckInput) int64 {
+	var estimated int64
+	if s.pricing != nil {
+		costCents, err := s.pricing.CalculateCost(ctx, "llm_chat", input.Provider, input.Model,
+			input.EstimatedPromptTokens, input.EstimatedCompletionTokens)
+		if err == nil {
+			// credits == cost_cents (1:1 system-wide). Skips the R2 char-path safety
+			// buffer because token estimates already carry SafetyMultiplier upstream.
+			estimated = costCents
+		}
+	}
+	if estimated <= 0 {
+		estimated = GetEstimatedCredits(string(op))
+	}
+	return estimated
+}
+
+// precheckAdminTest checks the admin_test pool balance instead of the three-pool.
+func (s *creditService) precheckAdminTest(ctx context.Context, user *model.User, estimated int64) (*PreCheckResult, error) {
+	if s.adminConsumer == nil {
+		return nil, fmt.Errorf("CheckAndEstimateBudget(admin_test): admin consumer not wired")
+	}
+	if user == nil {
+		return nil, fmt.Errorf("CheckAndEstimateBudget(admin_test): user is nil")
+	}
+	status, err := s.adminConsumer.Status(ctx, user.ID, time.Now().UTC())
+	if err != nil {
+		return nil, fmt.Errorf("CheckAndEstimateBudget(admin_test): status: %w", err)
+	}
+	var remaining int64
+	if status != nil {
+		remaining = status.Remaining
+	}
+	pre := &PreCheckResult{
+		Sufficient:       remaining >= estimated,
+		EstimatedCredits: estimated,
+		// Balance left zero intentionally: the three-pool BalanceBreakdown is N/A
+		// for the admin_test pool. The only caller (reserveBudgetAdminTest) reads
+		// EstimatedCredits, not Balance.
+	}
+	if !pre.Sufficient {
+		return pre, fmt.Errorf("%w: need %d credits, admin_test pool has %d", errno.ErrAdminTestExhausted, estimated, remaining)
+	}
+	return pre, nil
+}
+
+// reserveBudgetAdminTest reserves from the admin_test pool via ReserveAgentTest.
+func (s *creditService) reserveBudgetAdminTest(ctx context.Context, user *model.User, input BudgetReservationInput) (*Reservation, error) {
+	estimated := input.EstimatedCredits
+	if estimated <= 0 {
+		// No caller-provided estimate: precheck to compute it (and validate the
+		// admin_test balance). The normal middleware path (doReserveBudget) already
+		// ran CheckAndEstimateBudget and passes EstimatedCredits > 0, so we skip the
+		// redundant second Status query here. ReserveAgentTest's Consume is the
+		// authoritative balance gate regardless.
+		pre, err := s.CheckAndEstimateBudget(ctx, user, input.BudgetPrecheckInput)
+		if err != nil {
+			return nil, fmt.Errorf("ReserveBudget(admin_test): precheck: %w", err)
+		}
+		estimated = pre.EstimatedCredits
+	}
+	if estimated <= 0 {
+		estimated = GetEstimatedCredits(string(budgetOperationMap[input.Operation]))
+	}
+	var idempKey *string
+	if input.IdempotencyKey != "" {
+		k := input.IdempotencyKey
+		idempKey = &k
+	}
+	return s.ReserveAgentTest(ctx, user, estimated, idempKey)
+}
+
+// isAgentTestReservation returns true when the reservation's operation is
+// "agent_test" (i.e. it was drawn from the admin_test pool). On lookup failure
+// it returns false so the caller falls through to the three-pool path (whose
+// own not-found handling surfaces the error).
+//
+// Tradeoff: this adds one narrow PK SELECT per Reconcile/Refund. We route on the
+// PERSISTED operation (source of truth) rather than the ctx pool selector because
+// the finalize/refund path may run in a detached goroutine where the ctx pool
+// value is not guaranteed to propagate — correctness over a sub-ms read. The
+// extra read can be elided later by threading operation through the middleware
+// finalize interface (out of scope for T3).
+func (s *creditService) isAgentTestReservation(ctx context.Context, reservationID uint64) bool {
+	var row model.CreditReservation
+	if err := s.store.DB().WithContext(ctx).Select("operation").First(&row, reservationID).Error; err != nil {
+		return false
+	}
+	return row.Operation == "agent_test"
+}
+
+// refundAgentTest refunds the FULL reserved amount back to the admin_test pool
+// and marks the reservation refunded. Idempotent: a non-reserved row returns
+// ErrAlreadyFinalized (so the reservation sweeper treats it as already-done).
+func (s *creditService) refundAgentTest(ctx context.Context, reservationID uint64, reason string) error {
+	if s.adminConsumer == nil {
+		return fmt.Errorf("refundAgentTest: admin consumer not wired")
+	}
+	var rsv model.CreditReservation
+	if err := s.store.DB().WithContext(ctx).First(&rsv, reservationID).Error; err != nil {
+		return fmt.Errorf("refundAgentTest: fetch reservation %d: %w", reservationID, err)
+	}
+	if rsv.Status != "reserved" {
+		return ErrAlreadyFinalized
+	}
+	var origTxID uint64
+	if _, err := fmt.Sscanf(rsv.ReferenceID, "admin_test_tx:%d", &origTxID); err != nil {
+		return fmt.Errorf("refundAgentTest: parse ref ID %q: %w", rsv.ReferenceID, err)
+	}
+	if err := s.adminConsumer.Refund(ctx, rsv.UserID, origTxID, rsv.ReservedCredits); err != nil {
+		return fmt.Errorf("refundAgentTest: refund: %w", err)
+	}
+	return s.store.DB().WithContext(ctx).Model(&rsv).Updates(map[string]any{
+		"status":          "refunded",
+		"finalize_reason": reason,
+		"reconciled_at":   time.Now().UTC(),
 	}).Error
 }
 
@@ -286,26 +432,15 @@ func (s *creditService) CheckAndEstimateBudget(ctx context.Context, user *model.
 		return nil, fmt.Errorf("%w: operation=%q", ErrUnknownBudgetOperation, input.Operation)
 	}
 
-	// Step 2: estimate from token counts. If pricing calculator available, use
-	// it; otherwise fall back to the flat table (test / local path).
-	var estimatedCredits int64
-	if s.pricing != nil {
-		costCents, err := s.pricing.CalculateCost(ctx, "llm_chat", input.Provider, input.Model,
-			input.EstimatedPromptTokens, input.EstimatedCompletionTokens)
-		if err == nil {
-			// credits == cost_cents in this system (1:1 system-wide, no environment-specific conversion).
-			// Note: this skips the R2 char-path safety buffer (1 + safetyBufferPct) because
-			// context budget provides token estimates that are already conservative — the
-			// buffer is built into TokenEstimationProfile.SafetyMultiplier upstream.
-			estimatedCredits = costCents
-		}
-	}
-	if estimatedCredits <= 0 {
-		// Fallback: use the flat table (useful when pricing DB is unavailable or in tests).
-		estimatedCredits = GetEstimatedCredits(string(op))
-	}
+	// Step 2: estimate from token counts (pool-independent).
+	estimatedCredits := s.estimateBudgetCredits(ctx, op, input)
 
-	// Step 3: check balance.
+	// Step 3: check balance — pool-aware. admin_test (parent-account Builder 试聊)
+	// checks the credit_admin_test_grant pool; default ("") checks the three-pool
+	// balance (unchanged for SOP/chatbot/salesrag).
+	if input.Pool == PoolAdminTest {
+		return s.precheckAdminTest(ctx, user, estimatedCredits)
+	}
 	bal, err := s.credits.GetBalance(ctx, user)
 	if err != nil {
 		return nil, fmt.Errorf("CheckAndEstimateBudget: balance: %w", err)
@@ -327,6 +462,13 @@ func (s *creditService) CheckAndEstimateBudget(ctx context.Context, user *model.
 // coefficient_id=NULL, and the token-profile/event metadata from the input.
 // Spec §6.1.2.
 func (s *creditService) ReserveBudget(ctx context.Context, user *model.User, input BudgetReservationInput) (*Reservation, error) {
+	// Pool routing: admin_test (parent-account Builder 试聊) draws from the
+	// credit_admin_test_grant pool via ReserveAgentTest instead of the three-pool
+	// FIFO deduction. Default ("") keeps the unchanged three-pool path below.
+	if input.Pool == PoolAdminTest {
+		return s.reserveBudgetAdminTest(ctx, user, input)
+	}
+
 	// Precheck first to validate operation + check balance.
 	pre, err := s.CheckAndEstimateBudget(ctx, user, input.BudgetPrecheckInput)
 	if err != nil {

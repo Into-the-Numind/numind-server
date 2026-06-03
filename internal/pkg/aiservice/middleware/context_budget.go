@@ -708,6 +708,10 @@ func doReserveBudget(
 		Model:                     route.ServiceKey,
 		TokenProfileID:            result.TokenProfileID,
 		ContextBudgetEventID:      result.EventID,
+		// Pool selector (agent-mode-billing): "" = default three-pool;
+		// "admin_test" routes to the parent Builder 试聊 pool. Threaded from
+		// ctx (set by the agent runner for IsTest runs). Inherited by reserveIn.
+		Pool: BillingPoolFromCtx(ctx),
 	}
 
 	// Spec §6.1.2 step 1: load a fresh user before Reserve. The middleware

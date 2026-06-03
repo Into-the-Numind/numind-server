@@ -4,8 +4,19 @@ import (
 	"context"
 	"testing"
 
+	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/pkg/billing"
 )
+
+// Guard the cross-package string contract: middleware.BillingPoolAdminTest and
+// credit.PoolAdminTest MUST stay equal (they can't share a const — credit cannot
+// import middleware: import cycle). A drift would silently route admin_test
+// reservations through the three-pool, charging real user credits.
+func TestBillingPoolAdminTest_MatchesCreditConst(t *testing.T) {
+	if BillingPoolAdminTest != credit.PoolAdminTest {
+		t.Fatalf("pool const drift: middleware %q != credit %q", BillingPoolAdminTest, credit.PoolAdminTest)
+	}
+}
 
 // T2 (agent-mode-billing): WithBillingPool/BillingPoolFromCtx —— 专用 ctx key，
 // 选择计费池（""=三池, "admin_test"=父账户 Builder 试聊池）。须与 billing.WithBilling
