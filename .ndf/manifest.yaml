@@ -17,11 +17,12 @@ features:
     numind-server: /private/tmp/wt-agent-correctness-fixes-numind-server
   progress:
     total_tasks: 7
-    completed_tasks: 2
-    reviewed_tasks: 2
+    completed_tasks: 3
+    reviewed_tasks: 3
   artifacts:
     requirement: .ndf/features/agent-correctness-fixes/requirement.md
   decisions:
+  - 'S4-T3 (ai 2026-06-05, #5 旁白串台): 进程级唯一 *RunHooks 被并发 run 末写覆盖 NarrationRunID, adapter emitNarration 按该共享字段路由→A 旁白漏进 B 流。改 emitNarration 用 RunIDFromContext(ctx)(runner/runner_runstream 两路径 run 起始已 WithRunID 注入, 与其它 per-run hook 同源)路由; 整体删 NarrationRunID 字段+两处 mutation+三个 wrapper(compliancegate/budgetgate/permission)的 narrationRunIDFromBase 透传+helper; 改 4 个 adapter 测试改用 WithRunID 注入并断言 evs.RunID, 4 个 wrapper 测试去 NarrationRunID 断言; 加回归测试 TestEmitNarration_RoutesByContextRunID_NoCrossRunLeak(单共享 hooks+两 ctx runID 111/222→各自 subscriber 不串, 实测 pre-fix RED). 双 Sonnet reviewer 均 PASS(含 race detector 通过; 唯一 P2 zero-runID 静默丢弃路径=非回归, 已加澄清注释 amend). grep NarrationRunID 零代码引用; build+test+vet+gofmt 全绿. commit 6c970d9c.'
   - 'S4-T2 (ai 2026-06-05, #2 删 learner_data_query IDOR 工具): Execute 直信 LLM 传入 user_id 查档案不校验调用者→IDOR；产品决策删而非 scope。删 tool+test 文件; 从 factory_platform(构造+metadata+清未用 usersGetter)/safeToolBaseline/deriveDefaultToolFlags 默认 移除; 加回归测试 TestPlatformFactory_NoLearnerDataQueryTool(factory+baseline 双断言, 真实 ds)。**关键发现(超出原 map)**: userByIDGetter 接口+mockUserByIDGetter 定义在被删文件内但被 b2b2c-student-agent-access(runner/tenant_access) 共用→搬到 tenant_access.go/_test.go(其主消费者, 接口不变无行为变更)。工具数 19→18 / 21→20(with ds)。双 Sonnet reviewer: spec=PASS, code=PASS_WITH_CONCERNS(唯一 P2 configs/tool-display.yaml 残留 learner_data_query 死配置→已删 amend 入 commit)。go build+test+vet+gofmt 全绿。commit 8b908388。'
   - 'S4-T1 (ai 2026-06-05, #7 admin cancel 守卫): isTerminalStatus 旧码只认 completed/failed/cancelled/error(运行时从不写)→ status=terminated 漏过守卫覆盖 terminal_metadata。改 `return status != "running"`(DB CHECK 仅 running/terminated, 鲁棒未来值)。TDD: 测试改用生产真实值 terminated(原 completed=幻影值 SQLite 不校验 CHECK)→ RED(got nil)→ GREEN。双 Sonnet reviewer 均 PASS(仅 P2 命名/常量观察, 无需改; 确认省略 MergeTerminalMetadata 可接受——守卫修后 terminated run 被拒, in-flight running run 的 terminal_metadata 为空无可覆盖)。commit c870a199。'
   - 'S0-S3 (user 2026-06-05): 9 问逐条调查后 User 决策——#1 修(合规接线)/#2 直接删 learner_data_query 工具/#3 修(行为指引)/#4 修/#5 修/#7 修/#8 本 session subagent 查 prod 调系数(已完成分析)/#6 闲置超时建议 90s(后续独立)/#9 多实例单机暂不动。执行方式 AskUserQuestion=「就在这个 session 打包批量修」。7 task 串行，S0-S3 工件合并精简。'
