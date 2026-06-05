@@ -158,16 +158,17 @@ func TestWrapHooks_PostToolCall_NilBase(t *testing.T) {
 	assert.Equal(t, agent.HookActionContinue, action)
 }
 
-func TestWrapHooks_PreservesRegistryAndNarration(t *testing.T) {
+func TestWrapHooks_PreservesRegistry(t *testing.T) {
+	// T3 (#5): NarrationRunID field removed; the per-run id now flows through
+	// ctx (RunIDFromContext), so it is not copied through the wrapper. Registry
+	// is still copied and must survive the wrap.
 	reg := agent.NewHookActionRegistry()
 	base := &agent.RunHooks{
-		Registry:       reg,
-		NarrationRunID: 999,
+		Registry: reg,
 	}
 	g := NewBudgetGate(budget.NewTracker(nil), nil, nil)
 	wrapped := g.WrapHooks(base)
 	assert.Same(t, reg, wrapped.Registry, "Registry preserved")
-	assert.Equal(t, uint64(999), wrapped.NarrationRunID, "NarrationRunID preserved")
 }
 
 func TestWrapHooks_PostToolCall_RunStoreNil_NoCrash(t *testing.T) {

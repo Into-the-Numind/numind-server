@@ -57,12 +57,12 @@ type RunHooks struct {
 	// NarrationProvider is the shared narration singleton; runner.Run attaches it
 	// per-Run from r.narrationProvider. nil = legacy adapter behavior (no narration
 	// events emitted). #8 agent-mode-narration-layer.
+	//
+	// T3 (#5): the per-run id is NOT stored here — the adapter routes narration via
+	// RunIDFromContext(ctx) instead, matching every other per-run hook. Storing it
+	// on this process-global struct caused cross-run narration leakage under
+	// concurrency (last writer wins).
 	NarrationProvider *narration.Provider
-
-	// NarrationRunID is the per-Run identifier (= agent_run.ID); runner.Run sets
-	// this so the adapter can route narration events to the correct stream.
-	// Zero is invalid; only set when NarrationProvider is non-nil.
-	NarrationRunID uint64
 }
 
 // HookActionToLoopEvent maps a HookAction to a state machine LoopEvent.

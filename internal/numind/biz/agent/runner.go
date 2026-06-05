@@ -829,13 +829,14 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		effectiveHooks.Registry = NewHookActionRegistry()
 	}
 
-	// #8 narration-layer: attach Provider + RunID to effectiveHooks AFTER the
-	// Registry auto-inject (S2-D3). The adapter reads both fields per-emit.
-	// Attachment is conditional on effectiveHooks != nil because a truly
-	// hook-less Run has no adapter to emit from anyway.
+	// #8 narration-layer: attach Provider to effectiveHooks AFTER the Registry
+	// auto-inject (S2-D3). Attachment is conditional on effectiveHooks != nil
+	// because a truly hook-less Run has no adapter to emit from anyway.
+	// T3 (#5): the per-run id is NOT stored here anymore — the adapter routes
+	// narration via RunIDFromContext(ctx) (injected by WithRunID at run start),
+	// so concurrent runs no longer clobber a shared field.
 	if effectiveHooks != nil && r.narrationProvider != nil {
 		effectiveHooks.NarrationProvider = r.narrationProvider
-		effectiveHooks.NarrationRunID = run.ID
 	}
 
 	var einoTools []einotool.BaseTool

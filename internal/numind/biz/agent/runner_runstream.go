@@ -320,7 +320,6 @@ func (r *agentRunner) RunStream(
 	}
 	if effectiveHooks != nil && r.narrationProvider != nil {
 		effectiveHooks.NarrationProvider = r.narrationProvider
-		effectiveHooks.NarrationRunID = run.ID
 	}
 
 	var einoTools []einotool.BaseTool

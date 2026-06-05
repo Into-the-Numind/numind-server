@@ -315,37 +315,31 @@ func TestWrap_ConcurrentInvocation_RaceSafe(t *testing.T) {
 	wg.Wait()
 }
 
-// TestWrapHooks_PreservesNarrationFields verifies that NarrationProvider and
-// NarrationRunID set on the base hooks survive through permission.WrapHooks.
-// #12 agent-mode-billing-integration P1-2 fix — without this, the budget
-// wrapper (when chained `permission(budget(sandbox))`) would lose narration
-// fields at the outermost layer.
-func TestWrapHooks_PreservesNarrationFields(t *testing.T) {
+// TestWrapHooks_PreservesRegistry verifies that the Registry set on the base
+// hooks survives through permission.WrapHooks. #12 agent-mode-billing-integration
+// P1-2 fix — without field copy, the budget wrapper (when chained
+// `permission(budget(sandbox))`) would lose state at the outermost layer.
+//
+// T3 (#5): the former NarrationRunID field was removed; the per-run id now flows
+// through ctx (RunIDFromContext) instead of being copied through the wrapper, so
+// it is no longer asserted here.
+func TestWrapHooks_PreservesRegistry(t *testing.T) {
 	reg := agent.NewHookActionRegistry()
 	base := &agent.RunHooks{
-		Registry:       reg,
-		NarrationRunID: 42424242,
-		// NarrationProvider intentionally nil — verifying RunID copy is sufficient
-		// (Provider is *narration.Provider, same field-copy logic).
+		Registry: reg,
 	}
 	gate := NewPermissionGate()
 	defer gate.Close()
 	wrapped := WrapHooks(base, gate)
-	if wrapped.NarrationRunID != 42424242 {
-		t.Errorf("NarrationRunID lost: want 42424242 got %d", wrapped.NarrationRunID)
-	}
 	if wrapped.Registry != reg {
 		t.Error("Registry lost through wrap")
 	}
 }
 
-func TestWrapHooks_PreservesNarrationFields_NilBase(t *testing.T) {
+func TestWrapHooks_NilBase_NarrationProviderNil(t *testing.T) {
 	gate := NewPermissionGate()
 	defer gate.Close()
 	wrapped := WrapHooks(nil, gate)
-	if wrapped.NarrationRunID != 0 {
-		t.Errorf("nil base should yield RunID=0, got %d", wrapped.NarrationRunID)
-	}
 	if wrapped.NarrationProvider != nil {
 		t.Error("nil base should yield NarrationProvider nil")
 	}

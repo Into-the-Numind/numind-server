@@ -96,7 +96,6 @@ func WrapHooks(base *agent.RunHooks, gate *PermissionGate) *agent.RunHooks {
 		},
 		Registry:          registryFromBase(base),
 		NarrationProvider: narrationProviderFromBase(base),
-		NarrationRunID:    narrationRunIDFromBase(base),
 	}
 }
 
@@ -108,14 +107,6 @@ func narrationProviderFromBase(base *agent.RunHooks) *narration.Provider {
 		return nil
 	}
 	return base.NarrationProvider
-}
-
-// narrationRunIDFromBase preserves base.NarrationRunID through the permission wrapper.
-func narrationRunIDFromBase(base *agent.RunHooks) uint64 {
-	if base == nil {
-		return 0
-	}
-	return base.NarrationRunID
 }
 
 func forwardPre(ctx context.Context, base *agent.RunHooks, t einotool.BaseTool, input string) (agent.HookAction, error) {
