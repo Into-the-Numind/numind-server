@@ -2,7 +2,9 @@ package sop
 
 import (
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -10,9 +12,7 @@ import (
 
 // TestStartSSEHeartbeat_LifecycleAndMutex verifies the helper returns a usable
 // write mutex and a stop func that tears the goroutine down cleanly (no panic,
-// no deadlock). The 15s tick interval is a const so the tick itself is not
-// fast-unit-testable; the lifecycle + returned mutex contract is what callers
-// depend on.
+// no deadlock).
 func TestStartSSEHeartbeat_LifecycleAndMutex(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder() // *httptest.ResponseRecorder implements http.Flusher
@@ -33,4 +33,28 @@ func TestStartSSEHeartbeat_LifecycleAndMutex(t *testing.T) {
 		stop()
 		stop()
 	})
+}
+
+// TestStartSSEHeartbeat_WritesHeartbeat shortens the interval and asserts the
+// goroutine actually writes an SSE comment frame (behavior preserved per spec
+// §3). The recorder body is read under the returned mutex — the same lock the
+// heartbeat holds while writing — so the read is race-free.
+func TestStartSSEHeartbeat_WritesHeartbeat(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	old := sseHeartbeatInterval
+	sseHeartbeatInterval = 5 * time.Millisecond
+	t.Cleanup(func() { sseHeartbeatInterval = old })
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/stream", nil)
+
+	mu, stop := startSSEHeartbeat(c, w)
+	defer stop()
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return strings.Contains(w.Body.String(), ":\n\n")
+	}, time.Second, 5*time.Millisecond, "heartbeat must write an SSE comment within the interval")
 }
