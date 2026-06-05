@@ -1,13 +1,10 @@
-// Package bashvalidator wraps the 8 P0 Phase 0 V3 bash security validators
-// into an importable subpackage. The validator implementations are
-// extracted verbatim from cmd/agent-phase0-bash-validator/ (which is a
-// main package and therefore cannot be imported by business code).
+// Package bashvalidator gates user-provided shell commands. It bundles the 8 Phase-0 V3
+// obfuscation checkers (extracted verbatim from cmd/agent-phase0-bash-validator/) plus the
+// 6 semantic dangerous-command checkers added by agent-security-hardening (semantic_validators.go)
+// — 14 validators total, see AllValidators().
 //
-// Used by internal/numind/biz/agent/tool_bash_exec.go to gate user-provided
-// shell commands before they reach sandbox.ExecCommand.
-//
-// #6 permission-pipeline will extend this set to 23 validators per the
-// agent-mode permission roadmap.
+// Used by internal/numind/biz/agent/tool_bash_exec.go (defensive gate) and by the
+// permission pipeline's PlatformHardRule (pre-execution gate) before sandbox.ExecCommand.
 package bashvalidator
 
 import "regexp"
@@ -49,9 +46,12 @@ func denyResult(validatorID, reason, pattern string) Result {
 	}
 }
 
-// AllValidators returns all 8 P0 validators in priority order.
+// AllValidators returns all bash security validators in priority order:
+// the 8 Phase-0 obfuscation checkers + the 6 semantic dangerous-command checkers
+// (agent-security-hardening BLK-3 / platform bans ①②③④).
 func AllValidators() []Validator {
 	return []Validator{
+		// 8 Phase-0 obfuscation checkers
 		NewControlCharValidator(),
 		NewUnicodeValidator(),
 		NewCarriageReturnValidator(),
@@ -60,6 +60,13 @@ func AllValidators() []Validator {
 		NewProcEnvironValidator(),
 		NewBackslashOperatorValidator(),
 		NewBraceExpansionValidator(),
+		// 6 semantic dangerous-command checkers (agent-security-hardening)
+		NewDestructiveRemoveValidator(),
+		NewDiskDestructValidator(),
+		NewForkBombValidator(),
+		NewDownloadExecValidator(),
+		NewCredentialFileValidator(),
+		NewSSRFLiteralValidator(),
 	}
 }
 
@@ -76,7 +83,7 @@ func CheckCommand(cmd string, validators []Validator) Result {
 }
 
 // Validate is the top-level entry the tool_bash_exec gate calls.
-// Returns (allow=true, "") if all 8 P0 validators pass, otherwise
+// Returns (allow=true, "") if all validators pass, otherwise
 // (allow=false, "<ValidatorID>: <Reason> — pattern=<Pattern>").
 func Validate(command string) (bool, string) {
 	res := CheckCommand(command, AllValidators())
