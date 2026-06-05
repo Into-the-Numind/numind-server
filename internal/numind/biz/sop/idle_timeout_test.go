@@ -38,7 +38,7 @@ func TestIdleWatcher_MarkPreventsTrip(t *testing.T) {
 	// Keep marking faster than the idle window for ~200ms → never trips.
 	deadline := time.Now().Add(200 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		w.mark(60 * time.Millisecond)
+		w.mark()
 		time.Sleep(15 * time.Millisecond)
 	}
 	assert.False(t, w.tripped.Load(), "regular activity must keep the watcher from tripping")

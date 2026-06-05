@@ -121,6 +121,7 @@ func sopOverallTimeout() time.Duration {
 // the caller can return a clear "provider stalled" error vs a ctx error.
 type idleWatcher struct {
 	timer   *time.Timer
+	idle    time.Duration
 	tripped atomic.Bool
 }
 
@@ -128,7 +129,7 @@ type idleWatcher struct {
 // and a goroutine that closes body on ctx cancellation. The returned stop func
 // (call via defer) tears both down.
 func startIdleWatcher(ctx context.Context, body io.Closer, idle time.Duration) (*idleWatcher, func()) {
-	w := &idleWatcher{}
+	w := &idleWatcher{idle: idle}
 	w.timer = time.AfterFunc(idle, func() {
 		w.tripped.Store(true)
 		_ = body.Close() // unblocks the in-flight bufio read
@@ -147,8 +148,14 @@ func startIdleWatcher(ctx context.Context, body io.Closer, idle time.Duration) (
 	}
 }
 
-// mark resets the idle clock; call after every successful read.
-func (w *idleWatcher) mark(idle time.Duration) { w.timer.Reset(idle) }
+// mark resets the idle clock; call after every successful read. Once tripped it
+// is a no-op (avoids a redundant Reset racing the fired AfterFunc callback).
+func (w *idleWatcher) mark() {
+	if w.tripped.Load() {
+		return
+	}
+	w.timer.Reset(w.idle)
+}
 
 // applyDefaultLLMConfig 当节点未配置 LLM 信息时，使用系统默认配置（volc.*）
 func applyDefaultLLMConfig(node *model.SopNode) {
@@ -342,7 +349,7 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 			}
 			return "", nil, fmt.Errorf("read error: %w", readErr)
 		}
-		watcher.mark(idle)
+		watcher.mark()
 
 		// 转换为字符串并去除换行符
 		line := strings.TrimRight(string(lineBytes), "\r\n")
@@ -962,7 +969,7 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 			log.C(ctx).Errorw("Read error in ali deep thinking stream", "node_id", node.ID, "error", readErr)
 			return usage, fmt.Errorf("read error: %w", readErr)
 		}
-		watcher.mark(idle)
+		watcher.mark()
 
 		// 转换为字符串并去除换行符
 		line := strings.TrimRight(string(lineBytes), "\r\n")
@@ -1315,7 +1322,7 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 			log.C(ctx).Errorw("Read error in volc deep thinking stream", "node_id", node.ID, "error", readErr)
 			return usage, fmt.Errorf("read error: %w", readErr)
 		}
-		watcher.mark(idle)
+		watcher.mark()
 
 		// 转换为字符串并去除换行符
 		line := strings.TrimRight(string(lineBytes), "\r\n")
