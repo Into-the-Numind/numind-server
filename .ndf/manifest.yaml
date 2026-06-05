@@ -3481,3 +3481,25 @@ features:
   - 'S2-D3 (ai 2026-06-05): applyPlan 摘要 fragment Order=min(被替换 summarize 候选 Order),落历史原位而非末尾;用 sort.SliceStable 使同 Order 保持输入序(向后兼容全 0 Order 调用方=恒等,attachment 跟随父 user fragment)。'
   - 'S4-S5 (ai 2026-06-05): TDD GREEN——2 个复现测试 commit 415e17d5 先行 FAIL(Rule 11),fix commit 58a21f2f 后转 PASS。并行双 Sonnet reviewer(spec compliance + code quality)均 VERDICT=PASS_WITH_CONCERNS,无 P0。已处理(commit d4f0e937): P1 buildSOPGatewayFragments 前置条件文档(当前输入是 msgs 最后一条由 executeViaGateway:435 保证)、P2 chatbot 当前消息改用 NewCriticalUserFragment 共享 producer、P2 Prepare copy() in-place 注释、P2 测试加固(SOP 断言恰一个 critical user frag + TestMinFragmentOrder 空切片→0 + token 预算注释)。S5 验证策略=后端 Go 单测持久回归(bug 纯后端排序逻辑,无 UI;计费相邻共享逻辑应有回归保护)。affected 包(contextbudget/sop/chatbot/salesrag/aiservice)全绿 + task lint clean。诚实声明: 全仓库 go test ./... 有 internal/numind/biz/memory digest 测试 FAIL(table agent_run has no column named is_pinned)——pre-existing 测试 DB schema 问题,与本 feature 无关(memory 不 import 本改动,session 启动时 digest_generator_test.go 已被他人改动中)。S7 prod 未做(纯后端逻辑修复,按需 /deploy-dev 验收)。'
   blockers: []
+- id: test-fixture-schema-drift
+  ndf_version: '3.0'
+  description: '修复 develop 上预先存在的测试失败（被 sop-context-ordering-fix S5 全仓库 go test 扫出，由 user 要求修复）。根因=两处单测 helper 用手写 raw CREATE TABLE 建测试表,model 后续加列后 fixture 未同步,GORM INSERT 时报 "table X has no column named Y":(1) internal/numind/biz/memory/digest_generator_test.go agent_run 表缺 is_pinned/session_name/is_deleted/is_test(agent-mode-billing T10 加)→ TestGenerateDaily_*/TestRunDailyDigest_*/TestRunWeeklyDigest_* 全 FAIL;(2) cmd/numind/migrate_skill_artifact_test.go skill 表缺 origin_type → TestRunMigration_*/TestRunRollback_* 全 FAIL。Fix=两个 CREATE TABLE 各补齐缺失列(纯测试 fixture,+5 行,匹配 model 列定义)。Micro 边界检查因文件在 biz/ 路径被 ndf-done 机械拦截(不识别 _test.go),按脚本指引升 Hotfix。验证: go test ./... 全绿 + task lint clean。'
+  track: hotfix
+  stage: H3
+  classification_reason: 'Micro 本应(纯配套测试),但 ndf-done Micro 边界 guard 按路径前缀拦截 biz/**(不区分 _test.go)→ 按脚本指引升 Hotfix。Hotfix triage 5 条全过: ① 无 DB schema ② 无新 API ③ 无新外部服务 ④ 文件=2(≤3) ⑤ 无高风险(纯测试 fixture)。'
+  last_updated_by: ai-h3
+  last_updated_at: '2026-06-05T16:40:00+08:00'
+  created_at: '2026-06-05T16:25:50+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: fix/test-fixture-schema-drift
+  worktrees:
+    numind-server: /private/tmp/wt-test-fixture-schema-drift-numind-server
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-H3 (ai 2026-06-05): 修复为纯测试 fixture 同步(2 个 raw CREATE TABLE 补齐 model 漂移列),改动 +5 行全在 _test.go。验证=全仓库 go test ./... 全绿 + task lint clean(替代 dual-reviewer:改动机械且被全绿套件证明,匹配 model 列定义)。systemic follow-up(非本次): 这类 raw CREATE TABLE fixture 会随 model 加列反复漂移失败,可改用 db.AutoMigrate(&model.X{}) 根治,但风险更大(AutoMigrate schema 与手写有别可能影响其他断言),留作后续。'
+  blockers: []
