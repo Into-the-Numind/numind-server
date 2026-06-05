@@ -366,7 +366,7 @@ defaults:
 }
 
 // MANDATORY (S3 P0-1 fix): disk-load smoke test against the production yaml file.
-// Validates that the file ships shippable, all 6 built-in tools have entries,
+// Validates that the file ships shippable, all 5 built-in tools have entries,
 // and all templates parse without error.
 // Path resolves from internal/numind/biz/narration/ → repo root (3 levels up).
 func TestNewRendererFromPath_RepoRootYAML(t *testing.T) {
@@ -379,7 +379,6 @@ func TestNewRendererFromPath_RepoRootYAML(t *testing.T) {
 		"document_generate",
 		"image_gen",
 		"kb_search",
-		"learner_data_query",
 		"get_current_date",
 	}
 	for _, name := range wantTools {

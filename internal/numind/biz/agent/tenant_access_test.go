@@ -12,6 +12,18 @@ import (
 // uptr returns a pointer to a uint (for User.ParentUserID, a *uint).
 func uptr(v uint) *uint { return &v }
 
+// mockUserByIDGetter implements the narrow userByIDGetter interface for the
+// B2B2C tenant-access tests. GetByID ignores its userID argument and returns
+// the wired user/err verbatim.
+type mockUserByIDGetter struct {
+	user *model.User
+	err  error
+}
+
+func (m *mockUserByIDGetter) GetByID(_ context.Context, _ uint) (*model.User, error) {
+	return m.user, m.err
+}
+
 // agentDef builds a minimal AgentDefinition owned by parentID with the given
 // active flag (the two fields agentTenantAccess inspects).
 func agentDef(parentID uint, active bool) *model.AgentDefinition {

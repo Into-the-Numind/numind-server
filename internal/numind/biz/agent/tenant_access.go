@@ -11,6 +11,13 @@ import (
 	"numind-server/internal/pkg/model"
 )
 
+// userByIDGetter is the narrow subset of store.UserStore used by the agent run
+// path (B2B2C tenant access — resolving a caller's parent_user_id). Keeping a
+// narrow interface makes the access gate testable without a full IStore mock.
+type userByIDGetter interface {
+	GetByID(ctx context.Context, userID uint) (*model.User, error)
+}
+
 // All agent-definition access gates on the run path must call agentTenantAccess
 // (single source of truth). The three call sites are:
 //   - resolveDefinition       (student_run_lifecycle.go) — estimate/create/stream entry

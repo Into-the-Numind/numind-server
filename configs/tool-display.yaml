@@ -53,14 +53,6 @@ tools:
     error_template: "搜索中断，{{ .reason_friendly }}"
     rejected_template: "知识库搜索被规则拦截"
 
-  learner_data_query:
-    verb: "正在查询"
-    detail_template: "你的学习数据"
-    use_template: "{{ .verb }} {{ .detail }}"
-    result_template: "已查到学习数据"
-    error_template: "查询中断，{{ .reason_friendly }}"
-    rejected_template: "数据查询被规则拦截"
-
   get_current_date:
     verb: "正在获取"
     detail_template: "当前日期"
