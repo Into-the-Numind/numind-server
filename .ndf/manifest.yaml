@@ -3410,10 +3410,10 @@ features:
   ndf_version: '3.0'
   description: 'Agent mode 安全门禁加固（go-live blocker，prod-readiness §0.1 BLK-1/BLK-3 + §3.1 安全）。三件事：(1) BLK-1 恢复门禁——permission gate.go:110 用 flag.Lookup("test.v") 嗅探环境后门（commit 14754a39），仅 go test 走真 7-validator pipeline，dev/prod 一律 ForceAllowAllGate 全放行 → 平台硬规则/租户黑名单/IsDestructive/bashvalidator 真实运行时全失效，单测因 test.v 走真管线而虚假全绿。修复已存在于 fix/remove-permission-backdoor（2 commit: test(qa) 复现 + fix 改 config 驱动 agent.permission.enforce 默认 true 全环境强制真管线，viper.SetDefault 兜底 prod 无需改 config_prod），落后 develop ~81 commit 未合并 → 重落当前 develop 解 gate.go 冲突。(2) 软拦截不中断——现命中 deny→HookActionPermissionDeny(hooks.go:19)→TerminalPermissionDenied(state.go:20)→整 run 终止；改为只挡这一次工具调用、给 LLM 返回"被安全策略拦截"工具结果、ReAct 循环继续（adapter_full_to_eino.go:106-109 deny 分支 return error 改 return tool-result+nil；runner.go:1231-1243 + runner_runstream applyHookOverride 对 PermissionDeny 跳过 terminal、Reset registry，硬停 Stop/BlockingStop/BudgetExceeded 仍 terminal）+ 防呆（同工具+同类输入连续 N 次拦截才 terminal，拦截文案明确禁止重试）。(3) BLK-3 平台级安全输入禁令第一批 1-4（平台级=第一个 B，硬编码对所有租户生效，绝不写按 parent_user_id 的 tenant_admin_rule）：①SSRF 内网/元数据(169.254.169.254/127.0.0.1/localhost/10.x/192.168.x/172.16-31.x)→web_fetch(复用现 validateFetchURL)+run_python downloadInputFile(无 SSRF 现补)+bash curl/wget；②毁灭命令 rm -rf //~/HOME、mkfs、dd of=/dev/、fork bomb、>/dev/sd*→bashvalidator;③下载即执行 curl|sh、base64 -d|sh→bashvalidator;④凭据文件 /etc/shadow、~/.ssh、~/.aws/credentials、.env、/proc/<pid>/environ→bash(file_read 已 COS-URL-only 结构安全无需改)。bash 类(②③④)同时补强 bashvalidator(8 检查器仅防混淆字符=BLK-3)。最重要约束：精准只锁危险形态，严禁误伤（rm 只禁毁灭形态非所有 rm；SSRF 只禁内网非所有联网；凭据只禁服务器敏感路径不影响 file_read 读 COS 上传文件；用户下载 agent 产物完全不受影响）。不禁用任何整工具(tool_blacklist 留空)。禁碰 prod，dev sandbox=docker 验证。'
   track: standard
-  stage: S4
+  stage: S5
   classification_reason: 'Standard — Triage 第 5 条（权限/安全高风险：恢复安全门禁 + 新增平台安全策略 + 改 run 终止语义，信任边界跨 permission/agent runner/bashvalidator/工具多域）+ 第 4 条（>3 文件：gate.go/biz.go/平台 input-deny validator/bashvalidator/adapter_full_to_eino.go/tool_run_python.go + 大量测试）失败 → 不可降级。1 无 DB schema 变更 2 无新 API 端点 3 无新外部服务 4 文件数 >3 5 高风险=是。User 2026-06-05 任务交付说明预判 Standard，与 triage 一致。'
-  last_updated_by: ai-s4-start
-  last_updated_at: '2026-06-05T01:00:00+08:00'
+  last_updated_by: ai-s5-verified
+  last_updated_at: '2026-06-05T02:00:00+08:00'
   created_at: '2026-06-05T00:00:00+08:00'
   repos:
   - numind-server
@@ -3423,13 +3423,14 @@ features:
     numind-server: /private/tmp/wt-agent-security-hardening-numind-server
   progress:
     total_tasks: 5
-    completed_tasks: 3
-    reviewed_tasks: 3
+    completed_tasks: 5
+    reviewed_tasks: 5
   artifacts:
     requirement: requirements/agent-security-hardening.md
     spec: docs/superpowers/specs/2026-06-05-agent-security-hardening-design.md
     plan: docs/superpowers/plans/2026-06-05-agent-security-hardening-plan.md
     s5_strategy: docs/superpowers/plans/2026-06-05-agent-security-hardening-plan.md (T6)
+    qa: .ndf/features/agent-security-hardening/qa-report.md
   decisions:
   - 'S0-D1 (ai 2026-06-05): 本 feature 做"平台级"安全（B2B2C 第一个 B=平台跃迁有数），硬编码对所有机构/用户生效，绝不写进按 parent_user_id 的租户表（tenant_admin_rule / agent_permission_config）。'
   - 'S0-D2 (ai 2026-06-05): 吸收并取代废弃的 remove-permission-backdoor hotfix（manifest stage H1，fix/remove-permission-backdoor 2 commit 未合并）。该 hotfix 当初按 user 选 Hotfix 快车道但严格 triage 第 5 条本应 Standard；现并入本 Standard feature 一并交付。BLK-1 fix 的 2 commit（含 test(qa): 复现测试）将在 S4 cherry-pick 到 feature/agent-security-hardening 以保留 Rule 11 复现链。'
@@ -3439,6 +3440,8 @@ features:
   - 'S3-D2 (ai 2026-06-05, plan): 6 task（T1 BLK-1 cherry-pick→T2 SoftDenyController→T3 软拦截布线(依赖 T2)→T4 SSRF helper+run_python+web_fetch→T5 bashvalidator 语义检查器→T6 S5 策略）。全串行 Tier 4（biz.go 被 T1+T3 共享 + 安全敏感）；每 task 完成并行双 Sonnet reviewer。Rule 11：T1 cherry-pick 保留 test(qa) 链。Rule 10：T6 S5=Go 持久回归 + prod-shape dev 黑盒 + Playwright 尽量。'
   - 'S2-GATE/O1 (user 2026-06-05): 设计门禁通过。O1 待决项=enforce 激活既有 8 bash 检查器(拒所有 $()/{a,b})的误伤面 → 用户选「S5 实测再定」：按现状 S4(既有检查器激活 + 软拦截缓冲)，S5 dev 实测正常 bash 样本，若被既有 $()/{} 误伤届时带数据定放宽，本 PR 不动既有 8 检查器。S4 编码 greenlit。'
   - 'S4-T1-T3 (ai 2026-06-05): T1(BLK-1 cherry-pick fdcff8d1+27c550cf, gate.go 干净/biz.go 自动合并, enforce 默认 true, permission 测试绿) / T2(SoftDenyController: 三阈值防呆 maxSame3/maxTotal5/maxLifetime10, lifetimeByFP 成功不清零防 R2-B 绕过, 10 单测) / T3(软拦截布线: adapter deny→Resolve→软tool-result+nil+Record(Continue) R6-A registry 卫生 / wrap_hooks+compliancegate SetPending(detail 提到 sink 外解耦) / runner+runstream 双路径注入 + sink 1→16 / biz.go SetSoftDenyConfig + config_dev/local 文档化) 全 TDD GREEN + 每 task 双 Sonnet reviewer PASS/PASS_WITH_CONCERNS。修: T2 加 lifetime 防绕过测试+nil-pending+escalation 边界; T3 加 nil-pending fallback + compliance-source reason 适配器测试 + SetPending 解耦出 sink 块 + 软 deny narration reason="" (不塞全文进 narration Reason 字段)。硬停(Stop/BudgetExceeded)回归绿, -race 绿。'
+  - 'S4-T4-T5 (ai 2026-06-05): T4(SSRF: run_python downloadInputFile 复用同包 validateFetchURL 校验原始 URL(presign 前)+改用 newSafeHTTPClient 闭 TOCTOU; web_fetch SSRF 命中改软 ToolResult; 不抽新包=同包复用; 3 测试 incl IPv6) / T5(6 语义 bash validator 加进 AllValidators 双 gate 自动: DestructiveRemove/DiskDestruct/ForkBomb 两段式/DownloadExec 两步同文件/CredentialFile .env 动词门控/SSRFLiteral host 锚定; 每条双向测试) 全 TDD GREEN + 每 task 双 Sonnet reviewer。T4 修: TOCTOU(newSafeHTTPClient 拨号期重校验)+IPv6 测试+断言收紧。T5 ADVERSARIAL reviewer FAIL→4 P1 全修: rm 补 /home//usr//etc//var//boot/// 临界根(保 /tmp 放行)+SSRFLiteral 锚 ://host(消 …/localhost 路径误伤)+CredentialFile .ssh 仅密钥文件(消 ~/.ssh/config 误伤)+文档更新。'
+  - 'S5-VERIFIED (ai 2026-06-05): S5 后端验证 PASS。task lint exit 0; go test ./... 仅 cmd/numind+biz/memory 预存失败(本分支不碰这两包, git diff 证实); 全改动包 -race 绿(agent/bashvalidator/compliancegate/permission); prod-shape 二进制 go build ./cmd/numind 成功(78MB)=enforce 门禁+SoftDenyController+6 validator 接进真非测试二进制(BLK-1 test.v≠prod 教训)。持久回归覆盖 BLK-1 三态/软拦截 registry 卫生+防呆/SSRF/4 类 bash 禁令双向不误伤。QA 报告 .ndf/features/agent-security-hardening/qa-report.md。dev 黑盒(prod-shape enforce 日志确认 + O1 既有检查器误伤实测 + seed-agent 安全 smoke)留 S6(ndf-done 合并后部署 dev)。注: agent 不上 prod(5 红线 [[prod-no-agent-release-line]]), 止于 dev。'
   - 'S3-GATE-REVIEW (2 独立 sonnet reviewer 2026-06-05): 设计+plan 双审 VERDICT=PASS_WITH_FIXES。已纳入修正：[P0] adapter 无条件 Record(action) 必须拆 per-path、软路径 Record(Continue) 早返回（否则软 deny 末值仍 PermissionDeny→run 完成误升 terminal，spec §3.2c 显式化 + T3 强制测试）；[P1] 防呆加 lifetimeByFP(成功不清零,max 10) 杜绝"插成功无限重试"绕过；[P1] .env 动词门控(不误伤 echo 内 .env)；[P1] rm -rf $VAR 绕过记为沙箱临时性兜底的已知 gap(不 blanket-deny 避免误伤正常变量 rm)；[P1] enforce 激活既有 CommandSubstitution/BraceExpansion 误伤正常 bash → 加 S5 accept/reject 阈值 + 列为设计门禁待决项 O1；[P1] T3 补 compliancegate SetPending 测试 + registry 卫生测试(LastAction==Continue) + 未注入退化测试；[P1] T4 补 web_fetch/run_python 软结果行为测试 + run_python SSRF 校验原始 URL(presign 前)；[P1] T1 cherry-pick 先验 SHA 存在；[P1] T6 dev seed agent 夹具具体化(不留"S5 现场决")。[P2] maxTotal 8→5、sink buffer 1→16、SSRFLiteral 补 0.0.0.0/::1/fe80、DownloadExec 补两步式、ForkBomb 两段式检测、enabled=false loud-warn。'
   blockers: []
 
