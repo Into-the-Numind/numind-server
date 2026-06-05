@@ -393,6 +393,16 @@ func (t *runPythonTool) collectOutputFiles(
 // downloadInputFile downloads a COS URL (or any HTTP URL) to memory.
 // Returns at most 20 MiB (aligned with attachment limit).
 func (t *runPythonTool) downloadInputFile(ctx context.Context, fileURL string) ([]byte, error) {
+	// agent-security-hardening: SSRF guard on the CALLER-SUPPLIED URL, BEFORE any presign
+	// substitution (else an internal target disguised as a COS key could slip through).
+	// Reuses web_fetch's validateFetchURL (same package): rejects only internal /
+	// loopback / private / cloud-metadata addresses — public COS/HTTP downloads are
+	// unaffected. The Execute caller wraps the error into a soft runPythonFriendlyError,
+	// so a blocked URL does not terminate the run.
+	if _, err := validateFetchURL(fileURL, false); err != nil {
+		return nil, fmt.Errorf("input file URL rejected by SSRF policy: %w", err)
+	}
+
 	// Try to get a presigned URL if it looks like a COS object key embedded URL
 	objectKey := extractObjectKeyFromURL(fileURL)
 	if objectKey != "" {
@@ -408,7 +418,12 @@ func (t *runPythonTool) downloadInputFile(ctx context.Context, fileURL string) (
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	// agent-security-hardening: use the SSRF-safe client (same package, webFetchTimeout=30s)
+	// which RE-validates resolved IPs at dial time — closes the DNS-rebinding TOCTOU gap that
+	// the preflight validateFetchURL above cannot (the preflight gives an early clear block;
+	// this is the enforcement at connect time). The two-DNS-lookup cost is accepted for a
+	// backend-side SSRF surface.
+	client := newSafeHTTPClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("http GET: %w", err)

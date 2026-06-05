@@ -142,7 +142,10 @@ func (t *webFetchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	// that provide their own httpClient.
 	targetURL, err := validateFetchURL(in.URL, t.skipSSRFCheck)
 	if err != nil {
-		return nil, err
+		// agent-security-hardening: an SSRF/scheme block is returned as a SOFT tool
+		// result (not a Go error) so the LLM is told why and the run continues — only
+		// internal/metadata/non-http targets are blocked; public URLs are unaffected.
+		return t.returnSoftError("网址被安全策略拦截", "%s", err.Error())
 	}
 
 	fetchStart := time.Now()
