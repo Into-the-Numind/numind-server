@@ -43,6 +43,7 @@ func newMigrationTestDB(t *testing.T) *gorm.DB {
 			body_md             TEXT    NOT NULL DEFAULT '',
 			source_type         TEXT    NOT NULL DEFAULT 'custom',
 			source_template_id  INTEGER,
+			origin_type         TEXT    NOT NULL DEFAULT 'user',
 			version             INTEGER NOT NULL DEFAULT 1,
 			is_active           INTEGER NOT NULL DEFAULT 1,
 			created_by          INTEGER NOT NULL,
