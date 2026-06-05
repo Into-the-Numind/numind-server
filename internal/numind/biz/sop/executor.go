@@ -669,8 +669,10 @@ func consumeGatewayStream(
 				}
 			}
 		case <-idleTimer.C:
-			cancelStream()                  // stop the adapter (closes connection → ch closes)
-			go func() {                     //nolint:errcheck // drain to avoid adapter goroutine leak
+			cancelStream() // stop the adapter (closes connection → ch closes)
+			// Drain the channel until the adapter closes it, so the adapter
+			// goroutine never blocks on a send after we stop reading.
+			go func() {
 				for range ch {
 				}
 			}()
