@@ -834,7 +834,8 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	// 在 LLM 调用前：CheckAndEstimate + Reserve（post-T1: legacy_tier 已下线，SkipDeduction 恒为 false）
 	// defer FinalizeReservation 在函数返回时对账：
 	//   - actualCost 非零 → Reconcile（delta 回补/退还）
-	//   - opErr 非空    → Refund（分类 user_cancelled / provider_timeout / op_failed）
+	//   - opErr 非空    → Refund（分类 provider_timeout / op_failed；问题 1 detach 后客户端
+	//     断连不再取消 LLM ctx，故 user_cancelled 不再由断连触发，仅整体/idle 超时→provider_timeout）
 	//   - 两者都空       → Refund("no_actual_cost")（pricing 失败兜底）
 	// 注入点：在 langfuse trace 建立后，以便 credits span 挂到同一 trace 下。
 	//
@@ -1665,8 +1666,9 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 		)
 	}
 	if err != nil {
-		// LLM 调用失败或客户端断连 → defer FinalizeReservation 走 Refund 分支
-		// classifyReason 会把 context.Canceled 归类为 user_cancelled。
+		// LLM 调用失败 → opErr 置位 → defer FinalizeReservation 走 Refund 分支。
+		// 问题 1 detach 后客户端断连不再传入此路径（生成在后台跑完正常 Reconcile）；
+		// 整体/idle 超时 → context.DeadlineExceeded → classifyReason=provider_timeout。
 		chatOpErr = err
 		return err
 	}
