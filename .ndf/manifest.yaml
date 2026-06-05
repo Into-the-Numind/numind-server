@@ -3410,17 +3410,19 @@ features:
   ndf_version: '3.0'
   description: 'Agent mode 安全门禁加固（go-live blocker，prod-readiness §0.1 BLK-1/BLK-3 + §3.1 安全）。三件事：(1) BLK-1 恢复门禁——permission gate.go:110 用 flag.Lookup("test.v") 嗅探环境后门（commit 14754a39），仅 go test 走真 7-validator pipeline，dev/prod 一律 ForceAllowAllGate 全放行 → 平台硬规则/租户黑名单/IsDestructive/bashvalidator 真实运行时全失效，单测因 test.v 走真管线而虚假全绿。修复已存在于 fix/remove-permission-backdoor（2 commit: test(qa) 复现 + fix 改 config 驱动 agent.permission.enforce 默认 true 全环境强制真管线，viper.SetDefault 兜底 prod 无需改 config_prod），落后 develop ~81 commit 未合并 → 重落当前 develop 解 gate.go 冲突。(2) 软拦截不中断——现命中 deny→HookActionPermissionDeny(hooks.go:19)→TerminalPermissionDenied(state.go:20)→整 run 终止；改为只挡这一次工具调用、给 LLM 返回"被安全策略拦截"工具结果、ReAct 循环继续（adapter_full_to_eino.go:106-109 deny 分支 return error 改 return tool-result+nil；runner.go:1231-1243 + runner_runstream applyHookOverride 对 PermissionDeny 跳过 terminal、Reset registry，硬停 Stop/BlockingStop/BudgetExceeded 仍 terminal）+ 防呆（同工具+同类输入连续 N 次拦截才 terminal，拦截文案明确禁止重试）。(3) BLK-3 平台级安全输入禁令第一批 1-4（平台级=第一个 B，硬编码对所有租户生效，绝不写按 parent_user_id 的 tenant_admin_rule）：①SSRF 内网/元数据(169.254.169.254/127.0.0.1/localhost/10.x/192.168.x/172.16-31.x)→web_fetch(复用现 validateFetchURL)+run_python downloadInputFile(无 SSRF 现补)+bash curl/wget；②毁灭命令 rm -rf //~/HOME、mkfs、dd of=/dev/、fork bomb、>/dev/sd*→bashvalidator;③下载即执行 curl|sh、base64 -d|sh→bashvalidator;④凭据文件 /etc/shadow、~/.ssh、~/.aws/credentials、.env、/proc/<pid>/environ→bash(file_read 已 COS-URL-only 结构安全无需改)。bash 类(②③④)同时补强 bashvalidator(8 检查器仅防混淆字符=BLK-3)。最重要约束：精准只锁危险形态，严禁误伤（rm 只禁毁灭形态非所有 rm；SSRF 只禁内网非所有联网；凭据只禁服务器敏感路径不影响 file_read 读 COS 上传文件；用户下载 agent 产物完全不受影响）。不禁用任何整工具(tool_blacklist 留空)。禁碰 prod，dev sandbox=docker 验证。'
   track: standard
-  stage: S5
+  stage: S6
   classification_reason: 'Standard — Triage 第 5 条（权限/安全高风险：恢复安全门禁 + 新增平台安全策略 + 改 run 终止语义，信任边界跨 permission/agent runner/bashvalidator/工具多域）+ 第 4 条（>3 文件：gate.go/biz.go/平台 input-deny validator/bashvalidator/adapter_full_to_eino.go/tool_run_python.go + 大量测试）失败 → 不可降级。1 无 DB schema 变更 2 无新 API 端点 3 无新外部服务 4 文件数 >3 5 高风险=是。User 2026-06-05 任务交付说明预判 Standard，与 triage 一致。'
-  last_updated_by: ai-s5-verified
-  last_updated_at: '2026-06-05T02:00:00+08:00'
+  last_updated_by: ai-s6-merged
+  last_updated_at: '2026-06-05T03:00:00+08:00'
   created_at: '2026-06-05T00:00:00+08:00'
   repos:
   - numind-server
   branches:
     numind-server: feature/agent-security-hardening
   worktrees:
-    numind-server: /private/tmp/wt-agent-security-hardening-numind-server
+    numind-server: /private/tmp/wt-agent-security-hardening-numind-server (removed after ndf-done)
+  merged_commits:
+    numind-server: 4c53464e (merge 4811b13c on develop)
   progress:
     total_tasks: 5
     completed_tasks: 5
