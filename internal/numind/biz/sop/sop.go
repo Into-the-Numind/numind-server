@@ -1951,14 +1951,12 @@ func (b *sopBiz) ApplyBookmarkToNode(ctx context.Context, userID, runID, nodeID 
 		return nil, fmt.Errorf("failed to check existing node run: %w", err)
 	}
 
-	// 5. 如果该节点已经执行过，需要清理下游节点（与重新执行逻辑一致）
+	// 5. 如果该节点已经执行过，需要清理下游节点（与重新执行逻辑一致）。
+	// 三个删除走同一原子事务方法（问题 5）：避免笔记/对话清理失败被吞而残留过时下游数据。
 	if existingNodeRun != nil {
-		if err := b.ds.Sop().DeleteNodeRunsAfterSort(runID, node.Sort); err != nil {
+		if err := b.ds.Sop().CleanupDownstreamForRegeneration(runID, node.Sort); err != nil {
 			return nil, fmt.Errorf("failed to clean downstream nodes: %w", err)
 		}
-		// 同时清理笔记和聊天消息
-		_ = b.ds.Sop().DeleteNotesByRun(runID)
-		_ = b.ds.Sop().DeleteChatMessagesByRun(runID)
 	}
 
 	// 6. 创建或更新NodeRun
