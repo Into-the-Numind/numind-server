@@ -66,6 +66,7 @@ func buildSOPNodeFragments(
 		fragments = append(fragments, bizctx.NewImmutableSystemFragment(
 			fmt.Sprintf("tmpl-sys-%d", template.ID),
 			template.Prompt,
+			order,
 		))
 		order++
 	}
@@ -79,6 +80,7 @@ func buildSOPNodeFragments(
 		fragments = append(fragments, bizctx.NewImmutableSystemFragment(
 			fmt.Sprintf("node-sys-%d", node.ID),
 			node.Prompt,
+			order,
 		))
 		order++
 	}
@@ -91,7 +93,7 @@ func buildSOPNodeFragments(
 		switch msg.Role {
 		case "system":
 			// Any system messages from history become immutable fragments.
-			fragments = append(fragments, bizctx.NewImmutableSystemFragment(id, msg.Content))
+			fragments = append(fragments, bizctx.NewImmutableSystemFragment(id, msg.Content, order))
 		case "user":
 			fragments = append(fragments, bizctx.NewDurableUserFragment(id, msg.Content, order, 5))
 			// P2-1 (spec §9.1): emit RoleEvidence/SourceFile fragments for any
@@ -104,6 +106,8 @@ func buildSOPNodeFragments(
 	}
 
 	// 4. Current user input — CRITICAL, never compressed or dropped.
+	// Uses the final (largest) order so it always renders last after the
+	// Order-stable sort in the budget middleware. (sop-context-ordering-fix)
 	if currentInput != "" {
 		var nodeID uint
 		if node != nil {
@@ -112,6 +116,7 @@ func buildSOPNodeFragments(
 		fragments = append(fragments, bizctx.NewCriticalUserFragment(
 			fmt.Sprintf("current-input-%d", nodeID),
 			currentInput,
+			order,
 		))
 	}
 
@@ -149,11 +154,13 @@ func buildSOPGatewayFragments(msgs []LLMMessage) []contextbudget.ContextFragment
 		id := fmt.Sprintf("gw-%d", i)
 		switch msg.Role {
 		case "system":
-			fragments = append(fragments, bizctx.NewImmutableSystemFragment(id, msg.Content))
+			fragments = append(fragments, bizctx.NewImmutableSystemFragment(id, msg.Content, i))
 		case "user":
 			if i == lastUserIdx {
-				// Current turn — critical, incompressible.
-				fragments = append(fragments, bizctx.NewCriticalUserFragment(id, msg.Content))
+				// Current turn — critical, incompressible. Order=i (the last user
+				// message's index) is the largest Order, so it renders last after
+				// the Order-stable sort in the budget middleware. (sop-context-ordering-fix)
+				fragments = append(fragments, bizctx.NewCriticalUserFragment(id, msg.Content, i))
 			} else {
 				// Historical user message — durable, compressible.
 				fragments = append(fragments, bizctx.NewDurableUserFragment(id, msg.Content, i, 5))
@@ -193,7 +200,7 @@ func buildSOPChatFragments(
 		id := fmt.Sprintf("chat-hist-%d", i)
 		switch msg.Role {
 		case "system":
-			fragments = append(fragments, bizctx.NewImmutableSystemFragment(id, msg.Content))
+			fragments = append(fragments, bizctx.NewImmutableSystemFragment(id, msg.Content, order))
 		case "user":
 			fragments = append(fragments, bizctx.NewDurableUserFragment(id, msg.Content, order, 5))
 			// P2-1 (spec §9.1): emit RoleEvidence/SourceFile fragments for any
@@ -205,11 +212,14 @@ func buildSOPChatFragments(
 		order++
 	}
 
-	// Current question is always critical — it defines what the assistant must answer.
+	// Current question is always critical — it defines what the assistant must
+	// answer. Uses the final (largest) order so it renders last after the
+	// Order-stable sort in the budget middleware. (sop-context-ordering-fix)
 	if currentQuestion != "" {
 		fragments = append(fragments, bizctx.NewCriticalUserFragment(
 			fmt.Sprintf("chat-current-%d", order),
 			currentQuestion,
+			order,
 		))
 	}
 

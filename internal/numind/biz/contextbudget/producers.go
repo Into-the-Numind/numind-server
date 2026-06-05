@@ -18,7 +18,12 @@ import (
 //
 //	id      — unique fragment ID within the planning session
 //	content — system prompt text
-func NewImmutableSystemFragment(id, content string) contextbudget.ContextFragment {
+//	order   — sequence number (system prompts are normally 0, i.e. rendered first)
+//
+// Order is required (like NewDurableUserFragment/NewDurableAssistantFragment) so
+// the rendering pipeline can sort fragments into a deterministic message order;
+// leaving it implicit was the root cause of the SOP step-crossing bug.
+func NewImmutableSystemFragment(id, content string, order int) contextbudget.ContextFragment {
 	return contextbudget.ContextFragment{
 		ID:              id,
 		Role:            contextbudget.RoleImmutable,
@@ -26,6 +31,7 @@ func NewImmutableSystemFragment(id, content string) contextbudget.ContextFragmen
 		ContentType:     contextbudget.ContentText,
 		Content:         content,
 		Importance:      10,
+		Order:           order,
 		Compressibility: contextbudget.CompressNone,
 		Critical:        true,
 	}
@@ -36,7 +42,13 @@ func NewImmutableSystemFragment(id, content string) contextbudget.ContextFragmen
 //
 //	id      — unique fragment ID
 //	content — user message text
-func NewCriticalUserFragment(id, content string) contextbudget.ContextFragment {
+//	order   — sequence number; the current turn's input must use the HIGHEST
+//	          order so it renders last (after system, history, and any summary)
+//
+// Order is required so the rendering pipeline can place the current turn last;
+// omitting it (Order defaulted to 0) caused the current input to sort ahead of
+// history — the SOP step-crossing bug.
+func NewCriticalUserFragment(id, content string, order int) contextbudget.ContextFragment {
 	return contextbudget.ContextFragment{
 		ID:              id,
 		Role:            contextbudget.RoleRecent,
@@ -44,6 +56,7 @@ func NewCriticalUserFragment(id, content string) contextbudget.ContextFragment {
 		ContentType:     contextbudget.ContentText,
 		Content:         content,
 		Importance:      9,
+		Order:           order,
 		Compressibility: contextbudget.CompressNone,
 		Critical:        true,
 	}

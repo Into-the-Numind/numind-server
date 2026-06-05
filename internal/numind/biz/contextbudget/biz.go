@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"gorm.io/datatypes"
@@ -266,6 +267,15 @@ func (b *Biz) Prepare(ctx context.Context, input aimw.PrepareInput) (*aimw.Prepa
 		return nil, fmt.Errorf("Prepare: CreateEvent: %w", err)
 	}
 
+	// Stable-sort fragments by Order before rendering so the message sequence
+	// follows the logical conversation order (system → history/summary → current
+	// turn) even after compression rewrote the slice (applyPlan may append the
+	// summary out of position). RenderContextFragments renders in slice order and
+	// does NOT sort; SliceStable keeps equal-Order fragments in their existing
+	// relative order, so callers that leave Order at its zero value are unaffected.
+	// (sop-context-ordering-fix)
+	sortFragmentsByOrder(fragments)
+
 	// Render fragments to ChatMessages.
 	messages := aiservice.RenderContextFragments(fragments)
 
@@ -287,6 +297,32 @@ func (b *Biz) Prepare(ctx context.Context, input aimw.PrepareInput) (*aimw.Prepa
 		NormalizedOp:    normalizedOp,
 		SkipBudget:      false,
 	}, nil
+}
+
+// sortFragmentsByOrder stably sorts fragments ascending by their Order field.
+// Stable ordering preserves the relative sequence of equal-Order fragments,
+// keeping the sort a no-op for callers that leave Order at the zero value.
+// (sop-context-ordering-fix)
+func sortFragmentsByOrder(fragments []contextbudget.ContextFragment) {
+	sort.SliceStable(fragments, func(i, j int) bool {
+		return fragments[i].Order < fragments[j].Order
+	})
+}
+
+// minFragmentOrder returns the smallest Order among the given fragments, or 0
+// when the slice is empty. Used to anchor a compression summary at the position
+// of the earliest fragment it replaces. (sop-context-ordering-fix)
+func minFragmentOrder(frags []contextbudget.ContextFragment) int {
+	if len(frags) == 0 {
+		return 0
+	}
+	minOrder := frags[0].Order
+	for _, f := range frags[1:] {
+		if f.Order < minOrder {
+			minOrder = f.Order
+		}
+	}
+	return minOrder
 }
 
 // prepareWithoutCompression is a trimmed Prepare path used when operation ==
@@ -363,6 +399,9 @@ func (b *Biz) prepareWithoutCompression(ctx context.Context, input aimw.PrepareI
 	if err := b.store.CreateEvent(ctx, ev); err != nil {
 		return nil, fmt.Errorf("prepareWithoutCompression: CreateEvent: %w", err)
 	}
+
+	// Order-stable render (see sortFragmentsByOrder in Prepare). (sop-context-ordering-fix)
+	sortFragmentsByOrder(fragments)
 
 	messages := aiservice.RenderContextFragments(fragments)
 
@@ -896,6 +935,12 @@ func (b *Biz) applyPlan(
 
 		sf, compErr := b.compressor.Compress(ctx, summarizeCandidates, targetTokens)
 		if compErr == nil {
+			// Anchor the summary at the earliest replaced fragment's Order so it
+			// renders in the history region after the final stable sort in Prepare,
+			// rather than after the current-turn input. Without this it inherits the
+			// compressor's Order and, being appended last, can render out of place.
+			// (sop-context-ordering-fix)
+			sf.Order = minFragmentOrder(summarizeCandidates)
 			summaryFrag = &sf
 			for _, id := range summarizeIDs {
 				drop[id] = true
