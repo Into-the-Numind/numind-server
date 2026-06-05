@@ -186,6 +186,13 @@ agent:
   # 注：prod 靠后端 viper.SetDefault("agent.permission.enforce", true) 兜底，config_prod.yaml 无需声明。
   permission:
     enforce: true
+    # 软拦截（agent-security-hardening）：命中 deny 只挡这一次工具调用 + 喂回 LLM 续循环（非整 run 终止）。
+    # enabled=false 退回硬终止（高危逃生舱）。三阈值=防呆。prod 靠 viper.SetDefault 兜底。
+    soft_deny:
+      enabled: true
+      max_same_consecutive: 3
+      max_total_consecutive: 5
+      max_lifetime_per_fingerprint: 10
   memory:
     # Task 3.1: AGENT.md 2 级 cascade loader（部署级 + 用户全局）
     # 路径 3-6（workspace 维度）V1.5 不实施，等 V2 扩展。

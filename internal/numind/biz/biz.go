@@ -337,6 +337,21 @@ func NewBiz(ds store.IStore) *biz {
 		),
 	)
 	log.Infow("agent permission gate wired", "enforce", enforcePermission)
+
+	// agent-security-hardening: soft-interception config (per-run controller reads this).
+	// 命中 permission deny 时只挡这一次工具调用 + 喂回 LLM 续循环（非整 run 终止）；
+	// 防呆三阈值。SetDefault 兜底 prod 无需改 config_prod；enabled=false 退回硬终止（高危逃生舱）。
+	viper.SetDefault("agent.permission.soft_deny.enabled", true)
+	viper.SetDefault("agent.permission.soft_deny.max_same_consecutive", 3)
+	viper.SetDefault("agent.permission.soft_deny.max_total_consecutive", 5)
+	viper.SetDefault("agent.permission.soft_deny.max_lifetime_per_fingerprint", 10)
+	agent.SetSoftDenyConfig(agent.SoftDenyConfig{
+		Enabled:     viper.GetBool("agent.permission.soft_deny.enabled"),
+		MaxSame:     viper.GetInt("agent.permission.soft_deny.max_same_consecutive"),
+		MaxTotal:    viper.GetInt("agent.permission.soft_deny.max_total_consecutive"),
+		MaxLifetime: viper.GetInt("agent.permission.soft_deny.max_lifetime_per_fingerprint"),
+	})
+
 	// #12 agent-mode-billing-integration: budget tracker + admin_test consumer
 	// + BudgetGate hooks 嵌套到 permission 之下，sandbox 之上。
 	// Hook chain order: permission(outer) → budget(middle) → sandbox(base)

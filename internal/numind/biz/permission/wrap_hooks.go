@@ -38,17 +38,22 @@ func WrapHooks(base *agent.RunHooks, gate *PermissionGate) *agent.RunHooks {
 
 			switch result.Behavior {
 			case BehaviorDeny, BehaviorAsk:
+				detail := &agent.PermissionDenialDetail{
+					ToolName:       req.Tool.Name(),
+					Behavior:       result.Behavior,
+					DecisionReason: string(result.DecisionReason),
+					ValidatorID:    result.ValidatorID,
+					Message:        result.Message,
+				}
+				// agent-security-hardening: feed the deny reason to the per-run soft-deny
+				// controller (independent of sink presence) so the adapter surfaces it to the LLM.
+				if sd := agent.SoftDenyFromCtx(ctx); sd != nil {
+					sd.SetPending(detail)
+				}
 				if reg := registryFromBase(base); reg != nil {
 					reg.Record(agent.HookActionPermissionDeny)
 				}
 				if sink := agent.PermissionSinkFromCtx(ctx); sink != nil {
-					detail := &agent.PermissionDenialDetail{
-						ToolName:       req.Tool.Name(),
-						Behavior:       result.Behavior,
-						DecisionReason: string(result.DecisionReason),
-						ValidatorID:    result.ValidatorID,
-						Message:        result.Message,
-					}
 					select {
 					case sink <- detail:
 					default:

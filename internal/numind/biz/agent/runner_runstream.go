@@ -95,8 +95,15 @@ func (r *agentRunner) RunStream(
 	ctx = WithRunID(ctx, run.ID)
 
 	// 1.6. #6 permission-pipeline: per-Run permission denial sink.
-	permDenialSink := make(chan *PermissionDenialDetail, 1)
+	// buffered 16 (was 1): soft interception (agent-security-hardening) can deny multiple
+	// times per run; size 1 dropped all but the first detail.
+	permDenialSink := make(chan *PermissionDenialDetail, 16)
 	ctx = WithPermissionSink(ctx, permDenialSink)
+
+	// 1.7. agent-security-hardening: per-Run soft-deny controller (anti-loop + reason),
+	// injected alongside the sink. MUST be on BOTH run paths — a missing controller makes
+	// the adapter fall back to hard-terminate.
+	ctx = WithSoftDenyController(ctx, NewSoftDenyController(CurrentSoftDenyConfig()))
 
 	// 2. Langfuse trace (same as Run).
 	traceID := langfuse.TraceID()
