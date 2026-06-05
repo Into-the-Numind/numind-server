@@ -313,9 +313,17 @@ func NewBiz(ds store.IStore) *biz {
 
 	// #6 agent-mode-permission-pipeline: PermissionGate + 7 Validators + WrapHooks
 	// 顺序：permission → sandbox（避免 deny 时白启容器；S0 P0 reviewer fix）
+	//
+	// enforce 开关（remove-permission-backdoor hotfix 2026-06-02）：默认 true=所有环境跑真实 pipeline。
+	// SetDefault 兜底使 config_prod.yaml 无需声明该 key（且该文件禁止修改），prod 自动 enforce。
+	// 仅显式 agent.permission.enforce=false 时全局 force-allow（高危逃生舱，gate 构造内 loud-warn）。
+	// 取代旧 flag.Lookup("test.v") 环境嗅探后门（commit 14754a39）。
+	viper.SetDefault("agent.permission.enforce", true)
+	enforcePermission := viper.GetBool("agent.permission.enforce")
 	b.permissionGate = permission.NewPermissionGate(
 		permission.WithStore(ds.AgentPermissions()),
 		permission.WithSkillStore(ds.AgentDefinitions()),
+		permission.WithEnforce(enforcePermission),
 		permission.WithValidators(
 			permvalidators.NewPlatformHardRule(),
 			permvalidators.NewSandboxOverride(),
@@ -328,6 +336,22 @@ func NewBiz(ds store.IStore) *biz {
 			permvalidators.NewAutoModeLLMValidator(permvalidators.NewAIServiceLLMClassifier()),
 		),
 	)
+	log.Infow("agent permission gate wired", "enforce", enforcePermission)
+
+	// agent-security-hardening: soft-interception config (per-run controller reads this).
+	// 命中 permission deny 时只挡这一次工具调用 + 喂回 LLM 续循环（非整 run 终止）；
+	// 防呆三阈值。SetDefault 兜底 prod 无需改 config_prod；enabled=false 退回硬终止（高危逃生舱）。
+	viper.SetDefault("agent.permission.soft_deny.enabled", true)
+	viper.SetDefault("agent.permission.soft_deny.max_same_consecutive", 3)
+	viper.SetDefault("agent.permission.soft_deny.max_total_consecutive", 5)
+	viper.SetDefault("agent.permission.soft_deny.max_lifetime_per_fingerprint", 10)
+	agent.SetSoftDenyConfig(agent.SoftDenyConfig{
+		Enabled:     viper.GetBool("agent.permission.soft_deny.enabled"),
+		MaxSame:     viper.GetInt("agent.permission.soft_deny.max_same_consecutive"),
+		MaxTotal:    viper.GetInt("agent.permission.soft_deny.max_total_consecutive"),
+		MaxLifetime: viper.GetInt("agent.permission.soft_deny.max_lifetime_per_fingerprint"),
+	})
+
 	// #12 agent-mode-billing-integration: budget tracker + admin_test consumer
 	// + BudgetGate hooks 嵌套到 permission 之下，sandbox 之上。
 	// Hook chain order: permission(outer) → budget(middle) → sandbox(base)

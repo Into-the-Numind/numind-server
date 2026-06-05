@@ -223,6 +223,20 @@ sandbox:
 
 # Agent Memory 配置（V1.5 板块 3）
 agent:
+  # 权限 pipeline 总开关（remove-permission-backdoor hotfix 2026-06-02）。
+  # true（默认）= 所有环境跑真实 7-validator pipeline；false = 全局 force-allow（高危逃生舱，仅受控排障）。
+  # 取代旧 flag.Lookup("test.v") 环境嗅探后门（commit 14754a39）。
+  # 注：prod 靠后端 viper.SetDefault("agent.permission.enforce", true) 兜底，config_prod.yaml 无需声明。
+  permission:
+    enforce: true
+    # 软拦截（agent-security-hardening）：命中 deny 只挡这一次工具调用 + 喂回 LLM 续循环（非整 run 终止）。
+    # enabled=false 退回硬终止（高危逃生舱）。三阈值=防呆：同(工具+输入)连续 / 任意连续(成功清零) / 同指纹整 run 累计。
+    # prod 靠 viper.SetDefault 兜底，config_prod.yaml 无需声明。
+    soft_deny:
+      enabled: true
+      max_same_consecutive: 3
+      max_total_consecutive: 5
+      max_lifetime_per_fingerprint: 10
   memory:
     # Task 3.1: AGENT.md 2 级 cascade loader（部署级 + 用户全局）
     # 路径 3-6（workspace 维度）V1.5 不实施，等 V2 扩展。

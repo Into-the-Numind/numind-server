@@ -472,9 +472,14 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 
 	// 1.6. #6 permission-pipeline: 创建 per-Run permission denial sink + 注入 ctx。
 	// wrapper.PreToolCall deny 时通过此 sink 把 detail 回传给 runner 填 RunResult。
-	// buffered size=1 + non-blocking send，避免 wrapper 阻塞；每 Run 独立实例避免 cross-run race。
-	permDenialSink := make(chan *PermissionDenialDetail, 1)
+	// buffered 16 + non-blocking send：软拦截（agent-security-hardening）下一 run 可多次
+	// deny，size=1 会吞掉除第一条外的所有 detail；放大到 16 让多次拦截详情不丢。每 Run 独立实例避免 cross-run race。
+	permDenialSink := make(chan *PermissionDenialDetail, 16)
 	ctx = WithPermissionSink(ctx, permDenialSink)
+
+	// 1.7. agent-security-hardening: per-Run 软拦截控制器（防呆 + 拦截原因），与 sink 并列注入。
+	// nil-not-injected ⇒ adapter 退回硬终止；故两条 run 路径都必须注入。
+	ctx = WithSoftDenyController(ctx, NewSoftDenyController(CurrentSoftDenyConfig()))
 
 	// 2. Langfuse trace
 	traceID := langfuse.TraceID()

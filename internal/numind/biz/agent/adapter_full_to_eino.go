@@ -100,6 +100,31 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 		if err != nil {
 			return "", fmt.Errorf("PreToolCall: %w", err)
 		}
+		// Soft interception (agent-security-hardening): a permission Deny blocks ONLY
+		// this single tool call and feeds a message back to the LLM so the ReAct loop
+		// continues — unless the per-run anti-loop guard trips. This branch MUST come
+		// before the unconditional Record(action) below so the soft path can record
+		// Continue as the FINAL registry write (R6-A): otherwise the run-end
+		// applyHookOverride reads LastAction==PermissionDeny and mis-terminates a
+		// handled soft deny as TerminalPermissionDenied.
+		if action == HookActionPermissionDeny {
+			if sd := SoftDenyFromCtx(ctx); sd != nil && sd.Enabled() {
+				tripped, msg := sd.Resolve(a.ft.Name(), args)
+				if !tripped {
+					if a.hooks.Registry != nil {
+						a.hooks.Registry.Record(HookActionContinue)
+					}
+					// User-facing narration stays the standard "操作被拦截" (reason="").
+					// The full advisory (msg) goes to the LLM via the return value ONLY —
+					// not into the narration Reason field (which is for a short identifier).
+					// Soft deny intentionally omits tool_call_* SSE (no Execute ran), exactly
+					// like a hard reject.
+					a.emitNarration(ctx, narration.StateRejected, input, nil, nil, "")
+					return msg, nil // tool-result fed back to the model → loop continues
+				}
+				// tripped: fall through to the hard-terminate path below.
+			}
+		}
 		if a.hooks.Registry != nil {
 			a.hooks.Registry.Record(action)
 		}
@@ -182,6 +207,12 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 		a.emitNarration(ctx, narration.StateError, input, nil, effectiveErr, "")
 		a.emitStreamToolError(ctx, toolCallID, effectiveErr, durationMs)
 	} else {
+		// Successful tool execution = the agent made progress: reset the soft-deny
+		// anti-loop streak (consecutive + same-fp) so a healthy run that bounces off a
+		// single block never trips. The per-fingerprint LIFETIME counter is preserved.
+		if sd := SoftDenyFromCtx(ctx); sd != nil {
+			sd.OnSuccess()
+		}
 		a.emitNarration(ctx, narration.StateResult, input, result, nil, "")
 		a.emitStreamToolResult(ctx, toolCallID, output, durationMs)
 	}

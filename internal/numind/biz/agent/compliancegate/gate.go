@@ -55,17 +55,22 @@ func WrapHooks(base *agent.RunHooks, gate compliance.ComplianceGate) *agent.RunH
 				return forwardPre(ctx, base, t, input)
 			}
 			if result.Decision == model.DecisionDeny {
+				detail := &agent.PermissionDenialDetail{
+					ToolName:       req.Tool.Name,
+					Behavior:       permission.BehaviorDeny,
+					DecisionReason: "compliance:" + result.RuleLayer,
+					ValidatorID:    "compliance",
+					Message:        result.NarrationMsg,
+				}
+				// agent-security-hardening: feed the compliance deny reason to the per-run
+				// soft-deny controller (independent of sink presence) so the adapter surfaces it.
+				if sd := agent.SoftDenyFromCtx(ctx); sd != nil {
+					sd.SetPending(detail)
+				}
 				if reg := registryFromBase(base); reg != nil {
 					reg.Record(agent.HookActionPermissionDeny)
 				}
 				if sink := agent.PermissionSinkFromCtx(ctx); sink != nil {
-					detail := &agent.PermissionDenialDetail{
-						ToolName:       req.Tool.Name,
-						Behavior:       permission.BehaviorDeny,
-						DecisionReason: "compliance:" + result.RuleLayer,
-						ValidatorID:    "compliance",
-						Message:        result.NarrationMsg,
-					}
 					select {
 					case sink <- detail:
 					default:
