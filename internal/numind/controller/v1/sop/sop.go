@@ -851,9 +851,8 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 			data = fmt.Sprintf("event: thinking\ndata: %s\n\n", string(chunkJSON))
 		} else if event == "message" {
 			data = fmt.Sprintf("data: %s\n\n", string(chunkJSON))
-		} else if event == "done" {
-			data = "event: done\ndata: {\"status\":\"completed\"}\n\n"
 		} else {
+			// done 由本函数末尾统一发送一次（问题 4）；executor 不再透传 done。
 			return nil
 		}
 
@@ -2193,9 +2192,8 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 				data = fmt.Sprintf("event: thinking\ndata: %s\n\n", string(chunkJSON))
 			} else if event == "message" {
 				data = fmt.Sprintf("data: %s\n\n", string(chunkJSON))
-			} else if event == "done" {
-				data = "event: done\ndata: {\"status\":\"completed\"}\n\n"
 			} else {
+				// done 由本函数末尾统一发送一次（问题 4）；edit-stream 不再透传 done。
 				return nil
 			}
 
@@ -2238,9 +2236,8 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 					data = fmt.Sprintf("event: thinking\ndata: %s\n\n", string(chunkJSON))
 				} else if event == "message" {
 					data = fmt.Sprintf("data: %s\n\n", string(chunkJSON))
-				} else if event == "done" {
-					data = "event: done\ndata: {\"status\":\"completed\"}\n\n"
 				} else {
+					// done 由本函数末尾统一发送一次（问题 4）；edit-stream 不再透传 done。
 					return nil
 				}
 
@@ -2727,7 +2724,7 @@ func (ctrl *SopController) callVolcEditStream(ctx context.Context, messages []ma
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
-				_ = handler("done", "")
+				// done 由控制器末尾统一发送一次（问题 4）；edit-stream 不再透传 done。
 				break
 			}
 
@@ -2882,7 +2879,7 @@ func (ctrl *SopController) callAliEditStream(ctx context.Context, messages []map
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
-				_ = handler("done", "")
+				// done 由控制器末尾统一发送一次（问题 4）；edit-stream 不再透传 done。
 				break
 			}
 

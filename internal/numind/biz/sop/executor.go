@@ -780,8 +780,6 @@ func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *m
 			case "message":
 				answerBuf.WriteString(chunk)
 				return handler("message", chunk)
-			case "done":
-				return handler("done", "")
 			default:
 				return nil
 			}
@@ -796,8 +794,6 @@ func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *m
 			case "message":
 				answerBuf.WriteString(chunk)
 				return handler("message", chunk)
-			case "done":
-				return handler("done", "")
 			default:
 				return nil
 			}
@@ -1049,7 +1045,7 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 		raw := strings.TrimPrefix(line, "data: ")
 		if raw == "[DONE]" {
 			sawDone = true
-			_ = handler("done", "")
+			// done 事件由控制器在 biz 返回后统一发送一次（问题 4）；executor 不再透传 done。
 			break
 		}
 
@@ -1402,7 +1398,7 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 		raw := strings.TrimPrefix(line, "data: ")
 		if raw == "[DONE]" {
 			sawDone = true
-			_ = handler("done", "")
+			// done 事件由控制器在 biz 返回后统一发送一次（问题 4）；executor 不再透传 done。
 			break
 		}
 
