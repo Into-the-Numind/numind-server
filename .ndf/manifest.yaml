@@ -3400,8 +3400,8 @@ features:
     numind-server: /private/tmp/wt-agent-security-hardening-numind-server
   progress:
     total_tasks: 5
-    completed_tasks: 0
-    reviewed_tasks: 0
+    completed_tasks: 3
+    reviewed_tasks: 3
   artifacts:
     requirement: requirements/agent-security-hardening.md
     spec: docs/superpowers/specs/2026-06-05-agent-security-hardening-design.md
@@ -3415,6 +3415,7 @@ features:
   - 'S2-D1 (ai 2026-06-05, 设计): 软拦截=运行期 SoftDenyController（per-run ctx 注入，仿 permission_sink）。复用既有 PermissionDenialDetail（wrap_hooks:44 已送 sink）做拦截原因；adapter deny 分支 PermissionDeny→Resolve→软 tool-result+nil+Record(Continue) 续循环 / tripped→error 复用既有 override→TerminalPermissionDenied。零新 enum（I2/I6/I7 守）。SSRF 落工具层（web_fetch 已有 validateFetchURL，run_python 补，抽 agent/security/ssrf.go 共享）；bash ②③④+①-literal 落 bashvalidator AllValidators()（双 gate 自动）。file_read=COS-URL-only 无需改。不写租户表、不禁整工具、不改 config_prod。'
   - 'S3-D2 (ai 2026-06-05, plan): 6 task（T1 BLK-1 cherry-pick→T2 SoftDenyController→T3 软拦截布线(依赖 T2)→T4 SSRF helper+run_python+web_fetch→T5 bashvalidator 语义检查器→T6 S5 策略）。全串行 Tier 4（biz.go 被 T1+T3 共享 + 安全敏感）；每 task 完成并行双 Sonnet reviewer。Rule 11：T1 cherry-pick 保留 test(qa) 链。Rule 10：T6 S5=Go 持久回归 + prod-shape dev 黑盒 + Playwright 尽量。'
   - 'S2-GATE/O1 (user 2026-06-05): 设计门禁通过。O1 待决项=enforce 激活既有 8 bash 检查器(拒所有 $()/{a,b})的误伤面 → 用户选「S5 实测再定」：按现状 S4(既有检查器激活 + 软拦截缓冲)，S5 dev 实测正常 bash 样本，若被既有 $()/{} 误伤届时带数据定放宽，本 PR 不动既有 8 检查器。S4 编码 greenlit。'
+  - 'S4-T1-T3 (ai 2026-06-05): T1(BLK-1 cherry-pick fdcff8d1+27c550cf, gate.go 干净/biz.go 自动合并, enforce 默认 true, permission 测试绿) / T2(SoftDenyController: 三阈值防呆 maxSame3/maxTotal5/maxLifetime10, lifetimeByFP 成功不清零防 R2-B 绕过, 10 单测) / T3(软拦截布线: adapter deny→Resolve→软tool-result+nil+Record(Continue) R6-A registry 卫生 / wrap_hooks+compliancegate SetPending(detail 提到 sink 外解耦) / runner+runstream 双路径注入 + sink 1→16 / biz.go SetSoftDenyConfig + config_dev/local 文档化) 全 TDD GREEN + 每 task 双 Sonnet reviewer PASS/PASS_WITH_CONCERNS。修: T2 加 lifetime 防绕过测试+nil-pending+escalation 边界; T3 加 nil-pending fallback + compliance-source reason 适配器测试 + SetPending 解耦出 sink 块 + 软 deny narration reason="" (不塞全文进 narration Reason 字段)。硬停(Stop/BudgetExceeded)回归绿, -race 绿。'
   - 'S3-GATE-REVIEW (2 独立 sonnet reviewer 2026-06-05): 设计+plan 双审 VERDICT=PASS_WITH_FIXES。已纳入修正：[P0] adapter 无条件 Record(action) 必须拆 per-path、软路径 Record(Continue) 早返回（否则软 deny 末值仍 PermissionDeny→run 完成误升 terminal，spec §3.2c 显式化 + T3 强制测试）；[P1] 防呆加 lifetimeByFP(成功不清零,max 10) 杜绝"插成功无限重试"绕过；[P1] .env 动词门控(不误伤 echo 内 .env)；[P1] rm -rf $VAR 绕过记为沙箱临时性兜底的已知 gap(不 blanket-deny 避免误伤正常变量 rm)；[P1] enforce 激活既有 CommandSubstitution/BraceExpansion 误伤正常 bash → 加 S5 accept/reject 阈值 + 列为设计门禁待决项 O1；[P1] T3 补 compliancegate SetPending 测试 + registry 卫生测试(LastAction==Continue) + 未注入退化测试；[P1] T4 补 web_fetch/run_python 软结果行为测试 + run_python SSRF 校验原始 URL(presign 前)；[P1] T1 cherry-pick 先验 SHA 存在；[P1] T6 dev seed agent 夹具具体化(不留"S5 现场决")。[P2] maxTotal 8→5、sink buffer 1→16、SSRFLiteral 补 0.0.0.0/::1/fe80、DownloadExec 补两步式、ForkBomb 两段式检测、enabled=false loud-warn。'
   blockers: []
 
