@@ -564,71 +564,121 @@ func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode
 	// 4. 注入 skip-legacy-billing 标记，防止 Gateway 与旧 billing 路径双记账
 	ctx = aiservice.WithSkipLegacyBilling(ctx)
 
-	// 5. 调用 Gateway ChatStream（ContextFragments 由 middleware 处理预算规划和渲染）
+	// 5. 调用 Gateway ChatStream（ContextFragments 由 middleware 处理预算规划和渲染）。
+	//    使用可取消的 streamCtx：idle 超时（问题 2）时取消它，adapter 随之关闭连接、
+	//    runOAIStream 退出、ch 关闭。整体超时由父 ctx（biz 的 detach+WithTimeout）提供。
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
 	req := aiservice.ChatRequest{
 		ContextFragments: fragments,
 		Temperature:      0.7,
 		ModelOverride:    modelKey, // pass user's model choice; empty = use task profile default
 		Thinking:         thinking,
 	}
-	ch, err := aiservice.ChatStream(ctx, taskID, req)
+	ch, err := aiservice.ChatStream(streamCtx, taskID, req)
 	if err != nil {
 		return "", nil, fmt.Errorf("executeViaGateway: ChatStream: %w", err)
 	}
 
-	// 6. 消费 channel，将 ChatChunk 转换为 StreamHandler 回调
-	var fullContent strings.Builder
-	var finalUsage *TokenUsage
-	var modelName string
-	var providerName string
-	var streamErr error
-	for chunk := range ch {
-		if chunk.Model != "" {
-			modelName = chunk.Model
-		}
-		if chunk.Provider != "" {
-			providerName = chunk.Provider
-		}
-		if chunk.ReasoningDelta != "" {
-			if handlerErr := handler("thinking", chunk.ReasoningDelta); handlerErr != nil {
-				log.C(ctx).Warnw("executeViaGateway: stream handler error on thinking chunk",
-					"node_id", node.ID, "error", handlerErr)
+	// 6. 消费 channel（带 idle 超时），将 ChatChunk 转换为 StreamHandler 回调。
+	return consumeGatewayStream(ctx, ch, sopIdleTimeout(), cancelStream, node.ID, handler)
+}
+
+// consumeGatewayStream drains the Gateway ChatChunk channel into handler
+// callbacks, enforcing an idle timeout (problem 2): if no chunk arrives within
+// idle it cancels the stream (cancelStream → adapter closes the connection →
+// runOAIStream exits → ch closes) and returns a timeout error wrapping
+// context.DeadlineExceeded. After cancelling it drains ch in the background so
+// the adapter goroutine never blocks on a send (avoids a goroutine leak).
+//
+// Extracted from executeViaGateway so the consumption + idle logic is unit
+// testable with a hand-built channel (the live Gateway needs a registry).
+func consumeGatewayStream(
+	ctx context.Context,
+	ch <-chan aiservice.ChatChunk,
+	idle time.Duration,
+	cancelStream context.CancelFunc,
+	nodeID uint,
+	handler StreamHandler,
+) (string, *TokenUsage, error) {
+	var (
+		fullContent  strings.Builder
+		finalUsage   *TokenUsage
+		modelName    string
+		providerName string
+		streamErr    error
+	)
+
+	idleTimer := time.NewTimer(idle)
+	defer idleTimer.Stop()
+
+	for {
+		select {
+		case chunk, ok := <-ch:
+			if !ok {
+				// Stream finished.
+				if streamErr != nil {
+					return fullContent.String(), finalUsage, fmt.Errorf("executeViaGateway: stream error: %w", streamErr)
+				}
+				if fullContent.Len() == 0 && finalUsage == nil {
+					return "", nil, fmt.Errorf("executeViaGateway: empty response from Gateway (no chunks received)")
+				}
+				return fullContent.String(), finalUsage, nil
 			}
-		}
-		if chunk.Delta != "" {
-			fullContent.WriteString(chunk.Delta)
-			if handlerErr := handler("message", chunk.Delta); handlerErr != nil {
-				log.C(ctx).Warnw("executeViaGateway: stream handler error on message chunk",
-					"node_id", node.ID, "error", handlerErr)
-			}
-		}
-		if chunk.IsFinal {
-			if chunk.Err != nil {
-				streamErr = chunk.Err
-			}
-			if chunk.Usage != nil {
-				finalUsage = &billing.TokenUsage{
-					PromptTokens:     chunk.Usage.PromptTokens,
-					CompletionTokens: chunk.Usage.CompletionTokens,
-					TotalTokens:      chunk.Usage.TotalTokens,
-					ReasoningTokens:  chunk.Usage.ReasoningTokens,
-					ModelName:        modelName,
-					Provider:         providerName,
+			// Reset the idle clock on every chunk.
+			if !idleTimer.Stop() {
+				select {
+				case <-idleTimer.C:
+				default:
 				}
 			}
+			idleTimer.Reset(idle)
+
+			if chunk.Model != "" {
+				modelName = chunk.Model
+			}
+			if chunk.Provider != "" {
+				providerName = chunk.Provider
+			}
+			if chunk.ReasoningDelta != "" {
+				if handlerErr := handler("thinking", chunk.ReasoningDelta); handlerErr != nil {
+					log.C(ctx).Warnw("executeViaGateway: stream handler error on thinking chunk",
+						"node_id", nodeID, "error", handlerErr)
+				}
+			}
+			if chunk.Delta != "" {
+				fullContent.WriteString(chunk.Delta)
+				if handlerErr := handler("message", chunk.Delta); handlerErr != nil {
+					log.C(ctx).Warnw("executeViaGateway: stream handler error on message chunk",
+						"node_id", nodeID, "error", handlerErr)
+				}
+			}
+			if chunk.IsFinal {
+				if chunk.Err != nil {
+					streamErr = chunk.Err
+				}
+				if chunk.Usage != nil {
+					finalUsage = &billing.TokenUsage{
+						PromptTokens:     chunk.Usage.PromptTokens,
+						CompletionTokens: chunk.Usage.CompletionTokens,
+						TotalTokens:      chunk.Usage.TotalTokens,
+						ReasoningTokens:  chunk.Usage.ReasoningTokens,
+						ModelName:        modelName,
+						Provider:         providerName,
+					}
+				}
+			}
+		case <-idleTimer.C:
+			cancelStream()                  // stop the adapter (closes connection → ch closes)
+			go func() {                     //nolint:errcheck // drain to avoid adapter goroutine leak
+				for range ch {
+				}
+			}()
+			log.C(ctx).Warnw("gateway stream idle timeout", "node_id", nodeID, "idle", idle)
+			return fullContent.String(), finalUsage,
+				fmt.Errorf("gateway stream idle timeout: no data for %s: %w", idle, context.DeadlineExceeded)
 		}
 	}
-
-	// Mid-stream failure: propagate so the caller can fail the node rather
-	// than accepting a truncated output as "success".
-	if streamErr != nil {
-		return fullContent.String(), finalUsage, fmt.Errorf("executeViaGateway: stream error: %w", streamErr)
-	}
-	if fullContent.Len() == 0 && finalUsage == nil {
-		return "", nil, fmt.Errorf("executeViaGateway: empty response from Gateway (no chunks received)")
-	}
-
-	return fullContent.String(), finalUsage, nil
 }
 
 // ExecuteNodeStreamWithThinking 流式执行单个节点，并分离思考内容和实际内容
