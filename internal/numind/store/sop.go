@@ -96,10 +96,7 @@ type ISopStore interface {
 	DeleteRun(runID uint) error
 	DeleteRuns(runIDs []uint) error
 	DeleteNodeRunsByRun(runID uint) error
-	DeleteNodeRunsAfterSort(runID uint, sort int) error
-	DeleteNotesByRun(runID uint) error
 	DeleteFilesByRun(runID uint) error
-	DeleteChatMessagesByRun(runID uint) error
 	// CleanupDownstreamForRegeneration atomically removes stale downstream data
 	// when a mid-flow node is regenerated (see method doc).
 	CleanupDownstreamForRegeneration(runID uint, afterSort int) error
@@ -772,24 +769,9 @@ func (s *sopStore) DeleteNodeRunsByRun(runID uint) error {
 	return s.db.Where("run_id = ?", runID).Delete(&model.SopNodeRun{}).Error
 }
 
-// DeleteNodeRunsAfterSort 删除指定任务中排序在指定位置之后的执行记录
-func (s *sopStore) DeleteNodeRunsAfterSort(runID uint, sort int) error {
-	return s.db.Where("run_id = ? AND sort > ?", runID, sort).Delete(&model.SopNodeRun{}).Error
-}
-
-// DeleteNotesByRun 删除指定任务关联的所有笔记
-func (s *sopStore) DeleteNotesByRun(runID uint) error {
-	return s.db.Where("run_id = ?", runID).Delete(&model.SopNote{}).Error
-}
-
 // DeleteFilesByRun 删除指定任务关联的所有文件记录
 func (s *sopStore) DeleteFilesByRun(runID uint) error {
 	return s.db.Where("run_id = ?", runID).Delete(&model.SopFile{}).Error
-}
-
-// DeleteChatMessagesByRun 删除指定任务关联的所有对话消息
-func (s *sopStore) DeleteChatMessagesByRun(runID uint) error {
-	return s.db.Where("run_id = ?", runID).Delete(&model.SopChatMsg{}).Error
 }
 
 // CleanupDownstreamForRegeneration 在单个事务内删除：下游节点运行（sort > afterSort）、
