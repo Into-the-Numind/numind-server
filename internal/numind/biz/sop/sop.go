@@ -732,20 +732,12 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 			return fmt.Errorf("failed to update node run: %w", err)
 		}
 
-		// 联动清理（解决“时空推演矛盾”）：既然中间节点重做了，后续的所有步骤、笔记和对话都已经失效，必须清除以防冲突
+		// 联动清理（解决“时空推演矛盾”）：既然中间节点重做了，后续的所有步骤、笔记和对话都已经失效，必须清除以防冲突。
+		// 三个删除包进单个事务（要么全成、要么全不动）：原子清理失败 = 可能残留过时下游数据，
+		// 中止再生而非在脏时间线上继续（问题 5）。
 		log.C(ctx).Infow("Regeneration triggered, cleaning up downstream records", "run_id", runID, "after_sort", node.Sort)
-
-		// 1. 删除后续节点的执行记录
-		if err := b.ds.Sop().DeleteNodeRunsAfterSort(runID, node.Sort); err != nil {
-			log.C(ctx).Warnw("Failed to cleanup downstream node runs", "error", err)
-		}
-		// 2. 删除该任务关联的最终笔记
-		if err := b.ds.Sop().DeleteNotesByRun(runID); err != nil {
-			log.C(ctx).Warnw("Failed to cleanup run notes", "error", err)
-		}
-		// 3. 删除该任务关联的对话消息（历史已变，追问需重来）
-		if err := b.ds.Sop().DeleteChatMessagesByRun(runID); err != nil {
-			log.C(ctx).Warnw("Failed to cleanup run chat messages", "error", err)
+		if err := b.ds.Sop().CleanupDownstreamForRegeneration(runID, node.Sort); err != nil {
+			return fmt.Errorf("failed to clean up downstream records for regeneration: %w", err)
 		}
 
 		// 重新加载nodeRun以获取最新数据
