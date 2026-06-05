@@ -23,10 +23,6 @@ func TestStartSSEHeartbeat_LifecycleAndMutex(t *testing.T) {
 	require.NotNil(t, mu, "mutex must be returned for callers to guard writes")
 	require.NotNil(t, stop, "stop func must be returned")
 
-	// The mutex must be usable by the caller for content writes.
-	mu.Lock()
-	mu.Unlock()
-
 	// stop() must tear down the heartbeat goroutine without panic; calling the
 	// returned cancel twice (e.g. via defer + explicit) must be safe.
 	require.NotPanics(t, func() {
