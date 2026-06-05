@@ -12,8 +12,9 @@ import (
 )
 
 // sseHeartbeatInterval is how often an SSE comment heartbeat is written to keep
-// a streaming connection alive during long generations.
-const sseHeartbeatInterval = 15 * time.Second
+// a streaming connection alive during long generations. A var (not const) so
+// tests can shorten it; production never reassigns it.
+var sseHeartbeatInterval = 15 * time.Second
 
 // startSSEHeartbeat launches a goroutine that writes an SSE comment line
 // (":\n\n") every sseHeartbeatInterval so proxies / browsers keep the streaming

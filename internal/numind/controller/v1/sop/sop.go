@@ -2217,14 +2217,19 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 		friendly := errtranslate.FriendlyForSSE(c, "SopEditAIStream", aiErr)
 		errorMsg, _ := json.Marshal(friendly)
 		errorData := fmt.Sprintf("event: error\ndata: %s\n\n", string(errorMsg))
+		// 持有写锁：与心跳 goroutine 互斥，避免 SSE 帧交错（与另两个 handler 一致）。
+		mu.Lock()
 		_, _ = c.Writer.WriteString(errorData)
 		flusher.Flush()
+		mu.Unlock()
 		return
 	}
 
-	// 10. 发送完成事件
+	// 10. 发送完成事件（持有写锁，避免与心跳交错）
+	mu.Lock()
 	_, _ = c.Writer.WriteString("event: done\ndata: {\"status\":\"completed\"}\n\n")
 	flusher.Flush()
+	mu.Unlock()
 }
 
 // ChatAfterRunStream 已完成run后的对话（SSE）
