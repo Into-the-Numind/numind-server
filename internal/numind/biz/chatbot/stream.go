@@ -67,7 +67,7 @@ func BuildChatContextFragments(
 	order := 0
 
 	// Fragment 0: system prompt (immutable, never compressed).
-	frags = append(frags, contextbudget.NewImmutableSystemFragment("sys-0", systemPrompt))
+	frags = append(frags, contextbudget.NewImmutableSystemFragment("sys-0", systemPrompt, order))
 	order++
 
 	// Fragments 1…N: history turns.
