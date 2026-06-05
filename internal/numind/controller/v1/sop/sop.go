@@ -871,16 +871,15 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 	})
 
 	if err != nil {
-		// 检查是否是客户端断开连接
-		if c.Request.Context().Err() != nil {
-			log.C(c).Infow("Client disconnected during stream", "error", err)
-			return // 客户端断开，不需要发送错误
-		}
-
+		// 问题 1 后：detach 已让客户端断开不再触发 ctx 取消，故 err 一定是真实的生成/落库
+		// 错误。始终经 FriendlyForSSE 记录（mapped→Warn / unmapped→Error），原始 err 进 zap；
+		// 仅在客户端仍在时写 error 帧（断开则跳过，无意义）。
 		// 错误友好化：阻断 "node execution failed: executeViaGateway: ChatStream: ContextBudgetCredits:
-		// credit: insufficient balance..." 这类 Go 调用栈泄漏到 UI。原始 err 进 zap 日志。
-		// 详见 internal/numind/biz/errtranslate/translate.go。
+		// credit: insufficient balance..." 这类 Go 调用栈泄漏到 UI。详见 biz/errtranslate。
 		friendly := errtranslate.FriendlyForSSE(c, "SopExecuteNodeStream", err)
+		if clientGone.Load() || c.Request.Context().Err() != nil {
+			return // 客户端已断开：错误已落日志，无需也无法发送 error 帧
+		}
 		errorMsg, _ := json.Marshal(friendly)
 		errorData := fmt.Sprintf("event: error\ndata: %s\n\n", string(errorMsg))
 		mu.Lock()
@@ -2434,12 +2433,12 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 	})
 
 	if err != nil {
-		if c.Request.Context().Err() != nil {
-			log.C(c).Infow("Client disconnected during stream", "error", err)
-			return
-		}
-		// 错误友好化：转 errno 友好文案，原始 err 进 zap 日志（见 errtranslate）。
+		// 问题 1 后：detach 让客户端断开不再触发 ctx 取消，err 一定是真实错误。
+		// 始终经 FriendlyForSSE 落日志，仅在客户端仍在时写 error 帧。
 		friendly := errtranslate.FriendlyForSSE(c, "SopChatAfterRunStream", err)
+		if clientGone.Load() || c.Request.Context().Err() != nil {
+			return // 客户端已断开：错误已落日志，无需发送 error 帧
+		}
 		errorMsg, _ := json.Marshal(friendly)
 		errorData := fmt.Sprintf("event: error\ndata: %s\n\n", string(errorMsg))
 		mu.Lock()
