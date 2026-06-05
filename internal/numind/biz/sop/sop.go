@@ -495,6 +495,34 @@ func (b *sopBiz) GetNextNode(ctx context.Context, runID uint) (*model.SopNode, b
 	return nil, false, nil
 }
 
+// runStatusUpdateMaxAttempts 是 run 状态更新的最大尝试次数（含首次）。
+const runStatusUpdateMaxAttempts = 3
+
+// updateRunStatusWithRetry 带指数退避地持久化 run 状态更新（问题 6）。
+//
+// SOP run 的状态抖动不应暴露给用户：瞬时 DB 失败时重试（100ms→200ms 指数退避）；
+// 全部重试失败则记录 Error 级日志（进告警）并返回错误，由调用方决定是否静默继续——
+// 这类 run 会被后台 ResetZombieRuns 收敛，用户的流式生成不受影响。
+func (b *sopBiz) updateRunStatusWithRetry(ctx context.Context, runID uint, updates map[string]interface{}) error {
+	var err error
+	backoff := 100 * time.Millisecond
+	for attempt := 0; attempt < runStatusUpdateMaxAttempts; attempt++ {
+		if err = b.ds.Sop().UpdateRun(runID, updates); err == nil {
+			return nil
+		}
+		log.C(ctx).Warnw("run status update failed; will retry",
+			"run_id", runID, "attempt", attempt+1, "error", err)
+		// 最后一次失败后不再 sleep，直接给上层处理。
+		if attempt < runStatusUpdateMaxAttempts-1 {
+			time.Sleep(backoff)
+			backoff *= 2
+		}
+	}
+	log.C(ctx).Errorw("run status update failed after retries; leaving for zombie-reset",
+		"run_id", runID, "error", err)
+	return err
+}
+
 // ExecuteNodeStream 流式执行指定节点
 // modelKey: 用户选择的模型 key（空字符串表示使用节点默认配置）
 // thinkingMode: 是否开启深度思考模式
@@ -555,19 +583,25 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	}
 
 	// ===== 状态转换：draft → running =====
-	// 如果当前run是draft状态，首次执行节点时转换为running状态（此时才计入配额）
+	// 如果当前run是draft状态，首次执行节点时转换为running状态（此时才计入配额）。
+	// 问题 6：带退避重试持久化；仅在 DB 成功后才翻内存状态，保证内存与 DB 最终一致——
+	// 否则内存先置 Running 会让下方二次兜底（:658）误判已是 running 而跳过补偿。
 	if run.Status == model.SopStatusDraft {
-		run.Status = model.SopStatusRunning
+		var startedAt *time.Time
 		draftUpdate := map[string]interface{}{"status": model.SopStatusRunning}
 		if run.StartedAt == nil {
 			now := time.Now()
-			run.StartedAt = &now
+			startedAt = &now
 			draftUpdate["started_at"] = now
 		}
-		if err := b.ds.Sop().UpdateRun(run.ID, draftUpdate); err != nil {
-			log.C(ctx).Errorw("Failed to update run status from draft to running", "run_id", run.ID, "error", err)
-			// 不阻断执行，记录错误后继续
+		if err := b.updateRunStatusWithRetry(ctx, run.ID, draftUpdate); err != nil {
+			// 重试耗尽，DB 仍 draft。不翻内存 → 下方二次兜底/完成块/zombie-reset 可再收敛。
+			// 对用户静默（问题 6）。
 		} else {
+			run.Status = model.SopStatusRunning
+			if startedAt != nil {
+				run.StartedAt = startedAt
+			}
 			log.C(ctx).Infow("Run status changed from draft to running", "run_id", run.ID, "user_id", run.UserID)
 		}
 	}
@@ -654,7 +688,9 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	}
 
 	// 确全局执行记录（Run）的状态标记为正在执行（解决“状态僵死”问题）
-	// 无论是第一个节点启动，还是中间节点重生成，都必须确保整体状态为 running
+	// 无论是第一个节点启动，还是中间节点重生成，都必须确保整体状态为 running。
+	// 问题 6：带退避重试；重试都失败不再 fail-fast 报错给用户，记录后继续生成
+	// （run 状态由完成块或 ResetZombieRuns 收敛），对用户静默无感。
 	if run.Status != model.SopStatusRunning {
 		updateData := map[string]interface{}{
 			"status":        model.SopStatusRunning,
@@ -664,8 +700,11 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		if run.StartedAt == nil {
 			updateData["started_at"] = time.Now()
 		}
-		if err := b.ds.Sop().UpdateRun(runID, updateData); err != nil {
-			return fmt.Errorf("failed to update run status to running: %w", err)
+		if err := b.updateRunStatusWithRetry(ctx, runID, updateData); err != nil {
+			log.C(ctx).Errorw("could not mark run running after retries; continuing (self-heal via completion/zombie-reset)",
+				"run_id", runID, "error", err)
+		} else {
+			run.Status = model.SopStatusRunning
 		}
 	}
 
