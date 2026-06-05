@@ -63,7 +63,10 @@ func TestPrepare_CompressionKeepsCurrentInputLast(t *testing.T) {
 
 	// Tiny context window forces the planner to summarise the durable history.
 	// safe_input_budget = floor((150 - 20 - 5) * 0.85) = 106 tokens.
-	// Each history fragment (~200 zh chars * 0.6 = ~120 tokens) alone exceeds it.
+	// Each history fragment costs ~200 zh chars * 0.6 (sampleProfile zh rate) +
+	// 2 (fragment_overhead) + 4 (message_overhead) ≈ 126 tokens — alone exceeds
+	// the 106 safe budget, so compression is guaranteed even if overhead shifts a
+	// few tokens. The require(sc.called) below hard-gates this precondition.
 	policy := &model.ContextBudgetPolicy{
 		Operation:            "sop_run",
 		ReservedOutputTokens: 20,
@@ -148,4 +151,15 @@ func TestPrepare_CompressionKeepsCurrentInputLast(t *testing.T) {
 		"current step instruction MUST be the last message the LLM sees")
 	assert.Less(t, summaryIdx, curIdx,
 		"history summary must come BEFORE the current step instruction (bug renders it after → model continues prior step)")
+}
+
+// TestMinFragmentOrder locks the contract used by applyPlan to anchor a summary:
+// the smallest Order among replaced fragments, or 0 for an empty slice.
+func TestMinFragmentOrder(t *testing.T) {
+	assert.Equal(t, 0, minFragmentOrder(nil), "empty slice → 0")
+	assert.Equal(t, 0, minFragmentOrder([]contextbudget.ContextFragment{}), "empty slice → 0")
+	assert.Equal(t, 2, minFragmentOrder([]contextbudget.ContextFragment{
+		{Order: 5}, {Order: 2}, {Order: 9},
+	}), "min of {5,2,9} → 2")
+	assert.Equal(t, 7, minFragmentOrder([]contextbudget.ContextFragment{{Order: 7}}), "single element → its order")
 }

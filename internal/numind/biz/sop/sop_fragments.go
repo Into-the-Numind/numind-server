@@ -135,6 +135,15 @@ func buildSOPNodeFragments(
 //   - "system" role → RoleImmutable.
 //   - "assistant" role → RoleDurable / SourceAssistant.
 //   - "user" role (non-last) → RoleDurable / SourceUser.
+//
+// Precondition (guaranteed by executeViaGateway, which appends the current input
+// as the final message when input != ""): the current-turn user input is the
+// LAST element of msgs. Each fragment's Order is its message index, so the
+// current input receives the largest Order and renders last after the budget
+// middleware's Order-stable sort. If msgs were to end with an assistant message
+// (only possible when there is no current input), that trailing message would
+// carry a higher Order than the last user message — acceptable, since in that
+// degenerate case there is no current turn to keep last.
 func buildSOPGatewayFragments(msgs []LLMMessage) []contextbudget.ContextFragment {
 	if len(msgs) == 0 {
 		return nil

@@ -38,12 +38,14 @@ func TestBuildSOPGatewayFragments_CurrentInputHasHighestOrder(t *testing.T) {
 	// Identify the single critical user fragment (the current step input) and the
 	// maximum Order among all other (history/system) fragments.
 	var current *contextbudget.ContextFragment
+	criticalUserCount := 0
 	maxHistOrder := 0
 	haveHist := false
 	for i := range frags {
 		f := frags[i]
 		if f.Critical && f.Source == contextbudget.SourceUser {
 			current = &frags[i]
+			criticalUserCount++
 			continue
 		}
 		if !haveHist || f.Order > maxHistOrder {
@@ -52,6 +54,7 @@ func TestBuildSOPGatewayFragments_CurrentInputHasHighestOrder(t *testing.T) {
 		}
 	}
 
+	require.Equal(t, 1, criticalUserCount, "exactly one critical user fragment (the current step input) is expected")
 	require.NotNil(t, current, "current step critical user fragment must exist")
 	require.True(t, haveHist, "history fragments must exist")
 	assert.Greater(t, current.Order, maxHistOrder,

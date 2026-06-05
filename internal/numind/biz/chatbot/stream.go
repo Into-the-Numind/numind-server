@@ -123,18 +123,11 @@ func BuildChatContextFragments(
 		order++
 	}
 
-	// Current user message: critical, RoleRecent, CompressNone.
-	frags = append(frags, cb.ContextFragment{
-		ID:              "cur-msg",
-		Role:            cb.RoleRecent,
-		Source:          cb.SourceUser,
-		ContentType:     cb.ContentText,
-		Content:         currentMessage,
-		Importance:      9,
-		Order:           order,
-		Compressibility: cb.CompressNone,
-		Critical:        true,
-	})
+	// Current user message: critical, RoleRecent, CompressNone. order is the
+	// running max here, so it renders last after the budget middleware's
+	// Order-stable sort. Use the shared producer so the Order contract is enforced
+	// in one place. (sop-context-ordering-fix)
+	frags = append(frags, contextbudget.NewCriticalUserFragment("cur-msg", currentMessage, order))
 
 	return frags
 }

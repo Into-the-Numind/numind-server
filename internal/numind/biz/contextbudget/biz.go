@@ -200,6 +200,8 @@ func (b *Biz) Prepare(ctx context.Context, input aimw.PrepareInput) (*aimw.Prepa
 		return nil, fmt.Errorf("Prepare: ComputeBudget: %w", err)
 	}
 
+	// Copy so the later in-place sortFragmentsByOrder (and applyPlan rewrites) do
+	// not mutate the caller's input.Fragments slice. (sop-context-ordering-fix)
 	fragments := make([]contextbudget.ContextFragment, len(input.Fragments))
 	copy(fragments, input.Fragments)
 
