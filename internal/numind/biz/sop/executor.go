@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"numind-server/internal/numind/store"
@@ -109,6 +110,45 @@ func sopOverallTimeout() time.Duration {
 	}
 	return defaultSopStreamOverallTimeout
 }
+
+// idleWatcher closes a streaming response body when no activity (no new chunk)
+// is seen within the idle window, or when ctx is cancelled. It guards the
+// blocking bufio reads in the fallback streaming path (problem 2): a provider
+// that sends headers then stalls would otherwise hang the read forever.
+//
+// The read loop MUST call mark() after every successful read to reset the idle
+// clock. tripped() reports whether the IDLE timeout (not ctx cancel) fired, so
+// the caller can return a clear "provider stalled" error vs a ctx error.
+type idleWatcher struct {
+	timer   *time.Timer
+	tripped atomic.Bool
+}
+
+// startIdleWatcher arms an idle timer that closes body after idle of inactivity,
+// and a goroutine that closes body on ctx cancellation. The returned stop func
+// (call via defer) tears both down.
+func startIdleWatcher(ctx context.Context, body io.Closer, idle time.Duration) (*idleWatcher, func()) {
+	w := &idleWatcher{}
+	w.timer = time.AfterFunc(idle, func() {
+		w.tripped.Store(true)
+		_ = body.Close() // unblocks the in-flight bufio read
+	})
+	stop := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = body.Close()
+		case <-stop:
+		}
+	}()
+	return w, func() {
+		w.timer.Stop()
+		close(stop)
+	}
+}
+
+// mark resets the idle clock; call after every successful read.
+func (w *idleWatcher) mark(idle time.Duration) { w.timer.Reset(idle) }
 
 // applyDefaultLLMConfig 当节点未配置 LLM 信息时，使用系统默认配置（volc.*）
 func applyDefaultLLMConfig(node *model.SopNode) {
@@ -273,28 +313,27 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 	var fullOutput strings.Builder
 	var usage *TokenUsage
 	reader := bufio.NewReader(resp.Body)
+	// idle 超时保护（问题 2）：连续 idle 无字节则关闭 body 解除阻塞读。
+	idle := sopIdleTimeout()
+	watcher, stopWatcher := startIdleWatcher(ctx, resp.Body, idle)
+	defer stopWatcher()
 	sawDone := false
 
 	for {
-		// 检查context是否被取消
-		select {
-		case <-ctx.Done():
-			log.C(ctx).Warnw("Context cancelled during stream", "node_id", node.ID)
-			// 即使context取消，也返回已累积的输出
-			if fullOutput.Len() > 0 {
-				return fullOutput.String(), usage, nil
-			}
-			return "", nil, fmt.Errorf("stream cancelled: %w", ctx.Err())
-		default:
-		}
-
-		// 直接阻塞读取，不再使用不安全的每行超时逻辑
+		// 阻塞读取；ctx 取消或 idle 超时由 idleWatcher 关闭 body 解除阻塞。
 		lineBytes, readErr := reader.ReadBytes('\n')
 		if readErr != nil {
+			if watcher.tripped.Load() {
+				log.C(ctx).Warnw("LLM stream idle timeout", "node_id", node.ID, "idle", idle)
+				return fullOutput.String(), usage, fmt.Errorf("LLM stream idle timeout: no data for %s: %w", idle, context.DeadlineExceeded)
+			}
 			if readErr == io.EOF {
 				if len(lineBytes) == 0 {
 					break
 				}
+			}
+			if ctx.Err() != nil {
+				return fullOutput.String(), usage, fmt.Errorf("LLM stream cancelled: %w", ctx.Err())
 			}
 			log.C(ctx).Errorw("Read error during stream", "node_id", node.ID, "error", readErr)
 			// 即使读取出错，也返回已累积的输出（如果有）
@@ -303,6 +342,7 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 			}
 			return "", nil, fmt.Errorf("read error: %w", readErr)
 		}
+		watcher.mark(idle)
 
 		// 转换为字符串并去除换行符
 		line := strings.TrimRight(string(lineBytes), "\r\n")
@@ -871,6 +911,10 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 	}
 
 	reader := bufio.NewReader(resp.Body)
+	// idle 超时保护（问题 2）：连续 idle 无字节则关闭 body 解除阻塞读。
+	idle := sopIdleTimeout()
+	watcher, stopWatcher := startIdleWatcher(ctx, resp.Body, idle)
+	defer stopWatcher()
 
 	var (
 		thinkingBuf        strings.Builder
@@ -899,16 +943,13 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 	}
 
 	for {
-		// 检查context是否被取消
-		select {
-		case <-ctx.Done():
-			return usage, ctx.Err()
-		default:
-		}
-
-		// 直接阻塞读取，不再使用不安全的每行超时逻辑
+		// 阻塞读取；ctx 取消或 idle 超时由 idleWatcher 关闭 body 解除阻塞。
 		lineBytes, readErr := reader.ReadBytes('\n')
 		if readErr != nil {
+			if watcher.tripped.Load() {
+				log.C(ctx).Warnw("Ali deep thinking stream idle timeout", "node_id", node.ID, "idle", idle)
+				return usage, fmt.Errorf("ali deep thinking stream idle timeout: no data for %s: %w", idle, context.DeadlineExceeded)
+			}
 			if readErr == io.EOF {
 				if len(lineBytes) == 0 {
 					break
@@ -921,6 +962,7 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 			log.C(ctx).Errorw("Read error in ali deep thinking stream", "node_id", node.ID, "error", readErr)
 			return usage, fmt.Errorf("read error: %w", readErr)
 		}
+		watcher.mark(idle)
 
 		// 转换为字符串并去除换行符
 		line := strings.TrimRight(string(lineBytes), "\r\n")
@@ -1241,6 +1283,10 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 	}
 
 	reader := bufio.NewReader(resp.Body)
+	// idle 超时保护（问题 2）：连续 idle 无字节则关闭 body 解除阻塞读。
+	idle := sopIdleTimeout()
+	watcher, stopWatcher := startIdleWatcher(ctx, resp.Body, idle)
+	defer stopWatcher()
 
 	var (
 		thinkingBuf    strings.Builder
@@ -1250,16 +1296,13 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 	)
 
 	for {
-		// 检查context是否被取消
-		select {
-		case <-ctx.Done():
-			return usage, ctx.Err()
-		default:
-		}
-
-		// 直接阻塞读取，不再使用不安全的每行超时逻辑
+		// 阻塞读取；ctx 取消或 idle 超时由 idleWatcher 关闭 body 解除阻塞。
 		lineBytes, readErr := reader.ReadBytes('\n')
 		if readErr != nil {
+			if watcher.tripped.Load() {
+				log.C(ctx).Warnw("Volc deep thinking stream idle timeout", "node_id", node.ID, "idle", idle)
+				return usage, fmt.Errorf("volc deep thinking stream idle timeout: no data for %s: %w", idle, context.DeadlineExceeded)
+			}
 			if readErr == io.EOF {
 				if len(lineBytes) == 0 {
 					break
@@ -1272,6 +1315,7 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 			log.C(ctx).Errorw("Read error in volc deep thinking stream", "node_id", node.ID, "error", readErr)
 			return usage, fmt.Errorf("read error: %w", readErr)
 		}
+		watcher.mark(idle)
 
 		// 转换为字符串并去除换行符
 		line := strings.TrimRight(string(lineBytes), "\r\n")
