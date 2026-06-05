@@ -1,6 +1,7 @@
 package errtranslate
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -8,6 +9,22 @@ import (
 	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/pkg/errno"
 )
+
+// TestToErrno_WrappedDeadlineExceeded verifies stream idle/overall timeout
+// errors (which wrap context.DeadlineExceeded) map to ErrAIProviderTimeout so
+// the UI sees a friendly "provider timed out" message rather than the generic
+// fallback.
+func TestToErrno_WrappedDeadlineExceeded(t *testing.T) {
+	wrapped := fmt.Errorf("node execution failed: %w",
+		fmt.Errorf("LLM provider stalled: no data for 4m0s: %w", context.DeadlineExceeded))
+	e, ok := ToErrno(wrapped)
+	if !ok {
+		t.Fatalf("expected ok=true for wrapped context.DeadlineExceeded, got false (err=%v)", wrapped)
+	}
+	if e.Code != errno.ErrAIProviderTimeout.Code {
+		t.Fatalf("expected code %q, got %q", errno.ErrAIProviderTimeout.Code, e.Code)
+	}
+}
 
 // TestToErrno_WrappedCreditSentinel verifies the primary leak path: SOP biz
 // wraps credit.ErrInsufficientCredits via fmt.Errorf("node execution failed:
