@@ -3409,3 +3409,31 @@ features:
   - 'S0-D2 (ai 2026-06-05): 吸收并取代废弃的 remove-permission-backdoor hotfix（manifest stage H1，fix/remove-permission-backdoor 2 commit 未合并）。该 hotfix 当初按 user 选 Hotfix 快车道但严格 triage 第 5 条本应 Standard；现并入本 Standard feature 一并交付。BLK-1 fix 的 2 commit（含 test(qa): 复现测试）将在 S4 cherry-pick 到 feature/agent-security-hardening 以保留 Rule 11 复现链。'
   - 'S0-D3 (ai 2026-06-05, 调研结论 read-only Explore ×3): 软拦截介入点 adapter_full_to_eino.go:106-109(deny→return tool-result+nil)/runner.go:1231-1243+runner_runstream applyHookOverride(PermissionDeny 跳过 terminal+Reset registry)/防呆置外层 ReAct 循环。SSRF: validateFetchURL+checkIPSafe(tool_web_fetch.go:278-356)可复用，run_python downloadInputFile(~406)缺 SSRF。file_read=COS-URL-only(regex /agent-(attachments|outputs)/<uid>/)结构上不可读服务器路径 → ④凭据禁令仅 bash 需要，file_read 无需改。bash_exec=--network=none 无网络(SSRF via bash curl/wget 主要靠沙箱网络隔离，bashvalidator 文本检查作纵深)。平台禁令落 PlatformHardRule 扩展(现仅 gate bash_exec)，bash 语义危险加进 bashvalidator AllValidators()(双 gate 自动生效)。'
   blockers: []
+- id: sop-context-ordering-fix
+  ndf_version: '3.0'
+  description: '客户上报线上 bug：SOP 多步执行串步——执行第 3 步却产出第 2 步内容。根因=AI Gateway(ContextBudgetCredits 中间件)上下文压缩时 fragment 排序错位，仅当①走 Gateway(modelKey!="")②上下文超预算触发压缩 时命中(解释为何偏偏第 3 步:前两步短不压缩)。三处叠加:(1) biz/contextbudget/biz.go applyPlan 把摘要 fragment append 到 result 末尾,排在当前输入之后;(2) pkg/aiservice/context_renderer.go RenderContextFragments 不按 Order 排序+Prepare/prepareWithoutCompression 渲染前不排序;(3) producers.go NewImmutableSystemFragment/NewCriticalUserFragment 不设 Order(默认0),SOP buildSOPGatewayFragments 给当前输入调 NewCriticalUserFragment 时没传 Order→当前输入 Order=0 比历史还小。后果:压缩后消息序变成 系统提示+当前第3步指令+第1&2步摘要,摘要成最后一条,LLM 据此续写产出第2步内容。共享中间件:SOP/chatbot 命中,salesrag(Order 已 0/100+/1000 且无 summarize 候选)不命中、修复后不回归。Fix=三层 belt-and-suspenders: A 改两 producer 签名强制设 Order(无 test 调用方,只改 chatbot/stream.go+sop_fragments.go); B applyPlan 摘要 Order=min(被替换候选 Order)落原位; C Prepare/prepareWithoutCompression 渲染前 sort.SliceStable(byOrder)。RenderContextFragments 自身不改(保文档契约,排序责任留 biz 层)。'
+  track: standard
+  stage: S0
+  classification_reason: 'Standard — Triage 第 4 条(>3 文件:producers.go/biz.go/sop_fragments.go/chatbot stream.go + 测试)+ 第 5 条(计费相邻共享 context 中间件,跨 SOP/chatbot/salesrag 高风险)失败。① 无 DB schema ② 无新 API ③ 无新外部服务 ④ 文件 >3 ⑤ 高风险=是。'
+  last_updated_by: ai-s0
+  last_updated_at: '2026-06-05T12:45:00+08:00'
+  created_at: '2026-06-05T12:39:42+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: feature/sop-context-ordering-fix
+  worktrees:
+    numind-server: /private/tmp/wt-sop-context-ordering-fix-numind-server
+  progress:
+    total_tasks: 2
+    completed_tasks: 0
+    reviewed_tasks: 0
+  artifacts:
+    requirement: requirements/sop-context-ordering-fix.md
+    spec: docs/superpowers/specs/2026-06-05-sop-context-ordering-fix-design.md
+    plan: docs/superpowers/plans/2026-06-05-sop-context-ordering-fix-plan.md
+  decisions:
+  - 'S2-D1 (ai 2026-06-05): 选 Fix A 改 producer 签名(NewImmutableSystemFragment/NewCriticalUserFragment 加 order int 参数)而非调用点补设 .Order——结构性根治、强制每个调用点表态;且全仓库无 _test.go 调用这两 producer,blast radius 仅 chatbot/stream.go + sop_fragments.go 两生产文件。'
+  - 'S2-D2 (ai 2026-06-05): 稳定排序放 contextbudget biz 层(Prepare/prepareWithoutCompression),不改 RenderContextFragments 内部——保 renderer "调用方负责预排序" 文档契约,排序责任内聚在 biz 层。'
+  - 'S2-D3 (ai 2026-06-05): applyPlan 摘要 fragment Order=min(被替换 summarize 候选 Order),落历史原位而非末尾;用 sort.SliceStable 使同 Order 保持输入序(向后兼容全 0 Order 调用方=恒等,attachment 跟随父 user fragment)。'
+  blockers: []
