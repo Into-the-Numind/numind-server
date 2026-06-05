@@ -82,10 +82,11 @@ features:
   ndf_version: '3.0'
   description: 'Security backdoor removal: internal/numind/biz/permission/gate.go:106-121 的 PermissionGate.Check 含硬编码生产后门（commit 14754a39 "feat(permission): force release all permissions globally"）。仅当 flag.Lookup("test.v")!=nil（即 go test 下）才跑真实 validator pipeline (g.pipeline.Check)；dev/prod 一律无条件返回 BehaviorAllow + DecisionReasonOther + ValidatorID="ForceAllowAllGate"。后果：biz.go:313-327 wire 的 7 个 validator（PlatformHardRule、SandboxOverride、TenantAdminRule L2 租户黑名单、WorkingDir、ToolFlag per-agent 工具开关、UserSessionRule、AutoModeLLMValidator）在生产全是死代码，每个 agent tool call 被无条件放行。现有 gate_test.go 6 个测试因走 test.v 分支跑 pipeline 而全绿，恰好掩盖 prod 行为。Fix: 删除 test.v 分支让 pipeline 在所有环境运行；保留全局 override 但改由显式 config flag agent.permission.enforce 控制（默认 true=enforce；viper.SetDefault 兜底使 prod 无需改 config_prod.yaml；enforce=false 时才走 force-allow override 且 loud-warn 日志）。'
   track: hotfix
-  stage: H1
+  stage: superseded
+  superseded_by: agent-security-hardening
   classification_reason: 'Hotfix — (1) 无 DB schema 变更 (2) 无新 API 端点 (3) 无新外部服务 (4) 3 代码文件: gate.go + gate_test.go + biz.go (+ config_dev/local.yaml 文档化，可选) (5) **涉及权限高危逻辑——严格 triage 第 5 条失败本应 Standard**。User 2026-06-02 基于「线上正在生效的安全后门紧急性 + 改动小且是恢复既有 pipeline 而非设计新权限语义」明确选 Hotfix 快车道（H2 仍含单 reviewer + 失败复现测试）。Security-finding（非客户报告），按 Rule 11 精神：首 commit 为失败复现测试（test(qa): reproduce 前缀）证明非测试构建路径 force-allow，再用 fix 转 PASS，测试永久留库做回归保护。'
-  last_updated_by: ai-h1-start
-  last_updated_at: '2026-06-02T16:10:54+08:00'
+  last_updated_by: ai-superseded
+  last_updated_at: '2026-06-05T00:00:00+08:00'
   created_at: '2026-06-02T16:10:54+08:00'
   repos:
   - numind-server
@@ -3381,3 +3382,30 @@ features:
   - 'H3-VERIFIED (ai 2026-06-02, 用户授权 deploy dev twice): numind-web-v3（bug 观测仓库）连续部署 dev 两次验证 fix —— #1 full(rsync 修复脚本+build+deploy，镜像 develop-0ecb9bf) 替换既有 dev 容器=干净成功；#2 --deploy-only 再次替换 #1 的容器（正是出 125 的连续替换场景）=干净成功（容器 2acfb116→03c57077，✅ Deploy success，exit 0，全程无 125/Conflict）。终态：numind-web-v3-dev Up(healthy) on develop-0ecb9bf，:9200/health=200。三仓库 deploy-remote.sh 逻辑一致 + 各自回归测试绿，server/admin 由相同逻辑+单测覆盖；其 dev 双部署未跑（用户聚焦 web-v3 观测场景；可按需补）。S7 prod tag 未做（用户授权仅 dev）。'
   blockers: []
   created_at: '2026-06-02T00:00:00+08:00'
+
+- id: agent-security-hardening
+  ndf_version: '3.0'
+  description: 'Agent mode 安全门禁加固（go-live blocker，prod-readiness §0.1 BLK-1/BLK-3 + §3.1 安全）。三件事：(1) BLK-1 恢复门禁——permission gate.go:110 用 flag.Lookup("test.v") 嗅探环境后门（commit 14754a39），仅 go test 走真 7-validator pipeline，dev/prod 一律 ForceAllowAllGate 全放行 → 平台硬规则/租户黑名单/IsDestructive/bashvalidator 真实运行时全失效，单测因 test.v 走真管线而虚假全绿。修复已存在于 fix/remove-permission-backdoor（2 commit: test(qa) 复现 + fix 改 config 驱动 agent.permission.enforce 默认 true 全环境强制真管线，viper.SetDefault 兜底 prod 无需改 config_prod），落后 develop ~81 commit 未合并 → 重落当前 develop 解 gate.go 冲突。(2) 软拦截不中断——现命中 deny→HookActionPermissionDeny(hooks.go:19)→TerminalPermissionDenied(state.go:20)→整 run 终止；改为只挡这一次工具调用、给 LLM 返回"被安全策略拦截"工具结果、ReAct 循环继续（adapter_full_to_eino.go:106-109 deny 分支 return error 改 return tool-result+nil；runner.go:1231-1243 + runner_runstream applyHookOverride 对 PermissionDeny 跳过 terminal、Reset registry，硬停 Stop/BlockingStop/BudgetExceeded 仍 terminal）+ 防呆（同工具+同类输入连续 N 次拦截才 terminal，拦截文案明确禁止重试）。(3) BLK-3 平台级安全输入禁令第一批 1-4（平台级=第一个 B，硬编码对所有租户生效，绝不写按 parent_user_id 的 tenant_admin_rule）：①SSRF 内网/元数据(169.254.169.254/127.0.0.1/localhost/10.x/192.168.x/172.16-31.x)→web_fetch(复用现 validateFetchURL)+run_python downloadInputFile(无 SSRF 现补)+bash curl/wget；②毁灭命令 rm -rf //~/HOME、mkfs、dd of=/dev/、fork bomb、>/dev/sd*→bashvalidator;③下载即执行 curl|sh、base64 -d|sh→bashvalidator;④凭据文件 /etc/shadow、~/.ssh、~/.aws/credentials、.env、/proc/<pid>/environ→bash(file_read 已 COS-URL-only 结构安全无需改)。bash 类(②③④)同时补强 bashvalidator(8 检查器仅防混淆字符=BLK-3)。最重要约束：精准只锁危险形态，严禁误伤（rm 只禁毁灭形态非所有 rm；SSRF 只禁内网非所有联网；凭据只禁服务器敏感路径不影响 file_read 读 COS 上传文件；用户下载 agent 产物完全不受影响）。不禁用任何整工具(tool_blacklist 留空)。禁碰 prod，dev sandbox=docker 验证。'
+  track: standard
+  stage: S0
+  classification_reason: 'Standard — Triage 第 5 条（权限/安全高风险：恢复安全门禁 + 新增平台安全策略 + 改 run 终止语义，信任边界跨 permission/agent runner/bashvalidator/工具多域）+ 第 4 条（>3 文件：gate.go/biz.go/平台 input-deny validator/bashvalidator/adapter_full_to_eino.go/tool_run_python.go + 大量测试）失败 → 不可降级。1 无 DB schema 变更 2 无新 API 端点 3 无新外部服务 4 文件数 >3 5 高风险=是。User 2026-06-05 任务交付说明预判 Standard，与 triage 一致。'
+  last_updated_by: ai-s0-start
+  last_updated_at: '2026-06-05T00:00:00+08:00'
+  created_at: '2026-06-05T00:00:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: feature/agent-security-hardening
+  worktrees:
+    numind-server: /private/tmp/wt-agent-security-hardening-numind-server
+  progress:
+    total_tasks: 0
+    completed_tasks: 0
+    reviewed_tasks: 0
+  artifacts:
+    requirement: requirements/agent-security-hardening.md
+  decisions:
+  - 'S0-D1 (ai 2026-06-05): 本 feature 做"平台级"安全（B2B2C 第一个 B=平台跃迁有数），硬编码对所有机构/用户生效，绝不写进按 parent_user_id 的租户表（tenant_admin_rule / agent_permission_config）。'
+  - 'S0-D2 (ai 2026-06-05): 吸收并取代废弃的 remove-permission-backdoor hotfix（manifest stage H1，fix/remove-permission-backdoor 2 commit 未合并）。该 hotfix 当初按 user 选 Hotfix 快车道但严格 triage 第 5 条本应 Standard；现并入本 Standard feature 一并交付。BLK-1 fix 的 2 commit（含 test(qa): 复现测试）将在 S4 cherry-pick 到 feature/agent-security-hardening 以保留 Rule 11 复现链。'
+  - 'S0-D3 (ai 2026-06-05, 调研结论 read-only Explore ×3): 软拦截介入点 adapter_full_to_eino.go:106-109(deny→return tool-result+nil)/runner.go:1231-1243+runner_runstream applyHookOverride(PermissionDeny 跳过 terminal+Reset registry)/防呆置外层 ReAct 循环。SSRF: validateFetchURL+checkIPSafe(tool_web_fetch.go:278-356)可复用，run_python downloadInputFile(~406)缺 SSRF。file_read=COS-URL-only(regex /agent-(attachments|outputs)/<uid>/)结构上不可读服务器路径 → ④凭据禁令仅 bash 需要，file_read 无需改。bash_exec=--network=none 无网络(SSRF via bash curl/wget 主要靠沙箱网络隔离，bashvalidator 文本检查作纵深)。平台禁令落 PlatformHardRule 扩展(现仅 gate bash_exec)，bash 语义危险加进 bashvalidator AllValidators()(双 gate 自动生效)。'
+  blockers: []
