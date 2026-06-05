@@ -808,6 +808,13 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	log.C(ctx).Infow("Node run prepared for execution",
 		"run_id", runID, "node_id", nodeID, "node_run_id", nodeRun.ID, "is_update", isUpdate)
 
+	// ===== 问题 1：把生成从 HTTP 请求生命周期剥离 =====
+	// 客户端断开只取消请求 ctx，不应中断生成+落库。WithoutCancel 保留 trace/billing/
+	// reservation 等 ctx 值，叠加整体超时兜底（问题 2）。cancelStream 的 defer 必须注册在
+	// 下方 FinalizeReservation defer 之前，使其 LIFO 后执行 → 对账时 ctx 仍有效。
+	ctx, cancelStream := detachStreamContext(ctx, sopOverallTimeout())
+	defer cancelStream()
+
 	// 执行节点（流式），返回完整输出、思考内容和 token 使用统计
 	startTime := time.Now()
 	// 注入计费上下文
@@ -1550,6 +1557,12 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 	}
 	// 将当前问题加入 history
 	history = append(history, LLMMessage{Role: "user", Content: question})
+
+	// ===== 问题 1：把追问生成从 HTTP 请求生命周期剥离（与节点执行路径同构）=====
+	// 客户端断开只取消请求 ctx，不应中断生成+落库。cancelStream defer 注册在下方
+	// FinalizeReservation defer 之前，LIFO 后执行 → 对账时 ctx 仍有效。
+	ctx, cancelStream := detachStreamContext(ctx, sopOverallTimeout())
+	defer cancelStream()
 
 	// 调用模型流式生成回答
 	// 注入 Langfuse trace（追问路径可观测性，与节点执行路径对齐）

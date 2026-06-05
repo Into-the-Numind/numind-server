@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -826,12 +827,20 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 	}
 
 	// 流式执行节点
+	// 问题 1：客户端断开不中止生成。一旦检测到断开/写失败，置 clientGone 停止向客户端
+	// 推送，但 handler 始终返回 nil，让 biz 把这步生成完并落库（重连后经
+	// GET /sop/runs/:id/status 拉结果）。
+	var clientGone atomic.Bool
 	err = ctrl.sopBiz.ExecuteNodeStream(heartbeatCtx, uint(runID), uint(nodeID), inputText, resolvedModelKey, resolvedThinking, func(event string, chunk string) error {
+		if clientGone.Load() {
+			return nil
+		}
 		// 检查客户端是否断开连接
 		select {
 		case <-c.Request.Context().Done():
-			log.C(c).Infow("Client disconnected during stream")
-			return c.Request.Context().Err()
+			clientGone.Store(true)
+			log.C(c).Infow("client disconnected; continuing generation in background")
+			return nil
 		default:
 		}
 
@@ -851,8 +860,9 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 		mu.Lock()
 		defer mu.Unlock()
 		if _, err := c.Writer.WriteString(data); err != nil {
-			log.C(c).Warnw("Failed to write chunk to client", "error", err)
-			return err
+			clientGone.Store(true)
+			log.C(c).Warnw("client write failed; continuing generation in background", "error", err)
+			return nil
 		}
 
 		// 立即刷新，确保数据实时发送
@@ -2379,11 +2389,19 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 	}()
 
 	// 执行业务流
+	// 问题 1：客户端断开不中止生成（与节点执行路径同构）。clientGone 后停止推送但让
+	// biz 把回答生成完并落库（重连后经 chat-messages 接口可取回）。
+	var clientGone atomic.Bool
 	err := ctrl.sopBiz.ChatAfterRunStream(heartbeatCtx, req.RunID, req.ConversationID, req.Question, user.ID, resolvedModelKey, deepThinking, req.RegenerateMsgID, func(event string, chunk string) error {
+		if clientGone.Load() {
+			return nil
+		}
 		// 检查客户端连接
 		select {
 		case <-c.Request.Context().Done():
-			return c.Request.Context().Err()
+			clientGone.Store(true)
+			log.C(c).Infow("client disconnected; continuing generation in background")
+			return nil
 		default:
 		}
 
@@ -2407,8 +2425,9 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 		mu.Lock()
 		defer mu.Unlock()
 		if _, err := c.Writer.WriteString(data); err != nil {
-			log.C(c).Warnw("Failed to write chunk to client", "error", err)
-			return err
+			clientGone.Store(true)
+			log.C(c).Warnw("client write failed; continuing generation in background", "error", err)
+			return nil
 		}
 		flusher.Flush()
 		return nil
