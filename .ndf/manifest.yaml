@@ -3413,10 +3413,10 @@ features:
   ndf_version: '3.0'
   description: '客户上报线上 bug：SOP 多步执行串步——执行第 3 步却产出第 2 步内容。根因=AI Gateway(ContextBudgetCredits 中间件)上下文压缩时 fragment 排序错位，仅当①走 Gateway(modelKey!="")②上下文超预算触发压缩 时命中(解释为何偏偏第 3 步:前两步短不压缩)。三处叠加:(1) biz/contextbudget/biz.go applyPlan 把摘要 fragment append 到 result 末尾,排在当前输入之后;(2) pkg/aiservice/context_renderer.go RenderContextFragments 不按 Order 排序+Prepare/prepareWithoutCompression 渲染前不排序;(3) producers.go NewImmutableSystemFragment/NewCriticalUserFragment 不设 Order(默认0),SOP buildSOPGatewayFragments 给当前输入调 NewCriticalUserFragment 时没传 Order→当前输入 Order=0 比历史还小。后果:压缩后消息序变成 系统提示+当前第3步指令+第1&2步摘要,摘要成最后一条,LLM 据此续写产出第2步内容。共享中间件:SOP/chatbot 命中,salesrag(Order 已 0/100+/1000 且无 summarize 候选)不命中、修复后不回归。Fix=三层 belt-and-suspenders: A 改两 producer 签名强制设 Order(无 test 调用方,只改 chatbot/stream.go+sop_fragments.go); B applyPlan 摘要 Order=min(被替换候选 Order)落原位; C Prepare/prepareWithoutCompression 渲染前 sort.SliceStable(byOrder)。RenderContextFragments 自身不改(保文档契约,排序责任留 biz 层)。'
   track: standard
-  stage: S0
+  stage: S6
   classification_reason: 'Standard — Triage 第 4 条(>3 文件:producers.go/biz.go/sop_fragments.go/chatbot stream.go + 测试)+ 第 5 条(计费相邻共享 context 中间件,跨 SOP/chatbot/salesrag 高风险)失败。① 无 DB schema ② 无新 API ③ 无新外部服务 ④ 文件 >3 ⑤ 高风险=是。'
-  last_updated_by: ai-s0
-  last_updated_at: '2026-06-05T12:45:00+08:00'
+  last_updated_by: ai-s6
+  last_updated_at: '2026-06-05T13:30:00+08:00'
   created_at: '2026-06-05T12:39:42+08:00'
   repos:
   - numind-server
@@ -3426,8 +3426,8 @@ features:
     numind-server: /private/tmp/wt-sop-context-ordering-fix-numind-server
   progress:
     total_tasks: 2
-    completed_tasks: 0
-    reviewed_tasks: 0
+    completed_tasks: 2
+    reviewed_tasks: 2
   artifacts:
     requirement: requirements/sop-context-ordering-fix.md
     spec: docs/superpowers/specs/2026-06-05-sop-context-ordering-fix-design.md
@@ -3436,4 +3436,5 @@ features:
   - 'S2-D1 (ai 2026-06-05): 选 Fix A 改 producer 签名(NewImmutableSystemFragment/NewCriticalUserFragment 加 order int 参数)而非调用点补设 .Order——结构性根治、强制每个调用点表态;且全仓库无 _test.go 调用这两 producer,blast radius 仅 chatbot/stream.go + sop_fragments.go 两生产文件。'
   - 'S2-D2 (ai 2026-06-05): 稳定排序放 contextbudget biz 层(Prepare/prepareWithoutCompression),不改 RenderContextFragments 内部——保 renderer "调用方负责预排序" 文档契约,排序责任内聚在 biz 层。'
   - 'S2-D3 (ai 2026-06-05): applyPlan 摘要 fragment Order=min(被替换 summarize 候选 Order),落历史原位而非末尾;用 sort.SliceStable 使同 Order 保持输入序(向后兼容全 0 Order 调用方=恒等,attachment 跟随父 user fragment)。'
+  - 'S4-S5 (ai 2026-06-05): TDD GREEN——2 个复现测试 commit 415e17d5 先行 FAIL(Rule 11),fix commit 58a21f2f 后转 PASS。并行双 Sonnet reviewer(spec compliance + code quality)均 VERDICT=PASS_WITH_CONCERNS,无 P0。已处理(commit d4f0e937): P1 buildSOPGatewayFragments 前置条件文档(当前输入是 msgs 最后一条由 executeViaGateway:435 保证)、P2 chatbot 当前消息改用 NewCriticalUserFragment 共享 producer、P2 Prepare copy() in-place 注释、P2 测试加固(SOP 断言恰一个 critical user frag + TestMinFragmentOrder 空切片→0 + token 预算注释)。S5 验证策略=后端 Go 单测持久回归(bug 纯后端排序逻辑,无 UI;计费相邻共享逻辑应有回归保护)。affected 包(contextbudget/sop/chatbot/salesrag/aiservice)全绿 + task lint clean。诚实声明: 全仓库 go test ./... 有 internal/numind/biz/memory digest 测试 FAIL(table agent_run has no column named is_pinned)——pre-existing 测试 DB schema 问题,与本 feature 无关(memory 不 import 本改动,session 启动时 digest_generator_test.go 已被他人改动中)。S7 prod 未做(纯后端逻辑修复,按需 /deploy-dev 验收)。'
   blockers: []
