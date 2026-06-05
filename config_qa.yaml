@@ -175,3 +175,8 @@ agent:
       max_output_tokens: 800
       temperature: 0.3
       call_timeout_seconds: 30
+
+# SOP 流式执行健壮性超时（问题 2）。未配置时代码兜底 4m / 30m（含 prod，prod 配置不在此改）。
+sop:
+  stream_idle_timeout: 4m       # 连续多久无新数据视为卡死（idle 超时），到点掐掉流
+  stream_overall_timeout: 30m   # 单次流式生成整体上限（context deadline 兜底，非 http 超时，不误杀正常长流）

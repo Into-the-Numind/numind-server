@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"numind-server/internal/numind/store"
@@ -81,6 +82,95 @@ type StreamHandler func(event string, chunk string) error
 
 // TokenUsage Token使用统计信息（类型别名，实际定义在 billing 包中）
 type TokenUsage = billing.TokenUsage
+
+// Stream timeout defaults (problem 2). Code-level fallbacks apply when the
+// config keys are unset (including prod, whose config is never modified here).
+const (
+	defaultSopStreamIdleTimeout    = 4 * time.Minute  // 连续多久无新数据视为卡死
+	defaultSopStreamOverallTimeout = 30 * time.Minute // 单次流式生成整体上限（兜底）
+)
+
+// sopIdleTimeout returns the idle (no-byte) timeout for SOP streaming reads:
+// if the provider sends no data for this long the stream is treated as stalled.
+// Configured via sop.stream_idle_timeout (e.g. "4m"); falls back to 4 minutes.
+func sopIdleTimeout() time.Duration {
+	if v := viper.GetDuration("sop.stream_idle_timeout"); v > 0 {
+		return v
+	}
+	return defaultSopStreamIdleTimeout
+}
+
+// sopOverallTimeout returns the overall wall-clock ceiling for a single SOP
+// streaming generation (context deadline, never an http.Client.Timeout that
+// would truncate a healthy long stream). Configured via
+// sop.stream_overall_timeout (e.g. "30m"); falls back to 30 minutes.
+func sopOverallTimeout() time.Duration {
+	if v := viper.GetDuration("sop.stream_overall_timeout"); v > 0 {
+		return v
+	}
+	return defaultSopStreamOverallTimeout
+}
+
+// detachStreamContext derives the context a SOP streaming generation runs on
+// (problem 1). It uses context.WithoutCancel so a cancellation of parent (the
+// HTTP request ctx — cancelled on client disconnect / network blip) does NOT
+// abort generation or persistence; ctx values (langfuse trace, billing meta,
+// reservation ref) are preserved. An overall deadline is layered on top so a
+// genuinely stuck generation still terminates (problem 2 overall ceiling, a
+// context deadline — never an http.Client.Timeout that would truncate a healthy
+// long stream).
+//
+// The caller MUST defer the returned CancelFunc, and register that defer BEFORE
+// the FinalizeReservation defer so reconcile/refund still see a live ctx (LIFO).
+func detachStreamContext(parent context.Context, overall time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), overall)
+}
+
+// idleWatcher closes a streaming response body when no activity (no new chunk)
+// is seen within the idle window, or when ctx is cancelled. It guards the
+// blocking bufio reads in the fallback streaming path (problem 2): a provider
+// that sends headers then stalls would otherwise hang the read forever.
+//
+// The read loop MUST call mark() after every successful read to reset the idle
+// clock. tripped() reports whether the IDLE timeout (not ctx cancel) fired, so
+// the caller can return a clear "provider stalled" error vs a ctx error.
+type idleWatcher struct {
+	timer   *time.Timer
+	idle    time.Duration
+	tripped atomic.Bool
+}
+
+// startIdleWatcher arms an idle timer that closes body after idle of inactivity,
+// and a goroutine that closes body on ctx cancellation. The returned stop func
+// (call via defer) tears both down.
+func startIdleWatcher(ctx context.Context, body io.Closer, idle time.Duration) (*idleWatcher, func()) {
+	w := &idleWatcher{idle: idle}
+	w.timer = time.AfterFunc(idle, func() {
+		w.tripped.Store(true)
+		_ = body.Close() // unblocks the in-flight bufio read
+	})
+	stop := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = body.Close()
+		case <-stop:
+		}
+	}()
+	return w, func() {
+		w.timer.Stop()
+		close(stop)
+	}
+}
+
+// mark resets the idle clock; call after every successful read. Once tripped it
+// is a no-op (avoids a redundant Reset racing the fired AfterFunc callback).
+func (w *idleWatcher) mark() {
+	if w.tripped.Load() {
+		return
+	}
+	w.timer.Reset(w.idle)
+}
 
 // applyDefaultLLMConfig 当节点未配置 LLM 信息时，使用系统默认配置（volc.*）
 func applyDefaultLLMConfig(node *model.SopNode) {
@@ -245,28 +335,27 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 	var fullOutput strings.Builder
 	var usage *TokenUsage
 	reader := bufio.NewReader(resp.Body)
+	// idle 超时保护（问题 2）：连续 idle 无字节则关闭 body 解除阻塞读。
+	idle := sopIdleTimeout()
+	watcher, stopWatcher := startIdleWatcher(ctx, resp.Body, idle)
+	defer stopWatcher()
 	sawDone := false
 
 	for {
-		// 检查context是否被取消
-		select {
-		case <-ctx.Done():
-			log.C(ctx).Warnw("Context cancelled during stream", "node_id", node.ID)
-			// 即使context取消，也返回已累积的输出
-			if fullOutput.Len() > 0 {
-				return fullOutput.String(), usage, nil
-			}
-			return "", nil, fmt.Errorf("stream cancelled: %w", ctx.Err())
-		default:
-		}
-
-		// 直接阻塞读取，不再使用不安全的每行超时逻辑
+		// 阻塞读取；ctx 取消或 idle 超时由 idleWatcher 关闭 body 解除阻塞。
 		lineBytes, readErr := reader.ReadBytes('\n')
 		if readErr != nil {
+			if watcher.tripped.Load() {
+				log.C(ctx).Warnw("LLM stream idle timeout", "node_id", node.ID, "idle", idle)
+				return fullOutput.String(), usage, fmt.Errorf("LLM stream idle timeout: no data for %s: %w", idle, context.DeadlineExceeded)
+			}
 			if readErr == io.EOF {
 				if len(lineBytes) == 0 {
 					break
 				}
+			}
+			if ctx.Err() != nil {
+				return fullOutput.String(), usage, fmt.Errorf("LLM stream cancelled: %w", ctx.Err())
 			}
 			log.C(ctx).Errorw("Read error during stream", "node_id", node.ID, "error", readErr)
 			// 即使读取出错，也返回已累积的输出（如果有）
@@ -275,6 +364,7 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 			}
 			return "", nil, fmt.Errorf("read error: %w", readErr)
 		}
+		watcher.mark()
 
 		// 转换为字符串并去除换行符
 		line := strings.TrimRight(string(lineBytes), "\r\n")
@@ -462,71 +552,123 @@ func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode
 	// 4. 注入 skip-legacy-billing 标记，防止 Gateway 与旧 billing 路径双记账
 	ctx = aiservice.WithSkipLegacyBilling(ctx)
 
-	// 5. 调用 Gateway ChatStream（ContextFragments 由 middleware 处理预算规划和渲染）
+	// 5. 调用 Gateway ChatStream（ContextFragments 由 middleware 处理预算规划和渲染）。
+	//    使用可取消的 streamCtx：idle 超时（问题 2）时取消它，adapter 随之关闭连接、
+	//    runOAIStream 退出、ch 关闭。整体超时由父 ctx（biz 的 detach+WithTimeout）提供。
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
 	req := aiservice.ChatRequest{
 		ContextFragments: fragments,
 		Temperature:      0.7,
 		ModelOverride:    modelKey, // pass user's model choice; empty = use task profile default
 		Thinking:         thinking,
 	}
-	ch, err := aiservice.ChatStream(ctx, taskID, req)
+	ch, err := aiservice.ChatStream(streamCtx, taskID, req)
 	if err != nil {
 		return "", nil, fmt.Errorf("executeViaGateway: ChatStream: %w", err)
 	}
 
-	// 6. 消费 channel，将 ChatChunk 转换为 StreamHandler 回调
-	var fullContent strings.Builder
-	var finalUsage *TokenUsage
-	var modelName string
-	var providerName string
-	var streamErr error
-	for chunk := range ch {
-		if chunk.Model != "" {
-			modelName = chunk.Model
-		}
-		if chunk.Provider != "" {
-			providerName = chunk.Provider
-		}
-		if chunk.ReasoningDelta != "" {
-			if handlerErr := handler("thinking", chunk.ReasoningDelta); handlerErr != nil {
-				log.C(ctx).Warnw("executeViaGateway: stream handler error on thinking chunk",
-					"node_id", node.ID, "error", handlerErr)
+	// 6. 消费 channel（带 idle 超时），将 ChatChunk 转换为 StreamHandler 回调。
+	return consumeGatewayStream(ctx, ch, sopIdleTimeout(), cancelStream, node.ID, handler)
+}
+
+// consumeGatewayStream drains the Gateway ChatChunk channel into handler
+// callbacks, enforcing an idle timeout (problem 2): if no chunk arrives within
+// idle it cancels the stream (cancelStream → adapter closes the connection →
+// runOAIStream exits → ch closes) and returns a timeout error wrapping
+// context.DeadlineExceeded. After cancelling it drains ch in the background so
+// the adapter goroutine never blocks on a send (avoids a goroutine leak).
+//
+// Extracted from executeViaGateway so the consumption + idle logic is unit
+// testable with a hand-built channel (the live Gateway needs a registry).
+func consumeGatewayStream(
+	ctx context.Context,
+	ch <-chan aiservice.ChatChunk,
+	idle time.Duration,
+	cancelStream context.CancelFunc,
+	nodeID uint,
+	handler StreamHandler,
+) (string, *TokenUsage, error) {
+	var (
+		fullContent  strings.Builder
+		finalUsage   *TokenUsage
+		modelName    string
+		providerName string
+		streamErr    error
+	)
+
+	idleTimer := time.NewTimer(idle)
+	defer idleTimer.Stop()
+
+	for {
+		select {
+		case chunk, ok := <-ch:
+			if !ok {
+				// Stream finished.
+				if streamErr != nil {
+					return fullContent.String(), finalUsage, fmt.Errorf("executeViaGateway: stream error: %w", streamErr)
+				}
+				if fullContent.Len() == 0 && finalUsage == nil {
+					return "", nil, fmt.Errorf("executeViaGateway: empty response from Gateway (no chunks received)")
+				}
+				return fullContent.String(), finalUsage, nil
 			}
-		}
-		if chunk.Delta != "" {
-			fullContent.WriteString(chunk.Delta)
-			if handlerErr := handler("message", chunk.Delta); handlerErr != nil {
-				log.C(ctx).Warnw("executeViaGateway: stream handler error on message chunk",
-					"node_id", node.ID, "error", handlerErr)
-			}
-		}
-		if chunk.IsFinal {
-			if chunk.Err != nil {
-				streamErr = chunk.Err
-			}
-			if chunk.Usage != nil {
-				finalUsage = &billing.TokenUsage{
-					PromptTokens:     chunk.Usage.PromptTokens,
-					CompletionTokens: chunk.Usage.CompletionTokens,
-					TotalTokens:      chunk.Usage.TotalTokens,
-					ReasoningTokens:  chunk.Usage.ReasoningTokens,
-					ModelName:        modelName,
-					Provider:         providerName,
+			// Reset the idle clock on every chunk.
+			if !idleTimer.Stop() {
+				select {
+				case <-idleTimer.C:
+				default:
 				}
 			}
+			idleTimer.Reset(idle)
+
+			if chunk.Model != "" {
+				modelName = chunk.Model
+			}
+			if chunk.Provider != "" {
+				providerName = chunk.Provider
+			}
+			if chunk.ReasoningDelta != "" {
+				if handlerErr := handler("thinking", chunk.ReasoningDelta); handlerErr != nil {
+					log.C(ctx).Warnw("executeViaGateway: stream handler error on thinking chunk",
+						"node_id", nodeID, "error", handlerErr)
+				}
+			}
+			if chunk.Delta != "" {
+				fullContent.WriteString(chunk.Delta)
+				if handlerErr := handler("message", chunk.Delta); handlerErr != nil {
+					log.C(ctx).Warnw("executeViaGateway: stream handler error on message chunk",
+						"node_id", nodeID, "error", handlerErr)
+				}
+			}
+			if chunk.IsFinal {
+				if chunk.Err != nil {
+					streamErr = chunk.Err
+				}
+				if chunk.Usage != nil {
+					finalUsage = &billing.TokenUsage{
+						PromptTokens:     chunk.Usage.PromptTokens,
+						CompletionTokens: chunk.Usage.CompletionTokens,
+						TotalTokens:      chunk.Usage.TotalTokens,
+						ReasoningTokens:  chunk.Usage.ReasoningTokens,
+						ModelName:        modelName,
+						Provider:         providerName,
+					}
+				}
+			}
+		case <-idleTimer.C:
+			cancelStream() // stop the adapter (closes connection → ch closes)
+			// Drain the channel until the adapter closes it, so the adapter
+			// goroutine never blocks on a send after we stop reading.
+			go func() {
+				for range ch {
+				}
+			}()
+			log.C(ctx).Warnw("gateway stream idle timeout", "node_id", nodeID, "idle", idle)
+			return fullContent.String(), finalUsage,
+				fmt.Errorf("gateway stream idle timeout: no data for %s: %w", idle, context.DeadlineExceeded)
 		}
 	}
-
-	// Mid-stream failure: propagate so the caller can fail the node rather
-	// than accepting a truncated output as "success".
-	if streamErr != nil {
-		return fullContent.String(), finalUsage, fmt.Errorf("executeViaGateway: stream error: %w", streamErr)
-	}
-	if fullContent.Len() == 0 && finalUsage == nil {
-		return "", nil, fmt.Errorf("executeViaGateway: empty response from Gateway (no chunks received)")
-	}
-
-	return fullContent.String(), finalUsage, nil
 }
 
 // ExecuteNodeStreamWithThinking 流式执行单个节点，并分离思考内容和实际内容
@@ -611,8 +753,6 @@ func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *m
 			case "message":
 				answerBuf.WriteString(chunk)
 				return handler("message", chunk)
-			case "done":
-				return handler("done", "")
 			default:
 				return nil
 			}
@@ -627,8 +767,6 @@ func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *m
 			case "message":
 				answerBuf.WriteString(chunk)
 				return handler("message", chunk)
-			case "done":
-				return handler("done", "")
 			default:
 				return nil
 			}
@@ -816,6 +954,10 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 	}
 
 	reader := bufio.NewReader(resp.Body)
+	// idle 超时保护（问题 2）：连续 idle 无字节则关闭 body 解除阻塞读。
+	idle := sopIdleTimeout()
+	watcher, stopWatcher := startIdleWatcher(ctx, resp.Body, idle)
+	defer stopWatcher()
 
 	var (
 		thinkingBuf        strings.Builder
@@ -844,16 +986,13 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 	}
 
 	for {
-		// 检查context是否被取消
-		select {
-		case <-ctx.Done():
-			return usage, ctx.Err()
-		default:
-		}
-
-		// 直接阻塞读取，不再使用不安全的每行超时逻辑
+		// 阻塞读取；ctx 取消或 idle 超时由 idleWatcher 关闭 body 解除阻塞。
 		lineBytes, readErr := reader.ReadBytes('\n')
 		if readErr != nil {
+			if watcher.tripped.Load() {
+				log.C(ctx).Warnw("Ali deep thinking stream idle timeout", "node_id", node.ID, "idle", idle)
+				return usage, fmt.Errorf("ali deep thinking stream idle timeout: no data for %s: %w", idle, context.DeadlineExceeded)
+			}
 			if readErr == io.EOF {
 				if len(lineBytes) == 0 {
 					break
@@ -866,6 +1005,7 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 			log.C(ctx).Errorw("Read error in ali deep thinking stream", "node_id", node.ID, "error", readErr)
 			return usage, fmt.Errorf("read error: %w", readErr)
 		}
+		watcher.mark()
 
 		// 转换为字符串并去除换行符
 		line := strings.TrimRight(string(lineBytes), "\r\n")
@@ -878,7 +1018,7 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 		raw := strings.TrimPrefix(line, "data: ")
 		if raw == "[DONE]" {
 			sawDone = true
-			_ = handler("done", "")
+			// done 事件由控制器在 biz 返回后统一发送一次（问题 4）；executor 不再透传 done。
 			break
 		}
 
@@ -1186,6 +1326,10 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 	}
 
 	reader := bufio.NewReader(resp.Body)
+	// idle 超时保护（问题 2）：连续 idle 无字节则关闭 body 解除阻塞读。
+	idle := sopIdleTimeout()
+	watcher, stopWatcher := startIdleWatcher(ctx, resp.Body, idle)
+	defer stopWatcher()
 
 	var (
 		thinkingBuf    strings.Builder
@@ -1195,16 +1339,13 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 	)
 
 	for {
-		// 检查context是否被取消
-		select {
-		case <-ctx.Done():
-			return usage, ctx.Err()
-		default:
-		}
-
-		// 直接阻塞读取，不再使用不安全的每行超时逻辑
+		// 阻塞读取；ctx 取消或 idle 超时由 idleWatcher 关闭 body 解除阻塞。
 		lineBytes, readErr := reader.ReadBytes('\n')
 		if readErr != nil {
+			if watcher.tripped.Load() {
+				log.C(ctx).Warnw("Volc deep thinking stream idle timeout", "node_id", node.ID, "idle", idle)
+				return usage, fmt.Errorf("volc deep thinking stream idle timeout: no data for %s: %w", idle, context.DeadlineExceeded)
+			}
 			if readErr == io.EOF {
 				if len(lineBytes) == 0 {
 					break
@@ -1217,6 +1358,7 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 			log.C(ctx).Errorw("Read error in volc deep thinking stream", "node_id", node.ID, "error", readErr)
 			return usage, fmt.Errorf("read error: %w", readErr)
 		}
+		watcher.mark()
 
 		// 转换为字符串并去除换行符
 		line := strings.TrimRight(string(lineBytes), "\r\n")
@@ -1229,7 +1371,7 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 		raw := strings.TrimPrefix(line, "data: ")
 		if raw == "[DONE]" {
 			sawDone = true
-			_ = handler("done", "")
+			// done 事件由控制器在 biz 返回后统一发送一次（问题 4）；executor 不再透传 done。
 			break
 		}
 

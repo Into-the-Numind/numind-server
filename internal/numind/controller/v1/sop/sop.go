@@ -18,7 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -771,41 +771,10 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 		return
 	}
 
-	// 使用互斥锁保护并发写入 c.Writer（防止 heartbeater 和主 handler 冲突造成数据竞争）
-	var mu sync.Mutex
-
-	// 创建带心跳的 context，用于定期发送心跳保持连接
-	heartbeatCtx, heartbeatCancel := context.WithCancel(c.Request.Context())
-	defer heartbeatCancel()
-
-	// 启动心跳 goroutine，每 15 秒发送一次注释行（SSE 心跳），更频繁地保持连接活跃
-	heartbeatTicker := time.NewTicker(15 * time.Second)
-	defer heartbeatTicker.Stop()
-	go func() {
-		for {
-			select {
-			case <-heartbeatCtx.Done():
-				return
-			case <-heartbeatTicker.C:
-				// 发送 SSE 注释行（以 : 开头）作为心跳
-				// 检查连接是否仍然有效
-				select {
-				case <-c.Request.Context().Done():
-					return
-				default:
-					// 发送心跳注释行（使用简洁格式，确保前端不会解析）
-					mu.Lock()
-					if _, err := c.Writer.WriteString(":\n\n"); err != nil {
-						log.C(c).Warnw("Failed to send heartbeat", "error", err)
-						mu.Unlock()
-						return
-					}
-					flusher.Flush()
-					mu.Unlock()
-				}
-			}
-		}
-	}()
+	// 心跳保活（问题 3）：抽到公共 helper startSSEHeartbeat，返回写锁（所有 c.Writer 写入
+	// 须持有）+ stop。心跳本身保留（长文必需）。
+	mu, stopHeartbeat := startSSEHeartbeat(c, flusher)
+	defer stopHeartbeat()
 
 	// 读取模型参数（可选），走三级 fallback 解析
 	queryModelKey := c.Query("model_key")
@@ -826,12 +795,20 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 	}
 
 	// 流式执行节点
-	err = ctrl.sopBiz.ExecuteNodeStream(heartbeatCtx, uint(runID), uint(nodeID), inputText, resolvedModelKey, resolvedThinking, func(event string, chunk string) error {
+	// 问题 1：客户端断开不中止生成。一旦检测到断开/写失败，置 clientGone 停止向客户端
+	// 推送，但 handler 始终返回 nil，让 biz 把这步生成完并落库（重连后经
+	// GET /sop/runs/:id/status 拉结果）。
+	var clientGone atomic.Bool
+	err = ctrl.sopBiz.ExecuteNodeStream(c.Request.Context(), uint(runID), uint(nodeID), inputText, resolvedModelKey, resolvedThinking, func(event string, chunk string) error {
+		if clientGone.Load() {
+			return nil
+		}
 		// 检查客户端是否断开连接
 		select {
 		case <-c.Request.Context().Done():
-			log.C(c).Infow("Client disconnected during stream")
-			return c.Request.Context().Err()
+			clientGone.Store(true)
+			log.C(c).Infow("client disconnected; continuing generation in background")
+			return nil
 		default:
 		}
 
@@ -842,17 +819,17 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 			data = fmt.Sprintf("event: thinking\ndata: %s\n\n", string(chunkJSON))
 		} else if event == "message" {
 			data = fmt.Sprintf("data: %s\n\n", string(chunkJSON))
-		} else if event == "done" {
-			data = "event: done\ndata: {\"status\":\"completed\"}\n\n"
 		} else {
+			// done 由本函数末尾统一发送一次（问题 4）；executor 不再透传 done。
 			return nil
 		}
 
 		mu.Lock()
 		defer mu.Unlock()
 		if _, err := c.Writer.WriteString(data); err != nil {
-			log.C(c).Warnw("Failed to write chunk to client", "error", err)
-			return err
+			clientGone.Store(true)
+			log.C(c).Warnw("client write failed; continuing generation in background", "error", err)
+			return nil
 		}
 
 		// 立即刷新，确保数据实时发送
@@ -861,16 +838,15 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 	})
 
 	if err != nil {
-		// 检查是否是客户端断开连接
-		if c.Request.Context().Err() != nil {
-			log.C(c).Infow("Client disconnected during stream", "error", err)
-			return // 客户端断开，不需要发送错误
-		}
-
+		// 问题 1 后：detach 已让客户端断开不再触发 ctx 取消，故 err 一定是真实的生成/落库
+		// 错误。始终经 FriendlyForSSE 记录（mapped→Warn / unmapped→Error），原始 err 进 zap；
+		// 仅在客户端仍在时写 error 帧（断开则跳过，无意义）。
 		// 错误友好化：阻断 "node execution failed: executeViaGateway: ChatStream: ContextBudgetCredits:
-		// credit: insufficient balance..." 这类 Go 调用栈泄漏到 UI。原始 err 进 zap 日志。
-		// 详见 internal/numind/biz/errtranslate/translate.go。
+		// credit: insufficient balance..." 这类 Go 调用栈泄漏到 UI。详见 biz/errtranslate。
 		friendly := errtranslate.FriendlyForSSE(c, "SopExecuteNodeStream", err)
+		if clientGone.Load() || c.Request.Context().Err() != nil {
+			return // 客户端已断开：错误已落日志，无需也无法发送 error 帧
+		}
 		errorMsg, _ := json.Marshal(friendly)
 		errorData := fmt.Sprintf("event: error\ndata: %s\n\n", string(errorMsg))
 		mu.Lock()
@@ -2113,39 +2089,13 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 		return
 	}
 
-	// 6. 创建带心跳的 context
-	heartbeatCtx, heartbeatCancel := context.WithCancel(c.Request.Context())
-	defer heartbeatCancel()
+	// 6. 心跳保活（问题 3）：公共 helper，返回写锁 + stop。
+	mu, stopHeartbeat := startSSEHeartbeat(c, flusher)
+	defer stopHeartbeat()
 
-	// 使用互斥锁保护并发写入 c.Writer
-	var mu sync.Mutex
-
-	// 7. 启动心跳 goroutine，每 15 秒发送一次注释行（SSE 心跳）
-	heartbeatTicker := time.NewTicker(15 * time.Second)
-	defer heartbeatTicker.Stop()
-	go func() {
-		for {
-			select {
-			case <-heartbeatCtx.Done():
-				return
-			case <-heartbeatTicker.C:
-				select {
-				case <-c.Request.Context().Done():
-					return
-				default:
-					// 发送心跳注释行（使用简洁格式，确保前端不会解析）
-					mu.Lock()
-					if _, err := c.Writer.WriteString(":\n\n"); err != nil {
-						log.C(c).Warnw("Failed to send heartbeat", "error", err)
-						mu.Unlock()
-						return
-					}
-					flusher.Flush()
-					mu.Unlock()
-				}
-			}
-		}
-	}()
+	// EditText 是文本编辑助手（非 SOP 节点生成、无退款）：保持请求 ctx 取消语义
+	// （客户端断开即停），不做问题 1 的 detach。
+	editCtx := c.Request.Context()
 
 	// 8. 调用AI流式API（优先使用火山方舟，失败后降级到阿里百炼）
 	var aiErr error
@@ -2160,14 +2110,14 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 	// 注入计费上下文
 	if cu, ok := c.Get("current_user"); ok {
 		if u, ok := cu.(*model.User); ok {
-			heartbeatCtx = billing.WithBilling(heartbeatCtx, u.ID, "sop_text_edit")
+			editCtx = billing.WithBilling(editCtx, u.ID, "sop_text_edit")
 		}
 	}
 
 	// 先尝试火山方舟
 	var editUsage *billing.TokenUsage
 	if ctrl.volcBiz != nil {
-		editUsage, aiErr = ctrl.callVolcEditStream(heartbeatCtx, messages, deepThinking, func(event string, chunk string) error {
+		editUsage, aiErr = ctrl.callVolcEditStream(editCtx, messages, deepThinking, func(event string, chunk string) error {
 			hasResponse = true
 			// 检查客户端是否断开连接
 			select {
@@ -2184,9 +2134,8 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 				data = fmt.Sprintf("event: thinking\ndata: %s\n\n", string(chunkJSON))
 			} else if event == "message" {
 				data = fmt.Sprintf("data: %s\n\n", string(chunkJSON))
-			} else if event == "done" {
-				data = "event: done\ndata: {\"status\":\"completed\"}\n\n"
 			} else {
+				// done 由本函数末尾统一发送一次（问题 4）；edit-stream 不再透传 done。
 				return nil
 			}
 
@@ -2212,7 +2161,7 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 	// 如果火山方舟失败或不可用，降级到阿里百炼
 	if aiErr != nil || !hasResponse {
 		if ctrl.aliBiz != nil {
-			editUsage, aiErr = ctrl.callAliEditStream(heartbeatCtx, messages, deepThinking, func(event string, chunk string) error {
+			editUsage, aiErr = ctrl.callAliEditStream(editCtx, messages, deepThinking, func(event string, chunk string) error {
 				hasResponse = true
 				// 检查客户端是否断开连接
 				select {
@@ -2229,9 +2178,8 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 					data = fmt.Sprintf("event: thinking\ndata: %s\n\n", string(chunkJSON))
 				} else if event == "message" {
 					data = fmt.Sprintf("data: %s\n\n", string(chunkJSON))
-				} else if event == "done" {
-					data = "event: done\ndata: {\"status\":\"completed\"}\n\n"
 				} else {
+					// done 由本函数末尾统一发送一次（问题 4）；edit-stream 不再透传 done。
 					return nil
 				}
 
@@ -2269,14 +2217,19 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 		friendly := errtranslate.FriendlyForSSE(c, "SopEditAIStream", aiErr)
 		errorMsg, _ := json.Marshal(friendly)
 		errorData := fmt.Sprintf("event: error\ndata: %s\n\n", string(errorMsg))
+		// 持有写锁：与心跳 goroutine 互斥，避免 SSE 帧交错（与另两个 handler 一致）。
+		mu.Lock()
 		_, _ = c.Writer.WriteString(errorData)
 		flusher.Flush()
+		mu.Unlock()
 		return
 	}
 
-	// 10. 发送完成事件
+	// 10. 发送完成事件（持有写锁，避免与心跳交错）
+	mu.Lock()
 	_, _ = c.Writer.WriteString("event: done\ndata: {\"status\":\"completed\"}\n\n")
 	flusher.Flush()
+	mu.Unlock()
 }
 
 // ChatAfterRunStream 已完成run后的对话（SSE）
@@ -2344,46 +2297,25 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 		return
 	}
 
-	// 使用互斥锁保护并发写入 c.Writer
-	var mu sync.Mutex
-
-	// 创建带心跳的 context
-	heartbeatCtx, heartbeatCancel := context.WithCancel(c.Request.Context())
-	defer heartbeatCancel()
-
-	// 心跳 goroutine
-	heartbeatTicker := time.NewTicker(15 * time.Second)
-	defer heartbeatTicker.Stop()
-	go func() {
-		for {
-			select {
-			case <-heartbeatCtx.Done():
-				return
-			case <-heartbeatTicker.C:
-				select {
-				case <-c.Request.Context().Done():
-					return
-				default:
-					// 发送心跳注释行（使用简洁格式，确保前端不会解析）
-					mu.Lock()
-					if _, err := c.Writer.WriteString(":\n\n"); err != nil {
-						log.C(c).Warnw("Failed to send heartbeat", "error", err)
-						mu.Unlock()
-						return
-					}
-					flusher.Flush()
-					mu.Unlock()
-				}
-			}
-		}
-	}()
+	// 心跳保活（问题 3）：公共 helper，返回写锁 + stop。
+	mu, stopHeartbeat := startSSEHeartbeat(c, flusher)
+	defer stopHeartbeat()
 
 	// 执行业务流
-	err := ctrl.sopBiz.ChatAfterRunStream(heartbeatCtx, req.RunID, req.ConversationID, req.Question, user.ID, resolvedModelKey, deepThinking, req.RegenerateMsgID, func(event string, chunk string) error {
+	// 问题 1：客户端断开不中止生成（与节点执行路径同构）。clientGone 后停止推送但让
+	// biz 把回答生成完并落库（重连后经 chat-messages 接口可取回）。biz 会 detach ctx，
+	// 故此处传 c.Request.Context() 即可。
+	var clientGone atomic.Bool
+	err := ctrl.sopBiz.ChatAfterRunStream(c.Request.Context(), req.RunID, req.ConversationID, req.Question, user.ID, resolvedModelKey, deepThinking, req.RegenerateMsgID, func(event string, chunk string) error {
+		if clientGone.Load() {
+			return nil
+		}
 		// 检查客户端连接
 		select {
 		case <-c.Request.Context().Done():
-			return c.Request.Context().Err()
+			clientGone.Store(true)
+			log.C(c).Infow("client disconnected; continuing generation in background")
+			return nil
 		default:
 		}
 
@@ -2407,20 +2339,21 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 		mu.Lock()
 		defer mu.Unlock()
 		if _, err := c.Writer.WriteString(data); err != nil {
-			log.C(c).Warnw("Failed to write chunk to client", "error", err)
-			return err
+			clientGone.Store(true)
+			log.C(c).Warnw("client write failed; continuing generation in background", "error", err)
+			return nil
 		}
 		flusher.Flush()
 		return nil
 	})
 
 	if err != nil {
-		if c.Request.Context().Err() != nil {
-			log.C(c).Infow("Client disconnected during stream", "error", err)
-			return
-		}
-		// 错误友好化：转 errno 友好文案，原始 err 进 zap 日志（见 errtranslate）。
+		// 问题 1 后：detach 让客户端断开不再触发 ctx 取消，err 一定是真实错误。
+		// 始终经 FriendlyForSSE 落日志，仅在客户端仍在时写 error 帧。
 		friendly := errtranslate.FriendlyForSSE(c, "SopChatAfterRunStream", err)
+		if clientGone.Load() || c.Request.Context().Err() != nil {
+			return // 客户端已断开：错误已落日志，无需发送 error 帧
+		}
 		errorMsg, _ := json.Marshal(friendly)
 		errorData := fmt.Sprintf("event: error\ndata: %s\n\n", string(errorMsg))
 		mu.Lock()
@@ -2709,7 +2642,7 @@ func (ctrl *SopController) callVolcEditStream(ctx context.Context, messages []ma
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
-				_ = handler("done", "")
+				// done 由控制器末尾统一发送一次（问题 4）；edit-stream 不再透传 done。
 				break
 			}
 
@@ -2864,7 +2797,7 @@ func (ctrl *SopController) callAliEditStream(ctx context.Context, messages []map
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
-				_ = handler("done", "")
+				// done 由控制器末尾统一发送一次（问题 4）；edit-stream 不再透传 done。
 				break
 			}
 

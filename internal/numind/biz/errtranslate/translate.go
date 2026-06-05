@@ -18,6 +18,7 @@
 package errtranslate
 
 import (
+	"context"
 	"errors"
 
 	"github.com/gin-gonic/gin"
@@ -56,6 +57,11 @@ func ToErrno(err error) (*errno.Errno, bool) {
 	switch {
 	case errors.Is(err, credit.ErrInsufficientCredits):
 		return errno.ErrInsufficientCredits, true
+	// Stream idle timeout / overall timeout wrap context.DeadlineExceeded
+	// (see biz/sop stream timeouts). Surface a friendly "provider timed out"
+	// message instead of the generic fallback.
+	case errors.Is(err, context.DeadlineExceeded):
+		return errno.ErrAIProviderTimeout, true
 	}
 
 	return nil, false

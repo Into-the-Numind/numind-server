@@ -495,6 +495,34 @@ func (b *sopBiz) GetNextNode(ctx context.Context, runID uint) (*model.SopNode, b
 	return nil, false, nil
 }
 
+// runStatusUpdateMaxAttempts 是 run 状态更新的最大尝试次数（含首次）。
+const runStatusUpdateMaxAttempts = 3
+
+// updateRunStatusWithRetry 带指数退避地持久化 run 状态更新（问题 6）。
+//
+// SOP run 的状态抖动不应暴露给用户：瞬时 DB 失败时重试（100ms→200ms 指数退避）；
+// 全部重试失败则记录 Error 级日志（进告警）并返回错误，由调用方决定是否静默继续——
+// 这类 run 会被后台 ResetZombieRuns 收敛，用户的流式生成不受影响。
+func (b *sopBiz) updateRunStatusWithRetry(ctx context.Context, runID uint, updates map[string]interface{}) error {
+	var err error
+	backoff := 100 * time.Millisecond
+	for attempt := 0; attempt < runStatusUpdateMaxAttempts; attempt++ {
+		if err = b.ds.Sop().UpdateRun(runID, updates); err == nil {
+			return nil
+		}
+		log.C(ctx).Warnw("run status update failed; will retry",
+			"run_id", runID, "attempt", attempt+1, "error", err)
+		// 最后一次失败后不再 sleep，直接给上层处理。
+		if attempt < runStatusUpdateMaxAttempts-1 {
+			time.Sleep(backoff)
+			backoff *= 2
+		}
+	}
+	log.C(ctx).Errorw("run status update failed after retries; leaving for zombie-reset",
+		"run_id", runID, "error", err)
+	return err
+}
+
 // ExecuteNodeStream 流式执行指定节点
 // modelKey: 用户选择的模型 key（空字符串表示使用节点默认配置）
 // thinkingMode: 是否开启深度思考模式
@@ -555,19 +583,25 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	}
 
 	// ===== 状态转换：draft → running =====
-	// 如果当前run是draft状态，首次执行节点时转换为running状态（此时才计入配额）
+	// 如果当前run是draft状态，首次执行节点时转换为running状态（此时才计入配额）。
+	// 问题 6：带退避重试持久化；仅在 DB 成功后才翻内存状态，保证内存与 DB 最终一致——
+	// 否则内存先置 Running 会让下方二次兜底（:658）误判已是 running 而跳过补偿。
 	if run.Status == model.SopStatusDraft {
-		run.Status = model.SopStatusRunning
+		var startedAt *time.Time
 		draftUpdate := map[string]interface{}{"status": model.SopStatusRunning}
 		if run.StartedAt == nil {
 			now := time.Now()
-			run.StartedAt = &now
+			startedAt = &now
 			draftUpdate["started_at"] = now
 		}
-		if err := b.ds.Sop().UpdateRun(run.ID, draftUpdate); err != nil {
-			log.C(ctx).Errorw("Failed to update run status from draft to running", "run_id", run.ID, "error", err)
-			// 不阻断执行，记录错误后继续
+		if err := b.updateRunStatusWithRetry(ctx, run.ID, draftUpdate); err != nil {
+			// 重试耗尽，DB 仍 draft。不翻内存 → 下方二次兜底/完成块/zombie-reset 可再收敛。
+			// 对用户静默（问题 6）。
 		} else {
+			run.Status = model.SopStatusRunning
+			if startedAt != nil {
+				run.StartedAt = startedAt
+			}
 			log.C(ctx).Infow("Run status changed from draft to running", "run_id", run.ID, "user_id", run.UserID)
 		}
 	}
@@ -654,7 +688,9 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	}
 
 	// 确全局执行记录（Run）的状态标记为正在执行（解决“状态僵死”问题）
-	// 无论是第一个节点启动，还是中间节点重生成，都必须确保整体状态为 running
+	// 无论是第一个节点启动，还是中间节点重生成，都必须确保整体状态为 running。
+	// 问题 6：带退避重试；重试都失败不再 fail-fast 报错给用户，记录后继续生成
+	// （run 状态由完成块或 ResetZombieRuns 收敛），对用户静默无感。
 	if run.Status != model.SopStatusRunning {
 		updateData := map[string]interface{}{
 			"status":        model.SopStatusRunning,
@@ -664,8 +700,11 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		if run.StartedAt == nil {
 			updateData["started_at"] = time.Now()
 		}
-		if err := b.ds.Sop().UpdateRun(runID, updateData); err != nil {
-			return fmt.Errorf("failed to update run status to running: %w", err)
+		if err := b.updateRunStatusWithRetry(ctx, runID, updateData); err != nil {
+			log.C(ctx).Errorw("could not mark run running after retries; continuing (self-heal via completion/zombie-reset)",
+				"run_id", runID, "error", err)
+		} else {
+			run.Status = model.SopStatusRunning
 		}
 	}
 
@@ -732,20 +771,12 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 			return fmt.Errorf("failed to update node run: %w", err)
 		}
 
-		// 联动清理（解决“时空推演矛盾”）：既然中间节点重做了，后续的所有步骤、笔记和对话都已经失效，必须清除以防冲突
+		// 联动清理（解决“时空推演矛盾”）：既然中间节点重做了，后续的所有步骤、笔记和对话都已经失效，必须清除以防冲突。
+		// 三个删除包进单个事务（要么全成、要么全不动）：原子清理失败 = 可能残留过时下游数据，
+		// 中止再生而非在脏时间线上继续（问题 5）。
 		log.C(ctx).Infow("Regeneration triggered, cleaning up downstream records", "run_id", runID, "after_sort", node.Sort)
-
-		// 1. 删除后续节点的执行记录
-		if err := b.ds.Sop().DeleteNodeRunsAfterSort(runID, node.Sort); err != nil {
-			log.C(ctx).Warnw("Failed to cleanup downstream node runs", "error", err)
-		}
-		// 2. 删除该任务关联的最终笔记
-		if err := b.ds.Sop().DeleteNotesByRun(runID); err != nil {
-			log.C(ctx).Warnw("Failed to cleanup run notes", "error", err)
-		}
-		// 3. 删除该任务关联的对话消息（历史已变，追问需重来）
-		if err := b.ds.Sop().DeleteChatMessagesByRun(runID); err != nil {
-			log.C(ctx).Warnw("Failed to cleanup run chat messages", "error", err)
+		if err := b.ds.Sop().CleanupDownstreamForRegeneration(runID, node.Sort); err != nil {
+			return fmt.Errorf("failed to clean up downstream records for regeneration: %w", err)
 		}
 
 		// 重新加载nodeRun以获取最新数据
@@ -777,6 +808,13 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	log.C(ctx).Infow("Node run prepared for execution",
 		"run_id", runID, "node_id", nodeID, "node_run_id", nodeRun.ID, "is_update", isUpdate)
 
+	// ===== 问题 1：把生成从 HTTP 请求生命周期剥离 =====
+	// 客户端断开只取消请求 ctx，不应中断生成+落库。WithoutCancel 保留 trace/billing/
+	// reservation 等 ctx 值，叠加整体超时兜底（问题 2）。cancelStream 的 defer 必须注册在
+	// 下方 FinalizeReservation defer 之前，使其 LIFO 后执行 → 对账时 ctx 仍有效。
+	ctx, cancelStream := detachStreamContext(ctx, sopOverallTimeout())
+	defer cancelStream()
+
 	// 执行节点（流式），返回完整输出、思考内容和 token 使用统计
 	startTime := time.Now()
 	// 注入计费上下文
@@ -796,7 +834,8 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	// 在 LLM 调用前：CheckAndEstimate + Reserve（post-T1: legacy_tier 已下线，SkipDeduction 恒为 false）
 	// defer FinalizeReservation 在函数返回时对账：
 	//   - actualCost 非零 → Reconcile（delta 回补/退还）
-	//   - opErr 非空    → Refund（分类 user_cancelled / provider_timeout / op_failed）
+	//   - opErr 非空    → Refund（分类 provider_timeout / op_failed；问题 1 detach 后客户端
+	//     断连不再取消 LLM ctx，故 user_cancelled 不再由断连触发，仅整体/idle 超时→provider_timeout）
 	//   - 两者都空       → Refund("no_actual_cost")（pricing 失败兜底）
 	// 注入点：在 langfuse trace 建立后，以便 credits span 挂到同一 trace 下。
 	//
@@ -1520,6 +1559,12 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 	// 将当前问题加入 history
 	history = append(history, LLMMessage{Role: "user", Content: question})
 
+	// ===== 问题 1：把追问生成从 HTTP 请求生命周期剥离（与节点执行路径同构）=====
+	// 客户端断开只取消请求 ctx，不应中断生成+落库。cancelStream defer 注册在下方
+	// FinalizeReservation defer 之前，LIFO 后执行 → 对账时 ctx 仍有效。
+	ctx, cancelStream := detachStreamContext(ctx, sopOverallTimeout())
+	defer cancelStream()
+
 	// 调用模型流式生成回答
 	// 注入 Langfuse trace（追问路径可观测性，与节点执行路径对齐）
 	traceID := langfuse.TraceID()
@@ -1621,8 +1666,9 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 		)
 	}
 	if err != nil {
-		// LLM 调用失败或客户端断连 → defer FinalizeReservation 走 Refund 分支
-		// classifyReason 会把 context.Canceled 归类为 user_cancelled。
+		// LLM 调用失败 → opErr 置位 → defer FinalizeReservation 走 Refund 分支。
+		// 问题 1 detach 后客户端断连不再传入此路径（生成在后台跑完正常 Reconcile）；
+		// 整体/idle 超时 → context.DeadlineExceeded → classifyReason=provider_timeout。
 		chatOpErr = err
 		return err
 	}
@@ -1959,14 +2005,12 @@ func (b *sopBiz) ApplyBookmarkToNode(ctx context.Context, userID, runID, nodeID 
 		return nil, fmt.Errorf("failed to check existing node run: %w", err)
 	}
 
-	// 5. 如果该节点已经执行过，需要清理下游节点（与重新执行逻辑一致）
+	// 5. 如果该节点已经执行过，需要清理下游节点（与重新执行逻辑一致）。
+	// 三个删除走同一原子事务方法（问题 5）：避免笔记/对话清理失败被吞而残留过时下游数据。
 	if existingNodeRun != nil {
-		if err := b.ds.Sop().DeleteNodeRunsAfterSort(runID, node.Sort); err != nil {
+		if err := b.ds.Sop().CleanupDownstreamForRegeneration(runID, node.Sort); err != nil {
 			return nil, fmt.Errorf("failed to clean downstream nodes: %w", err)
 		}
-		// 同时清理笔记和聊天消息
-		_ = b.ds.Sop().DeleteNotesByRun(runID)
-		_ = b.ds.Sop().DeleteChatMessagesByRun(runID)
 	}
 
 	// 6. 创建或更新NodeRun
