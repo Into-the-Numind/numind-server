@@ -111,6 +111,21 @@ func sopOverallTimeout() time.Duration {
 	return defaultSopStreamOverallTimeout
 }
 
+// detachStreamContext derives the context a SOP streaming generation runs on
+// (problem 1). It uses context.WithoutCancel so a cancellation of parent (the
+// HTTP request ctx — cancelled on client disconnect / network blip) does NOT
+// abort generation or persistence; ctx values (langfuse trace, billing meta,
+// reservation ref) are preserved. An overall deadline is layered on top so a
+// genuinely stuck generation still terminates (problem 2 overall ceiling, a
+// context deadline — never an http.Client.Timeout that would truncate a healthy
+// long stream).
+//
+// The caller MUST defer the returned CancelFunc, and register that defer BEFORE
+// the FinalizeReservation defer so reconcile/refund still see a live ctx (LIFO).
+func detachStreamContext(parent context.Context, overall time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), overall)
+}
+
 // idleWatcher closes a streaming response body when no activity (no new chunk)
 // is seen within the idle window, or when ctx is cancelled. It guards the
 // blocking bufio reads in the fallback streaming path (problem 2): a provider
