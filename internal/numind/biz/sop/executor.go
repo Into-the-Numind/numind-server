@@ -82,6 +82,34 @@ type StreamHandler func(event string, chunk string) error
 // TokenUsage Token使用统计信息（类型别名，实际定义在 billing 包中）
 type TokenUsage = billing.TokenUsage
 
+// Stream timeout defaults (problem 2). Code-level fallbacks apply when the
+// config keys are unset (including prod, whose config is never modified here).
+const (
+	defaultSopStreamIdleTimeout    = 4 * time.Minute  // 连续多久无新数据视为卡死
+	defaultSopStreamOverallTimeout = 30 * time.Minute // 单次流式生成整体上限（兜底）
+)
+
+// sopIdleTimeout returns the idle (no-byte) timeout for SOP streaming reads:
+// if the provider sends no data for this long the stream is treated as stalled.
+// Configured via sop.stream_idle_timeout (e.g. "4m"); falls back to 4 minutes.
+func sopIdleTimeout() time.Duration {
+	if v := viper.GetDuration("sop.stream_idle_timeout"); v > 0 {
+		return v
+	}
+	return defaultSopStreamIdleTimeout
+}
+
+// sopOverallTimeout returns the overall wall-clock ceiling for a single SOP
+// streaming generation (context deadline, never an http.Client.Timeout that
+// would truncate a healthy long stream). Configured via
+// sop.stream_overall_timeout (e.g. "30m"); falls back to 30 minutes.
+func sopOverallTimeout() time.Duration {
+	if v := viper.GetDuration("sop.stream_overall_timeout"); v > 0 {
+		return v
+	}
+	return defaultSopStreamOverallTimeout
+}
+
 // applyDefaultLLMConfig 当节点未配置 LLM 信息时，使用系统默认配置（volc.*）
 func applyDefaultLLMConfig(node *model.SopNode) {
 	if node.APIKey == "" {
