@@ -1,5 +1,28 @@
 schema_version: '2.0'
 features:
+- id: remove-agent-tool-switches
+  ndf_version: '3.0'
+  description: 'Agent 配置器 UI 删除 3 个工具开关（code_sandbox 沙箱代码 / media 多媒体含图像生成 / dangerous 高危）。产品决策：所有工具默认全开，真正安全限制由后端独立权限门禁（并行 feature agent-security-hardening）负责，这 3 个开关对非工程师用户造成困惑且多余。改动两处前端：(1) QuestionnaireForm.vue（创建/配置智能体主表单）删工具开关 UI + 3 个 computed 代理 + patchToolFlag + 高危确认 handler/弹窗 + ConfirmModal import + .tool-flags CSS；配套 QuestionnaireForm.spec.ts 改 8→7 question 计数、移除 tool_flags 断言。(2) AgentAdvancedEdit.vue（高级模式编辑页，仅经不可逆「切换到高级模式」可达，其唯一可操作内容即这些开关、Prompt 文本框禁用）删开关后留作只读查看占位——去掉已失意义的「保存工具开关」按钮 + 高危确认弹窗 + 离开守卫，已有 agent 工具配置静默保留不变；配套 AgentAdvancedEdit.spec.ts 移除开关/保存相关测试、更新 banner 文案断言。保留不动：types/agentBuilder.ts 的 ToolFlags 接口 + initialFormState() tool_flags 默认全 true（新建 agent 默认全工具可用的来源）+ AgentBuilder.vue formToPayload/initForm round-trip。后端零改动。'
+  track: hotfix
+  stage: H1
+  classification_reason: 'Hotfix — User 2026-06-05 已确认档位与方案；AskUserQuestion 确认 AgentAdvancedEdit 处理为「两处都删，高级页留只读占位」。(1) 无 DB schema 变更 (2) 无新 API 端点 (3) 无新外部服务 (4) 4 文件（2 界面 + 2 配套测试，略超 ≤3 但 User 明确接受小改动） (5) 非支付/权限高危业务——纯前端 UI 删除，真正权限由后端 agent-security-hardening 负责。Rule 11 不适用（产品主动删误导性 UI，非 customer/线上 bug）。'
+  last_updated_by: ai-h1-start
+  last_updated_at: '2026-06-05T16:50:40+08:00'
+  created_at: '2026-06-05T16:50:40+08:00'
+  repos:
+  - numind-web-v3
+  branches:
+    numind-web-v3: fix/remove-agent-tool-switches
+  worktrees:
+    numind-web-v3: /private/tmp/wt-remove-agent-tool-switches-numind-web-v3
+  progress:
+    total_tasks: 1
+    completed_tasks: 0
+    reviewed_tasks: 0
+  decisions:
+  - 'H1-D1 (user 2026-06-05, AskUserQuestion): AgentAdvancedEdit.vue 唯一可操作内容即这 3 个开关（Prompt 编辑「即将上线」文本框禁用），删开关后选「两处都删，高级页留只读占位」——去掉「保存工具开关」按钮 + 高危确认弹窗，保留只读查看页作为以后 Prompt 编辑功能占位；已有 agent 工具配置静默保留不变。否决「只清主表单」（仍残留开关入口）与「整体下线高级模式」（改动过大且移除 Prompt 编辑占位）。'
+  blockers: []
+
 - id: agent-mode-billing
   ndf_version: '3.0'
   description: 'Agent run 不扣真实积分（go-live blocker，prod-readiness §0.1 BLK-2）。根因两处：(1) 真实扣费链路从未接通——平台唯一真实扣减积分（Reserve/Reconcile 两阶段，写 credit_reservation/credit_cycle/user_booster_balance/trial_grant）的入口是 aiservice 网关 ContextBudgetCredits 中间件（context_budget.go:398 第一行 len(ContextFragments)==0 即透传短路）；agent 适配器 convertToAiserviceRequest（adapter.go:191-253）只设 Messages/Tools 从不设 ContextFragments，run 入口（runner.go/runner_runstream.go）只 NewContextWithUserID 不注入 billing operation → 每次 agent LLM 调用被透传，不 Reserve 不 Reconcile，三池余额纹丝不动；工具内 aiservice.Chat（analyze_image/annotate_image/compaction）同样缺 ContextFragments；image_gen 裸 HTTP 打 DMXAPI 绕过 aiservice。(2) 内存 BudgetTracker 的 MaxCredits/MaxTurns 维度生产恒 0——budgetgate.WrapHooks（biz.go:343）没传 WithUsageLookup → usageLookup nil → RecordUsage(0)；adapter 在 runner 用 struct 字面量构造致 usageStore nil；RecordStep 全仓库无 caller；仅 wall_time 900s 兜底。Fix：方向 A（初判）让适配器设 ContextFragments + run 入口注入 billing operation ctx 使 ContextBudgetCredits 自动 Reserve/Reconcile per LLM call（工具内调用一并接通），vs 方向 B（runner 显式包 Reserve/Reconcile）——S2 二选一并论证；并接通 BudgetTracker（WithUsageLookup + 修 usageStore + RecordStep）。扣减对象=发起 run 的 agent_run.user_id（子账户跑扣子账户自己，对齐 b2b2c-student-agent-access），非 agent ParentUserID。难点：一 run 多次 LLM 调用 per-call 扣费、detached context.Background 致 HTTP cancel 不传播退款依赖 reservation_sweeper 兜底、Reserve 预扣 Reconcile 多退少补、余额不足优雅终止。待决：image_gen 收编 aiservice、admin 试聊 ReserveAgentTest/ReconcileAgentTest 是否纳入（S1/S2）。先例：credit-log-task-names 用 aismw.WithReservationRef 穿过同一网关，S2-D4 坑——billing.WithBilling 覆盖 BillingCtx 须用专用 ctx key。'
