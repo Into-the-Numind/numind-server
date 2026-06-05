@@ -31,7 +31,10 @@ func TestSopStreamTimeouts_ZeroFallsBackToDefault(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
 
-	// Explicit zero / unparseable → fall back to code default (defensive).
+	// Explicit zero (idle) and unparseable (overall) both yield 0 from
+	// viper.GetDuration → the >0 guard falls back to the code default.
 	viper.Set("sop.stream_idle_timeout", "0s")
-	assert.Equal(t, 4*time.Minute, sopIdleTimeout(), "non-positive config falls back to default")
+	viper.Set("sop.stream_overall_timeout", "notaduration")
+	assert.Equal(t, 4*time.Minute, sopIdleTimeout(), "non-positive idle config falls back to default")
+	assert.Equal(t, 30*time.Minute, sopOverallTimeout(), "unparseable overall config falls back to default")
 }
