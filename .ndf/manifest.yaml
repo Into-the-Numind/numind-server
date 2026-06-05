@@ -4,23 +4,27 @@ features:
   ndf_version: '3.0'
   description: 'Agent 配置器 UI 删除 3 个工具开关（code_sandbox 沙箱代码 / media 多媒体含图像生成 / dangerous 高危）。产品决策：所有工具默认全开，真正安全限制由后端独立权限门禁（并行 feature agent-security-hardening）负责，这 3 个开关对非工程师用户造成困惑且多余。改动两处前端：(1) QuestionnaireForm.vue（创建/配置智能体主表单）删工具开关 UI + 3 个 computed 代理 + patchToolFlag + 高危确认 handler/弹窗 + ConfirmModal import + .tool-flags CSS；配套 QuestionnaireForm.spec.ts 改 8→7 question 计数、移除 tool_flags 断言。(2) AgentAdvancedEdit.vue（高级模式编辑页，仅经不可逆「切换到高级模式」可达，其唯一可操作内容即这些开关、Prompt 文本框禁用）删开关后留作只读查看占位——去掉已失意义的「保存工具开关」按钮 + 高危确认弹窗 + 离开守卫，已有 agent 工具配置静默保留不变；配套 AgentAdvancedEdit.spec.ts 移除开关/保存相关测试、更新 banner 文案断言。保留不动：types/agentBuilder.ts 的 ToolFlags 接口 + initialFormState() tool_flags 默认全 true（新建 agent 默认全工具可用的来源）+ AgentBuilder.vue formToPayload/initForm round-trip。后端零改动。'
   track: hotfix
-  stage: H1
+  stage: completed
   classification_reason: 'Hotfix — User 2026-06-05 已确认档位与方案；AskUserQuestion 确认 AgentAdvancedEdit 处理为「两处都删，高级页留只读占位」。(1) 无 DB schema 变更 (2) 无新 API 端点 (3) 无新外部服务 (4) 4 文件（2 界面 + 2 配套测试，略超 ≤3 但 User 明确接受小改动） (5) 非支付/权限高危业务——纯前端 UI 删除，真正权限由后端 agent-security-hardening 负责。Rule 11 不适用（产品主动删误导性 UI，非 customer/线上 bug）。'
-  last_updated_by: ai-h1-start
-  last_updated_at: '2026-06-05T16:50:40+08:00'
+  last_updated_by: ai-h3-completed
+  last_updated_at: '2026-06-05T17:22:01+08:00'
+  completed_at: '2026-06-05T17:22:01+08:00'
   created_at: '2026-06-05T16:50:40+08:00'
   repos:
   - numind-web-v3
   branches:
-    numind-web-v3: fix/remove-agent-tool-switches
+    numind-web-v3: fix/remove-agent-tool-switches (deleted after ndf-done)
   worktrees:
-    numind-web-v3: /private/tmp/wt-remove-agent-tool-switches-numind-web-v3
+    numind-web-v3: (removed after ndf-done)
   progress:
     total_tasks: 1
-    completed_tasks: 0
-    reviewed_tasks: 0
+    completed_tasks: 1
+    reviewed_tasks: 1
   decisions:
   - 'H1-D1 (user 2026-06-05, AskUserQuestion): AgentAdvancedEdit.vue 唯一可操作内容即这 3 个开关（Prompt 编辑「即将上线」文本框禁用），删开关后选「两处都删，高级页留只读占位」——去掉「保存工具开关」按钮 + 高危确认弹窗，保留只读查看页作为以后 Prompt 编辑功能占位；已有 agent 工具配置静默保留不变。否决「只清主表单」（仍残留开关入口）与「整体下线高级模式」（改动过大且移除 Prompt 编辑占位）。'
+  - 'H1-D2 (ai 2026-06-05): 双 Sonnet reviewer 并行——spec-compliance=PASS（开关两处全删、initialFormState tool_flags 默认全 true / ToolFlags 接口 / AgentBuilder round-trip 全保留、后端零改动、Rule 11 正确判定不适用）；code-quality=PASS_WITH_CONCERNS（3 处测试死代码：AgentAdvancedEdit.spec 残留 notifications mock + onBeforeRouteLeave ghost、QuestionnaireForm.spec 过期 describe 标签）→ 已全部修复 amend 进 commit 815ddff。lint 0 error + type-check clean + 137 agent 单测全绿。'
+  - 'H2-D3 (ai 2026-06-05, 真实浏览器验证): 本地 vite proxy→dev backend gstack browse——/config/agents/builder?from=scratch 创建表单只剩 7 个 data-question、无 tool_flags block / 0 checkbox / 0 .tool-flags / 无开关文案（截图）；抓取真实 UI 创建 payload tool_flags 三项全 true；端到端 valid create→200（agent 100005）GET 回读 tool_flags 全 true 持久化、已 soft-delete。注：from-scratch UI 422「问卷 q6/q7 必填」为 pre-existing（表单不收集 q6/q7），与删开关无关。AgentAdvancedEdit 只读占位由 15 单测覆盖。'
+  - 'H3-D4 (ai 2026-06-05, merge+deploy+dev复验): ndf-done merge fix/remove-agent-tool-switches→develop（web-v3 9c80012）+ push；release.sh dev 部署 image develop-9c80012 健康（:9200/health=200）；dev 站点复验——配置器 7 data-question 无开关、无 console error；dev 端到端 create→200（agent 100006）tool_flags 全 true、已 soft-delete。DONE。prod 不做（agent 在 dev 验收止步，禁碰 prod）。'
   blockers: []
 
 - id: agent-mode-billing
