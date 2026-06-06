@@ -51,6 +51,21 @@ func (r *agentRunner) consumeEinoStream(
 
 	state, hasState := StreamStateFromContext(ctx)
 
+	// T4 (#4) double-emission fix: when the live StreamToolCallChecker
+	// (streamScanToolCallChecker) is active it already pumps the per-step ECHO
+	// events (token_delta / reasoning_delta / assistant_message / step_done) to
+	// the SAME shared channel for every model step. consumeEinoStream drains the
+	// END copy of the same model output, so re-emitting those echoes here
+	// doubles the user-visible text for a plain-text answer. checkerActive
+	// mirrors the checker's own emit guard (`if !hasState || state.Ch == nil`):
+	// under exactly that condition the checker pumps, so under it we must NOT
+	// re-emit. We still ACCUMULATE content (for stash/terminal/RunResult) and
+	// emit the events consumeEinoStream solely owns (stream_start, the single
+	// terminal, tool_call_start/result, error, yield). When the checker is NOT
+	// active (hypothetical no-checker path) consumeEinoStream emits everything,
+	// preserving the fallback.
+	checkerActive := hasState && state.Ch != nil
+
 	var (
 		currentMsgID  = uuid.NewString()
 		currentText   strings.Builder
@@ -249,21 +264,27 @@ func (r *agentRunner) consumeEinoStream(
 		// Classify the message by role.
 		switch msg.Role {
 		case schema.Assistant:
-			// Text delta.
+			// Text delta. Accumulate ALWAYS (terminal/stash/RunResult depend on
+			// it); only emit the echo when the live checker is NOT pumping (T4 #4).
 			if msg.Content != "" {
 				currentText.WriteString(msg.Content)
-				emit(stream.EventTokenDelta, stream.TokenDeltaPayload{
-					MessageID: currentMsgID,
-					Text:      msg.Content,
-				})
+				if !checkerActive {
+					emit(stream.EventTokenDelta, stream.TokenDeltaPayload{
+						MessageID: currentMsgID,
+						Text:      msg.Content,
+					})
+				}
 			}
-			// Reasoning delta (thinking models).
+			// Reasoning delta (thinking models). Accumulate ALWAYS; only emit the
+			// echo when the live checker is NOT pumping (T4 #4).
 			if msg.ReasoningContent != "" {
 				currentReason.WriteString(msg.ReasoningContent)
-				emit(stream.EventReasoningDelta, stream.ReasoningDeltaPayload{
-					MessageID: currentMsgID,
-					Text:      msg.ReasoningContent,
-				})
+				if !checkerActive {
+					emit(stream.EventReasoningDelta, stream.ReasoningDeltaPayload{
+						MessageID: currentMsgID,
+						Text:      msg.ReasoningContent,
+					})
+				}
 			}
 			// Tool calls — dedup by ID (same tool_call can arrive across multiple chunks).
 			for _, tc := range msg.ToolCalls {
@@ -310,16 +331,22 @@ func (r *agentRunner) consumeEinoStream(
 		if msg.ResponseMeta != nil && msg.ResponseMeta.FinishReason != "" {
 			hasToolCalls := len(msg.ToolCalls) > 0
 
-			emit(stream.EventAssistantMessage, stream.AssistantMessagePayload{
-				MessageID:        currentMsgID,
-				Content:          currentText.String(),
-				ReasoningContent: currentReason.String(),
-				HasToolCalls:     hasToolCalls,
-			})
-			emit(stream.EventStepDone, stream.StepDonePayload{
-				StepIndex:  stepIdx,
-				StopReason: msg.ResponseMeta.FinishReason,
-			})
+			// Echo events: emit only when the live checker is NOT pumping them
+			// (T4 #4). The stash + rotation below stay UNCONDITIONAL so the
+			// terminal payload, RunResult.FinalOutput, and StepCount remain
+			// correct regardless of who emits the echoes.
+			if !checkerActive {
+				emit(stream.EventAssistantMessage, stream.AssistantMessagePayload{
+					MessageID:        currentMsgID,
+					Content:          currentText.String(),
+					ReasoningContent: currentReason.String(),
+					HasToolCalls:     hasToolCalls,
+				})
+				emit(stream.EventStepDone, stream.StepDonePayload{
+					StepIndex:  stepIdx,
+					StopReason: msg.ResponseMeta.FinishReason,
+				})
+			}
 
 			// Stash the just-emitted assistant content BEFORE Reset so EOF can
 			// recover it as the final answer (single-step or last step of
