@@ -3570,3 +3570,23 @@ features:
   decisions:
   - 'H1-H3 (ai 2026-06-05): 修复为纯测试 fixture 同步(2 个 raw CREATE TABLE 补齐 model 漂移列),改动 +5 行全在 _test.go。验证=全仓库 go test ./... 全绿 + task lint clean(替代 dual-reviewer:改动机械且被全绿套件证明,匹配 model 列定义)。systemic follow-up(非本次): 这类 raw CREATE TABLE fixture 会随 model 加列反复漂移失败,可改用 db.AutoMigrate(&model.X{}) 根治,但风险更大(AutoMigrate schema 与手写有别可能影响其他断言),留作后续。'
   blockers: []
+- id: agent-from-scratch-q6q7
+  ndf_version: '3.0'
+  description: '内部验证发现的 pre-existing bug（非 customer 线上 bug，在 remove-agent-tool-switches 验收时被探测到，与该 feature 无关——该 feature 只删工具开关）。现象：配置中心→智能体→从零创建（/config/agents/builder?from=scratch）填名字/描述/欢迎语点保存→POST /v1/agent/skills 返回 422 "问卷必填项缺失：q6 (任务类型)、q7 (材料类型)"，且表单根本没有 q6/q7 输入控件→用户死路无法创建。根因：QuestionnaireForm.vue 只渲染 7 个 data-question 字段(name/icon_url/description/welcome_message/system_prompt/starters/q8)，从未接入 q6(任务类型,多选+自由文本)/q7(材料类型,多选)控件——尽管 types/agentBuilder.ts 的 Q6TaskType/Q7MaterialType 与 validation.ts 的 validateQ6/validateQ7 stub 早已定义占位。initialFormState() 把 q6/q7 默认成空数组→payload questionnaire_answers.q6=[],q7=[]→后端 biz/skill/service.go validateRequiredQuestionnaireForCreate 必填校验 422(q12 已默认 friendly 不缺；只有整 QA 缺失的路径才会带上 q12)。从模板/从已有派生路径预填了 q6/q7 故可用，仅从零创建坏。选方向 A（补控件）而非 B(放宽校验)/C(删入口)：q6/q7 实际驱动后端 Build() 生成 skill prompt(taskTypeDisplay/materialTypeDisplay) + deriveDefaultToolFlags(q7 含 text/csv/image→file_read)，空值会让从零创建出的 agent 质量下降。已用 Playwright 在 dev(49.233.219.254:9200)复现：DOM 确认无 q6/q7 字段 + 抓到 POST /v1/agent/skills 422 + payload q6:[],q7:[]。Fix scope=q6+q7 两控件 + validation 启用 q6/q7 必填 + 1 个回归测试。'
+  track: hotfix
+  stage: H1
+  classification_reason: 'Hotfix triage 5 条全过：① 无 DB schema 变更 ② 无新 API 端点(POST /v1/agent/skills 已接受 q6/q7) ③ 无新外部服务 ④ 影响文件 ≤3(QuestionnaireForm.vue + validation.ts + 回归测试；复用既有 ChipInput 组件 + 文件内既有 .questionnaire-form__radio-group CSS，无需新共享组件) ⑤ 无支付/权限高风险(agent 配置表单，q6/q7 影响生成 skill 质量非 money/auth)。Micro 排除：新增功能性表单控件+校验逻辑，非纯文案/样式/rename。内部发现非 customer 上报 bug → Rule 11 复现测试按 H1「至少 1 个新测试」处理(不强制 test(qa): 首 commit 链)。User 已确认方向 A + 档位 Hotfix。'
+  last_updated_by: ai-h1
+  last_updated_at: '2026-06-06T12:02:00+08:00'
+  created_at: '2026-06-06T12:02:00+08:00'
+  repos:
+  - numind-web-v3
+  branches:
+    numind-web-v3: fix/agent-from-scratch-q6q7
+  worktrees:
+    numind-web-v3: /private/tmp/wt-agent-from-scratch-q6q7-numind-web-v3
+  progress:
+    total_tasks: 1
+    completed_tasks: 0
+    reviewed_tasks: 0
+  blockers: []
