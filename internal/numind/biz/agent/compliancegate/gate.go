@@ -31,7 +31,7 @@ import (
 //
 // PostToolCall: pass-through (compliance does not decide post-tool).
 //
-// 关键不变量：保留 base.Registry / NarrationProvider / NarrationRunID 透传
+// 关键不变量：保留 base.Registry / NarrationProvider 透传
 // （permission.WrapHooks / budgetgate.WrapHooks 也保留同样字段）。
 //
 // gate may be nil — returns base unchanged.
@@ -90,7 +90,6 @@ func WrapHooks(base *agent.RunHooks, gate compliance.ComplianceGate) *agent.RunH
 		},
 		Registry:          registryFromBase(base),
 		NarrationProvider: narrationProviderFromBase(base),
-		NarrationRunID:    narrationRunIDFromBase(base),
 	}
 }
 
@@ -139,13 +138,6 @@ func narrationProviderFromBase(base *agent.RunHooks) *narration.Provider {
 		return nil
 	}
 	return base.NarrationProvider
-}
-
-func narrationRunIDFromBase(base *agent.RunHooks) uint64 {
-	if base == nil {
-		return 0
-	}
-	return base.NarrationRunID
 }
 
 func toolName(ctx context.Context, t einotool.BaseTool) string {

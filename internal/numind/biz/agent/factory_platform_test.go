@@ -38,15 +38,15 @@ func TestPlatformToolFactory_LoadTools(t *testing.T) {
 	f := NewPlatformToolFactory(nil, nil)
 	tools, metadata, err := f.LoadTools(context.Background())
 	require.NoError(t, err)
-	// V1.5 task 1.4: 12 vision-equipped base tools.
+	// V1.5 task 1.4: 12 vision-equipped base tools, minus learner_data_query
+	// (removed: IDOR — read any user's profile by LLM-supplied id) = 11.
 	// v2 marketplace: +1 load_skill.
 	// V1.5 Track 4 task 4.2/4.3/4.9: +4 create + 1 chart + 1 run_python = +6.
-	// Total base tool count: 12 + 1 + 6 = 19.
-	assert.Len(t, tools, 19)
-	assert.Len(t, metadata, 19)
+	// Total base tool count: 11 + 1 + 6 = 18.
+	assert.Len(t, tools, 18)
+	assert.Len(t, metadata, 18)
 	expected := []string{
 		"kb_search",
-		"learner_data_query",
 		"document_generate",
 		"image_gen",
 		"bash_exec",
@@ -77,15 +77,14 @@ func TestPlatformToolFactory_LoadTools_WithDS_8Tools(t *testing.T) {
 	f := NewPlatformToolFactory(nil, ds)
 	tools, metadata, err := f.LoadTools(context.Background())
 	require.NoError(t, err)
-	// V1.5 + v2 marketplace + Track 4: base count is now 19 (12 + load_skill + 4 create + chart + run_python);
-	// with ds, memory_write + memory_read are appended → total 21.
-	assert.Len(t, tools, 21, "non-nil ds should produce 21 tools (19 base + memory_write + memory_read)")
-	assert.Len(t, metadata, 21, "non-nil ds should produce 21 metadata entries")
+	// V1.5 + v2 marketplace + Track 4: base count is now 18 (11 + load_skill + 4 create + chart + run_python;
+	// learner_data_query removed for IDOR); with ds, memory_write + memory_read are appended → total 20.
+	assert.Len(t, tools, 20, "non-nil ds should produce 20 tools (18 base + memory_write + memory_read)")
+	assert.Len(t, metadata, 20, "non-nil ds should produce 20 metadata entries")
 
-	// Verify the first 19 are unchanged.
+	// Verify the first 18 are unchanged.
 	baseExpected := []string{
 		"kb_search",
-		"learner_data_query",
 		"document_generate",
 		"image_gen",
 		"bash_exec",
@@ -108,9 +107,9 @@ func TestPlatformToolFactory_LoadTools_WithDS_8Tools(t *testing.T) {
 		assert.Equal(t, want, tools[i].Name(), "tool[%d] name", i)
 	}
 
-	// Verify memory tools are appended at indices 19 and 20.
-	assert.Equal(t, "memory_write", tools[19].Name(), "tools[19] should be memory_write")
-	assert.Equal(t, "memory_read", tools[20].Name(), "tools[20] should be memory_read")
+	// Verify memory tools are appended at indices 18 and 19.
+	assert.Equal(t, "memory_write", tools[18].Name(), "tools[18] should be memory_write")
+	assert.Equal(t, "memory_read", tools[19].Name(), "tools[19] should be memory_read")
 }
 
 func TestPlatformToolFactory_LoadTools_WithDS_Metadata14(t *testing.T) {
@@ -119,19 +118,19 @@ func TestPlatformToolFactory_LoadTools_WithDS_Metadata14(t *testing.T) {
 	f := NewPlatformToolFactory(nil, ds)
 	_, metadata, err := f.LoadTools(context.Background())
 	require.NoError(t, err)
-	// V1.5 + v2 marketplace + Track 4: total is 21 (19 base + memory_write + memory_read).
-	require.Len(t, metadata, 21)
+	// V1.5 + v2 marketplace + Track 4: total is 20 (18 base + memory_write + memory_read).
+	require.Len(t, metadata, 20)
 
-	// memory_write metadata at index 19.
-	mw := metadata[19]
+	// memory_write metadata at index 18.
+	mw := metadata[18]
 	assert.Equal(t, "memory_write", mw.ToolName)
 	assert.Equal(t, "记忆写入", mw.DisplayName)
 	assert.Equal(t, "platform", mw.Source)
 	assert.Equal(t, "记忆", mw.Category)
 	assert.Equal(t, "moderate", mw.RiskLevel)
 
-	// memory_read metadata at index 20.
-	mr := metadata[20]
+	// memory_read metadata at index 19.
+	mr := metadata[19]
 	assert.Equal(t, "memory_read", mr.ToolName)
 	assert.Equal(t, "记忆读取", mr.DisplayName)
 	assert.Equal(t, "platform", mr.Source)
@@ -191,6 +190,33 @@ func TestPlatformToolFactory_Metadata(t *testing.T) {
 	assert.Equal(t, "platform-builtin", f.FactoryID())
 	assert.Equal(t, "platform", f.Source())
 	assert.Equal(t, "平台内置工具", f.DisplayName())
+}
+
+// TestPlatformFactory_NoLearnerDataQueryTool is the permanent guard that the
+// learner_data_query tool stays removed. The tool was deleted because it had an
+// IDOR: it read any user's profile by an LLM-supplied user_id with no caller
+// check. Product decision was to remove it rather than scope it. This test fails
+// if anyone re-registers it in the platform factory or re-adds it to the
+// safeToolBaseline.
+func TestPlatformFactory_NoLearnerDataQueryTool(t *testing.T) {
+	const removed = "learner_data_query"
+
+	// 1) Not registered in the platform factory tool list (with a real ds, the
+	//    fullest tool set including memory tools).
+	db := newFactoryTestDB(t)
+	ds := store.NewTestStore(db)
+	f := NewPlatformToolFactory(nil, ds)
+	tools, metadata, err := f.LoadTools(context.Background())
+	require.NoError(t, err)
+	for _, tool := range tools {
+		assert.NotEqual(t, removed, tool.Name(), "%s tool must stay removed (IDOR)", removed)
+	}
+	for _, m := range metadata {
+		assert.NotEqual(t, removed, m.ToolName, "%s metadata must stay removed (IDOR)", removed)
+	}
+
+	// 2) Not present in the default-on safe baseline.
+	assert.NotContains(t, safeToolBaseline, removed, "%s must not be in safeToolBaseline (IDOR)", removed)
 }
 
 func TestPlatformToolFactory_Watch_Noop(t *testing.T) {

@@ -235,7 +235,15 @@ func (a *fullToolEinoAdapter) emitNarration(ctx context.Context, st narration.St
 		return
 	}
 	obsInput := a.ft.BackfillObservableInput(input)
-	a.hooks.NarrationProvider.Emit(ctx, a.hooks.NarrationRunID, a.ft.Name(), st, narration.EmitPayload{
+	// T3 (#5): route narration by the per-run id carried in ctx (injected via
+	// WithRunID at run start) — the same source every other per-run hook reads.
+	// Previously this read a.hooks.NarrationRunID, a field on the process-global
+	// *RunHooks that the runner mutated per run; with 2+ concurrent runs the last
+	// writer won, leaking one run's narration into another's stream.
+	// RunIDFromContext returns 0 only if a caller forgot WithRunID (legacy/test);
+	// Emit then routes to an unsubscribed runID=0 bucket and the event is harmlessly
+	// dropped — both run paths always inject WithRunID before any tool executes.
+	a.hooks.NarrationProvider.Emit(ctx, RunIDFromContext(ctx), a.ft.Name(), st, narration.EmitPayload{
 		Input:  json.RawMessage(obsInput),
 		Result: json.RawMessage(result),
 		Err:    execErr,

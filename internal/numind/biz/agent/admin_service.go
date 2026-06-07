@@ -145,13 +145,19 @@ func (s *AgentAdminService) ListByStatus(ctx context.Context, parentUserID uint,
 	return dtos, total, nil
 }
 
-// isTerminalStatus returns true when the run status represents a completed/failed run.
+// isTerminalStatus reports whether a run is NOT cancellable because it is no
+// longer running.
+//
+// agent_run.status is constrained by a DB CHECK to exactly ('running',
+// 'terminated') — the fine-grained outcome (completed/failed/aborted/…) lives in
+// state_reason, not status. The previous implementation matched
+// "completed"/"failed"/"cancelled"/"error", none of which the runtime ever
+// writes, so a genuinely finished run (status=="terminated") slipped past the
+// guard and a force-cancel would stamp cancellation_requested_at and clobber the
+// real terminal_metadata. Treating anything other than "running" as terminal
+// closes that hole and is robust to any future status value.
 func isTerminalStatus(status string) bool {
-	switch status {
-	case "completed", "failed", "cancelled", "error":
-		return true
-	}
-	return false
+	return status != "running"
 }
 
 // isNotFoundErr returns true for "no row matched" errors from agentRunStore.Get.

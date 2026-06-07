@@ -24,11 +24,10 @@ type User struct {
 	//
 	// 准确数据：COUNT sop_run 表（store/customer.go GetSubUserRunCounts 已批量实现）。
 	//
-	// 字段保留是为了向后兼容仍在 marshal 它的 4 处：
+	// 字段保留是为了向后兼容仍在 marshal 它的 2 处：
 	//   - controller/v1/admin_user/user.go:87,133 (admin 后台用户列表/详情)
 	//   - controller/v1/user/get.go:64 (用户自查接口)
-	//   - biz/agent/tool_learner_data_query.go:50 (agent learner 工具)
-	// 这 4 处的迁移列入 tech debt follow-up，迁完后整体 drop 列。新代码禁止读此字段。
+	// 这 2 处的迁移列入 tech debt follow-up，迁完后整体 drop 列。新代码禁止读此字段。
 	TotalSopRuns int `gorm:"default:0;index" json:"total_sop_runs"`
 
 	// 管理员相关字段

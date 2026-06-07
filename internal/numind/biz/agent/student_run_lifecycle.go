@@ -732,22 +732,21 @@ func (s *StudentRunService) verifyRunOwnership(ctx context.Context, userID uint,
 // {"web_search": false} 等覆盖 baseline；当前 frontend (AgentAdvancedEdit.vue)
 // 只有 3 个 category 开关，所以 baseline 永远启用。
 var safeToolBaseline = []string{
-	"kb_search",          // RAG 检索
-	"learner_data_query", // 学员档案（read-only）
-	"memory_read",        // 长期记忆读
-	"memory_write",       // 长期记忆写
-	"get_current_date",   // 当前时间
-	"ask_user_question",  // 反问学员
-	"web_search",         // 网络搜索（Tavily）
-	"web_fetch",          // URL → Markdown
-	"file_read",          // PDF/图/文本
-	"create_csv",         // CSV 生成
-	"create_html",        // HTML 生成
-	"create_json",        // JSON 生成
-	"create_text",        // 文本生成
-	"create_png_chart",   // 图表生成
-	"load_skill",         // open-tools-skill-as-guidance: merged use_skill+read_skill — loads DB-bound + disk platform skill guidance; agent writes Python then run_python executes
-	"run_python",         // 2026-05-29 hotfix: load_skill is useless without an executor. The OutputToolsPriorityAddendum already promises every agent the load_skill→run_python path; baseline must match the promise. run_python is sandbox-isolated (docker), so the risk surface is the sandbox image itself, not the agent permission flag.
+	"kb_search",         // RAG 检索
+	"memory_read",       // 长期记忆读
+	"memory_write",      // 长期记忆写
+	"get_current_date",  // 当前时间
+	"ask_user_question", // 反问学员
+	"web_search",        // 网络搜索（Tavily）
+	"web_fetch",         // URL → Markdown
+	"file_read",         // PDF/图/文本
+	"create_csv",        // CSV 生成
+	"create_html",       // HTML 生成
+	"create_json",       // JSON 生成
+	"create_text",       // 文本生成
+	"create_png_chart",  // 图表生成
+	"load_skill",        // open-tools-skill-as-guidance: merged use_skill+read_skill — loads DB-bound + disk platform skill guidance; agent writes Python then run_python executes
+	"run_python",        // 2026-05-29 hotfix: load_skill is useless without an executor. The OutputToolsPriorityAddendum already promises every agent the load_skill→run_python path; baseline must match the promise. run_python is sandbox-isolated (docker), so the risk surface is the sandbox image itself, not the agent permission flag.
 }
 
 // categoryToTools 把 frontend AgentAdvancedEdit.vue 的 3 个 risk-category 开关

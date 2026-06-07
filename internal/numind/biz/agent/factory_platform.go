@@ -88,28 +88,25 @@ func (f *platformToolFactory) DisplayName() string { return "平台内置工具"
 // Tools constructed with nil deps will panic only if Execute is called; LoadTools itself
 // must never panic.
 //
-// Base tools (always present, ds=nil or ds!=nil): 19 tools, including load_skill
+// Base tools (always present, ds=nil or ds!=nil): 18 tools, including load_skill
 // (open-tools-skill-as-guidance: always registered; f.skillRegistry only controls
 // whether disk platform skills are resolvable, not whether load_skill exists):
 //
-//	kb_search, learner_data_query, document_generate, image_gen, bash_exec,
+//	kb_search, document_generate, image_gen, bash_exec,
 //	get_current_date, web_search, web_fetch, ask_user_question, file_read,
 //	analyze_image, annotate_image, load_skill,
 //	create_csv, create_html, create_json, create_text  (V1.5 output-skills task 4.2)
 //	create_png_chart                                    (V1.5 output-skills task 4.3)
 //	run_python                                          (V1.5 output-skills task 4.9)
 //
-// When f.ds is non-nil, memory_write + memory_read are appended (21 tools, else 19).
+// When f.ds is non-nil, memory_write + memory_read are appended (20 tools, else 18).
 func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMetadata, error) {
-	var usersGetter userByIDGetter
 	var attStore store.IAgentAttachmentStore
 	if f.ds != nil {
-		usersGetter = f.ds.Users()
 		attStore = f.ds.AgentAttachments()
 	}
 	tools := []FullTool{
 		&kbSearchTool{rag: f.rag},
-		&learnerDataQueryTool{users: usersGetter},
 		&documentGenerateTool{},
 		&imageGenTool{ds: f.ds, creditService: f.creditService},
 		&bashExecTool{},
@@ -143,7 +140,6 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 	}
 	metadata := []ToolMetadata{
 		{ToolName: "kb_search", DisplayName: "知识库检索", Description: "Search the knowledge base.", Source: "platform", Category: "RAG"},
-		{ToolName: "learner_data_query", DisplayName: "学员档案", Description: "Query learner profile.", Source: "platform", Category: "查询", RiskLevel: "moderate"},
 		{ToolName: "document_generate", DisplayName: "文档生成", Description: "[stub] Generate documents.", Source: "platform", Category: "生成"},
 		{ToolName: "image_gen", DisplayName: "图像生成", Description: "[stub] Generate images.", Source: "platform", Category: "多媒体", RequiresSandbox: true},
 		{ToolName: "bash_exec", DisplayName: "代码执行", Description: "[stub] Execute shell.", Source: "platform", Category: "代码", RiskLevel: "dangerous", RequiresSandbox: true},
@@ -168,7 +164,7 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		{ToolName: "run_python", DisplayName: "Python 代码执行（文件生成）", Description: "Execute Python 3 code in an isolated sandbox to generate files. Use directly for long-tail formats; for xlsx/docx/pptx/pdf use the load_skill → run_python two-step (Layer 2).", Source: "platform", RiskLevel: "dangerous", Category: "代码", RequiresSandbox: true},
 	}
 	// Append memory tools only when a real store is available (nil guard preserves
-	// the nil-ds unit test that expects exactly 17 tools).
+	// the nil-ds unit test that expects exactly 18 base tools).
 	if f.ds != nil {
 		np := memory.NewNotepad(f.ds.UserGlobalMemories())
 		tools = append(tools,

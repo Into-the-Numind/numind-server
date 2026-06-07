@@ -105,16 +105,17 @@ func TestWrapHooks_PostToolCall_Forwarded(t *testing.T) {
 	assert.True(t, postCalled, "PostToolCall should forward to base")
 }
 
-func TestWrapHooks_PreservesRegistryAndNarration(t *testing.T) {
+func TestWrapHooks_PreservesRegistry(t *testing.T) {
+	// T3 (#5): NarrationRunID field removed; the per-run id now flows through
+	// ctx (RunIDFromContext), so it is not copied through the wrapper. Registry
+	// is still copied and must survive the wrap.
 	gate := &fakeGate{}
 	reg := agent.NewHookActionRegistry()
 	base := &agent.RunHooks{
-		Registry:       reg,
-		NarrationRunID: 999,
+		Registry: reg,
 	}
 	wrapped := WrapHooks(base, gate)
 	assert.Same(t, reg, wrapped.Registry)
-	assert.Equal(t, uint64(999), wrapped.NarrationRunID)
 }
 
 func TestWrapHooks_NilBase_DoesNotPanic(t *testing.T) {

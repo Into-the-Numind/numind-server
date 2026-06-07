@@ -124,7 +124,6 @@ func TestToolNamesFromFlags_RealWorldBug_100001(t *testing.T) {
 	got := sortedNames(names)
 	assert.Contains(t, got, "kb_search")
 	assert.Contains(t, got, "web_search")
-	assert.Contains(t, got, "learner_data_query")
 	assert.Contains(t, got, "memory_read")
 	assert.Contains(t, got, "memory_write")
 	assert.Contains(t, got, "get_current_date")

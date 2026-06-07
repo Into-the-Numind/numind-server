@@ -316,14 +316,17 @@ func TestAdapter_NarrationEmits_UseResult(t *testing.T) {
 
 	hooks := rec.asRunHooks()
 	hooks.NarrationProvider = prov
-	hooks.NarrationRunID = 1001
+	// T3 (#5): narration routes by the run id in ctx, not a struct field.
+	ctx := WithRunID(context.Background(), 1001)
 
 	eino := adaptFullToEinoTool(ft, hooks)
-	_, err := eino.InvokableRun(context.Background(), `{}`)
+	_, err := eino.InvokableRun(ctx, `{}`)
 	require.NoError(t, err)
 
 	evs := drainEvents(ch, 100*time.Millisecond)
 	require.Len(t, evs, 2, "expected exactly 2 narration events (use + result)")
+	assert.Equal(t, uint64(1001), evs[0].RunID, "event must carry ctx-derived run id")
+	assert.Equal(t, uint64(1001), evs[1].RunID, "event must carry ctx-derived run id")
 	assert.Equal(t, narration.StateUse, evs[0].State)
 	assert.Equal(t, narration.StateResult, evs[1].State)
 	assert.Contains(t, evs[0].Message, "正在执行")
@@ -338,14 +341,16 @@ func TestAdapter_NarrationEmits_UseError(t *testing.T) {
 
 	hooks := rec.asRunHooks()
 	hooks.NarrationProvider = prov
-	hooks.NarrationRunID = 1002
+	// T3 (#5): narration routes by the run id in ctx, not a struct field.
+	ctx := WithRunID(context.Background(), 1002)
 
 	eino := adaptFullToEinoTool(ft, hooks)
-	_, err := eino.InvokableRun(context.Background(), `{}`)
+	_, err := eino.InvokableRun(ctx, `{}`)
 	require.Error(t, err)
 
 	evs := drainEvents(ch, 100*time.Millisecond)
 	require.Len(t, evs, 2, "expected exactly 2 narration events (use + error)")
+	assert.Equal(t, uint64(1002), evs[0].RunID, "event must carry ctx-derived run id")
 	assert.Equal(t, narration.StateUse, evs[0].State)
 	assert.Equal(t, narration.StateError, evs[1].State)
 	// Security contract: raw error text MUST NOT leak.
@@ -364,14 +369,16 @@ func TestAdapter_NarrationEmits_Rejected_NoUseEmitted(t *testing.T) {
 
 	hooks := rec.asRunHooks()
 	hooks.NarrationProvider = prov
-	hooks.NarrationRunID = 1003
+	// T3 (#5): narration routes by the run id in ctx, not a struct field.
+	ctx := WithRunID(context.Background(), 1003)
 
 	eino := adaptFullToEinoTool(ft, hooks)
-	_, err := eino.InvokableRun(context.Background(), `{}`)
+	_, err := eino.InvokableRun(ctx, `{}`)
 	require.Error(t, err)
 
 	evs := drainEvents(ch, 100*time.Millisecond)
 	require.Len(t, evs, 1, "expected exactly 1 narration event (rejected only); no use/result/error")
+	assert.Equal(t, uint64(1003), evs[0].RunID, "event must carry ctx-derived run id")
 	assert.Equal(t, narration.StateRejected, evs[0].State)
 	assert.Equal(t, "这个命令被规则拦截了", evs[0].Message)
 }
@@ -387,14 +394,16 @@ func TestAdapter_NarrationEmits_PostErrUpgradesToError(t *testing.T) {
 
 	hooks := rec.asRunHooks()
 	hooks.NarrationProvider = prov
-	hooks.NarrationRunID = 1004
+	// T3 (#5): narration routes by the run id in ctx, not a struct field.
+	ctx := WithRunID(context.Background(), 1004)
 
 	eino := adaptFullToEinoTool(ft, hooks)
-	_, err := eino.InvokableRun(context.Background(), `{}`)
+	_, err := eino.InvokableRun(ctx, `{}`)
 	require.Error(t, err, "caller should see PostToolCall-wrapped error")
 
 	evs := drainEvents(ch, 100*time.Millisecond)
 	require.Len(t, evs, 2, "expected use + error (NOT use + result)")
+	assert.Equal(t, uint64(1004), evs[0].RunID, "event must carry ctx-derived run id")
 	assert.Equal(t, narration.StateUse, evs[0].State)
 	assert.Equal(t, narration.StateError, evs[1].State,
 		"PostToolCall error with execErr=nil must drive narration to StateError, not StateResult")
@@ -413,6 +422,64 @@ func TestAdapter_NoNarrationProvider_LegacyBehaviorPreserved(t *testing.T) {
 	assert.Equal(t, `{"ok":true}`, out)
 	assert.Equal(t, int64(1), rec.preCalls.Load(), "PreToolCall should fire once")
 	assert.Equal(t, int64(1), rec.postCalls.Load(), "PostToolCall should fire once")
+}
+
+// TestEmitNarration_RoutesByContextRunID_NoCrossRunLeak is the permanent guard
+// for T3 (#5). Two concurrent agent runs share a SINGLE process-global *RunHooks
+// (the production wiring: one struct built once in biz.go, stored in
+// agentRunner.defaultHooks, reused by every run). Each run carries its own run id
+// in ctx via WithRunID. The adapter MUST route narration by the ctx run id so the
+// two runs land on their own subscriber streams.
+//
+// Pre-fix the adapter routed by a mutable RunHooks.NarrationRunID field that the
+// runner overwrote per run → last-writer-wins → run A's narration leaked into run
+// B's stream. That code can no longer compile (field deleted), but this test pins
+// the contract: routing follows ctx, the shared struct cannot cause cross-run
+// leakage. Run with the old code (read a.hooks.NarrationRunID, single shared
+// field) and both subscribers would have collided on one run id.
+func TestEmitNarration_RoutesByContextRunID_NoCrossRunLeak(t *testing.T) {
+	// ONE provider, ONE shared *RunHooks — mirrors the process-global wiring.
+	prov, err := narration.NewProvider(narration.Config{
+		YAMLBytes:  []byte(narrationFixtureYAML),
+		BufferSize: 16,
+	})
+	require.NoError(t, err)
+
+	const runA, runB uint64 = 111, 222
+	chA, cleanupA := prov.Subscribe(runA)
+	defer cleanupA()
+	chB, cleanupB := prov.Subscribe(runB)
+	defer cleanupB()
+
+	rec := newHookRecorder()
+	sharedHooks := rec.asRunHooks() // the SINGLE shared hooks struct
+	sharedHooks.NarrationProvider = prov
+
+	ft := &fakeFullTool{name: "fake_narration_tool", out: []byte(`{"ok":true}`)}
+	eino := adaptFullToEinoTool(ft, sharedHooks)
+
+	// Two runs through the SAME adapter + SAME hooks, differing only by ctx run id.
+	_, err = eino.InvokableRun(WithRunID(context.Background(), runA), `{}`)
+	require.NoError(t, err)
+	_, err = eino.InvokableRun(WithRunID(context.Background(), runB), `{}`)
+	require.NoError(t, err)
+
+	evsA := drainEvents(chA, 100*time.Millisecond)
+	evsB := drainEvents(chB, 100*time.Millisecond)
+
+	require.NotEmpty(t, evsA, "run A subscriber must receive its own narration")
+	require.NotEmpty(t, evsB, "run B subscriber must receive its own narration")
+
+	// No cross-run leakage: every event on stream A carries runA, every event on
+	// stream B carries runB. If routing read the shared struct field, the second
+	// run would have clobbered it and both streams would show 222 (or one stream
+	// would be starved), failing these assertions.
+	for _, ev := range evsA {
+		assert.Equal(t, runA, ev.RunID, "run A stream leaked an event tagged %d", ev.RunID)
+	}
+	for _, ev := range evsB {
+		assert.Equal(t, runB, ev.RunID, "run B stream leaked an event tagged %d", ev.RunID)
+	}
 }
 
 // ── tests: SSE tool-call event emission (2026-05-29 "frozen UI" fix) ─────────

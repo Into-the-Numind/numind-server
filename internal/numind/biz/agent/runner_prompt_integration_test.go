@@ -16,7 +16,7 @@ import (
 // 用接近真实 runner.go 的入参组合调用拼装层，覆盖 spec §9 的关键场景：
 //
 //   - Legacy 路径产出（PlatformBasePrompt 头 + 段顺序 + 安全脚注尾）
-//   - V2 路径含 systemPrompt + skill catalog + tools hint + memory + 4 段
+//   - V2 路径含 systemPrompt + skill catalog + tools hint + memory + 5 段（含 tenant_hard_rules）
 //   - D11 边界：V2 + 无 skills 时不混入 legacy body
 //
 // V2 fallback（SystemPrompt 纯空白时走 Legacy）由 runner.go:677 的 strings.TrimSpace
@@ -92,27 +92,31 @@ func TestPrompt_LegacyAgent_NoSystemPrompt(t *testing.T) {
 }
 
 // TestPrompt_V2Path_WithSkillsAndSystemPrompt 模拟新 agent（ad.SystemPrompt 非空 +
-// 已绑定 skills）走 V2 路径的入参组合，验证 4 段都到位 + 内容齐全。
+// 已绑定 skills）走 V2 路径的入参组合，验证 5 段都到位 + 内容齐全。
 //
-// 模拟 runner.go:692-701 的调用方式：
+// 模拟 runner.go 的调用方式：
 //   - institutionSection = BuildInstitutionSection(systemPrompt, skillCatalog, toolsHint)
 //   - userContext        = BuildUserContextSection(agentMd, selector, dialectic, temporal, disclaimer, memorySystem)
-//   - 最终 prompt        = BuildSystemPromptV2(institutionSection, userContext)
+//   - 最终 prompt        = BuildSystemPromptV2(tenantHardRules, institutionSection, userContext)
+//
+// T5 (#1a): 现在断言 tenantHardRules 也出现在 V2 prompt 里（且在 head 之后、institution 之前）。
 func TestPrompt_V2Path_WithSkillsAndSystemPrompt(t *testing.T) {
 	const (
-		systemPrompt = "你是销售助手"
-		skillCatalog = "## 可用技能\n- 销售话术库\n- 客户画像查询"
-		toolsHint    = "## 输出工具优先级\nGo 工具 > invoke_skill"
-		agentMd      = "\n\n## Agent Rules\n规则 1：保持专业语气"
-		memorySys    = "用户偏好简洁回复"
+		tenantHardRules = "## 平台硬规则\n禁止编造客户隐私"
+		systemPrompt    = "你是销售助手"
+		skillCatalog    = "## 可用技能\n- 销售话术库\n- 客户画像查询"
+		toolsHint       = "## 输出工具优先级\nGo 工具 > invoke_skill"
+		agentMd         = "\n\n## Agent Rules\n规则 1：保持专业语气"
+		memorySys       = "用户偏好简洁回复"
 	)
 	institutionSection := BuildInstitutionSection(systemPrompt, skillCatalog, toolsHint)
 	userContext := BuildUserContextSection(agentMd, "", "", "", "", memorySys)
 
-	got := BuildSystemPromptV2(institutionSection, userContext)
+	got := BuildSystemPromptV2(tenantHardRules, institutionSection, userContext)
 
-	// 1. 4 段都到位（institution 内子段 + userContext + 平台前后）
+	// 1. 5 段都到位（platform head + tenant hard rules + institution 内子段 + userContext + footer）
 	subs := []string{
+		"平台硬规则",       // tenant_hard_rules（#1a：不再被 DROP）
 		"你是销售助手",      // ad.SystemPrompt
 		"销售话术库",       // skill catalog 内容
 		"输出工具优先级",     // tools hint
@@ -129,18 +133,19 @@ func TestPrompt_V2Path_WithSkillsAndSystemPrompt(t *testing.T) {
 		}
 	}
 
-	// 2. 段顺序：head → institution(sysPrompt → catalog → tools) → userContext → footer
+	// 2. 段顺序：head → tenant_hard_rules → institution(sysPrompt → catalog → tools) → userContext → footer
 	idxHead := strings.Index(got, skill.PlatformBasePrompt)
+	idxHardRules := strings.Index(got, "平台硬规则")
 	idxSys := strings.Index(got, systemPrompt)
 	idxCatalog := strings.Index(got, "销售话术库")
 	idxTools := strings.Index(got, "输出工具优先级")
 	idxMem := strings.Index(got, "## Memories")
 	idxFooter := strings.Index(got, skill.PlatformSafetyFooter)
 
-	if !(idxHead < idxSys && idxSys < idxCatalog && idxCatalog < idxTools &&
-		idxTools < idxMem && idxMem < idxFooter) {
-		t.Errorf("V2 segment order broken: head=%d sys=%d catalog=%d tools=%d mem=%d footer=%d",
-			idxHead, idxSys, idxCatalog, idxTools, idxMem, idxFooter)
+	if !(idxHead < idxHardRules && idxHardRules < idxSys && idxSys < idxCatalog &&
+		idxCatalog < idxTools && idxTools < idxMem && idxMem < idxFooter) {
+		t.Errorf("V2 segment order broken: head=%d hardRules=%d sys=%d catalog=%d tools=%d mem=%d footer=%d",
+			idxHead, idxHardRules, idxSys, idxCatalog, idxTools, idxMem, idxFooter)
 	}
 }
 
@@ -164,7 +169,9 @@ func TestPrompt_V2Path_SystemPromptOnly_NoSkills(t *testing.T) {
 		toolsHint,
 	)
 	userContext := BuildUserContextSection("", "", "", "", "", "")
-	got := BuildSystemPromptV2(institutionSection, userContext)
+	// T5 (#1a): empty tenantHardRules keeps this test focused on the D11 no-skills
+	// boundary; the hard-rules-present case is covered elsewhere.
+	got := BuildSystemPromptV2("", institutionSection, userContext)
 
 	// D11 守护：哨兵字符串（代表运行时 v1 GeneratedSkillBody 残留）不应混入
 	if strings.Contains(got, "LEGACY_BODY_SENTINEL") {
@@ -182,7 +189,7 @@ func TestPrompt_V2Path_SystemPromptOnly_NoSkills(t *testing.T) {
 	if !strings.Contains(got, toolsHint) {
 		t.Errorf("V2 prompt should contain toolsHint; got=%q", got)
 	}
-	// 4 段平台外壳必须仍然在
+	// 平台外壳（platform_head 头 + safety_footer 尾）必须仍然在
 	if !strings.HasPrefix(got, skill.PlatformBasePrompt) {
 		t.Error("V2 prompt should start with PlatformBasePrompt")
 	}

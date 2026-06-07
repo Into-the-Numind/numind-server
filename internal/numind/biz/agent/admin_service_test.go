@@ -133,11 +133,17 @@ func TestAgentAdminService_CancelByAdmin_AlreadyTerminal_409(t *testing.T) {
 	svc, db := newAgentAdminService(t)
 	ctx := context.Background()
 
+	// "terminated" is the ONLY terminal status the runtime ever writes (DB CHECK
+	// constrains agent_run.status to 'running'|'terminated'; the fine-grained
+	// outcome lives in state_reason). The previous test used "completed", a value
+	// production never persists and SQLite's test DB doesn't enforce — so the guard
+	// was effectively untested against real data.
 	run := &model.AgentRun{
-		UserID:    2,
-		Status:    "completed", // terminal
-		Messages:  datatypes.JSON(`[]`),
-		StartedAt: time.Now(),
+		UserID:      2,
+		Status:      "terminated", // terminal (production-real value)
+		StateReason: "completed",  // fine-grained outcome lives here
+		Messages:    datatypes.JSON(`[]`),
+		StartedAt:   time.Now(),
 	}
 	require.NoError(t, db.Create(run).Error)
 

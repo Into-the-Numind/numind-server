@@ -91,7 +91,7 @@ func WithUsageLookup(a UsageLookupable) WrapHooksOption {
 //     from aiservice, wired by M-A-wire via WithUsageLookup option).
 //     Fallback: legacy tokensFromOutput for backward compat with nil-adapter tests.
 //
-// 关键不变量：保留 base.Registry / NarrationProvider / NarrationRunID 透传
+// 关键不变量：保留 base.Registry / NarrationProvider 透传
 // （permission.WrapHooks 也保留同样字段以确保链式无丢失，#12 M11 同步补丁）。
 func (g *BudgetGate) WrapHooks(base *agent.RunHooks, opts ...WrapHooksOption) *agent.RunHooks {
 	if g == nil {
@@ -156,7 +156,6 @@ func (g *BudgetGate) WrapHooks(base *agent.RunHooks, opts ...WrapHooksOption) *a
 		},
 		Registry:          registryFromBase(base),
 		NarrationProvider: narrationProviderFromBase(base),
-		NarrationRunID:    narrationRunIDFromBase(base),
 	}
 }
 
@@ -205,13 +204,6 @@ func narrationProviderFromBase(base *agent.RunHooks) *narration.Provider {
 		return nil
 	}
 	return base.NarrationProvider
-}
-
-func narrationRunIDFromBase(base *agent.RunHooks) uint64 {
-	if base == nil {
-		return 0
-	}
-	return base.NarrationRunID
 }
 
 // tokensFromOutput parses LLM token usage from tool output JSON if present.

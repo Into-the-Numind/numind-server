@@ -150,7 +150,7 @@ func marshalJSON(v any) (datatypes.JSON, error) {
 // 没有 tool_flags 会让 runner.go 走 pre-ReAct short-circuit（不调 LLM, 0 积分），
 // 学员看到 echo + 前端 'failed' 文案。为避免每个新 Agent 都是哑炮，
 // 这里根据 questionnaire_answers 智能 derive 一个合理默认集：
-//   - 永远开：基础工具 (kb_search/learner_data_query/memory_*/get_current_date/ask_user_question)
+//   - 永远开：基础工具 (kb_search/memory_*/get_current_date/ask_user_question)
 //   - q9='allow_search' 开：web_search + web_fetch
 //   - q7 含 'text'/'csv'/'image' 开：file_read
 //   - 危险类（bash_exec/image_gen/document_generate）保持 OFF
@@ -159,12 +159,11 @@ func marshalJSON(v any) (datatypes.JSON, error) {
 func deriveDefaultToolFlags(qa QuestionnaireAnswers) map[string]bool {
 	return map[string]bool{
 		// 基础读取 / 记忆 / 反问 / 时间
-		"kb_search":          true,
-		"learner_data_query": true,
-		"memory_read":        true,
-		"memory_write":       true,
-		"get_current_date":   true,
-		"ask_user_question":  true,
+		"kb_search":         true,
+		"memory_read":       true,
+		"memory_write":      true,
+		"get_current_date":  true,
+		"ask_user_question": true,
 		// 网络搜索与抓取
 		"web_search": true,
 		"web_fetch":  true,

@@ -201,7 +201,6 @@ func TestService_Create_emptyToolFlags_derivesDefault(t *testing.T) {
 	require.NoError(t, json.Unmarshal(ad.ToolFlags, &flags))
 	// Always-on basics
 	assert.True(t, flags["kb_search"], "kb_search default on")
-	assert.True(t, flags["learner_data_query"], "learner_data_query default on")
 	assert.True(t, flags["memory_read"], "memory_read default on")
 	assert.True(t, flags["memory_write"], "memory_write default on")
 	assert.True(t, flags["get_current_date"], "get_current_date default on")

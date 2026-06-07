@@ -93,8 +93,6 @@ func TestToolInputSchemas_MatchExecuteContract(t *testing.T) {
 			[]string{"attachment_url", "regions"}, []string{"attachment_url", "regions"}},
 		{"image_gen", (&imageGenTool{}).InputSchema(),
 			[]string{"prompt"}, []string{"prompt"}},
-		{"learner_data_query", (&learnerDataQueryTool{}).InputSchema(),
-			[]string{"user_id", "field"}, []string{"user_id"}},
 		{"document_generate", (&documentGenerateTool{}).InputSchema(),
 			[]string{"prompt", "format"}, []string{"prompt"}},
 		{"load_skill", (&loadSkillTool{}).InputSchema(),

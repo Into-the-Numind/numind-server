@@ -205,14 +205,12 @@ func TestHookActionRegistry_BudgetExceeded(t *testing.T) {
 // ── M8 (#8 narration-layer): NarrationProvider field default ────────────────
 
 func TestRunHooks_DefaultNarrationFields_Nil(t *testing.T) {
-	// #8 agent-mode-narration-layer adds NarrationProvider + NarrationRunID
-	// fields to RunHooks. The zero-value must remain nil/0 so that legacy
-	// callers (no narration wiring) continue to work without changes.
+	// #8 agent-mode-narration-layer adds the NarrationProvider field to RunHooks.
+	// The zero-value must remain nil so that legacy callers (no narration wiring)
+	// continue to work without changes. (T3 #5 removed the NarrationRunID field —
+	// the per-run id now flows through ctx via RunIDFromContext, not this struct.)
 	h := &RunHooks{}
 	if h.NarrationProvider != nil {
 		t.Errorf("default NarrationProvider must be nil; got %v", h.NarrationProvider)
-	}
-	if h.NarrationRunID != 0 {
-		t.Errorf("default NarrationRunID must be 0; got %d", h.NarrationRunID)
 	}
 }

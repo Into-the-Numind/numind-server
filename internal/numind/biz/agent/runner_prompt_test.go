@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"numind-server/internal/numind/biz/skill"
+	"numind-server/internal/pkg/model"
 )
 
 // TestPromptSegments_Append_FiltersEmpty 验证 Append 过滤纯空白段。
@@ -43,16 +44,21 @@ func TestPromptSegments_Render_NoExtraNewlines(t *testing.T) {
 	}
 }
 
-// TestBuildSystemPromptV2_FourSegments 验证 happy path：四段都注入，含 platform 常量、
-// institution/userContext 输入；段间分隔符是 "\n\n"（PromptSegments.Render 的契约）。
+// TestBuildSystemPromptV2_PlatformInstitutionUserSegments 验证 happy path：platform /
+// institution / userContext 段都注入，含 platform 常量、institution/userContext 输入；
+// 段间分隔符是 "\n\n"（PromptSegments.Render 的契约）。新增的 tenant_hard_rules 段
+// 由 TestBuildSystemPromptV2_HardRules 单独覆盖（本测试传 "" 故不含该段）。
 //
 // 注意：PlatformBasePrompt 自身末尾带 \n、PlatformSafetyFooter 自身开头带 \n，
 // 与 "\n\n" 分隔符拼接后会出现 3+ 连续 newline——这是 platform 常量的固有性质，
-// 与 legacy 路径（runner.go:676-687 字符串直拼）行为一致，不是 bug。
-func TestBuildSystemPromptV2_FourSegments(t *testing.T) {
+// 与 legacy 路径（BuildSystemPromptLegacy 字符串直拼）行为一致，不是 bug。
+func TestBuildSystemPromptV2_PlatformInstitutionUserSegments(t *testing.T) {
 	institution := "你是 XX 公司销售助手"
 	userCtx := "## Memories\n用户喜欢简洁回复"
-	got := BuildSystemPromptV2(institution, userCtx)
+	// T5 (#1a): BuildSystemPromptV2 now takes tenantHardRules as first arg.
+	// Empty here keeps this test focused on the institution/userContext segments;
+	// the tenant_hard_rules segment is covered by TestBuildSystemPromptV2_HardRules below.
+	got := BuildSystemPromptV2("", institution, userCtx)
 
 	if !strings.Contains(got, skill.PlatformBasePrompt) {
 		t.Errorf("missing PlatformBasePrompt in output")
@@ -89,7 +95,8 @@ func TestBuildSystemPromptV2_FourSegments(t *testing.T) {
 // TestBuildSystemPromptV2_AllEmpty 验证当 institution 和 userContext 都为空时，
 // 仍包含 PlatformBasePrompt + PlatformSafetyFooter（两个常量非空），且段间用 "\n\n" 连接。
 func TestBuildSystemPromptV2_AllEmpty(t *testing.T) {
-	got := BuildSystemPromptV2("", "")
+	// T5 (#1a): all three inputs empty (tenantHardRules, institution, userContext).
+	got := BuildSystemPromptV2("", "", "")
 
 	if !strings.Contains(got, skill.PlatformBasePrompt) {
 		t.Errorf("missing PlatformBasePrompt when both inputs empty")
@@ -245,5 +252,156 @@ func TestBuildSystemPromptV2_DropsLegacyBodyWhenNoSkillCatalog(t *testing.T) {
 	}
 	if !strings.Contains(got, "## 工具优先级") {
 		t.Errorf("BuildInstitutionSection 应包含 toolsHint; got=%q", got)
+	}
+}
+
+// TestBuildSystemPromptV2_HardRules 覆盖 #1a：V2 路径此前 DROP 了 tenantHardRules
+// （complianceGate.SystemPromptBlock 产出的 L0/L1 平台+租户硬规则），机构设了
+// system_prompt 时硬规则被静默丢弃。修复后 BuildSystemPromptV2 把 tenantHardRules
+// 作为 §2 段注入，位置在 platform_head 之后、institution 之前（镜像 legacy 顺序）。
+func TestBuildSystemPromptV2_HardRules(t *testing.T) {
+	const (
+		hardRules   = "## 平台与租户硬规则\nL0：禁止泄露其它租户数据。\nL1：禁止编造客户隐私。"
+		institution = "你是 XX 公司销售助手"
+		userCtx     = "## Memories\n用户喜欢简洁回复"
+	)
+	got := BuildSystemPromptV2(hardRules, institution, userCtx)
+
+	// 硬规则必须出现（#1a 核心断言）
+	if !strings.Contains(got, hardRules) {
+		t.Fatalf("V2 prompt 缺少 tenant hard rules（#1a 回归）; got=%q", got)
+	}
+
+	// 位置：platform_head 之后、institution 之前
+	idxHead := strings.Index(got, skill.PlatformBasePrompt)
+	idxHard := strings.Index(got, hardRules)
+	idxInst := strings.Index(got, institution)
+	idxUser := strings.Index(got, userCtx)
+	idxFoot := strings.Index(got, skill.PlatformSafetyFooter)
+	if !(idxHead < idxHard && idxHard < idxInst && idxInst < idxUser && idxUser < idxFoot) {
+		t.Errorf("V2 段顺序错误（期望 head < hardRules < institution < userCtx < footer）: head=%d hard=%d inst=%d user=%d foot=%d",
+			idxHead, idxHard, idxInst, idxUser, idxFoot)
+	}
+
+	// 段间分隔符 "\n\n"：hardRules 与 institution 之间正好两个 newline
+	between := got[idxHard+len(hardRules) : idxInst]
+	if between != "\n\n" {
+		t.Errorf("hardRules 与 institution 间应为 '\\n\\n'，got %q", between)
+	}
+
+	// 空 hardRules 时该段被 Append 过滤（不引入空段 / 多余空行）
+	gotEmpty := BuildSystemPromptV2("", institution, userCtx)
+	if strings.Contains(gotEmpty, "\n\n\n\n") {
+		t.Errorf("空 hardRules 不应留下空段造成 4+ 连续 newline; got=%q", gotEmpty)
+	}
+}
+
+// TestAssembleSystemPrompt_V2InjectsSystemPromptAndHardRules 覆盖 #3 + #1a 的端到端：
+// 共享 assembler 在 ad.SystemPrompt 非空时走 V2 分支，产出的 prompt 必须同时包含
+// ad.SystemPrompt（行为指引——这正是 RunStream 之前 DROP 的，#3）与 tenantHardRules
+// （#1a）。RunStream 现在调同一个 assembler，所以这条断言等价于证明 RunStream 两者都注入。
+func TestAssembleSystemPrompt_V2InjectsSystemPromptAndHardRules(t *testing.T) {
+	r := &agentRunner{} // platformSkillRegistry == nil → buildUnifiedSkillCatalog(nil,nil) == ""
+	const (
+		systemPrompt = "你是【XX 公司】销售助手，永远保持专业语气"
+		hardRules    = "## 平台硬规则\n禁止跨租户数据访问"
+	)
+	ad := &model.AgentDefinition{SystemPrompt: systemPrompt}
+
+	got := r.assembleSystemPrompt(
+		ad,
+		hardRules, // tenantHardRulesPlaceholder
+		"",        // body（skills 为空 → 走 D11 丢弃分支）
+		nil,       // skills
+		"",        // agentMd
+		"",        // selector
+		"",        // dialectic
+		"",        // temporal
+		"",        // memoryDisclaimer
+		"",        // memorySystem
+		"",        // memoriesSectionHeader（legacy 分支才用，V2 不用）
+		"",        // toolsSection
+	)
+
+	// #3：行为指引（ad.SystemPrompt）必须注入
+	if !strings.Contains(got, systemPrompt) {
+		t.Errorf("#3 回归：assembler V2 分支缺少 ad.SystemPrompt（行为指引）; got=%q", got)
+	}
+	// #1a：tenant hard rules 必须注入
+	if !strings.Contains(got, hardRules) {
+		t.Errorf("#1a 回归：assembler V2 分支缺少 tenant hard rules; got=%q", got)
+	}
+	// 平台外壳仍在
+	if !strings.HasPrefix(got, skill.PlatformBasePrompt) {
+		t.Error("assembler V2 输出应以 PlatformBasePrompt 起头")
+	}
+	if !strings.HasSuffix(got, skill.PlatformSafetyFooter) {
+		t.Error("assembler V2 输出应以 PlatformSafetyFooter 结尾")
+	}
+	// 顺序：head < hardRules < systemPrompt
+	idxHead := strings.Index(got, skill.PlatformBasePrompt)
+	idxHard := strings.Index(got, hardRules)
+	idxSys := strings.Index(got, systemPrompt)
+	if !(idxHead < idxHard && idxHard < idxSys) {
+		t.Errorf("assembler V2 段顺序错误: head=%d hard=%d sys=%d", idxHead, idxHard, idxSys)
+	}
+}
+
+// TestAssembleSystemPrompt_LegacyByteIdenticalToBuildLegacy 是无回归守护：
+// ad.SystemPrompt 为空时 assembler 走 legacy 分支，输出必须与直接调用
+// BuildSystemPromptLegacy 字节一致——证明 legacy / 空 system_prompt 这条（含 RunStream
+// 之前的 flat 拼装语义）完全没变。RunStream 旧 flat 拼装与 BuildSystemPromptLegacy
+// 已逐字段核对为字节等价（platformBase + tenantHardRules + body + memoriesHeader +
+// agentMd + selector + dialectic + temporal + memoryDisclaimer + memorySystem +
+// toolsSection + platformFooter，纯 + 直拼无额外分隔符），故此测试也守护 RunStream legacy 路径。
+func TestAssembleSystemPrompt_LegacyByteIdenticalToBuildLegacy(t *testing.T) {
+	r := &agentRunner{}
+	const (
+		hardRules    = "## 硬规则\nL0/L1"
+		body         = "[v1 generated body or skill catalog]"
+		agentMd      = "\n\n## Agent Rules\nrule1"
+		selector     = "\n\n<personal_context>fact</personal_context>"
+		dialectic    = "\n\n<insight>insight</insight>"
+		temporal     = "\n\n<digest>digest</digest>"
+		disclaimer   = "\n\n[disclaimer]\n"
+		memorySys    = "memory facts"
+		toolsSection = "\n\n## Output Tool Priority\n"
+		memHeader    = "\n\n## Memories\n"
+	)
+	// ad.SystemPrompt == "" → legacy 分支
+	ad := &model.AgentDefinition{SystemPrompt: ""}
+
+	got := r.assembleSystemPrompt(
+		ad,
+		hardRules,
+		body,
+		nil, // skills（legacy 分支不读 len(skills)）
+		agentMd,
+		selector,
+		dialectic,
+		temporal,
+		disclaimer,
+		memorySys,
+		memHeader,
+		toolsSection,
+	)
+
+	want := BuildSystemPromptLegacy(
+		skill.PlatformBasePrompt,
+		hardRules,
+		body,
+		memHeader,
+		agentMd,
+		selector,
+		dialectic,
+		temporal,
+		disclaimer,
+		memorySys,
+		toolsSection,
+		skill.PlatformSafetyFooter,
+	)
+
+	if got != want {
+		t.Errorf("legacy 分支输出与 BuildSystemPromptLegacy 不一致（无回归被破坏）:\n  want: %q\n  got:  %q", want, got)
 	}
 }
