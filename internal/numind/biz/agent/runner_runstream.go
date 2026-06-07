@@ -23,7 +23,6 @@ import (
 	"numind-server/internal/numind/biz/budget"
 	"numind-server/internal/numind/biz/compactv2"
 	"numind-server/internal/numind/biz/memory"
-	"numind-server/internal/numind/biz/skill"
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/errno"
@@ -131,6 +130,9 @@ func (r *agentRunner) RunStream(
 	// 4. #5 skill-system: load agent_definition and assemble SystemPrompt.
 	var skillVer int
 	var body string
+	// T5 (#3): hoisted to function scope (was block-scoped inside the ad-load block)
+	// so the shared assembler call site below can read len(skills) for the V2 branch.
+	var skills []model.Skill
 	var ad *model.AgentDefinition
 	var useSkillTurnState *UseSkillTurnState
 	if req.AgentDefinitionID > 0 && r.skillStore != nil {
@@ -148,7 +150,6 @@ func (r *agentRunner) RunStream(
 			return nil, err
 		}
 
-		var skills []model.Skill
 		if r.skillBindingService != nil {
 			var bindErr error
 			skills, bindErr = r.skillBindingService.ListByAgent(ctx, ad.ParentUserID, uint(req.AgentDefinitionID))
@@ -297,18 +298,26 @@ func (r *agentRunner) RunStream(
 		toolsSectionPlaceholder += attachmentReminderText
 	}
 
-	req.SystemPrompt = skill.PlatformBasePrompt +
-		tenantHardRulesPlaceholder +
-		body +
-		memoriesSectionHeader +
-		agentMdBlock +
-		selectorBlock +
-		dialecticInsightBlock +
-		temporalBlock +
-		memoryDisclaimerBlock +
-		memorySystemBlock +
-		toolsSectionPlaceholder +
-		skill.PlatformSafetyFooter
+	// T5 (#3/#1a): single shared assembler used by both Run and RunStream.
+	// Previously RunStream did a flat inline assembly equivalent to the legacy
+	// path — it included tenantHardRules but NEVER ad.SystemPrompt (= #3: the
+	// 行为指引 was silently dropped on the streaming chat main production path).
+	// The shared assembler routes through ShouldUseV2Prompt so a non-empty
+	// ad.SystemPrompt now gets a V2 prompt (incl. ad.SystemPrompt AND hard rules).
+	req.SystemPrompt = r.assembleSystemPrompt(
+		ad,
+		tenantHardRulesPlaceholder,
+		body,
+		skills,
+		agentMdBlock,
+		selectorBlock,
+		dialecticInsightBlock,
+		temporalBlock,
+		memoryDisclaimerBlock,
+		memorySystemBlock,
+		memoriesSectionHeader,
+		toolsSectionPlaceholder,
+	)
 
 	// 5. Assemble Eino tool list (same as Run).
 	effectiveHooks := req.Hooks

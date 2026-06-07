@@ -25,7 +25,6 @@ import (
 	"numind-server/internal/numind/biz/compliance"
 	"numind-server/internal/numind/biz/memory"
 	"numind-server/internal/numind/biz/narration"
-	"numind-server/internal/numind/biz/skill"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/profile"
@@ -762,55 +761,23 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	// temporalBlock (task 3.8 time-scoped digest) →
 	// memoryDisclaimerBlock + memorySystemBlock (L1/L2 dialog memory)。
 	// agentMdBlock / selectorBlock / dialecticInsightBlock / temporalBlock 自带前导 \n\n，空字符串时无副作用。
-	if ShouldUseV2Prompt(ad) {
-		// 新 V2 路径（system_prompt 非空 = 机构方已用大文本框定义 agent）
-		//
-		// body 的语义按 skills 是否有绑定来分支：
-		//   - len(skills) > 0：body = buildSkillCatalogBlock 输出（v2 catalog）
-		//   - len(skills) == 0：body = ad.GeneratedSkillBody / CustomSkillBody（v1 legacy）
-		//
-		// **决策（D11，见 spec §0）**：在新 V2 prompt 路径下，仅当 skills 非空时把 body 当作
-		// skill catalog 拼到 §2 institution；skills 为空时丢弃 body（不把 v1 legacy 内容
-		// 注入 V2 prompt）。理由：user 写了 system_prompt 即视为 agent 行为的唯一权威源，
-		// 不再叠加 v1 legacy。
-		// open-tools-skill-as-guidance: §2 catalog.
-		//   - bound agent: body already = userBody + unified catalog (DB+disk), set above.
-		//   - unbound agent: still expose the disk platform skills via the unified
-		//     renderer with no DB skills (so every agent can load_skill the platform
-		//     skills like pptx-author).
-		var skillCatalog string
-		if len(skills) > 0 {
-			skillCatalog = body
-		} else {
-			skillCatalog = buildUnifiedSkillCatalog(nil, r.platformSkillRegistry)
-		}
-		institutionSection := BuildInstitutionSection(
-			ad.SystemPrompt,
-			skillCatalog,
-			toolsSectionPlaceholder,
-		)
-		userContext := BuildUserContextSection(
-			agentMdBlock, selectorBlock, dialecticInsightBlock, temporalBlock,
-			memoryDisclaimerBlock, memorySystemBlock,
-		)
-		req.SystemPrompt = BuildSystemPromptV2(institutionSection, userContext)
-	} else {
-		// Legacy 路径，字面顺序与重构前一致；body 不论 v1/v2 都直接传入。
-		req.SystemPrompt = BuildSystemPromptLegacy(
-			skill.PlatformBasePrompt,
-			tenantHardRulesPlaceholder,
-			body,
-			memoriesSectionHeader,
-			agentMdBlock,
-			selectorBlock,
-			dialecticInsightBlock,
-			temporalBlock,
-			memoryDisclaimerBlock,
-			memorySystemBlock,
-			toolsSectionPlaceholder,
-			skill.PlatformSafetyFooter,
-		)
-	}
+	// T5 (#3/#1a): single shared assembler used by both Run and RunStream.
+	// V2 branch now injects tenantHardRulesPlaceholder (硬规则不再被 DROP)；
+	// legacy/空 system_prompt 分支字节一致于重构前。
+	req.SystemPrompt = r.assembleSystemPrompt(
+		ad,
+		tenantHardRulesPlaceholder,
+		body,
+		skills,
+		agentMdBlock,
+		selectorBlock,
+		dialecticInsightBlock,
+		temporalBlock,
+		memoryDisclaimerBlock,
+		memorySystemBlock,
+		memoriesSectionHeader,
+		toolsSectionPlaceholder,
+	)
 
 	// 5. 从 registry 装配 Eino 工具列表
 	// #4 sandbox-integration: 选 effectiveHooks — RunRequest.Hooks 优先，
