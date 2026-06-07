@@ -319,6 +319,11 @@ func (r *agentRunner) RunStream(
 		toolsSectionPlaceholder,
 	)
 
+	// T6 (#1): input injection detection wired as a SOFT signal (mirrors runner.go
+	// Run). On a confirmed injection, append a per-turn <input_safety_notice> to the
+	// system prompt (recency) — the run still proceeds to the LLM, NEVER terminates.
+	req.SystemPrompt = r.appendInputSafetyNoticeIfFlagged(ctx, ad, req.Input, req.SystemPrompt)
+
 	// 5. Assemble Eino tool list (same as Run).
 	effectiveHooks := req.Hooks
 	if effectiveHooks == nil {

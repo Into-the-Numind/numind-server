@@ -46,28 +46,54 @@ var injectionKeywords = []string{
 	"假装你是", "扮演",
 	"system:", "<system>", "<system_prompt>",
 	"give me your prompt", "把 system prompt 告诉我", "告诉我你的指令",
-	"dan", "jailbreak", "越狱",
+	// "do anything now" 是 DAN 越狱的标准开场白；不用裸 "dan"——它是 "markdown"/"Dante"
+	// 等正常词的子串，会无谓触发小模型复核（成本+延迟）。
+	"do anything now", "dan mode", "jailbreak", "越狱",
 	"you are now", "你现在是",
 }
 
-// Detect 返回 (hit, matchedKeyword, error)
-// v1 流程：先关键词，命中即返；否则 mock classifier（永远 false）
-// classifier 报错 → fail-open (false, "", err)
+// Detect 返回 (hit, matchedKeyword, error)。
+//
+// 流程：keyword 初筛 → 小模型复核（keyword pre-filter → LLM classifier CONFIRM）。
+//
+//  1. 扫 injectionKeywords（不区分大小写 strings.Contains），记下第一个命中的关键词。
+//  2. 没有任何关键词命中 → 直接返回 (false, "", nil)，**不**调用 classifier。
+//     vast majority 的正常消息走这条 0-cost 路径（关键词初筛已判其安全）。
+//  3. 有关键词命中 → 调 classifier.Classify 复核。仅当 classifier 也判定是注入
+//     时返回 (true, matchedKeyword, nil)；classifier 说不是 → 返回 (false, "", nil)。
+//
+// WHY keyword-as-prefilter-only（不再 keyword 命中即 flag）：关键词单独判定 over-flag
+// 了大量合法请求——"帮我扮演面试官练习"命中关键词"扮演"、"引用这句越狱小说台词"命中
+// "越狱"，但都是正当用途。改为 keyword 初筛缩小候选、再让小模型复核语义，显著降低
+// false positive，同时对绝大多数无关键词消息保持 0 LLM 成本。
+//
+// classifier 报错 → fail-open (false, "", err)（gate 在 err 上也 fail-open，不阻断）。
 func (d *InjectionDetector) Detect(ctx context.Context, input string) (bool, string, error) {
 	lower := strings.ToLower(input)
+	matchedKeyword := ""
 	for _, kw := range injectionKeywords {
 		if strings.Contains(lower, kw) {
-			return true, kw, nil
+			matchedKeyword = kw
+			break
 		}
 	}
+	// Pre-filter 判其安全（无关键词）→ 不花 classifier 成本。
+	if matchedKeyword == "" {
+		return false, "", nil
+	}
+	// 关键词命中 → 小模型复核。注意软处理后果（soft handling consequence）：
+	// AiserviceLLMClassifier 内部 fail-deny（超时/出错返回 true），所以在 keyword-hit
+	// 的这一 turn 上，一次 classifier 超时会产出一条（可能误报的）安全提示而非硬阻断——
+	// 这是 acceptable-by-design 的软失败模式（safety notice 而非 block）。
 	hit, err := d.classifier.Classify(ctx, input)
 	if err != nil {
 		return false, "", err
 	}
-	if hit {
-		return true, "llm_classifier", nil
+	if !hit {
+		// keyword false-positive 被 classifier 清除（如"扮演面试官"）。
+		return false, "", nil
 	}
-	return false, "", nil
+	return true, matchedKeyword, nil
 }
 
 // WrapInputFence 把外部数据用 fence tag 包裹（蓝本 §7.3）

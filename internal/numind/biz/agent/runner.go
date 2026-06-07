@@ -779,6 +779,12 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		toolsSectionPlaceholder,
 	)
 
+	// T6 (#1): input injection detection wired as a SOFT signal. On a confirmed
+	// injection (keyword pre-filter → LLM classifier confirm), append a per-turn
+	// <input_safety_notice> to the system prompt (recency) so the LLM declines the
+	// malicious part and still serves legitimate requests. NEVER terminates the run.
+	req.SystemPrompt = r.appendInputSafetyNoticeIfFlagged(ctx, ad, req.Input, req.SystemPrompt)
+
 	// 5. 从 registry 装配 Eino 工具列表
 	// #4 sandbox-integration: 选 effectiveHooks — RunRequest.Hooks 优先，
 	// 否则 r.defaultHooks（biz.go wire SandboxHookManager.AsRunHooks()）。
