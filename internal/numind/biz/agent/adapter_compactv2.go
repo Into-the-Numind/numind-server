@@ -29,8 +29,8 @@ import (
 // 这里：
 //
 //   1. 估算 in 的 token 数（char/4）
-//   2. ratio >= AutocompactThreshold(0.85) → 跑 L3 autocompact（LLM 摘要 + recent 5）
-//   3. ratio >= HardLimitRatio(0.95) 且连续 3 次失败 → 返回 ErrContextExhausted
+//   2. ratio >= AutocompactThreshold(0.70) → 跑 L3 autocompact（LLM 摘要 + recent 5）
+//   3. ratio >= HardLimitRatio(0.85) 且连续 3 次失败 → 返回 ErrContextExhausted
 //   4. aiservice 返回 prompt_too_long error → 强制 autocompact + retry 一次（PTL recovery，
 //      代替已删的 V1 ReactiveCompact 链）
 //
@@ -75,7 +75,7 @@ func newAdapterCompactor(contextWindow int) *adapterCompactor {
 //   - newIn：压缩后的 messages 切片（未压缩时返回原 in 不复制）
 //   - didCompact：是否实际做了压缩（true → caller 应记 log 便于运维观察）
 //   - err：
-//   - compactv2.ErrContextExhausted：连续 3 次失败 + ratio >= 95% → caller 必须放弃
+//   - compactv2.ErrContextExhausted：连续 3 次失败 + ratio >= HardLimitRatio(0.85) → caller 必须放弃
 //   - 其他 error：LLM 失败但未达 break circuit；caller 应当原样传 in 给 aiservice，
 //     让上游决定是否 PTL 或继续
 //

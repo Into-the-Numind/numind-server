@@ -23,7 +23,7 @@ import (
 //  2. 阈值到达时 autocompact LLM 摘要并替换 in
 //  3. aiservice prompt_too_long 错误时 ForcePTLRecover 自愈
 //  4. PTL recovery 第二次仍 PTL → 不再 retry，原错误冒泡
-//  5. 连续 3 次摘要失败 + ratio >= 95% → ErrContextExhausted（hard limit）
+//  5. 连续 3 次摘要失败 + ratio >= HardLimitRatio(0.85) → ErrContextExhausted（hard limit）
 //  6. compactor == nil 时彻底跳过 V2 逻辑（行为完全等价集成前）
 //  7. isPromptTooLongErr 关键词匹配覆盖主流 provider 措辞
 
@@ -137,7 +137,7 @@ func TestAdapter_AutocompactTriggersAboveThreshold(t *testing.T) {
 		return nil, nil
 	})
 
-	// 1K context window，conversation 估算 ~5K tokens → ratio 500% → 远超 85%
+	// 1K context window，conversation 估算 ~10K tokens → ratio ~1000% → 远超触发线 0.70
 	adapter := &aiserviceAdapter{taskID: profile.AgentRun, compactor: newAdapterCompactor(1_000)}
 	in := buildLongConversation(5_000)
 
@@ -148,6 +148,40 @@ func TestAdapter_AutocompactTriggersAboveThreshold(t *testing.T) {
 	assert.Equal(t, 2, callIdx, "应当调了 2 次 LLM（摘要 + 实际 ReAct）")
 	// compactor 失败计数应当复位
 	assert.Equal(t, 0, adapter.compactor.consecutiveFailures)
+}
+
+// TestAdapter_AutocompactTriggersInLoweredBand pins the T7 (#8) threshold drop
+// 0.85 → 0.70: a conversation whose estimated/window ratio lands in [0.70, 0.85)
+// now triggers L3 autocompact, whereas under the old 0.85 threshold it would have
+// passed through un-compacted — risking prompt_too_long once real Chinese tokens
+// exceed the byte/4 estimate (prod p90 calibration_ratio=1.51×). This test FAILS
+// against the old 0.85 threshold (case-1 would be AgentRun, not AgentCompact).
+func TestAdapter_AutocompactTriggersInLoweredBand(t *testing.T) {
+	callIdx := 0
+	withMockChat(t, func(_ context.Context, taskID string, _ aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
+		callIdx++
+		switch callIdx {
+		case 1:
+			assert.Equal(t, profile.AgentCompact, taskID, "ratio∈[0.70,0.85) 应触发摘要（旧 0.85 阈值下不会）")
+			return &aiservice.ChatResponse{Content: validSummary}, nil
+		case 2:
+			assert.Equal(t, profile.AgentRun, taskID, "压缩后应当是 AgentRun")
+			return &aiservice.ChatResponse{Content: "compacted answer"}, nil
+		}
+		t.Fatalf("unexpected 3rd chatFn call")
+		return nil, nil
+	})
+
+	// buildLongConversation(1000) → clamps to 7 assistant + 1 user chunk (8×3200B) +
+	// system ≈ 6403 estimated tokens. window 8500 → ratio ≈ 0.753, inside [0.70,0.85).
+	adapter := &aiserviceAdapter{taskID: profile.AgentRun, compactor: newAdapterCompactor(8_500)}
+	in := buildLongConversation(1_000)
+
+	out, err := adapter.Generate(context.Background(), in)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, "compacted answer", out.Content)
+	assert.Equal(t, 2, callIdx, "应当调了 2 次 LLM（摘要 + 实际 ReAct）")
 }
 
 func TestAdapter_PTLRecoverySucceeds(t *testing.T) {

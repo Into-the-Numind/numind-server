@@ -12,14 +12,21 @@
 //   - spec /Users/zhiyuchen/Downloads/有数-Agent-Mode-V1.5-NDF-spec/02-context/task-04-autocompact.md
 //   - README §D5 — XML 边界 vs `[REFERENCE ONLY]` 前缀对比
 //   - task 2.3 已声明 PruneThresholdRatio (0.50) / MicrocompactThreshold (0.70)；
-//     本文件追加 AutocompactThreshold (0.85) / HardLimitRatio (0.95) 及配套常量
+//     本文件追加 AutocompactThreshold (0.70) / HardLimitRatio (0.85) 及配套常量（T7 下调，见各常量注释）
 package compactv2
 
 const (
 	// AutocompactThreshold 是 L3 autocompact 触发的 token usage 比例阈值（estimated / context_window）。
-	// 到达 85% 时调用 LLM 把历史压缩成 12 段固定模板（见 prompt.go AutocompactPromptTemplate）。
-	// L1/L2 (50% / 70%) 是廉价兜底；85% 仍超阈值才付费调 LLM。
-	AutocompactThreshold = 0.85
+	// 到达该比例时调用 LLM 把历史压缩成 12 段固定模板（见 prompt.go AutocompactPromptTemplate）。
+	//
+	// T7 (#8, 2026-06-05): 0.85 → 0.70，依据 prod context_budget_event 2453 条真实调用分析：
+	// estimateTokensEino 的 bytes/4 估算在长尾严重低估真实 token——36% 调用实际 > 估算，
+	// p90 calibration_ratio=1.51×（思考模型如 claude-thinking 达 1.89×）。85% 触发线下，
+	// 估算 85% 时真实用量在 p90 已 ≈128% 撑爆 context，compaction 来不及触发即 prompt_too_long。
+	// 0.70 触发线使 0.70×1.51≈1.05 覆盖到 p90 长尾。注：旧注释提到的 L1/L2 (PruneThresholdRatio
+	// 0.50 / MicrocompactThreshold 0.70) 在 V2 adapter 路径未接线（vestigial），故下调到 0.70 无冲突。
+	// 更彻底的修法=estimateTokensEino 改用 contextbudget 分语言估算器(zh=0.60)——记为 follow-up。
+	AutocompactThreshold = 0.70
 
 	// AutocompactPreserveRecentMessages 是 autocompact 后保留的最近 messages 数（不进 LLM summary）。
 	// 设计：autocompact 替换的是 [1:cut] 区间，保 systemMsg (index 0) + recent N，
@@ -47,9 +54,12 @@ const (
 	MaxConsecutiveAutocompactFailures = 3
 
 	// HardLimitRatio 是触发 hard limit 评估的 token usage 比例。
-	// 当 ratio >= 0.95 且 state.ConsecutiveAutocompactFailures >= 3 → terminate；
-	// 否则仍走 autocompact 重试一次（让 break circuit 在 95% 才生效，避免 85% 单次失败立刻 terminate）。
-	HardLimitRatio = 0.95
+	// 当 ratio >= HardLimitRatio 且 state.ConsecutiveAutocompactFailures >= 3 → terminate；
+	// 否则仍走 autocompact 重试一次（让 break circuit 晚于触发线生效，避免触发线单次失败立刻 terminate）。
+	//
+	// T7 (#8, 2026-06-05): 0.95 → 0.85，与触发线 0.70 同步下移（保持触发→breaker 的重试带）。
+	// 0.95 估算下真实用量 p90 已 ≈143% 远超 context，breaker 太晚；0.85 让连续失败时更早熔断。
+	HardLimitRatio = 0.85
 
 	// AutocompactOpenTag / AutocompactCloseTag 是 D5 摘要 XML 包裹的开闭标签字面值。
 	//
