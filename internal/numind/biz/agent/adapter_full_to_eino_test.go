@@ -558,6 +558,23 @@ func TestAdapter_InvokableRun_EmitsArtifactURL(t *testing.T) {
 	}
 	require.NotNil(t, result, "expected a tool_call_result event")
 	assert.Equal(t, url, result.ArtifactURL, "generated file URL must be delivered as ArtifactURL")
+	assert.Equal(t, "image/png", result.ArtifactMime, "image artifact must carry its MIME type")
+	assert.Equal(t, "x.png", result.ArtifactFilename)
+}
+
+// TestArtifactFromToolResult covers artifact extraction + MIME derivation.
+func TestArtifactFromToolResult(t *testing.T) {
+	url, name, mime := artifactFromToolResult(`{"url":"https://c/x.png","filename":"x.png","format":"png"}`)
+	assert.Equal(t, "https://c/x.png", url)
+	assert.Equal(t, "x.png", name)
+	assert.Equal(t, "image/png", mime)
+
+	// Non-file tool output → no artifact.
+	url, _, _ = artifactFromToolResult(`{"results":["a","b"]}`)
+	assert.Empty(t, url)
+	// Plain text output → no artifact.
+	url, _, _ = artifactFromToolResult(`not json`)
+	assert.Empty(t, url)
 }
 
 func TestAdapter_InvokableRun_EmitsToolCallError(t *testing.T) {

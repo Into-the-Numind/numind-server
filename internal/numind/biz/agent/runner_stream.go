@@ -319,10 +319,14 @@ func (r *agentRunner) consumeEinoStream(
 				if ok {
 					durationMs = time.Since(state.StartedAt).Milliseconds()
 				}
+				artURL, artName, artMime := artifactFromToolResult(msg.Content)
 				emit(stream.EventToolCallResult, stream.ToolCallResultPayload{
-					ToolCallID: msg.ToolCallID,
-					Preview:    truncateRunes(msg.Content, 500),
-					DurationMs: durationMs,
+					ToolCallID:       msg.ToolCallID,
+					Preview:          truncateRunes(msg.Content, 500),
+					ArtifactURL:      artURL,
+					ArtifactFilename: artName,
+					ArtifactMime:     artMime,
+					DurationMs:       durationMs,
 				})
 			}
 		}

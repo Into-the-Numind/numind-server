@@ -148,11 +148,16 @@ type ToolCallProgressPayload struct {
 }
 
 // ToolCallResultPayload is emitted when a tool call completes successfully.
+// For file-producing tools (image_gen / create_*), the artifact_* fields carry
+// the generated file so the frontend can render it (e.g. an inline <img> for
+// images) instead of only showing a "图片已生成" text line.
 type ToolCallResultPayload struct {
-	ToolCallID  string `json:"tool_call_id"`
-	Preview     string `json:"preview"`
-	ArtifactURL string `json:"artifact_url,omitempty"`
-	DurationMs  int64  `json:"duration_ms"`
+	ToolCallID       string `json:"tool_call_id"`
+	Preview          string `json:"preview"`
+	ArtifactURL      string `json:"artifact_url,omitempty"`
+	ArtifactFilename string `json:"artifact_filename,omitempty"`
+	ArtifactMime     string `json:"artifact_mime,omitempty"`
+	DurationMs       int64  `json:"duration_ms"`
 }
 
 // ToolCallErrorPayload is emitted when a tool call fails.

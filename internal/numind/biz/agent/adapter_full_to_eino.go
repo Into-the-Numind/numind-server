@@ -290,11 +290,18 @@ func (a *fullToolEinoAdapter) emitStreamToolStart(ctx context.Context, toolCallI
 }
 
 // emitStreamToolResult emits tool_call_result with a truncated output preview.
+// For file-producing tools it also surfaces the generated artifact (URL + MIME)
+// so the frontend can render it — the preview is truncated to 500 runes and
+// would otherwise swallow the (long, signed) artifact URL.
 func (a *fullToolEinoAdapter) emitStreamToolResult(ctx context.Context, toolCallID, output string, durationMs int64) {
+	artURL, artName, artMime := artifactFromToolResult(output)
 	a.emitStream(ctx, stream.EventToolCallResult, stream.ToolCallResultPayload{
-		ToolCallID: toolCallID,
-		Preview:    truncateRunes(output, 500),
-		DurationMs: durationMs,
+		ToolCallID:       toolCallID,
+		Preview:          truncateRunes(output, 500),
+		ArtifactURL:      artURL,
+		ArtifactFilename: artName,
+		ArtifactMime:     artMime,
+		DurationMs:       durationMs,
 	})
 }
 
