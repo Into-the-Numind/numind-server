@@ -66,6 +66,11 @@ func TestUserFacingErrorMessage_Classification(t *testing.T) {
 	}{
 		{"errno curated", errno.ErrAIProviderTimeout, "超时"},
 		{"insufficient credits errno", errno.ErrInsufficientCredits, "积分"},
+		// The REAL production shape: the adapter injects the raw provider string
+		// into the errno Message via SetMessage. Code-based mapping must still yield
+		// friendly text (regression guard for the errors.As leak).
+		{"errno SetMessage raw", errno.ErrAIProviderTimeout.SetMessage(
+			`doPost /chat/completions: Post "https://www.dmxapi.cn/v1/chat/completions": net/http: timeout awaiting response headers`), "超时"},
 		{"free tier 403", errors.New(`ali.Chat: HTTP 403 AllocationQuota.FreeTierOnly`), "额度"},
 		{"raw timeout", errors.New("dmxapi.Chat: net/http: timeout awaiting response headers"), "超时"},
 		{"task profile", errors.New("[NodeRunError] gateway.ResolveTask: Task Profile 不存在 node path: [chat]"), "联系老师"},

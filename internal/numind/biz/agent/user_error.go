@@ -28,13 +28,31 @@ func UserFacingErrorMessage(err error) string {
 		return ""
 	}
 
-	// 1. Known *errno.Errno already carry curated Chinese messages.
+	// 1. Known *errno.Errno → map by STABLE Code to curated friendly text.
+	//    We must NOT return en.Message: provider adapters inject the raw upstream
+	//    string into Message via SetMessage (e.g. ErrAIProviderTimeout.SetMessage(
+	//    "doPost https://www.dmxapi.cn/... net/http: timeout awaiting response
+	//    headers")), so returning en.Message would leak engineer text. The Code is
+	//    stable regardless of SetMessage.
 	var en *errno.Errno
-	if errors.As(err, &en) && en.Message != "" {
-		return en.Message
+	if errors.As(err, &en) {
+		switch en.Code {
+		case "Credits.Insufficient":
+			return "积分不足，请充值后再试。"
+		case "AIService.ProviderTimeout":
+			return "AI 服务响应超时，请稍后再试。"
+		case "AIService.ProviderError", "AIService.FallbackExhausted",
+			"AIService.ServiceDeprecated", "AIService.Unbound", "AIService.ServiceNotFound":
+			return "AI 服务暂时不可用，请稍后再试。"
+		case "AIService.TaskNotFound", "AIService.CapabilityMismatch":
+			return "AI 服务暂未配置好，请联系老师。"
+		}
+		// Unmapped errno code → fall through to content classification (do NOT
+		// return en.Message; it may be a raw provider string).
 	}
 
-	// 2. Classify by content.
+	// 2. Classify by content (handles raw errors AND errnos whose Message carries
+	//    the upstream string).
 	if isPromptTooLong(err) {
 		return "本次对话内容太长了，请精简后再发送。"
 	}
@@ -49,11 +67,9 @@ func UserFacingErrorMessage(err error) string {
 		return "积分不足，请充值后再试。"
 	case strings.Contains(s, "timeout"), strings.Contains(s, "deadline exceeded"), strings.Contains(s, "timed out"):
 		return "AI 服务响应超时，请稍后再试。"
-	case strings.Contains(s, "task profile"), strings.Contains(s, "resolvetask"), strings.Contains(s, "task不存在"):
+	case strings.Contains(s, "task profile"), strings.Contains(s, "resolvetask"):
 		return "AI 服务暂未配置好，请联系老师。"
-	case strings.Contains(s, "fallbackexhausted"), strings.Contains(s, "all ai"), strings.Contains(s, "no available"):
-		return "AI 服务暂时不可用，请稍后再试。"
-	case strings.Contains(s, "rate limit"), strings.Contains(s, "too many requests"), strings.Contains(s, "429"):
+	case strings.Contains(s, "rate limit"), strings.Contains(s, "too many requests"), strings.Contains(s, "http 429"), strings.Contains(s, "status 429"):
 		return "请求太频繁了，请稍后再试。"
 	}
 	return userFacingFallback
