@@ -18,13 +18,10 @@ import (
 // in server logs.
 //
 // Repro contract: when chatFn returns an ErrAIProviderTimeout (which is what the
-// dmxapi adapter wraps net/http header-timeout into), the runner MUST persist
-// the actual error string into agent_run.terminal_metadata so it is visible to
-// frontend / admin without needing log access.
-//
-// Pre-fix: this test FAILS — runner.go only writes state_reason but leaves
-// terminal_metadata NULL on LLM failure.
-// Post-fix: this test PASSES — runner merges {"error_message": "...", "error_class": "model_error"}.
+// dmxapi adapter wraps net/http header-timeout into), the runner MUST persist the
+// error into agent_run.terminal_metadata — a USER-FACING friendly message in
+// error_message and the raw provider cause in error_detail — so frontend/admin
+// can see it without log access AND learners never see engineer text.
 func TestRunner_LLMError_PersistsErrorToTerminalMetadata(t *testing.T) {
 	// Inject the exact error shape produced by the dmxapi adapter
 	// (wrapHTTPClientErr → errno.ErrAIProviderTimeout.SetMessage(...)).
@@ -56,10 +53,17 @@ func TestRunner_LLMError_PersistsErrorToTerminalMetadata(t *testing.T) {
 
 	errMsg, ok := meta["error_message"].(string)
 	require.True(t, ok, "terminal_metadata.error_message must be a string, got %T", meta["error_message"])
-	assert.Contains(t, errMsg, "dmxapi.cn",
-		"error_message must carry the underlying provider error (not just the placeholder)")
-	assert.Contains(t, errMsg, "timeout awaiting response headers",
-		"error_message must carry the root cause from net/http")
+	// error_message is USER-FACING (friendly Chinese) — it must NOT leak the raw
+	// provider string. The raw cause is preserved under error_detail for ops.
+	assert.NotContains(t, errMsg, "dmxapi.cn", "error_message must not leak the provider host to users")
+	assert.NotContains(t, errMsg, "net/http", "error_message must not leak raw engineer text")
+	assert.Contains(t, errMsg, "超时", "provider timeout should map to a friendly 超时 message")
+
+	errDetail, _ := meta["error_detail"].(string)
+	assert.Contains(t, errDetail, "dmxapi.cn",
+		"error_detail must preserve the raw provider error for ops debugging")
+	assert.Contains(t, errDetail, "timeout awaiting response headers",
+		"error_detail must carry the root cause from net/http")
 
 	errClass, _ := meta["error_class"].(string)
 	assert.Equal(t, "model_error", errClass,

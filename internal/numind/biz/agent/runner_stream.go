@@ -124,9 +124,10 @@ func (r *agentRunner) consumeEinoStream(
 				"agent_run_id", run.ID, "error", mErr)
 			st.TerminalReason = TerminalModelError
 			emit(stream.EventTerminal, stream.TerminalPayload{
-				Reason:     string(TerminalModelError),
-				DurationMs: time.Since(startTime).Milliseconds(),
-				StepCount:  st.StepCount,
+				Reason:      string(TerminalModelError),
+				DurationMs:  time.Since(startTime).Milliseconds(),
+				StepCount:   st.StepCount,
+				UserMessage: UserFacingTerminalMessage(TerminalModelError),
 			})
 			return &RunResult{AgentRunID: run.ID, TerminalReason: TerminalModelError, StepCount: st.StepCount, Duration: time.Since(startTime)}, nil
 		}
@@ -159,9 +160,10 @@ func (r *agentRunner) consumeEinoStream(
 		// this sets st.TerminalReason = TerminalWaitingForUserChoice.
 		st.Transition(LoopEventAskUserPaused)
 		emit(stream.EventTerminal, stream.TerminalPayload{
-			Reason:     string(TerminalWaitingForUserChoice),
-			DurationMs: time.Since(startTime).Milliseconds(),
-			StepCount:  st.StepCount,
+			Reason:      string(TerminalWaitingForUserChoice),
+			DurationMs:  time.Since(startTime).Milliseconds(),
+			StepCount:   st.StepCount,
+			UserMessage: UserFacingTerminalMessage(TerminalWaitingForUserChoice),
 		})
 		return &RunResult{
 			AgentRunID:     run.ID,
@@ -182,9 +184,10 @@ func (r *agentRunner) consumeEinoStream(
 		select {
 		case <-ctx.Done():
 			emit(stream.EventTerminal, stream.TerminalPayload{
-				Reason:     string(TerminalAbortedStreaming),
-				DurationMs: time.Since(startTime).Milliseconds(),
-				StepCount:  st.StepCount,
+				Reason:      string(TerminalAbortedStreaming),
+				DurationMs:  time.Since(startTime).Milliseconds(),
+				StepCount:   st.StepCount,
+				UserMessage: UserFacingTerminalMessage(TerminalAbortedStreaming),
 			})
 			st.TerminalReason = TerminalAbortedStreaming
 			return &RunResult{
@@ -241,12 +244,13 @@ func (r *agentRunner) consumeEinoStream(
 
 			emit(stream.EventError, stream.ErrorPayload{
 				Code:    errCode,
-				Message: err.Error(),
+				Message: UserFacingErrorMessage(err), // raw err already logged above (line ~239)
 			})
 			emit(stream.EventTerminal, stream.TerminalPayload{
-				Reason:     string(st.TerminalReason),
-				DurationMs: time.Since(startTime).Milliseconds(),
-				StepCount:  st.StepCount,
+				Reason:      string(st.TerminalReason),
+				DurationMs:  time.Since(startTime).Milliseconds(),
+				StepCount:   st.StepCount,
+				UserMessage: UserFacingTerminalMessage(st.TerminalReason),
 			})
 			return &RunResult{
 				AgentRunID:     run.ID,
@@ -319,10 +323,14 @@ func (r *agentRunner) consumeEinoStream(
 				if ok {
 					durationMs = time.Since(state.StartedAt).Milliseconds()
 				}
+				artURL, artName, artMime := artifactFromToolResult(msg.Content)
 				emit(stream.EventToolCallResult, stream.ToolCallResultPayload{
-					ToolCallID: msg.ToolCallID,
-					Preview:    truncateRunes(msg.Content, 500),
-					DurationMs: durationMs,
+					ToolCallID:       msg.ToolCallID,
+					Preview:          truncateRunes(msg.Content, 500),
+					ArtifactURL:      artURL,
+					ArtifactFilename: artName,
+					ArtifactMime:     artMime,
+					DurationMs:       durationMs,
 				})
 			}
 		}

@@ -17,8 +17,10 @@ type AgentAttachment struct {
 	Size     int64  `gorm:"default:0"                  json:"size"`
 
 	// Modality is detected at upload time.
-	// Valid values: "image" | "pdf" | "audio" | "unknown".
-	// "unknown" means mime detection failed; the fallback worker skips those rows.
+	// Valid values: "image" | "pdf" | "audio" | "document" | "unknown".
+	// "document" covers office docs (docx/doc/pptx/xlsx/rtf), extracted to text
+	// locally via parser.DocumentParser. "unknown" means mime detection failed;
+	// the fallback worker skips those rows.
 	Modality string `gorm:"size:32;default:'unknown'" json:"modality"`
 
 	// Width and Height are populated during fallback generation for image files.

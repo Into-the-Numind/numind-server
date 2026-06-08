@@ -66,6 +66,16 @@ func composePDFFallback(filename string, filesizeKB int64, extractedText string)
 		filename, filesizeKB, extractedText)
 }
 
+// composeDocumentFallback builds the text_fallback string for an office document
+// attachment (docx/doc/pptx/xlsx/rtf) whose text was extracted locally.
+func composeDocumentFallback(filename string, filesizeKB int64, extractedText string) string {
+	if extractedText == "" {
+		return fmt.Sprintf("[文档：%s（%dKB），文本提取失败]", filename, filesizeKB)
+	}
+	return fmt.Sprintf("[文档：%s（%dKB）\n全文文本提取：\n%s\n]",
+		filename, filesizeKB, extractedText)
+}
+
 // composeAudioFallback builds the text_fallback string for an audio attachment.
 func composeAudioFallback(filename string, durationSec float64, transcript string) string {
 	if transcript == "" {
@@ -86,6 +96,8 @@ func composeErrorFallback(filename, modality, errMsg string) string {
 		return fmt.Sprintf("[PDF：%s，文本提取失败：%s]", filename, errMsg)
 	case ModalityAudio:
 		return fmt.Sprintf("[音频：%s，语音转文字失败：%s]", filename, errMsg)
+	case ModalityDocument:
+		return fmt.Sprintf("[文档：%s，文本提取失败：%s]", filename, errMsg)
 	default:
 		return fmt.Sprintf("[文件：%s，处理失败：%s]", filename, errMsg)
 	}

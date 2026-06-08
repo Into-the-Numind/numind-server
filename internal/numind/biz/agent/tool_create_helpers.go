@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"numind-server/internal/pkg/middleware"
@@ -98,11 +100,21 @@ func uploadGeneratedFile(
 		rawURL = fmt.Sprintf("/local-uploads/%s", objectKey)
 	} else {
 		// COS is enabled — use a 24-hour presigned URL per decision T4.
-		// Use the download-flavored helper so the response carries
-		// Content-Disposition: attachment; without it Chrome flags the
-		// cross-site download from https://youshu.asia as "不安全".
 		const presignExpiry = 24 * 60 * 60 // 86400 seconds
-		signed, signErr := util.GenerateSignedDownloadURL(ctx, objectKey, filename, presignExpiry)
+		var signed string
+		var signErr error
+		if strings.HasPrefix(contentType, "image/") {
+			// Images must render inline (<img>) in the chat, so use the plain
+			// signed URL. GenerateSignedDownloadURL forces Content-Disposition:
+			// attachment, which makes the browser download the file instead of
+			// displaying it — breaking inline image rendering (User-reported,
+			// dev 2026-06-08: image generated but never shown).
+			signed, signErr = util.GenerateSignedURL(ctx, objectKey, presignExpiry)
+		} else {
+			// Non-image artifacts are downloads; the attachment disposition keeps
+			// Chrome from flagging the cross-site download as "不安全".
+			signed, signErr = util.GenerateSignedDownloadURL(ctx, objectKey, filename, presignExpiry)
+		}
 		if signErr == nil && signed != "" {
 			rawURL = signed
 		}
@@ -120,4 +132,57 @@ func uploadGeneratedFile(
 		return nil, fmt.Errorf("uploadGeneratedFile: marshal output: %w", err)
 	}
 	return b, nil
+}
+
+// artifactFromToolResult inspects a tool's JSON result for a generated-file
+// artifact (the fileCreateOutput shape emitted by image_gen / create_* tools)
+// and returns its URL, filename, and MIME type. It returns empty strings when
+// the output is not a file artifact (no non-empty url), so non-file tools are
+// unaffected. The SSE tool_call_result emitters use this to deliver the URL via
+// ToolCallResultPayload.ArtifactURL — without it the frontend never receives the
+// generated file and the user sees "图片已生成" with no image.
+func artifactFromToolResult(output string) (url, filename, mime string) {
+	trimmed := strings.TrimSpace(output)
+	if !strings.HasPrefix(trimmed, "{") {
+		return "", "", ""
+	}
+	var fc fileCreateOutput
+	if err := json.Unmarshal([]byte(trimmed), &fc); err != nil || fc.URL == "" {
+		return "", "", ""
+	}
+	return fc.URL, fc.Filename, mimeFromArtifact(fc.Filename, fc.Format)
+}
+
+// mimeFromArtifact derives a MIME type from a filename extension (preferred) or
+// the format hint. Lets the frontend decide whether an artifact is an inline
+// image. Returns application/octet-stream when unknown.
+func mimeFromArtifact(filename, format string) string {
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(filename), "."))
+	if ext == "" {
+		ext = strings.ToLower(format)
+	}
+	switch ext {
+	case "png":
+		return "image/png"
+	case "jpg", "jpeg":
+		return "image/jpeg"
+	case "gif":
+		return "image/gif"
+	case "webp":
+		return "image/webp"
+	case "svg":
+		return "image/svg+xml"
+	case "pdf":
+		return "application/pdf"
+	case "html", "htm":
+		return "text/html"
+	case "csv":
+		return "text/csv"
+	case "json":
+		return "application/json"
+	case "txt", "md", "text":
+		return "text/plain"
+	default:
+		return "application/octet-stream"
+	}
 }

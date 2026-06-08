@@ -66,6 +66,11 @@ type RunRequest struct {
 	// agent-mode-billing: 计费路由到 admin_test 池（credit_admin_test_grant）而非三池，
 	// 供 B2B 月末对公结算。由 student_run_lifecycle 从 CreateRunRequest.IsTest 透传。
 	IsTest bool
+	// History 是同一 session 之前轮次已完成的对话（user/assistant 文本对，按时间正序），
+	// 由 StudentRunService 在派发 runner 前通过 loadSessionHistory 从 DB 加载并注入。
+	// buildEinoMessages 将其前置到当前 Input 之前，使 LLM 获得多轮上下文（修复多轮失忆）。
+	// 为空表示新会话或首轮；加载失败时 fail-open 为 nil（不阻断本轮 run）。
+	History []*schema.Message
 }
 
 // RunResult 是 AgentRunner.Run 的输出。
@@ -1265,7 +1270,11 @@ func (r *agentRunner) finalizeRun(
 	userInput := req.Input
 	assistantContent := finalText
 	if assistantContent == "" && runErr != nil {
-		assistantContent = fmt.Sprintf("[error: %s]", st.TerminalReason)
+		// Show a friendly message (not a machine code like "[error: model_error]").
+		assistantContent = UserFacingTerminalMessage(st.TerminalReason)
+		if assistantContent == "" {
+			assistantContent = userFacingFallback
+		}
 	}
 
 	// Persist the underlying LLM/provider error to agent_run.terminal_metadata so
@@ -1275,7 +1284,10 @@ func (r *agentRunner) finalizeRun(
 	// header timeout). Use Merge so we do not clobber BudgetGate's prior write.
 	if runErr != nil && st.TerminalReason != TerminalCompleted {
 		patch := map[string]interface{}{
-			"error_message": runErr.Error(),
+			// error_message is user-facing; the raw string is kept under error_detail
+			// for ops/admin debugging, not shown to learners.
+			"error_message": UserFacingErrorMessage(runErr),
+			"error_detail":  runErr.Error(),
 			"error_class":   string(st.TerminalReason),
 		}
 		if mErr := r.runStore.MergeTerminalMetadata(ctx, run.ID, patch); mErr != nil {
@@ -1489,9 +1501,13 @@ func (r *agentRunner) terminateRunContextExhausted(ctx context.Context, run *mod
 // aiserviceAdapter (it prepends it as messages[0] in convertToAiserviceRequest),
 // so we only need the user message here.
 func buildEinoMessages(req RunRequest) []*schema.Message {
-	return []*schema.Message{
-		{Role: schema.User, Content: req.Input},
-	}
+	// Prepend prior-turn history (same session) so the LLM has multi-turn context,
+	// then append the current user input last (recency). req.History is already
+	// chronological user/assistant text pairs loaded by StudentRunService.
+	msgs := make([]*schema.Message, 0, len(req.History)+1)
+	msgs = append(msgs, req.History...)
+	msgs = append(msgs, &schema.Message{Role: schema.User, Content: req.Input})
+	return msgs
 }
 
 // V1.5 compact-v1-removal — einoMessagesToCompact / compactMessagesToEino

@@ -26,12 +26,22 @@ import (
 const MaxUploadSize = 20 * 1024 * 1024
 
 // allowedMIMEPrefixes is the list of permitted MIME type prefixes / exact values.
+// Office documents (docx/doc/pptx/xlsx/rtf) are also accepted, but because
+// http.DetectContentType sniffs them as application/zip (OOXML) or
+// application/octet-stream (legacy OLE2), acceptance is driven by the file
+// extension fallback in Upload, not by these prefixes.
 var allowedMIMEPrefixes = []string{
 	"image/",
 	"application/pdf",
 	"text/plain",
 	"text/markdown",
 	"audio/",
+	// Office document MIME types parser.DocumentParser supports (used when a
+	// client sends a correctly-typed body). Legacy .xls/.ppt are excluded.
+	"application/vnd.openxmlformats-officedocument.",
+	"application/msword",
+	"application/rtf",
+	"text/rtf",
 }
 
 // UploadService handles agent attachment uploads to COS and persists records
@@ -115,8 +125,24 @@ func (s *UploadService) Upload(ctx context.Context, userID uint, file multipart.
 			mimeType = "audio/wav"
 		case ".m4a":
 			mimeType = "audio/m4a"
+		// Office documents sniff as application/zip (OOXML) or octet-stream (OLE2);
+		// recover the real type from the extension so they pass validation and are
+		// extracted locally via parser.DocumentParser (document modality). Only the
+		// formats parser.DocumentParser actually supports are accepted — legacy
+		// .xls/.ppt are intentionally NOT listed (no parser support → would fail
+		// after upload; reject upfront with a clear message instead).
+		case ".docx":
+			mimeType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+		case ".xlsx":
+			mimeType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+		case ".pptx":
+			mimeType = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+		case ".doc":
+			mimeType = "application/msword"
+		case ".rtf":
+			mimeType = "application/rtf"
 		default:
-			return nil, fmt.Errorf("attachment.Upload: unsupported file type '%s' (allowed: images, pdf, audio, plain text)", mimeType)
+			return nil, fmt.Errorf("不支持的文件类型，请上传图片、PDF、Word/Excel/PPT 文档、音频或文本文件")
 		}
 	}
 

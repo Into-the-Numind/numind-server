@@ -41,7 +41,8 @@ import (
 // TestRunStream_TerminalMetadata_PersistsLLMError verifies that when the
 // stream reader returns an error mid-stream (the path that calls finalizeRun),
 // the agent_run row's terminal_metadata JSON contains:
-//   - error_message: the error string (not empty)
+//   - error_message: a user-facing friendly message (no raw engineer text)
+//   - error_detail: the raw provider error string (for ops debugging)
 //   - error_class: the terminal reason string
 //
 // This is the streaming-path regression test for Hotfix 648d16d4.
@@ -116,8 +117,17 @@ func TestRunStream_TerminalMetadata_PersistsLLMError(t *testing.T) {
 	errMsg, ok := meta["error_message"].(string)
 	require.True(t, ok,
 		"terminal_metadata.error_message must be a string, got %T", meta["error_message"])
-	assert.Contains(t, errMsg, "timeout awaiting response headers",
-		"error_message must carry the underlying provider error string")
+	// error_message is now USER-FACING (friendly Chinese); it must NOT leak raw
+	// engineer text. The raw provider error is preserved under error_detail for ops.
+	assert.NotEmpty(t, errMsg, "error_message must carry a user-facing message")
+	assert.NotContains(t, errMsg, "net/http",
+		"error_message must not leak raw engineer text to users")
+	assert.NotContains(t, errMsg, "dmxapi",
+		"error_message must not leak the provider name to users")
+
+	errDetail, _ := meta["error_detail"].(string)
+	assert.Contains(t, errDetail, "timeout awaiting response headers",
+		"raw provider error must be preserved in error_detail for ops debugging")
 
 	errClass, _ := meta["error_class"].(string)
 	assert.Equal(t, string(TerminalModelError), errClass,
