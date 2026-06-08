@@ -1,5 +1,28 @@
 schema_version: '2.0'
 features:
+- id: agent-image-durable-render
+  ndf_version: '3.0'
+  description: 'agent-mode-dev-fixes #4 后续(User dev 复测仍看不到图)：图真生成+ArtifactURL 经 SSE 下发(已验证), 但 artifact 是 transient——reload 时 loadSessionSnapshot(agentChat.ts:451) 用 DB(getSessionSnapshot, 从不含 artifact)整体替换 messages, 图消失。根因=artifact 未持久化。修(durable render): 后端用 ctx-attached imageCollector(image_collector.go)在 adapter InvokableRun(stream+非stream 都跑)收集生成图, consumeEinoStream(流式) + runner.Run finalize(非流式)把 ![](url) 追加进最终 assistant content→持久化进 agent_run.messages→reload 经 AgentFinalAnswer/assistant markdown(renderMarkdown+DOMPurify 默许 img+已有 handleImageClick)渲染。前端删 transient artifact bubble 防 live 双图。review P1: 不能往非流式 ctx 注 StreamSessionState(会破坏 adapter:204 yield 处理)→改用独立 ctx collector 覆盖两路径。follow-up: 24h presigned URL 过期(persisted markdown 隔日裂图)→存 object key 读时再签。'
+  classification_reason: 'Hotfix(bug 续修, 紧扣 #4): 无 DB schema/无新 API/无新外部服务; 跨 server+web 但单一逻辑改动(图持久化渲染)。User dev 复测复现→Bug-from-Customer §12 适用(首 commit 失败复现测试 test(qa))。双 Sonnet reviewer PASS_WITH_CONCERNS, P1(非流式覆盖)已修, P2(24h URL)记 follow-up。'
+  last_updated_by: ai-h3-dev-deployed
+  last_updated_at: '2026-06-08T21:25:00+08:00'
+  created_at: '2026-06-08T20:50:00+08:00'
+  track: hotfix
+  stage: H3
+  repos:
+  - numind-server
+  - numind-web-v3
+  branches:
+    numind-server: fix/agent-image-durable-render
+    numind-web-v3: fix/agent-image-durable-render
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-H3 (ai 2026-06-08): 诊断走 dev 取证(SSE capture 证后端 artifact_url 已下发; loadSessionSnapshot DB 替换证 transient 丢失; AgentFinalAnswer renderMarkdown 证 img 可渲染)。修=ctx imageCollector 持久化图进 final answer markdown。双 reviewer PASS_WITH_CONCERNS→P1 非流式覆盖已修(独立 ctx collector 而非注 StreamSessionState 以免破坏 yield)。Gate: server go test ./... 0 FAIL+lint clean; web type-check+vitest 739 pass+eslint clean。止步 dev。'
+  blockers: []
+
 - id: agent-mode-dev-fixes
   ndf_version: '3.0'
   description: 'Agent mode dev 测试探测出的 4 个面向用户缺陷批修（User 上报 = Bug-from-Customer §12 适用，每 fix 首 commit 失败复现测试）。#3 多轮上下文丢失(每轮独立 agent_run messages=[], buildEinoMessages 只返回当前 Input 单条, runner 从不按 session 加载历史→第二轮失忆; 修 RunRequest+History/biz 层 ListBySession 注入+窗口上限/fail-open)。#1 docx 上传被拒+解析坏(upload.go 白名单按 DetectContentType docx→zip 拒 HTTP500; file_read 裸 URL 喂 qwen-long TODO-T7 未接; 修 upload 扩展名校正放行 office + file_read 复用现成 parser.DocumentParser 本地解析 + fallback document modality)。#4 生成图不可见(图真生成+传 COS 成功但 ToolCallResultPayload.ArtifactURL 从无赋值前端从不读 AgentArtifactItem 死代码 + image 用 attachment 头破坏 inline; 修后端 emit 填 ArtifactURL+events.go 补字段+image 改 inline 签名+前端读 artifact_url push artifact 气泡)。#2 工程师错误文案→用户友好中文(SSE 透传裸 err.Error()+机器码 TerminalReason, 前端 applyError markdown 直显短路友好兜底, HTTP402 显示"HTTP 402"; 修后端新增 user_error.go 翻译层复用 errno/ai.go+withhold 分类器, emit 点改用翻译层 raw 仅入日志, 前端兜底 reason→中文+402 复用 InsufficientCreditsDialog)。串行实现(#2/#4 共用 runner_stream.go/adapter_full_to_eino.go/agentChat.ts 热点文件 Tier-4 不并行写): T1 #3→T2 #1→T3 #4→T4 #2→T5 前端联调。'
