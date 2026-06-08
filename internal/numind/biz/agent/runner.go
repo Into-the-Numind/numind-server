@@ -505,6 +505,11 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	// the persisted final answer (see image_collector.go). Covers the non-stream
 	// path (e.g. ask_user_question resume) symmetrically with RunStream.
 	ctx = withImageCollector(ctx)
+	// Collect narration/tool-call events on the run-level ctx so finalizeRun can
+	// persist the tool-call timeline into agent_run.messages (durable replay on
+	// reload). Attached on ctx (ancestor of queryCtx and of the finalize ctx) so
+	// emit-side (tool execution) writes and finalize-side reads share one instance.
+	ctx = narration.WithCollector(ctx)
 
 	// 3. AbortController 三层 + 注册 cancel
 	queryCtx, queryCancel := DeriveQueryCtx(ctx)
@@ -1309,10 +1314,18 @@ func (r *agentRunner) finalizeRun(
 				"agent_run_id", run.ID, "error", mErr)
 		}
 	}
-	finalMessages, _ := json.Marshal([]map[string]any{
+	// Persist the tool-call timeline as a tool_group turn BETWEEN user and
+	// assistant so the process (web_search, image_gen, …) survives reload — it
+	// was previously a transient frontend-only construct lost on snapshot rebuild.
+	// Additive + nil-safe: no events ⇒ no tool_group turn ⇒ identical to before.
+	turns := []map[string]any{
 		{"role": "user", "content": userInput},
-		{"role": "assistant", "content": assistantContent, "reasoning": finalReasoning},
-	})
+	}
+	if groups := aggregateToolEvents(narration.CollectorFrom(ctx).Events()); len(groups) > 0 {
+		turns = append(turns, map[string]any{"role": "tool_group", "tool_calls": groups})
+	}
+	turns = append(turns, map[string]any{"role": "assistant", "content": assistantContent, "reasoning": finalReasoning})
+	finalMessages, _ := json.Marshal(turns)
 	if err := r.runStore.WriteTurn(ctx, run.ID, json.RawMessage(finalMessages)); err != nil {
 		log.Warnw("AgentRunner.Run WriteTurn failed", "agent_run_id", run.ID, "error", err)
 	}

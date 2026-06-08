@@ -13,6 +13,7 @@ import (
 
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 )
 
@@ -482,15 +483,18 @@ func (s *StudentQueryService) toEnrichedSummaries(ctx context.Context, runs []mo
 // ---------------------------------------------------------------------------
 
 // agentMessage is the frontend-shaped message type.
-// Discriminated by Type: 'user' | 'assistant' | 'final_answer'.
+// Discriminated by Type: 'user' | 'assistant' | 'final_answer' | 'tool_group'.
 type agentMessage struct {
 	ID        string `json:"id"`
-	Type      string `json:"type"`               // 'user' | 'assistant' | 'final_answer'
+	Type      string `json:"type"`               // 'user' | 'assistant' | 'final_answer' | 'tool_group'
 	Text      string `json:"text,omitempty"`     // for type='user'
 	Markdown  string `json:"markdown,omitempty"` // for type='assistant' | 'final_answer'
 	Reasoning string `json:"reasoning,omitempty"`
 	RunID     uint64 `json:"run_id,omitempty"` // for type='final_answer'
-	Timestamp string `json:"timestamp"`        // RFC3339
+	// ToolCalls carries the persisted tool-call timeline for type='tool_group'.
+	// Shape is 1:1 with the frontend ToolCallAggregate so it renders untransformed.
+	ToolCalls []persistedToolCall `json:"tool_calls,omitempty"`
+	Timestamp string              `json:"timestamp"` // RFC3339
 }
 
 // transformMessages converts the raw [{role,content}] turn array stored in
@@ -552,8 +556,30 @@ func transformMessages(raw []byte, runID uint64, startedAt time.Time, endedAt *t
 				msg.Type = "assistant"
 				msg.Markdown = content
 			}
+		case "tool_group":
+			// Replay the persisted tool-call timeline. Re-marshal the generic
+			// turn["tool_calls"] then decode into the typed slice; the persisted
+			// JSON is 1:1 with the frontend ToolCallAggregate shape.
+			msg.Type = "tool_group"
+			if rawTC, ok := turn["tool_calls"]; ok {
+				if b, mErr := json.Marshal(rawTC); mErr == nil {
+					var tcs []persistedToolCall
+					if uErr := json.Unmarshal(b, &tcs); uErr == nil {
+						msg.ToolCalls = tcs
+					} else {
+						// Observability: a decode failure here means the tool-call
+						// process silently vanishes on reload — log so operators can
+						// catch schema drift instead of debugging a blank timeline.
+						log.Warnw("transformMessages: failed to decode tool_group turn",
+							"run_id", runID, "error", uErr)
+					}
+				}
+			}
+			if len(msg.ToolCalls) == 0 {
+				continue // nothing renderable
+			}
 		default:
-			// Skip system / tool turns — frontend doesn't render them.
+			// Skip system / other turns — frontend doesn't render them.
 			continue
 		}
 		msgs = append(msgs, msg)

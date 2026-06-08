@@ -545,6 +545,67 @@ func TestStudentQuery_SessionSnapshot_MessageTransform(t *testing.T) {
 	assert.Equal(t, run.ID, rawMsgs[1].RunID)
 }
 
+// TestStudentQuery_SessionSnapshot_ToolGroupSurvivesReload is the customer-bug
+// reproduction (NDF rule 11): after an agent run that used tools, reopening the
+// session must still show the tool-call process. transformMessages previously
+// dropped any non-user/assistant turn (default: continue), so a persisted
+// tool_group turn vanished on reload. EXPECTED TO FAIL before the fix.
+func TestStudentQuery_SessionSnapshot_ToolGroupSurvivesReload(t *testing.T) {
+	svc, db := newSQServiceFull(t)
+
+	msgs, _ := json.Marshal([]map[string]any{
+		{"role": "user", "content": "查一下天气"},
+		{"role": "tool_group", "tool_calls": []map[string]any{
+			{
+				"tool_call_id":  "tc-1",
+				"tool_name":     "web_search",
+				"current_state": "result",
+				"events": []map[string]any{
+					{
+						"run_id":       1,
+						"tool_call_id": "tc-1",
+						"tool_name":    "web_search",
+						"state":        "result",
+						"message":      "完成",
+						"timestamp":    "2026-06-09T00:00:00Z",
+					},
+				},
+			},
+		}},
+		{"role": "assistant", "content": "今天晴", "reasoning": "先搜索再回答"},
+	})
+	run := &model.AgentRun{
+		UserID:      33,
+		SessionID:   "snap-toolgroup",
+		Status:      "terminated",
+		StateReason: "completed",
+		Messages:    msgs,
+		StartedAt:   time.Now(),
+	}
+	require.NoError(t, db.Create(run).Error)
+
+	snap, err := svc.GetSessionSnapshot(context.Background(), 33, run.SessionID)
+	require.NoError(t, err)
+	rawMsgs, ok := snap.Messages.([]agentMessage)
+	require.True(t, ok)
+
+	// Expect user → tool_group → final_answer (tool-call process survives reload).
+	require.Len(t, rawMsgs, 3)
+	assert.Equal(t, "user", rawMsgs[0].Type)
+	assert.Equal(t, "tool_group", rawMsgs[1].Type)
+	assert.Equal(t, "final_answer", rawMsgs[2].Type)
+	assert.Equal(t, "先搜索再回答", rawMsgs[2].Reasoning)
+
+	// tool_group content is reconstructed 1:1 for the frontend.
+	require.Len(t, rawMsgs[1].ToolCalls, 1)
+	tc := rawMsgs[1].ToolCalls[0]
+	assert.Equal(t, "tc-1", tc.ToolCallID)
+	assert.Equal(t, "web_search", tc.ToolName)
+	assert.Equal(t, "result", tc.CurrentState)
+	require.Len(t, tc.Events, 1)
+	assert.Equal(t, "完成", tc.Events[0].Message)
+}
+
 // TestStudentQuery_SessionSnapshot_AssistantMidTurnNotFinalAnswer verifies that
 // intermediate assistant turns are typed 'assistant', not 'final_answer'.
 func TestStudentQuery_SessionSnapshot_AssistantMidTurnNotFinalAnswer(t *testing.T) {

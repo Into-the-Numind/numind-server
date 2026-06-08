@@ -68,6 +68,11 @@ func (p *Provider) Emit(ctx context.Context, runID uint64, toolName string, stat
 		payload.ToolCallID = p.nextCallID(runID)
 	}
 	ev := p.translator.Translate(ctx, payload, toolName, state)
+	// Capture into the run-scoped collector (if attached) so the finalizer can
+	// persist the tool-call timeline for durable replay on reload. nil-safe when
+	// no collector is on ctx (e.g. non-student paths). Synchronous on purpose —
+	// must not depend on the async forwardNarration goroutine.
+	CollectorFrom(ctx).add(ev)
 	p.streamer.Send(ev)
 }
 
