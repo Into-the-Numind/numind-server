@@ -20,7 +20,7 @@ features:
     completed_tasks: 1
     reviewed_tasks: 1
   decisions:
-  - 'H1-H3 (ai 2026-06-08): 诊断走 dev 取证(SSE capture 证后端 artifact_url 已下发; loadSessionSnapshot DB 替换证 transient 丢失; AgentFinalAnswer renderMarkdown 证 img 可渲染)。修=ctx imageCollector 持久化图进 final answer markdown。双 reviewer PASS_WITH_CONCERNS→P1 非流式覆盖已修(独立 ctx collector 而非注 StreamSessionState 以免破坏 yield)。Gate: server go test ./... 0 FAIL+lint clean; web type-check+vitest 739 pass+eslint clean。止步 dev。'
+  - 'H1-H3 (ai 2026-06-08): 诊断走 dev 取证(SSE capture 证后端 artifact_url 已下发; loadSessionSnapshot DB 替换证 transient 丢失; AgentFinalAnswer renderMarkdown 证 img 可渲染)。修=ctx imageCollector 持久化图进 final answer markdown。双 reviewer PASS_WITH_CONCERNS→P1 非流式覆盖已修(独立 ctx collector 而非注 StreamSessionState 以免破坏 yield)。Gate: server go test ./... 0 FAIL+lint clean; web type-check+vitest 739 pass+eslint clean。ndf-done merge 两仓库(server c6733a37/web 5ecbfff)+部署 dev(容器 sha 已核对)。**dev 端到端验证 PASS**: 触发 image_gen(run 109)→SSE final_output 含 ![](cos url)→agent_run.messages HAS_IMAGE_MARKDOWN(持久化)→getRun(109).final_output 含 markdown 图(=reload 渲染源)。图现已 live+reload 均可见。止步 dev。'
   blockers: []
 
 - id: agent-mode-dev-fixes
