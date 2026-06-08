@@ -1494,9 +1494,13 @@ func (r *agentRunner) terminateRunContextExhausted(ctx context.Context, run *mod
 // aiserviceAdapter (it prepends it as messages[0] in convertToAiserviceRequest),
 // so we only need the user message here.
 func buildEinoMessages(req RunRequest) []*schema.Message {
-	return []*schema.Message{
-		{Role: schema.User, Content: req.Input},
-	}
+	// Prepend prior-turn history (same session) so the LLM has multi-turn context,
+	// then append the current user input last (recency). req.History is already
+	// chronological user/assistant text pairs loaded by StudentRunService.
+	msgs := make([]*schema.Message, 0, len(req.History)+1)
+	msgs = append(msgs, req.History...)
+	msgs = append(msgs, &schema.Message{Role: schema.User, Content: req.Input})
+	return msgs
 }
 
 // V1.5 compact-v1-removal — einoMessagesToCompact / compactMessagesToEino

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cloudwego/eino/schema"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
@@ -334,6 +335,9 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 		ExistingRunID:         preRun.ID,
 		AttachmentHasFallback: hasFallbackAttachments,
 		IsTest:                req.IsTest, // admin_test pool routing (agent-mode-billing)
+		// Multi-turn context: load prior session turns (excluding this just-created
+		// row) so the LLM remembers earlier conversation. Fail-open to nil.
+		History: s.loadSessionHistory(ctx, sessionID, preRun.ID),
 	}
 
 	// Bridge narration events: Provider.Emit pushes events to an in-memory
@@ -572,12 +576,85 @@ func (s *StudentRunService) RunStream(ctx context.Context, userID uint, req Crea
 		ExistingRunID:         runID,
 		AttachmentHasFallback: hasFallbackAttachments,
 		IsTest:                req.IsTest, // admin_test pool routing (agent-mode-billing)
+		// Multi-turn context: load prior session turns (excluding the current run)
+		// so the streaming chat remembers earlier conversation. Fail-open to nil.
+		History: s.loadSessionHistory(ctx, run.SessionID, runID),
 	}
 
 	// Bridge narration events (same as Create).
 	go s.forwardNarration(runID)
 
 	return s.runner.RunStream(ctx, runReq, runID, ch)
+}
+
+// loadSessionHistory loads prior completed turns of the same session and converts
+// them into chronological []*schema.Message (user/assistant text pairs) so the
+// runner can seed multi-turn context. Without this, every turn was a fresh
+// agent_run with messages=[] and the LLM had no memory of earlier turns
+// (User-reported, dev 2026-06-08).
+//
+// Design choices (v1):
+//   - excludeRunID drops the just-created row for the current turn (its messages=[]).
+//   - Only user/assistant text turns are kept; tool_call/tool_result detail is
+//     dropped to avoid OAI tool-pair protocol errors (see MEMORY oai-function-calling).
+//   - The newest maxHistoryRuns runs are scanned; total content is capped at
+//     maxHistoryChars, trimming the OLDEST messages first to protect the window.
+//   - Fail-open: any error returns nil so a history-load failure never blocks the run.
+func (s *StudentRunService) loadSessionHistory(ctx context.Context, sessionID string, excludeRunID uint64) []*schema.Message {
+	if sessionID == "" {
+		return nil
+	}
+	const (
+		maxHistoryRuns  = 40      // ~ last 40 turns of the session
+		maxHistoryChars = 200_000 // generous char budget guard (model windows are large but not infinite)
+	)
+
+	runs, _, err := s.runStore.ListBySession(ctx, sessionID, 0, maxHistoryRuns)
+	if err != nil {
+		log.Warnw("StudentRunService.loadSessionHistory: ListBySession failed, proceeding without history",
+			"session_id", sessionID, "error", err)
+		return nil
+	}
+
+	// ListBySession yields DESC (newest first); iterate in reverse for chronological order.
+	var msgs []*schema.Message
+	total := 0
+	for i := len(runs) - 1; i >= 0; i-- {
+		r := runs[i]
+		if r.ID == excludeRunID || len(r.Messages) == 0 {
+			continue
+		}
+		var turns []map[string]any
+		if uerr := json.Unmarshal(r.Messages, &turns); uerr != nil {
+			continue // skip a malformed row rather than fail the whole load
+		}
+		for _, turn := range turns {
+			content, _ := turn["content"].(string)
+			content = strings.TrimSpace(content)
+			if content == "" {
+				continue
+			}
+			role, _ := turn["role"].(string)
+			var sr schema.RoleType
+			switch role {
+			case "user":
+				sr = schema.User
+			case "assistant":
+				sr = schema.Assistant
+			default:
+				continue // ignore tool/system/unknown roles in v1 history
+			}
+			msgs = append(msgs, &schema.Message{Role: sr, Content: content})
+			total += len(content)
+		}
+	}
+
+	// Over budget → trim from the front (oldest) keeping the most recent turns.
+	for total > maxHistoryChars && len(msgs) > 0 {
+		total -= len(msgs[0].Content)
+		msgs = msgs[1:]
+	}
+	return msgs
 }
 
 // ---------------------------------------------------------------------------
