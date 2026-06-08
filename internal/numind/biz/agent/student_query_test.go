@@ -595,6 +595,15 @@ func TestStudentQuery_SessionSnapshot_ToolGroupSurvivesReload(t *testing.T) {
 	assert.Equal(t, "tool_group", rawMsgs[1].Type)
 	assert.Equal(t, "final_answer", rawMsgs[2].Type)
 	assert.Equal(t, "先搜索再回答", rawMsgs[2].Reasoning)
+
+	// tool_group content is reconstructed 1:1 for the frontend.
+	require.Len(t, rawMsgs[1].ToolCalls, 1)
+	tc := rawMsgs[1].ToolCalls[0]
+	assert.Equal(t, "tc-1", tc.ToolCallID)
+	assert.Equal(t, "web_search", tc.ToolName)
+	assert.Equal(t, "result", tc.CurrentState)
+	require.Len(t, tc.Events, 1)
+	assert.Equal(t, "完成", tc.Events[0].Message)
 }
 
 // TestStudentQuery_SessionSnapshot_AssistantMidTurnNotFinalAnswer verifies that

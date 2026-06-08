@@ -23,6 +23,7 @@ import (
 	"numind-server/internal/numind/biz/budget"
 	"numind-server/internal/numind/biz/compactv2"
 	"numind-server/internal/numind/biz/memory"
+	"numind-server/internal/numind/biz/narration"
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/errno"
@@ -120,6 +121,10 @@ func (r *agentRunner) RunStream(
 	// 2.5. agent-mode-billing: wire billing ctx (bill-only) so every LLM call
 	// (main loop + tool-internal) bills against the initiator's credits.
 	ctx = injectAgentBillingCtx(ctx, req, run.ID)
+	// Collect narration/tool-call events on the run-level ctx so finalizeRun can
+	// persist the tool-call timeline (durable replay on reload). On ctx (ancestor
+	// of queryCtx/attemptCtx AND the finalize ctx) so emit and finalize share one.
+	ctx = narration.WithCollector(ctx)
 
 	// 3. AbortController three-layer + register cancel.
 	queryCtx, queryCancel := DeriveQueryCtx(ctx)
