@@ -125,6 +125,8 @@ func TestIsDocumentReadable(t *testing.T) {
 		{"application/octet-stream", "x/agent-attachments/1/old.doc?sign=abc", true}, // ext fallback + query
 		{"image/png", "x/y.png", false},
 		{"text/plain", "x/y.txt", false},
+		{"text/plain", "x/y.pdf", false},               // specific MIME must NOT be hijacked by a .pdf name
+		{"application/vnd.ms-excel", "x/y.xls", false}, // legacy .xls unsupported by parser
 	}
 	for _, c := range cases {
 		if got := isDocumentReadable(c.mime, c.url); got != c.want {

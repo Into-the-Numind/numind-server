@@ -127,14 +127,13 @@ func extractCOSObjectKey(fileURL string) (string, bool) {
 // legacy OLE2, or empty) — so a specific MIME like text/plain or image/* is
 // never overridden by a misleading extension.
 func isDocumentReadable(mimeType, fileURL string) bool {
+	// Only formats parser.DocumentParser supports; legacy .xls/.ppt excluded.
 	switch mimeType {
 	case "application/pdf",
 		"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 		"application/vnd.openxmlformats-officedocument.presentationml.presentation",
 		"application/msword",
-		"application/vnd.ms-excel",
-		"application/vnd.ms-powerpoint",
 		"application/rtf",
 		"text/rtf":
 		return true
@@ -148,7 +147,7 @@ func isDocumentReadable(mimeType, fileURL string) bool {
 		name = name[:i]
 	}
 	switch strings.ToLower(path.Ext(name)) {
-	case ".pdf", ".docx", ".doc", ".pptx", ".xlsx", ".ppt", ".xls", ".rtf":
+	case ".pdf", ".docx", ".doc", ".pptx", ".xlsx", ".rtf":
 		return true
 	}
 	return false

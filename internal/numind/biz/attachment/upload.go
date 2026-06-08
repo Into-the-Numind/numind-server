@@ -36,11 +36,10 @@ var allowedMIMEPrefixes = []string{
 	"text/plain",
 	"text/markdown",
 	"audio/",
-	// Office document MIME types (used when a client sends a correctly-typed body).
+	// Office document MIME types parser.DocumentParser supports (used when a
+	// client sends a correctly-typed body). Legacy .xls/.ppt are excluded.
 	"application/vnd.openxmlformats-officedocument.",
 	"application/msword",
-	"application/vnd.ms-excel",
-	"application/vnd.ms-powerpoint",
 	"application/rtf",
 	"text/rtf",
 }
@@ -128,7 +127,10 @@ func (s *UploadService) Upload(ctx context.Context, userID uint, file multipart.
 			mimeType = "audio/m4a"
 		// Office documents sniff as application/zip (OOXML) or octet-stream (OLE2);
 		// recover the real type from the extension so they pass validation and are
-		// extracted locally via parser.DocumentParser (document modality).
+		// extracted locally via parser.DocumentParser (document modality). Only the
+		// formats parser.DocumentParser actually supports are accepted — legacy
+		// .xls/.ppt are intentionally NOT listed (no parser support → would fail
+		// after upload; reject upfront with a clear message instead).
 		case ".docx":
 			mimeType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 		case ".xlsx":
@@ -137,10 +139,6 @@ func (s *UploadService) Upload(ctx context.Context, userID uint, file multipart.
 			mimeType = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 		case ".doc":
 			mimeType = "application/msword"
-		case ".xls":
-			mimeType = "application/vnd.ms-excel"
-		case ".ppt":
-			mimeType = "application/vnd.ms-powerpoint"
 		case ".rtf":
 			mimeType = "application/rtf"
 		default:

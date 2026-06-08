@@ -84,15 +84,15 @@ const (
 // documentMIMEs is the set of office-document MIME types routed to the document
 // modality (local text extraction via parser.DocumentParser). PDF is handled by
 // its own modality; these are the non-PDF office formats.
+// Only formats parser.DocumentParser supports are listed; legacy .xls/.ppt are
+// excluded (no parser support).
 var documentMIMEs = map[string]struct{}{
 	"application/vnd.openxmlformats-officedocument.wordprocessingml.document":   {}, // .docx
 	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":         {}, // .xlsx
 	"application/vnd.openxmlformats-officedocument.presentationml.presentation": {}, // .pptx
-	"application/msword":            {}, // .doc
-	"application/vnd.ms-excel":      {}, // .xls
-	"application/vnd.ms-powerpoint": {}, // .ppt
-	"application/rtf":               {}, // .rtf
-	"text/rtf":                      {}, // .rtf (alt)
+	"application/msword": {}, // .doc
+	"application/rtf":    {}, // .rtf
+	"text/rtf":           {}, // .rtf (alt)
 }
 
 // DetectModality maps a MIME type to one of the modality constants.
@@ -467,7 +467,8 @@ func (p *fallbackPool) generateDocument(ctx context.Context, att *model.AgentAtt
 
 	if att.Size > maxDocumentBytes {
 		errMsg := fmt.Sprintf("document too large for extraction (max %dMB)", maxDocumentBytes/1024/1024)
-		fallbackText := composeDocumentFallback(att.Filename, filesizeKB, "")
+		fallbackText := fmt.Sprintf("[文档：%s（%dKB），文件过大无法提取（上限 %dMB）]",
+			att.Filename, filesizeKB, maxDocumentBytes/1024/1024)
 		completed := time.Now()
 		_ = p.store.UpdateFallback(ctx, att.ID, map[string]interface{}{
 			"fallback_ready":        true,

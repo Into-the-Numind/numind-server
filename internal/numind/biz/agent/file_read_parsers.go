@@ -17,9 +17,11 @@ import (
 )
 
 // docFetchTimeout bounds the HTTP GET used to download a document before local parsing.
+// NOTE: kept in sync with attachment/fallback_service.go docDownloadTimeout.
 const docFetchTimeout = 60 * time.Second
 
 // docFetchMaxBytes caps the document download size (matches the 20MB upload cap).
+// NOTE: kept in sync with attachment/fallback_service.go maxDocumentBytes.
 const docFetchMaxBytes = 20 * 1024 * 1024
 
 // documentParserImpl downloads a file and extracts plain text locally via the
