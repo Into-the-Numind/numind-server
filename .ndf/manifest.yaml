@@ -1,5 +1,33 @@
 schema_version: '2.0'
 features:
+- id: agent-mode-dev-fixes
+  ndf_version: '3.0'
+  description: 'Agent mode dev 测试探测出的 4 个面向用户缺陷批修（User 上报 = Bug-from-Customer §12 适用，每 fix 首 commit 失败复现测试）。#3 多轮上下文丢失(每轮独立 agent_run messages=[], buildEinoMessages 只返回当前 Input 单条, runner 从不按 session 加载历史→第二轮失忆; 修 RunRequest+History/biz 层 ListBySession 注入+窗口上限/fail-open)。#1 docx 上传被拒+解析坏(upload.go 白名单按 DetectContentType docx→zip 拒 HTTP500; file_read 裸 URL 喂 qwen-long TODO-T7 未接; 修 upload 扩展名校正放行 office + file_read 复用现成 parser.DocumentParser 本地解析 + fallback document modality)。#4 生成图不可见(图真生成+传 COS 成功但 ToolCallResultPayload.ArtifactURL 从无赋值前端从不读 AgentArtifactItem 死代码 + image 用 attachment 头破坏 inline; 修后端 emit 填 ArtifactURL+events.go 补字段+image 改 inline 签名+前端读 artifact_url push artifact 气泡)。#2 工程师错误文案→用户友好中文(SSE 透传裸 err.Error()+机器码 TerminalReason, 前端 applyError markdown 直显短路友好兜底, HTTP402 显示"HTTP 402"; 修后端新增 user_error.go 翻译层复用 errno/ai.go+withhold 分类器, emit 点改用翻译层 raw 仅入日志, 前端兜底 reason→中文+402 复用 InsufficientCreditsDialog)。串行实现(#2/#4 共用 runner_stream.go/adapter_full_to_eino.go/agentChat.ts 热点文件 Tier-4 不并行写): T1 #3→T2 #1→T3 #4→T4 #2→T5 前端联调。'
+  classification_reason: 'Standard（不可降级）：(1) 文件数 >3(~20 文件) (2) 跨仓库 numind-server+numind-web-v3 (3) #2/#4 文件交集需串行协调。无 DB schema 变更/无新 API/无新外部服务(复用 parser.DocumentParser/COS/aiservice)。S0-S3 工件合并精简为 .ndf/features/agent-mode-dev-fixes/requirement.md(bugfix 批次, 根因由并行 investigator workflow 落实 file:line+dev日志+DB取证)。User 指令全自动跑不问→自主推进+止步 dev(不碰 prod), technical 决策 AI 自决。'
+  last_updated_by: ai-s4-impl
+  last_updated_at: '2026-06-08T17:00:00+08:00'
+  created_at: '2026-06-08T17:00:00+08:00'
+  track: standard
+  stage: S4
+  repos:
+  - numind-server
+  - numind-web-v3
+  branches:
+    numind-server: feature/agent-mode-dev-fixes
+    numind-web-v3: feature/agent-mode-dev-fixes
+  worktrees:
+    numind-server: /private/tmp/wt-agent-mode-dev-fixes-numind-server
+    numind-web-v3: /private/tmp/wt-agent-mode-dev-fixes-numind-web-v3
+  progress:
+    total_tasks: 5
+    completed_tasks: 0
+    reviewed_tasks: 0
+  artifacts:
+    requirement: .ndf/features/agent-mode-dev-fixes/requirement.md
+  decisions:
+  - 'S0-S3 (ai 2026-06-08): 4 缺陷根因由 investigator workflow(4 并行 read-only agent + dev 日志/DB 取证)确认 file:line。Triage=Standard(文件数>3+跨仓库)。工件合并精简(requirement.md)。User 全自动授权→串行批修+并行双 reviewer+止步 dev。technical 决策 AI 自决: #1 走本地 parser.DocumentParser(零跨境零计费)/#2 用户只见中文 raw 入日志+402 复用 InsufficientCreditsDialog/#4 图 artifact 气泡渲染。follow-up(非本批): 百炼 fileID 大文档二级路径/历史会话图 URL 24h 过期重签/generateImage 收编 aiservice。'
+  blockers: []
+
 - id: agent-correctness-fixes
   ndf_version: '3.0'
   description: 'Agent-mode prod-readiness 测试探测出的一批正确性/稳定性/安全缺陷收口（内部发现，非 customer 线上 bug）。7 个 task 串行：T1 #7 管理员取消守卫(admin_service.go isTerminalStatus 只认 completed/failed/cancelled/error 但真实状态只有 running/terminated → 漏过守卫覆盖 terminal_metadata；改 status!=running 即终态 + MergeTerminalMetadata)；T2 #2 删 learner_data_query 越权工具(Execute 直信 LLM 传入 user_id 查档案不校验调用者=IDOR；删 tool+test+factory_platform:112+safeToolBaseline:736+grep 清残留)；T3 #5 旁白串台(进程级共享 *RunHooks.NarrationRunID 被并发 run 末写覆盖 adapter_full_to_eino:207；改用 RunIDFromContext + 删共享字段)；T4 #4 纯文字重复(streamScanToolCallChecker:711 + consumeEinoStream:253 两 emitter 对 eino copy 双份纯文字都发 token_delta 无去重)；T5 #3+#1a 统一提示词(RunStream 注入硬规则丢 system_prompt；Run V2 注入 system_prompt 丢 tenantHardRules；两路径都补全)；T6 #1b 合规接线(CheckUserInput/CheckLLMOutput 死代码零 caller + gate.go:121 永真 mock 输出分类器；接入 run 入口+评估换真分类器)；T7 #8 压缩系数(prod 2453 调用分析: 字节÷4 对中文轻微高估非低估, 真凶=长尾 p90 1.5×+思考模型 1.9× 低估; AutocompactThreshold 0.85→0.70 或改用 contextbudget 分语言估算器)。不含 #6 断流闲置超时(后续独立 task, User 建议 90s)/#9 多实例(单机无需动)。'
