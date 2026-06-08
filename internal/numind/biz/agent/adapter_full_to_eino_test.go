@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"numind-server/internal/numind/biz/agent/stream"
 	"numind-server/internal/numind/biz/narration"
@@ -521,6 +522,42 @@ func TestAdapter_InvokableRun_EmitsToolCallStartAndResult(t *testing.T) {
 	assert.Contains(t, types, stream.EventToolCallResult,
 		"tool_call_result must be emitted after a successful Execute")
 	assert.NotContains(t, types, stream.EventToolCallError)
+}
+
+// TestAdapter_InvokableRun_EmitsArtifactURL reproduces the User-reported bug
+// (dev 2026-06-08): image_gen said "图片已生成" but no image appeared. The image
+// was generated and uploaded to COS, but its URL was never delivered to the
+// frontend — ToolCallResultPayload.ArtifactURL was defined yet never populated.
+// A file-producing tool (image_gen / create_*) returns a fileCreateOutput JSON;
+// its url must surface as ArtifactURL. Pre-fix this FAILS (ArtifactURL empty).
+func TestAdapter_InvokableRun_EmitsArtifactURL(t *testing.T) {
+	const url = "https://cos.example/agent-outputs/1/x.png?sign=abc"
+	out := `{"url":"` + url + `","filename":"x.png","size_bytes":1024,"format":"png"}`
+	ft := &fakeFullTool{name: "image_gen", out: []byte(out)}
+	eino := adaptFullToEinoTool(ft, nil)
+
+	ch := make(chan stream.Event, 16)
+	ctx := WithStreamState(context.Background(), &StreamSessionState{Ch: ch, RunID: 1, StepIdx: 0})
+
+	_, err := eino.InvokableRun(ctx, `{"prompt":"a cat"}`)
+	require.NoError(t, err)
+
+	var result *stream.ToolCallResultPayload
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Type == stream.EventToolCallResult {
+				var p stream.ToolCallResultPayload
+				require.NoError(t, json.Unmarshal(ev.Data, &p))
+				result = &p
+			}
+			continue
+		default:
+		}
+		break
+	}
+	require.NotNil(t, result, "expected a tool_call_result event")
+	assert.Equal(t, url, result.ArtifactURL, "generated file URL must be delivered as ArtifactURL")
 }
 
 func TestAdapter_InvokableRun_EmitsToolCallError(t *testing.T) {
