@@ -1270,7 +1270,11 @@ func (r *agentRunner) finalizeRun(
 	userInput := req.Input
 	assistantContent := finalText
 	if assistantContent == "" && runErr != nil {
-		assistantContent = fmt.Sprintf("[error: %s]", st.TerminalReason)
+		// Show a friendly message (not a machine code like "[error: model_error]").
+		assistantContent = UserFacingTerminalMessage(st.TerminalReason)
+		if assistantContent == "" {
+			assistantContent = userFacingFallback
+		}
 	}
 
 	// Persist the underlying LLM/provider error to agent_run.terminal_metadata so
@@ -1280,7 +1284,10 @@ func (r *agentRunner) finalizeRun(
 	// header timeout). Use Merge so we do not clobber BudgetGate's prior write.
 	if runErr != nil && st.TerminalReason != TerminalCompleted {
 		patch := map[string]interface{}{
-			"error_message": runErr.Error(),
+			// error_message is user-facing; the raw string is kept under error_detail
+			// for ops/admin debugging, not shown to learners.
+			"error_message": UserFacingErrorMessage(runErr),
+			"error_detail":  runErr.Error(),
 			"error_class":   string(st.TerminalReason),
 		}
 		if mErr := r.runStore.MergeTerminalMetadata(ctx, run.ID, patch); mErr != nil {

@@ -203,9 +203,13 @@ type QuestionPromptPayload struct {
 
 // TerminalPayload signals the end of the stream and carries run summary data.
 type TerminalPayload struct {
-	Reason           string         `json:"reason"`
-	DurationMs       int64          `json:"duration_ms"`
-	StepCount        int            `json:"step_count"`
+	Reason     string `json:"reason"`
+	DurationMs int64  `json:"duration_ms"`
+	StepCount  int    `json:"step_count"`
+	// UserMessage is a friendly Chinese message derived from Reason for error
+	// terminals (empty for successful / waiting-for-user terminals). The frontend
+	// shows this instead of mapping the machine-code Reason itself.
+	UserMessage      string         `json:"user_message,omitempty"`
 	FinalOutput      string         `json:"final_output,omitempty"`
 	TerminalMetadata map[string]any `json:"terminal_metadata,omitempty"`
 	PermissionDenial map[string]any `json:"permission_denial,omitempty"`

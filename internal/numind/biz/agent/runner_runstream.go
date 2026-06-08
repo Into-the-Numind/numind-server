@@ -634,9 +634,13 @@ func applyHookOverride(effectiveHooks *RunHooks, st *LoopState) {
 // are emitted, so the SSE client receives a structured close rather than a silent EOF.
 // The seq argument is always 1 (first event in a new stream).
 func emitStreamErrorEvents(ch chan<- stream.Event, runID uint64, err error, reason TerminalReason, startTime time.Time) {
+	// Raw error → logs only (for ops). Users see the friendly translation.
+	log.Warnw("agent run stream error", "agent_run_id", runID, "terminal_reason", reason, "error", err.Error())
+	userMsg := UserFacingErrorMessage(err)
+
 	errEv, encErr := stream.Encode(stream.EventError, stream.ErrorPayload{
 		Code:    "model_error",
-		Message: err.Error(),
+		Message: userMsg,
 	}, 1, runID, 0)
 	if encErr == nil {
 		select {
@@ -646,11 +650,15 @@ func emitStreamErrorEvents(ch chan<- stream.Event, runID uint64, err error, reas
 	}
 
 	termEv, encErr := stream.Encode(stream.EventTerminal, stream.TerminalPayload{
-		Reason:     string(reason),
-		DurationMs: time.Since(startTime).Milliseconds(),
-		StepCount:  0,
+		Reason:      string(reason),
+		DurationMs:  time.Since(startTime).Milliseconds(),
+		StepCount:   0,
+		UserMessage: UserFacingTerminalMessage(reason),
 		TerminalMetadata: map[string]any{
-			"error_message": err.Error(),
+			// error_message is user-facing (read back on the polling path); the raw
+			// string is kept under error_detail for ops, not shown to users.
+			"error_message": userMsg,
+			"error_detail":  err.Error(),
 		},
 	}, 2, runID, 0)
 	if encErr == nil {
