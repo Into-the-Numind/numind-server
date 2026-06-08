@@ -137,6 +137,32 @@ func TestSanitizeFilename(t *testing.T) {
 	}
 }
 
+// TestUploadService_AcceptsDocx reproduces the User-reported bug (dev 2026-06-08):
+// uploading a .docx attachment in agent mode was rejected with HTTP 500
+// "unsupported file type 'application/zip'". docx is a zip container, so
+// http.DetectContentType returns "application/zip" which is not in the whitelist,
+// and the extension fallback switch had no .docx branch. Pre-fix this FAILS at
+// Upload (returns an error); post-fix the office MIME is recovered from the
+// extension and the upload is accepted as a "document" modality.
+func TestUploadService_AcceptsDocx(t *testing.T) {
+	// "PK\x03\x04" is the zip local-file-header signature → DetectContentType
+	// returns "application/zip" (exactly what a real .docx sniffs as).
+	zipBytes := append([]byte("PK\x03\x04"), make([]byte, 64)...)
+	file, hdr := testFile(zipBytes, "会议纪要.docx")
+
+	svc := NewUploadService()
+	result, err := svc.Upload(context.Background(), 1, file, hdr)
+	if err != nil {
+		t.Fatalf("docx upload must be accepted, got error: %v", err)
+	}
+	if !strings.Contains(result.MimeType, "wordprocessingml") {
+		t.Errorf("expected docx office MIME, got %q", result.MimeType)
+	}
+	if result.Modality != "document" {
+		t.Errorf("expected modality 'document', got %q", result.Modality)
+	}
+}
+
 // TestIsMIMEAllowed tests the MIME whitelist.
 func TestIsMIMEAllowed(t *testing.T) {
 	allowed := []string{
