@@ -119,10 +119,13 @@ func buildSOPNodeFragments(
 }
 
 // buildSOPGatewayFragments converts the inputs already assembled inside
-// executeViaGateway — a pre-built ordered LLMMessage slice that includes the
-// node system prompt (if any) at index 0, followed by history, and with the
-// current user input appended as the last user message — into ContextFragment
-// values for the Gateway producer path.
+// executeViaGateway (via buildGatewayMessages) — a pre-built ordered LLMMessage
+// slice of: the template system prompt (if any) and prior-step turns, with the
+// current turn appended as the last user message. For node execution the current
+// node's instruction is merged into that final user message (it is NOT a separate
+// system message at index 0); only the chat scenario keeps node.Prompt as a
+// leading system message. Converts into ContextFragment values for the Gateway
+// producer path.
 //
 // Rules:
 //   - The last "user" role message in msgs is the current turn → Critical.

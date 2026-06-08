@@ -399,20 +399,6 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 	return output, usage, nil
 }
 
-// executeViaGateway 通过 AI Gateway 执行节点流式调用（取代 executeViaRouter）
-//
-// Task Profile 选择规则：
-//   - SopVision：当任意消息含 image_url 类型的 MessagePart 时（视觉输入）
-//   - SopText：其余所有情况（纯文本）
-//
-// Task 9 (SOP Gateway Producer Migration):
-// 消息构造改为 ContextFragment 切片（buildSOPGatewayFragments），交由
-// ContextBudgetCredits middleware 处理预算规划和 context 压缩。
-// 不再调用 trimHistoryForGateway（middleware 负责裁剪）；
-// 不再手动预构建 ChatMessage 列表（RenderContextFragments 由 middleware 执行）。
-//
-// 调用前注入 WithSkipLegacyBilling，防止 LLMRouter 旧路径与 Gateway 双记账。
-// modelKey 参数当前未接通 Gateway ModelOverride（billing-baseline.md BLOCKER 3）；预留供未来扩展。
 // buildGatewayMessages assembles the ordered LLMMessage slice for the Gateway
 // execution path (system/template prompt → prior-step turns → current turn).
 //
@@ -447,6 +433,20 @@ func buildGatewayMessages(node *model.SopNode, input string, history []LLMMessag
 	return msgs
 }
 
+// executeViaGateway 通过 AI Gateway 执行节点流式调用（取代 executeViaRouter）
+//
+// Task Profile 选择规则：
+//   - SopVision：当任意消息含 image_url 类型的 MessagePart 时（视觉输入）
+//   - SopText：其余所有情况（纯文本）
+//
+// Task 9 (SOP Gateway Producer Migration):
+// 消息构造改为 ContextFragment 切片（buildSOPGatewayFragments），交由
+// ContextBudgetCredits middleware 处理预算规划和 context 压缩。
+// 不再调用 trimHistoryForGateway（middleware 负责裁剪）；
+// 不再手动预构建 ChatMessage 列表（RenderContextFragments 由 middleware 执行）。
+//
+// 调用前注入 WithSkipLegacyBilling，防止 LLMRouter 旧路径与 Gateway 双记账。
+// modelKey 参数当前未接通 Gateway ModelOverride（billing-baseline.md BLOCKER 3）；预留供未来扩展。
 func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, modelKey string, thinking bool, handler StreamHandler) (string, *TokenUsage, error) {
 
 	log.C(ctx).Infow("ExecuteNodeStream via AI Gateway",
