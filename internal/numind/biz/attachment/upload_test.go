@@ -112,8 +112,8 @@ func TestUploadService_BadMIME_422(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for disallowed MIME type")
 	}
-	if !strings.Contains(err.Error(), "unsupported file type") {
-		t.Errorf("expected 'unsupported file type' error, got: %v", err)
+	if !strings.Contains(err.Error(), "不支持的文件类型") {
+		t.Errorf("expected friendly unsupported-type error, got: %v", err)
 	}
 }
 

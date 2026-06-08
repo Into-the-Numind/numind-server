@@ -9,7 +9,9 @@ import (
 	_ "image/gif"  // register GIF decoder
 	_ "image/jpeg" // register JPEG decoder
 	_ "image/png"  // register PNG decoder
+	"io"
 	"math/rand"
+	"net/http"
 	"regexp"
 	"strings"
 	"sync"
@@ -24,6 +26,7 @@ import (
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/parser"
 	"numind-server/internal/pkg/util"
 )
 
@@ -65,10 +68,11 @@ func presignIfCOS(ctx context.Context, rawURL string) string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const (
-	ModalityImage   = "image"
-	ModalityPDF     = "pdf"
-	ModalityAudio   = "audio"
-	ModalityUnknown = "unknown"
+	ModalityImage    = "image"
+	ModalityPDF      = "pdf"
+	ModalityAudio    = "audio"
+	ModalityDocument = "document" // office docs: docx/doc/pptx/xlsx/rtf (local text extraction)
+	ModalityUnknown  = "unknown"
 
 	// DetectModality helpers
 	mimeImagePrefix = "image/"
@@ -77,7 +81,21 @@ const (
 	mimeMP3         = "audio/mpeg"
 )
 
-// DetectModality maps a MIME type to one of the four modality constants.
+// documentMIMEs is the set of office-document MIME types routed to the document
+// modality (local text extraction via parser.DocumentParser). PDF is handled by
+// its own modality; these are the non-PDF office formats.
+var documentMIMEs = map[string]struct{}{
+	"application/vnd.openxmlformats-officedocument.wordprocessingml.document":   {}, // .docx
+	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":         {}, // .xlsx
+	"application/vnd.openxmlformats-officedocument.presentationml.presentation": {}, // .pptx
+	"application/msword":            {}, // .doc
+	"application/vnd.ms-excel":      {}, // .xls
+	"application/vnd.ms-powerpoint": {}, // .ppt
+	"application/rtf":               {}, // .rtf
+	"text/rtf":                      {}, // .rtf (alt)
+}
+
+// DetectModality maps a MIME type to one of the modality constants.
 func DetectModality(mimeType string) string {
 	// Strip parameters (e.g. "image/jpeg; charset=..." → "image/jpeg").
 	if idx := strings.Index(mimeType, ";"); idx != -1 {
@@ -92,6 +110,9 @@ func DetectModality(mimeType string) string {
 	case strings.HasPrefix(mimeType, mimeAudioPrefix), mimeType == mimeMP3:
 		return ModalityAudio
 	default:
+		if _, ok := documentMIMEs[mimeType]; ok {
+			return ModalityDocument
+		}
 		return ModalityUnknown
 	}
 }
@@ -164,6 +185,13 @@ const (
 
 	// PDF size limit for direct Bailian upload (MVP constraint).
 	maxPDFBytes = 10 * 1024 * 1024 // 10MB
+
+	// Document (office) size limit for local extraction; matches the agent
+	// attachment upload cap (biz/attachment/upload.go MaxUploadSize = 20MB).
+	maxDocumentBytes int64 = 20 * 1024 * 1024 // 20MB
+
+	// docDownloadTimeout bounds the HTTP GET when fetching a document's bytes.
+	docDownloadTimeout = 60 * time.Second
 )
 
 var retryDelays = [maxRetries]time.Duration{retryDelay1, retryDelay2, retryDelay3}
@@ -421,9 +449,80 @@ func (p *fallbackPool) generateOnce(ctx context.Context, att *model.AgentAttachm
 		return p.generatePDF(ctx, att)
 	case ModalityAudio:
 		return p.generateAudio(ctx, att)
+	case ModalityDocument:
+		return p.generateDocument(ctx, att)
 	default:
 		return fmt.Errorf("unsupported modality: %s", att.Modality)
 	}
+}
+
+// generateDocument handles office documents (docx/doc/pptx/xlsx/rtf) by
+// downloading the file and extracting plain text locally via the shared
+// parser.DocumentParser — the same engine SOP uses (docx is pure-Go;
+// xlsx/pptx use MarkItDown; doc uses antiword — all baked into the server
+// image). Local extraction is deterministic, zero-cost, and cross-border-free,
+// which is why agent mode reuses it rather than the bare-URL→qwen-long path.
+func (p *fallbackPool) generateDocument(ctx context.Context, att *model.AgentAttachment) error {
+	filesizeKB := att.Size / 1024
+
+	if att.Size > maxDocumentBytes {
+		errMsg := fmt.Sprintf("document too large for extraction (max %dMB)", maxDocumentBytes/1024/1024)
+		fallbackText := composeDocumentFallback(att.Filename, filesizeKB, "")
+		completed := time.Now()
+		_ = p.store.UpdateFallback(ctx, att.ID, map[string]interface{}{
+			"fallback_ready":        true,
+			"fallback_error":        errMsg,
+			"text_fallback":         fallbackText,
+			"fallback_completed_at": completed,
+		})
+		return nil // not retry-able
+	}
+
+	// Download bytes (COS objects are private → presign a GET URL).
+	data, err := downloadBytes(ctx, presignIfCOS(ctx, att.URL), maxDocumentBytes)
+	if err != nil {
+		return fmt.Errorf("generateDocument download: %w", err)
+	}
+
+	text, err := parser.NewDocumentParser().Parse(ctx, bytes.NewReader(data), att.Filename)
+	if err != nil {
+		return fmt.Errorf("generateDocument parse: %w", err)
+	}
+	text = strings.TrimSpace(text)
+
+	fallbackText := composeDocumentFallback(att.Filename, filesizeKB, text)
+	completed := time.Now()
+	if err := p.store.UpdateFallback(ctx, att.ID, map[string]interface{}{
+		"text_fallback":         fallbackText,
+		"fallback_ready":        true,
+		"fallback_completed_at": completed,
+	}); err != nil {
+		return fmt.Errorf("generateDocument UpdateFallback: %w", err)
+	}
+	return nil
+}
+
+// downloadBytes fetches up to maxBytes from url via HTTP GET. Used by document
+// fallback extraction (parser.DocumentParser needs the raw bytes, not a URL).
+func downloadBytes(ctx context.Context, url string, maxBytes int64) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	client := &http.Client{Timeout: docDownloadTimeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("http get: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("http %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+	return data, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -40,9 +40,9 @@ type fileParser interface {
 // Parsers are injected at construction (T7 wires defaults via NewFileReadTool).
 type fileReadTool struct {
 	BaseTool
-	pdfParser   fileParser // application/pdf
-	imageParser fileParser // image/*  (OCR)
-	textParser  fileParser // text/plain, text/markdown
+	documentParser fileParser // application/pdf + office docs (docx/doc/pptx/xlsx/rtf), local parse
+	imageParser    fileParser // image/*  (OCR)
+	textParser     fileParser // text/plain, text/markdown
 	// headFn is the HTTP HEAD function; swapped in tests to avoid network calls.
 	headFn func(url string) (*http.Response, error)
 	// presignFn signs a COS object key for transient anonymous fetch, BOUND TO
@@ -58,14 +58,15 @@ type fileReadTool struct {
 }
 
 // NewFileReadTool constructs a fileReadTool with injected parsers.
-// T7 (runner wiring) calls this with the production implementations.
-func NewFileReadTool(pdf, img, txt fileParser) FullTool {
+// doc handles application/pdf + office documents (local parse); img handles
+// images via OCR; txt handles plain text / markdown.
+func NewFileReadTool(doc, img, txt fileParser) FullTool {
 	return &fileReadTool{
-		pdfParser:   pdf,
-		imageParser: img,
-		textParser:  txt,
-		headFn:      http.Head,
-		presignFn:   util.GenerateSignedURLForMethod,
+		documentParser: doc,
+		imageParser:    img,
+		textParser:     txt,
+		headFn:         http.Head,
+		presignFn:      util.GenerateSignedURLForMethod,
 	}
 }
 
@@ -73,7 +74,9 @@ var _ FullTool = (*fileReadTool)(nil)
 
 func (t *fileReadTool) Name() string { return "file_read" }
 func (t *fileReadTool) Description() string {
-	return "Read the contents of an uploaded file by URL. " +
+	return "Read the contents of an uploaded file by URL. Supports PDF, Word " +
+		"(.docx/.doc), Excel (.xlsx/.xls), PowerPoint (.pptx/.ppt), RTF, images " +
+		"(OCR), and plain text / markdown. " +
 		"Input: { file_url: string, prompt?: string }. " +
 		"Returns: { file_name, mime_type, content, page_count?, byte_size, truncated }."
 }
@@ -115,6 +118,40 @@ func extractCOSObjectKey(fileURL string) (string, bool) {
 		return "", false
 	}
 	return m[1], true
+}
+
+// isDocumentReadable reports whether a file should be routed to the local
+// DocumentParser (PDF + office formats). The authoritative signal is the MIME
+// type. The URL file-extension fallback applies ONLY when the MIME type is
+// generic/ambiguous (application/zip for OOXML, application/octet-stream for
+// legacy OLE2, or empty) — so a specific MIME like text/plain or image/* is
+// never overridden by a misleading extension.
+func isDocumentReadable(mimeType, fileURL string) bool {
+	switch mimeType {
+	case "application/pdf",
+		"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+		"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+		"application/msword",
+		"application/vnd.ms-excel",
+		"application/vnd.ms-powerpoint",
+		"application/rtf",
+		"text/rtf":
+		return true
+	}
+	// Extension fallback only for generic/ambiguous sniff results.
+	if mimeType != "" && mimeType != "application/zip" && mimeType != "application/octet-stream" {
+		return false
+	}
+	name := path.Base(fileURL)
+	if i := strings.IndexAny(name, "?#"); i != -1 {
+		name = name[:i]
+	}
+	switch strings.ToLower(path.Ext(name)) {
+	case ".pdf", ".docx", ".doc", ".pptx", ".xlsx", ".ppt", ".xls", ".rtf":
+		return true
+	}
+	return false
 }
 
 func (t *fileReadTool) returnSoftError(fileName, format string, args ...any) (ToolResult, error) {
@@ -238,11 +275,11 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	var truncated bool
 
 	switch {
-	case mimeType == "application/pdf":
-		if t.pdfParser == nil {
-			return t.returnSoftError(path.Base(in.FileURL), "PDF parser not configured")
+	case isDocumentReadable(mimeType, in.FileURL):
+		if t.documentParser == nil {
+			return t.returnSoftError(path.Base(in.FileURL), "document parser not configured")
 		}
-		content, pageCount, truncated, err = t.pdfParser.Parse(ctx, fetchURL, in.Prompt)
+		content, pageCount, truncated, err = t.documentParser.Parse(ctx, fetchURL, in.Prompt)
 	case strings.HasPrefix(mimeType, "image/"):
 		if t.imageParser == nil {
 			return t.returnSoftError(path.Base(in.FileURL), "image parser not configured")
@@ -254,7 +291,7 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		}
 		content, _, truncated, err = t.textParser.Parse(ctx, fetchURL, in.Prompt)
 	default:
-		return t.returnSoftError(path.Base(in.FileURL), "unsupported MIME type %q (supported: application/pdf, image/*, text/plain, text/markdown)", mimeType)
+		return t.returnSoftError(path.Base(in.FileURL), "unsupported MIME type %q (supported: PDF, Word/Excel/PowerPoint, images, plain text)", mimeType)
 	}
 	if err != nil {
 		return t.returnSoftError(path.Base(in.FileURL), "parse error: %v", err)

@@ -106,7 +106,7 @@ func TestTextParserImpl_Parse_ExactBoundary(t *testing.T) {
 
 func TestParsersImplementInterface(t *testing.T) {
 	// Compile-time assertions that all three parsers satisfy fileParser.
-	var _ fileParser = (*pdfParserImpl)(nil)
+	var _ fileParser = (*documentParserImpl)(nil)
 	var _ fileParser = (*imageParserImpl)(nil)
 	var _ fileParser = (*textParserImpl)(nil)
 }

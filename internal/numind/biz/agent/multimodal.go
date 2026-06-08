@@ -114,6 +114,9 @@ func buildAgentInputForModel(
 			inline = caps.AcceptsPDFInline
 		case attachment.ModalityAudio:
 			inline = caps.AcceptsAudioInline
+		case attachment.ModalityDocument:
+			// Office docs are always text-extracted locally (no inline form);
+			// route to the fallback path which injects the extracted text.
 		default:
 			// Unknown modality → conservatively route to fallback.
 			log.Warnw("buildAgentInputForModel: unknown modality, falling back",
@@ -248,6 +251,8 @@ func pendingFallbackTextFor(att *model.AgentAttachment) string {
 		prefix = "PDF"
 	case attachment.ModalityAudio:
 		prefix = "音频"
+	case attachment.ModalityDocument:
+		prefix = "文档"
 	default:
 		prefix = "附件"
 	}
@@ -346,6 +351,7 @@ func looksLikeFallbackText(text string) bool {
 	return strings.HasPrefix(text, "[图片：") ||
 		strings.HasPrefix(text, "[PDF：") ||
 		strings.HasPrefix(text, "[音频：") ||
+		strings.HasPrefix(text, "[文档：") ||
 		strings.HasPrefix(text, "[附件：")
 }
 
@@ -364,7 +370,7 @@ func BuildAttachmentReminderSegment(msgs []aiservice.ChatMessage) string {
 	if !HasFallbackAttachments(msgs) {
 		return ""
 	}
-	return "【附件说明】用户上传的图片/PDF 已转为文字描述。请基于描述内容回答用户问题。"
+	return "【附件说明】用户上传的图片/PDF/文档已转为文字描述。请基于描述内容回答用户问题。"
 }
 
 // ---------------------------------------------------------------------------

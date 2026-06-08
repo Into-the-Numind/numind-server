@@ -59,7 +59,7 @@ func TestFileReadTool_Execute_HappyPDF(t *testing.T) {
 	srv := newHeadServer(t, 200, "application/pdf", 2048)
 
 	parser := &mockFileParser{content: "## Report\n\nPage 1 content.", pageCount: 3, truncated: false}
-	tool := &fileReadTool{pdfParser: parser, headFn: http.Head}
+	tool := &fileReadTool{documentParser: parser, headFn: http.Head}
 
 	input, _ := json.Marshal(fileReadInput{FileURL: baseURL(srv.URL)})
 	result, err := tool.Execute(ctxUser123(), ToolInput(input))
@@ -82,6 +82,54 @@ func TestFileReadTool_Execute_HappyPDF(t *testing.T) {
 	}
 	if out.Truncated {
 		t.Error("expected truncated=false")
+	}
+}
+
+// TestFileReadTool_Execute_Docx is the file_read-layer regression for the docx
+// bug: an office MIME must route to the documentParser, not fall through to the
+// "unsupported MIME type" soft error.
+func TestFileReadTool_Execute_Docx(t *testing.T) {
+	const docxMIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	srv := newHeadServer(t, 200, docxMIME, 4096)
+
+	parser := &mockFileParser{content: "会议纪要正文：第一项议程……", truncated: false}
+	tool := &fileReadTool{documentParser: parser, headFn: http.Head}
+
+	input, _ := json.Marshal(fileReadInput{FileURL: srv.URL + "/agent-attachments/123/会议纪要.docx"})
+	result, err := tool.Execute(ctxUser123(), ToolInput(input))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var out fileReadOutput
+	if err := json.Unmarshal(result, &out); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+	if strings.Contains(out.Content, "unsupported MIME type") {
+		t.Fatalf("docx must not be rejected as unsupported: %q", out.Content)
+	}
+	if out.Content != parser.content {
+		t.Errorf("expected document parser content, got %q", out.Content)
+	}
+}
+
+// TestIsDocumentReadable covers MIME and extension-fallback routing.
+func TestIsDocumentReadable(t *testing.T) {
+	cases := []struct {
+		mime, url string
+		want      bool
+	}{
+		{"application/pdf", "x/y.pdf", true},
+		{"application/vnd.openxmlformats-officedocument.wordprocessingml.document", "x/y.docx", true},
+		{"application/zip", "x/agent-attachments/1/report.docx", true},               // ext fallback
+		{"application/octet-stream", "x/agent-attachments/1/old.doc?sign=abc", true}, // ext fallback + query
+		{"image/png", "x/y.png", false},
+		{"text/plain", "x/y.txt", false},
+	}
+	for _, c := range cases {
+		if got := isDocumentReadable(c.mime, c.url); got != c.want {
+			t.Errorf("isDocumentReadable(%q,%q)=%v want %v", c.mime, c.url, got, c.want)
+		}
 	}
 }
 
@@ -149,10 +197,13 @@ func TestFileReadTool_Execute_HappyMarkdown(t *testing.T) {
 }
 
 func TestFileReadTool_Execute_UnsupportedMIME(t *testing.T) {
-	srv := newHeadServer(t, 200, "application/zip", 10240)
+	// video/* with a non-document extension is genuinely unsupported. (A zip MIME
+	// with a .docx/.pdf name is now correctly treated as a document, so it can no
+	// longer stand in for "unsupported".)
+	srv := newHeadServer(t, 200, "video/mp4", 10240)
 
 	tool := &fileReadTool{headFn: http.Head}
-	input, _ := json.Marshal(fileReadInput{FileURL: baseURL(srv.URL)})
+	input, _ := json.Marshal(fileReadInput{FileURL: srv.URL + "/agent-attachments/123/clip.mp4"})
 	res, err := tool.Execute(ctxUser123(), ToolInput(input))
 	if err != nil {
 		t.Fatalf("expected nil error (soft reject), got: %v", err)
@@ -338,7 +389,7 @@ func TestFileReadTool_Execute_ParserError(t *testing.T) {
 	srv := newHeadServer(t, 200, "application/pdf", 512)
 
 	parser := &mockFileParser{err: errors.New("parse failed")}
-	tool := &fileReadTool{pdfParser: parser, headFn: http.Head}
+	tool := &fileReadTool{documentParser: parser, headFn: http.Head}
 
 	input, _ := json.Marshal(fileReadInput{FileURL: baseURL(srv.URL)})
 	res, err := tool.Execute(ctxUser123(), ToolInput(input))
@@ -508,9 +559,9 @@ func TestFileReadTool_Execute_COSURL_UsesPresignedURL(t *testing.T) {
 		onCall:  func(url string) { parserSawURL = url },
 	}
 	tool := &fileReadTool{
-		pdfParser: parser,
-		headFn:    http.Head,
-		presignFn: presign,
+		documentParser: parser,
+		headFn:         http.Head,
+		presignFn:      presign,
 	}
 
 	cosURL := "https://numind-dev-1.cos.ap-chengdu.myqcloud.com/agent-attachments/123/x.pdf"
@@ -568,9 +619,9 @@ func TestFileReadTool_Execute_NonCOSURL_BypassesPresign(t *testing.T) {
 
 	parser := &mockFileParser{content: "ok"}
 	tool := &fileReadTool{
-		pdfParser: parser,
-		headFn:    http.Head,
-		presignFn: presign,
+		documentParser: parser,
+		headFn:         http.Head,
+		presignFn:      presign,
 	}
 
 	// httptest URL is NOT a COS URL — must skip presign.
@@ -653,9 +704,9 @@ func TestFileReadTool_Execute_COSURL_NilPresignFn(t *testing.T) {
 
 	parser := &mockFileParser{content: "fallback ok"}
 	tool := &fileReadTool{
-		pdfParser: parser,
-		headFn:    http.Head,
-		presignFn: nil, // explicit nil → bypass presign
+		documentParser: parser,
+		headFn:         http.Head,
+		presignFn:      nil, // explicit nil → bypass presign
 	}
 
 	// Even though this URL "looks like" COS by host shape, the test server
