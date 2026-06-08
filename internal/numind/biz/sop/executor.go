@@ -419,14 +419,30 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 // Extracted from executeViaGateway so the message ordering is unit-testable
 // without a live Gateway registry. The returned slice is fed to
 // buildSOPGatewayFragments (fragment construction) and the SopVision detection.
+//
+// Node execution (input != ""): the current node's instruction (node.Prompt) is
+// merged into the FINAL user message — kept adjacent to its input — mirroring the
+// legacy ExecuteNodeStreamWithThinking path. This is the step-crossing fix:
+// hoisting node.Prompt to a leading system message (the pre-fix behaviour) left
+// the final user message as bare input while history carried each previous step's
+// persona-switch instruction, so the model intermittently followed the
+// most-recent in-history instruction (step N-1) instead of the current step.
+// (sop-gateway-step-crossing)
+//
+// Chat scenario (input == ""): the user's question already trails history, so
+// node.Prompt stays a leading system message (no bare-input ambiguity).
 func buildGatewayMessages(node *model.SopNode, input string, history []LLMMessage) []LLMMessage {
 	msgs := make([]LLMMessage, 0, len(history)+2)
-	if node.Prompt != "" {
+	if input == "" && node.Prompt != "" {
 		msgs = append(msgs, LLMMessage{Role: "system", Content: node.Prompt})
 	}
 	msgs = append(msgs, history...)
 	if input != "" {
-		msgs = append(msgs, LLMMessage{Role: "user", Content: input})
+		userContent := input
+		if node.Prompt != "" {
+			userContent = fmt.Sprintf("%s\n\n%s", node.Prompt, input)
+		}
+		msgs = append(msgs, LLMMessage{Role: "user", Content: userContent})
 	}
 	return msgs
 }
