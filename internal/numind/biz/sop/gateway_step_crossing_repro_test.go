@@ -50,6 +50,10 @@ func TestBuildGatewayMessages_CurrentInstructionAdjacentToInput(t *testing.T) {
 
 	msgs := buildGatewayMessages(node, input, history)
 	require.NotEmpty(t, msgs, "messages must not be empty")
+	// 3 history messages + 1 merged current-turn user message, and crucially NO
+	// extra standalone system message for node.Prompt — guards against a
+	// double-send regression (node.Prompt emitted as system AND merged into user).
+	require.Len(t, msgs, 4, "expected 3 history messages + 1 merged current-turn user message")
 
 	last := msgs[len(msgs)-1]
 	assert.Equal(t, "user", last.Role, "the final message must be the current user turn")
@@ -66,6 +70,25 @@ func TestBuildGatewayMessages_CurrentInstructionAdjacentToInput(t *testing.T) {
 				"current node instruction must not be detached as a leading system message")
 		}
 	}
+}
+
+// TestBuildGatewayMessages_EmptyPromptWithInput guards a node with no configured
+// prompt: the final user message must be the plain input (no leading "\n\n"
+// separator) and there must be no spurious system message.
+func TestBuildGatewayMessages_EmptyPromptWithInput(t *testing.T) {
+	node := &model.SopNode{Name: "无提示词节点", Prompt: ""}
+	history := []LLMMessage{
+		{Role: "user", Content: "历史输入"},
+		{Role: "assistant", Content: "历史输出"},
+	}
+	input := "当前步骤输入"
+
+	msgs := buildGatewayMessages(node, input, history)
+	require.Len(t, msgs, 3, "2 history messages + 1 current-turn user message")
+
+	last := msgs[len(msgs)-1]
+	assert.Equal(t, "user", last.Role)
+	assert.Equal(t, input, last.Content, "empty node prompt yields plain input with no leading separator")
 }
 
 // TestBuildGatewayMessages_ChatScenarioKeepsSystemPrompt is a guard: for the SOP
