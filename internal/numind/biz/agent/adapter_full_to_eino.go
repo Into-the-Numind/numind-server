@@ -216,14 +216,13 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 		}
 		a.emitNarration(ctx, narration.StateResult, input, result, nil, "")
 		a.emitStreamToolResult(ctx, toolCallID, output, durationMs)
-		// Collect tool-generated images so consumeEinoStream can embed them as
+		// Collect tool-generated images so the run finalizer can embed them as
 		// markdown in the PERSISTED final answer. The transient SSE artifact event
 		// is lost on reload (loadSessionSnapshot rebuilds from agent_run.messages,
-		// which never stored the artifact) — User-reported, dev 2026-06-08.
-		if ss, ok := StreamStateFromContext(ctx); ok && ss != nil {
-			if url, fname, mime := artifactFromToolResult(output); url != "" && strings.HasPrefix(mime, "image/") {
-				ss.addGeneratedImage(url, fname)
-			}
+		// which never stored the artifact) — User-reported, dev 2026-06-08. Uses a
+		// ctx collector so both streaming and non-streaming runs are covered.
+		if url, fname, mime := artifactFromToolResult(output); url != "" && strings.HasPrefix(mime, "image/") {
+			imageCollectorFrom(ctx).add(url, fname)
 		}
 	}
 

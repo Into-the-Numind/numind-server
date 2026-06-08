@@ -399,13 +399,11 @@ func (r *agentRunner) consumeEinoStream(
 	// final answer (agent_run.messages) and render durably on reload — the
 	// transient SSE artifact event alone vanishes when loadSessionSnapshot
 	// rebuilds the conversation from the DB.
-	if hasState {
-		if imgs := state.generatedImageMarkdown(); imgs != "" {
-			if finalContent != "" {
-				finalContent += "\n\n"
-			}
-			finalContent += imgs
+	if imgs := imageCollectorFrom(ctx).markdown(); imgs != "" {
+		if finalContent != "" {
+			finalContent += "\n\n"
 		}
+		finalContent += imgs
 	}
 
 	finalReasoning := lastStepReasoning

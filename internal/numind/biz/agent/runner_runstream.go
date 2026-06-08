@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"sync"
 	"time"
 
 	einotool "github.com/cloudwego/eino/components/tool"
@@ -51,52 +50,6 @@ type StreamSessionState struct {
 	// waiting_for_user_choice terminal instead of treating the sentinel as a
 	// model error. nil on every non-yielding run.
 	PendingYield *YieldPayload
-
-	// imgMu guards the generated-image collector below.
-	imgMu sync.Mutex
-	// generatedImages holds markdown ![](url) snippets for images produced by
-	// tools during this run (e.g. image_gen). consumeEinoStream appends them to
-	// the final assistant content so the image is PERSISTED in agent_run.messages
-	// and renders durably — a transient SSE artifact event is lost on reload.
-	generatedImages []string
-	// seenImageURLs dedups generatedImages by URL.
-	seenImageURLs map[string]struct{}
-}
-
-// addGeneratedImage records a tool-generated image (url + filename) as a markdown
-// snippet, deduped by URL. Safe for concurrent calls (tool goroutine vs drain).
-func (s *StreamSessionState) addGeneratedImage(url, filename string) {
-	if s == nil || url == "" {
-		return
-	}
-	s.imgMu.Lock()
-	defer s.imgMu.Unlock()
-	if s.seenImageURLs == nil {
-		s.seenImageURLs = make(map[string]struct{})
-	}
-	if _, ok := s.seenImageURLs[url]; ok {
-		return
-	}
-	s.seenImageURLs[url] = struct{}{}
-	alt := filename
-	if alt == "" {
-		alt = "生成的图片"
-	}
-	s.generatedImages = append(s.generatedImages, fmt.Sprintf("![%s](%s)", alt, url))
-}
-
-// generatedImageMarkdown returns the collected image snippets joined by blank
-// lines, or "" when none. Appended to the final answer for durable rendering.
-func (s *StreamSessionState) generatedImageMarkdown() string {
-	if s == nil {
-		return ""
-	}
-	s.imgMu.Lock()
-	defer s.imgMu.Unlock()
-	if len(s.generatedImages) == 0 {
-		return ""
-	}
-	return strings.Join(s.generatedImages, "\n\n")
 }
 
 func WithStreamState(ctx context.Context, state *StreamSessionState) context.Context {
@@ -560,6 +513,9 @@ func (r *agentRunner) RunStream(
 		CurrentMsgID: uuid.NewString(),
 	}
 	attemptCtx = WithStreamState(attemptCtx, sharedState)
+	// Collect tool-generated images during this run so consumeEinoStream can embed
+	// them as durable markdown in the final answer (see image_collector.go).
+	attemptCtx = withImageCollector(attemptCtx)
 
 	// 12. Call einoAgent.Stream — this is the key divergence from Run.
 	sr, streamErr := einoAgent.Stream(attemptCtx, einoMessages)

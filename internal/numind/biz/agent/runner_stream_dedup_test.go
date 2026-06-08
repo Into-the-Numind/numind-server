@@ -53,8 +53,8 @@ func TestConsumeEinoStream_EmbedsGeneratedImageInFinalAnswer(t *testing.T) {
 	const url = "https://cos.example/agent-outputs/1/x.png?sig=1"
 
 	state := &StreamSessionState{Ch: ch, RunID: run.ID, CurrentMsgID: "m0"}
-	state.addGeneratedImage(url, "x.png")
-	ctx := WithStreamState(context.Background(), state)
+	ctx := withImageCollector(WithStreamState(context.Background(), state))
+	imageCollectorFrom(ctx).add(url, "x.png")
 
 	sr := makeStreamReader([]*schema.Message{
 		{Role: schema.Assistant, Content: "图片已生成"},
