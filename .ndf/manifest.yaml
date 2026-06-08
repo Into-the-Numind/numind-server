@@ -4,11 +4,11 @@ features:
   ndf_version: '3.0'
   description: 'Agent mode dev 测试探测出的 4 个面向用户缺陷批修（User 上报 = Bug-from-Customer §12 适用，每 fix 首 commit 失败复现测试）。#3 多轮上下文丢失(每轮独立 agent_run messages=[], buildEinoMessages 只返回当前 Input 单条, runner 从不按 session 加载历史→第二轮失忆; 修 RunRequest+History/biz 层 ListBySession 注入+窗口上限/fail-open)。#1 docx 上传被拒+解析坏(upload.go 白名单按 DetectContentType docx→zip 拒 HTTP500; file_read 裸 URL 喂 qwen-long TODO-T7 未接; 修 upload 扩展名校正放行 office + file_read 复用现成 parser.DocumentParser 本地解析 + fallback document modality)。#4 生成图不可见(图真生成+传 COS 成功但 ToolCallResultPayload.ArtifactURL 从无赋值前端从不读 AgentArtifactItem 死代码 + image 用 attachment 头破坏 inline; 修后端 emit 填 ArtifactURL+events.go 补字段+image 改 inline 签名+前端读 artifact_url push artifact 气泡)。#2 工程师错误文案→用户友好中文(SSE 透传裸 err.Error()+机器码 TerminalReason, 前端 applyError markdown 直显短路友好兜底, HTTP402 显示"HTTP 402"; 修后端新增 user_error.go 翻译层复用 errno/ai.go+withhold 分类器, emit 点改用翻译层 raw 仅入日志, 前端兜底 reason→中文+402 复用 InsufficientCreditsDialog)。串行实现(#2/#4 共用 runner_stream.go/adapter_full_to_eino.go/agentChat.ts 热点文件 Tier-4 不并行写): T1 #3→T2 #1→T3 #4→T4 #2→T5 前端联调。'
   classification_reason: 'Standard（不可降级）：(1) 文件数 >3(~20 文件) (2) 跨仓库 numind-server+numind-web-v3 (3) #2/#4 文件交集需串行协调。无 DB schema 变更/无新 API/无新外部服务(复用 parser.DocumentParser/COS/aiservice)。S0-S3 工件合并精简为 .ndf/features/agent-mode-dev-fixes/requirement.md(bugfix 批次, 根因由并行 investigator workflow 落实 file:line+dev日志+DB取证)。User 指令全自动跑不问→自主推进+止步 dev(不碰 prod), technical 决策 AI 自决。'
-  last_updated_by: ai-s5-verified
-  last_updated_at: '2026-06-08T20:00:00+08:00'
+  last_updated_by: ai-s6-dev-deployed
+  last_updated_at: '2026-06-08T20:30:00+08:00'
   created_at: '2026-06-08T17:00:00+08:00'
   track: standard
-  stage: S5
+  stage: S6
   repos:
   - numind-server
   - numind-web-v3
@@ -26,6 +26,7 @@ features:
     requirement: .ndf/features/agent-mode-dev-fixes/requirement.md
   decisions:
   - 'S0-S3 (ai 2026-06-08): 4 缺陷根因由 investigator workflow(4 并行 read-only agent + dev 日志/DB 取证)确认 file:line。Triage=Standard(文件数>3+跨仓库)。工件合并精简(requirement.md)。User 全自动授权→串行批修+并行双 reviewer+止步 dev。technical 决策 AI 自决: #1 走本地 parser.DocumentParser(零跨境零计费)/#2 用户只见中文 raw 入日志+402 复用 InsufficientCreditsDialog/#4 图 artifact 气泡渲染。follow-up(非本批): 百炼 fileID 大文档二级路径/历史会话图 URL 24h 过期重签/generateImage 收编 aiservice。'
+  - 'S6 (ai 2026-06-08, dev 部署+验收): ndf-done 原子 merge feature/agent-mode-dev-fixes→develop 两仓库(server 72d98172..9a5f9d1c / web 9c80012..72a4ac0)+push+删 worktree/分支(已 fetch+log 复核 local==origin)。release.sh dev 部署两仓库: numind-server-dev=develop-9a5f9d1c / numind-web-v3-dev=develop-72a4ac0, 均 healthy, 已核对运行容器 image sha==新 sha(防 TCR silent-old)。**dev 冒烟**: #1 docx 上传 user_id=1 经 /v1/agent-attachments 返回 HTTP 200(修复前 500), modality=document, 存 COS 成功(att id=14/16)——主症状已现网验证。**发现一个 PRE-EXISTING dev bug(非本批引入)**: agent 附件异步 fallback(image/pdf/audio/document 全部)对**新上传不触发**, 仅 startup RecoverPending 处理; 实测新上传 PNG(我未碰的路径)与 docx 行为一致→证明非我 diff(我未碰 Enqueue/Start/worker pool/controller/biz 接线; 已 git diff 确认)。后果: dev 上 docx 全文提取(及所有附件 fallback)要等容器重启才跑; 上传接收+解析逻辑本身正确(单测全绿)。**follow-up(独立 bug, 需单独排查)**: fallback worker 不消费 live enqueue 的运行时根因(workerCtx 阻塞于 <-quit 未提前 cancel/无 stuck sem job→疑 enqueue 通道或实例问题, 需 goroutine 级排查); 另建议给 document modality 在 fallback 未就绪时附带 URL 走 file_read 同步兜底(抗 worker 降级)。止步 dev, prod(S7)不做, 待 User 验收。'
   - 'S4-S5 (ai 2026-06-08): 5 task 串行实现, 每个 first commit 失败复现测试(test(qa) 前缀)→fix→并行双 Sonnet reviewer. T1 #3 多轮上下文(RunRequest.History+loadSessionHistory 注入 buildEinoMessages, 窗口上限/fail-open; review P1 多模态 content 抽取+terminal/deleted 过滤). T2 #1 docx(upload 扩展名放行+document modality 本地 parser.DocumentParser fallback+file_read documentParserImpl; review P1 删无解析支持的 .xls/.ppt). T3 #4 图下发(emit 填 ArtifactURL/mime+image inline 签名; review P2 format=text). T4 #2 错误文案(user_error.go 翻译层; review **P0** errno.Message 被 SetMessage 注入 raw→改按 en.Code 映射, 修了掩盖该漏洞的旧测试). T5 前端(artifact 气泡+402 友好+terminal user_message dedup; review P1 reset 清 erroredRuns+401 redirect). S5 gate: server go test ./... 0 FAIL + golangci-lint ./... clean; web type-check clean + vitest 740 pass + eslint 0 error. 止步 dev(prod 不做)。'
   blockers: []
 
