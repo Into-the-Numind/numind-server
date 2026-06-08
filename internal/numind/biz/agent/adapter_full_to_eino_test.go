@@ -569,6 +569,11 @@ func TestArtifactFromToolResult(t *testing.T) {
 	assert.Equal(t, "x.png", name)
 	assert.Equal(t, "image/png", mime)
 
+	// create_text passes format="text" with an extension-less filename → text/plain
+	// (the format fallback must recognise "text", not just "txt"/"md").
+	_, _, mime = artifactFromToolResult(`{"url":"https://c/out","filename":"out","format":"text"}`)
+	assert.Equal(t, "text/plain", mime)
+
 	// Non-file tool output → no artifact.
 	url, _, _ = artifactFromToolResult(`{"results":["a","b"]}`)
 	assert.Empty(t, url)

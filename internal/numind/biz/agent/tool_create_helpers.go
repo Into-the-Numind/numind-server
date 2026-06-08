@@ -180,7 +180,7 @@ func mimeFromArtifact(filename, format string) string {
 		return "text/csv"
 	case "json":
 		return "application/json"
-	case "txt", "md":
+	case "txt", "md", "text":
 		return "text/plain"
 	default:
 		return "application/octet-stream"
