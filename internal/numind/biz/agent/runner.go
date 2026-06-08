@@ -66,6 +66,11 @@ type RunRequest struct {
 	// agent-mode-billing: 计费路由到 admin_test 池（credit_admin_test_grant）而非三池，
 	// 供 B2B 月末对公结算。由 student_run_lifecycle 从 CreateRunRequest.IsTest 透传。
 	IsTest bool
+	// History 是同一 session 之前轮次已完成的对话（user/assistant 文本对，按时间正序），
+	// 由 StudentRunService 在派发 runner 前通过 loadSessionHistory 从 DB 加载并注入。
+	// buildEinoMessages 将其前置到当前 Input 之前，使 LLM 获得多轮上下文（修复多轮失忆）。
+	// 为空表示新会话或首轮；加载失败时 fail-open 为 nil（不阻断本轮 run）。
+	History []*schema.Message
 }
 
 // RunResult 是 AgentRunner.Run 的输出。
