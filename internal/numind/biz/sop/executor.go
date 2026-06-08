@@ -489,6 +489,40 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 	return output, usage, nil
 }
 
+// buildGatewayMessages assembles the ordered LLMMessage slice for the Gateway
+// execution path (system/template prompt → prior-step turns → current turn).
+//
+// Extracted from executeViaGateway so the message ordering is unit-testable
+// without a live Gateway registry. The returned slice is fed to
+// buildSOPGatewayFragments (fragment construction) and the SopVision detection.
+//
+// Node execution (input != ""): the current node's instruction (node.Prompt) is
+// merged into the FINAL user message — kept adjacent to its input — mirroring the
+// legacy ExecuteNodeStreamWithThinking path. This is the step-crossing fix:
+// hoisting node.Prompt to a leading system message (the pre-fix behaviour) left
+// the final user message as bare input while history carried each previous step's
+// persona-switch instruction, so the model intermittently followed the
+// most-recent in-history instruction (step N-1) instead of the current step.
+// (sop-gateway-step-crossing)
+//
+// Chat scenario (input == ""): the user's question already trails history, so
+// node.Prompt stays a leading system message (no bare-input ambiguity).
+func buildGatewayMessages(node *model.SopNode, input string, history []LLMMessage) []LLMMessage {
+	msgs := make([]LLMMessage, 0, len(history)+2)
+	if input == "" && node.Prompt != "" {
+		msgs = append(msgs, LLMMessage{Role: "system", Content: node.Prompt})
+	}
+	msgs = append(msgs, history...)
+	if input != "" {
+		userContent := input
+		if node.Prompt != "" {
+			userContent = fmt.Sprintf("%s\n\n%s", node.Prompt, input)
+		}
+		msgs = append(msgs, LLMMessage{Role: "user", Content: userContent})
+	}
+	return msgs
+}
+
 // executeViaGateway 通过 AI Gateway 执行节点流式调用（取代 executeViaRouter）
 //
 // Task Profile 选择规则：
@@ -517,14 +551,7 @@ func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode
 	// 1. 构建有序 LLMMessage 列表（system → history → current input），
 	//    仅用于 Task Profile 选择（SopVision 检测）和 fragment 构建。
 	//    历史裁剪和 budget 规划由 ContextBudgetCredits middleware 负责。
-	llmMessages := make([]LLMMessage, 0, len(history)+2)
-	if node.Prompt != "" {
-		llmMessages = append(llmMessages, LLMMessage{Role: "system", Content: node.Prompt})
-	}
-	llmMessages = append(llmMessages, history...)
-	if input != "" {
-		llmMessages = append(llmMessages, LLMMessage{Role: "user", Content: input})
-	}
+	llmMessages := buildGatewayMessages(node, input, history)
 
 	// 2. 选择 Task Profile：任意消息含 image_url 类型内容 → SopVision，否则 SopText。
 	//    P2-3 (spec compliance): 优先尝试 JSON Part 解析精确检测；若 Content 不是合法 JSON
