@@ -46,8 +46,9 @@ func (m *lifecycleRunner) Cancel(runID uint64) bool {
 
 // lifecycleRunStore implements store.IAgentRunStore for lifecycle tests.
 type lifecycleRunStore struct {
-	runs   map[uint64]*model.AgentRun
-	nextID uint64
+	runs    map[uint64]*model.AgentRun
+	nextID  uint64
+	listErr error // when set, ListBySession returns this error (fail-open path test)
 }
 
 func newLifecycleRunStore() *lifecycleRunStore {
@@ -79,6 +80,9 @@ func (s *lifecycleRunStore) WriteTurn(_ context.Context, _ uint64, _ json.RawMes
 	return nil
 }
 func (s *lifecycleRunStore) ListBySession(_ context.Context, sessionID string, offset, limit int) ([]model.AgentRun, int64, error) {
+	if s.listErr != nil {
+		return nil, 0, s.listErr
+	}
 	var matched []model.AgentRun
 	for _, r := range s.runs {
 		if r.SessionID == sessionID {
@@ -635,23 +639,34 @@ func TestLoadSessionHistory_ReturnsPriorTurnsChronological(t *testing.T) {
 
 	// Turn 1 (oldest): user asks for research, assistant answers.
 	runStore.runs[1] = &model.AgentRun{
-		ID: 1, SessionID: sid, StartedAt: base,
+		ID: 1, SessionID: sid, StartedAt: base, Status: "terminated",
 		Messages: datatypes.JSON([]byte(`[{"role":"user","content":"帮我做调研"},{"role":"assistant","content":"调研结果A"}]`)),
 	}
 	// Turn 2 (newer): a tool turn (must be dropped) + user + assistant.
 	runStore.runs[2] = &model.AgentRun{
-		ID: 2, SessionID: sid, StartedAt: base.Add(time.Minute),
+		ID: 2, SessionID: sid, StartedAt: base.Add(time.Minute), Status: "terminated",
 		Messages: datatypes.JSON([]byte(`[{"role":"tool","content":"raw tool output"},{"role":"user","content":"做成PPT"},{"role":"assistant","content":"PPT已生成"}]`)),
 	}
 	// A run from a DIFFERENT session must be ignored.
 	runStore.runs[3] = &model.AgentRun{
-		ID: 3, SessionID: "other", StartedAt: base.Add(2 * time.Minute),
+		ID: 3, SessionID: "other", StartedAt: base.Add(2 * time.Minute), Status: "terminated",
 		Messages: datatypes.JSON([]byte(`[{"role":"user","content":"不相关"}]`)),
 	}
 	// The current run (excluded) with empty messages — must not appear.
 	runStore.runs[4] = &model.AgentRun{
-		ID: 4, SessionID: sid, StartedAt: base.Add(3 * time.Minute),
+		ID: 4, SessionID: sid, StartedAt: base.Add(3 * time.Minute), Status: "running",
 		Messages: datatypes.JSON([]byte(`[]`)),
+	}
+	// A still-running (non-terminal) prior row with partial content — must be
+	// skipped (only terminated turns contribute history).
+	runStore.runs[5] = &model.AgentRun{
+		ID: 5, SessionID: sid, StartedAt: base.Add(30 * time.Second), Status: "running",
+		Messages: datatypes.JSON([]byte(`[{"role":"user","content":"半截消息"}]`)),
+	}
+	// A soft-deleted prior turn — must be skipped.
+	runStore.runs[6] = &model.AgentRun{
+		ID: 6, SessionID: sid, StartedAt: base.Add(20 * time.Second), Status: "terminated", IsDeleted: true,
+		Messages: datatypes.JSON([]byte(`[{"role":"user","content":"已删除"},{"role":"assistant","content":"已删除回复"}]`)),
 	}
 
 	msgs := svc.loadSessionHistory(context.Background(), sid, 4)
@@ -680,5 +695,35 @@ func TestLoadSessionHistory_EmptySessionID(t *testing.T) {
 	svc := NewStudentRunService(nil, newLifecycleRunStore(), nil, nil, nil, nil)
 	if got := svc.loadSessionHistory(context.Background(), "", 0); got != nil {
 		t.Errorf("empty sessionID should return nil, got %+v", got)
+	}
+}
+
+// TestLoadSessionHistory_StoreError_FailOpen verifies a ListBySession error does
+// not block the run: loadSessionHistory returns nil instead of propagating.
+func TestLoadSessionHistory_StoreError_FailOpen(t *testing.T) {
+	runStore := newLifecycleRunStore()
+	runStore.listErr = errors.New("db unavailable")
+	svc := NewStudentRunService(nil, runStore, nil, nil, nil, nil)
+	if got := svc.loadSessionHistory(context.Background(), "session-x", 0); got != nil {
+		t.Errorf("store error must fail-open to nil, got %+v", got)
+	}
+}
+
+// TestHistoryTurnText_Multimodal verifies an OAI-style array content value has its
+// text parts extracted rather than being silently dropped.
+func TestHistoryTurnText_Multimodal(t *testing.T) {
+	if got := historyTurnText("plain string"); got != "plain string" {
+		t.Errorf("string content: got %q", got)
+	}
+	arr := []any{
+		map[string]any{"type": "text", "text": "看看这张图："},
+		map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://x/y.png"}},
+		map[string]any{"type": "text", "text": "谢谢"},
+	}
+	if got := historyTurnText(arr); got != "看看这张图：谢谢" {
+		t.Errorf("multimodal content: got %q, want concatenated text parts", got)
+	}
+	if got := historyTurnText(map[string]any{"unexpected": true}); got != "" {
+		t.Errorf("unknown content shape should yield empty, got %q", got)
 	}
 }

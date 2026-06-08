@@ -621,7 +621,10 @@ func (s *StudentRunService) loadSessionHistory(ctx context.Context, sessionID st
 	total := 0
 	for i := len(runs) - 1; i >= 0; i-- {
 		r := runs[i]
-		if r.ID == excludeRunID || len(r.Messages) == 0 {
+		// Only completed turns of this session contribute history: skip the
+		// current run, soft-deleted runs, and any non-terminal (still running)
+		// row whose messages may be partial.
+		if r.ID == excludeRunID || r.IsDeleted || r.Status != "terminated" || len(r.Messages) == 0 {
 			continue
 		}
 		var turns []map[string]any
@@ -629,8 +632,7 @@ func (s *StudentRunService) loadSessionHistory(ctx context.Context, sessionID st
 			continue // skip a malformed row rather than fail the whole load
 		}
 		for _, turn := range turns {
-			content, _ := turn["content"].(string)
-			content = strings.TrimSpace(content)
+			content := strings.TrimSpace(historyTurnText(turn["content"]))
 			if content == "" {
 				continue
 			}
@@ -654,7 +656,40 @@ func (s *StudentRunService) loadSessionHistory(ctx context.Context, sessionID st
 		total -= len(msgs[0].Content)
 		msgs = msgs[1:]
 	}
+	// Trimming (or a leading assistant-only run) can leave the slice starting
+	// with an assistant turn; drop leading non-user turns so history begins with
+	// a user message (clean role alternation for the LLM).
+	for len(msgs) > 0 && msgs[0].Role != schema.User {
+		msgs = msgs[1:]
+	}
 	return msgs
+}
+
+// historyTurnText extracts plain text from a stored turn's "content" field. It is
+// normally a string, but may be an OAI-style multimodal array
+// ([{"type":"text","text":"..."},{"type":"image_url",...}]). For arrays it
+// concatenates the text parts and ignores non-text parts (v1 history is text-only).
+// Without this, an array-valued content would type-assert to "" and the whole
+// turn (including its text) would be silently dropped from history.
+func historyTurnText(raw any) string {
+	switch v := raw.(type) {
+	case string:
+		return v
+	case []any:
+		var b strings.Builder
+		for _, p := range v {
+			part, ok := p.(map[string]any)
+			if !ok {
+				continue
+			}
+			if t, ok := part["text"].(string); ok {
+				b.WriteString(t)
+			}
+		}
+		return b.String()
+	default:
+		return ""
+	}
 }
 
 // ---------------------------------------------------------------------------
