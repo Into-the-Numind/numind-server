@@ -3651,3 +3651,26 @@ features:
   - 'H1 (ai 2026-06-06): TDD red→green。复现测试 commit 4651cd1 (test: 前缀, 7 断言 6 RED) 先行——断言 QuestionnaireForm 渲染 q6/q7 控件 + validateQ6/Q7 必填 + filledTopFields 仍报 q6/q7 缺失。fix commit 2501e3d: QuestionnaireForm.vue 加 q6(5 内置 task code checkbox 多选 + ChipInput 自由文本透传, 自由文本与 code 碰撞会被 drop 防静默重分类)/q7(4 材料 code checkbox 多选)控件 + 复用既有 ChipInput + 新增 checkbox-group/hint CSS; validation.ts validateQ6/Q7 改必填(≥1 项)并接入 validateForm(缺失现内联报错+scrollToFirstError 定位, 不再走后端 422 toast 死路); 同步更新 QuestionnaireForm.spec(7→9 blocks/3→5 required)+validation.spec(q6/q7 必填断言)编码旧坏行为的断言。模板/copy/edit 预填路径不受影响(纯加法, readonly 已守)。Gate 全绿: npm run lint 0 error(9 warning 均他文件预存)/vue-tsc type-check exit 0/vitest 743 pass(含 from-scratch-q6q7-regression 7 项)。'
   - 'H1-review (ai 2026-06-06): 并行双 Sonnet reviewer(spec-compliance + code-quality)均 VERDICT=PASS_WITH_CONCERNS, 零 P0/P1。spec reviewer 确认 q6/q7 option code 与后端 questionnaire.go 5+4 code 精确匹配、payload 全链路透传、none 计有效选择、Rule 11 满足、不回归 template/copy/edit。两 reviewer 共同 P2(自由文本与 code 碰撞静默重分类)当场修(q6Custom.set drop 碰撞 chip); 另修 P2: 抽 Q7_CODES 模块常量对称 Q6、去 currentQ7 冗余 cast、回归测试断言 length>0 → toContain(analyze_data/text)。复测全绿。'
   blockers: []
+- id: sop-gateway-step-crossing
+  ndf_version: '3.0'
+  description: 'Customer 上报 SOP 串步（2 次独立上报）：运行第 N 步, AI 产出第 N-1 步内容, 深度思考明确提到第 N-1 步指令。上次 session 误诊为压缩排序(sop-context-ordering-fix, 已部署 dev 未上 prod)——但 prod 取证证明 SOP 从不压缩(context_budget_event 30 天 0 个 compressed, 最大估算 96k tokens vs safe budget 835k)→压缩修复不可能是本 bug 起因。真因: Gateway 路径(executeViaGateway, prod 当 modelKey!="" 即用户选模型时走)把当前节点指令 node.Prompt 提升为顶部 system 消息, 当前输入作为末尾裸 user 消息; 而历史(sop.go:664-677)把每个前序步骤拼为 "nodePrompt+input"(含 "你现在切换为【X】" 角色切换指令)+其 assistant 输出。当前指令在最顶部远离生成点, 生成点前最近的指令是第 N-1 步的 persona-switch→模型间歇性遵从历史里最近的指令而串步。Legacy 路径(ExecuteNodeStreamWithThinking)无此 bug: 它把 node.Prompt+input 拼成末尾 user 消息(指令紧贴输入)。prod 复现确认: run 3039/node-run 8896 sort=3 创作节点产出 sort=2 爆款拆解(context_budget_event 2710 status=ok 21k/835k 无压缩; 实际模型 deepseek-v4-pro≠节点配置 deepseek-v3-2-251201 证 modelKey!="" 走 Gateway)。修=Gateway 节点执行(input!="")把 node.Prompt 并入末尾 user 消息(对齐 legacy); chat 场景(input=="")保留 system 不变。'
+  classification_reason: 'Hotfix triage 5 条全过：① 无 DB schema ② 无新 API 端点 ③ 无新外部服务 ④ 影响文件 ≤3(executor.go + 新 repro 测试 + sop_fragments.go 注释) ⑤ 无支付/权限高风险(SOP 消息拼接, 非 money/auth)。Micro 排除: 改核心 biz 执行逻辑。Bug-from-Customer Rule 11: 首 commit 失败复现测试 test(qa): 4985f0eb 先行(结构性断言: 当前指令须在末尾 user 消息且 node.Prompt 不得为独立 system)。User 指令"从头跑到结束 + 止步 dev 不碰 prod"。'
+  last_updated_by: ai-h2
+  last_updated_at: '2026-06-09T01:30:00+08:00'
+  created_at: '2026-06-09T01:10:54+08:00'
+  track: hotfix
+  stage: H2
+  repos:
+  - numind-server
+  branches:
+    numind-server: fix/sop-gateway-step-crossing
+  worktrees:
+    numind-server: /private/tmp/wt-sop-gateway-step-crossing-numind-server
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1 (ai 2026-06-09): TDD red→green。复现测试 commit 4985f0eb(test(qa): 前缀)先行——抽 buildGatewayMessages 保留 buggy 行为, 断言末尾 user 消息须含 node.Prompt 且 node.Prompt 不得为独立顶部 system→RED(裸 input)。fix commit 7daaf54c: input!="" 时 node.Prompt 并入末尾 user 消息(fmt.Sprintf "%s\n\n%s" 对齐 legacy ExecuteNodeStreamWithThinking); input=="" (chat)保留 system。node.Prompt 仍只发一次→token 计费不变。Gate: go test ./... 0 FAIL + go vet clean + golangci-lint(sop pkg) exit 0。'
+  - 'H1-review (ai 2026-06-09): 并行双 Sonnet reviewer(spec-compliance + code-quality)均 VERDICT=PASS, 零 P0/P1。spec reviewer 确认根因匹配、修复对齐 legacy、chat 路径不变、node.Prompt 单发计费不变、无遗漏调用点(仅 sop.go:888 节点执行 + 1653 chat 两处)、Rule 11 链正确。3 个 P2 当场修(commit cf956da5): buildGatewayMessages godoc 错位致 executeViaGateway 失注释→重排序; sop_fragments.go 注释"index 0 system"已过时→更新; repro 测试加 require.Len(防 double-send 回归)+空 prompt 边界测试。'
+  blockers: []
