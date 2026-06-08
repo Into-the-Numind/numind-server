@@ -395,6 +395,17 @@ func (r *agentRunner) consumeEinoStream(
 		finalContent = currentText.String()
 	}
 
+	// Embed any tool-generated images as markdown so they are PERSISTED in the
+	// final answer (agent_run.messages) and render durably on reload — the
+	// transient SSE artifact event alone vanishes when loadSessionSnapshot
+	// rebuilds the conversation from the DB.
+	if imgs := imageCollectorFrom(ctx).markdown(); imgs != "" {
+		if finalContent != "" {
+			finalContent += "\n\n"
+		}
+		finalContent += imgs
+	}
+
 	finalReasoning := lastStepReasoning
 	if finalReasoning == "" && currentReason.Len() > 0 {
 		finalReasoning = currentReason.String()

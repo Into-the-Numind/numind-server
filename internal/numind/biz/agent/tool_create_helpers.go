@@ -100,6 +100,10 @@ func uploadGeneratedFile(
 		rawURL = fmt.Sprintf("/local-uploads/%s", objectKey)
 	} else {
 		// COS is enabled — use a 24-hour presigned URL per decision T4.
+		// FOLLOW-UP: this URL is now embedded as markdown in the PERSISTED final
+		// answer (durable-render fix), so after 24h a reopened session shows a
+		// broken image. Proper fix: store the COS object key and presign lazily on
+		// read (getSessionSnapshot/transformMessages). Tracked as a follow-up.
 		const presignExpiry = 24 * 60 * 60 // 86400 seconds
 		var signed string
 		var signErr error

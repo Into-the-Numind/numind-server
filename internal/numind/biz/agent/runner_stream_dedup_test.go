@@ -29,6 +29,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,6 +39,43 @@ import (
 
 	"numind-server/internal/numind/biz/agent/stream"
 )
+
+// TestConsumeEinoStream_EmbedsGeneratedImageInFinalAnswer is the durability
+// regression: a tool-generated image collected on the StreamSessionState must be
+// embedded as markdown in the terminal FinalOutput (→ persisted in
+// agent_run.messages → renders on reload). Pre-fix consumeEinoStream did not
+// append it, so the image was lost when loadSessionSnapshot rebuilt from the DB.
+func TestConsumeEinoStream_EmbedsGeneratedImageInFinalAnswer(t *testing.T) {
+	r := makeRunner()
+	run := makeRun(4445)
+	st := &LoopState{}
+	ch := make(chan stream.Event, 256)
+	const url = "https://cos.example/agent-outputs/1/x.png?sig=1"
+
+	state := &StreamSessionState{Ch: ch, RunID: run.ID, CurrentMsgID: "m0"}
+	ctx := withImageCollector(WithStreamState(context.Background(), state))
+	imageCollectorFrom(ctx).add(url, "x.png")
+
+	sr := makeStreamReader([]*schema.Message{
+		{Role: schema.Assistant, Content: "图片已生成"},
+		{Role: schema.Assistant, Content: "", ResponseMeta: &schema.ResponseMeta{FinishReason: "stop"}},
+	})
+	_, err := r.consumeEinoStream(ctx, run, sr, ch, st, time.Now())
+	require.NoError(t, err)
+	close(ch)
+
+	evs := collectEvents(ch)
+	terminals := allEventsOfType(evs, stream.EventTerminal)
+	require.Len(t, terminals, 1)
+	var tp stream.TerminalPayload
+	require.NoError(t, json.Unmarshal(terminals[0].Data, &tp))
+	if !strings.Contains(tp.FinalOutput, "![x.png]("+url+")") {
+		t.Fatalf("final answer must embed generated image markdown (durable render), got: %q", tp.FinalOutput)
+	}
+	if !strings.Contains(tp.FinalOutput, "图片已生成") {
+		t.Errorf("final answer must keep the assistant text, got: %q", tp.FinalOutput)
+	}
+}
 
 // runCheckerThenConsume mirrors the production wiring: a single model output is
 // Copy(2)'d, one copy fed to streamScanToolCallChecker (the live pump) and the

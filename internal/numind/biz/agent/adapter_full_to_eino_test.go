@@ -6,6 +6,7 @@ import (
 	"errors"
 	"numind-server/internal/numind/biz/agent/stream"
 	"numind-server/internal/numind/biz/narration"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -580,6 +581,30 @@ func TestArtifactFromToolResult(t *testing.T) {
 	// Plain text output → no artifact.
 	url, _, _ = artifactFromToolResult(`not json`)
 	assert.Empty(t, url)
+}
+
+// TestAdapter_InvokableRun_CollectsGeneratedImage reproduces the User-reported
+// follow-up (dev 2026-06-08): image_gen ran and the URL was emitted on the SSE
+// artifact channel, but the bubble is transient — on reload loadSessionSnapshot
+// replaces messages from agent_run.messages (which never persists artifacts), so
+// the image vanishes. The durable fix collects generated images so they can be
+// embedded as markdown in the PERSISTED final answer. Pre-fix InvokableRun does
+// not collect → generatedImageMarkdown() is empty → this FAILS.
+func TestAdapter_InvokableRun_CollectsGeneratedImage(t *testing.T) {
+	const url = "https://cos.example/agent-outputs/1/y.png?sign=x"
+	out := `{"url":"` + url + `","filename":"y.png","size_bytes":10,"format":"png"}`
+	ft := &fakeFullTool{name: "image_gen", out: []byte(out)}
+	eino := adaptFullToEinoTool(ft, nil)
+
+	ctx := withImageCollector(context.Background())
+
+	_, err := eino.InvokableRun(ctx, `{"prompt":"a cat"}`)
+	require.NoError(t, err)
+
+	md := imageCollectorFrom(ctx).markdown()
+	if !strings.Contains(md, url) || !strings.Contains(md, "![") {
+		t.Fatalf("generated image must be collected as markdown for durable render, got %q", md)
+	}
 }
 
 func TestAdapter_InvokableRun_EmitsToolCallError(t *testing.T) {

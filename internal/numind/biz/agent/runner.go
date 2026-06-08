@@ -501,6 +501,10 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	// 2.5. agent-mode-billing: wire billing ctx (bill-only) so every LLM call
 	// under this run is Reserved/Reconciled against the initiator's credits.
 	ctx = injectAgentBillingCtx(ctx, req, run.ID)
+	// Collect tool-generated images so they can be embedded as durable markdown in
+	// the persisted final answer (see image_collector.go). Covers the non-stream
+	// path (e.g. ask_user_question resume) symmetrically with RunStream.
+	ctx = withImageCollector(ctx)
 
 	// 3. AbortController 三层 + 注册 cancel
 	queryCtx, queryCancel := DeriveQueryCtx(ctx)
@@ -1274,6 +1278,16 @@ func (r *agentRunner) finalizeRun(
 		assistantContent = UserFacingTerminalMessage(st.TerminalReason)
 		if assistantContent == "" {
 			assistantContent = userFacingFallback
+		}
+	}
+	// On success, embed any tool-generated images as markdown so they persist in
+	// agent_run.messages and render durably on reload (same as the streaming path).
+	if runErr == nil {
+		if imgs := imageCollectorFrom(ctx).markdown(); imgs != "" {
+			if assistantContent != "" {
+				assistantContent += "\n\n"
+			}
+			assistantContent += imgs
 		}
 	}
 
