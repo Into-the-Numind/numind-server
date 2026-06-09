@@ -994,9 +994,12 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 			if provider == "" {
 				provider = credit.ProviderFromModel(actualModelName)
 			}
-			cost, pErr := b.pricing.CalculateCost(ctx, "llm_chat",
+			// Cache-aware reconcile: bills the cache-HIT subset at the discounted
+			// rate. CachedPromptTokens==0 (no cache) or NULL cached price ⇒
+			// byte-identical to CalculateCost (zero regression).
+			cost, pErr := b.pricing.CalculateCostWithCache(ctx, "llm_chat",
 				provider, actualModelName,
-				usage.PromptTokens, usage.CompletionTokens)
+				usage.PromptTokens, usage.CompletionTokens, usage.CachedPromptTokens)
 			if pErr != nil {
 				// pricing 失败不阻塞业务，defer 走 Refund("op_failed")
 				opErr = fmt.Errorf("sop_run pricing calc: %w", pErr)
@@ -1755,9 +1758,11 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 			if provider == "" {
 				provider = credit.ProviderFromModel(effectiveModel)
 			}
-			cost, pErr := b.pricing.CalculateCost(ctx, "llm_chat",
+			// Cache-aware reconcile (chatbot path). Same zero-regression
+			// guarantee as the sop_run path above.
+			cost, pErr := b.pricing.CalculateCostWithCache(ctx, "llm_chat",
 				provider, effectiveModel,
-				usage.PromptTokens, usage.CompletionTokens)
+				usage.PromptTokens, usage.CompletionTokens, usage.CachedPromptTokens)
 			if pErr != nil {
 				chatOpErr = fmt.Errorf("sop_chat pricing calc: %w", pErr)
 				log.C(ctx).Warnw("Pricing calc failed; defer will Refund",
