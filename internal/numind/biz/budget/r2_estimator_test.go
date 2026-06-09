@@ -23,6 +23,14 @@ func (m *mockPricer) CalculateCost(ctx context.Context, op, provider, model stri
 	return int64(promptTokens + completionTokens), nil
 }
 
+// CalculateCostWithCache satisfies pricing.ICalculator. This mock ignores the
+// cached-token argument and delegates to CalculateCost (estimation never has
+// cache tokens pre-call).
+func (m *mockPricer) CalculateCostWithCache(ctx context.Context, op, provider, model string,
+	promptTokens, completionTokens, _ int) (int64, error) {
+	return m.CalculateCost(ctx, op, provider, model, promptTokens, completionTokens)
+}
+
 func TestEstimateAgentTurn_NormalPath(t *testing.T) {
 	pc := &mockPricer{}
 	got, err := EstimateAgentTurn(context.Background(), pc, "ali", "qwen-turbo", 200, 0)
