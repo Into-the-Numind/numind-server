@@ -188,10 +188,11 @@ func (d *DMXAPIAdapter) Chat(ctx context.Context, route *registry.ResolvedRoute,
 	usage := aiservice.TokenUsage{}
 	if oaiResp.Usage != nil {
 		usage = aiservice.TokenUsage{
-			PromptTokens:     oaiResp.Usage.PromptTokens,
-			CompletionTokens: oaiResp.Usage.CompletionTokens,
-			TotalTokens:      oaiResp.Usage.TotalTokens,
-			ReasoningTokens:  oaiResp.Usage.extractReasoningTokens(),
+			PromptTokens:       oaiResp.Usage.PromptTokens,
+			CompletionTokens:   oaiResp.Usage.CompletionTokens,
+			TotalTokens:        oaiResp.Usage.TotalTokens,
+			ReasoningTokens:    oaiResp.Usage.extractReasoningTokens(),
+			CachedPromptTokens: oaiResp.Usage.extractCachedPromptTokens(),
 		}
 	}
 

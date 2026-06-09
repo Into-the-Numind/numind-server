@@ -236,12 +236,27 @@ type oaiUsage struct {
 	// defensive compatibility for providers that may expose it at usage root.
 	// extractReasoningTokens() prefers nested first.
 	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+	// PromptTokensDetails nests the cached_tokens field used by the OpenAI-
+	// standard wire path `usage.prompt_tokens_details.cached_tokens` — the
+	// Batch A auto-prefix-cache signal for DeepSeek / GPT served via DMXAPI.
+	PromptTokensDetails *oaiPromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+	// PromptCacheHitTokens is the flat DeepSeek-native cache-hit field
+	// (`prompt_cache_hit_tokens`). Defensive compatibility for a node pointed
+	// directly at DeepSeek; extractCachedPromptTokens() prefers nested first.
+	PromptCacheHitTokens int `json:"prompt_cache_hit_tokens,omitempty"`
 }
 
 // oaiCompletionTokensDetails nests the reasoning_tokens field on providers that
 // use the OpenAI-standard wire path `usage.completion_tokens_details.reasoning_tokens`.
 type oaiCompletionTokensDetails struct {
 	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+}
+
+// oaiPromptTokensDetails nests the cached_tokens field on providers that use the
+// OpenAI-standard wire path `usage.prompt_tokens_details.cached_tokens`. This is
+// the portion of prompt_tokens served from the provider's prefix cache.
+type oaiPromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens,omitempty"`
 }
 
 // extractReasoningTokens returns the reasoning token count from whichever wire
@@ -257,6 +272,22 @@ func (u *oaiUsage) extractReasoningTokens() int {
 		return u.CompletionTokensDetails.ReasoningTokens
 	}
 	return u.ReasoningTokens
+}
+
+// extractCachedPromptTokens returns the count of prompt tokens the provider
+// served from its prefix cache, from whichever wire path the provider used.
+// Prefers nested (prompt_tokens_details.cached_tokens, the OpenAI-compatible
+// path DMXAPI exposes for DeepSeek / GPT) over flat (prompt_cache_hit_tokens,
+// DeepSeek-native). Returns 0 when the provider reports neither — guaranteeing
+// non-cache responses keep today's exact billing/usage behavior.
+func (u *oaiUsage) extractCachedPromptTokens() int {
+	if u == nil {
+		return 0
+	}
+	if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens > 0 {
+		return u.PromptTokensDetails.CachedTokens
+	}
+	return u.PromptCacheHitTokens
 }
 
 // oaiError is the error payload in an OpenAI-compatible error response.

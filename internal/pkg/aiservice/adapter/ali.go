@@ -108,9 +108,10 @@ func (a *AliAdapter) Chat(ctx context.Context, route *registry.ResolvedRoute, re
 	usage := aiservice.TokenUsage{}
 	if oaiResp.Usage != nil {
 		usage = aiservice.TokenUsage{
-			PromptTokens:     oaiResp.Usage.PromptTokens,
-			CompletionTokens: oaiResp.Usage.CompletionTokens,
-			TotalTokens:      oaiResp.Usage.TotalTokens,
+			PromptTokens:       oaiResp.Usage.PromptTokens,
+			CompletionTokens:   oaiResp.Usage.CompletionTokens,
+			TotalTokens:        oaiResp.Usage.TotalTokens,
+			CachedPromptTokens: oaiResp.Usage.extractCachedPromptTokens(),
 		}
 	}
 

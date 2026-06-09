@@ -79,9 +79,10 @@ func (v *VolcAdapter) Chat(ctx context.Context, route *registry.ResolvedRoute, r
 	usage := aiservice.TokenUsage{}
 	if oaiResp.Usage != nil {
 		usage = aiservice.TokenUsage{
-			PromptTokens:     oaiResp.Usage.PromptTokens,
-			CompletionTokens: oaiResp.Usage.CompletionTokens,
-			TotalTokens:      oaiResp.Usage.TotalTokens,
+			PromptTokens:       oaiResp.Usage.PromptTokens,
+			CompletionTokens:   oaiResp.Usage.CompletionTokens,
+			TotalTokens:        oaiResp.Usage.TotalTokens,
+			CachedPromptTokens: oaiResp.Usage.extractCachedPromptTokens(),
 		}
 	}
 
