@@ -125,6 +125,10 @@ func (r *agentRunner) RunStream(
 	// persist the tool-call timeline (durable replay on reload). On ctx (ancestor
 	// of queryCtx/attemptCtx AND the finalize ctx) so emit and finalize share one.
 	ctx = narration.WithCollector(ctx)
+	// Option C: collect each ReAct step's assistant text+reasoning so finalize can
+	// persist the FULL transcript (verbatim reload). Stream-only — the checker taps
+	// it at each FinishReason; non-stream Run leaves it empty → collapsed shape.
+	ctx = withStepCollector(ctx)
 
 	// 3. AbortController three-layer + register cancel.
 	queryCtx, queryCancel := DeriveQueryCtx(ctx)
@@ -778,6 +782,13 @@ func streamScanToolCallChecker(ctx context.Context, sr *schema.StreamReader[*sch
 
 				// 缓存最终文本，供 consumeEinoStream 的 Terminal 兜底直接提取
 				state.LastStepContent = currentText.String()
+
+				// Option C: record this step's assistant output for durable
+				// transcript persistence. Captured here (single source) — NOT in
+				// consumeEinoStream, which drains the END copy of the same output.
+				// time.Now() is the interleave key: this step's tool calls fire
+				// AFTER this point and before the next step's FinishReason.
+				stepCollectorFrom(ctx).add(currentText.String(), currentReason.String(), time.Now())
 
 				// 自动推进到下一步的 state 状态，为后续 ReAct 循环迭代铺路
 				state.StepIdx++

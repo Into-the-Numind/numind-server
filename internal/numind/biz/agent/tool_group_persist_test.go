@@ -50,3 +50,79 @@ func TestEventCollector_NilSafeAndOrdered(t *testing.T) {
 	require.NotNil(t, c)
 	assert.Nil(t, c.Events()) // empty → nil so caller can skip the turn
 }
+
+func TestBuildTranscriptTurns_NilWhenNoSteps(t *testing.T) {
+	// Non-stream Run captures no steps → caller falls back to collapsed shape.
+	assert.Nil(t, buildTranscriptTurns("hi", nil, nil, "answer", ""))
+	assert.Nil(t, buildTranscriptTurns("hi", []stepEntry{}, nil, "answer", ""))
+}
+
+func TestBuildTranscriptTurns_InterleavesByTimestamp(t *testing.T) {
+	base := time.Now()
+	t1, t2, t3 := base, base.Add(time.Millisecond), base.Add(2*time.Millisecond)
+	steps := []stepEntry{
+		{Content: "我先查数据", Reasoning: "think1", TS: t1},
+		{Content: "这是结果", Reasoning: "think2", TS: t3},
+	}
+	// web_search fires at t2 — between step1 (t1) and step2 (t3) → belongs to step1.
+	events := []narration.Event{
+		{RunID: 1, ToolCallID: "tc1", ToolName: "web_search", State: narration.StateResult, Message: "已获取搜索结果", Timestamp: t2},
+	}
+	turns := buildTranscriptTurns("查销量", steps, events, "这是结果（最终）", "think2")
+
+	require.Len(t, turns, 4)
+	assert.Equal(t, "user", turns[0]["role"])
+	assert.Equal(t, "查销量", turns[0]["content"])
+
+	assert.Equal(t, "assistant", turns[1]["role"])
+	assert.Equal(t, "我先查数据", turns[1]["content"]) // intermediate step kept verbatim
+	assert.Equal(t, "think1", turns[1]["reasoning"])
+
+	assert.Equal(t, "tool_group", turns[2]["role"])
+	tcs := turns[2]["tool_calls"].([]persistedToolCall)
+	require.Len(t, tcs, 1)
+	assert.Equal(t, "web_search", tcs[0].ToolName)
+
+	// final assistant turn reconciled to the authoritative final content.
+	assert.Equal(t, "assistant", turns[3]["role"])
+	assert.Equal(t, "这是结果（最终）", turns[3]["content"])
+}
+
+func TestBuildTranscriptTurns_ErrorEndingOnToolGroupAppendsAssistant(t *testing.T) {
+	base := time.Now()
+	steps := []stepEntry{{Content: "查一下", Reasoning: "", TS: base}}
+	events := []narration.Event{
+		{RunID: 1, ToolCallID: "tc1", ToolName: "web_search", State: narration.StateError, Reason: "超时", Timestamp: base.Add(time.Millisecond)},
+	}
+	// run errored after the tool → finalContent is a friendly error message.
+	turns := buildTranscriptTurns("q", steps, events, "执行出错", "")
+	require.Len(t, turns, 4)
+	assert.Equal(t, "assistant", turns[1]["role"]) // the step that called the tool
+	assert.Equal(t, "tool_group", turns[2]["role"])
+	assert.Equal(t, "assistant", turns[3]["role"]) // appended final error turn
+	assert.Equal(t, "执行出错", turns[3]["content"])
+}
+
+func TestBuildTranscriptTurns_ClearsStaleReasoningOnFinal(t *testing.T) {
+	// The last captured step has its own reasoning, but the run's finalReasoning
+	// is empty — the reconciled final answer turn must NOT carry the stale step
+	// reasoning (else the FE attributes it to the final answer).
+	steps := []stepEntry{{Content: "答案", Reasoning: "旧思考", TS: time.Now()}}
+	turns := buildTranscriptTurns("q", steps, nil, "最终答案", "")
+	require.Len(t, turns, 2)
+	last := turns[1]
+	assert.Equal(t, "assistant", last["role"])
+	assert.Equal(t, "最终答案", last["content"])
+	_, hasReasoning := last["reasoning"]
+	assert.False(t, hasReasoning, "stale reasoning must be cleared when finalReasoning is empty")
+}
+
+func TestBuildTranscriptTurns_SingleStepNoTools(t *testing.T) {
+	// Direct answer with no tools → [user, assistant]; matches collapsed shape.
+	steps := []stepEntry{{Content: "直接回答", Reasoning: "想一下", TS: time.Now()}}
+	turns := buildTranscriptTurns("q", steps, nil, "直接回答", "想一下")
+	require.Len(t, turns, 2)
+	assert.Equal(t, "user", turns[0]["role"])
+	assert.Equal(t, "assistant", turns[1]["role"])
+	assert.Equal(t, "直接回答", turns[1]["content"])
+}

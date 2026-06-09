@@ -398,8 +398,9 @@ func (r *agentRunner) consumeEinoStream(
 	// Embed any tool-generated images as markdown so they are PERSISTED in the
 	// final answer (agent_run.messages) and render durably on reload — the
 	// transient SSE artifact event alone vanishes when loadSessionSnapshot
-	// rebuilds the conversation from the DB.
-	if imgs := imageCollectorFrom(ctx).markdown(); imgs != "" {
+	// rebuilds the conversation from the DB. drainMarkdown (not markdown) so the
+	// subsequent finalizeRun embed doesn't append the same images a second time.
+	if imgs := imageCollectorFrom(ctx).drainMarkdown(); imgs != "" {
 		if finalContent != "" {
 			finalContent += "\n\n"
 		}
