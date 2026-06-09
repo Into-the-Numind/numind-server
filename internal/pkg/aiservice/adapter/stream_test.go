@@ -81,6 +81,81 @@ func TestRunOAIStream_TransportsReasoningTokens(t *testing.T) {
 	}
 }
 
+// TestRunOAIStream_TransportsCachedPromptTokens feeds a synthetic SSE stream
+// whose usage trailer carries prompt_tokens_details.cached_tokens (the Batch A
+// DeepSeek / GPT auto-prefix-cache wire path via DMXAPI) and asserts the
+// terminal ChatChunk surfaces CachedPromptTokens on Usage.
+func TestRunOAIStream_TransportsCachedPromptTokens(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"id":"x","model":"deepseek-v3-2-251201","choices":[{"delta":{"content":"hi"}}]}`,
+		``,
+		`data: {"id":"x","model":"deepseek-v3-2-251201","choices":[{"finish_reason":"stop","delta":{}}]}`,
+		``,
+		`data: {"id":"x","model":"deepseek-v3-2-251201","choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":50,"total_tokens":1050,"prompt_tokens_details":{"cached_tokens":768}}}`,
+		``,
+		`data: [DONE]`,
+		``,
+		``,
+	}, "\n")
+
+	r := io.NopCloser(strings.NewReader(sse))
+	ch := make(chan aiservice.ChatChunk, 16)
+
+	go runOAIStream(r, ch, "dmxapi", "deepseek-v3-2-251201", nil)
+
+	var terminal aiservice.ChatChunk
+	sawTerminal := false
+	for c := range ch {
+		if c.IsFinal {
+			terminal = c
+			sawTerminal = true
+		}
+	}
+
+	if !sawTerminal {
+		t.Fatal("no IsFinal=true chunk emitted")
+	}
+	if terminal.Usage == nil {
+		t.Fatal("terminal.Usage is nil; expected usage with cached tokens")
+	}
+	if terminal.Usage.CachedPromptTokens != 768 {
+		t.Errorf("Usage.CachedPromptTokens = %d; want 768", terminal.Usage.CachedPromptTokens)
+	}
+	if terminal.Usage.PromptTokens != 1000 {
+		t.Errorf("Usage.PromptTokens = %d; want 1000", terminal.Usage.PromptTokens)
+	}
+}
+
+// TestRunOAIStream_NoCachedTokens asserts the zero-regression guarantee: when
+// the provider sends no cache fields, the terminal Usage.CachedPromptTokens is 0.
+func TestRunOAIStream_NoCachedTokens(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"id":"x","model":"test-model","choices":[{"finish_reason":"stop","delta":{"content":"hi"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`,
+		``,
+		`data: [DONE]`,
+		``,
+		``,
+	}, "\n")
+
+	r := io.NopCloser(strings.NewReader(sse))
+	ch := make(chan aiservice.ChatChunk, 16)
+
+	go runOAIStream(r, ch, "ali", "test-model", nil)
+
+	var terminal aiservice.ChatChunk
+	for c := range ch {
+		if c.IsFinal {
+			terminal = c
+		}
+	}
+	if terminal.Usage == nil {
+		t.Fatal("terminal.Usage is nil; want non-nil")
+	}
+	if terminal.Usage.CachedPromptTokens != 0 {
+		t.Errorf("Usage.CachedPromptTokens = %d; want 0 (no cache fields)", terminal.Usage.CachedPromptTokens)
+	}
+}
+
 // TestRunOAIStream_StreamsToolCallsAndReasoningDelta REPRODUCES the bug
 // observed on dev 2026-05-28 (agent_run 48/54): when the LLM (deepseek-v4-pro
 // via dmxapi) decides to invoke a tool (e.g. web_search), it emits a stream

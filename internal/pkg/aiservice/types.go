@@ -125,6 +125,13 @@ type TokenUsage struct {
 	TotalTokens      int `json:"total_tokens"`
 	// ReasoningTokens is non-zero for thinking-capable models (e.g. deepseek-r1, o1).
 	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+	// CachedPromptTokens is the subset of PromptTokens that the provider served
+	// from its prompt-prefix cache (Batch A auto-caching: DeepSeek, GPT via the
+	// DMXAPI OpenAI-compatible endpoint). It is a portion of PromptTokens, not
+	// an addition to it — billing charges these tokens at the discounted cached
+	// input rate. Additive field: providers that do not report cache hits leave
+	// it 0 (omitempty), so cost/usage stay byte-identical to pre-cache behavior.
+	CachedPromptTokens int `json:"cached_prompt_tokens,omitempty"`
 }
 
 // ResponseFormatType enumerates the structured-output modes the Gateway
