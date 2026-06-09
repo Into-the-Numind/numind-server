@@ -286,6 +286,10 @@ func (r *UsageRecorder) buildRecord(event *UsageEvent) *model.UsageRecord {
 		record.CompletionTokens = event.Usage.CompletionTokens
 		record.TotalTokens = event.Usage.TotalTokens
 		record.ReasoningTokens = event.Usage.ReasoningTokens
+		// CachedPromptTokens is the prefix-cache HIT subset of PromptTokens
+		// (Batch A auto-caching). Additive: 0 ⇒ cost/revenue fall back to full
+		// input price, byte-identical to pre-cache behavior.
+		record.CachedPromptTokens = event.Usage.CachedPromptTokens
 		record.EstimatedPromptTokens = event.Usage.EstimatedPromptTokens
 	}
 	if event.Embedding != nil {
@@ -362,8 +366,11 @@ func (r *UsageRecorder) computeCost(ctx context.Context, record *model.UsageReco
 		if r.calc == nil {
 			return 0 // Defensive: tests may build a UsageRecorder without wiring calc.
 		}
-		costCents, err := r.calc.CalculateCost(ctx, record.ServiceType, record.Provider, record.Model,
-			record.PromptTokens, record.CompletionTokens)
+		// CalculateCostWithCache bills the cache-HIT subset of PromptTokens at the
+		// rule's discounted cached input price when set; when the cached price is
+		// NULL (or CachedPromptTokens==0) it is byte-identical to CalculateCost.
+		costCents, err := r.calc.CalculateCostWithCache(ctx, record.ServiceType, record.Provider, record.Model,
+			record.PromptTokens, record.CompletionTokens, record.CachedPromptTokens)
 		if err != nil {
 			return 0
 		}
@@ -409,7 +416,26 @@ func (r *UsageRecorder) computeRevenue(ctx context.Context, record *model.UsageR
 		if rule.BillingMode == "tiered_token" {
 			revenueYuan = r.calculateTieredRevenue(ctx, rule.ID, record.PromptTokens, record.CompletionTokens)
 		} else {
-			revenueYuan = float64(record.PromptTokens)/1_000_000*rule.SellInputPricePerMTok +
+			// Cache-aware revenue (sell dimension). cached is clamped to
+			// [0, PromptTokens] to defend a provider reporting cached > prompt.
+			// SellCachedInputPricePerMTok NULL ⇒ cachedSell == SellInputPricePerMTok
+			// ⇒ the cached + non-cached terms collapse to the pre-cache formula
+			// (byte-identical when cached==0 OR cached price NULL). NULL-safe
+			// independently of the cost-side cached column (P1 #5 paired-column).
+			cached := record.CachedPromptTokens
+			if cached < 0 {
+				cached = 0
+			}
+			if cached > record.PromptTokens {
+				cached = record.PromptTokens
+			}
+			cachedSell := rule.SellInputPricePerMTok
+			if rule.SellCachedInputPricePerMTok != nil {
+				cachedSell = *rule.SellCachedInputPricePerMTok
+			}
+			nonCached := record.PromptTokens - cached
+			revenueYuan = float64(cached)/1_000_000*cachedSell +
+				float64(nonCached)/1_000_000*rule.SellInputPricePerMTok +
 				float64(record.CompletionTokens)/1_000_000*rule.SellOutputPricePerMTok
 		}
 	case record.TotalTokens > 0:

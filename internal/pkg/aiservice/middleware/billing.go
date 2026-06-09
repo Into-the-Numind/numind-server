@@ -105,6 +105,11 @@ func wrapStreamForBilling(
 				record.CompletionTokens = chunk.Usage.CompletionTokens
 				record.TotalTokens = chunk.Usage.TotalTokens
 				record.ReasoningTokens = chunk.Usage.ReasoningTokens
+				// Prefix-cache HIT subset (Batch A). Additive: 0 when the
+				// provider reports no cache ⇒ full-price billing (zero regression).
+				// Written BEFORE publishCostToHolder so the cost reflects the
+				// cached discount on the streaming reconcile path.
+				record.CachedPromptTokens = chunk.Usage.CachedPromptTokens
 				finalSeen = true
 				// Publish actual cost BEFORE forwarding the IsFinal chunk so
 				// that the outer ContextBudgetCredits goroutine reads a fully
@@ -478,6 +483,8 @@ func populateLLMUsage(r *model.UsageRecord, resp interface{}, callErr error, ctx
 		r.CompletionTokens = chatResp.Usage.CompletionTokens
 		r.TotalTokens = chatResp.Usage.TotalTokens
 		r.ReasoningTokens = chatResp.Usage.ReasoningTokens
+		// Prefix-cache HIT subset (Batch A). Additive: 0 ⇒ full-price billing.
+		r.CachedPromptTokens = chatResp.Usage.CachedPromptTokens
 		return
 	}
 
@@ -543,8 +550,11 @@ func publishCostToHolder(ctx context.Context, record *model.UsageRecord, calc pr
 	// Non-LLM calls (OCR/ASR/embed) still go through the holder path — if the
 	// calculator returns a non-zero cost we accept it; if not, the holder stays
 	// at zero and finalizeReservationIfNeeded falls back to EstimatedCredits.
-	costCents, err := calc.CalculateCost(ctx, record.ServiceType, record.Provider, record.Model,
-		record.PromptTokens, record.CompletionTokens)
+	// CalculateCostWithCache bills the cache-HIT subset at the discounted cached
+	// input price when set; CachedPromptTokens==0 or NULL cached price ⇒
+	// byte-identical to CalculateCost (zero regression for the reconcile holder).
+	costCents, err := calc.CalculateCostWithCache(ctx, record.ServiceType, record.Provider, record.Model,
+		record.PromptTokens, record.CompletionTokens, record.CachedPromptTokens)
 	if err != nil {
 		// Pricing rule miss or DB error — leave holder unset so caller falls back.
 		return
