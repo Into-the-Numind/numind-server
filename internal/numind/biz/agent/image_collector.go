@@ -69,3 +69,22 @@ func (c *imageCollector) markdown() string {
 	}
 	return strings.Join(c.imgs, "\n\n")
 }
+
+// drainMarkdown returns the collected image snippets AND clears them, so a
+// subsequent call returns "". Use this when embedding images into the persisted
+// final answer: the streaming path embeds in consumeEinoStream and then
+// finalizeRun runs too — without draining, both append the same markdown and the
+// image is persisted twice. Safe on a nil receiver.
+func (c *imageCollector) drainMarkdown() string {
+	if c == nil {
+		return ""
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.imgs) == 0 {
+		return ""
+	}
+	md := strings.Join(c.imgs, "\n\n")
+	c.imgs = nil
+	return md
+}

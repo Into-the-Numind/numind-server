@@ -1286,9 +1286,11 @@ func (r *agentRunner) finalizeRun(
 		}
 	}
 	// On success, embed any tool-generated images as markdown so they persist in
-	// agent_run.messages and render durably on reload (same as the streaming path).
+	// agent_run.messages and render durably on reload. drainMarkdown so this is a
+	// no-op on the streaming path (consumeEinoStream already drained + embedded);
+	// on the non-stream Run path consumeEinoStream never ran, so this embeds once.
 	if runErr == nil {
-		if imgs := imageCollectorFrom(ctx).markdown(); imgs != "" {
+		if imgs := imageCollectorFrom(ctx).drainMarkdown(); imgs != "" {
 			if assistantContent != "" {
 				assistantContent += "\n\n"
 			}
@@ -1314,17 +1316,26 @@ func (r *agentRunner) finalizeRun(
 				"agent_run_id", run.ID, "error", mErr)
 		}
 	}
-	// Persist the tool-call timeline as a tool_group turn BETWEEN user and
-	// assistant so the process (web_search, image_gen, …) survives reload — it
-	// was previously a transient frontend-only construct lost on snapshot rebuild.
-	// Additive + nil-safe: no events ⇒ no tool_group turn ⇒ identical to before.
-	turns := []map[string]any{
-		{"role": "user", "content": userInput},
+	// Persist the conversation transcript so the process survives reload.
+	// Option C: when the streaming path captured per-step assistant output, persist
+	// the FULL interleaved transcript [user, assistant1, tool_group1, …, final
+	// assistant] for verbatim replay. Otherwise (non-stream Run, or no steps) fall
+	// back to the collapsed [user, tool_group, assistant] shape. assistantContent
+	// already carries the final answer + embedded image markdown; nil-safe.
+	turns := buildTranscriptTurns(
+		userInput,
+		stepCollectorFrom(ctx).list(),
+		narration.CollectorFrom(ctx).Events(),
+		assistantContent,
+		finalReasoning,
+	)
+	if turns == nil {
+		turns = []map[string]any{{"role": "user", "content": userInput}}
+		if groups := aggregateToolEvents(narration.CollectorFrom(ctx).Events()); len(groups) > 0 {
+			turns = append(turns, map[string]any{"role": "tool_group", "tool_calls": groups})
+		}
+		turns = append(turns, assistantTurn(assistantContent, finalReasoning))
 	}
-	if groups := aggregateToolEvents(narration.CollectorFrom(ctx).Events()); len(groups) > 0 {
-		turns = append(turns, map[string]any{"role": "tool_group", "tool_calls": groups})
-	}
-	turns = append(turns, map[string]any{"role": "assistant", "content": assistantContent, "reasoning": finalReasoning})
 	finalMessages, _ := json.Marshal(turns)
 	if err := r.runStore.WriteTurn(ctx, run.ID, json.RawMessage(finalMessages)); err != nil {
 		log.Warnw("AgentRunner.Run WriteTurn failed", "agent_run_id", run.ID, "error", err)

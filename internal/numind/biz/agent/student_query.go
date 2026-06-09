@@ -547,14 +547,21 @@ func transformMessages(raw []byte, runID uint64, startedAt time.Time, endedAt *t
 			msg.Text = content
 		case "assistant":
 			reasoning, _ := turn["reasoning"].(string)
-			msg.Reasoning = reasoning
 			if i == lastAssistantIdx && isTerminalSuccess && content != "" {
 				msg.Type = "final_answer"
 				msg.Markdown = content
+				msg.Reasoning = reasoning
 				msg.RunID = runID
 			} else {
+				// Option C transcript: an intermediate step with neither text nor
+				// reasoning is nothing to render — skip it (the stepCollector
+				// already drops these, but guard the read path too).
+				if content == "" && reasoning == "" {
+					continue
+				}
 				msg.Type = "assistant"
 				msg.Markdown = content
+				msg.Reasoning = reasoning
 			}
 		case "tool_group":
 			// Replay the persisted tool-call timeline. Re-marshal the generic

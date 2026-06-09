@@ -606,6 +606,70 @@ func TestStudentQuery_SessionSnapshot_ToolGroupSurvivesReload(t *testing.T) {
 	assert.Equal(t, "完成", tc.Events[0].Message)
 }
 
+// Option C: a persisted FULL transcript ([user, assistant, tool_group, assistant])
+// reloads as user → intermediate assistant (kept, with its own reasoning) →
+// tool_group → final_answer (last assistant promoted). Verbatim replay.
+func TestStudentQuery_SessionSnapshot_FullTranscriptReplay(t *testing.T) {
+	svc, db := newSQServiceFull(t)
+	msgs, _ := json.Marshal([]map[string]any{
+		{"role": "user", "content": "查销量并画图"},
+		{"role": "assistant", "content": "我先查数据", "reasoning": "需要先搜索"},
+		{"role": "tool_group", "tool_calls": []map[string]any{
+			{
+				"tool_call_id":  "tc1",
+				"tool_name":     "web_search",
+				"current_state": "result",
+				"events": []map[string]any{
+					{"run_id": 1, "tool_call_id": "tc1", "tool_name": "web_search", "state": "result", "message": "已获取搜索结果", "timestamp": "2026-06-09T00:00:00Z"},
+				},
+			},
+		}},
+		{"role": "assistant", "content": "这是趋势图与解读", "reasoning": "整理结论"},
+	})
+	run := &model.AgentRun{
+		UserID: 44, SessionID: "snap-transcript", Status: "terminated",
+		StateReason: "completed", Messages: msgs, StartedAt: time.Now(),
+	}
+	require.NoError(t, db.Create(run).Error)
+
+	snap, err := svc.GetSessionSnapshot(context.Background(), 44, run.SessionID)
+	require.NoError(t, err)
+	rawMsgs, ok := snap.Messages.([]agentMessage)
+	require.True(t, ok)
+	require.Len(t, rawMsgs, 4)
+
+	assert.Equal(t, "user", rawMsgs[0].Type)
+	assert.Equal(t, "assistant", rawMsgs[1].Type) // intermediate step kept
+	assert.Equal(t, "我先查数据", rawMsgs[1].Markdown)
+	assert.Equal(t, "需要先搜索", rawMsgs[1].Reasoning)
+	assert.Equal(t, "tool_group", rawMsgs[2].Type)
+	assert.Equal(t, "final_answer", rawMsgs[3].Type) // last assistant promoted
+	assert.Equal(t, "这是趋势图与解读", rawMsgs[3].Markdown)
+	assert.Equal(t, "整理结论", rawMsgs[3].Reasoning)
+}
+
+// Defensive read-path guard: an empty intermediate assistant turn is dropped.
+func TestStudentQuery_SessionSnapshot_SkipsEmptyAssistantStep(t *testing.T) {
+	svc, db := newSQServiceFull(t)
+	msgs, _ := json.Marshal([]map[string]any{
+		{"role": "user", "content": "q"},
+		{"role": "assistant", "content": "", "reasoning": ""}, // empty intermediate → skipped
+		{"role": "assistant", "content": "最终答案", "reasoning": ""},
+	})
+	run := &model.AgentRun{
+		UserID: 45, SessionID: "snap-emptyasst", Status: "terminated",
+		StateReason: "completed", Messages: msgs, StartedAt: time.Now(),
+	}
+	require.NoError(t, db.Create(run).Error)
+
+	snap, err := svc.GetSessionSnapshot(context.Background(), 45, run.SessionID)
+	require.NoError(t, err)
+	rawMsgs, _ := snap.Messages.([]agentMessage)
+	require.Len(t, rawMsgs, 2) // [user, final_answer] — empty assistant dropped
+	assert.Equal(t, "user", rawMsgs[0].Type)
+	assert.Equal(t, "final_answer", rawMsgs[1].Type)
+}
+
 // TestStudentQuery_SessionSnapshot_AssistantMidTurnNotFinalAnswer verifies that
 // intermediate assistant turns are typed 'assistant', not 'final_answer'.
 func TestStudentQuery_SessionSnapshot_AssistantMidTurnNotFinalAnswer(t *testing.T) {
