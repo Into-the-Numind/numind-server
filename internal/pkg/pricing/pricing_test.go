@@ -722,7 +722,7 @@ func TestCalculateCostWithCache_ZeroCachedEqualsPlain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CalculateCost: %v", err)
 	}
-	withCache, err := calc.(ICalculator).CalculateCostWithCache(ctx, "llm_chat", "dmxapi", "deepseek-v4-pro", pt, ct, 0)
+	withCache, err := calc.CalculateCostWithCache(ctx, "llm_chat", "dmxapi", "deepseek-v4-pro", pt, ct, 0)
 	if err != nil {
 		t.Fatalf("CalculateCostWithCache: %v", err)
 	}
@@ -742,7 +742,7 @@ func TestCalculateCostWithCache_NullPriceEqualsFullPrice(t *testing.T) {
 			"llm_chat|dmxapi|deepseek-v4-pro": flatRuleCached(1, 14.0, 28.0, 14.0, 28.0, nil, nil),
 		},
 	}
-	calc := NewCalculator(store).(ICalculator)
+	calc := NewCalculator(store)
 	ctx := context.Background()
 
 	const pt, ct, cached = 1_000_000, 500_000, 400_000
@@ -773,7 +773,7 @@ func TestCalculateCostWithCache_DiscountApplied(t *testing.T) {
 			"llm_chat|dmxapi|deepseek-v4-pro": flatRuleCached(1, 14.0, 0, 14.0, 0, f64p(1.4), f64p(1.4)),
 		},
 	}
-	calc := NewCalculator(store).(ICalculator)
+	calc := NewCalculator(store)
 	ctx := context.Background()
 
 	// 1M prompt, 400k cached, 0 completion.
@@ -795,7 +795,7 @@ func TestCalculateCostWithCache_DiscountApplied(t *testing.T) {
 			"llm_chat|dmxapi|deepseek-v4-pro": flatRuleCached(1, 14.0, 0, 14.0, 0, nil, nil),
 		},
 	}
-	calc2 := NewCalculator(store2).(ICalculator)
+	calc2 := NewCalculator(store2)
 	full, err := calc2.CalculateCostWithCache(ctx, "llm_chat", "dmxapi", "deepseek-v4-pro", 1_000_000, 0, 400_000)
 	if err != nil {
 		t.Fatalf("CalculateCostWithCache (full): %v", err)
@@ -817,7 +817,7 @@ func TestCalculateCostWithCache_ClampsCachedToPrompt(t *testing.T) {
 			"llm_chat|dmxapi|deepseek-v4-pro": flatRuleCached(1, 14.0, 0, 14.0, 0, f64p(1.4), f64p(1.4)),
 		},
 	}
-	calc := NewCalculator(store).(ICalculator)
+	calc := NewCalculator(store)
 	ctx := context.Background()
 
 	// cached=2M but prompt=1M → clamp cached to 1M → entire prompt at cached price.
@@ -854,7 +854,7 @@ func TestCalculateCostWithCache_TieredUnaffected(t *testing.T) {
 		pricingRules:     map[string]*model.PricingRule{"llm_chat|aihubmix|gpt-5.4": rule},
 		pricingRuleTiers: map[uint][]model.PricingRuleTier{99: tiers},
 	}
-	calc := NewCalculator(store).(ICalculator)
+	calc := NewCalculator(store)
 	ctx := context.Background()
 
 	plain, err := calc.CalculateCost(ctx, "llm_chat", "aihubmix", "gpt-5.4", 10_000, 2_000)
@@ -878,7 +878,7 @@ func TestCalculateCostWithCache_CreditMultiplierApplied(t *testing.T) {
 	store := &stubPricingStore{
 		pricingRules: map[string]*model.PricingRule{"llm_chat|dmxapi|deepseek-v4-pro": rule},
 	}
-	calc := NewCalculator(store).(ICalculator)
+	calc := NewCalculator(store)
 	ctx := context.Background()
 
 	// Base (multiplier=1) for 1M prompt / 400k cached / 0 completion = 896 cents (from T3).
@@ -903,7 +903,7 @@ func TestCalculateCostWithCache_PartialPairDegradesPerSide(t *testing.T) {
 			"llm_chat|dmxapi|deepseek-v4-pro": flatRuleCached(1, 14.0, 0, 14.0, 0, f64p(1.4), nil),
 		},
 	}
-	calc := NewCalculator(store).(ICalculator)
+	calc := NewCalculator(store)
 	ctx := context.Background()
 
 	// cost side uses the discount: same 896 cents as T3.
