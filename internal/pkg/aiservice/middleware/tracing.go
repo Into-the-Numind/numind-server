@@ -135,9 +135,9 @@ func Tracing(deps Deps) Middleware {
 						opts := []langfuse.GenOption{
 							langfuse.WithGenOutput(outputMap),
 						}
-						if lastUsage != nil {
-							opts = append(opts, langfuse.WithGenUsage(lastUsage.PromptTokens, lastUsage.CompletionTokens))
-						}
+						// Dual-channel cached-token observability (gated on cache>0
+						// inside the helper; no-cache events stay byte-identical).
+						opts = appendCachedUsageGenOption(opts, outputMap, lastUsage)
 						if lastModel != "" {
 							opts = append(opts, langfuse.WithGenModel(lastModel))
 						}
@@ -196,9 +196,9 @@ func Tracing(deps Deps) Middleware {
 						opts := []langfuse.GenOption{
 							langfuse.WithGenOutput(outputMap),
 						}
-						if usage != nil {
-							opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
-						}
+						// Dual-channel cached-token observability (gated on cache>0
+						// inside the helper; no-cache events stay byte-identical).
+						opts = appendCachedUsageGenOption(opts, outputMap, usage)
 						langfuse.EndGeneration(tc.TraceID, observationID, opts...)
 					}
 				} else {
@@ -296,6 +296,42 @@ func safeOutput(resp interface{}, meta map[string]interface{}) map[string]interf
 		out["raw"] = string(data)
 	}
 	return out
+}
+
+// appendCachedUsageGenOption appends the usage GenOption for a generation,
+// dual-channel for prompt-cache observability (Batch A). It is the single shared
+// implementation applied at BOTH usage-carrying EndGeneration sites (stream
+// close + non-stream success) so the logic stays consistent.
+//
+//   - usage == nil ⇒ no option appended (matches the existing `if usage != nil`
+//     guard; non-LLM / no-usage events are untouched).
+//   - CachedPromptTokens == 0 ⇒ plain WithGenUsage (TODAY's exact behavior) and
+//     outputMap is NOT mutated ⇒ non-cache events stay byte-identical.
+//   - CachedPromptTokens > 0 ⇒ channel A (WithGenCachedUsage, typed usage field,
+//     honored by Langfuse versions that parse it) AND channel B
+//     (output.metadata.cached_input_tokens, always rendered by Langfuse v3).
+//
+// outputMap is the same map already passed to WithGenOutput at the call site;
+// channel B only mutates it inside the cache>0 branch.
+func appendCachedUsageGenOption(opts []langfuse.GenOption, outputMap map[string]interface{}, usage *aiservice.TokenUsage) []langfuse.GenOption {
+	if usage == nil {
+		return opts
+	}
+	if usage.CachedPromptTokens > 0 {
+		// Channel A: typed usage field.
+		opts = append(opts, langfuse.WithGenCachedUsage(usage.PromptTokens, usage.CompletionTokens, usage.CachedPromptTokens))
+		// Channel B: output.metadata key (guaranteed visible on Langfuse v3).
+		if outputMap != nil {
+			if md, ok := outputMap["metadata"].(map[string]interface{}); ok && md != nil {
+				md["cached_input_tokens"] = usage.CachedPromptTokens
+			} else {
+				outputMap["metadata"] = map[string]interface{}{"cached_input_tokens": usage.CachedPromptTokens}
+			}
+		}
+		return opts
+	}
+	// No cache hit — emit today's exact event.
+	return append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
 }
 
 // buildMeta constructs the Langfuse metadata map from a resolved route.

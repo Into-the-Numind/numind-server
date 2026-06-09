@@ -68,6 +68,12 @@ type UsageData struct {
 	Input  int `json:"input,omitempty"`
 	Output int `json:"output,omitempty"`
 	Total  int `json:"total,omitempty"`
+	// CachedInput is the prompt-cache HIT subset of Input (Batch A auto-caching).
+	// omitempty ⇒ absent when 0, so non-cache generations serialize identically
+	// to pre-cache behavior. Channel A of the dual-channel observability scheme;
+	// channel B (output.metadata.cached_input_tokens) is the guaranteed-visible
+	// fallback for Langfuse versions that do not parse this usage field.
+	CachedInput int `json:"cached_input,omitempty"`
 }
 
 // ScoreBody 评分事件体
