@@ -29,6 +29,12 @@ func (m *mockPricingCalc) CalculateCost(_ context.Context, _, _, _ string, _, _ 
 	return m.costCents, m.err
 }
 
+// CalculateCostWithCache satisfies pricing.ICalculator; the cached-token arg is
+// ignored (this mock returns a fixed cost regardless of inputs).
+func (m *mockPricingCalc) CalculateCostWithCache(_ context.Context, _, _, _ string, _, _, _ int) (int64, error) {
+	return m.costCents, m.err
+}
+
 // ----------------------------------------------------------------------------
 // Mock UsageStore
 // ----------------------------------------------------------------------------

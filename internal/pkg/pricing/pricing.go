@@ -73,6 +73,16 @@ type ICalculator interface {
 	// It performs a single cache-backed lookup and never multiplies by tokens, so
 	// it is a cheap synchronous check suitable for per-call gating.
 	IsFreeModel(ctx context.Context, serviceType, provider, model string) (isFree bool, err error)
+
+	// CalculateCostWithCache is CalculateCost plus prompt-cache awareness.
+	// cachedTokens is the subset of promptTokens served from the provider's
+	// prompt cache (0 ⇒ identical to CalculateCost). cachedTokens is clamped to
+	// [0, promptTokens]. The cached portion is billed at the rule's cached input
+	// price when set; when NULL it falls back to the full input price, making the
+	// result byte-identical to CalculateCost. Tiered-billing rules ignore the
+	// cache argument entirely (not cache-aware in Batch A).
+	CalculateCostWithCache(ctx context.Context, serviceType, provider, model string,
+		promptTokens, completionTokens, cachedTokens int) (costCents int64, err error)
 }
 
 // calculator is the default ICalculator implementation. Thread-safe.
@@ -104,7 +114,9 @@ func (c *calculator) Close() {
 	unregisterCache(c.cache)
 }
 
-// CalculateCost implements ICalculator.
+// CalculateCost implements ICalculator. It is a thin delegate to
+// CalculateCostWithCache with cachedTokens=0, so the formula lives in exactly one
+// place and the no-cache path is provably identical to the cache-aware path.
 //
 // Formula (flat billing_mode):
 //
@@ -121,21 +133,60 @@ func (c *calculator) Close() {
 func (c *calculator) CalculateCost(ctx context.Context, serviceType, provider, model string,
 	promptTokens, completionTokens int,
 ) (int64, error) {
+	return c.CalculateCostWithCache(ctx, serviceType, provider, model, promptTokens, completionTokens, 0)
+}
+
+// CalculateCostWithCache implements ICalculator with prompt-cache awareness.
+//
+// Flat billing_mode formula (cache-aware):
+//
+//	cachedPrice = cached_input_price_per_mtok (if set) else input_price_per_mtok
+//	costYuan    = cached/1e6*cachedPrice + (prompt-cached)/1e6*input_price_per_mtok
+//	              + completion/1e6*output_price_per_mtok
+//
+// Zero-regression guarantees (PRIME DIRECTIVE):
+//   - cachedTokens==0 ⇒ the cached term is 0 and (prompt-cached)==prompt, so the
+//     formula collapses exactly to the legacy prompt/1e6*input + completion/1e6*output.
+//   - CachedInputPricePerMTok==nil (column NULL) ⇒ cachedPrice==input_price_per_mtok,
+//     so cached + non-cached portions sum to prompt/1e6*input regardless of split.
+//
+// cachedTokens is clamped to [0, promptTokens]. Tiered rules are billed at full
+// price (not cache-aware in Batch A). CreditMultiplier scaling is preserved.
+func (c *calculator) CalculateCostWithCache(ctx context.Context, serviceType, provider, model string,
+	promptTokens, completionTokens, cachedTokens int,
+) (int64, error) {
 	rule, err := c.resolvePricingRule(ctx, serviceType, provider, model)
 	if err != nil {
 		return 0, err
+	}
+
+	// Clamp cachedTokens defensively — providers can in theory report a cache
+	// count larger than the prompt (e.g. on retries) and negatives are nonsense.
+	if cachedTokens < 0 {
+		cachedTokens = 0
+	}
+	if cachedTokens > promptTokens {
+		cachedTokens = promptTokens
 	}
 
 	var costYuan float64
 	switch {
 	case promptTokens > 0 || completionTokens > 0:
 		if rule.BillingMode == "tiered_token" {
+			// Tiered mode is NOT cache-aware in Batch A — bill full price
+			// (byte-identical to today; cachedTokens is intentionally ignored).
 			costYuan, err = c.calculateTieredCost(ctx, rule.ID, promptTokens, completionTokens)
 			if err != nil {
 				return 0, err
 			}
 		} else {
-			costYuan = float64(promptTokens)/1_000_000*rule.InputPricePerMTok +
+			cachedPrice := rule.InputPricePerMTok
+			if rule.CachedInputPricePerMTok != nil {
+				cachedPrice = *rule.CachedInputPricePerMTok
+			}
+			nonCached := promptTokens - cachedTokens
+			costYuan = float64(cachedTokens)/1_000_000*cachedPrice +
+				float64(nonCached)/1_000_000*rule.InputPricePerMTok +
 				float64(completionTokens)/1_000_000*rule.OutputPricePerMTok
 		}
 	default:
