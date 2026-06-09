@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -127,7 +128,16 @@ func (r *agentToolRegistry) ListEnabled(ctx context.Context) ([]FullTool, error)
 	return out, nil
 }
 
-// ListAllTools returns all in-memory loaded tools regardless of enabled status.
+// ListAllTools returns all in-memory loaded tools regardless of enabled status,
+// sorted ascending by Name() for a deterministic order.
+//
+// The order matters for LLM prompt-cache hits: this slice is filtered+adapted
+// into the request's `tools` array (runner.go / runner_runstream.go). Ranging the
+// backing Go map directly produced a randomized order every call, so the
+// serialized prompt prefix changed call-to-call and the provider's auto
+// prefix-cache never fired. Sorting by Name() (== the LLM-facing ToolName) makes
+// the tool-identity order byte-stable; both consumers range+filter the result and
+// thus inherit a sorted subset. (llm-prompt-cache §4.8)
 func (r *agentToolRegistry) ListAllTools() []FullTool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -135,6 +145,7 @@ func (r *agentToolRegistry) ListAllTools() []FullTool {
 	for _, t := range r.tools {
 		out = append(out, t)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name() < out[j].Name() })
 	return out
 }
 
