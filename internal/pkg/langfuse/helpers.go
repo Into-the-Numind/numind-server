@@ -303,6 +303,22 @@ func WithGenUsage(promptTokens, completionTokens int) GenOption {
 	}
 }
 
+// WithGenCachedUsage is WithGenUsage plus the prompt-cache HIT token count
+// (Batch A auto-caching). It does NOT change WithGenUsage's signature, so the
+// ~12 legacy callers are untouched. cachedTokens is the subset of promptTokens
+// served from the provider's prefix cache; 0 leaves CachedInput absent
+// (omitempty) ⇒ byte-identical to WithGenUsage.
+func WithGenCachedUsage(promptTokens, completionTokens, cachedTokens int) GenOption {
+	return func(g *GenerationBody) {
+		g.Usage = &UsageData{
+			Input:       promptTokens,
+			Output:      completionTokens,
+			Total:       promptTokens + completionTokens,
+			CachedInput: cachedTokens,
+		}
+	}
+}
+
 // WithGenError 标记 generation 为错误
 func WithGenError(msg string) GenOption {
 	return func(g *GenerationBody) {

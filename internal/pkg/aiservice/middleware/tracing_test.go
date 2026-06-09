@@ -303,3 +303,82 @@ func TestMergeTraceMetadata(t *testing.T) {
 		})
 	}
 }
+
+// ----------------------------------------------------------------------------
+// llm-prompt-cache: Langfuse dual-channel cached-token observability (D3)
+// ----------------------------------------------------------------------------
+
+// TestAppendCachedUsageGenOption_CacheHit verifies that on a cache hit the
+// helper (a) appends a usage GenOption (channel A) and (b) writes the cached
+// count into output.metadata (channel B, guaranteed visible on Langfuse v3).
+func TestAppendCachedUsageGenOption_CacheHit(t *testing.T) {
+	outputMap := map[string]interface{}{"metadata": map[string]interface{}{"existing": "v"}}
+	usage := &aiservice.TokenUsage{PromptTokens: 1000, CompletionTokens: 200, CachedPromptTokens: 400}
+
+	opts := appendCachedUsageGenOption(nil, outputMap, usage)
+
+	// Channel A: exactly one usage option appended, carrying CachedInput=400.
+	if len(opts) != 1 {
+		t.Fatalf("expected 1 GenOption appended, got %d", len(opts))
+	}
+	g := &langfuse.GenerationBody{}
+	opts[0](g)
+	if g.Usage == nil || g.Usage.CachedInput != 400 {
+		t.Errorf("channel A: CachedInput not set, got %+v", g.Usage)
+	}
+	if g.Usage.Input != 1000 || g.Usage.Output != 200 {
+		t.Errorf("channel A: input/output wrong, got %+v", g.Usage)
+	}
+
+	// Channel B: output.metadata.cached_input_tokens set, existing keys preserved.
+	meta, ok := outputMap["metadata"].(map[string]interface{})
+	if !ok {
+		t.Fatal("metadata map missing")
+	}
+	if meta["cached_input_tokens"] != 400 {
+		t.Errorf("channel B: cached_input_tokens = %v, want 400", meta["cached_input_tokens"])
+	}
+	if meta["existing"] != "v" {
+		t.Errorf("channel B clobbered existing metadata: %v", meta)
+	}
+}
+
+// TestAppendCachedUsageGenOption_NoCacheByteIdentical is the zero-regression
+// control: when CachedPromptTokens==0 the helper appends the plain usage option
+// and does NOT mutate outputMap, so a non-cache generation's output bytes stay
+// byte-identical to pre-cache behavior.
+func TestAppendCachedUsageGenOption_NoCacheByteIdentical(t *testing.T) {
+	metaBefore := map[string]interface{}{"existing": "v"}
+	outputMap := map[string]interface{}{"metadata": metaBefore}
+	usage := &aiservice.TokenUsage{PromptTokens: 1000, CompletionTokens: 200, CachedPromptTokens: 0}
+
+	opts := appendCachedUsageGenOption(nil, outputMap, usage)
+
+	if len(opts) != 1 {
+		t.Fatalf("expected 1 GenOption appended, got %d", len(opts))
+	}
+	g := &langfuse.GenerationBody{}
+	opts[0](g)
+	if g.Usage == nil || g.Usage.CachedInput != 0 {
+		t.Errorf("no-cache: CachedInput must stay 0, got %+v", g.Usage)
+	}
+
+	// Channel B must NOT fire: no cached_input_tokens key, metadata untouched.
+	meta := outputMap["metadata"].(map[string]interface{})
+	if _, present := meta["cached_input_tokens"]; present {
+		t.Error("no-cache: cached_input_tokens must NOT be set (output bytes must stay identical)")
+	}
+	if len(meta) != 1 || meta["existing"] != "v" {
+		t.Errorf("no-cache: metadata mutated, got %v", meta)
+	}
+}
+
+// TestAppendCachedUsageGenOption_NilUsage verifies a nil usage appends nothing
+// (matches the existing `if usage != nil` guard at both EndGeneration sites).
+func TestAppendCachedUsageGenOption_NilUsage(t *testing.T) {
+	outputMap := map[string]interface{}{"metadata": map[string]interface{}{}}
+	opts := appendCachedUsageGenOption(nil, outputMap, nil)
+	if len(opts) != 0 {
+		t.Errorf("nil usage must append 0 options, got %d", len(opts))
+	}
+}
