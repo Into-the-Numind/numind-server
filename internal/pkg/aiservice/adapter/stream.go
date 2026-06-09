@@ -113,10 +113,11 @@ func runOAIStream(
 		// chunk, may be a later usage-only chunk with choices=[]).
 		if chunk.Usage != nil {
 			lastUsage = &aiservice.TokenUsage{
-				PromptTokens:     chunk.Usage.PromptTokens,
-				CompletionTokens: chunk.Usage.CompletionTokens,
-				TotalTokens:      chunk.Usage.TotalTokens,
-				ReasoningTokens:  chunk.Usage.extractReasoningTokens(),
+				PromptTokens:       chunk.Usage.PromptTokens,
+				CompletionTokens:   chunk.Usage.CompletionTokens,
+				TotalTokens:        chunk.Usage.TotalTokens,
+				ReasoningTokens:    chunk.Usage.extractReasoningTokens(),
+				CachedPromptTokens: chunk.Usage.extractCachedPromptTokens(),
 			}
 		}
 

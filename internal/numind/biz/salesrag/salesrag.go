@@ -391,7 +391,7 @@ func (b *salesRAGBiz) resolveSalesragChatRoute(ctx context.Context) (provider, m
 func (cc *salesragCreditContext) recordLLMResult(
 	ctx context.Context, streamErr error,
 	provider, modelName string,
-	promptTokens, completionTokens int,
+	promptTokens, completionTokens, cachedTokens int,
 ) {
 	if cc == nil || cc.rsv == nil {
 		return
@@ -410,10 +410,12 @@ func (cc *salesragCreditContext) recordLLMResult(
 	if modelName == "" {
 		modelName = cc.biz.defaultModel
 	}
-	cost, err := cc.biz.pricing.CalculateCost(ctx, "llm_chat",
-		provider, modelName, promptTokens, completionTokens)
+	// Cache-aware reconcile: bills the cache-HIT subset at the discounted rate.
+	// cachedTokens==0 or NULL cached price ⇒ byte-identical to CalculateCost.
+	cost, err := cc.biz.pricing.CalculateCostWithCache(ctx, "llm_chat",
+		provider, modelName, promptTokens, completionTokens, cachedTokens)
 	if err != nil {
-		log.Printf("[salesragCreditContext] pricing.CalculateCost failed provider=%s model=%s: %v",
+		log.Printf("[salesragCreditContext] pricing.CalculateCostWithCache failed provider=%s model=%s: %v",
 			provider, modelName, err)
 		// actualCost stays 0 → Refund(no_actual_cost).
 		return
@@ -1139,8 +1141,11 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 			"prompt_tokens":     finalUsage.PromptTokens,
 			"completion_tokens": finalUsage.CompletionTokens,
 			"total_tokens":      finalUsage.TotalTokens,
-			"model":             finalModel,
-			"provider":          finalProvider,
+			// Prefix-cache HIT subset (Batch A). In-process map (not re-serialized
+			// over the wire), so the int survives to the parse hop. 0 ⇒ full price.
+			"cached_prompt_tokens": finalUsage.CachedPromptTokens,
+			"model":                finalModel,
+			"provider":             finalProvider,
 		}
 		if evErr := onEvent("usage", usagePayload); evErr != nil {
 			return evErr
@@ -2137,7 +2142,7 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 	var thinkingText string
 	// Stream metadata captured from RetrieveStream internal "usage" event —
 	// used post-drain to compute actualCost via pricing.CalculateCost.
-	var streamPromptTokens, streamCompletionTokens int
+	var streamPromptTokens, streamCompletionTokens, streamCachedTokens int
 	var streamModel, streamProvider string
 	var streamErr error
 
@@ -2180,6 +2185,10 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 				if ct, ok := usage["completion_tokens"].(int); ok {
 					streamCompletionTokens = ct
 				}
+				// Prefix-cache HIT subset (Batch A). Absent/0 ⇒ full-price reconcile.
+				if cached, ok := usage["cached_prompt_tokens"].(int); ok {
+					streamCachedTokens = cached
+				}
 				if m, ok := usage["model"].(string); ok {
 					streamModel = m
 				}
@@ -2214,13 +2223,13 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 	// because they represent hard failures that never reached the LLM.
 	switch {
 	case err != nil:
-		cc.recordLLMResult(ctx, err, streamProvider, streamModel, streamPromptTokens, streamCompletionTokens)
+		cc.recordLLMResult(ctx, err, streamProvider, streamModel, streamPromptTokens, streamCompletionTokens, streamCachedTokens)
 		return err
 	case streamErr != nil:
-		cc.recordLLMResult(ctx, streamErr, streamProvider, streamModel, streamPromptTokens, streamCompletionTokens)
+		cc.recordLLMResult(ctx, streamErr, streamProvider, streamModel, streamPromptTokens, streamCompletionTokens, streamCachedTokens)
 		return streamErr
 	default:
-		cc.recordLLMResult(ctx, nil, streamProvider, streamModel, streamPromptTokens, streamCompletionTokens)
+		cc.recordLLMResult(ctx, nil, streamProvider, streamModel, streamPromptTokens, streamCompletionTokens, streamCachedTokens)
 	}
 
 	// 5. 保存助手消息（关联 Langfuse traceID，用于后续反馈评分）

@@ -1258,6 +1258,171 @@ func TestOAIUsage_ExtractReasoningTokens(t *testing.T) {
 	}
 }
 
+// ----------------------------------------------------------------------------
+// oaiUsage.extractCachedPromptTokens: Batch A prompt-cache token parsing (T1)
+// ----------------------------------------------------------------------------
+
+// TestOAIUsage_ExtractCachedPromptTokens covers the wire-path variants for
+// provider cache-hit input tokens that the DMXAPI OpenAI-compatible endpoint
+// surfaces for DeepSeek / GPT:
+//   - nested OpenAI-style prompt_tokens_details.cached_tokens (GPT-5.x, qwen)
+//   - flat DeepSeek-style prompt_cache_hit_tokens (native DeepSeek wire shape)
+//   - neither path present (no cache hit) => 0, byte-identical to today
+//   - nil receiver safety
+//   - nested=0 with non-zero flat (fallback to flat)
+//
+// PRIME DIRECTIVE: absence of any cache field MUST yield 0 so non-cache
+// behavior is unchanged.
+func TestOAIUsage_ExtractCachedPromptTokens(t *testing.T) {
+	cases := []struct {
+		name     string
+		payload  string // JSON to unmarshal
+		useNil   bool   // if true, call on nil receiver
+		expected int
+	}{
+		{
+			name:     "nested OpenAI-style cached_tokens",
+			payload:  `{"prompt_tokens":1000,"completion_tokens":50,"total_tokens":1050,"prompt_tokens_details":{"cached_tokens":768}}`,
+			expected: 768,
+		},
+		{
+			name:     "flat DeepSeek-style prompt_cache_hit_tokens",
+			payload:  `{"prompt_tokens":1000,"completion_tokens":50,"total_tokens":1050,"prompt_cache_hit_tokens":640}`,
+			expected: 640,
+		},
+		{
+			name:     "no cache fields (cache miss)",
+			payload:  `{"prompt_tokens":1000,"completion_tokens":50,"total_tokens":1050}`,
+			expected: 0,
+		},
+		{
+			name:     "nil receiver",
+			useNil:   true,
+			expected: 0,
+		},
+		{
+			name:     "nested=0 fallback to flat=320",
+			payload:  `{"prompt_tokens_details":{"cached_tokens":0},"prompt_cache_hit_tokens":320}`,
+			expected: 320,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got int
+			if tc.useNil {
+				var u *oaiUsage
+				got = u.extractCachedPromptTokens()
+			} else {
+				var u oaiUsage
+				if err := json.Unmarshal([]byte(tc.payload), &u); err != nil {
+					t.Fatalf("unmarshal failed: %v", err)
+				}
+				got = u.extractCachedPromptTokens()
+			}
+			if got != tc.expected {
+				t.Errorf("extractCachedPromptTokens() = %d, want %d", got, tc.expected)
+			}
+		})
+	}
+}
+
+// writeChatJSONCached writes an OAI-compatible non-streaming chat response that
+// carries nested prompt_tokens_details.cached_tokens, used by the per-adapter
+// cache-mapping tests below.
+func writeChatJSONCached(w http.ResponseWriter, content, model string, promptToks, completionToks, cachedToks int) {
+	body := fmt.Sprintf(
+		`{"id":"chatcmpl-test","model":%q,"choices":[{"message":{"content":%q},"finish_reason":"stop"}],"usage":{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d,"prompt_tokens_details":{"cached_tokens":%d}}}`,
+		model, content, promptToks, completionToks, promptToks+completionToks, cachedToks,
+	)
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(body))
+}
+
+// TestDMXAPIAdapter_Chat_CachedPromptTokens asserts the DMXAPI adapter maps the
+// provider's nested cached_tokens onto aiservice.TokenUsage.CachedPromptTokens.
+// DMXAPI is the Batch A entry point for DeepSeek / GPT auto-prefix-caching.
+func TestDMXAPIAdapter_Chat_CachedPromptTokens(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeChatJSONCached(w, "dmx cached", "deepseek-v3-2-251201", 1000, 50, 768)
+	}))
+	defer srv.Close()
+
+	d := NewDMXAPIAdapter()
+	route := mockRoute(srv.URL, "dmx-key", "deepseek-v3-2-251201")
+
+	resp, err := d.Chat(context.Background(), route, aiservice.ChatRequest{Messages: sampleMessages()})
+	if err != nil {
+		t.Fatalf("Chat: unexpected error: %v", err)
+	}
+	if resp.Usage.CachedPromptTokens != 768 {
+		t.Errorf("CachedPromptTokens = %d; want 768", resp.Usage.CachedPromptTokens)
+	}
+	if resp.Usage.PromptTokens != 1000 {
+		t.Errorf("PromptTokens = %d; want 1000", resp.Usage.PromptTokens)
+	}
+}
+
+// TestDMXAPIAdapter_Chat_NoCachedTokens asserts that when the provider returns
+// no cache fields, CachedPromptTokens is 0 — the zero-regression guarantee.
+func TestDMXAPIAdapter_Chat_NoCachedTokens(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeChatJSON(w, "dmx no cache", "deepseek-v3-2-251201", 1000, 50)
+	}))
+	defer srv.Close()
+
+	d := NewDMXAPIAdapter()
+	route := mockRoute(srv.URL, "dmx-key", "deepseek-v3-2-251201")
+
+	resp, err := d.Chat(context.Background(), route, aiservice.ChatRequest{Messages: sampleMessages()})
+	if err != nil {
+		t.Fatalf("Chat: unexpected error: %v", err)
+	}
+	if resp.Usage.CachedPromptTokens != 0 {
+		t.Errorf("CachedPromptTokens = %d; want 0 (no cache fields)", resp.Usage.CachedPromptTokens)
+	}
+}
+
+// TestAliAdapter_Chat_CachedPromptTokens asserts the Ali adapter also maps the
+// nested cached_tokens (additive mapping applied at every adapter→TokenUsage site).
+func TestAliAdapter_Chat_CachedPromptTokens(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeChatJSONCached(w, "ali cached", "qwen-plus", 2000, 30, 1280)
+	}))
+	defer srv.Close()
+
+	a := NewAliAdapter()
+	route := mockRoute(srv.URL, "test-key", "qwen-plus")
+
+	resp, err := a.Chat(context.Background(), route, aiservice.ChatRequest{Messages: sampleMessages()})
+	if err != nil {
+		t.Fatalf("Chat: unexpected error: %v", err)
+	}
+	if resp.Usage.CachedPromptTokens != 1280 {
+		t.Errorf("CachedPromptTokens = %d; want 1280", resp.Usage.CachedPromptTokens)
+	}
+}
+
+// TestVolcAdapter_Chat_CachedPromptTokens asserts the Volc adapter maps cached
+// tokens too (additive at every site, even though Volc is out of Batch A scope —
+// the field must thread uniformly).
+func TestVolcAdapter_Chat_CachedPromptTokens(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeChatJSONCached(w, "volc cached", "deepseek-v3", 500, 20, 256)
+	}))
+	defer srv.Close()
+
+	v := NewVolcAdapter()
+	route := mockRoute(srv.URL, "volc-key", "deepseek-v3")
+
+	resp, err := v.Chat(context.Background(), route, aiservice.ChatRequest{Messages: sampleMessages()})
+	if err != nil {
+		t.Fatalf("Chat: unexpected error: %v", err)
+	}
+	if resp.Usage.CachedPromptTokens != 256 {
+		t.Errorf("CachedPromptTokens = %d; want 256", resp.Usage.CachedPromptTokens)
+	}
+}
+
 // TestOAIChatRequest_ReasoningEffortOmitempty verifies that an empty
 // ReasoningEffort and MaxCompletionTokens=0 are omitted from the marshalled
 // JSON body so providers that don't know these fields just see a clean request.

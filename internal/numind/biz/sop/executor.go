@@ -678,8 +678,11 @@ func consumeGatewayStream(
 						CompletionTokens: chunk.Usage.CompletionTokens,
 						TotalTokens:      chunk.Usage.TotalTokens,
 						ReasoningTokens:  chunk.Usage.ReasoningTokens,
-						ModelName:        modelName,
-						Provider:         providerName,
+						// Prefix-cache HIT subset (Batch A). Additive: 0 ⇒ the
+						// SOP reconcile bills full input price (zero regression).
+						CachedPromptTokens: chunk.Usage.CachedPromptTokens,
+						ModelName:          modelName,
+						Provider:           providerName,
 					}
 				}
 			}

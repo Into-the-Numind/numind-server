@@ -686,3 +686,232 @@ func TestCalculateCost_CreditMultiplier(t *testing.T) {
 		t.Errorf("multiplier=0 (fallback): cost = %d, want 2 (should behave as 1.0)", cost3)
 	}
 }
+
+// ----------------------------------------------------------------------------
+// Task 2/3: CalculateCostWithCache — prompt-cache-aware billing
+// PRIME DIRECTIVE: every result must be byte-identical to CalculateCost when
+// cachedTokens==0 OR the cached price is NULL.
+// ----------------------------------------------------------------------------
+
+// flatRuleCached builds a flat rule with the cached-input price pair set.
+// Pass nil for either pointer to leave that column unset (NULL).
+func flatRuleCached(id uint, inputPrice, outputPrice, sellIn, sellOut float64, cachedCost, cachedSell *float64) *model.PricingRule {
+	r := flatRule(id, inputPrice, outputPrice, sellIn, sellOut)
+	r.CachedInputPricePerMTok = cachedCost
+	r.SellCachedInputPricePerMTok = cachedSell
+	return r
+}
+
+func f64p(v float64) *float64 { return &v }
+
+// TestCalculateCostWithCache_ZeroCachedEqualsPlain (T1): cachedTokens=0 must
+// produce a result byte-identical to CalculateCost for the SAME rule, even when
+// a cached price is configured. This is the strongest zero-regression guard.
+func TestCalculateCostWithCache_ZeroCachedEqualsPlain(t *testing.T) {
+	// Rule WITH a cached price set — proving the cached branch is inert at cached=0.
+	store := &stubPricingStore{
+		pricingRules: map[string]*model.PricingRule{
+			"llm_chat|dmxapi|deepseek-v4-pro": flatRuleCached(1, 14.0, 28.0, 14.0, 28.0, f64p(1.4), f64p(1.4)),
+		},
+	}
+	calc := NewCalculator(store)
+	ctx := context.Background()
+
+	const pt, ct = 1_000_000, 500_000
+	plain, err := calc.CalculateCost(ctx, "llm_chat", "dmxapi", "deepseek-v4-pro", pt, ct)
+	if err != nil {
+		t.Fatalf("CalculateCost: %v", err)
+	}
+	withCache, err := calc.CalculateCostWithCache(ctx, "llm_chat", "dmxapi", "deepseek-v4-pro", pt, ct, 0)
+	if err != nil {
+		t.Fatalf("CalculateCostWithCache: %v", err)
+	}
+	if withCache != plain {
+		t.Errorf("cached=0 must equal plain: withCache=%d plain=%d", withCache, plain)
+	}
+}
+
+// TestCalculateCostWithCache_NullPriceEqualsFullPrice (T2): cachedTokens>0 but
+// the cached price is NULL ⇒ the cached portion bills at full input price ⇒
+// identical to plain CalculateCost. Regression guard for the "column not yet
+// seeded" production state.
+func TestCalculateCostWithCache_NullPriceEqualsFullPrice(t *testing.T) {
+	store := &stubPricingStore{
+		pricingRules: map[string]*model.PricingRule{
+			// Cached price columns left NULL.
+			"llm_chat|dmxapi|deepseek-v4-pro": flatRuleCached(1, 14.0, 28.0, 14.0, 28.0, nil, nil),
+		},
+	}
+	calc := NewCalculator(store)
+	ctx := context.Background()
+
+	const pt, ct, cached = 1_000_000, 500_000, 400_000
+	plain, err := calc.CalculateCost(ctx, "llm_chat", "dmxapi", "deepseek-v4-pro", pt, ct)
+	if err != nil {
+		t.Fatalf("CalculateCost: %v", err)
+	}
+	withCache, err := calc.CalculateCostWithCache(ctx, "llm_chat", "dmxapi", "deepseek-v4-pro", pt, ct, cached)
+	if err != nil {
+		t.Fatalf("CalculateCostWithCache: %v", err)
+	}
+	if withCache != plain {
+		t.Errorf("NULL cached price must collapse to full price: withCache=%d plain=%d", withCache, plain)
+	}
+}
+
+// TestCalculateCostWithCache_DiscountApplied (T3): cached price SET ⇒ the cached
+// portion is billed at the discounted rate. Concrete numbers from the spec:
+// input=14, cached=1.4, prompt=1000, cached=400, completion=0.
+//
+//	cost = 400/1e6*1.4 + 600/1e6*14 + 0 = 0.00056 + 0.0084 = 0.00896 yuan
+//	     = 0.896 cents → round = 1 cent.
+//
+// Use 1M-scale to get a measurable, exact int.
+func TestCalculateCostWithCache_DiscountApplied(t *testing.T) {
+	store := &stubPricingStore{
+		pricingRules: map[string]*model.PricingRule{
+			"llm_chat|dmxapi|deepseek-v4-pro": flatRuleCached(1, 14.0, 0, 14.0, 0, f64p(1.4), f64p(1.4)),
+		},
+	}
+	calc := NewCalculator(store)
+	ctx := context.Background()
+
+	// 1M prompt, 400k cached, 0 completion.
+	//   cached:    400_000/1e6 * 1.4  = 0.56
+	//   nonCached: 600_000/1e6 * 14.0 = 8.40
+	//   total = 8.96 yuan = 896 cents.
+	cost, err := calc.CalculateCostWithCache(ctx, "llm_chat", "dmxapi", "deepseek-v4-pro", 1_000_000, 0, 400_000)
+	if err != nil {
+		t.Fatalf("CalculateCostWithCache: %v", err)
+	}
+	const want = int64(896)
+	if cost != want {
+		t.Errorf("discounted cost = %d cents, want %d", cost, want)
+	}
+
+	// Sanity: WITHOUT the discount (NULL cached price) the same inputs cost more.
+	store2 := &stubPricingStore{
+		pricingRules: map[string]*model.PricingRule{
+			"llm_chat|dmxapi|deepseek-v4-pro": flatRuleCached(1, 14.0, 0, 14.0, 0, nil, nil),
+		},
+	}
+	calc2 := NewCalculator(store2)
+	full, err := calc2.CalculateCostWithCache(ctx, "llm_chat", "dmxapi", "deepseek-v4-pro", 1_000_000, 0, 400_000)
+	if err != nil {
+		t.Fatalf("CalculateCostWithCache (full): %v", err)
+	}
+	// full = 1M/1e6*14 = 14 yuan = 1400 cents.
+	if full != 1400 {
+		t.Errorf("full-price control = %d, want 1400", full)
+	}
+	if cost >= full {
+		t.Errorf("discounted (%d) must be cheaper than full (%d)", cost, full)
+	}
+}
+
+// TestCalculateCostWithCache_ClampsCachedToPrompt (T4): cachedTokens > promptTokens
+// is clamped to promptTokens (whole prompt was cached). Also clamps negatives to 0.
+func TestCalculateCostWithCache_ClampsCachedToPrompt(t *testing.T) {
+	store := &stubPricingStore{
+		pricingRules: map[string]*model.PricingRule{
+			"llm_chat|dmxapi|deepseek-v4-pro": flatRuleCached(1, 14.0, 0, 14.0, 0, f64p(1.4), f64p(1.4)),
+		},
+	}
+	calc := NewCalculator(store)
+	ctx := context.Background()
+
+	// cached=2M but prompt=1M → clamp cached to 1M → entire prompt at cached price.
+	//   1M/1e6 * 1.4 = 1.4 yuan = 140 cents.
+	cost, err := calc.CalculateCostWithCache(ctx, "llm_chat", "dmxapi", "deepseek-v4-pro", 1_000_000, 0, 2_000_000)
+	if err != nil {
+		t.Fatalf("CalculateCostWithCache: %v", err)
+	}
+	if cost != 140 {
+		t.Errorf("over-clamp cost = %d, want 140 (entire prompt cached)", cost)
+	}
+
+	// negative cached → treated as 0 → full price.
+	neg, err := calc.CalculateCostWithCache(ctx, "llm_chat", "dmxapi", "deepseek-v4-pro", 1_000_000, 0, -5)
+	if err != nil {
+		t.Fatalf("CalculateCostWithCache (neg): %v", err)
+	}
+	if neg != 1400 {
+		t.Errorf("negative cached should bill full price: got %d, want 1400", neg)
+	}
+}
+
+// TestCalculateCostWithCache_TieredUnaffected (T5): tiered_token rules are NOT
+// cache-aware in Batch A — a cachedTokens>0 call must produce the SAME cost as
+// the plain tiered path (byte-identical).
+func TestCalculateCostWithCache_TieredUnaffected(t *testing.T) {
+	rule := &model.PricingRule{ID: 99, BillingMode: "tiered_token", IsActive: true}
+	maxTier1 := uint(32_000)
+	tiers := []model.PricingRuleTier{
+		{RuleID: 99, TokenType: "input", MinTokens: 0, MaxTokens: &maxTier1, CostPerMTok: 1.0, SellPerMTok: 1.5},
+		{RuleID: 99, TokenType: "output", MinTokens: 0, MaxTokens: &maxTier1, CostPerMTok: 4.0, SellPerMTok: 6.0},
+	}
+	store := &stubPricingStore{
+		pricingRules:     map[string]*model.PricingRule{"llm_chat|aihubmix|gpt-5.4": rule},
+		pricingRuleTiers: map[uint][]model.PricingRuleTier{99: tiers},
+	}
+	calc := NewCalculator(store)
+	ctx := context.Background()
+
+	plain, err := calc.CalculateCost(ctx, "llm_chat", "aihubmix", "gpt-5.4", 10_000, 2_000)
+	if err != nil {
+		t.Fatalf("plain tiered: %v", err)
+	}
+	withCache, err := calc.CalculateCostWithCache(ctx, "llm_chat", "aihubmix", "gpt-5.4", 10_000, 2_000, 8_000)
+	if err != nil {
+		t.Fatalf("cached tiered: %v", err)
+	}
+	if withCache != plain {
+		t.Errorf("tiered must ignore cache: withCache=%d plain=%d", withCache, plain)
+	}
+}
+
+// TestCalculateCostWithCache_CreditMultiplierApplied (T6): CreditMultiplier still
+// scales the final cost on the cached path.
+func TestCalculateCostWithCache_CreditMultiplierApplied(t *testing.T) {
+	rule := flatRuleCached(1, 14.0, 0, 14.0, 0, f64p(1.4), f64p(1.4))
+	rule.CreditMultiplier = 0.5
+	store := &stubPricingStore{
+		pricingRules: map[string]*model.PricingRule{"llm_chat|dmxapi|deepseek-v4-pro": rule},
+	}
+	calc := NewCalculator(store)
+	ctx := context.Background()
+
+	// Base (multiplier=1) for 1M prompt / 400k cached / 0 completion = 896 cents (from T3).
+	// With multiplier 0.5 → 448 cents.
+	cost, err := calc.CalculateCostWithCache(ctx, "llm_chat", "dmxapi", "deepseek-v4-pro", 1_000_000, 0, 400_000)
+	if err != nil {
+		t.Fatalf("CalculateCostWithCache: %v", err)
+	}
+	if cost != 448 {
+		t.Errorf("multiplier on cached path: cost = %d, want 448", cost)
+	}
+}
+
+// TestCalculateCostWithCache_PartialPairDegradesPerSide (P1 #5 guard): if only the
+// cost cached price is set and the sell side is NULL (an accidental partial), the
+// cost-side calculation still uses the discount and never crashes. (Revenue is the
+// recorder's responsibility — here we only assert the cost path is NULL-safe.)
+func TestCalculateCostWithCache_PartialPairDegradesPerSide(t *testing.T) {
+	// cost cached set, sell cached NULL.
+	store := &stubPricingStore{
+		pricingRules: map[string]*model.PricingRule{
+			"llm_chat|dmxapi|deepseek-v4-pro": flatRuleCached(1, 14.0, 0, 14.0, 0, f64p(1.4), nil),
+		},
+	}
+	calc := NewCalculator(store)
+	ctx := context.Background()
+
+	// cost side uses the discount: same 896 cents as T3.
+	cost, err := calc.CalculateCostWithCache(ctx, "llm_chat", "dmxapi", "deepseek-v4-pro", 1_000_000, 0, 400_000)
+	if err != nil {
+		t.Fatalf("CalculateCostWithCache: %v", err)
+	}
+	if cost != 896 {
+		t.Errorf("partial-pair cost side = %d, want 896", cost)
+	}
+}

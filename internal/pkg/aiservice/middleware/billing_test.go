@@ -29,6 +29,12 @@ func (m *mockPricingCalc) CalculateCost(_ context.Context, _, _, _ string, _, _ 
 	return m.costCents, m.err
 }
 
+// CalculateCostWithCache satisfies pricing.ICalculator; the cached-token arg is
+// ignored (this mock returns a fixed cost regardless of inputs).
+func (m *mockPricingCalc) CalculateCostWithCache(_ context.Context, _, _, _ string, _, _, _ int) (int64, error) {
+	return m.costCents, m.err
+}
+
 // ----------------------------------------------------------------------------
 // Mock UsageStore
 // ----------------------------------------------------------------------------
@@ -1188,5 +1194,125 @@ func TestBillingSetsFinalCostInHolder_StreamPath(t *testing.T) {
 	}
 	if gotCost != 77 {
 		t.Errorf("finalCostHolder cost = %d, want 77 (streaming path)", gotCost)
+	}
+}
+
+// ============================================================================
+// llm-prompt-cache: middleware captures CachedPromptTokens (D3 write sites)
+// ============================================================================
+
+// TestPopulateLLMUsage_CapturesCachedPromptTokens verifies the non-stream
+// reconcile write site copies CachedPromptTokens off the ChatResponse usage so
+// the recorder's cost/revenue path can bill the cached portion at a discount.
+func TestPopulateLLMUsage_CapturesCachedPromptTokens(t *testing.T) {
+	r := &model.UsageRecord{}
+	resp := &aiservice.ChatResponse{
+		Content: "answer",
+		Usage: aiservice.TokenUsage{
+			PromptTokens:       1000,
+			CompletionTokens:   200,
+			TotalTokens:        1200,
+			CachedPromptTokens: 400,
+		},
+	}
+
+	populateLLMUsage(r, resp, nil, context.Background())
+
+	if r.PromptTokens != 1000 || r.CompletionTokens != 200 {
+		t.Fatalf("base tokens not captured: prompt=%d completion=%d", r.PromptTokens, r.CompletionTokens)
+	}
+	if r.CachedPromptTokens != 400 {
+		t.Errorf("CachedPromptTokens = %d, want 400 (non-stream capture)", r.CachedPromptTokens)
+	}
+}
+
+// TestPopulateLLMUsage_NoCacheStaysZero is the zero-regression control: a
+// response with no cache tokens leaves record.CachedPromptTokens at 0.
+func TestPopulateLLMUsage_NoCacheStaysZero(t *testing.T) {
+	r := &model.UsageRecord{}
+	resp := &aiservice.ChatResponse{
+		Usage: aiservice.TokenUsage{PromptTokens: 1000, CompletionTokens: 200, TotalTokens: 1200},
+	}
+
+	populateLLMUsage(r, resp, nil, context.Background())
+
+	if r.CachedPromptTokens != 0 {
+		t.Errorf("CachedPromptTokens = %d, want 0 (no cache reported)", r.CachedPromptTokens)
+	}
+}
+
+// TestBilling_Stream_CapturesCachedPromptTokens verifies the streaming wrapper
+// copies CachedPromptTokens off the final chunk's usage into the persisted
+// usage_record, so the async recorder bills the cached discount on the stream
+// path too.
+func TestBilling_Stream_CapturesCachedPromptTokens(t *testing.T) {
+	store := newMockStoreWithPricing()
+	deps := Deps{UsageStore: store, Clock: fixedClock{t: time.Now()}, Logger: &mockLogger{}}
+	mw := Billing(deps)
+
+	chunks := []aiservice.ChatChunk{
+		{Delta: "Hello", Index: 0},
+		{
+			Delta:   "",
+			Index:   1,
+			IsFinal: true,
+			Usage: &aiservice.TokenUsage{
+				PromptTokens:       724,
+				CompletionTokens:   23,
+				TotalTokens:        747,
+				CachedPromptTokens: 300,
+			},
+		},
+	}
+
+	handler := mw(streamHandler(chunks))
+	ctx := WithUserID(context.Background(), 7)
+	resp, err := handler(ctx, llmRoute(), aiservice.ChatRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ch, ok := resp.(<-chan aiservice.ChatChunk)
+	if !ok {
+		t.Fatalf("expected <-chan ChatChunk, got %T", resp)
+	}
+	for range ch {
+	}
+
+	if len(store.records) != 1 {
+		t.Fatalf("expected 1 usage record after stream close, got %d", len(store.records))
+	}
+	r := store.records[0]
+	if r.PromptTokens != 724 {
+		t.Errorf("PromptTokens: got %d, want 724", r.PromptTokens)
+	}
+	if r.CachedPromptTokens != 300 {
+		t.Errorf("CachedPromptTokens: got %d, want 300 (stream capture)", r.CachedPromptTokens)
+	}
+}
+
+// TestBilling_Stream_NoCacheStaysZero is the stream-path zero-regression control.
+func TestBilling_Stream_NoCacheStaysZero(t *testing.T) {
+	store := newMockStoreWithPricing()
+	deps := Deps{UsageStore: store, Clock: fixedClock{t: time.Now()}, Logger: &mockLogger{}}
+	mw := Billing(deps)
+
+	chunks := []aiservice.ChatChunk{
+		{Delta: "Hi", Index: 0},
+		{Delta: "", Index: 1, IsFinal: true, Usage: &aiservice.TokenUsage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110}},
+	}
+	handler := mw(streamHandler(chunks))
+	ctx := WithUserID(context.Background(), 7)
+	resp, err := handler(ctx, llmRoute(), aiservice.ChatRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ch := resp.(<-chan aiservice.ChatChunk)
+	for range ch {
+	}
+	if len(store.records) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(store.records))
+	}
+	if store.records[0].CachedPromptTokens != 0 {
+		t.Errorf("CachedPromptTokens = %d, want 0", store.records[0].CachedPromptTokens)
 	}
 }
