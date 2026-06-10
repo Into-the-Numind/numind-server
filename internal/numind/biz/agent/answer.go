@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -15,13 +16,24 @@ import (
 )
 
 // AnswerRequest is the payload for POST /v1/agent-runs/:id/answer.
+//
+// agent-multi-question: Answers is keyed by the question text (Claude Code's
+// model). A run may have posed 1-4 questions; the user answers each. Skipping a
+// question = omitting its key. Cross-field rules are enforced in Answer (the
+// answers must reference real pending questions and each be non-empty) since
+// gin binding can't express them.
 type AnswerRequest struct {
-	// Selected contains the chosen option keys (0–4). May be EMPTY when the user
-	// answers only via the always-present free-text box (ask-question-freetext).
-	Selected []string `json:"selected" binding:"max=4"`
+	Answers map[string]AnswerItem `json:"answers"`
+}
+
+// AnswerItem is the user's answer to one question.
+type AnswerItem struct {
+	// Selected contains the chosen option labels (0–4). May be EMPTY when the
+	// user answers only via the always-present free-text box. (Option keys are
+	// not forwarded over SSE, so the client identifies options by label.)
+	Selected []string `json:"selected"`
 	// FreeText is free-form text the user may add alongside, or instead of, an
-	// option selection. At least one of Selected / FreeText must be non-empty
-	// (enforced in Answer — binding can't express the cross-field rule).
+	// option selection (the "Other" box).
 	FreeText string `json:"free_text,omitempty"`
 }
 
@@ -47,13 +59,9 @@ func (s *StudentRunService) Answer(ctx context.Context, userID uint, runID uint6
 		return nil, err
 	}
 
-	// 1b. Cross-field guard: at least one of Selected / FreeText must be present.
-	// binding only validates max=4 on Selected; free-text-only answers are valid
-	// (ask-question-freetext), but an empty-empty answer is not.
-	if len(req.Selected) == 0 && strings.TrimSpace(req.FreeText) == "" {
-		return nil, errno.ErrInvalidInput.SetMessage(
-			"answer: must select an option or provide free text",
-		)
+	// 1b. At least one question must be answered (skipping all is not a resume).
+	if len(req.Answers) == 0 {
+		return nil, errno.ErrInvalidInput.SetMessage("answer: must answer at least one question")
 	}
 
 	// 2. State check.
@@ -76,8 +84,36 @@ func (s *StudentRunService) Answer(ctx context.Context, userID uint, runID uint6
 		)
 	}
 
+	// 2c. Validate each answer against the pending questions: every key must
+	// reference a question that was actually asked, and each answer must carry
+	// a selection or free text (skipping = omitting the key, not an empty entry).
+	pending, perr := ParsePendingQuestion(run.PendingQuestionJSON)
+	if perr != nil {
+		return nil, errno.ErrInvalidInput.SetMessage("answer: pending question json is corrupt: %s", perr.Error())
+	}
+	asked := make(map[string]YieldQuestion, len(pending.Questions))
+	for _, q := range pending.Questions {
+		asked[q.Question] = q
+	}
+	for qText, item := range req.Answers {
+		q, ok := asked[qText]
+		if !ok {
+			return nil, errno.ErrInvalidInput.SetMessage("answer: question %q was not asked", qText)
+		}
+		if len(item.Selected) == 0 && strings.TrimSpace(item.FreeText) == "" {
+			return nil, errno.ErrInvalidInput.SetMessage("answer: question %q has neither a selection nor free text", qText)
+		}
+		if len(item.Selected) > 4 {
+			return nil, errno.ErrInvalidInput.SetMessage("answer: question %q has too many selected options (got %d, max 4)", qText, len(item.Selected))
+		}
+		if !q.MultiSelect && len(item.Selected) > 1 {
+			return nil, errno.ErrInvalidInput.SetMessage("answer: question %q is single-select but got %d options", qText, len(item.Selected))
+		}
+	}
+
 	// 3. Atomic answer: append user message + clear pending question in one tx.
-	userMsg := buildAnswerMessage(run.PendingQuestionJSON, req.Selected, req.FreeText)
+	// Reuse the already-parsed pending payload (no second parse).
+	userMsg := buildAnswerMessage(pending, req.Answers)
 	if err := s.runStore.AnswerAndClear(ctx, runID, userMsg); err != nil {
 		return nil, fmt.Errorf("Answer: atomic answer+clear: %w", err)
 	}
@@ -128,29 +164,66 @@ func (s *StudentRunService) Answer(ctx context.Context, userID uint, runID uint6
 	return &AnswerResponse{RunID: runID, Status: "resumed"}, nil
 }
 
-// buildAnswerMessage formats the user's answer into a human-readable string
-// to be appended as a user message in the conversation history. Includes the
-// original question (parsed from pendingJSON) per spec §2.3d so the LLM sees
-// the full Q&A context on resume.
-func buildAnswerMessage(pendingJSON []byte, selected []string, freeText string) string {
-	// T1 bridge: parse the now-array pending payload but keep the existing
-	// single-question answer semantics (first question). agent-multi-question T2
-	// replaces this with per-question answers from the answers map.
-	question := "<unparseable question>"
-	if payload, err := ParsePendingQuestion(pendingJSON); err == nil && len(payload.Questions) > 0 {
-		question = payload.Questions[0].Question
-	}
-	selectedJSON, _ := json.Marshal(selected)
+// buildAnswerMessage formats the user's answers into a human-readable user
+// message appended to the conversation history, so the resumed LLM sees the
+// full Q&A context (Claude Code's "User has answered your questions" pattern).
+// Questions render in the pending order; skipped questions are omitted.
+func buildAnswerMessage(pending YieldPayload, answers map[string]AnswerItem) string {
 	var sb strings.Builder
-	sb.WriteString("[user answered]\nQuestion: ")
-	sb.WriteString(question)
-	sb.WriteString("\nSelected: ")
-	sb.Write(selectedJSON)
-	if freeText != "" {
-		sb.WriteString("\nFree text: ")
-		sb.WriteString(freeText)
+	sb.WriteString("用户已回答你的问题：")
+	rendered := 0
+	for _, q := range pending.Questions {
+		item, ok := answers[q.Question]
+		if !ok {
+			continue
+		}
+		ans := resolveAnswer(item)
+		if ans == "" {
+			continue
+		}
+		sb.WriteString("\n- 「")
+		sb.WriteString(q.Question)
+		sb.WriteString("」→ ")
+		sb.WriteString(ans)
+		rendered++
 	}
+	// Defensive fallback: surface the answers keyed by their own text when no
+	// pending question matched. Unreachable from Answer() (it rejects corrupt
+	// pending and validates every key against the pending set, so rendered>=1);
+	// kept so buildAnswerMessage is safe in isolation / on an empty payload.
+	// Sort keys for deterministic output.
+	if rendered == 0 {
+		keys := make([]string, 0, len(answers))
+		for k := range answers {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			ans := resolveAnswer(answers[k])
+			if ans == "" {
+				continue
+			}
+			sb.WriteString("\n- 「")
+			sb.WriteString(k)
+			sb.WriteString("」→ ")
+			sb.WriteString(ans)
+		}
+	}
+	sb.WriteString("\n请据此继续，不要重复已回答的问题。")
 	return sb.String()
+}
+
+// resolveAnswer renders one AnswerItem as a single answer string: selected
+// option labels joined, with any free text appended.
+func resolveAnswer(item AnswerItem) string {
+	parts := make([]string, 0, 2)
+	if len(item.Selected) > 0 {
+		parts = append(parts, strings.Join(item.Selected, "、"))
+	}
+	if ft := strings.TrimSpace(item.FreeText); ft != "" {
+		parts = append(parts, ft)
+	}
+	return strings.Join(parts, "；")
 }
 
 // emitAnswerSpan records a Langfuse span for the answer resume event.
@@ -159,10 +232,17 @@ func buildAnswerMessage(pendingJSON []byte, selected []string, freeText string) 
 func emitAnswerSpan(ctx context.Context, run *model.AgentRun, req AnswerRequest) {
 	if tc := langfuse.FromContext(ctx); tc != nil {
 		spanID := langfuse.SpanID()
+		// Log only metadata — the question keys answered, not the user's answer
+		// values (free text can carry private/proprietary content).
+		answered := make([]string, 0, len(req.Answers))
+		for q := range req.Answers {
+			answered = append(answered, q)
+		}
+		sort.Strings(answered)
 		spanInput := map[string]any{
-			"run_id":    run.ID,
-			"selected":  req.Selected,
-			"free_text": req.FreeText,
+			"run_id":             run.ID,
+			"answered_count":     len(req.Answers),
+			"answered_questions": answered,
 		}
 		if run.PendingQuestionAt != nil {
 			spanInput["wait_duration_ms"] = time.Since(*run.PendingQuestionAt).Milliseconds()
