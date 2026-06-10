@@ -170,6 +170,8 @@
 | BUG-5 | **resume 后 agent 完全失忆**：yield 不持久化转录+answer resume loadSessionHistory 排除当前 run→agent 不记得提问前的调研，又问已知信息；"继续"开新 run memory_read 查不到。对"边查边问"方法论 agent 致命 | R1 现场用户上报（run #119/#120） | P0（上线阻断） | `closed`——hotfix yield-resume-context（TDD+双 review 从严，含多重 yield P1 修复）；HW-33 一并解决 |
 | ~~HW-33~~ | （并入 BUG-5）yield 持久化原始输入+resume 保留上下文 | — | — | `closed`（=BUG-5） |
 | HW-34 | yield 转录完整性 follow-up：errpath stepCollector 空（仅 tool groups 无 assistant 推理文本）；finalizeRun resume 完成覆写 waiting 转录（历史回看缺 waiting 前部分，不影响 live 上下文） | BUG-5 review 发现 | P2（历史完整性，非阻塞） | `open` |
+| D-9 | **ask_user_question 交互重设计**：选项强制→开放信息塞成元选择用户选了没用；无自由填写框。修：选项=具体候选答案+底部永远自由填写框+agent 行为引导（prompt） | R1 现场用户反馈（run 121） | D 类设计（用户拍板） | `closed`——feature ask-question-freetext（跨仓库+双 review，P0 free-text-only 断路已修） |
+| HW-35 | prompt 引导 agent"需要信息用工具问不要文本问完就停"是 soft 约束，LLM 仍可能输出纯文本提问→run completed（run 121 现象）。需 dev 验证；不行则 runner 层辅助（末步纯文本含提问意图时拦截 completed/强制 function-calling） | ask-question-freetext review 发现 | P1（agent 行为可靠性，待 dev 验证定级） | `verify` |
 | OBS-1 | dev 上 ali-dashscope qwen-turbo 辅助调用 403 三连退款（free tier 耗尽，已知 PLT-3），fail-open 不致命但拖慢每轮+日志噪音（run #114：67 笔 reservation 中 40 笔是 403 退款）；建议 dev 把相关 task_profile 路由迁离 ali | run #113/#114 | P2（dev only，R1 前顺手修可提速） | `open` |
 | OBS-2 | run 详情 API `credits_used` 恒 0（真实 reconcile 正常，聚合显示未接线）；create 响应 `estimated_credits_min/max` 也是 0-0 | run #114 | P2 | `open` |
 

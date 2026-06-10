@@ -1,5 +1,19 @@
 schema_version: '2.0'
 features:
+- id: ask-question-freetext
+  track: hotfix
+  description: 'R1 现场用户反馈（run 121 交互问题，非代码 bug 是设计缺陷）：ask_user_question 强制 2-4 选项→agent 把开放信息请求(陪跑周期/价格?)塞成元选择(陪跑模式细节)，用户选了无法提供实际信息；系统提示词零提问引导→agent 有时用文本问然后 run 停。用户拍板方案：保留 2-4 选项+每个选择题底部永远有自由填写框+agent 自己判断何时问+选项要是具体候选答案。实现：①后端 tool description+options schema 教 agent 选项是具体答案非元选择、用户始终能自由补充、需要用户信息时用工具问 ②PlatformBasePrompt(平台共享人设)加「向用户提问」段(必须用工具问不要文本问完就停/能做就做不瞎猜/选项要是真答案) ③前端 QuestionPrompt 单选去即点即交、两模式底部都有 free_text+提交。'
+  classification_reason: 'Hotfix：无 schema/新 API/外部服务；跨仓库(server+web)；feature 级交互改进但聚焦单一主题(提问交互)，方案已与用户逐字对齐。非 bug→Rule 11 不适用，前端有交互测试覆盖。'
+  status: active
+  stage: H2
+  repos:
+    numind-server: fix/ask-question-freetext
+    numind-web-v3: fix/ask-question-freetext
+  progress:
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-H2 (ai 2026-06-10): 双 Sonnet reviewer 并行从严：spec=FAIL→修后 PASS(P0 AnswerRequest.Selected binding required,min=1 拒绝 free-text-only 提交=核心 UX 断路→改 max=4+biz 跨字段校验 selected/freeText 至少一非空+2 测试；P1 e2e 依赖即点即交→加 submit click)，quality=PASS(3 P2:CSS align-self 非 flex 父级失效→submit display:block+margin-left:auto；test6 补 answered 隐藏断言；textarea disabled 注释)。前端 vitest 10 pass+type-check+eslint，后端 go test+lint 绿。**关键 follow-up HW-35**：prompt 引导 agent 用工具问是 soft 约束，LLM 仍可能输出纯文本「需要确认:」然后 run completed(run 121 现象)；prompt 改善高频场景但不保证消除，需 dev 验证 agent 行为，不行则 runner 层辅助(检测末步纯文本含提问意图时不让 completed/强制 function-calling)。'
 - id: yield-resume-context
   track: hotfix
   description: 'R1 现场用户上报（dev run #119/#120，P0 阻塞）：agent 调研到一半 ask_user_question 提问→用户回答→resume 后 agent 完全失忆（不记得之前搜过的），又问已在调研的公司名；用户打"继续"开新 run，memory_read 查不到要求重新提供基本信息。根因两层：①yield 路径不持久化转录（waiting messages=[]）②answer resume 调 loadSessionHistory(excludeRunID=当前run) 排除当前 run→History 空。修复：persistYieldTranscript 三处 yield 路径（流式 post-consume/errpath/非流式）持久化 user input+assistant steps+tool groups，多重 yield 安全（re-paused resume 前置已有转录去重 dup answer turn）；answer.go resume 注入"其他 run history+当前 run waiting 转录"作 History，answer 作 Input；turnsToHistoryMessages 从 loadSessionHistory 提取共用。'
