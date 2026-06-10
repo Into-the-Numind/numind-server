@@ -138,6 +138,7 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 	// 行为忠实等价于原 步骤1(意图分析+HyDE 追加) + 步骤2a(parallelSearch) + 步骤4(rerankChunks)。
 	if onStatus != nil {
 		onStatus("正在分析您的意图...")
+		onStatus("正在检索知识库并重排序...")
 	}
 	mainResult, err := s.retrieveSvc.Retrieve(retrieveCtx, query, retrieve.Scope{
 		UserID:      userID,
@@ -153,25 +154,23 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 	// 等待策略选择完成（与主通道并行后汇合，对齐原 wg.Wait 语义）。
 	wg.Wait()
 
+	// mainEmpty: 主通道 docIDs 为空（用户可能只配了观点库、没配产品/案例/FAQ）。
+	// 原行为：空 docIDs 时 store 静默返回空、不报错，且 opinion 仍独立检索。底座对空
+	// scope 改为返回 ErrEmptyScope——这里**不能提前 return**，否则会跳过 opinion 通道
+	// （收入路径回归：只配观点库的 session 会丢失全部观点证据）。故标记 mainEmpty 后
+	// 继续走 opinion；非 ErrEmptyScope 的真错误才中断。
+	mainEmpty := false
 	if err != nil {
-		// 原行为：docIDs 为空时不报错、返回空证据（store 对空 DocumentIDs 直接返回空）。
-		// 底座对空 scope 改为返回 ErrEmptyScope；这里收敛为「未检索到相关知识」以保
-		// 原 no-error 契约（见 TestSalesRAGService_EmptyDocIDs）。
 		if errors.Is(err, retrieve.ErrEmptyScope) {
+			mainEmpty = true
 			verdict.Reason = "未检索到相关知识"
-			return verdict, nil
+		} else {
+			return nil, fmt.Errorf("parallel search failed: %w", err)
 		}
-		return nil, fmt.Errorf("parallel search failed: %w", err)
 	}
 
-	// result.RewriteQueries = 实际用于检索的 query 列表（含 HyDE 追加），
-	// 即原 allSearchQueries。verdict.SearchQueries/RewriteQuery 用它填充。
-	allSearchQueries := mainResult.RewriteQueries
-	verdict.SearchQueries = allSearchQueries
-	if len(allSearchQueries) > 0 {
-		verdict.RewriteQuery = allSearchQueries[0]
-	}
-
+	// 策略赋值（无论主通道是否为空，strategy 已在上面 wg.Wait 处汇合完成；对齐原行为：
+	// 原代码主空时也不早返回，strategy 照常赋值）。
 	if strategy != nil {
 		verdict.Strategy = strategy
 		verdict.StrategyMetaID = strategy.MetaID
@@ -181,32 +180,47 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 			"meta_id", strategy.MetaID)
 	}
 
-	// 3. 主通道结果组装
-	if len(mainResult.Chunks) == 0 {
-		verdict.Reason = "未检索到相关知识"
-	} else {
-		verdict.Evidence = mainResult.Chunks
-		verdict.Reason = fmt.Sprintf("Rerank 后保留 %d 条", len(mainResult.Chunks))
+	// 3. 主通道结果组装（仅主通道非空时）。allSearchQueries = 实际检索用的 query 列表
+	// （含 HyDE）；主通道为空时无改写词（ErrEmptyScope 在 rewrite 前触发）。
+	var allSearchQueries []string
+	if !mainEmpty {
+		allSearchQueries = mainResult.RewriteQueries
+		verdict.SearchQueries = allSearchQueries
+		if len(allSearchQueries) > 0 {
+			verdict.RewriteQuery = allSearchQueries[0]
+		}
+		if len(mainResult.Chunks) == 0 {
+			verdict.Reason = "未检索到相关知识"
+		} else {
+			verdict.Evidence = mainResult.Chunks
+			verdict.Reason = fmt.Sprintf("Rerank 后保留 %d 条", len(mainResult.Chunks))
+		}
+		log.C(ctx).Infow("Parallel search completed",
+			"query_count", len(allSearchQueries),
+			"evidence_count", len(mainResult.Chunks),
+			"has_strategy", strategy != nil)
 	}
 
-	log.C(ctx).Infow("Parallel search completed",
-		"query_count", len(allSearchQueries),
-		"evidence_count", len(mainResult.Chunks),
-		"has_strategy", strategy != nil)
-
-	// 2c+5. 观点库独立通道（保留）：复用主通道的改写词（PrewrittenQueries），
-	// 不再二次 intent 分析（保 I1）；rerank top2；结果挂 verdict.OpinionEvidence。
+	// 2c+5. 观点库独立通道（保留）。主通道有改写词则复用（保 I1，不二次 intent）；
+	// 主通道为空（mainEmpty）时无改写词，opinion 自行改写一次——等价于原行为（原本就是
+	// 单次 intent 分析喂两通道，主空时该次分析此前未发生，故在此由 opinion 补一次）。
 	if len(opinionDocIDs) > 0 {
+		opOpts := retrieve.Options{
+			TopK:         10,
+			RerankTopN:   2, // 观点库 rerank 保留 top2（对齐原 rerankOpinionChunks）
+			BillingLabel: "salesrag_rerank_opinion",
+		}
+		if len(allSearchQueries) > 0 {
+			opOpts.RewriteQuery = false
+			opOpts.PrewrittenQueries = allSearchQueries // 复用主通道改写词，不二次 intent
+		} else {
+			opOpts.RewriteQuery = true // 主通道为空，opinion 自行改写一次（等价原单次 intent）
+			opOpts.History = history
+		}
 		opinionResult, opErr := s.retrieveSvc.Retrieve(retrieveCtx, query, retrieve.Scope{
 			UserID:      userID,
 			DocumentIDs: opinionDocIDs,
-		}, retrieve.Options{
-			TopK:              10,
-			RerankTopN:        2, // 观点库 rerank 保留 top2（对齐原 rerankOpinionChunks）
-			RewriteQuery:      false,
-			PrewrittenQueries: allSearchQueries, // 复用主通道改写词，不二次 intent
-			BillingLabel:      "salesrag_rerank_opinion",
-		})
+		}, opOpts)
 		if opErr != nil {
 			// 原行为：观点库检索失败仅 warn、不中断主流程。
 			if errors.Is(opErr, retrieve.ErrEmptyScope) {
@@ -217,6 +231,10 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 			}
 		} else if len(opinionResult.Chunks) > 0 {
 			verdict.OpinionEvidence = opinionResult.Chunks
+			// 主通道为空时用 opinion 的改写词补 verdict.SearchQueries（trace 完整性）。
+			if mainEmpty && len(verdict.SearchQueries) == 0 {
+				verdict.SearchQueries = opinionResult.RewriteQueries
+			}
 			if verdict.Reason == "" {
 				verdict.Reason = fmt.Sprintf("观点库 Rerank 后保留 %d 条", len(opinionResult.Chunks))
 			} else {
