@@ -107,11 +107,20 @@ func (s *answerRunStore) UpdateSessionDeleted(_ context.Context, _ string, _ boo
 	return nil
 }
 
-// answerRunner is a no-op runner for Answer tests.
-type answerRunner struct{ runCalled bool }
+// answerRunner is a no-op runner for Answer tests. It captures the RunRequest
+// from the detached resume goroutine so tests can assert History injection.
+type answerRunner struct {
+	runCalled   bool
+	capturedReq RunRequest
+	runDone     chan struct{}
+}
 
-func (r *answerRunner) Run(_ context.Context, _ RunRequest) (*RunResult, error) {
+func (r *answerRunner) Run(_ context.Context, req RunRequest) (*RunResult, error) {
 	r.runCalled = true
+	r.capturedReq = req
+	if r.runDone != nil {
+		close(r.runDone)
+	}
 	return &RunResult{}, nil
 }
 func (r *answerRunner) RunStream(_ context.Context, _ RunRequest, _ uint64, _ chan<- stream.Event) (*RunResult, error) {
@@ -121,11 +130,31 @@ func (r *answerRunner) Cancel(_ uint64) bool { return false }
 
 // newAnswerService creates a minimal StudentRunService wired for Answer tests.
 func newAnswerService(rs *answerRunStore) *StudentRunService {
+	return newAnswerServiceWithRunner(rs, &answerRunner{})
+}
+
+func newAnswerServiceWithRunner(rs *answerRunStore, runner *answerRunner) *StudentRunService {
 	return &StudentRunService{
-		runner:     &answerRunner{},
+		runner:     runner,
 		runStore:   rs,
 		skillStore: nil, // not needed for Answer tests
 	}
+}
+
+// seedAnswerRunWithTranscript seeds a waiting run whose Messages carry a
+// pre-yield ReAct transcript (the work the agent did before pausing).
+func seedAnswerRunWithTranscript(rs *answerRunStore, userID uint, transcript string) uint64 {
+	run := &model.AgentRun{
+		UserID:              userID,
+		SessionID:           "sess-resume",
+		Status:              "terminated",
+		StateReason:         string(TerminalWaitingForUserChoice),
+		Messages:            datatypes.JSON(transcript),
+		PendingQuestionJSON: datatypes.JSON(`{"question":"公司全称?","options":[{"key":"a","label":"我口述"},{"key":"b","label":"上传"}],"multi_select":false}`),
+		StartedAt:           time.Now(),
+	}
+	_ = rs.Create(context.Background(), run)
+	return run.ID
 }
 
 // seedAnswerRun seeds a run with the given stateReason owned by userID.
@@ -268,4 +297,40 @@ func TestBuildAnswerMessage_UnparsableJSON(t *testing.T) {
 	msg := buildAnswerMessage([]byte(`not-json`), []string{"a"}, "")
 	assert.Contains(t, msg, "[user answered]")
 	assert.Contains(t, msg, "<unparseable question>")
+}
+
+// test(qa): reproduce dev run #119 — after answering an ask_user_question pause,
+// the resumed agent had ZERO memory of the research it did before pausing
+// (loadSessionHistory excludes the current run, and the waiting run's transcript
+// was never reloaded). The agent re-asked for the company name it had already
+// been researching. Expected: the resume RunRequest carries the pre-yield
+// transcript as History so the agent retains its prior work.
+func TestAnswer_Resume_InjectsPriorTranscriptAsHistory(t *testing.T) {
+	rs := newAnswerRunStore()
+	runner := &answerRunner{runDone: make(chan struct{})}
+	svc := newAnswerServiceWithRunner(rs, runner)
+	userID := uint(7)
+	transcript := `[{"role":"user","content":"为莫小派做小红书定位调研"},{"role":"assistant","content":"我先联网检索莫小派的公开信息"},{"role":"tool_group","tool_calls":[{"tool_name":"web_search"}]},{"role":"assistant","content":"已找到部分信息，需要确认创办初心"}]`
+	runID := seedAnswerRunWithTranscript(rs, userID, transcript)
+
+	_, err := svc.Answer(context.Background(), userID, runID, AnswerRequest{Selected: []string{"我口述"}, FreeText: "2020年创办，创始人是前MCN操盘手"})
+	require.NoError(t, err)
+
+	select {
+	case <-runner.runDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("resume runner goroutine did not run")
+	}
+
+	require.True(t, runner.runCalled)
+	hist := runner.capturedReq.History
+	require.NotEmpty(t, hist, "resumed agent must receive its pre-yield transcript as History (else it forgets all prior research)")
+
+	// History must contain the original task + the agent's prior research steps.
+	var joined string
+	for _, m := range hist {
+		joined += m.Content + "\n"
+	}
+	assert.Contains(t, joined, "为莫小派做小红书定位调研", "original task must survive into resume context")
+	assert.Contains(t, joined, "已找到部分信息", "agent's prior research must survive into resume context")
 }
