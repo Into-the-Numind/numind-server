@@ -104,7 +104,7 @@ features:
 - id: retrieval-base
   ndf_version: '3.0'
   track: standard
-  stage: S5
+  stage: S6
   status: active
   description: '知识库统一检索底座第一批（P0+P1+P2）：把检索抽成领域无关通用底座 internal/pkg/retrieval（domain/port/ingest/retrieve/adapter），四通道（SOP/chatbot/salesrag/agent）共用一套检索管线（query 改写→混合检索→重排→打分 chunk），"答"各通道自拼。本批=P0 评估 harness(Recall@k/MRR 标 30-50 题做安全网)+P1 抽骨架(迁通用 domain/port + Retrieve()→[]chunk 出口 + ingest, 不动 salesrag strategy/opinion/prompt)+P2 迁 chatbot/agent(chatbot 删裸检索补 grounding/重排/query改写/importance按score; agent kb_search 改原始片段出口修双重LLM)。完整 6 阶段愿景+可行性见 proposals/retrieval-base-unification-proposal.md。'
   classification_reason: 'Standard（不可降级）：影响文件 >3（新建 internal/pkg/retrieval 包 + 拆 salesrag/domain 跨包改名 chatbot/agent/knowledgebase + 迁 ingest/retrieve + 评估）；高风险（触及 chatbot/agent 用户可见回答路径，为 salesrag 收入路径收口打地基）。无 DB schema 变更/无新 API/无新外部服务（混合检索 FTS5+重嵌在后续 feature）。'
@@ -122,6 +122,7 @@ features:
   - 'S1-S2 (ai 2026-06-10): S1=已提交提案(proposals/retrieval-base-unification-proposal.md)承担。S2 技术设计 .ndf/features/retrieval-base/spec.md 完成，Sonnet S2 Gate 2 P1(opinion query 共享破 I1 / factory_platform.go 遗漏)+5 P2 全补齐(PrewrittenQueries 复用改写保逐位一致 / agent factory 签名 / splitter 5 文件 / docStore 注入 / 测试随迁 / chatMode=free)。grep 核实 domain 拆包仅牵动 chatbot，比提案估计小。'
   - 'S3 (ai 2026-06-10): 任务计划 .ndf/features/retrieval-base/plan.md（12 task：P0×2 / P1×7 Tier4 串行 / P2×2 / S5×1）。Sonnet S3 Gate 2 P0(eval harness 只有 Recall@k 验不了逐位一致 → 加 exact-match golden 模式；chatbot grounding 缺持久回归 → 加 BuildChatContextFragments unit test)+3 P1(中间态编译 → MOVE+同 task 更新 consumer 保每步全仓库编译；T1.2 漏 18 个 port consumer；opinion 并行改串行申报结构变更)+2 P2(测试分拆/ingestion.go 死代码)全补齐。设计阶段 S0-S3 完成，待 S4 编码（依赖创始人 P0 标注集）。'
   - 'S4 (ai 2026-06-10): 抽骨架 4/12——T1.1 domain / T1.2 port(+QueryRewriter) / T1.3 adapter(store+embedder 工厂, 行为逐字等价已核) / T1.4 ingest(pipeline/5splitter/tagger, 删死代码 ingestion.go, 新增 ingest 包 TestMain) 均 implementer→双 Sonnet reviewer PASS, 每步全仓库 build/test/gofmt 绿。gofmt 债(T1.1/T1.2 import 未重排)已 1f8252c3 清。T1.4 spec-compliance P1: tagger_dmx_test 是 ContentTagger.analyze 白盒测试必须随 tagger 迁 ingest(dmx=DMXAPI provider 非销售逻辑) → 修正 spec §7.1(代码不动)。延后 P2: viking_store 冗余 Embedder type / ingest alias 冗余。worktree commit: T1.1 b3337abb / T1.2 7ee29353 / T1.3 9c1a60a5 / gofmt 1f8252c3 / T1.4 b97024aa。'
+  - 'S4完成+merge (ai 2026-06-11): T1.5 retrieve核心 / T0.2 golden安全网 / T1.6 salesrag切底座(golden验逐位一致, review抓修opinion-only丢证据回归+回归测试) / T1.7全仓库收口 / T2.1 chatbot修"回答怪"(grounding+rerank+引用+score-importance, 没挂KB纯聊天) / T2.2 agent kb_search去双重LLM+空scope翻全部 — 全部 implementer→双 Sonnet reviewer PASS + kbDocStore补测。ndf-done merge→develop 4af6c248 已 push + 复核(local==origin, build净, 全仓库 go test 83包过, golden PASS), worktree+分支已清理。**跨session发现(非本feature)**: develop 有1个 pre-existing 失败测试 TestAnswerHandler_MissingBody(controller/v1/agent), 系并行 feature agent-multi-question 的 b3e3f3c0 引入, 我 merge 前 42c9ada1 即已挂, 与检索 feature 无关。剩: 部署 dev + gstack/qa 验证 chatbot grounding(待用户拍板, 因 dev 会带并行 session WIP) + T0.1 创始人标注集(仅 Recall@k 质量度量, 延后)。'
   blockers: []
 - id: budget-tracker-token-units
   track: hotfix
