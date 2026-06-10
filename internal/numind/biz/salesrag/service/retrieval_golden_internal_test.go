@@ -24,6 +24,17 @@
 //   - intent rewrite 走 RegexRouter（纯正则，零 LLM，确定性）；
 //   - rerank 在 headless gateway（无 provider）下返回 error → 主干 fallback 到
 //     原始 top-5（见 sales_rag.go rerankChunks 失败分支），同样确定性。
+//
+// 适用范围与前提（reviewer P2 记录，刻意的边界）：
+//  1. 本 golden 只验「逐位一致」（同输入→同 chunk_id 序列），**不评估语义检索质量**。
+//     fake embedder 是 sha256 派生的非语义向量，故命中未必语义最优；Recall@k/MRR
+//     质量基线需真实 embedding + 创始人标注集（P2 验收阶段，本 harness 不覆盖）。
+//  2. 只覆盖 chatMode="free" 通用主干；不覆盖 sales 模式的 strategy 分支与 opinion
+//     第二通道（spec §9.4：strategy/opinion 留 salesrag、T1.6 不改，故风险可接受）。
+//  3. 确定性依赖 RegexRouter 只产 1 路 query（parallelSearch 单 goroutine）。若未来
+//     改用 LLMRouter（多路 query），degrade 路径的 allChunks[:N] 截断顺序会变 goroutine
+//     依赖 → 可能 flaky；届时需在 parallelSearch 出口先 (Score desc, ID asc) 排序再截断，
+//     或另立 harness。T1.6 不改本测试的 router，故当前安全。
 package service
 
 import (
