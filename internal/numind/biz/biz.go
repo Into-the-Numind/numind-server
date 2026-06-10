@@ -243,8 +243,17 @@ func NewBiz(ds store.IStore) *biz {
 	b.salesRAGService = salesrag.NewSalesRAGBizWithCredits(b.ds, pipeline, salesRAGSvc, b.Volc(), b.Ali(), salesSessionStore, parser, creditSvc, pricingCalc, salesragRegistry)
 
 	// 初始化 Agent Tool Registry + AgentRunner（agent-mode #2 + #3 + #4）
-	// 顺序敏感：必须在 salesRAGService 之后（PlatformToolFactory 依赖 salesRAGService）
 	agentToolRegistry := agent.NewAgentToolRegistry(ds.ToolDefinitions(), ds.ToolFactoryRegistries())
+
+	// T2.2: agent 的 kb_search 改走领域无关底座检索（去 salesrag 的双重 LLM）。
+	// 含 docStore，使 Scope{AllEnabled:true} 可解析为该用户全部启用文档——
+	// kb_search 空 doc_ids 时即走 AllEnabled（翻全部启用且已完成文档）。
+	// chatMode="free" 避免销售话术污染纯知识库检索的 query 改写（与 chatbotRetrieve 一致）。
+	agentRetrieve := retrieve.NewService(
+		vStore,
+		salesragservice.NewRouterRewriter(llmRouter, "free"),
+		newKBDocStore(ds.KnowledgeDocuments()),
+	)
 
 	// V1.5 Track 4 task 4.4: Skill Registry + platform factory construction.
 	// Build sandbox pool first so it can be wired into the platform factory before LoadAll.
@@ -275,18 +284,18 @@ func NewBiz(ds store.IStore) *biz {
 		if skillReg, skillRegErr := skills.NewRegistry(skillsRoot); skillRegErr != nil {
 			log.Warnw("skills.NewRegistry failed; load_skill will serve DB-bound skills only (no disk platform skills)",
 				"skills_root", skillsRoot, "error", skillRegErr)
-			platformFactory = agent.NewPlatformToolFactory(b.salesRAGService, ds)
+			platformFactory = agent.NewPlatformToolFactory(agentRetrieve, ds)
 		} else {
 			log.Infow("skills.Registry initialised", "skills_root", skillsRoot, "count", len(skillReg.List()))
 			// SkillPool type assertion retained for forward compat (run_python
 			// still uses sandboxPool); nil-safe even if assertion fails.
 			sp, _ := sandboxPool.(sandbox.SkillPool)
-			platformFactory = agent.NewPlatformToolFactoryWithSkills(b.salesRAGService, ds, skillReg, sp)
+			platformFactory = agent.NewPlatformToolFactoryWithSkills(agentRetrieve, ds, skillReg, sp)
 			platformSkillReg = skillReg
 			log.Infow("load_skill: disk platform skill registry wired", "count", len(skillReg.List()))
 		}
 	} else {
-		platformFactory = agent.NewPlatformToolFactory(b.salesRAGService, ds)
+		platformFactory = agent.NewPlatformToolFactory(agentRetrieve, ds)
 	}
 
 	// agent-mode-billing T9: wire creditService so image_gen Reserves/Reconciles real credits.

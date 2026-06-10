@@ -6,13 +6,15 @@ import (
 	"numind-server/internal/numind/biz/agent/skills"
 	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/biz/memory"
-	"numind-server/internal/numind/biz/salesrag"
 	"numind-server/internal/numind/biz/sandbox"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/retrieval/retrieve"
 )
 
 type platformToolFactory struct {
-	rag           salesrag.SalesRAGBiz
+	// rag is the retrieval base service backing kb_search (T2.2: was salesrag.SalesRAGBiz;
+	// now the domain-agnostic base — kb_search returns raw chunks, no in-tool answer generation).
+	rag           *retrieve.Service
 	ds            store.IStore
 	skillRegistry skills.Registry       // disk platform skills; nil = load_skill serves DB-bound skills only
 	skillPool     sandbox.SkillPool     // retained for forward compat (run_python uses sandbox.Pool, not SkillPool; load_skill does not need sandbox)
@@ -29,7 +31,8 @@ func SetFactoryCreditService(f ToolFactory, cs credit.ICreditService) {
 }
 
 // NewPlatformToolFactory returns a ToolFactory that loads all platform built-in tools.
-func NewPlatformToolFactory(rag salesrag.SalesRAGBiz, ds store.IStore) ToolFactory {
+// rag is the retrieval base service used by kb_search (T2.2).
+func NewPlatformToolFactory(rag *retrieve.Service, ds store.IStore) ToolFactory {
 	return &platformToolFactory{rag: rag, ds: ds}
 }
 
@@ -44,7 +47,7 @@ func NewPlatformToolFactory(rag salesrag.SalesRAGBiz, ds store.IStore) ToolFacto
 // longer prevents skill features from working. The agent uses run_python (which has its
 // own sandbox.Pool wiring) to execute the Python the LLM authors from the guidance.
 func NewPlatformToolFactoryWithSkills(
-	rag salesrag.SalesRAGBiz,
+	rag *retrieve.Service,
 	ds store.IStore,
 	reg skills.Registry,
 	pool sandbox.SkillPool,
@@ -106,7 +109,7 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		attStore = f.ds.AgentAttachments()
 	}
 	tools := []FullTool{
-		&kbSearchTool{rag: f.rag},
+		&kbSearchTool{retriever: f.rag},
 		&documentGenerateTool{},
 		&imageGenTool{ds: f.ds, creditService: f.creditService},
 		&bashExecTool{},
