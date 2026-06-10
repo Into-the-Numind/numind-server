@@ -844,7 +844,8 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	ctx = langfuse.WithTrace(ctx, traceID)
 
 	// ===== Phase 2 Task 2.1: Reserve → LLM → Reconcile 控制流 =====
-	// 在 LLM 调用前：CheckAndEstimate + Reserve（post-T1: legacy_tier 已下线，SkipDeduction 恒为 false）
+	// 在 LLM 调用前：CheckAndEstimate + Reserve（free-model-member-only 起：0 价模型+会员
+	// 时 CheckAndEstimate 置 SkipDeduction=true，下方两处 Reserve 由 !pre.SkipDeduction 守卫跳过）
 	// defer FinalizeReservation 在函数返回时对账：
 	//   - actualCost 非零 → Reconcile（delta 回补/退还）
 	//   - opErr 非空    → Refund（分类 provider_timeout / op_failed；问题 1 detach 后客户端
