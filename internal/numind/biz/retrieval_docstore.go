@@ -10,9 +10,13 @@ import (
 
 // kbDocStore 实现 retrieve.DocStore，解析 Scope{AllEnabled:true} 所需的"全部启用文档" docID 列表。
 //
-// 过滤逻辑对齐 salesrag.go 的检索白名单构建（salesRAGBiz.Retrieve / RetrieveStream）：
+// 过滤逻辑对齐 salesrag.go 的 salesRAGBiz.Retrieve 白名单：
 // 列出用户全部文档 → 仅保留 IsEnabled && Status==COMPLETED 的文档 → 返回其 docID。
 // agent 的 kb_search 在空 doc_ids 时走 AllEnabled，需要该适配器解析"翻全部启用文档"。
+//
+// 注（有意设计）：仅含该用户自有文档，**不含系统文档**（is_system=true / user_id=0）——
+// 与 salesRAGBiz.Retrieve 路径一致。salesrag RetrieveStream 另会并入系统文档，agent
+// kb_search 当前不需要；若后续要让 agent 检索系统知识库再统一处理。
 type kbDocStore struct {
 	docs store.KnowledgeDocumentStore
 }

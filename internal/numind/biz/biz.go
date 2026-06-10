@@ -140,7 +140,7 @@ func NewBiz(ds store.IStore) *biz {
 		pricing:       pricingCalc,
 		payment:       payment.NewPaymentBiz(ds, creditBiz),
 		llmRouterSvc:  llmrouter.New(ds),
-		// agentRunner / agentToolRegistry initialized after salesRAGService (line ~215)
+		// agentRunner / agentToolRegistry initialized after vStore + llmRouter（agent factory 已不依赖 salesRAGService）
 	}
 
 	// 创建 ConfigReader，用于从 Redis → MySQL → Viper 读取配置
