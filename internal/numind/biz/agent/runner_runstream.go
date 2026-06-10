@@ -560,6 +560,11 @@ func (r *agentRunner) RunStream(
 		// not a failure: surface the question and park the run exactly like
 		// the post-consume yield path below (dev run #117).
 		if p, ok := yieldFromStreamFailure(sharedState, streamErr); ok {
+			// HW-33: persist the pre-yield transcript so the resumed agent
+			// retains its prior work (user input + tool calls it ran before
+			// asking). Multi-step yields surface here, so this is the common
+			// path in production.
+			r.persistYieldTranscript(ctx, run.ID, req.Input)
 			// Carry the checker-tracked step count so the terminal payload
 			// reports real progress, not 0 (review P2: spec-parity).
 			yieldSt := &LoopState{StepCount: int(sharedState.StepIdx)}
@@ -621,6 +626,8 @@ func (r *agentRunner) RunStream(
 	// WITHOUT finalizeRun — no WriteTurn / memory extractor / search index on a
 	// paused run (the answer endpoint writes the turn on resume).
 	if result != nil && result.TerminalReason == TerminalWaitingForUserChoice {
+		// HW-33: persist pre-yield transcript for resume context (see errpath above).
+		r.persistYieldTranscript(attemptCtx, run.ID, req.Input)
 		endedAt := time.Now()
 		if uErr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalWaitingForUserChoice), &endedAt); uErr != nil {
 			log.Warnw("AgentRunner.RunStream yield UpdateState failed", "agent_run_id", run.ID, "error", uErr)

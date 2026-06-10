@@ -323,6 +323,8 @@ func TestAnswer_Resume_InjectsPriorTranscriptAsHistory(t *testing.T) {
 	}
 
 	require.True(t, runner.runCalled)
+	assert.Contains(t, runner.capturedReq.Input, "[user answered]", "the answer must become the resume Input")
+	assert.Equal(t, runID, runner.capturedReq.ExistingRunID, "resume must target the same run")
 	hist := runner.capturedReq.History
 	require.NotEmpty(t, hist, "resumed agent must receive its pre-yield transcript as History (else it forgets all prior research)")
 

@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"numind-server/internal/numind/biz/agent/stream"
+	"numind-server/internal/numind/biz/narration"
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
@@ -490,4 +491,69 @@ func yieldFromStreamFailure(state *StreamSessionState, err error) (*YieldPayload
 		return &p, true
 	}
 	return nil, false
+}
+
+// persistYieldTranscript writes the agent's pre-yield ReAct transcript (user
+// input + assistant steps + tool groups it ran before pausing) into
+// agent_run.messages. Before this the yield paths persisted nothing, so a
+// waiting run held messages=[] and the resumed agent (which reloads context
+// from persisted transcripts) forgot all prior work — it re-asked for facts it
+// had already researched (HW-33 / dev run #119). Best-effort: a write failure
+// is logged, not fatal — the pending question + answer flow still proceed.
+func (r *agentRunner) persistYieldTranscript(ctx context.Context, runID uint64, userInput string) {
+	turns := buildTranscriptTurns(
+		userInput,
+		stepCollectorFrom(ctx).list(),
+		narration.CollectorFrom(ctx).Events(),
+		"", "",
+	)
+	if turns == nil {
+		// No assistant steps captured (e.g. agent asked on its very first turn,
+		// or the stream-error yield path where consumeEinoStream never ran so
+		// stepCollector is empty — only narration tool events exist). Persist at
+		// least the user input + any tool groups so resume context and session
+		// history are non-empty.
+		turns = []map[string]any{{"role": "user", "content": userInput}}
+		if groups := aggregateToolEvents(narration.CollectorFrom(ctx).Events()); len(groups) > 0 {
+			turns = append(turns, map[string]any{"role": "tool_group", "tool_calls": groups})
+		}
+	}
+	// HW-33 multi-yield: if a transcript already exists (this is a resumed run
+	// that paused AGAIN — e.g. the agent asks a second clarifying question),
+	// prepend it so the earlier yield's work is not clobbered by this overwrite.
+	// AnswerAndClear already appended the prior answer as the existing tail user
+	// turn, which duplicates this turn's leading user turn (userInput == that
+	// answer), so drop the leading dup before merging.
+	if prior := r.existingTranscriptTurns(ctx, runID); len(prior) > 0 {
+		if len(turns) > 0 {
+			if role, _ := turns[0]["role"].(string); role == "user" {
+				turns = turns[1:]
+			}
+		}
+		turns = append(prior, turns...)
+	}
+	finalMessages, mErr := json.Marshal(turns)
+	if mErr != nil {
+		log.Warnw("persistYieldTranscript: marshal failed", "agent_run_id", runID, "error", mErr)
+		return
+	}
+	if err := r.runStore.WriteTurn(ctx, runID, json.RawMessage(finalMessages)); err != nil {
+		log.Warnw("persistYieldTranscript: WriteTurn failed", "agent_run_id", runID, "error", err)
+	}
+}
+
+// existingTranscriptTurns returns the already-persisted transcript turns for a
+// run, or nil if the run has no usable transcript yet (the common single-yield
+// case where messages is empty "[]"). Used by persistYieldTranscript to avoid
+// clobbering a prior yield's context on a re-paused resume run.
+func (r *agentRunner) existingTranscriptTurns(ctx context.Context, runID uint64) []map[string]any {
+	existing, err := r.runStore.Get(ctx, runID)
+	if err != nil || existing == nil || len(existing.Messages) == 0 || string(existing.Messages) == "[]" || string(existing.Messages) == "null" {
+		return nil
+	}
+	var turns []map[string]any
+	if uerr := json.Unmarshal(existing.Messages, &turns); uerr != nil {
+		return nil
+	}
+	return turns
 }

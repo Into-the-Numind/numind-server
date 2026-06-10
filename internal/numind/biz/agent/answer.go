@@ -79,6 +79,21 @@ func (s *StudentRunService) Answer(ctx context.Context, userID uint, runID uint6
 	sessionID := run.SessionID
 	toolFlags := resolveToolFlags(context.Background(), s, agentDefID)
 
+	// HW-33: rebuild the conversation context the resumed agent must see. The
+	// run paused mid-ReAct persisted its pre-yield transcript in run.Messages
+	// (captured here BEFORE AnswerAndClear appended the answer). loadSessionHistory
+	// excludes the current run by design, so the agent would otherwise resume with
+	// ZERO memory of the research it did before pausing (dev run #119: it re-asked
+	// for the company name it was already researching). Inject prior runs' history
+	// PLUS this run's pre-yield transcript as History; the answer becomes Input.
+	resumeHistory := s.loadSessionHistory(context.Background(), sessionID, runID)
+	if len(run.Messages) > 0 && string(run.Messages) != "null" {
+		var turns []map[string]any
+		if uerr := json.Unmarshal(run.Messages, &turns); uerr == nil {
+			resumeHistory = append(resumeHistory, turnsToHistoryMessages(turns)...)
+		}
+	}
+
 	// 6. Restart runner in a detached goroutine (detached ctx, same as Create).
 	go func() {
 		bgCtx := middleware.NewContextWithUserID(context.Background(), userID)
@@ -87,6 +102,7 @@ func (s *StudentRunService) Answer(ctx context.Context, userID uint, runID uint6
 			UserID:            userID,
 			SessionID:         sessionID,
 			Input:             userMsg,
+			History:           resumeHistory,
 			ToolNames:         toolNames,
 			AgentDefinitionID: agentDefID,
 			EnableMemory:      true,
