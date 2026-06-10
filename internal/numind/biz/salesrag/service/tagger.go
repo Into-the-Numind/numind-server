@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"numind-server/internal/numind/biz/salesrag/domain"
+	"numind-server/internal/pkg/retrieval/domain"
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/langfuse"

@@ -23,7 +23,7 @@ import (
 	"gorm.io/gorm/logger"
 
 	"numind-server/internal/numind/biz/chatbot"
-	"numind-server/internal/numind/biz/salesrag/domain"
+	"numind-server/internal/pkg/retrieval/domain"
 	"numind-server/internal/numind/store"
 	cb "numind-server/internal/pkg/contextbudget"
 	"numind-server/internal/pkg/errno"

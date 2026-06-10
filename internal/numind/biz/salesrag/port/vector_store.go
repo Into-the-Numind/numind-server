@@ -2,7 +2,7 @@ package port
 
 import (
 	"context"
-	"numind-server/internal/numind/biz/salesrag/domain"
+	"numind-server/internal/pkg/retrieval/domain"
 )
 
 // SearchFilter 定义检索标准

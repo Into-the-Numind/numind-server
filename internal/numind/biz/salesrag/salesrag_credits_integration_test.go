@@ -31,7 +31,7 @@ import (
 
 	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/biz/membership"
-	"numind-server/internal/numind/biz/salesrag/domain"
+	"numind-server/internal/pkg/retrieval/domain"
 	"numind-server/internal/numind/store"
 	cb "numind-server/internal/pkg/contextbudget"
 	"numind-server/internal/pkg/errno"

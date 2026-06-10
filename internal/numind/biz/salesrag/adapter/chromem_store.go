@@ -3,7 +3,7 @@ package adapter
 import (
 	"context"
 	"fmt"
-	"numind-server/internal/numind/biz/salesrag/domain"
+	"numind-server/internal/pkg/retrieval/domain"
 	"numind-server/internal/numind/biz/salesrag/port"
 	"strconv"
 	"strings"

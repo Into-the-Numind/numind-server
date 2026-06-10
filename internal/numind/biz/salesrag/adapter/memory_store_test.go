@@ -3,7 +3,7 @@ package adapter_test
 import (
 	"context"
 	"numind-server/internal/numind/biz/salesrag/adapter"
-	"numind-server/internal/numind/biz/salesrag/domain"
+	"numind-server/internal/pkg/retrieval/domain"
 	"numind-server/internal/numind/biz/salesrag/port"
 	"testing"
 

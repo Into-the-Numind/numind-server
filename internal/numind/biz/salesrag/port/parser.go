@@ -3,7 +3,7 @@ package port
 import (
 	"context"
 	"io"
-	"numind-server/internal/numind/biz/salesrag/domain"
+	"numind-server/internal/pkg/retrieval/domain"
 )
 
 // DocumentParser 文档解析器接口

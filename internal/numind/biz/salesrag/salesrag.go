@@ -18,7 +18,7 @@ import (
 	"unicode/utf8"
 
 	"numind-server/internal/numind/biz/credit"
-	"numind-server/internal/numind/biz/salesrag/domain"
+	"numind-server/internal/pkg/retrieval/domain"
 	"numind-server/internal/numind/biz/salesrag/service"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"

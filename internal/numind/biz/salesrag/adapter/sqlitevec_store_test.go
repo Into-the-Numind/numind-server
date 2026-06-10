@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"numind-server/internal/numind/biz/salesrag/domain"
+	"numind-server/internal/pkg/retrieval/domain"
 	"numind-server/internal/numind/biz/salesrag/port"
 
 	"github.com/stretchr/testify/assert"

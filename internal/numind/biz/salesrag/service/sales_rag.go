@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"numind-server/internal/numind/biz/salesrag/domain"
+	sdomain "numind-server/internal/numind/biz/salesrag/domain" // MetaStrategy/BasicStrategy
 	"numind-server/internal/numind/biz/salesrag/port"
 	"numind-server/internal/pkg/aiservice"
 	aismw "numind-server/internal/pkg/aiservice/middleware"
@@ -14,6 +14,7 @@ import (
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
+	"numind-server/internal/pkg/retrieval/domain" // KnowledgeChunk 等
 )
 
 // RetrievalVerdict 检索判决结果 (V1 兼容)
@@ -32,8 +33,8 @@ type RetrievalVerdict struct {
 	History       []string        `json:"history,omitempty"`        // 对话历史
 
 	// V3 策略引擎扩展
-	Strategy       *domain.BasicStrategy `json:"strategy,omitempty"`         // 选择的销售策略
-	StrategyMetaID string                `json:"strategy_meta_id,omitempty"` // 综合策略ID
+	Strategy       *sdomain.BasicStrategy `json:"strategy,omitempty"`         // 选择的销售策略
+	StrategyMetaID string                 `json:"strategy_meta_id,omitempty"` // 综合策略ID
 
 	// V4 知识库分类
 	DocCategoryMap map[uint]string `json:"doc_category_map,omitempty"` // 文档ID→分类 (product/case/faq)
@@ -144,7 +145,7 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 	var chunksErr error
 	var opinionChunks []domain.KnowledgeChunk
 	var opinionErr error
-	var strategy *domain.BasicStrategy
+	var strategy *sdomain.BasicStrategy
 
 	// 2a. 并行 - RAG 检索（使用包含 HyDE 的完整搜索列表）
 	wg.Add(1)

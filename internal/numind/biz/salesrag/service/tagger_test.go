@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"numind-server/internal/numind/biz/salesrag/domain"
+	"numind-server/internal/pkg/retrieval/domain"
 
 	"github.com/stretchr/testify/assert"
 )

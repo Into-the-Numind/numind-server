@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"numind-server/internal/numind/biz/contextbudget"
-	"numind-server/internal/numind/biz/salesrag/domain"
+	"numind-server/internal/pkg/retrieval/domain"
 	"numind-server/internal/numind/biz/salesrag/port"
 	"numind-server/internal/pkg/aiservice"
 	aismw "numind-server/internal/pkg/aiservice/middleware"

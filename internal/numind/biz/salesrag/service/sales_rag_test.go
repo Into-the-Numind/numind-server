@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"numind-server/internal/numind/biz/salesrag/adapter"
-	"numind-server/internal/numind/biz/salesrag/domain"
+	"numind-server/internal/pkg/retrieval/domain"
 	"numind-server/internal/numind/biz/salesrag/service"
 	aiservice "numind-server/internal/pkg/aiservice"
 
