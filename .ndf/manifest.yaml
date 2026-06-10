@@ -1,5 +1,20 @@
 schema_version: '2.0'
 features:
+- id: budget-tracker-token-units
+  track: hotfix
+  description: 'Agent 内存预算护栏单位错误（launch-sprint R1 前置探针发现，dev run #113 取证）：budgetgate PostToolCall 把原始 token（PromptTokens+CompletionTokens）直接喂 BudgetTracker.RecordUsage，而 MaxCredits/daily 维度以积分计（credit_cap_per_session 默认 800）→ 单次 ~6k token 调用即击穿上限，所有实质性 agent run 在首次工具调用被 budget hook 杀死（terminal used=6829 vs 真实扣费 ~5 积分；真实三池 Reserve/Reconcile 不受影响）。修复：WithPricingCalculator 注入平台 pricing 计算器 token→积分（cents==credits 1:1 与 billing gateway 同约定），降级路径（无 calculator/无 rule/legacy output JSON）用保守 500 tok/credit ceil 比率；tracker RecordUsage 参数改名 credits 钉死单位不变量；biz.go 接线。'
+  classification_reason: 'Hotfix：无 DB schema/新 API/新外部服务；4 文件（gate.go/tracker.go/biz.go+测试）；内存护栏非真实扣费路径（真实计费 Reserve/Reconcile 已独立验证不受影响）。'
+  status: active
+  stage: H2
+  repos:
+    numind-server: fix/budget-tracker-token-units
+  worktrees:
+    numind-server: /private/tmp/wt-budget-tracker-token-units-numind-server
+  progress:
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-H2 (ai 2026-06-10): TDD 链——70594c44 test(qa) 失败复现（记录 6059 token 当积分）→ bd092dde 修复。双 Sonnet reviewer 并行均 PASS_WITH_CONCERNS，0 P0/P1；5 条 P2（credits==0 不变量注释/closure 捕获对称/2 处 stale 注释/stub 参数名）全部当场修复 amend。1 条 pre-existing gap 移交 backlog HW-31（tool_annotate_image 经包级 chatFn 直调 aiservice.Chat 不进 usageStore→vision token 对护栏透明）。go test ./... ALL_PASS + golangci-lint clean。'
 - id: agent-image-durable-render
   ndf_version: '3.0'
   description: 'agent-mode-dev-fixes #4 后续(User dev 复测仍看不到图)：图真生成+ArtifactURL 经 SSE 下发(已验证), 但 artifact 是 transient——reload 时 loadSessionSnapshot(agentChat.ts:451) 用 DB(getSessionSnapshot, 从不含 artifact)整体替换 messages, 图消失。根因=artifact 未持久化。修(durable render): 后端用 ctx-attached imageCollector(image_collector.go)在 adapter InvokableRun(stream+非stream 都跑)收集生成图, consumeEinoStream(流式) + runner.Run finalize(非流式)把 ![](url) 追加进最终 assistant content→持久化进 agent_run.messages→reload 经 AgentFinalAnswer/assistant markdown(renderMarkdown+DOMPurify 默许 img+已有 handleImageClick)渲染。前端删 transient artifact bubble 防 live 双图。review P1: 不能往非流式 ctx 注 StreamSessionState(会破坏 adapter:204 yield 处理)→改用独立 ctx collector 覆盖两路径。follow-up: 24h presigned URL 过期(persisted markdown 隔日裂图)→存 object key 读时再签。'
