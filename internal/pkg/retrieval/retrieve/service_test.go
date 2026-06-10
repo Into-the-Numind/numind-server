@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sync"
 	"testing"
 
 	"numind-server/internal/pkg/retrieval/domain"
@@ -18,7 +19,8 @@ type fakeVectorStore struct {
 	byQuery map[string][]domain.KnowledgeChunk
 	// searchErr: 若该 query 命中此 map，则该路返回错误
 	searchErr map[string]error
-	// 记录调用
+	// 记录调用（parallelSearch 并发调用 Search，mu 保护这些 slice 的 append）
+	mu         sync.Mutex
 	gotFilters []port.SearchFilter
 	gotLimits  []int
 	gotQueries []string
@@ -34,9 +36,11 @@ func (f *fakeVectorStore) FetchByDocumentID(ctx context.Context, documentID uint
 	return nil, nil
 }
 func (f *fakeVectorStore) Search(ctx context.Context, query string, filter port.SearchFilter, limit int) ([]domain.KnowledgeChunk, error) {
+	f.mu.Lock()
 	f.gotFilters = append(f.gotFilters, filter)
 	f.gotLimits = append(f.gotLimits, limit)
 	f.gotQueries = append(f.gotQueries, query)
+	f.mu.Unlock()
 	if f.searchErr != nil {
 		if err, ok := f.searchErr[query]; ok {
 			return nil, err
@@ -66,17 +70,15 @@ func (f *fakeRewriter) Rewrite(ctx context.Context, query string, history []stri
 
 // fakeDocStore 返回预设的启用文档 ID 列表。
 type fakeDocStore struct {
-	ids        []uint
-	err        error
-	gotUserID  uint
-	callCount  int
-	calledWith []uint
+	ids       []uint
+	err       error
+	gotUserID uint
+	callCount int
 }
 
 func (f *fakeDocStore) ListEnabledDocIDs(ctx context.Context, userID uint) ([]uint, error) {
 	f.callCount++
 	f.gotUserID = userID
-	f.calledWith = append(f.calledWith, userID)
 	if f.err != nil {
 		return nil, f.err
 	}
