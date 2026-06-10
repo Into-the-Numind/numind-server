@@ -94,8 +94,9 @@ func TestBudget_UseSkill_PreAndPostBothInvoked(t *testing.T) {
 
 	// Verify BudgetTracker recorded the usage (load_skill counts the same as any tool)
 	snap := tr.Snapshot(context.Background(), 7)
-	assert.Equal(t, int64(15), snap.Credits,
-		"load_skill output tokens (15) must be recorded by tracker.RecordUsage (AC-6)")
+	// units fix: 15 tokens → ceil(15/500) = 1 credit.
+	assert.Equal(t, int64(1), snap.Credits,
+		"load_skill output tokens must be recorded (ratio-converted to credits) by tracker.RecordUsage (AC-6)")
 }
 
 func TestBudget_UseSkill_BudgetExceededShortCircuits(t *testing.T) {
@@ -165,5 +166,6 @@ func TestBudget_UseSkill_PostBeforeRecordUsage_OrderingContract(t *testing.T) {
 
 	// Snapshot proves RecordUsage ran AFTER base.Post (else credit would be 0)
 	snap := tr.Snapshot(context.Background(), 11)
-	assert.Equal(t, int64(42), snap.Credits, "RecordUsage must run for load_skill after base.Post")
+	// units fix: 42 tokens → ceil(42/500) = 1 credit.
+	assert.Equal(t, int64(1), snap.Credits, "RecordUsage must run for load_skill after base.Post")
 }

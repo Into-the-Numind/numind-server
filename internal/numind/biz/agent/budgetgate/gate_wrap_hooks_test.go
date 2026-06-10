@@ -147,7 +147,8 @@ func TestWrapHooks_PostToolCall_ForwardsToBaseFirst(t *testing.T) {
 	assert.Equal(t, []string{"base"}, callOrder)
 
 	s := tr.Snapshot(context.Background(), 1)
-	assert.Equal(t, int64(42), s.Credits, "tokens should be recorded from output usage field")
+	// units fix: 42 tokens → ceil(42/500) = 1 credit.
+	assert.Equal(t, int64(1), s.Credits, "output usage tokens are ratio-converted to credits before recording")
 }
 
 func TestWrapHooks_PostToolCall_NilBase(t *testing.T) {

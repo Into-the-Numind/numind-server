@@ -48,9 +48,10 @@ func TestPostToolCall_ReadsUsageFromAdapter(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, agent.HookActionContinue, action)
 
-	// Verify tracker recorded 150 (100+50) credits.
+	// Verify tracker recorded ratio-converted credits from 150 raw tokens.
 	snap := tr.Snapshot(context.Background(), 42)
-	assert.Equal(t, int64(150), snap.Credits, "tracker should record PromptTokens+CompletionTokens from adapter")
+	// units fix: 150 tokens, no pricing wired → ceil(150/500) = 1 credit.
+	assert.Equal(t, int64(1), snap.Credits, "tracker records ratio-converted credits from adapter usage")
 }
 
 // TestPostToolCall_FallbackToOutputTokens verifies the legacy fallback path:
@@ -78,7 +79,8 @@ func TestPostToolCall_FallbackToOutputTokens(t *testing.T) {
 	assert.Equal(t, agent.HookActionContinue, action)
 
 	snap := tr.Snapshot(context.Background(), 43)
-	assert.Equal(t, int64(77), snap.Credits, "should fall back to tokensFromOutput when adapter lookup misses")
+	// units fix: 77 tokens via legacy output → ceil(77/500) = 1 credit.
+	assert.Equal(t, int64(1), snap.Credits, "should fall back to tokensFromOutput (ratio-converted) when adapter lookup misses")
 }
 
 // TestPostToolCall_NilAdapter_FallsBack verifies backward-compat: WrapHooks built
@@ -102,5 +104,6 @@ func TestPostToolCall_NilAdapter_FallsBack(t *testing.T) {
 	assert.Equal(t, agent.HookActionContinue, action)
 
 	snap := tr.Snapshot(context.Background(), 44)
-	assert.Equal(t, int64(200), snap.Credits, "nil adapter should fall back to tokensFromOutput (backward compat)")
+	// units fix: 200 tokens via legacy output → ceil(200/500) = 1 credit.
+	assert.Equal(t, int64(1), snap.Credits, "nil adapter should fall back to tokensFromOutput, ratio-converted (backward compat)")
 }

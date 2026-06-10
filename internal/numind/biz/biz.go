@@ -374,6 +374,9 @@ func NewBiz(ds store.IStore) *biz {
 	budgetWrappedHooks := budgetGate.WrapHooks(
 		sandboxHookManager.AsRunHooks(),
 		budgetgate.WithUsageLookup(agent.NewCallUsageLookup(callUsageStore)),
+		// budget-tracker-token-units fix: convert tokens→credits before the
+		// tracker accumulates — MaxCredits/daily dims are credit-denominated.
+		budgetgate.WithPricingCalculator(pricingCalc),
 	)
 	permWrappedHooks := permission.WrapHooks(budgetWrappedHooks, b.permissionGate)
 
