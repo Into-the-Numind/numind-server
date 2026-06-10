@@ -336,3 +336,27 @@ func TestAnswer_Resume_InjectsPriorTranscriptAsHistory(t *testing.T) {
 	assert.Contains(t, joined, "为莫小派做小红书定位调研", "original task must survive into resume context")
 	assert.Contains(t, joined, "已找到部分信息", "agent's prior research must survive into resume context")
 }
+
+// ask-question-freetext: free-text-only answers (no option selected) are valid.
+func TestAnswer_FreeTextOnly_Succeeds(t *testing.T) {
+	rs := newAnswerRunStore()
+	svc := newAnswerService(rs)
+	userID := uint(42)
+	runID := seedAnswerRun(rs, userID, string(TerminalWaitingForUserChoice))
+
+	resp, err := svc.Answer(context.Background(), userID, runID, AnswerRequest{Selected: nil, FreeText: "我们主要服务留学生，客单价3000"})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "resumed", resp.Status)
+}
+
+// ask-question-freetext: empty selection AND empty free text is rejected.
+func TestAnswer_EmptySelectionAndFreeText_Rejected(t *testing.T) {
+	rs := newAnswerRunStore()
+	svc := newAnswerService(rs)
+	userID := uint(42)
+	runID := seedAnswerRun(rs, userID, string(TerminalWaitingForUserChoice))
+
+	_, err := svc.Answer(context.Background(), userID, runID, AnswerRequest{Selected: nil, FreeText: "   "})
+	require.Error(t, err, "an answer with neither an option nor free text must be rejected")
+}

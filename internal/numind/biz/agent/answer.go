@@ -16,9 +16,12 @@ import (
 
 // AnswerRequest is the payload for POST /v1/agent-runs/:id/answer.
 type AnswerRequest struct {
-	// Selected contains the chosen option keys (1–4).
-	Selected []string `json:"selected" binding:"required,min=1,max=4"`
-	// FreeText is optional free-form text the user may add alongside option selection.
+	// Selected contains the chosen option keys (0–4). May be EMPTY when the user
+	// answers only via the always-present free-text box (ask-question-freetext).
+	Selected []string `json:"selected" binding:"max=4"`
+	// FreeText is free-form text the user may add alongside, or instead of, an
+	// option selection. At least one of Selected / FreeText must be non-empty
+	// (enforced in Answer — binding can't express the cross-field rule).
 	FreeText string `json:"free_text,omitempty"`
 }
 
@@ -42,6 +45,15 @@ func (s *StudentRunService) Answer(ctx context.Context, userID uint, runID uint6
 	// 1. Ownership check (reuse existing helper).
 	if err := s.verifyRunOwnership(ctx, userID, runID); err != nil {
 		return nil, err
+	}
+
+	// 1b. Cross-field guard: at least one of Selected / FreeText must be present.
+	// binding only validates max=4 on Selected; free-text-only answers are valid
+	// (ask-question-freetext), but an empty-empty answer is not.
+	if len(req.Selected) == 0 && strings.TrimSpace(req.FreeText) == "" {
+		return nil, errno.ErrInvalidInput.SetMessage(
+			"answer: must select an option or provide free text",
+		)
 	}
 
 	// 2. State check.

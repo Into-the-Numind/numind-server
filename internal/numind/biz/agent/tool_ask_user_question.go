@@ -24,7 +24,7 @@ var _ FullTool = (*askUserQuestionTool)(nil)
 
 func (t *askUserQuestionTool) Name() string { return "ask_user_question" }
 func (t *askUserQuestionTool) Description() string {
-	return "Ask the user a clarifying question with structured options (2–4 choices). Yields the run until the user answers via POST /v1/agent-runs/:id/answer. Use when the user's intent is ambiguous and proceeding incorrectly would waste significant resources or produce the wrong output."
+	return "Ask the user for information you cannot obtain yourself — their private/internal facts, specific needs, preferences, or a decision only they can make. Provide 2–4 options where EACH option is a concrete, complete candidate answer to the question (e.g. for '陪跑周期多长?' use '90天'/'180天'/'半年以上', NOT meta-categories like '陪跑模式细节'). The user can pick an option OR type their own answer in the free-text box that always appears below the options, so options are suggestions, not an exhaustive list. Yields the run until the user answers via POST /v1/agent-runs/:id/answer. Use this (not a plain text reply) whenever the task needs info only the user has and proceeding without it would produce a wrong or low-quality result; do NOT use it for info you can research or reasonably infer yourself."
 }
 func (t *askUserQuestionTool) UserFacingName() string { return "反问" }
 func (t *askUserQuestionTool) NarrationVerb() string  { return "反问" }
@@ -42,7 +42,7 @@ func (t *askUserQuestionTool) InputSchema() json.RawMessage {
 				"type": "array",
 				"minItems": 2,
 				"maxItems": 4,
-				"description": "2-4 answer choices the user can pick from.",
+				"description": "2-4 concrete candidate answers to the question. Each MUST be a complete, selectable answer (e.g. '90天', '1v1私教'), NOT a meta-category like '陪跑模式细节' (which leaves the user nothing real to convey). The user always also has a free-text box below to type their own answer, so these are suggestions, not exhaustive.",
 				"items": {
 					"type": "object",
 					"properties": {
