@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 	"unicode/utf8"
 
@@ -303,6 +304,12 @@ func (s *StudentQueryService) GetSessionSnapshot(ctx context.Context, userID uin
 	for i := len(runs) - 1; i >= 0; i-- {
 		runMessages := transformMessages(runs[i].Messages, runs[i].ID, runs[i].StartedAt, runs[i].EndedAt, runs[i].Status, runs[i].StateReason)
 		allMessages = append(allMessages, runMessages...)
+		// A run paused at ask_user_question has no assistant turn for the
+		// question; synthesize an interactive card so a reloaded session can
+		// render it and resume (yield-session-reload fix).
+		if q, ok := synthesizeQuestionPrompt(&runs[i]); ok {
+			allMessages = append(allMessages, q)
+		}
 	}
 
 	snap.Messages = allMessages
@@ -486,15 +493,74 @@ func (s *StudentQueryService) toEnrichedSummaries(ctx context.Context, runs []mo
 // Discriminated by Type: 'user' | 'assistant' | 'final_answer' | 'tool_group'.
 type agentMessage struct {
 	ID        string `json:"id"`
-	Type      string `json:"type"`               // 'user' | 'assistant' | 'final_answer' | 'tool_group'
+	Type      string `json:"type"`               // 'user' | 'assistant' | 'final_answer' | 'tool_group' | 'question_prompt'
 	Text      string `json:"text,omitempty"`     // for type='user'
 	Markdown  string `json:"markdown,omitempty"` // for type='assistant' | 'final_answer'
 	Reasoning string `json:"reasoning,omitempty"`
-	RunID     uint64 `json:"run_id,omitempty"` // for type='final_answer'
+	RunID     uint64 `json:"run_id,omitempty"` // for type='final_answer' | 'question_prompt'
 	// ToolCalls carries the persisted tool-call timeline for type='tool_group'.
 	// Shape is 1:1 with the frontend ToolCallAggregate so it renders untransformed.
 	ToolCalls []persistedToolCall `json:"tool_calls,omitempty"`
 	Timestamp string              `json:"timestamp"` // RFC3339
+
+	// Question-prompt fields (type='question_prompt'): synthesized for a run
+	// paused at ask_user_question so a reloaded session re-renders the
+	// interactive card and the learner can answer (yield-session-reload fix).
+	Question     string              `json:"question,omitempty"`
+	Options      []questionPromptOpt `json:"options,omitempty"`
+	Header       string              `json:"header,omitempty"`
+	MultiSelect  bool                `json:"multi_select,omitempty"`  // omitempty: shared agentMessage struct — false would pollute every non-question message
+	AnswerStatus string              `json:"answer_status,omitempty"` // 'pending' | 'answered'
+}
+
+// questionPromptOpt mirrors the frontend QuestionPromptOption {label, description}.
+type questionPromptOpt struct {
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
+// synthesizeQuestionPrompt builds a question_prompt agentMessage from a run's
+// pending_question_json. Returns ok=false when the run is not waiting or the
+// payload is missing/invalid. The synthesized card carries answer_status
+// 'pending' so the UI renders it interactively after a reload.
+func synthesizeQuestionPrompt(run *model.AgentRun) (agentMessage, bool) {
+	if run.StateReason != string(TerminalWaitingForUserChoice) {
+		return agentMessage{}, false
+	}
+	if len(run.PendingQuestionJSON) == 0 || string(run.PendingQuestionJSON) == "null" {
+		return agentMessage{}, false
+	}
+	var p struct {
+		Question    string `json:"question"`
+		Header      string `json:"header"`
+		MultiSelect bool   `json:"multi_select"`
+		Options     []struct {
+			Label       string `json:"label"`
+			Description string `json:"description"`
+		} `json:"options"`
+	}
+	if err := json.Unmarshal(run.PendingQuestionJSON, &p); err != nil || p.Question == "" {
+		return agentMessage{}, false
+	}
+	opts := make([]questionPromptOpt, 0, len(p.Options))
+	for _, o := range p.Options {
+		opts = append(opts, questionPromptOpt{Label: o.Label, Description: o.Description})
+	}
+	ts := run.StartedAt.UTC().Format(time.RFC3339)
+	if run.PendingQuestionAt != nil {
+		ts = run.PendingQuestionAt.UTC().Format(time.RFC3339)
+	}
+	return agentMessage{
+		ID:           "q-" + strconv.FormatUint(run.ID, 10),
+		Type:         "question_prompt",
+		RunID:        run.ID,
+		Question:     p.Question,
+		Options:      opts,
+		Header:       p.Header,
+		MultiSelect:  p.MultiSelect,
+		AnswerStatus: "pending",
+		Timestamp:    ts,
+	}, true
 }
 
 // transformMessages converts the raw [{role,content}] turn array stored in
