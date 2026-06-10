@@ -133,15 +133,17 @@ func (s *StudentRunService) Answer(ctx context.Context, userID uint, runID uint6
 // original question (parsed from pendingJSON) per spec §2.3d so the LLM sees
 // the full Q&A context on resume.
 func buildAnswerMessage(pendingJSON []byte, selected []string, freeText string) string {
-	var payload YieldPayload
-	if err := json.Unmarshal(pendingJSON, &payload); err != nil {
-		// Fallback: don't block answer even if JSON parsing fails.
-		payload.Question = "<unparseable question>"
+	// T1 bridge: parse the now-array pending payload but keep the existing
+	// single-question answer semantics (first question). agent-multi-question T2
+	// replaces this with per-question answers from the answers map.
+	question := "<unparseable question>"
+	if payload, err := ParsePendingQuestion(pendingJSON); err == nil && len(payload.Questions) > 0 {
+		question = payload.Questions[0].Question
 	}
 	selectedJSON, _ := json.Marshal(selected)
 	var sb strings.Builder
 	sb.WriteString("[user answered]\nQuestion: ")
-	sb.WriteString(payload.Question)
+	sb.WriteString(question)
 	sb.WriteString("\nSelected: ")
 	sb.Write(selectedJSON)
 	if freeText != "" {

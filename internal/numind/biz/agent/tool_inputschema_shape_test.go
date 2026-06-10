@@ -73,8 +73,10 @@ func TestToolInputSchemas_MatchExecuteContract(t *testing.T) {
 			[]string{"kind", "key", "value"}, []string{"kind", "key", "value"}},
 		{"memory_read", (&memoryReadTool{}).InputSchema(),
 			[]string{"key", "kind", "limit"}, nil}, // kind carries an enum; properties match struct
+		// agent-multi-question: top-level is now a `questions` array; per-question
+		// fields (question/options/header/multi_select) live in items.properties.
 		{"ask_user_question", (&askUserQuestionTool{}).InputSchema(),
-			[]string{"question", "options", "header", "multi_select"}, []string{"question", "options"}},
+			[]string{"questions"}, []string{"questions"}},
 
 		// ── Task 3: read ──
 		{"web_search", (&webSearchTool{}).InputSchema(),

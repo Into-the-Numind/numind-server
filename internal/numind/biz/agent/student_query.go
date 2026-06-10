@@ -530,20 +530,17 @@ func synthesizeQuestionPrompt(run *model.AgentRun) (agentMessage, bool) {
 	if len(run.PendingQuestionJSON) == 0 || string(run.PendingQuestionJSON) == "null" {
 		return agentMessage{}, false
 	}
-	var p struct {
-		Question    string `json:"question"`
-		Header      string `json:"header"`
-		MultiSelect bool   `json:"multi_select"`
-		Options     []struct {
-			Label       string `json:"label"`
-			Description string `json:"description"`
-		} `json:"options"`
-	}
-	if err := json.Unmarshal(run.PendingQuestionJSON, &p); err != nil || p.Question == "" {
+	// T1 bridge: read the now-array pending payload (ParsePendingQuestion wraps
+	// legacy single-question rows) but keep emitting the flat single-question
+	// agentMessage shape so what T1 writes is reloadable. agent-multi-question T3
+	// replaces this with a questions-array agentMessage.
+	payload, err := ParsePendingQuestion(run.PendingQuestionJSON)
+	if err != nil || len(payload.Questions) == 0 || payload.Questions[0].Question == "" {
 		return agentMessage{}, false
 	}
-	opts := make([]questionPromptOpt, 0, len(p.Options))
-	for _, o := range p.Options {
+	q := payload.Questions[0]
+	opts := make([]questionPromptOpt, 0, len(q.Options))
+	for _, o := range q.Options {
 		opts = append(opts, questionPromptOpt{Label: o.Label, Description: o.Description})
 	}
 	ts := run.StartedAt.UTC().Format(time.RFC3339)
@@ -554,10 +551,10 @@ func synthesizeQuestionPrompt(run *model.AgentRun) (agentMessage, bool) {
 		ID:           "q-" + strconv.FormatUint(run.ID, 10),
 		Type:         "question_prompt",
 		RunID:        run.ID,
-		Question:     p.Question,
+		Question:     q.Question,
 		Options:      opts,
-		Header:       p.Header,
-		MultiSelect:  p.MultiSelect,
+		Header:       q.Header,
+		MultiSelect:  q.MultiSelect,
 		AnswerStatus: "pending",
 		Timestamp:    ts,
 	}, true

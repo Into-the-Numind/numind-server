@@ -7,14 +7,14 @@ import (
 
 func TestYieldError_Is_SentinelMatch(t *testing.T) {
 	ye := &yieldError{
-		Payload: YieldPayload{
+		Payload: YieldPayload{Questions: []YieldQuestion{{
 			Question: "Which option?",
 			Options: []YieldOption{
 				{Key: "a", Label: "Option A"},
 				{Key: "b", Label: "Option B"},
 			},
 			MultiSelect: false,
-		},
+		}}},
 	}
 	if !errors.Is(ye, ErrYieldForUserQuestion) {
 		t.Errorf("errors.Is(yieldError, ErrYieldForUserQuestion) = false, want true")
@@ -22,7 +22,7 @@ func TestYieldError_Is_SentinelMatch(t *testing.T) {
 }
 
 func TestYieldError_Is_DoesNotMatchOtherErrors(t *testing.T) {
-	ye := &yieldError{Payload: YieldPayload{Question: "q?"}}
+	ye := &yieldError{Payload: YieldPayload{Questions: []YieldQuestion{{Question: "q?"}}}}
 	other := errors.New("some other error")
 	if errors.Is(ye, other) {
 		t.Errorf("errors.Is(yieldError, otherErr) = true, want false")
@@ -30,7 +30,7 @@ func TestYieldError_Is_DoesNotMatchOtherErrors(t *testing.T) {
 }
 
 func TestYieldError_As_UnwrapsPayload(t *testing.T) {
-	wantPayload := YieldPayload{
+	wantQ := YieldQuestion{
 		Question: "Pick one",
 		Options: []YieldOption{
 			{Key: "x", Label: "X option", Description: "desc x"},
@@ -38,28 +38,32 @@ func TestYieldError_As_UnwrapsPayload(t *testing.T) {
 		Header:      "Test header",
 		MultiSelect: true,
 	}
-	original := &yieldError{Payload: wantPayload}
+	original := &yieldError{Payload: YieldPayload{Questions: []YieldQuestion{wantQ}}}
 
 	var target *yieldError
 	if !errors.As(original, &target) {
 		t.Fatalf("errors.As(yieldError, &target) = false, want true")
 	}
-	if target.Payload.Question != wantPayload.Question {
-		t.Errorf("Payload.Question = %q, want %q", target.Payload.Question, wantPayload.Question)
+	if len(target.Payload.Questions) != 1 {
+		t.Fatalf("Payload.Questions len = %d, want 1", len(target.Payload.Questions))
 	}
-	if target.Payload.Header != wantPayload.Header {
-		t.Errorf("Payload.Header = %q, want %q", target.Payload.Header, wantPayload.Header)
+	got := target.Payload.Questions[0]
+	if got.Question != wantQ.Question {
+		t.Errorf("Question = %q, want %q", got.Question, wantQ.Question)
 	}
-	if target.Payload.MultiSelect != wantPayload.MultiSelect {
-		t.Errorf("Payload.MultiSelect = %v, want %v", target.Payload.MultiSelect, wantPayload.MultiSelect)
+	if got.Header != wantQ.Header {
+		t.Errorf("Header = %q, want %q", got.Header, wantQ.Header)
 	}
-	if len(target.Payload.Options) != 1 || target.Payload.Options[0].Key != "x" {
-		t.Errorf("Payload.Options = %+v, want [{Key:x ...}]", target.Payload.Options)
+	if got.MultiSelect != wantQ.MultiSelect {
+		t.Errorf("MultiSelect = %v, want %v", got.MultiSelect, wantQ.MultiSelect)
+	}
+	if len(got.Options) != 1 || got.Options[0].Key != "x" {
+		t.Errorf("Options = %+v, want [{Key:x ...}]", got.Options)
 	}
 }
 
 func TestYieldError_Unwrap_ReturnsSentinel(t *testing.T) {
-	ye := &yieldError{Payload: YieldPayload{Question: "q?"}}
+	ye := &yieldError{Payload: YieldPayload{Questions: []YieldQuestion{{Question: "q?"}}}}
 	unwrapped := ye.Unwrap()
 	if unwrapped != ErrYieldForUserQuestion {
 		t.Errorf("Unwrap() = %v, want ErrYieldForUserQuestion", unwrapped)

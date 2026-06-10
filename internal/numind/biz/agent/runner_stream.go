@@ -449,16 +449,22 @@ func (r *agentRunner) persistAndEmitYield(ctx context.Context, runID uint64, st 
 		)
 		langfuse.EndSpan(tc.TraceID, spanID)
 	}
-	opts := make([]stream.QuestionOption, 0, len(p.Options))
-	for _, o := range p.Options {
-		opts = append(opts, stream.QuestionOption{Label: o.Label, Description: o.Description})
+	qs := make([]stream.QuestionPromptItem, 0, len(p.Questions))
+	for _, q := range p.Questions {
+		// The backend YieldOption carries a machine `key`, but the client
+		// identifies options by label, so key is intentionally not forwarded.
+		opts := make([]stream.QuestionOption, 0, len(q.Options))
+		for _, o := range q.Options {
+			opts = append(opts, stream.QuestionOption{Label: o.Label, Description: o.Description})
+		}
+		qs = append(qs, stream.QuestionPromptItem{
+			Question:    q.Question,
+			Options:     opts,
+			Header:      q.Header,
+			MultiSelect: q.MultiSelect,
+		})
 	}
-	emit(stream.EventQuestionPrompt, stream.QuestionPromptPayload{
-		Question:    p.Question,
-		Options:     opts,
-		Header:      p.Header,
-		MultiSelect: p.MultiSelect,
-	})
+	emit(stream.EventQuestionPrompt, stream.QuestionPromptPayload{Questions: qs})
 	// Drive the state machine (parity with runner.go's Run yield path) —
 	// this sets st.TerminalReason = TerminalWaitingForUserChoice.
 	st.Transition(LoopEventAskUserPaused)
