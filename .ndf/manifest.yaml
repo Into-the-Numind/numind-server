@@ -1,5 +1,18 @@
 schema_version: '2.0'
 features:
+- id: stream-yield-errpath
+  track: hotfix
+  description: 'R1 现场用户上报（dev run #117）：方法论指示 agent "查不到就问用户" → ask_user_question 在流式路径 yield → run 被判 model_error（"服务暂时不可用"）+ messages 持久化为空（刷新后会话全消失）。根因：多步 ReAct 中 einoAgent.Stream() 同步执行整图，工具节点的 yield 哨兵从 Stream() 返回值冒出，streamErr 分支无 yield 检查（BLK-4 旧修复只盖了 consumeEinoStream 的 stream 内路径）。修复：抽 persistAndEmitYield 单一 yield 核心（consumeEinoStream handleYield 委托）+ yieldFromStreamFailure 双探测（PendingYield 优先/errors.As 走 eino Unwrap 链）+ streamErr 分支接球转 waiting_for_user_choice；通用流错误改走 finalizeRun 持久化用户 turn（修空 messages/会话空白）。'
+  classification_reason: 'Hotfix：无 schema/新 API/外部服务；2 个 runner 文件+测试；用户上报 Bug-from-Customer §12 适用（首 commit 失败复现测试，行为级：真 ask 工具+mock chatStreamFn，复现与 run #117 一字不差的错误）。'
+  status: active
+  stage: H2
+  repos:
+    numind-server: fix/stream-yield-errpath
+  progress:
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-H2 (ai 2026-06-10): TDD——ae254673 test(qa) 行为级失败复现→8756640e 修复(amend 含 review P2)。双 Sonnet reviewer 并行：spec=PASS_WITH_CONCERNS(P2 StepCount=0→改用 sharedState.StepIdx；P2 newChanEmitter seq++ 移入成功发送分支对齐 T04 约定)，quality=PASS(同 seq P2)。已验证：resume 链路等价(answer 端点两件套 UpdatePendingQuestion+UpdateState 齐)、无 double-UpdateState、finalizeRun 副作用与 consumeErr 路径先例一致、非流式 Run 路径/consumeEinoStream 三处 yield 检查不受影响、seq 前端未消费无破坏。全 agent 子包 -race 绿。'
 - id: permission-allow-sandboxed-exec
   track: hotfix
   description: 'R1 预探针 run #115 发现：权限管线 UserSessionRule v1 对 IsDestructive=true 工具一律 deny（"该操作可能修改你的数据"），而全仓库 destructive 只有 bash_exec/run_python——均在一次性沙箱容器内执行、碰不到用户数据。两 feature 对撞：open-tools(06-01) 注册层全开 + remove-permission-backdoor(06-02) 管线真实化 → 文档生成管线（docx/xlsx/pptx via run_python）在权限层全灭（decision_log 历史 deny 全是这两工具）。修复：agent.IsSandboxIsolatedExecTool 单一 SOT（沙箱 hook 路由 toolNeedsSandbox 同源共用），UserSessionRule 对其 Passthrough(DecisionReasonSandboxOverride 可审计)；通用 destructive 工具仍 deny。对齐 2026-05-31 拍板（全开+沙箱兜底，不加高危开关）。'
