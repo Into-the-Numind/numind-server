@@ -79,19 +79,20 @@ func TestAskUserQuestionTool_EmptyQuestion(t *testing.T) {
 	assert.False(t, errors.As(err, &ye))
 }
 
-func TestAskUserQuestionTool_NoOptions(t *testing.T) {
+func TestAskUserQuestionTool_NoOptions_OpenEnded(t *testing.T) {
+	// ask-question-options-tolerant: 0 options is now a valid open-ended question.
 	tool := NewAskUserQuestionTool()
 	in, _ := json.Marshal(askUserQuestionInput{
 		Question: "No options?",
 		Options:  []YieldOption{},
 	})
 	_, err := tool.Execute(context.Background(), ToolInput(in))
-	require.Error(t, err)
 	var ye *yieldError
-	assert.False(t, errors.As(err, &ye))
+	require.True(t, errors.As(err, &ye), "0 options is a valid open-ended question")
 }
 
-func TestAskUserQuestionTool_TooManyOptions(t *testing.T) {
+func TestAskUserQuestionTool_FiveOptions_ClampsToFour(t *testing.T) {
+	// ask-question-options-tolerant: >4 options clamp to 4 instead of erroring.
 	tool := NewAskUserQuestionTool()
 	in, _ := json.Marshal(askUserQuestionInput{
 		Question: "Five options?",
@@ -102,9 +103,9 @@ func TestAskUserQuestionTool_TooManyOptions(t *testing.T) {
 		},
 	})
 	_, err := tool.Execute(context.Background(), ToolInput(in))
-	require.Error(t, err)
 	var ye *yieldError
-	assert.False(t, errors.As(err, &ye))
+	require.True(t, errors.As(err, &ye))
+	assert.Len(t, ye.Payload.Options, 4)
 }
 
 func TestAskUserQuestionTool_MissingOptionKey(t *testing.T) {
