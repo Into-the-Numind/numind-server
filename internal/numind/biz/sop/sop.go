@@ -382,23 +382,36 @@ func (b *sopBiz) CreateRun(ctx context.Context, templateID, userID uint, text st
 	// credits 用户：粗粒度余额预检，避免零余额时创建 orphan pending run
 	// （精确检查由 ExecuteNode 中的 creditSvc.CheckAndEstimate 负责）
 	// 三池都计入：trial_grant + credit_cycle + user_booster_balance。
+	//
+	// free-model-member-only C5: 会员（在期 sub 或 trial）豁免此粗检——会员可用
+	// 0 价模型跑 0 余额 SOP（per-node reserve 仍精确拦收费模型）。仅非会员保留
+	// 零余额快速拒绝（避免 orphan pending run）。
 	if b.creditSvc != nil {
-		bal, balErr := b.creditSvc.GetBalance(ctx, user)
-		if balErr != nil {
-			log.C(ctx).Warnw("Credits pre-check: failed to get balance, allowing run creation",
-				"user_id", userID, "err", balErr)
-		} else {
-			totalRemain := bal.SubRemain + bal.BoosterRemain + bal.TrialRemain
-			if totalRemain <= 0 {
-				log.C(ctx).Warnw("Credits pre-check: zero balance",
-					"user_id", userID,
-					"sub_remain", bal.SubRemain,
-					"booster_remain", bal.BoosterRemain,
-					"trial_remain", bal.TrialRemain)
-				return nil, errno.ErrInsufficientCredits.SetMessage("积分不足，请充值积分")
+		member, memberErr := b.creditSvc.IsActiveMember(ctx, uint64(userID))
+		if memberErr != nil {
+			// Conservative: on a membership-check failure treat as non-member and
+			// apply the balance gate, rather than letting a 0-balance user through.
+			log.C(ctx).Warnw("Credits pre-check: membership check failed, treating as non-member",
+				"user_id", userID, "err", memberErr)
+		}
+		if !member {
+			bal, balErr := b.creditSvc.GetBalance(ctx, user)
+			if balErr != nil {
+				log.C(ctx).Warnw("Credits pre-check: failed to get balance, allowing run creation",
+					"user_id", userID, "err", balErr)
+			} else {
+				totalRemain := bal.SubRemain + bal.BoosterRemain + bal.TrialRemain
+				if totalRemain <= 0 {
+					log.C(ctx).Warnw("Credits pre-check: zero balance (non-member)",
+						"user_id", userID,
+						"sub_remain", bal.SubRemain,
+						"booster_remain", bal.BoosterRemain,
+						"trial_remain", bal.TrialRemain)
+					return nil, errno.ErrInsufficientCredits.SetMessage("积分不足，请充值积分")
+				}
+				log.C(ctx).Infow("Credits user balance pre-check passed (non-member)",
+					"user_id", userID, "total_remain", totalRemain)
 			}
-			log.C(ctx).Infow("Credits user balance pre-check passed",
-				"user_id", userID, "total_remain", totalRemain)
 		}
 	}
 
