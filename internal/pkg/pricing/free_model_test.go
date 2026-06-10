@@ -44,6 +44,7 @@ func TestIsFreeModel(t *testing.T) {
 		{name: "nonzero output → not free", model: "qwen2", rule: rule(0, 3, 0, "flat"), wantFree: false},
 		{name: "nonzero per-call → not free", model: "imgmodel", rule: rule(0, 0, 5, "flat"), wantFree: false},
 		{name: "tiered rule never free (even all-zero)", model: "tieredfree", rule: rule(0, 0, 0, "tiered_token"), wantFree: false},
+		{name: "nonzero PricePerGB, zero LLM prices → still free (GB not examined, LLM-only gate)", model: "gbmodel", rule: &model.PricingRule{ID: 2, ServiceType: st, Provider: prov, BillingMode: "flat", PricePerGB: 1.5, CreditMultiplier: 1.0, IsActive: true}, wantFree: true},
 		{name: "no rule (not found) → not free, no err", model: "unpriced", rule: nil, wantFree: false},
 		{name: "db error → not free, err propagated", model: "anything", rule: nil, storeErr: sentinelErr, wantFree: false, wantErr: true},
 	}
