@@ -127,6 +127,35 @@ func (s *MembershipService) GetMembershipState(ctx context.Context, userID uint6
 	return state, nil
 }
 
+// IsActiveMember reports whether userID is a member at `now`, judged purely by
+// VALIDITY PERIOD: an unexpired subscription OR an unexpired trial grant.
+//
+// Unlike GetMembershipState's TrialActive flag, IsActiveMember deliberately
+// IGNORES remaining credits — a trial member whose trial credits are exhausted
+// (CreditsRemaining == 0) is still a member. This is required by the
+// free-model-member-only feature (AC2): a member must be able to use a 0-priced
+// model regardless of balance. Store errors are propagated (never swallowed):
+// a transient DB failure must not silently downgrade a real member to non-member.
+func (s *MembershipService) IsActiveMember(ctx context.Context, userID uint64, now time.Time) (bool, error) {
+	sub, err := s.store.Subscriptions().Get(ctx, userID)
+	if err != nil {
+		return false, fmt.Errorf("IsActiveMember: get subscription: %w", err)
+	}
+	if sub != nil && sub.ExpiresAt.After(now) {
+		return true, nil
+	}
+
+	trial, err := s.store.TrialGrants().Get(ctx, userID)
+	if err != nil {
+		return false, fmt.Errorf("IsActiveMember: get trial: %w", err)
+	}
+	if trial != nil && trial.ExpiresAt.After(now) {
+		return true, nil
+	}
+
+	return false, nil
+}
+
 // GetBalance returns the composite BalanceView for userID at now.
 //
 // Logic (spec §3.7):
