@@ -167,7 +167,9 @@
 | BUG-3 | **流式 yield 杀 run + 空転录**：多步 ReAct 中 ask_user_question 的 yield 从 einoAgent.Stream() 错误冒出，streamErr 分支无检查 → model_error"服务暂时不可用"+messages 空（刷新会话消失）。BLK-4 旧修复未盖此路径——**"已关闭"红线被 R1 实战证伪** | R1 现场用户上报（run #117） | P0（上线阻断） | `closed`——hotfix stream-yield-errpath（行为级 TDD+双 review；dev run #118 实弹验证 waiting+提问按方法论执行）；通用流错误现走 finalizeRun 持久化用户 turn |
 | OBS-3 | GET run 详情 API 对 waiting 态返回 status="running"（DB 实为 terminated/waiting）——前端映射约定待 R2 核对是否引起 UI 歧义 | run #118 | P2 | `verify` |
 | BUG-4 | **waiting 会话刷新一片空白**：yield 不写转录+快照不带 pending_question → 刷新后无任何记录、无法继续。所有会提问的 agent 必触发 | R1 现场用户上报（run #117/#118） | P0（上线阻断） | `closed`——hotfix yield-session-reload（跨仓库 TDD+双 review；快照合成 question_prompt + 前端恢复 currentRun） |
-| HW-33 | yield 持久化深层缺陷：waiting 期间用户**原始输入**未落库（气泡缺失，BUG-4 最小修复未含）；resume 时 finalizeRun 用 answerMsg 覆写 messages 丢失原始任务描述（answerMsg 仅嵌 Question）。需 yield 时 WriteTurn user input + resume 保留首 turn | BUG-4 review 发现 | P1（体验完整性，非阻塞） | `open` |
+| BUG-5 | **resume 后 agent 完全失忆**：yield 不持久化转录+answer resume loadSessionHistory 排除当前 run→agent 不记得提问前的调研，又问已知信息；"继续"开新 run memory_read 查不到。对"边查边问"方法论 agent 致命 | R1 现场用户上报（run #119/#120） | P0（上线阻断） | `closed`——hotfix yield-resume-context（TDD+双 review 从严，含多重 yield P1 修复）；HW-33 一并解决 |
+| ~~HW-33~~ | （并入 BUG-5）yield 持久化原始输入+resume 保留上下文 | — | — | `closed`（=BUG-5） |
+| HW-34 | yield 转录完整性 follow-up：errpath stepCollector 空（仅 tool groups 无 assistant 推理文本）；finalizeRun resume 完成覆写 waiting 转录（历史回看缺 waiting 前部分，不影响 live 上下文） | BUG-5 review 发现 | P2（历史完整性，非阻塞） | `open` |
 | OBS-1 | dev 上 ali-dashscope qwen-turbo 辅助调用 403 三连退款（free tier 耗尽，已知 PLT-3），fail-open 不致命但拖慢每轮+日志噪音（run #114：67 笔 reservation 中 40 笔是 403 退款）；建议 dev 把相关 task_profile 路由迁离 ali | run #113/#114 | P2（dev only，R1 前顺手修可提速） | `open` |
 | OBS-2 | run 详情 API `credits_used` 恒 0（真实 reconcile 正常，聚合显示未接线）；create 响应 `estimated_credits_min/max` 也是 0-0 | run #114 | P2 | `open` |
 

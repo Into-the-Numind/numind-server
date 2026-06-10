@@ -1,5 +1,18 @@
 schema_version: '2.0'
 features:
+- id: yield-resume-context
+  track: hotfix
+  description: 'R1 现场用户上报（dev run #119/#120，P0 阻塞）：agent 调研到一半 ask_user_question 提问→用户回答→resume 后 agent 完全失忆（不记得之前搜过的），又问已在调研的公司名；用户打"继续"开新 run，memory_read 查不到要求重新提供基本信息。根因两层：①yield 路径不持久化转录（waiting messages=[]）②answer resume 调 loadSessionHistory(excludeRunID=当前run) 排除当前 run→History 空。修复：persistYieldTranscript 三处 yield 路径（流式 post-consume/errpath/非流式）持久化 user input+assistant steps+tool groups，多重 yield 安全（re-paused resume 前置已有转录去重 dup answer turn）；answer.go resume 注入"其他 run history+当前 run waiting 转录"作 History，answer 作 Input；turnsToHistoryMessages 从 loadSessionHistory 提取共用。'
+  classification_reason: 'Hotfix：无 schema/新 API/外部服务；runner/answer/student_run_lifecycle 4 文件+测试；用户上报 Bug-from-Customer §12（首 commit 失败复现 test(qa)）。本 session 最复杂修复（转录持久化+resume 上下文协议），双 reviewer 从严。'
+  status: active
+  stage: H2
+  repos:
+    numind-server: fix/yield-resume-context
+  progress:
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-H2 (ai 2026-06-10): TDD——2bf3440b test(qa) 失败复现(resume History 空)→6b1427a5 修复(amend)。双 Sonnet reviewer 并行从严：spec=PASS_WITH_CONCERNS(P1 多重 yield 覆写丢首轮上下文——已修：existingTranscriptTurns 前置+dedup leading dup user turn，加 TestPersistYieldTranscript_SecondYield_KeepsPriorContext)，quality=PASS。P2 补强(answer resume 测试 assert Input 含[user answered]+ExistingRunID)+P3 null guard 已修。已验证：resume 时序(run.Messages 是 AnswerAndClear 前 waiting 转录无重复)、collector ctx 继承链三处取同一实例、turnsToHistoryMessages 提取语义等价、多轮链条不断。全 agent 子包 -race 绿+lint clean。follow-up HW-34：errpath stepCollector 空(仅 tool groups 无 assistant 文本)+finalizeRun resume 完成覆写 waiting 转录(仅历史回看完整性，不影响 live 上下文)。'
 - id: yield-session-reload
   track: hotfix
   description: 'R1 现场用户上报（dev run #117/#118）：agent 停在 ask_user_question（waiting_for_user_choice）的会话刷新后"一片空白，没有任何记录"且无法继续。根因：yield 路径不写转录（messages=[]），pending_question 只存 run.pending_question_json；GetSessionSnapshot 只返回 messages 数组→空白。修复（跨仓库）：后端 GetSessionSnapshot 对 waiting run 从 pending_question_json 合成 question_prompt agentMessage(answer_status=pending) 追加在转录后（completed run 即使 stale pending 也不合成）；前端 SessionSnapshot 加 run 字段、loadSessionSnapshot 在 waiting 时设 currentRun（否则 resume 轮询 null 守卫静默卡死）、handleAnswerSubmitted await ensureCurrentRun 兜底。answer 端点 resume 仅依赖 DB(state_reason+pending_json)与前端解耦。'
