@@ -14,7 +14,7 @@
 
 | 裁决 | 对 backlog 的影响 |
 |------|------|
-| **CAP-1（新增，上线阻断候选）**：现有 web_search/web_fetch 对锚定场景（小红书爆款选题挖掘）可能不够（登录墙+反爬）。R1 实战出结论；不通则立项补能力 | 新增本冲刺最大技术风险 |
+| **CAP-1（上线阻断候选）**：现有 web_search/web_fetch 对锚定场景（小红书爆款选题挖掘）可能不够（登录墙+反爬）。**预探针结论（2026-06-10 run #114）：B+ 级**——agent 15+ 轮检索后诚实声明"拿不到站内单篇笔记/精确互动数据/近 30 天实时榜"，但用二手可信源（36氪具名博主案例、千瓜年度报告、官方话题数据）产出了 5 个方向级选题+移植建议，质量真实可用、零编造。**站内实时数据缺口确认存在**。候选路径：① Hybrid（人喂爆款素材→agent 拆解改编，零新能力）② 第三方数据源 API（新红/千瓜，v1.5）③ 浏览器自动化+cookie（合规重，缓）。最终判定留 R1（真方法论灌入后看莫小派要不要实时数据） | 风险降级：不再是"跑不通"，是"数据新鲜度取舍"，R1 实战定形态 |
 | R1 重定义 = "实战建出选题 Agent"（能力探针+配置端走查+首个交付物三合一） | 原 R1 UI 走查脚本作废 |
 | 试聊按钮空 toast（UF-5 前半）→ **P1 必修**：跳转聊天页跑草稿 agent | UF-5 升级，出"待裁决"区 |
 | 方法论正文 custom_skill_body 编辑（UF-9）→ **v1 必修**（创始人核心操作） | UF-9 升级 P1 |
@@ -156,6 +156,16 @@
 
 ---
 
+## §8 冲刺期间新发现
+
+| ID | 条目 | 来源 | 级别 | 状态 |
+|----|------|------|------|------|
+| BUG-1 | **内存预算护栏把 token 当积分**：单次 ~6k token 调用击穿 800 积分 cap → 所有实质性 agent run 首次工具调用即被杀（terminal used=6829 vs 真实扣费 ~5）。真实三池扣费不受影响 | CAP-1 预探针 run #113（2026-06-10） | P0（R1 挡路） | `closed`——hotfix budget-tracker-token-units（develop c2f93c59，TDD+双 review，5 P2 全修） |
+| HW-31 | vision 工具（tool_annotate_image 等经包级 chatFn 直调 aiservice.Chat）usage 不进 usageStore → vision token 对内存护栏透明（真实计费不受影响） | BUG-1 review 发现（pre-existing） | P2 | `open` |
+| OBS-1 | dev 上 ali-dashscope qwen-turbo 辅助调用 403 三连退款（free tier 耗尽，已知 PLT-3），fail-open 不致命但拖慢每轮+日志噪音（run #114：67 笔 reservation 中 40 笔是 403 退款）；建议 dev 把相关 task_profile 路由迁离 ali | run #113/#114 | P2（dev only，R1 前顺手修可提速） | `open` |
+| OBS-2 | run 详情 API `credits_used` 恒 0（真实 reconcile 正常，聚合显示未接线）；create 响应 `estimated_credits_min/max` 也是 0-0 | run #114 | P2 | `open` |
+
 ## 变更日志
 
 - 2026-06-10 Phase 0 创建：合流 prod-readiness-test-plan / wave1 / wave2 / runbook / multimodal-fallback / manifest follow-ups；红线复核 6/6 关闭（2 个残留子项→HW-4/HW-5）；dev 探测无阻断。
+- 2026-06-10 R0 完成（§0 裁决补丁）；WK-1 合并；CAP-1 预探针发现并修复 BUG-1（同日 hotfix 上 dev）。
