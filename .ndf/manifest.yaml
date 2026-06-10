@@ -5,14 +5,16 @@ features:
   description: '0 价模型（agnes/有数AI）仅限会员（sub 或 trial 在期）使用且零扣费；免费用户拒绝（ErrMembershipRequired）。per-call 语义：判定单位=单次被计费拦截的 AI 调用，看该调用模型 pricing_rule 是否全 0；0价+会员→SkipDeduction 跳过预扣不扣分，0价+免费用户→拒绝；收费调用照常预扣/拦截（SalesRAG 中途收费子调用仍拦"积分不足"）。键：pricing.IsFreeModel(查 pricing_rule 全0，查不到≠免费)+membership.GetMembershipState+复用 PreCheckResult.SkipDeduction。'
   classification_reason: 'Standard：高风险计费/权限逻辑（会员判定+跳过扣费+余额门槛放宽）+影响文件>3。无 DB schema/新 API/新外部服务。'
   status: active
-  stage: S0
+  stage: S1
   repos:
     numind-server: feature/free-model-member-only
   worktrees:
     numind-server: /private/tmp/wt-free-model-member-only-numind-server
   artifacts:
     requirement: .ndf/features/free-model-member-only/requirement.md
+    proposal: .ndf/features/free-model-member-only/proposal.md
   decisions:
+  - 'S1 (ai 2026-06-11): 提案+PRD。关键发现：membership.TrialActive 要求 CreditsRemaining>0，但 PRD 要 trial 积分用光的会员也能用 0 价模型 → 本 feature "会员"判定改用**有效期**(sub 未过期 OR trial 未过期，忽略剩余余额)，不复用 TrialActive。AC1-7 落定。单仓库 numind-server（前端零改，403 复用既有业务错误展示，S2 验证）。S2 待查：embed/rerank 是否在积分拦截链 + 错误在 SSE 流式传播 + admin_test 池不误伤。'
   - 'S0 (ai 2026-06-11): 用户授权全流程自主到 dev 部署。Triage=Standard（高风险计费/权限）。per-call 语义+免费用户=!(SubActive||TrialActive) 已与用户逐字确认。embed/rerank 计费路径列为 S2 待查项（取证示只有 chat 走 ContextBudgetCredits 预扣）。S7 prod 不在授权内。'
 - id: agent-multi-question
   track: standard
