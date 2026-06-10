@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"numind-server/internal/pkg/retrieval/domain"
-	"numind-server/internal/numind/biz/salesrag/port"
+	"numind-server/internal/pkg/retrieval/port"
 	"strconv"
 	"strings"
 	"sync"

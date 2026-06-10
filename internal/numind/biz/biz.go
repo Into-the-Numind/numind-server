@@ -33,7 +33,7 @@ import (
 	permvalidators "numind-server/internal/numind/biz/permission/validators"
 	"numind-server/internal/numind/biz/salesrag"
 	"numind-server/internal/numind/biz/salesrag/adapter"
-	"numind-server/internal/numind/biz/salesrag/port"
+	"numind-server/internal/pkg/retrieval/port"
 	"numind-server/internal/numind/biz/salesrag/seed"
 	salesragservice "numind-server/internal/numind/biz/salesrag/service"
 	"numind-server/internal/numind/biz/sandbox"

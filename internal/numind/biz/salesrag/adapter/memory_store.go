@@ -6,7 +6,7 @@ import (
 	"sync"
 
 	"numind-server/internal/pkg/retrieval/domain"
-	"numind-server/internal/numind/biz/salesrag/port"
+	"numind-server/internal/pkg/retrieval/port"
 )
 
 // MemoryStore 内存版向量数据库 (用于测试和开发)

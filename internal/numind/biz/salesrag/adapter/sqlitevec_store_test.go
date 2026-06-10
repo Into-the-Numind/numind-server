@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"numind-server/internal/pkg/retrieval/domain"
-	"numind-server/internal/numind/biz/salesrag/port"
+	"numind-server/internal/pkg/retrieval/port"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

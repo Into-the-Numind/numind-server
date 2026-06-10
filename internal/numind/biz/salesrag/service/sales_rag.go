@@ -6,7 +6,7 @@ import (
 	"sync"
 
 	sdomain "numind-server/internal/numind/biz/salesrag/domain" // MetaStrategy/BasicStrategy
-	"numind-server/internal/numind/biz/salesrag/port"
+	sport "numind-server/internal/numind/biz/salesrag/port"     // IntentRouter/IntentType（销售意图，未搬迁）
 	"numind-server/internal/pkg/aiservice"
 	aismw "numind-server/internal/pkg/aiservice/middleware"
 	"numind-server/internal/pkg/aiservice/profile"
@@ -15,6 +15,7 @@ import (
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/retrieval/domain" // KnowledgeChunk 等
+	"numind-server/internal/pkg/retrieval/port"   // VectorStore/SearchFilter（已搬迁）
 )
 
 // RetrievalVerdict 检索判决结果 (V1 兼容)
@@ -27,7 +28,7 @@ type RetrievalVerdict struct {
 	Answer       string                  `json:"answer"`        // AI生成的最终回复
 
 	// V2 扩展字段
-	Intent        port.IntentType `json:"intent,omitempty"`         // 识别的意图
+	Intent        sport.IntentType `json:"intent,omitempty"`        // 识别的意图
 	SearchQueries []string        `json:"search_queries,omitempty"` // 多路搜索词
 	ChatMode      string          `json:"chat_mode,omitempty"`      // 对话模式 (sales/free)
 	History       []string        `json:"history,omitempty"`        // 对话历史
@@ -46,12 +47,12 @@ type RetrievalVerdict struct {
 // SalesRAGService 销售智能体 RAG 服务
 type SalesRAGService struct {
 	store       port.VectorStore
-	router      port.IntentRouter
+	router      sport.IntentRouter
 	strategySvc *StrategyService // 策略引擎
 }
 
 // NewSalesRAGService 创建新的 SalesRAGService
-func NewSalesRAGService(store port.VectorStore, router port.IntentRouter) *SalesRAGService {
+func NewSalesRAGService(store port.VectorStore, router sport.IntentRouter) *SalesRAGService {
 	return &SalesRAGService{
 		store:       store,
 		router:      router,

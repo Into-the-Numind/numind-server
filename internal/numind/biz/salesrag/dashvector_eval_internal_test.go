@@ -16,7 +16,7 @@ import (
 	"numind-server/internal/numind/biz/ali"
 	"numind-server/internal/numind/biz/salesrag/adapter"
 	"numind-server/internal/pkg/retrieval/domain"
-	"numind-server/internal/numind/biz/salesrag/port"
+	"numind-server/internal/pkg/retrieval/port"
 	"numind-server/internal/numind/biz/salesrag/service"
 	"numind-server/internal/pkg/middleware"
 

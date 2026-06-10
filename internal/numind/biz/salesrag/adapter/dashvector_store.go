@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"numind-server/internal/pkg/retrieval/domain"
-	"numind-server/internal/numind/biz/salesrag/port"
+	"numind-server/internal/pkg/retrieval/port"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/httpclient"
 	"numind-server/internal/pkg/log"

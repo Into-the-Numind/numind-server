@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"numind-server/internal/numind/biz/salesrag/port"
+	"numind-server/internal/pkg/retrieval/port"
 )
 
 type IngestionService struct {
