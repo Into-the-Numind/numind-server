@@ -20,6 +20,7 @@ import (
 	"numind-server/internal/numind/biz/budget"
 	"numind-server/internal/numind/biz/narration"
 	"numind-server/internal/pkg/log"
+	"numind-server/internal/pkg/pricing"
 )
 
 // UsageLookupable is an interface satisfied by *agent.aiserviceAdapter (and any
@@ -68,7 +69,8 @@ func (g *BudgetGate) AdminConsumer() budget.AdminTestConsumer { return g.adminCo
 type WrapHooksOption func(*wrapHooksConfig)
 
 type wrapHooksConfig struct {
-	usageLookup UsageLookupable // nil → fall back to legacy tokensFromOutput
+	usageLookup UsageLookupable     // nil → fall back to legacy tokensFromOutput
+	pricing     pricing.ICalculator // nil → conservative token→credit ratio fallback
 }
 
 // WithUsageLookup injects a UsageLookupable (typically the aiserviceAdapter) so
@@ -76,6 +78,42 @@ type wrapHooksConfig struct {
 // parsing tool-output JSON. When nil or absent the legacy fallback is used.
 func WithUsageLookup(a UsageLookupable) WrapHooksOption {
 	return func(c *wrapHooksConfig) { c.usageLookup = a }
+}
+
+// WithPricingCalculator injects the platform pricing calculator so PostToolCall
+// can convert raw LLM token usage into CREDITS before feeding the tracker —
+// the MaxCredits / daily-credits dimensions are denominated in credits
+// (agent_definition.credit_cap_per_session), never tokens. Without conversion
+// the tracker compares token counts (thousands per call) against credit caps
+// (hundreds per session) and kills every substantive run at its first tool
+// call (dev run #113). When nil, a conservative fixed ratio is used instead.
+func WithPricingCalculator(pc pricing.ICalculator) WrapHooksOption {
+	return func(c *wrapHooksConfig) { c.pricing = pc }
+}
+
+// fallbackTokensPerCredit is the conservative token→credit conversion used when
+// no pricing calculator is wired or the lookup fails (e.g. no pricing rule for
+// the model). 500 tokens/credit overestimates cost for most cheap models —
+// acceptable bias for an in-memory guardrail: it trips earlier, never later,
+// and the authoritative three-pool deduction (Reserve/Reconcile) is unaffected.
+const fallbackTokensPerCredit = 500
+
+// creditsForUsage converts an LLM call's token usage into credits. Primary path
+// uses the pricing calculator (cost cents == credits 1:1, same convention as the
+// billing gateway); fallback divides total tokens by fallbackTokensPerCredit
+// (ceil) so the guardrail still advances when pricing is unavailable.
+func creditsForUsage(ctx context.Context, pc pricing.ICalculator, u agent.Usage) int {
+	total := u.PromptTokens + u.CompletionTokens
+	if total <= 0 {
+		return 0
+	}
+	if pc != nil && u.Model != "" {
+		if cents, err := pc.CalculateCost(ctx, "llm_chat", u.Provider, u.Model, u.PromptTokens, u.CompletionTokens); err == nil {
+			return int(cents)
+		}
+		// fallthrough: no pricing rule / lookup failure → conservative ratio.
+	}
+	return (total + fallbackTokensPerCredit - 1) / fallbackTokensPerCredit
 }
 
 // WrapHooks decorates base hooks with budget checks.
@@ -88,8 +126,9 @@ func WithUsageLookup(a UsageLookupable) WrapHooksOption {
 // PostToolCall order:
 //  1. forward to base.PostToolCall first（sandbox 关容器/写日志）
 //  2. RecordUsage — primary: ctx call-id + UsageLookupable (real token counts
-//     from aiservice, wired by M-A-wire via WithUsageLookup option).
-//     Fallback: legacy tokensFromOutput for backward compat with nil-adapter tests.
+//     from aiservice, wired by M-A-wire via WithUsageLookup option), converted
+//     tokens→credits via creditsForUsage before recording (tracker is
+//     credit-denominated). Fallback: legacy tokensFromOutput, same conversion.
 //
 // 关键不变量：保留 base.Registry / NarrationProvider 透传
 // （permission.WrapHooks 也保留同样字段以确保链式无丢失，#12 M11 同步补丁）。
@@ -102,6 +141,7 @@ func (g *BudgetGate) WrapHooks(base *agent.RunHooks, opts ...WrapHooksOption) *a
 		o(cfg)
 	}
 	usageLookup := cfg.usageLookup // captured by PostToolCall closure
+	pricingCalc := cfg.pricing     // captured by PostToolCall closure
 
 	return &agent.RunHooks{
 		PreToolCall: func(ctx context.Context, t einotool.BaseTool, input string) (agent.HookAction, error) {
@@ -136,9 +176,14 @@ func (g *BudgetGate) WrapHooks(base *agent.RunHooks, opts ...WrapHooksOption) *a
 				if usageLookup != nil {
 					if callID := callctx.CallIDFromCtx(ctx); callID != "" {
 						if usage, ok := usageLookup.LookupUsage(callID); ok {
-							tokens := usage.PromptTokens + usage.CompletionTokens
-							if tokens > 0 {
-								g.tracker.RecordUsage(ctx, runID, tokens)
+							// Units invariant: the tracker is denominated in
+							// CREDITS — convert tokens before recording.
+							// recorded=true even when credits==0: the primary
+							// source found the real usage; a zero-cents price
+							// would yield 0 via the fallback too, so skipping
+							// the legacy path is correct.
+							if credits := creditsForUsage(ctx, pricingCalc, usage); credits > 0 {
+								g.tracker.RecordUsage(ctx, runID, credits)
 							}
 							recorded = true
 						}
@@ -146,9 +191,12 @@ func (g *BudgetGate) WrapHooks(base *agent.RunHooks, opts ...WrapHooksOption) *a
 				}
 				// Legacy fallback: parse {"usage":{"total_tokens":N}} from tool output.
 				// Preserved for nil-adapter callers and pre-#14 tests that inject output JSON.
+				// No model info here → creditsForUsage takes the ratio path.
 				if !recorded {
 					if tokens := tokensFromOutput(output); tokens > 0 {
-						g.tracker.RecordUsage(ctx, runID, tokens)
+						if credits := creditsForUsage(ctx, pricingCalc, agent.Usage{PromptTokens: tokens}); credits > 0 {
+							g.tracker.RecordUsage(ctx, runID, credits)
+						}
 					}
 				}
 			}
@@ -208,7 +256,8 @@ func narrationProviderFromBase(base *agent.RunHooks) *narration.Provider {
 
 // tokensFromOutput parses LLM token usage from tool output JSON if present.
 // v1 simplification: looks for {"usage":{"total_tokens": N}} shape; returns 0 otherwise.
-// #14 will replace with ctx-based RecordUsage from aiservice adapter.
+// Retained as the permanent legacy fallback — the primary path (#14/A8b,
+// WithUsageLookup) takes precedence whenever a call-id stash is present.
 func tokensFromOutput(output string) int {
 	if output == "" {
 		return 0

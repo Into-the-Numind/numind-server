@@ -19,7 +19,9 @@ type BudgetTracker interface {
 	Close(runID uint64)
 	RecordStep(ctx context.Context, runID uint64)
 	CanProceed(ctx context.Context, runID uint64) (exceeded bool, dim Dimension, detail map[string]any)
-	RecordUsage(ctx context.Context, runID uint64, tokens int)
+	// RecordUsage accumulates CREDITS (already converted from tokens by the
+	// caller — budgetgate.creditsForUsage). Never pass raw token counts.
+	RecordUsage(ctx context.Context, runID uint64, credits int)
 	Snapshot(ctx context.Context, runID uint64) Snapshot
 }
 
@@ -110,10 +112,12 @@ func (t *budgetTracker) RecordStep(ctx context.Context, runID uint64) {
 	st.turnCount.Add(1)
 }
 
-// RecordUsage adds tokens to the Run's credit counter and the user's daily aggregate.
+// RecordUsage adds credits to the Run's credit counter and the user's daily
+// aggregate. Callers must convert token usage to credits first (budgetgate
+// creditsForUsage) — the MaxCredits/daily dimensions are credit-denominated.
 // Non-positive values are silently ignored.
-func (t *budgetTracker) RecordUsage(ctx context.Context, runID uint64, tokens int) {
-	if tokens <= 0 {
+func (t *budgetTracker) RecordUsage(ctx context.Context, runID uint64, credits int) {
+	if credits <= 0 {
 		return
 	}
 	t.mu.RLock()
@@ -122,7 +126,7 @@ func (t *budgetTracker) RecordUsage(ctx context.Context, runID uint64, tokens in
 	if st == nil {
 		return
 	}
-	delta := int64(tokens)
+	delta := int64(credits)
 	st.creditUsed.Add(delta)
 	if st.UserID > 0 {
 		de := t.getOrCreateDailyEntry(st.UserID, time.Now().UTC())

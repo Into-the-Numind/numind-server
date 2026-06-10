@@ -32,7 +32,7 @@ func (s *stubBudgetTracker) Close(runID uint64) {
 }
 
 func (s *stubBudgetTracker) RecordStep(ctx context.Context, runID uint64)              {}
-func (s *stubBudgetTracker) RecordUsage(ctx context.Context, runID uint64, tokens int) {}
+func (s *stubBudgetTracker) RecordUsage(ctx context.Context, runID uint64, credits int) {}
 func (s *stubBudgetTracker) Snapshot(ctx context.Context, runID uint64) budget.Snapshot {
 	return budget.Snapshot{}
 }
