@@ -3730,11 +3730,11 @@ features:
   ndf_version: '3.0'
   description: '费用对账页（CustomersBillingView.vue, /customers/billing）4 处改动: (1) 导出按钮文案「导出 CSV」→「导出」; (2) 表格列头「子账号」→「账号」; (3) 账号列后新增「昵称」列展示 child nickname(空值 — 占位); (4) 类型筛选框选中态白色按钮圆角 --radius-sm(6px)→--radius-md(12px) 对齐外框。改动3需后端配套: GrantDetail 结构体加 Nickname 字段 + lookupUsernames 查询 SELECT 增 nickname 列 + 填充; user.nickname 列已存在无需 migration。前端 parent.ts ParentBillingDetail 加 nickname + view 渲染列 + CSV 导出同步加昵称列。'
   classification_reason: 'Hotfix(全 5 条满足): 无 DB schema 变更(nickname 列已存在,仅多 SELECT) / 无新 API 端点(改既有 /v1/users/me/billing-report 响应) / 无新外部服务 / 影响文件=3(b2b_billing.go + parent.ts + CustomersBillingView.vue) / 不碰支付权限逻辑(只读展示昵称列,不改计费数学/权限). Micro 排除: 改动3 触碰后端 biz 逻辑,超 Micro 文案/样式边界. 新功能请求非线上 bug → Rule 11 复现测试不适用. 跨仓库 numind-server + numind-web-v3. User 确认全做(AskUserQuestion).'
-  last_updated_by: ai-h3-dev-deployed
-  last_updated_at: '2026-06-10T16:00:00+08:00'
+  last_updated_by: ai-h3-prod-deployed
+  last_updated_at: '2026-06-10T16:30:00+08:00'
   created_at: '2026-06-10T14:00:00+08:00'
   track: hotfix
-  stage: H3
+  stage: done
   repos:
   - numind-server
   - numind-web-v3
@@ -3754,4 +3754,5 @@ features:
   - 'H2-review (ai 2026-06-10): 并行双 Sonnet reviewer(spec-compliance + code-quality)均 VERDICT=PASS, 零 P0/P1。spec reviewer 核实 4 改动全实现 + 列数对齐(thead6/tbody6/empty colspan6/tfoot 4+2) + 无残留「子账号」。code reviewer 确认 billing 数学零回归 / GORM Select 安全无 default:true 隐患 / %w 错误链 / CSV 注入由既有 escapeCsvField 兜底。4 个 P2 处置: [修] 删 view 未挂 CSS 的 col-nickname/col-nickname-th 死类(列用基类 center+cell-secondary 已与时长/开通时间列一致); [修] backend 测试补 empty-nickname→ChildNickname=="" case(覆盖前端 ||"—" 依赖的后端契约); [拒-设计] 不拆 GrantDetailDisplay 独立结构体(shared struct 在 admin 路径 emit 空 child_nickname 是 additive 向后兼容, hotfix 不值得 churn); [拒-语义] 不加 aria-sort=none(aria-sort 暗示该列可排序, 而昵称列刻意非排序, 裸 th 无排序 affordance 才是正确 a11y 处理)。两 P2 修复后 re-gate 全绿, 两仓库 commit 各自 amend。'
   - 'H3-merge (ai 2026-06-10): ndf-done 两仓库原子完成 — numind-server fix/billing-nickname-ui→develop(merge 148f03ab, 已 fetch 复核 origin/develop HEAD==local 含 feat bc5746fa) + numind-web-v3→develop(merge 697ba54, origin 复核同步), worktree+本地分支均删。代码已在 develop。未部署: 等 User 决定可视化验收(昵称列/导出文案/账号列头/筛选框圆角需浏览器看)。关键: 本 feature 前后端必须同发——前端读 child_nickname 依赖后端 GrantDetail.ChildNickname 返回, /deploy-dev 时 server + web-v3 一起上 dev(单独发前端会让昵称列恒为占位 —)。后端无 migration(user.nickname 列已存在)。验收通过再考虑 tag prod(隔离 cherry-pick, 同 csv-export 先例)。'
   - 'H3-dev (ai 2026-06-10): /deploy-dev server + web-v3 并行后台部署(release.sh dev, rsync→构建机 build→TCR push→换容器+健康检查)。server build 246s / web-v3 build 202s, push 各 15s/8s。Release complete: server→dev(9b81d381) + web-v3→dev(697ba54)。验证(防 TCR 100-tag silent-old): healthz 双绿(server /healthz status:ok, web /health healthy) + SSH dev 核对实跑容器 image=numind-server-dev:develop-9b81d381 / numind-web-v3-dev:develop-697ba54(均 healthy, 与部署 sha 一致, 非旧镜像)。等 User 浏览器验收 4 改动, 再决定 prod。'
+  - 'H3-prod (ai 2026-06-10): User dev 验收后追加第 5 改动「账号列居中」(独立 micro billing-account-center: .data-table td.col-user text-align left→center, ea579a6→merge af24784, gate 全绿, 已 /deploy-dev web-v3 核对 develop-af24784 healthy), 然后授权把全部改动隔离部署 prod「只部署我改的」。隔离 cherry-pick(同 csv-export 先例, 前后端必须同发)：核对 prod 实跑容器 server=v2.1.35-93cbae8b / web=v1.0.30-7371092(非信 latest tag)。后端先发(避免昵称列空窗): 从 v2.1.35 拉 worktree→cherry-pick 仅 bc5746fa(b2b_billing.go+test, 不带 manifest doc)→diff vs v2.1.35 恰 2 文件→go build/test/golangci-lint 全绿→tag v2.1.36(30e21233)→release.sh prod server→核对实跑 v2.1.36-30e21233 healthy。前端: 从 v1.0.30 拉 worktree→cherry-pick 49c0959(nickname)+ea579a6(center)→view 2 处冲突纯格式(v1.0.30 紧凑单行 vs develop 多行 prettier, 语义同; 冲突2 还残留重复 amount td)→保 v1.0.30 紧凑风格手解(NDF Edit hook 拦截非 ndf worktree→改用 python 精确替换+断言无残留 marker)→diff vs v1.0.30 恰 2 文件 32 行(无整文件 reformat churn)→eslint+vue-tsc 绿; vitest 8 失败全在 tests/unit/credit/*(CreditBalanceCard/Booster/credits-store/request-interceptor, 与本 diff 零交集→v1.0.30 旧基线 × develop node_modules superset 的环境噪声, 非本改动回归, 同 csv-export node_modules superset 记录)→tag v1.0.31(d74f7a9)→release.sh prod→核对实跑 v1.0.31-d74f7a9 + https://youshu.asia HTTP 200。两 tag 已推 origin, 两 release worktree+分支已删(tag 保活 commit)。修复均已在 develop(下次完整发版自带)。'
   blockers: []
