@@ -390,6 +390,12 @@ func (f *creditServiceFacade) ReserveBudget(ctx context.Context, user *model.Use
 	return f.svc.ReserveBudget(ctx, user, input)
 }
 
+// EnforceModelMembership delegates to ICreditService.EnforceModelMembership,
+// bridging the middleware's uint userID to the credit layer's uint64.
+func (f *creditServiceFacade) EnforceModelMembership(ctx context.Context, userID uint, provider, model string) error {
+	return f.svc.EnforceModelMembership(ctx, uint64(userID), provider, model)
+}
+
 // FinalizeReservation bridges the middleware's simple (id, credits, reason)
 // signature to ICreditService.Reconcile. When reason indicates a failure/refund
 // scenario it delegates to Refund instead.
