@@ -36,7 +36,7 @@ func TestDeleteChatbot_CleanupVisibility(t *testing.T) {
 	db.Model(&model.ChatbotVisibilityGrant{}).Where("chatbot_id = ?", cbID).Count(&beforeCount)
 	require.Equal(t, int64(2), beforeCount)
 
-	b := chatbot.NewChatbotBiz(ds, nil, nil)
+	b := chatbot.NewChatbotBiz(ds, nil)
 	require.NoError(t, b.DeleteChatbot(ctx, parent, cbID))
 
 	// 验证 chatbot 已软删
@@ -61,6 +61,6 @@ func TestDeleteChatbot_NoGrants(t *testing.T) {
 	parent := insertCbFilterUser(t, db, nil)
 	cbID := insertCbFilterConfig(t, db, parent, "no-grants", false)
 
-	b := chatbot.NewChatbotBiz(ds, nil, nil)
+	b := chatbot.NewChatbotBiz(ds, nil)
 	require.NoError(t, b.DeleteChatbot(ctx, parent, cbID))
 }

@@ -23,10 +23,14 @@ func withChatMode(ctx context.Context, chatMode string) context.Context {
 	return context.WithValue(ctx, chatModeCtxKey{}, chatMode)
 }
 
-// chatModeFromCtx 提取 chatMode；未注入时返回 "sales"（与旧默认一致）。
-func chatModeFromCtx(ctx context.Context) string {
+// chatModeFromCtx 提取 chatMode；未注入时返回 fallback（调用方提供的默认模式）。
+// salesrag 主干传 "sales"（与旧默认一致）；chatbot 经 NewRouterRewriter 传 "free"。
+func chatModeFromCtx(ctx context.Context, fallback string) string {
 	if v, ok := ctx.Value(chatModeCtxKey{}).(string); ok && v != "" {
 		return v
+	}
+	if fallback != "" {
+		return fallback
 	}
 	return "sales"
 }
@@ -43,12 +47,30 @@ func chatModeFromCtx(ctx context.Context) string {
 // 保 T1.6 逐位一致。
 type routerRewriter struct {
 	router sport.IntentRouter
+	// defaultChatMode 是 context 未注入 chatMode 时的回退模式。salesrag 主干留空
+	// （等价 "sales"）；chatbot 经 NewRouterRewriter 传 "free"，避免销售话术 prompt
+	// 污染纯知识库问答的 query 改写。
+	defaultChatMode string
+}
+
+// NewRouterRewriter 把 salesrag 的 IntentRouter 适配为底座 retrieval/port.QueryRewriter，
+// 供 salesrag 之外的调用方（如 chatbot）复用改写主干。
+//
+// defaultChatMode 是 context 未注入 chatMode 时的回退模式：
+//   - chatbot 传 "free"（自由讨论模式，不套销售话术）
+//   - 传空 等价 "sales"（与 salesrag 内部默认一致）
+//
+// 注意：若调用链经 withChatMode 注入了 chatMode，仍以 context 值优先（defaultChatMode
+// 仅作回退）。chatbot 不注入 chatMode，故始终走 defaultChatMode="free"。
+func NewRouterRewriter(router sport.IntentRouter, defaultChatMode string) retrievalport.QueryRewriter {
+	return routerRewriter{router: router, defaultChatMode: defaultChatMode}
 }
 
 // Rewrite 实现 retrieval/port.QueryRewriter，委托 IntentRouter.AnalyzeIntentV2。
-// chatMode 经 context 透传（RetrieveForResponseV2 注入），默认 "sales"。
+// chatMode 优先取 context 注入值（RetrieveForResponseV2 注入），否则用 defaultChatMode，
+// 仍为空则回退 "sales"。
 func (a routerRewriter) Rewrite(ctx context.Context, query string, history []string) (retrievalport.RewriteResult, error) {
-	res, err := a.router.AnalyzeIntentV2(ctx, query, history, chatModeFromCtx(ctx))
+	res, err := a.router.AnalyzeIntentV2(ctx, query, history, chatModeFromCtx(ctx, a.defaultChatMode))
 	if err != nil {
 		return retrievalport.RewriteResult{}, err
 	}

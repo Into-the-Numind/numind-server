@@ -135,7 +135,7 @@ func revokeChatbotPerm(t *testing.T, db *gorm.DB, subID, chatbotID uint) {
 // newChatbotBiz 构造 biz 实例，vectorStore/embedder 传 nil —— ListVisibleChatbots
 // / CreateSession / ChatStream 的权限守卫路径不会走到它们。
 func newChatbotBiz(db *gorm.DB) chatbot.IChatbotBiz {
-	return chatbot.NewChatbotBiz(store.NewTestStore(db), nil, nil)
+	return chatbot.NewChatbotBiz(store.NewTestStore(db), nil)
 }
 
 // ============================================================================

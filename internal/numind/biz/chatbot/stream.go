@@ -5,6 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,9 +20,10 @@ import (
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
+	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/retrieval/domain"
-	"numind-server/internal/pkg/retrieval/port"
+	"numind-server/internal/pkg/retrieval/retrieve"
 
 	"gorm.io/gorm"
 )
@@ -35,8 +39,40 @@ const chatStreamRecentTurns = 10
 // chatStreamMaxHistory 历史消息上下文窗口（最近 N 条消息）
 const chatStreamMaxHistory = 20
 
-// chatStreamMaxChunks 向量检索最大返回切片数
+// chatStreamMaxChunks 检索 rerank 后保留的切片数（喂给 LLM 的知识条数上限）
 const chatStreamMaxChunks = 6
+
+// chatStreamRetrieveTopK 每路召回 limit（底座 parallelSearch 用），rerank 前的候选池。
+const chatStreamRetrieveTopK = 10
+
+// chatStreamRetrieveBillingLabel 底座检索的计费/trace 归因标签。
+const chatStreamRetrieveBillingLabel = "chatbot_retrieval"
+
+// chatbotGroundingPrompt 是挂载知识库时注入的硬约束 grounding system fragment 文案。
+// 仅在检索到 KB chunks 时加入（纯聊天 chatbot 不加），把回答严格锚定到检索资料，
+// 修复"回答怪怪的"（裸检索无 grounding 时 LLM 会脱离资料自由发挥/编造）。
+const chatbotGroundingPrompt = "以下消息中标注为「知识库资料」的内容是从知识库检索到的资料。" +
+	"请仅依据这些资料回答用户的问题；资料中未提及的内容不要编造或臆测。" +
+	"若检索到的资料不足以回答，请如实说明「知识库中暂无相关信息」，不要凭空作答。" +
+	"引用资料时可用 [知识N] 标注来源编号（N 对应资料前缀），便于用户核对出处。"
+
+// scoreToImportance maps a rerank score in [0.0, 1.0] to an integer importance
+// in [0, 10] for use in ContextFragment.Importance. A score of 1.0 maps to 10;
+// 0.0 maps to 0. Values outside [0.0, 1.0] are clamped.
+//
+// NOTE: this is a verbatim copy of salesrag.scoreToImportance (an unexported
+// 12-line pure helper). Copied rather than cross-package imported because the
+// salesrag original is package-private; duplicating a trivial pure function is
+// cheaper than widening the salesrag API surface for a single caller.
+func scoreToImportance(score float32) int {
+	if score <= 0 {
+		return 0
+	}
+	if score >= 1.0 {
+		return 10
+	}
+	return int(score * 10)
+}
 
 // BuildChatContextFragments constructs the ordered ContextFragment slice for a
 // chatbot chat turn. This is the canonical fragment factory for the chatbot
@@ -48,8 +84,17 @@ const chatStreamMaxChunks = 6
 //	[1…N] history turns (oldest first):
 //	        older half → RoleDurable, CompressSummarize
 //	        recent half → RoleRecent, CompressSummarize
+//	[g]   grounding instruction (ONLY when kbChunks present) → RoleImmutable system
 //	[N+1] KB evidence chunks → RoleEvidence, SourceKB, CompressReference
+//	        Content prefixed with "[知识N] (相关度:X%) " for citation/grounding
+//	        Importance derived from chunk.Score (scoreToImportance)
 //	[last] current user message → RoleRecent, SourceUser, Critical=true, CompressNone
+//
+// Grounding contract (numind 知识库 RAG 修复 — "回答怪怪的" 根因):
+// when kbChunks is non-empty a hard-constraint grounding system fragment is
+// inserted (after history, before evidence) so the LLM answers ONLY from the
+// retrieved material. When kbChunks is empty the bot stays a 纯聊天 assistant —
+// NO grounding fragment, NO evidence, system prompt untouched.
 //
 // history is the persisted message slice ordered oldest-first (role+content pairs
 // as model.ChatbotMessage). kbChunks is the list of retrieved knowledge chunks.
@@ -107,20 +152,35 @@ func BuildChatContextFragments(
 		order++
 	}
 
-	// KB evidence chunks.
-	for i, chunk := range kbChunks {
-		chunkRef := chunk.ID
-		if chunkRef == "" {
-			chunkRef = fmt.Sprintf("kb-chunk-%d", i)
-		}
-		frags = append(frags, contextbudget.NewEvidenceReferenceFragment(
-			fmt.Sprintf("kb-%d", i),
-			chunkRef,
-			chunk.Content,
-			order,
-			7,
-		))
+	// Grounding instruction + KB evidence chunks — ONLY when KB chunks exist.
+	// Placed AFTER history, BEFORE evidence: this keeps the system-prompt head and
+	// the history prefix byte-stable across retrievals (prompt-cache invariant,
+	// prefix_stability_test) while still ranking the grounding constraint above the
+	// retrieved material. Pure-chat bots (no kbChunks) skip this whole block and
+	// thus emit neither grounding nor evidence — identical to legacy 纯聊天 behavior.
+	if len(kbChunks) > 0 {
+		// Grounding system fragment: hard constraint to answer only from retrieved KB.
+		frags = append(frags, contextbudget.NewImmutableSystemFragment("kb-grounding", chatbotGroundingPrompt, order))
 		order++
+
+		for i, chunk := range kbChunks {
+			chunkRef := chunk.ID
+			if chunkRef == "" {
+				chunkRef = fmt.Sprintf("kb-chunk-%d", i)
+			}
+			// Prefix evidence with a citable header so the LLM can reference sources
+			// as [知识N]; relevance is the rerank score as a percentage.
+			relevancePct := int(chunk.Score * 100)
+			labeledContent := fmt.Sprintf("【知识库资料】[知识%d] (相关度:%d%%)\n%s", i+1, relevancePct, chunk.Content)
+			frags = append(frags, contextbudget.NewEvidenceReferenceFragment(
+				fmt.Sprintf("kb-%d", i),
+				chunkRef,
+				labeledContent,
+				order,
+				scoreToImportance(chunk.Score),
+			))
+			order++
+		}
 	}
 
 	// Current user message: critical, RoleRecent, CompressNone. order is the
@@ -197,9 +257,14 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 		langfuse.WithSpanInput(map[string]interface{}{"message": message}),
 	)
 
-	// 5. 向量检索（如果有挂载知识库）
-	// retrievedChunks holds full domain.KnowledgeChunk values so we can build
-	// typed ContextFragments (ID + Score) alongside the legacy []string path.
+	// 4a. 先取历史窗口（供改写多轮消歧 + fragment 构建复用，避免二次查询）。
+	historyMsgs := b.fetchRecentHistory(ctx, session.ID)
+
+	// 5. 知识库检索（走底座 retrieve.Service：query 改写 + 多路检索 + rerank + 严格 scope）。
+	//
+	// 产品决策：只有挂了知识库且解析出 docIDs 时才走底座检索 + grounding；
+	// 没挂知识库（或解析不出 docIDs）= 纯聊天，不检索、不 grounding、不报错（保持现状）。
+	// 绝不对纯聊天 chatbot 调底座（否则触发 retrieve.ErrEmptyScope）。
 	var retrievedChunks []domain.KnowledgeChunk
 	var retrievedChunkContents []string // for buildChatMessages (legacy path)
 	vectorSpanID := langfuse.SpanID()
@@ -223,18 +288,29 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 			log.C(ctx).Warnw("ChatStream: list document IDs failed", "error", docErr)
 		}
 
-		if len(docIDs) > 0 && b.vectorStore != nil && b.embedder != nil {
-			filter := port.SearchFilter{
-				UserID:      config.UserID, // 使用智能体所有者的 userID 做隔离
-				DocumentIDs: docIDs,
-			}
-			chunks, searchErr := b.vectorStore.Search(ctx, message, filter, chatStreamMaxChunks)
-			if searchErr != nil {
-				log.C(ctx).Warnw("ChatStream: vector search failed", "error", searchErr)
-				langfuse.EndSpan(traceID, vectorSpanID, langfuse.WithSpanError(searchErr.Error()))
+		if len(docIDs) > 0 && b.retrieveSvc != nil {
+			// 注入 owner userID 供底座 rerank 计费/隔离归因（与 scope.UserID 一致）。
+			retrieveCtx := middleware.NewContextWithUserID(ctx, config.UserID)
+			result, retErr := b.retrieveSvc.Retrieve(retrieveCtx, message,
+				retrieve.Scope{
+					UserID:      config.UserID, // 使用智能体所有者的 userID 做隔离
+					DocumentIDs: docIDs,
+				},
+				retrieve.Options{
+					TopK:         chatStreamRetrieveTopK,
+					RerankTopN:   chatStreamMaxChunks,
+					RewriteQuery: true,
+					History:      historyToStrings(historyMsgs),
+					BillingLabel: chatStreamRetrieveBillingLabel,
+				},
+			)
+			if retErr != nil {
+				// 检索失败降级为无资料回答（不阻断对话），与原裸检索失败语义一致。
+				log.C(ctx).Warnw("ChatStream: base retrieval failed", "error", retErr)
+				langfuse.EndSpan(traceID, vectorSpanID, langfuse.WithSpanError(retErr.Error()))
 			} else {
-				retrievedChunks = chunks
-				for _, chunk := range chunks {
+				retrievedChunks = result.Chunks
+				for _, chunk := range retrievedChunks {
 					retrievedChunkContents = append(retrievedChunkContents, chunk.Content)
 				}
 				langfuse.EndSpan(traceID, vectorSpanID, langfuse.WithSpanOutput(map[string]interface{}{
@@ -244,13 +320,13 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 		} else {
 			langfuse.EndSpan(traceID, vectorSpanID, langfuse.WithSpanOutput(map[string]interface{}{
 				"chunk_count": 0,
-				"reason":      "no docs or vector store unavailable",
+				"reason":      "no docs or retrieval service unavailable",
 			}))
 		}
 	} else {
 		langfuse.EndSpan(traceID, vectorSpanID, langfuse.WithSpanOutput(map[string]interface{}{
 			"chunk_count": 0,
-			"reason":      "no KBs mounted",
+			"reason":      "no KBs mounted (纯聊天)",
 		}))
 	}
 
@@ -260,23 +336,7 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 		langfuse.WithSpanParent(assemblySpanID),
 	)
 
-	messages := b.buildChatMessages(ctx, config, session, message, retrievedChunkContents)
-
-	// Fetch history for the fragment builder (same window as buildChatMessages).
-	var historyMsgs []model.ChatbotMessage
-	histMsgs, total, histErr := b.ds.ChatbotSession().ListMessages(ctx, session.ID, 0, chatStreamMaxHistory)
-	if histErr != nil {
-		log.C(ctx).Warnw("ChatStream: fetch history for fragments failed", "error", histErr)
-	} else {
-		if total > int64(chatStreamMaxHistory) {
-			offset := int(total) - chatStreamMaxHistory
-			histMsgs, _, histErr = b.ds.ChatbotSession().ListMessages(ctx, session.ID, offset, chatStreamMaxHistory)
-			if histErr != nil {
-				histMsgs = nil
-			}
-		}
-		historyMsgs = histMsgs
-	}
+	messages := b.buildChatMessages(config, historyMsgs, message, retrievedChunkContents)
 
 	// Build context fragments for the context-budget middleware.
 	// System prompt: config.SystemPrompt (KB context is embedded via KB evidence fragments,
@@ -441,7 +501,7 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 		}),
 	)
 
-	// 11. 发送完成事件
+	// 11. 发送完成事件（含被引用的知识库来源，供前端显示出处）。
 	doneData := map[string]interface{}{
 		"trace_id": traceID,
 	}
@@ -449,11 +509,63 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 		doneData["prompt_tokens"] = usage.PromptTokens
 		doneData["completion_tokens"] = usage.CompletionTokens
 	}
+	if sources := parseCitedSources(fullContent.String(), retrievedChunks); len(sources) > 0 {
+		doneData["sources"] = sources
+	}
 	return handler("done", doneData)
 }
 
-// buildChatMessages 组装 LLM 消息数组：system + history + user
-func (b *chatbotBiz) buildChatMessages(ctx context.Context, config *model.ChatbotConfig, session *model.ChatbotSession, userMessage string, retrievedChunks []string) []map[string]interface{} {
+// citationRe 匹配回答中形如 [1] / [知识2] 的引用编号（编号 1-based）。
+var citationRe = regexp.MustCompile(`\[(?:知识)?(\d+)\]`)
+
+// CitedSource 是 done 事件里回填的被引用知识库来源。index 为 1-based 引用编号，
+// 对应 BuildChatContextFragments evidence 前缀的 [知识N]。
+type CitedSource struct {
+	Index        int    `json:"index"`
+	ChunkID      string `json:"chunk_id"`
+	DocumentID   uint   `json:"document_id"`
+	DocumentName string `json:"document_name,omitempty"`
+}
+
+// parseCitedSources 解析回答 fullContent 中的 [N]/[知识N] 引用，映射回检索到的 chunks，
+// 返回去重、按引用编号升序的来源列表。越界编号忽略；无引用或无 chunks 返回 nil。
+//
+// 最小后端实现：done 事件加 sources 字段即可，不改既有 SSE 协议结构（不强制前端消费）。
+func parseCitedSources(fullContent string, chunks []domain.KnowledgeChunk) []CitedSource {
+	if fullContent == "" || len(chunks) == 0 {
+		return nil
+	}
+	matches := citationRe.FindAllStringSubmatch(fullContent, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := make(map[int]bool)
+	var sources []CitedSource
+	for _, m := range matches {
+		n, convErr := strconv.Atoi(m[1])
+		if convErr != nil || n < 1 || n > len(chunks) || seen[n] {
+			continue
+		}
+		seen[n] = true
+		chunk := chunks[n-1] // [知识N] 是 1-based，对应 chunks[N-1]
+		sources = append(sources, CitedSource{
+			Index:        n,
+			ChunkID:      chunk.ID,
+			DocumentID:   chunk.DocumentID,
+			DocumentName: chunk.DocumentName,
+		})
+	}
+	sort.Slice(sources, func(i, j int) bool { return sources[i].Index < sources[j].Index })
+	return sources
+}
+
+// buildChatMessages 组装 LLM 消息数组：system + history + user。
+//
+// 注意：此为 legacy []map 路径，当 ContextFragments 非空时其输出会被 context-budget
+// 中间件用 RenderContextFragments 的结果覆盖（见 aiservice/middleware/context_budget.go）。
+// 因此 grounding/引用前缀只加在 BuildChatContextFragments，不动这里。history 由调用方
+// 预取并传入（与 fragment 构建复用同一批历史，避免二次查询）。
+func (b *chatbotBiz) buildChatMessages(config *model.ChatbotConfig, historyMsgs []model.ChatbotMessage, userMessage string, retrievedChunks []string) []map[string]interface{} {
 	var messages []map[string]interface{}
 
 	// 1. system prompt
@@ -467,20 +579,6 @@ func (b *chatbotBiz) buildChatMessages(ctx context.Context, config *model.Chatbo
 	})
 
 	// 2. 历史消息（最近 N 条，按 seq 升序）
-	// 使用 offset 技巧：先获取总数，然后取最后 N 条
-	historyMsgs, total, err := b.ds.ChatbotSession().ListMessages(ctx, session.ID, 0, chatStreamMaxHistory)
-	if err != nil {
-		log.C(ctx).Warnw("ChatStream: fetch history failed", "error", err)
-	} else if total > int64(chatStreamMaxHistory) {
-		// 如果消息数超过窗口大小，取最后 N 条
-		offset := int(total) - chatStreamMaxHistory
-		historyMsgs, _, err = b.ds.ChatbotSession().ListMessages(ctx, session.ID, offset, chatStreamMaxHistory)
-		if err != nil {
-			log.C(ctx).Warnw("ChatStream: fetch recent history failed", "error", err)
-			historyMsgs = nil
-		}
-	}
-
 	for _, msg := range historyMsgs {
 		messages = append(messages, map[string]interface{}{
 			"role":    msg.Role,
@@ -495,4 +593,37 @@ func (b *chatbotBiz) buildChatMessages(ctx context.Context, config *model.Chatbo
 	})
 
 	return messages
+}
+
+// fetchRecentHistory 取会话最近 chatStreamMaxHistory 条消息（按 seq 升序）。
+// 用 offset 技巧：先取总数，超过窗口则只取最后 N 条。失败仅告警并返回 nil（不阻断对话）。
+// 供 ChatStream 检索改写 + fragment 构建 + legacy buildChatMessages 复用同一批历史。
+func (b *chatbotBiz) fetchRecentHistory(ctx context.Context, sessionID uint) []model.ChatbotMessage {
+	historyMsgs, total, err := b.ds.ChatbotSession().ListMessages(ctx, sessionID, 0, chatStreamMaxHistory)
+	if err != nil {
+		log.C(ctx).Warnw("ChatStream: fetch history failed", "error", err)
+		return nil
+	}
+	if total > int64(chatStreamMaxHistory) {
+		offset := int(total) - chatStreamMaxHistory
+		historyMsgs, _, err = b.ds.ChatbotSession().ListMessages(ctx, sessionID, offset, chatStreamMaxHistory)
+		if err != nil {
+			log.C(ctx).Warnw("ChatStream: fetch recent history failed", "error", err)
+			return nil
+		}
+	}
+	return historyMsgs
+}
+
+// historyToStrings 把历史消息扁平化为 "role: content" 行，供底座 QueryRewriter 做多轮
+// 指代消歧。空历史返回 nil。
+func historyToStrings(historyMsgs []model.ChatbotMessage) []string {
+	if len(historyMsgs) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(historyMsgs))
+	for _, msg := range historyMsgs {
+		out = append(out, msg.Role+": "+msg.Content)
+	}
+	return out
 }

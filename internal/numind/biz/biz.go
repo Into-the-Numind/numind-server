@@ -50,6 +50,7 @@ import (
 	radapter "numind-server/internal/pkg/retrieval/adapter"
 	ingest "numind-server/internal/pkg/retrieval/ingest"
 	"numind-server/internal/pkg/retrieval/port"
+	"numind-server/internal/pkg/retrieval/retrieve"
 
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/spf13/viper"
@@ -631,9 +632,12 @@ func NewBiz(ds store.IStore) *biz {
 	// 初始化知识库服务
 	b.kbService = kbbiz.NewKnowledgeBaseBiz(ds, b.salesRAGService)
 
-	// 初始化智能体服务。LLM 调用统一走 aiservice Gateway（Task 9 起），
-	// LLMRouter 参数已移除；此处仅需 VectorStore + Embedder。
-	b.chatbotService = chatbotbiz.NewChatbotBiz(ds, vStore, embedder)
+	// 初始化智能体服务。LLM 调用统一走 aiservice Gateway（Task 9 起）。
+	// T2.1：chatbot 改走底座检索（query 改写 + 多路检索 + rerank + grounding）修"回答怪"。
+	// chatMode="free" 避免销售话术污染纯知识库问答的 query 改写；docStore=nil 因为 chatbot
+	// 始终用显式 docIDs scope（不需要 AllEnabled 解析）。只有挂了 KB 且解析出 docIDs 才调它。
+	chatbotRetrieve := retrieve.NewService(vStore, salesragservice.NewRouterRewriter(llmRouter, "free"), nil)
+	b.chatbotService = chatbotbiz.NewChatbotBiz(ds, chatbotRetrieve)
 
 	// 初始化博主监控服务
 	monitorCooldown := monitor.NewCooldownManager(
