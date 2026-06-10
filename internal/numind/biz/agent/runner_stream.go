@@ -118,59 +118,7 @@ func (r *agentRunner) consumeEinoStream(
 	// handler. Reached when the tool adapter captured a yield into stream state
 	// (PendingYield) or the sentinel propagated as a stream error.
 	handleYield := func(p YieldPayload) (*RunResult, error) {
-		payloadJSON, mErr := json.Marshal(p)
-		if mErr != nil {
-			log.Errorw("consumeEinoStream: marshal yield payload failed",
-				"agent_run_id", run.ID, "error", mErr)
-			st.TerminalReason = TerminalModelError
-			emit(stream.EventTerminal, stream.TerminalPayload{
-				Reason:      string(TerminalModelError),
-				DurationMs:  time.Since(startTime).Milliseconds(),
-				StepCount:   st.StepCount,
-				UserMessage: UserFacingTerminalMessage(TerminalModelError),
-			})
-			return &RunResult{AgentRunID: run.ID, TerminalReason: TerminalModelError, StepCount: st.StepCount, Duration: time.Since(startTime)}, nil
-		}
-		if pErr := r.runStore.UpdatePendingQuestion(ctx, run.ID, payloadJSON); pErr != nil {
-			// Non-fatal: still surface the question; the answer endpoint's
-			// pending-json guard rejects resume if it truly failed to persist.
-			log.Warnw("consumeEinoStream: UpdatePendingQuestion failed",
-				"agent_run_id", run.ID, "error", pErr)
-		}
-		// Langfuse span for observability parity with runner.go's Run yield path.
-		if tc := langfuse.FromContext(ctx); tc != nil {
-			spanID := langfuse.SpanID()
-			langfuse.CreateSpan(tc.TraceID, spanID, "tool.ask_user_question.yield",
-				langfuse.WithSpanParent(tc.ParentObservationID),
-				langfuse.WithSpanInput(p),
-			)
-			langfuse.EndSpan(tc.TraceID, spanID)
-		}
-		opts := make([]stream.QuestionOption, 0, len(p.Options))
-		for _, o := range p.Options {
-			opts = append(opts, stream.QuestionOption{Label: o.Label, Description: o.Description})
-		}
-		emit(stream.EventQuestionPrompt, stream.QuestionPromptPayload{
-			Question:    p.Question,
-			Options:     opts,
-			Header:      p.Header,
-			MultiSelect: p.MultiSelect,
-		})
-		// Drive the state machine (parity with runner.go's Run yield path) —
-		// this sets st.TerminalReason = TerminalWaitingForUserChoice.
-		st.Transition(LoopEventAskUserPaused)
-		emit(stream.EventTerminal, stream.TerminalPayload{
-			Reason:      string(TerminalWaitingForUserChoice),
-			DurationMs:  time.Since(startTime).Milliseconds(),
-			StepCount:   st.StepCount,
-			UserMessage: UserFacingTerminalMessage(TerminalWaitingForUserChoice),
-		})
-		return &RunResult{
-			AgentRunID:     run.ID,
-			TerminalReason: TerminalWaitingForUserChoice,
-			StepCount:      st.StepCount,
-			Duration:       time.Since(startTime),
-		}, nil
+		return r.persistAndEmitYield(ctx, run.ID, st, emit, startTime, p)
 	}
 
 	// Emit stream_start immediately.
@@ -460,4 +408,86 @@ func truncateMapValues(m map[string]any, maxLen int) map[string]any {
 		}
 	}
 	return out
+}
+
+// persistAndEmitYield is the shared core of the streaming yield protocol:
+// persist the pending question, record a Langfuse span, emit question_prompt +
+// waiting_for_user_choice terminal via the supplied emitter, and drive the
+// LoopState machine. Used by consumeEinoStream (yield arriving via the
+// returned stream / PendingYield) and by RunStream's einoAgent.Stream error
+// branch (yield raised mid-graph in multi-step ReAct surfaces as Stream()'s
+// returned error — dev run #117). Keeping one core prevents the two paths
+// from drifting.
+func (r *agentRunner) persistAndEmitYield(ctx context.Context, runID uint64, st *LoopState,
+	emit func(stream.EventType, any), startTime time.Time, p YieldPayload) (*RunResult, error) {
+	payloadJSON, mErr := json.Marshal(p)
+	if mErr != nil {
+		log.Errorw("persistAndEmitYield: marshal yield payload failed",
+			"agent_run_id", runID, "error", mErr)
+		st.TerminalReason = TerminalModelError
+		emit(stream.EventTerminal, stream.TerminalPayload{
+			Reason:      string(TerminalModelError),
+			DurationMs:  time.Since(startTime).Milliseconds(),
+			StepCount:   st.StepCount,
+			UserMessage: UserFacingTerminalMessage(TerminalModelError),
+		})
+		return &RunResult{AgentRunID: runID, TerminalReason: TerminalModelError, StepCount: st.StepCount, Duration: time.Since(startTime)}, nil
+	}
+	if pErr := r.runStore.UpdatePendingQuestion(ctx, runID, payloadJSON); pErr != nil {
+		// Non-fatal: still surface the question; the answer endpoint's
+		// pending-json guard rejects resume if it truly failed to persist.
+		log.Warnw("persistAndEmitYield: UpdatePendingQuestion failed",
+			"agent_run_id", runID, "error", pErr)
+	}
+	// Langfuse span for observability parity with runner.go's Run yield path.
+	if tc := langfuse.FromContext(ctx); tc != nil {
+		spanID := langfuse.SpanID()
+		langfuse.CreateSpan(tc.TraceID, spanID, "tool.ask_user_question.yield",
+			langfuse.WithSpanParent(tc.ParentObservationID),
+			langfuse.WithSpanInput(p),
+		)
+		langfuse.EndSpan(tc.TraceID, spanID)
+	}
+	opts := make([]stream.QuestionOption, 0, len(p.Options))
+	for _, o := range p.Options {
+		opts = append(opts, stream.QuestionOption{Label: o.Label, Description: o.Description})
+	}
+	emit(stream.EventQuestionPrompt, stream.QuestionPromptPayload{
+		Question:    p.Question,
+		Options:     opts,
+		Header:      p.Header,
+		MultiSelect: p.MultiSelect,
+	})
+	// Drive the state machine (parity with runner.go's Run yield path) —
+	// this sets st.TerminalReason = TerminalWaitingForUserChoice.
+	st.Transition(LoopEventAskUserPaused)
+	emit(stream.EventTerminal, stream.TerminalPayload{
+		Reason:      string(TerminalWaitingForUserChoice),
+		DurationMs:  time.Since(startTime).Milliseconds(),
+		StepCount:   st.StepCount,
+		UserMessage: UserFacingTerminalMessage(TerminalWaitingForUserChoice),
+	})
+	return &RunResult{
+		AgentRunID:     runID,
+		TerminalReason: TerminalWaitingForUserChoice,
+		StepCount:      st.StepCount,
+		Duration:       time.Since(startTime),
+	}, nil
+}
+
+// yieldFromStreamFailure extracts a yield payload from an einoAgent.Stream
+// failure. Checks the adapter-captured stream state first (authoritative
+// payload, set by fullToolEinoAdapter.InvokableRun), then walks the error
+// chain — eino's internalError implements Unwrap and tool_node wraps the tool
+// error with %w, so errors.As reaches the yieldError sentinel.
+func yieldFromStreamFailure(state *StreamSessionState, err error) (*YieldPayload, bool) {
+	if state != nil && state.PendingYield != nil {
+		return state.PendingYield, true
+	}
+	var yErr *yieldError
+	if errors.As(err, &yErr) {
+		p := yErr.Payload
+		return &p, true
+	}
+	return nil, false
 }

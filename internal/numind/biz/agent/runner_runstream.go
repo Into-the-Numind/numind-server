@@ -552,12 +552,38 @@ func (r *agentRunner) RunStream(
 				SkillVersion:   skillVer,
 			}, streamErr
 		}
-		endedAt := time.Now()
-		if uerr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalModelError), &endedAt); uerr != nil {
-			log.Warnw("AgentRunner.RunStream UpdateState failed on Stream error", "agent_run_id", run.ID, "error", uerr)
+		// ask_user_question yield: in multi-step ReAct, einoAgent.Stream()
+		// executes the graph synchronously, so a yield raised at a tools node
+		// surfaces HERE as the returned error ("[NodeRunError] failed to
+		// stream tool call ...: agent: yield for user question") — not via the
+		// returned stream that consumeEinoStream guards. A yield is a pause,
+		// not a failure: surface the question and park the run exactly like
+		// the post-consume yield path below (dev run #117).
+		if p, ok := yieldFromStreamFailure(sharedState, streamErr); ok {
+			// Carry the checker-tracked step count so the terminal payload
+			// reports real progress, not 0 (review P2: spec-parity).
+			yieldSt := &LoopState{StepCount: int(sharedState.StepIdx)}
+			result, _ := r.persistAndEmitYield(ctx, run.ID, yieldSt, newChanEmitter(ch, run.ID), startTime, *p)
+			endedAt := time.Now()
+			if uErr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalWaitingForUserChoice), &endedAt); uErr != nil {
+				log.Warnw("AgentRunner.RunStream yield UpdateState failed (errpath)", "agent_run_id", run.ID, "error", uErr)
+			}
+			if result != nil {
+				result.SkillVersion = skillVer
+			}
+			return result, nil
 		}
-		// Emit error + terminal so the SSE client sees a clean close.
+
+		// Generic stream failure: persist the turn via finalizeRun so the
+		// user's input (and the error terminal) survive a reload — previously
+		// this branch only flipped run state, leaving messages empty and the
+		// session blank after refresh (dev run #117 second defect).
 		emitStreamErrorEvents(ch, run.ID, streamErr, TerminalModelError, startTime)
+		errSt := &LoopState{TerminalReason: TerminalModelError}
+		applyHookOverride(effectiveHooks, errSt)
+		if _, fErr := r.finalizeRun(ctx, run, errSt, startTime, "", "", nil, false, skillVer, isTrivial, req, permDenialSink, streamErr, sessionID); fErr != nil {
+			log.Warnw("AgentRunner.RunStream finalizeRun failed on Stream error", "agent_run_id", run.ID, "error", fErr)
+		}
 		return nil, fmt.Errorf("AgentRunner.RunStream einoAgent.Stream: %w", streamErr)
 	}
 
@@ -637,6 +663,28 @@ func applyHookOverride(effectiveHooks *RunHooks, st *LoopState) {
 			if term, _, isTerminal := hookSt.Transition(ev); isTerminal {
 				st.TerminalReason = term
 			}
+		}
+	}
+}
+
+// newChanEmitter adapts a raw stream.Event channel to the emit-func shape
+// persistAndEmitYield expects. Mirrors emitStreamErrorEvents' encode+
+// non-blocking-send pattern with a local seq counter (the einoAgent.Stream
+// error path has no consumeEinoStream emit closure to reuse).
+func newChanEmitter(ch chan<- stream.Event, runID uint64) func(stream.EventType, any) {
+	var seq uint64 = 1
+	return func(t stream.EventType, payload any) {
+		ev, err := stream.Encode(t, payload, seq, runID, 0)
+		if err != nil {
+			log.Warnw("newChanEmitter: stream.Encode failed", "agent_run_id", runID, "event_type", t, "error", err)
+			return
+		}
+		// seq++ only on successful send (T04 P1 convention: dropped events
+		// must not advance the monotonic-no-gap counter).
+		select {
+		case ch <- ev:
+			seq++
+		default:
 		}
 	}
 }
