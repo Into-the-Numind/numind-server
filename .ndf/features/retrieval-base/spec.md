@@ -116,9 +116,10 @@ salesrag 的 **opinion 通道** = 在第二个 scope 上再调一次 `Retrieve`�
 
 `service/pipeline.go`（`IngestionPipeline`：parse→split→tag→embed→双写 MySQL+向量库）整体搬到 `retrieval/ingest`。**splitter 完整随迁 5 文件**：`splitter.go`、`enhanced_splitter.go`、`hybrid_splitter.go`、`splitter_adapter.go`（prod 用的 `NewCompatibilitySplitter` 依赖链）、`embedding_splitter.go`（`salesrag.go:3387` 直接引用）。tagger 的 Langfuse prompt key（`salesrag-tagging`）改为构造参数（默认值不变，行为不变）。`ingestion.go`（旧同步版，死代码）确认无生产引用后随迁或弃。
 
-### §7.1 测试随迁策略
-- **随底座迁**（测通用检索/入库）：`pipeline_test.go`、`ingestion_test.go`、`splitter_test.go`/`enhanced_splitter_test.go`/`hybrid_splitter_test.go`、`sales_rag_test.go` 中的通用检索用例、`sqlitevec_store_test.go`/`memory_store_test.go`。
-- **留 salesrag**（测销售逻辑）：`strategy_*_test.go`、`tagger_dmx_test.go`、`salesrag_credits_integration_test.go`；更新其 import 指向 `retrieval/domain`。
+### §7.1 测试随迁策略（T1.4 实施修正 2026-06-10）
+- **随底座迁**（测通用检索/入库）：`pipeline_test.go`、`splitter_test.go`/`enhanced_splitter_test.go`/`hybrid_splitter_test.go`、`tagger_test.go`、`tagger_dmx_test.go`（白盒测通用 `ContentTagger.analyze` 私有方法，"dmx"=DMXAPI provider 而非销售逻辑，**必须随 tagger.go 迁 ingest** 才能访问私有方法——原 spec 误列为"留 salesrag"，T1.4 修正）、`sqlitevec_store_test.go`/`memory_store_test.go`；新增 `main_test.go`（ingest 包 TestMain，等价于原留在 `service/sales_rag_test.go` 的 TestMain）。
+- **死代码删除**：`ingestion.go`+`ingestion_test.go`（旧同步版 `IngestionService`，grep 确认无生产引用，T1.4 已删——原 spec 误列 ingestion_test 为"随迁"）。
+- **留 salesrag**（测销售逻辑）：`strategy_*_test.go`、`sales_rag_test.go`（含 service 包 TestMain）、`salesrag_credits_integration_test.go`。
 
 ---
 
