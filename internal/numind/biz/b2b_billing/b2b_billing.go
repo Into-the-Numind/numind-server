@@ -87,8 +87,9 @@ type ParentBillingRow struct {
 type GrantDetail struct {
 	ChildUserID   uint      `json:"child_user_id"`
 	ChildUsername string    `json:"child_username"`
-	ProductType   string    `json:"product_type"` // trial / monthly
-	Months        int       `json:"months"`       // grant batch size for monthly; 0 for trial
+	ChildNickname string    `json:"child_nickname"` // populated for the parent self-service view; empty on the admin report
+	ProductType   string    `json:"product_type"`   // trial / monthly
+	Months        int       `json:"months"`         // grant batch size for monthly; 0 for trial
 	AmountCents   int64     `json:"amount_cents"`
 	GrantedAt     time.Time `json:"granted_at"`
 }
@@ -357,6 +358,32 @@ func (b *b2bBillingBiz) lookupUsernames(ctx context.Context, ids []uint) (map[ui
 	return out, nil
 }
 
+// userDisplay carries the display fields (username + nickname) for one user.
+type userDisplay struct {
+	Username string
+	Nickname string
+}
+
+// lookupUserDisplay returns id→{username,nickname} for the given user IDs.
+// Dedicated to the parent self-service report, which renders a nickname column;
+// the admin report keeps lookupUsernames (username-only) so its billing query
+// stays byte-identical.
+func (b *b2bBillingBiz) lookupUserDisplay(ctx context.Context, ids []uint) (map[uint]userDisplay, error) {
+	out := make(map[uint]userDisplay, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	var users []model.User
+	if err := b.ds.DB().WithContext(ctx).
+		Select("id, username, nickname").Where("id IN ?", ids).Find(&users).Error; err != nil {
+		return nil, fmt.Errorf("lookupUserDisplay: %w", err)
+	}
+	for _, u := range users {
+		out[u.ID] = userDisplay{Username: u.Username, Nickname: u.Nickname}
+	}
+	return out, nil
+}
+
 // GetBillingReportForParent assembles the self-service monthly settlement view
 // for one parent account. Reuses computeBilling with a granter filter so the
 // amounts are byte-for-byte consistent with the admin settlement report.
@@ -408,14 +435,15 @@ func (b *b2bBillingBiz) GetBillingReportForParent(ctx context.Context, month str
 	for id := range childIDSet {
 		childIDs = append(childIDs, id)
 	}
-	usernameByID, err := b.lookupUsernames(ctx, childIDs)
+	displayByID, err := b.lookupUserDisplay(ctx, childIDs)
 	if err != nil {
 		return nil, fmt.Errorf("GetBillingReportForParent: %w", err)
 	}
 	for _, e := range events {
 		report.Details = append(report.Details, GrantDetail{
 			ChildUserID:   e.childUserID,
-			ChildUsername: usernameByID[e.childUserID],
+			ChildUsername: displayByID[e.childUserID].Username,
+			ChildNickname: displayByID[e.childUserID].Nickname,
 			ProductType:   e.productType,
 			Months:        e.months,
 			AmountCents:   e.amountCents,

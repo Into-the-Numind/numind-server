@@ -764,6 +764,32 @@ func TestGetBillingReportForParent_ScopedToParent(t *testing.T) {
 	assert.EqualValues(t, childA, r.Details[0].ChildUserID, "must NOT see parentB's child")
 }
 
+func TestGetBillingReportForParent_IncludesChildNickname(t *testing.T) {
+	db := newB2BTestDB(t)
+	ds := store.NewTestStore(db)
+	biz := New(ds)
+
+	parent := insertB2BUser(t, db, "parent")
+	withNick := insertB2BUser(t, db, "childWithNick")
+	require.NoError(t, db.Exec(`UPDATE user SET nickname = ? WHERE id = ?`, "小明", withNick).Error)
+	noNick := insertB2BUser(t, db, "childNoNick") // nickname stays empty
+
+	may := time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC)
+	insertSubGrant(t, db, parent, withNick, 1, may)
+	insertSubGrant(t, db, parent, noNick, 1, may)
+
+	r, err := biz.GetBillingReportForParent(context.Background(), "2026-05", parent)
+	require.NoError(t, err)
+	require.Len(t, r.Details, 2)
+
+	nickByChild := map[uint]string{}
+	for _, d := range r.Details {
+		nickByChild[d.ChildUserID] = d.ChildNickname
+	}
+	assert.Equal(t, "小明", nickByChild[withNick], "set nickname must surface in parent billing detail")
+	assert.Equal(t, "", nickByChild[noNick], "missing nickname surfaces as empty string (frontend renders '—')")
+}
+
 func TestGetBillingReportForParent_AmountMatchesAdmin(t *testing.T) {
 	db := newB2BTestDB(t)
 	ds := store.NewTestStore(db)
