@@ -23,6 +23,10 @@ func (m *mockPricer) CalculateCost(ctx context.Context, op, provider, model stri
 	return int64(promptTokens + completionTokens), nil
 }
 
+func (m *mockPricer) IsFreeModel(_ context.Context, _, _, _ string) (bool, error) {
+	return false, nil
+}
+
 // CalculateCostWithCache satisfies pricing.ICalculator. This mock ignores the
 // cached-token argument and delegates to CalculateCost (estimation never has
 // cache tokens pre-call).

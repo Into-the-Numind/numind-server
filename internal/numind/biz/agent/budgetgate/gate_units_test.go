@@ -26,6 +26,10 @@ func (f *fakePricing) CalculateCost(_ context.Context, _, provider, model string
 	return f.costCents, f.err
 }
 
+func (f *fakePricing) IsFreeModel(_ context.Context, _, _, _ string) (bool, error) {
+	return false, nil
+}
+
 func (f *fakePricing) CalculateCostWithCache(ctx context.Context, st, provider, model string, p, c, _ int) (int64, error) {
 	return f.CalculateCost(ctx, st, provider, model, p, c)
 }

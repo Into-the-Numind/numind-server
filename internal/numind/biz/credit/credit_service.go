@@ -40,6 +40,121 @@ func translateMembershipInsufficient(err error) error {
 	return err
 }
 
+// ─── free-model member gate (feature free-model-member-only) ─────────────────
+
+// freeModelAction is the pure decision of the free-model gate.
+type freeModelAction int
+
+const (
+	// freeModelPassThrough: not a free model, or its pricing/membership could not
+	// be determined → continue normal billing.
+	freeModelPassThrough freeModelAction = iota
+	// freeModelBlock: free model + non-member → reject with ErrModelMembershipOnly.
+	freeModelBlock
+	// freeModelSkip: free model + active member → skip deduction (zero charge).
+	freeModelSkip
+)
+
+// decideFreeModel is the PURE decision for the free-model gate — no I/O, so the
+// whole truth table is unit-testable without a DB. On a membership lookup error
+// it deliberately returns PassThrough (fall back to normal billing) rather than
+// blocking a possibly-legit member: a 0-priced model still requires balance on
+// the normal path, which is the safe conservative outcome.
+func decideFreeModel(isFree bool, freeErr error, isMember bool, memberErr error) freeModelAction {
+	if freeErr != nil || !isFree {
+		return freeModelPassThrough
+	}
+	if memberErr != nil {
+		return freeModelPassThrough
+	}
+	if !isMember {
+		return freeModelBlock
+	}
+	return freeModelSkip
+}
+
+// freeModelGate runs the free-model decision for a charged chat precheck. It is
+// shared by both reserve-precheck entry points (gateway CheckAndEstimateBudget
+// and default-path creditsImpl.CheckAndEstimate). Returns:
+//   - (true, nil, ErrModelMembershipOnly)              → free model, non-member: block
+//   - (true, &PreCheckResult{SkipDeduction:true}, nil) → free model, member: zero charge
+//   - (false, nil, nil)                                → continue normal billing
+//
+// `balance` is invoked lazily only on the member-skip path to snapshot the
+// three-pool balance into the returned PreCheckResult (best-effort, nil-safe).
+func freeModelGate(
+	ctx context.Context, pc pricing.ICalculator, ms *membership.MembershipService,
+	serviceType, provider, model string, userID uint, balance func() BalanceBreakdown,
+) (handled bool, pre *PreCheckResult, err error) {
+	if pc == nil || ms == nil || model == "" {
+		return false, nil, nil
+	}
+	isFree, freeErr := pc.IsFreeModel(ctx, serviceType, provider, model)
+	if freeErr != nil || !isFree {
+		// Not free (or pricing undeterminable) → normal billing. Avoids the
+		// membership round-trip entirely on the common paid-model path.
+		return false, nil, nil
+	}
+	// The model is known free here (isFree==true, freeErr==nil), so decideFreeModel
+	// only distinguishes member / non-member / membership-error among these.
+	isMember, memberErr := ms.IsActiveMember(ctx, uint64(userID), time.Now().UTC())
+	switch decideFreeModel(isFree, freeErr, isMember, memberErr) {
+	case freeModelBlock:
+		return true, nil, errno.ErrModelMembershipOnly
+	case freeModelSkip:
+		var bal BalanceBreakdown
+		if balance != nil {
+			bal = balance()
+		}
+		// Observability: make "why was this not deducted?" answerable from logs.
+		log.C(ctx).Infow("free-model gate: active member on 0-priced model, skipping deduction",
+			"user_id", userID, "provider", provider, "model", model)
+		return true, &PreCheckResult{SkipDeduction: true, Sufficient: true, EstimatedCredits: 0, Balance: bal}, nil
+	default: // freeModelPassThrough — reachable here only on a membership-lookup error.
+		log.C(ctx).Warnw("free-model gate: membership undeterminable, falling back to normal billing",
+			"user_id", userID, "provider", provider, "model", model, "err", memberErr)
+		return false, nil, nil
+	}
+}
+
+// EnforceModelMembership enforces the member-only rule for 0-priced models
+// INDEPENDENT of any reserve/charge path: a non-member must never reach a free
+// model. Returns ErrModelMembershipOnly for (free model + non-member); nil for a
+// paid model, a member, or when the check is undeterminable (fail-open — the
+// reserve path still guards balance when ChargeUser is set). Used by the gateway
+// ContextBudgetCredits middleware so AC3 holds even if an operation is
+// configured with ChargeUser=false (free-model-member-only C7/AC3).
+func (s *creditService) EnforceModelMembership(ctx context.Context, userID uint64, provider, model string) error {
+	if s.pricing == nil || s.membershipSvc == nil || model == "" {
+		return nil
+	}
+	isFree, freeErr := s.pricing.IsFreeModel(ctx, "llm_chat", provider, model)
+	if freeErr != nil || !isFree {
+		return nil
+	}
+	isMember, memberErr := s.membershipSvc.IsActiveMember(ctx, userID, time.Now().UTC())
+	if memberErr != nil {
+		log.C(ctx).Warnw("EnforceModelMembership: membership undeterminable, allowing (fail-open)",
+			"user_id", userID, "provider", provider, "model", model, "err", memberErr)
+		return nil
+	}
+	if !isMember {
+		return errno.ErrModelMembershipOnly
+	}
+	return nil
+}
+
+// IsActiveMember reports whether userID is a member (unexpired sub OR trial,
+// ignoring remaining balance). Thin delegate to MembershipService.IsActiveMember
+// for callers that hold an ICreditService (e.g. SOP CreateRun's coarse
+// precheck) — free-model-member-only C5.
+func (s *creditService) IsActiveMember(ctx context.Context, userID uint64) (bool, error) {
+	if s.membershipSvc == nil {
+		return false, fmt.Errorf("creditService.IsActiveMember: membershipSvc not wired")
+	}
+	return s.membershipSvc.IsActiveMember(ctx, userID, time.Now().UTC())
+}
+
 // creditService is the ICreditService implementation. Post legacy-deprecation
 // (T1), the dispatch is gone — all flows route directly to creditsImpl.
 // The struct remains so the interface boundary (and span/metadata wiring) stays
@@ -432,6 +547,23 @@ func (s *creditService) CheckAndEstimateBudget(ctx context.Context, user *model.
 		return nil, fmt.Errorf("%w: operation=%q", ErrUnknownBudgetOperation, input.Operation)
 	}
 
+	// Free-model member gate (default three-pool only; admin_test has its own
+	// pool logic below). A 0-priced model is a member-only perk: members skip
+	// deduction (zero charge), non-members are rejected. Runs before estimation
+	// so a free model never wastes a pricing/estimate round-trip
+	// (free-model-member-only C3/AC1/AC3).
+	if input.Pool != PoolAdminTest {
+		if handled, pre, gErr := freeModelGate(ctx, s.pricing, s.membershipSvc, "llm_chat",
+			input.Provider, input.Model, user.ID, func() BalanceBreakdown {
+				if b, e := s.credits.GetBalance(ctx, user); e == nil && b != nil {
+					return *b
+				}
+				return BalanceBreakdown{}
+			}); handled {
+			return pre, gErr
+		}
+	}
+
 	// Step 2: estimate from token counts (pool-independent).
 	estimatedCredits := s.estimateBudgetCredits(ctx, op, input)
 
@@ -475,9 +607,10 @@ func (s *creditService) ReserveBudget(ctx context.Context, user *model.User, inp
 		return nil, fmt.Errorf("ReserveBudget: precheck: %w", err)
 	}
 
-	// Defensive: if a future precheck path ever sets SkipDeduction, honor it
-	// by returning (nil, nil). Post legacy-deprecation (T1) this branch is
-	// unreachable on the current callgraph.
+	// Free-model member path (free-model-member-only AC1): CheckAndEstimateBudget
+	// sets SkipDeduction=true for a 0-priced model + active member. Honor it by
+	// returning (nil, nil) — no reservation, zero deduction. (Pre-T4 this branch
+	// was unreachable; it is now the live free-model path.)
 	if pre.SkipDeduction {
 		return nil, nil
 	}
@@ -552,6 +685,13 @@ func (c *creditsImpl) CheckAndEstimate(ctx context.Context, user *model.User, op
 	// Trace metadata added BEFORE the span so both are visible on the trace
 	// root even if estimation errors mid-flight.
 	updateTraceMetadataForCredits(ctx, user, *bal)
+
+	// Free-model member gate (default path; mirrors CheckAndEstimateBudget). bal
+	// is already fetched, so the snapshot closure just returns it.
+	if handled, pre, gErr := freeModelGate(ctx, c.pricing, c.membershipSvc, "llm_chat",
+		in.Provider, in.Model, user.ID, func() BalanceBreakdown { return *bal }); handled {
+		return pre, gErr
+	}
 
 	estimated, coefID, err := c.estimation.EstimateCredits(ctx, op, in.PromptChars, in.Model, in.Provider)
 	if err != nil {

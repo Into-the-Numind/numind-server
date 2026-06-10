@@ -635,6 +635,10 @@ func (s *spyPricingCalc) CalculateCost(_ context.Context, _, _, _ string, pt, _ 
 	return s.cost, nil
 }
 
+func (s *spyPricingCalc) IsFreeModel(_ context.Context, _, _, _ string) (bool, error) {
+	return false, nil
+}
+
 func (s *spyPricingCalc) CalculateCostWithCache(_ context.Context, _, _, _ string, pt, _, cached int) (int64, error) {
 	s.gotPrompt = pt
 	s.gotCached = cached

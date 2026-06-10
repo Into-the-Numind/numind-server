@@ -29,6 +29,20 @@ func (zeroBalanceCreditSvc) GetBalance(_ context.Context, _ *model.User) (*credi
 	return &creditbiz.BalanceBreakdown{SubRemain: 0, BoosterRemain: 0}, nil
 }
 
+// CreateRun now consults IsActiveMember before the coarse balance check
+// (free-model-member-only C5). A zero-balance NON-member must still be blocked.
+func (zeroBalanceCreditSvc) IsActiveMember(_ context.Context, _ uint64) (bool, error) {
+	return false, nil
+}
+
+// memberZeroBalanceCreditSvc is an active member with zero balance: CreateRun must
+// NOT block such a user on the coarse balance check (free-model-member-only C5).
+type memberZeroBalanceCreditSvc struct{ creditbiz.ICreditService }
+
+func (memberZeroBalanceCreditSvc) IsActiveMember(_ context.Context, _ uint64) (bool, error) {
+	return true, nil
+}
+
 // newSopTestDB creates an isolated in-memory SQLite DB for SOP biz tests.
 // model.User has MySQL ENUM columns SQLite rejects, so user table is hand-rolled.
 // sop-salesrag-parent-scope Task 4: CreateTemplateByUser 现在读 user 表做 parent
@@ -307,4 +321,63 @@ func TestCreateRun_TemplateUnauthorizedReturnsTypedError(t *testing.T) {
 	require.True(t, errors.As(err, &e), "biz should return *errno.Errno, got %T: %v", err, err)
 	assert.Equal(t, "Config.TemplateUnauthorized", e.Code)
 	assert.Equal(t, 403, e.HTTP, "HTTP status should be 403 (Forbidden), not 500")
+}
+
+// TestCreateRun_MemberZeroBalance_NotBlockedByBalance verifies that an active
+// member with zero balance is NOT rejected by CreateRun's coarse balance check
+// (free-model-member-only C5). The run still fails downstream (no template seeded),
+// but crucially NOT with Credits.Insufficient — proving the coarse balance gate was
+// bypassed for the member (so a 0-balance member can run a free-model SOP).
+func TestCreateRun_MemberZeroBalance_NotBlockedByBalance(t *testing.T) {
+	db := newCreateRunTestDB(t)
+
+	// Parent (id=1): passes HasTemplatePermission fast path, so we get past the
+	// balance + permission checks to the template lookup.
+	require.NoError(t, db.Exec(
+		`INSERT INTO user (id, created_at, updated_at) VALUES (1, ?, ?)`,
+		time.Now(), time.Now(),
+	).Error)
+
+	ds := store.NewTestStore(db)
+	b := sop.NewSopBiz(ds, nil, nil).WithCreditService(memberZeroBalanceCreditSvc{}, nil)
+
+	_, err := b.CreateRun(context.Background(), uint(1), uint(1), "any text")
+	require.Error(t, err, "run fails downstream (no template), but not on balance")
+
+	// Reaching the template-lookup stage proves the member got PAST the coarse
+	// balance gate — a blocked user would get Credits.Insufficient, not this.
+	require.ErrorContains(t, err, "template not found",
+		"member with 0 balance must pass the coarse balance check and reach template lookup (C5)")
+}
+
+// memberCheckErrCreditSvc fails the membership check; CreateRun must conservatively
+// treat the user as a non-member and apply the zero-balance gate (§8 P0-1).
+type memberCheckErrCreditSvc struct{ creditbiz.ICreditService }
+
+func (memberCheckErrCreditSvc) IsActiveMember(_ context.Context, _ uint64) (bool, error) {
+	return false, errors.New("membership store unavailable")
+}
+func (memberCheckErrCreditSvc) GetBalance(_ context.Context, _ *model.User) (*creditbiz.BalanceBreakdown, error) {
+	return &creditbiz.BalanceBreakdown{SubRemain: 0, BoosterRemain: 0}, nil
+}
+
+// TestCreateRun_MemberCheckError_ConservativelyBlockedOnZeroBalance: when the
+// membership check errors, CreateRun treats the user as a non-member and still
+// applies the zero-balance gate (conservative fail — free-model-member-only §8 P0-1).
+func TestCreateRun_MemberCheckError_ConservativelyBlockedOnZeroBalance(t *testing.T) {
+	db := newCreateRunTestDB(t)
+	require.NoError(t, db.Exec(
+		`INSERT INTO user (id, created_at, updated_at) VALUES (1, ?, ?)`,
+		time.Now(), time.Now(),
+	).Error)
+
+	ds := store.NewTestStore(db)
+	b := sop.NewSopBiz(ds, nil, nil).WithCreditService(memberCheckErrCreditSvc{}, nil)
+
+	_, err := b.CreateRun(context.Background(), uint(1), uint(1), "any text")
+	require.Error(t, err)
+	var e *errno.Errno
+	require.True(t, errors.As(err, &e), "got %T: %v", err, err)
+	assert.Equal(t, "Credits.Insufficient", e.Code,
+		"membership-check error must conservatively apply the zero-balance gate")
 }

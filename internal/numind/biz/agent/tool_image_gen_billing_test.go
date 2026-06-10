@@ -20,6 +20,12 @@ type stubCreditService struct {
 	reserveID          uint64
 }
 
+func (s *stubCreditService) IsActiveMember(_ context.Context, _ uint64) (bool, error) {
+	return false, nil
+}
+func (s *stubCreditService) EnforceModelMembership(_ context.Context, _ uint64, _, _ string) error {
+	return nil
+}
 func (s *stubCreditService) ReserveBudget(_ context.Context, _ *model.User, _ credit.BudgetReservationInput) (*credit.Reservation, error) {
 	s.reserveBudgetCalls++
 	if s.reserveErr != nil {

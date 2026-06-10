@@ -36,6 +36,9 @@ func (c *poolCapturingCreditService) FinalizeReservation(context.Context, uint64
 	return nil
 }
 func (c *poolCapturingCreditService) Refund(context.Context, uint64, string) error { return nil }
+func (c *poolCapturingCreditService) EnforceModelMembership(context.Context, uint, string, string) error {
+	return nil
+}
 
 // ctxCheckingCreditService records the ctx error seen by Refund — to prove the
 // settle write runs on a non-cancelled ctx (agent-mode-billing T11).

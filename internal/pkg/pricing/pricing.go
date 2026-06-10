@@ -69,6 +69,21 @@ type ICalculator interface {
 	// cache argument entirely (not cache-aware in Batch A).
 	CalculateCostWithCache(ctx context.Context, serviceType, provider, model string,
 		promptTokens, completionTokens, cachedTokens int) (costCents int64, err error)
+
+	// IsFreeModel reports whether (serviceType, provider, model) resolves to a
+	// zero-priced model — a pricing rule exists and all of its COST components
+	// are 0 (input/output per-MTok and per-call), so a call charges the user 0
+	// credits. Used by the free-model member gate (feature free-model-member-only).
+	//
+	//   - rule found, flat, all-zero          → (true, nil)
+	//   - rule found but any cost price != 0   → (false, nil)
+	//   - rule found but tiered_token          → (false, nil)  (0-price models are flat)
+	//   - no rule (gorm.ErrRecordNotFound)     → (false, nil)  ("unpriced" is NOT "free")
+	//   - any other lookup error               → (false, err)
+	//
+	// It performs a single cache-backed lookup and never multiplies by tokens, so
+	// it is a cheap synchronous check suitable for per-call gating.
+	IsFreeModel(ctx context.Context, serviceType, provider, model string) (isFree bool, err error)
 }
 
 // calculator is the default ICalculator implementation. Thread-safe.
@@ -259,4 +274,28 @@ func (c *calculator) resolvePricingRule(ctx context.Context, serviceType, provid
 		c.cache.Put(fallbackKey, rule)
 	}
 	return rule, err
+}
+
+// IsFreeModel implements ICalculator — see the interface doc for the full
+// contract. It reuses the cache-backed resolvePricingRule and inspects COST
+// price components only. For an LLM chat call the credit charge comes from the
+// token formula (InputPricePerMTok / OutputPricePerMTok); PricePerCall is
+// additionally required to be 0 as a conservative guard so a per-call-billed
+// model never slips through as "free". PricePerGB (COS storage billing) is
+// intentionally NOT examined — this gate is LLM-call specific. A missing rule is
+// deliberately NOT free, so an unpriced/misconfigured model never becomes a
+// member-only bypass.
+func (c *calculator) IsFreeModel(ctx context.Context, serviceType, provider, model string) (bool, error) {
+	rule, err := c.resolvePricingRule(ctx, serviceType, provider, model)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	// Tiered rules are never treated as free: zero-priced models are flat.
+	if rule.BillingMode == "tiered_token" {
+		return false, nil
+	}
+	return rule.InputPricePerMTok == 0 && rule.OutputPricePerMTok == 0 && rule.PricePerCall == 0, nil
 }

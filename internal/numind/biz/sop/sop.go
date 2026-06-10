@@ -382,23 +382,36 @@ func (b *sopBiz) CreateRun(ctx context.Context, templateID, userID uint, text st
 	// credits 用户：粗粒度余额预检，避免零余额时创建 orphan pending run
 	// （精确检查由 ExecuteNode 中的 creditSvc.CheckAndEstimate 负责）
 	// 三池都计入：trial_grant + credit_cycle + user_booster_balance。
+	//
+	// free-model-member-only C5: 会员（在期 sub 或 trial）豁免此粗检——会员可用
+	// 0 价模型跑 0 余额 SOP（per-node reserve 仍精确拦收费模型）。仅非会员保留
+	// 零余额快速拒绝（避免 orphan pending run）。
 	if b.creditSvc != nil {
-		bal, balErr := b.creditSvc.GetBalance(ctx, user)
-		if balErr != nil {
-			log.C(ctx).Warnw("Credits pre-check: failed to get balance, allowing run creation",
-				"user_id", userID, "err", balErr)
-		} else {
-			totalRemain := bal.SubRemain + bal.BoosterRemain + bal.TrialRemain
-			if totalRemain <= 0 {
-				log.C(ctx).Warnw("Credits pre-check: zero balance",
-					"user_id", userID,
-					"sub_remain", bal.SubRemain,
-					"booster_remain", bal.BoosterRemain,
-					"trial_remain", bal.TrialRemain)
-				return nil, errno.ErrInsufficientCredits.SetMessage("积分不足，请充值积分")
+		member, memberErr := b.creditSvc.IsActiveMember(ctx, uint64(userID))
+		if memberErr != nil {
+			// Conservative: on a membership-check failure treat as non-member and
+			// apply the balance gate, rather than letting a 0-balance user through.
+			log.C(ctx).Warnw("Credits pre-check: membership check failed, treating as non-member",
+				"user_id", userID, "err", memberErr)
+		}
+		if !member {
+			bal, balErr := b.creditSvc.GetBalance(ctx, user)
+			if balErr != nil {
+				log.C(ctx).Warnw("Credits pre-check: failed to get balance, allowing run creation",
+					"user_id", userID, "err", balErr)
+			} else {
+				totalRemain := bal.SubRemain + bal.BoosterRemain + bal.TrialRemain
+				if totalRemain <= 0 {
+					log.C(ctx).Warnw("Credits pre-check: zero balance (non-member)",
+						"user_id", userID,
+						"sub_remain", bal.SubRemain,
+						"booster_remain", bal.BoosterRemain,
+						"trial_remain", bal.TrialRemain)
+					return nil, errno.ErrInsufficientCredits.SetMessage("积分不足，请充值积分")
+				}
+				log.C(ctx).Infow("Credits user balance pre-check passed (non-member)",
+					"user_id", userID, "total_remain", totalRemain)
 			}
-			log.C(ctx).Infow("Credits user balance pre-check passed",
-				"user_id", userID, "total_remain", totalRemain)
 		}
 	}
 
@@ -831,7 +844,8 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	ctx = langfuse.WithTrace(ctx, traceID)
 
 	// ===== Phase 2 Task 2.1: Reserve → LLM → Reconcile 控制流 =====
-	// 在 LLM 调用前：CheckAndEstimate + Reserve（post-T1: legacy_tier 已下线，SkipDeduction 恒为 false）
+	// 在 LLM 调用前：CheckAndEstimate + Reserve（free-model-member-only 起：0 价模型+会员
+	// 时 CheckAndEstimate 置 SkipDeduction=true，下方两处 Reserve 由 !pre.SkipDeduction 守卫跳过）
 	// defer FinalizeReservation 在函数返回时对账：
 	//   - actualCost 非零 → Reconcile（delta 回补/退还）
 	//   - opErr 非空    → Refund（分类 provider_timeout / op_failed；问题 1 detach 后客户端
@@ -868,13 +882,18 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 			if err != nil {
 				return wrapCreditError(err, pre)
 			}
-			// Audit P2#1 cleanup: SkipDeduction is always false post legacy-deprecation (T1).
-			// The previous `if !pre.SkipDeduction { ... }` wrapper was dead code; inlined.
-			idempKey := fmt.Sprintf("sop_run:%d:%d", runID, nodeID)
-			rsv, err = b.creditSvc.Reserve(ctx, user, credit.OpSopRun,
-				pre.EstimatedCredits, pre.CoefficientID, &idempKey)
-			if err != nil {
-				return err // ErrInsufficientCredits race 等
+			// free-model-member-only: a 0-priced model for an active member sets
+			// SkipDeduction=true with EstimatedCredits=0. Reserve rejects estimated<=0,
+			// so we MUST skip the reservation entirely (zero deduction). This restores
+			// the guard removed by the prior "Audit P2#1 cleanup" — SkipDeduction is no
+			// longer always-false.
+			if !pre.SkipDeduction {
+				idempKey := fmt.Sprintf("sop_run:%d:%d", runID, nodeID)
+				rsv, err = b.creditSvc.Reserve(ctx, user, credit.OpSopRun,
+					pre.EstimatedCredits, pre.CoefficientID, &idempKey)
+				if err != nil {
+					return err // ErrInsufficientCredits race 等
+				}
 			}
 		}
 	}
@@ -1622,13 +1641,16 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 			if err != nil {
 				return wrapCreditError(err, pre)
 			}
-			// Audit P2#1 cleanup: SkipDeduction is always false post legacy-deprecation (T1).
-			// The previous `if !pre.SkipDeduction { ... }` wrapper was dead code; inlined.
-			idempKey := fmt.Sprintf("sop_chat:%d:%d", runID, userMsg.Seq)
-			chatRsv, err = b.creditSvc.Reserve(ctx, user, credit.OpSopChat,
-				pre.EstimatedCredits, pre.CoefficientID, &idempKey)
-			if err != nil {
-				return err
+			// free-model-member-only: skip Reserve when SkipDeduction (0-priced model
+			// + active member, EstimatedCredits=0). Restores the guard removed by the
+			// prior "Audit P2#1 cleanup".
+			if !pre.SkipDeduction {
+				idempKey := fmt.Sprintf("sop_chat:%d:%d", runID, userMsg.Seq)
+				chatRsv, err = b.creditSvc.Reserve(ctx, user, credit.OpSopChat,
+					pre.EstimatedCredits, pre.CoefficientID, &idempKey)
+				if err != nil {
+					return err
+				}
 			}
 		}
 	}
