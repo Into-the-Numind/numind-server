@@ -1,5 +1,18 @@
 schema_version: '2.0'
 features:
+- id: permission-allow-sandboxed-exec
+  track: hotfix
+  description: 'R1 预探针 run #115 发现：权限管线 UserSessionRule v1 对 IsDestructive=true 工具一律 deny（"该操作可能修改你的数据"），而全仓库 destructive 只有 bash_exec/run_python——均在一次性沙箱容器内执行、碰不到用户数据。两 feature 对撞：open-tools(06-01) 注册层全开 + remove-permission-backdoor(06-02) 管线真实化 → 文档生成管线（docx/xlsx/pptx via run_python）在权限层全灭（decision_log 历史 deny 全是这两工具）。修复：agent.IsSandboxIsolatedExecTool 单一 SOT（沙箱 hook 路由 toolNeedsSandbox 同源共用），UserSessionRule 对其 Passthrough(DecisionReasonSandboxOverride 可审计)；通用 destructive 工具仍 deny。对齐 2026-05-31 拍板（全开+沙箱兜底，不加高危开关）。'
+  classification_reason: 'Hotfix：无 schema/新 API/新外部服务；3 文件+测试；先例 remove-permission-backdoor 同区域 hotfix。安全敏感→双 reviewer 从严（含沙箱兜底实证：disabled backend 下工具拒跑不裸执行）。'
+  status: active
+  stage: H2
+  repos:
+    numind-server: fix/permission-allow-sandboxed-exec
+  progress:
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-H2 (ai 2026-06-10): TDD——60b143c4 失败复现→cb3215f8(amend) 修复。双 Sonnet reviewer 并行 PASS_WITH_CONCERNS：P1(审计 reason 用 DecisionReasonSandboxOverride 使豁免可检索)已修；P2 已修（SOT 函数消除双名单漂移/大小写+空名负向测试/Passthrough-not-Allow 设计意图注释/warm-pool 措辞）；P2 registry 重名无 duplicate-check（未来 MCP 实装时的覆盖攻击面）→ backlog HW-32。安全实证：sandbox disabled 环境下 Borrow 返回 ErrSandboxDisabled→工具友好报错不裸跑，豁免不引入无沙箱裸执行。'
 - id: retrieval-base
   ndf_version: '3.0'
   track: standard

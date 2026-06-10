@@ -162,6 +162,8 @@
 |----|------|------|------|------|
 | BUG-1 | **内存预算护栏把 token 当积分**：单次 ~6k token 调用击穿 800 积分 cap → 所有实质性 agent run 首次工具调用即被杀（terminal used=6829 vs 真实扣费 ~5）。真实三池扣费不受影响 | CAP-1 预探针 run #113（2026-06-10） | P0（R1 挡路） | `closed`——hotfix budget-tracker-token-units（develop c2f93c59，TDD+双 review，5 P2 全修） |
 | HW-31 | vision 工具（tool_annotate_image 等经包级 chatFn 直调 aiservice.Chat）usage 不进 usageStore → vision token 对内存护栏透明（真实计费不受影响） | BUG-1 review 发现（pre-existing） | P2 | `open` |
+| BUG-2 | **UserSessionRule 拦死沙箱执行工具**：open-tools(06-01)×permission-backdoor-removal(06-02) 两 feature 对撞，run_python/bash_exec 被"可能修改你的数据"全拒 → 文档生成管线（docx/xlsx/pptx）全灭 | 预探针 run #115 | P0（上线阻断） | `closed`——hotfix permission-allow-sandboxed-exec（TDD+双 review 从严+沙箱兜底实证） |
+| HW-32 | 工具注册 registry 无重名 duplicate-check：未来 MCP/CLI factory 实装后，重名工具可静默覆盖平台工具并继承沙箱豁免（当前单 factory 不可利用） | BUG-2 review 发现 | P2（MCP 实装前必修） | `open` |
 | OBS-1 | dev 上 ali-dashscope qwen-turbo 辅助调用 403 三连退款（free tier 耗尽，已知 PLT-3），fail-open 不致命但拖慢每轮+日志噪音（run #114：67 笔 reservation 中 40 笔是 403 退款）；建议 dev 把相关 task_profile 路由迁离 ali | run #113/#114 | P2（dev only，R1 前顺手修可提速） | `open` |
 | OBS-2 | run 详情 API `credits_used` 恒 0（真实 reconcile 正常，聚合显示未接线）；create 响应 `estimated_credits_min/max` 也是 0-0 | run #114 | P2 | `open` |
 
