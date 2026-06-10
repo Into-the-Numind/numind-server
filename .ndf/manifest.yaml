@@ -1,5 +1,19 @@
 schema_version: '2.0'
 features:
+- id: yield-session-reload
+  track: hotfix
+  description: 'R1 现场用户上报（dev run #117/#118）：agent 停在 ask_user_question（waiting_for_user_choice）的会话刷新后"一片空白，没有任何记录"且无法继续。根因：yield 路径不写转录（messages=[]），pending_question 只存 run.pending_question_json；GetSessionSnapshot 只返回 messages 数组→空白。修复（跨仓库）：后端 GetSessionSnapshot 对 waiting run 从 pending_question_json 合成 question_prompt agentMessage(answer_status=pending) 追加在转录后（completed run 即使 stale pending 也不合成）；前端 SessionSnapshot 加 run 字段、loadSessionSnapshot 在 waiting 时设 currentRun（否则 resume 轮询 null 守卫静默卡死）、handleAnswerSubmitted await ensureCurrentRun 兜底。answer 端点 resume 仅依赖 DB(state_reason+pending_json)与前端解耦。'
+  classification_reason: 'Hotfix：无 schema/新 API/外部服务；跨仓库(server+web，先例 agent-image-durable-render)；用户上报 Bug-from-Customer §12（首 commit 失败复现测试）。最小安全修复：不碰 yield/resume 持久化时序（原始 user 输入气泡恢复 + resume transcript 完整性列 follow-up HW-33）。'
+  status: active
+  stage: H2
+  repos:
+    numind-server: fix/yield-session-reload
+    numind-web-v3: fix/yield-session-reload
+  progress:
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-H2 (ai 2026-06-10): TDD——server 2f698bb6 test(qa)(build-fail=合法 FAIL，依赖未存在字段)+web 测试→d042bc37/fcd07cb 修复(amend 含 review P2)。双 Sonnet reviewer 并行均 PASS_WITH_CONCERNS 零 P0/P1。5 P2 处理：multi_select omitempty——reviewer 建议去 omitempty 有误(agentMessage 共用 struct 会污染所有消息)→改前端类型 optional+消费处 ?? false(更正)；agentMessage stale 注释补 question_prompt；ensureCurrentRun 挪到 reconcileFromDB JSDoc 前；测试 as never→as AgentRun。server go test+lint 绿/web vitest 19 pass+type-check+eslint 绿。follow-up HW-33：yield 持久化原始 user 输入(waiting 期间气泡)+resume finalizeRun 用 answerMsg 覆写丢原始任务描述。'
 - id: stream-yield-errpath
   track: hotfix
   description: 'R1 现场用户上报（dev run #117）：方法论指示 agent "查不到就问用户" → ask_user_question 在流式路径 yield → run 被判 model_error（"服务暂时不可用"）+ messages 持久化为空（刷新后会话全消失）。根因：多步 ReAct 中 einoAgent.Stream() 同步执行整图，工具节点的 yield 哨兵从 Stream() 返回值冒出，streamErr 分支无 yield 检查（BLK-4 旧修复只盖了 consumeEinoStream 的 stream 内路径）。修复：抽 persistAndEmitYield 单一 yield 核心（consumeEinoStream handleYield 委托）+ yieldFromStreamFailure 双探测（PendingYield 优先/errors.As 走 eino Unwrap 链）+ streamErr 分支接球转 waiting_for_user_choice；通用流错误改走 finalizeRun 持久化用户 turn（修空 messages/会话空白）。'
