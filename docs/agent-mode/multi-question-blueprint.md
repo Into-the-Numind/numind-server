@@ -31,11 +31,15 @@
 - **唯一性**：question text 唯一 + 每 question 内 label 唯一
 - **"其他"自动**：前端给每个 question 自动加"其他/自由填写"，agent 不定义（沿用现有底部 free_text，但 per-question）
 
-### 答案协议（回传）
+### 答案协议（回传）— T2 实现形态（结构化，非扁平字符串）
 ```
-answers: { "<question text>": "<answer string>" }   // 多选逗号分隔；其他=用户输入
+POST /v1/agent-runs/:id/answer
+answers: { "<question text>": { "selected": ["<label>", ...], "free_text": "<text>" } }
 ```
-回传 LLM：`用户已回答你的问题：「陪跑周期多长？」=90天，「创始人故事」=2020年创办…，可据此继续。`
+- key = 问题文本；`selected` = 选中选项的 **label**（key 不下发前端，前端按 label 识别）；多选可多个 label，单选最多 1 个；纯开放问题只填 `free_text`。
+- 校验（后端）：每个 key 必须对应已问的问题；每条至少有 selected 或 free_text；单选 ≤1、多选 ≤4；至少回答一个（跳过=省略该 key）。
+- 服务端 `resolveAnswer` 把 selected（顿号「、」连接）+ free_text（「；」连接）拼成单条答案字符串。前端**不要**预先拼接。
+回传 LLM：`用户已回答你的问题：\n- 「陪跑周期多长？」→ 90天\n- 「主要客群是谁？」→ 宝妈、职场人；一二线城市\n请据此继续，不要重复已回答的问题。`
 
 ## Task 分解（S4，每 task TDD + 双 review）
 
