@@ -95,17 +95,22 @@ func freeModelGate(
 		// membership round-trip entirely on the common paid-model path.
 		return false, nil, nil
 	}
+	// The model is known free here (isFree==true, freeErr==nil), so decideFreeModel
+	// only distinguishes member / non-member / membership-error among these.
 	isMember, memberErr := ms.IsActiveMember(ctx, uint64(userID), time.Now().UTC())
 	switch decideFreeModel(isFree, freeErr, isMember, memberErr) {
 	case freeModelBlock:
-		return true, nil, fmt.Errorf("%w", errno.ErrModelMembershipOnly)
+		return true, nil, errno.ErrModelMembershipOnly
 	case freeModelSkip:
 		var bal BalanceBreakdown
 		if balance != nil {
 			bal = balance()
 		}
+		// Observability: make "why was this not deducted?" answerable from logs.
+		log.C(ctx).Infow("free-model gate: active member on 0-priced model, skipping deduction",
+			"user_id", userID, "provider", provider, "model", model)
 		return true, &PreCheckResult{SkipDeduction: true, Sufficient: true, EstimatedCredits: 0, Balance: bal}, nil
-	default: // freeModelPassThrough — only reachable here on a membership error.
+	default: // freeModelPassThrough — reachable here only on a membership-lookup error.
 		log.C(ctx).Warnw("free-model gate: membership undeterminable, falling back to normal billing",
 			"user_id", userID, "provider", provider, "model", model, "err", memberErr)
 		return false, nil, nil
@@ -134,7 +139,7 @@ func (s *creditService) EnforceModelMembership(ctx context.Context, userID uint6
 		return nil
 	}
 	if !isMember {
-		return fmt.Errorf("%w", errno.ErrModelMembershipOnly)
+		return errno.ErrModelMembershipOnly
 	}
 	return nil
 }
@@ -602,9 +607,10 @@ func (s *creditService) ReserveBudget(ctx context.Context, user *model.User, inp
 		return nil, fmt.Errorf("ReserveBudget: precheck: %w", err)
 	}
 
-	// Defensive: if a future precheck path ever sets SkipDeduction, honor it
-	// by returning (nil, nil). Post legacy-deprecation (T1) this branch is
-	// unreachable on the current callgraph.
+	// Free-model member path (free-model-member-only AC1): CheckAndEstimateBudget
+	// sets SkipDeduction=true for a 0-priced model + active member. Honor it by
+	// returning (nil, nil) — no reservation, zero deduction. (Pre-T4 this branch
+	// was unreachable; it is now the live free-model path.)
 	if pre.SkipDeduction {
 		return nil, nil
 	}
