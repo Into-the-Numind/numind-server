@@ -1,100 +1,53 @@
--- Seed cache-hit input pricing for Batch A models (DeepSeek + OpenAI GPT, FLAT rows).
+-- Seed cache-HIT input pricing for Batch A models — ABSOLUTE real DMXAPI prices.
 --
--- ============================================================================
--- TARGET ROW SET — derived from the migration HISTORY (the single source of
--- truth for which (provider, model) flat pricing_rule rows actually exist),
--- NOT from any single migration's prose. Every tuple below was located in a
--- committed seed/INSERT migration in this repo:
+-- 决策 (2026-06-10, user): 透传 DMXAPI 成本价 (用户命中价 = DMXAPI 实际命中价, 非倍数);
+--   base 输入价不动; aihubmix 暂不设 (无 aihubmix 价表 → NULL → 全价, 零回归);
+--   gpt-5.4 本环境为 tiered_token (tiered 计费路径不读 cached 列) → billing_mode='flat'
+--   守卫使其不匹配 → 全价零回归; 若某环境 gpt-5.4 为 flat 则按 ¥1.25 生效.
 --
---   provider      | model                  | input  | source migration
---   --------------+------------------------+--------+--------------------------------------------
---   volc-ark      | deepseek-v3-2-251201   | 1.2184 | seed_pricing_rules.sql:18   (SOP 主力, optional)
---   dmxapi        | deepseek-v3-2-251201   | 1.0000 | seed_pricing_rules.sql:24   (SalesRAG)
---   dmxapi        | deepseek-v4-pro        |14.0000 | 20260424_204500_seed_deepseek_v4_pro.sql:114
---   aihubmix      | deepseek-v4-pro        |14.0000 | 20260424_204500_seed_deepseek_v4_pro.sql:120
---   dmxapi        | DeepSeek-V3.2          | 2.1600 | 20260419_170000_seed_pricing_global_fallback.sql:38
---   dmxapi        | DeepSeek-V3.2-Thinking | 2.1600 | 20260419_170000_seed_pricing_global_fallback.sql:40
---   aihubmix      | deepseek-v3.2          | 2.1600 | 20260416_100000_seed_aihubmix_provider.sql:139
---   aihubmix      | deepseek-v3.2-thinking | 2.1600 | 20260420_030000_seed_drift_pricing_rules.sql:43
---   dmxapi-ssvip  | deepseek-v3.2          | 2.1600 | 20260418_170000_pricing_rule_vocabulary_fix.sql:91 (copied aihubmix)
---   dmxapi        | gpt-5.4                |10.0000 | 20260419_170000_seed_pricing_global_fallback.sql:46
+-- 价格来源: DMXAPI 价目表 (含税6%) 2026-06. 见 reference_llm_prompt_caching_mechanics 记忆.
+--   deepseek-v4-pro 命中 ¥0.025 | deepseek-v3.2(+thinking) ¥0.2 | gpt-5.5 ¥2.482 | gpt-5.4 ¥1.25
 --
--- OUT OF SCOPE (NOT seeded) — tiered_token GPT rows: aihubmix/gpt-5.4,
--- aihubmix/gpt-5.4-thinking, dmxapi-ssvip/gpt-5.4. The tier path
--- (pricing_rule_tier) never reads the cached_input_price_per_m_tok column, so a
--- cached price there would be ignored → those routes bill at full price → zero
--- regression by design. Excluded here via billing_mode='flat' + tuple matching.
--- gpt-5.5 has NO pricing_rule row (test fixture only) → deferred.
+-- cached_input_price_per_m_tok = 扣用户积分依据 (CalculateCostWithCache);
+-- sell_cached_input_price_per_m_tok = 营收记账. 透传 + cost==sell 惯例 → 同值.
+-- 列由 GORM AutoMigrate 建; 本文件是数据 UPDATE.
+-- 幂等: WHERE cached_input_price_per_m_tok IS NULL — 不覆盖既有值.
+-- LOWER(model) 兼容大小写漂移 (dev 小写 deepseek-v3.2 vs 历史大写 DeepSeek-V3.2).
 --
--- ============================================================================
--- ROBUSTNESS: cached price is derived as a RATIO of the row's OWN stored price
--- (ROUND(input_price_per_m_tok * ratio, 4)), NOT a hardcoded constant — so it is
--- correct whatever the live base price is and can never silently mis-price if an
--- operator repriced the base. Rounded to the column scale DECIMAL(10,4).
---
--- PAIRED COLUMNS (P1 #5): cost (cached_input_price_per_m_tok) and sell
--- (sell_cached_input_price_per_m_tok) are ALWAYS set together in one statement,
--- so a partial (cost-only / sell-only) state can never arise here.
---
--- IDEMPOTENT: WHERE ... AND cached_input_price_per_m_tok IS NULL — never
--- overwrites an existing value (operator edits and re-runs are both safe).
---
--- Ratios (sources cited):
---   DeepSeek cache-hit input ≈ 0.1× normal — DeepSeek API context-caching pricing
---     (cache-hit input ~1/10 of cache-miss). https://api-docs.deepseek.com (context caching)
---   OpenAI GPT cached input ≈ 0.5× normal — OpenAI prompt-caching docs (some tiers
---     0.25×; seed conservatively at 0.5×). https://platform.openai.com/docs/guides/prompt-caching
---
--- NOTE: CI does NOT auto-run migrations (CLAUDE.md §5.2); apply via SSH before
--- deploy, then run the post-apply COUNT check at the bottom of this file.
+-- ⚠ PROD 上线前先核对真实行 (provider/model 名称/大小写/flat-or-tiered 各环境可能不同):
+--     SELECT provider, model, billing_mode, input_price_per_m_tok FROM pricing_rule
+--     WHERE service_type='llm_chat'
+--       AND (LOWER(model) LIKE '%deepseek%' OR LOWER(model) LIKE '%gpt-5%');
+-- NOTE: CI does NOT auto-run migrations (CLAUDE.md §5.2); apply via SSH before deploy.
 
--- ----------------------------------------------------------------------------
--- DeepSeek family — 0.1× of the row's own price, paired cost+sell, flat only.
--- ----------------------------------------------------------------------------
+-- deepseek-v4-pro: 命中 ¥0.025
 UPDATE pricing_rule
-  SET cached_input_price_per_m_tok      = ROUND(input_price_per_m_tok      * 0.1, 4),
-      sell_cached_input_price_per_m_tok = ROUND(sell_input_price_per_m_tok * 0.1, 4)
-  WHERE service_type = 'llm_chat'
-    AND billing_mode = 'flat'
-    AND cached_input_price_per_m_tok IS NULL
-    AND (provider, model) IN (
-      ('volc-ark',     'deepseek-v3-2-251201'),   -- 1.2184 -> 0.1218
-      ('dmxapi',       'deepseek-v3-2-251201'),   -- 1.0000 -> 0.1000
-      ('dmxapi',       'deepseek-v4-pro'),        -- 14.0000 -> 1.4000
-      ('aihubmix',     'deepseek-v4-pro'),        -- 14.0000 -> 1.4000
-      ('dmxapi',       'DeepSeek-V3.2'),          -- 2.1600 -> 0.2160
-      ('dmxapi',       'DeepSeek-V3.2-Thinking'), -- 2.1600 -> 0.2160
-      ('aihubmix',     'deepseek-v3.2'),          -- 2.1600 -> 0.2160
-      ('aihubmix',     'deepseek-v3.2-thinking'), -- 2.1600 -> 0.2160
-      ('dmxapi-ssvip', 'deepseek-v3.2')           -- 2.1600 -> 0.2160
-    );
+  SET cached_input_price_per_m_tok = 0.0250, sell_cached_input_price_per_m_tok = 0.0250
+  WHERE service_type = 'llm_chat' AND billing_mode = 'flat' AND provider = 'dmxapi'
+    AND LOWER(model) = 'deepseek-v4-pro'
+    AND cached_input_price_per_m_tok IS NULL;
 
--- ----------------------------------------------------------------------------
--- OpenAI GPT — 0.5× of the row's own price, paired cost+sell, flat only.
--- (aihubmix/gpt-5.4[-thinking] and dmxapi-ssvip/gpt-5.4 are tiered_token →
---  excluded by billing_mode='flat'; only the dmxapi flat gpt-5.4 row matches.)
--- ----------------------------------------------------------------------------
+-- deepseek-v3.2 (含 thinking 变体): 命中 ¥0.2
 UPDATE pricing_rule
-  SET cached_input_price_per_m_tok      = ROUND(input_price_per_m_tok      * 0.5, 4),
-      sell_cached_input_price_per_m_tok = ROUND(sell_input_price_per_m_tok * 0.5, 4)
-  WHERE service_type = 'llm_chat'
-    AND billing_mode = 'flat'
-    AND cached_input_price_per_m_tok IS NULL
-    AND (provider, model) IN (
-      ('dmxapi', 'gpt-5.4')                       -- 10.0000 -> 5.0000
-    );
+  SET cached_input_price_per_m_tok = 0.2000, sell_cached_input_price_per_m_tok = 0.2000
+  WHERE service_type = 'llm_chat' AND billing_mode = 'flat' AND provider = 'dmxapi'
+    AND LOWER(model) IN ('deepseek-v3.2', 'deepseek-v3.2-thinking')
+    AND cached_input_price_per_m_tok IS NULL;
 
--- ----------------------------------------------------------------------------
--- POST-APPLY VERIFICATION (run manually after applying — proves WHERE matched):
---   SELECT provider, model, input_price_per_m_tok,
---          cached_input_price_per_m_tok, sell_cached_input_price_per_m_tok
---   FROM pricing_rule WHERE cached_input_price_per_m_tok IS NOT NULL
---   ORDER BY provider, model;
--- Expected: the targeted flat rows that exist on the environment (up to 10:
---   9 deepseek + 1 gpt-5.4). A COUNT of 0 means the WHERE missed every row →
---   STOP and re-run the live-DB discovery SELECT:
---     SELECT provider, model, billing_mode, input_price_per_m_tok
---     FROM pricing_rule
---     WHERE service_type='llm_chat' AND billing_mode='flat'
---       AND (model LIKE '%deepseek%' OR model LIKE '%DeepSeek%' OR model LIKE '%gpt-5%');
--- ----------------------------------------------------------------------------
+-- gpt-5.5: 命中 ¥2.482
+UPDATE pricing_rule
+  SET cached_input_price_per_m_tok = 2.4820, sell_cached_input_price_per_m_tok = 2.4820
+  WHERE service_type = 'llm_chat' AND billing_mode = 'flat' AND provider = 'dmxapi'
+    AND LOWER(model) = 'gpt-5.5'
+    AND cached_input_price_per_m_tok IS NULL;
+
+-- gpt-5.4: 命中 ¥1.25 (仅当该环境为 flat 时生效; dev 为 tiered → 不匹配, 零回归)
+UPDATE pricing_rule
+  SET cached_input_price_per_m_tok = 1.2500, sell_cached_input_price_per_m_tok = 1.2500
+  WHERE service_type = 'llm_chat' AND billing_mode = 'flat' AND provider = 'dmxapi'
+    AND LOWER(model) = 'gpt-5.4'
+    AND cached_input_price_per_m_tok IS NULL;
+
+-- POST-APPLY VERIFICATION (run manually): 期望看到已存在的 dmxapi flat 行被赋值.
+--   SELECT provider, model, input_price_per_m_tok, cached_input_price_per_m_tok
+--   FROM pricing_rule WHERE cached_input_price_per_m_tok IS NOT NULL ORDER BY provider, model;
