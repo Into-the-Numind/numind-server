@@ -7,9 +7,9 @@ import (
 	"strings"
 	"sync"
 
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/retrieval/domain"
 	"numind-server/internal/pkg/retrieval/port"
-	"numind-server/internal/pkg/log"
 
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 	_ "github.com/mattn/go-sqlite3"

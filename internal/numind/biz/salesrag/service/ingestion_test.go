@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"numind-server/internal/numind/biz/salesrag/adapter"
+	"numind-server/internal/numind/biz/salesrag/service"
+	"numind-server/internal/pkg/retrieval/adapter"
 	"numind-server/internal/pkg/retrieval/domain"
 	"numind-server/internal/pkg/retrieval/port"
-	"numind-server/internal/numind/biz/salesrag/service"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"

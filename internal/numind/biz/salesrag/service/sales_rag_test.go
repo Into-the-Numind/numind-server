@@ -6,9 +6,10 @@ import (
 	"testing"
 
 	"numind-server/internal/numind/biz/salesrag/adapter"
-	"numind-server/internal/pkg/retrieval/domain"
 	"numind-server/internal/numind/biz/salesrag/service"
 	aiservice "numind-server/internal/pkg/aiservice"
+	radapter "numind-server/internal/pkg/retrieval/adapter"
+	"numind-server/internal/pkg/retrieval/domain"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -26,7 +27,7 @@ func TestMain(m *testing.M) {
 
 func TestSalesRAGService_RetrieveDualTrack(t *testing.T) {
 	// 1. Setup Mock Store & Router
-	store := adapter.NewMemoryStore()
+	store := radapter.NewMemoryStore()
 	router := adapter.NewRegexRouter() // RegexRouter 已实现 AnalyzeIntentV2
 
 	ctx := context.Background()
@@ -58,7 +59,7 @@ func TestSalesRAGService_RetrieveDualTrack(t *testing.T) {
 }
 
 func TestSalesRAGService_EmptyDocIDs(t *testing.T) {
-	store := adapter.NewMemoryStore()
+	store := radapter.NewMemoryStore()
 	router := adapter.NewRegexRouter()
 	svc := service.NewSalesRAGService(store, router)
 
@@ -74,7 +75,7 @@ func TestSalesRAGService_EmptyDocIDs(t *testing.T) {
 }
 
 func TestSalesRAGService_UserIDIsolation(t *testing.T) {
-	store := adapter.NewMemoryStore()
+	store := radapter.NewMemoryStore()
 	router := adapter.NewRegexRouter()
 	svc := service.NewSalesRAGService(store, router)
 

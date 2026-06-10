@@ -15,10 +15,11 @@ import (
 
 	"numind-server/internal/numind/biz/ali"
 	"numind-server/internal/numind/biz/salesrag/adapter"
-	"numind-server/internal/pkg/retrieval/domain"
-	"numind-server/internal/pkg/retrieval/port"
 	"numind-server/internal/numind/biz/salesrag/service"
 	"numind-server/internal/pkg/middleware"
+	radapter "numind-server/internal/pkg/retrieval/adapter"
+	"numind-server/internal/pkg/retrieval/domain"
+	"numind-server/internal/pkg/retrieval/port"
 
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/suite"
@@ -60,7 +61,7 @@ func (s *DashVectorAuditSuite) SetupSuite() {
 	apiKey := viper.GetString("ali.dashvector.api_key")
 	collection := viper.GetString("ali.dashvector.collection")
 
-	s.store = adapter.NewDashVectorStore(endpoint, apiKey, collection, embedder)
+	s.store = radapter.NewDashVectorStore(endpoint, apiKey, collection, embedder)
 	llmRouter := adapter.NewLLMRouter()
 	s.ragEx = service.NewSalesRAGService(s.store, llmRouter)
 }

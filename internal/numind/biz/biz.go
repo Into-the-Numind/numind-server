@@ -4,7 +4,6 @@ package biz
 
 import (
 	"context"
-	"fmt"
 	"path/filepath"
 	"time"
 
@@ -33,7 +32,6 @@ import (
 	permvalidators "numind-server/internal/numind/biz/permission/validators"
 	"numind-server/internal/numind/biz/salesrag"
 	"numind-server/internal/numind/biz/salesrag/adapter"
-	"numind-server/internal/pkg/retrieval/port"
 	"numind-server/internal/numind/biz/salesrag/seed"
 	salesragservice "numind-server/internal/numind/biz/salesrag/service"
 	"numind-server/internal/numind/biz/sandbox"
@@ -43,13 +41,14 @@ import (
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/biz/volc"
 	"numind-server/internal/numind/store"
-	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/log"
 	docparser "numind-server/internal/pkg/parser"
 	"numind-server/internal/pkg/pricing"
 	redispkg "numind-server/internal/pkg/redis"
+	radapter "numind-server/internal/pkg/retrieval/adapter"
+	"numind-server/internal/pkg/retrieval/port"
 
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/spf13/viper"
@@ -163,19 +162,7 @@ func NewBiz(ds store.IStore) *biz {
 	// Dimension=2048 is fixed by the existing DashVector collection
 	// `sales_rag_prod` schema; must match task_profile.requirements.dimension
 	// and ai_service.capability_json.dimension for the routed service.
-	embedder := func(ctx context.Context, text string) ([]float32, error) {
-		resp, err := aiservice.Embed(ctx, profile.SalesragEmbed, aiservice.EmbedRequest{
-			Texts:     []string{text},
-			Dimension: 2048,
-		})
-		if err != nil {
-			return nil, err
-		}
-		if len(resp.Embeddings) == 0 {
-			return nil, fmt.Errorf("salesrag embed: empty embedding response")
-		}
-		return resp.Embeddings[0], nil
-	}
+	embedder := radapter.NewGatewayEmbedder(profile.SalesragEmbed, 2048)
 
 	vectorStoreType := viper.GetString("salesrag.vector_store.type")
 	if vectorStoreType == "" {
@@ -197,10 +184,10 @@ func NewBiz(ds store.IStore) *biz {
 			}
 		}
 		var vecErr error
-		vStore, vecErr = adapter.NewSQLiteVecStore(vecDBPath, embedder)
+		vStore, vecErr = radapter.NewSQLiteVecStore(vecDBPath, embedder)
 		if vecErr != nil {
 			log.Errorw("Failed to initialize SQLiteVecStore, falling back to MemoryStore", "error", vecErr, "path", vecDBPath)
-			vStore = adapter.NewMemoryStore()
+			vStore = radapter.NewMemoryStore()
 		} else {
 			log.Infow("Initialized SQLiteVecStore", "path", vecDBPath)
 		}
@@ -215,14 +202,14 @@ func NewBiz(ds store.IStore) *biz {
 		if dashCollection == "" {
 			dashCollection = "sales_rag"
 		}
-		vStore = adapter.NewDashVectorStore(dashEndpoint, dashApiKey, dashCollection, embedder)
+		vStore = radapter.NewDashVectorStore(dashEndpoint, dashApiKey, dashCollection, embedder)
 		log.Infow("Initialized DashVector store", "endpoint", dashEndpoint, "collection", dashCollection)
 	case "memory":
-		vStore = adapter.NewMemoryStore()
+		vStore = radapter.NewMemoryStore()
 		log.Infow("Initialized MemoryStore (testing only)")
 	default:
 		log.Warnw("Unknown vector store type, falling back to MemoryStore", "type", vectorStoreType)
-		vStore = adapter.NewMemoryStore()
+		vStore = radapter.NewMemoryStore()
 	}
 
 	// 初始化 LLM 意图路由器（V2: 使用 DMXAPI qwen-turbo-latest）
