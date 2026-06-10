@@ -3833,3 +3833,26 @@ features:
   - 'H3-dev (ai 2026-06-10): /deploy-dev server + web-v3 并行后台部署(release.sh dev, rsync→构建机 build→TCR push→换容器+健康检查)。server build 246s / web-v3 build 202s, push 各 15s/8s。Release complete: server→dev(9b81d381) + web-v3→dev(697ba54)。验证(防 TCR 100-tag silent-old): healthz 双绿(server /healthz status:ok, web /health healthy) + SSH dev 核对实跑容器 image=numind-server-dev:develop-9b81d381 / numind-web-v3-dev:develop-697ba54(均 healthy, 与部署 sha 一致, 非旧镜像)。等 User 浏览器验收 4 改动, 再决定 prod。'
   - 'H3-prod (ai 2026-06-10): User dev 验收后追加第 5 改动「账号列居中」(独立 micro billing-account-center: .data-table td.col-user text-align left→center, ea579a6→merge af24784, gate 全绿, 已 /deploy-dev web-v3 核对 develop-af24784 healthy), 然后授权把全部改动隔离部署 prod「只部署我改的」。隔离 cherry-pick(同 csv-export 先例, 前后端必须同发)：核对 prod 实跑容器 server=v2.1.35-93cbae8b / web=v1.0.30-7371092(非信 latest tag)。后端先发(避免昵称列空窗): 从 v2.1.35 拉 worktree→cherry-pick 仅 bc5746fa(b2b_billing.go+test, 不带 manifest doc)→diff vs v2.1.35 恰 2 文件→go build/test/golangci-lint 全绿→tag v2.1.36(30e21233)→release.sh prod server→核对实跑 v2.1.36-30e21233 healthy。前端: 从 v1.0.30 拉 worktree→cherry-pick 49c0959(nickname)+ea579a6(center)→view 2 处冲突纯格式(v1.0.30 紧凑单行 vs develop 多行 prettier, 语义同; 冲突2 还残留重复 amount td)→保 v1.0.30 紧凑风格手解(NDF Edit hook 拦截非 ndf worktree→改用 python 精确替换+断言无残留 marker)→diff vs v1.0.30 恰 2 文件 32 行(无整文件 reformat churn)→eslint+vue-tsc 绿; vitest 8 失败全在 tests/unit/credit/*(CreditBalanceCard/Booster/credits-store/request-interceptor, 与本 diff 零交集→v1.0.30 旧基线 × develop node_modules superset 的环境噪声, 非本改动回归, 同 csv-export node_modules superset 记录)→tag v1.0.31(d74f7a9)→release.sh prod→核对实跑 v1.0.31-d74f7a9 + https://youshu.asia HTTP 200。两 tag 已推 origin, 两 release worktree+分支已删(tag 保活 commit)。修复均已在 develop(下次完整发版自带)。'
   blockers: []
+
+- id: llm-prompt-cache-price-fixup
+  ndf_version: '3.0'
+  description: '修正已合入的 llm-prompt-cache 的 3 个 migration 缺陷(dev S5/S6 验证 + 真实 DMXAPI 价目表暴露): (1) 2 个 schema migration 用了 MySQL 8.4 不支持的 ADD COLUMN IF NOT EXISTS(MariaDB 语法, 手动跑报 1064; AutoMigrate 兜底所以 dev 列已建但文件本身坏)→ 改成 information_schema 预检 + PREPARE 幂等(对齐 20260603_140000_agent_run_add_is_test.sql 惯例); rollback 同改(DROP COLUMN IF EXISTS 也不支持)。(2) seed 价从「按 base 价 0.1×/0.5× 倍数猜测」改成「DMXAPI 价目表真实绝对值, 透传」(user 2026-06-10 决定 透传成本价/base 不碰): deepseek-v4-pro ¥0.025 / deepseek-v3.2(+thinking) ¥0.2 / gpt-5.5 ¥2.482 / gpt-5.4 flat-guard ¥1.25; aihubmix 不设(无价表→NULL→全价); LOWER(model) 兼容大小写。(3) seed 目标行从想象的历史行(deepseek-v3-2-251201 等 dev 没有)改成真实 dmxapi flat 行 + 补漏的 gpt-5.5。seed test 同步重写。cached_write_price 列本次不加(Gemini 计费未实测/Claude 写价形态未定, 留批次 B/C probe 后加)。'
+  classification_reason: 'Hotfix(缺陷修正): 无运行时逻辑改动(pricing.go/model 未动)、无新 schema(列已由 AutoMigrate 建, 仅修 migration 文件语法)、无新 API/外部服务。仅 migrations/ 下 6 SQL + 1 测试(billing 数据 seed 值修正, 非计费逻辑)。非 customer bug(自查 dev 验证期发现)→ Rule 11 不适用; 重写的 seed test 即回归守卫。'
+  last_updated_by: ai-h3
+  last_updated_at: '2026-06-10T17:30:00+08:00'
+  created_at: '2026-06-10T17:00:00+08:00'
+  track: hotfix
+  stage: H3
+  repos:
+  - numind-server
+  branches:
+    numind-server: fix/llm-prompt-cache-price-fixup
+  worktrees:
+    numind-server: /private/tmp/wt-llm-prompt-cache-price-fixup-numind-server
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-H3 (ai 2026-06-10): 改 3 migration(+3 rollback)+1 test。Gate: go build 干净 / go test ./... 79 ok 0 FAIL / golangci-lint(migrations) exit 0 / diff 恰 7 文件无越界。关键: 修复在真实 dev MySQL 8.4 实跑验证——3 个 fixed migration 直灌 dev 库 exit 0 + 幂等 noop(列已存在→already exists; seed WHERE IS NULL 不匹配→0 行改不覆盖已设真实价), 证 1064 语法 bug 已修且可安全重跑(SQLite 单测不执行 prepared-stmt, 必须真库验)。prod 上线前须先 SELECT 核对真实行。'
+  blockers: []
