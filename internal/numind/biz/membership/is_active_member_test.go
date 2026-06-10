@@ -95,3 +95,17 @@ func TestIsActiveMember_StoreErrorPropagated(t *testing.T) {
 	require.Error(t, err, "store failure must propagate, not be swallowed")
 	require.False(t, ok)
 }
+
+// 有效期边界：ExpiresAt == now 视为已过期（After 为排他边界），与 GetMembershipState 一致。
+func TestIsActiveMember_ExpiresAtExactlyNowIsExpired(t *testing.T) {
+	db := newTestDB(t)
+	svc := biz.NewMembershipService(db)
+	ctx := context.Background()
+	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+
+	seedActiveSub(t, db, 7007, now.AddDate(0, -1, 0), now, 1) // ExpiresAt == now
+
+	ok, err := svc.IsActiveMember(ctx, 7007, now)
+	require.NoError(t, err)
+	require.False(t, ok, "ExpiresAt==now is expired (exclusive boundary, consistent with SubActive)")
+}
