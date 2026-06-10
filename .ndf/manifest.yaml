@@ -1,5 +1,18 @@
 schema_version: '2.0'
 features:
+- id: ask-question-options-tolerant
+  track: hotfix
+  description: 'ask-question-freetext 部署后即回归（dev run #127，用户上报"服务不可用"）：教 agent"选项是建议非穷举"后 agent 给了 10 个选项，Execute 硬性 2-4 校验失败→工具调用崩→run model_error。修：Execute 容错——>4 截断前 4(log warn)，0 选项允许(纯开放问题靠自由填写框)，恰好 1 拒绝；schema minItems 2→0；description/options prose 教 0-or-2-4 形态。前端已支持 0 选项(ask-question-freetext placeholder 逻辑)，本 hotfix 仅 server。'
+  classification_reason: 'Hotfix：单文件(tool Execute+schema+description)+测试；我刚部署的 feature 引入的回归，用户上报 Bug-from-Customer §12（首 commit test(qa) 复现 run #127）。'
+  status: active
+  stage: H2
+  repos:
+    numind-server: fix/ask-question-options-tolerant
+  progress:
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-H2 (ai 2026-06-10): TDD——327206af test(qa) 复现(10 选项崩+0 选项拒)→4e48ed5a 修(amend)。双 Sonnet reviewer 并行均 PASS_WITH_CONCERNS：spec 逐项验证 0 选项端到端链路完整(yield→前端渲染 placeholder→提交 selected=[]+free_text→快照 synthesizeQuestionPrompt opts=[])，P1 测试 assert→require 已修；quality 0 P0/P1。follow-up HW-36(micro)：QuestionPrompt.vue 两处 dead CSS(我 ask-question-freetext 引入 display:block/margin-top:8px 被原 inline-flex/4px 覆盖，视觉正常但冗余)。go test+lint 绿。'
 - id: ask-question-freetext
   track: hotfix
   description: 'R1 现场用户反馈（run 121 交互问题，非代码 bug 是设计缺陷）：ask_user_question 强制 2-4 选项→agent 把开放信息请求(陪跑周期/价格?)塞成元选择(陪跑模式细节)，用户选了无法提供实际信息；系统提示词零提问引导→agent 有时用文本问然后 run 停。用户拍板方案：保留 2-4 选项+每个选择题底部永远有自由填写框+agent 自己判断何时问+选项要是具体候选答案。实现：①后端 tool description+options schema 教 agent 选项是具体答案非元选择、用户始终能自由补充、需要用户信息时用工具问 ②PlatformBasePrompt(平台共享人设)加「向用户提问」段(必须用工具问不要文本问完就停/能做就做不瞎猜/选项要是真答案) ③前端 QuestionPrompt 单选去即点即交、两模式底部都有 free_text+提交。'
