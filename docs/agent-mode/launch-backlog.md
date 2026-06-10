@@ -8,6 +8,24 @@
 
 ---
 
+## §0 R0 形态对齐裁决（2026-06-10）——本节覆盖下文各条初判
+
+> R0 已完成，产出 `design-baseline.md`（唯一产品判准）。关键裁决对 backlog 的影响：
+
+| 裁决 | 对 backlog 的影响 |
+|------|------|
+| **CAP-1（新增，上线阻断候选）**：现有 web_search/web_fetch 对锚定场景（小红书爆款选题挖掘）可能不够（登录墙+反爬）。R1 实战出结论；不通则立项补能力 | 新增本冲刺最大技术风险 |
+| R1 重定义 = "实战建出选题 Agent"（能力探针+配置端走查+首个交付物三合一） | 原 R1 UI 走查脚本作废 |
+| 试聊按钮空 toast（UF-5 前半）→ **P1 必修**：跳转聊天页跑草稿 agent | UF-5 升级，出"待裁决"区 |
+| 方法论正文 custom_skill_body 编辑（UF-9）→ **v1 必修**（创始人核心操作） | UF-9 升级 P1 |
+| 高级模式（UF-3）→ **v1 藏入口**（micro 任务），不做真 | UF-3 出"待裁决"区 |
+| Marketplace v1 裁（终局=官方精品店，非租户互发） | UF-11、HW-12 → `wontfix-v1`；marketplace E2E/验收项全部不做 |
+| 视频创作/剪辑 → v1.5 | 不进本冲刺任何排查 |
+| 问卷降级为"建壳"，题目在 R1 实战中边用边裁 | UF-1/UF-2 转 R1 实战现场裁决 |
+| D-1（新增设计出入）：agent 入口改"工作区"卡片区（与 SOP/chatbot 并列） | 新增前端改造项，R1 后出方案 |
+| WK-1 from-scratch 修复 → 立即合并（用户授权 AI 决定） | 见 §2 状态更新 |
+| 使用资格 gate = 会员在期+积分允许（HW-30 新增 `verify`）：复核代码是否按此 gate agent 使用 | 新增硬基建复核项 |
+
 ## §1 红线现状表（go-live blockers）
 
 > 来源：prod-readiness-test-plan §0.1（2026-06-01 基线 f73bea85）。复核基线：develop 9b81d381 / web 697ba54（2026-06-10，代码取证 + manifest 交叉）。
@@ -29,7 +47,7 @@
 
 | ID | 条目 | 说明 | 处置 |
 |----|------|------|------|
-| WK-1 | **agent-from-scratch-q6q7**（活跃 worktree） | from-scratch 创建表单不渲染 q6/q7 → 422 死路，**会挡 R1 配置者走查的 from-scratch 路径**。修复已完成+双 reviewer PASS（H2），只差 ndf-done+部署。用户已裁决：等走查确认 from-scratch 流程设计后再定 | `adjudicate`：R0 若确认 from-scratch 流程保留 → 立即 ndf-done 合并（沉没成本已付）；若砍 → 丢弃 worktree |
+| WK-1 | **agent-from-scratch-q6q7** | from-scratch 创建表单不渲染 q6/q7 → 422 死路。R0 确认路径保留，用户授权 AI 决定 → **2026-06-10 已 ndf-done 合并**（web-v3 develop 5419d0f），随 dev 重部署生效 | `closed` |
 | WK-2 | dev 容器落后 develop HEAD | dev = develop-6706e3be（06-09 15:44），HEAD = 9b81d381（含 ReAct transcript 持久化等 06-09 后 commit） | R1 前 `/deploy-dev` 重新部署两仓库 |
 | WK-3 | 特定 PNG 的 VLM 描述失败 | DashScope `image format is illegal` 400（attachment #3/#15，retry 4 次后带错 resolve）。不卡 run，但"传图让 agent 看"场景可能拿不到描述 | `verify`：R2 走查若复现则升级 |
 
