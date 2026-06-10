@@ -2,20 +2,16 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
 	sdomain "numind-server/internal/numind/biz/salesrag/domain" // MetaStrategy/BasicStrategy
 	sport "numind-server/internal/numind/biz/salesrag/port"     // IntentRouter/IntentType（销售意图，未搬迁）
-	"numind-server/internal/pkg/aiservice"
-	aismw "numind-server/internal/pkg/aiservice/middleware"
-	"numind-server/internal/pkg/aiservice/profile"
-	"numind-server/internal/pkg/billing"
-	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
-	"numind-server/internal/pkg/middleware"
-	"numind-server/internal/pkg/retrieval/domain" // KnowledgeChunk 等
-	"numind-server/internal/pkg/retrieval/port"   // VectorStore/SearchFilter（已搬迁）
+	"numind-server/internal/pkg/retrieval/domain"   // KnowledgeChunk 等
+	"numind-server/internal/pkg/retrieval/port"     // VectorStore/SearchFilter（已搬迁）
+	"numind-server/internal/pkg/retrieval/retrieve" // 领域无关检索主干（底座）
 )
 
 // RetrievalVerdict 检索判决结果 (V1 兼容)
@@ -48,15 +44,22 @@ type RetrievalVerdict struct {
 type SalesRAGService struct {
 	store       port.VectorStore
 	router      sport.IntentRouter
-	strategySvc *StrategyService // 策略引擎
+	strategySvc *StrategyService  // 策略引擎
+	retrieveSvc *retrieve.Service // 领域无关检索主干（底座；改写+并行检索+rerank）
 }
 
-// NewSalesRAGService 创建新的 SalesRAGService
+// NewSalesRAGService 创建新的 SalesRAGService。
+//
+// 内部把通用检索主干委托给 internal/pkg/retrieval/retrieve 底座：用
+// routerRewriter 适配现有 IntentRouter（chatMode 经 context 透传），docStore=nil
+// （RetrieveForResponseV2 始终用显式 docIDs scope，不需要 AllEnabled 解析）。
+// 签名保持不变，golden 测试与 biz.go 构造点均无需改动。
 func NewSalesRAGService(store port.VectorStore, router sport.IntentRouter) *SalesRAGService {
 	return &SalesRAGService{
 		store:       store,
 		router:      router,
 		strategySvc: NewStrategyService(),
+		retrieveSvc: retrieve.NewService(store, routerRewriter{router: router}, nil),
 	}
 }
 
@@ -105,61 +108,20 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 	onStatus func(string),
 ) (*RetrievalVerdict, error) {
 
-	// 1. 意图分析 + Query 生成 (LLM: qwen-turbo-latest)
-	if onStatus != nil {
-		onStatus("正在分析您的意图...")
-	}
-	intentResult, err := s.router.AnalyzeIntentV2(ctx, query, history, chatMode)
-	if err != nil {
-		return nil, fmt.Errorf("intent analysis failed: %w", err)
-	}
-
 	verdict := &RetrievalVerdict{
-		Query:         query,
-		SearchQueries: intentResult.SearchQueries,
-		ChatMode:      chatMode,
-		History:       history,
+		Query:    query,
+		ChatMode: chatMode,
+		History:  history,
 	}
 
-	// 设置 RewriteQuery 为第一个搜索词（兼容 V1）
-	if len(intentResult.SearchQueries) > 0 {
-		verdict.RewriteQuery = intentResult.SearchQueries[0]
-	}
+	// 把 per-request chatMode 注入 context，供 routerRewriter.Rewrite 透传给
+	// IntentRouter.AnalyzeIntentV2（底座 QueryRewriter 接口领域无关，不含 chatMode）。
+	retrieveCtx := withChatMode(ctx, chatMode)
 
-	// 将 HyDE Query 追加到搜索列表（如果存在）
-	// 最终列表：原始 Query + 3 个普通改写 + 1 个 HyDE = 最多 5 路并行检索
-	allSearchQueries := make([]string, len(intentResult.SearchQueries))
-	copy(allSearchQueries, intentResult.SearchQueries)
-	if intentResult.HyDEQuery != "" {
-		allSearchQueries = append(allSearchQueries, intentResult.HyDEQuery)
-		log.C(ctx).Infow("HyDE query added to search list",
-			"hyde_query_len", len(intentResult.HyDEQuery),
-			"total_queries", len(allSearchQueries))
-	}
-
-	// 2. 并行执行：RAG 检索 + 策略选择 + 观点库独立检索
-	if onStatus != nil {
-		onStatus(fmt.Sprintf("正在全库检索 (并发 %d 路)...", len(allSearchQueries)))
-	}
+	// 2b. 策略选择（仅 sales 模式启用）——销售专属，留 salesrag、不进底座。
+	// 保持与原结构一致：与主通道检索并行执行（无共享状态，结果与串行一致）。
 	var wg sync.WaitGroup
-	var allChunks []domain.KnowledgeChunk
-	var chunksErr error
-	var opinionChunks []domain.KnowledgeChunk
-	var opinionErr error
 	var strategy *sdomain.BasicStrategy
-
-	// 2a. 并行 - RAG 检索（使用包含 HyDE 的完整搜索列表）
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		filter := port.SearchFilter{
-			UserID:      userID,
-			DocumentIDs: docIDs,
-		}
-		allChunks, chunksErr = s.parallelSearch(ctx, allSearchQueries, filter)
-	}()
-
-	// 2b. 并行 - 策略选择（仅在 sales 模式下启用）
 	if chatMode == "sales" && s.strategySvc != nil {
 		wg.Add(1)
 		go func() {
@@ -172,30 +134,44 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 		}()
 	}
 
-	// 2c. 并行 - 观点库独立检索（复用通用搜索词）
-	if len(opinionDocIDs) > 0 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			opinionFilter := port.SearchFilter{
-				UserID:      userID,
-				DocumentIDs: opinionDocIDs,
-			}
-			opinionChunks, opinionErr = s.parallelSearch(ctx, allSearchQueries, opinionFilter)
-		}()
+	// 1+2a+4. 主通道：底座完成 query 改写(+HyDE) → 多路并行检索去重 → rerank(top5)。
+	// 行为忠实等价于原 步骤1(意图分析+HyDE 追加) + 步骤2a(parallelSearch) + 步骤4(rerankChunks)。
+	if onStatus != nil {
+		onStatus("正在分析您的意图...")
 	}
+	mainResult, err := s.retrieveSvc.Retrieve(retrieveCtx, query, retrieve.Scope{
+		UserID:      userID,
+		DocumentIDs: docIDs,
+	}, retrieve.Options{
+		TopK:         10, // 每路召回 limit（对齐原 parallelSearch 写死的 10）
+		RerankTopN:   5,  // 常规知识库 rerank 保留 top5（对齐原 rerankChunks）
+		RewriteQuery: true,
+		History:      history,
+		BillingLabel: "salesrag_rerank",
+	})
 
+	// 等待策略选择完成（与主通道并行后汇合，对齐原 wg.Wait 语义）。
 	wg.Wait()
 
-	// 处理检索错误
-	if chunksErr != nil {
-		return nil, fmt.Errorf("parallel search failed: %w", chunksErr)
-	}
-	if opinionErr != nil {
-		log.C(ctx).Warnw("Opinion search failed, continuing without opinion evidence", "error", opinionErr)
+	if err != nil {
+		// 原行为：docIDs 为空时不报错、返回空证据（store 对空 DocumentIDs 直接返回空）。
+		// 底座对空 scope 改为返回 ErrEmptyScope；这里收敛为「未检索到相关知识」以保
+		// 原 no-error 契约（见 TestSalesRAGService_EmptyDocIDs）。
+		if errors.Is(err, retrieve.ErrEmptyScope) {
+			verdict.Reason = "未检索到相关知识"
+			return verdict, nil
+		}
+		return nil, fmt.Errorf("parallel search failed: %w", err)
 	}
 
-	// 设置策略结果
+	// result.RewriteQueries = 实际用于检索的 query 列表（含 HyDE 追加），
+	// 即原 allSearchQueries。verdict.SearchQueries/RewriteQuery 用它填充。
+	allSearchQueries := mainResult.RewriteQueries
+	verdict.SearchQueries = allSearchQueries
+	if len(allSearchQueries) > 0 {
+		verdict.RewriteQuery = allSearchQueries[0]
+	}
+
 	if strategy != nil {
 		verdict.Strategy = strategy
 		verdict.StrategyMetaID = strategy.MetaID
@@ -205,229 +181,49 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 			"meta_id", strategy.MetaID)
 	}
 
-	log.C(ctx).Infow("Parallel search completed",
-		"query_count", len(intentResult.SearchQueries),
-		"total_chunks", len(allChunks),
-		"has_strategy", strategy != nil)
-
-	// 3. 常规知识库 Rerank
-	if len(allChunks) == 0 {
+	// 3. 主通道结果组装
+	if len(mainResult.Chunks) == 0 {
 		verdict.Reason = "未检索到相关知识"
 	} else {
-		// 4. Rerank (仅返回 Top 5-7 的索引)
-		if onStatus != nil {
-			onStatus(fmt.Sprintf("检索到 %d 条相关知识，正在重排序...", len(allChunks)))
-		}
-		rerankedChunks, err := s.rerankChunks(ctx, query, allChunks)
-		if err != nil {
-			// Rerank 失败时 Fallback 到原始 Top 5
-			log.C(ctx).Warnw("Rerank failed, using original top chunks", "error", err)
-			if len(allChunks) > 5 {
-				rerankedChunks = allChunks[:5]
-			} else {
-				rerankedChunks = allChunks
-			}
-		}
-
-		verdict.Evidence = rerankedChunks
-		verdict.Reason = fmt.Sprintf("检索到 %d 条知识，Rerank 后保留 %d 条",
-			len(allChunks), len(rerankedChunks))
+		verdict.Evidence = mainResult.Chunks
+		verdict.Reason = fmt.Sprintf("Rerank 后保留 %d 条", len(mainResult.Chunks))
 	}
 
-	// 5. 观点库独立 Rerank（top 2，阈值 0.3）
-	if len(opinionChunks) > 0 {
-		rerankedOpinion, rerankErr := s.rerankOpinionChunks(ctx, query, opinionChunks)
-		if rerankErr != nil {
-			log.C(ctx).Warnw("Opinion rerank failed, using top chunks", "error", rerankErr)
-			if len(opinionChunks) > 2 {
-				rerankedOpinion = opinionChunks[:2]
+	log.C(ctx).Infow("Parallel search completed",
+		"query_count", len(allSearchQueries),
+		"evidence_count", len(mainResult.Chunks),
+		"has_strategy", strategy != nil)
+
+	// 2c+5. 观点库独立通道（保留）：复用主通道的改写词（PrewrittenQueries），
+	// 不再二次 intent 分析（保 I1）；rerank top2；结果挂 verdict.OpinionEvidence。
+	if len(opinionDocIDs) > 0 {
+		opinionResult, opErr := s.retrieveSvc.Retrieve(retrieveCtx, query, retrieve.Scope{
+			UserID:      userID,
+			DocumentIDs: opinionDocIDs,
+		}, retrieve.Options{
+			TopK:              10,
+			RerankTopN:        2, // 观点库 rerank 保留 top2（对齐原 rerankOpinionChunks）
+			RewriteQuery:      false,
+			PrewrittenQueries: allSearchQueries, // 复用主通道改写词，不二次 intent
+			BillingLabel:      "salesrag_rerank_opinion",
+		})
+		if opErr != nil {
+			// 原行为：观点库检索失败仅 warn、不中断主流程。
+			if errors.Is(opErr, retrieve.ErrEmptyScope) {
+				// opinionDocIDs 非空时不会触发，防御性兜底。
+				log.C(ctx).Warnw("Opinion search empty scope, skipping", "error", opErr)
 			} else {
-				rerankedOpinion = opinionChunks
+				log.C(ctx).Warnw("Opinion search failed, continuing without opinion evidence", "error", opErr)
 			}
-		}
-		verdict.OpinionEvidence = rerankedOpinion
-		if verdict.Reason == "" {
-			verdict.Reason = fmt.Sprintf("观点库 %d 条 Rerank 后保留 %d 条",
-				len(opinionChunks), len(rerankedOpinion))
-		} else {
-			verdict.Reason += fmt.Sprintf("，观点库 %d 条 Rerank 后保留 %d 条",
-				len(opinionChunks), len(rerankedOpinion))
+		} else if len(opinionResult.Chunks) > 0 {
+			verdict.OpinionEvidence = opinionResult.Chunks
+			if verdict.Reason == "" {
+				verdict.Reason = fmt.Sprintf("观点库 Rerank 后保留 %d 条", len(opinionResult.Chunks))
+			} else {
+				verdict.Reason += fmt.Sprintf("，观点库 Rerank 后保留 %d 条", len(opinionResult.Chunks))
+			}
 		}
 	}
 
 	return verdict, nil
-}
-
-// parallelSearch 并行执行多路检索
-func (s *SalesRAGService) parallelSearch(
-	ctx context.Context,
-	queries []string,
-	filter port.SearchFilter,
-) ([]domain.KnowledgeChunk, error) {
-	if len(queries) == 0 {
-		return nil, nil
-	}
-
-	type searchResult struct {
-		chunks []domain.KnowledgeChunk
-		err    error
-	}
-
-	resultChan := make(chan searchResult, len(queries))
-	var wg sync.WaitGroup
-
-	// 并行检索
-	for _, q := range queries {
-		wg.Add(1)
-		go func(query string) {
-			defer wg.Done()
-			chunks, err := s.store.Search(ctx, query, filter, 10)
-			resultChan <- searchResult{chunks: chunks, err: err}
-		}(q)
-	}
-
-	// 等待所有 goroutine 完成后关闭 channel
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
-
-	// 收集结果
-	var allChunks []domain.KnowledgeChunk
-	seenIDs := make(map[string]bool)
-	var failCount int
-	var lastErr error
-
-	for result := range resultChan {
-		if result.err != nil {
-			failCount++
-			lastErr = result.err
-			log.C(ctx).Warnw("Search query failed", "error", result.err)
-			continue
-		}
-		// 去重合并
-		for _, chunk := range result.chunks {
-			if !seenIDs[chunk.ID] {
-				seenIDs[chunk.ID] = true
-				allChunks = append(allChunks, chunk)
-			}
-		}
-	}
-
-	// 所有查询都失败时返回错误，避免静默降级
-	if failCount == len(queries) && lastErr != nil {
-		return nil, fmt.Errorf("all %d search queries failed: %w", failCount, lastErr)
-	}
-
-	return allChunks, nil
-}
-
-// rerankScoreThreshold Rerank 分数截断阈值
-// 低于此阈值的结果将被丢弃（最少保留 1 条）
-const rerankScoreThreshold = 0.3
-
-// rerankWithLimit 通用 Rerank：按 topN 截断 + 分数阈值过滤 + 兜底至少 1 条
-//
-// billingLabel is used to tag the billing record for cost attribution.
-// Different call sites pass distinct labels (e.g. "salesrag_rerank" vs
-// "salesrag_rerank_opinion") so that spend can be broken down by use-case.
-func (s *SalesRAGService) rerankWithLimit(
-	ctx context.Context,
-	query string,
-	chunks []domain.KnowledgeChunk,
-	topN int,
-	label string,
-	billingLabel string,
-) ([]domain.KnowledgeChunk, error) {
-	if len(chunks) <= 1 {
-		return chunks, nil
-	}
-
-	documents := make([]string, len(chunks))
-	for i, chunk := range chunks {
-		documents[i] = chunk.Content
-	}
-
-	// 注入 aiservice 上下文：userID + skip-legacy-billing
-	if uid, ok := middleware.UserIDFromCtx(ctx); ok && uid > 0 {
-		ctx = aismw.WithUserID(ctx, uid)
-		ctx = billing.WithBilling(ctx, uid, billingLabel)
-	}
-	ctx = aiservice.WithSkipLegacyBilling(ctx)
-
-	// Langfuse rerank span
-	var rerankSpanID, rerankTraceID string
-	if tc := langfuse.FromContext(ctx); tc != nil {
-		rerankSpanID = langfuse.SpanID()
-		rerankTraceID = tc.TraceID
-		langfuse.CreateSpan(tc.TraceID, rerankSpanID, "rerank",
-			langfuse.WithSpanParent(tc.ParentObservationID),
-			langfuse.WithSpanInput(map[string]interface{}{"query": query, "doc_count": len(documents), "topN": topN}),
-		)
-		ctx = langfuse.WithTraceAndParent(ctx, tc.TraceID, rerankSpanID)
-	}
-
-	// 通过 AI Gateway 调用 Rerank（profile.SalesragRerank）
-	rerankResp, err := aiservice.Rerank(ctx, profile.SalesragRerank, aiservice.RerankRequest{
-		Query:     query,
-		Documents: documents,
-		TopN:      topN,
-	})
-	if rerankSpanID != "" {
-		if err != nil {
-			langfuse.EndSpan(rerankTraceID, rerankSpanID, langfuse.WithSpanError(err.Error()))
-		} else {
-			langfuse.EndSpan(rerankTraceID, rerankSpanID, langfuse.WithSpanOutput(map[string]interface{}{"result_count": len(rerankResp.Results)}))
-		}
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	result := make([]domain.KnowledgeChunk, 0, len(rerankResp.Results))
-	for i, rr := range rerankResp.Results {
-		if rr.Index < 0 || rr.Index >= len(chunks) {
-			continue
-		}
-		// 第一条始终保留（保底），后续按阈值筛选
-		if i > 0 && rr.Score < rerankScoreThreshold {
-			continue
-		}
-		chunk := chunks[rr.Index]
-		chunk.Score = float32(rr.Score)
-		result = append(result, chunk)
-	}
-
-	// 安全兜底：至少返回 1 条
-	if len(result) == 0 && len(rerankResp.Results) > 0 {
-		bestIdx := rerankResp.Results[0].Index
-		if bestIdx >= 0 && bestIdx < len(chunks) {
-			chunk := chunks[bestIdx]
-			chunk.Score = float32(rerankResp.Results[0].Score)
-			result = append(result, chunk)
-		}
-	}
-
-	log.C(ctx).Infow(label+" completed",
-		"input_count", len(chunks),
-		"output_count", len(result),
-		"threshold", rerankScoreThreshold,
-		"top_score", func() float64 {
-			if len(rerankResp.Results) > 0 {
-				return rerankResp.Results[0].Score
-			}
-			return 0
-		}())
-
-	return result, nil
-}
-
-// rerankChunks 使用 Rerank 模型进行重排序（top 5）
-func (s *SalesRAGService) rerankChunks(ctx context.Context, query string, chunks []domain.KnowledgeChunk) ([]domain.KnowledgeChunk, error) {
-	return s.rerankWithLimit(ctx, query, chunks, 5, "Rerank", "salesrag_rerank")
-}
-
-// rerankOpinionChunks 观点库专用 Rerank（top 2）
-func (s *SalesRAGService) rerankOpinionChunks(ctx context.Context, query string, chunks []domain.KnowledgeChunk) ([]domain.KnowledgeChunk, error) {
-	return s.rerankWithLimit(ctx, query, chunks, 2, "Opinion rerank", "salesrag_rerank_opinion")
 }
