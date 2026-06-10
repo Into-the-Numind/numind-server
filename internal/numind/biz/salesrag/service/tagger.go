@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"numind-server/internal/pkg/retrieval/domain"
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/langfuse"
+	"numind-server/internal/pkg/retrieval/domain"
 )
 
 type ContentTagger struct{}

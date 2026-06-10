@@ -28,10 +28,10 @@ type RetrievalVerdict struct {
 	Answer       string                  `json:"answer"`        // AI生成的最终回复
 
 	// V2 扩展字段
-	Intent        sport.IntentType `json:"intent,omitempty"`        // 识别的意图
-	SearchQueries []string        `json:"search_queries,omitempty"` // 多路搜索词
-	ChatMode      string          `json:"chat_mode,omitempty"`      // 对话模式 (sales/free)
-	History       []string        `json:"history,omitempty"`        // 对话历史
+	Intent        sport.IntentType `json:"intent,omitempty"`         // 识别的意图
+	SearchQueries []string         `json:"search_queries,omitempty"` // 多路搜索词
+	ChatMode      string           `json:"chat_mode,omitempty"`      // 对话模式 (sales/free)
+	History       []string         `json:"history,omitempty"`        // 对话历史
 
 	// V3 策略引擎扩展
 	Strategy       *sdomain.BasicStrategy `json:"strategy,omitempty"`         // 选择的销售策略

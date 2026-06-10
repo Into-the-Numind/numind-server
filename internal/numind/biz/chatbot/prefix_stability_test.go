@@ -22,9 +22,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"numind-server/internal/pkg/retrieval/domain"
 	cb "numind-server/internal/pkg/contextbudget"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/retrieval/domain"
 )
 
 // fragSignature renders a fragment's cache-relevant bytes (Role, Source, Content)

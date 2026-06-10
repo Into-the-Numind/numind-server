@@ -23,11 +23,11 @@ import (
 	"gorm.io/gorm/logger"
 
 	"numind-server/internal/numind/biz/chatbot"
-	"numind-server/internal/pkg/retrieval/domain"
 	"numind-server/internal/numind/store"
 	cb "numind-server/internal/pkg/contextbudget"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/retrieval/domain"
 )
 
 // makeUser 构造一个带 ID / ParentUserID 的 *model.User（model.User 嵌入 gorm.Model，

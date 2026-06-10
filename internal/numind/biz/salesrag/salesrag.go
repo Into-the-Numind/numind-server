@@ -18,7 +18,6 @@ import (
 	"unicode/utf8"
 
 	"numind-server/internal/numind/biz/credit"
-	"numind-server/internal/pkg/retrieval/domain"
 	"numind-server/internal/numind/biz/salesrag/service"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"
@@ -32,6 +31,7 @@ import (
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/pricing"
+	"numind-server/internal/pkg/retrieval/domain"
 	"numind-server/internal/pkg/util"
 
 	"numind-server/internal/numind/biz/ali"

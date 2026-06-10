@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"numind-server/internal/numind/biz/contextbudget"
-	"numind-server/internal/pkg/retrieval/domain"
-	"numind-server/internal/pkg/retrieval/port"
 	"numind-server/internal/pkg/aiservice"
 	aismw "numind-server/internal/pkg/aiservice/middleware"
 	"numind-server/internal/pkg/aiservice/profile"
@@ -20,6 +18,8 @@ import (
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/retrieval/domain"
+	"numind-server/internal/pkg/retrieval/port"
 
 	"gorm.io/gorm"
 )

@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"numind-server/internal/numind/biz/salesrag/adapter"
+	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/retrieval/domain"
 	"numind-server/internal/pkg/retrieval/port"
-	"numind-server/internal/pkg/model"
 
 	"github.com/stretchr/testify/assert"
 )
