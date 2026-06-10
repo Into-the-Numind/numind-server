@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/log"
 )
 
 type askUserQuestionInput struct {
@@ -24,7 +25,7 @@ var _ FullTool = (*askUserQuestionTool)(nil)
 
 func (t *askUserQuestionTool) Name() string { return "ask_user_question" }
 func (t *askUserQuestionTool) Description() string {
-	return "Ask the user for information you cannot obtain yourself — their private/internal facts, specific needs, preferences, or a decision only they can make. Provide 2–4 options where EACH option is a concrete, complete candidate answer to the question (e.g. for '陪跑周期多长?' use '90天'/'180天'/'半年以上', NOT meta-categories like '陪跑模式细节'). The user can pick an option OR type their own answer in the free-text box that always appears below the options, so options are suggestions, not an exhaustive list. Yields the run until the user answers via POST /v1/agent-runs/:id/answer. Use this (not a plain text reply) whenever the task needs info only the user has and proceeding without it would produce a wrong or low-quality result; do NOT use it for info you can research or reasonably infer yourself."
+	return "Ask the user for information you cannot obtain yourself — their private/internal facts, specific needs, preferences, or a decision only they can make. Options: give 2–4 when there are a few likely answers (EACH a concrete, complete candidate answer, e.g. for '陪跑周期多长?' use '90天'/'180天'/'半年以上', NOT meta-categories like '陪跑模式细节'); give an EMPTY options array for a pure open-ended question (e.g. '请提供你们的陪跑周期和价格'). The user can pick an option OR type their own answer in the free-text box that always appears below, so options are suggestions, not exhaustive — never list more than 4. Yields the run until the user answers via POST /v1/agent-runs/:id/answer. Use this (not a plain text reply) whenever the task needs info only the user has and proceeding without it would produce a wrong or low-quality result; do NOT use it for info you can research or reasonably infer yourself."
 }
 func (t *askUserQuestionTool) UserFacingName() string { return "反问" }
 func (t *askUserQuestionTool) NarrationVerb() string  { return "反问" }
@@ -40,9 +41,9 @@ func (t *askUserQuestionTool) InputSchema() json.RawMessage {
 			"question": {"type": "string", "description": "The clarifying question to ask the user."},
 			"options": {
 				"type": "array",
-				"minItems": 2,
+				"minItems": 0,
 				"maxItems": 4,
-				"description": "2-4 concrete candidate answers to the question. Each MUST be a complete, selectable answer (e.g. '90天', '1v1私教'), NOT a meta-category like '陪跑模式细节' (which leaves the user nothing real to convey). The user always also has a free-text box below to type their own answer, so these are suggestions, not exhaustive.",
+				"description": "0, or 2-4, concrete candidate answers. Provide 2-4 when there ARE a few likely answers — each MUST be a complete, selectable answer (e.g. '90天', '1v1私教'), NOT a meta-category like '陪跑模式细节' (which leaves the user nothing real to convey). Provide an EMPTY array for a pure open-ended question (e.g. '请提供你们的陪跑周期和价格') — the user answers via the always-present free-text box. Never give exactly 1. Do not pad past 4; the free-text box covers the rest.",
 				"items": {
 					"type": "object",
 					"properties": {
@@ -71,8 +72,20 @@ func (t *askUserQuestionTool) Execute(_ context.Context, input ToolInput) (ToolR
 	if in.Question == "" {
 		return nil, errno.ErrInvalidInput.SetMessage("ask_user_question: question is empty")
 	}
-	if len(in.Options) < 2 || len(in.Options) > 4 {
-		return nil, errno.ErrInvalidInput.SetMessage("ask_user_question: options length must be 2–4 (got %d)", len(in.Options))
+	// Tolerate the LLM over-supplying options: clamp to the first 4 instead of
+	// failing the whole tool call. ask-question-freetext taught the agent that
+	// "options are suggestions, not exhaustive", and a model duly returned 10 —
+	// the old hard 2-4 check then died model_error and the user saw "服务不可用"
+	// (dev run #127). The always-present free-text box covers anything beyond 4.
+	if len(in.Options) > 4 {
+		log.Warnw("ask_user_question: clamping options to 4", "got", len(in.Options))
+		in.Options = in.Options[:4]
+	}
+	// Allowed shapes: 0 options (a pure open-ended question answered entirely via
+	// the free-text box) or 2-4 concrete choices. Exactly 1 option is not a
+	// meaningful choice, so it stays rejected.
+	if len(in.Options) == 1 {
+		return nil, errno.ErrInvalidInput.SetMessage("ask_user_question: provide 0 options (open-ended) or 2-4 options (got 1)")
 	}
 	for i, opt := range in.Options {
 		if opt.Key == "" || opt.Label == "" {

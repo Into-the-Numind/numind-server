@@ -79,19 +79,20 @@ func TestAskUserQuestionTool_EmptyQuestion(t *testing.T) {
 	assert.False(t, errors.As(err, &ye))
 }
 
-func TestAskUserQuestionTool_NoOptions(t *testing.T) {
+func TestAskUserQuestionTool_NoOptions_OpenEnded(t *testing.T) {
+	// ask-question-options-tolerant: 0 options is now a valid open-ended question.
 	tool := NewAskUserQuestionTool()
 	in, _ := json.Marshal(askUserQuestionInput{
 		Question: "No options?",
 		Options:  []YieldOption{},
 	})
 	_, err := tool.Execute(context.Background(), ToolInput(in))
-	require.Error(t, err)
 	var ye *yieldError
-	assert.False(t, errors.As(err, &ye))
+	require.True(t, errors.As(err, &ye), "0 options is a valid open-ended question")
 }
 
-func TestAskUserQuestionTool_TooManyOptions(t *testing.T) {
+func TestAskUserQuestionTool_FiveOptions_ClampsToFour(t *testing.T) {
+	// ask-question-options-tolerant: >4 options clamp to 4 instead of erroring.
 	tool := NewAskUserQuestionTool()
 	in, _ := json.Marshal(askUserQuestionInput{
 		Question: "Five options?",
@@ -102,9 +103,9 @@ func TestAskUserQuestionTool_TooManyOptions(t *testing.T) {
 		},
 	})
 	_, err := tool.Execute(context.Background(), ToolInput(in))
-	require.Error(t, err)
 	var ye *yieldError
-	assert.False(t, errors.As(err, &ye))
+	require.True(t, errors.As(err, &ye))
+	assert.Len(t, ye.Payload.Options, 4)
 }
 
 func TestAskUserQuestionTool_MissingOptionKey(t *testing.T) {
@@ -139,4 +140,42 @@ func TestAskUserQuestionTool_Metadata(t *testing.T) {
 	assert.True(t, tool.AlwaysLoad())
 	assert.Equal(t, "反问", tool.NarrationVerb())
 	assert.Equal(t, "反问", tool.UserFacingName())
+}
+
+// test(qa): reproduce dev run #127 — the agent (after ask-question-freetext
+// taught it options are "suggestions, not exhaustive") supplied 10 options;
+// Execute's hard 2-4 check failed the tool call, the run died model_error and
+// the user saw "服务不可用". Expected: clamp to the first 4 and yield normally.
+func TestAskUserQuestionTool_TenOptions_ClampsAndYields(t *testing.T) {
+	tool := NewAskUserQuestionTool()
+	opts := make([]YieldOption, 10)
+	for i := range opts {
+		opts[i] = YieldOption{Key: string(rune('a' + i)), Label: string(rune('A' + i))}
+	}
+	in, _ := json.Marshal(askUserQuestionInput{Question: "Pick?", Options: opts})
+	_, err := tool.Execute(context.Background(), ToolInput(in))
+	var ye *yieldError
+	require.True(t, errors.As(err, &ye), "10 options must clamp + yield, not crash the run")
+	assert.Len(t, ye.Payload.Options, 4, "options clamped to 4")
+}
+
+// A pure open-ended question (0 options) is valid — the user answers entirely
+// via the always-present free-text box (ask-question-freetext).
+func TestAskUserQuestionTool_ZeroOptions_OpenEndedYields(t *testing.T) {
+	tool := NewAskUserQuestionTool()
+	in, _ := json.Marshal(askUserQuestionInput{Question: "请提供你们的陪跑周期和价格", Options: []YieldOption{}})
+	_, err := tool.Execute(context.Background(), ToolInput(in))
+	var ye *yieldError
+	require.True(t, errors.As(err, &ye), "0 options (open-ended) must yield, not error")
+	assert.Empty(t, ye.Payload.Options)
+}
+
+// Exactly 1 option is not a meaningful choice — still rejected.
+func TestAskUserQuestionTool_OneOption_Rejected(t *testing.T) {
+	tool := NewAskUserQuestionTool()
+	in, _ := json.Marshal(askUserQuestionInput{Question: "Only one?", Options: []YieldOption{{Key: "a", Label: "A"}}})
+	_, err := tool.Execute(context.Background(), ToolInput(in))
+	require.Error(t, err)
+	var ye *yieldError
+	assert.False(t, errors.As(err, &ye))
 }
