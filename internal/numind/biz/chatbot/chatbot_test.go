@@ -23,11 +23,11 @@ import (
 	"gorm.io/gorm/logger"
 
 	"numind-server/internal/numind/biz/chatbot"
-	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/store"
 	cb "numind-server/internal/pkg/contextbudget"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/retrieval/domain"
 )
 
 // makeUser 构造一个带 ID / ParentUserID 的 *model.User（model.User 嵌入 gorm.Model，
@@ -132,10 +132,10 @@ func revokeChatbotPerm(t *testing.T, db *gorm.DB, subID, chatbotID uint) {
 	).Error)
 }
 
-// newChatbotBiz 构造 biz 实例，vectorStore/embedder 传 nil —— ListVisibleChatbots
-// / CreateSession / ChatStream 的权限守卫路径不会走到它们。
+// newChatbotBiz 构造 biz 实例，retrieveSvc 传 nil —— ListVisibleChatbots
+// / CreateSession / ChatStream 的权限守卫路径不会走到检索。
 func newChatbotBiz(db *gorm.DB) chatbot.IChatbotBiz {
-	return chatbot.NewChatbotBiz(store.NewTestStore(db), nil, nil)
+	return chatbot.NewChatbotBiz(store.NewTestStore(db), nil)
 }
 
 // ============================================================================

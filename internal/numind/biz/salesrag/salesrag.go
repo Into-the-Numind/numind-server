@@ -18,7 +18,6 @@ import (
 	"unicode/utf8"
 
 	"numind-server/internal/numind/biz/credit"
-	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/biz/salesrag/service"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"
@@ -32,6 +31,8 @@ import (
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/pricing"
+	"numind-server/internal/pkg/retrieval/domain"
+	ingest "numind-server/internal/pkg/retrieval/ingest"
 	"numind-server/internal/pkg/util"
 
 	"numind-server/internal/numind/biz/ali"
@@ -209,12 +210,12 @@ type UpdateSessionRequest struct {
 
 type salesRAGBiz struct {
 	ds                store.IStore
-	ingestionPipeline *service.IngestionPipeline
+	ingestionPipeline *ingest.IngestionPipeline
 	ragSvc            *service.SalesRAGService
 	volcBiz           VolcBiz    // 添加大模型服务依赖（保留用于 fallback）
 	aliBiz            ali.AliBiz // 阿里云 API 客户端
 	sessionStore      store.SalesSessionStore
-	parser            service.PipelineParser
+	parser            ingest.PipelineParser
 
 	// Credits-system wiring (Phase 2 Task 2.2). When creditSvc is nil the biz
 	// silently skips credit deduction (backward-compat for call sites that
@@ -243,7 +244,7 @@ type VolcBiz interface {
 	StreamChatWithModel(ctx context.Context, messages []map[string]interface{}, model string, maxTokens int, temperature float64, reasoningEffort string, onEvent func(event string, token string) error) (string, *billing.TokenUsage, error)
 }
 
-func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *service.SalesRAGService, volc VolcBiz, ali ali.AliBiz, sessionStore store.SalesSessionStore, parser service.PipelineParser) SalesRAGBiz {
+func NewSalesRAGBiz(ds store.IStore, pipeline *ingest.IngestionPipeline, rag *service.SalesRAGService, volc VolcBiz, ali ali.AliBiz, sessionStore store.SalesSessionStore, parser ingest.PipelineParser) SalesRAGBiz {
 	return NewSalesRAGBizWithCredits(ds, pipeline, rag, volc, ali, sessionStore, parser, nil, nil, nil)
 }
 
@@ -253,12 +254,12 @@ func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *s
 // updated still compile and run. Production wiring in biz.go passes both.
 func NewSalesRAGBizWithCredits(
 	ds store.IStore,
-	pipeline *service.IngestionPipeline,
+	pipeline *ingest.IngestionPipeline,
 	rag *service.SalesRAGService,
 	volc VolcBiz,
 	ali ali.AliBiz,
 	sessionStore store.SalesSessionStore,
-	parser service.PipelineParser,
+	parser ingest.PipelineParser,
 	creditSvc credit.ICreditService,
 	pc pricing.ICalculator,
 	reg registry.Registry,
@@ -3384,7 +3385,7 @@ func (b *salesRAGBiz) ocrWithVisionModel(ctx context.Context, userID uint, image
 // CheckSemanticSplitterStatus 检查语义切分器状态
 // 返回: (是否可用, 诊断信息, 错误)
 func CheckSemanticSplitterStatus() (bool, string, error) {
-	splitter := service.NewEmbeddingSplitter(service.EmbeddingSplitterConfig{
+	splitter := ingest.NewEmbeddingSplitter(ingest.EmbeddingSplitterConfig{
 		Threshold:    0.6,
 		MinChunkSize: 100,
 		MaxChunkSize: 1000,

@@ -4,7 +4,6 @@ package biz
 
 import (
 	"context"
-	"fmt"
 	"path/filepath"
 	"time"
 
@@ -20,19 +19,21 @@ import (
 	"numind-server/internal/numind/biz/payment"
 	"numind-server/internal/numind/biz/salesrag"
 	"numind-server/internal/numind/biz/salesrag/adapter"
-	"numind-server/internal/numind/biz/salesrag/port"
 	"numind-server/internal/numind/biz/salesrag/seed"
 	salesragservice "numind-server/internal/numind/biz/salesrag/service"
 	sopbiz "numind-server/internal/numind/biz/sop"
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/biz/volc"
 	"numind-server/internal/numind/store"
-	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/log"
 	docparser "numind-server/internal/pkg/parser"
 	"numind-server/internal/pkg/pricing"
+	radapter "numind-server/internal/pkg/retrieval/adapter"
+	ingest "numind-server/internal/pkg/retrieval/ingest"
+	"numind-server/internal/pkg/retrieval/port"
+	"numind-server/internal/pkg/retrieval/retrieve"
 
 	"github.com/spf13/viper"
 )
@@ -120,19 +121,7 @@ func NewBiz(ds store.IStore) *biz {
 	// Dimension=2048 is fixed by the existing DashVector collection
 	// `sales_rag_prod` schema; must match task_profile.requirements.dimension
 	// and ai_service.capability_json.dimension for the routed service.
-	embedder := func(ctx context.Context, text string) ([]float32, error) {
-		resp, err := aiservice.Embed(ctx, profile.SalesragEmbed, aiservice.EmbedRequest{
-			Texts:     []string{text},
-			Dimension: 2048,
-		})
-		if err != nil {
-			return nil, err
-		}
-		if len(resp.Embeddings) == 0 {
-			return nil, fmt.Errorf("salesrag embed: empty embedding response")
-		}
-		return resp.Embeddings[0], nil
-	}
+	embedder := radapter.NewGatewayEmbedder(profile.SalesragEmbed, 2048)
 
 	vectorStoreType := viper.GetString("salesrag.vector_store.type")
 	if vectorStoreType == "" {
@@ -154,10 +143,10 @@ func NewBiz(ds store.IStore) *biz {
 			}
 		}
 		var vecErr error
-		vStore, vecErr = adapter.NewSQLiteVecStore(vecDBPath, embedder)
+		vStore, vecErr = radapter.NewSQLiteVecStore(vecDBPath, embedder)
 		if vecErr != nil {
 			log.Errorw("Failed to initialize SQLiteVecStore, falling back to MemoryStore", "error", vecErr, "path", vecDBPath)
-			vStore = adapter.NewMemoryStore()
+			vStore = radapter.NewMemoryStore()
 		} else {
 			log.Infow("Initialized SQLiteVecStore", "path", vecDBPath)
 		}
@@ -172,14 +161,14 @@ func NewBiz(ds store.IStore) *biz {
 		if dashCollection == "" {
 			dashCollection = "sales_rag"
 		}
-		vStore = adapter.NewDashVectorStore(dashEndpoint, dashApiKey, dashCollection, embedder)
+		vStore = radapter.NewDashVectorStore(dashEndpoint, dashApiKey, dashCollection, embedder)
 		log.Infow("Initialized DashVector store", "endpoint", dashEndpoint, "collection", dashCollection)
 	case "memory":
-		vStore = adapter.NewMemoryStore()
+		vStore = radapter.NewMemoryStore()
 		log.Infow("Initialized MemoryStore (testing only)")
 	default:
 		log.Warnw("Unknown vector store type, falling back to MemoryStore", "type", vectorStoreType)
-		vStore = adapter.NewMemoryStore()
+		vStore = radapter.NewMemoryStore()
 	}
 
 	// 初始化 LLM 意图路由器（V2: 使用 DMXAPI qwen-turbo-latest）
@@ -188,14 +177,14 @@ func NewBiz(ds store.IStore) *biz {
 	// Initialize Pipeline Components
 	parser := docparser.NewDocumentParser()
 	// 使用增强版切分器（支持中文分词、语义边界、100字符重叠、Markdown分级）
-	splitter := salesragservice.NewCompatibilitySplitter(salesragservice.SplitterConfig{
+	splitter := ingest.NewCompatibilitySplitter(ingest.SplitterConfig{
 		MaxChunkSize: 1000,
 		MinChunkSize: 200,
 	})
-	tagger := salesragservice.NewContentTagger()
+	tagger := ingest.NewContentTagger()
 
 	// Initialize Ingestion Pipeline (托管模式下不需要传 embedder)
-	pipeline := salesragservice.NewIngestionPipeline(parser, splitter, tagger, b.ds.KnowledgeDocuments(), vStore, b.ds.KnowledgeChunks())
+	pipeline := ingest.NewIngestionPipeline(parser, splitter, tagger, b.ds.KnowledgeDocuments(), vStore, b.ds.KnowledgeChunks())
 
 	// 业务逻辑实现（使用 LLMRouter）
 	salesRAGSvc := salesragservice.NewSalesRAGService(vStore, llmRouter)
@@ -213,9 +202,12 @@ func NewBiz(ds store.IStore) *biz {
 	// 初始化知识库服务
 	b.kbService = kbbiz.NewKnowledgeBaseBiz(ds, b.salesRAGService)
 
-	// 初始化智能体服务。LLM 调用统一走 aiservice Gateway（Task 9 起），
-	// LLMRouter 参数已移除；此处仅需 VectorStore + Embedder。
-	b.chatbotService = chatbotbiz.NewChatbotBiz(ds, vStore, embedder)
+	// 初始化智能体服务。LLM 调用统一走 aiservice Gateway（Task 9 起）。
+	// T2.1：chatbot 改走底座检索（query 改写 + 多路检索 + rerank + grounding）修"回答怪"。
+	// chatMode="free" 避免销售话术污染纯知识库问答的 query 改写；docStore=nil 因为 chatbot
+	// 始终用显式 docIDs scope（不需要 AllEnabled 解析）。只有挂了 KB 且解析出 docIDs 才调它。
+	chatbotRetrieve := retrieve.NewService(vStore, salesragservice.NewRouterRewriter(llmRouter, "free"), nil)
+	b.chatbotService = chatbotbiz.NewChatbotBiz(ds, chatbotRetrieve)
 
 	// 初始化博主监控服务
 	monitorCooldown := monitor.NewCooldownManager(
