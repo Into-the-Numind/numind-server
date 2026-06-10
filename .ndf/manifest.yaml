@@ -3942,3 +3942,27 @@ features:
   - 'H3-prod (ai 2026-06-10): 隔离 cherry-pick 上 prod(只我这一行修复)。从 prod tag v1.4.8(94fe2a0)拉 detached worktree→cherry-pick 仅 900e9b7(ProviderEdit.vue, 干净无冲突)→diff v1.4.8..HEAD 恰 1 文件 4+/1-(无附带 develop 在途 agent-mode/compliance 代码)→tag v1.4.9。用 v1.4.8 自带 cicd 脚本(缺 TCR push-guard, 故靠后置实跑核验兜底)。release.sh prod: build 27s/push 7s/deploy 健康。关键核验(不信 Release complete): 实跑容器 image==numind-admin-web:v1.4.9-5b617ae(healthy, 非旧 94fe2a0) + 直接 curl 线上 ProviderEdit-88joxE4c.js 证 isNew 逻辑已是 !V.params.id||V.params.id==="new"(修复版真服务, 非 silent-old) + 10x burst 全 200 无 502 + /health healthy。tag v1.4.9 已推 origin, release worktree 已删。修复也在 develop(3254b81, 下次完整发版自带, 含 3 个回归测试)。'
   completed_at: '2026-06-10T23:17:52+08:00'
   blockers: []
+
+- id: pricing-provider-dropdown-sync
+  ndf_version: '3.0'
+  description: '客户上报(prod): /billing/pricing 新建定价规则时, 供应商下拉框找不到刚建的 agnes-ai。根因: 下拉框 options 读 src/constants/billingMaps.ts 的写死常量 providerFormOptions(11 个固定项), 不是实时读 llm_provider 表; 新建的 agnes-ai(id 14)不在常量里→看不到。后端 CreatePricingRule 不校验 provider 白名单(收任意字符串), 纯前端瞎下拉。git 史有 fix(billing): align provider labels with actual llm_provider.name values, 印证以前靠人手同步常量。'
+  classification_reason: 'Hotfix(5 条全满足): 无 DB schema / 无新 API 端点(复用 listProvidersApi) / 无新外部服务 / 影响文件=2(billingMaps.ts + PricingRulesView.vue) / 非支付计费数学高风险(只改下拉数据源, 不动计费逻辑)。客户 prod bug → Rule 11 复现测试强制(已先提交失败的 test(qa))。单仓库 numind-admin-web。User 确认根因修+Hotfix。'
+  last_updated_by: ai-h3-prod-deployed
+  last_updated_at: '2026-06-10T23:43:11+08:00'
+  created_at: '2026-06-10T23:43:11+08:00'
+  track: hotfix
+  stage: done
+  completed_at: '2026-06-10T23:43:11+08:00'
+  repos:
+  - numind-admin-web
+  branches:
+    numind-admin-web: fix/pricing-provider-dropdown-sync
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1 (ai 2026-06-10): 复现走 Vitest 组件测试: mount PricingRulesView+mock listProvidersApi 返回 agnes-ai→点「新建规则」开 modal(Teleport to body, 故断言查 document)→断言供应商 select(按 label 定位)含 agnes-ai option。修前 FAIL(写死列表无 agnes-ai), 修后 PASS。修复 2 文件: billingMaps.ts 删死常量 providerFormOptions, 加 NON_LLM_BILLING_PROVIDERS=[cos,vikingdb,dashvector]+纯函数 buildProviderFormOptions(live∪extras, Set 去重, label 优先级 providerLabels||display_name||name); PricingRulesView 加 providers ref+fetchProviders(并入 onMounted Promise.all)+providerFormOptions computed。保留非 LLM 计费实体(prod 现有规则用 dashvector/vikingdb 各 1 条)。fetch 失败优雅降级(只剩 extras)。Gate: 3 测试 pass + eslint(scoped)0 + vue-tsc 0。'
+  - 'H1-review (ai 2026-06-10): 并行双 Sonnet reviewer 均 VERDICT=PASS 零 P0/P1。spec: 根因命中/Rule 11 commit 链正确/非 LLM 实体保留且去重/无残留 providerFormOptions importer/provider value=llm_provider.name 对齐后端/label 优先级正确。code: buildProviderFormOptions 去重+空名守卫+merge 顺序正确/computed 跨 fetch 重算/降级一致/TS 无洞/删死常量是对的。处置 P2: [修]测试 option 查询 scope 到供应商 select(按 label)防误配; [修]补 fetch 失败降级测试(只剩 cos/vikingdb/dashvector 无 agnes-ai); [修]注释标明哪个是 Rule 11 复现哪个是回归守卫。'
+  - 'H3 (ai 2026-06-10): ndf-done merge→develop(d389619, 已 fetch 独立复核 3 commit + billingMaps 含 buildProviderFormOptions)。隔离 cherry-pick 上 prod: 从当前 prod tag v1.4.9(5b617ae)拉 detached worktree→cherry-pick 仅 fa3a014(2 文件, 干净)→diff v1.4.9..HEAD 恰 2 文件 55+/7-→tag v1.4.10→release.sh prod(build 13s/push 7s/健康)。核验: 实跑容器 image==numind-admin-web:v1.4.10-fa3a014(healthy, 非旧) + 10x burst 全 200 + /health healthy。tag 已推 origin, worktree 已删。修复也在 develop(含 3 测试)。遗留(已记, 未修-本次范围外): UsageRecordsView.vue 的 providerFilterOptions 仍读同一写死常量, 同类 staleness(用量记录按供应商筛选看不到新供应商), 影响低, 可后续 follow-up 同法改实时。'
+  blockers: []
