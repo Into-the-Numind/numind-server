@@ -277,11 +277,14 @@ func (c *calculator) resolvePricingRule(ctx context.Context, serviceType, provid
 }
 
 // IsFreeModel implements ICalculator — see the interface doc for the full
-// contract. It reuses resolvePricingRule (cache-backed) and inspects only the
-// COST price components that feed CalculateCost's flat formula
-// (InputPricePerMTok / OutputPricePerMTok) plus PricePerCall, so a misconfigured
-// per-call price never slips through as "free". A missing rule is deliberately
-// NOT free — an unpriced model must not become a member-only-bypass backdoor.
+// contract. It reuses the cache-backed resolvePricingRule and inspects COST
+// price components only. For an LLM chat call the credit charge comes from the
+// token formula (InputPricePerMTok / OutputPricePerMTok); PricePerCall is
+// additionally required to be 0 as a conservative guard so a per-call-billed
+// model never slips through as "free". PricePerGB (COS storage billing) is
+// intentionally NOT examined — this gate is LLM-call specific. A missing rule is
+// deliberately NOT free, so an unpriced/misconfigured model never becomes a
+// member-only bypass.
 func (c *calculator) IsFreeModel(ctx context.Context, serviceType, provider, model string) (bool, error) {
 	rule, err := c.resolvePricingRule(ctx, serviceType, provider, model)
 	if err != nil {
