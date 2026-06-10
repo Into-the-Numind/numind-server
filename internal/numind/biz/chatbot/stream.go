@@ -170,7 +170,7 @@ func BuildChatContextFragments(
 			}
 			// Prefix evidence with a citable header so the LLM can reference sources
 			// as [知识N]; relevance is the rerank score as a percentage.
-			relevancePct := int(chunk.Score * 100)
+			relevancePct := min(max(int(chunk.Score*100), 0), 100) // clamp：rerank 分理论 [0,1]，防越界显示 >100%/<0
 			labeledContent := fmt.Sprintf("【知识库资料】[知识%d] (相关度:%d%%)\n%s", i+1, relevancePct, chunk.Content)
 			frags = append(frags, contextbudget.NewEvidenceReferenceFragment(
 				fmt.Sprintf("kb-%d", i),
