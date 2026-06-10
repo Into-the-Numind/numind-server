@@ -23,7 +23,9 @@ import (
 // answers must reference real pending questions and each be non-empty) since
 // gin binding can't express them.
 type AnswerRequest struct {
-	Answers map[string]AnswerItem `json:"answers"`
+	// binding:required rejects a totally-missing/empty answers map at bind time
+	// (a present-but-empty map and per-question rules are enforced in Answer).
+	Answers map[string]AnswerItem `json:"answers" binding:"required"`
 }
 
 // AnswerItem is the user's answer to one question.
