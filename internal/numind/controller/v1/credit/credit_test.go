@@ -44,6 +44,12 @@ type stubCreditSvc struct {
 func (s *stubCreditSvc) CheckAndEstimate(_ context.Context, _ *model.User, _ creditbiz.Operation, _ creditbiz.EstimationInput) (*creditbiz.PreCheckResult, error) {
 	return s.checkResult, s.checkErr
 }
+func (s *stubCreditSvc) IsActiveMember(_ context.Context, _ uint64) (bool, error) {
+	return false, nil
+}
+func (s *stubCreditSvc) EnforceModelMembership(_ context.Context, _ uint64, _, _ string) error {
+	return nil
+}
 func (s *stubCreditSvc) Reserve(_ context.Context, _ *model.User, _ creditbiz.Operation, _ int64, _ uint64, _ *string) (*creditbiz.Reservation, error) {
 	panic("not used in tests")
 }

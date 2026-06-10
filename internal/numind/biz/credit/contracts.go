@@ -115,4 +115,18 @@ type ICreditService interface {
 	// refund>0 → AdminTestConsumer.Refund; refund<0 → top up via Consume; both atomic.
 	// Returns error if reservation is not agent_test or already reconciled.
 	ReconcileAgentTest(ctx context.Context, reservationID uint64, actualCostCents int64) error
+
+	// IsActiveMember reports whether userID is a member (unexpired subscription
+	// OR unexpired trial), IGNORING remaining balance. Used by callers that only
+	// hold an ICreditService — e.g. SOP CreateRun's coarse precheck — so a
+	// 0-balance member can still create a run that uses a free model
+	// (free-model-member-only C5/AC2).
+	IsActiveMember(ctx context.Context, userID uint64) (bool, error)
+
+	// EnforceModelMembership returns errno.ErrModelMembershipOnly when
+	// (provider, model) is a 0-priced model AND userID is NOT a member; nil
+	// otherwise (paid model, member, or undeterminable). Enforces the member-only
+	// free model independent of any reserve/ChargeUser path, so a free user can
+	// never reach a 0-priced model (free-model-member-only C7/AC3).
+	EnforceModelMembership(ctx context.Context, userID uint64, provider, model string) error
 }
