@@ -9,20 +9,17 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"numind-server/internal/numind/biz/salesrag/port"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/retrieval/retrieve"
 
 	"gorm.io/gorm"
 )
 
 // StreamHandler 流式输出回调函数
 type StreamHandler func(event string, data interface{}) error
-
-// Embedder 向量化函数签名
-type Embedder func(ctx context.Context, text string) ([]float32, error)
 
 // CreateChatbotReq 创建智能体请求
 type CreateChatbotReq struct {
@@ -77,20 +74,28 @@ type IChatbotBiz interface {
 }
 
 type chatbotBiz struct {
-	ds          store.IStore
-	vectorStore port.VectorStore
-	embedder    Embedder
+	ds store.IStore
+	// retrieveSvc 领域无关检索主干（底座；query 改写 + 多路检索 + rerank + 严格 scope）。
+	// 只在 chatbot 挂载知识库且解析出 docIDs 时调用；纯聊天 chatbot 不走它（避免 ErrEmptyScope）。
+	// 可为 nil（不挂 KB 的纯配置 CRUD 测试场景），ChatStream 会先判 docIDs 再判 nil。
+	retrieveSvc *retrieve.Service
 }
 
 var _ IChatbotBiz = (*chatbotBiz)(nil)
 
-// NewChatbotBiz 创建智能体业务层实例
-// llmRouter 参数已废弃（Task 9 迁移至 AI Gateway），保留签名兼容调用方，传 nil 即可。
-func NewChatbotBiz(ds store.IStore, vectorStore port.VectorStore, embedder Embedder) IChatbotBiz {
+// NewChatbotBiz 创建智能体业务层实例。
+//
+// retrieveSvc 是为 chatbot 装配的底座检索服务，由调用方（biz.go）构造：
+//
+//	retrieve.NewService(vStore, service.NewRouterRewriter(llmRouter, "free"), nil)
+//
+// chatMode="free" 避免销售话术污染纯知识库问答的 query 改写；docStore=nil 因为 chatbot
+// 始终用显式 docIDs scope（不需要 AllEnabled 解析）。传 nil 时挂了 KB 的 chatbot 不检索
+// （降级为纯聊天），仅用于不触达 ChatStream 检索段的单测。
+func NewChatbotBiz(ds store.IStore, retrieveSvc *retrieve.Service) IChatbotBiz {
 	return &chatbotBiz{
 		ds:          ds,
-		vectorStore: vectorStore,
-		embedder:    embedder,
+		retrieveSvc: retrieveSvc,
 	}
 }
 

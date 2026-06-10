@@ -6,9 +6,10 @@ import (
 	"testing"
 
 	"numind-server/internal/numind/biz/salesrag/adapter"
-	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/biz/salesrag/service"
 	aiservice "numind-server/internal/pkg/aiservice"
+	radapter "numind-server/internal/pkg/retrieval/adapter"
+	"numind-server/internal/pkg/retrieval/domain"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -26,7 +27,7 @@ func TestMain(m *testing.M) {
 
 func TestSalesRAGService_RetrieveDualTrack(t *testing.T) {
 	// 1. Setup Mock Store & Router
-	store := adapter.NewMemoryStore()
+	store := radapter.NewMemoryStore()
 	router := adapter.NewRegexRouter() // RegexRouter 已实现 AnalyzeIntentV2
 
 	ctx := context.Background()
@@ -58,7 +59,7 @@ func TestSalesRAGService_RetrieveDualTrack(t *testing.T) {
 }
 
 func TestSalesRAGService_EmptyDocIDs(t *testing.T) {
-	store := adapter.NewMemoryStore()
+	store := radapter.NewMemoryStore()
 	router := adapter.NewRegexRouter()
 	svc := service.NewSalesRAGService(store, router)
 
@@ -74,7 +75,7 @@ func TestSalesRAGService_EmptyDocIDs(t *testing.T) {
 }
 
 func TestSalesRAGService_UserIDIsolation(t *testing.T) {
-	store := adapter.NewMemoryStore()
+	store := radapter.NewMemoryStore()
 	router := adapter.NewRegexRouter()
 	svc := service.NewSalesRAGService(store, router)
 
@@ -94,4 +95,27 @@ func TestSalesRAGService_UserIDIsolation(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Len(t, verdict.Evidence, 1)
 	assert.Equal(t, "f2", verdict.Evidence[0].ID)
+}
+
+// TestSalesRAGService_OpinionOnly_MainEmpty 回归测试（T1.6 spec-compliance review P1）：
+// 主通道 docIDs 为空（用户只配了观点库、未配产品/案例/FAQ）时，opinion 通道仍须独立
+// 检索——不能因主通道 ErrEmptyScope 被整体跳过（否则只配观点库的 session 丢失全部观点证据）。
+func TestSalesRAGService_OpinionOnly_MainEmpty(t *testing.T) {
+	store := radapter.NewMemoryStore()
+	router := adapter.NewRegexRouter()
+	svc := service.NewSalesRAGService(store, router)
+
+	ctx := context.Background()
+	store.Upsert(ctx, []domain.KnowledgeChunk{
+		{ID: "op1", DocumentID: 2, UserID: 1, Content: "Opinion: emphasize price value over discount"},
+	})
+
+	// 主通道 docIDs=nil（空）、opinion docIDs=[2] 非空 → opinion 必须仍被检索。
+	verdict, err := svc.RetrieveForResponseV2(ctx, "Price", nil, []uint{2}, nil, "free", 1, nil)
+	assert.Nil(t, err)
+	assert.Len(t, verdict.Evidence, 0, "主通道空应无常规 Evidence")
+	assert.NotEmpty(t, verdict.OpinionEvidence, "主通道空时 opinion 仍须检索到证据（T1.6 P1 回归保护）")
+	if len(verdict.OpinionEvidence) > 0 {
+		assert.Equal(t, "op1", verdict.OpinionEvidence[0].ID)
+	}
 }

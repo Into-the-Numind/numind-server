@@ -120,7 +120,7 @@ func TestListVisibleChatbotsWithPermission_FourQuadrants(t *testing.T) {
 	subUser := &model.User{ParentUserID: &parent}
 	subUser.ID = sub
 
-	b := chatbot.NewChatbotBiz(ds, nil, nil)
+	b := chatbot.NewChatbotBiz(ds, nil)
 	items, err := b.ListVisibleChatbotsWithPermission(ctx, subUser)
 	require.NoError(t, err)
 
@@ -155,7 +155,7 @@ func TestListVisibleChatbotsWithPermission_ParentBypass(t *testing.T) {
 	parentUser := &model.User{}
 	parentUser.ID = parent
 
-	b := chatbot.NewChatbotBiz(ds, nil, nil)
+	b := chatbot.NewChatbotBiz(ds, nil)
 	items, err := b.ListVisibleChatbotsWithPermission(ctx, parentUser)
 	require.NoError(t, err)
 
