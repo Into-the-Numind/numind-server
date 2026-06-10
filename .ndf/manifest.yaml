@@ -1,5 +1,24 @@
 schema_version: '2.0'
 features:
+- id: agent-multi-question
+  track: standard
+  description: 'R1 走查拍板：ask_user_question 重构为 Claude Code 式 questions 数组（1-4 独立问题/每问题 0 或 2-4 选项+自动"其他"/逐个问标签栏翻阅修改/Review 提交）。根因：截图暴露 agent 把多维度塞进一问题的选项→元选择用户选了没用。参考源码 /Users/zhiyuchen/Downloads/ClaudeCode/src/tools/AskUserQuestionTool/。蓝图 docs/agent-mode/multi-question-blueprint.md。改造：后端 YieldPayload/Execute/answer 协议/快照 + 前端类型/多问题导航组件(全新)/store。'
+  classification_reason: 'Standard：跨仓库 + 数据协议变更（答案从 single→answers map）+ 全新前端有状态组件 + 影响 agent 核心交互。'
+  status: active
+  stage: S3
+  repos:
+    numind-server: feature/agent-multi-question
+    numind-web-v3: feature/agent-multi-question
+  worktrees:
+    numind-server: /private/tmp/wt-agent-multi-question-numind-server
+    numind-web-v3: /private/tmp/wt-agent-multi-question-numind-web-v3
+  progress:
+    completed_tasks: 0
+    reviewed_tasks: 0
+  artifacts:
+    requirement: .ndf/features/agent-multi-question/requirement.md
+  decisions:
+  - 'S0-S3 (2026-06-10): R1 走查从截图发现根本设计缺陷(一工具硬扛开放收集+决策选择)，读 Claude Code 源码得标准答案=questions 数组单工具。用户拍板照搬+现在做+跨仓库。蓝图 requirement.md 含 6-task 分解(T1 协议→T2 answer→T3 快照→T4 前端类型→T5 多问题导航组件→T6 联调)。因当前 session context 已极长(8 feature 闭环)，用户拍板换 fresh session 做 S4 保质量。worktree 已建+requirement 已 commit feature 分支+blueprint 持久化 develop docs+memory project_agent_multi_question_model。'
 - id: ask-question-options-tolerant
   track: hotfix
   description: 'ask-question-freetext 部署后即回归（dev run #127，用户上报"服务不可用"）：教 agent"选项是建议非穷举"后 agent 给了 10 个选项，Execute 硬性 2-4 校验失败→工具调用崩→run model_error。修：Execute 容错——>4 截断前 4(log warn)，0 选项允许(纯开放问题靠自由填写框)，恰好 1 拒绝；schema minItems 2→0；description/options prose 教 0-or-2-4 形态。前端已支持 0 选项(ask-question-freetext placeholder 逻辑)，本 hotfix 仅 server。'
