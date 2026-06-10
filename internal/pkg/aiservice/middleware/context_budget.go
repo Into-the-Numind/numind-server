@@ -404,7 +404,7 @@ func ContextBudgetCredits(deps Deps) Middleware {
 			// is member-only. Enforce for EVERY chat request, independent of
 			// ContextFragments (covers no-KB chats) and of Policy.ChargeUser, so a
 			// non-member can never reach a free model on any chat path.
-			if deps.CreditService != nil {
+			if deps.CreditService != nil && route != nil {
 				gateUserID := uint(0)
 				if bc := billing.FromContext(ctx); bc != nil {
 					gateUserID = bc.UserID

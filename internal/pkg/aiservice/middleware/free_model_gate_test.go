@@ -47,9 +47,10 @@ func TestContextBudgetCredits_FreeModelNonMember_BlockedRegardlessOfFragmentsOrC
 // Counterpart: when EnforceModelMembership returns nil (member, or paid model), the
 // gate is transparent — a no-fragment chat passes through to the provider as before.
 func TestContextBudgetCredits_NoBlock_NoFragmentPassthroughUnchanged(t *testing.T) {
+	creditSvc := &mockCreditService{enforceErr: nil}
 	deps := Deps{
 		ContextBudget: &mockContextBudgetService{},
-		CreditService: &mockCreditService{enforceErr: nil},
+		CreditService: creditSvc,
 		Logger:        &mockLogger{},
 		Clock:         fixedClock{t: time.Now()},
 	}
@@ -68,4 +69,5 @@ func TestContextBudgetCredits_NoBlock_NoFragmentPassthroughUnchanged(t *testing.
 	_, err := handler(ctx, budgetRoute(), req)
 	require.NoError(t, err)
 	require.True(t, adapterCalled, "transparent gate must not disturb the no-fragment passthrough")
+	require.Equal(t, 1, creditSvc.enforceCalls, "the gate must actually invoke EnforceModelMembership")
 }
