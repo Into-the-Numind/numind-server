@@ -5,16 +5,22 @@ features:
   description: '0 价模型（agnes/有数AI）仅限会员（sub 或 trial 在期）使用且零扣费；免费用户拒绝（ErrMembershipRequired）。per-call 语义：判定单位=单次被计费拦截的 AI 调用，看该调用模型 pricing_rule 是否全 0；0价+会员→SkipDeduction 跳过预扣不扣分，0价+免费用户→拒绝；收费调用照常预扣/拦截（SalesRAG 中途收费子调用仍拦"积分不足"）。键：pricing.IsFreeModel(查 pricing_rule 全0，查不到≠免费)+membership.GetMembershipState+复用 PreCheckResult.SkipDeduction。'
   classification_reason: 'Standard：高风险计费/权限逻辑（会员判定+跳过扣费+余额门槛放宽）+影响文件>3。无 DB schema/新 API/新外部服务。'
   status: active
-  stage: S2
+  stage: S3
   repos:
     numind-server: feature/free-model-member-only
   worktrees:
     numind-server: /private/tmp/wt-free-model-member-only-numind-server
+  progress:
+    total_tasks: 6
+    completed_tasks: 0
+    reviewed_tasks: 0
   artifacts:
     requirement: .ndf/features/free-model-member-only/requirement.md
     proposal: .ndf/features/free-model-member-only/proposal.md
     spec: .ndf/features/free-model-member-only/spec.md
+    plan: .ndf/features/free-model-member-only/plan.md
   decisions:
+  - 'S3 (ai 2026-06-11): plan 完成（6 code task T1-T6 + T7 验证策略）。依赖：T1/T2/T3 独立→T4(credit门+接口)→T5(中间件C7)/T6(SOP)。独立 Sonnet 原子性审查 PASS_WITH_CONCERNS：C1-C7/AC1-7 全覆盖、依赖无环、T7 单测策略合理。修 P0-A：中间件 deps.CreditService 是窄接口 ContextBudgetCreditService 非 ICreditService→EnforceModelMembership 须加到该接口+creditServiceFacade+3中间件mock(T5)。修 P0-B/C：枚举 6 个 ICalculator 实现 + 2 个显式 ICreditService stub(credit_test.go/tool_image_gen_billing_test.go)，逐 task 编译绿。验证策略=持久化 Go 单测(高风险计费,无UI,不做E2E)。'
   - 'S2 (ai 2026-06-11): spec 完成。取证落定：唯一被预扣拦截的 chat 调用=带 ContextFragments 的主回复；embed/rerank/无fragments的rewrite 对所有人 uncharged（现状，不扩张）。改动 C1-C7：C1 pricing.IsFreeModel(全0价rule,查不到≠免费,tiered→false) / C2 membership.IsActiveMember(按有效期忽略余额,传播错误) / C3 CheckAndEstimateBudget gateway门(会员SkipDeduction零扣) / C4 CheckAndEstimate 默认路径完整门 / C5 SOP CreateRun 会员感知放宽 / C6 errno.ErrModelMembershipOnly(403) / C7 中间件 EnforceModelMembership(ChargeUser无关,AC3 airtight)。独立 Sonnet 审查 FAIL→3×P0 全解(IsActiveMember传错误 / ICreditService+ICalculator接口扩张入S3计划+更新mock / ChargeUser=false 旁路用C7独立拦截堵住)。ICreditService 加 IsActiveMember+EnforceModelMembership，ICalculator 加 IsFreeModel——全部实现/mock 同步更新。'
   - 'S1 (ai 2026-06-11): 提案+PRD。关键发现：membership.TrialActive 要求 CreditsRemaining>0，但 PRD 要 trial 积分用光的会员也能用 0 价模型 → 本 feature "会员"判定改用**有效期**(sub 未过期 OR trial 未过期，忽略剩余余额)，不复用 TrialActive。AC1-7 落定。单仓库 numind-server（前端零改，403 复用既有业务错误展示，S2 验证）。S2 待查：embed/rerank 是否在积分拦截链 + 错误在 SSE 流式传播 + admin_test 池不误伤。'
   - 'S0 (ai 2026-06-11): 用户授权全流程自主到 dev 部署。Triage=Standard（高风险计费/权限）。per-call 语义+免费用户=!(SubActive||TrialActive) 已与用户逐字确认。embed/rerank 计费路径列为 S2 待查项（取证示只有 chat 走 ContextBudgetCredits 预扣）。S7 prod 不在授权内。'
