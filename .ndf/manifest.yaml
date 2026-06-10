@@ -3705,11 +3705,11 @@ features:
   ndf_version: '3.0'
   description: '费用对账页（CustomersBillingView.vue, /customers/billing）增加「导出 CSV」按钮，导出当前页面所有记录。WYSIWYG 语义：导出 displayDetails（已应用类型筛选/搜索/排序的可见行集，与页脚「当前显示 N 笔」一致），非整月 report.details。纯前端零后端：复用页面已 onMounted 加载的数据，无新 API。新建 utils/csv.ts（escapeCsvField/buildCsv with UTF-8 BOM + CRLF/downloadCsv Blob 触发，RFC4180 转义，BOM 保证 Excel 正确显示中文）+ 改 CustomersBillingView.vue（toolbar 加按钮 + 组装行 + 文件名 费用对账_YYYY-MM.csv）+ csv.spec.ts 单测。'
   classification_reason: 'Hotfix(全 5 条满足): 无 DB schema / 无新 API 端点(复用已加载 displayDetails) / 无新外部服务 / 影响文件 ≤3(csv.ts + view + 单测) / 不碰支付权限逻辑(只读导出已展示数据)。Micro 排除: 新增业务代码文件(utils/csv.ts)超 Micro 边界。新功能请求非 customer 线上 bug → Rule 11 复现测试不适用。单仓库 numind-web-v3。User 指令全自动跑到 dev 部署止步。'
-  last_updated_by: ai-h3-dev-deployed
-  last_updated_at: '2026-06-09T18:40:00+08:00'
+  last_updated_by: ai-h3-prod-deployed
+  last_updated_at: '2026-06-10T11:00:00+08:00'
   created_at: '2026-06-09T17:30:00+08:00'
   track: hotfix
-  stage: H3
+  stage: done
   repos:
   - numind-web-v3
   branches:
@@ -3724,4 +3724,5 @@ features:
   - 'H1-H2 (ai 2026-06-09): 纯前端 hotfix。两 commit 拆分: style(00bfcdc) prettier 规范化 view(develop 漂移, 无行为变更) + feat(53847cc) csv util+view+test, 保证 feat 可独立 cherry-pick(本仓库有 prod 单 commit cherry-pick 先例)。设计判定: (1) WYSIWYG 导出 displayDetails(已筛选/搜索/排序的可见行集, 与页脚「当前显示 N 笔」一致)而非整月 report.details——「当前页面的所有记录」最自然读法, summary bar 仍显权威全月合计; (2) 价格导出为「元」数值(非 ¥ 文案)便于 Excel 求和, 列头「价格(元)」对齐表格「价格」; (3) UTF-8 BOM 保证 Excel 中文不乱码 + RFC4180 转义 + CRLF。无新 API(复用已加载数据)。'
   - 'H2-review (ai 2026-06-09): 并行双 Sonnet reviewer(spec-compliance + code-quality)均 VERDICT=PASS_WITH_CONCERNS, 零 P0/P1。6 个 P2 当场全修(Rule 7 上下文最新成本最低): [安全] CSV 公式注入中和(escapeCsvField 对 =+-@\t\r 开头单元格前置单引号, OWASP CWE-1236; child_username 用户可控昵称)+3 注入单测; [正确性] downloadCsv 延后 setTimeout(0) revoke 规避下载竞态+测试改 fake timers; [测试] 补 DOM removeChild 清理断言; [一致] 列头金额(元)→价格(元)对齐表格; [流程] 修复 commit 误归属(csv.ts/spec 原误落 style commit→重建落 feat commit)。Gate 复跑: eslint clean + vitest 13 pass + vue-tsc type-check exit 0。止步 dev。'
   - 'H3-dev (ai 2026-06-09): ndf-done merge fix/billing-csv-export→develop(92ca6c8)+push(已 fetch 复核 origin/develop 含 style 00bfcdc/feat 53847cc/csv.ts/csv.spec.ts)+删 worktree/分支。/deploy-dev numind-web-v3: 首次构建被构建机 SSH 掉链(rendering chunks 时 remote 关连接, 非代码问题)→重跑成功。Release complete dev(92ca6c8), 已核对 dev 运行容器 image=ccr.../numind-web-v3:develop-92ca6c8(防 TCR 100-tag silent-old), 容器 healthy, /health=healthy。止步 dev, prod 不做(待 User 验收)。'
+  - 'H3-prod (ai 2026-06-10): User 授权只上这一个 hotfix 到 prod。develop 领先 prod(v1.0.29)317 commit→不能 tag develop。隔离方案(同 sop-context-ordering-fix 先例): 核对 prod 实跑容器=v1.0.29-a1d2143(非仅信 latest tag)→从 v1.0.29 拉 release worktree→cherry-pick 仅 feat 53847cc(丢弃 style 00bfcdc, 那是 develop 专属 prettier 规范化, 对 v1.0.29 是噪声)。view 单冲突(toolbar 区, v1.0.29 search-box 单行 vs 我多行 wrapper)→取 incoming(toolbar-right+导出按钮); csv.ts/spec 干净落地。先验 v1.0.29 已含全部依赖(displayDetails/productLabel/durationLabel/formatDate/ParentBillingDetail 字段全在, parent.ts 同形)。Gate A 隔离: diff vs v1.0.29 恰为 3 文件(csv.ts/csv.spec.ts/view, 318+/6-, 零额外改动)。Gate B: 不跑全文件 prettier(避免 prod diff churn)→eslint clean+vitest 13 pass+vue-tsc type-check exit 0(v1.0.29 基线+我的改动, node_modules superset 兼容)。tag v1.0.30(7371092)→release.sh prod(rsync→构建机 build 112s→TCR push→换容器+60s 健康检查+自动回滚兜底)。结果: Deploy success prod, 已核对 prod 运行容器 image=v1.0.30-7371092(防 TCR stale), :9202/health=healthy, https://youshu.asia HTTP 200。tag v1.0.30 已推 origin(aa3a4c0)。release worktree+本地分支已删(tag 保活 commit)。修复已在 develop(下次完整发版自带)。'
   blockers: []
