@@ -293,6 +293,19 @@ func (s *spyCalculator) CalculateCost(_ context.Context, serviceType, provider, 
 	return s.returnCost, s.returnError
 }
 
+func (s *spyCalculator) IsFreeModel(_ context.Context, _, _, _ string) (bool, error) {
+	return false, nil
+}
+
+// CalculateCostWithCache satisfies pricing.ICalculator. It delegates to
+// CalculateCost (cached arg ignored) so existing assertions on the recorded
+// 5-tuple of args continue to hold.
+func (s *spyCalculator) CalculateCostWithCache(ctx context.Context, serviceType, provider, model string,
+	promptTokens, completionTokens, _ int,
+) (int64, error) {
+	return s.CalculateCost(ctx, serviceType, provider, model, promptTokens, completionTokens)
+}
+
 // TestBuildRecord_CallsPricingCalculator verifies that the recorder, after
 // Task B.4, delegates cost calculation to the injected pricing.ICalculator on
 // the LLM path (prompt + completion tokens). The stub calculator records the
@@ -534,5 +547,146 @@ func TestResolvePricingRule_ProviderModelIDDBError(t *testing.T) {
 	}
 	if !errors.Is(err, connErr) {
 		t.Errorf("expected connection error to be in the chain; got %v", err)
+	}
+}
+
+// ----------------------------------------------------------------------------
+// llm-prompt-cache: reconcile threads CachedPromptTokens into cost + revenue
+// ----------------------------------------------------------------------------
+
+// ptrF returns a pointer to v (test helper for the nullable cached price columns).
+func ptrF(v float64) *float64 { return &v }
+
+// cachedPricingRule builds a flat rule with both base and (optional) cached
+// input prices so the recorder's cached cost/revenue branches can be exercised.
+// Pass nil for cachedCost/cachedSell to leave those columns NULL (full-price
+// fallback — the zero-regression control).
+func cachedPricingRule(inputCost, outputCost, inputSell, outputSell float64, cachedCost, cachedSell *float64) *model.PricingRule {
+	return &model.PricingRule{
+		ID:                          1,
+		BillingMode:                 "flat",
+		InputPricePerMTok:           inputCost,
+		OutputPricePerMTok:          outputCost,
+		SellInputPricePerMTok:       inputSell,
+		SellOutputPricePerMTok:      outputSell,
+		CachedInputPricePerMTok:     cachedCost,
+		SellCachedInputPricePerMTok: cachedSell,
+		IsActive:                    true,
+		CreatedAt:                   time.Now(),
+		UpdatedAt:                   time.Now(),
+	}
+}
+
+// TestRecorder_CachedTokens_ThreadedToCostAndRevenue proves the recorder feeds
+// record.CachedPromptTokens into BOTH the cost path (via CalculateCostWithCache)
+// and the inline revenue formula, so the cached portion of prompt tokens is
+// billed at the discounted price on both the cost and sell dimensions.
+func TestRecorder_CachedTokens_ThreadedToCostAndRevenue(t *testing.T) {
+	clearPricingCache()
+
+	// input cost 14, output cost 0; sell input 20, sell output 0.
+	// cached cost 1.4 (0.1x), cached sell 2.0 (0.1x).
+	rule := cachedPricingRule(14, 0, 20, 0, ptrF(1.4), ptrF(2.0))
+	store := &stubUsageStore{
+		pricingRules: map[string]*model.PricingRule{
+			"llm_chat|dmxapi|deepseek-v4-pro": rule,
+		},
+	}
+	calc := pricing.NewCalculator(store)
+	r := &UsageRecorder{store: store, calc: calc, ch: make(chan *UsageEvent, 1), done: make(chan struct{})}
+
+	// 1,000,000 prompt tokens, 400,000 of them cache HITS, 0 completion.
+	event := &UsageEvent{
+		UserID:      1,
+		ServiceType: "llm_chat",
+		Provider:    "dmxapi",
+		Model:       "deepseek-v4-pro",
+		Usage:       &TokenUsage{PromptTokens: 1_000_000, CompletionTokens: 0, CachedPromptTokens: 400_000},
+	}
+	record := r.buildRecord(event)
+
+	// buildRecord must map the cached count into the persisted record.
+	if record.CachedPromptTokens != 400_000 {
+		t.Fatalf("CachedPromptTokens not threaded into record: got %d, want 400000", record.CachedPromptTokens)
+	}
+
+	// Cost: 400k cached @1.4 + 600k normal @14 = 0.56 + 8.4 = 8.96 yuan = 896 cents.
+	if record.CostCents != 896 {
+		t.Errorf("CostCents = %d, want 896 (cached discount applied)", record.CostCents)
+	}
+	// Revenue: 400k cached @2.0 + 600k normal @20 = 0.8 + 12.0 = 12.8 yuan = 1280 cents.
+	if record.RevenueCents != 1280 {
+		t.Errorf("RevenueCents = %d, want 1280 (cached sell discount applied)", record.RevenueCents)
+	}
+}
+
+// TestRecorder_CachedTokens_NullPriceFullRate is the zero-regression control:
+// cachedTokens>0 but the cached price columns are NULL ⇒ the cached portion is
+// billed at the FULL input/sell price, byte-identical to pre-cache behavior.
+func TestRecorder_CachedTokens_NullPriceFullRate(t *testing.T) {
+	clearPricingCache()
+
+	// Cached price columns NULL on both dimensions.
+	rule := cachedPricingRule(14, 0, 20, 0, nil, nil)
+	store := &stubUsageStore{
+		pricingRules: map[string]*model.PricingRule{
+			"llm_chat|dmxapi|deepseek-v4-pro": rule,
+		},
+	}
+	calc := pricing.NewCalculator(store)
+	r := &UsageRecorder{store: store, calc: calc, ch: make(chan *UsageEvent, 1), done: make(chan struct{})}
+
+	event := &UsageEvent{
+		UserID:      1,
+		ServiceType: "llm_chat",
+		Provider:    "dmxapi",
+		Model:       "deepseek-v4-pro",
+		Usage:       &TokenUsage{PromptTokens: 1_000_000, CompletionTokens: 0, CachedPromptTokens: 400_000},
+	}
+	record := r.buildRecord(event)
+
+	// Cost: 1M @14 = 14 yuan = 1400 cents (cached count irrelevant — NULL price).
+	if record.CostCents != 1400 {
+		t.Errorf("CostCents = %d, want 1400 (NULL cached price → full rate)", record.CostCents)
+	}
+	// Revenue: 1M @20 = 20 yuan = 2000 cents.
+	if record.RevenueCents != 2000 {
+		t.Errorf("RevenueCents = %d, want 2000 (NULL cached sell price → full rate)", record.RevenueCents)
+	}
+}
+
+// TestRecorder_NoCachedTokens_ByteIdentical is the second zero-regression
+// control: cachedTokens==0 with a cached price SET ⇒ identical to a run that
+// had no cached price at all (the cached term contributes nothing).
+func TestRecorder_NoCachedTokens_ByteIdentical(t *testing.T) {
+	clearPricingCache()
+
+	rule := cachedPricingRule(14, 0, 20, 0, ptrF(1.4), ptrF(2.0))
+	store := &stubUsageStore{
+		pricingRules: map[string]*model.PricingRule{
+			"llm_chat|dmxapi|deepseek-v4-pro": rule,
+		},
+	}
+	calc := pricing.NewCalculator(store)
+	r := &UsageRecorder{store: store, calc: calc, ch: make(chan *UsageEvent, 1), done: make(chan struct{})}
+
+	event := &UsageEvent{
+		UserID:      1,
+		ServiceType: "llm_chat",
+		Provider:    "dmxapi",
+		Model:       "deepseek-v4-pro",
+		Usage:       &TokenUsage{PromptTokens: 1_000_000, CompletionTokens: 0, CachedPromptTokens: 0},
+	}
+	record := r.buildRecord(event)
+
+	if record.CachedPromptTokens != 0 {
+		t.Errorf("CachedPromptTokens = %d, want 0", record.CachedPromptTokens)
+	}
+	// Cost 1M @14 = 1400 cents; Revenue 1M @20 = 2000 cents — no discount fires.
+	if record.CostCents != 1400 {
+		t.Errorf("CostCents = %d, want 1400 (cachedTokens=0 → full rate)", record.CostCents)
+	}
+	if record.RevenueCents != 2000 {
+		t.Errorf("RevenueCents = %d, want 2000 (cachedTokens=0 → full rate)", record.RevenueCents)
 	}
 }

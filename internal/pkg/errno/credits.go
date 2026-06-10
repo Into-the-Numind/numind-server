@@ -12,6 +12,12 @@ var (
 	// HTTP 403（用户已认证但权限不够）
 	ErrMembershipRequired = &Errno{HTTP: 403, Code: "Membership.Required", Message: "需要会员资格才能购买加量包"}
 
+	// ErrModelMembershipOnly 该模型仅限会员使用（0 价模型 = 会员专属权益，
+	// feature free-model-member-only）。免费用户（无在期 sub 且无在期 trial）
+	// 调用 0 价模型时返回此错误。
+	// HTTP 403（用户已认证但非会员）
+	ErrModelMembershipOnly = &Errno{HTTP: 403, Code: "Model.MembershipOnly", Message: "该模型仅限会员使用，请先开通会员"}
+
 	// ErrCoefficientConcurrent 系数并发更新冲突 retry 耗尽
 	ErrCoefficientConcurrent = &Errno{HTTP: 503, Code: "Coefficient.Concurrent", Message: "系数更新繁忙，请稍后重试"}
 

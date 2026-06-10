@@ -31,7 +31,6 @@ import (
 
 	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/biz/membership"
-	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/store"
 	cb "numind-server/internal/pkg/contextbudget"
 	"numind-server/internal/pkg/errno"
@@ -39,6 +38,7 @@ import (
 	"numind-server/internal/pkg/model"
 	membershipmodel "numind-server/internal/pkg/model/membership"
 	"numind-server/internal/pkg/pricing"
+	"numind-server/internal/pkg/retrieval/domain"
 )
 
 // --- test harness ---
@@ -429,7 +429,7 @@ func TestFinalize_StreamErrorTriggersRefund(t *testing.T) {
 	assert.EqualValues(t, 1000, cycleRemainBefore, "no debit before gateway reserve")
 
 	// Simulate mid-stream abort: recordLLMResult with cc.rsv==nil is a no-op.
-	cc.recordLLMResult(ctx, context.Canceled, "", "", 0, 0)
+	cc.recordLLMResult(ctx, context.Canceled, "", "", 0, 0, 0)
 	// Since cc.rsv==nil, opErr is NOT captured (the guard "if cc==nil || cc.rsv==nil" returns early).
 	assert.EqualValues(t, 0, cc.actualCost, "no-op: rsv==nil means no cost tracking")
 
@@ -614,5 +614,78 @@ func TestSalesRAGProfileAndChatStyleUseFragments(t *testing.T) {
 	}
 	for k := range usrF.Metadata {
 		assert.NotContains(t, k, "sop")
+	}
+}
+
+// ----------------------------------------------------------------------------
+// llm-prompt-cache: recordLLMResult threads cachedTokens into the reconcile cost
+// ----------------------------------------------------------------------------
+
+// spyPricingCalc records the cachedTokens argument passed to
+// CalculateCostWithCache so the salesrag reconcile chain can be verified to
+// thread the prompt-cache HIT count through to pricing.
+type spyPricingCalc struct {
+	gotCached int
+	gotPrompt int
+	cost      int64
+}
+
+func (s *spyPricingCalc) CalculateCost(_ context.Context, _, _, _ string, pt, _ int) (int64, error) {
+	s.gotPrompt = pt
+	return s.cost, nil
+}
+
+func (s *spyPricingCalc) IsFreeModel(_ context.Context, _, _, _ string) (bool, error) {
+	return false, nil
+}
+
+func (s *spyPricingCalc) CalculateCostWithCache(_ context.Context, _, _, _ string, pt, _, cached int) (int64, error) {
+	s.gotPrompt = pt
+	s.gotCached = cached
+	return s.cost, nil
+}
+
+// TestRecordLLMResult_ThreadsCachedTokens verifies the salesrag credit context's
+// reconcile path forwards the prompt-cache HIT count to pricing, so the cached
+// portion is billed at the discounted rate. The spy captures the argument; the
+// upstream emit→parse hops are covered by the in-process map round-trip in
+// ChatWithSession (the int survives unchanged since the payload is never
+// re-serialized over the wire).
+func TestRecordLLMResult_ThreadsCachedTokens(t *testing.T) {
+	spy := &spyPricingCalc{cost: 555}
+	cc := &salesragCreditContext{
+		biz: &salesRAGBiz{pricing: spy},
+		rsv: &credit.Reservation{}, // non-nil so the reconcile cost path runs
+	}
+
+	cc.recordLLMResult(context.Background(), nil, "dmxapi", "deepseek-v4-pro", 1000, 200, 400)
+
+	if spy.gotPrompt != 1000 {
+		t.Errorf("prompt tokens not threaded: got %d, want 1000", spy.gotPrompt)
+	}
+	if spy.gotCached != 400 {
+		t.Errorf("cached tokens not threaded to pricing: got %d, want 400", spy.gotCached)
+	}
+	if cc.actualCost != 555 {
+		t.Errorf("actualCost = %d, want 555 (from spy)", cc.actualCost)
+	}
+}
+
+// TestRecordLLMResult_NoCacheThreadsZero is the zero-regression control:
+// cachedTokens=0 flows through unchanged ⇒ pricing bills full input price.
+func TestRecordLLMResult_NoCacheThreadsZero(t *testing.T) {
+	spy := &spyPricingCalc{cost: 100}
+	cc := &salesragCreditContext{
+		biz: &salesRAGBiz{pricing: spy},
+		rsv: &credit.Reservation{},
+	}
+
+	cc.recordLLMResult(context.Background(), nil, "ali", "qwen-turbo", 500, 100, 0)
+
+	if spy.gotCached != 0 {
+		t.Errorf("cached tokens = %d, want 0 (no cache)", spy.gotCached)
+	}
+	if cc.actualCost != 100 {
+		t.Errorf("actualCost = %d, want 100", cc.actualCost)
 	}
 }
