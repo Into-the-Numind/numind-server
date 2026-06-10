@@ -3969,3 +3969,22 @@ features:
   - 'H1-review (ai 2026-06-10): 并行双 Sonnet reviewer 均 VERDICT=PASS 零 P0/P1。spec: 根因命中/Rule 11 commit 链正确/非 LLM 实体保留且去重/无残留 providerFormOptions importer/provider value=llm_provider.name 对齐后端/label 优先级正确。code: buildProviderFormOptions 去重+空名守卫+merge 顺序正确/computed 跨 fetch 重算/降级一致/TS 无洞/删死常量是对的。处置 P2: [修]测试 option 查询 scope 到供应商 select(按 label)防误配; [修]补 fetch 失败降级测试(只剩 cos/vikingdb/dashvector 无 agnes-ai); [修]注释标明哪个是 Rule 11 复现哪个是回归守卫。'
   - 'H3 (ai 2026-06-10): ndf-done merge→develop(d389619, 已 fetch 独立复核 3 commit + billingMaps 含 buildProviderFormOptions)。隔离 cherry-pick 上 prod: 从当前 prod tag v1.4.9(5b617ae)拉 detached worktree→cherry-pick 仅 fa3a014(2 文件, 干净)→diff v1.4.9..HEAD 恰 2 文件 55+/7-→tag v1.4.10→release.sh prod(build 13s/push 7s/健康)。核验: 实跑容器 image==numind-admin-web:v1.4.10-fa3a014(healthy, 非旧) + 10x burst 全 200 + /health healthy。tag 已推 origin, worktree 已删。修复也在 develop(含 3 测试)。遗留(已记, 未修-本次范围外): UsageRecordsView.vue 的 providerFilterOptions 仍读同一写死常量, 同类 staleness(用量记录按供应商筛选看不到新供应商), 影响低, 可后续 follow-up 同法改实时。'
   blockers: []
+
+- id: pricing-free-label
+  ndf_version: '3.0'
+  description: '客户上报(prod): 某模型的定价规则成本+售价全为 0 时, AI service edit 页计费规则显示「未配置」, 但其实是配置了的免费模型(不扣费)。根因: ServiceEdit billingModeLabel 按哪个价格字段>0 推断计费模式, 全 0 时 fall through 到「未配置」; 而「无规则」case 另有独立模板分支(未找到计费规则)→ 该「未配置」分支只在「规则存在但全 0」时触达, 即免费模型, 标签错。'
+  classification_reason: 'Hotfix(5 条全满足): 无 DB / 无新 API / 无新外部服务 / 影响文件=2(utils/pricing.ts 抽取+ServiceEdit.vue) / 非高风险(纯展示标签, 不动计费数学)。客户 prod bug → Rule 11 复现测试强制。单仓库 numind-admin-web。'
+  last_updated_by: ai-h3-prod-deployed
+  last_updated_at: '2026-06-11T00:08:48+08:00'
+  created_at: '2026-06-11T00:08:48+08:00'
+  completed_at: '2026-06-11T00:08:48+08:00'
+  track: hotfix
+  stage: done
+  repos: [numind-admin-web]
+  branches: {numind-admin-web: fix/pricing-free-label}
+  progress: {total_tasks: 1, completed_tasks: 1, reviewed_tasks: 1}
+  decisions:
+  - 'H1 (ai 2026-06-11): 为可单测, 把 ServiceEdit 的 3 个纯展示 helper(formatPrice/billingModeLabel/billingModeCss)抽到 src/utils/pricing.ts(verbatim, commit1 零行为改变)。修复: billingModeLabel 全 0 return「未配置」→「免费」; billingModeCss 全 0 → pricing-badge--free(新增绿色 badge, ServiceEdit <style> 加 .pricing-badge--free); per-gb 仍 --flat。复现测试 src/utils/__tests__/pricing.spec.ts: 全 0 rule→免费(修前 FAIL 返回未配置)。Gate: 6 测试 pass + eslint 0 + vue-tsc 0。'
+  - 'H1-review (ai 2026-06-11): 双 Sonnet reviewer 均 VERDICT=PASS 零 P0/P1。确认: 抽取 verbatim 行为保留 / Rule 11 commit 链正确(test 在前 fail→fix pass) / 全代码库仅此一处「未配置」/ ServiceEdit 无 dangling import(PricingRule 仍用)。处置 P2: [修]补 billingModeCss(gb)→--flat + formatPrice(gb)→¥/GB 测试覆盖; [修]billingModeCss 加 JSDoc 注明 class 名须对齐 ServiceEdit scoped CSS; [拒-范围外]reviewer 建议 gb→--token 消除 label/css 不一致——会让 --flat 变 dead CSS 且属 pre-existing 装饰性问题, 不在本 bug 范围, 保持 gb→--flat。'
+  - 'H3 (ai 2026-06-11): ndf-done merge→develop(9c004b1, 已独立复核 3 commit + utils/pricing.ts 含 免费/pricing-badge--free)。按 User 要求部署 dev + prod。DEV: release.sh dev(全量 build 33s, dev 久未 build)→实跑 develop-9c004b1 healthy(dev 现含本修复+前 2 修复+develop 全部在途)。PROD: 隔离 cherry-pick 3 commit 到 v1.4.10→diff 恰 3 文件(utils/pricing.ts+test+ServiceEdit)无附带→tag v1.4.11→release.sh prod。核验: 实跑 v1.4.11-0ad60b1 healthy + 直接 curl 线上 ServiceEdit-IHJgJtf0.js 证 含 免费(1)+pricing-badge--free(1)+未配置(0, 已消失) + 10x burst 全 200。tag 已推 origin, worktree 已删。'
+  blockers: []
