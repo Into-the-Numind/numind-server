@@ -3883,3 +3883,27 @@ features:
   decisions:
   - 'H1-H3 (ai 2026-06-10): 改 3 migration(+3 rollback)+1 test。Gate: go build 干净 / go test ./... 79 ok 0 FAIL / golangci-lint(migrations) exit 0 / diff 恰 7 文件无越界。关键: 修复在真实 dev MySQL 8.4 实跑验证——3 个 fixed migration 直灌 dev 库 exit 0 + 幂等 noop(列已存在→already exists; seed WHERE IS NULL 不匹配→0 行改不覆盖已设真实价), 证 1064 语法 bug 已修且可安全重跑(SQLite 单测不执行 prepared-stmt, 必须真库验)。prod 上线前须先 SELECT 核对真实行。'
   blockers: []
+
+- id: fix-provider-create-nan
+  ndf_version: '3.0'
+  description: '客户上报 prod bug(admin user_id=1 今日 22:35 触发 3 次): 点击「新增供应商」页 /ai-providers/new 发出 GET /v1/admin/ai/providers/NaN → 400。根因(nginx referer=/ai-providers/new + prod 日志 + 代码 + git 实证): 路由 ai-providers/new(name AIProviderCreate)是无 :id 参数的独立路由→route.params.id 为 undefined; ProviderEdit.vue 用 route.params.id === "new" 判 isNew→对 undefined 为 false→进入编辑模式 getProviderApi(Number(undefined))=NaN; 连带 Save 走 updateProviderApi(NaN)。自功能首次提交 08ba7d4 起就坏(此前供应商都从 DB/API 直接 seed, 没人从 UI 建过)。后端/数据完全正常(dev+prod 列表均返回正确 id)。对照: ServiceEdit 同写法不坏, 因其用 ai-services/:id/edit, new 走 :id 参数。'
+  classification_reason: 'Hotfix(5 条全满足): 无 DB schema / 无新 API 端点 / 无新外部服务 / 影响文件=1(ProviderEdit.vue, +1 测试) / 非支付权限会员高风险(admin AI 供应商配置)。Micro 排除: 逻辑改动非文案样式。客户 prod bug → Rule 11 复现测试强制(已先提交失败的 test(qa) 复现)。单仓库 numind-admin-web。User 确认 Hotfix。'
+  last_updated_by: ai-h2
+  last_updated_at: '2026-06-10T23:01:55+08:00'
+  created_at: '2026-06-10T23:01:55+08:00'
+  track: hotfix
+  stage: H2
+  repos:
+  - numind-admin-web
+  branches:
+    numind-admin-web: fix/fix-provider-create-nan
+  worktrees:
+    numind-admin-web: /private/tmp/wt-fix-provider-create-nan-numind-admin-web
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1 (ai 2026-06-10): 复现走 Vitest 组件测试(比 Playwright e2e 更确定/不依赖部署/测源码): mount ProviderEdit 于 /ai-providers/new(params.id=undefined)断言 getProviderApi 不被调用——修前 FAIL(被以 NaN 调用 1 次), 修后 PASS。修复 1 行: isNew = !route.params.id || route.params.id === "new"(缺 id 即新增, === "new" 分支保留兜底)。核实修后 providerId=0(非 NaN)/loadData 跳 GET/save 走 createProviderApi/api_key 必填在 create 生效/testConnection 模板 v-if !isNew 不暴露。Gate: 3 测试 pass + eslint(scoped)0 + vue-tsc 0。develop 基线噪声: src/stores/__tests__/agent.spec.ts 因 src/stores/agent.ts 未 track 于 HEAD(并行 agent-configurator feature 孤儿测试)transform 失败, 与本改动零交集。'
+  - 'H1-review (ai 2026-06-10): 并行双 Sonnet reviewer(spec-compliance + code-quality)均 VERDICT=PASS, 零 P0/P1。spec: 根因命中/Rule 11 commit 链(test(qa) 在前 fix 在后)正确/全代码路径核实/姐妹组件审计确认仅 ProviderEdit 中招(ServiceEdit/TemplateEditView/ComplianceRuleForm/TaskEdit 均安全)。code: !route.params.id 健壮/computed 跨导航重算/测试确定。3 个 P2 全修: vi.hoisted 替 wrapper lambda; afterEach unmount 防 watcher 泄漏; 补第三测试覆盖 watch(route.params.id)的 edit→create 导航路径。'
+  blockers: []
