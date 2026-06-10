@@ -14,11 +14,12 @@ features:
     numind-web-v3: /private/tmp/wt-agent-multi-question-numind-web-v3
   progress:
     total_tasks: 6
-    completed_tasks: 0
-    reviewed_tasks: 0
+    completed_tasks: 1
+    reviewed_tasks: 1
   artifacts:
     requirement: .ndf/features/agent-multi-question/requirement.md
   decisions:
+  - 'S4-T1 (ai 2026-06-11, commit cbf0b965): 后端协议结构性迁移→questions 数组。TDD: 写 multi-question Execute + ParsePendingQuestion 测试(RED=undefined struct)→实现→迁移既有 tool/yield/stream/runner 测试到数组形。改 YieldPayload{Questions []YieldQuestion}/InputSchema(questions 1-4)/Execute(per-question 0-or-2-4 容错+>4 clamp+exactly-1 reject+question 文本唯一+label 唯一+header≤12)/stream QuestionPromptPayload{Questions}/persistAndEmitYield 映射全部问题/ParsePendingQuestion(legacy 顶层 question→wrap 单元素)。answer.go buildAnswerMessage + student_query.go synthesizeQuestionPrompt 为 T1 bridge(读 questions[0] 保单问题语义+读回 T1 所写, T2/T3 升级)。双 Sonnet reviewer 均 PASS_WITH_CONCERNS, 0 P0。P1(spec)=synthesizeQuestionPrompt 未 bridge 会丢新格式 reload→已加 ParsePendingQuestion bridge。P1(code)=buildAnswerMessage 仅回显 Q[0]→**T2 范围**(answer request 仍单问题, 多问题答案在 T2+前端前不可达, 不 deploy 中间态, 故不 gate flag, T2 修)。P2 已修: ParsePendingQuestion null/{}/空数组/legacy-no-question 边界测试 + 多问题 partial-clamp 测试。P3: 删 askUserQuestionItem 无意义 omitempty。go test agent 全绿 + vet + golangci-lint clean。'
   - 'S4 启动 (ai 2026-06-10, fresh session): 进入 S4 编码。6 task 严格依赖链 T1(协议)→{T2 answer,T3 快照}→T4(前端类型)→T5(导航组件)→T6(联调)，每 task TDD+双 Sonnet reviewer。锁定协议契约: YieldPayload{Questions []YieldQuestion}, YieldQuestion{Question,Header,Options []YieldOption,MultiSelect}; 旧单问题 pending_question_json 读取兼容(probe 探测 legacy 顶层 question→synthesize questions=[单个])。answer 协议 AnswerRequest{Answers map[questionText]AnswerItem{Selected,FreeText}}, 按 pending 问题顺序解析+构建 LLM 消息(照搬 CC: 用户已回答你的问题:「Q」=A…)。前后端协议须一致, 不可只部署一端。止步 S5(本 session 范围=S4 实现+验证), S6 ndf-done/dev 部署待 user。'
   - 'S0-S3 (2026-06-10): R1 走查从截图发现根本设计缺陷(一工具硬扛开放收集+决策选择)，读 Claude Code 源码得标准答案=questions 数组单工具。用户拍板照搬+现在做+跨仓库。蓝图 requirement.md 含 6-task 分解(T1 协议→T2 answer→T3 快照→T4 前端类型→T5 多问题导航组件→T6 联调)。因当前 session context 已极长(8 feature 闭环)，用户拍板换 fresh session 做 S4 保质量。worktree 已建+requirement 已 commit feature 分支+blueprint 持久化 develop docs+memory project_agent_multi_question_model。'
 - id: ask-question-options-tolerant
