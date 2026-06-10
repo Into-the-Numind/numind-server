@@ -1142,6 +1142,11 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 					"agent_run_id", run.ID, "error", pErr)
 				// Non-fatal: continue to drive state machine to waiting_for_user_choice.
 			}
+			// 2b. HW-33: persist the pre-yield transcript so the resumed agent
+			// retains the work it did before pausing (the non-stream Run path is
+			// also the answer endpoint's re-run path, so a second yield here must
+			// keep prior context too).
+			r.persistYieldTranscript(attemptCtx, run.ID, req.Input)
 			log.Infow("AgentRunner.Run yield: ask_user_question paused run",
 				"agent_run_id", run.ID,
 				"payload_len", len(payloadJSON),

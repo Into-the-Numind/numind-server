@@ -587,6 +587,32 @@ func (s *StudentRunService) RunStream(ctx context.Context, userID uint, req Crea
 	return s.runner.RunStream(ctx, runReq, runID, ch)
 }
 
+// turnsToHistoryMessages converts persisted [{role,content}] transcript turns
+// into user/assistant schema.Messages (tool_group / system roles dropped — v1
+// history is text-only). Shared by loadSessionHistory (multi-run) and the
+// resume path (a single waiting run's pre-yield transcript, HW-33).
+func turnsToHistoryMessages(turns []map[string]any) []*schema.Message {
+	out := make([]*schema.Message, 0, len(turns))
+	for _, turn := range turns {
+		content := strings.TrimSpace(historyTurnText(turn["content"]))
+		if content == "" {
+			continue
+		}
+		role, _ := turn["role"].(string)
+		var sr schema.RoleType
+		switch role {
+		case "user":
+			sr = schema.User
+		case "assistant":
+			sr = schema.Assistant
+		default:
+			continue
+		}
+		out = append(out, &schema.Message{Role: sr, Content: content})
+	}
+	return out
+}
+
 // loadSessionHistory loads prior completed turns of the same session and converts
 // them into chronological []*schema.Message (user/assistant text pairs) so the
 // runner can seed multi-turn context. Without this, every turn was a fresh
@@ -631,23 +657,9 @@ func (s *StudentRunService) loadSessionHistory(ctx context.Context, sessionID st
 		if uerr := json.Unmarshal(r.Messages, &turns); uerr != nil {
 			continue // skip a malformed row rather than fail the whole load
 		}
-		for _, turn := range turns {
-			content := strings.TrimSpace(historyTurnText(turn["content"]))
-			if content == "" {
-				continue
-			}
-			role, _ := turn["role"].(string)
-			var sr schema.RoleType
-			switch role {
-			case "user":
-				sr = schema.User
-			case "assistant":
-				sr = schema.Assistant
-			default:
-				continue // ignore tool/system/unknown roles in v1 history
-			}
-			msgs = append(msgs, &schema.Message{Role: sr, Content: content})
-			total += len(content)
+		for _, m := range turnsToHistoryMessages(turns) {
+			msgs = append(msgs, m)
+			total += len(m.Content)
 		}
 	}
 
