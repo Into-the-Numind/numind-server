@@ -1,4 +1,4 @@
-package service
+package ingest
 
 // SplitterAdapter 切分器适配器
 // 用于兼容旧的 MarkdownSplitter 接口和新的混合切分器

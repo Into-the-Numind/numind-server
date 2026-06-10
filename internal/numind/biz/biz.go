@@ -48,6 +48,7 @@ import (
 	"numind-server/internal/pkg/pricing"
 	redispkg "numind-server/internal/pkg/redis"
 	radapter "numind-server/internal/pkg/retrieval/adapter"
+	ingest "numind-server/internal/pkg/retrieval/ingest"
 	"numind-server/internal/pkg/retrieval/port"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -218,14 +219,14 @@ func NewBiz(ds store.IStore) *biz {
 	// Initialize Pipeline Components
 	parser := docparser.NewDocumentParser()
 	// 使用增强版切分器（支持中文分词、语义边界、100字符重叠、Markdown分级）
-	splitter := salesragservice.NewCompatibilitySplitter(salesragservice.SplitterConfig{
+	splitter := ingest.NewCompatibilitySplitter(ingest.SplitterConfig{
 		MaxChunkSize: 1000,
 		MinChunkSize: 200,
 	})
-	tagger := salesragservice.NewContentTagger()
+	tagger := ingest.NewContentTagger()
 
 	// Initialize Ingestion Pipeline (托管模式下不需要传 embedder)
-	pipeline := salesragservice.NewIngestionPipeline(parser, splitter, tagger, b.ds.KnowledgeDocuments(), vStore, b.ds.KnowledgeChunks())
+	pipeline := ingest.NewIngestionPipeline(parser, splitter, tagger, b.ds.KnowledgeDocuments(), vStore, b.ds.KnowledgeChunks())
 
 	// 业务逻辑实现（使用 LLMRouter）
 	salesRAGSvc := salesragservice.NewSalesRAGService(vStore, llmRouter)
