@@ -3901,11 +3901,11 @@ features:
   ndf_version: '3.0'
   description: '客户上报 prod bug(admin user_id=1 今日 22:35 触发 3 次): 点击「新增供应商」页 /ai-providers/new 发出 GET /v1/admin/ai/providers/NaN → 400。根因(nginx referer=/ai-providers/new + prod 日志 + 代码 + git 实证): 路由 ai-providers/new(name AIProviderCreate)是无 :id 参数的独立路由→route.params.id 为 undefined; ProviderEdit.vue 用 route.params.id === "new" 判 isNew→对 undefined 为 false→进入编辑模式 getProviderApi(Number(undefined))=NaN; 连带 Save 走 updateProviderApi(NaN)。自功能首次提交 08ba7d4 起就坏(此前供应商都从 DB/API 直接 seed, 没人从 UI 建过)。后端/数据完全正常(dev+prod 列表均返回正确 id)。对照: ServiceEdit 同写法不坏, 因其用 ai-services/:id/edit, new 走 :id 参数。'
   classification_reason: 'Hotfix(5 条全满足): 无 DB schema / 无新 API 端点 / 无新外部服务 / 影响文件=1(ProviderEdit.vue, +1 测试) / 非支付权限会员高风险(admin AI 供应商配置)。Micro 排除: 逻辑改动非文案样式。客户 prod bug → Rule 11 复现测试强制(已先提交失败的 test(qa) 复现)。单仓库 numind-admin-web。User 确认 Hotfix。'
-  last_updated_by: ai-h3
+  last_updated_by: ai-h3-prod-deployed
   last_updated_at: '2026-06-10T23:01:55+08:00'
   created_at: '2026-06-10T23:01:55+08:00'
   track: hotfix
-  stage: H3
+  stage: done
   repos:
   - numind-admin-web
   branches:
@@ -3920,4 +3920,6 @@ features:
   - 'H1 (ai 2026-06-10): 复现走 Vitest 组件测试(比 Playwright e2e 更确定/不依赖部署/测源码): mount ProviderEdit 于 /ai-providers/new(params.id=undefined)断言 getProviderApi 不被调用——修前 FAIL(被以 NaN 调用 1 次), 修后 PASS。修复 1 行: isNew = !route.params.id || route.params.id === "new"(缺 id 即新增, === "new" 分支保留兜底)。核实修后 providerId=0(非 NaN)/loadData 跳 GET/save 走 createProviderApi/api_key 必填在 create 生效/testConnection 模板 v-if !isNew 不暴露。Gate: 3 测试 pass + eslint(scoped)0 + vue-tsc 0。develop 基线噪声: src/stores/__tests__/agent.spec.ts 因 src/stores/agent.ts 未 track 于 HEAD(并行 agent-configurator feature 孤儿测试)transform 失败, 与本改动零交集。'
   - 'H1-review (ai 2026-06-10): 并行双 Sonnet reviewer(spec-compliance + code-quality)均 VERDICT=PASS, 零 P0/P1。spec: 根因命中/Rule 11 commit 链(test(qa) 在前 fix 在后)正确/全代码路径核实/姐妹组件审计确认仅 ProviderEdit 中招(ServiceEdit/TemplateEditView/ComplianceRuleForm/TaskEdit 均安全)。code: !route.params.id 健壮/computed 跨导航重算/测试确定。3 个 P2 全修: vi.hoisted 替 wrapper lambda; afterEach unmount 防 watcher 泄漏; 补第三测试覆盖 watch(route.params.id)的 edit→create 导航路径。'
   - 'H3-merge (ai 2026-06-10): ndf-done 原子完成 — fix/fix-provider-create-nan→develop(merge 3254b81, 已 fetch 独立复核 origin/develop HEAD==3254b81 含全 3 commit d9fce95/900e9b7/e222323, ProviderEdit.vue:27 为修复版, 孤儿 agent.spec.ts 原样保留未被误删), worktree+本地分支已删。代码已在 develop。未部署: 等 User /deploy-dev admin 浏览器验收(新增供应商页应出空表单不再报错), 验收过再 tag prod。单仓库纯前端无 migration。'
+  - 'H3-prod (ai 2026-06-10): 隔离 cherry-pick 上 prod(只我这一行修复)。从 prod tag v1.4.8(94fe2a0)拉 detached worktree→cherry-pick 仅 900e9b7(ProviderEdit.vue, 干净无冲突)→diff v1.4.8..HEAD 恰 1 文件 4+/1-(无附带 develop 在途 agent-mode/compliance 代码)→tag v1.4.9。用 v1.4.8 自带 cicd 脚本(缺 TCR push-guard, 故靠后置实跑核验兜底)。release.sh prod: build 27s/push 7s/deploy 健康。关键核验(不信 Release complete): 实跑容器 image==numind-admin-web:v1.4.9-5b617ae(healthy, 非旧 94fe2a0) + 直接 curl 线上 ProviderEdit-88joxE4c.js 证 isNew 逻辑已是 !V.params.id||V.params.id==="new"(修复版真服务, 非 silent-old) + 10x burst 全 200 无 502 + /health healthy。tag v1.4.9 已推 origin, release worktree 已删。修复也在 develop(3254b81, 下次完整发版自带, 含 3 个回归测试)。'
+  completed_at: '2026-06-10T23:17:52+08:00'
   blockers: []
