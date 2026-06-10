@@ -1,5 +1,19 @@
 schema_version: '2.0'
 features:
+- id: free-model-member-only
+  track: standard
+  description: '0 价模型（agnes/有数AI）仅限会员（sub 或 trial 在期）使用且零扣费；免费用户拒绝（ErrMembershipRequired）。per-call 语义：判定单位=单次被计费拦截的 AI 调用，看该调用模型 pricing_rule 是否全 0；0价+会员→SkipDeduction 跳过预扣不扣分，0价+免费用户→拒绝；收费调用照常预扣/拦截（SalesRAG 中途收费子调用仍拦"积分不足"）。键：pricing.IsFreeModel(查 pricing_rule 全0，查不到≠免费)+membership.GetMembershipState+复用 PreCheckResult.SkipDeduction。'
+  classification_reason: 'Standard：高风险计费/权限逻辑（会员判定+跳过扣费+余额门槛放宽）+影响文件>3。无 DB schema/新 API/新外部服务。'
+  status: active
+  stage: S0
+  repos:
+    numind-server: feature/free-model-member-only
+  worktrees:
+    numind-server: /private/tmp/wt-free-model-member-only-numind-server
+  artifacts:
+    requirement: .ndf/features/free-model-member-only/requirement.md
+  decisions:
+  - 'S0 (ai 2026-06-11): 用户授权全流程自主到 dev 部署。Triage=Standard（高风险计费/权限）。per-call 语义+免费用户=!(SubActive||TrialActive) 已与用户逐字确认。embed/rerank 计费路径列为 S2 待查项（取证示只有 chat 走 ContextBudgetCredits 预扣）。S7 prod 不在授权内。'
 - id: agent-multi-question
   track: standard
   description: 'R1 走查拍板：ask_user_question 重构为 Claude Code 式 questions 数组（1-4 独立问题/每问题 0 或 2-4 选项+自动"其他"/逐个问标签栏翻阅修改/Review 提交）。根因：截图暴露 agent 把多维度塞进一问题的选项→元选择用户选了没用。参考源码 /Users/zhiyuchen/Downloads/ClaudeCode/src/tools/AskUserQuestionTool/。蓝图 docs/agent-mode/multi-question-blueprint.md。改造：后端 YieldPayload/Execute/answer 协议/快照 + 前端类型/多问题导航组件(全新)/store。'
