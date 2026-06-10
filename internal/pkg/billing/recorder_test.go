@@ -293,6 +293,10 @@ func (s *spyCalculator) CalculateCost(_ context.Context, serviceType, provider, 
 	return s.returnCost, s.returnError
 }
 
+func (s *spyCalculator) IsFreeModel(_ context.Context, _, _, _ string) (bool, error) {
+	return false, nil
+}
+
 // CalculateCostWithCache satisfies pricing.ICalculator. It delegates to
 // CalculateCost (cached arg ignored) so existing assertions on the recorded
 // 5-tuple of args continue to hold.
