@@ -216,3 +216,41 @@ func TestServiceIsActiveMember(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, ok)
 }
+
+// AC2 end-to-end: a trial member whose trial credits are exhausted (0) still
+// gets SkipDeduction on a free model (member judged by validity, not balance).
+func TestCheckAndEstimateBudget_FreeModel_TrialMemberZeroCredits_SkipsDeduction(t *testing.T) {
+	svc, db := buildFMService(t)
+	uid := uint(8008)
+	now := time.Now()
+	seedPackagesAndAccount(t, db, uid, []seedPackage{{
+		Type: model.CreditTypeTrial, RemainCredits: 0, ExpiresAt: now.AddDate(0, 0, 3),
+	}})
+	user := &model.User{}
+	user.ID = uid
+
+	pre, err := svc.CheckAndEstimateBudget(context.Background(), user, credit.BudgetPrecheckInput{
+		Operation: "chatbot_chat", Provider: fmProvider, Model: fmFreeModel,
+		EstimatedPromptTokens: 1000, EstimatedCompletionTokens: 500,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, pre)
+	assert.True(t, pre.SkipDeduction, "trial member with 0 credits + free model must skip (AC2)")
+}
+
+// R2/default-path regression (AC4): a paid model passes through the gate to
+// normal billing; a 0-balance non-member is blocked with ErrInsufficientCredits.
+func TestCheckAndEstimate_PaidModel_ZeroBalance_Insufficient(t *testing.T) {
+	svc, db := buildFMService(t)
+	uid := uint(8009)
+	seedPackagesAndAccount(t, db, uid, nil) // non-member, 0 balance
+	seedCoefficient(t, db, fmProvider, fmPaidModel, "sop_run", 1.5, 0.5, 0.2, 1, true)
+	user := &model.User{}
+	user.ID = uid
+
+	_, err := svc.CheckAndEstimate(context.Background(), user, credit.OpSopRun, credit.EstimationInput{
+		PromptChars: 1000, Model: fmPaidModel, Provider: fmProvider,
+	})
+	require.Error(t, err)
+	require.True(t, errors.Is(err, credit.ErrInsufficientCredits), "got %v", err)
+}

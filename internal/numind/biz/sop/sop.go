@@ -868,13 +868,18 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 			if err != nil {
 				return wrapCreditError(err, pre)
 			}
-			// Audit P2#1 cleanup: SkipDeduction is always false post legacy-deprecation (T1).
-			// The previous `if !pre.SkipDeduction { ... }` wrapper was dead code; inlined.
-			idempKey := fmt.Sprintf("sop_run:%d:%d", runID, nodeID)
-			rsv, err = b.creditSvc.Reserve(ctx, user, credit.OpSopRun,
-				pre.EstimatedCredits, pre.CoefficientID, &idempKey)
-			if err != nil {
-				return err // ErrInsufficientCredits race 等
+			// free-model-member-only: a 0-priced model for an active member sets
+			// SkipDeduction=true with EstimatedCredits=0. Reserve rejects estimated<=0,
+			// so we MUST skip the reservation entirely (zero deduction). This restores
+			// the guard removed by the prior "Audit P2#1 cleanup" — SkipDeduction is no
+			// longer always-false.
+			if !pre.SkipDeduction {
+				idempKey := fmt.Sprintf("sop_run:%d:%d", runID, nodeID)
+				rsv, err = b.creditSvc.Reserve(ctx, user, credit.OpSopRun,
+					pre.EstimatedCredits, pre.CoefficientID, &idempKey)
+				if err != nil {
+					return err // ErrInsufficientCredits race 等
+				}
 			}
 		}
 	}
@@ -1619,13 +1624,16 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 			if err != nil {
 				return wrapCreditError(err, pre)
 			}
-			// Audit P2#1 cleanup: SkipDeduction is always false post legacy-deprecation (T1).
-			// The previous `if !pre.SkipDeduction { ... }` wrapper was dead code; inlined.
-			idempKey := fmt.Sprintf("sop_chat:%d:%d", runID, userMsg.Seq)
-			chatRsv, err = b.creditSvc.Reserve(ctx, user, credit.OpSopChat,
-				pre.EstimatedCredits, pre.CoefficientID, &idempKey)
-			if err != nil {
-				return err
+			// free-model-member-only: skip Reserve when SkipDeduction (0-priced model
+			// + active member, EstimatedCredits=0). Restores the guard removed by the
+			// prior "Audit P2#1 cleanup".
+			if !pre.SkipDeduction {
+				idempKey := fmt.Sprintf("sop_chat:%d:%d", runID, userMsg.Seq)
+				chatRsv, err = b.creditSvc.Reserve(ctx, user, credit.OpSopChat,
+					pre.EstimatedCredits, pre.CoefficientID, &idempKey)
+				if err != nil {
+					return err
+				}
 			}
 		}
 	}
