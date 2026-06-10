@@ -70,6 +70,13 @@ type ContextBudgetCreditService interface {
 
 	// Refund fully refunds an existing reservation. Idempotent.
 	Refund(ctx context.Context, reservationID uint64, reason string) error
+
+	// EnforceModelMembership returns errno.ErrModelMembershipOnly when
+	// (provider, model) is a 0-priced model AND userID is NOT a member; nil
+	// otherwise. The middleware calls this for every chat request — independent
+	// of ContextFragments and of Policy.ChargeUser — so a non-member can never
+	// reach a member-only free model (free-model-member-only C7/AC3).
+	EnforceModelMembership(ctx context.Context, userID uint, provider, model string) error
 }
 
 // ----------------------------------------------------------------------------
@@ -391,6 +398,25 @@ func ContextBudgetCredits(deps Deps) Middleware {
 			chatReq, ok := asChatReq(req)
 			if !ok {
 				return next(ctx, route, req)
+			}
+
+			// Free-model member gate (free-model-member-only C7/AC3): a 0-priced model
+			// is member-only. Enforce for EVERY chat request, independent of
+			// ContextFragments (covers no-KB chats) and of Policy.ChargeUser, so a
+			// non-member can never reach a free model on any chat path.
+			if deps.CreditService != nil {
+				gateUserID := uint(0)
+				if bc := billing.FromContext(ctx); bc != nil {
+					gateUserID = bc.UserID
+				}
+				if gateUserID == 0 {
+					gateUserID, _ = ctx.Value(ctxKeyUserID{}).(uint)
+				}
+				if gateUserID != 0 {
+					if err := deps.CreditService.EnforceModelMembership(ctx, gateUserID, route.Provider.Name, route.ServiceKey); err != nil {
+						return nil, fmt.Errorf("ContextBudgetCredits: %w", err)
+					}
+				}
 			}
 
 			// bill-only mode (agent-mode-billing): the agent manages its own

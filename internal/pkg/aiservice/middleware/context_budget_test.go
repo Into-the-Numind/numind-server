@@ -67,6 +67,7 @@ type mockCreditService struct {
 	reserveErr    error
 	finalizeErr   error
 	refundErr     error
+	enforceErr    error
 	reserveCalls  int
 	finalizeCalls int
 	refundCalls   int
@@ -83,6 +84,10 @@ func (m *mockCreditService) LoadUser(_ context.Context, _ uint) (*model.User, er
 
 func (m *mockCreditService) CheckAndEstimateBudget(_ context.Context, _ *model.User, _ credit.BudgetPrecheckInput) (*credit.PreCheckResult, error) {
 	return m.checkResult, m.checkErr
+}
+
+func (m *mockCreditService) EnforceModelMembership(context.Context, uint, string, string) error {
+	return m.enforceErr
 }
 
 func (m *mockCreditService) ReserveBudget(_ context.Context, _ *model.User, _ credit.BudgetReservationInput) (*credit.Reservation, error) {
