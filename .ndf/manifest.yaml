@@ -80,8 +80,8 @@ features:
     numind-server: /private/tmp/wt-retrieval-base-numind-server
   progress:
     total_tasks: 12
-    completed_tasks: 7
-    reviewed_tasks: 7
+    completed_tasks: 8
+    reviewed_tasks: 8
   created_at: '2026-06-10'
   decisions:
   - 'S0 (user 2026-06-10): 拍板正式启动。已定 4 决策——(1) scope: 底座必须明确范围, "全部启用文档"作显式可选(agent 用), 没选则提示用户去选(不静默翻全部/不给默认KB); chatbot+salesrag 先选、agent 可全选。(2) SOP 本批不接(后续 feature, 仅留口)。(3) 节奏=本批 P0+P1+P2; salesrag 收口(P5)放最后单独 feature。(4) 复用全局入口+各通道自留"答", 不合并四路。独立待办: strategy_service.go:43 硬编码路径 bug 单独排查。'
