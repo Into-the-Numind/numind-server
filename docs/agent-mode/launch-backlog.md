@@ -164,6 +164,8 @@
 | HW-31 | vision 工具（tool_annotate_image 等经包级 chatFn 直调 aiservice.Chat）usage 不进 usageStore → vision token 对内存护栏透明（真实计费不受影响） | BUG-1 review 发现（pre-existing） | P2 | `open` |
 | BUG-2 | **UserSessionRule 拦死沙箱执行工具**：open-tools(06-01)×permission-backdoor-removal(06-02) 两 feature 对撞，run_python/bash_exec 被"可能修改你的数据"全拒 → 文档生成管线（docx/xlsx/pptx）全灭 | 预探针 run #115 | P0（上线阻断） | `closed`——hotfix permission-allow-sandboxed-exec（TDD+双 review 从严+沙箱兜底实证） |
 | HW-32 | 工具注册 registry 无重名 duplicate-check：未来 MCP/CLI factory 实装后，重名工具可静默覆盖平台工具并继承沙箱豁免（当前单 factory 不可利用） | BUG-2 review 发现 | P2（MCP 实装前必修） | `open` |
+| BUG-3 | **流式 yield 杀 run + 空転录**：多步 ReAct 中 ask_user_question 的 yield 从 einoAgent.Stream() 错误冒出，streamErr 分支无检查 → model_error"服务暂时不可用"+messages 空（刷新会话消失）。BLK-4 旧修复未盖此路径——**"已关闭"红线被 R1 实战证伪** | R1 现场用户上报（run #117） | P0（上线阻断） | `closed`——hotfix stream-yield-errpath（行为级 TDD+双 review；dev run #118 实弹验证 waiting+提问按方法论执行）；通用流错误现走 finalizeRun 持久化用户 turn |
+| OBS-3 | GET run 详情 API 对 waiting 态返回 status="running"（DB 实为 terminated/waiting）——前端映射约定待 R2 核对是否引起 UI 歧义 | run #118 | P2 | `verify` |
 | OBS-1 | dev 上 ali-dashscope qwen-turbo 辅助调用 403 三连退款（free tier 耗尽，已知 PLT-3），fail-open 不致命但拖慢每轮+日志噪音（run #114：67 笔 reservation 中 40 笔是 403 退款）；建议 dev 把相关 task_profile 路由迁离 ali | run #113/#114 | P2（dev only，R1 前顺手修可提速） | `open` |
 | OBS-2 | run 详情 API `credits_used` 恒 0（真实 reconcile 正常，聚合显示未接线）；create 响应 `estimated_credits_min/max` 也是 0-0 | run #114 | P2 | `open` |
 
@@ -171,3 +173,4 @@
 
 - 2026-06-10 Phase 0 创建：合流 prod-readiness-test-plan / wave1 / wave2 / runbook / multimodal-fallback / manifest follow-ups；红线复核 6/6 关闭（2 个残留子项→HW-4/HW-5）；dev 探测无阻断。
 - 2026-06-10 R0 完成（§0 裁决补丁）；WK-1 合并；CAP-1 预探针发现并修复 BUG-1（同日 hotfix 上 dev）。
+- 2026-06-10 R1 进行中：预探针抓 BUG-2（权限拦沙箱工具）、现场实战抓 BUG-3（流式 yield 杀 run）——均当日 TDD+双 review+部署+实弹复验闭环。R1 配置端走查收 D-2~D-8 八条裁决（见 design-baseline 更新）。
