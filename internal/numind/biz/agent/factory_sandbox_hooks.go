@@ -202,7 +202,15 @@ func (m *SandboxHookManager) postToolCall(ctx context.Context, t einotool.BaseTo
 // with the tools that actually call sandboxSessionForCurrentCall — currently
 // bash_exec and run_python. Adding a new sandbox-using tool means adding it
 // here AND making it surface a friendly soft error when the session is nil.
-func toolNeedsSandbox(toolName string) bool {
+func toolNeedsSandbox(toolName string) bool { return IsSandboxIsolatedExecTool(toolName) }
+
+// IsSandboxIsolatedExecTool reports whether toolName is an exec tool whose
+// entire execution happens inside a dedicated sandbox container (borrowed
+// exclusively from the warm pool per call, destroyed on return — never shared,
+// never reused). Single source of truth shared by the sandbox hook routing
+// (toolNeedsSandbox) and the permission layer's UserSessionRule exemption —
+// keep additions here so both stay in sync.
+func IsSandboxIsolatedExecTool(toolName string) bool {
 	switch toolName {
 	case "bash_exec", "run_python":
 		return true
