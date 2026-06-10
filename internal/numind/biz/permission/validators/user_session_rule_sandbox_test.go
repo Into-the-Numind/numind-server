@@ -28,5 +28,24 @@ func TestUserSessionRule_SandboxedExecTools_Passthrough(t *testing.T) {
 			t.Errorf("%s: want passthrough (sandbox-isolated exec), got %q (msg=%q)",
 				name, got.Behavior, got.Message)
 		}
+		if got.DecisionReason != permission.DecisionReasonSandboxOverride {
+			t.Errorf("%s: want auditable reason %q, got %q",
+				name, permission.DecisionReasonSandboxOverride, got.DecisionReason)
+		}
+	}
+}
+
+// Map lookup is exact-match: case variants and empty names are NOT exempt.
+func TestUserSessionRule_NonExactNames_StillDenied(t *testing.T) {
+	v := NewUserSessionRule()
+	for _, name := range []string{"Bash_Exec", "RUN_PYTHON", "Run_Python", ""} {
+		req := permission.PermissionRequest{
+			Tool:      newFakeDestructiveTool(name),
+			InputJSON: `{}`,
+		}
+		got := v.Validate(context.Background(), req)
+		if got.Behavior != permission.BehaviorDeny {
+			t.Errorf("%q: destructive tool with non-exact name must stay denied, got %q", name, got.Behavior)
+		}
 	}
 }
