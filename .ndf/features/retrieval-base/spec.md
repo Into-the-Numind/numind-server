@@ -164,7 +164,7 @@ salesrag 的 **opinion 通道** = 在第二个 scope 上再调一次 `Retrieve`�
 - 落点：`retrieval`（或 salesrag）包内 `*_recall_eval_internal_test.go`，`//go:build integration`，照 `dashvector_eval_internal_test.go` 复刻（已有 Recall@k+MRR+延迟逻辑），改连 `adapter.NewSQLiteVecStore`。
 - fixture：`testdata/`（新建）放 30-50 条 `query → expected chunk_ids`（JSONL/TSV）。**取代**原硬编码失效绝对路径。
 - 标注数据：从 salesrag 会话 / agent_run 历史采样真实 query → AI 出 expected chunk_ids 初稿 → 创始人复核（关键人工依赖）。
-- 指标：Recall@k、MRR（确定性，纯算术）。LLM-judge faithfulness/context-relevance 列为 P0 可选第二层（本批先做确定性层）。
+- 指标：Recall@k、MRR（确定性）**+ exact-match golden 模式**：改前 top-K **有序 chunk_id 序列**存 golden fixture，改后 `reflect.DeepEqual` 比对——验证 I1"逐位一致"的唯一可靠手段（Recall@k 只验 document 命中、验不了有序 chunk 全集相等）。LLM-judge faithfulness/context-relevance 为可选第二层。
 - 用途：① P1 后核 salesrag 逐位一致；② P2 后核 chatbot 指标提升不退化。
 
 ---

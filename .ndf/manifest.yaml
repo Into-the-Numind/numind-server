@@ -16,7 +16,7 @@ features:
 - id: retrieval-base
   ndf_version: '3.0'
   track: standard
-  stage: S2
+  stage: S3
   status: active
   description: '知识库统一检索底座第一批（P0+P1+P2）：把检索抽成领域无关通用底座 internal/pkg/retrieval（domain/port/ingest/retrieve/adapter），四通道（SOP/chatbot/salesrag/agent）共用一套检索管线（query 改写→混合检索→重排→打分 chunk），"答"各通道自拼。本批=P0 评估 harness(Recall@k/MRR 标 30-50 题做安全网)+P1 抽骨架(迁通用 domain/port + Retrieve()→[]chunk 出口 + ingest, 不动 salesrag strategy/opinion/prompt)+P2 迁 chatbot/agent(chatbot 删裸检索补 grounding/重排/query改写/importance按score; agent kb_search 改原始片段出口修双重LLM)。完整 6 阶段愿景+可行性见 proposals/retrieval-base-unification-proposal.md。'
   classification_reason: 'Standard（不可降级）：影响文件 >3（新建 internal/pkg/retrieval 包 + 拆 salesrag/domain 跨包改名 chatbot/agent/knowledgebase + 迁 ingest/retrieve + 评估）；高风险（触及 chatbot/agent 用户可见回答路径，为 salesrag 收入路径收口打地基）。无 DB schema 变更/无新 API/无新外部服务（混合检索 FTS5+重嵌在后续 feature）。'
@@ -25,13 +25,14 @@ features:
   worktrees:
     numind-server: /private/tmp/wt-retrieval-base-numind-server
   progress:
-    total_tasks: 0
+    total_tasks: 12
     completed_tasks: 0
     reviewed_tasks: 0
   created_at: '2026-06-10'
   decisions:
   - 'S0 (user 2026-06-10): 拍板正式启动。已定 4 决策——(1) scope: 底座必须明确范围, "全部启用文档"作显式可选(agent 用), 没选则提示用户去选(不静默翻全部/不给默认KB); chatbot+salesrag 先选、agent 可全选。(2) SOP 本批不接(后续 feature, 仅留口)。(3) 节奏=本批 P0+P1+P2; salesrag 收口(P5)放最后单独 feature。(4) 复用全局入口+各通道自留"答", 不合并四路。独立待办: strategy_service.go:43 硬编码路径 bug 单独排查。'
   - 'S1-S2 (ai 2026-06-10): S1=已提交提案(proposals/retrieval-base-unification-proposal.md)承担。S2 技术设计 .ndf/features/retrieval-base/spec.md 完成，Sonnet S2 Gate 2 P1(opinion query 共享破 I1 / factory_platform.go 遗漏)+5 P2 全补齐(PrewrittenQueries 复用改写保逐位一致 / agent factory 签名 / splitter 5 文件 / docStore 注入 / 测试随迁 / chatMode=free)。grep 核实 domain 拆包仅牵动 chatbot，比提案估计小。'
+  - 'S3 (ai 2026-06-10): 任务计划 .ndf/features/retrieval-base/plan.md（12 task：P0×2 / P1×7 Tier4 串行 / P2×2 / S5×1）。Sonnet S3 Gate 2 P0(eval harness 只有 Recall@k 验不了逐位一致 → 加 exact-match golden 模式；chatbot grounding 缺持久回归 → 加 BuildChatContextFragments unit test)+3 P1(中间态编译 → MOVE+同 task 更新 consumer 保每步全仓库编译；T1.2 漏 18 个 port consumer；opinion 并行改串行申报结构变更)+2 P2(测试分拆/ingestion.go 死代码)全补齐。设计阶段 S0-S3 完成，待 S4 编码（依赖创始人 P0 标注集）。'
   blockers: []
 - id: budget-tracker-token-units
   track: hotfix
