@@ -92,12 +92,13 @@ func (a *aiserviceAdapter) WithTools(tools []*schema.ToolInfo) (einomodel.ToolCa
 	cloned := make([]*schema.ToolInfo, len(tools))
 	copy(cloned, tools)
 	return &aiserviceAdapter{
-		modelName:    a.modelName,
-		taskID:       a.taskID,
-		tools:        cloned,
-		systemPrompt: a.systemPrompt,
-		usageStore:   a.usageStore, // shared pointer — safe per-run isolation
-		compactor:    a.compactor,  // shared per-Run state (consecutiveFailures 等)
+		modelName:       a.modelName,
+		taskID:          a.taskID,
+		tools:           cloned,
+		systemPrompt:    a.systemPrompt,
+		usageStore:      a.usageStore,      // shared pointer — safe per-run isolation
+		compactor:       a.compactor,       // shared per-Run state (consecutiveFailures 等)
+		maxOutputTokens: a.maxOutputTokens, // resolved once at construction; immutable
 	}, nil
 }
 
@@ -252,6 +253,12 @@ func (a *aiserviceAdapter) convertToAiserviceRequest(in []*schema.Message) aiser
 	}
 	if a.modelName != "" {
 		req.ModelOverride = a.modelName
+	}
+	// Explicit output cap so a thinking model always has room to finish its tool
+	// call (run 133 truncation). 0 → leave unset (provider default). Resolved once
+	// at construction from the model's capability_json (see agentMaxOutputTokens).
+	if a.maxOutputTokens > 0 {
+		req.MaxTokens = a.maxOutputTokens
 	}
 	// Convert bound Eino ToolInfo → aiservice.Tool for function-calling.
 	if len(a.tools) > 0 {

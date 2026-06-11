@@ -439,6 +439,9 @@ func (r *agentRunner) RunStream(
 		systemPrompt: req.SystemPrompt,
 		// agent-mode-billing T6: shared callID→Usage store (MaxCredits via budgetgate).
 		usageStore: r.adapterUsageStore(),
+		// Explicit output cap so a thinking model never truncates its trailing tool
+		// call at the provider default (dev run 133). Resolved once from capability.
+		maxOutputTokens: agentMaxOutputTokens(queryCtx),
 	}
 	if useCompactV2 {
 		ctxWindow := 0

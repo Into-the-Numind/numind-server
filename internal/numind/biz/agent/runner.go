@@ -877,6 +877,9 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		// agent-mode-billing T6: shared callID→Usage store so budgetgate's
 		// WithUsageLookup sees real token counts (MaxCredits). nil-safe via helper.
 		usageStore: r.adapterUsageStore(),
+		// Explicit output cap so the resume path's thinking model never truncates a
+		// trailing tool call at the provider default (dev run 133).
+		maxOutputTokens: agentMaxOutputTokens(queryCtx),
 	}
 	// V1.5 v2-compact-adapter-integration — V2 compact 接入 Eino per-ReAct-round
 	// LLM 调用层。useCompactV2 true 时注入 compactor；nil → adapter.Generate 中所有
