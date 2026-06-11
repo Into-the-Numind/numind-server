@@ -5,18 +5,22 @@ features:
   description: 'agnes-2.0-flash(0价会员专属模型)无思考模式。根因：dmxapi 适配器 oaiChatRequest 只有 reasoning_effort 字段，无 chat_template_kwargs；agnes(Qwen/vLLM 风格)靠 chat_template_kwargs.enable_thinking:true 激活思考。次因：dev 注册表 agnes 配成 supports_thinking=0+thinking_only=1(矛盾)→门控为假什么都不发。方案：ai_service 加 thinking_style 列(reasoning_effort/enable_thinking_kwarg/none)，适配器按列发对应字段；agnes 数据修正。管理端 UI 暴露列为 follow-up。'
   classification_reason: 'Standard：DB schema 变更(ai_service 新列+回填)+影响文件>3。无新 API 端点(admin UI follow-up)/无新外部服务(agnes-ai 已集成)。须零回归既有思考模型(Gemini/Claude/DeepSeek/GPT-5)。'
   status: active
-  stage: S0
+  stage: S3
   repos:
     numind-server: feature/thinking-activation-style
   worktrees:
     numind-server: /private/tmp/wt-thinking-activation-style-numind-server
   progress:
-    total_tasks: 0
+    total_tasks: 3
     completed_tasks: 0
     reviewed_tasks: 0
   artifacts:
     requirement: .ndf/features/thinking-activation-style/requirement.md
+    proposal: .ndf/features/thinking-activation-style/proposal.md
+    spec: .ndf/features/thinking-activation-style/spec.md
+    plan: .ndf/features/thinking-activation-style/plan.md
   decisions:
+  - 'S1-S3 (ai 2026-06-11): 用户授权全流程自主到 dev(停 S6 验收, 不碰 prod)。S1 提案+PRD(AC1-7)。S2 spec：thinking_style 枚举列(reasoning_effort/enable_thinking_kwarg/none/空=legacy reasoning_effort 零回归)，门控不变仅替换 thinking_only=false 内部分支为 switch thinking_style；adapter 加 chat_template_kwargs(omitempty)。S3 plan：T1 schema(model 字段+migration+agnes 数据修正)→T2 registry 读取链(store.go 2 处 raw SQL+ResolvedRoute)→T3 adapter wire 发射+测试；T4 验证策略=后端单测为主+dev agnes 实跑 sanity。串行依赖无环。'
   - 'S0 (ai 2026-06-11): 用户上报 agnes-2.0-flash 无思考。调查确认 thinking flag 已透传(旧 executor 缺口已修)，真因=适配器无 chat_template_kwargs 能力+注册表配错。Triage=Standard(DB schema 变更)。用户经 AskUserQuestion 选定"注册表加 thinking_style 列"方案(vs Hotfix 硬编码 provider 名)。范围：server-only，agnes 数据用 migration 配，admin UI 暴露列 follow-up。'
 - id: free-model-member-only
   track: standard
