@@ -192,18 +192,26 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 
 	// EMIT RESULT or ERROR (based on effectiveErr — what caller sees).
 	durationMs := time.Since(startedAt).Milliseconds()
-	// ask_user_question pauses the run via a yield sentinel error. On the
-	// streaming path, capture the payload into the shared stream state so
-	// consumeEinoStream surfaces a question_prompt + waiting_for_user_choice
-	// terminal — and suppress the error narration / tool_call_error SSE, because
-	// a yield is a pause, not a tool failure. The sentinel is still returned so
-	// the eino graph stops. The non-stream Run path has no stream state, so it
-	// falls through to the normal error branch (unchanged; yield handled in
-	// runner.go after Generate).
+	// ask_user_question pauses the run via a yield sentinel error. A yield is a
+	// PAUSE, not a tool failure, so it must NEVER surface as an error narration /
+	// tool_call_error SSE on EITHER path. On the streaming path, capture the
+	// payload into the shared stream state so consumeEinoStream surfaces a
+	// question_prompt + waiting_for_user_choice terminal. On the non-streaming
+	// resume path (answer.go → runner.Run) there is no stream state; the yield is
+	// handled in runner.go after Generate, and we emit nothing here. The sentinel
+	// is still returned below so the eino graph stops.
+	//
+	// Bug history: this branch previously also required `hasStream &&
+	// streamState != nil`, so a resumed run (non-stream) fell through to the error
+	// branch and surfaced a false "问题处理中断，稍后再试一下" narration on the 2nd
+	// ask_user_question — the run was healthily paused + answerable, but looked
+	// broken (customer-reported). Gating only on the yield sentinel fixes both paths.
 	var yErr *yieldError
-	if streamState, hasStream := StreamStateFromContext(ctx); errors.As(effectiveErr, &yErr) && hasStream && streamState != nil {
-		p := yErr.Payload
-		streamState.PendingYield = &p
+	if errors.As(effectiveErr, &yErr) {
+		if streamState, hasStream := StreamStateFromContext(ctx); hasStream && streamState != nil {
+			p := yErr.Payload
+			streamState.PendingYield = &p
+		}
 	} else if effectiveErr != nil {
 		a.emitNarration(ctx, narration.StateError, input, nil, effectiveErr, "")
 		a.emitStreamToolError(ctx, toolCallID, effectiveErr, durationMs)
