@@ -91,6 +91,36 @@ func TestRunStream_ShortCircuit_NoTools(t *testing.T) {
 	require.NotNil(t, got.EndedAt)
 }
 
+// test(qa): reproduce dev run 138 — when the SSE client disconnects mid-run (the user
+// refreshes the page), the request context is canceled. A terminal write that persists
+// THROUGH that context fails with "context canceled", leaving a zombie run
+// (status=running, turns=0) whose session VANISHES from the UI. The terminal write must
+// use a cancel-detached context so it lands regardless of the SSE lifecycle.
+func TestRunStream_TerminalWriteUsesCancelDetachedCtx(t *testing.T) {
+	ms := newMockStore()
+	run := makeRunForStream(t, ms)
+	r := &agentRunner{
+		runStore: ms,
+		cancels:  make(map[uint64]context.CancelFunc),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := make(chan stream.Event, 256)
+	_, err := r.RunStream(ctx, RunRequest{UserID: 1, Input: "hello"}, run.ID, ch)
+	close(ch)
+	require.NoError(t, err)
+
+	// Simulate the SSE client disconnecting (refresh): cancel the request context.
+	cancel()
+
+	// The ctx the store received for the terminal write must NOT be canceled by the
+	// request-context cancel. Before the fix the write used the request-derived ctx
+	// (canceled here) and the real DB write would fail → the session vanished.
+	require.NotNil(t, ms.lastUpdateStateCtx)
+	assert.NoError(t, ms.lastUpdateStateCtx.Err(),
+		"terminal write must use a cancel-detached ctx so it survives SSE disconnect (run 138)")
+}
+
 // TestRunStream_ShortCircuit_HookActionStop verifies that a pre-seeded
 // HookActionStop in the Registry overrides the terminal reason on the short-
 // circuit path (same invariant as Run's short-circuit hook override).
