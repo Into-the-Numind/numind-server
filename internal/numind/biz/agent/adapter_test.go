@@ -199,30 +199,28 @@ func TestConvertToAiserviceRequest_ZeroMaxTokensUnset(t *testing.T) {
 	}
 }
 
-// TestClampAgentMaxTokens pins the output-cap policy: a model's huge declared max
-// (deepseek-v4-pro = 384000) is capped to the ceiling, an undeclared model gets the
-// floor, and anything below the floor is raised — so the agent always requests an
-// adequate-but-sane cap.
-func TestClampAgentMaxTokens(t *testing.T) {
+// TestResolveAgentMaxTokens pins the output-cap policy: a model's declared
+// max_output_tokens is used VERBATIM (no artificial ceiling — capping below a model's
+// real limit would truncate long reports), and only an undeclared (0) model falls
+// back to a safe default.
+func TestResolveAgentMaxTokens(t *testing.T) {
 	cases := []struct {
 		name string
 		in   int
 		want int
 	}{
-		{"declared huge (v4-pro 384000) → ceiling", 384000, agentMaxOutputTokensCeiling},
-		{"declared mid (32000) → unchanged", 32000, 32000},
-		{"declared at ceiling", 64000, agentMaxOutputTokensCeiling},
-		{"declared below floor (4096) → floor", 4096, agentMaxOutputTokensFloor},
-		{"just below floor (8191) → floor", 8191, agentMaxOutputTokensFloor},
-		{"just above floor (8193) → unchanged", 8193, 8193},
-		{"unset (0) → floor", 0, agentMaxOutputTokensFloor},
-		{"negative → floor", -1, agentMaxOutputTokensFloor},
-		{"exactly floor", agentMaxOutputTokensFloor, agentMaxOutputTokensFloor},
+		{"deepseek-v4-pro 384000 → verbatim", 384000, 384000},
+		{"claude 128000 → verbatim", 128000, 128000},
+		{"gemini 64000 → verbatim", 64000, 64000},
+		{"mid 32000 → verbatim", 32000, 32000},
+		{"small model 4096 → verbatim (respect real limit, not floored)", 4096, 4096},
+		{"unset (0) → fallback", 0, agentMaxOutputTokensFallback},
+		{"negative → fallback", -1, agentMaxOutputTokensFallback},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := clampAgentMaxTokens(tc.in); got != tc.want {
-				t.Errorf("clampAgentMaxTokens(%d) = %d, want %d", tc.in, got, tc.want)
+			if got := resolveAgentMaxTokens(tc.in); got != tc.want {
+				t.Errorf("resolveAgentMaxTokens(%d) = %d, want %d", tc.in, got, tc.want)
 			}
 		})
 	}
