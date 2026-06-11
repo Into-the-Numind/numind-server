@@ -19,6 +19,7 @@ import (
 // Compile-time interface checks.
 var _ ChatAdapter = (*AliAdapter)(nil)
 var _ EmbedAdapter = (*AliAdapter)(nil)
+var _ RerankAdapter = (*AliAdapter)(nil)
 
 // dashscopeEmbedRequest is the DashScope native embedding request (not OpenAI compatible).
 type dashscopeEmbedRequest struct {
@@ -38,6 +39,42 @@ type dashscopeEmbedResponse struct {
 			Embedding []float32 `json:"embedding"`
 			TextIndex int       `json:"text_index"`
 		} `json:"embeddings"`
+	} `json:"output"`
+	Usage struct {
+		TotalTokens int `json:"total_tokens"`
+	} `json:"usage"`
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// dashscopeRerankRequest is the DashScope NATIVE text-rerank request. Verified
+// by live probe (2026-06-11): the native endpoint requires the nested
+// input/parameters shape (a flat {model,query,documents} returns HTTP 400
+// "Field required: input.query"). qwen3-rerank and gte-rerank-v2 both accept it.
+type dashscopeRerankRequest struct {
+	Model string `json:"model"`
+	Input struct {
+		Query     string   `json:"query"`
+		Documents []string `json:"documents"`
+	} `json:"input"`
+	Parameters struct {
+		ReturnDocuments bool `json:"return_documents,omitempty"`
+		TopN            int  `json:"top_n,omitempty"`
+	} `json:"parameters"`
+}
+
+// dashscopeRerankResponse is the DashScope NATIVE text-rerank response.
+// Verified shape: {"output":{"results":[{"index":0,"relevance_score":0.86,
+// "document":{"text":"..."}}]},"usage":{"total_tokens":49},"request_id":"..."}.
+type dashscopeRerankResponse struct {
+	Output struct {
+		Results []struct {
+			Index          int     `json:"index"`
+			RelevanceScore float64 `json:"relevance_score"`
+			Document       struct {
+				Text string `json:"text"`
+			} `json:"document"`
+		} `json:"results"`
 	} `json:"output"`
 	Usage struct {
 		TotalTokens int `json:"total_tokens"`
@@ -72,7 +109,7 @@ func (a *AliAdapter) Name() string { return "ali" }
 func (a *AliAdapter) ProviderType() string { return "dashscope" }
 
 // Capabilities lists the capabilities this adapter supports.
-func (a *AliAdapter) Capabilities() []string { return []string{"chat", "embed"} }
+func (a *AliAdapter) Capabilities() []string { return []string{"chat", "embed", "rerank"} }
 
 // Chat performs a non-streaming chat completion against the DashScope
 // OpenAI-compatible endpoint.
@@ -227,6 +264,66 @@ func (a *AliAdapter) Embed(ctx context.Context, route *registry.ResolvedRoute, r
 		Model:       route.ProviderModelID,
 		Provider:    a.Name(),
 		TotalTokens: dsResp.Usage.TotalTokens,
+	}, nil
+}
+
+// Rerank re-scores and re-orders documents using DashScope's NATIVE text-rerank
+// endpoint. We derive the native base from Provider.BaseURL the same way Embed
+// does (replace /compatible-mode/v1 with /api/v1) so the URL stays in sync with
+// config. The model (e.g. qwen3-rerank, gte-rerank-v2) comes from the route's
+// ProviderModelID, so adding a new DashScope rerank model is registry-only.
+func (a *AliAdapter) Rerank(ctx context.Context, route *registry.ResolvedRoute, req aiservice.RerankRequest) (*aiservice.RerankResponse, error) {
+	if len(req.Documents) == 0 {
+		return &aiservice.RerankResponse{Provider: a.Name()}, nil
+	}
+
+	nativeBase := strings.Replace(route.Provider.BaseURL, "/compatible-mode/v1", "/api/v1", 1)
+	rerankURL := nativeBase + "/services/rerank/text-rerank/text-rerank"
+
+	var dsReq dashscopeRerankRequest
+	dsReq.Model = route.ProviderModelID
+	dsReq.Input.Query = req.Query
+	dsReq.Input.Documents = req.Documents
+	dsReq.Parameters.ReturnDocuments = true
+	if req.TopN > 0 && req.TopN <= len(req.Documents) {
+		dsReq.Parameters.TopN = req.TopN
+	}
+
+	body, err := json.Marshal(dsReq)
+	if err != nil {
+		return nil, fmt.Errorf("ali.Rerank: marshal: %w", err)
+	}
+
+	respBytes, err := a.doRawPost(ctx, route.Provider.APIKey, rerankURL, body)
+	if err != nil {
+		return nil, fmt.Errorf("ali.Rerank: %w", err)
+	}
+
+	var dsResp dashscopeRerankResponse
+	if err := json.Unmarshal(respBytes, &dsResp); err != nil {
+		return nil, fmt.Errorf("ali.Rerank: decode: %w", err)
+	}
+	if dsResp.Code != "" {
+		return nil, fmt.Errorf("ali.Rerank: provider error [%s]: %s", dsResp.Code, dsResp.Message)
+	}
+
+	results := make([]aiservice.RerankResult, 0, len(dsResp.Output.Results))
+	for _, r := range dsResp.Output.Results {
+		doc := r.Document.Text
+		if doc == "" && r.Index >= 0 && r.Index < len(req.Documents) {
+			doc = req.Documents[r.Index]
+		}
+		results = append(results, aiservice.RerankResult{
+			Index:    r.Index,
+			Score:    r.RelevanceScore,
+			Document: doc,
+		})
+	}
+
+	return &aiservice.RerankResponse{
+		Results:  results,
+		Model:    route.ProviderModelID,
+		Provider: a.Name(),
 	}, nil
 }
 
