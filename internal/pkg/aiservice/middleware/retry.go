@@ -212,5 +212,9 @@ func retryStream(
 		}
 		return ch, nil, true
 	}
+	// policy.retryDelay is called once (single retry budget). If the streaming
+	// retry budget is ever raised >1, swap this for a per-attempt exponential
+	// back-off — retryDelay() currently returns an independent jittered base
+	// delay per call, not a growing one.
 	return wrapStreamWithReattempt(ctx, firstCh, reattempt, policy.retryDelay)
 }

@@ -66,7 +66,13 @@ func wrapStreamWithReattempt(
 				// Reattempt candidate: a retryable error terminal chunk seen
 				// before any content was forwarded. Hold it; do not forward yet.
 				// (P1-5: decide on chunk.Err only, never on chunk.Usage.)
-				if chunk.IsFinal && chunk.Err != nil && !firstContentForwarded && retryableError(chunk.Err) {
+				// The Delta/ReasoningDelta==""(empty) guard is defence-in-depth:
+				// adapter.runOAIStream never bundles content into an error terminal
+				// (it emits content chunks first, then a separate terminal), but if
+				// a future provider/adapter did, swallowing that chunk would drop
+				// content — so fall through and forward it instead of retrying.
+				if chunk.IsFinal && chunk.Err != nil && !firstContentForwarded &&
+					chunk.Delta == "" && chunk.ReasoningDelta == "" && retryableError(chunk.Err) {
 					c := chunk
 					pendingErr = &c
 					break
@@ -126,7 +132,9 @@ func wrapStreamWithReattempt(
 }
 
 // drainChunks consumes the remainder of ch so the producing goroutine / HTTP
-// body is released. ch is expected to be closed by its producer.
+// body is released. The caller MUST guarantee ch is closed by its producer
+// (every adapter ChatStream does `defer close(ch)` / `defer body.Close()`);
+// otherwise this blocks forever and leaks the wrapStreamWithReattempt goroutine.
 func drainChunks(ch <-chan aiservice.ChatChunk) {
 	for range ch { //nolint:revive // intentional drain
 	}

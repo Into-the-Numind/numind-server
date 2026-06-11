@@ -296,3 +296,70 @@ func runStream(t *testing.T, h Handler) []aiservice.ChatChunk {
 	}
 	return collectStream(t, resp)
 }
+
+// TestRetryStream_CtxCancelledDuringBackoff: cancelling ctx while the helper is
+// waiting out the retry back-off aborts the reattempt — no second upstream call,
+// channel closes promptly.
+func TestRetryStream_CtxCancelledDuringBackoff(t *testing.T) {
+	// Long back-off so cancellation reliably lands during the wait.
+	policy := RetryPolicy{BaseDelay: 2 * time.Second, MaxJitter: time.Microsecond}
+	mw := retryWithPolicy(policy)
+	callCount := 0
+	inner := countingStreamHandler(&callCount, func(_ int) []aiservice.ChatChunk {
+		return []aiservice.ChatChunk{idleErrChunk()} // pre-content error every attempt
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	resp, err := mw(inner)(ctx, buildTestRoute("llm"), aiservice.ChatRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ch := resp.(<-chan aiservice.ChatChunk)
+
+	// Cancel ~30ms in — attempt 1's error is consumed, helper is in the 2s back-off.
+	go func() { time.Sleep(30 * time.Millisecond); cancel() }()
+
+	done := make(chan struct{})
+	go func() { collectStream(t, ch); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second): // < the 2s back-off → only closes early if cancel aborted it
+		t.Fatal("stream did not close after ctx cancellation during back-off")
+	}
+	if callCount != 1 {
+		t.Errorf("ctx cancel during back-off must abort retry: expected 1 attempt, got %d", callCount)
+	}
+}
+
+// TestRetryStream_CtxCancelledDuringRead: cancelling ctx while forwarding chunks
+// makes the helper stop sending and drain the in-flight attempt (no leak).
+func TestRetryStream_CtxCancelledDuringRead(t *testing.T) {
+	mw := retryWithPolicy(zeroDelayPolicy())
+	producerDone := make(chan struct{})
+	inner := Handler(func(_ context.Context, _ *registry.ResolvedRoute, _ interface{}) (interface{}, error) {
+		ch := make(chan aiservice.ChatChunk) // unbuffered → forwarding blocks until consumed
+		go func() {
+			defer close(ch)
+			ch <- aiservice.ChatChunk{Delta: "a", Index: 0}
+			ch <- aiservice.ChatChunk{Delta: "b", Index: 1}
+			close(producerDone)
+		}()
+		return (<-chan aiservice.ChatChunk)(ch), nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled: the forward select must take the ctx.Done branch
+	resp, err := mw(inner)(ctx, buildTestRoute("llm"), aiservice.ChatRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ch := resp.(<-chan aiservice.ChatChunk)
+
+	// Do NOT read `ch` yet: with no reader on out, only ctx.Done is ready in the
+	// forward select, so the helper deterministically drains the producer.
+	select {
+	case <-producerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("producer not drained after ctx cancellation during read — goroutine/HTTP leak")
+	}
+	collectStream(t, ch) // out is already closed by the helper's defer
+}
