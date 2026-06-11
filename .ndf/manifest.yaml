@@ -4103,3 +4103,44 @@ features:
   - 'H3-merge (ai 2026-06-11): ndf-done 原子完成 — fix/thinking-autocollapse→develop(merge 72e010a, 已 fetch 独立复核 origin/develop HEAD==72e010a 且 c5617f4/cda30bc/99058d1 三 commit 均 ancestor; develop 版 ChatbotChat auto-collapse×2 / ChatMessage×1 / StepOutput trim 守卫在位), worktree+本地分支已删。叠在 stream-typewriter-adaptive(2abce90)之上, 故 72e010a 同时含打字机自适应 + 思考折叠两修复 → 一次 dev 部署可一并 feel-test。未部署→下一步 /deploy-dev。'
   - 'H3-prod (ai 2026-06-11): 与 stream-typewriter-adaptive 一起隔离 cherry-pick 上 prod tag v1.0.32(e89d12e) — 详见 stream-typewriter-adaptive 的 H3-prod 决策(同一次 cherry-pick + release.sh prod)。本 feature 的 3 commit(c5617f4/cda30bc/99058d1)在 v1.0.32 内; auto-collapse ×2(ChatbotChat)/×1(ChatMessage)/StepOutput trim 守卫均在位。prod 实跑 v1.0.32-e89d12e healthy + youshu.asia HTTP 200。两 feature 同一 tag 上线完毕。'
   blockers: []
+
+- id: fix-stepoutput-test-selectors
+  ndf_version: '3.0'
+  description: 'Follow-up #3(本人上报技术债): StepOutput.test.ts 一批 it.skip 用了错误选择器(.step-output-thinking* / .step-output-cursor), DOM 实际是 .thinking-container/.thinking-header/.thinking-title/.streaming-placeholder/.streaming-dot, 折叠态 class 是 collapsed 非 is-collapsed → 这些测试一直被 skip, 思考面板的渲染/折叠/toggle/aria 回归覆盖落空(产品无影响, 纯测试债)。'
+  classification_reason: 'Micro(配套测试): 仅改测试文件选择器+断言, 零产品代码改动, 零行为风险。走 ndf-micro。'
+  last_updated_by: ai-micro-done
+  last_updated_at: '2026-06-11T20:55:00+08:00'
+  created_at: '2026-06-11T20:50:00+08:00'
+  completed_at: '2026-06-11T20:55:00+08:00'
+  track: micro
+  stage: done
+  repos: [numind-web-v3]
+  branches: {numind-web-v3: micro/fix-stepoutput-test-selectors (merged → develop, deleted)}
+  decisions:
+  - 'M1 (ai 2026-06-11): 修正 7 个测试选择器(.step-output-thinking*→.thinking-container 等; is-collapsed→collapsed; display:none 断言→改查 collapsed class; .step-output-cursor→.streaming-dot 计数)并重新启用(render/默认折叠态/toggle/流式结束折叠/占位/aria-expanded)。2 个保持 skip 且改诚实理由: 滚动测试 jsdom 无真实布局脆弱(应走 e2e); aria-label 测试需组件补 a11y 属性(超出选择器修复范围)。merge 2e5b737, 20 pass/2 skip(原 9 skip)。Gate: eslint 0。'
+  blockers: []
+
+- id: typewriter-tighten-sop-dispose
+  ndf_version: '3.0'
+  description: 'Follow-up #1+#2(本人上报): #1 打字机结尾 ≤300ms 残留补全微闪——User 在「彻底改三套机制渲染时序(有消息闪没风险)」vs「安全快修收紧滞后阈值」之间选了后者: maxLagMs 默认 300→150, 结尾一次性补全字数减半(625cps 下 ~188→~94), 流式期间更贴近后端, 稳态平滑度不受影响(maxLag 只决定跟随距离)。#2 SOPRunView onBeforeUnmount 没 dispose 两个打字机 reveal → 流式途中切走页面 rAF loop 在已卸载组件空转(pre-existing 泄漏, ChatArea/ChatbotChat 早做对)。'
+  classification_reason: 'Hotfix(5 条全满足): 无 DB / 无新 API / 无新外部服务 / 影响源文件=2(useTypewriterReveal.ts 默认常量 + SOPRunView.vue dispose)+1 测试 / 非高风险(渲染节奏常量 + 生命周期清理)。#1 是 User 在两方案中明确选的安全快修(放弃高风险 handoff 重写)。单仓库 numind-web-v3。'
+  last_updated_by: ai-h3-merged
+  last_updated_at: '2026-06-11T21:32:56+08:00'
+  created_at: '2026-06-11T21:20:00+08:00'
+  track: hotfix
+  stage: H3
+  repos:
+  - numind-web-v3
+  branches:
+    numind-web-v3: fix/typewriter-tighten-sop-dispose (merged → develop, deleted)
+  worktrees:
+    numind-web-v3: (removed by ndf-done)
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1 (ai 2026-06-11): 2 commit 分关注点 — 8c80425 #1 maxLagMs 默认 300→150(+ 回归测试锁死默认=150: 不传 maxLagMs 下 625cps maxLag<150, 若回 300 则 ~188 会 FAIL) / 6f21d15 #2 SOPRunView onBeforeUnmount 加 chatThinkingReveal.dispose()+chatContentReveal.dispose()(镜像 ChatArea/ChatbotChat)。hiddenFlushThresholdMs 的 300 是另一变量, 未动。Gate: vue-tsc 0 / eslint 0 / 全量 vitest 76 文件 811 pass(含 #3 恢复的 7 个 + 新默认测试)。'
+  - 'H1-review (ai 2026-06-11): 并行双 Sonnet reviewer 均 VERDICT=PASS 零 P0/P1。spec: 150 仍满足「maxLag 只决定跟随距离非稳态平滑」(稳态每帧揭示=到达率, 仅 backlog 上界减半), 6 处调用点均零 opts 吃新默认, 默认测试确实在 300 时 FAIL, dispose 引用正确; #1 残留减半非消除是 User 明确选择, 范围正确。code: maxLagMs 守卫仅改 fallback 字面量、hiddenFlushThresholdMs 未误触, dispose 幂等(stop 检查 rafId!=null)且 sseStream.abort 先行无并发 append 竞态, 测试确定性。P2 均非 actionable(测试确定/dispose 顺序正确)。'
+  - 'H3-merge (ai 2026-06-11): ndf-done merge fix/typewriter-tighten-sop-dispose→develop(c0c1208, 已 fetch 独立复核 origin/develop HEAD==c0c1208 且 8c80425/6f21d15 均 ancestor; develop 版默认 150 在位 + SOP dispose×2 在位), worktree+本地分支已删。叠在 #3(2e5b737)之上。未部署 prod → 下一步 /deploy-dev → User feel-test 结尾闪是否更小 → 满意再隔离 cherry-pick tag v1.0.33 上 prod(连同 #3 测试改动)。'
+  blockers: []
