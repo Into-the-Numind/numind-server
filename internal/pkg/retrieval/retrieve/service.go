@@ -81,7 +81,7 @@ func (s *Service) Retrieve(ctx context.Context, query string, scope Scope, opts 
 
 	// 4. rerank（RerankTopN>0 才走；失败 fallback 原 topN，与 sales_rag.go 一致）
 	if opts.RerankTopN > 0 && len(chunks) > 0 {
-		reranked, rerankErr := s.rerankWithLimit(ctx, query, chunks, opts.RerankTopN, "Rerank", opts.BillingLabel)
+		reranked, rerankErr := s.rerankWithLimit(ctx, query, chunks, opts.RerankTopN, "Rerank", opts.BillingLabel, opts)
 		if rerankErr != nil {
 			// Rerank 失败时 Fallback 到原始 Top N（对齐 sales_rag.go 的降级语义）
 			log.C(ctx).Warnw("Rerank failed, using original top chunks", "error", rerankErr)
@@ -231,10 +231,10 @@ func (s *Service) parallelSearch(
 //   - 注入 userID + billing + skip-legacy-billing 上下文；
 //   - Langfuse rerank span（name "rerank"，input/output 同构）；
 //   - 调 aiservice.Rerank(ctx, profile.SalesragRerank, ...)；
-//   - 第一条始终保留（保底），后续 score < 0.3 丢弃；
-//   - 结果全空时取 Results[0] 兜底 1 条。
+//   - 阈值过滤 + 保底交由 applyRerankFilter（纯函数，可单测）。
 //
 // billingLabel 作参数（不同调用点传不同 label 做成本归因），与 sales_rag.go 设计一致。
+// opts 透传阈值/保底配置（RerankMinScore / RerankNoFloor）；默认值 → salesrag 现状不变。
 func (s *Service) rerankWithLimit(
 	ctx context.Context,
 	query string,
@@ -242,6 +242,7 @@ func (s *Service) rerankWithLimit(
 	topN int,
 	label string,
 	billingLabel string,
+	opts Options,
 ) ([]domain.KnowledgeChunk, error) {
 	if len(chunks) <= 1 {
 		return chunks, nil
@@ -288,34 +289,13 @@ func (s *Service) rerankWithLimit(
 		return nil, err
 	}
 
-	result := make([]domain.KnowledgeChunk, 0, len(rerankResp.Results))
-	for i, rr := range rerankResp.Results {
-		if rr.Index < 0 || rr.Index >= len(chunks) {
-			continue
-		}
-		// 第一条始终保留（保底），后续按阈值筛选
-		if i > 0 && rr.Score < rerankScoreThreshold {
-			continue
-		}
-		chunk := chunks[rr.Index]
-		chunk.Score = float32(rr.Score)
-		result = append(result, chunk)
-	}
-
-	// 安全兜底：至少返回 1 条
-	if len(result) == 0 && len(rerankResp.Results) > 0 {
-		bestIdx := rerankResp.Results[0].Index
-		if bestIdx >= 0 && bestIdx < len(chunks) {
-			chunk := chunks[bestIdx]
-			chunk.Score = float32(rerankResp.Results[0].Score)
-			result = append(result, chunk)
-		}
-	}
+	result := applyRerankFilter(chunks, rerankResp.Results, opts)
 
 	log.C(ctx).Infow(label+" completed",
 		"input_count", len(chunks),
 		"output_count", len(result),
-		"threshold", rerankScoreThreshold,
+		"threshold", rerankThreshold(opts),
+		"no_floor", opts.RerankNoFloor,
 		"top_score", func() float64 {
 			if len(rerankResp.Results) > 0 {
 				return rerankResp.Results[0].Score
@@ -324,4 +304,61 @@ func (s *Service) rerankWithLimit(
 		}())
 
 	return result, nil
+}
+
+// rerankThreshold 解析生效的 rerank 分阈值：
+// opts.RerankMinScore > 0 时用它（chatbot 通用问答传 0.6 丢低相关度），
+// 否则用 rerankScoreThreshold 常量 0.3（salesrag 现状，逐位一致）。
+func rerankThreshold(opts Options) float64 {
+	if opts.RerankMinScore > 0 {
+		return float64(opts.RerankMinScore)
+	}
+	return rerankScoreThreshold
+}
+
+// applyRerankFilter 是 rerank 结果的纯过滤逻辑（无 I/O，可单测）。
+//
+// 行为（默认 Options → 与 sales_rag.go 原内联逻辑逐位一致）：
+//   - 按 rerank 结果顺序遍历，越界 Index 跳过；
+//   - 第一条（i==0）始终保留（保底），后续 score < threshold 丢弃；
+//   - 命中的 chunk 写入 rerank score；
+//   - 结果全空时兜底取 Results[0] 1 条。
+//
+// 新增配置（chatbot 通用问答用）：
+//   - threshold 由 rerankThreshold(opts) 解析（RerankMinScore>0 抬高至 0.6）；
+//   - opts.RerankNoFloor=true 时**不保底**：第一条同样受阈值约束，全部低于阈值 → 返回空
+//     （chatbot 召回全是垃圾时返回空 → 走纯聊天而非 grounding 在低相关度内容上）。
+func applyRerankFilter(
+	chunks []domain.KnowledgeChunk,
+	results []aiservice.RerankResult,
+	opts Options,
+) []domain.KnowledgeChunk {
+	threshold := rerankThreshold(opts)
+
+	result := make([]domain.KnowledgeChunk, 0, len(results))
+	for i, rr := range results {
+		if rr.Index < 0 || rr.Index >= len(chunks) {
+			continue
+		}
+		// 保底语义：默认（!NoFloor）下第一条始终保留；NoFloor=true 时第一条也受阈值约束。
+		keepFloor := i == 0 && !opts.RerankNoFloor
+		if !keepFloor && rr.Score < threshold {
+			continue
+		}
+		chunk := chunks[rr.Index]
+		chunk.Score = float32(rr.Score)
+		result = append(result, chunk)
+	}
+
+	// 安全兜底：至少返回 1 条（仅默认保底模式；NoFloor=true 时允许返回空）。
+	if len(result) == 0 && !opts.RerankNoFloor && len(results) > 0 {
+		bestIdx := results[0].Index
+		if bestIdx >= 0 && bestIdx < len(chunks) {
+			chunk := chunks[bestIdx]
+			chunk.Score = float32(results[0].Score)
+			result = append(result, chunk)
+		}
+	}
+
+	return result
 }

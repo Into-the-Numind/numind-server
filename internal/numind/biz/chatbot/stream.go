@@ -297,11 +297,20 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 					DocumentIDs: docIDs,
 				},
 				retrieve.Options{
-					TopK:         chatStreamRetrieveTopK,
-					RerankTopN:   chatStreamMaxChunks,
-					RewriteQuery: true,
-					History:      historyToStrings(historyMsgs),
-					BillingLabel: chatStreamRetrieveBillingLabel,
+					TopK:       chatStreamRetrieveTopK,
+					RerankTopN: chatStreamMaxChunks,
+					// F1: 用原始 message 检索，停用 query 改写。底座的 RewriteQuery
+					// 走 salesrag 的「销售意图分析师」prompt，会把 educational 通用问答
+					// 改写歪（销售视角污染），导致召回跑偏。chatbot 专属中性改写 prompt
+					// 是后续增强；当前用原话检索，优于销售改写。
+					RewriteQuery: false,
+					// F2: 高阈值 0.6 + 关闭保底 → 召回全是低相关度(40-50%)内容时返回空，
+					// chatbot 无 chunk → BuildChatContextFragments 走纯聊天，bot 从 system
+					// prompt 作答，不再 grounding 在不相关的「资料」上给困惑回答。
+					RerankMinScore: 0.6,
+					RerankNoFloor:  true,
+					History:        historyToStrings(historyMsgs),
+					BillingLabel:   chatStreamRetrieveBillingLabel,
 				},
 			)
 			if retErr != nil {
