@@ -26,7 +26,7 @@ func yieldStreamFn() func(context.Context, string, aiservice.ChatRequest) (<-cha
 				Type: "function",
 				Function: aiservice.ToolCallFunction{
 					Name:      "ask_user_question",
-					Arguments: `{"question":"贵公司的创办初心是什么？","options":[{"key":"a","label":"我来口述"},{"key":"b","label":"上传资料"}]}`,
+					Arguments: `{"questions":[{"question":"贵公司的创办初心是什么？","options":[{"key":"a","label":"我来口述"},{"key":"b","label":"上传资料"}]}]}`,
 				},
 			}},
 		}

@@ -289,7 +289,8 @@ func (h *StudentRunController) GetAttachmentStatus(c *gin.Context) {
 // ---------------------------------------------------------------------------
 
 // Answer handles POST /v1/agent-runs/:id/answer.
-// The request body must contain {"selected": ["key1", ...], "free_text": "..."}.
+// The request body must contain {"answers": {"<question text>": {"selected":
+// ["label", ...], "free_text": "..."}, ...}} — one entry per answered question.
 // Returns 200 {"code":0,"data":{"run_id":N,"status":"resumed"}} on success.
 func (h *StudentRunController) Answer(c *gin.Context) {
 	user := middleware.GetCurrentUser(c)

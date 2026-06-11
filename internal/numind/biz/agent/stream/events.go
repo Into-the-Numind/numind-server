@@ -189,16 +189,24 @@ type QuestionOption struct {
 	Description string `json:"description,omitempty"`
 }
 
-// QuestionPromptPayload is emitted when the agent yields an ask_user_question.
+// QuestionPromptItem is one question in a QuestionPromptPayload.
 //
 // Options uses omitempty: a nil slice would marshal to JSON `null`, but the
 // frontend treats this field as a list and expects an empty array when no
 // options exist. Omitting the key entirely lets the parser default to [].
-type QuestionPromptPayload struct {
+type QuestionPromptItem struct {
 	Question    string           `json:"question"`
 	Options     []QuestionOption `json:"options,omitempty"`
 	Header      string           `json:"header,omitempty"`
 	MultiSelect bool             `json:"multi_select"`
+}
+
+// QuestionPromptPayload is emitted when the agent yields an ask_user_question.
+//
+// agent-multi-question: carries 1-4 independent questions (Claude Code's
+// AskUserQuestion model). The frontend renders a tabbed navigator over them.
+type QuestionPromptPayload struct {
+	Questions []QuestionPromptItem `json:"questions"`
 }
 
 // TerminalPayload signals the end of the stream and carries run summary data.

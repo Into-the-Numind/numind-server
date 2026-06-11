@@ -42,12 +42,12 @@ func TestYieldProtocol_RunResult_Shape(t *testing.T) {
 // errors.As correctly unwraps yieldError from a wrapped error (simulating
 // how einoAgent might wrap the error from tool.Execute).
 func TestYieldProtocol_ErrorsAs_IntegrationWithRunnerHandler(t *testing.T) {
-	payload := YieldPayload{
+	payload := YieldPayload{Questions: []YieldQuestion{{
 		Question:    "Which approach?",
 		Options:     []YieldOption{{Key: "a", Label: "Option A"}, {Key: "b", Label: "Option B"}},
 		Header:      "Choose one",
 		MultiSelect: false,
-	}
+	}}}
 	// Simulate the error returned by einoAgent.Generate when a tool yields.
 	rawErr := &yieldError{Payload: payload}
 
@@ -58,9 +58,10 @@ func TestYieldProtocol_ErrorsAs_IntegrationWithRunnerHandler(t *testing.T) {
 	// Direct check — the runner handler uses errors.As on runErr.
 	var yieldErr *yieldError
 	require.True(t, errors.As(rawErr, &yieldErr), "errors.As must extract yieldError")
-	assert.Equal(t, payload.Question, yieldErr.Payload.Question)
-	assert.Len(t, yieldErr.Payload.Options, 2)
-	assert.Equal(t, "a", yieldErr.Payload.Options[0].Key)
+	require.Len(t, yieldErr.Payload.Questions, 1)
+	assert.Equal(t, payload.Questions[0].Question, yieldErr.Payload.Questions[0].Question)
+	assert.Len(t, yieldErr.Payload.Questions[0].Options, 2)
+	assert.Equal(t, "a", yieldErr.Payload.Questions[0].Options[0].Key)
 
 	// Also verify errors.Is works for the sentinel.
 	require.True(t, errors.Is(rawErr, ErrYieldForUserQuestion))

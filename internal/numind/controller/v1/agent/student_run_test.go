@@ -242,7 +242,7 @@ func TestAnswerHandler_Returns200(t *testing.T) {
 	r.POST("/v1/agent-runs/:id/answer", ctrl.Answer)
 
 	body, _ := json.Marshal(map[string]any{
-		"selected": []string{"a"},
+		"answers": map[string]any{"问题？": map[string]any{"selected": []string{"a"}}},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/agent-runs/99/answer", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -270,7 +270,9 @@ func TestAnswerHandler_InvalidRunID(t *testing.T) {
 	r := gin.New()
 	r.POST("/v1/agent-runs/:id/answer", ctrl.Answer)
 
-	body, _ := json.Marshal(map[string]any{"selected": []string{"a"}})
+	body, _ := json.Marshal(map[string]any{
+		"answers": map[string]any{"问题？": map[string]any{"selected": []string{"a"}}},
+	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/agent-runs/abc/answer", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -294,8 +296,9 @@ func TestAnswerHandler_MissingBody(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	// ShouldBindJSON with binding:"required" should reject empty selected.
+	// ShouldBindJSON with binding:"required" on the answers map should reject a
+	// body with no answers (agent-multi-question).
 	if w.Code == http.StatusOK {
-		t.Errorf("expected non-200 for missing selected field, got 200")
+		t.Errorf("expected non-200 for a body with no answers, got 200")
 	}
 }

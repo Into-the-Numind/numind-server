@@ -54,13 +54,14 @@ func TestGetSessionSnapshot_WaitingRun_SynthesizesQuestionPrompt(t *testing.T) {
 
 	q := msgs[0]
 	assert.Equal(t, "question_prompt", q.Type)
-	assert.Equal(t, "贵公司的创办初心是什么？", q.Question)
-	assert.Equal(t, "莫小派档案", q.Header)
 	assert.Equal(t, "pending", q.AnswerStatus)
 	assert.Equal(t, run.ID, q.RunID)
-	require.Len(t, q.Options, 2)
-	assert.Equal(t, "创始人故事与初心", q.Options[0].Label)
-	assert.Equal(t, "创始人是谁？为什么创办？", q.Options[0].Description)
+	require.Len(t, q.Questions, 1, "single-question pending wraps into a one-element array")
+	assert.Equal(t, "贵公司的创办初心是什么？", q.Questions[0].Question)
+	assert.Equal(t, "莫小派档案", q.Questions[0].Header)
+	require.Len(t, q.Questions[0].Options, 2)
+	assert.Equal(t, "创始人故事与初心", q.Questions[0].Options[0].Label)
+	assert.Equal(t, "创始人是谁？为什么创办？", q.Questions[0].Options[0].Description)
 }
 
 // A waiting run that already has a transcript (multi-step before the yield)
@@ -131,4 +132,81 @@ func TestGetSessionSnapshot_CompletedRun_NoQuestionSynthesized(t *testing.T) {
 	for _, m := range msgs {
 		assert.NotEqual(t, "question_prompt", m.Type, "completed run must not synthesize a question")
 	}
+}
+
+// agent-multi-question: a waiting run that posed multiple questions synthesizes
+// a single question_prompt message carrying ALL questions as an array.
+func TestGetSessionSnapshot_WaitingRun_SynthesizesMultipleQuestions(t *testing.T) {
+	svc, db := newSQServiceFull(t)
+
+	pending := []byte(`{"questions":[` +
+		`{"question":"陪跑周期多长？","header":"陪跑","options":[{"key":"a","label":"90天"},{"key":"b","label":"180天"}]},` +
+		`{"question":"主要客群是谁？","multi_select":true,"options":[{"key":"a","label":"宝妈"},{"key":"b","label":"职场人"}]}` +
+		`]}`)
+	run := &model.AgentRun{
+		UserID:              11,
+		SessionID:           "snap-multi",
+		Status:              "terminated",
+		StateReason:         string(TerminalWaitingForUserChoice),
+		Messages:            datatypes.JSON(`[]`),
+		PendingQuestionJSON: pending,
+		StartedAt:           time.Now(),
+	}
+	require.NoError(t, db.Create(run).Error)
+
+	snap, err := svc.GetSessionSnapshot(context.Background(), 11, run.SessionID)
+	require.NoError(t, err)
+
+	msgs := snap.Messages.([]agentMessage)
+	require.Len(t, msgs, 1)
+	q := msgs[0]
+	assert.Equal(t, "question_prompt", q.Type)
+	assert.Equal(t, "pending", q.AnswerStatus)
+	require.Len(t, q.Questions, 2, "both questions must be synthesized into the array")
+	assert.Equal(t, "陪跑周期多长？", q.Questions[0].Question)
+	assert.Equal(t, "陪跑", q.Questions[0].Header)
+	require.Len(t, q.Questions[0].Options, 2)
+	assert.Equal(t, "90天", q.Questions[0].Options[0].Label)
+	assert.False(t, q.Questions[0].MultiSelect)
+	assert.Equal(t, "主要客群是谁？", q.Questions[1].Question)
+	assert.True(t, q.Questions[1].MultiSelect)
+	assert.Empty(t, q.Questions[1].Header, "second question has no header")
+	require.Len(t, q.Questions[1].Options, 2, "second question's own options must not be cross-mapped")
+	assert.Equal(t, "宝妈", q.Questions[1].Options[0].Label)
+	assert.Equal(t, "职场人", q.Questions[1].Options[1].Label)
+}
+
+// agent-multi-question: a pure open-ended question (0 options) reloads with an
+// empty options list (not null) — matching the live stream's omitempty shape.
+func TestGetSessionSnapshot_WaitingRun_SynthesizesOpenEndedQuestion(t *testing.T) {
+	svc, db := newSQServiceFull(t)
+
+	pending := []byte(`{"questions":[{"question":"请提供你们的价格区间","options":[]}]}`)
+	run := &model.AgentRun{
+		UserID:              11,
+		SessionID:           "snap-open",
+		Status:              "terminated",
+		StateReason:         string(TerminalWaitingForUserChoice),
+		Messages:            datatypes.JSON(`[]`),
+		PendingQuestionJSON: pending,
+		StartedAt:           time.Now(),
+	}
+	require.NoError(t, db.Create(run).Error)
+
+	snap, err := svc.GetSessionSnapshot(context.Background(), 11, run.SessionID)
+	require.NoError(t, err)
+
+	msgs := snap.Messages.([]agentMessage)
+	require.Len(t, msgs, 1)
+	q := msgs[0]
+	assert.Equal(t, "question_prompt", q.Type)
+	require.Len(t, q.Questions, 1)
+	assert.Equal(t, "请提供你们的价格区间", q.Questions[0].Question)
+	assert.Empty(t, q.Questions[0].Options, "open-ended question has no options")
+
+	// The serialized message omits the options key entirely (not null), matching
+	// the live stream's omitempty contract the frontend parses.
+	raw, mErr := json.Marshal(q)
+	require.NoError(t, mErr)
+	assert.NotContains(t, string(raw), `"options":null`)
 }

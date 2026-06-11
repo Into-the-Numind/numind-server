@@ -186,7 +186,9 @@ func TestAnswer_HappyPath(t *testing.T) {
 	userID := uint(42)
 	runID := seedAnswerRun(rs, userID, string(TerminalWaitingForUserChoice))
 
-	req := AnswerRequest{Selected: []string{"a"}, FreeText: "extra note"}
+	req := AnswerRequest{Answers: map[string]AnswerItem{
+		"Which region?": {Selected: []string{"北"}, FreeText: "extra note"},
+	}}
 	resp, err := svc.Answer(context.Background(), userID, runID, req)
 
 	require.NoError(t, err)
@@ -205,7 +207,7 @@ func TestAnswer_CrossUserRunNotFound(t *testing.T) {
 	attackerID := uint(99)
 	runID := seedAnswerRun(rs, ownerID, string(TerminalWaitingForUserChoice))
 
-	req := AnswerRequest{Selected: []string{"a"}}
+	req := AnswerRequest{Answers: map[string]AnswerItem{"Which region?": {Selected: []string{"北"}}}}
 	_, err := svc.Answer(context.Background(), attackerID, runID, req)
 
 	require.Error(t, err)
@@ -223,7 +225,7 @@ func TestAnswer_RunNotWaiting(t *testing.T) {
 	// Seed a run in "completed" state (no pending JSON).
 	runID := seedAnswerRun(rs, userID, "completed")
 
-	req := AnswerRequest{Selected: []string{"a"}}
+	req := AnswerRequest{Answers: map[string]AnswerItem{"Which region?": {Selected: []string{"北"}}}}
 	_, err := svc.Answer(context.Background(), userID, runID, req)
 
 	require.Error(t, err)
@@ -237,7 +239,7 @@ func TestAnswer_RunNotFound(t *testing.T) {
 	rs := newAnswerRunStore()
 	svc := newAnswerService(rs)
 
-	_, err := svc.Answer(context.Background(), 42, 9999, AnswerRequest{Selected: []string{"a"}})
+	_, err := svc.Answer(context.Background(), 42, 9999, AnswerRequest{Answers: map[string]AnswerItem{"q": {Selected: []string{"a"}}}})
 	require.Error(t, err)
 }
 
@@ -258,7 +260,7 @@ func TestAnswer_NoPendingJSON(t *testing.T) {
 	}
 	_ = rs.Create(context.Background(), run)
 
-	_, err := svc.Answer(context.Background(), userID, run.ID, AnswerRequest{Selected: []string{"a"}})
+	_, err := svc.Answer(context.Background(), userID, run.ID, AnswerRequest{Answers: map[string]AnswerItem{"q": {Selected: []string{"a"}}}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no pending question json")
 }
@@ -270,33 +272,42 @@ func TestAnswer_AnswerAndClearError(t *testing.T) {
 	userID := uint(42)
 	runID := seedAnswerRun(rs, userID, string(TerminalWaitingForUserChoice))
 
-	_, err := svc.Answer(context.Background(), userID, runID, AnswerRequest{Selected: []string{"a"}})
+	_, err := svc.Answer(context.Background(), userID, runID, AnswerRequest{Answers: map[string]AnswerItem{"Which region?": {Selected: []string{"北"}}}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "atomic answer+clear")
 }
 
 func TestBuildAnswerMessage(t *testing.T) {
-	pendingJSON := []byte(`{"question":"Which region?","options":[{"key":"a","label":"北"}],"multi_select":false}`)
-	msg := buildAnswerMessage(pendingJSON, []string{"a", "b"}, "hello")
-	assert.Contains(t, msg, "[user answered]")
-	assert.Contains(t, msg, "Which region?")
-	assert.Contains(t, msg, `["a","b"]`)
-	assert.Contains(t, msg, "hello")
+	pending := parsePending(t, `{"question":"Which region?","options":[{"key":"a","label":"北"}],"multi_select":false}`)
+	msg := buildAnswerMessage(pending, map[string]AnswerItem{
+		"Which region?": {Selected: []string{"北", "南"}, FreeText: "hello"},
+	})
+	assert.Contains(t, msg, "用户已回答")
+	assert.Contains(t, msg, "「Which region?」")
+	// selected labels joined by 、, free text appended after ；
+	assert.Contains(t, msg, "北、南；hello")
 }
 
 func TestBuildAnswerMessage_NoFreeText(t *testing.T) {
-	pendingJSON := []byte(`{"question":"Pick one","options":[{"key":"x","label":"X"}],"multi_select":false}`)
-	msg := buildAnswerMessage(pendingJSON, []string{"x"}, "")
-	assert.Contains(t, msg, "[user answered]")
-	assert.Contains(t, msg, "Pick one")
-	assert.NotContains(t, msg, "Free text")
+	pending := parsePending(t, `{"question":"Pick one","options":[{"key":"x","label":"X"}],"multi_select":false}`)
+	msg := buildAnswerMessage(pending, map[string]AnswerItem{
+		"Pick one": {Selected: []string{"X"}},
+	})
+	assert.Contains(t, msg, "「Pick one」")
+	assert.Contains(t, msg, "X")
+	// No trailing separator when there is no free text.
+	assert.NotContains(t, msg, "X；")
 }
 
-func TestBuildAnswerMessage_UnparsableJSON(t *testing.T) {
-	// Malformed JSON should not panic; fallback question text used.
-	msg := buildAnswerMessage([]byte(`not-json`), []string{"a"}, "")
-	assert.Contains(t, msg, "[user answered]")
-	assert.Contains(t, msg, "<unparseable question>")
+func TestBuildAnswerMessage_EmptyPending_FallsBackToAnswers(t *testing.T) {
+	// An empty/corrupt pending payload must not panic; the answers still render
+	// via the deterministic fallback so the LLM keeps the context.
+	msg := buildAnswerMessage(YieldPayload{}, map[string]AnswerItem{
+		"某个问题?": {Selected: []string{"某选项"}},
+	})
+	assert.Contains(t, msg, "用户已回答")
+	assert.Contains(t, msg, "「某个问题?」")
+	assert.Contains(t, msg, "某选项")
 }
 
 // test(qa): reproduce dev run #119 — after answering an ask_user_question pause,
@@ -313,7 +324,9 @@ func TestAnswer_Resume_InjectsPriorTranscriptAsHistory(t *testing.T) {
 	transcript := `[{"role":"user","content":"为莫小派做小红书定位调研"},{"role":"assistant","content":"我先联网检索莫小派的公开信息"},{"role":"tool_group","tool_calls":[{"tool_name":"web_search"}]},{"role":"assistant","content":"已找到部分信息，需要确认创办初心"}]`
 	runID := seedAnswerRunWithTranscript(rs, userID, transcript)
 
-	_, err := svc.Answer(context.Background(), userID, runID, AnswerRequest{Selected: []string{"我口述"}, FreeText: "2020年创办，创始人是前MCN操盘手"})
+	_, err := svc.Answer(context.Background(), userID, runID, AnswerRequest{Answers: map[string]AnswerItem{
+		"公司全称?": {Selected: []string{"我口述"}, FreeText: "2020年创办，创始人是前MCN操盘手"},
+	}})
 	require.NoError(t, err)
 
 	select {
@@ -323,7 +336,7 @@ func TestAnswer_Resume_InjectsPriorTranscriptAsHistory(t *testing.T) {
 	}
 
 	require.True(t, runner.runCalled)
-	assert.Contains(t, runner.capturedReq.Input, "[user answered]", "the answer must become the resume Input")
+	assert.Contains(t, runner.capturedReq.Input, "用户已回答", "the answer must become the resume Input")
 	assert.Equal(t, runID, runner.capturedReq.ExistingRunID, "resume must target the same run")
 	hist := runner.capturedReq.History
 	require.NotEmpty(t, hist, "resumed agent must receive its pre-yield transcript as History (else it forgets all prior research)")
@@ -344,7 +357,9 @@ func TestAnswer_FreeTextOnly_Succeeds(t *testing.T) {
 	userID := uint(42)
 	runID := seedAnswerRun(rs, userID, string(TerminalWaitingForUserChoice))
 
-	resp, err := svc.Answer(context.Background(), userID, runID, AnswerRequest{Selected: nil, FreeText: "我们主要服务留学生，客单价3000"})
+	resp, err := svc.Answer(context.Background(), userID, runID, AnswerRequest{Answers: map[string]AnswerItem{
+		"Which region?": {FreeText: "我们主要服务留学生，客单价3000"},
+	}})
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	assert.Equal(t, "resumed", resp.Status)
@@ -357,6 +372,8 @@ func TestAnswer_EmptySelectionAndFreeText_Rejected(t *testing.T) {
 	userID := uint(42)
 	runID := seedAnswerRun(rs, userID, string(TerminalWaitingForUserChoice))
 
-	_, err := svc.Answer(context.Background(), userID, runID, AnswerRequest{Selected: nil, FreeText: "   "})
+	_, err := svc.Answer(context.Background(), userID, runID, AnswerRequest{Answers: map[string]AnswerItem{
+		"Which region?": {Selected: nil, FreeText: "   "},
+	}})
 	require.Error(t, err, "an answer with neither an option nor free text must be rejected")
 }

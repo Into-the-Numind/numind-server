@@ -237,12 +237,12 @@ func TestRoundTrip_StateChange(t *testing.T) {
 
 // TestRoundTrip_QuestionPrompt verifies QuestionPromptPayload round-trip.
 func TestRoundTrip_QuestionPrompt(t *testing.T) {
-	p := QuestionPromptPayload{
+	p := QuestionPromptPayload{Questions: []QuestionPromptItem{{
 		Question:    "Which format?",
 		Options:     []QuestionOption{{Label: "PDF"}, {Label: "CSV", Description: "comma-separated"}},
 		Header:      "Please choose",
 		MultiSelect: false,
-	}
+	}}}
 	got := roundTrip(t, EventQuestionPrompt, p)
 	assertEventFields(t, got, EventQuestionPrompt, 1, 42)
 
@@ -250,8 +250,11 @@ func TestRoundTrip_QuestionPrompt(t *testing.T) {
 	if err := json.Unmarshal(got.Data, &decoded); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
-	if len(decoded.Options) != 2 {
-		t.Errorf("Options len: got %d, want 2", len(decoded.Options))
+	if len(decoded.Questions) != 1 {
+		t.Fatalf("Questions len: got %d, want 1", len(decoded.Questions))
+	}
+	if len(decoded.Questions[0].Options) != 2 {
+		t.Errorf("Options len: got %d, want 2", len(decoded.Questions[0].Options))
 	}
 }
 

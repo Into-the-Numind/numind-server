@@ -549,11 +549,11 @@ func TestConsumeEinoStream_YieldViaPendingState(t *testing.T) {
 	state := &StreamSessionState{
 		Ch:    ch,
 		RunID: run.ID,
-		PendingYield: &YieldPayload{
+		PendingYield: &YieldPayload{Questions: []YieldQuestion{{
 			Question:    "你想要哪种格式?",
 			Options:     []YieldOption{{Key: "pdf", Label: "PDF"}, {Key: "csv", Label: "CSV 表格"}},
 			MultiSelect: false,
-		},
+		}}},
 	}
 	ctx := WithStreamState(context.Background(), state)
 	sr := makeStreamReader([]*schema.Message{}) // empty → clean EOF
@@ -572,10 +572,11 @@ func TestConsumeEinoStream_YieldViaPendingState(t *testing.T) {
 
 	var qp stream.QuestionPromptPayload
 	require.NoError(t, json.Unmarshal(qps[0].Data, &qp))
-	assert.Equal(t, "你想要哪种格式?", qp.Question)
-	require.Len(t, qp.Options, 2, "structured options must be forwarded (not dropped/stringified)")
-	assert.Equal(t, "PDF", qp.Options[0].Label)
-	assert.Equal(t, "CSV 表格", qp.Options[1].Label)
+	require.Len(t, qp.Questions, 1)
+	assert.Equal(t, "你想要哪种格式?", qp.Questions[0].Question)
+	require.Len(t, qp.Questions[0].Options, 2, "structured options must be forwarded (not dropped/stringified)")
+	assert.Equal(t, "PDF", qp.Questions[0].Options[0].Label)
+	assert.Equal(t, "CSV 表格", qp.Questions[0].Options[1].Label)
 
 	terms := allEventsOfType(evs, stream.EventTerminal)
 	require.Len(t, terms, 1)
@@ -603,10 +604,10 @@ func TestConsumeEinoStream_YieldViaStreamError(t *testing.T) {
 	ctx := WithStreamState(context.Background(), state)
 
 	sr, sw := schema.Pipe[*schema.Message](4)
-	_ = sw.Send(nil, &yieldError{Payload: YieldPayload{
+	_ = sw.Send(nil, &yieldError{Payload: YieldPayload{Questions: []YieldQuestion{{
 		Question: "继续吗?",
 		Options:  []YieldOption{{Key: "y", Label: "继续"}, {Key: "n", Label: "停止"}},
-	}})
+	}}}})
 	sw.Close()
 
 	result, err := r.consumeEinoStream(ctx, run, sr, ch, st, time.Now())

@@ -506,17 +506,31 @@ type agentMessage struct {
 	// Question-prompt fields (type='question_prompt'): synthesized for a run
 	// paused at ask_user_question so a reloaded session re-renders the
 	// interactive card and the learner can answer (yield-session-reload fix).
-	Question     string              `json:"question,omitempty"`
-	Options      []questionPromptOpt `json:"options,omitempty"`
-	Header       string              `json:"header,omitempty"`
-	MultiSelect  bool                `json:"multi_select,omitempty"`  // omitempty: shared agentMessage struct — false would pollute every non-question message
-	AnswerStatus string              `json:"answer_status,omitempty"` // 'pending' | 'answered'
+	// agent-multi-question: a run may pose 1-4 questions, carried as an array
+	// whose item shape matches the live stream QuestionPromptItem so the
+	// frontend renders reloaded and streamed questions identically. omitempty:
+	// agentMessage is a shared union struct — without it every non-question
+	// message would serialize "questions":null. A question_prompt message always
+	// carries >=1 question (synthesizeQuestionPrompt returns false otherwise), so
+	// the frontend always sees a populated array on the messages it reads it from.
+	Questions    []questionPromptItem `json:"questions,omitempty"`
+	AnswerStatus string               `json:"answer_status,omitempty"` // 'pending' | 'answered'
 }
 
 // questionPromptOpt mirrors the frontend QuestionPromptOption {label, description}.
 type questionPromptOpt struct {
 	Label       string `json:"label"`
 	Description string `json:"description,omitempty"`
+}
+
+// questionPromptItem is one question in a synthesized question_prompt message.
+// Its JSON shape matches the live stream.QuestionPromptItem so the frontend
+// renders a reloaded question identically to a streamed one.
+type questionPromptItem struct {
+	Question    string              `json:"question"`
+	Options     []questionPromptOpt `json:"options,omitempty"`
+	Header      string              `json:"header,omitempty"`
+	MultiSelect bool                `json:"multi_select"`
 }
 
 // synthesizeQuestionPrompt builds a question_prompt agentMessage from a run's
@@ -530,21 +544,35 @@ func synthesizeQuestionPrompt(run *model.AgentRun) (agentMessage, bool) {
 	if len(run.PendingQuestionJSON) == 0 || string(run.PendingQuestionJSON) == "null" {
 		return agentMessage{}, false
 	}
-	var p struct {
-		Question    string `json:"question"`
-		Header      string `json:"header"`
-		MultiSelect bool   `json:"multi_select"`
-		Options     []struct {
-			Label       string `json:"label"`
-			Description string `json:"description"`
-		} `json:"options"`
-	}
-	if err := json.Unmarshal(run.PendingQuestionJSON, &p); err != nil || p.Question == "" {
+	// ParsePendingQuestion wraps legacy single-question rows into a one-element
+	// array, so both old and new pending_question_json reload uniformly.
+	payload, err := ParsePendingQuestion(run.PendingQuestionJSON)
+	if err != nil || len(payload.Questions) == 0 {
 		return agentMessage{}, false
 	}
-	opts := make([]questionPromptOpt, 0, len(p.Options))
-	for _, o := range p.Options {
-		opts = append(opts, questionPromptOpt{Label: o.Label, Description: o.Description})
+	items := make([]questionPromptItem, 0, len(payload.Questions))
+	for _, q := range payload.Questions {
+		// Skip a malformed/blank question rather than render an empty card. The
+		// write path validates every question non-empty, so this only guards
+		// against a corrupt/manually-edited row.
+		if q.Question == "" {
+			continue
+		}
+		// The backend YieldOption carries a machine `key`, but the client
+		// identifies options by label, so key is intentionally not forwarded.
+		opts := make([]questionPromptOpt, 0, len(q.Options))
+		for _, o := range q.Options {
+			opts = append(opts, questionPromptOpt{Label: o.Label, Description: o.Description})
+		}
+		items = append(items, questionPromptItem{
+			Question:    q.Question,
+			Options:     opts,
+			Header:      q.Header,
+			MultiSelect: q.MultiSelect,
+		})
+	}
+	if len(items) == 0 {
+		return agentMessage{}, false
 	}
 	ts := run.StartedAt.UTC().Format(time.RFC3339)
 	if run.PendingQuestionAt != nil {
@@ -554,10 +582,7 @@ func synthesizeQuestionPrompt(run *model.AgentRun) (agentMessage, bool) {
 		ID:           "q-" + strconv.FormatUint(run.ID, 10),
 		Type:         "question_prompt",
 		RunID:        run.ID,
-		Question:     p.Question,
-		Options:      opts,
-		Header:       p.Header,
-		MultiSelect:  p.MultiSelect,
+		Questions:    items,
 		AnswerStatus: "pending",
 		Timestamp:    ts,
 	}, true

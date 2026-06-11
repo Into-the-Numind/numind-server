@@ -10,9 +10,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// These tests cover the single-question case (one element in the questions
+// array — the most common shape). Multi-question behavior and per-question
+// validation rules live in tool_ask_user_question_multi_test.go.
+
+// oneQuestion wraps a single question into the array input for brevity.
+func oneQuestion(item askUserQuestionItem) []byte {
+	in, _ := json.Marshal(askUserQuestionInput{Questions: []askUserQuestionItem{item}})
+	return in
+}
+
 func TestAskUserQuestionTool_HappyPath(t *testing.T) {
 	tool := NewAskUserQuestionTool()
-	in, _ := json.Marshal(askUserQuestionInput{
+	in := oneQuestion(askUserQuestionItem{
 		Question: "Which region should we target?",
 		Options: []YieldOption{
 			{Key: "north", Label: "北方"},
@@ -30,11 +40,12 @@ func TestAskUserQuestionTool_HappyPath(t *testing.T) {
 
 	var ye *yieldError
 	require.True(t, errors.As(err, &ye), "error must be *yieldError")
-	assert.Equal(t, "Which region should we target?", ye.Payload.Question)
-	assert.Len(t, ye.Payload.Options, 2)
-	assert.Equal(t, "north", ye.Payload.Options[0].Key)
-	assert.Equal(t, "选择", ye.Payload.Header)
-	assert.False(t, ye.Payload.MultiSelect)
+	require.Len(t, ye.Payload.Questions, 1)
+	assert.Equal(t, "Which region should we target?", ye.Payload.Questions[0].Question)
+	assert.Len(t, ye.Payload.Questions[0].Options, 2)
+	assert.Equal(t, "north", ye.Payload.Questions[0].Options[0].Key)
+	assert.Equal(t, "选择", ye.Payload.Questions[0].Header)
+	assert.False(t, ye.Payload.Questions[0].MultiSelect)
 
 	// errors.Is with sentinel.
 	assert.True(t, errors.Is(err, ErrYieldForUserQuestion))
@@ -42,7 +53,7 @@ func TestAskUserQuestionTool_HappyPath(t *testing.T) {
 
 func TestAskUserQuestionTool_HappyPath_ThreeOptions(t *testing.T) {
 	tool := NewAskUserQuestionTool()
-	in, _ := json.Marshal(askUserQuestionInput{
+	in := oneQuestion(askUserQuestionItem{
 		Question: "What format?",
 		Options: []YieldOption{
 			{Key: "a", Label: "PDF"},
@@ -54,7 +65,7 @@ func TestAskUserQuestionTool_HappyPath_ThreeOptions(t *testing.T) {
 	require.Error(t, err)
 	var ye *yieldError
 	require.True(t, errors.As(err, &ye))
-	assert.Len(t, ye.Payload.Options, 3)
+	assert.Len(t, ye.Payload.Questions[0].Options, 3)
 }
 
 func TestAskUserQuestionTool_InvalidJSON(t *testing.T) {
@@ -69,7 +80,7 @@ func TestAskUserQuestionTool_InvalidJSON(t *testing.T) {
 
 func TestAskUserQuestionTool_EmptyQuestion(t *testing.T) {
 	tool := NewAskUserQuestionTool()
-	in, _ := json.Marshal(askUserQuestionInput{
+	in := oneQuestion(askUserQuestionItem{
 		Question: "",
 		Options:  []YieldOption{{Key: "a", Label: "A"}, {Key: "b", Label: "B"}},
 	})
@@ -80,9 +91,9 @@ func TestAskUserQuestionTool_EmptyQuestion(t *testing.T) {
 }
 
 func TestAskUserQuestionTool_NoOptions_OpenEnded(t *testing.T) {
-	// ask-question-options-tolerant: 0 options is now a valid open-ended question.
+	// ask-question-options-tolerant: 0 options is a valid open-ended question.
 	tool := NewAskUserQuestionTool()
-	in, _ := json.Marshal(askUserQuestionInput{
+	in := oneQuestion(askUserQuestionItem{
 		Question: "No options?",
 		Options:  []YieldOption{},
 	})
@@ -94,7 +105,7 @@ func TestAskUserQuestionTool_NoOptions_OpenEnded(t *testing.T) {
 func TestAskUserQuestionTool_FiveOptions_ClampsToFour(t *testing.T) {
 	// ask-question-options-tolerant: >4 options clamp to 4 instead of erroring.
 	tool := NewAskUserQuestionTool()
-	in, _ := json.Marshal(askUserQuestionInput{
+	in := oneQuestion(askUserQuestionItem{
 		Question: "Five options?",
 		Options: []YieldOption{
 			{Key: "a", Label: "A"}, {Key: "b", Label: "B"},
@@ -105,12 +116,12 @@ func TestAskUserQuestionTool_FiveOptions_ClampsToFour(t *testing.T) {
 	_, err := tool.Execute(context.Background(), ToolInput(in))
 	var ye *yieldError
 	require.True(t, errors.As(err, &ye))
-	assert.Len(t, ye.Payload.Options, 4)
+	assert.Len(t, ye.Payload.Questions[0].Options, 4)
 }
 
 func TestAskUserQuestionTool_MissingOptionKey(t *testing.T) {
 	tool := NewAskUserQuestionTool()
-	in, _ := json.Marshal(askUserQuestionInput{
+	in := oneQuestion(askUserQuestionItem{
 		Question: "Missing key?",
 		Options:  []YieldOption{{Key: "", Label: "A"}, {Key: "b", Label: "B"}},
 	})
@@ -122,7 +133,7 @@ func TestAskUserQuestionTool_MissingOptionKey(t *testing.T) {
 
 func TestAskUserQuestionTool_HeaderTooLong(t *testing.T) {
 	tool := NewAskUserQuestionTool()
-	in, _ := json.Marshal(askUserQuestionInput{
+	in := oneQuestion(askUserQuestionItem{
 		Question: "Long header?",
 		Options:  []YieldOption{{Key: "a", Label: "A"}, {Key: "b", Label: "B"}},
 		Header:   "这个标题超过了十二个字符的限制",
@@ -152,28 +163,28 @@ func TestAskUserQuestionTool_TenOptions_ClampsAndYields(t *testing.T) {
 	for i := range opts {
 		opts[i] = YieldOption{Key: string(rune('a' + i)), Label: string(rune('A' + i))}
 	}
-	in, _ := json.Marshal(askUserQuestionInput{Question: "Pick?", Options: opts})
+	in := oneQuestion(askUserQuestionItem{Question: "Pick?", Options: opts})
 	_, err := tool.Execute(context.Background(), ToolInput(in))
 	var ye *yieldError
 	require.True(t, errors.As(err, &ye), "10 options must clamp + yield, not crash the run")
-	assert.Len(t, ye.Payload.Options, 4, "options clamped to 4")
+	assert.Len(t, ye.Payload.Questions[0].Options, 4, "options clamped to 4")
 }
 
 // A pure open-ended question (0 options) is valid — the user answers entirely
 // via the always-present free-text box (ask-question-freetext).
 func TestAskUserQuestionTool_ZeroOptions_OpenEndedYields(t *testing.T) {
 	tool := NewAskUserQuestionTool()
-	in, _ := json.Marshal(askUserQuestionInput{Question: "请提供你们的陪跑周期和价格", Options: []YieldOption{}})
+	in := oneQuestion(askUserQuestionItem{Question: "请提供你们的陪跑周期和价格", Options: []YieldOption{}})
 	_, err := tool.Execute(context.Background(), ToolInput(in))
 	var ye *yieldError
 	require.True(t, errors.As(err, &ye), "0 options (open-ended) must yield, not error")
-	assert.Empty(t, ye.Payload.Options)
+	assert.Empty(t, ye.Payload.Questions[0].Options)
 }
 
 // Exactly 1 option is not a meaningful choice — still rejected.
 func TestAskUserQuestionTool_OneOption_Rejected(t *testing.T) {
 	tool := NewAskUserQuestionTool()
-	in, _ := json.Marshal(askUserQuestionInput{Question: "Only one?", Options: []YieldOption{{Key: "a", Label: "A"}}})
+	in := oneQuestion(askUserQuestionItem{Question: "Only one?", Options: []YieldOption{{Key: "a", Label: "A"}}})
 	_, err := tool.Execute(context.Background(), ToolInput(in))
 	require.Error(t, err)
 	var ye *yieldError
