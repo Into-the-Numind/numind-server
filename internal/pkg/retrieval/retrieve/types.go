@@ -28,6 +28,14 @@ type Options struct {
 	PrewrittenQueries []string // 已有改写结果直接复用（非空则跳过 rewriter；opinion 第二 scope 用，保 I1）
 	History           []string // 多轮历史，传给 QueryRewriter
 	BillingLabel      string   // 计费/trace 归因
+
+	// RerankMinScore 最低 rerank 分阈值。0=用现有默认（rerankScoreThreshold 常量 0.3）；
+	// >0=用此值。chatbot 通用问答传 0.6 丢弃低相关度内容；salesrag 传 0（保现状）。
+	RerankMinScore float32
+	// RerankNoFloor 关闭保底：true=全部 chunk 都低于阈值时返回空（不兜底 top-1）；
+	// false(默认)=保留 rerank top-1（salesrag 现有行为，逐位一致）。
+	// chatbot 传 true：召回全是垃圾时返回空 → 走纯聊天而非 grounding 在垃圾上。
+	RerankNoFloor bool
 }
 
 // RetrievalResult 检索结果。Chunks 为去重 + 可选重排后的最终切片，

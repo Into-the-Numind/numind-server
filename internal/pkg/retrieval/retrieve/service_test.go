@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/retrieval/domain"
 	"numind-server/internal/pkg/retrieval/port"
 )
@@ -499,5 +500,93 @@ func TestRetrieve_RerankSingleChunk_ShortCircuit(t *testing.T) {
 	}
 	if len(res.Chunks) != 1 || res.Chunks[0].ID != "only" {
 		t.Errorf("want single chunk 'only', got %+v", res.Chunks)
+	}
+}
+
+// --- bug-from-customer 复现测试（Rule 11） ---
+//
+// 客户在 dev 实测：chatbot「AI 时代的创业第一课」（KB《创始人手册》）问
+// 「创业要经过哪几个阶段」，召回的全是相关度 40-50% 的「老板做 IP/市场营销」
+// 不相关内容。rerank 阈值 0.3 + 保底(keep top-1)把这些低相关度垃圾也当「资料」
+// 喂进 prompt，bot 忠实 grounding 后给困惑回答。
+//
+// 根因 F2：检索主干没有「全部低于阈值时整体丢弃」的机制——
+//   - 阈值写死 0.3 常量，无法按调用点抬高；
+//   - 第一条永远保底（floor），即便它只有 0.45 的相关度。
+//
+// 期望（修复后）：调用点能传高阈值 + NoFloor，使「全部 chunk 都低于阈值」时
+// 返回空，让 chatbot 走纯聊天而非 grounding 在垃圾上。
+//
+// 本测试针对纯过滤逻辑 applyRerankFilter（从 rerankWithLimit 抽出，可控 score，
+// 不依赖 headless aiservice 的降级路径）：
+//   - 修复前 FAIL（applyRerankFilter / Options.RerankMinScore / Options.RerankNoFloor
+//     皆不存在 → 编译失败 = bug 在「无机制丢弃低相关度」上得证）；
+//   - 修复后 PASS。
+func TestApplyRerankFilter_HighThresholdNoFloor_DropsAllLowRelevance(t *testing.T) {
+	// 模拟客户场景：4 个 chunk，rerank 分都在 40-50%（全是不相关内容）。
+	chunks := []domain.KnowledgeChunk{
+		chunk("ip", 1), chunk("marketing", 1), chunk("brand", 1), chunk("traffic", 1),
+	}
+	rerankResults := []aiservice.RerankResult{
+		{Index: 0, Score: 0.48},
+		{Index: 1, Score: 0.45},
+		{Index: 2, Score: 0.42},
+		{Index: 3, Score: 0.40},
+	}
+
+	// chatbot 调用点：高阈值 0.6 + NoFloor=true → 全部低于阈值 → 返回空。
+	got := applyRerankFilter(chunks, rerankResults, Options{
+		RerankMinScore: 0.6,
+		RerankNoFloor:  true,
+	})
+	if len(got) != 0 {
+		ids := make([]string, len(got))
+		for i, c := range got {
+			ids[i] = c.ID
+		}
+		t.Fatalf("high threshold + NoFloor: want 0 chunks (all 40-50%% below 0.6 dropped), got %d %v", len(got), ids)
+	}
+}
+
+// TestApplyRerankFilter_DefaultOptions_SalesragBehaviorUnchanged 锁死 salesrag
+// 现有行为：默认 Options（RerankMinScore=0 → 用 0.3 常量；RerankNoFloor=false → 保底）
+// 必须与抽取前逐位一致——第一条始终保留，后续 <0.3 丢弃，结果空时兜底 top-1。
+func TestApplyRerankFilter_DefaultOptions_SalesragBehaviorUnchanged(t *testing.T) {
+	chunks := []domain.KnowledgeChunk{
+		chunk("hi", 1), chunk("mid", 1), chunk("lo", 1),
+	}
+	rerankResults := []aiservice.RerankResult{
+		{Index: 0, Score: 0.9},  // 第一条：保留
+		{Index: 1, Score: 0.5},  // >=0.3：保留
+		{Index: 2, Score: 0.12}, // <0.3：丢弃
+	}
+	got := applyRerankFilter(chunks, rerankResults, Options{}) // 默认值
+	if len(got) != 2 || got[0].ID != "hi" || got[1].ID != "mid" {
+		ids := make([]string, len(got))
+		for i, c := range got {
+			ids[i] = c.ID
+		}
+		t.Fatalf("default opts: want [hi mid] (0.3 阈值, lo 丢弃), got %v", ids)
+	}
+	if got[0].Score != 0.9 || got[1].Score != 0.5 {
+		t.Errorf("scores should be written from rerank: got %v %v", got[0].Score, got[1].Score)
+	}
+}
+
+// TestApplyRerankFilter_DefaultFloor_KeepsTop1WhenAllBelow 锁死 salesrag 保底语义：
+// 默认（NoFloor=false）下，即便全部低于阈值，第一条永远保留（兜底 top-1）。
+func TestApplyRerankFilter_DefaultFloor_KeepsTop1WhenAllBelow(t *testing.T) {
+	chunks := []domain.KnowledgeChunk{chunk("a", 1), chunk("b", 1)}
+	rerankResults := []aiservice.RerankResult{
+		{Index: 0, Score: 0.2}, // 第一条：保底保留（即便 <0.3）
+		{Index: 1, Score: 0.1}, // <0.3：丢弃
+	}
+	got := applyRerankFilter(chunks, rerankResults, Options{}) // 默认保底
+	if len(got) != 1 || got[0].ID != "a" {
+		ids := make([]string, len(got))
+		for i, c := range got {
+			ids[i] = c.ID
+		}
+		t.Fatalf("default floor: want [a] (top-1 保底), got %v", ids)
 	}
 }
