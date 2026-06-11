@@ -2,7 +2,6 @@ package adapter
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +9,7 @@ import (
 	"strings"
 
 	"numind-server/internal/pkg/aiservice"
+	"numind-server/internal/pkg/errno"
 )
 
 // runOAIStream reads an OpenAI-compatible SSE stream from r and sends
@@ -189,9 +189,13 @@ func runOAIStream(
 	}
 
 	// Idle-timeout: the watchdog closed the body after `idle` of no data. Surface a
-	// clear, distinct error (wrapping context.DeadlineExceeded so it classifies as a
-	// timeout) instead of a generic scan_error, so the run fails fast and the gateway
-	// can retry/fallback rather than hanging on the HTTP timeout (dev run 138).
+	// clear, distinct error wrapping errno.ErrAIProviderTimeout — a provider stall IS
+	// a provider timeout, and unlike context.DeadlineExceeded (which retryableError
+	// treats as non-retryable) it classifies as a RETRYABLE provider timeout. So the
+	// run fails fast (60s) instead of hanging on the 10-min HTTP timeout (dev run 138),
+	// and a future streaming-retry wrapper can re-attempt the same provider before the
+	// first chunk. (The current sync Retry middleware does not see this async stream
+	// error — see retry.go; that wrapper is the deferred Part B.)
 	if idleWatcher != nil && idleWatcher.tripped.Load() {
 		ch <- aiservice.ChatChunk{
 			Index:         index,
@@ -200,7 +204,7 @@ func runOAIStream(
 			Usage:         lastUsage,
 			Provider:      provider,
 			Model:         resolvedModel,
-			Err:           fmt.Errorf("aiservice stream idle timeout: no data for %s: %w", idleWatcher.idle, context.DeadlineExceeded),
+			Err:           fmt.Errorf("aiservice stream idle timeout: no data for %s: %w", idleWatcher.idle, errno.ErrAIProviderTimeout),
 			TraceMetadata: traceMeta,
 		}
 		return
