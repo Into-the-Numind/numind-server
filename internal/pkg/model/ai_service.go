@@ -97,11 +97,18 @@ type AIService struct {
 	BaseModelID      *uint64         `gorm:"index:idx_base_model" json:"base_model_id"`
 	SupportsThinking bool            `gorm:"default:false" json:"supports_thinking"`
 	ThinkingOnly     bool            `gorm:"default:false" json:"thinking_only"`
-	Icon             string          `gorm:"size:50" json:"icon"`
-	SortOrder        int             `gorm:"default:0" json:"sort_order"`
-	IsActive         bool            `gorm:"default:true" json:"is_active"`
-	CreatedAt        time.Time       `json:"created_at"`
-	UpdatedAt        time.Time       `json:"updated_at"`
+	// ThinkingStyle selects HOW thinking is activated on the OpenAI-compatible
+	// wire when SupportsThinking && !ThinkingOnly. Empty string is the legacy
+	// default and behaves identically to "reasoning_effort" (today's behavior).
+	//   "" / "reasoning_effort" → reasoning_effort:"medium"
+	//   "enable_thinking_kwarg" → chat_template_kwargs:{"enable_thinking":true} (Qwen/vLLM style)
+	//   "none"                  → inject nothing (supports thinking but no activation field)
+	ThinkingStyle string    `gorm:"size:32;default:''" json:"thinking_style"`
+	Icon          string    `gorm:"size:50" json:"icon"`
+	SortOrder     int       `gorm:"default:0" json:"sort_order"`
+	IsActive      bool      `gorm:"default:true" json:"is_active"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // TableName returns the table name for AIService.
