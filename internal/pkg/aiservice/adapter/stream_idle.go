@@ -9,14 +9,15 @@ import (
 )
 
 // defaultStreamIdleTimeout is the fallback idle window for streaming LLM reads when
-// aiservice.stream_idle_timeout is unset. 120s is generous enough that a healthy
-// thinking model (deepseek-v4-pro streams reasoning continuously) never trips it,
-// yet short enough that a stalled provider stream is killed in 2 minutes instead of
-// hanging the whole agent run for minutes (dev run 138 hung ~6.5 min).
-const defaultStreamIdleTimeout = 120 * time.Second
+// aiservice.stream_idle_timeout is unset. 60s is generous enough that a healthy
+// thinking model (deepseek-v4-pro streams reasoning continuously) never trips it
+// — dev run 140 streamed fine with no false trip — yet short enough that a stalled
+// provider stream fails fast in 1 minute instead of hanging the agent run for minutes
+// (dev run 138 hung ~6.5 min).
+const defaultStreamIdleTimeout = 60 * time.Second
 
 // streamIdleTimeout returns the configured idle timeout for streaming LLM reads.
-// Config key aiservice.stream_idle_timeout (e.g. "2m", "90s"); unset → 120s default.
+// Config key aiservice.stream_idle_timeout (e.g. "60s", "90s"); unset → 60s default.
 // An explicit "0s" disables the watchdog entirely (safety valve).
 func streamIdleTimeout() time.Duration {
 	if viper.IsSet("aiservice.stream_idle_timeout") {

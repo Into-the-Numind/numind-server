@@ -1,7 +1,6 @@
 package adapter
 
 import (
-	"context"
 	"io"
 	"strings"
 	"sync"
@@ -13,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"numind-server/internal/pkg/aiservice"
+	"numind-server/internal/pkg/errno"
 )
 
 func TestStreamIdleWatcher_TripsAfterIdle(t *testing.T) {
@@ -73,7 +73,7 @@ func TestRunOAIStream_IdleTimeout_StalledStream(t *testing.T) {
 			}
 			if strings.Contains(chunk.FinishReason, "idle_timeout") {
 				gotIdle = true
-				assert.ErrorIs(t, chunk.Err, context.DeadlineExceeded, "idle timeout must classify as a deadline error")
+				assert.ErrorIs(t, chunk.Err, errno.ErrAIProviderTimeout, "idle timeout must classify as a retryable provider timeout")
 			}
 		case <-timeout:
 			t.Fatal("runOAIStream hung — no idle_timeout chunk emitted (the run-138 bug)")
