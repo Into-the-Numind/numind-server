@@ -144,7 +144,15 @@ func (s *StudentRunService) Answer(ctx context.Context, userID uint, runID uint6
 		}
 	}
 
-	// 6. Restart runner in a detached goroutine (detached ctx, same as Create).
+	// 6a. Re-establish the narration→buffer forwarder for the resumed run. Phase 1's
+	// forwarder exited when RunStream's defer CloseRun closed the channel on yield, so
+	// without this the resumed runner's narration (web_search, chart, image_gen, …) is
+	// emitted but never drained into the poll buffer → PollNarration returns the stale
+	// pre-yield events forever and the UI looks frozen ("答完就停"). Same bridge as
+	// Create/RunStream start (student_run_lifecycle.go). nil-safe (graceful degrade).
+	go s.forwardNarration(runID)
+
+	// 6b. Restart runner in a detached goroutine (detached ctx, same as Create).
 	go func() {
 		bgCtx := middleware.NewContextWithUserID(context.Background(), userID)
 		toolNames := toolNamesFromFlags(toolFlags)
