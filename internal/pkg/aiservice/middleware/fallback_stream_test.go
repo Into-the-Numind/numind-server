@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"numind-server/internal/pkg/aiservice"
@@ -111,6 +112,34 @@ func TestFallbackStream_NoAlternates_PropagatesPrimaryError(t *testing.T) {
 	}
 	if len(got) == 0 || got[len(got)-1].Err == nil {
 		t.Errorf("expected the primary error terminal to pass through")
+	}
+}
+
+// TestFallbackStream_ResolveAlternatesError_PropagatesPrimaryError: when the
+// alternates lookup itself fails (e.g. DB timeout), no failover is attempted and
+// the primary error terminal passes through — a lookup failure must not be
+// swallowed as "no alternates → silent success".
+func TestFallbackStream_ResolveAlternatesError_PropagatesPrimaryError(t *testing.T) {
+	primary := dsPrimaryRoute()
+	resolver := &registryStub{primaryRoute: primary, alternatesErr: errors.New("db timeout")}
+	mw := Fallback(Deps{Resolver: resolver, Logger: &mockLogger{}})
+
+	var calls []streamCall
+	inner := streamingProviderHandler(&calls, map[string][]aiservice.ChatChunk{
+		"aihubmix": {idleErrChunk()},
+	})
+
+	resp, err := mw(inner)(context.Background(), primary, aiservice.ChatRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := collectStream(t, resp)
+
+	if len(calls) != 1 {
+		t.Errorf("alternates lookup error → exactly 1 upstream call (primary only), got %d", len(calls))
+	}
+	if len(got) == 0 || got[len(got)-1].Err == nil {
+		t.Errorf("expected the primary error terminal to pass through on alternates lookup failure")
 	}
 }
 

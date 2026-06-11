@@ -170,6 +170,8 @@ func fallbackStream(
 			}
 			c2, ok := r2.(<-chan aiservice.ChatChunk)
 			if !ok {
+				deps.warnw("fallback: streaming alternate returned non-channel response (skipping)",
+					"task_id", route.TaskID, "to_provider", alt.Provider.Name, "to_service_id", alt.ServiceID)
 				continue
 			}
 			deps.warnw("fallback: streaming failover to alternate provider",
