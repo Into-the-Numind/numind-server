@@ -144,6 +144,38 @@ func TestAskUserQuestionTool_HeaderTooLong(t *testing.T) {
 	assert.False(t, errors.As(err, &ye))
 }
 
+// test(qa): reproduce dev run #133 — after the agent finished its web research it
+// tried to "ask everything at once" via a multi-question ask_user_question call.
+// The tool-call JSON arrived truncated ("unexpected end of JSON input" — large
+// payload cut off by the model's output limit / stream), Execute returned a HARD
+// error, it propagated as NodeRunError, and the whole run died model_error — the
+// user saw "服务暂时不可用". A truncated / empty / malformed tool call must be a
+// SOFT error (a tool result fed back to the model, nil Go error) so the run
+// survives and the model can retry with a smaller call.
+//
+// Before the fix this FAILS (each case returns a hard error).
+func TestAskUserQuestionTool_MalformedArgs_SoftErrorNotKill(t *testing.T) {
+	tool := NewAskUserQuestionTool()
+	cases := []struct{ name, args string }{
+		{"truncated mid-json", `{"questions":[{"question":"创始人的故事是什么？","options":[{"key":"a","label":"`},
+		{"empty args", ``},
+		{"empty object (0 questions)", `{}`},
+		{"not json", `not-json`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := tool.Execute(context.Background(), ToolInput(tc.args))
+			// MUST NOT hard-error — a hard error kills the entire run.
+			require.NoError(t, err, "malformed/truncated args must be a soft error, not a run-killer")
+			var ye *yieldError
+			require.False(t, errors.As(err, &ye), "must not be a yield (it did not succeed)")
+			// Soft error carries a message back to the model so it can retry.
+			require.NotNil(t, result)
+			assert.Contains(t, string(result), "error")
+		})
+	}
+}
+
 func TestAskUserQuestionTool_Metadata(t *testing.T) {
 	tool := NewAskUserQuestionTool()
 	assert.Equal(t, "ask_user_question", tool.Name())
