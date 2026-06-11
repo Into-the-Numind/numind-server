@@ -55,6 +55,14 @@ type IStore interface {
 	// Returns errno.ErrAIServiceNotFound when no active route exists for the given key.
 	GetResolvedRouteByModelKey(ctx context.Context, modelKey string) (*resolvedRouteRow, error)
 
+	// ListResolvedRoutesByModel returns ALL active routes for a single service
+	// (model), ordered by priority DESC, id ASC — the same JOIN/filters as
+	// GetResolvedRoute but WITHOUT the LIMIT 1. Used to surface a model's
+	// same-model alternate-provider routes for cross-provider streaming fallback
+	// (e.g. deepseek-v4-pro on both aihubmix and dmxapi). Returns an empty slice
+	// (not an error) when the service has no active routes.
+	ListResolvedRoutesByModel(ctx context.Context, serviceID uint64) ([]*resolvedRouteRow, error)
+
 	// Audit log
 	InsertAuditLog(ctx context.Context, entry *model.AIServiceAuditLog) error
 }
@@ -492,6 +500,102 @@ LIMIT 1
 		ThinkingOnly:     row.ThinkingOnly,
 		ThinkingStyle:    row.ThinkingStyle,
 	}, nil
+}
+
+// ListResolvedRoutesByModel returns all active routes for serviceID, ordered by
+// priority DESC, id ASC. Same JOIN/filters as GetResolvedRoute but without the
+// LIMIT 1, so every provider configured for the model is returned (the primary
+// is the first element; same-model alternates follow). Returns an empty slice
+// when the service is deprecated/inactive or has no active routes.
+func (s *gormStore) ListResolvedRoutesByModel(ctx context.Context, serviceID uint64) ([]*resolvedRouteRow, error) {
+	const q = `
+SELECT
+  s.id                     AS service_id,
+  s.model_key              AS model_key,
+  s.display_name           AS display_name,
+  s.service_type           AS service_type,
+  s.capability_json        AS capability_json,
+  s.latency_tier           AS latency_tier,
+  s.quality_tier           AS quality_tier,
+  s.deprecated_at          AS deprecated_at,
+  s.is_active              AS is_active,
+  s.supports_thinking      AS supports_thinking,
+  s.thinking_only          AS thinking_only,
+  s.thinking_style         AS thinking_style,
+  p.id                     AS provider_id,
+  p.name                   AS provider_name,
+  p.base_url               AS provider_base_url,
+  p.api_key                AS provider_api_key,
+  r.provider_model_id      AS provider_model_id,
+  r.priority               AS route_priority,
+  r.is_active              AS route_is_active
+FROM ai_service s
+JOIN ai_service_route r ON r.model_id = s.id AND r.is_active = true
+JOIN llm_provider p ON p.id = r.provider_id AND p.is_active = true
+WHERE s.id = ?
+  AND s.deprecated_at IS NULL
+  AND s.is_active = true
+ORDER BY r.priority DESC, r.id ASC
+`
+	type rawRow struct {
+		ServiceID         uint64     `gorm:"column:service_id"`
+		ModelKey          string     `gorm:"column:model_key"`
+		DisplayName       string     `gorm:"column:display_name"`
+		ServiceType       string     `gorm:"column:service_type"`
+		CapabilityJSONStr *string    `gorm:"column:capability_json"`
+		LatencyTier       string     `gorm:"column:latency_tier"`
+		QualityTier       string     `gorm:"column:quality_tier"`
+		DeprecatedAt      *time.Time `gorm:"column:deprecated_at"`
+		IsActive          bool       `gorm:"column:is_active"`
+		SupportsThinking  bool       `gorm:"column:supports_thinking"`
+		ThinkingOnly      bool       `gorm:"column:thinking_only"`
+		ThinkingStyle     string     `gorm:"column:thinking_style"`
+		ProviderID        uint64     `gorm:"column:provider_id"`
+		ProviderName      string     `gorm:"column:provider_name"`
+		ProviderBaseURL   string     `gorm:"column:provider_base_url"`
+		ProviderAPIKey    string     `gorm:"column:provider_api_key"`
+		ProviderModelID   string     `gorm:"column:provider_model_id"`
+		RoutePriority     int        `gorm:"column:route_priority"`
+		RouteIsActive     bool       `gorm:"column:route_is_active"`
+	}
+
+	var rows []rawRow
+	if err := s.db.WithContext(ctx).Raw(q, serviceID).Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("gormStore.ListResolvedRoutesByModel: %w", err)
+	}
+
+	out := make([]*resolvedRouteRow, 0, len(rows))
+	for i := range rows {
+		row := rows[i]
+		var capJSON model.JSONMap
+		if row.CapabilityJSONStr != nil && *row.CapabilityJSONStr != "" {
+			if err := json.Unmarshal([]byte(*row.CapabilityJSONStr), &capJSON); err != nil {
+				return nil, fmt.Errorf("gormStore.ListResolvedRoutesByModel: unmarshal capability_json: %w", err)
+			}
+		}
+		out = append(out, &resolvedRouteRow{
+			ServiceID:        row.ServiceID,
+			ModelKey:         row.ModelKey,
+			DisplayName:      row.DisplayName,
+			ServiceType:      row.ServiceType,
+			CapabilityJSON:   capJSON,
+			LatencyTier:      row.LatencyTier,
+			QualityTier:      row.QualityTier,
+			DeprecatedAt:     row.DeprecatedAt,
+			IsActive:         row.IsActive,
+			ProviderID:       row.ProviderID,
+			ProviderName:     row.ProviderName,
+			ProviderBaseURL:  row.ProviderBaseURL,
+			ProviderAPIKey:   row.ProviderAPIKey,
+			ProviderModelID:  row.ProviderModelID,
+			RoutePriority:    row.RoutePriority,
+			RouteIsActive:    row.RouteIsActive,
+			SupportsThinking: row.SupportsThinking,
+			ThinkingOnly:     row.ThinkingOnly,
+			ThinkingStyle:    row.ThinkingStyle,
+		})
+	}
+	return out, nil
 }
 
 // InsertAuditLog inserts an immutable audit log entry.

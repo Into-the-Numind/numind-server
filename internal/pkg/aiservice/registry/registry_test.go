@@ -188,6 +188,11 @@ func (m *mockStore) GetResolvedRouteByModelKey(_ context.Context, modelKey strin
 	return nil, errno.ErrAIServiceNotFound
 }
 
+func (m *mockStore) ListResolvedRoutesByModel(_ context.Context, _ uint64) ([]*resolvedRouteRow, error) {
+	m.dbCallCount["ListResolvedRoutesByModel"]++
+	return nil, nil
+}
+
 func (m *mockStore) InsertAuditLog(_ context.Context, entry *model.AIServiceAuditLog) error {
 	m.dbCallCount["InsertAuditLog"]++
 	m.auditLogs = append(m.auditLogs, entry)
