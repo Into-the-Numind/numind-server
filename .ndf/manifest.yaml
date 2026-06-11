@@ -1,5 +1,24 @@
 schema_version: '2.0'
 features:
+- id: agent-stream-retry
+  track: standard
+  description: 'agent mode 流式 LLM 在「首个内容 chunk 之前」发生 idle timeout(errno.ErrAIProviderTimeout, Part A 已让其快速失败)时自动重试: 同供应商同模型重试 1 次→仍失败降级同模型另一供应商(deepseek-v4-pro: aihubmix→dmxapi, 数据已存在)。已吐内容后的中途断流不重试(快速失败原样透传)。对下游透明(对外仍是一个 <-chan ChatChunk)。Part B = 上线前可靠性硬化最后一环。'
+  classification_reason: 'Standard: 高风险计费逻辑(Reserve/Reconcile 两阶段, 重试绝不能重复预扣/对账)+影响文件>3(gateway/retry/fallback/registry+测试)。无 DB schema(备用路由数据已存在, 仅 registry 查询层 surface)/无新 API 端点/无新外部服务。用户经 AskUserQuestion 确认 Standard(2026-06-12)。'
+  status: active
+  stage: S0
+  repos:
+    numind-server: feature/agent-stream-retry
+  worktrees:
+    numind-server: /private/tmp/wt-agent-stream-retry-numind-server
+  progress:
+    total_tasks: 0
+    completed_tasks: 0
+    reviewed_tasks: 0
+  artifacts:
+    requirement: .ndf/features/agent-stream-retry/requirement.md
+  decisions:
+  - 'S0 (ai 2026-06-12): 复核 A/B/C/D 四锚点(详见 requirement.md)。关键: idle 错误是 IsFinal+Err=ErrAIProviderTimeout 终止 chunk(retryable); WithFirstChunkSent 半接通(无人 set); ChatStream 锁 primary 适配器但 base_url/key 来自 route+aihubmix/dmxapi 共用 dmxapi 适配器故对 agent.run 限制为哑; deepseek-v4-pro 已有 aihubmix(pri10)+dmxapi(pri5) 双路由但 GetResolvedRoute LIMIT 1 只取 top。计费洞察: 同供应商重试放 Retry middleware 内(Reserve 之下)→零重复 Reserve/UsageRecord。Triage=Standard, 用户确认。架构选型(网关层/agent适配器层/Retry+Fallback middleware 流式化)留 S2 reviewer 压测拍板。'
+  blockers: []
 - id: rerank-routing
   track: standard
   description: 'rerank 做成注册表驱动一等能力(多供应商优先级 cascade fallback, 跨异构 provider 用各自适配器), 复用 task_profile_service role=fallback+priority 机制(与主对话模型同套)。起因: 线上 bug——DMXAPI 下架 qwen3-rerank→注册表路由 ali-dashscope 但 ali 适配器无 Rerank 代码→gateway 报 provider ali does not support Rerank, dev+prod rerank 静默失效(已切 dmxapi/bge 止血)。根因: gateway makeHandler 绑死 primary 适配器(fallback 换 route 不换 adapter)+Fallback 仅试 fallbacks[0]+429 非 retryable+ali 无 rerank 适配器。'
