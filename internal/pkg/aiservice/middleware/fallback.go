@@ -7,19 +7,23 @@ import (
 	"numind-server/internal/pkg/errno"
 )
 
-// Fallback returns a Middleware that switches to the first available fallback
-// service when the primary service fails after exhausting Retry attempts
-// (spec §6.5).
+// Fallback returns a Middleware that fails the request over to the configured
+// fallback services when the primary service fails after exhausting Retry
+// attempts (spec §6.5).
 //
-// Contract:
+// Contract (rerank-routing T4 — multi-level cascade):
 //   - Fallback is only triggered after the primary service has failed with a
 //     retryable error (ErrAIProviderTimeout or ErrAIProviderError).
-//   - At most one fallback service is tried (no cascading fallbacks).
-//   - The fallback service call has Retry disabled (skip_retry=true injected
-//     into ctx) so the total upstream call count stays ≤ 3.
-//   - If the fallback service also fails, ErrAIFallbackExhausted is returned.
-//   - The Langfuse generation/span for the fallback call carries the metadata
-//     key fallback_from_service_id (injected via ctx before calling next).
+//   - ALL configured fallback services are tried in priority order (highest
+//     priority first); the first success wins. Any candidate failure (retryable
+//     or not) advances to the next candidate.
+//   - Each fallback call has Retry disabled (skip_retry=true injected into ctx,
+//     re-derived from the original ctx per candidate so it is not compounded),
+//     so each candidate makes a single upstream attempt.
+//   - If every fallback also fails, ErrAIFallbackExhausted is returned with the
+//     list of tried service IDs in its message (provenance for debugging/billing).
+//   - The Langfuse generation/span for each fallback call carries the metadata
+//     key fallback_from_service_id = the PRIMARY service id (root cause).
 //
 // When Deps.Resolver is nil the middleware becomes a transparent passthrough.
 func Fallback(deps Deps) Middleware {
@@ -49,35 +53,45 @@ func Fallback(deps Deps) Middleware {
 				return resp, err
 			}
 
-			// Take the highest-priority fallback (first in the ordered slice).
-			// fallbacks[0] is the highest-priority backup (Task 3 ResolveTask sorts by priority ASC).
-			fbRoute := fallbacks[0]
-
-			// Log fallback trigger.
-			deps.warnw("fallback: switching to fallback service",
+			// Cascade through ALL fallbacks in priority order (rerank-routing T4).
+			// fallbacks is ordered highest-priority-first. Previously only
+			// fallbacks[0] was tried; configuring >1 backup silently ignored the
+			// rest. Now each candidate is attempted until one succeeds.
+			deps.warnw("fallback: engaging cascade",
 				"task_id", route.TaskID,
 				"primary_service_id", route.ServiceID,
-				"fallback_service_id", fbRoute.ServiceID,
-				"fallback_service_key", fbRoute.ServiceKey,
 				"primary_error", err,
+				"candidates", len(fallbacks),
 			)
 
-			// Inject skip_retry + fallback metadata into ctx for the inner chain.
-			fbCtx := withSkipRetry(ctx)
-			fbCtx = withFallbackFromServiceID(fbCtx, route.ServiceID)
+			triedIDs := make([]uint64, 0, len(fallbacks))
+			for i := range fallbacks {
+				fbRoute := fallbacks[i]
+				triedIDs = append(triedIDs, fbRoute.ServiceID)
 
-			fbResp, fbErr := next(fbCtx, &fbRoute, req)
-			if fbErr != nil {
-				// Both primary and fallback failed.
-				deps.warnw("fallback: fallback service also failed",
+				// Inject skip_retry + fallback metadata into ctx for the inner chain.
+				// (Re-derived from the ORIGINAL ctx each iteration so skip_retry is
+				// not compounded across candidates.)
+				fbCtx := withSkipRetry(ctx)
+				fbCtx = withFallbackFromServiceID(fbCtx, route.ServiceID)
+
+				fbResp, fbErr := next(fbCtx, &fbRoute, req)
+				if fbErr == nil {
+					return fbResp, nil
+				}
+				// Any failure (retryable OR not, incl. capability mismatch) on a
+				// last-resort fallback → try the next candidate.
+				deps.warnw("fallback: candidate failed",
 					"task_id", route.TaskID,
 					"fallback_service_id", fbRoute.ServiceID,
+					"fallback_service_key", fbRoute.ServiceKey,
 					"fallback_error", fbErr,
 				)
-				return nil, errno.ErrAIFallbackExhausted
 			}
 
-			return fbResp, nil
+			// All candidates failed — return with provenance for debugging/billing:
+			// the primary error (root cause) + the fallback service IDs we tried.
+			return nil, errno.ErrAIFallbackExhausted.SetMessage("所有 AI 服务（含 fallback）均不可用 (primary err: %v; tried %d fallback(s): %v)", err, len(triedIDs), triedIDs)
 		}
 	}
 }

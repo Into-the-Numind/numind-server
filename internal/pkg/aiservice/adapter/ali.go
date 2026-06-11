@@ -19,6 +19,7 @@ import (
 // Compile-time interface checks.
 var _ ChatAdapter = (*AliAdapter)(nil)
 var _ EmbedAdapter = (*AliAdapter)(nil)
+var _ RerankAdapter = (*AliAdapter)(nil)
 
 // dashscopeEmbedRequest is the DashScope native embedding request (not OpenAI compatible).
 type dashscopeEmbedRequest struct {
@@ -44,6 +45,43 @@ type dashscopeEmbedResponse struct {
 	} `json:"usage"`
 	Code    string `json:"code,omitempty"`
 	Message string `json:"message,omitempty"`
+}
+
+// dashscopeRerankRequest is the DashScope NATIVE text-rerank request. Verified
+// by live probe (2026-06-11): the native endpoint requires the nested
+// input/parameters shape (a flat {model,query,documents} returns HTTP 400
+// "Field required: input.query"). qwen3-rerank and gte-rerank-v2 both accept it.
+type dashscopeRerankRequest struct {
+	Model string `json:"model"`
+	Input struct {
+		Query     string   `json:"query"`
+		Documents []string `json:"documents"`
+	} `json:"input"`
+	Parameters struct {
+		ReturnDocuments bool `json:"return_documents,omitempty"`
+		TopN            int  `json:"top_n,omitempty"`
+	} `json:"parameters"`
+}
+
+// dashscopeRerankResponse is the DashScope NATIVE text-rerank response.
+// Verified shape: {"output":{"results":[{"index":0,"relevance_score":0.86,
+// "document":{"text":"..."}}]},"usage":{"total_tokens":49},"request_id":"..."}.
+type dashscopeRerankResponse struct {
+	Output struct {
+		Results []struct {
+			Index          int     `json:"index"`
+			RelevanceScore float64 `json:"relevance_score"`
+			Document       struct {
+				Text string `json:"text"`
+			} `json:"document"`
+		} `json:"results"`
+	} `json:"output"`
+	Usage struct {
+		TotalTokens int `json:"total_tokens"`
+	} `json:"usage"`
+	Code      string `json:"code,omitempty"`
+	Message   string `json:"message,omitempty"`
+	RequestID string `json:"request_id,omitempty"`
 }
 
 // AliAdapter implements ChatAdapter and EmbedAdapter for Alibaba Cloud
@@ -72,7 +110,7 @@ func (a *AliAdapter) Name() string { return "ali" }
 func (a *AliAdapter) ProviderType() string { return "dashscope" }
 
 // Capabilities lists the capabilities this adapter supports.
-func (a *AliAdapter) Capabilities() []string { return []string{"chat", "embed"} }
+func (a *AliAdapter) Capabilities() []string { return []string{"chat", "embed", "rerank"} }
 
 // Chat performs a non-streaming chat completion against the DashScope
 // OpenAI-compatible endpoint.
@@ -230,6 +268,72 @@ func (a *AliAdapter) Embed(ctx context.Context, route *registry.ResolvedRoute, r
 	}, nil
 }
 
+// Rerank re-scores and re-orders documents using DashScope's NATIVE text-rerank
+// endpoint. We derive the native base from Provider.BaseURL the same way Embed
+// does (replace /compatible-mode/v1 with /api/v1) so the URL stays in sync with
+// config. The model (e.g. qwen3-rerank, gte-rerank-v2) comes from the route's
+// ProviderModelID, so adding a new DashScope rerank model is registry-only.
+func (a *AliAdapter) Rerank(ctx context.Context, route *registry.ResolvedRoute, req aiservice.RerankRequest) (*aiservice.RerankResponse, error) {
+	if len(req.Documents) == 0 {
+		return &aiservice.RerankResponse{Provider: a.Name()}, nil
+	}
+
+	// Same native-base derivation as Embed: the DashScope native rerank path lives
+	// under /api/v1, while the configured BaseURL is the OpenAI-compatible
+	// /compatible-mode/v1 base. ASSUMPTION (consistent with Embed): the provider
+	// BaseURL is the DashScope compatible-mode base; a non-DashScope custom base
+	// without that segment would no-op the replace and append the service path
+	// verbatim. All registered ali-dashscope providers use the standard base.
+	nativeBase := strings.Replace(route.Provider.BaseURL, "/compatible-mode/v1", "/api/v1", 1)
+	rerankURL := nativeBase + "/services/rerank/text-rerank/text-rerank"
+
+	var dsReq dashscopeRerankRequest
+	dsReq.Model = route.ProviderModelID
+	dsReq.Input.Query = req.Query
+	dsReq.Input.Documents = req.Documents
+	dsReq.Parameters.ReturnDocuments = true
+	if req.TopN > 0 && req.TopN <= len(req.Documents) {
+		dsReq.Parameters.TopN = req.TopN
+	}
+
+	body, err := json.Marshal(dsReq)
+	if err != nil {
+		return nil, fmt.Errorf("ali.Rerank: marshal: %w", err)
+	}
+
+	respBytes, err := a.doRawPost(ctx, route.Provider.APIKey, rerankURL, body)
+	if err != nil {
+		return nil, fmt.Errorf("ali.Rerank: %w", err)
+	}
+
+	var dsResp dashscopeRerankResponse
+	if err := json.Unmarshal(respBytes, &dsResp); err != nil {
+		return nil, fmt.Errorf("ali.Rerank: decode: %w", err)
+	}
+	if dsResp.Code != "" {
+		return nil, fmt.Errorf("ali.Rerank: provider error [%s]: %s", dsResp.Code, dsResp.Message)
+	}
+
+	results := make([]aiservice.RerankResult, 0, len(dsResp.Output.Results))
+	for _, r := range dsResp.Output.Results {
+		doc := r.Document.Text
+		if doc == "" && r.Index < len(req.Documents) {
+			doc = req.Documents[r.Index]
+		}
+		results = append(results, aiservice.RerankResult{
+			Index:    r.Index,
+			Score:    r.RelevanceScore,
+			Document: doc,
+		})
+	}
+
+	return &aiservice.RerankResponse{
+		Results:  results,
+		Model:    route.ProviderModelID,
+		Provider: a.Name(),
+	}, nil
+}
+
 // ----------------------------------------------------------------------------
 // Internal helpers
 // ----------------------------------------------------------------------------
@@ -337,9 +441,25 @@ func wrapHTTPClientErr(op string, err error) error {
 
 // wrapHTTPStatusErr maps HTTP status codes to typed errno values.
 //   - 5xx → ErrAIProviderError (retriable)
-//   - 4xx → plain fmt.Errorf (not retriable)
+//   - 429 Too Many Requests / 408 Request Timeout → ErrAIProviderError (retriable):
+//     these are TRANSIENT — a rate-limited model (e.g. the free bge-reranker
+//     5 req/min tier) or a server-side request-receipt/idle timeout should engage
+//     the middleware Retry/Fallback so the request can fail over to another
+//     provider, not hard-fail. (rerank-routing T3)
+//   - other 4xx → plain fmt.Errorf (not retriable — genuine client/config errors)
+//
+// Shared by the ali, dmxapi and volc adapters (defined once here), so all three
+// gain 429/408 fail-over behavior uniformly.
+//
+// Interaction with httpclient transport retries: httpclient.shouldRetryByStatus
+// already retries 429 at the transport layer up to the adapter's RetryPolicy
+// MaxRetries (ali rerank uses doRawPost with MaxRetries=0 → single attempt;
+// dmxapi doPost uses a small MaxRetries). After those are exhausted the 429
+// surfaces here and now (T3) triggers a cross-provider fail-over instead of a
+// hard error — that fail-over is the intended new behavior, not double-retry of
+// the SAME provider.
 func wrapHTTPStatusErr(op string, statusCode int, body []byte) error {
-	if statusCode >= 500 {
+	if statusCode >= 500 || statusCode == http.StatusTooManyRequests || statusCode == http.StatusRequestTimeout {
 		return errno.ErrAIProviderError.SetMessage("%s: HTTP %d: %s", op, statusCode, string(body))
 	}
 	return fmt.Errorf("%s: HTTP %d: %s", op, statusCode, string(body))
