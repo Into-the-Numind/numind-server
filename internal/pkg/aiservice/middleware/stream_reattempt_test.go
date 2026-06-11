@@ -3,7 +3,9 @@ package middleware
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/registry"
@@ -125,4 +127,172 @@ func TestRetry_Stream_RetriesIdleTimeoutBeforeFirstChunk(t *testing.T) {
 			t.Errorf("retry succeeded but consumer still saw error terminal chunk: %v", c.Err)
 		}
 	}
+}
+
+// ----------------------------------------------------------------------------
+// T1 — streaming Retry behaviour lock
+// ----------------------------------------------------------------------------
+
+// countTerminals counts IsFinal chunks; the consumer must see exactly one.
+func countTerminals(chunks []aiservice.ChatChunk) int {
+	n := 0
+	for _, c := range chunks {
+		if c.IsFinal {
+			n++
+		}
+	}
+	return n
+}
+
+// TestRetryStream_NormalStreamPassthrough (AC9 zero-regression): a stream whose
+// first chunk is content must pass through unchanged with no reattempt.
+func TestRetryStream_NormalStreamPassthrough(t *testing.T) {
+	mw := retryWithPolicy(zeroDelayPolicy())
+	callCount := 0
+	inner := countingStreamHandler(&callCount, func(_ int) []aiservice.ChatChunk {
+		return successChunks("hello world")
+	})
+	resp, err := mw(inner)(context.Background(), buildTestRoute("llm"), aiservice.ChatRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := collectStream(t, resp)
+	if callCount != 1 {
+		t.Errorf("normal stream must not reattempt: expected 1 call, got %d", callCount)
+	}
+	if concatDelta(got) != "hello world" {
+		t.Errorf("content altered: got %q", concatDelta(got))
+	}
+	if countTerminals(got) != 1 || got[len(got)-1].Usage == nil {
+		t.Errorf("terminal usage chunk not preserved: %+v", got)
+	}
+}
+
+// TestRetryStream_PostContentErrorNoRetry (AC4): an error AFTER content was
+// forwarded must not retry; the error terminal passes through.
+func TestRetryStream_PostContentErrorNoRetry(t *testing.T) {
+	mw := retryWithPolicy(zeroDelayPolicy())
+	callCount := 0
+	inner := countingStreamHandler(&callCount, func(_ int) []aiservice.ChatChunk {
+		return []aiservice.ChatChunk{{Delta: "partial", Index: 0}, idleErrChunk()}
+	})
+	got := runStream(t, mw(inner))
+	if callCount != 1 {
+		t.Errorf("post-content error must not retry: expected 1 call, got %d", callCount)
+	}
+	if concatDelta(got) != "partial" {
+		t.Errorf("expected forwarded content %q, got %q", "partial", concatDelta(got))
+	}
+	if got[len(got)-1].Err == nil {
+		t.Errorf("post-content error terminal should pass through to consumer")
+	}
+}
+
+// TestRetryStream_ReasoningDeltaCountsAsContent (P0-3): a thinking model that
+// emits reasoning then stalls has already "started streaming" — no retry.
+func TestRetryStream_ReasoningDeltaCountsAsContent(t *testing.T) {
+	mw := retryWithPolicy(zeroDelayPolicy())
+	callCount := 0
+	inner := countingStreamHandler(&callCount, func(_ int) []aiservice.ChatChunk {
+		return []aiservice.ChatChunk{{ReasoningDelta: "thinking...", Index: 0}, idleErrChunk()}
+	})
+	_ = runStream(t, mw(inner))
+	if callCount != 1 {
+		t.Errorf("error after reasoning delta must not retry (firstContentForwarded), got %d calls", callCount)
+	}
+}
+
+// TestRetryStream_RetryExhaustedPropagatesSingleError (AC3 + P0-1): when both
+// the initial attempt and the retry fail pre-content, the consumer sees exactly
+// ONE terminal error chunk (so the outer Billing/ContextBudget wrappers refund
+// exactly once).
+func TestRetryStream_RetryExhaustedPropagatesSingleError(t *testing.T) {
+	mw := retryWithPolicy(zeroDelayPolicy())
+	callCount := 0
+	inner := countingStreamHandler(&callCount, func(_ int) []aiservice.ChatChunk {
+		return []aiservice.ChatChunk{idleErrChunk()}
+	})
+	got := runStream(t, mw(inner))
+	if callCount != 2 {
+		t.Errorf("expected 2 attempts (initial + 1 retry) then give up, got %d", callCount)
+	}
+	if countTerminals(got) != 1 {
+		t.Errorf("expected exactly 1 terminal chunk to reach consumer, got %d (%+v)", countTerminals(got), got)
+	}
+	if len(got) == 0 || got[len(got)-1].Err == nil {
+		t.Errorf("expected a final error terminal chunk after exhaustion")
+	}
+}
+
+// TestRetryStream_SkipRetryNoStreamRetry (P0-4): when skip_retry is set (Fallback
+// bypass), a streaming pre-content error must NOT trigger a same-provider retry.
+func TestRetryStream_SkipRetryNoStreamRetry(t *testing.T) {
+	mw := retryWithPolicy(zeroDelayPolicy())
+	callCount := 0
+	inner := countingStreamHandler(&callCount, func(_ int) []aiservice.ChatChunk {
+		return []aiservice.ChatChunk{idleErrChunk()}
+	})
+	ctx := withSkipRetry(context.Background())
+	resp, err := mw(inner)(ctx, buildTestRoute("llm"), aiservice.ChatRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_ = collectStream(t, resp)
+	if callCount != 1 {
+		t.Errorf("skip_retry must not same-provider-retry streams: expected 1 call, got %d", callCount)
+	}
+}
+
+// TestRetryStream_DrainsAbandonedAttempt (P0-2): the failed attempt's channel is
+// fully drained so the producer goroutine / provider HTTP body is released; its
+// stragglers must not leak to the consumer.
+func TestRetryStream_DrainsAbandonedAttempt(t *testing.T) {
+	mw := retryWithPolicy(zeroDelayPolicy())
+	producerDone := make(chan struct{})
+	callCount := 0
+	inner := Handler(func(_ context.Context, _ *registry.ResolvedRoute, _ interface{}) (interface{}, error) {
+		callCount++
+		call := callCount
+		ch := make(chan aiservice.ChatChunk) // unbuffered → drain must actively consume
+		go func() {
+			defer close(ch)
+			if call == 1 {
+				ch <- idleErrChunk()
+				ch <- aiservice.ChatChunk{Delta: "straggler"} // only delivered if drained
+				close(producerDone)
+				return
+			}
+			for _, c := range successChunks("ok") {
+				ch <- c
+			}
+		}()
+		return (<-chan aiservice.ChatChunk)(ch), nil
+	})
+	got := runStream(t, mw(inner))
+
+	select {
+	case <-producerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("abandoned attempt channel was not drained (producer blocked) — goroutine/HTTP leak")
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 attempts, got %d", callCount)
+	}
+	if concatDelta(got) != "ok" {
+		t.Errorf("expected retried content %q, got %q", "ok", concatDelta(got))
+	}
+	if strings.Contains(concatDelta(got), "straggler") {
+		t.Error("abandoned attempt content leaked to consumer")
+	}
+}
+
+// runStream invokes a streaming Handler with a default route and drains the
+// resulting channel into a slice of chunks.
+func runStream(t *testing.T, h Handler) []aiservice.ChatChunk {
+	t.Helper()
+	resp, err := h(context.Background(), buildTestRoute("llm"), aiservice.ChatRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	return collectStream(t, resp)
 }

@@ -6,8 +6,10 @@ import (
 	"math/rand/v2"
 	"time"
 
+	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/log"
 )
 
 // RetryPolicy controls the retry behaviour.
@@ -132,12 +134,26 @@ func Retry(_ Deps) Middleware {
 func retryWithPolicy(policy RetryPolicy) Middleware {
 	return func(next Handler) Handler {
 		return func(ctx context.Context, route *registry.ResolvedRoute, req interface{}) (interface{}, error) {
-			// Skip retry when instructed (Fallback bypass or streaming post-first-chunk).
+			// Skip retry when instructed (Fallback bypass). Passthrough for both
+			// streaming and non-streaming calls — fallback candidates must not be
+			// same-provider-retried (keeps total upstream calls ≤ 3, ADR P0-4).
 			if shouldSkipRetry(ctx) {
 				return next(ctx, route, req)
 			}
 
 			resp, err := next(ctx, route, req)
+
+			// Streaming-aware retry (Part B): a successfully-established stream
+			// returns (channel, nil); the failure arrives asynchronously as a
+			// ChatChunk.Err terminal chunk that the synchronous logic below never
+			// sees. Wrap the channel so a retryable error BEFORE the first content
+			// chunk re-establishes the same-route stream once. Sits below Billing
+			// and ContextBudgetCredits (Reserve) → the reattempt re-invokes only
+			// the adapter, never a second Reserve / UsageRecord (ADR §billing).
+			if ch, isStream := resp.(<-chan aiservice.ChatChunk); isStream && err == nil {
+				return retryStream(ctx, route, req, ch, next, policy), nil
+			}
+
 			if err == nil {
 				return resp, nil
 			}
@@ -162,4 +178,39 @@ func retryWithPolicy(policy RetryPolicy) Middleware {
 			return next(ctx, route, req)
 		}
 	}
+}
+
+// retryStream wraps a streaming response with a single same-route reattempt on a
+// retryable error that occurs before the first content chunk. The reattempt
+// re-invokes next (the adapter) on the SAME route — it does NOT re-enter the
+// outer Billing / ContextBudgetCredits middlewares, so no second Reserve or
+// UsageRecord is produced (ADR 0001 §billing). Once any content/reasoning chunk
+// is forwarded, retries are disabled (handled inside wrapStreamWithReattempt).
+func retryStream(
+	ctx context.Context,
+	route *registry.ResolvedRoute,
+	req interface{},
+	firstCh <-chan aiservice.ChatChunk,
+	next Handler,
+	policy RetryPolicy,
+) <-chan aiservice.ChatChunk {
+	attempted := false
+	reattempt := func(rctx context.Context) (<-chan aiservice.ChatChunk, error, bool) {
+		if attempted {
+			return nil, nil, false // single retry budget
+		}
+		attempted = true
+		log.Infow("aiservice: streaming retry (same provider) after retryable pre-first-chunk stream error",
+			"task_id", route.TaskID, "service_id", route.ServiceID, "provider", route.Provider.Name)
+		resp, err := next(rctx, route, req)
+		if err != nil {
+			return nil, err, true // start error → wrapper forwards the held error chunk
+		}
+		ch, ok := resp.(<-chan aiservice.ChatChunk)
+		if !ok {
+			return nil, nil, false
+		}
+		return ch, nil, true
+	}
+	return wrapStreamWithReattempt(ctx, firstCh, reattempt, policy.retryDelay)
 }
