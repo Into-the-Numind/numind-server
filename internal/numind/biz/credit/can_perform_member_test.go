@@ -26,8 +26,10 @@ func TestCanPerformAIOperation_MemberZeroBalance_Allowed(t *testing.T) {
 	seedPackagesAndAccount(t, db, uid, []seedPackage{{
 		Type: model.CreditTypeTrial, RemainCredits: 0, ExpiresAt: time.Now().AddDate(0, 0, 3),
 	}})
-	// GORM default:200 zero-value gotcha (database.md §6): RemainCredits=0 persists as
-	// the DB DEFAULT 200. Force the genuine 0 so the member truly has an exhausted balance.
+	// GORM skips zero-value int fields tagged `default:200`, so db.Create (in
+	// seedPackagesAndAccount) leaves trial_grant.credits_remaining=200 even though we
+	// passed RemainCredits=0. Force the genuine 0 so the member truly has an exhausted
+	// balance. (Repo-wide gotcha, documented in .claude/rules/database.md §6.)
 	require.NoError(t, db.Exec("UPDATE trial_grant SET credits_remaining = 0 WHERE user_id = ?", uid).Error)
 
 	b := credit.NewCreditBiz(ds)
