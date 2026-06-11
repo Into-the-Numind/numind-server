@@ -158,6 +158,16 @@
 
 ## §8 冲刺期间新发现
 
+> R1 续测（2026-06-11，multi-question 已部署 dev）新增：
+
+| ID | 条目 | 来源 | 级别 | 状态 |
+|----|------|------|------|------|
+| ENV-1 | **dev dmxapi 供应商大面积超时/503**：deepseek context deadline exceeded + qwen-turbo-latest"无可用渠道"，12 分钟 106 次。打断 agent 长任务（run 130 写报告中途崩）。**已缓解**：dev agent 主模型 deepseek 路由切 aihubmix(健康 200)优先、dmxapi 降 fallback；qwen-turbo dmxapi 降走 ali（ai_service_route 41→p10/40→p5/58→p1） | run 130 取证 | 环境（非代码 bug） | `mitigated`（dev 切渠道；prod 用不同渠道） |
+| HW-37 | **run 异常终止状态机不收尾**：LLM 超时打断 resume run 时 state_reason 停在"running"（status=terminated），前端显示成"卡住"而非"失败请重试"。run 130：ended_at=11:37(第一段 yield) 但 resume 第二段跑到 11:41 未回写状态 | run 130（state_reason=running 异常） | P1（健壮性，上线前修） | `open`（待查：multi-question yield 收尾 or resume 中断收尾） |
+| RISK-1 | **agent 长任务对 LLM 稳定性高度敏感**：几十轮工具+LLM，供应商一抖整任务崩（ENV-1 实证）。上线前 prod 需：①最稳渠道 ②超时重试/断点容错（一超时不整崩） | ENV-1 暴露 | P1（上线 gate 考虑） | `open` |
+
+
+
 | ID | 条目 | 来源 | 级别 | 状态 |
 |----|------|------|------|------|
 | BUG-1 | **内存预算护栏把 token 当积分**：单次 ~6k token 调用击穿 800 积分 cap → 所有实质性 agent run 首次工具调用即被杀（terminal used=6829 vs 真实扣费 ~5）。真实三池扣费不受影响 | CAP-1 预探针 run #113（2026-06-10） | P0（R1 挡路） | `closed`——hotfix budget-tracker-token-units（develop c2f93c59，TDD+双 review，5 P2 全修） |
