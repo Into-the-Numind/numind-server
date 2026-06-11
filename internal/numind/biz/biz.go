@@ -329,9 +329,12 @@ func NewBiz(ds store.IStore) *biz {
 			permvalidators.NewWorkingDir(""),
 			permvalidators.NewToolFlag(ds.AgentDefinitions()),
 			permvalidators.NewUserSessionRule(),
-			// #14/A7 (commit 60b67547): real L3 auto-mode LLM classifier via aiservice.Chat
-			// (qwen-turbo, 250ms timeout, fail-allow).
-			permvalidators.NewAutoModeLLMValidator(permvalidators.NewAIServiceLLMClassifier()),
+			// The L3 auto-mode LLM classifier (NewAutoModeLLMValidator) was REMOVED:
+			// agent mode is full-open by product decision (2026-05-31), so it only ever
+			// fail-allowed — adding zero safety while charging an LLM call (and a per-tool
+			// timeout tax when agent.permission_check is unreachable). The deterministic
+			// validators above (platform hard rules, sandbox, working-dir, tool flags,
+			// session rules) remain and run instantly.
 		),
 	)
 	log.Infow("agent permission gate wired", "enforce", enforcePermission)
