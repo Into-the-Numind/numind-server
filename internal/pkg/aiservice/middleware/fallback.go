@@ -49,35 +49,44 @@ func Fallback(deps Deps) Middleware {
 				return resp, err
 			}
 
-			// Take the highest-priority fallback (first in the ordered slice).
-			// fallbacks[0] is the highest-priority backup (Task 3 ResolveTask sorts by priority ASC).
-			fbRoute := fallbacks[0]
-
-			// Log fallback trigger.
-			deps.warnw("fallback: switching to fallback service",
+			// Cascade through ALL fallbacks in priority order (rerank-routing T4).
+			// fallbacks is ordered highest-priority-first. Previously only
+			// fallbacks[0] was tried; configuring >1 backup silently ignored the
+			// rest. Now each candidate is attempted until one succeeds.
+			deps.warnw("fallback: engaging cascade",
 				"task_id", route.TaskID,
 				"primary_service_id", route.ServiceID,
-				"fallback_service_id", fbRoute.ServiceID,
-				"fallback_service_key", fbRoute.ServiceKey,
 				"primary_error", err,
+				"candidates", len(fallbacks),
 			)
 
-			// Inject skip_retry + fallback metadata into ctx for the inner chain.
-			fbCtx := withSkipRetry(ctx)
-			fbCtx = withFallbackFromServiceID(fbCtx, route.ServiceID)
+			triedIDs := make([]uint64, 0, len(fallbacks))
+			for i := range fallbacks {
+				fbRoute := fallbacks[i]
+				triedIDs = append(triedIDs, fbRoute.ServiceID)
 
-			fbResp, fbErr := next(fbCtx, &fbRoute, req)
-			if fbErr != nil {
-				// Both primary and fallback failed.
-				deps.warnw("fallback: fallback service also failed",
+				// Inject skip_retry + fallback metadata into ctx for the inner chain.
+				// (Re-derived from the ORIGINAL ctx each iteration so skip_retry is
+				// not compounded across candidates.)
+				fbCtx := withSkipRetry(ctx)
+				fbCtx = withFallbackFromServiceID(fbCtx, route.ServiceID)
+
+				fbResp, fbErr := next(fbCtx, &fbRoute, req)
+				if fbErr == nil {
+					return fbResp, nil
+				}
+				// Any failure (retryable OR not, incl. capability mismatch) on a
+				// last-resort fallback → try the next candidate.
+				deps.warnw("fallback: candidate failed",
 					"task_id", route.TaskID,
 					"fallback_service_id", fbRoute.ServiceID,
+					"fallback_service_key", fbRoute.ServiceKey,
 					"fallback_error", fbErr,
 				)
-				return nil, errno.ErrAIFallbackExhausted
 			}
 
-			return fbResp, nil
+			// All candidates failed — return with provenance for debugging/billing.
+			return nil, errno.ErrAIFallbackExhausted.SetMessage("所有 AI 服务（含 fallback）均不可用 (tried %d fallback(s): %v)", len(triedIDs), triedIDs)
 		}
 	}
 }
