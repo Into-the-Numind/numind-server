@@ -130,6 +130,13 @@ func (r *agentRunner) RunStream(
 	// it at each FinishReason; non-stream Run leaves it empty → collapsed shape.
 	ctx = withStepCollector(ctx)
 
+	// persistCtx is a cancellation-detached copy of ctx (keeps trace/user/run values)
+	// used for ALL terminal-state + transcript writes below. When the SSE client
+	// disconnects (the user refreshes mid-run) ctx is canceled; persisting through it
+	// fails with "context canceled" and leaves a zombie run whose session vanishes
+	// (dev run 138). The DB driver bounds these writes, so no extra timeout is needed.
+	persistCtx := context.WithoutCancel(ctx)
+
 	// 3. AbortController three-layer + register cancel.
 	queryCtx, queryCancel := DeriveQueryCtx(ctx)
 	r.registerCancel(run.ID, queryCancel)
@@ -378,14 +385,14 @@ func (r *agentRunner) RunStream(
 		log.Warnw("AgentRunner.RunStream: no tools resolved from registry; using pre-ReAct short-circuit",
 			"agent_run_id", run.ID, "registry_nil", r.registry == nil)
 		endedAt := time.Now()
-		if uerr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalCompleted), &endedAt); uerr != nil {
+		if uerr := r.runStore.UpdateState(persistCtx, run.ID, "terminated", string(TerminalCompleted), &endedAt); uerr != nil {
 			log.Warnw("AgentRunner.RunStream UpdateState failed on short-circuit", "agent_run_id", run.ID, "error", uerr)
 		}
 		shortCircuitMessages, _ := json.Marshal([]map[string]any{
 			{"role": "user", "content": req.Input},
 			{"role": "assistant", "content": req.Input},
 		})
-		if wErr := r.runStore.WriteTurn(ctx, run.ID, json.RawMessage(shortCircuitMessages)); wErr != nil {
+		if wErr := r.runStore.WriteTurn(persistCtx, run.ID, json.RawMessage(shortCircuitMessages)); wErr != nil {
 			log.Warnw("AgentRunner.RunStream WriteTurn failed on short-circuit", "agent_run_id", run.ID, "error", wErr)
 		}
 		if r.searchService != nil {
@@ -407,7 +414,7 @@ func (r *agentRunner) RunStream(
 					hookSt := &LoopState{}
 					if term, _, isTerminal := hookSt.Transition(ev); isTerminal {
 						shortTerminalReason = term
-						if uerr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(shortTerminalReason), &endedAt); uerr != nil {
+						if uerr := r.runStore.UpdateState(persistCtx, run.ID, "terminated", string(shortTerminalReason), &endedAt); uerr != nil {
 							log.Warnw("AgentRunner.RunStream UpdateState (hook override) failed on short-circuit", "agent_run_id", run.ID, "error", uerr)
 						}
 					}
@@ -481,7 +488,7 @@ func (r *agentRunner) RunStream(
 	})
 	if err != nil {
 		endedAt := time.Now()
-		if uerr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalModelError), &endedAt); uerr != nil {
+		if uerr := r.runStore.UpdateState(persistCtx, run.ID, "terminated", string(TerminalModelError), &endedAt); uerr != nil {
 			log.Warnw("AgentRunner.RunStream UpdateState failed on NewAgent error", "agent_run_id", run.ID, "error", uerr)
 		}
 		return nil, fmt.Errorf("AgentRunner.RunStream NewAgent: %w", err)
@@ -573,7 +580,7 @@ func (r *agentRunner) RunStream(
 			yieldSt := &LoopState{StepCount: int(sharedState.StepIdx)}
 			result, _ := r.persistAndEmitYield(ctx, run.ID, yieldSt, newChanEmitter(ch, run.ID), startTime, *p)
 			endedAt := time.Now()
-			if uErr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalWaitingForUserChoice), &endedAt); uErr != nil {
+			if uErr := r.runStore.UpdateState(persistCtx, run.ID, "terminated", string(TerminalWaitingForUserChoice), &endedAt); uErr != nil {
 				log.Warnw("AgentRunner.RunStream yield UpdateState failed (errpath)", "agent_run_id", run.ID, "error", uErr)
 			}
 			if result != nil {
@@ -632,7 +639,7 @@ func (r *agentRunner) RunStream(
 		// HW-33: persist pre-yield transcript for resume context (see errpath above).
 		r.persistYieldTranscript(attemptCtx, run.ID, req.Input)
 		endedAt := time.Now()
-		if uErr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalWaitingForUserChoice), &endedAt); uErr != nil {
+		if uErr := r.runStore.UpdateState(persistCtx, run.ID, "terminated", string(TerminalWaitingForUserChoice), &endedAt); uErr != nil {
 			log.Warnw("AgentRunner.RunStream yield UpdateState failed", "agent_run_id", run.ID, "error", uErr)
 		}
 		return result, nil

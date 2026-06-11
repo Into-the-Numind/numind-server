@@ -1306,6 +1306,16 @@ func (r *agentRunner) finalizeRun(
 		}
 	}
 
+	// Finalization persistence (terminal metadata, transcript, state) MUST survive a
+	// canceled request context. When the SSE client disconnects — e.g. the user
+	// refreshes mid-run — ctx is canceled, and a finalize that uses it fails with
+	// "context canceled", leaving a ZOMBIE run (status=running, turns=0) whose session
+	// vanishes from the UI (dev run 138). Detach with WithoutCancel (keeps trace/user
+	// values) under a bounded 10s budget so the run's content + terminal state always
+	// land. Mirrors the detached-ctx pattern the FULLTEXT indexer below already uses.
+	finalizeCtx, cancelFinalize := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancelFinalize()
+
 	// Persist the underlying LLM/provider error to agent_run.terminal_metadata so
 	// frontend / admin can surface the real cause (HTTP timeout, 4xx, etc.)
 	// without grepping server logs. Pre-fix only state_reason was written, so
@@ -1319,7 +1329,7 @@ func (r *agentRunner) finalizeRun(
 			"error_detail":  runErr.Error(),
 			"error_class":   string(st.TerminalReason),
 		}
-		if mErr := r.runStore.MergeTerminalMetadata(ctx, run.ID, patch); mErr != nil {
+		if mErr := r.runStore.MergeTerminalMetadata(finalizeCtx, run.ID, patch); mErr != nil {
 			log.Warnw("AgentRunner.Run MergeTerminalMetadata failed",
 				"agent_run_id", run.ID, "error", mErr)
 		}
@@ -1345,7 +1355,7 @@ func (r *agentRunner) finalizeRun(
 		turns = append(turns, assistantTurn(assistantContent, finalReasoning))
 	}
 	finalMessages, _ := json.Marshal(turns)
-	if err := r.runStore.WriteTurn(ctx, run.ID, json.RawMessage(finalMessages)); err != nil {
+	if err := r.runStore.WriteTurn(finalizeCtx, run.ID, json.RawMessage(finalMessages)); err != nil {
 		log.Warnw("AgentRunner.Run WriteTurn failed", "agent_run_id", run.ID, "error", err)
 	}
 	// Task 3.5: index messages for FULLTEXT search. Hook is failure-tolerant
@@ -1411,7 +1421,7 @@ func (r *agentRunner) finalizeRun(
 	if contextExhausted {
 		log.Infow("AgentRunner.Run skipping final UpdateState (context_exhausted already persisted)",
 			"agent_run_id", run.ID)
-	} else if err := r.runStore.UpdateState(ctx, run.ID, "terminated", string(st.TerminalReason), &endedAt); err != nil {
+	} else if err := r.runStore.UpdateState(finalizeCtx, run.ID, "terminated", string(st.TerminalReason), &endedAt); err != nil {
 		log.Warnw("AgentRunner.Run UpdateState failed", "agent_run_id", run.ID, "error", err)
 	}
 
