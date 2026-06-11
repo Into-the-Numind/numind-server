@@ -434,9 +434,16 @@ func wrapHTTPClientErr(op string, err error) error {
 
 // wrapHTTPStatusErr maps HTTP status codes to typed errno values.
 //   - 5xx → ErrAIProviderError (retriable)
-//   - 4xx → plain fmt.Errorf (not retriable)
+//   - 429 Too Many Requests / 408 Request Timeout → ErrAIProviderError (retriable):
+//     these are TRANSIENT — a rate-limited model (e.g. the free bge-reranker
+//     5 req/min tier) or an HTTP-level timeout should engage Retry/Fallback so
+//     the request can fail over to another provider, not hard-fail. (rerank-routing T3)
+//   - other 4xx → plain fmt.Errorf (not retriable — genuine client/config errors)
+//
+// Shared by the ali, dmxapi and volc adapters (defined once here), so all three
+// gain 429/408 fail-over behavior uniformly.
 func wrapHTTPStatusErr(op string, statusCode int, body []byte) error {
-	if statusCode >= 500 {
+	if statusCode >= 500 || statusCode == http.StatusTooManyRequests || statusCode == http.StatusRequestTimeout {
 		return errno.ErrAIProviderError.SetMessage("%s: HTTP %d: %s", op, statusCode, string(body))
 	}
 	return fmt.Errorf("%s: HTTP %d: %s", op, statusCode, string(body))
