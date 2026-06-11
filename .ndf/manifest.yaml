@@ -1,5 +1,23 @@
 schema_version: '2.0'
 features:
+- id: thinking-activation-style
+  track: standard
+  description: 'agnes-2.0-flash(0价会员专属模型)无思考模式。根因：dmxapi 适配器 oaiChatRequest 只有 reasoning_effort 字段，无 chat_template_kwargs；agnes(Qwen/vLLM 风格)靠 chat_template_kwargs.enable_thinking:true 激活思考。次因：dev 注册表 agnes 配成 supports_thinking=0+thinking_only=1(矛盾)→门控为假什么都不发。方案：ai_service 加 thinking_style 列(reasoning_effort/enable_thinking_kwarg/none)，适配器按列发对应字段；agnes 数据修正。管理端 UI 暴露列为 follow-up。'
+  classification_reason: 'Standard：DB schema 变更(ai_service 新列+回填)+影响文件>3。无新 API 端点(admin UI follow-up)/无新外部服务(agnes-ai 已集成)。须零回归既有思考模型(Gemini/Claude/DeepSeek/GPT-5)。'
+  status: active
+  stage: S0
+  repos:
+    numind-server: feature/thinking-activation-style
+  worktrees:
+    numind-server: /private/tmp/wt-thinking-activation-style-numind-server
+  progress:
+    total_tasks: 0
+    completed_tasks: 0
+    reviewed_tasks: 0
+  artifacts:
+    requirement: .ndf/features/thinking-activation-style/requirement.md
+  decisions:
+  - 'S0 (ai 2026-06-11): 用户上报 agnes-2.0-flash 无思考。调查确认 thinking flag 已透传(旧 executor 缺口已修)，真因=适配器无 chat_template_kwargs 能力+注册表配错。Triage=Standard(DB schema 变更)。用户经 AskUserQuestion 选定"注册表加 thinking_style 列"方案(vs Hotfix 硬编码 provider 名)。范围：server-only，agnes 数据用 migration 配，admin UI 暴露列 follow-up。'
 - id: free-model-member-only
   track: standard
   description: '0 价模型（agnes/有数AI）仅限会员（sub 或 trial 在期）使用且零扣费；免费用户拒绝（ErrMembershipRequired）。per-call 语义：判定单位=单次被计费拦截的 AI 调用，看该调用模型 pricing_rule 是否全 0；0价+会员→SkipDeduction 跳过预扣不扣分，0价+免费用户→拒绝；收费调用照常预扣/拦截（SalesRAG 中途收费子调用仍拦"积分不足"）。键：pricing.IsFreeModel(查 pricing_rule 全0，查不到≠免费)+membership.GetMembershipState+复用 PreCheckResult.SkipDeduction。'
