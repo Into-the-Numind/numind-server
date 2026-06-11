@@ -24,6 +24,9 @@ type mockAgentRunStore struct {
 	mu   sync.Mutex
 	runs map[uint64]*model.AgentRun
 	seq  uint64
+	// lastUpdateStateCtx records the ctx passed to the most recent UpdateState so
+	// tests can assert the terminal write uses a cancel-detached context.
+	lastUpdateStateCtx context.Context
 }
 
 func newMockStore() *mockAgentRunStore {
@@ -48,9 +51,10 @@ func (m *mockAgentRunStore) Get(_ context.Context, id uint64) (*model.AgentRun, 
 	return nil, errors.New("not found")
 }
 
-func (m *mockAgentRunStore) UpdateState(_ context.Context, id uint64, status, reason string, endedAt *time.Time) error {
+func (m *mockAgentRunStore) UpdateState(ctx context.Context, id uint64, status, reason string, endedAt *time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.lastUpdateStateCtx = ctx
 	if r, ok := m.runs[id]; ok {
 		r.Status = status
 		r.StateReason = reason
