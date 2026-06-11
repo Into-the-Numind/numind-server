@@ -55,6 +55,14 @@ type aiserviceAdapter struct {
 	systemPrompt string             // #5 skill-system: injected by runner.Run; prepended as messages[0] when set
 	usageStore   *sync.Map          // keyed by call-id string → Usage
 
+	// maxOutputTokens caps the model's per-turn output (req.MaxTokens). Resolved
+	// once at construction from the agent model's capability_json.max_output_tokens
+	// (clamped to a safe range). 0 → leave unset (provider default). Without this,
+	// a thinking model (deepseek-v4-pro emits reasoning FIRST, tool_calls LAST) can
+	// exhaust the provider's default output budget on reasoning and truncate the
+	// trailing tool call mid-JSON → dev run 133 ("unexpected end of JSON input").
+	maxOutputTokens int
+
 	// V1.5 v2-compact-adapter-integration — V2 compact hook（适配 Eino per-ReAct-round
 	// 的 Generate 调用层）。nil → V2 prevention chain 不启用，行为退化为"直通 LLM"。
 	// 由 runner.go 在 useCompactV2 == true 时注入；通过 WithTools 复制实例时共享指针

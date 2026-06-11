@@ -169,6 +169,36 @@ func TestConvertToAiserviceRequest_EmptyModelName(t *testing.T) {
 	}
 }
 
+// test(qa): dev run 133 root cause — the agent sent NO max_tokens, so a thinking
+// model (deepseek-v4-pro, which emits reasoning FIRST and tool_calls LAST) ran at
+// the provider's default output cap; the reasoning exhausted the budget and the
+// trailing ask_user_question tool call was truncated mid-JSON ("unexpected end of
+// JSON input"), killing the run. The adapter must carry its resolved maxOutputTokens
+// onto req.MaxTokens so the model always has room to finish the tool call. Before the
+// fix convertToAiserviceRequest never sets MaxTokens → it stays 0 (provider default).
+func TestConvertToAiserviceRequest_PropagatesMaxTokens(t *testing.T) {
+	a := &aiserviceAdapter{taskID: "agent.run", maxOutputTokens: 64000}
+	req := a.convertToAiserviceRequest([]*schema.Message{
+		{Role: schema.User, Content: "hi"},
+	})
+	if req.MaxTokens != 64000 {
+		t.Errorf("MaxTokens: got %d, want 64000 (agent must cap output — run 133)", req.MaxTokens)
+	}
+}
+
+// TestConvertToAiserviceRequest_ZeroMaxTokensUnset verifies a 0 maxOutputTokens
+// leaves req.MaxTokens unset (provider default) — no accidental clamp when the
+// model's capability was unresolvable.
+func TestConvertToAiserviceRequest_ZeroMaxTokensUnset(t *testing.T) {
+	a := &aiserviceAdapter{taskID: "agent.run", maxOutputTokens: 0}
+	req := a.convertToAiserviceRequest([]*schema.Message{
+		{Role: schema.User, Content: "hi"},
+	})
+	if req.MaxTokens != 0 {
+		t.Errorf("MaxTokens: got %d, want 0 (unset when maxOutputTokens=0)", req.MaxTokens)
+	}
+}
+
 // TestConvertToAiserviceRequest_PropagatesToolCallID is the Eino-side half of
 // the hotfix aiservice-tool-message-roundtrip regression. Before the fix,
 // schema.Message.ToolCallID was silently dropped when converting to
