@@ -66,6 +66,10 @@ type ResolvedRoute struct {
 	// reasoning_effort injection (some intrinsic models like Gemini 3.1 reject minimal/none and
 	// would error if adapter tried to disable).
 	ThinkingOnly bool
+	// ThinkingStyle mirrors ai_service.thinking_style — HOW the adapter activates thinking on
+	// the OAI wire when SupportsThinking && !ThinkingOnly. "" / "reasoning_effort" → reasoning_effort;
+	// "enable_thinking_kwarg" → chat_template_kwargs.enable_thinking; "none" → inject nothing.
+	ThinkingStyle string
 }
 
 // ----------------------------------------------------------------------------
@@ -447,6 +451,7 @@ func buildResolvedRoute(taskID string, row *resolvedRouteRow) ResolvedRoute {
 		Pricing:          PricingInfo{},
 		SupportsThinking: row.SupportsThinking,
 		ThinkingOnly:     row.ThinkingOnly,
+		ThinkingStyle:    row.ThinkingStyle,
 	}
 }
 
