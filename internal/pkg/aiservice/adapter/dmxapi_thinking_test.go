@@ -289,6 +289,96 @@ func TestDMXAPI_Thinking_Matrix(t *testing.T) {
 				tempOverridden:  false,
 			},
 		},
+		// case 10 (AC2): explicit thinking_style="reasoning_effort" → reasoning_effort, no kwarg.
+		{
+			name:       "explicit_reasoning_effort_style",
+			modelID:    "some-oai-model",
+			supports:   true,
+			thinkOnly:  false,
+			thinkStyle: "reasoning_effort",
+			req: aiservice.ChatRequest{
+				Messages:  sampleMessages(),
+				Thinking:  true,
+				MaxTokens: 500,
+			},
+			expectBody: expectation{
+				reasoningEffort: "medium",
+				maxTokens:       500,
+			},
+			expectMeta: metaExpect{
+				reasoningEffort: "medium",
+				modelFamily:     string(ModelFamilyGeneric),
+				tempOverridden:  false,
+			},
+		},
+		// case 11 (AC3): thinking_style="none" → neither reasoning_effort nor kwarg.
+		{
+			name:       "none_style_injects_nothing",
+			modelID:    "some-oai-model",
+			supports:   true,
+			thinkOnly:  false,
+			thinkStyle: "none",
+			req: aiservice.ChatRequest{
+				Messages:  sampleMessages(),
+				Thinking:  true,
+				MaxTokens: 500,
+			},
+			expectBody: expectation{
+				reasoningEffort: "",
+				maxTokens:       500,
+			},
+			expectMeta: metaExpect{
+				reasoningEffort: "none",
+				modelFamily:     string(ModelFamilyGeneric),
+				tempOverridden:  false,
+			},
+		},
+		// case 12 (AC5 guard): enable_thinking_kwarg style but Thinking=false → no kwarg (gate off).
+		{
+			name:       "kwarg_style_thinking_false_no_injection",
+			modelID:    "agnes-2.0-flash",
+			supports:   true,
+			thinkOnly:  false,
+			thinkStyle: "enable_thinking_kwarg",
+			req: aiservice.ChatRequest{
+				Messages:  sampleMessages(),
+				Thinking:  false,
+				MaxTokens: 500,
+			},
+			expectBody: expectation{
+				reasoningEffort:     "",
+				maxTokens:           500,
+				enableThinkingKwarg: false,
+			},
+			expectMeta: metaExpect{
+				reasoningEffort: "",
+				modelFamily:     string(ModelFamilyGeneric),
+				tempOverridden:  false,
+			},
+		},
+		// case 13 (AC5 guard): enable_thinking_kwarg style but supports_thinking=false → no kwarg.
+		{
+			name:       "kwarg_style_supports_false_no_injection",
+			modelID:    "agnes-2.0-flash",
+			supports:   false,
+			thinkOnly:  false,
+			thinkStyle: "enable_thinking_kwarg",
+			req: aiservice.ChatRequest{
+				Messages:  sampleMessages(),
+				Thinking:  true,
+				MaxTokens: 500,
+			},
+			expectBody: expectation{
+				reasoningEffort:     "",
+				maxTokens:           500,
+				enableThinkingKwarg: false,
+			},
+			expectMeta: metaExpect{
+				reasoningEffort: "",
+				modelFamily:     string(ModelFamilyGeneric),
+				tempOverridden:  false,
+			},
+		},
 	}
 
 	for _, tc := range cases {

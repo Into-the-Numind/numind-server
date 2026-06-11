@@ -348,19 +348,24 @@ type FileUploadResponse struct {
 // empty"), and the parent pointer on ChatResponse / ChatChunk is what
 // actually gates JSON emission.
 type TraceMetadata struct {
-	// ResolvedReasoningEffort records the final reasoning-effort value the
-	// adapter used for this call. Possible values:
+	// ResolvedReasoningEffort records HOW thinking was activated for this call.
+	// Despite the historical name, the value is an activation-mechanism sentinel,
+	// not strictly a reasoning-effort level. Possible values:
 	//
-	//   ""          — not injected. Either the model does not support
-	//                 reasoning effort or the caller did not opt in.
-	//   "medium"    — injected into the upstream request (e.g. OpenAI-
-	//                 compatible `reasoning_effort: "medium"`). This is the
-	//                 only non-sentinel value the current Gateway emits.
-	//   "intrinsic" — Q8=B sentinel. The model is intrinsic-thinking
-	//                 (thinking_only=true), so reasoning always happens and
-	//                 no wire field is injected; this sentinel records that
-	//                 thinking was in effect conceptually even though the
-	//                 upstream request carries no reasoning_effort field.
+	//   ""                      — not injected. Either the model does not support
+	//                             thinking or the caller did not opt in.
+	//   "medium"                — OpenAI-compatible `reasoning_effort: "medium"`
+	//                             was injected (thinking_style ""/"reasoning_effort").
+	//   "enable_thinking_kwarg" — Qwen/vLLM-style activation: the request carries
+	//                             `chat_template_kwargs.enable_thinking: true`
+	//                             (thinking_style="enable_thinking_kwarg", e.g. agnes-2.0-flash).
+	//   "none"                  — model supports thinking and the caller opted in,
+	//                             but thinking_style="none" so no activation field
+	//                             was injected (distinct from "" = thinking off / unsupported).
+	//   "intrinsic"             — Q8=B sentinel. The model is intrinsic-thinking
+	//                             (thinking_only=true), so reasoning always happens and
+	//                             no wire field is injected; records that thinking was in
+	//                             effect conceptually even though the request carries no field.
 	ResolvedReasoningEffort string `json:"resolved_reasoning_effort,omitempty"`
 	// ResolvedModelFamily is the model family the adapter classified this
 	// call into (e.g. "deepseek", "qwen", "doubao"). Useful for trace-level
