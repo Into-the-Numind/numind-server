@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"numind-server/internal/numind/biz/agent/stream"
+	"numind-server/internal/numind/biz/narration"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
 )
@@ -198,6 +199,43 @@ func TestAnswer_HappyPath(t *testing.T) {
 
 	// AnswerAndClear must have been called (atomic replace for AppendUserMessage + ClearPendingQuestion).
 	assert.Contains(t, rs.answerAndClearCalls, runID)
+}
+
+// test(qa): reproduce "答完就停" — after the user answers, the resumed runner emits
+// narration (web_search, chart, image_gen, …) but PollNarration returns the stale
+// pre-yield events forever, so the UI looks frozen. Root cause: Answer never started
+// the narration→buffer forwarder that Create/RunStream start. With the fix a resume
+// emit reaches the poll buffer; without it the buffer stays empty.
+func TestAnswer_Resume_StartsNarrationForwarding(t *testing.T) {
+	rs := newAnswerRunStore()
+	prov, err := narration.NewProvider(narration.Config{YAMLBytes: []byte(narrationFixtureYAML), BufferSize: 16})
+	require.NoError(t, err)
+	buf := NewNarrationBuffer(100, time.Minute)
+	svc := &StudentRunService{
+		runner:        &answerRunner{},
+		runStore:      rs,
+		narrationProv: prov,
+		narrationBuf:  buf,
+	}
+	userID := uint(7)
+	runID := seedAnswerRun(rs, userID, string(TerminalWaitingForUserChoice))
+	defer prov.CloseRun(runID) // let the forwarder goroutine exit cleanly
+
+	_, err = svc.Answer(context.Background(), userID, runID, AnswerRequest{
+		Answers: map[string]AnswerItem{"Which region?": {Selected: []string{"北"}}},
+	})
+	require.NoError(t, err)
+
+	// Give Answer's forwardNarration goroutine time to Subscribe, then simulate the
+	// resumed runner emitting a tool-call narration event.
+	time.Sleep(50 * time.Millisecond)
+	prov.Emit(context.Background(), runID, "web_search", narration.StateUse, narration.EmitPayload{})
+
+	// With the fix, forwardNarration drains the event into the poll buffer; without it
+	// nobody drains and PollNarration stays empty (the frozen "答完就停" UI).
+	require.Eventually(t, func() bool {
+		return len(buf.QuerySince(runID, time.Time{})) > 0
+	}, time.Second, 20*time.Millisecond, "resume narration must reach the poll buffer")
 }
 
 func TestAnswer_CrossUserRunNotFound(t *testing.T) {
