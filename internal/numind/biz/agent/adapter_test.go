@@ -169,6 +169,81 @@ func TestConvertToAiserviceRequest_EmptyModelName(t *testing.T) {
 	}
 }
 
+// test(qa): dev run 133 root cause — the agent sent NO max_tokens, so a thinking
+// model (deepseek-v4-pro, which emits reasoning FIRST and tool_calls LAST) ran at
+// the provider's default output cap; the reasoning exhausted the budget and the
+// trailing ask_user_question tool call was truncated mid-JSON ("unexpected end of
+// JSON input"), killing the run. The adapter must carry its resolved maxOutputTokens
+// onto req.MaxTokens so the model always has room to finish the tool call. Before the
+// fix convertToAiserviceRequest never sets MaxTokens → it stays 0 (provider default).
+func TestConvertToAiserviceRequest_PropagatesMaxTokens(t *testing.T) {
+	a := &aiserviceAdapter{taskID: "agent.run", maxOutputTokens: 64000}
+	req := a.convertToAiserviceRequest([]*schema.Message{
+		{Role: schema.User, Content: "hi"},
+	})
+	if req.MaxTokens != 64000 {
+		t.Errorf("MaxTokens: got %d, want 64000 (agent must cap output — run 133)", req.MaxTokens)
+	}
+}
+
+// TestConvertToAiserviceRequest_ZeroMaxTokensUnset verifies a 0 maxOutputTokens
+// leaves req.MaxTokens unset (provider default) — no accidental clamp when the
+// model's capability was unresolvable.
+func TestConvertToAiserviceRequest_ZeroMaxTokensUnset(t *testing.T) {
+	a := &aiserviceAdapter{taskID: "agent.run", maxOutputTokens: 0}
+	req := a.convertToAiserviceRequest([]*schema.Message{
+		{Role: schema.User, Content: "hi"},
+	})
+	if req.MaxTokens != 0 {
+		t.Errorf("MaxTokens: got %d, want 0 (unset when maxOutputTokens=0)", req.MaxTokens)
+	}
+}
+
+// TestClampAgentMaxTokens pins the output-cap policy: a model's huge declared max
+// (deepseek-v4-pro = 384000) is capped to the ceiling, an undeclared model gets the
+// floor, and anything below the floor is raised — so the agent always requests an
+// adequate-but-sane cap.
+func TestClampAgentMaxTokens(t *testing.T) {
+	cases := []struct {
+		name string
+		in   int
+		want int
+	}{
+		{"declared huge (v4-pro 384000) → ceiling", 384000, agentMaxOutputTokensCeiling},
+		{"declared mid (32000) → unchanged", 32000, 32000},
+		{"declared at ceiling", 64000, agentMaxOutputTokensCeiling},
+		{"declared below floor (4096) → floor", 4096, agentMaxOutputTokensFloor},
+		{"just below floor (8191) → floor", 8191, agentMaxOutputTokensFloor},
+		{"just above floor (8193) → unchanged", 8193, 8193},
+		{"unset (0) → floor", 0, agentMaxOutputTokensFloor},
+		{"negative → floor", -1, agentMaxOutputTokensFloor},
+		{"exactly floor", agentMaxOutputTokensFloor, agentMaxOutputTokensFloor},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := clampAgentMaxTokens(tc.in); got != tc.want {
+				t.Errorf("clampAgentMaxTokens(%d) = %d, want %d", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWithTools_PreservesMaxOutputTokens guards the cap on the tool-bound clone.
+// Eino calls WithTools to produce the adapter that actually drives the ReAct loop;
+// if that clone dropped maxOutputTokens, every tool-call turn would silently revert
+// to the provider default and re-introduce the run-133 truncation.
+func TestWithTools_PreservesMaxOutputTokens(t *testing.T) {
+	base := &aiserviceAdapter{taskID: "agent.run", maxOutputTokens: 32000}
+	clone, err := base.WithTools(nil)
+	if err != nil {
+		t.Fatalf("WithTools: %v", err)
+	}
+	got := clone.(*aiserviceAdapter).maxOutputTokens
+	if got != 32000 {
+		t.Errorf("clone maxOutputTokens: got %d, want 32000 (must survive WithTools)", got)
+	}
+}
+
 // TestConvertToAiserviceRequest_PropagatesToolCallID is the Eino-side half of
 // the hotfix aiservice-tool-message-roundtrip regression. Before the fix,
 // schema.Message.ToolCallID was silently dropped when converting to
