@@ -163,7 +163,9 @@
 | ID | 条目 | 来源 | 级别 | 状态 |
 |----|------|------|------|------|
 | ENV-1 | **dev dmxapi 供应商大面积超时/503**：deepseek context deadline exceeded + qwen-turbo-latest"无可用渠道"，12 分钟 106 次。打断 agent 长任务（run 130 写报告中途崩）。**已缓解**：dev agent 主模型 deepseek 路由切 aihubmix(健康 200)优先、dmxapi 降 fallback；qwen-turbo dmxapi 降走 ali（ai_service_route 41→p10/40→p5/58→p1） | run 130 取证 | 环境（非代码 bug） | `mitigated`（dev 切渠道；prod 用不同渠道） |
-| HW-37 | **run 异常终止状态机不收尾**：LLM 超时打断 resume run 时 state_reason 停在"running"（status=terminated），前端显示成"卡住"而非"失败请重试"。run 130：ended_at=11:37(第一段 yield) 但 resume 第二段跑到 11:41 未回写状态 | run 130（state_reason=running 异常） | P1（健壮性，上线前修） | `open`（待查：multi-question yield 收尾 or resume 中断收尾） |
+| HW-37 | **resume 链路无超时兜底+无 stuck-run sweeper**（investigator 确认）：resume detached goroutine 用 context.Background() 无 deadline、无 recover、全链无 timeout；若 LLM 真挂死则永久停 "running"（status=terminated，前端永显卡住）。run 130/131 实测最终 completed(跑很久)非真卡死，但结构性风险确凿。修：resume goroutine 加 timeout+recover+收尾；加周期 sweeper 扫 terminated+running 超时 run 强制收尾 | run 130/131 + investigator | P1（健壮性，上线前修） | `open` |
+| UX-1 | **前端长任务零进度反馈(上线必修)**：agent resume 跑 14 分钟(run 131)，前端只显示静止的"等待 agent 继续..."，用户无法判断 agent 在跑/死/进度。三次误判"agent 停了"的真正原因。需 resume 期间显示实时进度(搜第N个/正在写报告)。注：resume 走轮询非 SSE，narration 进度未透传前端 | run 131 诊断 | P0(上线必修，UX 核心) | `open` |
+| ENV-2 | dev 辅助 LLM(qwen-turbo service 20: permission_check/injection_check/narration_fallback/sync_turn)两渠道全挂(ali free tier 403 + dmxapi timeout)，每工具调用干等超时拖慢 run 至 14 分钟。**已修**：辅助 task profile 切 aihubmix deepseek-v3.2(service 13)；主 run/compact 已 aihubmix。memory_extract/select 仍 qwen(异步不阻塞) | run 131 诊断 | 环境(已缓解) | `mitigated` |
 | RISK-1 | **agent 长任务对 LLM 稳定性高度敏感**：几十轮工具+LLM，供应商一抖整任务崩（ENV-1 实证）。上线前 prod 需：①最稳渠道 ②超时重试/断点容错（一超时不整崩） | ENV-1 暴露 | P1（上线 gate 考虑） | `open` |
 
 
