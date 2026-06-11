@@ -118,20 +118,27 @@ func TestWebSearchTool_CacheHit(t *testing.T) {
 	}
 }
 
+// Input-validation failures are SOFT errors (run survives) after the dev-run-132
+// hardening: Execute returns nil Go error and a tool result whose Error field
+// carries the message, so the ReAct loop feeds it back and the model retries.
 func TestWebSearchTool_EmptyQuery(t *testing.T) {
 	tool := NewWebSearchTool(300)
 	input, _ := json.Marshal(webSearchInput{Query: ""})
-	_, err := tool.Execute(context.Background(), ToolInput(input))
-	if err == nil {
-		t.Fatal("expected error for empty query")
+	result, err := tool.Execute(context.Background(), ToolInput(input))
+	if err != nil {
+		t.Fatalf("empty query must be a soft error, got hard error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "query is empty") {
-		t.Errorf("expected 'query is empty' in error, got: %v", err)
+	var out webSearchOutput
+	if err := json.Unmarshal(result, &out); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+	if !strings.Contains(out.Error, "query is empty") {
+		t.Errorf("expected 'query is empty' in soft error, got: %q", out.Error)
 	}
 }
 
-// TestWebSearchTool_MaxResultsOutOfRange replaces the old MaxResultsClamped test.
-// P1-1: out-of-range max_results must return an error, not silently clamp.
+// TestWebSearchTool_MaxResultsOutOfRange: out-of-range max_results must NOT silently
+// clamp AND must NOT hard-error (the latter kills the run). It returns a soft error.
 func TestWebSearchTool_MaxResultsOutOfRange(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -145,12 +152,16 @@ func TestWebSearchTool_MaxResultsOutOfRange(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tool := NewWebSearchTool(300)
 			input, _ := json.Marshal(webSearchInput{Query: "test", MaxResults: tc.maxResults})
-			_, err := tool.Execute(context.Background(), ToolInput(input))
-			if err == nil {
-				t.Fatalf("max_results=%d: expected error, got nil", tc.maxResults)
+			result, err := tool.Execute(context.Background(), ToolInput(input))
+			if err != nil {
+				t.Fatalf("max_results=%d: must be soft error, got hard error: %v", tc.maxResults, err)
 			}
-			if !strings.Contains(err.Error(), "max_results") {
-				t.Errorf("max_results=%d: expected 'max_results' in error, got: %v", tc.maxResults, err)
+			var out webSearchOutput
+			if err := json.Unmarshal(result, &out); err != nil {
+				t.Fatalf("max_results=%d: result is not valid JSON: %v", tc.maxResults, err)
+			}
+			if !strings.Contains(out.Error, "max_results") {
+				t.Errorf("max_results=%d: expected 'max_results' in soft error, got: %q", tc.maxResults, out.Error)
 			}
 		})
 	}
@@ -158,9 +169,83 @@ func TestWebSearchTool_MaxResultsOutOfRange(t *testing.T) {
 
 func TestWebSearchTool_InvalidInputJSON(t *testing.T) {
 	tool := NewWebSearchTool(300)
-	_, err := tool.Execute(context.Background(), ToolInput([]byte("not-json")))
-	if err == nil {
-		t.Fatal("expected JSON parse error")
+	result, err := tool.Execute(context.Background(), ToolInput([]byte("not-json")))
+	if err != nil {
+		t.Fatalf("malformed JSON must be a soft error, got hard error: %v", err)
+	}
+	var out webSearchOutput
+	if err := json.Unmarshal(result, &out); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+	if !strings.Contains(out.Error, "invalid input") {
+		t.Errorf("expected 'invalid input' in soft error, got: %q", out.Error)
+	}
+}
+
+// TestWebSearchInput_CoerceMaxResults verifies the custom unmarshaler accepts the
+// loosely-typed numbers models emit (string, float, quoted float) and treats a
+// missing/null value as 0 (caught later by the range check).
+func TestWebSearchInput_CoerceMaxResults(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want int
+	}{
+		{"int", `{"query":"x","max_results":5}`, 5},
+		{"string", `{"query":"x","max_results":"5"}`, 5},
+		{"float", `{"query":"x","max_results":5.0}`, 5},
+		{"string float", `{"query":"x","max_results":"5.0"}`, 5},
+		{"float rounds to nearest", `{"query":"x","max_results":5.9}`, 6},
+		{"whitespace string", `{"query":"x","max_results":"  5  "}`, 5},
+		{"empty string", `{"query":"x","max_results":""}`, 0},
+		{"missing", `{"query":"x"}`, 0},
+		{"null", `{"query":"x","max_results":null}`, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var in webSearchInput
+			if err := json.Unmarshal([]byte(tc.raw), &in); err != nil {
+				t.Fatalf("unmarshal %s: %v", tc.raw, err)
+			}
+			if in.MaxResults != tc.want {
+				t.Errorf("max_results: got %d, want %d", in.MaxResults, tc.want)
+			}
+		})
+	}
+}
+
+// TestWebSearchInput_NonNumericMaxResults: a genuinely non-numeric value still
+// errors at unmarshal time — Execute converts that into a soft, retryable error.
+func TestWebSearchInput_NonNumericMaxResults(t *testing.T) {
+	var in webSearchInput
+	if err := json.Unmarshal([]byte(`{"query":"x","max_results":"abc"}`), &in); err == nil {
+		t.Fatal("expected error for non-numeric max_results")
+	}
+}
+
+// TestWebSearchTool_StringMaxResults reproduces dev run 132 (2026-06-11): the LLM
+// emitted `max_results` as a JSON STRING ("5") instead of a number (5). The strict
+// `int` field rejected it with a HARD error, which propagated as NodeRunError and
+// killed the entire agent run mid-task ("服务暂时不可用"). A loosely-typed tool
+// argument from the model must NOT kill the run — it must be coerced and succeed.
+//
+// Before the fix this FAILS (Execute returns ErrBind on the string→int unmarshal).
+func TestWebSearchTool_StringMaxResults(t *testing.T) {
+	_, cleanup := setupWebSearchTestServer(t, http.StatusOK, tavilyFixtureBody)
+	defer cleanup()
+
+	tool := NewWebSearchTool(300)
+	// Raw tool-call arguments exactly as a model may emit them: max_results quoted.
+	result, err := tool.Execute(context.Background(), ToolInput(`{"query":"莫小派 小红书 培训","max_results":"5"}`))
+	if err != nil {
+		t.Fatalf("string max_results must not hard-error (this kills the run): %v", err)
+	}
+	var out webSearchOutput
+	if err := json.Unmarshal(result, &out); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+	if len(out.Results) != 2 {
+		t.Fatalf("expected 2 results after coercing max_results=\"5\", got %d", len(out.Results))
 	}
 }
 
