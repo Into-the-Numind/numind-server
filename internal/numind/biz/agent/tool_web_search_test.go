@@ -164,6 +164,32 @@ func TestWebSearchTool_InvalidInputJSON(t *testing.T) {
 	}
 }
 
+// TestWebSearchTool_StringMaxResults reproduces dev run 132 (2026-06-11): the LLM
+// emitted `max_results` as a JSON STRING ("5") instead of a number (5). The strict
+// `int` field rejected it with a HARD error, which propagated as NodeRunError and
+// killed the entire agent run mid-task ("服务暂时不可用"). A loosely-typed tool
+// argument from the model must NOT kill the run — it must be coerced and succeed.
+//
+// Before the fix this FAILS (Execute returns ErrBind on the string→int unmarshal).
+func TestWebSearchTool_StringMaxResults(t *testing.T) {
+	_, cleanup := setupWebSearchTestServer(t, http.StatusOK, tavilyFixtureBody)
+	defer cleanup()
+
+	tool := NewWebSearchTool(300)
+	// Raw tool-call arguments exactly as a model may emit them: max_results quoted.
+	result, err := tool.Execute(context.Background(), ToolInput(`{"query":"莫小派 小红书 培训","max_results":"5"}`))
+	if err != nil {
+		t.Fatalf("string max_results must not hard-error (this kills the run): %v", err)
+	}
+	var out webSearchOutput
+	if err := json.Unmarshal(result, &out); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+	if len(out.Results) != 2 {
+		t.Fatalf("expected 2 results after coercing max_results=\"5\", got %d", len(out.Results))
+	}
+}
+
 func TestWebSearchTool_Metadata(t *testing.T) {
 	tool := NewWebSearchTool(300)
 	if !tool.IsReadOnly() {
