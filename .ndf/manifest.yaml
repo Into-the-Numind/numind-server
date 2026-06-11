@@ -4052,11 +4052,12 @@ features:
   ndf_version: '3.0'
   description: '用户上报(自测): chatbot/sales/SOP 聊天页流式渲染前后端严重不同步。开思考模式时, 后端已收完全部 thinking, 前端打字机才呈现约 1/5; 正文 token 一到→thinking 瞬间全量 dump + 跳正文; 正文同理, 传输结束(isLoading→false)时前端仅约 1/5, 然后「啪」一下把剩余全量呈现。根因(读码实证): composables/useTypewriterReveal.ts 以固定 80 cps(charsPerSec)从 target(后端累积)向 displayed(UI)搬字, 远低于当前快模型(deepseek/glm/doubao 经网关)真实到达速率(文件注释假设 ~52 cps 已失效)→backlog 无界累积; 三处 flush()(thinking→content 切换 + isLoading 结束)把积压瞬间 displayed=target → 即「啪一下」。三个消费方: views/chatbot/ChatbotChat.vue:88-131, components/sales/ChatArea.vue:28-72, views/sop/SOPRunView.vue:220-221, 均 import 同一 composable。'
   classification_reason: 'Hotfix(5 条全满足): 无 DB schema / 无新 API 端点 / 无新外部服务 / 影响文件=2(useTypewriterReveal.ts + 新增单测, 中心化修一个 composable 即覆盖三处消费方) / 非支付权限会员高风险(纯前端渲染节奏)。Micro 排除: 逻辑改动非文案样式。用户上报 bug → Rule 11 复现测试强制(先提交失败的 test(qa) 复现 backlog 无界)。单仓库 numind-web-v3。User 确认 Hotfix。手感: 平滑优先, 同时尽量接近原始 token(自适应最大滞后阈值取值偏平滑)。'
-  last_updated_by: ai-h3-merged
-  last_updated_at: '2026-06-11T14:30:00+08:00'
+  last_updated_by: ai-h3-prod-deployed
+  last_updated_at: '2026-06-11T21:01:00+08:00'
   created_at: '2026-06-11T14:11:35+08:00'
+  completed_at: '2026-06-11T21:01:00+08:00'
   track: hotfix
-  stage: H3
+  stage: done
   repos:
   - numind-web-v3
   branches:
@@ -4073,17 +4074,19 @@ features:
   - 'H1-review (ai 2026-06-11): 并行双 Sonnet reviewer(spec-compliance + code-quality)均 VERDICT=PASS, 零 P0/P1。spec 核验: 自适应公式对所有 >floor 到达率均使 backlog 有界(稳态 lag=arrival×maxLag/1000, 实测 625cps→169/10000cps→2831 均 <bound); Rule 11 commit 链正确(test(qa) 在前且 RED, fix 后 GREEN); 6 处 useTypewriterReveal() 调用点均零 opts→吃新默认, 中心化修复成立; flush/reset/dispose/后台分支语义保留; 残留 stream-end flush 从 dump 80% 降为 ~14%(<300ms blip); 测试断言修正合法(指数 ease-out 非线性, 原断言错的是测试不是实现)。code 核验: add=min(budget,backlog) 无 overshoot, budget≥1 保证进度, 死循环只在 maxLagMs=0/NaN(已加 Number.isFinite/>0 守卫); 无 any; rAF 不泄漏。处置全部 P2: [修]maxLagMs 守卫; [修]dLen/tLen 收进 else 消除后台分支死读; [修]两处「固定 80 cps」陈旧注释同步; [缓-另立]SOPRunView onBeforeUnmount 未 dispose 两个 reveal(pre-existing rAF 泄漏, 与本 desync 无关, 不并入本 hotfix, 已记 follow-up); [已覆盖]测试阈值推导注释(test 内已含 625cps×0.3s≈188 推导)。'
   - 'H3-merge (ai 2026-06-11): ndf-done 原子完成 — fix/stream-typewriter-adaptive→develop(merge 2abce90, 已 fetch 独立复核 origin/develop HEAD==2abce90 且 b629b7f/bf16ce5/8eefaa1 三 commit 均为 ancestor, develop 版 composable 含 adaptiveRate/maxLagMs ×12), worktree+本地分支已删, 物理目录确认消失。代码已在 develop+origin/develop。未部署: 等 User /deploy-dev → 浏览器 feel-test 流式打字机是否「平滑且贴近后端」(maxLagMs=300 是唯一可调旋钮, 嫌松改小/嫌急改大, 一行常量, follow-up micro 即可) → 验收过再 tag prod。单仓库纯前端无 migration。Follow-up 已记: SOPRunView dispose 泄漏。'
   - 'H3-deploy (ai 2026-06-11): /deploy-dev 部署 develop@2abce90 到 dev。首次失败: 构建机(139.155.129.13)磁盘 100% 满(docker build cache 41G + stale images 8.4G), rsync 阶段 No space left。SSH `docker system prune -af` 回收 47.76GB→14% 占用, 重试成功(build 219s/push 9s/total ~3m54s)。核验: dev 容器 numind-web-v3-dev 实跑 image develop-2abce90(非旧) + /health healthy。已记 memory: project_build_machine_disk_fills_docker_cache。等 User feel-test。'
+  - 'H3-prod (ai 2026-06-11): 与 thinking-autocollapse 合并打包上 prod(隔离 cherry-pick, 不带 develop 在途 agent/billing)。从 prod tag v1.0.31(d74f7a9)拉 detached worktree → cherry-pick 两 feature 全 6 commit(b629b7f/bf16ce5/8eefaa1 + c5617f4/cda30bc/99058d1; git 自动 merge ChatbotChat/ChatMessage 无冲突)→ diff v1.0.31..HEAD 恰 8 文件 258+/8-(独立复核无在途代码)→ tag v1.0.32。Gate(prod base): vue-tsc 0 / 我的 3 测试 21 pass / eslint 0。release.sh prod: build 225s/push 7s/total ~4m14s。核验(不信 Release complete): SSH prod 机实跑容器 numind-web-v3 image==v1.0.32-e89d12e(healthy, 非 silent-old) + https://youshu.asia HTTP 200。tag v1.0.32 已推 origin。prev image v1.0.31-d74f7a9 留作 rollback。release worktree 已删。'
   blockers: []
 
 - id: thinking-autocollapse
   ndf_version: '3.0'
   description: '用户要求(Chatbot 页): 思考过程展示/折叠规则 — (a)思考生成中保持展开 (b)正文一旦开始生成即自动折叠思考 (c)整轮 SSE 结束后保持折叠。现状: chatbot 完全不自动折叠。并要求检查 SOP 是否也自动折叠。调查实证: 共享组件 components/sales/ThinkingBlock.vue 早已用 auto-collapse prop 实现 (a)(b)(c)(agent 模式在用), 但 chatbot/sales 渲染时没传该 prop→从不折叠。thinkingFinished 信号本身正确(正文首 token 即 true)。SOP 用独立组件: ChatBubble.vue(追问对话)三条全对; StepOutput.vue(步骤生成)只 watch streaming(结束折叠=c), 缺 watch content 首现(=b)→正文已开始仍展开要等整轮结束才折叠。'
   classification_reason: 'Hotfix(5 条全满足): 无 DB / 无新 API / 无新外部服务 / 影响源文件=3(ChatbotChat.vue+ChatMessage.vue 各加 auto-collapse prop, StepOutput.vue 加 content watcher)+2 测试 / 非支付权限会员高风险(纯前端折叠交互)。Micro 排除: 交互逻辑改动。用户上报行为 gap → Rule 11 复现测试强制(先提交失败 test(qa))。单仓库 numind-web-v3。User 确认 Hotfix + 范围含 sales(全站一致)。'
-  last_updated_by: ai-h3-merged
-  last_updated_at: '2026-06-11T19:24:00+08:00'
+  last_updated_by: ai-h3-prod-deployed
+  last_updated_at: '2026-06-11T21:01:00+08:00'
   created_at: '2026-06-11T19:22:37+08:00'
+  completed_at: '2026-06-11T21:01:00+08:00'
   track: hotfix
-  stage: H3
+  stage: done
   repos:
   - numind-web-v3
   branches:
@@ -4098,4 +4101,5 @@ features:
   - 'H1 实现 (ai 2026-06-11): 3 commit — c5617f4 test(qa) 复现(RED: ChatMessage 流式正文开始/历史消息思考不折叠 + StepOutput body-start 不折叠, 4 差异化断言 FAIL) → cda30bc fix(ChatbotChat 两处+ChatMessage 一处 ThinkingBlock 加 auto-collapse; StepOutput 加 watch(content) 镜像 ChatBubble) → 99058d1 review-P2(trim 守卫空白首 token + skipped 测试债注释)。ChatBubble/agent 已对, 不动。Gate 全过: eslint(scoped 5 文件)0 / vue-tsc 0 / 全量 vitest 76 文件 803 pass。'
   - 'H1-review (ai 2026-06-11): 并行双 Sonnet reviewer 均 VERDICT=PASS 零 P0/P1。spec 全 trace 四面(chatbot 流式/chatbot 定稿/sales/SOP StepOutput)(a)(b)(c)均满足: chatbot 流式→定稿 handoff 无展开闪烁(定稿 ThinkingBlock collapsed=ref(autoCollapse&&finished)=true); thinkingFinished 用 raw store.streamContent(后端首 token)非打字机延迟, 正确; StepOutput watch(content) 仅首 token 触发、与 watch(streaming) 不冲突。Rule 11 commit 链正确且复现非平凡。code 核验: watch 无双触发/无需 immediate; auto-collapse 布尔简写等价 :auto-collapse=true(对齐 AgentMessageItem); 无 any; 三面机制不同(前二委托 ThinkingBlock, StepOutput 自有 ref)不可抽取。处置 P2: [修]StepOutput newContent?.trim() 防空白首 token 提前折叠; [修]skipped 旧测试(错选择器 .step-output-thinking*)加 TODO 注释澄清属既有债。'
   - 'H3-merge (ai 2026-06-11): ndf-done 原子完成 — fix/thinking-autocollapse→develop(merge 72e010a, 已 fetch 独立复核 origin/develop HEAD==72e010a 且 c5617f4/cda30bc/99058d1 三 commit 均 ancestor; develop 版 ChatbotChat auto-collapse×2 / ChatMessage×1 / StepOutput trim 守卫在位), worktree+本地分支已删。叠在 stream-typewriter-adaptive(2abce90)之上, 故 72e010a 同时含打字机自适应 + 思考折叠两修复 → 一次 dev 部署可一并 feel-test。未部署→下一步 /deploy-dev。'
+  - 'H3-prod (ai 2026-06-11): 与 stream-typewriter-adaptive 一起隔离 cherry-pick 上 prod tag v1.0.32(e89d12e) — 详见 stream-typewriter-adaptive 的 H3-prod 决策(同一次 cherry-pick + release.sh prod)。本 feature 的 3 commit(c5617f4/cda30bc/99058d1)在 v1.0.32 内; auto-collapse ×2(ChatbotChat)/×1(ChatMessage)/StepOutput trim 守卫均在位。prod 实跑 v1.0.32-e89d12e healthy + youshu.asia HTTP 200。两 feature 同一 tag 上线完毕。'
   blockers: []
