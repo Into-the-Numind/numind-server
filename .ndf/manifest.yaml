@@ -5,7 +5,7 @@ features:
   description: 'rerank 做成注册表驱动一等能力(多供应商优先级 cascade fallback, 跨异构 provider 用各自适配器), 复用 task_profile_service role=fallback+priority 机制(与主对话模型同套)。起因: 线上 bug——DMXAPI 下架 qwen3-rerank→注册表路由 ali-dashscope 但 ali 适配器无 Rerank 代码→gateway 报 provider ali does not support Rerank, dev+prod rerank 静默失效(已切 dmxapi/bge 止血)。根因: gateway makeHandler 绑死 primary 适配器(fallback 换 route 不换 adapter)+Fallback 仅试 fallbacks[0]+429 非 retryable+ali 无 rerank 适配器。'
   classification_reason: 'Standard: 新外部服务集成(百炼 rerank capability)+触及共享 AI gateway 派发核心+影响文件>3。无 DB schema(注册表路由是数据)/无新 API 端点。salesrag 收入路径受影响。用户确认 Standard + 授权 S0→deploy dev 自主(prod 不在授权)。'
   status: active
-  stage: S0
+  stage: S4
   repos:
     numind-server: /private/tmp/wt-rerank-routing-numind-server (feature/rerank-routing)
   worktrees:

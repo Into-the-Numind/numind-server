@@ -39,11 +39,12 @@ func (g *Gateway) resolveAndRun(ctx, taskID, req, dispatch) (interface{}, error)
 }
 ```
 
-- `lookupProvider(name)` = 抽出现有逻辑 `g.providers[name]` else `findAdapterByPrefix(name)`。
+- **具体实现（reviewer 澄清）**：保留 `makeHandler func(p Provider, route) (GatewayHandler, error)` 签名不变；把"`p` 的解析"从**闭包构造时**（makeHandler 调用处捕获 primary 的 p）移到**闭包执行时**（handler 被 Fallback 用 fallback route 调用时，按 `r.Provider.Name` 重新解析）。即返回的 `GatewayHandler` 内部首行 `p := g.lookupProvider(r.Provider.Name)`。
+- `lookupProvider(name)` = 抽出现有逻辑 `g.providers[name]` else `findAdapterByPrefix(name)`。**必须内部持 `g.mu.RLock()`**——现有 `findAdapterByPrefix` doc 注明"Caller must hold g.mu.RLock"；闭包在 chain 调用时执行（RLock 已释放），故 `lookupProvider` 自己加锁，否则 data race（`go test -race` 必跑）。`findAdapterByPrefix` 的"未知 provider 兜底到 dmxapi 适配器"行为（gateway.go:173-176）保留——per-route 路径下若 provider 名拼错会落到 dmxapi 适配器，再由闭包内的 capability 断言兜底；加一个测试用例覆盖未注册 provider 的行为。
 - 每个能力（Chat/Embed/Rerank/OCR/ASR）提供 `dispatch`（capability 断言 + 实际调用）。
 - **保留 primary fail-fast**：primary 不支持该能力时，在 chain 前返回（错误信息不变）→ 行为零回归。
 - **fallback route** 经 `next` 进入 handler 时，按 fallback 的 provider 名解析适配器 → 用对家适配器。
-- **范围**：只改 `resolveAndRun`（覆盖 Chat/Embed/Rerank/OCR/ASR）。`ChatStream`（gateway.go:268）有独立解析逻辑、不走 resolveAndRun，本次**不动**（流式跨家 fallback 罕见且 chat 均 OAI 兼容，捕获 primary 适配器无害）——作为已知限制记录。
+- **范围**：只改 `resolveAndRun`（覆盖 Chat/Embed/Rerank/OCR/ASR）。`ChatStream`（gateway.go:268-323）有**结构等同 pre-T1 resolveAndRun 的独立解析块**、不走 resolveAndRun，本次**故意不动**（流式跨家 fallback 罕见且 chat 均 OAI 兼容，捕获 primary 适配器无害）——作为已知限制记录。
 
 ### T2：ali/百炼 rerank 适配器
 
@@ -115,16 +116,25 @@ if err == nil { return resp, nil }
 if !retryableError(err) { return resp, err }       // primary 非 retryable → 不 fallback（不变）
 _, fallbacks, resolveErr := deps.Resolver.ResolveTask(ctx, route.TaskID)
 if resolveErr != nil || len(fallbacks) == 0 { return resp, err }
+// 进 cascade 前记一条 warn（保留旧版可观测性契约：primary_error + 候选数）
+deps.warnw("fallback: engaging cascade", "task_id", route.TaskID,
+    "primary_service_id", route.ServiceID, "primary_error", err, "candidates", len(fallbacks))
+triedIDs := make([]uint64, 0, len(fallbacks))
 for i := range fallbacks {
     fb := fallbacks[i]
+    triedIDs = append(triedIDs, fb.ServiceID)
     fbCtx := withFallbackFromServiceID(withSkipRetry(ctx), route.ServiceID)
     fbResp, fbErr := next(fbCtx, &fb, req)
     if fbErr == nil { return fbResp, nil }
+    // 任一 fallback 失败（含 capability-mismatch / 非 retryable）→ 继续试下一条
     deps.warnw("fallback: candidate failed", "task_id", route.TaskID, "fallback_service_id", fb.ServiceID, "err", fbErr)
 }
-return nil, errno.ErrAIFallbackExhausted
+// 全失败：带 provenance（试了哪些 service id）便于排障/对账
+return nil, errno.ErrAIFallbackExhausted.SetMessage("tried %d fallback(s): %v", len(triedIDs), triedIDs)
 ```
 - **零回归**：单 fallback 配置时循环 1 次 = 旧行为。多 fallback 时依次尝试（旧代码会忽略 `fallbacks[1:]`，这是隐性 bug，本次顺带修）。
+- **fallback 候选失败处理**：循环内对**任何**错误（retryable 或非 retryable，含 `ErrAICapabilityMismatch`）都继续试下一条——fallback 已是 last-resort，逐家尝试是预期行为（`retryableError` 门禁只作用于是否对 **primary** 启动 cascade）。
+- **provenance**：全失败返回的 `ErrAIFallbackExhausted` 带上试过的 service id 列表（reviewer F4：便于排障 + 对账）。
 - skip_retry 仍注入，单家不放大调用数。
 
 ### T5：dev 注册表路由配置（数据，非代码；在 S5/部署阶段执行）
@@ -136,7 +146,13 @@ dev 上把 rerank 配成优先级链：
 
 ## 3. trace topology（AI 功能）
 
-rerank 调用在 `retrieve.Service.Retrieve` 内（已有 rerank span）。本次不改 trace 结构。billing + tracing 中间件在 chain 内，每条实际执行的 route（含 fallback）都会记 provider/model 到 generation/span。验收：rerank span 不再 ERROR；fallback 生效时 span 反映实际 provider。
+rerank 调用在 `retrieve.Service.Retrieve` 内（已有 rerank span）。本次不改 trace 结构。
+
+**chain 层序（reviewer 澄清，chain.go）**：Tracing（最外）→ Fallback → ContextBudget → Billing → Retry → Adapter。
+
+- **Billing 在 Fallback 内层**：Fallback 用 fallback route 调 `next` 时，Billing 收到的是 fallback route → **计费正确记录实际生效的 provider/model**（T1 让 adapter 也对，端到端一致）。
+- **Tracing 在 Fallback 外层**：generation/span 在 Fallback 之前用 **primary route** 创建。所以 fallback 生效时，外层 trace generation 显示的是 **primary 的 model 身份**、但结果为 success（Fallback 返回了 fallback 的成功结果）。
+- **验收口径（修正 reviewer S2-P1）**：AC7 = rerank span **不再 ERROR**（这是用户真实目标）。**不**声称"span 反映 fallback 实际 provider"——那在当前 chain 拓扑下结构上不成立。计费侧由 Billing 中间件正确归属到实际 provider。若未来要让 trace 也精确反映 fallback provider，需把 Tracing 移到 Fallback 内层（invasive，不在本次范围）。
 
 ## 4. 验收标准映射
 
