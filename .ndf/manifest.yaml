@@ -5,19 +5,23 @@ features:
   description: 'agent mode 流式 LLM 在「首个内容 chunk 之前」发生 idle timeout(errno.ErrAIProviderTimeout, Part A 已让其快速失败)时自动重试: 同供应商同模型重试 1 次→仍失败降级同模型另一供应商(deepseek-v4-pro: aihubmix→dmxapi, 数据已存在)。已吐内容后的中途断流不重试(快速失败原样透传)。对下游透明(对外仍是一个 <-chan ChatChunk)。Part B = 上线前可靠性硬化最后一环。'
   classification_reason: 'Standard: 高风险计费逻辑(Reserve/Reconcile 两阶段, 重试绝不能重复预扣/对账)+影响文件>3(gateway/retry/fallback/registry+测试)。无 DB schema(备用路由数据已存在, 仅 registry 查询层 surface)/无新 API 端点/无新外部服务。用户经 AskUserQuestion 确认 Standard(2026-06-12)。'
   status: active
-  stage: S0
+  stage: S3
   repos:
     numind-server: feature/agent-stream-retry
   worktrees:
     numind-server: /private/tmp/wt-agent-stream-retry-numind-server
   progress:
-    total_tasks: 0
+    total_tasks: 5
     completed_tasks: 0
     reviewed_tasks: 0
   artifacts:
     requirement: .ndf/features/agent-stream-retry/requirement.md
+    proposal: .ndf/features/agent-stream-retry/proposal.md
+    spec: .ndf/features/agent-stream-retry/spec.md
+    plan: .ndf/features/agent-stream-retry/plan.md
   decisions:
-  - 'S0 (ai 2026-06-12): 复核 A/B/C/D 四锚点(详见 requirement.md)。关键: idle 错误是 IsFinal+Err=ErrAIProviderTimeout 终止 chunk(retryable); WithFirstChunkSent 半接通(无人 set); ChatStream 锁 primary 适配器但 base_url/key 来自 route+aihubmix/dmxapi 共用 dmxapi 适配器故对 agent.run 限制为哑; deepseek-v4-pro 已有 aihubmix(pri10)+dmxapi(pri5) 双路由但 GetResolvedRoute LIMIT 1 只取 top。计费洞察: 同供应商重试放 Retry middleware 内(Reserve 之下)→零重复 Reserve/UsageRecord。Triage=Standard, 用户确认。架构选型(网关层/agent适配器层/Retry+Fallback middleware 流式化)留 S2 reviewer 压测拍板。'
+  - 'S1-S3 (ai 2026-06-12): 用户授权全流程自主到 deploy dev(prod 不碰)。架构 reviewer subagent 压测(8/10)背书 Option 3=既有 Retry+Fallback middleware 流式化(对比 Option1 网关层/Option2 agent适配器层均二次 Reserve 脏账)。ADR 0001 记决策+9 条 MUST-HANDLE(4 P0: Retry 吞失败 channel error chunk 不冒泡/重试前 drain/firstContentForwarded 含 ReasoningDelta/skip_retry early-return 保 upstream≤3)。5 task: T1 共享 reattempt helper+流式 Retry(Reserve 之下零重复计费) / T2 registry ResolveModelAlternates(surface deepseek-v4-pro 的 dmxapi 备用路由,数据已存在) / T3 流式 Fallback 跨供应商降级 / T4 gateway.ChatStream per-route lookup(修 C,对齐 Embed) / T5 集成+验证。S5 验证=后端 Go TDD(计费 Reserve 计数断言)+dev 实跑(定位调研助手),无 UI 不做 Playwright。Rule 11 首 commit=失败复现测试。'
+  - 'S0 (ai 2026-06-12): 复核 A/B/C/D 四锚点(详见 requirement.md)。关键: idle 错误是 IsFinal+Err=ErrAIProviderTimeout 终止 chunk(retryable); WithFirstChunkSent 半接通(无人 set); ChatStream 锁 primary 适配器但 base_url/key 来自 route+aihubmix/dmxapi 共用 dmxapi 适配器故对 agent.run 限制为哑; deepseek-v4-pro 已有 aihubmix(pri10)+dmxapi(pri5) 双路由但 GetResolvedRoute LIMIT 1 只取 top。计费洞察: 同供应商重试放 Retry middleware 内(Reserve 之下)→零重复 Reserve/UsageRecord。Triage=Standard, 用户确认。'
   blockers: []
 - id: rerank-routing
   track: standard
