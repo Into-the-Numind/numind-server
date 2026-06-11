@@ -273,6 +273,10 @@ func TestChainStream_NormalStream_NoRetryNoFallback_BillingNormal(t *testing.T) 
 	// Reserve is synchronous (pre-call); reconcile is async — converge on it.
 	eventually(t, func() bool {
 		r, rf, f := creditCounts(creditSvc)
-		return r == 1 && rf == 0 && f == 1
-	}, "happy-path billing did not settle to reserve=1 refund=0 finalize=1")
+		return r == 1 && rf == 0 && f == 1 && usageStore.count() == 1
+	}, "happy-path billing did not settle to reserve=1 refund=0 finalize=1 records=1")
+
+	if usageStore.count() != 1 {
+		t.Errorf("happy path must write exactly 1 usage record (Billing not bypassed), got %d", usageStore.count())
+	}
 }
