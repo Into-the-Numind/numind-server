@@ -26,6 +26,7 @@ import (
 	"sync/atomic"
 
 	"numind-server/internal/pkg/aiservice/registry"
+	"numind-server/internal/pkg/errno"
 )
 
 // ----------------------------------------------------------------------------
@@ -224,18 +225,19 @@ func (g *Gateway) resolveAndRun(
 		req = chatReq
 	}
 
-	g.mu.RLock()
-	p, ok := g.providers[primary.Provider.Name]
-	if !ok {
-		p = g.findAdapterByPrefix(primary.Provider.Name)
-		ok = p != nil
-	}
-	chainFn := g.chain
-	g.mu.RUnlock()
-
-	if !ok {
+	// Resolve the PRIMARY provider for the fail-fast capability check below.
+	// NOTE: the actual per-call adapter is resolved again inside the handler via
+	// lookupProvider(r.Provider.Name) — that is what lets the Fallback middleware
+	// dispatch a fallback route to ITS OWN provider's adapter instead of reusing
+	// the primary's (cross-provider fallback for rerank/embed/etc).
+	p := g.lookupProvider(primary.Provider.Name)
+	if p == nil {
 		return nil, fmt.Errorf("gateway: no provider registered for %q", primary.Provider.Name)
 	}
+
+	g.mu.RLock()
+	chainFn := g.chain
+	g.mu.RUnlock()
 
 	handler, err := makeHandler(p, primary)
 	if err != nil {
@@ -248,6 +250,22 @@ func (g *Gateway) resolveAndRun(
 	return handler(ctx, primary, req)
 }
 
+// lookupProvider resolves a registered provider by name, applying the same
+// prefix-match fallback (findAdapterByPrefix) as the legacy inline resolution.
+// It acquires g.mu.RLock internally so it is safe to call from a dispatch
+// closure at handler-EXECUTION time (after resolveAndRun's own RLock has been
+// released). This per-call resolution is the mechanism that makes the Fallback
+// middleware use each route's own adapter — see resolveAndRun.
+func (g *Gateway) lookupProvider(name string) Provider {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	if pr, ok := g.providers[name]; ok {
+		return pr
+	}
+	// findAdapterByPrefix requires the caller to hold g.mu.RLock — satisfied here.
+	return g.findAdapterByPrefix(name)
+}
+
 // ----------------------------------------------------------------------------
 // Chat
 // ----------------------------------------------------------------------------
@@ -255,11 +273,18 @@ func (g *Gateway) resolveAndRun(
 // Chat performs a non-streaming chat call for the given taskID.
 func (g *Gateway) Chat(ctx context.Context, taskID string, req ChatRequest) (*ChatResponse, error) {
 	resp, err := g.resolveAndRun(ctx, taskID, req, func(p Provider, route *registry.ResolvedRoute) (GatewayHandler, error) {
-		chat, ok := p.(ChatProvider)
-		if !ok {
+		if _, ok := p.(ChatProvider); !ok {
 			return nil, fmt.Errorf("gateway: provider %q does not support Chat", p.Name())
 		}
 		return func(ctx context.Context, r *registry.ResolvedRoute, rawReq interface{}) (interface{}, error) {
+			rp := g.lookupProvider(r.Provider.Name)
+			if rp == nil {
+				return nil, fmt.Errorf("gateway: no provider registered for %q", r.Provider.Name)
+			}
+			chat, ok := rp.(ChatProvider)
+			if !ok {
+				return nil, fmt.Errorf("gateway: provider %q does not support Chat: %w", rp.Name(), errno.ErrAICapabilityMismatch)
+			}
 			return chat.Chat(ctx, r, rawReq.(ChatRequest))
 		}, nil
 	})
@@ -297,6 +322,13 @@ func (g *Gateway) ChatStream(ctx context.Context, taskID string, req ChatRequest
 		req.MaxTokens = defaultMaxTokensFromCapability(primary.Capability.MaxOutputTokens)
 	}
 
+	// NOTE(rerank-routing T1): ChatStream intentionally keeps the legacy resolution
+	// that captures the PRIMARY adapter at construction time (it does NOT use the
+	// per-route lookupProvider applied to resolveAndRun). Consequence: cross-provider
+	// streaming fallback would dispatch to the primary adapter, not the fallback's.
+	// This is an accepted known limitation — streaming fallback across heterogeneous
+	// providers is rare and all chat providers are OAI-compatible. Fix in a follow-up
+	// if streaming rerank/cross-protocol fallback is ever needed.
 	g.mu.RLock()
 	p, ok := g.providers[primary.Provider.Name]
 	if !ok {
@@ -344,11 +376,18 @@ func (g *Gateway) ChatStream(ctx context.Context, taskID string, req ChatRequest
 // Embed performs a text embedding call for the given taskID.
 func (g *Gateway) Embed(ctx context.Context, taskID string, req EmbedRequest) (*EmbedResponse, error) {
 	resp, err := g.resolveAndRun(ctx, taskID, req, func(p Provider, route *registry.ResolvedRoute) (GatewayHandler, error) {
-		embed, ok := p.(EmbedProvider)
-		if !ok {
+		if _, ok := p.(EmbedProvider); !ok {
 			return nil, fmt.Errorf("gateway: provider %q does not support Embed", p.Name())
 		}
 		return func(ctx context.Context, r *registry.ResolvedRoute, rawReq interface{}) (interface{}, error) {
+			rp := g.lookupProvider(r.Provider.Name)
+			if rp == nil {
+				return nil, fmt.Errorf("gateway: no provider registered for %q", r.Provider.Name)
+			}
+			embed, ok := rp.(EmbedProvider)
+			if !ok {
+				return nil, fmt.Errorf("gateway: provider %q does not support Embed: %w", rp.Name(), errno.ErrAICapabilityMismatch)
+			}
 			return embed.Embed(ctx, r, rawReq.(EmbedRequest))
 		}, nil
 	})
@@ -368,11 +407,18 @@ func (g *Gateway) Embed(ctx context.Context, taskID string, req EmbedRequest) (*
 // Rerank performs a reranking call for the given taskID.
 func (g *Gateway) Rerank(ctx context.Context, taskID string, req RerankRequest) (*RerankResponse, error) {
 	resp, err := g.resolveAndRun(ctx, taskID, req, func(p Provider, route *registry.ResolvedRoute) (GatewayHandler, error) {
-		rerank, ok := p.(RerankProvider)
-		if !ok {
+		if _, ok := p.(RerankProvider); !ok {
 			return nil, fmt.Errorf("gateway: provider %q does not support Rerank", p.Name())
 		}
 		return func(ctx context.Context, r *registry.ResolvedRoute, rawReq interface{}) (interface{}, error) {
+			rp := g.lookupProvider(r.Provider.Name)
+			if rp == nil {
+				return nil, fmt.Errorf("gateway: no provider registered for %q", r.Provider.Name)
+			}
+			rerank, ok := rp.(RerankProvider)
+			if !ok {
+				return nil, fmt.Errorf("gateway: provider %q does not support Rerank: %w", rp.Name(), errno.ErrAICapabilityMismatch)
+			}
 			return rerank.Rerank(ctx, r, rawReq.(RerankRequest))
 		}, nil
 	})
@@ -392,11 +438,18 @@ func (g *Gateway) Rerank(ctx context.Context, taskID string, req RerankRequest) 
 // OCR performs an optical character recognition call for the given taskID.
 func (g *Gateway) OCR(ctx context.Context, taskID string, req OCRRequest) (*OCRResponse, error) {
 	resp, err := g.resolveAndRun(ctx, taskID, req, func(p Provider, route *registry.ResolvedRoute) (GatewayHandler, error) {
-		ocr, ok := p.(OCRProvider)
-		if !ok {
+		if _, ok := p.(OCRProvider); !ok {
 			return nil, fmt.Errorf("gateway: provider %q does not support OCR", p.Name())
 		}
 		return func(ctx context.Context, r *registry.ResolvedRoute, rawReq interface{}) (interface{}, error) {
+			rp := g.lookupProvider(r.Provider.Name)
+			if rp == nil {
+				return nil, fmt.Errorf("gateway: no provider registered for %q", r.Provider.Name)
+			}
+			ocr, ok := rp.(OCRProvider)
+			if !ok {
+				return nil, fmt.Errorf("gateway: provider %q does not support OCR: %w", rp.Name(), errno.ErrAICapabilityMismatch)
+			}
 			return ocr.OCR(ctx, r, rawReq.(OCRRequest))
 		}, nil
 	})
@@ -416,11 +469,18 @@ func (g *Gateway) OCR(ctx context.Context, taskID string, req OCRRequest) (*OCRR
 // ASR performs an automatic speech recognition call for the given taskID.
 func (g *Gateway) ASR(ctx context.Context, taskID string, req ASRRequest) (*ASRResponse, error) {
 	resp, err := g.resolveAndRun(ctx, taskID, req, func(p Provider, route *registry.ResolvedRoute) (GatewayHandler, error) {
-		asr, ok := p.(ASRProvider)
-		if !ok {
+		if _, ok := p.(ASRProvider); !ok {
 			return nil, fmt.Errorf("gateway: provider %q does not support ASR", p.Name())
 		}
 		return func(ctx context.Context, r *registry.ResolvedRoute, rawReq interface{}) (interface{}, error) {
+			rp := g.lookupProvider(r.Provider.Name)
+			if rp == nil {
+				return nil, fmt.Errorf("gateway: no provider registered for %q", r.Provider.Name)
+			}
+			asr, ok := rp.(ASRProvider)
+			if !ok {
+				return nil, fmt.Errorf("gateway: provider %q does not support ASR: %w", rp.Name(), errno.ErrAICapabilityMismatch)
+			}
 			return asr.ASR(ctx, r, rawReq.(ASRRequest))
 		}, nil
 	})
