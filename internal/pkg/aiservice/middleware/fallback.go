@@ -7,19 +7,23 @@ import (
 	"numind-server/internal/pkg/errno"
 )
 
-// Fallback returns a Middleware that switches to the first available fallback
-// service when the primary service fails after exhausting Retry attempts
-// (spec §6.5).
+// Fallback returns a Middleware that fails the request over to the configured
+// fallback services when the primary service fails after exhausting Retry
+// attempts (spec §6.5).
 //
-// Contract:
+// Contract (rerank-routing T4 — multi-level cascade):
 //   - Fallback is only triggered after the primary service has failed with a
 //     retryable error (ErrAIProviderTimeout or ErrAIProviderError).
-//   - At most one fallback service is tried (no cascading fallbacks).
-//   - The fallback service call has Retry disabled (skip_retry=true injected
-//     into ctx) so the total upstream call count stays ≤ 3.
-//   - If the fallback service also fails, ErrAIFallbackExhausted is returned.
-//   - The Langfuse generation/span for the fallback call carries the metadata
-//     key fallback_from_service_id (injected via ctx before calling next).
+//   - ALL configured fallback services are tried in priority order (highest
+//     priority first); the first success wins. Any candidate failure (retryable
+//     or not) advances to the next candidate.
+//   - Each fallback call has Retry disabled (skip_retry=true injected into ctx,
+//     re-derived from the original ctx per candidate so it is not compounded),
+//     so each candidate makes a single upstream attempt.
+//   - If every fallback also fails, ErrAIFallbackExhausted is returned with the
+//     list of tried service IDs in its message (provenance for debugging/billing).
+//   - The Langfuse generation/span for each fallback call carries the metadata
+//     key fallback_from_service_id = the PRIMARY service id (root cause).
 //
 // When Deps.Resolver is nil the middleware becomes a transparent passthrough.
 func Fallback(deps Deps) Middleware {
@@ -85,8 +89,9 @@ func Fallback(deps Deps) Middleware {
 				)
 			}
 
-			// All candidates failed — return with provenance for debugging/billing.
-			return nil, errno.ErrAIFallbackExhausted.SetMessage("所有 AI 服务（含 fallback）均不可用 (tried %d fallback(s): %v)", len(triedIDs), triedIDs)
+			// All candidates failed — return with provenance for debugging/billing:
+			// the primary error (root cause) + the fallback service IDs we tried.
+			return nil, errno.ErrAIFallbackExhausted.SetMessage("所有 AI 服务（含 fallback）均不可用 (primary err: %v; tried %d fallback(s): %v)", err, len(triedIDs), triedIDs)
 		}
 	}
 }

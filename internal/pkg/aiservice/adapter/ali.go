@@ -79,8 +79,9 @@ type dashscopeRerankResponse struct {
 	Usage struct {
 		TotalTokens int `json:"total_tokens"`
 	} `json:"usage"`
-	Code    string `json:"code,omitempty"`
-	Message string `json:"message,omitempty"`
+	Code      string `json:"code,omitempty"`
+	Message   string `json:"message,omitempty"`
+	RequestID string `json:"request_id,omitempty"`
 }
 
 // AliAdapter implements ChatAdapter and EmbedAdapter for Alibaba Cloud
@@ -277,6 +278,12 @@ func (a *AliAdapter) Rerank(ctx context.Context, route *registry.ResolvedRoute, 
 		return &aiservice.RerankResponse{Provider: a.Name()}, nil
 	}
 
+	// Same native-base derivation as Embed: the DashScope native rerank path lives
+	// under /api/v1, while the configured BaseURL is the OpenAI-compatible
+	// /compatible-mode/v1 base. ASSUMPTION (consistent with Embed): the provider
+	// BaseURL is the DashScope compatible-mode base; a non-DashScope custom base
+	// without that segment would no-op the replace and append the service path
+	// verbatim. All registered ali-dashscope providers use the standard base.
 	nativeBase := strings.Replace(route.Provider.BaseURL, "/compatible-mode/v1", "/api/v1", 1)
 	rerankURL := nativeBase + "/services/rerank/text-rerank/text-rerank"
 
@@ -310,7 +317,7 @@ func (a *AliAdapter) Rerank(ctx context.Context, route *registry.ResolvedRoute, 
 	results := make([]aiservice.RerankResult, 0, len(dsResp.Output.Results))
 	for _, r := range dsResp.Output.Results {
 		doc := r.Document.Text
-		if doc == "" && r.Index >= 0 && r.Index < len(req.Documents) {
+		if doc == "" && r.Index < len(req.Documents) {
 			doc = req.Documents[r.Index]
 		}
 		results = append(results, aiservice.RerankResult{
@@ -436,12 +443,21 @@ func wrapHTTPClientErr(op string, err error) error {
 //   - 5xx → ErrAIProviderError (retriable)
 //   - 429 Too Many Requests / 408 Request Timeout → ErrAIProviderError (retriable):
 //     these are TRANSIENT — a rate-limited model (e.g. the free bge-reranker
-//     5 req/min tier) or an HTTP-level timeout should engage Retry/Fallback so
-//     the request can fail over to another provider, not hard-fail. (rerank-routing T3)
+//     5 req/min tier) or a server-side request-receipt/idle timeout should engage
+//     the middleware Retry/Fallback so the request can fail over to another
+//     provider, not hard-fail. (rerank-routing T3)
 //   - other 4xx → plain fmt.Errorf (not retriable — genuine client/config errors)
 //
 // Shared by the ali, dmxapi and volc adapters (defined once here), so all three
 // gain 429/408 fail-over behavior uniformly.
+//
+// Interaction with httpclient transport retries: httpclient.shouldRetryByStatus
+// already retries 429 at the transport layer up to the adapter's RetryPolicy
+// MaxRetries (ali rerank uses doRawPost with MaxRetries=0 → single attempt;
+// dmxapi doPost uses a small MaxRetries). After those are exhausted the 429
+// surfaces here and now (T3) triggers a cross-provider fail-over instead of a
+// hard error — that fail-over is the intended new behavior, not double-retry of
+// the SAME provider.
 func wrapHTTPStatusErr(op string, statusCode int, body []byte) error {
 	if statusCode >= 500 || statusCode == http.StatusTooManyRequests || statusCode == http.StatusRequestTimeout {
 		return errno.ErrAIProviderError.SetMessage("%s: HTTP %d: %s", op, statusCode, string(body))
