@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -51,6 +52,17 @@ func runOAIStream(
 	defer r.Close()
 	defer close(ch)
 
+	// Idle watchdog: a provider that sends headers then stalls would block the
+	// scanner.Scan() loop below forever — hanging the whole agent run (dev run 138,
+	// ~6.5 min). Close the body after `idle` of no new data so the read unblocks with
+	// a clear, retryable error instead of waiting on the 10-min HTTP timeout.
+	var idleWatcher *streamIdleWatcher
+	if idle := streamIdleTimeout(); idle > 0 {
+		var stopWatcher func()
+		idleWatcher, stopWatcher = startStreamIdleWatcher(r, idle)
+		defer stopWatcher()
+	}
+
 	scanner := bufio.NewScanner(r)
 	// Increase scanner buffer for large payloads.
 	buf := make([]byte, 0, 64*1024)
@@ -71,6 +83,9 @@ func runOAIStream(
 	pendingToolCalls := map[int]*aiservice.ToolCall{}
 
 	for scanner.Scan() {
+		if idleWatcher != nil {
+			idleWatcher.mark() // got data → reset the idle clock
+		}
 		line := scanner.Text()
 
 		// Skip blank lines and SSE comment lines.
@@ -171,6 +186,24 @@ func runOAIStream(
 			}
 			index++
 		}
+	}
+
+	// Idle-timeout: the watchdog closed the body after `idle` of no data. Surface a
+	// clear, distinct error (wrapping context.DeadlineExceeded so it classifies as a
+	// timeout) instead of a generic scan_error, so the run fails fast and the gateway
+	// can retry/fallback rather than hanging on the HTTP timeout (dev run 138).
+	if idleWatcher != nil && idleWatcher.tripped.Load() {
+		ch <- aiservice.ChatChunk{
+			Index:         index,
+			FinishReason:  fmt.Sprintf("idle_timeout: no stream data for %s", idleWatcher.idle),
+			IsFinal:       true,
+			Usage:         lastUsage,
+			Provider:      provider,
+			Model:         resolvedModel,
+			Err:           fmt.Errorf("aiservice stream idle timeout: no data for %s: %w", idleWatcher.idle, context.DeadlineExceeded),
+			TraceMetadata: traceMeta,
+		}
+		return
 	}
 
 	if err := scanner.Err(); err != nil {
