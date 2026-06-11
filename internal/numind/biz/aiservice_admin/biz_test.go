@@ -189,6 +189,10 @@ func (m *mockRegistry) ResolveByModelKey(_ context.Context, _ string, _ string) 
 	panic("not implemented in mock")
 }
 
+func (m *mockRegistry) ResolveModelAlternates(_ context.Context, _ string, _, _ uint64) ([]registry.ResolvedRoute, error) {
+	panic("not implemented in mock")
+}
+
 // ----------------------------------------------------------------------------
 // Tests
 // ----------------------------------------------------------------------------

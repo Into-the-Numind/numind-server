@@ -133,6 +133,17 @@ type Registry interface {
 	// Errors:
 	//   - errno.ErrAIServiceNotFound — no active service with the given model_key
 	ResolveByModelKey(ctx context.Context, taskID string, modelKey string) (*ResolvedRoute, error)
+
+	// ResolveModelAlternates returns the same-model alternate-provider routes for
+	// a task's primary model, ordered by priority DESC, EXCLUDING the route whose
+	// provider matches excludeProviderID (the one already attempted as primary).
+	// It powers cross-provider streaming fallback: fail a streaming chat over to
+	// the SAME model on a DIFFERENT provider (e.g. deepseek-v4-pro: aihubmix →
+	// dmxapi) when the primary provider's stream stalls before the first content
+	// chunk. Returns an empty slice (not an error) when the model has no alternate
+	// provider routes. Not cached — alternates are only read on the rare failover
+	// path, and the underlying GetResolvedRoute cache already covers the hot path.
+	ResolveModelAlternates(ctx context.Context, taskID string, primaryServiceID, excludeProviderID uint64) ([]ResolvedRoute, error)
 }
 
 // ----------------------------------------------------------------------------
@@ -418,6 +429,24 @@ func (r *registryImpl) ResolveByModelKey(ctx context.Context, taskID string, mod
 	}
 	route := buildResolvedRoute(taskID, row)
 	return &route, nil
+}
+
+// ResolveModelAlternates returns the same-model alternate-provider routes for
+// primaryServiceID, ordered by priority DESC, excluding excludeProviderID.
+// See the Registry interface doc for the cross-provider streaming fallback use.
+func (r *registryImpl) ResolveModelAlternates(ctx context.Context, taskID string, primaryServiceID, excludeProviderID uint64) ([]ResolvedRoute, error) {
+	rows, err := r.store.ListResolvedRoutesByModel(ctx, primaryServiceID)
+	if err != nil {
+		return nil, fmt.Errorf("registry.ResolveModelAlternates: %w", err)
+	}
+	alts := make([]ResolvedRoute, 0, len(rows))
+	for _, row := range rows {
+		if row.ProviderID == excludeProviderID {
+			continue // skip the provider already attempted as primary
+		}
+		alts = append(alts, buildResolvedRoute(taskID, row))
+	}
+	return alts, nil
 }
 
 // ----------------------------------------------------------------------------

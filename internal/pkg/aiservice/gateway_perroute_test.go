@@ -103,3 +103,70 @@ func TestGateway_Rerank_UnregisteredProvider_Errors(t *testing.T) {
 		t.Errorf("expected 'no provider registered' error, got: %v", err)
 	}
 }
+
+// recordingStreamProvider counts ChatStream invocations so we can prove which
+// adapter served a streaming call.
+type recordingStreamProvider struct {
+	name        string
+	streamCalls int
+	chunks      []aiservice.ChatChunk
+}
+
+func (m *recordingStreamProvider) Name() string           { return m.name }
+func (m *recordingStreamProvider) ProviderType() string   { return "mock" }
+func (m *recordingStreamProvider) Capabilities() []string { return []string{"chat"} }
+func (m *recordingStreamProvider) Chat(_ context.Context, _ *registry.ResolvedRoute, _ aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
+	return nil, errno.ErrAICapabilityMismatch // not used by these tests
+}
+func (m *recordingStreamProvider) ChatStream(_ context.Context, _ *registry.ResolvedRoute, _ aiservice.ChatRequest) (<-chan aiservice.ChatChunk, error) {
+	m.streamCalls++
+	ch := make(chan aiservice.ChatChunk, len(m.chunks)+1)
+	for _, c := range m.chunks {
+		ch <- c
+	}
+	close(ch)
+	return (<-chan aiservice.ChatChunk)(ch), nil
+}
+
+// TestGatewayChatStream_DispatchesPerRouteAdapter proves the config-C fix: when
+// the middleware chain dispatches a DIFFERENT route than the primary (as the
+// streaming Fallback does on failover), ChatStream resolves the adapter PER-ROUTE
+// (lookupProvider) instead of reusing the primary adapter captured at
+// construction. Before the fix the primary adapter was locked in, so the
+// alternate route would have been served by the wrong provider's wire logic.
+func TestGatewayChatStream_DispatchesPerRouteAdapter(t *testing.T) {
+	provA := &recordingStreamProvider{name: "prov-a"}
+	provB := &recordingStreamProvider{
+		name:   "prov-b",
+		chunks: []aiservice.ChatChunk{{Delta: "hi"}, {IsFinal: true, FinishReason: "stop"}},
+	}
+
+	primaryRoute := registry.ResolvedRoute{TaskID: "agent.run", ServiceID: 1, Provider: registry.ProviderInfo{Name: "prov-a"}}
+	altRoute := registry.ResolvedRoute{TaskID: "agent.run", ServiceID: 2, Provider: registry.ProviderInfo{Name: "prov-b"}}
+	reg := &reproRegistry{primary: &primaryRoute}
+
+	gw := aiservice.Build(aiservice.Deps{Registry: reg})
+	// Chain that swaps the route to the alternate provider (mimics a fallback
+	// switch) — the handler must then dispatch to prov-b's OWN adapter.
+	gw.SetMiddlewareChain(aiservice.MiddlewareChainFunc(func(next aiservice.GatewayHandler) aiservice.GatewayHandler {
+		return func(ctx context.Context, _ *registry.ResolvedRoute, req interface{}) (interface{}, error) {
+			return next(ctx, &altRoute, req)
+		}
+	}))
+	gw.RegisterProvider(provA)
+	gw.RegisterProvider(provB)
+
+	ch, err := gw.ChatStream(context.Background(), "agent.run", aiservice.ChatRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for range ch { //nolint:revive // drain
+	}
+
+	if provA.streamCalls != 0 {
+		t.Errorf("primary adapter must NOT serve the alternate route; prov-a calls=%d", provA.streamCalls)
+	}
+	if provB.streamCalls != 1 {
+		t.Errorf("alternate route must dispatch to ITS OWN adapter (per-route lookup); prov-b calls=%d", provB.streamCalls)
+	}
+}

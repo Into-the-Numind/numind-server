@@ -148,6 +148,10 @@ func (r *mockRegistry) ResolveByModelKey(_ context.Context, _ string, _ string) 
 	return nil, errno.ErrAIServiceNotFound
 }
 
+func (r *mockRegistry) ResolveModelAlternates(_ context.Context, _ string, _, _ uint64) ([]registry.ResolvedRoute, error) {
+	return nil, nil
+}
+
 // ----------------------------------------------------------------------------
 // Tests
 // ----------------------------------------------------------------------------

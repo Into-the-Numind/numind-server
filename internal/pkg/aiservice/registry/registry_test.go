@@ -27,6 +27,7 @@ type mockStore struct {
 	resolvedRoutes map[uint64]*resolvedRouteRow  // keyed by service_id
 	auditLogs      []*model.AIServiceAuditLog
 	dbCallCount    map[string]int // tracks how many times each method was called
+	listRoutesErr  error          // when set, ListResolvedRoutesByModel returns it
 }
 
 func newMockStore() *mockStore {
@@ -186,6 +187,14 @@ func (m *mockStore) GetResolvedRouteByModelKey(_ context.Context, modelKey strin
 		}
 	}
 	return nil, errno.ErrAIServiceNotFound
+}
+
+func (m *mockStore) ListResolvedRoutesByModel(_ context.Context, _ uint64) ([]*resolvedRouteRow, error) {
+	m.dbCallCount["ListResolvedRoutesByModel"]++
+	if m.listRoutesErr != nil {
+		return nil, m.listRoutesErr
+	}
+	return nil, nil
 }
 
 func (m *mockStore) InsertAuditLog(_ context.Context, entry *model.AIServiceAuditLog) error {

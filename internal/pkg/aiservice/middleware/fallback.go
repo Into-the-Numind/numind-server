@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 
+	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/errno"
 )
@@ -31,6 +32,24 @@ func Fallback(deps Deps) Middleware {
 		return func(ctx context.Context, route *registry.ResolvedRoute, req interface{}) (interface{}, error) {
 			// Attempt the primary service path (which includes Retry inside the chain).
 			resp, err := next(ctx, route, req)
+
+			// Streaming-aware fallback (Part B): a successfully-established stream
+			// returns (channel, nil); the failure surfaces asynchronously as a
+			// ChatChunk.Err terminal chunk that the synchronous cascade below never
+			// sees. Wrap the channel so a retryable error BEFORE the first content
+			// chunk cascades to the SAME MODEL's alternate-provider routes (e.g.
+			// deepseek-v4-pro: aihubmix → dmxapi). This wrapper sits OUTSIDE
+			// ContextBudgetCredits, so each alternate gets its own fresh Reserve
+			// (correct for a different provider); the primary's reservation was
+			// already refunded by ContextBudgetCredits when its error terminal
+			// flowed up through it.
+			if ch, isStream := resp.(<-chan aiservice.ChatChunk); isStream && err == nil {
+				if deps.Resolver == nil {
+					return ch, nil // no resolver → no fallback, transparent passthrough
+				}
+				return fallbackStream(ctx, route, req, ch, next, deps), nil
+			}
+
 			if err == nil {
 				return resp, nil
 			}
@@ -94,4 +113,73 @@ func Fallback(deps Deps) Middleware {
 			return nil, errno.ErrAIFallbackExhausted.SetMessage("所有 AI 服务（含 fallback）均不可用 (primary err: %v; tried %d fallback(s): %v)", err, len(triedIDs), triedIDs)
 		}
 	}
+}
+
+// fallbackStream wraps a streaming response so that a retryable error before the
+// first content chunk cascades to the primary model's same-model
+// alternate-provider routes (cross-provider streaming fallback). Each alternate
+// is invoked with skip_retry (no same-provider stream retry — total upstream
+// calls stay ≤ 3: primary attempt + primary retry + one alternate) and a
+// fallback_from_service_id marker for tracing/billing provenance. Alternates are
+// resolved lazily (only on the failover path) so the common success path takes
+// no extra DB hit. Once any content chunk is forwarded, no fallback is attempted
+// (handled inside wrapStreamWithReattempt).
+func fallbackStream(
+	ctx context.Context,
+	route *registry.ResolvedRoute,
+	req interface{},
+	firstCh <-chan aiservice.ChatChunk,
+	next Handler,
+	deps Deps,
+) <-chan aiservice.ChatChunk {
+	var (
+		alts     []registry.ResolvedRoute
+		resolved bool
+		idx      int
+	)
+	reattempt := func(rctx context.Context) (<-chan aiservice.ChatChunk, error, bool) {
+		if !resolved {
+			resolved = true
+			a, e := deps.Resolver.ResolveModelAlternates(rctx, route.TaskID, route.ServiceID, route.Provider.ID)
+			if e != nil {
+				deps.warnw("fallback: ResolveModelAlternates failed (streaming)",
+					"task_id", route.TaskID, "primary_service_id", route.ServiceID, "error", e)
+				return nil, nil, false
+			}
+			alts = a
+			if len(alts) > 0 {
+				deps.warnw("fallback: engaging streaming cross-provider cascade",
+					"task_id", route.TaskID, "primary_service_id", route.ServiceID,
+					"from_provider", route.Provider.Name, "candidates", len(alts))
+			}
+		}
+		// Cascade through alternates, skipping any that fail to establish a stream.
+		for idx < len(alts) {
+			alt := alts[idx]
+			idx++
+			// Re-derive from the ORIGINAL ctx each iteration so skip_retry is not
+			// compounded across candidates.
+			fbCtx := withSkipRetry(ctx)
+			fbCtx = withFallbackFromServiceID(fbCtx, route.ServiceID)
+			r2, e2 := next(fbCtx, &alt, req)
+			if e2 != nil {
+				deps.warnw("fallback: streaming candidate failed to start",
+					"task_id", route.TaskID, "to_provider", alt.Provider.Name,
+					"to_service_id", alt.ServiceID, "error", e2)
+				continue
+			}
+			c2, ok := r2.(<-chan aiservice.ChatChunk)
+			if !ok {
+				deps.warnw("fallback: streaming alternate returned non-channel response (skipping)",
+					"task_id", route.TaskID, "to_provider", alt.Provider.Name, "to_service_id", alt.ServiceID)
+				continue
+			}
+			deps.warnw("fallback: streaming failover to alternate provider",
+				"task_id", route.TaskID, "from_provider", route.Provider.Name,
+				"to_provider", alt.Provider.Name, "to_service_id", alt.ServiceID)
+			return c2, nil, true
+		}
+		return nil, nil, false // alternates exhausted → forward the held primary error
+	}
+	return wrapStreamWithReattempt(ctx, firstCh, reattempt, nil)
 }

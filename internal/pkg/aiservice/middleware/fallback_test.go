@@ -19,6 +19,10 @@ type registryStub struct {
 	primaryRoute   *registry.ResolvedRoute
 	fallbackRoutes []registry.ResolvedRoute
 	resolveErr     error
+	// alternates / alternatesErr drive ResolveModelAlternates (streaming
+	// cross-provider fallback). Left zero by tests that don't exercise it.
+	alternates    []registry.ResolvedRoute
+	alternatesErr error
 }
 
 func (r *registryStub) GetService(_ context.Context, _ uint64) (*model.AIService, error) {
@@ -58,6 +62,10 @@ func (r *registryStub) ResolveTask(_ context.Context, _ string) (*registry.Resol
 func (r *registryStub) ResolveByModelKey(_ context.Context, _ string, _ string) (*registry.ResolvedRoute, error) {
 	// stub: always return not-found so gateway falls back to profile default
 	return nil, errno.ErrAIServiceNotFound
+}
+
+func (r *registryStub) ResolveModelAlternates(_ context.Context, _ string, _, _ uint64) ([]registry.ResolvedRoute, error) {
+	return r.alternates, r.alternatesErr
 }
 
 // ----------------------------------------------------------------------------
