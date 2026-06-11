@@ -39,6 +39,7 @@ func newStoreTestDB(t *testing.T) *gorm.DB {
 			base_model_id     INTEGER,
 			supports_thinking INTEGER NOT NULL DEFAULT 0,
 			thinking_only     INTEGER NOT NULL DEFAULT 0,
+			thinking_style    TEXT    NOT NULL DEFAULT '',
 			icon              TEXT,
 			sort_order        INTEGER DEFAULT 0,
 			is_active         INTEGER DEFAULT 1,
@@ -79,7 +80,7 @@ func newStoreTestDB(t *testing.T) *gorm.DB {
 // seedRouteWithThinkingFlags inserts one minimal triple (ai_service + llm_provider
 // + ai_service_route) for the given (modelKey, supportsThinking, thinkingOnly)
 // and returns the freshly-created service ID.
-func seedRouteWithThinkingFlags(t *testing.T, db *gorm.DB, modelKey string, supportsThinking, thinkingOnly bool) uint64 {
+func seedRouteWithThinkingFlags(t *testing.T, db *gorm.DB, modelKey string, supportsThinking, thinkingOnly bool, thinkingStyle string) uint64 {
 	t.Helper()
 
 	supportsVal := 0
@@ -94,10 +95,10 @@ func seedRouteWithThinkingFlags(t *testing.T, db *gorm.DB, modelKey string, supp
 	// Insert ai_service row.
 	require.NoError(t, db.Exec(`
 		INSERT INTO ai_service
-		  (model_key, display_name, service_type, is_active, supports_thinking, thinking_only)
+		  (model_key, display_name, service_type, is_active, supports_thinking, thinking_only, thinking_style)
 		VALUES
-		  (?, ?, 'llm', 1, ?, ?)`,
-		modelKey, modelKey+"-display", supportsVal, thinkingOnlyVal,
+		  (?, ?, 'llm', 1, ?, ?, ?)`,
+		modelKey, modelKey+"-display", supportsVal, thinkingOnlyVal, thinkingStyle,
 	).Error)
 
 	var serviceID uint64
@@ -174,7 +175,7 @@ func TestStore_GetResolvedRoute_ReadsThinkingFlags(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			db := newStoreTestDB(t)
-			serviceID := seedRouteWithThinkingFlags(t, db, tc.modelKey, tc.seedSupportsThinking, tc.seedThinkingOnly)
+			serviceID := seedRouteWithThinkingFlags(t, db, tc.modelKey, tc.seedSupportsThinking, tc.seedThinkingOnly, "")
 
 			store := NewStore(db)
 
@@ -184,6 +185,7 @@ func TestStore_GetResolvedRoute_ReadsThinkingFlags(t *testing.T) {
 			require.NotNil(t, row)
 			assert.Equal(t, tc.expectedSupportsThinking, row.SupportsThinking, "GetResolvedRoute SupportsThinking")
 			assert.Equal(t, tc.expectedThinkingOnly, row.ThinkingOnly, "GetResolvedRoute ThinkingOnly")
+			assert.Equal(t, "", row.ThinkingStyle, "GetResolvedRoute ThinkingStyle defaults to empty")
 
 			// Verify GetResolvedRouteByModelKey surfaces both flags identically.
 			row2, err := store.GetResolvedRouteByModelKey(context.Background(), tc.modelKey)
@@ -191,6 +193,44 @@ func TestStore_GetResolvedRoute_ReadsThinkingFlags(t *testing.T) {
 			require.NotNil(t, row2)
 			assert.Equal(t, tc.expectedSupportsThinking, row2.SupportsThinking, "GetResolvedRouteByModelKey SupportsThinking")
 			assert.Equal(t, tc.expectedThinkingOnly, row2.ThinkingOnly, "GetResolvedRouteByModelKey ThinkingOnly")
+			assert.Equal(t, "", row2.ThinkingStyle, "GetResolvedRouteByModelKey ThinkingStyle defaults to empty")
+		})
+	}
+}
+
+// TestStore_GetResolvedRoute_ReadsThinkingStyle verifies that ai_service.thinking_style
+// flows through both resolver queries into resolvedRouteRow.ThinkingStyle. The adapter
+// (dmxapi.buildOAIRequest) relies on this value to decide WHICH thinking-activation
+// field to put on the wire (reasoning_effort vs chat_template_kwargs.enable_thinking).
+func TestStore_GetResolvedRoute_ReadsThinkingStyle(t *testing.T) {
+	cases := []struct {
+		name          string
+		modelKey      string
+		thinkingStyle string
+	}{
+		{name: "enable_thinking_kwarg", modelKey: "model-kwarg", thinkingStyle: "enable_thinking_kwarg"},
+		{name: "reasoning_effort", modelKey: "model-effort", thinkingStyle: "reasoning_effort"},
+		{name: "none", modelKey: "model-none-style", thinkingStyle: "none"},
+		{name: "empty_legacy", modelKey: "model-empty", thinkingStyle: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newStoreTestDB(t)
+			// Optional-thinking model (supports_thinking=1, thinking_only=0) carrying the style.
+			serviceID := seedRouteWithThinkingFlags(t, db, tc.modelKey, true, false, tc.thinkingStyle)
+
+			store := NewStore(db)
+
+			row, err := store.GetResolvedRoute(context.Background(), serviceID)
+			require.NoError(t, err)
+			require.NotNil(t, row)
+			assert.Equal(t, tc.thinkingStyle, row.ThinkingStyle, "GetResolvedRoute ThinkingStyle")
+
+			row2, err := store.GetResolvedRouteByModelKey(context.Background(), tc.modelKey)
+			require.NoError(t, err)
+			require.NotNil(t, row2)
+			assert.Equal(t, tc.thinkingStyle, row2.ThinkingStyle, "GetResolvedRouteByModelKey ThinkingStyle")
 		})
 	}
 }

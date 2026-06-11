@@ -137,15 +137,30 @@ func (d *DMXAPIAdapter) buildOAIRequest(
 		oaiReq.MaxTokens = req.MaxTokens
 	}
 
-	// Thinking → reasoning_effort gating (spec §3.2 decision table).
+	// Thinking activation gating (spec §3.2 decision table). HOW thinking is
+	// activated on the wire is driven by route.ThinkingStyle (ai_service.thinking_style).
 	if req.Thinking && route.SupportsThinking {
 		if route.ThinkingOnly {
 			// Intrinsic-thinking model: record sentinel, do not inject wire field.
 			meta.ResolvedReasoningEffort = "intrinsic"
 		} else {
-			// Optional-thinking model: inject wire field so the provider actually thinks.
-			oaiReq.ReasoningEffort = "medium"
-			meta.ResolvedReasoningEffort = "medium"
+			// Optional-thinking model: inject the activation field its provider expects.
+			switch route.ThinkingStyle {
+			case "enable_thinking_kwarg":
+				// Qwen/vLLM convention (e.g. agnes-2.0-flash): the model only thinks
+				// when chat_template_kwargs.enable_thinking is set; it ignores reasoning_effort.
+				oaiReq.ChatTemplateKwargs = map[string]interface{}{"enable_thinking": true}
+				meta.ResolvedReasoningEffort = "enable_thinking_kwarg"
+			case "none":
+				// Supports thinking but no activation field should be injected (rare; reserved).
+				// Record the sentinel so Langfuse can distinguish this from "" (thinking off / unsupported).
+				meta.ResolvedReasoningEffort = "none"
+			default:
+				// "" (legacy) or "reasoning_effort": OpenAI-style. Empty string preserves
+				// today's behavior exactly (all prior optional-thinking models sent this).
+				oaiReq.ReasoningEffort = "medium"
+				meta.ResolvedReasoningEffort = "medium"
+			}
 		}
 	}
 

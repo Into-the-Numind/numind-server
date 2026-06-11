@@ -173,6 +173,12 @@ type oaiChatRequest struct {
 	// Avoid "none"/"minimal" unless the provider is verified to accept them
 	// (Gemini 3.1 Pro rejects both). Empty string = do not send the field.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// ChatTemplateKwargs carries provider chat-template arguments for models that
+	// activate thinking via the HuggingFace/vLLM/Qwen convention rather than
+	// reasoning_effort — e.g. agnes-2.0-flash expects {"enable_thinking": true}.
+	// Selected by ai_service.thinking_style="enable_thinking_kwarg". Omitted (via
+	// omitempty) for every other model so the legacy wire shape is byte-identical.
+	ChatTemplateKwargs map[string]interface{} `json:"chat_template_kwargs,omitempty"`
 	// Tools advertises function-calling tools available to the model. Omitted
 	// (via omitempty) when no tools bound — preserves the pre-Agent-mode wire
 	// shape for SOP/chatbot callers that do not use function calling.
