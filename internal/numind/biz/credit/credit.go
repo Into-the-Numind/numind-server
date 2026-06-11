@@ -70,6 +70,19 @@ func (b *creditBiz) CanPerformAIOperation(ctx context.Context, user *model.User,
 		return false, "积分系统初始化错误，请联系管理员"
 	}
 
+	// free-model-member-only: active members (sub or trial, by validity period) are
+	// exempt from this controller-level coarse balance pre-check — the authoritative
+	// per-call reserve decides (0-priced model → free/SkipDeduction; paid model →
+	// blocked there). Mirrors SOP CreateRun's membership-aware relaxation (C5). Without
+	// this, a 0-balance member selecting a 0-priced model is wrongly blocked here with
+	// "积分不足" before the free-model gate ever runs. On a membership-check error we fall
+	// through to the balance gate (conservative).
+	if member, merr := b.membershipSvc.IsActiveMember(ctx, uint64(user.ID), time.Now().UTC()); merr != nil {
+		log.Errorw("CanPerformAIOperation: IsActiveMember failed; applying balance gate", "user_id", user.ID, "err", merr)
+	} else if member {
+		return true, ""
+	}
+
 	estimated := GetEstimatedCredits(operation)
 	view, err := b.membershipSvc.GetBalance(ctx, uint64(user.ID), time.Now().UTC())
 	if err != nil {
