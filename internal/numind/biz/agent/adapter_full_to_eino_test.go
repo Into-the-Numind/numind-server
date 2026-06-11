@@ -411,6 +411,39 @@ func TestAdapter_NarrationEmits_PostErrUpgradesToError(t *testing.T) {
 		"PostToolCall error with execErr=nil must drive narration to StateError, not StateResult")
 }
 
+// TestAdapter_NarrationEmits_YieldNotErrorOnNonStreamPath reproduces a
+// customer-reported bug: when a RESUMED run (answer.go → runner.Run, the
+// non-streaming path with NO StreamState in ctx) reaches a 2nd
+// ask_user_question, the yield sentinel previously fell through to the error
+// branch and emitted a false StateError narration. The learner saw
+// "失败⚠️问题处理中断，稍后再试一下" even though the run was healthily paused and
+// answerable. A yield is a PAUSE, not a tool failure: StateError must NOT fire
+// on either path. Only the StateUse ("等你回答…") narration may be emitted.
+func TestAdapter_NarrationEmits_YieldNotErrorOnNonStreamPath(t *testing.T) {
+	yieldErr := &yieldError{Payload: YieldPayload{Questions: []YieldQuestion{
+		{Question: "陪跑周期多长？", Options: []YieldOption{{Key: "90", Label: "90天"}}},
+	}}}
+	ft := &fakeFullTool{name: "ask_user_question", err: yieldErr}
+	rec := newHookRecorder()
+	prov, ch, cleanup := setupNarration(t, 1010)
+	defer cleanup()
+
+	hooks := rec.asRunHooks()
+	hooks.NarrationProvider = prov
+	// Non-stream resume path: WithRunID only, NO StreamState injected into ctx.
+	ctx := WithRunID(context.Background(), 1010)
+
+	eino := adaptFullToEinoTool(ft, hooks)
+	_, err := eino.InvokableRun(ctx, `{}`)
+	require.Error(t, err, "yield sentinel still propagates so the eino graph stops")
+	require.ErrorIs(t, err, ErrYieldForUserQuestion)
+
+	evs := drainEvents(ch, 100*time.Millisecond)
+	require.Len(t, evs, 1, "only the StateUse narration may fire for a yield; NO StateError")
+	assert.Equal(t, narration.StateUse, evs[0].State,
+		"a yield is a pause, not a failure: the only event must be StateUse, never StateError")
+}
+
 func TestAdapter_NoNarrationProvider_LegacyBehaviorPreserved(t *testing.T) {
 	// Sanity: when NarrationProvider is nil, adapter behaves exactly as
 	// pre-#8 (no panic, no events, hooks fire as before).
