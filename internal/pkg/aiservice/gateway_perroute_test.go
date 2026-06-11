@@ -142,7 +142,7 @@ func TestGatewayChatStream_DispatchesPerRouteAdapter(t *testing.T) {
 	}
 
 	primaryRoute := registry.ResolvedRoute{TaskID: "agent.run", ServiceID: 1, Provider: registry.ProviderInfo{Name: "prov-a"}}
-	altRoute := registry.ResolvedRoute{TaskID: "agent.run", ServiceID: 1, Provider: registry.ProviderInfo{Name: "prov-b"}}
+	altRoute := registry.ResolvedRoute{TaskID: "agent.run", ServiceID: 2, Provider: registry.ProviderInfo{Name: "prov-b"}}
 	reg := &reproRegistry{primary: &primaryRoute}
 
 	gw := aiservice.Build(aiservice.Deps{Registry: reg})
