@@ -7,7 +7,7 @@ features:
   status: active
   stage: S6
   repos:
-    numind-server: develop (merged via ndf-done, commit 11c7bb0e)
+    numind-server: develop (merged via ndf-done, commits 11c7bb0e + fix fa38114d)
   progress:
     total_tasks: 6
     completed_tasks: 6
@@ -19,6 +19,7 @@ features:
     plan: .ndf/features/free-model-member-only/plan.md
     qa: .ndf/features/free-model-member-only/qa-report.md
   decisions:
+  - 'S6-fix (ai 2026-06-11): dev 验收发现 bug——会员账号 0 余额跑 SOP 节点选免费模型仍报"积分不足"。根因=漏掉的第三道门：controller/v1/sop/sop.go:671 的 CanPerformAIOperation("sop_run")（也用于 sop_chat + salesrag 6 处）是 controller 层粗粒度余额预检，跑在 free-model gate 之前且不感知会员/免费模型→0 余额会员被 GetEstimatedCredits 的 flat 估算(sop_run=20)挡掉。S2 review 其实点过这条但被我误判 out-of-scope。修：credit.go CanPerformAIOperation 加 IsActiveMember 豁免（同 C5 模式），覆盖 SOP+salesrag。Bug-from-customer：先 commit 失败复现测试 d27f62ae（trial 0 积分会员——踩 GORM default:200 零值坑，raw UPDATE 强制 0）→ 修 60ca74d6 → GREEN。双 Sonnet review PASS_WITH_CONCERNS：**确认无新增计费漏洞**（CanPerform 只检查不扣费；SOP/salesrag_chat 收费模型仍由 per-call reserve 拦；OCR/file_parse/profile/style_analysis 本就 unmetered=T6 既有技术债，非本修引入）。merge fa38114d→develop+push，重新 /deploy-dev。**Follow-up 技术债**：salesrag file_parse/ocr/profile_analysis/style_analysis 走 Reserve/Reconcile 迁移（T6 cleanup 遗留，非本 feature）。'
   - 'S6 (ai 2026-06-11): ndf-done 完成——feature/free-model-member-only 10 commit merge→develop（merge commit 11c7bb0e）+ push origin/develop（local==origin 已核）+ worktree/本地分支已清。/deploy-dev server 部署 dev 中。停在 S6 等用户验收；S7 prod 不在本次授权（需用户 tag + 单独确认）。'
   - 'S4-S5 (ai 2026-06-11): S4 编码完成 9 commit（T1-T6），每 task 双 Sonnet reviewer + 修复。T1 errno.ErrModelMembershipOnly / T2 pricing.IsFreeModel(+6 mock) / T3 membership.IsActiveMember / T4 credit 双入口门(decideFreeModel纯函数+freeModelGate)+ICreditService 扩 2 法+2 stub；**T4 review 抓 P0**=sop.go 默认路径两处 Reserve 丢了 if !pre.SkipDeduction 守卫(会员跑 free 模型会报 estimated>0)→已补；T5 中间件 EnforceModelMembership 提到 ChargeUser/fragment 之前(no-KB 也拦)+nil-route 守卫；T6 SOP CreateRun 会员感知放宽。S5：改动包单测+race+lint+build 全绿；AC1-7 矩阵见 qa-report。**全仓库 go test 唯一 FAIL=controller/v1/agent.TestAnswerHandler_MissingBody 属并行 feature agent-multi-question 中间态，非己引入（commit 隔离确认）**。下一步 S6 ndf-done + /deploy-dev server。'
   - 'S3 (ai 2026-06-11): plan 完成（6 code task T1-T6 + T7 验证策略）。依赖：T1/T2/T3 独立→T4(credit门+接口)→T5(中间件C7)/T6(SOP)。独立 Sonnet 原子性审查 PASS_WITH_CONCERNS：C1-C7/AC1-7 全覆盖、依赖无环、T7 单测策略合理。修 P0-A：中间件 deps.CreditService 是窄接口 ContextBudgetCreditService 非 ICreditService→EnforceModelMembership 须加到该接口+creditServiceFacade+3中间件mock(T5)。修 P0-B/C：枚举 6 个 ICalculator 实现 + 2 个显式 ICreditService stub(credit_test.go/tool_image_gen_billing_test.go)，逐 task 编译绿。验证策略=持久化 Go 单测(高风险计费,无UI,不做E2E)。'
