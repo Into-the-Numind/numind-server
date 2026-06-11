@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -101,6 +102,7 @@ func TestResolveModelAlternates_ExcludesPrimaryProvider(t *testing.T) {
 	assert.Equal(t, "agent.run", alts[0].TaskID)
 	assert.Equal(t, "model-alt-exclude-guan", alts[0].ProviderModelID)
 	assert.Equal(t, "https://lo.invalid", alts[0].Provider.BaseURL, "alternate carries its own endpoint")
+	assert.Equal(t, "llm", alts[0].Capability.ServiceType, "capability is built from the row (buildResolvedRoute path)")
 
 	// Excluding the lo provider returns the hi route instead.
 	alts2, err := reg.ResolveModelAlternates(context.Background(), "agent.run", serviceID, loP)
@@ -123,4 +125,31 @@ func TestResolveModelAlternates_EmptyWhenSingleProvider(t *testing.T) {
 	alts, err := reg.ResolveModelAlternates(context.Background(), "agent.run", serviceID, rows[0].ProviderID)
 	require.NoError(t, err)
 	assert.Empty(t, alts)
+}
+
+// TestStore_ListResolvedRoutesByModel_EmptyForDeprecatedService: a deprecated
+// service yields no routes (the WHERE s.deprecated_at IS NULL filter), so a
+// model that was deprecated can never be a streaming fallback target.
+func TestStore_ListResolvedRoutesByModel_EmptyForDeprecatedService(t *testing.T) {
+	db := newStoreTestDB(t)
+	serviceID, _, _ := seedModelTwoProviders(t, db, "model-deprecated-alt")
+	require.NoError(t, db.Exec(`UPDATE ai_service SET deprecated_at = ? WHERE id = ?`, time.Now(), serviceID).Error)
+
+	rows, err := NewStore(db).ListResolvedRoutesByModel(context.Background(), serviceID)
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+}
+
+// TestResolveModelAlternates_PropagatesStoreError: a store failure surfaces as an
+// error (wrapped), not a silent empty list — the failover caller must be able to
+// tell "no alternates" apart from "lookup failed".
+func TestResolveModelAlternates_PropagatesStoreError(t *testing.T) {
+	sentinel := errors.New("db boom")
+	ms := &mockStore{dbCallCount: map[string]int{}, listRoutesErr: sentinel}
+	reg := NewWithStore(ms, time.Minute)
+
+	alts, err := reg.ResolveModelAlternates(context.Background(), "agent.run", 24, 3)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, sentinel)
+	assert.Nil(t, alts)
 }
