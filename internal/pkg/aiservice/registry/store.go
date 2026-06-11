@@ -101,6 +101,7 @@ type resolvedRouteRow struct {
 	RouteIsActive    bool
 	SupportsThinking bool
 	ThinkingOnly     bool
+	ThinkingStyle    string
 }
 
 // ----------------------------------------------------------------------------
@@ -318,6 +319,7 @@ SELECT
   s.is_active              AS is_active,
   s.supports_thinking      AS supports_thinking,
   s.thinking_only          AS thinking_only,
+  s.thinking_style         AS thinking_style,
   p.id                     AS provider_id,
   p.name                   AS provider_name,
   p.base_url               AS provider_base_url,
@@ -346,6 +348,7 @@ LIMIT 1
 		IsActive          bool       `gorm:"column:is_active"`
 		SupportsThinking  bool       `gorm:"column:supports_thinking"`
 		ThinkingOnly      bool       `gorm:"column:thinking_only"`
+		ThinkingStyle     string     `gorm:"column:thinking_style"`
 		ProviderID        uint64     `gorm:"column:provider_id"`
 		ProviderName      string     `gorm:"column:provider_name"`
 		ProviderBaseURL   string     `gorm:"column:provider_base_url"`
@@ -391,6 +394,7 @@ LIMIT 1
 		RouteIsActive:    row.RouteIsActive,
 		SupportsThinking: row.SupportsThinking,
 		ThinkingOnly:     row.ThinkingOnly,
+		ThinkingStyle:    row.ThinkingStyle,
 	}, nil
 }
 
@@ -413,6 +417,7 @@ SELECT
   s.is_active              AS is_active,
   s.supports_thinking      AS supports_thinking,
   s.thinking_only          AS thinking_only,
+  s.thinking_style         AS thinking_style,
   p.id                     AS provider_id,
   p.name                   AS provider_name,
   p.base_url               AS provider_base_url,
@@ -441,6 +446,7 @@ LIMIT 1
 		IsActive          bool       `gorm:"column:is_active"`
 		SupportsThinking  bool       `gorm:"column:supports_thinking"`
 		ThinkingOnly      bool       `gorm:"column:thinking_only"`
+		ThinkingStyle     string     `gorm:"column:thinking_style"`
 		ProviderID        uint64     `gorm:"column:provider_id"`
 		ProviderName      string     `gorm:"column:provider_name"`
 		ProviderBaseURL   string     `gorm:"column:provider_base_url"`
@@ -484,6 +490,7 @@ LIMIT 1
 		RouteIsActive:    row.RouteIsActive,
 		SupportsThinking: row.SupportsThinking,
 		ThinkingOnly:     row.ThinkingOnly,
+		ThinkingStyle:    row.ThinkingStyle,
 	}, nil
 }
 
