@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -14,7 +16,6 @@ import (
 	"github.com/spf13/viper"
 
 	"numind-server/internal/pkg/aiservice"
-	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
 )
 
@@ -23,6 +24,67 @@ type webSearchInput struct {
 	Query          string   `json:"query"`
 	MaxResults     int      `json:"max_results"`
 	AllowedDomains []string `json:"allowed_domains,omitempty"`
+}
+
+// UnmarshalJSON tolerates loosely-typed tool arguments from the model. LLMs
+// frequently emit a numeric parameter as a JSON string ("5") or a float (5.0)
+// instead of an integer (5). With a strict int field that mismatch is a hard
+// unmarshal error, and a hard error from a tool kills the entire agent run
+// (dev run 132, 2026-06-11: the model sent max_results="5" on its 6th search and
+// the whole task died after 5 healthy searches). Coerce max_results here so a
+// model's type wobble never kills a working run. Genuinely out-of-range or
+// non-numeric values still fail — surfaced as a soft, retryable error in Execute.
+func (in *webSearchInput) UnmarshalJSON(data []byte) error {
+	// Alias prevents infinite recursion into this method; max_results stays raw so
+	// it can be accepted as either a JSON number or a JSON string.
+	var raw struct {
+		Query          string          `json:"query"`
+		MaxResults     json.RawMessage `json:"max_results"`
+		AllowedDomains []string        `json:"allowed_domains,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	in.Query = raw.Query
+	in.AllowedDomains = raw.AllowedDomains
+	n, err := coerceJSONInt(raw.MaxResults)
+	if err != nil {
+		return fmt.Errorf("max_results: %w", err)
+	}
+	in.MaxResults = n
+	return nil
+}
+
+// coerceJSONInt parses a raw JSON value that should be an integer but may arrive
+// as a JSON number (5), a quoted string ("5"), or a float (5.0 / "5.0"). Empty or
+// JSON null yields 0, which the caller's range check treats as "unset". A
+// non-numeric value returns an error so the caller can surface a soft message.
+func coerceJSONInt(raw json.RawMessage) (int, error) {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return 0, nil
+	}
+	// Unwrap a JSON string ("5" / "5.0") to its inner text.
+	if s[0] == '"' {
+		var str string
+		if err := json.Unmarshal(raw, &str); err != nil {
+			return 0, err
+		}
+		s = strings.TrimSpace(str)
+		if s == "" {
+			return 0, nil
+		}
+	}
+	if n, err := strconv.Atoi(s); err == nil {
+		return n, nil
+	}
+	// Accept floats like 5.0 — some models round-trip ints through float. Round to
+	// the nearest integer (5.9 → 6) rather than truncating; the downstream 1-10
+	// range check still rejects anything that lands out of range (e.g. 0.3 → 0).
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		return int(math.Round(f)), nil
+	}
+	return 0, fmt.Errorf("not an integer: %q", s)
 }
 
 // webSearchOutput is the JSON shape returned to the LLM.
@@ -113,17 +175,21 @@ func (t *webSearchTool) InputSchema() json.RawMessage {
 func (t *webSearchTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	start := time.Now()
 
+	// All input-validation failures below return a SOFT error (a tool result
+	// carrying the message, nil Go error) instead of a hard error. A hard error
+	// from a tool propagates as a NodeRunError and kills the entire agent run; a
+	// soft error feeds the message back into the ReAct loop so the model retries
+	// with corrected arguments and the run survives. This mirrors the provider-error
+	// path below (dev run 132 hardening, 2026-06-11).
 	var in webSearchInput
 	if err := json.Unmarshal(input, &in); err != nil {
-		// P1-2: JSON unmarshal failure → errno.ErrBind
-		return nil, errno.ErrBind.SetMessage("web_search: invalid input: %v", err)
+		return t.returnSoftError("web_search: invalid input: %v", err)
 	}
 	if in.Query == "" {
-		return nil, fmt.Errorf("web_search: query is empty")
+		return t.returnSoftError("web_search: query is empty")
 	}
-	// P1-1: out-of-range max_results returns ErrInvalidParameter, not clamp.
 	if in.MaxResults < 1 || in.MaxResults > 10 {
-		return nil, errno.ErrInvalidParameter.SetMessage("web_search: max_results 必须在 1-10 之间")
+		return t.returnSoftError("web_search: max_results 必须在 1-10 之间（收到 %d）", in.MaxResults)
 	}
 
 	key := webSearchCacheKey(in)
@@ -175,8 +241,7 @@ func (t *webSearchTool) Execute(ctx context.Context, input ToolInput) (ToolResul
 		AllowedDomains: in.AllowedDomains,
 	})
 	if err != nil {
-		// P1-2: wrap provider errors with errno.ErrAIProviderError.
-		// 我们采用软拒绝机制，彻底避免直接抛 Go fatal 错误引发 Eino 智能体崩溃崩溃。
+		// 软拒绝机制：把 provider 错误喂回模型，避免直接抛 Go fatal 错误引发 Eino 智能体 run 崩溃。
 		return t.returnSoftError("web_search: provider error: %v", err)
 	}
 
