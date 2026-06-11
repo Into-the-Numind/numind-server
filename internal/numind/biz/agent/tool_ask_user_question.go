@@ -3,8 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
-	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
 )
 
@@ -80,29 +80,51 @@ func (t *askUserQuestionTool) InputSchema() json.RawMessage {
 	}`)
 }
 
-// Execute validates the input and returns a *yieldError to pause the run.
-// The runner.go yield handler detects the sentinel via errors.As and drives the
-// state machine to TerminalWaitingForUserChoice.
+// softError returns a recoverable tool result (a ToolResult carrying an error
+// message, nil Go error) instead of a hard error. A hard error from a tool
+// propagates as a NodeRunError and kills the ENTIRE agent run; dev run #133 died
+// exactly this way when a truncated multi-question tool call failed to unmarshal.
+// A soft error feeds the message back into the ReAct loop so the model retries
+// (e.g. with fewer / shorter questions) and the run survives. The shape mirrors
+// web_search's returnSoftError (an {"error": "..."} object the model can read).
+func (t *askUserQuestionTool) softError(format string, args ...any) (ToolResult, error) {
+	out, _ := json.Marshal(map[string]string{"error": "ERROR: " + fmt.Sprintf(format, args...)})
+	return ToolResult(out), nil
+}
+
+// Execute validates the input. On SUCCESS it returns a *yieldError sentinel to
+// pause the run (the runner.go yield handler detects it via errors.As and drives
+// the state machine to TerminalWaitingForUserChoice). On any validation FAILURE it
+// returns a SOFT error (see softError) — a ToolResult carrying the message with a
+// nil Go error — never a hard error: a malformed/truncated/over-long tool call from
+// the model must never kill the run; it is fed back so the model corrects and retries.
 func (t *askUserQuestionTool) Execute(_ context.Context, input ToolInput) (ToolResult, error) {
 	var in askUserQuestionInput
 	if err := json.Unmarshal(input, &in); err != nil {
-		return nil, errno.ErrBind.SetMessage("ask_user_question: invalid JSON: %s", err.Error())
+		// dev run #133: a large "ask everything at once" multi-question call arrived
+		// truncated → "unexpected end of JSON input". Soft-error AND steer the retry
+		// smaller so it fits within the model's output budget next time.
+		return t.softError("ask_user_question 参数解析失败（很可能一次问的问题太多/太长导致 JSON 被截断）：%s。请重新调用，一次只问 1-2 个最关键的问题，每个问题给 0 个或 2-4 个简短选项。", err.Error())
 	}
 	if len(in.Questions) == 0 {
-		return nil, errno.ErrInvalidInput.SetMessage("ask_user_question: provide 1-4 questions (got 0)")
+		return t.softError("ask_user_question: 请提供 1-4 个问题（当前 0 个）。")
 	}
 	if len(in.Questions) > 4 {
-		return nil, errno.ErrInvalidInput.SetMessage("ask_user_question: provide at most 4 questions (got %d)", len(in.Questions))
+		// Reject (not clamp) >4 questions: each question is a user-facing yield slot,
+		// so silently dropping the 5th would lose a question the user never sees. (By
+		// contrast, >4 OPTIONS within a question are clamped below — the always-present
+		// free-text box still covers anything past the 4th suggestion.)
+		return t.softError("ask_user_question: 一次最多 4 个问题（当前 %d）。请只保留最关键的，分批问。", len(in.Questions))
 	}
 	seenQuestion := make(map[string]struct{}, len(in.Questions))
 	out := make([]YieldQuestion, 0, len(in.Questions))
 	for qi := range in.Questions {
 		q := in.Questions[qi]
 		if q.Question == "" {
-			return nil, errno.ErrInvalidInput.SetMessage("ask_user_question: question[%d] is empty", qi)
+			return t.softError("ask_user_question: question[%d] 文本为空。", qi)
 		}
 		if _, dup := seenQuestion[q.Question]; dup {
-			return nil, errno.ErrInvalidInput.SetMessage("ask_user_question: duplicate question text %q", q.Question)
+			return t.softError("ask_user_question: 重复的问题文本 %q。", q.Question)
 		}
 		seenQuestion[q.Question] = struct{}{}
 		// Tolerate the LLM over-supplying options for a question: clamp to the
@@ -119,20 +141,20 @@ func (t *askUserQuestionTool) Execute(_ context.Context, input ToolInput) (ToolR
 		// answered entirely via the free-text box) or 2-4 concrete choices.
 		// Exactly 1 option is not a meaningful choice, so it stays rejected.
 		if len(q.Options) == 1 {
-			return nil, errno.ErrInvalidInput.SetMessage("ask_user_question: question[%d] provide 0 options (open-ended) or 2-4 options (got 1)", qi)
+			return t.softError("ask_user_question: question[%d] 请给 0 个（开放式）或 2-4 个选项（当前 1 个）。", qi)
 		}
 		seenLabel := make(map[string]struct{}, len(q.Options))
 		for oi, opt := range q.Options {
 			if opt.Key == "" || opt.Label == "" {
-				return nil, errno.ErrInvalidInput.SetMessage("ask_user_question: question[%d] option[%d] missing key or label", qi, oi)
+				return t.softError("ask_user_question: question[%d] option[%d] 缺少 key 或 label。", qi, oi)
 			}
 			if _, dup := seenLabel[opt.Label]; dup {
-				return nil, errno.ErrInvalidInput.SetMessage("ask_user_question: question[%d] duplicate option label %q", qi, opt.Label)
+				return t.softError("ask_user_question: question[%d] 重复的选项 label %q。", qi, opt.Label)
 			}
 			seenLabel[opt.Label] = struct{}{}
 		}
 		if len([]rune(q.Header)) > 12 {
-			return nil, errno.ErrInvalidInput.SetMessage("ask_user_question: question[%d] header exceeds 12 chars (got %d)", qi, len([]rune(q.Header)))
+			return t.softError("ask_user_question: question[%d] header 超过 12 字（当前 %d）。", qi, len([]rune(q.Header)))
 		}
 		out = append(out, YieldQuestion{
 			Question:    q.Question,

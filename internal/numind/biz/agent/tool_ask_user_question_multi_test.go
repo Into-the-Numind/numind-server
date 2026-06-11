@@ -66,10 +66,8 @@ func TestAskUserQuestion_FourQuestions_Yields(t *testing.T) {
 func TestAskUserQuestion_ZeroQuestions_Rejected(t *testing.T) {
 	tool := NewAskUserQuestionTool()
 	in, _ := json.Marshal(askUserQuestionInput{Questions: []askUserQuestionItem{}})
-	_, err := tool.Execute(context.Background(), ToolInput(in))
-	require.Error(t, err)
-	var ye *yieldError
-	assert.False(t, errors.As(err, &ye), "0 questions must error, not yield")
+	result, err := tool.Execute(context.Background(), ToolInput(in))
+	requireSoftReject(t, result, err) // 0 questions: soft-rejected, run survives
 }
 
 func TestAskUserQuestion_FiveQuestions_Rejected(t *testing.T) {
@@ -82,10 +80,8 @@ func TestAskUserQuestion_FiveQuestions_Rejected(t *testing.T) {
 		}
 	}
 	in, _ := json.Marshal(askUserQuestionInput{Questions: items})
-	_, err := tool.Execute(context.Background(), ToolInput(in))
-	require.Error(t, err)
-	var ye *yieldError
-	assert.False(t, errors.As(err, &ye), "5 questions must error (max 4)")
+	result, err := tool.Execute(context.Background(), ToolInput(in))
+	requireSoftReject(t, result, err) // >4 questions: soft-rejected (model retries with ≤4)
 }
 
 func TestAskUserQuestion_DuplicateQuestionText_Rejected(t *testing.T) {
@@ -96,10 +92,8 @@ func TestAskUserQuestion_DuplicateQuestionText_Rejected(t *testing.T) {
 			{Question: "同样的问题？", Options: []YieldOption{{Key: "c", Label: "C"}, {Key: "d", Label: "D"}}},
 		},
 	})
-	_, err := tool.Execute(context.Background(), ToolInput(in))
-	require.Error(t, err)
-	var ye *yieldError
-	assert.False(t, errors.As(err, &ye), "duplicate question text must error")
+	result, err := tool.Execute(context.Background(), ToolInput(in))
+	requireSoftReject(t, result, err) // duplicate question text: soft-rejected
 }
 
 func TestAskUserQuestion_DuplicateLabelWithinQuestion_Rejected(t *testing.T) {
@@ -109,10 +103,8 @@ func TestAskUserQuestion_DuplicateLabelWithinQuestion_Rejected(t *testing.T) {
 			{Question: "选哪个？", Options: []YieldOption{{Key: "a", Label: "同名"}, {Key: "b", Label: "同名"}}},
 		},
 	})
-	_, err := tool.Execute(context.Background(), ToolInput(in))
-	require.Error(t, err)
-	var ye *yieldError
-	assert.False(t, errors.As(err, &ye), "duplicate option label within a question must error")
+	result, err := tool.Execute(context.Background(), ToolInput(in))
+	requireSoftReject(t, result, err) // duplicate option label within a question: soft-rejected
 }
 
 func TestAskUserQuestion_PerQuestion_OneOption_Rejected(t *testing.T) {
@@ -123,10 +115,8 @@ func TestAskUserQuestion_PerQuestion_OneOption_Rejected(t *testing.T) {
 			{Question: "坏问题？", Options: []YieldOption{{Key: "a", Label: "只有一个"}}},
 		},
 	})
-	_, err := tool.Execute(context.Background(), ToolInput(in))
-	require.Error(t, err)
-	var ye *yieldError
-	assert.False(t, errors.As(err, &ye), "a question with exactly 1 option must error")
+	result, err := tool.Execute(context.Background(), ToolInput(in))
+	requireSoftReject(t, result, err) // a question with exactly 1 option: soft-rejected
 }
 
 func TestAskUserQuestion_PerQuestion_ZeroOptions_OpenEnded(t *testing.T) {
@@ -188,10 +178,8 @@ func TestAskUserQuestion_PerQuestion_MissingKeyOrLabel_Rejected(t *testing.T) {
 			{Question: "缺 key？", Options: []YieldOption{{Key: "", Label: "A"}, {Key: "b", Label: "B"}}},
 		},
 	})
-	_, err := tool.Execute(context.Background(), ToolInput(in))
-	require.Error(t, err)
-	var ye *yieldError
-	assert.False(t, errors.As(err, &ye))
+	result, err := tool.Execute(context.Background(), ToolInput(in))
+	requireSoftReject(t, result, err) // missing option key: soft-rejected
 }
 
 func TestAskUserQuestion_PerQuestion_HeaderTooLong_Rejected(t *testing.T) {
@@ -201,10 +189,8 @@ func TestAskUserQuestion_PerQuestion_HeaderTooLong_Rejected(t *testing.T) {
 			{Question: "标题太长？", Header: "这个标题超过了十二个字符的限制", Options: []YieldOption{{Key: "a", Label: "A"}, {Key: "b", Label: "B"}}},
 		},
 	})
-	_, err := tool.Execute(context.Background(), ToolInput(in))
-	require.Error(t, err)
-	var ye *yieldError
-	assert.False(t, errors.As(err, &ye))
+	result, err := tool.Execute(context.Background(), ToolInput(in))
+	requireSoftReject(t, result, err) // header too long: soft-rejected
 }
 
 func TestAskUserQuestion_EmptyQuestionText_Rejected(t *testing.T) {
@@ -214,10 +200,8 @@ func TestAskUserQuestion_EmptyQuestionText_Rejected(t *testing.T) {
 			{Question: "", Options: []YieldOption{{Key: "a", Label: "A"}, {Key: "b", Label: "B"}}},
 		},
 	})
-	_, err := tool.Execute(context.Background(), ToolInput(in))
-	require.Error(t, err)
-	var ye *yieldError
-	assert.False(t, errors.As(err, &ye))
+	result, err := tool.Execute(context.Background(), ToolInput(in))
+	requireSoftReject(t, result, err) // empty question text: soft-rejected
 }
 
 // ParsePendingQuestion bridges the pre-agent-multi-question single-question

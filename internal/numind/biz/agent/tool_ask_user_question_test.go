@@ -20,6 +20,20 @@ func oneQuestion(item askUserQuestionItem) []byte {
 	return in
 }
 
+// requireSoftReject asserts Execute soft-rejected the input: no Go error (so the
+// run is NOT killed), not a yield, and a tool result carrying an error message the
+// model can read and retry on. After the ask-question-soft-error hotfix (dev run
+// #133), every malformed/over-limit tool call takes this path instead of a hard
+// error that would terminate the whole run.
+func requireSoftReject(t *testing.T, result ToolResult, err error) {
+	t.Helper()
+	require.NoError(t, err, "soft error: the run must survive (no hard error)")
+	var ye *yieldError
+	require.False(t, errors.As(err, &ye), "soft error is not a yield")
+	require.NotNil(t, result, "soft error returns a tool result for the model")
+	assert.Contains(t, string(result), "error", "soft error result carries a message")
+}
+
 func TestAskUserQuestionTool_HappyPath(t *testing.T) {
 	tool := NewAskUserQuestionTool()
 	in := oneQuestion(askUserQuestionItem{
@@ -70,12 +84,8 @@ func TestAskUserQuestionTool_HappyPath_ThreeOptions(t *testing.T) {
 
 func TestAskUserQuestionTool_InvalidJSON(t *testing.T) {
 	tool := NewAskUserQuestionTool()
-	_, err := tool.Execute(context.Background(), ToolInput(`not-json`))
-	require.Error(t, err)
-	assert.NotNil(t, err)
-	// Must NOT be a yieldError.
-	var ye *yieldError
-	assert.False(t, errors.As(err, &ye))
+	result, err := tool.Execute(context.Background(), ToolInput(`not-json`))
+	requireSoftReject(t, result, err)
 }
 
 func TestAskUserQuestionTool_EmptyQuestion(t *testing.T) {
@@ -84,10 +94,8 @@ func TestAskUserQuestionTool_EmptyQuestion(t *testing.T) {
 		Question: "",
 		Options:  []YieldOption{{Key: "a", Label: "A"}, {Key: "b", Label: "B"}},
 	})
-	_, err := tool.Execute(context.Background(), ToolInput(in))
-	require.Error(t, err)
-	var ye *yieldError
-	assert.False(t, errors.As(err, &ye))
+	result, err := tool.Execute(context.Background(), ToolInput(in))
+	requireSoftReject(t, result, err)
 }
 
 func TestAskUserQuestionTool_NoOptions_OpenEnded(t *testing.T) {
@@ -125,10 +133,8 @@ func TestAskUserQuestionTool_MissingOptionKey(t *testing.T) {
 		Question: "Missing key?",
 		Options:  []YieldOption{{Key: "", Label: "A"}, {Key: "b", Label: "B"}},
 	})
-	_, err := tool.Execute(context.Background(), ToolInput(in))
-	require.Error(t, err)
-	var ye *yieldError
-	assert.False(t, errors.As(err, &ye))
+	result, err := tool.Execute(context.Background(), ToolInput(in))
+	requireSoftReject(t, result, err)
 }
 
 func TestAskUserQuestionTool_HeaderTooLong(t *testing.T) {
@@ -138,10 +144,8 @@ func TestAskUserQuestionTool_HeaderTooLong(t *testing.T) {
 		Options:  []YieldOption{{Key: "a", Label: "A"}, {Key: "b", Label: "B"}},
 		Header:   "这个标题超过了十二个字符的限制",
 	})
-	_, err := tool.Execute(context.Background(), ToolInput(in))
-	require.Error(t, err)
-	var ye *yieldError
-	assert.False(t, errors.As(err, &ye))
+	result, err := tool.Execute(context.Background(), ToolInput(in))
+	requireSoftReject(t, result, err)
 }
 
 // test(qa): reproduce dev run #133 — after the agent finished its web research it
@@ -217,8 +221,6 @@ func TestAskUserQuestionTool_ZeroOptions_OpenEndedYields(t *testing.T) {
 func TestAskUserQuestionTool_OneOption_Rejected(t *testing.T) {
 	tool := NewAskUserQuestionTool()
 	in := oneQuestion(askUserQuestionItem{Question: "Only one?", Options: []YieldOption{{Key: "a", Label: "A"}}})
-	_, err := tool.Execute(context.Background(), ToolInput(in))
-	require.Error(t, err)
-	var ye *yieldError
-	assert.False(t, errors.As(err, &ye))
+	result, err := tool.Execute(context.Background(), ToolInput(in))
+	requireSoftReject(t, result, err)
 }
