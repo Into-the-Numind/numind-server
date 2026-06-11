@@ -30,13 +30,13 @@ features:
   description: 'R1 走查拍板：ask_user_question 重构为 Claude Code 式 questions 数组（1-4 独立问题/每问题 0 或 2-4 选项+自动"其他"/逐个问标签栏翻阅修改/Review 提交）。根因：截图暴露 agent 把多维度塞进一问题的选项→元选择用户选了没用。参考源码 /Users/zhiyuchen/Downloads/ClaudeCode/src/tools/AskUserQuestionTool/。蓝图 docs/agent-mode/multi-question-blueprint.md。改造：后端 YieldPayload/Execute/answer 协议/快照 + 前端类型/多问题导航组件(全新)/store。'
   classification_reason: 'Standard：跨仓库 + 数据协议变更（答案从 single→answers map）+ 全新前端有状态组件 + 影响 agent 核心交互。'
   status: active
-  stage: S5
+  stage: S6
   repos:
-    numind-server: feature/agent-multi-question
-    numind-web-v3: feature/agent-multi-question
+    numind-server: feature/agent-multi-question (merged → develop 612b0146, deleted)
+    numind-web-v3: feature/agent-multi-question (merged → develop 31758b5, deleted)
   worktrees:
-    numind-server: /private/tmp/wt-agent-multi-question-numind-server
-    numind-web-v3: /private/tmp/wt-agent-multi-question-numind-web-v3
+    numind-server: (removed after ndf-done)
+    numind-web-v3: (removed after ndf-done)
   progress:
     total_tasks: 4
     completed_tasks: 4
@@ -44,6 +44,7 @@ features:
   artifacts:
     requirement: .ndf/features/agent-multi-question/requirement.md
   decisions:
+  - 'S6 (ai 2026-06-11): ndf-done 原子完成——两仓库 feature/agent-multi-question merged→develop+push(server 612b0146 / web 31758b5)+删 worktree+删本地分支，已 fetch+log 复核 develop==origin(ahead0 behind0)。注: 并行 session 同时合并 free-model-member-only(11c7bb0e)并在部署 server, develop HEAD 612b0146 含两 feature。部署 dev: web-v3 先(本 feature 独占)→server 后(避免与并行 session 并发 build)。协议变更前后端同时上 dev。无 migration(pending_question 列早已存在, 改动在 JSON 内 questions 数组)。待 dev 部署+验收(S6 硬门禁)。'
   - 'S5 验证 (ai 2026-06-11, server 76615ec3): 全量验证通过。后端 `go test ./...`(整 module 79 包)exit 0 + golangci-lint clean; 前端 type-check clean + vitest 791 pass + eslint clean。S5 全量跑出一个 **pre-existing** 失败 TestAnswerHandler_MissingBody(非本 feature 回归): ask-question-freetext 把 AnswerRequest.Selected 从 required 放宽到 max=4 后, `{}` body 一直 bind OK→200, 该 controller 测试在 develop 上早已红(测试注释 stale)。在 answer 协议域内修: AnswerRequest.Answers 加 binding:required(空 body bind 时即拒, present-but-empty+per-question 仍由 Answer biz 校验)+迁移 controller happy/invalid-id 测试到 answers body。**止步 S5**: 本 session 范围=S4 实现+S5 验证。S6(ndf-done 原子 merge 两仓库→develop→dev 部署)须前后端同时上(协议变更不可只部署一端), 留给 user 决定。dev gstack /qa(真实多问题 agent 提问)建议 S6 部署后做——需真 LLM 决定问多问题且两端同时在 dev。'
   - 'S4-T4 + 前端重构 (ai 2026-06-11, commit web 266a996): 前端整体多问题。**Rule 9 重构**: 蓝图 T4/T5/T6(类型/组件/store)无法原子分割——改 QuestionPromptMessage 类型同时 break store+wiring+组件(与后端 T1 同构耦合)→合并为单原子 task，total_tasks 6→4。改: types(QuestionPromptItem 新/QuestionPromptMessage.questions[]/QuestionPromptPayload.questions[]/AnswerPayload.answers map) + api + store stream/poll 注入 + AgentMessageItem 传 questions + QuestionPrompt.vue 重写为导航组件(标签栏 Q1☑Q2☐ 进度+点击回改/per-question currentIndex+{selected,freeText}/单多选/底部自由填写/Review 页 edit 链/提交建 answers map skip 未答; 单问题塌缩为直接提交)。poll-path tool_call_yield 死路(后端经 stream+snapshot 下发, 非此 poll 字段)保 shape parity。双 Sonnet reviewer 均 PASS_WITH_CONCERNS 0 P0。修: P1 submit 按钮加 type=button + questions=[] 渲染崩溃守卫 + multi_select 必填 boolean(后端 always-serialize); P2 多选按钮补 @keydown + tablist→role=group(stepper 非 ARIA tab) + 恢复 submitting 态测试 + free_text undefined 断言; P3 toggle-off(单/多)+double-submit 守卫测试。驳回: 重复问题文本碰撞(后端 T1 Execute 已强制 question 唯一)。type-check clean + vitest 791 pass + eslint clean。'
   - 'S4-T3 (ai 2026-06-11, commit 5b80ab86): 快照恢复多问题合成。后端 T1-T3 全闭环=协议全多问题。agentMessage flat 问题字段→Questions []questionPromptItem(JSON shape 严格匹配 stream.QuestionPromptItem, 前端 reload 与 live 同构渲染); synthesizeQuestionPrompt 合成全部 pending 问题(ParsePendingQuestion 兼容 legacy 单问题→单元素)。TDD: 多问题快照测试(2 问→Questions[2])RED→实现→迁移单问题测试到数组。双 Sonnet reviewer 均 PASS_WITH_CONCERNS 0 P0/P1。处理: spec P2(Questions omitempty vs stream 无 omitempty)=**保留 omitempty**(agentMessage 是共享 union struct, 去掉会让每条非问题消息序列化 questions:null; question_prompt 必有≥1 问题故前端总见数组)+注释说明; code P2 守卫只查 Q[0]→改循环内 skip 空问题+items 空则不合成; P2 加开放问题(0 选项)快照测试断言 options 省略非 null; P3 强化多问题测试(Q[1] options/label/header 断言防 cross-map)。go test agent 全绿+lint clean。下一步前端 T4-T6(契约: stream/snapshot 均 questions 数组[{question,options[{label,description}],header,multi_select}], answer 提交 answers map[questionText]{selected labels,free_text})。'
