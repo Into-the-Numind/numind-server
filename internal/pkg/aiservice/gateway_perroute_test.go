@@ -60,6 +60,29 @@ func TestGateway_EmbedFailsOverToDifferentProvider(t *testing.T) {
 	}
 }
 
+// TestGateway_Rerank_PrimaryLacksCapability reproduces the LITERAL production
+// error (Rule-11 Assertion A): the rerank task's primary provider does not
+// implement Rerank (the ali-dashscope incident) → gateway returns
+// "does not support Rerank". This is the fail-fast path (before the chain).
+func TestGateway_Rerank_PrimaryLacksCapability(t *testing.T) {
+	// embed-only provider — does NOT implement RerankProvider.
+	embedOnly := &recordingEmbedProvider{name: "ali-dashscope", resp: &aiservice.EmbedResponse{}}
+	route := registry.ResolvedRoute{TaskID: "salesrag.rerank", ServiceID: 1, Provider: registry.ProviderInfo{Name: "ali-dashscope"}}
+	reg := &reproRegistry{primary: &route}
+
+	gw := aiservice.Build(aiservice.Deps{Registry: reg})
+	gw.SetMiddlewareChain(aiservice.MiddlewareChainFunc(func(next aiservice.GatewayHandler) aiservice.GatewayHandler { return next }))
+	gw.RegisterProvider(embedOnly)
+
+	_, err := gw.Rerank(context.Background(), "salesrag.rerank", aiservice.RerankRequest{Query: "q", Documents: []string{"a"}})
+	if err == nil {
+		t.Fatal("expected 'does not support Rerank' error, got nil")
+	}
+	if !contains(err.Error(), "does not support Rerank") {
+		t.Errorf("expected 'does not support Rerank' (production symptom), got: %v", err)
+	}
+}
+
 // TestGateway_Rerank_UnregisteredProvider_Errors documents the behavior when a
 // route points to a provider with no registered adapter and no dmxapi catch-all:
 // lookupProvider returns nil and the dispatch handler reports "no provider

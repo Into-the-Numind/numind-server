@@ -27,6 +27,7 @@ import (
 	"sync/atomic"
 
 	"numind-server/internal/pkg/aiservice/registry"
+	"numind-server/internal/pkg/errno"
 )
 
 // ----------------------------------------------------------------------------
@@ -274,7 +275,7 @@ func (g *Gateway) Chat(ctx context.Context, taskID string, req ChatRequest) (*Ch
 			}
 			chat, ok := rp.(ChatProvider)
 			if !ok {
-				return nil, fmt.Errorf("gateway: provider %q does not support Chat", rp.Name())
+				return nil, fmt.Errorf("gateway: provider %q does not support Chat: %w", rp.Name(), errno.ErrAICapabilityMismatch)
 			}
 			return chat.Chat(ctx, r, rawReq.(ChatRequest))
 		}, nil
@@ -307,6 +308,13 @@ func (g *Gateway) ChatStream(ctx context.Context, taskID string, req ChatRequest
 		}
 	}
 
+	// NOTE(rerank-routing T1): ChatStream intentionally keeps the legacy resolution
+	// that captures the PRIMARY adapter at construction time (it does NOT use the
+	// per-route lookupProvider applied to resolveAndRun). Consequence: cross-provider
+	// streaming fallback would dispatch to the primary adapter, not the fallback's.
+	// This is an accepted known limitation — streaming fallback across heterogeneous
+	// providers is rare and all chat providers are OAI-compatible. Fix in a follow-up
+	// if streaming rerank/cross-protocol fallback is ever needed.
 	g.mu.RLock()
 	p, ok := g.providers[primary.Provider.Name]
 	if !ok {
@@ -364,7 +372,7 @@ func (g *Gateway) Embed(ctx context.Context, taskID string, req EmbedRequest) (*
 			}
 			embed, ok := rp.(EmbedProvider)
 			if !ok {
-				return nil, fmt.Errorf("gateway: provider %q does not support Embed", rp.Name())
+				return nil, fmt.Errorf("gateway: provider %q does not support Embed: %w", rp.Name(), errno.ErrAICapabilityMismatch)
 			}
 			return embed.Embed(ctx, r, rawReq.(EmbedRequest))
 		}, nil
@@ -395,7 +403,7 @@ func (g *Gateway) Rerank(ctx context.Context, taskID string, req RerankRequest) 
 			}
 			rerank, ok := rp.(RerankProvider)
 			if !ok {
-				return nil, fmt.Errorf("gateway: provider %q does not support Rerank", rp.Name())
+				return nil, fmt.Errorf("gateway: provider %q does not support Rerank: %w", rp.Name(), errno.ErrAICapabilityMismatch)
 			}
 			return rerank.Rerank(ctx, r, rawReq.(RerankRequest))
 		}, nil
@@ -426,7 +434,7 @@ func (g *Gateway) OCR(ctx context.Context, taskID string, req OCRRequest) (*OCRR
 			}
 			ocr, ok := rp.(OCRProvider)
 			if !ok {
-				return nil, fmt.Errorf("gateway: provider %q does not support OCR", rp.Name())
+				return nil, fmt.Errorf("gateway: provider %q does not support OCR: %w", rp.Name(), errno.ErrAICapabilityMismatch)
 			}
 			return ocr.OCR(ctx, r, rawReq.(OCRRequest))
 		}, nil
@@ -457,7 +465,7 @@ func (g *Gateway) ASR(ctx context.Context, taskID string, req ASRRequest) (*ASRR
 			}
 			asr, ok := rp.(ASRProvider)
 			if !ok {
-				return nil, fmt.Errorf("gateway: provider %q does not support ASR", rp.Name())
+				return nil, fmt.Errorf("gateway: provider %q does not support ASR: %w", rp.Name(), errno.ErrAICapabilityMismatch)
 			}
 			return asr.ASR(ctx, r, rawReq.(ASRRequest))
 		}, nil
