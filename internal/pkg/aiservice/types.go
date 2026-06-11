@@ -93,6 +93,12 @@ type ToolCall struct {
 type ChatMessage struct {
 	Role    MessageRole    `json:"role"`
 	Content MessageContent `json:"content"`
+	// ToolCallID is the id of the tool_call this message responds to (role=tool). agent-mode only.
+	ToolCallID string `json:"tool_call_id,omitempty"`
+	// ToolCalls is the assistant's requested tool invocations (role=assistant). agent-mode only.
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	// ReasoningContent echoes thinking-mode CoT back to thinking-capable providers.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 // TokenUsage reports the token consumption of a Chat call.
