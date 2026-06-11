@@ -14,11 +14,12 @@ import (
 
 // mockThinkingRoute builds a ResolvedRoute with the DMXAPI-relevant thinking
 // flags populated. All cases in the matrix below target the DMXAPIAdapter.
-func mockThinkingRoute(serverURL, modelID string, supportsThinking, thinkingOnly bool) *registry.ResolvedRoute {
+func mockThinkingRoute(serverURL, modelID string, supportsThinking, thinkingOnly bool, thinkingStyle string) *registry.ResolvedRoute {
 	return &registry.ResolvedRoute{
 		ProviderModelID:  modelID,
 		SupportsThinking: supportsThinking,
 		ThinkingOnly:     thinkingOnly,
+		ThinkingStyle:    thinkingStyle,
 		Provider: registry.ProviderInfo{
 			BaseURL: serverURL,
 			APIKey:  "test-key",
@@ -43,6 +44,7 @@ func TestDMXAPI_Thinking_Matrix(t *testing.T) {
 		maxCompletionTokens int
 		temperature         float64
 		temperatureSent     bool // omitempty: 0.0 is omitted
+		enableThinkingKwarg bool // chat_template_kwargs.enable_thinking==true expected on the wire
 	}
 	type metaExpect struct {
 		reasoningEffort string
@@ -55,6 +57,7 @@ func TestDMXAPI_Thinking_Matrix(t *testing.T) {
 		modelID    string
 		supports   bool
 		thinkOnly  bool
+		thinkStyle string
 		req        aiservice.ChatRequest
 		expectBody expectation
 		expectMeta metaExpect
@@ -256,6 +259,36 @@ func TestDMXAPI_Thinking_Matrix(t *testing.T) {
 				tempOverridden:  false,
 			},
 		},
+		// case 9 (REPRO, bug-from-customer): agnes-2.0-flash activates thinking via
+		// chat_template_kwargs.enable_thinking, NOT reasoning_effort. Before the
+		// thinking_style switch lands, the adapter sends neither → agnes never thinks.
+		// thinking_style="enable_thinking_kwarg" must emit chat_template_kwargs and
+		// must NOT emit reasoning_effort.
+		{
+			name:       "agnes_enable_thinking_kwarg_emits_chat_template_kwargs",
+			modelID:    "agnes-2.0-flash",
+			supports:   true,
+			thinkOnly:  false,
+			thinkStyle: "enable_thinking_kwarg",
+			req: aiservice.ChatRequest{
+				Messages:  sampleMessages(),
+				Thinking:  true,
+				MaxTokens: 500,
+			},
+			expectBody: expectation{
+				reasoningEffort:     "",
+				maxTokens:           500,
+				maxCompletionTokens: 0,
+				temperature:         0,
+				temperatureSent:     false,
+				enableThinkingKwarg: true,
+			},
+			expectMeta: metaExpect{
+				reasoningEffort: "enable_thinking_kwarg",
+				modelFamily:     string(ModelFamilyGeneric),
+				tempOverridden:  false,
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -269,7 +302,7 @@ func TestDMXAPI_Thinking_Matrix(t *testing.T) {
 			defer srv.Close()
 
 			d := NewDMXAPIAdapter()
-			route := mockThinkingRoute(srv.URL, tc.modelID, tc.supports, tc.thinkOnly)
+			route := mockThinkingRoute(srv.URL, tc.modelID, tc.supports, tc.thinkOnly, tc.thinkStyle)
 
 			resp, err := d.Chat(context.Background(), route, tc.req)
 			if err != nil {
@@ -290,6 +323,17 @@ func TestDMXAPI_Thinking_Matrix(t *testing.T) {
 			}
 			if sent.MaxCompletionTokens != tc.expectBody.maxCompletionTokens {
 				t.Errorf("max_completion_tokens: got %d, want %d", sent.MaxCompletionTokens, tc.expectBody.maxCompletionTokens)
+			}
+
+			// chat_template_kwargs.enable_thinking (Qwen/vLLM-style thinking activation).
+			if tc.expectBody.enableThinkingKwarg {
+				if sent.ChatTemplateKwargs == nil {
+					t.Errorf("chat_template_kwargs: expected present with enable_thinking=true, got nil")
+				} else if v, ok := sent.ChatTemplateKwargs["enable_thinking"].(bool); !ok || !v {
+					t.Errorf("chat_template_kwargs.enable_thinking: got %v, want true", sent.ChatTemplateKwargs["enable_thinking"])
+				}
+			} else if sent.ChatTemplateKwargs != nil {
+				t.Errorf("chat_template_kwargs: expected absent (omitempty), got %v", sent.ChatTemplateKwargs)
 			}
 			if tc.expectBody.temperatureSent {
 				if sent.Temperature != tc.expectBody.temperature {
