@@ -185,6 +185,8 @@
 | D-9 | **ask_user_question 交互重设计**：选项强制→开放信息塞成元选择用户选了没用；无自由填写框。修：选项=具体候选答案+底部永远自由填写框+agent 行为引导（prompt） | R1 现场用户反馈（run 121） | D 类设计（用户拍板） | `closed`——feature ask-question-freetext（跨仓库+双 review，P0 free-text-only 断路已修） |
 | BUG-6 | **ask_user_question >4 选项崩 run**：ask-question-freetext 教 agent"选项非穷举"→agent 给 10 选项→Execute 硬 2-4 校验崩→"服务不可用"。我刚部署 feature 的回归 | dev run #127 用户上报 | P0（回归） | `closed`——hotfix ask-question-options-tolerant（容错截断+0 选项开放，TDD+双 review） |
 | HW-36 | QuestionPrompt.vue 两处 dead CSS（ask-question-freetext 引入 display:block/margin-top:8px 被原值覆盖，视觉正常仅冗余） | BUG-6 review 发现 | P3（micro 清理） | `open` |
+| BUG-7 | **web_search string max_results 杀 run**：LLM 把 max_results 当字符串发("5")→严格 int 解析硬错→NodeRunError→整 run 暴毙（run 132：5 次成功搜索后第 6 次崩）。偶发=模型类型抖动，agent 核心 web 能力随机暴毙 | dev run #132 用户上报 | P0（上线阻断） | `closed`——hotfix web-search-robust-input（容忍 string/float→int + 输入校验全转软错误让 run 永不被烂调用杀死，TDD+双 review PASS，landed develop 13441a8a） |
+| HW-38 | **工具输入数值/bool 字段同类脆弱性**：LLM 发 string 类型参数会硬错杀 run（同 BUG-7 类，非 web_search 独有）。待加容错 unmarshal 的工具：annotate_image(X/Y/Width/Height)、create_png_chart(Width/Height/Values/XValues)、ask_user_question(MultiSelect)、kb_search(DocIDs []uint)、run_python(TimeoutSeconds)。建议抽共享 coerce helper + recoverableToolError sentinel，让任何工具输入校验失败都软错误而非杀 run | BUG-7 双 review 发现 | P1（launch 硬化，同类随时复现） | `open` |
 | HW-35 | prompt 引导 agent"需要信息用工具问不要文本问完就停"是 soft 约束，LLM 仍可能输出纯文本提问→run completed（run 121 现象）。需 dev 验证；不行则 runner 层辅助（末步纯文本含提问意图时拦截 completed/强制 function-calling） | ask-question-freetext review 发现 | P1（agent 行为可靠性，待 dev 验证定级） | `verify` |
 | OBS-1 | dev 上 ali-dashscope qwen-turbo 辅助调用 403 三连退款（free tier 耗尽，已知 PLT-3），fail-open 不致命但拖慢每轮+日志噪音（run #114：67 笔 reservation 中 40 笔是 403 退款）；建议 dev 把相关 task_profile 路由迁离 ali | run #113/#114 | P2（dev only，R1 前顺手修可提速） | `open` |
 | OBS-2 | run 详情 API `credits_used` 恒 0（真实 reconcile 正常，聚合显示未接线）；create 响应 `estimated_credits_min/max` 也是 0-0 | run #114 | P2 | `open` |
@@ -194,3 +196,4 @@
 - 2026-06-10 Phase 0 创建：合流 prod-readiness-test-plan / wave1 / wave2 / runbook / multimodal-fallback / manifest follow-ups；红线复核 6/6 关闭（2 个残留子项→HW-4/HW-5）；dev 探测无阻断。
 - 2026-06-10 R0 完成（§0 裁决补丁）；WK-1 合并；CAP-1 预探针发现并修复 BUG-1（同日 hotfix 上 dev）。
 - 2026-06-10 R1 进行中：预探针抓 BUG-2（权限拦沙箱工具）、现场实战抓 BUG-3（流式 yield 杀 run）——均当日 TDD+双 review+部署+实弹复验闭环。R1 配置端走查收 D-2~D-8 八条裁决（见 design-baseline 更新）。
+- 2026-06-11 R1 续：dev run #132 抓 BUG-7（web_search string max_results 硬错杀 run，agent 核心 web 能力随机暴毙；先前误判为"供应商问题/卡死"实为工具契约 bug）——当日 TDD+双 review PASS+landed develop（hotfix web-search-robust-input）。reviewer 发现同类工具输入脆弱性记 HW-38（launch 硬化 follow-up）。
