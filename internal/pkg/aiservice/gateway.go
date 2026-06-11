@@ -308,32 +308,34 @@ func (g *Gateway) ChatStream(ctx context.Context, taskID string, req ChatRequest
 		}
 	}
 
-	// NOTE(rerank-routing T1): ChatStream intentionally keeps the legacy resolution
-	// that captures the PRIMARY adapter at construction time (it does NOT use the
-	// per-route lookupProvider applied to resolveAndRun). Consequence: cross-provider
-	// streaming fallback would dispatch to the primary adapter, not the fallback's.
-	// This is an accepted known limitation — streaming fallback across heterogeneous
-	// providers is rare and all chat providers are OAI-compatible. Fix in a follow-up
-	// if streaming rerank/cross-protocol fallback is ever needed.
-	g.mu.RLock()
-	p, ok := g.providers[primary.Provider.Name]
-	if !ok {
-		p = g.findAdapterByPrefix(primary.Provider.Name)
-		ok = p != nil
+	// Fail-fast capability check on the PRIMARY provider (mirrors resolveAndRun).
+	// The actual per-call adapter is resolved AGAIN inside the handler via
+	// lookupProvider(r.Provider.Name) — that is what lets the streaming Fallback
+	// middleware dispatch a fallback route to ITS OWN provider's adapter instead of
+	// reusing the primary's. (Previously this captured the primary adapter at
+	// construction time — NOTE(rerank-routing T1) — which broke cross-provider
+	// streaming fallback; fixed in agent-stream-retry to match Chat/Embed.)
+	p := g.lookupProvider(primary.Provider.Name)
+	if p == nil {
+		return nil, fmt.Errorf("gateway: no provider registered for %q", primary.Provider.Name)
 	}
+	if _, ok := p.(ChatProvider); !ok {
+		return nil, fmt.Errorf("gateway: provider %q does not support ChatStream: %w", p.Name(), errno.ErrAICapabilityMismatch)
+	}
+
+	g.mu.RLock()
 	chainFn := g.chain
 	g.mu.RUnlock()
 
-	if !ok {
-		return nil, fmt.Errorf("gateway: no provider registered for %q", primary.Provider.Name)
-	}
-
-	chat, ok := p.(ChatProvider)
-	if !ok {
-		return nil, fmt.Errorf("gateway: provider %q does not support ChatStream", p.Name())
-	}
-
 	handler := GatewayHandler(func(ctx context.Context, r *registry.ResolvedRoute, rawReq interface{}) (interface{}, error) {
+		rp := g.lookupProvider(r.Provider.Name)
+		if rp == nil {
+			return nil, fmt.Errorf("gateway: no provider registered for %q", r.Provider.Name)
+		}
+		chat, ok := rp.(ChatProvider)
+		if !ok {
+			return nil, fmt.Errorf("gateway: provider %q does not support ChatStream: %w", rp.Name(), errno.ErrAICapabilityMismatch)
+		}
 		ch, err := chat.ChatStream(ctx, r, rawReq.(ChatRequest))
 		if err != nil {
 			return nil, err
