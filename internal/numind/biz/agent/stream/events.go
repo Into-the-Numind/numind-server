@@ -191,12 +191,13 @@ type QuestionOption struct {
 
 // QuestionPromptItem is one question in a QuestionPromptPayload.
 //
-// Options uses omitempty: a nil slice would marshal to JSON `null`, but the
-// frontend treats this field as a list and expects an empty array when no
-// options exist. Omitting the key entirely lets the parser default to [].
+// Options must ALWAYS serialize as a JSON array — present even when empty,
+// never null and never omitted. The frontend reads options.length unguarded;
+// an omitted key crashed the whole question card (dev run 147, 2026-06-12).
+// Emitters build the slice with make(...) so it is non-nil and marshals to [].
 type QuestionPromptItem struct {
 	Question    string           `json:"question"`
-	Options     []QuestionOption `json:"options,omitempty"`
+	Options     []QuestionOption `json:"options"`
 	Header      string           `json:"header,omitempty"`
 	MultiSelect bool             `json:"multi_select"`
 }
