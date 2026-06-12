@@ -5,21 +5,22 @@ features:
   description: 'agent 工具层 soft error 全量清扫：凡模型输入导致的错误(unmarshal/缺字段/越界)及可恢复运行期错误(检索/上传/存储失败)一律返回 ToolResult+nil error 让模型自我纠正, 不再 NodeRunError 杀整个 run。起因: dev run 136(web_fetch bool prompt)/137(image_gen 缺 prompt) 被硬错误杀死(aihubmix 路由期模型频发烂参数)。对照: 已加固的 web_search/ask_user_question 让 run 143/145 自愈存活。业界基准: Claude Code 全部工具参数错误包成 is_error tool_result 永不终止会话(2026-06-12 源码实证)。'
   classification_reason: 'Standard: 影响文件 >3(约 11 个 tool_*.go + 共享 helper + 测试)。无 DB schema/无新 API/无新外部服务/非支付权限。Bug-from-Customer(Rule 11): 首 commit=失败复现测试。用户经 AskUserQuestion 确认 Standard(2026-06-12)。'
   status: active
-  stage: S3
+  stage: S6
   repos:
-    numind-server: feature/tool-soft-error-sweep
+    numind-server: develop (merged via ndf-done, merge commit 42d89410)
   worktrees:
-    numind-server: /private/tmp/wt-tool-soft-error-sweep-numind-server
+    numind-server: (removed by ndf-done)
   progress:
     total_tasks: 5
-    completed_tasks: 0
-    reviewed_tasks: 0
+    completed_tasks: 5
+    reviewed_tasks: 5
   artifacts:
     requirement: .ndf/features/tool-soft-error-sweep/requirement.md
     proposal: .ndf/features/tool-soft-error-sweep/proposal.md
     spec: .ndf/features/tool-soft-error-sweep/spec.md
     plan: .ndf/features/tool-soft-error-sweep/plan.md
   decisions:
+  - 'S4-S6 (ai 2026-06-12): 5/5 task 完成+5/5 reviewed(每 task 双 Sonnet 并行)。commit 链: 4255d39c test(qa) 复现 17 RED(Rule11 首commit, 指纹=run136/137 原文)→bd14980d T1 image_gen+web_fetch(+bcfaf565 review P2)→70475ce7 T2 create_*+共享 softToolError helper(+7cd5fafb 双前缀修)→14f2b262 T3 kb_search/memory/document_generate→T3 质量 review FAIL(3 P1: kb/memory 故障改 soft 后 ops 零可见性、stub 消息泄漏内部 issue 引用给 LLM)→d69cf847 修(Warnw ×6+消息剥离)→复核 PASS(+40e1e6aa Description 残留清理)。S5 gate: go test ./... 全仓 0 FAIL + -race 改动包绿 + golangci-lint 全仓 0。ndf-done 原子 merge 42d89410, 已 fetch 复核 7 commit 全 ancestor of origin/develop。下一步 /deploy-dev server + 正常路径冒烟, 停 dev 等用户验收(prod 不在授权)。'
   - 'S0-S3 (ai 2026-06-12): 起因=定位调研助手 dev 实测多 run 被工具硬错误杀死(136/137), 根因链=aihubmix 第三方 v4-pro 烂参数 × Eino v0.8.13 无 tool-error 钩子(非 nil error=杀 run)。路由已止血切回 dmxapi-guan(route40 pri20)。主 session 亲读 11 个工具源码核实修复面(纠正 subagent 误判: analyze/annotate/png_chart 入口已 soft): image_gen+web_fetch(P0, 文件内 helper 已存在只是入口没用)/create_csv/json/html/text/kb_search/memory_read/write/document_generate + png_chart 上传路径。错误分类契约: 输入错误+可恢复运行期错误→soft; ctx 取消+yield→保留 hard。不做: 退化检测/think 标签清理/质量 fallback(Claude Code 未做, 用户拍板不做)/类型 coerce 扩展。S5=仅后端 TDD+dev 冒烟(无 UI), T0 复现测试永久留库作回归保护。5 task: T0 复现(RED)→T1 P0→T2 create_*→T3 其余→T4 验证策略。'
   blockers: []
 - id: agent-stream-retry
