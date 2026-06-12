@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"gorm.io/datatypes"
 
@@ -45,5 +46,27 @@ func TestSynthesizeQuestionPrompt_EmptyOptionsSerializeAsArray(t *testing.T) {
 	}
 	if got := strings.Count(s, `"options":[]`); got != 2 {
 		t.Fatalf("both zero-option questions must carry \"options\":[] (got %d occurrence(s)): %s", got, s)
+	}
+}
+
+// TestSynthesizeQuestionPrompt_TimestampPrefersPendingQuestionAt covers the
+// timestamp source branch: when PendingQuestionAt is set it wins over
+// StartedAt (review P2 — the zero-value StartedAt in the test above exercises
+// only the fallback branch).
+func TestSynthesizeQuestionPrompt_TimestampPrefersPendingQuestionAt(t *testing.T) {
+	askedAt := time.Date(2026, 6, 12, 7, 48, 43, 0, time.UTC)
+	run := &model.AgentRun{
+		ID:                  147,
+		StateReason:         string(TerminalWaitingForUserChoice),
+		PendingQuestionJSON: datatypes.JSON(`{"questions":[{"question":"q","options":[],"multi_select":false}]}`),
+		StartedAt:           time.Date(2026, 6, 12, 7, 47, 0, 0, time.UTC),
+		PendingQuestionAt:   &askedAt,
+	}
+	msg, ok := synthesizeQuestionPrompt(run)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if msg.Timestamp != "2026-06-12T07:48:43Z" {
+		t.Fatalf("timestamp must come from PendingQuestionAt, got %s", msg.Timestamp)
 	}
 }
