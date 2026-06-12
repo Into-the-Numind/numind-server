@@ -443,6 +443,14 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 			return nil, fmt.Errorf("AgentRunner.Run load existing: %w", getErr)
 		}
 		run = existing
+		// answer-resume-lifecycle F1b: a taken-over run must advertise itself as
+		// running. AnswerAndClear already flips the row on the answer path; this
+		// idempotent correction covers any other resume entry point so the run
+		// never spends its resumed leg claiming status='terminated' (dev run 148).
+		if uerr := r.runStore.UpdateState(ctx, run.ID, "running", "running", nil); uerr != nil {
+			log.Warnw("AgentRunner.Run: mark resumed run running failed",
+				"agent_run_id", run.ID, "error", uerr)
+		}
 	} else {
 		run = &model.AgentRun{
 			UserID:            req.UserID,

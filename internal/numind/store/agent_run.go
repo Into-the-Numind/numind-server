@@ -362,12 +362,19 @@ func (s *agentRunStore) AnswerAndClear(ctx context.Context, id uint64, userMessa
 			return fmt.Errorf("agentRunStore.AnswerAndClear marshal array(id=%d): %w", id, err)
 		}
 
-		// Single UPDATE: messages + clear pending fields + reset state_reason.
+		// Single UPDATE: messages + clear pending fields + return the row to a
+		// truthful running state. The yield terminal wrote status='terminated' +
+		// ended_at; leaving them in place made every poller declare the run
+		// finished the moment the user answered, while the detached resume kept
+		// working (dev run 148 — the user saw a stale "final answer" and the
+		// real report arrived unseen 8.5 minutes later).
 		result := tx.Model(&model.AgentRun{}).Where("id = ?", id).Updates(map[string]interface{}{
 			"messages":              datatypes.JSON(newMsgs),
 			"pending_question_json": nil,
 			"pending_question_at":   nil,
 			"state_reason":          "running",
+			"status":                "running",
+			"ended_at":              nil,
 		})
 		if result.Error != nil {
 			return fmt.Errorf("agentRunStore.AnswerAndClear update(id=%d): %w", id, result.Error)
