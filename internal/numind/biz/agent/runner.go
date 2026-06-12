@@ -437,12 +437,29 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	// M-A1 / M-C3a: populate AgentDefinitionID from request (non-zero for runs with a wired skill).
 	// hotfix agent-mode-contract-align: 学员侧异步派发预建 row,通过 ExistingRunID 接管。
 	var run *model.AgentRun
+	// answer-resume-lifecycle F2: capture the pre-yield transcript at takeover so
+	// final persistence APPENDS the resumed leg instead of clobbering leg 1.
+	var priorMessages json.RawMessage
 	if req.ExistingRunID != 0 {
 		existing, getErr := r.runStore.Get(ctx, req.ExistingRunID)
 		if getErr != nil {
 			return nil, fmt.Errorf("AgentRunner.Run load existing: %w", getErr)
 		}
 		run = existing
+		if len(existing.Messages) > 0 {
+			priorMessages = json.RawMessage(existing.Messages)
+		}
+		// answer-resume-lifecycle F1b: a taken-over run must advertise itself as
+		// running. AnswerAndClear already flips the row on the answer path; this
+		// idempotent correction covers any other resume entry point so the run
+		// never spends its resumed leg claiming status='terminated' (dev run 148).
+		// NOTE: ended_at clearing is owned by AnswerAndClear (the sole resume
+		// entry today); a future non-answer resume entry must clear it itself
+		// (UpdateState with nil endedAt intentionally leaves the column alone).
+		if uerr := r.runStore.UpdateState(ctx, run.ID, "running", "running", nil); uerr != nil {
+			log.Warnw("AgentRunner.Run: mark resumed run running failed",
+				"agent_run_id", run.ID, "error", uerr)
+		}
 	} else {
 		run = &model.AgentRun{
 			UserID:            req.UserID,
@@ -916,10 +933,10 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		if uerr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalCompleted), &endedAt); uerr != nil {
 			log.Warnw("AgentRunner.Run UpdateState failed on short-circuit", "agent_run_id", run.ID, "error", uerr)
 		}
-		shortCircuitMessages, _ := json.Marshal([]map[string]any{
+		shortCircuitMessages, _ := json.Marshal(mergeResumeTranscript(priorMessages, []map[string]any{
 			{"role": "user", "content": req.Input},
 			{"role": "assistant", "content": req.Input},
-		})
+		}))
 		if wErr := r.runStore.WriteTurn(ctx, run.ID, json.RawMessage(shortCircuitMessages)); wErr != nil {
 			log.Warnw("AgentRunner.Run WriteTurn failed on short-circuit", "agent_run_id", run.ID, "error", wErr)
 		}
@@ -1248,7 +1265,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		reasoning = output.ReasoningContent
 	}
 
-	return r.finalizeRun(ctx, run, st, startTime, finalText, reasoning, output, contextExhausted, skillVer, isTrivial, req, permDenialSink, runErr, sessionID)
+	return r.finalizeRun(ctx, run, st, startTime, finalText, reasoning, output, contextExhausted, skillVer, isTrivial, req, permDenialSink, runErr, sessionID, priorMessages)
 }
 
 // finalizeRun performs the persistence and clean-up work shared between Run and
@@ -1282,6 +1299,10 @@ func (r *agentRunner) finalizeRun(
 	permDenialSink <-chan *PermissionDenialDetail,
 	runErr error,
 	sessionID string,
+	// priorMessages is the pre-yield transcript captured at ExistingRunID
+	// takeover (answer-resume-lifecycle F2); nil for non-resume runs and for
+	// RunStream (resume only enters via Run).
+	priorMessages json.RawMessage,
 ) (*RunResult, error) {
 	// Write turn to agent_run.messages.
 	userInput := req.Input
@@ -1354,6 +1375,9 @@ func (r *agentRunner) finalizeRun(
 		}
 		turns = append(turns, assistantTurn(assistantContent, finalReasoning))
 	}
+	// answer-resume-lifecycle F2: a resumed run appends to its pre-yield
+	// transcript instead of overwriting it (dev run 148 history loss).
+	turns = mergeResumeTranscript(priorMessages, turns)
 	finalMessages, _ := json.Marshal(turns)
 	if err := r.runStore.WriteTurn(finalizeCtx, run.ID, json.RawMessage(finalMessages)); err != nil {
 		log.Warnw("AgentRunner.Run WriteTurn failed", "agent_run_id", run.ID, "error", err)
