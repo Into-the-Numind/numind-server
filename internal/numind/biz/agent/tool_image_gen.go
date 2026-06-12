@@ -71,11 +71,13 @@ func (t *imageGenTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	var inp struct {
 		Prompt string `json:"prompt"`
 	}
+	// Malformed model input must come back soft: a non-nil Go error here is a
+	// NodeRunError that kills the whole run (dev run 137).
 	if err := json.Unmarshal(input, &inp); err != nil {
-		return nil, fmt.Errorf("invalid image_gen input format: %w", err)
+		return t.returnSoftError("invalid image_gen input format: %v", err)
 	}
 	if strings.TrimSpace(inp.Prompt) == "" {
-		return nil, errors.New("prompt is required for image generation")
+		return t.returnSoftError("prompt is required for image generation")
 	}
 
 	// 2. 计费：生成前预扣（nil creditService → 跳过计费，保持测试行为）。

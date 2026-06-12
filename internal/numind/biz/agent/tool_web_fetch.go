@@ -93,8 +93,10 @@ func (t *webFetchTool) InputSchema() json.RawMessage {
 
 func (t *webFetchTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	var in webFetchInput
+	// Malformed model input must come back soft: a non-nil Go error here is a
+	// NodeRunError that kills the whole run (dev run 136: bool prompt).
 	if err := json.Unmarshal(input, &in); err != nil {
-		return nil, errno.ErrBind.SetMessage("web_fetch: %s", err.Error())
+		return t.returnSoftError("", "web_fetch: invalid input: %v", err)
 	}
 
 	// Reject COS agent-attachment URLs — they are private uploads, not web
@@ -173,7 +175,8 @@ func (t *webFetchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 				langfuse.EndSpan(tc.TraceID, spanID, langfuse.WithSpanError(err.Error()))
 			}
 		}
-		return nil, errno.ErrInvalidInput.SetMessage("web_fetch: build request: %s", err.Error())
+		// Model-controlled URL → input-derived failure must stay soft (spec I1).
+		return t.returnSoftError("网页请求失败", "web_fetch: build request: %s", err.Error())
 	}
 	req.Header.Set("User-Agent", "Numind-Agent/1.0 (+https://youshu.asia)")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
