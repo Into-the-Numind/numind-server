@@ -390,10 +390,15 @@ func TestWebFetch_Timeout(t *testing.T) {
 // ── TestWebFetch_InvalidInputJSON ─────────────────────────────────────────────
 
 func TestWebFetch_InvalidInputJSON(t *testing.T) {
+	// tool-soft-error-sweep: malformed input must be a SOFT error (nil Go
+	// error) — a hard error here killed dev run 136 via Eino NodeRunError.
 	tool := &webFetchTool{}
-	_, err := tool.Execute(context.Background(), ToolInput([]byte(`not-json`)))
-	if err == nil {
-		t.Fatal("expected error for invalid JSON, got nil")
+	result, err := tool.Execute(context.Background(), ToolInput([]byte(`not-json`)))
+	if err != nil {
+		t.Fatalf("expected soft error for invalid JSON, got hard error: %v", err)
+	}
+	if !strings.Contains(string(result), "ERROR") {
+		t.Fatalf("soft error payload must contain ERROR marker, got: %s", result)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/retrieval/retrieve"
 )
@@ -83,8 +84,10 @@ func (t *kbSearchTool) InputSchema() json.RawMessage {
 // salesrag's Answer/Strategy/Opinion verdict — to avoid the double-LLM pass.
 func (t *kbSearchTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	var in kbSearchInput
+	// Model-input and recoverable failures stay soft: a non-nil Go error is a
+	// NodeRunError that kills the whole agent run (tool-soft-error-sweep).
 	if err := json.Unmarshal(input, &in); err != nil {
-		return nil, err
+		return softToolError("kb_search", "invalid input: %v", err)
 	}
 
 	// userID from context (runner injects via middleware.NewContextWithUserID).
@@ -108,7 +111,11 @@ func (t *kbSearchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 
 	res, err := t.retriever.Retrieve(ctx, in.Query, scope, opts)
 	if err != nil {
-		return nil, err
+		// Transient retrieval outage (vector store / ES down) must not kill the
+		// run; the LLM can retry or continue without KB grounding. Warn so a
+		// sustained outage is still visible to ops (T3 review P1).
+		log.Warnw("kb_search: retrieval failed", "error", err)
+		return softToolError("kb_search", "retrieval failed: %v", err)
 	}
 
 	out := kbSearchOutput{Chunks: make([]kbSearchChunk, 0, len(res.Chunks))}

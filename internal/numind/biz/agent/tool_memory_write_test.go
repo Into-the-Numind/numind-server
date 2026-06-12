@@ -69,18 +69,24 @@ func TestMemoryWriteTool_JSONInvalid(t *testing.T) {
 	tool, _ := makeMemoryWriteTool(t)
 	ctx := middleware.NewContextWithUserID(context.Background(), 1)
 
-	_, err := tool.Execute(ctx, ToolInput([]byte("not-json")))
-	require.Error(t, err)
+	// tool-soft-error-sweep: malformed input is a SOFT error.
+	result, err := tool.Execute(ctx, ToolInput([]byte("not-json")))
+	require.NoError(t, err)
+	assert.Contains(t, string(result), "invalid input")
 }
 
-// TestMemoryWriteTool_UserMissing verifies missing userID in context returns ErrMemoryUserRequired.
+// TestMemoryWriteTool_UserMissing verifies missing userID in context returns a
+// soft "memory unavailable" error (tool-soft-error-sweep: wiring gaps must not
+// kill the run; visibility comes from the Warnw log).
 func TestMemoryWriteTool_UserMissing(t *testing.T) {
 	tool, _ := makeMemoryWriteTool(t)
 
+	// tool-soft-error-sweep: a wiring gap (no user in ctx) is a SOFT error —
+	// a missing memory write must not abort the whole run.
 	input, _ := json.Marshal(memoryWriteToolInput{Kind: "fact", Key: "k", Value: "v"})
-	_, err := tool.Execute(context.Background(), ToolInput(input))
-	require.Error(t, err)
-	assert.Equal(t, memory.ErrMemoryUserRequired, err)
+	result, err := tool.Execute(context.Background(), ToolInput(input))
+	require.NoError(t, err)
+	assert.Contains(t, string(result), "memory unavailable")
 }
 
 // TestMemoryWriteTool_AgentDefIDZero verifies that when agentDefID is not in context

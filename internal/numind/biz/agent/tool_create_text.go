@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"time"
 )
 
@@ -43,8 +42,9 @@ type createTextInput struct {
 
 func (t *createTextTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	var in createTextInput
+	// Model-input and recoverable failures stay soft (tool-soft-error-sweep).
 	if err := json.Unmarshal(input, &in); err != nil {
-		return nil, fmt.Errorf("create_text: invalid input: %w", err)
+		return softToolError("create_text", "invalid input: %v", err)
 	}
 
 	filename := in.Filename
@@ -53,5 +53,9 @@ func (t *createTextTool) Execute(ctx context.Context, input ToolInput) (ToolResu
 	}
 
 	data := []byte(in.Content)
-	return uploadGeneratedFile(ctx, data, "text/plain; charset=utf-8", filename, "text")
+	result, err := uploadGeneratedFile(ctx, data, "text/plain; charset=utf-8", filename, "text")
+	if err != nil {
+		return softToolError("create_text", "upload failed: %v", err)
+	}
+	return result, nil
 }

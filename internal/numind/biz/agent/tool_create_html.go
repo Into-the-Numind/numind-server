@@ -76,8 +76,10 @@ type createHTMLInput struct {
 
 func (t *createHTMLTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	var in createHTMLInput
+	// Model-input and recoverable failures stay soft: a non-nil Go error is a
+	// NodeRunError that kills the whole agent run (tool-soft-error-sweep).
 	if err := json.Unmarshal(input, &in); err != nil {
-		return nil, fmt.Errorf("create_html: invalid input: %w", err)
+		return softToolError("create_html", "invalid input: %v", err)
 	}
 
 	filename := in.Filename
@@ -87,10 +89,17 @@ func (t *createHTMLTool) Execute(ctx context.Context, input ToolInput) (ToolResu
 
 	htmlBytes, err := renderHTML(in)
 	if err != nil {
-		return nil, err
+		// Template parse/render failures are input-driven (model-supplied
+		// template). renderHTML errors already carry the "create_html: " prefix;
+		// trim it so softToolError does not double it.
+		return softToolError("create_html", "%s", strings.TrimPrefix(err.Error(), "create_html: "))
 	}
 
-	return uploadGeneratedFile(ctx, htmlBytes, "text/html; charset=utf-8", filename, "html")
+	result, uploadErr := uploadGeneratedFile(ctx, htmlBytes, "text/html; charset=utf-8", filename, "html")
+	if uploadErr != nil {
+		return softToolError("create_html", "upload failed: %v", uploadErr)
+	}
+	return result, nil
 }
 
 // renderHTML produces the final HTML bytes from the tool input. Extracted from
