@@ -1,5 +1,24 @@
 schema_version: '2.0'
 features:
+- id: question-options-omitempty
+  track: hotfix
+  description: 'agent 提问卡片白屏修复：零选项开放题的 options 字段被 json omitempty 吃掉(SSE+快照双路径)，前端 QuestionPrompt.vue 裸读 options.length → TypeError 整卡崩溃 → 暂停的 run 看似永久卡死(dev run 147)。修复=后端两结构体去 omitempty 永远输出 "options":[](发射路径已是 make 非 nil)+前端 currentOptions computed ?? [] 归一化容忍缺失。'
+  classification_reason: 'Hotfix: 无 DB schema/无新 API/无新外部服务/非支付权限；跨 2 仓库共 4 代码文件(字面超 ≤3 线)，经用户 AskUserQuestion 确认按 Hotfix 走(单一根因小修)。Bug-from-Customer(Rule 11): 双仓库首 commit 均为失败复现测试。'
+  status: active
+  stage: H3
+  repos:
+    numind-server: develop (merged via ndf-done, merge commit eaca3948)
+    numind-web-v3: develop (merged via ndf-done, merge commit b568aad)
+  worktrees:
+    numind-server: (removed by ndf-done)
+    numind-web-v3: (removed by ndf-done)
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-H3 (ai 2026-06-12): 浏览器实测诊断(规矩: 前端 bug 先 Playwright/browse 不静态推理)→console 实锤 TypeError options.length(AgentChatView bundle)+快照接口实测 question_prompt 在场但 Q1 无 options 键+后端注释自曝错误假设("省略 key 前端会默认[]")。触发条件=模型出无选项开放题, 与当日工具加固/渠道切换无关(多问题重构遗留协议缝, 昨晚能用是因为每题都带选项)。commit 链: server 0b1c6746 test(qa) RED→30157944 fix(去 omitempty×2+注释改正)→18ac3f21 review P2; web c6a459f test(qa) RED→269753a fix(currentOptions ?? [])→a1fd792 review P2。双 Sonnet review 双 PASS(0 P0/P1, 4 P2 中 2 个覆盖缺口已补)。门禁: server go test ./... 0 FAIL+agent 包 lint 0; web vitest 815 用例全过+vue-tsc 0+eslint 0。兼容性: reviewer 排查全部 question_prompt 消费方无人依赖缺失语义; legacy 单问题行 make(0,0) 保证 []。下一步双仓库 /deploy-dev + 浏览器复验 run 147 会话卡片渲染。'
+  blockers: []
 - id: customer-list-booster-tplcount
   track: hotfix
   description: '客户管理页两处改动：(1) BUG——「已授权模板」列对子账号 CountActiveAuthorizedSopTemplates / GetAuthorizedTemplates 只过滤 status=active 漏了 publish_status=published，残留对已下架(draft)模板的白名单行被多计，prod 莫小派(parent 30：3发布SOP+8助手+1销售=12 宇宙)下约20个子账号显示 13。修复对齐 published 口径，最大回 12。(2) FEATURE——「额度」列后新增「加量包」列，显示 user_booster_balance.credits_remaining（SubUserInfo.booster_balance；GetMembershipStateBatch 批量拉 BoosterTotal）。'
