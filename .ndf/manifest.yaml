@@ -1,5 +1,29 @@
 schema_version: '2.0'
 features:
+- id: answer-resume-lifecycle
+  track: standard
+  description: '答题续跑全链路修复：yield 暂停=terminated+waiting，AnswerAndClear 只改 state_reason 不改 status、续跑接管也不翻转 → 整个续跑期 run 对外宣称已终止 → 前端一轮询即判终，把提问前旧文案推成 final_answer 并停止跟踪(dev run 148: 用户看到假"回答完毕"，后端默默干完 8.5min 产出完整 DOCX 报告无人看)。一并修：续跑落库覆写冲掉第一段历史(G1)；续跑再提问时轮询模式无卡片注入机制(G2, Q→A→Q 链断裂)。'
+  classification_reason: 'Standard: 跨 2 仓库、run 生命周期核心语义、影响文件>3。无 DB schema/无新 API/无新外部服务。用户确认"直接开干干到 deploy dev"(2026-06-12)。Bug-from-Customer(Rule 11): 双仓库首 commit=失败复现测试。'
+  status: active
+  stage: S3
+  repos:
+    numind-server: feature/answer-resume-lifecycle
+    numind-web-v3: feature/answer-resume-lifecycle
+  worktrees:
+    numind-server: /private/tmp/wt-answer-resume-lifecycle-numind-server
+    numind-web-v3: /private/tmp/wt-answer-resume-lifecycle-numind-web-v3
+  progress:
+    total_tasks: 5
+    completed_tasks: 0
+    reviewed_tasks: 0
+  artifacts:
+    requirement: .ndf/features/answer-resume-lifecycle/requirement.md
+    proposal: .ndf/features/answer-resume-lifecycle/proposal.md
+    spec: .ndf/features/answer-resume-lifecycle/spec.md
+    plan: .ndf/features/answer-resume-lifecycle/plan.md
+  decisions:
+  - 'S0-S3 (ai 2026-06-12): 根因链 5 环全代码+DB 实证(requirement.md)，墓碑证据=run 141 冻死在 terminated+running。设计原则=修数据真相(DB row 诚实)而非 DTO 层化妆，前端守卫只做纵深防御；G2 二次提问注入复用当日 hotfix 已验证的快照 synthesizeQuestionPrompt 机制(零后端改动)。否决: GetRun DTO 映射掩盖谎言 / narration yield_payload 新协议面 / RunStream 流式 resume(更大工程)。S5=双仓库 TDD+dev browse 实测完整 Q→A→续跑→交付闭环。5 task: T0 复现(RED 双仓库)→T1 状态真相→T2 追加持久化→T3 前端守卫+注入→T4 验证。'
+  blockers: []
 - id: question-options-omitempty
   track: hotfix
   description: 'agent 提问卡片白屏修复：零选项开放题的 options 字段被 json omitempty 吃掉(SSE+快照双路径)，前端 QuestionPrompt.vue 裸读 options.length → TypeError 整卡崩溃 → 暂停的 run 看似永久卡死(dev run 147)。修复=后端两结构体去 omitempty 永远输出 "options":[](发射路径已是 make 非 nil)+前端 currentOptions computed ?? [] 归一化容忍缺失。'
