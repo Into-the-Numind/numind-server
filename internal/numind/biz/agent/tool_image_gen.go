@@ -77,7 +77,7 @@ func (t *imageGenTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		return t.returnSoftError("invalid image_gen input format: %v", err)
 	}
 	if strings.TrimSpace(inp.Prompt) == "" {
-		return t.returnSoftError("prompt is required for image generation")
+		return t.returnSoftError("image_gen: prompt is required")
 	}
 
 	// 2. 计费：生成前预扣（nil creditService → 跳过计费，保持测试行为）。

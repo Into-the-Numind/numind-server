@@ -96,7 +96,7 @@ func (t *webFetchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	// Malformed model input must come back soft: a non-nil Go error here is a
 	// NodeRunError that kills the whole run (dev run 136: bool prompt).
 	if err := json.Unmarshal(input, &in); err != nil {
-		return t.returnSoftError("", "web_fetch: invalid input: %v", err)
+		return t.returnSoftError("输入格式错误", "web_fetch: invalid input: %v", err)
 	}
 
 	// Reject COS agent-attachment URLs — they are private uploads, not web
