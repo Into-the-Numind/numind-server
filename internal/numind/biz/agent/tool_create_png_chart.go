@@ -241,7 +241,8 @@ func (t *createPNGChartTool) Execute(ctx context.Context, input ToolInput) (Tool
 	// Upload via shared COS helper (task 4.2, same package).
 	result, err := uploadGeneratedFile(ctx, pngBytes, "image/png", outFilename, "png")
 	if err != nil {
-		return chartFriendlyError("create_png_chart: upload failed: " + err.Error()), err
+		// Recoverable upload outage must stay soft (tool-soft-error-sweep).
+		return chartFriendlyError("create_png_chart: upload failed: " + err.Error()), nil
 	}
 
 	// Augment the result with chart-specific fields.
