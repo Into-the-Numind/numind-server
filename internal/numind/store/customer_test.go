@@ -103,12 +103,13 @@ func newPermissionTestDB(t *testing.T) *gorm.DB {
 	// sop_template —— 对齐 model.SopTemplate 最小字段（CountActiveAuthorizedSopTemplates 用）
 	require.NoError(t, db.Exec(`
         CREATE TABLE sop_template (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at DATETIME,
-            updated_at DATETIME,
-            deleted_at DATETIME,
-            name       TEXT NOT NULL DEFAULT '',
-            status     TEXT NOT NULL DEFAULT 'draft'
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at     DATETIME,
+            updated_at     DATETIME,
+            deleted_at     DATETIME,
+            name           TEXT NOT NULL DEFAULT '',
+            status         TEXT NOT NULL DEFAULT 'draft',
+            publish_status TEXT NOT NULL DEFAULT 'published'
         )`).Error)
 
 	sqlDB, err := db.DB()

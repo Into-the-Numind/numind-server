@@ -1,5 +1,24 @@
 schema_version: '2.0'
 features:
+- id: customer-list-booster-tplcount
+  track: hotfix
+  description: '客户管理页两处改动：(1) BUG——「已授权模板」列对子账号 CountActiveAuthorizedSopTemplates / GetAuthorizedTemplates 只过滤 status=active 漏了 publish_status=published，残留对已下架(draft)模板的白名单行被多计，prod 莫小派(parent 30：3发布SOP+8助手+1销售=12 宇宙)下约20个子账号显示 13。修复对齐 published 口径，最大回 12。(2) FEATURE——「额度」列后新增「加量包」列，显示 user_booster_balance.credits_remaining（SubUserInfo.booster_balance；GetMembershipStateBatch 批量拉 BoosterTotal）。'
+  classification_reason: 'Hotfix: 无 DB schema 变更/无新 API 端点(扩展既有 /v1/customers/sub-users 响应)/无新外部服务/读-only 展示非扣费路径。文件略超 3(跨 server+web-v3)但实质 Hotfix。Bug-from-Customer(Rule 11): 首 commit=失败复现测试，prod DB 已取证根因。'
+  status: completed
+  stage: H3
+  repos:
+    numind-server: fix/customer-list-booster-tplcount
+    numind-web-v3: fix/customer-list-booster-tplcount
+  worktrees:
+    numind-server: /private/tmp/wt-customer-list-booster-tplcount-numind-server
+    numind-web-v3: /private/tmp/wt-customer-list-booster-tplcount-numind-web-v3
+  progress:
+    total_tasks: 2
+    completed_tasks: 2
+    reviewed_tasks: 2
+  decisions:
+  - 'H1 (ai 2026-06-12): 用户 push back 否定「纯标签语义」假设 → 查 prod DB 取证：子账号 SOP 计数漏 publish_status 过滤，多计 1 个 active+draft 模板。双 Sonnet reviewer PASS(0 P0)。booster 列复用 GetMembershipStateBatch(仅 ListSubUsers 调用，SubUserInfo 仅此一处构建，无 /v1/users/children 泄漏)。'
+  blockers: []
 - id: tool-soft-error-sweep
   track: standard
   description: 'agent 工具层 soft error 全量清扫：凡模型输入导致的错误(unmarshal/缺字段/越界)及可恢复运行期错误(检索/上传/存储失败)一律返回 ToolResult+nil error 让模型自我纠正, 不再 NodeRunError 杀整个 run。起因: dev run 136(web_fetch bool prompt)/137(image_gen 缺 prompt) 被硬错误杀死(aihubmix 路由期模型频发烂参数)。对照: 已加固的 web_search/ask_user_question 让 run 143/145 自愈存活。业界基准: Claude Code 全部工具参数错误包成 is_error tool_result 永不终止会话(2026-06-12 源码实证)。'

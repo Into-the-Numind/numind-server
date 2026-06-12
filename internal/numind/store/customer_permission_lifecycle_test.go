@@ -854,6 +854,68 @@ func TestGetAuthorizedTemplates_ExcludesSoftDeletedPerms(t *testing.T) {
 		"revoke（软删除）后的模板不应出现在授权列表中")
 }
 
+// insertDraftTemplate 插入一个 status='active' 但 publish_status='draft'（已下架）的模板。
+func insertDraftTemplate(t *testing.T, db *gorm.DB, name string, creatorID uint) uint {
+	t.Helper()
+	now := time.Now()
+	res := db.Exec(
+		`INSERT INTO sop_template (created_at, updated_at, name, creator_user_id, status, publish_status)
+		 VALUES (?, ?, ?, ?, 'active', 'draft')`,
+		now, now, name, creatorID,
+	)
+	require.NoError(t, res.Error)
+	var id uint
+	require.NoError(t, db.Raw("SELECT last_insert_rowid()").Scan(&id).Error)
+	return id
+}
+
+// TestCountActiveAuthorizedSopTemplates_ExcludesUnpublished 复现客户 bug 的 store 层根因：
+// 子账号白名单里既有已发布模板，又有 active 但已下架(draft)的模板时，计数应只算已发布的。
+// 修复前 CountActiveAuthorizedSopTemplates 只过滤 status='active' → 返回 2（FAIL）；
+// 修复后补 publish_status='published' → 返回 1。
+func TestCountActiveAuthorizedSopTemplates_ExcludesUnpublished(t *testing.T) {
+	db := newFullPermissionTestDB(t)
+	cs := NewCustomerStore(db)
+	ctx := context.Background()
+
+	parent := insertTestUser(t, db, nil)
+	child := insertTestUser(t, db, &parent)
+
+	pub := insertTestTemplate(t, db, "Published", parent)
+	draft := insertDraftTemplate(t, db, "Unpublished", parent)
+	require.NoError(t, cs.GrantTemplates(ctx, parent, child, []uint{pub, draft}))
+
+	n, err := cs.CountActiveAuthorizedSopTemplates(ctx, child)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, n,
+		"已授权模板计数应只算已发布模板，排除 active 但未发布(draft)的草稿")
+}
+
+// TestGetAuthorizedTemplates_ExcludesUnpublished 守卫详情页授权模板列表同样排除已下架模板，
+// 与列表计数口径一致。
+func TestGetAuthorizedTemplates_ExcludesUnpublished(t *testing.T) {
+	db := newFullPermissionTestDB(t)
+	cs := NewCustomerStore(db)
+	ctx := context.Background()
+
+	parent := insertTestUser(t, db, nil)
+	child := insertTestUser(t, db, &parent)
+
+	pub := insertTestTemplate(t, db, "Published", parent)
+	draft := insertDraftTemplate(t, db, "Unpublished", parent)
+	require.NoError(t, cs.GrantTemplates(ctx, parent, child, []uint{pub, draft}))
+
+	templates, err := cs.GetAuthorizedTemplates(ctx, child)
+	require.NoError(t, err)
+
+	var ids []uint
+	for _, tpl := range templates {
+		ids = append(ids, tpl.ID)
+	}
+	assert.Equal(t, []uint{pub}, ids,
+		"详情页授权模板列表应排除 active 但未发布(draft)的草稿模板")
+}
+
 // ============================================================================
 // ListUserTemplatePermissions — 权限列表查询验证
 // ============================================================================

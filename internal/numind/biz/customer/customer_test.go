@@ -800,3 +800,37 @@ func TestListSubUsers_ChildRowStaysWhitelist(t *testing.T) {
 	assert.Equal(t, 1, resp.SubUsers[childIdx].AuthorizedTemplates,
 		"子账户行应按白名单计数（仅被授权的 1 个 SOP）")
 }
+
+// TestListSubUsers_ChildRowExcludesUnpublishedTemplate 复现客户上报 bug（prod 莫小派）：
+// 「已授权模板」对子账号多计 1。根因——子账号被授权过一个模板，该模板后来被下架
+// （status 仍 'active' 但 publish_status 变 'draft'），白名单权限行残留。计数查询
+// CountActiveAuthorizedSopTemplates 只过滤 status='active'，漏了 publish_status='published'，
+// 于是把这个已下架模板也计入，子账号数字超过「父账号可见模板宇宙」。
+//
+// 期望：已授权模板只计入「已发布(published)」模板，排除 active 但未发布的草稿。
+// 修复前 = 2（FAIL）；修复后 = 1。
+func TestListSubUsers_ChildRowExcludesUnpublishedTemplate(t *testing.T) {
+	db, biz := newBizUnderTest(t)
+	parent := insertBizUser(t, db, nil)
+	child := insertBizUser(t, db, &parent)
+
+	// 一个已发布模板 + 一个 active 但已下架(draft)的模板，两者都在子账号白名单里
+	pub := insertBizSopTemplate(t, db, parent, "pubSop", "active", "published")
+	draft := insertBizSopTemplate(t, db, parent, "draftSop", "active", "draft")
+	grantBizTemplate(t, db, parent, child, pub)
+	grantBizTemplate(t, db, parent, child, draft)
+
+	resp, err := biz.ListSubUsers(context.Background(), parent, 0, 10)
+	require.NoError(t, err)
+
+	childIdx := -1
+	for i := range resp.SubUsers {
+		if resp.SubUsers[i].UserID == child {
+			childIdx = i
+			break
+		}
+	}
+	require.GreaterOrEqual(t, childIdx, 0, "应能在列表中找到子账户行")
+	assert.Equal(t, 1, resp.SubUsers[childIdx].AuthorizedTemplates,
+		"已授权模板应只计入已发布模板，排除 active 但未发布(draft)的草稿模板")
+}

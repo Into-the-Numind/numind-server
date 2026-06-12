@@ -242,6 +242,9 @@ type BatchMembershipState struct {
 	SubscriptionExpiresAt *string
 	HasUsedTrial          bool
 	CycleRemaining        int64
+	// BoosterTotal 加量包剩余积分（user_booster_balance.credits_remaining，聚合余额）。
+	// 与 CycleRemaining（订阅+trial）分开，前端客户列表「加量包」列展示用。
+	BoosterTotal int64
 }
 
 // GetMembershipStateBatch computes membership state for multiple users in two
@@ -299,6 +302,18 @@ func (s *MembershipService) GetMembershipStateBatch(ctx context.Context, userIDs
 			st.HasActiveTrial = true
 			exp := trial.ExpiresAt.Format(time.RFC3339)
 			st.TrialExpiresAt = &exp
+		}
+	}
+
+	// Batch-fetch booster balances（加量包剩余积分，单聚合行 / user）。
+	// 缺行视为 0（用户从未购买过加量包），与 GetBalance 语义一致。
+	var boosters []model.UserBoosterBalance
+	if err := s.db.WithContext(ctx).Where("user_id IN ?", userIDs).Find(&boosters).Error; err != nil {
+		return nil, fmt.Errorf("GetMembershipStateBatch: fetch boosters: %w", err)
+	}
+	for i := range boosters {
+		if st := result[boosters[i].UserID]; st != nil {
+			st.BoosterTotal = boosters[i].CreditsRemaining
 		}
 	}
 
