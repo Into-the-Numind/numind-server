@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"time"
 )
 
@@ -45,8 +44,9 @@ type createJSONInput struct {
 
 func (t *createJSONTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	var in createJSONInput
+	// Model-input and recoverable failures stay soft (tool-soft-error-sweep).
 	if err := json.Unmarshal(input, &in); err != nil {
-		return nil, fmt.Errorf("create_json: invalid input: %w", err)
+		return softToolError("create_json", "invalid input: %v", err)
 	}
 
 	filename := in.Filename
@@ -64,8 +64,12 @@ func (t *createJSONTool) Execute(ctx context.Context, input ToolInput) (ToolResu
 		out, err = json.Marshal(in.Data)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("create_json: marshal data: %w", err)
+		return softToolError("create_json", "marshal data: %v", err)
 	}
 
-	return uploadGeneratedFile(ctx, out, "application/json; charset=utf-8", filename, "json")
+	result, uploadErr := uploadGeneratedFile(ctx, out, "application/json; charset=utf-8", filename, "json")
+	if uploadErr != nil {
+		return softToolError("create_json", "upload failed: %v", uploadErr)
+	}
+	return result, nil
 }

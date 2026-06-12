@@ -98,11 +98,12 @@ func TestCreateCSVTool_Execute_EmptyData(t *testing.T) {
 	tool := &createCSVTool{}
 	ctx := context.Background()
 
-	// nil data (omitted field) → empty slice after unmarshal → should error
+	// tool-soft-error-sweep: empty data is model-input-derived → SOFT error
+	// (nil Go error) so the run survives and the LLM can self-correct.
 	input := ToolInput(`{"data": []}`)
-	_, err := tool.Execute(ctx, input)
-	require.Error(t, err)
-	assert.Contains(t, strings.ToLower(err.Error()), "empty")
+	result, err := tool.Execute(ctx, input)
+	require.NoError(t, err)
+	assert.Contains(t, strings.ToLower(string(result)), "empty")
 }
 
 func TestCreateCSVTool_Execute_AutoFilename(t *testing.T) {

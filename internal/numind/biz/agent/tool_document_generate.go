@@ -18,7 +18,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 )
 
 type documentGenerateTool struct {
@@ -35,7 +34,7 @@ var _ FullTool = (*documentGenerateTool)(nil)
 
 func (t *documentGenerateTool) Name() string { return "document_generate" }
 func (t *documentGenerateTool) Description() string {
-	return "[stub] Generate a long-form document. Requires aiservice task registration (planned for #12 billing-integration)."
+	return "[stub] Generate a long-form document. Currently unavailable — do not call this tool."
 }
 func (t *documentGenerateTool) UserFacingName() string  { return "文档生成" }
 func (t *documentGenerateTool) NarrationVerb() string   { return "生成" }
@@ -62,13 +61,15 @@ func (t *documentGenerateTool) InputSchema() json.RawMessage {
 func (t *documentGenerateTool) Execute(_ context.Context, input ToolInput) (ToolResult, error) {
 	// 即使 IsEnabled=false 防护被绕过，Execute 也返回明确 error。
 	var in documentGenerateInput
+	// Stub tool: every failure stays soft — even a well-formed call must not
+	// kill the run (tool-soft-error-sweep).
 	if err := json.Unmarshal(input, &in); err != nil {
-		return nil, err
+		return softToolError("document_generate", "invalid input: %v", err)
 	}
 	if in.Prompt == "" {
-		return nil, errors.New("document_generate: prompt is required")
+		return softToolError("document_generate", "prompt is required")
 	}
-	return nil, errors.New("document_generate: aiservice task 'agent.document_generate' not registered " +
-		"(blocked on #12 agent-mode-billing-integration adding profile.AgentDocumentGenerate + " +
-		"seed_pricing_rules.sql qwen-long pricing row)")
+	// Keep engineering detail (task registration, blocking issue) out of the
+	// LLM-visible payload (T3 review P1); the stub status lives in code comments.
+	return softToolError("document_generate", "此工具当前不可用，请勿重试，请改用其他工具完成任务")
 }

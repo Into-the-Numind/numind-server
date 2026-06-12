@@ -76,10 +76,12 @@ func TestCreateHTMLTool_Execute_CustomTemplate(t *testing.T) {
 func TestCreateHTMLTool_Execute_BadTemplate(t *testing.T) {
 	tool := &createHTMLTool{}
 	ctx := context.Background()
+	// tool-soft-error-sweep: a model-supplied bad template is input-derived →
+	// SOFT error (nil Go error) so the run survives.
 	input := makeHTMLInput(t, "content", "{{.unclosed", "", "bad.html")
-	_, err := tool.Execute(ctx, input)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "template parse error")
+	result, err := tool.Execute(ctx, input)
+	require.NoError(t, err)
+	assert.Contains(t, string(result), "template parse error")
 }
 
 func TestCreateHTMLTool_Execute_AutoFilename(t *testing.T) {

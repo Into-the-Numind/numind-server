@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
-	"fmt"
 	"time"
 )
 
@@ -48,12 +47,14 @@ type createCSVInput struct {
 
 func (t *createCSVTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	var in createCSVInput
+	// Model-input and recoverable failures stay soft: a non-nil Go error is a
+	// NodeRunError that kills the whole agent run (tool-soft-error-sweep).
 	if err := json.Unmarshal(input, &in); err != nil {
-		return nil, fmt.Errorf("create_csv: invalid input: %w", err)
+		return softToolError("create_csv", "invalid input: %v", err)
 	}
 
 	if len(in.Data) == 0 {
-		return nil, fmt.Errorf("create_csv: data is empty — provide at least one row")
+		return softToolError("create_csv", "data is empty — provide at least one row")
 	}
 
 	filename := in.Filename
@@ -71,7 +72,7 @@ func (t *createCSVTool) Execute(ctx context.Context, input ToolInput) (ToolResul
 	}
 	if len(escapedHeaders) > 0 {
 		if err := w.Write(escapedHeaders); err != nil {
-			return nil, fmt.Errorf("create_csv: write headers: %w", err)
+			return softToolError("create_csv", "write headers: %v", err)
 		}
 	}
 	for _, row := range in.Data {
@@ -82,19 +83,23 @@ func (t *createCSVTool) Execute(ctx context.Context, input ToolInput) (ToolResul
 			escapedRow[j] = escapeCSVFormula(cell)
 		}
 		if err := w.Write(escapedRow); err != nil {
-			return nil, fmt.Errorf("create_csv: write row: %w", err)
+			return softToolError("create_csv", "write row: %v", err)
 		}
 	}
 	w.Flush()
 	if err := w.Error(); err != nil {
-		return nil, fmt.Errorf("create_csv: flush: %w", err)
+		return softToolError("create_csv", "flush: %v", err)
 	}
 
 	// Prepend UTF-8 BOM so Excel opens the file correctly without encoding prompts.
 	bom := []byte{0xEF, 0xBB, 0xBF}
 	data := append(bom, buf.Bytes()...)
 
-	return uploadGeneratedFile(ctx, data, "text/csv; charset=utf-8", filename, "csv")
+	result, err := uploadGeneratedFile(ctx, data, "text/csv; charset=utf-8", filename, "csv")
+	if err != nil {
+		return softToolError("create_csv", "upload failed: %v", err)
+	}
+	return result, nil
 }
 
 // escapeCSVFormula prevents CSV formula injection by prefixing cells that start
