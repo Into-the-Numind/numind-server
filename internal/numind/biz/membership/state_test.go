@@ -137,6 +137,30 @@ func TestGetMembershipState_ProOnly(t *testing.T) {
 	assert.Nil(t, state.TrialExpiresAt)
 }
 
+// TestGetMembershipStateBatch_IncludesBoosterTotal 验证批量接口把
+// user_booster_balance 的剩余积分填到 BoosterTotal（客户列表「加量包」列数据源）。
+// 缺 booster 行的用户应为 0。
+func TestGetMembershipStateBatch_IncludesBoosterTotal(t *testing.T) {
+	db := newTestDB(t)
+	svc := biz.NewMembershipService(db)
+	ctx := context.Background()
+
+	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+	seedBooster(t, db, 9101, 600)
+	seedBooster(t, db, 9102, 1200)
+	// 9103 无 booster 行 → 期望 0
+
+	out, err := svc.GetMembershipStateBatch(ctx, []uint64{9101, 9102, 9103}, now)
+	require.NoError(t, err)
+
+	require.NotNil(t, out[9101])
+	assert.Equal(t, int64(600), out[9101].BoosterTotal)
+	require.NotNil(t, out[9102])
+	assert.Equal(t, int64(1200), out[9102].BoosterTotal)
+	require.NotNil(t, out[9103])
+	assert.Equal(t, int64(0), out[9103].BoosterTotal, "无 booster 行应为 0")
+}
+
 // TestGetMembershipState_TrialOverlapsPro is the key US-2 test:
 // when BOTH trial and subscription are active, DisplayState must be "trial".
 // (BoosterFrozen=false because at least one membership is active.)

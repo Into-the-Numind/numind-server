@@ -17,13 +17,14 @@ type SubUserInfo struct {
 	Avatar              string `json:"avatar"`
 	TotalSopRuns        int    `json:"total_sop_runs"`
 	AuthorizedTemplates int    `json:"authorized_templates"`
-	CreditBalance       int64  `json:"credit_balance"` // 额度余额（total balance incl. booster）
+	CreditBalance       int64  `json:"credit_balance"` // 额度余额（= cycle_remaining，订阅+trial，不含 booster）
 	CreditExpires       string `json:"credit_expires"` // 最晚额度包到期时间
 
 	// Task 20 fields: 前端 GrantMembershipModal 双状态 + trial tab graying
 	MembershipState SubUserMembershipState `json:"membership_state"`
 	HasUsedTrial    bool                   `json:"has_used_trial"`  // 是否曾用过 trial 包（任意状态）
 	CycleRemaining  int64                  `json:"cycle_remaining"` // 订阅+trial 剩余积分（不含 booster）
+	BoosterBalance  int64                  `json:"booster_balance"` // 加量包剩余积分（user_booster_balance）
 }
 
 // ListSubUsersResponse 获取子客户列表响应
