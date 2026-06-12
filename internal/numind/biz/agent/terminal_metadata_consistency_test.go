@@ -89,7 +89,7 @@ func TestRunStream_TerminalMetadata_PersistsLLMError(t *testing.T) {
 	finalResult, finalErr := r.finalizeRun(
 		context.Background(), run, st, time.Now(), finalText,
 		"", nil, false, 0, false, RunRequest{UserID: 1, Input: "trigger error"},
-		make(chan *PermissionDenialDetail, 1), consumeErr, "sess-meta-test",
+		make(chan *PermissionDenialDetail, 1), consumeErr, "sess-meta-test", nil,
 	)
 	// finalizeRun may return the consumeErr or nil depending on WriteTurn success.
 	_ = finalErr

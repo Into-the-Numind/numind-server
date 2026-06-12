@@ -596,7 +596,7 @@ func (r *agentRunner) RunStream(
 		emitStreamErrorEvents(ch, run.ID, streamErr, TerminalModelError, startTime)
 		errSt := &LoopState{TerminalReason: TerminalModelError}
 		applyHookOverride(effectiveHooks, errSt)
-		if _, fErr := r.finalizeRun(ctx, run, errSt, startTime, "", "", nil, false, skillVer, isTrivial, req, permDenialSink, streamErr, sessionID); fErr != nil {
+		if _, fErr := r.finalizeRun(ctx, run, errSt, startTime, "", "", nil, false, skillVer, isTrivial, req, permDenialSink, streamErr, sessionID, nil); fErr != nil {
 			log.Warnw("AgentRunner.RunStream finalizeRun failed on Stream error", "agent_run_id", run.ID, "error", fErr)
 		}
 		return nil, fmt.Errorf("AgentRunner.RunStream einoAgent.Stream: %w", streamErr)
@@ -623,7 +623,7 @@ func (r *agentRunner) RunStream(
 		if result != nil {
 			finalReasoning = result.FinalReasoning
 		}
-		finalResult, finalErr := r.finalizeRun(ctx, run, st, startTime, finalText, finalReasoning, nil, false, skillVer, isTrivial, req, permDenialSink, consumeErr, sessionID)
+		finalResult, finalErr := r.finalizeRun(ctx, run, st, startTime, finalText, finalReasoning, nil, false, skillVer, isTrivial, req, permDenialSink, consumeErr, sessionID, nil)
 		if finalErr != nil {
 			return finalResult, finalErr
 		}
@@ -663,7 +663,7 @@ func (r *agentRunner) RunStream(
 	if result != nil {
 		finalReasoning = result.FinalReasoning
 	}
-	return r.finalizeRun(ctx, run, st, startTime, finalText, finalReasoning, nil, false, skillVer, isTrivial, req, permDenialSink, nil, sessionID)
+	return r.finalizeRun(ctx, run, st, startTime, finalText, finalReasoning, nil, false, skillVer, isTrivial, req, permDenialSink, nil, sessionID, nil)
 }
 
 // applyHookOverride checks if the effectiveHooks.Registry recorded a non-Continue
