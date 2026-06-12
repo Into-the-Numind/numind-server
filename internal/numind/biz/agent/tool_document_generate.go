@@ -69,7 +69,7 @@ func (t *documentGenerateTool) Execute(_ context.Context, input ToolInput) (Tool
 	if in.Prompt == "" {
 		return softToolError("document_generate", "prompt is required")
 	}
-	return softToolError("document_generate", "此工具当前不可用，请勿重试 "+
-		"(aiservice task 'agent.document_generate' not registered; blocked on #12 "+
-		"agent-mode-billing-integration)")
+	// Keep engineering detail (task registration, blocking issue) out of the
+	// LLM-visible payload (T3 review P1); the stub status lives in code comments.
+	return softToolError("document_generate", "此工具当前不可用，请勿重试，请改用其他工具完成任务")
 }

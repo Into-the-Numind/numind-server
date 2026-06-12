@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/retrieval/retrieve"
 )
@@ -111,7 +112,9 @@ func (t *kbSearchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	res, err := t.retriever.Retrieve(ctx, in.Query, scope, opts)
 	if err != nil {
 		// Transient retrieval outage (vector store / ES down) must not kill the
-		// run; the LLM can retry or continue without KB grounding.
+		// run; the LLM can retry or continue without KB grounding. Warn so a
+		// sustained outage is still visible to ops (T3 review P1).
+		log.Warnw("kb_search: retrieval failed", "error", err)
 		return softToolError("kb_search", "retrieval failed: %v", err)
 	}
 

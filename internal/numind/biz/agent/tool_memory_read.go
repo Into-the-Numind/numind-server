@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"numind-server/internal/numind/biz/memory"
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 )
 
@@ -88,13 +89,16 @@ func (t *memoryReadTool) Execute(ctx context.Context, input ToolInput) (ToolResu
 
 	userID, ok := middleware.UserIDFromCtx(ctx)
 	if !ok {
-		return softToolError("memory_read", "memory unavailable: no user in context (system wiring)")
+		// Wiring gap — soft for the LLM, Warn for ops (T3 review P1).
+		log.Warnw("memory_read: no user in context — runner wiring bug")
+		return softToolError("memory_read", "memory unavailable: no user in context")
 	}
 
 	var items []memory.MemoryItem
 	if in.Key != "" {
 		item, err := t.notepad.Read(ctx, userID, in.Key)
 		if err != nil {
+			log.Warnw("memory_read: notepad read failed", "key", in.Key, "error", err)
 			return softToolError("memory_read", "read failed: %v", err)
 		}
 		if item != nil {
@@ -103,6 +107,7 @@ func (t *memoryReadTool) Execute(ctx context.Context, input ToolInput) (ToolResu
 	} else if in.Kind != "" {
 		list, err := t.notepad.ListByKind(ctx, userID, memory.MemoryKind(in.Kind), in.Limit)
 		if err != nil {
+			log.Warnw("memory_read: notepad list failed", "kind", in.Kind, "error", err)
 			return softToolError("memory_read", "list failed: %v", err)
 		}
 		items = list

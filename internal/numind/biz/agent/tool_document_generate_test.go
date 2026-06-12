@@ -80,8 +80,8 @@ func TestDocumentGenerateTool_StubBehavior(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected soft stub error, got hard error: %v", err)
 	}
-	if !contains(string(result), "not registered") {
-		t.Errorf("soft error should mention task not registered, got: %s", result)
+	if !contains(string(result), "请勿重试") {
+		t.Errorf("soft stub error must carry the no-retry instruction, got: %s", result)
 	}
 }
 

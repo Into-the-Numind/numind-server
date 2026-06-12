@@ -75,7 +75,9 @@ func TestMemoryWriteTool_JSONInvalid(t *testing.T) {
 	assert.Contains(t, string(result), "invalid input")
 }
 
-// TestMemoryWriteTool_UserMissing verifies missing userID in context returns ErrMemoryUserRequired.
+// TestMemoryWriteTool_UserMissing verifies missing userID in context returns a
+// soft "memory unavailable" error (tool-soft-error-sweep: wiring gaps must not
+// kill the run; visibility comes from the Warnw log).
 func TestMemoryWriteTool_UserMissing(t *testing.T) {
 	tool, _ := makeMemoryWriteTool(t)
 
