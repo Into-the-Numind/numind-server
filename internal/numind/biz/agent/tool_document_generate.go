@@ -34,7 +34,7 @@ var _ FullTool = (*documentGenerateTool)(nil)
 
 func (t *documentGenerateTool) Name() string { return "document_generate" }
 func (t *documentGenerateTool) Description() string {
-	return "[stub] Generate a long-form document. Requires aiservice task registration (planned for #12 billing-integration)."
+	return "[stub] Generate a long-form document. Currently unavailable — do not call this tool."
 }
 func (t *documentGenerateTool) UserFacingName() string  { return "文档生成" }
 func (t *documentGenerateTool) NarrationVerb() string   { return "生成" }
