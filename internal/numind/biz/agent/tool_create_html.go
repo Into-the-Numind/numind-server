@@ -89,8 +89,10 @@ func (t *createHTMLTool) Execute(ctx context.Context, input ToolInput) (ToolResu
 
 	htmlBytes, err := renderHTML(in)
 	if err != nil {
-		// Template parse/render failures are input-driven (model-supplied template).
-		return softToolError("create_html", "%v", err)
+		// Template parse/render failures are input-driven (model-supplied
+		// template). renderHTML errors already carry the "create_html: " prefix;
+		// trim it so softToolError does not double it.
+		return softToolError("create_html", "%s", strings.TrimPrefix(err.Error(), "create_html: "))
 	}
 
 	result, uploadErr := uploadGeneratedFile(ctx, htmlBytes, "text/html; charset=utf-8", filename, "html")
