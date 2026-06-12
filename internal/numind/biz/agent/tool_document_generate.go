@@ -18,7 +18,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 )
 
 type documentGenerateTool struct {
@@ -62,13 +61,15 @@ func (t *documentGenerateTool) InputSchema() json.RawMessage {
 func (t *documentGenerateTool) Execute(_ context.Context, input ToolInput) (ToolResult, error) {
 	// 即使 IsEnabled=false 防护被绕过，Execute 也返回明确 error。
 	var in documentGenerateInput
+	// Stub tool: every failure stays soft — even a well-formed call must not
+	// kill the run (tool-soft-error-sweep).
 	if err := json.Unmarshal(input, &in); err != nil {
-		return nil, err
+		return softToolError("document_generate", "invalid input: %v", err)
 	}
 	if in.Prompt == "" {
-		return nil, errors.New("document_generate: prompt is required")
+		return softToolError("document_generate", "prompt is required")
 	}
-	return nil, errors.New("document_generate: aiservice task 'agent.document_generate' not registered " +
-		"(blocked on #12 agent-mode-billing-integration adding profile.AgentDocumentGenerate + " +
-		"seed_pricing_rules.sql qwen-long pricing row)")
+	return softToolError("document_generate", "此工具当前不可用，请勿重试 "+
+		"(aiservice task 'agent.document_generate' not registered; blocked on #12 "+
+		"agent-mode-billing-integration)")
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"numind-server/internal/pkg/middleware"
@@ -126,18 +127,27 @@ func TestKbSearchTool_Execute_PropagatesError(t *testing.T) {
 	mock := &mockKbRetriever{err: errors.New("retrieve error")}
 	tool := &kbSearchTool{retriever: mock}
 
+	// tool-soft-error-sweep: retrieval outages surface as SOFT errors so the
+	// run survives; the payload still carries the failure for the LLM.
 	input, _ := json.Marshal(kbSearchInput{Query: "q"})
-	_, err := tool.Execute(context.Background(), ToolInput(input))
-	if err == nil {
-		t.Error("expected error to be propagated")
+	result, err := tool.Execute(context.Background(), ToolInput(input))
+	if err != nil {
+		t.Fatalf("expected soft error, got hard error: %v", err)
+	}
+	if !strings.Contains(string(result), "retrieval failed") {
+		t.Errorf("soft error should mention retrieval failure, got: %s", result)
 	}
 }
 
 func TestKbSearchTool_Execute_BadJSON(t *testing.T) {
 	tool := &kbSearchTool{retriever: &mockKbRetriever{}}
-	_, err := tool.Execute(context.Background(), ToolInput([]byte("not-json")))
-	if err == nil {
-		t.Error("expected JSON unmarshal error")
+	// tool-soft-error-sweep: malformed input is a SOFT error.
+	result, err := tool.Execute(context.Background(), ToolInput([]byte("not-json")))
+	if err != nil {
+		t.Fatalf("expected soft error for bad JSON, got hard error: %v", err)
+	}
+	if !strings.Contains(string(result), "invalid input") {
+		t.Errorf("soft error should mention invalid input, got: %s", result)
 	}
 }
 

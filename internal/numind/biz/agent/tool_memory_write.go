@@ -64,13 +64,17 @@ func (t *memoryWriteTool) InputSchema() json.RawMessage {
 // calls Notepad.Write to upsert the L2 memory entry.
 func (t *memoryWriteTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	var in memoryWriteToolInput
+	// Model-input and recoverable failures stay soft: a non-nil Go error is a
+	// NodeRunError that kills the whole agent run (tool-soft-error-sweep).
 	if err := json.Unmarshal(input, &in); err != nil {
-		return nil, err
+		return softToolError("memory_write", "invalid input: %v", err)
 	}
 
 	userID, ok := middleware.UserIDFromCtx(ctx)
 	if !ok {
-		return nil, memory.ErrMemoryUserRequired
+		// System wiring gap (runner did not inject the user) — still soft: a
+		// missing memory write must not abort the whole research run.
+		return softToolError("memory_write", "memory unavailable: no user in context (system wiring)")
 	}
 
 	// #7 memory-system: read source_agent_definition_id from context.
@@ -85,7 +89,9 @@ func (t *memoryWriteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 		SourceType:              memory.SourceAgentTool,
 		SourceAgentDefinitionID: sourceAgentDefID,
 	}); err != nil {
-		return nil, err
+		// Includes Notepad input validation (bad kind / oversized key) and
+		// transient store failures — both recoverable for the LLM.
+		return softToolError("memory_write", "write failed: %v", err)
 	}
 
 	return ToolResult(`{"ok": true}`), nil

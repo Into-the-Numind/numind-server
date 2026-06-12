@@ -8,18 +8,26 @@ import (
 
 func TestDocumentGenerateTool_Execute_EmptyPromptReturnsError(t *testing.T) {
 	tool := &documentGenerateTool{}
+	// tool-soft-error-sweep: now a SOFT error (nil Go error) so the run survives.
 	input, _ := json.Marshal(documentGenerateInput{Prompt: ""})
-	_, err := tool.Execute(context.Background(), ToolInput(input))
-	if err == nil {
-		t.Error("expected error for empty prompt")
+	result, err := tool.Execute(context.Background(), ToolInput(input))
+	if err != nil {
+		t.Fatalf("expected soft error for empty prompt, got hard error: %v", err)
+	}
+	if !contains(string(result), "prompt is required") {
+		t.Errorf("soft error should mention missing prompt, got: %s", result)
 	}
 }
 
 func TestDocumentGenerateTool_Execute_BadJSON(t *testing.T) {
 	tool := &documentGenerateTool{}
-	_, err := tool.Execute(context.Background(), ToolInput([]byte("not-json")))
-	if err == nil {
-		t.Error("expected JSON unmarshal error")
+	// tool-soft-error-sweep: now a SOFT error (nil Go error) so the run survives.
+	result, err := tool.Execute(context.Background(), ToolInput([]byte("not-json")))
+	if err != nil {
+		t.Fatalf("expected soft error for bad JSON, got hard error: %v", err)
+	}
+	if !contains(string(result), "invalid input") {
+		t.Errorf("soft error should mention invalid input, got: %s", result)
 	}
 }
 
@@ -65,14 +73,15 @@ func TestDocumentGenerateTool_StubBehavior(t *testing.T) {
 	if tool.IsEnabled(ToolConfig{}) {
 		t.Error("stub document_generate must be IsEnabled=false by default")
 	}
-	// Execute with valid prompt: still errors with registration message
+	// Execute with valid prompt: stub message comes back SOFT so the run
+	// survives even if IsEnabled gating is bypassed (tool-soft-error-sweep).
 	raw, _ := json.Marshal(documentGenerateInput{Prompt: "Hello"})
-	_, err := tool.Execute(context.Background(), ToolInput(raw))
-	if err == nil {
-		t.Fatal("expected stub error from Execute")
+	result, err := tool.Execute(context.Background(), ToolInput(raw))
+	if err != nil {
+		t.Fatalf("expected soft stub error, got hard error: %v", err)
 	}
-	if !contains(err.Error(), "not registered") {
-		t.Errorf("error should mention task not registered, got: %v", err)
+	if !contains(string(result), "not registered") {
+		t.Errorf("soft error should mention task not registered, got: %s", result)
 	}
 }
 

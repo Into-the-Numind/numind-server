@@ -76,8 +76,9 @@ func (t *memoryReadTool) InputSchema() json.RawMessage {
 // before being returned so the LLM receives the original content.
 func (t *memoryReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	var in memoryReadToolInput
+	// Model-input and recoverable failures stay soft (tool-soft-error-sweep).
 	if err := json.Unmarshal(input, &in); err != nil {
-		return nil, err
+		return softToolError("memory_read", "invalid input: %v", err)
 	}
 
 	// Clamp limit: <=0 or >50 → default 10.
@@ -87,14 +88,14 @@ func (t *memoryReadTool) Execute(ctx context.Context, input ToolInput) (ToolResu
 
 	userID, ok := middleware.UserIDFromCtx(ctx)
 	if !ok {
-		return nil, memory.ErrMemoryUserRequired
+		return softToolError("memory_read", "memory unavailable: no user in context (system wiring)")
 	}
 
 	var items []memory.MemoryItem
 	if in.Key != "" {
 		item, err := t.notepad.Read(ctx, userID, in.Key)
 		if err != nil {
-			return nil, err
+			return softToolError("memory_read", "read failed: %v", err)
 		}
 		if item != nil {
 			items = append(items, *item)
@@ -102,7 +103,7 @@ func (t *memoryReadTool) Execute(ctx context.Context, input ToolInput) (ToolResu
 	} else if in.Kind != "" {
 		list, err := t.notepad.ListByKind(ctx, userID, memory.MemoryKind(in.Kind), in.Limit)
 		if err != nil {
-			return nil, err
+			return softToolError("memory_read", "list failed: %v", err)
 		}
 		items = list
 	}
