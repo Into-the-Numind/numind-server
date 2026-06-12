@@ -27,7 +27,13 @@ func mergeResumeTranscript(prior json.RawMessage, turns []map[string]any) []map[
 	rest := turns
 	if len(turns) > 0 {
 		first, last := turns[0], priorTurns[len(priorTurns)-1]
-		if first["role"] == "user" && last["role"] == "user" && first["content"] == last["content"] {
+		// content may be an OAI-style []any for multimodal turns; comparing
+		// incomparable interface values with == panics. Dedup only applies to
+		// the plain-string answer message AnswerAndClear appends, so a string
+		// type-assert is both safe and sufficient (review P2).
+		firstContent, fOK := first["content"].(string)
+		lastContent, lOK := last["content"].(string)
+		if fOK && lOK && first["role"] == "user" && last["role"] == "user" && firstContent == lastContent {
 			rest = turns[1:]
 		}
 	}

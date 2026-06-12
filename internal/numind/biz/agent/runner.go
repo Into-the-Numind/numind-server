@@ -453,6 +453,9 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		// running. AnswerAndClear already flips the row on the answer path; this
 		// idempotent correction covers any other resume entry point so the run
 		// never spends its resumed leg claiming status='terminated' (dev run 148).
+		// NOTE: ended_at clearing is owned by AnswerAndClear (the sole resume
+		// entry today); a future non-answer resume entry must clear it itself
+		// (UpdateState with nil endedAt intentionally leaves the column alone).
 		if uerr := r.runStore.UpdateState(ctx, run.ID, "running", "running", nil); uerr != nil {
 			log.Warnw("AgentRunner.Run: mark resumed run running failed",
 				"agent_run_id", run.ID, "error", uerr)

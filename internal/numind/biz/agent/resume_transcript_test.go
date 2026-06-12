@@ -68,6 +68,12 @@ func TestMergeResumeTranscript(t *testing.T) {
 		assert.Len(t, got, 4)
 	})
 
+	t.Run("prior last turn has multimodal content — no panic, no dedup", func(t *testing.T) {
+		multiPrior := json.RawMessage(`[{"role":"user","content":[{"type":"text","text":"看图"}]}]`)
+		got := mergeResumeTranscript(multiPrior, leg2)
+		assert.Len(t, got, 4)
+	})
+
 	t.Run("multi-turn prior preserved verbatim", func(t *testing.T) {
 		got := mergeResumeTranscript(prior, leg2)
 		b, _ := json.Marshal(got[0:3])
