@@ -254,7 +254,12 @@ func (c *customerStore) ListUserTemplatePermissions(ctx context.Context, userID 
 	return permissions, err
 }
 
-// GetAuthorizedTemplates 获取用户已授权的所有模板
+// GetAuthorizedTemplates 获取用户已授权且仍「可用」的模板。
+//
+// 口径必须与父账号 CountVisibleTemplates、授权弹窗 ListVisibleTemplates 一致：
+// status='active' AND publish_status='published'。否则子账号若残留对一个已下架
+// (publish_status='draft') 模板的白名单行，会把它也算进来 → 「已授权模板」超过
+// 父账号可见模板宇宙（客户上报 bug，prod 莫小派多计 1）。
 func (c *customerStore) GetAuthorizedTemplates(ctx context.Context, userID uint) ([]model.SopTemplate, error) {
 	var templates []model.SopTemplate
 
@@ -262,23 +267,25 @@ func (c *customerStore) GetAuthorizedTemplates(ctx context.Context, userID uint)
 		Distinct("sop_template.*").
 		Joins("INNER JOIN user_template_permission ON user_template_permission.template_id = sop_template.id").
 		Where("user_template_permission.sub_user_id = ? AND user_template_permission.deleted_at IS NULL", userID).
+		Where("sop_template.status = ? AND sop_template.publish_status = ?", "active", "published").
 		Find(&templates).Error
 
 	return templates, err
 }
 
-// CountActiveAuthorizedSopTemplates 返回白名单内 sop_template.status='active' 的数量。
+// CountActiveAuthorizedSopTemplates 返回白名单内仍「可用」的 SOP 模板数量。
 //
-// 与 GetAuthorizedTemplates+Status=="active" 过滤等价，但走纯 COUNT 避免列拉取——
-// 列表路径每个 user 调一次，N+1 优化。GetSubUserDetail 仍用 GetAuthorizedTemplates
-// 因为详情页需要返回模板对象列表。
+// 口径 = status='active' AND publish_status='published'，与 GetAuthorizedTemplates
+// 及父账号 CountVisibleTemplates 完全一致。早期只过滤 status='active'，漏了
+// publish_status，导致已下架(draft)模板被计入 → 列表「已授权模板」多计（客户上报
+// bug）。走纯 COUNT 避免列拉取——列表路径每个 user 调一次，N+1 优化。
 func (c *customerStore) CountActiveAuthorizedSopTemplates(ctx context.Context, userID uint) (int64, error) {
 	var n int64
 	err := c.db.WithContext(ctx).
 		Table("user_template_permission").
 		Joins("INNER JOIN sop_template ON sop_template.id = user_template_permission.template_id").
-		Where("user_template_permission.sub_user_id = ? AND user_template_permission.deleted_at IS NULL AND sop_template.status = ?",
-			userID, "active").
+		Where("user_template_permission.sub_user_id = ? AND user_template_permission.deleted_at IS NULL AND sop_template.status = ? AND sop_template.publish_status = ?",
+			userID, "active", "published").
 		Count(&n).Error
 	if err != nil {
 		return 0, fmt.Errorf("CountActiveAuthorizedSopTemplates: %w", err)

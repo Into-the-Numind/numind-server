@@ -157,6 +157,7 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 		var membershipState v1.SubUserMembershipState
 		var hasUsedTrial bool
 		var cycleRemaining int64
+		var boosterBalance int64
 		if ms != nil {
 			membershipState = v1.SubUserMembershipState{
 				HasActiveTrial:        ms.HasActiveTrial,
@@ -170,6 +171,7 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 			}
 			hasUsedTrial = ms.HasUsedTrial
 			cycleRemaining = ms.CycleRemaining
+			boosterBalance = ms.BoosterTotal
 		}
 
 		// credit_balance / credit_expires 是给前端兜底用的快捷字段。
@@ -202,6 +204,7 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 			MembershipState:     membershipState,
 			HasUsedTrial:        hasUsedTrial,
 			CycleRemaining:      cycleRemaining,
+			BoosterBalance:      boosterBalance,
 		})
 	}
 
