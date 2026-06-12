@@ -527,8 +527,11 @@ type questionPromptOpt struct {
 // Its JSON shape matches the live stream.QuestionPromptItem so the frontend
 // renders a reloaded question identically to a streamed one.
 type questionPromptItem struct {
-	Question    string              `json:"question"`
-	Options     []questionPromptOpt `json:"options,omitempty"`
+	Question string `json:"question"`
+	// Options must ALWAYS serialize as an array (never omitted/null) — the
+	// frontend reads options.length unguarded (dev run 147 blank-card bug).
+	// synthesizeQuestionPrompt builds it with make(...) so it is non-nil.
+	Options     []questionPromptOpt `json:"options"`
 	Header      string              `json:"header,omitempty"`
 	MultiSelect bool                `json:"multi_select"`
 }
