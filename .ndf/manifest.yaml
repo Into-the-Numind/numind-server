@@ -1,5 +1,22 @@
 schema_version: '2.0'
 features:
+- id: cos-url-lazy-resign
+  track: hotfix
+  description: '报告下载链接 InvalidRequest 修复：模型把 ~600 字符 COS 签名 URL 抄进最终回答时截断、丢 q-sign-* 签名参数(presign 本身成功有日志)，匿名 GET 带 disposition 被 COS 拒(dev run 150)。治本=后端读取/渲染时(GetRun.final_output + GetSessionSnapshot messages)按对象路径重新签名、丢弃持久化残缺 query；截断只伤 query 路径完好→救活所有历史死链+顺带根治 24h presign 过期。图片 inline 签名保 <img>，其余 attachment 下载，签名失败保留原文。'
+  classification_reason: 'Hotfix: 无 DB schema/无新 API/无新外部服务/非支付权限；单仓库 numind-server，新增 cos_resign.go + 改 student_query.go 两读取点 + util host helper + 测试(实质聚焦单一根因)。Bug-from-Customer(Rule 11): 首 commit=失败复现测试(桩 RED)。用户授权"马上完成治本方案"。'
+  status: active
+  stage: H3
+  repos:
+    numind-server: develop (merged via ndf-done)
+  worktrees:
+    numind-server: (removed by ndf-done)
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-H3 (ai 2026-06-13): 根因取证=run 150 messages 里 docx 链接 disp=true/sign=false(截断), 同消息图片链接抄全, run148/149 也抄全→模型抄超长 URL 概率失误; 服务端日志 00:10:17 COS signed download URL generated 证 presign 成功。设计=惰性重签名(读取时按 path 重签, 丢残缺 query); transformMessages 是 ctx-less 纯函数故在 GetSessionSnapshot 后处理。救急已先交付手动重签链接(容器取 secret 重签 curl 200)。commit: 41722eda test(qa) 桩 RED(5 用例)→4215f686 fix(cos_resign.go+两读取点接入)→52f0ceb6 review P2 注释。单 Sonnet 综合 review PASS(0 P0/P1, 3 P2 全补注释; 正则/路由/接入完整性/失败安全/Rule11/实跑全验)。门禁: go test ./... 0 FAIL+改动包 lint 0。下一步 ndf-done + /deploy-dev server + 重生成报告点链接验证可下载。遗留: 流式直出 final answer 无法中途改写(reload/reconcile 兜底); 下载文件名降级为 ASCII path 名(上传时 sanitize 已丢中文原名, 不可逆)。'
+  blockers: []
 - id: answer-resume-lifecycle
   track: standard
   description: '答题续跑全链路修复：yield 暂停=terminated+waiting，AnswerAndClear 只改 state_reason 不改 status、续跑接管也不翻转 → 整个续跑期 run 对外宣称已终止 → 前端一轮询即判终，把提问前旧文案推成 final_answer 并停止跟踪(dev run 148: 用户看到假"回答完毕"，后端默默干完 8.5min 产出完整 DOCX 报告无人看)。一并修：续跑落库覆写冲掉第一段历史(G1)；续跑再提问时轮询模式无卡片注入机制(G2, Q→A→Q 链断裂)。'
