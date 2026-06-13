@@ -316,6 +316,9 @@ func (s *StudentQueryService) GetSessionSnapshot(ctx context.Context, userID uin
 	// reopened session re-signs from the object key, healing truncated and
 	// expired URLs (dev run 150). transformMessages is a pure, ctx-less helper,
 	// so the signing pass lives here where the request ctx is available.
+	// Only Markdown is re-signed: COS object links come from tool results into
+	// assistant content, never into reasoning/thinking text, so Reasoning needs
+	// no pass.
 	for i := range allMessages {
 		if allMessages[i].Markdown != "" {
 			allMessages[i].Markdown = resignCOSLinks(ctx, allMessages[i].Markdown)

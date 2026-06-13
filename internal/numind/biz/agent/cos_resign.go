@@ -37,6 +37,10 @@ func cosLinkRE(host string) *regexp.Regexp {
 	if v, ok := cosLinkReCache.Load(host); ok {
 		return v.(*regexp.Regexp)
 	}
+	// '(' is intentionally NOT a boundary: COS object keys are sanitized via
+	// sanitizeOutputFilename (parens → '_'), so a key can never contain '(' or
+	// ')'. The ')' boundary therefore only ever marks the end of a markdown
+	// link. Do not relax sanitizeOutputFilename without revisiting this.
 	re := regexp.MustCompile(`https://` + regexp.QuoteMeta(host) + `/[^\s)"'<>]+`)
 	cosLinkReCache.Store(host, re)
 	return re
