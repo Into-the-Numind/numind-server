@@ -260,3 +260,17 @@ func CheckObjectExists(ctx context.Context, objectKey string) bool {
 	_, err = cosClient.client.Object.Head(ctx, objectKey, nil)
 	return err == nil
 }
+
+// COSBucketHost returns the bucket's host without scheme, e.g.
+// "numind-dev-1334169463.cos.ap-chengdu.myqcloud.com", or "" when COS is not
+// configured. It reads viper directly (no client init) so callers that only
+// need to RECOGNISE a COS link — such as the markdown re-signing read path —
+// work even when the COS singleton has not been initialised.
+func COSBucketHost() string {
+	bucket := viper.GetString("cos.bucket")
+	region := viper.GetString("cos.region")
+	if bucket == "" || region == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s.cos.%s.myqcloud.com", bucket, region)
+}
