@@ -312,6 +312,16 @@ func (s *StudentQueryService) GetSessionSnapshot(ctx context.Context, userID uin
 		}
 	}
 
+	// Re-sign COS links in every rendered message (cos-url-lazy-resign): a
+	// reopened session re-signs from the object key, healing truncated and
+	// expired URLs (dev run 150). transformMessages is a pure, ctx-less helper,
+	// so the signing pass lives here where the request ctx is available.
+	for i := range allMessages {
+		if allMessages[i].Markdown != "" {
+			allMessages[i].Markdown = resignCOSLinks(ctx, allMessages[i].Markdown)
+		}
+	}
+
 	snap.Messages = allMessages
 	return snap, nil
 }
@@ -344,8 +354,11 @@ func (s *StudentQueryService) GetRun(ctx context.Context, userID uint, runID uin
 		return nil, fmt.Errorf("StudentQueryService.GetRun enrich: %w", err)
 	}
 	return &RunDetail{
-		RunSummary:  *summaries[0],
-		FinalOutput: extractFinalAssistantText(run.Messages),
+		RunSummary: *summaries[0],
+		// Re-sign any COS link the model embedded in its answer: the persisted
+		// URL may be truncated (model dropped the signature) or expired
+		// (cos-url-lazy-resign, dev run 150).
+		FinalOutput: resignCOSLinks(ctx, extractFinalAssistantText(run.Messages)),
 	}, nil
 }
 

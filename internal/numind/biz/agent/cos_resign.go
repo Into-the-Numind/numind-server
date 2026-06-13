@@ -61,8 +61,36 @@ func cosLinkRE(host string) *regexp.Regexp {
 // everything else re-signs as an attachment download. On any signing error the
 // original text is left untouched (best-effort, never worse than before).
 func resignCOSLinksWithHost(ctx context.Context, markdown, host string, s cosSigner) string {
-	// HOTFIX cos-url-lazy-resign T0 stub — real re-signing lands in the fix commit.
-	return markdown
+	if markdown == "" || host == "" {
+		return markdown
+	}
+	prefix := "https://" + host + "/"
+	return cosLinkRE(host).ReplaceAllStringFunc(markdown, func(match string) string {
+		objectKey := strings.TrimPrefix(match, prefix)
+		if i := strings.IndexByte(objectKey, '?'); i >= 0 {
+			objectKey = objectKey[:i]
+		}
+		if objectKey == "" {
+			return match
+		}
+		name := objectKey
+		if i := strings.LastIndexByte(objectKey, '/'); i >= 0 {
+			name = objectKey[i+1:]
+		}
+		var (
+			signed string
+			err    error
+		)
+		if cosIsImageName(name) {
+			signed, err = s.signImage(ctx, objectKey, cosResignExpirySeconds)
+		} else {
+			signed, err = s.signDownload(ctx, objectKey, name, cosResignExpirySeconds)
+		}
+		if err != nil || signed == "" {
+			return match
+		}
+		return signed
+	})
 }
 
 // cosIsImageName reports whether the object's filename extension is an inline
