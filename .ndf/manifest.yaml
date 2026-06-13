@@ -4,7 +4,7 @@ features:
   track: hotfix
   description: 'agent 等待期两处体验修复。5a: 写长报告的 1-3min 工具静默期被 30s 的"任务似乎卡住了"误报成故障(dev run 150)→阈值放宽 30→90s/60→180s + 文案正向化"仍在处理中…请耐心等待" + 收到新 narration 自动撤销已插提示(自愈)。5b: 部署新前端后旧标签页继续跑旧 bundle 无提示, 用户在旧代码上测试以为"没修好"→useVersionCheck 轮询 index.html(no-store)比对 hash bundle 名, 检测到新部署弹不阻断的 NewVersionBanner 让用户自行刷新(不自动刷新避免打断), vite dev 无 hash bundle 天然 inert。'
   classification_reason: 'Hotfix: 单仓库 numind-web-v3, 无 DB schema/无新 API/无新外部服务/非支付权限。纯前端等待体验, 低风险。5a=Bug-from-Customer(用户截图报"卡住"), 5b=衍生预防 feature。文件数略超 3 但单一主题。用户授权"把第五个问题一起解决"。'
-  status: active
+  status: completed
   stage: H3
   repos:
     numind-web-v3: develop (merged via ndf-done)
@@ -15,6 +15,7 @@ features:
     completed_tasks: 1
     reviewed_tasks: 1
   decisions:
+  - 'H3 dev 部署+验证 (ai 2026-06-13): /deploy-dev ✅(build 103s, bundle index-B-erUQsh.js, 对比旧 index-Cr0e4Rqo.js hash 确实变)。browse 硬刷新加载新页面 0 console error, banner 静默挂载。node 端到端: 真实 fetch dev index.html→extractBundleHash 解析出 index-B-erUQsh.js(正确跳过 legacy)→对旧 baseline would_prompt=true、对同版本 false。5b 固有边界(已向用户说明): 版本检测从含该功能的版本起才生效, 用户当前开着的旧标签跑旧代码无检测能力不会弹, 但从此次部署起新加载页面均带检测, 下次部署即提示。5a 由阈值/文案/自愈单测+部署保证(长任务静默 90s+ 难快速强制, 不造)。停 dev 等用户验收, prod 不在授权。'
   - 'H1-H3 (ai 2026-06-13): 取证=narration 每500ms拉, events空且30s则插stuck(useAgentNarration); 长报告生成期+续跑启动期工具静默是正常的→必然误报。轮询模式前端拿不到token级信号无法精确分辨"在生成"vs"卡死", 故治本=阈值覆盖正常长任务+文案正向+自愈撤销(承认静默正常, 这是对的产品行为非治标)。5b probe dev index.html: Cache-Control no-store + hash bundle index-Cr0e4Rqo.js→零后端版本信号。commit: 926e041 test(qa) RED(文案+纯函数)→f487c2a 5a fix→5afe8e7 5b feat→review P2(检测到更新停轮询)。单 Sonnet review PASS(0 P0/P1, 3 P2: 定时器泄漏已修, 另2个=与既有代码一致的风格项不动)。门禁: vitest 845 全过+vue-tsc 0+eslint 0。下一步 ndf-done + /deploy-dev + browse 验证 banner(改 dev bundle 触发)+长任务不再误报。遗留接受: 登录页也轮询版本(无害, 同源每5min轻量fetch)。'
   blockers: []
 - id: cos-url-lazy-resign
