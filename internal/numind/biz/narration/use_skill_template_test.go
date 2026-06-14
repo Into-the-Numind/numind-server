@@ -28,9 +28,9 @@ func TestLoadSkill_RenderFromYAML(t *testing.T) {
 		state      State
 		wantSubstr []string
 	}{
-		{StateUse, []string{"📚", "正在加载技能", skillName}},
-		{StateResult, []string{"📚", "已加载技能", skillName}},
-		{StateError, []string{"⚠", "技能加载失败"}},
+		{StateUse, []string{"正在加载技能", skillName}},
+		{StateResult, []string{"已加载技能", skillName}},
+		{StateError, []string{"技能加载失败"}},
 	}
 	for _, tc := range cases {
 		verb, detail, msg := r.Render(renderRequest{
@@ -51,13 +51,17 @@ func TestLoadSkill_RenderFromYAML(t *testing.T) {
 				t.Errorf("state %v message missing %q; got %q", tc.state, want, msg)
 			}
 		}
+		// no-emoji rule: the frontend timeline renders its own lucide icon, so the
+		// narration message must not carry a presentation emoji of its own.
+		assertNoEmoji(t, msg)
 	}
 }
 
 // TestUseSkill_RenderFromYAML verifies that the production tool-display.yaml
 // ships an entry for the `use_skill` AgentTool (agent-mode v2 #2) and that the
 // use/result/error templates render the expected user-facing copy with the
-// 📚/⚠ icons and the skill name interpolated from input.name.
+// skill name interpolated from input.name. The message carries NO emoji — the
+// frontend timeline owns the icon (lucide).
 //
 // Path resolves from internal/numind/biz/narration/ → repo root (4 levels up).
 // Mirrors the disk-load pattern in TestNewRendererFromPath_RepoRootYAML.
@@ -79,19 +83,19 @@ func TestUseSkill_RenderFromYAML(t *testing.T) {
 		wantSubstr []string // all must appear in message
 	}{
 		{
-			name:       "use state shows loading icon + skill name",
+			name:       "use state shows loading copy + skill name",
 			state:      StateUse,
-			wantSubstr: []string{"📚", "正在加载技能", skillName},
+			wantSubstr: []string{"正在加载技能", skillName},
 		},
 		{
-			name:       "result state shows success icon + skill name",
+			name:       "result state shows success copy + skill name",
 			state:      StateResult,
-			wantSubstr: []string{"📚", "已调用技能", skillName},
+			wantSubstr: []string{"已调用技能", skillName},
 		},
 		{
-			name:       "error state shows warning icon + reason",
+			name:       "error state shows failure copy + reason",
 			state:      StateError,
-			wantSubstr: []string{"⚠", "技能加载失败", "网络异常"},
+			wantSubstr: []string{"技能加载失败", "网络异常"},
 		},
 	}
 
@@ -116,6 +120,23 @@ func TestUseSkill_RenderFromYAML(t *testing.T) {
 					t.Errorf("message missing %q; got %q", want, msg)
 				}
 			}
+			assertNoEmoji(t, msg)
 		})
+	}
+}
+
+// assertNoEmoji fails if s contains any presentation emoji. Guards the no-emoji
+// rule: narration messages must carry plain copy only, since the frontend
+// timeline renders the icon (lucide). Covers the common emoji blocks
+// (pictographs, misc symbols, dingbats) plus the VS16 variation selector.
+func assertNoEmoji(t *testing.T, s string) {
+	t.Helper()
+	for _, ch := range s {
+		if (ch >= 0x1F000 && ch <= 0x1FAFF) || // pictographs & symbols (📚 U+1F4DA, 📖 U+1F4D6)
+			(ch >= 0x2600 && ch <= 0x27BF) || // misc symbols + dingbats (⚠ U+26A0)
+			(ch >= 0x2B00 && ch <= 0x2BFF) || // misc symbols & arrows
+			ch == 0xFE0F { // VS16 emoji variation selector
+			t.Errorf("message must not contain emoji (frontend owns the icon); found %U in %q", ch, s)
+		}
 	}
 }
