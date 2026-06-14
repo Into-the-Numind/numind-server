@@ -4349,5 +4349,25 @@ features:
   - 'S0-S2 调查(ai 2026-06-14): 并行双 Explore 侦察 + 主 session 读核心文件，确立 ground truth 否决 playground 初稿的假设——后端是 Eino 单条顺序 ReAct(非并行,删并行网格)/终态前不知道总步数(无进度比例无ETA)/narration message 是 tool-display.yaml 静态模板(query 不在里面,但 web_search 走 BaseTool 默认 BackfillObservableInput 原样返回 input → .input.query 本就可读, emitNarration 对 StateUse 也传 obsInput)/agent 组件全用默认 sans 无衬线。结论: 根因在模板不插值,改 yaml 即治本,流式+轮询+重载三路径一次性全好。'
   - 'S4 实现(ai 2026-06-14): 后端=tool-display.yaml web_search/web_fetch/kb_search use_template 插 {{ .input.query/url }}(if 守卫缺失回落静态文案) + web_search result 给 {{ len .result.results }} 条数 / web_fetch result 给 title; display.go truncate 改 rune-safe(原字节切对中文乱码,且当前无人用,零回归)。前端=AgentToolCallList 进度头(执行中·已完成N步 / 已完成N步·用时X, 用时由首尾事件 server 时间戳算无 skew, 无新计时器) + 状态点(转圈/绿点) + userToggled 守卫(手动收起后不被自动弹开); AgentToolCallItem 当前活跃步绿色左轨高亮(.is-active:not(.skill-use)) + KNOWN_TOOL_NAMES 补齐真实内置工具消 console.warn。全程默认字体。'
   - 'S5 review(ai 2026-06-14): 并行双 Sonnet reviewer。修掉发现的真 P1: (a) web_fetch 软错误 title 是中文错误标签 → 会渲染「已读取：网址被安全策略拦截」误导, 给 webFetchOutput 加 Error 字段(对齐 webSearchOutput)+模板 {{ if and .result.title (not .result.error) }} 守卫; (b) isSkillUse 只配 use_skill 漏了现网 load_skill → skill 高亮永不触发, 改 SKILL_TOOL_NAMES 集合含 load_skill/use_skill/read_skill; (c) prefers-reduced-motion 没覆盖既有 badge-spin/animated-dots, 补上; (d) userToggled 防 watch 与用户手动收起打架; (e) 我自己 --accent-soft fallback 写错 90%→93%。新增/更新测试: rune-safe 截断不乱码、web_search query/count+空数组回落、web_fetch url/title+软错误回落、ToolCallList 执行中/用时/userToggled。'
-  - 'Gate(ai 2026-06-14): 后端 narration+agent 测试 ok / go build ok / gofmt 干净 / golangci-lint(narration+agent scoped) exit 0。前端 vue-tsc 0 / eslint(改动文件) 0 / 全量 vitest 79 文件 830 pass。下一步 ndf-done → /deploy-dev server + web → 浏览器核验。prod 不在授权。'
+  - 'Gate(ai 2026-06-14): 后端 narration+agent 测试 ok / go build ok / gofmt 干净 / golangci-lint(narration+agent scoped) exit 0。前端 vue-tsc 0 / eslint(改动文件) 0 / 全量 vitest 79 文件 830 pass。ndf-done merge develop(server 71146730 / web 5c427ea) → /deploy-dev server+web 实跑容器核验(grep 运行中 server 容器 tool-display.yaml 确有新模板)→ User dev 实测。prod 不在授权。'
+  blockers: []
+
+- id: agent-exec-ux-followup
+  ndf_version: '3.0'
+  description: 'agent-progress-clarity 的 dev 实测 follow-up(纯前端 numind-web-v3)。User 在 dev 跑定位调研助手发现 3 个真问题：(1) 流式那一刻工具卡仍是泛化「正在搜索网络」不显示搜什么——因为前端有两套标签来源(流式=前端硬编码 / 轮询=后端 narration message),上一轮只修了后端轮询路径; (2) 答完 ask_user_question 后卡片只剩「已回答,等待 agent 继续」,看不见问的题; (3) 答题后冒出一张超长聚合卡,把答题前所有动作又汇总一遍。'
+  classification_reason: 'Hotfix(5 条全满足): 无 DB / 无新 API / 无新外部服务 / 2 源文件(agentChat.ts + QuestionPrompt.vue)+3 测试 / 非高风险(纯展示层)。单仓库 numind-web-v3。'
+  last_updated_by: ai-h3
+  last_updated_at: '2026-06-14T12:28:00+08:00'
+  created_at: '2026-06-14T11:50:00+08:00'
+  completed_at: '2026-06-14T12:28:00+08:00'
+  track: hotfix
+  stage: H3
+  repos: [numind-web-v3]
+  branches: {numind-web-v3: fix/agent-exec-ux-followup (merged → develop d859085, deleted)}
+  progress: {total_tasks: 1, completed_tasks: 1, reviewed_tasks: 1}
+  decisions:
+  - 'H1 实现(ai 2026-06-14): Fix A 流式语义标签=applyStreamEvent tool_call_start 用 streamingToolUseLabel(input_preview.query/url) 镜像后端 yaml(web_search/web_fetch/kb_search),缺失回落泛化标签;input_preview 确认带完整工具参数(runner_stream.go truncateMapValues)。clip 改 code-point spread 防 emoji 截半。Fix B 答完态=QuestionPrompt 改只读 recap(问题+resolvedAnswer(i) 答案),去掉 opacity:0.65/pointer-events:none;live 用组件 state 高亮,reload 时 state 空显示「已回答」(用户答案另作 user 气泡在 transcript,answer.go 第3步追加)。'
+  - 'H1 Fix C(关键,经两轮 review 重做): 答题后巨卡根因=流式路径从不推进 lastNarrationTs,answer-resume 走轮询(非重开流)从空 cursor 重拉全 run narration 再聚合成一张卡。第一版用 streamedToolCallIds 按 tool_call_id 去重——reviewer 抓出是**空操作**(SSE 用模型 tc.ID / narration 用 nextCallID 的 <runID>-<seq>,id 体系不同,.has() 永 false,我的测试用两边相同假 id 才"过")。重做=时间戳 cursor: terminal SSE handler 设 lastNarrationTs=e.ts(QuerySince 严格 After,terminal e.ts>所有答题前 narration ts)+ loadSessionSnapshot 等待态用 run.updated_at seed(reload 路径)。验证: 首轮纯流式无并发轮询(useAgentNarration watch 只 stop 不 auto-start)/多轮 Q&A cursor 由 pollNarration 自然推进/reconcileFromDB 不碰 lastNarrationTs。'
+  - 'H1 review(ai 2026-06-14): 第一轮双 Sonnet → P0(dedup 空操作,已重做)+若干 P2;第二轮聚焦 reviewer 验证 cursor 方案"结构正确、主 bug 真解决、无竞争"。修 P2: clip emoji-safe / answered-a 颜色改 --color-text 不抢主色 / 补 kb_search 标签测试 / 补 pollNarration 转发 cursor 闭环测试。残留 P2(非阻塞,已注释/pre-existing): snapshot updated_at 理论 skew(后端 goroutine race 低概率)、AgentChatView resetLocal 内聚味。Gate: vue-tsc 0 / eslint 0 / 全量 vitest 79 文件 836 pass(+6 新)。'
+  - 'H3(ai 2026-06-14): ndf-done merge fix/agent-exec-ux-followup→develop(d859085,已 fetch 复核 origin/develop 含 3452925)。/deploy-dev web 部署中(纯前端无后端改动)。prod 不在授权。'
   blockers: []
