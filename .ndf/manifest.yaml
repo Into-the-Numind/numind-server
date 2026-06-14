@@ -4371,3 +4371,23 @@ features:
   - 'H1 review(ai 2026-06-14): 第一轮双 Sonnet → P0(dedup 空操作,已重做)+若干 P2;第二轮聚焦 reviewer 验证 cursor 方案"结构正确、主 bug 真解决、无竞争"。修 P2: clip emoji-safe / answered-a 颜色改 --color-text 不抢主色 / 补 kb_search 标签测试 / 补 pollNarration 转发 cursor 闭环测试。残留 P2(非阻塞,已注释/pre-existing): snapshot updated_at 理论 skew(后端 goroutine race 低概率)、AgentChatView resetLocal 内聚味。Gate: vue-tsc 0 / eslint 0 / 全量 vitest 79 文件 836 pass(+6 新)。'
   - 'H3(ai 2026-06-14): ndf-done merge fix/agent-exec-ux-followup→develop(d859085,已 fetch 复核 origin/develop 含 3452925)。/deploy-dev web 部署中(纯前端无后端改动)。prod 不在授权。'
   blockers: []
+
+- id: narration-stable-toolcall-id
+  ndf_version: '3.0'
+  description: 'Bug-from-Customer(dev 实跑复现 ground truth): 答题后轮询卡片每个搜索拆成两条——一条"执行中"永久卡住(计时器跑过 10 分钟)+ 一条独立"已完成"。这是 agent-exec-ux-followup 后 User 再次上报"巨卡 + 计时不停"的真根因(前两轮没击中)。用 browse + E2E 凭据在 dev 实跑定位调研助手→答题→展开 post-answer 卡,亲眼看到 use/result 拆成两个 item。'
+  classification_reason: 'Hotfix(Bug-from-Customer): 无 DB / 无新 API / 无新外部服务 / 后端 1 文件(adapter)+前端 2 文件(store+组件)+测试。跨双仓库。Rule 11 第一个 commit 是失败复现测试。'
+  last_updated_by: ai-h3
+  last_updated_at: '2026-06-14T15:05:00+08:00'
+  created_at: '2026-06-14T14:30:00+08:00'
+  completed_at: '2026-06-14T15:05:00+08:00'
+  track: hotfix
+  stage: H3
+  repos: [numind-server, numind-web-v3]
+  branches: {numind-server: fix/narration-stable-toolcall-id, numind-web-v3: fix/narration-stable-toolcall-id}
+  progress: {total_tasks: 1, completed_tasks: 1, reviewed_tasks: 1}
+  decisions:
+  - '根因(ground truth via dev 实跑): adapter_full_to_eino.go 为 SSE 生成稳定 toolCallID(注释明说 stable across start/result/error),但 emitNarration 不传它 → narration.Provider.Emit 在 ToolCallID 空时走 nextCallID 每次生成新 <runID>-<seq>(provider.go:67) → 一个工具 use=999-1/result=999-2 不同 id → 前端按 id 聚合拆两条,use 那条永等不到 result→永久 isInFlight→AgentToolCallItem 计时器永不停 + item 翻倍堆一张卡。流式用同一 toolCallID 所以正常——答题前(流式)好、答题后(轮询 narration)崩。pre-existing bug 非我引入。'
+  - 'H1 修复: 后端=toolCallID 移到 InvokableRun 顶部,emitNarration 加 toolCallID 参数,5 个调用点(rejected×2/use/error/result)全传 → 共享 id。bonus: 持久化时间线(Collector→agent_run.messages)也用合并 id → reload 路径同样修好。Rule 11: 先 commit 失败复现测试(f05cad94)→ fix(00ad925c)→ 转绿。blast radius: grep 确认无代码解析 <runID>-<seq>,nextCallID 仍作 fallback,narration id 现与 SSE/artifact uuid 一致。前端=finalizeToolGroups(运行终态翻残留非终态:completed→result/中断→error,兜底停计时器) + AgentToolCallList 展开封顶 last 8 + "前 N 步已完成"。'
+  - 'H1 review: 双 Sonnet。后端 fix + blast radius CLEAN,确认 reload 同步修好。修 P1: finalizeToolGroups 对 cancelled/failed 原本翻 result(不诚实)→ completed→result 其余→error。P2: .tool-folded fallback 色 #8b90a0 / 过时 id-scheme 注释更新。Gate: 后端 go test+golangci-lint(agent)0/gofmt 净;前端 vue-tsc0/eslint0/全量 841 pass。'
+  - 'H3: ndf-done merge 双仓库→develop。/deploy-dev server + web(后端改 adapter 必须重部署 server)。prod 不在授权。诊断方法: browse + E2E 凭据 dev 实跑复现是定位此类"看似前端实为后端"bug 的正确姿势(前两轮静态推理没击中)。'
+  blockers: []
