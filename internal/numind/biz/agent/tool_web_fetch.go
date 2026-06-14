@@ -29,6 +29,11 @@ type webFetchOutput struct {
 	ByteSize  int    `json:"byte_size"`
 	Truncated bool   `json:"truncated"`
 	FetchedAt string `json:"fetched_at"`
+	// Error is set ONLY on the soft-error path (mirrors webSearchOutput.Error).
+	// It lets the narration result template distinguish a real page read from a
+	// soft failure — without it, returnSoftError's Chinese error label lands in
+	// Title and renders as a misleading "已读取：网址被安全策略拦截".
+	Error string `json:"error,omitempty"`
 }
 
 // webFetchTool implements FullTool for the "web_fetch" operation.
@@ -74,6 +79,7 @@ func (t *webFetchTool) returnSoftError(title, format string, args ...any) (ToolR
 		ByteSize:  len(msg) + 7,
 		Truncated: false,
 		FetchedAt: time.Now().UTC().Format(time.RFC3339),
+		Error:     "ERROR: " + msg,
 	})
 	return ToolResult(out), nil
 }

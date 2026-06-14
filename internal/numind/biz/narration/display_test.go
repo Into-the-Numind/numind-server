@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"text/template"
+	"unicode/utf8"
 )
 
 const minimalValidYAML = `
@@ -362,6 +363,139 @@ defaults:
 	})
 	if msg != "42" {
 		t.Errorf("default with int val: want '42', got %q", msg)
+	}
+}
+
+func Test_TemplateFuncs_Truncate_RuneSafe_NoMojibake(t *testing.T) {
+	// Byte-slicing a CJK string (the OLD truncate impl: s[:n]) cuts mid-rune and
+	// produces mojibake. These templates now interpolate user-facing CJK (search
+	// query, page title), so truncate MUST slice on rune boundaries.
+	src := `
+tools:
+  bash_exec:
+    verb: v
+    use_template: "{{ truncate 4 .input.q }}"
+    result_template: ok
+    error_template: bad
+    rejected_template: rej
+defaults:
+  verb: dv
+  use_template: "{{ .verb }}"
+  result_template: ok
+  error_template: bad
+  rejected_template: rej
+`
+	r := mustRenderer(t, src)
+	_, _, msg := r.Render(renderRequest{
+		ToolName: "bash_exec",
+		State:    StateUse,
+		Input:    map[string]any{"q": "四川莫小派小红书陪跑"}, // 10 runes
+		Result:   map[string]any{},
+	})
+	if msg != "四川莫小..." {
+		t.Errorf("rune-safe truncate: want '四川莫小...', got %q", msg)
+	}
+	if !utf8.ValidString(msg) {
+		t.Errorf("truncate produced invalid UTF-8 (mojibake): %q", msg)
+	}
+}
+
+// agent-progress-clarity (2026-06-14): these tests pin the real production
+// templates that surface the search query / fetched URL / page title in the
+// narration message, plus their fallbacks. They run against the SHIPPED yaml so
+// a future edit that drops the query interpolation fails CI.
+func Test_RealYAML_WebSearch_SurfacesQueryAndCount(t *testing.T) {
+	r, err := NewRendererFromPath("../../../../configs/tool-display.yaml")
+	if err != nil {
+		t.Fatalf("load yaml: %v", err)
+	}
+
+	// StateUse with a query → message carries the query, not the generic "网络".
+	_, _, use := r.Render(renderRequest{
+		ToolName: "web_search",
+		State:    StateUse,
+		Input:    map[string]any{"query": "四川莫小派 小红书陪跑"},
+		Result:   map[string]any{},
+	})
+	if !strings.Contains(use, "四川莫小派") {
+		t.Errorf("web_search use should contain the query, got %q", use)
+	}
+	if strings.Contains(use, "网络") {
+		t.Errorf("web_search WITH query must not fall back to '网络', got %q", use)
+	}
+
+	// No query (missing key) → falls back to the static "网络" label, never empty.
+	_, _, fallback := r.Render(renderRequest{
+		ToolName: "web_search",
+		State:    StateUse,
+		Input:    map[string]any{},
+		Result:   map[string]any{},
+	})
+	if !strings.Contains(fallback, "网络") {
+		t.Errorf("web_search WITHOUT query should fall back to '网络', got %q", fallback)
+	}
+
+	// StateResult with results → count surfaced.
+	_, _, res := r.Render(renderRequest{
+		ToolName: "web_search",
+		State:    StateResult,
+		Input:    map[string]any{},
+		Result:   map[string]any{"results": []any{"a", "b", "c"}},
+	})
+	if !strings.Contains(res, "3") {
+		t.Errorf("web_search result should show count 3, got %q", res)
+	}
+
+	// StateResult with no results → safe fallback label. Cover BOTH the missing-key
+	// shape and the actual soft-error shape returnSoftError marshals: {"results":[]}.
+	for _, empty := range []map[string]any{{}, {"results": []any{}}} {
+		_, _, res0 := r.Render(renderRequest{
+			ToolName: "web_search",
+			State:    StateResult,
+			Input:    map[string]any{},
+			Result:   empty,
+		})
+		if res0 != "已获取搜索结果" {
+			t.Errorf("web_search result with empty results %v should be '已获取搜索结果', got %q", empty, res0)
+		}
+	}
+}
+
+func Test_RealYAML_WebFetch_SurfacesURLAndTitle(t *testing.T) {
+	r, err := NewRendererFromPath("../../../../configs/tool-display.yaml")
+	if err != nil {
+		t.Fatalf("load yaml: %v", err)
+	}
+	_, _, use := r.Render(renderRequest{
+		ToolName: "web_fetch",
+		State:    StateUse,
+		Input:    map[string]any{"url": "https://example.com/page"},
+		Result:   map[string]any{},
+	})
+	if !strings.Contains(use, "example.com") {
+		t.Errorf("web_fetch use should contain the url, got %q", use)
+	}
+	_, _, res := r.Render(renderRequest{
+		ToolName: "web_fetch",
+		State:    StateResult,
+		Input:    map[string]any{},
+		Result:   map[string]any{"title": "四川莫小派官网介绍"},
+	})
+	if !strings.Contains(res, "四川莫小派官网介绍") {
+		t.Errorf("web_fetch result should contain the page title, got %q", res)
+	}
+
+	// Soft-error path: returnSoftError sets BOTH title (a Chinese error label) and
+	// error. The template must NOT render "已读取：网址被安全策略拦截" — the error
+	// guard makes it fall back to the neutral "已读取网页".
+	_, _, softErr := r.Render(renderRequest{
+		ToolName: "web_fetch",
+		State:    StateResult,
+		Input:    map[string]any{},
+		Result:   map[string]any{"title": "网址被安全策略拦截", "error": "ERROR: web_fetch: blocked"},
+	})
+	if softErr != "已读取网页" {
+		t.Errorf("web_fetch soft-error result should fall back to '已读取网页', got %q", softErr)
 	}
 }
 
