@@ -4322,3 +4322,32 @@ features:
   - 'H3-merge (ai 2026-06-11): ndf-done merge fix/typewriter-tighten-sop-dispose→develop(c0c1208, 已 fetch 独立复核 origin/develop HEAD==c0c1208 且 8c80425/6f21d15 均 ancestor; develop 版默认 150 在位 + SOP dispose×2 在位), worktree+本地分支已删。叠在 #3(2e5b737)之上。未部署 prod → 下一步 /deploy-dev → User feel-test 结尾闪是否更小 → 满意再隔离 cherry-pick tag v1.0.33 上 prod(连同 #3 测试改动)。'
   - 'H3-prod (ai 2026-06-11): User 让直接 cherry-pick 上 prod。从 prod tag v1.0.32(e89d12e)拉 detached worktree → cherry-pick #3+#1+#2 三 commit(75390b1/8c80425/6f21d15, 无冲突)→ diff v1.0.32..HEAD 恰 4 文件 63+/47-(StepOutput.test.ts + useTypewriterReveal.ts/.spec.ts + SOPRunView.vue, 无 develop 在途代码)→ tag v1.0.33。Gate(prod base): vue-tsc 0 / 受影响 2 测试文件 26 pass 2 skip / eslint 0。release.sh prod: build 66s/push 8s/total ~1m26s。核验(不信 Release complete): SSH prod 实跑容器 image==v1.0.33-95d7d52(healthy, 非 silent-old) + youshu.asia HTTP 200。tag v1.0.33 已推 origin(95d7d52)。prev image v1.0.32-e89d12e 留 rollback。release worktree 已删。#3(纯测试)亦随此 tag 进 prod 保持源一致。三个 follow-up(#1/#2/#3)全部 closed。'
   blockers: []
+
+- id: agent-progress-clarity
+  ndf_version: '3.0'
+  description: 'agent-mode 执行过程展示 UX 改造(对标 Manus，但严格基于后端真实数据，不做并行网格/进度比例/倒计时这些后端拿不到的假数据)。核心痛点=用户看不出 agent 在搜什么、有没有进展、是不是原地打转(与上一轮「是否卡住/循环」同根)。三件真事: (1) 语义化步骤标签——根因是 tool-display.yaml 模板没把 query 插进 message; (2) 有意义的进度头——执行中/已完成N步/用时X(真实数据); (3) 当前步绿色高亮 + 降噪。'
+  classification_reason: 'Standard: 无 DB schema / 无新 API / 无新外部服务, 但跨 numind-server + numind-web-v3 双仓库、影响 >3 文件(后端 yaml+display.go+web_fetch / 前端 ToolCallList+ToolCallItem+test)。非高风险 biz。User 明确「都要做、一次到 dev、默认字体、基于项目真实情况不自嗨、查整体逻辑 bug」。'
+  last_updated_by: ai-s6
+  last_updated_at: '2026-06-14T11:30:00+08:00'
+  created_at: '2026-06-14T11:07:48+08:00'
+  track: standard
+  stage: S6
+  repos:
+  - numind-server
+  - numind-web-v3
+  branches:
+    numind-server: feature/agent-progress-clarity
+    numind-web-v3: feature/agent-progress-clarity
+  worktrees:
+    numind-server: /private/tmp/wt-agent-progress-clarity-numind-server
+    numind-web-v3: /private/tmp/wt-agent-progress-clarity-numind-web-v3
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'S0-S2 调查(ai 2026-06-14): 并行双 Explore 侦察 + 主 session 读核心文件，确立 ground truth 否决 playground 初稿的假设——后端是 Eino 单条顺序 ReAct(非并行,删并行网格)/终态前不知道总步数(无进度比例无ETA)/narration message 是 tool-display.yaml 静态模板(query 不在里面,但 web_search 走 BaseTool 默认 BackfillObservableInput 原样返回 input → .input.query 本就可读, emitNarration 对 StateUse 也传 obsInput)/agent 组件全用默认 sans 无衬线。结论: 根因在模板不插值,改 yaml 即治本,流式+轮询+重载三路径一次性全好。'
+  - 'S4 实现(ai 2026-06-14): 后端=tool-display.yaml web_search/web_fetch/kb_search use_template 插 {{ .input.query/url }}(if 守卫缺失回落静态文案) + web_search result 给 {{ len .result.results }} 条数 / web_fetch result 给 title; display.go truncate 改 rune-safe(原字节切对中文乱码,且当前无人用,零回归)。前端=AgentToolCallList 进度头(执行中·已完成N步 / 已完成N步·用时X, 用时由首尾事件 server 时间戳算无 skew, 无新计时器) + 状态点(转圈/绿点) + userToggled 守卫(手动收起后不被自动弹开); AgentToolCallItem 当前活跃步绿色左轨高亮(.is-active:not(.skill-use)) + KNOWN_TOOL_NAMES 补齐真实内置工具消 console.warn。全程默认字体。'
+  - 'S5 review(ai 2026-06-14): 并行双 Sonnet reviewer。修掉发现的真 P1: (a) web_fetch 软错误 title 是中文错误标签 → 会渲染「已读取：网址被安全策略拦截」误导, 给 webFetchOutput 加 Error 字段(对齐 webSearchOutput)+模板 {{ if and .result.title (not .result.error) }} 守卫; (b) isSkillUse 只配 use_skill 漏了现网 load_skill → skill 高亮永不触发, 改 SKILL_TOOL_NAMES 集合含 load_skill/use_skill/read_skill; (c) prefers-reduced-motion 没覆盖既有 badge-spin/animated-dots, 补上; (d) userToggled 防 watch 与用户手动收起打架; (e) 我自己 --accent-soft fallback 写错 90%→93%。新增/更新测试: rune-safe 截断不乱码、web_search query/count+空数组回落、web_fetch url/title+软错误回落、ToolCallList 执行中/用时/userToggled。'
+  - 'Gate(ai 2026-06-14): 后端 narration+agent 测试 ok / go build ok / gofmt 干净 / golangci-lint(narration+agent scoped) exit 0。前端 vue-tsc 0 / eslint(改动文件) 0 / 全量 vitest 79 文件 830 pass。下一步 ndf-done → /deploy-dev server + web → 浏览器核验。prod 不在授权。'
+  blockers: []

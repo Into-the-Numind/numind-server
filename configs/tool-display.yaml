@@ -48,7 +48,10 @@ tools:
   kb_search:
     verb: "正在搜索"
     detail_template: "知识库"
-    use_template: "{{ .verb }} {{ .detail }}"
+    # .input.query 是 BackfillObservableInput 暴露的搜索词（kb_search 走 BaseTool
+    # 默认实现，原样返回 input → query 可读）。带上具体搜索词，避免一连串
+    # 「正在搜索 知识库」看起来像在原地打转。query 缺失时回落到静态 detail。
+    use_template: "{{ .verb }}{{ if .input.query }}知识库：{{ truncate 30 .input.query }}{{ else }} {{ .detail }}{{ end }}"
     result_template: "已查到相关内容"
     error_template: "搜索中断，{{ .reason_friendly }}"
     rejected_template: "知识库搜索被规则拦截"
@@ -62,22 +65,28 @@ tools:
     rejected_template: "日期获取被规则拦截"
 
   # 2026-05-22: 补齐 6 个之前走 defaults block 的工具，让学员看到具体的工具
-  # 名称而不是泛化的「正在处理 操作」。所有 detail 保持 static（不读 .input）
-  # 以免某些工具未 BackfillObservableInput 导致空字符串渲染。
+  # 名称而不是泛化的「正在处理 操作」。
+  # 2026-06-14 (agent-progress-clarity): web_search / web_fetch 升级为带上具体的
+  # 搜索词 / 网址 / 标题。这两个工具走 BaseTool 默认 BackfillObservableInput（原样
+  # 返回 input），所以 .input.query / .input.url 可读；结果态读 .result.* 给出条数 /
+  # 标题。{{ if }} 守卫保证字段缺失时回落到原静态文案，绝不渲染空串。
 
   web_search:
     verb: "正在搜索"
     detail_template: "网络"
-    use_template: "{{ .verb }} {{ .detail }}"
-    result_template: "已获取搜索结果"
+    use_template: "{{ .verb }}{{ if .input.query }}：{{ truncate 40 .input.query }}{{ else }} {{ .detail }}{{ end }}"
+    result_template: "{{ if .result.results }}已找到 {{ len .result.results }} 条结果{{ else }}已获取搜索结果{{ end }}"
     error_template: "搜索中断，{{ .reason_friendly }}"
     rejected_template: "网络搜索被规则拦截"
 
   web_fetch:
     verb: "正在抓取"
     detail_template: "网页内容"
-    use_template: "{{ .verb }} {{ .detail }}"
-    result_template: "已读取网页"
+    use_template: "{{ .verb }}{{ if .input.url }}：{{ truncate 50 .input.url }}{{ else }} {{ .detail }}{{ end }}"
+    # `and .result.title (not .result.error)`: only call it a successful read when
+    # there's a title AND no soft-error marker — otherwise returnSoftError's error
+    # label sits in Title and would render as a misleading "已读取：<错误>".
+    result_template: "{{ if and .result.title (not .result.error) }}已读取：{{ truncate 40 .result.title }}{{ else }}已读取网页{{ end }}"
     error_template: "抓取中断，{{ .reason_friendly }}"
     rejected_template: "网页抓取被规则拦截"
 

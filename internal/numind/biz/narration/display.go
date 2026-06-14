@@ -224,11 +224,17 @@ func renderTemplate(tmpl *template.Template, data any) (out string) {
 // the intuitive `default "fallback" .input.maybe_missing` template idiom.
 func templateFuncs() template.FuncMap {
 	return template.FuncMap{
+		// truncate caps a string at n RUNES (not bytes). Byte-slicing a Chinese
+		// string (s[:n]) cuts mid-rune and produces mojibake — and these templates
+		// now interpolate user-facing CJK fields (search query, page title). Rune
+		// slicing keeps the cut on a character boundary. Currently the only caller
+		// is tool-display.yaml's use/result templates.
 		"truncate": func(n int, s string) string {
-			if len(s) <= n {
+			r := []rune(s)
+			if len(r) <= n {
 				return s
 			}
-			return s[:n] + "..."
+			return string(r[:n]) + "..."
 		},
 		"default": func(fallback string, val any) string {
 			if val == nil {
