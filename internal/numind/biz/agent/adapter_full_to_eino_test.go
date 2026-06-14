@@ -127,6 +127,57 @@ func TestAdaptFullToEinoTool_Hooks_HappyPath(t *testing.T) {
 	assert.Nil(t, rec.lastErr, "PostToolCall sees no execErr on success")
 }
 
+// Bug repro (customer-reported, dev 2026-06-14): on the POLLING path (an
+// ask_user_question answer-resume), a single tool call's StateUse and StateResult
+// narration events surfaced as TWO separate UI cards — the 'use' one stuck in
+// 执行中 forever (its live timer ticked for 10+ minutes) plus a separate 已完成
+// card. Root cause: emitNarration passed an EMPTY ToolCallID, so
+// narration.Provider.nextCallID minted a FRESH "<runID>-<seq>" for EACH emit
+// (use → "<id>-1", result → "<id>-2"). The polling UI groups by tool_call_id, so
+// the two never merged. The SSE path was unaffected because it threads ONE
+// synthetic toolCallID through start/result. Fix: emitNarration must thread that
+// same stable toolCallID into the narration payload so all states of one call
+// share an id.
+func TestAdaptFullToEinoTool_Narration_UseAndResultShareToolCallID(t *testing.T) {
+	prov, err := narration.NewProvider(narration.Config{YAMLBytes: []byte(`
+tools:
+  x:
+    verb: "执行"
+    use_template: "{{ .verb }}"
+    result_template: "完成"
+    error_template: "出错"
+    rejected_template: "拦截"
+defaults:
+  verb: "处理"
+  use_template: "{{ .verb }}"
+  result_template: "完成"
+  error_template: "出错"
+  rejected_template: "拦截"
+`)})
+	require.NoError(t, err)
+
+	ft := &fakeFullTool{name: "x", out: []byte(`{"ok":true}`)}
+	eino := adaptFullToEinoTool(ft, &RunHooks{NarrationProvider: prov})
+	ctx := narration.WithCollector(WithRunID(context.Background(), 999))
+
+	_, err = eino.InvokableRun(ctx, `{"input":"hi"}`)
+	require.NoError(t, err)
+
+	var useID, resultID string
+	for _, ev := range narration.CollectorFrom(ctx).Events() {
+		switch ev.State {
+		case narration.StateUse:
+			useID = ev.ToolCallID
+		case narration.StateResult:
+			resultID = ev.ToolCallID
+		}
+	}
+	require.NotEmpty(t, useID, "expected a StateUse narration event")
+	require.NotEmpty(t, resultID, "expected a StateResult narration event")
+	assert.Equal(t, useID, resultID,
+		"a tool call's use & result narration MUST share one tool_call_id — otherwise the polling UI splits them and the 'use' card sticks in 执行中 forever (customer-reported timer-never-stops bug)")
+}
+
 func TestAdaptFullToEinoTool_Hooks_PreStopShortCircuits(t *testing.T) {
 	ft := &fakeFullTool{name: "x", out: []byte(`{"ok":true}`)}
 	rec := newHookRecorder()
