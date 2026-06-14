@@ -119,9 +119,9 @@ tools:
   load_skill:
     verb: "加载技能"
     detail_template: "{{ .input.name }}"
-    use_template: "📚 正在加载技能：{{ .input.name }}"
-    result_template: "📚 已加载技能：{{ .input.name }}"
-    error_template: "⚠ 技能加载失败：{{ .reason_friendly }}"
+    use_template: "正在加载技能：{{ .input.name }}"
+    result_template: "已加载技能：{{ .input.name }}"
+    error_template: "技能加载失败：{{ .reason_friendly }}"
     rejected_template: "技能加载被拒绝"
 
   # use_skill / read_skill: tombstone entries for historical agent_run narration
@@ -130,16 +130,16 @@ tools:
   use_skill:
     verb: "调用技能"
     detail_template: "{{ .input.name }}"
-    use_template: "📚 正在加载技能：{{ .input.name }}"
-    result_template: "📚 已调用技能：{{ .input.name }}"
-    error_template: "⚠ 技能加载失败：{{ .reason_friendly }}"
+    use_template: "正在加载技能：{{ .input.name }}"
+    result_template: "已调用技能：{{ .input.name }}"
+    error_template: "技能加载失败：{{ .reason_friendly }}"
     rejected_template: "技能调用被拒绝"
   read_skill:
     verb: "查阅技能"
     detail_template: "{{ .input.skill_name }}"
-    use_template: "📖 正在查阅技能指南：{{ .input.skill_name }}"
-    result_template: "📖 已查阅技能指南"
-    error_template: "⚠ 技能指南读取失败：{{ .reason_friendly }}"
+    use_template: "正在查阅技能指南：{{ .input.skill_name }}"
+    result_template: "已查阅技能指南"
+    error_template: "技能指南读取失败：{{ .reason_friendly }}"
     rejected_template: "技能查阅被拒绝"
 
   # ask_user_question 是 yield 式工具：narration 会 emit StateUse 然后

@@ -139,7 +139,7 @@ func TestBudget_UseSkill_BudgetExceededShortCircuits(t *testing.T) {
 func TestBudget_UseSkill_PostBeforeRecordUsage_OrderingContract(t *testing.T) {
 	// Verifies the documented order: forward to base.PostToolCall FIRST,
 	// then RecordUsage. Important because base.PostToolCall on load_skill might
-	// emit narration ("📚 已调用技能：..."); if we recorded usage first and the
+	// emit narration ("已调用技能：..."); if we recorded usage first and the
 	// recording overflowed budget, narration would never fire — bad UX.
 	tr := budget.NewTracker(nil)
 	tr.Start(context.Background(), 11, 1, budget.DefaultLimits())
