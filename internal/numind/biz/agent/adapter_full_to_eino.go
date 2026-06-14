@@ -96,6 +96,15 @@ func paramsOneOfFromInputSchema(toolName string, raw json.RawMessage) *schema.Pa
 func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ ...einotool.Option) (string, error) {
 	input := ToolInput(args)
 
+	// One synthetic id per invocation, threaded through BOTH the SSE stream events
+	// AND every narration emit (use/result/error/rejected) for this call. Without
+	// it on the narration path, narration.Provider.nextCallID mints a fresh
+	// "<runID>-<seq>" per emit, so the polling UI (which groups by tool_call_id)
+	// splits one call's use & result into two cards — the 'use' one stuck in 执行中
+	// forever (customer-reported, dev 2026-06-14). Minted at the top so the early
+	// rejected-narration paths share it too.
+	toolCallID := uuid.NewString()
+
 	if a.hooks != nil && a.hooks.PreToolCall != nil {
 		action, err := a.hooks.PreToolCall(ctx, a, args)
 		if err != nil {
@@ -120,7 +129,7 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 					// not into the narration Reason field (which is for a short identifier).
 					// Soft deny intentionally omits tool_call_* SSE (no Execute ran), exactly
 					// like a hard reject.
-					a.emitNarration(ctx, narration.StateRejected, input, nil, nil, "")
+					a.emitNarration(ctx, narration.StateRejected, toolCallID, input, nil, nil, "")
 					return msg, nil // tool-result fed back to the model → loop continues
 				}
 				// tripped: fall through to the hard-terminate path below.
@@ -131,13 +140,13 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 		}
 		if action != HookActionContinue {
 			// EMIT REJECTED: short-circuit before Execute; no use/result/error follow.
-			a.emitNarration(ctx, narration.StateRejected, input, nil, nil, "")
+			a.emitNarration(ctx, narration.StateRejected, toolCallID, input, nil, nil, "")
 			return "", fmt.Errorf("tool execution stopped by hook: action=%d", action)
 		}
 	}
 
 	// EMIT USE: after PreToolCall Continue, before Execute (S0 D2 timing contract).
-	a.emitNarration(ctx, narration.StateUse, input, nil, nil, "")
+	a.emitNarration(ctx, narration.StateUse, toolCallID, input, nil, nil, "")
 
 	// EMIT SSE tool_call_start. The active streaming path (runner_runstream.go's
 	// streamScanToolCallChecker) scans only MODEL OUTPUT and never emits
@@ -145,9 +154,9 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 	// tool is running — during a 30–60s run_python it looks frozen (2026-05-29
 	// bug). Emitting here (the tool lifecycle boundary) fires exactly once per
 	// call, carries the real tool name + input, and works for every model
-	// regardless of how it streams tool_calls. toolCallID is synthetic but stable
-	// across this call's start/result/error so the frontend can correlate them.
-	toolCallID := uuid.NewString()
+	// regardless of how it streams tool_calls. toolCallID (minted at the top) is
+	// synthetic but stable across this call's start/result/error so the frontend
+	// can correlate them.
 	startedAt := time.Now()
 	// ask_user_question yields (never returns a tool result/error), so emitting a
 	// tool_call_start here would create a streaming tool card that never resolves
@@ -213,7 +222,7 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 			streamState.PendingYield = &p
 		}
 	} else if effectiveErr != nil {
-		a.emitNarration(ctx, narration.StateError, input, nil, effectiveErr, "")
+		a.emitNarration(ctx, narration.StateError, toolCallID, input, nil, effectiveErr, "")
 		a.emitStreamToolError(ctx, toolCallID, effectiveErr, durationMs)
 	} else {
 		// Successful tool execution = the agent made progress: reset the soft-deny
@@ -222,7 +231,7 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 		if sd := SoftDenyFromCtx(ctx); sd != nil {
 			sd.OnSuccess()
 		}
-		a.emitNarration(ctx, narration.StateResult, input, result, nil, "")
+		a.emitNarration(ctx, narration.StateResult, toolCallID, input, result, nil, "")
 		a.emitStreamToolResult(ctx, toolCallID, output, durationMs)
 		// Collect tool-generated images so the run finalizer can embed them as
 		// markdown in the PERSISTED final answer. The transient SSE artifact event
@@ -247,7 +256,7 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 //
 // The `reason` parameter is reserved for #6 permission-pipeline to populate
 // the rejection reason; v1 always passes "" (S1-D21). Do not remove or rename.
-func (a *fullToolEinoAdapter) emitNarration(ctx context.Context, st narration.State, input ToolInput, result ToolResult, execErr error, reason string) {
+func (a *fullToolEinoAdapter) emitNarration(ctx context.Context, st narration.State, toolCallID string, input ToolInput, result ToolResult, execErr error, reason string) {
 	if a.hooks == nil || a.hooks.NarrationProvider == nil {
 		return
 	}
@@ -261,10 +270,11 @@ func (a *fullToolEinoAdapter) emitNarration(ctx context.Context, st narration.St
 	// Emit then routes to an unsubscribed runID=0 bucket and the event is harmlessly
 	// dropped — both run paths always inject WithRunID before any tool executes.
 	a.hooks.NarrationProvider.Emit(ctx, RunIDFromContext(ctx), a.ft.Name(), st, narration.EmitPayload{
-		Input:  json.RawMessage(obsInput),
-		Result: json.RawMessage(result),
-		Err:    execErr,
-		Reason: reason,
+		ToolCallID: toolCallID,
+		Input:      json.RawMessage(obsInput),
+		Result:     json.RawMessage(result),
+		Err:        execErr,
+		Reason:     reason,
 	})
 }
 
