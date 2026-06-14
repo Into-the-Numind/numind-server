@@ -4411,3 +4411,46 @@ features:
   - 'S5 review: 双 Sonnet。修 P1: (a) dwell 链式延迟(连续切换把提交一路推后)→ 改 leading+trailing 固定窗 throttle; (b) 完成 1.4s 内新 run 显示"已完成"→ 新 run 启动清 settling; (c) .run-pulse 一直 pointer-events:none → 时间 tab hover 死,.show 加 auto; (d) 双 script 块导出 silenceLadder → 移到 utils/agentRunPulse.ts。P2: 视觉隐藏 aria-live(dwell 限速每工具一次,给盲人活信号又不刷屏)、光标 fallback 改翠绿、rAF→可清理 timer、settle keyframe 去抖动、触屏显示用时、hsl 语法统一。Gate: vue-tsc0/eslint0/全量 80 文件 851 pass(+10 新)。'
   - 'S6: ndf-done merge develop(8c4b034)→ /deploy-dev web(纯前端)。prod 不在授权。mockup: /tmp/youshu-agent-runpulse-mockup.html(User 已看过拍板)。'
   blockers: []
+
+- id: agent-process-timeline
+  ndf_version: '3.0'
+  description: 'User 看完 Manus 录屏后定调: agent 执行过程要做成 Manus 式「一条常驻、铺开的叙事时间线」——紧凑单行动作 + 思考散文穿插 + 计划步骤标题,全部在同一个头像下连续流动,而不是一堆各带头像的独立卡片。废掉之前的 AgentRunPulse 分离底栏(与上方过程重复)。User 两点细节: (1) 图标用 lucide 不用 emoji; (2) 问题卡片答完后可点击展开回看原问题与回答(只读)。'
+  classification_reason: 'Standard(多组件重写 + 跨视图集成): 无 DB/无新 API/无新外部服务,但重写 AgentToolCallList/AgentToolCallItem(扁平单行)、新增 agent-tool-icons.ts(tool→lucide 映射)、AgentMessageList/AgentMessageItem 连续时间线(continued 单头像)、AgentRunPulse 重写为内联尾行、QuestionPrompt 答后折叠、删 agent-icons.ts 死代码,>3 文件 + 测试重写。纯前端单仓库 numind-web-v3。'
+  last_updated_by: ai-s6
+  last_updated_at: '2026-06-15T00:05:00+08:00'
+  created_at: '2026-06-14T23:00:00+08:00'
+  completed_at: '2026-06-15T00:05:00+08:00'
+  track: standard
+  stage: S6
+  repos: [numind-web-v3]
+  branches: {numind-web-v3: feature/agent-process-timeline (merged → develop 7d4d043, deleted)}
+  progress: {total_tasks: 1, completed_tasks: 1, reviewed_tasks: 1}
+  decisions:
+  - 'Manus 录屏分析→落地: 过程 = 一条铺开的叙事时间线。AgentToolCallItem 每个工具渲染成单行 [状态图标][活动标签],标签取首个 use 事件 message 剥「正在」后保持稳定(完成不跳字,靠前导图标换状态: Loader2 转圈→typeIcon 完成→AlertCircle 错误)。AgentToolCallList 去卡片 chrome 变扁平 list。AgentMessageList 连续 agent-flow 消息(assistant/tool_group/plan/artifact/final_answer)在同一头像下 continued(margin-top -19px + 隐藏重复头像)→ 读成一个连续块而非卡片堆。这同时根除了「答题后巨型汇总卡」(巨卡本质是 tool_group 用卡片 chrome 堆叠)。'
+  - 'User 细节1(lucide 不 emoji): 新增 src/shared/agent-tool-icons.ts 把 tool_name 映射到 lucide(web_search→Search/web_fetch→Globe/kb_search→BookOpen/image_gen→Image/load_skill→BookMarked/run_python→Terminal/...,sop_*→Sparkles,兜底 Wrench)。删旧 emoji 版 agent-icons.ts(无 importer 死代码)。活跃行图标 --primary 翠绿(与流式光标/run-pulse 点同源,曾误用 --blue 非 token P1 已修)。'
+  - 'User 细节2(答后回看): QuestionPrompt 答完默认折叠(answeredExpanded=ref(false)),「✓ 已回答 · 查看问题与回答」按钮配 ChevronDown/Up 切换 v-show 原问题与所选答案(只读)。测试用 aria-expanded 断言折叠态(规避 v-show+jsdom isVisible quirk)。'
+  - 'AgentRunPulse 重写为 RELAY 内联尾行(非 pinned 底栏): visible = isRunning && !isWaitingForUser && !lastMsgStreaming;流式时让文字光标当活信号本行让位;否则呼吸点 + 诚实静默词(silenceLadder 按 store.stuckSince) + 用时计时器。词是通用「处理中…」不回显工具——这正是 User 反馈「底栏与上方过程重复」的根因修复。'
+  - 'S4/S5 review: 双 Sonnet。修 P1: streamingMessageText 去 as any、活跃图标 --blue→--primary、.continued margin 数学(gap+margin-bottom 双算)→去 .msg margin-bottom 设 -19px。P2: 标签正则、sr-only 双读→.word aria-hidden、删死代码 agent-icons.ts。Gate: vue-tsc0/eslint0/全量 80 文件 823 pass。'
+  - '眼见为实(dev 实跑,User 两次被「代码对、线上错」坑过): browse + E2E 凭据登录 dev 打开历史定位调研会话,亲眼见扁平时间线(29 条 tl-line/6 tool-timeline,lucide 图标,单头像连续流,无巨卡)。发现 1 真缺陷: load_skill 那行 message 自带 📚 漏进来(违反 no-emoji)→ 派生 tooldisplay-deemoji hotfix + 本 feature 加前导 emoji 剥离(EMOJI_PREFIX 正则 Extended_Pictographic+VS16+ZWJ),历史会话即时干净。回归 824 pass(+1)。'
+  - 'S6: ndf-done merge develop(7d4d043)→ /deploy-dev web。prod 不在授权(等 User dev 验收)。mockup: /tmp/youshu-agent-timeline-mockup.html(User 拍板「就这样落地」)。'
+  blockers: []
+
+- id: tooldisplay-deemoji
+  ndf_version: '3.0'
+  description: 'agent-process-timeline 的 dev 眼见为实派生: Manus 式时间线现在每行渲染自己的 lucide 图标,但 configs/tool-display.yaml 里 3 个技能类工具(load_skill/use_skill/read_skill)的 narration 模板仍把 📚/📖/⚠ emoji 写死在 message 文案里,漏进时间线变成 lucide 旁的重复图标,违反 User 明确的「不要用 emoji」。非客户上报(dev 验证中发现),Rule 11 不适用。'
+  classification_reason: 'Hotfix(由 Micro 升级): 无 DB/无新 API/无新外部服务/3 文件(tool-display.yaml + 2 测试)/非高风险。本想走 Micro(纯文案+配套测试)但 ndf-check 把 biz/ 下 _test.go 一律判越界 → 按脚本指引升 Hotfix。单仓库 numind-server。'
+  last_updated_by: ai-h3
+  last_updated_at: '2026-06-15T00:00:00+08:00'
+  created_at: '2026-06-14T23:54:00+08:00'
+  completed_at: '2026-06-15T00:00:00+08:00'
+  track: hotfix
+  stage: H3
+  repos: [numind-server]
+  branches: {numind-server: fix/tooldisplay-deemoji (merged → develop af67d5f7, deleted)}
+  progress: {total_tasks: 1, completed_tasks: 1, reviewed_tasks: 1}
+  decisions:
+  - '治本治标 defense-in-depth: 后端从 9 行模板删 emoji(新 run message 本身干净)+ 前端在 AgentToolCallItem 渲染时剥前导 emoji(历史会话+任何未来漏网即时干净)。后端单看 dev 观察不到差异(前端无论如何都剥),但留 emoji 在模板是潜在债——未来任何渲染原始 message 的界面会再漏,故一并根治。'
+  - '改动: load_skill/use_skill/read_skill 的 use/result/error_template 去掉 📚/📖/⚠(verb/detail/interpolation/「正在」文案不动)。use_skill_template_test 去 emoji 断言 + 加 assertNoEmoji 守卫(扫 0x1F000-1FAFF/0x2600-27BF/0x2B00-2BFF/VS16 锁死规则防回归)。budgetgate 测试 1 处过时注释同步。'
+  - 'H2 review: 双 Sonnet。spec PASS(emoji 全清/守卫覆盖 📚U+1F4DA 📖U+1F4D6 ⚠U+26A0 且不误伤 CJK U+4E00-9FFF/全角冒号 U+FF1A/角括号/其余工具模板本就无 emoji)。quality 无 P0/P1,修 P2 循环变量 r→ch(避与同文件 r *Renderer 撞名)。Gate: go test -count=1(narration+budgetgate)0/golangci-lint(2 包)0/YAML 合法/grep 确认无 Go 代码依赖被删 emoji 串。'
+  - 'H3: ndf-done merge develop(af67d5f7)→ /deploy-dev server(模板 YAML 由 server 加载,虽对 dev 观察 inert 但保 dev==develop)。prod 不在授权。'
+  blockers: []
