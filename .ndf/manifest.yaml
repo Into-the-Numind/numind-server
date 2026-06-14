@@ -4391,3 +4391,23 @@ features:
   - 'H1 review: 双 Sonnet。后端 fix + blast radius CLEAN,确认 reload 同步修好。修 P1: finalizeToolGroups 对 cancelled/failed 原本翻 result(不诚实)→ completed→result 其余→error。P2: .tool-folded fallback 色 #8b90a0 / 过时 id-scheme 注释更新。Gate: 后端 go test+golangci-lint(agent)0/gofmt 净;前端 vue-tsc0/eslint0/全量 841 pass。'
   - 'H3: ndf-done merge 双仓库→develop。/deploy-dev server + web(后端改 adapter 必须重部署 server)。prod 不在授权。诊断方法: browse + E2E 凭据 dev 实跑复现是定位此类"看似前端实为后端"bug 的正确姿势(前两轮静态推理没击中)。'
   blockers: []
+
+- id: agent-run-pulse
+  ndf_version: '3.0'
+  description: 'User 上报: 绿色光标只在流式打字时有,生成图片/docx、以及轮询模式下 LLM 内部组织报告那几段既不流式也无活跃工具卡 → 0~90 秒纯死气,像卡死。要一个一致的"活着"信号让 UX 极致。User 明确要求先和一个新 Opus 4.8 subagent 头脑风暴形成方案。'
+  classification_reason: 'Standard(新组件 + 跨视图集成): 无 DB/API/新服务,但新增 AgentRunPulse 组件 + AgentChatView 挂载 + 光标 + util + 测试 >3 文件。纯前端单仓库 numind-web-v3。'
+  last_updated_by: ai-s6
+  last_updated_at: '2026-06-14T22:42:00+08:00'
+  created_at: '2026-06-14T21:00:00+08:00'
+  completed_at: '2026-06-14T22:42:00+08:00'
+  track: standard
+  stage: S6
+  repos: [numind-web-v3]
+  branches: {numind-web-v3: feature/agent-run-pulse (merged → develop 8c4b034, deleted)}
+  progress: {total_tasks: 1, completed_tasks: 1, reviewed_tasks: 1}
+  decisions:
+  - 'S2 头脑风暴(2 轮 Opus 4.8 subagent): 收敛出「实时进展行 AgentRunPulse」——对话与输入框之间一条常驻行,是 RELAY 不是第4个竞争信号。流式时让文字光标当活信号(进展行隐藏),流式一停 0ms 硬切接棒(冷启 250ms 淡入);有活跃工具回显其旁白;空隙走诚实阶梯(按 stuckSince 真实静默 0 秒就亮: 处理中→仍在处理中→复杂调研可能需要几分钟→可随时停止,绝不假进度/ETA/步数);等用户回答时整行隐藏(反向撒谎最坏)。节点 ping-pong 来回弹(非左→右扫,扫会被误读成假进度条)。reduced-motion: 关弹跳+用时常显+光标常亮不闪。subagent 关键纠正: per-tool 计时器其实已做很多只是工具一完就死、waiting 必须抑制、光标其实是 --primary 翠绿非蓝。'
+  - 'S4 决定不做后端 phase=composing(虽 User 在 mockup 里看过该状态): 深挖 ReAct 循环发现每次 LLM 生成要等生成完看有无 tool call 才知道是"写报告"还是"想下一步",生成开始那刻分不清 → 硬标"正在撰写报告"就是 leading-lie/假数据(User 最恨)。诚实做法: 那段用阶梯"处理中"兜,报告若由工具生成则进展行本就回显"正在生成文档"。组件预留读 phase 接口(forward-compat)但不自己编。结果: 纯前端、单仓库、低风险。User 拍板"就这样落地"。'
+  - 'S5 review: 双 Sonnet。修 P1: (a) dwell 链式延迟(连续切换把提交一路推后)→ 改 leading+trailing 固定窗 throttle; (b) 完成 1.4s 内新 run 显示"已完成"→ 新 run 启动清 settling; (c) .run-pulse 一直 pointer-events:none → 时间 tab hover 死,.show 加 auto; (d) 双 script 块导出 silenceLadder → 移到 utils/agentRunPulse.ts。P2: 视觉隐藏 aria-live(dwell 限速每工具一次,给盲人活信号又不刷屏)、光标 fallback 改翠绿、rAF→可清理 timer、settle keyframe 去抖动、触屏显示用时、hsl 语法统一。Gate: vue-tsc0/eslint0/全量 80 文件 851 pass(+10 新)。'
+  - 'S6: ndf-done merge develop(8c4b034)→ /deploy-dev web(纯前端)。prod 不在授权。mockup: /tmp/youshu-agent-runpulse-mockup.html(User 已看过拍板)。'
+  blockers: []
