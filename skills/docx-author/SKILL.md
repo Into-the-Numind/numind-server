@@ -37,13 +37,18 @@ doc.save("/workdir/output/headings_demo.docx")
 
 ## Template 2 — Inline image
 
+> 若本次对话中你用 `image_gen` 生成过图片，**务必**把那张图片的 COS URL 放进
+> `run_python` 的 `input_files`，并用 `doc.add_picture(...)` 把它嵌入文档对应位置——
+> 不要只在聊天里给用户一张图、却漏掉了文档里的图。`input_files` 里的 URL 会被下载到
+> `/workdir/input/<filename>`，按文件名（或顺序）引用即可。
+
 ```python
 from docx import Document
 from docx.shared import Inches
 doc = Document()
 doc.add_heading("产品截图汇总", level=0)
 doc.add_paragraph("以下截图来自最新构建：")
-# image at /workdir/input/screenshot.png (user-uploaded; substitute filename)
+# image at /workdir/input/screenshot.png (user-uploaded OR run-generated via image_gen; substitute filename)
 doc.add_picture("/workdir/input/screenshot.png", width=Inches(5.5))
 doc.add_paragraph("图 1：主页面")
 doc.save("/workdir/output/image_demo.docx")

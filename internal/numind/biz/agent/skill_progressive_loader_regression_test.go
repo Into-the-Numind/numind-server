@@ -192,3 +192,21 @@ func TestReopensOutputPath(t *testing.T) {
 		})
 	}
 }
+
+// TestOutputToolsPriorityAddendum_DocxEmbedImageNudge 防回归：docx 输出引导必须
+// 提示 agent 在 image_gen 生成过图片时，把 COS URL 放进 run_python 的 input_files
+// 并用 doc.add_picture 嵌入文档——避免"聊天里给图、文档里漏图"。
+//
+// 背景：agent-output-polish feature #2b（尽力引导，不保证模型每次照做）。
+func TestOutputToolsPriorityAddendum_DocxEmbedImageNudge(t *testing.T) {
+	wantSubstrings := []string{
+		"input_files", // 把图片 URL 放进 run_python 的 input_files
+		"image_gen",   // 触发条件：曾用 image_gen 生成图片
+		"add_picture", // 嵌入手段：doc.add_picture
+	}
+	for _, sub := range wantSubstrings {
+		if !strings.Contains(OutputToolsPriorityAddendum, sub) {
+			t.Errorf("OutputToolsPriorityAddendum 缺少 docx 嵌图引导子串 %q", sub)
+		}
+	}
+}
