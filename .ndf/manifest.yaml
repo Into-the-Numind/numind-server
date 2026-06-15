@@ -4567,3 +4567,21 @@ features:
   - 'S3: plan 按文件归属切 6 task(T-server/T-thinking/T-artifacts/T-finalanswer/T-toolcall/T-question)。唯一代码依赖 T-finalanswer←T-artifacts(groupAdjacentImages)。S5=vitest+go test+dev browse。'
   - 'S3 atomicity review(Sonnet): CONDITIONAL_PASS, 0 P0。2 P1 已纳入 T-artifacts: #2a 须同改 artifactRefOf(加 text 参数+更新 standaloneArtifactOf 调用)与独立的 extractArtifacts inline 路径, 且加 extractArtifacts-direct 测试。文件归属 disjoint 验证 PASS, 顺序 PASS。'
   blockers: []
+- id: adaptive-session-titles
+  ndf_version: '3.0'
+  description: '会话自适应标题 + Agent 历史列表完整化。两模式会话标题千篇一律(chatbot=智能体名 config.Name 写死 chatbot.go:377; agent=session_name 空/继承)→首轮对话结束后用便宜小模型(qwen-turbo)生成 6-12 字内容相关标题, 走系统路径不扣用户积分, 仅在标题为默认值/空时写入(不覆盖手动改名)。挂载点: chatbot=stream.go ChatStream done 前; agent=runner.go finalizeRun transcript 落库后。附带修 agent "只显示5个会话历史" bug: 四层硬编码 limit=5(agentChat.ts:273→agent.ts:47→student_query.go controller:84/biz:243)→侧边栏改展示全部, 最新在上(后端已 is_pinned DESC,started_at DESC)。chatbot 历史一并完善(当前默认拉首页20无加载更多)。'
+  classification_reason: 'Standard: 跨 numind-server+numind-web-v3 两仓库/影响文件>3/含新增标题生成 helper(LLM 调用)。无 DB schema(title/session_name 已存在)/无新对外 API 端点/无新外部服务(复用 aiservice)/非支付权限(标题生成走系统路径不计费)。用户 2026-06-16 确认 Standard + 4 项产品决策(LLM摘要标题/agent侧边栏全部/chatbot一并完善)。'
+  last_updated_by: ai-s0
+  last_updated_at: '2026-06-16T00:46:42+08:00'
+  created_at: '2026-06-16T00:46:42+08:00'
+  track: standard
+  stage: S0
+  status: active
+  repos: [numind-server, numind-web-v3]
+  branches: {numind-server: feature/adaptive-session-titles, numind-web-v3: feature/adaptive-session-titles}
+  worktrees: {numind-server: /private/tmp/wt-adaptive-session-titles-numind-server, numind-web-v3: /private/tmp/wt-adaptive-session-titles-numind-web-v3}
+  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
+  artifacts: {requirement: requirements/adaptive-session-titles.md}
+  decisions:
+  - 'S0: 需求卡 requirements/adaptive-session-titles.md。调研已读代码定位两模式标题写死点+agent 5-limit 四层硬编码根因。用户确认 4 项: (1)LLM摘要标题 qwen-turbo 不扣费 (2)agent 侧边栏展示全部最新在上 (3)chatbot 历史一并完善 (4)Standard 档。Triage→Standard(跨仓库/文件>3/新 helper)。注意与活跃 feature agent-output-refine(S3) 同改 agent 前端, S2/S3 须文件归属避冲突。'
+  blockers: []
