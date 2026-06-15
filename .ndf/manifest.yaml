@@ -204,10 +204,10 @@ features:
   track: standard
   description: '0 价模型（agnes/有数AI）仅限会员（sub 或 trial 在期）使用且零扣费；免费用户拒绝（ErrMembershipRequired）。per-call 语义：判定单位=单次被计费拦截的 AI 调用，看该调用模型 pricing_rule 是否全 0；0价+会员→SkipDeduction 跳过预扣不扣分，0价+免费用户→拒绝；收费调用照常预扣/拦截（SalesRAG 中途收费子调用仍拦"积分不足"）。键：pricing.IsFreeModel(查 pricing_rule 全0，查不到≠免费)+membership.GetMembershipState+复用 PreCheckResult.SkipDeduction。'
   classification_reason: 'Standard：高风险计费/权限逻辑（会员判定+跳过扣费+余额门槛放宽）+影响文件>3。无 DB schema/新 API/新外部服务。'
-  status: active
-  stage: S6
+  status: completed
+  stage: S7
   repos:
-    numind-server: develop (merged via ndf-done, commits 11c7bb0e + fix fa38114d)
+    numind-server: develop (11c7bb0e + fix fa38114d) ; prod hotfix v2.1.42 (branch release-hotfix-v2.1.42, commit 7e517768)
   progress:
     total_tasks: 6
     completed_tasks: 6
@@ -219,6 +219,7 @@ features:
     plan: .ndf/features/free-model-member-only/plan.md
     qa: .ndf/features/free-model-member-only/qa-report.md
   decisions:
+  - 'S7 prod 热修 (ai 2026-06-15, 用户授权): 发现功能早被并行 session cherry-pick 上 prod(v2.1.39→现 v2.1.41)但缺 CanPerformAIOperation 修复——靠 grep 实际运行二进制坐实(dev binary 有"applying balance gate"=1, prod=0; 方法已自证)。修法:从 v2.1.41(commit baa32fcd, prod 实跑)切 worktree release-hotfix-v2.1.42, cherry-pick 3 commit(d27f62ae+60ca74d6+0d723ca4)干净无冲突→go build/test 绿→tag v2.1.42(annotated)→push 分支+tag→release.sh prod server。结果:✅ Deploy success, 容器 v2.1.42-7e517768 healthy, 重 grep 运行二进制"applying balance gate"=1(修复确已上线)。prod 后端 9095 对外在网关后不可直 curl, 以容器 healthcheck 为准。**经验**:确认"修复是否上 prod"必须 grep 实际运行二进制(git tag/commit 推断会被 cherry-pick/重新打 tag 误导; tag 是 annotated 时 rev-parse 给 tag object 非 commit)。'
   - 'S6-fix (ai 2026-06-11): dev 验收发现 bug——会员账号 0 余额跑 SOP 节点选免费模型仍报"积分不足"。根因=漏掉的第三道门：controller/v1/sop/sop.go:671 的 CanPerformAIOperation("sop_run")（也用于 sop_chat + salesrag 6 处）是 controller 层粗粒度余额预检，跑在 free-model gate 之前且不感知会员/免费模型→0 余额会员被 GetEstimatedCredits 的 flat 估算(sop_run=20)挡掉。S2 review 其实点过这条但被我误判 out-of-scope。修：credit.go CanPerformAIOperation 加 IsActiveMember 豁免（同 C5 模式），覆盖 SOP+salesrag。Bug-from-customer：先 commit 失败复现测试 d27f62ae（trial 0 积分会员——踩 GORM default:200 零值坑，raw UPDATE 强制 0）→ 修 60ca74d6 → GREEN。双 Sonnet review PASS_WITH_CONCERNS：**确认无新增计费漏洞**（CanPerform 只检查不扣费；SOP/salesrag_chat 收费模型仍由 per-call reserve 拦；OCR/file_parse/profile/style_analysis 本就 unmetered=T6 既有技术债，非本修引入）。merge fa38114d→develop+push，重新 /deploy-dev。**Follow-up 技术债**：salesrag file_parse/ocr/profile_analysis/style_analysis 走 Reserve/Reconcile 迁移（T6 cleanup 遗留，非本 feature）。'
   - 'S6 (ai 2026-06-11): ndf-done 完成——feature/free-model-member-only 10 commit merge→develop（merge commit 11c7bb0e）+ push origin/develop（local==origin 已核）+ worktree/本地分支已清。/deploy-dev server 部署 dev 中。停在 S6 等用户验收；S7 prod 不在本次授权（需用户 tag + 单独确认）。'
   - 'S4-S5 (ai 2026-06-11): S4 编码完成 9 commit（T1-T6），每 task 双 Sonnet reviewer + 修复。T1 errno.ErrModelMembershipOnly / T2 pricing.IsFreeModel(+6 mock) / T3 membership.IsActiveMember / T4 credit 双入口门(decideFreeModel纯函数+freeModelGate)+ICreditService 扩 2 法+2 stub；**T4 review 抓 P0**=sop.go 默认路径两处 Reserve 丢了 if !pre.SkipDeduction 守卫(会员跑 free 模型会报 estimated>0)→已补；T5 中间件 EnforceModelMembership 提到 ChargeUser/fragment 之前(no-KB 也拦)+nil-route 守卫；T6 SOP CreateRun 会员感知放宽。S5：改动包单测+race+lint+build 全绿；AC1-7 矩阵见 qa-report。**全仓库 go test 唯一 FAIL=controller/v1/agent.TestAnswerHandler_MissingBody 属并行 feature agent-multi-question 中间态，非己引入（commit 隔离确认）**。下一步 S6 ndf-done + /deploy-dev server。'
