@@ -74,7 +74,7 @@ features:
   description: '通知系统：管理端发官方公告，用户端铃铛+通知中心看（已读/未读），公告可为问卷类型（单选/多选/评分/开放文本）做用户调研；后台看已读率+用户明细+问卷回收率。仅全员广播(V1)。强隔离：feature flag 默认 OFF + 独立表 + 独立路由组 /v1/announcements & /v1/admin/announcements + 前端懒加载，零改现有表/端点，不影响 prod 打 tag。'
   classification_reason: 'Standard: DB schema 变更(公告/已读回执/问卷题目/答卷新表)+新增 API 端点(admin 发布/统计 + 用户拉取/标记已读/提交)+跨 3 仓库(server/admin-web/web-v3)文件数>3。含 admin/user 鉴权(无支付)。用户 2026-06-16 授权直接开工(autopilot, 不部署 prod)。'
   status: active
-  stage: S4
+  stage: S6
   repos:
     numind-server: feature/notification-center
     numind-admin-web: feature/notification-center
@@ -85,16 +85,18 @@ features:
     numind-web-v3: /private/tmp/wt-notification-center-numind-web-v3
   progress:
     total_tasks: 11
-    completed_tasks: 6
-    reviewed_tasks: 6
+    completed_tasks: 11
+    reviewed_tasks: 11
   artifacts:
     requirement: .ndf/features/notification-center/requirement.md
     proposal: .ndf/features/notification-center/proposal.md
     spec: .ndf/features/notification-center/spec.md
     plan: .ndf/features/notification-center/plan.md
+    qa: .ndf/features/notification-center/qa-report.md
   decisions:
   - 'S0 (ai 2026-06-16): 档位=Standard(DB+API+3仓库)。锁定产品决策(AskUserQuestion): 铃铛+通知中心展示 / 仅全员广播 / 问卷四题型全做 / 后台要已读率+用户明细+回收率。自主设计: 问卷=公告 type 之一 / Markdown 正文 / 可选 expires_at / 一人一答 / feature flag 默认 OFF 隔离。用户授权 autopilot 推进, 不部署 prod。'
   - 'S1-S3 (ai 2026-06-16): 提案/PRD/spec/plan 全产出(.ndf/features/notification-center/, feature 分支)。spec §1 5表 §2 flag §3 锁 13 端点契约 §4 errno §5 业务规则 §6 前端规格 §7 测试策略。S3 独立 Sonnet reviewer PASS_WITH_CONCERNS(0 P0): 采纳拆 T2→T2a/b、T4→T4a/b、T6→T6a/b(便于独立验证) + 折入软删须查询层过滤deleted_at(FK CASCADE 仅硬删) / default-bool 回归测试归 store / 答卷事务回滚测试 / unread-count 覆盖 / 列表已读率 client 端 target=0 守卫。编码任务 11 个。进入 S4。'
+  - 'S4-S6 (ai 2026-06-16): 11/11 编码任务完成, 每任务并行双 Sonnet review(P0/P1 全修, P2 多数现修少数记录接受)。后端 go test ./... 0 FAIL + lint 0; admin-web type-check 0 + 本功能 vitest 全过(1 预存无关 agent.spec orphan 失败,非本 diff); web-v3 type-check 0 + 897 tests 0 fail; 两端 scoped lint 0。S5: Go/vitest 单测持久回归齐, Playwright e2e spec 留存但浏览器闭环未起本地栈(spec §7 既定: dev+gstack/qa 验), 已诚实声明。S6: ndf-done 三仓库 merge→develop pushed(server f7b3bc8b/admin a68af79/web 74aa891), worktree+分支清理, 并行 session 脏文件零重叠保留。flag 默认 OFF + config_prod 未写 → prod 打 tag 不受影响。未部署 dev/prod(待用户授权)。'
   blockers: []
 - id: agent-wait-ux
   track: hotfix
