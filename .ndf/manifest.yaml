@@ -4552,20 +4552,23 @@ features:
   ndf_version: '3.0'
   description: 'Agent 输出细节精修(User dev 实跑 agent-output-redesign 后 7 条反馈): (1)思考块箭头方向 折叠→右展开→下(ThinkingBlock chevron); (2)文件/图片命名丑——前端 splitIntoSegments 用 markdown 链接文字/alt 当显示名(现错用 URL path sanitized 下划线名)+后端 image_gen 起干净默认名(现 gemini-image-{unix}); (3)图片不要大外框 单图 S2(无框+轻阴影+点击大图)多图 M1(自适应网格); (4)markdown 标题分级字号+段间距; (5)表格/引用等带色→翠绿柔和不刺眼; (6)「等你回答一个问题」绿底行还转圈——前端过滤 ask_user_question(根因 tool-display.yaml 配 narration yield 工具永无 result→永久转圈+和问题卡重复); (7)问题卡已回答态回看卡仍旧白卡→统一 C3。playground docs/numind-image-playground.html(S2/M1)。'
   classification_reason: 'Standard: 跨仓库(后端 image 命名+前端多组件)/影响文件 >3。无 DB schema/新 API/支付权限。User playground 选 #3=S2/M1。'
-  last_updated_by: ai-s3
+  last_updated_by: ai-s5
   last_updated_at: '2026-06-16T00:33:04+08:00'
   created_at: '2026-06-16T00:33:04+08:00'
   track: standard
-  stage: S3
+  stage: S5
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/agent-output-refine, numind-web-v3: feature/agent-output-refine}
-  progress: {total_tasks: 6, completed_tasks: 0, reviewed_tasks: 0}
-  artifacts: {requirement: requirements/agent-output-refine.md, playground: docs/numind-image-playground.html, spec: docs/superpowers/specs/2026-06-16-agent-output-refine-design.md, plan: docs/superpowers/plans/agent-output-refine-plan.md}
+  progress: {total_tasks: 6, completed_tasks: 6, reviewed_tasks: 6}
+  artifacts: {requirement: requirements/agent-output-refine.md, playground: docs/numind-image-playground.html, spec: docs/superpowers/specs/2026-06-16-agent-output-refine-design.md, plan: docs/superpowers/plans/agent-output-refine-plan.md, qa_report: .ndf/features/agent-output-refine/qa-report.md}
   decisions:
   - 'S0: 需求卡。7 项落点 #1 ThinkingBlock chevron/#2 前端链接文字显示名+后端 image_gen 命名/#3 S2+M1/#4 标题分级/#5 表格引用翠绿/#6 过滤 ask_user_question 转圈行/#7 answered 态 C3。Triage→Standard。'
   - 'S1+S2: 设计合并 spec 2026-06-16-agent-output-refine-design.md。#1 ChevronRight 折叠右/展开下；#2a 前端取 markdown link-text/alt 当显示名(空回退 filenameOf)+#2b 后端 image_gen 默认名 image-YYYYMMDD-HHMMSS.png；#3 单图 S2(无框轻阴影点击放大)+多图 M1(groupAdjacentImages 连续图并网格)；#4 h1/h2 衬线+微妙字阶；#5 表格/引用/inline code/链接→柔和翠绿；#6 AgentToolCallList 过滤 ask_user_question；#7 answered 态 avatar+衬线+翠绿对齐 C3。'
   - 'S3: plan 按文件归属切 6 task(T-server/T-thinking/T-artifacts/T-finalanswer/T-toolcall/T-question)。唯一代码依赖 T-finalanswer←T-artifacts(groupAdjacentImages)。S5=vitest+go test+dev browse。'
   - 'S3 atomicity review(Sonnet): CONDITIONAL_PASS, 0 P0。2 P1 已纳入 T-artifacts: #2a 须同改 artifactRefOf(加 text 参数+更新 standaloneArtifactOf 调用)与独立的 extractArtifacts inline 路径, 且加 extractArtifacts-direct 测试。文件归属 disjoint 验证 PASS, 顺序 PASS。'
+  - 'S4: 6 task 全实现并 commit。后端 1(defaultImageFilename)+前端 5(ThinkingBlock/agentArtifacts+ArtifactItem/AgentFinalAnswer/AgentToolCallList/QuestionPrompt)。门禁全绿: go test 0 / golangci 0 / vitest 888 passed / vue-tsc 0 / eslint 0。'
+  - 'S4 双 Sonnet review(spec+quality 覆盖全 feature diff, merge-base): 双 PASS, 0 P0。spec 1 P2(ArtifactItem S2 正向断言缺)已修;quality 1 P1(grid img 无 @error→COS 过期碎图)已修+3 P2(displayName 注释/grid key=url/answered avatar 统一 26px)已修;时区 P2 不修(文件名展示)。修后重跑全绿。reviewed_tasks=6=completed_tasks。'
+  - 'S5: qa-report.md。逻辑/结构有 vitest 持久回归;纯视觉(箭头角度/字阶/翠绿浓淡/S2/M1/C3)一次性 dev 确认。待 S6 deploy server→web + dev browse 实跑 7 项。'
   blockers: []
 - id: adaptive-session-titles
   ndf_version: '3.0'
