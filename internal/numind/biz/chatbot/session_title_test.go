@@ -110,3 +110,54 @@ func TestMaybeGenerateTitle_EmptyResult_NoUpdate(t *testing.T) {
 	require.NoError(t, db.First(&row, sess.ID).Error)
 	assert.Equal(t, "客服助手", row.Title, "empty generated title → no update")
 }
+
+// Concurrent-rename race (P1): session.Title is a snapshot from ChatStream start;
+// the user renames mid-stream so the DB row no longer equals defaultName by the
+// time we write. The atomic compare-and-set must NOT clobber the manual rename.
+func TestMaybeGenerateTitle_ConcurrentRename_NoClobber(t *testing.T) {
+	b, db := newTitleTestBiz(t)
+	sess := &model.ChatbotSession{UserID: 1, ChatbotID: 2, Title: "客服助手", Status: "active"}
+	require.NoError(t, db.Create(sess).Error)
+	// Simulate the user renaming the session DURING title generation: the DB row
+	// changes while the in-memory snapshot (sess.Title) still holds the default.
+	require.NoError(t, db.Model(&model.ChatbotSession{}).Where("id = ?", sess.ID).
+		Update("title", "用户中途改的名").Error)
+
+	withGenTitleFn(t, func(_ context.Context, _, _ string) (string, error) {
+		return "自动生成标题", nil
+	})
+
+	got := b.maybeGenerateTitle(context.Background(), sess, "客服助手", "q", "a")
+	assert.Empty(t, got, "compare-and-set must fail when title changed concurrently")
+
+	var row model.ChatbotSession
+	require.NoError(t, db.First(&row, sess.ID).Error)
+	assert.Equal(t, "用户中途改的名", row.Title, "manual rename during generation must NOT be clobbered (US3)")
+}
+
+func TestMaybeGenerateTitle_NilSession_ReturnsEmpty(t *testing.T) {
+	b, _ := newTitleTestBiz(t)
+	called := false
+	withGenTitleFn(t, func(_ context.Context, _, _ string) (string, error) {
+		called = true
+		return "x", nil
+	})
+	assert.Empty(t, b.maybeGenerateTitle(context.Background(), nil, "bot", "q", "a"))
+	assert.False(t, called, "nil session → no generation")
+}
+
+func TestMaybeGenerateTitle_UpdateError_ReturnsEmpty(t *testing.T) {
+	b, db := newTitleTestBiz(t)
+	sess := &model.ChatbotSession{UserID: 1, ChatbotID: 2, Title: "客服助手", Status: "active"}
+	require.NoError(t, db.Create(sess).Error)
+	withGenTitleFn(t, func(_ context.Context, _, _ string) (string, error) {
+		return "新标题", nil
+	})
+	// Close the DB so UpdateTitleIfCurrent errors.
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	require.NoError(t, sqlDB.Close())
+
+	got := b.maybeGenerateTitle(context.Background(), sess, "客服助手", "q", "a")
+	assert.Empty(t, got, "UpdateTitleIfCurrent error → best-effort returns empty")
+}

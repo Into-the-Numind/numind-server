@@ -21,6 +21,12 @@ type IChatbotSessionStore interface {
 	// sessionID 不存在时返回 gorm.ErrRecordNotFound。
 	UpdateTitle(ctx context.Context, sessionID uint, title string) error
 
+	// UpdateTitleIfCurrent 原子地把 title 从 expected 改成 newTitle（WHERE id=? AND title=expected）。
+	// 用于自适应标题(adaptive-session-titles)：避免标题生成期间用户手动 rename 被覆盖的竞态——
+	// 仅当标题仍是写入时的默认值才覆盖。返回 updated=true 表示成功改写；false 表示标题已被并发改动
+	// 或 session 不存在（此时调用方应放弃）。显式 updated_at=updated_at 同样绕开 ON UPDATE 触发器。
+	UpdateTitleIfCurrent(ctx context.Context, sessionID uint, newTitle, expected string) (updated bool, err error)
+
 	// SetPinnedAt 设置或清除会话的置顶时间。显式 updated_at=updated_at 绕开 MySQL ON UPDATE 触发器（D2 决策）。
 	// pinnedAt == nil 时写入 SQL NULL（取消置顶）。sessionID 不存在时返回 gorm.ErrRecordNotFound。
 	SetPinnedAt(ctx context.Context, sessionID uint, pinnedAt *time.Time) error
@@ -115,6 +121,26 @@ func (s *chatbotSessionStore) UpdateTitle(ctx context.Context, sessionID uint, t
 		return gorm.ErrRecordNotFound
 	}
 	return nil
+}
+
+// UpdateTitleIfCurrent atomically sets title=newTitle only when the row's current
+// title still equals expected (compare-and-set). Returns updated=false (no error)
+// when no row matched — either the title was changed concurrently (e.g. user
+// rename during title generation) or the session does not exist; the caller
+// should then leave the title alone. Mirrors UpdateTitle's updated_at=updated_at
+// guard against the MySQL ON UPDATE trigger (D2).
+func (s *chatbotSessionStore) UpdateTitleIfCurrent(ctx context.Context, sessionID uint, newTitle, expected string) (bool, error) {
+	result := s.db.WithContext(ctx).
+		Model(&model.ChatbotSession{}).
+		Where("id = ? AND title = ?", sessionID, expected).
+		Updates(map[string]interface{}{
+			"title":      newTitle,
+			"updated_at": gorm.Expr("updated_at"),
+		})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
 }
 
 // SetPinnedAt 设置或清除会话的置顶时间，显式设置 updated_at=updated_at 绕开 MySQL
