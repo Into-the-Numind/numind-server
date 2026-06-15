@@ -27,6 +27,7 @@ import (
 	"numind-server/internal/numind/controller/v1/admin_order"
 	"numind-server/internal/numind/controller/v1/admin_sop"
 	"numind-server/internal/numind/controller/v1/admin_user"
+	announcementcontroller "numind-server/internal/numind/controller/v1/announcement"
 	marketplacecontroller "numind-server/internal/numind/controller/v1/marketplace"
 	monitorcontroller "numind-server/internal/numind/controller/v1/monitor"
 	"numind-server/internal/numind/store"
@@ -291,6 +292,29 @@ func installAdminRouters(g *gin.Engine) error {
 		)
 		mpCtrl := marketplacecontroller.NewController(mpSvc)
 		adminGroup.POST("/marketplace/:id/recommend", mpCtrl.SetRecommended)
+	}
+
+	// 通知中心管理端 (notification-center T4b, spec §3.2)
+	// FeatureFlag 中间件挂在 group 上（flag off → ErrFeatureDisabled 404）；
+	// AdminAuthMiddleware 由 adminGroup 继承（已强制 IsAdmin）。
+	// gin 静态/参数路由：/:id/stats 等是 param+static 后缀，不与 /:id 冲突。
+	{
+		annAdmin := announcementcontroller.NewAdminController(b.Announcement())
+		annAdminGroup := adminGroup.Group("/announcements")
+		annAdminGroup.Use(importMw.FeatureFlag("features.notification_center.enabled"))
+		{
+			annAdminGroup.POST("", annAdmin.Create)
+			annAdminGroup.GET("", annAdmin.List)
+			annAdminGroup.GET("/:id", annAdmin.Get)
+			annAdminGroup.PUT("/:id", annAdmin.Update)
+			annAdminGroup.POST("/:id/publish", annAdmin.Publish)
+			annAdminGroup.POST("/:id/archive", annAdmin.Archive)
+			annAdminGroup.DELETE("/:id", annAdmin.Delete)
+			annAdminGroup.GET("/:id/stats", annAdmin.Stats)
+			annAdminGroup.GET("/:id/readers", annAdmin.Readers)
+			annAdminGroup.GET("/:id/survey-results", annAdmin.SurveyResults)
+			annAdminGroup.GET("/:id/responses", annAdmin.Responses)
+		}
 	}
 
 	return nil
