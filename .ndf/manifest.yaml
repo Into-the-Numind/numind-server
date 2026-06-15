@@ -4575,11 +4575,11 @@ features:
   ndf_version: '3.0'
   description: 'Agent 输出细节精修(User dev 实跑 agent-output-redesign 后 7 条反馈): (1)思考块箭头方向 折叠→右展开→下(ThinkingBlock chevron); (2)文件/图片命名丑——前端 splitIntoSegments 用 markdown 链接文字/alt 当显示名(现错用 URL path sanitized 下划线名)+后端 image_gen 起干净默认名(现 gemini-image-{unix}); (3)图片不要大外框 单图 S2(无框+轻阴影+点击大图)多图 M1(自适应网格); (4)markdown 标题分级字号+段间距; (5)表格/引用等带色→翠绿柔和不刺眼; (6)「等你回答一个问题」绿底行还转圈——前端过滤 ask_user_question(根因 tool-display.yaml 配 narration yield 工具永无 result→永久转圈+和问题卡重复); (7)问题卡已回答态回看卡仍旧白卡→统一 C3。playground docs/numind-image-playground.html(S2/M1)。'
   classification_reason: 'Standard: 跨仓库(后端 image 命名+前端多组件)/影响文件 >3。无 DB schema/新 API/支付权限。User playground 选 #3=S2/M1。'
-  last_updated_by: ai-s6
+  last_updated_by: ai-s6-verified
   last_updated_at: '2026-06-16T00:33:04+08:00'
   created_at: '2026-06-16T00:33:04+08:00'
   track: standard
-  stage: S6
+  stage: completed
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/agent-output-refine, numind-web-v3: feature/agent-output-refine}
   progress: {total_tasks: 6, completed_tasks: 6, reviewed_tasks: 6}
@@ -4592,6 +4592,8 @@ features:
   - 'S4: 6 task 全实现并 commit。后端 1(defaultImageFilename)+前端 5(ThinkingBlock/agentArtifacts+ArtifactItem/AgentFinalAnswer/AgentToolCallList/QuestionPrompt)。门禁全绿: go test 0 / golangci 0 / vitest 888 passed / vue-tsc 0 / eslint 0。'
   - 'S4 双 Sonnet review(spec+quality 覆盖全 feature diff, merge-base): 双 PASS, 0 P0。spec 1 P2(ArtifactItem S2 正向断言缺)已修;quality 1 P1(grid img 无 @error→COS 过期碎图)已修+3 P2(displayName 注释/grid key=url/answered avatar 统一 26px)已修;时区 P2 不修(文件名展示)。修后重跑全绿。reviewed_tasks=6=completed_tasks。'
   - 'S5: qa-report.md。逻辑/结构有 vitest 持久回归;纯视觉(箭头角度/字阶/翠绿浓淡/S2/M1/C3)一次性 dev 确认。待 S6 deploy server→web + dev browse 实跑 7 项。'
+  - 'S6: ndf-done 双仓库 merge→develop→push(server ca5df9c4 / web bb8e1a9, local==origin 已核)。/deploy-dev server(8cf7fadf-dirty, build 178s)+web(bb8e1a9, build 104s)均 Release complete+healthz ok+容器镜像 SHA 已核换上(注:第一条后台命令的 & 造成假完成假象, 已用追踪式后台重跑确认)。'
+  - 'S6 dev browse 实跑(历史 session 复载, 0 console error): #1 chevron-right ×26✓ / #3 final-answer image-grid 3图 M1✓ / #4 h2 衬线 17.5px+h3 sans 15px 分级✓ / #5 表头 emerald(色 rgb24,149,108 底 rgb235,250,245)+链接 emerald✓ / #6 timeline 无「等你回答」转圈行✓ / #7 answered 卡 emerald avatar+Check+翠绿底 C3✓。截图核对 DOCX 链接可读名✓。注:#2 图片名旧 session 仍显旧名(历史数据, LLM 旧 alt), 新 run 才走 image-{date}.png+新 alt。#4/#5 仅覆盖 final answer(AgentFinalAnswer); 流式中间气泡(AgentMessageItem 自有 markdown-body)样式未动——非本次 7 项范围, 记为可选 follow-up。'
   blockers: []
 - id: adaptive-session-titles
   ndf_version: '3.0'
