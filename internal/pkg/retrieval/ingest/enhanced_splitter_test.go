@@ -74,17 +74,28 @@ func TestEnhancedMarkdownSplitter_WithOverlap(t *testing.T) {
 		t.Fatalf("Split failed: %v", err)
 	}
 
-	// 验证重叠
+	// 验证重叠：内部标记不再泄漏，且重叠机制仍在工作。
+	overlapFound := false
 	for i := 1; i < len(chunks); i++ {
 		curr := chunks[i].Content
 
-		// 当前 chunk 应该包含前一 chunk 的尾部
-		if !strings.Contains(curr, "上下文衔接") {
-			t.Errorf("Chunk %d should contain overlap marker", i)
+		// 回归：内部切块标记绝不能再泄漏进 chunk 内容（防止喂进 LLM prompt）。
+		if strings.Contains(curr, "上下文衔接") {
+			t.Errorf("Chunk %d leaked internal join marker into content", i)
 		}
 
-		t.Logf("Chunk %d length: %d", i, len(curr))
+		// 词边界裁剪后某些 chunk 的前置重叠可能为空，故只要求至少一个 chunk 带上重叠区
+		// （CoreStart 偏移到 sep 之后），证明去掉标记后重叠机制仍然生效。
+		if chunks[i].CoreStart > 0 {
+			overlapFound = true
+		}
+
+		t.Logf("Chunk %d length: %d, CoreStart: %d", i, len(curr), chunks[i].CoreStart)
 		t.Logf("Chunk %d content preview: %s...", i, curr[:min(50, len(curr))])
+	}
+
+	if len(chunks) > 1 && !overlapFound {
+		t.Error("expected at least one chunk to carry prefix overlap (CoreStart > 0)")
 	}
 }
 
