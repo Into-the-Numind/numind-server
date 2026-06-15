@@ -4571,19 +4571,20 @@ features:
   ndf_version: '3.0'
   description: '会话自适应标题 + Agent 历史列表完整化。两模式会话标题千篇一律(chatbot=智能体名 config.Name 写死 chatbot.go:377; agent=session_name 空/继承)→首轮对话结束后用便宜小模型(qwen-turbo)生成 6-12 字内容相关标题, 走系统路径不扣用户积分, 仅在标题为默认值/空时写入(不覆盖手动改名)。挂载点: chatbot=stream.go ChatStream done 前; agent=runner.go finalizeRun transcript 落库后。附带修 agent "只显示5个会话历史" bug: 四层硬编码 limit=5(agentChat.ts:273→agent.ts:47→student_query.go controller:84/biz:243)→侧边栏改展示全部, 最新在上(后端已 is_pinned DESC,started_at DESC)。chatbot 历史一并完善(当前默认拉首页20无加载更多)。'
   classification_reason: 'Standard: 跨 numind-server+numind-web-v3 两仓库/影响文件>3/含新增标题生成 helper(LLM 调用)。无 DB schema(title/session_name 已存在)/无新对外 API 端点/无新外部服务(复用 aiservice)/非支付权限(标题生成走系统路径不计费)。用户 2026-06-16 确认 Standard + 4 项产品决策(LLM摘要标题/agent侧边栏全部/chatbot一并完善)。'
-  last_updated_by: ai-s2
-  last_updated_at: '2026-06-16T01:05:00+08:00'
+  last_updated_by: ai-s3
+  last_updated_at: '2026-06-16T01:15:00+08:00'
   created_at: '2026-06-16T00:46:42+08:00'
   track: standard
-  stage: S2
+  stage: S3
   status: active
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/adaptive-session-titles, numind-web-v3: feature/adaptive-session-titles}
   worktrees: {numind-server: /private/tmp/wt-adaptive-session-titles-numind-server, numind-web-v3: /private/tmp/wt-adaptive-session-titles-numind-web-v3}
-  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
-  artifacts: {requirement: requirements/adaptive-session-titles.md, spec: docs/superpowers/specs/2026-06-16-adaptive-session-titles-design.md}
+  progress: {total_tasks: 6, completed_tasks: 0, reviewed_tasks: 0}
+  artifacts: {requirement: requirements/adaptive-session-titles.md, spec: docs/superpowers/specs/2026-06-16-adaptive-session-titles-design.md, plan: docs/superpowers/plans/adaptive-session-titles-plan.md}
   decisions:
   - 'S0: 需求卡 requirements/adaptive-session-titles.md。调研已读代码定位两模式标题写死点+agent 5-limit 四层硬编码根因。用户确认 4 项: (1)LLM摘要标题 qwen-turbo 不扣费 (2)agent 侧边栏展示全部最新在上 (3)chatbot 历史一并完善 (4)Standard 档。Triage→Standard(跨仓库/文件>3/新 helper)。注意与活跃 feature agent-output-refine(S3) 同改 agent 前端, S2/S3 须文件归属避冲突。'
   - 'S1+S2: 合并设计 spec 2026-06-16-adaptive-session-titles-design.md。共享 helper biz/sessiontitle.Generate(qwen-turbo,无 ContextFragments,剥离 billing ctx 不计费); chatbot ChatStream maxSeq==0 挂载+done.session_title; agent finalizeRun total==1&&session_name=="" 挂载+UpdateSessionName; agent 侧边栏改 listAllHistorySessions(去30天窗)+滚动; chatbot 加载更多+滚动+done实时更新标题。无 DB schema/无新对外端点。'
   - 'S2 review(Sonnet): CONDITIONAL_PASS。抓出 P0=agent finalizeCtx 继承 billOnly=true 致标题调用不 pass-through、计费仅靠 DB policy 拦(漏配则扣用户)→修复: Generate 内剥离 billing ctx(新增 WithoutGatewayBillingOnly helper),不计费不依赖 DB。P1=agent guard total 恒≥1 去 total==0 分支。P2=history 去30天窗/SessionTitle 进 allTaskIDsList/3s 超时。全部已纳入 spec。'
+  - 'S3: plan adaptive-session-titles-plan.md 切 6 task。T1 后端基座(billing helper+profile+sessiontitle 包)←T2(chatbot)/T3(agent+history去窗) 硬依赖；T4(agent前端)/T5(chatbot前端)独立可与后端并行。T6=S5 验证策略(单测+vitest+dev浏览器QA+计费DB核验)。执行=主session 顺序实现+每task并行双reviewer。文件归属已声明, T4/T5 与 agent-output-refine 同改 agent 前端须 merge 前 fetch 核对。'
   blockers: []
