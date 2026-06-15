@@ -81,6 +81,31 @@ T9: S5 验证策略（独立 reviewer 一并审）
 3. admin 统计页：已读率正确、已读/未读用户列表正确、survey 聚合（选项计数/评分分布/文本列表）正确。
 4. feature flag off：用户端无铃铛、后端端点返回 ErrFeatureDisabled。
 
+## S3 Review Refinements（已采纳，2026-06-16）
+独立 Sonnet reviewer：PASS_WITH_CONCERNS，0 P0。按其 P1/P2 调整：
+
+**任务拆分（P1，便于独立验证 + 半成品可编译）：**
+- **T2 → T2a / T2b**
+  - T2a：`IAnnouncementStore` 接口（全量声明）+ 用户端方法实现（列表/详情/未读数/已读 upsert/提交答卷事务/查已提交）+ CRUD（create+questions 事务/get/update/publish/archive/软删/admin 列表）。analytics 方法可先 stub 返回 `errors.New("TODO T2b")`，保证 T3 可基于完整接口启动。+ store 单测（CRUD/upsert 幂等/事务）。
+  - T2b：analytics 实现 — stats 计数、readers(read & unread 反连接)、survey 聚合(option_counts/rating 分布+avg/text 列表)、responses 分页。+ analytics 单测。
+- **T4 → T4a / T4b**
+  - T4a：user controller（5 端点，含 `unread-count`）+ 改 `router.go`（user group + FeatureFlag）。
+  - T4b：admin controller（8 端点）+ 改 `admin_router.go`（admin group + FeatureFlag）。T4a/T4b 文件 disjoint，可 Tier 3 并行（实际串行更稳）。
+- **T6 → T6a / T6b**
+  - T6a：`AnnouncementListView`（DataTable）+ `AnnouncementFormView` + `SurveyQuestionBuilder` + router + sidebar。
+  - T6b：`AnnouncementStatsView` + `SurveyResultChart` + 单测。依赖 T6a（列表可导航到统计）。
+
+**折入验收条件（P2）：**
+- **[T2a/T2b] 软删 vs FK CASCADE**：FK CASCADE 仅对硬删生效，软删（deleted_at）不触发。所有 stats/readers/列表/可见性查询必须显式 `announcement.deleted_at IS NULL`，已删公告不计入任何统计与展示。（数据完整性，非仅 UI）
+- **[T2b] unread 反连接**：用 `NOT EXISTS (SELECT 1 FROM announcement_read ...)` 或 `LEFT JOIN ... WHERE ar.id IS NULL`，过滤 `user.is_admin=false AND user.deleted_at IS NULL`，依赖 `idx_annread_user`。实现处注释选型。
+- **[T2a] GORM default bool 回归测试归 store**（真 GORM Create 路径，in-memory sqlite）：`is_important=false` / `required=false` 正确落库（`.claude/rules/database.md §6` 模式）。T3 biz 层用 mock 仅做单元断言。
+- **[T3] 答卷事务回滚测试**：mock store 在第 3 条 survey_answer insert 报错 → 验证 survey_response 不被创建（整体回滚），聚合不被污染。
+- **[T7] store `refreshUnread` 调 `GET /v1/announcements/unread-count`**（轻量端点，非 list）。
+- **[T8] E2E spec 实质内容**（非空 stub）：至少覆盖 (1) 铃铛红点出现/读后递减；(2) 问卷提交成功 + 二次打开显示已提交只读态(is_survey_submitted=true)；(3) flag off 隐藏铃铛。component test 用 spy 验证 60s 轮询打 unread-count。
+- **[T6a] 列表已读率列** = client 端 `read_count/target_count`，target_count=0 显示 '–'/'0%'（守卫）。
+
+**拆分后编码任务计数：T1, T2a, T2b, T3, T4a, T4b, T5, T6a, T6b, T7, T8 = 11；T9=S5 验证（非编码）。**
+
 ## 风险/回退
 - 后端 AutoMigrate 注册点找不到 → Pause（但已知项目用 AutoMigrate，grep 可定位）。
 - 前端铃铛全局 layout 定位不明 → 实现者读 layout 组件确认，必要时退化为 Sidebar 菜单项 + `/notifications` 路由。
