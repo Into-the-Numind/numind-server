@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
 
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -120,9 +122,6 @@ type IAnnouncementStore interface {
 	// ListResponses 返回按用户下钻的答卷列表（含每人全部答案），分页。
 	ListResponses(ctx context.Context, annID uint64, offset, limit int) ([]ResponseRow, int64, error)
 }
-
-// errTODOAnalytics 是 T2a analytics stub 的占位错误；T2b 实现后这些 stub 全部替换。
-var errTODOAnalytics = errors.New("TODO T2b: analytics not yet implemented")
 
 type announcementStore struct {
 	db *gorm.DB
@@ -389,34 +388,286 @@ func (s *announcementStore) SoftDelete(ctx context.Context, id uint64) error {
 	return nil
 }
 
-// ---------- analytics stubs（T2a 占位，T2b 实现） ----------
+// ---------- analytics（T2b 实现） ----------
 
-// TargetUserCount 见接口注释。T2a stub。
+// TargetUserCount 返回目标用户数：COUNT(user WHERE is_admin = false)。
+// GORM 软删除 scope（model.User 含 gorm.Model → DeletedAt）自动追加 deleted_at IS NULL，
+// 故无需显式写 deleted_at 条件（spec §5 口径）。
 func (s *announcementStore) TargetUserCount(ctx context.Context) (int64, error) {
-	return 0, errTODOAnalytics
+	var n int64
+	err := s.db.WithContext(ctx).Model(&model.User{}).
+		Where("is_admin = ?", false).
+		Count(&n).Error
+	if err != nil {
+		return 0, fmt.Errorf("TargetUserCount: %w", err)
+	}
+	return n, nil
 }
 
-// ReadCount 见接口注释。T2a stub。
+// ReadCount 返回指定公告的已读回执数。
 func (s *announcementStore) ReadCount(ctx context.Context, annID uint64) (int64, error) {
-	return 0, errTODOAnalytics
+	var n int64
+	err := s.db.WithContext(ctx).Model(&model.AnnouncementRead{}).
+		Where("announcement_id = ?", annID).
+		Count(&n).Error
+	if err != nil {
+		return 0, fmt.Errorf("ReadCount: %w", err)
+	}
+	return n, nil
 }
 
-// ResponseCount 见接口注释。T2a stub。
+// ResponseCount 返回指定公告的答卷数。
 func (s *announcementStore) ResponseCount(ctx context.Context, annID uint64) (int64, error) {
-	return 0, errTODOAnalytics
+	var n int64
+	err := s.db.WithContext(ctx).Model(&model.SurveyResponse{}).
+		Where("announcement_id = ?", annID).
+		Count(&n).Error
+	if err != nil {
+		return 0, fmt.Errorf("ResponseCount: %w", err)
+	}
+	return n, nil
 }
 
-// ListReaders 见接口注释。T2a stub。
+// ListReaders 返回已读(read)或未读(unread)用户列表，分页。
+//
+// 反连接选型（plan §99-100 / spec §3.2）：
+//   - read：INNER JOIN announcement_read 取有回执的目标用户，按 read_at DESC。
+//   - unread：目标用户中 NOT EXISTS 对应回执者。选用 NOT EXISTS 子查询（而非
+//     LEFT JOIN ... WHERE ar.id IS NULL），因为 NOT EXISTS 语义更直白、命中
+//     idx_annread_user (user_id) 上的半连接，且不会因 JOIN 产生重复行需 DISTINCT。
+//
+// 两路径都过滤 user.is_admin=false；user.deleted_at IS NULL 由 GORM 软删除 scope
+// （model.User 含 gorm.Model）自动追加，admin/软删用户均不出现在列表与 total 中。
 func (s *announcementStore) ListReaders(ctx context.Context, annID uint64, readStatus string, offset, limit int) ([]ReaderRow, int64, error) {
-	return nil, 0, errTODOAnalytics
+	var rows []ReaderRow
+	var total int64
+
+	switch readStatus {
+	case "read":
+		q := s.db.WithContext(ctx).Model(&model.User{}).
+			Joins("JOIN announcement_read ar ON ar.user_id = user.id AND ar.announcement_id = ?", annID).
+			Where("user.is_admin = ?", false)
+		if err := q.Count(&total).Error; err != nil {
+			return nil, 0, fmt.Errorf("ListReaders(read): count: %w", err)
+		}
+		if err := q.
+			Select("user.id AS user_id, user.nickname AS nickname, user.phone AS phone, ar.read_at AS read_at").
+			Order("ar.read_at DESC").
+			Offset(offset).Limit(limit).
+			Scan(&rows).Error; err != nil {
+			return nil, 0, fmt.Errorf("ListReaders(read): scan: %w", err)
+		}
+	case "unread":
+		q := s.db.WithContext(ctx).Model(&model.User{}).
+			Where("user.is_admin = ?", false).
+			Where("NOT EXISTS (SELECT 1 FROM announcement_read ar WHERE ar.user_id = user.id AND ar.announcement_id = ?)", annID)
+		if err := q.Count(&total).Error; err != nil {
+			return nil, 0, fmt.Errorf("ListReaders(unread): count: %w", err)
+		}
+		// read_at 为 nil（未读用户无回执）；ReaderRow.ReadAt 是 *time.Time，Scan 时留空即 nil。
+		if err := q.
+			Select("user.id AS user_id, user.nickname AS nickname, user.phone AS phone").
+			Order("user.id ASC").
+			Offset(offset).Limit(limit).
+			Scan(&rows).Error; err != nil {
+			return nil, 0, fmt.Errorf("ListReaders(unread): scan: %w", err)
+		}
+	default:
+		return nil, 0, fmt.Errorf("ListReaders: invalid read_status %q (want read|unread)", readStatus)
+	}
+	return rows, total, nil
 }
 
-// SurveyAggregate 见接口注释。T2a stub。
+// SurveyAggregate 返回问卷各题聚合（spec §3.2 survey-results）。
+//
+// 设计：JSON 数组聚合一律在 Go 内完成（plan/spec 明确禁止 MySQL JSON SQL 函数——它们
+// 在 sqlite 测试库不可用，且问卷 N 小）。流程：
+//  1. 按 order_index 取题目（含 options 顺序，作为输出顺序与零计数选项的来源）。
+//  2. 一次性取该公告所有答卷的答案（JOIN survey_response 拿 user_id/submitted_at），
+//     连带 user.nickname；在内存中按 question_id 归集。
+//  3. 逐题按题型聚合：single/multi 解析 answer_options JSON 数组计数；rating 累加分布+均值；
+//     text 收集非空文本。
 func (s *announcementStore) SurveyAggregate(ctx context.Context, annID uint64) ([]QuestionAggregate, error) {
-	return nil, errTODOAnalytics
+	questions, err := s.GetQuestions(ctx, annID)
+	if err != nil {
+		return nil, fmt.Errorf("SurveyAggregate: questions: %w", err)
+	}
+
+	// answerJoin 是一条答案 + 其所属答卷/用户信息（内存聚合用）。
+	type answerJoin struct {
+		QuestionID    uint64
+		AnswerOptions datatypes.JSON
+		AnswerRating  *int
+		AnswerText    *string
+		UserID        uint
+		Nickname      string
+		SubmittedAt   time.Time
+	}
+	var joined []answerJoin
+	// survey_answer → survey_response（取 user_id/submitted_at）→ user（取 nickname）。
+	// user 用 LEFT JOIN：即便用户被软删（GORM 软删 scope 不作用于显式 JOIN 表），
+	// 答案仍计入聚合（已收集的答卷数据不因用户后续删除而丢失）。
+	err = s.db.WithContext(ctx).
+		Table("survey_answer AS sa").
+		Select("sa.question_id AS question_id, sa.answer_options AS answer_options, "+
+			"sa.answer_rating AS answer_rating, sa.answer_text AS answer_text, "+
+			"sr.user_id AS user_id, sr.submitted_at AS submitted_at, u.nickname AS nickname").
+		Joins("JOIN survey_response sr ON sr.id = sa.response_id").
+		Joins("LEFT JOIN user u ON u.id = sr.user_id").
+		Where("sr.announcement_id = ?", annID).
+		Order("sr.submitted_at ASC, sa.id ASC").
+		Scan(&joined).Error
+	if err != nil {
+		return nil, fmt.Errorf("SurveyAggregate: answers: %w", err)
+	}
+
+	// 按 question_id 归集答案。
+	byQuestion := make(map[uint64][]answerJoin, len(questions))
+	for _, a := range joined {
+		byQuestion[a.QuestionID] = append(byQuestion[a.QuestionID], a)
+	}
+
+	out := make([]QuestionAggregate, 0, len(questions))
+	for _, q := range questions {
+		agg := QuestionAggregate{
+			QuestionID:   q.ID,
+			Title:        q.Title,
+			QuestionType: q.QuestionType,
+		}
+		answers := byQuestion[q.ID]
+
+		switch q.QuestionType {
+		case model.SurveyQuestionTypeSingle, model.SurveyQuestionTypeMulti:
+			// 解析题目 options 顺序，保证输出按题目选项顺序且含零计数项。
+			var optList []string
+			if len(q.Options) > 0 {
+				if uerr := json.Unmarshal(q.Options, &optList); uerr != nil {
+					return nil, fmt.Errorf("SurveyAggregate: unmarshal question %d options: %w", q.ID, uerr)
+				}
+			}
+			counts := make(map[string]int64, len(optList))
+			for _, a := range answers {
+				if len(a.AnswerOptions) == 0 {
+					continue
+				}
+				var chosen []string
+				if uerr := json.Unmarshal(a.AnswerOptions, &chosen); uerr != nil {
+					return nil, fmt.Errorf("SurveyAggregate: unmarshal answer_options (q=%d): %w", q.ID, uerr)
+				}
+				for _, c := range chosen {
+					counts[c]++
+				}
+			}
+			agg.OptionCounts = make([]OptionCount, 0, len(optList))
+			for _, opt := range optList {
+				agg.OptionCounts = append(agg.OptionCounts, OptionCount{Option: opt, Count: counts[opt]})
+			}
+		case model.SurveyQuestionTypeRating:
+			max := 0
+			if q.RatingMax != nil {
+				max = *q.RatingMax
+			}
+			dist := make(map[int]int64, max)
+			var sum, n int64
+			for _, a := range answers {
+				if a.AnswerRating == nil {
+					continue
+				}
+				v := *a.AnswerRating
+				dist[v]++
+				sum += int64(v)
+				n++
+			}
+			agg.Distribution = make([]RatingBucket, 0, max)
+			for v := 1; v <= max; v++ {
+				agg.Distribution = append(agg.Distribution, RatingBucket{Value: v, Count: dist[v]})
+			}
+			if n > 0 {
+				agg.Average = float64(sum) / float64(n)
+			}
+		case model.SurveyQuestionTypeText:
+			agg.TextAnswers = make([]TextAnswerRow, 0, len(answers))
+			for _, a := range answers {
+				if a.AnswerText == nil || *a.AnswerText == "" {
+					continue
+				}
+				agg.TextAnswers = append(agg.TextAnswers, TextAnswerRow{
+					UserID:      a.UserID,
+					Nickname:    a.Nickname,
+					Text:        *a.AnswerText,
+					SubmittedAt: a.SubmittedAt,
+				})
+			}
+		}
+		out = append(out, agg)
+	}
+	return out, nil
 }
 
-// ListResponses 见接口注释。T2a stub。
+// ListResponses 返回按用户下钻的答卷列表（含每人全部答案），分页（spec §3.2 responses）。
+//
+// 先分页 survey_response（按 submitted_at DESC），拿到本页 response_id 集合，再一次性
+// 查这些答卷的全部 survey_answer（避免 per-response N+1），并补上 user.nickname。
 func (s *announcementStore) ListResponses(ctx context.Context, annID uint64, offset, limit int) ([]ResponseRow, int64, error) {
-	return nil, 0, errTODOAnalytics
+	var total int64
+	if err := s.db.WithContext(ctx).Model(&model.SurveyResponse{}).
+		Where("announcement_id = ?", annID).
+		Count(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("ListResponses: count: %w", err)
+	}
+
+	// 分页本页答卷（带 nickname；user 用 LEFT JOIN 容忍软删用户）。
+	type respRow struct {
+		ID          uint64
+		UserID      uint
+		Nickname    string
+		SubmittedAt time.Time
+	}
+	var resps []respRow
+	err := s.db.WithContext(ctx).
+		Table("survey_response AS sr").
+		Select("sr.id AS id, sr.user_id AS user_id, sr.submitted_at AS submitted_at, u.nickname AS nickname").
+		Joins("LEFT JOIN user u ON u.id = sr.user_id").
+		Where("sr.announcement_id = ?", annID).
+		Order("sr.submitted_at DESC, sr.id DESC").
+		Offset(offset).Limit(limit).
+		Scan(&resps).Error
+	if err != nil {
+		return nil, 0, fmt.Errorf("ListResponses: page responses: %w", err)
+	}
+	if len(resps) == 0 {
+		return []ResponseRow{}, total, nil
+	}
+
+	// 一次性取本页所有答卷的答案，按 response_id 归集（避免 N+1）。
+	respIDs := make([]uint64, 0, len(resps))
+	for _, r := range resps {
+		respIDs = append(respIDs, r.ID)
+	}
+	var answers []model.SurveyAnswer
+	if err := s.db.WithContext(ctx).
+		Where("response_id IN ?", respIDs).
+		Order("response_id ASC, id ASC").
+		Find(&answers).Error; err != nil {
+		return nil, 0, fmt.Errorf("ListResponses: answers: %w", err)
+	}
+	byResp := make(map[uint64][]model.SurveyAnswer, len(resps))
+	for _, a := range answers {
+		byResp[a.ResponseID] = append(byResp[a.ResponseID], a)
+	}
+
+	out := make([]ResponseRow, 0, len(resps))
+	for _, r := range resps {
+		ans := byResp[r.ID]
+		if ans == nil {
+			ans = []model.SurveyAnswer{}
+		}
+		out = append(out, ResponseRow{
+			UserID:      r.UserID,
+			Nickname:    r.Nickname,
+			SubmittedAt: r.SubmittedAt,
+			Answers:     ans,
+		})
+	}
+	return out, total, nil
 }
