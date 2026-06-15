@@ -22,6 +22,7 @@ import (
 	agentatt "numind-server/internal/numind/biz/agent/attachment"
 	"numind-server/internal/numind/biz/agent/search"
 	"numind-server/internal/numind/biz/ali"
+	announcementbiz "numind-server/internal/numind/biz/announcement"
 	"numind-server/internal/numind/biz/attachment"
 	chatbotbiz "numind-server/internal/numind/biz/chatbot"
 	"numind-server/internal/numind/biz/config"
@@ -108,24 +109,25 @@ type realBizOnlyCustomers struct {
 	customers customerbiz.ICustomerBiz
 }
 
-func (b *realBizOnlyCustomers) Users() user.UserBiz                    { return nil }
-func (b *realBizOnlyCustomers) Ali() ali.AliBiz                        { return nil }
-func (b *realBizOnlyCustomers) Volc() volc.VolcBiz                     { return nil }
-func (b *realBizOnlyCustomers) Configs() config.ConfigBiz              { return nil }
-func (b *realBizOnlyCustomers) Sop() sopbiz.ISopBiz                    { return nil }
-func (b *realBizOnlyCustomers) Customers() customerbiz.ICustomerBiz    { return b.customers }
-func (b *realBizOnlyCustomers) SalesRAG() salesrag.SalesRAGBiz         { return nil }
-func (b *realBizOnlyCustomers) Credit() credit.ICreditBiz              { return nil }
-func (b *realBizOnlyCustomers) CreditService() credit.ICreditService   { return nil }
-func (b *realBizOnlyCustomers) Pricing() pricing.ICalculator           { return nil }
-func (b *realBizOnlyCustomers) Payment() payment.IPaymentBiz           { return nil }
-func (b *realBizOnlyCustomers) Monitor() monitor.IMonitorBiz           { return nil }
-func (b *realBizOnlyCustomers) KnowledgeBase() kbbiz.IKnowledgeBaseBiz { return nil }
-func (b *realBizOnlyCustomers) Chatbot() chatbotbiz.IChatbotBiz        { return nil }
-func (b *realBizOnlyCustomers) LLMRouter() *llmrouter.Router           { return nil }
-func (b *realBizOnlyCustomers) Agents() agent.AgentRunner              { return nil }
-func (b *realBizOnlyCustomers) AgentTools() agent.AgentToolRegistry    { return nil }
-func (b *realBizOnlyCustomers) Skill() skillbiz.Service                { return nil }
+func (b *realBizOnlyCustomers) Users() user.UserBiz                            { return nil }
+func (b *realBizOnlyCustomers) Ali() ali.AliBiz                                { return nil }
+func (b *realBizOnlyCustomers) Volc() volc.VolcBiz                             { return nil }
+func (b *realBizOnlyCustomers) Configs() config.ConfigBiz                      { return nil }
+func (b *realBizOnlyCustomers) Sop() sopbiz.ISopBiz                            { return nil }
+func (b *realBizOnlyCustomers) Customers() customerbiz.ICustomerBiz            { return b.customers }
+func (b *realBizOnlyCustomers) Announcement() announcementbiz.IAnnouncementBiz { return nil }
+func (b *realBizOnlyCustomers) SalesRAG() salesrag.SalesRAGBiz                 { return nil }
+func (b *realBizOnlyCustomers) Credit() credit.ICreditBiz                      { return nil }
+func (b *realBizOnlyCustomers) CreditService() credit.ICreditService           { return nil }
+func (b *realBizOnlyCustomers) Pricing() pricing.ICalculator                   { return nil }
+func (b *realBizOnlyCustomers) Payment() payment.IPaymentBiz                   { return nil }
+func (b *realBizOnlyCustomers) Monitor() monitor.IMonitorBiz                   { return nil }
+func (b *realBizOnlyCustomers) KnowledgeBase() kbbiz.IKnowledgeBaseBiz         { return nil }
+func (b *realBizOnlyCustomers) Chatbot() chatbotbiz.IChatbotBiz                { return nil }
+func (b *realBizOnlyCustomers) LLMRouter() *llmrouter.Router                   { return nil }
+func (b *realBizOnlyCustomers) Agents() agent.AgentRunner                      { return nil }
+func (b *realBizOnlyCustomers) AgentTools() agent.AgentToolRegistry            { return nil }
+func (b *realBizOnlyCustomers) Skill() skillbiz.Service                        { return nil }
 func (b *realBizOnlyCustomers) StudentQuery() *agent.StudentQueryService {
 	return nil
 }
