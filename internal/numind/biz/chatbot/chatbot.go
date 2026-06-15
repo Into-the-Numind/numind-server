@@ -65,7 +65,7 @@ type IChatbotBiz interface {
 	ListSessions(ctx context.Context, userID uint, offset, limit int) ([]model.ChatbotSession, int64, error)
 	DeleteSession(ctx context.Context, userID uint, sessionID uint) error
 	ListMessages(ctx context.Context, userID uint, sessionID uint, offset, limit int) ([]model.ChatbotMessage, int64, error)
-	ChatStream(ctx context.Context, userID uint, sessionID uint, message string, modelKey string, thinking bool, handler StreamHandler) error
+	ChatStream(ctx context.Context, userID uint, sessionID uint, message string, attachmentIDs []uint64, modelKey string, thinking bool, handler StreamHandler) error
 
 	// C端：会话管理（Task 3 — rename-pin feature）
 	RenameSession(ctx context.Context, userID, sessionID uint, title string) error
