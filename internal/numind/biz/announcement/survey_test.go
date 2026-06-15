@@ -30,7 +30,7 @@ func TestAnnouncementBiz_SubmitSurvey_NotVisible_NotFound(t *testing.T) {
 		},
 	}
 	b := NewWithStore(fs)
-	err := b.SubmitSurvey(context.Background(), 1, 99, nil)
+	_, err := b.SubmitSurvey(context.Background(), 1, 99, nil)
 	assert.ErrorIs(t, err, errno.ErrAnnouncementNotFound)
 }
 
@@ -41,7 +41,7 @@ func TestAnnouncementBiz_SubmitSurvey_NotSurvey_Error(t *testing.T) {
 		},
 	}
 	b := NewWithStore(fs)
-	err := b.SubmitSurvey(context.Background(), 1, 1, nil)
+	_, err := b.SubmitSurvey(context.Background(), 1, 1, nil)
 	assert.ErrorIs(t, err, errno.ErrAnnouncementNotSurvey)
 }
 
@@ -49,7 +49,7 @@ func TestAnnouncementBiz_SubmitSurvey_AlreadySubmitted(t *testing.T) {
 	fs := surveyFake(nil)
 	fs.hasSubmittedFn = func(_ context.Context, _ uint64, _ uint) (bool, error) { return true, nil }
 	b := NewWithStore(fs)
-	err := b.SubmitSurvey(context.Background(), 1, 1, nil)
+	_, err := b.SubmitSurvey(context.Background(), 1, 1, nil)
 	assert.ErrorIs(t, err, errno.ErrSurveyAlreadySubmitted)
 	assert.Equal(t, 0, fs.submitCalls, "已提交不应再写答卷")
 }
@@ -61,7 +61,7 @@ func TestAnnouncementBiz_SubmitSurvey_RequiredMissing(t *testing.T) {
 	}
 	fs := surveyFake(qs)
 	b := NewWithStore(fs)
-	err := b.SubmitSurvey(context.Background(), 1, 1, []AnswerInput{}) // 不答
+	_, err := b.SubmitSurvey(context.Background(), 1, 1, []AnswerInput{}) // 不答
 	assert.ErrorIs(t, err, errno.ErrSurveyValidation)
 	assert.Equal(t, 0, fs.submitCalls)
 }
@@ -73,7 +73,7 @@ func TestAnnouncementBiz_SubmitSurvey_SingleWrongCount(t *testing.T) {
 	}
 	fs := surveyFake(qs)
 	b := NewWithStore(fs)
-	err := b.SubmitSurvey(context.Background(), 1, 1, []AnswerInput{
+	_, err := b.SubmitSurvey(context.Background(), 1, 1, []AnswerInput{
 		{QuestionID: 10, Options: []string{"A", "B"}}, // 选了 2 个
 	})
 	assert.ErrorIs(t, err, errno.ErrSurveyValidation)
@@ -86,7 +86,7 @@ func TestAnnouncementBiz_SubmitSurvey_MultiOptionNotInSet(t *testing.T) {
 	}
 	fs := surveyFake(qs)
 	b := NewWithStore(fs)
-	err := b.SubmitSurvey(context.Background(), 1, 1, []AnswerInput{
+	_, err := b.SubmitSurvey(context.Background(), 1, 1, []AnswerInput{
 		{QuestionID: 10, Options: []string{"A", "Z"}}, // Z 不在集合
 	})
 	assert.ErrorIs(t, err, errno.ErrSurveyValidation)
@@ -100,7 +100,7 @@ func TestAnnouncementBiz_SubmitSurvey_RatingOutOfRange(t *testing.T) {
 	fs := surveyFake(qs)
 	b := NewWithStore(fs)
 	for _, v := range []int{0, 6} {
-		err := b.SubmitSurvey(context.Background(), 1, 1, []AnswerInput{
+		_, err := b.SubmitSurvey(context.Background(), 1, 1, []AnswerInput{
 			{QuestionID: 10, Rating: ptrInt(v)},
 		})
 		assert.ErrorIs(t, err, errno.ErrSurveyValidation, "rating=%d should fail", v)
@@ -114,7 +114,7 @@ func TestAnnouncementBiz_SubmitSurvey_TextEmptyWhenRequired(t *testing.T) {
 	}
 	fs := surveyFake(qs)
 	b := NewWithStore(fs)
-	err := b.SubmitSurvey(context.Background(), 1, 1, []AnswerInput{
+	_, err := b.SubmitSurvey(context.Background(), 1, 1, []AnswerInput{
 		{QuestionID: 10, Text: ptrStr("   ")}, // 全空白
 	})
 	assert.ErrorIs(t, err, errno.ErrSurveyValidation)
@@ -127,7 +127,7 @@ func TestAnnouncementBiz_SubmitSurvey_UnknownQuestionID(t *testing.T) {
 	}
 	fs := surveyFake(qs)
 	b := NewWithStore(fs)
-	err := b.SubmitSurvey(context.Background(), 1, 1, []AnswerInput{
+	_, err := b.SubmitSurvey(context.Background(), 1, 1, []AnswerInput{
 		{QuestionID: 999, Text: ptrStr("hi")}, // 该题不属于本问卷
 	})
 	assert.ErrorIs(t, err, errno.ErrSurveyValidation)
@@ -147,11 +147,13 @@ func TestAnnouncementBiz_SubmitSurvey_Success_MarksReadAfter(t *testing.T) {
 		return nil
 	}
 	b := NewWithStore(fs)
-	err := b.SubmitSurvey(context.Background(), 7, 1, []AnswerInput{
+	dto, err := b.SubmitSurvey(context.Background(), 7, 1, []AnswerInput{
 		{QuestionID: 10, Options: []string{"A"}},
 		// 题 11 非 required，不答 → 允许，不产生 answer 行
 	})
 	require.NoError(t, err)
+	require.NotNil(t, dto)
+	assert.True(t, dto.Submitted, "成功提交返回 {submitted:true}")
 	assert.Equal(t, 1, fs.submitCalls)
 	assert.Equal(t, 1, fs.markReadCalls, "成功提交后须 MarkRead")
 	require.Len(t, capturedAnswers, 1, "非 required 未答题不产生 answer 行")
@@ -172,7 +174,7 @@ func TestAnnouncementBiz_SubmitSurvey_TransactionRollback_NoMarkRead(t *testing.
 		return errStoreBoom
 	}
 	b := NewWithStore(fs)
-	err := b.SubmitSurvey(context.Background(), 7, 1, []AnswerInput{
+	_, err := b.SubmitSurvey(context.Background(), 7, 1, []AnswerInput{
 		{QuestionID: 10, Options: []string{"A"}},
 	})
 

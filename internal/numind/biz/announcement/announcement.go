@@ -62,6 +62,11 @@ type UnreadCountDTO struct {
 	UnreadCount int64 `json:"unread_count"`
 }
 
+// SubmitResultDTO 是问卷提交响应（spec §3.1 submit → {"submitted": true}）。
+type SubmitResultDTO struct {
+	Submitted bool `json:"submitted"`
+}
+
 // AnnouncementDetailDTO 是用户端详情响应（spec §3.1）。
 // 非 survey 时 Questions 为 []（非 null，匹配 spec "非 survey 时 questions 为 []"）。
 type AnnouncementDetailDTO struct {
@@ -254,7 +259,7 @@ type IAnnouncementBiz interface {
 	UnreadCount(ctx context.Context, userID uint) (*UnreadCountDTO, error)
 	DetailForUser(ctx context.Context, userID uint, id uint64) (*AnnouncementDetailDTO, error)
 	MarkRead(ctx context.Context, userID uint, id uint64) (*UnreadCountDTO, error)
-	SubmitSurvey(ctx context.Context, userID uint, id uint64, answers []AnswerInput) error
+	SubmitSurvey(ctx context.Context, userID uint, id uint64, answers []AnswerInput) (*SubmitResultDTO, error)
 
 	// ---------- admin ----------
 	Create(ctx context.Context, adminID uint, in CreateInput) (*AdminAnnouncementDTO, error)
@@ -537,6 +542,20 @@ func (b *announcementBiz) Update(ctx context.Context, id uint64, in UpdateInput)
 		return nil, err
 	}
 
+	// ★ 所有校验前置于任何写入：题目仅 draft 可改 + 题目构造校验。
+	// 否则 published 公告"改标题+带题目"会先把标题写库再因冻结报错（部分写入，reviewer P1）。
+	var pendingQuestions []model.SurveyQuestion
+	if in.Questions != nil {
+		if ann.Status != model.AnnouncementStatusDraft {
+			return nil, errno.ErrAnnouncementStatus.SetMessage("仅草稿状态可修改问卷题目")
+		}
+		qs, berr := buildQuestions(ann.Type, in.Questions)
+		if berr != nil {
+			return nil, berr
+		}
+		pendingQuestions = qs
+	}
+
 	if in.Title != nil {
 		if *in.Title == "" {
 			return nil, errno.ErrSurveyValidation.SetMessage("title 不能为空")
@@ -557,16 +576,9 @@ func (b *announcementBiz) Update(ctx context.Context, id uint64, in UpdateInput)
 		return nil, fmt.Errorf("Update: store: %w", err)
 	}
 
-	// 题目替换仅 draft 允许。
+	// 题目替换仅 draft 允许（校验已前置，此处只写）。
 	if in.Questions != nil {
-		if ann.Status != model.AnnouncementStatusDraft {
-			return nil, errno.ErrAnnouncementStatus.SetMessage("仅草稿状态可修改问卷题目")
-		}
-		questions, berr := buildQuestions(ann.Type, in.Questions)
-		if berr != nil {
-			return nil, berr
-		}
-		if err := b.store.ReplaceQuestions(ctx, id, questions); err != nil {
+		if err := b.store.ReplaceQuestions(ctx, id, pendingQuestions); err != nil {
 			return nil, fmt.Errorf("Update: replace questions: %w", err)
 		}
 	}

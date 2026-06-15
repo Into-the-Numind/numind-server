@@ -564,10 +564,12 @@ func TestAnnouncementBiz_Create_RatingMissingStyle_Error(t *testing.T) {
 
 func TestAnnouncementBiz_Create_ValidSurvey_PublishedSetsPublishedAt(t *testing.T) {
 	var capturedAnn *model.Announcement
+	var capturedQs []model.SurveyQuestion
 	fs := &fakeStore{
-		createFn: func(_ context.Context, ann *model.Announcement, _ []model.SurveyQuestion) error {
+		createFn: func(_ context.Context, ann *model.Announcement, questions []model.SurveyQuestion) error {
 			ann.ID = 1
 			capturedAnn = ann
+			capturedQs = questions
 			return nil
 		},
 		getQuestionsFn: func(_ context.Context, _ uint64) ([]model.SurveyQuestion, error) {
@@ -591,6 +593,9 @@ func TestAnnouncementBiz_Create_ValidSurvey_PublishedSetsPublishedAt(t *testing.
 	assert.Equal(t, uint64(1), dto.ID)
 	require.Len(t, dto.Questions, 1)
 	assert.Equal(t, []string{"A", "B"}, dto.Questions[0].Options)
+	// required=false 必须从 biz 透传到 store（spec §7；store 负责 default:1 fixup 落库）
+	require.Len(t, capturedQs, 1)
+	assert.False(t, capturedQs[0].Required, "biz 须把 required=false 透传给 store（QuestionInput.Required=*bool false）")
 }
 
 func TestAnnouncementBiz_Create_PlainWithQuestions_Error(t *testing.T) {

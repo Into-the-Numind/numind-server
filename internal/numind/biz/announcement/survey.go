@@ -34,31 +34,31 @@ type AnswerInput struct {
 //
 // ★ 顺序保证（plan T3 事务回滚）：MarkRead 仅在 SubmitResponse 成功后调用；
 // SubmitResponse 报错时直接返回（包装），不触发任何已读副作用、不残留答卷。
-func (b *announcementBiz) SubmitSurvey(ctx context.Context, userID uint, id uint64, answers []AnswerInput) error {
+func (b *announcementBiz) SubmitSurvey(ctx context.Context, userID uint, id uint64, answers []AnswerInput) (*SubmitResultDTO, error) {
 	ann, err := b.store.GetVisibleByID(ctx, id)
 	if err != nil {
-		return err // ErrAnnouncementNotFound 透传
+		return nil, err // ErrAnnouncementNotFound 透传
 	}
 	if ann.Type != model.AnnouncementTypeSurvey {
-		return errno.ErrAnnouncementNotSurvey
+		return nil, errno.ErrAnnouncementNotSurvey
 	}
 
 	submitted, err := b.store.HasSubmitted(ctx, id, userID)
 	if err != nil {
-		return fmt.Errorf("SubmitSurvey: has submitted: %w", err)
+		return nil, fmt.Errorf("SubmitSurvey: has submitted: %w", err)
 	}
 	if submitted {
-		return errno.ErrSurveyAlreadySubmitted
+		return nil, errno.ErrSurveyAlreadySubmitted
 	}
 
 	questions, err := b.store.GetQuestions(ctx, id)
 	if err != nil {
-		return fmt.Errorf("SubmitSurvey: questions: %w", err)
+		return nil, fmt.Errorf("SubmitSurvey: questions: %w", err)
 	}
 
 	modelAnswers, err := validateAndBuildAnswers(questions, answers)
 	if err != nil {
-		return err // ErrSurveyValidation（已附细节）
+		return nil, err // ErrSurveyValidation（已附细节）
 	}
 
 	resp := &model.SurveyResponse{
@@ -68,15 +68,15 @@ func (b *announcementBiz) SubmitSurvey(ctx context.Context, userID uint, id uint
 	}
 	if err := b.store.SubmitResponse(ctx, resp, modelAnswers); err != nil {
 		// 事务在 store 内回滚；不调用 MarkRead，不残留任何已读/答卷副作用。
-		return fmt.Errorf("SubmitSurvey: submit: %w", err)
+		return nil, fmt.Errorf("SubmitSurvey: submit: %w", err)
 	}
 
 	// 提交成功 → 顺带标记已读（spec §3.1）。失败不回滚答卷（已读是次要副作用），
 	// 但仍向上报错让调用方感知。
 	if err := b.store.MarkRead(ctx, id, userID); err != nil {
-		return fmt.Errorf("SubmitSurvey: mark read: %w", err)
+		return nil, fmt.Errorf("SubmitSurvey: mark read: %w", err)
 	}
-	return nil
+	return &SubmitResultDTO{Submitted: true}, nil
 }
 
 // validateAndBuildAnswers 按题型校验答案并构造 model.SurveyAnswer 列表（spec §5）。
@@ -182,10 +182,12 @@ func validateQuestionAnswer(q *model.SurveyQuestion, a *AnswerInput, optSet map[
 		if a == nil || a.Rating == nil {
 			return row, false, nil // 未答
 		}
-		max := 0
-		if q.RatingMax != nil {
-			max = *q.RatingMax
+		if q.RatingMax == nil {
+			// 数据完整性：buildQuestions 强制 rating_max 非空，nil 说明数据损坏/遗留行，
+			// 不能用 max=0 兜底（会让任何 v>=1 通过校验）。直接判违规。
+			return row, false, errno.ErrSurveyValidation.SetMessage("评分题「%s」未配置 rating_max", q.Title)
 		}
+		max := *q.RatingMax
 		v := *a.Rating
 		if v < 1 || v > max {
 			return row, false, errno.ErrSurveyValidation.SetMessage("评分题「%s」的分值 %d 超出范围 [1, %d]", q.Title, v, max)
