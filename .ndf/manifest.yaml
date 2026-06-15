@@ -4481,3 +4481,21 @@ features:
   - 'S4-T3+T4(前端,worktree numind-web-v3) DONE: T4(issue2 绿底) commit 4a61209——.tl-line 加 hsla(160 hue,0.06)绿底+圆角+padding,.tool-timeline gap:3px,active 0.10/error 淡红,不破坏扁平时间线。T3(issue1 前端渲染) commit 4d8b4e7+P2 7caee01——QuestionPromptItem 加 answer?,QuestionPrompt.displayAnswer(优先 questions[i].answer→live state→已回答),AgentMessageItem answered 映射已存在(P1-C 确认),+2 vitest(reload 真实答案/legacy fallback)。一次双 Sonnet review 覆盖 T3+T4 均 PASS(0 P0/P1,P2 已修 stale 注释;#ef4444 预存无关跳过)。门禁: vue-tsc 0/eslint 0/QuestionPrompt 21 tests pass。★P1 交付约束(review M1): 跨仓库 deploy 必须后端(server)先于前端(web)上线,否则前端 questions[i].answer undefined→reload 仍显示已回答 issue1 未根治→S6 deploy server 先于 web。'
   - 'S4-T2(后端 issue4 流式续跑) DONE: commit RED 7a4cec51(test(qa) answer-stream 端点缺失)→GREEN 1ba430cc(新增 POST /v1/agent-runs/:id/answer-stream SSE + biz AnswerStream→runner.RunStream + 抽 validateAndPersistAnswer helper 供 Answer/AnswerStream 共享 + AcquireResumeStreamLock 锁已存在 run + 抽 streamEvents 共享 pump + 路由)。★关键: RunStream 捕获 priorMessages 透传 3 处 finalizeRun(原 nil)→续跑 APPEND 不覆写第一段(防 dev run 148)+保 T1 issue1 answer turn; 初始流 messages="[]"→mergeResumeTranscript no-op 行为不变。旧 Answer+轮询保留作 fallback。无新增裸 LLM(复用 RunStream Langfuse)。双 Sonnet review PASS/PASS_WITH_CONCERNS(0 P0/P1, pump 抽取逐行核对零行为差异)。门禁: go test agent+store+controller 0(含 6 TestCreateStream_* 不回归)/gofmt 0/golangci-lint 0。TECH-DEBT(预存项目级,Rule 7 推迟): controller.runSvc 是具体类型→真实 CreateStream/AnswerStream handler 走 inline-copy 测试非真 streamEvents; S5 dev browse 实跑覆盖真端到端作安全网。'
   - 'S4-T1(后端 issue1) DONE: commit RED 2f2ffffc(test(qa) 复现答案 turn 渲成 user 气泡)→GREEN 851435bb(buildAnswerTurn 内嵌 question_answer + AnswerAndClear 收 json.RawMessage turn + transformMessages 重建 answered 卡 + questionPromptItem.Answer + 4 mock 同步)→P2 72d72e45(projectYieldOptions helper/turn 空值 guard/buildAnswerTurn+reconstructAnsweredQuestions 单测)。R2 已验证 turnsToHistoryMessages+mergeResumeTranscript 只读 role/content。双 Sonnet review 均 PASS_WITH_CONCERNS(0 P0/P1, P2 全修)。门禁: go test agent+store 0/gofmt 0/golangci-lint 0。注: T2 切 RunStream 续跑须确认 RunStream 也 merge prior transcript(否则重蹈 G1 覆写)。'
+  blockers: []
+
+- id: agent-output-polish
+  ndf_version: '3.0'
+  description: 'Agent mode 输出体验打磨(User dev 实跑 agent-qa-card-ux 后 4 条反馈): (1)去掉问题卡多问题模式的 review 检查页, 最后一题按钮直接「提交」。(2)生成图片不显示/不进 docx——★运行时取证推翻初判: run158 持久化最终回答确实嵌了 ![](url) 且图 URL curl 200/png/1MB, 前端 renderMarkdown 正确产 <img>; 即聊天图技术上正常渲染只是正文末尾不显眼(2a); docx 里没图=AI 用 run_python+docx-author 现写没嵌图=AI 行为(2b,改技能指南尽力)。(3)AI 回复 emoji 太多→User 选「禁用 emoji+美化 markdown 渲染」(基础提示 skill/constants.go 加指令+前端美化)。(4)下载链接(AI 在 markdown 写的 [下载](cos-url))做成卡片。统一设计: 2a+4 合并, 最终回答里图片+可下载文档都渲染成产物卡片(复用 AgentArtifactItem)。'
+  classification_reason: 'Standard: 跨仓库(后端提示/技能 + 前端多组件)/影响文件 >3。不涉 DB schema/不涉支付权限。User 档位确认选「一个 Standard 打包 4 个」。emoji 选「禁用+美化」。'
+  last_updated_by: ai-s0
+  last_updated_at: '2026-06-15T16:48:14+08:00'
+  created_at: '2026-06-15T16:48:14+08:00'
+  track: standard
+  stage: S0
+  repos: [numind-server, numind-web-v3]
+  branches: {numind-server: feature/agent-output-polish, numind-web-v3: feature/agent-output-polish}
+  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
+  artifacts: {requirement: requirements/agent-output-polish.md}
+  decisions:
+  - 'S0: 需求卡 requirements/agent-output-polish.md。★#2a 运行时取证(dev DB run158 + curl + renderMarkdown 测试): 聊天图实际正常渲染(非 bug), 改进点=显眼度→产物卡片。#2b docx 嵌图=AI 行为只能技能引导。#3 emoji=禁用+美化(User 选)。#2a+#4 合并为产物卡片统一设计。Triage→Standard(跨仓库+>3文件)。'
+  blockers: []
