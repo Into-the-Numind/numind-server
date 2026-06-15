@@ -51,6 +51,14 @@ func (ctrl *UserController) GetCurrentUser(c *gin.Context) {
 		userWithStats.AvatarURL = util.GetAvatarWithCOS(c, userWithStats.ID, userWithStats.AvatarURL)
 	}
 
+	// org-branding: 解析有效机构品牌名（父账户用自己/子账户用父账户/空串=未设置）。
+	// 失败不阻断 /me，降级为空串，前端兜底"有数AI"。
+	brandName, rcErr := ctrl.b.Users().ResolveCompanyName(c, userWithStats)
+	if rcErr != nil {
+		log.C(c).Warnw("ResolveCompanyName failed", "user_id", userWithStats.ID, "err", rcErr)
+		brandName = ""
+	}
+
 	// 构建响应数据（credits-only 计费体系，legacy_tier 已移除 2026-05）
 	response := gin.H{
 		"id":             userWithStats.ID,
@@ -60,6 +68,7 @@ func (ctrl *UserController) GetCurrentUser(c *gin.Context) {
 		"created_at":     userWithStats.CreatedAt,
 		"updated_at":     userWithStats.UpdatedAt,
 		"parent_user_id": userWithStats.ParentUserID,
+		"company_name":   brandName,
 
 		"total_sop_runs": userWithStats.TotalSopRuns,
 	}
