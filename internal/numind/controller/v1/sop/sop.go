@@ -1972,6 +1972,7 @@ func (ctrl *SopController) GetRunStatus(c *gin.Context) {
 	completedNodes := make([]v1.CompletedNodeInfo, len(status.CompletedNodes))
 	for i, node := range status.CompletedNodes {
 		completedNodes[i] = v1.CompletedNodeInfo{
+			NodeRunID:    node.NodeRunID, // 修复：此前漏拷贝，导致响应 node_run_id 恒为 0
 			NodeID:       node.NodeID,
 			NodeName:     node.NodeName,
 			Sort:         node.Sort,
@@ -1984,6 +1985,22 @@ func (ctrl *SopController) GetRunStatus(c *gin.Context) {
 			ModelName:    node.ModelName,   // B5
 			LatencyMs:    node.LatencyMs,   // B5
 			TotalTokens:  node.TotalTokens, // B5
+		}
+		// 该步上传文件（回看可见），URL 已在 biz 层实时签名
+		if len(node.Files) > 0 {
+			files := make([]v1.CompletedNodeFileInfo, len(node.Files))
+			for j, f := range node.Files {
+				files[j] = v1.CompletedNodeFileInfo{
+					ID:       f.ID,
+					FileName: f.FileName,
+					FileURL:  f.FileURL,
+					FileType: f.FileType,
+					FileSize: f.FileSize,
+					FileExt:  f.FileExt,
+					Content:  f.Content,
+				}
+			}
+			completedNodes[i].Files = files
 		}
 	}
 	response.CompletedNodes = completedNodes
