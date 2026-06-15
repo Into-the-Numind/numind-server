@@ -14,6 +14,7 @@ import (
 	"numind-server/internal/numind/biz/agent/search"
 	"numind-server/internal/numind/biz/agent/skills"
 	"numind-server/internal/numind/biz/ali"
+	announcementbiz "numind-server/internal/numind/biz/announcement"
 	"numind-server/internal/numind/biz/attachment"
 	"numind-server/internal/numind/biz/budget"
 	chatbotbiz "numind-server/internal/numind/biz/chatbot"
@@ -66,26 +67,27 @@ type IBiz interface {
 	Ali() ali.AliBiz
 	Volc() volc.VolcBiz
 	Configs() config.ConfigBiz
-	Sop() sopbiz.ISopBiz                          // SOP服务
-	Customers() customerbiz.ICustomerBiz          // 客户管理服务
-	SalesRAG() salesrag.SalesRAGBiz               // 销售 RAG 服务
-	Credit() credit.ICreditBiz                    // 积分服务
-	CreditService() credit.ICreditService         // credits-system ICreditService 统一入口
-	Pricing() pricing.ICalculator                 // pricing 同步成本计算
-	Payment() payment.IPaymentBiz                 // 支付服务
-	Monitor() monitor.IMonitorBiz                 // 博主监控服务
-	KnowledgeBase() kbbiz.IKnowledgeBaseBiz       // 知识库服务
-	Chatbot() chatbotbiz.IChatbotBiz              // 智能体服务
-	LLMRouter() *llmrouter.Router                 // LLM 路由服务
-	Agents() agent.AgentRunner                    // Agent Runtime（agent-mode #2）
-	AgentTools() agent.AgentToolRegistry          // Agent Tool Registry（agent-mode #3）
-	Skill() skillbiz.Service                      // Agent Skill CRUD（#5/14 skill-system）
-	StudentQuery() *agent.StudentQueryService     // Student-facing agent query (#14 follow-up ALPHA)
-	StudentRun() *agent.StudentRunService         // Student-facing run lifecycle (#14 BETA)
-	Attachment() *attachment.UploadService        // File attachment upload (#14 BETA)
-	AttachmentFallback() agentatt.FallbackService // Async fallback generation (V1.5 task 1.2)
-	MemoryCadence() *memory.CadenceService        // Task 3.6 dialectic cadence gate (Task 3.7 caller)
-	SearchService() search.Service                // Task 3.5 FULLTEXT search (router.go consumer)
+	Sop() sopbiz.ISopBiz                            // SOP服务
+	Customers() customerbiz.ICustomerBiz            // 客户管理服务
+	Announcement() announcementbiz.IAnnouncementBiz // 通知中心（公告/问卷）服务
+	SalesRAG() salesrag.SalesRAGBiz                 // 销售 RAG 服务
+	Credit() credit.ICreditBiz                      // 积分服务
+	CreditService() credit.ICreditService           // credits-system ICreditService 统一入口
+	Pricing() pricing.ICalculator                   // pricing 同步成本计算
+	Payment() payment.IPaymentBiz                   // 支付服务
+	Monitor() monitor.IMonitorBiz                   // 博主监控服务
+	KnowledgeBase() kbbiz.IKnowledgeBaseBiz         // 知识库服务
+	Chatbot() chatbotbiz.IChatbotBiz                // 智能体服务
+	LLMRouter() *llmrouter.Router                   // LLM 路由服务
+	Agents() agent.AgentRunner                      // Agent Runtime（agent-mode #2）
+	AgentTools() agent.AgentToolRegistry            // Agent Tool Registry（agent-mode #3）
+	Skill() skillbiz.Service                        // Agent Skill CRUD（#5/14 skill-system）
+	StudentQuery() *agent.StudentQueryService       // Student-facing agent query (#14 follow-up ALPHA)
+	StudentRun() *agent.StudentRunService           // Student-facing run lifecycle (#14 BETA)
+	Attachment() *attachment.UploadService          // File attachment upload (#14 BETA)
+	AttachmentFallback() agentatt.FallbackService   // Async fallback generation (V1.5 task 1.2)
+	MemoryCadence() *memory.CadenceService          // Task 3.6 dialectic cadence gate (Task 3.7 caller)
+	SearchService() search.Service                  // Task 3.5 FULLTEXT search (router.go consumer)
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -756,6 +758,12 @@ func (b *biz) Sop() sopbiz.ISopBiz {
 // Customers 返回客户管理服务实例.
 func (b *biz) Customers() customerbiz.ICustomerBiz {
 	return customerbiz.New(b.ds)
+}
+
+// Announcement 返回通知中心（公告/问卷）服务实例（notification-center）。
+// 沿用 Customers() 的惰性构造模式（无状态，依赖 ds.Announcements()）。
+func (b *biz) Announcement() announcementbiz.IAnnouncementBiz {
+	return announcementbiz.New(b.ds)
 }
 
 // SalesRAG 返回销售 RAG 服务实例.
