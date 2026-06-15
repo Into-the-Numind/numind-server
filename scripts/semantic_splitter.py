@@ -300,26 +300,33 @@ def add_overlap(chunks: List[Dict], overlap_size: int) -> List[Dict]:
         return chunks
     
     result = []
-    
+
+    # 重叠片段之间只用纯空行分隔。历史曾插入字面 "[上下文衔接]" 标记，但该标记会随
+    # content 一起被嵌入并泄漏进 LLM prompt，故不再写入；旧 chunk 的遗留标记在 Go 侧
+    # 渲染时由 domain.StripContextJoinMarker 兜底剥除。
+    sep = "\n\n"
+
     for i, chunk in enumerate(chunks):
         new_chunk = chunk.copy()
-        
+
         # 前置重叠
         if i > 0:
             prev_content = chunks[i - 1]["content"]
             overlap_text = prev_content[-overlap_size:] if len(prev_content) > overlap_size else prev_content
-            new_chunk["content"] = overlap_text + "\n\n[上下文衔接]\n\n" + chunk["content"]
-            new_chunk["has_prefix_overlap"] = True
-        
+            if overlap_text:
+                new_chunk["content"] = overlap_text + sep + chunk["content"]
+                new_chunk["has_prefix_overlap"] = True
+
         # 后置重叠
         if i < len(chunks) - 1:
             next_content = chunks[i + 1]["content"]
             overlap_text = next_content[:overlap_size] if len(next_content) > overlap_size else next_content
-            new_chunk["content"] = new_chunk["content"] + "\n\n[上下文衔接]\n\n" + overlap_text
-            new_chunk["has_suffix_overlap"] = True
-        
+            if overlap_text:
+                new_chunk["content"] = new_chunk["content"] + sep + overlap_text
+                new_chunk["has_suffix_overlap"] = True
+
         result.append(new_chunk)
-    
+
     return result
 
 
