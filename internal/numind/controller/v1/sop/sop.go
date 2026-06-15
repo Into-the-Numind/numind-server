@@ -1986,6 +1986,22 @@ func (ctrl *SopController) GetRunStatus(c *gin.Context) {
 			LatencyMs:    node.LatencyMs,   // B5
 			TotalTokens:  node.TotalTokens, // B5
 		}
+		// 该步上传文件（回看可见），URL 已在 biz 层实时签名
+		if len(node.Files) > 0 {
+			files := make([]v1.CompletedNodeFileInfo, len(node.Files))
+			for j, f := range node.Files {
+				files[j] = v1.CompletedNodeFileInfo{
+					ID:       f.ID,
+					FileName: f.FileName,
+					FileURL:  f.FileURL,
+					FileType: f.FileType,
+					FileSize: f.FileSize,
+					FileExt:  f.FileExt,
+					Content:  f.Content,
+				}
+			}
+			completedNodes[i].Files = files
+		}
 	}
 	response.CompletedNodes = completedNodes
 

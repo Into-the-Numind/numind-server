@@ -203,6 +203,20 @@ type CompletedNodeInfo struct {
 	ModelName    string `json:"model_name"`            // 实际调用的模型名称（B5）
 	LatencyMs    int64  `json:"latency_ms"`            // 执行耗时（毫秒）（B5）
 	TotalTokens  int    `json:"total_tokens"`          // 总 tokens（B5，绕过 model 层 json:"-"）
+	// Files 该步上传的文件（回看可见）。URL 为读取时实时签名：图片走 inline GET 签名（可 <img> 渲染），
+	// 非图片走 download 签名（attachment + 原文件名）。无文件时省略。
+	Files []CompletedNodeFileInfo `json:"files,omitempty"`
+}
+
+// CompletedNodeFileInfo 回看态单个上传文件（URL 已实时签名，私有桶裸链不可用）。
+type CompletedNodeFileInfo struct {
+	ID       uint   `json:"id"`
+	FileName string `json:"file_name"`
+	FileURL  string `json:"file_url"`           // 实时签名 URL（约 2h）；签名失败/无 object_key/COS 未启用 → 回退原 base url
+	FileType string `json:"file_type"`          // MIME（前端判 image/ 前缀决定渲染图片 vs 文件卡）
+	FileSize int64  `json:"file_size"`          // 字节
+	FileExt  string `json:"file_ext,omitempty"` // 扩展名（前端选文件图标的辅助）
+	Content  string `json:"content,omitempty"`  // 提取文本（可空、已截断，单文件上限 100KB）；前端默认折叠
 }
 
 // BookmarkInfo 书签信息（用于状态响应）

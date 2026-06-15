@@ -20,6 +20,7 @@ import (
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/pricing"
+	"numind-server/internal/pkg/util"
 	v1 "numind-server/pkg/api/numind/v1"
 
 	"gorm.io/gorm"
@@ -359,6 +360,8 @@ type CompletedNodeInfo struct {
 	ModelName    string `json:"model_name"`            // 实际调用的模型名称（B5）
 	LatencyMs    int64  `json:"latency_ms"`            // 执行耗时（毫秒）（B5）
 	TotalTokens  int    `json:"total_tokens"`          // 总 tokens（B5）
+	// Files 该步上传的文件（回看可见）。URL 已实时签名。见 replay_files.go。
+	Files []CompletedNodeFileInfo `json:"files,omitempty"`
 }
 
 // NextNodeInfo 下一个节点信息
@@ -1141,6 +1144,27 @@ func (b *sopBiz) GetRunStatus(ctx context.Context, runID uint) (*RunStatus, erro
 			}
 			break
 		}
+	}
+
+	// 装配每步上传文件（回看可见）。文件本体存 sop_file 表，URL 为私有桶 base 链接，
+	// 必须读取时实时签名（裸链匿名 GET 会 403）。失败不阻断主流程。
+	files, ferr := b.ds.Sop().ListFilesByRun(runID)
+	if ferr != nil {
+		log.C(ctx).Warnw("ListFilesByRun failed, replay files omitted", "run_id", runID, "error", ferr)
+	} else {
+		signImage := func(ctx context.Context, objectKey string) (string, error) {
+			if !util.IsCOSEnabled() {
+				return "", nil
+			}
+			return util.GenerateSignedURL(ctx, objectKey, replayFileURLExpirySeconds)
+		}
+		signDownload := func(ctx context.Context, objectKey, fileName string) (string, error) {
+			if !util.IsCOSEnabled() {
+				return "", nil
+			}
+			return util.GenerateSignedDownloadURL(ctx, objectKey, fileName, replayFileURLExpirySeconds)
+		}
+		attachNodeFiles(ctx, completedNodes, files, signImage, signDownload)
 	}
 
 	return &RunStatus{
