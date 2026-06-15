@@ -81,7 +81,19 @@ type ChatbotMessage struct {
 	PromptTokens     int       `gorm:"not null;default:0" json:"prompt_tokens"`
 	CompletionTokens int       `gorm:"not null;default:0" json:"completion_tokens"`
 	CreatedAt        time.Time `json:"created_at"`
+	// Attachments 记录该 user 消息携带的图片附件引用（chatbot-image-recognition）。
+	// 仅 user 消息可能非空；assistant 消息恒为 nil（omitempty 时字段省略）。
+	// serializer:json → GORM 自动 JSON 序列化进/出 `attachments` 列，读写无需 store 手动处理。
+	// 仅存展示所需轻量字段（不存 URL，reload 展示文件名 chip，规避 COS presign-on-read）。
+	Attachments []MessageAttachment `gorm:"column:attachments;serializer:json" json:"attachments,omitempty"`
 }
 
 // TableName returns the table name for ChatbotMessage.
 func (ChatbotMessage) TableName() string { return "chatbot_message" }
+
+// MessageAttachment 是 ChatbotMessage.Attachments 的元素：用户消息携带的附件引用。
+type MessageAttachment struct {
+	ID       uint64 `json:"id"`
+	Filename string `json:"filename"`
+	MimeType string `json:"mime_type"`
+}
