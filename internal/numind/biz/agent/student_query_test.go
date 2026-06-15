@@ -222,12 +222,14 @@ func TestGetSessionSnapshot_Forbidden_OtherUser(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TestListAllHistorySessions_Last30Days
+// TestListAllHistorySessions_IncludesOlderThan30Days
 // ---------------------------------------------------------------------------
 
-// TestListAllHistorySessions_Last30Days verifies that runs older than 30 days
-// are excluded.
-func TestListAllHistorySessions_Last30Days(t *testing.T) {
+// TestListAllHistorySessions_IncludesOlderThan30Days verifies that the 30-day
+// window was removed (adaptive-session-titles US4): ALL sessions are returned,
+// including ones older than 30 days. Replaces the prior _Last30Days test, which
+// asserted the now-removed window — the requirement deliberately changed.
+func TestListAllHistorySessions_IncludesOlderThan30Days(t *testing.T) {
 	svc, db := newSQService(t)
 
 	// Recent run.
@@ -241,7 +243,7 @@ func TestListAllHistorySessions_Last30Days(t *testing.T) {
 	}
 	require.NoError(t, db.Create(recent).Error)
 
-	// Old run (35 days ago).
+	// Old run (35 days ago) — previously excluded by the 30-day window.
 	old := &model.AgentRun{
 		UserID:    33,
 		SessionID: "old",
@@ -256,9 +258,12 @@ func TestListAllHistorySessions_Last30Days(t *testing.T) {
 
 	got, err := svc.ListAllHistorySessions(context.Background(), 33)
 	require.NoError(t, err)
+	sids := map[string]bool{}
 	for _, s := range got {
-		assert.NotEqual(t, "old", s.SessionID, "run older than 30 days must not appear")
+		sids[s.SessionID] = true
 	}
+	assert.True(t, sids["recent"], "recent session present")
+	assert.True(t, sids["old"], "35-day-old session must now appear (30-day window removed, US4)")
 }
 
 // ---------------------------------------------------------------------------
