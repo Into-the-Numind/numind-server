@@ -3,8 +3,11 @@ package aiservice
 // defaultMaxTokensFallback is the per-call output cap used ONLY when the resolved
 // model declares no max_output_tokens in its capability_json. A configured model
 // uses its declared value verbatim (those are the models' real limits, e.g. agnes
-// 65500) — capping below the real limit would truncate long answers.
-const defaultMaxTokensFallback = 8192
+// 65500) — capping below the real limit would truncate long answers. Set high
+// (60000) because every current model supports far more than a few thousand output
+// tokens; a low fallback would truncate a long answer on any model that is missing
+// its capability config.
+const defaultMaxTokensFallback = 60000
 
 // defaultMaxTokensFromCapability returns the per-call output cap the gateway sends
 // when the caller left req.MaxTokens unset (0). The resolved model's admin-configured
