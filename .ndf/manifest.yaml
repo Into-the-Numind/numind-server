@@ -1,5 +1,28 @@
 schema_version: '2.0'
 features:
+- id: notification-center
+  track: standard
+  description: '通知系统：管理端发官方公告，用户端铃铛+通知中心看（已读/未读），公告可为问卷类型（单选/多选/评分/开放文本）做用户调研；后台看已读率+用户明细+问卷回收率。仅全员广播(V1)。强隔离：feature flag 默认 OFF + 独立表 + 独立路由组 /v1/announcements & /v1/admin/announcements + 前端懒加载，零改现有表/端点，不影响 prod 打 tag。'
+  classification_reason: 'Standard: DB schema 变更(公告/已读回执/问卷题目/答卷新表)+新增 API 端点(admin 发布/统计 + 用户拉取/标记已读/提交)+跨 3 仓库(server/admin-web/web-v3)文件数>3。含 admin/user 鉴权(无支付)。用户 2026-06-16 授权直接开工(autopilot, 不部署 prod)。'
+  status: active
+  stage: S0
+  repos:
+    numind-server: feature/notification-center
+    numind-admin-web: feature/notification-center
+    numind-web-v3: feature/notification-center
+  worktrees:
+    numind-server: /private/tmp/wt-notification-center-numind-server
+    numind-admin-web: /private/tmp/wt-notification-center-numind-admin-web
+    numind-web-v3: /private/tmp/wt-notification-center-numind-web-v3
+  progress:
+    total_tasks: 0
+    completed_tasks: 0
+    reviewed_tasks: 0
+  artifacts:
+    requirement: .ndf/features/notification-center/requirement.md
+  decisions:
+  - 'S0 (ai 2026-06-16): 档位=Standard(DB+API+3仓库)。锁定产品决策(AskUserQuestion): 铃铛+通知中心展示 / 仅全员广播 / 问卷四题型全做 / 后台要已读率+用户明细+回收率。自主设计: 问卷=公告 type 之一 / Markdown 正文 / 可选 expires_at / 一人一答 / feature flag 默认 OFF 隔离。用户授权 autopilot 推进, 不部署 prod。'
+  blockers: []
 - id: agent-wait-ux
   track: hotfix
   description: 'agent 等待期两处体验修复。5a: 写长报告的 1-3min 工具静默期被 30s 的"任务似乎卡住了"误报成故障(dev run 150)→阈值放宽 30→90s/60→180s + 文案正向化"仍在处理中…请耐心等待" + 收到新 narration 自动撤销已插提示(自愈)。5b: 部署新前端后旧标签页继续跑旧 bundle 无提示, 用户在旧代码上测试以为"没修好"→useVersionCheck 轮询 index.html(no-store)比对 hash bundle 名, 检测到新部署弹不阻断的 NewVersionBanner 让用户自行刷新(不自动刷新避免打断), vite dev 无 hash bundle 天然 inert。'
