@@ -4487,18 +4487,19 @@ features:
   ndf_version: '3.0'
   description: 'Agent mode 输出体验打磨(User dev 实跑 agent-qa-card-ux 后 4 条反馈): (1)去掉问题卡多问题模式的 review 检查页, 最后一题按钮直接「提交」。(2)生成图片不显示/不进 docx——★运行时取证推翻初判: run158 持久化最终回答确实嵌了 ![](url) 且图 URL curl 200/png/1MB, 前端 renderMarkdown 正确产 <img>; 即聊天图技术上正常渲染只是正文末尾不显眼(2a); docx 里没图=AI 用 run_python+docx-author 现写没嵌图=AI 行为(2b,改技能指南尽力)。(3)AI 回复 emoji 太多→User 选「禁用 emoji+美化 markdown 渲染」(基础提示 skill/constants.go 加指令+前端美化)。(4)下载链接(AI 在 markdown 写的 [下载](cos-url))做成卡片。统一设计: 2a+4 合并, 最终回答里图片+可下载文档都渲染成产物卡片(复用 AgentArtifactItem)。'
   classification_reason: 'Standard: 跨仓库(后端提示/技能 + 前端多组件)/影响文件 >3。不涉 DB schema/不涉支付权限。User 档位确认选「一个 Standard 打包 4 个」。emoji 选「禁用+美化」。'
-  last_updated_by: ai-s5
-  last_updated_at: '2026-06-15T17:26:19+08:00'
+  last_updated_by: ai-s6
+  last_updated_at: '2026-06-15T17:27:43+08:00'
   created_at: '2026-06-15T16:48:14+08:00'
   track: standard
-  stage: S5
+  stage: S6
   repos: [numind-server, numind-web-v3]
-  branches: {numind-server: feature/agent-output-polish, numind-web-v3: feature/agent-output-polish}
+  branches: {numind-server: feature/agent-output-polish (merged → develop 234a8fd3, deleted), numind-web-v3: feature/agent-output-polish (merged → develop 5c2988a, deleted)}
   progress: {total_tasks: 5, completed_tasks: 5, reviewed_tasks: 5}
   artifacts: {requirement: requirements/agent-output-polish.md, proposal: docs/superpowers/specs/2026-06-15-agent-output-polish-design.md, spec: docs/superpowers/specs/2026-06-15-agent-output-polish-design.md, plan: docs/superpowers/plans/agent-output-polish-plan.md, qa: .ndf/features/agent-output-polish/qa-report.md}
   decisions:
   - 'S0: 需求卡 requirements/agent-output-polish.md。★#2a 运行时取证(dev DB run158 + curl + renderMarkdown 测试): 聊天图实际正常渲染(非 bug), 改进点=显眼度→产物卡片。#2b docx 嵌图=AI 行为只能技能引导。#3 emoji=禁用+美化(User 选)。#2a+#4 合并为产物卡片统一设计。Triage→Standard(跨仓库+>3文件)。'
   - 'S1+S2(合并, 4 项均明确 UX 改进无需重定义问题): 提案+spec docs/superpowers/specs/2026-06-15-agent-output-polish-design.md。落点锁定: #1 QuestionPrompt 去 review 步; #2a+#4 AgentFinalAnswer 用 extractArtifacts 抽图片+下载链接→复用 AgentArtifactItem 卡片(派生 markdown 故刷新仍在); #3 后端 skill/constants.go PlatformBasePrompt 加禁 emoji+前端 markdown 美化; #2b docx-author SKILL.md(已有 add_picture 模板)+output_tools_priority_prompt 加嵌图引导(尽力)。docx-author 技能已支持嵌图, 缺的是 AI 把生成图传进 input_files 的行为。无新增 LLM 入口。'
+  - 'S6: ndf-done 原子化 merge 双仓库→develop+push(server 234a8fd3 / web 5c2988a)+删 worktree+删本地分支, 已验证两 develop 与 origin 同步。下一步 /deploy-dev server 先于 web→dev browse+E2E 实跑验收 4 项→等 User 确认。prod 不在授权。'
   - 'S5 自动验收 PASS。QA 报告 .ndf/features/agent-output-polish/qa-report.md。门禁全绿: SERVER go test ./... 0 FAIL+golangci-lint 0; WEB vitest 857 pass/81 文件+vue-tsc 0+eslint 0。运行时验收(问题卡无检查页/产物卡片/emoji 消失/markdown 精致/docx 嵌图观察)按 plan T6 推迟 S6 dev browse+E2E 实跑。S6 deploy server 先于 web; TCR 100-tag 可能再触发(清旧标签)。'
   - 'S4 DONE(5 task, Tier2 跨仓库并行 implementer): 后端 commit c77e47b0(#3 emoji 提示 PlatformBasePrompt 加输出风格段+防回归单测; P1-C 确认所有 test 用常量引用无字面断言)/500e8e14(#2b docx-author SKILL.md+output_tools_priority_prompt 加嵌图引导 best-effort)。前端 commit 984b91e(#1 删 review 步+面板HTML/CSS/reviewing ref 无 dead code)/2c35942(#2a+#4 新 extractArtifacts util: COS 判定 host(myqcloud/cos.ap-)+path(agent-outputs/)双谓词+第三方链接/图不误伤; AgentFinalAnswer 渲染 AgentArtifactItem 卡片+prose 去节点; 23+6 vitest)/163893f(#3 markdown 美化+P1-B hr 从 display:none 改显示)。4 个 Sonnet review(每仓库双): 后端双 PASS; 前端 code-quality PASS(0 P0/P1)+spec-compliance 代码 PASS。spec-compliance 报的 P0「缺 S0-S3 工件」=FALSE POSITIVE(reviewer 在 web worktree 看到的是分支点旧 manifest+S0 .ndf-active 元数据; 实际 requirement/proposal/spec/plan 均在 develop 已 commit 8e9e52d1/2bbf06b2/cdef1d43, manifest 条目 S3, 工件 git show 确认 EXISTS——流程正确先工件后码)。P2 全推迟(reviewer 判不阻塞): 后端 pptx 对称/测试顺序; 前端 extractArtifacts 代码围栏内 COS URL(理论,COS生成URL不会)/URL内括号(COS路径无)/prose双空行(渲染无影响)。门禁: server go test skill+agent 0/gofmt/golangci-lint 0; web vue-tsc 0/eslint 0/全量 vitest 857 pass(0 fail)。'
   - 'S3: plan docs/superpowers/plans/agent-output-polish-plan.md。5 实现 task(T1-T5)+T6 验证策略, 后端先于前端, 序 T2→T5→T1→T3→T4→T6(T3/T4 同改 AgentFinalAnswer 串行)。独立 Sonnet 原子性审查 VERDICT=PASS_WITH_CONCERNS, 3 P1 已修: P1-A(extractArtifacts COS 判定边界 host myqcloud/cos.ap-+path agent-outputs/ + 第三方链接不误伤的测试用例)/P1-B(AgentFinalAnswer 现有 :deep(hr){display:none!important} 须改否则 T4 hr 美化静默无效)/P1-C(runner_prompt_test.go 硬编码 want=PlatformBasePrompt+... 改提示后须同步更新 want); 2 P2 已修(T1 删 review HTML/CSS 不留 dead code/T3 扩展名白名单明确)。'
