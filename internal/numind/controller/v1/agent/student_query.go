@@ -1,5 +1,5 @@
 // Package agent implements HTTP handlers for the agent system.
-// student_query.go contains the 7 GET + 1 POST student-facing endpoints that
+// student_query.go contains the 6 GET + 3 POST student-facing endpoints that
 // web-v3 calls. Controller is a thin layer: param binding + auth ctx +
 // biz call + core.WriteResponse. No business logic here.
 package agent
@@ -17,7 +17,7 @@ import (
 	"numind-server/internal/pkg/middleware"
 )
 
-// StudentQueryController handles the 8 student-facing endpoints.
+// StudentQueryController handles the 9 student-facing endpoints.
 type StudentQueryController struct {
 	skillSvc skill.Service
 	querySvc *bizagent.StudentQueryService
@@ -28,7 +28,7 @@ func NewStudentQueryController(skillSvc skill.Service, querySvc *bizagent.Studen
 	return &StudentQueryController{skillSvc: skillSvc, querySvc: querySvc}
 }
 
-// RegisterStudentQueryRoutes registers all 8 student-facing endpoints under authGroup.
+// RegisterStudentQueryRoutes registers all 9 student-facing endpoints under authGroup.
 // Called by router.go after the auth group is set up.
 func RegisterStudentQueryRoutes(authGroup *gin.RouterGroup, skillSvc skill.Service, querySvc *bizagent.StudentQueryService) {
 	ctrl := NewStudentQueryController(skillSvc, querySvc)
@@ -43,15 +43,13 @@ func RegisterStudentQueryRoutes(authGroup *gin.RouterGroup, skillSvc skill.Servi
 	authGroup.GET("/sessions/:id/snapshot", ctrl.GetSessionSnapshot)
 	// 5. GET /v1/agent-runs/:id  (student detail — distinct from admin endpoint)
 	authGroup.GET("/agent-runs/:id", ctrl.GetRun)
-	// 6. POST /v1/agent-runs/:id/feedback
-	authGroup.POST("/agent-runs/:id/feedback", ctrl.WriteFeedback)
-	// 7. GET /v1/tenant-settings/support-contact
+	// 6. GET /v1/tenant-settings/support-contact
 	authGroup.GET("/tenant-settings/support-contact", ctrl.GetSupportContact)
-	// 8. POST /v1/agent-sessions/:id/pin
+	// 7. POST /v1/agent-sessions/:id/pin
 	authGroup.POST("/agent-sessions/:id/pin", ctrl.PinSession)
-	// 9. POST /v1/agent-sessions/:id/rename
+	// 8. POST /v1/agent-sessions/:id/rename
 	authGroup.POST("/agent-sessions/:id/rename", ctrl.RenameSession)
-	// 10. POST /v1/agent-sessions/:id/delete
+	// 9. POST /v1/agent-sessions/:id/delete
 	authGroup.POST("/agent-sessions/:id/delete", ctrl.DeleteSession)
 }
 
@@ -170,36 +168,6 @@ func (h *StudentQueryController) GetRun(c *gin.Context) {
 		return
 	}
 	core.WriteResponse(c, nil, run)
-}
-
-// feedbackRequest is the JSON body for POST /v1/agent-runs/:id/feedback.
-type feedbackRequest struct {
-	Verdict string `json:"verdict" binding:"required"`
-	Text    string `json:"text"`
-}
-
-// WriteFeedback handles POST /v1/agent-runs/:id/feedback.
-// Persists 👍/👎 + optional text to agent_run.terminal_metadata["feedback"].
-func (h *StudentQueryController) WriteFeedback(c *gin.Context) {
-	user := middleware.GetCurrentUser(c)
-	if user == nil {
-		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
-		return
-	}
-	id, ok := mustParseID(c)
-	if !ok {
-		return
-	}
-	var req feedbackRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("%s", err.Error()), nil)
-		return
-	}
-	err := h.querySvc.WriteFeedback(c.Request.Context(), user.ID, id, bizagent.FeedbackRequest{
-		Verdict: req.Verdict,
-		Text:    req.Text,
-	})
-	core.WriteResponse(c, err, nil)
 }
 
 // GetSupportContact handles GET /v1/tenant-settings/support-contact.

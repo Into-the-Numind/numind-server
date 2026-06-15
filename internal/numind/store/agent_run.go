@@ -39,7 +39,8 @@ type IAgentRunStore interface {
 	// MergeTerminalMetadata merges a JSON patch into agent_run.terminal_metadata.
 	// Reads current value, merges key-by-key (shallow), writes back.
 	// RowsAffected==0 returns error.
-	// Used by WriteFeedback v1 (#14 follow-up ALPHA).
+	// Used by finalizeRun() to record error_message/error_class on the run's
+	// terminal (error/extend) path.
 	MergeTerminalMetadata(ctx context.Context, id uint64, patch map[string]interface{}) error
 	// UpdatePendingQuestion writes the ask_user_question payload JSON to
 	// agent_run.pending_question_json and sets pending_question_at = NOW() and

@@ -35,23 +35,45 @@ for step in ["发布新版本", "客户回访", "复盘"]:
 doc.save("/workdir/output/headings_demo.docx")
 ```
 
-## Template 2 — Inline image
+## Template 2 — Inline image（强制嵌图规则）
 
-> 若本次对话中你用 `image_gen` 生成过图片，**务必**把那张图片的 COS URL 放进
-> `run_python` 的 `input_files`，并用 `doc.add_picture(...)` 把它嵌入文档对应位置——
-> 不要只在聊天里给用户一张图、却漏掉了文档里的图。`input_files` 里的 URL 会被下载到
-> `/workdir/input/<filename>`，按文件名（或顺序）引用即可。
+**如果本次对话中你用 `image_gen` 生成过任何图片，写 docx 时你【必须】把那些图嵌进文档，绝不允许只在聊天里给用户一张图、却漏掉了文档里的图。** 具体两步缺一不可：
+
+1. **把图的 COS URL 传给 `input_files`**：调用 `run_python` 时，在 `input_files` 数组里放上每张图的 COS URL。这些 URL 会被自动下载到 `/workdir/input/<filename>`（文件名取自 URL 末段），你的 Python 代码按这个本地路径读取。
+2. **在正文用 `doc.add_picture(...)` 嵌入**：在封面、对应章节或图注位置，调用 `doc.add_picture('/workdir/input/<filename>', width=Inches(5.5))` 把图片插进文档。
+
+下面是一段完整、可直接抄改的片段（封面嵌一张 image_gen 生成的图 + 章节内嵌另一张）：
 
 ```python
 from docx import Document
 from docx.shared import Inches
+
+# 假设本次对话里 image_gen 生成了两张图，它们的 COS URL 已通过 run_python 的
+# input_files=["https://cos.../cover.png", "https://cos.../chart.png"] 传入，
+# 因此本地分别落在 /workdir/input/cover.png 和 /workdir/input/chart.png。
 doc = Document()
-doc.add_heading("产品截图汇总", level=0)
-doc.add_paragraph("以下截图来自最新构建：")
-# image at /workdir/input/screenshot.png (user-uploaded OR run-generated via image_gen; substitute filename)
-doc.add_picture("/workdir/input/screenshot.png", width=Inches(5.5))
-doc.add_paragraph("图 1：主页面")
-doc.save("/workdir/output/image_demo.docx")
+
+# 封面：必须把生成的封面图嵌进来，而不是只在聊天里发给用户。
+doc.add_heading("2026 Q3 业务方案", level=0)
+doc.add_picture("/workdir/input/cover.png", width=Inches(5.5))
+doc.add_paragraph("图 0：方案封面")
+
+# 正文章节：同理嵌入章节配图。
+doc.add_heading("一、市场分析", level=1)
+doc.add_paragraph("下图为最新市场趋势：")
+doc.add_picture("/workdir/input/chart.png", width=Inches(5.5))
+doc.add_paragraph("图 1：市场趋势")
+
+doc.save("/workdir/output/report_with_images.docx")
+```
+
+对应的 `run_python` 调用（注意 `input_files` 必须带上每张图的 COS URL）：
+
+```json
+{
+  "code": "<上面的 Python 片段>",
+  "input_files": ["https://cos.../cover.png", "https://cos.../chart.png"]
+}
 ```
 
 ## Template 3 — Table
