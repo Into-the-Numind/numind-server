@@ -4505,3 +4505,22 @@ features:
   - 'S4 DONE(5 task, Tier2 跨仓库并行 implementer): 后端 commit c77e47b0(#3 emoji 提示 PlatformBasePrompt 加输出风格段+防回归单测; P1-C 确认所有 test 用常量引用无字面断言)/500e8e14(#2b docx-author SKILL.md+output_tools_priority_prompt 加嵌图引导 best-effort)。前端 commit 984b91e(#1 删 review 步+面板HTML/CSS/reviewing ref 无 dead code)/2c35942(#2a+#4 新 extractArtifacts util: COS 判定 host(myqcloud/cos.ap-)+path(agent-outputs/)双谓词+第三方链接/图不误伤; AgentFinalAnswer 渲染 AgentArtifactItem 卡片+prose 去节点; 23+6 vitest)/163893f(#3 markdown 美化+P1-B hr 从 display:none 改显示)。4 个 Sonnet review(每仓库双): 后端双 PASS; 前端 code-quality PASS(0 P0/P1)+spec-compliance 代码 PASS。spec-compliance 报的 P0「缺 S0-S3 工件」=FALSE POSITIVE(reviewer 在 web worktree 看到的是分支点旧 manifest+S0 .ndf-active 元数据; 实际 requirement/proposal/spec/plan 均在 develop 已 commit 8e9e52d1/2bbf06b2/cdef1d43, manifest 条目 S3, 工件 git show 确认 EXISTS——流程正确先工件后码)。P2 全推迟(reviewer 判不阻塞): 后端 pptx 对称/测试顺序; 前端 extractArtifacts 代码围栏内 COS URL(理论,COS生成URL不会)/URL内括号(COS路径无)/prose双空行(渲染无影响)。门禁: server go test skill+agent 0/gofmt/golangci-lint 0; web vue-tsc 0/eslint 0/全量 vitest 857 pass(0 fail)。'
   - 'S3: plan docs/superpowers/plans/agent-output-polish-plan.md。5 实现 task(T1-T5)+T6 验证策略, 后端先于前端, 序 T2→T5→T1→T3→T4→T6(T3/T4 同改 AgentFinalAnswer 串行)。独立 Sonnet 原子性审查 VERDICT=PASS_WITH_CONCERNS, 3 P1 已修: P1-A(extractArtifacts COS 判定边界 host myqcloud/cos.ap-+path agent-outputs/ + 第三方链接不误伤的测试用例)/P1-B(AgentFinalAnswer 现有 :deep(hr){display:none!important} 须改否则 T4 hr 美化静默无效)/P1-C(runner_prompt_test.go 硬编码 want=PlatformBasePrompt+... 改提示后须同步更新 want); 2 P2 已修(T1 删 review HTML/CSS 不留 dead code/T3 扩展名白名单明确)。'
   blockers: []
+
+- id: chunk-marker-strip
+  ndf_version: '3.0'
+  description: '知识库 chunk 内部切块标记 [上下文衔接] 泄漏进 LLM prompt(dev 673/688 含此标记)。修复: (1)render 时 strip(新增 domain.StripContextJoinMarker 单一真相源; chatbot 检索点就地 strip 覆盖 evidence/参考资料/引用三链; salesrag V2 5 渲染点 + context-budget buildSalesRAGEvidenceFragments 共 6 点); (2)两个切块器停插标记——Go enhanced_splitter(兜底)+ Python semantic_splitter.py(运行态确认 dev 主路径 9093 在跑); (3)顺手修 strategy_service.go 硬编码 Mac 路径→viper 配置驱动。'
+  classification_reason: 'Hotfix: 不动 DB schema/不新增 endpoint/不新外部服务/不涉支付权限。文件数略超(4 生产+Python+测试+配置)但改动低风险内聚, User 任务预授权 Hotfix。内部发现非客户报(客户报的 V013 是 LLM 幻觉真实章节标题非污染), Rule 11 不强制复现测试, 但加 strip + splitter 回归测试。'
+  last_updated_by: ai-h3
+  last_updated_at: '2026-06-15T18:12:01+08:00'
+  created_at: '2026-06-15T17:45:00+08:00'
+  track: hotfix
+  stage: H3
+  repos: [numind-server]
+  branches: {numind-server: fix/chunk-marker-strip}
+  progress: {total_tasks: 3, completed_tasks: 3, reviewed_tasks: 3}
+  artifacts: {}
+  decisions:
+  - 'H1 第0步 Langfuse 取证(dev chatbot-chat trace): rerank/F2/grounding 全健康(无关问题 rerank 0.001<0.6 → F2 丢弃 → 纯聊天无 evidence 片段); 标记确认在 DB chunk(rerank document 字段直显 V014 + [上下文衔接] + V015); V0XX=源文档真实章节标题非污染。结论: 客户问题已被 F1/F2/grounding 解决, 本任务=清内部标记泄漏+修 strategy bug, 低优先级仍值得做。'
+  - 'H2 实现 5 commit: render strip(a6b21639)+Go splitter 停插(5c09224b)+strategy 配置驱动(675bd4d2)+salesrag context-budget evidence 路径补 strip(837bca95, review P0)+Python semantic_splitter 停插治本(9e83ebf4)。★纠正任务前提: 任务称语义切块未部署/只 Go 兜底插标记——运行态取证推翻(dev semantic_server.py:9093 在跑 model_ready, Python add_overlap 也插标记), 故 Go+Python 两路径都修才治本; render strip 普适兜底旧 chunk。双 Sonnet review + completeness re-review 均 PASS, 0 遗漏 LLM-feed 点。门禁: 受影响 9 包 go test 0 / gofmt 0 / golangci-lint 0 / py_compile 0。config_prod 未碰。'
+  - 'H2 仓库卫生发现(未修, 告知 User): scripts/__pycache__/*.pyc 被误纳入 git 跟踪(document_parser + semantic_splitter)——应进 .gitignore, 本 hotfix 不扩范围。'
+  blockers: []
