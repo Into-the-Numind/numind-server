@@ -75,26 +75,27 @@ func TestEnhancedMarkdownSplitter_WithOverlap(t *testing.T) {
 	}
 
 	// 验证重叠：内部标记不再泄漏，且重叠机制仍在工作。
-	overlapFound := false
-	for i := 1; i < len(chunks); i++ {
+	prefixOverlapFound := false
+	for i := range chunks {
 		curr := chunks[i].Content
 
-		// 回归：内部切块标记绝不能再泄漏进 chunk 内容（防止喂进 LLM prompt）。
+		// 回归：内部切块标记绝不能再泄漏进任何 chunk 内容（防止喂进 LLM prompt）。
 		if strings.Contains(curr, "上下文衔接") {
 			t.Errorf("Chunk %d leaked internal join marker into content", i)
 		}
 
-		// 词边界裁剪后某些 chunk 的前置重叠可能为空，故只要求至少一个 chunk 带上重叠区
-		// （CoreStart 偏移到 sep 之后），证明去掉标记后重叠机制仍然生效。
+		// CoreStart 默认为 0，仅在前置重叠分支以非空 prefix 写入时才 > 0，是重叠机制
+		// 确实运行的可靠判据（词边界裁剪后个别 chunk 的重叠可能为空，故只要求整体上
+		// 至少有一个 chunk 带上前置重叠）。
 		if chunks[i].CoreStart > 0 {
-			overlapFound = true
+			prefixOverlapFound = true
 		}
 
-		t.Logf("Chunk %d length: %d, CoreStart: %d", i, len(curr), chunks[i].CoreStart)
+		t.Logf("Chunk %d length: %d, Core: %d-%d", i, len(curr), chunks[i].CoreStart, chunks[i].CoreEnd)
 		t.Logf("Chunk %d content preview: %s...", i, curr[:min(50, len(curr))])
 	}
 
-	if len(chunks) > 1 && !overlapFound {
+	if len(chunks) > 1 && !prefixOverlapFound {
 		t.Error("expected at least one chunk to carry prefix overlap (CoreStart > 0)")
 	}
 }
