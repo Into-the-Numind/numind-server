@@ -40,15 +40,16 @@ type CompletedNodeInfo struct {
 type CompletedNodeFileInfo struct {
     ID       uint   `json:"id"`
     FileName string `json:"file_name"`
-    FileURL  string `json:"file_url"`           // 实时签名 GET inline URL（约 2h）；签名失败回退原 base url
-    FileType string `json:"file_type"`          // MIME
+    FileURL  string `json:"file_url"`           // 实时签名 URL（约 2h）。图片=inline GET 签名(可 <img> 渲染)；非图片=download 签名(attachment+RFC5987原名,避免 Chrome 跨站下载告警)。签名失败/无 object_key/COS 未启用 → 回退原 base url
+    FileType string `json:"file_type"`          // MIME（前端判 image/ 前缀决定渲染图 vs 文件卡）
     FileSize int64  `json:"file_size"`
-    FileExt  string `json:"file_ext,omitempty"` // 扩展名（前端判图标/是否图片的辅助）
-    Content  string `json:"content,omitempty"`  // 提取文本（可空、已截断）；前端默认折叠
+    FileExt  string `json:"file_ext,omitempty"` // 扩展名（前端选文件图标的辅助）
+    Content  string `json:"content,omitempty"`  // 提取文本（可空、已截断，单文件上限 MaxTextContentLength=100KB）；前端默认折叠
 }
 ```
 
-> 不复用 `TemplateFileInfo`：它无 `content`/`file_ext`，且 `/templates/:id/runs` 返回多 run，附 content 会膨胀。status 接口仅单 run，附 content 可接受。
+> 不复用 `TemplateFileInfo`：它无 `content`/`file_ext`，且 `/templates/:id/runs` 返回多 run，附 content 会膨胀。status 接口仅单 run，content 上限 = 文件数 × 100KB（每步通常 1–3 文件，体量可接受）。
+> **单 file_url 双签名策略（S2 reviewer P1 采纳）**：不分裂出 `download_url` 第二字段——biz 按 image-ness 选签名 flavor，前端只认一个 `file_url`（图片塞 `<img>` src、文档点击 `window.open`）。每文件仅一次 presign。
 
 ### 2.2 biz 变更 — `internal/numind/biz/sop/sop.go`
 
@@ -57,13 +58,18 @@ type CompletedNodeFileInfo struct {
    - `files, err := b.ds.Sop().ListFilesByRun(runID)`（err 非致命：log warn 后视为空，主流程不阻断）；
    - 按 `file.NodeID`（`*uint`，解引用）分组到 `map[uint][]model.SopFile`；
    - 遍历 `completedNodes[i]`，取本 node 的文件，逐个：
-     - `signed := f.FileURL`；若 `f.ObjectKey != "" && util.IsCOSEnabled()` 则 `if u, e := util.GenerateSignedURL(ctx, f.ObjectKey, 7200); e == nil && u != "" { signed = u }`（失败保留 base，graceful）；
+     - `signed := f.FileURL`（默认回退原 base url）；
+     - 若 `f.ObjectKey != "" && util.IsCOSEnabled()`：
+       - 判 image-ness：`isImage := strings.HasPrefix(f.FileType, "image/") || isImageExt(f.FileExt)`（biz/sop 内写小 helper `isImageExt`，集合 `.jpg/.jpeg/.png/.gif/.webp/.bmp/.svg`；不跨包调 biz/agent 私有的 cosIsImageName）；
+       - image → `u, e := util.GenerateSignedURL(ctx, f.ObjectKey, 7200)`；非 image → `u, e := util.GenerateSignedDownloadURL(ctx, f.ObjectKey, f.FileName, 7200)`；`e==nil && u!="" { signed = u }`（失败保留 base，graceful）。
      - append `CompletedNodeFileInfo{ID, FileName, FileURL: signed, FileType, FileSize, FileExt, Content}`。
-   - `content` 是否透出：直接带上（单 run 体量可接受，支撑 AC5）。
+   - `content` 直接带上（单 run 体量可接受，支撑 AC5）。
 
 ### 2.3 controller 变更 — `internal/numind/controller/v1/sop/sop.go`
 
 `GetRunStatus` handler 的 biz→v1 映射（line 1974）新增 `Files` 字段映射：把 `node.Files`（biz）逐个映射为 `v1.CompletedNodeFileInfo`。纯字段搬运，无逻辑。
+
+> **顺带修复（S2 reviewer P1，独立 commit）**：该映射块（1974-1987）现状**漏拷贝 `NodeRunID`**——`v1.CompletedNodeInfo.NodeRunID` 恒为 0（既有 bug，前端 store 用 `cn.node_run_id` 当 `SopNodeRun.id`）。本次顺手加一行 `NodeRunID: node.NodeRunID`，但**单独成 commit**（`fix(sop): map NodeRunID in run status response`），不与 Files feature 混在同一 commit（CLAUDE.md 硬规则）。本 feature 不依赖该字段，故即使不修也不阻断；修它是零风险正确性补全。
 
 ### 2.4 后端不变量
 - 不改 `sop_node_run.input` 的写入/语义（其它消费方不受影响）。
@@ -94,12 +100,23 @@ export interface StatusNodeFileInfo {
 - `recoverNodeRunFromServer`（line 572）：构造时 `files: info.files ?? []`。
 - `refreshNodeRun`（line 537）：合并时 `files: info.files ?? prev.files ?? []`（让刚执行完的 done-current 步也能尽快显示上传）。
 
-### 3.4 输入文本剥离 util — `src/views/sop/utils/`（新建小工具 + 单测）
-`stripMergedFileBlocks(input: string, fileNames: string[]): string`：
-- 若任一 `=== <fileName> ===` marker 出现在 input，则从**第一个匹配到的已知文件名 marker** 处截断，返回其前的用户文本（trim）。
-- 同时剥离 `用户已上传以下文件：` 起始的无内容提示段。
-- 匹配不到任何已知文件名 marker → **原样返回**（保守：宁可多展示也不误删用户文本）。
-- 纯函数，便于单测（AC4 回归保护）。
+### 3.4 输入文本剥离 util — `src/views/sop/utils/replayInput.ts`（新建小工具 + 单测）
+
+> **S2 reviewer P0 消解**：改用**结构分隔符剥离**，不再做"文件名 marker 匹配"——后端合并 marker 用 `file.Filename`(原始名) 而 `sop_file.file_name` 可能是 sanitize 后名，名字匹配会因特殊字符失效。分隔符法不依赖文件名，且不需改执行热路径(controller:718)。
+
+后端合并格式（取证锁定，controller sop.go:730-746）：
+- 有提取内容：`<userText>` + `\n\n` + `join(["=== <name> ===\n<content>", ...], "\n\n")`；userText 为空时直接以 `=== ` 开头。
+- 无提取内容但有文件：`<userText>` + `\n\n用户已上传以下文件：...`；userText 为空时直接以该提示开头。
+
+`stripMergedFileBlocks(input: string, hasFiles: boolean): string`：
+- `!hasFiles || !input` → 原样返回 `input`（无文件时绝不剥离，避免误伤含 `=== ` 的用户文本）。
+- 否则取 `\n\n=== ` 与 `\n\n用户已上传以下文件：` 两个分隔符在 input 中的**最早出现位置**，命中则返回其前缀 `input.slice(0, idx).trim()`。
+- 若未命中 `\n\n`-前缀分隔符，但 input 以 `=== ` 或 `用户已上传以下文件：` 开头（userText 为空场景）→ 返回 `''`。
+- 都不命中（有文件但无可识别块，防御）→ 返回 `input.trim()`（保守全显）。
+- 纯函数，便于单测（AC4 回归保护）。残留边界：用户文本中若出现 `\n\n=== ` 且该步又有文件，会被误截——概率极低且优于展示整块合并 blob，接受。
+
+### 3.4b 文件大小格式化 util — 同 `replayInput.ts`
+`formatFileSize(bytes: number): string`：`<1024 → "{n} B"`；`<1024² → "{n} KB"`；else `"{n.x} MB"`。纯函数 + 单测。
 
 ### 3.5 新组件 — `src/views/sop/components/ReplayInputCard.vue`
 只读「回看输入卡」。详见 §4 UI 设计。Props：
@@ -117,7 +134,7 @@ export interface StatusNodeFileInfo {
   :files="currentNodeRun.files"
 />
 ```
-注意：该插入在 `<Transition mode="out-in">` 内只能有一个根节点切换 —— 用一个包裹 `<div key="readonly">` 同时含 ReplayInputCard + OutputCard，或把 ReplayInputCard 提到 Transition 外、只读态条件渲染。实现时择**包裹 div** 方案（保持单一过渡节点）。
+注意：该插入在 `<Transition name="sop-fade" mode="out-in">` 内只能有**单一根节点**切换。**锁定方案（S2 reviewer P1）**：把只读分支的 `v-else-if="isDoneCurrent || isDoneHistory"` 从 `<OutputCard>` 移到一个包裹 `<div key="readonly" class="readonly-stack">`，div 内依次放 `<ReplayInputCard>`（带自身 v-if）+ `<OutputCard>`。这样 ReplayInputCard 与 OutputCard 作为一个过渡单元一起入场（联动动画），不破坏既有 key/transition 逻辑。**不采用**"提到 Transition 外"的备选（会让两卡各自独立入场、动画割裂）。`readonly-stack` 用 `display:flex; flex-direction:column; gap` 控制两卡间距。
 
 ## §4 UI 设计规格（美观合理 —— 硬要求）
 
@@ -170,7 +187,7 @@ export interface StatusNodeFileInfo {
 
 ## §6 测试策略（喂给 S3 的 S5 验证 task）
 - **后端 Go 单测**（biz 层）：`GetRunStatus` 装配 files —— mock store `ListFilesByRun` 返回含/不含 ObjectKey 的文件，断言 Files 数组长度、按 node 分组正确、ObjectKey 空时回退 base url。COS 签名可注入/桩（IsCOSEnabled=false 路径走回退，便于无 COS 环境测）。
-- **前端单测**（vitest）：`stripMergedFileBlocks` 纯函数 —— 用例覆盖：纯文本无文件、文本+单文件 marker、文本+多文件、无文本仅文件块、`用户已上传以下文件：` 提示段、文件名含特殊字符匹配不到→原样返回（AC4 回归）。文件大小格式化函数用例。
+- **前端单测**（vitest）：`stripMergedFileBlocks` 纯函数 —— 用例覆盖：(a) `hasFiles=false` 即使含 `=== ` 也原样返回；(b) 文本 + 单文件 `\n\n=== ` 块 → 仅留文本；(c) 文本 + 多文件块 → 仅留文本；(d) userText 为空、input 以 `=== ` 开头 → 返回 ''；(e) `\n\n用户已上传以下文件：` 提示段分支 → 仅留文本；(f) userText 为空以 `用户已上传以下文件：` 开头 → ''；(g) hasFiles=true 但无可识别块 → trim 全显（防御）。`formatFileSize`：B/KB/MB 三档边界用例。
 - **S5 浏览器验证**：因回看依赖真实历史 run + 真实 COS 文件，本地无完整数据；采用 **dev 部署后用 gstack `/qa`/browse 以 E2E 账号导航到一条含上传的历史 SOP run**，逐步验证：输入文本可见(AC1)、图片缩略图加载成功非 403(AC2)、文档卡可打开(AC3)、提取文本展开(AC5)、空步骤不报错(AC6)、只读无输入框(AC7)、视觉一致(AC9)。截图留档。
   - 诚实声明：`stripMergedFileBlocks` + 后端 files 装配有持久化单测做回归；端到端视觉验证走 dev（一次性 gstack QA，无持久 E2E 脚本）—— 本功能非支付/权限高风险，可接受。
 
