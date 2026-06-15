@@ -60,8 +60,9 @@ func RegisterStudentRunRoutes(authGroup *gin.RouterGroup, b biz.IBiz) {
 	authGroup.GET("/agent-runs/:id/narration", c.PollNarration)
 	authGroup.POST("/agent-runs/:id/cancel", c.Cancel)
 	authGroup.POST("/agent-runs/:id/extend-budget", c.ExtendBudget)
-	// T4 ask_user_question answer endpoint.
+	// T4 ask_user_question answer endpoint (poll path) + issue4 streaming resume.
 	authGroup.POST("/agent-runs/:id/answer", c.Answer)
+	authGroup.POST("/agent-runs/:id/answer-stream", c.AnswerStream)
 	authGroup.POST("/agent-attachments", c.UploadAttachment)
 	// V1.5 task 1.2: fallback status polling.
 	authGroup.GET("/agent-attachments/:id/status", c.GetAttachmentStatus)

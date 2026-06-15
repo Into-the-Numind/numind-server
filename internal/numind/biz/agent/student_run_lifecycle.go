@@ -518,6 +518,17 @@ func (s *StudentRunService) ReleaseStreamLock(runID uint64) {
 	s.streamLock.Release(runID)
 }
 
+// AcquireResumeStreamLock acquires the SSE single-subscriber lock for an
+// ALREADY-EXISTING paused run (issue4 streaming answer resume). Unlike
+// AcquireStreamLock it does NOT pre-create an agent_run row — the run is the one
+// the user paused via ask_user_question, loaded by RunStream via runStore.Get.
+// Returns false when another SSE subscriber already holds this run's lock; the
+// controller then surfaces a 409 and the frontend falls back to the poll path.
+// Release via ReleaseStreamLock (idempotent).
+func (s *StudentRunService) AcquireResumeStreamLock(runID uint64) bool {
+	return s.streamLock.Acquire(runID)
+}
+
 // RunStream executes the agent in streaming mode, emitting stream.Event values
 // onto ch. The caller must have already called AcquireStreamLock (which
 // pre-creates the agent_run row and acquires the SSE lock).

@@ -85,6 +85,20 @@ func (r *agentRunner) RunStream(
 		return nil, fmt.Errorf("AgentRunner.RunStream load run: %w", err)
 	}
 
+	// answer-resume-lifecycle / issue4: capture the pre-yield transcript so the
+	// streaming resume leg APPENDS to leg 1 instead of clobbering it (mirrors
+	// runner.go Run's ExistingRunID takeover, lines 442-451). On an INITIAL stream
+	// (CreateStream pre-creates the row with messages="[]") this is empty, so
+	// mergeResumeTranscript is a strict no-op and initial-stream behaviour is
+	// unchanged. On an answer-resume stream (AnswerStream → RunStream) run.Messages
+	// already holds [leg1 turns…, answer turn] (AnswerAndClear appended it), so the
+	// finalize path below merges the resumed leg onto it — preventing the dev run
+	// 148 history-loss + dropping the issue1 answered question card.
+	var priorMessages json.RawMessage
+	if len(run.Messages) > 0 {
+		priorMessages = json.RawMessage(run.Messages)
+	}
+
 	// 1.1. #8 narration-layer: register CloseRun defer immediately after run.ID
 	// is materialised, before any potentially-panicking init.
 	if r.narrationProvider != nil {
@@ -596,7 +610,7 @@ func (r *agentRunner) RunStream(
 		emitStreamErrorEvents(ch, run.ID, streamErr, TerminalModelError, startTime)
 		errSt := &LoopState{TerminalReason: TerminalModelError}
 		applyHookOverride(effectiveHooks, errSt)
-		if _, fErr := r.finalizeRun(ctx, run, errSt, startTime, "", "", nil, false, skillVer, isTrivial, req, permDenialSink, streamErr, sessionID, nil); fErr != nil {
+		if _, fErr := r.finalizeRun(ctx, run, errSt, startTime, "", "", nil, false, skillVer, isTrivial, req, permDenialSink, streamErr, sessionID, priorMessages); fErr != nil {
 			log.Warnw("AgentRunner.RunStream finalizeRun failed on Stream error", "agent_run_id", run.ID, "error", fErr)
 		}
 		return nil, fmt.Errorf("AgentRunner.RunStream einoAgent.Stream: %w", streamErr)
@@ -623,7 +637,7 @@ func (r *agentRunner) RunStream(
 		if result != nil {
 			finalReasoning = result.FinalReasoning
 		}
-		finalResult, finalErr := r.finalizeRun(ctx, run, st, startTime, finalText, finalReasoning, nil, false, skillVer, isTrivial, req, permDenialSink, consumeErr, sessionID, nil)
+		finalResult, finalErr := r.finalizeRun(ctx, run, st, startTime, finalText, finalReasoning, nil, false, skillVer, isTrivial, req, permDenialSink, consumeErr, sessionID, priorMessages)
 		if finalErr != nil {
 			return finalResult, finalErr
 		}
@@ -663,7 +677,7 @@ func (r *agentRunner) RunStream(
 	if result != nil {
 		finalReasoning = result.FinalReasoning
 	}
-	return r.finalizeRun(ctx, run, st, startTime, finalText, finalReasoning, nil, false, skillVer, isTrivial, req, permDenialSink, nil, sessionID, nil)
+	return r.finalizeRun(ctx, run, st, startTime, finalText, finalReasoning, nil, false, skillVer, isTrivial, req, permDenialSink, nil, sessionID, priorMessages)
 }
 
 // applyHookOverride checks if the effectiveHooks.Registry recorded a non-Continue

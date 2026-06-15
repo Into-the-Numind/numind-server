@@ -46,13 +46,19 @@ const (
 	ssePingInterval = 25 * time.Second
 )
 
-// streamingRunSvc is the subset of StudentRunService used by CreateStream.
-// Defined here so test files in the same package can implement a small stub
-// rather than wiring the full concrete service.
+// streamingRunSvc is the subset of StudentRunService used by the SSE handlers
+// (CreateStream + AnswerStream). Defined here so test files in the same package
+// can implement a small stub rather than wiring the full concrete service.
 type streamingRunSvc interface {
 	AcquireStreamLock(ctx context.Context, userID uint, req agentbiz.CreateRunRequest) (runID uint64, acquired bool, err error)
 	ReleaseStreamLock(runID uint64)
 	RunStream(ctx context.Context, userID uint, req agentbiz.CreateRunRequest, runID uint64, ch chan<- stream.Event) (*agentbiz.RunResult, error)
+	// AcquireResumeStreamLock acquires the SSE lock for an existing paused run
+	// (issue4 streaming answer resume); does NOT pre-create a row.
+	AcquireResumeStreamLock(runID uint64) bool
+	// AnswerStream validates + persists the answer, then streams the resumed leg
+	// onto ch (issue4). ch is owned by the caller (controller closes it).
+	AnswerStream(ctx context.Context, userID uint, runID uint64, req agentbiz.AnswerRequest, ch chan<- stream.Event) (*agentbiz.RunResult, error)
 }
 
 // CreateStream handles POST /v1/agent-runs/stream.
@@ -93,6 +99,69 @@ func (h *StudentRunController) CreateStream(c *gin.Context) {
 	}
 	defer h.runSvc.ReleaseStreamLock(runID)
 
+	// Pump the run's events to the client over SSE. The produce closure drives
+	// RunStream on the (cancellable) runCtx; the shared streamEvents method owns
+	// the headers + first-byte flush + drain-mode loop (identical to AnswerStream).
+	h.streamEvents(c, runID, func(runCtx context.Context, ch chan<- stream.Event) {
+		_, _ = h.runSvc.RunStream(runCtx, user.ID, req, runID, ch)
+	})
+}
+
+// AnswerStream handles POST /v1/agent-runs/:id/answer-stream (issue4): the
+// streaming counterpart of Answer. It validates + persists the user's answer
+// inside the biz layer (shared with the poll path), then streams the resumed
+// agent leg over SSE so the user sees assistant prose live instead of poll-only
+// tool narration. The legacy Answer + polling path is preserved as a fallback;
+// on a 409 (already-attached) or network failure the frontend falls back to it.
+func (h *StudentRunController) AnswerStream(c *gin.Context) {
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	runID, ok := mustParseRunID(c)
+	if !ok {
+		return
+	}
+
+	var req agentbiz.AnswerRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("%s", err.Error()), nil)
+		return
+	}
+
+	// Acquire the SSE lock on the EXISTING paused run (does not pre-create a row).
+	// A second subscriber gets 409 + run_id so the frontend resumes polling.
+	if !h.runSvc.AcquireResumeStreamLock(runID) {
+		c.JSON(http.StatusConflict, gin.H{
+			"code":    errno.ErrAgentStreamAlreadyAttached.Code,
+			"message": errno.ErrAgentStreamAlreadyAttached.Message,
+			"data":    gin.H{"run_id": runID},
+		})
+		return
+	}
+	defer h.runSvc.ReleaseStreamLock(runID)
+
+	// Ownership / state / answer validation happens inside AnswerStream (the
+	// shared validateAndPersistAnswer helper, step 1). A cross-user caller would
+	// transiently hold the lock until validation fails, which is harmless (the
+	// deferred Release frees it immediately).
+	h.streamEvents(c, runID, func(runCtx context.Context, ch chan<- stream.Event) {
+		_, _ = h.runSvc.AnswerStream(runCtx, user.ID, runID, req, ch)
+	})
+}
+
+// streamEvents runs the shared SSE pump: it switches the response to the SSE
+// protocol, flushes a first byte, spawns produce in a goroutine to feed the
+// event channel, and drains the channel to the client until terminal + channel
+// close. produce MUST eventually return (closing the channel) and must respect
+// the runCtx it is handed (cancelled on client disconnect). The drain-mode logic
+// (keep selecting after a terminal/error frame so the producer's finalize DB
+// writes land on a live context) is identical for CreateStream and AnswerStream;
+// centralising it here avoids re-deriving the subtle drain handling per handler
+// (dev agent_run 45 empty-session bug). runID is used only for the Langfuse span.
+func (h *StudentRunController) streamEvents(c *gin.Context, runID uint64, produce func(runCtx context.Context, ch chan<- stream.Event)) {
 	// --- Switch to SSE protocol ---
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -132,10 +201,10 @@ func (h *StudentRunController) CreateStream(c *gin.Context) {
 	// Buffered channel owned by the pump goroutine below.
 	eventCh := make(chan stream.Event, sseEventChanCap)
 
-	// Goroutine: owns eventCh; closes it when RunStream returns.
+	// Goroutine: owns eventCh; closes it when produce returns.
 	go func() {
 		defer close(eventCh)
-		_, _ = h.runSvc.RunStream(runCtx, user.ID, req, runID, eventCh)
+		produce(runCtx, eventCh)
 	}()
 
 	// SSE keepalive ticker.
@@ -202,8 +271,8 @@ func (h *StudentRunController) CreateStream(c *gin.Context) {
 			data, marshalErr := json.Marshal(ev)
 			if marshalErr != nil {
 				// P2 fix: log the marshal failure before skipping.
-				log.C(ctx).Warnw("CreateStream: marshal event failed",
-					"event_type", ev.Type, "error", marshalErr)
+				log.C(ctx).Warnw("streamEvents: marshal event failed",
+					"run_id", runID, "event_type", ev.Type, "error", marshalErr)
 				continue
 			}
 

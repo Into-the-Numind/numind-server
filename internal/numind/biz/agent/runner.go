@@ -1300,8 +1300,12 @@ func (r *agentRunner) finalizeRun(
 	runErr error,
 	sessionID string,
 	// priorMessages is the pre-yield transcript captured at ExistingRunID
-	// takeover (answer-resume-lifecycle F2); nil for non-resume runs and for
-	// RunStream (resume only enters via Run).
+	// takeover (answer-resume-lifecycle F2); nil for non-resume runs. Both Run
+	// (poll resume) and RunStream (streaming resume, issue4) pass it: RunStream
+	// captures run.Messages at load and threads it through so a streamed resume
+	// leg APPENDS to leg 1 instead of clobbering it. Empty/"[]"/"null" makes
+	// mergeResumeTranscript a strict no-op, so the initial (non-resume) path is
+	// unchanged.
 	priorMessages json.RawMessage,
 ) (*RunResult, error) {
 	// Write turn to agent_run.messages.
