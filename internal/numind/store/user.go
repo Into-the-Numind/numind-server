@@ -102,8 +102,14 @@ func (u *users) GetUserByID(ctx context.Context, userID uint) (*model.User, erro
 }
 
 func (u *users) UpdateUser(ctx context.Context, user *model.User) error {
-	// 使用Select只更新特定字段，避免意外更新敏感字段
-	return u.db.Model(user).Select("nickname", "avatar_url", "updated_at").Updates(user).Error
+	// map 形式更新（org-branding）：显式列出可更新列，保留"避免意外更新敏感字段"的初衷；
+	// 且 map 总是写入 key，company_name="" 也能持久化（清空品牌名）——struct 形式会跳过零值
+	// 导致清空失效（见 .claude/rules/database.md §6b）。updated_at 由 GORM map 模式自动刷新。
+	return u.db.Model(user).Updates(map[string]interface{}{
+		"nickname":     user.Nickname,
+		"avatar_url":   user.AvatarURL,
+		"company_name": user.CompanyName,
+	}).Error
 }
 
 func NewUserStore(db *gorm.DB) UserStore {

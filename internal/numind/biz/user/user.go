@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,6 +40,9 @@ type UserBiz interface {
 	GetCurrentUserWithStats(ctx context.Context, userID uint) (*model.User, error)
 	UpdateUserProfile(ctx context.Context, userID uint, req *v1.UpdateUserProfileRequest) error
 	UpdateUserAvatar(ctx context.Context, userID uint, avatarURL string) error
+	// ResolveCompanyName 返回用户的有效机构品牌名（org-branding）：
+	// 父账户用自己的 CompanyName，子账户用父账户的 CompanyName，均可能为空串（未设置）。
+	ResolveCompanyName(ctx context.Context, user *model.User) (string, error)
 
 	// Web端登录
 	WebLogin(req *v1.WebLoginRequest) (*v1.WebLoginResponse, error)
@@ -197,6 +201,11 @@ func (b *userBiz) UpdateUserProfile(ctx context.Context, userID uint, req *v1.Up
 	if req.AvatarURL != nil {
 		user.AvatarURL = *req.AvatarURL
 	}
+	// CompanyName（org-branding）：仅父账户（ParentUserID==nil）可写；
+	// 子账户传入静默忽略（继承语义）。传空串=清空回兜底"有数AI"。
+	if req.CompanyName != nil && user.ParentUserID == nil {
+		user.CompanyName = strings.TrimSpace(*req.CompanyName)
+	}
 
 	// 需要添加一个基于 User model 的更新方法
 	if err := b.ds.Users().UpdateUser(ctx, user); err != nil {
@@ -204,6 +213,24 @@ func (b *userBiz) UpdateUserProfile(ctx context.Context, userID uint, req *v1.Up
 	}
 
 	return nil
+}
+
+// ResolveCompanyName 是 UserBiz 接口中 `ResolveCompanyName` 方法的实现.
+// 父账户（ParentUserID==nil）返回自己的 CompanyName；子账户返回父账户的 CompanyName。
+// 均可能为空串（未设置），展示层负责兜底"有数AI"。
+// 父账户记录异常缺失时返回空串而非报错，避免阻断 /me。
+func (b *userBiz) ResolveCompanyName(ctx context.Context, user *model.User) (string, error) {
+	if user.ParentUserID == nil {
+		return user.CompanyName, nil
+	}
+	parent, err := b.ds.Users().GetUserByID(ctx, *user.ParentUserID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", nil
+		}
+		return "", fmt.Errorf("ResolveCompanyName: %w", err)
+	}
+	return parent.CompanyName, nil
 }
 
 // UpdateUserAvatar 是 UserBiz 接口中 `UpdateUserAvatar` 方法的实现.
