@@ -1972,6 +1972,7 @@ func (ctrl *SopController) GetRunStatus(c *gin.Context) {
 	completedNodes := make([]v1.CompletedNodeInfo, len(status.CompletedNodes))
 	for i, node := range status.CompletedNodes {
 		completedNodes[i] = v1.CompletedNodeInfo{
+			NodeRunID:    node.NodeRunID, // 修复：此前漏拷贝，导致响应 node_run_id 恒为 0
 			NodeID:       node.NodeID,
 			NodeName:     node.NodeName,
 			Sort:         node.Sort,
