@@ -4590,6 +4590,7 @@ features:
   - 'S1+S2: 合并设计 spec 2026-06-16-adaptive-session-titles-design.md。共享 helper biz/sessiontitle.Generate(qwen-turbo,无 ContextFragments,剥离 billing ctx 不计费); chatbot ChatStream maxSeq==0 挂载+done.session_title; agent finalizeRun total==1&&session_name=="" 挂载+UpdateSessionName; agent 侧边栏改 listAllHistorySessions(去30天窗)+滚动; chatbot 加载更多+滚动+done实时更新标题。无 DB schema/无新对外端点。'
   - 'S2 review(Sonnet): CONDITIONAL_PASS。抓出 P0=agent finalizeCtx 继承 billOnly=true 致标题调用不 pass-through、计费仅靠 DB policy 拦(漏配则扣用户)→修复: Generate 内剥离 billing ctx(新增 WithoutGatewayBillingOnly helper),不计费不依赖 DB。P1=agent guard total 恒≥1 去 total==0 分支。P2=history 去30天窗/SessionTitle 进 allTaskIDsList/3s 超时。全部已纳入 spec。'
   - 'S3: plan adaptive-session-titles-plan.md 切 6 task。T1 后端基座(billing helper+profile+sessiontitle 包)←T2(chatbot)/T3(agent+history去窗) 硬依赖；T4(agent前端)/T5(chatbot前端)独立可与后端并行。T6=S5 验证策略(单测+vitest+dev浏览器QA+计费DB核验)。执行=主session 顺序实现+每task并行双reviewer。文件归属已声明, T4/T5 与 agent-output-refine 同改 agent 前端须 merge 前 fetch 核对。'
+  - 'S3 atomicity review(Sonnet): CONDITIONAL_PASS, 0 P0, 2 P1+3 P2 已折入 plan。P1: T1 补 Langfuse generation 失败路径单测; T5←T2 集成顺序标注。P2: T3 两 commit; T4 开工前跑 ndf-check-disjoint vs agent-output-refine; T6 计费核验具体化(COUNT credit_reservation 差值)。路由: session.title 需 dev/prod 各注册 qwen-turbo 路由, 漏配 Generate 优雅 no-op。⚠并发: chatbot-image-recognition(S0) 也改 chatbot/stream.go ChatStream(与本 feature T2 同文件), merge 第二者须解冲突。'
   blockers: []
 - id: chatbot-image-recognition
   ndf_version: '3.0'

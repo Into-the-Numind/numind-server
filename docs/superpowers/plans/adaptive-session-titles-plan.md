@@ -113,6 +113,17 @@ T6(S5 验证策略) ── 文档，最后
 
 ---
 
+## S3 原子性 review 结论（Sonnet 独立审查 2026-06-16）
+CONDITIONAL_PASS，0 P0，2 P1 + 3 P2，已折入下列执行约束：
+- **P1-1（T1）**：T1 验收**追加** Langfuse generation **失败路径**单测——mock aiservice 返回 err 时验证记 generation error（output 含 error）或无 trace 时优雅跳过（ai-service.md §3 合规）。
+- **P1-2（T5←T2）**：T5 消费 T2 的 `done.session_title`；T5 可先实现（字段缺失时 no-op 向后兼容），但 **T2 合并后才能做完整集成验证**。
+- **P2-1（T3）**：T3 用**两个独立 commit**（runner 标题接入 / student_query 去时间窗），各自验收分述。
+- **P2-2（T4）**：T4 开工前**必跑** `ndf-check-disjoint` 对比本 feature 与 agent-output-refine 的前端文件集，exit 0 才动手。
+- **P2-3（T6）**：计费核验法具体化——首轮完成后 `SELECT COUNT(*) FROM credit_reservation WHERE user_id=<uid> AND created_at>=<首轮起>`，差值应等于主对话 reserve 行数（标题不应新增 reserve 行）；并可对 session-title 的 Langfuse generation 确认无 reserve/transaction。
+
+## 路由依赖（S6/S7 操作项）
+`profile.SessionTitle="session.title"` 需在 DB registry 注册一条 → qwen-turbo 路由（dev S6 / prod S7 各一次，30s 缓存免重启）。漏配时 `Generate` 优雅 no-op（best-effort，不报错不扣费）。附 seed SQL 文档化（部署不自动跑 migration，需手动 SSH 执行——见 `project_dev_deploy_migration_gap`）。
+
 ## 门禁汇总
 - 每 task: `go test`(后端) / `vitest`(前端) + lint + **并行双 reviewer(Sonnet) PASS(无 P0)**。
 - S4 出口: `task lint` 0 + `go test ./...` 0 + 前端 `npm run lint`+`type-check` 0 + `reviewed_tasks==completed_tasks`。
