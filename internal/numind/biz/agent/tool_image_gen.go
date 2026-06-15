@@ -100,7 +100,7 @@ func (t *imageGenTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	}
 
 	// 4. 上传产物。
-	filename := fmt.Sprintf("gemini-image-%d.png", time.Now().Unix())
+	filename := defaultImageFilename(time.Now())
 	res, uploadErr := uploadGeneratedFile(ctx, imgBytes, "image/png", filename, "png")
 	if uploadErr != nil {
 		t.refund(ctx, rsvID, "image_gen_upload_failed")
@@ -110,6 +110,15 @@ func (t *imageGenTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	// 5. 成功：对账扣减（扁平 per-image，无 token 校正）。
 	t.reconcile(ctx, rsvID)
 	return res, nil
+}
+
+// defaultImageFilename builds the default object name for a generated image:
+// image-YYYYMMDD-HHMMSS.png. ASCII + date-form so it survives the COS object-key
+// sanitize unchanged and reads cleanly when the frontend falls back to it (the LLM
+// did not write a markdown alt). Replaces the old gemini-image-{unix} (a giant
+// timestamp that also leaked the underlying model name).
+func defaultImageFilename(now time.Time) string {
+	return fmt.Sprintf("image-%s.png", now.Format("20060102-150405"))
 }
 
 // imageGenCredits returns the flat per-image credit cost (estimate == actual).
