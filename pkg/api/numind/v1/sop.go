@@ -216,7 +216,7 @@ type CompletedNodeFileInfo struct {
 	FileType string `json:"file_type"`          // MIME（前端判 image/ 前缀决定渲染图片 vs 文件卡）
 	FileSize int64  `json:"file_size"`          // 字节
 	FileExt  string `json:"file_ext,omitempty"` // 扩展名（前端选文件图标的辅助）
-	Content  string `json:"content,omitempty"`  // 提取文本（可空、已截断，单文件上限 100KB）；前端默认折叠
+	Content  string `json:"content,omitempty"`  // 上传时提取的文本（可空；上传路径已按 MaxTextContentLength=100KB 截断后入库，回看直接透出）；前端默认折叠
 }
 
 // BookmarkInfo 书签信息（用于状态响应）

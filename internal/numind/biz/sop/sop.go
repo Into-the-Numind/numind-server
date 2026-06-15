@@ -1152,14 +1152,15 @@ func (b *sopBiz) GetRunStatus(ctx context.Context, runID uint) (*RunStatus, erro
 	if ferr != nil {
 		log.C(ctx).Warnw("ListFilesByRun failed, replay files omitted", "run_id", runID, "error", ferr)
 	} else {
+		cosEnabled := util.IsCOSEnabled() // 进程级稳定，取一次供两个签名闭包共用
 		signImage := func(ctx context.Context, objectKey string) (string, error) {
-			if !util.IsCOSEnabled() {
+			if !cosEnabled {
 				return "", nil
 			}
 			return util.GenerateSignedURL(ctx, objectKey, replayFileURLExpirySeconds)
 		}
 		signDownload := func(ctx context.Context, objectKey, fileName string) (string, error) {
-			if !util.IsCOSEnabled() {
+			if !cosEnabled {
 				return "", nil
 			}
 			return util.GenerateSignedDownloadURL(ctx, objectKey, fileName, replayFileURLExpirySeconds)
