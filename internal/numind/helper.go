@@ -391,6 +391,20 @@ func autoMigrate(db *gorm.DB) error {
 		return fmt.Errorf("failed to migrate agent_attachment: %v", err)
 	}
 
+	// Notification Center 5 表（notification-center T1）
+	// AutoMigrate 建表/列/简单索引（含复合 idx_ann_status_pub / uk_annread / uk_sr）；
+	// FK 约束由 migrations/20260616_120000_create_notification_center.sql 负责
+	// （AutoMigrate 不可靠处），需上线前手工 SSH 执行。
+	if err := db.AutoMigrate(
+		&model.Announcement{},
+		&model.AnnouncementRead{},
+		&model.SurveyQuestion{},
+		&model.SurveyResponse{},
+		&model.SurveyAnswer{},
+	); err != nil {
+		return fmt.Errorf("failed to migrate notification center tables: %v", err)
+	}
+
 	log.Infow("All database schema migration completed")
 
 	// 3. 迁移后验证字符集

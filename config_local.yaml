@@ -3,6 +3,11 @@
 runmode: debug               # Gin 开发模式, 可选值有：debug, release, test
 addr: :9091                  # HTTP 服务器监听地址
 
+# Feature flags（默认 OFF；prod 不设此段 → 自动 OFF）
+features:
+  notification_center:
+    enabled: true             # 通知中心（铃铛 + 公告/问卷），dev/local 开启
+
 # 后台管理系统配置
 admin:
   addr: :9099                # 后台管理系统监听地址
