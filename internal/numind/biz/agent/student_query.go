@@ -198,15 +198,8 @@ type SessionSnapshot struct {
 	Messages interface{} `json:"messages"` // frontend-shaped AgentMessage array
 }
 
-// FeedbackRequest carries a 👍/👎 verdict and optional text from the learner.
-type FeedbackRequest struct {
-	Verdict string `json:"verdict"` // "up" | "down"
-	Text    string `json:"text,omitempty"`
-}
-
-// StudentQueryService handles the student-facing read + feedback endpoints.
-// (#14 follow-up ALPHA — 7 GET + 1 POST).
-// TODO(v2): promote feedback to a dedicated agent_run_feedback table for analytics.
+// StudentQueryService handles the student-facing read + session-management endpoints.
+// (#14 follow-up ALPHA).
 type StudentQueryService struct {
 	runStore    store.IAgentRunStore
 	userStore   store.UserStore
@@ -384,36 +377,6 @@ func extractFinalAssistantText(raw []byte) string {
 		}
 	}
 	return ""
-}
-
-// WriteFeedback appends a learner's 👍/👎 + optional text to
-// agent_run.terminal_metadata["feedback"] (v1 — simple and zero-schema).
-// Verdict must be "up" or "down"; empty verdict is accepted (no-op validation here —
-// controller must validate binding).
-func (s *StudentQueryService) WriteFeedback(ctx context.Context, userID uint, runID uint64, req FeedbackRequest) error {
-	// Ownership check first.
-	run, err := s.runStore.Get(ctx, runID)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) || isNotFoundErr(err) {
-			return errno.ErrAgentRunNotFound
-		}
-		return fmt.Errorf("StudentQueryService.WriteFeedback get: %w", err)
-	}
-	if run.UserID != userID {
-		return errno.ErrForbidden.SetMessage("feedback can only be submitted for your own runs")
-	}
-
-	patch := map[string]interface{}{
-		"feedback": map[string]interface{}{
-			"verdict":      req.Verdict,
-			"text":         req.Text,
-			"submitted_at": time.Now().UTC().Format(time.RFC3339),
-		},
-	}
-	if err := s.runStore.MergeTerminalMetadata(ctx, runID, patch); err != nil {
-		return fmt.Errorf("StudentQueryService.WriteFeedback merge: %w", err)
-	}
-	return nil
 }
 
 // ---------------------------------------------------------------------------

@@ -222,50 +222,6 @@ func TestGetSessionSnapshot_Forbidden_OtherUser(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TestWriteFeedback_PersistsToAgentRun
-// ---------------------------------------------------------------------------
-
-// TestWriteFeedback_PersistsToAgentRun verifies that WriteFeedback appends the
-// verdict to agent_run.terminal_metadata and can be read back.
-func TestWriteFeedback_PersistsToAgentRun(t *testing.T) {
-	svc, db := newSQService(t)
-
-	runID := seedRun(t, db, 55, "sess-feedback", "completed")
-
-	req := FeedbackRequest{Verdict: "up", Text: "great session"}
-	err := svc.WriteFeedback(context.Background(), 55, runID, req)
-	require.NoError(t, err)
-
-	// Read back terminal_metadata and verify feedback key.
-	var run model.AgentRun
-	require.NoError(t, db.First(&run, runID).Error)
-	require.NotEmpty(t, run.TerminalMetadata)
-
-	var meta map[string]interface{}
-	require.NoError(t, json.Unmarshal(run.TerminalMetadata, &meta))
-	fb, ok := meta["feedback"].(map[string]interface{})
-	require.True(t, ok, "terminal_metadata should contain 'feedback' object")
-	assert.Equal(t, "up", fb["verdict"])
-	assert.Equal(t, "great session", fb["text"])
-}
-
-// ---------------------------------------------------------------------------
-// TestWriteFeedback_Forbidden_OtherUser
-// ---------------------------------------------------------------------------
-
-// TestWriteFeedback_Forbidden_OtherUser verifies that a different user cannot
-// submit feedback for a run they do not own.
-func TestWriteFeedback_Forbidden_OtherUser(t *testing.T) {
-	svc, db := newSQService(t)
-
-	runID := seedRun(t, db, 77, "sess-other", "completed")
-
-	err := svc.WriteFeedback(context.Background(), 999, runID, FeedbackRequest{Verdict: "down"})
-	require.Error(t, err)
-	assert.ErrorIs(t, err, errno.ErrForbidden)
-}
-
-// ---------------------------------------------------------------------------
 // TestListAllHistorySessions_Last30Days
 // ---------------------------------------------------------------------------
 
