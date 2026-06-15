@@ -28,7 +28,7 @@ features:
   description: '机构自定义品牌名（白标第一步）：B 端机构父账户在用户端「设置」里填公司名称→用户端左上角侧边栏显示该名称，其下所有 C 端子账户继承显示父账户名称，无名称兜底"有数AI"。另：登录页 logo 换成"有数AI"文字（用户端+管理端）。当前侧边栏硬编码"靓靓·海外IP研究所"，本需求数据化。'
   classification_reason: 'Standard: DB schema 变更(User 表加 company_name 字段+migration)+扩展 API(PUT /v1/users/me 接受 company_name + /v1/users/me 响应输出已解析有效品牌名)+跨 3 仓库(server/web-v3/admin-web)文件数>3。触及 B2B2C 父子关系解析但非支付/权限。用户 2026-06-16 设为 goal 授权 autopilot 推进, 不部署 prod。'
   status: active
-  stage: S2
+  stage: S3
   repos:
     numind-server: feature/org-branding
     numind-web-v3: feature/org-branding
@@ -38,14 +38,16 @@ features:
     numind-web-v3: /private/tmp/wt-org-branding-numind-web-v3
     numind-admin-web: /private/tmp/wt-org-branding-numind-admin-web
   progress:
-    total_tasks: 0
+    total_tasks: 3
     completed_tasks: 0
     reviewed_tasks: 0
   artifacts:
     requirement: .ndf/features/org-branding/requirement.md
     proposal: .ndf/features/org-branding/proposal.md
     spec: .ndf/features/org-branding/spec.md
+    plan: .ndf/features/org-branding/plan.md
   decisions:
+  - 'S3 (ai 2026-06-16): plan 完成+独立 Sonnet reviewer 审查=PASS。3 代码 task: T1 后端 company_name 全链路(model+migration+api+biz守卫+store map形式+controller+6 biz测+1 store SQLite测) / T2 web-v3(store displayBrandName+侧边栏动态+设置页父账户编辑+登录页文字; auth.ts 需新增 updateProfile PUT 封装—现仅 GET) / T3 admin-web 登录页 N→有数AI 文字。T4=S5验证策略(规则10): gstack /qa 展示验证+后端Go测守高风险(B2B2C继承+GORM清空)持久回归; 不达支付/权限/会员E2E门槛, 已诚实声明前端无持久回归。依赖: T1先, T2/T3 跨仓库disjoint可Tier2并行。reviewer P1(API路径歧义)已解决=锁定 src/api/auth.ts。'
   - 'S2 (ai 2026-06-16): spec 完成+独立 Sonnet reviewer 审查。覆盖全部 US1-4/AC1-9。reviewer 报 2 P1 已修: (1) store UpdateUser 改 map 形式(database.md §6b: Select+Updates(struct) 会丢空串→AC3清空挂掉) (2) ResolveCompanyName 必须声明进 UserBiz interface(编译期 var _ 检查)。外加 2 P2 已纳入: 字段位置精确化(AvatarURL后/ParentUserID前)+store层SQLite集成测试守 AC3(biz mock 测不出 GORM 零值落库)。API 契约锁定: PUT /me 加 CompanyName *string + GET /me 加已解析 company_name。无 LLM→无 trace。'
   - 'S1 (ai 2026-06-16): 提案+PRD 完成。技术可行性=高(复用 User.ParentUserID 父子关系+现有 PUT/GET /v1/users/me, 仅加 company_name 字段, 不新建表/端点)。识别 4 风险(空值清空用*string区分/子账户误改加biz守卫/GET解析父名单次查/migration手工跑)。9 条 AC。工作量~1.5人天。无 LLM 调用。'
   - 'S0 (ai 2026-06-16): 档位=Standard(DB+API+3仓库, 规则强制不可降级)。锁定产品决策(AskUserQuestion): 上线隔离=正常合并即上线(无 feature flag) / 谁设置=B端父账户自己在用户端设置页填(管理端不加入口) / 显示范围=只做左上角侧边栏+登录页 / 登录页范围=用户端+管理端都换"有数AI"文字。自主设计前提: 纯文字非图片 / 名称归属父账户子账户继承 / 登录页固定"有数AI" / 后端 /v1/users/me 直出已解析有效品牌名前端只读一字段。'
