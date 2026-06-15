@@ -358,7 +358,12 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 	visionTurn := false
 	var visionParts []aiservice.MessagePart
 	if len(atts) > 0 {
-		parts, hasInlineImage, _ := multimodal.BuildUserParts(ctx, message, atts, modelKey, attStore)
+		parts, hasInlineImage, partsErr := multimodal.BuildUserParts(ctx, message, atts, modelKey, attStore)
+		if partsErr != nil {
+			// BuildUserParts degrades internally (conservative caps / fallback), so
+			// this is currently always nil; log defensively for future error paths.
+			log.C(ctx).Warnw("ChatStream: BuildUserParts error", "error", partsErr)
+		}
 		if hasInlineImage {
 			visionTurn = true
 			visionParts = parts
@@ -437,6 +442,8 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 	// 中间件的 fragment 渲染只产纯文本、会覆盖 Messages 丢掉图片（spec §1）。bill-only
 	// 跳过 fragment 渲染、保留我们自拼的 Messages，且 synthBillOnlyResult.ChargeUser=true
 	// 使 reserve/reconcile 计费照常（识图含 image_url → Gateway Billing 自动计 llm_vision）。
+	// 注：上面为 fragment 路径构建的 aiMessages/ctxFragments 在识图 turn 被丢弃（每轮多一次
+	// 历史遍历，可忽略）；保持无条件构建是为了让 langfuse prompt-construction span 语义统一。
 	if visionTurn {
 		visionMsgs := b.buildVisionMessages(config, historyMsgs, retrievedChunkContents, visionParts)
 		ctx = applyVisionBillOnly(ctx, &gatewayReq, visionMsgs)
