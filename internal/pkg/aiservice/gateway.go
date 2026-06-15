@@ -215,6 +215,15 @@ func (g *Gateway) resolveAndRun(
 		}
 	}
 
+	// Default max_tokens from the resolved model's configured capability when the
+	// caller left it 0, so a thinking model's reasoning cannot exhaust the provider
+	// default budget and strand the answer in reasoning_content. Only fills
+	// ChatRequest; Embed/Rerank req types are left untouched. See maxtokens.go.
+	if chatReq, ok := req.(ChatRequest); ok && chatReq.MaxTokens == 0 {
+		chatReq.MaxTokens = defaultMaxTokensFromCapability(primary.Capability.MaxOutputTokens)
+		req = chatReq
+	}
+
 	g.mu.RLock()
 	p, ok := g.providers[primary.Provider.Name]
 	if !ok {
@@ -280,6 +289,12 @@ func (g *Gateway) ChatStream(ctx context.Context, taskID string, req ChatRequest
 		if overrideRoute, overrideErr := g.registry.ResolveByModelKey(ctx, taskID, req.ModelOverride); overrideErr == nil {
 			primary = overrideRoute
 		}
+	}
+
+	// Default max_tokens from the resolved model's configured capability when the
+	// caller left it 0 (same as resolveAndRun; ChatStream resolves inline). See maxtokens.go.
+	if req.MaxTokens == 0 {
+		req.MaxTokens = defaultMaxTokensFromCapability(primary.Capability.MaxOutputTokens)
 	}
 
 	g.mu.RLock()
