@@ -118,8 +118,10 @@ if len(atts) == 0 {
 - `ChatStream` 持久化 user 消息时写入 `Attachments`（来自 loaded atts）。
 - `ListMessages` 读出 `attachments` 原样返回（无需 presign：仅展示文件名 chip，**不渲染图片**——与 agent `📎 filename` 一致，规避 COS presign-on-read 复杂度；reload 看缩略图列为后续增强）。
 
-### 3.5 task profile（可选，文档一致性）
-- migration 更新 `task_profile` 中 `chatbot.stream` 的 `input_modalities` → `["text","image"]`。**非功能必需**（modality 能力在 per-model capability_json），仅元数据正确性。低优先，可并入主 migration。
+### 3.5 task profile — **不放宽**（S3 review 修正）
+- **决策（代码核实）**：`profile/capability.go:125-131` `matchLLM` 是**子集过滤**——task `requirements.input_modalities` 要求的模态必须全在模型支持列表里。若把 `chatbot.stream` 放宽到 `["text","image"]`，纯文本的 **agnes（0元会员默认模型）会被排除出默认路由**，破坏省钱默认 + free-model-member 设计。**故保持 `chatbot.stream` = `["text"]`，不改 task profile。**
+- 识图模型经 **ModelOverride** 到达：`gateway.go` 在 `req.ModelOverride!=""` 时走 `registry.ResolveByModelKey`，**绕过 `matchLLM` requirements 过滤**（双 reviewer + 代码确认），所以用户在 ModelSelector 选 `qwen3-vl-flash` 时即便 task profile 限 `["text"]` 也能正常解析到识图模型路由。
+- S5 验证 `done`/usage 的 ModelName == 用户所选识图模型 key，确认 ModelOverride 未静默 fallback。
 
 ## 4. 前端设计（numind-web-v3）
 
@@ -155,7 +157,7 @@ if len(atts) == 0 {
 ## 7. 不做 / 边界
 - 不改 agent（其 multimodal 副本留存）；不改共享 contextbudget 包；不改 SOP。
 - **AS-6 v1 明确口径（S2 review P2，消歧义）**：reload 后用户气泡显示的是**文件名 chip**（对齐 agent `📎 filename`），**不是图片缩略图**。发送前的输入区预览可显示本地 blob 缩略图。reload 显示真图缩略图（需 messages 读路径 presign COS）列为**后续增强**，不在 v1。
-- **task profile 路由确认（S2 review P1）**：S4 须确认 `chatbot.stream` task profile 的 `requirements.input_modalities`（若有）不会把用户选的识图模型路由筛掉导致 `ModelOverride` 解析失败 → 静默 fallback agnes。若 seed 里 `chatbot.stream` 限定 `["text"]` 会排除识图路由，则把它放宽为 `["text","image"]`（§3.5 的 migration 从"可选文档一致性"升为"P1 必做"）。
+- **task profile 不放宽（S2 P1 + S3 P1 终解）**：见 §3.5——`matchLLM` 子集过滤使放宽会排除 agnes 默认模型，故 `chatbot.stream` 保持 `["text"]`，识图靠 ModelOverride 绕过过滤。S5 用 ModelName 断言验证 ModelOverride 路由正确。
 - PDF/音频 inline 不在本 feature（仅 image）。
 
 ## 8. 涉及文件预览（S3 细化）
