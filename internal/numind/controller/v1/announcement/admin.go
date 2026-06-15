@@ -47,7 +47,7 @@ type QuestionItem struct {
 type CreateAnnouncementRequest struct {
 	Type        string         `json:"type"`
 	Title       string         `json:"title" binding:"required"`
-	Content     string         `json:"content"`
+	Content     string         `json:"content" binding:"required"` // spec §1.1 content NOT NULL — 不允许空内容公告
 	IsImportant *bool          `json:"is_important"`
 	ExpiresAt   *time.Time     `json:"expires_at"`
 	Status      string         `json:"status"`
