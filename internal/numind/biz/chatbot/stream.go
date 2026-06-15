@@ -403,6 +403,10 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 		Temperature:      0.7,
 		ModelOverride:    modelKey, // pass user's model choice; empty = use task profile default
 		Thinking:         thinking,
+		// Explicit output cap so a thinking model's reasoning cannot exhaust the
+		// provider default budget before the answer is emitted (which strands the
+		// whole answer in reasoning_content with empty content). See maxtokens.go.
+		MaxTokens: chatbotMaxOutputTokens(ctx),
 	}
 
 	ch, llmErr := aiservice.ChatStream(ctx, profile.ChatbotStream, gatewayReq)
