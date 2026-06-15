@@ -4524,3 +4524,20 @@ features:
   - 'H2 实现 5 commit: render strip(a6b21639)+Go splitter 停插(5c09224b)+strategy 配置驱动(675bd4d2)+salesrag context-budget evidence 路径补 strip(837bca95, review P0)+Python semantic_splitter 停插治本(9e83ebf4)。★纠正任务前提: 任务称语义切块未部署/只 Go 兜底插标记——运行态取证推翻(dev semantic_server.py:9093 在跑 model_ready, Python add_overlap 也插标记), 故 Go+Python 两路径都修才治本; render strip 普适兜底旧 chunk。双 Sonnet review + completeness re-review 均 PASS, 0 遗漏 LLM-feed 点。门禁: 受影响 9 包 go test 0 / gofmt 0 / golangci-lint 0 / py_compile 0。config_prod 未碰。'
   - 'H2 仓库卫生发现(未修, 告知 User): scripts/__pycache__/*.pyc 被误纳入 git 跟踪(document_parser + semantic_splitter)——应进 .gitignore, 本 hotfix 不扩范围。'
   blockers: []
+
+- id: agent-output-redesign
+  ndf_version: '3.0'
+  description: 'Agent 产物卡片重设计+反馈删除+docx 嵌图(User dev 实跑 agent-output-polish 后反馈+playground 选型 A1/B1/C3): (1)文件卡→A1 极简行内/图片卡→B1 缩略/多问题卡→C3 对话感软卡; (2)#4 修复 extractArtifacts 把句中下载链接抽走留空「文件下载：」+卡片脱节→改分段就地渲染(prose/artifact 按原顺序交替, 卡片出现在链接原位); (3)#5 删反馈条——经查前端发{feedback,note}后端要{verdict}必填→每次点 400 啥没存+无消费方+SOP/chatbot 都没做, User 决定删(前端 UI+后端坏端点一起清); (4)#2 docx 嵌图——run159 取证 AI 生成图但 run_python NO input_files→图没进 docx, 软提示无效→docx-author 技能加强指令+代码模板(必须 input_files+add_picture, 位置交 AI, 0%→预期80-95%非硬保证)。#3(每次生封面图=agent 自己提示词)User 自行改 agent 提示词不在本 feature。playground: docs/numind-card-playground.html。'
+  classification_reason: 'Standard: 跨仓库(前端卡片/反馈+后端技能/端点)/影响文件 >3。无 DB schema/新增 API(反删一个端点)/支付权限。User playground 选型 A1/B1/C3 + 确认删反馈 + #2 强提示方案。'
+  last_updated_by: ai-s0
+  last_updated_at: '2026-06-15T19:29:03+08:00'
+  created_at: '2026-06-15T19:29:03+08:00'
+  track: standard
+  stage: S0
+  repos: [numind-server, numind-web-v3]
+  branches: {numind-server: feature/agent-output-redesign, numind-web-v3: feature/agent-output-redesign}
+  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
+  artifacts: {requirement: requirements/agent-output-redesign.md, playground: docs/numind-card-playground.html}
+  decisions:
+  - 'S0: 需求卡 requirements/agent-output-redesign.md。User playground 选 A1(文件)/B1(图片)/C3(问题卡)。#4 核心=AgentFinalAnswer 从 strip+底部追加 改 分段就地渲染。#5 删反馈(字段不匹配 400+无消费方)。#2 docx 强提示+代码模板(取证 run159 NO input_files)。#3 User 自改 agent 提示词不在本 feature。Triage→Standard。'
+  blockers: []
