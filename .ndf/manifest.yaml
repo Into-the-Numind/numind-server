@@ -4487,15 +4487,17 @@ features:
   ndf_version: '3.0'
   description: 'Agent mode 输出体验打磨(User dev 实跑 agent-qa-card-ux 后 4 条反馈): (1)去掉问题卡多问题模式的 review 检查页, 最后一题按钮直接「提交」。(2)生成图片不显示/不进 docx——★运行时取证推翻初判: run158 持久化最终回答确实嵌了 ![](url) 且图 URL curl 200/png/1MB, 前端 renderMarkdown 正确产 <img>; 即聊天图技术上正常渲染只是正文末尾不显眼(2a); docx 里没图=AI 用 run_python+docx-author 现写没嵌图=AI 行为(2b,改技能指南尽力)。(3)AI 回复 emoji 太多→User 选「禁用 emoji+美化 markdown 渲染」(基础提示 skill/constants.go 加指令+前端美化)。(4)下载链接(AI 在 markdown 写的 [下载](cos-url))做成卡片。统一设计: 2a+4 合并, 最终回答里图片+可下载文档都渲染成产物卡片(复用 AgentArtifactItem)。'
   classification_reason: 'Standard: 跨仓库(后端提示/技能 + 前端多组件)/影响文件 >3。不涉 DB schema/不涉支付权限。User 档位确认选「一个 Standard 打包 4 个」。emoji 选「禁用+美化」。'
-  last_updated_by: ai-s0
-  last_updated_at: '2026-06-15T16:48:14+08:00'
+  last_updated_by: ai-s3
+  last_updated_at: '2026-06-15T16:53:32+08:00'
   created_at: '2026-06-15T16:48:14+08:00'
   track: standard
-  stage: S0
+  stage: S3
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/agent-output-polish, numind-web-v3: feature/agent-output-polish}
-  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
-  artifacts: {requirement: requirements/agent-output-polish.md}
+  progress: {total_tasks: 5, completed_tasks: 0, reviewed_tasks: 0}
+  artifacts: {requirement: requirements/agent-output-polish.md, proposal: docs/superpowers/specs/2026-06-15-agent-output-polish-design.md, spec: docs/superpowers/specs/2026-06-15-agent-output-polish-design.md, plan: docs/superpowers/plans/agent-output-polish-plan.md}
   decisions:
   - 'S0: 需求卡 requirements/agent-output-polish.md。★#2a 运行时取证(dev DB run158 + curl + renderMarkdown 测试): 聊天图实际正常渲染(非 bug), 改进点=显眼度→产物卡片。#2b docx 嵌图=AI 行为只能技能引导。#3 emoji=禁用+美化(User 选)。#2a+#4 合并为产物卡片统一设计。Triage→Standard(跨仓库+>3文件)。'
+  - 'S1+S2(合并, 4 项均明确 UX 改进无需重定义问题): 提案+spec docs/superpowers/specs/2026-06-15-agent-output-polish-design.md。落点锁定: #1 QuestionPrompt 去 review 步; #2a+#4 AgentFinalAnswer 用 extractArtifacts 抽图片+下载链接→复用 AgentArtifactItem 卡片(派生 markdown 故刷新仍在); #3 后端 skill/constants.go PlatformBasePrompt 加禁 emoji+前端 markdown 美化; #2b docx-author SKILL.md(已有 add_picture 模板)+output_tools_priority_prompt 加嵌图引导(尽力)。docx-author 技能已支持嵌图, 缺的是 AI 把生成图传进 input_files 的行为。无新增 LLM 入口。'
+  - 'S3: plan docs/superpowers/plans/agent-output-polish-plan.md。5 实现 task(T1-T5)+T6 验证策略, 后端先于前端, 序 T2→T5→T1→T3→T4→T6(T3/T4 同改 AgentFinalAnswer 串行)。待独立 Sonnet 原子性审查。'
   blockers: []
