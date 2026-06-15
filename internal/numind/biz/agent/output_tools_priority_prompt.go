@@ -33,7 +33,7 @@ When the user asks you to generate a file, prefer tools in this order:
    STEP B: run_python({"code": "<Python following the guidance>", "input_files": [...]}) to execute.
    Available skills:
    - .xlsx → name="xlsx-author"
-   - .docx → name="docx-author"
+   - .docx → name="docx-author"  (if you generated an image earlier via image_gen, pass its COS URL in run_python input_files and embed it with doc.add_picture — never give the user a picture in chat but leave it out of the document)
    - .pptx → name="pptx-author"
    - .pdf  → name="pdf-from-html"
    IMPORTANT: do NOT skip STEP A — without the SKILL.md you will write wrong imports.
@@ -60,7 +60,7 @@ When the user asks you to generate a file, prefer tools in this order:
    ⚠️ run_python 无状态——每次调用是全新沙箱，文件不跨调用保留。整份文档必须一次 run_python 生成完；禁止重开上次调用写的输出路径（如 Presentation("/workdir/output/x.pptx") 会失败）。
    可用 skill:
    - .xlsx → name="xlsx-author"
-   - .docx → name="docx-author"
+   - .docx → name="docx-author"（若你之前用 image_gen 生成过图片，把该图片的 COS URL 放进 run_python 的 input_files，并用 doc.add_picture 嵌入文档——不要只在聊天里给图却漏掉文档里的图）
    - .pptx → name="pptx-author"
    - .pdf  → name="pdf-from-html"
    **重要**: 不要跳过步骤 A——不读 SKILL.md 直接写代码会用错 import。
