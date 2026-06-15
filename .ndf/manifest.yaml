@@ -1,5 +1,28 @@
 schema_version: '2.0'
 features:
+- id: org-branding
+  track: standard
+  description: '机构自定义品牌名（白标第一步）：B 端机构父账户在用户端「设置」里填公司名称→用户端左上角侧边栏显示该名称，其下所有 C 端子账户继承显示父账户名称，无名称兜底"有数AI"。另：登录页 logo 换成"有数AI"文字（用户端+管理端）。当前侧边栏硬编码"靓靓·海外IP研究所"，本需求数据化。'
+  classification_reason: 'Standard: DB schema 变更(User 表加 company_name 字段+migration)+扩展 API(PUT /v1/users/me 接受 company_name + /v1/users/me 响应输出已解析有效品牌名)+跨 3 仓库(server/web-v3/admin-web)文件数>3。触及 B2B2C 父子关系解析但非支付/权限。用户 2026-06-16 设为 goal 授权 autopilot 推进, 不部署 prod。'
+  status: active
+  stage: S0
+  repos:
+    numind-server: feature/org-branding
+    numind-web-v3: feature/org-branding
+    numind-admin-web: feature/org-branding
+  worktrees:
+    numind-server: /private/tmp/wt-org-branding-numind-server
+    numind-web-v3: /private/tmp/wt-org-branding-numind-web-v3
+    numind-admin-web: /private/tmp/wt-org-branding-numind-admin-web
+  progress:
+    total_tasks: 0
+    completed_tasks: 0
+    reviewed_tasks: 0
+  artifacts:
+    requirement: .ndf/features/org-branding/requirement.md
+  decisions:
+  - 'S0 (ai 2026-06-16): 档位=Standard(DB+API+3仓库, 规则强制不可降级)。锁定产品决策(AskUserQuestion): 上线隔离=正常合并即上线(无 feature flag) / 谁设置=B端父账户自己在用户端设置页填(管理端不加入口) / 显示范围=只做左上角侧边栏+登录页 / 登录页范围=用户端+管理端都换"有数AI"文字。自主设计前提: 纯文字非图片 / 名称归属父账户子账户继承 / 登录页固定"有数AI" / 后端 /v1/users/me 直出已解析有效品牌名前端只读一字段。'
+  blockers: []
 - id: notification-center
   track: standard
   description: '通知系统：管理端发官方公告，用户端铃铛+通知中心看（已读/未读），公告可为问卷类型（单选/多选/评分/开放文本）做用户调研；后台看已读率+用户明细+问卷回收率。仅全员广播(V1)。强隔离：feature flag 默认 OFF + 独立表 + 独立路由组 /v1/announcements & /v1/admin/announcements + 前端懒加载，零改现有表/端点，不影响 prod 打 tag。'
