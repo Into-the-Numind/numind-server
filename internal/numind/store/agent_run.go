@@ -52,11 +52,13 @@ type IAgentRunStore interface {
 	// The message is appended as {"role":"user","content":<content>}.
 	// RowsAffected==0 returns error. Used by Answer biz method (T4).
 	AppendUserMessage(ctx context.Context, id uint64, content string) error
-	// AnswerAndClear atomically appends a user message to agent_run.messages AND
-	// clears pending_question_json / pending_question_at / state_reason in a single
-	// DB transaction. Replaces the separate AppendUserMessage + ClearPendingQuestion
-	// pair used in earlier iterations. Used by Answer biz method (T4 P2 fix).
-	AnswerAndClear(ctx context.Context, id uint64, userMessage string) error
+	// AnswerAndClear atomically appends a pre-built answer turn to
+	// agent_run.messages AND clears pending_question_json / pending_question_at /
+	// state_reason in a single DB transaction. The biz layer builds the full turn
+	// (role=user + content + embedded question_answer for issue1 reconstruction),
+	// so the store appends it verbatim. Replaces the separate AppendUserMessage +
+	// ClearPendingQuestion pair used in earlier iterations.
+	AnswerAndClear(ctx context.Context, id uint64, turn json.RawMessage) error
 	UpdateSessionPinned(ctx context.Context, sessionID string, isPinned bool) error
 	UpdateSessionName(ctx context.Context, sessionID string, name string) error
 	UpdateSessionDeleted(ctx context.Context, sessionID string, isDeleted bool) error
@@ -334,7 +336,13 @@ func (s *agentRunStore) AppendUserMessage(ctx context.Context, id uint64, conten
 // AnswerAndClear atomically appends a user message and clears pending question state
 // in a single DB transaction. This avoids a TOCTOU window between AppendUserMessage
 // and ClearPendingQuestion that could leave the run in an inconsistent state on error.
-func (s *agentRunStore) AnswerAndClear(ctx context.Context, id uint64, userMessage string) error {
+func (s *agentRunStore) AnswerAndClear(ctx context.Context, id uint64, turn json.RawMessage) error {
+	// Guard the interface contract: a nil/empty turn would append the literal
+	// "null" (or nothing) into the transcript. The biz layer always builds a
+	// valid turn, so this is defensive against future callers.
+	if len(turn) == 0 || string(turn) == "null" {
+		return fmt.Errorf("agentRunStore.AnswerAndClear(id=%d): empty answer turn", id)
+	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Read current messages inside the transaction.
 		var run model.AgentRun
@@ -350,12 +358,9 @@ func (s *agentRunStore) AnswerAndClear(ctx context.Context, id uint64, userMessa
 			}
 		}
 
-		// Append the new user message.
-		newMsg, err := json.Marshal(map[string]string{"role": "user", "content": userMessage})
-		if err != nil {
-			return fmt.Errorf("agentRunStore.AnswerAndClear marshal msg(id=%d): %w", id, err)
-		}
-		msgs = append(msgs, json.RawMessage(newMsg))
+		// Append the pre-built answer turn verbatim (biz layer owns its shape:
+		// role=user + content + embedded question_answer for issue1).
+		msgs = append(msgs, turn)
 
 		newMsgs, err := json.Marshal(msgs)
 		if err != nil {

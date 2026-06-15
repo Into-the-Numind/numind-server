@@ -94,7 +94,7 @@ func (s *answerRunStore) AppendUserMessage(_ context.Context, id uint64, _ strin
 	s.appendMessageCalls = append(s.appendMessageCalls, id)
 	return s.appendMessageErr
 }
-func (s *answerRunStore) AnswerAndClear(_ context.Context, id uint64, _ string) error {
+func (s *answerRunStore) AnswerAndClear(_ context.Context, id uint64, _ json.RawMessage) error {
 	s.answerAndClearCalls = append(s.answerAndClearCalls, id)
 	return s.answerAndClearErr
 }
@@ -324,6 +324,42 @@ func TestBuildAnswerMessage(t *testing.T) {
 	assert.Contains(t, msg, "「Which region?」")
 	// selected labels joined by 、, free text appended after ；
 	assert.Contains(t, msg, "北、南；hello")
+}
+
+func TestBuildAnswerTurn_EmbedsQuestionAnswer(t *testing.T) {
+	pending := parsePending(t, `{"question":"目标受众?","header":"受众","options":[{"key":"k1","label":"年轻女性","description":"18-30"}],"multi_select":false}`)
+	raw, err := buildAnswerTurn(pending, map[string]AnswerItem{
+		"目标受众?": {Selected: []string{"年轻女性"}},
+	}, "用户已回答你的问题：…")
+	require.NoError(t, err)
+	var turn map[string]any
+	require.NoError(t, json.Unmarshal(raw, &turn))
+	assert.Equal(t, "user", turn["role"])
+	qa, ok := turn["question_answer"].(map[string]any)
+	require.True(t, ok, "answered turn must embed question_answer")
+	qs, _ := qa["questions"].([]any)
+	require.Len(t, qs, 1)
+	q0 := qs[0].(map[string]any)
+	assert.Equal(t, "目标受众?", q0["question"])
+	assert.Equal(t, "年轻女性", q0["answer"])
+	opts, _ := q0["options"].([]any)
+	require.Len(t, opts, 1)
+	_, hasKey := opts[0].(map[string]any)["key"]
+	assert.False(t, hasKey, "machine option key must be dropped (client identifies by label)")
+}
+
+func TestBuildAnswerTurn_AllSkippedDegradesToBubble(t *testing.T) {
+	// Every answer resolves empty (blank free text, no selection) → no question is
+	// embedded → the turn degrades to a plain user bubble (no question_answer).
+	pending := parsePending(t, `{"question":"Q1","options":[],"multi_select":false}`)
+	raw, err := buildAnswerTurn(pending, map[string]AnswerItem{
+		"Q1": {Selected: nil, FreeText: "   "},
+	}, "plain content")
+	require.NoError(t, err)
+	var turn map[string]any
+	require.NoError(t, json.Unmarshal(raw, &turn))
+	_, has := turn["question_answer"]
+	assert.False(t, has, "no answered question → no question_answer field (plain user bubble)")
 }
 
 func TestBuildAnswerMessage_NoFreeText(t *testing.T) {

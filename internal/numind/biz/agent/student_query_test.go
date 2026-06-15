@@ -545,6 +545,94 @@ func TestStudentQuery_SessionSnapshot_MessageTransform(t *testing.T) {
 	assert.Equal(t, run.ID, rawMsgs[1].RunID)
 }
 
+// TestStudentQuery_SessionSnapshot_AnsweredQuestionCardSurvivesReload is the
+// issue1 customer-bug reproduction (NDF rule 11): after the user answers an
+// ask_user_question and the run completes, reopening the session must keep the
+// question CARD (answered/collapsed), not degrade the answer into an orphan
+// "用户已回答你的问题…" user bubble. The answer turn embeds a question_answer
+// structure (written by AnswerAndClear); transformMessages must reconstruct it
+// as an answered question_prompt card. EXPECTED TO FAIL before the fix
+// (transformMessages emits a plain user bubble for the answer turn).
+func TestStudentQuery_SessionSnapshot_AnsweredQuestionCardSurvivesReload(t *testing.T) {
+	svc, db := newSQServiceFull(t)
+
+	msgs, _ := json.Marshal([]map[string]any{
+		{"role": "user", "content": "帮我做个调研"},
+		{
+			"role":    "user",
+			"content": "用户已回答你的问题：\n- 「目标受众是谁？」→ 年轻女性\n请据此继续，不要重复已回答的问题。",
+			"question_answer": map[string]any{
+				"questions": []map[string]any{
+					{
+						"question":     "目标受众是谁？",
+						"header":       "受众",
+						"multi_select": false,
+						"options": []map[string]any{
+							{"label": "年轻女性", "description": "18-30"},
+							{"label": "职场人士"},
+						},
+						"answer": "年轻女性",
+					},
+				},
+			},
+		},
+		{"role": "assistant", "content": "好的，调研完成"},
+	})
+	run := &model.AgentRun{
+		UserID:      12,
+		SessionID:   "snap-answered-card",
+		Status:      "terminated",
+		StateReason: "completed",
+		Messages:    msgs,
+		StartedAt:   time.Now(),
+	}
+	require.NoError(t, db.Create(run).Error)
+
+	snap, err := svc.GetSessionSnapshot(context.Background(), 12, run.SessionID)
+	require.NoError(t, err)
+	rawMsgs, ok := snap.Messages.([]agentMessage)
+	require.True(t, ok, "snap.Messages must be []agentMessage")
+
+	var card *agentMessage
+	for i := range rawMsgs {
+		if rawMsgs[i].Type == "question_prompt" {
+			card = &rawMsgs[i]
+		}
+		if rawMsgs[i].Type == "user" {
+			assert.NotContains(t, rawMsgs[i].Text, "用户已回答你的问题",
+				"answered question turn must NOT render as a plain user bubble (issue1)")
+		}
+	}
+	require.NotNil(t, card, "answered question turn must reconstruct a question_prompt card on reload")
+	assert.Equal(t, "answered", card.AnswerStatus)
+	assert.Equal(t, run.ID, card.RunID)
+	require.Len(t, card.Questions, 1)
+	assert.Equal(t, "目标受众是谁？", card.Questions[0].Question)
+	assert.Equal(t, "年轻女性", card.Questions[0].Answer, "reconstructed card must carry the user's actual answer")
+	require.Len(t, card.Questions[0].Options, 2, "options must survive reconstruction (non-nil array)")
+}
+
+func TestReconstructAnsweredQuestions(t *testing.T) {
+	// nil / corrupt / empty all degrade to ok=false (turn stays a plain bubble).
+	_, ok := reconstructAnsweredQuestions(nil)
+	assert.False(t, ok, "nil → false")
+	_, ok = reconstructAnsweredQuestions("not-an-object")
+	assert.False(t, ok, "non-object JSON → false")
+	_, ok = reconstructAnsweredQuestions(map[string]any{"questions": []any{}})
+	assert.False(t, ok, "empty questions → false")
+
+	// Valid payload → items; a nil Options becomes a non-nil empty slice so the
+	// frontend never reads options.length on null (dev run 147).
+	items, ok := reconstructAnsweredQuestions(map[string]any{
+		"questions": []any{map[string]any{"question": "Q1", "answer": "A1"}},
+	})
+	require.True(t, ok)
+	require.Len(t, items, 1)
+	assert.Equal(t, "Q1", items[0].Question)
+	assert.Equal(t, "A1", items[0].Answer)
+	assert.NotNil(t, items[0].Options, "nil options must become a non-nil empty slice")
+}
+
 // TestStudentQuery_SessionSnapshot_ToolGroupSurvivesReload is the customer-bug
 // reproduction (NDF rule 11): after an agent run that used tools, reopening the
 // session must still show the tool-call process. transformMessages previously

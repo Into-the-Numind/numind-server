@@ -54,6 +54,14 @@ func (s *stubStreamSvc) AcquireStreamLock(_ context.Context, _ uint, _ agentbiz.
 	return s.acquireRunID, s.acquiredOK, s.acquireErr
 }
 func (s *stubStreamSvc) ReleaseStreamLock(_ uint64) {}
+
+// AcquireResumeStreamLock + AnswerStream satisfy the expanded streamingRunSvc
+// seam (issue4). The CreateStream tests never exercise the resume path, so these
+// are inert stubs.
+func (s *stubStreamSvc) AcquireResumeStreamLock(_ uint64) bool { return true }
+func (s *stubStreamSvc) AnswerStream(_ context.Context, _ uint, _ uint64, _ agentbiz.AnswerRequest, ch chan<- stream.Event) (*agentbiz.RunResult, error) {
+	return nil, nil
+}
 func (s *stubStreamSvc) RunStream(_ context.Context, _ uint, _ agentbiz.CreateRunRequest, _ uint64, ch chan<- stream.Event) (*agentbiz.RunResult, error) {
 	for _, ev := range s.events {
 		ch <- ev
@@ -365,6 +373,14 @@ func (s *blockingStreamSvc) AcquireStreamLock(_ context.Context, _ uint, _ agent
 }
 func (s *blockingStreamSvc) ReleaseStreamLock(_ uint64) {}
 func (s *blockingStreamSvc) RunStream(ctx context.Context, _ uint, _ agentbiz.CreateRunRequest, _ uint64, _ chan<- stream.Event) (*agentbiz.RunResult, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// AcquireResumeStreamLock + AnswerStream satisfy the expanded streamingRunSvc
+// seam (issue4); blockingStreamSvc only exercises the CreateStream path.
+func (s *blockingStreamSvc) AcquireResumeStreamLock(_ uint64) bool { return true }
+func (s *blockingStreamSvc) AnswerStream(ctx context.Context, _ uint, _ uint64, _ agentbiz.AnswerRequest, _ chan<- stream.Event) (*agentbiz.RunResult, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
