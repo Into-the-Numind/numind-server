@@ -257,9 +257,17 @@ func (s *StudentQueryService) ListRecentSessions(ctx context.Context, userID uin
 // (latest run by started_at) and orders is_pinned DESC, started_at DESC. 500 is a
 // generous safety cap that effectively means "all" for any real user.
 func (s *StudentQueryService) ListAllHistorySessions(ctx context.Context, userID uint) ([]*RunSummary, error) {
-	runs, err := s.runStore.ListByUser(ctx, userID, nil, 500)
+	const historyCap = 500
+	runs, err := s.runStore.ListByUser(ctx, userID, nil, historyCap)
 	if err != nil {
 		return nil, fmt.Errorf("StudentQueryService.ListAllHistorySessions: %w", err)
+	}
+	// No-silent-cap: surface when a power user actually hits the safety bound so we
+	// notice if pagination is ever truly needed (rather than silently dropping the
+	// oldest sessions).
+	if len(runs) == historyCap {
+		log.C(ctx).Warnw("ListAllHistorySessions hit 500-session cap; oldest sessions omitted",
+			"user_id", userID)
 	}
 	return s.toEnrichedSummaries(ctx, runs)
 }

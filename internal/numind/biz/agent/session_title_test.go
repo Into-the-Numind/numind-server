@@ -109,6 +109,38 @@ func TestMaybeGenerateSessionTitle_GenerateError_NoChange(t *testing.T) {
 	assert.Equal(t, "", sessionNameOf(t, db, "s1"), "generate failure → session stays unnamed")
 }
 
+func TestMaybeGenerateSessionTitle_EmptyTitle_NoUpdate(t *testing.T) {
+	db := newSQTestDB(t)
+	rs := store.NewTestStore(db).AgentRuns()
+	seedUnnamedRun(t, db, 1, "s1")
+
+	withAgentGenTitleFn(t, func(_ context.Context, _, _ string) (string, error) {
+		return "", nil // success but empty title
+	})
+
+	maybeGenerateSessionTitle(context.Background(), rs, "s1", "q", "a")
+	assert.Equal(t, "", sessionNameOf(t, db, "s1"), "empty title (no error) → session stays unnamed")
+}
+
+func TestMaybeGenerateSessionTitle_ListError_NoOp(t *testing.T) {
+	db := newSQTestDB(t)
+	rs := store.NewTestStore(db).AgentRuns()
+	seedUnnamedRun(t, db, 1, "s1")
+
+	called := false
+	withAgentGenTitleFn(t, func(_ context.Context, _, _ string) (string, error) {
+		called = true
+		return "x", nil
+	})
+	// Close the DB so ListBySession errors before generation is attempted.
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	require.NoError(t, sqlDB.Close())
+
+	maybeGenerateSessionTitle(context.Background(), rs, "s1", "q", "a")
+	assert.False(t, called, "ListBySession error → generator not called, best-effort no-op")
+}
+
 func TestMaybeGenerateSessionTitle_EmptySessionID_NoOp(t *testing.T) {
 	db := newSQTestDB(t)
 	rs := store.NewTestStore(db).AgentRuns()
