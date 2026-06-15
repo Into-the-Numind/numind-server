@@ -4696,13 +4696,14 @@ features:
   ndf_version: '3.0'
   description: '把 Agent mode 的图片识别双路径方案移植到 chatbot(AI助手)。现状: chatbot 前端只收文档(.txt/.md/.pdf/.doc/.docx)、后端 chatReq 仅 message 文本字段、任务画像 chatbot.stream input_modalities=["text"]→完全无识图。移植: 能识图模型(qwen3-vl-flash/qwen-vl-plus/doubao-seed-1-8 等, 判定=ai_service.capability_json.accepts_image_inline 5min缓存/未知保守false)→image_url part 直喂(inline); 不能识图模型(含 prod 默认 0元会员 agnes-2.0-flash)→透明降级(上传时后台 VLM qwen3-vl-flash+百度OCR 异步预生成 text_fallback, 请求时拼纯文本)。复用模式无关件: agent_attachment 表/UploadService/FallbackService worker pool/capability 判定/billing(自动按 image_url part 计 llm_vision)+langfuse middleware/aiservice 多模态类型(MessagePart/ImageURL)。解耦 agent 专属: buildAgentInputForModel 输出被 MessagesToInputString 压平成字符串塞 ReAct(runner过渡债)→chatbot 流式应让 image_url part 直接进 ChatRequest.Messages 不压平; 入口契约 ChatStream 加 attachment_ids 参数; legacy attachment_urls+file_read 提示路径(agent专属)不移植。'
   classification_reason: 'Standard: 跨 numind-server+numind-web-v3 两仓库/影响文件>3/新增 API 端点(chatbot 图片上传入口+ChatStream attachment_ids 契约)/很可能 DB schema(agent_attachment.source 区分来源待 S2 定)/涉及 vision 计费(llm_vision 比文本贵+后台 VLM 系统成本)。用户 2026-06-16 经 AskUserQuestion 确认 Standard + 非识图模型透明降级。'
-  last_updated_by: ai-s4s5
+  last_updated_by: ai-s6
   last_updated_at: '2026-06-16T01:06:10+08:00'
   created_at: '2026-06-16T01:06:10+08:00'
   track: standard
-  stage: S5
+  stage: S6
   status: active
   repos: [numind-server, numind-web-v3]
+  branches: {numind-server: develop (merged via ndf-done), numind-web-v3: develop (merged via ndf-done)}
   branches: {numind-server: feature/chatbot-image-recognition, numind-web-v3: feature/chatbot-image-recognition}
   worktrees: {numind-server: /private/tmp/wt-chatbot-image-recognition-numind-server, numind-web-v3: /private/tmp/wt-chatbot-image-recognition-numind-web-v3}
   progress: {total_tasks: 7, completed_tasks: 7, reviewed_tasks: 7}
@@ -4712,4 +4713,5 @@ features:
   - 'S1+S2 (ai 2026-06-16): 3 只读 agent 吃透 agent 方案 + 核验关键假设。设计=双路径: 非识图(透明降级)纯文本走现有 fragment 路径零网关改动; 识图 inline 走 bill-only(WithGatewayBillingOnly+自拼Messages含image_url Parts+ContextFragments=nil, 保留reserve/reconcile)。复用: /v1/agent-attachments 上传零改动+attachment_ids走capability路由+FallbackService worker+capability判定。新建共享包 biz/multimodal(复制~200行agent路由,不碰agent活跃feature)。DB加 chatbot_message.attachments JSON(serializer:json)。S2 Sonnet review CONDITIONAL_PASS: 4 关键假设(bill-only扣费/image_url须Parts/ModelOverride兼容/非识图全文本)代码实证全成立; 2 P1(ModelOverride路由解析校验+UploadResponse.id补共享type)+4 P2(AS-6文件名chip消歧/GORM serializer:json/复制行数修正/非识图重跑复用)全吸收进 spec。'
   - 'S3 (ai 2026-06-16): plan 切 8 task(T1 multimodal共享包/T2 DB+model+store/T3 ChatStream双路径/T4 controller/T6 FE api+store/T7 FE UI/T8 S5验证策略; code task=T1-T7=7)。后端先于前端, T1/T2->T3->T4, T6->T7。S3 Sonnet 原子性 review CONDITIONAL_PASS(0 P0): P1=task profile 放宽必要性——代码核实 matchLLM(capability.go:125-131)子集过滤, 放宽 chatbot.stream 到[text,image]会排除纯文本 agnes 默认模型, 故删 task profile migration 保持[text], 识图靠 ModelOverride 绕过过滤(比 reviewer 字面建议更正确); 2 P2(trace元数据S5人工核验/前端分流加vitest)全吸收。⚠并发: stream.go 同被 adaptive-session-titles(S3,改507-540行)修改, T3 插入点 step6/7 之间不重叠但同文件 merge 需人工解。'
   - 'S4 (ai 2026-06-16): 7 task 全实现+commit, 每 task 完成并行双 Sonnet review。后端: T1 biz/multimodal 共享包(buildPartsWithCaps 纯逻辑可测+presign/waitForFallback/mkInlineBlock 复制agent)、T2 chatbot_message.attachments JSON(serializer:json)+migration、T3 ChatStream 双路径(applyVisionBillOnly 抽出可测 bill-only注入+buildVisionMessages+effectiveMessage/message 分离不污染持久化)、T4 controller attachment_ids。前端: T6 UploadResponse.id+ChatbotMessage.attachments+store imageAttachments暂存+vitest、T7 ChatbotChat 上传UI(accept image/*+routeFiles分流+缩略图+气泡chip)。8 个 reviewer 全 PASS_WITH_CONCERNS(0 P0); 修了 2 个 P1(multimodal PDF/audio 恒fallback、前端cleanup blob泄漏)+多个 P2(每次现场修); 推迟项(input缩略图放大/低价值)已文档化。门禁: go test ./internal/numind/... 57ok 0FAIL + go vet通过 + golangci改动包净 + 前端 vue-tsc/eslint/vitest(6新+13总)全过。reviewed=completed=7。'
+  - 'S6 dev 部署 (ai 2026-06-16): ndf-done 两仓库 merge develop+push 已独立复核(server f4123442/web b3d8aa5 在 origin/develop, multimodal包+migration+前端spec均在)。⚠先手工应用 migration 到 dev DB(chatbot_message 不在 AutoMigrate, 新代码每次写消息带 attachments 列→不建列会破坏所有 chatbot 写入)→SSH docker exec numind-mysql-dev 建 JSON 列(count 0→1, type json nullable)。再 /deploy-dev server(build177s/push13s)+/deploy-dev web(build102s/push7s), 两容器跑新镜像(numind-server-dev develop-f4123442-dirty healthy + healthz ok; numind-web-v3-dev develop-b3d8aa5 health ok)。端到端识图验证(识图模型inline+透明降级)按 feedback_walkthrough_user_executes 交用户亲手走/或独立E2E账号征同意后探, 非自动用用户账号驱动。停 dev 等用户验收, prod 不在授权。'
   blockers: []
