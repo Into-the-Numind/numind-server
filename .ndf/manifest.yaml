@@ -4552,11 +4552,11 @@ features:
   ndf_version: '3.0'
   description: 'Agent 输出细节精修(User dev 实跑 agent-output-redesign 后 7 条反馈): (1)思考块箭头方向 折叠→右展开→下(ThinkingBlock chevron); (2)文件/图片命名丑——前端 splitIntoSegments 用 markdown 链接文字/alt 当显示名(现错用 URL path sanitized 下划线名)+后端 image_gen 起干净默认名(现 gemini-image-{unix}); (3)图片不要大外框 单图 S2(无框+轻阴影+点击大图)多图 M1(自适应网格); (4)markdown 标题分级字号+段间距; (5)表格/引用等带色→翠绿柔和不刺眼; (6)「等你回答一个问题」绿底行还转圈——前端过滤 ask_user_question(根因 tool-display.yaml 配 narration yield 工具永无 result→永久转圈+和问题卡重复); (7)问题卡已回答态回看卡仍旧白卡→统一 C3。playground docs/numind-image-playground.html(S2/M1)。'
   classification_reason: 'Standard: 跨仓库(后端 image 命名+前端多组件)/影响文件 >3。无 DB schema/新 API/支付权限。User playground 选 #3=S2/M1。'
-  last_updated_by: ai-s5
+  last_updated_by: ai-s6
   last_updated_at: '2026-06-16T00:33:04+08:00'
   created_at: '2026-06-16T00:33:04+08:00'
   track: standard
-  stage: S5
+  stage: S6
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/agent-output-refine, numind-web-v3: feature/agent-output-refine}
   progress: {total_tasks: 6, completed_tasks: 6, reviewed_tasks: 6}
@@ -4590,4 +4590,22 @@ features:
   - 'S1+S2: 合并设计 spec 2026-06-16-adaptive-session-titles-design.md。共享 helper biz/sessiontitle.Generate(qwen-turbo,无 ContextFragments,剥离 billing ctx 不计费); chatbot ChatStream maxSeq==0 挂载+done.session_title; agent finalizeRun total==1&&session_name=="" 挂载+UpdateSessionName; agent 侧边栏改 listAllHistorySessions(去30天窗)+滚动; chatbot 加载更多+滚动+done实时更新标题。无 DB schema/无新对外端点。'
   - 'S2 review(Sonnet): CONDITIONAL_PASS。抓出 P0=agent finalizeCtx 继承 billOnly=true 致标题调用不 pass-through、计费仅靠 DB policy 拦(漏配则扣用户)→修复: Generate 内剥离 billing ctx(新增 WithoutGatewayBillingOnly helper),不计费不依赖 DB。P1=agent guard total 恒≥1 去 total==0 分支。P2=history 去30天窗/SessionTitle 进 allTaskIDsList/3s 超时。全部已纳入 spec。'
   - 'S3: plan adaptive-session-titles-plan.md 切 6 task。T1 后端基座(billing helper+profile+sessiontitle 包)←T2(chatbot)/T3(agent+history去窗) 硬依赖；T4(agent前端)/T5(chatbot前端)独立可与后端并行。T6=S5 验证策略(单测+vitest+dev浏览器QA+计费DB核验)。执行=主session 顺序实现+每task并行双reviewer。文件归属已声明, T4/T5 与 agent-output-refine 同改 agent 前端须 merge 前 fetch 核对。'
+  blockers: []
+- id: chatbot-image-recognition
+  ndf_version: '3.0'
+  description: '把 Agent mode 的图片识别双路径方案移植到 chatbot(AI助手)。现状: chatbot 前端只收文档(.txt/.md/.pdf/.doc/.docx)、后端 chatReq 仅 message 文本字段、任务画像 chatbot.stream input_modalities=["text"]→完全无识图。移植: 能识图模型(qwen3-vl-flash/qwen-vl-plus/doubao-seed-1-8 等, 判定=ai_service.capability_json.accepts_image_inline 5min缓存/未知保守false)→image_url part 直喂(inline); 不能识图模型(含 prod 默认 0元会员 agnes-2.0-flash)→透明降级(上传时后台 VLM qwen3-vl-flash+百度OCR 异步预生成 text_fallback, 请求时拼纯文本)。复用模式无关件: agent_attachment 表/UploadService/FallbackService worker pool/capability 判定/billing(自动按 image_url part 计 llm_vision)+langfuse middleware/aiservice 多模态类型(MessagePart/ImageURL)。解耦 agent 专属: buildAgentInputForModel 输出被 MessagesToInputString 压平成字符串塞 ReAct(runner过渡债)→chatbot 流式应让 image_url part 直接进 ChatRequest.Messages 不压平; 入口契约 ChatStream 加 attachment_ids 参数; legacy attachment_urls+file_read 提示路径(agent专属)不移植。'
+  classification_reason: 'Standard: 跨 numind-server+numind-web-v3 两仓库/影响文件>3/新增 API 端点(chatbot 图片上传入口+ChatStream attachment_ids 契约)/很可能 DB schema(agent_attachment.source 区分来源待 S2 定)/涉及 vision 计费(llm_vision 比文本贵+后台 VLM 系统成本)。用户 2026-06-16 经 AskUserQuestion 确认 Standard + 非识图模型透明降级。'
+  last_updated_by: ai-s0
+  last_updated_at: '2026-06-16T01:06:10+08:00'
+  created_at: '2026-06-16T01:06:10+08:00'
+  track: standard
+  stage: S0
+  status: active
+  repos: [numind-server, numind-web-v3]
+  branches: {numind-server: feature/chatbot-image-recognition, numind-web-v3: feature/chatbot-image-recognition}
+  worktrees: {numind-server: /private/tmp/wt-chatbot-image-recognition-numind-server, numind-web-v3: /private/tmp/wt-chatbot-image-recognition-numind-web-v3}
+  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
+  artifacts: {requirement: .ndf/features/chatbot-image-recognition/requirement.md}
+  decisions:
+  - 'S0: 需求卡 .ndf/features/chatbot-image-recognition/requirement.md。调研已吃透 Agent mode 双路径方案(上传时异步预生成 text_fallback + 请求时按 capability 实时路由 inline/fallback)。用户确认: (1)Standard 档 (2)非识图模型透明降级(后台 VLM 转文字描述, 含默认 0元 agnes-2.0-flash)。Triage→Standard。⚠并发风险: chatbot stream.go ChatStream 同时被活跃 feature adaptive-session-titles(S3)修改, agent 前端被 agent-output-refine(S3)修改→本 feature S2/S3 须做文件归属声明, S4 前 git fetch 核对避免 merge 冲突。'
   blockers: []
