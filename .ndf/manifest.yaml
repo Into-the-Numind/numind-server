@@ -4547,3 +4547,20 @@ features:
   - 'S4 DONE(5 task, Tier2 跨仓库并行 implementer)。后端 a37b1d8d(#2 docx-author SKILL.md 软提示→强指令+完整 python 代码模板 必须+input_files+add_picture+Inches+守卫测试)/cc30481d(#5 删反馈端点 route+WriteFeedback controller+feedbackRequest+biz WriteFeedback+FeedbackRequest+测试, 保留 terminal_metadata/MergeTerminalMetadata, salesRAG feedback 未误删)。前端 c206616(#5 删反馈条 AgentFinalAnswer/AgentFeedbackBar/store/api/mock/types+AgentMessageItem 绑定 P1-B+5 测试文件 mock P1-C 全清)/e96a633(#1+#4 splitIntoSegments 按行切只切独占行 COS 节点 句中/列表内保留 prose P1-A+AgentFinalAnswer 分段就地+AgentArtifactItem A1/B1)/361f22f(#1 QuestionPrompt C3 对话感软卡 保留多问题导航/直接提交/answered/aria/jsdom)+P2 69855fb(stale 注释+QuestionPrompt 蓝→翠绿)。4 Sonnet review(每仓库双)全 PASS(0 P0/P1)。spec-compliance 报的后端 P0/P1「chatbot maxtokens 删除」=FALSE POSITIVE(用错 diff base develop..HEAD; feature merge-base..HEAD 不碰 chatbot, 是 develop 领先 fix/chatbot-thinking-maxtokens merge, ndf-done 保留无回归, 已 git 验证)。P2 全推迟/已修(代码围栏内 COS 链接理论边界/extractArtifacts 重复/C3 textarea vs pill 功能超集)。门禁: server go test ./... 0+golangci-lint 0; web vue-tsc 0+eslint 0+全量 vitest 872 pass。'
   - 'S3: plan docs/superpowers/plans/agent-output-redesign-plan.md。5 task(T1-T5)+T6 验证, 后端先于前端, 序 T1→T2→T3→T4→T5→T6(T3/T4 同改 AgentFinalAnswer 串行)。独立 Sonnet 原子性审查 VERDICT=CONDITIONAL_PASS, 3 P1 已修: P1-A(splitIntoSegments 切割规则: 只切独占行的 COS 节点, 句中/列表内链接保留 prose 防破坏 markdown 块结构, 测试含列表内不切用例)/P1-B(删 feedback 须同步改 AgentMessageItem 删 :initial-feedback/:initial-note 绑定否则 type-check 失败, runId 保留)/P1-C(清 5 测试文件的 submitFeedback vi.fn() mock + AgentMessageItem.spec initialFeedback); P2 已修(A1 无 size 显类型标签/FinalAnswerMessage 删 feedback 字段保留 run_id/保留 extractArtifacts 既有测试)。'
   blockers: []
+
+- id: agent-output-refine
+  ndf_version: '3.0'
+  description: 'Agent 输出细节精修(User dev 实跑 agent-output-redesign 后 7 条反馈): (1)思考块箭头方向 折叠→右展开→下(ThinkingBlock chevron); (2)文件/图片命名丑——前端 splitIntoSegments 用 markdown 链接文字/alt 当显示名(现错用 URL path sanitized 下划线名)+后端 image_gen 起干净默认名(现 gemini-image-{unix}); (3)图片不要大外框 单图 S2(无框+轻阴影+点击大图)多图 M1(自适应网格); (4)markdown 标题分级字号+段间距; (5)表格/引用等带色→翠绿柔和不刺眼; (6)「等你回答一个问题」绿底行还转圈——前端过滤 ask_user_question(根因 tool-display.yaml 配 narration yield 工具永无 result→永久转圈+和问题卡重复); (7)问题卡已回答态回看卡仍旧白卡→统一 C3。playground docs/numind-image-playground.html(S2/M1)。'
+  classification_reason: 'Standard: 跨仓库(后端 image 命名+前端多组件)/影响文件 >3。无 DB schema/新 API/支付权限。User playground 选 #3=S2/M1。'
+  last_updated_by: ai-s0
+  last_updated_at: '2026-06-16T00:33:04+08:00'
+  created_at: '2026-06-16T00:33:04+08:00'
+  track: standard
+  stage: S0
+  repos: [numind-server, numind-web-v3]
+  branches: {numind-server: feature/agent-output-refine, numind-web-v3: feature/agent-output-refine}
+  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
+  artifacts: {requirement: requirements/agent-output-refine.md, playground: docs/numind-image-playground.html}
+  decisions:
+  - 'S0: 需求卡。7 项落点 #1 ThinkingBlock chevron/#2 前端链接文字显示名+后端 image_gen 命名/#3 S2+M1/#4 标题分级/#5 表格引用翠绿/#6 过滤 ask_user_question 转圈行/#7 answered 态 C3。Triage→Standard。'
+  blockers: []
