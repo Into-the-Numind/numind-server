@@ -1,5 +1,26 @@
 schema_version: '2.0'
 features:
+- id: sop-replay-input-visibility
+  track: standard
+  description: 'SOP 回看页输入与上传可见：历史运行回看的只读步骤(done-history/done-current)当前只展示 AI 输出，看不到当时用户输入文本与上传的文件/图片。需求=把每步「历史输入」与「上传内容」在回看态变可见，方便回溯每一步输入上下文，UI 要美观合理。数据(sop_node_run.input + sop_file 表)已持久化，仅回看接口 /sop/runs/:id/status 的 completed_nodes 未透出 files + 前端只读态未渲染 input/files。'
+  classification_reason: 'Standard: 无 DB schema 变更(数据已持久化)+无新端点(在现有 /sop/runs/:id/status 响应补 files 字段)+无新外部服务+非支付权限，但文件数>3(后端 DTO/biz/controller + 前端 api/store/回看组件/新只读输入卡)且跨 numind-server+numind-web-v3 两仓库 + UI 需设计走 S2。规则强制不可降级。用户 2026-06-16 设为 /goal autopilot 授权直至部署 dev(不部署 prod)。'
+  status: active
+  stage: S0
+  repos:
+    numind-server: feature/sop-replay-input-visibility
+    numind-web-v3: feature/sop-replay-input-visibility
+  worktrees:
+    numind-server: /private/tmp/wt-sop-replay-input-visibility-numind-server
+    numind-web-v3: /private/tmp/wt-sop-replay-input-visibility-numind-web-v3
+  progress:
+    total_tasks: 0
+    completed_tasks: 0
+    reviewed_tasks: 0
+  artifacts:
+    requirement: .ndf/features/sop-replay-input-visibility/requirement.md
+  decisions:
+  - 'S0 (ai 2026-06-16): 档位=Standard(文件数>3+跨2仓库+UI设计需求, 规则强制不可降级; 注: 不动 DB/API 端点, 因数据已持久化、只补现有 status 接口的 files 字段)。现状取证(读代码确认): 回看页走 GET /sop/runs/:id/status→CompletedNodeInfo 有 input 无 files; SopStepView done-history 只渲染 OutputCard 不渲染 input/files; sop_node_run.input 是「用户文本+=== 文件名 ===\n提取内容」合并 blob; sop_file 表存文件本体(file_url/name/type/size/content)。用户 /goal 授权 autopilot 推进至 dev, prod 不在授权。'
+  blockers: []
 - id: org-branding
   track: standard
   description: '机构自定义品牌名（白标第一步）：B 端机构父账户在用户端「设置」里填公司名称→用户端左上角侧边栏显示该名称，其下所有 C 端子账户继承显示父账户名称，无名称兜底"有数AI"。另：登录页 logo 换成"有数AI"文字（用户端+管理端）。当前侧边栏硬编码"靓靓·海外IP研究所"，本需求数据化。'
