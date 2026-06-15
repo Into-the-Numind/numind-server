@@ -275,14 +275,8 @@ func (s *announcementStore) Create(ctx context.Context, ann *model.Announcement,
 		if err := tx.Create(ann).Error; err != nil {
 			return fmt.Errorf("Create: create announcement: %w", err)
 		}
-		// is_important=false 同样可能被 default:0 写回，但 default:0 与零值一致无需 fixup；
-		// 仍按 database.md §6 防御性确认：若 caller 要求 false 而 GORM 写成 true 则修正。
-		if !ann.IsImportant {
-			if err := tx.Model(ann).UpdateColumn("is_important", false).Error; err != nil {
-				return fmt.Errorf("Create: fixup is_important: %w", err)
-			}
-			ann.IsImportant = false
-		}
+		// 注：is_important 用 gorm:"default:0"，零值 false 与 DB 默认一致，GORM 会把列写进
+		// INSERT，无 default:true 坑，无需 fixup（database.md §6 仅 default:true/1 才触发）。
 		for i := range questions {
 			questions[i].AnnouncementID = ann.ID
 			wantRequired := questions[i].Required

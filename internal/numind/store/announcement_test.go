@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,7 +23,10 @@ import (
 // 用于复现 GORM Create default-bool 坑）。
 func newAnnouncementTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared&_busy_timeout=5000"), &gorm.Config{
+	// per-test 命名的内存库（避免共享 `file::memory:` 在并行/跨测试时数据串），
+	// 仿本包 reservation/credit 测试既有模式。
+	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared&_busy_timeout=5000"
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	require.NoError(t, err)
@@ -37,6 +41,7 @@ func newAnnouncementTestDB(t *testing.T) *gorm.DB {
 
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1) // 同名内存库多连接会锁，限单连接
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	return db
 }
@@ -391,16 +396,31 @@ func TestAnnouncementStore_AdminCRUD(t *testing.T) {
 	assert.False(t, final.IsImportant, "Update 路径 is_important=false 须落库")
 }
 
-// TestAnnouncementStore_GetByIDExcludesSoftDeleted 验证 GetByID 排除软删公告。
+// TestAnnouncementStore_GetByIDExcludesSoftDeleted 验证 GetByID 与 ListAll 均排除软删公告。
 func TestAnnouncementStore_GetByIDExcludesSoftDeleted(t *testing.T) {
 	db := newAnnouncementTestDB(t)
 	s := NewAnnouncementStore(db)
 	ctx := context.Background()
 
+	keep := makeAnnouncement(model.AnnouncementTypePlain, model.AnnouncementStatusPublished)
+	require.NoError(t, s.Create(ctx, keep, nil))
 	ann := makeAnnouncement(model.AnnouncementTypePlain, model.AnnouncementStatusPublished)
 	require.NoError(t, s.Create(ctx, ann, nil))
+
+	// 软删前 ListAll 应有 2 条
+	_, total, err := s.ListAll(ctx, "", "", 0, 50)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), total)
+
 	require.NoError(t, s.SoftDelete(ctx, ann.ID))
 
-	_, err := s.GetByID(ctx, ann.ID)
+	_, err = s.GetByID(ctx, ann.ID)
 	assert.ErrorIs(t, err, errno.ErrAnnouncementNotFound, "软删公告 GetByID 应返回 ErrAnnouncementNotFound")
+
+	// 软删后 ListAll 应只剩 1 条（FK CASCADE 仅硬删生效，软删靠 deleted_at 过滤）
+	rows, total, err := s.ListAll(ctx, "", "", 0, 50)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total, "软删公告不应出现在 ListAll")
+	assert.Len(t, rows, 1)
+	assert.Equal(t, keep.ID, rows[0].ID)
 }
