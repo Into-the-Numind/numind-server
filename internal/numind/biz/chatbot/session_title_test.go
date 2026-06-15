@@ -1,0 +1,112 @@
+package chatbot
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
+
+	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/model"
+)
+
+// newTitleTestBiz builds a chatbotBiz backed by an in-memory SQLite store with
+// just the chatbot_session table — enough to exercise maybeGenerateTitle's
+// UpdateTitle write without the full ChatStream LLM path.
+func newTitleTestBiz(t *testing.T) (*chatbotBiz, *gorm.DB) {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	require.NoError(t, db.AutoMigrate(&model.ChatbotSession{}))
+	return &chatbotBiz{ds: store.NewTestStore(db)}, db
+}
+
+// withGenTitleFn swaps the package-level title generator for the test. Not
+// t.Parallel safe (package-level var).
+func withGenTitleFn(t *testing.T, fn func(ctx context.Context, userMsg, assistantMsg string) (string, error)) {
+	t.Helper()
+	old := genTitleFn
+	genTitleFn = fn
+	t.Cleanup(func() { genTitleFn = old })
+}
+
+func TestMaybeGenerateTitle_DefaultName_GeneratesAndPersists(t *testing.T) {
+	b, db := newTitleTestBiz(t)
+	sess := &model.ChatbotSession{UserID: 1, ChatbotID: 2, Title: "客服助手", Status: "active"}
+	require.NoError(t, db.Create(sess).Error)
+
+	withGenTitleFn(t, func(_ context.Context, u, a string) (string, error) {
+		assert.Contains(t, u, "退货", "user message forwarded to generator")
+		assert.Contains(t, a, "流程", "assistant content forwarded to generator")
+		return "退货流程咨询", nil
+	})
+
+	got := b.maybeGenerateTitle(context.Background(), sess, "客服助手", "怎么退货", "退货流程是这样的……")
+	assert.Equal(t, "退货流程咨询", got, "first turn with default title → generate")
+
+	var row model.ChatbotSession
+	require.NoError(t, db.First(&row, sess.ID).Error)
+	assert.Equal(t, "退货流程咨询", row.Title, "generated title persisted to DB")
+}
+
+func TestMaybeGenerateTitle_RenamedOrTitled_Skips(t *testing.T) {
+	b, db := newTitleTestBiz(t)
+	sess := &model.ChatbotSession{UserID: 1, ChatbotID: 2, Title: "我的重要对话", Status: "active"}
+	require.NoError(t, db.Create(sess).Error)
+
+	called := false
+	withGenTitleFn(t, func(_ context.Context, _, _ string) (string, error) {
+		called = true
+		return "x", nil
+	})
+
+	got := b.maybeGenerateTitle(context.Background(), sess, "客服助手", "q", "a")
+	assert.Empty(t, got, "title != defaultName → skip")
+	assert.False(t, called, "generator must NOT be called once renamed (US3)")
+
+	var row model.ChatbotSession
+	require.NoError(t, db.First(&row, sess.ID).Error)
+	assert.Equal(t, "我的重要对话", row.Title, "manual rename preserved")
+}
+
+func TestMaybeGenerateTitle_GenerateError_LeavesTitleUnchanged(t *testing.T) {
+	b, db := newTitleTestBiz(t)
+	sess := &model.ChatbotSession{UserID: 1, ChatbotID: 2, Title: "客服助手", Status: "active"}
+	require.NoError(t, db.Create(sess).Error)
+
+	withGenTitleFn(t, func(_ context.Context, _, _ string) (string, error) {
+		return "", errors.New("llm down")
+	})
+
+	got := b.maybeGenerateTitle(context.Background(), sess, "客服助手", "q", "a")
+	assert.Empty(t, got, "generate failure → no title")
+	var row model.ChatbotSession
+	require.NoError(t, db.First(&row, sess.ID).Error)
+	assert.Equal(t, "客服助手", row.Title, "title unchanged on generate failure (best-effort)")
+}
+
+func TestMaybeGenerateTitle_EmptyResult_NoUpdate(t *testing.T) {
+	b, db := newTitleTestBiz(t)
+	sess := &model.ChatbotSession{UserID: 1, ChatbotID: 2, Title: "客服助手", Status: "active"}
+	require.NoError(t, db.Create(sess).Error)
+
+	withGenTitleFn(t, func(_ context.Context, _, _ string) (string, error) {
+		return "", nil // success but empty title
+	})
+
+	got := b.maybeGenerateTitle(context.Background(), sess, "客服助手", "q", "a")
+	assert.Empty(t, got)
+	var row model.ChatbotSession
+	require.NoError(t, db.First(&row, sess.ID).Error)
+	assert.Equal(t, "客服助手", row.Title, "empty generated title → no update")
+}
