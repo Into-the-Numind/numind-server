@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -42,8 +43,9 @@ func TestAnswerAndClear_MarksRunResumed(t *testing.T) {
 	require.NoError(t, s.UpdateState(ctx, run.ID, "terminated", "waiting_for_user_choice", &endedAt))
 	require.NoError(t, s.UpdatePendingQuestion(ctx, run.ID, datatypes.JSON(`{"questions":[{"question":"q","options":[]}]}`)))
 
-	// The user answers.
-	require.NoError(t, s.AnswerAndClear(ctx, run.ID, "用户已回答你的问题：……"))
+	// The user answers (biz layer builds the full turn; store appends verbatim).
+	answerTurn := json.RawMessage(`{"role":"user","content":"用户已回答你的问题：……"}`)
+	require.NoError(t, s.AnswerAndClear(ctx, run.ID, answerTurn))
 
 	got, err := s.Get(ctx, run.ID)
 	require.NoError(t, err)

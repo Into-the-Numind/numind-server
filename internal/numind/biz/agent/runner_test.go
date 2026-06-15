@@ -167,7 +167,7 @@ func (m *mockAgentRunStore) AppendUserMessage(_ context.Context, _ uint64, _ str
 }
 
 // AnswerAndClear — T4 reviewer-fix atomic answer flow mock impl
-func (m *mockAgentRunStore) AnswerAndClear(_ context.Context, _ uint64, _ string) error {
+func (m *mockAgentRunStore) AnswerAndClear(_ context.Context, _ uint64, _ json.RawMessage) error {
 	return nil
 }
 func (m *mockAgentRunStore) UpdateSessionPinned(_ context.Context, _ string, _ bool) error {

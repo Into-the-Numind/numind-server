@@ -550,6 +550,11 @@ type questionPromptItem struct {
 	Options     []questionPromptOpt `json:"options"`
 	Header      string              `json:"header,omitempty"`
 	MultiSelect bool                `json:"multi_select"`
+	// Answer is the user's resolved answer, set only on a reconstructed
+	// ANSWERED card (issue1: transformMessages rebuilds an answered
+	// question_prompt from the answer turn's embedded question_answer). Empty on
+	// a pending (still-waiting) card synthesized by synthesizeQuestionPrompt.
+	Answer string `json:"answer,omitempty"`
 }
 
 // synthesizeQuestionPrompt builds a question_prompt agentMessage from a run's
@@ -653,8 +658,20 @@ func transformMessages(raw []byte, runID uint64, startedAt time.Time, endedAt *t
 
 		switch role {
 		case "user":
-			msg.Type = "user"
-			msg.Text = content
+			// issue1: an answered ask_user_question turn embeds a question_answer
+			// structure (AnswerAndClear). Reconstruct it as an answered
+			// question_prompt card so a reloaded session keeps the card form
+			// instead of an orphan "用户已回答…" user bubble. An ordinary user
+			// turn (no question_answer) stays a plain bubble.
+			if items, ok := reconstructAnsweredQuestions(turn["question_answer"]); ok {
+				msg.Type = "question_prompt"
+				msg.RunID = runID
+				msg.Questions = items
+				msg.AnswerStatus = "answered"
+			} else {
+				msg.Type = "user"
+				msg.Text = content
+			}
 		case "assistant":
 			reasoning, _ := turn["reasoning"].(string)
 			if i == lastAssistantIdx && isTerminalSuccess && content != "" {
@@ -702,6 +719,37 @@ func transformMessages(raw []byte, runID uint64, startedAt time.Time, endedAt *t
 		msgs = append(msgs, msg)
 	}
 	return msgs
+}
+
+// reconstructAnsweredQuestions rebuilds the answered question_prompt items from a
+// user turn's embedded question_answer field (written by buildAnswerTurn /
+// AnswerAndClear on the answer path). The turn is a generic map, so re-marshal +
+// decode into the typed []questionPromptItem (same pattern as the tool_group
+// replay). Returns ok=false when the field is absent/empty/corrupt so an ordinary
+// user turn (and any legacy pre-issue1 answer turn) stays a plain bubble.
+func reconstructAnsweredQuestions(raw any) ([]questionPromptItem, bool) {
+	if raw == nil {
+		return nil, false
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return nil, false
+	}
+	var qa struct {
+		Questions []questionPromptItem `json:"questions"`
+	}
+	if err := json.Unmarshal(b, &qa); err != nil || len(qa.Questions) == 0 {
+		return nil, false
+	}
+	// Options must ALWAYS serialize as an array (frontend reads options.length
+	// unguarded — dev run 147 blank-card bug); a question with a nil Options gets
+	// an empty slice, never null.
+	for i := range qa.Questions {
+		if qa.Questions[i].Options == nil {
+			qa.Questions[i].Options = []questionPromptOpt{}
+		}
+	}
+	return qa.Questions, true
 }
 
 // PinSession logic-pins the whole session for the user.

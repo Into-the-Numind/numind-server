@@ -608,6 +608,8 @@ func TestStudentQuery_SessionSnapshot_AnsweredQuestionCardSurvivesReload(t *test
 	assert.Equal(t, run.ID, card.RunID)
 	require.Len(t, card.Questions, 1)
 	assert.Equal(t, "目标受众是谁？", card.Questions[0].Question)
+	assert.Equal(t, "年轻女性", card.Questions[0].Answer, "reconstructed card must carry the user's actual answer")
+	require.Len(t, card.Questions[0].Options, 2, "options must survive reconstruction (non-nil array)")
 }
 
 // TestStudentQuery_SessionSnapshot_ToolGroupSurvivesReload is the customer-bug

@@ -94,7 +94,7 @@ func (s *answerRunStore) AppendUserMessage(_ context.Context, id uint64, _ strin
 	s.appendMessageCalls = append(s.appendMessageCalls, id)
 	return s.appendMessageErr
 }
-func (s *answerRunStore) AnswerAndClear(_ context.Context, id uint64, _ string) error {
+func (s *answerRunStore) AnswerAndClear(_ context.Context, id uint64, _ json.RawMessage) error {
 	s.answerAndClearCalls = append(s.answerAndClearCalls, id)
 	return s.answerAndClearErr
 }

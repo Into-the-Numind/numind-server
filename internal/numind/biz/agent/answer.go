@@ -113,10 +113,17 @@ func (s *StudentRunService) Answer(ctx context.Context, userID uint, runID uint6
 		}
 	}
 
-	// 3. Atomic answer: append user message + clear pending question in one tx.
-	// Reuse the already-parsed pending payload (no second parse).
+	// 3. Atomic answer: append the answer turn + clear pending question in one tx.
+	// Reuse the already-parsed pending payload (no second parse). userMsg is the
+	// human-readable content (also the resume Input below); the persisted turn
+	// additionally embeds question_answer so a reloaded session reconstructs an
+	// answered question_prompt card instead of an orphan user bubble (issue1).
 	userMsg := buildAnswerMessage(pending, req.Answers)
-	if err := s.runStore.AnswerAndClear(ctx, runID, userMsg); err != nil {
+	turn, err := buildAnswerTurn(pending, req.Answers, userMsg)
+	if err != nil {
+		return nil, fmt.Errorf("Answer: build answer turn: %w", err)
+	}
+	if err := s.runStore.AnswerAndClear(ctx, runID, turn); err != nil {
 		return nil, fmt.Errorf("Answer: atomic answer+clear: %w", err)
 	}
 
@@ -221,6 +228,47 @@ func buildAnswerMessage(pending YieldPayload, answers map[string]AnswerItem) str
 	}
 	sb.WriteString("\n请据此继续，不要重复已回答的问题。")
 	return sb.String()
+}
+
+// buildAnswerTurn builds the persisted answer turn appended to agent_run.messages
+// on the answer path. content is the human-readable Q&A text (buildAnswerMessage
+// output) — the LLM resume history reads role+content only (turnsToHistoryMessages
+// / mergeResumeTranscript ignore extra fields; verified). The embedded
+// question_answer structure (questions + the user's resolved answer per question,
+// only answered questions, in pending order) lets transformMessages reconstruct an
+// answered question_prompt card on reload (issue1) instead of an orphan user
+// bubble. question_answer is omitted when nothing was answered, so the turn
+// degrades to a plain user bubble (matches buildAnswerMessage's fallback).
+func buildAnswerTurn(pending YieldPayload, answers map[string]AnswerItem, content string) (json.RawMessage, error) {
+	qs := make([]questionPromptItem, 0, len(pending.Questions))
+	for _, q := range pending.Questions {
+		item, ok := answers[q.Question]
+		if !ok {
+			continue
+		}
+		ans := resolveAnswer(item)
+		if ans == "" {
+			continue
+		}
+		// Drop the machine option key (the client identifies options by label) —
+		// same projection as synthesizeQuestionPrompt.
+		opts := make([]questionPromptOpt, 0, len(q.Options))
+		for _, o := range q.Options {
+			opts = append(opts, questionPromptOpt{Label: o.Label, Description: o.Description})
+		}
+		qs = append(qs, questionPromptItem{
+			Question:    q.Question,
+			Options:     opts,
+			Header:      q.Header,
+			MultiSelect: q.MultiSelect,
+			Answer:      ans,
+		})
+	}
+	turn := map[string]any{"role": "user", "content": content}
+	if len(qs) > 0 {
+		turn["question_answer"] = map[string]any{"questions": qs}
+	}
+	return json.Marshal(turn)
 }
 
 // resolveAnswer renders one AnswerItem as a single answer string: selected
