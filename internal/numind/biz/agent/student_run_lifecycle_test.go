@@ -159,6 +159,10 @@ func (s *lifecycleRunStore) UpdateSessionPinned(_ context.Context, _ string, _ b
 func (s *lifecycleRunStore) UpdateSessionName(_ context.Context, _ string, _ string) error {
 	return nil
 }
+
+func (s *lifecycleRunStore) UpdateSessionNameIfEmpty(_ context.Context, _ string, _ string) (bool, error) {
+	return false, nil
+}
 func (s *lifecycleRunStore) UpdateSessionDeleted(_ context.Context, _ string, _ bool) error {
 	return nil
 }

@@ -1386,6 +1386,14 @@ func (r *agentRunner) finalizeRun(
 	if err := r.runStore.WriteTurn(finalizeCtx, run.ID, json.RawMessage(finalMessages)); err != nil {
 		log.Warnw("AgentRunner.Run WriteTurn failed", "agent_run_id", run.ID, "error", err)
 	}
+	// adaptive-session-titles: after a successful first turn, auto-name the session
+	// from its content (best-effort; non-user-billed). Only on TerminalCompleted —
+	// don't title from an errored/empty run. finalizeCtx is the detached WithoutCancel
+	// ctx; sessiontitle.Generate strips its inherited bill-only+userID so the user is
+	// never charged.
+	if st.TerminalReason == TerminalCompleted {
+		maybeGenerateSessionTitle(finalizeCtx, r.runStore, sessionID, userInput, finalText)
+	}
 	// Task 3.5: index messages for FULLTEXT search. Hook is failure-tolerant
 	// internally — never blocks the run. Runs in a detached goroutine with a
 	// background context (request ctx cancel must not abort indexing — search

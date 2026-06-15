@@ -176,6 +176,10 @@ func (m *mockAgentRunStore) UpdateSessionPinned(_ context.Context, _ string, _ b
 func (m *mockAgentRunStore) UpdateSessionName(_ context.Context, _ string, _ string) error {
 	return nil
 }
+
+func (m *mockAgentRunStore) UpdateSessionNameIfEmpty(_ context.Context, _ string, _ string) (bool, error) {
+	return false, nil
+}
 func (m *mockAgentRunStore) UpdateSessionDeleted(_ context.Context, _ string, _ bool) error {
 	return nil
 }

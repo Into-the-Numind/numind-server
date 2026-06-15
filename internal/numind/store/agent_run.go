@@ -62,6 +62,12 @@ type IAgentRunStore interface {
 	AnswerAndClear(ctx context.Context, id uint64, turn json.RawMessage) error
 	UpdateSessionPinned(ctx context.Context, sessionID string, isPinned bool) error
 	UpdateSessionName(ctx context.Context, sessionID string, name string) error
+	// UpdateSessionNameIfEmpty atomically names all runs of a session ONLY while
+	// their session_name is still empty (WHERE session_id=? AND session_name='').
+	// Used by adaptive-session-titles auto-titling so a concurrent manual rename
+	// during title generation is never clobbered. Returns updated=true when ≥1 row
+	// changed; false (no error) when the name was already set (skip).
+	UpdateSessionNameIfEmpty(ctx context.Context, sessionID string, name string) (updated bool, err error)
 	UpdateSessionDeleted(ctx context.Context, sessionID string, isDeleted bool) error
 }
 
@@ -425,6 +431,20 @@ func (s *agentRunStore) UpdateSessionName(ctx context.Context, sessionID string,
 		return fmt.Errorf("agentRunStore.UpdateSessionName(sessionID=%s): %w", sessionID, result.Error)
 	}
 	return nil
+}
+
+// UpdateSessionNameIfEmpty sets session_name=name for the session's runs only
+// while session_name is still empty (compare-and-set), so a concurrent manual
+// rename during auto-title generation is never overwritten. Returns updated=false
+// (no error) when nothing matched — name already set, or session absent.
+func (s *agentRunStore) UpdateSessionNameIfEmpty(ctx context.Context, sessionID string, name string) (bool, error) {
+	result := s.db.WithContext(ctx).Model(&model.AgentRun{}).
+		Where("session_id = ? AND session_name = ?", sessionID, "").
+		Update("session_name", name)
+	if result.Error != nil {
+		return false, fmt.Errorf("agentRunStore.UpdateSessionNameIfEmpty(sessionID=%s): %w", sessionID, result.Error)
+	}
+	return result.RowsAffected > 0, nil
 }
 
 func (s *agentRunStore) UpdateSessionDeleted(ctx context.Context, sessionID string, isDeleted bool) error {
