@@ -27,16 +27,21 @@ T6 = S5 验证策略
 
 ## T3 — 前端 #5：删反馈条
 **仓库**：numind-web-v3（worktree，node_modules symlink）
-**改动**：`src/components/agent/AgentFinalAnswer.vue` 去 `<AgentFeedbackBar>` + import + feedback props（runId/initialFeedback/initialNote 若仅 feedback 用则删）；删 `src/components/agent/AgentFeedbackBar.vue` + `__tests__/AgentFeedbackBar.spec.ts`(若有)；`src/stores/agentChat.ts` 删 `submitFeedback`；`src/api/agent.ts` 删 `submitFeedback`；`src/types/agent.ts` 删 `FeedbackRequest`；清 mock(agent.mock.ts 若有 submitFeedback)。grep `submitFeedback`/`FeedbackBar`/`FeedbackRequest`/`initialFeedback` 确认无残留。
-**测试**：更新 AgentFinalAnswer.spec（去 feedback 断言）；全量 vitest 编译过无残留引用。
+**改动**：`src/components/agent/AgentFinalAnswer.vue` 去 `<AgentFeedbackBar>` + import + **feedback-specific props `initialFeedback`/`initialNote`（删）；`runId` prop 保留（通用，无害）**；删 `src/components/agent/AgentFeedbackBar.vue` + `__tests__/AgentFeedbackBar.spec.ts`(若有)；`src/stores/agentChat.ts` 删 `submitFeedback`(+return export)；`src/api/agent.ts` 删 `submitFeedback`；`src/api/agent.mock.ts` 删 `submitFeedback`；`src/types/agent.ts` 删 `FeedbackRequest` + **`FinalAnswerMessage` 的 `feedback?`/`feedback_note?` 字段（删；`run_id?` 保留通用）**。
+- **★P1-B（编译失败风险）**：`src/components/agent/AgentMessageItem.vue`（约 L287-289）删 `:initial-feedback="asFinalAnswer.feedback"` + `:initial-note="asFinalAnswer.feedback_note"` 绑定（`:run-id` 保留）。否则删 props 后 type-check 报 unknown prop。
+- **★P1-C（mock 残留）**：清以下测试文件里的 `submitFeedback: vi.fn()` mock key：`agentChat.spec.ts`/`agentChat-resume.spec.ts`/`agentChat-streaming.spec.ts`/`views/agent/__tests__/AgentChatView.spec.ts`/`composables/__tests__/useAgentNarration.spec.ts`；`AgentMessageItem.spec.ts`(约 L26) 删 `initialFeedback` mock prop。
+- grep `submitFeedback`/`FeedbackBar`/`FeedbackRequest`/`initialFeedback`/`feedback_note` 全仓库确认零残留。
+**测试**：更新 AgentFinalAnswer.spec（去 feedback stub/断言）；**全量 vitest + vue-tsc 编译过无残留引用**（P1-B/C 的兜底）。
 **验收**：vitest 0 FAIL；type-check 0；eslint 0。
 
 ## T4 — 前端 #1+#4：卡片就地渲染（A1/B1）
 **仓库**：numind-web-v3（T3 后，同改 AgentFinalAnswer）
 **改动**：
-- `src/utils/agentArtifacts.ts` 加 `splitIntoSegments(markdown): Segment[]`（`Segment={type:'prose',html} | {type:'artifact',ref}`）：复用既有 COS 判定+mime+filename，扫描 markdown 按原顺序切 prose/artifact 段（prose 段 renderMarkdown 成 html）。保留旧 extractArtifacts。
+- `src/utils/agentArtifacts.ts` 加 `splitIntoSegments(markdown): Segment[]`（`Segment={type:'prose',html} | {type:'artifact',ref}`）：复用既有 COS 判定+mime+filename，按原顺序切 prose/artifact 段（prose 段 renderMarkdown 成 html）。**保留旧 extractArtifacts + 其既有测试不改**。
+  - **★P1-A 切割规则（必须，否则破坏 markdown 块结构）**：只在 **COS 节点独占一行/段落**（前后是行边界或空行，可含 `[...]:` 前缀如「文件下载：」在同一行也算独立——即该行除了 label 文字+链接没有别的块结构）时才切出 artifact 段；**COS 链接嵌在列表项/表格单元格/被正文包围的行内**时**保留在 prose 中不切**（避免切出半截列表/表格）。实现取整行/整段为切割单位。
+  - **★P1-A 测试用例必含**：①COS 下载链接独占一行（含「文件下载：[link]」整行）→ 切出卡片，prose 不留半截；②COS 链接在**列表项中间**（`- 报告：[link] 分析…`）→ **不切出，保留 prose**（断言 segments 里该 artifact 不被提取）；③多个独立行 artifact + prose 交替顺序正确；④第三方链接任何位置都不切。
 - `src/components/agent/AgentFinalAnswer.vue`：`segments=computed(()=>splitIntoSegments(props.markdown))`；模板 `v-for` 段：prose→`<div class="markdown-body" v-html>`、artifact→`<AgentArtifactItem :artifact="{id:i,...ref}">`。保留 copy/image-preview + markdown 美化 CSS。
-- `src/components/agent/AgentArtifactItem.vue`：文件行重设计为 **A1**（doc-badge 翠绿淡底+文件名+`{ext} · {size?}`+下载图标按钮）；图片重设计为 **B1**（圆角缩略图+说明，点击 modal 保留）。严格用 token。参照 `docs/numind-card-playground.html` 的 .fa1/.ib1 样式。
+- `src/components/agent/AgentArtifactItem.vue`：文件行重设计为 **A1**（doc-badge 翠绿淡底+文件名+meta+下载图标按钮）；图片重设计为 **B1**（圆角缩略图+说明，点击 modal 保留）。严格用 token。参照 `docs/numind-card-playground.html` 的 .fa1/.ib1 样式。**（P2）ArtifactRef 无 size 字段 → A1 的 meta 显示文件类型标签（由 mime/扩展名推 `DOCX`/`PDF`/`XLSX` 等大写），不显示 KB（拿不到）。不扩 ArtifactRef 接口（保持 AgentMessageItem 既有用法不回归）。**
 - 测试：`agentArtifacts.spec.ts` 加 splitIntoSegments（分段顺序/句中链接/COS判定/第三方不抽/混合）；`AgentFinalAnswer.spec.ts` 断言卡片就地（artifact 段在 prose 段之间）、「文件下载：」prose 后紧跟卡片；`AgentArtifactItem.spec.ts` 更新 A1/B1 结构。
 **验收**：vitest 0；type-check 0；eslint 0；全量 vitest（AgentMessageItem 用 AgentArtifactItem 不回归）。
 
