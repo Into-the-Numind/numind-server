@@ -223,7 +223,7 @@ func (s *EnhancedMarkdownSplitter) splitSection(section MarkdownSection, fullTex
 	// 每个 core content 会在 addOverlap 中：
 	// 1. 在前面增加约 OverlapSize 长度的内容
 	// 2. 在后面增加约 OverlapSize 长度的内容
-	// 3. 增加 "[上下文衔接]" 标记及其换行符 (约 18 bytes * 2 = 36 bytes)
+	// 3. 前后各一个空行分隔符 "\n\n" (约 4 bytes * 2 = 8 bytes)
 	// 为了确保 Core + Overlap < MaxChunkSize，我们需要严格限制 core。
 	reserve := (s.cfg.OverlapSize * 2) + 50
 	effectiveMax := s.cfg.MaxChunkSize - reserve
@@ -483,6 +483,12 @@ func (s *EnhancedMarkdownSplitter) addOverlap(chunks []EnhancedSplitChunk, fullT
 
 	var result []EnhancedSplitChunk
 
+	// 重叠片段之间只用纯空行分隔。历史曾在拼接处插入字面 "[上下文衔接]" 标记，但该
+	// 标记会随 chunk.Content 一起被嵌入并泄漏进 LLM prompt，故不再写入；重叠区域由
+	// CoreStart/CoreEnd 标定，不依赖任何可见标记。旧 chunk 的遗留标记在渲染时由
+	// domain.StripContextJoinMarker 兜底剥除。
+	const sep = "\n\n"
+
 	for i, chunk := range chunks {
 		newChunk := chunk
 		content := chunk.Content
@@ -502,8 +508,10 @@ func (s *EnhancedMarkdownSplitter) addOverlap(chunks []EnhancedSplitChunk, fullT
 			// 确保在词语边界切分
 			prefix = s.trimToWordBoundary(prefix, false)
 
-			newChunk.Content = prefix + "\n\n[上下文衔接]\n\n" + content
-			newChunk.CoreStart = len(prefix) + len("\n\n[上下文衔接]\n\n")
+			if prefix != "" {
+				newChunk.Content = prefix + sep + content
+				newChunk.CoreStart = len(prefix) + len(sep)
+			}
 		}
 
 		// 后置重叠：从后一个chunk的开头取
@@ -521,8 +529,10 @@ func (s *EnhancedMarkdownSplitter) addOverlap(chunks []EnhancedSplitChunk, fullT
 			// 确保在词语边界切分
 			suffix = s.trimToWordBoundary(suffix, true)
 
-			newChunk.Content = newChunk.Content + "\n\n[上下文衔接]\n\n" + suffix
-			newChunk.CoreEnd = len(newChunk.Content) - len("\n\n[上下文衔接]\n\n") - len(suffix)
+			if suffix != "" {
+				newChunk.Content = newChunk.Content + sep + suffix
+				newChunk.CoreEnd = len(newChunk.Content) - len(sep) - len(suffix)
+			}
 		}
 
 		result = append(result, newChunk)
