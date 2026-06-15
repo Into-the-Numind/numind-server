@@ -802,7 +802,7 @@ func (b *salesRAGBiz) generateAnswer(ctx context.Context, query string, verdict 
 
 	// 构建知识上下文
 	for i, chunk := range allChunks {
-		contextParts = append(contextParts, fmt.Sprintf("[知识%d] %s", i+1, chunk.Content))
+		contextParts = append(contextParts, fmt.Sprintf("[知识%d] %s", i+1, domain.StripContextJoinMarker(chunk.Content)))
 		if i >= 4 { // 最多使用5条知识
 			break
 		}
@@ -871,11 +871,13 @@ func buildSalesRAGEvidenceFragments(chunks []domain.KnowledgeChunk) []cb.Context
 			sourceRef = fmt.Sprintf("salesrag-chunk-%d", i)
 		}
 		frags = append(frags, cb.ContextFragment{
-			ID:              fmt.Sprintf("ev-%d", i),
-			Role:            cb.RoleEvidence,
-			Source:          cb.SourceKB,
-			ContentType:     cb.ContentText,
-			Content:         chunk.Content,
+			ID:          fmt.Sprintf("ev-%d", i),
+			Role:        cb.RoleEvidence,
+			Source:      cb.SourceKB,
+			ContentType: cb.ContentText,
+			// 旧 chunk 含历史遗留的 [上下文衔接] 切块标记，喂进 context-budget evidence
+			// 片段（最终拼成 LLM 消息）前剥除，与 V2 prompt 渲染点保持一致。
+			Content:         domain.StripContextJoinMarker(chunk.Content),
 			Importance:      scoreToImportance(chunk.Score),
 			Order:           100 + i, // evidence slots: 100, 101, 102... (between system@0 and user@1000)
 			Compressibility: cb.CompressReference,
@@ -1207,10 +1209,11 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, ocrTexts []string, ver
 			}
 
 			var contentLine string
+			cleanContent := domain.StripContextJoinMarker(chunk.Content)
 			if chunk.Score > 0 {
-				contentLine = fmt.Sprintf("[知识%d] (相关度:%.0f%%) %s", i+1, chunk.Score*100, chunk.Content)
+				contentLine = fmt.Sprintf("[知识%d] (相关度:%.0f%%) %s", i+1, chunk.Score*100, cleanContent)
 			} else {
-				contentLine = fmt.Sprintf("[知识%d] %s", i+1, chunk.Content)
+				contentLine = fmt.Sprintf("[知识%d] %s", i+1, cleanContent)
 			}
 
 			categorizedContent[category] = append(categorizedContent[category], contentLine)
@@ -1233,10 +1236,11 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, ocrTexts []string, ver
 		var opinionLines []string
 		for i, chunk := range verdict.OpinionEvidence {
 			idx := i + 1
+			cleanContent := domain.StripContextJoinMarker(chunk.Content)
 			if chunk.Score > 0 {
-				opinionLines = append(opinionLines, fmt.Sprintf("[观点%d] (相关度:%.0f%%) %s", idx, chunk.Score*100, chunk.Content))
+				opinionLines = append(opinionLines, fmt.Sprintf("[观点%d] (相关度:%.0f%%) %s", idx, chunk.Score*100, cleanContent))
 			} else {
-				opinionLines = append(opinionLines, fmt.Sprintf("[观点%d] %s", idx, chunk.Content))
+				opinionLines = append(opinionLines, fmt.Sprintf("[观点%d] %s", idx, cleanContent))
 			}
 		}
 		opinionContext = strings.Join(opinionLines, "\n\n")

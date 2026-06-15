@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 
+	"github.com/spf13/viper"
+
 	"numind-server/internal/numind/biz/salesrag/adapter"
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/pkg/log"
@@ -38,10 +40,13 @@ func (s *StrategyService) loadData() {
 	s.once.Do(func() {
 		s.metas, s.basics = LoadStrategies()
 
-		// 尝试从指定目录加载策略内容（覆盖默认内容）
-		// TODO: 路径应从配置读取
-		strategyDir := "/Users/zhiyuchen/Desktop/莫小派/Codes/基础策略"
-		LoadStrategyContentsFromDir(strategyDir, s.basics)
+		// 可选：从配置目录加载策略内容覆盖默认内容。配置驱动（key: salesrag.strategy_dir），
+		// 未配置则使用代码内置默认策略内容。历史曾硬编码 Mac Desktop 绝对路径，导致服务器
+		// （乃至本机仓库迁移后）静默加载失败。
+		// 注：通过 sync.Once 只在服务初始化（启动时 viper 已加载完成）读取一次，改值需重启。
+		if strategyDir := viper.GetString("salesrag.strategy_dir"); strategyDir != "" {
+			LoadStrategyContentsFromDir(strategyDir, s.basics)
+		}
 
 		// 构建索引
 		for _, m := range s.metas {
