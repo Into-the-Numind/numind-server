@@ -34,7 +34,7 @@ features:
   description: '机构自定义品牌名（白标第一步）：B 端机构父账户在用户端「设置」里填公司名称→用户端左上角侧边栏显示该名称，其下所有 C 端子账户继承显示父账户名称，无名称兜底"有数AI"。另：登录页 logo 换成"有数AI"文字（用户端+管理端）。当前侧边栏硬编码"靓靓·海外IP研究所"，本需求数据化。'
   classification_reason: 'Standard: DB schema 变更(User 表加 company_name 字段+migration)+扩展 API(PUT /v1/users/me 接受 company_name + /v1/users/me 响应输出已解析有效品牌名)+跨 3 仓库(server/web-v3/admin-web)文件数>3。触及 B2B2C 父子关系解析但非支付/权限。用户 2026-06-16 设为 goal 授权 autopilot 推进, 不部署 prod。'
   status: active
-  stage: S5
+  stage: S6
   repos:
     numind-server: feature/org-branding
     numind-web-v3: feature/org-branding
@@ -58,6 +58,7 @@ features:
     plan: .ndf/features/org-branding/plan.md
     qa: .ndf/features/org-branding/qa-report.md
   decisions:
+  - 'S6 (ai 2026-06-16): ndf-done 合并 3 仓库→develop+push 已核实(local==origin, merge commit 在, 分支/worktree 已清)。dev DB migration 手工 SSH 跑(AutoMigrate User 被注释掉, helper.go:183), company_name 列已加。3 仓库部署 dev: server(4da6e84f-dirty,9091 healthy) / web-v3(ed94046,9200 healthy) / admin-web(d0b6416,9100 healthy)。dev 端到端验证(E2E 父账号): GET /me 含 company_name(AC9✓); PUT 设名→GET 返回(AC1✓) + PUT 空串→GET 空(AC3✓, GORM 清空在真实 MySQL 生效); gstack 浏览器登录→侧边栏显示"有数测试机构"(AC1 UI✓)→设置页填新值 blur→侧边栏响应式更新(AC1 全 UI✓)→公司名编辑框父账户可见(AC5✓); 登录页 web-v3+admin 均"有数AI"文字(AC7/AC8✓)。无 console error。E2E 测试账号已复位 company_name=空。待用户 dev 验收(S6 硬门禁)。prod 不在本次授权(用户要求与 prod 打 tag 隔离, 不部署 prod)。'
   - 'S5 (ai 2026-06-16): 本地验收 ALL_PASS(可验证范围)。两前端生产构建 PASS。gstack 本地视觉: web-v3 登录页 .login-logo="有数AI" 品牌绿 wordmark 无 console error(AC7✓); admin 登录页 logo="有数AI" pill+标题"有数AI管理后台"(AC8✓)。后端 AC1/2/3/6/9 由 Go 测+build 守住。诚实声明(规则10): 认证态侧边栏/设置/继承的端到端视觉需部署后端+DB+登录态, 本地无完整栈, 留 S6 dev 真实账号 gstack /qa 全面验收(可实际设名看传播); 高风险继承/清空逻辑已有持久 Go 测不依赖一次性浏览器。截图 /tmp/org_login_v3.png + /tmp/org_login_admin.png。'
   - 'S4 (ai 2026-06-16): 编码完成 3/3 task, 各双 Sonnet review PASS(无 P0/P1)。T1 后端: go build ./... 0 + biz/user 8 测 + store clear 测全过 + golangci-lint 0; review P2 已补 store 层 TestStore_UpdateUser_ClearCompanyName。T2 web-v3: type-check 0 + eslint 0; review 5 P2 已修(配色用 var(--color-primary)/catch 去 any/窄屏防溢出/保存后从 store 同步 originalCompany/AppInput 注释)。T3 admin-web: type-check 0 + eslint 0; review PASS(顺带把标题改有数AI管理后台保持品牌一致)。commits: server 30ab8ab7+542e5b18 / web-v3 9359b7f+d1716e2 / admin-web 8e60d71。相邻包(customer biz/store/membership)测试全过, 加字段未破坏。下一步 S5 本地 gstack /qa 验收。'
   - 'S3 (ai 2026-06-16): plan 完成+独立 Sonnet reviewer 审查=PASS。3 代码 task: T1 后端 company_name 全链路(model+migration+api+biz守卫+store map形式+controller+6 biz测+1 store SQLite测) / T2 web-v3(store displayBrandName+侧边栏动态+设置页父账户编辑+登录页文字; auth.ts 需新增 updateProfile PUT 封装—现仅 GET) / T3 admin-web 登录页 N→有数AI 文字。T4=S5验证策略(规则10): gstack /qa 展示验证+后端Go测守高风险(B2B2C继承+GORM清空)持久回归; 不达支付/权限/会员E2E门槛, 已诚实声明前端无持久回归。依赖: T1先, T2/T3 跨仓库disjoint可Tier2并行。reviewer P1(API路径歧义)已解决=锁定 src/api/auth.ts。'
