@@ -118,6 +118,17 @@ const (
 	// in dev/prod; missing route returns error and surfaces as ErrSanitizeUnavailable to
 	// the user. Seed migration bundled with T7 errno (agent-mode-v2-skill-marketplace plan).
 	SkillMarketplaceSanitize = "skill.marketplace.sanitize"
+
+	// SessionTitle is the chatbot/agent session auto-title generation task
+	// (adaptive-session-titles). After the first conversation turn completes,
+	// biz/sessiontitle.Generate calls this to summarise the exchange into a
+	// short 6-12 char title. It is a system-internal, non-user-billed call:
+	// the request carries no ContextFragments and Generate strips the billing
+	// context, so the gateway takes its pass-through branch and never reserves.
+	// Recommended route: qwen-turbo (cheap; MaxTokens=32; 3s timeout). Requires
+	// a DB-registered ai_service route → qwen-turbo in dev/prod; if missing,
+	// Generate degrades gracefully (best-effort no-op, no error to the user).
+	SessionTitle = "session.title"
 )
 
 // allTaskIDsList is the canonical ordered list of all task IDs.
@@ -154,6 +165,8 @@ var allTaskIDsList = []string{
 	AgentDigest,
 	// v2 additions
 	SkillMarketplaceSanitize,
+	// adaptive-session-titles
+	SessionTitle,
 }
 
 // AllTaskIDs returns all task ID strings in a stable order.
