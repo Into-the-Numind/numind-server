@@ -256,6 +256,9 @@ func (ctrl *ChatbotController) ListMessages(c *gin.Context) {
 // chatReq 聊天请求
 type chatReq struct {
 	Message string `json:"message" binding:"required"`
+	// AttachmentIDs 本轮携带的图片附件 id（chatbot-image-recognition）。
+	// 经 /v1/agent-attachments 上传后拿到的 id；空/缺省 = 纯文本。
+	AttachmentIDs []uint64 `json:"attachment_ids,omitempty"`
 }
 
 // Chat SSE流式聊天接口
@@ -301,7 +304,7 @@ func (ctrl *ChatbotController) Chat(c *gin.Context) {
 
 	w := c.Writer
 
-	err := ctrl.chatbotBiz.ChatStream(c, user.ID, sessionID, req.Message, resolvedModelKey, resolvedThinking,
+	err := ctrl.chatbotBiz.ChatStream(c, user.ID, sessionID, req.Message, req.AttachmentIDs, resolvedModelKey, resolvedThinking,
 		func(eventType string, data interface{}) error {
 			var eventData []byte
 			var marshalErr error

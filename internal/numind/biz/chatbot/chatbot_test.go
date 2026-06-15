@@ -354,7 +354,7 @@ func TestChatStream_AfterRevoke_Denied(t *testing.T) {
 
 	// 4. 子账号继续对同一个 session 调 ChatStream → 必须被权限检查阻断
 	handler := func(event string, data interface{}) error { return nil }
-	err = b.ChatStream(context.Background(), child, session.ID, "hello", "", false, handler)
+	err = b.ChatStream(context.Background(), child, session.ID, "hello", nil, "", false, handler)
 
 	require.Error(t, err, "撤权后 ChatStream 必须返回错误")
 	assert.True(t, errors.Is(err, errno.ErrChatbotRunDenied),

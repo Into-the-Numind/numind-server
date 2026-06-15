@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"numind-server/internal/numind/biz/contextbudget"
+	"numind-server/internal/numind/biz/multimodal"
 	"numind-server/internal/pkg/aiservice"
 	aismw "numind-server/internal/pkg/aiservice/middleware"
 	"numind-server/internal/pkg/aiservice/profile"
@@ -193,7 +194,11 @@ func BuildChatContextFragments(
 }
 
 // ChatStream 执行流式对话：向量检索 → 组装 prompt → LLM 流式输出 → 持久化消息
-func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint, message string, modelKey string, thinking bool, handler StreamHandler) error {
+//
+// attachmentIDs 为本轮携带的图片附件 id（chatbot-image-recognition）。按所选模型
+// capability 分流：识图模型走 bill-only 直喂 image_url Parts；非识图模型把图片的
+// text_fallback 拼进消息走 fragment 路径（透明降级）。空 ids = 纯文本，行为不变。
+func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint, message string, attachmentIDs []uint64, modelKey string, thinking bool, handler StreamHandler) error {
 	// 1. 获取会话并验证所有权
 	session, err := b.ds.ChatbotSession().GetSession(ctx, sessionID)
 	if err != nil {
@@ -342,13 +347,33 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 		}))
 	}
 
+	// 5b. 图片附件分流（chatbot-image-recognition）。
+	//   - 识图模型：visionTurn=true，图片以 image_url Parts 直喂（bill-only，见 step 7）。
+	//   - 非识图模型：把图片的 text_fallback 拼进 effectiveMessage，走下面的 fragment 路径。
+	// effectiveMessage 是喂给 LLM 的文本（可能含 fallback 描述）；持久化用原始 message，
+	// 避免把"[图片：…描述…]"写进用户消息内容（reload 会显示）。
+	effectiveMessage := message
+	attStore := b.ds.AgentAttachments()
+	atts := multimodal.LoadAttachmentsByIDs(ctx, attStore, attachmentIDs, userID)
+	visionTurn := false
+	var visionParts []aiservice.MessagePart
+	if len(atts) > 0 {
+		parts, hasInlineImage, _ := multimodal.BuildUserParts(ctx, message, atts, modelKey, attStore)
+		if hasInlineImage {
+			visionTurn = true
+			visionParts = parts
+		} else {
+			effectiveMessage = multimodal.FlattenTextParts(parts)
+		}
+	}
+
 	// 6. 构建 prompt (legacy path) + ContextFragments (budget path)
 	promptSpanID := langfuse.SpanID()
 	langfuse.CreateSpan(traceID, promptSpanID, "prompt-construction",
 		langfuse.WithSpanParent(assemblySpanID),
 	)
 
-	messages := b.buildChatMessages(config, historyMsgs, message, retrievedChunkContents)
+	messages := b.buildChatMessages(config, historyMsgs, effectiveMessage, retrievedChunkContents)
 
 	// Build context fragments for the context-budget middleware.
 	// System prompt: config.SystemPrompt (KB context is embedded via KB evidence fragments,
@@ -356,7 +381,7 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 	ctxFragments := BuildChatContextFragments(
 		config.SystemPrompt,
 		historyMsgs,
-		message,
+		effectiveMessage,
 		retrievedChunks,
 		chatStreamRecentTurns,
 	)
@@ -406,6 +431,15 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 		// MaxTokens intentionally left 0: the gateway defaults it from the resolved
 		// model's configured max_output_tokens (defaultMaxTokensFromCapability), so a
 		// thinking model's answer isn't stranded in reasoning_content. See gateway maxtokens.go.
+	}
+
+	// 7b. 识图 turn：走 bill-only。image_url Parts 必须直达 adapter——context-budget
+	// 中间件的 fragment 渲染只产纯文本、会覆盖 Messages 丢掉图片（spec §1）。bill-only
+	// 跳过 fragment 渲染、保留我们自拼的 Messages，且 synthBillOnlyResult.ChargeUser=true
+	// 使 reserve/reconcile 计费照常（识图含 image_url → Gateway Billing 自动计 llm_vision）。
+	if visionTurn {
+		visionMsgs := b.buildVisionMessages(config, historyMsgs, retrievedChunkContents, visionParts)
+		ctx = applyVisionBillOnly(ctx, &gatewayReq, visionMsgs)
 	}
 
 	ch, llmErr := aiservice.ChatStream(ctx, profile.ChatbotStream, gatewayReq)
@@ -466,13 +500,14 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 	}
 
 	userMsg := &model.ChatbotMessage{
-		SessionID: sessionID,
-		UserID:    userID,
-		Role:      "user",
-		Content:   message,
-		TraceID:   traceID,
-		Seq:       maxSeq + 1,
-		CreatedAt: time.Now(),
+		SessionID:   sessionID,
+		UserID:      userID,
+		Role:        "user",
+		Content:     message,
+		Attachments: messageAttachmentsFrom(atts),
+		TraceID:     traceID,
+		Seq:         maxSeq + 1,
+		CreatedAt:   time.Now(),
 	}
 	if err := b.ds.ChatbotSession().CreateMessage(ctx, userMsg); err != nil {
 		log.C(ctx).Errorw("ChatStream: save user message failed", "error", err)
@@ -508,11 +543,20 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 	_ = b.ds.ChatbotSession().IncrementMessageCount(ctx, sessionID)
 
 	// 10. 更新 trace output
+	visionPath := ""
+	if len(atts) > 0 {
+		visionPath = "fallback"
+		if visionTurn {
+			visionPath = "inline"
+		}
+	}
 	langfuse.CreateTrace(traceID, "chatbot-chat",
 		langfuse.WithTraceOutput(map[string]interface{}{
 			"response_length":   fullContent.Len(),
 			"prompt_tokens":     promptTokens,
 			"completion_tokens": completionTokens,
+			"attachment_count":  len(atts),
+			"vision_path":       visionPath,
 		}),
 	)
 
@@ -608,6 +652,71 @@ func (b *chatbotBiz) buildChatMessages(config *model.ChatbotConfig, historyMsgs 
 	})
 
 	return messages
+}
+
+// buildVisionMessages assembles the full []aiservice.ChatMessage for an inline
+// image (vision) turn, used on the bill-only path where the context-budget
+// fragment renderer is bypassed (it would drop image_url parts). The current
+// user message carries the multimodal Parts (text + image_url); system + history
+// are plain text. When KB chunks were retrieved, the grounding instruction and
+// 参考资料 are folded into the system message (the fragment path's grounding is
+// unavailable here). retrievedChunks is the same slice fed to buildChatMessages.
+func (b *chatbotBiz) buildVisionMessages(
+	config *model.ChatbotConfig,
+	historyMsgs []model.ChatbotMessage,
+	retrievedChunks []string,
+	userParts []aiservice.MessagePart,
+) []aiservice.ChatMessage {
+	systemPrompt := config.SystemPrompt
+	if len(retrievedChunks) > 0 {
+		systemPrompt += "\n\n" + chatbotGroundingPrompt + "\n\n参考资料：\n" + strings.Join(retrievedChunks, "\n\n")
+	}
+
+	msgs := make([]aiservice.ChatMessage, 0, len(historyMsgs)+2)
+	msgs = append(msgs, aiservice.ChatMessage{
+		Role:    aiservice.MessageRoleSystem,
+		Content: aiservice.MessageContent{Text: systemPrompt},
+	})
+	for _, m := range historyMsgs {
+		msgs = append(msgs, aiservice.ChatMessage{
+			Role:    aiservice.MessageRole(m.Role),
+			Content: aiservice.MessageContent{Text: m.Content},
+		})
+	}
+	msgs = append(msgs, aiservice.ChatMessage{
+		Role:    aiservice.MessageRoleUser,
+		Content: aiservice.MessageContent{Parts: userParts},
+	})
+	return msgs
+}
+
+// applyVisionBillOnly switches the request to the bill-only path for an inline
+// image turn: it replaces Messages with the self-assembled vision messages
+// (carrying image_url Parts), clears ContextFragments (so the fragment renderer
+// is bypassed — it would drop image parts), and marks the ctx bill-only so the
+// context-budget middleware keeps our Messages while still running
+// reserve/reconcile (synthBillOnlyResult.ChargeUser=true). Returns the new ctx.
+func applyVisionBillOnly(ctx context.Context, req *aiservice.ChatRequest, visionMsgs []aiservice.ChatMessage) context.Context {
+	req.Messages = visionMsgs
+	req.ContextFragments = nil
+	return aismw.WithGatewayBillingOnly(ctx)
+}
+
+// messageAttachmentsFrom maps loaded attachments to the lightweight display refs
+// persisted on a user message (id/filename/mime_type only). Returns nil for no
+// attachments so the column stays SQL NULL.
+func messageAttachmentsFrom(atts []*model.AgentAttachment) []model.MessageAttachment {
+	if len(atts) == 0 {
+		return nil
+	}
+	out := make([]model.MessageAttachment, 0, len(atts))
+	for _, a := range atts {
+		if a == nil {
+			continue
+		}
+		out = append(out, model.MessageAttachment{ID: a.ID, Filename: a.Filename, MimeType: a.MimeType})
+	}
+	return out
 }
 
 // fetchRecentHistory 取会话最近 chatStreamMaxHistory 条消息（按 seq 升序）。
