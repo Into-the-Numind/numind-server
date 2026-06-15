@@ -107,12 +107,14 @@ func buildPartsWithCaps(
 		switch att.Modality {
 		case agentatt.ModalityImage:
 			inline = caps != nil && caps.AcceptsImageInline
-		case agentatt.ModalityPDF:
-			inline = caps != nil && caps.AcceptsPDFInline
-		case agentatt.ModalityAudio:
-			inline = caps != nil && caps.AcceptsAudioInline
-		case agentatt.ModalityDocument:
-			// Office docs are text-extracted locally; always route to fallback.
+		case agentatt.ModalityPDF, agentatt.ModalityAudio, agentatt.ModalityDocument:
+			// Only image inline is wired here (mkInlineBlock emits image_url only).
+			// PDF/audio/document ALWAYS route to the text-fallback path (their
+			// pre-generated OCR/extracted text), never inline — otherwise a model
+			// with AcceptsPDFInline=true would get a "not supported" placeholder
+			// instead of the real fallback text. Native PDF/audio inline is future
+			// work. (review P1; differs intentionally from agent copy, which has a
+			// file_read tool to consume the URL.)
 		default:
 			log.Warnw("multimodal.buildPartsWithCaps: unknown modality, falling back",
 				"att_id", att.ID, "modality", att.Modality)
@@ -248,6 +250,8 @@ func waitForFallback(
 
 // textFallbackOf extracts the text_fallback string, defending against a nil
 // field (should not happen once FallbackReady=true).
+//
+// TODO(dedup): mirrors biz/agent/multimodal.go.
 func textFallbackOf(att *model.AgentAttachment) string {
 	if att.TextFallback != nil && *att.TextFallback != "" {
 		return *att.TextFallback
@@ -257,6 +261,8 @@ func textFallbackOf(att *model.AgentAttachment) string {
 
 // pendingFallbackTextFor composes a modality-aware "pending" placeholder for an
 // attachment whose fallback is not yet ready.
+//
+// TODO(dedup): mirrors biz/agent/multimodal.go.
 func pendingFallbackTextFor(att *model.AgentAttachment) string {
 	var prefix string
 	switch att.Modality {
@@ -283,6 +289,8 @@ var cosURLPathRE = regexp.MustCompile(`^https?://[^/]+\.cos\.[^/]+\.myqcloud\.co
 
 // extractCOSObjectKey returns the COS object key for a COS bucket URL and whether
 // the URL was recognized as COS.
+//
+// TODO(dedup): mirrors biz/agent/tool_file_read.go:extractCOSObjectKey.
 func extractCOSObjectKey(fileURL string) (string, bool) {
 	m := cosURLPathRE.FindStringSubmatch(fileURL)
 	if len(m) < 2 {
@@ -309,9 +317,14 @@ func presignAttachmentURL(ctx context.Context, att *model.AgentAttachment) (stri
 	return signed, nil
 }
 
-// mkInlineBlock constructs a MessagePart for an inline attachment. Only image is
-// supported as image_url; other modalities log and return a text placeholder
-// (PDF/audio inline not wired here — this feature is image-only).
+// mkInlineBlock constructs an image_url MessagePart. buildPartsWithCaps only
+// routes image modality here (PDF/audio/document always take the text-fallback
+// path), so the default branch is defensive and should be unreachable in
+// practice.
+//
+// TODO(dedup): mirrors biz/agent/multimodal.go (agent's default branch keeps a
+// file_read hint; chatbot has no such tool so the text is shortened — divergence
+// is intentional).
 func mkInlineBlock(modality, url string) aiservice.MessagePart {
 	switch modality {
 	case agentatt.ModalityImage:

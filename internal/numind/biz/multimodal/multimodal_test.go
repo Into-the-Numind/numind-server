@@ -97,6 +97,55 @@ func TestBuildPartsWithCaps_FallbackPendingTimeout(t *testing.T) {
 	assert.Contains(t, parts[0].Text, "描述生成中")
 }
 
+// pollingAttStore returns a not-ready attachment until the readyAfter-th GetByID
+// call, then returns a ready one — exercising waitForFallback's polling loop.
+type pollingAttStore struct {
+	fakeAttStore
+	readyAfter int
+	calls      int
+	ready      *model.AgentAttachment
+}
+
+func (p *pollingAttStore) GetByID(_ context.Context, id uint64) (*model.AgentAttachment, error) {
+	p.calls++
+	if p.calls >= p.readyAfter {
+		return p.ready, nil
+	}
+	return &model.AgentAttachment{ID: id, Modality: agentatt.ModalityImage}, nil
+}
+
+func TestBuildPartsWithCaps_FallbackPollsUntilReady(t *testing.T) {
+	att := imageAtt(1, "https://x/y.png") // FallbackReady=false → must poll
+	ready := imageAtt(1, "https://x/y.png")
+	ready.FallbackReady = true
+	ready.TextFallback = strPtr("[图片：chart.png，画面描述：一张折线图]")
+	store := &pollingAttStore{readyAfter: 2, ready: ready}
+	caps := &capability.Capabilities{AcceptsImageInline: false}
+
+	parts, hasInlineImage, err := buildPartsWithCaps(context.Background(), "看", []*model.AgentAttachment{att}, caps, store)
+	require.NoError(t, err)
+	assert.False(t, hasInlineImage)
+	require.Len(t, parts, 2)
+	assert.Equal(t, "[图片：chart.png，画面描述：一张折线图]", parts[1].Text)
+	assert.GreaterOrEqual(t, store.calls, 2, "should have polled until ready")
+}
+
+func TestBuildPartsWithCaps_PDFAlwaysFallback(t *testing.T) {
+	// Even if a model reports AcceptsPDFInline=true, PDF must take the text
+	// fallback path (mkInlineBlock only emits image_url). review P1 guard.
+	att := &model.AgentAttachment{ID: 1, URL: "https://x/y.pdf", Filename: "report.pdf", Modality: agentatt.ModalityPDF}
+	att.FallbackReady = true
+	att.TextFallback = strPtr("[PDF：report.pdf，提取文本：季度营收...]")
+	caps := &capability.Capabilities{AcceptsImageInline: true, AcceptsPDFInline: true}
+
+	parts, hasInlineImage, err := buildPartsWithCaps(context.Background(), "总结", []*model.AgentAttachment{att}, caps, nil)
+	require.NoError(t, err)
+	assert.False(t, hasInlineImage, "PDF must never produce inline image")
+	require.Len(t, parts, 2)
+	assert.Equal(t, aiservice.MessagePartTypeText, parts[1].Type)
+	assert.Equal(t, "[PDF：report.pdf，提取文本：季度营收...]", parts[1].Text)
+}
+
 func TestLoadAttachmentsByIDs_SkipsForeign(t *testing.T) {
 	mine := imageAtt(1, "https://x/1.png")
 	store := &fakeAttStore{

@@ -49,6 +49,6 @@ func TestChatbotMessage_AttachmentsRoundTrip(t *testing.T) {
 	assert.Equal(t, "image/png", msgs[0].Attachments[0].MimeType)
 	assert.Equal(t, uint64(12), msgs[0].Attachments[1].ID)
 
-	// assistant message (seq 2) has no attachments
-	assert.Empty(t, msgs[1].Attachments)
+	// assistant message (seq 2) has no attachments — stored as SQL NULL → read back nil
+	assert.Nil(t, msgs[1].Attachments, "assistant msg Attachments should be nil (SQL NULL), not empty slice")
 }
