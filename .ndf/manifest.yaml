@@ -5,7 +5,7 @@ features:
   description: 'SOP 回看页输入与上传可见：历史运行回看的只读步骤(done-history/done-current)当前只展示 AI 输出，看不到当时用户输入文本与上传的文件/图片。需求=把每步「历史输入」与「上传内容」在回看态变可见，方便回溯每一步输入上下文，UI 要美观合理。数据(sop_node_run.input + sop_file 表)已持久化，仅回看接口 /sop/runs/:id/status 的 completed_nodes 未透出 files + 前端只读态未渲染 input/files。'
   classification_reason: 'Standard: 无 DB schema 变更(数据已持久化)+无新端点(在现有 /sop/runs/:id/status 响应补 files 字段)+无新外部服务+非支付权限，但文件数>3(后端 DTO/biz/controller + 前端 api/store/回看组件/新只读输入卡)且跨 numind-server+numind-web-v3 两仓库 + UI 需设计走 S2。规则强制不可降级。用户 2026-06-16 设为 /goal autopilot 授权直至部署 dev(不部署 prod)。'
   status: active
-  stage: S3
+  stage: S4
   repos:
     numind-server: feature/sop-replay-input-visibility
     numind-web-v3: feature/sop-replay-input-visibility
@@ -14,14 +14,15 @@ features:
     numind-web-v3: /private/tmp/wt-sop-replay-input-visibility-numind-web-v3
   progress:
     total_tasks: 3
-    completed_tasks: 0
-    reviewed_tasks: 0
+    completed_tasks: 1
+    reviewed_tasks: 1
   artifacts:
     requirement: .ndf/features/sop-replay-input-visibility/requirement.md
     proposal: .ndf/features/sop-replay-input-visibility/proposal.md
     spec: .ndf/features/sop-replay-input-visibility/spec.md
     plan: .ndf/features/sop-replay-input-visibility/plan.md
   decisions:
+  - 'S4-T1 (ai 2026-06-16): 后端完成(server worktree)。commit e23a6af2 fix NodeRunID 映射(独立); 9cf47e59 feat=v1+biz CompletedNodeInfo 加 Files[]+replay_files.go(attachNodeFiles 可测 seam 签名注入/isImageExt/按 *NodeID 分组/image inline 签名·非图 download 签名·空key或签名失败回退 base)+GetRunStatus 装配(ListFilesByRun 非致命)+controller 映射+6 单测; 759ea1e5 refactor 修 2 P2(hoist cosEnabled/Content 注释)。门禁: go build 0+go vet 0+golangci-lint 0+go test sop 包全过。并行双 Sonnet review: spec-compliance=PASS(0 P0/P1, DTO双层同构/装配/回退/NodeRunID独立commit/Rule11非bug不强制repro 全核), code-quality=PASS_WITH_CONCERNS(0 P0/P1, 2 P2 已修; 确认 biz 调 util 有 10+ 先例合规、原地改 slice 正确、nil 守卫到位)。completed/reviewed=1/3。'
   - 'S3 (ai 2026-06-16): plan 产出, 3 个 code task。T1 后端(server): DTO+biz attachNodeFiles 可测 seam(签名注入)+isImageExt+controller 映射, 含 NodeRunID 修复独立 commit, biz 单测。T2 前端数据层(web-v3): api/types/store 3映射点+replayInput.ts 纯函数(stripMergedFileBlocks/formatFileSize)+vitest。T3 前端 UI: ReplayInputCard.vue 只读卡(spec §4 视觉)+接入 SopStepView 只读分支包裹 div。T1⟂T2 跨仓库 Tier2 可并行, T3 依赖 T2。T4=S5 验证策略(Rule10): 单测做回归+dev gstack QA(7 步清单)忠实端到端(真实历史 run+私有桶签名只能在 dev 验), 非高风险接受无持久 E2E。S3 独立 Sonnet reviewer=PASS_WITH_CONCERNS(0 P0, 1 P1+6 P2)全处置: P1 NodeRunID 下游兼容→T1 加核对(T2 review grep 前端 nodeRun.id 用法); P2 锁定 attachNodeFiles 签名/AgentImagePreview 复用/types.ts 单一真相 re-export/T2 验收列 3 映射点/T1 验收去掉不可达 COS 断言改单测+lint+build(端到端留 T4 dev QA)/T4 路径拆 5a 纯文本与 5b 全空/isImageExt 大写用例。原子性+依赖+覆盖+Bug-from-Customer(非线上bug,不强制 repro 测试)均 PASS。进 S4。'
   - 'S2 (ai 2026-06-16): 技术设计锁定(spec.md=跨仓库 API 契约权威)。后端: CompletedNodeInfo 加 Files[](新 CompletedNodeFileInfo: id/file_name/file_url已签名/file_type/file_size/file_ext/content), biz GetRunStatus 装配=ListFilesByRun→按 NodeID 分组→object_key 实时 GenerateSignedURL(7200s,失败回退base), controller 加 Files 映射。前端: api/store(3映射点 loadRunSnapshot/recover/refresh)/types 加 files, 新 ReplayInputCard.vue(只读) + stripMergedFileBlocks 纯函数(剥离=== 文件名 ===段, 匹配不到原样返回)。UI: quiet↔accent 层次, head 中性灰 PenLine, 文本块 surface-tint, 图片网格88px复用 AgentImagePreview, 文件卡 open新标签, content 折叠 mono。无 LLM=Langfuse N/A。Transition 单节点用包裹 div。Sonnet spec reviewer=NEEDS_REVISION(1 P0+4 P1)已全处置: P0(文件名不一致致剥离失效)→改结构分隔符剥离(\n\n=== / 用户已上传, 仅 hasFiles 时剥离, 不依赖文件名、不改执行热路径)消解; P1 文档下载→单 file_url 双签名(图片 inline/非图 download-disposition); P1 NodeRunID 漏映射→S4 独立 commit 顺修; P1 Transition→锁包裹 div; P2 content 体量→注明 100KB/file。修订后 spec 进 S3。'
   - 'S1 (ai 2026-06-16): 提案+PRD 完成。技术可行性=高(数据全持久化, 无表/列/迁移; 复用 ListFilesByRun+GenerateSignedURL+既有 TemplateFileInfo 形态)。关键风险取证: (1)【高】COS 私有桶, UploadBytesToCOS 存非签名 base URL→裸链 403, 必须回看时按 object_key 实时 GenerateSignedURL(GET inline, 2h, 失败回退) — 此前 cos-url-lazy-resign hotfix 已证匿名 GET 被拒; (2)【中】input 是合并 blob(用户文本+=== 文件名 ===\n提取内容), 前端按已知文件名剥离文件段只展示用户文本, 匹配不到保守不剥离。无 LLM 调用→Langfuse N/A。9 条 AC。仓库=server+web-v3。'
