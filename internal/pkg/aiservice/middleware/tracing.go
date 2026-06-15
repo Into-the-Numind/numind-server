@@ -236,6 +236,16 @@ func WithUserID(ctx context.Context, userID uint) context.Context {
 	return context.WithValue(ctx, ctxKeyUserID{}, userID)
 }
 
+// UserIDFromCtx reads the tracing/billing userID injected by WithUserID (0 when
+// unset). Exported so system-internal callers and their tests can verify the
+// userID was zeroed — the free-model gate in ContextBudgetCredits falls back to
+// this key when the billing context userID is 0, so a non-zero value here would
+// still subject an internal call to membership enforcement.
+func UserIDFromCtx(ctx context.Context) uint {
+	v, _ := ctx.Value(ctxKeyUserID{}).(uint)
+	return v
+}
+
 // WithFeatureRef injects an arbitrary feature reference map (e.g. sop_id, node_id)
 // into the context for Tracing metadata.
 func WithFeatureRef(ctx context.Context, ref map[string]interface{}) context.Context {

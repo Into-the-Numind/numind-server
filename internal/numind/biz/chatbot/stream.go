@@ -507,6 +507,10 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 	_ = b.ds.ChatbotSession().IncrementMessageCount(ctx, sessionID)
 	_ = b.ds.ChatbotSession().IncrementMessageCount(ctx, sessionID)
 
+	// 9b. 标题自适应（adaptive-session-titles）：首轮对话结束后生成一个内容相关的简短标题，
+	// 覆盖创建时写死的智能体名，并在 done 事件回传供前端即时更新。详见 maybeGenerateTitle。
+	newTitle := b.maybeGenerateTitle(ctx, session, config.Name, message, fullContent.String())
+
 	// 10. 更新 trace output
 	langfuse.CreateTrace(traceID, "chatbot-chat",
 		langfuse.WithTraceOutput(map[string]interface{}{
@@ -526,6 +530,9 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 	}
 	if sources := parseCitedSources(fullContent.String(), retrievedChunks); len(sources) > 0 {
 		doneData["sources"] = sources
+	}
+	if newTitle != "" {
+		doneData["session_title"] = newTitle
 	}
 	return handler("done", doneData)
 }

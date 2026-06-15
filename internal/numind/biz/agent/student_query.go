@@ -249,12 +249,25 @@ func (s *StudentQueryService) ListRecentSessions(ctx context.Context, userID uin
 	return s.toEnrichedSummaries(ctx, runs)
 }
 
-// ListAllHistorySessions returns all sessions for the learner in the last 30 days.
+// ListAllHistorySessions returns ALL of the learner's sessions, newest first.
+//
+// adaptive-session-titles US4: the sidebar must show every session the user ever
+// created, not just the last 30 days, so the previous `since = now-30d` window is
+// removed (sinceTime=nil). ListByUser already dedups to one row per session
+// (latest run by started_at) and orders is_pinned DESC, started_at DESC. 500 is a
+// generous safety cap that effectively means "all" for any real user.
 func (s *StudentQueryService) ListAllHistorySessions(ctx context.Context, userID uint) ([]*RunSummary, error) {
-	since := time.Now().AddDate(0, 0, -30)
-	runs, err := s.runStore.ListByUser(ctx, userID, &since, 500)
+	const historyCap = 500
+	runs, err := s.runStore.ListByUser(ctx, userID, nil, historyCap)
 	if err != nil {
 		return nil, fmt.Errorf("StudentQueryService.ListAllHistorySessions: %w", err)
+	}
+	// No-silent-cap: surface when a power user actually hits the safety bound so we
+	// notice if pagination is ever truly needed (rather than silently dropping the
+	// oldest sessions).
+	if len(runs) == historyCap {
+		log.C(ctx).Warnw("ListAllHistorySessions hit 500-session cap; oldest sessions omitted",
+			"user_id", userID)
 	}
 	return s.toEnrichedSummaries(ctx, runs)
 }

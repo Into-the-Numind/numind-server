@@ -104,6 +104,10 @@ func (s *answerRunStore) UpdateSessionPinned(_ context.Context, _ string, _ bool
 func (s *answerRunStore) UpdateSessionName(_ context.Context, _ string, _ string) error {
 	return nil
 }
+
+func (s *answerRunStore) UpdateSessionNameIfEmpty(_ context.Context, _ string, _ string) (bool, error) {
+	return false, nil
+}
 func (s *answerRunStore) UpdateSessionDeleted(_ context.Context, _ string, _ bool) error {
 	return nil
 }

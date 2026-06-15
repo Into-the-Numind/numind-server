@@ -54,3 +54,15 @@ func GatewayBillingOnlyFromCtx(ctx context.Context) bool {
 	v, _ := ctx.Value(ctxKeyGatewayBillingOnly{}).(bool)
 	return v
 }
+
+// WithoutGatewayBillingOnly clears the bill-only flag (sets it to false),
+// overriding any inherited WithGatewayBillingOnly. Used by system-internal,
+// non-user-billed LLM calls (e.g. session-title generation) whose ctx may be
+// derived (context.WithoutCancel) from an agent request that set bill-only:
+// without this, ContextBudgetCredits would skip its no-fragment pass-through
+// and run the bill-only Reserve path, billing the user. Pair it with a request
+// that carries no ContextFragments and a zeroed userID so the gateway takes the
+// pass-through branch and never reserves.
+func WithoutGatewayBillingOnly(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeyGatewayBillingOnly{}, false)
+}
