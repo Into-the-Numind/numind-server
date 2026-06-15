@@ -74,6 +74,9 @@ salesrag:
   vector_store:
     type: "sqlitevec"   # sqlitevec | dashvector | memory
     path: "/opt/numind/dev/sales_vector.db"
+  # 基础策略内容覆盖目录（可选）。留空/不配置则使用代码内置默认策略内容。
+  # 本地若有策略 txt/md 文件，可设为其所在目录以覆盖默认内容。
+  # strategy_dir: ""
 
 # RAG 向量数据库配置
 rag:
