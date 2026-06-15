@@ -3,9 +3,28 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
+
+// defaultImageFilename must yield a clean ASCII date-form name (image-YYYYMMDD-HHMMSS.png),
+// not the old gemini-image-{unix} (giant timestamp + leaked model name). The frontend
+// falls back to this name when the LLM writes no markdown alt, so it must read cleanly.
+func TestDefaultImageFilename(t *testing.T) {
+	fixed := time.Date(2026, 6, 16, 18, 36, 47, 0, time.UTC)
+	got := defaultImageFilename(fixed)
+	if got != "image-20260616-183647.png" {
+		t.Errorf("defaultImageFilename = %q; want image-20260616-183647.png", got)
+	}
+	if strings.Contains(got, "gemini") {
+		t.Errorf("filename must not leak model name: %q", got)
+	}
+	if !regexp.MustCompile(`^image-\d{8}-\d{6}\.png$`).MatchString(got) {
+		t.Errorf("filename %q does not match image-YYYYMMDD-HHMMSS.png", got)
+	}
+}
 
 func TestImageGenTool_Name(t *testing.T) {
 	if got := (&imageGenTool{}).Name(); got != "image_gen" {
