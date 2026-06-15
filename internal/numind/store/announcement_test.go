@@ -571,6 +571,19 @@ func TestAnnouncementStore_ListReaders(t *testing.T) {
 	assert.Equal(t, int64(2), total, "分页 total 不受 limit 影响")
 	assert.Len(t, page1, 1)
 
+	// 软删一个未读的非 admin 用户 → 应从 unread 集合剔除（GORM 软删 scope 自动 deleted_at IS NULL）。
+	u5 := seedUser(t, db, "u5", "104", false)
+	_, beforeTotal, err := s.ListReaders(ctx, ann.ID, "unread", 0, 50)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), beforeTotal, "新增未读用户 u5 后 unread = 3")
+	require.NoError(t, db.Delete(&model.User{}, u5.ID).Error) // 软删
+	afterRows, afterTotal, err := s.ListReaders(ctx, ann.ID, "unread", 0, 50)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), afterTotal, "软删用户必须从 unread 剔除")
+	for _, r := range afterRows {
+		assert.NotEqual(t, u5.ID, r.UserID, "软删用户不应出现在 unread 列表")
+	}
+
 	// 非法 status 报错
 	_, _, err = s.ListReaders(ctx, ann.ID, "bogus", 0, 50)
 	assert.Error(t, err)

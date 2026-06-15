@@ -53,7 +53,7 @@ type QuestionAggregate struct {
 	QuestionType string          `json:"question_type"`
 	OptionCounts []OptionCount   `json:"option_counts,omitempty"`
 	Distribution []RatingBucket  `json:"distribution,omitempty"`
-	Average      float64         `json:"average,omitempty"`
+	Average      float64         `json:"average"` // rating 题始终输出（0 表示暂无答卷）
 	TextAnswers  []TextAnswerRow `json:"text_answers,omitempty"`
 }
 
@@ -547,7 +547,8 @@ func (s *announcementStore) SurveyAggregate(ctx context.Context, annID uint64) (
 			}
 			counts := make(map[string]int64, len(optList))
 			for _, a := range answers {
-				if len(a.AnswerOptions) == 0 {
+				// 跳过空 / JSON null（MySQL NULL 列经 datatypes.JSON 可能回传 []byte("null") 而非 nil）。
+				if len(a.AnswerOptions) == 0 || string(a.AnswerOptions) == "null" {
 					continue
 				}
 				var chosen []string
