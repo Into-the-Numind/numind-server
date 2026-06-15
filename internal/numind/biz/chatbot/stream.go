@@ -317,8 +317,11 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 				langfuse.EndSpan(traceID, vectorSpanID, langfuse.WithSpanError(retErr.Error()))
 			} else {
 				retrievedChunks = result.Chunks
-				for _, chunk := range retrievedChunks {
-					retrievedChunkContents = append(retrievedChunkContents, chunk.Content)
+				for i := range retrievedChunks {
+					// 旧 chunk 内容含历史遗留的 [上下文衔接] 切块标记，就地剥除一次，
+					// 下游三条消费链（evidence 片段 / legacy 参考资料 / 用户引用来源）统一受益。
+					retrievedChunks[i].Content = domain.StripContextJoinMarker(retrievedChunks[i].Content)
+					retrievedChunkContents = append(retrievedChunkContents, retrievedChunks[i].Content)
 				}
 				langfuse.EndSpan(traceID, vectorSpanID, langfuse.WithSpanOutput(map[string]interface{}{
 					"chunk_count": len(retrievedChunks),
