@@ -11,6 +11,7 @@ import (
 	artifactbiz "numind-server/internal/numind/biz/skill/artifact"
 	agentcontroller "numind-server/internal/numind/controller/v1/agent"
 	"numind-server/internal/numind/controller/v1/ali"
+	announcementcontroller "numind-server/internal/numind/controller/v1/announcement"
 	chatbotcontroller "numind-server/internal/numind/controller/v1/chatbot"
 	"numind-server/internal/numind/controller/v1/config"
 	creditcontroller "numind-server/internal/numind/controller/v1/credit"
@@ -270,6 +271,23 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/customers/sub-users/:user_id/features", customerCtrl.ListSubUserFeatures)
 		authGroup.POST("/customers/sub-users/:user_id/features", customerCtrl.GrantFeatures)
 		authGroup.DELETE("/customers/sub-users/:user_id/features", customerCtrl.RevokeFeatures)
+	}
+
+	// 通知中心（公告/问卷）用户端（notification-center T4a）。
+	// 整组挂 feature flag：flag off 时所有路由返回 ErrFeatureDisabled（spec §2）。
+	// AuthMiddleware 由 authGroup 继承。静态路由 /unread-count 注册在 /:id 之前——
+	// gin v1（httprouter）同层级静态优先于 :param，故二者不冲突。
+	{
+		annCtrl := announcementcontroller.NewUserController(b.Announcement())
+		annGroup := authGroup.Group("/announcements")
+		annGroup.Use(importMw.FeatureFlag("features.notification_center.enabled"))
+		{
+			annGroup.GET("", annCtrl.ListAnnouncements)               // 公告列表（含 unread_count）
+			annGroup.GET("/unread-count", annCtrl.UnreadCount)        // 未读数（铃铛轮询）
+			annGroup.GET("/:id", annCtrl.GetDetail)                   // 公告详情（含问卷题目）
+			annGroup.POST("/:id/read", annCtrl.MarkRead)              // 标记已读（幂等）
+			annGroup.POST("/:id/survey/submit", annCtrl.SubmitSurvey) // 提交问卷答卷
+		}
 	}
 
 	// B2B2C 会员赋予（Q1 / Task 10）：父账户为子账户开通会员，不走支付流程
