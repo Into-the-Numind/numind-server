@@ -871,11 +871,13 @@ func buildSalesRAGEvidenceFragments(chunks []domain.KnowledgeChunk) []cb.Context
 			sourceRef = fmt.Sprintf("salesrag-chunk-%d", i)
 		}
 		frags = append(frags, cb.ContextFragment{
-			ID:              fmt.Sprintf("ev-%d", i),
-			Role:            cb.RoleEvidence,
-			Source:          cb.SourceKB,
-			ContentType:     cb.ContentText,
-			Content:         chunk.Content,
+			ID:          fmt.Sprintf("ev-%d", i),
+			Role:        cb.RoleEvidence,
+			Source:      cb.SourceKB,
+			ContentType: cb.ContentText,
+			// 旧 chunk 含历史遗留的 [上下文衔接] 切块标记，喂进 context-budget evidence
+			// 片段（最终拼成 LLM 消息）前剥除，与 V2 prompt 渲染点保持一致。
+			Content:         domain.StripContextJoinMarker(chunk.Content),
 			Importance:      scoreToImportance(chunk.Score),
 			Order:           100 + i, // evidence slots: 100, 101, 102... (between system@0 and user@1000)
 			Compressibility: cb.CompressReference,

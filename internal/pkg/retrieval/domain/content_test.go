@@ -27,6 +27,18 @@ func TestStripContextJoinMarker(t *testing.T) {
 			want: "前文后文",
 		},
 		{
+			// 旧 Go 切块器在 prefix 为空时会产出以 "\n\n[marker]\n\n" 开头的内容；
+			// 剥除后留下一个无害的前导空行，关键是标记本身必须消失。
+			name: "canonical marker at start leaves harmless leading blank line",
+			in:   "\n\n" + ContextJoinMarker + "\n\n" + "正文内容",
+			want: "\n\n正文内容",
+		},
+		{
+			name: "canonical marker at end leaves harmless trailing blank line",
+			in:   "正文内容" + "\n\n" + ContextJoinMarker + "\n\n",
+			want: "正文内容\n\n",
+		},
+		{
 			name: "no marker returns input unchanged",
 			in:   "正常的知识库内容，没有任何标记。",
 			want: "正常的知识库内容，没有任何标记。",
