@@ -13,6 +13,7 @@ import (
 	aismw "numind-server/internal/pkg/aiservice/middleware"
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/billing"
+	"numind-server/internal/pkg/langfuse"
 )
 
 type chatFnSig = func(ctx context.Context, taskID string, req aiservice.ChatRequest) (*aiservice.ChatResponse, error)
@@ -20,11 +21,12 @@ type chatFnSig = func(ctx context.Context, taskID string, req aiservice.ChatRequ
 // capturedCall records what Generate passed to the LLM call, including the
 // billing-relevant ctx flags so we can assert the user is never billed.
 type capturedCall struct {
-	taskID        string
-	req           aiservice.ChatRequest
-	billOnly      bool
-	billingUserID uint
-	skipLegacy    bool
+	taskID           string
+	req              aiservice.ChatRequest
+	billOnly         bool
+	billingUserID    uint
+	middlewareUserID uint
+	skipLegacy       bool
 }
 
 // stubChat returns a chatFn that records call args (incl. ctx billing flags) and
@@ -33,10 +35,11 @@ func stubChat(content string) (chatFnSig, *[]capturedCall) {
 	calls := make([]capturedCall, 0, 1)
 	fn := func(ctx context.Context, taskID string, req aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
 		c := capturedCall{
-			taskID:     taskID,
-			req:        req,
-			billOnly:   aismw.GatewayBillingOnlyFromCtx(ctx),
-			skipLegacy: aiservice.ShouldSkipLegacyBilling(ctx),
+			taskID:           taskID,
+			req:              req,
+			billOnly:         aismw.GatewayBillingOnlyFromCtx(ctx),
+			middlewareUserID: aismw.UserIDFromCtx(ctx),
+			skipLegacy:       aiservice.ShouldSkipLegacyBilling(ctx),
 		}
 		if bc := billing.FromContext(ctx); bc != nil {
 			c.billingUserID = bc.UserID
@@ -76,6 +79,8 @@ func TestSanitizeTitle(t *testing.T) {
 		{"quote_then_punct", `"账号定位策略！"`, "账号定位策略"},
 		{"empty", "", ""},
 		{"only_quotes", `""`, ""},
+		{"only_cjk_quotes", "“”", ""},
+		{"only_book_quotes", "「」", ""},
 		{"only_punct", "。！", ""},
 	}
 	for _, c := range cases {
@@ -138,7 +143,8 @@ func TestGenerate_StripsBillingContext_NoUserCharge(t *testing.T) {
 	require.Len(t, *calls, 1)
 	got := (*calls)[0]
 	assert.False(t, got.billOnly, "bill-only must be cleared so gateway takes pass-through (no reserve)")
-	assert.Equal(t, uint(0), got.billingUserID, "billing userID must be zeroed (no reserve, no free-model gate)")
+	assert.Equal(t, uint(0), got.billingUserID, "billing userID must be zeroed (no reserve)")
+	assert.Equal(t, uint(0), got.middlewareUserID, "ctxKeyUserID must be zeroed: free-model gate falls back to it when billing userID is 0")
 	assert.True(t, got.skipLegacy, "legacy UsageRecord must be skipped")
 }
 
@@ -154,6 +160,35 @@ func TestGenerate_LLMError_ReturnsEmptyError(t *testing.T) {
 	assert.Empty(t, title)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "provider quota exceeded")
+}
+
+func TestGenerate_LLMError_WithTrace_NoPanic(t *testing.T) {
+	// With a Langfuse trace present (tc != nil), the error branch records a
+	// generation error (spec §2.7 / ai-service.md §3). Langfuse is disabled in
+	// unit tests so CreateGeneration/EndGeneration are no-ops; this test pins
+	// that the tc != nil failure path executes without panicking and still
+	// returns the wrapped error. (The tc == nil graceful-skip path is covered
+	// by TestGenerate_LLMError_ReturnsEmptyError.)
+	withChatFn(t, func(_ context.Context, _ string, _ aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
+		return nil, errors.New("provider down")
+	})
+	ctx := langfuse.WithTrace(context.Background(), "test-trace-id")
+	require.NotNil(t, langfuse.FromContext(ctx), "trace ctx must be present to exercise the tc!=nil branch")
+
+	title, err := Generate(ctx, "做个调研", "好的")
+	assert.Empty(t, title)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "provider down")
+}
+
+func TestGenerate_OnlyOneSideEmpty_StillCallsLLM(t *testing.T) {
+	stub, calls := stubChat("内容标题")
+	withChatFn(t, stub)
+	// Early-return guard is user=="" AND asst=="" — one non-empty side proceeds.
+	title, err := Generate(context.Background(), "   ", "助手给出的一些内容")
+	require.NoError(t, err)
+	assert.Equal(t, "内容标题", title)
+	require.Len(t, *calls, 1, "one non-empty side must still trigger the LLM call")
 }
 
 func TestGenerate_EmptyInput_NoLLMCall(t *testing.T) {
