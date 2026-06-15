@@ -612,6 +612,27 @@ func TestStudentQuery_SessionSnapshot_AnsweredQuestionCardSurvivesReload(t *test
 	require.Len(t, card.Questions[0].Options, 2, "options must survive reconstruction (non-nil array)")
 }
 
+func TestReconstructAnsweredQuestions(t *testing.T) {
+	// nil / corrupt / empty all degrade to ok=false (turn stays a plain bubble).
+	_, ok := reconstructAnsweredQuestions(nil)
+	assert.False(t, ok, "nil → false")
+	_, ok = reconstructAnsweredQuestions("not-an-object")
+	assert.False(t, ok, "non-object JSON → false")
+	_, ok = reconstructAnsweredQuestions(map[string]any{"questions": []any{}})
+	assert.False(t, ok, "empty questions → false")
+
+	// Valid payload → items; a nil Options becomes a non-nil empty slice so the
+	// frontend never reads options.length on null (dev run 147).
+	items, ok := reconstructAnsweredQuestions(map[string]any{
+		"questions": []any{map[string]any{"question": "Q1", "answer": "A1"}},
+	})
+	require.True(t, ok)
+	require.Len(t, items, 1)
+	assert.Equal(t, "Q1", items[0].Question)
+	assert.Equal(t, "A1", items[0].Answer)
+	assert.NotNil(t, items[0].Options, "nil options must become a non-nil empty slice")
+}
+
 // TestStudentQuery_SessionSnapshot_ToolGroupSurvivesReload is the customer-bug
 // reproduction (NDF rule 11): after an agent run that used tools, reopening the
 // session must still show the tool-call process. transformMessages previously

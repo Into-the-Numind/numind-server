@@ -250,15 +250,9 @@ func buildAnswerTurn(pending YieldPayload, answers map[string]AnswerItem, conten
 		if ans == "" {
 			continue
 		}
-		// Drop the machine option key (the client identifies options by label) —
-		// same projection as synthesizeQuestionPrompt.
-		opts := make([]questionPromptOpt, 0, len(q.Options))
-		for _, o := range q.Options {
-			opts = append(opts, questionPromptOpt{Label: o.Label, Description: o.Description})
-		}
 		qs = append(qs, questionPromptItem{
 			Question:    q.Question,
-			Options:     opts,
+			Options:     projectYieldOptions(q.Options),
 			Header:      q.Header,
 			MultiSelect: q.MultiSelect,
 			Answer:      ans,

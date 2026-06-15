@@ -337,6 +337,12 @@ func (s *agentRunStore) AppendUserMessage(ctx context.Context, id uint64, conten
 // in a single DB transaction. This avoids a TOCTOU window between AppendUserMessage
 // and ClearPendingQuestion that could leave the run in an inconsistent state on error.
 func (s *agentRunStore) AnswerAndClear(ctx context.Context, id uint64, turn json.RawMessage) error {
+	// Guard the interface contract: a nil/empty turn would append the literal
+	// "null" (or nothing) into the transcript. The biz layer always builds a
+	// valid turn, so this is defensive against future callers.
+	if len(turn) == 0 || string(turn) == "null" {
+		return fmt.Errorf("agentRunStore.AnswerAndClear(id=%d): empty answer turn", id)
+	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Read current messages inside the transaction.
 		var run model.AgentRun

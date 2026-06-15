@@ -582,15 +582,9 @@ func synthesizeQuestionPrompt(run *model.AgentRun) (agentMessage, bool) {
 		if q.Question == "" {
 			continue
 		}
-		// The backend YieldOption carries a machine `key`, but the client
-		// identifies options by label, so key is intentionally not forwarded.
-		opts := make([]questionPromptOpt, 0, len(q.Options))
-		for _, o := range q.Options {
-			opts = append(opts, questionPromptOpt{Label: o.Label, Description: o.Description})
-		}
 		items = append(items, questionPromptItem{
 			Question:    q.Question,
-			Options:     opts,
+			Options:     projectYieldOptions(q.Options),
 			Header:      q.Header,
 			MultiSelect: q.MultiSelect,
 		})
@@ -719,6 +713,19 @@ func transformMessages(raw []byte, runID uint64, startedAt time.Time, endedAt *t
 		msgs = append(msgs, msg)
 	}
 	return msgs
+}
+
+// projectYieldOptions maps backend YieldOptions to the frontend questionPromptOpt
+// shape, dropping the machine `key` (the client identifies options by label). The
+// result is always a non-nil slice so the rendered card never serializes
+// "options":null (dev run 147 blank-card bug). Shared by synthesizeQuestionPrompt
+// (pending card) and buildAnswerTurn (answered card).
+func projectYieldOptions(opts []YieldOption) []questionPromptOpt {
+	out := make([]questionPromptOpt, 0, len(opts))
+	for _, o := range opts {
+		out = append(out, questionPromptOpt{Label: o.Label, Description: o.Description})
+	}
+	return out
 }
 
 // reconstructAnsweredQuestions rebuilds the answered question_prompt items from a
