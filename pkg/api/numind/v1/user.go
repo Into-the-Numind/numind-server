@@ -68,6 +68,9 @@ type UpdateUserRequest struct {
 type UpdateUserProfileRequest struct {
 	Nickname  *string `json:"nickname" valid:"stringlength(1|100)"`
 	AvatarURL *string `json:"avatar_url" valid:"stringlength(1|512)"`
+	// CompanyName 机构品牌名（org-branding）：nil=不修改，传空串=清空回兜底"有数AI"。
+	// 仅父账户可写（biz 层守卫），子账户传入会被静默忽略。
+	CompanyName *string `json:"company_name" valid:"stringlength(0|100)"`
 }
 
 // WebLoginRequest Web端用户名密码登录请求

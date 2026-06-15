@@ -14,6 +14,10 @@ type User struct {
 	Nickname  string `gorm:"size:100" json:"nickname"`
 	AvatarURL string `gorm:"size:512" json:"avatar_url"`
 
+	// CompanyName 机构品牌名（org-branding）：仅父账户（ParentUserID==nil）有意义，
+	// 子账户继承父账户的值。空串表示未设置，展示层兜底"有数AI"。
+	CompanyName string `gorm:"size:100;not null;default:''" json:"company_name"`
+
 	// 客户层级管理字段
 	ParentUserID *uint `gorm:"type:int unsigned;index" json:"parent_user_id,omitempty"` // 上级客户ID,NULL表示直接客户
 	Parent       *User `gorm:"foreignKey:ParentUserID;references:ID" json:"parent,omitempty"`
