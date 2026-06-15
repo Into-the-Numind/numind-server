@@ -217,6 +217,15 @@ func (g *Gateway) resolveAndRun(
 		}
 	}
 
+	// Default max_tokens from the resolved model's configured capability when the
+	// caller left it 0, so a thinking model's reasoning cannot exhaust the provider
+	// default budget and strand the answer in reasoning_content. Only fills
+	// ChatRequest; Embed/Rerank req types are left untouched. See maxtokens.go.
+	if chatReq, ok := req.(ChatRequest); ok && chatReq.MaxTokens == 0 {
+		chatReq.MaxTokens = defaultMaxTokensFromCapability(primary.Capability.MaxOutputTokens)
+		req = chatReq
+	}
+
 	// Resolve the PRIMARY provider for the fail-fast capability check below.
 	// NOTE: the actual per-call adapter is resolved again inside the handler via
 	// lookupProvider(r.Provider.Name) — that is what lets the Fallback middleware
@@ -306,6 +315,14 @@ func (g *Gateway) ChatStream(ctx context.Context, taskID string, req ChatRequest
 		if overrideRoute, overrideErr := g.registry.ResolveByModelKey(ctx, taskID, req.ModelOverride); overrideErr == nil {
 			primary = overrideRoute
 		}
+	}
+
+	// Default max_tokens from the resolved model's configured capability when the
+	// caller left it 0 (same as resolveAndRun; ChatStream resolves inline). Prevents
+	// a thinking model's reasoning from exhausting the provider default budget and
+	// stranding the answer in reasoning_content. See maxtokens.go.
+	if req.MaxTokens == 0 {
+		req.MaxTokens = defaultMaxTokensFromCapability(primary.Capability.MaxOutputTokens)
 	}
 
 	// Fail-fast capability check on the PRIMARY provider (mirrors resolveAndRun).
