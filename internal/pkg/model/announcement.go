@@ -81,9 +81,11 @@ type SurveyQuestion struct {
 	Title          string         `gorm:"size:500;not null" json:"title"`
 	Options        datatypes.JSON `json:"options"`
 	RatingMax      *int           `gorm:"type:int" json:"rating_max"`
-	RatingStyle    string         `gorm:"size:10" json:"rating_style"`
-	Required       bool           `gorm:"type:tinyint(1);not null;default:1" json:"required"`
-	CreatedAt      time.Time      `gorm:"type:datetime;not null;default:CURRENT_TIMESTAMP;autoCreateTime" json:"created_at"`
+	RatingStyle    *string        `gorm:"size:10" json:"rating_style"` // NULL for non-rating questions (spec §1.3)
+	// ⚠ default:1 bool 坑（database.md §6）：Create 路径 required=false 会被静默写成 true。
+	// T2/T3 store/biz 必须用 *bool 入参或 Create 后 UpdateColumn fixup。
+	Required  bool      `gorm:"type:tinyint(1);not null;default:1" json:"required"`
+	CreatedAt time.Time `gorm:"type:datetime;not null;default:CURRENT_TIMESTAMP;autoCreateTime" json:"created_at"`
 }
 
 // TableName returns the table name for SurveyQuestion.
@@ -111,7 +113,7 @@ type SurveyAnswer struct {
 	QuestionID    uint64         `gorm:"type:bigint unsigned;not null;index:idx_sa_question" json:"question_id"`
 	AnswerOptions datatypes.JSON `json:"answer_options"`
 	AnswerRating  *int           `gorm:"type:int" json:"answer_rating"`
-	AnswerText    string         `gorm:"type:text" json:"answer_text"`
+	AnswerText    *string        `gorm:"type:text" json:"answer_text"` // NULL for non-text answers (spec §1.5)
 	CreatedAt     time.Time      `gorm:"type:datetime;not null;default:CURRENT_TIMESTAMP;autoCreateTime" json:"created_at"`
 }
 

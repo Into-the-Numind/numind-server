@@ -392,9 +392,10 @@ func autoMigrate(db *gorm.DB) error {
 	}
 
 	// Notification Center 5 表（notification-center T1）
-	// AutoMigrate 建表/列/简单索引（含复合 idx_ann_status_pub / uk_annread / uk_sr）；
-	// FK 约束由 migrations/20260616_120000_create_notification_center.sql 负责
-	// （AutoMigrate 不可靠处），需上线前手工 SSH 执行。
+	// AutoMigrate 尽力建表/列/索引；UNIQUE 键（uk_annread / uk_sr）与 FK 约束
+	// 在部分 MySQL 版本下 AutoMigrate 不可靠，必须由
+	// migrations/20260616_120000_create_notification_center.sql 兜底建立，
+	// 需上线前手工 SSH 执行（参考 dev-deploy-migration-gap）。
 	if err := db.AutoMigrate(
 		&model.Announcement{},
 		&model.AnnouncementRead{},
