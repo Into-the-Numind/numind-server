@@ -5,13 +5,13 @@ features:
   description: 'SOP 回看页输入与上传可见：历史运行回看的只读步骤(done-history/done-current)当前只展示 AI 输出，看不到当时用户输入文本与上传的文件/图片。需求=把每步「历史输入」与「上传内容」在回看态变可见，方便回溯每一步输入上下文，UI 要美观合理。数据(sop_node_run.input + sop_file 表)已持久化，仅回看接口 /sop/runs/:id/status 的 completed_nodes 未透出 files + 前端只读态未渲染 input/files。'
   classification_reason: 'Standard: 无 DB schema 变更(数据已持久化)+无新端点(在现有 /sop/runs/:id/status 响应补 files 字段)+无新外部服务+非支付权限，但文件数>3(后端 DTO/biz/controller + 前端 api/store/回看组件/新只读输入卡)且跨 numind-server+numind-web-v3 两仓库 + UI 需设计走 S2。规则强制不可降级。用户 2026-06-16 设为 /goal autopilot 授权直至部署 dev(不部署 prod)。'
   status: active
-  stage: S4
+  stage: S6
   repos:
-    numind-server: feature/sop-replay-input-visibility
-    numind-web-v3: feature/sop-replay-input-visibility
+    numind-server: develop (merged via ndf-done)
+    numind-web-v3: develop (merged via ndf-done)
   worktrees:
-    numind-server: /private/tmp/wt-sop-replay-input-visibility-numind-server
-    numind-web-v3: /private/tmp/wt-sop-replay-input-visibility-numind-web-v3
+    numind-server: (removed by ndf-done)
+    numind-web-v3: (removed by ndf-done)
   progress:
     total_tasks: 3
     completed_tasks: 3
