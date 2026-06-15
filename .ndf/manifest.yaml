@@ -72,8 +72,8 @@ features:
     numind-web-v3: /private/tmp/wt-notification-center-numind-web-v3
   progress:
     total_tasks: 11
-    completed_tasks: 0
-    reviewed_tasks: 0
+    completed_tasks: 3
+    reviewed_tasks: 3
   artifacts:
     requirement: .ndf/features/notification-center/requirement.md
     proposal: .ndf/features/notification-center/proposal.md
