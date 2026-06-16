@@ -145,7 +145,7 @@ func wrapStreamForBilling(
 			}
 			// No final usage seen (stream interrupted / ctx cancelled / no Usage in
 			// final chunk) — holder cannot be populated with real cost, so it stays
-			// at zero and finalizeReservationIfNeeded falls back to EstimatedCredits.
+			// unset and finalizeReservationIfNeeded refunds the reservation (fix ③).
 		}
 		// Persist the billing record before closing dst.
 		// Closing dst is the synchronisation point for callers that drain the
@@ -549,20 +549,20 @@ func publishCostToHolder(ctx context.Context, record *model.UsageRecord, calc pr
 	// Only LLM paths produce token-based costs that matter for reconciliation.
 	// Non-LLM calls (OCR/ASR/embed) still go through the holder path — if the
 	// calculator returns a non-zero cost we accept it; if not, the holder stays
-	// at zero and finalizeReservationIfNeeded falls back to EstimatedCredits.
+	// unset and finalizeReservationIfNeeded refunds the reservation (fix ③).
 	// CalculateCostWithCache bills the cache-HIT subset at the discounted cached
 	// input price when set; CachedPromptTokens==0 or NULL cached price ⇒
 	// byte-identical to CalculateCost (zero regression for the reconcile holder).
 	costCents, err := calc.CalculateCostWithCache(ctx, record.ServiceType, record.Provider, record.Model,
 		record.PromptTokens, record.CompletionTokens, record.CachedPromptTokens)
 	if err != nil {
-		// Pricing rule miss or DB error — leave holder unset so caller falls back.
+		// Pricing rule miss or DB error — leave holder unset so the caller refunds.
 		return
 	}
 	// F-7: call Set() so the holder's set flag is raised even when costCents==0.
-	// This distinguishes "Billing computed cost=0 (e.g. 0/0 pricing rule)" from
-	// "Billing never ran / pricing rule miss" — only the former should use 0,
-	// the latter should fall back to EstimatedCredits.
+	// This distinguishes "Billing computed cost=0 (e.g. 0/0 pricing rule)" → use 0
+	// from "Billing never ran / pricing rule miss" → holder unset → caller refunds
+	// (fix ③). Only the former reconciles as 0.
 	holder.Set(costCents)
 }
 

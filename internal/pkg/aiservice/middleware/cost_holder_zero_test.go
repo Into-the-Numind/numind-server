@@ -193,15 +193,17 @@ func TestFinalize_UsesZeroCostFromHolder(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 2b. Chain-integration: EstimatedCredits used when holder Set was never called
+// 2b. Chain-integration: holder unset with usage → REFUND (fix ③)
 // ---------------------------------------------------------------------------
 
-// TestFinalize_FallsBackWhenHolderUnset verifies that when a *finalCostHolder
-// exists in ctx (reservation was created) but Set was never called (e.g.
-// pricing rule miss / Billing error path), FinalizeReservation falls back to
-// fi.EstimatedCredits. This is the correct behaviour for the "unknown cost"
-// scenario — only the "known zero cost" case should use 0.
-func TestFinalize_FallsBackWhenHolderUnset(t *testing.T) {
+// TestFinalize_RefundsWhenHolderUnsetWithUsage verifies fix ③: when a
+// *finalCostHolder exists (reservation created) but Set was never called AND
+// token usage is present, the call genuinely could not be priced (pricing_rule
+// miss). The reconcile must REFUND the reservation, NOT charge a fabricated
+// fallback. The pre-fix behaviour — FinalizeReservation(fi.EstimatedCredits),
+// where EstimatedCredits carried ReservedOutputTokens (a token count) — is
+// exactly what billed 64000 credits on the customer's image request.
+func TestFinalize_RefundsWhenHolderUnsetWithUsage(t *testing.T) {
 	renderedMsgs := []aiservice.ChatMessage{
 		{Role: aiservice.MessageRoleUser, Content: aiservice.MessageContent{Text: "unset holder test"}},
 	}
@@ -255,14 +257,16 @@ func TestFinalize_FallsBackWhenHolderUnset(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if capturingSvc.finalizeCalls != 1 {
-		t.Errorf("FinalizeReservation calls: got %d, want 1", capturingSvc.finalizeCalls)
+	// Fix ③: holder unset + usage present → refund, never charge a fallback.
+	if capturingSvc.finalizeCalls != 0 {
+		t.Errorf("FinalizeReservation calls: got %d, want 0 (must refund, not charge fallback)", capturingSvc.finalizeCalls)
 	}
-
-	// When holder.Set was never called, FinalizeReservation must use EstimatedCredits.
-	if capturedActualCredits != estimatedCredits {
-		t.Errorf("FinalizeReservation actualCredits = %d, want %d (EstimatedCredits fallback when holder unset)",
-			capturedActualCredits, estimatedCredits)
+	if capturingSvc.refundCalls != 1 {
+		t.Errorf("Refund calls: got %d, want 1 (pricing unavailable → refund)", capturingSvc.refundCalls)
+	}
+	// onFinalize must not have fired (no charge happened).
+	if capturedActualCredits != -1 {
+		t.Errorf("FinalizeReservation should not have been called, but captured actualCredits = %d", capturedActualCredits)
 	}
 }
 

@@ -2,6 +2,8 @@ package pricing
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -23,6 +25,10 @@ type stubPricingStore struct {
 	pricingRules map[string]*model.PricingRule
 	// pricingErr overrides the error returned by GetPricingRule (nil = use map).
 	pricingErr error
+	// pricingByModelErr overrides the error returned by GetPricingRuleByModel
+	// only (nil = use map). Lets a test make the exact lookup miss (NotFound)
+	// while the service_type-agnostic fallback hits a real DB error.
+	pricingByModelErr error
 
 	// pricingRuleTiers is keyed by rule ID.
 	pricingRuleTiers map[uint][]model.PricingRuleTier
@@ -33,9 +39,10 @@ type stubPricingStore struct {
 	providerModelIDErr error
 
 	// Call counters (atomic so concurrent tests are safe).
-	getPricingRuleCalls      atomic.Int64
-	getProviderModelIDCalls  atomic.Int64
-	getPricingRuleTiersCalls atomic.Int64
+	getPricingRuleCalls        atomic.Int64
+	getProviderModelIDCalls    atomic.Int64
+	getPricingRuleTiersCalls   atomic.Int64
+	getPricingRuleByModelCalls atomic.Int64
 }
 
 func (s *stubPricingStore) GetPricingRule(_ context.Context, serviceType, provider, modelName string) (*model.PricingRule, error) {
@@ -68,6 +75,28 @@ func (s *stubPricingStore) GetProviderModelID(_ context.Context, modelKey, provi
 		return id, nil
 	}
 	return "", gorm.ErrRecordNotFound
+}
+
+// GetPricingRuleByModel scans pricingRules for any entry whose key matches
+// "*|<provider>|<model>" regardless of service_type — mirrors the DB query's
+// service_type independence (keys are "serviceType|provider|model"). Newest-wins
+// is not modelled (the stub holds at most one row per key); tests needing
+// multi-row precedence assert at the store level.
+func (s *stubPricingStore) GetPricingRuleByModel(_ context.Context, provider, modelName string) (*model.PricingRule, error) {
+	s.getPricingRuleByModelCalls.Add(1)
+	if s.pricingByModelErr != nil {
+		return nil, s.pricingByModelErr
+	}
+	if s.pricingErr != nil {
+		return nil, s.pricingErr
+	}
+	suffix := "|" + provider + "|" + modelName
+	for key, rule := range s.pricingRules {
+		if strings.HasSuffix(key, suffix) && rule.IsActive {
+			return rule, nil
+		}
+	}
+	return nil, gorm.ErrRecordNotFound
 }
 
 // flatRule builds a flat (non-tiered) PricingRule for tests.
@@ -334,6 +363,88 @@ func TestCalculateCost_ProviderModelIDFallback(t *testing.T) {
 	}
 	if got := store.getProviderModelIDCalls.Load(); got != 1 {
 		t.Errorf("expected 1 GetProviderModelID call, got %d", got)
+	}
+}
+
+// TestCalculateCost_VisionFallsBackToChat reproduces the multimodal-billing-fix
+// bug (customer: one chatbot image upload charged 64000 credits).
+//
+// The gateway's classifyServiceType tags ANY request carrying an image_url as
+// service_type="llm_vision". But a unified model like claude-opus-4-6 only has
+// an "llm_chat" pricing_rule (its price is per-token regardless of modality).
+// With service_type baked into the pricing key, the llm_vision lookup misses →
+// CalculateCost returns ErrRecordNotFound → the reconcile fallback charges the
+// worst-case (MaxOutputTokens/2 ≈ 64000 tokens treated as credits).
+//
+// After fix ①, pricing resolves by (provider, model) regardless of service_type,
+// so the image request bills the model's real token cost (~12 cents), not 64000.
+func TestCalculateCost_VisionFallsBackToChat(t *testing.T) {
+	// claude-opus-4-6 real dmxapi price: 24.82 元/M input, 124.1 元/M output.
+	rule := flatRule(78, 24.82, 124.1, 24.82, 124.1)
+	store := &stubPricingStore{
+		pricingRules: map[string]*model.PricingRule{
+			// Unified model: priced under llm_chat ONLY. No llm_vision row.
+			"llm_chat|dmxapi|claude-opus-4-6": rule,
+		},
+	}
+
+	calc := NewCalculator(store)
+	// The forensic request: 2178 input + 504 output tokens.
+	cost, err := calc.CalculateCost(context.Background(), "llm_vision", "dmxapi",
+		"claude-opus-4-6", 2178, 504)
+	if err != nil {
+		t.Fatalf("llm_vision should fall back to the model's llm_chat price, got error %v", err)
+	}
+	// 2178/1e6*24.82 + 504/1e6*124.1 = 0.1166 元 → 12 cents (NOT 64000).
+	const want = int64(12)
+	if cost != want {
+		t.Errorf("cost = %d cents, want %d (real claude-opus-4-6 token cost)", cost, want)
+	}
+}
+
+// TestCalculateCost_VisionModelExactStillWins guards fix ① against regressing
+// dedicated vision models (qwen-vl / doubao-vision): when an EXACT
+// (llm_vision, provider, model) pricing row exists, it must win and the
+// service_type-agnostic fallback must NOT fire.
+func TestCalculateCost_VisionModelExactStillWins(t *testing.T) {
+	rule := flatRule(42, 0.15, 1.5, 0.15, 1.5) // qwen3-vl-flash real vision price
+	store := &stubPricingStore{
+		pricingRules: map[string]*model.PricingRule{
+			"llm_vision|ali-dashscope|qwen3-vl-flash": rule,
+		},
+	}
+
+	calc := NewCalculator(store)
+	cost, err := calc.CalculateCost(context.Background(), "llm_vision", "ali-dashscope",
+		"qwen3-vl-flash", 1_000_000, 1_000_000)
+	if err != nil {
+		t.Fatalf("exact llm_vision row should resolve, got %v", err)
+	}
+	const want = int64(165) // (0.15+1.5)*100
+	if cost != want {
+		t.Errorf("cost = %d, want %d (exact vision price)", cost, want)
+	}
+	if got := store.getPricingRuleByModelCalls.Load(); got != 0 {
+		t.Errorf("agnostic fallback must NOT fire on exact match; GetPricingRuleByModel called %d times", got)
+	}
+}
+
+// TestCalculateCost_AgnosticDBErrorPropagates verifies that a real (non-NotFound)
+// DB error on the service_type-agnostic fallback path is surfaced rather than
+// silently downgraded to ErrRecordNotFound (which would bill ¥0). Guards the
+// ICalculator contract on the fix ① path (S4 review P1).
+func TestCalculateCost_AgnosticDBErrorPropagates(t *testing.T) {
+	transient := errors.New("connection refused")
+	store := &stubPricingStore{
+		pricingRules:      map[string]*model.PricingRule{}, // exact lookup → NotFound
+		pricingByModelErr: transient,                       // agnostic lookup → real DB error
+	}
+
+	calc := NewCalculator(store)
+	_, err := calc.CalculateCost(context.Background(), "llm_vision", "dmxapi",
+		"claude-opus-4-6", 2178, 504)
+	if !errors.Is(err, transient) {
+		t.Fatalf("agnostic DB error must propagate, got %v", err)
 	}
 }
 

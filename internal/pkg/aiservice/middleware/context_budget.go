@@ -507,8 +507,9 @@ func ContextBudgetCredits(deps Deps) Middleware {
 			// back to ReservedOutputTokens when the estimator returns no data.
 			completionTokens := effectiveCompletionTokens(ctx, deps, route, result.Policy.ReservedOutputTokens)
 			var reservationID uint64
+			var reservedCredits int64
 			if result.Policy.ChargeUser && deps.CreditService != nil && userID != 0 {
-				reservationID, err = doReserveBudget(ctx, deps, result, userID, route, completionTokens)
+				reservationID, reservedCredits, err = doReserveBudget(ctx, deps, result, userID, route, completionTokens)
 				if err != nil {
 					// Insufficient credits or reserve error — don't call provider.
 					return nil, fmt.Errorf("ContextBudgetCredits: %w", err)
@@ -604,7 +605,7 @@ func ContextBudgetCredits(deps Deps) Middleware {
 			}
 
 			// Build the base FinalizeInput that will be used by the finalizer.
-			baseFI := buildBaseFinalizeInput(result, reservationID)
+			baseFI := buildBaseFinalizeInput(result, reservationID, reservedCredits)
 
 			// ----------------------------------------------------------------
 			// Step 7: call next (Billing → Retry → Adapter).
@@ -653,15 +654,17 @@ func ContextBudgetCredits(deps Deps) Middleware {
 // No-op when ReservationID == 0 (legacy-tier user / ChargeUser=false / no
 // user context).
 //
-// Actual cost resolution (spec §6.4):
+// Actual cost resolution (spec §6.4, fix ③):
 //   - Reads the *finalCostHolder injected by ContextBudgetCredits step 5b.
 //   - If Billing middleware called holder.Set(c) (from pricing rule + actual
 //     token counts), that value — including 0 — is used as actualCredits for
 //     reconcile. A 0/0 pricing rule legitimately produces cost=0 and must NOT
-//     fall back to EstimatedCredits (F-7 fix).
-//   - Falls back to fi.EstimatedCredits only when the holder is absent or Set
-//     was never called (e.g. legacy non-streaming paths, pricing-rule miss, or
-//     error paths where Billing never computed a cost).
+//     be treated as "unpriced" (F-7 fix).
+//   - Holder absent / Set never called (pricing-rule miss or stream truncated)
+//     → REFUND the reservation; never charge a fabricated fallback (the old
+//     fi.EstimatedCredits=ReservedOutputTokens path is what billed 64000). Log
+//     ERROR when token usage was present (real pricing config gap) vs WARN when
+//     there was no usage (benign truncation / calibration skipped).
 //
 // Failures are logged warn — finalize must never propagate errors to the caller.
 func finalizeReservationIfNeeded(ctx context.Context, deps Deps, fi FinalizeInput) {
@@ -693,17 +696,47 @@ func finalizeReservationIfNeeded(ctx context.Context, deps Deps, fi FinalizeInpu
 		return
 	}
 
-	// Resolve the actual cost: prefer the value set by Billing middleware via
-	// the finalCostHolder (real pricing-rule cost, including 0). Falls back to
-	// EstimatedCredits only when the holder is absent or Set was never called.
-	// F-7: use ok flag from Get() instead of CostCents > 0 so that a legitimately
-	// zero-cost call (0/0 pricing rule) is reconciled as 0 rather than falling
-	// back to the EstimatedCredits placeholder.
-	actualCredits := fi.EstimatedCredits
+	// Resolve the actual cost from the finalCostHolder set by the Billing
+	// middleware (real pricing-rule cost, including a legitimate 0 from a 0/0
+	// rule). F-7: Get()'s ok flag — not CostCents > 0 — distinguishes "Billing
+	// computed 0" (reconcile as 0) from "holder never Set" (pricing missed).
+	var actualCredits int64
+	costResolved := false
 	if holder := finalCostHolderFromCtx(ctx); holder != nil {
 		if c, ok := holder.Get(); ok {
 			actualCredits = c
+			costResolved = true
 		}
+	}
+
+	// Fix ③: holder unset → DO NOT charge a fabricated fallback (the old
+	// EstimatedCredits=ReservedOutputTokens path is what billed 64000 credits).
+	// We cannot price the call, so refund the reservation. Distinguish the cause
+	// for ops (P1-2): no token usage (stream truncated / calibration skipped) is
+	// benign; usage present but unpriced is a real pricing_rule config gap that
+	// must be loud so the missing rule gets added (fix ① makes this rare).
+	if !costResolved {
+		hasUsage := fi.ActualPromptTokens > 0 || fi.ActualCompletionTokens > 0
+		if fi.CalibrationSkipped || !hasUsage {
+			deps.warnw("ContextBudgetCredits: reconcile without usage data — refunding (benign)",
+				"reservation_id", fi.ReservationID,
+				"event_id", fi.EventID,
+			)
+		} else {
+			deps.errorw("ContextBudgetCredits: pricing unavailable despite token usage — REFUNDING, not charging fallback (pricing_rule config gap)",
+				"reservation_id", fi.ReservationID,
+				"event_id", fi.EventID,
+				"prompt_tokens", fi.ActualPromptTokens,
+				"completion_tokens", fi.ActualCompletionTokens,
+			)
+		}
+		if err := deps.CreditService.Refund(ctx, fi.ReservationID, "pricing_unavailable"); err != nil {
+			deps.warnw("ContextBudgetCredits: Refund error (pricing unavailable)",
+				"reservation_id", fi.ReservationID,
+				"error", err,
+			)
+		}
+		return
 	}
 
 	if err := deps.CreditService.FinalizeReservation(ctx, fi.ReservationID, actualCredits, "context_budget_reconcile"); err != nil {
@@ -743,14 +776,35 @@ func effectiveCompletionTokens(ctx context.Context, deps Deps, route *registry.R
 	return tokens
 }
 
+// defaultBillOnlyReservedOutputTokens caps the bill-only cold-start output-token
+// reservation (fix ②). The pre-fix default of MaxOutputTokens/2 means a 128K
+// model reserves 64000 tokens — which, priced at a model like claude, is ~796
+// credits held for a request whose real output is a few hundred tokens. That
+// gross over-reservation is also what the reconcile fallback bug amplified into
+// the 64000-credit overcharge. This ceiling covers the vast majority of chat /
+// agent completions; the per-(provider,model) historical estimator
+// (effectiveCompletionTokens) refines the reserve downward toward the real
+// average once data exists, and Reconcile settles against actual usage — i.e.
+// the reserve is an estimate (a temporary hold), never the final charge.
+//
+// Deliberately a flat constant, not config: it gates billing, so a hot-editable
+// value carries business risk. If a future operation needs a different cold-start
+// ceiling (e.g. long-output agent_run vs short chatbot_chat), extend this into a
+// map[operation]int here rather than wiring it through config.
+const defaultBillOnlyReservedOutputTokens = 8192
+
 // synthBillOnlyResult builds a PrepareResult for bill-only mode: no compression,
 // no message replacement (Messages=nil → Step 4 keeps the caller's original
 // messages), ChargeUser=true, and a direct token estimate. The estimate is
 // approximate; Reconcile corrects it against the provider's actual token usage.
 func synthBillOnlyResult(operation string, route *registry.ResolvedRoute, messages []aiservice.ChatMessage) *PrepareResult {
-	reserved := route.Capability.MaxOutputTokens / 2
+	// reserved = min(MaxOutputTokens/2, 8192): keep the historical "half the
+	// window" safety for small-window models, but cap large-window models so a
+	// cold-start image/agent turn no longer freezes ~796 credits. MaxOutputTokens
+	// unknown (0) or negative → fall back to the 8192 ceiling.
+	reserved := min(route.Capability.MaxOutputTokens/2, defaultBillOnlyReservedOutputTokens)
 	if reserved <= 0 {
-		reserved = 2048
+		reserved = defaultBillOnlyReservedOutputTokens
 	}
 	return &PrepareResult{
 		NormalizedOp:   operation,
@@ -794,6 +848,11 @@ func billOnlyPromptEstimate(messages []aiservice.ChatMessage) int {
 //
 // completionTokens is the value computed by effectiveCompletionTokens (caller
 // passes it in so the same value can be mirrored into budgetMetadata).
+// doReserveBudget reserves credits and returns (reservationID, reservedCredits,
+// err). reservedCredits is the real pre-call credit estimate that was deducted
+// (precheck.EstimatedCredits) — a CREDIT amount, threaded into FinalizeInput so
+// the reconcile/event layer records the true reserve (not a token count). It is
+// 0 when no reservation was created (SkipDeduction / nil reservation).
 func doReserveBudget(
 	ctx context.Context,
 	deps Deps,
@@ -801,7 +860,7 @@ func doReserveBudget(
 	userID uint,
 	route *registry.ResolvedRoute,
 	completionTokens int,
-) (uint64, error) {
+) (uint64, int64, error) {
 	precheckIn := credit.BudgetPrecheckInput{
 		UserID:                    userID,
 		Operation:                 result.NormalizedOp,
@@ -821,17 +880,17 @@ func doReserveBudget(
 	// only has userID in ctx; the credit facade resolves it via the user store.
 	user, err := deps.CreditService.LoadUser(ctx, userID)
 	if err != nil {
-		return 0, fmt.Errorf("LoadUser: %w", err)
+		return 0, 0, fmt.Errorf("LoadUser: %w", err)
 	}
 
 	precheck, err := deps.CreditService.CheckAndEstimateBudget(ctx, user, precheckIn)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	// SkipDeduction: legacy-tier user — no reservation.
 	if precheck.SkipDeduction {
-		return 0, nil
+		return 0, 0, nil
 	}
 
 	reserveIn := credit.BudgetReservationInput{
@@ -841,17 +900,26 @@ func doReserveBudget(
 	}
 	rsv, err := deps.CreditService.ReserveBudget(ctx, user, reserveIn)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if rsv == nil {
-		return 0, nil
+		return 0, 0, nil
 	}
-	return rsv.ID, nil
+	return rsv.ID, precheck.EstimatedCredits, nil
 }
 
 // buildBaseFinalizeInput builds the common FinalizeInput skeleton from a
-// PrepareResult and reservation ID. The caller fills in Status/Refund/tokens.
-func buildBaseFinalizeInput(result *PrepareResult, reservationID uint64) FinalizeInput {
+// PrepareResult, reservation ID, and the real reserved credit amount. The caller
+// fills in Status/Refund/tokens.
+//
+// reservedCredits is the actual credits held by Reserve (precheck.EstimatedCredits)
+// — a CREDIT value. Fix ③ replaced the previous `int64(ReservedOutputTokens)`,
+// which put a TOKEN COUNT into a credits field: on a pricing miss the reconcile
+// fallback then charged that count as credits (the 64000 overcharge), and the
+// context_budget_event ReconcileDelta (= cost − EstimatedCredits) mixed cents with
+// tokens. With the real reserve here, EstimatedCredits is observability-only —
+// finalizeReservationIfNeeded refunds (never charges it) when the holder is unset.
+func buildBaseFinalizeInput(result *PrepareResult, reservationID uint64, reservedCredits int64) FinalizeInput {
 	actions := make([]string, 0, len(result.Plan.Actions))
 	for _, a := range result.Plan.Actions {
 		if a.Type != contextbudget.ActionKeep {
@@ -861,7 +929,7 @@ func buildBaseFinalizeInput(result *PrepareResult, reservationID uint64) Finaliz
 	return FinalizeInput{
 		EventID:            result.EventID,
 		ReservationID:      reservationID,
-		EstimatedCredits:   int64(result.Policy.ReservedOutputTokens), // approximation; biz layer recalculates
+		EstimatedCredits:   reservedCredits,
 		CompressionActions: actions,
 	}
 }

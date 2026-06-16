@@ -88,7 +88,13 @@ func TestBillOnly_Integration_PoolThreadingAndPerCallBilling(t *testing.T) {
 		Logger:        &mockLogger{},
 		Clock:         fixedClock{t: time.Now()},
 	}
-	adapter := Handler(func(_ context.Context, _ *registry.ResolvedRoute, req interface{}) (interface{}, error) {
+	adapter := Handler(func(ctx context.Context, _ *registry.ResolvedRoute, req interface{}) (interface{}, error) {
+		// Stand in for the Billing middleware (omitted from this chain): publish a
+		// resolved cost to the holder so reconcile finalizes. Post fix ③, an unset
+		// holder means "could not price" → refund, not charge a fallback.
+		if h := finalCostHolderFromCtx(ctx); h != nil {
+			h.Set(3)
+		}
 		return &aiservice.ChatResponse{
 			Content: "ok",
 			Usage:   aiservice.TokenUsage{PromptTokens: 50, CompletionTokens: 10, TotalTokens: 60},
