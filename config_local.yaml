@@ -9,6 +9,8 @@ features:
     enabled: true             # 通知中心（铃铛 + 公告/问卷），dev/local 开启
   document_system:
     enabled: true             # 文档系统 v1（agent 产物在线编辑/导出），local 开启
+  meeting_copilot:
+    enabled: true             # 会议副驾（实时转写 + 反馈 + AI 纪要），内部试用，local 开启
 
 # 后台管理系统配置
 admin:

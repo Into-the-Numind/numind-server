@@ -415,6 +415,20 @@ func autoMigrate(db *gorm.DB) error {
 		}
 	}
 
+	// meeting-copilot: 条件 AutoMigrate —— 仅 features.meeting_copilot.enabled 开启时建 4 张 meeting 表。
+	// prod 默认 flag off → 表永不在 prod 出现，保证合 develop 不影响 prod 打 tag 部署。
+	// 权威 schema 见 migrations/20260617_160000_create_meeting_copilot.sql。
+	if viper.GetBool("features.meeting_copilot.enabled") {
+		if err := db.AutoMigrate(
+			&model.MeetingSession{},
+			&model.MeetingSegment{},
+			&model.MeetingFeedback{},
+			&model.MeetingPreset{},
+		); err != nil {
+			return fmt.Errorf("failed to migrate meeting copilot tables: %w", err)
+		}
+	}
+
 	log.Infow("All database schema migration completed")
 
 	// 3. 迁移后验证字符集

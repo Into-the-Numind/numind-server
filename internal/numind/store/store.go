@@ -60,6 +60,7 @@ type IStore interface {
 	Marketplaces() IMarketplaceStore         // agent-mode-v2-skill-marketplace — skill_marketplace + skill_subscription
 	Announcements() IAnnouncementStore       // notification-center — 公告/问卷通知中心
 	Documents() IDocumentStore               // document-system — AI 生成产物的可编辑文档
+	Meetings() IMeetingStore                 // meeting-copilot — 会议副驾会话/分段/反馈/预设
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -298,4 +299,9 @@ func (ds *datastore) Announcements() IAnnouncementStore {
 // Documents 返回一个实现了 IDocumentStore 接口的实例（document-system）。
 func (ds *datastore) Documents() IDocumentStore {
 	return newDocumentStore(ds.db)
+}
+
+// Meetings 返回一个实现了 IMeetingStore 接口的实例（meeting-copilot）。
+func (ds *datastore) Meetings() IMeetingStore {
+	return newMeetingStore(ds.db)
 }

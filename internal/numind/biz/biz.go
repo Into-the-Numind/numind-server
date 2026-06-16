@@ -25,6 +25,7 @@ import (
 	documentbiz "numind-server/internal/numind/biz/document"
 	kbbiz "numind-server/internal/numind/biz/knowledgebase"
 	"numind-server/internal/numind/biz/llmrouter"
+	meetingbiz "numind-server/internal/numind/biz/meeting"
 	"numind-server/internal/numind/biz/membership"
 	"numind-server/internal/numind/biz/memory"
 	"numind-server/internal/numind/biz/monitor"
@@ -80,6 +81,7 @@ type IBiz interface {
 	Monitor() monitor.IMonitorBiz                   // 博主监控服务
 	KnowledgeBase() kbbiz.IKnowledgeBaseBiz         // 知识库服务
 	Chatbot() chatbotbiz.IChatbotBiz                // 智能体服务
+	Meeting() meetingbiz.IMeetingBiz                // 会议副驾服务（meeting-copilot）
 	LLMRouter() *llmrouter.Router                   // LLM 路由服务
 	Agents() agent.AgentRunner                      // Agent Runtime（agent-mode #2）
 	AgentTools() agent.AgentToolRegistry            // Agent Tool Registry（agent-mode #3）
@@ -107,6 +109,7 @@ type biz struct {
 	monitorService    monitor.IMonitorBiz
 	kbService         kbbiz.IKnowledgeBaseBiz
 	chatbotService    chatbotbiz.IChatbotBiz
+	meetingService    meetingbiz.IMeetingBiz // 会议副驾服务（meeting-copilot）
 	llmRouterSvc      *llmrouter.Router
 	agentRunner       agent.AgentRunner
 	agentToolRegistry agent.AgentToolRegistry
@@ -661,6 +664,10 @@ func NewBiz(ds store.IStore) *biz {
 	chatbotRetrieve := retrieve.NewService(vStore, salesragservice.NewRouterRewriter(llmRouter, "free"), nil)
 	b.chatbotService = chatbotbiz.NewChatbotBiz(ds, chatbotRetrieve)
 
+	// 初始化会议副驾服务（meeting-copilot）。LLM/ASR 统一走 aiservice Gateway；
+	// 内部试用「仅记录用量、不扣费、不拦截」由 biz/meeting 的 internalCallCtx 保证。
+	b.meetingService = meetingbiz.NewMeetingBiz(ds)
+
 	// 初始化博主监控服务
 	monitorCooldown := monitor.NewCooldownManager(
 		viper.GetInt("monitor.cooldown.check_minutes"),
@@ -821,6 +828,11 @@ func (b *biz) KnowledgeBase() kbbiz.IKnowledgeBaseBiz {
 // Chatbot 返回智能体服务实例.
 func (b *biz) Chatbot() chatbotbiz.IChatbotBiz {
 	return b.chatbotService
+}
+
+// Meeting 返回会议副驾服务实例（meeting-copilot）。
+func (b *biz) Meeting() meetingbiz.IMeetingBiz {
+	return b.meetingService
 }
 
 // Agents 返回 Agent Runtime 实例（agent-mode #2 runtime-skeleton）。
