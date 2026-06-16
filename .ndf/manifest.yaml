@@ -4942,11 +4942,13 @@ features:
   track: hotfix
   description: '设置页让每个用户编辑自己的昵称并保存到数据库，限制 10 个字符以内。复用 company-name-edit-modal 弹窗模式(maxlength + 计数器 + IME 组合回车守卫)，昵称编辑对所有账户(含子账户)可见。后端 UpdateUserProfileRequest.Nickname 校验由 stringlength(1|100) 收紧到 (1|10)。'
   classification_reason: 'Hotfix: 后端链路全就绪(model.Nickname size:100 / PUT /v1/users/me UpdateProfile / biz UpdateUserProfile / store UpdateUser)，几乎纯前端 UI。无 DB schema 变更(nickname 列已存在)/无新 API 端点(复用现有)/无新外部服务/影响文件 ≤3(SettingsView.vue + v1/user.go + 测试)/非支付权限。非线上 bug(新功能)，不强制复现测试，但补最小覆盖测试(前端弹窗交互 spec + 后端校验 go test)。'
-  last_updated_by: ai-h3
-  last_updated_at: '2026-06-16T19:06:00+08:00'
+  last_updated_by: ai-prod
+  last_updated_at: '2026-06-16T22:00:00+08:00'
   created_at: '2026-06-16T18:31:00+08:00'
-  status: active
-  stage: H3
+  completed_at: '2026-06-16T22:00:00+08:00'
+  status: completed
+  stage: completed
+  prod: '前端 v1.0.35-9c0c521(昵称UI) + 后端 v2.1.46-cb03bd66(昵称校验100→10+空串守卫) 经 prodrel cherry-pick 上线; settings-row-order 行序经 web v1.0.36-cefccd9 补部署。prod 全部上线并核验(容器实跑 sha + youshu.asia/health OK)。'
   repos: [numind-web-v3, numind-server]
   branches: {numind-web-v3: develop (merged via ndf-done), numind-server: develop (merged via ndf-done)}
   worktrees: {numind-web-v3: (removed by ndf-done), numind-server: (removed by ndf-done)}
