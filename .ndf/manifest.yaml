@@ -5031,17 +5031,18 @@ features:
   ndf_version: '3.0'
   description: 'agent mode 的 web_fetch 只做裸 HTTP GET(不渲染 JS/不过基础反爬), 对现代网页(JS 渲染 + Cloudflare 等基础 bot 墙)力不从心, 沦为摆设。引入自托管 crawl4ai(Docker, Playwright 真实浏览器渲染→LLM-ready markdown, Apache-2.0)作为 agent 的网页读取工具, 补强/替换 web_fetch 的开放网页读取。范围: 单页 render+extract + Langfuse trace + 软错误模式 + SSRF 防护沿用 + tool_definition 注册。明确排除: 小红书等强反爬平台数据抓取(自托管=用自家 IP/账号硬爬, 已被禁言十天验证此路不通, 需另案换策略); 多页深度 crawl(BFS/DFS)暂不做。开放问题(S2 定): 新工具替换 web_fetch 后端 vs 并存(快路径 + 渲染路径)。'
   classification_reason: 'Standard(用户 2026-06-17 直接动手确认): 新外部服务集成(crawl4ai Docker 服务)=Hotfix 第3条不满足; 影响文件>3(新工具 tool_crawl4ai.go + factory 注册 + config + 部署 compose/Dockerfile + 测试)。无 DB schema 变更(用现有 tool_definition 表注册数据行)/无新 API 端点(agent 工具内部注册非 HTTP route)/非支付权限(但涉及 SSRF, 沿用 web_fetch 两段校验)。仅后端 numind-server。'
-  last_updated_by: ai-s0
-  last_updated_at: '2026-06-17T01:18:25+0800'
+  last_updated_by: ai-s1
+  last_updated_at: '2026-06-17T01:33:59+0800'
   created_at: '2026-06-17T01:18:25+0800'
   track: standard
-  stage: S0
+  stage: S1
   status: active
   repos: [numind-server]
   branches: {numind-server: feature/crawl4ai-tool}
   worktrees: {numind-server: /private/tmp/wt-crawl4ai-tool-numind-server}
   progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
-  artifacts: {requirement: .ndf/features/crawl4ai-tool/requirement.md}
+  artifacts: {requirement: .ndf/features/crawl4ai-tool/requirement.md, proposal: .ndf/features/crawl4ai-tool/proposal.md}
   decisions:
   - 'S0 (ai 2026-06-17): 源于用户反馈 web_fetch 即便对普通网页也读不好(2026 年大量站点 JS 渲染 + Cloudflare 基础反爬) + xiaohongshu-mcp 自家账号爬小红书被禁言十天。评估 5 个开源候选(invisible_playwright/firecrawl/obscura/Scrapling/Webwright)后再评 crawl4ai: 选 crawl4ai 自托管(Apache-2.0 无 AGPL 商用包袱 + LLM-native markdown + Docker HTTP 服务接入贴合现 web_fetch)。需求拆两块: A=读好开放网页(本 feature, 低风险, 该做); B=平台数据(小红书, 排除, 换策略非换库)。'
+  - 'S1 (ai 2026-06-17): 可行性高(web_fetch 姊妹模板+SSRF 函数复用+viper config+httpclient+Langfuse span 全现成)。关键技术决策=方案 B 替换+兜底(非上轮口头的并存): web_fetch Execute 改为优先走 crawl4ai 渲染, crawl4ai 未配置/超时/报错则自动退回现有裸 HTTP 路径(零回归)。理由: 直接修复用户痛点(默认工具变好, 不靠 LLM 学会何时升级), 无双工具混淆, 优雅降级。prod 约束: 禁改 config_prod.yaml→默认 base_url 空=跳过 crawl4ai 走裸 HTTP, 运维另加配置+部署服务后自动升级=安全灰度。工作量 2-3 天含容器部署。仅 numind-server。'
   blockers: []
