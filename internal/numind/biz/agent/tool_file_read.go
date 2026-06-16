@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"path"
 	"regexp"
 	"strconv"
@@ -116,6 +117,15 @@ func extractCOSObjectKey(fileURL string) (string, bool) {
 	m := cosURLPathRE.FindStringSubmatch(fileURL)
 	if len(m) < 2 {
 		return "", false
+	}
+	// The captured path is percent-encoded in the URL. Readable object keys may
+	// carry UTF-8 (e.g. %E6%9C%AC for a Chinese name); decode back to the raw key
+	// the COS SDK expects before presigning (it re-encodes internally, so passing
+	// the encoded form would double-encode → 404). PathUnescape on a pure-ASCII key
+	// (no '%') is an identity, so legacy keys are unaffected; on a malformed escape
+	// keep the original (best-effort).
+	if decoded, err := url.PathUnescape(m[1]); err == nil {
+		return decoded, true
 	}
 	return m[1], true
 }

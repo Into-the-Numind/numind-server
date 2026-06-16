@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/util"
@@ -29,6 +30,14 @@ const maxFileBytes = 100 * 1024 * 1024
 
 // sanitizeFilenameRe matches characters that are NOT alphanumeric, dot, hyphen, or underscore.
 var sanitizeFilenameRe = regexp.MustCompile(`[^a-zA-Z0-9._-]`)
+
+// objectKeyNameRe matches characters NOT allowed in a *readable* object-key name
+// segment. Unlike sanitizeFilenameRe (ASCII-only) it KEEPS every Unicode letter and
+// digit — so an AI-chosen Chinese name like "本周工作小结.docx" survives into the COS
+// key instead of being mangled to "______.docx" — and replaces only separators,
+// punctuation, whitespace and control chars with "_". '(' and ')' are NOT letters/
+// digits, so they are still stripped: cos_resign.go's ')' link-boundary invariant holds.
+var objectKeyNameRe = regexp.MustCompile(`[^\p{L}\p{N}._-]`)
 
 // dotdotRe matches two or more consecutive dots (path traversal sequences).
 var dotdotRe = regexp.MustCompile(`\.\.+`)
@@ -53,6 +62,45 @@ func sanitizeOutputFilename(name string) string {
 		return "output"
 	}
 	return safe
+}
+
+// sanitizeObjectKeyName produces a READABLE, path-safe object-key name segment from
+// a filename, preserving Unicode letters/digits so the COS key reflects the AI's
+// content-related name (user requirement: 存到 COS 必须是相关的名字). Specifically:
+//   - chars outside [\p{L}\p{N}._-] (incl. "/" "\\" whitespace, control chars,
+//     parens) are replaced with "_"
+//   - sequences of two or more dots ("..") collapse to a single dot (anti-traversal)
+//   - the result is truncated to maxFilenameBytes bytes on a UTF-8 rune boundary
+//     (never splitting a multibyte char), then leading/trailing "_" / "." trimmed
+//   - an empty result falls back to "output"
+//
+// COS object keys are UTF-8 safe and the cos-go-sdk-v5 percent-encodes the key
+// consistently for both the request path and the signature, so multibyte names
+// round-trip through upload → presign → download. Readers that parse the key back
+// OUT of a URL string (cos_resign.go, tool_file_read.go) url.PathUnescape it first.
+func sanitizeObjectKeyName(name string) string {
+	safe := objectKeyNameRe.ReplaceAllString(name, "_")
+	safe = dotdotRe.ReplaceAllString(safe, ".")
+	safe = truncateUTF8(safe, maxFilenameBytes)
+	safe = strings.Trim(safe, "_.")
+	if safe == "" {
+		return "output"
+	}
+	return safe
+}
+
+// truncateUTF8 truncates s to at most maxBytes bytes without splitting a multibyte
+// rune (a naive s[:maxBytes] on a CJK string can land mid-rune → invalid UTF-8 in
+// the object key). Backs off to the nearest preceding rune boundary.
+func truncateUTF8(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }
 
 // userIDFromContext extracts the userID that runner.Run injects via
@@ -87,7 +135,10 @@ func uploadGeneratedFile(
 	}
 
 	userID := userIDFromContext(ctx)
-	sanitized := sanitizeOutputFilename(filename)
+	// Readable key: keep the AI's Chinese/Unicode name in the COS object key (not
+	// mangled to "______"). Display/download names already come from `filename` via
+	// the reflected Content-Disposition below; this aligns the stored key too.
+	sanitized := sanitizeObjectKeyName(filename)
 	ts := time.Now().Format("20060102-150405")
 	objectKey := fmt.Sprintf("agent-outputs/%d/%s-%s", userID, ts, sanitized)
 

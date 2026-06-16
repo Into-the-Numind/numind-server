@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -80,6 +81,36 @@ func TestResignCOSLinks_LeavesForeignAndEmptyUntouched(t *testing.T) {
 	}
 	if got := resignCOSLinksWithHost(context.Background(), "any", "", fakeSigner()); got != "any" {
 		t.Fatalf("empty host must be a no-op, got: %s", got)
+	}
+}
+
+// TestResignCOSLinks_DecodesUTF8Key locks the readable-object-key change
+// (document-editor-ux): a doc whose COS key carries a Chinese name appears
+// percent-encoded in the persisted markdown URL (%E6%9C%AC…). On re-sign the key
+// must be url.PathUnescape'd back to its raw form before handing to the COS SDK —
+// otherwise the SDK re-encodes the already-encoded key (double-encode → 404).
+// fakeSigner echoes the key/filename it receives, so we assert the DECODED key
+// and name reached it.
+func TestResignCOSLinks_DecodesUTF8Key(t *testing.T) {
+	rawName := "本周工作小结.docx"
+	rawKey := "agent-outputs/1/20260616-101010-" + rawName
+	// Tail is percent-encoded in the URL text (as a real COS download URL would be).
+	encKey := "agent-outputs/1/20260616-101010-" + url.PathEscape(rawName)
+	md := "报告：[点击下载 Word 文档](https://" + testCOSHost + "/" + encKey +
+		"?response-content-disposition=x&q-signature=OLD)"
+
+	got := resignCOSLinksWithHost(context.Background(), md, testCOSHost, fakeSigner())
+
+	// signDownload echoed the DECODED key → raw Chinese key present, not double-encoded.
+	if !strings.Contains(got, "/"+rawKey+"?") {
+		t.Fatalf("re-signed URL must carry the DECODED key %q, got: %s", rawKey, got)
+	}
+	if strings.Contains(got, "%25E6") {
+		t.Fatalf("key was double-encoded (%%25E6…) — PathUnescape missing, got: %s", got)
+	}
+	// disposition filename derived from the decoded key tail.
+	if !strings.Contains(got, "dl="+rawName) {
+		t.Fatalf("download filename must be the decoded name %q, got: %s", rawName, got)
 	}
 }
 

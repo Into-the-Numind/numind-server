@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -26,6 +27,16 @@ var cosImageExts = map[string]bool{
 	".webp": true, ".svg": true, ".bmp": true,
 }
 
+// keyTimestampPrefixRE matches the "<yyyymmdd>-<HHMMSS>-" prefix that
+// uploadGeneratedFile / run_python prepend to every object-key tail for
+// uniqueness (e.g. "20260616-101010-本周工作小结.docx"). Stripped from the
+// re-signed download filename so a reopened session shows the clean content name
+// in the Content-Disposition (and thus the artifact card), matching the
+// first-time download which already passes the clean filename. Only ONE leading
+// timestamp is removed, so a user file literally named "20260101-计划.docx"
+// keeps its own date.
+var keyTimestampPrefixRE = regexp.MustCompile(`^\d{8}-\d{6}-`)
+
 var cosLinkReCache sync.Map // host(string) -> *regexp.Regexp
 
 // cosLinkRE returns a cached regexp matching any URL on the given COS bucket
@@ -38,9 +49,12 @@ func cosLinkRE(host string) *regexp.Regexp {
 		return v.(*regexp.Regexp)
 	}
 	// '(' is intentionally NOT a boundary: COS object keys are sanitized via
-	// sanitizeOutputFilename (parens → '_'), so a key can never contain '(' or
-	// ')'. The ')' boundary therefore only ever marks the end of a markdown
-	// link. Do not relax sanitizeOutputFilename without revisiting this.
+	// sanitizeOutputFilename / sanitizeObjectKeyName (both map '(' ')' → '_', the
+	// latter because parens are not \p{L}/\p{N}), so a key can never contain '('
+	// or ')'. The ')' boundary therefore only ever marks the end of a markdown
+	// link. Readable keys may now carry percent-encoded UTF-8 (e.g. %E6%9C%AC) in
+	// the URL text — still ASCII, no parens — so the boundary is unaffected; the
+	// extracted key is url.PathUnescape'd in resignCOSLinksWithHost before signing.
 	re := regexp.MustCompile(`https://` + regexp.QuoteMeta(host) + `/[^\s)"'<>]+`)
 	cosLinkReCache.Store(host, re)
 	return re
@@ -77,10 +91,22 @@ func resignCOSLinksWithHost(ctx context.Context, markdown, host string, s cosSig
 		if objectKey == "" {
 			return match
 		}
+		// The URL text carries the key percent-encoded (readable keys may hold
+		// %E6%9C%AC… UTF-8). Decode back to the raw key the COS SDK expects — it
+		// re-encodes internally when signing, so passing the encoded form would
+		// double-encode → a 404 key. PathUnescape on a pure-ASCII key (legacy
+		// sanitizeOutputFilename output, no '%') is an identity, so legacy links
+		// are unaffected. On a malformed escape, keep the original (best-effort).
+		if decoded, err := url.PathUnescape(objectKey); err == nil {
+			objectKey = decoded
+		}
 		name := objectKey
 		if i := strings.LastIndexByte(objectKey, '/'); i >= 0 {
 			name = objectKey[i+1:]
 		}
+		// Strip the system "<ts>-" prefix so the reflected download filename (and the
+		// reopened-session artifact card, which reads it) shows the clean name.
+		name = keyTimestampPrefixRE.ReplaceAllString(name, "")
 		var (
 			signed string
 			err    error

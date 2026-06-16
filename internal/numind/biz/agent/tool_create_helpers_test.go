@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -56,6 +57,77 @@ func TestSanitizeOutputFilename_OnlySpecialChars(t *testing.T) {
 	// single underscore is the boundary case — sanitize keeps it but equals "_"
 	// which is remapped to "output"
 	assert.Equal(t, "output", got)
+}
+
+func TestSanitizeObjectKeyName_PreservesUnicode(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		// Chinese letters/digits survive (the whole point of the readable-key change).
+		{"本周工作小结.docx", "本周工作小结.docx"},
+		{"Q3销售复盘报告.docx", "Q3销售复盘报告.docx"},
+		// Space → "_"; Chinese preserved around it.
+		{"Q3 销售复盘.docx", "Q3_销售复盘.docx"},
+		// Plain ASCII unchanged (parity with sanitizeOutputFilename for safe names).
+		{"report-2026.csv", "report-2026.csv"},
+		// Parens (ASCII and full-width) are not \p{L}/\p{N} → "_"; protects the
+		// ')' link-boundary invariant in cos_resign.go. Leading "_" (from the
+		// opening paren) is then trimmed by strings.Trim(safe, "_.").
+		{"(草稿)报告.docx", "草稿_报告.docx"},
+		{"（草稿）报告.docx", "草稿_报告.docx"},
+		// Path traversal: slash → "_", ".." collapsed to "." (same as ASCII path).
+		{"../etc/passwd", "etc_passwd"},
+		{"/abs/路径.txt", "abs_路径.txt"},
+	}
+	for _, tt := range tests {
+		got := sanitizeObjectKeyName(tt.input)
+		assert.Equal(t, tt.want, got, "input=%q", tt.input)
+	}
+}
+
+func TestSanitizeObjectKeyName_Empty(t *testing.T) {
+	assert.Equal(t, "output", sanitizeObjectKeyName(""))
+	assert.Equal(t, "output", sanitizeObjectKeyName("___"))
+	assert.Equal(t, "output", sanitizeObjectKeyName("。。")) // full-width dots → "_" → trimmed
+}
+
+func TestSanitizeObjectKeyName_TruncatesOnRuneBoundary(t *testing.T) {
+	// 67 Chinese runes = 201 bytes > maxFilenameBytes(200); must back off to 66
+	// runes = 198 bytes and stay valid UTF-8 (never split a multibyte rune).
+	long := strings.Repeat("本", 67)
+	got := sanitizeObjectKeyName(long)
+	assert.LessOrEqual(t, len(got), maxFilenameBytes)
+	assert.True(t, utf8.ValidString(got), "truncated key must be valid UTF-8")
+	assert.Equal(t, strings.Repeat("本", 66), got)
+}
+
+func TestTruncateUTF8(t *testing.T) {
+	assert.Equal(t, "abc", truncateUTF8("abc", 10))    // shorter than max → unchanged
+	assert.Equal(t, "abcde", truncateUTF8("abcde", 5)) // exactly max → unchanged
+	assert.Equal(t, "ab", truncateUTF8("abcde", 2))    // ASCII cut
+	assert.Equal(t, "本", truncateUTF8("本本", 4))        // 6 bytes → 4 max → 1 rune (3 bytes)
+	assert.True(t, utf8.ValidString(truncateUTF8("本本本", 5)))
+}
+
+// TestUploadGeneratedFile_ChineseNameInKey verifies the AI's Chinese filename
+// reaches the COS object key (not mangled to "______"), satisfying the user's
+// requirement that documents stored to COS carry a content-related name.
+func TestUploadGeneratedFile_ChineseNameInKey(t *testing.T) {
+	ctx := middleware.NewContextWithUserID(context.Background(), 7)
+	data := []byte("# 本周工作小结\n\n完成了文档系统。")
+	result, err := uploadGeneratedFile(ctx, data, "text/markdown", "本周工作小结.md", "md")
+	require.NoError(t, err)
+
+	var out fileCreateOutput
+	require.NoError(t, unmarshalFileCreateOutput(result, &out))
+
+	// Object key (in the placeholder URL when COS disabled) keeps the Chinese name.
+	assert.Contains(t, out.URL, "agent-outputs/7/", "URL should contain userID segment")
+	assert.Contains(t, out.URL, "本周工作小结.md", "COS key must carry the readable Chinese name")
+	assert.NotContains(t, out.URL, "______", "Chinese must NOT be mangled to underscores")
+	// Filename field stays the exact original (drives download disposition + display).
+	assert.Equal(t, "本周工作小结.md", out.Filename)
 }
 
 func TestUserIDFromContext_WithValue(t *testing.T) {
