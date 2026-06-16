@@ -66,7 +66,9 @@ type UpdateUserRequest struct {
 
 // UpdateUserProfileRequest 指定了修改用户个人信息的请求参数
 type UpdateUserProfileRequest struct {
-	Nickname  *string `json:"nickname" valid:"stringlength(1|100)"`
+	// Nickname 昵称：nil=不修改。上限 10 字符（产品约束，与前端 maxlength 一致）；
+	// govalidator stringlength 按 rune 计数，故 10 = 10 个汉字/字符。DB 列 size:100 为安全上限不变。
+	Nickname  *string `json:"nickname" valid:"stringlength(1|10)"`
 	AvatarURL *string `json:"avatar_url" valid:"stringlength(1|512)"`
 	// CompanyName 机构品牌名（org-branding）：nil=不修改，传空串=清空回兜底"有数AI"。
 	// 仅父账户可写（biz 层守卫），子账户传入会被静默忽略。
