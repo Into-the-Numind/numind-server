@@ -743,14 +743,32 @@ func effectiveCompletionTokens(ctx context.Context, deps Deps, route *registry.R
 	return tokens
 }
 
+// defaultBillOnlyReservedOutputTokens caps the bill-only cold-start output-token
+// reservation (fix ②). The pre-fix default of MaxOutputTokens/2 means a 128K
+// model reserves 64000 tokens — which, priced at a model like claude, is ~796
+// credits held for a request whose real output is a few hundred tokens. That
+// gross over-reservation is also what the reconcile fallback bug amplified into
+// the 64000-credit overcharge. This ceiling covers the vast majority of chat /
+// agent completions; the per-(provider,model) historical estimator
+// (effectiveCompletionTokens) refines the reserve downward toward the real
+// average once data exists, and Reconcile settles against actual usage.
+const defaultBillOnlyReservedOutputTokens = 8192
+
 // synthBillOnlyResult builds a PrepareResult for bill-only mode: no compression,
 // no message replacement (Messages=nil → Step 4 keeps the caller's original
 // messages), ChargeUser=true, and a direct token estimate. The estimate is
 // approximate; Reconcile corrects it against the provider's actual token usage.
 func synthBillOnlyResult(operation string, route *registry.ResolvedRoute, messages []aiservice.ChatMessage) *PrepareResult {
+	// reserved = min(MaxOutputTokens/2, 8192): keep the historical "half the
+	// window" safety for small-window models, but cap large-window models so a
+	// cold-start image/agent turn no longer freezes ~796 credits. MaxOutputTokens
+	// unknown (0) → fall back to the 8192 ceiling.
 	reserved := route.Capability.MaxOutputTokens / 2
 	if reserved <= 0 {
-		reserved = 2048
+		reserved = defaultBillOnlyReservedOutputTokens
+	}
+	if reserved > defaultBillOnlyReservedOutputTokens {
+		reserved = defaultBillOnlyReservedOutputTokens
 	}
 	return &PrepareResult{
 		NormalizedOp:   operation,

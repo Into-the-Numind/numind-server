@@ -1168,3 +1168,16 @@ func TestSynthBillOnlyReserve_NotHalfWindow(t *testing.T) {
 			result.Policy.ReservedOutputTokens)
 	}
 }
+
+// TestSynthBillOnlyReserve_SmallWindowKept verifies fix ② does not inflate the
+// reserve for small-window models: MaxOutputTokens/2 below the 8192 ceiling is
+// kept as-is (no regression for cheap small models).
+func TestSynthBillOnlyReserve_SmallWindowKept(t *testing.T) {
+	route := &registry.ResolvedRoute{
+		Capability: profile.ServiceCapability{MaxOutputTokens: 4096},
+	}
+	result := synthBillOnlyResult("agent_run", route, nil)
+	if got, want := result.Policy.ReservedOutputTokens, 2048; got != want {
+		t.Errorf("small-window reserve = %d, want %d (MaxOutputTokens/2)", got, want)
+	}
+}
