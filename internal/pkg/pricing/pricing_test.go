@@ -337,6 +337,42 @@ func TestCalculateCost_ProviderModelIDFallback(t *testing.T) {
 	}
 }
 
+// TestCalculateCost_VisionFallsBackToChat reproduces the multimodal-billing-fix
+// bug (customer: one chatbot image upload charged 64000 credits).
+//
+// The gateway's classifyServiceType tags ANY request carrying an image_url as
+// service_type="llm_vision". But a unified model like claude-opus-4-6 only has
+// an "llm_chat" pricing_rule (its price is per-token regardless of modality).
+// With service_type baked into the pricing key, the llm_vision lookup misses →
+// CalculateCost returns ErrRecordNotFound → the reconcile fallback charges the
+// worst-case (MaxOutputTokens/2 ≈ 64000 tokens treated as credits).
+//
+// After fix ①, pricing resolves by (provider, model) regardless of service_type,
+// so the image request bills the model's real token cost (~12 cents), not 64000.
+func TestCalculateCost_VisionFallsBackToChat(t *testing.T) {
+	// claude-opus-4-6 real dmxapi price: 24.82 元/M input, 124.1 元/M output.
+	rule := flatRule(78, 24.82, 124.1, 24.82, 124.1)
+	store := &stubPricingStore{
+		pricingRules: map[string]*model.PricingRule{
+			// Unified model: priced under llm_chat ONLY. No llm_vision row.
+			"llm_chat|dmxapi|claude-opus-4-6": rule,
+		},
+	}
+
+	calc := NewCalculator(store)
+	// The forensic request: 2178 input + 504 output tokens.
+	cost, err := calc.CalculateCost(context.Background(), "llm_vision", "dmxapi",
+		"claude-opus-4-6", 2178, 504)
+	if err != nil {
+		t.Fatalf("llm_vision should fall back to the model's llm_chat price, got error %v", err)
+	}
+	// 2178/1e6*24.82 + 504/1e6*124.1 = 0.1166 元 → 12 cents (NOT 64000).
+	const want = int64(12)
+	if cost != want {
+		t.Errorf("cost = %d cents, want %d (real claude-opus-4-6 token cost)", cost, want)
+	}
+}
+
 // TestCalculateCost_TieredBilling exercises the tiered_token path, ensuring
 // the rule's tier sub-rows are consulted and the bracket selected by prompt
 // tokens applies to both input and output pricing (current policy per
