@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -191,4 +192,54 @@ func TestLoadSkill_Metadata(t *testing.T) {
 	req, _ := parsed["required"].([]any)
 	require.Len(t, req, 1)
 	assert.Equal(t, "name", req[0])
+}
+
+// TestDiskSkills_FitUnderLoadCap is a regression guard for the silent-fallback bug
+// (docx-gen-skill-and-naming): docx-author SKILL.md grew to 5001 bytes and exceeded
+// the old 4096 loadSkillMaxBodyBytes cap, so load_skill("docx-author") soft-failed
+// and the agent improvised raw python-docx (mangled filenames + risk of wrong
+// imports). Every platform disk skill's SKILL.md must stay loadable; if one outgrows
+// the cap, RAISE loadSkillMaxBodyBytes (and accept the bounded context) rather than
+// let load_skill fail silently at runtime. Run against the OLD 4096 cap this test
+// FAILS (docx-author 5001 > 4096) — i.e. it reproduces the bug.
+func TestDiskSkills_FitUnderLoadCap(t *testing.T) {
+	skillsDir := filepath.Join(testRepoRoot(t), "skills")
+	entries, err := os.ReadDir(skillsDir)
+	require.NoError(t, err, "skills/ dir must exist at %s", skillsDir)
+
+	checked := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		p := filepath.Join(skillsDir, e.Name(), "SKILL.md")
+		info, statErr := os.Stat(p)
+		if os.IsNotExist(statErr) {
+			continue // not every skill dir ships a disk SKILL.md
+		}
+		require.NoError(t, statErr)
+		assert.LessOrEqualf(t, int(info.Size()), loadSkillMaxBodyBytes,
+			"skills/%s/SKILL.md is %d bytes > loadSkillMaxBodyBytes(%d) — load_skill will soft-fail at runtime and the agent will fall back; trim the file or raise the cap",
+			e.Name(), info.Size(), loadSkillMaxBodyBytes)
+		checked++
+	}
+	require.Positive(t, checked, "expected at least one disk SKILL.md under skills/")
+}
+
+// testRepoRoot walks up from this test file until it finds go.mod (the repo root),
+// so the test can locate the real skills/ dir (which lives at repo root, not under
+// internal/). Distinct from skills_test.repoRoot (different package).
+func testRepoRoot(t *testing.T) string {
+	t.Helper()
+	_, thisFile, _, ok := runtime.Caller(0)
+	require.True(t, ok, "runtime.Caller must resolve test file path")
+	dir := filepath.Dir(thisFile)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		require.NotEqual(t, parent, dir, "reached filesystem root without finding go.mod")
+		dir = parent
+	}
 }

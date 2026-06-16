@@ -114,6 +114,26 @@ func TestResignCOSLinks_DecodesUTF8Key(t *testing.T) {
 	}
 }
 
+// TestResignCOSLinks_StripsPyAndTimestampFromDownloadName locks the
+// docx-gen-skill-and-naming polish: run_python keys are "<ts>-py-<name>"; the
+// re-signed download filename (which drives the reopened-session card/download)
+// must strip the system "<ts>-py-" prefix so it shows the clean content name.
+func TestResignCOSLinks_StripsPyAndTimestampFromDownloadName(t *testing.T) {
+	rawName := "本周工作小结.docx"
+	encKey := "agent-outputs/1/20260616-101010-py-" + url.PathEscape(rawName)
+	md := "[报告](https://" + testCOSHost + "/" + encKey + "?q-signature=OLD)"
+
+	got := resignCOSLinksWithHost(context.Background(), md, testCOSHost, fakeSigner())
+
+	// fakeSigner echoes dl=<filename>; "<ts>-py-" must be gone, leaving the clean name.
+	if !strings.Contains(got, "dl="+rawName) {
+		t.Fatalf("download name must strip <ts>-py- prefix → %q, got: %s", rawName, got)
+	}
+	if strings.Contains(got, "dl=20260616-101010-py-") {
+		t.Fatalf("re-signed download name still has the <ts>-py- prefix, got: %s", got)
+	}
+}
+
 func TestResignCOSLinks_SignerErrorKeepsOriginal(t *testing.T) {
 	key := "agent-outputs/1/a-report.docx"
 	orig := "https://" + testCOSHost + "/" + key + "?stale"

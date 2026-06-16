@@ -32,8 +32,12 @@ import (
 // LoadSkillToolName 是平台 tool 标识，注册到 AgentToolRegistry。
 const LoadSkillToolName = "load_skill"
 
-// loadSkillMaxBodyBytes 是磁盘 SKILL.md 的防御性大小上限（沿用 read_skill 的 4096）。
-const loadSkillMaxBodyBytes = 4096
+// loadSkillMaxBodyBytes 是磁盘 SKILL.md 的防御性大小上限（bound 单个技能注入 agent 的上下文）。
+// 4096→8192：docx-author SKILL.md 因加料图片嵌入代码模板涨到 5001 字节，超过旧 4096 上限，
+// 导致 load_skill("docx-author") 静默软报错 → agent 拿不到指引 → 退化成手写 python-docx
+// （文件名绞碎 + 易写错 import）。8192 给当前最大技能 64% 余量；技能 ≤ 此值由 *_skillmd
+// 测试守护，超了 CI 直接红，避免再次静默退化。
+const loadSkillMaxBodyBytes = 8192
 
 // loadSkillTool implements FullTool for the unified load_skill built-in.
 //
