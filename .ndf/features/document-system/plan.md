@@ -49,8 +49,8 @@
 - `internal/numind/biz/document/objectkey.go`（deriveObjectKey + 前缀/userID 校验 + IsEditableMime）
 - `internal/numind/biz/document/dto.go`
 - `internal/pkg/errno/document.go`（ErrDocumentNotFound/SourceForbidden/SourceExpired(410)/NotEditable/TooLarge/ExportUnavailable，用预定义码段）
-- 单测：`objectkey_test.go`（IDOR 前缀/userID 校验、IsEditable 判定）、`parse_test.go`（各分支选择 + **qwen-long 分支传带 trace 的 ctx，mock langfuse FromContext 验证 CreateTrace+CreateGeneration 被调用**）、`service_test.go`（ownership 越权返回 NotFound、超限报错、open 命中复用）
-**验收**：`go test ./internal/numind/biz/document/...` 过；`task lint` 0；**【S3-review P1+P2】** IDOR 单测验证跨用户 key 返回**具体 `errno.ErrDocumentSourceForbidden`**（非 generic error）；**qwen-long 分支单测验证 Langfuse trace/generation 被调用**（spec §6 可观测性合规）。
+- 单测：`objectkey_test.go`（IDOR 前缀/userID 校验、IsEditable 判定）、`parse_test.go`（direct/html/markitdown 分支选择）、`service_test.go`（ownership 越权返回 NotFound、超限报错、open 命中复用、源过期映射）
+**验收**：`go test ./internal/numind/biz/document/...` 过；`task lint` 0；**【S3-review P1+P2】** IDOR 单测验证跨用户 key 返回**具体 `errno.ErrDocumentSourceForbidden`**（非 generic error）。**【S4-T3 决策】qwen-long 推迟 v2 → v1 无 LLM → Langfuse 验证 N/A**（保留 docxFallback 接口 seam 注入 nil）。
 **原子性**：biz 核心逻辑 + 测试，完成后 Open/Get/Save 可被 controller 调；export 单列 T4。
 
 ## T4 — 导出 service + biz 装配 + 并发守卫（server）[dep T1,T3]
