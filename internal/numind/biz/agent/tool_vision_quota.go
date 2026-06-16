@@ -44,6 +44,8 @@ func visionQuotaClearRun(runID uint64) {
 	if runID == 0 {
 		return
 	}
+	// NOTE: keep in sync with checkAndIncVisionQuota's switch — add any new vision
+	// tool name here so its per-run counter is evicted too.
 	visionQuotaStore.Delete(visionQuotaKey{runID: runID, toolName: "analyze_image"})
 	visionQuotaStore.Delete(visionQuotaKey{runID: runID, toolName: "annotate_image"})
 }

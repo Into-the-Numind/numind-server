@@ -81,7 +81,7 @@ func TestCreateJSONInput_CoercesStringPretty(t *testing.T) {
 }
 
 func TestCreatePNGChartInput_CoercesStringValuesAndDims(t *testing.T) {
-	body := `{"chart_type":"bar","title":"t","data":{"labels":["a","b"],"series":[{"name":"s","values":["1","2.5"]}]},"options":{"width":"800","height":"600"}}`
+	body := `{"chart_type":"bar","title":"t","data":{"labels":["a","b"],"series":[{"name":"s","values":["1","2.5"]}]},"options":{"width":"800","height":"600","show_legend":"true"}}`
 	var in createPNGChartInput
 	if err := json.Unmarshal([]byte(body), &in); err != nil {
 		t.Fatalf("string values/dims must not fail: %v", err)
@@ -94,6 +94,9 @@ func TestCreatePNGChartInput_CoercesStringValuesAndDims(t *testing.T) {
 	}
 	if in.Options == nil || in.Options.Width != 800 || in.Options.Height != 600 {
 		t.Errorf("options dims not coerced: %+v", in.Options)
+	}
+	if in.Options == nil || in.Options.ShowLegend == nil || !*in.Options.ShowLegend {
+		t.Errorf("show_legend string \"true\" not coerced: %+v", in.Options)
 	}
 }
 

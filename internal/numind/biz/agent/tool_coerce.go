@@ -214,7 +214,7 @@ func (o *pngChartOptions) UnmarshalJSON(data []byte) error {
 		Height     json.RawMessage `json:"height,omitempty"`
 		XLabel     string          `json:"x_label,omitempty"`
 		YLabel     string          `json:"y_label,omitempty"`
-		ShowLegend *bool           `json:"show_legend,omitempty"`
+		ShowLegend json.RawMessage `json:"show_legend,omitempty"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -228,6 +228,14 @@ func (o *pngChartOptions) UnmarshalJSON(data []byte) error {
 	}
 	o.XLabel = raw.XLabel
 	o.YLabel = raw.YLabel
-	o.ShowLegend = raw.ShowLegend
+	// show_legend is an optional *bool (nil = unset). Coerce a string "true"/"false"
+	// like the other bool fields; absent/null leaves it unset.
+	if s := strings.TrimSpace(string(raw.ShowLegend)); s != "" && s != "null" {
+		b, berr := coerceJSONBool(raw.ShowLegend)
+		if berr != nil {
+			return fmt.Errorf("show_legend: %w", berr)
+		}
+		o.ShowLegend = &b
+	}
 	return nil
 }
