@@ -357,7 +357,10 @@ func (t *runPythonTool) collectOutputFiles(
 			continue
 		}
 
-		sanitized := sanitizeOutputFilename(name)
+		// 可读 key：保留 python 写出的真实中文名（如「本周工作小结.docx」），不再绞碎成
+		// "______"。download disposition 用原始 name（已是真名）；重开会话 re-sign 从 key 尾
+		// 派生名时也因此干净。docx 生成只能走本路径（无 create_docx 工具），故此修必需。
+		sanitized := sanitizeObjectKeyName(name)
 		objectKey := fmt.Sprintf("agent-outputs/%d/%s-py-%s", userID, ts, sanitized)
 
 		ct := mime.TypeByExtension(filepath.Ext(name))

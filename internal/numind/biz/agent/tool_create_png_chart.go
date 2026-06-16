@@ -232,9 +232,11 @@ func (t *createPNGChartTool) Execute(ctx context.Context, input ToolInput) (Tool
 	if outFilename == "" {
 		outFilename = req.ChartType + "_chart.png"
 	} else {
-		// Ensure .png extension.
+		// Ensure .png extension. Use the Unicode-preserving sanitizer so a Chinese
+		// chart name (e.g.「本周业绩」) survives into the COS key instead of becoming
+		// "____.png" (consistent with uploadGeneratedFile / run_python naming).
 		if len(outFilename) < 4 || outFilename[len(outFilename)-4:] != ".png" {
-			outFilename = sanitizeOutputFilename(outFilename) + ".png"
+			outFilename = sanitizeObjectKeyName(outFilename) + ".png"
 		}
 	}
 

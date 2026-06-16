@@ -27,15 +27,17 @@ var cosImageExts = map[string]bool{
 	".webp": true, ".svg": true, ".bmp": true,
 }
 
-// keyTimestampPrefixRE matches the "<yyyymmdd>-<HHMMSS>-" prefix that
-// uploadGeneratedFile / run_python prepend to every object-key tail for
-// uniqueness (e.g. "20260616-101010-本周工作小结.docx"). Stripped from the
-// re-signed download filename so a reopened session shows the clean content name
-// in the Content-Disposition (and thus the artifact card), matching the
-// first-time download which already passes the clean filename. Only ONE leading
-// timestamp is removed, so a user file literally named "20260101-计划.docx"
-// keeps its own date.
-var keyTimestampPrefixRE = regexp.MustCompile(`^\d{8}-\d{6}-`)
+// keyTimestampPrefixRE matches the "<yyyymmdd>-<HHMMSS>-" prefix (plus an optional
+// run_python "py-" marker) that uploadGeneratedFile / run_python prepend to every
+// object-key tail for uniqueness (e.g. "20260616-101010-本周工作小结.docx" or
+// "20260616-101010-py-本周工作小结.docx"). Stripped from the re-signed download
+// filename so a reopened session shows the clean content name in the
+// Content-Disposition (and thus the artifact card), matching the first-time
+// download which already passes the clean filename. Only ONE leading timestamp is
+// removed, so a user file literally named "20260101-计划.docx" keeps its own date.
+// The optional "py-" is the system run_python marker; the rare cost is a user file
+// literally named "py-foo.docx" losing its "py-" on reopen (cosmetic only).
+var keyTimestampPrefixRE = regexp.MustCompile(`^\d{8}-\d{6}-(?:py-)?`)
 
 var cosLinkReCache sync.Map // host(string) -> *regexp.Regexp
 
