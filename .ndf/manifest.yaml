@@ -1,5 +1,24 @@
 schema_version: '2.0'
 features:
+- id: company-name-modal-ime-limit
+  track: hotfix
+  description: 'org-branding follow-up（用户报告 bug + 微调）：(1) 弹窗输入框中文输入法组合期间的回车（选词/确认候选）被误判为"确定"提交 → 修复；(2) 公司名字符上限 100→10。'
+  classification_reason: 'Hotfix: 单仓库 numind-web-v3 单组件 SettingsView.vue，无 DB/新 API/新外部服务/非支付权限。含用户报告的 IME 回车 bug（Bug-from-Customer：首 commit=失败复现测试）。'
+  status: active
+  stage: H3
+  repos:
+    numind-web-v3: develop (merged via ndf-done)
+  worktrees:
+    numind-web-v3: (removed by ndf-done)
+  branches:
+    numind-web-v3: develop (merged via ndf-done)
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-H3 (ai 2026-06-16): IME bug 根因=@keyup.enter 时机晚于 compositionend（keyup 时 isComposing 已 false 守不住）→ 改 @keydown.enter + compositionstart/end 跟踪 imeComposing + isComposing/keyCode 229 三重守卫；组合中回车不提交、普通回车正常确认。限制 100→10: maxlength=10 + 计数 /10 + COMPANY_NAME_MAX 常量（后端 valid(0|100)/varchar(100) 安全上限不变，前端物理上限即 10）。Bug-from-Customer(Rule 11): 首 commit db59781=失败复现测试(组合回车不提交+普通回车确认+计数/10), fix 5225641 后转 PASS(6 测全过)。单 Sonnet review PASS, P2(计数器 CSS 注释 100→10) 已修。type-check 0+eslint 0。commits: db59781(RED)+5225641(fix)+9814f33(P2), merge ed70667。下一步 /deploy-dev + dev gstack /qa。prod 不在授权。'
+  blockers: []
 - id: company-name-edit-modal
   track: hotfix
   description: 'org-branding follow-up：设置页「公司名称」UX 从内联点击编辑改为只展示当前值 + 「修改」按钮 → 点击弹出小弹窗(输入 + 确认/取消)。展示区不可直接点击编辑，弹窗沿用现有 confirm-dialog 风格/字体，保存按钮品牌绿。'
