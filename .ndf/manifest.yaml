@@ -4872,3 +4872,18 @@ features:
   - 'T-backend(8e01a3b1/65487ab8): 发送时即时标题端点 POST /v1/{chatbot/sessions,agent-sessions}/:id/title(prompt-only 生成+属主校验+仅默认名/未命名+CAS)。B-1: maybeGenerateTitle 重读DB当前标题避免兜底浪费调用。Generate 支持 assistantMsg="". 双review PASS_WITH_CONCERNS 0 P0: 修端点响应统一{title}/agent best-effort/config ErrChatbotNotFound 映射/doc/ErrorIs 断言。'
   - 'S4 全完成(6/6 双review, 因并行 manifest churn 进度数被回退过, 此处校正): T-model(deepseek-v4-flash via dmxapi 注册+session.title 指向, migration 20260616_140000, dev实测质量好) / T-backend(8e01a3b1+65487ab8 /title 端点 chatbot+agent, B-1 兜底重读) / T-fe-chatbot(6f32adb+a1e21a0 draft 延迟建会话+秒标题+占位闪动+并发守卫) / T-fe-agent(24c0dcf+6785d19 预生成session_id+乐观+/title重试) / T-delete-bug(04c3ebd test→665196f fix, 加 open class, Rule11 PASS) / T-S5策略。门禁: 前端 vitest+lint+tc 绿; 后端 go test 绿。S6 待: 部署 dev+browse 复验删除/标题/占位 + prod migration 注册 deepseek-v4-flash。'
   blockers: []
+- id: nickname-edit
+  ndf_version: '3.0'
+  track: hotfix
+  description: '设置页让每个用户编辑自己的昵称并保存到数据库，限制 10 个字符以内。复用 company-name-edit-modal 弹窗模式(maxlength + 计数器 + IME 组合回车守卫)，昵称编辑对所有账户(含子账户)可见。后端 UpdateUserProfileRequest.Nickname 校验由 stringlength(1|100) 收紧到 (1|10)。'
+  classification_reason: 'Hotfix: 后端链路全就绪(model.Nickname size:100 / PUT /v1/users/me UpdateProfile / biz UpdateUserProfile / store UpdateUser)，几乎纯前端 UI。无 DB schema 变更(nickname 列已存在)/无新 API 端点(复用现有)/无新外部服务/影响文件 ≤3(SettingsView.vue + v1/user.go + 测试)/非支付权限。非线上 bug(新功能)，不强制复现测试，但补最小覆盖测试(前端弹窗交互 spec + 后端校验 go test)。'
+  last_updated_by: ai-h1
+  last_updated_at: '2026-06-16T18:31:00+08:00'
+  created_at: '2026-06-16T18:31:00+08:00'
+  status: active
+  stage: H1
+  repos: [numind-web-v3, numind-server]
+  branches: {numind-web-v3: fix/nickname-edit, numind-server: fix/nickname-edit}
+  worktrees: {numind-web-v3: /private/tmp/wt-nickname-edit-numind-web-v3, numind-server: /private/tmp/wt-nickname-edit-numind-server}
+  progress: {total_tasks: 1, completed_tasks: 0, reviewed_tasks: 0}
+  blockers: []
