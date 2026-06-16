@@ -3,7 +3,9 @@ package util
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path"
@@ -16,6 +18,13 @@ import (
 	"github.com/spf13/viper"
 	cos "github.com/tencentyun/cos-go-sdk-v5"
 )
+
+// ErrCOSObjectNotFound 表示 COS 对象不存在（HTTP 404 / NoSuchKey）。
+// 调用方据此判别"源对象已过期/被清理"，区别于凭证/网络等其它错误。
+var ErrCOSObjectNotFound = errors.New("cos: object not found")
+
+// ErrCOSDisabled 表示当前环境未启用 COS。
+var ErrCOSDisabled = errors.New("cos: not enabled")
 
 // COSClient is a lazy-initialized singleton for Tencent COS operations.
 type COSClient struct {
@@ -111,6 +120,57 @@ func UploadBytesToCOS(ctx context.Context, objectKey string, contentType string,
 
 	// Return base URL (non-signed). Callers can request signed URL via GenerateSignedURL.
 	return fmt.Sprintf("%s/%s", cosClient.baseURL, objectKey), nil
+}
+
+// DownloadFromCOS 下载 COS 对象的原始字节（document-system：打开文档时拉源产物）。
+//
+// 错误判别（关键，见 .ndf/features/document-system/spec.md §3.4）：
+//   - 对象不存在（HTTP 404 / NoSuchKey）→ ErrCOSObjectNotFound（biz 映射 410 源已过期）
+//   - COS 未启用 → ErrCOSDisabled
+//   - 其它（403 凭证 / 网络等）→ 原样返回，调用方不可误判为"不存在"
+func DownloadFromCOS(ctx context.Context, objectKey string) ([]byte, error) {
+	cosClient, err := getCOSClient()
+	if err != nil {
+		return nil, err
+	}
+	if !cosClient.enabled || cosClient.client == nil {
+		return nil, ErrCOSDisabled
+	}
+
+	objectKey = strings.TrimPrefix(objectKey, "/")
+	objectKey = path.Clean(objectKey)
+
+	resp, err := cosClient.client.Object.Get(ctx, objectKey, nil)
+	if err != nil {
+		return nil, classifyCOSGetErr(cosRespStatus(resp), err)
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read COS object body: %w", err)
+	}
+	return data, nil
+}
+
+// cosRespStatus 安全取 COS 响应的 HTTP 状态码（resp 或内嵌 http.Response 为 nil 时返回 0）。
+func cosRespStatus(resp *cos.Response) int {
+	if resp != nil && resp.Response != nil {
+		return resp.StatusCode
+	}
+	return 0
+}
+
+// classifyCOSGetErr 把 Object.Get 的错误归类：仅 HTTP 404 → ErrCOSObjectNotFound（保留原始
+// COS 错误链便于排障 RequestId 等）；其它（含 403）原样返回。抽成纯函数便于单测（无需真实 COS）。
+func classifyCOSGetErr(statusCode int, err error) error {
+	if statusCode == http.StatusNotFound {
+		if err == nil {
+			return ErrCOSObjectNotFound
+		}
+		return fmt.Errorf("%w: %w", ErrCOSObjectNotFound, err)
+	}
+	return err
 }
 
 // IsCOSEnabled returns whether COS is properly configured.
