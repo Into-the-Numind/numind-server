@@ -4935,14 +4935,14 @@ features:
   ndf_version: '3.0'
   description: '把"模型能不能看图"从 4 个互相冗余/失效的字段塌成单一真相源=input_modalities 含 image。取证: capabilities含vision=死值(0任务要求 capability=vision); features.vision+input_modalities=image=冗余对(识图任务两遍表达同一事); accepts_image_inline=过度设计的重复(真正控发图但admin改不了、无模型用到"接受图非内联"区分)。根因=路由层(input_modalities/capabilities/features)与发图层(accepts_image_inline)两套能力表示各读各key从未对齐(agent V1.5 引入未并入既有 input_modalities)。方案: ①发图判断改读 input_modalities 派生 AcceptsImageInline ②识图任务 requirements 去 features:[vision] 只留 input_modalities ③capabilities enum 删 vision ④migration 先把真相搬进 input_modalities 再退役其余。admin 表单 schema 驱动改后端自动反映。仅 image(pdf/audio 不动)。'
   classification_reason: 'Standard(用户 2026-06-16 确认治本): DB schema 变更(task_profile requirements + capability_json 数据清洗 migration)/影响文件>3/高风险(改所有 LLM 路由经过的共享能力层 + agent fallback 决策, blast radius 大)。无新 API 端点/无新外部服务。仅后端(admin 表单 schema 驱动无需改 admin-web)。'
-  last_updated_by: ai-s4s5
+  last_updated_by: ai-s6
   last_updated_at: '2026-06-16T18:52:12+08:00'
   created_at: '2026-06-16T18:52:12+08:00'
   track: standard
-  stage: S5
+  stage: S6
   status: active
   repos: [numind-server]
-  branches: {numind-server: feature/vision-capability-unify}
+  branches: {numind-server: develop (merged via ndf-done)}
   worktrees: {numind-server: /private/tmp/wt-vision-capability-unify-numind-server}
   progress: {total_tasks: 3, completed_tasks: 3, reviewed_tasks: 3}
   artifacts: {requirement: .ndf/features/vision-capability-unify/requirement.md, spec: .ndf/features/vision-capability-unify/spec.md, plan: .ndf/features/vision-capability-unify/plan.md, qa: .ndf/features/vision-capability-unify/qa-report.md}
@@ -4951,6 +4951,7 @@ features:
   - 'S1+S2 (ai 2026-06-16): 设计=改 capability/api.go lookupCapabilities 投影一处令 AcceptsImageInline 从 input_modalities 含 image 派生(退役读 accepts_image_inline)→chatbot+agent 经 GetCapabilities 自动统一零下游改动; schema 删 capabilities enum 的 vision+改 description; migration 回填 input_modalities+task_profile 去 features.vision+清理。S2 Sonnet review CONDITIONAL_PASS: 核心假设全验证(改投影即全覆盖/去features.vision安全/pdf-audio自洽/死字段确认/无遗漏消费者)。吸收 1 P0(回填必须三信号OR且 accepts_image_inline 不能丢-seed的qwen-vl+手设模型只有这一信号)+3 P1(attachment.vision_describe requirements空无需改/features.vision在ai_service侧本就dead check去掉不改路由/migration后必须重启清5min缓存)+P2(执行顺序:回填->重启->验收->清理->schema)。'
   - 'S3 (ai 2026-06-16): plan 切 T1(capability/api.go 投影从 input_modalities 派生 AcceptsImageInline+vestigial注释)/T2(profile schema 删 capabilities enum vision+改 description+matchLLM回归测试)/T3(migration 三信号OR回填+task_profile去features.vision+清理); T4 验证策略。文件 disjoint。S3 Sonnet 原子性 review CONDITIONAL_PASS: 吸收 1 P0(部署时序硬约束: T3 migration(a)(b)必须先于T1代码上线+重启, 否则只有accepts_image_inline信号的seed qwen-vl/手设模型在T1启动瞬间回归不能看图)+2 P1(matchLLM回归单测spec要求漏了已补T2/T2 capabilities-enum-no-vision断言改必做)+2 P2(parseCapsJSON抽纯函数可选/S5加下游multimodal仍绿)。'
   - 'S4 (ai 2026-06-16): T1-T3 实现+每完成并行双review。T1 capability/api.go projectCapabilities 纯函数(AcceptsImageInline 从 input_modalities 含image派生,退役读accepts_image_inline,pdf/audio不变)+SOT单测锁退役语义+containsFold大小写不敏感; T2 schema删capabilities enum vision+改description+matchLLM回归测试(模型仅靠input_modalities=image匹配,非视觉不匹配)+schema断言; T3 migration三信号OR回填(a1 JSON_SET空/a2 JSON_ARRAY_APPEND保text)+task_profile去features.vision+清理capabilities.vision,dev SELECT预览验证(a2命中4模型/b命中4任务含attachment.vision_describe实有features.vision/c1命中qwen3-vl-flash+agnes)。双Sonnet review PASS_WITH_CONCERNS(0 P0/0 P1, 5 P2全修:过时注释/fixture用退役字段/IFNULL死代码)。门禁:17包0FAIL+vet+lint净。reviewed=completed=3。发现:agnes配置标image将被当识图模型(治本后admin可控)。'
+  - 'S6 dev 部署 (ai 2026-06-16): ndf-done merge develop+push(3c1c29ee 已验证在 origin/develop, 含 projectCapabilities+migration)。⚠严格部署时序(S3 P0): 先在 dev 旧容器应用 migration(a)(b)(c1)→实测落地(6视觉模型 input_modalities 都含image text没丢/4识图任务去features.vision/qwen3-vl+agnes去capabilities.vision/P0回归检查=0无模型缺image)→再 /deploy-dev server(build184s)→新容器 develop-3c1c29ee-dirty healthy+healthz ok(fresh cache 读已回填input_modalities)。治本验收(admin只勾input_modalities=image验证生效)按 feedback_walkthrough_user_executes 交用户亲手走。停 dev, prod 数据迁移单独交用户过目(更敏感)。'
   blockers: []
 - id: deploy-rsync-lock
   ndf_version: '3.0'
