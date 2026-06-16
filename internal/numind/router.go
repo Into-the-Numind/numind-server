@@ -19,6 +19,7 @@ import (
 	documentcontroller "numind-server/internal/numind/controller/v1/document"
 	llmcontroller "numind-server/internal/numind/controller/v1/llm"
 	marketplacecontroller "numind-server/internal/numind/controller/v1/marketplace"
+	meetingcontroller "numind-server/internal/numind/controller/v1/meeting"
 	monitorcontroller "numind-server/internal/numind/controller/v1/monitor"
 	ordercontroller "numind-server/internal/numind/controller/v1/order"
 	parentbillingcontroller "numind-server/internal/numind/controller/v1/parent_billing"
@@ -305,6 +306,32 @@ func installNumindRouters(g *gin.Engine) error {
 		}
 	}
 
+	// 会议副驾（meeting-copilot）：全新独立模式、内部试用先行、代码高度自包含可整体删除。
+	// 整组套 FeatureFlag —— flag off（prod 默认）时所有路由返回 ErrFeatureDisabled(404)。
+	// AuthMiddleware 由 authGroup 继承。注意路由注册顺序：静态 /presets 在 /:id 之前注册——
+	// gin v1（httprouter）同层级静态优先于 :param，二者不冲突（与通知中心 /unread-count 同理）。
+	{
+		meetingCtrl := meetingcontroller.NewController(b.Meeting())
+		meetingGroup := authGroup.Group("/meetings")
+		meetingGroup.Use(importMw.FeatureFlag("features.meeting_copilot.enabled"))
+		{
+			// 预设（静态路径，先于 /:id 注册）。
+			meetingGroup.GET("/presets", meetingCtrl.ListPresets)         // 当前用户预设 + 内置
+			meetingGroup.POST("/presets", meetingCtrl.SavePreset)         // 存预设
+			meetingGroup.DELETE("/presets/:id", meetingCtrl.DeletePreset) // 删预设（仅本人、非 builtin）
+
+			// 会话生命周期。
+			meetingGroup.POST("", meetingCtrl.CreateSession) // 创建会话
+			meetingGroup.GET("", meetingCtrl.ListSessions)   // 分页列表
+			meetingGroup.GET("/:id", meetingCtrl.GetSession) // 详情（含 segments + feedbacks）
+
+			// 分段转写 + 反馈（SSE）+ 结束。
+			meetingGroup.POST("/:id/segments", meetingCtrl.IngestSegment)    // 分段近实时转写（multipart）
+			meetingGroup.POST("/:id/feedback", meetingCtrl.GenerateFeedback) // 反馈（SSE）
+			meetingGroup.POST("/:id/end", meetingCtrl.EndSession)            // 结束 + 同步生成纪要
+		}
+	}
+
 	// B2B2C 会员赋予（Q1 / Task 10）：父账户为子账户开通会员，不走支付流程
 	// creditCtrl.GrantMembership 使用新 membership.MembershipService 路径（§5.1 + §5.7）
 	{
@@ -378,7 +405,7 @@ func installNumindRouters(g *gin.Engine) error {
 			chatbotGroup.GET("/sessions/:id/messages", chatbotCtrl.ListMessages)
 			chatbotGroup.POST("/sessions/:id/chat", chatbotCtrl.Chat)
 			chatbotGroup.POST("/sessions/:id/title", chatbotCtrl.GenerateTitle) // instant-title-ux: 发送时即时生成标题
-			chatbotGroup.PUT("/sessions/:id/rename", chatbotCtrl.RenameSession)  // 重命名会话
+			chatbotGroup.PUT("/sessions/:id/rename", chatbotCtrl.RenameSession) // 重命名会话
 			chatbotGroup.PUT("/sessions/:id/pin", chatbotCtrl.PinSession)       // 置顶/取消置顶会话
 		}
 	}

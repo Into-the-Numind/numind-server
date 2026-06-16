@@ -31,6 +31,7 @@ import (
 	documentbiz "numind-server/internal/numind/biz/document"
 	kbbiz "numind-server/internal/numind/biz/knowledgebase"
 	"numind-server/internal/numind/biz/llmrouter"
+	meetingbiz "numind-server/internal/numind/biz/meeting"
 	"numind-server/internal/numind/biz/memory"
 	"numind-server/internal/numind/biz/monitor"
 	"numind-server/internal/numind/biz/payment"
@@ -118,6 +119,7 @@ func (b *realBizOnlyCustomers) Sop() sopbiz.ISopBiz                            {
 func (b *realBizOnlyCustomers) Customers() customerbiz.ICustomerBiz            { return b.customers }
 func (b *realBizOnlyCustomers) Announcement() announcementbiz.IAnnouncementBiz { return nil }
 func (b *realBizOnlyCustomers) Document() documentbiz.IDocumentService         { return nil }
+func (b *realBizOnlyCustomers) Meeting() meetingbiz.IMeetingBiz                { return nil }
 func (b *realBizOnlyCustomers) SalesRAG() salesrag.SalesRAGBiz                 { return nil }
 func (b *realBizOnlyCustomers) Credit() credit.ICreditBiz                      { return nil }
 func (b *realBizOnlyCustomers) CreditService() credit.ICreditService           { return nil }
