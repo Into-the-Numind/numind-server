@@ -1,5 +1,29 @@
 schema_version: '2.0'
 features:
+- id: notif-acceptance-fixes
+  track: standard
+  description: '通知系统 dev 验收发现的 3 个 bug 修复：(1) 已读数/回收率含 admin 读者但 target/readers 排除→不一致，改 ReadCount/ResponseCount JOIN user 排除 is_admin+软删；(2) admin 列表操作列按钮换行错位→加宽列+右对齐单行；(3) 编辑页取消按钮默认 submit→点取消提交表单创建重复，改 type=button。跨 numind-server+numind-admin-web。'
+  classification_reason: 'Standard: 跨仓库 bug 修复。每 bug 带 test(repro) 红→绿（Rule 11）。'
+  status: active
+  stage: S6
+  repos:
+    numind-server: develop (merged via ndf-done)
+    numind-admin-web: develop (merged via ndf-done)
+  progress: {total_tasks: 3, completed_tasks: 3, reviewed_tasks: 3}
+  decisions:
+  - 'S4-S6 (ai 2026-06-16): 双 review PASS(0 P0/P1)。后端 ReadCount/ResponseCount JOIN user(is_admin=0 AND deleted_at IS NULL)与 TargetUserCount/ListReaders 口径统一; 复现测试 ExcludesAdmin 红→绿。admin-web 取消按钮 type=button+操作列右对齐。dev 实测: 统计 1/175 一致、按钮排版、取消无 POST/PUT。reviewer P2(AppButton 默认 submit 隐患)→拆 hotfix appbutton-default-type-button 治本。'
+  blockers: []
+- id: appbutton-default-type-button
+  track: hotfix
+  description: 'admin-web AppButton 默认 type 从隐式 submit 改为显式 button——原生 button 在 form 内默认 submit，导致取消类按钮意外提交表单（notif Bug3 根因类）。加 type prop 默认 button + :type 绑定；全站 3 表单提交按钮均已显式 type=submit（审计确认安全）。'
+  classification_reason: 'Hotfix: 单仓库 numind-admin-web, 1 文件+测试, 无 DB/API。预防性硬化, H1 含 AppButton type 测试。'
+  status: active
+  stage: H3
+  repos: {numind-admin-web: develop (merged via ndf-done)}
+  progress: {total_tasks: 1, completed_tasks: 1, reviewed_tasks: 1}
+  decisions:
+  - 'H1-H3 (ai 2026-06-16): 审计全站仅 3 表单(login/compliance/announcement)提交按钮均显式 type=submit→改默认安全。AppButton 加 type prop 默认 button。全量 vitest 113 过(agent.spec 预存孤儿失败无关)。dev 实测: 登录 submit 正常进首页/公告保存 PUT200/取消 type=button 不提交。顺带修好合规表单取消同类隐患。'
+  blockers: []
 - id: sop-replay-input-strip
   track: hotfix
   description: 'SOP 回看 done-current(首次运行刚完成节点)两个客户报告问题。P1: 只上传文件不输入文字时,「用户输入」文本块显示了文件全部提取内容(与上传卡重复)——根因=前端 compose() 把文件内容以 <文本>\n\n<内容>(无 === 文件名 === 标记)拼进 input, 旧 delimiter 剥离匹配不到; 修=stripMergedFileBlocks 改按 file.content 锚定移除(\n\n+内容块 + file-only 整体, CRLF 归一化, 不误删句中同名子串)。P2: 运行中附件「查看提取文本」/长文「展开」点了被收回——根因=done-current 的 refreshNodeRun 把 props.files 从空更新为列表→触发旧 watch([input,files]) 重置展开态; 修=移除 watch, SopStepView 给 ReplayInputCard 加 :key=node.id(切步 remount 重置, 同步内 files 更新不重置)。'
