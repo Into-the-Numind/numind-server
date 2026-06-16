@@ -5023,21 +5023,22 @@ features:
   ndf_version: '3.0'
   description: '把图片归一化(缩放/压缩到服务商可接受尺寸/大小)做成公共服务 internal/pkg/imageutil, chatbot/agent上传+salesrag+VLM转文字统一调用。触发: chatbot opus-4-6 上传10982px超宽图→dmxapi HTTP400 dimensions exceed 8000px→无回复。取证: salesrag 4段缩图(imaging.Lanczos)缺单边像素上限(只查总像素36MP+长宽比150:1, 10982x1285约14MP放行但宽超8000)+写死Doubao阈值+4段重复+画质bug(循环缩已缩图伪影叠加)。Claude Code参考: 硬限base64<=5MB(原始3.75MB)+单边cap2000px+每次从原图缩+渐进压缩+友好错误。方案: imageutil.Normalize(opts MaxWidth/Height/Bytes/TotalPixels/AspectRatio)+上传归一化到2000px/3.75MB通用安全尺寸存COS(修inline+VLM两路)+传输改base64 data-URL(去COS可达性依赖,S2确认dmxapi收)+迁移salesrag 4段合一+错误映射。'
   classification_reason: 'Standard(用户2026-06-17确认开干): 影响文件>3(新imageutil包+upload+salesrag 4段迁移+发图base64+适配器确认+错误映射)/部分高风险(动salesrag已上线图片分析路径+chatbot发图+image token计费)。无DB schema/无新API端点/无新外部服务(imaging依赖已在仓库)。仅后端。'
-  last_updated_by: ai-s3
+  last_updated_by: ai-s4s5
   last_updated_at: '2026-06-17T00:49:24+08:00'
   created_at: '2026-06-17T00:49:24+08:00'
   track: standard
-  stage: S3
+  stage: S5
   status: active
   repos: [numind-server]
   branches: {numind-server: feature/image-normalize-service}
   worktrees: {numind-server: /private/tmp/wt-image-normalize-service-numind-server}
-  progress: {total_tasks: 4, completed_tasks: 0, reviewed_tasks: 0}
-  artifacts: {requirement: .ndf/features/image-normalize-service/requirement.md, spec: .ndf/features/image-normalize-service/spec.md, plan: .ndf/features/image-normalize-service/plan.md}
+  progress: {total_tasks: 4, completed_tasks: 4, reviewed_tasks: 4}
+  artifacts: {requirement: .ndf/features/image-normalize-service/requirement.md, spec: .ndf/features/image-normalize-service/spec.md, plan: .ndf/features/image-normalize-service/plan.md, qa: .ndf/features/image-normalize-service/qa-report.md}
   decisions:
   - 'S0 (ai 2026-06-17): 源于 opus-4-6 上传10982px超宽图被dmxapi 400拒(超8000px/边)无回复。调研: salesrag 4段缩图需优化(缺单边上限治不了本问题/写死Doubao/4段重复/反复缩已缩图画质bug)不可照搬; Claude Code imageResizer.ts是好范本(从原图缩/渐进压缩/友好错误/2000px+5MB base64)。用户拍板Standard=建公共imageutil服务+所有相关方接入+base64传输。imaging依赖已在仓库。'
   - 'S1+S2 (ai 2026-06-17): 实现细节调研确认 base64 data-URL 可行(types.go文档+adapter原样透传+salesrag已用)但有每轮重发/计费/33%膨胀代价→用户选①URL主+上传归一化+base64兜底。设计: 新 internal/pkg/imageutil.Normalize(Options MaxWidth/Height/Bytes/TotalPixels/AspectRatio,每次从原图缩修salesrag画质bug)+上传时归一化到2000px/3.75MB通用安全尺寸存COS(inline/VLM零改动自动受益)+迁移salesrag段1/2/4合并段3解耦不动ocrWithBaidu+errtranslate图片尺寸400映射。S2 Sonnet review CONDITIONAL_PASS(0 P0): 核心假设全验证(multimodal/fallback零改动/adapter data-URL/salesrag等价/2000px通吃claude8000-Doubao36MP-qwenvl-gpt-gemini)。吸收2 P1(fileSize重算/段3 ocrWithBaidu归一化字节trade-off)+3 P2(targetW守卫/errtranslate strings.Contains+errno.ErrImageTooLarge/PNG透明填黑)。'
   - 'S3 (ai 2026-06-17): plan 切 T1(imageutil公共包)/T2(上传归一化)/T3(salesrag 4段迁移)/T4(errno+errtranslate映射); T5验证。T1地基T2T3依赖。S3 Sonnet review CONDITIONAL_PASS(深读salesrag真实代码): 吸收2 P0(T2注入点精确化-归一化块在line154前fileSize天然对/T3段3单上传+frontendURL用objectKey+删displayObjectKey双上传)+2 P1(T4保现有translate_test+新测/T3段1 ErrImageTooLarge维持continue)+P2(T1快路径MediaType用http.DetectContentType非imaging.Format/T2失败保原值/T3段2保留line2974base64兜底/T2确认COS test double)。base64兜底降级follow-up review判合理(条件:不删salesrag段2现有base64兜底)。'
+  - 'S4 (ai 2026-06-17): T1 imageutil公共包(Normalize每次从原图缩修画质bug+快路径+clampMin1+ErrImageTooLarge+http.DetectContentType,9单测)/T2 上传归一化(2000px-3.75MB,COS上传前,fileSize-dims反映归一化后,失败保原值)/T3 salesrag 4段迁移(subagent实现+61/-343,段1continue段2abort段3单上传解耦段4ErrImageTooLarge,删math/jpeg import保imaging,rule8验证commit+company_name失败T2 baseline已复现确认pre-existing非regression)/T4 errno.ErrImageTooLarge+errtranslate strings.Contains映射。双Sonnet review双PASS_WITH_CONCERNS(0 P0/0 P1,代码质量逐段确认T3行为等价上线未改坏); 3 P2修2(aspect-ratio best-effort注释/errtranslate测试grounding)+接受1(双重normalize fast-path no-op防御性)。门禁: go build ./... 干净+vet+影响包测试全绿+lint净。reviewed=completed=4。base64兜底降级follow-up。'
   blockers: []
 - id: crawl4ai-tool
   ndf_version: '3.0'
