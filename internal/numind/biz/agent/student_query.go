@@ -751,6 +751,40 @@ func (s *StudentQueryService) RenameSession(ctx context.Context, userID uint, se
 	return s.runStore.UpdateSessionName(ctx, sessionID, name)
 }
 
+// GenerateSessionTitle 即时从 prompt 生成 agent 会话标题（instant-title-ux 发送时路径）。
+// 验证属主；仅当 session 仍未命名(session_name=="")时调小模型生成并用 CAS 写回。
+// 返回新标题或 ""（已命名/生成失败时空，best-effort）。系统内部调用不扣用户积分。
+// 注意（设计 review B-2）：前端必须在 createRun 落库后才调本端点，否则 ListBySession 取不到
+// run → 返回 ErrAgentRunNotFound，秒标题落空（回复后兜底 maybeGenerateSessionTitle 仍会补）。
+func (s *StudentQueryService) GenerateSessionTitle(ctx context.Context, userID uint, sessionID, prompt string) (string, error) {
+	runs, _, err := s.runStore.ListBySession(ctx, sessionID, 0, 1)
+	if err != nil {
+		return "", fmt.Errorf("StudentQueryService.GenerateSessionTitle: %w", err)
+	}
+	if len(runs) == 0 {
+		return "", errno.ErrAgentRunNotFound
+	}
+	if runs[0].UserID != userID {
+		return "", errno.ErrForbidden.SetMessage("access to another user's session is not allowed")
+	}
+	if runs[0].SessionName != "" {
+		return "", nil // 已命名（手动 rename / 上轮自动）— 不覆盖
+	}
+	title, gerr := agentGenTitleFn(ctx, prompt, "")
+	if gerr != nil {
+		// best-effort（与 chatbot 路径一致）：生成失败仅 log, 返回 ("", nil) 不让前端报错。
+		log.C(ctx).Warnw("GenerateSessionTitle: generate failed", "error", gerr, "session_id", sessionID)
+		return "", nil
+	}
+	if title == "" {
+		return "", nil
+	}
+	if _, uerr := s.runStore.UpdateSessionNameIfEmpty(ctx, sessionID, title); uerr != nil {
+		return "", fmt.Errorf("StudentQueryService.GenerateSessionTitle update: %w", uerr)
+	}
+	return title, nil
+}
+
 // DeleteSession logical-deletes the whole session (and all its runs) for the user.
 func (s *StudentQueryService) DeleteSession(ctx context.Context, userID uint, sessionID string) error {
 	if err := s.verifySessionOwnership(ctx, userID, sessionID); err != nil {

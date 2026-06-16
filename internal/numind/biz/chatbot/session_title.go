@@ -32,7 +32,18 @@ var genTitleFn = sessiontitle.Generate
 // existing title untouched and the conversation proceeds normally. The title
 // LLM call is system-internal and does not bill the user (see sessiontitle).
 func (b *chatbotBiz) maybeGenerateTitle(ctx context.Context, session *model.ChatbotSession, defaultName, userMsg, assistantContent string) string {
-	if session == nil || session.Title != defaultName {
+	if session == nil {
+		return ""
+	}
+	// B-1: the passed-in session may be a pre-stream snapshot. The send-time /title
+	// endpoint (instant-title-ux) could have set the title during the stream, so
+	// re-read the current title to skip the wasted LLM call when it is already
+	// non-default. The CAS write below still guards correctness either way.
+	currentTitle := session.Title
+	if fresh, ferr := b.ds.ChatbotSession().GetSession(ctx, session.ID); ferr == nil && fresh != nil {
+		currentTitle = fresh.Title
+	}
+	if currentTitle != defaultName {
 		return ""
 	}
 	title, err := genTitleFn(ctx, userMsg, assistantContent)

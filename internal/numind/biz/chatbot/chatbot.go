@@ -67,6 +67,10 @@ type IChatbotBiz interface {
 	ListMessages(ctx context.Context, userID uint, sessionID uint, offset, limit int) ([]model.ChatbotMessage, int64, error)
 	ChatStream(ctx context.Context, userID uint, sessionID uint, message string, attachmentIDs []uint64, modelKey string, thinking bool, handler StreamHandler) error
 
+	// GenerateTitleForSession 在发送首条消息时即时从 prompt 生成会话标题（instant-title-ux）。
+	// 仅当标题仍是默认名（chatbot 名）时生成；返回新标题或 ""（已改名/已生成则空）。
+	GenerateTitleForSession(ctx context.Context, userID, sessionID uint, prompt string) (string, error)
+
 	// C端：会话管理（Task 3 — rename-pin feature）
 	RenameSession(ctx context.Context, userID, sessionID uint, title string) error
 	PinSession(ctx context.Context, userID, sessionID uint, pinned bool) (*time.Time, error)
@@ -491,6 +495,31 @@ func (b *chatbotBiz) RenameSession(ctx context.Context, userID, sessionID uint, 
 		return fmt.Errorf("RenameSession: %w", err)
 	}
 	return nil
+}
+
+// GenerateTitleForSession 即时从 prompt 生成会话标题（instant-title-ux 发送时路径）。
+// 验证 session 属主，仅当标题仍是默认名（config.Name）时调小模型生成并用 CAS 写回。
+// best-effort：生成失败/已改名时返回 ("", nil)（除属主/未找到错误）。系统内部调用不计费。
+func (b *chatbotBiz) GenerateTitleForSession(ctx context.Context, userID, sessionID uint, prompt string) (string, error) {
+	session, err := b.ds.ChatbotSession().GetSession(ctx, sessionID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", errno.ErrSessionNotFound
+		}
+		return "", fmt.Errorf("GenerateTitleForSession: %w", err)
+	}
+	if session.UserID != userID {
+		return "", errno.ErrForbidden
+	}
+	config, err := b.ds.ChatbotConfig().Get(ctx, session.ChatbotID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", errno.ErrChatbotNotFound
+		}
+		return "", fmt.Errorf("GenerateTitleForSession: %w", err)
+	}
+	// 复用与 maybeGenerateTitle 同一套：仅默认名才生成 + CAS 防覆盖手动改名。
+	return b.maybeGenerateTitle(ctx, session, config.Name, prompt, ""), nil
 }
 
 // PinSession 置顶或取消置顶会话，验证所有权。
