@@ -14,6 +14,50 @@ import (
 	"numind-server/internal/pkg/model"
 )
 
+// fakeDefaultSkillSyncer records the write-through call so the Patch wiring can be
+// asserted without importing the artifact package (which would create an import cycle:
+// artifact already imports skill for skill.Build).
+type fakeDefaultSkillSyncer struct {
+	called       bool
+	gotParentID  uint
+	gotAgentID   uint
+	gotBody      string
+}
+
+func (f *fakeDefaultSkillSyncer) SyncAgentDefaultSkill(_ context.Context, parentUserID, agentID uint, newBody string) error {
+	f.called = true
+	f.gotParentID = parentUserID
+	f.gotAgentID = agentID
+	f.gotBody = newBody
+	return nil
+}
+
+// TestService_Patch_WritesThroughToDefaultSkill reproduces the v1↔v2 divergence: after
+// migrate-skill-from-agent, an agent's behavior lives in a bound v2 skill named
+// "<agent> 的默认技能". The v1 questionnaire Patch rebuilt GeneratedSkillBody but never
+// touched that skill, so a parent's edit left the runtime-loaded skill body stale.
+// Patch must invoke the injected syncer with the rebuilt body.
+func TestService_Patch_WritesThroughToDefaultSkill(t *testing.T) {
+	svc, db := newTestService(t)
+	parentID := seedParentUserID(db)
+	syncer := &fakeDefaultSkillSyncer{}
+	svc = svc.WithDefaultSkillSyncer(syncer)
+
+	ad, err := svc.Create(context.Background(), parentID, minCreateReq())
+	require.NoError(t, err)
+	oldBody := ad.GeneratedSkillBody
+
+	newQ := QuestionnaireAnswers{Q6: []string{"give_advice"}, Q7: []string{"text", "csv"}, Q12: "professional"}
+	patched, err := svc.Patch(context.Background(), parentID, ad.ID, PatchRequest{QuestionnaireAnswers: &newQ})
+	require.NoError(t, err)
+	require.NotEqual(t, oldBody, patched.GeneratedSkillBody, "questionnaire edit must rebuild body")
+
+	require.True(t, syncer.called, "Patch must write through to the bound default skill")
+	assert.Equal(t, parentID, syncer.gotParentID)
+	assert.Equal(t, uint(ad.ID), syncer.gotAgentID)
+	assert.Equal(t, patched.GeneratedSkillBody, syncer.gotBody, "syncer must receive the rebuilt body")
+}
+
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------

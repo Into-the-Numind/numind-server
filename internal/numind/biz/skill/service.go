@@ -12,6 +12,7 @@ import (
 
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 )
 
@@ -51,7 +52,19 @@ type PatchRequest struct {
 
 // Service 定义 biz/skill 层的 9 个业务方法。
 // 所有方法第一步校验 userID 为父账户（子账户返回 ErrChildAccountForbidden）。
+// DefaultSkillSyncer propagates a v1 questionnaire edit's rebuilt body to the agent's
+// bound v2 "默认技能" (created by migrate-skill-from-agent), so editing the agent no
+// longer leaves the runtime-loaded skill body stale. Implemented in biz/skill/artifact
+// (which already depends on this package for skill.Build) and injected here via
+// WithDefaultSkillSyncer to avoid an import cycle. A no-op when no default skill exists.
+type DefaultSkillSyncer interface {
+	SyncAgentDefaultSkill(ctx context.Context, parentUserID, agentID uint, newBody string) error
+}
+
 type Service interface {
+	// WithDefaultSkillSyncer injects the write-through syncer (builder; returns self).
+	WithDefaultSkillSyncer(syncer DefaultSkillSyncer) Service
+
 	Create(ctx context.Context, userID uint, req CreateRequest) (*model.AgentDefinition, error)
 	Get(ctx context.Context, userID uint, id uint64) (*model.AgentDefinition, error)
 	List(ctx context.Context, userID uint, includeInactive bool, page, pageSize int) ([]model.AgentDefinition, int64, error)
@@ -74,6 +87,7 @@ type service struct {
 	skillStore      store.IAgentDefinitionStore
 	templateStore   store.ISkillTemplateStore
 	templateService *TemplateService
+	syncer          DefaultSkillSyncer // optional; nil = no write-through (Create path / un-wired)
 }
 
 // NewService 构造 Service 实例。
@@ -84,6 +98,13 @@ func NewService(ds store.IStore) Service {
 		templateStore:   ds.SkillTemplates(),
 		templateService: NewTemplateService(ds.SkillTemplates()),
 	}
+}
+
+// WithDefaultSkillSyncer injects the default-skill write-through syncer and returns
+// the service for chaining (mirrors StudentRunService.WithUserStore).
+func (s *service) WithDefaultSkillSyncer(syncer DefaultSkillSyncer) Service {
+	s.syncer = syncer
+	return s
 }
 
 // validateRequiredQuestionnaireForCreate 校验创建新 AgentDefinition 时问卷必填项
@@ -372,6 +393,17 @@ func (s *service) Patch(ctx context.Context, userID uint, id uint64, req PatchRe
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	// Write-through to the agent's migrated v2 "默认技能" so the runtime-loaded skill
+	// body reflects this edit (v1↔v2 divergence fix). Best-effort + post-commit: the
+	// agent edit is the source of truth; a sync failure (or no default skill) must not
+	// fail the Patch — the eager GeneratedSkillBody already updated.
+	if s.syncer != nil {
+		if serr := s.syncer.SyncAgentDefaultSkill(ctx, userID, uint(ad.ID), ad.GeneratedSkillBody); serr != nil {
+			log.Warnw("skill.Patch: default-skill write-through failed (agent edit still applied)",
+				"agent_id", ad.ID, "parent_user_id", userID, "error", serr)
+		}
 	}
 	return ad, nil
 }
