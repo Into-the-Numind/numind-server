@@ -4790,3 +4790,21 @@ features:
   - 'S4-T6(commit 66c8c958): 沙箱 skill 镜像 Dockerfile.base apt 加 pandoc(导出 md→docx/pdf)。独立 CI/CD 不碰主应用部署。Sonnet review PASS: bookworm 有 pandoc 包/--no-install-recommends 防 texlive/weasyprint+CJK 已装/仅 skill 镜像/无语法错。镜像重建+真实产出待 S6 dev. 后端+infra(T1-T6)全完成, 余前端 T7-T9.'
   - 'S4-T7(commit 6f9e728): 前端数据层。api/documents+request.ts blob放行+types+stores/documents(open/scheduleSave debounce1.5s/flush inflight守卫/flushOnUnload fetch keepalive带auth/exportAs blob下载/reset)+utils/editableArtifact+env flag+vitest. 双Sonnet review: spec PASS_WITH_CONCERNS / quality FAIL(P1!). P1=慢保存期间编辑丢失(in-flight save完成无条件清pendingContent)→修: 仅pendingContent===body才清+finally检测新编辑重排(saveState!=error守卫防风暴)+lost-update回归测试. P2: flushOnUnload取消dangling timer+复用导出getToken+revokeObjectURL断言. 修后re-review PASS(回归测试覆盖+无loop+lint/tc净, 8 store+4 isEditable=12测试). 余 T8 Milkdown编辑器/T9 模态+入口.'
   blockers: []
+- id: instant-title-ux
+  ndf_version: '3.0'
+  description: '即时标题 UX 改造(承接 adaptive-session-titles)。(1)延迟建会话+发送时秒生成标题(chatbot+agent): 点新对话只显空白页不入列, 首发才乐观入列+占位闪动+并行从 prompt 调快速小模型秒生成标题+拿到更新。标题时机从回复后前移到发送时只用 prompt(新增 /title 端点), 保留回复后兜底(CAS 防双触发)。(2)修 chatbot 删除 bug(后端正常, 前端问题, Playwright 诊断)。(3)标题模型换 deepseek-v4-flash(via dmxapi 非思考)。'
+  classification_reason: 'Standard: 跨两仓库/新增 API 端点(/title)/影响文件>3/含 DB 注册。删除 bug=Bug-from-Customer(用户报 dev), 须先复现测试。用户 2026-06-16 给定全部需求+模型参数。'
+  last_updated_by: ai-s3
+  last_updated_at: '2026-06-16T14:10:00+08:00'
+  created_at: '2026-06-16T14:10:00+08:00'
+  track: standard
+  stage: S3
+  status: active
+  repos: [numind-server, numind-web-v3]
+  branches: {numind-server: feature/instant-title-ux, numind-web-v3: feature/instant-title-ux}
+  worktrees: {numind-server: /private/tmp/wt-instant-title-ux-numind-server, numind-web-v3: /private/tmp/wt-instant-title-ux-numind-web-v3}
+  progress: {total_tasks: 6, completed_tasks: 1, reviewed_tasks: 0}
+  artifacts: {spec: docs/superpowers/specs/2026-06-16-instant-title-ux-design.md}
+  decisions:
+  - 'S0-S3 合并设计 spec。T-model 已做(deepseek-v4-flash 注册+session.title 指向, migration 20260616_140000, dev 实测标题质量好)。余: title 端点(prompt-only)、chatbot/agent draft 延迟建会话+占位闪动、删除 bug(浏览器诊断+复现测试)。'
+  blockers: []
