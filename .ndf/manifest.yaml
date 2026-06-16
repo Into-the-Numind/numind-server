@@ -4767,14 +4767,14 @@ features:
   description: '文档系统 v1：让 agent mode 在对话中生成的文本类交付物(markdown/docx/纯文本/HTML)能在对话内点开→WYSIWYG 在线编辑(转换式:解析成 markdown 底层存储,TipTap/Milkdown 无头编辑器)→自动持久化→导出下载(md/docx/pdf)。不做独立"AI 生成文档"功能(生成发生在 agent mode);打开入口=agent 对话里直接点开(无独立"我的文档"工作区);可编辑=文本类,图表PNG/CSV/Excel/PPT/PDF 只预览+下载;持久化=自动可打开,编辑即落库;仅 C 端私有,不做分享/版本/协作。v2 推迟:用户上传文档的在线编辑。复用 COS+DocumentParser(MarkItDown/go-fitz)+qwen-long+Python docx-author skill+AgentToolArtifact。'
   classification_reason: 'Standard:新增 DB schema(document 表关联 agent_tool_artifact)+新增 API 端点(文档 CRUD/解析打开/保存/导出下载)+影响文件>3+跨 numind-server+numind-web-v3 两仓库+涉及用户数据隔离(user_id/parent_user_id)。无支付逻辑;新前端无头编辑器库属前端依赖非外部服务集成。用户 2026-06-16 经 3 轮 AskUserQuestion 确认 Standard + 6 项产品决策(AI生成为主/转换式/WYSIWYG/对话内打开/文本类可编/自动持久化) + v1 范围(只做 AI 生成产物,上传编辑放 v2)。'
   last_updated_by: ai-s4
-  last_updated_at: '2026-06-16T13:46:12+08:00'
+  last_updated_at: '2026-06-16T13:56:12+08:00'
   created_at: '2026-06-16T12:00:25+08:00'
   status: active
   stage: S4
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/document-system, numind-web-v3: feature/document-system}
   worktrees: {numind-server: /private/tmp/wt-document-system-numind-server, numind-web-v3: /private/tmp/wt-document-system-numind-web-v3}
-  progress: {total_tasks: 9, completed_tasks: 7, reviewed_tasks: 7}
+  progress: {total_tasks: 9, completed_tasks: 8, reviewed_tasks: 8}
   artifacts: {requirement: .ndf/features/document-system/requirement.md, proposal: .ndf/features/document-system/proposal.md, spec: .ndf/features/document-system/spec.md, plan: .ndf/features/document-system/plan.md}
   isolation: 'feature flag 休眠:后端 features.document_system.enabled 默认 OFF + 前端 VITE_ENABLE_DOCUMENT_SYSTEM;合 develop 不影响 prod 打 tag(prod 手动 tag 部署不开 flag=未上线)。复用 notification-center 休眠模式。'
   decisions:
@@ -4789,6 +4789,7 @@ features:
   - 'S4-T5(commit 15dd164b): controller+router+config flag。controller/v1/document Open/Get/Save/Export(current_user鉴权/uint(u.ID)/export RFC5987 Content-Disposition二进制流)+router /documents组套FeatureFlag+config_dev/local加document_system.enabled(prod/qa不加=休眠). 双Sonnet review: spec FAIL(P0!)+quality PASS_WITH_CONCERNS. P0=IBiz加Document()致salesrag_test的realBizOnlyCustomers stub缺方法→task lint编译失败; 修=补Document()stub+import(repo-wide vet确认仅此一处). P2=4处c.Request.Context()改c直传(项目惯例/Langfuse传播). 修后re-review PASS, config_prod/qa确认未动. 后端T1-T5全链路完成. controller按约定不单测(E2E覆盖).'
   - 'S4-T6(commit 66c8c958): 沙箱 skill 镜像 Dockerfile.base apt 加 pandoc(导出 md→docx/pdf)。独立 CI/CD 不碰主应用部署。Sonnet review PASS: bookworm 有 pandoc 包/--no-install-recommends 防 texlive/weasyprint+CJK 已装/仅 skill 镜像/无语法错。镜像重建+真实产出待 S6 dev. 后端+infra(T1-T6)全完成, 余前端 T7-T9.'
   - 'S4-T7(commit 6f9e728): 前端数据层。api/documents+request.ts blob放行+types+stores/documents(open/scheduleSave debounce1.5s/flush inflight守卫/flushOnUnload fetch keepalive带auth/exportAs blob下载/reset)+utils/editableArtifact+env flag+vitest. 双Sonnet review: spec PASS_WITH_CONCERNS / quality FAIL(P1!). P1=慢保存期间编辑丢失(in-flight save完成无条件清pendingContent)→修: 仅pendingContent===body才清+finally检测新编辑重排(saveState!=error守卫防风暴)+lost-update回归测试. P2: flushOnUnload取消dangling timer+复用导出getToken+revokeObjectURL断言. 修后re-review PASS(回归测试覆盖+无loop+lint/tc净, 8 store+4 isEditable=12测试). 余 T8 Milkdown编辑器/T9 模态+入口.'
+  - 'S4-T8(commit bf172e7): Milkdown WYSIWYG 编辑器组件。MilkdownEditor.vue(@milkdown/crepe v7.21,v-model markdown+readonly,单向流不watch避环). 装独立node_modules(主checkout完好). 双Sonnet review: spec PASS/quality PASS_WITH_CONCERNS(P0!). P0=readonly+create期间卸载→crepe置null→setReadonly空引用; 修=捕获本地instance+crepe!==instance检测卸载则destroy孤儿+return+void destroy(P1)+mock 3-arg+竞态回归测试. 修后re-review PASS(正常流readonly仍生效,5测试). Crepe真实渲染走S5 dev QA. T9须defineAsyncComponent懒加载控bundle.'
   blockers: []
 - id: instant-title-ux
   ndf_version: '3.0'
@@ -4803,7 +4804,7 @@ features:
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/instant-title-ux, numind-web-v3: feature/instant-title-ux}
   worktrees: {numind-server: /private/tmp/wt-instant-title-ux-numind-server, numind-web-v3: /private/tmp/wt-instant-title-ux-numind-web-v3}
-  progress: {total_tasks: 6, completed_tasks: 1, reviewed_tasks: 0}
+  progress: {total_tasks: 6, completed_tasks: 1, reviewed_tasks: 1}
   artifacts: {spec: docs/superpowers/specs/2026-06-16-instant-title-ux-design.md}
   decisions:
   - 'S0-S3 合并设计 spec。T-model 已做(deepseek-v4-flash 注册+session.title 指向, migration 20260616_140000, dev 实测标题质量好)。余: title 端点(prompt-only)、chatbot/agent draft 延迟建会话+占位闪动、删除 bug(浏览器诊断+复现测试)。'
