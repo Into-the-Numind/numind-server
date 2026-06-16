@@ -654,15 +654,17 @@ func ContextBudgetCredits(deps Deps) Middleware {
 // No-op when ReservationID == 0 (legacy-tier user / ChargeUser=false / no
 // user context).
 //
-// Actual cost resolution (spec §6.4):
+// Actual cost resolution (spec §6.4, fix ③):
 //   - Reads the *finalCostHolder injected by ContextBudgetCredits step 5b.
 //   - If Billing middleware called holder.Set(c) (from pricing rule + actual
 //     token counts), that value — including 0 — is used as actualCredits for
 //     reconcile. A 0/0 pricing rule legitimately produces cost=0 and must NOT
-//     fall back to EstimatedCredits (F-7 fix).
-//   - Falls back to fi.EstimatedCredits only when the holder is absent or Set
-//     was never called (e.g. legacy non-streaming paths, pricing-rule miss, or
-//     error paths where Billing never computed a cost).
+//     be treated as "unpriced" (F-7 fix).
+//   - Holder absent / Set never called (pricing-rule miss or stream truncated)
+//     → REFUND the reservation; never charge a fabricated fallback (the old
+//     fi.EstimatedCredits=ReservedOutputTokens path is what billed 64000). Log
+//     ERROR when token usage was present (real pricing config gap) vs WARN when
+//     there was no usage (benign truncation / calibration skipped).
 //
 // Failures are logged warn — finalize must never propagate errors to the caller.
 func finalizeReservationIfNeeded(ctx context.Context, deps Deps, fi FinalizeInput) {
