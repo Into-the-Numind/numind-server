@@ -194,7 +194,18 @@ func (a *aiserviceAdapter) Stream(ctx context.Context, in []*schema.Message, opt
 	if err != nil {
 		return nil, err
 	}
-	return wrapChannelAsStreamReader(ch), nil
+	// Stash the final chunk's token usage keyed by call-id, mirroring Generate, so
+	// budgetgate's PostToolCall can record it into the MaxCredits dimension. Without
+	// this the production streaming path stashed nothing → the per-agent
+	// CreditCapPerSession guardrail was inert (agent-mode-billing follow-up). Observes
+	// usage only; the chunk stream itself is forwarded unchanged.
+	callID := callctx.CallIDFromCtx(ctx)
+	onFinalUsage := func(u Usage) {
+		if callID != "" && a.usageStore != nil {
+			a.usageStore.Store(callID, u)
+		}
+	}
+	return wrapChannelAsStreamReader(ch, onFinalUsage), nil
 }
 
 // convertToAiserviceRequest converts Eino []*schema.Message to aiservice.ChatRequest,
@@ -363,7 +374,7 @@ func convertToolInfos(infos []*schema.ToolInfo) []aiservice.Tool {
 // eino boundary. react.Agent.Stream() received zero schema.Message chunks,
 // the SSE consumer terminated with step_count=0, and the frontend showed an
 // empty assistant bubble (dev agent_run 48/54, agent_id=100003 web_search).
-func wrapChannelAsStreamReader(ch <-chan aiservice.ChatChunk) *schema.StreamReader[*schema.Message] {
+func wrapChannelAsStreamReader(ch <-chan aiservice.ChatChunk, onFinalUsage func(Usage)) *schema.StreamReader[*schema.Message] {
 	sr, sw := schema.Pipe[*schema.Message](16)
 	go func() {
 		defer sw.Close()
@@ -377,6 +388,15 @@ func wrapChannelAsStreamReader(ch <-chan aiservice.ChatChunk) *schema.StreamRead
 			// Forward both as a final schema.Message so consumeEinoStream can
 			// dispatch tool calls and observe the step boundary before EOF.
 			if chunk.IsFinal {
+				// Observe token usage (final chunk only) before any forwarding/break
+				// so the per-session credit cap accrues regardless of which branch runs.
+				if onFinalUsage != nil && chunk.Usage != nil {
+					onFinalUsage(Usage{
+						PromptTokens:     chunk.Usage.PromptTokens,
+						CompletionTokens: chunk.Usage.CompletionTokens,
+						Model:            chunk.Model,
+					})
+				}
 				if chunk.FinishReason == "" && len(chunk.ToolCalls) == 0 {
 					break
 				}

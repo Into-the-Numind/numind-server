@@ -19,14 +19,13 @@ func NewCallUsageStore() *sync.Map { return &sync.Map{} }
 // in-flight calls — each callID is stashed once by the adapter and consumed once
 // by PostToolCall, avoiding unbounded growth.
 //
-// NOTE (streaming MaxCredits limitation): only aiserviceAdapter.Generate stashes
-// usage; aiserviceAdapter.Stream (the production SSE path's final-answer turn)
-// does not. So the in-memory MaxCredits guardrail counts tool-deciding Generate
-// turns but undercounts a streaming run's final-answer tokens. This affects ONLY
-// the in-memory safety cap — the authoritative three-pool credit deduction
-// (T1-T5, via aiservice ContextBudgetCredits which reconciles ChatStream on the
-// final chunk) is unaffected. MaxTurns works for all paths (RecordStep fires in
-// PreToolCall regardless). Completing streaming MaxCredits = a follow-up.
+// NOTE: BOTH aiserviceAdapter.Generate and aiserviceAdapter.Stream stash usage
+// (keyed by call-id) so the in-memory MaxCredits guardrail accrues on the production
+// streaming path too — each tool-deciding turn's usage is consumed by the following
+// PostToolCall. The cap still cannot stop the FINAL answer turn (no subsequent tool
+// call to gate on), but it now bounds runaway multi-turn loops, which is the risk it
+// exists for. The authoritative three-pool credit deduction (via aiservice
+// ContextBudgetCredits, reconciled on the final chunk) is separate and unaffected.
 type CallUsageLookup struct{ m *sync.Map }
 
 // NewCallUsageLookup wraps the shared store as a UsageLookupable for WrapHooks.
