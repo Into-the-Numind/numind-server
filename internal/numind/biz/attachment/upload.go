@@ -17,6 +17,7 @@ import (
 
 	agentatt "numind-server/internal/numind/biz/agent/attachment"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/imageutil"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/util"
@@ -146,6 +147,25 @@ func (s *UploadService) Upload(ctx context.Context, userID uint, file multipart.
 		}
 	}
 
+	// ── Image normalization (image-normalize-service) ────────────────────────
+	// Downscale/recompress oversized images BEFORE storing to COS so every
+	// downstream consumer (inline image_url, VLM describe) gets a provider-safe
+	// image — claude/dmxapi hard-reject any side >8000px, Doubao caps 36MP.
+	// 2000px/3.75MB is safe across all in-use vision models. On failure, keep the
+	// original (best-effort; the errtranslate mapping is the last-resort safety net).
+	modality := agentatt.DetectModality(mimeType)
+	if modality == agentatt.ModalityImage {
+		if res, nErr := imageutil.Normalize(data, imageutil.Options{
+			MaxWidth: 2000, MaxHeight: 2000, MaxBytes: 3932160, // 3.75 MB
+		}); nErr != nil {
+			log.C(ctx).Warnw("attachment.Upload: image normalize failed, storing original",
+				"filename", hdr.Filename, "error", nErr)
+		} else if res.Resized {
+			data = res.Data
+			mimeType = res.MediaType
+		}
+	}
+
 	// Build COS object key: agent-attachments/<userID>/<unixnano>-<filename>
 	ts := time.Now()
 	safeFilename := sanitizeFilename(hdr.Filename)
@@ -162,12 +182,12 @@ func (s *UploadService) Upload(ctx context.Context, userID uint, file multipart.
 		url = fmt.Sprintf("/local-uploads/%s", objectKey)
 	}
 
+	// fileSize / modality / dimensions all reflect the (possibly normalized) data:
+	// data was replaced above when the image was resized, so Size and Width/Height
+	// record the stored (normalized) image, not the original (image-normalize-service).
 	fileSize := int64(len(data))
 
-	// ── Detect modality ──────────────────────────────────────────────────────
-	modality := agentatt.DetectModality(mimeType)
-
-	// ── Detect image dimensions ──────────────────────────────────────────────
+	// ── Detect image dimensions (modality already detected above) ─────────────
 	var width, height *int
 	if modality == agentatt.ModalityImage {
 		width, height = agentatt.DecodeImageDimensionsFromBytes(data)
