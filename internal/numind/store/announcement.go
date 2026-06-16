@@ -405,10 +405,13 @@ func (s *announcementStore) TargetUserCount(ctx context.Context) (int64, error) 
 }
 
 // ReadCount 返回指定公告的已读回执数。
+// 只数在册的普通用户（is_admin=0 且未软删），与 TargetUserCount / ListReaders 口径一致——
+// 否则 admin 读者会让「已读数」大于「阅读情况」列表条数、已读率分子分母口径不一致。
 func (s *announcementStore) ReadCount(ctx context.Context, annID uint64) (int64, error) {
 	var n int64
 	err := s.db.WithContext(ctx).Model(&model.AnnouncementRead{}).
-		Where("announcement_id = ?", annID).
+		Joins("JOIN user u ON u.id = announcement_read.user_id AND u.is_admin = 0 AND u.deleted_at IS NULL").
+		Where("announcement_read.announcement_id = ?", annID).
 		Count(&n).Error
 	if err != nil {
 		return 0, fmt.Errorf("ReadCount: %w", err)
@@ -417,10 +420,12 @@ func (s *announcementStore) ReadCount(ctx context.Context, annID uint64) (int64,
 }
 
 // ResponseCount 返回指定公告的答卷数。
+// 同 ReadCount：只数在册普通用户（排除 admin + 软删），与 TargetUserCount 口径一致。
 func (s *announcementStore) ResponseCount(ctx context.Context, annID uint64) (int64, error) {
 	var n int64
 	err := s.db.WithContext(ctx).Model(&model.SurveyResponse{}).
-		Where("announcement_id = ?", annID).
+		Joins("JOIN user u ON u.id = survey_response.user_id AND u.is_admin = 0 AND u.deleted_at IS NULL").
+		Where("survey_response.announcement_id = ?", annID).
 		Count(&n).Error
 	if err != nil {
 		return 0, fmt.Errorf("ResponseCount: %w", err)
