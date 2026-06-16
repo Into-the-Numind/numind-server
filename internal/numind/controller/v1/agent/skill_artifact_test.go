@@ -421,7 +421,10 @@ func TestSkillArtifact_ListAgentSkills_HappyPath(t *testing.T) {
 	var sk1 model.Skill
 	require.NoError(t, json.Unmarshal(createResp1.Data, &sk1))
 
-	createStatus2, createResp2 := doArtifactRequest(t, engine, http.MethodPost, "/v1/skills", minimalCreateBody(), withUser(100))
+	// Distinct name: binding two same-named skills to one agent is now rejected
+	// (Attach dup-name guard — same-named bindings brick the run at name resolution).
+	createBody2 := map[string]interface{}{"name": "Test Skill 2", "body_md": "# Test 2\nSome body."}
+	createStatus2, createResp2 := doArtifactRequest(t, engine, http.MethodPost, "/v1/skills", createBody2, withUser(100))
 	require.Equal(t, http.StatusOK, createStatus2)
 	var sk2 model.Skill
 	require.NoError(t, json.Unmarshal(createResp2.Data, &sk2))
