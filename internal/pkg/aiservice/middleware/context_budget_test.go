@@ -1181,3 +1181,16 @@ func TestSynthBillOnlyReserve_SmallWindowKept(t *testing.T) {
 		t.Errorf("small-window reserve = %d, want %d (MaxOutputTokens/2)", got, want)
 	}
 }
+
+// TestSynthBillOnlyReserve_UnknownCapability covers the MaxOutputTokens=0 path
+// (model capability not configured in DB): the reserve must fall back to the
+// 8192 ceiling, not 0.
+func TestSynthBillOnlyReserve_UnknownCapability(t *testing.T) {
+	route := &registry.ResolvedRoute{
+		Capability: profile.ServiceCapability{MaxOutputTokens: 0},
+	}
+	result := synthBillOnlyResult("chatbot_chat", route, nil)
+	if got := result.Policy.ReservedOutputTokens; got != 8192 {
+		t.Errorf("unknown-capability reserve = %d, want 8192", got)
+	}
+}

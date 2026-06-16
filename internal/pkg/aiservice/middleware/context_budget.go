@@ -751,7 +751,13 @@ func effectiveCompletionTokens(ctx context.Context, deps Deps, route *registry.R
 // the 64000-credit overcharge. This ceiling covers the vast majority of chat /
 // agent completions; the per-(provider,model) historical estimator
 // (effectiveCompletionTokens) refines the reserve downward toward the real
-// average once data exists, and Reconcile settles against actual usage.
+// average once data exists, and Reconcile settles against actual usage — i.e.
+// the reserve is an estimate (a temporary hold), never the final charge.
+//
+// Deliberately a flat constant, not config: it gates billing, so a hot-editable
+// value carries business risk. If a future operation needs a different cold-start
+// ceiling (e.g. long-output agent_run vs short chatbot_chat), extend this into a
+// map[operation]int here rather than wiring it through config.
 const defaultBillOnlyReservedOutputTokens = 8192
 
 // synthBillOnlyResult builds a PrepareResult for bill-only mode: no compression,
@@ -762,12 +768,9 @@ func synthBillOnlyResult(operation string, route *registry.ResolvedRoute, messag
 	// reserved = min(MaxOutputTokens/2, 8192): keep the historical "half the
 	// window" safety for small-window models, but cap large-window models so a
 	// cold-start image/agent turn no longer freezes ~796 credits. MaxOutputTokens
-	// unknown (0) → fall back to the 8192 ceiling.
-	reserved := route.Capability.MaxOutputTokens / 2
+	// unknown (0) or negative → fall back to the 8192 ceiling.
+	reserved := min(route.Capability.MaxOutputTokens/2, defaultBillOnlyReservedOutputTokens)
 	if reserved <= 0 {
-		reserved = defaultBillOnlyReservedOutputTokens
-	}
-	if reserved > defaultBillOnlyReservedOutputTokens {
 		reserved = defaultBillOnlyReservedOutputTokens
 	}
 	return &PrepareResult{
