@@ -59,6 +59,7 @@ type IStore interface {
 	AgentAttachments() IAgentAttachmentStore // V1.5 multimodal fallback task 1.2
 	Marketplaces() IMarketplaceStore         // agent-mode-v2-skill-marketplace — skill_marketplace + skill_subscription
 	Announcements() IAnnouncementStore       // notification-center — 公告/问卷通知中心
+	Documents() IDocumentStore               // document-system — AI 生成产物的可编辑文档
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -292,4 +293,9 @@ func (ds *datastore) ToolArtifact() IAgentToolArtifactStore {
 // Announcements 返回一个实现了 IAnnouncementStore 接口的实例（notification-center）。
 func (ds *datastore) Announcements() IAnnouncementStore {
 	return NewAnnouncementStore(ds.db)
+}
+
+// Documents 返回一个实现了 IDocumentStore 接口的实例（document-system）。
+func (ds *datastore) Documents() IDocumentStore {
+	return newDocumentStore(ds.db)
 }

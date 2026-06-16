@@ -406,6 +406,15 @@ func autoMigrate(db *gorm.DB) error {
 		return fmt.Errorf("failed to migrate notification center tables: %v", err)
 	}
 
+	// document-system: 条件 AutoMigrate —— 仅 features.document_system.enabled 开启时建 document 表。
+	// prod 默认 flag off → 表永不在 prod 出现，保证合 develop 不影响 prod 打 tag 部署。
+	// 权威 schema + 显式 ROW_FORMAT 见 migrations/20260616_124000_create_document.sql。
+	if viper.GetBool("features.document_system.enabled") {
+		if err := db.AutoMigrate(&model.Document{}); err != nil {
+			return fmt.Errorf("failed to migrate document table: %w", err)
+		}
+	}
+
 	log.Infow("All database schema migration completed")
 
 	// 3. 迁移后验证字符集
