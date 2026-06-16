@@ -5026,3 +5026,21 @@ features:
   - 'S0 (ai 2026-06-17): 源于 opus-4-6 上传10982px超宽图被dmxapi 400拒(超8000px/边)无回复。调研: salesrag 4段缩图需优化(缺单边上限治不了本问题/写死Doubao/4段重复/反复缩已缩图画质bug)不可照搬; Claude Code imageResizer.ts是好范本(从原图缩/渐进压缩/友好错误/2000px+5MB base64)。用户拍板Standard=建公共imageutil服务+所有相关方接入+base64传输。imaging依赖已在仓库。'
   - 'S1+S2 (ai 2026-06-17): 实现细节调研确认 base64 data-URL 可行(types.go文档+adapter原样透传+salesrag已用)但有每轮重发/计费/33%膨胀代价→用户选①URL主+上传归一化+base64兜底。设计: 新 internal/pkg/imageutil.Normalize(Options MaxWidth/Height/Bytes/TotalPixels/AspectRatio,每次从原图缩修salesrag画质bug)+上传时归一化到2000px/3.75MB通用安全尺寸存COS(inline/VLM零改动自动受益)+迁移salesrag段1/2/4合并段3解耦不动ocrWithBaidu+errtranslate图片尺寸400映射。S2 Sonnet review CONDITIONAL_PASS(0 P0): 核心假设全验证(multimodal/fallback零改动/adapter data-URL/salesrag等价/2000px通吃claude8000-Doubao36MP-qwenvl-gpt-gemini)。吸收2 P1(fileSize重算/段3 ocrWithBaidu归一化字节trade-off)+3 P2(targetW守卫/errtranslate strings.Contains+errno.ErrImageTooLarge/PNG透明填黑)。'
   blockers: []
+- id: crawl4ai-tool
+  ndf_version: '3.0'
+  description: 'agent mode 的 web_fetch 只做裸 HTTP GET(不渲染 JS/不过基础反爬), 对现代网页(JS 渲染 + Cloudflare 等基础 bot 墙)力不从心, 沦为摆设。引入自托管 crawl4ai(Docker, Playwright 真实浏览器渲染→LLM-ready markdown, Apache-2.0)作为 agent 的网页读取工具, 补强/替换 web_fetch 的开放网页读取。范围: 单页 render+extract + Langfuse trace + 软错误模式 + SSRF 防护沿用 + tool_definition 注册。明确排除: 小红书等强反爬平台数据抓取(自托管=用自家 IP/账号硬爬, 已被禁言十天验证此路不通, 需另案换策略); 多页深度 crawl(BFS/DFS)暂不做。开放问题(S2 定): 新工具替换 web_fetch 后端 vs 并存(快路径 + 渲染路径)。'
+  classification_reason: 'Standard(用户 2026-06-17 直接动手确认): 新外部服务集成(crawl4ai Docker 服务)=Hotfix 第3条不满足; 影响文件>3(新工具 tool_crawl4ai.go + factory 注册 + config + 部署 compose/Dockerfile + 测试)。无 DB schema 变更(用现有 tool_definition 表注册数据行)/无新 API 端点(agent 工具内部注册非 HTTP route)/非支付权限(但涉及 SSRF, 沿用 web_fetch 两段校验)。仅后端 numind-server。'
+  last_updated_by: ai-s0
+  last_updated_at: '2026-06-17T01:18:25+0800'
+  created_at: '2026-06-17T01:18:25+0800'
+  track: standard
+  stage: S0
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: feature/crawl4ai-tool}
+  worktrees: {numind-server: /private/tmp/wt-crawl4ai-tool-numind-server}
+  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
+  artifacts: {requirement: .ndf/features/crawl4ai-tool/requirement.md}
+  decisions:
+  - 'S0 (ai 2026-06-17): 源于用户反馈 web_fetch 即便对普通网页也读不好(2026 年大量站点 JS 渲染 + Cloudflare 基础反爬) + xiaohongshu-mcp 自家账号爬小红书被禁言十天。评估 5 个开源候选(invisible_playwright/firecrawl/obscura/Scrapling/Webwright)后再评 crawl4ai: 选 crawl4ai 自托管(Apache-2.0 无 AGPL 商用包袱 + LLM-native markdown + Docker HTTP 服务接入贴合现 web_fetch)。需求拆两块: A=读好开放网页(本 feature, 低风险, 该做); B=平台数据(小红书, 排除, 换策略非换库)。'
+  blockers: []
