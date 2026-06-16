@@ -73,8 +73,11 @@ func (c *Client) RenderMarkdown(ctx context.Context, targetURL string) (*RenderR
   ```
   - markdown 提取优先级：`fit_markdown` → `raw_markdown` → 字符串形态。三者皆空 → 视为失败（返回 error，触发 fallback）。
   - title 取 `results[0].metadata.title`，缺省空串。
+  - **markdown 字段实现注意（S3 review P2）**：`markdown` 跨版本是 string 或 object，Go 侧用 `json.RawMessage` 接收后两段解析——先试 `json.Unmarshal` 为 string，失败再解为 `{fit_markdown, raw_markdown}` struct。不要直接假定单一形态。
 - 健康检查：`GET {base_url}/health`（部署脚本用，非工具运行时用）。
-- HTTP 客户端：`httpclient.NewClient(...)`，超时取 `crawl4ai.timeout_seconds`（默认 30s），`MaxRetries: 0`（渲染昂贵，失败即 fallback 而非重试）。
+- HTTP 客户端：`httpclient.NewClient(...)`，超时取 `crawl4ai.timeout_seconds`（默认 30s）。
+  - **重试必须显式关（S3 review P2）**：`httpclient.Client.Do()` 在 `Request.RetryPolicy == nil` 时会套用 `DefaultRetryPolicy()`（MaxRetries=3）——Config 级 MaxRetries 被忽略。因此每个 crawl4ai `Request` **必须**显式 `RetryPolicy: &httpclient.RetryPolicy{MaxRetries: 0}`（照 `web_search.go:132` Tavily 写法）。渲染昂贵，失败即 fallback 而非重试。
+  - **body 读取失败也算渲染失败（S3 review P2）**：200 OK 后 `io.ReadAll(resp.Body)` 仍可能失败 → `RenderMarkdown` 返回 error（不 panic），由调用方 fallback。
 
 ## 4. web_fetch Execute 改造（核心流程）
 
@@ -109,7 +112,7 @@ Execute(ctx, input):
 1. **Go 侧 pre-flight（已有，复用）**：`validateFetchURL` + `checkIPSafe` 在调 crawl4ai **之前**对 targetURL 做 DNS 解析 + 内网/loopback/link-local/cloud-metadata 拦截。内网 URL 在交给 crawl4ai 前就被拒。
 2. **crawl4ai 容器网络隔离（部署层，新增）**：crawl4ai 容器放在**仅出公网、不可达内部子网/DB/其他业务容器**的网络。这是渲染路径 SSRF 的**真正控制**——因为 Go 侧的 dial-time DNS-rebinding 防护（`newSafeHTTPClient` 的自定义 DialContext）只覆盖裸 HTTP 路径，覆盖不到 crawl4ai 内部发起的二次解析/请求。
 
-> 残余风险（DNS rebinding 在渲染路径）：pre-flight 解析与 crawl4ai 实际抓取之间有时间窗。结论：**靠容器网络隔离兜底**，并在 spec/部署文档显著标注。S3 plan 的部署 task 必须落实网络隔离，否则该 task 不算完成。
+> 残余风险（DNS rebinding 在渲染路径）：pre-flight 解析与 crawl4ai 实际抓取之间有时间窗。**另有重定向链风险（S3 review P2）**：Go 侧只校验初始 URL，但 crawl4ai 的浏览器可能跟随 HTTP 3xx 或 JS 跳转到内网地址——pre-flight 覆盖不到二次跳转。结论：**这两类都靠容器网络隔离兜底**（隔离网络里二次请求打不到内部服务），并在 spec/部署文档显著标注。S3 plan 的部署 task 必须**实测**网络隔离生效（见 plan T3），否则该 task 不算完成。
 
 ## 6. 配置块（viper）
 ```yaml
@@ -126,12 +129,14 @@ crawl4ai:
 ## 7. 部署（dev 必做，prod 文档化）
 - 镜像：`unclecode/crawl4ai:0.8.6`（**pin 版本**，勿用 latest）。
 - 端口：11235；`--shm-size=1g`；容器需 ≥4GB RAM。
-- dev：`deploy/crawl4ai/docker-compose.yml` 起服务 + 健康检查（`/health`）+ 资源限制（mem_limit）+ 网络隔离（见 §5）。后端容器经 `crawl4ai.base_url` 指向它。
+- dev：`deploy/crawl4ai/docker-compose.yml` 起服务 + 健康检查（`/health`）+ 资源限制 + 网络隔离（见 §5）。后端容器经 `crawl4ai.base_url` 指向它。
+  - **资源限制用 Compose v2 语法（S3 review P2）**：`deploy.resources.limits.memory: 4g`，**不是** v1 的服务级 `mem_limit`（现代 compose 会静默忽略）。
 - prod：同清单，运维手动部署 + 加配置（不进自动 CI，本 feature 不触 prod）。
 
 ## 8. Langfuse 可观测性
 - 不新增 LLM generation（crawl4ai 非 LLM 调用）。
 - 沿用现有 `tool.web_fetch.execute` span，EndSpan output 增加：`fetch_path`(render/raw_fallback/raw_direct)、`crawl4ai_latency_ms`、`crawl4ai_status`（走渲染时的 crawl4ai 返回码/错误）。
+- **所有早退出路径也要带 fetch_path（S3 review P2）**：现有代码有多处早 `EndSpan`（请求构建失败、HTTP 4xx/5xx、body 读取失败等分支）。这些早退出的 span output 同样要 set `fetch_path`，避免可观测性出现空洞。
 - 优雅降级：`if tc := langfuse.FromContext(ctx); tc != nil` 守卫不变。
 
 ## 9. PRD 验收标准 → 设计映射
