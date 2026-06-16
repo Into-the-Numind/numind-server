@@ -7,10 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"image/jpeg"
 	"io"
 	"log"
-	"math"
 	"mime/multipart"
 	"path/filepath"
 	"strings"
@@ -27,6 +25,7 @@ import (
 	"numind-server/internal/pkg/billing"
 	cb "numind-server/internal/pkg/contextbudget"
 	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/imageutil"
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
@@ -2398,106 +2397,19 @@ func (b *salesRAGBiz) AnalyzeProfileMultiFiles(ctx context.Context, userID uint,
 				continue
 			}
 
-			// 针对微信聊天记录长截图的压缩处理
+			// 针对微信聊天记录长截图的归一化处理（经由公共 imageutil 服务）
 			// 火山方舟 Doubao-Seed 模型限制：大小 < 10MB, 总像素 < 36,000,000, 长宽比 < 150:1
-			const maxVisionSize = 10 * 1024 * 1024 // 10MB
-			const maxTotalPixels = 36000000        // 36MP
-
-			// 解码图片检查属性
-			img, err := imaging.Decode(bytes.NewReader(imageData))
+			res, err := imageutil.Normalize(imageData, imageutil.Options{
+				MaxBytes:       10 * 1024 * 1024, // 10MB
+				MaxTotalPixels: 36_000_000,       // 36MP
+				MaxAspectRatio: 150,
+			})
 			if err != nil {
-				log.Printf("Failed to decode image %s: %v", fileHeader.Filename, err)
+				// 解码失败或极端无法压到限制内（含 ErrImageTooLarge）→ 跳过该图片，维持原语义
+				log.Printf("[AnalyzeProfileMultiFiles] Image %s normalize failed (%v), skipping", fileHeader.Filename, err)
 				continue
 			}
-
-			bounds := img.Bounds()
-			width, height := bounds.Dx(), bounds.Dy()
-			totalPixels := int64(width) * int64(height)
-			aspectRatio := float64(height) / float64(width)
-			if width > height {
-				aspectRatio = float64(width) / float64(height)
-			}
-
-			// 检查是否需要压缩（大小、像素、长宽比任一超标）
-			if len(imageData) > maxVisionSize || totalPixels > maxTotalPixels || aspectRatio > 150 {
-				log.Printf("[AnalyzeProfileMultiFiles] Image %s needs compression (Size: %d, Pixels: %d, Ratio: %.2f)",
-					fileHeader.Filename, len(imageData), totalPixels, aspectRatio)
-
-				// 微信长截图通常宽高比很大，需要更激进的压缩策略
-				scale := 1.0
-				if totalPixels > maxTotalPixels {
-					scale = math.Sqrt(float64(maxTotalPixels-1000000) / float64(totalPixels))
-				}
-				// 长宽比过大时进一步缩小，避免模型处理超长图
-				if aspectRatio > 140 {
-					scale = math.Min(scale, 0.8)
-				}
-
-				quality := 85
-				// 迭代压缩直到满足限制，确保最终一定能压缩到 10MB 以下
-				for len(imageData) > maxVisionSize && (width > 100 || height > 100) {
-					if scale < 1.0 {
-						width = int(float64(width) * scale)
-						height = int(float64(height) * scale)
-					}
-					// 每次循环都进行缩放，确保尺寸在减小
-					if scale >= 1.0 {
-						width = int(float64(width) * 0.9)
-						height = int(float64(height) * 0.9)
-					}
-
-					img = imaging.Resize(img, width, height, imaging.Lanczos)
-
-					var buf bytes.Buffer
-					err = jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality})
-					if err != nil {
-						log.Printf("Failed to encode image %s: %v", fileHeader.Filename, err)
-						break
-					}
-					imageData = buf.Bytes()
-
-					log.Printf("[AnalyzeProfileMultiFiles] Compression iteration: %dx%d, size: %d bytes, quality: %d",
-						width, height, len(imageData), quality)
-
-					// 如果还超过 10MB，继续降低质量或缩小尺寸
-					if len(imageData) > maxVisionSize {
-						if quality > 30 {
-							// 优先降低质量，直到 30%
-							quality -= 10
-						} else {
-							// 质量到 30% 后，大幅缩小尺寸
-							scale = 0.7
-						}
-					}
-				}
-			}
-
-			// 最终校验，如果仍然超过 10MB，使用最后的手段：大幅降低质量和尺寸
-			if len(imageData) > maxVisionSize {
-				log.Printf("[AnalyzeProfileMultiFiles] Image %s still too large after normal compression (%d bytes), applying aggressive compression", fileHeader.Filename, len(imageData))
-				// 最后手段：质量降至 20%，尺寸减半
-				for len(imageData) > maxVisionSize && (width > 50 || height > 50) {
-					width = int(float64(width) * 0.7)
-					height = int(float64(height) * 0.7)
-					img = imaging.Resize(img, width, height, imaging.Lanczos)
-
-					var buf bytes.Buffer
-					err = jpeg.Encode(&buf, img, &jpeg.Options{Quality: 20})
-					if err != nil {
-						log.Printf("Failed to encode image %s in aggressive compression: %v", fileHeader.Filename, err)
-						break
-					}
-					imageData = buf.Bytes()
-
-					log.Printf("[AnalyzeProfileMultiFiles] Aggressive compression: %dx%d, size: %d bytes", width, height, len(imageData))
-				}
-			}
-
-			// 最终校验，如果仍然超过 10MB，则跳过该图片
-			if len(imageData) > maxVisionSize {
-				log.Printf("[AnalyzeProfileMultiFiles] Image %s too large even after aggressive compression (%d bytes), skipping", fileHeader.Filename, len(imageData))
-				continue
-			}
+			imageData = res.Data
 
 			// 上传到临时目录
 			objectKey := fmt.Sprintf("salesrag/analyze_tmp/%d/%d_%d_%s", userID, time.Now().Unix(), i, fileHeader.Filename)
@@ -2865,95 +2777,20 @@ func (b *salesRAGBiz) analyzeChatStyleTextStream(ctx context.Context, userID uin
 func (b *salesRAGBiz) analyzeChatStyleImageStream(ctx context.Context, userID uint, imageData []byte, onToken func(token string) error) (string, error) {
 	log.Printf("[analyzeChatStyleImageStream] Starting analysis for user %d, image size: %d bytes", userID, len(imageData))
 
-	// 1. 检查图片大小和尺寸，如果超过限制则压缩
+	// 1. 检查图片大小和尺寸，如果超过限制则归一化（经由公共 imageutil 服务）
 	// 火山方舟 Doubao-Seed 模型限制：大小 < 10MB, 总像素 < 36,000,000, 长宽比 < 150:1
-	const maxVisionSize = 10 * 1024 * 1024 // 10MB
-	const maxTotalPixels int64 = 36000000  // 36MP
-
-	// 解码图片以检查尺寸
-	img, err := imaging.Decode(bytes.NewReader(imageData))
+	res, err := imageutil.Normalize(imageData, imageutil.Options{
+		MaxBytes:       10 * 1024 * 1024, // 10MB
+		MaxTotalPixels: 36_000_000,       // 36MP
+		MaxAspectRatio: 150,
+	})
 	if err != nil {
-		log.Printf("[analyzeChatStyleImageStream] Failed to decode image: %v", err)
-		return "", fmt.Errorf("解码图片失败: %w", err)
+		// 解码失败或极端无法压到限制内（含 ErrImageTooLarge）→ 维持原函数 abort-with-error 语义
+		log.Printf("[analyzeChatStyleImageStream] Image normalize failed: %v", err)
+		return "", fmt.Errorf("图片处理失败: %w", err)
 	}
-
-	bounds := img.Bounds()
-	width := bounds.Dx()
-	height := bounds.Dy()
-	totalPixels := int64(width) * int64(height)
-	aspectRatio := float64(height) / float64(width)
-	if width > height {
-		aspectRatio = float64(width) / float64(height)
-	}
-
-	log.Printf("[analyzeChatStyleImageStream] Original image: %dx%d, size: %d bytes, pixels: %d, ratio: %.2f",
-		width, height, len(imageData), totalPixels, aspectRatio)
-
-	// 检查是否需要压缩（大小、像素、长宽比任一超标）
-	if len(imageData) > maxVisionSize || totalPixels > maxTotalPixels || aspectRatio > 150 {
-		log.Printf("[analyzeChatStyleImageStream] Image needs compression")
-
-		scale := 1.0
-		if totalPixels > maxTotalPixels {
-			scale = math.Sqrt(float64(maxTotalPixels-1000000) / float64(totalPixels))
-		}
-		if aspectRatio > 140 {
-			scale = math.Min(scale, 0.8)
-		}
-
-		quality := 85
-		for len(imageData) > maxVisionSize && (width > 100 || height > 100) {
-			if scale < 1.0 {
-				width = int(float64(width) * scale)
-				height = int(float64(height) * scale)
-			} else {
-				width = int(float64(width) * 0.9)
-				height = int(float64(height) * 0.9)
-			}
-
-			img = imaging.Resize(img, width, height, imaging.Lanczos)
-
-			var buf bytes.Buffer
-			if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
-				return "", fmt.Errorf("压缩图片失败: %w", err)
-			}
-			imageData = buf.Bytes()
-
-			log.Printf("[analyzeChatStyleImageStream] Compression iteration: %dx%d, size: %d bytes, quality: %d",
-				width, height, len(imageData), quality)
-
-			if len(imageData) > maxVisionSize {
-				if quality > 30 {
-					quality -= 10
-				} else {
-					scale = 0.7
-				}
-			}
-		}
-
-		// 激进压缩：质量降至 20%，尺寸持续缩小
-		if len(imageData) > maxVisionSize {
-			for len(imageData) > maxVisionSize && (width > 50 || height > 50) {
-				width = int(float64(width) * 0.7)
-				height = int(float64(height) * 0.7)
-				img = imaging.Resize(img, width, height, imaging.Lanczos)
-
-				var buf bytes.Buffer
-				if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 20}); err != nil {
-					return "", fmt.Errorf("激进压缩图片失败: %w", err)
-				}
-				imageData = buf.Bytes()
-
-				log.Printf("[analyzeChatStyleImageStream] Aggressive compression: %dx%d, size: %d bytes", width, height, len(imageData))
-			}
-		}
-
-		if len(imageData) > maxVisionSize {
-			return "", fmt.Errorf("图片过大且压缩失败 (当前大小: %d bytes)", len(imageData))
-		}
-
-		log.Printf("[analyzeChatStyleImageStream] Compression done, final: %dx%d, %d bytes", width, height, len(imageData))
-	}
+	imageData = res.Data
+	log.Printf("[analyzeChatStyleImageStream] Image ready, final size: %d bytes (resized: %v)", len(imageData), res.Resized)
 
 	// 2. 上传图片到 COS 获取 URL
 	var dataURL string
@@ -3110,7 +2947,20 @@ func (b *salesRAGBiz) OCRAnalyze(ctx context.Context, userID uint, imageData []b
 		engine = "baidu"
 	}
 
-	// 1. 上传原图到 COS（两种引擎都需要）
+	// 1. 归一化图片（经由公共 imageutil 服务），再单次上传到 COS（两种引擎都用归一化后的图）
+	// 火山方舟限制：大小 < 10MB, 总像素 < 36MP, 宽高比 < 150:1
+	if res, nErr := imageutil.Normalize(imageData, imageutil.Options{
+		MaxBytes:       10 * 1024 * 1024, // 10MB
+		MaxTotalPixels: 36_000_000,       // 36MP
+		MaxAspectRatio: 150,
+	}); nErr != nil {
+		// 解码失败或极端无法压到限制内（含 ErrImageTooLarge）→ 保持原行为：仍上传原图继续
+		log.Printf("[OCRAnalyze] Image normalize failed, using original: user_id=%d, error=%v", userID, nErr)
+	} else if res.Resized {
+		imageData = res.Data
+		contentType = res.MediaType
+	}
+
 	objectKey := fmt.Sprintf("sales_chat/%d/%s/%d_%s", userID, sessionID, time.Now().Unix(), filename)
 	cosURL, err := util.UploadBytesToCOS(ctx, objectKey, contentType, imageData)
 	if err != nil {
@@ -3118,79 +2968,8 @@ func (b *salesRAGBiz) OCRAnalyze(ctx context.Context, userID uint, imageData []b
 		return "", "", fmt.Errorf("图片存储失败: %w", err)
 	}
 
-	// 1b. 如果图片超过火山方舟限制，压缩后重新上传
-	// 返回的 URL 后续会作为多模态 image_url 传给 AI
-	// 火山方舟限制：大小 < 10MB, 总像素 < 36MP, 宽高比 < 150:1
-	const maxAIImageSize = 10 * 1024 * 1024
-	const maxAIPixels int64 = 36_000_000
-	const maxAIAspectRatio = 150.0
-
-	displayObjectKey := objectKey
-	needsCompress := len(imageData) > maxAIImageSize
-	if img, decErr := imaging.Decode(bytes.NewReader(imageData)); decErr == nil {
-		width, height := img.Bounds().Dx(), img.Bounds().Dy()
-		totalPixels := int64(width) * int64(height)
-		aspectRatio := float64(width) / float64(height)
-		if height > width {
-			aspectRatio = float64(height) / float64(width)
-		}
-
-		if totalPixels > maxAIPixels || aspectRatio > maxAIAspectRatio {
-			needsCompress = true
-		}
-
-		if needsCompress {
-			log.Printf("[OCRAnalyze] Image needs compression for AI: size=%d, pixels=%d, ratio=%.1f, user_id=%d",
-				len(imageData), totalPixels, aspectRatio, userID)
-
-			// 先按像素/宽高比计算初始缩放
-			scale := 1.0
-			if totalPixels > maxAIPixels {
-				scale = math.Sqrt(float64(maxAIPixels-1_000_000) / float64(totalPixels))
-			}
-			if aspectRatio > maxAIAspectRatio {
-				scale = math.Min(scale, 0.8)
-			}
-			if scale < 1.0 {
-				width = int(float64(width) * scale)
-				height = int(float64(height) * scale)
-				img = imaging.Resize(img, width, height, imaging.Lanczos)
-			}
-
-			// 循环压缩直到满足大小限制
-			quality := 85
-			var compressed []byte
-			var buf bytes.Buffer
-			if encErr := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); encErr == nil {
-				compressed = buf.Bytes()
-			}
-			for len(compressed) > maxAIImageSize && (width > 100 || height > 100) {
-				width = int(float64(width) * 0.85)
-				height = int(float64(height) * 0.85)
-				resized := imaging.Resize(img, width, height, imaging.Lanczos)
-				buf.Reset()
-				if encErr := jpeg.Encode(&buf, resized, &jpeg.Options{Quality: quality}); encErr != nil {
-					break
-				}
-				compressed = buf.Bytes()
-				if len(compressed) > maxAIImageSize && quality > 30 {
-					quality -= 10
-				}
-			}
-
-			if len(compressed) > 0 && len(compressed) <= maxAIImageSize {
-				compressedKey := objectKey + "_ai.jpg"
-				if _, upErr := util.UploadBytesToCOS(ctx, compressedKey, "image/jpeg", compressed); upErr == nil {
-					displayObjectKey = compressedKey
-					log.Printf("[OCRAnalyze] Compressed for AI: %d -> %d bytes, %dx%d, user_id: %d",
-						len(imageData), len(compressed), width, height, userID)
-				}
-			}
-		}
-	}
-
-	// 生成前端展示用的签名 URL（使用压缩版，若有）
-	frontendURL, err := util.GenerateSignedURL(ctx, displayObjectKey, 86400) // 24h
+	// 生成前端展示用的签名 URL（使用归一化后的图）
+	frontendURL, err := util.GenerateSignedURL(ctx, objectKey, 86400) // 24h
 	if err != nil {
 		log.Printf("[OCRAnalyze] Generate frontend signed URL failed, fallback to raw, error: %v", err)
 		frontendURL = cosURL
@@ -3236,92 +3015,31 @@ func (b *salesRAGBiz) ocrWithBaidu(ctx context.Context, userID uint, imageData [
 func (b *salesRAGBiz) ocrWithVisionModel(ctx context.Context, userID uint, imageData []byte, contentType string, objectKey string, cosURL string, frontendURL string) (string, string, error) {
 	log.Printf("[OCRAnalyze] Using vision model engine, user_id: %d, image_size: %d", userID, len(imageData))
 
-	// 图片压缩（火山方舟模型限制：大小 < 10MB, 总像素 < 36,000,000, 长宽比 < 150:1）
-	const maxVisionSize = 10 * 1024 * 1024 // 10MB
-	const maxTotalPixels int64 = 36000000  // 36MP
-
-	img, err := imaging.Decode(bytes.NewReader(imageData))
-	if err != nil {
-		log.Printf("[OCRAnalyze] Failed to decode image for compression check, user_id: %d, error: %v", userID, err)
-	} else {
-		bounds := img.Bounds()
-		width, height := bounds.Dx(), bounds.Dy()
-		totalPixels := int64(width) * int64(height)
-		aspectRatio := float64(height) / float64(width)
-		if width > height {
-			aspectRatio = float64(width) / float64(height)
+	// 图片归一化（经由公共 imageutil 服务）
+	// 火山方舟模型限制：大小 < 10MB, 总像素 < 36,000,000, 长宽比 < 150:1
+	res, nErr := imageutil.Normalize(imageData, imageutil.Options{
+		MaxBytes:       10 * 1024 * 1024, // 10MB
+		MaxTotalPixels: 36_000_000,       // 36MP
+		MaxAspectRatio: 150,
+	})
+	switch {
+	case errors.Is(nErr, imageutil.ErrImageTooLarge):
+		// 极端无法压到限制内 → 维持原"图片过大且压缩失败"abort 语义
+		return "", "", fmt.Errorf("图片过大且压缩失败，请上传更小的图片")
+	case nErr != nil:
+		// 解码失败 → 维持原行为：记录并使用原图继续
+		log.Printf("[OCRAnalyze] Failed to normalize image for compression check, user_id: %d, error: %v", userID, nErr)
+	case res.Resized:
+		imageData = res.Data
+		// 归一化后需要重新上传到 COS
+		compressedKey := objectKey + "_compressed.jpg"
+		if _, uploadErr := util.UploadBytesToCOS(ctx, compressedKey, "image/jpeg", imageData); uploadErr != nil {
+			log.Printf("[OCRAnalyze] Upload compressed image failed: %v", uploadErr)
+		} else {
+			objectKey = compressedKey
 		}
-
-		if len(imageData) > maxVisionSize || totalPixels > maxTotalPixels || aspectRatio > 150 {
-			log.Printf("[OCRAnalyze] Image needs compression, user_id: %d, size: %d, pixels: %d, ratio: %.2f",
-				userID, len(imageData), totalPixels, aspectRatio)
-
-			scale := 1.0
-			if totalPixels > maxTotalPixels {
-				scale = math.Sqrt(float64(maxTotalPixels-1000000) / float64(totalPixels))
-			}
-			if aspectRatio > 140 {
-				scale = math.Min(scale, 0.8)
-			}
-
-			quality := 85
-			for len(imageData) > maxVisionSize && (width > 100 || height > 100) {
-				if scale < 1.0 {
-					width = int(float64(width) * scale)
-					height = int(float64(height) * scale)
-				} else {
-					width = int(float64(width) * 0.9)
-					height = int(float64(height) * 0.9)
-				}
-
-				img = imaging.Resize(img, width, height, imaging.Lanczos)
-
-				var buf bytes.Buffer
-				if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
-					log.Printf("[OCRAnalyze] Failed to compress image: %v", err)
-					break
-				}
-				imageData = buf.Bytes()
-
-				if len(imageData) > maxVisionSize {
-					if quality > 30 {
-						quality -= 10
-					} else {
-						scale = 0.7
-					}
-				}
-			}
-
-			if len(imageData) > maxVisionSize {
-				for len(imageData) > maxVisionSize && (width > 50 || height > 50) {
-					width = int(float64(width) * 0.7)
-					height = int(float64(height) * 0.7)
-					img = imaging.Resize(img, width, height, imaging.Lanczos)
-
-					var buf bytes.Buffer
-					if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 20}); err != nil {
-						break
-					}
-					imageData = buf.Bytes()
-				}
-			}
-
-			if len(imageData) > maxVisionSize {
-				return "", "", fmt.Errorf("图片过大且压缩失败，请上传更小的图片")
-			}
-
-			// 压缩后需要重新上传到 COS
-			compressedKey := objectKey + "_compressed.jpg"
-			_, uploadErr := util.UploadBytesToCOS(ctx, compressedKey, "image/jpeg", imageData)
-			if uploadErr != nil {
-				log.Printf("[OCRAnalyze] Upload compressed image failed: %v", uploadErr)
-			} else {
-				objectKey = compressedKey
-			}
-
-			log.Printf("[OCRAnalyze] Compression done, user_id: %d, final_size: %d, dimensions: %dx%d",
-				userID, len(imageData), width, height)
-		}
+		log.Printf("[OCRAnalyze] Normalize done, user_id: %d, final_size: %d, dimensions: %dx%d",
+			userID, len(imageData), res.Width, res.Height)
 	}
 
 	// 生成签名 URL 供视觉模型访问
