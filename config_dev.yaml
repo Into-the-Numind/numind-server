@@ -7,6 +7,8 @@ addr: :9091                  # HTTP 服务器监听地址
 features:
   notification_center:
     enabled: true             # 通知中心（铃铛 + 公告/问卷），dev 开启
+  document_system:
+    enabled: true             # 文档系统 v1（agent 产物在线编辑/导出），dev 开启
 
 # 后台管理系统配置
 admin:

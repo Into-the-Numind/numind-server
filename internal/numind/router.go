@@ -16,6 +16,7 @@ import (
 	"numind-server/internal/numind/controller/v1/config"
 	creditcontroller "numind-server/internal/numind/controller/v1/credit"
 	customercontroller "numind-server/internal/numind/controller/v1/customer"
+	documentcontroller "numind-server/internal/numind/controller/v1/document"
 	llmcontroller "numind-server/internal/numind/controller/v1/llm"
 	marketplacecontroller "numind-server/internal/numind/controller/v1/marketplace"
 	monitorcontroller "numind-server/internal/numind/controller/v1/monitor"
@@ -287,6 +288,20 @@ func installNumindRouters(g *gin.Engine) error {
 			annGroup.GET("/:id", annCtrl.GetDetail)                   // 公告详情（含问卷题目）
 			annGroup.POST("/:id/read", annCtrl.MarkRead)              // 标记已读（幂等）
 			annGroup.POST("/:id/survey/submit", annCtrl.SubmitSurvey) // 提交问卷答卷
+		}
+	}
+
+	// 文档系统 v1（document-system）：agent 生成产物的打开/编辑/保存/导出。
+	// 整组套 FeatureFlag —— flag off（prod 默认）时所有路由返回 ErrFeatureDisabled(404)。
+	{
+		docCtrl := documentcontroller.NewController(b.Document())
+		docGroup := authGroup.Group("/documents")
+		docGroup.Use(importMw.FeatureFlag("features.document_system.enabled"))
+		{
+			docGroup.POST("/open", docCtrl.Open)        // 打开/懒建档
+			docGroup.GET("/:id", docCtrl.Get)           // 取文档（重开）
+			docGroup.PUT("/:id", docCtrl.Save)          // 自动保存
+			docGroup.GET("/:id/export", docCtrl.Export) // 导出下载 ?format=md|pdf|docx
 		}
 	}
 
