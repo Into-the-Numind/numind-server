@@ -67,7 +67,10 @@ func parseToMarkdown(ctx context.Context, data []byte, filename, mime string, dp
 
 	case kindDocx:
 		if dp != nil {
-			text, err := dp.Parse(ctx, bytes.NewReader(data), filename)
+			// DocumentParser.Parse 按文件名扩展名路由（无 .docx → "unsupported file type"）。
+			// 前端常把 markdown 链接文字（如"点击下载 Word 文档"）当 filename 传，无扩展名 →
+			// 必须补 .docx，否则 docx 永远解析失败。kindDocx 已由 mime/扩展名判定，补后缀安全。
+			text, err := dp.Parse(ctx, bytes.NewReader(data), ensureDocxName(filename))
 			if err == nil && strings.TrimSpace(text) != "" {
 				return text, "markitdown", nil
 			}
@@ -83,4 +86,13 @@ func parseToMarkdown(ctx context.Context, data []byte, filename, mime string, dp
 	default:
 		return "", "", errno.ErrDocumentNotEditable
 	}
+}
+
+// ensureDocxName 保证传给 DocumentParser 的文件名带 .docx 扩展名（其 Parse 按扩展名路由）。
+// 前端可能传无扩展名的展示名（链接文字），此时回退到固定名让 MarkItDown 正确识别。
+func ensureDocxName(filename string) string {
+	if strings.HasSuffix(strings.ToLower(strings.TrimSpace(filename)), ".docx") {
+		return filename
+	}
+	return "document.docx"
 }
