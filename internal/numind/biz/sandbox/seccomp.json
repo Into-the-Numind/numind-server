@@ -20,7 +20,6 @@
         "add_key",
         "request_key",
         "bpf",
-        "clone3",
         "personality",
         "userfaultfd",
         "perf_event_open",
