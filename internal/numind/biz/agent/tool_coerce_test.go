@@ -96,3 +96,37 @@ func TestCreatePNGChartInput_CoercesStringValuesAndDims(t *testing.T) {
 		t.Errorf("options dims not coerced: %+v", in.Options)
 	}
 }
+
+func TestCoerceHelpers(t *testing.T) {
+	for _, c := range []struct {
+		in   string
+		want bool
+	}{{`true`, true}, {`"true"`, true}, {`"false"`, false}, {`1`, true}, {`"0"`, false}, {`""`, false}, {`null`, false}} {
+		got, err := coerceJSONBool(json.RawMessage(c.in))
+		if err != nil {
+			t.Errorf("coerceJSONBool(%s) err: %v", c.in, err)
+		}
+		if got != c.want {
+			t.Errorf("coerceJSONBool(%s)=%v want %v", c.in, got, c.want)
+		}
+	}
+	for _, c := range []struct {
+		in   string
+		want float64
+	}{{`5`, 5}, {`"5"`, 5}, {`5.5`, 5.5}, {`"5.5"`, 5.5}, {``, 0}, {`null`, 0}} {
+		got, err := coerceJSONFloat(json.RawMessage(c.in))
+		if err != nil {
+			t.Errorf("coerceJSONFloat(%s) err: %v", c.in, err)
+		}
+		if got != c.want {
+			t.Errorf("coerceJSONFloat(%s)=%v want %v", c.in, got, c.want)
+		}
+	}
+	// Non-numeric stays an error so Execute can surface a soft message.
+	if _, err := coerceJSONFloat(json.RawMessage(`"abc"`)); err == nil {
+		t.Error("coerceJSONFloat(\"abc\") should error")
+	}
+	if _, err := coerceJSONBool(json.RawMessage(`"maybe"`)); err == nil {
+		t.Error("coerceJSONBool(\"maybe\") should error")
+	}
+}
