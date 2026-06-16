@@ -4847,10 +4847,11 @@ features:
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/instant-title-ux, numind-web-v3: feature/instant-title-ux}
   worktrees: {numind-server: /private/tmp/wt-instant-title-ux-numind-server, numind-web-v3: /private/tmp/wt-instant-title-ux-numind-web-v3}
-  progress: {total_tasks: 6, completed_tasks: 3, reviewed_tasks: 3}
+  progress: {total_tasks: 6, completed_tasks: 5, reviewed_tasks: 5}
   artifacts: {spec: docs/superpowers/specs/2026-06-16-instant-title-ux-design.md}
   decisions:
   - 'S0-S3 合并设计 spec。T-model 已做(deepseek-v4-flash 注册+session.title 指向, migration 20260616_140000, dev 实测标题质量好)。余: title 端点(prompt-only)、chatbot/agent draft 延迟建会话+占位闪动、删除 bug(浏览器诊断+复现测试)。'
   - 'T-backend(8e01a3b1/65487ab8): 发送时即时标题端点 POST /v1/{chatbot/sessions,agent-sessions}/:id/title(prompt-only 生成+属主校验+仅默认名/未命名+CAS)。B-1: maybeGenerateTitle 重读DB当前标题避免兜底浪费调用。Generate 支持 assistantMsg="". 双review PASS_WITH_CONCERNS 0 P0: 修端点响应统一{title}/agent best-effort/config ErrChatbotNotFound 映射/doc/ErrorIs 断言。'
   - 'T-fe-chatbot(6f32adb/a1e21a0): 点新对话进 draft(startDraft 不建会话不入列), 首发懒建会话+乐观入列+titlePendingIds 独立Set闪动占位+并行调/title秒生成+拿到更新+清pending。进入空/删空也走draft。双review PASS_WITH_CONCERNS 0 P0: 修并发首发守卫 isCreatingSession/去 sessionsTotal+=1/flushPromises/补连发不重建+失败重试测试。'
+  - 'T-fe-agent(24c0dcf/6785d19): agent 新会话首发前端预生成 session_id(prepareNewSession 返回传 createRun)+乐观入侧边栏顶部+titlePendingIds 闪动+并行调/agent-sessions/:id/title(not-found 重试1次覆盖 createRun 延迟)+拿到更新 session_name。现有 currentRun.session_id watcher 导航同一 id。双review 无 P0: 修 P1 标题 pending 时跳过 fetchRecentSessions 防竞态。(同时记 T-fe-chatbot 已 4/6→实为5/6含本task)。'
   blockers: []
