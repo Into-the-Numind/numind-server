@@ -22,6 +22,7 @@ import (
 	"numind-server/internal/numind/biz/config"
 	"numind-server/internal/numind/biz/credit"
 	customerbiz "numind-server/internal/numind/biz/customer"
+	documentbiz "numind-server/internal/numind/biz/document"
 	kbbiz "numind-server/internal/numind/biz/knowledgebase"
 	"numind-server/internal/numind/biz/llmrouter"
 	"numind-server/internal/numind/biz/membership"
@@ -70,6 +71,7 @@ type IBiz interface {
 	Sop() sopbiz.ISopBiz                            // SOP服务
 	Customers() customerbiz.ICustomerBiz            // 客户管理服务
 	Announcement() announcementbiz.IAnnouncementBiz // 通知中心（公告/问卷）服务
+	Document() documentbiz.IDocumentService         // document-system 文档系统服务
 	SalesRAG() salesrag.SalesRAGBiz                 // 销售 RAG 服务
 	Credit() credit.ICreditBiz                      // 积分服务
 	CreditService() credit.ICreditService           // credits-system ICreditService 统一入口
@@ -108,19 +110,21 @@ type biz struct {
 	llmRouterSvc      *llmrouter.Router
 	agentRunner       agent.AgentRunner
 	agentToolRegistry agent.AgentToolRegistry
-	permissionGate    *permission.PermissionGate // #6 agent-mode-permission-pipeline
-	complianceGate    compliance.ComplianceGate  // #13 agent-mode-compliance-3layer
-	complianceAudit   *compliance.AuditLogger    // #13 agent-mode-compliance-3layer (Stop on shutdown)
-	memoryExtractor   *memory.ExtractorService   // Task 3.3 LLM extraction (Stop on shutdown)
-	memoryCadence     *memory.CadenceService     // Task 3.6 dialectic cadence gate (read-only)
-	memoryDialectic   memory.DialecticService    // Task 3.7 Layer A dialectic insight provider (background goroutine-based)
-	memoryTemporal    memory.TemporalService     // Task 3.8 temporal digest injector (per-turn read-only, 4 granularities)
-	memoryDigestCron  *memory.CronRunner         // Task 3.8 cron scheduler (4 jobs: daily/weekly/monthly/quarterly); Stop on shutdown
-	searchService     search.Service             // Task 3.5 FULLTEXT ngram search (also wired into AgentRunner via WithSearchService)
-	studentQuerySvc   *agent.StudentQueryService // #14 follow-up ALPHA student-facing queries
-	studentRunSvc     *agent.StudentRunService   // #14 BETA student-facing run lifecycle
-	attachFallbackSvc agentatt.FallbackService   // V1.5 multimodal fallback (task 1.2)
-	uploadSvc         *attachment.UploadService  // wired with fallback (V1.5 task 1.2)
+	permissionGate    *permission.PermissionGate   // #6 agent-mode-permission-pipeline
+	complianceGate    compliance.ComplianceGate    // #13 agent-mode-compliance-3layer
+	complianceAudit   *compliance.AuditLogger      // #13 agent-mode-compliance-3layer (Stop on shutdown)
+	memoryExtractor   *memory.ExtractorService     // Task 3.3 LLM extraction (Stop on shutdown)
+	memoryCadence     *memory.CadenceService       // Task 3.6 dialectic cadence gate (read-only)
+	memoryDialectic   memory.DialecticService      // Task 3.7 Layer A dialectic insight provider (background goroutine-based)
+	memoryTemporal    memory.TemporalService       // Task 3.8 temporal digest injector (per-turn read-only, 4 granularities)
+	memoryDigestCron  *memory.CronRunner           // Task 3.8 cron scheduler (4 jobs: daily/weekly/monthly/quarterly); Stop on shutdown
+	searchService     search.Service               // Task 3.5 FULLTEXT ngram search (also wired into AgentRunner via WithSearchService)
+	studentQuerySvc   *agent.StudentQueryService   // #14 follow-up ALPHA student-facing queries
+	studentRunSvc     *agent.StudentRunService     // #14 BETA student-facing run lifecycle
+	attachFallbackSvc agentatt.FallbackService     // V1.5 multimodal fallback (task 1.2)
+	uploadSvc         *attachment.UploadService    // wired with fallback (V1.5 task 1.2)
+	documentSvc       documentbiz.IDocumentService // document-system: 单实例(持久化导出并发守卫)
+	sandboxPool       sandbox.Pool                 // document-system 导出复用(spec §3.5b)；未来 healthcheck 可访问
 }
 
 // NewBiz 创建一个 IBiz 类型的实例.
@@ -268,6 +272,10 @@ func NewBiz(ds store.IStore) *biz {
 	sandboxPool := sandbox.NewPool(sandboxConfig, dockerClient, sandboxLogger)
 	sandboxHookManager := agent.NewSandboxHookManager(sandboxPool, ds.AgentSandboxSessions())
 	agent.SetDefaultHookManager(sandboxHookManager)
+
+	// document-system: 单实例文档服务（导出复用 sandboxPool；并发守卫须持久故在此构造一次）。
+	b.sandboxPool = sandboxPool
+	b.documentSvc = documentbiz.NewService(b.ds.Documents(), sandboxPool)
 	log.Infow("sandbox pool initialized",
 		"backend", string(sandboxConfig.Backend),
 		"pool_min", sandboxConfig.PoolMin,
@@ -764,6 +772,11 @@ func (b *biz) Customers() customerbiz.ICustomerBiz {
 // 沿用 Customers() 的惰性构造模式（无状态，依赖 ds.Announcements()）。
 func (b *biz) Announcement() announcementbiz.IAnnouncementBiz {
 	return announcementbiz.New(b.ds)
+}
+
+// Document 返回文档系统服务实例（document-system，单实例持久化导出并发守卫）。
+func (b *biz) Document() documentbiz.IDocumentService {
+	return b.documentSvc
 }
 
 // SalesRAG 返回销售 RAG 服务实例.

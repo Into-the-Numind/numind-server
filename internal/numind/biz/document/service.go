@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	"numind-server/internal/numind/biz/sandbox"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
@@ -22,6 +23,8 @@ type IDocumentService interface {
 	Get(ctx context.Context, userID uint, id uint64) (*DocumentDTO, error)
 	// Save 保存文档正文/标题（含 ownership 校验，last-write-wins）。
 	Save(ctx context.Context, userID uint, id uint64, req SaveReq) (*DocumentDTO, error)
+	// Export 导出文档为 md/pdf/docx，返回 (文件名, contentType, 数据, error)。含 ownership 校验。
+	Export(ctx context.Context, userID uint, id uint64, format string) (string, string, []byte, error)
 }
 
 // cosDownloader 抽象 COS 下载，便于测试注入。
@@ -29,19 +32,23 @@ type cosDownloader func(ctx context.Context, objectKey string) ([]byte, error)
 
 // service 是 IDocumentService 的实现。
 type service struct {
-	store    store.IDocumentStore
-	download cosDownloader
-	parser   *parser.DocumentParser
-	fallback docxFallback // v1 注入 nil；v2 注入 qwen-long 兜底
+	store       store.IDocumentStore
+	download    cosDownloader
+	parser      *parser.DocumentParser
+	fallback    docxFallback // v1 注入 nil；v2 注入 qwen-long 兜底
+	pool        sandbox.Pool // 导出用（pdf/docx 经 pandoc）；nil 时 pdf/docx 不可导
+	exportGuard *userGuard   // 每用户单并发导出守卫（须单实例持久，故在 NewService 建一次）
 }
 
-// NewService 创建文档服务（v1：无 qwen-long 兜底）。
-func NewService(s store.IDocumentStore) IDocumentService {
+// NewService 创建文档服务（v1：无 qwen-long 兜底）。pool 用于 pdf/docx 导出，可为 nil（仅 md 可导）。
+func NewService(s store.IDocumentStore, pool sandbox.Pool) IDocumentService {
 	return &service{
-		store:    s,
-		download: util.DownloadFromCOS,
-		parser:   parser.NewDocumentParser(),
-		fallback: nil,
+		store:       s,
+		download:    util.DownloadFromCOS,
+		parser:      parser.NewDocumentParser(),
+		fallback:    nil,
+		pool:        pool,
+		exportGuard: newUserGuard(),
 	}
 }
 
