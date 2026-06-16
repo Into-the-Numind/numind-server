@@ -1152,3 +1152,19 @@ func (c *capturingCreditService) FinalizeReservation(ctx context.Context, reserv
 	}
 	return c.mockCreditService.FinalizeReservation(ctx, reservationID, actualCredits, reason)
 }
+
+// TestSynthBillOnlyReserve_NotHalfWindow reproduces fix ②: the bill-only reserve
+// must NOT default to MaxOutputTokens/2. For a 128K-output model that worst case
+// is 64000 tokens — the gross over-reservation that, combined with the reconcile
+// fallback bug, surfaced as the 64000-credit overcharge. The reserve should be a
+// modest cold-start ceiling (the historical estimator refines it downward).
+func TestSynthBillOnlyReserve_NotHalfWindow(t *testing.T) {
+	route := &registry.ResolvedRoute{
+		Capability: profile.ServiceCapability{MaxOutputTokens: 128000},
+	}
+	result := synthBillOnlyResult("chatbot_chat", route, nil)
+	if result.Policy.ReservedOutputTokens > 8192 {
+		t.Errorf("bill-only reserve = %d output tokens, want <= 8192 (not MaxOutputTokens/2=64000)",
+			result.Policy.ReservedOutputTokens)
+	}
+}
