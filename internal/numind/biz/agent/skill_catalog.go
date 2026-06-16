@@ -10,6 +10,32 @@ import (
 	"numind-server/internal/pkg/model"
 )
 
+// dedupSkillsByName drops bound skills whose name duplicates an earlier one (first
+// by sort_order wins). The runtime resolves bound skills by name, so two same-named
+// active bindings are ambiguous. Previously the runner HARD-ERRORED on this (S1-D13),
+// which bricked the whole agent — every run failed before any LLM call. New duplicates
+// are now prevented at attach time (BindingService.Attach), but pre-existing data may
+// still contain them, so we degrade gracefully (drop later dupes + WARN) instead of
+// bricking the run.
+func dedupSkillsByName(skillList []model.Skill, agentID uint64) []model.Skill {
+	if len(skillList) <= 1 {
+		return skillList
+	}
+	seen := make(map[string]uint, len(skillList))
+	out := make([]model.Skill, 0, len(skillList))
+	for i := range skillList {
+		if existing, dup := seen[skillList[i].Name]; dup {
+			log.Warnw("AgentRunner: dropping duplicate-named bound Skill (kept first)",
+				"agent_id", agentID, "skill_name", skillList[i].Name,
+				"kept_skill_id", existing, "dropped_skill_id", skillList[i].ID)
+			continue
+		}
+		seen[skillList[i].Name] = skillList[i].ID
+		out = append(out, skillList[i])
+	}
+	return out
+}
+
 // skillCatalogTotalCharCap is the soft cap for the rendered catalog. Includes
 // header boilerplate (~300 chars) — skill entries get ~1700 chars. When the
 // total would exceed this, trailing disk skills are dropped with a WARN log.

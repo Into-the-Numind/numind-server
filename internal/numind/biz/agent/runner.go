@@ -598,19 +598,10 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 			// v2 路径：catalog 占据段位 [3] body (不读 ad.GeneratedSkillBody/CustomSkillBody)
 			// 设计意图 (S2-D22)：父账户用 binding 模型时不应再编辑 ad.body — binding 表是新 SoT。
 
-			// 同名防御 (S1-D13)：无 (parent_user_id, name) UNIQUE DB 约束 (S4-D26)，
-			// 由 runner defensive check 兜底。发现重名拒绝启动 Run，避免 LLM 调用歧义。
-			nameSeen := make(map[string]uint, len(skills))
-			for i := range skills {
-				sk := &skills[i]
-				if existing, dup := nameSeen[sk.Name]; dup {
-					log.Errorw("AgentRunner.Run: duplicate Skill name in bindings (S1-D13)",
-						"agent_id", req.AgentDefinitionID, "skill_name", sk.Name,
-						"skill_ids", []uint{existing, sk.ID})
-					return nil, fmt.Errorf("AgentRunner.Run: duplicate Skill name %q in bindings (rule S1-D13)", sk.Name)
-				}
-				nameSeen[sk.Name] = sk.ID
-			}
+			// 同名防御 (S1-D13)：无 (parent_user_id, name) UNIQUE DB 约束 (S4-D26)。
+			// 旧实现发现重名 hard-error 拒绝 Run（brick agent）；现改为优雅去重（保留首个），
+			// 新重名已在 attach 时拦截（BindingService.Attach）。
+			skills = dedupSkillsByName(skills, req.AgentDefinitionID)
 
 			// 构造 turn state — runner cache 给 use_skill tool (T03) 用 (O(1) lookup, 0 DB)。
 			useSkillTurnState = NewUseSkillTurnState(UseSkillTurnCapDefault)

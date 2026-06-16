@@ -203,17 +203,9 @@ func (r *agentRunner) RunStream(
 		}
 
 		if len(skills) > 0 {
-			nameSeen := make(map[string]uint, len(skills))
-			for i := range skills {
-				sk := &skills[i]
-				if existing, dup := nameSeen[sk.Name]; dup {
-					log.Errorw("AgentRunner.RunStream: duplicate Skill name in bindings (S1-D13)",
-						"agent_id", req.AgentDefinitionID, "skill_name", sk.Name,
-						"skill_ids", []uint{existing, sk.ID})
-					return nil, fmt.Errorf("AgentRunner.RunStream: duplicate Skill name %q in bindings (rule S1-D13)", sk.Name)
-				}
-				nameSeen[sk.Name] = sk.ID
-			}
+			// S1-D13 同名防御：无 (parent_user_id, name) UNIQUE 约束。旧实现 hard-error
+			// 整个 run（brick agent）；现改为优雅去重（保留首个），新重名已在 attach 拦截。
+			skills = dedupSkillsByName(skills, req.AgentDefinitionID)
 
 			useSkillTurnState = NewUseSkillTurnState(UseSkillTurnCapDefault)
 			for i := range skills {
