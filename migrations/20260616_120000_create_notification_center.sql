@@ -29,8 +29,8 @@ CREATE TABLE IF NOT EXISTS announcement (
     published_at  DATETIME NULL,
     expires_at    DATETIME NULL
                    COMMENT 'NULL = 永不过期',
-    created_by    INT UNSIGNED NOT NULL
-                   COMMENT 'admin user id',
+    created_by    BIGINT UNSIGNED NOT NULL
+                   COMMENT 'admin user id (匹配 user.id bigint unsigned)',
     created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     deleted_at    DATETIME NULL
@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS announcement (
 CREATE TABLE IF NOT EXISTS announcement_read (
     id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     announcement_id  BIGINT UNSIGNED NOT NULL,
-    user_id          INT UNSIGNED NOT NULL,
+    user_id          BIGINT UNSIGNED NOT NULL,
     read_at          DATETIME NOT NULL
                       COMMENT '首次已读时间（幂等保留）',
     created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS survey_question (
 CREATE TABLE IF NOT EXISTS survey_response (
     id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     announcement_id  BIGINT UNSIGNED NOT NULL,
-    user_id          INT UNSIGNED NOT NULL,
+    user_id          BIGINT UNSIGNED NOT NULL,
     submitted_at     DATETIME NOT NULL,
     created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uk_sr (announcement_id, user_id),

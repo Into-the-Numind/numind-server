@@ -45,7 +45,7 @@ type Announcement struct {
 	Status      string         `gorm:"size:16;not null;default:'draft';index:idx_ann_status_pub,priority:1" json:"status"`
 	PublishedAt *time.Time     `gorm:"type:datetime;index:idx_ann_status_pub,priority:2" json:"published_at"`
 	ExpiresAt   *time.Time     `gorm:"type:datetime" json:"expires_at"`
-	CreatedBy   uint           `gorm:"type:int unsigned;not null" json:"created_by"`
+	CreatedBy   uint           `gorm:"type:bigint unsigned;not null" json:"created_by"` // 匹配 user.id (gorm.Model uint→bigint unsigned)
 	CreatedAt   time.Time      `gorm:"type:datetime;not null;default:CURRENT_TIMESTAMP;autoCreateTime" json:"created_at"`
 	UpdatedAt   time.Time      `gorm:"type:datetime;not null;default:CURRENT_TIMESTAMP;autoUpdateTime" json:"updated_at"`
 	DeletedAt   gorm.DeletedAt `gorm:"index:idx_ann_deleted" json:"deleted_at"`
@@ -60,7 +60,7 @@ func (Announcement) TableName() string { return "announcement" }
 type AnnouncementRead struct {
 	ID             uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
 	AnnouncementID uint64    `gorm:"type:bigint unsigned;not null;uniqueIndex:uk_annread,priority:1" json:"announcement_id"`
-	UserID         uint      `gorm:"type:int unsigned;not null;uniqueIndex:uk_annread,priority:2;index:idx_annread_user" json:"user_id"`
+	UserID         uint      `gorm:"type:bigint unsigned;not null;uniqueIndex:uk_annread,priority:2;index:idx_annread_user" json:"user_id"` // 匹配 user.id bigint unsigned（FK 要求同类型）
 	ReadAt         time.Time `gorm:"type:datetime;not null" json:"read_at"`
 	CreatedAt      time.Time `gorm:"type:datetime;not null;default:CURRENT_TIMESTAMP;autoCreateTime" json:"created_at"`
 }
@@ -96,7 +96,7 @@ func (SurveyQuestion) TableName() string { return "survey_question" }
 type SurveyResponse struct {
 	ID             uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
 	AnnouncementID uint64    `gorm:"type:bigint unsigned;not null;uniqueIndex:uk_sr,priority:1;index:idx_sr_ann" json:"announcement_id"`
-	UserID         uint      `gorm:"type:int unsigned;not null;uniqueIndex:uk_sr,priority:2" json:"user_id"`
+	UserID         uint      `gorm:"type:bigint unsigned;not null;uniqueIndex:uk_sr,priority:2" json:"user_id"` // 匹配 user.id bigint unsigned（FK 要求同类型）
 	SubmittedAt    time.Time `gorm:"type:datetime;not null" json:"submitted_at"`
 	CreatedAt      time.Time `gorm:"type:datetime;not null;default:CURRENT_TIMESTAMP;autoCreateTime" json:"created_at"`
 }
