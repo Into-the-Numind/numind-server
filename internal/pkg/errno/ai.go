@@ -41,6 +41,12 @@ var (
 	// network-level error.
 	ErrAIProviderError = &Errno{HTTP: 502, Code: "AIService.ProviderError", Message: "AI 服务调用失败"}
 
+	// ErrImageTooLarge is returned when an uploaded image exceeds a provider's
+	// pixel-dimension or byte-size limit (e.g. claude/dmxapi reject any side
+	// >8000px). The upload-time normalizer (imageutil) handles most cases; this is
+	// the last-resort mapping for an image that still gets rejected upstream.
+	ErrImageTooLarge = &Errno{HTTP: 400, Code: "AIService.ImageTooLarge", Message: "图片过大，请换一张更小的图片"}
+
 	// ErrAIRestoreRequiresReason is returned when a restore operation is attempted
 	// without providing a reason.
 	ErrAIRestoreRequiresReason = &Errno{HTTP: 400, Code: "AIService.RestoreRequiresReason", Message: "恢复操作必须填写原因"}

@@ -26,6 +26,33 @@ func TestToErrno_WrappedDeadlineExceeded(t *testing.T) {
 	}
 }
 
+// TestToErrno_ImageDimensionsExceed verifies provider image-size/dimension
+// rejections (string-only errors) map to ErrImageTooLarge so the user sees
+// "图片过大" instead of the generic fallback (image-normalize-service).
+func TestToErrno_ImageDimensionsExceed(t *testing.T) {
+	cases := []string{
+		// Real dmxapi/claude 400 the user actually hit (matches "exceed max allowed size" + "dimensions exceed").
+		`ChatStream: LLM call failed: dmxapi.ChatStream: HTTP 400: {"error":{"message":"At least one of the image dimensions exceed max allowed size: 8000 pixels"}}`,
+		// Generic "image ... too large" phrasing seen from OpenAI-compatible aggregators.
+		"provider rejected: image too large",
+		// "dimensions exceed" variant (e.g. Anthropic-style messages).
+		"image dimensions exceed limit",
+	}
+	for _, msg := range cases {
+		e, ok := ToErrno(fmt.Errorf("wrapped: %w", errors.New(msg)))
+		if !ok {
+			t.Fatalf("expected ok=true for %q", msg)
+		}
+		if e.Code != errno.ErrImageTooLarge.Code {
+			t.Fatalf("expected code %q, got %q (msg=%q)", errno.ErrImageTooLarge.Code, e.Code, msg)
+		}
+	}
+	// A normal unrelated error must NOT match.
+	if _, ok := ToErrno(errors.New("some other failure")); ok {
+		t.Fatal("unrelated error should not map to ErrImageTooLarge")
+	}
+}
+
 // TestToErrno_WrappedCreditSentinel verifies the primary leak path: SOP biz
 // wraps credit.ErrInsufficientCredits via fmt.Errorf("node execution failed:
 // %w", err) and the controller boundary should still map it back to
