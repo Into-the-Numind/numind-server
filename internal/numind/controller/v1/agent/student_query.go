@@ -51,6 +51,8 @@ func RegisterStudentQueryRoutes(authGroup *gin.RouterGroup, skillSvc skill.Servi
 	authGroup.POST("/agent-sessions/:id/rename", ctrl.RenameSession)
 	// 9. POST /v1/agent-sessions/:id/delete
 	authGroup.POST("/agent-sessions/:id/delete", ctrl.DeleteSession)
+	// 10. POST /v1/agent-sessions/:id/title — instant-title-ux: 发送时即时生成标题
+	authGroup.POST("/agent-sessions/:id/title", ctrl.GenerateSessionTitle)
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +192,11 @@ type renameSessionRequest struct {
 	Name string `json:"name" binding:"required"`
 }
 
+// generateTitleRequest 即时生成会话标题请求（instant-title-ux 发送时路径）
+type generateTitleRequest struct {
+	Prompt string `json:"prompt" binding:"required"`
+}
+
 // PinSession handles POST /v1/agent-sessions/:id/pin.
 func (h *StudentQueryController) PinSession(c *gin.Context) {
 	user := middleware.GetCurrentUser(c)
@@ -212,6 +219,33 @@ func (h *StudentQueryController) PinSession(c *gin.Context) {
 }
 
 // RenameSession handles POST /v1/agent-sessions/:id/rename.
+// GenerateSessionTitle handles POST /v1/agent-sessions/:id/title.
+// Generates a title from the first prompt at send time (instant-title-ux). Returns
+// {title} ("" when not generated / already named). System-internal, non-user-billed.
+func (h *StudentQueryController) GenerateSessionTitle(c *gin.Context) {
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+	sessionID := c.Param("id")
+	if sessionID == "" || len(sessionID) > 64 {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("invalid session id: %q", sessionID), nil)
+		return
+	}
+	var req generateTitleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("%s", err.Error()), nil)
+		return
+	}
+	title, err := h.querySvc.GenerateSessionTitle(c.Request.Context(), user.ID, sessionID, req.Prompt)
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+	core.WriteResponse(c, nil, gin.H{"title": title})
+}
+
 func (h *StudentQueryController) RenameSession(c *gin.Context) {
 	user := middleware.GetCurrentUser(c)
 	if user == nil {

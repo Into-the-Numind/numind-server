@@ -27,7 +27,7 @@ func newTitleTestBiz(t *testing.T) (*chatbotBiz, *gorm.DB) {
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	require.NoError(t, db.AutoMigrate(&model.ChatbotSession{}))
+	require.NoError(t, db.AutoMigrate(&model.ChatbotSession{}, &model.ChatbotConfig{}))
 	return &chatbotBiz{ds: store.NewTestStore(db)}, db
 }
 
@@ -133,6 +133,38 @@ func TestMaybeGenerateTitle_ConcurrentRename_NoClobber(t *testing.T) {
 	var row model.ChatbotSession
 	require.NoError(t, db.First(&row, sess.ID).Error)
 	assert.Equal(t, "用户中途改的名", row.Title, "manual rename during generation must NOT be clobbered (US3)")
+}
+
+// GenerateTitleForSession is the send-time (instant) path: ownership check + reuse
+// of the default-name guard + CAS, generating from the prompt alone.
+func TestGenerateTitleForSession(t *testing.T) {
+	b, db := newTitleTestBiz(t)
+	cfg := &model.ChatbotConfig{Name: "客服助手"}
+	require.NoError(t, db.Create(cfg).Error)
+	sess := &model.ChatbotSession{UserID: 1, ChatbotID: cfg.ID, Title: "客服助手", Status: "active"}
+	require.NoError(t, db.Create(sess).Error)
+
+	// owner + still default name → generate from prompt + persist
+	withGenTitleFn(t, func(_ context.Context, p, a string) (string, error) {
+		assert.Contains(t, p, "怎么退货")
+		assert.Empty(t, a, "instant path passes prompt only")
+		return "退货咨询", nil
+	})
+	title, err := b.GenerateTitleForSession(context.Background(), 1, sess.ID, "怎么退货")
+	require.NoError(t, err)
+	assert.Equal(t, "退货咨询", title)
+	var row model.ChatbotSession
+	require.NoError(t, db.First(&row, sess.ID).Error)
+	assert.Equal(t, "退货咨询", row.Title, "persisted")
+
+	// already named (now != default) → "" skip
+	title, err = b.GenerateTitleForSession(context.Background(), 1, sess.ID, "另一个问题")
+	require.NoError(t, err)
+	assert.Empty(t, title)
+
+	// non-owner → error, no change
+	_, err = b.GenerateTitleForSession(context.Background(), 999, sess.ID, "q")
+	require.Error(t, err, "non-owner must be rejected")
 }
 
 func TestMaybeGenerateTitle_NilSession_ReturnsEmpty(t *testing.T) {

@@ -175,6 +175,37 @@ func (ctrl *ChatbotController) RenameSession(c *gin.Context) {
 	core.WriteResponse(c, nil, gin.H{"id": id, "title": title})
 }
 
+// generateTitleRequest 即时生成会话标题请求（instant-title-ux 发送时路径）
+type generateTitleRequest struct {
+	Prompt string `json:"prompt" binding:"required"`
+}
+
+// GenerateTitle 在用户发送首条消息时即时从 prompt 生成会话标题。
+// 仅当标题仍是默认名时生成；返回 {id, title}（title 为 "" 表示未生成/已改名）。
+// 系统内部 LLM 调用不扣用户积分。
+func (ctrl *ChatbotController) GenerateTitle(c *gin.Context) {
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+	id, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+	var req generateTitleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("%s", err.Error()), nil)
+		return
+	}
+	title, err := ctrl.chatbotBiz.GenerateTitleForSession(c, user.ID, id, req.Prompt)
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+	core.WriteResponse(c, nil, gin.H{"id": id, "title": title})
+}
+
 // pinSessionRequest 置顶会话请求
 type pinSessionRequest struct {
 	Pinned *bool `json:"pinned" binding:"required"` // 必须用 *bool 指针避免 false 被 Gin 当作 zero value 跳过 required
