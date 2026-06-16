@@ -22,6 +22,14 @@ func cacheKey(serviceType, provider, model string) string {
 	return serviceType + "|" + provider + "|" + model
 }
 
+// agnosticCacheKey builds the LRU key for service_type-agnostic fallback hits
+// (fix ①). The "agnostic|" prefix never collides with a real service_type, so
+// these entries are kept distinct from the cacheKey() entries above. Computed in
+// one place so resolveAgnostic and InvalidateCache stay in sync.
+func agnosticCacheKey(provider, model string) string {
+	return "agnostic|" + provider + "|" + model
+}
+
 // cacheEntry wraps a PricingRule with its expiry so that stale entries can be
 // dropped lazily on Get. We prefer lazy TTL over a background sweeper to keep
 // the cache dependency minimal.
@@ -120,10 +128,16 @@ func unregisterCache(c *ruleCache) {
 // A missing key is a no-op — callers do not need to check membership first.
 func InvalidateCache(serviceType, provider, model string) {
 	key := cacheKey(serviceType, provider, model)
+	// Also evict the service_type-agnostic entry (fix ①): it is keyed only by
+	// (provider, model), so any service_type's price change for this model must
+	// drop it too — otherwise an admin price edit would leave the agnostic
+	// fallback path serving the stale price until TTL expiry.
+	aKey := agnosticCacheKey(provider, model)
 	cacheRegistryMu.RLock()
 	defer cacheRegistryMu.RUnlock()
 	for _, c := range cacheRegistry {
 		c.Remove(key)
+		c.Remove(aKey)
 	}
 }
 

@@ -296,17 +296,18 @@ func (c *calculator) resolvePricingRule(ctx context.Context, serviceType, provid
 	// model's row registered under another service_type ("llm_chat"). Only
 	// reached AFTER the exact (serviceType, …) lookups missed → a dedicated
 	// vision model with its own llm_vision row keeps precedence (no regression).
-	if rule := c.resolveAgnostic(ctx, provider, modelKey, providerModelID); rule != nil {
-		return rule, nil
-	}
-	return nil, gorm.ErrRecordNotFound
+	return c.resolveAgnostic(ctx, provider, modelKey, providerModelID)
 }
 
 // resolveAgnostic is the service_type-agnostic last-resort lookup (fix ①). It
 // tries (provider, modelKey) then (provider, providerModelID), caching hits
-// under a dedicated "agnostic|provider|model" key that never collides with the
-// "serviceType|provider|model" keys used by the exact lookups above. Returns nil
-// when nothing matches (caller maps that to ErrRecordNotFound).
+// under agnosticCacheKey() — a dedicated prefix that never collides with the
+// "serviceType|provider|model" keys used by the exact lookups above.
+//
+// Returns gorm.ErrRecordNotFound when no candidate matches. A non-NotFound DB
+// error (timeout, connection refused) is PROPAGATED — consistent with the rest
+// of resolvePricingRule and the ICalculator contract: a real lookup failure must
+// bubble up, never be silently downgraded to "not found" (which would bill ¥0).
 //
 // follow-up: two sibling resolvers (billing.ResolvePricingRule for usage_record
 // snapshots, middleware/billing.go inline) duplicate this 2-step logic and do
@@ -314,7 +315,7 @@ func (c *calculator) resolvePricingRule(ctx context.Context, serviceType, provid
 // for vision→unified-model calls. Cost/reconcile are unaffected (both flow
 // through this resolver via calc). Consolidating the three resolvers is tracked
 // separately.
-func (c *calculator) resolveAgnostic(ctx context.Context, provider, modelKey, providerModelID string) *model.PricingRule {
+func (c *calculator) resolveAgnostic(ctx context.Context, provider, modelKey, providerModelID string) (*model.PricingRule, error) {
 	candidates := []string{modelKey}
 	if providerModelID != "" && providerModelID != modelKey {
 		candidates = append(candidates, providerModelID)
@@ -323,16 +324,21 @@ func (c *calculator) resolveAgnostic(ctx context.Context, provider, modelKey, pr
 		if m == "" {
 			continue
 		}
-		aKey := "agnostic|" + provider + "|" + m
+		aKey := agnosticCacheKey(provider, m)
 		if rule, ok := c.cache.Get(aKey); ok {
-			return rule
+			return rule, nil
 		}
-		if rule, err := c.store.GetPricingRuleByModel(ctx, provider, m); err == nil {
+		rule, err := c.store.GetPricingRuleByModel(ctx, provider, m)
+		if err == nil {
 			c.cache.Put(aKey, rule)
-			return rule
+			return rule, nil
 		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err // real DB error — propagate, do not silently bill ¥0
+		}
+		// NotFound on this candidate → try the next.
 	}
-	return nil
+	return nil, gorm.ErrRecordNotFound
 }
 
 // IsFreeModel implements ICalculator — see the interface doc for the full

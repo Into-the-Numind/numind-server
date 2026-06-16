@@ -2,6 +2,7 @@ package pricing
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -24,6 +25,10 @@ type stubPricingStore struct {
 	pricingRules map[string]*model.PricingRule
 	// pricingErr overrides the error returned by GetPricingRule (nil = use map).
 	pricingErr error
+	// pricingByModelErr overrides the error returned by GetPricingRuleByModel
+	// only (nil = use map). Lets a test make the exact lookup miss (NotFound)
+	// while the service_type-agnostic fallback hits a real DB error.
+	pricingByModelErr error
 
 	// pricingRuleTiers is keyed by rule ID.
 	pricingRuleTiers map[uint][]model.PricingRuleTier
@@ -79,6 +84,9 @@ func (s *stubPricingStore) GetProviderModelID(_ context.Context, modelKey, provi
 // multi-row precedence assert at the store level.
 func (s *stubPricingStore) GetPricingRuleByModel(_ context.Context, provider, modelName string) (*model.PricingRule, error) {
 	s.getPricingRuleByModelCalls.Add(1)
+	if s.pricingByModelErr != nil {
+		return nil, s.pricingByModelErr
+	}
 	if s.pricingErr != nil {
 		return nil, s.pricingErr
 	}
@@ -418,6 +426,25 @@ func TestCalculateCost_VisionModelExactStillWins(t *testing.T) {
 	}
 	if got := store.getPricingRuleByModelCalls.Load(); got != 0 {
 		t.Errorf("agnostic fallback must NOT fire on exact match; GetPricingRuleByModel called %d times", got)
+	}
+}
+
+// TestCalculateCost_AgnosticDBErrorPropagates verifies that a real (non-NotFound)
+// DB error on the service_type-agnostic fallback path is surfaced rather than
+// silently downgraded to ErrRecordNotFound (which would bill ¥0). Guards the
+// ICalculator contract on the fix ① path (S4 review P1).
+func TestCalculateCost_AgnosticDBErrorPropagates(t *testing.T) {
+	transient := errors.New("connection refused")
+	store := &stubPricingStore{
+		pricingRules:      map[string]*model.PricingRule{}, // exact lookup → NotFound
+		pricingByModelErr: transient,                       // agnostic lookup → real DB error
+	}
+
+	calc := NewCalculator(store)
+	_, err := calc.CalculateCost(context.Background(), "llm_vision", "dmxapi",
+		"claude-opus-4-6", 2178, 504)
+	if !errors.Is(err, transient) {
+		t.Fatalf("agnostic DB error must propagate, got %v", err)
 	}
 }
 

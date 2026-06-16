@@ -56,7 +56,7 @@ func (s *stubUsageStore) GetPricingRuleByModel(_ context.Context, provider, mode
 	}
 	suffix := "|" + provider + "|" + modelName
 	for key, rule := range s.pricingRules {
-		if strings.HasSuffix(key, suffix) {
+		if strings.HasSuffix(key, suffix) && rule.IsActive {
 			return rule, nil
 		}
 	}
