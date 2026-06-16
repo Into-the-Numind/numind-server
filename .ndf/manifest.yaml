@@ -1,5 +1,18 @@
 schema_version: '2.0'
 features:
+- id: meeting-copilot
+  track: standard
+  description: '会议副驾（Meeting Copilot）——全新独立模式。用户开场设定角色定位+反馈规则(role_prompt)，系统近实时录音+转写(前端 Web Audio 分段 16k 单声道 WAV → aiservice.ASR/FunASR)，按提示词以「自动(服务端 LLM 判官按 auto_interval 决定是否插话)+手动(随时点按钮)」两种方式给实时反馈(SSE 流)，会议结束生成结构化 AI 纪要(要点/决议/待办)。角色可存预设模板复用。内部试用先行：feature flag features.meeting_copilot.enabled 默认 OFF + VITE_ENABLE_MEETING_COPILOT 控前端入口，仅记录用量(UsageRecord)不接会员门槛/不扣积分。代码高度自包含(biz/meeting + controller/v1/meeting + model/meeting + store/meeting + views/meeting + stores/meeting.ts + api/meeting.ts + composables/useMeetingRecorder)，可整体删除。跨 numind-server + numind-web-v3。'
+  classification_reason: 'Standard: 新增 4 张表(meeting_session/segment/feedback/preset)+migration、新增多个 API 端点、跨两仓库、文件数远超 3。非客户 bug(Rule 11 不适用)。用户 /goal + dynamic workflows 驱动；product 决策已 4 问拍板(自动+手动反馈 / 录音+转写+AI纪要 / 自由填+存预设 / 内部 flag 先行)。'
+  status: active
+  stage: S2
+  repos:
+    numind-server: feature/meeting-copilot (worktree /private/tmp/wt-meeting-copilot-numind-server)
+    numind-web-v3: feature/meeting-copilot (worktree /private/tmp/wt-meeting-copilot-numind-web-v3)
+  progress: {total_tasks: 5, completed_tasks: 0, reviewed_tasks: 0}
+  decisions:
+  - 'S0-S2 (ai 2026-06-17): 可行性评估通过。关键约束=ASR 仅批量(FunASR)无流式→采用分段近实时(前端 Web Audio 每~10s 编码 16k 单声道 WAV 上传, FunASR 兼容)。反馈架构=客户端定时轮询触发+服务端 LLM 判官(避免服务端常驻 goroutine/SSE 长连接；何时反馈由 role_prompt 决定, 满足需求)。计费=plain aiservice 调用(记 UsageRecord)不走 Reserve/Reconcile/会员门槛(内部试用)。复用现有 task profile 不新注册(避开 registry 注册陷阱)。契约 SPEC: docs/meeting-copilot/SPEC.md。'
+  blockers: []
 - id: agent-mode-ux-repair
   track: standard
   description: 'Agent mode 全面维修（前端 numind-web-v3）。审计 UX 旅程发现的 P0/P1：U1 学员跨 Agent 历史+搜索整套做好却无任何入口(HomeView 加查看历史链接)；U2 技能市场「装载到 Agent」跳到了技能编辑器(无绑定入口)→订阅闭环断裂，改为带 skill 上下文跳 Agent 列表(引导条)→选 Agent→AgentEdit 透传→SkillBindingPanel 自动装载，一步到位；U4 移除即将上线假按钮(试聊一下→去装载技能/隐藏不可逆且只读的高级模式开关)；U5 SkillBindingPanel 补技能↔问卷心智解释；U6 模板导入去 800ms setTimeout；U7 AgentChatHeader 渲染本就算好却没放进模板的 statusBadge(已结束/进行中/任务失败/积分用尽)。'
@@ -17,15 +30,18 @@ features:
   description: '客户上报：一次 chatbot 上传图片被扣 64000 积分。根因三处叠加：(1) 网关 classifyServiceType 把任何带图请求归类 service_type=llm_vision，但 pricing.resolvePricingRule 把 service_type 当定价主键，llm_vision 只配 ali/volc，dmxapi/claude 无 vision 价→CalculateCost 报错；(2) 对账缺价兜底 fi.EstimatedCredits=ReservedOutputTokens(=MaxOutputTokens/2=64000)，把输出 token 数直接当积分扣(单位错误)；(3) bill-only synthBillOnlyResult 硬编码预扣=MaxOutputTokens/2，比实际(504 token/12 积分)高 66 倍。真实成本~12 积分。修：①定价按(provider,model)解析无视 service_type；②bill-only 预扣用历史均值估算器；③对账缺价退款/收0+告警绝不放大。dev 数据已修(退 4758,audit txn 8472)。'
   classification_reason: 'Standard: 直接碰计费/支付高风险逻辑(triage 第5条)，>3 文件(pricing.go+context_budget.go 多处+测试)。Bug-from-Customer(Rule 11)：首 commit=失败复现测试。'
   status: active
-  stage: S4
+  stage: S5
   repos:
     numind-server: feature/multimodal-billing-fix (worktree /private/tmp/wt-multimodal-billing-fix-numind-server)
-  progress: {total_tasks: 3, completed_tasks: 1, reviewed_tasks: 1}
+  progress: {total_tasks: 3, completed_tasks: 3, reviewed_tasks: 3}
   decisions:
   - 'S0 (ai 2026-06-17): forensic 完成根因三处叠加。用户拍板 Standard + 三个改纳入同一 feature。dev user1 已退 4758 积分(audit txn 8472)。prod 未被咬(已核查无 ≥5000 对账，prod 识图走 ali/qwen-vl 有价)。已验证无模型配双模态价→按(provider,model)定价零歧义。'
   - 'S1+S2 (ai 2026-06-17): spec.md 合并提案+设计(沿用 image-normalize 惯例)。独立 Sonnet review=PASS_WITH_CONCERNS(2 P1+3 P2 全部就地修进 spec)：P1-1 agnostic cache key 固定前缀 agnostic|；P1-2 缺价退款区分 CalibrationSkipped(良性 warn) vs 有用量缺价(ERROR 告警)避免假告警；P2-2 GetPricingRuleByModel ORDER BY id DESC；P2-3 关键=EstimatedCredits 改真实预扣额(非 0 非 token 数)保住 context_budget_event 观测性+消单位错误，doReserveBudget 返回 reservedCredits 透传。'
   - 'S4-T1 (ai 2026-06-17): Fix① 定价 service_type-agnostic 回退。commit df03d5ad(repro RED Rule11)→9e2ea98f(fix)→5e96a4bc(review 修复)。S3 review 挖出定价解析三处重复→T1 scope 收敛只修 chain1(钱:reconcile+cost_cents 经 calc.resolvePricingRule)，chain2/3 snapshot+resolver 合并记 follow-up。双 Sonnet review PASS_WITH_CONCERNS 0 P0：P1=resolveAgnostic 改传播非-NotFound DB 错误(守 ICalculator 契约非静默¥0)；P2=InvalidateCache 清 agnostic key/补 DB 错误测试/recorder stub IsActive。门禁 pricing/billing/store 全绿+vet 0。注: worktree 基线无 develop 的 manifest(docs 提交在 develop) 故 reviewer 报"manifest 无条目"是 worktree/develop 分离的误报。'
   - 'S3 (ai 2026-06-17): plan.md T1(定价 agnostic 回退)/T2(预扣 8192)/T3(对账缺价退款+观测性)/T4(S5 策略)，每 task repro-first(Rule 11)。独立 Sonnet plan review=PASS_WITH_CONCERNS：P1 关键发现=定价解析有三处重复(chain1 pricing.resolvePricingRule 管钱/chain2 middleware 内联+chain3 billing.ResolvePricingRule 管 snapshot)，T1 扩为三处一致加 agnostic 回退(resolver 合并记 follow-up)；P2 buildBaseFinalizeInput 实际一处调用点。S5 策略(Go 单测持久+dev 实跑)judged 合理非偷懒。'
+  - 'S4-T2 (ai 2026-06-17): Fix② bill-only 预扣冷启动 min(MaxOutputTokens/2, 8192)。commit e32cd575(repro)+04324f68(stub 补全)→afb0d695(fix)→35ac9e16(review)。双 review PASS_WITH_CONCERNS 0 P0/P1：P2 补 MaxOutputTokens=0 测试/min() 重构/常量决策注释。同时缓解 agent 过度冻结。'
+  - 'S4-T3 (ai 2026-06-17): Fix③ 对账缺价退款+消单位错误(最高风险)。commit e50247df(repro)→3c1d1d47(fix)→126c9fc1(review 注释)。doReserveBudget 返回真实预扣额→buildBaseFinalizeInput EstimatedCredits 非 token 数(保 context_budget_event 观测性);finalizeReservationIfNeeded holder 未 Set→退款不扣 fallback,区分 warn(流中断)/ERROR(缺价);F-7 holder.Set(0)扣0 不回归。集成测试 adapter 改 Set holder 代表 prod 计价(旧测试靠缺价 fallback 隐式测旧 bug)。spec review PASS+quality PASS_WITH_CONCERNS 0 P0/P1(P2 全为过时注释已刷新)。'
+  - 'S5 (ai 2026-06-17): qa-report.md。自动化层 ALL_PASS——改动 5 包(pricing/billing/middleware/store/contextbudget)全绿(含 -race)+golangci-lint 0+go build 全模块 0。3 复现测试红→绿永久回归。Rule 8 核实: salesrag/controller-credit/controller-agent 三包预存失败=table user 缺 company_name test-DB schema 漂移(git diff 确认本 feature 未碰 salesrag/user/migration),非回归。dev 端到端治本验收(actual_cost_cents ~10 非 64000)留 S6。'
   blockers: []
 - id: agent-mode-backend-repair
   track: standard
