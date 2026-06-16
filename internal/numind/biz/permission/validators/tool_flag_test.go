@@ -123,6 +123,50 @@ func TestToolFlag_ToolDisabled_Deny(t *testing.T) {
 	}
 }
 
+// TestToolFlag_CategoryDisabled_Denies reproduces the broken-toggle bug: the
+// AgentAdvancedEdit UI stores risk-CATEGORY keys (code_sandbox / media / dangerous),
+// but the validator only ever checked raw tool names — so a parent disabling
+// "代码沙箱" wrote {"code_sandbox": false} yet bash_exec kept running (the validator
+// looked up flags["bash_exec"], found nothing, and passed through). A disabled risk
+// category must DENY the tools it gates.
+func TestToolFlag_CategoryDisabled_Denies(t *testing.T) {
+	flags, _ := datatypes.JSON([]byte(`{"code_sandbox": false, "media": false, "dangerous": false}`)).MarshalJSON()
+	s := &fakeAgentDefinitionStore{
+		definition: &model.AgentDefinition{ID: 1, ToolFlags: datatypes.JSON(flags)},
+	}
+	v := NewToolFlag(s)
+
+	for _, tool := range []string{"bash_exec", "image_gen"} {
+		req := permission.PermissionRequest{AgentDefinitionID: 1, Tool: newFakeTool(tool), InputJSON: `{}`}
+		got := v.Validate(context.Background(), req)
+		if got.Behavior != permission.BehaviorDeny {
+			t.Errorf("tool %q: a disabled risk category must DENY, got %q", tool, got.Behavior)
+		}
+	}
+
+	// Baseline tools are never gated by risk categories.
+	req := permission.PermissionRequest{AgentDefinitionID: 1, Tool: newFakeTool("kb_search"), InputJSON: `{}`}
+	if got := v.Validate(context.Background(), req); got.Behavior != permission.BehaviorPassthrough {
+		t.Errorf("baseline kb_search must passthrough even with categories off, got %q", got.Behavior)
+	}
+}
+
+// TestToolFlag_CategoryDisabled_OverridesStaleToolKey guards the legacy-data path:
+// an agent created before this fix has tool-name keys (bash_exec:true) in its flags.
+// If the parent later disables the category, the category-deny must win over the
+// stale per-tool true (so the UI toggle always takes effect regardless of merge/replace).
+func TestToolFlag_CategoryDisabled_OverridesStaleToolKey(t *testing.T) {
+	flags, _ := datatypes.JSON([]byte(`{"bash_exec": true, "code_sandbox": false}`)).MarshalJSON()
+	s := &fakeAgentDefinitionStore{
+		definition: &model.AgentDefinition{ID: 1, ToolFlags: datatypes.JSON(flags)},
+	}
+	v := NewToolFlag(s)
+	req := permission.PermissionRequest{AgentDefinitionID: 1, Tool: newFakeTool("bash_exec"), InputJSON: `{}`}
+	if got := v.Validate(context.Background(), req); got.Behavior != permission.BehaviorDeny {
+		t.Errorf("disabled category must override a stale per-tool true, got %q", got.Behavior)
+	}
+}
+
 func TestToolFlag_ToolNotInFlags_Passthrough(t *testing.T) {
 	flags, _ := datatypes.JSON([]byte(`{"file_read": true}`)).MarshalJSON()
 	s := &fakeAgentDefinitionStore{
