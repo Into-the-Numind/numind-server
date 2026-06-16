@@ -225,6 +225,76 @@ func TestMatch_LLM(t *testing.T) {
 	}
 }
 
+// TestMatch_LLM_VisionViaInputModalitiesOnly locks the vision-capability-unify
+// routing contract: after the migration drops `vision` from vision-task feature
+// requirements, a model is matched for image input PURELY via input_modalities
+// containing "image" — it does NOT need a `vision` feature flag. Proves the
+// task_profile cleanup (drop features.vision) is a no-op on routing behaviour.
+func TestMatch_LLM_VisionViaInputModalitiesOnly(t *testing.T) {
+	// New vision-task requirement shape (post-migration): image modality, NO vision feature.
+	visionReq := Requirements{
+		InputModalities: []string{"text", "image"},
+		MinContext:      8192,
+		Features:        []string{"streaming"}, // vision feature removed
+	}
+
+	// A vision model that signals vision ONLY via input_modalities (no features.vision,
+	// no capabilities=vision) — the new single-source-of-truth shape.
+	visionModelNoFlag := ServiceCapability{
+		ServiceType:     "llm",
+		InputModalities: []string{"text", "image"},
+		ContextWindow:   32768,
+		MaxOutputTokens: 4096,
+		Capabilities:    []string{"chat"},
+		Features:        map[string]bool{"streaming": true},
+	}
+
+	// 1. legacy vision model (still carries features.vision) matches the new req.
+	got := Match("llm", visionReq, llmSvcVision)
+	assert.True(t, got.Compatible, "legacy vision model should match vision req w/o features.vision: %v", got.Reasons)
+
+	// 2. vision model signalled ONLY by input_modalities=image matches (features.vision not needed).
+	got = Match("llm", visionReq, visionModelNoFlag)
+	assert.True(t, got.Compatible, "input_modalities-only vision model should match: %v", got.Reasons)
+
+	// 3. text-only model still rejected (input_modalities guard holds → non-vision not误匹配).
+	got = Match("llm", visionReq, llmSvcFullText)
+	assert.False(t, got.Compatible, "text-only model must NOT match a vision req")
+}
+
+// TestLLMSchema_VisionViaInputModalities locks the vision-capability-unify schema
+// cleanup: the capabilities enum no longer offers "vision", and input_modalities
+// is documented as THE vision control.
+func TestLLMSchema_VisionViaInputModalities(t *testing.T) {
+	schema, err := SchemaFor("llm")
+	if err != nil {
+		t.Fatalf("SchemaFor(llm): %v", err)
+	}
+	var caps, inputMod *CapabilityField
+	for i := range schema.Fields {
+		switch schema.Fields[i].Name {
+		case "capabilities":
+			caps = &schema.Fields[i]
+		case "input_modalities":
+			inputMod = &schema.Fields[i]
+		}
+	}
+	if caps == nil || inputMod == nil {
+		t.Fatal("expected capabilities + input_modalities fields in llm schema")
+	}
+	for _, ev := range caps.EnumValues {
+		assert.NotEqual(t, "vision", ev, "capabilities enum must NOT contain retired 'vision'; got %v", caps.EnumValues)
+	}
+	assert.Contains(t, inputMod.Description, "唯一生效", "input_modalities should be documented as the sole vision control")
+	var hasImage bool
+	for _, ev := range inputMod.EnumValues {
+		if ev == "image" {
+			hasImage = true
+		}
+	}
+	assert.True(t, hasImage, "input_modalities enum must still offer 'image'")
+}
+
 // ---------------------------------------------------------------------------
 // TestMatch_OCR — table-driven OCR scenarios
 // ---------------------------------------------------------------------------
