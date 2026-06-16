@@ -102,11 +102,61 @@ func usePkg(db *gorm.DB) {
 // Fixture capability JSON strings
 // ----------------------------------------------------------------------------
 
+// vision-capability-unify: vision is now signalled by input_modalities containing
+// "image" (the single source of truth), NOT the legacy accepts_image_inline field.
+// Fixtures updated accordingly; pdf/audio still use their explicit inline fields.
 const (
-	capVisionModel = `{"accepts_image_inline":true,"accepts_pdf_inline":false,"accepts_audio_inline":false,"max_inline_size_bytes":20971520,"supports_vision_tool_calling":true,"preferred_image_format":"base64"}`
-	capPDFModel    = `{"accepts_image_inline":false,"accepts_pdf_inline":true,"accepts_audio_inline":false,"max_inline_size_bytes":104857600,"supports_vision_tool_calling":false,"preferred_image_format":"base64"}`
-	capTextOnly    = `{"accepts_image_inline":false,"accepts_pdf_inline":false,"accepts_audio_inline":false,"max_inline_size_bytes":0,"supports_vision_tool_calling":false,"preferred_image_format":"base64"}`
+	capVisionModel = `{"input_modalities":["text","image"],"accepts_pdf_inline":false,"accepts_audio_inline":false,"max_inline_size_bytes":20971520,"supports_vision_tool_calling":true,"preferred_image_format":"base64"}`
+	capPDFModel    = `{"input_modalities":["text"],"accepts_pdf_inline":true,"accepts_audio_inline":false,"max_inline_size_bytes":104857600,"supports_vision_tool_calling":false,"preferred_image_format":"base64"}`
+	capTextOnly    = `{"input_modalities":["text"],"accepts_pdf_inline":false,"accepts_audio_inline":false,"max_inline_size_bytes":0,"supports_vision_tool_calling":false,"preferred_image_format":"base64"}`
 )
+
+// ----------------------------------------------------------------------------
+// vision-capability-unify: SOT semantics (pure projection, no DB)
+// ----------------------------------------------------------------------------
+
+// TestProjectCapabilities_SOT locks the single-source-of-truth contract:
+// AcceptsImageInline derives ONLY from input_modalities containing "image";
+// the legacy accepts_image_inline field is retired (no longer read).
+func TestProjectCapabilities_SOT(t *testing.T) {
+	cases := []struct {
+		name    string
+		json    string
+		wantImg bool
+		wantPDF bool
+	}{
+		{"input_modalities has image → true", `{"input_modalities":["text","image"]}`, true, false},
+		{"input_modalities text only → false", `{"input_modalities":["text"]}`, false, false},
+		{"input_modalities missing → false", `{"accepts_pdf_inline":true}`, false, true},
+		{"input_modalities empty → false", `{"input_modalities":[]}`, false, false},
+		// SOT: legacy accepts_image_inline=true ALONE is ignored (retired field).
+		{"legacy accepts_image_inline only → false (retired)", `{"accepts_image_inline":true}`, false, false},
+		// SOT: image present, no legacy field → true.
+		{"image modality, no legacy field → true", `{"input_modalities":["image"]}`, true, false},
+		// case-insensitive match.
+		{"Image (mixed case) → true", `{"input_modalities":["text","Image"]}`, true, false},
+		// pdf still read from its own field, independent of input_modalities.
+		{"pdf inline preserved, image false", `{"input_modalities":["text"],"accepts_pdf_inline":true}`, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			caps, ok := projectCapabilities(tc.json)
+			if !ok {
+				t.Fatalf("projectCapabilities(%s) ok=false for valid json", tc.json)
+			}
+			if caps.AcceptsImageInline != tc.wantImg {
+				t.Errorf("AcceptsImageInline = %v, want %v", caps.AcceptsImageInline, tc.wantImg)
+			}
+			if caps.AcceptsPDFInline != tc.wantPDF {
+				t.Errorf("AcceptsPDFInline = %v, want %v", caps.AcceptsPDFInline, tc.wantPDF)
+			}
+		})
+	}
+	// Malformed JSON → conservative defaults + ok=false.
+	if caps, ok := projectCapabilities(`{not json`); ok || caps.AcceptsImageInline {
+		t.Errorf("malformed json: got ok=%v img=%v, want ok=false img=false", ok, caps.AcceptsImageInline)
+	}
+}
 
 // ----------------------------------------------------------------------------
 // Core 24-case matrix: 6 model keys x 4 media types

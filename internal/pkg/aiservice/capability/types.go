@@ -21,26 +21,37 @@ package capability
 type Capabilities struct {
 	// AcceptsImageInline indicates the model can receive image bytes directly
 	// in the messages payload (base64 or URL).
+	//
+	// SOURCE OF TRUTH (vision-capability-unify): this is DERIVED at projection
+	// time from capability_json.input_modalities containing "image" — the legacy
+	// `accepts_image_inline` JSON field is no longer read. See projectCapabilities.
+	// The json tag is retained only so the embedded-struct unmarshal stays valid;
+	// its parsed value is overwritten by the derivation.
 	AcceptsImageInline bool `json:"accepts_image_inline"`
 
 	// AcceptsPDFInline indicates the model can receive PDF bytes directly
-	// in the messages payload.
+	// in the messages payload. (Still read directly from JSON; pdf out of scope
+	// for the vision-capability-unify input_modalities derivation.)
 	AcceptsPDFInline bool `json:"accepts_pdf_inline"`
 
 	// AcceptsAudioInline indicates the model can receive audio bytes directly
-	// in the messages payload.
+	// in the messages payload. (Still read directly from JSON.)
 	AcceptsAudioInline bool `json:"accepts_audio_inline"`
 
 	// MaxInlineSizeBytes is the maximum byte size of a single inline attachment.
-	// 0 means "no inline attachments supported" (AcceptsXxxInline should also be false).
+	// vestigial: no business consumer reads this (vision-capability-unify audit); kept
+	// for backward-compatible JSON shape, slated for follow-up removal.
 	MaxInlineSizeBytes int64 `json:"max_inline_size_bytes"`
 
 	// SupportsVisionToolCalling indicates the model can invoke tool calls
 	// while processing image input.
+	// vestigial: no business consumer reads this (vision-capability-unify audit).
 	SupportsVisionToolCalling bool `json:"supports_vision_tool_calling"`
 
 	// PreferredImageFormat is the preferred encoding for image inline content.
 	// Valid values: "base64" | "url". Defaults to "base64" if empty.
+	// vestigial: defaulted in projectCapabilities but no business consumer reads it
+	// (vision-capability-unify audit).
 	PreferredImageFormat string `json:"preferred_image_format"`
 }
 
