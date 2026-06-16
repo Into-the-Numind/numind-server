@@ -4909,3 +4909,21 @@ features:
   - 'H1-H2 (ai 2026-06-16): 调研发现后端链路全就绪(model.Nickname/PUT /v1/users/me/biz UpdateUserProfile/store UpdateUser)，本功能≈纯前端 UI。前端(web-v3 039fc7b): SettingsView.vue 昵称行加「修改」按钮(无 v-if=所有账户可见)+昵称编辑弹窗，复刻 company-name-edit-modal(maxlength=10+计数器+IME 组合回车三重守卫 nicknameImeComposing/isComposing/keyCode229)；savedNickname 态 + displayName 改基于它(回退 userStore.nickname=username)；confirmNicknameEdit: trim+无变化短路+必填+上限+saving 并发守卫+fresh||next 回写。昵称按钮用独立 .nickname-edit-btn(样式经 CSS 分组复用 .row-edit-btn)避免与公司名按钮选择器冲突(踩到: 昵称行在公司行前，共用 class 致 company 测试 find 第一个误命中→已修)。后端(server e61307e4): UpdateUserProfileRequest.Nickname stringlength(1|100)→(1|10)(govalidator 按 rune 计数=10 汉字)。测试: 前端 SettingsView.nicknameEdit.spec.ts(8 用例)+后端 v1/user_test.go(rune 边界,记录 govalidator 空串跳过陷阱)。非客户 bug(用户主动加功能)→Rule11 复现测试不适用。'
   - 'H2 双 Sonnet review(spec+quality) 均 PASS_WITH_CONCERNS, 0 P0/P1, 3 有效 P2 全部就地修复(Rule7): (1)后端空串绕过 govalidator→biz 层 UpdateUserProfile 加 trim+拒空守卫(0376c69b)+nickname_test.go(设置/空串拒/纯空白拒); (2)测试缺"未设昵称→回退用户名"覆盖→补用例; (3)IME 测试未独立验证 ref 守卫→加 compositionstart/end(42cfe3a)。推迟2项(均记理由非偷懒): 前端 .length(UTF-16) vs 后端 rune 计数差异(昵称全 BMP length≡rune, 正确修需移除 maxlength 偏离 company 既有模式=项目级一致性); company 计数器 /10 硬编码(属已上线 company 功能, 超本 hotfix 范围)。门禁全绿: 前端 vitest 19(nickname8+company6+integration5)/eslint/type-check 0; 后端 go test(biz/user+v1)/build/vet/golangci-lint 0。下一步 H3: ndf-done 合 develop + /deploy-dev + dev 浏览器验收(需用户授权外向操作)。'
   blockers: []
+- id: vision-capability-unify
+  ndf_version: '3.0'
+  description: '把"模型能不能看图"从 4 个互相冗余/失效的字段塌成单一真相源=input_modalities 含 image。取证: capabilities含vision=死值(0任务要求 capability=vision); features.vision+input_modalities=image=冗余对(识图任务两遍表达同一事); accepts_image_inline=过度设计的重复(真正控发图但admin改不了、无模型用到"接受图非内联"区分)。根因=路由层(input_modalities/capabilities/features)与发图层(accepts_image_inline)两套能力表示各读各key从未对齐(agent V1.5 引入未并入既有 input_modalities)。方案: ①发图判断改读 input_modalities 派生 AcceptsImageInline ②识图任务 requirements 去 features:[vision] 只留 input_modalities ③capabilities enum 删 vision ④migration 先把真相搬进 input_modalities 再退役其余。admin 表单 schema 驱动改后端自动反映。仅 image(pdf/audio 不动)。'
+  classification_reason: 'Standard(用户 2026-06-16 确认治本): DB schema 变更(task_profile requirements + capability_json 数据清洗 migration)/影响文件>3/高风险(改所有 LLM 路由经过的共享能力层 + agent fallback 决策, blast radius 大)。无新 API 端点/无新外部服务。仅后端(admin 表单 schema 驱动无需改 admin-web)。'
+  last_updated_by: ai-s0
+  last_updated_at: '2026-06-16T18:52:12+08:00'
+  created_at: '2026-06-16T18:52:12+08:00'
+  track: standard
+  stage: S0
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: feature/vision-capability-unify}
+  worktrees: {numind-server: /private/tmp/wt-vision-capability-unify-numind-server}
+  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
+  artifacts: {requirement: .ndf/features/vision-capability-unify/requirement.md}
+  decisions:
+  - 'S0 (ai 2026-06-16): 源于 chatbot-image-recognition 上线后用户发现 admin 勾 input_modalities=image 不生效, 深挖出"能不能看图"被表示成4字段互不对齐。本 session 已查实: capabilities=vision 死值/features.vision+input_modalities 冗余/accepts_image_inline 是唯一活的发图门但 admin 碰不到。用户拍板 standard 治本=塌成单一真相源 input_modalities。'
+  blockers: []
