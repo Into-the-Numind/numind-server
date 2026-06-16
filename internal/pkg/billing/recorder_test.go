@@ -686,3 +686,7 @@ func TestRecorder_NoCachedTokens_ByteIdentical(t *testing.T) {
 		t.Errorf("RevenueCents = %d, want 2000 (cachedTokens=0 → full rate)", record.RevenueCents)
 	}
 }
+
+func (*spyCalculator) IsFreeModel(ctx context.Context, serviceType, provider, model string) (bool, error) {
+	return false, nil
+}

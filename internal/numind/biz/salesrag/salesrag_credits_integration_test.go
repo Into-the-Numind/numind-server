@@ -685,3 +685,7 @@ func TestRecordLLMResult_NoCacheThreadsZero(t *testing.T) {
 		t.Errorf("actualCost = %d, want 100", cc.actualCost)
 	}
 }
+
+func (*spyPricingCalc) IsFreeModel(ctx context.Context, serviceType, provider, model string) (bool, error) {
+	return false, nil
+}

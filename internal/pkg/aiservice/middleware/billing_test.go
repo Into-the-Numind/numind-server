@@ -1316,3 +1316,7 @@ func TestBilling_Stream_NoCacheStaysZero(t *testing.T) {
 		t.Errorf("CachedPromptTokens = %d, want 0", store.records[0].CachedPromptTokens)
 	}
 }
+
+func (*mockPricingCalc) IsFreeModel(ctx context.Context, serviceType, provider, model string) (bool, error) {
+	return false, nil
+}
