@@ -1,5 +1,25 @@
 schema_version: '2.0'
 features:
+- id: llm-stream-timeout
+  track: hotfix
+  description: 'SOP 用 claude-opus-4-6（thinking）via dmxapi "一直深度思考、最终无答案、两次都失败" 修复：删除流式 LLM 调用的整请求 http.Client.Timeout（600s 硬墙会截断健康长流）。'
+  classification_reason: 'Hotfix: 单仓库 numind-server，无 DB schema/无新 API/无新外部服务/影响 ≤3 文件（httpclient/client.go + aiservice/adapter/dmxapi.go + 测试）/非支付权限。客户上报 prod bug（Bug-from-Customer：首 commit=失败复现测试）。'
+  status: active
+  stage: H3
+  repos:
+    numind-server: develop (merged via ndf-done)
+  worktrees:
+    numind-server: (removed by ndf-done)
+  branches:
+    numind-server: fix/llm-stream-timeout (merged via ndf-done)
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-H3 (ai 2026-06-16): 根因取证=prod run 3294 user 30，claude-opus-4-6 thinking via dmxapi，两次正好 600s 报 AIService.ProviderTimeout(504) + "context deadline exceeded (Client.Timeout...)"（errtranslate translate.go:88），换 deepseek-v4-pro 即成。机制=Go http.Client.Timeout 含读 body，对流式 SSE 是整条流硬上限，健康长流（claude extended thinking >10min）被砍；gateway 路径 dmxapi 适配器用 LLMConfig(600s) 架空了 SOP 层本意的 30min overall ceiling（executor.go detachStreamContext，注释明写 never an http.Client.Timeout）。修=新增 httpclient.LLMStreamConfig(=LLMConfig 但 Timeout=0)，dmxapi 加 streamClient 走 doStream，doPost 保留 600s client；作用域确认 LLMConfig 全仓库仅 dmxapi 用，ali/volc/ocr/file 用 DefaultConfig 不动。流式存活改由 ResponseHeaderTimeout(180s)+idle watchdog+caller ctx deadline 治理。Bug-from-Customer(Rule 11): 首 commit 6868e01f=失败复现测试(总超时截断健康流), fix 13d2ec5e 后 PASS。两 Sonnet review(spec+quality) 均 PASS 无 P0/P1；P2(测试坐实 mid-body 截断 0<n<lines) 已修 81f5e266。go vet+golangci-lint(0)+build+httpclient/adapter 测试全绿。commits: 6868e01f(RED)+13d2ec5e(fix)+81f5e266(P2)。'
+  blockers:
+  - '观察项(非本 hotfix 引入): 适配器层 aiservice.stream_idle_timeout 全环境未配=60s 默认（含 prod）。本次事故连续吐字撞 600s、60s idle 未触发，故修复有效；但 claude thinking 若 token 间停顿 >60s 会以新 idle_timeout 失败。prod 加 aiservice.stream_idle_timeout 需用户改 config_prod.yaml（AI 禁改）。'
 - id: company-name-modal-ime-limit
   track: hotfix
   description: 'org-branding follow-up（用户报告 bug + 微调）：(1) 弹窗输入框中文输入法组合期间的回车（选词/确认候选）被误判为"确定"提交 → 修复；(2) 公司名字符上限 100→10。'
@@ -4785,14 +4805,14 @@ features:
   track: standard
   description: '文档系统 v1：让 agent mode 在对话中生成的文本类交付物(markdown/docx/纯文本/HTML)能在对话内点开→WYSIWYG 在线编辑(转换式:解析成 markdown 底层存储,TipTap/Milkdown 无头编辑器)→自动持久化→导出下载(md/docx/pdf)。不做独立"AI 生成文档"功能(生成发生在 agent mode);打开入口=agent 对话里直接点开(无独立"我的文档"工作区);可编辑=文本类,图表PNG/CSV/Excel/PPT/PDF 只预览+下载;持久化=自动可打开,编辑即落库;仅 C 端私有,不做分享/版本/协作。v2 推迟:用户上传文档的在线编辑。复用 COS+DocumentParser(MarkItDown/go-fitz)+qwen-long+Python docx-author skill+AgentToolArtifact。'
   classification_reason: 'Standard:新增 DB schema(document 表关联 agent_tool_artifact)+新增 API 端点(文档 CRUD/解析打开/保存/导出下载)+影响文件>3+跨 numind-server+numind-web-v3 两仓库+涉及用户数据隔离(user_id/parent_user_id)。无支付逻辑;新前端无头编辑器库属前端依赖非外部服务集成。用户 2026-06-16 经 3 轮 AskUserQuestion 确认 Standard + 6 项产品决策(AI生成为主/转换式/WYSIWYG/对话内打开/文本类可编/自动持久化) + v1 范围(只做 AI 生成产物,上传编辑放 v2)。'
-  last_updated_by: ai-s5
-  last_updated_at: '2026-06-16T14:14:16+08:00'
+  last_updated_by: ai-s6
+  last_updated_at: '2026-06-16T17:52:13+08:00'
   created_at: '2026-06-16T12:00:25+08:00'
   status: active
-  stage: S5
+  stage: S6
   repos: [numind-server, numind-web-v3]
-  branches: {numind-server: feature/document-system, numind-web-v3: feature/document-system}
-  worktrees: {numind-server: /private/tmp/wt-document-system-numind-server, numind-web-v3: /private/tmp/wt-document-system-numind-web-v3}
+  branches: {numind-server: develop (merged via ndf-done), numind-web-v3: develop (merged via ndf-done)}
+  worktrees: {numind-server: (removed by ndf-done), numind-web-v3: (removed by ndf-done)}
   progress: {total_tasks: 9, completed_tasks: 9, reviewed_tasks: 9}
   artifacts: {requirement: .ndf/features/document-system/requirement.md, proposal: .ndf/features/document-system/proposal.md, spec: .ndf/features/document-system/spec.md, plan: .ndf/features/document-system/plan.md, qa: .ndf/features/document-system/qa-report.md}
   isolation: 'feature flag 休眠:后端 features.document_system.enabled 默认 OFF + 前端 VITE_ENABLE_DOCUMENT_SYSTEM;合 develop 不影响 prod 打 tag(prod 手动 tag 部署不开 flag=未上线)。复用 notification-center 休眠模式。'
@@ -4811,6 +4831,9 @@ features:
   - 'S4-T8(commit bf172e7): Milkdown WYSIWYG 编辑器组件。MilkdownEditor.vue(@milkdown/crepe v7.21,v-model markdown+readonly,单向流不watch避环). 装独立node_modules(主checkout完好). 双Sonnet review: spec PASS/quality PASS_WITH_CONCERNS(P0!). P0=readonly+create期间卸载→crepe置null→setReadonly空引用; 修=捕获本地instance+crepe!==instance检测卸载则destroy孤儿+return+void destroy(P1)+mock 3-arg+竞态回归测试. 修后re-review PASS(正常流readonly仍生效,5测试). Crepe真实渲染走S5 dev QA. T9须defineAsyncComponent懒加载控bundle.'
   - 'S4-T9(commit d26c17a+amend) + S4 完成: DocumentEditorModal(Teleport全屏/顶栏保存态+下载下拉/4状态/Esc+遮罩flush/beforeunload keepalive/懒加载Milkdown)+AgentArtifactItem打开编辑入口(canEdit=flag×isEditable门控,两file-row分支,懒加载模态). 双Sonnet review均 PASS_WITH_CONCERNS(0 P0/P1): 修P2(.is-saving琥珀色/handleClose加flushOnUnload安全网防关闭时飞行保存+新编辑丢失/run_id注释推迟v2/补txt+html+xlsx+pptx+csv测试矩阵11测试). 全量vitest 953→后续含新增全过0fail, eslint+type-check净. **S4 编码完成 9/9 task, reviewed=completed=9**. 后端T1-T6+前端T7-T9. 余 S5 验收.'
   - 'S5 自动验收(qa-report.md): 逻辑持久回归全绿——后端 go test 本feature全部包PASS(biz/document/store/util/errno)+go vet净; 前端 vitest 953 passed/0 failed+eslint净+type-check净. 隔离取证: go test ./... 3包FAIL(salesrag/agent/credit)经对照develop主checkout完全相同→develop baseline既有非本feature(salesrag_test仅补Document()stub适配IBiz编译,运行时失败先前就有); golangci-lint因go install后不在PATH无法跑(环境非代码). 按T10策略: US1-5真链路+跨用户隔离探针+pandoc真实产出留S6 dev+用户走查(Milkdown/pandoc运行时依赖+需agent生成docx+用户偏好亲手走查feedback_walkthrough_user_executes). S6须先重建sandbox镜像(T6 pandoc). merge/deploy属外向需用户授权.'
+  - 'S6: ndf-done 两仓库 merge develop + push 已独立复核为真(server e8479b9e / web-v3 249e26d, local==origin, document 文件确在 develop)+worktree已删+本地分支已删. 用户授权合develop+部署dev(不动prod). 下一步: 重建sandbox skill镜像(加pandoc,导出pdf/docx需)+ /deploy-dev server&web(document表靠config_dev flag on的条件AutoMigrate启动时自动建,无需手工migration)+用户dev走查US1-5.'
+  - 'S6 dev 部署完成+验证: /deploy-dev server(develop-1bed7a26-dirty)+web(develop-249e26d), 两容器实跑新镜像SHA核验通过(非TCR假绿)+healthz双绿+document表条件AutoMigrate(flag on)自动建好schema正确. 核心闭环(打开/编辑/自动保存/md导出)dev可用. **pdf/docx导出**待sandbox skill镜像加pandoc重建(须构建机139.155.129.13 amd64跑build.sh,本地docker是arm64不匹配;+新tag+config_dev.image_tag更新+server重部署)——pdf/docx专属独立infra step,核心不依赖. 待: 用户dev走查US1-5(亲手,feedback_walkthrough_user_executes)+决定pandoc镜像重建+S7 prod授权.'
+  - 'S6 完成(pandoc 导出闭环): sandbox skill 镜像加 pandoc 在构建机(amd64)重建. 踩坑: requirements.txt 只 pin weasyprint==62.3 未 pin pydyf→重建 libs 时 pip 拉 pydyf 0.12.1 破坏 weasyprint(AttributeError super transform)→所有 weasyprint PDF 崩(含现有 agent pdf-from-html). 修=pin pydyf==0.10.0(已 commit requirements.txt)重建 skills-v1.5.3. 镜像级验证: pandoc md→docx 9931B✓ + md→pdf(--pdf-engine=weasyprint) 8652B %PDF-✓(中文). config_dev image_tag→v1.5.3, server 重部署 develop-e60f2777-dirty healthy. dev: 打开/编辑/自动保存/md+docx+pdf 导出全可用. develop 已推 origin. 待: 用户 dev 走查 US1-5(亲手)+S7 prod 授权.'
   blockers: []
 - id: instant-title-ux
   ndf_version: '3.0'
@@ -4825,8 +4848,9 @@ features:
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/instant-title-ux, numind-web-v3: feature/instant-title-ux}
   worktrees: {numind-server: /private/tmp/wt-instant-title-ux-numind-server, numind-web-v3: /private/tmp/wt-instant-title-ux-numind-web-v3}
-  progress: {total_tasks: 6, completed_tasks: 1, reviewed_tasks: 1}
+  progress: {total_tasks: 6, completed_tasks: 2, reviewed_tasks: 2}
   artifacts: {spec: docs/superpowers/specs/2026-06-16-instant-title-ux-design.md}
   decisions:
   - 'S0-S3 合并设计 spec。T-model 已做(deepseek-v4-flash 注册+session.title 指向, migration 20260616_140000, dev 实测标题质量好)。余: title 端点(prompt-only)、chatbot/agent draft 延迟建会话+占位闪动、删除 bug(浏览器诊断+复现测试)。'
+  - 'T-backend(8e01a3b1/65487ab8): 发送时即时标题端点 POST /v1/{chatbot/sessions,agent-sessions}/:id/title(prompt-only 生成+属主校验+仅默认名/未命名+CAS)。B-1: maybeGenerateTitle 重读DB当前标题避免兜底浪费调用。Generate 支持 assistantMsg="". 双review PASS_WITH_CONCERNS 0 P0: 修端点响应统一{title}/agent best-effort/config ErrChatbotNotFound 映射/doc/ErrorIs 断言。'
   blockers: []

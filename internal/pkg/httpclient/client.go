@@ -67,6 +67,31 @@ func LLMConfig() *Config {
 	return c
 }
 
+// LLMStreamConfig 为 LLM **流式** 调用定制的配置。
+//
+// 与 LLMConfig 的唯一差异：删除整请求总超时（Timeout = 0）。
+//
+// 原因：Go 的 http.Client.Timeout 是「连接 + 读完整个 response body」的硬上限，
+// 文档明确 "The timer remains running after Do ... and will interrupt reading of
+// the Response.Body"。对流式 SSE 而言，它等于「整条流最多活这么久」——哪怕模型
+// 一直在健康地吐 token 也会被砍。prod 事故 2026-06-16（SOP run 3294，
+// claude-opus-4-6 thinking via dmxapi）：extended thinking 持续 >10min，600s 总
+// 超时在流仍在传数据时触发 → "context deadline exceeded (Client.Timeout ...)" →
+// 504 ProviderTimeout → 用户只见无尽思考、最终无答案。
+//
+// 流式调用的存活/上限改由更合适的机制治理，不依赖这道总超时：
+//   - 首包：ResponseHeaderTimeout（180s，继承自 LLMConfig）
+//   - 卡死：runOAIStream / consumeGatewayStream 的 idle watchdog（无数据即判停）
+//   - 整体上限：调用方 context deadline（如 SOP 的 sopOverallTimeout=30min）
+//
+// 非流式调用仍用 LLMConfig（保留 600s 总超时）——它一次性返回 body，总超时是
+// 合理的兜底。
+func LLMStreamConfig() *Config {
+	c := LLMConfig()
+	c.Timeout = 0
+	return c
+}
+
 // Client 优化的HTTP客户端
 type Client struct {
 	config *Config
