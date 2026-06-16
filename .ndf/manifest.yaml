@@ -4891,7 +4891,7 @@ features:
   description: '文档系统 v1：让 agent mode 在对话中生成的文本类交付物(markdown/docx/纯文本/HTML)能在对话内点开→WYSIWYG 在线编辑(转换式:解析成 markdown 底层存储,TipTap/Milkdown 无头编辑器)→自动持久化→导出下载(md/docx/pdf)。不做独立"AI 生成文档"功能(生成发生在 agent mode);打开入口=agent 对话里直接点开(无独立"我的文档"工作区);可编辑=文本类,图表PNG/CSV/Excel/PPT/PDF 只预览+下载;持久化=自动可打开,编辑即落库;仅 C 端私有,不做分享/版本/协作。v2 推迟:用户上传文档的在线编辑。复用 COS+DocumentParser(MarkItDown/go-fitz)+qwen-long+Python docx-author skill+AgentToolArtifact。'
   classification_reason: 'Standard:新增 DB schema(document 表关联 agent_tool_artifact)+新增 API 端点(文档 CRUD/解析打开/保存/导出下载)+影响文件>3+跨 numind-server+numind-web-v3 两仓库+涉及用户数据隔离(user_id/parent_user_id)。无支付逻辑;新前端无头编辑器库属前端依赖非外部服务集成。用户 2026-06-16 经 3 轮 AskUserQuestion 确认 Standard + 6 项产品决策(AI生成为主/转换式/WYSIWYG/对话内打开/文本类可编/自动持久化) + v1 范围(只做 AI 生成产物,上传编辑放 v2)。'
   last_updated_by: ai-s6
-  last_updated_at: '2026-06-16T21:22:27+08:00'
+  last_updated_at: '2026-06-16T23:49:24+08:00'
   created_at: '2026-06-16T12:00:25+08:00'
   status: active
   stage: S6
@@ -4921,6 +4921,7 @@ features:
   - 'S6 完成(pandoc 导出闭环): sandbox skill 镜像加 pandoc 在构建机(amd64)重建. 踩坑: requirements.txt 只 pin weasyprint==62.3 未 pin pydyf→重建 libs 时 pip 拉 pydyf 0.12.1 破坏 weasyprint(AttributeError super transform)→所有 weasyprint PDF 崩(含现有 agent pdf-from-html). 修=pin pydyf==0.10.0(已 commit requirements.txt)重建 skills-v1.5.3. 镜像级验证: pandoc md→docx 9931B✓ + md→pdf(--pdf-engine=weasyprint) 8652B %PDF-✓(中文). config_dev image_tag→v1.5.3, server 重部署 develop-e60f2777-dirty healthy. dev: 打开/编辑/自动保存/md+docx+pdf 导出全可用. develop 已推 origin. 待: 用户 dev 走查 US1-5(亲手)+S7 prod 授权.'
   - 'S6 验收发现 docx/pdf 导出在硬化沙箱崩 → hotfix doc-export-sandbox(commit c93d2485 合 develop). 后端验收(测试账号 userID1 真实server): open IDOR 403✓/不可编422✓/源过期410✓/GET 200✓/PUT自动保存200✓落库/导出md 200✓/越权get+export 404✓. docx/pdf 三层根因(全程 dev exec 真实沙箱实测): (1)seccomp deny clone3(ERRNO→EPERM,新glibc线程创建不回退)→pandoc(GHC)+weasyprint(GLib)pthread_create崩→移除clone3(clone本就允许,unshare/mount/ptrace/bpf仍禁,放宽最小有界); (2)weasyprint需可写/tmp(fontconfig硬写/tmp,read-only下PDF静默失败)→BuildSpawnConfig加/tmp tmpfs; (3)export命令前缀HOME=/workdir XDG_CACHE_HOME=/workdir(fontconfig缓存落可写). 另:dev从未拉过skill镜像(pre-existing,agent run_python同受影响)已补拉v1.5.3. 顺带修复agent pdf-from-html(weasyprint)在此沙箱本就跑不了. Sonnet review PASS_WITH_CONCERNS(放宽确认最小有界). 待redeploy#4后重验docx/pdf+用户UI走查+S7 prod授权.'
   - 'S6 redeploy#4(b2b8991e)后 docx/pdf 终极验证全过(真实server: docx 10143B PK / pdf 11471B %PDF- / RFC5987中文名导出验收.docx). 又发现前端flag deploy gap: vite build是production模式不读.env.development, flag须经Docker build-arg注入(同notification-center)→Dockerfile加ARG/ENV VITE_ENABLE_DOCUMENT_SYSTEM + build-and-push.sh dev/qa传true(commit 11f9667 web-v3 develop)+重部署web. 至此后端全验+前端入口flag已通. 待用户dev UI走查(打开编辑→Milkdown→保存→下载md/docx/pdf)+S7 prod授权(prod须Dockerfile/config都不开flag=休眠).'
+  - 'S6 用户UI走查发现真bug: 打开agent生成的Word→「文件解析失败」. 取证(非猜): COS对象是有效docx(PK 37519B)+document_parser.py/MarkItDown对真实docx解析成功+server容器有python3/markitdown. 根因=DocumentParser.Parse按文件名扩展名路由(无.docx→default unsupported file type), 而前端把markdown链接文字「点击下载 Word 文档」当filename传(无扩展名)→docx永远失败. hotfix doc-open-docx-ext: parseToMarkdown docx分支用ensureDocxName()补.docx(kindDocx已由mime判定)+回归测试. 注:我后端验收只测了open错误路径(IDOR/不可编/源过期)+直接插行测export, **open成功路径(下载真docx→解析)没端到端测**是盲点, 用户正好撞上. redeploy#5后重验. follow-up(cosmetic): 前端用链接文字当filename致文档标题不佳, 可后续从URL取真实名.'
   blockers: []
 - id: instant-title-ux
   ndf_version: '3.0'
