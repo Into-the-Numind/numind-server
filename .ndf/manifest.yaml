@@ -5045,11 +5045,11 @@ features:
   ndf_version: '3.0'
   description: 'agent mode 的 web_fetch 只做裸 HTTP GET(不渲染 JS/不过基础反爬), 对现代网页(JS 渲染 + Cloudflare 等基础 bot 墙)力不从心, 沦为摆设。引入自托管 crawl4ai(Docker, Playwright 真实浏览器渲染→LLM-ready markdown, Apache-2.0)作为 agent 的网页读取工具, 补强/替换 web_fetch 的开放网页读取。范围: 单页 render+extract + Langfuse trace + 软错误模式 + SSRF 防护沿用 + tool_definition 注册。明确排除: 小红书等强反爬平台数据抓取(自托管=用自家 IP/账号硬爬, 已被禁言十天验证此路不通, 需另案换策略); 多页深度 crawl(BFS/DFS)暂不做。开放问题(S2 定): 新工具替换 web_fetch 后端 vs 并存(快路径 + 渲染路径)。'
   classification_reason: 'Standard(用户 2026-06-17 直接动手确认): 新外部服务集成(crawl4ai Docker 服务)=Hotfix 第3条不满足; 影响文件>3(新工具 tool_crawl4ai.go + factory 注册 + config + 部署 compose/Dockerfile + 测试)。无 DB schema 变更(用现有 tool_definition 表注册数据行)/无新 API 端点(agent 工具内部注册非 HTTP route)/非支付权限(但涉及 SSRF, 沿用 web_fetch 两段校验)。仅后端 numind-server。'
-  last_updated_by: ai-s5
-  last_updated_at: '2026-06-17T02:49:39+0800'
+  last_updated_by: ai-s6
+  last_updated_at: '2026-06-17T02:53:45+0800'
   created_at: '2026-06-17T01:18:25+0800'
   track: standard
-  stage: S5
+  stage: S6
   status: active
   repos: [numind-server]
   branches: {numind-server: feature/crawl4ai-tool}
@@ -5064,4 +5064,5 @@ features:
   - 'S4 T1 (ai 2026-06-17, worktree 71afeddd): internal/pkg/crawl4ai 客户端包完成。RenderMarkdown 调 POST /crawl, json.RawMessage 两段解析 markdown(string|{fit/raw}), 显式 Request.RetryPolicy{0}, 全失败路径 return error 不 panic, Configured() nil 安全。11 用例含 hijack 真实 body-read 中断, go test -race 净。双 Sonnet review 0 P0/P1(spec PASS / quality PASS_WITH_CONCERNS): 已就地修 5 P2 中关键 4(auth 测试 channel 同步消除 -race 竞争 / body-read 测试 goroutine 内 t.Fatal→t.Errorf 防假绿 / timeout 时序裕度 50→100ms vs 1000ms / truncateForErr rune 安全 + ConnectTimeout 钳不超总超时); 保留显式 Content-Type(与 Tavily 兄弟一致)。'
   - 'S4 完成 (ai 2026-06-17, worktree feature/crawl4ai-tool @ b44f752f): T1 crawl4ai 客户端(71afeddd) + T2 web_fetch 渲染集成+config+factory desc(f20a2ecc) + T3 部署 compose+README(2ba2b48c) + review P2 修复(b44f752f) 全部完成。每 task 并行双 Sonnet review 均 0 P0/P1(T1 PASS/PASS_WITH_CONCERNS, T2 双 PASS_WITH_CONCERNS, T3 compose docker-validated)。P2 已就地修: render 截断 UTF-8 安全 / raw_fallback span 补 crawl4ai_latency_ms / client TLS 超时钳制 / +render截断+nil renderer 测试 / dev config 注释澄清。门禁: go vet ./... 净; golangci-lint 改动包 0 问题(task lint 全量失败仅因 golangci-lint 不在 PATH 环境问题); crawl4ai+agent 包 go test -race 全绿无回归。注: 全量 go test ./... 有 salesrag/credit/agent-controller 预存 DB 依赖失败(0.00s 瞬失), 已在 baseline develop 565fc358 复核同样失败=非本改动引入。reviewed==completed==3。下一步 S5 本地验收需起 crawl4ai 容器(4GB/浏览器)。'
   - 'S5 本地验收 PASS (ai 2026-06-17): 起真实 crawl4ai:0.8.6 容器(/health ok)做一次性 live 集成。决定性验证: quotes.toscrape.com/js/ 裸 HTTP 抓 class=quote=0 条(空壳), crawl4ai 渲染后 markdown 含 JS 加载引用文本+11 署名=渲染升级真实有效。契约验真: curl /crawl 真实响应 markdown 是 object(raw/fit_markdown), example.com fit_markdown 空→raw 有→证明 fit→raw 兜底必要且正确; metadata.title/status_code 吻合解析器; 我的确切请求体被接受(200)。真实 Go 客户端 RenderMarkdown 全链路 throwaway gated test PASS(跑后删, 守 T4 无持久 live 测试)。fallback/raw_direct/SSRF 单测覆盖。Langfuse fetch_path 代码全路径已写=DESIGN-VERIFIED(本地无后端+langfuse未 live 目检)。网络隔离: crawl4ai 仅挂专网无其他容器=结构隔离生效, 跨容器 reachability 完整测试留 S6。go vet+golangci-lint(改动包)净, crawl4ai+agent 包 -race 绿无回归; 全量 go test 的 salesrag/credit 失败=baseline 预存非本改动。容器已 compose down 清理。待 S6: dev 部署容器+配 base_url+跨容器隔离实测+span 线上目检。'
+  - 'S6 (ai 2026-06-17): ndf-done 已 merge feature/crawl4ai-tool → develop 并 push, 复核为真(origin/develop=354f40ea merge commit, internal/pkg/crawl4ai 在 origin, worktree+分支已删)。代码落主干, crawl4ai 默认 off(config_dev base_url 空=裸 HTTP 零回归)。下一步 dev 部署: 探查 dev 服务器 docker/RAM/镜像可达性(crawl4ai 镜像在 Docker Hub, dev 国内可能需 TCR 中转)→ 起 crawl4ai 容器 → 配 base_url → 部署后端 → dev 验收。'
   blockers: []
