@@ -127,6 +127,10 @@ func (s *spyUsageStore) GetPricingRule(_ context.Context, _, _, _ string) (*mode
 	return nil, gorm.ErrRecordNotFound
 }
 
+func (s *spyUsageStore) GetPricingRuleByModel(_ context.Context, _, _ string) (*model.PricingRule, error) {
+	return nil, gorm.ErrRecordNotFound
+}
+
 // TestBuildDefault_OrderingMatchesSpec verifies that BuildDefault assembles the chain
 // in the new correct order:
 //

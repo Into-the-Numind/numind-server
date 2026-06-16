@@ -36,6 +36,10 @@ func (s *tsUsageStore) GetPricingRule(_ context.Context, _, _, _ string) (*model
 	return nil, gorm.ErrRecordNotFound
 }
 
+func (s *tsUsageStore) GetPricingRuleByModel(_ context.Context, _, _ string) (*model.PricingRule, error) {
+	return nil, gorm.ErrRecordNotFound
+}
+
 func (s *tsUsageStore) count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()

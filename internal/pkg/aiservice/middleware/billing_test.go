@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,6 +73,19 @@ func (m *mockUsageStore) GetPricingRule(_ context.Context, serviceType, provider
 		return nil, gorm.ErrRecordNotFound
 	}
 	return rule, nil
+}
+
+func (m *mockUsageStore) GetPricingRuleByModel(_ context.Context, provider, modelName string) (*model.PricingRule, error) {
+	if m.pricingRules == nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+	suffix := "|" + provider + "|" + modelName
+	for key, rule := range m.pricingRules {
+		if strings.HasSuffix(key, suffix) {
+			return rule, nil
+		}
+	}
+	return nil, gorm.ErrRecordNotFound
 }
 
 // newMockStoreWithPricing creates a mockUsageStore pre-seeded with the three
@@ -402,6 +416,10 @@ func (m *mockBillingStore) CreateUsageRecords(_ context.Context, recs []*model.U
 // async recorder path). Returns ErrRecordNotFound so calculateCostAndRevenue
 // short-circuits to 0/0 without panicking on a nil rule.
 func (m *mockBillingStore) GetPricingRule(_ context.Context, _, _, _ string) (*model.PricingRule, error) {
+	return nil, gorm.ErrRecordNotFound
+}
+
+func (m *mockBillingStore) GetPricingRuleByModel(_ context.Context, _, _ string) (*model.PricingRule, error) {
 	return nil, gorm.ErrRecordNotFound
 }
 
