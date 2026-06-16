@@ -4948,3 +4948,18 @@ features:
   - 'S1+S2 (ai 2026-06-16): 设计=改 capability/api.go lookupCapabilities 投影一处令 AcceptsImageInline 从 input_modalities 含 image 派生(退役读 accepts_image_inline)→chatbot+agent 经 GetCapabilities 自动统一零下游改动; schema 删 capabilities enum 的 vision+改 description; migration 回填 input_modalities+task_profile 去 features.vision+清理。S2 Sonnet review CONDITIONAL_PASS: 核心假设全验证(改投影即全覆盖/去features.vision安全/pdf-audio自洽/死字段确认/无遗漏消费者)。吸收 1 P0(回填必须三信号OR且 accepts_image_inline 不能丢-seed的qwen-vl+手设模型只有这一信号)+3 P1(attachment.vision_describe requirements空无需改/features.vision在ai_service侧本就dead check去掉不改路由/migration后必须重启清5min缓存)+P2(执行顺序:回填->重启->验收->清理->schema)。'
   - 'S3 (ai 2026-06-16): plan 切 T1(capability/api.go 投影从 input_modalities 派生 AcceptsImageInline+vestigial注释)/T2(profile schema 删 capabilities enum vision+改 description+matchLLM回归测试)/T3(migration 三信号OR回填+task_profile去features.vision+清理); T4 验证策略。文件 disjoint。S3 Sonnet 原子性 review CONDITIONAL_PASS: 吸收 1 P0(部署时序硬约束: T3 migration(a)(b)必须先于T1代码上线+重启, 否则只有accepts_image_inline信号的seed qwen-vl/手设模型在T1启动瞬间回归不能看图)+2 P1(matchLLM回归单测spec要求漏了已补T2/T2 capabilities-enum-no-vision断言改必做)+2 P2(parseCapsJSON抽纯函数可选/S5加下游multimodal仍绿)。'
   blockers: []
+- id: deploy-rsync-lock
+  ndf_version: '3.0'
+  track: hotfix
+  description: 'numind-server dev 部署 docker build 失败(COPY skills /app/skills → "/skills not found")的 infra 修复。根因不是 nickname-edit 也不是 .dockerignore/Dockerfile, 而是部署链路无并发保护: 3 仓库部署都 rsync 到构建机各自共享目录 ~/repos/<repo>/ 再原地 docker build, rsync 用 --delete 且无锁。同仓库两部署并发时一个的 --delete 在另一个 build 读上下文期间删掉 skills/(及 internal/.../agent/skills)。修=release.sh 加 per-repo mkdir 串行锁 + rsync 后 skills/ 上下文 fail-fast 校验。'
+  classification_reason: 'Hotfix: 单仓库 numind-server, 仅改 scripts/cicd/release.sh(+新增 test_release_lock.sh), 无 DB schema/无新 API/无新外部服务/影响文件 ≤3/非支付权限。内部 infra bug(部署时自查发现, 非客户上报)→Rule11 复现测试不适用; 加锁算法测试满足 H1 ≥1 测试。'
+  last_updated_by: ai-h1
+  last_updated_at: '2026-06-16T19:18:00+08:00'
+  created_at: '2026-06-16T19:18:00+08:00'
+  status: active
+  stage: H1
+  repos: [numind-server]
+  branches: {numind-server: fix/deploy-rsync-lock}
+  worktrees: {numind-server: /private/tmp/wt-deploy-rsync-lock-numind-server}
+  progress: {total_tasks: 1, completed_tasks: 1, reviewed_tasks: 0}
+  blockers: []
