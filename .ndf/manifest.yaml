@@ -5,16 +5,17 @@ features:
   description: 'SOP 回看页"上传素材点击打开新标签显示 COS 报错"修复(客户报告)。真因=签名有效但历史 COS 对象已 GC→404(非权限)。用户拍板(AskUserQuestion 选项1): 文档卡改只读不可点(去 window.open)、图片保留页内放大、保留「查看提取文本」展开预览(读入库抽取文本不依赖 COS)。单仓库 numind-web-v3 单组件 ReplayInputCard.vue + 复现测试。'
   classification_reason: 'Hotfix: 单仓库 numind-web-v3、无 DB/无新 API/无新外部服务、非支付权限、文件数=1 组件+1 测试。Bug-from-Customer(Rule 11): 首 commit=失败复现测试。'
   status: active
-  stage: H2
+  stage: H3
   repos:
-    numind-web-v3: fix/sop-replay-doc-noclick
+    numind-web-v3: develop (merged via ndf-done)
   worktrees:
-    numind-web-v3: /private/tmp/wt-sop-replay-doc-noclick-numind-web-v3
+    numind-web-v3: (removed by ndf-done)
   progress:
     total_tasks: 1
     completed_tasks: 1
     reviewed_tasks: 1
   decisions:
+  - 'H3 dev 部署+验证 (ai 2026-06-16): ndf-done 合并 develop(9264c8c, 已核对 develop==origin+openFile 移除+复现测试在库)→/deploy-dev(容器 numind-web-v3-dev=develop-9264c8c 12:33 新建 health OK)。browse+E2E 账号 dev 复验: (1)文档卡 tag=DIV/isButton=false/cursor=auto, 点击 tabs 仍=1 且 window.open 未被调用→不再开新标签报错; (2)「查看提取文本」展开仍出 609 字; (3)run 2862 图片缩略图仍是 button, 点击 image-preview-overlay 弹出→页内放大保留。三项符合用户决策。止步 dev(hotfix prod 需用户确认+tag)。'
   - 'H1-H2 (ai 2026-06-16): 根因取证(dev 实测)=COS 签名永远有效, 旧运行对象已回收→点击 window.open 得 404 报错页; 新上传对象→200。用户选"文档不可点+图片保留页内放大"。修=ReplayInputCard 文档卡 button@click=openFile→只读 div(删 openFile/去 cursor/hover), 图片缩略图放大与「查看提取文本」展开保留。Rule 11 commit 链: cb5ad3d test(qa) RED(点击文档卡 window.open 被调+tagName=BUTTON 必失败)→77a549c fix(转 GREEN)→08ec126 docs 注释同步。门禁: vitest 3/3+type-check 0+eslint 0+build 0。并行双 Sonnet review 均 PASS_WITH_CONCERNS(0 P0/P1, 同一个 P2 头注释陈旧已修)。下一步 ndf-done+/deploy-dev+browse 验证文档不可点/图片仍放大。'
   blockers: []
 - id: sop-replay-input-visibility
@@ -4744,11 +4745,11 @@ features:
   track: standard
   description: '文档系统 v1：让 agent mode 在对话中生成的文本类交付物(markdown/docx/纯文本/HTML)能在对话内点开→WYSIWYG 在线编辑(转换式:解析成 markdown 底层存储,TipTap/Milkdown 无头编辑器)→自动持久化→导出下载(md/docx/pdf)。不做独立"AI 生成文档"功能(生成发生在 agent mode);打开入口=agent 对话里直接点开(无独立"我的文档"工作区);可编辑=文本类,图表PNG/CSV/Excel/PPT/PDF 只预览+下载;持久化=自动可打开,编辑即落库;仅 C 端私有,不做分享/版本/协作。v2 推迟:用户上传文档的在线编辑。复用 COS+DocumentParser(MarkItDown/go-fitz)+qwen-long+Python docx-author skill+AgentToolArtifact。'
   classification_reason: 'Standard:新增 DB schema(document 表关联 agent_tool_artifact)+新增 API 端点(文档 CRUD/解析打开/保存/导出下载)+影响文件>3+跨 numind-server+numind-web-v3 两仓库+涉及用户数据隔离(user_id/parent_user_id)。无支付逻辑;新前端无头编辑器库属前端依赖非外部服务集成。用户 2026-06-16 经 3 轮 AskUserQuestion 确认 Standard + 6 项产品决策(AI生成为主/转换式/WYSIWYG/对话内打开/文本类可编/自动持久化) + v1 范围(只做 AI 生成产物,上传编辑放 v2)。'
-  last_updated_by: ai-s3
-  last_updated_at: '2026-06-16T12:33:12+08:00'
+  last_updated_by: ai-s4
+  last_updated_at: '2026-06-16T12:34:36+08:00'
   created_at: '2026-06-16T12:00:25+08:00'
   status: active
-  stage: S3
+  stage: S4
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/document-system, numind-web-v3: feature/document-system}
   worktrees: {numind-server: /private/tmp/wt-document-system-numind-server, numind-web-v3: /private/tmp/wt-document-system-numind-web-v3}
