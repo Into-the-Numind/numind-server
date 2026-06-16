@@ -75,15 +75,19 @@ func TestLLMStreamConfig_DoesNotTruncateHealthyLongStream(t *testing.T) {
 	}
 
 	// 1. Reproduce the bug: a total http.Client.Timeout shorter than the stream
-	//    duration truncates a perfectly healthy stream mid-read.
+	//    duration truncates a perfectly healthy stream mid-read. We assert it was
+	//    a *body-read* truncation — some chunks arrived (n>0), then the read was
+	//    cut (err!=nil) before completion (n<lines) — not a connect/header failure
+	//    (which against a localhost httptest server is implausible anyway).
 	short := NewClient(&Config{
 		Timeout:               100 * time.Millisecond, // total cap < ~300ms stream
 		ConnectTimeout:        time.Second,
 		ResponseHeaderTimeout: time.Second, // headers arrive instantly; ensure it's the total cap that bites
 		TLSHandshakeTimeout:   time.Second,
 	})
-	if n, err := readAll(short); err == nil && n == lines {
-		t.Fatalf("expected total-timeout truncation, but read the full stream (n=%d, err=nil)", n)
+	n, err := readAll(short)
+	if err == nil || n == 0 || n >= lines {
+		t.Fatalf("expected mid-body truncation by total timeout (0<n<%d, err!=nil), got n=%d err=%v", lines, n, err)
 	}
 
 	// 2. The fix: the streaming LLM config carries no total request timeout, so a
@@ -95,7 +99,7 @@ func TestLLMStreamConfig_DoesNotTruncateHealthyLongStream(t *testing.T) {
 		t.Fatalf("LLMStreamConfig must have no total request timeout, got %v", streamCfg.Timeout)
 	}
 	stream := NewClient(streamCfg)
-	n, err := readAll(stream)
+	n, err = readAll(stream)
 	if err != nil {
 		t.Fatalf("streaming client errored on a healthy stream: %v", err)
 	}
