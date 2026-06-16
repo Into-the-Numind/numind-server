@@ -3,7 +3,7 @@
 
 -- Repoint session.title back to agnes-2.0-flash (the prior model).
 UPDATE task_profile tp
-JOIN ai_service s ON s.model_key = 'agnes-2.0-flash' AND s.is_active = 1
+JOIN ai_service s ON s.model_key = 'agnes-2.0-flash' AND s.is_active = 1 AND s.deprecated_at IS NULL
 SET tp.default_service_id = s.id
 WHERE tp.task_id = 'session.title';
 

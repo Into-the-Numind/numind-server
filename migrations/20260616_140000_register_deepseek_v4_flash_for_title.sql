@@ -13,8 +13,11 @@
 --   unlike deepseek-v4-pro which is thinking_only=1). sessiontitle.Generate never sets the
 --   Thinking flag, so the call runs non-thinking.
 --
--- Pricing (route-level, per_1m_tokens, ¥): input 0.85 / output 1.7 (cache-hit 0.02 not a
--- separate route column — tracked by the cache-aware billing layer when applicable).
+-- Pricing reference (¥, per 1M tokens): input 0.85 / output 1.7 / cache-hit 0.02. NOTE: the
+-- billing middleware reads price from the pricing_rule table, NOT ai_service_route — the
+-- route price columns below are reference/display only. session.title is a no-bill path
+-- (Generate strips billing ctx) so no pricing_rule row is required here; if this model is
+-- later bound to a BILLABLE task_profile, add an INSERT INTO pricing_rule then.
 --
 -- ⚠️ Dev / Prod 部署后必须手动 SSH 跑此 SQL (CI 不跑 migrations, project_dev_deploy_migration_gap).
 -- Verify provider exists first: SELECT id FROM llm_provider WHERE name='dmxapi' AND is_active=1;
@@ -35,16 +38,13 @@ VALUES
    ),
    'fast', 'standard', 0, 1, 0, '', 1);
 
--- 2. Route to dmxapi (guarded against duplicates — no UNIQUE on the tuple).
-INSERT INTO ai_service_route
+-- 2. Route to dmxapi. INSERT IGNORE is idempotent via uk_model_provider(model_id, provider_id).
+INSERT IGNORE INTO ai_service_route
   (model_id, provider_id, provider_model_id, priority, input_price_per_mtok, output_price_per_mtok, pricing_unit, is_active, created_at, updated_at)
-SELECT s.id, p.id, 'deepseek-v4-flash', 10, 0.85, 1.7, 'per_1m_tokens', 1, NOW(), NOW()
+SELECT s.id, p.id, 'deepseek-v4-flash', 10, 0.85, 1.7, 'per_1m_tokens', 1, NOW(3), NOW(3)
 FROM ai_service s
 JOIN llm_provider p ON p.name = 'dmxapi' AND p.is_active = 1
-WHERE s.model_key = 'deepseek-v4-flash'
-  AND NOT EXISTS (
-    SELECT 1 FROM ai_service_route r WHERE r.model_id = s.id AND r.provider_id = p.id
-  );
+WHERE s.model_key = 'deepseek-v4-flash';
 
 -- 3. Repoint the session.title task profile to deepseek-v4-flash.
 UPDATE task_profile tp
