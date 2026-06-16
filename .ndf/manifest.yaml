@@ -5,16 +5,17 @@ features:
   description: 'footer-polish 后续修复：OutputCard 页脚模型名对历史 model_name 与 SOP 注册表 key 不完全一致时回退成 key(注册表 deepseek-v3.2-thinking vs 存的 deepseek-v3.2/deepseek-v3.2-think；gpt-5.4-2026-03-05 带日期后缀)。加 normalizeModelKey 剥 thinking 后缀+日期尾段做容错匹配(exact 优先→归一化→回退原值)，覆盖 dev 库绝大多数(deepseek-v3.2 507+deepseek-v3.2-think 154+claude-sonnet-4-6+gpt-5.x 日期版)；deepseek-v3-2-251201(dash≠dot)等极少数仍回退 key。'
   classification_reason: 'Hotfix: 纯前端单仓库 numind-web-v3、单文件 OutputCard.vue+测试、无 DB/API/外部服务/支付权限。修上一 hotfix 的展示缺陷。'
   status: active
-  stage: H2
+  stage: H3
   repos:
-    numind-web-v3: fix/sop-model-name-match
+    numind-web-v3: develop (merged via ndf-done)
   worktrees:
-    numind-web-v3: /private/tmp/wt-sop-model-name-match-numind-web-v3
+    numind-web-v3: (removed by ndf-done)
   progress:
     total_tasks: 1
     completed_tasks: 1
     reviewed_tasks: 1
   decisions:
+  - 'H3 dev 部署+验证 (ai 2026-06-16): ndf-done 合并 develop(6eb3fea, normalizeModelKey 在库)→/deploy-dev(容器 develop-6eb3fea 18:43 health OK)。browse+E2E 验 run 1440 step1 页脚 meta=「耗时 23.9s DeepSeek V3.2 1869 tokens」——历史存的 deepseek-v3.2 现正确显示 display_name「DeepSeek V3.2」而非 key ✓。止步 dev(prod 需用户确认+tag)。'
   - 'H1-H2 (ai 2026-06-16): 根因取证(dev 库 sop_node_run model_name GROUP BY)=存的值形态杂(基础名/带-think/-thinking/带日期后缀 provider id)，注册表只 9 个 UI key 且 deepseek/sonnet 用 -thinking 变体。修=normalizeModelKey(先剥 -YYYY-MM-DD 与 -\\d{6,8} 日期尾段、再剥 -think(ing)) 做归一化匹配, exact 优先, 都不中回退原 key(不会误显示)。commit 40faa39 fix+5 测试→bb80cf8 修 2 理论 P2(正则顺序日期先/测试去重)。门禁 vitest 16+type-check 0+eslint 0+build 0。并行双 Sonnet review 均 PASS(0 P0/P1, 2 理论 P2 已处置; 确认无 false-positive 风险因当前注册表无 base+thinking 并存)。下一步 ndf-done+/deploy-dev+browse 验 deepseek-v3.2→DeepSeek V3.2。'
   blockers: []
 - id: sop-step-footer-polish
@@ -22,16 +23,17 @@ features:
   description: 'SOP 运行页+回看页 UI 精修：①OutputCard 把复制/保存生成记录与耗时/模型/tokens 合并为同一行(动作左、meta 右)，meta 改成与按钮同款(13px/--text-secondary/sans)，模型显示 display_name 而非 model_key，去掉完成时间；AI输出图标改 Lucide Sparkles 中性圆。②回看页 HistoryViewStrip 文案精简「正在查看历史步骤」；ReplayInputCard「你的输入→用户输入」「上传的素材·N→上传文件(去计数)」「展开全部→展开(移到标题行右)」+三区域间距+三区域 icon 统一(User/Paperclip/Sparkles 同款中性圆)。'
   classification_reason: 'Hotfix: 纯前端单仓库 numind-web-v3、无 DB/无 API/无外部服务/非支付权限、3 源文件(OutputCard/HistoryViewStrip/ReplayInputCard)+OutputCard 测试。非线上 bug(UI 增强)，不强制复现测试，但补了组件回归测试。'
   status: active
-  stage: H2
+  stage: H3
   repos:
-    numind-web-v3: fix/sop-step-footer-polish
+    numind-web-v3: develop (merged via ndf-done)
   worktrees:
-    numind-web-v3: /private/tmp/wt-sop-step-footer-polish-numind-web-v3
+    numind-web-v3: (removed by ndf-done)
   progress:
     total_tasks: 1
     completed_tasks: 1
     reviewed_tasks: 1
   decisions:
+  - 'H3 dev 部署+验证 (ai 2026-06-16): ndf-done 合并 develop(f6bde1d)→/deploy-dev(health OK)。browse+E2E 验 run 1440 step1: 页脚同一行(动作左/meta 右 actionsLeft_metaRight=true sameRow=true 三项)、HistoryViewStrip=「正在查看历史步骤」、用户输入/上传文件(无计数)、展开在标题行右、三 icon 同款 24px 中性圆。模型名 display_name 的 thinking/日期变体由后续 hotfix sop-model-name-match 补全(本次 exact 匹配已生效)。止步 dev。'
   - 'H1-H2 (ai 2026-06-16): 模型名映射用 llmModel store getModels(sop) 把 model_key→display_name(缺失回退key)，纯前端无后端。MetaFooter 不动(销售 ChatBubble 复用)，页脚行在 OutputCard 内直接重做(.output__footer 左 actions 右 meta)。三区域 icon 统一中性圆(OutputCard .output__ai-icon ≡ ReplayInputCard .replay-input__head-icon)。间距=uploads margin-top space-xl + replay-input margin-bottom(叠加 readonly-stack gap)。commit 8a43ac0 主改+OutputCard.spec 重写(setActivePinia+预置 loadedByFeature 防 HTTP，验 display_name/key回退/tokens省略/meta门槛)→cd16d7c 修 3 P2(删 head-right 死CSS/同步注释/补 latency=0 测试)。门禁 vitest 135+11 全过/type-check 0/eslint 0/build 0。并行双 Sonnet review 均 PASS_WITH_CONCERNS(0 P0/P1, 3 P2 已修)。下一步 ndf-done+/deploy-dev+browse 验证。'
   blockers: []
 - id: llm-stream-timeout
