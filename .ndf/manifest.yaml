@@ -1,5 +1,22 @@
 schema_version: '2.0'
 features:
+- id: sop-replay-input-strip
+  track: hotfix
+  description: 'SOP 回看 done-current(首次运行刚完成节点)两个客户报告问题。P1: 只上传文件不输入文字时,「用户输入」文本块显示了文件全部提取内容(与上传卡重复)——根因=前端 compose() 把文件内容以 <文本>\n\n<内容>(无 === 文件名 === 标记)拼进 input, 旧 delimiter 剥离匹配不到; 修=stripMergedFileBlocks 改按 file.content 锚定移除(\n\n+内容块 + file-only 整体, CRLF 归一化, 不误删句中同名子串)。P2: 运行中附件「查看提取文本」/长文「展开」点了被收回——根因=done-current 的 refreshNodeRun 把 props.files 从空更新为列表→触发旧 watch([input,files]) 重置展开态; 修=移除 watch, SopStepView 给 ReplayInputCard 加 :key=node.id(切步 remount 重置, 同步内 files 更新不重置)。'
+  classification_reason: 'Hotfix: 纯前端单仓库 numind-web-v3、3 源文件(replayInput.ts/ReplayInputCard.vue/SopStepView.vue)+测试、无 DB/API/外部服务/支付权限。Bug-from-Customer(Rule 11): 首 commit=失败复现测试。'
+  status: active
+  stage: H2
+  repos:
+    numind-web-v3: fix/sop-replay-input-strip
+  worktrees:
+    numind-web-v3: /private/tmp/wt-sop-replay-input-strip-numind-web-v3
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-H2 (ai 2026-06-16): 浏览器复现确认(dev run 2864 file-only): textShowsUploadContent=true(515字文件内容塞进输入框)+docCards=1 重复; files[].content 在 done-current 可用(refreshNodeRun); 关键细节 input 用 \r\n 而 content 用 \n 故须归一化。Rule 11 commit 链: a81be96 test(qa) RED(新compose格式/多文件/CRLF 4 用例失败)→5126dd1 fix(content-based 剥离+:key 替换 watch)→8682768 refactor(锚定移除消解 reviewer P2 子串误删风险)。门禁 vitest 250 sop+20 strip 全过/type-check 0/eslint 0/build 0。并行双 Sonnet review 均 PASS_WITH_CONCERNS(0 P0/P1, 同一 P2 split 子串误删→已改锚定移除真正修掉+加回归测试)。下一步 ndf-done+/deploy-dev+browse 复验 file-only 无输入框文本块 + 展开保持。'
+  blockers: []
 - id: sop-model-name-match
   track: hotfix
   description: 'footer-polish 后续修复：OutputCard 页脚模型名对历史 model_name 与 SOP 注册表 key 不完全一致时回退成 key(注册表 deepseek-v3.2-thinking vs 存的 deepseek-v3.2/deepseek-v3.2-think；gpt-5.4-2026-03-05 带日期后缀)。加 normalizeModelKey 剥 thinking 后缀+日期尾段做容错匹配(exact 优先→归一化→回退原值)，覆盖 dev 库绝大多数(deepseek-v3.2 507+deepseek-v3.2-think 154+claude-sonnet-4-6+gpt-5.x 日期版)；deepseek-v3-2-251201(dash≠dot)等极少数仍回退 key。'
