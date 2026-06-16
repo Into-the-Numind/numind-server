@@ -31,6 +31,8 @@ RUN set -eux; \
 #   - libffi-dev: cffi / cryptography builds
 #   - fonts-wqy-zenhei: CJK font support for PDF/chart generation (T12/T15 decisions)
 #   - curl: minimal network tool (sandbox is --network=none; here for image-build-time only)
+#   - pandoc: document-system 导出 md→docx（pandoc -o out.docx）/ md→pdf（--pdf-engine=weasyprint，
+#       复用已装 weasyprint + CJK 字体）。仅本 skill 镜像装，不影响主应用 Dockerfile/部署链路。
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libpango1.0-0 \
         libcairo2 \
@@ -38,6 +40,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libffi-dev \
         shared-mime-info \
         fonts-wqy-zenhei \
+        pandoc \
     && rm -rf /var/lib/apt/lists/*
 
 # Create the sandbox user (nobody at uid/gid 65534 on Alpine; use 1000:1000 on Debian).

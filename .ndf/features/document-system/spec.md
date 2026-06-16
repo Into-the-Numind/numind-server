@@ -133,9 +133,11 @@ type IDocumentStore interface {
 |---|---|---|
 | .md/.markdown, text/markdown, text/plain, .txt | 直接当 markdown/文本 | `direct` |
 | .html/.htm, text/html | `html-to-markdown`（go.mod 已有 JohannesKaufmann/html-to-markdown） | `html` |
-| .docx, ...wordprocessingml.document | `DocumentParser`（MarkItDown，写 temp file→解析） | `markitdown` |
-| docx 且 MarkItDown 失败/返回空 | qwen-long 兜底（aiservice 入口，**有 trace**，见 §6） | `qwen_long` |
+| .docx, ...wordprocessingml.document | `DocumentParser`（MarkItDown 主 + go-fitz/正则兜底，写 temp file→解析） | `markitdown` |
+| docx 且 DocumentParser 失败/返回空 | **v1: 直接 ErrDocumentParseFailed**（保留 `docxFallback` 接口 seam，v1 注入 nil） | — |
 | 其他（不可编辑类）| —— | open 返回 ErrDocumentNotEditable（前端本不该让点） |
+
+> **【S4-T3 scope 决策 2026-06-16】qwen-long 兜底 v1 推迟到 v2。** 理由：(1) v1 输入全是 agent 生成的干净 docx，DocumentParser(MarkItDown 主 + go-fitz/正则兜底)足够；(2) qwen-long 跨 controller 层、耦合 DashScope 文件 API、是"兜底的兜底"实际永不触发；(3) 砍掉后 **document-system v1 全程无 LLM 调用**，隔离更干净无计费/trace 负担。代码保留 `docxFallback` 接口 seam，v2 接用户上传脏 docx 时注入 qwen-long 实现（含 §6 trace）。
 
 > **【P1 修复】运行时依赖**：`DocumentParser.Parse()` 内部 `exec.Command("python3", "internal/pkg/parser/document_parser.py", tmpFile)` —— 依赖容器内有 `python3` + `document_parser.py` 脚本随二进制就位。新 document biz 复用它即继承此依赖。S4 须在 CI/构建镜像里验证 `python3 document_parser.py` 可跑；MarkItDown 不可用时降级 qwen-long（仍可工作）。
 
@@ -250,7 +252,9 @@ export const exportDocument = (id: number, format: 'md'|'pdf'|'docx') =>
 ---
 
 ## §6 AI 可观测性（trace 拓扑）
-仅 **qwen-long 兜底解析**分支涉及 LLM：
+> **【S4-T3 决策更新】v1 全程无 LLM 调用** —— qwen-long 兜底推迟到 v2（见 §3.2 注），解析(direct/html/markitdown)与导出(pandoc)均确定性。故 v1 **N/A**，无需 trace/billing。下文为 v2 接入 qwen-long 时的 trace 拓扑预案：
+
+仅 **qwen-long 兜底解析**分支涉及 LLM（v2）：
 - Trace 起点：`DocumentService.OpenFromArtifact` 的 qwen-long 分支 → `langfuse.CreateTrace("document-parse")`，`WithUserID`、`WithTraceInput({document_filename, source_mime})`、tag `document-system`。
 - Generation：qwen-long extract → `CreateGeneration`（model=qwen-long，记 prompt/completion tokens）。
 - 关键元数据：user_id、source_mime、parse_method、filename。

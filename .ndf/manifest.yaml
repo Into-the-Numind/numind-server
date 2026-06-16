@@ -1,5 +1,44 @@
 schema_version: '2.0'
 features:
+- id: company-name-modal-ime-limit
+  track: hotfix
+  description: 'org-branding follow-up（用户报告 bug + 微调）：(1) 弹窗输入框中文输入法组合期间的回车（选词/确认候选）被误判为"确定"提交 → 修复；(2) 公司名字符上限 100→10。'
+  classification_reason: 'Hotfix: 单仓库 numind-web-v3 单组件 SettingsView.vue，无 DB/新 API/新外部服务/非支付权限。含用户报告的 IME 回车 bug（Bug-from-Customer：首 commit=失败复现测试）。'
+  status: active
+  stage: H3
+  repos:
+    numind-web-v3: develop (merged via ndf-done)
+  worktrees:
+    numind-web-v3: (removed by ndf-done)
+  branches:
+    numind-web-v3: develop (merged via ndf-done)
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-H3 (ai 2026-06-16): IME bug 根因=@keyup.enter 时机晚于 compositionend（keyup 时 isComposing 已 false 守不住）→ 改 @keydown.enter + compositionstart/end 跟踪 imeComposing + isComposing/keyCode 229 三重守卫；组合中回车不提交、普通回车正常确认。限制 100→10: maxlength=10 + 计数 /10 + COMPANY_NAME_MAX 常量（后端 valid(0|100)/varchar(100) 安全上限不变，前端物理上限即 10）。Bug-from-Customer(Rule 11): 首 commit db59781=失败复现测试(组合回车不提交+普通回车确认+计数/10), fix 5225641 后转 PASS(6 测全过)。单 Sonnet review PASS, P2(计数器 CSS 注释 100→10) 已修。type-check 0+eslint 0。commits: db59781(RED)+5225641(fix)+9814f33(P2), merge ed70667。下一步 /deploy-dev + dev gstack /qa。prod 不在授权。'
+  blockers: []
+- id: company-name-edit-modal
+  track: hotfix
+  description: 'org-branding follow-up：设置页「公司名称」UX 从内联点击编辑改为只展示当前值 + 「修改」按钮 → 点击弹出小弹窗(输入 + 确认/取消)。展示区不可直接点击编辑，弹窗沿用现有 confirm-dialog 风格/字体，保存按钮品牌绿。'
+  classification_reason: 'Hotfix: 单仓库 numind-web-v3，无 DB schema/无新 API(复用 PUT /v1/users/me)/无新外部服务/影响 1 文件(SettingsView.vue)/非支付权限。前端交互改进，非客户 bug(无强制复现测试)。'
+  status: active
+  stage: H3
+  repos:
+    numind-web-v3: develop (merged via ndf-done)
+  worktrees:
+    numind-web-v3: (removed by ndf-done)
+  branches:
+    numind-web-v3: develop (merged via ndf-done)
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H3 (ai 2026-06-16): ndf-done 合并 web-v3→develop+push 已核实(local==origin, merge commit eb2d7a9, 分支/worktree 清)。/deploy-dev web-v3(tag eb2d7a9, 9200 healthy)。dev gstack /qa 端到端: 设置页公司名 display-only 显示淡灰"有数AI"(is-empty)+「修改」按钮、无内联输入框✓; 点修改→弹窗(标题"修改公司名称"+确认/取消, 沿用 confirm-dialog 风格, 背景模糊)✓; 填"有数测试机构"+确认→弹窗关闭+toast"公司名称已更新"+侧边栏与显示值同步变更✓; 无 console error。截图 /tmp/org_modal_open.png + /tmp/org_modal_after.png。E2E 账号已复位空。待用户快速确认。prod 不在授权(与 org-branding 一并上线时机由用户定)。'
+  - 'H1-H2 (ai 2026-06-16): 实现弹窗编辑替代内联编辑。移除 .company-input 内联输入/blur 保存，改 display-only span + 「修改」按钮 → Teleport 弹窗(沿用 .confirm-dialog 风格, 保存按钮 var(--color-primary) 绿区别于退出红)。逻辑: openCompanyEdit 预填+autofocus / closeCompanyEdit(保存中禁关) / confirmCompanyEdit(trim+校验+updateProfile+fetchUserInfo刷侧边栏+toast, 值未变直接关不发请求)。新增 4 个 @vue/test-utils 组件测试(打开/取消不调接口/确认调updateProfile+刷新/未变不发请求)全过。单 Sonnet review PASS, P1(测试单flush→改双flush防flaky)+P2(弹窗hint边距24→20)已修。type-check 0 + eslint 0。commits: 40554d1+ab75834。下一步 ndf-done + /deploy-dev + dev gstack /qa 视觉确认弹窗。'
+  blockers: []
 - id: sop-replay-doc-noclick
   track: hotfix
   description: 'SOP 回看页"上传素材点击打开新标签显示 COS 报错"修复(客户报告)。真因=签名有效但历史 COS 对象已 GC→404(非权限)。用户拍板(AskUserQuestion 选项1): 文档卡改只读不可点(去 window.open)、图片保留页内放大、保留「查看提取文本」展开预览(读入库抽取文本不依赖 COS)。单仓库 numind-web-v3 单组件 ReplayInputCard.vue + 复现测试。'
@@ -4746,16 +4785,16 @@ features:
   track: standard
   description: '文档系统 v1：让 agent mode 在对话中生成的文本类交付物(markdown/docx/纯文本/HTML)能在对话内点开→WYSIWYG 在线编辑(转换式:解析成 markdown 底层存储,TipTap/Milkdown 无头编辑器)→自动持久化→导出下载(md/docx/pdf)。不做独立"AI 生成文档"功能(生成发生在 agent mode);打开入口=agent 对话里直接点开(无独立"我的文档"工作区);可编辑=文本类,图表PNG/CSV/Excel/PPT/PDF 只预览+下载;持久化=自动可打开,编辑即落库;仅 C 端私有,不做分享/版本/协作。v2 推迟:用户上传文档的在线编辑。复用 COS+DocumentParser(MarkItDown/go-fitz)+qwen-long+Python docx-author skill+AgentToolArtifact。'
   classification_reason: 'Standard:新增 DB schema(document 表关联 agent_tool_artifact)+新增 API 端点(文档 CRUD/解析打开/保存/导出下载)+影响文件>3+跨 numind-server+numind-web-v3 两仓库+涉及用户数据隔离(user_id/parent_user_id)。无支付逻辑;新前端无头编辑器库属前端依赖非外部服务集成。用户 2026-06-16 经 3 轮 AskUserQuestion 确认 Standard + 6 项产品决策(AI生成为主/转换式/WYSIWYG/对话内打开/文本类可编/自动持久化) + v1 范围(只做 AI 生成产物,上传编辑放 v2)。'
-  last_updated_by: ai-s4
-  last_updated_at: '2026-06-16T12:44:46+08:00'
+  last_updated_by: ai-s5
+  last_updated_at: '2026-06-16T14:14:16+08:00'
   created_at: '2026-06-16T12:00:25+08:00'
   status: active
-  stage: S4
+  stage: S5
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/document-system, numind-web-v3: feature/document-system}
   worktrees: {numind-server: /private/tmp/wt-document-system-numind-server, numind-web-v3: /private/tmp/wt-document-system-numind-web-v3}
-  progress: {total_tasks: 9, completed_tasks: 1, reviewed_tasks: 1}
-  artifacts: {requirement: .ndf/features/document-system/requirement.md, proposal: .ndf/features/document-system/proposal.md, spec: .ndf/features/document-system/spec.md, plan: .ndf/features/document-system/plan.md}
+  progress: {total_tasks: 9, completed_tasks: 9, reviewed_tasks: 9}
+  artifacts: {requirement: .ndf/features/document-system/requirement.md, proposal: .ndf/features/document-system/proposal.md, spec: .ndf/features/document-system/spec.md, plan: .ndf/features/document-system/plan.md, qa: .ndf/features/document-system/qa-report.md}
   isolation: 'feature flag 休眠:后端 features.document_system.enabled 默认 OFF + 前端 VITE_ENABLE_DOCUMENT_SYSTEM;合 develop 不影响 prod 打 tag(prod 手动 tag 部署不开 flag=未上线)。复用 notification-center 休眠模式。'
   decisions:
   - 'S0:需求卡 .ndf/features/document-system/requirement.md。3 轮 AskUserQuestion 锁定:核心=AI 生成交付物为主;生成入口=agent mode 内(无独立生成功能);打开=对话内点开(无独立工作区);编辑=转换式 docx/文本→markdown→WYSIWYG(TipTap/Milkdown);可编辑=文本类,其余只预览下载;持久化=自动;仅C端私有不做分享/版本/协作。v1 只做 AI 生成产物,上传编辑放 v2。Triage→Standard(新表/新端点/跨仓库/文件>3)。隔离=feature flag 休眠不影响 prod 打 tag。'
@@ -4763,4 +4802,31 @@ features:
   - 'S2: spec .ndf/features/document-system/spec.md。6 项决策拍板: 导出复用 sandbox.Pool+pandoc(skill镜像独立CI/CD不碰主应用)/WYSIWYG=Milkdown(@milkdown/crepe)/解析链 direct→html-to-markdown→MarkItDown→qwen-long兜底/document表(user_id,source_object_key)唯一键懒建档/自动保存debounce1.5s+sendBeacon flush last-write-wins/content_md上限2MB。含 DB schema+双仓库API契约(POST open/GET :id/PUT :id/GET :id/export)+trace拓扑(仅qwen-long分支)+隔离三层(FeatureFlag+VITE+条件AutoMigrate)。独立 Sonnet review CONDITIONAL_PASS: 3 P0(IDOR越权→校验agent-outputs/{userID}/前缀; AutoMigrate prod建表→仅flag on才迁; sandboxPool局部变量→存biz字段+IBiz.Document())+6 P1+6 P2 全部并入(见spec §10)。'
   - 'S3: plan .ndf/features/document-system/plan.md 切 10 task(代码 T1-T9 + T10 验证策略)。后端 T1 DB地基→T2 COS下载→T3 biz核心(IDOR/parse链/errno)→T4 导出+biz装配+并发守卫→T5 controller+router+config; T6 沙箱镜像加pandoc(独立infra); 前端 T7 API+store+flag→T8 Milkdown→T9 模态+AgentArtifactItem入口; T10=S5验证策略(go test+vitest持久回归 + dev浏览器QA US1-5 + 跨用户隔离探针, 高风险须持久测试)。依赖无环, 后端(T1-5)vs前端(T7-9)Tier2跨仓库并行(契约spec§4锁定), 后端内部按依赖串行(biz.go/router.go/helper.go不并写)。S3 atomicity review(Sonnet) CONDITIONAL_PASS: 完整性/原子性/依赖/文件归属全干净, 3 P0 spec修复都已分配; 6 条验收收紧(P1: T3 Langfuse trace验证/T4 IBiz编译断言/T2 mock404断言; P2: T1 flag正向路径说明/T3 errno具体化/T10 T6前置)全部并入。'
   - 'S4-T1(commit 87643476): DB 地基完成。migration(ROW_FORMAT=DYNAMIC)+model.Document((user_id,source_object_key)唯一键)+IDocumentStore(4法,UpdateContent map形式+RowsAffected查ErrRecordNotFound)+datastore accessor+helper.go条件AutoMigrate(仅flag on建表,prod零schema影响)+8 store单测。双Sonnet review: spec PASS / quality PASS_WITH_CONCERNS(0 P0); 修2 P1(UpdateContent RowsAffected静默no-op/测试DB连接泄漏t.Cleanup)+5 P2(ParseMethod biz必设注释/default:directquote/时间戳not null+autoTime tags/GetByID+UpdateContent miss测试/helper %w)全部并入,重跑 build+test+vet 全绿。'
+  - 'S4-T2(commit a141bfd0): COS 下载 helper。util.DownloadFromCOS 仅 404→ErrCOSObjectNotFound(保留原错误链)/off→ErrCOSDisabled/其它原样; classifyCOSGetErr+cosRespStatus 抽纯函数单测(404/403/500/0/nil)。双 Sonnet review 均 PASS(0 P0/P1), 采纳 P2 错误链保留。'
+  - 'S4-T3(commit dd15a7e3+amend): biz 核心。objectkey(IDOR isOwnedAgentOutputKey 严格 agent-outputs/{userID}/+TrimLeft双斜杠)+parse(direct/html/markitdown,docxFallback接口seam v1注nil)+service(Open懒建档+并发race回查/Get/Save全程ownership→NotFound不泄露)+dto(2MB上限)+errno(9码). scope决策: qwen-long推迟v2→v1无LLM(spec/§3.2/§6已更新). 双Sonnet review均 PASS_WITH_CONCERNS(0 P0/P1, IDOR两位都确认正确): 修P2(双斜杠TrimLeft/dotfile标题/Save回读权威updated_at/补csv+pptx+双斜杠+并发race测试). go test全过+vet净.'
+  - 'S4-T4(commit b5acfade): 导出 service + biz 装配 + 并发守卫。export.go Export(md直返/pdf+docx经sandbox+pandoc,CopyFromContainer二进制安全)+userGuard每用户单并发+sandbox off/池满优雅降级. biz.go P0-PoolWiring闭环: documentSvc单实例(持久守卫)+sandboxPool字段+Document()accessor+IBiz. 双Sonnet review: spec PASS_WITH_CONCERNS / quality FAIL(P0!). P0=WriteFile绝对路径翻倍(/workdir//workdir/..)+缺ExecMkdir父目录→pdf/docx必失败; 修=ExecMkdir input+output+WriteFile相对路径; P1 ErrPoolExhausted→429 Busy; P2 sandboxPool字段+safeFilename加"/\t. 修后re-review PASS(数据流端到端核对sandbox API契约正确). 注:pdf/docx真实产出待T6镜像+dev集成验证.'
+  - 'S4-T5(commit 15dd164b): controller+router+config flag。controller/v1/document Open/Get/Save/Export(current_user鉴权/uint(u.ID)/export RFC5987 Content-Disposition二进制流)+router /documents组套FeatureFlag+config_dev/local加document_system.enabled(prod/qa不加=休眠). 双Sonnet review: spec FAIL(P0!)+quality PASS_WITH_CONCERNS. P0=IBiz加Document()致salesrag_test的realBizOnlyCustomers stub缺方法→task lint编译失败; 修=补Document()stub+import(repo-wide vet确认仅此一处). P2=4处c.Request.Context()改c直传(项目惯例/Langfuse传播). 修后re-review PASS, config_prod/qa确认未动. 后端T1-T5全链路完成. controller按约定不单测(E2E覆盖).'
+  - 'S4-T6(commit 66c8c958): 沙箱 skill 镜像 Dockerfile.base apt 加 pandoc(导出 md→docx/pdf)。独立 CI/CD 不碰主应用部署。Sonnet review PASS: bookworm 有 pandoc 包/--no-install-recommends 防 texlive/weasyprint+CJK 已装/仅 skill 镜像/无语法错。镜像重建+真实产出待 S6 dev. 后端+infra(T1-T6)全完成, 余前端 T7-T9.'
+  - 'S4-T7(commit 6f9e728): 前端数据层。api/documents+request.ts blob放行+types+stores/documents(open/scheduleSave debounce1.5s/flush inflight守卫/flushOnUnload fetch keepalive带auth/exportAs blob下载/reset)+utils/editableArtifact+env flag+vitest. 双Sonnet review: spec PASS_WITH_CONCERNS / quality FAIL(P1!). P1=慢保存期间编辑丢失(in-flight save完成无条件清pendingContent)→修: 仅pendingContent===body才清+finally检测新编辑重排(saveState!=error守卫防风暴)+lost-update回归测试. P2: flushOnUnload取消dangling timer+复用导出getToken+revokeObjectURL断言. 修后re-review PASS(回归测试覆盖+无loop+lint/tc净, 8 store+4 isEditable=12测试). 余 T8 Milkdown编辑器/T9 模态+入口.'
+  - 'S4-T8(commit bf172e7): Milkdown WYSIWYG 编辑器组件。MilkdownEditor.vue(@milkdown/crepe v7.21,v-model markdown+readonly,单向流不watch避环). 装独立node_modules(主checkout完好). 双Sonnet review: spec PASS/quality PASS_WITH_CONCERNS(P0!). P0=readonly+create期间卸载→crepe置null→setReadonly空引用; 修=捕获本地instance+crepe!==instance检测卸载则destroy孤儿+return+void destroy(P1)+mock 3-arg+竞态回归测试. 修后re-review PASS(正常流readonly仍生效,5测试). Crepe真实渲染走S5 dev QA. T9须defineAsyncComponent懒加载控bundle.'
+  - 'S4-T9(commit d26c17a+amend) + S4 完成: DocumentEditorModal(Teleport全屏/顶栏保存态+下载下拉/4状态/Esc+遮罩flush/beforeunload keepalive/懒加载Milkdown)+AgentArtifactItem打开编辑入口(canEdit=flag×isEditable门控,两file-row分支,懒加载模态). 双Sonnet review均 PASS_WITH_CONCERNS(0 P0/P1): 修P2(.is-saving琥珀色/handleClose加flushOnUnload安全网防关闭时飞行保存+新编辑丢失/run_id注释推迟v2/补txt+html+xlsx+pptx+csv测试矩阵11测试). 全量vitest 953→后续含新增全过0fail, eslint+type-check净. **S4 编码完成 9/9 task, reviewed=completed=9**. 后端T1-T6+前端T7-T9. 余 S5 验收.'
+  - 'S5 自动验收(qa-report.md): 逻辑持久回归全绿——后端 go test 本feature全部包PASS(biz/document/store/util/errno)+go vet净; 前端 vitest 953 passed/0 failed+eslint净+type-check净. 隔离取证: go test ./... 3包FAIL(salesrag/agent/credit)经对照develop主checkout完全相同→develop baseline既有非本feature(salesrag_test仅补Document()stub适配IBiz编译,运行时失败先前就有); golangci-lint因go install后不在PATH无法跑(环境非代码). 按T10策略: US1-5真链路+跨用户隔离探针+pandoc真实产出留S6 dev+用户走查(Milkdown/pandoc运行时依赖+需agent生成docx+用户偏好亲手走查feedback_walkthrough_user_executes). S6须先重建sandbox镜像(T6 pandoc). merge/deploy属外向需用户授权.'
+  blockers: []
+- id: instant-title-ux
+  ndf_version: '3.0'
+  description: '即时标题 UX 改造(承接 adaptive-session-titles)。(1)延迟建会话+发送时秒生成标题(chatbot+agent): 点新对话只显空白页不入列, 首发才乐观入列+占位闪动+并行从 prompt 调快速小模型秒生成标题+拿到更新。标题时机从回复后前移到发送时只用 prompt(新增 /title 端点), 保留回复后兜底(CAS 防双触发)。(2)修 chatbot 删除 bug(后端正常, 前端问题, Playwright 诊断)。(3)标题模型换 deepseek-v4-flash(via dmxapi 非思考)。'
+  classification_reason: 'Standard: 跨两仓库/新增 API 端点(/title)/影响文件>3/含 DB 注册。删除 bug=Bug-from-Customer(用户报 dev), 须先复现测试。用户 2026-06-16 给定全部需求+模型参数。'
+  last_updated_by: ai-s3
+  last_updated_at: '2026-06-16T14:10:00+08:00'
+  created_at: '2026-06-16T14:10:00+08:00'
+  track: standard
+  stage: S3
+  status: active
+  repos: [numind-server, numind-web-v3]
+  branches: {numind-server: feature/instant-title-ux, numind-web-v3: feature/instant-title-ux}
+  worktrees: {numind-server: /private/tmp/wt-instant-title-ux-numind-server, numind-web-v3: /private/tmp/wt-instant-title-ux-numind-web-v3}
+  progress: {total_tasks: 6, completed_tasks: 1, reviewed_tasks: 1}
+  artifacts: {spec: docs/superpowers/specs/2026-06-16-instant-title-ux-design.md}
+  decisions:
+  - 'S0-S3 合并设计 spec。T-model 已做(deepseek-v4-flash 注册+session.title 指向, migration 20260616_140000, dev 实测标题质量好)。余: title 端点(prompt-only)、chatbot/agent draft 延迟建会话+占位闪动、删除 bug(浏览器诊断+复现测试)。'
   blockers: []
