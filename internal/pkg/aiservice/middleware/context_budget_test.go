@@ -1221,3 +1221,73 @@ func TestReconcile_PricingMiss_RefundsNotWorstCase(t *testing.T) {
 		t.Errorf("pricing miss must Refund the reservation; refundCalls=%d", mock.refundCalls)
 	}
 }
+
+// TestReconcile_PricingResolved_ChargesActual verifies the happy path is intact:
+// when the holder carries the real cost, reconcile charges that exact amount
+// (not the reserve estimate) and does not refund.
+func TestReconcile_PricingResolved_ChargesActual(t *testing.T) {
+	var charged int64 = -1
+	svc := &capturingCreditService{}
+	svc.onFinalize = func(c int64) { charged = c }
+	deps := Deps{CreditService: svc}
+
+	holder := &finalCostHolder{}
+	holder.Set(30) // Billing computed the real cost = 30 credits
+	ctx := withFinalCostHolder(context.Background(), holder)
+
+	fi := FinalizeInput{
+		ReservationID:          1,
+		EstimatedCredits:       796, // reserve estimate — must NOT be charged
+		ActualPromptTokens:     2178,
+		ActualCompletionTokens: 504,
+		Status:                 "ok",
+	}
+	finalizeReservationIfNeeded(ctx, deps, fi)
+
+	if svc.finalizeCalls != 1 || svc.refundCalls != 0 {
+		t.Errorf("resolved cost: finalizeCalls=%d refundCalls=%d, want 1/0", svc.finalizeCalls, svc.refundCalls)
+	}
+	if charged != 30 {
+		t.Errorf("charged = %d, want 30 (holder cost, not the 796 reserve estimate)", charged)
+	}
+}
+
+// TestReconcile_HolderUnset_DistinguishesWarnVsError covers fix ③ P1-2: a holder
+// unset because of no usage (stream truncated / calibration skipped) refunds at
+// WARN level (benign), while a holder unset WITH usage refunds at ERROR level
+// (a real pricing_rule config gap). Both refund — the log level differs so
+// truncated streams don't spam false pricing alerts.
+func TestReconcile_HolderUnset_DistinguishesWarnVsError(t *testing.T) {
+	t.Run("no usage → warn", func(t *testing.T) {
+		logger := &mockLogger{}
+		mock := &mockCreditService{}
+		deps := Deps{CreditService: mock, Logger: logger}
+		fi := FinalizeInput{ReservationID: 1, EstimatedCredits: 796, CalibrationSkipped: true, Status: "ok"}
+		finalizeReservationIfNeeded(context.Background(), deps, fi)
+
+		if mock.refundCalls != 1 || mock.finalizeCalls != 0 {
+			t.Errorf("calibration-skipped: refundCalls=%d finalizeCalls=%d, want 1/0", mock.refundCalls, mock.finalizeCalls)
+		}
+		if len(logger.errors) != 0 {
+			t.Errorf("benign no-usage refund must NOT log ERROR, got %v", logger.errors)
+		}
+		if len(logger.warns) == 0 {
+			t.Error("benign no-usage refund should log a WARN")
+		}
+	})
+
+	t.Run("has usage → error", func(t *testing.T) {
+		logger := &mockLogger{}
+		mock := &mockCreditService{}
+		deps := Deps{CreditService: mock, Logger: logger}
+		fi := FinalizeInput{ReservationID: 1, EstimatedCredits: 796, ActualPromptTokens: 100, ActualCompletionTokens: 50, Status: "ok"}
+		finalizeReservationIfNeeded(context.Background(), deps, fi)
+
+		if mock.refundCalls != 1 || mock.finalizeCalls != 0 {
+			t.Errorf("usage-present pricing gap: refundCalls=%d finalizeCalls=%d, want 1/0", mock.refundCalls, mock.finalizeCalls)
+		}
+		if len(logger.errors) == 0 {
+			t.Error("pricing config gap with usage must log an ERROR alert")
+		}
+	})
+}

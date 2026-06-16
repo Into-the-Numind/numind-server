@@ -117,7 +117,7 @@ func TestChainStream_RetryThenCrossProviderFailover_BillingCorrect(t *testing.T)
 	// Innermost adapter: aihubmix stalls pre-content every call; dmxapi succeeds.
 	var mu sync.Mutex
 	adapterCalls := map[string]int{}
-	adapter := Handler(func(_ context.Context, route *registry.ResolvedRoute, _ interface{}) (interface{}, error) {
+	adapter := Handler(func(ctx context.Context, route *registry.ResolvedRoute, _ interface{}) (interface{}, error) {
 		mu.Lock()
 		adapterCalls[route.Provider.Name]++
 		mu.Unlock()
@@ -126,6 +126,13 @@ func TestChainStream_RetryThenCrossProviderFailover_BillingCorrect(t *testing.T)
 		if route.Provider.Name == "aihubmix" {
 			chunks = []aiservice.ChatChunk{idleErrChunk()}
 		} else {
+			// Successful provider: publish a resolved cost (stand-in for Billing,
+			// whose pricing lookup misses in this stub) so the alternate
+			// reservation reconciles. The failing primary leaves its holder unset
+			// → fix ③ refunds it (exactly the reserve=2 refund=1 finalize=1 shape).
+			if h := finalCostHolderFromCtx(ctx); h != nil {
+				h.Set(5)
+			}
 			chunks = successChunks("recovered")
 		}
 		ch := make(chan aiservice.ChatChunk, len(chunks)+1)
@@ -237,10 +244,15 @@ func TestChainStream_NormalStream_NoRetryNoFallback_BillingNormal(t *testing.T) 
 
 	var mu sync.Mutex
 	calls := 0
-	adapter := Handler(func(_ context.Context, _ *registry.ResolvedRoute, _ interface{}) (interface{}, error) {
+	adapter := Handler(func(ctx context.Context, _ *registry.ResolvedRoute, _ interface{}) (interface{}, error) {
 		mu.Lock()
 		calls++
 		mu.Unlock()
+		// Stand in for Billing's cost publish (pricing lookup misses in this stub)
+		// so the happy path reconciles. Post fix ③, an unset holder → refund.
+		if h := finalCostHolderFromCtx(ctx); h != nil {
+			h.Set(2)
+		}
 		chunks := []aiservice.ChatChunk{
 			{Delta: "hello ", Index: 0},
 			{Delta: "world", Index: 1},
