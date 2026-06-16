@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 
@@ -148,6 +149,32 @@ func TestKbSearchTool_Execute_BadJSON(t *testing.T) {
 	}
 	if !strings.Contains(string(result), "invalid input") {
 		t.Errorf("soft error should mention invalid input, got: %s", result)
+	}
+}
+
+// TestKbSearchTool_Execute_MarshalFailureIsSoft reproduces the run-killer: a chunk
+// whose Score is NaN/Inf (degenerate similarity/rerank math) makes json.Marshal of
+// the success output fail. The old code returned that as a hard Go error, which Eino
+// turns into a NodeRunError that terminates the ENTIRE agent run. A marshal failure
+// of one result must stay SOFT so the run survives (tool-soft-error-sweep invariant).
+func TestKbSearchTool_Execute_MarshalFailureIsSoft(t *testing.T) {
+	mock := &mockKbRetriever{
+		result: &retrieve.RetrievalResult{
+			Chunks: []domain.KnowledgeChunk{
+				// NaN float cannot be JSON-encoded → forces json.Marshal to error.
+				{ID: "c1", DocumentID: 7, Content: "snippet", Score: float32(math.NaN())},
+			},
+		},
+	}
+	tool := &kbSearchTool{retriever: mock}
+
+	input, _ := json.Marshal(kbSearchInput{Query: "q"})
+	result, err := tool.Execute(context.Background(), ToolInput(input))
+	if err != nil {
+		t.Fatalf("expected soft error on marshal failure, got hard error (kills run): %v", err)
+	}
+	if !strings.Contains(string(result), "ERROR") {
+		t.Errorf("soft error payload should carry an ERROR marker, got: %s", result)
 	}
 }
 
