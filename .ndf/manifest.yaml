@@ -28,8 +28,9 @@ features:
   track: hotfix
   description: 'SOP 回看 done-current(首次运行刚完成节点)两个客户报告问题。P1: 只上传文件不输入文字时,「用户输入」文本块显示了文件全部提取内容(与上传卡重复)——根因=前端 compose() 把文件内容以 <文本>\n\n<内容>(无 === 文件名 === 标记)拼进 input, 旧 delimiter 剥离匹配不到; 修=stripMergedFileBlocks 改按 file.content 锚定移除(\n\n+内容块 + file-only 整体, CRLF 归一化, 不误删句中同名子串)。P2: 运行中附件「查看提取文本」/长文「展开」点了被收回——根因=done-current 的 refreshNodeRun 把 props.files 从空更新为列表→触发旧 watch([input,files]) 重置展开态; 修=移除 watch, SopStepView 给 ReplayInputCard 加 :key=node.id(切步 remount 重置, 同步内 files 更新不重置)。'
   classification_reason: 'Hotfix: 纯前端单仓库 numind-web-v3、3 源文件(replayInput.ts/ReplayInputCard.vue/SopStepView.vue)+测试、无 DB/API/外部服务/支付权限。Bug-from-Customer(Rule 11): 首 commit=失败复现测试。'
-  status: active
-  stage: H3
+  status: completed
+  stage: H3 (deployed prod 2026-06-16, easy-3 batch)
+  deployed: 'prod v1.0.35 (numind-web-v3) 2026-06-16，随 SOP回看 easy-3 批次上线。'
   repos:
     numind-web-v3: develop (merged via ndf-done)
   worktrees:
@@ -46,8 +47,9 @@ features:
   track: hotfix
   description: 'footer-polish 后续修复：OutputCard 页脚模型名对历史 model_name 与 SOP 注册表 key 不完全一致时回退成 key(注册表 deepseek-v3.2-thinking vs 存的 deepseek-v3.2/deepseek-v3.2-think；gpt-5.4-2026-03-05 带日期后缀)。加 normalizeModelKey 剥 thinking 后缀+日期尾段做容错匹配(exact 优先→归一化→回退原值)，覆盖 dev 库绝大多数(deepseek-v3.2 507+deepseek-v3.2-think 154+claude-sonnet-4-6+gpt-5.x 日期版)；deepseek-v3-2-251201(dash≠dot)等极少数仍回退 key。'
   classification_reason: 'Hotfix: 纯前端单仓库 numind-web-v3、单文件 OutputCard.vue+测试、无 DB/API/外部服务/支付权限。修上一 hotfix 的展示缺陷。'
-  status: active
-  stage: H3
+  status: completed
+  stage: H3 (deployed prod 2026-06-16, easy-3 batch)
+  deployed: 'prod v1.0.35 (numind-web-v3) 2026-06-16，随 SOP回看 easy-3 批次上线。'
   repos:
     numind-web-v3: develop (merged via ndf-done)
   worktrees:
@@ -64,8 +66,9 @@ features:
   track: hotfix
   description: 'SOP 运行页+回看页 UI 精修：①OutputCard 把复制/保存生成记录与耗时/模型/tokens 合并为同一行(动作左、meta 右)，meta 改成与按钮同款(13px/--text-secondary/sans)，模型显示 display_name 而非 model_key，去掉完成时间；AI输出图标改 Lucide Sparkles 中性圆。②回看页 HistoryViewStrip 文案精简「正在查看历史步骤」；ReplayInputCard「你的输入→用户输入」「上传的素材·N→上传文件(去计数)」「展开全部→展开(移到标题行右)」+三区域间距+三区域 icon 统一(User/Paperclip/Sparkles 同款中性圆)。'
   classification_reason: 'Hotfix: 纯前端单仓库 numind-web-v3、无 DB/无 API/无外部服务/非支付权限、3 源文件(OutputCard/HistoryViewStrip/ReplayInputCard)+OutputCard 测试。非线上 bug(UI 增强)，不强制复现测试，但补了组件回归测试。'
-  status: active
-  stage: H3
+  status: completed
+  stage: H3 (deployed prod 2026-06-16, easy-3 batch)
+  deployed: 'prod v1.0.35 (numind-web-v3) 2026-06-16，随 SOP回看 easy-3 批次上线。'
   repos:
     numind-web-v3: develop (merged via ndf-done)
   worktrees:
@@ -143,8 +146,9 @@ features:
   track: hotfix
   description: 'SOP 回看页"上传素材点击打开新标签显示 COS 报错"修复(客户报告)。真因=签名有效但历史 COS 对象已 GC→404(非权限)。用户拍板(AskUserQuestion 选项1): 文档卡改只读不可点(去 window.open)、图片保留页内放大、保留「查看提取文本」展开预览(读入库抽取文本不依赖 COS)。单仓库 numind-web-v3 单组件 ReplayInputCard.vue + 复现测试。'
   classification_reason: 'Hotfix: 单仓库 numind-web-v3、无 DB/无新 API/无新外部服务、非支付权限、文件数=1 组件+1 测试。Bug-from-Customer(Rule 11): 首 commit=失败复现测试。'
-  status: active
-  stage: H3
+  status: completed
+  stage: H3 (deployed prod 2026-06-16, easy-3 batch)
+  deployed: 'prod v1.0.35 (numind-web-v3) 2026-06-16，随 SOP回看 easy-3 批次上线。'
   repos:
     numind-web-v3: develop (merged via ndf-done)
   worktrees:
@@ -161,8 +165,9 @@ features:
   track: standard
   description: 'SOP 回看页输入与上传可见：历史运行回看的只读步骤(done-history/done-current)当前只展示 AI 输出，看不到当时用户输入文本与上传的文件/图片。需求=把每步「历史输入」与「上传内容」在回看态变可见，方便回溯每一步输入上下文，UI 要美观合理。数据(sop_node_run.input + sop_file 表)已持久化，仅回看接口 /sop/runs/:id/status 的 completed_nodes 未透出 files + 前端只读态未渲染 input/files。'
   classification_reason: 'Standard: 无 DB schema 变更(数据已持久化)+无新端点(在现有 /sop/runs/:id/status 响应补 files 字段)+无新外部服务+非支付权限，但文件数>3(后端 DTO/biz/controller + 前端 api/store/回看组件/新只读输入卡)且跨 numind-server+numind-web-v3 两仓库 + UI 需设计走 S2。规则强制不可降级。用户 2026-06-16 设为 /goal autopilot 授权直至部署 dev(不部署 prod)。'
-  status: active
-  stage: S6
+  status: completed
+  stage: S6 (deployed prod 2026-06-16, easy-3 batch)
+  deployed: 'prod v2.1.46 (numind-server) + v1.0.35 (numind-web-v3) 2026-06-16，随 easy-3 批次(org-branding + 改昵称 + SOP回看)同步上线；隐藏依赖 GenerateSignedDownloadURL(后端)/AgentImagePreview.vue(前端) 已随 cherry-pick 补入 prod 基线；dev=develop 全量；prod 端到端功能验收待用户在真实账号确认。tag 已推 origin。'
   repos:
     numind-server: develop (merged via ndf-done)
     numind-web-v3: develop (merged via ndf-done)
