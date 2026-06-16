@@ -17,6 +17,9 @@ func TestDeriveObjectKey(t *testing.T) {
 		{"无 query", "https://b.cos.r.myqcloud.com/agent-outputs/7/2-b.md", "agent-outputs/7/2-b.md", false},
 		{"双斜杠规范化", "https://b.cos.r.myqcloud.com//agent-outputs/7/3-c.md", "agent-outputs/7/3-c.md", false},
 		{"空 path", "https://b.cos.r.myqcloud.com/", "", true},
+		// 可读 key：中文名在 URL 里是 percent-encoded，url.Parse 的 u.Path 已解码 →
+		// 还原为 COS SDK 期望的原始中文 key（开文档流程对中文名文档生效）。
+		{"中文名 percent-encoded 解码", "https://b.cos.r.myqcloud.com/agent-outputs/7/123-%E6%9C%AC%E5%91%A8%E5%B7%A5%E4%BD%9C%E5%B0%8F%E7%BB%93.docx?sign=x", "agent-outputs/7/123-本周工作小结.docx", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
