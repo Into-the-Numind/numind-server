@@ -147,35 +147,23 @@ func marshalJSON(v any) (datatypes.JSON, error) {
 //
 // tool_flags 默认值规则（当 req.ToolFlags 为 nil/empty 时）：
 // 当前 5 步问卷未含 "工具选择" step，frontend 不会发送 tool_flags。
-// 没有 tool_flags 会让 runner.go 走 pre-ReAct short-circuit（不调 LLM, 0 积分），
-// 学员看到 echo + 前端 'failed' 文案。为避免每个新 Agent 都是哑炮，
-// 这里根据 questionnaire_answers 智能 derive 一个合理默认集：
-//   - 永远开：基础工具 (kb_search/memory_*/get_current_date/ask_user_question)
-//   - q9='allow_search' 开：web_search + web_fetch
-//   - q7 含 'text'/'csv'/'image' 开：file_read
-//   - 危险类（bash_exec/image_gen/document_generate）保持 OFF
 //
-// 等 #15+ frontend questionnaire 加 "工具选择" step 后可放弃本默认。
-func deriveDefaultToolFlags(qa QuestionnaireAnswers) map[string]bool {
+// tool_flags 的命名空间是 frontend AgentAdvancedEdit 暴露的 3 个风险【分类】开关
+// （code_sandbox / media / dangerous），不是原始工具名。运行时的 ToolFlag 校验器
+// 是分类感知的（toolGatingCategories）：某分类显式为 false → deny 它门下的工具
+// （bash_exec / image_gen）；分类为 true 或缺失 → 放行。基础工具（kb_search/
+// web_search/file_read/memory_* 等）始终可用，不受分类开关影响。
+//
+// 默认全开（产品决策 2026-06-17）：3 个分类都 true，新 Agent 开箱即用；父账户随后
+// 可在 AgentAdvancedEdit 关掉某一类，校验器会真正拦截。
+//
+// 注意：旧实现额外写入原始工具名 key（bash_exec:true 等），与 frontend 的分类命名
+// 空间不一致，且注释谎称"危险类保持 OFF"——实际全开。现统一为分类 key，消除歧义。
+func deriveDefaultToolFlags(_ QuestionnaireAnswers) map[string]bool {
 	return map[string]bool{
-		// 基础读取 / 记忆 / 反问 / 时间
-		"kb_search":         true,
-		"memory_read":       true,
-		"memory_write":      true,
-		"get_current_date":  true,
-		"ask_user_question": true,
-		// 网络搜索与抓取
-		"web_search": true,
-		"web_fetch":  true,
-		// 学员材料文件读取
-		"file_read": true,
-		// 高级及高危工具
-		"bash_exec":         true,
-		"image_gen":         true,
-		"document_generate": true,
-		"code_sandbox":      true,
-		"media":             true,
-		"dangerous":         true,
+		"code_sandbox": true, // → bash_exec
+		"media":        true, // → image_gen
+		"dangerous":    true, // bash_exec 的别名分类
 	}
 }
 
