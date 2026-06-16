@@ -196,7 +196,14 @@ func (b *userBiz) UpdateUserProfile(ctx context.Context, userID uint, req *v1.Up
 
 	// 只更新允许的字段
 	if req.Nickname != nil {
-		user.Nickname = *req.Nickname
+		// 昵称必填：trim 后为空则拒绝。govalidator 的 stringlength(1|10) 对空串会跳过校验
+		// （非 required 字段空值视为"未提供"），故 min=1 拦不住空串；此处补齐后端守卫，
+		// 与前端弹窗必填一致，避免直接调 API 把昵称清空。
+		nickname := strings.TrimSpace(*req.Nickname)
+		if nickname == "" {
+			return errno.ErrInvalidParameter.SetMessage("昵称不能为空")
+		}
+		user.Nickname = nickname
 	}
 	if req.AvatarURL != nil {
 		user.AvatarURL = *req.AvatarURL
