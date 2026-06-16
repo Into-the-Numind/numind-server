@@ -15,24 +15,26 @@ T1 在 pricing 包，与 T2/T3 完全 disjoint。T2/T3 同改 `context_budget.go
 
 ---
 
-## T1 — Fix ① 定价按 (provider, model) 解析（三处解析器 + store）
+## T1 — Fix ① 定价按 (provider, model) 解析（chain 1，管"钱"）
 
-> **（S3 review P1）** 代码有**三处**重复的定价解析，必须一致加 agnostic 回退，否则"cost_cents 对了但 snapshot 空"割裂：
-> - **chain 1** `pricing.resolvePricingRule`（pricing.go:241，自带 cache）→ 管 reconcile 扣费 + `usage_record.cost_cents`（经 `calc.CalculateCostWithCache`，recorder.go:372）——**钱，最关键**
-> - **chain 3** `billing.ResolvePricingRule`（recorder.go:57，自带 pricingCache）→ snapshot/unit 解析
-> - **chain 2** `middleware/billing.go:311` 内联 2-step → 写 `pricing_*_snapshot` 审计列
-> 三者各自重复 2-step（direct + providerModelID）；**resolver 重复本身是 pre-existing tech debt，本 feature 不做合并（记 follow-up），但一致加第 3 步 agnostic 回退。**
+> **（S3 review P1 + S4 scope 收敛）** 代码有**三处**重复定价解析。S4 实现时核实：**钱全走 chain 1**——
+> - **chain 1** `pricing.resolvePricingRule`（pricing.go:241，自带 LRU cache）→ pricing.ICalculator → reconcile 扣费 **且** `usage_record.cost_cents`（recorder.go:372 `r.calc.CalculateCostWithCache`）。**修这一处，钱（对账+cost_cents）全对。**
+> - **chain 2** `middleware/billing.go:311`（dbUsageStore）+ **chain 3** `billing.ResolvePricingRule`（recorder.go:57）→ 仅写 `pricing_*_snapshot` **审计列**（miss 时 nil，非致命，不影响扣费）。
+>
+> **scope 决策**：加 `GetPricingRuleByModel` 到 3 个接口需触及 3 接口 + 2 DB 实现(billingStore/dbUsageStore) + 6 测试桩 ≈ 11 处，为**审计列**铺这么多跨包管线、且固化"3 个重复 resolver"的债 → 不划算。**T1 只修 chain 1（钱）**；chain 2/3 snapshot + **resolver 合并** 降为 follow-up（reviewer 允许"记录 known gap"）。snapshot 在 vision→claude 下仍可能 NULL（已知、非钱、cost_cents 正确）。
 
-**涉及文件**：`internal/pkg/pricing/pricing.go`（resolvePricingRule）+ `internal/pkg/billing/recorder.go`（ResolvePricingRule）+ `internal/pkg/aiservice/middleware/billing.go`（line 311 内联）+ pricing/usage store 接口/实现（新增 `GetPricingRuleByModel`）+ 各包 `_test.go`
+**涉及文件**：`internal/pkg/pricing/pricing.go`（resolvePricingRule）+ `internal/pkg/pricing/`（PricingStore 接口加 `GetPricingRuleByModel`）+ `internal/numind/store/billing.go`（billingStore 实现）+ `pricing_test.go`（stub + 测试）
 
-**repro test（红）**：`TestResolvePricingRule_VisionFallsBackToChat`（pricing 包）——seed `(llm_chat, dmxapi, claude-opus-4-6)` 价但无 `(llm_vision, …)`；调 `resolvePricingRule("llm_vision", "dmxapi", "claude-opus-4-6")` 当前返回 ErrRecordNotFound（FAIL）。
+**repro test（红，已提交 df03d5ad）**：`TestCalculateCost_VisionFallsBackToChat`——seed `(llm_chat, dmxapi, claude-opus-4-6)` 价但无 `(llm_vision, …)`；`CalculateCost("llm_vision", …)` 当前 ErrRecordNotFound（FAIL）→ fix 后解析到 chat 价、cost=12 分。
 
 **实现**：
-- store 新增 `GetPricingRuleByModel(ctx, provider, modelKey) (*model.PricingRule, error)`：GORM `Where("provider=? AND model=? AND is_active=?", provider, modelKey, true).Order("id DESC").Limit(1).Find(...)`；命中 >1 行打 warn。**两个 store 接口都加**（`pricing.PricingStore` + `billing.UsageStore`，实现在 `store/billing.go` 单一实现）。
-- **三处解析器**末尾（现有 directKey miss + providerModelID miss 之后）一致加 agnostic 回退：`GetPricingRuleByModel(provider, modelKey)` → 仍 miss 再 `GetPricingRuleByModel(provider, providerModelID)`；命中用 agnostic cache key `"agnostic|"+provider+"|"+model` 缓存（不与带 service_type 的 key 碰撞）。
-- 注释说明 agnostic 回退只在精确 miss 时兜底；标注 resolver 重复=follow-up。
+- `PricingStore` 接口 + `stubPricingStore` + `billingStore` 加 `GetPricingRuleByModel(ctx, provider, modelKey) (*model.PricingRule, error)`：GORM `Where("provider=? AND model=? AND is_active=?", …, true).Order("id DESC").Find`；>1 行打 warn 取最新。
+- `resolvePricingRule` 末尾（directKey miss + providerModelID miss 之后）加 agnostic 回退：`GetPricingRuleByModel(provider, modelKey)` → 仍 miss 再 `(provider, providerModelID)`；命中用 agnostic cache key `"agnostic|"+provider+"|"+model` 缓存（不与带 service_type 的 key 碰撞）。
+- 注释说明 agnostic 回退只在精确 miss 时兜底；标注 chain 2/3 snapshot + resolver 合并 = follow-up。
 
-**验收**：repro test 转绿；`go test ./internal/pkg/pricing/... ./internal/pkg/billing/... ./internal/numind/store/...` 全绿（专用视觉模型精确命中不回归——加 `TestResolvePricingRule_VisionModelExactStillWins`）；`task lint` 0。`go build ./...` 0（store 接口新增方法需 `store/billing.go` 同步实现，编译即验证）。
+**验收**：repro test 转绿（cost=12）；`go test ./internal/pkg/pricing/... ./internal/numind/store/...` 全绿（专用视觉模型精确命中不回归——加 `TestCalculateCost_VisionModelExactStillWins`）；`task lint` 0；`go build ./...` 0（接口新增方法需 billingStore 同步实现，编译即验证）。
+
+**follow-up（记入 manifest）**：chain 2/3 snapshot 审计列对 vision→统一模型仍 NULL（非钱）；3 个重复 resolver 应合并为单一入口。
 
 ---
 
