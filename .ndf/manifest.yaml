@@ -4843,14 +4843,15 @@ features:
   last_updated_at: '2026-06-16T14:10:00+08:00'
   created_at: '2026-06-16T14:10:00+08:00'
   track: standard
-  stage: S3
+  stage: S5
   status: active
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/instant-title-ux, numind-web-v3: feature/instant-title-ux}
   worktrees: {numind-server: /private/tmp/wt-instant-title-ux-numind-server, numind-web-v3: /private/tmp/wt-instant-title-ux-numind-web-v3}
-  progress: {total_tasks: 6, completed_tasks: 2, reviewed_tasks: 2}
+  progress: {total_tasks: 6, completed_tasks: 6, reviewed_tasks: 6}
   artifacts: {spec: docs/superpowers/specs/2026-06-16-instant-title-ux-design.md}
   decisions:
   - 'S0-S3 合并设计 spec。T-model 已做(deepseek-v4-flash 注册+session.title 指向, migration 20260616_140000, dev 实测标题质量好)。余: title 端点(prompt-only)、chatbot/agent draft 延迟建会话+占位闪动、删除 bug(浏览器诊断+复现测试)。'
   - 'T-backend(8e01a3b1/65487ab8): 发送时即时标题端点 POST /v1/{chatbot/sessions,agent-sessions}/:id/title(prompt-only 生成+属主校验+仅默认名/未命名+CAS)。B-1: maybeGenerateTitle 重读DB当前标题避免兜底浪费调用。Generate 支持 assistantMsg="". 双review PASS_WITH_CONCERNS 0 P0: 修端点响应统一{title}/agent best-effort/config ErrChatbotNotFound 映射/doc/ErrorIs 断言。'
+  - 'S4 全完成(6/6 双review, 因并行 manifest churn 进度数被回退过, 此处校正): T-model(deepseek-v4-flash via dmxapi 注册+session.title 指向, migration 20260616_140000, dev实测质量好) / T-backend(8e01a3b1+65487ab8 /title 端点 chatbot+agent, B-1 兜底重读) / T-fe-chatbot(6f32adb+a1e21a0 draft 延迟建会话+秒标题+占位闪动+并发守卫) / T-fe-agent(24c0dcf+6785d19 预生成session_id+乐观+/title重试) / T-delete-bug(04c3ebd test→665196f fix, 加 open class, Rule11 PASS) / T-S5策略。门禁: 前端 vitest+lint+tc 绿; 后端 go test 绿。S6 待: 部署 dev+browse 复验删除/标题/占位 + prod migration 注册 deepseek-v4-flash。'
   blockers: []
