@@ -31,8 +31,11 @@ func TestToErrno_WrappedDeadlineExceeded(t *testing.T) {
 // "图片过大" instead of the generic fallback (image-normalize-service).
 func TestToErrno_ImageDimensionsExceed(t *testing.T) {
 	cases := []string{
+		// Real dmxapi/claude 400 the user actually hit (matches "exceed max allowed size" + "dimensions exceed").
 		`ChatStream: LLM call failed: dmxapi.ChatStream: HTTP 400: {"error":{"message":"At least one of the image dimensions exceed max allowed size: 8000 pixels"}}`,
+		// Generic "image ... too large" phrasing seen from OpenAI-compatible aggregators.
 		"provider rejected: image too large",
+		// "dimensions exceed" variant (e.g. Anthropic-style messages).
 		"image dimensions exceed limit",
 	}
 	for _, msg := range cases {

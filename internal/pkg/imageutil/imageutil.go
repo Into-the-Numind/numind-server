@@ -168,7 +168,13 @@ func targetDimensions(w, h int, opt Options) (int, int) {
 	}
 
 	// Aspect-ratio cap: a too-extreme ratio (e.g. WeChat long screenshots) gets an
-	// extra modest shrink so the model isn't fed an ultra-long strip.
+	// extra modest shrink. NOTE: this is BEST-EFFORT pixel reduction, not a ratio
+	// fix — scaling both sides preserves the ratio. Genuinely capping the ratio
+	// would require cropping (losing content, bad for OCR), which we intentionally
+	// don't do; the shrink just lowers total pixels so the image is less likely to
+	// trip a provider's combined size+ratio guard. Mirrors the original salesrag
+	// behaviour. Only the salesrag/Doubao path sets MaxAspectRatio (the chatbot
+	// upload path leaves it 0).
 	if opt.MaxAspectRatio > 0 && aspectRatio(int(tw), int(th)) > opt.MaxAspectRatio {
 		tw *= 0.8
 		th *= 0.8
