@@ -503,6 +503,45 @@ func TestAnnouncementStore_ReadAndResponseCount(t *testing.T) {
 	assert.Equal(t, int64(2), respc)
 }
 
+// TestAnnouncementStore_ReadResponseCount_ExcludesAdmin 复现并回归 acceptance bug：
+// 已读数/回收率曾把 admin 读者也算进去，但 target_count 与 readers 列表都排除 admin，
+// 导致「已读数=2 但阅读情况只有 1 个读者」。ReadCount/ResponseCount 须与 target 口径
+// 一致（只数 is_admin=0 且未软删的在册用户）。
+func TestAnnouncementStore_ReadResponseCount_ExcludesAdmin(t *testing.T) {
+	db := newAnnouncementTestDB(t)
+	s := NewAnnouncementStore(db)
+	ctx := context.Background()
+
+	ann := makeAnnouncement(model.AnnouncementTypeSurvey, model.AnnouncementStatusPublished)
+	now := time.Now()
+	ann.PublishedAt = &now
+	require.NoError(t, s.Create(ctx, ann, nil))
+
+	admin := seedUser(t, db, "管理员", "200", true)    // is_admin=true → 不计
+	normal := seedUser(t, db, "普通用户", "201", false) // 计入
+	deleted := seedUser(t, db, "已删用户", "202", false)
+	require.NoError(t, db.Delete(&model.User{}, deleted.ID).Error) // 软删 → 不计
+
+	markReadFor(t, db, ann.ID, admin.ID, now)
+	markReadFor(t, db, ann.ID, normal.ID, now)
+	markReadFor(t, db, ann.ID, deleted.ID, now)
+
+	rc, err := s.ReadCount(ctx, ann.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), rc, "ReadCount 须排除 admin + 软删用户，只数普通在册用户")
+
+	require.NoError(t, s.SubmitResponse(ctx,
+		&model.SurveyResponse{AnnouncementID: ann.ID, UserID: admin.ID, SubmittedAt: now}, nil))
+	require.NoError(t, s.SubmitResponse(ctx,
+		&model.SurveyResponse{AnnouncementID: ann.ID, UserID: normal.ID, SubmittedAt: now}, nil))
+	require.NoError(t, s.SubmitResponse(ctx,
+		&model.SurveyResponse{AnnouncementID: ann.ID, UserID: deleted.ID, SubmittedAt: now}, nil))
+
+	respc, err := s.ResponseCount(ctx, ann.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), respc, "ResponseCount 须排除 admin + 软删用户")
+}
+
 // TestAnnouncementStore_ListReaders 验证已读/未读用户列表：
 // admin 永不出现；read 列表=有回执的非 admin 用户；unread 列表=目标用户减已读；分页 total 正确。
 func TestAnnouncementStore_ListReaders(t *testing.T) {
