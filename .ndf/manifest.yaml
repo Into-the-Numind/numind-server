@@ -1,5 +1,22 @@
 schema_version: '2.0'
 features:
+- id: sop-replay-doc-noclick
+  track: hotfix
+  description: 'SOP 回看页"上传素材点击打开新标签显示 COS 报错"修复(客户报告)。真因=签名有效但历史 COS 对象已 GC→404(非权限)。用户拍板(AskUserQuestion 选项1): 文档卡改只读不可点(去 window.open)、图片保留页内放大、保留「查看提取文本」展开预览(读入库抽取文本不依赖 COS)。单仓库 numind-web-v3 单组件 ReplayInputCard.vue + 复现测试。'
+  classification_reason: 'Hotfix: 单仓库 numind-web-v3、无 DB/无新 API/无新外部服务、非支付权限、文件数=1 组件+1 测试。Bug-from-Customer(Rule 11): 首 commit=失败复现测试。'
+  status: active
+  stage: H2
+  repos:
+    numind-web-v3: fix/sop-replay-doc-noclick
+  worktrees:
+    numind-web-v3: /private/tmp/wt-sop-replay-doc-noclick-numind-web-v3
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-H2 (ai 2026-06-16): 根因取证(dev 实测)=COS 签名永远有效, 旧运行对象已回收→点击 window.open 得 404 报错页; 新上传对象→200。用户选"文档不可点+图片保留页内放大"。修=ReplayInputCard 文档卡 button@click=openFile→只读 div(删 openFile/去 cursor/hover), 图片缩略图放大与「查看提取文本」展开保留。Rule 11 commit 链: cb5ad3d test(qa) RED(点击文档卡 window.open 被调+tagName=BUTTON 必失败)→77a549c fix(转 GREEN)→08ec126 docs 注释同步。门禁: vitest 3/3+type-check 0+eslint 0+build 0。并行双 Sonnet review 均 PASS_WITH_CONCERNS(0 P0/P1, 同一个 P2 头注释陈旧已修)。下一步 ndf-done+/deploy-dev+browse 验证文档不可点/图片仍放大。'
+  blockers: []
 - id: sop-replay-input-visibility
   track: standard
   description: 'SOP 回看页输入与上传可见：历史运行回看的只读步骤(done-history/done-current)当前只展示 AI 输出，看不到当时用户输入文本与上传的文件/图片。需求=把每步「历史输入」与「上传内容」在回看态变可见，方便回溯每一步输入上下文，UI 要美观合理。数据(sop_node_run.input + sop_file 表)已持久化，仅回看接口 /sop/runs/:id/status 的 completed_nodes 未透出 files + 前端只读态未渲染 input/files。'
@@ -4718,4 +4735,25 @@ features:
   - 'S3 (ai 2026-06-16): plan 切 8 task(T1 multimodal共享包/T2 DB+model+store/T3 ChatStream双路径/T4 controller/T6 FE api+store/T7 FE UI/T8 S5验证策略; code task=T1-T7=7)。后端先于前端, T1/T2->T3->T4, T6->T7。S3 Sonnet 原子性 review CONDITIONAL_PASS(0 P0): P1=task profile 放宽必要性——代码核实 matchLLM(capability.go:125-131)子集过滤, 放宽 chatbot.stream 到[text,image]会排除纯文本 agnes 默认模型, 故删 task profile migration 保持[text], 识图靠 ModelOverride 绕过过滤(比 reviewer 字面建议更正确); 2 P2(trace元数据S5人工核验/前端分流加vitest)全吸收。⚠并发: stream.go 同被 adaptive-session-titles(S3,改507-540行)修改, T3 插入点 step6/7 之间不重叠但同文件 merge 需人工解。'
   - 'S4 (ai 2026-06-16): 7 task 全实现+commit, 每 task 完成并行双 Sonnet review。后端: T1 biz/multimodal 共享包(buildPartsWithCaps 纯逻辑可测+presign/waitForFallback/mkInlineBlock 复制agent)、T2 chatbot_message.attachments JSON(serializer:json)+migration、T3 ChatStream 双路径(applyVisionBillOnly 抽出可测 bill-only注入+buildVisionMessages+effectiveMessage/message 分离不污染持久化)、T4 controller attachment_ids。前端: T6 UploadResponse.id+ChatbotMessage.attachments+store imageAttachments暂存+vitest、T7 ChatbotChat 上传UI(accept image/*+routeFiles分流+缩略图+气泡chip)。8 个 reviewer 全 PASS_WITH_CONCERNS(0 P0); 修了 2 个 P1(multimodal PDF/audio 恒fallback、前端cleanup blob泄漏)+多个 P2(每次现场修); 推迟项(input缩略图放大/低价值)已文档化。门禁: go test ./internal/numind/... 57ok 0FAIL + go vet通过 + golangci改动包净 + 前端 vue-tsc/eslint/vitest(6新+13总)全过。reviewed=completed=7。'
   - 'S6 dev 部署 (ai 2026-06-16): ndf-done 两仓库 merge develop+push 已独立复核(server f4123442/web b3d8aa5 在 origin/develop, multimodal包+migration+前端spec均在)。⚠先手工应用 migration 到 dev DB(chatbot_message 不在 AutoMigrate, 新代码每次写消息带 attachments 列→不建列会破坏所有 chatbot 写入)→SSH docker exec numind-mysql-dev 建 JSON 列(count 0→1, type json nullable)。再 /deploy-dev server(build177s/push13s)+/deploy-dev web(build102s/push7s), 两容器跑新镜像(numind-server-dev develop-f4123442-dirty healthy + healthz ok; numind-web-v3-dev develop-b3d8aa5 health ok)。端到端识图验证(识图模型inline+透明降级)按 feedback_walkthrough_user_executes 交用户亲手走/或独立E2E账号征同意后探, 非自动用用户账号驱动。停 dev 等用户验收, prod 不在授权。'
+  blockers: []
+- id: document-system
+  ndf_version: '3.0'
+  track: standard
+  description: '文档系统 v1：让 agent mode 在对话中生成的文本类交付物(markdown/docx/纯文本/HTML)能在对话内点开→WYSIWYG 在线编辑(转换式:解析成 markdown 底层存储,TipTap/Milkdown 无头编辑器)→自动持久化→导出下载(md/docx/pdf)。不做独立"AI 生成文档"功能(生成发生在 agent mode);打开入口=agent 对话里直接点开(无独立"我的文档"工作区);可编辑=文本类,图表PNG/CSV/Excel/PPT/PDF 只预览+下载;持久化=自动可打开,编辑即落库;仅 C 端私有,不做分享/版本/协作。v2 推迟:用户上传文档的在线编辑。复用 COS+DocumentParser(MarkItDown/go-fitz)+qwen-long+Python docx-author skill+AgentToolArtifact。'
+  classification_reason: 'Standard:新增 DB schema(document 表关联 agent_tool_artifact)+新增 API 端点(文档 CRUD/解析打开/保存/导出下载)+影响文件>3+跨 numind-server+numind-web-v3 两仓库+涉及用户数据隔离(user_id/parent_user_id)。无支付逻辑;新前端无头编辑器库属前端依赖非外部服务集成。用户 2026-06-16 经 3 轮 AskUserQuestion 确认 Standard + 6 项产品决策(AI生成为主/转换式/WYSIWYG/对话内打开/文本类可编/自动持久化) + v1 范围(只做 AI 生成产物,上传编辑放 v2)。'
+  last_updated_by: ai-s2
+  last_updated_at: '2026-06-16T12:27:01+08:00'
+  created_at: '2026-06-16T12:00:25+08:00'
+  status: active
+  stage: S2
+  repos: [numind-server, numind-web-v3]
+  branches: {numind-server: feature/document-system, numind-web-v3: feature/document-system}
+  worktrees: {numind-server: /private/tmp/wt-document-system-numind-server, numind-web-v3: /private/tmp/wt-document-system-numind-web-v3}
+  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
+  artifacts: {requirement: .ndf/features/document-system/requirement.md, proposal: .ndf/features/document-system/proposal.md, spec: .ndf/features/document-system/spec.md}
+  isolation: 'feature flag 休眠:后端 features.document_system.enabled 默认 OFF + 前端 VITE_ENABLE_DOCUMENT_SYSTEM;合 develop 不影响 prod 打 tag(prod 手动 tag 部署不开 flag=未上线)。复用 notification-center 休眠模式。'
+  decisions:
+  - 'S0:需求卡 .ndf/features/document-system/requirement.md。3 轮 AskUserQuestion 锁定:核心=AI 生成交付物为主;生成入口=agent mode 内(无独立生成功能);打开=对话内点开(无独立工作区);编辑=转换式 docx/文本→markdown→WYSIWYG(TipTap/Milkdown);可编辑=文本类,其余只预览下载;持久化=自动;仅C端私有不做分享/版本/协作。v1 只做 AI 生成产物,上传编辑放 v2。Triage→Standard(新表/新端点/跨仓库/文件>3)。隔离=feature flag 休眠不影响 prod 打 tag。'
+  - 'S1: 提案+PRD .ndf/features/document-system/proposal.md。3 只读 agent 吃透产物全链路得关键发现: 用户看到的生成文件=uploadGeneratedFile→COS agent-outputs/(无DB行/无ID/URL24h过期), 非 AgentToolArtifact(>16KB本地磁盘上下文管理用)。设计=document 表按(user_id,source_object_key)稳定键, 首次打开懒materialize(拉COS→解析md→快照content_md), 完全附加不动生成链路。6 用户故事+8 验收+边界/权限/UI规格。3 大风险: R1 md→docx/pdf 导出无独立Go路径(office skill 仅 agent沙箱可达)→S2三选一(沙箱复用/pandoc容器/v1先md+pdf); R2 产物无持久化→懒建档快照; R3 无WYSIWYG→新增Milkdown无头库(不违禁UI框架)。隔离=FeatureFlag休眠照搬notification-center。待S2决策6项。'
+  - 'S2: spec .ndf/features/document-system/spec.md。6 项决策拍板: 导出复用 sandbox.Pool+pandoc(skill镜像独立CI/CD不碰主应用)/WYSIWYG=Milkdown(@milkdown/crepe)/解析链 direct→html-to-markdown→MarkItDown→qwen-long兜底/document表(user_id,source_object_key)唯一键懒建档/自动保存debounce1.5s+sendBeacon flush last-write-wins/content_md上限2MB。含 DB schema+双仓库API契约(POST open/GET :id/PUT :id/GET :id/export)+trace拓扑(仅qwen-long分支)+隔离三层(FeatureFlag+VITE+条件AutoMigrate)。独立 Sonnet review CONDITIONAL_PASS: 3 P0(IDOR越权→校验agent-outputs/{userID}/前缀; AutoMigrate prod建表→仅flag on才迁; sandboxPool局部变量→存biz字段+IBiz.Document())+6 P1+6 P2 全部并入(见spec §10)。'
   blockers: []
