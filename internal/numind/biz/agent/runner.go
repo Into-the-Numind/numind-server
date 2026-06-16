@@ -427,7 +427,7 @@ func NewAgentRunner(runStore store.IAgentRunStore, registry AgentToolRegistry, o
 // Run 主流程（spec §4.4）。
 // 简化：#2 仅跑通 mock + 真实流程基础架构；
 // LLM 调用 / Eino agent.Generate 真实集成靠 Task 8 集成测试覆盖。
-func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
+func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResult, err error) {
 	startTime := time.Now()
 
 	// 0. 注入 userID 到 context，供工具（如 kbSearchTool）读取。
@@ -440,6 +440,27 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	// answer-resume-lifecycle F2: capture the pre-yield transcript at takeover so
 	// final persistence APPENDS the resumed leg instead of clobbering leg 1.
 	var priorMessages json.RawMessage
+
+	// Backstop panic guard for the detached polling-run goroutine. The closure reads
+	// `run` lazily, so it persists a clean terminal once the row exists (and just logs
+	// if a panic happens before creation). Tool panics are contained by
+	// invokeToolGuarded; this covers prep/hook/finalize so a run never crashes the process.
+	defer func() {
+		if rec := recover(); rec != nil {
+			var rid uint64
+			if run != nil {
+				rid = run.ID
+			}
+			result, err = nil, recoverAgentRunPanic(rec, rid, r.runStore, nil, startTime)
+		}
+	}()
+	// Evict this run's vision-tool quota counters on every exit path (run set lazily).
+	defer func() {
+		if run != nil {
+			visionQuotaClearRun(run.ID)
+		}
+	}()
+
 	if req.ExistingRunID != 0 {
 		existing, getErr := r.runStore.Get(ctx, req.ExistingRunID)
 		if getErr != nil {
@@ -577,19 +598,10 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 			// v2 路径：catalog 占据段位 [3] body (不读 ad.GeneratedSkillBody/CustomSkillBody)
 			// 设计意图 (S2-D22)：父账户用 binding 模型时不应再编辑 ad.body — binding 表是新 SoT。
 
-			// 同名防御 (S1-D13)：无 (parent_user_id, name) UNIQUE DB 约束 (S4-D26)，
-			// 由 runner defensive check 兜底。发现重名拒绝启动 Run，避免 LLM 调用歧义。
-			nameSeen := make(map[string]uint, len(skills))
-			for i := range skills {
-				sk := &skills[i]
-				if existing, dup := nameSeen[sk.Name]; dup {
-					log.Errorw("AgentRunner.Run: duplicate Skill name in bindings (S1-D13)",
-						"agent_id", req.AgentDefinitionID, "skill_name", sk.Name,
-						"skill_ids", []uint{existing, sk.ID})
-					return nil, fmt.Errorf("AgentRunner.Run: duplicate Skill name %q in bindings (rule S1-D13)", sk.Name)
-				}
-				nameSeen[sk.Name] = sk.ID
-			}
+			// 同名防御 (S1-D13)：无 (parent_user_id, name) UNIQUE DB 约束 (S4-D26)。
+			// 旧实现发现重名 hard-error 拒绝 Run（brick agent）；现改为优雅去重（保留首个），
+			// 新重名已在 attach 时拦截（BindingService.Attach）。
+			skills = dedupSkillsByName(skills, req.AgentDefinitionID)
 
 			// 构造 turn state — runner cache 给 use_skill tool (T03) 用 (O(1) lookup, 0 DB)。
 			useSkillTurnState = NewUseSkillTurnState(UseSkillTurnCapDefault)

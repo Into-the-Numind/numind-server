@@ -133,6 +133,27 @@ func TestNarrationBuffer_GC_RemovesOldRuns(t *testing.T) {
 	}
 }
 
+// TestNarrationBuffer_StartGC_EvictsPeriodically verifies the background ticker
+// actually calls GC so stale runs are evicted without a manual GC() call (the leak
+// the wiring fixes).
+func TestNarrationBuffer_StartGC_EvictsPeriodically(t *testing.T) {
+	buf := NewNarrationBuffer(200, 20*time.Millisecond) // tiny retention
+	runID := uint64(91)
+	buf.AppendEvent(runID, makeEvent(runID, time.Now()))
+
+	stop := buf.StartGC(5 * time.Millisecond)
+	defer stop()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(buf.QuerySince(runID, time.Time{})) == 0 {
+			return // evicted by the ticker — success
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("StartGC ticker did not evict the stale run within 2s")
+}
+
 // TestNarrationBuffer_ConcurrentSafe verifies that 100 concurrent goroutines
 // appending events don't cause races (run with -race flag).
 func TestNarrationBuffer_ConcurrentSafe(t *testing.T) {

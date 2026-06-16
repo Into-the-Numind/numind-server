@@ -52,6 +52,32 @@ func TestBinding_Attach_CrossTenantAgentRejected(t *testing.T) {
 	require.ErrorIs(t, err, errno.ErrSkillArtifactNotFound)
 }
 
+// TestBinding_Attach_DuplicateNameRejected reproduces the agent-bricking bug: the
+// skill table has no (parent_user_id, name) UNIQUE, so a tenant can hold two skills
+// named the same. The runtime resolves an agent's bound skills BY NAME and returns a
+// hard error if two active bindings collide — bricking every run before any LLM call.
+// Attach must reject binding a second skill whose name duplicates an already-bound one.
+func TestBinding_Attach_DuplicateNameRejected(t *testing.T) {
+	db := newTestDB(t)
+	bsvc := NewBindingService(db)
+	svc := NewService(db)
+
+	require.NoError(t, db.Exec(
+		"INSERT INTO agent_definition (id, parent_user_id, name, is_active, created_by) VALUES (?, ?, ?, ?, ?)",
+		1, 100, "agent-100", 1, 100).Error)
+
+	// Two same-named skills in the same tenant (allowed — no UNIQUE constraint).
+	s1, err := svc.Create(context.Background(), 100, 100, CreateRequest{Name: "dup", BodyMd: "a"})
+	require.NoError(t, err)
+	s2, err := svc.Create(context.Background(), 100, 100, CreateRequest{Name: "dup", BodyMd: "b"})
+	require.NoError(t, err)
+
+	require.NoError(t, bsvc.Attach(context.Background(), 100, 1, s1.ID, 0))
+
+	err = bsvc.Attach(context.Background(), 100, 1, s2.ID, 1)
+	require.ErrorIs(t, err, errno.ErrSkillArtifactNameConflict)
+}
+
 func TestBinding_Attach_NewBindingCreated(t *testing.T) {
 	db := newTestDB(t)
 	bsvc := NewBindingService(db)

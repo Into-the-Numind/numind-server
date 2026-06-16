@@ -573,14 +573,16 @@ func TestRunner_DualReadFallback_WithBindings_UsesCatalog(t *testing.T) {
 	assert.NotContains(t, catalog, "LEGACY_BODY_MARKER", "v2 路径不应读 legacy ad body")
 }
 
-// TestRunner_DuplicateSkillNames_RejectsRun — 同名 binding 触发 S1-D13 防御：
-// runner 启动时检测到重名 → 拒绝 Run 返回 error，不进入 LLM 调用。
-func TestRunner_DuplicateSkillNames_RejectsRun(t *testing.T) {
+// TestRunner_DuplicateSkillNames_DedupsGracefully — pre-existing duplicate-named
+// bindings must NOT brick the run. The old S1-D13 hard-error aborted every run before
+// any LLM call, making the agent unusable. The runner now dedups by name (keeps the
+// first) and proceeds; new duplicates are prevented at attach time.
+func TestRunner_DuplicateSkillNames_DedupsGracefully(t *testing.T) {
 	skillSt := newMemorySkillStore(3, 77, "any body")
 	bindLister := &fakeSkillBindingLister{
 		skills: []model.Skill{
-			{ID: 20, Name: "重名技能", Description: "第一个", IsActive: true},
-			{ID: 21, Name: "重名技能", Description: "第二个 — 应触发拒绝", IsActive: true},
+			{ID: 20, Name: "重名技能", Description: "第一个 — 保留", IsActive: true},
+			{ID: 21, Name: "重名技能", Description: "第二个 — 应被去重", IsActive: true},
 		},
 	}
 
@@ -593,12 +595,11 @@ func TestRunner_DuplicateSkillNames_RejectsRun(t *testing.T) {
 
 	result, err := runner.Run(context.Background(), RunRequest{
 		UserID:            3,
-		Input:             "should fail before LLM",
+		Input:             "should not brick on duplicate skill names",
 		AgentDefinitionID: 77,
 	})
-	require.Error(t, err, "duplicate Skill name must cause Run to return error")
-	assert.Contains(t, err.Error(), "duplicate Skill name", "error message should reference the rule (S1-D13)")
-	assert.Nil(t, result, "RunResult should be nil on rejected Run")
+	require.NoError(t, err, "duplicate Skill name must NOT brick the run (graceful dedup)")
+	require.NotNil(t, result, "RunResult should be present after graceful dedup")
 }
 
 // TestRunner_WithSkillBindingService_Option — wire-up sanity check

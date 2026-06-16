@@ -14,6 +14,50 @@ import (
 	"numind-server/internal/pkg/model"
 )
 
+// fakeDefaultSkillSyncer records the write-through call so the Patch wiring can be
+// asserted without importing the artifact package (which would create an import cycle:
+// artifact already imports skill for skill.Build).
+type fakeDefaultSkillSyncer struct {
+	called       bool
+	gotParentID  uint
+	gotAgentID   uint
+	gotBody      string
+}
+
+func (f *fakeDefaultSkillSyncer) SyncAgentDefaultSkill(_ context.Context, parentUserID, agentID uint, newBody string) error {
+	f.called = true
+	f.gotParentID = parentUserID
+	f.gotAgentID = agentID
+	f.gotBody = newBody
+	return nil
+}
+
+// TestService_Patch_WritesThroughToDefaultSkill reproduces the v1↔v2 divergence: after
+// migrate-skill-from-agent, an agent's behavior lives in a bound v2 skill named
+// "<agent> 的默认技能". The v1 questionnaire Patch rebuilt GeneratedSkillBody but never
+// touched that skill, so a parent's edit left the runtime-loaded skill body stale.
+// Patch must invoke the injected syncer with the rebuilt body.
+func TestService_Patch_WritesThroughToDefaultSkill(t *testing.T) {
+	svc, db := newTestService(t)
+	parentID := seedParentUserID(db)
+	syncer := &fakeDefaultSkillSyncer{}
+	svc = svc.WithDefaultSkillSyncer(syncer)
+
+	ad, err := svc.Create(context.Background(), parentID, minCreateReq())
+	require.NoError(t, err)
+	oldBody := ad.GeneratedSkillBody
+
+	newQ := QuestionnaireAnswers{Q6: []string{"give_advice"}, Q7: []string{"text", "csv"}, Q12: "professional"}
+	patched, err := svc.Patch(context.Background(), parentID, ad.ID, PatchRequest{QuestionnaireAnswers: &newQ})
+	require.NoError(t, err)
+	require.NotEqual(t, oldBody, patched.GeneratedSkillBody, "questionnaire edit must rebuild body")
+
+	require.True(t, syncer.called, "Patch must write through to the bound default skill")
+	assert.Equal(t, parentID, syncer.gotParentID)
+	assert.Equal(t, uint(ad.ID), syncer.gotAgentID)
+	assert.Equal(t, patched.GeneratedSkillBody, syncer.gotBody, "syncer must receive the rebuilt body")
+}
+
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
@@ -199,25 +243,21 @@ func TestService_Create_emptyToolFlags_derivesDefault(t *testing.T) {
 
 	var flags map[string]bool
 	require.NoError(t, json.Unmarshal(ad.ToolFlags, &flags))
-	// Always-on basics
-	assert.True(t, flags["kb_search"], "kb_search default on")
-	assert.True(t, flags["memory_read"], "memory_read default on")
-	assert.True(t, flags["memory_write"], "memory_write default on")
-	assert.True(t, flags["get_current_date"], "get_current_date default on")
-	assert.True(t, flags["ask_user_question"], "ask_user_question default on")
-	// q9=allow_search → web tools on
-	assert.True(t, flags["web_search"], "web_search on when q9=allow_search")
-	assert.True(t, flags["web_fetch"], "web_fetch on when q9=allow_search")
-	// q7 has text/csv → file_read on
-	assert.True(t, flags["file_read"], "file_read on when q7 has materials")
-	// Dangerous now default ON
-	assert.True(t, flags["bash_exec"], "bash_exec default on")
-	assert.True(t, flags["image_gen"], "image_gen default on")
-	assert.True(t, flags["document_generate"], "document_generate default on")
+	// tool_flags now uses the 3 risk-CATEGORY keys (matching AgentAdvancedEdit),
+	// full-open by default. Baseline tools (kb_search/web_search/file_read/memory_*)
+	// are always-on at runtime independent of tool_flags, so they are NOT listed here.
+	assert.True(t, flags["code_sandbox"], "code_sandbox default on (→ bash_exec)")
+	assert.True(t, flags["media"], "media default on (→ image_gen)")
+	assert.True(t, flags["dangerous"], "dangerous default on")
+	// Old raw tool-name keys are gone (namespace unified to categories).
+	_, hasRawToolKey := flags["web_search"]
+	assert.False(t, hasRawToolKey, "default no longer writes raw tool-name keys")
 }
 
-// TestService_Create_emptyToolFlags_noSearch: all tools remain default ON in new design.
-func TestService_Create_emptyToolFlags_noSearch(t *testing.T) {
+// TestService_Create_emptyToolFlags_categoryDefault: the derived default is the
+// full-open 3-category set regardless of q9/q7. The old per-tool derivation was
+// removed — baseline tools are always-on at runtime, not gated by tool_flags.
+func TestService_Create_emptyToolFlags_categoryDefault(t *testing.T) {
 	svc, db := newTestService(t)
 	parentID := seedParentUserID(db)
 
@@ -231,12 +271,10 @@ func TestService_Create_emptyToolFlags_noSearch(t *testing.T) {
 
 	var flags map[string]bool
 	require.NoError(t, json.Unmarshal(ad.ToolFlags, &flags))
-	assert.True(t, flags["web_search"], "web_search is default on")
-	assert.True(t, flags["web_fetch"], "web_fetch is default on")
-	assert.True(t, flags["file_read"], "file_read is default on")
-	// Basics still on
-	assert.True(t, flags["kb_search"])
-	assert.True(t, flags["memory_read"])
+	assert.Len(t, flags, 3, "default is exactly the 3 risk categories")
+	assert.True(t, flags["code_sandbox"])
+	assert.True(t, flags["media"])
+	assert.True(t, flags["dangerous"])
 }
 
 func TestService_Create_userSuppliedToolFlags_winsOverDefault(t *testing.T) {

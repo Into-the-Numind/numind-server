@@ -23,6 +23,11 @@ var (
 	// 触发位置：POST /v1/agents/:agent_id/skills 重复 attach。
 	ErrSkillArtifactBindingExists = &Errno{HTTP: 409, Code: "Conflict.SkillArtifactBindingExists", Message: "skill artifact already bound to this agent"}
 
+	// ErrSkillArtifactNameConflict 表示尝试装载一个与该 Agent 已绑定技能【同名】的技能。
+	// 运行时按 name 解析绑定技能，两个同名活跃绑定会让 runner hard-error 整个 run 卡死，
+	// 因此在 attach 时即拦截。触发位置：POST /v1/agents/:agent_id/skills 同名绑定。
+	ErrSkillArtifactNameConflict = &Errno{HTTP: 409, Code: "Conflict.SkillArtifactNameConflict", Message: "another skill with the same name is already bound to this agent"}
+
 	// ErrSkillArtifactFrontmatterInvalid 表示 frontmatter 解析失败（YAML 语法错误等）。
 	// 业务层可选择 fallback：把 raw content 当 body_md，frontmatter 字段保留空——
 	// 是否 fallback 由 service 层决定，errno 本身只表达"解析失败"语义。

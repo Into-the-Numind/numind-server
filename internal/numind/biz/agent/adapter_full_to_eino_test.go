@@ -21,10 +21,11 @@ import (
 
 type fakeFullTool struct {
 	BaseTool
-	name string
-	desc string
-	out  []byte
-	err  error
+	name     string
+	desc     string
+	out      []byte
+	err      error
+	panicVal any // when non-nil, Execute panics with it (simulates a tool bug)
 }
 
 func (f *fakeFullTool) Name() string           { return f.name }
@@ -33,6 +34,9 @@ func (f *fakeFullTool) UserFacingName() string { return f.name }
 func (f *fakeFullTool) NarrationVerb() string  { return "执行" }
 
 func (f *fakeFullTool) Execute(_ context.Context, _ ToolInput) (ToolResult, error) {
+	if f.panicVal != nil {
+		panic(f.panicVal)
+	}
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -64,6 +68,21 @@ func TestAdaptFullToEinoTool_NilHooks_InvokableRun_Error(t *testing.T) {
 	_, err := eino.InvokableRun(context.Background(), `{}`)
 	require.Error(t, err)
 	assert.EqualError(t, err, "boom")
+}
+
+// TestAdaptFullToEinoTool_ExecutePanic_BecomesSoftError reproduces the run-killer
+// where a tool's Execute panics (nil-deref in a parser, image decode, etc.). The
+// panic would otherwise unwind through the eino graph and crash the detached run
+// goroutine — Gin's recovery middleware does not cover spawned goroutines. The
+// adapter must contain it and convert it to a SOFT error so the run survives and
+// the LLM sees the failure.
+func TestAdaptFullToEinoTool_ExecutePanic_BecomesSoftError(t *testing.T) {
+	ft := &fakeFullTool{name: "boom", panicVal: "simulated nil-map write"}
+	eino := adaptFullToEinoTool(ft, nil)
+	out, err := eino.InvokableRun(context.Background(), `{}`)
+	require.NoError(t, err, "a tool panic must be contained as a soft error, not propagate")
+	assert.Contains(t, out, "ERROR", "panic should surface as a soft tool error payload")
+	assert.Contains(t, out, "boom", "soft error should name the tool")
 }
 
 func TestAdaptFullToEinoTool_NilHooks_InvokableRun_EmptyResult(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm"
 
 	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 )
 
@@ -191,8 +192,27 @@ func (b *BindingService) Attach(ctx context.Context, parentUserID, agentID, skil
 		return err
 	}
 	// 校验 skill 所属租户（同时验存在性）
-	if _, err := b.skillStore.Get(ctx, parentUserID, skillID); err != nil {
+	sk, err := b.skillStore.Get(ctx, parentUserID, skillID)
+	if err != nil {
 		return err
+	}
+
+	// 重名守卫：运行时按 name 解析 Agent 的绑定技能，两个同名活跃绑定会让 runner
+	// hard-error 整个 run 卡死（agent 不可用）。在 attach 时即拦截同名绑定。
+	// best-effort：列表失败不硬阻塞 attach（与下方 binding 流程一致的降级姿态）。
+	bound, lerr := b.ListByAgent(ctx, parentUserID, agentID)
+	if lerr != nil {
+		// Don't block the attach on a transient list failure; the runner's
+		// dedupSkillsByName is the backstop. Log so the silent skip is observable.
+		log.Warnw("Attach: duplicate-name guard skipped (ListByAgent failed); runner dedup is the backstop",
+			"agent_id", agentID, "parent_user_id", parentUserID, "error", lerr)
+	} else {
+		for i := range bound {
+			if bound[i].ID != skillID && bound[i].Name == sk.Name {
+				return errno.ErrSkillArtifactNameConflict.SetMessage(
+					"已绑定同名技能「%s」，请先重命名其中一个再装载", sk.Name)
+			}
+		}
 	}
 
 	existing, err := b.store.Get(ctx, agentID, skillID)

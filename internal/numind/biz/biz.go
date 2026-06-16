@@ -718,6 +718,10 @@ func NewBiz(ds store.IStore) *biz {
 	// run works end-to-end). narrationProv may be nil if YAML init failed
 	// earlier in this function; the bridge handles that gracefully.
 	narrationBuf := agent.NewNarrationBuffer(256, 30*time.Minute)
+	// Start the periodic GC so per-run narration entries are evicted ~30min after a
+	// run's last write; without this the buffer grows by one entry per run forever
+	// (slow process-lifetime memory leak). Process-lifetime ticker — no stop needed.
+	narrationBuf.StartGC(5 * time.Minute)
 	b.studentRunSvc = agent.NewStudentRunService(
 		b.agentRunner,
 		ds.AgentRuns(),

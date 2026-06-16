@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -168,8 +169,8 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 		a.emitStreamToolStart(ctx, toolCallID, args)
 	}
 
-	// Execute the underlying tool
-	result, execErr := a.ft.Execute(ctx, input)
+	// Execute the underlying tool (panic-guarded — see invokeToolGuarded).
+	result, execErr := a.invokeToolGuarded(ctx, input)
 	var output string
 	if result != nil {
 		output = string(result)
@@ -247,6 +248,26 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 		return output, effectiveErr
 	}
 	return output, nil
+}
+
+// invokeToolGuarded runs the underlying tool's Execute with a panic guard. A panic
+// inside Execute (nil-deref in a file parser, image decode, a tool's own bug) would
+// otherwise unwind through the eino graph and crash the detached run goroutine —
+// Gin's recovery middleware does not cover spawned goroutines, so one bad tool call
+// would take down the whole process. Containing it here converts the panic into a
+// SOFT tool error: the run continues and the LLM sees the failure (same contract as
+// every other recoverable tool error). The recover sits at the exact call site of
+// Execute, so it catches the panic in Execute's own goroutine regardless of how eino
+// schedules tool nodes.
+func (a *fullToolEinoAdapter) invokeToolGuarded(ctx context.Context, input ToolInput) (result ToolResult, execErr error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Errorw("tool Execute panic recovered (run protected)",
+				"tool", a.ft.Name(), "panic", rec, "stack", string(debug.Stack()))
+			result, execErr = softToolError(a.ft.Name(), "internal tool error: %v", rec)
+		}
+	}()
+	return a.ft.Execute(ctx, input)
 }
 
 // emitNarration is fire-and-forget; no-op when NarrationProvider is nil.

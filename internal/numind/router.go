@@ -432,7 +432,12 @@ func installNumindRouters(g *gin.Engine) error {
 	// Agent 技能系统（#5/14 agent-mode-skill-system）
 	// 全部走 AuthMiddleware（authGroup），父账户专属（子账户在 biz 层返回 403）。
 	{
-		skillCtrl := agentcontroller.NewSkillController(skillbiz.NewService(store.S))
+		// WithDefaultSkillSyncer: a v1 questionnaire edit writes through to the agent's
+		// bound v2 "默认技能" (migrate-skill-from-agent), so edits never leave the
+		// runtime-loaded skill body stale. No-op when the agent has no default skill.
+		skillSvc := skillbiz.NewService(store.S).
+			WithDefaultSkillSyncer(artifactbiz.NewDefaultSkillSyncer(store.S.DB()))
+		skillCtrl := agentcontroller.NewSkillController(skillSvc)
 		agentGroup := authGroup.Group("/agent")
 		{
 			skills := agentGroup.Group("/skills")

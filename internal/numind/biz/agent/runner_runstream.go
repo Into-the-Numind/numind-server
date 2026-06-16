@@ -73,8 +73,20 @@ func (r *agentRunner) RunStream(
 	req RunRequest,
 	runID uint64,
 	ch chan<- stream.Event,
-) (*RunResult, error) {
+) (result *RunResult, err error) {
 	startTime := time.Now()
+
+	// Backstop panic guard for the detached run goroutine. Registered first so it
+	// runs last on unwind (after CloseRun etc.). Tool panics are contained earlier
+	// by invokeToolGuarded; this covers prep/hook/finalize panics so one bad run
+	// never crashes the process, and leaves a clean model_error terminal + SSE close.
+	defer func() {
+		if rec := recover(); rec != nil {
+			result, err = nil, recoverAgentRunPanic(rec, runID, r.runStore, ch, startTime)
+		}
+	}()
+	// Evict this run's vision-tool quota counters on every exit path.
+	defer visionQuotaClearRun(runID)
 
 	// 0. Inject userID into context (tools like kbSearchTool read it).
 	ctx = middleware.NewContextWithUserID(ctx, req.UserID)
@@ -191,17 +203,9 @@ func (r *agentRunner) RunStream(
 		}
 
 		if len(skills) > 0 {
-			nameSeen := make(map[string]uint, len(skills))
-			for i := range skills {
-				sk := &skills[i]
-				if existing, dup := nameSeen[sk.Name]; dup {
-					log.Errorw("AgentRunner.RunStream: duplicate Skill name in bindings (S1-D13)",
-						"agent_id", req.AgentDefinitionID, "skill_name", sk.Name,
-						"skill_ids", []uint{existing, sk.ID})
-					return nil, fmt.Errorf("AgentRunner.RunStream: duplicate Skill name %q in bindings (rule S1-D13)", sk.Name)
-				}
-				nameSeen[sk.Name] = sk.ID
-			}
+			// S1-D13 同名防御：无 (parent_user_id, name) UNIQUE 约束。旧实现 hard-error
+			// 整个 run（brick agent）；现改为优雅去重（保留首个），新重名已在 attach 拦截。
+			skills = dedupSkillsByName(skills, req.AgentDefinitionID)
 
 			useSkillTurnState = NewUseSkillTurnState(UseSkillTurnCapDefault)
 			for i := range skills {
