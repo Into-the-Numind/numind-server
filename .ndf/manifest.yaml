@@ -1,5 +1,25 @@
 schema_version: '2.0'
 features:
+- id: llm-stream-timeout
+  track: hotfix
+  description: 'SOP 用 claude-opus-4-6（thinking）via dmxapi "一直深度思考、最终无答案、两次都失败" 修复：删除流式 LLM 调用的整请求 http.Client.Timeout（600s 硬墙会截断健康长流）。'
+  classification_reason: 'Hotfix: 单仓库 numind-server，无 DB schema/无新 API/无新外部服务/影响 ≤3 文件（httpclient/client.go + aiservice/adapter/dmxapi.go + 测试）/非支付权限。客户上报 prod bug（Bug-from-Customer：首 commit=失败复现测试）。'
+  status: active
+  stage: H3
+  repos:
+    numind-server: develop (merged via ndf-done)
+  worktrees:
+    numind-server: (removed by ndf-done)
+  branches:
+    numind-server: fix/llm-stream-timeout (merged via ndf-done)
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+  decisions:
+  - 'H1-H3 (ai 2026-06-16): 根因取证=prod run 3294 user 30，claude-opus-4-6 thinking via dmxapi，两次正好 600s 报 AIService.ProviderTimeout(504) + "context deadline exceeded (Client.Timeout...)"（errtranslate translate.go:88），换 deepseek-v4-pro 即成。机制=Go http.Client.Timeout 含读 body，对流式 SSE 是整条流硬上限，健康长流（claude extended thinking >10min）被砍；gateway 路径 dmxapi 适配器用 LLMConfig(600s) 架空了 SOP 层本意的 30min overall ceiling（executor.go detachStreamContext，注释明写 never an http.Client.Timeout）。修=新增 httpclient.LLMStreamConfig(=LLMConfig 但 Timeout=0)，dmxapi 加 streamClient 走 doStream，doPost 保留 600s client；作用域确认 LLMConfig 全仓库仅 dmxapi 用，ali/volc/ocr/file 用 DefaultConfig 不动。流式存活改由 ResponseHeaderTimeout(180s)+idle watchdog+caller ctx deadline 治理。Bug-from-Customer(Rule 11): 首 commit 6868e01f=失败复现测试(总超时截断健康流), fix 13d2ec5e 后 PASS。两 Sonnet review(spec+quality) 均 PASS 无 P0/P1；P2(测试坐实 mid-body 截断 0<n<lines) 已修 81f5e266。go vet+golangci-lint(0)+build+httpclient/adapter 测试全绿。commits: 6868e01f(RED)+13d2ec5e(fix)+81f5e266(P2)。'
+  blockers:
+  - '观察项(非本 hotfix 引入): 适配器层 aiservice.stream_idle_timeout 全环境未配=60s 默认（含 prod）。本次事故连续吐字撞 600s、60s idle 未触发，故修复有效；但 claude thinking 若 token 间停顿 >60s 会以新 idle_timeout 失败。prod 加 aiservice.stream_idle_timeout 需用户改 config_prod.yaml（AI 禁改）。'
 - id: company-name-modal-ime-limit
   track: hotfix
   description: 'org-branding follow-up（用户报告 bug + 微调）：(1) 弹窗输入框中文输入法组合期间的回车（选词/确认候选）被误判为"确定"提交 → 修复；(2) 公司名字符上限 100→10。'
