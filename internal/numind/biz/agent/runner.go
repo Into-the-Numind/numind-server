@@ -427,7 +427,7 @@ func NewAgentRunner(runStore store.IAgentRunStore, registry AgentToolRegistry, o
 // Run 主流程（spec §4.4）。
 // 简化：#2 仅跑通 mock + 真实流程基础架构；
 // LLM 调用 / Eino agent.Generate 真实集成靠 Task 8 集成测试覆盖。
-func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
+func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResult, err error) {
 	startTime := time.Now()
 
 	// 0. 注入 userID 到 context，供工具（如 kbSearchTool）读取。
@@ -440,6 +440,21 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	// answer-resume-lifecycle F2: capture the pre-yield transcript at takeover so
 	// final persistence APPENDS the resumed leg instead of clobbering leg 1.
 	var priorMessages json.RawMessage
+
+	// Backstop panic guard for the detached polling-run goroutine. The closure reads
+	// `run` lazily, so it persists a clean terminal once the row exists (and just logs
+	// if a panic happens before creation). Tool panics are contained by
+	// invokeToolGuarded; this covers prep/hook/finalize so a run never crashes the process.
+	defer func() {
+		if rec := recover(); rec != nil {
+			var rid uint64
+			if run != nil {
+				rid = run.ID
+			}
+			result, err = nil, recoverAgentRunPanic(rec, rid, r.runStore, nil, startTime)
+		}
+	}()
+
 	if req.ExistingRunID != 0 {
 		existing, getErr := r.runStore.Get(ctx, req.ExistingRunID)
 		if getErr != nil {

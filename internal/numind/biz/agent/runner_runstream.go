@@ -73,8 +73,18 @@ func (r *agentRunner) RunStream(
 	req RunRequest,
 	runID uint64,
 	ch chan<- stream.Event,
-) (*RunResult, error) {
+) (result *RunResult, err error) {
 	startTime := time.Now()
+
+	// Backstop panic guard for the detached run goroutine. Registered first so it
+	// runs last on unwind (after CloseRun etc.). Tool panics are contained earlier
+	// by invokeToolGuarded; this covers prep/hook/finalize panics so one bad run
+	// never crashes the process, and leaves a clean model_error terminal + SSE close.
+	defer func() {
+		if rec := recover(); rec != nil {
+			result, err = nil, recoverAgentRunPanic(rec, runID, r.runStore, ch, startTime)
+		}
+	}()
 
 	// 0. Inject userID into context (tools like kbSearchTool read it).
 	ctx = middleware.NewContextWithUserID(ctx, req.UserID)
