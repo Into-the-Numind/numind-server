@@ -5,13 +5,14 @@ features:
   description: '会议副驾（Meeting Copilot）——全新独立模式。用户开场设定角色定位+反馈规则(role_prompt)，系统近实时录音+转写(前端 Web Audio 分段 16k 单声道 WAV → aiservice.ASR/FunASR)，按提示词以「自动(服务端 LLM 判官按 auto_interval 决定是否插话)+手动(随时点按钮)」两种方式给实时反馈(SSE 流)，会议结束生成结构化 AI 纪要(要点/决议/待办)。角色可存预设模板复用。内部试用先行：feature flag features.meeting_copilot.enabled 默认 OFF + VITE_ENABLE_MEETING_COPILOT 控前端入口，仅记录用量(UsageRecord)不接会员门槛/不扣积分。代码高度自包含(biz/meeting + controller/v1/meeting + model/meeting + store/meeting + views/meeting + stores/meeting.ts + api/meeting.ts + composables/useMeetingRecorder)，可整体删除。跨 numind-server + numind-web-v3。'
   classification_reason: 'Standard: 新增 4 张表(meeting_session/segment/feedback/preset)+migration、新增多个 API 端点、跨两仓库、文件数远超 3。非客户 bug(Rule 11 不适用)。用户 /goal + dynamic workflows 驱动；product 决策已 4 问拍板(自动+手动反馈 / 录音+转写+AI纪要 / 自由填+存预设 / 内部 flag 先行)。'
   status: active
-  stage: S2
+  stage: S6
   repos:
-    numind-server: feature/meeting-copilot (worktree /private/tmp/wt-meeting-copilot-numind-server)
-    numind-web-v3: feature/meeting-copilot (worktree /private/tmp/wt-meeting-copilot-numind-web-v3)
-  progress: {total_tasks: 5, completed_tasks: 0, reviewed_tasks: 0}
+    numind-server: develop (merged via ndf-done 2d41a607)
+    numind-web-v3: develop (merged via ndf-done 948cd27)
+  progress: {total_tasks: 5, completed_tasks: 5, reviewed_tasks: 5}
   decisions:
   - 'S0-S2 (ai 2026-06-17): 可行性评估通过。关键约束=ASR 仅批量(FunASR)无流式→采用分段近实时(前端 Web Audio 每~10s 编码 16k 单声道 WAV 上传, FunASR 兼容)。反馈架构=客户端定时轮询触发+服务端 LLM 判官(避免服务端常驻 goroutine/SSE 长连接；何时反馈由 role_prompt 决定, 满足需求)。计费=plain aiservice 调用(记 UsageRecord)不走 Reserve/Reconcile/会员门槛(内部试用)。复用现有 task profile 不新注册(避开 registry 注册陷阱)。契约 SPEC: docs/meeting-copilot/SPEC.md。'
+  - 'S3-S6 (ai 2026-06-17): dynamic workflow 编排实现(后端3阶段 data→biz→api || 前端2阶段 core→views 跨仓库并行)+四路并行 Sonnet 审查(后端/前端 各 spec+quality)。4 verdict(前端 2 PASS / 后端 2 FAIL)共 4 P1+11 P2，Tier2 并行修复 agent 全修：P1=helper.go 补 meeting_copilot AutoMigrate 守卫 / Langfuse 漏 CreateTrace+WithTrace 致 generation 永不落库(WithUserID 入参是 uint) / transcribe 校验裸 fmt.Errorf→errno.ErrInvalidParameter 返400 / 前端录音 start() 部分失败泄漏 AudioContext+MediaStream→teardownGraph。计费纪律已核: internalCallCtx userID=0(WithBilling0+aismw.WithUserID0+WithoutGatewayBillingOnly+SkipLegacy, 无 ContextFragments)→网关直通不扣三池+绕会员门(权衡: UsageRecord 归 user_id=0)。门禁: 后端 go build/vet/test/golangci-lint 全 0；前端 type-check 0+scoped eslint clean。ndf-done 合两仓库 develop+push 已独立复核(local==origin, 无残留 worktree)。feature flag 默认 OFF 不影响 prod 打 tag。未部署 dev/prod。下一步: /deploy-dev(server+web)→用户真实麦克风走查 S5。'
   blockers: []
 - id: agent-mode-ux-repair
   track: standard
