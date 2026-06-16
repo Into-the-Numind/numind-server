@@ -46,3 +46,17 @@ func TestParseToMarkdown_Other_NotEditable(t *testing.T) {
 	_, _, err := parseToMarkdown(context.Background(), []byte("\x89PNG"), "a.png", "image/png", nil, nil)
 	assert.True(t, errors.Is(err, errno.ErrDocumentNotEditable))
 }
+
+// TestEnsureDocxName 回归：DocumentParser.Parse 按扩展名路由，前端常把链接文字（无扩展名）
+// 当 filename 传 → docx 解析落 default("unsupported file type")失败。ensureDocxName 必须补 .docx。
+// （dev 走查实测：filename「点击下载 Word 文档」→ 文件解析失败 → 本修复。）
+func TestEnsureDocxName(t *testing.T) {
+	// 无扩展名（前端链接文字）→ 回退 document.docx
+	assert.Equal(t, "document.docx", ensureDocxName("点击下载 Word 文档"))
+	assert.Equal(t, "document.docx", ensureDocxName(""))
+	assert.Equal(t, "document.docx", ensureDocxName("报告"))
+	// 已带 .docx（含大小写/空格）→ 原样保留
+	assert.Equal(t, "report.docx", ensureDocxName("report.docx"))
+	assert.Equal(t, "本周小结.docx", ensureDocxName("本周小结.docx"))
+	assert.Equal(t, "REPORT.DOCX", ensureDocxName("REPORT.DOCX"))
+}
