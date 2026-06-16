@@ -47,13 +47,24 @@ type dmxapiRerankResponse struct {
 // Unlike the ali and volc adapters, DMXAPIAdapter ALSO supports Rerank because
 // DMXAPI exposes qwen3-rerank at /rerank.
 type DMXAPIAdapter struct {
+	// client serves non-streaming calls (doPost: chat-non-stream, embed, rerank).
+	// Keeps the DefaultConfig 600s total request timeout — a one-shot body is a safe
+	// thing to cap.
 	client *httpclient.Client
+	// streamClient serves streaming chat (doStream). It uses LLMStreamConfig,
+	// which drops the total http.Client.Timeout: that cap also bounds body reads,
+	// so it would truncate a healthy long SSE stream (prod incident 2026-06-16:
+	// claude-opus-4-6 thinking streamed >10min and got cut at the 600s cap).
+	// Stream liveness/ceiling are governed by ResponseHeaderTimeout + idle
+	// watchdog + the caller's context deadline instead.
+	streamClient *httpclient.Client
 }
 
 // NewDMXAPIAdapter creates a DMXAPIAdapter backed by the shared httpclient pool.
 func NewDMXAPIAdapter() *DMXAPIAdapter {
 	return &DMXAPIAdapter{
-		client: httpclient.NewClient(nil), // uses DefaultConfig
+		client:       httpclient.NewClient(nil),                          // DefaultConfig（600s 总超时）— 非流式 doPost
+		streamClient: httpclient.NewClient(httpclient.LLMStreamConfig()), // 无总超时 — 流式 doStream
 	}
 }
 
@@ -373,10 +384,13 @@ func (d *DMXAPIAdapter) doPost(ctx context.Context, route *registry.ResolvedRout
 // The caller is responsible for closing resp.Body.
 //
 // We disable retries (MaxRetries: 0) because a streaming response cannot be replayed.
+//
+// Uses d.streamClient (no total http.Client.Timeout) so a healthy long SSE
+// stream is not truncated mid-read — see the streamClient field comment.
 func (d *DMXAPIAdapter) doStream(ctx context.Context, route *registry.ResolvedRoute, path string, body []byte) (*http.Response, error) {
 	url := route.Provider.BaseURL + path
 
-	resp, err := d.client.Do(&httpclient.Request{
+	resp, err := d.streamClient.Do(&httpclient.Request{
 		Method:  "POST",
 		URL:     url,
 		Body:    bytes.NewReader(body),

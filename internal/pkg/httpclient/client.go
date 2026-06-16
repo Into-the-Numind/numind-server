@@ -51,6 +51,17 @@ func DefaultConfig() *Config {
 	}
 }
 
+// LLMStreamConfig 为 LLM **流式** 调用定制：在 DefaultConfig 基础上删除整请求总超时
+// （Timeout = 0）。Go 的 http.Client.Timeout 含「读完整个 response body」，对流式 SSE
+// 等于整条流的硬上限，会截断健康长流（prod 事故 2026-06-16：claude-opus-4-6 thinking
+// 流式 >10min 被 600s 砍 → context deadline exceeded → 504 ProviderTimeout → 无答案）。
+// 流式存活/上限改由 idle watchdog + 调用方 context deadline 治理；非流式仍用 DefaultConfig
+// （保留 600s 总超时兜底）。
+func LLMStreamConfig() *Config {
+	c := DefaultConfig()
+	c.Timeout = 0
+	return c
+}
 // Client 优化的HTTP客户端
 type Client struct {
 	config *Config
