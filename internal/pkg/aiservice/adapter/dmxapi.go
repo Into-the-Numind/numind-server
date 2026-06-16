@@ -176,6 +176,24 @@ func (d *DMXAPIAdapter) buildOAIRequest(
 				meta.ResolvedReasoningEffort = "medium"
 			}
 		}
+	} else if !req.Thinking && route.SupportsThinking && !route.ThinkingOnly {
+		// Explicit NON-thinking on an optional-thinking model. Some providers default
+		// thinking ON unless told otherwise — e.g. deepseek-v4-flash at DMXAPI returns
+		// reasoning_content (and runs ~2x slower) unless enable_thinking=false is sent.
+		// Mirror the activation switch above to inject the DEACTIVATION field for styles
+		// that have one. Only fires when the caller explicitly opts out of thinking
+		// (req.Thinking==false), which today is backend tasks like session.title;
+		// chatbot/sop force Thinking=true (llmrouter default) so they never reach here.
+		switch route.ThinkingStyle {
+		case "enable_thinking_kwarg":
+			// Qwen/vLLM/DeepSeek-hybrid convention: chat_template_kwargs.enable_thinking=false
+			// suppresses the chain-of-thought. Verified against DMXAPI deepseek-v4-flash.
+			oaiReq.ChatTemplateKwargs = map[string]interface{}{"enable_thinking": false}
+			meta.ResolvedReasoningEffort = "enable_thinking_kwarg_off"
+		default:
+			// "" / "reasoning_effort" / "none": these models DON'T think when no activation
+			// field is sent, so no explicit deactivation is needed (omit field).
+		}
 	}
 
 	// Claude base + Thinking=true → force temperature=1 (Q4=A).

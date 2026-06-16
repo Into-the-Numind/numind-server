@@ -45,6 +45,10 @@ func TestDMXAPI_Thinking_Matrix(t *testing.T) {
 		temperature         float64
 		temperatureSent     bool // omitempty: 0.0 is omitted
 		enableThinkingKwarg bool // chat_template_kwargs.enable_thinking==true expected on the wire
+		// disableThinkingKwarg: chat_template_kwargs.enable_thinking==false expected on the
+		// wire (explicit thinking-OFF for hybrid models that default thinking ON, e.g.
+		// deepseek-v4-flash for session titles). Mutually exclusive with enableThinkingKwarg.
+		disableThinkingKwarg bool
 	}
 	type metaExpect struct {
 		reasoningEffort string
@@ -333,9 +337,12 @@ func TestDMXAPI_Thinking_Matrix(t *testing.T) {
 				tempOverridden:  false,
 			},
 		},
-		// case 12 (AC5 guard): enable_thinking_kwarg style but Thinking=false → no kwarg (gate off).
+		// case 12 (title-nothinking): enable_thinking_kwarg style + Thinking=false on an
+		// optional-thinking model now emits the DEACTIVATION field enable_thinking=false.
+		// Hybrid models like deepseek-v4-flash default thinking ON at DMXAPI; the bare
+		// request would think unless we explicitly opt out. (Was previously "no injection".)
 		{
-			name:       "kwarg_style_thinking_false_no_injection",
+			name:       "kwarg_style_thinking_false_emits_disable",
 			modelID:    "agnes-2.0-flash",
 			supports:   true,
 			thinkOnly:  false,
@@ -346,13 +353,62 @@ func TestDMXAPI_Thinking_Matrix(t *testing.T) {
 				MaxTokens: 500,
 			},
 			expectBody: expectation{
-				reasoningEffort:     "",
-				maxTokens:           500,
-				enableThinkingKwarg: false,
+				reasoningEffort:      "",
+				maxTokens:            500,
+				disableThinkingKwarg: true,
+			},
+			expectMeta: metaExpect{
+				reasoningEffort: "enable_thinking_kwarg_off",
+				modelFamily:     string(ModelFamilyGeneric),
+				tempOverridden:  false,
+			},
+		},
+		// case 14 (title-nothinking, real scenario): deepseek-v4-flash is the session.title
+		// model. The title call never opts into thinking → must send enable_thinking=false
+		// so the provider does NOT return a chain-of-thought (faster, cheaper, no 8s timeout).
+		{
+			name:       "deepseek_v4_flash_title_thinking_false_emits_disable",
+			modelID:    "deepseek-v4-flash",
+			supports:   true,
+			thinkOnly:  false,
+			thinkStyle: "enable_thinking_kwarg",
+			req: aiservice.ChatRequest{
+				Messages:  sampleMessages(),
+				Thinking:  false,
+				MaxTokens: 256,
+			},
+			expectBody: expectation{
+				reasoningEffort:      "",
+				maxTokens:            256,
+				disableThinkingKwarg: true,
+			},
+			expectMeta: metaExpect{
+				reasoningEffort: "enable_thinking_kwarg_off",
+				modelFamily:     string(ModelFamilyDeepSeek),
+				tempOverridden:  false,
+			},
+		},
+		// case 15 (guard): thinking_only model + Thinking=false → NO disable kwarg.
+		// Intrinsic-thinking models (e.g. deepseek-v4-pro for agent runs) always think;
+		// the !ThinkingOnly gate must keep the deactivation branch from firing on them.
+		{
+			name:       "thinking_only_thinking_false_no_disable",
+			modelID:    "deepseek-v4-pro",
+			supports:   true,
+			thinkOnly:  true,
+			thinkStyle: "enable_thinking_kwarg",
+			req: aiservice.ChatRequest{
+				Messages:  sampleMessages(),
+				Thinking:  false,
+				MaxTokens: 500,
+			},
+			expectBody: expectation{
+				reasoningEffort: "",
+				maxTokens:       500,
 			},
 			expectMeta: metaExpect{
 				reasoningEffort: "",
-				modelFamily:     string(ModelFamilyGeneric),
+				modelFamily:     string(ModelFamilyDeepSeek),
 				tempOverridden:  false,
 			},
 		},
@@ -415,15 +471,27 @@ func TestDMXAPI_Thinking_Matrix(t *testing.T) {
 				t.Errorf("max_completion_tokens: got %d, want %d", sent.MaxCompletionTokens, tc.expectBody.maxCompletionTokens)
 			}
 
-			// chat_template_kwargs.enable_thinking (Qwen/vLLM-style thinking activation).
-			if tc.expectBody.enableThinkingKwarg {
+			// chat_template_kwargs.enable_thinking (Qwen/vLLM-style thinking activation/deactivation).
+			if tc.expectBody.enableThinkingKwarg && tc.expectBody.disableThinkingKwarg {
+				t.Fatalf("invalid test case: enableThinkingKwarg and disableThinkingKwarg are mutually exclusive")
+			}
+			switch {
+			case tc.expectBody.enableThinkingKwarg:
 				if sent.ChatTemplateKwargs == nil {
 					t.Errorf("chat_template_kwargs: expected present with enable_thinking=true, got nil")
 				} else if v, ok := sent.ChatTemplateKwargs["enable_thinking"].(bool); !ok || !v {
 					t.Errorf("chat_template_kwargs.enable_thinking: got %v, want true", sent.ChatTemplateKwargs["enable_thinking"])
 				}
-			} else if sent.ChatTemplateKwargs != nil {
-				t.Errorf("chat_template_kwargs: expected absent (omitempty), got %v", sent.ChatTemplateKwargs)
+			case tc.expectBody.disableThinkingKwarg:
+				if sent.ChatTemplateKwargs == nil {
+					t.Errorf("chat_template_kwargs: expected present with enable_thinking=false, got nil")
+				} else if v, ok := sent.ChatTemplateKwargs["enable_thinking"].(bool); !ok || v {
+					t.Errorf("chat_template_kwargs.enable_thinking: got %v, want false", sent.ChatTemplateKwargs["enable_thinking"])
+				}
+			default:
+				if sent.ChatTemplateKwargs != nil {
+					t.Errorf("chat_template_kwargs: expected absent (omitempty), got %v", sent.ChatTemplateKwargs)
+				}
 			}
 			if tc.expectBody.temperatureSent {
 				if sent.Temperature != tc.expectBody.temperature {
