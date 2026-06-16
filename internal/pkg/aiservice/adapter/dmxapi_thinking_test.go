@@ -472,6 +472,9 @@ func TestDMXAPI_Thinking_Matrix(t *testing.T) {
 			}
 
 			// chat_template_kwargs.enable_thinking (Qwen/vLLM-style thinking activation/deactivation).
+			if tc.expectBody.enableThinkingKwarg && tc.expectBody.disableThinkingKwarg {
+				t.Fatalf("invalid test case: enableThinkingKwarg and disableThinkingKwarg are mutually exclusive")
+			}
 			switch {
 			case tc.expectBody.enableThinkingKwarg:
 				if sent.ChatTemplateKwargs == nil {
