@@ -5007,3 +5007,21 @@ features:
   - 'H1 (ai 2026-06-16): release.sh 加 acquire_release_lock(per-repo mkdir 原子锁, key=basename(BUILD_REPO_PATH)=numind-server, server/admin 同 repo 共享锁正确串行, 不同 repo 各自锁仍并行; 陈旧锁=持有 PID 已死则清理; 900s 超时; 仅 full/--build-only 获取, --deploy-only 不需) + verify_build_context(rsync 后断言 skills/ 存在非空, 仅 server target) + test_release_lock.sh(5 用例: 互斥/陈旧清理/不误抢/重获取, 全过)。commits 299177d6(主)+cefbbfdc(P2)。'
   - 'H2-H3 (ai 2026-06-16): 双 Sonnet review(spec PASS / quality PASS_WITH_CONCERNS, 0 P0/P1)。3 有效 P2 全修(Rule7): stale 分支加 sleep1+计时防 flapping 自旋 / verify 仅 server / 测试 rc 捕获 mkdir 非 echo。H2 验证=从 worktree 真实部署 dev(cefbbfdc): **实时撞上并发 admin 部署(旧无锁脚本)印证根因**; 我的部署锁获取→rsync 恢复 skills/→verify 通过→**COPY skills 成功(之前失败步)**→Build176s/Push12s/Release complete。核验: 后端 healthz {status:ok} / dev 容器 develop-cefbbfdc Up healthy / 构建机 skills/ 已恢复。本次部署同时把 nickname-edit 后端校验(100→10+空串守卫)带上 dev。ndf-done 合 develop(bbc1cab8, local==origin 复核)。infra 修复经成功部署自证, completed。'
   blockers: []
+- id: image-normalize-service
+  ndf_version: '3.0'
+  description: '把图片归一化(缩放/压缩到服务商可接受尺寸/大小)做成公共服务 internal/pkg/imageutil, chatbot/agent上传+salesrag+VLM转文字统一调用。触发: chatbot opus-4-6 上传10982px超宽图→dmxapi HTTP400 dimensions exceed 8000px→无回复。取证: salesrag 4段缩图(imaging.Lanczos)缺单边像素上限(只查总像素36MP+长宽比150:1, 10982x1285约14MP放行但宽超8000)+写死Doubao阈值+4段重复+画质bug(循环缩已缩图伪影叠加)。Claude Code参考: 硬限base64<=5MB(原始3.75MB)+单边cap2000px+每次从原图缩+渐进压缩+友好错误。方案: imageutil.Normalize(opts MaxWidth/Height/Bytes/TotalPixels/AspectRatio)+上传归一化到2000px/3.75MB通用安全尺寸存COS(修inline+VLM两路)+传输改base64 data-URL(去COS可达性依赖,S2确认dmxapi收)+迁移salesrag 4段合一+错误映射。'
+  classification_reason: 'Standard(用户2026-06-17确认开干): 影响文件>3(新imageutil包+upload+salesrag 4段迁移+发图base64+适配器确认+错误映射)/部分高风险(动salesrag已上线图片分析路径+chatbot发图+image token计费)。无DB schema/无新API端点/无新外部服务(imaging依赖已在仓库)。仅后端。'
+  last_updated_by: ai-s0
+  last_updated_at: '2026-06-17T00:49:24+08:00'
+  created_at: '2026-06-17T00:49:24+08:00'
+  track: standard
+  stage: S0
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: feature/image-normalize-service}
+  worktrees: {numind-server: /private/tmp/wt-image-normalize-service-numind-server}
+  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
+  artifacts: {requirement: .ndf/features/image-normalize-service/requirement.md}
+  decisions:
+  - 'S0 (ai 2026-06-17): 源于 opus-4-6 上传10982px超宽图被dmxapi 400拒(超8000px/边)无回复。调研: salesrag 4段缩图需优化(缺单边上限治不了本问题/写死Doubao/4段重复/反复缩已缩图画质bug)不可照搬; Claude Code imageResizer.ts是好范本(从原图缩/渐进压缩/友好错误/2000px+5MB base64)。用户拍板Standard=建公共imageutil服务+所有相关方接入+base64传输。imaging依赖已在仓库。'
+  blockers: []
