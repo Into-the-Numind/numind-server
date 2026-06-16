@@ -131,7 +131,11 @@ func (t *kbSearchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 
 	b, err := json.Marshal(out)
 	if err != nil {
-		return nil, err
+		// Marshal can fail on degenerate chunk data (e.g. a NaN/Inf Score from
+		// rerank math). A hard Go error here is a NodeRunError that kills the
+		// whole run — keep it SOFT so the LLM continues without KB grounding.
+		log.Warnw("kb_search: marshal output failed", "error", err)
+		return softToolError("kb_search", "marshal output: %v", err)
 	}
 	return ToolResult(b), nil
 }
