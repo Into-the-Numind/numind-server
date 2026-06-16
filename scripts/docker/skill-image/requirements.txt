@@ -24,6 +24,11 @@ python-pptx==1.0.2
 # HTML → PDF (pdf-from-html skill, T4.8)
 # Requires: libpango, libcairo, libgdk-pixbuf (in Dockerfile.base / apt)
 weasyprint==62.3
+# pydyf MUST be pinned to weasyprint 62.3's compatible version. Unpinned, pip pulls
+# pydyf 0.12.x whose Stream API broke weasyprint 62.3 (AttributeError: 'super' object
+# has no attribute 'transform') → ALL weasyprint PDF output crashes (pdf-from-html +
+# document-system md→pdf). 0.10.0 is the version weasyprint 62.3 ships against.
+pydyf==0.10.0
 
 # Low-level PDF / fallback
 reportlab==4.2.5
