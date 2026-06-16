@@ -30,7 +30,9 @@ type CapabilitySchema struct {
 }
 
 // llmSchema is the capability schema for service_type = "llm".
-// It covers chat, embedding, rerank and vision services.
+// It covers chat, embedding and rerank services; image/vision input is expressed
+// via input_modalities containing "image" (vision-capability-unify), not a separate
+// capability value.
 // External callers should use SchemaFor("llm") instead of accessing this directly.
 var llmSchema = CapabilitySchema{
 	ServiceType: "llm",

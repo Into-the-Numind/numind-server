@@ -19,8 +19,9 @@
 -- ════════════════════════════════════════════════════════════════════════════
 
 -- (a1) 有视觉信号但 input_modalities 缺失/为空 → 置 ["text","image"]
+-- (capability_json IS NOT NULL 已由 WHERE 保证，JSON_SET 直接用，不需 IFNULL)
 UPDATE ai_service
-SET capability_json = JSON_SET(IFNULL(capability_json, '{}'), '$.input_modalities', JSON_ARRAY('text', 'image'))
+SET capability_json = JSON_SET(capability_json, '$.input_modalities', JSON_ARRAY('text', 'image'))
 WHERE deprecated_at IS NULL
   AND capability_json IS NOT NULL AND JSON_VALID(capability_json)
   AND ( JSON_CONTAINS(capability_json, 'true', '$.accepts_image_inline') = 1

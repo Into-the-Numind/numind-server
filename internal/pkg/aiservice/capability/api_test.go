@@ -182,7 +182,7 @@ func TestResolveFallbackBehavior_Matrix(t *testing.T) {
 	}
 
 	cases := []tc{
-		// ---- qwen3-vl-flash (vision: accepts_image_inline=true) ----
+		// ---- qwen3-vl-flash (vision: input_modalities contains "image") ----
 		{"qwen3-vl-flash", MediaImage, FallbackInline},
 		{"qwen3-vl-flash", MediaPDF, FallbackToOCROnly}, // VL model does NOT accept PDF inline
 		{"qwen3-vl-flash", MediaAudio, FallbackReject},
@@ -481,12 +481,15 @@ func TestGetCapabilities_MalformedJSON(t *testing.T) {
 // preferred_image_format defaults to "base64".
 func TestGetCapabilities_DefaultPreferredFormat(t *testing.T) {
 	db := newTestDB(t)
-	seedRow(t, db, "no-fmt-model", `{"accepts_image_inline":true,"max_inline_size_bytes":1024}`)
+	seedRow(t, db, "no-fmt-model", `{"input_modalities":["text","image"],"max_inline_size_bytes":1024}`)
 	usePkg(db)
 
 	caps, err := GetCapabilities("no-fmt-model")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if !caps.AcceptsImageInline {
+		t.Errorf("expected AcceptsImageInline=true (input_modalities has image)")
 	}
 	if caps.PreferredImageFormat != "base64" {
 		t.Errorf("expected preferred_image_format=base64, got %q", caps.PreferredImageFormat)
