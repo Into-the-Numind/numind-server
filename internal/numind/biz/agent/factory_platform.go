@@ -148,7 +148,7 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		{ToolName: "bash_exec", DisplayName: "代码执行", Description: "[stub] Execute shell.", Source: "platform", Category: "代码", RiskLevel: "dangerous", RequiresSandbox: true},
 		{ToolName: "get_current_date", DisplayName: "当前日期", Description: "Return today's date.", Source: "platform", Category: "查询"},
 		{ToolName: "web_search", DisplayName: "网络搜索", Description: "Search the web for real-time information.", Source: "platform", RiskLevel: "safe", Category: "网络"},
-		{ToolName: "web_fetch", DisplayName: "网页读取", Description: "Fetch a URL and return its contents as Markdown.", Source: "platform", RiskLevel: "moderate", Category: "网络"},
+		{ToolName: "web_fetch", DisplayName: "网页读取", Description: "Fetch a URL and return its contents as Markdown (JavaScript-rendered when the render service is available).", Source: "platform", RiskLevel: "moderate", Category: "网络"},
 		{ToolName: "ask_user_question", DisplayName: "反问学员", Description: "Ask the user a clarifying question with structured options. Yields the run.", Source: "platform", RiskLevel: "safe", Category: "交互"},
 		{ToolName: "file_read", DisplayName: "读取文件", Description: "Read an uploaded file's contents by URL.", Source: "platform", RiskLevel: "moderate", Category: "文件"},
 		// V1.5 vision tools — RequiresVision intentionally absent (not in ToolMetadata struct);
