@@ -513,6 +513,9 @@ func (b *chatbotBiz) GenerateTitleForSession(ctx context.Context, userID, sessio
 	}
 	config, err := b.ds.ChatbotConfig().Get(ctx, session.ChatbotID)
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", errno.ErrChatbotNotFound
+		}
 		return "", fmt.Errorf("GenerateTitleForSession: %w", err)
 	}
 	// 复用与 maybeGenerateTitle 同一套：仅默认名才生成 + CAS 防覆盖手动改名。

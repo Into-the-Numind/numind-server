@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm/logger"
 
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
 )
 
@@ -165,6 +166,7 @@ func TestGenerateTitleForSession(t *testing.T) {
 	// non-owner → error, no change
 	_, err = b.GenerateTitleForSession(context.Background(), 999, sess.ID, "q")
 	require.Error(t, err, "non-owner must be rejected")
+	assert.ErrorIs(t, err, errno.ErrForbidden, "non-owner must get ErrForbidden")
 }
 
 func TestMaybeGenerateTitle_NilSession_ReturnsEmpty(t *testing.T) {

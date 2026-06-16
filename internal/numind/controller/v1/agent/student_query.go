@@ -218,7 +218,6 @@ func (h *StudentQueryController) PinSession(c *gin.Context) {
 	core.WriteResponse(c, err, gin.H{"success": err == nil})
 }
 
-// RenameSession handles POST /v1/agent-sessions/:id/rename.
 // GenerateSessionTitle handles POST /v1/agent-sessions/:id/title.
 // Generates a title from the first prompt at send time (instant-title-ux). Returns
 // {title} ("" when not generated / already named). System-internal, non-user-billed.
@@ -246,6 +245,7 @@ func (h *StudentQueryController) GenerateSessionTitle(c *gin.Context) {
 	core.WriteResponse(c, nil, gin.H{"title": title})
 }
 
+// RenameSession handles POST /v1/agent-sessions/:id/rename.
 func (h *StudentQueryController) RenameSession(c *gin.Context) {
 	user := middleware.GetCurrentUser(c)
 	if user == nil {

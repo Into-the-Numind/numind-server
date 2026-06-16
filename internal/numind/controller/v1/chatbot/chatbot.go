@@ -203,7 +203,7 @@ func (ctrl *ChatbotController) GenerateTitle(c *gin.Context) {
 		core.WriteResponse(c, err, nil)
 		return
 	}
-	core.WriteResponse(c, nil, gin.H{"id": id, "title": title})
+	core.WriteResponse(c, nil, gin.H{"title": title})
 }
 
 // pinSessionRequest 置顶会话请求

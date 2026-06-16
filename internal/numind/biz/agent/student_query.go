@@ -771,11 +771,16 @@ func (s *StudentQueryService) GenerateSessionTitle(ctx context.Context, userID u
 		return "", nil // 已命名（手动 rename / 上轮自动）— 不覆盖
 	}
 	title, gerr := agentGenTitleFn(ctx, prompt, "")
-	if gerr != nil || title == "" {
-		return "", gerr
+	if gerr != nil {
+		// best-effort（与 chatbot 路径一致）：生成失败仅 log, 返回 ("", nil) 不让前端报错。
+		log.C(ctx).Warnw("GenerateSessionTitle: generate failed", "error", gerr, "session_id", sessionID)
+		return "", nil
+	}
+	if title == "" {
+		return "", nil
 	}
 	if _, uerr := s.runStore.UpdateSessionNameIfEmpty(ctx, sessionID, title); uerr != nil {
-		return "", uerr
+		return "", fmt.Errorf("StudentQueryService.GenerateSessionTitle update: %w", uerr)
 	}
 	return title, nil
 }

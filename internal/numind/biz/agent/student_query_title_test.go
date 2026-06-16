@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
 )
 
@@ -42,6 +43,7 @@ func TestGenerateSessionTitle_Agent(t *testing.T) {
 	withAgentGenTitleFn(t, func(_ context.Context, _, _ string) (string, error) { called = true; return "x", nil })
 	_, err = svc.GenerateSessionTitle(context.Background(), 999, "s-other", "q")
 	require.Error(t, err, "non-owner must be rejected")
+	assert.ErrorIs(t, err, errno.ErrForbidden, "non-owner must get ErrForbidden, not some other error")
 	assert.False(t, called)
 
 	// already named → "" (skip)
