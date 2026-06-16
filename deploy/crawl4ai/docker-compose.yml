@@ -1,0 +1,35 @@
+# crawl4ai 自托管网页渲染服务 —— agent `web_fetch` 工具的渲染后端。
+# 用真实浏览器渲染 JS 页面 → LLM-ready markdown。部署/排障见同目录 README.md。
+#
+# 网络隔离（spec §5）：crawl4ai 只接入下面这个独立 bridge 网络 `crawl4ai_net`，
+# 绝不加入后端业务网络/DB 网络。因此即使渲染目标页发生 3xx/JS 跳转或 DNS rebinding，
+# 容器内发起的二次请求也打不到内部服务容器（可用 `docker exec` 验证，见 README）。
+# 后端通过宿主机已发布端口 host:11235 访问它，不与它共享内部网络。
+# 完整出网管控（禁止 crawl4ai 访问 RFC1918 内网段）由宿主机防火墙/安全组实现，
+# docker-compose 无法单独做到（容器需出公网，不能用 internal:true 网络）—— 见 README prod 段。
+
+services:
+  crawl4ai:
+    image: unclecode/crawl4ai:0.8.6     # pin 版本，勿用 latest
+    container_name: crawl4ai
+    restart: unless-stopped
+    shm_size: "1g"                       # 浏览器共享内存，官方最低要求
+    ports:
+      - "11235:11235"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11235/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 4g                     # Compose v2 语法（非 v1 service 级 mem_limit）
+    networks:
+      - crawl4ai_net
+
+networks:
+  crawl4ai_net:
+    driver: bridge
+    # 专网：仅 crawl4ai 接入。不在此声明任何后端/DB 服务 → 物理隔离。

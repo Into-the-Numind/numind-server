@@ -14,9 +14,19 @@ import (
 
 	md "github.com/JohannesKaufmann/html-to-markdown"
 
+	"numind-server/internal/pkg/crawl4ai"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
+	"numind-server/internal/pkg/log"
 )
+
+// crawl4aiRenderer is the subset of *crawl4ai.Client that web_fetch needs.
+// Declaring it as an interface lets tests inject a fake renderer without a
+// live crawl4ai service. *crawl4ai.Client satisfies it.
+type crawl4aiRenderer interface {
+	Configured() bool
+	RenderMarkdown(ctx context.Context, targetURL string) (*crawl4ai.RenderResult, error)
+}
 
 type webFetchInput struct {
 	URL    string `json:"url"`
@@ -46,15 +56,20 @@ type webFetchOutput struct {
 // want to bypass the pre-flight DNS check.
 type webFetchTool struct {
 	BaseTool
-	httpClient    *http.Client // nil → newSafeHTTPClient() on each Execute call
-	skipSSRFCheck bool         // test-only: bypass validateFetchURL DNS check
+	httpClient    *http.Client     // nil → newSafeHTTPClient() on each Execute call
+	skipSSRFCheck bool             // test-only: bypass validateFetchURL DNS check
+	renderer      crawl4aiRenderer // nil/unconfigured → pure raw-HTTP path (no regression)
 }
 
 var _ FullTool = (*webFetchTool)(nil)
 
 // NewWebFetchTool constructs a webFetchTool with production defaults (SSRF check enabled,
-// newSafeHTTPClient used on first Execute). Used by platformToolFactory (T7).
-func NewWebFetchTool() FullTool { return &webFetchTool{} }
+// newSafeHTTPClient used on first Execute, crawl4ai renderer from config). Used by
+// platformToolFactory. When crawl4ai.base_url is unset, the renderer reports
+// Configured()=false and web_fetch behaves exactly as the legacy raw-HTTP tool.
+func NewWebFetchTool() FullTool {
+	return &webFetchTool{renderer: crawl4ai.NewClientFromConfig()}
+}
 
 const (
 	webFetchMaxBytes = 100 * 1024 // 100 KB
@@ -63,7 +78,7 @@ const (
 
 func (t *webFetchTool) Name() string { return "web_fetch" }
 func (t *webFetchTool) Description() string {
-	return "Fetch a URL and return its contents as Markdown. Input: { url: string, prompt?: string }. Returns: { title, content_md, byte_size, truncated, fetched_at }."
+	return "Fetch a URL and return its contents as Markdown. JavaScript-rendered pages are supported (a real browser renders the page when the render service is available; otherwise a fast raw fetch is used). Input: { url: string, prompt?: string }. Returns: { title, content_md, byte_size, truncated, fetched_at }."
 }
 func (t *webFetchTool) UserFacingName() string      { return "网页读取" }
 func (t *webFetchTool) NarrationVerb() string       { return "读取网页" }
@@ -166,6 +181,86 @@ func (t *webFetchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		)
 	}
 
+	// endSpan closes the span (if any). fetch_path is always supplied by the
+	// caller via the fields map so every exit path stays observable.
+	endSpan := func(fields map[string]any, errMsg string) {
+		if spanID == "" {
+			return
+		}
+		tc := langfuse.FromContext(ctx)
+		if tc == nil {
+			return
+		}
+		if errMsg != "" {
+			langfuse.EndSpan(tc.TraceID, spanID, langfuse.WithSpanOutput(fields), langfuse.WithSpanError(errMsg))
+			return
+		}
+		langfuse.EndSpan(tc.TraceID, spanID, langfuse.WithSpanOutput(fields))
+	}
+
+	// fetchPath records which path produced the result (observability).
+	fetchPath := "raw_direct"
+	var crawl4aiErr string
+	var crawl4aiLatencyMs int64
+
+	// --- Render path: crawl4ai renders JS pages → LLM-ready markdown. The
+	// target URL was already SSRF pre-flight validated above; on any failure we
+	// fall back to the raw HTTP path below (zero regression). crawl4ai failures
+	// NEVER return a Go error (that would kill the agent run).
+	if t.renderer != nil && t.renderer.Configured() {
+		renderStart := time.Now()
+		res, rerr := t.renderer.RenderMarkdown(ctx, targetURL)
+		if rerr == nil && res != nil && strings.TrimSpace(res.Markdown) != "" {
+			content := res.Markdown
+			truncated := len(content) > webFetchMaxBytes
+			if truncated {
+				// Slice on a byte boundary then drop any partial trailing rune
+				// so content_md stays valid UTF-8 (mirrors client.truncateForErr).
+				content = strings.ToValidUTF8(content[:webFetchMaxBytes], "")
+			}
+			endSpan(map[string]any{
+				"url":                 targetURL,
+				"fetch_path":          "render",
+				"crawl4ai_status":     res.StatusCode,
+				"crawl4ai_latency_ms": time.Since(renderStart).Milliseconds(),
+				"content_length":      len(content),
+				"truncated":           truncated,
+				"latency_ms":          time.Since(fetchStart).Milliseconds(),
+			}, "")
+			out, _ := json.Marshal(webFetchOutput{
+				Title:     res.Title,
+				ContentMD: content,
+				ByteSize:  len(content),
+				Truncated: truncated,
+				FetchedAt: time.Now().UTC().Format(time.RFC3339),
+			})
+			return ToolResult(out), nil
+		}
+		if rerr != nil {
+			crawl4aiErr = rerr.Error()
+		} else {
+			crawl4aiErr = "crawl4ai: empty markdown"
+		}
+		crawl4aiLatencyMs = time.Since(renderStart).Milliseconds()
+		fetchPath = "raw_fallback"
+		log.C(ctx).Infow("web_fetch: crawl4ai render failed, falling back to raw HTTP",
+			"url", targetURL, "error", crawl4aiErr)
+	}
+
+	// baseFields seeds every raw-path span output with url + fetch_path (+ the
+	// crawl4ai fallback error, when applicable).
+	baseFields := func(extra map[string]any) map[string]any {
+		m := map[string]any{"url": targetURL, "fetch_path": fetchPath}
+		if crawl4aiErr != "" {
+			m["crawl4ai_error"] = crawl4aiErr
+			m["crawl4ai_latency_ms"] = crawl4aiLatencyMs
+		}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+
 	client := t.httpClient
 	if client == nil {
 		client = newSafeHTTPClient()
@@ -176,11 +271,7 @@ func (t *webFetchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 
 	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, targetURL, nil)
 	if err != nil {
-		if spanID != "" {
-			if tc := langfuse.FromContext(ctx); tc != nil {
-				langfuse.EndSpan(tc.TraceID, spanID, langfuse.WithSpanError(err.Error()))
-			}
-		}
+		endSpan(baseFields(map[string]any{"latency_ms": time.Since(fetchStart).Milliseconds()}), err.Error())
 		// Model-controlled URL → input-derived failure must stay soft (spec I1).
 		return t.returnSoftError("网页请求失败", "web_fetch: build request: %s", err.Error())
 	}
@@ -189,11 +280,7 @@ func (t *webFetchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 
 	resp, err := client.Do(req)
 	if err != nil {
-		if spanID != "" {
-			if tc := langfuse.FromContext(ctx); tc != nil {
-				langfuse.EndSpan(tc.TraceID, spanID, langfuse.WithSpanError(err.Error()))
-			}
-		}
+		endSpan(baseFields(map[string]any{"latency_ms": time.Since(fetchStart).Milliseconds()}), err.Error())
 		var finalErr error
 		if errors.Is(err, context.DeadlineExceeded) || isTimeoutError(err) {
 			finalErr = errno.ErrTimeout.SetMessage("web_fetch: timeout after %s", webFetchTimeout)
@@ -205,26 +292,17 @@ func (t *webFetchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		if spanID != "" {
-			if tc := langfuse.FromContext(ctx); tc != nil {
-				langfuse.EndSpan(tc.TraceID, spanID, langfuse.WithSpanOutput(map[string]any{
-					"url":         targetURL,
-					"status_code": resp.StatusCode,
-					"latency_ms":  time.Since(fetchStart).Milliseconds(),
-				}), langfuse.WithSpanError(fmt.Sprintf("HTTP %d", resp.StatusCode)))
-			}
-		}
+		endSpan(baseFields(map[string]any{
+			"status_code": resp.StatusCode,
+			"latency_ms":  time.Since(fetchStart).Milliseconds(),
+		}), fmt.Sprintf("HTTP %d", resp.StatusCode))
 		return t.returnSoftError("网页请求拒绝", "web_fetch: HTTP %d from %s", resp.StatusCode, targetURL)
 	}
 
 	// Read body with cap to detect truncation.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(webFetchMaxBytes+1)))
 	if err != nil {
-		if spanID != "" {
-			if tc := langfuse.FromContext(ctx); tc != nil {
-				langfuse.EndSpan(tc.TraceID, spanID, langfuse.WithSpanError(err.Error()))
-			}
-		}
+		endSpan(baseFields(map[string]any{"latency_ms": time.Since(fetchStart).Milliseconds()}), err.Error())
 		return t.returnSoftError("读取网页内容失败", "web_fetch: read body: %s", err.Error())
 	}
 	truncated := len(body) > webFetchMaxBytes
@@ -232,20 +310,14 @@ func (t *webFetchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		body = body[:webFetchMaxBytes]
 	}
 
-	// Close span with full §6.2 metadata: url, status_code, content_length,
-	// mime_type, latency_ms, truncated.
-	if spanID != "" {
-		if tc := langfuse.FromContext(ctx); tc != nil {
-			langfuse.EndSpan(tc.TraceID, spanID, langfuse.WithSpanOutput(map[string]any{
-				"url":            targetURL,
-				"status_code":    resp.StatusCode,
-				"content_length": len(body),
-				"mime_type":      resp.Header.Get("Content-Type"),
-				"latency_ms":     time.Since(fetchStart).Milliseconds(),
-				"truncated":      truncated,
-			}))
-		}
-	}
+	// Close span with full metadata + fetch_path (raw_direct or raw_fallback).
+	endSpan(baseFields(map[string]any{
+		"status_code":    resp.StatusCode,
+		"content_length": len(body),
+		"mime_type":      resp.Header.Get("Content-Type"),
+		"latency_ms":     time.Since(fetchStart).Milliseconds(),
+		"truncated":      truncated,
+	}), "")
 
 	title, contentMD := convertHTMLToMarkdown(body)
 

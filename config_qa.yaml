@@ -139,6 +139,14 @@ web_search:
     timeout_seconds: 5
     cache_ttl_seconds: 300
 
+# crawl4ai 网页渲染服务（自托管）。web_fetch 优先用它渲染 JS 页面；base_url 为空
+# 或服务不可达时自动退回裸 HTTP 抓取（零回归）。
+crawl4ai:
+  base_url: ""                         # 空=纯裸 HTTP；部署 crawl4ai 容器后填服务地址
+  token: ""                            # crawl4ai JWT，默认关
+  timeout_seconds: 30
+  content_filter: "fit"                # fit=干净正文 | raw=原始 markdown
+
 # Agent Memory 配置（V1.5 板块 3）
 agent:
   memory:
