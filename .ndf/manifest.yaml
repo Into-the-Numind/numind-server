@@ -115,6 +115,7 @@ features:
   - 'S0 (ai 2026-06-16): 档位=Standard(DB+API+3仓库)。锁定产品决策(AskUserQuestion): 铃铛+通知中心展示 / 仅全员广播 / 问卷四题型全做 / 后台要已读率+用户明细+回收率。自主设计: 问卷=公告 type 之一 / Markdown 正文 / 可选 expires_at / 一人一答 / feature flag 默认 OFF 隔离。用户授权 autopilot 推进, 不部署 prod。'
   - 'S1-S3 (ai 2026-06-16): 提案/PRD/spec/plan 全产出(.ndf/features/notification-center/, feature 分支)。spec §1 5表 §2 flag §3 锁 13 端点契约 §4 errno §5 业务规则 §6 前端规格 §7 测试策略。S3 独立 Sonnet reviewer PASS_WITH_CONCERNS(0 P0): 采纳拆 T2→T2a/b、T4→T4a/b、T6→T6a/b(便于独立验证) + 折入软删须查询层过滤deleted_at(FK CASCADE 仅硬删) / default-bool 回归测试归 store / 答卷事务回滚测试 / unread-count 覆盖 / 列表已读率 client 端 target=0 守卫。编码任务 11 个。进入 S4。'
   - 'S4-S6 (ai 2026-06-16): 11/11 编码任务完成, 每任务并行双 Sonnet review(P0/P1 全修, P2 多数现修少数记录接受)。后端 go test ./... 0 FAIL + lint 0; admin-web type-check 0 + 本功能 vitest 全过(1 预存无关 agent.spec orphan 失败,非本 diff); web-v3 type-check 0 + 897 tests 0 fail; 两端 scoped lint 0。S5: Go/vitest 单测持久回归齐, Playwright e2e spec 留存但浏览器闭环未起本地栈(spec §7 既定: dev+gstack/qa 验), 已诚实声明。S6: ndf-done 三仓库 merge→develop pushed(server f7b3bc8b/admin a68af79/web 74aa891), worktree+分支清理, 并行 session 脏文件零重叠保留。flag 默认 OFF + config_prod 未写 → prod 打 tag 不受影响。未部署 dev/prod(待用户授权)。'
+  - 'S6-deploy (ai 2026-06-16): 三服务部署 dev 成功(server e4e3f874/admin-web a68af79/web-v3 af88128, healthz 全过)。dev flag 开(config_dev) + web-v3 铃铛靠新增 VITE_ENABLE_NOTIFICATIONS build-arg(dev/qa=true,prod 空→隐藏,改 Dockerfile+build-and-push.sh)。AutoMigrate 建 5 表+UNIQUE。实测暴露 schema bug: user_id/created_by 写死 int unsigned 但 user.id=bigint unsigned→FK 不兼容; 已 hotfix(notif-userid-bigint, 复现测试红→绿) 改 bigint+重部署 AutoMigrate ALTER+应用 migration→7 FK 全就位。种 2 条 demo(公告+四题型问卷), live API 验: unread=2/列表/问卷详情 4 题全对。未部署 prod。'
   blockers: []
 - id: agent-wait-ux
   track: hotfix
@@ -4746,14 +4747,14 @@ features:
   description: '文档系统 v1：让 agent mode 在对话中生成的文本类交付物(markdown/docx/纯文本/HTML)能在对话内点开→WYSIWYG 在线编辑(转换式:解析成 markdown 底层存储,TipTap/Milkdown 无头编辑器)→自动持久化→导出下载(md/docx/pdf)。不做独立"AI 生成文档"功能(生成发生在 agent mode);打开入口=agent 对话里直接点开(无独立"我的文档"工作区);可编辑=文本类,图表PNG/CSV/Excel/PPT/PDF 只预览+下载;持久化=自动可打开,编辑即落库;仅 C 端私有,不做分享/版本/协作。v2 推迟:用户上传文档的在线编辑。复用 COS+DocumentParser(MarkItDown/go-fitz)+qwen-long+Python docx-author skill+AgentToolArtifact。'
   classification_reason: 'Standard:新增 DB schema(document 表关联 agent_tool_artifact)+新增 API 端点(文档 CRUD/解析打开/保存/导出下载)+影响文件>3+跨 numind-server+numind-web-v3 两仓库+涉及用户数据隔离(user_id/parent_user_id)。无支付逻辑;新前端无头编辑器库属前端依赖非外部服务集成。用户 2026-06-16 经 3 轮 AskUserQuestion 确认 Standard + 6 项产品决策(AI生成为主/转换式/WYSIWYG/对话内打开/文本类可编/自动持久化) + v1 范围(只做 AI 生成产物,上传编辑放 v2)。'
   last_updated_by: ai-s4
-  last_updated_at: '2026-06-16T12:34:36+08:00'
+  last_updated_at: '2026-06-16T12:44:46+08:00'
   created_at: '2026-06-16T12:00:25+08:00'
   status: active
   stage: S4
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/document-system, numind-web-v3: feature/document-system}
   worktrees: {numind-server: /private/tmp/wt-document-system-numind-server, numind-web-v3: /private/tmp/wt-document-system-numind-web-v3}
-  progress: {total_tasks: 9, completed_tasks: 0, reviewed_tasks: 0}
+  progress: {total_tasks: 9, completed_tasks: 1, reviewed_tasks: 1}
   artifacts: {requirement: .ndf/features/document-system/requirement.md, proposal: .ndf/features/document-system/proposal.md, spec: .ndf/features/document-system/spec.md, plan: .ndf/features/document-system/plan.md}
   isolation: 'feature flag 休眠:后端 features.document_system.enabled 默认 OFF + 前端 VITE_ENABLE_DOCUMENT_SYSTEM;合 develop 不影响 prod 打 tag(prod 手动 tag 部署不开 flag=未上线)。复用 notification-center 休眠模式。'
   decisions:
@@ -4761,4 +4762,5 @@ features:
   - 'S1: 提案+PRD .ndf/features/document-system/proposal.md。3 只读 agent 吃透产物全链路得关键发现: 用户看到的生成文件=uploadGeneratedFile→COS agent-outputs/(无DB行/无ID/URL24h过期), 非 AgentToolArtifact(>16KB本地磁盘上下文管理用)。设计=document 表按(user_id,source_object_key)稳定键, 首次打开懒materialize(拉COS→解析md→快照content_md), 完全附加不动生成链路。6 用户故事+8 验收+边界/权限/UI规格。3 大风险: R1 md→docx/pdf 导出无独立Go路径(office skill 仅 agent沙箱可达)→S2三选一(沙箱复用/pandoc容器/v1先md+pdf); R2 产物无持久化→懒建档快照; R3 无WYSIWYG→新增Milkdown无头库(不违禁UI框架)。隔离=FeatureFlag休眠照搬notification-center。待S2决策6项。'
   - 'S2: spec .ndf/features/document-system/spec.md。6 项决策拍板: 导出复用 sandbox.Pool+pandoc(skill镜像独立CI/CD不碰主应用)/WYSIWYG=Milkdown(@milkdown/crepe)/解析链 direct→html-to-markdown→MarkItDown→qwen-long兜底/document表(user_id,source_object_key)唯一键懒建档/自动保存debounce1.5s+sendBeacon flush last-write-wins/content_md上限2MB。含 DB schema+双仓库API契约(POST open/GET :id/PUT :id/GET :id/export)+trace拓扑(仅qwen-long分支)+隔离三层(FeatureFlag+VITE+条件AutoMigrate)。独立 Sonnet review CONDITIONAL_PASS: 3 P0(IDOR越权→校验agent-outputs/{userID}/前缀; AutoMigrate prod建表→仅flag on才迁; sandboxPool局部变量→存biz字段+IBiz.Document())+6 P1+6 P2 全部并入(见spec §10)。'
   - 'S3: plan .ndf/features/document-system/plan.md 切 10 task(代码 T1-T9 + T10 验证策略)。后端 T1 DB地基→T2 COS下载→T3 biz核心(IDOR/parse链/errno)→T4 导出+biz装配+并发守卫→T5 controller+router+config; T6 沙箱镜像加pandoc(独立infra); 前端 T7 API+store+flag→T8 Milkdown→T9 模态+AgentArtifactItem入口; T10=S5验证策略(go test+vitest持久回归 + dev浏览器QA US1-5 + 跨用户隔离探针, 高风险须持久测试)。依赖无环, 后端(T1-5)vs前端(T7-9)Tier2跨仓库并行(契约spec§4锁定), 后端内部按依赖串行(biz.go/router.go/helper.go不并写)。S3 atomicity review(Sonnet) CONDITIONAL_PASS: 完整性/原子性/依赖/文件归属全干净, 3 P0 spec修复都已分配; 6 条验收收紧(P1: T3 Langfuse trace验证/T4 IBiz编译断言/T2 mock404断言; P2: T1 flag正向路径说明/T3 errno具体化/T10 T6前置)全部并入。'
+  - 'S4-T1(commit 87643476): DB 地基完成。migration(ROW_FORMAT=DYNAMIC)+model.Document((user_id,source_object_key)唯一键)+IDocumentStore(4法,UpdateContent map形式+RowsAffected查ErrRecordNotFound)+datastore accessor+helper.go条件AutoMigrate(仅flag on建表,prod零schema影响)+8 store单测。双Sonnet review: spec PASS / quality PASS_WITH_CONCERNS(0 P0); 修2 P1(UpdateContent RowsAffected静默no-op/测试DB连接泄漏t.Cleanup)+5 P2(ParseMethod biz必设注释/default:directquote/时间戳not null+autoTime tags/GetByID+UpdateContent miss测试/helper %w)全部并入,重跑 build+test+vet 全绿。'
   blockers: []
