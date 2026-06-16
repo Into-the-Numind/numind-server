@@ -35,8 +35,13 @@ const (
 	// maxTitleRunes is the hard cap on the returned title length.
 	maxTitleRunes = 20
 	// genTimeout bounds the title call so a slow provider cannot stall the
-	// caller (chatbot generates synchronously before the SSE done event).
-	genTimeout = 3 * time.Second
+	// caller (chatbot generates synchronously before the SSE done event). 8s
+	// leaves room for thinking-capable default models while still failing fast.
+	genTimeout = 8 * time.Second
+	// maxOutputTokens caps the title completion. Generous enough that a
+	// thinking-capable model has room for reasoning_content AND the title in
+	// Content (we only read Content); sanitizeTitle clamps the final result.
+	maxOutputTokens = 256
 )
 
 // systemPrompt instructs the model to emit only a bare title.
@@ -49,8 +54,9 @@ var chatFn = aiservice.Chat
 // Generate summarises the first conversation turn into a 6-12 char title.
 //
 // Non-user-billed: it strips the billing context and sends no ContextFragments
-// so the gateway pass-through runs and no credit reservation is created. Uses
-// qwen-turbo via profile.SessionTitle under a 3s timeout.
+// so the gateway pass-through runs and no credit reservation is created. Routes
+// via the profile.SessionTitle task profile's admin-configurable default model
+// under an 8s timeout.
 //
 // Best-effort: on any failure (empty input, LLM error, empty result after
 // sanitisation) it returns ("", err); callers must leave the existing title
@@ -91,9 +97,13 @@ func Generate(ctx context.Context, userMsg, assistantMsg string) (string, error)
 			{Role: aiservice.MessageRoleSystem, Content: aiservice.MessageContent{Text: systemPrompt}},
 			{Role: aiservice.MessageRoleUser, Content: aiservice.MessageContent{Text: convo}},
 		},
-		ModelOverride: "qwen-turbo", // priced cheap model (not a 0-priced member-only model)
-		MaxTokens:     32,
-		Temperature:   0.3,
+		// No ModelOverride: route via the session.title task_profile's default
+		// service so ops can repoint the model in the admin console without a
+		// code change (hardcoding a model key would force-override the DB route —
+		// and a dead one, e.g. Ali qwen-turbo's FreeTierOnly quota on dev, would
+		// silently break title generation).
+		MaxTokens:   maxOutputTokens,
+		Temperature: 0.3,
 	})
 	if err != nil {
 		if tc != nil {

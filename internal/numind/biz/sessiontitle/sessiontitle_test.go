@@ -115,8 +115,8 @@ func TestGenerate_HappyPath_RequestShape(t *testing.T) {
 	require.Len(t, *calls, 1)
 	got := (*calls)[0]
 	assert.Equal(t, profile.SessionTitle, got.taskID, "must use session.title task")
-	assert.Equal(t, "qwen-turbo", got.req.ModelOverride, "must use cheap qwen-turbo")
-	assert.Equal(t, 32, got.req.MaxTokens)
+	assert.Empty(t, got.req.ModelOverride, "no ModelOverride → route via task_profile default (admin-configurable, avoids forcing a dead model)")
+	assert.Equal(t, 256, got.req.MaxTokens)
 	assert.Nil(t, got.req.ContextFragments, "no ContextFragments → gateway pass-through (no reserve)")
 	require.Len(t, got.req.Messages, 2)
 	assert.Equal(t, aiservice.MessageRoleSystem, got.req.Messages[0].Role)
