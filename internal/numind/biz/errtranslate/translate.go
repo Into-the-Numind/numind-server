@@ -20,6 +20,7 @@ package errtranslate
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -62,6 +63,17 @@ func ToErrno(err error) (*errno.Errno, bool) {
 	// message instead of the generic fallback.
 	case errors.Is(err, context.DeadlineExceeded):
 		return errno.ErrAIProviderTimeout, true
+	}
+
+	// Provider image-size/dimension rejections are string-only errors (no typed
+	// error to errors.Is against), e.g. dmxapi/claude:
+	//   "At least one of the image dimensions exceed max allowed size: 8000 pixels"
+	// imageutil normalizes most images at upload; this is the last-resort mapping
+	// so the user sees "图片过大" instead of the generic fallback (image-normalize-service).
+	if msg := strings.ToLower(err.Error()); strings.Contains(msg, "dimensions exceed") ||
+		strings.Contains(msg, "exceed max allowed size") ||
+		(strings.Contains(msg, "image") && strings.Contains(msg, "too large")) {
+		return errno.ErrImageTooLarge, true
 	}
 
 	return nil, false
