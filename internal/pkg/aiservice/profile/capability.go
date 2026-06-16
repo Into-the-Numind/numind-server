@@ -12,7 +12,9 @@ type Requirements struct {
 	// MinContext is the minimum context window (tokens) the task requires.
 	MinContext int `json:"min_context,omitempty"`
 	// Features lists feature-flag names that must be enabled on the service
-	// (e.g. ["tool_use", "streaming", "vision", "json_mode"]).
+	// (e.g. ["tool_use", "streaming", "json_mode"]). Note: image/vision is NOT a
+	// feature — it is expressed via InputModalities containing "image"
+	// (vision-capability-unify single source of truth).
 	Features []string `json:"features,omitempty"`
 	// Capability specifies the required capability class (e.g. "embedding", "rerank").
 	Capability string `json:"capability,omitempty"`

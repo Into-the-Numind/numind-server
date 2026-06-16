@@ -30,7 +30,9 @@ type CapabilitySchema struct {
 }
 
 // llmSchema is the capability schema for service_type = "llm".
-// It covers chat, embedding, rerank and vision services.
+// It covers chat, embedding and rerank services; image/vision input is expressed
+// via input_modalities containing "image" (vision-capability-unify), not a separate
+// capability value.
 // External callers should use SchemaFor("llm") instead of accessing this directly.
 var llmSchema = CapabilitySchema{
 	ServiceType: "llm",
@@ -40,7 +42,7 @@ var llmSchema = CapabilitySchema{
 			Type:        "modalities",
 			Required:    true,
 			EnumValues:  []string{"text", "image", "audio"},
-			Description: "输入模态列表，如 [\"text\", \"image\"]",
+			Description: "输入模态列表；勾选 image = 允许该模型看图（这是唯一生效的看图开关，运行时按它决定能否直接把图片喂给模型）",
 		},
 		{
 			Name:        "output_modalities",
@@ -65,8 +67,8 @@ var llmSchema = CapabilitySchema{
 			Name:        "capabilities",
 			Type:        "string_list",
 			Required:    false,
-			EnumValues:  []string{"chat", "embedding", "rerank", "vision"},
-			Description: "服务支持的能力大类",
+			EnumValues:  []string{"chat", "embedding", "rerank"},
+			Description: "服务支持的能力大类（看图能力请用上面的 input_modalities 勾 image，不在这里配）",
 		},
 		{
 			Name:        "dimension",
@@ -78,7 +80,7 @@ var llmSchema = CapabilitySchema{
 			Name:        "features",
 			Type:        "feature_map",
 			Required:    false,
-			Description: "特性开关，如 {\"tool_use\":true, \"streaming\":true, \"vision\":true, \"json_mode\":true, \"thinking\":false}",
+			Description: "特性开关，如 {\"tool_use\":true, \"streaming\":true, \"json_mode\":true, \"thinking\":false}（看图不在这里配，用 input_modalities 勾 image）",
 		},
 	},
 }

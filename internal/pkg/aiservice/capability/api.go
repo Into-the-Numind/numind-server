@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"gorm.io/gorm"
 
@@ -177,20 +178,56 @@ func lookupCapabilities(modelKey string) (*Capabilities, error) {
 		return &c, nil
 	}
 
-	var caps Capabilities
-	if err := json.Unmarshal([]byte(*row.CapabilityJSONStr), &caps); err != nil {
+	caps, ok := projectCapabilities(*row.CapabilityJSONStr)
+	if !ok {
 		log.Warnw("capability.lookupCapabilities: capability_json parse error, using conservative defaults",
-			"model_key", modelKey, "error", err)
+			"model_key", modelKey)
 		c := defaultConservative
 		return &c, nil
 	}
+	return &caps, nil
+}
 
-	// Ensure PreferredImageFormat has a safe default.
+// projectCapabilities parses a capability_json string into a Capabilities struct.
+//
+// Single source of truth for "can the model see an image inline": AcceptsImageInline
+// is DERIVED from input_modalities containing "image" (case-insensitive) — NOT from
+// the legacy `accepts_image_inline` field, which is retired. This unifies the two
+// historical representations: admin configures `input_modalities` (the standard
+// "what inputs does this model accept"), and the runtime image-send gate honours it.
+// (vision-capability-unify)
+//
+// AcceptsPDFInline / AcceptsAudioInline are still read directly from their JSON
+// fields (pdf/audio are out of scope for this unification — image only).
+//
+// Returns (defaultConservative, false) when the JSON cannot be parsed.
+func projectCapabilities(jsonStr string) (Capabilities, bool) {
+	var wire struct {
+		Capabilities
+		InputModalities []string `json:"input_modalities"`
+	}
+	if err := json.Unmarshal([]byte(jsonStr), &wire); err != nil {
+		return defaultConservative, false
+	}
+	caps := wire.Capabilities
+	// SOT: input_modalities has "image" ⟺ the model accepts image inline.
+	// The legacy accepts_image_inline value unmarshaled above is intentionally overwritten.
+	caps.AcceptsImageInline = containsFold(wire.InputModalities, "image")
 	if caps.PreferredImageFormat == "" {
 		caps.PreferredImageFormat = "base64"
 	}
+	return caps, true
+}
 
-	return &caps, nil
+// containsFold reports whether items contains target (ASCII case-insensitive),
+// so a capability_json with "Image" / "IMAGE" still matches.
+func containsFold(items []string, target string) bool {
+	for _, it := range items {
+		if strings.EqualFold(it, target) {
+			return true
+		}
+	}
+	return false
 }
 
 // isNotFound reports whether err is a GORM record-not-found error.
