@@ -121,7 +121,9 @@ func (s *service) exportViaPandoc(ctx context.Context, md, format string) ([]byt
 	}
 
 	outName := "out." + format
-	cmd := "pandoc /workdir/input/doc.md -o /workdir/output/" + outName
+	// HOME/XDG_CACHE_HOME=/workdir：read-only rootfs 下让 weasyprint 的 fontconfig 字体缓存
+	// 落到可写的 /workdir tmpfs（否则 md→pdf 静默失败）。/tmp 由 sandbox spawn 另挂 tmpfs。
+	cmd := "HOME=/workdir XDG_CACHE_HOME=/workdir pandoc /workdir/input/doc.md -o /workdir/output/" + outName
 	if format == "pdf" {
 		// weasyprint 已装于 skill 镜像（含 CJK 字体 wqy-zenhei）。S4 须实测此调用方式；
 		// 若 pandoc 内置 weasyprint 引擎不可用，改两步 md→html→weasyprint。

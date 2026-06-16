@@ -45,6 +45,47 @@ func TestResolveSeccompPath_SyncOnce(t *testing.T) {
 	}
 }
 
+// TestSeccompProfile_AllowsClone3 verifies the embedded profile no longer ERRNO-denies
+// clone3 (doc-export-sandbox hotfix). Newer glibc thread creation tries clone3 first and
+// does NOT fall back to clone on EPERM (only ENOSYS) — denying clone3 broke pthread_create
+// (pandoc GHC RTS + weasyprint GLib/Pango), so md→pdf/docx export and the agent
+// pdf-from-html skill all crashed. Other dangerous syscalls (ptrace/mount/unshare/bpf/…)
+// stay denied.
+func TestSeccompProfile_AllowsClone3(t *testing.T) {
+	prof := string(defaultSeccompProfile)
+	if strings.Contains(prof, "clone3") {
+		t.Errorf("seccomp profile must NOT deny clone3 (breaks thread creation for pandoc/weasyprint)")
+	}
+	// Dangerous syscalls must still be denied (sanity: we only loosened clone3).
+	for _, denied := range []string{"ptrace", "mount", "unshare", "bpf", "init_module"} {
+		if !strings.Contains(prof, denied) {
+			t.Errorf("seccomp profile lost deny entry %q — only clone3 should have been removed", denied)
+		}
+	}
+}
+
+// TestBuildSpawnConfig_IncludesTmpfsTmp verifies /tmp is a writable tmpfs mount
+// (doc-export-sandbox hotfix). weasyprint/fontconfig/pango write to /tmp regardless of
+// TMPDIR; without it, --read-only rootfs makes md→pdf export silently produce no PDF.
+func TestBuildSpawnConfig_IncludesTmpfsTmp(t *testing.T) {
+	resetSeccompPathForTesting()
+	seccomp, err := ResolveSeccompPath()
+	if err != nil {
+		t.Fatalf("seccomp path err = %v", err)
+	}
+	sc := BuildSpawnConfig(DefaultSandboxConfig, seccomp)
+	if !hasTmpfsMount(sc.Tmpfs, "/tmp") {
+		t.Errorf("Tmpfs = %v; want a writable /tmp mount for weasyprint PDF export", sc.Tmpfs)
+	}
+	// /workdir + /skills must remain.
+	if !hasTmpfsMount(sc.Tmpfs, "/workdir") {
+		t.Errorf("Tmpfs lost /workdir mount: %v", sc.Tmpfs)
+	}
+	if !hasTmpfsMount(sc.Tmpfs, "/skills") {
+		t.Errorf("Tmpfs lost /skills mount: %v", sc.Tmpfs)
+	}
+}
+
 func TestBuildSpawnConfig_FromDefaults_PassesChecklist(t *testing.T) {
 	resetSeccompPathForTesting()
 	seccomp, err := ResolveSeccompPath()

@@ -84,6 +84,11 @@ func BuildSpawnConfig(cfg SandboxConfig, absSeccompPath string) SpawnConfig {
 			// overrides the image's `VOLUME ["/skills"]`, which was otherwise leaking
 			// one anonymous volume per spawned container. 64m is ample for skill code.
 			"/skills:size=64m,uid=1000,gid=1000",
+			// /tmp writable tmpfs: weasyprint/fontconfig/pango (document-system md→pdf export
+			// via pandoc --pdf-engine=weasyprint, and the agent pdf-from-html skill) write
+			// intermediate/cache files to /tmp regardless of TMPDIR; with --read-only rootfs
+			// and no /tmp mount weasyprint silently produces no PDF. 64m ample, ephemeral per-container.
+			"/tmp:size=64m,uid=1000,gid=1000",
 		},
 		Network:  network,
 		Detached: true,
