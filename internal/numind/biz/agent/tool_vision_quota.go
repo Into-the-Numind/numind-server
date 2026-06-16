@@ -36,6 +36,18 @@ func visionQuotaGet(runID uint64, toolName string) *int64 {
 	return v.(*int64)
 }
 
+// visionQuotaClearRun removes a run's vision quota counters. Without this the
+// process-lifetime sync.Map accumulates one entry per (runID, vision-tool) forever.
+// Called from the run finalizers via defer so it fires on every exit path (including
+// panics). Safe for runID 0 (no-op) and for runs that never used a vision tool.
+func visionQuotaClearRun(runID uint64) {
+	if runID == 0 {
+		return
+	}
+	visionQuotaStore.Delete(visionQuotaKey{runID: runID, toolName: "analyze_image"})
+	visionQuotaStore.Delete(visionQuotaKey{runID: runID, toolName: "annotate_image"})
+}
+
 // checkAndIncVisionQuota atomically increments the call counter for (runID, toolName)
 // and returns an error if the quota would be exceeded.
 //

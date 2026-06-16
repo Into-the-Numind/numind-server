@@ -103,8 +103,35 @@ func (b *NarrationBuffer) QuerySince(runID uint64, since time.Time) []*narration
 	return result
 }
 
+// StartGC launches a background ticker that calls GC every interval until the
+// returned stop func is invoked. interval <= 0 defaults to 5 minutes.
+//
+// Without this running, perRun/lastWrite accumulate one entry per run forever — a
+// slow but unbounded memory leak on a long-lived server (the GC method existed but
+// nothing ever called it). biz wiring starts one ticker for the process lifetime.
+func (b *NarrationBuffer) StartGC(interval time.Duration) (stop func()) {
+	if interval <= 0 {
+		interval = 5 * time.Minute
+	}
+	done := make(chan struct{})
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				b.GC()
+			case <-done:
+				return
+			}
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(done) }) }
+}
+
 // GC removes entries for runs whose last write was more than retainFor ago.
-// Call from a periodic goroutine ticker (e.g., every 5 minutes).
+// Call from a periodic goroutine ticker (e.g., every 5 minutes) — see StartGC.
 func (b *NarrationBuffer) GC() {
 	cutoff := time.Now().Add(-b.retainFor)
 

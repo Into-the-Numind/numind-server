@@ -85,6 +85,8 @@ func (r *agentRunner) RunStream(
 			result, err = nil, recoverAgentRunPanic(rec, runID, r.runStore, ch, startTime)
 		}
 	}()
+	// Evict this run's vision-tool quota counters on every exit path.
+	defer visionQuotaClearRun(runID)
 
 	// 0. Inject userID into context (tools like kbSearchTool read it).
 	ctx = middleware.NewContextWithUserID(ctx, req.UserID)

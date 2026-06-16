@@ -454,6 +454,12 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 			result, err = nil, recoverAgentRunPanic(rec, rid, r.runStore, nil, startTime)
 		}
 	}()
+	// Evict this run's vision-tool quota counters on every exit path (run set lazily).
+	defer func() {
+		if run != nil {
+			visionQuotaClearRun(run.ID)
+		}
+	}()
 
 	if req.ExistingRunID != 0 {
 		existing, getErr := r.runStore.Get(ctx, req.ExistingRunID)
