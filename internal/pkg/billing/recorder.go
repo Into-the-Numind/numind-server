@@ -21,6 +21,10 @@ type UsageStore interface {
 	CreateUsageRecord(ctx context.Context, record *model.UsageRecord) error
 	CreateUsageRecords(ctx context.Context, records []*model.UsageRecord) error
 	GetPricingRule(ctx context.Context, serviceType, provider, modelName string) (*model.PricingRule, error)
+	// GetPricingRuleByModel resolves pricing by (provider, model) ignoring
+	// service_type — the agnostic fallback consumed by pricing.resolvePricingRule
+	// (fix ①). Required here because UsageStore is passed to pricing.NewCalculator.
+	GetPricingRuleByModel(ctx context.Context, provider, modelName string) (*model.PricingRule, error)
 	GetPricingRuleTiers(ctx context.Context, ruleID uint) ([]model.PricingRuleTier, error)
 	// GetProviderModelID resolves the provider-specific model ID for the given
 	// logical model key and provider name. It joins ai_service and

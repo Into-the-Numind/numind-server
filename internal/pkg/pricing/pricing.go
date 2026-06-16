@@ -43,6 +43,16 @@ type PricingStore interface {
 	// model key (joined through ai_service + ai_service_route).
 	// Returns ("", gorm.ErrRecordNotFound) when no mapping exists.
 	GetProviderModelID(ctx context.Context, modelKey, providerName string) (string, error)
+
+	// GetPricingRuleByModel looks up the active pricing_rule for a (provider,
+	// model) pair IGNORING service_type. It is the service_type-agnostic
+	// fallback for resolvePricingRule: a unified model (e.g. claude-opus-4-6)
+	// carries a single per-token price regardless of modality, so an image
+	// request classified "llm_vision" must still resolve to that model's row
+	// (registered under "llm_chat"). Returns gorm.ErrRecordNotFound when no row
+	// matches. When multiple active rows exist across service_types the newest
+	// (highest id) wins.
+	GetPricingRuleByModel(ctx context.Context, provider, modelName string) (*model.PricingRule, error)
 }
 
 // ICalculator is the public contract for cost calculation.
@@ -253,27 +263,76 @@ func (c *calculator) resolvePricingRule(ctx context.Context, serviceType, provid
 		return nil, err
 	}
 
-	// Fallback: resolve provider-specific model ID and retry.
-	providerModelID, resolveErr := c.store.GetProviderModelID(ctx, modelKey, provider)
-	if resolveErr != nil {
-		if errors.Is(resolveErr, gorm.ErrRecordNotFound) {
-			return nil, gorm.ErrRecordNotFound
+	// Fallback 1: resolve provider-specific model ID and retry by
+	// (serviceType, provider, providerModelID). A non-NotFound resolve error is
+	// surfaced (don't silently bill ¥0); a NotFound resolve just leaves
+	// providerModelID empty and lets fallback 2 run with modelKey alone.
+	providerModelID := ""
+	if pmID, resolveErr := c.store.GetProviderModelID(ctx, modelKey, provider); resolveErr != nil {
+		if !errors.Is(resolveErr, gorm.ErrRecordNotFound) {
+			return nil, resolveErr
 		}
-		return nil, resolveErr
+	} else {
+		providerModelID = pmID
 	}
-	if providerModelID == modelKey {
-		return nil, gorm.ErrRecordNotFound
+	if providerModelID != "" && providerModelID != modelKey {
+		fallbackKey := cacheKey(serviceType, provider, providerModelID)
+		if rule, ok := c.cache.Get(fallbackKey); ok {
+			return rule, nil
+		}
+		rule, err = c.store.GetPricingRule(ctx, serviceType, provider, providerModelID)
+		if err == nil {
+			c.cache.Put(fallbackKey, rule)
+			return rule, nil
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
 	}
 
-	fallbackKey := cacheKey(serviceType, provider, providerModelID)
-	if rule, ok := c.cache.Get(fallbackKey); ok {
+	// Fallback 2 (fix ①, service_type-agnostic): a unified model (e.g.
+	// claude-opus-4-6) carries ONE per-token price regardless of modality, so an
+	// image request the gateway classified "llm_vision" must still resolve to the
+	// model's row registered under another service_type ("llm_chat"). Only
+	// reached AFTER the exact (serviceType, …) lookups missed → a dedicated
+	// vision model with its own llm_vision row keeps precedence (no regression).
+	if rule := c.resolveAgnostic(ctx, provider, modelKey, providerModelID); rule != nil {
 		return rule, nil
 	}
-	rule, err = c.store.GetPricingRule(ctx, serviceType, provider, providerModelID)
-	if err == nil {
-		c.cache.Put(fallbackKey, rule)
+	return nil, gorm.ErrRecordNotFound
+}
+
+// resolveAgnostic is the service_type-agnostic last-resort lookup (fix ①). It
+// tries (provider, modelKey) then (provider, providerModelID), caching hits
+// under a dedicated "agnostic|provider|model" key that never collides with the
+// "serviceType|provider|model" keys used by the exact lookups above. Returns nil
+// when nothing matches (caller maps that to ErrRecordNotFound).
+//
+// follow-up: two sibling resolvers (billing.ResolvePricingRule for usage_record
+// snapshots, middleware/billing.go inline) duplicate this 2-step logic and do
+// NOT yet get the agnostic fallback — their pricing_*_snapshot columns stay NULL
+// for vision→unified-model calls. Cost/reconcile are unaffected (both flow
+// through this resolver via calc). Consolidating the three resolvers is tracked
+// separately.
+func (c *calculator) resolveAgnostic(ctx context.Context, provider, modelKey, providerModelID string) *model.PricingRule {
+	candidates := []string{modelKey}
+	if providerModelID != "" && providerModelID != modelKey {
+		candidates = append(candidates, providerModelID)
 	}
-	return rule, err
+	for _, m := range candidates {
+		if m == "" {
+			continue
+		}
+		aKey := "agnostic|" + provider + "|" + m
+		if rule, ok := c.cache.Get(aKey); ok {
+			return rule
+		}
+		if rule, err := c.store.GetPricingRuleByModel(ctx, provider, m); err == nil {
+			c.cache.Put(aKey, rule)
+			return rule
+		}
+	}
+	return nil
 }
 
 // IsFreeModel implements ICalculator — see the interface doc for the full

@@ -8,6 +8,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 )
 
@@ -23,6 +24,9 @@ type BillingStore interface {
 	GetUserConsumption(ctx context.Context, userID uint, from, to time.Time) (int64, error)
 	// GetPricingRule 获取匹配的定价规则
 	GetPricingRule(ctx context.Context, serviceType, provider, modelName string) (*model.PricingRule, error)
+	// GetPricingRuleByModel 按 (provider, model) 查定价规则，忽略 service_type
+	// （service_type-agnostic 兜底，详见 pricing.resolvePricingRule fix ①）
+	GetPricingRuleByModel(ctx context.Context, provider, modelName string) (*model.PricingRule, error)
 	// GetPricingRuleTiers 获取指定定价规则的分段配置
 	GetPricingRuleTiers(ctx context.Context, ruleID uint) ([]model.PricingRuleTier, error)
 	// GetProviderModelID resolves the provider-specific model ID (provider_model_id)
@@ -350,6 +354,33 @@ func (s *billingStore) GetPricingRule(ctx context.Context, serviceType, provider
 		}
 	}
 	return best, nil
+}
+
+// GetPricingRuleByModel 按 (provider, model) 查 active 定价规则，忽略 service_type。
+//
+// service_type-agnostic 兜底（fix ①）：统一模型（如 claude-opus-4-6）无论文字还是
+// 图片都是同一条 per-token 定价，但网关把带图请求归类 service_type=llm_vision，而该
+// 模型只有 llm_chat 定价行 → 精确查找 miss。本方法让 resolvePricingRule 在精确查找
+// 全 miss 后回退到"该模型唯一的价"。多条 active 行（跨 service_type）取最新（id DESC）
+// 并 warn，提示运营该模型定价配置有歧义。
+func (s *billingStore) GetPricingRuleByModel(ctx context.Context, provider, modelName string) (*model.PricingRule, error) {
+	var rules []model.PricingRule
+	err := s.db.WithContext(ctx).
+		Where("provider = ? AND model = ? AND is_active = ?", provider, modelName, true).
+		Order("id DESC").
+		Limit(2). // 取 2 条足以判断是否 >1，避免拉全表
+		Find(&rules).Error
+	if err != nil {
+		return nil, err
+	}
+	if len(rules) == 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+	if len(rules) > 1 {
+		log.Warnw("pricing: multiple active pricing rules for (provider, model) across service_types; using newest",
+			"provider", provider, "model", modelName, "newest_id", rules[0].ID)
+	}
+	return &rules[0], nil
 }
 
 // GetPricingRuleTiers 获取指定定价规则的分段配置（用于 tiered_token 模式）

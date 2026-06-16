@@ -2,6 +2,7 @@ package pricing
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -33,9 +34,10 @@ type stubPricingStore struct {
 	providerModelIDErr error
 
 	// Call counters (atomic so concurrent tests are safe).
-	getPricingRuleCalls      atomic.Int64
-	getProviderModelIDCalls  atomic.Int64
-	getPricingRuleTiersCalls atomic.Int64
+	getPricingRuleCalls        atomic.Int64
+	getProviderModelIDCalls    atomic.Int64
+	getPricingRuleTiersCalls   atomic.Int64
+	getPricingRuleByModelCalls atomic.Int64
 }
 
 func (s *stubPricingStore) GetPricingRule(_ context.Context, serviceType, provider, modelName string) (*model.PricingRule, error) {
@@ -68,6 +70,25 @@ func (s *stubPricingStore) GetProviderModelID(_ context.Context, modelKey, provi
 		return id, nil
 	}
 	return "", gorm.ErrRecordNotFound
+}
+
+// GetPricingRuleByModel scans pricingRules for any entry whose key matches
+// "*|<provider>|<model>" regardless of service_type — mirrors the DB query's
+// service_type independence (keys are "serviceType|provider|model"). Newest-wins
+// is not modelled (the stub holds at most one row per key); tests needing
+// multi-row precedence assert at the store level.
+func (s *stubPricingStore) GetPricingRuleByModel(_ context.Context, provider, modelName string) (*model.PricingRule, error) {
+	s.getPricingRuleByModelCalls.Add(1)
+	if s.pricingErr != nil {
+		return nil, s.pricingErr
+	}
+	suffix := "|" + provider + "|" + modelName
+	for key, rule := range s.pricingRules {
+		if strings.HasSuffix(key, suffix) && rule.IsActive {
+			return rule, nil
+		}
+	}
+	return nil, gorm.ErrRecordNotFound
 }
 
 // flatRule builds a flat (non-tiered) PricingRule for tests.
@@ -370,6 +391,33 @@ func TestCalculateCost_VisionFallsBackToChat(t *testing.T) {
 	const want = int64(12)
 	if cost != want {
 		t.Errorf("cost = %d cents, want %d (real claude-opus-4-6 token cost)", cost, want)
+	}
+}
+
+// TestCalculateCost_VisionModelExactStillWins guards fix ① against regressing
+// dedicated vision models (qwen-vl / doubao-vision): when an EXACT
+// (llm_vision, provider, model) pricing row exists, it must win and the
+// service_type-agnostic fallback must NOT fire.
+func TestCalculateCost_VisionModelExactStillWins(t *testing.T) {
+	rule := flatRule(42, 0.15, 1.5, 0.15, 1.5) // qwen3-vl-flash real vision price
+	store := &stubPricingStore{
+		pricingRules: map[string]*model.PricingRule{
+			"llm_vision|ali-dashscope|qwen3-vl-flash": rule,
+		},
+	}
+
+	calc := NewCalculator(store)
+	cost, err := calc.CalculateCost(context.Background(), "llm_vision", "ali-dashscope",
+		"qwen3-vl-flash", 1_000_000, 1_000_000)
+	if err != nil {
+		t.Fatalf("exact llm_vision row should resolve, got %v", err)
+	}
+	const want = int64(165) // (0.15+1.5)*100
+	if cost != want {
+		t.Errorf("cost = %d, want %d (exact vision price)", cost, want)
+	}
+	if got := store.getPricingRuleByModelCalls.Load(); got != 0 {
+		t.Errorf("agnostic fallback must NOT fire on exact match; GetPricingRuleByModel called %d times", got)
 	}
 }
 

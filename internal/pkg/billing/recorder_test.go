@@ -3,6 +3,7 @@ package billing
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -45,6 +46,19 @@ func (s *stubUsageStore) GetPricingRule(_ context.Context, serviceType, provider
 	key := serviceType + "|" + provider + "|" + modelName
 	if rule, ok := s.pricingRules[key]; ok {
 		return rule, nil
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+
+func (s *stubUsageStore) GetPricingRuleByModel(_ context.Context, provider, modelName string) (*model.PricingRule, error) {
+	if s.pricingErr != nil {
+		return nil, s.pricingErr
+	}
+	suffix := "|" + provider + "|" + modelName
+	for key, rule := range s.pricingRules {
+		if strings.HasSuffix(key, suffix) {
+			return rule, nil
+		}
 	}
 	return nil, gorm.ErrRecordNotFound
 }
