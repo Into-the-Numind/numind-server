@@ -1194,3 +1194,30 @@ func TestSynthBillOnlyReserve_UnknownCapability(t *testing.T) {
 		t.Errorf("unknown-capability reserve = %d, want 8192", got)
 	}
 }
+
+// TestReconcile_PricingMiss_RefundsNotWorstCase reproduces fix ③, the core of the
+// 64000 overcharge. When the cost holder is unset at reconcile (pricing genuinely
+// missed) AND token usage IS present, the pre-fix code charged fi.EstimatedCredits
+// — a token COUNT masquerading as credits (= ReservedOutputTokens ≈ 64000). It must
+// instead REFUND the reservation, never charge a fabricated worst case.
+func TestReconcile_PricingMiss_RefundsNotWorstCase(t *testing.T) {
+	mock := &mockCreditService{}
+	deps := Deps{CreditService: mock}
+	fi := FinalizeInput{
+		ReservationID:          1,
+		EstimatedCredits:       64000, // pre-fix worst case: token count as credits
+		ActualPromptTokens:     2178,
+		ActualCompletionTokens: 504,
+		Status:                 "ok",
+	}
+	// ctx carries NO finalCostHolder → simulates the pricing-rule miss that left
+	// the holder unset at reconcile.
+	finalizeReservationIfNeeded(context.Background(), deps, fi)
+
+	if mock.finalizeCalls != 0 {
+		t.Errorf("pricing miss must NOT FinalizeReservation (would charge fabricated worst case); finalizeCalls=%d", mock.finalizeCalls)
+	}
+	if mock.refundCalls != 1 {
+		t.Errorf("pricing miss must Refund the reservation; refundCalls=%d", mock.refundCalls)
+	}
+}
