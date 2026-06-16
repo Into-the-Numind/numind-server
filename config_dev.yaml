@@ -210,7 +210,7 @@ sandbox:
   # for invoke_skill (pptx/docx/xlsx/pdf) — plain python:3.11-slim lacks these libs so
   # skills failed at import. Built+pushed via scripts/docker/skill-image/build.sh --push.
   # v1.5.2: +pandoc（document-system 导出 md→docx / md→pdf via --pdf-engine=weasyprint）。
-  image_tag: ccr.ccs.tencentyun.com/youshunumind/sandbox-skill:skills-v1.5.2
+  image_tag: ccr.ccs.tencentyun.com/youshunumind/sandbox-skill:skills-v1.5.3
   memory_limit_mb: 512
   cpu_quota: 1.0
   pids_limit: 64
