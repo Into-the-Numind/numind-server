@@ -395,6 +395,7 @@ func wrapChannelAsStreamReader(ch <-chan aiservice.ChatChunk, onFinalUsage func(
 						PromptTokens:     chunk.Usage.PromptTokens,
 						CompletionTokens: chunk.Usage.CompletionTokens,
 						Model:            chunk.Model,
+						Provider:         chunk.Provider,
 					})
 				}
 				if chunk.FinishReason == "" && len(chunk.ToolCalls) == 0 {

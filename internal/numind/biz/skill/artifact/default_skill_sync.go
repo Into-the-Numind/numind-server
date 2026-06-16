@@ -56,11 +56,12 @@ func (d *DefaultSkillSyncer) SyncAgentDefaultSkill(ctx context.Context, parentUs
 		// SourceType "" preserves the skill's existing source/origin (Service.Update
 		// only overwrites them when a non-empty SourceType is supplied).
 		_, uerr := d.svc.Update(ctx, parentUserID, sk.ID, CreateRequest{
-			Name:         sk.Name,
-			Description:  sk.Description,
-			WhenToUse:    sk.WhenToUse,
-			AllowedTools: allowed,
-			BodyMd:       newBody,
+			Name:             sk.Name,
+			Description:      sk.Description,
+			WhenToUse:        sk.WhenToUse,
+			AllowedTools:     allowed,
+			BodyMd:           newBody,
+			SourceTemplateID: sk.SourceTemplateID, // preserve (Update clobbers it unconditionally)
 		})
 		return uerr
 	}
