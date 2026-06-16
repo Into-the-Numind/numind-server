@@ -124,6 +124,22 @@ func TestGenerate_HappyPath_RequestShape(t *testing.T) {
 	assert.Contains(t, got.req.Messages[1].Content.Text, "帮我做小红书账号定位")
 }
 
+// Prompt-only (instant send-time) path: no assistant reply → the conversation
+// snippet must NOT contain a dangling "助手：" line.
+func TestGenerate_PromptOnly_NoDanglingAssistant(t *testing.T) {
+	stub, calls := stubChat("账号定位")
+	withChatFn(t, stub)
+
+	title, err := Generate(context.Background(), "帮我做小红书账号定位", "")
+	require.NoError(t, err)
+	assert.Equal(t, "账号定位", title)
+
+	require.Len(t, *calls, 1)
+	userText := (*calls)[0].req.Messages[1].Content.Text
+	assert.Contains(t, userText, "帮我做小红书账号定位")
+	assert.NotContains(t, userText, "助手：", "prompt-only path must omit the empty 助手 line")
+}
+
 // --- P0 regression: billing context is stripped so the user is never billed,
 // even when the inherited ctx carries bill-only + a real userID (agent path). ---
 

@@ -44,8 +44,10 @@ const (
 	maxOutputTokens = 256
 )
 
-// systemPrompt instructs the model to emit only a bare title.
-const systemPrompt = `你是会话标题生成器。根据用户与助手的首轮对话，用 6 到 12 个汉字概括对话主题，作为简短标题。只输出标题本身，不要任何标点、引号、前后缀或解释。`
+// systemPrompt instructs the model to emit only a bare title. Phrased to work both
+// when the assistant reply is present (post-response fallback) and when it is not
+// (instant title at send time, prompt-only).
+const systemPrompt = `你是会话标题生成器。根据下面的对话内容，用 6 到 12 个汉字概括主题作为简短标题。只输出标题本身，不要任何标点、引号、前后缀或解释。`
 
 // chatFn is the package-level injection point so tests can swap the LLM call.
 // Production uses aiservice.Chat directly.
@@ -67,7 +69,15 @@ func Generate(ctx context.Context, userMsg, assistantMsg string) (string, error)
 	if user == "" && asst == "" {
 		return "", fmt.Errorf("sessiontitle.Generate: empty conversation")
 	}
-	convo := fmt.Sprintf("用户：%s\n助手：%s", user, asst)
+	// Build the conversation snippet. assistantMsg is empty for the instant
+	// (send-time) path — generate the title from the user's prompt alone rather
+	// than emitting a dangling "助手：" with no content.
+	var convo string
+	if asst == "" {
+		convo = fmt.Sprintf("用户：%s", user)
+	} else {
+		convo = fmt.Sprintf("用户：%s\n助手：%s", user, asst)
+	}
 
 	// Strip ALL billing context so both chatbot and agent (finalizeCtx, which
 	// inherits bill-only + userID via context.WithoutCancel) take the gateway
