@@ -1,5 +1,17 @@
 schema_version: '2.0'
 features:
+- id: agent-mode-backend-repair
+  track: standard
+  description: 'Agent mode 全面维修（后端）。6 路审计发现的 P0/P1：B1 kb_search 成功路径 marshal 硬错误→整 run 被杀(改 softToolError)；B2 工具 int/bool 字段不容忍 LLM 字符串(run_python/annotate_image/memory_read/create_json/create_png_chart 抽共享 coerce)；B3 spawn 的 run goroutine 无 recover()→工具 panic 拖垮进程；B4 NarrationBuffer.GC 从不调用+vision quota sync.Map 不清理(内存泄漏)；B5 父账户 3 个权限分类开关实际不生效(校验器查 tool-name key 而前端存 category key→改分类感知,默认仍全开)；B6 绑定重名 skill→runner hard-error brick(Attach 拦截)；B7 v1 问卷编辑不写穿透到迁移默认 skill(改了没生效/前后矛盾)；B8 per-Agent 积分上限在流式路径不生效(Stream 不 stash usage)。'
+  classification_reason: 'Standard: 单仓库 numind-server 但文件数远超 3、涉及权限(B5)与计费(B8)高风险逻辑。Bug-from-Customer(Rule 11)：每 task 首 commit=失败复现测试。'
+  status: active
+  stage: S4
+  repos:
+    numind-server: feature/agent-mode-backend-repair (worktree /private/tmp/wt-agent-mode-backend-repair-numind-server)
+  progress: {total_tasks: 8, completed_tasks: 0, reviewed_tasks: 0}
+  decisions:
+  - 'S0-S3 (ai 2026-06-17): 审计报告即需求+spec(docs/agent-mode/repair-2026-06-17-plan.md)。用户决策：工具默认全开但修好分类开关失效；移除即将上线假按钮(前端 feature)；全部 P0/P1 一次性交付。Defer: seq 单调性/error 分类结构化/daily-cap Redis/image_gen 走 aiservice/市场版本漂移(均注明理由)。'
+  blockers: []
 - id: notif-acceptance-fixes
   track: standard
   description: '通知系统 dev 验收发现的 3 个 bug 修复：(1) 已读数/回收率含 admin 读者但 target/readers 排除→不一致，改 ReadCount/ResponseCount JOIN user 排除 is_admin+软删；(2) admin 列表操作列按钮换行错位→加宽列+右对齐单行；(3) 编辑页取消按钮默认 submit→点取消提交表单创建重复，改 type=button。跨 numind-server+numind-admin-web。'
@@ -5031,18 +5043,19 @@ features:
   ndf_version: '3.0'
   description: 'agent mode 的 web_fetch 只做裸 HTTP GET(不渲染 JS/不过基础反爬), 对现代网页(JS 渲染 + Cloudflare 等基础 bot 墙)力不从心, 沦为摆设。引入自托管 crawl4ai(Docker, Playwright 真实浏览器渲染→LLM-ready markdown, Apache-2.0)作为 agent 的网页读取工具, 补强/替换 web_fetch 的开放网页读取。范围: 单页 render+extract + Langfuse trace + 软错误模式 + SSRF 防护沿用 + tool_definition 注册。明确排除: 小红书等强反爬平台数据抓取(自托管=用自家 IP/账号硬爬, 已被禁言十天验证此路不通, 需另案换策略); 多页深度 crawl(BFS/DFS)暂不做。开放问题(S2 定): 新工具替换 web_fetch 后端 vs 并存(快路径 + 渲染路径)。'
   classification_reason: 'Standard(用户 2026-06-17 直接动手确认): 新外部服务集成(crawl4ai Docker 服务)=Hotfix 第3条不满足; 影响文件>3(新工具 tool_crawl4ai.go + factory 注册 + config + 部署 compose/Dockerfile + 测试)。无 DB schema 变更(用现有 tool_definition 表注册数据行)/无新 API 端点(agent 工具内部注册非 HTTP route)/非支付权限(但涉及 SSRF, 沿用 web_fetch 两段校验)。仅后端 numind-server。'
-  last_updated_by: ai-s1
-  last_updated_at: '2026-06-17T01:33:59+0800'
+  last_updated_by: ai-s2
+  last_updated_at: '2026-06-17T01:41:55+0800'
   created_at: '2026-06-17T01:18:25+0800'
   track: standard
-  stage: S1
+  stage: S2
   status: active
   repos: [numind-server]
   branches: {numind-server: feature/crawl4ai-tool}
   worktrees: {numind-server: /private/tmp/wt-crawl4ai-tool-numind-server}
   progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
-  artifacts: {requirement: .ndf/features/crawl4ai-tool/requirement.md, proposal: .ndf/features/crawl4ai-tool/proposal.md}
+  artifacts: {requirement: .ndf/features/crawl4ai-tool/requirement.md, proposal: .ndf/features/crawl4ai-tool/proposal.md, spec: .ndf/features/crawl4ai-tool/spec.md}
   decisions:
   - 'S0 (ai 2026-06-17): 源于用户反馈 web_fetch 即便对普通网页也读不好(2026 年大量站点 JS 渲染 + Cloudflare 基础反爬) + xiaohongshu-mcp 自家账号爬小红书被禁言十天。评估 5 个开源候选(invisible_playwright/firecrawl/obscura/Scrapling/Webwright)后再评 crawl4ai: 选 crawl4ai 自托管(Apache-2.0 无 AGPL 商用包袱 + LLM-native markdown + Docker HTTP 服务接入贴合现 web_fetch)。需求拆两块: A=读好开放网页(本 feature, 低风险, 该做); B=平台数据(小红书, 排除, 换策略非换库)。'
   - 'S1 (ai 2026-06-17): 可行性高(web_fetch 姊妹模板+SSRF 函数复用+viper config+httpclient+Langfuse span 全现成)。关键技术决策=方案 B 替换+兜底(非上轮口头的并存): web_fetch Execute 改为优先走 crawl4ai 渲染, crawl4ai 未配置/超时/报错则自动退回现有裸 HTTP 路径(零回归)。理由: 直接修复用户痛点(默认工具变好, 不靠 LLM 学会何时升级), 无双工具混淆, 优雅降级。prod 约束: 禁改 config_prod.yaml→默认 base_url 空=跳过 crawl4ai 走裸 HTTP, 运维另加配置+部署服务后自动升级=安全灰度。工作量 2-3 天含容器部署。仅 numind-server。'
+  - 'S2 (ai 2026-06-17): 核对 crawl4ai v0.8.6 真实契约(POST /crawl 同步, 端口 11235, shm 1g, JWT 默认关, markdown 字段跨版本两形态 string|{raw/fit_markdown} 须防御解析, title 取 metadata.title)。设计: 新 internal/pkg/crawl4ai 独立包(非 LLM 调用→不走 aiservice)+RenderMarkdown/Configured; web_fetch Execute 内部加 render→raw_fallback→raw_direct 三分支, 输入输出 struct 与工具元数据全不变(factory_platform.go 不动)。SSRF 两道防线: Go 侧 validateFetchURL pre-flight 复用 + crawl4ai 容器网络隔离(渲染路径 dial-time rebinding 防护真正控制, 部署 task 必落实)。软错误不变量: crawl4ai 任何失败只 fallback 或 returnSoftError 永不 (nil,error) 杀 run。prod 禁改 config_prod.yaml→base_url 默认空=纯裸 HTTP 零回归, 运维部署服务+加配置后自动升级。'
   blockers: []
