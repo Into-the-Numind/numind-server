@@ -4827,11 +4827,12 @@ features:
   ndf_version: '3.0'
   description: '知识库 chunk 内部切块标记 [上下文衔接] 泄漏进 LLM prompt(dev 673/688 含此标记)。修复: (1)render 时 strip(新增 domain.StripContextJoinMarker 单一真相源; chatbot 检索点就地 strip 覆盖 evidence/参考资料/引用三链; salesrag V2 5 渲染点 + context-budget buildSalesRAGEvidenceFragments 共 6 点); (2)两个切块器停插标记——Go enhanced_splitter(兜底)+ Python semantic_splitter.py(运行态确认 dev 主路径 9093 在跑); (3)顺手修 strategy_service.go 硬编码 Mac 路径→viper 配置驱动。'
   classification_reason: 'Hotfix: 不动 DB schema/不新增 endpoint/不新外部服务/不涉支付权限。文件数略超(4 生产+Python+测试+配置)但改动低风险内聚, User 任务预授权 Hotfix。内部发现非客户报(客户报的 V013 是 LLM 幻觉真实章节标题非污染), Rule 11 不强制复现测试, 但加 strip + splitter 回归测试。'
-  last_updated_by: ai-h3
-  last_updated_at: '2026-06-15T18:12:01+08:00'
+  last_updated_by: ai-prod
+  last_updated_at: '2026-06-17T03:18:31+0800'
   created_at: '2026-06-15T17:45:00+08:00'
   track: hotfix
-  stage: H3
+  stage: completed
+  status: completed
   repos: [numind-server]
   branches: {numind-server: fix/chunk-marker-strip}
   progress: {total_tasks: 3, completed_tasks: 3, reviewed_tasks: 3}
@@ -4840,6 +4841,7 @@ features:
   - 'H1 第0步 Langfuse 取证(dev chatbot-chat trace): rerank/F2/grounding 全健康(无关问题 rerank 0.001<0.6 → F2 丢弃 → 纯聊天无 evidence 片段); 标记确认在 DB chunk(rerank document 字段直显 V014 + [上下文衔接] + V015); V0XX=源文档真实章节标题非污染。结论: 客户问题已被 F1/F2/grounding 解决, 本任务=清内部标记泄漏+修 strategy bug, 低优先级仍值得做。'
   - 'H2 实现 5 commit: render strip(a6b21639)+Go splitter 停插(5c09224b)+strategy 配置驱动(675bd4d2)+salesrag context-budget evidence 路径补 strip(837bca95, review P0)+Python semantic_splitter 停插治本(9e83ebf4)。★纠正任务前提: 任务称语义切块未部署/只 Go 兜底插标记——运行态取证推翻(dev semantic_server.py:9093 在跑 model_ready, Python add_overlap 也插标记), 故 Go+Python 两路径都修才治本; render strip 普适兜底旧 chunk。双 Sonnet review + completeness re-review 均 PASS, 0 遗漏 LLM-feed 点。门禁: 受影响 9 包 go test 0 / gofmt 0 / golangci-lint 0 / py_compile 0。config_prod 未碰。'
   - 'H2 仓库卫生发现(未修, 告知 User): scripts/__pycache__/*.pyc 被误纳入 git 跟踪(document_parser + semantic_splitter)——应进 .gitignore, 本 hotfix 不扩范围。'
+  - 'H3->completed: prod 隔离发布 v2.1.48。基于当前 prod tag v2.1.47 建 release-no-agent-v2.1.48 worktree cherry-pick 5 个 fix commit(零冲突)-> build/test/gofmt/py 验证(salesrag 5 credits 测试是 no-agent 线 pre-existing 失败, 干净 v2.1.47 同样红, 非本次引入)-> tag v2.1.48 push origin-> release.sh prod server 部署成功, prod 跑 v2.1.48-cebdc3c7 健康无 rollback, 容器内 semantic_splitter.py 标记插入=0 实证 live。dev 先部署验证 live。pyc 仓库卫生 develop 4c9b11a8 单独修。'
   blockers: []
 
 - id: agent-output-redesign
