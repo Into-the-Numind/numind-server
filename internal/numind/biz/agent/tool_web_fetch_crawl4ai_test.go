@@ -178,3 +178,41 @@ func TestWebFetch_RenderFailAndRawFail_SoftError(t *testing.T) {
 		t.Errorf("expected soft-error payload when both paths fail, got %q", out.ContentMD)
 	}
 }
+
+// TestWebFetch_RenderTruncation: rendered markdown over webFetchMaxBytes is
+// truncated + flagged. ASCII payload → the byte cut lands on a clean boundary.
+func TestWebFetch_RenderTruncation(t *testing.T) {
+	big := strings.Repeat("a", webFetchMaxBytes+500)
+	fr := &fakeRenderer{configured: true, res: &crawl4ai.RenderResult{Title: "Big", Markdown: big}}
+	tool := &webFetchTool{renderer: fr, skipSSRFCheck: true}
+
+	out, err := execWebFetch(t, tool, "https://example.com", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !out.Truncated {
+		t.Error("Truncated should be true for oversized rendered markdown")
+	}
+	if len(out.ContentMD) != webFetchMaxBytes {
+		t.Errorf("ContentMD len = %d; want %d", len(out.ContentMD), webFetchMaxBytes)
+	}
+}
+
+// TestWebFetch_NilRenderer_RawDirect: a nil renderer (legacy construction) takes
+// the raw HTTP path with no panic — explicit guard coverage.
+func TestWebFetch_NilRenderer_RawDirect(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><head><title>NilR</title></head><body>x</body></html>`)
+	}))
+	t.Cleanup(srv.Close)
+
+	tool := &webFetchTool{renderer: nil, httpClient: srv.Client(), skipSSRFCheck: true}
+	out, err := execWebFetch(t, tool, srv.URL, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Title != "NilR" {
+		t.Errorf("Title = %q; want NilR", out.Title)
+	}
+}

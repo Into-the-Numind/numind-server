@@ -201,6 +201,7 @@ func (t *webFetchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	// fetchPath records which path produced the result (observability).
 	fetchPath := "raw_direct"
 	var crawl4aiErr string
+	var crawl4aiLatencyMs int64
 
 	// --- Render path: crawl4ai renders JS pages → LLM-ready markdown. The
 	// target URL was already SSRF pre-flight validated above; on any failure we
@@ -213,7 +214,9 @@ func (t *webFetchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 			content := res.Markdown
 			truncated := len(content) > webFetchMaxBytes
 			if truncated {
-				content = content[:webFetchMaxBytes]
+				// Slice on a byte boundary then drop any partial trailing rune
+				// so content_md stays valid UTF-8 (mirrors client.truncateForErr).
+				content = strings.ToValidUTF8(content[:webFetchMaxBytes], "")
 			}
 			endSpan(map[string]any{
 				"url":                 targetURL,
@@ -238,6 +241,7 @@ func (t *webFetchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		} else {
 			crawl4aiErr = "crawl4ai: empty markdown"
 		}
+		crawl4aiLatencyMs = time.Since(renderStart).Milliseconds()
 		fetchPath = "raw_fallback"
 		log.C(ctx).Infow("web_fetch: crawl4ai render failed, falling back to raw HTTP",
 			"url", targetURL, "error", crawl4aiErr)
@@ -249,6 +253,7 @@ func (t *webFetchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		m := map[string]any{"url": targetURL, "fetch_path": fetchPath}
 		if crawl4aiErr != "" {
 			m["crawl4ai_error"] = crawl4aiErr
+			m["crawl4ai_latency_ms"] = crawl4aiLatencyMs
 		}
 		for k, v := range extra {
 			m[k] = v

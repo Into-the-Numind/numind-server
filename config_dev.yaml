@@ -200,9 +200,11 @@ web_search:
 
 # crawl4ai 网页渲染服务（自托管）。web_fetch 优先用它渲染 JS 页面；base_url 为空
 # 或服务不可达时自动退回裸 HTTP 抓取（零回归）。
-# S6 部署 crawl4ai 容器后，把 base_url 填成其可达地址（如 http://crawl4ai:11235）。
+# S6 部署 crawl4ai 容器后，把 base_url 填成后端可达地址：
+#   - 后端在宿主机进程：http://localhost:11235
+#   - 后端在容器：http://<部署机内网IP>:11235（经宿主机已发布端口，勿与 crawl4ai 共网）
 crawl4ai:
-  base_url: ""                         # 空=纯裸 HTTP；部署 crawl4ai 容器后填服务地址
+  base_url: ""                         # 空=纯裸 HTTP；部署 crawl4ai 容器后按上面注释填
   token: ""                            # crawl4ai JWT，默认关
   timeout_seconds: 30
   content_filter: "fit"                # fit=干净正文 | raw=原始 markdown

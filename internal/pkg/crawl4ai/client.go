@@ -66,12 +66,16 @@ func NewClientFromConfig() *Client {
 	if total < connectTimeout {
 		connectTimeout = total
 	}
+	tlsTimeout := 10 * time.Second
+	if total < tlsTimeout {
+		tlsTimeout = total
+	}
 
 	hc := httpclient.NewClient(&httpclient.Config{
 		Timeout:               total,
 		ConnectTimeout:        connectTimeout,
 		ResponseHeaderTimeout: total,
-		TLSHandshakeTimeout:   10 * time.Second,
+		TLSHandshakeTimeout:   tlsTimeout,
 		IdleConnTimeout:       90 * time.Second,
 		MaxIdleConns:          10,
 		MaxIdleConnsPerHost:   5,
