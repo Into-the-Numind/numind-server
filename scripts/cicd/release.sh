@@ -145,6 +145,9 @@ acquire_release_lock() {
     if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
       echo "⚠ 清理陈旧部署锁 ($RELEASE_LOCK，持有者 PID $holder 已退出)"
       rm -rf "$RELEASE_LOCK"
+      # 计入等待并小睡，避免极端"进程快速创建后崩溃"的 flapping 导致紧自旋且永不超时
+      sleep 1
+      waited=$((waited + 1))
       continue
     fi
     if [ "$waited" -ge "$max" ]; then
@@ -165,6 +168,8 @@ acquire_release_lock() {
 # 锁已防并发破坏，此处 fail-fast 把"源/上下文缺 skills/"早报为清晰错误，
 # 而非 docker build 半途的晦涩 "COPY skills: /skills not found"。
 verify_build_context() {
+  # 只有 server 的 Dockerfile 有 COPY skills；admin 的 Dockerfile.admin 不 COPY skills，无需校验。
+  [ "$TARGET" = "server" ] || return 0
   if ! ssh $SSH_OPTS "$SSH_TARGET" "cd '$BUILD_REPO_PATH' && [ -d skills ] && [ -n \"\$(ls -A skills 2>/dev/null)\" ]"; then
     echo "ERROR: 构建上下文缺 skills/ (构建机 $BUILD_REPO_PATH/skills 不存在或为空)" >&2
     echo "  → Dockerfile 有 COPY skills /app/skills，缺它会导致构建失败。" >&2

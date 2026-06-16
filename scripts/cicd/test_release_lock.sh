@@ -14,8 +14,9 @@ check() { # check <desc> <expected:0|1> <actual_exit>
 LOCK="$(mktemp -d)/numind-release-test.lock"
 rm -rf "$LOCK"
 
-# ① 空闲时 mkdir 获取成功
-mkdir "$LOCK" 2>/dev/null && echo $$ > "$LOCK/pid"; rc=$?
+# ① 空闲时 mkdir 获取成功（rc 必须捕获 mkdir 本身的退出码，不能被后续 echo 覆盖）
+mkdir "$LOCK" 2>/dev/null; rc=$?
+if [ "$rc" -eq 0 ]; then echo $$ > "$LOCK/pid"; fi
 check "空闲时获取锁成功" 0 "$rc"
 
 # ② 已持有时再 mkdir 同一锁 → 失败(原子互斥)
