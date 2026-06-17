@@ -12,7 +12,7 @@
 # ============ doc 128 产品介绍手册 ============
 - { id: q01, type: in_kb_single, query: "海外高势能IP陪跑服务的核心定位是什么?", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [128] }
 - { id: q02, type: exact_term,   query: "你们一共陪跑过多少位海外IP、业务覆盖多少个国家和地区?", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [128] }
-- { id: q03, type: paraphrase,   query: "加州那位房产经纪人April是怎么从零做起来的?", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [128] }
+- { id: q03, type: exact_term,   query: "加州那位房产经纪人April是怎么从零做起来的?", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [128] }
 - { id: q04, type: in_kb_single, query: "你们的内容陪跑能做到多细的颗粒度?", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [128] }
 
 # ============ doc 127 客户案例库 ============

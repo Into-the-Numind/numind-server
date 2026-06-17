@@ -15,10 +15,10 @@
 
 golden YAML 每条:
   - id: q1
-    query: "创业要经过哪几个阶段?"
+    query: "海外高势能IP陪跑服务的核心定位是什么?"
     type: in_kb_single            # in_kb_single|in_kb_multi|exact_term|paraphrase|out_of_kb
-    scope: { user_id: 0, document_ids: [113] }   # 评估锚定的语料范围
-    expected_doc_ids: [113]       # 正确答案应来自哪篇(out_of_kb 留空 [])
+    scope: { user_id: 25, document_ids: [127,128,129,146] }   # 评估锚定的语料范围
+    expected_doc_ids: [128]       # 正确答案应来自哪篇(out_of_kb 留空 [])
   ...
 """
 import argparse
