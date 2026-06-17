@@ -1,0 +1,75 @@
+# RAG 检索评估黄金集 — iDriveCareer(莫小派子账户 user_id=350)真实生产 KB
+# 13 篇真实文档: 26公司介绍 29客服问答库(FAQ) 37LaunchEvent 41产品对比 49产品服务 50产品列表 55公众号介绍 56标准会员合同 57VIP合同 58超级VIP合同 61终身会员合同 97案例库 98观点库
+# 由 dynamic workflow 从真实文档合成(44)+真实query挖掘(14)+对抗校标(每条标签经独立judge对照全集验证,丢7条歧义);硬负例10条(在域但iDC库答不了,多为莫小派其它产品线)。
+# scope 固定=iDC 13篇全集, user_id=350。
+
+- { id: q01, type: paraphrase, query: "你们收人民币或者美金吗?能刷信用卡或者用支付宝、PayPal付款吗?", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29] }
+- { id: q02, type: in_kb_single, query: "iDC会员最后按计划走完培训,拿到大公司offer的成功率大概是多少?", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29] }
+- { id: q03, type: paraphrase, query: "你们那个职业方向测评到底准不准?准确率有多高?", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29] }
+- { id: q04, type: in_kb_single, query: "iDC一共多少老师?有几个全职HR导师?", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29] }
+- { id: q05, type: in_kb_single, query: "你们的报价是含税的吗?在加拿大要交多少税,能不能帮我免税?", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29] }
+- { id: q06, type: in_kb_single, query: "我想多准备几份针对不同岗位的简历,如果不是会员,额外再改一份怎么收费?", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29] }
+- { id: q07, type: in_kb_single, query: "你们有帮忙申请研究生或者考CFA、FRM这类证书的服务吗?", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29] }
+- { id: q08, type: paraphrase, query: "你们的客服上班时间是几点到几点?周末或者晚上能联系到人吗?", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29] }
+- { id: q09, type: in_kb_single, query: "VIP会员要是不想做了想退回标准会员,能退差价吗?", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29] }
+- { id: q10, type: in_kb_single, query: "刚毕业本科生和研究生在北美一般的起薪大概是多少?", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29] }
+- { id: q11, type: paraphrase, query: "我平时还要上学上班,加入会员后平均一周得花多少时间在培训上?错过沙龙能补吗?", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29] }
+- { id: q12, type: in_kb_single, query: "加入你们会员有什么门槛吗?成绩不好你们会不会不收?要面试或考试吗?", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29] }
+- { id: q13, type: in_kb_single, query: "有没有那种本来学建筑、后来转去做市场营销的学员案例？最后拿到的是什么offer？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [97] }
+- { id: q14, type: paraphrase, query: "你们有没有帮过那种缺加拿大本地实习、毕业才三个月就拿到Manulife数据岗的人？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [97] }
+- { id: q15, type: in_kb_single, query: "那个会计转金融、从CIBC Mellon基金会计一路晋升、最后转去做资本市场风控拿下TD的学员叫什么？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [97] }
+- { id: q16, type: in_kb_single, query: "读MBA转行做风控、压力大到失眠流泪甚至想放弃的那位，后来怎么逆转的？她叫什么名字？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [97] }
+- { id: q17, type: in_kb_single, query: "Neil这个学员一开始觉得自己适合纯Business方向，后来为什么改走风控的路？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [97] }
+- { id: q18, type: in_kb_single, query: "那个高中毕业就开始规划、大三就连续拿了三个大厂实习、还进了Cerebras的最年轻终身会员是谁？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [97] }
+- { id: q19, type: in_kb_single, query: "Meg Zhao面试Scotiabank的Trade Floor风险经理岗位，结果发生了什么？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [97] }
+- { id: q20, type: paraphrase, query: "经历过三年职业空窗期、从国内转到北美的那位学员，是靠什么心态熬过来的？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [97] }
+- { id: q21, type: paraphrase, query: "学生抱怨投了几十份简历都石沉大海、觉得在加拿大找实习根本是死局，咨询顾问一般会怎么回应、推荐做什么？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [98] }
+- { id: q22, type: in_kb_single, query: "如果家长说孩子选了商科但不知道毕业能干啥，你们的建议是怎么帮孩子定方向的？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [98] }
+- { id: q23, type: in_kb_single, query: "学员觉得自己性格内向、答不好领导力的面试题，顾问是怎么看待内向和领导力关系的？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [98] }
+- { id: q24, type: in_kb_single, query: "学员拿了买方实习的offer、工资翻倍却怀疑自己是不是运气好、配不配得上，顾问会怎么开导？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [98] }
+- { id: q25, type: exact_term, query: "报了iDC的标准年度会员，要是中途觉得不满意想退钱，他们扣多少钱、几天内提出有效？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [56] }
+- { id: q26, type: exact_term, query: "标准会员合同里说我的简历和自荐信最多能改几个版本？模拟面试给几次？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [56] }
+- { id: q27, type: exact_term, query: "如果公司在到期前主动终止我的标准会员合同，按完成到哪个阶段退多少比例的费用？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [56] }
+- { id: q28, type: in_kb_multi, query: "VIP年度会员一年要交多少加币？跟标准会员比多了哪些一对一指导？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [57, 50] }
+- { id: q29, type: in_kb_multi, query: "超级VIP会员相比普通VIP，多出来的那个2到3个月、还能开正式推荐信的项目是什么？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [58, 41, 50] }
+- { id: q30, type: in_kb_multi, query: "超级VIP会员一年的费用是多少？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [58, 50] }
+- { id: q31, type: in_kb_multi, query: "终身会员（Tenure）过了有效期之后还想继续保留资格，每年是不是要交一笔费用？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [61, 50] }
+- { id: q32, type: exact_term, query: "终身会员合同的退款是按读了几年来算的吗？读满第一年、第二年分别退多少？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [61] }
+- { id: q33, type: in_kb_multi, query: "iDC的会员合同适用哪个地区的法律来解释和管辖？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [56, 57, 58, 61] }
+- { id: q34, type: in_kb_single, query: "四档会员对比里，那个技术面试问答的修改（Technical Interview Q&A Editing）哪几档有、哪几档没有？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [41] }
+- { id: q35, type: exact_term, query: "单买MAPP职业驱动力测评要多少钱？想加急2个工作日出报告还要另加多少？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [50] }
+- { id: q36, type: in_kb_single, query: "iDC 这家公司是哪一年成立的，到现在帮了多少学生找到工作？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [26] }
+- { id: q37, type: exact_term, query: "听说 iDriveCareer 在业内有个外号，被叫做什么？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [26] }
+- { id: q38, type: in_kb_single, query: "iDC 创始人是从哪所商学院读的 MBA，移民和回流的经历是怎样的？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [26] }
+- { id: q39, type: in_kb_single, query: "iDC 在香港、深圳、加拿大的办公室分别在什么地方？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [26] }
+- { id: q40, type: in_kb_single, query: "iDC 的导师团队和 HR 顾问大概有多少人？还有内推渠道覆盖哪些机构？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [55] }
+- { id: q41, type: paraphrase, query: "2018 年那场启动活动的破冰主持人讲了什么故事？他投了多少个职位？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [37] }
+- { id: q42, type: in_kb_single, query: "iDC launch event 当天的整个流程都安排了哪些环节？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [37] }
+- { id: q43, type: in_kb_multi, query: "iDC 创始人 Sherry 老师的学历背景，跟客服那边介绍的导师团队规模能不能对上？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [26, 29] }
+- { id: q44, type: in_kb_multi, query: "iDC 年度 VIP 会员里那个面试辅导加急服务，在正式的会员合同里是怎么定义会员有效期的？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [49, 57] }
+- { id: q45, type: in_kb_multi, query: "你们价格怎么收取？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29, 50] }
+- { id: q46, type: in_kb_single, query: "必须要一次性交全款吗，可以分期付款吗？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29] }
+- { id: q47, type: in_kb_multi, query: "请问你们的陪伴计划保offer吗，拿不到offer怎么办，退多少钱？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29] }
+- { id: q48, type: in_kb_single, query: "你们是否有内推？我的背景不好，很担心没有内推拿不到面试？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29] }
+- { id: q49, type: in_kb_single, query: "你们价格有点贵，我再考虑考虑（是否能优惠/打折）", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29] }
+- { id: q50, type: in_kb_multi, query: "你们能针对不同的求职方向，修改不同版本的简历吗？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29, 41] }
+- { id: q51, type: in_kb_single, query: "怎么保证你们导师的辅导质量？怎么证明导师是大厂在职？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29] }
+- { id: q52, type: in_kb_single, query: "你们团队的规模有多大？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29] }
+- { id: q53, type: in_kb_multi, query: "你们有线下办公室吗？能线下拜访吗？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29, 26] }
+- { id: q54, type: in_kb_single, query: "我不需要陪伴计划，能分开卖吗？（会员服务可否拆开买单项）", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29] }
+- { id: q55, type: in_kb_multi, query: "你们老师的工作年限都是多久的？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29, 55] }
+- { id: q56, type: in_kb_multi, query: "我能了解下你们老师的具体背景吗？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29, 55] }
+- { id: q57, type: in_kb_single, query: "对老师不满意可不可以更换老师吗？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29] }
+- { id: q58, type: in_kb_single, query: "我最近太忙了，等我这段时间忙完，再来报名！（在职/在校无法全心投入是否有问题）", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [29] }
+
+# ===== 硬负例(在域但 iDC KB 答不了,期望检索拒答返回空) =====
+- { id: q59, type: out_of_kb, query: "你们小红书IP陪跑一年多少钱？包含哪些服务？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [] }
+- { id: q60, type: out_of_kb, query: "代运营和你们的IP陪跑相比为什么不好？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [] }
+- { id: q61, type: out_of_kb, query: "职场跃迁12个月陪跑36800/46800包含什么？涨价到46800了吗？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [] }
+- { id: q62, type: out_of_kb, query: "你们帮忙做英国本科申请(LSE/UCL)的John Locke论文竞赛和文书规划吗？怎么收费？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [] }
+- { id: q63, type: out_of_kb, query: "你们的1V1是视频还是电话？有没有微信2V1群12个月持续答疑？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [] }
+- { id: q64, type: out_of_kb, query: "我做美国留学生求职/STEM OPT，你们能帮我留美进Esri这类GIS公司吗？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [] }
+- { id: q65, type: out_of_kb, query: "帮我诊断一下这个小红书账号做得好和不好的地方", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [] }
+- { id: q66, type: out_of_kb, query: "你们能针对房产经纪人/保险这类高客单赛道做IP陪跑吗？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [] }
+- { id: q67, type: out_of_kb, query: "问卷里哪些题符合什么条件就能判断客户是A/B/C类？", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [] }
+- { id: q68, type: out_of_kb, query: "你们的合同可以修改条款吗？我想先签合同再付款", scope: {user_id: 350, document_ids: [26, 29, 37, 41, 49, 50, 55, 56, 57, 58, 61, 97, 98]}, expected_doc_ids: [] }
