@@ -92,7 +92,13 @@ def score_one(expected, ranked_docs, k):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--golden", required=True)
-    ap.add_argument("--base-url", default="http://49.233.219.254:9091")  # 用户服务(端点在此),非 admin 9099
+    ap.add_argument("--base-url", default="http://49.233.219.254:9091",
+                    help="检索端点地址(用户服务,端点在此),非 admin 9099")
+    ap.add_argument("--login-url", default=None,
+                    help="admin 登录地址(取 token);默认=base-url。端点迁到用户服务后,登录在 "
+                         "admin(9099)、检索在用户服务(9091),须分别指定 --login-url 9099 + --base-url 9091")
+    ap.add_argument("--token", default=None,
+                    help="直接传 admin token,跳过登录(已有 token 时用,免暴露密码)")
     ap.add_argument("--user", default="admin")
     ap.add_argument("--password", default=os.environ.get("NUMIND_ADMIN_PASSWORD"),
                     help="admin 密码;默认读环境变量 NUMIND_ADMIN_PASSWORD(不硬编码)")
@@ -100,8 +106,6 @@ def main():
     ap.add_argument("--raw", action="store_true",
                     help="原始排序召回模式;默认对齐 chatbot 产线(0.6 阈值+no_floor+原话检索)")
     args = ap.parse_args()
-    if not args.password:
-        sys.exit("缺少 admin 密码:用 --password 或环境变量 NUMIND_ADMIN_PASSWORD")
 
     mode = "raw" if args.raw else "prod"
     with open(args.golden, encoding="utf-8") as f:
@@ -109,7 +113,12 @@ def main():
     if not isinstance(golden, list):
         sys.exit("golden YAML 根必须是题目列表")
 
-    token = login(args.base_url, args.user, args.password)
+    if args.token:
+        token = args.token
+    else:
+        if not args.password:
+            sys.exit("缺少 admin 密码:用 --password / 环境变量 NUMIND_ADMIN_PASSWORD,或直接 --token")
+        token = login(args.login_url or args.base_url, args.user, args.password)
 
     # n        = 题数(recall/拒答准确率分母,含 out_of_kb)
     # rank_n   = 库内题数(expected 非空;MRR/nDCG 分母,out_of_kb 不并入)
