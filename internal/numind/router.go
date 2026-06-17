@@ -9,6 +9,7 @@ import (
 	"numind-server/internal/numind/biz/membership"
 	skillbiz "numind-server/internal/numind/biz/skill"
 	artifactbiz "numind-server/internal/numind/biz/skill/artifact"
+	admincontroller "numind-server/internal/numind/controller/v1/admin"
 	agentcontroller "numind-server/internal/numind/controller/v1/agent"
 	"numind-server/internal/numind/controller/v1/ali"
 	announcementcontroller "numind-server/internal/numind/controller/v1/announcement"
@@ -575,6 +576,20 @@ func installNumindRouters(g *gin.Engine) error {
 		beaconGroup := v1Group.Group("")
 		beaconGroup.Use(importMw.OptionalAuthMiddleware())
 		beaconGroup.POST("/sop/runs/:id/draft", userSopc.DeleteDraftRun) // Beacon 方式删除草稿
+	}
+
+	// RAG Eval Harness — admin-gated 检索调试端点（rag-eval-harness）。
+	// 刻意注册在【用户服务】而非 admin 服务：检索栈需要 AI gateway + 挂载的 sqlite-vec 卷
+	// （/opt/numind/dev/sales_vector.db），二者都只在用户服务进程/容器里存在；admin 服务既无
+	// gateway（历史纯管理 API）也未挂该卷。这里复用的正是生产 chatbot 同一个 retrieve.Service
+	// （b.RagRetrieve() == chatbotRetrieve），评估即真实链路。用 AdminAuthMiddleware 守卫
+	// （admin token + IsAdmin），仍是 admin-only 工具，不对普通用户开放。路径保持
+	// /v1/admin/rag-eval/retrieve 不变（仅端口从 9099 改为 9091）。
+	{
+		ragEvalGroup := v1Group.Group("/admin/rag-eval")
+		ragEvalGroup.Use(importMw.AdminAuthMiddleware())
+		evalCtl := admincontroller.NewRAGEvalController(b.RagRetrieve())
+		ragEvalGroup.POST("/retrieve", evalCtl.Retrieve)
 	}
 
 	return nil

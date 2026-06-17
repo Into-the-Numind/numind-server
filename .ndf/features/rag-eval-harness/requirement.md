@@ -28,7 +28,9 @@
 ### 3.3 工具(harness)
 复用**真实检索栈**(`retrieve.Service.Retrieve`,同 chatbot/salesrag 路径)+ 读黄金集 YAML + 跑每题 + 算指标 + 输出报告,可重复执行。**不碰生产行为**。
 
-> **架构落地(对 S0 设想的偏离,已评审采纳)**:最初设想是 dev 容器内独立运行的 Go CLI `cmd/rag-eval`。实际改为 **admin 只读端点 `POST /v1/admin/rag-eval/retrieve`(admin-gated)+ 外部 Python 打分脚本 `scripts/rag_eval/run_eval.py`**。原因:① 端点直接复用已 wiring 好的 `retrieve.Service`(经 biz.RagRetrieve()),零重复构建检索栈;② 打分逻辑(recall@k/MRR/nDCG)用 Python 迭代更快、不进编译产物;③ 端点对部署的 dev/prod 都能跑,不需要进容器 exec。代价:多了一个 admin 端点(只读、admin token 守卫、BillingLabel="rag_eval"、不在任何生产用户流程引用)。
+> **架构落地(对 S0 设想的偏离,已评审采纳)**:最初设想是 dev 容器内独立运行的 Go CLI `cmd/rag-eval`。实际改为 **admin-gated 只读端点 `POST /v1/admin/rag-eval/retrieve` + 外部 Python 打分脚本 `scripts/rag_eval/run_eval.py`**。原因:① 端点直接复用已 wiring 好的 `retrieve.Service`(经 biz.RagRetrieve()),零重复构建检索栈;② 打分逻辑(recall@k/MRR/nDCG)用 Python 迭代更快、不进编译产物。代价:多了一个 admin-gated 端点(只读、admin token 守卫、BillingLabel="rag_eval"、不在任何生产用户流程引用)。
+>
+> **端点落在【用户服务 9091】而非 admin 服务(运行时踩坑后定位)**:检索栈在 admin 服务上**跑不起来**——(a) admin 进程历史从不初始化 AI gateway → 首个 embed 触发 `aiservice.Default()` panic(且 embed 在 goroutine 里,gin.Recovery 兜不住,整进程崩);(b) 即便补了 gateway,admin 容器**未挂载** sqlite-vec 向量卷(`/opt/numind/dev`),检索读到空库返回 0 结果。两者都只在用户服务进程/容器具备。故把端点注册在 `router.go`(用户服务),用 `AdminAuthMiddleware` 守卫(admin token+IsAdmin,可移植),复用的正是生产 chatbot 同一个 `retrieve.Service`——**评估即真实链路**。曾短暂尝试给 admin 加 gateway(hotfix rag-eval-admin-gateway)后已整体回退。
 
 ## 4. 必须由你(业务方)定/确认的两件事(科学前提)
 

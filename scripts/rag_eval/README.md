@@ -4,7 +4,7 @@
 
 ## 组成
 
-- **打分引擎**:admin 端点 `POST /v1/admin/rag-eval/retrieve`(admin 服务 9099),复用真实 chatbot 检索栈(query 改写→多路向量检索→rerank),返回排序后的 chunk(doc_id+score)。**只读、不在任何生产用户流程**。
+- **打分引擎**:admin-gated 端点 `POST /v1/admin/rag-eval/retrieve`(注册在**用户服务 9091**,非 admin 服务——检索栈需要 AI gateway + 挂载的 sqlite-vec 卷,二者只在用户服务进程/容器存在;仍用 AdminAuthMiddleware 守卫),复用真实 chatbot 检索栈(query 改写→多路向量检索→rerank),返回排序后的 chunk(doc_id+score)。**只读、不在任何生产用户流程**。
 - **打分脚本**:`run_eval.py` 读黄金集 → 逐题调端点 → 算 recall@k / MRR / nDCG@k → 出报告(分题型 + 总体)。
 - **黄金集**:`golden.yaml`(问题 + 正确答案该来自哪篇),由业务方抽查确认。`golden.example.yaml` 是模板。
 
@@ -14,7 +14,7 @@
 pip install requests pyyaml          # 一次性
 export NUMIND_ADMIN_PASSWORD=<pw>    # 密码走环境变量,不硬编码进脚本/命令历史
 python3 run_eval.py --golden golden.yaml \
-    --base-url http://49.233.219.254:9099 --user admin --k 5
+    --base-url http://49.233.219.254:9091 --user admin --k 5
 # 默认对齐 chatbot 产线(rerank 0.6 阈值 + no_floor + 原话检索);
 # 加 --raw 看不带阈值的原始排序召回(诊断"是召回不到还是被阈值丢了")。
 ```
@@ -34,9 +34,14 @@ python3 run_eval.py --golden golden.yaml \
 2. 上一项改进(如混合检索)→ 再跑 → **涨了留、降了回退**。
 3. 逐项迭代(混合检索→查询处理→阈值调优→上下文组装),每步用本工具验证,直到指标达标。
 
-## 待办(建评估语料 + 黄金集)
+## 评估语料(已就位)
 
-1. 建**干净评估专用 KB**:挑代表性真实业务文档(产品手册/案例/百问百答/创始人手册等)传到一个专用账号,记下 user_id + 各 doc_id。
-2. 把 doc_id 填进 `golden.yaml` 的 scope/expected_doc_ids。
-3. 从真实 Langfuse 聊天记录 + 该语料起草 30-50 题,覆盖 5 种题型。
-4. **业务方抽查确认标注** → 跑出基线。
+锚定 dev 现有真实 KB:**user_id=25** 的莫小派销售 KB 4 篇(`document_ids=[127,128,129,146]` = 产品手册/案例库/百问百答/陪跑优势),已逐篇核对向量库实际 chunk 内容。`golden.yaml` 已起草 **22 题覆盖 5 种题型**,标注基于真实 chunk。
+
+**仍建议业务方抽查 `golden.yaml` 标注**(尺子准不准全看这步);要扩样本就继续从真实 Langfuse 聊天记录补题到 30-50 题。
+
+## 扩到新语料(可选)
+
+1. 选一个真实账号的连贯 KB(避免重复/转录类长文档),`sqlite3 sales_vector.db "SELECT user_id,document_id,COUNT(*) FROM chunks GROUP BY 1,2"` 看哪些 doc 真有 chunk(只在 MySQL 有 document 行、向量库无 chunk = 检索不到)。
+2. 把 user_id + doc_id 填进 `golden.yaml` 的 scope/expected_doc_ids,逐篇抽 chunk 内容起草问题。
+3. **业务方抽查确认标注** → 跑出新基线。

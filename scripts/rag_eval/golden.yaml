@@ -1,44 +1,44 @@
-# RAG 检索评估黄金集 —— 锚定干净评估语料 (user_id=1 的 4 篇真实业务文档)
-#   doc 13  = 产品(海外高势能IP陪跑服务-产品介绍手册)
-#   doc 14  = 案例库(海外房产/留学等客户案例)
-#   doc 15  = 百问百答(销售异议处理 Q&A)
-#   doc 113 = 创业者手册-构建AI原生创业公司(Anthropic 译本)
+# RAG 检索评估黄金集 —— 锚定 user_id=25 的真实业务 KB（4 篇连贯文档，内容已逐篇核对向量库实际 chunk）
+#   doc 128 = 产品介绍手册（海外高势能IP陪跑服务，核心定位/成功案例/陪跑方法）
+#   doc 127 = 客户案例库（上海豪宅菲比 / 广州汪艳萍 / 长沙江景房 等真实案例）
+#   doc 129 = 百问百答手册（价格异议 / 投入时间 / 新人焦虑 等销售话术 Q&A）
+#   doc 146 = 海外IP陪跑「我有什么优势」（先涨粉再变现的误区 / 创始人背书 / 卖服务非培训）
 #
-# ⚠️ 标注由 AI 基于文档内容起草,需业务方抽查确认(expected_doc_ids 准不准决定尺子准不准)。
-# scope 固定为这 4 篇全集 → 检索在全集里找,看期望文档有没有排进前 k。
+# scope 固定为这 4 篇（user_id=25）→ 检索在这 4 篇里找，看期望文档是否排进前 k。
+# 注：user_id=25 的 KB 里还有一篇 doc 144（百问百答的近重复副本）+ 148/149（会议转录），
+#     为避免「正确文档」歧义，scope 只取 4 篇互不重复的代表作（排除 144 重复、148/149 长转录）。
+# ⚠️ 标注由 AI 基于向量库实际 chunk 内容起草，已逐条核对；仍建议业务方抽查（标注准 = 尺子准）。
 
-# ============ doc 13 产品/服务 ============
-- { id: q01, type: in_kb_single, query: "海外高势能IP陪跑服务的核心定位是什么?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [13] }
-- { id: q02, type: exact_term,   query: "你们用AI指令库能把写稿时间缩短多少?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [13] }
-- { id: q03, type: in_kb_single, query: "你们怎么帮客户打造朋友圈人设?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [13] }
-- { id: q04, type: paraphrase,   query: "陪跑服务具体分哪几步落地?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [13] }
+# ============ doc 128 产品介绍手册 ============
+- { id: q01, type: in_kb_single, query: "海外高势能IP陪跑服务的核心定位是什么?", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [128] }
+- { id: q02, type: exact_term,   query: "你们一共陪跑过多少位海外IP、业务覆盖多少个国家和地区?", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [128] }
+- { id: q03, type: exact_term,   query: "加州那位房产经纪人April是怎么从零做起来的?", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [128] }
+- { id: q04, type: in_kb_single, query: "你们的内容陪跑能做到多细的颗粒度?", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [128] }
 
-# ============ doc 14 案例库 ============
-- { id: q05, type: in_kb_single, query: "有哪些海外房产的成功客户案例?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [14] }
-- { id: q06, type: exact_term,   query: "新加坡的王桢Vera来自哪家公司?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [14] }
-- { id: q07, type: in_kb_single, query: "上海做豪宅的菲比这个案例是怎么做起来的?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [14] }
-- { id: q08, type: exact_term,   query: "EB-1A 和 NIW 适合什么人申请移民?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [14] }
+# ============ doc 127 客户案例库 ============
+- { id: q05, type: in_kb_single, query: "上海做豪宅的菲比这个客户案例是怎么回事?", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [127] }
+- { id: q06, type: exact_term,   query: "广州的房产大V汪艳萍陪跑之后成交情况怎么样?", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [127] }
+- { id: q07, type: paraphrase,   query: "高净值客户买房背后隐藏的两个需求是什么?", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [127] }
+- { id: q08, type: in_kb_single, query: "长沙做江景房的那位客户是怎么重新定位人设的?", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [127] }
 
-# ============ doc 15 百问百答 ============
-- { id: q09, type: in_kb_single, query: "客户说你们价格太贵、有压力,销冠怎么回应?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [15] }
-- { id: q10, type: paraphrase,   query: "我预算有限,觉得收费偏高,你们怎么说服我?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [15] }
-- { id: q11, type: in_kb_single, query: "客户问一周最少投入多少时间才有效果,怎么答?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [15] }
-- { id: q12, type: exact_term,   query: "你们一共服务了多少个国家的伙伴?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [15] }
-- { id: q13, type: exact_term,   query: "定位之后你们会帮我准备多少个选题?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [15] }
-- { id: q14, type: in_kb_single, query: "我不会拍真人出镜视频,你们会教吗?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [15] }
+# ============ doc 129 百问百答手册 ============
+- { id: q09, type: in_kb_single, query: "客户说价格让他有压力,销冠是怎么回应的?", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [129] }
+- { id: q10, type: paraphrase,   query: "我觉得你们收费偏高、预算有限,你们怎么说服我?", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [129] }
+- { id: q11, type: in_kb_single, query: "客户问一周最少要投入多少时间才能有效果,怎么答?", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [129] }
+- { id: q12, type: exact_term,   query: "客户说给个初始价今晚就交钱,销冠怎么回应?", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [129] }
+- { id: q13, type: in_kb_single, query: "客户担心自己刚转赛道、资质不够深,怎么回应?", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [129] }
 
-# ============ doc 113 创始人手册(AI 原生创业) ============
-- { id: q15, type: in_kb_single, query: "什么是'智能体编码'(agentic coding)?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [113] }
-- { id: q16, type: in_kb_single, query: "创始人常犯的'把构建误当成验证'是什么意思?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [113] }
-- { id: q17, type: paraphrase,   query: "为什么说写第一行代码前要先'雇一支工程团队'?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [113] }
-- { id: q18, type: in_kb_single, query: "2026 年创业公司的生命周期发生了什么重构?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [113] }
+# ============ doc 146 海外IP陪跑「我有什么优势」 ============
+- { id: q14, type: in_kb_single, query: "做知识IP最大的误区是什么?", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [146] }
+- { id: q15, type: exact_term,   query: "你们创始人做过几年战略管理咨询、服务过什么级别的企业?", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [146] }
+- { id: q16, type: paraphrase,   query: "你们和市面上那些教做流量的培训机构有什么不一样?", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [146] }
 
 # ============ 跨多篇 (in_kb_multi:答案可来自≥2篇,命中任一即算召回) ============
-- { id: q22, type: in_kb_multi, query: "海外IP陪跑服务怎么落地、有没有做成的真实客户?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [13,14] }
-- { id: q23, type: in_kb_multi, query: "你们的IP陪跑服务包含哪些内容、客户常见疑问又怎么解答?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [13,15] }
-- { id: q24, type: in_kb_multi, query: "有没有客户案例能回应'价格太贵'的顾虑?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [14,15] }
+- { id: q17, type: in_kb_multi, query: "海外IP陪跑服务怎么落地、有没有真实做成的客户案例?", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [128,127] }
+- { id: q18, type: in_kb_multi, query: "你们的服务都包含什么、客户常见的疑问又怎么解答?", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [128,129] }
+- { id: q19, type: in_kb_multi, query: "客户嫌价格贵的时候,有没有成功案例和话术能打消顾虑?", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [127,129] }
 
 # ============ 库外 / 应拒答 ============
-- { id: q19, type: out_of_kb, query: "今天北京的天气怎么样?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [] }
-- { id: q20, type: out_of_kb, query: "帮我写一段 Python 快速排序代码。", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [] }
-- { id: q21, type: out_of_kb, query: "推荐几部最近好看的科幻电影。", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [] }
+- { id: q20, type: out_of_kb, query: "今天北京的天气怎么样?", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [] }
+- { id: q21, type: out_of_kb, query: "帮我写一段 Python 快速排序代码。", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [] }
+- { id: q22, type: out_of_kb, query: "推荐几部最近好看的科幻电影。", scope: {user_id: 25, document_ids: [127,128,129,146]}, expected_doc_ids: [] }

@@ -7,17 +7,18 @@
 用法:
   export NUMIND_ADMIN_PASSWORD=<pw>   # 密码走环境变量,不进命令历史/源码
   python3 run_eval.py --golden golden.yaml \
-      --base-url http://49.233.219.254:9099 --user admin --k 5
+      --base-url http://49.233.219.254:9091 --user admin --k 5
+  # 端点在【用户服务 9091】(非 admin 9099)——检索栈在用户服务进程,详见 README。
   # 默认对齐 chatbot 产线(0.6 阈值+no_floor+原话);加 --raw 看原始排序召回。
 # 指标均在 top-k 截断处计算(recall@k / MRR@k / nDCG@k),三者口径一致。
 # out_of_kb 题只计"拒答准确率"(检索为空即正确),不并入 MRR/nDCG 平均。
 
 golden YAML 每条:
   - id: q1
-    query: "创业要经过哪几个阶段?"
+    query: "海外高势能IP陪跑服务的核心定位是什么?"
     type: in_kb_single            # in_kb_single|in_kb_multi|exact_term|paraphrase|out_of_kb
-    scope: { user_id: 0, document_ids: [113] }   # 评估锚定的语料范围
-    expected_doc_ids: [113]       # 正确答案应来自哪篇(out_of_kb 留空 [])
+    scope: { user_id: 25, document_ids: [127,128,129,146] }   # 评估锚定的语料范围
+    expected_doc_ids: [128]       # 正确答案应来自哪篇(out_of_kb 留空 [])
   ...
 """
 import argparse
@@ -91,7 +92,7 @@ def score_one(expected, ranked_docs, k):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--golden", required=True)
-    ap.add_argument("--base-url", default="http://49.233.219.254:9099")
+    ap.add_argument("--base-url", default="http://49.233.219.254:9091")  # 用户服务(端点在此),非 admin 9099
     ap.add_argument("--user", default="admin")
     ap.add_argument("--password", default=os.environ.get("NUMIND_ADMIN_PASSWORD"),
                     help="admin 密码;默认读环境变量 NUMIND_ADMIN_PASSWORD(不硬编码)")

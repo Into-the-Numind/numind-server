@@ -14,10 +14,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	"numind-server/internal/numind/store"
-	"numind-server/internal/pkg/aiservice"
-	"numind-server/internal/pkg/aiservice/capability"
-	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/log"
 	mw "numind-server/internal/pkg/middleware"
 	"numind-server/pkg/version/verflag"
@@ -69,29 +65,6 @@ func runAdmin() error {
 	// 初始化 store 层
 	if err := initStore(); err != nil {
 		return err
-	}
-
-	// 初始化 AI Service Gateway 单例。
-	// admin server 历史上不需要 AI（纯管理 API），故从不调 SetDefault；
-	// rag-eval 检索调试端点是首个会走检索栈（embed → 向量检索 → rerank）的 admin 路由，
-	// 触发 aiservice.Default() → panic("called before SetDefault")，且 embed 在 parallelSearch
-	// 的 goroutine 里跑，gin.Recovery 兜不住 → 整个进程崩。
-	// 这里挂一个最小 gateway：registry + providers + SetDefault，**不挂** billing/budget/langfuse
-	// middleware（gateway 对 nil chain 有兜底）。后果：admin 进程里发出的 AI 调用既不计费、不预扣
-	// 积分，也不进 Langfuse trace —— 这对 rag-eval（只读评估工具）是预期且正确的，但若将来有人在
-	// admin 端加面向用户的 AI 流程，务必改走带 middleware 的完整 gateway，否则会漏计费/漏追踪。
-	// provider 凭据由 user server 启动时已同步进 llm_provider 表，registry 从 DB 读取；
-	// 此处仍非致命地 sync 一次保证 admin 自洽（SetDefault 是进程内单例，与 user server 互不影响）。
-	{
-		capability.Init(store.S.DB()) // 与 user server 一致；GetCapabilities 在未 Init 时返回 error 不 panic，此处为防御性对齐
-		reg := registry.New(store.S.DB())
-		gw := aiservice.Build(aiservice.Deps{Registry: reg})
-		registerAIProviders(gw)
-		aiservice.SetDefault(gw)
-		log.Infow("AI Service Gateway initialised (admin, no-billing-middleware)", "adapters", gw.AdapterNames())
-		if err := aiservice.SyncProviderCredentials(context.Background(), store.S.DB(), viper.GetViper()); err != nil {
-			log.Errorw("Failed to sync AI provider credentials (admin), continuing", "error", err)
-		}
 	}
 
 	// Task 13 / T9: validate billing.b2b_cutover_date is configured.
