@@ -1,5 +1,24 @@
 schema_version: '2.0'
 features:
+- id: chatbot-query-rewrite
+  track: standard
+  description: 'RAG ③ 查询处理：chatbot 检索前加 chatbot 专属【中性陈述】查询改写（intent_declarative），把口语提问规整成保留领域锚词的检索短语后再向量检索，抬高正确 chunk 的 rerank 分恢复召回——不降 0.6 阈值、不破坏库外拒答。证据：BASELINE.md + THRESHOLD_TUNING.md（④ 定不改阈值）+ dynamic workflow feasibility（intent_declarative 实测 in-KB recall 0.842→1.0/oob 拒答保持 1.0；HyDE 因泄漏被否决）。flag features.chatbot_query_rewrite.enabled 默认 OFF。'
+  classification_reason: 'Standard: 触碰生产 chatbot 检索路径 + 每轮一次 LLM 改写调用（延迟/计费面）+ 新 prompt + 跨 stream.go/新文件/config/测试。无 DB schema/无新外部服务/无新 API 端点。flag 默认 OFF → prod 零影响。'
+  status: active
+  stage: S4
+  repos:
+    numind-server: /private/tmp/wt-chatbot-query-rewrite-numind-server (feature/chatbot-query-rewrite)
+  worktrees:
+    numind-server: /private/tmp/wt-chatbot-query-rewrite-numind-server
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 0
+  artifacts:
+    requirement: .ndf/features/chatbot-query-rewrite/requirement.md
+  decisions:
+  - 'S4 (ai 2026-06-17): 实现=chatbot biz 新 query_rewrite.go（rewriteQueryForRetrieval：aiservice.Chat 走 salesrag.intent 路由+chatbot 专属中性 prompt/few-shot 用胜出改写做种子/温度0.1；sanitizeRewrite 守卫空/超长回退原话）+ stream.go 检索前 effectiveQuery 改写（flag 开才改）+ 改写空召回→原话重试（anchor-drop 安全网）+ Langfuse chatbot-query-rewrite span + config_dev flag ON（prod 不配=OFF）+ 单测 TestSanitizeRewrite。复用 salesrag.intent profile（dedicated chatbot.query_rewrite profile 列后续 tech debt）。build/vet/gofmt/test 全绿。下一步 Rule6 双审→ndf-done→deploy dev→E2E 验。'
+  blockers: []
 - id: rag-eval-harness
   track: standard
   description: 'RAG 检索评估集+打分工具(地基):建干净评估专用 KB(用户选定)+Go CLI cmd/rag-eval 复用真实检索栈 retrieve.Service.Retrieve,读 golden YAML 算 recall@k/MRR/nDCG 出基线,让后续混合检索/查询处理/阈值调优/上下文组装每步改前改后跑分对比(科学闭环)。目标把 RAG 打造业界一流的第1步/前提。dev KB ~95文档多账号混杂乱→必须锚定干净语料。'
