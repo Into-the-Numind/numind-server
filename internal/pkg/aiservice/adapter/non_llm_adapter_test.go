@@ -624,6 +624,9 @@ func TestImageGenEndpoint_Shaping(t *testing.T) {
 		{"https://www.dmxapi.cn/v1", "m", "https://www.dmxapi.cn/v1beta/models/m:generateContent"},
 		{"https://www.dmxapi.cn", "m", "https://www.dmxapi.cn/v1beta/models/m:generateContent"},
 		{"", "m", "https://www.dmxapi.cn/v1beta/models/m:generateContent"},
+		// base already at the v1beta root must NOT be mangled by the /v1 replace.
+		{"https://proxy.com/v1beta", "m", "https://proxy.com/v1beta/models/m:generateContent"},
+		{"https://proxy.com/v1beta/", "m", "https://proxy.com/v1beta/models/m:generateContent"},
 	}
 	for _, c := range cases {
 		if got := imageGenEndpoint(c.base, c.model); got != c.want {

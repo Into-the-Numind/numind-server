@@ -106,6 +106,10 @@ func NewDMXAPIAdapter() *DMXAPIAdapter {
 	imgCfg := httpclient.DefaultConfig()
 	imgCfg.Timeout = imageGenHTTPTimeout
 	imgCfg.ResponseHeaderTimeout = imageGenHTTPTimeout
+	// Image generation is NON-idempotent — a retry on timeout would make the
+	// provider generate (and bill on its side) the same prompt again. Single
+	// attempt, matching the legacy raw-HTTP path.
+	imgCfg.MaxRetries = 0
 	return &DMXAPIAdapter{
 		client:         httpclient.NewClient(httpclient.LLMConfig()),
 		streamClient:   httpclient.NewClient(httpclient.LLMStreamConfig()),
@@ -550,6 +554,10 @@ func imageGenEndpoint(baseURL, model string) string {
 	}
 	suffix := "v1beta/models/" + model + ":generateContent"
 	switch {
+	case strings.Contains(baseURL, "/v1beta/"):
+		// Base already points at the v1beta root — just append models/... (must be
+		// checked before the /v1 cases, since "/v1beta" contains "/v1").
+		return baseURL + "models/" + model + ":generateContent"
 	case strings.Contains(baseURL, "/v1/"):
 		return strings.Replace(baseURL, "/v1/", "/"+suffix, 1)
 	case strings.Contains(baseURL, "/v1"):
