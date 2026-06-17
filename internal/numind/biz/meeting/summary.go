@@ -18,8 +18,117 @@ const summaryMaxTranscriptRunes = 12000
 // summaryMaxOutputTokens 纪要最大输出 token（结构化要点/决议/待办，给足空间）。
 const summaryMaxOutputTokens = 2000
 
+// rollingSummaryMaxOutputTokens 滚动摘要最大输出 token（结构化 running memory，FEEDBACK_V2_SPEC §2.4）。
+const rollingSummaryMaxOutputTokens = 1500
+
+// rollingDeltaMaxRunes 单次折叠喂给模型的「新增转写」上限（字）。节流游标到点时积累的增量通常
+// 在 ~1500 字附近，留余量兜底超长（极端情况下取尾部）。
+const rollingDeltaMaxRunes = 6000
+
 // summaryChatFn 是非流式 LLM 调用注入点（生产用 aiservice.Chat；单测可替换）。
 var summaryChatFn = aiservice.Chat
+
+// rollingSummarySystemPrompt 指示模型把「已有滚动摘要 + 新增转写」折叠成更新后的结构化摘要
+// （FEEDBACK_V2_SPEC §2.4）。结构化 markdown 抗漂移：四个固定二级标题。
+const rollingSummarySystemPrompt = `你是会议实时记录助理，负责维护一份「滚动摘要」(running memory)，随会议推进持续更新它，让阅读者无需看全部逐字稿就能掌握整场脉络。
+
+我会给你「已有滚动摘要」和「自上次更新以来的新增对话」。请把新增信息合并进已有摘要，输出**更新后**的完整滚动摘要（不是只输出增量），使用 markdown 格式，严格保留以下四个二级标题章节（即使某章节暂无内容也保留标题并写「（暂无）」）：
+
+## 会议主题/目标
+本次会议要讨论或达成的核心目标。
+
+## 已确立的事实与决议
+已经形成共识、确认的事实或做出的决定。
+
+## 各方立场/诉求
+不同参与方的观点、立场、关切与诉求。
+
+## 未决问题/待办
+尚未解决的分歧、悬而未决的问题、后续行动项。
+
+要求：合并而非堆砌——把同主题信息整合、去重、提炼；保留关键事实与决议不丢失；保持简洁。只输出更新后的滚动摘要 markdown 本身，不要任何前后缀、解释或代码块围栏。`
+
+// updateRunningSummary 把「已有 running_summary + 新增转写」折叠成更新后的结构化滚动摘要
+// （FEEDBACK_V2_SPEC §2.2/§2.4）。这是一次 cheap 非流式 LLM 调用，复用已注册的 chatbot.stream
+// profile（禁新注册），走 internalCallCtx 剥离扣费 + 会员门 + Langfuse 观测。
+//
+// 入参：
+//   - prev：已有滚动摘要（首次为空）；
+//   - deltaTranscript：自上次折叠以来的新增转写（已拼好的文本）。
+//
+// 返回更新后的摘要 markdown。deltaTranscript 为空白时直接返回 prev（无新内容，不调 LLM）。
+// 由调用方（realtime 后台 goroutine）负责持久化与并发控制；本函数纯粹是 LLM 折叠逻辑，无副作用。
+func (b *meetingBiz) updateRunningSummary(ctx context.Context, userID uint, sessionID uint64, prev, deltaTranscript string) (string, error) {
+	delta := strings.TrimSpace(deltaTranscript)
+	if delta == "" {
+		return prev, nil
+	}
+	// 兜底超长增量：只保留尾部（最近的内容最相关，旧内容多已折进 prev）。
+	if dr := []rune(delta); len(dr) > rollingDeltaMaxRunes {
+		delta = string(dr[len(dr)-rollingDeltaMaxRunes:])
+	}
+
+	callCtx := internalCallCtx(ctx, "meeting.rolling_summary")
+
+	// Langfuse trace（同 generateSummary 约定，优雅降级）。
+	traceID := langfuse.TraceID()
+	langfuse.CreateTrace(traceID, "meeting-rolling-summary",
+		langfuse.WithUserID(userID),
+		langfuse.WithTraceTags("meeting"),
+	)
+	callCtx = langfuse.WithTrace(callCtx, traceID)
+
+	tc := langfuse.FromContext(callCtx)
+	var genID string
+	if tc != nil {
+		genID = langfuse.SpanID()
+		langfuse.CreateGeneration(tc.TraceID, genID,
+			langfuse.WithGenParent(tc.ParentObservationID),
+			langfuse.WithGenName("meeting-rolling-summary"),
+			langfuse.WithGenInput(map[string]interface{}{
+				"session_id": sessionID,
+				"prev_size":  len([]rune(prev)),
+				"delta_size": len([]rune(delta)),
+				"has_prev":   strings.TrimSpace(prev) != "",
+			}),
+		)
+	}
+
+	prevForPrompt := strings.TrimSpace(prev)
+	if prevForPrompt == "" {
+		prevForPrompt = "（暂无，这是本次会议的第一段摘要，请基于新增对话直接建立结构化摘要。）"
+	}
+	userMsg := fmt.Sprintf("【已有滚动摘要】\n%s\n\n【自上次更新以来的新增对话】\n%s", prevForPrompt, delta)
+
+	// 复用 profile.ChatbotStream 做非流式 Chat（同 generateSummary 的理由，见下方注释）。
+	resp, err := summaryChatFn(callCtx, profile.ChatbotStream, aiservice.ChatRequest{
+		Messages: []aiservice.ChatMessage{
+			{Role: aiservice.MessageRoleSystem, Content: aiservice.MessageContent{Text: rollingSummarySystemPrompt}},
+			{Role: aiservice.MessageRoleUser, Content: aiservice.MessageContent{Text: userMsg}},
+		},
+		MaxTokens:   rollingSummaryMaxOutputTokens,
+		Temperature: 0.3,
+	})
+	if err != nil {
+		endGenError(tc, genID, err)
+		return "", fmt.Errorf("updateRunningSummary: LLM call failed: %w", err)
+	}
+
+	updated := strings.TrimSpace(resp.Content)
+	if updated == "" {
+		endGenError(tc, genID, fmt.Errorf("empty rolling summary content"))
+		return "", fmt.Errorf("updateRunningSummary: empty summary")
+	}
+
+	if tc != nil {
+		langfuse.EndGeneration(tc.TraceID, genID,
+			langfuse.WithGenModel(resp.Model),
+			langfuse.WithGenOutput(updated),
+			langfuse.WithGenUsage(resp.Usage.PromptTokens, resp.Usage.CompletionTokens),
+		)
+	}
+	return updated, nil
+}
 
 // summarySystemPrompt 指示模型生成结构化 markdown 纪要（要点 / 决议 / 待办，SPEC §0.3 / §3）。
 const summarySystemPrompt = `你是专业的会议纪要助理。请阅读下面完整的会议转写，输出一份结构化的中文会议纪要，使用 markdown 格式，严格包含以下三个二级标题章节（即使某章节无内容也保留标题并写「（无）」）：
@@ -98,6 +207,98 @@ func (b *meetingBiz) generateSummary(ctx context.Context, userID uint, s *model.
 	if summary == "" {
 		endGenError(tc, genID, fmt.Errorf("empty summary content"))
 		return "", fmt.Errorf("generateSummary: empty summary")
+	}
+
+	if tc != nil {
+		langfuse.EndGeneration(tc.TraceID, genID,
+			langfuse.WithGenModel(resp.Model),
+			langfuse.WithGenOutput(summary),
+			langfuse.WithGenUsage(resp.Usage.PromptTokens, resp.Usage.CompletionTokens),
+		)
+	}
+	return summary, nil
+}
+
+// finalSummaryFromRollingSystemPrompt 指示模型基于滚动摘要 + 尾部增量转写生成最终结构化纪要
+// （FEEDBACK_V2_SPEC §3.1）。复用与一次性纪要相同的三章节结构（要点/决议/待办），只是输入是
+// 已折叠的滚动摘要而非全稿——近乎瞬时。
+const finalSummaryFromRollingSystemPrompt = `你是专业的会议纪要助理。我会给你一份「会议滚动摘要」（已结构化记录了整场脉络）以及「会议结尾的最新对话」（可能尚未折进摘要）。请综合两者，输出一份最终的中文会议纪要，使用 markdown 格式，严格包含以下三个二级标题章节（即使某章节无内容也保留标题并写「（无）」）：
+
+## 要点
+用无序列表概括会议讨论的关键信息与主要观点。
+
+## 决议
+用无序列表列出会议达成的结论或决定；没有则写「（无）」。
+
+## 待办
+用无序列表列出后续行动项，尽量标注负责人与时限；没有则写「（无）」。
+
+只输出纪要 markdown 本身，不要任何前后缀、解释或代码块围栏。`
+
+// generateFinalSummary 生成会话的最终结构化纪要（FEEDBACK_V2_SPEC §3.1）。
+//
+// 优先路径：若 session.RunningSummary 非空，基于「滚动摘要 + 尾部未折叠转写」生成纪要——近乎
+// 瞬时（输入小），不读全稿。回退路径：无 running_summary 时退回 generateSummary（读全稿，
+// 即原有逻辑），保证旧会话/未触发过滚动摘要的会话仍能出纪要。
+//
+// 计费/Langfuse 纪律同 generateSummary（internalCallCtx + 显式 trace）。
+func (b *meetingBiz) generateFinalSummary(ctx context.Context, userID uint, s *model.MeetingSession, segs []model.MeetingSegment) (string, error) {
+	rolling := strings.TrimSpace(s.RunningSummary)
+	if rolling == "" {
+		// 回退：无滚动摘要，读全稿一次性生成（原 EndSession 同步路径逻辑）。
+		return b.generateSummary(ctx, userID, s, segs)
+	}
+
+	// 尾部增量：滚动摘要可能落后于最后几句（折叠游标节流），把尾部转写一并喂给模型补齐。
+	// 取最近 ~2000 字即可（滚动摘要已覆盖主体脉络）。
+	tail, _ := buildTranscriptWindow(segs, 2000)
+
+	callCtx := internalCallCtx(ctx, "meeting.summary")
+	traceID := langfuse.TraceID()
+	langfuse.CreateTrace(traceID, "meeting-summary",
+		langfuse.WithUserID(userID),
+		langfuse.WithTraceTags("meeting"),
+	)
+	callCtx = langfuse.WithTrace(callCtx, traceID)
+
+	tc := langfuse.FromContext(callCtx)
+	var genID string
+	if tc != nil {
+		genID = langfuse.SpanID()
+		langfuse.CreateGeneration(tc.TraceID, genID,
+			langfuse.WithGenParent(tc.ParentObservationID),
+			langfuse.WithGenName("meeting-summary-from-rolling"),
+			langfuse.WithGenInput(map[string]interface{}{
+				"session_id":   s.ID,
+				"rolling_size": len([]rune(rolling)),
+				"tail_size":    len([]rune(tail)),
+			}),
+		)
+	}
+
+	tailForPrompt := strings.TrimSpace(tail)
+	if tailForPrompt == "" {
+		tailForPrompt = "（无新增，滚动摘要已是最新。）"
+	}
+	userMsg := fmt.Sprintf("会议标题：%s\n\n【会议滚动摘要】\n%s\n\n【会议结尾的最新对话】\n%s", s.Title, rolling, tailForPrompt)
+
+	resp, err := summaryChatFn(callCtx, profile.ChatbotStream, aiservice.ChatRequest{
+		Messages: []aiservice.ChatMessage{
+			{Role: aiservice.MessageRoleSystem, Content: aiservice.MessageContent{Text: finalSummaryFromRollingSystemPrompt}},
+			{Role: aiservice.MessageRoleUser, Content: aiservice.MessageContent{Text: userMsg}},
+		},
+		MaxTokens:   summaryMaxOutputTokens,
+		Temperature: 0.3,
+	})
+	if err != nil {
+		endGenError(tc, genID, err)
+		return "", fmt.Errorf("generateFinalSummary: LLM call failed: %w", err)
+	}
+
+	summary := strings.TrimSpace(resp.Content)
+	if summary == "" {
+		endGenError(tc, genID, fmt.Errorf("empty summary content"))
+		return "", fmt.Errorf("generateFinalSummary: empty summary")
 	}
 
 	if tc != nil {

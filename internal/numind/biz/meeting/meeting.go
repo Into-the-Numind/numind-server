@@ -16,10 +16,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 
 	"gorm.io/gorm"
@@ -166,8 +168,27 @@ func NewMeetingBiz(ds store.IStore) IMeetingBiz {
 	return &meetingBiz{ds: ds}
 }
 
-// defaultAutoIntervalSeconds 自动反馈最小间隔默认值（SPEC §2.1）。
-const defaultAutoIntervalSeconds = 60
+// defaultAutoIntervalSeconds 自动反馈间隔默认值（未提供时；FEEDBACK_V2_SPEC §1 前端默认 15）。
+const defaultAutoIntervalSeconds = 15
+
+// autoIntervalMinSeconds / autoIntervalMaxSeconds 自动反馈间隔合法区间（FEEDBACK_V2_SPEC §1：
+// 用户自设 5-60 秒，去档位；后端校验放宽到 5-60，越界 clamp 而非拒绝）。
+const (
+	autoIntervalMinSeconds = 5
+	autoIntervalMaxSeconds = 60
+)
+
+// clampAutoInterval 把提供的间隔 clamp 到 [5,60]（FEEDBACK_V2_SPEC §1）。<=0 视为未提供，
+// 由调用方回退默认值。
+func clampAutoInterval(v int) int {
+	if v < autoIntervalMinSeconds {
+		return autoIntervalMinSeconds
+	}
+	if v > autoIntervalMaxSeconds {
+		return autoIntervalMaxSeconds
+	}
+	return v
+}
 
 // ---------------------------------------------------------------------------
 // 会话生命周期
@@ -177,7 +198,8 @@ const defaultAutoIntervalSeconds = 60
 func (b *meetingBiz) CreateSession(ctx context.Context, userID uint, req *CreateSessionReq) (*SessionDTO, error) {
 	interval := defaultAutoIntervalSeconds
 	if req.AutoIntervalSeconds != nil && *req.AutoIntervalSeconds > 0 {
-		interval = *req.AutoIntervalSeconds
+		// 放宽到 5-60，越界 clamp（FEEDBACK_V2_SPEC §1：用户自设 5-60，去档位）。
+		interval = clampAutoInterval(*req.AutoIntervalSeconds)
 	}
 
 	// preset_id 给定时校验存在 + 归属（本人或内置 user_id=0），但 role_prompt 以请求为准
@@ -256,7 +278,17 @@ func (b *meetingBiz) ListSessions(ctx context.Context, userID uint, offset, limi
 	return out, total, nil
 }
 
-// EndSession 结束会话：置 status=ended、算 duration、同步生成 summary。
+// asyncSummarySpawn 是异步纪要生成的派发点（FEEDBACK_V2_SPEC §3.1）。生产用 go func 真异步；
+// 单测可替换为同步执行以断言状态机（generating→done/failed）。
+var asyncSummarySpawn = func(fn func()) { go fn() }
+
+// EndSession 结束会话：两段式（FEEDBACK_V2_SPEC §3.1）。
+//
+//	同步段（秒回）：校验归属 → 置 status=ended + ended_at + duration + summary_status=generating
+//	  → 持久化 → 立即返回 DTO（绝不被请求 ctx 取消打断、不阻塞等纪要）。
+//	异步段：spawn 后台 goroutine（独立 context.Background() + recover）→ generateFinalSummary
+//	  （优先基于 running_summary，无则回退读全稿）→ 回写 summary + summary_status=done；
+//	  失败置 failed 并 log。
 //
 // 已结束会话再次调用是幂等的：直接返回当前 DTO（不重复生成纪要）。
 func (b *meetingBiz) EndSession(ctx context.Context, userID uint, id uint64) (*SessionDTO, error) {
@@ -270,34 +302,89 @@ func (b *meetingBiz) EndSession(ctx context.Context, userID uint, id uint64) (*S
 		return &dto, nil
 	}
 
+	// --- 同步段（秒回）---
 	now := time.Now()
 	s.Status = model.MeetingSessionStatusEnded
 	s.EndedAt = &now
 	s.DurationSeconds = computeDurationSeconds(s.StartedAt, now)
-
-	// 同步生成结构化纪要（SPEC §3 end：返回体含 summary、summary_status=done）。
-	// summary.go 内部处理转写窗口/分块、空转写降级、LLM 失败降级。生成失败不阻断结束流程，
-	// 只把 summary_status 置 failed。
-	segs, segErr := b.ds.Meetings().ListSegmentsBySession(ctx, id)
-	if segErr != nil {
-		// 取分段失败：仍结束会话，纪要标记 failed。
-		s.SummaryStatus = model.MeetingSummaryStatusFailed
-	} else {
-		summaryMD, sumErr := b.generateSummary(ctx, userID, s, segs)
-		if sumErr != nil || summaryMD == "" {
-			s.SummaryStatus = model.MeetingSummaryStatusFailed
-		} else {
-			s.Summary = summaryMD
-			s.SummaryStatus = model.MeetingSummaryStatusDone
-		}
-	}
+	s.SummaryStatus = model.MeetingSummaryStatusGenerating // 纪要后台生成中
 
 	if err := b.ds.Meetings().UpdateSession(ctx, s); err != nil {
 		return nil, fmt.Errorf("EndSession: update: %w", err)
 	}
 
+	// --- 异步段：后台生成纪要（独立 ctx + recover；不被请求取消打断）---
+	asyncSummarySpawn(func() {
+		b.finalizeSummaryAsync(userID, id)
+	})
+
 	dto := toSessionDTO(s)
 	return &dto, nil
+}
+
+// finalizeSummaryAsync 在后台生成最终纪要并回写（FEEDBACK_V2_SPEC §3.1 异步段）。
+//
+// 独立 context.Background()（不受 EndSession 请求 ctx 取消影响），recover() 防 panic。
+// 重新读 session（拿最新 running_summary）+ 全部分段 → generateFinalSummary → 定向写 summary +
+// summary_status=done；任一步失败置 failed 并 log。
+//
+// 写库用定向列更新（UpdateSessionSummary，只碰 summary+summary_status）而非全行 Save：与并发跑
+// 的 runRollingSummaryFold 共存时，避免把它刚写的 running_summary 用本 goroutine 读到的旧值覆盖。
+//
+// recover 范围收窄：用 success 标记区分「done 已成功落库」与「真正失败」。done 写成功后置 success，
+// defer recover 仅在 !success 时才 markSummaryFailed——否则一个发生在 done 落库**之后**的 panic
+// 会把已成功的 done 误翻成 failed。
+func (b *meetingBiz) finalizeSummaryAsync(userID uint, id uint64) {
+	success := false
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Errorw("meeting: finalize summary panicked", "session_id", id, "panic", rec)
+			if !success {
+				b.markSummaryFailed(id)
+			}
+		}
+	}()
+
+	ctx := context.Background()
+
+	s, err := b.ds.Meetings().GetSession(ctx, id)
+	if err != nil {
+		log.Warnw("meeting: finalize summary load session failed", "session_id", id, "error", err)
+		b.markSummaryFailed(id)
+		return
+	}
+
+	segs, segErr := b.ds.Meetings().ListSegmentsBySession(ctx, id)
+	if segErr != nil {
+		log.Warnw("meeting: finalize summary list segments failed", "session_id", id, "error", segErr)
+		b.markSummaryFailed(id)
+		return
+	}
+
+	summaryMD, sumErr := b.generateFinalSummary(ctx, userID, s, segs)
+	if sumErr != nil || strings.TrimSpace(summaryMD) == "" {
+		log.Warnw("meeting: finalize summary generate failed", "session_id", id, "error", sumErr)
+		b.markSummaryFailed(id)
+		return
+	}
+
+	if err := b.ds.Meetings().UpdateSessionSummary(ctx, id, summaryMD, model.MeetingSummaryStatusDone); err != nil {
+		log.Warnw("meeting: finalize summary persist failed", "session_id", id, "error", err)
+		b.markSummaryFailed(id)
+		return
+	}
+	// done 已成功落库：此后任何 panic 都不应把它翻成 failed。
+	success = true
+}
+
+// markSummaryFailed 把纪要状态置 failed（后台失败收尾）。定向只更 summary_status 一列
+// （MarkSummaryStatus），不读全行也不全行 Save——避免覆盖并发 fold 写的 running_summary。
+// 失败仅 log。
+func (b *meetingBiz) markSummaryFailed(id uint64) {
+	ctx := context.Background()
+	if err := b.ds.Meetings().MarkSummaryStatus(ctx, id, model.MeetingSummaryStatusFailed); err != nil {
+		log.Warnw("meeting: mark summary failed persist failed", "session_id", id, "error", err)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -321,7 +408,7 @@ func (b *meetingBiz) ListPresets(ctx context.Context, userID uint) ([]PresetDTO,
 func (b *meetingBiz) SavePreset(ctx context.Context, userID uint, req *SavePresetReq) (*PresetDTO, error) {
 	interval := defaultAutoIntervalSeconds
 	if req.AutoIntervalSeconds != nil && *req.AutoIntervalSeconds > 0 {
-		interval = *req.AutoIntervalSeconds
+		interval = clampAutoInterval(*req.AutoIntervalSeconds)
 	}
 	p := &model.MeetingPreset{
 		UserID:              userID,

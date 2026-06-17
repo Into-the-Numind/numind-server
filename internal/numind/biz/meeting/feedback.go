@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/profile"
@@ -17,9 +18,17 @@ import (
 // auto 触发时模型若以此开头 → 发 skip 事件、不落库。
 const noFeedbackSentinel = "NO_FEEDBACK"
 
-// feedbackTranscriptWindowRunes 反馈生成读取的转写窗口大小（最近 N 字，SPEC §3.1
-// 「实现者定窗口，如最近 ~2000 字」）。
-const feedbackTranscriptWindowRunes = 2000
+// feedbackRecentWindow 反馈判官看到的「最近逐字对话」时间窗口（FEEDBACK_V2_SPEC §2.3：
+// 最近 5 分钟，按 segment.created_at 取）。
+const feedbackRecentWindow = 5 * time.Minute
+
+// feedbackRecentMaxRunes 最近 5 分钟窗口的安全字数上限（FEEDBACK_V2_SPEC §2.3：~8000 字
+// 兜底；超长只保留尾部——最新的对话最相关，全局脉络已由滚动摘要覆盖）。
+const feedbackRecentMaxRunes = 8000
+
+// feedbackRecentFeedbackLimit 注入 prompt 的「已给过的反馈」最大条数（FEEDBACK_V2_SPEC §2.3：
+// 最近 ~10 条，提示判官避免重复）。
+const feedbackRecentFeedbackLimit = 10
 
 // feedbackMaxOutputTokens 反馈正文最大输出 token（反馈应简洁可立即使用）。
 const feedbackMaxOutputTokens = 800
@@ -50,12 +59,21 @@ func (b *meetingBiz) GenerateFeedback(ctx context.Context, userID uint, sessionI
 		return err
 	}
 
-	// 取转写窗口 + 当前锚点 seq。
+	// 取最近 5 分钟逐字窗口 + 当前锚点 seq（FEEDBACK_V2_SPEC §2.3）。
 	segs, err := b.ds.Meetings().ListSegmentsBySession(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("GenerateFeedback: list segments: %w", err)
 	}
-	transcript, anchorSeq := buildTranscriptWindow(segs, feedbackTranscriptWindowRunes)
+	recentTranscript, anchorSeq := buildRecentTranscriptWindow(segs, feedbackRecentWindow, feedbackRecentMaxRunes, time.Now())
+
+	// 已给过的反馈（FEEDBACK_V2_SPEC §2.3：注入 prompt 让判官避免重复，最近 ~10 条）。
+	priorFeedbacks, err := b.ds.Meetings().ListFeedbacksBySession(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("GenerateFeedback: list feedbacks: %w", err)
+	}
+
+	// 三段上下文（FEEDBACK_V2_SPEC §2.3）：滚动摘要 + 最近 5 分钟逐字 + 已给反馈清单。
+	userMsg := buildFeedbackUserMessage(s.RunningSummary, recentTranscript, priorFeedbacks, feedbackRecentFeedbackLimit)
 
 	sysPrompt := buildFeedbackSystemPrompt(s.RolePrompt, trigger)
 	callCtx := internalCallCtx(ctx, "meeting.feedback")
@@ -79,9 +97,11 @@ func (b *meetingBiz) GenerateFeedback(ctx context.Context, userID uint, sessionI
 			langfuse.WithGenParent(tc.ParentObservationID),
 			langfuse.WithGenName("meeting-feedback"),
 			langfuse.WithGenInput(map[string]interface{}{
-				"trigger":    trigger,
-				"anchor_seq": anchorSeq,
-				"transcript": transcript,
+				"trigger":              trigger,
+				"anchor_seq":           anchorSeq,
+				"recent_transcript":    recentTranscript,
+				"has_running_summary":  strings.TrimSpace(s.RunningSummary) != "",
+				"prior_feedback_count": len(priorFeedbacks),
 			}),
 		)
 	}
@@ -90,7 +110,7 @@ func (b *meetingBiz) GenerateFeedback(ctx context.Context, userID uint, sessionI
 		// 不设 ContextFragments —— 保持网关无 fragment 直通分支，不 Reserve/Reconcile。
 		Messages: []aiservice.ChatMessage{
 			{Role: aiservice.MessageRoleSystem, Content: aiservice.MessageContent{Text: sysPrompt}},
-			{Role: aiservice.MessageRoleUser, Content: aiservice.MessageContent{Text: transcriptUserMessage(transcript)}},
+			{Role: aiservice.MessageRoleUser, Content: aiservice.MessageContent{Text: userMsg}},
 		},
 		MaxTokens:   feedbackMaxOutputTokens,
 		Temperature: 0.4,
@@ -264,17 +284,63 @@ func drainChunks(ch <-chan aiservice.ChatChunk) {
 	}
 }
 
-// transcriptUserMessage 构造发给模型的转写输入消息。空转写时给出明确占位，避免模型困惑。
-func transcriptUserMessage(transcript string) string {
-	if strings.TrimSpace(transcript) == "" {
-		return "（目前还没有可用的会议转写内容。）"
+// buildFeedbackUserMessage 拼装发给判官的三段上下文（FEEDBACK_V2_SPEC §2.3）：
+//
+//	[会议滚动摘要]   —— running_summary（让模型据此了解整场脉络，避免幻觉）；无则「（暂无）」。
+//	[最近 5 分钟对话] —— recentTranscript（最近 5 分钟逐字转写）；空则明确占位。
+//	[你已经给过的反馈（不要重复）] —— 本会话最近 ~feedbackLimit 条反馈正文；无则「（暂无）」。
+//
+// priorFeedbacks 按 created_at ASC（store 保证），取尾部 feedbackLimit 条（最新的最相关）。
+func buildFeedbackUserMessage(runningSummary, recentTranscript string, priorFeedbacks []model.MeetingFeedback, feedbackLimit int) string {
+	summary := strings.TrimSpace(runningSummary)
+	if summary == "" {
+		summary = "（暂无）"
 	}
-	return fmt.Sprintf("以下是最近的会议转写：\n\n%s", transcript)
+
+	transcript := strings.TrimSpace(recentTranscript)
+	if transcript == "" {
+		transcript = "（目前还没有可用的会议转写内容。）"
+	}
+
+	priorBlock := formatPriorFeedbacks(priorFeedbacks, feedbackLimit)
+
+	var sb strings.Builder
+	sb.WriteString("[会议滚动摘要]\n")
+	sb.WriteString(summary)
+	sb.WriteString("\n\n[最近 5 分钟对话]\n")
+	sb.WriteString(transcript)
+	sb.WriteString("\n\n[你已经给过的反馈（不要重复）]\n")
+	sb.WriteString(priorBlock)
+	return sb.String()
 }
 
-// buildFeedbackSystemPrompt 拼装系统提示（SPEC §3.1）。
+// formatPriorFeedbacks 把已给反馈拼成清单（取尾部 limit 条，按时间顺序）。空时返回「（暂无）」。
+func formatPriorFeedbacks(fbs []model.MeetingFeedback, limit int) string {
+	// 取尾部 limit 条（store 已按 created_at ASC，尾部=最新）。
+	start := 0
+	if limit > 0 && len(fbs) > limit {
+		start = len(fbs) - limit
+	}
+	var items []string
+	for i := start; i < len(fbs); i++ {
+		c := strings.TrimSpace(fbs[i].Content)
+		if c == "" {
+			continue
+		}
+		items = append(items, fmt.Sprintf("- %s", c))
+	}
+	if len(items) == 0 {
+		return "（暂无）"
+	}
+	return strings.Join(items, "\n")
+}
+
+// buildFeedbackSystemPrompt 拼装系统提示（SPEC §3.1 + FEEDBACK_V2_SPEC §2.3）。
 //   - auto：可输出 NO_FEEDBACK 表示此刻无需反馈。
 //   - manual：必须给出反馈，不提供 NO_FEEDBACK 选项。
+//
+// 两种 trigger 都在 role_prompt 指令后追加「参考滚动摘要了解全局、不要重复已给反馈」一句
+// （FEEDBACK_V2_SPEC §2.3：上下文已升级为三段，提示模型善用滚动摘要并去重）。
 func buildFeedbackSystemPrompt(rolePrompt, trigger string) string {
 	var sb strings.Builder
 	sb.WriteString(strings.TrimSpace(rolePrompt))
@@ -286,6 +352,7 @@ func buildFeedbackSystemPrompt(rolePrompt, trigger string) string {
 		sb.WriteString(noFeedbackSentinel)
 		sb.WriteString(" 这一个标记，不要有其他内容。")
 	}
+	sb.WriteString("\n\n请参考下面的会议滚动摘要了解整场会议的全局脉络；不要重复你已经给过的反馈。")
 	return sb.String()
 }
 
@@ -322,6 +389,45 @@ func buildTranscriptWindow(segs []model.MeetingSegment, maxRunes int) (string, i
 		picked[l], picked[r] = picked[r], picked[l]
 	}
 	return strings.Join(picked, "\n"), anchorSeq
+}
+
+// buildRecentTranscriptWindow 取「最近 window 时间窗口内」的 final 段拼成逐字转写
+// （FEEDBACK_V2_SPEC §2.3），返回 (transcript, anchorSeq)。
+//
+//   - 按 segment.created_at 截取：保留 created_at >= now-window 的段（边界用 now 注入便于测试，
+//     生产传 time.Now()）。
+//   - anchorSeq 仍取全部分段中最后一段的 seq（转写进度锚点，与 buildTranscriptWindow 语义一致），
+//     不受时间窗口影响——锚点表示「反馈生成时转写已推进到哪」。无分段时为 0。
+//   - 空文本段（静音）跳过拼接但参与 anchor 计算。
+//   - 安全字数上限 maxRunes 兜底：窗口内内容超长时只保留尾部（最新最相关，全局脉络由滚动摘要覆盖）。
+//
+// store 返回的 segs 已按 seq ASC（≈时间顺序），故顺序遍历即时间顺序。
+func buildRecentTranscriptWindow(segs []model.MeetingSegment, window time.Duration, maxRunes int, now time.Time) (string, int) {
+	anchorSeq := 0
+	if len(segs) > 0 {
+		anchorSeq = segs[len(segs)-1].Seq
+	}
+
+	cutoff := now.Add(-window)
+	var picked []string
+	for i := range segs {
+		// 仅保留窗口内的段。CreatedAt 零值（未持久化/测试未设）视为「在窗口内」，避免误丢。
+		if !segs[i].CreatedAt.IsZero() && segs[i].CreatedAt.Before(cutoff) {
+			continue
+		}
+		t := strings.TrimSpace(segs[i].Text)
+		if t == "" {
+			continue
+		}
+		picked = append(picked, t)
+	}
+
+	transcript := strings.Join(picked, "\n")
+	// 安全字数上限：超长只保留尾部（rune-aware，避免截断多字节字符）。
+	if r := []rune(transcript); maxRunes > 0 && len(r) > maxRunes {
+		transcript = string(r[len(r)-maxRunes:])
+	}
+	return transcript, anchorSeq
 }
 
 // endGenError 是 Langfuse generation 错误收尾的小工具（优雅降级 if tc != nil）。

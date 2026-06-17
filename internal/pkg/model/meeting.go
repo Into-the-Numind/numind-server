@@ -51,6 +51,10 @@ type MeetingSession struct {
 	DurationSeconds int `gorm:"not null;default:0" json:"duration_seconds"`
 	// Summary AI 纪要（markdown）。
 	Summary string `gorm:"type:mediumtext" json:"summary,omitempty"`
+	// RunningSummary 滚动结构化摘要（running memory，FEEDBACK_V2_SPEC §2.1）：会议进行中由后台
+	// goroutine 节流折叠出的全局脉络（主题/事实决议/各方立场/未决待办），喂给反馈判官避免幻觉，
+	// 也作为最终纪要生成的基底。AutoMigrate 自动补此列（migration 20260618_100000 供手动环境）。
+	RunningSummary string `gorm:"type:mediumtext" json:"running_summary,omitempty"`
 	// SummaryStatus none / generating / done / failed。
 	SummaryStatus string `gorm:"size:20;not null;default:'none'" json:"summary_status"`
 	// StartedAt 会议开始时间。

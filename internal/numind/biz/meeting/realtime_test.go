@@ -12,8 +12,10 @@ package meeting
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,6 +24,7 @@ import (
 	"gorm.io/gorm/logger"
 
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/model"
 )
 
@@ -91,6 +94,185 @@ func TestHandleFinal_RespectsStartingSeq(t *testing.T) {
 	r.handleFinal("续上", 0, 500)
 	require.Len(t, got, 1)
 	assert.Equal(t, 6, got[0].Seq, "从 maxSeq+1 续接")
+}
+
+// ---------------------------------------------------------------------------
+// (a2) 滚动摘要折叠（FEEDBACK_V2_SPEC §2.2/§2.4）
+// ---------------------------------------------------------------------------
+
+// TestJoinSegmentRange 验证折叠区间拼接 (fromExclusive, toInclusive]，跳过区间外/空文本。
+func TestJoinSegmentRange(t *testing.T) {
+	segs := []model.MeetingSegment{
+		{Seq: 1, Text: "旧句已折"},
+		{Seq: 2, Text: "新句A"},
+		{Seq: 3, Text: ""}, // 静音跳过
+		{Seq: 4, Text: "新句B"},
+		{Seq: 5, Text: "尚未到达"},
+	}
+	// 折叠 (1, 4]：取 seq 2,3,4，跳过 1（已折）、5（未到）、3（空）。
+	got := joinSegmentRange(segs, 1, 4)
+	assert.Equal(t, "新句A\n新句B", got)
+
+	// 空区间。
+	assert.Equal(t, "", joinSegmentRange(segs, 4, 4))
+}
+
+// TestMaybeUpdateRollingSummary_RuneThresholdTriggersFold 验证累计字数达阈值时触发后台折叠，
+// 折叠结果落到 running_summary，且折叠游标推进、计数清零。
+func TestMaybeUpdateRollingSummary_RuneThresholdTriggersFold(t *testing.T) {
+	b, db := newRealtimeTestBiz(t)
+	// 建一个会话（折叠 goroutine 要 GetSession / UpdateSession）。
+	s := &model.MeetingSession{UserID: 100, Title: "T", RolePrompt: "x", Status: model.MeetingSessionStatusActive}
+	require.NoError(t, db.Create(s).Error)
+
+	// fake 折叠 LLM：返回结构化摘要，并 capture 收到的增量（用 mu 保护跨 goroutine 访问，race-safe）。
+	origSummary := summaryChatFn
+	t.Cleanup(func() { summaryChatFn = origSummary })
+	var capMu sync.Mutex
+	var gotDelta string
+	var foldCalls int
+	done := make(chan struct{}, 4)
+	summaryChatFn = func(_ context.Context, _ string, req aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
+		capMu.Lock()
+		gotDelta = req.Messages[len(req.Messages)-1].Content.Text
+		foldCalls++
+		capMu.Unlock()
+		out := &aiservice.ChatResponse{Content: "## 会议主题/目标\n- 已折叠"}
+		done <- struct{}{}
+		return out, nil
+	}
+
+	r := &realtimeASR{b: b, userID: 100, sessionID: s.ID, nextSeq: 0, summaryFoldedSeq: 0}
+
+	// 落两段，第二段把累计字数推过阈值（1500）。先落一条短的，再落一条超长的。
+	r.handleFinal("短句", 0, 500) // 几个字，不触发
+	r.mu.Lock()
+	pendingAfterShort := r.summaryRunesPending
+	inflightAfterShort := r.summaryInFlight
+	r.mu.Unlock()
+	assert.Greater(t, pendingAfterShort, 0, "短句累计但未触发")
+	assert.False(t, inflightAfterShort, "未达阈值不触发")
+
+	// 超长段（>1500 字）→ 触发折叠。
+	bigText := strings.Repeat("话", rollingSummaryRuneThreshold+10)
+	r.handleFinal(bigText, 500, 2000)
+
+	// 等后台折叠 goroutine 跑完（最多 ~2s）。
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("折叠 goroutine 未触发")
+	}
+	// 给 goroutine 写库的时间（done 在 LLM 返回时发，但持久化在其后）。
+	require.Eventually(t, func() bool {
+		var reloaded model.MeetingSession
+		if err := db.First(&reloaded, s.ID).Error; err != nil {
+			return false
+		}
+		return strings.Contains(reloaded.RunningSummary, "已折叠")
+	}, 2*time.Second, 20*time.Millisecond, "running_summary 应被回写")
+
+	capMu.Lock()
+	assert.Equal(t, 1, foldCalls, "触发一次折叠")
+	assert.Contains(t, gotDelta, "短句", "增量含第一段")
+	assert.Contains(t, gotDelta, "话", "增量含超长段")
+	capMu.Unlock()
+
+	// 折叠后：计数清零、游标推进到 seq 2。
+	require.Eventually(t, func() bool {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return !r.summaryInFlight && r.summaryFoldedSeq == 2 && r.summaryRunesPending == 0
+	}, 2*time.Second, 20*time.Millisecond, "折叠后游标推进、计数清零、in-flight 释放")
+}
+
+// TestMaybeUpdateRollingSummary_NoReentryWhileInFlight 验证一次只允许一个折叠在途（防并发重入）。
+func TestMaybeUpdateRollingSummary_NoReentryWhileInFlight(t *testing.T) {
+	b, db := newRealtimeTestBiz(t)
+	s := &model.MeetingSession{UserID: 100, Title: "T", RolePrompt: "x", Status: model.MeetingSessionStatusActive}
+	require.NoError(t, db.Create(s).Error)
+
+	r := &realtimeASR{b: b, userID: 100, sessionID: s.ID, nextSeq: 0, summaryFoldedSeq: 0}
+
+	// 手动置 in-flight：模拟已有折叠在跑。
+	r.mu.Lock()
+	r.summaryInFlight = true
+	r.mu.Unlock()
+
+	origSummary := summaryChatFn
+	t.Cleanup(func() { summaryChatFn = origSummary })
+	var calls int
+	summaryChatFn = func(_ context.Context, _ string, _ aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
+		calls++
+		return &aiservice.ChatResponse{Content: "x"}, nil
+	}
+
+	// 即便超长内容达阈值，因 in-flight 也不再 spawn。
+	r.handleFinal(strings.Repeat("字", rollingSummaryRuneThreshold+100), 0, 1000)
+
+	time.Sleep(100 * time.Millisecond) // 给（不该发生的）goroutine 机会
+	assert.Equal(t, 0, calls, "in-flight 时不重入折叠")
+	// pending 仍累计（下次 in-flight 释放后可触发）。
+	r.mu.Lock()
+	assert.Greater(t, r.summaryRunesPending, 0)
+	r.mu.Unlock()
+}
+
+// TestMaybeUpdateRollingSummary_TimeThresholdTriggersFold 验证「字数未达阈值但时间到点」也触发折叠
+// （FEEDBACK_V2_SPEC §2.2 90s 时间闸）：稀疏会议（5 分钟攒不到 1500 字）也能按时间折叠，不会永远卡在
+// 字数阈值上。构造 summaryLastFoldAt 在 91s 前、pending>0 但 <1500，调 maybe... 后断言触发后台折叠。
+func TestMaybeUpdateRollingSummary_TimeThresholdTriggersFold(t *testing.T) {
+	b, db := newRealtimeTestBiz(t)
+	s := &model.MeetingSession{UserID: 100, Title: "T", RolePrompt: "x", Status: model.MeetingSessionStatusActive}
+	require.NoError(t, db.Create(s).Error)
+
+	origSummary := summaryChatFn
+	t.Cleanup(func() { summaryChatFn = origSummary })
+	var capMu sync.Mutex
+	var foldCalls int
+	done := make(chan struct{}, 4)
+	summaryChatFn = func(_ context.Context, _ string, _ aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
+		capMu.Lock()
+		foldCalls++
+		capMu.Unlock()
+		done <- struct{}{}
+		return &aiservice.ChatResponse{Content: "## 会议主题/目标\n- 按时间折叠"}, nil
+	}
+
+	// 先落一条短句（pending>0 但远小于 1500 字阈值），并把 summaryLastFoldAt 拨到 91s 前
+	// （模拟会议进行了 91 秒但内容稀疏），下一条短句应仅凭时间闸触发折叠。
+	r := &realtimeASR{
+		b: b, userID: 100, sessionID: s.ID, nextSeq: 0, summaryFoldedSeq: 0,
+		summaryLastFoldAt: time.Now().Add(-91 * time.Second),
+	}
+
+	r.handleFinal("一句很短的话", 0, 1000) // 仅几个字，远不到 1500 字数闸
+
+	// 时间闸（91s > 90s）应触发后台折叠。
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("时间阈值未触发折叠 goroutine")
+	}
+
+	capMu.Lock()
+	assert.Equal(t, 1, foldCalls, "时间到点触发一次折叠")
+	capMu.Unlock()
+
+	// 折叠期间字数远未达阈值，确认确是时间闸（而非字数闸）触发。
+	assert.Less(t, len([]rune("一句很短的话")), rollingSummaryRuneThreshold, "前置：内容远小于字数阈值")
+
+	// 折叠后：in-flight 释放、计数清零、游标推进、running_summary 落库。
+	require.Eventually(t, func() bool {
+		var reloaded model.MeetingSession
+		if err := db.First(&reloaded, s.ID).Error; err != nil {
+			return false
+		}
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return !r.summaryInFlight && r.summaryRunesPending == 0 &&
+			r.summaryFoldedSeq == 1 && strings.Contains(reloaded.RunningSummary, "按时间折叠")
+	}, 2*time.Second, 20*time.Millisecond, "时间触发折叠后状态收敛 + running_summary 落库")
 }
 
 // ---------------------------------------------------------------------------
