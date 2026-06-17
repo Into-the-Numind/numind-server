@@ -1,0 +1,40 @@
+# RAG 检索评估黄金集（示例/模板）。真实黄金集由业务方抽查确认后落到 golden.yaml。
+#
+# 每条:
+#   id:               题号(唯一)
+#   query:            用户问题(尽量用真实聊天记录里的原话)
+#   type:             in_kb_single | in_kb_multi | exact_term | paraphrase | out_of_kb
+#   scope:            评估锚定的语料范围(干净评估专用 KB 的 user_id + document_ids)
+#   expected_doc_ids: 正确答案应来自哪篇(可多篇;out_of_kb 留空 [])
+#
+# 占位 user_id=0 / document_ids 待"干净评估 KB"建好后填真实 id。
+
+- id: q1
+  query: "创业要经过哪几个阶段?"
+  type: in_kb_single
+  scope: { user_id: 0, document_ids: [] }
+  expected_doc_ids: []   # TODO: 填创始人手册在评估 KB 的 doc id
+
+- id: q2
+  query: "做最小可行产品(MVP)阶段最该避免什么?"
+  type: paraphrase       # 同义改写,考语义召回
+  scope: { user_id: 0, document_ids: [] }
+  expected_doc_ids: []
+
+- id: q3
+  query: "超级VIP会员合同的有效期是多久?"
+  type: exact_term       # 专有名词/精确,考关键词召回(纯向量易漏)
+  scope: { user_id: 0, document_ids: [] }
+  expected_doc_ids: []
+
+- id: q4
+  query: "AI 时代创业公司真正的护城河是什么?"
+  type: in_kb_multi      # 可能跨多篇
+  scope: { user_id: 0, document_ids: [] }
+  expected_doc_ids: []
+
+- id: q5
+  query: "今天午饭吃什么比较好?"
+  type: out_of_kb        # 库外,期望检索不到相关 → 应拒答/纯聊天
+  scope: { user_id: 0, document_ids: [] }
+  expected_doc_ids: []
