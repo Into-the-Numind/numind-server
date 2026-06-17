@@ -1,5 +1,27 @@
 schema_version: '2.0'
 features:
+- id: semantic-chunk-reliability
+  track: standard
+  description: '让知识库入库切块"稳定走语义+兜底也切得好+永不让用户上传失败+全程可追溯"。实证:语义切块(bge-small-zh,semantic_server:9093)已部署且健康,但 dev 历史 chunk 约 7-8 成是固定长度兜底切的(>2000字落规则档),病根=兜底静默(不记录/不告警/照切),真实兜底率测不出、触发原因(启动窗口/单例状态未恢复/split失败)无法定位。UX 原则(客户定):上传永不失败>语义优先>好兜底+留痕。'
+  classification_reason: 'Standard: DB schema 变更(knowledge_document 加 split_strategy/split_detail 列)+动入库核心 ingest/pipeline+影响文件>3。无新 API 端点/无新外部服务(语义已集成)。salesrag 检索路径敏感。'
+  status: active
+  stage: S0
+  repos:
+    numind-server: /private/tmp/wt-semantic-chunk-reliability-numind-server (feature/semantic-chunk-reliability)
+  worktrees:
+    numind-server: /private/tmp/wt-semantic-chunk-reliability-numind-server
+  progress:
+    total_tasks: 5
+    completed_tasks: 0
+    reviewed_tasks: 0
+  artifacts:
+    requirement: .ndf/features/semantic-chunk-reliability/requirement.md
+    proposal: .ndf/features/semantic-chunk-reliability/proposal.md
+    spec: .ndf/features/semantic-chunk-reliability/spec.md
+    plan: .ndf/features/semantic-chunk-reliability/plan.md
+  decisions:
+  - 'S0-S3 (ai 2026-06-17): 用户授权按 UX 原则(永不失败>语义优先>好兜底+留痕)重排范围,自主跑到 deploy dev(prod 不碰,最终和 strategy_service 修复一起上 prod)。排查实证:语义服务 dev+prod 健康/split 能用,但历史 7-8 成 chunk 走兜底(>2000字),病根=静默兜底无留痕→真实率测不出+触发不可定位。设计 5 task: T0 复现测试(Rule11 首commit) / T1 留痕(SplitWithDetails 接出 strategy→持久化 knowledge_document 加2列+migration+日志,keystone) / T2 永不失败加固+回归测试(不变式:切块问题绝不让上传失败) / T3 好兜底(规则档 MaxChunkSize 6000→1800) / T4 语义可靠性(split瞬时失败重试1次+周期重探TTL让崩溃恢复后重新启用)。S5=后端TDD+dev实跑(传文档查strategy=semantic+人为停语义验永不失败+留痕测真实兜底率AC6)。不做:重切重嵌存量(等AC6数据)/语义模型升级/评估集/前端。'
+  blockers: []
 - id: agent-chat-ui-fixes
   track: hotfix
   description: 'Agent mode 聊天页两处 UI 修复（前端 numind-web-v3）：(1) 左侧会话列表侧栏滚动后点击靠下的历史会话，列表自动跳回顶部——应保持原滚动位置不变（行为 bug）；(2) 同一 narration 下多个工具调用之间，左侧状态图标应有竖向虚线上下连接，形成 Manus 式连续时间线（纯样式）。'
