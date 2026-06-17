@@ -50,14 +50,15 @@ type runState struct {
 	dailyCredits atomic.Int64 // running tally for the user's day (initialized from cache at Start)
 }
 
-// budgetTracker is the in-memory implementation of BudgetTracker.
-// TODO(#14): replace dailyCache with Redis INCRBY when prod becomes multi-instance.
+// budgetTracker implements BudgetTracker. The cross-instance daily aggregate is
+// backed by IBudgetStore (Redis INCRBY — see redis_store.go); dailyCache is the
+// in-process fallback used only when store == nil or a store call errors.
 type budgetTracker struct {
 	mu     sync.RWMutex
 	states map[uint64]*runState
 
-	// dailyCache is the in-process aggregate per (userID, dayUTC).
-	// Updated on every RecordUsage call. No lazy-sync to store in v1 (no persistence).
+	// dailyCache is the in-process fallback aggregate per (userID, dayUTC), used
+	// when store == nil (tests/dev) or a store call fails (graceful degrade).
 	dailyMu    sync.RWMutex
 	dailyCache map[string]*dailyEntry // key: "userID:YYYY-MM-DD"
 
@@ -65,13 +66,12 @@ type budgetTracker struct {
 }
 
 type dailyEntry struct {
-	Credits    atomic.Int64
-	LastSyncAt atomic.Int64 // unix nano; reserved for future store sync
+	Credits atomic.Int64
 }
 
-// NewTracker constructs a fresh in-memory BudgetTracker.
-// store may be nil — v1 dev environment uses nil (no persistence; daily aggregate
-// is per-process only). #14 will wire a Redis-backed implementation.
+// NewTracker constructs a BudgetTracker. store is the cross-instance daily counter
+// (Redis-backed in prod — see NewRedisStore); pass nil for in-process-only mode
+// (tests / dev without Redis), where the daily aggregate lives in dailyCache.
 func NewTracker(store IBudgetStore) BudgetTracker {
 	return &budgetTracker{
 		states:     make(map[uint64]*runState),
@@ -148,7 +148,11 @@ func (t *budgetTracker) RecordUsage(ctx context.Context, runID uint64, credits i
 	if st.UserID > 0 {
 		if t.store != nil {
 			// Cross-instance daily counter (Redis INCRBY). On error, fall back to
-			// the in-process cache so usage is never silently dropped.
+			// the in-process cache so usage is never silently dropped. NOTE: if the
+			// store was previously healthy, dailyCache starts at 0 for this user/day,
+			// so the fallback under-counts during a Redis outage — intentional
+			// fail-open (don't block the user on an infra blip; the cap is a soft
+			// daily guard, not a hard wallet debit).
 			if newVal, err := t.store.AddUserDailyCredits(ctx, st.UserID, time.Now().UTC(), delta); err != nil {
 				log.Warnw("budget: AddUserDailyCredits failed, falling back to in-process daily cache",
 					"user_id", st.UserID, "run_id", runID, "error", err)
