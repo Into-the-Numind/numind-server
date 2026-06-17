@@ -247,8 +247,10 @@ func TestService_Create_emptyToolFlags_derivesDefault(t *testing.T) {
 	// full-open by default. Baseline tools (kb_search/web_search/file_read/memory_*)
 	// are always-on at runtime independent of tool_flags, so they are NOT listed here.
 	assert.True(t, flags["code_sandbox"], "code_sandbox default on (→ bash_exec)")
-	assert.True(t, flags["media"], "media default on (→ image_gen)")
 	assert.True(t, flags["dangerous"], "dangerous default on")
+	// media/image_gen removed (2026-06-17): 文生图不再当开关，永远可用。
+	_, hasMedia := flags["media"]
+	assert.False(t, hasMedia, "media category removed (image_gen ungated)")
 	// Old raw tool-name keys are gone (namespace unified to categories).
 	_, hasRawToolKey := flags["web_search"]
 	assert.False(t, hasRawToolKey, "default no longer writes raw tool-name keys")
@@ -271,9 +273,8 @@ func TestService_Create_emptyToolFlags_categoryDefault(t *testing.T) {
 
 	var flags map[string]bool
 	require.NoError(t, json.Unmarshal(ad.ToolFlags, &flags))
-	assert.Len(t, flags, 3, "default is exactly the 3 risk categories")
+	assert.Len(t, flags, 2, "default is exactly the 2 risk categories (media/image_gen ungated)")
 	assert.True(t, flags["code_sandbox"])
-	assert.True(t, flags["media"])
 	assert.True(t, flags["dangerous"])
 }
 

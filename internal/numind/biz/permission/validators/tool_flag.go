@@ -27,8 +27,9 @@ func (v *ToolFlag) ID() string { return "ToolFlag" }
 // never category-gated. run_python/load_skill are intentionally NOT gated (they are
 // the always-on skill executor path promised by OutputToolsPriorityAddendum).
 var toolGatingCategories = map[string][]string{
+	// image_gen removed (2026-06-17): 文生图是常用功能、不再当开关，永远可调用；
+	// 改用每用户并发上限（agent.imageGenMaxConcurrentPerUser=6）控制，不在权限层门控。
 	"bash_exec": {"code_sandbox", "dangerous"},
-	"image_gen": {"media"},
 }
 
 func (v *ToolFlag) Validate(ctx context.Context, req permission.PermissionRequest) permission.PermissionResult {

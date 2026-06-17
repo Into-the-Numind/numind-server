@@ -80,6 +80,15 @@ func (t *imageGenTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		return t.returnSoftError("image_gen: prompt is required")
 	}
 
+	// 1.5 并发上限：同一用户同时最多 imageGenMaxConcurrentPerUser 个文生图请求。
+	// 超额直接软返回（不预扣、不生成）。在计费之前检查，避免无谓 Reserve。
+	if bc := billing.FromContext(ctx); bc != nil && bc.UserID != 0 {
+		if !imageGenConcurrency.acquire(bc.UserID) {
+			return t.returnSoftError("你同时最多 %d 个文生图请求，请等前面的完成再试", imageGenMaxConcurrentPerUser)
+		}
+		defer imageGenConcurrency.release(bc.UserID)
+	}
+
 	// 2. 计费：生成前预扣（nil creditService → 跳过计费，保持测试行为）。
 	rsvID, billErr := t.reserve(ctx)
 	if billErr != nil {

@@ -183,8 +183,8 @@ func marshalJSON(v any) (datatypes.JSON, error) {
 func deriveDefaultToolFlags(_ QuestionnaireAnswers) map[string]bool {
 	return map[string]bool{
 		"code_sandbox": true, // → bash_exec
-		"media":        true, // → image_gen
 		"dangerous":    true, // bash_exec 的别名分类
+		// media/image_gen 已移除（2026-06-17）：文生图不再当开关，永远可用 + 每用户并发上限。
 	}
 }
 

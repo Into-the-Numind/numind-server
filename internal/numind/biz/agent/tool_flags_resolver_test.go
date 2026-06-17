@@ -21,9 +21,10 @@ func TestToolNamesFromFlags_EmptyFlags_ReturnsSafeBaseline(t *testing.T) {
 	got := sortedNames(names)
 	want := sortedNames(safeToolBaseline)
 	assert.Equal(t, want, got, "empty ToolFlags must yield the full safe baseline (no dangerous tools)")
-	// Explicit: dangerous-only tools must NOT appear.
+	// Explicit: sandbox-gated tools must NOT appear.
 	assert.NotContains(t, got, "bash_exec")
-	assert.NotContains(t, got, "image_gen")
+	// image_gen IS in the baseline since 2026-06-17 (文生图不再当开关，永远可用).
+	assert.Contains(t, got, "image_gen")
 }
 
 func TestToolNamesFromFlags_NilJSON_ReturnsSafeBaseline(t *testing.T) {
@@ -71,15 +72,17 @@ func TestToolNamesFromFlags_CategoryFlagsFalse_KeepBaselineOnly(t *testing.T) {
 	want := sortedNames(safeToolBaseline)
 	assert.Equal(t, want, got)
 	assert.NotContains(t, got, "bash_exec")
-	assert.NotContains(t, got, "image_gen")
+	// image_gen IS in the baseline now (ungated), so disabling categories keeps it.
+	assert.Contains(t, got, "image_gen")
 }
 
 func TestToolNamesFromFlags_PartialCategory(t *testing.T) {
-	raw, _ := json.Marshal(map[string]bool{"media": true})
+	raw, _ := json.Marshal(map[string]bool{"code_sandbox": true})
 	names := toolNamesFromFlags(raw)
 	got := sortedNames(names)
-	assert.Contains(t, got, "image_gen", "media true enables image_gen")
-	assert.NotContains(t, got, "bash_exec", "code_sandbox/dangerous not set → bash_exec stays off")
+	assert.Contains(t, got, "bash_exec", "code_sandbox true enables bash_exec")
+	// image_gen is always in the baseline now (ungated, 2026-06-17).
+	assert.Contains(t, got, "image_gen", "image_gen is baseline (always on)")
 }
 
 func TestToolNamesFromFlags_DirectToolName_OverridesBaseline(t *testing.T) {

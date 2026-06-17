@@ -134,16 +134,20 @@ func TestToolFlag_CategoryDisabled_Denies(t *testing.T) {
 	}
 	v := NewToolFlag(s)
 
-	for _, tool := range []string{"bash_exec", "image_gen"} {
-		req := permission.PermissionRequest{AgentDefinitionID: 1, Tool: newFakeTool(tool), InputJSON: `{}`}
-		got := v.Validate(context.Background(), req)
-		if got.Behavior != permission.BehaviorDeny {
-			t.Errorf("tool %q: a disabled risk category must DENY, got %q", tool, got.Behavior)
-		}
+	// bash_exec is gated by code_sandbox/dangerous → disabled category DENIES it.
+	req := permission.PermissionRequest{AgentDefinitionID: 1, Tool: newFakeTool("bash_exec"), InputJSON: `{}`}
+	if got := v.Validate(context.Background(), req); got.Behavior != permission.BehaviorDeny {
+		t.Errorf("bash_exec: a disabled risk category must DENY, got %q", got.Behavior)
+	}
+
+	// image_gen is NO LONGER category-gated (2026-06-17): 文生图永远可用，即便 media=false。
+	req = permission.PermissionRequest{AgentDefinitionID: 1, Tool: newFakeTool("image_gen"), InputJSON: `{}`}
+	if got := v.Validate(context.Background(), req); got.Behavior != permission.BehaviorPassthrough {
+		t.Errorf("image_gen must passthrough (ungated) even with media=false, got %q", got.Behavior)
 	}
 
 	// Baseline tools are never gated by risk categories.
-	req := permission.PermissionRequest{AgentDefinitionID: 1, Tool: newFakeTool("kb_search"), InputJSON: `{}`}
+	req = permission.PermissionRequest{AgentDefinitionID: 1, Tool: newFakeTool("kb_search"), InputJSON: `{}`}
 	if got := v.Validate(context.Background(), req); got.Behavior != permission.BehaviorPassthrough {
 		t.Errorf("baseline kb_search must passthrough even with categories off, got %q", got.Behavior)
 	}
