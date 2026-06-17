@@ -3,6 +3,8 @@ package agent
 import (
 	"errors"
 	"strings"
+
+	aierr "numind-server/internal/pkg/aiservice/aierr"
 )
 
 // Withhold recovery（spec §7）：把 LLM 错误分类为可恢复的 chain 事件或终止事件。
@@ -28,19 +30,28 @@ func HandleLLMError(state *LoopState, err error) LoopEvent {
 }
 
 // isPromptTooLong 判定 err 是否是 PromptTooLong (context window 超限)。
-// 实现：检查 err message 关键字 + 错误类型 wrapping。
-// 注：aiservice 真实错误格式由 #1 Phase 0 V2 demo 已确认（"context_length_exceeded" / "prompt_too_long" 等）；
-// 这里用 substring match 兜底，#9 compact feature 时改为基于结构化 ErrCode。
+// 实现：优先读 provider adapter 附加的结构化 aierr.SemanticCode（从上游 error.code /
+// error.type / httpStatus 分类得到），无结构化码时回退到 err message substring match。
+// 结构化优先在 #9 (TD2) 落地——provider adapters 现在用 aierr.ProviderError 包裹上游错误，
+// 这里读 aierr.CodeOf(err) 即可拿到稳定语义码，substring 仅作 legacy 兜底。
 func isPromptTooLong(err error) bool {
+	if aierr.CodeOf(err) == aierr.CodeContextLengthExceeded {
+		return true
+	}
 	s := strings.ToLower(err.Error())
 	return strings.Contains(s, "context_length_exceeded") ||
 		strings.Contains(s, "prompt_too_long") ||
 		strings.Contains(s, "context window") ||
-		strings.Contains(s, "token limit exceeded")
+		strings.Contains(s, "token limit exceeded") ||
+		strings.Contains(s, "maximum context")
 }
 
 // isMaxOutputTokens 判定 err 是否是 max_tokens / max_output 错误。
+// 结构化优先（aierr.CodeMaxOutputTokens），substring 兜底。
 func isMaxOutputTokens(err error) bool {
+	if aierr.CodeOf(err) == aierr.CodeMaxOutputTokens {
+		return true
+	}
 	s := strings.ToLower(err.Error())
 	return strings.Contains(s, "max_tokens") ||
 		strings.Contains(s, "max_output") ||
@@ -48,7 +59,11 @@ func isMaxOutputTokens(err error) bool {
 }
 
 // isImageError 判定 err 是否是图像处理错误（vision tool 失败）。
+// 结构化优先（aierr.CodeImageError），substring 兜底。
 func isImageError(err error) bool {
+	if aierr.CodeOf(err) == aierr.CodeImageError {
+		return true
+	}
 	s := strings.ToLower(err.Error())
 	return strings.Contains(s, "image_decode") ||
 		strings.Contains(s, "image_format") ||

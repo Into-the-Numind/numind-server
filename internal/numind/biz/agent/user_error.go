@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 
+	aierr "numind-server/internal/pkg/aiservice/aierr"
 	"numind-server/internal/pkg/errno"
 )
 
@@ -49,6 +50,22 @@ func UserFacingErrorMessage(err error) string {
 		}
 		// Unmapped errno code → fall through to content classification (do NOT
 		// return en.Message; it may be a raw provider string).
+	}
+
+	// 1b. Structured semantic code (aierr.ProviderError) attached by provider
+	//     adapters from upstream error.code / error.type / httpStatus. Switch on
+	//     the stable code instead of fragile substring matching. PTL / image are
+	//     handled by the content classifiers below (which themselves read the
+	//     structured code first), so here we only cover the remaining codes.
+	switch aierr.CodeOf(err) {
+	case aierr.CodeRateLimited:
+		return "请求太频繁，请稍后再试。"
+	case aierr.CodeAuthError:
+		return "AI 服务鉴权失败，请联系管理员。"
+	case aierr.CodeContentFilter:
+		return "内容被安全策略拦截，请调整后重试。"
+	case aierr.CodeProviderTimeout:
+		return "AI 服务响应超时，请稍后再试。"
 	}
 
 	// 2. Classify by content (handles raw errors AND errnos whose Message carries

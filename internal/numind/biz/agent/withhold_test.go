@@ -2,7 +2,10 @@ package agent
 
 import (
 	"errors"
+	"fmt"
 	"testing"
+
+	aierr "numind-server/internal/pkg/aiservice/aierr"
 )
 
 func TestHandleLLMError_PTL(t *testing.T) {
@@ -120,5 +123,38 @@ func TestChains_Independent(t *testing.T) {
 	}
 	if s.MaxOutputRetries != 1 {
 		t.Errorf("MaxOutputRetries should be 1; got %d", s.MaxOutputRetries)
+	}
+}
+
+// 结构化路径：provider adapter 附加的 aierr.ProviderError 直接被识别为 PTL，
+// 不依赖 message substring（message 这里故意不含任何关键字）。
+func TestHandleLLMError_StructuredPTL(t *testing.T) {
+	err := aierr.New(0, "context_length_exceeded", "", "", nil)
+	if got := HandleLLMError(&LoopState{}, err); got != LoopEventLLMErrPTL {
+		t.Errorf("structured context_length_exceeded must classify as PTL; got %v", got)
+	}
+}
+
+// 结构化路径经 fmt.Errorf("%w") 包裹后，errors.As 仍能穿透找到 ProviderError。
+func TestHandleLLMError_StructuredPTL_Wrapped(t *testing.T) {
+	inner := aierr.New(0, "context_length_exceeded", "", "", nil)
+	err := fmt.Errorf("dmxapi.Chat: %w", inner)
+	if got := HandleLLMError(&LoopState{}, err); got != LoopEventLLMErrPTL {
+		t.Errorf("wrapped structured PTL must traverse via errors.As; got %v", got)
+	}
+}
+
+// 结构化路径：max_output / image 语义码也走结构化分类。
+func TestHandleLLMError_StructuredMaxOutput(t *testing.T) {
+	err := aierr.New(0, "", "", "max_output reached", nil) // classifies to CodeMaxOutputTokens
+	if got := HandleLLMError(&LoopState{}, err); got != LoopEventLLMErrMaxOutput {
+		t.Errorf("structured max_output must classify as MaxOutput; got %v", got)
+	}
+}
+
+func TestHandleLLMError_StructuredImage(t *testing.T) {
+	err := aierr.New(0, "", "", "image_decode failed", nil) // classifies to CodeImageError
+	if got := HandleLLMError(&LoopState{}, err); got != LoopEventLLMErrImage {
+		t.Errorf("structured image error must classify as Image; got %v", got)
 	}
 }

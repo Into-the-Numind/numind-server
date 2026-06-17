@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"numind-server/internal/pkg/aiservice"
+	"numind-server/internal/pkg/aiservice/aierr"
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/httpclient"
 )
@@ -229,7 +230,8 @@ func (d *DMXAPIAdapter) Chat(ctx context.Context, route *registry.ResolvedRoute,
 		return nil, fmt.Errorf("dmxapi.Chat: decode: %w", err)
 	}
 	if oaiResp.Error != nil {
-		return nil, fmt.Errorf("dmxapi.Chat: provider error: %s", oaiResp.Error.Message)
+		return nil, fmt.Errorf("dmxapi.Chat: %w",
+			aierr.New(0, fmt.Sprint(oaiResp.Error.Code), oaiResp.Error.Type, oaiResp.Error.Message, nil))
 	}
 	if len(oaiResp.Choices) == 0 {
 		return nil, fmt.Errorf("dmxapi.Chat: empty choices")
@@ -365,7 +367,10 @@ func (d *DMXAPIAdapter) Rerank(ctx context.Context, route *registry.ResolvedRout
 		return nil, fmt.Errorf("dmxapi.Rerank: decode: %w", err)
 	}
 	if rrResp.Error != nil {
-		return nil, fmt.Errorf("dmxapi.Rerank: provider error: %s", rrResp.Error.Message)
+		// dmxapiRerankResponse.Error carries only Message (no structured code/type),
+		// so classification falls back to message substrings.
+		return nil, fmt.Errorf("dmxapi.Rerank: %w",
+			aierr.New(0, "", "", rrResp.Error.Message, nil))
 	}
 
 	results := make([]aiservice.RerankResult, 0, len(rrResp.Results))
