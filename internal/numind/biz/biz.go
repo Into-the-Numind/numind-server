@@ -92,6 +92,7 @@ type IBiz interface {
 	AttachmentFallback() agentatt.FallbackService   // Async fallback generation (V1.5 task 1.2)
 	MemoryCadence() *memory.CadenceService          // Task 3.6 dialectic cadence gate (Task 3.7 caller)
 	SearchService() search.Service                  // Task 3.5 FULLTEXT search (router.go consumer)
+	RagRetrieve() *retrieve.Service                 // 底座检索服务（rag-eval-harness：admin 评估端点复用真实检索栈）
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -109,6 +110,7 @@ type biz struct {
 	monitorService    monitor.IMonitorBiz
 	kbService         kbbiz.IKnowledgeBaseBiz
 	chatbotService    chatbotbiz.IChatbotBiz
+	ragRetrieve       *retrieve.Service      // 底座检索服务（rag-eval-harness 评估端点复用）
 	meetingService    meetingbiz.IMeetingBiz // 会议副驾服务（meeting-copilot）
 	llmRouterSvc      *llmrouter.Router
 	agentRunner       agent.AgentRunner
@@ -663,6 +665,7 @@ func NewBiz(ds store.IStore) *biz {
 	// 始终用显式 docIDs scope（不需要 AllEnabled 解析）。只有挂了 KB 且解析出 docIDs 才调它。
 	chatbotRetrieve := retrieve.NewService(vStore, salesragservice.NewRouterRewriter(llmRouter, "free"), nil)
 	b.chatbotService = chatbotbiz.NewChatbotBiz(ds, chatbotRetrieve)
+	b.ragRetrieve = chatbotRetrieve // rag-eval-harness：评估端点复用同一套真实检索栈
 
 	// 初始化会议副驾服务（meeting-copilot）。LLM/ASR 统一走 aiservice Gateway；
 	// 内部试用「仅记录用量、不扣费、不拦截」由 biz/meeting 的 internalCallCtx 保证。
@@ -828,6 +831,11 @@ func (b *biz) KnowledgeBase() kbbiz.IKnowledgeBaseBiz {
 // Chatbot 返回智能体服务实例.
 func (b *biz) Chatbot() chatbotbiz.IChatbotBiz {
 	return b.chatbotService
+}
+
+// RagRetrieve 返回底座检索服务（rag-eval-harness：admin 评估端点复用真实检索栈跑分）。
+func (b *biz) RagRetrieve() *retrieve.Service {
+	return b.ragRetrieve
 }
 
 // Meeting 返回会议副驾服务实例（meeting-copilot）。

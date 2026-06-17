@@ -261,6 +261,14 @@ func installAdminRouters(g *gin.Engine) error {
 		arGroup.POST("/:id/cancel", agentRunCtl.Cancel)
 	}
 
+	// RAG Eval Harness — admin-gated retrieval-debug endpoint (rag-eval-harness).
+	// Runs the real chatbot retrieval stack and returns ranked chunks so the
+	// external scoring script can compute recall@k / MRR / nDCG against a golden set.
+	{
+		evalCtl := admin.NewRAGEvalController(b.RagRetrieve())
+		adminGroup.POST("/rag-eval/retrieve", evalCtl.Retrieve)
+	}
+
 	// Context Budget Admin — token profiles, policies, preview, events (Task 11)
 	{
 		cbStore := store.NewContextBudgetStore(store.S.DB())
