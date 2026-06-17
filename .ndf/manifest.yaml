@@ -5,7 +5,7 @@ features:
   description: 'RAG 检索评估集+打分工具(地基):建干净评估专用 KB(用户选定)+Go CLI cmd/rag-eval 复用真实检索栈 retrieve.Service.Retrieve,读 golden YAML 算 recall@k/MRR/nDCG 出基线,让后续混合检索/查询处理/阈值调优/上下文组装每步改前改后跑分对比(科学闭环)。目标把 RAG 打造业界一流的第1步/前提。dev KB ~95文档多账号混杂乱→必须锚定干净语料。'
   classification_reason: 'Standard: 新增评估包/CLI+方法论需严谨+多文件。无 DB schema/无新生产 API/无新外部服务,纯 dev 工具但作为地基要扎实。'
   status: active
-  stage: S0
+  stage: S4
   repos:
     numind-server: /private/tmp/wt-rag-eval-harness-numind-server (feature/rag-eval-harness)
   worktrees:
@@ -17,6 +17,7 @@ features:
   artifacts:
     requirement: .ndf/features/rag-eval-harness/requirement.md
   decisions:
+  - 'S4 (ai 2026-06-17): 建完打分引擎(admin POST /v1/admin/rag-eval/retrieve 复用真实检索栈 e00789a0)+打分脚本 run_eval.py(recall@k/MRR/nDCG fcf4a849)+golden 模式/README。评估语料=用户选"从现有真实文档组装": user_id=1 的 4 篇连贯真实文档(doc13 产品/14 案例库/15 百问百答/113 创始人手册,56 chunk,即 chatbot10 KB),无需上传。golden.yaml 起草 21 题(5 类型:in_kb_single/exact_term/paraphrase/out_of_kb;标注基于实采内容)。**待办: Rule6 双审端点+脚本 / 用户抽查 golden 标注 / ndf-done+部署 admin(端点在 9099)/ 跑基线。** 注: 评估在 admin 服务(9099)不在 server(9091)。下一 feature: 混合检索。'
   - 'S0 (ai 2026-06-17): 用户指令"全做,踏实按序科学全面,目标 RAG 业界一流"。确立方法论顺序: ①评估集(本feature,地基)→②混合检索→③查询处理(改写/一题多搜/HyDE)→④rerank阈值调优→⑤上下文组装深度优化,每步用评估集跑分验证(科学闭环)。AskUserQuestion: 评估锚点=用户选"建干净评估专用KB"(vs 锚现成乱账号)。指标 recall@k/MRR/nDCG;harness=cmd/rag-eval 复用 retrieve.Service.Retrieve 跑 dev 容器。人在环节: golden 标准答案由用户抽查确认。'
   blockers: []
 - id: agent-tool-done-state

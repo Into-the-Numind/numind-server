@@ -1,0 +1,39 @@
+# RAG 检索评估黄金集 —— 锚定干净评估语料 (user_id=1 的 4 篇真实业务文档)
+#   doc 13  = 产品(海外高势能IP陪跑服务-产品介绍手册)
+#   doc 14  = 案例库(海外房产/留学等客户案例)
+#   doc 15  = 百问百答(销售异议处理 Q&A)
+#   doc 113 = 创业者手册-构建AI原生创业公司(Anthropic 译本)
+#
+# ⚠️ 标注由 AI 基于文档内容起草,需业务方抽查确认(expected_doc_ids 准不准决定尺子准不准)。
+# scope 固定为这 4 篇全集 → 检索在全集里找,看期望文档有没有排进前 k。
+
+# ============ doc 13 产品/服务 ============
+- { id: q01, type: in_kb_single, query: "海外高势能IP陪跑服务的核心定位是什么?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [13] }
+- { id: q02, type: exact_term,   query: "你们用AI指令库能把写稿时间缩短多少?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [13] }
+- { id: q03, type: in_kb_single, query: "你们怎么帮客户打造朋友圈人设?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [13] }
+- { id: q04, type: paraphrase,   query: "陪跑服务具体分哪几步落地?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [13] }
+
+# ============ doc 14 案例库 ============
+- { id: q05, type: in_kb_single, query: "有哪些海外房产的成功客户案例?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [14] }
+- { id: q06, type: exact_term,   query: "新加坡的王桢Vera来自哪家公司?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [14] }
+- { id: q07, type: in_kb_single, query: "上海做豪宅的菲比这个案例是怎么做起来的?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [14] }
+- { id: q08, type: exact_term,   query: "EB-1A 和 NIW 适合什么人申请移民?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [14] }
+
+# ============ doc 15 百问百答 ============
+- { id: q09, type: in_kb_single, query: "客户说你们价格太贵、有压力,销冠怎么回应?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [15] }
+- { id: q10, type: paraphrase,   query: "我预算有限,觉得收费偏高,你们怎么说服我?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [15] }
+- { id: q11, type: in_kb_single, query: "客户问一周最少投入多少时间才有效果,怎么答?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [15] }
+- { id: q12, type: exact_term,   query: "你们一共服务了多少个国家的伙伴?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [15] }
+- { id: q13, type: exact_term,   query: "定位之后你们会帮我准备多少个选题?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [15] }
+- { id: q14, type: in_kb_single, query: "我不会拍真人出镜视频,你们会教吗?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [15] }
+
+# ============ doc 113 创始人手册(AI 原生创业) ============
+- { id: q15, type: in_kb_single, query: "什么是'智能体编码'(agentic coding)?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [113] }
+- { id: q16, type: in_kb_single, query: "创始人常犯的'把构建误当成验证'是什么意思?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [113] }
+- { id: q17, type: paraphrase,   query: "为什么说写第一行代码前要先'雇一支工程团队'?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [113] }
+- { id: q18, type: in_kb_single, query: "2026 年创业公司的生命周期发生了什么重构?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [113] }
+
+# ============ 库外 / 应拒答 ============
+- { id: q19, type: out_of_kb, query: "今天北京的天气怎么样?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [] }
+- { id: q20, type: out_of_kb, query: "帮我写一段 Python 快速排序代码。", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [] }
+- { id: q21, type: out_of_kb, query: "推荐几部最近好看的科幻电影。", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [] }
