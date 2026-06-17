@@ -91,7 +91,7 @@ func (r *agentRunner) consumeEinoStream(
 	)
 	if hasState && state.CurrentMsgID != "" {
 		currentMsgID = state.CurrentMsgID
-		stepIdx = state.StepIdx
+		stepIdx = int(state.StepIdx.Load())
 	}
 
 	// emit safely writes an event to ch. If ctx is already done, the send is

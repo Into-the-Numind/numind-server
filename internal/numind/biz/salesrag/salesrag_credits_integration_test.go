@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS user (
     phone            TEXT,
     nickname         TEXT,
     avatar_url       TEXT,
+    company_name     TEXT    NOT NULL DEFAULT '',
     parent_user_id   INTEGER,
     total_sop_runs   INTEGER DEFAULT 0,
     username         TEXT,

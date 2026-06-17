@@ -45,6 +45,7 @@ func newCtrlTestDB(t *testing.T) *gorm.DB {
 			phone          TEXT    NOT NULL DEFAULT '',
 			nickname       TEXT    NOT NULL DEFAULT '',
 			avatar_url     TEXT    NOT NULL DEFAULT '',
+			company_name   TEXT    NOT NULL DEFAULT '',
 			parent_user_id INTEGER,
 			username       TEXT    NOT NULL DEFAULT '',
 			password       TEXT    NOT NULL DEFAULT '',

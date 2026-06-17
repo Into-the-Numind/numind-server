@@ -44,7 +44,13 @@ type StreamSessionState struct {
 	RunID           uint64
 	CurrentMsgID    string
 	LastStepContent string
-	StepIdx         int
+	// StepIdx is the SHARED ReAct step index for a run. The graph goroutine's
+	// checker (streamScanToolCallChecker) advances it via StepIdx.Add(1) while the
+	// tool adapter (fullToolEinoAdapter.emitStream) and stream drain
+	// (consumeEinoStream) read it concurrently via StepIdx.Load(), so it MUST be
+	// atomic. The WIRE field stream.Event.StepIndex stays a plain int; only this
+	// internal counter is atomic.
+	StepIdx atomic.Int32
 	// Seq is the SINGLE shared, monotonic SSE event-sequence counter for a run.
 	// Three emitters advance it concurrently — the stream drain goroutine
 	// (consumeEinoStream), the graph goroutine (streamScanToolCallChecker), and
@@ -602,7 +608,7 @@ func (r *agentRunner) RunStream(
 			r.persistYieldTranscript(ctx, run.ID, req.Input)
 			// Carry the checker-tracked step count so the terminal payload
 			// reports real progress, not 0 (review P2: spec-parity).
-			yieldSt := &LoopState{StepCount: int(sharedState.StepIdx)}
+			yieldSt := &LoopState{StepCount: int(sharedState.StepIdx.Load())}
 			result, _ := r.persistAndEmitYield(ctx, run.ID, yieldSt, newChanEmitter(sharedState), startTime, *p)
 			endedAt := time.Now()
 			if uErr := r.runStore.UpdateState(persistCtx, run.ID, "terminated", string(TerminalWaitingForUserChoice), &endedAt); uErr != nil {
@@ -813,7 +819,7 @@ func streamScanToolCallChecker(ctx context.Context, sr *schema.StreamReader[*sch
 			return
 		}
 		seq := state.Seq.Add(1)
-		ev, err := stream.Encode(t, payload, seq, state.RunID, state.StepIdx)
+		ev, err := stream.Encode(t, payload, seq, state.RunID, int(state.StepIdx.Load()))
 		if err != nil {
 			return
 		}
@@ -868,7 +874,7 @@ func streamScanToolCallChecker(ctx context.Context, sr *schema.StreamReader[*sch
 					HasToolCalls:     hasToolCalls,
 				})
 				emit(stream.EventStepDone, stream.StepDonePayload{
-					StepIndex:  state.StepIdx,
+					StepIndex:  int(state.StepIdx.Load()),
 					StopReason: msg.ResponseMeta.FinishReason,
 				})
 
@@ -883,7 +889,7 @@ func streamScanToolCallChecker(ctx context.Context, sr *schema.StreamReader[*sch
 				stepCollectorFrom(ctx).add(currentText.String(), currentReason.String(), time.Now())
 
 				// 自动推进到下一步的 state 状态，为后续 ReAct 循环迭代铺路
-				state.StepIdx++
+				state.StepIdx.Add(1)
 				state.CurrentMsgID = uuid.NewString()
 			}
 		}

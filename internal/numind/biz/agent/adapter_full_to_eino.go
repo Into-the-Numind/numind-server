@@ -311,7 +311,7 @@ func (a *fullToolEinoAdapter) emitStream(ctx context.Context, t stream.EventType
 		return
 	}
 	seq := state.Seq.Add(1)
-	ev, err := stream.Encode(t, payload, seq, state.RunID, state.StepIdx)
+	ev, err := stream.Encode(t, payload, seq, state.RunID, int(state.StepIdx.Load()))
 	if err != nil {
 		return
 	}
