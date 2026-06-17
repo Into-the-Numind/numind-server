@@ -1,5 +1,15 @@
 schema_version: '2.0'
 features:
+- id: agent-chat-ui-fixes
+  track: hotfix
+  description: 'Agent mode 聊天页两处 UI 修复（前端 numind-web-v3）：(1) 左侧会话列表侧栏滚动后点击靠下的历史会话，列表自动跳回顶部——应保持原滚动位置不变（行为 bug）；(2) 同一 narration 下多个工具调用之间，左侧状态图标应有竖向虚线上下连接，形成 Manus 式连续时间线（纯样式）。'
+  classification_reason: 'Hotfix: 单仓库 numind-web-v3, 文件 ≤3(AgentChatView + AgentToolCallItem), 无 DB/API/外部服务/支付权限。#1 是运行时行为 bug→前端规则先 Playwright 诊断+回归测试(满足 H1 至少 1 测试)；#2 纯样式 gstack 视觉验收。'
+  status: active
+  stage: H1
+  repos: {numind-web-v3: fix/agent-chat-ui-fixes (worktree /private/tmp/wt-agent-chat-ui-fixes-numind-web-v3)}
+  progress: {total_tasks: 2, completed_tasks: 0, reviewed_tasks: 0}
+  decisions: []
+  blockers: []
 - id: meeting-copilot
   track: standard
   description: '会议副驾（Meeting Copilot）——全新独立模式。用户开场设定角色定位+反馈规则(role_prompt)，系统近实时录音+转写(前端 Web Audio 分段 16k 单声道 WAV → aiservice.ASR/FunASR)，按提示词以「自动(服务端 LLM 判官按 auto_interval 决定是否插话)+手动(随时点按钮)」两种方式给实时反馈(SSE 流)，会议结束生成结构化 AI 纪要(要点/决议/待办)。角色可存预设模板复用。内部试用先行：feature flag features.meeting_copilot.enabled 默认 OFF + VITE_ENABLE_MEETING_COPILOT 控前端入口，仅记录用量(UsageRecord)不接会员门槛/不扣积分。代码高度自包含(biz/meeting + controller/v1/meeting + model/meeting + store/meeting + views/meeting + stores/meeting.ts + api/meeting.ts + composables/useMeetingRecorder)，可整体删除。跨 numind-server + numind-web-v3。'
