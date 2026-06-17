@@ -48,8 +48,9 @@ type SplitResponse struct {
 
 // EmbeddingSplitter 语义切分器（基于 bge-small 模型）
 type EmbeddingSplitter struct {
-	cfg        EmbeddingSplitterConfig
-	httpClient *http.Client
+	cfg         EmbeddingSplitterConfig
+	httpClient  *http.Client // /split 用,长超时(长文本慢)
+	probeClient *http.Client // /health 探活用,短超时——绝不能复用 600s client,否则语义服务慢响应会卡死入库
 }
 
 // NewEmbeddingSplitter 创建语义切分器
@@ -76,13 +77,17 @@ func NewEmbeddingSplitter(cfg EmbeddingSplitterConfig) *EmbeddingSplitter {
 		httpClient: &http.Client{
 			Timeout: 600 * time.Second, // 增加超时到 600s，长文本处理可能比较慢
 		},
+		probeClient: &http.Client{
+			Timeout: 5 * time.Second, // 健康探活短超时,防慢响应卡死入库 goroutine
+		},
 	}
 }
 
-// splitInternal 内部切分逻辑
-func (s *EmbeddingSplitter) splitInternal(text string) ([]EmbeddingChunk, error) {
+// splitInternal 内部切分逻辑。第二个返回值 retryable 表示该错误是否为瞬时错误
+// (网络失败 / 5xx)——值得重试一次;4xx / 解码 / 业务失败不重试。
+func (s *EmbeddingSplitter) splitInternal(text string) ([]EmbeddingChunk, bool, error) {
 	if text == "" {
-		return []EmbeddingChunk{}, nil
+		return []EmbeddingChunk{}, false, nil
 	}
 
 	reqBody := SplitRequest{
@@ -95,35 +100,41 @@ func (s *EmbeddingSplitter) splitInternal(text string) ([]EmbeddingChunk, error)
 
 	jsonBody, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, false, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	resp, err := s.httpClient.Post(s.cfg.ServerURL+"/split", "application/json", bytes.NewBuffer(jsonBody))
 	if err != nil {
-		return nil, fmt.Errorf("failed to call semantic server: %v (Please ensure python scripts/semantic_server.py is running)", err)
+		// 网络/连接/超时 → 瞬时,可重试
+		return nil, true, fmt.Errorf("failed to call semantic server: %v (Please ensure python scripts/semantic_server.py is running)", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("semantic server returned status %d: %s", resp.StatusCode, string(body))
+		retryable := resp.StatusCode >= 500 // 5xx 瞬时可重试;4xx 是请求问题,重试无意义
+		return nil, retryable, fmt.Errorf("semantic server returned status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var result SplitResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+		return nil, false, fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	if !result.Success {
-		return nil, fmt.Errorf("semantic split error: %s", result.Error)
+		return nil, false, fmt.Errorf("semantic split error: %s", result.Error)
 	}
 
-	return result.Chunks, nil
+	return result.Chunks, false, nil
 }
 
-// Split 执行语义切分
+// Split 执行语义切分。瞬时错误(网络/5xx)重试一次再返回(最终由 HybridSplitter 兜底)。
 func (s *EmbeddingSplitter) Split(text string) ([]SplitChunk, error) {
-	chunks, err := s.splitInternal(text)
+	chunks, retryable, err := s.splitInternal(text)
+	if err != nil && retryable {
+		time.Sleep(200 * time.Millisecond)
+		chunks, _, err = s.splitInternal(text)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +153,8 @@ func (s *EmbeddingSplitter) Split(text string) ([]SplitChunk, error) {
 
 // SplitEnhanced 返回详细的切分结果
 func (s *EmbeddingSplitter) SplitEnhanced(text string) ([]EmbeddingChunk, error) {
-	return s.splitInternal(text)
+	chunks, _, err := s.splitInternal(text)
+	return chunks, err
 }
 
 // healthResponse 语义服务健康检查响应
@@ -151,9 +163,10 @@ type healthResponse struct {
 	ModelReady bool   `json:"model_ready"`
 }
 
-// IsAvailable 检查语义切分服务是否可用且模型已加载
+// IsAvailable 检查语义切分服务是否可用且模型已加载。用短超时 probeClient,
+// 绝不复用 /split 的 600s client——否则语义服务慢响应会卡死调用方(入库 goroutine)。
 func (s *EmbeddingSplitter) IsAvailable() bool {
-	resp, err := s.httpClient.Get(s.cfg.ServerURL + "/health")
+	resp, err := s.probeClient.Get(s.cfg.ServerURL + "/health")
 	if err != nil {
 		return false
 	}

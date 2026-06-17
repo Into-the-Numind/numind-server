@@ -4,7 +4,13 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sync"
+	"time"
 )
+
+// semanticProbeTTL 是语义服务可用性的重探周期：超过此时长则在下次切分时重探一次,
+// 让语义服务崩溃后恢复、或启动窗口后就绪时能被自动重新启用,无需重启容器。
+const semanticProbeTTL = 30 * time.Second
 
 // HybridSplitterConfig 混合切分器配置
 type HybridSplitterConfig struct {
@@ -20,10 +26,40 @@ type HybridSplitterConfig struct {
 
 // HybridSplitter 混合切分器
 type HybridSplitter struct {
-	ruleSplitter      *EnhancedMarkdownSplitter
-	semanticSplitter  *EmbeddingSplitter
-	cfg               HybridSplitterConfig
+	ruleSplitter     *EnhancedMarkdownSplitter
+	semanticSplitter *EmbeddingSplitter
+	cfg              HybridSplitterConfig
+
+	// 并发安全:semanticAvailable/lastProbeAt 在单例上被多次切分调用读写,必须加锁(go test -race)。
+	mu                sync.Mutex
 	semanticAvailable bool
+	lastProbeAt       time.Time
+}
+
+// refreshAvailability 返回语义服务当前是否可用,带 TTL 周期重探(check-on-call,不起常驻 goroutine)。
+// 探活的 HTTP 调用在锁外执行(短超时 probeClient),只在锁内读写状态字段,避免长时间持锁卡住入库。
+func (h *HybridSplitter) refreshAvailability() bool {
+	if h.semanticSplitter == nil {
+		return false
+	}
+	h.mu.Lock()
+	needProbe := h.lastProbeAt.IsZero() || time.Since(h.lastProbeAt) > semanticProbeTTL
+	cur := h.semanticAvailable
+	h.mu.Unlock()
+
+	if !needProbe {
+		return cur
+	}
+
+	avail := h.semanticSplitter.IsAvailable() // 短超时,锁外
+	h.mu.Lock()
+	if avail != h.semanticAvailable {
+		log.Printf("[HybridSplitter] semantic availability changed: %v -> %v", h.semanticAvailable, avail)
+	}
+	h.semanticAvailable = avail
+	h.lastProbeAt = time.Now()
+	h.mu.Unlock()
+	return avail
 }
 
 // NewHybridSplitter 创建混合切分器
@@ -40,9 +76,10 @@ func NewHybridSplitter(cfg HybridSplitterConfig) *HybridSplitter {
 	// 初始化规则切分器
 	h.ruleSplitter = NewEnhancedMarkdownSplitter(cfg.RuleConfig)
 
-	// 初始化语义切分器并检查可用性
+	// 初始化语义切分器并检查可用性(记 lastProbeAt,纳入 TTL 周期重探)
 	h.semanticSplitter = NewEmbeddingSplitter(cfg.SemanticConfig)
 	h.semanticAvailable = h.semanticSplitter.IsAvailable()
+	h.lastProbeAt = time.Now()
 
 	// 始终输出启动状态（不再依赖 SPLITTER_DEBUG 环境变量）
 	if h.semanticAvailable {
@@ -59,18 +96,13 @@ func NewHybridSplitter(cfg HybridSplitterConfig) *HybridSplitter {
 // 1. < 500字符：不切分，直接返回一个chunk
 // 2. >= 500字符：优先语义切分，不可用则降级规则切分
 func (h *HybridSplitter) Split(text string) ([]SplitChunk, error) {
-	// [PRO] 动态重连机制：如果之前不可用，尝试重新检查一次并更新状态
-	if !h.semanticAvailable {
-		if h.semanticSplitter.IsAvailable() {
-			h.semanticAvailable = true
-			log.Println("[HybridSplitter] Semantic server detected! Switching to semantic splitting.")
-		}
-	}
+	// 带 TTL 周期重探的可用性检查(并发安全;语义崩溃恢复后能自动重新启用)
+	available := h.refreshAvailability()
 
 	// 输出诊断日志（可以通过环境变量控制）
 	if os.Getenv("SPLITTER_DEBUG") == "1" {
 		log.Printf("[HybridSplitter] Text length: %d, SemanticAvailable: %v",
-			len(text), h.semanticAvailable)
+			len(text), available)
 	}
 
 	// 策略1：文本太短（< h.cfg.SemanticMinLength），不切分
@@ -85,7 +117,7 @@ func (h *HybridSplitter) Split(text string) ([]SplitChunk, error) {
 	}
 
 	// 策略2：文本足够长（>= h.cfg.SemanticMinLength），优先语义切分
-	if h.semanticAvailable {
+	if available {
 		log.Printf("[HybridSplitter] Using semantic splitting (text=%d bytes)", len(text))
 		chunks, err := h.semanticSplitter.Split(text)
 		if err != nil {
@@ -106,16 +138,11 @@ func (h *HybridSplitter) Split(text string) ([]SplitChunk, error) {
 // 1. < 500字符：不切分，直接返回一个chunk
 // 2. >= 500字符：优先语义切分，不可用则降级规则切分
 func (h *HybridSplitter) SplitWithDetails(text string) ([]SplitChunk, map[string]interface{}, error) {
-	// [PRO] 动态重连机制：如果之前不可用，尝试重新检查一次并更新状态
-	if !h.semanticAvailable {
-		if h.semanticSplitter.IsAvailable() {
-			h.semanticAvailable = true
-			log.Println("[HybridSplitter] Semantic server detected! Switching to semantic splitting.")
-		}
-	}
+	// 带 TTL 周期重探的可用性检查(并发安全)
+	available := h.refreshAvailability()
 
 	details := map[string]interface{}{
-		"semantic_available": h.semanticAvailable,
+		"semantic_available": available,
 		"text_length":        len(text),
 	}
 
@@ -134,7 +161,7 @@ func (h *HybridSplitter) SplitWithDetails(text string) ([]SplitChunk, map[string
 	}
 
 	// 策略2：文本足够长（>= h.cfg.SemanticMinLength），优先语义切分
-	if h.semanticAvailable {
+	if available {
 		details["strategy"] = "semantic"
 		chunks, err = h.semanticSplitter.Split(text)
 		if err != nil {
@@ -159,8 +186,10 @@ func (h *HybridSplitter) SplitWithDetails(text string) ([]SplitChunk, map[string
 	return chunks, details, nil
 }
 
-// IsSemanticAvailable 检查语义切分是否可用
+// IsSemanticAvailable 检查语义切分是否可用(并发安全读)
 func (h *HybridSplitter) IsSemanticAvailable() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	return h.semanticAvailable
 }
 
