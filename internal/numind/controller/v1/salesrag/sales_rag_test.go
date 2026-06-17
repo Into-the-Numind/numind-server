@@ -44,6 +44,7 @@ import (
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/pricing"
+	"numind-server/internal/pkg/retrieval/retrieve"
 )
 
 // -----------------------------------------------------------------------------
@@ -140,6 +141,7 @@ func (b *realBizOnlyCustomers) Attachment() *attachment.UploadService        { r
 func (b *realBizOnlyCustomers) AttachmentFallback() agentatt.FallbackService { return nil }
 func (b *realBizOnlyCustomers) MemoryCadence() *memory.CadenceService        { return nil }
 func (b *realBizOnlyCustomers) SearchService() search.Service                { return nil }
+func (b *realBizOnlyCustomers) RagRetrieve() *retrieve.Service               { return nil }
 
 // compile-time guard: this test struct must satisfy biz.IBiz or tests fail here.
 var _ biz.IBiz = (*realBizOnlyCustomers)(nil)
