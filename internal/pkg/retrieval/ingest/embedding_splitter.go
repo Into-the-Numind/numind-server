@@ -106,7 +106,7 @@ func (s *EmbeddingSplitter) splitInternal(text string) ([]EmbeddingChunk, bool, 
 	resp, err := s.httpClient.Post(s.cfg.ServerURL+"/split", "application/json", bytes.NewBuffer(jsonBody))
 	if err != nil {
 		// 网络/连接/超时 → 瞬时,可重试
-		return nil, true, fmt.Errorf("failed to call semantic server: %v (Please ensure python scripts/semantic_server.py is running)", err)
+		return nil, true, fmt.Errorf("failed to call semantic server: %w (Please ensure python scripts/semantic_server.py is running)", err)
 	}
 	defer resp.Body.Close()
 

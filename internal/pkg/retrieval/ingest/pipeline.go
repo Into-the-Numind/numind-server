@@ -272,13 +272,18 @@ func (p *IngestionPipeline) process(ctx context.Context, doc *domain.KnowledgeDo
 			// 写入失败只记日志、绝不阻断入库——留痕是辅助不能反害主流程)。
 			if splitStrategy != "" {
 				updates["split_strategy"] = splitStrategy
-				updates["split_detail"] = splitDetail
+				if splitDetail != "" { // 语义/no_split 成功时 detail 为空,不必写空串
+					updates["split_detail"] = splitDetail
+				}
 			}
 			if err := updater.UpdateColumns(ctx, doc.ID, updates); err != nil {
 				log.Printf("Failed to update metadata to COMPLETED: %v", err)
 			}
 		} else {
-			// Fallback to UpdateStatus
+			// Fallback to UpdateStatus(该 docStore 不支持 UpdateColumns → 无法持久化 strategy)
+			if splitStrategy != "" {
+				log.Printf("WARN: doc %d split_strategy=%q not persisted: docStore lacks UpdateColumns", doc.ID, splitStrategy)
+			}
 			if err := p.docStore.UpdateStatus(ctx, doc.ID, string(domain.DocStatusCompleted), ""); err != nil {
 				log.Printf("Failed to update status to COMPLETED: %v", err)
 			}

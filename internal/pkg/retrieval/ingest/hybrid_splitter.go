@@ -172,7 +172,9 @@ func (h *HybridSplitter) SplitWithDetails(text string) ([]SplitChunk, map[string
 			chunks, err = h.convertToSplitChunks(h.ruleSplitter.Split(text))
 		}
 	} else {
-		// 策略3：语义切分不可用，降级为规则切分
+		// 策略3：语义切分不可用，降级为规则切分。
+		// 注:内部用 "rule" 表示"语义从未可用",会被 normalizeStrategy 归一为 rule_fallback；
+		// 改这个字面量需同步 normalizeStrategy。
 		details["strategy"] = "rule"
 		details["reason"] = "semantic_unavailable"
 		chunks, err = h.convertToSplitChunks(h.ruleSplitter.Split(text))
@@ -212,8 +214,10 @@ func (h *HybridSplitter) convertToSplitChunks(chunks []EnhancedSplitChunk, err e
 func NewDefaultHybridSplitter() *HybridSplitter {
 	return NewHybridSplitter(HybridSplitterConfig{
 		RuleConfig: EnhancedSplitterConfig{
-			MaxChunkSize:    6000,
-			MinChunkSize:    1500,
+			// 与 NewCompatibilitySplitter 的兜底档保持一致(好兜底,贴近语义档),
+			// 避免直接用 NewSplitterAdapter 的路径退回 6000 大块。
+			MaxChunkSize:    1800,
+			MinChunkSize:    900,
 			OverlapSize:     300,
 			EnableJieba:     true,
 			ProtectMarkdown: true,
