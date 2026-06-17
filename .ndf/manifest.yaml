@@ -5,7 +5,7 @@ features:
   description: '让知识库入库切块"稳定走语义+兜底也切得好+永不让用户上传失败+全程可追溯"。实证:语义切块(bge-small-zh,semantic_server:9093)已部署且健康,但 dev 历史 chunk 约 7-8 成是固定长度兜底切的(>2000字落规则档),病根=兜底静默(不记录/不告警/照切),真实兜底率测不出、触发原因(启动窗口/单例状态未恢复/split失败)无法定位。UX 原则(客户定):上传永不失败>语义优先>好兜底+留痕。'
   classification_reason: 'Standard: DB schema 变更(knowledge_document 加 split_strategy/split_detail 列)+动入库核心 ingest/pipeline+影响文件>3。无新 API 端点/无新外部服务(语义已集成)。salesrag 检索路径敏感。'
   status: active
-  stage: S0
+  stage: S4
   repos:
     numind-server: /private/tmp/wt-semantic-chunk-reliability-numind-server (feature/semantic-chunk-reliability)
   worktrees:
