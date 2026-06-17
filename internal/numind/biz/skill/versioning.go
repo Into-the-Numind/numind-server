@@ -42,18 +42,14 @@ func WriteHistorySnapshot(ctx context.Context, tx *gorm.DB, ad *model.AgentDefin
 // Priority rules (first match wins):
 //   - restoreSourceVersion > 0 → "从 v{N} 恢复"
 //   - prev == nil              → "首次发布"
-//   - AdvancedMode toggled on  → "切换到高级模式"
 //   - IsActive toggled to false → "软删除"
-//   - otherwise                → list changed Q field labels, or "更新"
+//   - otherwise                → list changed field labels, or "更新"
 func ComputeChangesSummary(prev, curr *model.AgentDefinition, restoreSourceVersion uint) string {
 	if restoreSourceVersion > 0 {
 		return fmt.Sprintf("从 v%d 恢复", restoreSourceVersion)
 	}
 	if prev == nil {
 		return "首次发布"
-	}
-	if !prev.AdvancedMode && curr.AdvancedMode {
-		return "切换到高级模式"
 	}
 	if prev.IsActive && !curr.IsActive {
 		return "软删除"
@@ -73,6 +69,9 @@ func ComputeChangesSummary(prev, curr *model.AgentDefinition, restoreSourceVersi
 	}
 	if prev.WelcomeMessage != curr.WelcomeMessage {
 		changes = append(changes, "Q4（欢迎语）")
+	}
+	if prev.SystemPrompt != curr.SystemPrompt {
+		changes = append(changes, "行为指引")
 	}
 	if !jsonEqual(prev.Starters, curr.Starters) {
 		changes = append(changes, "Q5（快速开始按钮）")

@@ -12,7 +12,6 @@ import (
 
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/errno"
-	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 )
 
@@ -21,50 +20,35 @@ const SystemPromptMaxLen = 64 * 1024
 
 // CreateRequest 包含创建 agent_definition 所需的所有字段。
 type CreateRequest struct {
-	Name                 string
-	Description          string
-	IconURL              string
-	WelcomeMessage       string
-	SystemPrompt         string
-	Starters             []string
-	QuestionnaireAnswers QuestionnaireAnswers
-	ToolFlags            map[string]bool
-	CreditCapPerSession  *uint
-	DailyCreditCap       *uint
-	SourceTemplateID     *uint64
+	Name                string
+	Description         string
+	IconURL             string
+	WelcomeMessage      string
+	SystemPrompt        string
+	Starters            []string
+	ToolFlags           map[string]bool
+	CreditCapPerSession *uint
+	DailyCreditCap      *uint
+	SourceTemplateID    *uint64
 }
 
 // PatchRequest 包含更新 agent_definition 的可选字段（nil = 不变）。
 // 注意：advanced_mode / parent_user_id / is_active 不允许通过 Patch 修改。
 type PatchRequest struct {
-	Name                 *string
-	Description          *string
-	IconURL              *string
-	WelcomeMessage       *string
-	SystemPrompt         *string
-	Starters             *[]string
-	QuestionnaireAnswers *QuestionnaireAnswers
-	ToolFlags            *map[string]bool
-	CreditCapPerSession  *uint
-	DailyCreditCap       *uint
-	CustomSkillBody      *string
+	Name                *string
+	Description         *string
+	IconURL             *string
+	WelcomeMessage      *string
+	SystemPrompt        *string
+	Starters            *[]string
+	ToolFlags           *map[string]bool
+	CreditCapPerSession *uint
+	DailyCreditCap      *uint
 }
 
-// Service 定义 biz/skill 层的 9 个业务方法。
+// Service 定义 biz/skill 层的业务方法。
 // 所有方法第一步校验 userID 为父账户（子账户返回 ErrChildAccountForbidden）。
-// DefaultSkillSyncer propagates a v1 questionnaire edit's rebuilt body to the agent's
-// bound v2 "默认技能" (created by migrate-skill-from-agent), so editing the agent no
-// longer leaves the runtime-loaded skill body stale. Implemented in biz/skill/artifact
-// (which already depends on this package for skill.Build) and injected here via
-// WithDefaultSkillSyncer to avoid an import cycle. A no-op when no default skill exists.
-type DefaultSkillSyncer interface {
-	SyncAgentDefaultSkill(ctx context.Context, parentUserID, agentID uint, newBody string) error
-}
-
 type Service interface {
-	// WithDefaultSkillSyncer injects the write-through syncer (builder; returns self).
-	WithDefaultSkillSyncer(syncer DefaultSkillSyncer) Service
-
 	Create(ctx context.Context, userID uint, req CreateRequest) (*model.AgentDefinition, error)
 	Get(ctx context.Context, userID uint, id uint64) (*model.AgentDefinition, error)
 	List(ctx context.Context, userID uint, includeInactive bool, page, pageSize int) ([]model.AgentDefinition, int64, error)
@@ -73,7 +57,6 @@ type Service interface {
 
 	ListHistory(ctx context.Context, userID uint, agentID uint64) ([]model.AgentDefinitionHistory, error)
 	Restore(ctx context.Context, userID uint, agentID uint64, version uint) (*model.AgentDefinition, error)
-	AdvancedToggle(ctx context.Context, userID uint, id uint64) (*model.AgentDefinition, error)
 
 	ListTemplates(ctx context.Context) ([]model.SkillTemplate, error)
 
@@ -87,7 +70,6 @@ type service struct {
 	skillStore      store.IAgentDefinitionStore
 	templateStore   store.ISkillTemplateStore
 	templateService *TemplateService
-	syncer          DefaultSkillSyncer // optional; nil = no write-through (Create path / un-wired)
 }
 
 // NewService 构造 Service 实例。
@@ -98,38 +80,6 @@ func NewService(ds store.IStore) Service {
 		templateStore:   ds.SkillTemplates(),
 		templateService: NewTemplateService(ds.SkillTemplates()),
 	}
-}
-
-// WithDefaultSkillSyncer injects the default-skill write-through syncer and returns
-// the service for chaining (mirrors StudentRunService.WithUserStore).
-func (s *service) WithDefaultSkillSyncer(syncer DefaultSkillSyncer) Service {
-	s.syncer = syncer
-	return s
-}
-
-// validateRequiredQuestionnaireForCreate 校验创建新 AgentDefinition 时问卷必填项
-// Q6（任务类型）/ Q7（材料类型）/ Q12（说话风格）是否齐全。缺失任一项返回
-// errno.ErrSkillBuilderFailed（HTTP 422，errno doc 已写 "如必填题缺失"），错误
-// 消息列出具体缺失字段。
-//
-// 仅在 Create 触发；Patch 部分更新不调用——允许 caller 不带 questionnaire（caller
-// 主动清空 QA 属另一类问题，本函数不覆盖）。Build()（skill_builder.go）作为纯
-// transformer 故意不做此校验，详见其 doc。
-func validateRequiredQuestionnaireForCreate(qa QuestionnaireAnswers) error {
-	var missing []string
-	if len(qa.Q6) == 0 {
-		missing = append(missing, "q6 (任务类型)")
-	}
-	if len(qa.Q7) == 0 {
-		missing = append(missing, "q7 (材料类型)")
-	}
-	if qa.Q12 == "" {
-		missing = append(missing, "q12 (说话风格)")
-	}
-	if len(missing) > 0 {
-		return errno.ErrSkillBuilderFailed.SetMessage("问卷必填项缺失：%s", strings.Join(missing, "、"))
-	}
-	return nil
 }
 
 // requireParentAccount 校验 userID 对应的 user 是父账户（ParentUserID == nil）。
@@ -180,7 +130,7 @@ func marshalJSON(v any) (datatypes.JSON, error) {
 //
 // 注意：旧实现额外写入原始工具名 key（bash_exec:true 等），与 frontend 的分类命名
 // 空间不一致，且注释谎称"危险类保持 OFF"——实际全开。现统一为分类 key，消除歧义。
-func deriveDefaultToolFlags(_ QuestionnaireAnswers) map[string]bool {
+func deriveDefaultToolFlags() map[string]bool {
 	return map[string]bool{
 		"code_sandbox": true, // → bash_exec
 		"dangerous":    true, // bash_exec 的别名分类
@@ -193,26 +143,22 @@ func (s *service) Create(ctx context.Context, userID uint, req CreateRequest) (*
 		return nil, err
 	}
 
-	if err := validateRequiredQuestionnaireForCreate(req.QuestionnaireAnswers); err != nil {
-		return nil, err
+	if strings.TrimSpace(req.SystemPrompt) == "" {
+		return nil, errno.ErrInvalidParameter.SetMessage("提示词（行为指引）不能为空")
 	}
 
 	if len(req.SystemPrompt) > SystemPromptMaxLen {
 		return nil, errno.ErrSystemPromptTooLong
 	}
 
-	qaJSON, err := marshalJSON(req.QuestionnaireAnswers)
-	if err != nil {
-		return nil, fmt.Errorf("Create marshal questionnaire: %w", err)
-	}
 	startersJSON, err := marshalJSON(req.Starters)
 	if err != nil {
 		return nil, fmt.Errorf("Create marshal starters: %w", err)
 	}
-	// Fill default tool_flags when frontend doesn't supply (5-step questionnaire
-	// lacks a tool-selection step — see deriveDefaultToolFlags doc above).
+	// Fill default tool_flags when frontend doesn't supply (no tool-selection step
+	// in the create flow — see deriveDefaultToolFlags doc above).
 	if len(req.ToolFlags) == 0 {
-		req.ToolFlags = deriveDefaultToolFlags(req.QuestionnaireAnswers)
+		req.ToolFlags = deriveDefaultToolFlags()
 	}
 	toolFlagsJSON, err := marshalJSON(req.ToolFlags)
 	if err != nil {
@@ -220,29 +166,22 @@ func (s *service) Create(ctx context.Context, userID uint, req CreateRequest) (*
 	}
 
 	ad := &model.AgentDefinition{
-		ParentUserID:         userID,
-		Name:                 req.Name,
-		Description:          req.Description,
-		IconURL:              req.IconURL,
-		WelcomeMessage:       req.WelcomeMessage,
-		SystemPrompt:         req.SystemPrompt,
-		Starters:             startersJSON,
-		QuestionnaireAnswers: qaJSON,
-		ToolFlags:            toolFlagsJSON,
-		CreditCapPerSession:  req.CreditCapPerSession,
-		DailyCreditCap:       req.DailyCreditCap,
-		SourceTemplateID:     req.SourceTemplateID,
-		Version:              1,
-		IsActive:             true,
-		AdvancedMode:         false,
-		CreatedBy:            userID,
+		ParentUserID:        userID,
+		Name:                req.Name,
+		Description:         req.Description,
+		IconURL:             req.IconURL,
+		WelcomeMessage:      req.WelcomeMessage,
+		SystemPrompt:        req.SystemPrompt,
+		Starters:            startersJSON,
+		ToolFlags:           toolFlagsJSON,
+		CreditCapPerSession: req.CreditCapPerSession,
+		DailyCreditCap:      req.DailyCreditCap,
+		SourceTemplateID:    req.SourceTemplateID,
+		Version:             1,
+		IsActive:            true,
+		AdvancedMode:        false,
+		CreatedBy:           userID,
 	}
-
-	body, err := Build(ad)
-	if err != nil {
-		return nil, err // already errno.ErrSkillBuilderFailed or wrapped parse error
-	}
-	ad.GeneratedSkillBody = body
 
 	err = s.ds.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := s.skillStore.CreateTx(ctx, tx, ad); err != nil {
@@ -302,7 +241,7 @@ func (s *service) List(ctx context.Context, userID uint, includeInactive bool, p
 
 // Patch 部分更新 AgentDefinition。
 // 拒绝修改 advanced_mode / parent_user_id / is_active（这些字段通过专用端点操作）。
-// 问卷改变时重算 GeneratedSkillBody；version+1；写 history。全程事务。
+// version+1；写 history。全程事务。
 func (s *service) Patch(ctx context.Context, userID uint, id uint64, req PatchRequest) (*model.AgentDefinition, error) {
 	if err := s.requireParentAccount(ctx, userID); err != nil {
 		return nil, err
@@ -348,13 +287,6 @@ func (s *service) Patch(ctx context.Context, userID uint, id uint64, req PatchRe
 		}
 		ad.Starters = b
 	}
-	if req.QuestionnaireAnswers != nil {
-		b, err := marshalJSON(*req.QuestionnaireAnswers)
-		if err != nil {
-			return nil, fmt.Errorf("Patch marshal questionnaire: %w", err)
-		}
-		ad.QuestionnaireAnswers = b
-	}
 	if req.ToolFlags != nil {
 		b, err := marshalJSON(*req.ToolFlags)
 		if err != nil {
@@ -368,19 +300,7 @@ func (s *service) Patch(ctx context.Context, userID uint, id uint64, req PatchRe
 	if req.DailyCreditCap != nil {
 		ad.DailyCreditCap = req.DailyCreditCap
 	}
-	if req.CustomSkillBody != nil {
-		if !ad.AdvancedMode {
-			return nil, errno.ErrInvalidParameter.SetMessage("问卷模式不允许直接编辑 SKILL.md")
-		}
-		ad.CustomSkillBody = *req.CustomSkillBody
-	}
 
-	// Rebuild GeneratedSkillBody whenever questionnaire or top-level Q fields change.
-	body, err := Build(ad)
-	if err != nil {
-		return nil, err
-	}
-	ad.GeneratedSkillBody = body
 	ad.Version++
 
 	summary := ComputeChangesSummary(prev, ad, 0)
@@ -395,16 +315,6 @@ func (s *service) Patch(ctx context.Context, userID uint, id uint64, req PatchRe
 		return nil, err
 	}
 
-	// Write-through to the agent's migrated v2 "默认技能" so the runtime-loaded skill
-	// body reflects this edit (v1↔v2 divergence fix). Best-effort + post-commit: the
-	// agent edit is the source of truth; a sync failure (or no default skill) must not
-	// fail the Patch — the eager GeneratedSkillBody already updated.
-	if s.syncer != nil {
-		if serr := s.syncer.SyncAgentDefaultSkill(ctx, userID, uint(ad.ID), ad.GeneratedSkillBody); serr != nil {
-			log.Warnw("skill.Patch: default-skill write-through failed (agent edit still applied)",
-				"agent_id", ad.ID, "parent_user_id", userID, "error", serr)
-		}
-	}
 	return ad, nil
 }
 
@@ -528,48 +438,6 @@ func (s *service) Restore(ctx context.Context, userID uint, agentID uint64, vers
 		return nil, err
 	}
 	return &restored, nil
-}
-
-// AdvancedToggle 将问卷模式（advanced_mode=0）切换为高级模式（advanced_mode=1），不可逆。
-// 已处于高级模式时返回 ErrAlreadyInAdvancedMode。
-// 拷贝 GeneratedSkillBody → CustomSkillBody 作为初始值。全程事务。
-func (s *service) AdvancedToggle(ctx context.Context, userID uint, id uint64) (*model.AgentDefinition, error) {
-	if err := s.requireParentAccount(ctx, userID); err != nil {
-		return nil, err
-	}
-
-	ad, err := s.skillStore.GetByIDIncludeInactive(ctx, id)
-	if err != nil {
-		if isNotFound(err) {
-			return nil, errno.ErrSkillNotFound
-		}
-		return nil, fmt.Errorf("AdvancedToggle get skill(%d): %w", id, err)
-	}
-	if err := ownsAgent(ad, userID); err != nil {
-		return nil, err
-	}
-
-	if ad.AdvancedMode {
-		return nil, errno.ErrAlreadyInAdvancedMode
-	}
-
-	prev := copyAgentDefinition(ad)
-	ad.AdvancedMode = true
-	ad.CustomSkillBody = ad.GeneratedSkillBody
-	ad.Version++
-
-	summary := ComputeChangesSummary(prev, ad, 0)
-
-	err = s.ds.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := s.skillStore.UpdateTx(ctx, tx, ad); err != nil {
-			return err
-		}
-		return WriteHistorySnapshot(ctx, tx, ad, userID, summary)
-	})
-	if err != nil {
-		return nil, err
-	}
-	return ad, nil
 }
 
 // ListTemplates 列举所有激活的平台内置技能模板。

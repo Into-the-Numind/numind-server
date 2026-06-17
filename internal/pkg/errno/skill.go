@@ -23,10 +23,4 @@ var (
 
 	// ErrSkillBuilderFailed 表示 skill_builder 组装 SKILL.md 失败（如必填题缺失）。
 	ErrSkillBuilderFailed = &Errno{HTTP: 422, Code: "BizError.SkillBuilderFailed", Message: "skill body builder failed"}
-
-	// ErrAdvancedModeIrreversible 表示尝试从高级模式切回问卷模式（不可逆操作）。
-	ErrAdvancedModeIrreversible = &Errno{HTTP: 422, Code: "BizError.AdvancedModeIrreversible", Message: "cannot switch back from advanced mode"}
-
-	// ErrAlreadyInAdvancedMode 表示已处于高级模式，重复调用 advanced-toggle。
-	ErrAlreadyInAdvancedMode = &Errno{HTTP: 422, Code: "BizError.AlreadyInAdvancedMode", Message: "already in advanced mode"}
 )

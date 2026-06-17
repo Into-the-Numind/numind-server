@@ -85,11 +85,11 @@ func TestComputeChangesSummary_restoreFromVersion(t *testing.T) {
 	assert.Equal(t, "从 v3 恢复", got)
 }
 
-func TestComputeChangesSummary_advancedModeToggle(t *testing.T) {
-	prev := &model.AgentDefinition{AdvancedMode: false, IsActive: true}
-	curr := &model.AgentDefinition{AdvancedMode: true, IsActive: true}
+func TestComputeChangesSummary_systemPromptChange(t *testing.T) {
+	prev := &model.AgentDefinition{SystemPrompt: "old prompt", IsActive: true}
+	curr := &model.AgentDefinition{SystemPrompt: "new prompt", IsActive: true}
 	got := ComputeChangesSummary(prev, curr, 0)
-	assert.Equal(t, "切换到高级模式", got)
+	assert.Equal(t, "修改了 行为指引", got)
 }
 
 func TestComputeChangesSummary_softDelete(t *testing.T) {

@@ -14,50 +14,6 @@ import (
 	"numind-server/internal/pkg/model"
 )
 
-// fakeDefaultSkillSyncer records the write-through call so the Patch wiring can be
-// asserted without importing the artifact package (which would create an import cycle:
-// artifact already imports skill for skill.Build).
-type fakeDefaultSkillSyncer struct {
-	called       bool
-	gotParentID  uint
-	gotAgentID   uint
-	gotBody      string
-}
-
-func (f *fakeDefaultSkillSyncer) SyncAgentDefaultSkill(_ context.Context, parentUserID, agentID uint, newBody string) error {
-	f.called = true
-	f.gotParentID = parentUserID
-	f.gotAgentID = agentID
-	f.gotBody = newBody
-	return nil
-}
-
-// TestService_Patch_WritesThroughToDefaultSkill reproduces the v1↔v2 divergence: after
-// migrate-skill-from-agent, an agent's behavior lives in a bound v2 skill named
-// "<agent> 的默认技能". The v1 questionnaire Patch rebuilt GeneratedSkillBody but never
-// touched that skill, so a parent's edit left the runtime-loaded skill body stale.
-// Patch must invoke the injected syncer with the rebuilt body.
-func TestService_Patch_WritesThroughToDefaultSkill(t *testing.T) {
-	svc, db := newTestService(t)
-	parentID := seedParentUserID(db)
-	syncer := &fakeDefaultSkillSyncer{}
-	svc = svc.WithDefaultSkillSyncer(syncer)
-
-	ad, err := svc.Create(context.Background(), parentID, minCreateReq())
-	require.NoError(t, err)
-	oldBody := ad.GeneratedSkillBody
-
-	newQ := QuestionnaireAnswers{Q6: []string{"give_advice"}, Q7: []string{"text", "csv"}, Q12: "professional"}
-	patched, err := svc.Patch(context.Background(), parentID, ad.ID, PatchRequest{QuestionnaireAnswers: &newQ})
-	require.NoError(t, err)
-	require.NotEqual(t, oldBody, patched.GeneratedSkillBody, "questionnaire edit must rebuild body")
-
-	require.True(t, syncer.called, "Patch must write through to the bound default skill")
-	assert.Equal(t, parentID, syncer.gotParentID)
-	assert.Equal(t, uint(ad.ID), syncer.gotAgentID)
-	assert.Equal(t, patched.GeneratedSkillBody, syncer.gotBody, "syncer must receive the rebuilt body")
-}
-
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
@@ -90,18 +46,15 @@ func newTestService(t *testing.T) (Service, *gorm.DB) {
 	return NewService(ds), db
 }
 
-// minCreateReq returns a minimal valid CreateRequest (Q6, Q7, Q12 filled).
+// minCreateReq returns a minimal valid CreateRequest. SystemPrompt is now the
+// single required prompt field (questionnaire removed from the user-facing path).
 func minCreateReq() CreateRequest {
 	return CreateRequest{
-		Name:        "测试 Agent",
-		Description: "单测描述",
-		Starters:    []string{},
-		ToolFlags:   map[string]bool{},
-		QuestionnaireAnswers: QuestionnaireAnswers{
-			Q6:  []string{"answer_questions"},
-			Q7:  []string{"text"},
-			Q12: "friendly",
-		},
+		Name:         "测试 Agent",
+		Description:  "单测描述",
+		SystemPrompt: "你是一个友好的助手。",
+		Starters:     []string{},
+		ToolFlags:    map[string]bool{},
 	}
 }
 
@@ -133,7 +86,9 @@ func TestService_Create_succeeds(t *testing.T) {
 	assert.Equal(t, parentID, ad.ParentUserID)
 	assert.Equal(t, uint(1), ad.Version)
 	assert.True(t, ad.IsActive)
-	assert.NotEmpty(t, ad.GeneratedSkillBody)
+	// GeneratedSkillBody is no longer populated on Create — new agents use
+	// SystemPrompt via the V2 runtime path.
+	assert.Empty(t, ad.GeneratedSkillBody)
 }
 
 func TestService_Create_childAccount_returns403(t *testing.T) {
@@ -145,50 +100,31 @@ func TestService_Create_childAccount_returns403(t *testing.T) {
 	assert.ErrorIs(t, err, errno.ErrChildAccountForbidden)
 }
 
-func TestService_Create_emptyQuestionnaire_returnsBuilderFailed(t *testing.T) {
+// TestService_Create_emptySystemPrompt_returnsError: SystemPrompt is now the
+// single required prompt field (questionnaire removed). Blank/whitespace-only
+// prompts are rejected so every new agent has a runtime prompt.
+func TestService_Create_emptySystemPrompt_returnsError(t *testing.T) {
 	svc, db := newTestService(t)
 	parentID := seedParentUserID(db)
 
 	cases := []struct {
-		name        string
-		qa          QuestionnaireAnswers
-		wantMissing []string
+		name   string
+		prompt string
 	}{
-		{
-			name:        "all empty",
-			qa:          QuestionnaireAnswers{},
-			wantMissing: []string{"q6", "q7", "q12"},
-		},
-		{
-			name:        "q6 missing",
-			qa:          QuestionnaireAnswers{Q7: []string{"text"}, Q12: "friendly"},
-			wantMissing: []string{"q6"},
-		},
-		{
-			name:        "q7 missing",
-			qa:          QuestionnaireAnswers{Q6: []string{"analyze_data"}, Q12: "friendly"},
-			wantMissing: []string{"q7"},
-		},
-		{
-			name:        "q12 missing",
-			qa:          QuestionnaireAnswers{Q6: []string{"analyze_data"}, Q7: []string{"text"}},
-			wantMissing: []string{"q12"},
-		},
+		{name: "empty", prompt: ""},
+		{name: "whitespace only", prompt: "   \n\t  "},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			req := minCreateReq()
-			req.QuestionnaireAnswers = tc.qa
+			req.SystemPrompt = tc.prompt
 
 			var beforeCount int64
 			require.NoError(t, db.Model(&model.AgentDefinition{}).Count(&beforeCount).Error)
 
 			_, err := svc.Create(context.Background(), parentID, req)
 			require.Error(t, err)
-			assert.ErrorIs(t, err, errno.ErrSkillBuilderFailed)
-			for _, field := range tc.wantMissing {
-				assert.Contains(t, err.Error(), field, "error message should list missing field %q", field)
-			}
+			assert.ErrorIs(t, err, errno.ErrInvalidParameter)
 
 			var afterCount int64
 			require.NoError(t, db.Model(&model.AgentDefinition{}).Count(&afterCount).Error)
@@ -226,8 +162,7 @@ func TestService_Create_writesHistoryV1(t *testing.T) {
 }
 
 // TestService_Create_emptyToolFlags_derivesDefault: when frontend doesn't
-// supply tool_flags (5-step questionnaire lacks a tool-selection step),
-// the service must derive a sensible default from questionnaire_answers,
+// supply tool_flags, the service must derive a sensible default,
 // otherwise runner.go short-circuits with 0 tools and learners see "failed".
 func TestService_Create_emptyToolFlags_derivesDefault(t *testing.T) {
 	svc, db := newTestService(t)
@@ -235,15 +170,13 @@ func TestService_Create_emptyToolFlags_derivesDefault(t *testing.T) {
 
 	req := minCreateReq()
 	req.ToolFlags = nil // simulate frontend without tool step
-	req.QuestionnaireAnswers.Q9 = "allow_search"
-	req.QuestionnaireAnswers.Q7 = []string{"text", "csv"}
 
 	ad, err := svc.Create(context.Background(), parentID, req)
 	require.NoError(t, err)
 
 	var flags map[string]bool
 	require.NoError(t, json.Unmarshal(ad.ToolFlags, &flags))
-	// tool_flags now uses the 3 risk-CATEGORY keys (matching AgentAdvancedEdit),
+	// tool_flags now uses the risk-CATEGORY keys (matching AgentAdvancedEdit),
 	// full-open by default. Baseline tools (kb_search/web_search/file_read/memory_*)
 	// are always-on at runtime independent of tool_flags, so they are NOT listed here.
 	assert.True(t, flags["code_sandbox"], "code_sandbox default on (→ bash_exec)")
@@ -257,16 +190,14 @@ func TestService_Create_emptyToolFlags_derivesDefault(t *testing.T) {
 }
 
 // TestService_Create_emptyToolFlags_categoryDefault: the derived default is the
-// full-open 3-category set regardless of q9/q7. The old per-tool derivation was
-// removed — baseline tools are always-on at runtime, not gated by tool_flags.
+// full-open risk-category set. The old per-tool derivation was removed —
+// baseline tools are always-on at runtime, not gated by tool_flags.
 func TestService_Create_emptyToolFlags_categoryDefault(t *testing.T) {
 	svc, db := newTestService(t)
 	parentID := seedParentUserID(db)
 
 	req := minCreateReq()
 	req.ToolFlags = nil
-	req.QuestionnaireAnswers.Q9 = "no_web_search"
-	req.QuestionnaireAnswers.Q7 = []string{"voice"}
 
 	ad, err := svc.Create(context.Background(), parentID, req)
 	require.NoError(t, err)
@@ -283,9 +214,8 @@ func TestService_Create_userSuppliedToolFlags_winsOverDefault(t *testing.T) {
 	parentID := seedParentUserID(db)
 
 	req := minCreateReq()
-	// User explicitly disables kb_search even though q9=allow_search would default-on.
+	// User explicitly disables kb_search; the supplied map is authoritative.
 	req.ToolFlags = map[string]bool{"kb_search": false, "web_search": true}
-	req.QuestionnaireAnswers.Q9 = "allow_search"
 
 	ad, err := svc.Create(context.Background(), parentID, req)
 	require.NoError(t, err)
@@ -448,23 +378,20 @@ func TestService_Patch_writesHistory(t *testing.T) {
 	assert.Equal(t, int64(2), count)
 }
 
-func TestService_Patch_questionnaireChange_rebuildsBody(t *testing.T) {
+// TestService_Patch_systemPromptChange persists an edited SystemPrompt and
+// bumps the version (Build/GeneratedSkillBody rebuild was removed).
+func TestService_Patch_systemPromptChange(t *testing.T) {
 	svc, db := newTestService(t)
 	parentID := seedParentUserID(db)
 
 	ad, err := svc.Create(context.Background(), parentID, minCreateReq())
 	require.NoError(t, err)
-	origBody := ad.GeneratedSkillBody
 
-	newQA := QuestionnaireAnswers{
-		Q6:  []string{"generate_content"},
-		Q7:  []string{"image"},
-		Q12: "professional",
-	}
-	patched, err := svc.Patch(context.Background(), parentID, ad.ID, PatchRequest{QuestionnaireAnswers: &newQA})
+	newPrompt := "你现在是一个专业严谨的分析助手。"
+	patched, err := svc.Patch(context.Background(), parentID, ad.ID, PatchRequest{SystemPrompt: &newPrompt})
 	require.NoError(t, err)
-	assert.NotEqual(t, origBody, patched.GeneratedSkillBody)
-	assert.Contains(t, patched.GeneratedSkillBody, "专业严谨的风格")
+	assert.Equal(t, newPrompt, patched.SystemPrompt)
+	assert.Equal(t, uint(2), patched.Version)
 }
 
 // ---------------------------------------------------------------------------
@@ -578,71 +505,6 @@ func TestService_Restore_createsNewVersion(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// AdvancedToggle
-// ---------------------------------------------------------------------------
-
-func TestService_AdvancedToggle_succeeds(t *testing.T) {
-	svc, db := newTestService(t)
-	parentID := seedParentUserID(db)
-
-	ad, err := svc.Create(context.Background(), parentID, minCreateReq())
-	require.NoError(t, err)
-	assert.False(t, ad.AdvancedMode)
-
-	toggled, err := svc.AdvancedToggle(context.Background(), parentID, ad.ID)
-	require.NoError(t, err)
-	assert.True(t, toggled.AdvancedMode)
-	assert.Equal(t, uint(2), toggled.Version)
-}
-
-func TestService_AdvancedToggle_alreadyAdvanced_returns422(t *testing.T) {
-	svc, db := newTestService(t)
-	parentID := seedParentUserID(db)
-
-	ad, err := svc.Create(context.Background(), parentID, minCreateReq())
-	require.NoError(t, err)
-
-	_, err = svc.AdvancedToggle(context.Background(), parentID, ad.ID)
-	require.NoError(t, err)
-
-	// Second toggle must fail.
-	_, err = svc.AdvancedToggle(context.Background(), parentID, ad.ID)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, errno.ErrAlreadyInAdvancedMode)
-}
-
-func TestService_AdvancedToggle_copiesGeneratedToCustom(t *testing.T) {
-	svc, db := newTestService(t)
-	parentID := seedParentUserID(db)
-
-	ad, err := svc.Create(context.Background(), parentID, minCreateReq())
-	require.NoError(t, err)
-	generatedBody := ad.GeneratedSkillBody
-	require.NotEmpty(t, generatedBody)
-
-	toggled, err := svc.AdvancedToggle(context.Background(), parentID, ad.ID)
-	require.NoError(t, err)
-	assert.Equal(t, generatedBody, toggled.CustomSkillBody,
-		"CustomSkillBody should be a copy of GeneratedSkillBody on first toggle")
-}
-
-func TestService_AdvancedToggle_preservesQuestionnaireAnswers(t *testing.T) {
-	svc, db := newTestService(t)
-	parentID := seedParentUserID(db)
-
-	ad, err := svc.Create(context.Background(), parentID, minCreateReq())
-	require.NoError(t, err)
-
-	toggled, err := svc.AdvancedToggle(context.Background(), parentID, ad.ID)
-	require.NoError(t, err)
-
-	// QuestionnaireAnswers should be preserved after toggle.
-	var qa QuestionnaireAnswers
-	require.NoError(t, json.Unmarshal(toggled.QuestionnaireAnswers, &qa))
-	assert.Equal(t, []string{"answer_questions"}, qa.Q6)
-}
-
-// ---------------------------------------------------------------------------
 // ListTemplates
 // ---------------------------------------------------------------------------
 
@@ -710,15 +572,6 @@ func TestService_Restore_nonexistentAgent_returns404(t *testing.T) {
 	parentID := seedParentUserID(db)
 
 	_, err := svc.Restore(context.Background(), parentID, 99999, 1)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, errno.ErrSkillNotFound)
-}
-
-func TestService_AdvancedToggle_nonexistentID_returns404(t *testing.T) {
-	svc, db := newTestService(t)
-	parentID := seedParentUserID(db)
-
-	_, err := svc.AdvancedToggle(context.Background(), parentID, 99999)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errno.ErrSkillNotFound)
 }
