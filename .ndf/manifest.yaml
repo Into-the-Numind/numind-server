@@ -5,8 +5,8 @@ features:
   description: 'Agent mode 工具时间线「已完成却还在转圈」bug（客户反馈）+ 一行式重构。原本每个工具调用渲染成两行（加载技能 spinner + 已加载技能），且回看已完成 run 时第一行 spinner 永久转圈。改为一行随状态原地切换：运行中=use 文案+spinner；完成=result 文案(已加载技能)+统一绿色打勾✓(替掉 per-type 图标)；出错=alert。前端 only。'
   classification_reason: 'Hotfix: 单仓库 numind-web-v3, 2 源文件(AgentToolCallItem.vue + agentChat.ts)+2 测试, 无 DB/API/外部服务/支付权限。Bug-from-Customer(Rule 11) 首 commit=失败复现测试。'
   status: active
-  stage: H2
-  repos: {numind-web-v3: fix/agent-tool-done-state (worktree /private/tmp/wt-agent-tool-done-state-numind-web-v3)}
+  stage: H3
+  repos: {numind-web-v3: develop (merged via ndf-done d2b3d53)}
   progress: {total_tasks: 2, completed_tasks: 2, reviewed_tasks: 2}
   decisions:
   - 'H1 (ai 2026-06-17): 根因经运行时探针(dev snapshot dump)确诊：后端 2026-06-14 已修(InvokableRun mint uuid 共享 tool_call_id→use+result 合并一 aggregate，dev 新 run 已是单 aggregate state=result)。用户看到的两行+卡转圈来自该后端修复前持久化的旧 run(split data, 不可回改)。两个前端缺口：(a) loadSessionSnapshot 不调 finalizeToolGroups→回看完成 run 残留 in-flight=spinner；(b) AgentToolCallItem 永远显示 use 文案+type 图标，从不切到 done。修：AgentToolCallItem 一行随状态切(done=latest/result 文案+Check 绿勾, 删 toolIcon)；loadSessionSnapshot 对 TERMINAL run(非 running/pending)调 finalizeToolGroups(snap.status)。用户拍板统一打勾(替 per-type 图标)。Rule 11 链：test(qa)070facf(4 RED)→fix 2a717ca→绿(38 test)。门禁 type-check 0/eslint 0。两阶段并行 Sonnet review 均 PASS_WITH_CONCERNS(0 P0/P1)；P2 全就地修(fd2c9b2)：删 orphan agent-tool-icons.ts/刷新过时注释/补 failed-run 回看→error 测试。下一步 ndf-done→deploy-dev→用户验收。'
