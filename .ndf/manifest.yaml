@@ -1,5 +1,19 @@
 schema_version: '2.0'
 features:
+- id: meeting-feedback-v2
+  track: standard
+  description: '会议副驾反馈引擎 v2：①触发升级——用户自设 5-60s 基础间隔(去档位/去25s冷却)+内容闸(新转写≥~2句/100字才叫判官,否则静默跳过不调模型)+停顿感知(到点若在说话等自然停顿再触发)+手动兜底永远在。②上下文不幻觉——滚动结构化摘要(新增 meeting_session.running_summary 列, 每~2-3min/~1500新字后台异步 cheap LLM 折叠)+最近5分钟逐字+已给反馈清单(去重), 替换原"最近2000字"窗口。③修复总结 bug——根因=前端 doEnd 先 recorder.stop/waitForAsrClosed/upload 最后才 endMeeting, 卡住/请求取消就到不了, 后端 /end 同步等5s生成总结期间被取消则啥都没存(后端 /end+总结本身已验证正常)。修=/end 秒回 status=ended+summary_status=generating, 总结异步独立ctx生成(基于滚动摘要近瞬时)+前端轮询; doEnd 硬化保证 endMeeting 必执行(recorder.stop 加超时/各步 try-catch)。跨 numind-server+numind-web-v3。'
+  classification_reason: 'Standard: 新增 DB 列(running_summary)+migration、改反馈/总结核心 biz、改 /end 语义(同步→异步)、前端触发与结束流程重写、跨两仓库、文件数远超 3。总结 bug 属 Bug-from-Customer(用户测试报告 Rule 11)：前端加复现回归测试(模拟 pre-step 失败断言 endMeeting 仍执行)。'
+  status: active
+  stage: S6
+  repos:
+    numind-server: develop (merged via ndf-done 49febca7)
+    numind-web-v3: develop (merged via ndf-done 1be7ddf)
+  progress: {total_tasks: 5, completed_tasks: 5, reviewed_tasks: 5}
+  decisions:
+  - 'S0-S2 (ai 2026-06-18): 用户拍板触发参数(5-60s 自设/无档位/无冷却)+5分钟逐字窗口。总结 bug 已直打 dev session 4 复现+根因定位(后端正常, 前端 doEnd 到不了 endMeeting / 同步总结被取消)。设计=触发六件套(去档位去冷却)+滚动摘要 running memory(摘要+5min逐字+已给反馈去重)+/end 异步化(秒回+后台生成+轮询)。契约 SPEC: docs/meeting-copilot/FEEDBACK_V2_SPEC.md。用 dynamic workflow 实现。'
+  - 'S3-S6 (ai 2026-06-18): dynamic workflow 实现(后端 数据+滚动摘要+异步end → 反馈三段上下文+间隔 ‖ 前端 store+setup → 视图+轮询+doEnd硬化)+四路并行 Sonnet 审查。verdict be-spec PASS/其余 FAIL, 1 P0+8 P1+2 fe-P0(同一 Rule11 提交序)。Tier2 并行修复(后端 agent 限流挂前已改完, 验证全绿): P0=fold recover 挪 defer 最前; P1=两异步写路径 db.Save 丢更新→store 加定向列更新(UpdateSessionSummary/UpdateRunningSummary/MarkSummaryStatus)/timeReady 首轮(summaryLastFoldAt 初始化 now)/finalize recover 范围(success 守卫)/补时间阈值测试; 前端 Promise.race 定时器泄漏/teardownInProgress 复位/EndMeetingResponse 注释。Rule11: web 先提失败 test(repro) ced0192(未修复 recorder.stop 抛错→endMeeting 不执行 实测 FAIL)→回填修复→PASS 红绿铁证。门禁 后端 build/vet/test/-race 全0+gofmt净、前端 type-check0+回归2/2+eslint净。ndf-done 合两仓库 develop 已复核(local==origin)。下一步 /deploy-dev 验"结束必出纪要"。'
+  blockers: []
 - id: chatbot-query-rewrite
   track: standard
   description: 'RAG ③ 查询处理：chatbot 检索前加 chatbot 专属【中性陈述】查询改写（intent_declarative），把口语提问规整成保留领域锚词的检索短语后再向量检索，抬高正确 chunk 的 rerank 分恢复召回——不降 0.6 阈值、不破坏库外拒答。证据：BASELINE.md + THRESHOLD_TUNING.md（④ 定不改阈值）+ dynamic workflow feasibility（intent_declarative 实测 in-KB recall 0.842→1.0/oob 拒答保持 1.0；HyDE 因泄漏被否决）。flag features.chatbot_query_rewrite.enabled 默认 OFF。'
