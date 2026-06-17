@@ -303,7 +303,9 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 			// 1.0）。失败/超时在 rewriteQueryForRetrieval 内部回退原话。
 			effectiveQuery := message
 			if queryRewriteEnabled() {
-				effectiveQuery = b.rewriteQueryForRetrieval(retrieveCtx, message)
+				// 把改写 span 挂到 vector-retrieval span 下（parent=vectorSpanID），trace 层级清晰。
+				rewriteCtx := langfuse.WithTraceAndParent(retrieveCtx, traceID, vectorSpanID)
+				effectiveQuery = b.rewriteQueryForRetrieval(rewriteCtx, message)
 			}
 
 			retrieveScope := retrieve.Scope{

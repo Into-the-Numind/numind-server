@@ -59,7 +59,7 @@ const queryRewriteSystemPrompt = `你是知识库检索的查询改写器。把�
 func (b *chatbotBiz) rewriteQueryForRetrieval(ctx context.Context, message string) string {
 	msg := strings.TrimSpace(message)
 	if msg == "" {
-		return message
+		return message // span not started yet → no EndSpan needed
 	}
 
 	var tc *langfuse.TraceCtx
@@ -72,6 +72,11 @@ func (b *chatbotBiz) rewriteQueryForRetrieval(ctx context.Context, message strin
 		)
 	}
 
+	// 计费归因：调用方传的 retrieveCtx 用 pkg/middleware 的 userID key（=owner），而 aiservice
+	// billing 中间件读的是另一个 struct key → 这里看到的 userID=0，改写调用不计用户积分（与同
+	// retrieveCtx 上的 embed/rerank 计费行为一致，属检索侧系统成本，非用户每问加扣）。
+	// 注：salesrag.intent 的 task_profile 在 DB 里带 json_mode feature，但那只是选模型的路由提示，
+	// 网关不会注入 response_format，本调用输出是纯文本。
 	resp, err := aiservice.Chat(ctx, profile.SalesragIntent, aiservice.ChatRequest{
 		Messages: []aiservice.ChatMessage{
 			{Role: aiservice.MessageRoleSystem, Content: aiservice.MessageContent{Text: queryRewriteSystemPrompt}},

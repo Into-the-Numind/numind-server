@@ -13,10 +13,11 @@ features:
   progress:
     total_tasks: 1
     completed_tasks: 1
-    reviewed_tasks: 0
+    reviewed_tasks: 1
   artifacts:
     requirement: .ndf/features/chatbot-query-rewrite/requirement.md
   decisions:
+  - 'S4 review (ai 2026-06-17): Rule6 双 Sonnet 审（spec + code-quality）均 VERDICT:PASS，0 P0/P1。P2 全就地修：改写 Langfuse span 挂到 vector-retrieval span 下（parent=vectorSpanID）；补注释（空串早返回无需 EndSpan / 改写计费 userID=0 不扣用户积分与检索侧一致 / salesrag.intent 带 json_mode 仅路由提示不注入 response_format）。salesrag.intent profile 复用列后续 tech debt（dedicated chatbot.query_rewrite profile）。build/vet/gofmt/test 全绿。'
   - 'S4 (ai 2026-06-17): 实现=chatbot biz 新 query_rewrite.go（rewriteQueryForRetrieval：aiservice.Chat 走 salesrag.intent 路由+chatbot 专属中性 prompt/few-shot 用胜出改写做种子/温度0.1；sanitizeRewrite 守卫空/超长回退原话）+ stream.go 检索前 effectiveQuery 改写（flag 开才改）+ 改写空召回→原话重试（anchor-drop 安全网）+ Langfuse chatbot-query-rewrite span + config_dev flag ON（prod 不配=OFF）+ 单测 TestSanitizeRewrite。复用 salesrag.intent profile（dedicated chatbot.query_rewrite profile 列后续 tech debt）。build/vet/gofmt/test 全绿。下一步 Rule6 双审→ndf-done→deploy dev→E2E 验。'
   blockers: []
 - id: rag-eval-harness
