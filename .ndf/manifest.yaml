@@ -5,10 +5,11 @@ features:
   description: 'Agent mode 聊天页两处 UI 修复（前端 numind-web-v3）：(1) 左侧会话列表侧栏滚动后点击靠下的历史会话，列表自动跳回顶部——应保持原滚动位置不变（行为 bug）；(2) 同一 narration 下多个工具调用之间，左侧状态图标应有竖向虚线上下连接，形成 Manus 式连续时间线（纯样式）。'
   classification_reason: 'Hotfix: 单仓库 numind-web-v3, 文件 ≤3(AgentChatView + AgentToolCallItem), 无 DB/API/外部服务/支付权限。#1 是运行时行为 bug→前端规则先 Playwright 诊断+回归测试(满足 H1 至少 1 测试)；#2 纯样式 gstack 视觉验收。'
   status: active
-  stage: H2
-  repos: {numind-web-v3: fix/agent-chat-ui-fixes (worktree /private/tmp/wt-agent-chat-ui-fixes-numind-web-v3)}
+  stage: H3
+  repos: {numind-web-v3: develop (merged via ndf-done 5d0416b)}
   progress: {total_tasks: 2, completed_tasks: 2, reviewed_tasks: 2}
   decisions:
+  - 'H3 (ai 2026-06-17): ndf-done 合 develop+push 已独立复核(local==origin 5d0416b, worktree/分支已删)。deploy-dev OK(develop-5d0416b healthy)。#1 部署后用真实 118-session 账号运行时复验：scrollTop 5643→5643 保持、DOM 节点不变(同一探针 pre-fix 是 5643→0+remount)，PASS。#2 几何本地截图核验。等用户 dev 验收→tag prod。未上 prod。'
   - 'H1 (ai 2026-06-17): #1 根因经 Playwright 运行时探针确诊（非静态推断）——侧栏 .sessions-list 在 .app-container 里，而 .app-container 是 v-if=isLoadingSnapshot 的 v-else 分支；切会话时 loadSessionSnapshot 把 loadingSnapshot 翻 true（跨 await），整个 .app-container（含侧栏）卸载重挂，scrollTop 5643→0、DOM 节点更换（marker 丢失）。修=.app-container 常驻，loading/error/main 只在主列切换。Rule 11 链：test(qa) 失败复现(8af9228)→fix(170f5e3)→绿。#2 纯 CSS .tl-line:not(:last-child)::after 虚线连接同一 .tool-timeline 内相邻图标，geometry 截图核验 OK（含换行/末条无尾随）。门禁：eslint 0 + type-check 0 + 回归 spec 绿。两阶段并行 Sonnet review：spec=PASS，quality=PASS_WITH_CONCERNS(0 P0)；P1(测试数据源注释澄清)+P2(DocumentEditorPanel 加 !loading&&!error 守卫)已就地修(a3e02b3)。未部署 dev。下一步 ndf-done→deploy-dev→用户验收。'
   blockers: []
 - id: meeting-copilot
