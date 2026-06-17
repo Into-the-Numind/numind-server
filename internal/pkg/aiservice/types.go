@@ -357,6 +357,25 @@ type ASRResponse struct {
 	Provider        string  `json:"provider"`
 }
 
+// ImageGenRequest is the unified request for text-to-image generation calls.
+type ImageGenRequest struct {
+	// Prompt is the text description of the image to generate.
+	Prompt string `json:"prompt"`
+	// AspectRatio hints the desired aspect ratio (e.g. "1:1", "16:9").
+	// Empty defaults to the provider's default ratio.
+	AspectRatio string `json:"aspect_ratio,omitempty"`
+}
+
+// ImageGenResponse is the unified response for text-to-image generation calls.
+type ImageGenResponse struct {
+	// ImageBase64 is the base64-encoded image payload (no data-URI prefix).
+	ImageBase64 string `json:"image_base64"`
+	// ContentType is the MIME type of the decoded image (e.g. "image/png").
+	ContentType string `json:"content_type"`
+	Model       string `json:"model"`
+	Provider    string `json:"provider"`
+}
+
 // FileUploadRequest is the unified request for file upload calls.
 type FileUploadRequest struct {
 	// FileBytes holds the raw file contents to upload.

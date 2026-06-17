@@ -12,7 +12,10 @@
 //	resp, err := aiservice.Chat(ctx, profile.SopText, req)
 package aiservice
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // Chat performs a non-streaming chat completion via the process-wide Gateway.
 // taskID must be one of the constants in the profile package (e.g., profile.SopText).
@@ -46,4 +49,19 @@ func OCR(ctx context.Context, taskID string, req OCRRequest) (*OCRResponse, erro
 // ASR transcribes an audio clip to text via the process-wide Gateway.
 func ASR(ctx context.Context, taskID string, req ASRRequest) (*ASRResponse, error) {
 	return Default().ASR(ctx, taskID, req)
+}
+
+// ImageGen generates an image from a text prompt via the process-wide Gateway.
+//
+// Unlike Chat/Embed/etc this uses the non-panicking defaultGateway.Load() path
+// (mirroring package-level ResolveTask): image_gen is an agent tool whose unit
+// tests run without a wired gateway, and a panic there would crash the test
+// process rather than surface a soft error to the tool's caller. When no default
+// gateway is installed it returns an error the tool maps to a soft tool error.
+func ImageGen(ctx context.Context, taskID string, req ImageGenRequest) (*ImageGenResponse, error) {
+	g := defaultGateway.Load()
+	if g == nil {
+		return nil, errors.New("aiservice: default gateway not initialized")
+	}
+	return g.ImageGen(ctx, taskID, req)
 }

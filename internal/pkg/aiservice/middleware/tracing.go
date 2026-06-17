@@ -263,7 +263,9 @@ func withFallbackFromServiceID(ctx context.Context, id uint64) context.Context {
 // ----------------------------------------------------------------------------
 
 // isLLMType returns true for service types that map to Langfuse Generation
-// (LLM chat/vision/embed). OCR/ASR/rerank use Span instead.
+// (LLM chat/vision/embed). OCR/ASR/rerank/image_gen use Span instead — they
+// are non-token capabilities with no model/usage metadata to record on a
+// Generation, so a Span faithfully represents the sub-operation.
 func isLLMType(serviceType string) bool {
 	return serviceType == "llm"
 }

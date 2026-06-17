@@ -1,35 +1,39 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
-	"gorm.io/gorm"
-
 	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
 	aismw "numind-server/internal/pkg/aiservice/middleware"
+	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
-	"numind-server/internal/pkg/model"
 )
 
 // imageGenTool is the image_gen FullTool.
-// Implements prompt-based image generation via the 'dmxapi' provider's
-// gemini-2.5-flash-image model and uploads it through uploadGeneratedFile.
+// Implements prompt-based image generation: the provider call is routed through
+// the unified aiservice gateway (aiservice.ImageGen → task profile agent.image_gen
+// → dmxapi gemini-2.5-flash-image), and the produced image is uploaded through
+// uploadGeneratedFile.
 //
 // agent-mode-billing T9: each generation is billed via explicit
 // Reserve→generate→Reconcile/Refund against the run initiator's credits
 // (pool-aware: IsTest runs draw from the admin_test pool). image_gen is non-chat
 // so it cannot ride the ContextBudgetCredits chat path; it bills here directly.
+// This flat tool-level Reserve/Reconcile is the SINGLE credit deduction — the
+// aiservice path (agent-imagegen-via-aiservice) adds observability + a UsageRecord
+// (analytics) only and does NOT deduct credits (ImageGenRequest is non-chat, so
+// the context_budget middleware skips it; the billing middleware only writes a
+// UsageRecord, never a deduction).
 type imageGenTool struct {
 	BaseTool
 	ds            store.IStore
@@ -101,7 +105,7 @@ func (t *imageGenTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		return t.returnSoftError("无法生成图像（计费系统错误）: %v", billErr)
 	}
 
-	// 3. 生成图像（裸 HTTP 打 dmxapi — 收编 aiservice 为后续 follow-up）。
+	// 3. 生成图像（走统一 aiservice 网关：Langfuse tracing + 路由/降级 + UsageRecord）。
 	imgBytes, genErr := t.generateImage(ctx, inp.Prompt)
 	if genErr != nil {
 		t.refund(ctx, rsvID, "image_gen_failed")
@@ -189,119 +193,32 @@ func (t *imageGenTool) refund(ctx context.Context, rsvID uint64, reason string) 
 	}
 }
 
-// generateImage runs the dmxapi text-to-image call and returns the raw PNG bytes,
-// or an error (soft-mapped by the caller). Extracted from Execute so billing can
-// wrap it with Reserve/Reconcile/Refund cleanly.
+// generateImage runs the text-to-image call through the unified aiservice gateway
+// and returns the raw PNG bytes, or an error (soft-mapped by the caller). Extracted
+// from Execute so billing can wrap it with Reserve/Reconcile/Refund cleanly.
+//
+// Routing through aiservice.ImageGen gives this call the same Langfuse tracing +
+// routing/fallback + UsageRecord (analytics) as Chat/Embed/Rerank. IMPORTANT for
+// billing: the aiservice path does NOT deduct credits — its billing middleware
+// only writes a UsageRecord, and ImageGenRequest is a non-chat request so the
+// context_budget middleware skips it (no ChargeUser policy fires). The single
+// credit deduction remains the tool's flat Reserve/Reconcile in Execute, which is
+// left untouched around this call.
 func (t *imageGenTool) generateImage(ctx context.Context, prompt string) ([]byte, error) {
-	ds := t.ds
-	if ds == nil {
-		ds = store.S
-	}
-	var db *gorm.DB
-	if ds != nil {
-		func() {
-			defer func() { _ = recover() }()
-			db = ds.DB()
-		}()
-	}
-	if db == nil {
-		return nil, errors.New("database store context is not configured")
-	}
-
-	var provider model.LLMProvider
-	if err := db.WithContext(ctx).Where("name = ?", "dmxapi").First(&provider).Error; err != nil {
-		return nil, fmt.Errorf("failed to retrieve 'dmxapi' provider config: %v", err)
-	}
-	if provider.APIKey == "" {
-		return nil, errors.New("dmxapi provider API key is not configured in DB")
-	}
-
-	baseURL := strings.TrimSpace(provider.BaseURL)
-	if baseURL == "" {
-		baseURL = "https://www.dmxapi.cn"
-	}
-	if !strings.HasSuffix(baseURL, "/") {
-		baseURL += "/"
-	}
-
-	var apiURL string
-	if strings.Contains(baseURL, "/v1/") {
-		apiURL = strings.Replace(baseURL, "/v1/", "/v1beta/models/gemini-2.5-flash-image:generateContent", 1)
-	} else if strings.Contains(baseURL, "/v1") {
-		apiURL = strings.Replace(baseURL, "/v1", "/v1beta/models/gemini-2.5-flash-image:generateContent", 1)
-	} else {
-		apiURL = baseURL + "v1beta/models/gemini-2.5-flash-image:generateContent"
-	}
-
-	reqBody := map[string]interface{}{
-		"contents": []interface{}{
-			map[string]interface{}{
-				"parts": []interface{}{
-					map[string]interface{}{"text": prompt},
-				},
-			},
-		},
-		"generationConfig": map[string]interface{}{
-			"imageConfig": map[string]interface{}{"aspectRatio": "1:1"},
-		},
-	}
-
-	jsonBytes, err := json.Marshal(reqBody)
+	resp, err := aiservice.ImageGen(ctx, profile.AgentImageGen, aiservice.ImageGenRequest{
+		Prompt:      prompt,
+		AspectRatio: "1:1",
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal payload: %w", err)
+		return nil, fmt.Errorf("image generation failed: %v", err)
+	}
+	if resp == nil || strings.TrimSpace(resp.ImageBase64) == "" {
+		return nil, errors.New("no image data returned (possibly blocked by safety filters)")
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewBuffer(jsonBytes))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("x-goog-api-key", provider.APIKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 90 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("http request failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		var errBuffer bytes.Buffer
-		_, _ = errBuffer.ReadFrom(resp.Body)
-		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, errBuffer.String())
-	}
-
-	var result struct {
-		Candidates []struct {
-			Content struct {
-				Parts []struct {
-					InlineData struct {
-						Data string `json:"data"`
-					} `json:"inlineData"`
-				} `json:"parts"`
-			} `json:"content"`
-		} `json:"candidates"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode response payload: %v", err)
-	}
-
-	var base64Data string
-	if len(result.Candidates) > 0 && len(result.Candidates[0].Content.Parts) > 0 {
-		for _, part := range result.Candidates[0].Content.Parts {
-			if part.InlineData.Data != "" {
-				base64Data = part.InlineData.Data
-				break
-			}
-		}
-	}
-	if base64Data == "" {
-		return nil, errors.New("no image base64 data returned from API response (possibly blocked by safety filters)")
-	}
-
-	imgBytes, err := base64.StdEncoding.DecodeString(base64Data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode base64 image data: %v", err)
+	imgBytes, decErr := base64.StdEncoding.DecodeString(resp.ImageBase64)
+	if decErr != nil {
+		return nil, fmt.Errorf("failed to decode base64 image data: %v", decErr)
 	}
 	return imgBytes, nil
 }

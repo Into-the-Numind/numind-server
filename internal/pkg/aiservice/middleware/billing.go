@@ -19,9 +19,10 @@ import (
 // Billing returns a Middleware that writes a UsageRecord for every AI service
 // call.  The record captures the pricing snapshot at call time and fills the
 // usage fields appropriate for the service_type:
-//   - llm  → tokens_input / tokens_output (from ChatResponse.Usage or final ChatChunk.Usage)
-//   - ocr  → call_count = 1
-//   - asr  → duration_seconds (from ASRResponse.DurationSeconds)
+//   - llm        → tokens_input / tokens_output (from ChatResponse.Usage or final ChatChunk.Usage)
+//   - ocr        → call_count = 1
+//   - image_gen  → call_count = 1 (flat per-call; analytics cost only, not a deduction)
+//   - asr        → duration_seconds (from ASRResponse.DurationSeconds)
 //
 // Failure contract (spec §6.3):
 //   - DB write failures are logged at ERROR but never propagated to the caller.
@@ -201,13 +202,14 @@ func persistRecord(ctx context.Context, record *model.UsageRecord, route *regist
 // ai_service.service_type (coarse: llm/ocr/asr) and pricing_rule.service_type
 // (fine: llm_chat/llm_vision/embedding/rerank/ocr/asr/...).
 //
-// Returns one of: llm_chat | llm_vision | embedding | rerank | ocr | asr
+// Returns one of: llm_chat | llm_vision | embedding | rerank | ocr | asr | image_gen
 //
 // Mapping rules:
-//   - OCRRequest    → "ocr"
-//   - ASRRequest    → "asr"
-//   - EmbedRequest  → "embedding"
-//   - RerankRequest → "rerank"
+//   - OCRRequest      → "ocr"
+//   - ASRRequest      → "asr"
+//   - EmbedRequest    → "embedding"
+//   - RerankRequest   → "rerank"
+//   - ImageGenRequest → "image_gen"
 //   - ChatRequest with any image_url part in any message → "llm_vision"
 //   - ChatRequest text-only → "llm_chat"
 //
@@ -240,6 +242,12 @@ func classifyServiceType(req any, fallbackServiceType string) string {
 	case *aiservice.RerankRequest:
 		if r != nil {
 			return "rerank"
+		}
+	case aiservice.ImageGenRequest:
+		return "image_gen"
+	case *aiservice.ImageGenRequest:
+		if r != nil {
+			return "image_gen"
 		}
 	case aiservice.ChatRequest:
 		return classifyChatRequest(r)
@@ -453,7 +461,11 @@ func populateUsage(ctx context.Context, r *model.UsageRecord, serviceType string
 	switch serviceType {
 	case "llm", "llm_chat", "llm_vision":
 		populateLLMUsage(r, resp, callErr, ctx)
-	case "ocr":
+	case "ocr", "image_gen":
+		// Per-call capabilities: one record == one call. The pricing_rule for
+		// image_gen is a flat per-call cost (for the UsageRecord/analytics cost
+		// only — the actual credit deduction is the tool's flat Reserve/Reconcile,
+		// NOT this UsageRecord).
 		c := 1
 		r.CallCount = &c
 	case "asr":
