@@ -14,6 +14,10 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
+	"numind-server/internal/pkg/aiservice/adapter"
+	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/log"
 	mw "numind-server/internal/pkg/middleware"
 	"numind-server/pkg/version/verflag"
@@ -65,6 +69,36 @@ func runAdmin() error {
 	// 初始化 store 层
 	if err := initStore(); err != nil {
 		return err
+	}
+
+	// 初始化 AI Service Gateway 单例。
+	// admin server 历史上不需要 AI（纯管理 API），故从不调 SetDefault；
+	// rag-eval 检索调试端点是首个会走检索栈（embed → 向量检索 → rerank）的 admin 路由，
+	// 触发 aiservice.Default() → panic("called before SetDefault")，且 embed 在 parallelSearch
+	// 的 goroutine 里跑，gin.Recovery 兜不住 → 整个进程崩。
+	// 这里挂一个最小 gateway：registry + providers + SetDefault，不挂 billing/budget/langfuse
+	// middleware（admin 不计费；gateway 对 nil chain 有兜底）。provider 凭据由 user server 启动时
+	// 已同步进 llm_provider 表，registry 从 DB 读取；此处仍非致命地 sync 一次保证自洽。
+	{
+		reg := registry.New(store.S.DB())
+		gw := aiservice.Build(aiservice.Deps{Registry: reg})
+		for _, p := range []aiservice.Provider{
+			adapter.NewAliAdapter(),
+			adapter.NewVolcAdapter(),
+			adapter.NewDMXAPIAdapter(),
+			adapter.NewBaiduOCRAdapter(),
+			adapter.NewBailianFileAdapter(),
+			adapter.NewFunASRAdapter(),
+		} {
+			gw.RegisterProvider(p)
+		}
+		gw.RegisterProviderAlias("dmxapi-ssvip", "dmxapi")
+		gw.RegisterProviderAlias("aihubmix", "dmxapi")
+		aiservice.SetDefault(gw)
+		log.Infow("AI Service Gateway initialised (admin, no-billing-middleware)", "adapters", gw.AdapterNames())
+		if err := aiservice.SyncProviderCredentials(context.Background(), store.S.DB(), viper.GetViper()); err != nil {
+			log.Errorw("Failed to sync AI provider credentials (admin), continuing", "error", err)
+		}
 	}
 
 	// Task 13 / T9: validate billing.b2b_cutover_date is configured.
