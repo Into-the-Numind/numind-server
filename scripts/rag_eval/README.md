@@ -4,7 +4,7 @@
 
 ## 组成
 
-- **打分引擎**:admin 端点 `POST /v1/admin/rag-eval/retrieve`(admin 服务 9099),复用真实 chatbot 检索栈(query 改写→多路向量检索→rerank),返回排序后的 chunk(doc_id+score)。**只读、不在任何生产用户流程**。
+- **打分引擎**:admin-gated 端点 `POST /v1/admin/rag-eval/retrieve`(注册在**用户服务 9091**,非 admin 服务——检索栈需要 AI gateway + 挂载的 sqlite-vec 卷,二者只在用户服务进程/容器存在;仍用 AdminAuthMiddleware 守卫),复用真实 chatbot 检索栈(query 改写→多路向量检索→rerank),返回排序后的 chunk(doc_id+score)。**只读、不在任何生产用户流程**。
 - **打分脚本**:`run_eval.py` 读黄金集 → 逐题调端点 → 算 recall@k / MRR / nDCG@k → 出报告(分题型 + 总体)。
 - **黄金集**:`golden.yaml`(问题 + 正确答案该来自哪篇),由业务方抽查确认。`golden.example.yaml` 是模板。
 
@@ -14,7 +14,7 @@
 pip install requests pyyaml          # 一次性
 export NUMIND_ADMIN_PASSWORD=<pw>    # 密码走环境变量,不硬编码进脚本/命令历史
 python3 run_eval.py --golden golden.yaml \
-    --base-url http://49.233.219.254:9099 --user admin --k 5
+    --base-url http://49.233.219.254:9091 --user admin --k 5
 # 默认对齐 chatbot 产线(rerank 0.6 阈值 + no_floor + 原话检索);
 # 加 --raw 看不带阈值的原始排序召回(诊断"是召回不到还是被阈值丢了")。
 ```
