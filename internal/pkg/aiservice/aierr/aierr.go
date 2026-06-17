@@ -35,10 +35,16 @@ type ProviderError struct {
 }
 
 func (e *ProviderError) Error() string {
-	if e.Err != nil {
-		return fmt.Sprintf("provider error [%s]: %s: %v", e.Semantic, e.Message, e.Err)
+	// Keep the raw provider code in the string (not just the semantic code) so logs
+	// and substring assertions can see the upstream's own code.
+	code := string(e.Semantic)
+	if e.ProviderCode != "" {
+		code += "/" + e.ProviderCode
 	}
-	return fmt.Sprintf("provider error [%s]: %s", e.Semantic, e.Message)
+	if e.Err != nil {
+		return fmt.Sprintf("provider error [%s]: %s: %v", code, e.Message, e.Err)
+	}
+	return fmt.Sprintf("provider error [%s]: %s", code, e.Message)
 }
 
 func (e *ProviderError) Unwrap() error { return e.Err }
@@ -76,11 +82,15 @@ func Classify(httpStatus int, code, typ, message string) SemanticCode {
 	switch {
 	case c == "context_length_exceeded" || strings.Contains(c, "context_length"):
 		return CodeContextLengthExceeded
+	case c == "invalid_image" || strings.Contains(c, "image_decode") || strings.Contains(c, "image_format"):
+		return CodeImageError
 	case c == "content_filter" || t == "content_filter" || strings.Contains(c, "content_policy"):
 		return CodeContentFilter
 	case c == "rate_limit_exceeded" || c == "rate_limited" || c == "requests_rate_limit" || httpStatus == 429:
 		return CodeRateLimited
-	case httpStatus == 401 || httpStatus == 403 || c == "invalid_api_key" || c == "authentication_error" || strings.Contains(c, "auth"):
+	// exact auth codes only — avoid a broad contains("auth") matching unrelated codes.
+	case httpStatus == 401 || httpStatus == 403 || c == "invalid_api_key" ||
+		c == "authentication_error" || c == "auth_failed" || c == "unauthorized":
 		return CodeAuthError
 	case httpStatus == 408 || httpStatus == 504:
 		return CodeProviderTimeout
@@ -101,8 +111,9 @@ func Classify(httpStatus int, code, typ, message string) SemanticCode {
 		return CodeRateLimited
 	}
 	// last: structured invalid_parameter (after substrings so a context-length
-	// message still classifies as PTL even when type=invalid_request_error)
-	if t == "invalid_request_error" || c == "invalid_parameter" || strings.Contains(c, "invalid") {
+	// message still classifies as PTL even when type=invalid_request_error). Use
+	// exact codes — a broad contains("invalid") would swallow e.g. invalid_image.
+	if t == "invalid_request_error" || c == "invalid_parameter" || c == "invalid_request_error" {
 		return CodeInvalidParameter
 	}
 	return CodeUnknown

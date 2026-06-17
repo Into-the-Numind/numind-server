@@ -42,7 +42,8 @@ func isPromptTooLong(err error) bool {
 	return strings.Contains(s, "context_length_exceeded") ||
 		strings.Contains(s, "prompt_too_long") ||
 		strings.Contains(s, "context window") ||
-		strings.Contains(s, "token limit exceeded")
+		strings.Contains(s, "token limit exceeded") ||
+		strings.Contains(s, "maximum context")
 }
 
 // isMaxOutputTokens 判定 err 是否是 max_tokens / max_output 错误。

@@ -90,6 +90,26 @@ func TestClassify(t *testing.T) {
 			message: "some unrelated upstream hiccup",
 			want:    CodeUnknown,
 		},
+		{
+			name:    "maximum context message -> PTL",
+			message: "request exceeds the maximum context of 8192 tokens",
+			want:    CodeContextLengthExceeded,
+		},
+		{
+			name: "structured invalid_image code -> image (not invalid_parameter)",
+			code: "invalid_image",
+			want: CodeImageError,
+		},
+		{
+			name: "structured authentication_error code -> auth",
+			code: "authentication_error",
+			want: CodeAuthError,
+		},
+		{
+			name: "non-auth code containing 'auth' substring -> NOT auth (tightened)",
+			code: "reauth_pending_unrelated",
+			want: CodeUnknown,
+		},
 	}
 
 	for _, c := range cases {

@@ -243,7 +243,7 @@ func (a *AliAdapter) Embed(ctx context.Context, route *registry.ResolvedRoute, r
 		return nil, fmt.Errorf("ali.Embed: decode: %w", err)
 	}
 	if dsResp.Code != "" {
-		return nil, fmt.Errorf("ali.Embed: provider error [%s]: %s", dsResp.Code, dsResp.Message)
+		return nil, fmt.Errorf("ali.Embed: %w", aierr.New(0, dsResp.Code, "", dsResp.Message, nil))
 	}
 	if len(dsResp.Output.Embeddings) == 0 {
 		return nil, fmt.Errorf("ali.Embed: empty embeddings")
@@ -313,7 +313,7 @@ func (a *AliAdapter) Rerank(ctx context.Context, route *registry.ResolvedRoute, 
 		return nil, fmt.Errorf("ali.Rerank: decode: %w", err)
 	}
 	if dsResp.Code != "" {
-		return nil, fmt.Errorf("ali.Rerank: provider error [%s]: %s", dsResp.Code, dsResp.Message)
+		return nil, fmt.Errorf("ali.Rerank: %w", aierr.New(0, dsResp.Code, "", dsResp.Message, nil))
 	}
 
 	results := make([]aiservice.RerankResult, 0, len(dsResp.Output.Results))
