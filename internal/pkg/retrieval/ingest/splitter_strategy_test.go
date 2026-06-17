@@ -45,3 +45,20 @@ func TestSplitWithStrategy_NoSplitShortText(t *testing.T) {
 	assert.NotEmpty(t, chunks)
 	assert.Equal(t, StrategyNoSplit, strategy, "短文本应为 no_split")
 }
+
+// TestFallbackChunkSize_Reasonable (T3): 规则兜底切出的块应贴近语义档(≤~1800+overlap),
+// 不再是 6000 字大块;长文本应切成多块。
+func TestFallbackChunkSize_Reasonable(t *testing.T) {
+	a := NewSplitterAdapter()
+	longText := strings.Repeat("创业要经历几个阶段,每个阶段的核心任务都不同。", 300) // ~6000+ 字
+
+	chunks, strategy, _, err := a.SplitWithStrategy(longText)
+	assert.NoError(t, err)
+	assert.Equal(t, StrategyFallback, strategy)
+	assert.GreaterOrEqual(t, len(chunks), 2, "长文本兜底应切成多块")
+
+	for i, c := range chunks {
+		// MaxChunkSize 1800 + overlap 300 + 少量余量(markdown/jieba 边界)
+		assert.LessOrEqualf(t, len([]rune(c.Content)), 2400, "块 %d 过大(应贴近 1800 档): %d 字", i, len([]rune(c.Content)))
+	}
+}

@@ -129,9 +129,12 @@ func NewCompatibilitySplitter(cfg SplitterConfig) *CompatibilitySplitter {
 	// 创建混合配置
 	hybridCfg := HybridSplitterConfig{
 		RuleConfig: EnhancedSplitterConfig{
-			MaxChunkSize:    6000, // 2000汉字 * 3
-			MinChunkSize:    1500, // 500汉字 * 3
-			OverlapSize:     300,  // 100汉字 * 3
+			// T3 好兜底:语义不可用时也要切得检索友好,贴近语义档(500-2000),
+			// 不再动辄 6000 字大块。MaxChunkSize 6000→1800(600汉字*3),
+			// MinChunkSize 1500→900(300汉字*3,给切分留足窗口)。
+			MaxChunkSize:    1800,
+			MinChunkSize:    900,
+			OverlapSize:     300, // 100汉字 * 3
 			EnableJieba:     true,
 			ProtectMarkdown: true,
 		},
