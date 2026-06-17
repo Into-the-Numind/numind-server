@@ -296,28 +296,45 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 		if len(docIDs) > 0 && b.retrieveSvc != nil {
 			// 注入 owner userID 供底座 rerank 计费/隔离归因（与 scope.UserID 一致）。
 			retrieveCtx := middleware.NewContextWithUserID(ctx, config.UserID)
-			result, retErr := b.retrieveSvc.Retrieve(retrieveCtx, message,
-				retrieve.Scope{
-					UserID:      config.UserID, // 使用智能体所有者的 userID 做隔离
-					DocumentIDs: docIDs,
-				},
-				retrieve.Options{
-					TopK:       chatStreamRetrieveTopK,
-					RerankTopN: chatStreamMaxChunks,
-					// F1: 用原始 message 检索，停用 query 改写。底座的 RewriteQuery
-					// 走 salesrag 的「销售意图分析师」prompt，会把 educational 通用问答
-					// 改写歪（销售视角污染），导致召回跑偏。chatbot 专属中性改写 prompt
-					// 是后续增强；当前用原话检索，优于销售改写。
-					RewriteQuery: false,
-					// F2: 高阈值 0.6 + 关闭保底 → 召回全是低相关度(40-50%)内容时返回空，
-					// chatbot 无 chunk → BuildChatContextFragments 走纯聊天，bot 从 system
-					// prompt 作答，不再 grounding 在不相关的「资料」上给困惑回答。
-					RerankMinScore: 0.6,
-					RerankNoFloor:  true,
-					History:        historyToStrings(historyMsgs),
-					BillingLabel:   chatStreamRetrieveBillingLabel,
-				},
-			)
+
+			// ③ 查询处理（chatbot-query-rewrite，flag 默认 OFF）：开启时用 chatbot 专属【中性
+			// 陈述】改写把口语 query 规整后再检索，抬高正确 chunk 的 rerank 分以恢复召回——不降
+			// 0.6 阈值、不破坏库外拒答（评估 harness 实测 in-KB recall 0.842→1.0、oob 拒答保持
+			// 1.0）。失败/超时在 rewriteQueryForRetrieval 内部回退原话。
+			effectiveQuery := message
+			if queryRewriteEnabled() {
+				// 把改写 span 挂到 vector-retrieval span 下（parent=vectorSpanID），trace 层级清晰。
+				rewriteCtx := langfuse.WithTraceAndParent(retrieveCtx, traceID, vectorSpanID)
+				effectiveQuery = b.rewriteQueryForRetrieval(rewriteCtx, message)
+			}
+
+			retrieveScope := retrieve.Scope{
+				UserID:      config.UserID, // 使用智能体所有者的 userID 做隔离
+				DocumentIDs: docIDs,
+			}
+			retrieveOpts := retrieve.Options{
+				TopK:       chatStreamRetrieveTopK,
+				RerankTopN: chatStreamMaxChunks,
+				// F1: 不走底座 RewriteQuery（salesrag「销售意图分析师」prompt 会把 educational
+				// 通用问答改写歪/销售视角污染）。chatbot 专属中性改写改在上面 effectiveQuery 处做，
+				// 传入已改写文本；底座保持 RewriteQuery=false，按传入文本语义检索。
+				RewriteQuery: false,
+				// F2: 高阈值 0.6 + 关闭保底 → 召回全是低相关度(40-50%)内容时返回空，
+				// chatbot 无 chunk → BuildChatContextFragments 走纯聊天，bot 从 system
+				// prompt 作答，不再 grounding 在不相关的「资料」上给困惑回答。
+				RerankMinScore: 0.6,
+				RerankNoFloor:  true,
+				History:        historyToStrings(historyMsgs),
+				BillingLabel:   chatStreamRetrieveBillingLabel,
+			}
+			result, retErr := b.retrieveSvc.Retrieve(retrieveCtx, effectiveQuery, retrieveScope, retrieveOpts)
+			// 安全网：改写后检索为空（改写可能过度抽象丢了锚词）→ 用原话再检一次，避免 ③ 改写
+			// 把召回反而打没（anchor-drop 回归，feasibility 实测过的主风险）。
+			if retErr == nil && len(result.Chunks) == 0 && effectiveQuery != message {
+				log.C(ctx).Infow("ChatStream: rewritten query returned no chunks, retrying with original",
+					"rewritten", effectiveQuery)
+				result, retErr = b.retrieveSvc.Retrieve(retrieveCtx, message, retrieveScope, retrieveOpts)
+			}
 			if retErr != nil {
 				// 检索失败降级为无资料回答（不阻断对话），与原裸检索失败语义一致。
 				log.C(ctx).Warnw("ChatStream: base retrieval failed", "error", retErr)
