@@ -22,6 +22,14 @@ type IMeetingStore interface {
 	ListSessions(ctx context.Context, userID uint, offset, limit int) ([]model.MeetingSession, int64, error)
 	// UpdateSession 全量保存会话（含零值字段，用 db.Save，参 .claude/rules/database.md §6b：Save 对零值 bool 安全）。
 	UpdateSession(ctx context.Context, s *model.MeetingSession) error
+	// UpdateSessionSummary 只更新 summary + summary_status 两列（定向列更新，避免异步路径全行
+	// Save 互相覆盖并发 goroutine 写的其它列，如 running_summary）。
+	UpdateSessionSummary(ctx context.Context, id uint64, summary, status string) error
+	// UpdateRunningSummary 只更新 running_summary 一列（定向列更新，避免覆盖 finalize 并发写的
+	// summary/summary_status）。
+	UpdateRunningSummary(ctx context.Context, id uint64, runningSummary string) error
+	// MarkSummaryStatus 只更新 summary_status 一列（定向列更新，失败收尾用）。
+	MarkSummaryStatus(ctx context.Context, id uint64, status string) error
 
 	// --- segment ---
 	// CreateSegment 追加一条转写分段（写回 ID）。
@@ -98,6 +106,42 @@ func (s *meetingStore) ListSessions(ctx context.Context, userID uint, offset, li
 // UpdateSession 全量保存会话。用 db.Save（含 SELECT "*"，对零值 bool 安全，见 .claude/rules/database.md §6b）。
 func (s *meetingStore) UpdateSession(ctx context.Context, m *model.MeetingSession) error {
 	return s.db.WithContext(ctx).Save(m).Error
+}
+
+// UpdateSessionSummary 定向更新 summary + summary_status 两列。
+//
+// 用于异步纪要生成回写：finalizeSummaryAsync 与 runRollingSummaryFold 是两个并发后台 goroutine，
+// 各自「读 session → 隔几秒 LLM → 回写」。若都用全行 db.Save，finalize 写 summary 时会把并发 fold
+// 刚写的 running_summary 用自己读到的旧值覆盖（反之亦然，丢更新）。改用 map 形式的定向列更新只触
+// 碰自己负责的列，规避丢更新竞争。map 形式（非 struct）保证空字符串/零值也写入。
+func (s *meetingStore) UpdateSessionSummary(ctx context.Context, id uint64, summary, status string) error {
+	return s.db.WithContext(ctx).
+		Model(&model.MeetingSession{}).
+		Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"summary":        summary,
+			"summary_status": status,
+		}).Error
+}
+
+// UpdateRunningSummary 定向更新 running_summary 一列（避免覆盖 finalize 并发写的 summary 列）。
+func (s *meetingStore) UpdateRunningSummary(ctx context.Context, id uint64, runningSummary string) error {
+	return s.db.WithContext(ctx).
+		Model(&model.MeetingSession{}).
+		Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"running_summary": runningSummary,
+		}).Error
+}
+
+// MarkSummaryStatus 定向更新 summary_status 一列（失败收尾用）。
+func (s *meetingStore) MarkSummaryStatus(ctx context.Context, id uint64, status string) error {
+	return s.db.WithContext(ctx).
+		Model(&model.MeetingSession{}).
+		Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"summary_status": status,
+		}).Error
 }
 
 // --- segment ---

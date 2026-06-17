@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,6 +34,13 @@ import (
 
 // asrBytesPerSecond 是 16kHz / 16bit / 单声道 PCM 每秒字节数（SPEC §1：16000*2）。
 const asrBytesPerSecond = 16000 * 2
+
+// rollingSummaryRuneThreshold 触发滚动摘要折叠的累计新增字数阈值（FEEDBACK_V2_SPEC §2.2：~1500 字）。
+const rollingSummaryRuneThreshold = 1500
+
+// rollingSummaryTimeThreshold 触发滚动摘要折叠的时间阈值（FEEDBACK_V2_SPEC §2.2：~90 秒）。
+// 仅当自上次折叠后有过新增内容时才按时间触发（避免静默会话空跑）。
+const rollingSummaryTimeThreshold = 90 * time.Second
 
 // aliDashscopeProviderName 是 registry `llm_provider` 中阿里供应商的 name（SPEC §1：复用同账号 key）。
 const aliDashscopeProviderName = "ali-dashscope"
@@ -81,6 +89,17 @@ type realtimeASR struct {
 	usageDone bool
 	startedAt time.Time
 
+	// --- 滚动摘要节流状态（FEEDBACK_V2_SPEC §2.2，受 mu 保护）---
+	// summaryRunesPending 自上次折叠以来累计的新增字数（节流计数器，达阈值触发）。
+	summaryRunesPending int
+	// summaryLastFoldAt 上次触发折叠的时间（90s 时间闸）。零值表示从未折叠。
+	summaryLastFoldAt time.Time
+	// summaryInFlight 防并发重入：一次只允许一个后台折叠 goroutine（in-memory per session）。
+	summaryInFlight bool
+	// summaryFoldedSeq 折叠游标：已折进 running_summary 的最后一段 seq（in-memory per session，
+	// 重连重置可接受——折叠幂等性由「摘要+新增」prompt 容忍，FEEDBACK_V2_SPEC §2.2）。
+	summaryFoldedSeq int
+
 	// langfuse 观测句柄（优雅降级：tc 为 nil 时全程跳过）。
 	traceID string
 	genID   string
@@ -113,13 +132,20 @@ func (b *meetingBiz) StartRealtimeASR(ctx context.Context, userID uint, sessionI
 		return nil, fmt.Errorf("StartRealtimeASR: max seq: %w", err)
 	}
 
+	now := time.Now()
 	r := &realtimeASR{
 		b:         b,
 		userID:    userID,
 		sessionID: sessionID,
 		handlers:  handlers,
 		nextSeq:   maxSeq, // 落库时先 +1
-		startedAt: time.Now(),
+		startedAt: now,
+		// 折叠游标从 maxSeq 起：本连接只折叠新转写，已有段（若有）不重折——重连续接时它们
+		// 多已在上次连接折进 running_summary（或可接受地略过，prompt 容忍）。
+		summaryFoldedSeq: maxSeq,
+		// summaryLastFoldAt 初始化为会议开始时间（非零）：90s 时间闸从开始就计时，首轮也能
+		// 按时间触发。否则稀疏内容（5 分钟攒不到 1500 字）会永远等不到字数阈值、永不折叠。
+		summaryLastFoldAt: now,
 	}
 
 	// Langfuse trace+generation（SPEC §4，优雅降级）。internalCallCtx 不注入 trace，故此处显式
@@ -260,6 +286,140 @@ func (r *realtimeASR) handleFinal(text string, beginMs, endMs int64) {
 	if r.handlers.OnFinal != nil {
 		r.handlers.OnFinal(toSegmentDTO(seg))
 	}
+
+	// 节流触发滚动摘要折叠（FEEDBACK_V2_SPEC §2.2）：纯后台，绝不阻塞中继/录音。
+	r.maybeUpdateRollingSummary(text)
+}
+
+// ---------------------------------------------------------------------------
+// 滚动摘要节流折叠（FEEDBACK_V2_SPEC §2.2/§2.4）
+// ---------------------------------------------------------------------------
+
+// maybeUpdateRollingSummary 在每条 final 段落库后调用：累计新增字数，达字数(~1500)或时间(~90s)
+// 阈值且当前无折叠在途时，spawn 一个后台 goroutine 把新增转写折进 running_summary。
+//
+// 绝不阻塞调用方（reader goroutine）：阈值判断/计数在锁内 O(1) 完成，真正的 LLM 调用在独立
+// goroutine + context.Background() 里跑。每会话 summaryInFlight 防并发重入；失败仅 log。
+func (r *realtimeASR) maybeUpdateRollingSummary(latestText string) {
+	runes := len([]rune(strings.TrimSpace(latestText)))
+
+	r.mu.Lock()
+	r.summaryRunesPending += runes
+	now := time.Now()
+
+	// 时间闸：仅在有新增内容（pending>0）时才按时间触发，避免静默会话空跑。summaryLastFoldAt 在
+	// StartRealtimeASR 已初始化为会议开始时间（非零），故首轮也能按 90s 时间触发——稀疏会议（攒不到
+	// 1500 字）不会永远等不到字数阈值。!IsZero() 守卫保留兜底（防御零值构造的实例）。
+	timeReady := r.summaryRunesPending > 0 &&
+		!r.summaryLastFoldAt.IsZero() &&
+		now.Sub(r.summaryLastFoldAt) >= rollingSummaryTimeThreshold
+	runeReady := r.summaryRunesPending >= rollingSummaryRuneThreshold
+
+	// 字数闸或时间闸任一达标即触发；in-flight 时一律不重入。
+	if r.summaryInFlight || (!runeReady && !timeReady) {
+		r.mu.Unlock()
+		return
+	}
+
+	// 抢占折叠窗口：清零计数、记时间、置 in-flight，capture 折叠区间上界（当前 max seq）。
+	r.summaryInFlight = true
+	r.summaryRunesPending = 0
+	r.summaryLastFoldAt = now
+	fromSeqExclusive := r.summaryFoldedSeq
+	toSeqInclusive := r.nextSeq
+	r.mu.Unlock()
+
+	go r.runRollingSummaryFold(fromSeqExclusive, toSeqInclusive)
+}
+
+// runRollingSummaryFold 后台折叠一次滚动摘要：读 (fromSeqExclusive, toSeqInclusive] 区间的新增
+// 转写 + 已有 running_summary → updateRunningSummary → 回写 meeting_session.running_summary。
+//
+// 独立 context.Background()（ws 关闭不该打断），recover() 防 panic，失败仅 log（绝不影响
+// 转写/反馈）。结束时释放 summaryInFlight 并推进折叠游标。
+func (r *realtimeASR) runRollingSummaryFold(fromSeqExclusive, toSeqInclusive int) {
+	defer func() {
+		// recover() 必须在 defer 闭包**最先**调用才能捕获 body 的 panic（Go 语义）；放在
+		// mutex 复位之后会让 panic 逃逸、goroutine 崩进程。故先 recover、再复位 in-flight 标记。
+		if rec := recover(); rec != nil {
+			log.Errorw("meeting realtime: rolling summary fold panicked",
+				"session_id", r.sessionID, "panic", rec)
+		}
+		// 无论成功失败/是否 panic 都释放在途标记，下一拍可再触发。
+		r.mu.Lock()
+		r.summaryInFlight = false
+		r.mu.Unlock()
+	}()
+
+	ctx := context.Background()
+
+	// 取当前会话（拿已有 running_summary）。
+	s, err := r.b.ds.Meetings().GetSession(ctx, r.sessionID)
+	if err != nil {
+		log.Warnw("meeting realtime: rolling summary fold load session failed",
+			"session_id", r.sessionID, "error", err)
+		return
+	}
+
+	// 取新增转写区间 (fromSeqExclusive, toSeqInclusive]。复用全量 ListSegments + 内存过滤
+	// （会话内分段量级有限；store 无 by-seq-range 方法，避免为此扩接口）。
+	segs, err := r.b.ds.Meetings().ListSegmentsBySession(ctx, r.sessionID)
+	if err != nil {
+		log.Warnw("meeting realtime: rolling summary fold list segments failed",
+			"session_id", r.sessionID, "error", err)
+		return
+	}
+	delta := joinSegmentRange(segs, fromSeqExclusive, toSeqInclusive)
+	if strings.TrimSpace(delta) == "" {
+		return // 该区间无实质内容（全静音），不调 LLM。
+	}
+
+	updated, err := r.b.updateRunningSummary(ctx, r.userID, r.sessionID, s.RunningSummary, delta)
+	if err != nil {
+		log.Warnw("meeting realtime: rolling summary fold LLM failed",
+			"session_id", r.sessionID, "error", err)
+		return
+	}
+	if strings.TrimSpace(updated) == "" || updated == s.RunningSummary {
+		// 内容未变化（理论上 updateRunningSummary 已处理空增量），推进游标即可。
+		r.advanceFoldCursor(toSeqInclusive)
+		return
+	}
+
+	// 定向只更 running_summary 一列（不用全行 Save）：与 finalizeSummaryAsync 并发跑时，避免把
+	// 它刚写的 summary/summary_status 用本 goroutine 读到的旧值覆盖（丢更新竞争）。
+	if err := r.b.ds.Meetings().UpdateRunningSummary(ctx, r.sessionID, updated); err != nil {
+		log.Warnw("meeting realtime: rolling summary persist failed",
+			"session_id", r.sessionID, "error", err)
+		return
+	}
+	r.advanceFoldCursor(toSeqInclusive)
+}
+
+// advanceFoldCursor 把折叠游标前移到 seq（单调不回退；并发安全）。
+func (r *realtimeASR) advanceFoldCursor(seq int) {
+	r.mu.Lock()
+	if seq > r.summaryFoldedSeq {
+		r.summaryFoldedSeq = seq
+	}
+	r.mu.Unlock()
+}
+
+// joinSegmentRange 拼接 (fromSeqExclusive, toSeqInclusive] 区间内非空分段文本，按 seq 时间顺序。
+func joinSegmentRange(segs []model.MeetingSegment, fromSeqExclusive, toSeqInclusive int) string {
+	var parts []string
+	for i := range segs {
+		seq := segs[i].Seq
+		if seq <= fromSeqExclusive || seq > toSeqInclusive {
+			continue
+		}
+		t := strings.TrimSpace(segs[i].Text)
+		if t == "" {
+			continue
+		}
+		parts = append(parts, t)
+	}
+	return strings.Join(parts, "\n")
 }
 
 func (r *realtimeASR) handleError(err error) {
