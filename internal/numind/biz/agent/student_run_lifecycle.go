@@ -134,10 +134,16 @@ func (s *StudentRunService) Estimate(ctx context.Context, userID uint, req Estim
 	}
 
 	// Combine message length + a representative system prompt size.
-	// In production, ad.GeneratedSkillBody is the actual prompt; use that if available.
+	// New agents store the prompt in ad.SystemPrompt (V2 runtime path); legacy
+	// questionnaire/advanced agents use GeneratedSkillBody/CustomSkillBody. Mirror
+	// assembleSystemPrompt's V2-vs-legacy split so the reserve estimate isn't 0 for
+	// new agents (T1: questionnaire removed, SystemPrompt is the canonical prompt).
 	systemPromptLen := len(ad.GeneratedSkillBody)
 	if ad.AdvancedMode {
 		systemPromptLen = len(ad.CustomSkillBody)
+	}
+	if ad.SystemPrompt != "" {
+		systemPromptLen = len(ad.SystemPrompt)
 	}
 	promptCharCount := systemPromptLen + len(req.Message) + 500 // +500 heuristic overhead
 
