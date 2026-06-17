@@ -578,7 +578,7 @@ func (r *agentRunner) RunStream(
 				log.Warnw("AgentRunner.RunStream terminateRunContextExhausted persist failed", "agent_run_id", run.ID, "error", tErr)
 			}
 			// Emit error + terminal so the SSE client sees a clean close.
-			emitStreamErrorEvents(ch, run.ID, streamErr, TerminalModelError, startTime)
+			emitStreamErrorEvents(ch, run.ID, sharedState.Seq.Load(), streamErr, TerminalModelError, startTime)
 			return &RunResult{
 				AgentRunID:     run.ID,
 				TerminalReason: TerminalModelError,
@@ -618,7 +618,7 @@ func (r *agentRunner) RunStream(
 		// user's input (and the error terminal) survive a reload — previously
 		// this branch only flipped run state, leaving messages empty and the
 		// session blank after refresh (dev run #117 second defect).
-		emitStreamErrorEvents(ch, run.ID, streamErr, TerminalModelError, startTime)
+		emitStreamErrorEvents(ch, run.ID, sharedState.Seq.Load(), streamErr, TerminalModelError, startTime)
 		errSt := &LoopState{TerminalReason: TerminalModelError}
 		applyHookOverride(effectiveHooks, errSt)
 		if _, fErr := r.finalizeRun(ctx, run, errSt, startTime, "", "", nil, false, skillVer, isTrivial, req, permDenialSink, streamErr, sessionID, priorMessages); fErr != nil {
@@ -730,10 +730,14 @@ func newChanEmitter(state *StreamSessionState) func(stream.EventType, any) {
 }
 
 // emitStreamErrorEvents sends an EventError + EventTerminal pair onto ch (non-blocking
-// via buffered send). Used when einoAgent.Stream returns an error before any chunks
-// are emitted, so the SSE client receives a structured close rather than a silent EOF.
-// The seq argument is always 1 (first event in a new stream).
-func emitStreamErrorEvents(ch chan<- stream.Event, runID uint64, err error, reason TerminalReason, startTime time.Time) {
+// via buffered send). Used when einoAgent.Stream returns an error, so the SSE client
+// receives a structured close rather than a silent EOF.
+//
+// seqBase is the current value of the shared StreamSessionState.Seq (0 when no state
+// is available, e.g. the panic-recovery backstop). The error/terminal pair use
+// seqBase+1 / seqBase+2 so they stay monotonic after any events the run already
+// emitted (the model can error mid-stream once the checker has advanced the counter).
+func emitStreamErrorEvents(ch chan<- stream.Event, runID uint64, seqBase uint64, err error, reason TerminalReason, startTime time.Time) {
 	// Raw error → logs only (for ops). Users see the friendly translation.
 	log.Warnw("agent run stream error", "agent_run_id", runID, "terminal_reason", reason, "error", err.Error())
 	userMsg := UserFacingErrorMessage(err)
@@ -741,7 +745,7 @@ func emitStreamErrorEvents(ch chan<- stream.Event, runID uint64, err error, reas
 	errEv, encErr := stream.Encode(stream.EventError, stream.ErrorPayload{
 		Code:    "model_error",
 		Message: userMsg,
-	}, 1, runID, 0)
+	}, seqBase+1, runID, 0)
 	if encErr == nil {
 		select {
 		case ch <- errEv:
@@ -760,7 +764,7 @@ func emitStreamErrorEvents(ch chan<- stream.Event, runID uint64, err error, reas
 			"error_message": userMsg,
 			"error_detail":  err.Error(),
 		},
-	}, 2, runID, 0)
+	}, seqBase+2, runID, 0)
 	if encErr == nil {
 		select {
 		case ch <- termEv:

@@ -34,7 +34,9 @@ func recoverAgentRunPanic(rec any, runID uint64, runStore store.IAgentRunStore, 
 		}
 	}
 	if ch != nil {
-		emitStreamErrorEvents(ch, runID, err, TerminalModelError, startTime)
+		// seqBase=0: the panic-recovery backstop has no shared StreamSessionState in
+		// scope; error/terminal use seq 1/2 (the FE never reorders these events).
+		emitStreamErrorEvents(ch, runID, 0, err, TerminalModelError, startTime)
 	}
 	return err
 }

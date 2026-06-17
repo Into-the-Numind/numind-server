@@ -27,7 +27,7 @@ func TestEmitStreamErrorEvents_UserFacingMessage(t *testing.T) {
 	ch := make(chan stream.Event, 8)
 	rawErr := errors.New(`dmxapi.Chat: doPost /chat/completions: HTTP 403: {"error":{"message":"The free tier of the model has been exhausted","code":"AllocationQuota.FreeTierOnly"}}`)
 
-	emitStreamErrorEvents(ch, 1, rawErr, TerminalModelError, time.Now())
+	emitStreamErrorEvents(ch, 1, 0, rawErr, TerminalModelError, time.Now())
 
 	var errMsg string
 	for {
