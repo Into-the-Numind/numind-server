@@ -174,10 +174,7 @@ func (s *StudentRunService) Estimate(ctx context.Context, userID uint, req Estim
 		estPromptTokens = tokens
 	}
 
-	// Cap estimate at credit_cap_per_session if configured.
-	if ad.CreditCapPerSession != nil && int64(*ad.CreditCapPerSession) < estCredits {
-		estCredits = int64(*ad.CreditCapPerSession)
-	}
+	// Per-session credit cap removed (2026-06-17): estimate is no longer clamped.
 
 	// Derive {min, max, is_large_task} band from central estimate (web-v3 contract).
 	// ±20% band accounts for completion-token variance in ReAct loops.
@@ -761,59 +758,6 @@ func (s *StudentRunService) Cancel(ctx context.Context, userID uint, runID uint6
 
 	s.runner.Cancel(runID)
 	return nil
-}
-
-// ---------------------------------------------------------------------------
-// ExtendBudget
-// ---------------------------------------------------------------------------
-
-// ExtendBudgetRequest is the payload for POST /v1/agent-runs/:id/extend-budget.
-type ExtendBudgetRequest struct {
-	AddCredits int `json:"add_credits" binding:"required,min=1"`
-}
-
-// ExtendBudget records a budget extension for a paused/budget-exceeded run.
-// v1: writes extension metadata to agent_run.terminal_metadata; full resume
-// (re-invoking AgentRunner.Run from checkpoint) is deferred to a later feature.
-func (s *StudentRunService) ExtendBudget(ctx context.Context, userID uint, runID uint64, req ExtendBudgetRequest) (*model.AgentRun, error) {
-	if err := s.verifyRunOwnership(ctx, userID, runID); err != nil {
-		return nil, err
-	}
-
-	run, err := s.runStore.Get(ctx, runID)
-	if err != nil {
-		return nil, fmt.Errorf("StudentRunService.ExtendBudget: get run: %w", err)
-	}
-
-	// Only allow extension on runs that stopped due to budget exhaustion.
-	// "terminated" + state_reason matching budget-exceeded signals.
-	if run.Status != "terminated" {
-		return nil, fmt.Errorf("StudentRunService.ExtendBudget: run is not in a terminal state (status=%s)", run.Status)
-	}
-
-	// Write extension record to terminal_metadata.
-	ext := map[string]any{
-		"budget_extension": map[string]any{
-			"add_credits": req.AddCredits,
-			"extended_at": time.Now().Format(time.RFC3339),
-			"extended_by": userID,
-		},
-	}
-	extJSON, err := json.Marshal(ext)
-	if err != nil {
-		return nil, fmt.Errorf("StudentRunService.ExtendBudget: marshal metadata: %w", err)
-	}
-
-	if err := s.runStore.UpdateTerminalMetadata(ctx, runID, extJSON); err != nil {
-		return nil, fmt.Errorf("StudentRunService.ExtendBudget: update metadata: %w", err)
-	}
-
-	// Re-fetch updated run.
-	updated, err := s.runStore.Get(ctx, runID)
-	if err != nil {
-		return nil, fmt.Errorf("StudentRunService.ExtendBudget: re-fetch: %w", err)
-	}
-	return updated, nil
 }
 
 // ---------------------------------------------------------------------------

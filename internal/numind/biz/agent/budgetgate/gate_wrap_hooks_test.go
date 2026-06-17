@@ -70,7 +70,7 @@ func TestWrapHooks_PreToolCall_AllowForwardsToBase(t *testing.T) {
 func TestWrapHooks_PreToolCall_ExceededShortCircuits(t *testing.T) {
 	tr := budget.NewTracker(nil)
 	// Limits with MaxTurns=1 → CanProceed exceeded after 1 RecordStep
-	tr.Start(context.Background(), 1, 1, budget.Limits{MaxTurns: 1, MaxCredits: 1000, MaxWallTime: time.Hour, MaxDailyCredits: 10000})
+	tr.Start(context.Background(), 1, 1, budget.Limits{MaxTurns: 1, MaxWallTime: time.Hour, MaxDailyCredits: 10000})
 	defer tr.Close(1)
 	tr.RecordStep(context.Background(), 1)
 
@@ -174,7 +174,7 @@ func TestWrapHooks_PreservesRegistry(t *testing.T) {
 
 func TestWrapHooks_PostToolCall_RunStoreNil_NoCrash(t *testing.T) {
 	tr := budget.NewTracker(nil)
-	tr.Start(context.Background(), 1, 1, budget.Limits{MaxTurns: 1, MaxCredits: 1000, MaxWallTime: time.Hour, MaxDailyCredits: 10000})
+	tr.Start(context.Background(), 1, 1, budget.Limits{MaxTurns: 1, MaxWallTime: time.Hour, MaxDailyCredits: 10000})
 	defer tr.Close(1)
 	tr.RecordStep(context.Background(), 1)
 

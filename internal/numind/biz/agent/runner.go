@@ -230,7 +230,7 @@ func WithBudgetTracker(t budget.BudgetTracker) RunnerOption {
 
 // WithCallUsageStore injects the process-level callID→Usage store (agent-mode-billing
 // T6). Each per-run adapter writes real LLM token Usage into it; budgetgate reads
-// it (via WithUsageLookup over the same store) to feed RecordUsage → MaxCredits.
+// it (via WithUsageLookup over the same store) to feed RecordUsage → daily-credits.
 func WithCallUsageStore(m *sync.Map) RunnerOption {
 	return func(r *agentRunner) {
 		r.callUsageStore = m
@@ -904,7 +904,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 		taskID:       profile.AgentRun,
 		systemPrompt: req.SystemPrompt, // #7 memory-system: assembled by Step 4 6-segment formula (PlatformBase + tenantRules + body + disclaimer + memory + tools + Footer)
 		// agent-mode-billing T6: shared callID→Usage store so budgetgate's
-		// WithUsageLookup sees real token counts (MaxCredits). nil-safe via helper.
+		// WithUsageLookup sees real token counts (daily-credits). nil-safe via helper.
 		usageStore: r.adapterUsageStore(),
 		// Explicit output cap so the resume path's thinking model never truncates a
 		// trailing tool call at the provider default (dev run 133).

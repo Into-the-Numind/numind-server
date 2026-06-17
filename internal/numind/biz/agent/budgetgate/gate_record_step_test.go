@@ -19,7 +19,6 @@ func TestPreToolCall_RecordsStep_TripsMaxTurns(t *testing.T) {
 	tr := budget.NewTracker(nil)
 	limits := budget.Limits{
 		MaxTurns:        2,
-		MaxCredits:      800,
 		MaxWallTime:     time.Hour,
 		MaxDailyCredits: 2000,
 	}

@@ -34,12 +34,13 @@ type Snapshot struct {
 	StartedAt    time.Time
 }
 
-// Limits is the 4-dimensional budget configuration passed to BudgetTracker.Start.
+// Limits is the budget configuration passed to BudgetTracker.Start.
+// The per-session credit cap was removed (2026-06-17 agent-credit-cap-redesign);
+// only turns / wall-time / daily-credits remain.
 type Limits struct {
-	MaxTurns        int           // default 50; agent_definition.max_turns_per_run not yet introduced (v1)
-	MaxCredits      int64         // from agent_definition.credit_cap_per_session (×1, no coefficient in v1)
-	MaxWallTime     time.Duration // default 300s
-	MaxDailyCredits int64         // from agent_definition.daily_credit_cap or default 2000
+	MaxTurns        int           // default 100; agent_definition.max_turns_per_run not yet introduced (v1)
+	MaxWallTime     time.Duration // default 900s
+	MaxDailyCredits int64         // from agent_definition.daily_credit_cap or default 200000
 }
 
 // Default constants for admin_test pool.

@@ -11,18 +11,20 @@ type Dimension string
 
 const (
 	DimMaxTurns        Dimension = "max_turns"
-	DimMaxCredits      Dimension = "max_credits"
 	DimMaxWallTime     Dimension = "max_wall_time"
 	DimMaxDailyCredits Dimension = "max_daily_credits"
 )
 
-// DefaultLimits returns the 4-dim defaults used when agent_definition fields are zero/nil.
+// DefaultLimits returns the budget defaults used when agent_definition fields are zero/nil.
 //
 // Values:
 //   - MaxTurns        = 100 (蓝本 §4.1.8 step limit default — raised from 50)
-//   - MaxCredits      = 800 (蓝本 §6.6 default 配置上限)
 //   - MaxWallTime     = 900s
-//   - MaxDailyCredits = 2000
+//   - MaxDailyCredits = 200000
+//
+// 注：per-session credit cap（旧 MaxCredits / agent_definition.credit_cap_per_session）
+// 已整体移除（2026-06-17 agent-credit-cap-redesign）。单次 run 的成本不再单独设上限，
+// 只受 MaxTurns（卡死保护）+ MaxWallTime（墙钟）+ MaxDailyCredits（用户日总额）约束。
 //
 // MaxWallTime was 300s, but a single multi-artifact run (web research + a full
 // HTML report + a multi-slide PPT via the sandbox skill) legitimately runs just
@@ -33,16 +35,15 @@ const (
 // batches) burned through that budget before reaching create_html / invoke_skill
 // (dev agent_run 76 on 2026-05-29). Raised 50 → 100 so the agent has actual
 // room for a long research + artifact-generation chain in one pass. Cost remains
-// bounded by MaxCredits (800/run) and MaxDailyCredits (2000); MaxTurns is the
-// stuck-loop guard, and 100 is still well below any reasonable runaway threshold.
-// Eino's per-graph MaxStep (runner.go / runner_runstream.go) is kept > this
-// value (currently 120) so termination always flows through this budget gate.
+// bounded by MaxDailyCredits (200000); MaxTurns is the stuck-loop guard, and the
+// per-session cap is removed. 100 is still well below any reasonable runaway
+// threshold. Eino's per-graph MaxStep (runner.go / runner_runstream.go) is kept
+// > this value (currently 120) so termination always flows through this budget gate.
 func DefaultLimits() Limits {
 	return Limits{
 		MaxTurns:        100,
-		MaxCredits:      800,
 		MaxWallTime:     900 * time.Second,
-		MaxDailyCredits: 2000,
+		MaxDailyCredits: 200000,
 	}
 }
 
@@ -50,19 +51,14 @@ func DefaultLimits() Limits {
 // nil / zero values fall back to DefaultLimits — callers don't need to handle.
 //
 // 字段类型注意（model.AgentDefinition #5 落地）：
-//   - CreditCapPerSession *uint
-//   - DailyCreditCap      *uint
+//   - DailyCreditCap *uint （需要 nil-pointer 守护后 deref）
 //
-// 都需要 nil-pointer 守护后 deref。
-//
+// per-session credit cap 已移除（2026-06-17）；只剩 daily cap 可由 agent_definition 覆盖。
 // MaxTurnsPerRun 字段 v1 未引入 agent_definition；走 DefaultLimits.MaxTurns。
 func LimitsFromAgentDef(ad *model.AgentDefinition) Limits {
 	d := DefaultLimits()
 	if ad == nil {
 		return d
-	}
-	if ad.CreditCapPerSession != nil && *ad.CreditCapPerSession > 0 {
-		d.MaxCredits = int64(*ad.CreditCapPerSession)
 	}
 	if ad.DailyCreditCap != nil && *ad.DailyCreditCap > 0 {
 		d.MaxDailyCredits = int64(*ad.DailyCreditCap)

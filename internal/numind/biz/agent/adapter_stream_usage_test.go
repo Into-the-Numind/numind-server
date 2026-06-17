@@ -12,11 +12,11 @@ import (
 	"numind-server/internal/pkg/aiservice"
 )
 
-// TestAdapter_Stream_StashesUsage reproduces the inert per-session credit cap: the
+// TestAdapter_Stream_StashesUsage reproduces an inert budget guardrail: the
 // PRODUCTION path is streaming (adapter.Stream), but only Generate stashed token usage
-// — so budgetgate's MaxCredits dimension stayed 0 for streaming runs and the per-agent
-// CreditCapPerSession (CreditSlider) never enforced. Stream must stash the final
-// chunk's usage keyed by call-id, exactly like Generate, so the cap accrues.
+// — so budgetgate's credit accounting stayed 0 for streaming runs (originally the
+// per-session cap, now the daily-credits dimension). Stream must stash the final
+// chunk's usage keyed by call-id, exactly like Generate, so the credit total accrues.
 func TestAdapter_Stream_StashesUsage(t *testing.T) {
 	origStreamFn := chatStreamFn
 	t.Cleanup(func() { chatStreamFn = origStreamFn })

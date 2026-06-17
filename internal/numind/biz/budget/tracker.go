@@ -5,6 +5,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"numind-server/internal/pkg/log"
 )
 
 // BudgetTracker tracks the 4-dimensional budget state per agent run.
@@ -25,14 +27,15 @@ type BudgetTracker interface {
 	Snapshot(ctx context.Context, runID uint64) Snapshot
 }
 
-// IBudgetStore is the optional persistence layer (v1: nil OK).
-// TODO(#14): wire a Redis-backed implementation for multi-instance daily aggregate.
+// IBudgetStore is the optional cross-instance persistence layer for the daily
+// aggregate. nil → in-process only (tests / dev without Redis).
 type IBudgetStore interface {
-	// GetUserDailyCredits returns the user's accumulated daily credits.
-	// Returns 0 + nil when no row yet for today.
+	// AddUserDailyCredits atomically adds delta to the user's daily total for `day`
+	// and returns the new total. Implementations must refresh a TTL so the key
+	// auto-expires after the day rolls over.
+	AddUserDailyCredits(ctx context.Context, userID uint, day time.Time, delta int64) (int64, error)
+	// GetUserDailyCredits returns the user's current daily total (0 when absent).
 	GetUserDailyCredits(ctx context.Context, userID uint, day time.Time) (int64, error)
-	// SetUserDailyCredits writes the daily aggregate (upsert).
-	SetUserDailyCredits(ctx context.Context, userID uint, day time.Time, credits int64) error
 }
 
 // runState is the per-Run state held by budgetTracker.
@@ -47,14 +50,15 @@ type runState struct {
 	dailyCredits atomic.Int64 // running tally for the user's day (initialized from cache at Start)
 }
 
-// budgetTracker is the in-memory implementation of BudgetTracker.
-// TODO(#14): replace dailyCache with Redis INCRBY when prod becomes multi-instance.
+// budgetTracker implements BudgetTracker. The cross-instance daily aggregate is
+// backed by IBudgetStore (Redis INCRBY — see redis_store.go); dailyCache is the
+// in-process fallback used only when store == nil or a store call errors.
 type budgetTracker struct {
 	mu     sync.RWMutex
 	states map[uint64]*runState
 
-	// dailyCache is the in-process aggregate per (userID, dayUTC).
-	// Updated on every RecordUsage call. No lazy-sync to store in v1 (no persistence).
+	// dailyCache is the in-process fallback aggregate per (userID, dayUTC), used
+	// when store == nil (tests/dev) or a store call fails (graceful degrade).
 	dailyMu    sync.RWMutex
 	dailyCache map[string]*dailyEntry // key: "userID:YYYY-MM-DD"
 
@@ -62,13 +66,12 @@ type budgetTracker struct {
 }
 
 type dailyEntry struct {
-	Credits    atomic.Int64
-	LastSyncAt atomic.Int64 // unix nano; reserved for future store sync
+	Credits atomic.Int64
 }
 
-// NewTracker constructs a fresh in-memory BudgetTracker.
-// store may be nil — v1 dev environment uses nil (no persistence; daily aggregate
-// is per-process only). #14 will wire a Redis-backed implementation.
+// NewTracker constructs a BudgetTracker. store is the cross-instance daily counter
+// (Redis-backed in prod — see NewRedisStore); pass nil for in-process-only mode
+// (tests / dev without Redis), where the daily aggregate lives in dailyCache.
 func NewTracker(store IBudgetStore) BudgetTracker {
 	return &budgetTracker{
 		states:     make(map[uint64]*runState),
@@ -84,10 +87,23 @@ func (t *budgetTracker) Start(ctx context.Context, runID uint64, userID uint, li
 		StartedAt: time.Now(),
 		UserID:    userID,
 	}
-	// Seed dailyCredits from the shared daily cache for this user.
+	// Seed dailyCredits for this user. With a cross-instance store (Redis) seed
+	// from the shared counter so the daily cap reflects all app instances; without
+	// one, fall back to the in-process daily cache (tests / dev).
 	if userID > 0 {
-		de := t.getOrCreateDailyEntry(userID, time.Now().UTC())
-		st.dailyCredits.Store(de.Credits.Load())
+		if t.store != nil {
+			if v, err := t.store.GetUserDailyCredits(ctx, userID, time.Now().UTC()); err != nil {
+				log.Warnw("budget: GetUserDailyCredits failed, falling back to in-process daily cache",
+					"user_id", userID, "run_id", runID, "error", err)
+				de := t.getOrCreateDailyEntry(userID, time.Now().UTC())
+				st.dailyCredits.Store(de.Credits.Load())
+			} else {
+				st.dailyCredits.Store(v)
+			}
+		} else {
+			de := t.getOrCreateDailyEntry(userID, time.Now().UTC())
+			st.dailyCredits.Store(de.Credits.Load())
+		}
 	}
 	t.mu.Lock()
 	t.states[runID] = st
@@ -112,10 +128,10 @@ func (t *budgetTracker) RecordStep(ctx context.Context, runID uint64) {
 	st.turnCount.Add(1)
 }
 
-// RecordUsage adds credits to the Run's credit counter and the user's daily
-// aggregate. Callers must convert token usage to credits first (budgetgate
-// creditsForUsage) — the MaxCredits/daily dimensions are credit-denominated.
-// Non-positive values are silently ignored.
+// RecordUsage adds credits to the Run's credit counter (telemetry) and the
+// user's daily aggregate (the daily-credits dimension). Callers must convert
+// token usage to credits first (budgetgate creditsForUsage) — the daily
+// dimension is credit-denominated. Non-positive values are silently ignored.
 func (t *budgetTracker) RecordUsage(ctx context.Context, runID uint64, credits int) {
 	if credits <= 0 {
 		return
@@ -127,19 +143,37 @@ func (t *budgetTracker) RecordUsage(ctx context.Context, runID uint64, credits i
 		return
 	}
 	delta := int64(credits)
+	// Per-run credits-used: telemetry only (no cap). Always accumulate.
 	st.creditUsed.Add(delta)
 	if st.UserID > 0 {
-		de := t.getOrCreateDailyEntry(st.UserID, time.Now().UTC())
-		newVal := de.Credits.Add(delta)
-		// Keep the run's cached view of the daily total in sync.
-		st.dailyCredits.Store(newVal)
+		if t.store != nil {
+			// Cross-instance daily counter (Redis INCRBY). On error, fall back to
+			// the in-process cache so usage is never silently dropped. NOTE: if the
+			// store was previously healthy, dailyCache starts at 0 for this user/day,
+			// so the fallback under-counts during a Redis outage — intentional
+			// fail-open (don't block the user on an infra blip; the cap is a soft
+			// daily guard, not a hard wallet debit).
+			if newVal, err := t.store.AddUserDailyCredits(ctx, st.UserID, time.Now().UTC(), delta); err != nil {
+				log.Warnw("budget: AddUserDailyCredits failed, falling back to in-process daily cache",
+					"user_id", st.UserID, "run_id", runID, "error", err)
+				newVal := t.getOrCreateDailyEntry(st.UserID, time.Now().UTC()).Credits.Add(delta)
+				st.dailyCredits.Store(newVal)
+			} else {
+				st.dailyCredits.Store(newVal)
+			}
+		} else {
+			de := t.getOrCreateDailyEntry(st.UserID, time.Now().UTC())
+			newVal := de.Credits.Add(delta)
+			// Keep the run's cached view of the daily total in sync.
+			st.dailyCredits.Store(newVal)
+		}
 	}
 }
 
-// CanProceed checks all 4 budget dimensions independently.
+// CanProceed checks the budget dimensions independently.
 // Returns (false, "", nil) when all limits are within bounds.
 // Returns (true, dim, detail) on the first exceeded dimension (checked in priority order:
-// turns → credits → wall_time → daily_credits).
+// turns → wall_time → daily_credits).
 // Unknown runID returns (false, "", nil) — fail-open; caller must call Start first.
 func (t *budgetTracker) CanProceed(ctx context.Context, runID uint64) (bool, Dimension, map[string]any) {
 	t.mu.RLock()
@@ -159,16 +193,7 @@ func (t *budgetTracker) CanProceed(ctx context.Context, runID uint64) (bool, Dim
 		}
 	}
 
-	// 2. Per-Run credits
-	credits := st.creditUsed.Load()
-	if credits >= st.Limits.MaxCredits {
-		return true, DimMaxCredits, map[string]any{
-			"used":  credits,
-			"limit": st.Limits.MaxCredits,
-		}
-	}
-
-	// 3. Wall time
+	// 2. Wall time
 	elapsed := time.Since(st.StartedAt)
 	if elapsed >= st.Limits.MaxWallTime {
 		return true, DimMaxWallTime, map[string]any{
@@ -177,7 +202,7 @@ func (t *budgetTracker) CanProceed(ctx context.Context, runID uint64) (bool, Dim
 		}
 	}
 
-	// 4. Daily credits (cross-Run for the same user)
+	// 3. Daily credits (cross-Run for the same user)
 	daily := st.dailyCredits.Load()
 	if daily >= st.Limits.MaxDailyCredits {
 		return true, DimMaxDailyCredits, map[string]any{

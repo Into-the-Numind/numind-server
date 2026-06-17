@@ -30,30 +30,28 @@ func NewSkillController(svc skill.Service) *SkillController {
 
 // CreateRequest is the JSON body for POST /v1/agent/skills.
 type CreateRequest struct {
-	Name                string          `json:"name" binding:"required"`
-	Description         string          `json:"description"`
-	IconURL             string          `json:"icon_url"`
-	WelcomeMessage      string          `json:"welcome_message"`
-	SystemPrompt        string          `json:"system_prompt"`
-	Starters            []string        `json:"starters"`
-	ToolFlags           map[string]bool `json:"tool_flags"`
-	CreditCapPerSession *uint           `json:"credit_cap_per_session"`
-	DailyCreditCap      *uint           `json:"daily_credit_cap"`
-	SourceTemplateID    *uint64         `json:"source_template_id"`
+	Name             string          `json:"name" binding:"required"`
+	Description      string          `json:"description"`
+	IconURL          string          `json:"icon_url"`
+	WelcomeMessage   string          `json:"welcome_message"`
+	SystemPrompt     string          `json:"system_prompt"`
+	Starters         []string        `json:"starters"`
+	ToolFlags        map[string]bool `json:"tool_flags"`
+	DailyCreditCap   *uint           `json:"daily_credit_cap"`
+	SourceTemplateID *uint64         `json:"source_template_id"`
 }
 
 // PatchRequest is the JSON body for PATCH /v1/agent/skills/:id.
 // All fields are optional (nil = no change).
 type PatchRequest struct {
-	Name                *string          `json:"name"`
-	Description         *string          `json:"description"`
-	IconURL             *string          `json:"icon_url"`
-	WelcomeMessage      *string          `json:"welcome_message"`
-	SystemPrompt        *string          `json:"system_prompt"`
-	Starters            *[]string        `json:"starters"`
-	ToolFlags           *map[string]bool `json:"tool_flags"`
-	CreditCapPerSession *uint            `json:"credit_cap_per_session"`
-	DailyCreditCap      *uint            `json:"daily_credit_cap"`
+	Name           *string          `json:"name"`
+	Description    *string          `json:"description"`
+	IconURL        *string          `json:"icon_url"`
+	WelcomeMessage *string          `json:"welcome_message"`
+	SystemPrompt   *string          `json:"system_prompt"`
+	Starters       *[]string        `json:"starters"`
+	ToolFlags      *map[string]bool `json:"tool_flags"`
+	DailyCreditCap *uint            `json:"daily_credit_cap"`
 }
 
 // ---------------------------------------------------------------------------
@@ -90,16 +88,15 @@ func (c *SkillController) Create(ctx *gin.Context) {
 	}
 
 	ad, err := c.svc.Create(ctx.Request.Context(), user.ID, skill.CreateRequest{
-		Name:                req.Name,
-		Description:         req.Description,
-		IconURL:             req.IconURL,
-		WelcomeMessage:      req.WelcomeMessage,
-		SystemPrompt:        req.SystemPrompt,
-		Starters:            req.Starters,
-		ToolFlags:           req.ToolFlags,
-		CreditCapPerSession: req.CreditCapPerSession,
-		DailyCreditCap:      req.DailyCreditCap,
-		SourceTemplateID:    req.SourceTemplateID,
+		Name:             req.Name,
+		Description:      req.Description,
+		IconURL:          req.IconURL,
+		WelcomeMessage:   req.WelcomeMessage,
+		SystemPrompt:     req.SystemPrompt,
+		Starters:         req.Starters,
+		ToolFlags:        req.ToolFlags,
+		DailyCreditCap:   req.DailyCreditCap,
+		SourceTemplateID: req.SourceTemplateID,
 	})
 	core.WriteResponse(ctx, err, ad)
 }
@@ -165,15 +162,14 @@ func (c *SkillController) Patch(ctx *gin.Context) {
 	}
 
 	ad, err := c.svc.Patch(ctx.Request.Context(), user.ID, id, skill.PatchRequest{
-		Name:                req.Name,
-		Description:         req.Description,
-		IconURL:             req.IconURL,
-		WelcomeMessage:      req.WelcomeMessage,
-		SystemPrompt:        req.SystemPrompt,
-		Starters:            req.Starters,
-		ToolFlags:           req.ToolFlags,
-		CreditCapPerSession: req.CreditCapPerSession,
-		DailyCreditCap:      req.DailyCreditCap,
+		Name:           req.Name,
+		Description:    req.Description,
+		IconURL:        req.IconURL,
+		WelcomeMessage: req.WelcomeMessage,
+		SystemPrompt:   req.SystemPrompt,
+		Starters:       req.Starters,
+		ToolFlags:      req.ToolFlags,
+		DailyCreditCap: req.DailyCreditCap,
 	})
 	core.WriteResponse(ctx, err, ad)
 }

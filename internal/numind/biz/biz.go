@@ -379,19 +379,21 @@ func NewBiz(ds store.IStore) *biz {
 	//
 	// PostToolCall 自然逆序（外层调内层，内层先返回）：
 	//   sandbox 关容器 → budget RecordUsage（拿真实 tokens）→ permission 透传
-	budgetTracker := budget.NewTracker(nil) // v1: nil IBudgetStore — daily aggregate 仅 in-process; TODO(#14) Redis
+	// daily aggregate 跨实例共享：Redis INCRBY 计数器（TD1）。Redis 未初始化时
+	// NewRedisStore 返回 nil → NewTracker 退回 in-process（dev/test 安全）。
+	budgetTracker := budget.NewTracker(budget.NewRedisStore(redispkg.GetClient()))
 	budgetAdminConsumer := budget.NewAdminTestConsumer(ds)
 	budgetGate := budgetgate.NewBudgetGate(budgetTracker, budgetAdminConsumer, ds.AgentRuns())
 
 	// agent-mode-billing T6: a single process-level callID→Usage store shared by
 	// the per-run adapters (writers) and budgetgate (reader) so RecordUsage sees
-	// real LLM token counts → MaxCredits dimension works.
+	// real LLM token counts → daily-credits dimension works.
 	callUsageStore := agent.NewCallUsageStore()
 	budgetWrappedHooks := budgetGate.WrapHooks(
 		sandboxHookManager.AsRunHooks(),
 		budgetgate.WithUsageLookup(agent.NewCallUsageLookup(callUsageStore)),
 		// budget-tracker-token-units fix: convert tokens→credits before the
-		// tracker accumulates — MaxCredits/daily dims are credit-denominated.
+		// tracker accumulates — the daily-credits dim is credit-denominated.
 		budgetgate.WithPricingCalculator(pricingCalc),
 	)
 	permWrappedHooks := permission.WrapHooks(budgetWrappedHooks, b.permissionGate)
@@ -644,7 +646,7 @@ func NewBiz(ds store.IStore) *biz {
 		agent.WithNarrationProvider(narrationProv), // #8 narration-layer (nil if init failed)
 		agent.WithMemoryProvider(memoryProvider),   // #7 memory-system
 		agent.WithBudgetTracker(budgetTracker),     // #12 agent-mode-billing-integration
-		agent.WithCallUsageStore(callUsageStore),   // agent-mode-billing T6: shared usage store (MaxCredits)
+		agent.WithCallUsageStore(callUsageStore),   // agent-mode-billing T6: shared usage store (daily-credits)
 		agent.WithComplianceGate(b.complianceGate), // #13 agent-mode-compliance-3layer
 		agent.WithMemoryExtractor(memoryExtractor), // Task 3.3 LLM extraction async pipeline
 		agent.WithMemorySelector(memorySelector),   // Task 3.4 top-5 side-query selector

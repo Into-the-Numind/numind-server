@@ -104,7 +104,6 @@ func TestBudget_UseSkill_BudgetExceededShortCircuits(t *testing.T) {
 	// MaxTurns=1 → after 1 RecordStep, CanProceed returns exceeded
 	tr.Start(context.Background(), 9, 1, budget.Limits{
 		MaxTurns:        1,
-		MaxCredits:      1000,
 		MaxWallTime:     time.Hour,
 		MaxDailyCredits: 10000,
 	})

@@ -12,7 +12,7 @@ import (
 
 func TestBudgetTracker_StartCloseStateIsolation(t *testing.T) {
 	tr := NewTracker(nil)
-	limits := Limits{MaxTurns: 10, MaxCredits: 100, MaxWallTime: time.Second, MaxDailyCredits: 1000}
+	limits := Limits{MaxTurns: 10, MaxWallTime: time.Second, MaxDailyCredits: 1000}
 
 	// Start 5 runs
 	for i := uint64(1); i <= 5; i++ {
@@ -63,7 +63,7 @@ func TestBudgetTracker_RecordUsage_ZeroOrNegativeNoop(t *testing.T) {
 
 func TestBudgetTracker_CanProceed_MaxTurnsExceeded(t *testing.T) {
 	tr := NewTracker(nil)
-	tr.Start(context.Background(), 1, 1, Limits{MaxTurns: 3, MaxCredits: 1000, MaxWallTime: time.Hour, MaxDailyCredits: 10000})
+	tr.Start(context.Background(), 1, 1, Limits{MaxTurns: 3, MaxWallTime: time.Hour, MaxDailyCredits: 10000})
 	for i := 0; i < 3; i++ {
 		tr.RecordStep(context.Background(), 1)
 	}
@@ -74,18 +74,9 @@ func TestBudgetTracker_CanProceed_MaxTurnsExceeded(t *testing.T) {
 	assert.Equal(t, 3, detail["limit"])
 }
 
-func TestBudgetTracker_CanProceed_MaxCreditsExceeded(t *testing.T) {
-	tr := NewTracker(nil)
-	tr.Start(context.Background(), 1, 1, Limits{MaxTurns: 100, MaxCredits: 500, MaxWallTime: time.Hour, MaxDailyCredits: 10000})
-	tr.RecordUsage(context.Background(), 1, 500)
-	exceeded, dim, _ := tr.CanProceed(context.Background(), 1)
-	assert.True(t, exceeded)
-	assert.Equal(t, DimMaxCredits, dim)
-}
-
 func TestBudgetTracker_CanProceed_MaxWallTimeExceeded(t *testing.T) {
 	tr := NewTracker(nil)
-	tr.Start(context.Background(), 1, 1, Limits{MaxTurns: 100, MaxCredits: 1000, MaxWallTime: 10 * time.Millisecond, MaxDailyCredits: 10000})
+	tr.Start(context.Background(), 1, 1, Limits{MaxTurns: 100, MaxWallTime: 10 * time.Millisecond, MaxDailyCredits: 10000})
 	time.Sleep(15 * time.Millisecond)
 	exceeded, dim, _ := tr.CanProceed(context.Background(), 1)
 	assert.True(t, exceeded)
@@ -95,7 +86,7 @@ func TestBudgetTracker_CanProceed_MaxWallTimeExceeded(t *testing.T) {
 func TestBudgetTracker_CanProceed_MaxDailyCreditsExceeded(t *testing.T) {
 	tr := NewTracker(nil)
 	// Cross-Run daily aggregate — same userID across 2 runs.
-	limits := Limits{MaxTurns: 100, MaxCredits: 100000, MaxWallTime: time.Hour, MaxDailyCredits: 1000}
+	limits := Limits{MaxTurns: 100, MaxWallTime: time.Hour, MaxDailyCredits: 1000}
 	tr.Start(context.Background(), 1, 42, limits)
 	tr.RecordUsage(context.Background(), 1, 600)
 	tr.Close(1)
@@ -197,4 +188,64 @@ func TestBudgetTracker_uintToString(t *testing.T) {
 	require.Equal(t, "1", uintToString(1))
 	require.Equal(t, "42", uintToString(42))
 	require.Equal(t, "9999", uintToString(9999))
+}
+
+// fakeBudgetStore is an in-memory IBudgetStore for asserting the tracker
+// consults the cross-instance store rather than its in-process cache.
+type fakeBudgetStore struct {
+	mu      sync.Mutex
+	totals  map[string]int64 // key: "userID:YYYY-MM-DD"
+	seedGet int64            // value returned by GetUserDailyCredits before any Add
+}
+
+func (f *fakeBudgetStore) key(userID uint, day time.Time) string {
+	return uintToString(userID) + ":" + day.UTC().Format("2006-01-02")
+}
+
+func (f *fakeBudgetStore) AddUserDailyCredits(_ context.Context, userID uint, day time.Time, delta int64) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.totals == nil {
+		f.totals = make(map[string]int64)
+	}
+	k := f.key(userID, day)
+	if _, ok := f.totals[k]; !ok {
+		f.totals[k] = f.seedGet
+	}
+	f.totals[k] += delta
+	return f.totals[k], nil
+}
+
+func (f *fakeBudgetStore) GetUserDailyCredits(_ context.Context, userID uint, day time.Time) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.totals != nil {
+		if v, ok := f.totals[f.key(userID, day)]; ok {
+			return v, nil
+		}
+	}
+	return f.seedGet, nil
+}
+
+// TestBudgetTracker_StoreBackedDailyAggregate verifies that when an IBudgetStore
+// is injected, the tracker seeds the daily total from the store at Start, feeds
+// RecordUsage deltas through the store, and uses the store's returned total for
+// the daily-credits CanProceed check (cross-instance correctness).
+func TestBudgetTracker_StoreBackedDailyAggregate(t *testing.T) {
+	// Store already shows 800 credits used today (e.g. another instance).
+	store := &fakeBudgetStore{seedGet: 800}
+	tr := NewTracker(store)
+	limits := Limits{MaxTurns: 100, MaxWallTime: time.Hour, MaxDailyCredits: 1000}
+
+	tr.Start(context.Background(), 1, 7, limits)
+	// Snapshot should reflect the store-seeded daily total.
+	assert.Equal(t, int64(800), tr.Snapshot(context.Background(), 1).DailyCredits)
+
+	// Adding 250 → store total 1050 ≥ 1000 → daily cap tripped.
+	tr.RecordUsage(context.Background(), 1, 250)
+	assert.Equal(t, int64(1050), tr.Snapshot(context.Background(), 1).DailyCredits)
+
+	exceeded, dim, _ := tr.CanProceed(context.Background(), 1)
+	assert.True(t, exceeded)
+	assert.Equal(t, DimMaxDailyCredits, dim)
 }

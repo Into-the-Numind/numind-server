@@ -12,14 +12,12 @@ import (
 func TestDefaultLimits(t *testing.T) {
 	d := DefaultLimits()
 	assert.Equal(t, 100, d.MaxTurns)
-	assert.Equal(t, int64(800), d.MaxCredits)
 	assert.Equal(t, 900*time.Second, d.MaxWallTime)
-	assert.Equal(t, int64(2000), d.MaxDailyCredits)
+	assert.Equal(t, int64(200000), d.MaxDailyCredits)
 }
 
 func TestDimensionConstants(t *testing.T) {
 	assert.Equal(t, Dimension("max_turns"), DimMaxTurns)
-	assert.Equal(t, Dimension("max_credits"), DimMaxCredits)
 	assert.Equal(t, Dimension("max_wall_time"), DimMaxWallTime)
 	assert.Equal(t, Dimension("max_daily_credits"), DimMaxDailyCredits)
 }
@@ -38,8 +36,7 @@ func TestLimitsFromAgentDef_NilPointers(t *testing.T) {
 func TestLimitsFromAgentDef_ZeroPointers(t *testing.T) {
 	zero := uint(0)
 	ad := &model.AgentDefinition{
-		CreditCapPerSession: &zero,
-		DailyCreditCap:      &zero,
+		DailyCreditCap: &zero,
 	}
 	// *uint 解引用为 0 → falls through to default
 	got := LimitsFromAgentDef(ad)
@@ -47,14 +44,11 @@ func TestLimitsFromAgentDef_ZeroPointers(t *testing.T) {
 }
 
 func TestLimitsFromAgentDef_NonZeroPointers(t *testing.T) {
-	creditCap := uint(1500)
 	dailyCap := uint(5000)
 	ad := &model.AgentDefinition{
-		CreditCapPerSession: &creditCap,
-		DailyCreditCap:      &dailyCap,
+		DailyCreditCap: &dailyCap,
 	}
 	got := LimitsFromAgentDef(ad)
-	assert.Equal(t, int64(1500), got.MaxCredits)
 	assert.Equal(t, int64(5000), got.MaxDailyCredits)
 	// 未配置的字段走 default
 	assert.Equal(t, 100, got.MaxTurns)

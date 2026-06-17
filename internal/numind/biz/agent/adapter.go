@@ -195,10 +195,10 @@ func (a *aiserviceAdapter) Stream(ctx context.Context, in []*schema.Message, opt
 		return nil, err
 	}
 	// Stash the final chunk's token usage keyed by call-id, mirroring Generate, so
-	// budgetgate's PostToolCall can record it into the MaxCredits dimension. Without
-	// this the production streaming path stashed nothing → the per-agent
-	// CreditCapPerSession guardrail was inert (agent-mode-billing follow-up). Observes
-	// usage only; the chunk stream itself is forwarded unchanged.
+	// budgetgate's PostToolCall can record it into the daily-credits dimension. Without
+	// this the production streaming path stashed nothing → the daily-credits guardrail
+	// was inert on streaming runs (agent-mode-billing follow-up). Observes usage only;
+	// the chunk stream itself is forwarded unchanged.
 	callID := callctx.CallIDFromCtx(ctx)
 	onFinalUsage := func(u Usage) {
 		if callID != "" && a.usageStore != nil {
