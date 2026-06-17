@@ -11,9 +11,12 @@
 ## 怎么用
 
 ```bash
-pip install requests pyyaml   # 一次性
+pip install requests pyyaml          # 一次性
+export NUMIND_ADMIN_PASSWORD=<pw>    # 密码走环境变量,不硬编码进脚本/命令历史
 python3 run_eval.py --golden golden.yaml \
-    --base-url http://49.233.219.254:9099 --user admin --password <pw> --k 5
+    --base-url http://49.233.219.254:9099 --user admin --k 5
+# 默认对齐 chatbot 产线(rerank 0.6 阈值 + no_floor + 原话检索);
+# 加 --raw 看不带阈值的原始排序召回(诊断"是召回不到还是被阈值丢了")。
 ```
 
 ## 指标含义(大白话)

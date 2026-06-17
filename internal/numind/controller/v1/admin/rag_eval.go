@@ -28,13 +28,18 @@ type ragEvalRetrieveReq struct {
 	UserID      uint   `json:"user_id"`
 	DocumentIDs []uint `json:"document_ids"`
 	AllEnabled  bool   `json:"all_enabled"`
-	// Retrieval knobs (0 = sensible default). Defaults mirror the chatbot's
-	// candidate pool; RerankMinScore defaults to 0 so eval measures RAW ranked
-	// recall (the caller can pass 0.6 to see the post-threshold view).
+	// Retrieval knobs — fully caller-controlled so the scoring script can pick
+	// the measurement mode. TopK/RerankTopN default to the chatbot candidate
+	// pool (10) when 0. RerankMinScore/RerankNoFloor/RewriteQuery pass through
+	// verbatim: to mirror the production chatbot pass {rewrite_query:false,
+	// rerank_min_score:0.6, rerank_no_floor:true}; for raw ranked recall pass
+	// {rerank_min_score:0, rerank_no_floor:false}. NOTE: when RerankMinScore=0
+	// the service still applies its 0.3 default floor (not "no floor").
 	TopK           int     `json:"top_k"`
 	RerankTopN     int     `json:"rerank_top_n"`
 	RerankMinScore float32 `json:"rerank_min_score"`
 	RerankNoFloor  bool    `json:"rerank_no_floor"`
+	RewriteQuery   bool    `json:"rewrite_query"`
 }
 
 type ragEvalChunk struct {
@@ -55,6 +60,11 @@ func (ctl *RAGEvalController) Retrieve(c *gin.Context) {
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("retrieval service not wired"), nil)
 		return
 	}
+	// 数据隔离守卫:all_enabled 必须显式指定 user_id,避免误扫 user_id=0(系统默认用户)的全部文档。
+	if req.AllEnabled && req.UserID == 0 {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("user_id required when all_enabled=true"), nil)
+		return
+	}
 
 	if req.TopK <= 0 {
 		req.TopK = 10
@@ -69,6 +79,7 @@ func (ctl *RAGEvalController) Retrieve(c *gin.Context) {
 		RerankTopN:     req.RerankTopN,
 		RerankMinScore: req.RerankMinScore,
 		RerankNoFloor:  req.RerankNoFloor,
+		RewriteQuery:   req.RewriteQuery,
 		BillingLabel:   "rag_eval",
 	}
 

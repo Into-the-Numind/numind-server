@@ -26,7 +26,9 @@
 - (后续可加)**答案忠实度/相关度**:LLM-as-judge 评端到端回答是否有据、不编。
 
 ### 3.3 工具(harness)
-Go CLI `cmd/rag-eval`:复用**真实检索栈**(`retrieve.Service.Retrieve`,同 chatbot/salesrag 路径)+ 读黄金集 YAML + 跑每题 + 算指标 + 输出报告。在 **dev 容器内**运行(有 config + sqlite-vec + embed/rerank 网络),可重复执行。**不碰生产行为、不加生产端点**。
+复用**真实检索栈**(`retrieve.Service.Retrieve`,同 chatbot/salesrag 路径)+ 读黄金集 YAML + 跑每题 + 算指标 + 输出报告,可重复执行。**不碰生产行为**。
+
+> **架构落地(对 S0 设想的偏离,已评审采纳)**:最初设想是 dev 容器内独立运行的 Go CLI `cmd/rag-eval`。实际改为 **admin 只读端点 `POST /v1/admin/rag-eval/retrieve`(admin-gated)+ 外部 Python 打分脚本 `scripts/rag_eval/run_eval.py`**。原因:① 端点直接复用已 wiring 好的 `retrieve.Service`(经 biz.RagRetrieve()),零重复构建检索栈;② 打分逻辑(recall@k/MRR/nDCG)用 Python 迭代更快、不进编译产物;③ 端点对部署的 dev/prod 都能跑,不需要进容器 exec。代价:多了一个 admin 端点(只读、admin token 守卫、BillingLabel="rag_eval"、不在任何生产用户流程引用)。
 
 ## 4. 必须由你(业务方)定/确认的两件事(科学前提)
 

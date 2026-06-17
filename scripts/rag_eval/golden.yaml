@@ -33,6 +33,11 @@
 - { id: q17, type: paraphrase,   query: "为什么说写第一行代码前要先'雇一支工程团队'?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [113] }
 - { id: q18, type: in_kb_single, query: "2026 年创业公司的生命周期发生了什么重构?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [113] }
 
+# ============ 跨多篇 (in_kb_multi:答案可来自≥2篇,命中任一即算召回) ============
+- { id: q22, type: in_kb_multi, query: "海外IP陪跑服务怎么落地、有没有做成的真实客户?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [13,14] }
+- { id: q23, type: in_kb_multi, query: "你们的IP陪跑服务包含哪些内容、客户常见疑问又怎么解答?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [13,15] }
+- { id: q24, type: in_kb_multi, query: "有没有客户案例能回应'价格太贵'的顾虑?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [14,15] }
+
 # ============ 库外 / 应拒答 ============
 - { id: q19, type: out_of_kb, query: "今天北京的天气怎么样?", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [] }
 - { id: q20, type: out_of_kb, query: "帮我写一段 Python 快速排序代码。", scope: {user_id: 1, document_ids: [13,14,15,113]}, expected_doc_ids: [] }

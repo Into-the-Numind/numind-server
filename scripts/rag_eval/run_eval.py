@@ -19,6 +19,7 @@ golden YAML 每条:
 """
 import argparse
 import math
+import os
 import sys
 from collections import defaultdict
 
@@ -37,7 +38,9 @@ def login(base_url, user, password):
     return token
 
 
-def retrieve(base_url, token, query, scope, k):
+def retrieve(base_url, token, query, scope, k, mode):
+    # mode: "prod"(默认,对齐 chatbot 产线 min=0.6+no_floor 原话检索) 或 "raw"(原始排序召回)。
+    prod = (mode == "prod")
     body = {
         "query": query,
         "user_id": scope.get("user_id", 0),
@@ -45,7 +48,9 @@ def retrieve(base_url, token, query, scope, k):
         "all_enabled": scope.get("all_enabled", False),
         "top_k": max(k, 10),
         "rerank_top_n": max(k, 10),
-        # 默认 RerankMinScore=0：量原始排序召回(不被 0.6 阈值丢)。
+        "rewrite_query": False,                 # chatbot post-F1 用原话检索
+        "rerank_min_score": 0.6 if prod else 0,  # prod=0.6 阈值(真实);raw=0
+        "rerank_no_floor": True if prod else False,  # prod=低于阈值返回空(库外题可正确为空)
     }
     r = requests.post(f"{base_url}/v1/admin/rag-eval/retrieve", json=body,
                       headers={"Authorization": f"Bearer {token}"}, timeout=60)
@@ -85,11 +90,18 @@ def main():
     ap.add_argument("--golden", required=True)
     ap.add_argument("--base-url", default="http://49.233.219.254:9099")
     ap.add_argument("--user", default="admin")
-    ap.add_argument("--password", default="admin123456")
+    ap.add_argument("--password", default=os.environ.get("NUMIND_ADMIN_PASSWORD"),
+                    help="admin 密码;默认读环境变量 NUMIND_ADMIN_PASSWORD(不硬编码)")
     ap.add_argument("--k", type=int, default=5)
+    ap.add_argument("--raw", action="store_true",
+                    help="原始排序召回模式;默认对齐 chatbot 产线(0.6 阈值+no_floor+原话检索)")
     args = ap.parse_args()
+    if not args.password:
+        sys.exit("缺少 admin 密码:用 --password 或环境变量 NUMIND_ADMIN_PASSWORD")
 
-    golden = yaml.safe_load(open(args.golden, encoding="utf-8"))
+    mode = "raw" if args.raw else "prod"
+    with open(args.golden, encoding="utf-8") as f:
+        golden = yaml.safe_load(f)
     if not isinstance(golden, list):
         sys.exit("golden YAML 根必须是题目列表")
 
