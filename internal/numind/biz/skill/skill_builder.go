@@ -9,12 +9,15 @@ import (
 )
 
 // Build 把 agent_definition 的 questionnaire_answers JSON + 直接字段（name/description）
-// 组装为 SKILL.md（generated_skill_body）。
+// 组装为 SKILL.md。
+//
+// T1（2026-06-17）起 Build 不再服务用户建 Agent 流程（问卷模式已删，用户直接写
+// SystemPrompt）。现仅作内部「模板编译器」：artifact.ImportTemplate 把 seed 模板的
+// questionnaire_answers 编译为技能 body。属 T4 技能/市场重设计范畴。
 //
 // Build 是纯 transformer——Q6/Q7/Q12 等字段缺失时对应段落省略不渲染，不返回必填
 // 校验错误（参见 TestBuild_MissingQ6/Q7/Q12_succeedsAndOmitsSection 与
-// TestBuild_NilQuestionnaireAnswers_succeeds）。必填业务规则在
-// biz/skill/service.Create 触发（参见 validateRequiredQuestionnaireForCreate）。
+// TestBuild_NilQuestionnaireAnswers_succeeds）。
 //
 // 错误：
 //   - questionnaire_answers JSON parse fail → wrapped error

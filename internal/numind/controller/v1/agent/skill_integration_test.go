@@ -90,7 +90,6 @@ func newTestEngine(t *testing.T, db *gorm.DB) *gin.Engine {
 			skills.DELETE("/:id", ctrl.Delete)
 			skills.GET("/:id/history", ctrl.ListHistory)
 			skills.POST("/:id/restore/:version", ctrl.Restore)
-			skills.POST("/:id/advanced-toggle", ctrl.AdvancedToggle)
 		}
 		agentGroup.GET("/skill-templates", ctrl.ListTemplates)
 	}
@@ -164,15 +163,12 @@ func withChild() map[string]string { return map[string]string{"X-Test-UserID": "
 func withNoAuth() map[string]string { return map[string]string{} }
 
 // validCreateBody returns a minimal valid CreateRequest JSON payload.
+// system_prompt is now the single required prompt field (questionnaire removed).
 func validCreateBody() map[string]interface{} {
 	return map[string]interface{}{
-		"name":        "My Agent",
-		"description": "A test agent for unit tests",
-		"questionnaire_answers": map[string]interface{}{
-			"q6":  []string{"analyze_data"},
-			"q7":  []string{"text"},
-			"q12": "professional",
-		},
+		"name":          "My Agent",
+		"description":   "A test agent for unit tests",
+		"system_prompt": "你是一个用于单测的助手。",
 	}
 }
 
@@ -233,18 +229,19 @@ func TestCreate_MissingRequiredField(t *testing.T) {
 	assert.NotEqual(t, 0, resp.Code)
 }
 
-// TestCreate_MissingQuestionnaire_422 verifies that a missing q6/q7/q12 returns 422.
-func TestCreate_MissingQuestionnaire_422(t *testing.T) {
+// TestCreate_MissingSystemPrompt_400 verifies that a blank system_prompt returns 400.
+// system_prompt is now the single required prompt field (questionnaire removed).
+func TestCreate_MissingSystemPrompt_400(t *testing.T) {
 	db := newTestDB(t)
 	seedUsers(t, db)
 	engine := newTestEngine(t, db)
 
 	body := map[string]interface{}{
-		"name":                  "Missing QA",
-		"questionnaire_answers": map[string]interface{}{}, // all empty
+		"name": "Missing Prompt",
+		// system_prompt absent → blank → rejected
 	}
 	status, resp := doRequest(t, engine, http.MethodPost, "/v1/agent/skills", body, withParent())
-	assert.Equal(t, http.StatusUnprocessableEntity, status)
+	assert.Equal(t, http.StatusBadRequest, status)
 	assert.NotEqual(t, 0, resp.Code)
 }
 
@@ -516,49 +513,6 @@ func TestRestore_VersionNotFound(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// AdvancedToggle tests
-// ---------------------------------------------------------------------------
-
-// TestAdvancedToggle_HappyPath verifies toggling advanced mode succeeds once.
-func TestAdvancedToggle_HappyPath(t *testing.T) {
-	db := newTestDB(t)
-	seedUsers(t, db)
-	engine := newTestEngine(t, db)
-
-	_, createResp := doRequest(t, engine, http.MethodPost, "/v1/agent/skills", validCreateBody(), withParent())
-	var created model.AgentDefinition
-	require.NoError(t, json.Unmarshal(createResp.Data, &created))
-	assert.False(t, created.AdvancedMode)
-
-	status, resp := doRequest(t, engine, http.MethodPost, "/v1/agent/skills/"+strconv.FormatUint(created.ID, 10)+"/advanced-toggle", nil, withParent())
-	require.Equal(t, http.StatusOK, status)
-	assert.Equal(t, 0, resp.Code)
-
-	var toggled model.AgentDefinition
-	require.NoError(t, json.Unmarshal(resp.Data, &toggled))
-	assert.True(t, toggled.AdvancedMode)
-}
-
-// TestAdvancedToggle_AlreadyAdvanced_422 verifies second toggle returns 422.
-func TestAdvancedToggle_AlreadyAdvanced_422(t *testing.T) {
-	db := newTestDB(t)
-	seedUsers(t, db)
-	engine := newTestEngine(t, db)
-
-	_, createResp := doRequest(t, engine, http.MethodPost, "/v1/agent/skills", validCreateBody(), withParent())
-	var created model.AgentDefinition
-	require.NoError(t, json.Unmarshal(createResp.Data, &created))
-	idPath := "/v1/agent/skills/" + strconv.FormatUint(created.ID, 10)
-
-	// First toggle
-	doRequest(t, engine, http.MethodPost, idPath+"/advanced-toggle", nil, withParent())
-
-	// Second toggle should fail
-	status, _ := doRequest(t, engine, http.MethodPost, idPath+"/advanced-toggle", nil, withParent())
-	assert.Equal(t, http.StatusUnprocessableEntity, status)
-}
-
-// ---------------------------------------------------------------------------
 // ListTemplates tests
 // ---------------------------------------------------------------------------
 
@@ -599,8 +553,8 @@ func TestListTemplates_Empty(t *testing.T) {
 	assert.Equal(t, 0, data.Total)
 }
 
-// TestPatch_CustomSkillBody_AdvancedMode_Success 验证在高级模式下，修改并保存 custom_skill_body 可以持久化成功。
-func TestPatch_CustomSkillBody_AdvancedMode_Success(t *testing.T) {
+// TestPatch_SystemPrompt_Success 验证 PATCH system_prompt 持久化成功并写入 history 快照。
+func TestPatch_SystemPrompt_Success(t *testing.T) {
 	db := newTestDB(t)
 	seedUsers(t, db)
 	engine := newTestEngine(t, db)
@@ -611,28 +565,21 @@ func TestPatch_CustomSkillBody_AdvancedMode_Success(t *testing.T) {
 	require.NoError(t, json.Unmarshal(createResp.Data, &created))
 	idPath := "/v1/agent/skills/" + strconv.FormatUint(created.ID, 10)
 
-	// 2. 切换为高级模式
-	statusToggle, respToggle := doRequest(t, engine, http.MethodPost, idPath+"/advanced-toggle", nil, withParent())
-	require.Equal(t, http.StatusOK, statusToggle)
-	var toggled model.AgentDefinition
-	require.NoError(t, json.Unmarshal(respToggle.Data, &toggled))
-	require.True(t, toggled.AdvancedMode)
-
-	// 3. 在高级模式下 PATCH custom_skill_body
-	newBody := "# My Custom Skill\nEdited by user."
-	patchBody := map[string]interface{}{"custom_skill_body": newBody}
+	// 2. PATCH system_prompt
+	newPrompt := "你现在是一个专业严谨的分析助手。"
+	patchBody := map[string]interface{}{"system_prompt": newPrompt}
 	statusPatch, respPatch := doRequest(t, engine, http.MethodPatch, idPath, patchBody, withParent())
 	require.Equal(t, http.StatusOK, statusPatch)
 	assert.Equal(t, 0, respPatch.Code)
 
 	var patched model.AgentDefinition
 	require.NoError(t, json.Unmarshal(respPatch.Data, &patched))
-	assert.Equal(t, newBody, patched.CustomSkillBody)
+	assert.Equal(t, newPrompt, patched.SystemPrompt)
 
-	// 4. 从 DB 重新读取，并验证 history 版本快照
+	// 3. 从 DB 重新读取，并验证 history 版本快照
 	var dbAd model.AgentDefinition
 	require.NoError(t, db.First(&dbAd, created.ID).Error)
-	assert.Equal(t, newBody, dbAd.CustomSkillBody)
+	assert.Equal(t, newPrompt, dbAd.SystemPrompt)
 
 	var histories []model.AgentDefinitionHistory
 	require.NoError(t, db.Where("agent_id = ?", created.ID).Order("version desc").Find(&histories).Error)
@@ -640,25 +587,5 @@ func TestPatch_CustomSkillBody_AdvancedMode_Success(t *testing.T) {
 
 	var snapshot model.AgentDefinition
 	require.NoError(t, json.Unmarshal(histories[0].Snapshot, &snapshot))
-	assert.Equal(t, newBody, snapshot.CustomSkillBody)
-}
-
-// TestPatch_CustomSkillBody_QuestionnaireMode_Failed 验证在问卷模式下，尝试修改 custom_skill_body 会被拒绝并返回 400 错误。
-func TestPatch_CustomSkillBody_QuestionnaireMode_Failed(t *testing.T) {
-	db := newTestDB(t)
-	seedUsers(t, db)
-	engine := newTestEngine(t, db)
-
-	// 1. 创建 Agent (默认为问卷模式)
-	_, createResp := doRequest(t, engine, http.MethodPost, "/v1/agent/skills", validCreateBody(), withParent())
-	var created model.AgentDefinition
-	require.NoError(t, json.Unmarshal(createResp.Data, &created))
-	require.False(t, created.AdvancedMode)
-	idPath := "/v1/agent/skills/" + strconv.FormatUint(created.ID, 10)
-
-	// 2. 尝试 PATCH custom_skill_body -> 应返回 400 Bad Request
-	patchBody := map[string]interface{}{"custom_skill_body": "hack prompt"}
-	statusPatch, respPatch := doRequest(t, engine, http.MethodPatch, idPath, patchBody, withParent())
-	assert.Equal(t, http.StatusBadRequest, statusPatch)
-	assert.NotEqual(t, 0, respPatch.Code)
+	assert.Equal(t, newPrompt, snapshot.SystemPrompt)
 }
