@@ -20,6 +20,11 @@ type KnowledgeDocument struct {
 
 	IsEnabled bool `gorm:"default:true;index" json:"is_enabled"`
 	IsSystem  bool `gorm:"default:false;index" json:"is_system"` // 系统内置文档（不可删除/编辑）
+
+	// 切块留痕（semantic-chunk-reliability）：记录本文档入库时用了哪种切块策略 + 原因,
+	// 让"语义没起作用、静默走兜底"可被发现/统计/定位。值: semantic / rule_fallback / no_split / 空(历史行)。
+	SplitStrategy string `gorm:"size:20;index" json:"split_strategy"`
+	SplitDetail   string `gorm:"size:512" json:"split_detail"`
 }
 
 func (KnowledgeDocument) TableName() string {

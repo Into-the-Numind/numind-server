@@ -167,10 +167,22 @@ func (p *IngestionPipeline) process(ctx context.Context, doc *domain.KnowledgeDo
 
 	log.Printf("Starting splitting for doc %d", doc.ID)
 
-	chunks, err := p.splitter.Split(markdown)
-	if err != nil {
-		p.fail(doc, fmt.Errorf("splitting failed: %w", err))
-		return
+	// 切块 + 留痕：若 splitter 实现 StrategyAwareSplitter(可选接口,照搬 docStore.UpdateColumns
+	// 的类型断言模式),拿到用了语义还是兜底 + 原因,便于"语义静默失效"可被发现/统计/定位;
+	// 否则降级用旧 Split()。SplitWithStrategy 不变式:永不返回 err、非空文本必非空 chunk。
+	var chunks []SplitChunk
+	var splitStrategy, splitDetail string
+	if sa, ok := p.splitter.(StrategyAwareSplitter); ok {
+		chunks, splitStrategy, splitDetail, _ = sa.SplitWithStrategy(markdown)
+		if splitStrategy == StrategyFallback {
+			log.Printf("WARN: doc %d chunked via rule-fallback (semantic unavailable/failed); detail=%q", doc.ID, splitDetail)
+		}
+	} else {
+		chunks, err = p.splitter.Split(markdown)
+		if err != nil {
+			p.fail(doc, fmt.Errorf("splitting failed: %w", err))
+			return
+		}
 	}
 
 	if len(chunks) == 0 {
@@ -255,6 +267,12 @@ func (p *IngestionPipeline) process(ctx context.Context, doc *domain.KnowledgeDo
 				"status":      string(domain.DocStatusCompleted),
 				"chunk_count": len(kChunks),
 				"error_msg":   "",
+			}
+			// 留痕:记录本文档用了哪种切块策略 + 原因(仅当 splitter 暴露了策略时;
+			// 写入失败只记日志、绝不阻断入库——留痕是辅助不能反害主流程)。
+			if splitStrategy != "" {
+				updates["split_strategy"] = splitStrategy
+				updates["split_detail"] = splitDetail
 			}
 			if err := updater.UpdateColumns(ctx, doc.ID, updates); err != nil {
 				log.Printf("Failed to update metadata to COMPLETED: %v", err)
