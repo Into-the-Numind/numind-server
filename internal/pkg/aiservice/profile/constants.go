@@ -2,8 +2,8 @@
 // the Capability Matching algorithm used by the AI Gateway.
 package profile
 
-// Task ID constants for all 27 supported task profiles
-// (14 base + 7 agent-mode #14 + 2 V1.5 attachment + 4 V1.5 memory).
+// Task ID constants for all supported task profiles. The canonical, always-current
+// set is allTaskIDsList below (and AllTaskIDs()); add new IDs to both.
 // Business layers should reference these constants (e.g. profile.SopText) rather
 // than raw string literals to gain IDE completion and compile-time typo detection.
 const (
@@ -50,6 +50,17 @@ const (
 	AgentInjectionCheck = "agent.injection_check"
 	// AgentPermissionCheck is the Agent permission L3 auto-mode classifier (#14).
 	AgentPermissionCheck = "agent.permission_check"
+	// AgentImageGen is the Agent text-to-image generation tool task
+	// (agent-imagegen-via-aiservice). The image_gen tool routes its provider call
+	// through aiservice.ImageGen(ctx, profile.AgentImageGen, ...) so the call gets
+	// Langfuse tracing + routing/fallback + a UsageRecord (analytics). Its
+	// service_type is "image_gen". IMPORTANT: this profile MUST NOT carry a
+	// ChargeUser context_budget policy — the tool already performs the single
+	// credit deduction via its flat Reserve/Reconcile, and ImageGenRequest never
+	// reaches the ContextBudgetCredits chat path anyway. Requires a DB-registered
+	// ai_service route → gemini-2.5-flash-image (dmxapi) in dev/prod; missing
+	// route returns an error the tool maps to a soft tool error.
+	AgentImageGen = "agent.image_gen"
 
 	// ── V1.5 attachment profiles (task 1.2 / board 3) ────────────────────────
 
@@ -156,6 +167,7 @@ var allTaskIDsList = []string{
 	AgentNarrationFallback,
 	AgentInjectionCheck,
 	AgentPermissionCheck,
+	AgentImageGen,
 	// V1.5 additions
 	AttachmentVisionDescribe,
 	AttachmentPDFExtract,

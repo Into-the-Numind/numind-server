@@ -48,7 +48,13 @@ func TestImageGenTool_IsEnabled(t *testing.T) {
 	}
 }
 
-func TestImageGenTool_Execute_ReturnsProviderNotConfigured(t *testing.T) {
+// When the aiservice gateway is not wired (unit-test process, no SetDefault),
+// the image_gen tool's generateImage routes through aiservice.ImageGen which
+// returns a "default gateway not initialized" error. Execute must map that to a
+// SOFT tool error (nil Go error) — a hard error would kill the whole agent run.
+// This replaces the pre-aiservice assertion (old raw-HTTP path returned
+// "database store context is not configured" from the DB provider lookup).
+func TestImageGenTool_Execute_ReturnsSoftError_WhenGatewayUnwired(t *testing.T) {
 	tool := &imageGenTool{}
 	res, err := tool.Execute(context.Background(), []byte(`{"prompt":"a cat"}`))
 	if err != nil {
@@ -58,7 +64,10 @@ func TestImageGenTool_Execute_ReturnsProviderNotConfigured(t *testing.T) {
 	if err := json.Unmarshal(res, &out); err != nil {
 		t.Fatalf("invalid json: %v", err)
 	}
-	if !strings.Contains(out["error"], "database store context is not configured") {
-		t.Errorf("expected soft error message, got: %s", out["error"])
+	if !strings.HasPrefix(out["error"], "ERROR:") {
+		t.Errorf("expected a soft tool error (ERROR: prefix), got: %s", out["error"])
+	}
+	if !strings.Contains(out["error"], "gateway not initialized") {
+		t.Errorf("expected gateway-not-initialized soft error, got: %s", out["error"])
 	}
 }

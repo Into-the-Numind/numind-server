@@ -86,6 +86,12 @@ type ASRProvider interface {
 	ASR(ctx context.Context, route *registry.ResolvedRoute, req ASRRequest) (*ASRResponse, error)
 }
 
+// ImageGenProvider is implemented by adapters that support text-to-image generation.
+type ImageGenProvider interface {
+	Provider
+	ImageGen(ctx context.Context, route *registry.ResolvedRoute, req ImageGenRequest) (*ImageGenResponse, error)
+}
+
 // ----------------------------------------------------------------------------
 // Deps
 // ----------------------------------------------------------------------------
@@ -496,6 +502,37 @@ func (g *Gateway) ASR(ctx context.Context, taskID string, req ASRRequest) (*ASRR
 		return nil, nil
 	}
 	return resp.(*ASRResponse), nil
+}
+
+// ----------------------------------------------------------------------------
+// ImageGen
+// ----------------------------------------------------------------------------
+
+// ImageGen performs a text-to-image generation call for the given taskID.
+func (g *Gateway) ImageGen(ctx context.Context, taskID string, req ImageGenRequest) (*ImageGenResponse, error) {
+	resp, err := g.resolveAndRun(ctx, taskID, req, func(p Provider, route *registry.ResolvedRoute) (GatewayHandler, error) {
+		if _, ok := p.(ImageGenProvider); !ok {
+			return nil, fmt.Errorf("gateway: provider %q does not support ImageGen", p.Name())
+		}
+		return func(ctx context.Context, r *registry.ResolvedRoute, rawReq interface{}) (interface{}, error) {
+			rp := g.lookupProvider(r.Provider.Name)
+			if rp == nil {
+				return nil, fmt.Errorf("gateway: no provider registered for %q", r.Provider.Name)
+			}
+			img, ok := rp.(ImageGenProvider)
+			if !ok {
+				return nil, fmt.Errorf("gateway: provider %q does not support ImageGen: %w", rp.Name(), errno.ErrAICapabilityMismatch)
+			}
+			return img.ImageGen(ctx, r, rawReq.(ImageGenRequest))
+		}, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil {
+		return nil, nil
+	}
+	return resp.(*ImageGenResponse), nil
 }
 
 // ----------------------------------------------------------------------------

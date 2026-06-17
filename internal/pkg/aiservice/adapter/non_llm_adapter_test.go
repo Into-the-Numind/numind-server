@@ -499,6 +499,140 @@ func TestBailianFileAdapter_UploadFile_LeaseError(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
+// DMXAPIAdapter.ImageGen tests (Gemini-format text-to-image)
+// ----------------------------------------------------------------------------
+
+// writeGeminiImageResponse writes a mock Gemini generateContent response carrying
+// a base64 inlineData image part.
+func writeGeminiImageResponse(w http.ResponseWriter, b64 string, mime string) {
+	w.Header().Set("Content-Type", "application/json")
+	resp := map[string]interface{}{
+		"candidates": []map[string]interface{}{
+			{
+				"content": map[string]interface{}{
+					"parts": []map[string]interface{}{
+						{"inlineData": map[string]interface{}{"data": b64, "mimeType": mime}},
+					},
+				},
+			},
+		},
+	}
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// TestDMXAPIAdapter_ImageGen_Roundtrip verifies the full text-to-image cycle:
+// endpoint shaping (/v1beta/models/<model>:generateContent), the x-goog-api-key
+// header (NOT Authorization: Bearer), the contents/generationConfig body, and
+// base64 inlineData parsing.
+func TestDMXAPIAdapter_ImageGen_Roundtrip(t *testing.T) {
+	// "iVBORw0KGgo=" is valid base64 (decodes to PNG magic bytes prefix).
+	const testB64 = "iVBORw0KGgo="
+	const testKey = "test-goog-key"
+
+	var sawPath, sawKey, sawAuth string
+	var sawAspect string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawPath = r.URL.Path
+		sawKey = r.Header.Get("x-goog-api-key")
+		sawAuth = r.Header.Get("Authorization")
+		var body struct {
+			GenerationConfig struct {
+				ImageConfig struct {
+					AspectRatio string `json:"aspectRatio"`
+				} `json:"imageConfig"`
+			} `json:"generationConfig"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		sawAspect = body.GenerationConfig.ImageConfig.AspectRatio
+		writeGeminiImageResponse(w, testB64, "image/png")
+	}))
+	defer srv.Close()
+
+	a := NewDMXAPIAdapter()
+	// Base URL with no /v1 → suffix is appended.
+	route := mockRouteWithModel(srv.URL, testKey, "gemini-2.5-flash-image")
+
+	resp, err := a.ImageGen(context.Background(), route, aiservice.ImageGenRequest{
+		Prompt:      "a red panda",
+		AspectRatio: "16:9",
+	})
+	if err != nil {
+		t.Fatalf("ImageGen: unexpected error: %v", err)
+	}
+	if resp.ImageBase64 != testB64 {
+		t.Errorf("ImageBase64 = %q; want %q", resp.ImageBase64, testB64)
+	}
+	if resp.ContentType != "image/png" {
+		t.Errorf("ContentType = %q; want image/png", resp.ContentType)
+	}
+	if resp.Provider != "dmxapi" {
+		t.Errorf("Provider = %q; want dmxapi", resp.Provider)
+	}
+	if resp.Model != "gemini-2.5-flash-image" {
+		t.Errorf("Model = %q; want gemini-2.5-flash-image", resp.Model)
+	}
+	if !strings.Contains(sawPath, "/v1beta/models/gemini-2.5-flash-image:generateContent") {
+		t.Errorf("request path = %q; want it to contain the generateContent endpoint", sawPath)
+	}
+	if sawKey != testKey {
+		t.Errorf("x-goog-api-key = %q; want %q", sawKey, testKey)
+	}
+	if sawAuth != "" {
+		t.Errorf("Authorization header set = %q; image_gen must NOT use Bearer auth", sawAuth)
+	}
+	if sawAspect != "16:9" {
+		t.Errorf("aspectRatio = %q; want 16:9", sawAspect)
+	}
+}
+
+// TestDMXAPIAdapter_ImageGen_NoImageData verifies that a response with no
+// inlineData part returns an error (safety-filter / empty-result case).
+func TestDMXAPIAdapter_ImageGen_NoImageData(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"candidates": []interface{}{}})
+	}))
+	defer srv.Close()
+
+	a := NewDMXAPIAdapter()
+	route := mockRouteWithModel(srv.URL, "k", "gemini-2.5-flash-image")
+	_, err := a.ImageGen(context.Background(), route, aiservice.ImageGenRequest{Prompt: "x"})
+	if err == nil {
+		t.Error("expected error for empty candidates; got nil")
+	}
+}
+
+// TestDMXAPIAdapter_ImageGen_MissingAPIKey verifies that a missing API key fails
+// before any HTTP call.
+func TestDMXAPIAdapter_ImageGen_MissingAPIKey(t *testing.T) {
+	a := NewDMXAPIAdapter()
+	route := mockRouteWithModel("http://example.invalid", "", "gemini-2.5-flash-image")
+	_, err := a.ImageGen(context.Background(), route, aiservice.ImageGenRequest{Prompt: "x"})
+	if err == nil {
+		t.Error("expected error for missing API key; got nil")
+	}
+}
+
+// TestImageGenEndpoint_Shaping verifies the endpoint rewriting matches the legacy
+// raw-HTTP path: /v1/ and /v1 bases are rewritten, others get the suffix appended.
+func TestImageGenEndpoint_Shaping(t *testing.T) {
+	cases := []struct {
+		base, model, want string
+	}{
+		{"https://www.dmxapi.cn/v1/", "m", "https://www.dmxapi.cn/v1beta/models/m:generateContent"},
+		{"https://www.dmxapi.cn/v1", "m", "https://www.dmxapi.cn/v1beta/models/m:generateContent"},
+		{"https://www.dmxapi.cn", "m", "https://www.dmxapi.cn/v1beta/models/m:generateContent"},
+		{"", "m", "https://www.dmxapi.cn/v1beta/models/m:generateContent"},
+	}
+	for _, c := range cases {
+		if got := imageGenEndpoint(c.base, c.model); got != c.want {
+			t.Errorf("imageGenEndpoint(%q,%q) = %q; want %q", c.base, c.model, got, c.want)
+		}
+	}
+}
+
+// ----------------------------------------------------------------------------
 // Interface compliance checks for the new adapters
 // ----------------------------------------------------------------------------
 
@@ -506,4 +640,5 @@ func TestNonLLMAdapterInterfaceCompliance(t *testing.T) {
 	var _ OCRAdapter = NewBaiduOCRAdapter()
 	var _ ASRAdapter = NewFunASRAdapter()
 	var _ FileServiceAdapter = NewBailianFileAdapter()
+	var _ ImageGenAdapter = NewDMXAPIAdapter()
 }

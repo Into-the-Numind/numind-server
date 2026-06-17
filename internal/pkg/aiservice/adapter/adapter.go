@@ -100,6 +100,14 @@ type ASRAdapter interface {
 	ASR(ctx context.Context, route *registry.ResolvedRoute, req aiservice.ASRRequest) (*aiservice.ASRResponse, error)
 }
 
+// ImageGenAdapter is implemented by adapters that support text-to-image generation.
+type ImageGenAdapter interface {
+	Adapter
+
+	// ImageGen generates an image from a text prompt and returns the base64 payload.
+	ImageGen(ctx context.Context, route *registry.ResolvedRoute, req aiservice.ImageGenRequest) (*aiservice.ImageGenResponse, error)
+}
+
 // FileServiceAdapter is implemented by adapters that support file upload services.
 // It is distinct from LLM/OCR/ASR adapters and is used to upload files to a
 // provider-managed store (e.g. Alibaba Bailian) and obtain a stable FileID that

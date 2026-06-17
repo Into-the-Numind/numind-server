@@ -3,10 +3,14 @@ package adapter
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
+	"time"
 
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/aierr"
@@ -32,6 +36,17 @@ const dmxapiPostMaxRetries = 3
 var _ ChatAdapter = (*DMXAPIAdapter)(nil)
 var _ EmbedAdapter = (*DMXAPIAdapter)(nil)
 var _ RerankAdapter = (*DMXAPIAdapter)(nil)
+var _ ImageGenAdapter = (*DMXAPIAdapter)(nil)
+
+// imageGenHTTPTimeout caps a single text-to-image request. Image generation is a
+// one-shot (non-streaming) call, so capping the whole request (body read included)
+// is safe. 90s matches the value the legacy raw-HTTP image_gen path used.
+const imageGenHTTPTimeout = 90 * time.Second
+
+// defaultImageGenModel is the Gemini image model used when route.ProviderModelID
+// is empty (e.g. a route mis-seeded without a provider_model_id). Mirrors the
+// literal the legacy tool_image_gen.go raw-HTTP path hardcoded.
+const defaultImageGenModel = "gemini-2.5-flash-image"
 
 // dmxapiRerankRequest is the DMXAPI rerank request body.
 type dmxapiRerankRequest struct {
@@ -70,6 +85,11 @@ type DMXAPIAdapter struct {
 	// Stream liveness/ceiling are governed by ResponseHeaderTimeout + idle
 	// watchdog + the caller's context deadline instead.
 	streamClient *httpclient.Client
+	// imageGenClient serves the non-OpenAI-compatible Gemini image endpoint
+	// (x-goog-api-key + /v1beta/models/<model>:generateContent). Image generation
+	// is a one-shot call (no streaming) with a higher latency floor than chat, so
+	// it carries its own 90s total-request timeout independent of the chat clients.
+	imageGenClient *httpclient.Client
 }
 
 // NewDMXAPIAdapter creates a DMXAPIAdapter backed by the shared httpclient pool.
@@ -83,9 +103,13 @@ type DMXAPIAdapter struct {
 // Streaming chat uses a separate client (LLMStreamConfig) with no total request
 // timeout — see streamClient field and httpclient.LLMStreamConfig.
 func NewDMXAPIAdapter() *DMXAPIAdapter {
+	imgCfg := httpclient.DefaultConfig()
+	imgCfg.Timeout = imageGenHTTPTimeout
+	imgCfg.ResponseHeaderTimeout = imageGenHTTPTimeout
 	return &DMXAPIAdapter{
-		client:       httpclient.NewClient(httpclient.LLMConfig()),
-		streamClient: httpclient.NewClient(httpclient.LLMStreamConfig()),
+		client:         httpclient.NewClient(httpclient.LLMConfig()),
+		streamClient:   httpclient.NewClient(httpclient.LLMStreamConfig()),
+		imageGenClient: httpclient.NewClient(imgCfg),
 	}
 }
 
@@ -96,7 +120,9 @@ func (d *DMXAPIAdapter) Name() string { return "dmxapi" }
 func (d *DMXAPIAdapter) ProviderType() string { return "dmxapi" }
 
 // Capabilities lists the capabilities this adapter supports.
-func (d *DMXAPIAdapter) Capabilities() []string { return []string{"chat", "embed", "rerank"} }
+func (d *DMXAPIAdapter) Capabilities() []string {
+	return []string{"chat", "embed", "rerank", "image_gen"}
+}
 
 // buildOAIRequest assembles the OpenAI-compatible chat request payload and the
 // trace metadata record. Centralises per-family dispatch so that Chat and
@@ -391,6 +417,146 @@ func (d *DMXAPIAdapter) Rerank(ctx context.Context, route *registry.ResolvedRout
 		Model:    route.ProviderModelID,
 		Provider: d.Name(),
 	}, nil
+}
+
+// ImageGen generates an image from a text prompt via the Gemini-format image
+// endpoint that DMXAPI proxies. This is NOT OpenAI-compatible: the request goes
+// to /v1beta/models/<model>:generateContent, authenticates with the
+// `x-goog-api-key` header (not Authorization: Bearer), and returns the image as
+// base64 inlineData. It therefore uses a bespoke HTTP path (imageGenClient)
+// rather than the shared OpenAI doPost.
+//
+// Endpoint/body/response parsing is ported verbatim from the legacy raw-HTTP
+// image_gen path (biz/agent/tool_image_gen.go generateImage), but the base URL
+// and API key come from route.Provider (registry-resolved) instead of a direct
+// llm_provider table lookup.
+func (d *DMXAPIAdapter) ImageGen(ctx context.Context, route *registry.ResolvedRoute, req aiservice.ImageGenRequest) (*aiservice.ImageGenResponse, error) {
+	if route == nil {
+		return nil, errors.New("dmxapi.ImageGen: nil route")
+	}
+	if route.Provider.APIKey == "" {
+		return nil, errors.New("dmxapi.ImageGen: provider API key is not configured")
+	}
+
+	model := strings.TrimSpace(route.ProviderModelID)
+	if model == "" {
+		model = defaultImageGenModel
+	}
+
+	apiURL := imageGenEndpoint(route.Provider.BaseURL, model)
+
+	aspectRatio := strings.TrimSpace(req.AspectRatio)
+	if aspectRatio == "" {
+		aspectRatio = "1:1"
+	}
+	reqBody := map[string]interface{}{
+		"contents": []interface{}{
+			map[string]interface{}{
+				"parts": []interface{}{
+					map[string]interface{}{"text": req.Prompt},
+				},
+			},
+		},
+		"generationConfig": map[string]interface{}{
+			"imageConfig": map[string]interface{}{"aspectRatio": aspectRatio},
+		},
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("dmxapi.ImageGen: marshal: %w", err)
+	}
+
+	resp, err := d.imageGenClient.Do(&httpclient.Request{
+		Method:  "POST",
+		URL:     apiURL,
+		Body:    bytes.NewReader(body),
+		Context: ctx,
+		Headers: map[string]string{
+			"x-goog-api-key": route.Provider.APIKey,
+			"Content-Type":   "application/json",
+		},
+		// One-shot non-streaming call; allow a couple of retries on transient blips
+		// (httpclient applies exponential backoff). Matches the chat doPost budget.
+		RetryPolicy: &httpclient.RetryPolicy{MaxRetries: dmxapiPostMaxRetries},
+	})
+	if err != nil {
+		return nil, wrapHTTPClientErr("dmxapi.ImageGen", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, wrapHTTPStatusErr("dmxapi.ImageGen", resp.StatusCode, b)
+	}
+
+	var result struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					InlineData struct {
+						Data     string `json:"data"`
+						MimeType string `json:"mimeType"`
+					} `json:"inlineData"`
+				} `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("dmxapi.ImageGen: decode: %w", err)
+	}
+
+	var base64Data, mimeType string
+	if len(result.Candidates) > 0 {
+		for _, part := range result.Candidates[0].Content.Parts {
+			if part.InlineData.Data != "" {
+				base64Data = part.InlineData.Data
+				mimeType = part.InlineData.MimeType
+				break
+			}
+		}
+	}
+	if base64Data == "" {
+		return nil, errors.New("dmxapi.ImageGen: no image data returned (possibly blocked by safety filters)")
+	}
+	// Validate the base64 is decodable here so the caller can trust ImageBase64.
+	if _, err := base64.StdEncoding.DecodeString(base64Data); err != nil {
+		return nil, fmt.Errorf("dmxapi.ImageGen: invalid base64 image data: %w", err)
+	}
+	if mimeType == "" {
+		mimeType = "image/png"
+	}
+
+	return &aiservice.ImageGenResponse{
+		ImageBase64: base64Data,
+		ContentType: mimeType,
+		Model:       model,
+		Provider:    d.Name(),
+	}, nil
+}
+
+// imageGenEndpoint builds the Gemini generateContent URL from the provider base
+// URL and the model id. It mirrors the legacy tool_image_gen.go path rewriting:
+// a base URL ending in /v1/ or /v1 is rewritten to the /v1beta/models/<model>:
+// generateContent form; otherwise the path is appended. Defaults to the public
+// dmxapi.cn host when baseURL is empty.
+func imageGenEndpoint(baseURL, model string) string {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		baseURL = "https://www.dmxapi.cn"
+	}
+	if !strings.HasSuffix(baseURL, "/") {
+		baseURL += "/"
+	}
+	suffix := "v1beta/models/" + model + ":generateContent"
+	switch {
+	case strings.Contains(baseURL, "/v1/"):
+		return strings.Replace(baseURL, "/v1/", "/"+suffix, 1)
+	case strings.Contains(baseURL, "/v1"):
+		return strings.Replace(baseURL, "/v1", "/"+suffix, 1)
+	default:
+		return baseURL + suffix
+	}
 }
 
 // ----------------------------------------------------------------------------
