@@ -206,7 +206,7 @@ web_search:
 #   - 后端在宿主机进程：http://localhost:11235
 #   - 后端在容器：http://<部署机内网IP>:11235（经宿主机已发布端口，勿与 crawl4ai 共网）
 crawl4ai:
-  base_url: ""                         # 空=纯裸 HTTP；部署 crawl4ai 容器后按上面注释填
+  base_url: "http://139.155.129.13:11235"   # 构建机 crawl4ai（dev/prod 共用，安全组+iptables 限源）
   token: ""                            # crawl4ai JWT，默认关
   timeout_seconds: 30
   content_filter: "fit"                # fit=干净正文 | raw=原始 markdown
