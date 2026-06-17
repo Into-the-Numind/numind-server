@@ -19,26 +19,27 @@
 -- ⚠️ dev/prod 部署不自动跑 migration（MEMORY: project_dev_deploy_migration_gap），须手工 SSH 执行。
 -- 幂等：列用 ADD COLUMN IF NOT EXISTS；索引用 INFORMATION_SCHEMA 守卫 + 动态 SQL（MySQL 8 无 CREATE INDEX IF NOT EXISTS）。
 
--- ---- skill 列 ----
-ALTER TABLE skill
-  ADD COLUMN IF NOT EXISTS owner_user_id INT UNSIGNED NOT NULL DEFAULT 0
-  COMMENT '真正创建者 user id（父建=父 id，子建=子 id）'
-  AFTER parent_user_id;
+-- ---- skill 列（INFORMATION_SCHEMA 守卫，幂等；MySQL 8 不支持 ADD COLUMN IF NOT EXISTS）----
+-- owner_user_id = 真正创建者 user id（backfill=created_by）；
+-- visibility    = 三级可见性 official/institution/sub_user；
+-- subscription_id / marketplace_id = 市场订阅引用指针（非零=运行时改读 marketplace 当前快照）。
+SET @db := DATABASE();
 
-ALTER TABLE skill
-  ADD COLUMN IF NOT EXISTS visibility ENUM('official','institution','sub_user') NOT NULL DEFAULT 'institution'
-  COMMENT '三级可见性：official=全局，institution=机构内，sub_user=仅创建者'
-  AFTER owner_user_id;
+SET @c := (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@db AND table_name='skill' AND column_name='owner_user_id');
+SET @sql := IF(@c=0, 'ALTER TABLE skill ADD COLUMN owner_user_id INT UNSIGNED NOT NULL DEFAULT 0 AFTER parent_user_id', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-ALTER TABLE skill
-  ADD COLUMN IF NOT EXISTS subscription_id INT UNSIGNED NOT NULL DEFAULT 0
-  COMMENT '市场订阅引用指针：非零=订阅引用行'
-  AFTER is_active;
+SET @c := (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@db AND table_name='skill' AND column_name='visibility');
+SET @sql := IF(@c=0, 'ALTER TABLE skill ADD COLUMN visibility ENUM(''official'',''institution'',''sub_user'') NOT NULL DEFAULT ''institution'' AFTER owner_user_id', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-ALTER TABLE skill
-  ADD COLUMN IF NOT EXISTS marketplace_id INT UNSIGNED NOT NULL DEFAULT 0
-  COMMENT '市场引用指针：非零=运行时改读 marketplace 当前 SanitizedBodyMD 快照'
-  AFTER subscription_id;
+SET @c := (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@db AND table_name='skill' AND column_name='subscription_id');
+SET @sql := IF(@c=0, 'ALTER TABLE skill ADD COLUMN subscription_id INT UNSIGNED NOT NULL DEFAULT 0 AFTER is_active', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @c := (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@db AND table_name='skill' AND column_name='marketplace_id');
+SET @sql := IF(@c=0, 'ALTER TABLE skill ADD COLUMN marketplace_id INT UNSIGNED NOT NULL DEFAULT 0 AFTER subscription_id', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- 回填 owner_user_id（仅对默认 0 的行，避免覆盖二次执行结果）
 UPDATE skill SET owner_user_id = created_by WHERE owner_user_id = 0;
@@ -54,16 +55,16 @@ UPDATE skill SET owner_user_id = created_by WHERE owner_user_id = 0;
 -- 因此必须用 parent_user_id = 0 守卫：只有平台 seed 的系统行（owner/parent=0）才是真正的全局官方。
 UPDATE skill SET visibility = 'official' WHERE origin_type = 'official' AND parent_user_id = 0;
 
--- ---- skill_subscription 列 ----
-ALTER TABLE skill_subscription
-  ADD COLUMN IF NOT EXISTS source_skill_id INT UNSIGNED NOT NULL DEFAULT 0
-  COMMENT '发布方原始 skill id（reference-mode >0；legacy clone-mode =0）'
-  AFTER cloned_skill_id;
+-- ---- skill_subscription 列（INFORMATION_SCHEMA 守卫，幂等）----
+-- source_skill_id = 发布方原始 skill id（reference-mode >0；legacy clone-mode =0）；
+-- subscribed_version = 订阅时刻 source skill 版本（0=未知/legacy）。
+SET @c := (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@db AND table_name='skill_subscription' AND column_name='source_skill_id');
+SET @sql := IF(@c=0, 'ALTER TABLE skill_subscription ADD COLUMN source_skill_id INT UNSIGNED NOT NULL DEFAULT 0 AFTER cloned_skill_id', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-ALTER TABLE skill_subscription
-  ADD COLUMN IF NOT EXISTS subscribed_version INT UNSIGNED NOT NULL DEFAULT 0
-  COMMENT '订阅时刻 source skill 版本（0=未知/legacy）'
-  AFTER source_skill_id;
+SET @c := (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@db AND table_name='skill_subscription' AND column_name='subscribed_version');
+SET @sql := IF(@c=0, 'ALTER TABLE skill_subscription ADD COLUMN subscribed_version INT UNSIGNED NOT NULL DEFAULT 0 AFTER source_skill_id', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- ---- 索引（INFORMATION_SCHEMA 守卫，幂等）----
 SET @db := DATABASE();
