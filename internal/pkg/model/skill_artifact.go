@@ -16,8 +16,17 @@ import (
 //   - Create 路径必须用 `Select("*").Create(...)` 或 UpdateColumn fixup
 //   - Update 路径用 `db.Save()` 或 `Updates(map)` 安全
 type Skill struct {
-	ID               uint           `gorm:"primaryKey;autoIncrement" json:"id"`
-	ParentUserID     uint           `gorm:"type:int unsigned;not null;index:idx_skill_parent_active,priority:1" json:"parent_user_id"`
+	ID           uint `gorm:"primaryKey;autoIncrement" json:"id"`
+	ParentUserID uint `gorm:"type:int unsigned;not null;index:idx_skill_parent_active,priority:1;index:idx_skill_visibility,priority:1" json:"parent_user_id"`
+	// OwnerUserID 是真正的创建者 user id（父账户自建=父 id；子账户自建=子账户 id）。
+	// 与 ParentUserID（=机构 id）区分：可见性 'sub_user' 按 OwnerUserID 收敛。
+	OwnerUserID uint `gorm:"type:int unsigned;not null;index:idx_skill_owner" json:"owner_user_id"`
+	// Visibility 三级可见性（T4 skill-3tier-visibility）：
+	//   'official'    → 所有机构所有用户可见（仅 admin seed / import-template 创建）
+	//   'institution' → 机构内全员可见（parent_user_id 命中的父账户 + 全部子账户）；仅父账户可创建/设置
+	//   'sub_user'    → 仅 OwnerUserID 可见（子账户自建默认 / 父账户创建私有技能）
+	// DEFAULT='institution'（父账户自建默认）；子账户自建默认 'sub_user'（service 层决定）。
+	Visibility       string         `gorm:"type:enum('official','institution','sub_user');not null;default:'institution';index:idx_skill_visibility,priority:2" json:"visibility"`
 	Name             string         `gorm:"size:100;not null" json:"name"`
 	Description      string         `gorm:"size:300;not null;default:''" json:"description"`
 	WhenToUse        string         `gorm:"size:500;not null;default:''" json:"when_to_use"`
@@ -27,10 +36,18 @@ type Skill struct {
 	SourceTemplateID *uint          `gorm:"type:int unsigned;index:idx_skill_source_template" json:"source_template_id"`
 	OriginType       string         `gorm:"type:enum('official','tenant','user');not null;default:'user'" json:"origin_type"`
 	Version          uint           `gorm:"type:int unsigned;not null;default:1" json:"version"`
-	IsActive         bool           `gorm:"type:tinyint(1);not null;default:1;index:idx_skill_parent_active,priority:2" json:"is_active"`
-	CreatedBy        uint           `gorm:"type:int unsigned;not null" json:"created_by"`
-	CreatedAt        time.Time      `gorm:"type:datetime;not null;default:CURRENT_TIMESTAMP;autoCreateTime" json:"created_at"`
-	UpdatedAt        time.Time      `gorm:"type:datetime;not null;default:CURRENT_TIMESTAMP;autoUpdateTime;index:idx_skill_parent_active,priority:3,sort:desc" json:"updated_at"`
+	IsActive         bool           `gorm:"type:tinyint(1);not null;default:1;index:idx_skill_parent_active,priority:2;index:idx_skill_visibility,priority:3" json:"is_active"`
+	// SubscriptionID / MarketplaceID 标记本行是市场订阅的"引用指针"（T4 reference-mode）。
+	// 任一非零 ⇒ 此行 body 非权威，运行时 loadDBSkill 改读 marketplace 当前 SanitizedBodyMD 快照。
+	SubscriptionID uint      `gorm:"type:int unsigned;not null;default:0" json:"subscription_id"`
+	MarketplaceID  uint      `gorm:"type:int unsigned;not null;default:0" json:"marketplace_id"`
+	CreatedBy      uint      `gorm:"type:int unsigned;not null" json:"created_by"`
+	CreatedAt      time.Time `gorm:"type:datetime;not null;default:CURRENT_TIMESTAMP;autoCreateTime" json:"created_at"`
+	UpdatedAt      time.Time `gorm:"type:datetime;not null;default:CURRENT_TIMESTAMP;autoUpdateTime;index:idx_skill_parent_active,priority:3,sort:desc" json:"updated_at"`
+
+	// CanEdit 是非持久化的派生字段（不入库），由 biz 层 ListVisibleSkills/GetForCaller 计算，
+	// 驱动前端编辑/删除按钮门控。'official' 行对所有人只读（can_edit=false）。
+	CanEdit bool `gorm:"-" json:"can_edit"`
 }
 
 func (Skill) TableName() string { return "skill" }

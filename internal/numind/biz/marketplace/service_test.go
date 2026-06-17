@@ -83,15 +83,19 @@ func newFakeArtifactSvc() *fakeArtifactSvc {
 	return &fakeArtifactSvc{nextID: 100, skills: map[uint]*model.Skill{}}
 }
 
-func (f *fakeArtifactSvc) Create(ctx context.Context, parentUserID, createdBy uint, req artifact.CreateRequest) (*model.Skill, error) {
-	f.createCalls = append(f.createCalls, artifactCreateCall{ParentUserID: parentUserID, CreatedBy: createdBy, Req: req})
+// Create matches the T4 ArtifactService.Create signature
+// (callerUserID, instID, isParent, req). The legacy clone.go path passes
+// (subscriberUserID, subscriberUserID, true, req).
+func (f *fakeArtifactSvc) Create(ctx context.Context, callerUserID, instID uint, isParent bool, req artifact.CreateRequest) (*model.Skill, error) {
+	f.createCalls = append(f.createCalls, artifactCreateCall{ParentUserID: instID, CreatedBy: callerUserID, Req: req})
 	if f.failNextCreate {
 		f.failNextCreate = false
 		return nil, errors.New("fakeArtifactSvc: forced create failure")
 	}
 	f.nextID++
 	sk := &model.Skill{
-		ParentUserID: parentUserID,
+		ParentUserID: instID,
+		OwnerUserID:  callerUserID,
 		Name:         req.Name,
 		Description:  req.Description,
 		WhenToUse:    req.WhenToUse,
@@ -116,7 +120,7 @@ func (f *fakeArtifactSvc) Get(ctx context.Context, parentUserID, skillID uint) (
 	return sk, nil
 }
 
-func (f *fakeArtifactSvc) Delete(ctx context.Context, parentUserID, skillID uint) (int64, error) {
+func (f *fakeArtifactSvc) DeleteInternal(ctx context.Context, parentUserID, skillID uint) (int64, error) {
 	f.deleteCalls = append(f.deleteCalls, skillID)
 	if f.failNextDelete {
 		f.failNextDelete = false
@@ -140,6 +144,29 @@ func newTestService(t *testing.T) (Service, *fakeArtifactSvc, *fakeUserStore, st
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(&model.SkillMarketplace{}, &model.SkillSubscription{}, &model.AgentSkillBinding{}))
+	// model.Skill uses MySQL ENUM/JSON DDL that SQLite AutoMigrate can't parse —
+	// create it with explicit SQLite-compatible DDL (ENUM→TEXT, JSON→TEXT).
+	require.NoError(t, db.Exec(`CREATE TABLE skill (
+		id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+		parent_user_id      INTEGER NOT NULL,
+		owner_user_id       INTEGER NOT NULL DEFAULT 0,
+		visibility          TEXT    NOT NULL DEFAULT 'institution',
+		name                TEXT    NOT NULL,
+		description         TEXT    NOT NULL DEFAULT '',
+		when_to_use         TEXT    NOT NULL DEFAULT '',
+		allowed_tools       TEXT    NOT NULL DEFAULT '[]',
+		body_md             TEXT    NOT NULL DEFAULT '',
+		source_type         TEXT    NOT NULL DEFAULT 'custom',
+		source_template_id  INTEGER,
+		origin_type         TEXT    NOT NULL DEFAULT 'user',
+		version             INTEGER NOT NULL DEFAULT 1,
+		is_active           INTEGER NOT NULL DEFAULT 1,
+		subscription_id     INTEGER NOT NULL DEFAULT 0,
+		marketplace_id      INTEGER NOT NULL DEFAULT 0,
+		created_by          INTEGER NOT NULL,
+		created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`).Error)
 	t.Cleanup(func() {
 		sqlDB, _ := db.DB()
 		_ = sqlDB.Close()
@@ -153,25 +180,41 @@ func newTestService(t *testing.T) (Service, *fakeArtifactSvc, *fakeUserStore, st
 
 	art := newFakeArtifactSvc()
 	svc := NewService(mpStore, art, users, db)
+	// Stash the db on the helper-returned tuple via a package-level map keyed by t —
+	// simpler: tests that seed skills call seedSkill(t, art, db, db, ...). We expose db
+	// in the return tuple already (5th value), so seedSkill takes db explicitly.
 	return svc, art, users, mpStore, db
 }
 
-// seedSkillToFake adds a skill owned by parentUserID to fake artifact svc.
-func seedSkill(t *testing.T, art *fakeArtifactSvc, id, parentUserID uint, body string) *model.Skill {
+// seedSkill adds a skill owned by parentUserID. T4: Publish reads from the REAL
+// DB (getOwnedSkillForPublish), while SanitizePreview still reads from the fake
+// artifact Get. To keep both code paths working, seed into BOTH the fake map and
+// the real skill table. parent_user_id = owner_user_id = parentUserID,
+// visibility='institution' (a parent-owned institution skill — publishable).
+func seedSkill(t *testing.T, art *fakeArtifactSvc, db *gorm.DB, id, parentUserID uint, body string) *model.Skill {
 	t.Helper()
 	sk := &model.Skill{
 		ParentUserID: parentUserID,
+		OwnerUserID:  parentUserID,
+		Visibility:   "institution",
 		Name:         "Seed Skill",
 		Description:  "seed description",
 		WhenToUse:    "seed when",
 		BodyMd:       body,
+		SourceType:   "custom",
+		OriginType:   "tenant",
+		Version:      1,
 		IsActive:     true,
+		CreatedBy:    parentUserID,
 	}
 	sk.ID = id
 	art.skills[id] = sk
 	if id > art.nextID {
 		art.nextID = id
 	}
+	// Also insert into the real DB so getOwnedSkillForPublish finds it.
+	dbRow := *sk
+	require.NoError(t, db.Select("*").Create(&dbRow).Error)
 	return sk
 }
 
@@ -189,8 +232,8 @@ func realStubChat(t *testing.T) {
 // ---- tests: SanitizePreview ----
 
 func TestSanitizePreview_HappyPath(t *testing.T) {
-	svc, art, _, _, _ := newTestService(t)
-	seedSkill(t, art, 10, 1, "raw body with admin@example.com")
+	svc, art, _, _, db := newTestService(t)
+	seedSkill(t, art, db, 10, 1, "raw body with admin@example.com")
 	realStubChat(t)
 
 	out, err := svc.SanitizePreview(context.Background(), 1, 10)
@@ -199,8 +242,8 @@ func TestSanitizePreview_HappyPath(t *testing.T) {
 }
 
 func TestSanitizePreview_ChildBlocked(t *testing.T) {
-	svc, art, _, _, _ := newTestService(t)
-	seedSkill(t, art, 10, 1, "body")
+	svc, art, _, _, db := newTestService(t)
+	seedSkill(t, art, db, 10, 1, "body")
 	realStubChat(t)
 
 	_, err := svc.SanitizePreview(context.Background(), 3, 10)
@@ -208,8 +251,8 @@ func TestSanitizePreview_ChildBlocked(t *testing.T) {
 }
 
 func TestSanitizePreview_SkillNotOwned(t *testing.T) {
-	svc, art, _, _, _ := newTestService(t)
-	seedSkill(t, art, 10, 1, "body") // owned by user 1
+	svc, art, _, _, db := newTestService(t)
+	seedSkill(t, art, db, 10, 1, "body") // owned by user 1
 	realStubChat(t)
 
 	// user 2 tries to preview user 1's skill
@@ -218,8 +261,8 @@ func TestSanitizePreview_SkillNotOwned(t *testing.T) {
 }
 
 func TestSanitizePreview_EmptyBody(t *testing.T) {
-	svc, art, _, _, _ := newTestService(t)
-	seedSkill(t, art, 10, 1, "") // empty body
+	svc, art, _, _, db := newTestService(t)
+	seedSkill(t, art, db, 10, 1, "") // empty body
 	realStubChat(t)
 
 	_, err := svc.SanitizePreview(context.Background(), 1, 10)
@@ -229,8 +272,8 @@ func TestSanitizePreview_EmptyBody(t *testing.T) {
 // ---- tests: Publish ----
 
 func TestPublish_HappyPath(t *testing.T) {
-	svc, art, _, _, _ := newTestService(t)
-	seedSkill(t, art, 10, 1, "raw body content")
+	svc, art, _, _, db := newTestService(t)
+	seedSkill(t, art, db, 10, 1, "raw body content")
 	realStubChat(t)
 
 	mp, err := svc.Publish(context.Background(), 1, PublishRequest{
@@ -247,18 +290,23 @@ func TestPublish_HappyPath(t *testing.T) {
 	assert.Equal(t, "脱敏后正文", mp.SanitizedBodyMD)
 }
 
-func TestPublish_ChildBlocked(t *testing.T) {
-	svc, art, _, _, _ := newTestService(t)
-	seedSkill(t, art, 10, 3, "body")
+// TestPublish_SubUserCannotPublishUnowned (T4 dual-level publish): children are NO
+// LONGER blocked from Publish, but a sub-user can only publish a skill they OWN.
+// Skill 10 is an institution-owned skill (owner=parent 1); child 3 (institution 1)
+// does not own it → ErrSkillNotOwned.
+func TestPublish_SubUserCannotPublishUnowned(t *testing.T) {
+	svc, art, _, _, db := newTestService(t)
+	// institution skill owned by parent 1 (child 3's institution).
+	seedSkill(t, art, db, 10, 1, "body")
 	realStubChat(t)
 
 	_, err := svc.Publish(context.Background(), 3, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "x"})
-	assert.ErrorIs(t, err, ErrChildAccountCannotAccessMarketplace)
+	assert.ErrorIs(t, err, ErrSkillNotOwned)
 }
 
 func TestPublish_SkillNotOwned(t *testing.T) {
-	svc, art, _, _, _ := newTestService(t)
-	seedSkill(t, art, 10, 1, "body") // owned by 1
+	svc, art, _, _, db := newTestService(t)
+	seedSkill(t, art, db, 10, 1, "body") // owned by 1
 	realStubChat(t)
 
 	_, err := svc.Publish(context.Background(), 2, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "x"})
@@ -266,8 +314,8 @@ func TestPublish_SkillNotOwned(t *testing.T) {
 }
 
 func TestPublish_AlreadyPublished(t *testing.T) {
-	svc, art, _, _, _ := newTestService(t)
-	seedSkill(t, art, 10, 1, "raw")
+	svc, art, _, _, db := newTestService(t)
+	seedSkill(t, art, db, 10, 1, "raw")
 	realStubChat(t)
 	ctx := context.Background()
 
@@ -279,8 +327,8 @@ func TestPublish_AlreadyPublished(t *testing.T) {
 }
 
 func TestPublish_ConfirmationMismatch(t *testing.T) {
-	svc, art, _, _, _ := newTestService(t)
-	seedSkill(t, art, 10, 1, "raw")
+	svc, art, _, _, db := newTestService(t)
+	seedSkill(t, art, db, 10, 1, "raw")
 	realStubChat(t) // returns "脱敏后正文"
 
 	// User echoes back something totally different (>5% char delta).
@@ -293,8 +341,8 @@ func TestPublish_ConfirmationMismatch(t *testing.T) {
 }
 
 func TestPublish_EmptyBody(t *testing.T) {
-	svc, art, _, _, _ := newTestService(t)
-	seedSkill(t, art, 10, 1, "")
+	svc, art, _, _, db := newTestService(t)
+	seedSkill(t, art, db, 10, 1, "")
 	realStubChat(t)
 
 	_, err := svc.Publish(context.Background(), 1, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: ""})
@@ -304,8 +352,8 @@ func TestPublish_EmptyBody(t *testing.T) {
 // ---- tests: Unpublish ----
 
 func TestUnpublish_HappyPath(t *testing.T) {
-	svc, art, _, mpStore, _ := newTestService(t)
-	seedSkill(t, art, 10, 1, "body")
+	svc, art, _, mpStore, db := newTestService(t)
+	seedSkill(t, art, db, 10, 1, "body")
 	realStubChat(t)
 	ctx := context.Background()
 
@@ -326,8 +374,8 @@ func TestUnpublish_ChildBlocked(t *testing.T) {
 }
 
 func TestUnpublish_NotOwned(t *testing.T) {
-	svc, art, _, _, _ := newTestService(t)
-	seedSkill(t, art, 10, 1, "body")
+	svc, art, _, _, db := newTestService(t)
+	seedSkill(t, art, db, 10, 1, "body")
 	realStubChat(t)
 	ctx := context.Background()
 
@@ -348,9 +396,9 @@ func TestUnpublish_NotFound(t *testing.T) {
 // ---- tests: List / Get ----
 
 func TestList_DefaultsAndPagination(t *testing.T) {
-	svc, art, _, _, _ := newTestService(t)
-	seedSkill(t, art, 10, 1, "body-a")
-	seedSkill(t, art, 11, 1, "body-b")
+	svc, art, _, _, db := newTestService(t)
+	seedSkill(t, art, db, 10, 1, "body-a")
+	seedSkill(t, art, db, 11, 1, "body-b")
 	realStubChat(t)
 	ctx := context.Background()
 
@@ -382,8 +430,8 @@ func TestList_ChildBlocked(t *testing.T) {
 }
 
 func TestGet_ChildBlocked(t *testing.T) {
-	svc, art, _, _, _ := newTestService(t)
-	seedSkill(t, art, 10, 1, "body")
+	svc, art, _, _, db := newTestService(t)
+	seedSkill(t, art, db, 10, 1, "body")
 	realStubChat(t)
 	ctx := context.Background()
 	mp, _ := svc.Publish(ctx, 1, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "脱敏后正文"})
@@ -393,8 +441,8 @@ func TestGet_ChildBlocked(t *testing.T) {
 }
 
 func TestGet_Public(t *testing.T) {
-	svc, art, _, _, _ := newTestService(t)
-	seedSkill(t, art, 10, 1, "body")
+	svc, art, _, _, db := newTestService(t)
+	seedSkill(t, art, db, 10, 1, "body")
 	realStubChat(t)
 	ctx := context.Background()
 	mp, _ := svc.Publish(ctx, 1, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "脱敏后正文"})
@@ -405,8 +453,8 @@ func TestGet_Public(t *testing.T) {
 }
 
 func TestGet_UnpublishedVisibleToPublisherOnly(t *testing.T) {
-	svc, art, _, _, _ := newTestService(t)
-	seedSkill(t, art, 10, 1, "body")
+	svc, art, _, _, db := newTestService(t)
+	seedSkill(t, art, db, 10, 1, "body")
 	realStubChat(t)
 	ctx := context.Background()
 	mp, _ := svc.Publish(ctx, 1, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "脱敏后正文"})
@@ -432,23 +480,39 @@ func TestGet_NotFound(t *testing.T) {
 
 func TestSubscribe_HappyPath_WritesToSubscriberTenant(t *testing.T) {
 	svc, art, _, _, db := newTestService(t)
-	seedSkill(t, art, 10, 1, "body")
+	seedSkill(t, art, db, 10, 1, "body")
 	realStubChat(t)
 	ctx := context.Background()
 	mp, _ := svc.Publish(ctx, 1, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "脱敏后正文"})
 
-	// user 2 subscribes
-	clonedID, _, err := svc.Subscribe(ctx, 2, mp.ID)
+	// user 2 subscribes (T4 reference-mode → returns subscription_id, source_skill_id).
+	subID, sourceSkillID, err := svc.Subscribe(ctx, 2, mp.ID)
 	require.NoError(t, err)
-	require.NotZero(t, clonedID)
+	require.NotZero(t, subID)
+	assert.Equal(t, uint(10), sourceSkillID, "source_skill_id = publisher's original skill id")
 
-	// Verify cloned skill was created with parent_user_id=2 (cross-tenant rule 7)
-	require.NotEmpty(t, art.createCalls)
-	last := art.createCalls[len(art.createCalls)-1]
-	assert.Equal(t, uint(2), last.ParentUserID, "cloned skill must belong to subscriber (rule 7)")
-	assert.Equal(t, uint(2), last.CreatedBy)
-	assert.Equal(t, "imported_from_marketplace", last.Req.SourceType)
-	assert.Contains(t, last.Req.Description, "订阅自市场")
+	// T4: NO clone via artifact svc — reference pointer written directly to DB.
+	assert.Empty(t, art.createCalls, "reference-mode does NOT call artifactSvc.Create")
+
+	// subscription row is reference-mode: source_skill_id>0, cloned_skill_id=0.
+	var sub model.SkillSubscription
+	require.NoError(t, db.Where("subscriber_user_id = ? AND marketplace_id = ?", 2, mp.ID).First(&sub).Error)
+	assert.Equal(t, uint(10), sub.SourceSkillID)
+	assert.Equal(t, uint(0), sub.ClonedSkillID)
+
+	// reference pointer skill in subscriber's tenant ONLY (parent_user_id=2, marketplace_id set).
+	var ptr model.Skill
+	require.NoError(t, db.Where("subscription_id = ?", sub.ID).First(&ptr).Error)
+	assert.Equal(t, uint(2), ptr.ParentUserID, "pointer belongs to subscriber (rule 7)")
+	assert.Equal(t, uint(2), ptr.OwnerUserID)
+	assert.Equal(t, mp.ID, ptr.MarketplaceID)
+	assert.Equal(t, "imported_from_marketplace", ptr.SourceType)
+	assert.Contains(t, ptr.Description, "订阅自市场")
+
+	// No row was written into publisher's tenant (no NEW skill with parent_user_id=1).
+	var pubSkillCount int64
+	require.NoError(t, db.Model(&model.Skill{}).Where("parent_user_id = ? AND marketplace_id > 0", 1).Count(&pubSkillCount).Error)
+	assert.Equal(t, int64(0), pubSkillCount, "no reference row in publisher's tenant")
 
 	// Verify subscribe_count was incremented in DB
 	var refreshed model.SkillMarketplace
@@ -457,8 +521,8 @@ func TestSubscribe_HappyPath_WritesToSubscriberTenant(t *testing.T) {
 }
 
 func TestSubscribe_ChildBlocked(t *testing.T) {
-	svc, art, _, _, _ := newTestService(t)
-	seedSkill(t, art, 10, 1, "body")
+	svc, art, _, _, db := newTestService(t)
+	seedSkill(t, art, db, 10, 1, "body")
 	realStubChat(t)
 	ctx := context.Background()
 	mp, _ := svc.Publish(ctx, 1, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "脱敏后正文"})
@@ -468,8 +532,8 @@ func TestSubscribe_ChildBlocked(t *testing.T) {
 }
 
 func TestSubscribe_SelfSubscribeForbidden(t *testing.T) {
-	svc, art, _, _, _ := newTestService(t)
-	seedSkill(t, art, 10, 1, "body")
+	svc, art, _, _, db := newTestService(t)
+	seedSkill(t, art, db, 10, 1, "body")
 	realStubChat(t)
 	ctx := context.Background()
 	mp, _ := svc.Publish(ctx, 1, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "脱敏后正文"})
@@ -479,8 +543,8 @@ func TestSubscribe_SelfSubscribeForbidden(t *testing.T) {
 }
 
 func TestSubscribe_AlreadySubscribed(t *testing.T) {
-	svc, art, _, _, _ := newTestService(t)
-	seedSkill(t, art, 10, 1, "body")
+	svc, art, _, _, db := newTestService(t)
+	seedSkill(t, art, db, 10, 1, "body")
 	realStubChat(t)
 	ctx := context.Background()
 	mp, _ := svc.Publish(ctx, 1, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "脱敏后正文"})
@@ -493,8 +557,8 @@ func TestSubscribe_AlreadySubscribed(t *testing.T) {
 }
 
 func TestSubscribe_UnpublishedNotSubscribable(t *testing.T) {
-	svc, art, _, _, _ := newTestService(t)
-	seedSkill(t, art, 10, 1, "body")
+	svc, art, _, _, db := newTestService(t)
+	seedSkill(t, art, db, 10, 1, "body")
 	realStubChat(t)
 	ctx := context.Background()
 	mp, _ := svc.Publish(ctx, 1, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "脱敏后正文"})
@@ -504,44 +568,54 @@ func TestSubscribe_UnpublishedNotSubscribable(t *testing.T) {
 	assert.ErrorIs(t, err, ErrMarketplaceNotFound, "unpublished should appear as not-found to subscribers")
 }
 
-func TestSubscribe_Phase1FailureNoOrphan(t *testing.T) {
+// TestSubscribe_ReferenceMode_AtomicTx verifies the reference-mode subscribe is a
+// single atomic tx: on success, subscription + pointer + count are all written;
+// a duplicate subscribe leaves exactly one of each (no double-write).
+func TestSubscribe_ReferenceMode_AtomicTx(t *testing.T) {
 	svc, art, _, _, db := newTestService(t)
-	seedSkill(t, art, 10, 1, "body")
+	seedSkill(t, art, db, 10, 1, "body")
 	realStubChat(t)
 	ctx := context.Background()
 	mp, _ := svc.Publish(ctx, 1, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "脱敏后正文"})
 
-	art.failNextCreate = true
 	_, _, err := svc.Subscribe(ctx, 2, mp.ID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cloneToSubscriber")
+	require.NoError(t, err)
 
-	// No subscription written.
-	var count int64
-	require.NoError(t, db.Model(&model.SkillSubscription{}).Where("subscriber_user_id = ?", 2).Count(&count).Error)
-	assert.Equal(t, int64(0), count)
+	// Duplicate subscribe → ErrAlreadySubscribed, no second write.
+	_, _, err = svc.Subscribe(ctx, 2, mp.ID)
+	assert.ErrorIs(t, err, ErrAlreadySubscribed)
 
-	// subscribe_count not incremented.
+	var subCount int64
+	require.NoError(t, db.Model(&model.SkillSubscription{}).Where("subscriber_user_id = ?", 2).Count(&subCount).Error)
+	assert.Equal(t, int64(1), subCount, "exactly one subscription")
+
+	var ptrCount int64
+	require.NoError(t, db.Model(&model.Skill{}).Where("parent_user_id = ? AND marketplace_id = ?", 2, mp.ID).Count(&ptrCount).Error)
+	assert.Equal(t, int64(1), ptrCount, "exactly one reference pointer")
+
 	var refreshed model.SkillMarketplace
 	require.NoError(t, db.First(&refreshed, mp.ID).Error)
-	assert.Equal(t, uint(0), refreshed.SubscribeCount)
+	assert.Equal(t, uint(1), refreshed.SubscribeCount)
 }
 
 // ---- tests: Unsubscribe ----
 
 func TestUnsubscribe_HappyPath(t *testing.T) {
 	svc, art, _, _, db := newTestService(t)
-	seedSkill(t, art, 10, 1, "body")
+	seedSkill(t, art, db, 10, 1, "body")
 	realStubChat(t)
 	ctx := context.Background()
 	mp, _ := svc.Publish(ctx, 1, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "脱敏后正文"})
-	clonedID, _, _ := svc.Subscribe(ctx, 2, mp.ID)
+	subID, _, _ := svc.Subscribe(ctx, 2, mp.ID)
 
 	require.NoError(t, svc.Unsubscribe(ctx, 2, mp.ID))
 
-	// cloned skill soft-deleted by fakeArtifactSvc.Delete
-	assert.Contains(t, art.deleteCalls, clonedID)
-	assert.False(t, art.skills[clonedID].IsActive)
+	// T4 reference-mode: pointer skill soft-deleted in subscriber's tenant (is_active=0).
+	// No artifactSvc.DeleteInternal call (reference path doesn't use it).
+	assert.Empty(t, art.deleteCalls, "reference-mode unsubscribe does NOT call artifactSvc")
+	var ptr model.Skill
+	require.NoError(t, db.Where("subscription_id = ?", subID).First(&ptr).Error)
+	assert.False(t, ptr.IsActive, "reference pointer soft-deleted")
 
 	// subscription row removed
 	var count int64
@@ -567,8 +641,8 @@ func TestUnsubscribe_ChildBlocked(t *testing.T) {
 }
 
 func TestUnsubscribe_NotOwnedByCaller(t *testing.T) {
-	svc, art, _, _, _ := newTestService(t)
-	seedSkill(t, art, 10, 1, "body")
+	svc, art, _, _, db := newTestService(t)
+	seedSkill(t, art, db, 10, 1, "body")
 	realStubChat(t)
 	ctx := context.Background()
 	mp, _ := svc.Publish(ctx, 1, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "脱敏后正文"})
@@ -582,8 +656,8 @@ func TestUnsubscribe_NotOwnedByCaller(t *testing.T) {
 // ---- tests: ListMySubscriptions ----
 
 func TestListMySubscriptions_EmptyAndPopulated(t *testing.T) {
-	svc, art, _, _, _ := newTestService(t)
-	seedSkill(t, art, 10, 1, "body")
+	svc, art, _, _, db := newTestService(t)
+	seedSkill(t, art, db, 10, 1, "body")
 	realStubChat(t)
 	ctx := context.Background()
 
@@ -605,30 +679,31 @@ func TestListMySubscriptions_EmptyAndPopulated(t *testing.T) {
 
 func TestListMySubscriptions_AgentCountHydrated(t *testing.T) {
 	svc, art, _, _, db := newTestService(t)
-	seedSkill(t, art, 10, 1, "body")
+	seedSkill(t, art, db, 10, 1, "body")
 	realStubChat(t)
 	ctx := context.Background()
 	mp, _ := svc.Publish(ctx, 1, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "脱敏后正文"})
-	clonedID, _, _ := svc.Subscribe(ctx, 2, mp.ID)
+	subID, _, _ := svc.Subscribe(ctx, 2, mp.ID)
 
-	// Insert 2 agent_skill_binding rows for cloned skill — simulate user 2
-	// loaded the cloned skill into 2 agents.
+	// T4 reference-mode: bindings are counted against the reference POINTER skill id
+	// (looked up by subscription_id), not the subscription id.
+	var ptr model.Skill
+	require.NoError(t, db.Where("subscription_id = ?", subID).First(&ptr).Error)
+	pointerID := ptr.ID
+
 	now := time.Now()
-	require.NoError(t, db.Create(&model.AgentSkillBinding{AgentID: 100, SkillID: clonedID, IsActive: true, BoundAt: now}).Error)
-	require.NoError(t, db.Create(&model.AgentSkillBinding{AgentID: 101, SkillID: clonedID, IsActive: true, BoundAt: now}).Error)
-	// And one inactive binding (must not count).
-	// database.md §6 default:true bool gotcha + GORM-SQLite interaction: even Select("*")
-	// can't force is_active=false through the GORM layer reliably in tests. Use raw SQL
-	// to bypass entirely — fully deterministic.
+	require.NoError(t, db.Create(&model.AgentSkillBinding{AgentID: 100, SkillID: pointerID, IsActive: true, BoundAt: now}).Error)
+	require.NoError(t, db.Create(&model.AgentSkillBinding{AgentID: 101, SkillID: pointerID, IsActive: true, BoundAt: now}).Error)
+	// And one inactive binding (must not count). Raw SQL to bypass GORM default:1 gotcha.
 	require.NoError(t, db.Exec(
 		`INSERT INTO agent_skill_binding (agent_id, skill_id, sort_order, is_active, bound_at) VALUES (?, ?, 0, 0, ?)`,
-		102, clonedID, now,
+		102, pointerID, now,
 	).Error)
 
 	items, _, err := svc.ListMySubscriptions(ctx, 2, 0, 10)
 	require.NoError(t, err)
 	require.Len(t, items, 1)
-	assert.Equal(t, 2, items[0].AgentCount, "only active bindings count")
+	assert.Equal(t, 2, items[0].AgentCount, "only active bindings count (against reference pointer)")
 }
 
 func TestListMySubscriptions_ChildBlocked(t *testing.T) {
@@ -640,8 +715,8 @@ func TestListMySubscriptions_ChildBlocked(t *testing.T) {
 // ---- tests: SetRecommended (admin) ----
 
 func TestSetRecommended_TogglesAndPersists(t *testing.T) {
-	svc, art, _, mpStore, _ := newTestService(t)
-	seedSkill(t, art, 10, 1, "body")
+	svc, art, _, mpStore, db := newTestService(t)
+	seedSkill(t, art, db, 10, 1, "body")
 	realStubChat(t)
 	ctx := context.Background()
 	mp, _ := svc.Publish(ctx, 1, PublishRequest{SkillID: 10, CategoryTags: []string{"x"}, ConfirmedSanitizedBodyMD: "脱敏后正文"})
@@ -667,7 +742,7 @@ func TestPublish_SanitizeLLMFailure_NoDBWrite(t *testing.T) {
 	// When sanitize LLM (Stage 2) fails, Publish must return error and write
 	// NOTHING to skill_marketplace. spec §10.2 "LLM down → publish disabled".
 	svc, art, _, _, db := newTestService(t)
-	seedSkill(t, art, 10, 1, "raw body")
+	seedSkill(t, art, db, 10, 1, "raw body")
 
 	// Inject LLM failure into the sanitize.go chatFn.
 	withChatFn(t, errChat(errors.New("provider quota exceeded")))
@@ -702,7 +777,7 @@ func TestPublish_ConfirmationWithinTolerance_Accepted(t *testing.T) {
 	// Server stub returns "abcdefghij" (10 chars). User echoes the same plus 0 extra
 	// → 0% delta, must pass.
 	svc, art, _, _, db := newTestService(t)
-	seedSkill(t, art, 10, 1, "body")
+	seedSkill(t, art, db, 10, 1, "body")
 
 	stub, _ := stubChat(t, "abcdefghij", 1, 1)
 	withChatFn(t, stub)

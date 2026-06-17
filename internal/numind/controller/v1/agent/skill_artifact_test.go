@@ -57,6 +57,8 @@ func newArtifactTestDB(t *testing.T) *gorm.DB {
 		`CREATE TABLE skill (
 			id                  INTEGER PRIMARY KEY AUTOINCREMENT,
 			parent_user_id      INTEGER NOT NULL,
+			owner_user_id       INTEGER NOT NULL DEFAULT 0,
+			visibility          TEXT    NOT NULL DEFAULT 'institution',
 			name                TEXT    NOT NULL,
 			description         TEXT    NOT NULL DEFAULT '',
 			when_to_use         TEXT    NOT NULL DEFAULT '',
@@ -67,6 +69,8 @@ func newArtifactTestDB(t *testing.T) *gorm.DB {
 			origin_type         TEXT    NOT NULL DEFAULT 'user',
 			version             INTEGER NOT NULL DEFAULT 1,
 			is_active           INTEGER NOT NULL DEFAULT 1,
+			subscription_id     INTEGER NOT NULL DEFAULT 0,
+			marketplace_id      INTEGER NOT NULL DEFAULT 0,
 			created_by          INTEGER NOT NULL,
 			created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -341,15 +345,23 @@ func TestSkillArtifact_Create_MissingBodyMd_400(t *testing.T) {
 // 403 sub-account / 401 unauthenticated
 // ---------------------------------------------------------------------------
 
-// TestSkillArtifact_Create_ChildAccount_403：子账户访问返回 403。
-func TestSkillArtifact_Create_ChildAccount_403(t *testing.T) {
+// TestSkillArtifact_Create_ChildAccount_CreatesSubUserSkill (T4): 子账户不再被 403 拦截，
+// 而是成功创建一条 visibility='sub_user' 的私有技能（owner=子账户 200，parent_user_id=机构 100）。
+func TestSkillArtifact_Create_ChildAccount_CreatesSubUserSkill(t *testing.T) {
 	db := newArtifactTestDB(t)
 	seedArtifactUsers(t, db)
 	engine := newArtifactTestEngine(t, db)
 
 	status, resp := doArtifactRequest(t, engine, http.MethodPost, "/v1/skills", minimalCreateBody(), withUser(200))
-	assert.Equal(t, http.StatusForbidden, status)
-	assert.NotEqual(t, 0, resp.Code)
+	assert.Equal(t, http.StatusOK, status)
+	assert.Equal(t, 0, resp.Code)
+
+	// 落库校验：sub_user 私有技能。
+	var row model.Skill
+	require.NoError(t, db.Where("name = ?", "Test Skill").First(&row).Error)
+	assert.Equal(t, "sub_user", row.Visibility, "child create defaults to sub_user")
+	assert.Equal(t, uint(200), row.OwnerUserID, "owner = child user id")
+	assert.Equal(t, uint(100), row.ParentUserID, "parent_user_id = institution (child's parent)")
 }
 
 // TestSkillArtifact_List_Unauthenticated_401：未登录返回 401。

@@ -94,10 +94,10 @@ func TestCloneToSubscriber_NoLangfuseContext_NoPanic(t *testing.T) {
 }
 
 func TestUnsubscribeCleanup_DelegatesToArtifactDelete(t *testing.T) {
-	svc, art, _, _, _ := newTestService(t)
+	svc, art, _, _, db := newTestService(t)
 	s := svc.(*service)
 
-	seedSkill(t, art, 200, 2, "body")
+	seedSkill(t, art, db, 200, 2, "body")
 
 	err := s.unsubscribeCleanup(context.Background(), 2, 200, 999)
 	require.NoError(t, err)
@@ -106,10 +106,10 @@ func TestUnsubscribeCleanup_DelegatesToArtifactDelete(t *testing.T) {
 }
 
 func TestUnsubscribeCleanup_DeleteFailure_WrapsError(t *testing.T) {
-	svc, art, _, _, _ := newTestService(t)
+	svc, art, _, _, db := newTestService(t)
 	s := svc.(*service)
 
-	seedSkill(t, art, 200, 2, "body")
+	seedSkill(t, art, db, 200, 2, "body")
 	art.failNextDelete = true
 
 	err := s.unsubscribeCleanup(context.Background(), 2, 200, 999)

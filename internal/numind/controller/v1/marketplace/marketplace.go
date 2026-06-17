@@ -224,14 +224,15 @@ func (c *Controller) Subscribe(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	clonedID, subID, err := c.svc.Subscribe(ctx.Request.Context(), userID, id)
+	subID, sourceSkillID, err := c.svc.Subscribe(ctx.Request.Context(), userID, id)
 	if err != nil {
 		core.WriteResponse(ctx, err, nil)
 		return
 	}
+	// T4 reference-mode response: {subscription_id, source_skill_id}. cloned_skill_id removed.
 	core.WriteResponse(ctx, nil, gin.H{
-		"cloned_skill_id": clonedID,
 		"subscription_id": subID,
+		"source_skill_id": sourceSkillID,
 	})
 }
 

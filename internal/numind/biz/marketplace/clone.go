@@ -14,9 +14,9 @@ import (
 // marketplace row's sanitized body + frontmatter. Wrapped in a Langfuse span
 // "marketplace-subscribe-clone" when a TraceCtx is present (spec §9).
 //
-// This is Phase 1 of Subscribe's two-phase commit (S4-T4-D1). It commits the
-// cloned skill independently; Subscribe's caller is responsible for invoking
-// the compensating Delete if Phase 2 fails.
+// LEGACY (pre-T4): this was Phase 1 of the two-phase clone Subscribe. T4 switched
+// Subscribe to reference-mode (createReferencePointerTx) and NO LONGER calls this
+// function. Kept only for legacy-clone-row compatibility / potential rollback.
 func (s *service) cloneToSubscriber(ctx context.Context, mp *model.SkillMarketplace, subscriberUserID uint) (uint, error) {
 	tc := langfuse.FromContext(ctx)
 	var spanID string
@@ -47,7 +47,10 @@ func (s *service) cloneToSubscriber(ctx context.Context, mp *model.SkillMarketpl
 		// "imported_from_marketplace" (spec investigation Q3 / S0-D2 revised). Binding
 		// only fires on HTTP path; programmatic call bypasses it. DDL ENUM accepts.
 	}
-	cloned, err := s.artifactSvc.Create(ctx, subscriberUserID, subscriberUserID, createReq)
+	// LEGACY-only path: subscriber publishes into their OWN tenant, so caller is
+	// the parent account (isParent=true, instID=subscriberUserID). T4 reference
+	// Subscribe does not reach here.
+	cloned, err := s.artifactSvc.Create(ctx, subscriberUserID, subscriberUserID, true, createReq)
 
 	if tc != nil && spanID != "" {
 		if err != nil {
@@ -82,7 +85,7 @@ func (s *service) unsubscribeCleanup(ctx context.Context, subscriberUserID, clon
 		)
 	}
 
-	_, err := s.artifactSvc.Delete(ctx, subscriberUserID, clonedSkillID)
+	_, err := s.artifactSvc.DeleteInternal(ctx, subscriberUserID, clonedSkillID)
 
 	if tc != nil && spanID != "" {
 		if err != nil {

@@ -37,6 +37,21 @@ type IStore interface {
 	// 排序：updated_at DESC。
 	List(ctx context.Context, parentUserID uint, search string, offset, limit int) ([]model.Skill, int64, error)
 
+	// ListVisible 按三级可见性谓词列举 caller 可见的活跃 Skill（T4 skill-3tier-visibility）。
+	//
+	// WHERE is_active = 1 AND (
+	//       visibility = 'official'
+	//    OR (visibility = 'institution' AND parent_user_id = instID)
+	//    OR (visibility = 'sub_user'    AND owner_user_id  = callerID)
+	// )
+	// 这是跨机构隔离边界 —— 机构 A 数据永不泄漏给机构 B。
+	// search 非空 → AND name LIKE '%search%'；排序 updated_at DESC；total 同谓词 COUNT。
+	ListVisible(ctx context.Context, instID, callerID uint, search string, offset, limit int) ([]model.Skill, int64, error)
+
+	// GetForCaller 按三级可见性谓词取单个 Skill（含 is_active=0，供详情/恢复）。
+	// 不可见或不存在 → ErrSkillArtifactNotFound（不区分以防资源枚举）。
+	GetForCaller(ctx context.Context, instID, callerID, skillID uint) (*model.Skill, error)
+
 	// Update 全量更新 Skill 行。
 	// `db.Save` 安全（database.md §6b），bool 字段不丢。
 	Update(ctx context.Context, s *model.Skill) error
@@ -117,6 +132,56 @@ func (s *gormStore) List(ctx context.Context, parentUserID uint, search string, 
 		return nil, 0, fmt.Errorf("Skill store.List find: %w", err)
 	}
 	return items, total, nil
+}
+
+// visibilityPredicate 是三级可见性 WHERE 子句（store.ListVisible / GetForCaller 共用）。
+//
+// 隔离边界（T4 安全核心）：
+//   - 'official'    → 所有人可见
+//   - 'institution' → parent_user_id = instID 命中的机构内全员可见
+//   - 'sub_user'    → owner_user_id = callerID 仅创建者可见
+//
+// instID/callerID 由 biz 层从 caller.ParentUserID 解析后传入，store 不二次鉴权。
+func visibilityPredicate(q *gorm.DB, instID, callerID uint) *gorm.DB {
+	return q.Where(
+		"visibility = ? OR (visibility = ? AND parent_user_id = ?) OR (visibility = ? AND owner_user_id = ?)",
+		"official", "institution", instID, "sub_user", callerID,
+	)
+}
+
+// ListVisible 实现三级可见性列表查询。索引利用 idx_skill_visibility(parent_user_id, visibility, is_active)。
+func (s *gormStore) ListVisible(ctx context.Context, instID, callerID uint, search string, offset, limit int) ([]model.Skill, int64, error) {
+	q := s.db.WithContext(ctx).Model(&model.Skill{}).
+		Where("is_active = ?", true)
+	q = visibilityPredicate(q, instID, callerID)
+	if search != "" {
+		q = q.Where("name LIKE ?", "%"+search+"%")
+	}
+
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("Skill store.ListVisible count: %w", err)
+	}
+
+	var items []model.Skill
+	if err := q.Order("updated_at DESC").Offset(offset).Limit(limit).Find(&items).Error; err != nil {
+		return nil, 0, fmt.Errorf("Skill store.ListVisible find: %w", err)
+	}
+	return items, total, nil
+}
+
+// GetForCaller 按可见性谓词取单个 Skill（含 is_active=0）。不可见/不存在 → ErrSkillArtifactNotFound。
+func (s *gormStore) GetForCaller(ctx context.Context, instID, callerID, skillID uint) (*model.Skill, error) {
+	q := s.db.WithContext(ctx).Where("id = ?", skillID)
+	q = visibilityPredicate(q, instID, callerID)
+	var m model.Skill
+	if err := q.First(&m).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errno.ErrSkillArtifactNotFound
+		}
+		return nil, fmt.Errorf("Skill store.GetForCaller: %w", err)
+	}
+	return &m, nil
 }
 
 // Update 使用 `db.Save` 全字段写入；bool 字段（IsActive）零值不丢失（database.md §6b 已验证）。

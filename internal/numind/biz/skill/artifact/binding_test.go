@@ -28,8 +28,8 @@ func setupBindingFixture(t *testing.T, db *gorm.DB) (skillID uint) {
 		3, 200, "agent-200", 1, 200).Error)
 
 	// 创建 skill 直接走 svc
-	svc := NewService(db)
-	sk, err := svc.Create(context.Background(), 100, 100, CreateRequest{Name: "sk", BodyMd: "x"})
+	svc := newServiceWithParents(db, 100)
+	sk, err := svc.Create(context.Background(), 100, 100, true, CreateRequest{Name: "sk", BodyMd: "x"})
 	require.NoError(t, err)
 	return sk.ID
 }
@@ -60,16 +60,16 @@ func TestBinding_Attach_CrossTenantAgentRejected(t *testing.T) {
 func TestBinding_Attach_DuplicateNameRejected(t *testing.T) {
 	db := newTestDB(t)
 	bsvc := NewBindingService(db)
-	svc := NewService(db)
+	svc := newServiceWithParents(db, 100)
 
 	require.NoError(t, db.Exec(
 		"INSERT INTO agent_definition (id, parent_user_id, name, is_active, created_by) VALUES (?, ?, ?, ?, ?)",
 		1, 100, "agent-100", 1, 100).Error)
 
 	// Two same-named skills in the same tenant (allowed — no UNIQUE constraint).
-	s1, err := svc.Create(context.Background(), 100, 100, CreateRequest{Name: "dup", BodyMd: "a"})
+	s1, err := svc.Create(context.Background(), 100, 100, true, CreateRequest{Name: "dup", BodyMd: "a"})
 	require.NoError(t, err)
-	s2, err := svc.Create(context.Background(), 100, 100, CreateRequest{Name: "dup", BodyMd: "b"})
+	s2, err := svc.Create(context.Background(), 100, 100, true, CreateRequest{Name: "dup", BodyMd: "b"})
 	require.NoError(t, err)
 
 	require.NoError(t, bsvc.Attach(context.Background(), 100, 1, s1.ID, 0))
@@ -158,10 +158,10 @@ func TestBinding_Reorder_UpdatesSortOrderTransactionally(t *testing.T) {
 	skillA := setupBindingFixture(t, db) // 1 个 agent + 1 个 skill
 
 	// 再创建 2 个 skill 给 agent 1 装载
-	svc := NewService(db)
-	skB, err := svc.Create(ctx, 100, 100, CreateRequest{Name: "skB", BodyMd: "x"})
+	svc := newServiceWithParents(db, 100)
+	skB, err := svc.Create(ctx, 100, 100, true, CreateRequest{Name: "skB", BodyMd: "x"})
 	require.NoError(t, err)
-	skC, err := svc.Create(ctx, 100, 100, CreateRequest{Name: "skC", BodyMd: "x"})
+	skC, err := svc.Create(ctx, 100, 100, true, CreateRequest{Name: "skC", BodyMd: "x"})
 	require.NoError(t, err)
 
 	// 装载 A, B, C 给 agent 1（顺序 0,1,2）
@@ -207,8 +207,8 @@ func TestBinding_ListByAgent_ReturnsSortedActiveSkills(t *testing.T) {
 	ctx := context.Background()
 	skA := setupBindingFixture(t, db)
 
-	svc := NewService(db)
-	skB, err := svc.Create(ctx, 100, 100, CreateRequest{Name: "skB", BodyMd: "x"})
+	svc := newServiceWithParents(db, 100)
+	skB, err := svc.Create(ctx, 100, 100, true, CreateRequest{Name: "skB", BodyMd: "x"})
 	require.NoError(t, err)
 
 	// 装载 skA (sort=2), skB (sort=0)
