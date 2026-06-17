@@ -1,6 +1,7 @@
 package artifact
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -8,6 +9,8 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+
+	"numind-server/internal/pkg/model"
 )
 
 // newTestDB 创建独立的 in-memory SQLite DB 并用 raw DDL 显式创建 4 张表。
@@ -34,9 +37,12 @@ func newTestDB(t *testing.T) *gorm.DB {
 
 	ddls := []string{
 		// skill — ENUM 退化为 TEXT，JSON_ARRAY() 默认退化为 '[]'
+		// T4: 增 owner_user_id / visibility / subscription_id / marketplace_id 列（AutoMigrate 等价）。
 		`CREATE TABLE skill (
 			id                  INTEGER PRIMARY KEY AUTOINCREMENT,
 			parent_user_id      INTEGER NOT NULL,
+			owner_user_id       INTEGER NOT NULL DEFAULT 0,
+			visibility          TEXT    NOT NULL DEFAULT 'institution',
 			name                TEXT    NOT NULL,
 			description         TEXT    NOT NULL DEFAULT '',
 			when_to_use         TEXT    NOT NULL DEFAULT '',
@@ -47,11 +53,15 @@ func newTestDB(t *testing.T) *gorm.DB {
 			origin_type         TEXT    NOT NULL DEFAULT 'user',
 			version             INTEGER NOT NULL DEFAULT 1,
 			is_active           INTEGER NOT NULL DEFAULT 1,
+			subscription_id     INTEGER NOT NULL DEFAULT 0,
+			marketplace_id      INTEGER NOT NULL DEFAULT 0,
 			created_by          INTEGER NOT NULL,
 			created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX idx_skill_parent_active ON skill (parent_user_id, is_active, updated_at)`,
+		`CREATE INDEX idx_skill_visibility ON skill (parent_user_id, visibility, is_active)`,
+		`CREATE INDEX idx_skill_owner ON skill (owner_user_id)`,
 		`CREATE INDEX idx_skill_source_template ON skill (source_template_id)`,
 
 		`CREATE TABLE skill_history (
@@ -107,4 +117,46 @@ func newTestDB(t *testing.T) *gorm.DB {
 		require.NoError(t, db.Exec(ddl).Error, "create table")
 	}
 	return db
+}
+
+// fakeUserLookup 是 artifact.UserLookup 的内存实现（单测注入，避免依赖 store.user）。
+// parent[id]=nil 表示父账户；child[id]=parentID 表示子账户。
+type fakeUserLookup struct {
+	users map[uint]*model.User
+}
+
+func newFakeUserLookup() *fakeUserLookup {
+	return &fakeUserLookup{users: map[uint]*model.User{}}
+}
+
+// addParent 注册一个父账户（ParentUserID == nil）。
+func (f *fakeUserLookup) addParent(id uint) {
+	u := &model.User{ParentUserID: nil}
+	u.ID = id
+	f.users[id] = u
+}
+
+// addChild 注册一个子账户（ParentUserID == parentID）。
+func (f *fakeUserLookup) addChild(id, parentID uint) {
+	pid := parentID
+	u := &model.User{ParentUserID: &pid}
+	u.ID = id
+	f.users[id] = u
+}
+
+func (f *fakeUserLookup) GetByID(_ context.Context, userID uint) (*model.User, error) {
+	if u, ok := f.users[userID]; ok {
+		return u, nil
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+
+// newServiceWithParents 构造一个注入了 fakeUserLookup（含给定 parent ids）的 Service。
+// 现有测试把 id 当 parent 用，此 helper 让它们零改动地满足 UserLookup 依赖。
+func newServiceWithParents(db *gorm.DB, parentIDs ...uint) *Service {
+	ul := newFakeUserLookup()
+	for _, id := range parentIDs {
+		ul.addParent(id)
+	}
+	return NewServiceWithUsers(db, ul)
 }

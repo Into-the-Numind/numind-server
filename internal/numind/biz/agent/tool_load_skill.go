@@ -39,20 +39,44 @@ const LoadSkillToolName = "load_skill"
 // 测试守护，超了 CI 直接红，避免再次静默退化。
 const loadSkillMaxBodyBytes = 8192
 
+// MarketplaceSnapshotReader resolves a marketplace row's CURRENT sanitized body
+// by id, for T4 reference-pointer skills (sk.MarketplaceID > 0). Returns the
+// snapshot body + whether the row is still public. Implemented by the marketplace
+// store (GetByID); abstracted as an interface so tests can inject a fake.
+//
+// CROSS-TENANT GUARD: lookup is BY marketplace_id ONLY (a public marketplace row),
+// NEVER by joining to the publisher's private skill table. The subscriber never
+// reads the publisher's tenant skill row.
+type MarketplaceSnapshotReader interface {
+	// GetSnapshot returns (sanitizedBodyMD, isPublic, found).
+	GetSnapshot(ctx context.Context, marketplaceID uint) (body string, isPublic bool, found bool)
+}
+
 // loadSkillTool implements FullTool for the unified load_skill built-in.
 //
 // registry (disk platform skills) may be nil — then load_skill serves only DB
 // business skills via the ctx turn state. DB skills are looked up from
 // UseSkillTurnState (runner-cached, 0 DB calls); disk skills from registry.Get.
+//
+// marketplaceReader (T4) resolves reference-pointer skill bodies from the current
+// marketplace snapshot; nil → reference pointers fall back to their seeded body.
 type loadSkillTool struct {
 	BaseTool
-	registry skills.Registry
+	registry          skills.Registry
+	marketplaceReader MarketplaceSnapshotReader
 }
 
 // NewLoadSkillTool constructs the load_skill FullTool. Passing nil registry is
 // permitted (only DB-bound skills will resolve; disk lookups soft-error).
 func NewLoadSkillTool(reg skills.Registry) FullTool {
 	return &loadSkillTool{registry: reg}
+}
+
+// NewLoadSkillToolWithMarketplace constructs load_skill with a marketplace snapshot
+// reader for T4 reference-pointer resolution (publisher re-publish → subscriber
+// updates; fail-soft if the source is gone/unpublished).
+func NewLoadSkillToolWithMarketplace(reg skills.Registry, mr MarketplaceSnapshotReader) FullTool {
+	return &loadSkillTool{registry: reg, marketplaceReader: mr}
 }
 
 var _ FullTool = (*loadSkillTool)(nil)
@@ -136,7 +160,30 @@ func (t *loadSkillTool) loadDBSkill(ctx context.Context, turn *UseSkillTurnState
 	if !sk.IsActive {
 		return ToolResult(jsonErr("技能 '%s' 已被禁用", sk.Name)), nil
 	}
-	if sk.BodyMd == "" {
+
+	// T4 reference-pointer resolution: when this row is a marketplace reference
+	// (MarketplaceID > 0), the authoritative body is the marketplace's CURRENT
+	// SanitizedBodyMD snapshot (publisher re-publish → subscriber updates). The
+	// lookup is BY marketplace_id ONLY (public row), never the publisher's private
+	// skill table (cross-tenant guard). Fail-soft (jsonErr) if the source is
+	// gone/unpublished — this NEVER hard-errors the run (MEMORY: tool hard errors
+	// kill the run).
+	effectiveBody := sk.BodyMd
+	if sk.MarketplaceID > 0 {
+		if t.marketplaceReader == nil {
+			// No reader wired (tests / legacy). Fall back to the seeded snapshot body.
+			if effectiveBody == "" {
+				return ToolResult(jsonErr("技能 '%s' 内容为空，请联系配置者更新", sk.Name)), nil
+			}
+		} else {
+			body, isPublic, found := t.marketplaceReader.GetSnapshot(ctx, sk.MarketplaceID)
+			if !found || !isPublic {
+				return ToolResult(jsonErr("技能 '%s' 的市场来源已下架", sk.Name)), nil
+			}
+			effectiveBody = body
+		}
+	}
+	if effectiveBody == "" {
 		return ToolResult(jsonErr("技能 '%s' 内容为空，请联系配置者更新", sk.Name)), nil
 	}
 
@@ -146,14 +193,14 @@ func (t *loadSkillTool) loadDBSkill(ctx context.Context, turn *UseSkillTurnState
 		traceID, spanID = tc.TraceID, langfuse.SpanID()
 		langfuse.CreateSpan(traceID, spanID, "tool.load_skill.db",
 			langfuse.WithSpanParent(tc.ParentObservationID),
-			langfuse.WithSpanInput(map[string]any{"skill_name": sk.Name, "skill_id": sk.ID}),
+			langfuse.WithSpanInput(map[string]any{"skill_name": sk.Name, "skill_id": sk.ID, "marketplace_id": sk.MarketplaceID}),
 		)
 		defer func() { langfuse.EndSpan(traceID, spanID) }()
 	}
 
 	// allowed_tools → recommendation hint (Move D). Not enforced; just shown to the LLM.
 	recommended := parseRecommendedTools([]byte(sk.AllowedTools))
-	bodyWithHint := sk.BodyMd
+	bodyWithHint := effectiveBody
 	if len(recommended) > 0 {
 		bodyWithHint += "\n\n💡 推荐配合使用的工具：" + strings.Join(recommended, ", ")
 	}
@@ -173,7 +220,7 @@ func (t *loadSkillTool) loadDBSkill(ctx context.Context, turn *UseSkillTurnState
 		"source":            "db",
 		"skill_name":        sk.Name,
 		"skill_version":     sk.Version,
-		"body_length":       len(sk.BodyMd),
+		"body_length":       len(effectiveBody),
 		"body":              bodyWrapped,
 		"recommended_tools": recommended,
 		"turn_invocation":   turn.InvocationCount,

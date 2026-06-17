@@ -40,11 +40,17 @@ func (SkillMarketplace) TableName() string { return "skill_marketplace" }
 // table as cloned_skill_id. UNIQUE(subscriber_user_id, marketplace_id) prevents
 // duplicate subscriptions.
 type SkillSubscription struct {
-	ID               uint      `gorm:"primaryKey;autoIncrement" json:"id"`
-	SubscriberUserID uint      `gorm:"type:int unsigned;not null;uniqueIndex:uk_subscription_user_marketplace,priority:1;index:idx_subscription_subscriber,priority:1" json:"subscriber_user_id"`
-	MarketplaceID    uint      `gorm:"type:int unsigned;not null;uniqueIndex:uk_subscription_user_marketplace,priority:2;index:idx_subscription_marketplace" json:"marketplace_id"`
-	ClonedSkillID    uint      `gorm:"type:int unsigned;not null" json:"cloned_skill_id"`
-	SubscribedAt     time.Time `gorm:"type:datetime;not null;default:CURRENT_TIMESTAMP;autoCreateTime;index:idx_subscription_subscriber,priority:2,sort:desc" json:"subscribed_at"`
+	ID               uint `gorm:"primaryKey;autoIncrement" json:"id"`
+	SubscriberUserID uint `gorm:"type:int unsigned;not null;uniqueIndex:uk_subscription_user_marketplace,priority:1;index:idx_subscription_subscriber,priority:1" json:"subscriber_user_id"`
+	MarketplaceID    uint `gorm:"type:int unsigned;not null;uniqueIndex:uk_subscription_user_marketplace,priority:2;index:idx_subscription_marketplace" json:"marketplace_id"`
+	// ClonedSkillID 保留：legacy clone-mode 订阅行 >0；新 reference-mode 行 =0。
+	ClonedSkillID uint `gorm:"type:int unsigned;not null" json:"cloned_skill_id"`
+	// SourceSkillID 是发布方原始 skill id（= marketplace.source_skill_id）。
+	// 新 reference-mode 订阅 >0；legacy clone-mode 行 =0。一行恰有一个非零（与 ClonedSkillID 互斥）。
+	SourceSkillID uint `gorm:"type:int unsigned;not null;default:0;index:idx_subscription_source" json:"source_skill_id"`
+	// SubscribedVersion 是订阅时刻 source skill 的 Version（用于"原版已更新/已删除"提示）。0=未知（legacy）。
+	SubscribedVersion uint      `gorm:"type:int unsigned;not null;default:0" json:"subscribed_version"`
+	SubscribedAt      time.Time `gorm:"type:datetime;not null;default:CURRENT_TIMESTAMP;autoCreateTime;index:idx_subscription_subscriber,priority:2,sort:desc" json:"subscribed_at"`
 }
 
 func (SkillSubscription) TableName() string { return "skill_subscription" }

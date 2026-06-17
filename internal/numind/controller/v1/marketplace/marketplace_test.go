@@ -283,6 +283,8 @@ func TestSubscribe_AlreadySubscribed_409(t *testing.T) {
 }
 
 func TestSubscribe_HappyPath(t *testing.T) {
+	// T4 reference-mode: Subscribe returns (subscription_id, source_skill_id).
+	// fake's first return = subscription_id, second = source_skill_id.
 	svc := &fakeService{subscribeID: 777, subscribeSubID: 321}
 	r := newRouter(t, svc, 1, true)
 
@@ -293,8 +295,10 @@ func TestSubscribe_HappyPath(t *testing.T) {
 		Data map[string]any `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, float64(777), resp.Data["cloned_skill_id"])
-	assert.Equal(t, float64(321), resp.Data["subscription_id"], "spec §4.1 requires subscription_id, not marketplace_id")
+	assert.Equal(t, float64(777), resp.Data["subscription_id"], "T4: first return is subscription_id")
+	assert.Equal(t, float64(321), resp.Data["source_skill_id"], "T4: reference-mode returns source_skill_id, not cloned_skill_id")
+	_, hasCloned := resp.Data["cloned_skill_id"]
+	assert.False(t, hasCloned, "T4: cloned_skill_id removed from response")
 }
 
 func TestUnsubscribe_HappyPath(t *testing.T) {

@@ -14,7 +14,7 @@ import (
 
 func TestVersioning_ListHistory_ChildAccountDenied(t *testing.T) {
 	db := newTestDB(t)
-	svc := NewService(db)
+	svc := newServiceWithParents(db, 100)
 
 	_, err := svc.versioning.ListHistory(context.Background(), 0, 1)
 	require.ErrorIs(t, err, errno.ErrPermissionDenied)
@@ -22,10 +22,10 @@ func TestVersioning_ListHistory_ChildAccountDenied(t *testing.T) {
 
 func TestVersioning_ListHistory_V1IsFirstPublish(t *testing.T) {
 	db := newTestDB(t)
-	svc := NewService(db)
+	svc := newServiceWithParents(db, 100)
 	ctx := context.Background()
 
-	sk, err := svc.Create(ctx, 100, 100, CreateRequest{Name: "v1", BodyMd: "body"})
+	sk, err := svc.Create(ctx, 100, 100, true, CreateRequest{Name: "v1", BodyMd: "body"})
 	require.NoError(t, err)
 
 	items, err := svc.versioning.ListHistory(ctx, 100, sk.ID)
@@ -37,10 +37,10 @@ func TestVersioning_ListHistory_V1IsFirstPublish(t *testing.T) {
 
 func TestVersioning_ListHistory_DiffSummaryNonEmptyAfterUpdate(t *testing.T) {
 	db := newTestDB(t)
-	svc := NewService(db)
+	svc := newServiceWithParents(db, 100)
 	ctx := context.Background()
 
-	sk, err := svc.Create(ctx, 100, 100, CreateRequest{Name: "v1", BodyMd: "line 1\nline 2"})
+	sk, err := svc.Create(ctx, 100, 100, true, CreateRequest{Name: "v1", BodyMd: "line 1\nline 2"})
 	require.NoError(t, err)
 
 	_, err = svc.Update(ctx, 100, sk.ID, CreateRequest{
@@ -67,10 +67,10 @@ func TestVersioning_ListHistory_DiffSummaryNonEmptyAfterUpdate(t *testing.T) {
 
 func TestVersioning_ListHistory_DiffSummaryTruncated(t *testing.T) {
 	db := newTestDB(t)
-	svc := NewService(db)
+	svc := newServiceWithParents(db, 100)
 	ctx := context.Background()
 
-	sk, err := svc.Create(ctx, 100, 100, CreateRequest{Name: "v1", BodyMd: "x"})
+	sk, err := svc.Create(ctx, 100, 100, true, CreateRequest{Name: "v1", BodyMd: "x"})
 	require.NoError(t, err)
 
 	// 极长 body 改动 → +N -M 数字可能很大但格式可控；测主要测 200 字符截断
@@ -88,10 +88,10 @@ func TestVersioning_ListHistory_DiffSummaryTruncated(t *testing.T) {
 
 func TestVersioning_Restore_NewVersionFromSnapshot(t *testing.T) {
 	db := newTestDB(t)
-	svc := NewService(db)
+	svc := newServiceWithParents(db, 100)
 	ctx := context.Background()
 
-	sk, err := svc.Create(ctx, 100, 100, CreateRequest{Name: "v1", BodyMd: "original"})
+	sk, err := svc.Create(ctx, 100, 100, true, CreateRequest{Name: "v1", BodyMd: "original"})
 	require.NoError(t, err)
 
 	_, err = svc.Update(ctx, 100, sk.ID, CreateRequest{Name: "v2", BodyMd: "modified"})
@@ -113,10 +113,10 @@ func TestVersioning_Restore_NewVersionFromSnapshot(t *testing.T) {
 
 func TestVersioning_Restore_VersionNotFound(t *testing.T) {
 	db := newTestDB(t)
-	svc := NewService(db)
+	svc := newServiceWithParents(db, 100)
 	ctx := context.Background()
 
-	sk, err := svc.Create(ctx, 100, 100, CreateRequest{Name: "v1", BodyMd: "x"})
+	sk, err := svc.Create(ctx, 100, 100, true, CreateRequest{Name: "v1", BodyMd: "x"})
 	require.NoError(t, err)
 
 	_, err = svc.versioning.Restore(ctx, 100, sk.ID, 999)
@@ -125,10 +125,10 @@ func TestVersioning_Restore_VersionNotFound(t *testing.T) {
 
 func TestVersioning_Restore_RevivesInactiveSkill(t *testing.T) {
 	db := newTestDB(t)
-	svc := NewService(db)
+	svc := newServiceWithParents(db, 100)
 	ctx := context.Background()
 
-	sk, err := svc.Create(ctx, 100, 100, CreateRequest{Name: "v1", BodyMd: "x"})
+	sk, err := svc.Create(ctx, 100, 100, true, CreateRequest{Name: "v1", BodyMd: "x"})
 	require.NoError(t, err)
 
 	// 软删
@@ -152,7 +152,7 @@ func TestVersioning_Restore_RevivesInactiveSkill(t *testing.T) {
 
 func TestVersioning_Restore_ChildAccountDenied(t *testing.T) {
 	db := newTestDB(t)
-	svc := NewService(db)
+	svc := newServiceWithParents(db, 100)
 
 	_, err := svc.versioning.Restore(context.Background(), 0, 1, 1)
 	require.ErrorIs(t, err, errno.ErrPermissionDenied)
@@ -160,10 +160,10 @@ func TestVersioning_Restore_ChildAccountDenied(t *testing.T) {
 
 func TestVersioning_Restore_CrossTenantReturnsNotFound(t *testing.T) {
 	db := newTestDB(t)
-	svc := NewService(db)
+	svc := newServiceWithParents(db, 100)
 	ctx := context.Background()
 
-	sk, err := svc.Create(ctx, 100, 100, CreateRequest{Name: "v1", BodyMd: "x"})
+	sk, err := svc.Create(ctx, 100, 100, true, CreateRequest{Name: "v1", BodyMd: "x"})
 	require.NoError(t, err)
 
 	_, err = svc.versioning.Restore(ctx, 200, sk.ID, 1)
@@ -172,10 +172,10 @@ func TestVersioning_Restore_CrossTenantReturnsNotFound(t *testing.T) {
 
 func TestVersioning_WriteSnapshot_PersistsFullJSON(t *testing.T) {
 	db := newTestDB(t)
-	svc := NewService(db)
+	svc := newServiceWithParents(db, 100)
 	ctx := context.Background()
 
-	sk, err := svc.Create(ctx, 100, 100, CreateRequest{
+	sk, err := svc.Create(ctx, 100, 100, true, CreateRequest{
 		Name:         "verify-snapshot",
 		Description:  "desc",
 		WhenToUse:    "when",

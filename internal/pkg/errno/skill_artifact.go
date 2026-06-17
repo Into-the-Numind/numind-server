@@ -32,4 +32,13 @@ var (
 	// 业务层可选择 fallback：把 raw content 当 body_md，frontmatter 字段保留空——
 	// 是否 fallback 由 service 层决定，errno 本身只表达"解析失败"语义。
 	ErrSkillArtifactFrontmatterInvalid = &Errno{HTTP: 422, Code: "BizError.SkillArtifactFrontmatterInvalid", Message: "skill artifact frontmatter parse failed"}
+
+	// ErrSkillVisibilityForbidden 表示子账户尝试创建/设置 'institution' 或 'official' 可见性。
+	// 仅父账户可创建 'institution'；'official' 任何 API 调用都不允许（仅 admin seed / import-template）。
+	// 触发位置（T4 skill-3tier-visibility）：Service.Create 子账户 clamp 守卫。
+	ErrSkillVisibilityForbidden = &Errno{HTTP: 403, Code: "Forbidden.SkillVisibility", Message: "无权设置该技能可见性等级"}
+
+	// ErrSkillSourceUnavailable 表示市场引用技能（reference pointer）的来源已下架/删除。
+	// 运行时 loadDBSkill 走 jsonErr 软错误返回此语义文案（不杀 run）；此常量供一致性定义。
+	ErrSkillSourceUnavailable = &Errno{HTTP: 404, Code: "ResourceNotFound.SkillSource", Message: "技能的市场来源已下架"}
 )

@@ -130,7 +130,10 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		// resolve). IsEnabled=EnableSkills, so the runner's full-open loop exposes it
 		// to every agent. Resolves DB-bound skills (via ctx turn state) DB-first, then
 		// disk platform skills (SKILL.md). No binding-gated conditional needed.
-		NewLoadSkillTool(f.skillRegistry),
+		//
+		// T4: when f.ds is wired, attach a marketplace snapshot reader so reference-
+		// pointer skills (marketplace_id>0) load the publisher's CURRENT snapshot.
+		f.newLoadSkillTool(),
 		// V1.5 output-skills task 4.2: simple file generation tools (Layer 1, no sandbox).
 		&createCSVTool{},
 		&createHTMLTool{},
@@ -180,6 +183,34 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		)
 	}
 	return tools, metadata, nil
+}
+
+// newLoadSkillTool builds the load_skill tool, wiring a marketplace snapshot
+// reader when a store is available (T4 reference-pointer resolution). When f.ds
+// is nil (unit tests), falls back to the plain constructor (no marketplace read).
+func (f *platformToolFactory) newLoadSkillTool() FullTool {
+	if f.ds == nil {
+		return NewLoadSkillTool(f.skillRegistry)
+	}
+	return NewLoadSkillToolWithMarketplace(f.skillRegistry, &marketplaceSnapshotReader{mp: f.ds.Marketplaces()})
+}
+
+// marketplaceSnapshotReader adapts store.IMarketplaceStore to the
+// MarketplaceSnapshotReader interface. Reads BY marketplace_id ONLY (public row),
+// never the publisher's private skill table (T4 cross-tenant guard).
+type marketplaceSnapshotReader struct {
+	mp store.IMarketplaceStore
+}
+
+func (r *marketplaceSnapshotReader) GetSnapshot(ctx context.Context, marketplaceID uint) (string, bool, bool) {
+	if r.mp == nil {
+		return "", false, false
+	}
+	row, err := r.mp.GetByID(ctx, marketplaceID)
+	if err != nil || row == nil {
+		return "", false, false
+	}
+	return row.SanitizedBodyMD, row.IsPublic, true
 }
 
 // Watch is a no-op in v1; dynamic reloading is deferred to a future task.
