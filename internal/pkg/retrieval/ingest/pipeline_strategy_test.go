@@ -100,3 +100,38 @@ func TestIngestionPipeline_PersistsSplitStrategy_OnFallback(t *testing.T) {
 	assert.Equal(t, "rule_fallback", docStore.lastUpdates["split_strategy"],
 		"a fallback ingest must record split_strategy so it is traceable")
 }
+
+// TestIngestionPipeline_RealSplitter_NeverFailsOnSemanticDown (T2): end-to-end with
+// the REAL CompatibilitySplitter. Locally there is no semantic server (localhost:9093
+// connection refused), so ingest must transparently fall back to rule chunking,
+// still reach COMPLETED with non-empty chunks, and record split_strategy=rule_fallback.
+// This locks the never-fail invariant against the real splitter chain.
+func TestIngestionPipeline_RealSplitter_NeverFailsOnSemanticDown(t *testing.T) {
+	parser := adapter.NewSimpleParser()
+	splitter := NewCompatibilitySplitter(SplitterConfig{MaxChunkSize: 1000}) // real hybrid; semantic unavailable locally
+	tagger := NewContentTagger()
+	docStore := &capturingDocStore{}
+	store := &MockStore{}
+	chunkStore := &MockChunkStore{}
+
+	pipeline := NewIngestionPipeline(parser, splitter, tagger, docStore, store, chunkStore)
+
+	tmpFile, err := os.CreateTemp("", "realsplit_*.md")
+	assert.NoError(t, err)
+	defer os.Remove(tmpFile.Name())
+	// 长文本(>1500字节阈值)以触发切分路径。
+	body := "# 创业指南\n"
+	for i := 0; i < 120; i++ {
+		body += "创业要经历想法验证、最小产品、规模化几个阶段,每个阶段的核心任务和心态都不同。\n"
+	}
+	_, _ = tmpFile.WriteString(body)
+	_ = tmpFile.Close()
+
+	doc := &domain.KnowledgeDocument{ID: 2, Name: "guide.md", FilePath: tmpFile.Name(), Status: domain.DocStatusPending}
+	pipeline.process(context.Background(), doc)
+
+	assert.Equal(t, string(domain.DocStatusCompleted), docStore.lastUpdates["status"],
+		"semantic down → upload must still succeed")
+	assert.Equal(t, "rule_fallback", docStore.lastUpdates["split_strategy"],
+		"semantic down → must record rule_fallback")
+}
