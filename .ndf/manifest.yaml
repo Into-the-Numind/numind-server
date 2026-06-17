@@ -1,5 +1,24 @@
 schema_version: '2.0'
 features:
+- id: rag-eval-harness
+  track: standard
+  description: 'RAG 检索评估集+打分工具(地基):建干净评估专用 KB(用户选定)+Go CLI cmd/rag-eval 复用真实检索栈 retrieve.Service.Retrieve,读 golden YAML 算 recall@k/MRR/nDCG 出基线,让后续混合检索/查询处理/阈值调优/上下文组装每步改前改后跑分对比(科学闭环)。目标把 RAG 打造业界一流的第1步/前提。dev KB ~95文档多账号混杂乱→必须锚定干净语料。'
+  classification_reason: 'Standard: 新增评估包/CLI+方法论需严谨+多文件。无 DB schema/无新生产 API/无新外部服务,纯 dev 工具但作为地基要扎实。'
+  status: active
+  stage: S0
+  repos:
+    numind-server: /private/tmp/wt-rag-eval-harness-numind-server (feature/rag-eval-harness)
+  worktrees:
+    numind-server: /private/tmp/wt-rag-eval-harness-numind-server
+  progress:
+    total_tasks: 0
+    completed_tasks: 0
+    reviewed_tasks: 0
+  artifacts:
+    requirement: .ndf/features/rag-eval-harness/requirement.md
+  decisions:
+  - 'S0 (ai 2026-06-17): 用户指令"全做,踏实按序科学全面,目标 RAG 业界一流"。确立方法论顺序: ①评估集(本feature,地基)→②混合检索→③查询处理(改写/一题多搜/HyDE)→④rerank阈值调优→⑤上下文组装深度优化,每步用评估集跑分验证(科学闭环)。AskUserQuestion: 评估锚点=用户选"建干净评估专用KB"(vs 锚现成乱账号)。指标 recall@k/MRR/nDCG;harness=cmd/rag-eval 复用 retrieve.Service.Retrieve 跑 dev 容器。人在环节: golden 标准答案由用户抽查确认。'
+  blockers: []
 - id: agent-tool-done-state
   track: hotfix
   description: 'Agent mode 工具时间线「已完成却还在转圈」bug（客户反馈）+ 一行式重构。原本每个工具调用渲染成两行（加载技能 spinner + 已加载技能），且回看已完成 run 时第一行 spinner 永久转圈。改为一行随状态原地切换：运行中=use 文案+spinner；完成=result 文案(已加载技能)+统一绿色打勾✓(替掉 per-type 图标)；出错=alert。前端 only。'
