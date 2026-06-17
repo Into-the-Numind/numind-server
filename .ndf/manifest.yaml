@@ -16,13 +16,15 @@ features:
   description: '会议副驾转写链路重构为真·实时流式 ASR(阿里 Paraformer-realtime WebSocket)。替换原分段批量 ASR(FunASR dev 不可用)：前端 Web Audio 连续采集 16k 单声道 PCM →经我方 WebSocket 端点流式上传→后端中继 dashscope wss(run-task/audio/finish-task)→result-generated 逐字回推(中间结果灰显/sentence_end 落 meeting_segment)。复用现有 ali-dashscope DashScope key(同账号同 key)。新增项目首个 WebSocket 基础设施(gorilla/websocket)。录音改为整场单文件(并行 MediaRecorder→COS, 会后回放)。计费=按音频时长记 UsageRecord 不扣费(内部试用)。跨 numind-server+numind-web-v3。'
   classification_reason: 'Standard: 新增 WebSocket 端点(项目首个 ws)、新外部流式集成(dashscope realtime ASR)、新依赖、前端音频管道重写、跨两仓库、文件数远超 3。会议副驾 ASR 在 dev 实测 0 转写(FunASR 弃用+机器扛不住)后, 用户拍板直接上 Ali websocket 真流式。'
   status: active
-  stage: S2
+  stage: S6
   repos:
-    numind-server: feature/meeting-realtime-asr (worktree /private/tmp/wt-meeting-realtime-asr-numind-server)
-    numind-web-v3: feature/meeting-realtime-asr (worktree /private/tmp/wt-meeting-realtime-asr-numind-web-v3)
-  progress: {total_tasks: 4, completed_tasks: 0, reviewed_tasks: 0}
+    numind-server: develop (merged via ndf-done fe210adc)
+    numind-web-v3: develop (merged via ndf-done 70678fc)
+  progress: {total_tasks: 4, completed_tasks: 4, reviewed_tasks: 4}
   decisions:
   - 'S0-S2 (ai 2026-06-17): meeting-copilot dev 实测转写 0 段, 根因=FunASR 弃用(deprecated 2026-04-20)+dev 3.6G 内存扛不动自托管。调研后用户拍板上云端真流式。选 Ali Paraformer-realtime(已集成 Ali 账号/key 复用; 真 websocket 逐字; vs MIMO 是分段非真流式; vs 火山 ¥3.5/h 贵)。协议: wss://dashscope.aliyuncs.com/api-ws/v1/inference, run-task(paraformer-realtime-v2/pcm/16k)→PCM帧→result-generated(sentence_end 分中间/最终)→finish-task。契约 SPEC: docs/meeting-copilot/REALTIME_ASR_SPEC.md。'
+  - 'S3-S6 (ai 2026-06-17): dynamic workflow 实现(后端 dashscope ws 客户端+编排 → 我方 ws 端点+录音上传 ‖ 前端流PCM/逐字/整场录音)+四路并行 Sonnet 审查。verdict be-spec PASS/be-quality FAIL/fe-spec FAIL/fe-quality PASS, 0 P0+8 P1+~12 P2, Tier2 并行修复全修: P1=pre-ready PCM 缓冲不丢首音 / OnError 后关 ws / realtime nextSeq 数据竞争(go test -race 验) / 落库失败不杀流(仅 log) / 前端 doEnd 等 closed 防丢尾音 / onerror 去重 onClosed / 启动竞态兜底; 补 realtime_test.go(seq/duration/usage幂等/sentence_end 分发)。dashscope 实时 ASR 探针实测 task-started(ali-dashscope key 已开通配额, 零代码切换)。门禁 后端 build/vet/test/-race 全0、前端 type-check 0+eslint clean。ndf-done 合两仓库 develop 已复核(local==origin)。下一步 /deploy-dev(server+web)→真机走查。'
+  blockers: []
 - id: semantic-chunk-reliability
   track: standard
   description: '让知识库入库切块"稳定走语义+兜底也切得好+永不让用户上传失败+全程可追溯"。实证:语义切块(bge-small-zh,semantic_server:9093)已部署且健康,但 dev 历史 chunk 约 7-8 成是固定长度兜底切的(>2000字落规则档),病根=兜底静默(不记录/不告警/照切),真实兜底率测不出、触发原因(启动窗口/单例状态未恢复/split失败)无法定位。UX 原则(客户定):上传永不失败>语义优先>好兜底+留痕。'
