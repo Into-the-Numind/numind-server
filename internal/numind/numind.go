@@ -21,7 +21,6 @@ import (
 	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"
-	"numind-server/internal/pkg/aiservice/adapter"
 	"numind-server/internal/pkg/aiservice/capability"
 	aimw "numind-server/internal/pkg/aiservice/middleware"
 	"numind-server/internal/pkg/aiservice/registry"
@@ -197,20 +196,10 @@ func run() error {
 	})
 	gateway.SetMiddlewareChain(aimw.AsGatewayChain(mwChain))
 
-	// Register all built-in provider adapters.
-	for _, p := range []aiservice.Provider{
-		adapter.NewAliAdapter(),
-		adapter.NewVolcAdapter(),
-		adapter.NewDMXAPIAdapter(),
-		adapter.NewBaiduOCRAdapter(),
-		adapter.NewBailianFileAdapter(),
-		adapter.NewFunASRAdapter(),
-	} {
-		gateway.RegisterProvider(p)
-	}
-	// Register aliases for providers that share the same adapter protocol
-	gateway.RegisterProviderAlias("dmxapi-ssvip", "dmxapi")
-	gateway.RegisterProviderAlias("aihubmix", "dmxapi")
+	// Register all built-in provider adapters + shared-protocol aliases.
+	// Shared with the admin server (admin.go) via registerAIProviders so the two
+	// gateways can never drift on the provider set.
+	registerAIProviders(gateway)
 
 	aiservice.SetDefault(gateway)
 	log.Infow("AI Service Gateway initialised", "adapters", gateway.AdapterNames())
