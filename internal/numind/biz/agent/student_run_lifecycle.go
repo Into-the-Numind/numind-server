@@ -882,14 +882,15 @@ var safeToolBaseline = []string{
 	"create_png_chart",  // 图表生成
 	"load_skill",        // open-tools-skill-as-guidance: merged use_skill+read_skill — loads DB-bound + disk platform skill guidance; agent writes Python then run_python executes
 	"run_python",        // 2026-05-29 hotfix: load_skill is useless without an executor. The OutputToolsPriorityAddendum already promises every agent the load_skill→run_python path; baseline must match the promise. run_python is sandbox-isolated (docker), so the risk surface is the sandbox image itself, not the agent permission flag.
+	"image_gen",         // 2026-06-17: 文生图是常用功能、不再当开关，永远可用；改用每用户并发上限(imageGenMaxConcurrentPerUser=6)控制。
 }
 
 // categoryToTools 把 frontend AgentAdvancedEdit.vue 的 3 个 risk-category 开关
 // 展开为受限工具（这些工具默认 OFF，必须通过 category 显式启用）。
 //
 //	code_sandbox  → bash_exec      (RequiresSandbox=true)
-//	media         → image_gen      (Category="多媒体")
 //	dangerous     → bash_exec      (RiskLevel="dangerous" 别名)
+//	(media/image_gen 已于 2026-06-17 移除：文生图不再当开关，永远可用 + 每用户并发上限)
 //	enable_skills → load_skill + run_python   (open-tools-skill-as-guidance merged
 //	  use_skill+read_skill into load_skill; the two-step flow needs BOTH tools —
 //	  load_skill loads the SKILL.md guidance, run_python executes the Python the LLM
@@ -899,7 +900,6 @@ var safeToolBaseline = []string{
 //	  kept so the flag's documented contract stays consistent.)
 var categoryToTools = map[string][]string{
 	"code_sandbox": {"bash_exec"},
-	"media":        {"image_gen"},
 	"dangerous":    {"bash_exec"}, // alias of code_sandbox for now
 	// Single-loop progressive disclosure: catalog → load_skill → run_python.
 	// Both tools must be reachable or the agent crashes mid-flow with
