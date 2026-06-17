@@ -302,16 +302,16 @@ func (a *fullToolEinoAdapter) emitNarration(ctx context.Context, st narration.St
 // emitStream sends one SSE event onto the shared streaming channel pulled from
 // ctx (injected by RunStream via WithStreamState). No-op when there is no
 // stream state (e.g. the non-streaming Run path or unit tests) — so the
-// adapter stays usable in both modes. Seq is owned by the single in-flight
-// step; tool execution is sequential with the model-output scanner, so the
-// unsynchronised increment matches the existing emit closure's contract.
+// adapter stays usable in both modes. Seq is drawn from the SINGLE shared,
+// monotonic counter (state.Seq.Add(1)); parallel tool calls can reach this
+// concurrently, so the atomic increment keeps every emitter's seq distinct.
 func (a *fullToolEinoAdapter) emitStream(ctx context.Context, t stream.EventType, payload any) {
 	state, ok := StreamStateFromContext(ctx)
 	if !ok || state == nil || state.Ch == nil {
 		return
 	}
-	state.Seq++
-	ev, err := stream.Encode(t, payload, state.Seq, state.RunID, state.StepIdx)
+	seq := state.Seq.Add(1)
+	ev, err := stream.Encode(t, payload, seq, state.RunID, state.StepIdx)
 	if err != nil {
 		return
 	}

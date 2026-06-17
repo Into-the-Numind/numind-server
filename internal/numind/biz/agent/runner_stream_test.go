@@ -476,6 +476,42 @@ func TestConsumeEinoStream_SeqMonotonic(t *testing.T) {
 	}
 }
 
+// TestConsumeEinoStream_SeqContinuesFromSharedState guards the T3 unification: when
+// a StreamSessionState is in context, consumeEinoStream must draw its seq from the
+// SHARED atomic counter (state.Seq) — continuing after whatever the checker/adapter
+// already emitted during the graph — not restart at 1 with a private counter.
+func TestConsumeEinoStream_SeqContinuesFromSharedState(t *testing.T) {
+	r := makeRunner()
+	run := makeRun(11)
+	st := &LoopState{}
+
+	msgs := []*schema.Message{
+		{Role: schema.Assistant, Content: "a"},
+		{Role: schema.Assistant, Content: "", ResponseMeta: &schema.ResponseMeta{FinishReason: "stop"}},
+	}
+	sr := makeStreamReader(msgs)
+
+	// Simulate the checker/adapter having advanced the shared counter to 7 during
+	// the graph. Ch is nil so consumeEinoStream owns all emits (checkerActive=false),
+	// but the seq source is still the shared state.Seq.
+	shared := &StreamSessionState{RunID: run.ID}
+	shared.Seq.Store(7)
+	ctx := WithStreamState(context.Background(), shared)
+
+	ch := make(chan stream.Event, 32)
+	_, err := r.consumeEinoStream(ctx, run, sr, ch, st, time.Now())
+	close(ch)
+	require.NoError(t, err)
+
+	evs := collectEvents(ch)
+	require.NotEmpty(t, evs)
+	assert.Greater(t, evs[0].Seq, uint64(7),
+		"first emitted seq must continue from the shared state.Seq (was 7), not restart at 1")
+	for i := 1; i < len(evs); i++ {
+		assert.Greater(t, evs[i].Seq, evs[i-1].Seq)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test: RunID in all events matches run.ID
 // ---------------------------------------------------------------------------

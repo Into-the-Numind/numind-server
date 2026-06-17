@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	einotool "github.com/cloudwego/eino/components/tool"
@@ -44,7 +45,13 @@ type StreamSessionState struct {
 	CurrentMsgID    string
 	LastStepContent string
 	StepIdx         int
-	Seq             uint64
+	// Seq is the SINGLE shared, monotonic SSE event-sequence counter for a run.
+	// Three emitters advance it concurrently — the stream drain goroutine
+	// (consumeEinoStream), the graph goroutine (streamScanToolCallChecker), and
+	// parallel tool calls (fullToolEinoAdapter.emitStream) — so it MUST be atomic.
+	// Every emitter takes its next seq via Seq.Add(1). The WIRE field
+	// stream.Event.Seq stays a plain uint64; only this internal counter is atomic.
+	Seq atomic.Uint64
 	// PendingYield is set by the tool adapter (fullToolEinoAdapter.InvokableRun)
 	// when ask_user_question returns its yield sentinel during streaming. The
 	// stream drain (consumeEinoStream) reads it to surface a question_prompt +
@@ -571,7 +578,7 @@ func (r *agentRunner) RunStream(
 				log.Warnw("AgentRunner.RunStream terminateRunContextExhausted persist failed", "agent_run_id", run.ID, "error", tErr)
 			}
 			// Emit error + terminal so the SSE client sees a clean close.
-			emitStreamErrorEvents(ch, run.ID, streamErr, TerminalModelError, startTime)
+			emitStreamErrorEvents(ch, run.ID, sharedState.Seq.Load(), streamErr, TerminalModelError, startTime)
 			return &RunResult{
 				AgentRunID:     run.ID,
 				TerminalReason: TerminalModelError,
@@ -596,7 +603,7 @@ func (r *agentRunner) RunStream(
 			// Carry the checker-tracked step count so the terminal payload
 			// reports real progress, not 0 (review P2: spec-parity).
 			yieldSt := &LoopState{StepCount: int(sharedState.StepIdx)}
-			result, _ := r.persistAndEmitYield(ctx, run.ID, yieldSt, newChanEmitter(ch, run.ID), startTime, *p)
+			result, _ := r.persistAndEmitYield(ctx, run.ID, yieldSt, newChanEmitter(sharedState), startTime, *p)
 			endedAt := time.Now()
 			if uErr := r.runStore.UpdateState(persistCtx, run.ID, "terminated", string(TerminalWaitingForUserChoice), &endedAt); uErr != nil {
 				log.Warnw("AgentRunner.RunStream yield UpdateState failed (errpath)", "agent_run_id", run.ID, "error", uErr)
@@ -611,7 +618,7 @@ func (r *agentRunner) RunStream(
 		// user's input (and the error terminal) survive a reload — previously
 		// this branch only flipped run state, leaving messages empty and the
 		// session blank after refresh (dev run #117 second defect).
-		emitStreamErrorEvents(ch, run.ID, streamErr, TerminalModelError, startTime)
+		emitStreamErrorEvents(ch, run.ID, sharedState.Seq.Load(), streamErr, TerminalModelError, startTime)
 		errSt := &LoopState{TerminalReason: TerminalModelError}
 		applyHookOverride(effectiveHooks, errSt)
 		if _, fErr := r.finalizeRun(ctx, run, errSt, startTime, "", "", nil, false, skillVer, isTrivial, req, permDenialSink, streamErr, sessionID, priorMessages); fErr != nil {
@@ -704,31 +711,33 @@ func applyHookOverride(effectiveHooks *RunHooks, st *LoopState) {
 
 // newChanEmitter adapts a raw stream.Event channel to the emit-func shape
 // persistAndEmitYield expects. Mirrors emitStreamErrorEvents' encode+
-// non-blocking-send pattern with a local seq counter (the einoAgent.Stream
-// error path has no consumeEinoStream emit closure to reuse).
-func newChanEmitter(ch chan<- stream.Event, runID uint64) func(stream.EventType, any) {
-	var seq uint64 = 1
+// non-blocking-send pattern, but draws each seq from the SINGLE shared,
+// monotonic counter (state.Seq) so the yield events it emits stay ordered
+// relative to any chunk-stream events already sent on the same run.
+func newChanEmitter(state *StreamSessionState) func(stream.EventType, any) {
 	return func(t stream.EventType, payload any) {
-		ev, err := stream.Encode(t, payload, seq, runID, 0)
+		seq := state.Seq.Add(1)
+		ev, err := stream.Encode(t, payload, seq, state.RunID, 0)
 		if err != nil {
-			log.Warnw("newChanEmitter: stream.Encode failed", "agent_run_id", runID, "event_type", t, "error", err)
+			log.Warnw("newChanEmitter: stream.Encode failed", "agent_run_id", state.RunID, "event_type", t, "error", err)
 			return
 		}
-		// seq++ only on successful send (T04 P1 convention: dropped events
-		// must not advance the monotonic-no-gap counter).
 		select {
-		case ch <- ev:
-			seq++
+		case state.Ch <- ev:
 		default:
 		}
 	}
 }
 
 // emitStreamErrorEvents sends an EventError + EventTerminal pair onto ch (non-blocking
-// via buffered send). Used when einoAgent.Stream returns an error before any chunks
-// are emitted, so the SSE client receives a structured close rather than a silent EOF.
-// The seq argument is always 1 (first event in a new stream).
-func emitStreamErrorEvents(ch chan<- stream.Event, runID uint64, err error, reason TerminalReason, startTime time.Time) {
+// via buffered send). Used when einoAgent.Stream returns an error, so the SSE client
+// receives a structured close rather than a silent EOF.
+//
+// seqBase is the current value of the shared StreamSessionState.Seq (0 when no state
+// is available, e.g. the panic-recovery backstop). The error/terminal pair use
+// seqBase+1 / seqBase+2 so they stay monotonic after any events the run already
+// emitted (the model can error mid-stream once the checker has advanced the counter).
+func emitStreamErrorEvents(ch chan<- stream.Event, runID uint64, seqBase uint64, err error, reason TerminalReason, startTime time.Time) {
 	// Raw error → logs only (for ops). Users see the friendly translation.
 	log.Warnw("agent run stream error", "agent_run_id", runID, "terminal_reason", reason, "error", err.Error())
 	userMsg := UserFacingErrorMessage(err)
@@ -736,7 +745,7 @@ func emitStreamErrorEvents(ch chan<- stream.Event, runID uint64, err error, reas
 	errEv, encErr := stream.Encode(stream.EventError, stream.ErrorPayload{
 		Code:    "model_error",
 		Message: userMsg,
-	}, 1, runID, 0)
+	}, seqBase+1, runID, 0)
 	if encErr == nil {
 		select {
 		case ch <- errEv:
@@ -755,7 +764,7 @@ func emitStreamErrorEvents(ch chan<- stream.Event, runID uint64, err error, reas
 			"error_message": userMsg,
 			"error_detail":  err.Error(),
 		},
-	}, 2, runID, 0)
+	}, seqBase+2, runID, 0)
 	if encErr == nil {
 		select {
 		case ch <- termEv:
@@ -803,8 +812,8 @@ func streamScanToolCallChecker(ctx context.Context, sr *schema.StreamReader[*sch
 		if !hasState || state.Ch == nil {
 			return
 		}
-		state.Seq++
-		ev, err := stream.Encode(t, payload, state.Seq, state.RunID, state.StepIdx)
+		seq := state.Seq.Add(1)
+		ev, err := stream.Encode(t, payload, seq, state.RunID, state.StepIdx)
 		if err != nil {
 			return
 		}

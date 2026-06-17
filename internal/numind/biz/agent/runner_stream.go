@@ -73,7 +73,12 @@ func (r *agentRunner) consumeEinoStream(
 		currentReason strings.Builder
 		toolCalls     = make(map[string]*toolCallStreamState)
 		stepIdx       int
-		seq           uint64
+		// localSeq is the fallback seq source ONLY when there is no shared stream
+		// state (hasState == false: the no-checker / unit-test path). When hasState
+		// is true the shared, monotonic state.Seq counter is used instead so this
+		// drain goroutine and the graph goroutine (checker / tool adapter) never
+		// collide on a seq value.
+		localSeq      uint64
 		firstByteSent bool
 		// lastStepContent stashes currentText.String() right before each
 		// step-done Reset() so EOF emit terminal + RunResult.FinalOutput
@@ -92,12 +97,27 @@ func (r *agentRunner) consumeEinoStream(
 	// emit safely writes an event to ch. If ctx is already done, the send is
 	// skipped to avoid blocking forever on a full or unread channel.
 	//
-	// P1 fix (T04): seq++ fires ONLY inside the successful send branch. Previously
-	// seq++ ran unconditionally before the select, so a ctx.Done() win (dropped
-	// event) still advanced seq — producing monotonic-sequence gaps that the SSE
-	// client would interpret as lost events.
+	// Seq source (agent-event-seq-unify): the seq is drawn BEFORE the send from
+	// the SINGLE shared, monotonic counter — state.Seq when a shared stream state
+	// exists (the production path: this drain goroutine, the graph goroutine's
+	// checker, and parallel tool-call emitters all advance the same atomic
+	// counter so values never collide or go backwards), or the localSeq fallback
+	// when there is no shared state (the no-checker / unit-test path).
+	//
+	// This intentionally increments BEFORE the send (was: increment-only-on-
+	// successful-send). A dropped event on ctx.Done() therefore leaves a 1-gap in
+	// the seq stream. That is ACCEPTABLE: seq is an ordering key for the client,
+	// NOT a gap-detector (the FE does not gap-fill), and a gap can only occur at
+	// ctx cancellation — i.e. the run is ending anyway.
 	emit := func(t stream.EventType, payload any) {
-		ev, err := stream.Encode(t, payload, seq+1, run.ID, stepIdx)
+		var nextSeq uint64
+		if hasState {
+			nextSeq = state.Seq.Add(1)
+		} else {
+			localSeq++
+			nextSeq = localSeq
+		}
+		ev, err := stream.Encode(t, payload, nextSeq, run.ID, stepIdx)
 		if err != nil {
 			log.Warnw("consumeEinoStream: stream.Encode failed",
 				"agent_run_id", run.ID, "event_type", t, "error", err)
@@ -105,7 +125,6 @@ func (r *agentRunner) consumeEinoStream(
 		}
 		select {
 		case ch <- ev:
-			seq++
 			if !firstByteSent {
 				firstByteSent = true
 			}
@@ -361,11 +380,9 @@ func (r *agentRunner) consumeEinoStream(
 		finalReasoning = currentReason.String()
 	}
 
-	if hasState {
-		seq = state.Seq
-	}
-
-	// Emit terminal.
+	// Emit terminal. (No pre-terminal seq sync needed anymore: the emit closure
+	// reads/advances the shared state.Seq directly, so the terminal continues the
+	// single unified counter without a manual hand-off.)
 	emit(stream.EventTerminal, stream.TerminalPayload{
 		Reason:      string(TerminalCompleted),
 		DurationMs:  time.Since(startTime).Milliseconds(),
