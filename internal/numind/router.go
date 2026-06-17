@@ -326,9 +326,19 @@ func installNumindRouters(g *gin.Engine) error {
 			meetingGroup.GET("/:id", meetingCtrl.GetSession) // 详情（含 segments + feedbacks）
 
 			// 分段转写 + 反馈（SSE）+ 结束。
-			meetingGroup.POST("/:id/segments", meetingCtrl.IngestSegment)    // 分段近实时转写（multipart）
+			meetingGroup.POST("/:id/segments", meetingCtrl.IngestSegment)    // 分段近实时转写（multipart，旧路径保留）
+			meetingGroup.POST("/:id/recording", meetingCtrl.UploadRecording) // 整场录音上传（实时流式路径，SPEC §3）
 			meetingGroup.POST("/:id/feedback", meetingCtrl.GenerateFeedback) // 反馈（SSE）
 			meetingGroup.POST("/:id/end", meetingCtrl.EndSession)            // 结束 + 同步生成纪要
+		}
+
+		// 实时流式 ASR ws 端点（SPEC §2）：浏览器 ws 无法带 Authorization 头，故**不**挂
+		// AuthMiddleware（鉴权在 handler 内用 ?token= 完成），仅套 FeatureFlag（off→404）。
+		// 与 meetingGroup 平级注册到 v1Group，避免继承 authGroup 的 AuthMiddleware。
+		wsGroup := v1Group.Group("/meetings")
+		wsGroup.Use(importMw.FeatureFlag("features.meeting_copilot.enabled"))
+		{
+			wsGroup.GET("/:id/asr-stream", meetingCtrl.AsrStream) // 实时流式转写（websocket，GET 升级）
 		}
 	}
 

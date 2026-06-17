@@ -136,6 +136,15 @@ type IMeetingBiz interface {
 	// --- 分段转写 ---
 	IngestSegment(ctx context.Context, userID uint, sessionID uint64, req *IngestSegmentReq) (*SegmentDTO, error)
 
+	// --- 实时流式转写（SPEC §2/§5）---
+	// StartRealtimeASR 开一条实时 ASR 编排会话（供 ws controller 调用）。校验会话归属 + active，
+	// 失败返回 error（controller 据此拒绝 ws 升级）。
+	StartRealtimeASR(ctx context.Context, userID uint, sessionID uint64, handlers RealtimeASRHandlers) (IRealtimeASR, error)
+
+	// --- 整场录音持久化（SPEC §3）---
+	// UpdateRecordingURL 把整场录音上传到 COS 并回写 meeting_session.recording_url，返回新 URL。
+	UpdateRecordingURL(ctx context.Context, userID uint, sessionID uint64, audio []byte, contentType string) (string, error)
+
 	// --- 反馈（SSE） ---
 	GenerateFeedback(ctx context.Context, userID uint, sessionID uint64, req *FeedbackReq, h SSEHandler) error
 

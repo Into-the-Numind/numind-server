@@ -198,6 +198,60 @@ func (ctl *Controller) IngestSegment(c *gin.Context) {
 }
 
 // ---------------------------------------------------------------------------
+// 整场录音上传（实时流式路径，SPEC §3）
+// ---------------------------------------------------------------------------
+
+// maxRecordingSize 整场录音上传大小上限（webm/opus，长会议留足余量）。
+const maxRecordingSize = 200 * 1024 * 1024 // 200MB
+
+// UploadRecording 上传整场录音并回写 recording_url。POST /v1/meetings/:id/recording
+//
+// multipart/form-data：audio(文件, webm/opus)。流式路径不再逐段存音频，用户结束时一次性上传整段
+// blob 供会后回放（SPEC §3）。
+func (ctl *Controller) UploadRecording(c *gin.Context) {
+	userID, ok := currentUserID(c)
+	if !ok {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+	id, ok := parseSessionID(c)
+	if !ok {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	file, header, err := c.Request.FormFile("audio")
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("缺少 audio 录音文件"), nil)
+		return
+	}
+	defer file.Close()
+
+	if header.Size > maxRecordingSize {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("录音过大（上限 %dMB）", maxRecordingSize/1024/1024), nil)
+		return
+	}
+
+	audioBytes, err := io.ReadAll(io.LimitReader(file, maxRecordingSize+1))
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("读取录音数据失败"), nil)
+		return
+	}
+
+	contentType := header.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "audio/webm"
+	}
+
+	url, err := ctl.biz.UpdateRecordingURL(c.Request.Context(), userID, id, audioBytes, contentType)
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+	core.WriteResponse(c, nil, gin.H{"recording_url": url})
+}
+
+// ---------------------------------------------------------------------------
 // 反馈（SSE）
 // ---------------------------------------------------------------------------
 
