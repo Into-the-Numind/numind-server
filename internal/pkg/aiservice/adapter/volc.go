@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"numind-server/internal/pkg/aiservice"
+	"numind-server/internal/pkg/aiservice/aierr"
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/httpclient"
 )
@@ -71,7 +72,8 @@ func (v *VolcAdapter) Chat(ctx context.Context, route *registry.ResolvedRoute, r
 		return nil, fmt.Errorf("volc.Chat: decode: %w", err)
 	}
 	if oaiResp.Error != nil {
-		return nil, fmt.Errorf("volc.Chat: provider error: %s", oaiResp.Error.Message)
+		return nil, fmt.Errorf("volc.Chat: %w",
+			aierr.New(0, fmt.Sprint(oaiResp.Error.Code), oaiResp.Error.Type, oaiResp.Error.Message, nil))
 	}
 	if len(oaiResp.Choices) == 0 {
 		return nil, fmt.Errorf("volc.Chat: empty choices")

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"numind-server/internal/pkg/aiservice"
+	"numind-server/internal/pkg/aiservice/aierr"
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/httpclient"
@@ -138,7 +139,8 @@ func (a *AliAdapter) Chat(ctx context.Context, route *registry.ResolvedRoute, re
 		return nil, fmt.Errorf("ali.Chat: decode: %w", err)
 	}
 	if oaiResp.Error != nil {
-		return nil, fmt.Errorf("ali.Chat: provider error: %s", oaiResp.Error.Message)
+		return nil, fmt.Errorf("ali.Chat: %w",
+			aierr.New(0, fmt.Sprint(oaiResp.Error.Code), oaiResp.Error.Type, oaiResp.Error.Message, nil))
 	}
 	if len(oaiResp.Choices) == 0 {
 		return nil, fmt.Errorf("ali.Chat: empty choices")
@@ -459,10 +461,20 @@ func wrapHTTPClientErr(op string, err error) error {
 // hard error — that fail-over is the intended new behavior, not double-retry of
 // the SAME provider.
 func wrapHTTPStatusErr(op string, statusCode int, body []byte) error {
+	// Decide the underlying error first (errno for retriable classes, plain
+	// fmt.Errorf otherwise) — this preserves the existing branch logic and the
+	// stable errno Code that errno.Decode / user_error.go switches on.
+	var underlying error
 	if statusCode >= 500 || statusCode == http.StatusTooManyRequests || statusCode == http.StatusRequestTimeout {
-		return errno.ErrAIProviderError.SetMessage("%s: HTTP %d: %s", op, statusCode, string(body))
+		underlying = errno.ErrAIProviderError.SetMessage("%s: HTTP %d: %s", op, statusCode, string(body))
+	} else {
+		underlying = fmt.Errorf("%s: HTTP %d: %s", op, statusCode, string(body))
 	}
-	return fmt.Errorf("%s: HTTP %d: %s", op, statusCode, string(body))
+	// Wrap with a semantic ProviderError classified from the HTTP status (429 →
+	// rate_limited, 401/403 → auth, 408/504 → timeout). The underlying errno is
+	// carried via Err so errno.Decode still resolves through Unwrap; the body is
+	// passed as the message so substring fallback also applies.
+	return aierr.New(statusCode, "", "", fmt.Sprintf("%s: HTTP %d: %s", op, statusCode, string(body)), underlying)
 }
 
 // isTimeoutErr returns true for network timeouts and context deadline exceeded.
