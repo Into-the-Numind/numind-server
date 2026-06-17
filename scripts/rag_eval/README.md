@@ -13,11 +13,17 @@
 ```bash
 pip install requests pyyaml          # 一次性
 export NUMIND_ADMIN_PASSWORD=<pw>    # 密码走环境变量,不硬编码进脚本/命令历史
+# 检索端点在【用户服务 9091】,admin 登录在【admin 服务 9099】→ 分别指定:
 python3 run_eval.py --golden golden.yaml \
-    --base-url http://49.233.219.254:9091 --user admin --k 5
+    --login-url http://49.233.219.254:9099 \
+    --base-url  http://49.233.219.254:9091 --user admin --k 5
+# (也可 --token <T> 直接传 token 跳过登录。)
 # 默认对齐 chatbot 产线(rerank 0.6 阈值 + no_floor + 原话检索);
 # 加 --raw 看不带阈值的原始排序召回(诊断"是召回不到还是被阈值丢了")。
 ```
+
+> dev 的 9091/9099 不对公网开放时,先开 SSH 隧道(`ssh -L 19091:localhost:9091 -L 19099:localhost:9099 ...`)再把上面地址换成 localhost:1909x。
+> 跑出来的基线见 **[BASELINE.md](BASELINE.md)**。
 
 ## 指标含义(大白话)
 
