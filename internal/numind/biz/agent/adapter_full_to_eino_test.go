@@ -613,7 +613,8 @@ func TestAdapter_InvokableRun_EmitsToolCallStartAndResult(t *testing.T) {
 	eino := adaptFullToEinoTool(ft, nil) // nil hooks: stream emission is independent of hooks
 
 	ch := make(chan stream.Event, 16)
-	st := &StreamSessionState{Ch: ch, RunID: 42, StepIdx: 1}
+	st := &StreamSessionState{Ch: ch, RunID: 42}
+	st.StepIdx.Store(1)
 	ctx := WithStreamState(context.Background(), st)
 
 	out, err := eino.InvokableRun(ctx, `{"query":"github trending"}`)
@@ -641,7 +642,7 @@ func TestAdapter_InvokableRun_EmitsArtifactURL(t *testing.T) {
 	eino := adaptFullToEinoTool(ft, nil)
 
 	ch := make(chan stream.Event, 16)
-	ctx := WithStreamState(context.Background(), &StreamSessionState{Ch: ch, RunID: 1, StepIdx: 0})
+	ctx := WithStreamState(context.Background(), &StreamSessionState{Ch: ch, RunID: 1})
 
 	_, err := eino.InvokableRun(ctx, `{"prompt":"a cat"}`)
 	require.NoError(t, err)
@@ -715,7 +716,7 @@ func TestAdapter_InvokableRun_EmitsToolCallError(t *testing.T) {
 	eino := adaptFullToEinoTool(ft, nil)
 
 	ch := make(chan stream.Event, 16)
-	ctx := WithStreamState(context.Background(), &StreamSessionState{Ch: ch, RunID: 7, StepIdx: 0})
+	ctx := WithStreamState(context.Background(), &StreamSessionState{Ch: ch, RunID: 7})
 
 	_, err := eino.InvokableRun(ctx, `{"skill_name":"pptx-author"}`)
 	require.Error(t, err)
@@ -742,7 +743,7 @@ func TestAdapter_ToolCallStart_CarriesInputPreview(t *testing.T) {
 	ft := &fakeFullTool{name: "invoke_skill", out: []byte(`{}`)}
 	eino := adaptFullToEinoTool(ft, nil)
 	ch := make(chan stream.Event, 16)
-	ctx := WithStreamState(context.Background(), &StreamSessionState{Ch: ch, RunID: 1, StepIdx: 0})
+	ctx := WithStreamState(context.Background(), &StreamSessionState{Ch: ch, RunID: 1})
 
 	_, err := eino.InvokableRun(ctx, `{"skill_name":"pptx-author","instructions":"make a deck"}`)
 	require.NoError(t, err)
