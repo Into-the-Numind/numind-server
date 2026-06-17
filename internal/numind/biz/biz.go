@@ -665,7 +665,10 @@ func NewBiz(ds store.IStore) *biz {
 	// 始终用显式 docIDs scope（不需要 AllEnabled 解析）。只有挂了 KB 且解析出 docIDs 才调它。
 	chatbotRetrieve := retrieve.NewService(vStore, salesragservice.NewRouterRewriter(llmRouter, "free"), nil)
 	b.chatbotService = chatbotbiz.NewChatbotBiz(ds, chatbotRetrieve)
-	b.ragRetrieve = chatbotRetrieve // rag-eval-harness：评估端点复用同一套真实检索栈
+	// rag-eval-harness：评估端点刻意复用 chatbot 的同一 *retrieve.Service 指针，
+	// 这样跑分用的就是生产 chatbot 真实检索栈（docStore=nil → 评估也只支持显式 docIDs）。
+	// retrieve.Service 无可变 per-call 状态，只读共享安全。
+	b.ragRetrieve = chatbotRetrieve
 
 	// 初始化会议副驾服务（meeting-copilot）。LLM/ASR 统一走 aiservice Gateway；
 	// 内部试用「仅记录用量、不扣费、不拦截」由 biz/meeting 的 internalCallCtx 保证。

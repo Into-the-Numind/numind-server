@@ -5,9 +5,12 @@
 按"期望文档有没有进前 k 名 / 排第几"算 recall@k、MRR、nDCG@k，输出报告。
 
 用法:
+  export NUMIND_ADMIN_PASSWORD=<pw>   # 密码走环境变量,不进命令历史/源码
   python3 run_eval.py --golden golden.yaml \
-      --base-url http://49.233.219.254:9099 \
-      --user admin --password admin123456 --k 5
+      --base-url http://49.233.219.254:9099 --user admin --k 5
+  # 默认对齐 chatbot 产线(0.6 阈值+no_floor+原话);加 --raw 看原始排序召回。
+# 指标均在 top-k 截断处计算(recall@k / MRR@k / nDCG@k),三者口径一致。
+# out_of_kb 题只计"拒答准确率"(检索为空即正确),不并入 MRR/nDCG 平均。
 
 golden YAML 每条:
   - id: q1
@@ -75,7 +78,7 @@ def score_one(expected, ranked_docs, k):
     topk = ranked_docs[:k]
     hit = 1.0 if any(d in exp for d in topk) else 0.0
     rr = 0.0
-    for i, d in enumerate(ranked_docs):
+    for i, d in enumerate(topk):  # MRR@k:与 recall@k / nDCG@k 同口径(top-k 截断)
         if d in exp:
             rr = 1.0 / (i + 1)
             break
@@ -107,25 +110,38 @@ def main():
 
     token = login(args.base_url, args.user, args.password)
 
-    by_type = defaultdict(lambda: {"hit": 0.0, "rr": 0.0, "ndcg": 0.0, "n": 0})
-    tot = {"hit": 0.0, "rr": 0.0, "ndcg": 0.0, "n": 0}
+    # n        = 题数(recall/拒答准确率分母,含 out_of_kb)
+    # rank_n   = 库内题数(expected 非空;MRR/nDCG 分母,out_of_kb 不并入)
+    by_type = defaultdict(lambda: {"hit": 0.0, "rr": 0.0, "ndcg": 0.0, "n": 0, "rank_n": 0})
+    tot = {"hit": 0.0, "rr": 0.0, "ndcg": 0.0, "n": 0, "rank_n": 0}
     rows = []
     for q in golden:
-        ranked = retrieve(args.base_url, token, q["query"], q.get("scope", {}), args.k)
-        hit, rr, ndcg = score_one(q.get("expected_doc_ids", []), ranked, args.k)
+        expected = q.get("expected_doc_ids", [])
+        ranked = retrieve(args.base_url, token, q["query"], q.get("scope", {}), args.k, mode)
+        hit, rr, ndcg = score_one(expected, ranked, args.k)
         t = q.get("type", "unknown")
         for agg in (by_type[t], tot):
-            agg["hit"] += hit; agg["rr"] += rr; agg["ndcg"] += ndcg; agg["n"] += 1
+            agg["hit"] += hit
+            agg["n"] += 1
+            if expected:  # 库内题才计入排序指标
+                agg["rr"] += rr
+                agg["ndcg"] += ndcg
+                agg["rank_n"] += 1
         rows.append((q.get("id", "?"), t, hit, rr, ranked[:args.k]))
 
-    print(f"\n=== RAG 检索评估 (k={args.k}, {tot['n']} 题) ===")
-    print(f"{'id':<10}{'type':<16}{'hit@k':<7}{'RR':<7}top{args.k}_docs")
+    print(f"\n=== RAG 检索评估 (mode={mode}, k={args.k}, {tot['n']} 题) ===")
+    print(f"{'id':<10}{'type':<16}{'hit@k':<7}{'RR@k':<7}top{args.k}_docs")
     for rid, t, hit, rr, top in rows:
         print(f"{rid:<10}{t:<16}{int(hit):<7}{rr:<7.2f}{top}")
 
     def line(name, a):
-        n = max(a["n"], 1)
-        print(f"{name:<18} recall@{args.k}={a['hit']/n:.3f}  MRR={a['rr']/n:.3f}  nDCG@{args.k}={a['ndcg']/n:.3f}  (n={a['n']})")
+        n, rn = max(a["n"], 1), a["rank_n"]
+        recall = a["hit"] / n
+        if rn > 0:  # 库内题:报 MRR@k / nDCG@k
+            print(f"{name:<18} recall@{args.k}={recall:.3f}  MRR@{args.k}={a['rr']/rn:.3f}  "
+                  f"nDCG@{args.k}={a['ndcg']/rn:.3f}  (n={a['n']}, 库内={rn})")
+        else:       # out_of_kb:只报拒答准确率
+            print(f"{name:<18} 拒答准确率={recall:.3f}  (MRR/nDCG 不适用)  (n={a['n']})")
     print("\n--- 分类型 ---")
     for t in sorted(by_type):
         line(t, by_type[t])

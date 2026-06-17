@@ -27,14 +27,19 @@ type ragEvalRetrieveReq struct {
 	Query       string `json:"query" binding:"required"`
 	UserID      uint   `json:"user_id"`
 	DocumentIDs []uint `json:"document_ids"`
-	AllEnabled  bool   `json:"all_enabled"`
+	// AllEnabled is rejected by this endpoint (see Retrieve): the wired
+	// retrieve.Service has no DocStore, mirroring the production chatbot which
+	// always passes explicit DocumentIDs. Eval anchors to a fixed corpus, so
+	// callers MUST pass document_ids.
+	AllEnabled bool `json:"all_enabled"`
 	// Retrieval knobs — fully caller-controlled so the scoring script can pick
 	// the measurement mode. TopK/RerankTopN default to the chatbot candidate
 	// pool (10) when 0. RerankMinScore/RerankNoFloor/RewriteQuery pass through
-	// verbatim: to mirror the production chatbot pass {rewrite_query:false,
-	// rerank_min_score:0.6, rerank_no_floor:true}; for raw ranked recall pass
-	// {rerank_min_score:0, rerank_no_floor:false}. NOTE: when RerankMinScore=0
-	// the service still applies its 0.3 default floor (not "no floor").
+	// verbatim. To mirror the production chatbot pass {rewrite_query:false,
+	// rerank_min_score:0.6, rerank_no_floor:true}.
+	// NOTE on raw mode: RerankMinScore=0 does NOT mean "no floor" — the service
+	// still applies its 0.3 default floor. Pass rerank_no_floor:true to disable
+	// the safety fallback (return empty when every candidate is below threshold).
 	TopK           int     `json:"top_k"`
 	RerankTopN     int     `json:"rerank_top_n"`
 	RerankMinScore float32 `json:"rerank_min_score"`
@@ -60,9 +65,14 @@ func (ctl *RAGEvalController) Retrieve(c *gin.Context) {
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("retrieval service not wired"), nil)
 		return
 	}
-	// 数据隔离守卫:all_enabled 必须显式指定 user_id,避免误扫 user_id=0(系统默认用户)的全部文档。
-	if req.AllEnabled && req.UserID == 0 {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("user_id required when all_enabled=true"), nil)
+	// all_enabled 不被本端点支持:wired retrieve.Service 无 DocStore(与生产 chatbot 一致,
+	// 后者总是传显式 DocumentIDs),且评估按设计锚定固定语料。直接拒绝,避免下游返回隐晦的 500。
+	if req.AllEnabled {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("all_enabled not supported by rag-eval; pass explicit document_ids"), nil)
+		return
+	}
+	if len(req.DocumentIDs) == 0 {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("document_ids required"), nil)
 		return
 	}
 
