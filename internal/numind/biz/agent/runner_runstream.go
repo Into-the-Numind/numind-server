@@ -462,7 +462,7 @@ func (r *agentRunner) RunStream(
 		modelName:    "",
 		taskID:       profile.AgentRun,
 		systemPrompt: req.SystemPrompt,
-		// agent-mode-billing T6: shared callID→Usage store (MaxCredits via budgetgate).
+		// agent-mode-billing T6: shared callID→Usage store (daily-credits via budgetgate).
 		usageStore: r.adapterUsageStore(),
 		// Explicit output cap so a thinking model never truncates its trailing tool
 		// call at the provider default (dev run 133). Resolved once from capability.

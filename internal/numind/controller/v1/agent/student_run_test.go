@@ -28,8 +28,6 @@ type stubStudentRunSvc struct {
 	pollResp     []*narration.Event
 	pollErr      error
 	cancelErr    error
-	extendResp   *model.AgentRun
-	extendErr    error
 	answerResp   *agentbiz.AnswerResponse
 	answerErr    error
 }
@@ -44,9 +42,6 @@ func (s *stubStudentRunSvc) PollNarration(_ context.Context, _ uint, _ uint64, _
 	return s.pollResp, s.pollErr
 }
 func (s *stubStudentRunSvc) Cancel(_ context.Context, _ uint, _ uint64) error { return s.cancelErr }
-func (s *stubStudentRunSvc) ExtendBudget(_ context.Context, _ uint, _ uint64, _ agentbiz.ExtendBudgetRequest) (*model.AgentRun, error) {
-	return s.extendResp, s.extendErr
-}
 func (s *stubStudentRunSvc) Answer(_ context.Context, _ uint, _ uint64, _ agentbiz.AnswerRequest) (*agentbiz.AnswerResponse, error) {
 	return s.answerResp, s.answerErr
 }
@@ -59,7 +54,6 @@ type studentRunIface interface {
 	Create(context.Context, uint, agentbiz.CreateRunRequest) (*agentbiz.CreateRunResponse, error)
 	PollNarration(context.Context, uint, uint64, time.Time) ([]*narration.Event, error)
 	Cancel(context.Context, uint, uint64) error
-	ExtendBudget(context.Context, uint, uint64, agentbiz.ExtendBudgetRequest) (*model.AgentRun, error)
 	Answer(context.Context, uint, uint64, agentbiz.AnswerRequest) (*agentbiz.AnswerResponse, error)
 }
 

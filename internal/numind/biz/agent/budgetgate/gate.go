@@ -81,12 +81,12 @@ func WithUsageLookup(a UsageLookupable) WrapHooksOption {
 }
 
 // WithPricingCalculator injects the platform pricing calculator so PostToolCall
-// can convert raw LLM token usage into CREDITS before feeding the tracker —
-// the MaxCredits / daily-credits dimensions are denominated in credits
-// (agent_definition.credit_cap_per_session), never tokens. Without conversion
-// the tracker compares token counts (thousands per call) against credit caps
-// (hundreds per session) and kills every substantive run at its first tool
-// call (dev run #113). When nil, a conservative fixed ratio is used instead.
+// can convert raw LLM token usage into CREDITS before feeding the tracker — the
+// daily-credits dimension (agent_definition.daily_credit_cap) is denominated in
+// credits, never tokens. Without conversion the tracker would compare token
+// counts (thousands per call) against credit caps and trip the daily dimension
+// far too early (cf. dev run #113, when the now-removed per-session cap fired).
+// When nil, a conservative fixed ratio is used instead.
 func WithPricingCalculator(pc pricing.ICalculator) WrapHooksOption {
 	return func(c *wrapHooksConfig) { c.pricing = pc }
 }

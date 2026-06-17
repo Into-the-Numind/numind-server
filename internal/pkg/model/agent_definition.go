@@ -25,16 +25,15 @@ type AgentDefinition struct {
 	// 非空时走新 4 段拼装（BuildSystemPromptV2）；空字符串时 fallback 到
 	// BuildSystemPromptLegacy（沿用现有 6+ 段拼装逻辑）。
 	// 上限：64KB（后端 biz 层校验），DB 列 MEDIUMTEXT 16MB 仅兜底。
-	SystemPrompt        string         `gorm:"type:mediumtext;not null" json:"system_prompt"`
-	ToolFlags           datatypes.JSON `json:"tool_flags"`
-	CreditCapPerSession *uint          `gorm:"type:int unsigned" json:"credit_cap_per_session"`
-	DailyCreditCap      *uint          `gorm:"type:int unsigned" json:"daily_credit_cap"`
-	Version             uint           `gorm:"type:int unsigned;not null;default:1" json:"version"`
-	IsActive            bool           `gorm:"type:tinyint(1);not null;default:1;index:idx_ad_parent_active" json:"is_active"`
-	SourceTemplateID    *uint64        `gorm:"type:bigint unsigned;index:idx_ad_template" json:"source_template_id"`
-	CreatedBy           uint           `gorm:"type:int unsigned;not null" json:"created_by"`
-	CreatedAt           time.Time      `gorm:"type:datetime;not null;default:CURRENT_TIMESTAMP;autoCreateTime" json:"created_at"`
-	UpdatedAt           time.Time      `gorm:"type:datetime;not null;default:CURRENT_TIMESTAMP;autoUpdateTime" json:"updated_at"`
+	SystemPrompt     string         `gorm:"type:mediumtext;not null" json:"system_prompt"`
+	ToolFlags        datatypes.JSON `json:"tool_flags"`
+	DailyCreditCap   *uint          `gorm:"type:int unsigned" json:"daily_credit_cap"`
+	Version          uint           `gorm:"type:int unsigned;not null;default:1" json:"version"`
+	IsActive         bool           `gorm:"type:tinyint(1);not null;default:1;index:idx_ad_parent_active" json:"is_active"`
+	SourceTemplateID *uint64        `gorm:"type:bigint unsigned;index:idx_ad_template" json:"source_template_id"`
+	CreatedBy        uint           `gorm:"type:int unsigned;not null" json:"created_by"`
+	CreatedAt        time.Time      `gorm:"type:datetime;not null;default:CURRENT_TIMESTAMP;autoCreateTime" json:"created_at"`
+	UpdatedAt        time.Time      `gorm:"type:datetime;not null;default:CURRENT_TIMESTAMP;autoUpdateTime" json:"updated_at"`
 }
 
 func (AgentDefinition) TableName() string { return "agent_definition" }

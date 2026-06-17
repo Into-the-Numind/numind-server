@@ -59,7 +59,6 @@ func RegisterStudentRunRoutes(authGroup *gin.RouterGroup, b biz.IBiz) {
 	authGroup.POST("/agent-runs/stream", c.CreateStream)
 	authGroup.GET("/agent-runs/:id/narration", c.PollNarration)
 	authGroup.POST("/agent-runs/:id/cancel", c.Cancel)
-	authGroup.POST("/agent-runs/:id/extend-budget", c.ExtendBudget)
 	// T4 ask_user_question answer endpoint (poll path) + issue4 streaming resume.
 	authGroup.POST("/agent-runs/:id/answer", c.Answer)
 	authGroup.POST("/agent-runs/:id/answer-stream", c.AnswerStream)
@@ -166,33 +165,6 @@ func (h *StudentRunController) Cancel(c *gin.Context) {
 
 	err := h.runSvc.Cancel(c.Request.Context(), user.ID, runID)
 	core.WriteResponse(c, err, nil)
-}
-
-// ---------------------------------------------------------------------------
-// ExtendBudget — POST /v1/agent-runs/:id/extend-budget
-// ---------------------------------------------------------------------------
-
-// ExtendBudget handles POST /v1/agent-runs/:id/extend-budget.
-func (h *StudentRunController) ExtendBudget(c *gin.Context) {
-	user := middleware.GetCurrentUser(c)
-	if user == nil {
-		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
-		return
-	}
-
-	runID, ok := mustParseRunID(c)
-	if !ok {
-		return
-	}
-
-	var req agent.ExtendBudgetRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("%s", err.Error()), nil)
-		return
-	}
-
-	updated, err := h.runSvc.ExtendBudget(c.Request.Context(), user.ID, runID, req)
-	core.WriteResponse(c, err, updated)
 }
 
 // ---------------------------------------------------------------------------

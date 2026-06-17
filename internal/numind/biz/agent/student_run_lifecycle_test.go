@@ -388,59 +388,6 @@ func TestStudentRunService_Cancel_AlreadyTerminal(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// ExtendBudget tests
-// ---------------------------------------------------------------------------
-
-func TestStudentRunService_ExtendBudget_HappyPath(t *testing.T) {
-	runStore := newLifecycleRunStore()
-	userID := uint(7)
-	run := &model.AgentRun{UserID: userID, Status: "terminated", StateReason: "budget_exceeded"}
-	if err := runStore.Create(context.Background(), run); err != nil {
-		t.Fatal(err)
-	}
-
-	svc := NewStudentRunService(nil, runStore, nil, nil, nil, nil)
-	updated, err := svc.ExtendBudget(context.Background(), userID, run.ID, ExtendBudgetRequest{AddCredits: 100})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if updated.TerminalMetadata == nil {
-		t.Error("expected terminal_metadata to be written")
-	}
-}
-
-func TestStudentRunService_ExtendBudget_NotTerminal(t *testing.T) {
-	runStore := newLifecycleRunStore()
-	userID := uint(7)
-	run := &model.AgentRun{UserID: userID, Status: "running"}
-	if err := runStore.Create(context.Background(), run); err != nil {
-		t.Fatal(err)
-	}
-
-	svc := NewStudentRunService(nil, runStore, nil, nil, nil, nil)
-	_, err := svc.ExtendBudget(context.Background(), userID, run.ID, ExtendBudgetRequest{AddCredits: 100})
-	if err == nil {
-		t.Fatal("expected error for non-terminal run")
-	}
-}
-
-func TestStudentRunService_ExtendBudget_WrongOwner(t *testing.T) {
-	runStore := newLifecycleRunStore()
-	run := &model.AgentRun{UserID: 999, Status: "terminated"}
-	if err := runStore.Create(context.Background(), run); err != nil {
-		t.Fatal(err)
-	}
-
-	svc := NewStudentRunService(nil, runStore, nil, nil, nil, nil)
-	_, err := svc.ExtendBudget(context.Background(), uint(1), run.ID, ExtendBudgetRequest{AddCredits: 100})
-	if err == nil {
-		t.Fatal("expected ownership error")
-	}
-	if !errors.Is(err, errno.ErrAgentRunNotFound) {
-		t.Errorf("expected ErrAgentRunNotFound, got %v", err)
-	}
-}
 
 // TestStudentRunService_forwardNarration_BridgeProviderToBuffer is the
 // regression for the hotfix narration-buffer-bridge. Before the fix,

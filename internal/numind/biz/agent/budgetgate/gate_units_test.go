@@ -91,17 +91,16 @@ func TestPostToolCall_PricingErrorFallsBackToRatio(t *testing.T) {
 	assert.Equal(t, int64(13), snap.Credits, "pricing error must degrade to the fixed token→credit ratio")
 }
 
-// test(qa): reproduce dev run #113 — BudgetTracker counted raw LLM tokens as
-// credits. A single ~6k-token LLM call blew through the 800-credit MaxCredits
-// session cap and terminated every substantive agent run at its first tool
-// call (terminal_metadata: {"budget_dimension":"max_credits","limit":800,
-// "used":6829} while the authoritative reservation path had charged ~5 credits).
+// test(qa): regression from dev run #113 — BudgetTracker counted raw LLM tokens
+// as credits. (Back then a single ~6k-token call also blew through the now-removed
+// 800-credit per-session cap; that cap is gone as of 2026-06-17, but the unit bug
+// still matters because credits feed the daily aggregate dimension.)
 //
 // Correct behavior: PostToolCall must feed the tracker CREDITS (pricing-converted
 // or a conservative token→credit ratio), never raw token counts.
 func TestPostToolCall_DoesNotCountRawTokensAsCredits(t *testing.T) {
 	tr := budget.NewTracker(nil)
-	tr.Start(context.Background(), 113, 1, budget.DefaultLimits()) // MaxCredits=800
+	tr.Start(context.Background(), 113, 1, budget.DefaultLimits())
 	defer tr.Close(113)
 
 	// Real shape from dev run #113's main ReAct call.
@@ -122,7 +121,7 @@ func TestPostToolCall_DoesNotCountRawTokensAsCredits(t *testing.T) {
 
 	exceeded, dim, detail := tr.CanProceed(ctx, 113)
 	assert.False(t, exceeded,
-		"one ~6k-token LLM call must NOT exhaust the 800-credit session cap (dim=%s detail=%v)", dim, detail)
+		"one ~6k-token LLM call must NOT trip any budget dimension (dim=%s detail=%v)", dim, detail)
 
 	snap := tr.Snapshot(context.Background(), 113)
 	assert.Less(t, snap.Credits, int64(100),

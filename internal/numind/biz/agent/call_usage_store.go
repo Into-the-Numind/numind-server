@@ -5,12 +5,12 @@ import "sync"
 // NewCallUsageStore returns a process-level callID→Usage map shared between the
 // per-run aiserviceAdapters (which Store the real token Usage after each LLM
 // call, keyed by ctx call-id) and budgetgate (which reads it in PostToolCall to
-// feed BudgetTracker.RecordUsage → the MaxCredits dimension).
+// feed BudgetTracker.RecordUsage → the daily-credits dimension + per-run telemetry).
 //
 // agent-mode-billing T6: the previous design constructed adapters with a nil
 // usageStore in runner.go/runner_runstream.go, so budgetgate's WithUsageLookup
-// never saw any usage (MaxCredits stuck at 0). A single shared store, injected
-// into both the runner (via WithCallUsageStore) and WrapHooks (via
+// never saw any usage (the credit counter stuck at 0). A single shared store,
+// injected into both the runner (via WithCallUsageStore) and WrapHooks (via
 // WithUsageLookup over NewCallUsageLookup), closes the loop.
 func NewCallUsageStore() *sync.Map { return &sync.Map{} }
 
@@ -20,10 +20,10 @@ func NewCallUsageStore() *sync.Map { return &sync.Map{} }
 // by PostToolCall, avoiding unbounded growth.
 //
 // NOTE: BOTH aiserviceAdapter.Generate and aiserviceAdapter.Stream stash usage
-// (keyed by call-id) so the in-memory MaxCredits guardrail accrues on the production
+// (keyed by call-id) so the in-memory daily-credit guardrail accrues on the production
 // streaming path too — each tool-deciding turn's usage is consumed by the following
-// PostToolCall. The cap still cannot stop the FINAL answer turn (no subsequent tool
-// call to gate on), but it now bounds runaway multi-turn loops, which is the risk it
+// PostToolCall. The daily cap still cannot stop the FINAL answer turn (no subsequent
+// tool call to gate on), but it bounds runaway cross-run usage, which is the risk it
 // exists for. The authoritative three-pool credit deduction (via aiservice
 // ContextBudgetCredits, reconciled on the final chunk) is separate and unaffected.
 type CallUsageLookup struct{ m *sync.Map }

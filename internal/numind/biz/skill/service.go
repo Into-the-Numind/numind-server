@@ -20,30 +20,28 @@ const SystemPromptMaxLen = 64 * 1024
 
 // CreateRequest 包含创建 agent_definition 所需的所有字段。
 type CreateRequest struct {
-	Name                string
-	Description         string
-	IconURL             string
-	WelcomeMessage      string
-	SystemPrompt        string
-	Starters            []string
-	ToolFlags           map[string]bool
-	CreditCapPerSession *uint
-	DailyCreditCap      *uint
-	SourceTemplateID    *uint64
+	Name             string
+	Description      string
+	IconURL          string
+	WelcomeMessage   string
+	SystemPrompt     string
+	Starters         []string
+	ToolFlags        map[string]bool
+	DailyCreditCap   *uint
+	SourceTemplateID *uint64
 }
 
 // PatchRequest 包含更新 agent_definition 的可选字段（nil = 不变）。
 // 注意：advanced_mode / parent_user_id / is_active 不允许通过 Patch 修改。
 type PatchRequest struct {
-	Name                *string
-	Description         *string
-	IconURL             *string
-	WelcomeMessage      *string
-	SystemPrompt        *string
-	Starters            *[]string
-	ToolFlags           *map[string]bool
-	CreditCapPerSession *uint
-	DailyCreditCap      *uint
+	Name           *string
+	Description    *string
+	IconURL        *string
+	WelcomeMessage *string
+	SystemPrompt   *string
+	Starters       *[]string
+	ToolFlags      *map[string]bool
+	DailyCreditCap *uint
 }
 
 // Service 定义 biz/skill 层的业务方法。
@@ -166,21 +164,20 @@ func (s *service) Create(ctx context.Context, userID uint, req CreateRequest) (*
 	}
 
 	ad := &model.AgentDefinition{
-		ParentUserID:        userID,
-		Name:                req.Name,
-		Description:         req.Description,
-		IconURL:             req.IconURL,
-		WelcomeMessage:      req.WelcomeMessage,
-		SystemPrompt:        req.SystemPrompt,
-		Starters:            startersJSON,
-		ToolFlags:           toolFlagsJSON,
-		CreditCapPerSession: req.CreditCapPerSession,
-		DailyCreditCap:      req.DailyCreditCap,
-		SourceTemplateID:    req.SourceTemplateID,
-		Version:             1,
-		IsActive:            true,
-		AdvancedMode:        false,
-		CreatedBy:           userID,
+		ParentUserID:     userID,
+		Name:             req.Name,
+		Description:      req.Description,
+		IconURL:          req.IconURL,
+		WelcomeMessage:   req.WelcomeMessage,
+		SystemPrompt:     req.SystemPrompt,
+		Starters:         startersJSON,
+		ToolFlags:        toolFlagsJSON,
+		DailyCreditCap:   req.DailyCreditCap,
+		SourceTemplateID: req.SourceTemplateID,
+		Version:          1,
+		IsActive:         true,
+		AdvancedMode:     false,
+		CreatedBy:        userID,
 	}
 
 	err = s.ds.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -293,9 +290,6 @@ func (s *service) Patch(ctx context.Context, userID uint, id uint64, req PatchRe
 			return nil, fmt.Errorf("Patch marshal tool_flags: %w", err)
 		}
 		ad.ToolFlags = b
-	}
-	if req.CreditCapPerSession != nil {
-		ad.CreditCapPerSession = req.CreditCapPerSession
 	}
 	if req.DailyCreditCap != nil {
 		ad.DailyCreditCap = req.DailyCreditCap

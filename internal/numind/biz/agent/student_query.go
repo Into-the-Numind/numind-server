@@ -18,10 +18,6 @@ import (
 	"numind-server/internal/pkg/model"
 )
 
-// defaultCreditBudget is the fallback per-session credits budget when
-// agent_definition.credit_cap_per_session is NULL or 0.
-const defaultCreditBudget = 200
-
 // RunSummary is a lightweight view of model.AgentRun returned by list endpoints.
 // Full messages are omitted to keep list payloads small.
 // JSON field names align with web-v3 src/types/agent.ts AgentRun / RecentSession contract.
@@ -48,10 +44,9 @@ type RunSummary struct {
 	// PreviewText is the first user-role content from messages, truncated to ~60 chars.
 	PreviewText string `json:"preview_text,omitempty"`
 
-	// Fix 1: credits fields computed on read (no DB columns added).
-	CreditsUsed           int    `json:"credits_used"`
-	CreditsBudget         int    `json:"credits_budget"`
-	CreditsThresholdState string `json:"credits_threshold_state"` // 'under_60' | 'warning_60' | 'blocked_100'
+	// Fix 1: credits used computed on read (no DB columns added).
+	// 单次会话积分上限已删除（2026-06-17）；不再有 per-run budget / threshold 展示。
+	CreditsUsed int `json:"credits_used"`
 
 	// 会话管理字段
 	IsPinned    bool   `json:"is_pinned"`
@@ -94,28 +89,11 @@ func frontendStatus(status, stateReason string) string {
 	return status
 }
 
-// creditsThresholdState computes the threshold state string from used/budget ratio.
-func creditsThresholdState(used, budget int) string {
-	if budget <= 0 {
-		return "under_60"
-	}
-	ratio := float64(used) / float64(budget)
-	switch {
-	case ratio >= 1.0:
-		return "blocked_100"
-	case ratio >= 0.6:
-		return "warning_60"
-	default:
-		return "under_60"
-	}
-}
-
 // runEnrichment holds the computed-on-read extra fields for a single run.
 type runEnrichment struct {
-	agentName     string
-	agentEmoji    string
-	creditsUsed   int
-	creditsBudget int
+	agentName   string
+	agentEmoji  string
+	creditsUsed int
 }
 
 // runToSummary converts a model.AgentRun to a RunSummary without enrichment.
@@ -129,20 +107,19 @@ func runToSummary(r model.AgentRun) RunSummary {
 	}
 
 	return RunSummary{
-		ID:                    r.ID,
-		UserID:                r.UserID,
-		SessionID:             r.SessionID,
-		AgentDefinitionID:     r.AgentDefinitionID,
-		Status:                frontendStatus(r.Status, r.StateReason),
-		StateReason:           r.StateReason,
-		StartedAt:             r.StartedAt,
-		EndedAt:               r.EndedAt,
-		CreatedAt:             r.CreatedAt,
-		LastActiveAt:          lastActive.UTC().Format(time.RFC3339),
-		PreviewText:           extractPreviewText(r.Messages),
-		CreditsThresholdState: "under_60", // will be overwritten by enrichSummary
-		IsPinned:              r.IsPinned,
-		SessionName:           r.SessionName,
+		ID:                r.ID,
+		UserID:            r.UserID,
+		SessionID:         r.SessionID,
+		AgentDefinitionID: r.AgentDefinitionID,
+		Status:            frontendStatus(r.Status, r.StateReason),
+		StateReason:       r.StateReason,
+		StartedAt:         r.StartedAt,
+		EndedAt:           r.EndedAt,
+		CreatedAt:         r.CreatedAt,
+		LastActiveAt:      lastActive.UTC().Format(time.RFC3339),
+		PreviewText:       extractPreviewText(r.Messages),
+		IsPinned:          r.IsPinned,
+		SessionName:       r.SessionName,
 	}
 }
 
@@ -151,8 +128,6 @@ func enrichSummary(s *RunSummary, e runEnrichment) {
 	s.AgentName = e.agentName
 	s.AgentEmoji = e.agentEmoji
 	s.CreditsUsed = e.creditsUsed
-	s.CreditsBudget = e.creditsBudget
-	s.CreditsThresholdState = creditsThresholdState(e.creditsUsed, e.creditsBudget)
 }
 
 // extractPreviewText pulls the first user-role content from the messages JSON array,
@@ -203,7 +178,7 @@ type SessionSnapshot struct {
 type StudentQueryService struct {
 	runStore    store.IAgentRunStore
 	userStore   store.UserStore
-	skillStore  store.IAgentDefinitionStore // for agent_name/emoji + credit_cap_per_session
+	skillStore  store.IAgentDefinitionStore // for agent_name/emoji
 	creditStore store.CreditStore           // for credits_used computation (SumByReservationIDs)
 }
 
@@ -226,7 +201,7 @@ func NewStudentQueryService(
 type StudentQueryOption func(*StudentQueryService)
 
 // WithQuerySkillStore injects an IAgentDefinitionStore so RunSummary can be
-// enriched with agent_name, agent_emoji, and credit_cap_per_session.
+// enriched with agent_name and agent_emoji.
 func WithQuerySkillStore(s store.IAgentDefinitionStore) StudentQueryOption {
 	return func(svc *StudentQueryService) { svc.skillStore = s }
 }
@@ -453,13 +428,9 @@ func (s *StudentQueryService) toEnrichedSummaries(ctx context.Context, runs []mo
 			creditsUsed = creditsByReservation[*r.ReservationID]
 		}
 
-		budget := defaultCreditBudget
 		agentName := ""
 		agentEmoji := ""
 		if def, ok := defMap[r.AgentDefinitionID]; ok {
-			if def.CreditCapPerSession != nil && *def.CreditCapPerSession > 0 {
-				budget = int(*def.CreditCapPerSession)
-			}
 			agentName = def.Name
 			// AgentDefinition doesn't have an emoji field in the model; use "" for now.
 			// TODO: add emoji/icon field to agent_definition when the model gets it.
@@ -467,10 +438,9 @@ func (s *StudentQueryService) toEnrichedSummaries(ctx context.Context, runs []mo
 		}
 
 		enrichSummary(out[i], runEnrichment{
-			agentName:     agentName,
-			agentEmoji:    agentEmoji,
-			creditsUsed:   int(creditsUsed),
-			creditsBudget: budget,
+			agentName:   agentName,
+			agentEmoji:  agentEmoji,
+			creditsUsed: int(creditsUsed),
 		})
 	}
 

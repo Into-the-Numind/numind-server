@@ -277,15 +277,13 @@ func TestListAllHistorySessions_IncludesOlderThan30Days(t *testing.T) {
 func TestStudentQuery_CreditsUsed_ComputedFromReservation(t *testing.T) {
 	svc, db := newSQServiceFull(t)
 
-	// Seed an agent_definition with credit_cap_per_session=100.
+	// Seed an agent_definition (per-session credit cap removed 2026-06-17).
 	agentDef := &model.AgentDefinition{
 		ParentUserID: 1,
 		Name:         "TestAgent",
 		IsActive:     true,
 		CreatedBy:    1,
 	}
-	cap := uint(100)
-	agentDef.CreditCapPerSession = &cap
 	require.NoError(t, db.Create(agentDef).Error)
 
 	// Seed a run with reservation_id=42 and agent_definition_id.
@@ -309,51 +307,20 @@ func TestStudentQuery_CreditsUsed_ComputedFromReservation(t *testing.T) {
 		 VALUES (77, 0, -30, 'agent_run', 'reservation', '42', datetime('now')),
 		        (77, 0, -25, 'agent_run', 'reservation', '42', datetime('now'))`).Error)
 
-	// credits_used should be 55, budget=100, state=under_60.
+	// credits_used should be 55 (summed from the two reservation debit rows).
 	got, err := svc.ListRecentSessions(context.Background(), 77, 5)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	assert.Equal(t, 55, got[0].CreditsUsed)
-	assert.Equal(t, 100, got[0].CreditsBudget)
-	assert.Equal(t, "under_60", got[0].CreditsThresholdState)
 }
 
-// TestStudentQuery_CreditsThreshold_Warning verifies the warning_60 band.
-func TestStudentQuery_CreditsThreshold_Warning(t *testing.T) {
-	svc, db := newSQServiceFull(t)
-
-	agentDef := &model.AgentDefinition{ParentUserID: 1, Name: "A", IsActive: true, CreatedBy: 1}
-	cap := uint(100)
-	agentDef.CreditCapPerSession = &cap
-	require.NoError(t, db.Create(agentDef).Error)
-
-	rsvID := uint64(99)
-	msgs, _ := json.Marshal([]map[string]string{})
-	run := &model.AgentRun{
-		UserID: 88, SessionID: "warn-sess", Status: "running",
-		Messages: msgs, StartedAt: time.Now(),
-		AgentDefinitionID: agentDef.ID, ReservationID: &rsvID,
-	}
-	require.NoError(t, db.Create(run).Error)
-
-	// 75 credits spent → 75% of 100 → warning_60.
-	require.NoError(t, db.Exec(
-		`INSERT INTO credit_transaction (user_id, package_id, amount, operation, biz_ref_type, biz_ref_id, created_at)
-		 VALUES (88, 0, -75, 'agent_run', 'reservation', '99', datetime('now'))`).Error)
-
-	got, err := svc.ListRecentSessions(context.Background(), 88, 5)
-	require.NoError(t, err)
-	require.Len(t, got, 1)
-	assert.Equal(t, "warning_60", got[0].CreditsThresholdState)
-}
-
-// TestStudentQuery_CreditsThreshold_Blocked verifies the blocked_100 band.
-func TestStudentQuery_CreditsThreshold_Blocked(t *testing.T) {
+// TestStudentQuery_BudgetExhaustedStatus verifies error_max_budget maps to the
+// frontend "budget_exhausted" status (the daily-cap terminal path; per-session
+// budget/threshold display was removed 2026-06-17).
+func TestStudentQuery_BudgetExhaustedStatus(t *testing.T) {
 	svc, db := newSQServiceFull(t)
 
 	agentDef := &model.AgentDefinition{ParentUserID: 1, Name: "B", IsActive: true, CreatedBy: 1}
-	cap := uint(50)
-	agentDef.CreditCapPerSession = &cap
 	require.NoError(t, db.Create(agentDef).Error)
 
 	rsvID := uint64(200)
@@ -366,41 +333,14 @@ func TestStudentQuery_CreditsThreshold_Blocked(t *testing.T) {
 	}
 	require.NoError(t, db.Create(run).Error)
 
-	// 50 credits spent == 100% of cap=50 → blocked_100.
 	require.NoError(t, db.Exec(
 		`INSERT INTO credit_transaction (user_id, package_id, amount, operation, biz_ref_type, biz_ref_id, created_at)
-		 VALUES (99, 0, -50, 'agent_run', 'reservation', '200', datetime('now'))`).Error)
+		 VALUES (99, 0, -200, 'agent_run', 'reservation', '200', datetime('now'))`).Error)
 
 	got, err := svc.ListRecentSessions(context.Background(), 99, 5)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
-	assert.Equal(t, "blocked_100", got[0].CreditsThresholdState)
 	assert.Equal(t, "budget_exhausted", got[0].Status)
-}
-
-// TestStudentQuery_CreditsBudget_DefaultWhenNoCap verifies the default budget
-// of 200 is used when credit_cap_per_session is NULL.
-func TestStudentQuery_CreditsBudget_DefaultWhenNoCap(t *testing.T) {
-	svc, db := newSQServiceFull(t)
-
-	agentDef := &model.AgentDefinition{ParentUserID: 1, Name: "NoCap", IsActive: true, CreatedBy: 1}
-	// CreditCapPerSession left nil.
-	require.NoError(t, db.Create(agentDef).Error)
-
-	msgs, _ := json.Marshal([]map[string]string{})
-	run := &model.AgentRun{
-		UserID: 44, SessionID: "nocap-sess", Status: "running",
-		Messages: msgs, StartedAt: time.Now(),
-		AgentDefinitionID: agentDef.ID,
-	}
-	require.NoError(t, db.Create(run).Error)
-
-	got, err := svc.ListRecentSessions(context.Background(), 44, 5)
-	require.NoError(t, err)
-	require.Len(t, got, 1)
-	assert.Equal(t, defaultCreditBudget, got[0].CreditsBudget)
-	assert.Equal(t, 0, got[0].CreditsUsed)
-	assert.Equal(t, "under_60", got[0].CreditsThresholdState)
 }
 
 // ---------------------------------------------------------------------------
