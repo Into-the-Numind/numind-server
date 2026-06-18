@@ -235,12 +235,17 @@ func (r *agentRunner) consumeEinoStream(
 
 		// Tool-call args delta side-channel (BE-1): a no-content interim
 		// message carrying an incremental fragment of a tool call's function
-		// arguments. Emitted only for allowlisted code/content tools so the
-		// frontend can render a live "writing code" box. Handled before the
-		// role switch because it is an additive observability signal — it does
+		// arguments. In production the streamScanToolCallChecker (the real-time
+		// pump) is the source for these — it drains the model output of every
+		// step, including the intermediate tool-call turn this drain never sees
+		// (consumeEinoStream gets the END copy). So this branch only fires on the
+		// no-checker path (!checkerActive: unit tests / hypothetical no-checker
+		// run), mirroring the token/reasoning delta guards below; the
+		// !checkerActive guard prevents a double-emit when both copies carry it.
+		// Handled before the role switch — additive observability signal that does
 		// NOT touch currentText/currentReason/toolCalls or the step machinery.
 		if ad := toolCallArgsDeltaFromExtra(msg.Extra); ad != nil {
-			if isCodeStreamingTool(ad.FunctionName) {
+			if !checkerActive && isCodeStreamingTool(ad.FunctionName) {
 				emit(stream.EventToolCallArgsDelta, stream.ToolCallArgsDeltaPayload{
 					ToolCallID:   ad.ToolCallID,
 					FunctionName: ad.FunctionName,

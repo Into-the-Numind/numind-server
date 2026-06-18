@@ -844,6 +844,25 @@ func streamScanToolCallChecker(ctx context.Context, sr *schema.StreamReader[*sch
 			continue
 		}
 
+		// followup3 FE-3: tool-call args-delta side-channel. The content-less
+		// synthetic frames carrying an incremental fragment of a tool call's
+		// function arguments flow through THIS real-time pump — not
+		// consumeEinoStream, which drains the END copy and never sees the
+		// intermediate tool-call turn. Emit here (allowlist-gated to code/content
+		// tools) so the frontend can render its live "writing code" box. This is
+		// an additive observability signal: skip the content/reasoning/step
+		// handling below for these no-content frames.
+		if ad := toolCallArgsDeltaFromExtra(msg.Extra); ad != nil {
+			if hasState && isCodeStreamingTool(ad.FunctionName) {
+				emit(stream.EventToolCallArgsDelta, stream.ToolCallArgsDeltaPayload{
+					ToolCallID:   ad.ToolCallID,
+					FunctionName: ad.FunctionName,
+					ArgsDelta:    ad.ArgsDelta,
+				})
+			}
+			continue
+		}
+
 		if len(msg.ToolCalls) > 0 {
 			hasToolCalls = true
 		}
