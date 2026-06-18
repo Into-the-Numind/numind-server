@@ -499,59 +499,48 @@ func TestBailianFileAdapter_UploadFile_LeaseError(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
-// DMXAPIAdapter.ImageGen tests (Gemini-format text-to-image)
+// DMXAPIAdapter.ImageGen tests (OpenAI-compatible text-to-image, gpt-image-2)
 // ----------------------------------------------------------------------------
 
-// writeGeminiImageResponse writes a mock Gemini generateContent response carrying
-// a base64 inlineData image part.
-func writeGeminiImageResponse(w http.ResponseWriter, b64 string, mime string) {
+// writeImagesResponse writes a mock OpenAI-compatible images response carrying a
+// base64 image in data[0].b64_json.
+func writeImagesResponse(w http.ResponseWriter, b64 string) {
 	w.Header().Set("Content-Type", "application/json")
 	resp := map[string]interface{}{
-		"candidates": []map[string]interface{}{
-			{
-				"content": map[string]interface{}{
-					"parts": []map[string]interface{}{
-						{"inlineData": map[string]interface{}{"data": b64, "mimeType": mime}},
-					},
-				},
-			},
-		},
+		"created": 1,
+		"data":    []map[string]interface{}{{"b64_json": b64}},
 	}
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // TestDMXAPIAdapter_ImageGen_Roundtrip verifies the full text-to-image cycle:
-// endpoint shaping (/v1beta/models/<model>:generateContent), the x-goog-api-key
-// header (NOT Authorization: Bearer), the contents/generationConfig body, and
-// base64 inlineData parsing.
+// endpoint shaping (/images/generations), the Authorization: Bearer header (NOT
+// x-goog-api-key), the model/prompt/size body, and data[0].b64_json parsing.
 func TestDMXAPIAdapter_ImageGen_Roundtrip(t *testing.T) {
 	// "iVBORw0KGgo=" is valid base64 (decodes to PNG magic bytes prefix).
 	const testB64 = "iVBORw0KGgo="
-	const testKey = "test-goog-key"
+	const testKey = "test-bearer-key"
 
 	var sawPath, sawKey, sawAuth string
-	var sawAspect string
+	var sawModel, sawPrompt, sawSize string
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sawPath = r.URL.Path
 		sawKey = r.Header.Get("x-goog-api-key")
 		sawAuth = r.Header.Get("Authorization")
 		var body struct {
-			GenerationConfig struct {
-				ImageConfig struct {
-					AspectRatio string `json:"aspectRatio"`
-				} `json:"imageConfig"`
-			} `json:"generationConfig"`
+			Model  string `json:"model"`
+			Prompt string `json:"prompt"`
+			Size   string `json:"size"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		sawAspect = body.GenerationConfig.ImageConfig.AspectRatio
-		writeGeminiImageResponse(w, testB64, "image/png")
+		sawModel, sawPrompt, sawSize = body.Model, body.Prompt, body.Size
+		writeImagesResponse(w, testB64)
 	}))
 	defer srv.Close()
 
 	a := NewDMXAPIAdapter()
-	// Base URL with no /v1 → suffix is appended.
-	route := mockRouteWithModel(srv.URL, testKey, "gemini-2.5-flash-image")
+	route := mockRouteWithModel(srv.URL, testKey, "gpt-image-2")
 
 	resp, err := a.ImageGen(context.Background(), route, aiservice.ImageGenRequest{
 		Prompt:      "a red panda",
@@ -569,37 +558,65 @@ func TestDMXAPIAdapter_ImageGen_Roundtrip(t *testing.T) {
 	if resp.Provider != "dmxapi" {
 		t.Errorf("Provider = %q; want dmxapi", resp.Provider)
 	}
-	if resp.Model != "gemini-2.5-flash-image" {
-		t.Errorf("Model = %q; want gemini-2.5-flash-image", resp.Model)
+	if resp.Model != "gpt-image-2" {
+		t.Errorf("Model = %q; want gpt-image-2", resp.Model)
 	}
-	if !strings.Contains(sawPath, "/v1beta/models/gemini-2.5-flash-image:generateContent") {
-		t.Errorf("request path = %q; want it to contain the generateContent endpoint", sawPath)
+	if !strings.HasSuffix(sawPath, "/images/generations") {
+		t.Errorf("request path = %q; want it to end with /images/generations", sawPath)
 	}
-	if sawKey != testKey {
-		t.Errorf("x-goog-api-key = %q; want %q", sawKey, testKey)
+	if sawAuth != "Bearer "+testKey {
+		t.Errorf("Authorization = %q; want %q", sawAuth, "Bearer "+testKey)
 	}
-	if sawAuth != "" {
-		t.Errorf("Authorization header set = %q; image_gen must NOT use Bearer auth", sawAuth)
+	if sawKey != "" {
+		t.Errorf("x-goog-api-key set = %q; OpenAI-compatible image_gen must use Bearer auth", sawKey)
 	}
-	if sawAspect != "16:9" {
-		t.Errorf("aspectRatio = %q; want 16:9", sawAspect)
+	if sawModel != "gpt-image-2" {
+		t.Errorf("body.model = %q; want gpt-image-2", sawModel)
+	}
+	if sawPrompt != "a red panda" {
+		t.Errorf("body.prompt = %q; want 'a red panda'", sawPrompt)
+	}
+	if sawSize != "1536x1024" {
+		t.Errorf("body.size = %q; want 1536x1024 (16:9 → landscape)", sawSize)
 	}
 }
 
-// TestDMXAPIAdapter_ImageGen_NoImageData verifies that a response with no
-// inlineData part returns an error (safety-filter / empty-result case).
+// TestDMXAPIAdapter_ImageGen_NoImageData verifies that a response with no image
+// data returns an error (moderation / empty-result case).
 func TestDMXAPIAdapter_ImageGen_NoImageData(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"candidates": []interface{}{}})
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": []interface{}{}})
 	}))
 	defer srv.Close()
 
 	a := NewDMXAPIAdapter()
-	route := mockRouteWithModel(srv.URL, "k", "gemini-2.5-flash-image")
+	route := mockRouteWithModel(srv.URL, "k", "gpt-image-2")
 	_, err := a.ImageGen(context.Background(), route, aiservice.ImageGenRequest{Prompt: "x"})
 	if err == nil {
-		t.Error("expected error for empty candidates; got nil")
+		t.Error("expected error for empty data; got nil")
+	}
+}
+
+// TestDMXAPIAdapter_ImageGen_ProviderError verifies a 200-with-error body surfaces
+// as an error (OpenAI-compatible APIs can return errors inside a 200 body).
+func TestDMXAPIAdapter_ImageGen_ProviderError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]interface{}{
+				"message": "content moderation blocked",
+				"type":    "image_generation_user_error",
+			},
+		})
+	}))
+	defer srv.Close()
+
+	a := NewDMXAPIAdapter()
+	route := mockRouteWithModel(srv.URL, "k", "gpt-image-2")
+	_, err := a.ImageGen(context.Background(), route, aiservice.ImageGenRequest{Prompt: "x"})
+	if err == nil {
+		t.Error("expected error for body error object; got nil")
 	}
 }
 
@@ -607,30 +624,45 @@ func TestDMXAPIAdapter_ImageGen_NoImageData(t *testing.T) {
 // before any HTTP call.
 func TestDMXAPIAdapter_ImageGen_MissingAPIKey(t *testing.T) {
 	a := NewDMXAPIAdapter()
-	route := mockRouteWithModel("http://example.invalid", "", "gemini-2.5-flash-image")
+	route := mockRouteWithModel("http://example.invalid", "", "gpt-image-2")
 	_, err := a.ImageGen(context.Background(), route, aiservice.ImageGenRequest{Prompt: "x"})
 	if err == nil {
 		t.Error("expected error for missing API key; got nil")
 	}
 }
 
-// TestImageGenEndpoint_Shaping verifies the endpoint rewriting matches the legacy
-// raw-HTTP path: /v1/ and /v1 bases are rewritten, others get the suffix appended.
+// TestImageGenEndpoint_Shaping verifies the OpenAI-images URL shaping:
+// {baseURL}/images/generations, trailing slash trimmed, empty → dmxapi.cn/v1.
 func TestImageGenEndpoint_Shaping(t *testing.T) {
 	cases := []struct {
-		base, model, want string
+		base, want string
 	}{
-		{"https://www.dmxapi.cn/v1/", "m", "https://www.dmxapi.cn/v1beta/models/m:generateContent"},
-		{"https://www.dmxapi.cn/v1", "m", "https://www.dmxapi.cn/v1beta/models/m:generateContent"},
-		{"https://www.dmxapi.cn", "m", "https://www.dmxapi.cn/v1beta/models/m:generateContent"},
-		{"", "m", "https://www.dmxapi.cn/v1beta/models/m:generateContent"},
-		// base already at the v1beta root must NOT be mangled by the /v1 replace.
-		{"https://proxy.com/v1beta", "m", "https://proxy.com/v1beta/models/m:generateContent"},
-		{"https://proxy.com/v1beta/", "m", "https://proxy.com/v1beta/models/m:generateContent"},
+		{"https://www.dmxapi.cn/v1", "https://www.dmxapi.cn/v1/images/generations"},
+		{"https://www.dmxapi.cn/v1/", "https://www.dmxapi.cn/v1/images/generations"},
+		{"https://proxy.com/v1", "https://proxy.com/v1/images/generations"},
+		{"", "https://www.dmxapi.cn/v1/images/generations"},
 	}
 	for _, c := range cases {
-		if got := imageGenEndpoint(c.base, c.model); got != c.want {
-			t.Errorf("imageGenEndpoint(%q,%q) = %q; want %q", c.base, c.model, got, c.want)
+		if got := imageGenEndpoint(c.base); got != c.want {
+			t.Errorf("imageGenEndpoint(%q) = %q; want %q", c.base, got, c.want)
+		}
+	}
+}
+
+// TestSizeFromAspectRatio verifies the aspect-ratio → gpt-image-2 size mapping.
+func TestSizeFromAspectRatio(t *testing.T) {
+	cases := map[string]string{
+		"16:9":      "1536x1024",
+		"landscape": "1536x1024",
+		"9:16":      "1024x1536",
+		"portrait":  "1024x1536",
+		"1:1":       "1024x1024",
+		"":          "1024x1024",
+		"weird":     "1024x1024",
+	}
+	for in, want := range cases {
+		if got := sizeFromAspectRatio(in); got != want {
+			t.Errorf("sizeFromAspectRatio(%q) = %q; want %q", in, got, want)
 		}
 	}
 }

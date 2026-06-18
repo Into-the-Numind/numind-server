@@ -43,10 +43,10 @@ var _ ImageGenAdapter = (*DMXAPIAdapter)(nil)
 // is safe. 90s matches the value the legacy raw-HTTP image_gen path used.
 const imageGenHTTPTimeout = 90 * time.Second
 
-// defaultImageGenModel is the Gemini image model used when route.ProviderModelID
-// is empty (e.g. a route mis-seeded without a provider_model_id). Mirrors the
-// literal the legacy tool_image_gen.go raw-HTTP path hardcoded.
-const defaultImageGenModel = "gemini-2.5-flash-image"
+// defaultImageGenModel is the image model used when route.ProviderModelID is empty
+// (e.g. a route mis-seeded without a provider_model_id). DMXAPI serves gpt-image-2
+// via the OpenAI-compatible /v1/images/generations endpoint.
+const defaultImageGenModel = "gpt-image-2"
 
 // dmxapiRerankRequest is the DMXAPI rerank request body.
 type dmxapiRerankRequest struct {
@@ -422,17 +422,13 @@ func (d *DMXAPIAdapter) Rerank(ctx context.Context, route *registry.ResolvedRout
 	}, nil
 }
 
-// ImageGen generates an image from a text prompt via the Gemini-format image
-// endpoint that DMXAPI proxies. This is NOT OpenAI-compatible: the request goes
-// to /v1beta/models/<model>:generateContent, authenticates with the
-// `x-goog-api-key` header (not Authorization: Bearer), and returns the image as
-// base64 inlineData. It therefore uses a bespoke HTTP path (imageGenClient)
-// rather than the shared OpenAI doPost.
-//
-// Endpoint/body/response parsing is ported verbatim from the legacy raw-HTTP
-// image_gen path (biz/agent/tool_image_gen.go generateImage), but the base URL
-// and API key come from route.Provider (registry-resolved) instead of a direct
-// llm_provider table lookup.
+// ImageGen generates an image from a text prompt via DMXAPI's OpenAI-compatible
+// images endpoint (POST {baseURL}/images/generations, Authorization: Bearer),
+// serving the gpt-image-2 model. The image comes back as base64 in
+// data[0].b64_json. Model + base URL + key come from route.Provider
+// (registry-resolved). It uses the bespoke imageGenClient (longer timeout +
+// single-attempt) rather than the shared doPost, which retries — image gen is
+// non-idempotent (see RetryPolicy below).
 func (d *DMXAPIAdapter) ImageGen(ctx context.Context, route *registry.ResolvedRoute, req aiservice.ImageGenRequest) (*aiservice.ImageGenResponse, error) {
 	if route == nil {
 		return nil, errors.New("dmxapi.ImageGen: nil route")
@@ -446,23 +442,11 @@ func (d *DMXAPIAdapter) ImageGen(ctx context.Context, route *registry.ResolvedRo
 		model = defaultImageGenModel
 	}
 
-	apiURL := imageGenEndpoint(route.Provider.BaseURL, model)
-
-	aspectRatio := strings.TrimSpace(req.AspectRatio)
-	if aspectRatio == "" {
-		aspectRatio = "1:1"
-	}
 	reqBody := map[string]interface{}{
-		"contents": []interface{}{
-			map[string]interface{}{
-				"parts": []interface{}{
-					map[string]interface{}{"text": req.Prompt},
-				},
-			},
-		},
-		"generationConfig": map[string]interface{}{
-			"imageConfig": map[string]interface{}{"aspectRatio": aspectRatio},
-		},
+		"model":  model,
+		"prompt": req.Prompt,
+		"n":      1,
+		"size":   sizeFromAspectRatio(req.AspectRatio),
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -472,12 +456,12 @@ func (d *DMXAPIAdapter) ImageGen(ctx context.Context, route *registry.ResolvedRo
 
 	resp, err := d.imageGenClient.Do(&httpclient.Request{
 		Method:  "POST",
-		URL:     apiURL,
+		URL:     imageGenEndpoint(route.Provider.BaseURL),
 		Body:    bytes.NewReader(body),
 		Context: ctx,
 		Headers: map[string]string{
-			"x-goog-api-key": route.Provider.APIKey,
-			"Content-Type":   "application/json",
+			"Authorization": "Bearer " + route.Provider.APIKey,
+			"Content-Type":  "application/json",
 		},
 		// Image generation is NON-idempotent — a retry would make the provider
 		// generate (and bill on its side) the same prompt again. Single attempt
@@ -498,75 +482,62 @@ func (d *DMXAPIAdapter) ImageGen(ctx context.Context, route *registry.ResolvedRo
 	}
 
 	var result struct {
-		Candidates []struct {
-			Content struct {
-				Parts []struct {
-					InlineData struct {
-						Data     string `json:"data"`
-						MimeType string `json:"mimeType"`
-					} `json:"inlineData"`
-				} `json:"parts"`
-			} `json:"content"`
-		} `json:"candidates"`
+		Data []struct {
+			B64JSON string `json:"b64_json"`
+			URL     string `json:"url"`
+		} `json:"data"`
+		Error *struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    any    `json:"code"`
+		} `json:"error"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("dmxapi.ImageGen: decode: %w", err)
 	}
-
-	var base64Data, mimeType string
-	if len(result.Candidates) > 0 {
-		for _, part := range result.Candidates[0].Content.Parts {
-			if part.InlineData.Data != "" {
-				base64Data = part.InlineData.Data
-				mimeType = part.InlineData.MimeType
-				break
-			}
-		}
+	// OpenAI-compatible APIs can return a 200 with a populated error object.
+	if result.Error != nil && result.Error.Message != "" {
+		return nil, fmt.Errorf("dmxapi.ImageGen: provider error: %s", result.Error.Message)
 	}
-	if base64Data == "" {
-		return nil, errors.New("dmxapi.ImageGen: no image data returned (possibly blocked by safety filters)")
+	if len(result.Data) == 0 || result.Data[0].B64JSON == "" {
+		return nil, errors.New("dmxapi.ImageGen: no image data returned (data[0].b64_json empty; possibly blocked by moderation)")
 	}
+	base64Data := result.Data[0].B64JSON
 	// Validate the base64 is decodable here so the caller can trust ImageBase64.
 	if _, err := base64.StdEncoding.DecodeString(base64Data); err != nil {
 		return nil, fmt.Errorf("dmxapi.ImageGen: invalid base64 image data: %w", err)
 	}
-	if mimeType == "" {
-		mimeType = "image/png"
-	}
 
 	return &aiservice.ImageGenResponse{
 		ImageBase64: base64Data,
-		ContentType: mimeType,
+		ContentType: "image/png",
 		Model:       model,
 		Provider:    d.Name(),
 	}, nil
 }
 
-// imageGenEndpoint builds the Gemini generateContent URL from the provider base
-// URL and the model id. It mirrors the legacy tool_image_gen.go path rewriting:
-// a base URL ending in /v1/ or /v1 is rewritten to the /v1beta/models/<model>:
-// generateContent form; otherwise the path is appended. Defaults to the public
-// dmxapi.cn host when baseURL is empty.
-func imageGenEndpoint(baseURL, model string) string {
-	baseURL = strings.TrimSpace(baseURL)
+// imageGenEndpoint builds the OpenAI-compatible images URL: {baseURL}/images/
+// generations. baseURL is the provider base (e.g. https://www.dmxapi.cn/v1); a
+// trailing slash is trimmed. Defaults to the public dmxapi.cn /v1 host when empty.
+func imageGenEndpoint(baseURL string) string {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if baseURL == "" {
-		baseURL = "https://www.dmxapi.cn"
+		baseURL = "https://www.dmxapi.cn/v1"
 	}
-	if !strings.HasSuffix(baseURL, "/") {
-		baseURL += "/"
-	}
-	suffix := "v1beta/models/" + model + ":generateContent"
-	switch {
-	case strings.Contains(baseURL, "/v1beta/"):
-		// Base already points at the v1beta root — just append models/... (must be
-		// checked before the /v1 cases, since "/v1beta" contains "/v1").
-		return baseURL + "models/" + model + ":generateContent"
-	case strings.Contains(baseURL, "/v1/"):
-		return strings.Replace(baseURL, "/v1/", "/"+suffix, 1)
-	case strings.Contains(baseURL, "/v1"):
-		return strings.Replace(baseURL, "/v1", "/"+suffix, 1)
+	return baseURL + "/images/generations"
+}
+
+// sizeFromAspectRatio maps an aspect-ratio hint to a gpt-image-2 size string.
+// gpt-image-2 supports 1024x1024 (square), 1536x1024 (landscape) and 1024x1536
+// (portrait). Unknown / empty → square.
+func sizeFromAspectRatio(ar string) string {
+	switch strings.TrimSpace(ar) {
+	case "16:9", "landscape", "3:2":
+		return "1536x1024"
+	case "9:16", "portrait", "2:3":
+		return "1024x1536"
 	default:
-		return baseURL + suffix
+		return "1024x1024"
 	}
 }
 
