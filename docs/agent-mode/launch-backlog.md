@@ -197,3 +197,10 @@
 - 2026-06-10 R0 完成（§0 裁决补丁）；WK-1 合并；CAP-1 预探针发现并修复 BUG-1（同日 hotfix 上 dev）。
 - 2026-06-10 R1 进行中：预探针抓 BUG-2（权限拦沙箱工具）、现场实战抓 BUG-3（流式 yield 杀 run）——均当日 TDD+双 review+部署+实弹复验闭环。R1 配置端走查收 D-2~D-8 八条裁决（见 design-baseline 更新）。
 - 2026-06-11 R1 续：dev run #132 抓 BUG-7（web_search string max_results 硬错杀 run，agent 核心 web 能力随机暴毙；先前误判为"供应商问题/卡死"实为工具契约 bug）——当日 TDD+双 review PASS+landed develop（hotfix web-search-robust-input）。reviewer 发现同类工具输入脆弱性记 HW-38（launch 硬化 follow-up）。
+- 2026-06-11/12 R1 走查实战大批闭环（全 TDD+实测验证+landed develop+部署 dev，review 对小改精简）：
+  - **BUG-8 ask_user_question 截断杀 run**（run #133，多问题 JSON 被截断硬错）→ 软错误兜底（hotfix ask-question-soft-error，run 134 实测）。
+  - **BUG-9 思考模型 tool_call 截断真因**：agent.run=deepseek-v4-pro(thinking_only)+代码不设 max_tokens→走 provider 默认低上限→长 reasoning 挤截断末尾 tool_call。修=显式设 max_tokens(capability 读)：先 clamp[8192,64000]（agent-max-tokens-cap，run 135 实测 19-turn 深度路径），后按 user 反馈去人为上限**用真实配置值**（agent-maxtokens-real-values，run 136 用 38.4 万跑 23-turn 验证 provider 接受）。详见 [[project_agent_max_tokens_thinking_truncation]]。
+  - **删 L3 LLM permission 分类器**（full-open 决策；dev 上 agent.permission_check 不可达→每工具调用超时拖慢）→ removed（agent-remove-llm-permission，run 136 实测 0 条超时）。保留 6 个死规则 validator。
+  - **BUG-10 "答完就停"**：resume 路径没启动 narration 搬运工(forwardNarration)→前端轮询拿不到 resume 进度。修（agent-resume-narration，TDD+run 137 实测 narration 21→27）。详见根因机制。
+  - **BUG-11 "刷新会话消失"**（run #138）：SSE 断开→ctx 取消→run 收尾保存(WriteTurn/UpdateState)用被取消的 ctx 全失败→僵尸 run(turns=0)→会话消失。修=收尾用 `context.WithoutCancel` detached ctx（agent-finalize-detached-ctx，TDD+kill-curl 实测 run 139 持久化 vs run 138 僵尸）。
+  - **RISK-1 LLM 卡死**（run #138 单次调用卡 6.5 分钟）：流式无空闲超时。修=runOAIStream 加 idleWatcher(照搬 sop.idleWatcher)，60s 空闲快速失败 wrap ErrAIProviderTimeout(retryable)（agent-stream-idle-timeout→agent-stream-idle-60s，TDD 卡流复现+run 140/142 不误触发）。**Part B 待办**：流式重试包装器（idle 超时→同供应商重试 1 次→换供应商同模型），因流式错误异步、现有 sync Retry 中间件看不到，需在网关层包装；+ 配置 agent.run 同模型多供应商 fallback 路由。user 拍板 2 次重试(1 retry)+中途断流暂只快速失败。
