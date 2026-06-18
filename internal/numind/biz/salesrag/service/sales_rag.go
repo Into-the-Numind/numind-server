@@ -149,6 +149,12 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 		RewriteQuery: true,
 		History:      history,
 		BillingLabel: "salesrag_rerank",
+		// RerankNoFloor=true：关掉"保底 top-1"。所有片段都低于阈值(默认0.3)时返回空，
+		// 让下游走 len(Chunks)==0 的"未检索到相关知识"分支，而不是拿一个低相关度的 top-1
+		// 硬 grounding（防"在域但库外"——如莫小派别条产品线问题——被当成 iDC 内容乱答）。
+		// 依据：iDriveCareer 真实数据评估，0.3 阈值 + no_floor 对硬负例拒答率 1.0、in-KB 召回 0.845。
+		// 见 scripts/rag_eval/REAL_DATA_RAG_FINDINGS.md。
+		RerankNoFloor: true,
 	})
 
 	// 等待策略选择完成（与主通道并行后汇合，对齐原 wg.Wait 语义）。
