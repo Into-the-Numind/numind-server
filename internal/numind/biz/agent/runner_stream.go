@@ -363,19 +363,14 @@ func (r *agentRunner) consumeEinoStream(
 		finalContent = currentText.String()
 	}
 
-	// Embed any tool-generated images as markdown so they are PERSISTED in the
-	// final answer (agent_run.messages) and render durably on reload — the
-	// transient SSE artifact event alone vanishes when loadSessionSnapshot
-	// rebuilds the conversation from the DB. drainMarkdownExcluding (not markdown):
-	// drains so the subsequent finalizeRun embed doesn't append a second time, AND
-	// excludes any image the model already embedded in finalContent so it doesn't
-	// render twice (dev 2026-06-18).
-	if imgs := imageCollectorFrom(ctx).drainMarkdownExcluding(finalContent); imgs != "" {
-		if finalContent != "" {
-			finalContent += "\n\n"
-		}
-		finalContent += imgs
-	}
+	// Embed any tool-generated artifacts (images + documents/HTML) as markdown so they
+	// are PERSISTED in the final answer (agent_run.messages) and render durably on
+	// reload — the transient SSE artifact event alone vanishes when loadSessionSnapshot
+	// rebuilds the conversation from the DB. finalizeInto drains so the subsequent
+	// finalizeRun embed doesn't append a second time, AND excludes any image the model
+	// already embedded (no double render) + appends documents as standalone card links
+	// (问题五). dev 2026-06-18.
+	finalContent = artifactCollectorFrom(ctx).finalizeInto(finalContent)
 
 	finalReasoning := lastStepReasoning
 	if finalReasoning == "" && currentReason.Len() > 0 {

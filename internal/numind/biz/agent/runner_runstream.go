@@ -565,7 +565,7 @@ func (r *agentRunner) RunStream(
 	attemptCtx = WithStreamState(attemptCtx, sharedState)
 	// Collect tool-generated images during this run so consumeEinoStream can embed
 	// them as durable markdown in the final answer (see image_collector.go).
-	attemptCtx = withImageCollector(attemptCtx)
+	attemptCtx = withArtifactCollector(attemptCtx)
 
 	// 12. Call einoAgent.Stream — this is the key divergence from Run.
 	sr, streamErr := einoAgent.Stream(attemptCtx, einoMessages)

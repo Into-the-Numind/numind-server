@@ -591,7 +591,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 	// Collect tool-generated images so they can be embedded as durable markdown in
 	// the persisted final answer (see image_collector.go). Covers the non-stream
 	// path (e.g. ask_user_question resume) symmetrically with RunStream.
-	ctx = withImageCollector(ctx)
+	ctx = withArtifactCollector(ctx)
 	// Collect narration/tool-call events on the run-level ctx so finalizeRun can
 	// persist the tool-call timeline into agent_run.messages (durable replay on
 	// reload). Attached on ctx (ancestor of queryCtx and of the finalize ctx) so
@@ -1379,19 +1379,14 @@ func (r *agentRunner) finalizeRun(
 			assistantContent = userFacingFallback
 		}
 	}
-	// On success, embed any tool-generated images as markdown so they persist in
-	// agent_run.messages and render durably on reload. drainMarkdownExcluding so this
-	// is a no-op on the streaming path (consumeEinoStream already drained + embedded);
-	// on the non-stream Run path consumeEinoStream never ran, so this embeds once —
-	// minus any image the model already wrote into assistantContent (no double render,
-	// dev 2026-06-18).
+	// On success, embed any tool-generated artifacts (images + documents/HTML) as
+	// markdown so they persist in agent_run.messages and render durably on reload.
+	// finalizeInto drains the collector so this is a no-op on the streaming path
+	// (consumeEinoStream already embedded); on the non-stream Run path it embeds once
+	// — images minus any the model already wrote (no double render), documents as
+	// standalone card links (问题五). dev 2026-06-18.
 	if runErr == nil {
-		if imgs := imageCollectorFrom(ctx).drainMarkdownExcluding(assistantContent); imgs != "" {
-			if assistantContent != "" {
-				assistantContent += "\n\n"
-			}
-			assistantContent += imgs
-		}
+		assistantContent = artifactCollectorFrom(ctx).finalizeInto(assistantContent)
 	}
 
 	// Finalization persistence (terminal metadata, transcript, state) MUST survive a
