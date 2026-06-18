@@ -995,7 +995,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 			log.Warnw("AgentRunner.Run UpdateState failed on short-circuit", "agent_run_id", run.ID, "error", uerr)
 		}
 		shortCircuitMessages, _ := json.Marshal(mergeResumeTranscript(priorMessages, []map[string]any{
-			{"role": "user", "content": req.Input},
+			{"role": "user", "content": req.displayUserText()},
 			{"role": "assistant", "content": req.Input},
 		}))
 		if wErr := r.runStore.WriteTurn(ctx, run.ID, json.RawMessage(shortCircuitMessages)); wErr != nil {
@@ -1058,7 +1058,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 				scSession = fmt.Sprintf("run-%d", run.ID)
 			}
 			r.memoryExtractor.Enqueue(req.UserID, scSession, []memory.ChatMessage{
-				{Role: "user", Content: req.Input},
+				{Role: "user", Content: req.displayUserText()},
 			}, isTrivial)
 		}
 		return &RunResult{
@@ -1227,7 +1227,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 			// retains the work it did before pausing (the non-stream Run path is
 			// also the answer endpoint's re-run path, so a second yield here must
 			// keep prior context too).
-			r.persistYieldTranscript(attemptCtx, run.ID, req.displayUserText())
+			r.persistYieldTranscript(attemptCtx, run.ID, req.displayUserText(), req.DisplayAttachments)
 			log.Infow("AgentRunner.Run yield: ask_user_question paused run",
 				"agent_run_id", run.ID,
 				"payload_len", len(payloadJSON),
@@ -1490,7 +1490,7 @@ func (r *agentRunner) finalizeRun(
 	// the memory pipeline. Run() callers always set finalText on completion, so
 	// removing the output gate is safe for both code paths.
 	if r.memoryProvider != nil && st.TerminalReason == TerminalCompleted {
-		userMsg := memory.Message{Role: "user", Content: req.Input}
+		userMsg := memory.Message{Role: "user", Content: req.displayUserText()}
 		asstMsg := memory.Message{Role: "assistant", Content: finalText}
 		go func() {
 			bgCtx := middleware.WithAgentSessionID(context.Background(), sessionID)
@@ -1511,7 +1511,7 @@ func (r *agentRunner) finalizeRun(
 	// this CANNOT delay the runner return. No goroutine wrap needed.
 	if r.memoryExtractor != nil && req.UserID != 0 {
 		extractMsgs := []memory.ChatMessage{
-			{Role: "user", Content: req.Input},
+			{Role: "user", Content: req.displayUserText()},
 			{Role: "assistant", Content: finalText},
 		}
 		r.memoryExtractor.Enqueue(req.UserID, sessionID, extractMsgs, isTrivial)

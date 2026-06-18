@@ -359,7 +359,7 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 		UserID:                userID,
 		SessionID:             sessionID,
 		Input:                 input,
-		DisplayInput:          &req.Message,
+		DisplayInput:          strPtr(req.Message),
 		DisplayAttachments:    displayAtts,
 		ToolNames:             toolNames,
 		AgentDefinitionID:     req.AgentDefinitionID,
@@ -456,6 +456,11 @@ func displayAttachmentsFromURLs(urls []string) []displayAttachment {
 	}
 	return out
 }
+
+// strPtr returns a pointer to an independent COPY of s (the value parameter), so the
+// pointer never aliases a caller's struct field — safe to stash in RunRequest.DisplayInput
+// that an async run goroutine reads later.
+func strPtr(s string) *string { return &s }
 
 // filenameFromURL extracts a human-readable filename from a URL: last path segment,
 // query stripped, percent-decoded. Best-effort — returns the raw tail on decode error.
@@ -669,7 +674,7 @@ func (s *StudentRunService) RunStream(ctx context.Context, userID uint, req Crea
 		UserID:                userID,
 		SessionID:             run.SessionID,
 		Input:                 input,
-		DisplayInput:          &req.Message,
+		DisplayInput:          strPtr(req.Message),
 		DisplayAttachments:    displayAtts,
 		ToolNames:             toolNames,
 		AgentDefinitionID:     run.AgentDefinitionID,

@@ -78,6 +78,48 @@ func TestFinalizeRun_UserTurnExcludesSystemPromptAndCarriesAttachments(t *testin
 		"LLM-facing message must still carry the file_read hint")
 }
 
+// TestFinalizeRun_AttachmentOnlySend covers the attachment-only edge (Message=""):
+// the persisted user turn must show an EMPTY text (not the file_read hint that
+// buildAgentInput's empty fallback / composed input may carry) while still carrying
+// the attachment chips. Drives the real loop so persistence flows through finalizeRun.
+func TestFinalizeRun_AttachmentOnlySend(t *testing.T) {
+	store := newMockStore()
+	runner, toolName := newReActRunner(store)
+	withMockChatFn(t, successChatFn("已读取附件。"))
+
+	attURL := "https://x.cos.ap-guangzhou.myqcloud.com/agent-attachments/7/photo.png"
+	// Attachment-only send: the LLM Input is a non-empty composed hint, but the human
+	// typed nothing — DisplayInput is an explicit empty string.
+	input := buildAgentInput("", []string{attURL})
+	empty := ""
+	req := newReActRequest(toolName, input)
+	req.SessionID = "att-only-1"
+	req.DisplayInput = &empty
+	req.DisplayAttachments = []displayAttachment{{URL: attURL, Filename: "photo.png"}}
+
+	result, err := runner.Run(context.Background(), req)
+	require.NoError(t, err)
+
+	run, err := store.Get(context.Background(), result.AgentRunID)
+	require.NoError(t, err)
+	var msgs []map[string]any
+	require.NoError(t, json.Unmarshal(run.Messages, &msgs))
+
+	var userTurn map[string]any
+	for _, m := range msgs {
+		if role, _ := m["role"].(string); role == "user" {
+			userTurn = m
+			break
+		}
+	}
+	require.NotNil(t, userTurn)
+	content, _ := userTurn["content"].(string)
+	assert.Equal(t, "", content, "attachment-only send must persist an empty user text, not the hint")
+	atts, ok := userTurn["attachments"].([]any)
+	require.True(t, ok, "attachment-only send must still carry attachment chips")
+	require.Len(t, atts, 1)
+}
+
 // TestRunRequest_displayUserText covers the fallback semantics: nil DisplayInput
 // falls back to Input (resume/test paths), a non-nil value (incl. empty) is honored.
 func TestRunRequest_displayUserText(t *testing.T) {
