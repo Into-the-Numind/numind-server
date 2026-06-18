@@ -186,10 +186,10 @@ func (c *Client) Embed(ctx context.Context, pcm []byte, sessionID string, segmen
 	}
 
 	req := &httpclient.Request{
-		Method:      http.MethodPost,
-		URL:         c.baseURL + "/embed",
-		Headers:     map[string]string{"Content-Type": "application/json"},
-		Body:        bytes.NewReader(body),
+		Method:  http.MethodPost,
+		URL:     c.baseURL + "/embed",
+		Headers: map[string]string{"Content-Type": "application/json"},
+		Body:    bytes.NewReader(body),
 		Context: ctx,
 		// MaxRetries:0 (Do() defaults to 3 otherwise). RetryPolicy has no Delay field
 		// here, but a zero delay is harmless: with MaxRetries=0 the retry loop never

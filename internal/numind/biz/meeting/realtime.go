@@ -24,13 +24,26 @@ import (
 	"sync"
 	"time"
 
+	"numind-server/internal/numind/biz/meeting/diarize"
+	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/util"
+	"numind-server/internal/pkg/voiceprint"
 
+	"github.com/spf13/viper"
 	"gorm.io/gorm"
 )
+
+// diarizationEnabled reports the effective speaker-diarization flag
+// (DIARIZATION_SPEC.md §4 P1-flag): meeting_copilot.enabled AND
+// meeting_diarization.enabled. When false the relay never builds a PCM ring buffer
+// and never dispatches segment slices — the whole diarize path stays inert.
+func diarizationEnabled() bool {
+	return viper.GetBool("features.meeting_copilot.enabled") &&
+		viper.GetBool("features.meeting_diarization.enabled")
+}
 
 // asrBytesPerSecond 是 16kHz / 16bit / 单声道 PCM 每秒字节数（SPEC §1：16000*2）。
 const asrBytesPerSecond = 16000 * 2
@@ -57,6 +70,10 @@ type RealtimeASRHandlers struct {
 	OnError func(err error)
 	// OnClosed：阿里 task-finished 正常收尾（上层转 {"type":"closed"}）。
 	OnClosed func()
+	// OnSpeaker：在线增量聚类为某段定了 online_speaker_id（DIARIZATION_SPEC §3/§6，上层转
+	// {"type":"speaker", ...}）。仅在 effective diarization flag 开启且声纹服务可用时才会被调；
+	// 软降级（声纹不可用）时该段不回推、online_speaker_id 留空。nil-safe：上层未提供即不回推。
+	OnSpeaker func(update diarize.SpeakerUpdate)
 }
 
 // IRealtimeASR 是编排层暴露给 ws controller（BE-2）的单连接会话句柄。
@@ -80,6 +97,12 @@ type realtimeASR struct {
 	handlers  RealtimeASRHandlers
 
 	stream *asrStream
+
+	// diarizeBuf 是本会话的 PCM 滚动 ring buffer + 待处理切片 channel（T6 基建，
+	// DIARIZATION_SPEC.md §3/§4）。仅当 effective diarization flag（meeting_copilot &&
+	// meeting_diarization）开启时非 nil；关闭时为 nil，所有 diarize 钩子是 nil-safe no-op，
+	// 转写链路零影响。消费者是 T7。
+	diarizeBuf *diarize.SessionBuffer
 
 	// nextSeq 是下一条 final segment 的 seq；落库前自增（单 reader goroutine 串行调用，
 	// 但 Close 可能并发触发 usage 记录，故用 mu 保护）。
@@ -148,6 +171,19 @@ func (b *meetingBiz) StartRealtimeASR(ctx context.Context, userID uint, sessionI
 		summaryLastFoldAt: now,
 	}
 
+	// T6 说话人分离 PCM 缓冲（DIARIZATION_SPEC.md §3/§4 P1-flag）：仅当 effective flag
+	// （meeting_copilot && meeting_diarization）开启时建 ring buffer；否则 diarizeBuf 留 nil，
+	// 后续 SendAudio/handleFinal 的 diarize 钩子全是 nil-safe no-op，转写链路零影响。
+	//
+	// T7 在线增量聚类 worker（DIARIZATION_SPEC.md §3 step (2)/(3)，§7 T7(b)）：flag 开启后再看
+	// 声纹服务是否配置（voiceprint.base_url）。base_url 为空（prod 未配 / 整体软降级）则 buffer
+	// 仍建（保证 ring 行为一致 + 测试可见），但不启 worker——slice 投进 channel 没人消费、随会话
+	// Close 排空丢弃，等价于「在线 diarization 跳过」（§5 D1 / 任务 (c) 软降级）。
+	if diarizationEnabled() {
+		r.diarizeBuf = diarize.NewSessionBuffer()
+		r.startDiarizeWorker()
+	}
+
 	// Langfuse trace+generation（SPEC §4，优雅降级）。internalCallCtx 不注入 trace，故此处显式
 	// 建。userID 仅做可观测归属，与 billing user_id=0 隔离。
 	r.traceID = langfuse.TraceID()
@@ -179,10 +215,58 @@ func (b *meetingBiz) StartRealtimeASR(ctx context.Context, userID uint, sessionI
 	if err != nil {
 		// 连接失败：记一条 0 时长 usage（含 error）以留痕，再返回。
 		r.recordUsage(err)
+		// T7 泄漏修复：握手失败时调用方拿不到 IRealtimeASR handle，Close() 永不会被调用，
+		// 故此处必须主动关 diarize ring buffer——否则已在 line 184 启动的 worker 会永远
+		// 阻塞在 `for slice := range pending`，连同 voiceprint.Client 和 ~1.92MB ring buffer 一起泄漏。
+		// 仅当 effective diarization flag 开启且 voiceprint.base_url 已配时 worker 才真正存在；
+		// 其余路径 diarizeBuf 为 nil，Close() nil-safe no-op。Close 同时幂等，重复调用无副作用。
+		r.diarizeBuf.Close() // nil-safe + 幂等
 		return nil, fmt.Errorf("StartRealtimeASR: %w", err)
 	}
 	r.stream = stream
 	return r, nil
+}
+
+// startDiarizeWorker 启动本会话的在线增量聚类 worker（DIARIZATION_SPEC.md §3 step (2)/(3)，§7 T7(b)）。
+//
+// 仅在 effective diarization flag 已开启（调用方已判）后再看声纹服务是否配置：voiceprint.base_url
+// 为空（prod 未配 / 整体软降级）则 worker 不启——投进 channel 的 slice 无人消费、随 Close 排空丢弃，
+// 等价于在线 diarization 跳过（任务 (c) 软降级；§5 D1）。
+//
+// worker 在独立 goroutine 跑，range diarizeBuf.Pending() 直到 SessionBuffer.Close() 关 channel 后
+// 排空退出（无泄漏，与 T6 生命周期契约一致）。Embed 软降级、DB/ws 失败均在 worker 内吞掉 + log，
+// 绝不反压/杀 relay（§4 P1 不变量）。回推前端复用 handlers.OnSpeaker（上层经单 writer 串行写 ws）。
+func (r *realtimeASR) startDiarizeWorker() {
+	if r.diarizeBuf == nil {
+		return
+	}
+	baseURL := viper.GetString("voiceprint.base_url")
+	if strings.TrimSpace(baseURL) == "" {
+		log.Infow("meeting realtime: voiceprint base_url unset, online diarization skipped (soft-degrade)",
+			"session_id", r.sessionID)
+		return
+	}
+
+	vp := voiceprint.NewClient(baseURL)
+	if !vp.Configured() {
+		// 防御：NewClient TrimRight 后仍空（理论不会，baseURL 已非空）。
+		return
+	}
+
+	// 专属 diarize store（DIARIZATION_SPEC.md §6/§7 P2-store）：从 IStore.DB() 构造，避免拓宽
+	// IStore 接口而与 T8 在 store.go 上冲突。
+	speakerStore := store.NewDiarizeStore(r.b.ds.DB())
+
+	// sessionID 字符串形态喂声纹服务（trace 关联用）。
+	sessionIDStr := fmt.Sprintf("%d", r.sessionID)
+
+	worker := diarize.NewWorker(r.sessionID, sessionIDStr, vp, speakerStore, func(update diarize.SpeakerUpdate) {
+		if r.handlers.OnSpeaker != nil {
+			r.handlers.OnSpeaker(update)
+		}
+	})
+
+	go worker.Run(r.diarizeBuf.Pending())
 }
 
 // uploadBytesToCOS 是录音上传的 seam（测试可覆盖以注入"上传期间会话被结束"的竞态）。
@@ -289,6 +373,12 @@ func (r *realtimeASR) handleFinal(text string, beginMs, endMs int64) {
 	if r.handlers.OnFinal != nil {
 		r.handlers.OnFinal(toSegmentDTO(seg))
 	}
+
+	// T6 钩子（DIARIZATION_SPEC.md §3/§4 P1）：句末分段已落库（seg.ID 就绪），按 [beginMs,endMs]
+	// 从 ring buffer 切出该段 PCM 投非阻塞 channel 给 T7 消费。beginMs/endMs 是 dashscope 相对本流
+	// 起点的毫秒（与 ring 累计字节起点对齐）。SliceAndDispatch 非阻塞：channel 满即丢弃+计数，绝不
+	// 反压 ASR；diarizeBuf 为 nil（flag off）时是 no-op。
+	r.diarizeBuf.SliceAndDispatch(int64(seg.ID), beginMs, endMs)
 
 	// 节流触发滚动摘要折叠（FEEDBACK_V2_SPEC §2.2）：纯后台，绝不阻塞中继/录音。
 	r.maybeUpdateRollingSummary(text)
@@ -445,10 +535,17 @@ func (r *realtimeASR) handleClosed() {
 // ---------------------------------------------------------------------------
 
 // SendAudio 转发 PCM 并累计音频字节（SPEC §1.2 / §4）。
+//
+// T6 钩子（DIARIZATION_SPEC.md §4 P0-1）：把这一帧也喂进 diarize ring buffer。pcm 可能是
+// gorilla ws 读循环复用的底层 buffer（relayClientFrames 把 conn.ReadMessage 的 data 直接传进来），
+// SessionBuffer.Write 内部立即 copy 到自有存储再返回，调用方下一次 ReadMessage 复用 buffer 不会
+// 污染已入环的音频。diarizeBuf 为 nil（flag off）时是 no-op。在转发 dashscope 之前喂环：即便转发
+// 失败也已留存音频，且 Write O(1) 不阻塞。
 func (r *realtimeASR) SendAudio(pcm []byte) error {
 	if r.stream == nil {
 		return fmt.Errorf("realtime asr: stream not started")
 	}
+	r.diarizeBuf.Write(pcm) // nil-safe；内部立即 copy（P0-1）
 	r.mu.Lock()
 	r.audioByts += int64(len(pcm))
 	r.mu.Unlock()
@@ -463,10 +560,14 @@ func (r *realtimeASR) Finish() {
 }
 
 // Close 兜底收尾：关 dashscope 流并记 usage（若尚未记）。幂等。controller 在连接断开/异常时调用。
+//
+// T6 钩子：关 diarize ring buffer（关 pending channel，让 ranging 的 T7 消费者排空退出）。nil-safe
+// 且幂等。diarize 的关闭不影响 usage/转写收尾。
 func (r *realtimeASR) Close() {
 	if r.stream != nil {
 		r.stream.close()
 	}
+	r.diarizeBuf.Close() // nil-safe + 幂等
 	r.recordUsage(nil)
 }
 
