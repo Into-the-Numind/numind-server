@@ -10,9 +10,9 @@ uvicorn==0.30.3
 # in compute_fbank() — NOT for model inference (that runs through onnxruntime).
 # Future optimization: replace torchaudio.compliance.kaldi.fbank with
 # kaldi-native-fbank to drop the heavy torch dependency from this service.
-# The CPU wheels are pulled from the PyTorch CPU index in the Dockerfile.
-# +cpu local-version pin: forces resolution from the CPU mirror only (regular
-# PyPI has 2.2.2 = CUDA build; --extra-index-url is additive so without +cpu pip
-# picks the GPU wheel and bloats the image ~5.8GB → ~600MB). Verified 2026-06-19.
-torch==2.2.2+cpu
-torchaudio==2.2.2+cpu
+# CPU wheels are installed in the Dockerfile via the official PyTorch CPU index
+# (--index-url .../whl/cpu) BEFORE this file, so these plain pins resolve as already
+# satisfied. Do NOT use the Tsinghua mirror for torch (it lacks +cpu tags) nor an
+# additive --extra-index-url (pip then picks the CUDA build → ~5.8GB image).
+torch==2.2.2
+torchaudio==2.2.2

@@ -27,11 +27,13 @@ ENV PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
     PIP_NO_CACHE_DIR=1
 
 COPY requirements.txt .
-# torch/torchaudio CPU wheels live in a dedicated index; --extra-index-url keeps
-# the Tsinghua PyPI mirror as the primary source for everything else.
-RUN pip install --no-cache-dir \
-        --extra-index-url https://mirrors.tuna.tsinghua.edu.cn/pytorch-wheels/cpu \
-        -r requirements.txt
+# torch/torchaudio CPU-only from the official PyTorch CPU index (it ships the +cpu
+# wheels; the Tsinghua mirror lacks the +cpu local-version tag, and an additive
+# --extra-index-url lets pip resolve the CUDA build from PyPI → ~5.8GB image).
+# Install CPU torch FIRST so the subsequent -r requirements.txt sees it satisfied.
+RUN pip install --no-cache-dir torch==2.2.2 torchaudio==2.2.2 \
+        --index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py .
 COPY entrypoint.sh .
