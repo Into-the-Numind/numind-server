@@ -88,3 +88,15 @@ func (c *imageCollector) drainMarkdown() string {
 	c.imgs = nil
 	return md
 }
+
+// drainMarkdownExcluding will return the collected image markdown EXCLUDING any
+// image the model already embedded in `content`, and clear the collector — the fix
+// for the duplicate-render bug (dev 2026-06-18: the LLM wrote ![](url) in its own
+// final answer AND the finalizer appended the same image, so it rendered twice).
+//
+// reproduce-first seam: this stub preserves the current (buggy) behavior — it
+// ignores `content` and returns everything — so the reproduction test fails. The
+// exclusion-by-content logic lands in the fix commit. Safe on a nil receiver.
+func (c *imageCollector) drainMarkdownExcluding(content string) string {
+	return c.drainMarkdown()
+}
