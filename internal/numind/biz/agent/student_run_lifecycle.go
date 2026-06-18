@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -462,8 +463,14 @@ func displayAttachmentsFromURLs(urls []string) []displayAttachment {
 // that an async run goroutine reads later.
 func strPtr(s string) *string { return &s }
 
+// nanoPrefixRe matches the upload object-key's nanosecond ID prefix
+// (agent-attachments/<userID>/<unixnano>-<filename>). It requires ≥13 leading
+// digits + a hyphen so short numeric prefixes like "2024-报告.docx" are left alone.
+var nanoPrefixRe = regexp.MustCompile(`^\d{13,}-`)
+
 // filenameFromURL extracts a human-readable filename from a URL: last path segment,
-// query stripped, percent-decoded. Best-effort — returns the raw tail on decode error.
+// query stripped, percent-decoded, with the upload nanosecond ID prefix removed
+// (问题二). Best-effort — returns the raw tail on decode error.
 func filenameFromURL(u string) string {
 	s := u
 	if i := strings.IndexByte(s, '?'); i >= 0 {
@@ -475,6 +482,9 @@ func filenameFromURL(u string) string {
 	if dec, err := url.PathUnescape(s); err == nil {
 		s = dec
 	}
+	// Strip the nanosecond ID prefix added at upload time so chips show the
+	// original filename. Only ≥13-digit prefixes are stripped (see nanoPrefixRe).
+	s = nanoPrefixRe.ReplaceAllString(s, "")
 	return s
 }
 
