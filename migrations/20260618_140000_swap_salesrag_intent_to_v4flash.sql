@@ -18,6 +18,13 @@ VALUES
    0,1,'llm','fast','standard',
    '{"features": {"tool_use": true, "streaming": true}, "capabilities": ["chat"], "context_window": 1000000, "input_modalities": ["text"], "max_output_tokens": 384000, "output_modalities": ["text"]}');
 
+-- 1b. Force the thinking config correct even if v4-flash was pre-registered by an
+-- earlier migration (e.g. 20260616 title profile) with an empty thinking_style.
+-- supports_thinking MUST be 1 + thinking_style='enable_thinking_kwarg' so the gateway
+-- sends enable_thinking:false for non-thinking callers (else dmxapi defaults thinking ON).
+UPDATE ai_service SET supports_thinking=1, thinking_only=0, thinking_style='enable_thinking_kwarg'
+WHERE model_key='deepseek-v4-flash';
+
 -- 2. Route to dmxapi
 INSERT INTO ai_service_route
   (model_id, provider_id, provider_model_id, priority, input_price_per_mtok, output_price_per_mtok, pricing_unit, is_active)
