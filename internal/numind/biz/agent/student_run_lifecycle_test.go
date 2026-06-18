@@ -388,7 +388,6 @@ func TestStudentRunService_Cancel_AlreadyTerminal(t *testing.T) {
 	}
 }
 
-
 // TestStudentRunService_forwardNarration_BridgeProviderToBuffer is the
 // regression for the hotfix narration-buffer-bridge. Before the fix,
 // Provider.Emit pushed events to an in-memory channel that nobody read,
@@ -511,13 +510,32 @@ func TestCreateRunRequest_AttachmentOnlyIsSendable(t *testing.T) {
 	if (CreateRunRequest{Message: "  ", AttachmentIDs: []uint64{42}}).hasNoSendable() {
 		t.Error("attachment-only (ID) must be sendable")
 	}
-	// genuinely empty: no text, no attachment → NOT sendable (reject)
+	// genuinely empty: exact empty string, no attachment → NOT sendable (reject)
+	if !(CreateRunRequest{Message: ""}).hasNoSendable() {
+		t.Error("empty string + no attachment → must be rejected")
+	}
+	// whitespace-only, no attachment → NOT sendable (TrimSpace closes the space loophole)
 	if !(CreateRunRequest{Message: "   "}).hasNoSendable() {
-		t.Error("no text and no attachment → must be rejected")
+		t.Error("whitespace-only + no attachment → must be rejected")
 	}
 	// text only → sendable
 	if (CreateRunRequest{Message: "hi"}).hasNoSendable() {
 		t.Error("text-only must be sendable")
+	}
+}
+
+// TestBuildAgentInput_EmptyMessageWithAttachment: an attachment-only send (empty
+// message) must still compose a NON-empty, well-formed prompt — the LLM must never
+// receive a blank user turn (attachment-only-send fix, 2026-06-18).
+func TestBuildAgentInput_EmptyMessageWithAttachment(t *testing.T) {
+	got := buildAgentInput("", []string{"https://cos/x.docx"})
+	if strings.TrimSpace(got) == "" {
+		t.Fatal("empty message + attachment must NOT produce a blank input")
+	}
+	for _, want := range []string{"【系统提示】", "file_read", "https://cos/x.docx"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("composed input missing %q; got %q", want, got)
+		}
 	}
 }
 
