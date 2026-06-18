@@ -69,9 +69,10 @@ func TestArtifactsFromToolResult_NonArtifact(t *testing.T) {
 }
 
 // TestArtifactCollector_FinalizeInto_RunPythonMultiFileCards: end-to-end — both
-// run_python files become STANDALONE card lines, and the model's inline links
-// (including ones written inside a markdown table row) referencing the same URLs
-// are STRIPPED so there is exactly one card per file and no buried naked link.
+// run_python files get STANDALONE card lines appended (so each is reliably a card),
+// and the model's inline links (prose + table row) are PRESERVED, never stripped —
+// stripping a table cell emptied it and detached the card (dev 2026-06-18 followup,
+// user-reported on dev).
 func TestArtifactCollector_FinalizeInto_RunPythonMultiFileCards(t *testing.T) {
 	ctx := withArtifactCollector(context.Background())
 	c := artifactCollectorFrom(ctx)
@@ -81,7 +82,8 @@ func TestArtifactCollector_FinalizeInto_RunPythonMultiFileCards(t *testing.T) {
 		c.add(a.URL, a.Filename, a.Mime)
 	}
 
-	// Model wrote both files as inline links — one in prose, one inside a table row.
+	// Model wrote both files as inline links — one in prose (trailing punctuation, not
+	// standalone), one inside a table row.
 	content := "已为你生成两份文件：\n\n" +
 		"详见 [报告.docx](" + cosPyDocx + ")。\n\n" +
 		"| 文件 | 链接 |\n|---|---|\n" +
@@ -89,12 +91,23 @@ func TestArtifactCollector_FinalizeInto_RunPythonMultiFileCards(t *testing.T) {
 
 	got := c.finalizeInto(content)
 
-	// Standalone card lines appended for BOTH files.
-	assert.Contains(t, got, "[报告.docx]("+cosPyDocx+")")
-	assert.Contains(t, got, "[页面.html]("+cosPyHTML+")")
+	// Standalone card lines appended for BOTH files (the actionable cards the frontend
+	// lifts into AgentArtifactItem).
+	var docxCard, htmlCard bool
+	for _, line := range strings.Split(got, "\n") {
+		tl := strings.TrimSpace(line)
+		if tl == "[报告.docx]("+cosPyDocx+")" {
+			docxCard = true
+		}
+		if tl == "[页面.html]("+cosPyHTML+")" {
+			htmlCard = true
+		}
+	}
+	assert.True(t, docxCard, "docx must get a standalone card line")
+	assert.True(t, htmlCard, "html must get a standalone card line")
 
-	// The model's inline link nodes (prose + table row) must be stripped: each URL
-	// appears EXACTLY once (only in the appended standalone card line).
-	assert.Equal(t, 1, strings.Count(got, "("+cosPyDocx+")"), "docx URL must appear once")
-	assert.Equal(t, 1, strings.Count(got, "("+cosPyHTML+")"), "html URL must appear once")
+	// The model's inline prose link and table row are PRESERVED (not stripped → no empty
+	// cell). Each URL therefore appears twice: original context + appended card.
+	assert.Contains(t, got, "详见 [报告.docx]("+cosPyDocx+")。", "prose inline link preserved")
+	assert.Contains(t, got, "| 页面 | [页面.html]("+cosPyHTML+") |", "table row preserved (no empty cell)")
 }
