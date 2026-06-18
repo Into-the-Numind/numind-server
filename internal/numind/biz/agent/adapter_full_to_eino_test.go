@@ -197,6 +197,55 @@ defaults:
 		"a tool call's use & result narration MUST share one tool_call_id — otherwise the polling UI splits them and the 'use' card sticks in 执行中 forever (customer-reported timer-never-stops bug)")
 }
 
+// TestAdaptFullToEinoTool_Narration_SoftErrorEmitsStateError reproduces the
+// customer-reported bug (dev run 169, 2026-06-18): a tool that returns a SOFT
+// error — a successful ToolResult (nil Go error) whose JSON body carries the
+// "ERROR: " contract (softToolError / each tool's returnSoftError), e.g. an
+// image_gen timeout — was narrated as StateResult. So the UI showed a green
+// "✓ 图片已生成" success badge while the model itself said "生成过程中遇到了超时".
+// A soft error is a FAILURE: it must narrate StateError, never StateResult.
+func TestAdaptFullToEinoTool_Narration_SoftErrorEmitsStateError(t *testing.T) {
+	prov, err := narration.NewProvider(narration.Config{YAMLBytes: []byte(`
+tools:
+  x:
+    verb: "执行"
+    use_template: "{{ .verb }}"
+    result_template: "完成"
+    error_template: "出错"
+    rejected_template: "拦截"
+defaults:
+  verb: "处理"
+  use_template: "{{ .verb }}"
+  result_template: "完成"
+  error_template: "出错"
+  rejected_template: "拦截"
+`)})
+	require.NoError(t, err)
+
+	// Soft-error contract: nil Go error, body carries the "ERROR: " marker in the
+	// dedicated "error" field (the shape image_gen / softToolError use).
+	ft := &fakeFullTool{name: "x", out: []byte(`{"error":"ERROR: x: 生成过程中遇到了超时"}`)}
+	eino := adaptFullToEinoTool(ft, &RunHooks{NarrationProvider: prov})
+	ctx := narration.WithCollector(WithRunID(context.Background(), 999))
+
+	_, err = eino.InvokableRun(ctx, `{"input":"hi"}`)
+	require.NoError(t, err, "a soft error keeps the Go error nil so the ReAct loop continues")
+
+	var sawResult, sawError bool
+	for _, ev := range narration.CollectorFrom(ctx).Events() {
+		switch ev.State {
+		case narration.StateResult:
+			sawResult = true
+		case narration.StateError:
+			sawError = true
+		}
+	}
+	assert.False(t, sawResult,
+		"a soft-error tool result MUST NOT narrate StateResult — that renders a false ✓ success badge over a failed call (customer-reported: image_gen timeout showed 图片已生成 ✓)")
+	assert.True(t, sawError,
+		"a soft-error tool result MUST narrate StateError so the UI shows failure (✗), matching what the model tells the user")
+}
+
 func TestAdaptFullToEinoTool_Hooks_PreStopShortCircuits(t *testing.T) {
 	ft := &fakeFullTool{name: "x", out: []byte(`{"ok":true}`)}
 	rec := newHookRecorder()
