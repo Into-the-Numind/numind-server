@@ -37,12 +37,30 @@ import (
 )
 
 // RunRequest 是 AgentRunner.Run 的输入。
+// displayAttachment is a user-uploaded attachment {url, filename} persisted onto
+// the user turn for reload-time chip rendering (agent-output-ux-fixes 问题二).
+type displayAttachment struct {
+	URL      string
+	Filename string
+}
+
 type RunRequest struct {
 	UserID    uint
 	SessionID string
 	Input     string
-	ToolNames []string
-	Hooks     *RunHooks
+	// DisplayInput, when non-nil, is the user's ORIGINAL message text used for the
+	// PERSISTED/DISPLAYED user turn (agent_run.messages), separate from Input which
+	// may carry the buildAgentInput "【系统提示】…file_read…" hint sent to the LLM.
+	// nil ⇒ fall back to Input (resume/test paths). A non-nil empty string IS honored
+	// (attachment-only sends persist empty user text + chips, not the LLM hint).
+	// agent-output-ux-fixes 问题二: stops the hint leaking into the chat bubble while
+	// keeping it in the LLM context.
+	DisplayInput *string
+	// DisplayAttachments are the user's uploaded attachments {url, filename}, persisted
+	// onto the user turn so a reloaded session renders attachment chips. Empty ⇒ no chips.
+	DisplayAttachments []displayAttachment
+	ToolNames          []string
+	Hooks              *RunHooks
 	// AgentDefinitionID 为 0 时 fall through（使用 #2 mock 行为，不注入 Skill）。
 	// 非 0 时 runner.Run 通过 skillStore.GetByIDIncludeInactive 装载 agent 定义，
 	// 并按 advanced_mode 选 GeneratedSkillBody 或 CustomSkillBody 组装 SystemPrompt。
@@ -71,6 +89,17 @@ type RunRequest struct {
 	// buildEinoMessages 将其前置到当前 Input 之前，使 LLM 获得多轮上下文（修复多轮失忆）。
 	// 为空表示新会话或首轮；加载失败时 fail-open 为 nil（不阻断本轮 run）。
 	History []*schema.Message
+}
+
+// displayUserText returns the text to PERSIST/DISPLAY as the user turn: DisplayInput
+// when provided (incl. an intentional empty string for attachment-only sends), else
+// Input. Keeps the buildAgentInput "【系统提示】…file_read…" hint out of the chat
+// bubble (agent-output-ux-fixes 问题二) while Input still carries it to the LLM.
+func (r RunRequest) displayUserText() string {
+	if r.DisplayInput != nil {
+		return *r.DisplayInput
+	}
+	return r.Input
 }
 
 // RunResult 是 AgentRunner.Run 的输出。
