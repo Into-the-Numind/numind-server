@@ -114,9 +114,14 @@ func (b *meetingBiz) GenerateFeedback(ctx context.Context, userID uint, sessionI
 		},
 		MaxTokens:   feedbackMaxOutputTokens,
 		Temperature: 0.4,
+		// 实时反馈要低延迟：显式关思考。配合 profile.MeetingFeedback 路由到的
+		// deepseek-v4-flash(thinking_only=0) → 非思考、秒出。(pro 是 thinking_only 强制思考太慢)
+		Thinking: false,
 	}
 
-	ch, llmErr := chatStreamFn(callCtx, profile.ChatbotStream, gatewayReq)
+	// profile.MeetingFeedback → deepseek-v4-flash(非思考)，独立于 chatbot.stream(pro)，
+	// 切它不影响 chatbot 产品。滚动摘要/会后纪要仍用 chatbot.stream(见 summary.go)。
+	ch, llmErr := chatStreamFn(callCtx, profile.MeetingFeedback, gatewayReq)
 	if llmErr != nil {
 		endGenError(tc, genID, llmErr)
 		_ = h("error", map[string]string{"message": "反馈生成失败"})
