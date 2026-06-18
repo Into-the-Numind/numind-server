@@ -294,6 +294,12 @@ func (r *UsageRecorder) buildRecord(event *UsageEvent) *model.UsageRecord {
 		// (Batch A auto-caching). Additive: 0 ⇒ cost/revenue fall back to full
 		// input price, byte-identical to pre-cache behavior.
 		record.CachedPromptTokens = event.Usage.CachedPromptTokens
+		// CacheCreationTokens is the cache-WRITE (creation) subset — a PREMIUM
+		// bucket distinct from the read hits above. Explicit copy (NOT via
+		// Normalize, a deliberate no-op for this field). 0 for every non-native-
+		// Claude event ⇒ cost/revenue 3-bucket carve collapses to the read-only
+		// path byte-identically (zero regression). T2.
+		record.CacheCreationTokens = event.Usage.CacheCreationTokens
 		record.EstimatedPromptTokens = event.Usage.EstimatedPromptTokens
 	}
 	if event.Embedding != nil {
@@ -370,11 +376,12 @@ func (r *UsageRecorder) computeCost(ctx context.Context, record *model.UsageReco
 		if r.calc == nil {
 			return 0 // Defensive: tests may build a UsageRecorder without wiring calc.
 		}
-		// CalculateCostWithCache bills the cache-HIT subset of PromptTokens at the
-		// rule's discounted cached input price when set; when the cached price is
-		// NULL (or CachedPromptTokens==0) it is byte-identical to CalculateCost.
-		costCents, err := r.calc.CalculateCostWithCache(ctx, record.ServiceType, record.Provider, record.Model,
-			record.PromptTokens, record.CompletionTokens, record.CachedPromptTokens)
+		// CalculateCostWithCacheRW bills the 3-bucket carve: cache-WRITE (creation)
+		// at a PREMIUM, cache-READ at a DISCOUNT, the remainder at full input.
+		// CacheCreationTokens==0 AND CachedPromptTokens==0 (or NULL cache prices) ⇒
+		// byte-identical to CalculateCost. Symmetric with computeRevenue's carve.
+		costCents, err := r.calc.CalculateCostWithCacheRW(ctx, record.ServiceType, record.Provider, record.Model,
+			record.PromptTokens, record.CompletionTokens, record.CachedPromptTokens, record.CacheCreationTokens)
 		if err != nil {
 			return 0
 		}
