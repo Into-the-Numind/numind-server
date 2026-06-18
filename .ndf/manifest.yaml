@@ -5238,15 +5238,14 @@ features:
   ndf_version: '3.0'
   description: 'Agent mode 输出与附件呈现 UX 打包修复(用户测试报告 4 项, 第3项疑问已答不进范围): ①技能名缺失(前端 bug)——后端 tool_call_start.input_preview 已带 name+narration 模板正确, 前端 agentChat.ts actionLabels 漏 load_skill 落默认分支显示"正在调用工具 load_skill", 修=前端补 load_skill 从 input_preview.name 取名。②系统提示泄露用户气泡(后端 bug)——buildAgentInput(student_run_lifecycle.go:419)拼的"【系统提示】用户上传了以下附件请调用 file_read…"被同时喂 LLM(对)+持久化进 agent_run.Messages(错, runner.go:1324), 前端 transformMessages 原样渲染, 修=后端分离 LLM input 与持久化/展示原文(保留引导指令进 LLM)。③工具进行中无反馈(前端 UX)——后端有 tool_call_progress 事件+前端有 Loader2 spinner 但 label 运行中永远取首个事件文案不更新, 长工具(docx/html)中间静止, 修=前端显示最新 progress 消息+更明显进行中动效(闪烁点)。④生成文件统一走卡片而非下载链接(后端为主)——image_collector 只收图片嵌 final answer markdown, 文档(docx/html/pdf)未收集未嵌入只靠 AI 手写链接, 修=后端建对称 artifact 收集器把所有生成文件统一嵌入(图片![] 文档[] 独占一行), 前端 AgentArtifactItem+DOC_EXTS 已支持卡片+预览自动受益。跨 numind-server+numind-web-v3。'
   classification_reason: 'Standard(用户 2026-06-18 确认"一个 feature 打包"): 单看 4 修复各满足 Hotfix(无 DB schema/无新 API 端点/无新外部服务/非支付权限), 但合并跨前后端+影响文件数>3(约 6-8 文件)→升 Standard。问题二、五是正确性 bug 属 Bug-from-Customer(Rule 11): 对应 task 第一个 commit 须失败复现测试(Go)。'
-  last_updated_by: ai-s5
+  last_updated_by: ai-s6
   last_updated_at: '2026-06-18T15:21:00+0800'
   created_at: '2026-06-18T15:21:00+0800'
   track: standard
-  stage: S5
+  stage: S6
   status: active
   repos: [numind-server, numind-web-v3]
-  branches: {numind-server: feature/agent-output-ux-fixes, numind-web-v3: feature/agent-output-ux-fixes}
-  worktrees: {numind-server: /private/tmp/wt-agent-output-ux-fixes-numind-server, numind-web-v3: /private/tmp/wt-agent-output-ux-fixes-numind-web-v3}
+  branches: {numind-server: develop (merged via ndf-done 56e4c59b), numind-web-v3: develop (merged via ndf-done e22b2d0)}
   progress: {total_tasks: 5, completed_tasks: 5, reviewed_tasks: 5}
   artifacts: {requirement: .ndf/features/agent-output-ux-fixes/requirement.md, proposal: .ndf/features/agent-output-ux-fixes/proposal.md, spec: .ndf/features/agent-output-ux-fixes/spec.md, plan: .ndf/features/agent-output-ux-fixes/plan.md, qa: .ndf/features/agent-output-ux-fixes/qa-report.md}
   decisions:
@@ -5256,4 +5255,5 @@ features:
   - 'S3 (ai 2026-06-18): plan.md 5 个代码 task(T1 后端问题二→T2 后端问题五 串行同改 runner.go; T3/T4/T5 前端独立)+T6 S5 策略。独立 Sonnet 原子性 review = PASS_WITH_CONCERNS(原子性/依赖/spec覆盖/Bug-from-Customer 全过), 2 P1+2 P2 已全部就地补进 plan: P1-1 给 gstack /qa 加显式阻塞门禁语义(任一关键路径失败阻塞交付); P1-2 T2 验收补 html reload 读路径重签为 inline(cos_resign cosIsInlineRenderName 改动覆盖读路径, T1 student_query 附件分支无需动); P2-1 T3 补 result 态带名 vitest 断言; P2-2 T4 补 label latest/first 切换 vitest。验证策略: 后端两正确性 bug Go 单测本地真跑(永久回归)+前端 html 提取/label 逻辑 vitest+视觉(技能名/流动点/卡片iframe)gstack /qa 对 dev 取证(诚实偏离, 用户指令止于 dev)。下一步 S4 编码 TDD+每 task 双 Sonnet review。'
   - 'S4 完成 (ai 2026-06-18): 5 task 全做完, 每 task 双 Sonnet review 均 PASS_WITH_CONCERNS, P1/P2 全就地修。后端(worktree numind-server): T1 问题二(RED 154fab24 复现测试→GREEN 48a9a58b 接线→review-fix 49153df5: displayUserText 分离持久化/展示 + attachments chip + 短路路径+persistYield+memory 全覆盖 + strPtr 消别名 + 纯附件 E2E); T2 问题五(RED test(qa)→GREEN 41d76113→review-fix 6dfd6c58: imageCollector→artifactCollector 泛化 + finalizeInto 文档独占行卡片 + stripNodesReferencing 正则修前缀碰撞 + HTML inline 签名 uploadGeneratedFile+cos_resign + create_html 补.html)。前端(worktree numind-web-v3): T5 html DOC_EXTS/MIME_BY_EXT(34ee53b); T3 load_skill 技能名 label+skill_name aggregate(10aa790); T4 流动点+latest label(5805546); review-fix fff7cf0(CSS 对齐+补 vitest)。门禁全绿: 后端 go test ./biz/agent + vet; 前端 type-check + eslint + vitest 965 passed。Bug-from-Customer: T1/T2 各有 test(qa) 复现 commit 链永久留存。下一步 S5 验收(确定性门禁本地真跑 + 视觉 gstack/qa 留 S6 dev)。'
   - 'S5 (ai 2026-06-18): 确定性门禁本地全 PASS。后端: go build ./... ✓ / go test ./biz/agent ✓ / go test -race ✓(17.8s) / go vet ✓ / gofmt 净(task lint 因 golangci-lint 不在 PATH 未跑, go vet 兜底)。前端: type-check ✓ / eslint(改动文件)✓ / vitest 90 files 965 passed。覆盖两后端正确性 bug + html 提取逻辑(永久回归)。视觉/交互(技能名/流动点/文件卡片+HTML iframe 预览)按 plan T6 诚实声明转 S6 dev gstack /qa(交付阻塞门禁)。qa-report.md 已出。下一步 S6 ndf-done 合两仓库 develop + 部署 dev + gstack /qa 取证。'
+  - 'S6 (ai 2026-06-18): ndf-done 合并两仓库 → develop 已 push 并复核(origin/develop server=56e4c59b 含 artifact_collector.go / web=e22b2d0 含 DOC_EXTS html; 两 worktree+分支已清)。dev 部署: numind-server(server) + numind-web-v3 并发后台 release.sh dev(不同仓库不共享构建锁)。部署完做 healthz + gstack /qa 验 3 条关键路径(附件气泡无系统提示 / 技能名 / docx+html 卡片+预览+流动点)。prod 不在本次授权(用户指令止于 dev)。'
   blockers: []
