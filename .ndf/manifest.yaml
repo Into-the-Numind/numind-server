@@ -5351,3 +5351,20 @@ features:
   decisions:
   - 'H1-H3 (ai 2026-06-18): 根因=Eino react StreamToolCallChecker(streamScanToolCallChecker)是模型输出帧实时流经+emit 的唯一源(consumeEinoStream 只读 END copy), BE-1 把 args-delta emit 放错地方。修=checker 循环加 args-delta emit(hasState && isCodeStreamingTool 门禁); consumeEinoStream emit 加 !checkerActive 守卫(与 token/reasoning delta 一致, 生产单发)。复现测试(schema.Pipe 喂 checker content-less args-delta 帧 + WithStreamState 断言 ch 收 EventToolCallArgsDelta)RED→GREEN; 旧 consumeEinoStream 测试走 no-checker 路径仍 PASS。双 Sonnet review PASS/PASS(核实: 单发/continue 安全[args-delta 帧与 ToolCalls/FinishReason 终态帧互斥]/seq 并发原子安全)。门禁全绿。下一步 ndf-done + 部署 dev 复测代码框。'
   blockers: []
+- id: agent-live-render-fixes
+  ndf_version: '3.0'
+  description: 'dev 回归(2026-06-18, web-only): followup3 两个前端 live 渲染 bug。①流式"写代码框"不显示: SSE 抓取(run 180)证实后端发 1802 个 tool_call_args_delta, 但每步 args-delta 早于 tool_call_start→旧 updateStreamingToolCall 找不到 aggregate→no-op→argsStream 丢。②生成结束后文件卡片+复制按钮不自动出现(要刷新): reconcileFromDB 把 final_output(含卡片链接)写进 assistant 类型气泡(纯 markdown 不拆卡片/无复制), 而 reload 快照末尾是 final_answer(AgentFinalAnswer 拆卡片+复制)。修=A 独立 liveCodeStreams buffer(按 tool_call_id 不依赖 aggregate); B reconcile 把最后 finalized 气泡原地转 final_answer。'
+  classification_reason: 'Hotfix: 仅 numind-web-v3/无 DB/无新 API/无新外部服务/文件数 ≤3(agentChat.ts+types/agent.ts+测试)/非支付权限。Bug-from-Customer(复现测试先行)。'
+  last_updated_by: ai-h3
+  last_updated_at: '2026-06-19T00:10:00+0800'
+  created_at: '2026-06-19T00:00:00+0800'
+  track: hotfix
+  stage: H3
+  status: active
+  repos: [numind-web-v3]
+  branches: {numind-web-v3: fix/agent-live-render-fixes}
+  worktrees: {numind-web-v3: /private/tmp/wt-agent-live-render-fixes-numind-web-v3}
+  progress: {total_tasks: 1, completed_tasks: 1, reviewed_tasks: 1}
+  decisions:
+  - 'H1-H3 (ai 2026-06-18): 用 dev SSE 抓取(run 180)+getRun+快照运行时定位(按 CLAUDE.md §6 不纯静态推理)。根因 A=args-delta 早于 tool_call_start(每步先吐参数再装配 tool call), 旧 emit 写不存在的 aggregate; 根因 B=reconcile 保持 assistant 类型(AgentMessageItem 纯 markdown 不拆卡片), final_answer(AgentFinalAnswer)才拆卡片+复制。修 A=liveCodeStreams/Order/DoneIds 三 buffer(ref 重新赋值触发响应式), activeCodeStream 取最新未done, result/error 标 done 收起, reset 清; 修 B=reconcileFromDB 最后气泡原地转 final_answer(findIndex by _stream_id), 早期 step 保持 finalized assistant, 守住多run隔离/全finalize/幂等(旧回归测试同步更新)。复现测试先行 RED→GREEN。双 Sonnet review PASS/PASS(3 LOW: buffer累积 negligible+reset清/indexOf→findIndex 已采纳/空final_output有意)。门禁: type-check+eslint+vitest 975 passed。下一步 ndf-done web + 部署 dev。'
+  blockers: []
