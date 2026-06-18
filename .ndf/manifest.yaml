@@ -5334,3 +5334,20 @@ features:
   decisions:
   - 'H1-H3 (ai 2026-06-18): 根因=Eino internal/concat.go ConcatSliceValue 对 Extra map 每 key 多非零值无注册 concat func 则报错。修=init() 调 compose.RegisterStreamChunkConcatFunc[*aiservice.ToolCallArgsDelta](拼 ArgsDelta+保首个 ToolCallID/FunctionName); 对执行无害(dispatch 用组装 ToolCalls 非 Extra), consumeEinoStream 仍 concat 前逐帧读(流式不受影响)。复现测试(schema.ConcatMessages 两条带 Extra 消息)RED→GREEN。双 Sonnet review PASS/PASS(code-quality 核实 Extra 不泄漏持久化/LLM: buildTranscriptTurns 只取 role/content/reasoning/tool_calls, convertToAiserviceRequest 不碰 Extra)。门禁: go build ./... + go test agent+adapter + vet + gofmt 全绿。下一步 ndf-done + 部署 dev 复测 file_read。'
   blockers: []
+- id: agent-argsdelta-emit-from-checker
+  ndf_version: '3.0'
+  description: 'dev 回归(2026-06-18): followup3 FE-3 流式写代码框不显示。根因=args-delta 合成帧(content-less, Extra 带 *ToolCallArgsDelta)流经 streamScanToolCallChecker(实时泵, 读每步模型输出), 而 BE-1 把 EventToolCallArgsDelta 的 emit 错误只加在 consumeEinoStream(只 drain END copy, 收不到中间工具调用轮)→生产路径永不 emit。修=checker 加 emit + consumeEinoStream 加 !checkerActive 守卫(退化 no-checker 兜底, 防双发)。'
+  classification_reason: 'Hotfix: 无 DB/无新 API/无新外部服务/文件数 ≤3(runner_runstream.go+runner_stream.go+复现测试)/非支付权限。Bug-from-Customer(复现测试先行)。'
+  last_updated_by: ai-h3
+  last_updated_at: '2026-06-18T23:55:00+0800'
+  created_at: '2026-06-18T23:45:00+0800'
+  track: hotfix
+  stage: H3
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: fix/agent-argsdelta-emit-from-checker}
+  worktrees: {numind-server: /private/tmp/wt-agent-argsdelta-emit-from-checker-numind-server}
+  progress: {total_tasks: 1, completed_tasks: 1, reviewed_tasks: 1}
+  decisions:
+  - 'H1-H3 (ai 2026-06-18): 根因=Eino react StreamToolCallChecker(streamScanToolCallChecker)是模型输出帧实时流经+emit 的唯一源(consumeEinoStream 只读 END copy), BE-1 把 args-delta emit 放错地方。修=checker 循环加 args-delta emit(hasState && isCodeStreamingTool 门禁); consumeEinoStream emit 加 !checkerActive 守卫(与 token/reasoning delta 一致, 生产单发)。复现测试(schema.Pipe 喂 checker content-less args-delta 帧 + WithStreamState 断言 ch 收 EventToolCallArgsDelta)RED→GREEN; 旧 consumeEinoStream 测试走 no-checker 路径仍 PASS。双 Sonnet review PASS/PASS(核实: 单发/continue 安全[args-delta 帧与 ToolCalls/FinishReason 终态帧互斥]/seq 并发原子安全)。门禁全绿。下一步 ndf-done + 部署 dev 复测代码框。'
+  blockers: []
