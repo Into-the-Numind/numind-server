@@ -132,6 +132,13 @@ type TokenUsage struct {
 	// input rate. Additive field: providers that do not report cache hits leave
 	// it 0 (omitempty), so cost/usage stay byte-identical to pre-cache behavior.
 	CachedPromptTokens int `json:"cached_prompt_tokens,omitempty"`
+	// CacheCreationTokens is the subset of PromptTokens the provider WROTE into its
+	// prompt cache on this call (Anthropic cache_creation_input_tokens — a PREMIUM
+	// bucket, NOT a discount). Distinct from CachedPromptTokens (read hits). Set
+	// ONLY by the native Claude adapter; every other adapter leaves it 0 (omitempty),
+	// so cost/usage stay byte-identical to pre-cache behavior. Gemini's implicit
+	// cache has no separate creation bucket → 0 (D5).
+	CacheCreationTokens int `json:"cache_creation_tokens,omitempty"`
 }
 
 // ResponseFormatType enumerates the structured-output modes the Gateway

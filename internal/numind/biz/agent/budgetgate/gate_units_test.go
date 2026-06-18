@@ -34,6 +34,10 @@ func (f *fakePricing) CalculateCostWithCache(ctx context.Context, st, provider, 
 	return f.CalculateCost(ctx, st, provider, model, p, c)
 }
 
+func (f *fakePricing) CalculateCostWithCacheRW(ctx context.Context, st, provider, model string, p, c, _, _ int) (int64, error) {
+	return f.CalculateCost(ctx, st, provider, model, p, c)
+}
+
 // TestPostToolCall_ConvertsTokensViaPricing pins the primary path: with a
 // pricing calculator wired, the tracker accumulates the calculator's credit
 // figure (cost cents == credits, same convention as the billing gateway).

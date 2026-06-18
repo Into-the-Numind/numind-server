@@ -320,6 +320,15 @@ func (s *spyCalculator) CalculateCostWithCache(ctx context.Context, serviceType,
 	return s.CalculateCost(ctx, serviceType, provider, model, promptTokens, completionTokens)
 }
 
+// CalculateCostWithCacheRW satisfies pricing.ICalculator. It delegates to
+// CalculateCost (both cache buckets ignored) so existing assertions on the
+// recorded 5-tuple of args continue to hold.
+func (s *spyCalculator) CalculateCostWithCacheRW(ctx context.Context, serviceType, provider, model string,
+	promptTokens, completionTokens, _, _ int,
+) (int64, error) {
+	return s.CalculateCost(ctx, serviceType, provider, model, promptTokens, completionTokens)
+}
+
 // TestBuildRecord_CallsPricingCalculator verifies that the recorder, after
 // Task B.4, delegates cost calculation to the injected pricing.ICalculator on
 // the LLM path (prompt + completion tokens). The stub calculator records the

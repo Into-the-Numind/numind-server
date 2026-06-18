@@ -420,25 +420,43 @@ func (r *UsageRecorder) computeRevenue(ctx context.Context, record *model.UsageR
 		if rule.BillingMode == "tiered_token" {
 			revenueYuan = r.calculateTieredRevenue(ctx, rule.ID, record.PromptTokens, record.CompletionTokens)
 		} else {
-			// Cache-aware revenue (sell dimension). cached is clamped to
-			// [0, PromptTokens] to defend a provider reporting cached > prompt.
-			// SellCachedInputPricePerMTok NULL ⇒ cachedSell == SellInputPricePerMTok
-			// ⇒ the cached + non-cached terms collapse to the pre-cache formula
-			// (byte-identical when cached==0 OR cached price NULL). NULL-safe
-			// independently of the cost-side cached column (P1 #5 paired-column).
-			cached := record.CachedPromptTokens
-			if cached < 0 {
-				cached = 0
+			// Cache-aware revenue (sell dimension), symmetric with the cost-side
+			// 3-bucket carve (pricing.CalculateCostWithCacheRW, D3): cache-WRITE
+			// (creation) is a PREMIUM, cache-READ a DISCOUNT, the remainder full
+			// sell input. Carve write FIRST, then read, with the SAME clamp
+			// ordering as cost so nonCached can never go negative on a provider
+			// over-report (cw clamps to [0, prompt]; cr to [0, prompt-cw]).
+			//
+			// Zero-regression: CacheCreationTokens==0 (every non-Claude call) ⇒
+			// cw=0 ⇒ this collapses to the prior read-only carve byte-identically.
+			// SellCacheCreationInputPricePerMTok NULL ⇒ cwSell == SellInputPricePerMTok
+			// ⇒ the write bucket is priced exactly as today (no premium). Each sell
+			// cache column is NULL-safe independently of its cost-side pair.
+			cw := record.CacheCreationTokens
+			if cw < 0 {
+				cw = 0
 			}
-			if cached > record.PromptTokens {
-				cached = record.PromptTokens
+			if cw > record.PromptTokens {
+				cw = record.PromptTokens
 			}
-			cachedSell := rule.SellInputPricePerMTok
+			cr := record.CachedPromptTokens
+			if cr < 0 {
+				cr = 0
+			}
+			if cr > record.PromptTokens-cw {
+				cr = record.PromptTokens - cw
+			}
+			cwSell := rule.SellInputPricePerMTok
+			if rule.SellCacheCreationInputPricePerMTok != nil {
+				cwSell = *rule.SellCacheCreationInputPricePerMTok
+			}
+			crSell := rule.SellInputPricePerMTok
 			if rule.SellCachedInputPricePerMTok != nil {
-				cachedSell = *rule.SellCachedInputPricePerMTok
+				crSell = *rule.SellCachedInputPricePerMTok
 			}
-			nonCached := record.PromptTokens - cached
-			revenueYuan = float64(cached)/1_000_000*cachedSell +
+			nonCached := record.PromptTokens - cw - cr
+			revenueYuan = float64(cw)/1_000_000*cwSell +
+				float64(cr)/1_000_000*crSell +
 				float64(nonCached)/1_000_000*rule.SellInputPricePerMTok +
 				float64(record.CompletionTokens)/1_000_000*rule.SellOutputPricePerMTok
 		}
