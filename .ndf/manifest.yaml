@@ -5234,3 +5234,21 @@ features:
   - 'S6 dev 部署完成 (ai 2026-06-17): crawl4ai 落户构建机 139.155.129.13:11235(选构建机=7.3G内存最足/已有/零新账号绕开首单风控/当前空载;经腾讯云镜像源拉 amd64 镜像因 Docker Hub 国内不可达)。安全: iptables DOCKER-USER 入站 11235 仅 dev 49.233.219.254/prod 129.28.125.51/本桥, 出站封容器→10/8+192.168+169.254(实测 metadata exit28 拦住); 用户腾讯云安全组放行同两 IP(轻量防火墙); 双层。dev/prod 出口公网 IP 实测=各自已知 IP 与白名单吻合, 两边 curl /health 200 秒通。config_dev base_url=http://139.155.129.13:11235 已合并 push develop。后端部署 dev: 撞另一 session 的 admin 部署占共享锁(admin/server 同 numind-server 仓库共享 Mac 本地锁)→首次等锁 900s 超时(非故障, 等对方 510s 后释放)→重试抢锁成功(build 175s/push 14s/Release complete, 容器 develop-250707ea-dirty healthy, healthz ok)。验证: 部署链路全通(代码+配置+可达), 渲染路径由 S5 live(真容器渲染 JS+真 Go 客户端)+dev 集成(可达+配置)复合验证。运维: compose ~/crawl4ai/docker-compose.yml(mem5g/shm1g), harden.sh ~/crawl4ai/(reboot/docker 重启需重跑)。待: 用户在 dev 跑 agent 读 JS 网页做产品验收(我取证 Langfuse span fetch_path=render); prod 启用(配 prod base_url+部署)是用户单独拍板, 本 feature 不碰 prod。'
   - 'S6 验收通过 (ai 2026-06-17): 用户在 dev 跑 agent_run 168(读 quotes.toscrape.com/js/), web_fetch 走 crawl4ai 渲染三重确证: ①dev 后端日志 falling-back 计数=0(未退裸抓) ②agent 完整提取全部 10 条 JS 动态加载名言(裸抓只能空壳→渲染铁证) ③web_fetch 耗时 ~10s(22:55:51→22:56:01, 浏览器渲染延迟非裸抓瞬时)。S6 dev 部署+人工验收完成, feature 交付 dev。S7/prod 启用=用户单独决定未做(config_prod.yaml 禁改→需运维加 prod crawl4ai 配置块[样例 deploy/crawl4ai/README.md]+部署 prod 后端; 网络已备: prod IP 在 iptables 白名单+安全组, prod→构建机:11235 实测秒通)。'
   blockers: []
+- id: agent-output-ux-fixes
+  ndf_version: '3.0'
+  description: 'Agent mode 输出与附件呈现 UX 打包修复(用户测试报告 4 项, 第3项疑问已答不进范围): ①技能名缺失(前端 bug)——后端 tool_call_start.input_preview 已带 name+narration 模板正确, 前端 agentChat.ts actionLabels 漏 load_skill 落默认分支显示"正在调用工具 load_skill", 修=前端补 load_skill 从 input_preview.name 取名。②系统提示泄露用户气泡(后端 bug)——buildAgentInput(student_run_lifecycle.go:419)拼的"【系统提示】用户上传了以下附件请调用 file_read…"被同时喂 LLM(对)+持久化进 agent_run.Messages(错, runner.go:1324), 前端 transformMessages 原样渲染, 修=后端分离 LLM input 与持久化/展示原文(保留引导指令进 LLM)。③工具进行中无反馈(前端 UX)——后端有 tool_call_progress 事件+前端有 Loader2 spinner 但 label 运行中永远取首个事件文案不更新, 长工具(docx/html)中间静止, 修=前端显示最新 progress 消息+更明显进行中动效(闪烁点)。④生成文件统一走卡片而非下载链接(后端为主)——image_collector 只收图片嵌 final answer markdown, 文档(docx/html/pdf)未收集未嵌入只靠 AI 手写链接, 修=后端建对称 artifact 收集器把所有生成文件统一嵌入(图片![] 文档[] 独占一行), 前端 AgentArtifactItem+DOC_EXTS 已支持卡片+预览自动受益。跨 numind-server+numind-web-v3。'
+  classification_reason: 'Standard(用户 2026-06-18 确认"一个 feature 打包"): 单看 4 修复各满足 Hotfix(无 DB schema/无新 API 端点/无新外部服务/非支付权限), 但合并跨前后端+影响文件数>3(约 6-8 文件)→升 Standard。问题二、五是正确性 bug 属 Bug-from-Customer(Rule 11): 对应 task 第一个 commit 须失败复现测试(Go)。'
+  last_updated_by: ai-s0
+  last_updated_at: '2026-06-18T15:21:00+0800'
+  created_at: '2026-06-18T15:21:00+0800'
+  track: standard
+  stage: S0
+  status: active
+  repos: [numind-server, numind-web-v3]
+  branches: {numind-server: feature/agent-output-ux-fixes, numind-web-v3: feature/agent-output-ux-fixes}
+  worktrees: {numind-server: /private/tmp/wt-agent-output-ux-fixes-numind-server, numind-web-v3: /private/tmp/wt-agent-output-ux-fixes-numind-web-v3}
+  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
+  artifacts: {requirement: .ndf/features/agent-output-ux-fixes/requirement.md}
+  decisions:
+  - 'S0 (ai 2026-06-18): 源于用户在 agent mode 测试中报告 4 个问题+1 个疑问。四路只读 Explore 调查定位全部根因(见 requirement.md)。问题三(附件读取机制)是疑问已答=主路径 AI 主动调 file_read, MarkItDown 仅在模型不支持原生多模态兜底分支用, 不改代码。用户拍板"一个 Standard feature 打包"4 个修复。等 S0 gate 确认继续评估。'
+  blockers: []
