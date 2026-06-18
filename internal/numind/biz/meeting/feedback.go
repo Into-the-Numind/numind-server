@@ -348,11 +348,23 @@ func buildFeedbackSystemPrompt(rolePrompt, trigger string) string {
 	if trigger == model.MeetingFeedbackTriggerManual {
 		sb.WriteString("依据上述角色，阅读最近的会议转写，现在必须给出一条反馈。反馈应简洁、可立即使用，直接输出反馈正文本身，不要任何前后缀、解释或标记。")
 	} else {
-		sb.WriteString("依据上述角色，阅读最近的会议转写。判断此刻是否应给出反馈。若应当，直接输出反馈正文（简洁、可立即使用），不要任何前后缀或解释；若此刻不需要，仅输出 ")
+		// 规则化判定（让模型按可核对的条件决定，而非"尽量找"这类模糊指令）：满足任一「给反馈」
+		// 条件即输出反馈；仅当两条「沉默」条件同时成立才输出 NO_FEEDBACK；不确定时倾向给反馈。
+		sb.WriteString("依据上述角色，阅读最近的会议转写，按以下规则决定：\n\n")
+		sb.WriteString("【给出反馈】满足以下任一条，就直接输出一条反馈正文（简洁、可立即使用，不要任何前后缀或解释）：\n")
+		sb.WriteString("1. 最近的对话触发了上述角色规则中明确规定的介入时机；\n")
+		sb.WriteString("2. 出现了新的观点、问题、需求、异议或信息；\n")
+		sb.WriteString("3. 存在事实错误、逻辑漏洞、自相矛盾，或遗漏了关键点；\n")
+		sb.WriteString("4. 讨论出现重复、绕圈、跑题或卡住；\n")
+		sb.WriteString("5. 形成了一个可被确认、凝练或推进到下一步的结论。\n\n")
+		sb.WriteString("【保持沉默】仅当以下两条同时成立时，才只输出 ")
 		sb.WriteString(noFeedbackSentinel)
-		sb.WriteString(" 这一个标记，不要有其他内容。")
+		sb.WriteString(" 这一个标记、不要有其他任何内容：\n")
+		sb.WriteString("1. 最近的对话相比你上一条反馈没有任何新的实质内容；\n")
+		sb.WriteString("2. 且不满足上面任何一条「给出反馈」的条件。\n\n")
+		sb.WriteString("判定不确定时，给出反馈。不要逐字重复你已经给过的反馈，但可以从新角度补充或推进。")
 	}
-	sb.WriteString("\n\n请参考下面的会议滚动摘要了解整场会议的全局脉络；不要重复你已经给过的反馈。")
+	sb.WriteString("\n\n请参考下面的会议滚动摘要了解整场会议的全局脉络。")
 	return sb.String()
 }
 
