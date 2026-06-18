@@ -106,10 +106,9 @@ func NewDMXAPIAdapter() *DMXAPIAdapter {
 	imgCfg := httpclient.DefaultConfig()
 	imgCfg.Timeout = imageGenHTTPTimeout
 	imgCfg.ResponseHeaderTimeout = imageGenHTTPTimeout
-	// Image generation is NON-idempotent — a retry on timeout would make the
-	// provider generate (and bill on its side) the same prompt again. Single
-	// attempt, matching the legacy raw-HTTP path.
-	imgCfg.MaxRetries = 0
+	// NOTE: single-attempt (non-idempotent image gen) is enforced via the request's
+	// RetryPolicy{MaxRetries:0} in ImageGen — Config.MaxRetries is ignored by the
+	// httpclient retry loop, so we do NOT rely on it here.
 	return &DMXAPIAdapter{
 		client:         httpclient.NewClient(httpclient.LLMConfig()),
 		streamClient:   httpclient.NewClient(httpclient.LLMStreamConfig()),
@@ -480,9 +479,13 @@ func (d *DMXAPIAdapter) ImageGen(ctx context.Context, route *registry.ResolvedRo
 			"x-goog-api-key": route.Provider.APIKey,
 			"Content-Type":   "application/json",
 		},
-		// One-shot non-streaming call; allow a couple of retries on transient blips
-		// (httpclient applies exponential backoff). Matches the chat doPost budget.
-		RetryPolicy: &httpclient.RetryPolicy{MaxRetries: dmxapiPostMaxRetries},
+		// Image generation is NON-idempotent — a retry would make the provider
+		// generate (and bill on its side) the same prompt again. Single attempt
+		// (MaxRetries: 0), mirroring the streaming client. NOTE: the retry budget is
+		// THIS req.RetryPolicy, NOT the client Config.MaxRetries — the httpclient
+		// retry loop reads req.RetryPolicy.MaxRetries (client.go), so setting the
+		// config knob alone does nothing.
+		RetryPolicy: &httpclient.RetryPolicy{MaxRetries: 0},
 	})
 	if err != nil {
 		return nil, wrapHTTPClientErr("dmxapi.ImageGen", err)
