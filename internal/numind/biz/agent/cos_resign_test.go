@@ -63,6 +63,21 @@ func TestResignCOSLinks_ImagesSignInline(t *testing.T) {
 	}
 }
 
+// HTML must re-sign INLINE (no attachment disposition) so a reloaded session's artifact
+// card can render the page in its sandboxed iframe rather than force-downloading it
+// (agent-output-ux-fixes 问题五, plan P1-2).
+func TestResignCOSLinks_HTMLSignsInline(t *testing.T) {
+	key := "agent-outputs/1/20260618-150405-页面.html"
+	md := "[页面](https://" + testCOSHost + "/" + key + "?q-signature=OLD)"
+	got := resignCOSLinksWithHost(context.Background(), md, testCOSHost, fakeSigner())
+	if !strings.Contains(got, "q-signature=IMG") {
+		t.Fatalf("html must use the inline signer (iframe preview), got: %s", got)
+	}
+	if strings.Contains(got, "attachment") {
+		t.Fatalf("html must NOT get an attachment disposition (breaks iframe preview), got: %s", got)
+	}
+}
+
 func TestResignCOSLinks_MultipleLinksAllReplaced(t *testing.T) {
 	docKey := "agent-outputs/1/a-report.docx"
 	imgKey := "agent-outputs/1/b-chart.png"

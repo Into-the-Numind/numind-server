@@ -159,13 +159,18 @@ func artifactObjectKey(u string) string {
 	return u
 }
 
-// stripNodesReferencing removes every markdown image/link node whose URL contains
-// objectKey from content (used so a model-written inline doc link does not survive
-// as a naked link beside the standalone card). Best-effort: empty objectKey → no-op.
+// stripNodesReferencing removes every markdown image/link node whose URL IS objectKey
+// (optionally followed by a ?query / #fragment) from content — used so a model-written
+// inline doc link does not survive as a naked link beside the standalone card.
+//
+// The URL must END at objectKey: the char after it may only be `?`, `#`, trailing
+// whitespace, or the closing `)`. This avoids a prefix collision where objectKey
+// "…/data" would otherwise also strip a different file "…/data.csv" generated in the
+// same second (review P1). Best-effort: empty objectKey → no-op.
 func stripNodesReferencing(content, objectKey string) string {
 	if objectKey == "" || content == "" {
 		return content
 	}
-	re := regexp.MustCompile(`!?\[[^\]]*\]\([^)]*` + regexp.QuoteMeta(objectKey) + `[^)]*\)`)
+	re := regexp.MustCompile(`!?\[[^\]]*\]\(\s*` + regexp.QuoteMeta(objectKey) + `(?:[?#][^)]*)?\s*\)`)
 	return re.ReplaceAllString(content, "")
 }

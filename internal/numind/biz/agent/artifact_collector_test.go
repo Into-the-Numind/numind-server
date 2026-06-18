@@ -107,3 +107,16 @@ func TestArtifactCollector_FinalizeInto_StripsInlineDocLink(t *testing.T) {
 	// exactly one occurrence of the docx URL remains (one card, no duplicate)
 	assert.Equal(t, 1, strings.Count(got, cosDocx), "exactly one reference → one card")
 }
+
+// Regression (review P1): stripNodesReferencing(content, keyA) must strip ONLY the node
+// whose URL IS keyA (+ optional query), NOT a different file whose URL has keyA as a
+// string prefix (e.g. "…-data" vs "…-data.csv" generated in the same second). The old
+// `[^)]*<key>[^)]*` pattern collaterally stripped the longer one.
+func TestStripNodesReferencing_NoPrefixCollision(t *testing.T) {
+	const keyA = "https://cos.example.com/agent-outputs/1/20260618-150405-data"
+	content := "[A](" + keyA + "?sig=1) 和 [B](" + keyA + ".csv?sig=2)"
+	got := stripNodesReferencing(content, keyA)
+	assert.NotContains(t, got, "[A]("+keyA+"?sig=1)", "the node whose URL IS keyA must be stripped")
+	assert.Contains(t, got, "[B]("+keyA+".csv?sig=2)",
+		"a different file sharing keyA as a prefix must NOT be collaterally stripped")
+}

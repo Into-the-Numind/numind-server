@@ -85,6 +85,12 @@ func (t *createHTMLTool) Execute(ctx context.Context, input ToolInput) (ToolResu
 	filename := in.Filename
 	if filename == "" {
 		filename = "generated_" + time.Now().Format("20060102_150405") + ".html"
+	} else if lower := strings.ToLower(filename); !strings.HasSuffix(lower, ".html") && !strings.HasSuffix(lower, ".htm") {
+		// Guarantee an .html extension so the read-path re-sign (cosIsInlineRenderName,
+		// extension-based) agrees with the write-path inline signing (mime-based) — else
+		// an extension-less name would re-sign as a download and break iframe preview on
+		// reload (问题五 review P2).
+		filename += ".html"
 	}
 
 	htmlBytes, err := renderHTML(in)

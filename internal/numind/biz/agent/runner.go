@@ -588,9 +588,9 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 	// 2.5. agent-mode-billing: wire billing ctx (bill-only) so every LLM call
 	// under this run is Reserved/Reconciled against the initiator's credits.
 	ctx = injectAgentBillingCtx(ctx, req, run.ID)
-	// Collect tool-generated images so they can be embedded as durable markdown in
-	// the persisted final answer (see image_collector.go). Covers the non-stream
-	// path (e.g. ask_user_question resume) symmetrically with RunStream.
+	// Collect tool-generated artifacts (images + documents/HTML) so they can be embedded
+	// as durable markdown in the persisted final answer (see artifact_collector.go).
+	// Covers the non-stream path (e.g. ask_user_question resume) symmetrically with RunStream.
 	ctx = withArtifactCollector(ctx)
 	// Collect narration/tool-call events on the run-level ctx so finalizeRun can
 	// persist the tool-call timeline into agent_run.messages (durable replay on
