@@ -5262,11 +5262,11 @@ features:
   ndf_version: '3.0'
   description: 'agent-output-ux-fixes dev 验收发现的 5 个问题修复(用户报告 2026-06-18): ①纯附件气泡多余分割线(前端 .user-atts border-top+空 text)②工具行上下 padding 不均(.tl-ic margin-top:2px)③生成文件时只有光标无进度(LLM 流式生成工具参数期 eino 未给完整 tool call→tool_call_start 晚发; 修=前端启发式 stalled→"正在生成…")④文件不稳定变卡片真凶=run_python 输出 files[] 数组但 artifactFromToolResult 只认单 fileCreateOutput→漏收→不剥不嵌; 修=后端多文件收集⑤a 任务结束还显"处理中"(isRunning 依赖 currentRun.status, terminal 后 reconcile 失败不复位)⑤b 3+指示器重复(工具行 spinner+跳动点同行; 删上轮加的跳动点)。设计 Option A: 每阶段一个信号+生成期明确提示, 问题3 前端启发式解耦低风险。跨 numind-server(BE1 多文件收集)+numind-web-v3(FE1-5)。'
   classification_reason: 'Standard(用户确认): 跨前后端 + 后端 artifact 收集逻辑(多文件)+流式/状态逻辑 + 文件数>3。无 DB schema/无新 API 端点/无新外部服务/非支付权限。源于上个 feature dev 验收, 属新一轮(原 feature 已 ndf-done 不可重开)。'
-  last_updated_by: ai-s5
+  last_updated_by: ai-s6
   last_updated_at: '2026-06-18T18:02:25+0800'
   created_at: '2026-06-18T18:02:25+0800'
   track: standard
-  stage: S5
+  stage: S6
   status: active
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/agent-output-ux-followup, numind-web-v3: feature/agent-output-ux-followup}
@@ -5276,4 +5276,5 @@ features:
   decisions:
   - 'S0-S3 (ai 2026-06-18): 源于 agent-output-ux-fixes dev 验收用户报 5 问题。三路只读调查定位根因(见 spec.md): 问题4 真凶=run_python files[] 数组漏收(artifactFromToolResult 只认单文件)。用户拍板 Option A(每阶段一信号+生成期提示)+新开 Standard。关键简化: 问题3 前端启发式(stalled→正在生成…)不依赖后端 eino partial tool call, 前后端解耦低风险→后端只改问题4(多文件收集)。合并 S0-S3 为单 spec.md(followup 批量 pragmatic)。用 dynamic workflow 实现: BE1‖FE1-5(Tier2 跨仓库并行)+每仓库双 review。下一步 workflow S4。'
   - 'S4 (ai 2026-06-18): dynamic workflow 跑实现阶段(BE‖FE 并行)。期间用户刷新 dev 暴露新证据: HTML(create_html 单文件)被收+卡片但表格那格空了(我上轮 stripNodesReferencing 剥表格单元格), docx(run_python files[])仍漏收。据此**改设计→表格安全**: 不再 strip 模型链接(剥表格留空格子+卡片脱离); 改 hasStandaloneCardableLine 判定(模型已写独占可成卡片行则跳过, 否则只 append 独占卡片行), 表格/行内链接保留。停 workflow(BE 已 commit 多文件收集 2 commit, FE 半成品), 主 session 接管收尾: BE 加 table-safe 重构 commit; FE 完成 5 修+补 agentGeneration 测试。每仓库补 4 路 Sonnet review(workflow review 阶段未跑): BE PASS_WITH_CONCERNS, FE 抓到 P1=FE5 没接入组件(agent 被停在写组件前, "正在生成…"从不出现)→主 session 接入 AgentMessageItem(store+1s ticker+isGenerating computed+动效 reduced-motion); BE P2=hasStandaloneCardableLine 缺单行单节点守卫(两链接同行尾部丢卡片)已修+测试。门禁全绿: BE go build ./... + go test + vet; FE type-check + eslint + vitest 91files 975passed。下一步 S6 ndf-done 合两仓库+部署 dev。'
+  - 'S6 (ai 2026-06-18): ndf-done 合两仓库→develop 已 push 并复核(origin/develop server=de8532eb 含 hasStandaloneCardableLine x3 / web=8fd562c 含 agentGeneration.ts; worktree+分支已清)。dev 部署两仓库并发 release.sh: server develop-de8532eb-dirty(build 249s, /healthz ok) + web develop-8fd562c(/health healthy)。剩 S6 硬门禁=用户在 dev 亲手验收 5 问题(纯附件无分割线/工具行 padding 均匀/生成期"正在生成…"/docx+html 都稳定卡片且表格不破/结束后无"处理中"+指示器不重复)。prod 不在授权(止于 dev)。'
   blockers: []
