@@ -1,8 +1,10 @@
 package adapter
 
 import (
+	"fmt"
 	"net/url"
 	"regexp"
+	"strings"
 )
 
 // native_shared.go holds scaffolding shared by the two provider-native adapters
@@ -41,6 +43,31 @@ func redactGeminiURL(u string) string {
 	q.Set("key", "REDACTED")
 	parsed.RawQuery = q.Encode()
 	return parsed.String()
+}
+
+// sanitizeGeminiTransportErr scrubs the live Gemini API key out of a
+// transport-level error before it is wrapped/logged/traced (spec finding #4 — P0
+// key leak). Go's net/http.Client.Do returns a *url.Error whose Error() string
+// embeds the FULL request URL — including the `?key=<APIKey>` auth param — and
+// httpclient.Do further wraps it with %w, so the live key reaches err.Error().
+// redactGeminiURL only scrubs the URL we build for the error PREFIX; it cannot
+// touch the URL Go itself folded into the transport error SUFFIX. This helper
+// rewrites the whole error string, replacing every occurrence of the real key
+// (and, defensively, any residual `key=<value>` query param) with REDACTED, and
+// returns a fresh error so the sanitized form is what every downstream surface
+// sees. apiKey "" ⇒ only the regex fallback runs (no-op replace of an empty key).
+func sanitizeGeminiTransportErr(apiKey string, err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	if apiKey != "" {
+		msg = strings.ReplaceAll(msg, apiKey, "REDACTED")
+	}
+	// Defensive: also scrub any `key=<value>` left in the string (e.g. a
+	// proxy-rewritten URL whose key differs from route.Provider.APIKey).
+	msg = redactKeyParamRe.ReplaceAllString(msg, "${1}REDACTED")
+	return fmt.Errorf("%s", msg)
 }
 
 // assembleAnthropicPromptTokens computes the unified PromptTokens for an
