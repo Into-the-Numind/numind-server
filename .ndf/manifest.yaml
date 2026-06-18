@@ -5238,19 +5238,20 @@ features:
   ndf_version: '3.0'
   description: 'Agent mode 输出与附件呈现 UX 打包修复(用户测试报告 4 项, 第3项疑问已答不进范围): ①技能名缺失(前端 bug)——后端 tool_call_start.input_preview 已带 name+narration 模板正确, 前端 agentChat.ts actionLabels 漏 load_skill 落默认分支显示"正在调用工具 load_skill", 修=前端补 load_skill 从 input_preview.name 取名。②系统提示泄露用户气泡(后端 bug)——buildAgentInput(student_run_lifecycle.go:419)拼的"【系统提示】用户上传了以下附件请调用 file_read…"被同时喂 LLM(对)+持久化进 agent_run.Messages(错, runner.go:1324), 前端 transformMessages 原样渲染, 修=后端分离 LLM input 与持久化/展示原文(保留引导指令进 LLM)。③工具进行中无反馈(前端 UX)——后端有 tool_call_progress 事件+前端有 Loader2 spinner 但 label 运行中永远取首个事件文案不更新, 长工具(docx/html)中间静止, 修=前端显示最新 progress 消息+更明显进行中动效(闪烁点)。④生成文件统一走卡片而非下载链接(后端为主)——image_collector 只收图片嵌 final answer markdown, 文档(docx/html/pdf)未收集未嵌入只靠 AI 手写链接, 修=后端建对称 artifact 收集器把所有生成文件统一嵌入(图片![] 文档[] 独占一行), 前端 AgentArtifactItem+DOC_EXTS 已支持卡片+预览自动受益。跨 numind-server+numind-web-v3。'
   classification_reason: 'Standard(用户 2026-06-18 确认"一个 feature 打包"): 单看 4 修复各满足 Hotfix(无 DB schema/无新 API 端点/无新外部服务/非支付权限), 但合并跨前后端+影响文件数>3(约 6-8 文件)→升 Standard。问题二、五是正确性 bug 属 Bug-from-Customer(Rule 11): 对应 task 第一个 commit 须失败复现测试(Go)。'
-  last_updated_by: ai-s2
+  last_updated_by: ai-s3
   last_updated_at: '2026-06-18T15:21:00+0800'
   created_at: '2026-06-18T15:21:00+0800'
   track: standard
-  stage: S2
+  stage: S3
   status: active
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/agent-output-ux-fixes, numind-web-v3: feature/agent-output-ux-fixes}
   worktrees: {numind-server: /private/tmp/wt-agent-output-ux-fixes-numind-server, numind-web-v3: /private/tmp/wt-agent-output-ux-fixes-numind-web-v3}
-  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
-  artifacts: {requirement: .ndf/features/agent-output-ux-fixes/requirement.md, proposal: .ndf/features/agent-output-ux-fixes/proposal.md, spec: .ndf/features/agent-output-ux-fixes/spec.md}
+  progress: {total_tasks: 5, completed_tasks: 0, reviewed_tasks: 0}
+  artifacts: {requirement: .ndf/features/agent-output-ux-fixes/requirement.md, proposal: .ndf/features/agent-output-ux-fixes/proposal.md, spec: .ndf/features/agent-output-ux-fixes/spec.md, plan: .ndf/features/agent-output-ux-fixes/plan.md}
   decisions:
   - 'S0 (ai 2026-06-18): 源于用户在 agent mode 测试中报告 4 个问题+1 个疑问。四路只读 Explore 调查定位全部根因(见 requirement.md)。问题三(附件读取机制)是疑问已答=主路径 AI 主动调 file_read, MarkItDown 仅在模型不支持原生多模态兜底分支用, 不改代码。用户拍板"一个 Standard feature 打包"4 个修复。等 S0 gate 确认继续评估。'
   - 'S1 (ai 2026-06-18): 用户授权"S0 一路做到 dev"=过 gate 授权。深度 grounding 读码后出 proposal+PRD。可行性极高(4 项基建全在)。关键技术决策: ①问题二=持久化 user turn 用原始 req.Message(非 buildAgentInput 含系统提示的拼接串)+回填 attachments chip(前端类型已有)+read 路径重签附件 URL; 引导 file_read 指令仍进 LLM 不回退。②问题五=泛化 imageCollector→收所有生成文件; 文档单独处理(剥行内引用 objectKey 节点+append 独占[filename](url)行)避免裸链接/重复, 图片行为不变; 前端 DOC_EXTS/MIME_BY_EXT 补 html; HTML 走 inline 签名(uploadGeneratedFile+cos_resign)让 sandbox iframe 预览不被强制下载。③问题一=前端 agentChat.ts 补 load_skill label 从 input_preview.name 取名。④问题四=AgentToolCallItem active 态取最新 progress 消息+流动点动效(尊重 reduced-motion)。不涉新 LLM 调用(可观测性 N/A, 但不得破坏 finalizeRun 周边 trace)。下一步 S2 spec。'
   - 'S2 (ai 2026-06-18): spec.md 落到文件级。grounding 后补充设计要点: FIX A 完成态也要带名→tool_call_start 把技能名存 aggregate(新增 skill_name?)，tool_call_result 复用; FIX B 用 DisplayInput *string(nil=回退 Input, 非nil含空=用它, 解纯附件无文字 leak)+displayUserText() helper 覆盖 finalizeRun+persistYieldTranscript 两持久化站点(LLM 侧 req.Input 不动)+user turn 落 attachments 键+read 重签; FIX D 嵌入收敛单一 collector.finalizeInto(content) 两站点复用(图片 drainExcluding 不变/文档剥行内 objectKey 节点+append 独占行)避免裸链接重复+HTML inline 签名(uploadGeneratedFile+cos_resign cosIsInlineRenderName 加 .html/.htm)+前端 DOC_EXTS/MIME_BY_EXT 补 html。数据契约: user turn 增可选 attachments 键(向后兼容)。下一步 S3 plan+原子性 review。'
+  - 'S3 (ai 2026-06-18): plan.md 5 个代码 task(T1 后端问题二→T2 后端问题五 串行同改 runner.go; T3/T4/T5 前端独立)+T6 S5 策略。独立 Sonnet 原子性 review = PASS_WITH_CONCERNS(原子性/依赖/spec覆盖/Bug-from-Customer 全过), 2 P1+2 P2 已全部就地补进 plan: P1-1 给 gstack /qa 加显式阻塞门禁语义(任一关键路径失败阻塞交付); P1-2 T2 验收补 html reload 读路径重签为 inline(cos_resign cosIsInlineRenderName 改动覆盖读路径, T1 student_query 附件分支无需动); P2-1 T3 补 result 态带名 vitest 断言; P2-2 T4 补 label latest/first 切换 vitest。验证策略: 后端两正确性 bug Go 单测本地真跑(永久回归)+前端 html 提取/label 逻辑 vitest+视觉(技能名/流动点/卡片iframe)gstack /qa 对 dev 取证(诚实偏离, 用户指令止于 dev)。下一步 S4 编码 TDD+每 task 双 Sonnet review。'
   blockers: []
