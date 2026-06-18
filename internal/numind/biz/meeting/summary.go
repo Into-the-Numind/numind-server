@@ -100,14 +100,16 @@ func (b *meetingBiz) updateRunningSummary(ctx context.Context, userID uint, sess
 	}
 	userMsg := fmt.Sprintf("【已有滚动摘要】\n%s\n\n【自上次更新以来的新增对话】\n%s", prevForPrompt, delta)
 
-	// 复用 profile.ChatbotStream 做非流式 Chat（同 generateSummary 的理由，见下方注释）。
-	resp, err := summaryChatFn(callCtx, profile.ChatbotStream, aiservice.ChatRequest{
+	// profile.MeetingSummary → deepseek-v4-flash（非思考）：滚动摘要是后台高频调用，摘要无需思考，
+	// flash 快且省。会后最终纪要(generateSummary/generateFinalSummary)仍走 chatbot.stream(pro)。
+	resp, err := summaryChatFn(callCtx, profile.MeetingSummary, aiservice.ChatRequest{
 		Messages: []aiservice.ChatMessage{
 			{Role: aiservice.MessageRoleSystem, Content: aiservice.MessageContent{Text: rollingSummarySystemPrompt}},
 			{Role: aiservice.MessageRoleUser, Content: aiservice.MessageContent{Text: userMsg}},
 		},
 		MaxTokens:   rollingSummaryMaxOutputTokens,
 		Temperature: 0.3,
+		Thinking:    false,
 	})
 	if err != nil {
 		endGenError(tc, genID, err)
