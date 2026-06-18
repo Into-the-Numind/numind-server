@@ -225,6 +225,21 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 	} else if effectiveErr != nil {
 		a.emitNarration(ctx, narration.StateError, toolCallID, input, nil, effectiveErr, "")
 		a.emitStreamToolError(ctx, toolCallID, effectiveErr, durationMs)
+	} else if softMsg, isSoft := softToolErrorMessage(output); isSoft {
+		// SOFT ERROR: nil Go error, but the JSON body carries the "ERROR: " contract
+		// (softToolError / each tool's returnSoftError) — e.g. an image_gen timeout.
+		// The model reads the error and self-corrects, so the loop continues (return
+		// stays output,nil below), but the UI must show FAILURE — NOT a false
+		// "✓ 图片已生成" success badge over a failed call (customer-reported, dev run
+		// 169). It is still the agent making a move, so reset the soft-deny streak
+		// exactly like a genuine result; we just narrate StateError and do NOT harvest
+		// a (non-existent) image into the final answer.
+		if sd := SoftDenyFromCtx(ctx); sd != nil {
+			sd.OnSuccess()
+		}
+		softErr := errors.New(softMsg)
+		a.emitNarration(ctx, narration.StateError, toolCallID, input, nil, softErr, "")
+		a.emitStreamToolError(ctx, toolCallID, softErr, durationMs)
 	} else {
 		// Successful tool execution = the agent made progress: reset the soft-deny
 		// anti-loop streak (consecutive + same-fp) so a healthy run that bounces off a

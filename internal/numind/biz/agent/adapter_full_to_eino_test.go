@@ -246,6 +246,38 @@ defaults:
 		"a soft-error tool result MUST narrate StateError so the UI shows failure (✗), matching what the model tells the user")
 }
 
+// TestSoftToolErrorMessage locks the detector's false-positive safety: it matches
+// ONLY a dedicated "error" field with the "ERROR: " prefix, never a successful
+// result whose content merely contains the text "ERROR:".
+func TestSoftToolErrorMessage(t *testing.T) {
+	cases := []struct {
+		name   string
+		output string
+		want   string
+		ok     bool
+	}{
+		{"image_gen soft error", `{"error":"ERROR: x: 生成过程中遇到了超时"}`, "ERROR: x: 生成过程中遇到了超时", true},
+		{"softToolError shape", `{"error":"ERROR: image_gen: boom"}`, "ERROR: image_gen: boom", true},
+		{"success result", `{"ok":true}`, "", false},
+		{"empty error field", `{"error":""}`, "", false},
+		{"error field without ERROR prefix", `{"error":"just a note"}`, "", false},
+		{"content contains ERROR but no error field", `{"content":"the log said ERROR: x","ok":true}`, "", false},
+		{"file_read soft error (error + content)", `{"file_name":"x.pdf","mime_type":"application/octet-stream","content":"ERROR: 文件不存在","error":"ERROR: 文件不存在"}`, "ERROR: 文件不存在", true},
+		{"run_python friendly error (no ERROR prefix)", `{"error":"run_python: traceback ..."}`, "", false},
+		{"non-string error field", `{"error":42}`, "", false},
+		{"non-json", `not json`, "", false},
+		{"json array", `["ERROR: x"]`, "", false},
+		{"empty", ``, "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := softToolErrorMessage(c.output)
+			assert.Equal(t, c.ok, ok, "ok mismatch")
+			assert.Equal(t, c.want, got, "message mismatch")
+		})
+	}
+}
+
 func TestAdaptFullToEinoTool_Hooks_PreStopShortCircuits(t *testing.T) {
 	ft := &fakeFullTool{name: "x", out: []byte(`{"ok":true}`)}
 	rec := newHookRecorder()
