@@ -30,6 +30,17 @@ const (
 	MeetingFeedbackTriggerAuto = "auto"
 	// MeetingFeedbackTriggerManual 手动触发（用户点「现在给我反馈」，总是生成）。
 	MeetingFeedbackTriggerManual = "manual"
+
+	// MeetingDiarizationStatusNone 尚未开始说话人分离（DIARIZATION_SPEC §6）。
+	MeetingDiarizationStatusNone = "none"
+	// MeetingDiarizationStatusOnline 会中在线增量聚类进行中（A/B/C 临时标签）。
+	MeetingDiarizationStatusOnline = "online"
+	// MeetingDiarizationStatusRefining 会后离线全局重聚类精修中。
+	MeetingDiarizationStatusRefining = "refining"
+	// MeetingDiarizationStatusDone 离线精修完成（final 标签就绪）。
+	MeetingDiarizationStatusDone = "done"
+	// MeetingDiarizationStatusFailed 说话人分离失败（软降级，转写不受影响）。
+	MeetingDiarizationStatusFailed = "failed"
 )
 
 // MeetingSession 会议会话主表（SPEC §2.1）。
@@ -59,6 +70,11 @@ type MeetingSession struct {
 	RunningSummary string `gorm:"type:mediumtext" json:"running_summary,omitempty"`
 	// SummaryStatus none / generating / done / failed。
 	SummaryStatus string `gorm:"size:20;not null;default:'none'" json:"summary_status"`
+	// SpeakerCount 离线精修出的说话人数（DIARIZATION_SPEC §6）；NULL=未精修。
+	SpeakerCount *int `gorm:"column:speaker_count" json:"speaker_count,omitempty"`
+	// DiarizationStatus 说话人分离状态：none/online/refining/done/failed。无 default:true，规避
+	// §database.md 的 default:true bool Create 坑（此处为 string，亦保持显式 default:'none'）。
+	DiarizationStatus string `gorm:"size:20;not null;default:'none'" json:"diarization_status"`
 	// StartedAt 会议开始时间。
 	StartedAt *time.Time `json:"started_at,omitempty"`
 	// EndedAt 会议结束时间。
@@ -84,8 +100,17 @@ type MeetingSegment struct {
 	// DurationSeconds ASR 返回的音频时长（也用于用量参考）。
 	DurationSeconds float64 `gorm:"not null;default:0" json:"duration_seconds"`
 	// AudioURL 该段音频在 COS 的地址（录音回放用）。
-	AudioURL  string    `gorm:"size:1024" json:"audio_url,omitempty"`
-	CreatedAt time.Time `gorm:"not null;autoCreateTime" json:"created_at"`
+	AudioURL string `gorm:"size:1024" json:"audio_url,omitempty"`
+	// OnlineSpeakerID 在线增量聚类临时簇号（DIARIZATION_SPEC §6）；NULL=声纹未就绪/软降级。
+	OnlineSpeakerID *int `gorm:"column:online_speaker_id" json:"online_speaker_id,omitempty"`
+	// OnlineProvisional 灰区暂定标（provisional，不更新质心）。无 default:true，规避 §database.md 的
+	// default:true bool Create 坑（false 须如实持久化）。
+	OnlineProvisional bool `gorm:"column:online_provisional;not null;default:0" json:"online_provisional"`
+	// FinalSpeakerID 离线全局重聚类稳定簇号；NULL=尚未精修。
+	FinalSpeakerID *int `gorm:"column:final_speaker_id" json:"final_speaker_id,omitempty"`
+	// SpeakerConfidence 说话人聚类置信度；NULL=未知。
+	SpeakerConfidence *float32  `gorm:"column:speaker_confidence" json:"speaker_confidence,omitempty"`
+	CreatedAt         time.Time `gorm:"not null;autoCreateTime" json:"created_at"`
 }
 
 // TableName 指定表名。
@@ -127,3 +152,37 @@ type MeetingPreset struct {
 
 // TableName 指定表名。
 func (MeetingPreset) TableName() string { return "meeting_preset" }
+
+// MeetingSpeaker 离线全局重聚类产物：出场序稳定编号 + 色板映射（DIARIZATION_SPEC §6）。
+// 出场序编号须幂等（重试不漂移）；与 MeetingSession 弱关联无 FK。
+type MeetingSpeaker struct {
+	ID uint64 `gorm:"primaryKey;autoIncrement" json:"id"`
+	// MeetingID 所属会话（弱关联，无 FK）。
+	MeetingID uint64 `gorm:"not null;uniqueIndex:uk_ms_meeting_cluster,priority:1;index:idx_ms_meeting" json:"meeting_id"`
+	// ClusterID 离线重聚类簇号。
+	ClusterID int `gorm:"not null;uniqueIndex:uk_ms_meeting_cluster,priority:2" json:"cluster_id"`
+	// DisplayLabel 展示编号（出场序 1/2/3…）。
+	DisplayLabel string `gorm:"size:32;not null" json:"display_label"`
+	// ColorIndex 前端取色板下标。
+	ColorIndex int       `gorm:"not null" json:"color_index"`
+	CreatedAt  time.Time `gorm:"not null;autoCreateTime" json:"created_at"`
+}
+
+// TableName 指定表名。
+func (MeetingSpeaker) TableName() string { return "meeting_speaker" }
+
+// MeetingSegmentEmbedding 逐段 192-d 声纹 embedding 落库（DIARIZATION_SPEC §6，离线 AHC 重聚类
+// 主路径前提 P0-2）。Embedding 为 float32×192 packed 字节（BLOB）；与 segment/session 弱关联无 FK。
+type MeetingSegmentEmbedding struct {
+	ID uint64 `gorm:"primaryKey;autoIncrement" json:"id"`
+	// MeetingID 所属会话（弱关联，无 FK）。
+	MeetingID uint64 `gorm:"not null;index:idx_mse_meeting" json:"meeting_id"`
+	// SegmentID 所属分段（弱关联，无 FK）。
+	SegmentID uint64 `gorm:"not null;uniqueIndex:uk_mse_segment" json:"segment_id"`
+	// Embedding float32×192 packed 字节。type:longblob 对齐项目现有 agent_session_memory.embedding 约定。
+	Embedding []byte    `gorm:"type:longblob;not null" json:"embedding"`
+	CreatedAt time.Time `gorm:"not null;autoCreateTime" json:"created_at"`
+}
+
+// TableName 指定表名。
+func (MeetingSegmentEmbedding) TableName() string { return "meeting_segment_embedding" }

@@ -38,6 +38,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	meetingbiz "numind-server/internal/numind/biz/meeting"
+	"numind-server/internal/numind/biz/meeting/diarize"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
@@ -57,13 +58,15 @@ var asrUpgrader = websocket.Upgrader{
 	CheckOrigin:     func(_ *http.Request) bool { return true },
 }
 
-// clientWSEvent 是回前端的 JSON 文本帧（SPEC §2 后端→前端）。
-// segment 仅 final 事件携带；text 仅 interim 携带；message 仅 error 携带。
+// clientWSEvent 是回前端的 JSON 文本帧（SPEC §2 后端→前端 / DIARIZATION_SPEC §3/§6）。
+// segment 仅 final 事件携带；text 仅 interim 携带；message 仅 error 携带；speaker 仅
+// {"type":"speaker"} 在线说话人分离事件携带（已落库的 online_speaker_id 回推前端）。
 type clientWSEvent struct {
 	Type    string                 `json:"type"`
 	Text    string                 `json:"text,omitempty"`
 	Segment *meetingbiz.SegmentDTO `json:"segment,omitempty"`
 	Message string                 `json:"message,omitempty"`
+	Speaker *diarize.SpeakerUpdate `json:"speaker,omitempty"`
 }
 
 // asrWSConn 包装前端 conn，串行化所有写（单 writer goroutine）。
@@ -208,6 +211,13 @@ func (ctl *Controller) AsrStream(c *gin.Context) {
 		OnFinal: func(seg meetingbiz.SegmentDTO) {
 			s := seg
 			client.send(clientWSEvent{Type: "final", Segment: &s})
+		},
+		OnSpeaker: func(update diarize.SpeakerUpdate) {
+			// 在线增量聚类为某段定了 online_speaker_id（DIARIZATION_SPEC §3/§6）→ 经单 writer
+			// 串行回推 {"type":"speaker", ...}。已落库，前端按 online_speaker_id 上色（provisional/
+			// 低 conf 弱化）。声纹软降级时本回调不会被调，前端保持灰标兜底。
+			u := update
+			client.send(clientWSEvent{Type: "speaker", Speaker: &u})
 		},
 		OnError: func(e error) {
 			client.send(clientWSEvent{Type: "error", Message: e.Error()})

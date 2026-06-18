@@ -1,0 +1,18 @@
+# Voiceprint microservice (CAM++ speaker embedding) — CPU only.
+# Pin versions for reproducible builds. See DIARIZATION_SPEC §5 D1 / §7 T1.
+
+onnxruntime==1.18.1
+numpy==1.26.4
+fastapi==0.111.1
+uvicorn==0.30.3
+
+# torch + torchaudio (CPU) are used ONLY for the Kaldi-compatible fbank front-end
+# in compute_fbank() — NOT for model inference (that runs through onnxruntime).
+# Future optimization: replace torchaudio.compliance.kaldi.fbank with
+# kaldi-native-fbank to drop the heavy torch dependency from this service.
+# The CPU wheels are pulled from the PyTorch CPU index in the Dockerfile.
+# +cpu local-version pin: forces resolution from the CPU mirror only (regular
+# PyPI has 2.2.2 = CUDA build; --extra-index-url is additive so without +cpu pip
+# picks the GPU wheel and bloats the image ~5.8GB → ~600MB). Verified 2026-06-19.
+torch==2.2.2+cpu
+torchaudio==2.2.2+cpu

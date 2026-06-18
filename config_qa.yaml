@@ -3,6 +3,11 @@
 runmode: release             # Gin 开发模式, 可选值有：debug, release, test
 addr: :9091                  # HTTP 服务器监听地址
 
+# Feature flags（默认 OFF；缺省 key → viper 自动返回 false）
+features:
+  meeting_diarization:
+    enabled: false            # 会议说话人分离（声纹引擎），qa 默认 OFF；effective = meeting_copilot.enabled && meeting_diarization.enabled
+
 # 后台管理系统配置
 admin:
   addr: :9099                # 后台管理系统监听地址
@@ -146,6 +151,13 @@ crawl4ai:
   token: ""                            # crawl4ai JWT，默认关
   timeout_seconds: 30
   content_filter: "fit"                # fit=干净正文 | raw=原始 markdown
+
+# 声纹服务（自建 CAM++ embedding，会议说话人分离用）。非 LLM，不经 aiservice 网关。
+# base_url 为空或服务不可达时声纹一律软降级，绝不杀 relay/转写（见 DIARIZATION_SPEC §9/T5）。
+# qa 默认空（feature 默认 OFF）；部署声纹容器后按 crawl4ai 同款填服务地址。
+voiceprint:
+  base_url: ""                         # 空=声纹禁用（软降级）；部署声纹容器后填服务地址
+  timeout_seconds: 5                   # /embed 单段超时；超时即软降级 valid=false
 
 # Agent Memory 配置（V1.5 板块 3）
 agent:
