@@ -1156,15 +1156,16 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 		// 直接消费路径 (ack 内嵌 body, 后续 task 简化) 兜底；此 outer-loop 注入是
 		// spec 文字契约 + 未来 outer-retry 场景的 hook 保留。
 		//
-		// 全量消费而非取首条：同 turn 内 LLM 可串调 load_skill(A)→load_skill(B)（cap=3），
+		// 全量消费而非取首条：同 turn 内 LLM 可串调 load_skill(A)→load_skill(B)（PendingSkills
+		// 只装绑定技能，数量受该 agent 的绑定技能数约束，不受 load_skill 的非绑定 cap），
 		// 任何一条丢失都会破坏 LLM 对已加载技能的认知（spec §3.3 路径 a 启用时表现为
 		// "只看到最后一条"的 latent bug）。
 		//
 		// 即使 dormant，CtxKeyUseSkillTurn 的写读一致性必须保证 — 多次消费安全
 		// (consume 后清空 slice, 不会重复注入)。
 		if useSkillTurnState != nil && len(useSkillTurnState.PendingSkills) > 0 {
-			// range value copy: ps.Body 可达 KB，但 len ≤ UseSkillTurnCapDefault (3)，可接受。
-			// 若未来 cap 提升或 body 显著增大，改 `for i := range` + &PendingSkills[i]。
+			// range value copy: ps.Body 可达 KB，但 PendingSkills 只装绑定技能、len ≤ 该 agent
+			// 的绑定技能数（小），可接受。若未来 body 显著增大，改 `for i := range` + &PendingSkills[i]。
 			for _, ps := range useSkillTurnState.PendingSkills {
 				einoMessages = append(einoMessages, &schema.Message{
 					Role: schema.User,

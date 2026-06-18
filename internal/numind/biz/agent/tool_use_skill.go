@@ -17,8 +17,11 @@ import (
 )
 
 const (
-	// UseSkillTurnCapDefault 是单 turn 内 load_skill 最大调用次数 (S0-D6)。
-	UseSkillTurnCapDefault = 3
+	// UseSkillTurnCapDefault 是单 turn 内可加载的**额外（非绑定）技能**上限
+	// (S0-D6; skill-load-cap-exclude-bound 起改为只数非绑定 load)。agent 自己绑定的
+	// 业务技能不计入此限（loadDBSkill 不 increment），只有临时加载的平台/市场技能
+	// (loadDiskSkill) 计数。设为 5 给多绑定 agent 留足"再加载几个平台技能"的余量。
+	UseSkillTurnCapDefault = 5
 
 	// Tool result status enum (Langfuse span output + ack JSON 复用，避免魔法字符串)
 	toolStatusLoaded = "loaded"
@@ -60,8 +63,9 @@ type PendingSkill struct {
 // ReAct 共享同一实例。下次 runner.Run 调用（= 新 user input）重新构造新 state。
 //
 // 字段：
-//   - InvocationCount: 本 turn 已 use_skill 调用次数，每次 +1，超 Cap 拒绝
-//   - Cap: use_skill 调用上限（默认 UseSkillTurnCapDefault = 3）
+//   - InvocationCount: 本 turn 已加载的**非绑定**技能数（loadDiskSkill 每次 +1，超
+//     Cap 拒绝）。绑定技能 loadDBSkill 不计数（skill-load-cap-exclude-bound）。
+//   - Cap: 额外（非绑定）技能加载上限（默认 UseSkillTurnCapDefault = 5）
 //   - PendingSkills: use_skill Execute 顺序 append 的待注入快照列表；runner
 //     在下次 LLM Generate 前一次性消费全部并清空，每条包成 <system-reminder>
 //     user msg 注入。同 turn 多次调用必须全部保留——单字段会被后调用覆盖、

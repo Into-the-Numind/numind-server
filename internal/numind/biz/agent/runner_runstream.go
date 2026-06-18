@@ -538,10 +538,10 @@ func (r *agentRunner) RunStream(
 	einoMessages := buildEinoMessages(req)
 
 	// 10. Inject pending skill bodies (v2 #2 §3.3) — 全量按调用序消费，与 runner.go
-	// 主循环消费点保持一致。同 turn 多次 use_skill (cap=3) 时每条都注入，
+	// 主循环消费点保持一致。同 turn 多次加载绑定技能时每条都注入，
 	// 否则 outer-loop 注入路径启用时漏 Skill 指引（覆盖式赋值时只剩最后一条）。
 	if useSkillTurnState != nil && len(useSkillTurnState.PendingSkills) > 0 {
-		// range value copy: ps.Body 可达 KB，cap ≤ 3 可接受，与 runner.go 消费点对称。
+		// range value copy: ps.Body 可达 KB，PendingSkills 只装绑定技能、len ≤ 绑定技能数（小），可接受，与 runner.go 消费点对称。
 		for _, ps := range useSkillTurnState.PendingSkills {
 			einoMessages = append(einoMessages, &schema.Message{
 				Role: schema.User,

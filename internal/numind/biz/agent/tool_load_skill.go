@@ -130,13 +130,12 @@ func (t *loadSkillTool) Execute(ctx context.Context, input ToolInput) (ToolResul
 
 	turn, hasTurn := UseSkillTurnFromCtx(ctx)
 
-	// cap check (only when a turn state exists — DB-bound agents). Disk-only agents
-	// have no turn state and no cap, matching read_skill's prior behavior.
-	if hasTurn && turn.InvocationCount >= turn.Cap {
-		return ToolResult(jsonErr("已达本轮技能调用上限 (%d 次)，本轮无法再加载其他技能", turn.Cap)), nil
-	}
-
-	// 1. DB-first: bound business skill (runner-cached, 0 DB calls).
+	// 1. DB-first: bound business skill (the agent's OWN configured skills,
+	// runner-cached, 0 DB calls). These are ALWAYS loadable and do NOT count toward
+	// the cap — only ad-hoc platform/marketplace loads are capped. Rationale
+	// (skill-load-cap-exclude-bound): an agent with several bound skills must not
+	// exhaust its budget just loading its own skills before it can reach for a
+	// platform skill (e.g. a meeting agent with 3 bound skills + docx-author).
 	if hasTurn {
 		if sk, ok := turn.SkillByName[p.Name]; ok && sk != nil {
 			// collision observability: a DB skill named like a platform skill shadows it (D3).
@@ -150,7 +149,14 @@ func (t *loadSkillTool) Execute(ctx context.Context, input ToolInput) (ToolResul
 		}
 	}
 
-	// 2. disk: platform skill (SKILL.md on the server container disk).
+	// 2. cap check — applies ONLY to non-bound (platform/marketplace) loads. The
+	// bound-skill branch above already returned. Disk-only agents have no turn state
+	// and no cap, matching read_skill's prior behavior.
+	if hasTurn && turn.InvocationCount >= turn.Cap {
+		return ToolResult(jsonErr("已达本轮额外技能加载上限（%d 个非绑定技能）。agent 自己绑定的技能不计入此限，可继续加载。", turn.Cap)), nil
+	}
+
+	// 3. disk: platform skill (SKILL.md on the server container disk).
 	return t.loadDiskSkill(ctx, turn, hasTurn, p.Name)
 }
 
@@ -213,7 +219,9 @@ func (t *loadSkillTool) loadDBSkill(ctx context.Context, turn *UseSkillTurnState
 		Version: int(sk.Version),
 		Body:    bodyWrapped,
 	})
-	turn.InvocationCount++
+	// NOTE: bound (DB) skills are the agent's OWN configured skills and do NOT count
+	// toward the cap (skill-load-cap-exclude-bound). Only non-bound loadDiskSkill
+	// increments InvocationCount.
 
 	ack := map[string]any{
 		"status":            toolStatusLoaded,
