@@ -85,8 +85,8 @@ type DMXAPIAdapter struct {
 	// Stream liveness/ceiling are governed by ResponseHeaderTimeout + idle
 	// watchdog + the caller's context deadline instead.
 	streamClient *httpclient.Client
-	// imageGenClient serves the non-OpenAI-compatible Gemini image endpoint
-	// (x-goog-api-key + /v1beta/models/<model>:generateContent). Image generation
+	// imageGenClient serves the OpenAI-compatible images endpoint
+	// (Authorization: Bearer + /v1/images/generations, gpt-image-2). Image generation
 	// is a one-shot call (no streaming) with a higher latency floor than chat, so
 	// it carries its own 90s total-request timeout independent of the chat clients.
 	imageGenClient *httpclient.Client

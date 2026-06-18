@@ -11,7 +11,7 @@ var estimatedCredits = map[string]int64{
 	"file_parse":       3,
 	"ocr":              1,
 	"agent_run":        6,  // agent ReAct LLM 调用，对齐 chat 类（实际走 pricing token 计价）
-	"image_gen":        10, // 文生图 per-image 预检估算（实际走 pricing_rule flat per-call）
+	"image_gen":        10, // 文生图 per-image 扁平计费：预扣=对账=此值（image_gen 无 pricing_rule，非 token 计价）
 }
 
 // GetEstimatedCredits 获取操作的预估积分消耗

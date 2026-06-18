@@ -58,7 +58,7 @@ const (
 	// ChargeUser context_budget policy — the tool already performs the single
 	// credit deduction via its flat Reserve/Reconcile, and ImageGenRequest never
 	// reaches the ContextBudgetCredits chat path anyway. Requires a DB-registered
-	// ai_service route → gemini-2.5-flash-image (dmxapi) in dev/prod; missing
+	// ai_service route → gpt-image-2 (dmxapi) in dev/prod; missing
 	// route returns an error the tool maps to a soft tool error.
 	AgentImageGen = "agent.image_gen"
 
