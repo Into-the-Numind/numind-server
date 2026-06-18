@@ -190,23 +190,78 @@ func uploadGeneratedFile(
 	return b, nil
 }
 
-// artifactFromToolResult inspects a tool's JSON result for a generated-file
-// artifact (the fileCreateOutput shape emitted by image_gen / create_* tools)
-// and returns its URL, filename, and MIME type. It returns empty strings when
-// the output is not a file artifact (no non-empty url), so non-file tools are
-// unaffected. The SSE tool_call_result emitters use this to deliver the URL via
-// ToolCallResultPayload.ArtifactURL — without it the frontend never receives the
-// generated file and the user sees "图片已生成" with no image.
-func artifactFromToolResult(output string) (url, filename, mime string) {
+// toolArtifact is one generated-file artifact parsed out of a tool's JSON result.
+type toolArtifact struct {
+	URL      string
+	Filename string
+	Mime     string
+}
+
+// artifactsFromToolResult inspects a tool's JSON result for generated-file
+// artifacts and returns ALL of them. It supports two shapes:
+//
+//   - fileCreateOutput single file: {"url":...,"filename":...,"format":...} —
+//     emitted by image_gen / create_html / create_csv / create_* tools.
+//   - runPythonOutput multi-file: {"files":[{"filename":...,"url":...},...]} —
+//     emitted by run_python (the docx/pptx/xlsx/html path via load_skill). Each
+//     file's mime is inferred from its filename (no format hint in this shape).
+//
+// It returns an empty slice when the output is not JSON or contains no file with a
+// non-empty url, so non-file tools are unaffected. Bug-from-Customer (问题4): the
+// old single-file-only parser parsed run_python's url as empty → the generated
+// docx/html were never collected → their inline links (incl. markdown table rows)
+// were neither stripped nor lifted into standalone file cards.
+func artifactsFromToolResult(output string) []toolArtifact {
 	trimmed := strings.TrimSpace(output)
 	if !strings.HasPrefix(trimmed, "{") {
-		return "", "", ""
+		return nil
 	}
+
+	// Multi-file shape first: run_python emits {"files":[...]}. We detect it by a
+	// non-empty files[] with at least one usable url; otherwise fall through to the
+	// single-file shape (a create_* output has no "files" key, so rp.Files is nil).
+	var rp runPythonOutput
+	if err := json.Unmarshal([]byte(trimmed), &rp); err == nil && len(rp.Files) > 0 {
+		var arts []toolArtifact
+		for _, f := range rp.Files {
+			if f.URL == "" {
+				continue
+			}
+			arts = append(arts, toolArtifact{
+				URL:      f.URL,
+				Filename: f.Filename,
+				Mime:     mimeFromArtifact(f.Filename, ""),
+			})
+		}
+		if len(arts) > 0 {
+			return arts
+		}
+	}
+
+	// Single-file shape: fileCreateOutput {"url":...,"filename":...,"format":...}.
 	var fc fileCreateOutput
-	if err := json.Unmarshal([]byte(trimmed), &fc); err != nil || fc.URL == "" {
+	if err := json.Unmarshal([]byte(trimmed), &fc); err == nil && fc.URL != "" {
+		return []toolArtifact{{
+			URL:      fc.URL,
+			Filename: fc.Filename,
+			Mime:     mimeFromArtifact(fc.Filename, fc.Format),
+		}}
+	}
+	return nil
+}
+
+// artifactFromToolResult returns the FIRST generated-file artifact from a tool's
+// JSON result (or empty strings when there is none). Retained for the SSE
+// tool_call_result emitters (runner_stream.go), which deliver a single artifact via
+// ToolCallResultPayload.ArtifactURL — without it the frontend never receives the
+// generated file and the user sees "图片已生成" with no image. For collecting ALL
+// files (run_python multi-file), callers use artifactsFromToolResult instead.
+func artifactFromToolResult(output string) (url, filename, mime string) {
+	arts := artifactsFromToolResult(output)
+	if len(arts) == 0 {
 		return "", "", ""
 	}
-	return fc.URL, fc.Filename, mimeFromArtifact(fc.Filename, fc.Format)
+	return arts[0].URL, arts[0].Filename, arts[0].Mime
 }
 
 // mimeFromArtifact derives a MIME type from a filename extension (preferred) or

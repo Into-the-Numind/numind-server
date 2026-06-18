@@ -102,10 +102,11 @@ func (c *artifactCollector) add(url, filename, mime string) {
 //
 //   - Images: appended as ![alt](url) UNLESS the model already embedded the same
 //     object key in content (no double render — dev 2026-06-18). Placement preserved.
-//   - Documents/HTML: any inline markdown node the model wrote referencing the doc's
-//     object key is STRIPPED from content, then the doc is appended as a STANDALONE
-//     [name](url) line so the frontend lifts it into a file card — exactly one card,
-//     no buried naked link, no duplicate (问题五).
+//   - Documents/HTML: if the model already presented the doc as a STANDALONE-cardable
+//     line the frontend cards it → skip. Otherwise append a standalone [name](url) line
+//     so every generated file is reliably a card. The model's links are NEVER stripped:
+//     stripping a markdown table cell left it empty and detached the card from its row
+//     (问题五 + dev 2026-06-18 followup).
 func (c *artifactCollector) finalizeInto(content string) string {
 	if c == nil {
 		return content
@@ -122,9 +123,13 @@ func (c *artifactCollector) finalizeInto(content string) string {
 			}
 			imgMD = append(imgMD, e.md)
 		case artifactDoc:
-			// Drop any inline node the model wrote for this doc (it would otherwise
-			// render as a naked link beside the card); re-append standalone below.
-			content = stripNodesReferencing(content, e.objectKey)
+			// Never strip the model's links — stripping a table cell empties it and the
+			// card floats away from its row (dev 2026-06-18 followup). If the doc is
+			// already a standalone-cardable line the frontend cards it → skip; else append
+			// a standalone card line. Any in-table/inline link stays as readable context.
+			if hasStandaloneCardableLine(content, e.objectKey) {
+				continue
+			}
 			docMD = append(docMD, e.md)
 		}
 	}
@@ -159,18 +164,47 @@ func artifactObjectKey(u string) string {
 	return u
 }
 
-// stripNodesReferencing removes every markdown image/link node whose URL IS objectKey
-// (optionally followed by a ?query / #fragment) from content — used so a model-written
-// inline doc link does not survive as a naked link beside the standalone card.
-//
-// The URL must END at objectKey: the char after it may only be `?`, `#`, trailing
-// whitespace, or the closing `)`. This avoids a prefix collision where objectKey
-// "…/data" would otherwise also strip a different file "…/data.csv" generated in the
-// same second (review P1). Best-effort: empty objectKey → no-op.
-func stripNodesReferencing(content, objectKey string) string {
+// listOrQuoteLineRE mirrors the frontend agentArtifacts LIST_OR_QUOTE_RE: a line that
+// starts a list item / ordered item / blockquote. The frontend never lifts a COS link
+// inside one (or inside a table row) into a card, so neither do we.
+var listOrQuoteLineRE = regexp.MustCompile(`^\s*(?:[-*+]\s|\d+[.)]\s|>\s?)`)
+
+// anyMarkdownNodeRE matches any markdown image/link node, used to enforce the frontend
+// standaloneArtifactOf rule that a cardable line holds EXACTLY ONE node — a line with
+// two file links (e.g. "生成了 [a](…) 和 [b](…)") is not standalone-cardable for either.
+var anyMarkdownNodeRE = regexp.MustCompile(`!?\[[^\]]*\]\([^)]*\)`)
+
+// hasStandaloneCardableLine reports whether content already has a line the frontend's
+// standaloneArtifactOf would lift into a file card for objectKey: a markdown link/image
+// node referencing objectKey, alone on its line (nothing meaningful after the node),
+// and NOT inside a table row (pipe), list, or blockquote. Mirrors the frontend so the
+// backend appends a card ONLY when the frontend wouldn't already render one — avoiding a
+// duplicate card and never stripping/breaking the model's tables (dev 2026-06-18). The
+// URL must END at objectKey (next char `?`/`#`/whitespace/`)`) so a prefix like "…/data"
+// does not match a different file "…/data.csv".
+func hasStandaloneCardableLine(content, objectKey string) bool {
 	if objectKey == "" || content == "" {
-		return content
+		return false
 	}
-	re := regexp.MustCompile(`!?\[[^\]]*\]\(\s*` + regexp.QuoteMeta(objectKey) + `(?:[?#][^)]*)?\s*\)`)
-	return re.ReplaceAllString(content, "")
+	// QuoteMeta always yields a valid literal fragment, so MustCompile cannot panic here.
+	nodeRe := regexp.MustCompile(`!?\[[^\]]*\]\(\s*` + regexp.QuoteMeta(objectKey) + `(?:[?#][^)]*)?\s*\)`)
+	for _, line := range strings.Split(content, "\n") {
+		if strings.Contains(line, "|") || listOrQuoteLineRE.MatchString(line) {
+			continue
+		}
+		// Mirror frontend standaloneArtifactOf: exactly ONE markdown node on the line.
+		// Two links on one line ("[a](…) 和 [b](…)") → the frontend cards neither, so we
+		// must NOT skip appending our card for the second URL.
+		if len(anyMarkdownNodeRE.FindAllStringIndex(line, -1)) != 1 {
+			continue
+		}
+		loc := nodeRe.FindStringIndex(line)
+		if loc == nil {
+			continue
+		}
+		if strings.TrimSpace(line[loc[1]:]) == "" { // nothing meaningful after the node
+			return true
+		}
+	}
+	return false
 }

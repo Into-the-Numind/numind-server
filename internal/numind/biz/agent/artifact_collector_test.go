@@ -87,36 +87,80 @@ func TestArtifactCollector_FinalizeInto_EmbedsHTML(t *testing.T) {
 	assert.Contains(t, got, "[页面.html]("+cosHTML+")", "html must embed as a standalone link → card")
 }
 
-// If the model wrote the doc link INLINE (mixed with prose), the inline node must be
-// stripped and the doc appended standalone — exactly one card, no naked inline link.
-func TestArtifactCollector_FinalizeInto_StripsInlineDocLink(t *testing.T) {
+// If the model wrote the doc link INLINE mixed with prose (not standalone-cardable),
+// the model's link is PRESERVED (never stripped) and a standalone card line is appended
+// so the file is still reliably a card (dev 2026-06-18 followup: stripping broke tables).
+func TestArtifactCollector_FinalizeInto_InlineDocPreservedAndCarded(t *testing.T) {
 	ctx := withArtifactCollector(context.Background())
 	c := artifactCollectorFrom(ctx)
 	c.add(cosDocx, "报告.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
-	// model wrote it inline with trailing prose → would NOT card on the frontend
 	content := "文件已生成，点击[下载报告](" + cosDocx + ")，记得查收。"
 	got := c.finalizeInto(content)
-	// the inline node is removed
-	assert.NotContains(t, got, "[下载报告]("+cosDocx+")", "inline doc node must be stripped")
-	// and re-appended as a standalone line
-	assert.Contains(t, got, "[报告.docx]("+cosDocx+")", "doc must be re-appended standalone")
-	// surrounding prose survives
+	assert.Contains(t, got, "[下载报告]("+cosDocx+")", "model's inline link must be PRESERVED, not stripped")
 	assert.Contains(t, got, "文件已生成")
 	assert.Contains(t, got, "记得查收")
-	// exactly one occurrence of the docx URL remains (one card, no duplicate)
-	assert.Equal(t, 1, strings.Count(got, cosDocx), "exactly one reference → one card")
+	// a standalone card line is appended (so the file is a card even though the inline
+	// link isn't cardable) → the docx now appears twice (inline context + appended card).
+	var standalone bool
+	for _, line := range strings.Split(got, "\n") {
+		if strings.TrimSpace(line) == "[报告.docx]("+cosDocx+")" {
+			standalone = true
+		}
+	}
+	assert.True(t, standalone, "a standalone card line must be appended")
 }
 
-// Regression (review P1): stripNodesReferencing(content, keyA) must strip ONLY the node
-// whose URL IS keyA (+ optional query), NOT a different file whose URL has keyA as a
-// string prefix (e.g. "…-data" vs "…-data.csv" generated in the same second). The old
-// `[^)]*<key>[^)]*` pattern collaterally stripped the longer one.
-func TestStripNodesReferencing_NoPrefixCollision(t *testing.T) {
-	const keyA = "https://cos.example.com/agent-outputs/1/20260618-150405-data"
-	content := "[A](" + keyA + "?sig=1) 和 [B](" + keyA + ".csv?sig=2)"
-	got := stripNodesReferencing(content, keyA)
-	assert.NotContains(t, got, "[A]("+keyA+"?sig=1)", "the node whose URL IS keyA must be stripped")
-	assert.Contains(t, got, "[B]("+keyA+".csv?sig=2)",
-		"a different file sharing keyA as a prefix must NOT be collaterally stripped")
+// A doc inside a markdown TABLE row must keep its cell intact (NOT stripped → no empty
+// cell) and still get a standalone card appended (dev 2026-06-18 followup: empty-cell +
+// detached-card regression the user reported on dev).
+func TestArtifactCollector_FinalizeInto_TableDocPreservedAndCarded(t *testing.T) {
+	ctx := withArtifactCollector(context.Background())
+	c := artifactCollectorFrom(ctx)
+	c.add(cosDocx, "报告.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+	content := "| 格式 | 文件 | 说明 |\n| --- | --- | --- |\n| DOCX | [报告.docx](" + cosDocx + ") | 正式文档 |"
+	got := c.finalizeInto(content)
+	assert.Contains(t, got, "| DOCX | [报告.docx]("+cosDocx+") | 正式文档 |", "table row must be preserved intact (no empty cell)")
+	lines := strings.Split(got, "\n")
+	assert.Equal(t, "[报告.docx]("+cosDocx+")", strings.TrimSpace(lines[len(lines)-1]), "a standalone card line is appended at the end")
+}
+
+// If the model ALREADY wrote the doc as a standalone-cardable line, the frontend cards
+// it → finalizeInto must NOT append a duplicate.
+func TestArtifactCollector_FinalizeInto_SkipsAlreadyStandalone(t *testing.T) {
+	ctx := withArtifactCollector(context.Background())
+	c := artifactCollectorFrom(ctx)
+	c.add(cosDocx, "报告.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+	content := "结果：\n\n[报告.docx](" + cosDocx + ")"
+	got := c.finalizeInto(content)
+	assert.Equal(t, 1, strings.Count(got, cosDocx), "already standalone-cardable → no duplicate card appended")
+}
+
+// Two file links on ONE prose line: the frontend cards NEITHER (standaloneArtifactOf
+// requires exactly one node), so finalizeInto must append a card for EACH — the trailing
+// one must not be wrongly skipped (review P2: exactly-one-node guard).
+func TestArtifactCollector_FinalizeInto_TwoLinksOneLineBothCarded(t *testing.T) {
+	const docA = "https://cos.example.com/agent-outputs/1/a.docx?sig=1"
+	const docB = "https://cos.example.com/agent-outputs/1/b.html?sig=2"
+	ctx := withArtifactCollector(context.Background())
+	c := artifactCollectorFrom(ctx)
+	c.add(docA, "a.docx", "application/octet-stream")
+	c.add(docB, "b.html", "text/html")
+
+	content := "生成了 [a.docx](" + docA + ") 和 [b.html](" + docB + ")。"
+	got := c.finalizeInto(content)
+	var aCard, bCard bool
+	for _, line := range strings.Split(got, "\n") {
+		tl := strings.TrimSpace(line)
+		if tl == "[a.docx]("+docA+")" {
+			aCard = true
+		}
+		if tl == "[b.html]("+docB+")" {
+			bCard = true
+		}
+	}
+	assert.True(t, aCard, "first file must get a standalone card")
+	assert.True(t, bCard, "trailing file on the same line must ALSO get a card (not skipped)")
 }
