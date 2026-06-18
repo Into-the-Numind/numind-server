@@ -574,6 +574,44 @@ func TestEndSession_EmptyTranscriptDegradesSummary(t *testing.T) {
 	assert.Contains(t, done.Session.Summary, "没有可用的转写内容")
 }
 
+// TestUpdateRecordingURL_DoesNotRevertEndedSession 复现客户 bug：暂停会议后点"结束会议"无效、
+// 必须退回列表重进才能结束。运行时数据证实：会话其实已结束，但 ~2s 后被"反结束"回 active。
+// 根因——录音上传（UpdateRecordingURL）常在 EndSession 之后才落库，旧实现全行 db.Save 会用
+// 上传开始时加载的陈旧 active 快照覆盖 status/ended_at/summary_status，把刚结束的会话反结束。
+// 用 uploadBytesToCOS seam 注入"上传期间会话被结束"竞态：上传函数内把会话置 ended，
+// 上传返回后 UpdateRecordingURL 落库；断言会话仍为 ended（修复前会被反结束 → FAIL）。
+func TestUpdateRecordingURL_DoesNotRevertEndedSession(t *testing.T) {
+	biz, db := newMeetingTestBiz(t)
+	ctx := context.Background()
+	dto, err := biz.CreateSession(ctx, 100, &CreateSessionReq{RolePrompt: "x"})
+	require.NoError(t, err)
+
+	// seam：模拟上传耗时期间会话被结束（典型 doEnd：先传录音，几乎同时 EndSession）。
+	origUpload := uploadBytesToCOS
+	t.Cleanup(func() { uploadBytesToCOS = origUpload })
+	uploadBytesToCOS = func(_ context.Context, _ string, _ string, _ []byte) (string, error) {
+		now := time.Now()
+		require.NoError(t, db.Model(&model.MeetingSession{}).Where("id = ?", dto.ID).
+			Updates(map[string]interface{}{
+				"status":         model.MeetingSessionStatusEnded,
+				"ended_at":       &now,
+				"summary_status": model.MeetingSummaryStatusGenerating,
+			}).Error)
+		return "https://cos.example/full.webm", nil
+	}
+
+	url, err := biz.UpdateRecordingURL(ctx, 100, dto.ID, []byte("audio-bytes"), "video/webm")
+	require.NoError(t, err)
+	assert.Equal(t, "https://cos.example/full.webm", url)
+
+	// 关键断言：录音落库后会话必须仍是 ended，绝不能被反结束回 active。
+	var row model.MeetingSession
+	require.NoError(t, db.First(&row, dto.ID).Error)
+	assert.Equal(t, model.MeetingSessionStatusEnded, row.Status, "录音上传不得把已结束会话反结束回 active")
+	assert.NotNil(t, row.EndedAt, "ended_at 不得被清空")
+	assert.Equal(t, "https://cos.example/full.webm", row.RecordingURL, "recording_url 应已写入")
+}
+
 // TestGenerateFinalSummary_UsesRunningSummary 验证有 running_summary 时走滚动摘要路径（不读全稿）。
 func TestGenerateFinalSummary_UsesRunningSummary(t *testing.T) {
 	biz, _ := newMeetingTestBiz(t)

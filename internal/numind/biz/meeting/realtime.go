@@ -185,6 +185,9 @@ func (b *meetingBiz) StartRealtimeASR(ctx context.Context, userID uint, sessionI
 	return r, nil
 }
 
+// uploadBytesToCOS 是录音上传的 seam（测试可覆盖以注入"上传期间会话被结束"的竞态）。
+var uploadBytesToCOS = util.UploadBytesToCOS
+
 // UpdateRecordingURL 把整场录音上传到 COS（key `meeting-recordings/<userID>/<sessionID>/full.webm`）
 // 并回写 meeting_session.recording_url（SPEC §3）。
 //
@@ -198,7 +201,7 @@ func (b *meetingBiz) UpdateRecordingURL(ctx context.Context, userID uint, sessio
 	}
 
 	objectKey := fmt.Sprintf("meeting-recordings/%d/%d/full.webm", userID, sessionID)
-	url, err := util.UploadBytesToCOS(ctx, objectKey, contentType, audio)
+	url, err := uploadBytesToCOS(ctx, objectKey, contentType, audio)
 	if err != nil {
 		return "", fmt.Errorf("UpdateRecordingURL: upload cos: %w", err)
 	}
