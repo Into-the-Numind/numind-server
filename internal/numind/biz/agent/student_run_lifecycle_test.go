@@ -498,6 +498,29 @@ func TestStudentRunService_forwardNarration_NilProviderIsNoop(t *testing.T) {
 // silently regress to "no upload" replies and these tests will catch it.
 // ---------------------------------------------------------------------------
 
+// TestCreateRunRequest_AttachmentOnlyIsSendable reproduces the customer-reported bug
+// (2026-06-18): uploading ONLY an attachment (e.g. a docx) and clicking send was
+// rejected with "message is required". An attachment alone IS the content the user
+// wants the agent to process, so an attachment-only request must be sendable.
+func TestCreateRunRequest_AttachmentOnlyIsSendable(t *testing.T) {
+	// attachment URL only, no text → must be sendable
+	if (CreateRunRequest{Message: "", AttachmentURLs: []string{"https://cos/x.docx"}}).hasNoSendable() {
+		t.Error("attachment-only (URL) must be sendable — the uploaded file IS the content")
+	}
+	// attachment ID only, whitespace text → must be sendable
+	if (CreateRunRequest{Message: "  ", AttachmentIDs: []uint64{42}}).hasNoSendable() {
+		t.Error("attachment-only (ID) must be sendable")
+	}
+	// genuinely empty: no text, no attachment → NOT sendable (reject)
+	if !(CreateRunRequest{Message: "   "}).hasNoSendable() {
+		t.Error("no text and no attachment → must be rejected")
+	}
+	// text only → sendable
+	if (CreateRunRequest{Message: "hi"}).hasNoSendable() {
+		t.Error("text-only must be sendable")
+	}
+}
+
 func TestBuildAgentInput_NoAttachments(t *testing.T) {
 	got := buildAgentInput("hello agent", nil)
 	if got != "hello agent" {

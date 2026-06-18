@@ -222,6 +222,19 @@ type CreateRunRequest struct {
 	IsTest bool `json:"is_test,omitempty"`
 }
 
+// hasNoSendable reports whether the request carries nothing for the agent to act
+// on — neither input text nor any attachment. An attachment alone IS sendable
+// content: the user uploaded a file (e.g. a docx) for the agent to process, so an
+// empty input_text WITH attachments must NOT be rejected (customer-reported,
+// 2026-06-18).
+//
+// reproduce-first seam: this stub preserves the current (buggy) behavior — it looks
+// ONLY at Message and ignores attachments — so the reproduction test fails. The fix
+// commit makes it consider AttachmentURLs / AttachmentIDs.
+func (r CreateRunRequest) hasNoSendable() bool {
+	return strings.TrimSpace(r.Message) == ""
+}
+
 // CreateRunResponse is returned from POST /v1/agent-runs.
 // Field names align with web-v3 src/types/agent.ts CreateRunResponse contract.
 // run_id is the real DB row id (Create pre-allocates the row synchronously so
