@@ -40,8 +40,9 @@ const chatStreamRecentTurns = 10
 // chatStreamMaxHistory 历史消息上下文窗口（最近 N 条消息）
 const chatStreamMaxHistory = 20
 
-// chatStreamMaxChunks 检索 rerank 后保留的切片数（喂给 LLM 的知识条数上限）
-const chatStreamMaxChunks = 6
+// chatStreamMaxChunks 检索 rerank 后保留的切片数（喂给 LLM 的知识条数上限）。
+// 统一为 5：真实数据评估显示 0.3 阈值下 in-KB 召回在 top-3 即到顶，>5 不再涨、只增噪声/token。
+const chatStreamMaxChunks = 5
 
 // chatStreamRetrieveTopK 每路召回 limit（底座 parallelSearch 用），rerank 前的候选池。
 const chatStreamRetrieveTopK = 10

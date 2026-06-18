@@ -212,8 +212,9 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 	// 单次 intent 分析喂两通道，主空时该次分析此前未发生，故在此由 opinion 补一次）。
 	if len(opinionDocIDs) > 0 {
 		opOpts := retrieve.Options{
-			TopK:         10,
-			RerankTopN:   2, // 观点库 rerank 保留 top2（对齐原 rerankOpinionChunks）
+			TopK:       10,
+			RerankTopN: 5, // 观点库统一为 top5（与主通道一致）。观点是补充视角,保底留 1 条
+			// （RerankNoFloor 不设=false→全低于阈值仍保 top1,与主通道"拒答"语义有意不同）。
 			BillingLabel: "salesrag_rerank_opinion",
 		}
 		if len(allSearchQueries) > 0 {
