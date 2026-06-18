@@ -5298,3 +5298,21 @@ features:
   - 'S4-S5 (ai 2026-06-18): dynamic workflow 跑实现(BE‖FE 并行, 都已 commit)。实现中用户追加 HTML 预览反馈(sandbox="" 禁脚本→AI 报告靠 Tailwind CDN/JS 渲染样式全失效=裸文字)+卡片交互改版。停 workflow 主 session 接管: 调查确认 HTML 真渲染预览可行(allow-scripts 无 same-origin=opaque origin 隔离, CodePen 同款)。用户拍板: HTML 启用真渲染预览; 卡片统一只一个下载按钮+预览/编辑通过点击卡片(html→预览/可编辑→编辑器/否则提示"暂不支持预览")。FE-E 编辑图标改为新卡片交互模型(AgentArtifactItem 重写)+iframe sandbox="allow-scripts"。每仓库补 4 路 Sonnet review(workflow review 阶段被停未跑): BE 两路 PASS(文件名剥前缀+Bug-from-Customer 链+prompt 两路径真注入确认), FE 两路 PASS/DONE_WITH_CONCERNS——一致抓 allow-popups 超 spec 授权→移除只留 allow-scripts+spec 测试精确断言; BE P2 空串守卫已修+测试。门禁全绿: BE build ./...+test+vet; FE type-check+eslint+vitest 91files 968passed。下一步 S6 ndf-done 合两仓库+部署 dev。'
   - 'S6 (ai 2026-06-18): ndf-done 合两仓库→develop push 并复核(origin server=62e4659d 含 nanoPrefixRe / web=b164e8a 含 sandbox="allow-scripts"; worktree+分支已清)。dev 部署两仓库并发 release.sh: server develop-62e4659d-dirty(build 249s, /healthz ok) + web develop-b164e8a(/health healthy)。剩 S6 硬门禁=用户 dev 亲手验收(附件 icon/文件名干净/工具+思考左对齐/终止并入发送/无表格+卡片重复/卡片只下载按钮+点卡片预览编辑/HTML 真渲染预览)。prod 不在授权(止于 dev)。'
   blockers: []
+- id: agent-output-ux-followup3
+  ndf_version: '3.0'
+  description: 'agent-output-ux-followup2 dev 验收后用户第4轮反馈(2026-06-18): #1 生成动效尾部脉动点→前置转圈spinner; #2 HTML从源头切断预览只下载(点击提示"不支持预览"删iframe), docx/md/txt保留点击开右侧编辑器(方案B), 图片保留modal; #3 eino流式吐工具参数(写代码)增量+前端折叠代码框(默认展开/成功即收起/纯箭头/固定高度), 白名单门禁=生成类工具(run_python/create_html/create_docx/create_csv/create_json/create_text/create_png_chart); #4 create_docx markdown→docx确定性快路(复用沙箱跑固定md_to_docx.py, LLM只传markdown不写代码, 工具描述引导Agent路由)。跨numind-server(BE-1流式/BE-2 create_docx/BE-3 HTML转下载)+numind-web-v3(FE-1 spinner/FE-2 HTML只下载+方案B/FE-3代码框)。'
+  classification_reason: 'Standard(延续前三轮模式): 跨前后端 + 新工具create_docx+沙箱 + eino流式adapter改动 + 多前端组件 + 文件数>3。无DB schema/无新API端点(SSE事件非新路由)/无新外部服务/非支付权限。源于上轮dev验收。非Bug-from-Customer(增强/移除)。'
+  last_updated_by: ai-s4
+  last_updated_at: '2026-06-18T20:30:00+0800'
+  created_at: '2026-06-18T20:30:00+0800'
+  track: standard
+  stage: S4
+  status: active
+  repos: [numind-server, numind-web-v3]
+  branches: {numind-server: feature/agent-output-ux-followup3, numind-web-v3: feature/agent-output-ux-followup3}
+  worktrees: {numind-server: /private/tmp/wt-agent-output-ux-followup3-numind-server, numind-web-v3: /private/tmp/wt-agent-output-ux-followup3-numind-web-v3}
+  progress: {total_tasks: 6, completed_tasks: 0, reviewed_tasks: 0}
+  artifacts: {spec: .ndf/features/agent-output-ux-followup3/spec.md}
+  decisions:
+  - 'S0-S3 (ai 2026-06-18): 第4轮反馈经长对话Q&A敲定。纠正前investigator错误claim(业界非"确定性渲染docx"——Claude/Codex/Anthropic官方skill都让LLM写python-docx代码,没人做原生确定性docx工具; numind现状机制=业界标准)。提速真杠杆=markdown→docx快路(LLM少吐token)+不换模型(用户锁死deepseek-v4-pro质量优先)。用户拍板: HTML切断预览只下载/docx保留编辑(方案B)/eino流式只吐写代码段+白名单门禁/代码框默认展开成功收起纯箭头固定高度/create_docx靠工具描述路由。dynamic workflow: BE(1+2+3串行)‖FE(1+2+3串行)Tier2跨仓库+每仓库双review。下一步workflow S4。'
+  blockers: []
