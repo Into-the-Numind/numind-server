@@ -589,6 +589,13 @@ func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode
 		Temperature:      0.7,
 		ModelOverride:    modelKey, // pass user's model choice; empty = use task profile default
 		Thinking:         thinking,
+		// T7 Layer-3 opt-in: a SOP run replays a stable instruction prefix (system
+		// + durable history) across multi-node execution (R≥2 reuse), so it asserts
+		// the per-call cache intent. Gated downstream by the global flag + the
+		// model's prompt_cache_policy in the native Claude adapter; on every
+		// existing (dmxapi OAI-compat) route this field is ignored ⇒ no behavior
+		// change until a route is repointed to a native provider.
+		EnablePromptCache: true,
 	}
 	ch, err := aiservice.ChatStream(streamCtx, taskID, req)
 	if err != nil {
