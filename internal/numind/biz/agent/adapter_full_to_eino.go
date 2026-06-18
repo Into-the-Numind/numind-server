@@ -254,9 +254,11 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 		// agent_run.messages, which never stored the artifact) — User-reported: images
 		// dev 2026-06-08, documents (问题五) dev 2026-06-18. The collector classifies by
 		// mime (image → inline ![], else → standalone card link). Uses a ctx collector
-		// so both streaming and non-streaming runs are covered.
-		if url, fname, mime := artifactFromToolResult(output); url != "" {
-			artifactCollectorFrom(ctx).add(url, fname, mime)
+		// so both streaming and non-streaming runs are covered. artifactsFromToolResult
+		// returns ALL files so run_python's multi-file {"files":[...]} output (docx +
+		// html, etc.) is fully collected, not just the first (问题4).
+		for _, a := range artifactsFromToolResult(output) {
+			artifactCollectorFrom(ctx).add(a.URL, a.Filename, a.Mime)
 		}
 	}
 
