@@ -212,7 +212,7 @@ func toolNeedsSandbox(toolName string) bool { return IsSandboxIsolatedExecTool(t
 // keep additions here so both stay in sync.
 func IsSandboxIsolatedExecTool(toolName string) bool {
 	switch toolName {
-	case "bash_exec", "run_python":
+	case "bash_exec", "run_python", "create_docx":
 		return true
 	}
 	return false
