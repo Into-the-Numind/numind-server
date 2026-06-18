@@ -11,6 +11,8 @@ features:
     enabled: true             # 文档系统 v1（agent 产物在线编辑/导出），dev 开启
   meeting_copilot:
     enabled: true             # 会议副驾（实时转写 + 反馈 + AI 纪要），内部试用，dev 开启
+  meeting_diarization:
+    enabled: true             # 会议说话人分离（声纹引擎），dev 开启；effective = meeting_copilot.enabled && meeting_diarization.enabled
   chatbot_query_rewrite:
     enabled: true             # ③ RAG 查询处理（chatbot 检索前中性陈述改写），dev 开启验证；prod 默认 OFF（不配=false）
 
@@ -212,6 +214,14 @@ crawl4ai:
   token: ""                            # crawl4ai JWT，默认关
   timeout_seconds: 30
   content_filter: "fit"                # fit=干净正文 | raw=原始 markdown
+
+# 声纹服务（自建 CAM++ embedding，会议说话人分离用）。非 LLM，不经 aiservice 网关。
+# base_url 为空或服务不可达时声纹一律软降级（valid=false），绝不杀 relay/转写（见 DIARIZATION_SPEC §9/T5）。
+# 构建机 CPU 微服务（dev/prod 共用，安全组+iptables 限源，参 crawl4ai harden 模板）。
+# 受 features.meeting_diarization.enabled 守卫（且与 meeting_copilot.enabled AND）。
+voiceprint:
+  base_url: "http://139.155.129.13:11236"   # 构建机声纹服务（dev/prod 共用，安全组+iptables 限源）
+  timeout_seconds: 5                   # /embed 单段超时；超时即软降级 valid=false
 
 # Agent 沙箱配置（#4 sandbox-integration）
 # backend: disabled = no-op pool（prod 默认，相当于 #3 stub 行为）
