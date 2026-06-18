@@ -721,6 +721,8 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 	// V1.5 Track 4: 输出文件工具优先级引导（Layer 1 Go → Layer 2 skill → Layer 3 run_python 兜底）。
 	// 总是追加 — Layer 1/2/3 工具在 V1.5 后均默认注册，引导不破坏 6 段顺序（仍属段 2 Tools 内）。
 	toolsSectionPlaceholder += OutputToolsPriorityAddendum
+	// 问题五：告知模型生成文件由系统渲染成卡片，不要自造下载链接表格（消除重复）。
+	toolsSectionPlaceholder += GeneratedFilePresentationAddendum
 
 	// V1.5 板块 2 task 2.2 — V2 路径门控：DB flag use_compact_v2=true 且 runner 注入了 V2 deps。
 	// 若任一不满足，useCompactV2 视为 false：保持 V1 行为（adaptFullToEinoTool 原样、不注入

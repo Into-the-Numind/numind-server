@@ -275,6 +275,8 @@ func (r *agentRunner) RunStream(
 	var toolsSectionPlaceholder string
 
 	toolsSectionPlaceholder += OutputToolsPriorityAddendum
+	// 问题五：告知模型生成文件由系统渲染成卡片，不要自造下载链接表格（消除重复）。
+	toolsSectionPlaceholder += GeneratedFilePresentationAddendum
 
 	useCompactV2 := run.UseCompactV2 && r.artifactStore != nil && r.artifactDir != ""
 	if run.UseCompactV2 && !useCompactV2 {
