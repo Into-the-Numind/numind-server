@@ -585,9 +585,10 @@ func installNumindRouters(g *gin.Engine) error {
 	// （b.RagRetrieve() == chatbotRetrieve），评估即真实链路。用 AdminAuthMiddleware 守卫
 	// （admin token + IsAdmin），仍是 admin-only 工具，不对普通用户开放。路径保持
 	// /v1/admin/rag-eval/retrieve 不变（仅端口从 9099 改为 9091）。
+	// feature flag features.rag_eval.enabled：dev 开、prod 默认 OFF（不把 debug 端点暴露上 prod）。
 	{
 		ragEvalGroup := v1Group.Group("/admin/rag-eval")
-		ragEvalGroup.Use(importMw.AdminAuthMiddleware())
+		ragEvalGroup.Use(importMw.FeatureFlag("features.rag_eval.enabled"), importMw.AdminAuthMiddleware())
 		evalCtl := admincontroller.NewRAGEvalController(b.RagRetrieve())
 		ragEvalGroup.POST("/retrieve", evalCtl.Retrieve)
 	}

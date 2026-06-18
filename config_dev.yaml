@@ -12,7 +12,9 @@ features:
   meeting_copilot:
     enabled: true             # 会议副驾（实时转写 + 反馈 + AI 纪要），内部试用，dev 开启
   chatbot_query_rewrite:
-    enabled: true             # ③ RAG 查询处理（chatbot 检索前中性陈述改写），dev 开启验证；prod 默认 OFF（不配=false）
+    enabled: false            # ③ chatbot 查询改写：iDriveCareer 真实数据评估证明"提召回的改写会破坏库外拒答"，结论=不上。dev 也关掉与结论一致（prod 本就 OFF）。
+  rag_eval:
+    enabled: true             # rag-eval 检索调试端点（/v1/admin/rag-eval/retrieve），admin-only 评估工具，dev 开启；prod 默认 OFF（不暴露 debug 端点）
 
 # 后台管理系统配置
 admin:
