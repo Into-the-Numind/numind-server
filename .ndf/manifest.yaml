@@ -5282,17 +5282,18 @@ features:
   ndf_version: '3.0'
   description: 'agent-output-ux-followup dev 验收发现的 6 问题(用户 2026-06-18 第三轮): #1 附件 chip emoji 📎→输入框同款 lucide Paperclip; #2 附件名去纳秒前缀(upload object key=agent-attachments/uid/<unixnano>-<name>, filenameFromURL 剥 ^\d{13,}- 避免误伤 2024-xx; 优先 att.Filename 干净名); #3 工具调用+深度思考左对齐正文左边界; #4 终止按钮并入发送按钮(空闲=发送/运行=终止, 删中央 abort-bar; cancel 已验证生效); #5 system prompt 加指引让 AI 不自己写文件下载表格/链接(系统自动渲染卡片)消除表格+卡片重复(表格vs卡片根本矛盾唯一干净解); #6 可编辑卡片(docx)加编辑图标(docx 无眼睛因二进制不能 iframe, 但 canEdit 可点开编辑器, dev flag VITE_ENABLE_DOCUMENT_SYSTEM=true/prod=false)。跨 numind-server(BE-A 文件名/BE-B prompt)+numind-web-v3(FE-A..E)。'
   classification_reason: 'Standard(延续前两轮模式): 跨前后端 + 改 system prompt 组装 + 多前端组件 + 文件数>3。无 DB schema/无新 API 端点/无新外部服务/非支付权限。源于上轮 dev 验收。#2 Bug-from-Customer(filenameFromURL repro)。'
-  last_updated_by: ai-s3
+  last_updated_by: ai-s5
   last_updated_at: '2026-06-18T19:06:11+0800'
   created_at: '2026-06-18T19:06:11+0800'
   track: standard
-  stage: S3
+  stage: S5
   status: active
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/agent-output-ux-followup2, numind-web-v3: feature/agent-output-ux-followup2}
   worktrees: {numind-server: /private/tmp/wt-agent-output-ux-followup2-numind-server, numind-web-v3: /private/tmp/wt-agent-output-ux-followup2-numind-web-v3}
-  progress: {total_tasks: 7, completed_tasks: 0, reviewed_tasks: 0}
+  progress: {total_tasks: 7, completed_tasks: 7, reviewed_tasks: 7}
   artifacts: {spec: .ndf/features/agent-output-ux-followup2/spec.md}
   decisions:
   - 'S0-S3 (ai 2026-06-18): 第三轮 dev 验收 6 问题。三路只读调查定位: #2 前缀=upload.go unixnano object key; #5 根因=system prompt 无文件呈现指引→AI 自造下载表格+后端卡片=重复(唯一干净解=prompt 引导 AI 不自写, 系统渲染); #6 docx 无眼睛=二进制不能 iframe(只 html/图片可预览), 但 docx canEdit 可开编辑器(dev flag 已开), 加编辑图标让能力可见。设计直接, 无阻塞 fork。用 dynamic workflow: BE(BE-A 文件名+BE-B prompt)‖FE(FE-A icon/FE-B live名/FE-C 对齐/FE-D 按钮合并/FE-E 编辑图标)+每仓库双 review。下一步 workflow S4。'
+  - 'S4-S5 (ai 2026-06-18): dynamic workflow 跑实现(BE‖FE 并行, 都已 commit)。实现中用户追加 HTML 预览反馈(sandbox="" 禁脚本→AI 报告靠 Tailwind CDN/JS 渲染样式全失效=裸文字)+卡片交互改版。停 workflow 主 session 接管: 调查确认 HTML 真渲染预览可行(allow-scripts 无 same-origin=opaque origin 隔离, CodePen 同款)。用户拍板: HTML 启用真渲染预览; 卡片统一只一个下载按钮+预览/编辑通过点击卡片(html→预览/可编辑→编辑器/否则提示"暂不支持预览")。FE-E 编辑图标改为新卡片交互模型(AgentArtifactItem 重写)+iframe sandbox="allow-scripts"。每仓库补 4 路 Sonnet review(workflow review 阶段被停未跑): BE 两路 PASS(文件名剥前缀+Bug-from-Customer 链+prompt 两路径真注入确认), FE 两路 PASS/DONE_WITH_CONCERNS——一致抓 allow-popups 超 spec 授权→移除只留 allow-scripts+spec 测试精确断言; BE P2 空串守卫已修+测试。门禁全绿: BE build ./...+test+vet; FE type-check+eslint+vitest 91files 968passed。下一步 S6 ndf-done 合两仓库+部署 dev。'
   blockers: []
