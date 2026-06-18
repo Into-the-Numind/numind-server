@@ -5278,3 +5278,21 @@ features:
   - 'S4 (ai 2026-06-18): dynamic workflow 跑实现阶段(BE‖FE 并行)。期间用户刷新 dev 暴露新证据: HTML(create_html 单文件)被收+卡片但表格那格空了(我上轮 stripNodesReferencing 剥表格单元格), docx(run_python files[])仍漏收。据此**改设计→表格安全**: 不再 strip 模型链接(剥表格留空格子+卡片脱离); 改 hasStandaloneCardableLine 判定(模型已写独占可成卡片行则跳过, 否则只 append 独占卡片行), 表格/行内链接保留。停 workflow(BE 已 commit 多文件收集 2 commit, FE 半成品), 主 session 接管收尾: BE 加 table-safe 重构 commit; FE 完成 5 修+补 agentGeneration 测试。每仓库补 4 路 Sonnet review(workflow review 阶段未跑): BE PASS_WITH_CONCERNS, FE 抓到 P1=FE5 没接入组件(agent 被停在写组件前, "正在生成…"从不出现)→主 session 接入 AgentMessageItem(store+1s ticker+isGenerating computed+动效 reduced-motion); BE P2=hasStandaloneCardableLine 缺单行单节点守卫(两链接同行尾部丢卡片)已修+测试。门禁全绿: BE go build ./... + go test + vet; FE type-check + eslint + vitest 91files 975passed。下一步 S6 ndf-done 合两仓库+部署 dev。'
   - 'S6 (ai 2026-06-18): ndf-done 合两仓库→develop 已 push 并复核(origin/develop server=de8532eb 含 hasStandaloneCardableLine x3 / web=8fd562c 含 agentGeneration.ts; worktree+分支已清)。dev 部署两仓库并发 release.sh: server develop-de8532eb-dirty(build 249s, /healthz ok) + web develop-8fd562c(/health healthy)。剩 S6 硬门禁=用户在 dev 亲手验收 5 问题(纯附件无分割线/工具行 padding 均匀/生成期"正在生成…"/docx+html 都稳定卡片且表格不破/结束后无"处理中"+指示器不重复)。prod 不在授权(止于 dev)。'
   blockers: []
+- id: agent-output-ux-followup2
+  ndf_version: '3.0'
+  description: 'agent-output-ux-followup dev 验收发现的 6 问题(用户 2026-06-18 第三轮): #1 附件 chip emoji 📎→输入框同款 lucide Paperclip; #2 附件名去纳秒前缀(upload object key=agent-attachments/uid/<unixnano>-<name>, filenameFromURL 剥 ^\d{13,}- 避免误伤 2024-xx; 优先 att.Filename 干净名); #3 工具调用+深度思考左对齐正文左边界; #4 终止按钮并入发送按钮(空闲=发送/运行=终止, 删中央 abort-bar; cancel 已验证生效); #5 system prompt 加指引让 AI 不自己写文件下载表格/链接(系统自动渲染卡片)消除表格+卡片重复(表格vs卡片根本矛盾唯一干净解); #6 可编辑卡片(docx)加编辑图标(docx 无眼睛因二进制不能 iframe, 但 canEdit 可点开编辑器, dev flag VITE_ENABLE_DOCUMENT_SYSTEM=true/prod=false)。跨 numind-server(BE-A 文件名/BE-B prompt)+numind-web-v3(FE-A..E)。'
+  classification_reason: 'Standard(延续前两轮模式): 跨前后端 + 改 system prompt 组装 + 多前端组件 + 文件数>3。无 DB schema/无新 API 端点/无新外部服务/非支付权限。源于上轮 dev 验收。#2 Bug-from-Customer(filenameFromURL repro)。'
+  last_updated_by: ai-s3
+  last_updated_at: '2026-06-18T19:06:11+0800'
+  created_at: '2026-06-18T19:06:11+0800'
+  track: standard
+  stage: S3
+  status: active
+  repos: [numind-server, numind-web-v3]
+  branches: {numind-server: feature/agent-output-ux-followup2, numind-web-v3: feature/agent-output-ux-followup2}
+  worktrees: {numind-server: /private/tmp/wt-agent-output-ux-followup2-numind-server, numind-web-v3: /private/tmp/wt-agent-output-ux-followup2-numind-web-v3}
+  progress: {total_tasks: 7, completed_tasks: 0, reviewed_tasks: 0}
+  artifacts: {spec: .ndf/features/agent-output-ux-followup2/spec.md}
+  decisions:
+  - 'S0-S3 (ai 2026-06-18): 第三轮 dev 验收 6 问题。三路只读调查定位: #2 前缀=upload.go unixnano object key; #5 根因=system prompt 无文件呈现指引→AI 自造下载表格+后端卡片=重复(唯一干净解=prompt 引导 AI 不自写, 系统渲染); #6 docx 无眼睛=二进制不能 iframe(只 html/图片可预览), 但 docx canEdit 可开编辑器(dev flag 已开), 加编辑图标让能力可见。设计直接, 无阻塞 fork。用 dynamic workflow: BE(BE-A 文件名+BE-B prompt)‖FE(FE-A icon/FE-B live名/FE-C 对齐/FE-D 按钮合并/FE-E 编辑图标)+每仓库双 review。下一步 workflow S4。'
+  blockers: []
