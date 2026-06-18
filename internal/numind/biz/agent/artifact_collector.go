@@ -169,6 +169,11 @@ func artifactObjectKey(u string) string {
 // inside one (or inside a table row) into a card, so neither do we.
 var listOrQuoteLineRE = regexp.MustCompile(`^\s*(?:[-*+]\s|\d+[.)]\s|>\s?)`)
 
+// anyMarkdownNodeRE matches any markdown image/link node, used to enforce the frontend
+// standaloneArtifactOf rule that a cardable line holds EXACTLY ONE node — a line with
+// two file links (e.g. "生成了 [a](…) 和 [b](…)") is not standalone-cardable for either.
+var anyMarkdownNodeRE = regexp.MustCompile(`!?\[[^\]]*\]\([^)]*\)`)
+
 // hasStandaloneCardableLine reports whether content already has a line the frontend's
 // standaloneArtifactOf would lift into a file card for objectKey: a markdown link/image
 // node referencing objectKey, alone on its line (nothing meaningful after the node),
@@ -181,9 +186,16 @@ func hasStandaloneCardableLine(content, objectKey string) bool {
 	if objectKey == "" || content == "" {
 		return false
 	}
+	// QuoteMeta always yields a valid literal fragment, so MustCompile cannot panic here.
 	nodeRe := regexp.MustCompile(`!?\[[^\]]*\]\(\s*` + regexp.QuoteMeta(objectKey) + `(?:[?#][^)]*)?\s*\)`)
 	for _, line := range strings.Split(content, "\n") {
 		if strings.Contains(line, "|") || listOrQuoteLineRE.MatchString(line) {
+			continue
+		}
+		// Mirror frontend standaloneArtifactOf: exactly ONE markdown node on the line.
+		// Two links on one line ("[a](…) 和 [b](…)") → the frontend cards neither, so we
+		// must NOT skip appending our card for the second URL.
+		if len(anyMarkdownNodeRE.FindAllStringIndex(line, -1)) != 1 {
 			continue
 		}
 		loc := nodeRe.FindStringIndex(line)

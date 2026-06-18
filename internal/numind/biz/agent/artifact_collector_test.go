@@ -137,3 +137,30 @@ func TestArtifactCollector_FinalizeInto_SkipsAlreadyStandalone(t *testing.T) {
 	got := c.finalizeInto(content)
 	assert.Equal(t, 1, strings.Count(got, cosDocx), "already standalone-cardable → no duplicate card appended")
 }
+
+// Two file links on ONE prose line: the frontend cards NEITHER (standaloneArtifactOf
+// requires exactly one node), so finalizeInto must append a card for EACH — the trailing
+// one must not be wrongly skipped (review P2: exactly-one-node guard).
+func TestArtifactCollector_FinalizeInto_TwoLinksOneLineBothCarded(t *testing.T) {
+	const docA = "https://cos.example.com/agent-outputs/1/a.docx?sig=1"
+	const docB = "https://cos.example.com/agent-outputs/1/b.html?sig=2"
+	ctx := withArtifactCollector(context.Background())
+	c := artifactCollectorFrom(ctx)
+	c.add(docA, "a.docx", "application/octet-stream")
+	c.add(docB, "b.html", "text/html")
+
+	content := "生成了 [a.docx](" + docA + ") 和 [b.html](" + docB + ")。"
+	got := c.finalizeInto(content)
+	var aCard, bCard bool
+	for _, line := range strings.Split(got, "\n") {
+		tl := strings.TrimSpace(line)
+		if tl == "[a.docx]("+docA+")" {
+			aCard = true
+		}
+		if tl == "[b.html]("+docB+")" {
+			bCard = true
+		}
+	}
+	assert.True(t, aCard, "first file must get a standalone card")
+	assert.True(t, bCard, "trailing file on the same line must ALSO get a card (not skipped)")
+}
