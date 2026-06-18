@@ -154,7 +154,9 @@ const summarySystemPrompt = `你是专业的会议纪要助理。请阅读下面
 // 计费纪律：走 aiservice.Chat（UsageRecord 自动记录），用 internalCallCtx 剥离扣费 + 会员门；
 // 不设 ContextFragments → 网关无 fragment 直通，零三池变动。
 func (b *meetingBiz) generateSummary(ctx context.Context, userID uint, s *model.MeetingSession, segs []model.MeetingSegment) (string, error) {
-	transcript := joinTranscript(segs, summaryMaxTranscriptRunes)
+	// 说话人归并（DIARIZATION_SPEC.md §7 T9 (b)）：flag 开启且已有 final_speaker_id 时，按
+	// "发言人N：…" 分组拼转写；否则退回纯 joinTranscript（现状行为不变）。
+	transcript := b.buildSummaryTranscript(ctx, s.ID, segs, summaryMaxTranscriptRunes)
 	if strings.TrimSpace(transcript) == "" {
 		// 无有效转写：降级占位纪要，不调 LLM。
 		return emptyTranscriptSummary(), nil
@@ -252,8 +254,16 @@ func (b *meetingBiz) generateFinalSummary(ctx context.Context, userID uint, s *m
 	}
 
 	// 尾部增量：滚动摘要可能落后于最后几句（折叠游标节流），把尾部转写一并喂给模型补齐。
-	// 取最近 ~2000 字即可（滚动摘要已覆盖主体脉络）。
-	tail, _ := buildTranscriptWindow(segs, 2000)
+	// 取最近 ~2000 字即可（滚动摘要已覆盖主体脉络）。说话人归并（DIARIZATION_SPEC.md §7 T9 (b)）：
+	// flag 开启且已有 final_speaker_id 时，尾部也按 "发言人N：…" 分组（取尾部分段，保持时间序）；
+	// 否则退回纯 buildTranscriptWindow（现状行为不变）。
+	var tail string
+	if diarizationEnabled() && hasAnyFinalSpeaker(segs) {
+		speakerByCluster, _ := b.loadSpeakerMap(ctx, s.ID)
+		tail = joinTranscriptBySpeaker(tailSegments(segs, 2000), speakerByCluster, 2000)
+	} else {
+		tail, _ = buildTranscriptWindow(segs, 2000)
+	}
 
 	callCtx := internalCallCtx(ctx, "meeting.summary")
 	traceID := langfuse.TraceID()
