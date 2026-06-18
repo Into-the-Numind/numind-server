@@ -30,6 +30,11 @@ type fileReadOutput struct {
 	PageCount int    `json:"page_count,omitempty"`
 	ByteSize  int    `json:"byte_size"`
 	Truncated bool   `json:"truncated"`
+	// Error is set ONLY on the soft-error path (returnSoftError), mirroring the
+	// dedicated "error" field of web_search/web_fetch/image_gen so the Eino adapter's
+	// soft-error detector (softToolErrorMessage) narrates StateError, not a false
+	// "✓ success" badge. Omitted on a successful read (the model reads Content).
+	Error string `json:"error,omitempty"`
 }
 
 // fileParser is the narrow interface for each MIME-specific backend.
@@ -171,6 +176,7 @@ func (t *fileReadTool) returnSoftError(fileName, format string, args ...any) (To
 		Content:   "ERROR: " + msg,
 		ByteSize:  len(msg) + 7,
 		Truncated: false,
+		Error:     "ERROR: " + msg,
 	})
 	return ToolResult(out), nil
 }
