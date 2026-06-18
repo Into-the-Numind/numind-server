@@ -70,6 +70,11 @@ type ResolvedRoute struct {
 	// the OAI wire when SupportsThinking && !ThinkingOnly. "" / "reasoning_effort" → reasoning_effort;
 	// "enable_thinking_kwarg" → chat_template_kwargs.enable_thinking; "none" → inject nothing.
 	ThinkingStyle string
+	// PromptCachePolicy mirrors ai_service.prompt_cache_policy — the per-model durable knob
+	// (Layer 2 of the 3-layer cache toggle) selecting whether/how provider-native prompt
+	// caching is used by the native adapters. Enum: off | claude_ephemeral | gemini_implicit
+	// | auto. Empty/"off"/any unrecognised value ⇒ caching stays off (safe default).
+	PromptCachePolicy string
 }
 
 // ----------------------------------------------------------------------------
@@ -477,10 +482,11 @@ func buildResolvedRoute(taskID string, row *resolvedRouteRow) ResolvedRoute {
 		// middleware (buildBaseRecord). The column was removed from ai_service_route
 		// in T-arch; the billing middleware performs the lookup and writes Unit into
 		// the UsageRecord.
-		Pricing:          PricingInfo{},
-		SupportsThinking: row.SupportsThinking,
-		ThinkingOnly:     row.ThinkingOnly,
-		ThinkingStyle:    row.ThinkingStyle,
+		Pricing:           PricingInfo{},
+		SupportsThinking:  row.SupportsThinking,
+		ThinkingOnly:      row.ThinkingOnly,
+		ThinkingStyle:     row.ThinkingStyle,
+		PromptCachePolicy: row.PromptCachePolicy,
 	}
 }
 

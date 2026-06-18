@@ -103,12 +103,21 @@ type AIService struct {
 	//   "" / "reasoning_effort" → reasoning_effort:"medium"
 	//   "enable_thinking_kwarg" → chat_template_kwargs:{"enable_thinking":true} (Qwen/vLLM style)
 	//   "none"                  → inject nothing (supports thinking but no activation field)
-	ThinkingStyle string    `gorm:"size:32;default:''" json:"thinking_style"`
-	Icon          string    `gorm:"size:50" json:"icon"`
-	SortOrder     int       `gorm:"default:0" json:"sort_order"`
-	IsActive      bool      `gorm:"default:true" json:"is_active"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ThinkingStyle string `gorm:"size:32;default:''" json:"thinking_style"`
+	// PromptCachePolicy is the per-model durable knob (Layer 2 of the 3-layer cache
+	// toggle) selecting whether/how provider-native prompt caching is used. Caching
+	// economics are a property of the MODEL, so the knob lives on ai_service next to
+	// thinking_style. Enum: off | claude_ephemeral | gemini_implicit | auto.
+	// `not null;default:'off'` keeps the safe default explicit and prevents NULL ever
+	// appearing in admin reads — anything not in {claude_ephemeral, gemini_implicit,
+	// auto} means caching stays off. Mirrored onto ResolvedRoute via the same pattern
+	// thinking_style follows.
+	PromptCachePolicy string    `gorm:"size:16;not null;default:'off'" json:"prompt_cache_policy"`
+	Icon              string    `gorm:"size:50" json:"icon"`
+	SortOrder         int       `gorm:"default:0" json:"sort_order"`
+	IsActive          bool      `gorm:"default:true" json:"is_active"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 // TableName returns the table name for AIService.

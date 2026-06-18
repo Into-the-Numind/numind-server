@@ -13,6 +13,8 @@ features:
     enabled: true             # 会议副驾（实时转写 + 反馈 + AI 纪要），内部试用，dev 开启
   chatbot_query_rewrite:
     enabled: true             # ③ RAG 查询处理（chatbot 检索前中性陈述改写），dev 开启验证；prod 默认 OFF（不配=false）
+  provider_prompt_cache:
+    enabled: true             # 供应商原生 prompt 缓存（Claude ephemeral / Gemini implicit）全局开关，dev 开启验证；prod 默认 OFF（不配=false）
 
 # 后台管理系统配置
 admin:

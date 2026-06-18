@@ -196,6 +196,18 @@ type ChatRequest struct {
 	// show explicit `thinking=false` choices so that route-level debugging
 	// can distinguish "caller did not opt in" from "field never serialised".
 	Thinking bool `json:"thinking"`
+	// EnablePromptCache is Layer 3 of the 3-layer provider-native cache toggle: the
+	// per-call intent signalling that THIS specific call has a reused stable prefix
+	// worth caching. Set true by SOP + agent (R≥2 reuse); left false by chatbot /
+	// salesrag single-shot callers. The native Claude adapter ANDs this with the
+	// global flag (Layer 1) and the per-model policy (Layer 2) before emitting
+	// `cache_control` — false ⇒ the Anthropic body is wire-identical to a non-cached
+	// call. For Gemini (implicit cache) it is advisory only.
+	//
+	// The json tag deliberately omits `omitempty` (matches `Thinking`): traces must
+	// faithfully record an explicit `enable_prompt_cache=false`. ChatRequest is an
+	// internal type never bound from HTTP, so no user request can flip this.
+	EnablePromptCache bool `json:"enable_prompt_cache"`
 }
 
 // ChatResponse is the unified response type for non-streaming Chat calls.
