@@ -424,6 +424,11 @@ func autoMigrate(db *gorm.DB) error {
 			&model.MeetingSegment{},
 			&model.MeetingFeedback{},
 			&model.MeetingPreset{},
+			// 说话人分离地基（DIARIZATION_SPEC §6）：MeetingSpeaker = 离线出场序编号 + 色板映射；
+			// MeetingSegmentEmbedding = 逐段 192-d embedding 落库，是离线 AHC 重聚类主路径前提（P0-2）。
+			// 漏建 MeetingSegmentEmbedding 会让 T7/T8 的 INSERT 报「表不存在」。
+			&model.MeetingSpeaker{},
+			&model.MeetingSegmentEmbedding{},
 		); err != nil {
 			return fmt.Errorf("failed to migrate meeting copilot tables: %w", err)
 		}
