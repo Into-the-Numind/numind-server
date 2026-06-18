@@ -19,11 +19,14 @@ import (
 	"strings"
 	"time"
 
+	"numind-server/internal/numind/biz/meeting/diarize"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/voiceprint"
 
+	"github.com/spf13/viper"
 	"gorm.io/gorm"
 )
 
@@ -69,19 +72,24 @@ type SavePresetReq struct {
 
 // SessionDTO 会话 DTO（SPEC §3：时间字段 ISO8601 由 time.Time json 默认编码保证）。
 type SessionDTO struct {
-	ID                  uint64     `json:"id"`
-	Title               string     `json:"title"`
-	RolePrompt          string     `json:"role_prompt"`
-	PresetID            *uint64    `json:"preset_id,omitempty"`
-	Status              string     `json:"status"`
-	AutoIntervalSeconds int        `json:"auto_interval_seconds"`
-	DurationSeconds     int        `json:"duration_seconds"`
-	Summary             string     `json:"summary,omitempty"`
-	SummaryStatus       string     `json:"summary_status"`
-	StartedAt           *time.Time `json:"started_at,omitempty"`
-	EndedAt             *time.Time `json:"ended_at,omitempty"`
-	CreatedAt           time.Time  `json:"created_at"`
-	UpdatedAt           time.Time  `json:"updated_at"`
+	ID                  uint64  `json:"id"`
+	Title               string  `json:"title"`
+	RolePrompt          string  `json:"role_prompt"`
+	PresetID            *uint64 `json:"preset_id,omitempty"`
+	Status              string  `json:"status"`
+	AutoIntervalSeconds int     `json:"auto_interval_seconds"`
+	DurationSeconds     int     `json:"duration_seconds"`
+	Summary             string  `json:"summary,omitempty"`
+	SummaryStatus       string  `json:"summary_status"`
+	// DiarizationStatus 说话人分离状态（none/online/refining/done/failed，DIARIZATION_SPEC.md §6）。
+	// 仅当说话人分离 flag 开启时填充；关闭时为空串（前端据此走"无说话人"现状行为）。
+	DiarizationStatus string `json:"diarization_status,omitempty"`
+	// SpeakerCount 离线精修出的说话人数；NULL=未精修。仅 flag 开启时填充。
+	SpeakerCount *int       `json:"speaker_count,omitempty"`
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+	EndedAt      *time.Time `json:"ended_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
 // SegmentDTO 转写分段 DTO（SPEC §3 segments 返回体）。
@@ -93,6 +101,35 @@ type SegmentDTO struct {
 	DurationSeconds float64   `json:"duration_seconds"`
 	AudioURL        string    `json:"audio_url,omitempty"`
 	CreatedAt       time.Time `json:"created_at"`
+
+	// --- 说话人分离（DIARIZATION_SPEC.md §6 展示规则）。仅当 flag 开启时这些字段才填充；
+	// 关闭时全部留零值（json omitempty 隐藏），行为与现状完全一致。---
+
+	// SpeakerLabel 有效展示标签：final_speaker_id(经 meeting_speaker 映射，如 "发言人1") →
+	// online_speaker_id(字母 A/B/C 临时标签) → 空串("发言人?" 由前端兜底)。
+	SpeakerLabel string `json:"speaker_label,omitempty"`
+	// SpeakerColorIndex 前端取色板下标。final 标签取 meeting_speaker.color_index；online 临时标签
+	// 按字母序 (A=0,B=1…) round-robin；无标签时省略。
+	SpeakerColorIndex *int `json:"speaker_color_index,omitempty"`
+	// FinalSpeakerID 离线全局重聚类稳定簇号；NULL=尚未精修（仍用 online 临时标签）。
+	FinalSpeakerID *int `json:"final_speaker_id,omitempty"`
+	// OnlineSpeakerID 在线增量聚类临时簇号；NULL=声纹未就绪/软降级。
+	OnlineSpeakerID *int `json:"online_speaker_id,omitempty"`
+	// OnlineProvisional 在线灰区暂定标（provisional，低置信，前端弱化展示）。
+	OnlineProvisional bool `json:"online_provisional,omitempty"`
+	// SpeakerConfidence 说话人聚类置信度；NULL=未知。
+	SpeakerConfidence *float32 `json:"speaker_confidence,omitempty"`
+}
+
+// SpeakerDTO 离线精修说话人映射 DTO（DIARIZATION_SPEC.md §6）。前端用 label+color 渲染色标图例，
+// 并把 segment.final_speaker_id == cluster_id 的段标到对应说话人。
+type SpeakerDTO struct {
+	// ClusterID 离线重聚类簇号（== segment.final_speaker_id）。
+	ClusterID int `json:"cluster_id"`
+	// Label 展示编号（出场序 "发言人1"/"发言人2"…）。
+	Label string `json:"label"`
+	// ColorIndex 前端取色板下标。
+	ColorIndex int `json:"color_index"`
 }
 
 // FeedbackDTO 反馈 DTO（SPEC §3.1 done 事件 payload）。
@@ -121,6 +158,10 @@ type SessionDetailDTO struct {
 	Session   SessionDTO    `json:"session"`
 	Segments  []SegmentDTO  `json:"segments"`
 	Feedbacks []FeedbackDTO `json:"feedbacks"`
+	// Speakers 离线精修说话人列表（label+color，DIARIZATION_SPEC.md §6）。仅 flag 开启且已精修出
+	// meeting_speaker 时非空；否则 nil（json omitempty 隐藏）。前端据 segment.final_speaker_id
+	// 关联到此列表的 cluster_id。
+	Speakers []SpeakerDTO `json:"speakers,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -262,6 +303,10 @@ func (b *meetingBiz) GetSession(ctx context.Context, userID uint, id uint64) (*S
 		Segments:  toSegmentDTOs(segs),
 		Feedbacks: toFeedbackDTOs(fbs),
 	}
+	// 说话人分离富化（DIARIZATION_SPEC.md §6 / §7 T9）：flag 开启时为每段填有效标签 + 附 speakers
+	// 映射 + diarization_status；关闭时 no-op，响应与现状逐字节一致。读路径出错软降级（仅 log，不
+	// 失败 GetSession）。
+	b.enrichDetailWithSpeakers(ctx, detail, s, segs)
 	return detail, nil
 }
 
@@ -327,8 +372,69 @@ func (b *meetingBiz) EndSession(ctx context.Context, userID uint, id uint64, gen
 		})
 	}
 
+	// --- 异步段：会后离线说话人精修（DIARIZATION_SPEC.md §3 step (4) / §4 P1-离线触发时序）---
+	// 因主路径走会中已逐段攒好的 meeting_segment_embedding（P0-2，不依赖录音时间轴），离线精修可在
+	// EndSession 后即触发，无须等录音上传。flag 守卫：effective = meeting_copilot && meeting_diarization
+	// （diarizationEnabled，与在线 relay 同一判定）。关闭时整段跳过，零开销。失败一律软降级（绝不杀
+	// EndSession 的同步返回，也不影响纪要 / 转写）。
+	if diarizationEnabled() {
+		asyncDiarizeSpawn(func() {
+			b.refineSpeakersAsync(id)
+		})
+	}
+
 	dto := toSessionDTO(s)
 	return &dto, nil
+}
+
+// asyncDiarizeSpawn 是离线说话人精修的派发点（DIARIZATION_SPEC.md §3 step (4)）。生产用 go func
+// 真异步；单测可替换为同步执行以断言精修副作用（meeting_speaker / final_speaker_id / diarization_status）。
+var asyncDiarizeSpawn = func(fn func()) { go fn() }
+
+// refineSpeakersAsync 在后台跑离线说话人精修（DIARIZATION_SPEC.md §3 step (4)，§4 P0-2 主路径）。
+//
+// 独立 context.Background()（不受 EndSession 请求 ctx 取消影响）+ recover 防 panic——与
+// finalizeSummaryAsync 同纪律。主路径 = 拉本场已存逐段 embedding 全局 AHC 重聚类（diarize.Refiner），
+// 天然按 segment 对齐、不依赖录音时间轴。仅当无任何已存 embedding 时才走 full.webm→/diarize 兜底
+// （需录音 URL + 声纹服务可配）。
+//
+// 软降级（§4 P1）：任何失败仅 log，diarization_status 落 failed，前端继续用在线 A/B/C 临时标签——
+// 转写 / 纪要 / relay 全不受影响。
+func (b *meetingBiz) refineSpeakersAsync(id uint64) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Errorw("meeting: refine speakers panicked", "session_id", id, "panic", rec)
+		}
+	}()
+
+	ctx := context.Background()
+
+	// 专属离线 diarize store（DIARIZATION_SPEC.md §6/§7 P2-store）：从 IStore.DB() 构造，
+	// 避免拓宽 IStore 接口而与其它 store 改动冲突。
+	offlineStore := store.NewDiarizeOfflineStore(b.ds.DB())
+
+	// 兜底路径所需：录音 URL + 声纹客户端（仅在无已存 embedding 时才会被 Refiner 用到）。
+	// 录音上传常在 EndSession 之后才完成，故此处读到的 recording_url 可能为空——空则兜底不可用，
+	// 但主路径（已存 embedding）不受影响。
+	var recordingURL string
+	if s, err := b.ds.Meetings().GetSession(ctx, id); err == nil {
+		recordingURL = s.RecordingURL
+	} else {
+		log.Warnw("meeting: refine speakers load session failed (fallback recording url unavailable)",
+			"session_id", id, "error", err)
+	}
+
+	var diarizeClient diarize.DiarizeClient
+	if baseURL := strings.TrimSpace(viper.GetString("voiceprint.base_url")); baseURL != "" {
+		diarizeClient = voiceprint.NewClient(baseURL)
+	}
+
+	refiner := diarize.NewRefiner(offlineStore, diarizeClient, recordingURL)
+	if err := refiner.RefineSpeakers(ctx, id); err != nil {
+		// RefineSpeakers 已 best-effort 置 diarization_status=failed；此处仅 log（软降级）。
+		log.Warnw("meeting: refine speakers failed (soft-degraded, online labels retained)",
+			"session_id", id, "error", err)
+	}
 }
 
 // finalizeSummaryAsync 在后台生成最终纪要并回写（FEEDBACK_V2_SPEC §3.1 异步段）。
