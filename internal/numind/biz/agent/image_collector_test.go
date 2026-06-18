@@ -10,8 +10,8 @@ import (
 
 // Regression: the streaming path embeds images in consumeEinoStream AND then
 // finalizeRun runs — both must not append the same image markdown. markdown() is
-// idempotent (safe to read twice); drainMarkdown() clears so the second embed is
-// a no-op, preventing the persisted final answer from showing the image twice.
+// idempotent (safe to read twice); drainMarkdownExcluding clears so the second
+// embed is a no-op, preventing the persisted final answer from showing it twice.
 func TestImageCollector_DrainClearsMarkdown(t *testing.T) {
 	ctx := withImageCollector(context.Background())
 	c := imageCollectorFrom(ctx)
@@ -22,8 +22,9 @@ func TestImageCollector_DrainClearsMarkdown(t *testing.T) {
 	assert.Contains(t, md, "![x.png](https://cos/x.png)")
 	assert.Equal(t, md, c.markdown(), "markdown() must be idempotent (no clear)")
 
-	assert.Equal(t, md, c.drainMarkdown(), "drainMarkdown returns the markdown")
-	assert.Equal(t, "", c.drainMarkdown(), "drainMarkdown clears → empty on 2nd call")
+	// Empty content excludes nothing → returns all, then clears.
+	assert.Equal(t, md, c.drainMarkdownExcluding(""), "drain returns the markdown")
+	assert.Equal(t, "", c.drainMarkdownExcluding(""), "drain clears → empty on 2nd call")
 	assert.Equal(t, "", c.markdown(), "markdown is empty after drain")
 }
 
@@ -74,9 +75,24 @@ func TestImageCollector_DrainMarkdownExcluding_KeepsUnreferenced(t *testing.T) {
 	assert.Equal(t, "", c.drainMarkdownExcluding(""), "drains → empty on 2nd call")
 }
 
+// TestImageCollector_DrainMarkdownExcluding_MixedBatch: with two distinct images,
+// one already embedded by the model and one not, only the un-embedded one is kept.
+func TestImageCollector_DrainMarkdownExcluding_MixedBatch(t *testing.T) {
+	const embedded = "https://cos.example.com/agent-outputs/1/a.png?sig=1"
+	const fresh = "https://cos.example.com/agent-outputs/1/b.png?sig=2"
+	ctx := withImageCollector(context.Background())
+	c := imageCollectorFrom(ctx)
+	c.add(embedded, "a.png")
+	c.add(fresh, "b.png")
+
+	got := c.drainMarkdownExcluding("model wrote ![a](" + embedded + ") and nothing else")
+	assert.NotContains(t, got, "a.png", "the model-embedded image must be excluded")
+	assert.Contains(t, got, "![b.png]("+fresh+")", "the un-embedded image must be kept")
+}
+
 func TestImageCollector_NilSafe(t *testing.T) {
 	var c *imageCollector
 	c.add("u", "f")
 	assert.Equal(t, "", c.markdown())
-	assert.Equal(t, "", c.drainMarkdown())
+	assert.Equal(t, "", c.drainMarkdownExcluding("anything"))
 }

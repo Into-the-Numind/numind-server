@@ -20,7 +20,15 @@ import (
 type imageCollector struct {
 	mu   sync.Mutex
 	seen map[string]struct{}
-	imgs []string
+	imgs []imageEntry
+}
+
+// imageEntry pairs an image's URL with its rendered markdown snippet, so the
+// collector can both emit the markdown and match the image against the model's own
+// answer text by its (signature-independent) object key.
+type imageEntry struct {
+	url string
+	md  string
 }
 
 type imageCollectorCtxKey struct{}
@@ -53,7 +61,7 @@ func (c *imageCollector) add(url, filename string) {
 	if alt == "" {
 		alt = "生成的图片"
 	}
-	c.imgs = append(c.imgs, fmt.Sprintf("![%s](%s)", alt, url))
+	c.imgs = append(c.imgs, imageEntry{url: url, md: fmt.Sprintf("![%s](%s)", alt, url)})
 }
 
 // markdown returns the collected image snippets joined by blank lines, or "" when
@@ -64,39 +72,52 @@ func (c *imageCollector) markdown() string {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.imgs) == 0 {
-		return ""
-	}
-	return strings.Join(c.imgs, "\n\n")
+	return joinEntries(c.imgs)
 }
 
-// drainMarkdown returns the collected image snippets AND clears them, so a
-// subsequent call returns "". Use this when embedding images into the persisted
-// final answer: the streaming path embeds in consumeEinoStream and then
-// finalizeRun runs too — without draining, both append the same markdown and the
-// image is persisted twice. Safe on a nil receiver.
-func (c *imageCollector) drainMarkdown() string {
+// drainMarkdownExcluding returns the collected image markdown EXCLUDING any image
+// the model already embedded in `content`, and clears the collector. This fixes the
+// duplicate-render bug (dev 2026-06-18): the LLM wrote ![](url) in its own final
+// answer AND the finalizer appended the same image, rendering it twice. An image is
+// considered "already embedded" when content contains its object key (URL minus the
+// signed query string), so a model-rendered re-signed URL still matches. Images the
+// model did NOT reference are still returned, preserving the persistence guarantee
+// the collector exists for. Safe on a nil receiver.
+func (c *imageCollector) drainMarkdownExcluding(content string) string {
 	if c == nil {
 		return ""
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.imgs) == 0 {
-		return ""
+	kept := make([]imageEntry, 0, len(c.imgs))
+	for _, e := range c.imgs {
+		if e.url != "" && strings.Contains(content, imageObjectKey(e.url)) {
+			continue // model already embedded this image in its answer
+		}
+		kept = append(kept, e)
 	}
-	md := strings.Join(c.imgs, "\n\n")
 	c.imgs = nil
-	return md
+	return joinEntries(kept)
 }
 
-// drainMarkdownExcluding will return the collected image markdown EXCLUDING any
-// image the model already embedded in `content`, and clear the collector — the fix
-// for the duplicate-render bug (dev 2026-06-18: the LLM wrote ![](url) in its own
-// final answer AND the finalizer appended the same image, so it rendered twice).
-//
-// reproduce-first seam: this stub preserves the current (buggy) behavior — it
-// ignores `content` and returns everything — so the reproduction test fails. The
-// exclusion-by-content logic lands in the fix commit. Safe on a nil receiver.
-func (c *imageCollector) drainMarkdownExcluding(content string) string {
-	return c.drainMarkdown()
+// joinEntries renders image entries to markdown joined by blank lines, "" when none.
+func joinEntries(entries []imageEntry) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	mds := make([]string, len(entries))
+	for i, e := range entries {
+		mds[i] = e.md
+	}
+	return strings.Join(mds, "\n\n")
+}
+
+// imageObjectKey returns the signature-independent part of an image URL — scheme +
+// host + path, without the signed query string — so an image embedded via a
+// re-signed URL (same COS object, different ?q-sign-time/signature) still matches.
+func imageObjectKey(u string) string {
+	if i := strings.IndexByte(u, '?'); i >= 0 {
+		return u[:i]
+	}
+	return u
 }

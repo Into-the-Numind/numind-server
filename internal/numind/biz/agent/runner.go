@@ -1331,11 +1331,13 @@ func (r *agentRunner) finalizeRun(
 		}
 	}
 	// On success, embed any tool-generated images as markdown so they persist in
-	// agent_run.messages and render durably on reload. drainMarkdown so this is a
-	// no-op on the streaming path (consumeEinoStream already drained + embedded);
-	// on the non-stream Run path consumeEinoStream never ran, so this embeds once.
+	// agent_run.messages and render durably on reload. drainMarkdownExcluding so this
+	// is a no-op on the streaming path (consumeEinoStream already drained + embedded);
+	// on the non-stream Run path consumeEinoStream never ran, so this embeds once —
+	// minus any image the model already wrote into assistantContent (no double render,
+	// dev 2026-06-18).
 	if runErr == nil {
-		if imgs := imageCollectorFrom(ctx).drainMarkdown(); imgs != "" {
+		if imgs := imageCollectorFrom(ctx).drainMarkdownExcluding(assistantContent); imgs != "" {
 			if assistantContent != "" {
 				assistantContent += "\n\n"
 			}
