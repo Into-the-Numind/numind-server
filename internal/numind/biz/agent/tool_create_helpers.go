@@ -158,12 +158,13 @@ func uploadGeneratedFile(
 		const presignExpiry = 24 * 60 * 60 // 86400 seconds
 		var signed string
 		var signErr error
-		if strings.HasPrefix(contentType, "image/") {
-			// Images must render inline (<img>) in the chat, so use the plain
-			// signed URL. GenerateSignedDownloadURL forces Content-Disposition:
-			// attachment, which makes the browser download the file instead of
-			// displaying it — breaking inline image rendering (User-reported,
-			// dev 2026-06-08: image generated but never shown).
+		if strings.HasPrefix(contentType, "image/") || strings.HasPrefix(contentType, "text/html") {
+			// Images render inline (<img>); HTML renders inside the artifact card's
+			// sandboxed iframe (问题五) — both need a PLAIN signed URL.
+			// GenerateSignedDownloadURL forces Content-Disposition: attachment, which
+			// makes the browser DOWNLOAD instead of displaying — breaking inline image
+			// render AND HTML iframe preview (User-reported: image dev 2026-06-08,
+			// HTML 问题五 dev 2026-06-18).
 			signed, signErr = util.GenerateSignedURL(ctx, objectKey, presignExpiry)
 		} else {
 			// Non-image artifacts are downloads; the attachment disposition keeps

@@ -27,6 +27,11 @@ var cosImageExts = map[string]bool{
 	".webp": true, ".svg": true, ".bmp": true,
 }
 
+// cosInlineHTMLExts are HTML extensions re-signed INLINE (no attachment disposition)
+// so the artifact card's sandboxed iframe can render the page (问题五) instead of the
+// browser force-downloading it. Mirrors uploadGeneratedFile's inline signing branch.
+var cosInlineHTMLExts = map[string]bool{".html": true, ".htm": true}
+
 // keyTimestampPrefixRE matches the "<yyyymmdd>-<HHMMSS>-" prefix (plus an optional
 // run_python "py-" marker) that uploadGeneratedFile / run_python prepend to every
 // object-key tail for uniqueness (e.g. "20260616-101010-本周工作小结.docx" or
@@ -113,7 +118,7 @@ func resignCOSLinksWithHost(ctx context.Context, markdown, host string, s cosSig
 			signed string
 			err    error
 		)
-		if cosIsImageName(name) {
+		if cosIsInlineRenderName(name) {
 			signed, err = s.signImage(ctx, objectKey, cosResignExpirySeconds)
 		} else {
 			signed, err = s.signDownload(ctx, objectKey, name, cosResignExpirySeconds)
@@ -125,14 +130,17 @@ func resignCOSLinksWithHost(ctx context.Context, markdown, host string, s cosSig
 	})
 }
 
-// cosIsImageName reports whether the object's filename extension is an inline
-// image type (rendered with <img> rather than downloaded as an attachment).
-func cosIsImageName(name string) bool {
+// cosIsInlineRenderName reports whether the object's filename extension is rendered
+// INLINE (image via <img>, or HTML inside the artifact card's sandboxed iframe)
+// rather than downloaded as an attachment — so the read-path re-sign uses signImage
+// (no Content-Disposition: attachment) for these.
+func cosIsInlineRenderName(name string) bool {
 	dot := strings.LastIndexByte(name, '.')
 	if dot < 0 {
 		return false
 	}
-	return cosImageExts[strings.ToLower(name[dot:])]
+	ext := strings.ToLower(name[dot:])
+	return cosImageExts[ext] || cosInlineHTMLExts[ext]
 }
 
 // resignCOSLinks is the production wrapper: it resolves the live bucket host and

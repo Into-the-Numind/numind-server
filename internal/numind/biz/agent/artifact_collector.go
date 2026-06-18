@@ -101,10 +101,11 @@ func (c *artifactCollector) add(url, filename, mime string) {
 // the second sees an empty collector and is a no-op). Safe on a nil receiver.
 //
 //   - Images: appended as ![alt](url) UNLESS the model already embedded the same
-//     object key in content (no double render — dev 2026-06-18).
-//
-// NOTE(问题五, T2 commit A): document embedding is NOT yet implemented here — docs
-// are collected but dropped. The doc branch + inline-strip land in the fix commit.
+//     object key in content (no double render — dev 2026-06-18). Placement preserved.
+//   - Documents/HTML: any inline markdown node the model wrote referencing the doc's
+//     object key is STRIPPED from content, then the doc is appended as a STANDALONE
+//     [name](url) line so the frontend lifts it into a file card — exactly one card,
+//     no buried naked link, no duplicate (问题五).
 func (c *artifactCollector) finalizeInto(content string) string {
 	if c == nil {
 		return content
@@ -112,20 +113,27 @@ func (c *artifactCollector) finalizeInto(content string) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	var imgMD []string
+	var imgMD, docMD []string
 	for _, e := range c.entries {
-		if e.kind != artifactImage {
-			continue
+		switch e.kind {
+		case artifactImage:
+			if e.objectKey != "" && strings.Contains(content, e.objectKey) {
+				continue // model already embedded this image in its answer
+			}
+			imgMD = append(imgMD, e.md)
+		case artifactDoc:
+			// Drop any inline node the model wrote for this doc (it would otherwise
+			// render as a naked link beside the card); re-append standalone below.
+			content = stripNodesReferencing(content, e.objectKey)
+			docMD = append(docMD, e.md)
 		}
-		if e.objectKey != "" && strings.Contains(content, e.objectKey) {
-			continue // model already embedded this image in its answer
-		}
-		imgMD = append(imgMD, e.md)
 	}
 	c.entries = nil
 	c.seen = make(map[string]struct{})
 
-	return appendBlock(content, imgMD)
+	content = appendBlock(content, imgMD)
+	content = appendBlock(content, docMD)
+	return content
 }
 
 // appendBlock joins block by blank lines and appends it to content (blank-line

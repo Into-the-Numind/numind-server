@@ -45,7 +45,17 @@ func TestArtifactCollector_FinalizeInto_SkipsModelEmbeddedImage(t *testing.T) {
 	assert.Equal(t, content, got, "already-embedded image must not be appended again")
 }
 
-// ── Document / HTML embedding (问题五 — RED until the fix commit) ──
+// cosIsInlineRenderName: images + html render inline (signImage); docs download.
+func TestCosIsInlineRenderName(t *testing.T) {
+	assert.True(t, cosIsInlineRenderName("page.html"), "html → inline (iframe preview)")
+	assert.True(t, cosIsInlineRenderName("PAGE.HTM"), "htm case-insensitive → inline")
+	assert.True(t, cosIsInlineRenderName("img.png"), "image → inline")
+	assert.False(t, cosIsInlineRenderName("报告.docx"), "docx → download")
+	assert.False(t, cosIsInlineRenderName("data.pdf"), "pdf → download")
+	assert.False(t, cosIsInlineRenderName("noext"), "no extension → download")
+}
+
+// ── Document / HTML embedding (问题五) ──
 
 // TestArtifactCollector_FinalizeInto_EmbedsDocAsStandaloneLink reproduces 问题五: a
 // generated docx must be embedded into the final answer as a STANDALONE [name](url)
