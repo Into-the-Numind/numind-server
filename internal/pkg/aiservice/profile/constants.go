@@ -146,6 +146,12 @@ const (
 	// nudge must be quick, and deepseek-v4-pro is thinking_only (too slow). Kept distinct
 	// from chatbot.stream so switching this model never affects the chatbot product.
 	MeetingFeedback = "meeting.feedback"
+
+	// MeetingSummary is the meeting-copilot rolling-summary fold (running memory) task.
+	// Also routed to deepseek-v4-flash (non-thinking): summarization needs no reasoning and
+	// it runs frequently in the background, so flash keeps it fast + cheap. Distinct from
+	// chatbot.stream. (The end-of-meeting final 纪要 still uses chatbot.stream/pro for quality.)
+	MeetingSummary = "meeting.summary"
 )
 
 // allTaskIDsList is the canonical ordered list of all task IDs.
@@ -187,6 +193,8 @@ var allTaskIDsList = []string{
 	SessionTitle,
 	// meeting-copilot realtime feedback (fast non-thinking model)
 	MeetingFeedback,
+	// meeting-copilot rolling-summary fold (fast non-thinking model)
+	MeetingSummary,
 }
 
 // AllTaskIDs returns all task ID strings in a stable order.
