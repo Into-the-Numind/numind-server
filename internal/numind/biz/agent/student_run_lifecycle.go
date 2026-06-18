@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -282,8 +283,12 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 	// serialised to string via MessagesToInputString for RunRequest.Input.
 	var input string
 	var hasFallbackAttachments bool
+	// displayAtts are persisted onto the user turn for chip rendering (问题二); the
+	// composed `input` (which may carry the file_read hint) is no longer shown.
+	var displayAtts []displayAttachment
 	if len(req.AttachmentIDs) > 0 && s.attachmentStore != nil {
 		atts := loadAttachmentsByIDs(ctx, s.attachmentStore, req.AttachmentIDs, userID)
+		displayAtts = displayAttachmentsFromEntities(atts)
 		msgs, buildErr := buildAgentInputForModel(ctx, req.Message, atts, req.ModelKey, s.attachmentStore)
 		if buildErr != nil {
 			log.Warnw("StudentRunService.Create: buildAgentInputForModel failed, falling back",
@@ -307,6 +312,7 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 				"user_id", userID, "attachment_ids", req.AttachmentIDs)
 		}
 		input = buildAgentInput(req.Message, req.AttachmentURLs)
+		displayAtts = displayAttachmentsFromURLs(req.AttachmentURLs)
 	}
 	// Never hand the runner a blank user turn: attachment-only sends are allowed, so a
 	// failed attachment load could leave input empty (hasNoSendable only gates the
@@ -353,6 +359,8 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 		UserID:                userID,
 		SessionID:             sessionID,
 		Input:                 input,
+		DisplayInput:          &req.Message,
+		DisplayAttachments:    displayAtts,
 		ToolNames:             toolNames,
 		AgentDefinitionID:     req.AgentDefinitionID,
 		EnableMemory:          true,
@@ -423,6 +431,46 @@ func buildAgentInput(message string, attachmentURLs []string) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// displayAttachmentsFromEntities maps loaded attachment entities to the {url,filename}
+// display refs persisted onto the user turn for chip rendering (问题二).
+func displayAttachmentsFromEntities(atts []*model.AgentAttachment) []displayAttachment {
+	out := make([]displayAttachment, 0, len(atts))
+	for _, a := range atts {
+		if a != nil && a.URL != "" {
+			out = append(out, displayAttachment{URL: a.URL, Filename: a.Filename})
+		}
+	}
+	return out
+}
+
+// displayAttachmentsFromURLs builds display refs from a legacy AttachmentURLs list,
+// deriving each filename from the URL's last path segment (问题二).
+func displayAttachmentsFromURLs(urls []string) []displayAttachment {
+	out := make([]displayAttachment, 0, len(urls))
+	for _, u := range urls {
+		if u != "" {
+			out = append(out, displayAttachment{URL: u, Filename: filenameFromURL(u)})
+		}
+	}
+	return out
+}
+
+// filenameFromURL extracts a human-readable filename from a URL: last path segment,
+// query stripped, percent-decoded. Best-effort — returns the raw tail on decode error.
+func filenameFromURL(u string) string {
+	s := u
+	if i := strings.IndexByte(s, '?'); i >= 0 {
+		s = s[:i]
+	}
+	if i := strings.LastIndexByte(s, '/'); i >= 0 {
+		s = s[i+1:]
+	}
+	if dec, err := url.PathUnescape(s); err == nil {
+		s = dec
+	}
+	return s
 }
 
 // emptyAttachmentInputFallback is the user-turn substituted when an attachment-only
@@ -582,8 +630,10 @@ func (s *StudentRunService) RunStream(ctx context.Context, userID uint, req Crea
 	// Build capability-aware input (same logic as Create).
 	var input string
 	var hasFallbackAttachments bool
+	var displayAtts []displayAttachment
 	if len(req.AttachmentIDs) > 0 && s.attachmentStore != nil {
 		atts := loadAttachmentsByIDs(ctx, s.attachmentStore, req.AttachmentIDs, userID)
+		displayAtts = displayAttachmentsFromEntities(atts)
 		msgs, buildErr := buildAgentInputForModel(ctx, req.Message, atts, req.ModelKey, s.attachmentStore)
 		if buildErr != nil {
 			log.Warnw("StudentRunService.RunStream: buildAgentInputForModel failed, falling back",
@@ -599,6 +649,7 @@ func (s *StudentRunService) RunStream(ctx context.Context, userID uint, req Crea
 				"user_id", userID, "attachment_ids", req.AttachmentIDs)
 		}
 		input = buildAgentInput(req.Message, req.AttachmentURLs)
+		displayAtts = displayAttachmentsFromURLs(req.AttachmentURLs)
 	}
 	// See Create: never hand the runner a blank user turn on an empty-composed
 	// attachment-only send.
@@ -618,6 +669,8 @@ func (s *StudentRunService) RunStream(ctx context.Context, userID uint, req Crea
 		UserID:                userID,
 		SessionID:             run.SessionID,
 		Input:                 input,
+		DisplayInput:          &req.Message,
+		DisplayAttachments:    displayAtts,
 		ToolNames:             toolNames,
 		AgentDefinitionID:     run.AgentDefinitionID,
 		EnableMemory:          true,

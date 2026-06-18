@@ -102,6 +102,26 @@ func (r RunRequest) displayUserText() string {
 	return r.Input
 }
 
+// setUserTurnAttachments sets the "attachments" key ([{url,filename}]) on the FIRST
+// user turn in turns, when atts is non-empty. No-op on empty atts or when no user
+// turn exists. Lets a reloaded session render attachment chips (agent-output-ux-fixes
+// 问题二) now that the raw URL list is no longer baked into the displayed user text.
+func setUserTurnAttachments(turns []map[string]any, atts []displayAttachment) {
+	if len(atts) == 0 {
+		return
+	}
+	for _, t := range turns {
+		if role, _ := t["role"].(string); role == "user" {
+			arr := make([]map[string]any, 0, len(atts))
+			for _, a := range atts {
+				arr = append(arr, map[string]any{"url": a.URL, "filename": a.Filename})
+			}
+			t["attachments"] = arr
+			return
+		}
+	}
+}
+
 // RunResult 是 AgentRunner.Run 的输出。
 type RunResult struct {
 	AgentRunID     uint64
@@ -1207,7 +1227,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 			// retains the work it did before pausing (the non-stream Run path is
 			// also the answer endpoint's re-run path, so a second yield here must
 			// keep prior context too).
-			r.persistYieldTranscript(attemptCtx, run.ID, req.Input)
+			r.persistYieldTranscript(attemptCtx, run.ID, req.displayUserText())
 			log.Infow("AgentRunner.Run yield: ask_user_question paused run",
 				"agent_run_id", run.ID,
 				"payload_len", len(payloadJSON),
@@ -1350,7 +1370,7 @@ func (r *agentRunner) finalizeRun(
 	priorMessages json.RawMessage,
 ) (*RunResult, error) {
 	// Write turn to agent_run.messages.
-	userInput := req.Input
+	userInput := req.displayUserText()
 	assistantContent := finalText
 	if assistantContent == "" && runErr != nil {
 		// Show a friendly message (not a machine code like "[error: model_error]").
@@ -1424,6 +1444,10 @@ func (r *agentRunner) finalizeRun(
 	}
 	// answer-resume-lifecycle F2: a resumed run appends to its pre-yield
 	// transcript instead of overwriting it (dev run 148 history loss).
+	// Carry the user's uploaded attachments onto the user turn so a reloaded session
+	// renders chips (问题二) — must run before mergeResumeTranscript so it targets THIS
+	// leg's user turn, not a prepended prior-leg one.
+	setUserTurnAttachments(turns, req.DisplayAttachments)
 	turns = mergeResumeTranscript(priorMessages, turns)
 	finalMessages, _ := json.Marshal(turns)
 	if err := r.runStore.WriteTurn(finalizeCtx, run.ID, json.RawMessage(finalMessages)); err != nil {
