@@ -27,10 +27,11 @@ var cosImageExts = map[string]bool{
 	".webp": true, ".svg": true, ".bmp": true,
 }
 
-// cosInlineHTMLExts are HTML extensions re-signed INLINE (no attachment disposition)
-// so the artifact card's sandboxed iframe can render the page (问题五) instead of the
-// browser force-downloading it. Mirrors uploadGeneratedFile's inline signing branch.
-var cosInlineHTMLExts = map[string]bool{".html": true, ".htm": true}
+// NOTE (agent-output-ux-followup3 BE-3): HTML used to be re-signed INLINE so the
+// artifact card's sandboxed iframe could render it (问题五). The HTML iframe preview
+// was removed on the frontend (FE-2) — HTML is now presented as an attachment
+// DOWNLOAD. So only images remain inline; cosIsInlineRenderName no longer treats
+// .html/.htm as inline, and they fall through to the signDownload (attachment) path.
 
 // keyTimestampPrefixRE matches the "<yyyymmdd>-<HHMMSS>-" prefix (plus an optional
 // run_python "py-" marker) that uploadGeneratedFile / run_python prepend to every
@@ -131,16 +132,17 @@ func resignCOSLinksWithHost(ctx context.Context, markdown, host string, s cosSig
 }
 
 // cosIsInlineRenderName reports whether the object's filename extension is rendered
-// INLINE (image via <img>, or HTML inside the artifact card's sandboxed iframe)
-// rather than downloaded as an attachment — so the read-path re-sign uses signImage
-// (no Content-Disposition: attachment) for these.
+// INLINE (only images, via <img>) rather than downloaded as an attachment — so the
+// read-path re-sign uses signImage (no Content-Disposition: attachment) for these.
+// HTML is NO LONGER inline (BE-3): the frontend removed the iframe preview, so .html
+// is presented as a download and re-signs via signDownload like every other file.
 func cosIsInlineRenderName(name string) bool {
 	dot := strings.LastIndexByte(name, '.')
 	if dot < 0 {
 		return false
 	}
 	ext := strings.ToLower(name[dot:])
-	return cosImageExts[ext] || cosInlineHTMLExts[ext]
+	return cosImageExts[ext]
 }
 
 // resignCOSLinks is the production wrapper: it resolves the live bucket host and

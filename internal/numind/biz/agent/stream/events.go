@@ -32,6 +32,13 @@ const (
 	// EventToolCallProgress carries narration progress from an in-flight tool call.
 	EventToolCallProgress EventType = "tool_call_progress"
 
+	// EventToolCallArgsDelta carries an incremental fragment of an in-flight
+	// tool call's function arguments (i.e. the "code/content being written").
+	// Emitted ONLY for allowlisted code/content generating tools (see the
+	// runner's isCodeStreamingTool). Lets the frontend render a live, collapsible
+	// "writing code" box. Purely observational — never affects execution.
+	EventToolCallArgsDelta EventType = "tool_call_args_delta"
+
 	// EventToolCallResult is emitted when a tool call completes successfully.
 	EventToolCallResult EventType = "tool_call_result"
 
@@ -145,6 +152,16 @@ type ToolCallProgressPayload struct {
 	ToolCallID string `json:"tool_call_id"`
 	Message    string `json:"message"`
 	Verb       string `json:"verb,omitempty"`
+}
+
+// ToolCallArgsDeltaPayload carries an incremental fragment of an in-flight
+// tool call's function arguments. Concatenating all ArgsDelta values for a
+// given ToolCallID reconstructs the full arguments JSON the model is writing.
+// Emitted only for allowlisted code/content tools.
+type ToolCallArgsDeltaPayload struct {
+	ToolCallID   string `json:"tool_call_id"`
+	FunctionName string `json:"function_name"`
+	ArgsDelta    string `json:"args_delta"`
 }
 
 // ToolCallResultPayload is emitted when a tool call completes successfully.

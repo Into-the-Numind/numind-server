@@ -2394,7 +2394,7 @@ features:
   ndf_version: '2.0'
   description: 'Agent 模式 14-feature 分解 #14/14 — 终局集成 (S0-S3 complete, Phase A 进行中)。把 13 个 feature 累计推迟的 mock → 真实 LLM/Embedder/Classifier 切换全部落地（A1-A8 共 8 个切换点：adapter Eino ReAct Generate / memory embedder / memory SyncTurn / compact provider / narration LLM fallback / injection classifier / permission L3 auto-mode classifier / PostToolCall token ctx 数据流）+ 跨 admin-web + web-v3 8 个 Playwright e2e（B1 创建 Agent / B2 学员对话 / B3 permission deny / B4 budget 超限 / B5 compliance 拦截 / B6 compact 触发 / B7 会话恢复 / B8 历史版本回滚）+ 补齐 admin-web 5 项 v1-limitations（compliance_rule CRUD UI / Langfuse trace 跳转 / agent_run 强制取消 + 后端 endpoint / 监控真实数据源 + GET /v1/admin/agent-runs?status=running / 移除 v1 不联机 banner）+ dev 部署（手工 SSH 跑 13 个 migration + /deploy-dev server/admin + /deploy-dev admin-web/web-v3 + 8 e2e smoke test in dev）+ prod 部署准备文档（不真部署）：deploy-checklist-feature-14.md / config-prod-diff.md / runbook.md / architecture-v1.md status 更新 / 根目录 CLAUDE.md 加 Agent 模式 § / numind-server/CLAUDE.md 加 biz/agent/* / Go-live checklist / CHANGELOG v2.2.0。Out of scope: 真 prod 部署 / git tag / 真改 config_prod.yaml / 跨账户 memory 共享 / Skill 模板市场 / Daytona → CubeSandbox / 真实 SQL-AST 静态分析 / 23 Bash validator 扩展 / MMR + LLM rerank / 跨实例 Daily aggregate Redis / AdminTestExpireDaemon cron / MaxTurnsPerRun 字段化 / task lint 历史债。'
   track: standard
-  stage: S4
+  stage: S6
   classification_reason: 'Standard Triage 5 条全审：(1) DB schema 变更：是（Phase C C3/C4 admin endpoint 可能 ALTER agent_run.cancellation_requested_at；Phase A A3 可能在 agent_session_memory 加 sync_turn_ts，待 S2 定）(2) 新 API 端点：是（Phase C 至少 7 个新 admin endpoints — agent-runs cancel / list-running + compliance_rule CRUD 5 个）(3) 新外部服务集成：部分（aiservice 既有，但 Langfuse trace 子链补全视作集成深化）(4) 影响文件数 >>3（跨 3 仓库 30+ 文件）(5) 高风险业务逻辑：是（Phase A A7 permission L3 classifier；A8 billing PostToolCall token 数据流影响真实计费）。5 条至少 4 条违反 → Standard。'
   last_updated_by: ai-s4-phase-a-wave1
   last_updated_at: '2026-05-21T20:00:00+08:00'
@@ -5297,4 +5297,23 @@ features:
   - 'S0-S3 (ai 2026-06-18): 第三轮 dev 验收 6 问题。三路只读调查定位: #2 前缀=upload.go unixnano object key; #5 根因=system prompt 无文件呈现指引→AI 自造下载表格+后端卡片=重复(唯一干净解=prompt 引导 AI 不自写, 系统渲染); #6 docx 无眼睛=二进制不能 iframe(只 html/图片可预览), 但 docx canEdit 可开编辑器(dev flag 已开), 加编辑图标让能力可见。设计直接, 无阻塞 fork。用 dynamic workflow: BE(BE-A 文件名+BE-B prompt)‖FE(FE-A icon/FE-B live名/FE-C 对齐/FE-D 按钮合并/FE-E 编辑图标)+每仓库双 review。下一步 workflow S4。'
   - 'S4-S5 (ai 2026-06-18): dynamic workflow 跑实现(BE‖FE 并行, 都已 commit)。实现中用户追加 HTML 预览反馈(sandbox="" 禁脚本→AI 报告靠 Tailwind CDN/JS 渲染样式全失效=裸文字)+卡片交互改版。停 workflow 主 session 接管: 调查确认 HTML 真渲染预览可行(allow-scripts 无 same-origin=opaque origin 隔离, CodePen 同款)。用户拍板: HTML 启用真渲染预览; 卡片统一只一个下载按钮+预览/编辑通过点击卡片(html→预览/可编辑→编辑器/否则提示"暂不支持预览")。FE-E 编辑图标改为新卡片交互模型(AgentArtifactItem 重写)+iframe sandbox="allow-scripts"。每仓库补 4 路 Sonnet review(workflow review 阶段被停未跑): BE 两路 PASS(文件名剥前缀+Bug-from-Customer 链+prompt 两路径真注入确认), FE 两路 PASS/DONE_WITH_CONCERNS——一致抓 allow-popups 超 spec 授权→移除只留 allow-scripts+spec 测试精确断言; BE P2 空串守卫已修+测试。门禁全绿: BE build ./...+test+vet; FE type-check+eslint+vitest 91files 968passed。下一步 S6 ndf-done 合两仓库+部署 dev。'
   - 'S6 (ai 2026-06-18): ndf-done 合两仓库→develop push 并复核(origin server=62e4659d 含 nanoPrefixRe / web=b164e8a 含 sandbox="allow-scripts"; worktree+分支已清)。dev 部署两仓库并发 release.sh: server develop-62e4659d-dirty(build 249s, /healthz ok) + web develop-b164e8a(/health healthy)。剩 S6 硬门禁=用户 dev 亲手验收(附件 icon/文件名干净/工具+思考左对齐/终止并入发送/无表格+卡片重复/卡片只下载按钮+点卡片预览编辑/HTML 真渲染预览)。prod 不在授权(止于 dev)。'
+  blockers: []
+- id: agent-output-ux-followup3
+  ndf_version: '3.0'
+  description: 'agent-output-ux-followup2 dev 验收后用户第4轮反馈(2026-06-18): #1 生成动效尾部脉动点→前置转圈spinner; #2 HTML从源头切断预览只下载(点击提示"不支持预览"删iframe), docx/md/txt保留点击开右侧编辑器(方案B), 图片保留modal; #3 eino流式吐工具参数(写代码)增量+前端折叠代码框(默认展开/成功即收起/纯箭头/固定高度), 白名单门禁=生成类工具(run_python/create_html/create_docx/create_csv/create_json/create_text/create_png_chart); #4 create_docx markdown→docx确定性快路(复用沙箱跑固定md_to_docx.py, LLM只传markdown不写代码, 工具描述引导Agent路由)。跨numind-server(BE-1流式/BE-2 create_docx/BE-3 HTML转下载)+numind-web-v3(FE-1 spinner/FE-2 HTML只下载+方案B/FE-3代码框)。'
+  classification_reason: 'Standard(延续前三轮模式): 跨前后端 + 新工具create_docx+沙箱 + eino流式adapter改动 + 多前端组件 + 文件数>3。无DB schema/无新API端点(SSE事件非新路由)/无新外部服务/非支付权限。源于上轮dev验收。非Bug-from-Customer(增强/移除)。'
+  last_updated_by: ai-s6
+  last_updated_at: '2026-06-18T20:30:00+0800'
+  created_at: '2026-06-18T20:30:00+0800'
+  track: standard
+  stage: S4
+  status: active
+  repos: [numind-server, numind-web-v3]
+  branches: {numind-server: feature/agent-output-ux-followup3, numind-web-v3: feature/agent-output-ux-followup3}
+  worktrees: {numind-server: /private/tmp/wt-agent-output-ux-followup3-numind-server, numind-web-v3: /private/tmp/wt-agent-output-ux-followup3-numind-web-v3}
+  progress: {total_tasks: 6, completed_tasks: 6, reviewed_tasks: 6}
+  artifacts: {spec: .ndf/features/agent-output-ux-followup3/spec.md}
+  decisions:
+  - 'S0-S3 (ai 2026-06-18): 第4轮反馈经长对话Q&A敲定。纠正前investigator错误claim(业界非"确定性渲染docx"——Claude/Codex/Anthropic官方skill都让LLM写python-docx代码,没人做原生确定性docx工具; numind现状机制=业界标准)。提速真杠杆=markdown→docx快路(LLM少吐token)+不换模型(用户锁死deepseek-v4-pro质量优先)。用户拍板: HTML切断预览只下载/docx保留编辑(方案B)/eino流式只吐写代码段+白名单门禁/代码框默认展开成功收起纯箭头固定高度/create_docx靠工具描述路由。dynamic workflow: BE(1+2+3串行)‖FE(1+2+3串行)Tier2跨仓库+每仓库双review。下一步workflow S4。'
+  - 'S4-S6 (ai 2026-06-18): dynamic workflow 跑 BE‖FE 并行实现(各 3 task 一 commit) + 每仓库双 Sonnet review。BE: BE-1 eino 流式吐工具参数增量(ChatChunk.ToolCallArgsDelta 旁路, schema.Message.Extra 透传过 Eino, runner 按白名单 isCodeStreamingTool 门禁后 emit, 分层比 spec 更干净=门禁放 runner 非 adapter pkg)+BE-2 create_docx(复用沙箱跑 //go:embed 内嵌 md_to_docx.py, LLM 只传 markdown)+BE-3 HTML 移出 inline 走 attachment 下载。FE: FE-1 前置 spinner 删脉动点 + FE-2 HTML 删 iframe 改 flashHint 不支持预览(保留 docx/md/txt 编辑=方案B, isHtml 守卫挡编辑路径)+FE-3 流式代码框(默认展开/成功收起/纯箭头/固定 160px)。Review 抓: BE 质量 review FAIL=P0 create_docx 缺席 IsSandboxIsolatedExecTool→沙箱 session 不借→工具静默失效(主 session 修=加白名单+回归测试锁, 复核确认无第二处遗漏 IsSandboxIsolatedExecTool 是唯一真相源); FE P1=spinner 与代码框互斥(改 v-if=isGenerating||codeStream 同框)+P2 codeBoxExpanded 不复位(watch 空→非空复位)+P2 过时注释。全 P0/P1/P2 就地修+复核 PASS。门禁全绿: BE go build ./...+test+vet+gofmt; FE type-check+eslint+vitest 310 passed(24 files)。下一步 ndf-done 合两仓库+部署 dev。prod 不在授权(止于 dev)。'
   blockers: []

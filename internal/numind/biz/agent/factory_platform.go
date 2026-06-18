@@ -139,6 +139,10 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		&createHTMLTool{},
 		&createJSONTool{},
 		&createTextTool{},
+		// agent-output-ux-followup3 BE-2: Markdown -> .docx deterministic fast path
+		// (sandboxed fixed script; NOT no-sandbox like the others — IsEnabled gates
+		// on EnableSandbox).
+		&createDocxTool{},
 		// V1.5 output-skills task 4.3: PNG chart tool (Layer 1, gonum/plot + go-chart/v2).
 		&createPNGChartTool{},
 		// V1.5 output-skills task 4.9: run_python (Layer 3, last-resort sandbox Python execution).
@@ -164,6 +168,8 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		{ToolName: "create_html", DisplayName: "生成 HTML 页面", Description: "Render an HTML page from content or a template.", Source: "platform", RiskLevel: "safe", Category: "文件生成"},
 		{ToolName: "create_json", DisplayName: "生成 JSON 文件", Description: "Serialize data to a JSON file.", Source: "platform", RiskLevel: "safe", Category: "文件生成"},
 		{ToolName: "create_text", DisplayName: "生成文本文件", Description: "Write plain text content to a .txt file.", Source: "platform", RiskLevel: "safe", Category: "文件生成"},
+		// agent-output-ux-followup3 BE-2: Markdown -> .docx deterministic fast path.
+		{ToolName: "create_docx", DisplayName: "生成 Word 文档（Markdown）", Description: "Generate a .docx Word document from Markdown (headings, paragraphs, lists, tables, inline images). For complex layouts use run_python + docx-author.", Source: "platform", RiskLevel: "safe", Category: "文件生成", RequiresSandbox: true},
 		// V1.5 output-skills task 4.3: PNG chart tool.
 		{ToolName: "create_png_chart", DisplayName: "图表生成（PNG）", Description: "Generate a static PNG chart from structured data.", Source: "platform", RiskLevel: "safe", Category: "可视化"},
 		// V1.5 output-skills task 4.9: run_python (Layer 3 last-resort).

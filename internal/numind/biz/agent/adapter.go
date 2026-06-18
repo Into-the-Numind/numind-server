@@ -12,6 +12,30 @@ import (
 	"numind-server/internal/pkg/aiservice"
 )
 
+// extraKeyToolCallArgsDelta is the schema.Message.Extra key used to smuggle a
+// *aiservice.ToolCallArgsDelta through the Eino streaming boundary (BE-1).
+// Eino's interim schema.Message has no native "tool-call args delta" concept,
+// so wrapChannelAsStreamReader stashes the side-channel here and
+// consumeEinoStream reads it back. Keyed by a package-private constant so it
+// cannot collide with any provider/model Extra keys.
+const extraKeyToolCallArgsDelta = "numind_tool_call_args_delta"
+
+// toolCallArgsDeltaFromExtra extracts the side-channel *aiservice.ToolCallArgsDelta
+// that wrapChannelAsStreamReader stashed in schema.Message.Extra, or nil if the
+// message carries no such delta. The decode counterpart of the encode in
+// wrapChannelAsStreamReader; both use extraKeyToolCallArgsDelta.
+func toolCallArgsDeltaFromExtra(extra map[string]any) *aiservice.ToolCallArgsDelta {
+	if extra == nil {
+		return nil
+	}
+	v, ok := extra[extraKeyToolCallArgsDelta]
+	if !ok {
+		return nil
+	}
+	ad, _ := v.(*aiservice.ToolCallArgsDelta)
+	return ad
+}
+
 // chatFn is the package-level seam used by tests to mock aiservice.Chat without
 // starting a live gateway. Production code leaves this pointing at aiservice.Chat.
 var chatFn = aiservice.Chat
@@ -420,6 +444,31 @@ func wrapChannelAsStreamReader(ch <-chan aiservice.ChatChunk, onFinalUsage func(
 				}
 				_ = sw.Send(finalMsg, nil)
 				break
+			}
+
+			// Interim chunk with a tool-call args delta side-channel (BE-1):
+			// carry it through the Eino boundary via schema.Message.Extra so
+			// consumeEinoStream can apply the allowlist gate and emit a
+			// EventToolCallArgsDelta. No-content message — handled before the
+			// content/reasoning skip below so it is not dropped.
+			if chunk.ToolCallArgsDelta != nil {
+				ad := chunk.ToolCallArgsDelta
+				msg := &schema.Message{
+					Role: schema.Assistant,
+					Extra: map[string]any{
+						extraKeyToolCallArgsDelta: &aiservice.ToolCallArgsDelta{
+							ToolCallID:   ad.ToolCallID,
+							FunctionName: ad.FunctionName,
+							ArgsDelta:    ad.ArgsDelta,
+						},
+					},
+				}
+				if closed := sw.Send(msg, nil); closed {
+					for range ch { //nolint:revive
+					}
+					return
+				}
+				continue
 			}
 
 			// Interim chunk — skip if neither content nor reasoning carried
