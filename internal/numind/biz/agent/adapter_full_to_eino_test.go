@@ -781,12 +781,12 @@ func TestAdapter_InvokableRun_CollectsGeneratedImage(t *testing.T) {
 	ft := &fakeFullTool{name: "image_gen", out: []byte(out)}
 	eino := adaptFullToEinoTool(ft, nil)
 
-	ctx := withImageCollector(context.Background())
+	ctx := withArtifactCollector(context.Background())
 
 	_, err := eino.InvokableRun(ctx, `{"prompt":"a cat"}`)
 	require.NoError(t, err)
 
-	md := imageCollectorFrom(ctx).markdown()
+	md := artifactCollectorFrom(ctx).finalizeInto("")
 	if !strings.Contains(md, url) || !strings.Contains(md, "![") {
 		t.Fatalf("generated image must be collected as markdown for durable render, got %q", md)
 	}

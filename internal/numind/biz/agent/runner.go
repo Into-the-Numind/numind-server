@@ -37,12 +37,30 @@ import (
 )
 
 // RunRequest 是 AgentRunner.Run 的输入。
+// displayAttachment is a user-uploaded attachment {url, filename} persisted onto
+// the user turn for reload-time chip rendering (agent-output-ux-fixes 问题二).
+type displayAttachment struct {
+	URL      string
+	Filename string
+}
+
 type RunRequest struct {
 	UserID    uint
 	SessionID string
 	Input     string
-	ToolNames []string
-	Hooks     *RunHooks
+	// DisplayInput, when non-nil, is the user's ORIGINAL message text used for the
+	// PERSISTED/DISPLAYED user turn (agent_run.messages), separate from Input which
+	// may carry the buildAgentInput "【系统提示】…file_read…" hint sent to the LLM.
+	// nil ⇒ fall back to Input (resume/test paths). A non-nil empty string IS honored
+	// (attachment-only sends persist empty user text + chips, not the LLM hint).
+	// agent-output-ux-fixes 问题二: stops the hint leaking into the chat bubble while
+	// keeping it in the LLM context.
+	DisplayInput *string
+	// DisplayAttachments are the user's uploaded attachments {url, filename}, persisted
+	// onto the user turn so a reloaded session renders attachment chips. Empty ⇒ no chips.
+	DisplayAttachments []displayAttachment
+	ToolNames          []string
+	Hooks              *RunHooks
 	// AgentDefinitionID 为 0 时 fall through（使用 #2 mock 行为，不注入 Skill）。
 	// 非 0 时 runner.Run 通过 skillStore.GetByIDIncludeInactive 装载 agent 定义，
 	// 并按 advanced_mode 选 GeneratedSkillBody 或 CustomSkillBody 组装 SystemPrompt。
@@ -71,6 +89,37 @@ type RunRequest struct {
 	// buildEinoMessages 将其前置到当前 Input 之前，使 LLM 获得多轮上下文（修复多轮失忆）。
 	// 为空表示新会话或首轮；加载失败时 fail-open 为 nil（不阻断本轮 run）。
 	History []*schema.Message
+}
+
+// displayUserText returns the text to PERSIST/DISPLAY as the user turn: DisplayInput
+// when provided (incl. an intentional empty string for attachment-only sends), else
+// Input. Keeps the buildAgentInput "【系统提示】…file_read…" hint out of the chat
+// bubble (agent-output-ux-fixes 问题二) while Input still carries it to the LLM.
+func (r RunRequest) displayUserText() string {
+	if r.DisplayInput != nil {
+		return *r.DisplayInput
+	}
+	return r.Input
+}
+
+// setUserTurnAttachments sets the "attachments" key ([{url,filename}]) on the FIRST
+// user turn in turns, when atts is non-empty. No-op on empty atts or when no user
+// turn exists. Lets a reloaded session render attachment chips (agent-output-ux-fixes
+// 问题二) now that the raw URL list is no longer baked into the displayed user text.
+func setUserTurnAttachments(turns []map[string]any, atts []displayAttachment) {
+	if len(atts) == 0 {
+		return
+	}
+	for _, t := range turns {
+		if role, _ := t["role"].(string); role == "user" {
+			arr := make([]map[string]any, 0, len(atts))
+			for _, a := range atts {
+				arr = append(arr, map[string]any{"url": a.URL, "filename": a.Filename})
+			}
+			t["attachments"] = arr
+			return
+		}
+	}
 }
 
 // RunResult 是 AgentRunner.Run 的输出。
@@ -539,10 +588,10 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 	// 2.5. agent-mode-billing: wire billing ctx (bill-only) so every LLM call
 	// under this run is Reserved/Reconciled against the initiator's credits.
 	ctx = injectAgentBillingCtx(ctx, req, run.ID)
-	// Collect tool-generated images so they can be embedded as durable markdown in
-	// the persisted final answer (see image_collector.go). Covers the non-stream
-	// path (e.g. ask_user_question resume) symmetrically with RunStream.
-	ctx = withImageCollector(ctx)
+	// Collect tool-generated artifacts (images + documents/HTML) so they can be embedded
+	// as durable markdown in the persisted final answer (see artifact_collector.go).
+	// Covers the non-stream path (e.g. ask_user_question resume) symmetrically with RunStream.
+	ctx = withArtifactCollector(ctx)
 	// Collect narration/tool-call events on the run-level ctx so finalizeRun can
 	// persist the tool-call timeline into agent_run.messages (durable replay on
 	// reload). Attached on ctx (ancestor of queryCtx and of the finalize ctx) so
@@ -946,7 +995,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 			log.Warnw("AgentRunner.Run UpdateState failed on short-circuit", "agent_run_id", run.ID, "error", uerr)
 		}
 		shortCircuitMessages, _ := json.Marshal(mergeResumeTranscript(priorMessages, []map[string]any{
-			{"role": "user", "content": req.Input},
+			{"role": "user", "content": req.displayUserText()},
 			{"role": "assistant", "content": req.Input},
 		}))
 		if wErr := r.runStore.WriteTurn(ctx, run.ID, json.RawMessage(shortCircuitMessages)); wErr != nil {
@@ -1009,7 +1058,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 				scSession = fmt.Sprintf("run-%d", run.ID)
 			}
 			r.memoryExtractor.Enqueue(req.UserID, scSession, []memory.ChatMessage{
-				{Role: "user", Content: req.Input},
+				{Role: "user", Content: req.displayUserText()},
 			}, isTrivial)
 		}
 		return &RunResult{
@@ -1178,7 +1227,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 			// retains the work it did before pausing (the non-stream Run path is
 			// also the answer endpoint's re-run path, so a second yield here must
 			// keep prior context too).
-			r.persistYieldTranscript(attemptCtx, run.ID, req.Input)
+			r.persistYieldTranscript(attemptCtx, run.ID, req.displayUserText(), req.DisplayAttachments)
 			log.Infow("AgentRunner.Run yield: ask_user_question paused run",
 				"agent_run_id", run.ID,
 				"payload_len", len(payloadJSON),
@@ -1321,7 +1370,7 @@ func (r *agentRunner) finalizeRun(
 	priorMessages json.RawMessage,
 ) (*RunResult, error) {
 	// Write turn to agent_run.messages.
-	userInput := req.Input
+	userInput := req.displayUserText()
 	assistantContent := finalText
 	if assistantContent == "" && runErr != nil {
 		// Show a friendly message (not a machine code like "[error: model_error]").
@@ -1330,19 +1379,14 @@ func (r *agentRunner) finalizeRun(
 			assistantContent = userFacingFallback
 		}
 	}
-	// On success, embed any tool-generated images as markdown so they persist in
-	// agent_run.messages and render durably on reload. drainMarkdownExcluding so this
-	// is a no-op on the streaming path (consumeEinoStream already drained + embedded);
-	// on the non-stream Run path consumeEinoStream never ran, so this embeds once —
-	// minus any image the model already wrote into assistantContent (no double render,
-	// dev 2026-06-18).
+	// On success, embed any tool-generated artifacts (images + documents/HTML) as
+	// markdown so they persist in agent_run.messages and render durably on reload.
+	// finalizeInto drains the collector so this is a no-op on the streaming path
+	// (consumeEinoStream already embedded); on the non-stream Run path it embeds once
+	// — images minus any the model already wrote (no double render), documents as
+	// standalone card links (问题五). dev 2026-06-18.
 	if runErr == nil {
-		if imgs := imageCollectorFrom(ctx).drainMarkdownExcluding(assistantContent); imgs != "" {
-			if assistantContent != "" {
-				assistantContent += "\n\n"
-			}
-			assistantContent += imgs
-		}
+		assistantContent = artifactCollectorFrom(ctx).finalizeInto(assistantContent)
 	}
 
 	// Finalization persistence (terminal metadata, transcript, state) MUST survive a
@@ -1395,6 +1439,10 @@ func (r *agentRunner) finalizeRun(
 	}
 	// answer-resume-lifecycle F2: a resumed run appends to its pre-yield
 	// transcript instead of overwriting it (dev run 148 history loss).
+	// Carry the user's uploaded attachments onto the user turn so a reloaded session
+	// renders chips (问题二) — must run before mergeResumeTranscript so it targets THIS
+	// leg's user turn, not a prepended prior-leg one.
+	setUserTurnAttachments(turns, req.DisplayAttachments)
 	turns = mergeResumeTranscript(priorMessages, turns)
 	finalMessages, _ := json.Marshal(turns)
 	if err := r.runStore.WriteTurn(finalizeCtx, run.ID, json.RawMessage(finalMessages)); err != nil {
@@ -1437,7 +1485,7 @@ func (r *agentRunner) finalizeRun(
 	// the memory pipeline. Run() callers always set finalText on completion, so
 	// removing the output gate is safe for both code paths.
 	if r.memoryProvider != nil && st.TerminalReason == TerminalCompleted {
-		userMsg := memory.Message{Role: "user", Content: req.Input}
+		userMsg := memory.Message{Role: "user", Content: req.displayUserText()}
 		asstMsg := memory.Message{Role: "assistant", Content: finalText}
 		go func() {
 			bgCtx := middleware.WithAgentSessionID(context.Background(), sessionID)
@@ -1458,7 +1506,7 @@ func (r *agentRunner) finalizeRun(
 	// this CANNOT delay the runner return. No goroutine wrap needed.
 	if r.memoryExtractor != nil && req.UserID != 0 {
 		extractMsgs := []memory.ChatMessage{
-			{Role: "user", Content: req.Input},
+			{Role: "user", Content: req.displayUserText()},
 			{Role: "assistant", Content: finalText},
 		}
 		r.memoryExtractor.Enqueue(req.UserID, sessionID, extractMsgs, isTrivial)

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
-	"strings"
 	"time"
 
 	einotool "github.com/cloudwego/eino/components/tool"
@@ -249,13 +248,15 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 		}
 		a.emitNarration(ctx, narration.StateResult, toolCallID, input, result, nil, "")
 		a.emitStreamToolResult(ctx, toolCallID, output, durationMs)
-		// Collect tool-generated images so the run finalizer can embed them as
-		// markdown in the PERSISTED final answer. The transient SSE artifact event
-		// is lost on reload (loadSessionSnapshot rebuilds from agent_run.messages,
-		// which never stored the artifact) — User-reported, dev 2026-06-08. Uses a
-		// ctx collector so both streaming and non-streaming runs are covered.
-		if url, fname, mime := artifactFromToolResult(output); url != "" && strings.HasPrefix(mime, "image/") {
-			imageCollectorFrom(ctx).add(url, fname)
+		// Collect ALL tool-generated artifacts (images + documents/HTML) so the run
+		// finalizer can embed them in the PERSISTED final answer. The transient SSE
+		// artifact event is lost on reload (loadSessionSnapshot rebuilds from
+		// agent_run.messages, which never stored the artifact) — User-reported: images
+		// dev 2026-06-08, documents (问题五) dev 2026-06-18. The collector classifies by
+		// mime (image → inline ![], else → standalone card link). Uses a ctx collector
+		// so both streaming and non-streaming runs are covered.
+		if url, fname, mime := artifactFromToolResult(output); url != "" {
+			artifactCollectorFrom(ctx).add(url, fname, mime)
 		}
 	}
 

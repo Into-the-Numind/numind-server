@@ -301,6 +301,13 @@ func (s *StudentQueryService) GetSessionSnapshot(ctx context.Context, userID uin
 	// assistant content, never into reasoning/thinking text, so Reasoning needs
 	// no pass.
 	for i := range allMessages {
+		// 问题二: re-sign user attachment URLs too (they expire/truncate like
+		// embedded markdown links) so reloaded chips stay clickable.
+		for j := range allMessages[i].Attachments {
+			if u := allMessages[i].Attachments[j].URL; u != "" {
+				allMessages[i].Attachments[j].URL = resignCOSLinks(ctx, u)
+			}
+		}
 		if allMessages[i].Markdown != "" {
 			allMessages[i].Markdown = resignCOSLinks(ctx, allMessages[i].Markdown)
 		}
@@ -453,13 +460,24 @@ func (s *StudentQueryService) toEnrichedSummaries(ctx context.Context, runs []mo
 
 // agentMessage is the frontend-shaped message type.
 // Discriminated by Type: 'user' | 'assistant' | 'final_answer' | 'tool_group'.
+// messageAttachment is a user-uploaded file {url, filename} rendered as a chip on a
+// type='user' message. JSON shape matches the frontend UserMessage.attachments item.
+type messageAttachment struct {
+	URL      string `json:"url"`
+	Filename string `json:"filename"`
+}
+
 type agentMessage struct {
-	ID        string `json:"id"`
-	Type      string `json:"type"`               // 'user' | 'assistant' | 'final_answer' | 'tool_group' | 'question_prompt'
-	Text      string `json:"text,omitempty"`     // for type='user'
-	Markdown  string `json:"markdown,omitempty"` // for type='assistant' | 'final_answer'
-	Reasoning string `json:"reasoning,omitempty"`
-	RunID     uint64 `json:"run_id,omitempty"` // for type='final_answer' | 'question_prompt'
+	ID   string `json:"id"`
+	Type string `json:"type"`           // 'user' | 'assistant' | 'final_answer' | 'tool_group' | 'question_prompt'
+	Text string `json:"text,omitempty"` // for type='user'
+	// Attachments are the user's uploaded files {url, filename} for type='user',
+	// rendered as chips. Persisted onto the user turn so a reloaded session shows
+	// them (agent-output-ux-fixes 问题二) — replaces the old leaked URL-list text.
+	Attachments []messageAttachment `json:"attachments,omitempty"`
+	Markdown    string              `json:"markdown,omitempty"` // for type='assistant' | 'final_answer'
+	Reasoning   string              `json:"reasoning,omitempty"`
+	RunID       uint64              `json:"run_id,omitempty"` // for type='final_answer' | 'question_prompt'
 	// ToolCalls carries the persisted tool-call timeline for type='tool_group'.
 	// Shape is 1:1 with the frontend ToolCallAggregate so it renders untransformed.
 	ToolCalls []persistedToolCall `json:"tool_calls,omitempty"`
@@ -611,6 +629,23 @@ func transformMessages(raw []byte, runID uint64, startedAt time.Time, endedAt *t
 			} else {
 				msg.Type = "user"
 				msg.Text = content
+				// 问题二: a user turn may carry uploaded attachments {url, filename}
+				// (persisted by setUserTurnAttachments) → render as chips. URLs are
+				// re-signed in the caller's pass (where the request ctx is available).
+				if rawAtts, ok := turn["attachments"].([]any); ok {
+					for _, it := range rawAtts {
+						m, ok := it.(map[string]any)
+						if !ok {
+							continue
+						}
+						u, _ := m["url"].(string)
+						if u == "" {
+							continue
+						}
+						fn, _ := m["filename"].(string)
+						msg.Attachments = append(msg.Attachments, messageAttachment{URL: u, Filename: fn})
+					}
+				}
 			}
 		case "assistant":
 			reasoning, _ := turn["reasoning"].(string)

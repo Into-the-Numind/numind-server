@@ -28,7 +28,7 @@ func TestPersistYieldTranscript_CapturesUserInputAndSteps(t *testing.T) {
 	ctx = narration.WithCollector(ctx)
 	stepCollectorFrom(ctx).add("我先联网检索莫小派的公开信息", "", time.Now())
 
-	r.persistYieldTranscript(ctx, run.ID, "为莫小派做小红书定位调研")
+	r.persistYieldTranscript(ctx, run.ID, "为莫小派做小红书定位调研", nil)
 
 	stored, _ := ms.Get(context.Background(), run.ID)
 	var turns []map[string]any
@@ -56,7 +56,7 @@ func TestPersistYieldTranscript_NoSteps_StillPersistsUserInput(t *testing.T) {
 	ctx := withStepCollector(context.Background())
 	ctx = narration.WithCollector(ctx)
 
-	r.persistYieldTranscript(ctx, run.ID, "帮我调研")
+	r.persistYieldTranscript(ctx, run.ID, "帮我调研", nil)
 
 	stored, _ := ms.Get(context.Background(), run.ID)
 	var turns []map[string]any
@@ -82,7 +82,7 @@ func TestPersistYieldTranscript_SecondYield_KeepsPriorContext(t *testing.T) {
 	ctx := withStepCollector(context.Background())
 	ctx = narration.WithCollector(ctx)
 	stepCollectorFrom(ctx).add("第二轮分析竞品", "", time.Now())
-	r.persistYieldTranscript(ctx, run.ID, "[user answered] Q1")
+	r.persistYieldTranscript(ctx, run.ID, "[user answered] Q1", nil)
 
 	stored, _ := ms.Get(context.Background(), run.ID)
 	var turns []map[string]any

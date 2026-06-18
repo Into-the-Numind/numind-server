@@ -420,7 +420,7 @@ func (r *agentRunner) RunStream(
 			log.Warnw("AgentRunner.RunStream UpdateState failed on short-circuit", "agent_run_id", run.ID, "error", uerr)
 		}
 		shortCircuitMessages, _ := json.Marshal([]map[string]any{
-			{"role": "user", "content": req.Input},
+			{"role": "user", "content": req.displayUserText()},
 			{"role": "assistant", "content": req.Input},
 		})
 		if wErr := r.runStore.WriteTurn(persistCtx, run.ID, json.RawMessage(shortCircuitMessages)); wErr != nil {
@@ -458,7 +458,7 @@ func (r *agentRunner) RunStream(
 				scSession = fmt.Sprintf("run-%d", run.ID)
 			}
 			r.memoryExtractor.Enqueue(req.UserID, scSession, []memory.ChatMessage{
-				{Role: "user", Content: req.Input},
+				{Role: "user", Content: req.displayUserText()},
 			}, isTrivial)
 		}
 		return &RunResult{
@@ -563,9 +563,10 @@ func (r *agentRunner) RunStream(
 		CurrentMsgID: uuid.NewString(),
 	}
 	attemptCtx = WithStreamState(attemptCtx, sharedState)
-	// Collect tool-generated images during this run so consumeEinoStream can embed
-	// them as durable markdown in the final answer (see image_collector.go).
-	attemptCtx = withImageCollector(attemptCtx)
+	// Collect tool-generated artifacts (images + documents/HTML) during this run so
+	// consumeEinoStream can embed them as durable markdown in the final answer
+	// (see artifact_collector.go).
+	attemptCtx = withArtifactCollector(attemptCtx)
 
 	// 12. Call einoAgent.Stream — this is the key divergence from Run.
 	sr, streamErr := einoAgent.Stream(attemptCtx, einoMessages)
@@ -605,7 +606,7 @@ func (r *agentRunner) RunStream(
 			// retains its prior work (user input + tool calls it ran before
 			// asking). Multi-step yields surface here, so this is the common
 			// path in production.
-			r.persistYieldTranscript(ctx, run.ID, req.Input)
+			r.persistYieldTranscript(ctx, run.ID, req.displayUserText(), req.DisplayAttachments)
 			// Carry the checker-tracked step count so the terminal payload
 			// reports real progress, not 0 (review P2: spec-parity).
 			yieldSt := &LoopState{StepCount: int(sharedState.StepIdx.Load())}
@@ -668,7 +669,7 @@ func (r *agentRunner) RunStream(
 	// paused run (the answer endpoint writes the turn on resume).
 	if result != nil && result.TerminalReason == TerminalWaitingForUserChoice {
 		// HW-33: persist pre-yield transcript for resume context (see errpath above).
-		r.persistYieldTranscript(attemptCtx, run.ID, req.Input)
+		r.persistYieldTranscript(attemptCtx, run.ID, req.displayUserText(), req.DisplayAttachments)
 		endedAt := time.Now()
 		if uErr := r.runStore.UpdateState(persistCtx, run.ID, "terminated", string(TerminalWaitingForUserChoice), &endedAt); uErr != nil {
 			log.Warnw("AgentRunner.RunStream yield UpdateState failed", "agent_run_id", run.ID, "error", uErr)

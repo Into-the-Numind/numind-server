@@ -15,8 +15,8 @@ import (
 // ---------------------------------------------------------------------------
 // Shared test helpers
 // ---------------------------------------------------------------------------
-
-func strPtr(s string) *string { return &s }
+// NOTE: strPtr now lives in student_run_lifecycle.go (promoted to production for
+// RunRequest.DisplayInput); tests in this package share that definition.
 
 // makeAtt constructs a minimal AgentAttachment for tests.
 func makeAtt(id uint64, modality string, ready bool, fallbackText string) *model.AgentAttachment {

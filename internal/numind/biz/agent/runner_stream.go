@@ -363,19 +363,14 @@ func (r *agentRunner) consumeEinoStream(
 		finalContent = currentText.String()
 	}
 
-	// Embed any tool-generated images as markdown so they are PERSISTED in the
-	// final answer (agent_run.messages) and render durably on reload — the
-	// transient SSE artifact event alone vanishes when loadSessionSnapshot
-	// rebuilds the conversation from the DB. drainMarkdownExcluding (not markdown):
-	// drains so the subsequent finalizeRun embed doesn't append a second time, AND
-	// excludes any image the model already embedded in finalContent so it doesn't
-	// render twice (dev 2026-06-18).
-	if imgs := imageCollectorFrom(ctx).drainMarkdownExcluding(finalContent); imgs != "" {
-		if finalContent != "" {
-			finalContent += "\n\n"
-		}
-		finalContent += imgs
-	}
+	// Embed any tool-generated artifacts (images + documents/HTML) as markdown so they
+	// are PERSISTED in the final answer (agent_run.messages) and render durably on
+	// reload — the transient SSE artifact event alone vanishes when loadSessionSnapshot
+	// rebuilds the conversation from the DB. finalizeInto drains so the subsequent
+	// finalizeRun embed doesn't append a second time, AND excludes any image the model
+	// already embedded (no double render) + appends documents as standalone card links
+	// (问题五). dev 2026-06-18.
+	finalContent = artifactCollectorFrom(ctx).finalizeInto(finalContent)
 
 	finalReasoning := lastStepReasoning
 	if finalReasoning == "" && currentReason.Len() > 0 {
@@ -525,7 +520,7 @@ func yieldFromStreamFailure(state *StreamSessionState, err error) (*YieldPayload
 // from persisted transcripts) forgot all prior work — it re-asked for facts it
 // had already researched (HW-33 / dev run #119). Best-effort: a write failure
 // is logged, not fatal — the pending question + answer flow still proceed.
-func (r *agentRunner) persistYieldTranscript(ctx context.Context, runID uint64, userInput string) {
+func (r *agentRunner) persistYieldTranscript(ctx context.Context, runID uint64, userInput string, atts []displayAttachment) {
 	turns := buildTranscriptTurns(
 		userInput,
 		stepCollectorFrom(ctx).list(),
@@ -543,6 +538,11 @@ func (r *agentRunner) persistYieldTranscript(ctx context.Context, runID uint64, 
 			turns = append(turns, map[string]any{"role": "tool_group", "tool_calls": groups})
 		}
 	}
+	// 问题二: carry the user's uploaded attachments onto the user turn so a session
+	// reloaded WHILE paused at ask_user_question still shows chips (before resume's
+	// finalizeRun re-persists them). Runs before the multi-yield prior merge so it
+	// targets this leg's user turn.
+	setUserTurnAttachments(turns, atts)
 	// HW-33 multi-yield: if a transcript already exists (this is a resumed run
 	// that paused AGAIN — e.g. the agent asks a second clarifying question),
 	// prepend it so the earlier yield's work is not clobbered by this overwrite.
