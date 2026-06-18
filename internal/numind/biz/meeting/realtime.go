@@ -195,8 +195,7 @@ var uploadBytesToCOS = util.UploadBytesToCOS
 // COS 未启用时 UploadBytesToCOS 返回空 URL，此处仍回写（空字符串），由前端按 recording_url 是否
 // 为空决定是否展示回放——不当作错误。
 func (b *meetingBiz) UpdateRecordingURL(ctx context.Context, userID uint, sessionID uint64, audio []byte, contentType string) (string, error) {
-	s, err := b.getOwnedSession(ctx, userID, sessionID)
-	if err != nil {
+	if _, err := b.getOwnedSession(ctx, userID, sessionID); err != nil {
 		return "", err
 	}
 
@@ -206,8 +205,9 @@ func (b *meetingBiz) UpdateRecordingURL(ctx context.Context, userID uint, sessio
 		return "", fmt.Errorf("UpdateRecordingURL: upload cos: %w", err)
 	}
 
-	s.RecordingURL = url
-	if err := b.ds.Meetings().UpdateSession(ctx, s); err != nil {
+	// 定向只更新 recording_url 列（不能全行 Save：录音上传常在 EndSession 之后才完成，
+	// 全行 Save 会用加载时的陈旧 active 态覆盖 status/ended_at/summary_status，把会话"反结束"）。
+	if err := b.ds.Meetings().UpdateRecordingURL(ctx, sessionID, url); err != nil {
 		return "", fmt.Errorf("UpdateRecordingURL: persist recording_url: %w", err)
 	}
 	return url, nil

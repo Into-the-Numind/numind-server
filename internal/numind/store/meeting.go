@@ -30,6 +30,9 @@ type IMeetingStore interface {
 	UpdateRunningSummary(ctx context.Context, id uint64, runningSummary string) error
 	// MarkSummaryStatus 只更新 summary_status 一列（定向列更新，失败收尾用）。
 	MarkSummaryStatus(ctx context.Context, id uint64, status string) error
+	// UpdateRecordingURL 只更新 recording_url 一列（定向列更新）。录音上传可能在 EndSession 之后
+	// 才完成，全行 Save 会用加载时的陈旧 active 态把会话"反结束"——故必须定向更新。
+	UpdateRecordingURL(ctx context.Context, id uint64, recordingURL string) error
 
 	// --- segment ---
 	// CreateSegment 追加一条转写分段（写回 ID）。
@@ -131,6 +134,16 @@ func (s *meetingStore) UpdateRunningSummary(ctx context.Context, id uint64, runn
 		Where("id = ?", id).
 		Updates(map[string]interface{}{
 			"running_summary": runningSummary,
+		}).Error
+}
+
+// UpdateRecordingURL 定向更新 recording_url 一列（避免录音上传在结束后用陈旧会话全行 Save 反结束）。
+func (s *meetingStore) UpdateRecordingURL(ctx context.Context, id uint64, recordingURL string) error {
+	return s.db.WithContext(ctx).
+		Model(&model.MeetingSession{}).
+		Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"recording_url": recordingURL,
 		}).Error
 }
 
