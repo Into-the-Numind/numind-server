@@ -3,14 +3,52 @@ package agent
 import (
 	"context"
 	"io"
+	"strings"
 	"sync"
 
 	einomodel "github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 
 	"numind-server/internal/numind/biz/agent/callctx"
 	"numind-server/internal/pkg/aiservice"
 )
+
+// init registers a stream-chunk concat function for *aiservice.ToolCallArgsDelta.
+//
+// BE-1 smuggles the per-chunk tool-call args delta through schema.Message.Extra
+// (see extraKeyToolCallArgsDelta). When a tool's function.arguments stream across
+// more than one chunk, Eino concatenates the streamed assistant frames — e.g. the
+// tools node pre-processor calls schema.ConcatMessages — which merges the Extra map
+// key-by-key. Without a registered concat func, two non-zero *ToolCallArgsDelta
+// values under the same key make Eino's ConcatSliceValue fail with "cannot concat
+// multiple non-zero value of type *aiservice.ToolCallArgsDelta", killing the run
+// (dev agent_run 177: file_read).
+//
+// The merged value is harmless to execution: tool dispatch uses the fully assembled
+// ToolCalls on the IsFinal chunk, not this Extra. consumeEinoStream reads each
+// frame's delta BEFORE concat, so live streaming is unaffected. This func only
+// keeps the unavoidable concat from erroring.
+func init() {
+	compose.RegisterStreamChunkConcatFunc(func(items []*aiservice.ToolCallArgsDelta) (*aiservice.ToolCallArgsDelta, error) {
+		merged := &aiservice.ToolCallArgsDelta{}
+		var b strings.Builder
+		for _, it := range items {
+			if it == nil {
+				continue
+			}
+			if merged.ToolCallID == "" {
+				merged.ToolCallID = it.ToolCallID
+			}
+			if merged.FunctionName == "" {
+				merged.FunctionName = it.FunctionName
+			}
+			b.WriteString(it.ArgsDelta)
+		}
+		merged.ArgsDelta = b.String()
+		return merged, nil
+	})
+}
 
 // extraKeyToolCallArgsDelta is the schema.Message.Extra key used to smuggle a
 // *aiservice.ToolCallArgsDelta through the Eino streaming boundary (BE-1).
