@@ -42,9 +42,10 @@ func TestPlatformToolFactory_LoadTools(t *testing.T) {
 	// (removed: IDOR — read any user's profile by LLM-supplied id) = 11.
 	// v2 marketplace: +1 load_skill.
 	// V1.5 Track 4 task 4.2/4.3/4.9: +4 create + 1 chart + 1 run_python = +6.
-	// Total base tool count: 11 + 1 + 6 = 18.
-	assert.Len(t, tools, 18)
-	assert.Len(t, metadata, 18)
+	// agent-output-ux-followup3 BE-2: +1 create_docx.
+	// Total base tool count: 11 + 1 + 6 + 1 = 19.
+	assert.Len(t, tools, 19)
+	assert.Len(t, metadata, 19)
 	expected := []string{
 		"kb_search",
 		"document_generate",
@@ -62,6 +63,7 @@ func TestPlatformToolFactory_LoadTools(t *testing.T) {
 		"create_html",
 		"create_json",
 		"create_text",
+		"create_docx", // agent-output-ux-followup3 BE-2
 		"create_png_chart",
 		"run_python",
 	}
@@ -77,12 +79,13 @@ func TestPlatformToolFactory_LoadTools_WithDS_8Tools(t *testing.T) {
 	f := NewPlatformToolFactory(nil, ds)
 	tools, metadata, err := f.LoadTools(context.Background())
 	require.NoError(t, err)
-	// V1.5 + v2 marketplace + Track 4: base count is now 18 (11 + load_skill + 4 create + chart + run_python;
-	// learner_data_query removed for IDOR); with ds, memory_write + memory_read are appended → total 20.
-	assert.Len(t, tools, 20, "non-nil ds should produce 20 tools (18 base + memory_write + memory_read)")
-	assert.Len(t, metadata, 20, "non-nil ds should produce 20 metadata entries")
+	// V1.5 + v2 marketplace + Track 4: base count is now 19 (11 + load_skill + 4 create
+	// + create_docx + chart + run_python; learner_data_query removed for IDOR); with ds,
+	// memory_write + memory_read are appended → total 21.
+	assert.Len(t, tools, 21, "non-nil ds should produce 21 tools (19 base + memory_write + memory_read)")
+	assert.Len(t, metadata, 21, "non-nil ds should produce 21 metadata entries")
 
-	// Verify the first 18 are unchanged.
+	// Verify the first 19 are unchanged.
 	baseExpected := []string{
 		"kb_search",
 		"document_generate",
@@ -100,6 +103,7 @@ func TestPlatformToolFactory_LoadTools_WithDS_8Tools(t *testing.T) {
 		"create_html",
 		"create_json",
 		"create_text",
+		"create_docx",
 		"create_png_chart",
 		"run_python",
 	}
@@ -107,9 +111,9 @@ func TestPlatformToolFactory_LoadTools_WithDS_8Tools(t *testing.T) {
 		assert.Equal(t, want, tools[i].Name(), "tool[%d] name", i)
 	}
 
-	// Verify memory tools are appended at indices 18 and 19.
-	assert.Equal(t, "memory_write", tools[18].Name(), "tools[18] should be memory_write")
-	assert.Equal(t, "memory_read", tools[19].Name(), "tools[19] should be memory_read")
+	// Verify memory tools are appended at indices 19 and 20.
+	assert.Equal(t, "memory_write", tools[19].Name(), "tools[19] should be memory_write")
+	assert.Equal(t, "memory_read", tools[20].Name(), "tools[20] should be memory_read")
 }
 
 func TestPlatformToolFactory_LoadTools_WithDS_Metadata14(t *testing.T) {
@@ -118,19 +122,19 @@ func TestPlatformToolFactory_LoadTools_WithDS_Metadata14(t *testing.T) {
 	f := NewPlatformToolFactory(nil, ds)
 	_, metadata, err := f.LoadTools(context.Background())
 	require.NoError(t, err)
-	// V1.5 + v2 marketplace + Track 4: total is 20 (18 base + memory_write + memory_read).
-	require.Len(t, metadata, 20)
+	// V1.5 + v2 marketplace + Track 4 + BE-2: total is 21 (19 base + memory_write + memory_read).
+	require.Len(t, metadata, 21)
 
-	// memory_write metadata at index 18.
-	mw := metadata[18]
+	// memory_write metadata at index 19.
+	mw := metadata[19]
 	assert.Equal(t, "memory_write", mw.ToolName)
 	assert.Equal(t, "记忆写入", mw.DisplayName)
 	assert.Equal(t, "platform", mw.Source)
 	assert.Equal(t, "记忆", mw.Category)
 	assert.Equal(t, "moderate", mw.RiskLevel)
 
-	// memory_read metadata at index 19.
-	mr := metadata[19]
+	// memory_read metadata at index 20.
+	mr := metadata[20]
 	assert.Equal(t, "memory_read", mr.ToolName)
 	assert.Equal(t, "记忆读取", mr.DisplayName)
 	assert.Equal(t, "platform", mr.Source)

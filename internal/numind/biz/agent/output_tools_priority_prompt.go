@@ -27,13 +27,14 @@ When the user asks you to generate a file, prefer tools in this order:
    - .json → create_json
    - .txt / .md → create_text
    - simple chart (.png, bar/line/pie/scatter) → create_png_chart
+   - STANDARD .docx (headings, paragraphs, lists, tables, inline images) → create_docx (pass Markdown directly; faster and more reliable than writing python-docx by hand)
 
 2. COMPLEX formats — use the skill workflow (Layer 2, Python in sandbox):
    STEP A: load_skill({"name": "<chosen>"}) to get the SKILL.md guidance.
    STEP B: run_python({"code": "<Python following the guidance>", "input_files": [...]}) to execute.
    Available skills:
    - .xlsx → name="xlsx-author"
-   - .docx → name="docx-author"  (if you generated an image earlier via image_gen, pass its COS URL in run_python input_files and embed it with doc.add_picture — never give the user a picture in chat but leave it out of the document)
+   - .docx with COMPLEX custom layout / precise styling ONLY → name="docx-author"  (for a standard document prefer create_docx above; if you generated an image earlier via image_gen, pass its COS URL in run_python input_files and embed it with doc.add_picture — never give the user a picture in chat but leave it out of the document)
    - .pptx → name="pptx-author"
    - .pdf  → name="pdf-from-html"
    IMPORTANT: do NOT skip STEP A — without the SKILL.md you will write wrong imports.
@@ -53,6 +54,7 @@ When the user asks you to generate a file, prefer tools in this order:
    - .json → create_json
    - .txt / .md → create_text
    - 简单图表 (.png，柱状 / 折线 / 饼图 / 散点) → create_png_chart
+   - 普通 .docx（标题 / 段落 / 列表 / 表格 / 插图）→ create_docx（直接传 Markdown，比手写 python-docx 更快更稳）
 
 2. 复杂格式按 skill 两步流执行（Python 沙箱）：
    步骤 A: load_skill({"name": "<选定>"}) 获取 SKILL.md 指南。
@@ -60,7 +62,7 @@ When the user asks you to generate a file, prefer tools in this order:
    ⚠️ run_python 无状态——每次调用是全新沙箱，文件不跨调用保留。整份文档必须一次 run_python 生成完；禁止重开上次调用写的输出路径（如 Presentation("/workdir/output/x.pptx") 会失败）。
    可用 skill:
    - .xlsx → name="xlsx-author"
-   - .docx → name="docx-author"（若你之前用 image_gen 生成过图片，把该图片的 COS URL 放进 run_python 的 input_files，并用 doc.add_picture 嵌入文档——不要只在聊天里给图却漏掉文档里的图）
+   - 仅当 .docx 需要特殊版式 / 精细样式时 → name="docx-author"（普通文档请优先用上面的 create_docx；若你之前用 image_gen 生成过图片，把该图片的 COS URL 放进 run_python 的 input_files，并用 doc.add_picture 嵌入文档——不要只在聊天里给图却漏掉文档里的图）
    - .pptx → name="pptx-author"
    - .pdf  → name="pdf-from-html"
    **重要**: 不要跳过步骤 A——不读 SKILL.md 直接写代码会用错 import。
