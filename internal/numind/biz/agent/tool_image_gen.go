@@ -22,7 +22,7 @@ import (
 // imageGenTool is the image_gen FullTool.
 // Implements prompt-based image generation: the provider call is routed through
 // the unified aiservice gateway (aiservice.ImageGen → task profile agent.image_gen
-// → dmxapi gemini-2.5-flash-image), and the produced image is uploaded through
+// → dmxapi gpt-image-2), and the produced image is uploaded through
 // uploadGeneratedFile.
 //
 // agent-mode-billing T9: each generation is billed via explicit
@@ -128,8 +128,8 @@ func (t *imageGenTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 // defaultImageFilename builds the default object name for a generated image:
 // image-YYYYMMDD-HHMMSS.png. ASCII + date-form so it survives the COS object-key
 // sanitize unchanged and reads cleanly when the frontend falls back to it (the LLM
-// did not write a markdown alt). Replaces the old gemini-image-{unix} (a giant
-// timestamp that also leaked the underlying model name).
+// did not write a markdown alt). Replaces an earlier model-named form that embedded
+// the underlying model name plus a giant Unix timestamp.
 func defaultImageFilename(now time.Time) string {
 	return fmt.Sprintf("image-%s.png", now.Format("20060102-150405"))
 }
