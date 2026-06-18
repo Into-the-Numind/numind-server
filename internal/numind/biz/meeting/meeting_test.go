@@ -309,8 +309,8 @@ func TestBuildFeedbackSystemPrompt_AppendsRollingSummaryNote(t *testing.T) {
 	auto := buildFeedbackSystemPrompt("你是辩论陪练", model.MeetingFeedbackTriggerAuto)
 	assert.Contains(t, auto, "你是辩论陪练", "保留 role_prompt")
 	assert.Contains(t, auto, noFeedbackSentinel, "auto 仍提供 NO_FEEDBACK 选项（机制不动）")
-	assert.Contains(t, auto, note, "auto 追加滚动摘要去重提示")
-	assert.Contains(t, auto, "不要重复你已经给过的反馈")
+	assert.Contains(t, auto, note, "auto 追加滚动摘要提示")
+	assert.Contains(t, auto, "不要逐字重复你已经给过的反馈", "auto 规则内含去重提示(软化版)")
 
 	manual := buildFeedbackSystemPrompt("你是辩论陪练", model.MeetingFeedbackTriggerManual)
 	assert.Contains(t, manual, "必须给出一条反馈", "manual 必须给反馈")
@@ -895,7 +895,7 @@ func TestGenerateFeedback_ThreeSectionContext(t *testing.T) {
 	// 系统提示含去重提示。
 	require.NotEmpty(t, captured.Messages)
 	sysMsg := captured.Messages[0].Content.Text
-	assert.Contains(t, sysMsg, "不要重复你已经给过的反馈")
+	assert.Contains(t, sysMsg, "不要逐字重复你已经给过的反馈")
 
 	// anchor 仍取最后一段 seq（不受窗口影响）。
 	last := cap.events[len(cap.events)-1]
