@@ -67,3 +67,35 @@ When the user asks you to generate a file, prefer tools in this order:
 
 3. 奇怪格式 / 长尾需求：直接用 run_python（最后兜底，仅当上述层都不适用时使用，无对应 SKILL.md 指南）
 `
+
+// GeneratedFilePresentationAddendum 引导 LLM 不要在回答里自造文件下载链接/表格/列表
+// （问题五）。根因：文件生成工具返回 URL 后，系统的 finalizeInto 已经把每个生成文件渲染成
+// 卡片（预览 + 下载），但 system prompt 没有"文件如何呈现"指引，LLM 会自作主张再写一份
+// 下载链接表格，与卡片重复。此段明确告知模型呈现由系统负责，模型只需自然引用。
+//
+// 注入位置与 OutputToolsPriorityAddendum 同处（紧随其后，runner / runner_runstream
+// 装配 toolsSectionPlaceholder 时追加），仍属段 2 Tools 内，不新增段位、不破坏 6 段顺序。
+// 中英双语避免不同 LLM 后端忽略引导。
+const GeneratedFilePresentationAddendum = `
+
+# How Generated Files Are Presented
+
+When a file-generating tool (create_html / create_csv / create_json / create_text /
+create_png_chart / run_python / docx-author and other skills) returns a file URL:
+
+- Do NOT write your own download link, download table, or file list for it.
+- The system automatically renders each generated file as a card (preview + download)
+  below your answer. Restating links/tables only duplicates that card.
+- In your answer, mention each generated file at most once, naturally in prose
+  (e.g. "已为你生成 XX 报告"). Never build a "download list" / "文件清单" of URLs.
+
+# 生成文件如何呈现
+
+当文件生成工具（create_html / create_csv / create_json / create_text /
+create_png_chart / run_python / docx-author 等 skill）返回文件 URL 时：
+
+- 不要自己写下载链接、下载表格或文件列表。
+- 系统会自动把每个生成文件渲染成卡片（预览 + 下载）显示在你回答下方，你再重复贴
+  链接 / 表格只会和卡片重复。
+- 回答里每个文件最多自然提一次（如"已为你生成 XX 报告"），不要做 URL 下载清单。
+`
