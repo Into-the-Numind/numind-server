@@ -5317,3 +5317,20 @@ features:
   - 'S0-S3 (ai 2026-06-18): 第4轮反馈经长对话Q&A敲定。纠正前investigator错误claim(业界非"确定性渲染docx"——Claude/Codex/Anthropic官方skill都让LLM写python-docx代码,没人做原生确定性docx工具; numind现状机制=业界标准)。提速真杠杆=markdown→docx快路(LLM少吐token)+不换模型(用户锁死deepseek-v4-pro质量优先)。用户拍板: HTML切断预览只下载/docx保留编辑(方案B)/eino流式只吐写代码段+白名单门禁/代码框默认展开成功收起纯箭头固定高度/create_docx靠工具描述路由。dynamic workflow: BE(1+2+3串行)‖FE(1+2+3串行)Tier2跨仓库+每仓库双review。下一步workflow S4。'
   - 'S4-S6 (ai 2026-06-18): dynamic workflow 跑 BE‖FE 并行实现(各 3 task 一 commit) + 每仓库双 Sonnet review。BE: BE-1 eino 流式吐工具参数增量(ChatChunk.ToolCallArgsDelta 旁路, schema.Message.Extra 透传过 Eino, runner 按白名单 isCodeStreamingTool 门禁后 emit, 分层比 spec 更干净=门禁放 runner 非 adapter pkg)+BE-2 create_docx(复用沙箱跑 //go:embed 内嵌 md_to_docx.py, LLM 只传 markdown)+BE-3 HTML 移出 inline 走 attachment 下载。FE: FE-1 前置 spinner 删脉动点 + FE-2 HTML 删 iframe 改 flashHint 不支持预览(保留 docx/md/txt 编辑=方案B, isHtml 守卫挡编辑路径)+FE-3 流式代码框(默认展开/成功收起/纯箭头/固定 160px)。Review 抓: BE 质量 review FAIL=P0 create_docx 缺席 IsSandboxIsolatedExecTool→沙箱 session 不借→工具静默失效(主 session 修=加白名单+回归测试锁, 复核确认无第二处遗漏 IsSandboxIsolatedExecTool 是唯一真相源); FE P1=spinner 与代码框互斥(改 v-if=isGenerating||codeStream 同框)+P2 codeBoxExpanded 不复位(watch 空→非空复位)+P2 过时注释。全 P0/P1/P2 就地修+复核 PASS。门禁全绿: BE go build ./...+test+vet+gofmt; FE type-check+eslint+vitest 310 passed(24 files)。下一步 ndf-done 合两仓库+部署 dev。prod 不在授权(止于 dev)。'
   blockers: []
+- id: agent-argsdelta-concat-fix
+  ndf_version: '3.0'
+  description: 'dev 回归(agent_run 177, 2026-06-18): followup3 BE-1 把 *aiservice.ToolCallArgsDelta 塞进 schema.Message.Extra; 工具参数跨多 chunk 流式时(file_read 的 url/run_python 的 code)Eino tools 节点 schema.ConcatMessages concat 多帧 Extra, 该自定义类型无注册 concat func → "cannot concat multiple non-zero value" → NodeRunError → run 挂报"服务暂时不可用"。修=adapter.go init() 注册 compose.RegisterStreamChunkConcatFunc 合并多帧 delta。'
+  classification_reason: 'Hotfix: 无 DB schema/无新 API/无新外部服务/文件数 ≤3(adapter.go + 复现测试)/非支付权限。Bug-from-Customer(复现测试先行)。'
+  last_updated_by: ai-h3
+  last_updated_at: '2026-06-18T23:30:00+0800'
+  created_at: '2026-06-18T23:10:00+0800'
+  track: hotfix
+  stage: H3
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: fix/agent-argsdelta-concat-fix}
+  worktrees: {numind-server: /private/tmp/wt-agent-argsdelta-concat-fix-numind-server}
+  progress: {total_tasks: 1, completed_tasks: 1, reviewed_tasks: 1}
+  decisions:
+  - 'H1-H3 (ai 2026-06-18): 根因=Eino internal/concat.go ConcatSliceValue 对 Extra map 每 key 多非零值无注册 concat func 则报错。修=init() 调 compose.RegisterStreamChunkConcatFunc[*aiservice.ToolCallArgsDelta](拼 ArgsDelta+保首个 ToolCallID/FunctionName); 对执行无害(dispatch 用组装 ToolCalls 非 Extra), consumeEinoStream 仍 concat 前逐帧读(流式不受影响)。复现测试(schema.ConcatMessages 两条带 Extra 消息)RED→GREEN。双 Sonnet review PASS/PASS(code-quality 核实 Extra 不泄漏持久化/LLM: buildTranscriptTurns 只取 role/content/reasoning/tool_calls, convertToAiserviceRequest 不碰 Extra)。门禁: go build ./... + go test agent+adapter + vet + gofmt 全绿。下一步 ndf-done + 部署 dev 复测 file_read。'
+  blockers: []
