@@ -484,7 +484,11 @@ func filenameFromURL(u string) string {
 	}
 	// Strip the nanosecond ID prefix added at upload time so chips show the
 	// original filename. Only ≥13-digit prefixes are stripped (see nanoPrefixRe).
-	s = nanoPrefixRe.ReplaceAllString(s, "")
+	// Guard: if the object key is a bare "<digits>-" with no name after it, stripping
+	// would yield an empty chip label — keep the pre-strip tail instead (review P2).
+	if stripped := nanoPrefixRe.ReplaceAllString(s, ""); stripped != "" {
+		s = stripped
+	}
 	return s
 }
 

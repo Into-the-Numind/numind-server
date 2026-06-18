@@ -23,6 +23,13 @@ func TestFilenameFromURL_StripsNanoPrefix(t *testing.T) {
 			url:  "https://x.cos/agent-attachments/9/2024-plan.docx",
 			want: "2024-plan.docx",
 		},
+		{
+			// bare "<nanos>-" with no name after → stripping would blank the chip;
+			// guard keeps the pre-strip tail (review P2).
+			name: "bare nanosecond prefix keeps tail (no empty label)",
+			url:  "https://x.cos/agent-attachments/9/1781779536452527550-",
+			want: "1781779536452527550-",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
