@@ -203,7 +203,7 @@ func (s *StudentRunService) Estimate(ctx context.Context, userID uint, req Estim
 type CreateRunRequest struct {
 	AgentDefinitionID uint64   `json:"agent_skill_id" binding:"required"`
 	SessionID         string   `json:"session_id,omitempty"` // empty → new session
-	Message           string   `json:"input_text" binding:"required"`
+	Message           string   `json:"input_text"`           // empty allowed when an attachment is present (attachment-only send); validated by hasNoSendable
 	AttachmentURLs    []string `json:"attachment_urls,omitempty"`
 	// AttachmentIDs is the task-1.3 field: the frontend sends DB row IDs for
 	// uploaded attachments so that buildAgentInputForModel can load the full
@@ -220,6 +220,21 @@ type CreateRunRequest struct {
 	// (credit_admin_test_grant) instead of the three-pool. Propagated to
 	// RunRequest.IsTest → injectAgentBillingCtx → middleware pool selector.
 	IsTest bool `json:"is_test,omitempty"`
+}
+
+// hasNoSendable reports whether the request carries nothing for the agent to act
+// on — neither input text nor any attachment. An attachment alone IS sendable
+// content: the user uploaded a file (e.g. a docx) for the agent to process, so an
+// empty input_text WITH attachments must NOT be rejected (customer-reported,
+// 2026-06-18). buildAgentInput already composes a valid prompt from attachments
+// alone (it prepends the "用户上传了以下附件，请调用 file_read" instruction), so the
+// downstream run is well-formed even when Message is empty.
+//
+// A whitespace-only Message counts as empty (TrimSpace) — it is rejected unless an
+// attachment is present. (The prior guard used a bare `== ""`; trimming closes the
+// "send a single space" loophole.)
+func (r CreateRunRequest) hasNoSendable() bool {
+	return strings.TrimSpace(r.Message) == "" && len(r.AttachmentURLs) == 0 && len(r.AttachmentIDs) == 0
 }
 
 // CreateRunResponse is returned from POST /v1/agent-runs.
@@ -240,8 +255,8 @@ type CreateRunResponse struct {
 // The goroutine uses context.Background() (detached) so that HTTP request
 // cancellation does NOT kill the in-flight run.
 func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateRunRequest) (*CreateRunResponse, error) {
-	if req.Message == "" {
-		return nil, errno.ErrBind.SetMessage("message is required")
+	if req.hasNoSendable() {
+		return nil, errno.ErrBind.SetMessage("message or attachment is required")
 	}
 
 	// Validate agent definition exists and belongs to the learner's parent.
@@ -292,6 +307,12 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 				"user_id", userID, "attachment_ids", req.AttachmentIDs)
 		}
 		input = buildAgentInput(req.Message, req.AttachmentURLs)
+	}
+	// Never hand the runner a blank user turn: attachment-only sends are allowed, so a
+	// failed attachment load could leave input empty (hasNoSendable only gates the
+	// truly-nothing case at entry). Substitute a graceful read-failure instruction.
+	if strings.TrimSpace(input) == "" {
+		input = emptyAttachmentInputFallback
 	}
 
 	// Resolve tool names from ToolFlags JSON.
@@ -404,6 +425,14 @@ func buildAgentInput(message string, attachmentURLs []string) string {
 	return b.String()
 }
 
+// emptyAttachmentInputFallback is the user-turn substituted when an attachment-only
+// send composes to an empty input — e.g. the attachment_ids path with attachmentStore
+// unset, or all ids unreadable. Allowing attachment-only sends (no input_text) makes
+// this reachable; rather than hand the runner a blank user turn — or orphan the
+// already-created run row with a late hard error — the agent is told to surface the
+// read failure to the user.
+const emptyAttachmentInputFallback = "用户上传了附件，但系统暂时无法读取其内容。请告知用户附件读取失败，并建议重新上传或直接用文字描述需求。"
+
 // loadAttachmentsByIDs fetches AgentAttachment entities for the given IDs,
 // enforcing that each row belongs to userID. Rows that fail the ownership
 // check or cannot be fetched are skipped (logged as warnings).
@@ -448,8 +477,8 @@ func loadAttachmentsByIDs(
 // to DB and the caller must NOT try to clean it up (the row may already have
 // been picked up by a background runner in a concurrent CreateStream request).
 func (s *StudentRunService) AcquireStreamLock(ctx context.Context, userID uint, req CreateRunRequest) (runID uint64, acquired bool, err error) {
-	if req.Message == "" {
-		return 0, false, errno.ErrBind.SetMessage("message is required")
+	if req.hasNoSendable() {
+		return 0, false, errno.ErrBind.SetMessage("message or attachment is required")
 	}
 
 	// Validate agent definition. The returned ad is intentionally unused — its
@@ -570,6 +599,11 @@ func (s *StudentRunService) RunStream(ctx context.Context, userID uint, req Crea
 				"user_id", userID, "attachment_ids", req.AttachmentIDs)
 		}
 		input = buildAgentInput(req.Message, req.AttachmentURLs)
+	}
+	// See Create: never hand the runner a blank user turn on an empty-composed
+	// attachment-only send.
+	if strings.TrimSpace(input) == "" {
+		input = emptyAttachmentInputFallback
 	}
 
 	toolNames := toolNamesFromFlags(nil) // tool flags resolved from the loaded run's definition below
