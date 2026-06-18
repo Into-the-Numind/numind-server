@@ -5385,3 +5385,20 @@ features:
   decisions:
   - 'H1-H3 (ai 2026-06-19): dev SSE 抓取(run 180)运行时定位。②真凶=tool_call_id 不匹配(args-delta=供应商 call_00_ / start+result=后端 UUID 45640f12-), result-keyed done 永不命中→改 step_done 清 buffer(id 无关, 删 DoneIds + result/error done-marking, activeCodeStream 简化取最新)。③真凶=最后步 assistant_message 先 finalize(isStreaming=false)再 terminal, reconcile 的 isStreaming===true 过滤漏掉→改 runBubbles 按 _run_id 匹配(无视 isStreaming)+alreadyHasFinal 幂等守卫, 最后气泡 findIndex by _stream_id 转 final_answer。①模板 toggle 移进 .generation-stall 内联, 删 .code-stream flex wrapper, .code-stream-body block 全宽左对齐圆角8px。复现测试先行(id 不匹配 result 不清/step_done 清; assistant_message finalize 后仍转 final_answer)RED→GREEN。双 Sonnet review PASS/PASS 零 must-fix(多run/多step/幂等/空finalOut 旧不变量全保)。门禁: type-check+eslint+vitest 976 passed。下一步 ndf-done web + 部署 dev。'
   blockers: []
+- id: skill-load-cap-exclude-bound
+  ndf_version: '3.0'
+  description: 'dev 用户反馈(2026-06-19): agent 报"技能加载已达本轮上限"。根因=load_skill 的每条消息上限(UseSkillTurnCapDefault=3, 整 run 共享计数器)把 agent 自己绑定的业务技能也计入——会议纪要助手绑定 3 个技能(brandkit/Meeting Notes/gpt taste)一加载就耗光配额, 再加载平台技能(docx-author)就撞限。用户拍板: 绑定技能不计入上限(永远可加载), 额外允许 5 个非绑定(平台/市场)技能。'
+  classification_reason: 'Hotfix: 仅 numind-server/无 DB/无新 API/无新外部服务/文件 ≤3(tool_load_skill.go+tool_use_skill.go+测试, 附带 runner 注释)/非支付权限。源于用户反馈的过严阈值。'
+  last_updated_by: ai-h3
+  last_updated_at: '2026-06-19T01:00:00+0800'
+  created_at: '2026-06-19T00:50:00+0800'
+  track: hotfix
+  stage: H3
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: fix/skill-load-cap-exclude-bound}
+  worktrees: {numind-server: /private/tmp/wt-skill-load-cap-exclude-bound-numind-server}
+  progress: {total_tasks: 1, completed_tasks: 1, reviewed_tasks: 1}
+  decisions:
+  - 'H1-H3 (ai 2026-06-19): 方案 B(忠于"绑定不计入"语义)。load_skill Execute 把 cap 检查移到仅非绑定路径(绑定 loadDBSkill 在检查前 return, 永远可加载); loadDBSkill 删 InvocationCount++(绑定免费), loadDiskSkill 保留(非绑定计数); UseSkillTurnCapDefault 3→5(额外非绑定上限)。use_skill 已合并进 load_skill 故计数器只此一处, blast radius 小。PendingSkills 只装绑定技能现不受 cap(受 agent 绑定数约束), 同步修 runner.go/runner_runstream.go 3 处过时 cap=3 注释。测试: 绑定 load 不计数(1→0/3→0)、非绑定到 cap 拒绝且绑定 past-cap 仍可加载、PendingSkills 累积不变。双 Sonnet review PASS/PASS(只 LOW 注释 finding 已修)。门禁: go build+test+vet+gofmt 全绿。下一步 ndf-done + 部署 dev。'
+  blockers: []
