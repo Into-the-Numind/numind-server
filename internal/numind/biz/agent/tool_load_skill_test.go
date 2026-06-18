@@ -66,7 +66,7 @@ func TestLoadSkill_DBSkill_WrapsBody_AndRecommendation(t *testing.T) {
 	assert.Contains(t, body, "web_search")
 	assert.Contains(t, body, "crm_search")
 
-	assert.Equal(t, 1, turn.InvocationCount, "DB load bumps the cap counter")
+	assert.Equal(t, 0, turn.InvocationCount, "bound (DB) load does NOT count toward the cap (skill-load-cap-exclude-bound)")
 	require.Len(t, turn.PendingSkills, 1)
 	assert.Equal(t, "销售话术训练", turn.PendingSkills[0].Name)
 }
@@ -106,17 +106,26 @@ func TestLoadSkill_DBFirst_Collision(t *testing.T) {
 	assert.Contains(t, body, "my custom pptx guidance")
 }
 
-// AC-6: per-turn cap exhaustion returns a graceful error ack, count not bumped.
-func TestLoadSkill_CapExhausted_GracefulAck(t *testing.T) {
+// AC-6: the cap applies ONLY to non-bound (disk/platform) loads. A non-bound load
+// at the cap returns a graceful error (count not bumped); a BOUND skill still loads
+// past the cap because the agent's own skills are free (skill-load-cap-exclude-bound).
+func TestLoadSkill_CapExhausted_NonBoundRejected_BoundStillLoads(t *testing.T) {
+	reg := buildDiskRegistry(t, "pptx-author", "pptx", "# pptx")
 	sk := fixedSkill(1, "X", "body", `[]`)
 	ctx, turn := buildTurnWithSkills(t, sk)
 	turn.Cap = 2
-	turn.InvocationCount = 2 // already at cap
+	turn.InvocationCount = 2 // 2 non-bound already loaded → at cap
 
-	ack := execLoadSkill(t, NewLoadSkillTool(nil), ctx, "X")
+	// Non-bound (disk) load at the cap → rejected, counter unchanged.
+	ack := execLoadSkill(t, NewLoadSkillTool(reg), ctx, "pptx-author")
 	assert.Equal(t, "error", ack["status"])
 	assert.Contains(t, ack["error"], "上限")
-	assert.Equal(t, 2, turn.InvocationCount, "cap-rejected call must not bump the counter")
+	assert.Equal(t, 2, turn.InvocationCount, "cap-rejected non-bound call must not bump the counter")
+
+	// Bound skill loads even past the non-bound cap, and does not touch the counter.
+	ackBound := execLoadSkill(t, NewLoadSkillTool(reg), ctx, "X")
+	assert.Equal(t, "loaded", ackBound["status"], "bound skill must load even when the non-bound cap is exhausted")
+	assert.Equal(t, 2, turn.InvocationCount, "bound load must not change the non-bound counter")
 }
 
 // On a miss, the soft error lists BOTH DB-bound and disk skill names.
@@ -163,7 +172,7 @@ func TestLoadSkill_MultipleCalls_PendingSkillsAccumulate(t *testing.T) {
 	assert.Equal(t, "技能C", turn.PendingSkills[2].Name)
 	assert.Contains(t, turn.PendingSkills[0].Body, "bodyA")
 	assert.Contains(t, turn.PendingSkills[2].Body, "bodyC")
-	assert.Equal(t, 3, turn.InvocationCount)
+	assert.Equal(t, 0, turn.InvocationCount, "all three are bound skills → none count toward the cap")
 }
 
 func TestLoadSkill_InactiveSkill_SoftError(t *testing.T) {
