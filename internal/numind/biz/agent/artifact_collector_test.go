@@ -45,10 +45,11 @@ func TestArtifactCollector_FinalizeInto_SkipsModelEmbeddedImage(t *testing.T) {
 	assert.Equal(t, content, got, "already-embedded image must not be appended again")
 }
 
-// cosIsInlineRenderName: images + html render inline (signImage); docs download.
+// cosIsInlineRenderName: ONLY images render inline (signImage); everything else
+// (incl. HTML — BE-3 removed the iframe preview) downloads.
 func TestCosIsInlineRenderName(t *testing.T) {
-	assert.True(t, cosIsInlineRenderName("page.html"), "html → inline (iframe preview)")
-	assert.True(t, cosIsInlineRenderName("PAGE.HTM"), "htm case-insensitive → inline")
+	assert.False(t, cosIsInlineRenderName("page.html"), "html → download (iframe preview removed, BE-3)")
+	assert.False(t, cosIsInlineRenderName("PAGE.HTM"), "htm → download (iframe preview removed, BE-3)")
 	assert.True(t, cosIsInlineRenderName("img.png"), "image → inline")
 	assert.False(t, cosIsInlineRenderName("报告.docx"), "docx → download")
 	assert.False(t, cosIsInlineRenderName("data.pdf"), "pdf → download")

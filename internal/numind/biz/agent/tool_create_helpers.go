@@ -158,17 +158,19 @@ func uploadGeneratedFile(
 		const presignExpiry = 24 * 60 * 60 // 86400 seconds
 		var signed string
 		var signErr error
-		if strings.HasPrefix(contentType, "image/") || strings.HasPrefix(contentType, "text/html") {
-			// Images render inline (<img>); HTML renders inside the artifact card's
-			// sandboxed iframe (问题五) — both need a PLAIN signed URL.
+		if strings.HasPrefix(contentType, "image/") {
+			// Images render inline (<img>) and need a PLAIN signed URL.
 			// GenerateSignedDownloadURL forces Content-Disposition: attachment, which
 			// makes the browser DOWNLOAD instead of displaying — breaking inline image
-			// render AND HTML iframe preview (User-reported: image dev 2026-06-08,
-			// HTML 问题五 dev 2026-06-18).
+			// render (User-reported: image dev 2026-06-08).
+			//
+			// BE-3: HTML is NO LONGER inline. The frontend removed the iframe preview
+			// (problem 五 reverted), so text/html now takes the download branch below,
+			// staying aligned with cos_resign.cosIsInlineRenderName (images only).
 			signed, signErr = util.GenerateSignedURL(ctx, objectKey, presignExpiry)
 		} else {
-			// Non-image artifacts are downloads; the attachment disposition keeps
-			// Chrome from flagging the cross-site download as "不安全".
+			// Non-image artifacts (incl. HTML) are downloads; the attachment
+			// disposition keeps Chrome from flagging the cross-site download as "不安全".
 			signed, signErr = util.GenerateSignedDownloadURL(ctx, objectKey, filename, presignExpiry)
 		}
 		if signErr == nil && signed != "" {
