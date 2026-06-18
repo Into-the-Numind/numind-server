@@ -233,6 +233,23 @@ func (r *agentRunner) consumeEinoStream(
 			continue
 		}
 
+		// Tool-call args delta side-channel (BE-1): a no-content interim
+		// message carrying an incremental fragment of a tool call's function
+		// arguments. Emitted only for allowlisted code/content tools so the
+		// frontend can render a live "writing code" box. Handled before the
+		// role switch because it is an additive observability signal — it does
+		// NOT touch currentText/currentReason/toolCalls or the step machinery.
+		if ad := toolCallArgsDeltaFromExtra(msg.Extra); ad != nil {
+			if isCodeStreamingTool(ad.FunctionName) {
+				emit(stream.EventToolCallArgsDelta, stream.ToolCallArgsDeltaPayload{
+					ToolCallID:   ad.ToolCallID,
+					FunctionName: ad.FunctionName,
+					ArgsDelta:    ad.ArgsDelta,
+				})
+			}
+			continue
+		}
+
 		// Classify the message by role.
 		switch msg.Role {
 		case schema.Assistant:

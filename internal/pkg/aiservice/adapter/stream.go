@@ -152,6 +152,16 @@ func runOAIStream(
 		// Accumulate tool_call deltas per index. The first chunk for a given
 		// index carries id+name+type; subsequent chunks carry partial
 		// function.arguments fragments that concatenate to the full JSON.
+		//
+		// argsDelta is an OPTIONAL side-channel: when a fragment carries an
+		// arguments slice we surface it as a ToolCallArgsDelta on a non-final
+		// chunk so the agent runner can stream a live "writing code" view. This
+		// never affects the execution contract — execution still uses the fully
+		// assembled ToolCall on the IsFinal=true terminal chunk below. The
+		// runner applies its own allowlist gate (isCodeStreamingTool) by
+		// FunctionName before emitting anything to the client; this layer fills
+		// the field unconditionally and lets the runner decide.
+		var argsDeltas []aiservice.ToolCallArgsDelta
 		for _, tcd := range choice.Delta.ToolCalls {
 			existing, ok := pendingToolCalls[tcd.Index]
 			if !ok {
@@ -169,6 +179,15 @@ func runOAIStream(
 			}
 			if tcd.Function.Arguments != "" {
 				existing.Function.Arguments += tcd.Function.Arguments
+				// Side-channel: carry the incremental arguments fragment with
+				// the (possibly already-known) id + name for this tool-call
+				// index. The name is read from the accumulated state so that
+				// later fragments (which omit name) still carry it.
+				argsDeltas = append(argsDeltas, aiservice.ToolCallArgsDelta{
+					ToolCallID:   existing.ID,
+					FunctionName: existing.Function.Name,
+					ArgsDelta:    tcd.Function.Arguments,
+				})
 			}
 		}
 
@@ -183,6 +202,23 @@ func runOAIStream(
 				IsFinal:        false,
 				Provider:       provider,
 				Model:          resolvedModel,
+			}
+			index++
+		}
+
+		// Emit tool-call arguments deltas as additional interim chunks (one per
+		// fragment). Kept separate from the content emit above so a single SSE
+		// chunk that carries both content and tool_call args (rare) still yields
+		// both signals. These carry no Delta/ReasoningDelta — only the
+		// side-channel field — so downstream content accumulation is untouched.
+		for i := range argsDeltas {
+			ad := argsDeltas[i]
+			ch <- aiservice.ChatChunk{
+				Index:             index,
+				IsFinal:           false,
+				Provider:          provider,
+				Model:             resolvedModel,
+				ToolCallArgsDelta: &ad,
 			}
 			index++
 		}

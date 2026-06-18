@@ -213,6 +213,28 @@ type ChatResponse struct {
 	TraceMetadata *TraceMetadata `json:"trace_metadata,omitempty"`
 }
 
+// ToolCallArgsDelta is an OPTIONAL side-channel carried on interim ChatChunks
+// to surface the incremental function.arguments fragment of an in-flight
+// tool-call as it streams. It is purely additive observability for the agent
+// "streaming code box" UX — it never participates in the execution contract.
+// Execution still uses the fully assembled ToolCall on the IsFinal=true chunk.
+//
+// Only populated for tool calls the adapter recognises as code/content
+// generating (see runner's isCodeStreamingTool allowlist); nil otherwise.
+type ToolCallArgsDelta struct {
+	// ToolCallID is the provider-assigned tool-call id (may be empty on the
+	// first fragment if the provider sends id and the first arguments slice in
+	// separate deltas; consumers should also key on the chunk arrival order).
+	ToolCallID string `json:"tool_call_id"`
+	// FunctionName is the tool name. Carried on every emitted delta (the
+	// adapter remembers the per-index name from the first chunk).
+	FunctionName string `json:"function_name"`
+	// ArgsDelta is the incremental function.arguments JSON fragment for this
+	// chunk. Concatenating all ArgsDelta values for a tool-call reconstructs
+	// the full Function.Arguments surfaced on the terminal ToolCall.
+	ArgsDelta string `json:"args_delta"`
+}
+
 // ChatChunk is a single streamed chunk emitted by ChatStream.
 type ChatChunk struct {
 	// Delta is the incremental text fragment for this chunk.
@@ -243,6 +265,12 @@ type ChatChunk struct {
 	Model string `json:"model,omitempty"`
 	// Provider is the adapter name that produced this chunk (e.g. "ali", "volc").
 	Provider string `json:"provider,omitempty"`
+	// ToolCallArgsDelta is an OPTIONAL side-channel carrying the incremental
+	// function.arguments fragment of an in-flight tool call (see the type doc).
+	// Non-nil only on interim chunks for allowlisted code/content tools; the
+	// terminal chunk still carries the fully assembled ToolCalls. Additive: a
+	// nil value (the common case) changes nothing about the execution contract.
+	ToolCallArgsDelta *ToolCallArgsDelta `json:"tool_call_args_delta,omitempty"`
 	// Err carries a mid-stream failure distinctly from "stream ended normally".
 	// Only populated on the terminal chunk (IsFinal=true). Consumers should check
 	// `if chunk.IsFinal && chunk.Err != nil` to distinguish graceful end from

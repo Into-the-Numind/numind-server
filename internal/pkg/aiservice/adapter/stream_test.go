@@ -261,6 +261,79 @@ func TestRunOAIStream_StreamsToolCallsAndReasoningDelta(t *testing.T) {
 	}
 }
 
+// TestRunOAIStream_EmitsToolCallArgsDelta verifies the BE-1 side-channel: every
+// streamed function.arguments fragment is surfaced as a non-final ChatChunk with
+// ToolCallArgsDelta populated (carrying id + name + the fragment), the
+// concatenation of all ArgsDelta values equals the full arguments, AND the
+// terminal chunk still carries the fully-assembled ToolCall (execution contract
+// is untouched).
+func TestRunOAIStream_EmitsToolCallArgsDelta(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"id":"r1","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_x","type":"function","function":{"name":"run_python","arguments":""}}]}}]}`,
+		``,
+		`data: {"id":"r1","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"code\":\""}}]}}]}`,
+		``,
+		`data: {"id":"r1","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"print(1)"}}]}}]}`,
+		``,
+		`data: {"id":"r1","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"}"}}]}}]}`,
+		``,
+		`data: {"id":"r1","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`,
+		``,
+		`data: [DONE]`,
+		``,
+		``,
+	}, "\n")
+
+	r := io.NopCloser(strings.NewReader(sse))
+	ch := make(chan aiservice.ChatChunk, 32)
+	go runOAIStream(r, ch, "dmxapi", "deepseek-v4-pro", nil)
+
+	var (
+		argsDeltas  []aiservice.ToolCallArgsDelta
+		terminal    aiservice.ChatChunk
+		sawTerminal bool
+	)
+	for c := range ch {
+		if c.IsFinal {
+			terminal = c
+			sawTerminal = true
+			continue
+		}
+		if c.ToolCallArgsDelta != nil {
+			argsDeltas = append(argsDeltas, *c.ToolCallArgsDelta)
+		}
+	}
+
+	if !sawTerminal {
+		t.Fatal("no IsFinal=true chunk emitted")
+	}
+	// 3 arguments fragments were sent (the first id+name chunk had empty args).
+	if len(argsDeltas) != 3 {
+		t.Fatalf("len(argsDeltas) = %d; want 3", len(argsDeltas))
+	}
+	var assembled strings.Builder
+	for _, ad := range argsDeltas {
+		assembled.WriteString(ad.ArgsDelta)
+		if ad.FunctionName != "run_python" {
+			t.Errorf("ArgsDelta.FunctionName = %q; want run_python", ad.FunctionName)
+		}
+		if ad.ToolCallID != "call_x" {
+			t.Errorf("ArgsDelta.ToolCallID = %q; want call_x", ad.ToolCallID)
+		}
+	}
+	if assembled.String() != `{"code":"print(1)"}` {
+		t.Errorf("assembled args = %q; want %q", assembled.String(), `{"code":"print(1)"}`)
+	}
+	// Execution contract intact: terminal still carries the full ToolCall.
+	if len(terminal.ToolCalls) != 1 {
+		t.Fatalf("terminal.ToolCalls len = %d; want 1", len(terminal.ToolCalls))
+	}
+	if terminal.ToolCalls[0].Function.Arguments != `{"code":"print(1)"}` {
+		t.Errorf("terminal full args = %q; want %q",
+			terminal.ToolCalls[0].Function.Arguments, `{"code":"print(1)"}`)
+	}
+}
+
 // TestRunOAIStream_NilTraceMeta verifies that callers who do not populate
 // TraceMetadata (ali, volc) can safely pass nil. The terminal chunk must
 // have TraceMetadata=nil and no panic occurs during stream processing.
