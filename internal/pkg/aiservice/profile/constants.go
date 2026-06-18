@@ -140,6 +140,12 @@ const (
 	// a DB-registered ai_service route → qwen-turbo in dev/prod; if missing,
 	// Generate degrades gracefully (best-effort no-op, no error to the user).
 	SessionTitle = "session.title"
+
+	// MeetingFeedback is the meeting-copilot real-time feedback (judge+generate) task.
+	// Routed to a fast NON-thinking model (deepseek-v4-flash) for low latency — the live
+	// nudge must be quick, and deepseek-v4-pro is thinking_only (too slow). Kept distinct
+	// from chatbot.stream so switching this model never affects the chatbot product.
+	MeetingFeedback = "meeting.feedback"
 )
 
 // allTaskIDsList is the canonical ordered list of all task IDs.
@@ -179,6 +185,8 @@ var allTaskIDsList = []string{
 	SkillMarketplaceSanitize,
 	// adaptive-session-titles
 	SessionTitle,
+	// meeting-copilot realtime feedback (fast non-thinking model)
+	MeetingFeedback,
 }
 
 // AllTaskIDs returns all task ID strings in a stable order.
