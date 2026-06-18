@@ -23,6 +23,8 @@ const (
 	MeetingSummaryStatusDone = "done"
 	// MeetingSummaryStatusFailed 纪要生成失败。
 	MeetingSummaryStatusFailed = "failed"
+	// MeetingSummaryStatusSkipped 用户结束会议时选择不生成纪要。
+	MeetingSummaryStatusSkipped = "skipped"
 
 	// MeetingFeedbackTriggerAuto 自动触发（服务端 LLM 判官决定是否给反馈）。
 	MeetingFeedbackTriggerAuto = "auto"

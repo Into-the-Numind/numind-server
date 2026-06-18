@@ -470,7 +470,7 @@ func TestEndSession_AsyncStateMachineDone(t *testing.T) {
 	asyncSummarySpawn = func(fn func()) { deferred = fn }
 
 	// 同步段秒回：返回时是 generating。
-	ended, err := biz.EndSession(ctx, 100, dto.ID)
+	ended, err := biz.EndSession(ctx, 100, dto.ID, true)
 	require.NoError(t, err)
 	assert.Equal(t, model.MeetingSessionStatusEnded, ended.Status)
 	assert.Equal(t, model.MeetingSummaryStatusGenerating, ended.SummaryStatus, "同步段秒回 generating")
@@ -492,7 +492,7 @@ func TestEndSession_AsyncStateMachineDone(t *testing.T) {
 
 	// 幂等：再次 end 不报错，状态保持 ended、纪要不被重置（已 ended 直接返回，不再派发）。
 	deferred = nil
-	again, err := biz.EndSession(ctx, 100, dto.ID)
+	again, err := biz.EndSession(ctx, 100, dto.ID, true)
 	require.NoError(t, err)
 	assert.Equal(t, model.MeetingSessionStatusEnded, again.Status)
 	assert.Equal(t, model.MeetingSummaryStatusDone, again.SummaryStatus, "幂等 end 不重置已完成纪要")
@@ -514,7 +514,7 @@ func TestEndSession_SyncSpawnEndToEnd(t *testing.T) {
 		return &aiservice.ChatResponse{Content: "## 要点\n- 上线时间\n\n## 决议\n- （无）\n\n## 待办\n- （无）"}, nil
 	}
 
-	_, err = biz.EndSession(ctx, 100, dto.ID)
+	_, err = biz.EndSession(ctx, 100, dto.ID, true)
 	require.NoError(t, err)
 
 	// sync spawn → 异步段已在 EndSession 内同步跑完。
@@ -545,7 +545,7 @@ func TestEndSession_AsyncStateMachineFailed(t *testing.T) {
 	var deferred func()
 	asyncSummarySpawn = func(fn func()) { deferred = fn }
 
-	ended, err := biz.EndSession(ctx, 100, dto.ID)
+	ended, err := biz.EndSession(ctx, 100, dto.ID, true)
 	require.NoError(t, err)
 	assert.Equal(t, model.MeetingSummaryStatusGenerating, ended.SummaryStatus, "同步段仍秒回 generating")
 
@@ -566,7 +566,7 @@ func TestEndSession_EmptyTranscriptDegradesSummary(t *testing.T) {
 	require.NoError(t, err)
 
 	// 不塞任何转写 → generateFinalSummary 回退 generateSummary 降级占位（不调 LLM），summary_status=done。
-	_, err = biz.EndSession(ctx, 100, dto.ID)
+	_, err = biz.EndSession(ctx, 100, dto.ID, true)
 	require.NoError(t, err)
 	done, err := biz.GetSession(ctx, 100, dto.ID)
 	require.NoError(t, err)
@@ -610,6 +610,34 @@ func TestUpdateRecordingURL_DoesNotRevertEndedSession(t *testing.T) {
 	assert.Equal(t, model.MeetingSessionStatusEnded, row.Status, "录音上传不得把已结束会话反结束回 active")
 	assert.NotNil(t, row.EndedAt, "ended_at 不得被清空")
 	assert.Equal(t, "https://cos.example/full.webm", row.RecordingURL, "recording_url 应已写入")
+}
+
+// TestEndSession_SkipSummary 验证 generateSummary=false：结束会话但不生成纪要（summary_status=skipped、
+// 不派发异步段）。用户"只想结束、不要纪要"的场景。
+func TestEndSession_SkipSummary(t *testing.T) {
+	biz, _ := newMeetingTestBiz(t)
+	ctx := context.Background()
+	dto, err := biz.CreateSession(ctx, 100, &CreateSessionReq{RolePrompt: "x"})
+	require.NoError(t, err)
+
+	// 捕获异步段：generateSummary=false 时绝不应派发。
+	origSpawn := asyncSummarySpawn
+	t.Cleanup(func() { asyncSummarySpawn = origSpawn })
+	spawned := false
+	asyncSummarySpawn = func(func()) { spawned = true }
+
+	ended, err := biz.EndSession(ctx, 100, dto.ID, false)
+	require.NoError(t, err)
+	assert.Equal(t, model.MeetingSessionStatusEnded, ended.Status)
+	assert.Equal(t, model.MeetingSummaryStatusSkipped, ended.SummaryStatus, "不生成纪要 → skipped")
+	assert.NotNil(t, ended.EndedAt)
+	assert.False(t, spawned, "generateSummary=false 不得派发异步纪要生成")
+
+	// 持久化也应是 ended+skipped。
+	persisted, err := biz.GetSession(ctx, 100, dto.ID)
+	require.NoError(t, err)
+	assert.Equal(t, model.MeetingSessionStatusEnded, persisted.Session.Status)
+	assert.Equal(t, model.MeetingSummaryStatusSkipped, persisted.Session.SummaryStatus)
 }
 
 // TestGenerateFinalSummary_UsesRunningSummary 验证有 running_summary 时走滚动摘要路径（不读全稿）。

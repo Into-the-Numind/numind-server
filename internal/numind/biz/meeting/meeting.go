@@ -133,7 +133,7 @@ type IMeetingBiz interface {
 	CreateSession(ctx context.Context, userID uint, req *CreateSessionReq) (*SessionDTO, error)
 	GetSession(ctx context.Context, userID uint, id uint64) (*SessionDetailDTO, error)
 	ListSessions(ctx context.Context, userID uint, offset, limit int) ([]SessionDTO, int64, error)
-	EndSession(ctx context.Context, userID uint, id uint64) (*SessionDTO, error)
+	EndSession(ctx context.Context, userID uint, id uint64, generateSummary bool) (*SessionDTO, error)
 
 	// --- 分段转写 ---
 	IngestSegment(ctx context.Context, userID uint, sessionID uint64, req *IngestSegmentReq) (*SegmentDTO, error)
@@ -282,16 +282,18 @@ func (b *meetingBiz) ListSessions(ctx context.Context, userID uint, offset, limi
 // 单测可替换为同步执行以断言状态机（generating→done/failed）。
 var asyncSummarySpawn = func(fn func()) { go fn() }
 
-// EndSession 结束会话：两段式（FEEDBACK_V2_SPEC §3.1）。
+// EndSession 结束会话：两段式（FEEDBACK_V2_SPEC §3.1）。generateSummary=false 时只结束、
+// 不生成纪要（summary_status=skipped，跳过异步段）。
 //
-//	同步段（秒回）：校验归属 → 置 status=ended + ended_at + duration + summary_status=generating
-//	  → 持久化 → 立即返回 DTO（绝不被请求 ctx 取消打断、不阻塞等纪要）。
-//	异步段：spawn 后台 goroutine（独立 context.Background() + recover）→ generateFinalSummary
-//	  （优先基于 running_summary，无则回退读全稿）→ 回写 summary + summary_status=done；
-//	  失败置 failed 并 log。
+//	同步段（秒回）：校验归属 → 置 status=ended + ended_at + duration + summary_status
+//	  （generateSummary=true → generating；false → skipped）→ 持久化 → 立即返回 DTO
+//	  （绝不被请求 ctx 取消打断、不阻塞等纪要）。
+//	异步段（仅 generateSummary=true）：spawn 后台 goroutine（独立 context.Background() + recover）
+//	  → generateFinalSummary（优先基于 running_summary，无则回退读全稿）→ 回写 summary +
+//	  summary_status=done；失败置 failed 并 log。
 //
 // 已结束会话再次调用是幂等的：直接返回当前 DTO（不重复生成纪要）。
-func (b *meetingBiz) EndSession(ctx context.Context, userID uint, id uint64) (*SessionDTO, error) {
+func (b *meetingBiz) EndSession(ctx context.Context, userID uint, id uint64, generateSummary bool) (*SessionDTO, error) {
 	s, err := b.getOwnedSession(ctx, userID, id)
 	if err != nil {
 		return nil, err
@@ -307,16 +309,23 @@ func (b *meetingBiz) EndSession(ctx context.Context, userID uint, id uint64) (*S
 	s.Status = model.MeetingSessionStatusEnded
 	s.EndedAt = &now
 	s.DurationSeconds = computeDurationSeconds(s.StartedAt, now)
-	s.SummaryStatus = model.MeetingSummaryStatusGenerating // 纪要后台生成中
+	// generateSummary=false：用户只想结束、不生成纪要 → 置 skipped，跳过异步生成。
+	if generateSummary {
+		s.SummaryStatus = model.MeetingSummaryStatusGenerating // 纪要后台生成中
+	} else {
+		s.SummaryStatus = model.MeetingSummaryStatusSkipped
+	}
 
 	if err := b.ds.Meetings().UpdateSession(ctx, s); err != nil {
 		return nil, fmt.Errorf("EndSession: update: %w", err)
 	}
 
 	// --- 异步段：后台生成纪要（独立 ctx + recover；不被请求取消打断）---
-	asyncSummarySpawn(func() {
-		b.finalizeSummaryAsync(userID, id)
-	})
+	if generateSummary {
+		asyncSummarySpawn(func() {
+			b.finalizeSummaryAsync(userID, id)
+		})
+	}
 
 	dto := toSessionDTO(s)
 	return &dto, nil
