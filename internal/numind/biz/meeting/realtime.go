@@ -185,6 +185,9 @@ func (b *meetingBiz) StartRealtimeASR(ctx context.Context, userID uint, sessionI
 	return r, nil
 }
 
+// uploadBytesToCOS 是录音上传的 seam（测试可覆盖以注入"上传期间会话被结束"的竞态）。
+var uploadBytesToCOS = util.UploadBytesToCOS
+
 // UpdateRecordingURL 把整场录音上传到 COS（key `meeting-recordings/<userID>/<sessionID>/full.webm`）
 // 并回写 meeting_session.recording_url（SPEC §3）。
 //
@@ -192,19 +195,19 @@ func (b *meetingBiz) StartRealtimeASR(ctx context.Context, userID uint, sessionI
 // COS 未启用时 UploadBytesToCOS 返回空 URL，此处仍回写（空字符串），由前端按 recording_url 是否
 // 为空决定是否展示回放——不当作错误。
 func (b *meetingBiz) UpdateRecordingURL(ctx context.Context, userID uint, sessionID uint64, audio []byte, contentType string) (string, error) {
-	s, err := b.getOwnedSession(ctx, userID, sessionID)
-	if err != nil {
+	if _, err := b.getOwnedSession(ctx, userID, sessionID); err != nil {
 		return "", err
 	}
 
 	objectKey := fmt.Sprintf("meeting-recordings/%d/%d/full.webm", userID, sessionID)
-	url, err := util.UploadBytesToCOS(ctx, objectKey, contentType, audio)
+	url, err := uploadBytesToCOS(ctx, objectKey, contentType, audio)
 	if err != nil {
 		return "", fmt.Errorf("UpdateRecordingURL: upload cos: %w", err)
 	}
 
-	s.RecordingURL = url
-	if err := b.ds.Meetings().UpdateSession(ctx, s); err != nil {
+	// 定向只更新 recording_url 列（不能全行 Save：录音上传常在 EndSession 之后才完成，
+	// 全行 Save 会用加载时的陈旧 active 态覆盖 status/ended_at/summary_status，把会话"反结束"）。
+	if err := b.ds.Meetings().UpdateRecordingURL(ctx, sessionID, url); err != nil {
 		return "", fmt.Errorf("UpdateRecordingURL: persist recording_url: %w", err)
 	}
 	return url, nil

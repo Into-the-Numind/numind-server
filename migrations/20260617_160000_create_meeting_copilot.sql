@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS `meeting_session` (
   `recording_url`         VARCHAR(1024)   NULL,                           -- 预留（MVP 录音=分段列表）
   `duration_seconds`      INT             NOT NULL DEFAULT 0,             -- 结束时统计
   `summary`               MEDIUMTEXT      NULL,                           -- AI 纪要（markdown）
-  `summary_status`        VARCHAR(20)     NOT NULL DEFAULT 'none',        -- none / generating / done / failed
+  `summary_status`        VARCHAR(20)     NOT NULL DEFAULT 'none',        -- none / generating / done / failed / skipped
   `started_at`            DATETIME(3)     NULL,
   `ended_at`              DATETIME(3)     NULL,
   `created_at`            DATETIME(3)     NOT NULL,

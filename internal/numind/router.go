@@ -330,7 +330,7 @@ func installNumindRouters(g *gin.Engine) error {
 			meetingGroup.POST("/:id/segments", meetingCtrl.IngestSegment)    // 分段近实时转写（multipart，旧路径保留）
 			meetingGroup.POST("/:id/recording", meetingCtrl.UploadRecording) // 整场录音上传（实时流式路径，SPEC §3）
 			meetingGroup.POST("/:id/feedback", meetingCtrl.GenerateFeedback) // 反馈（SSE）
-			meetingGroup.POST("/:id/end", meetingCtrl.EndSession)            // 结束 + 同步生成纪要
+			meetingGroup.POST("/:id/end", meetingCtrl.EndSession)            // 结束会话（可选 body {generate_summary}，缺省 true）
 		}
 
 		// 实时流式 ASR ws 端点（SPEC §2）：浏览器 ws 无法带 Authorization 头，故**不**挂

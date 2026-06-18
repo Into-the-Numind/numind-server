@@ -121,7 +121,9 @@ func (ctl *Controller) GetSession(c *gin.Context) {
 	core.WriteResponse(c, nil, detail)
 }
 
-// EndSession 结束会话并同步生成纪要。POST /v1/meetings/:id/end
+// EndSession 结束会话。POST /v1/meetings/:id/end
+// 可选 body {generate_summary: bool}：缺省/无 body 视为 true（向后兼容、默认生成 AI 纪要）；
+// 传 false 则只结束、不生成纪要（summary_status=skipped）。
 func (ctl *Controller) EndSession(c *gin.Context) {
 	userID, ok := currentUserID(c)
 	if !ok {
@@ -134,7 +136,17 @@ func (ctl *Controller) EndSession(c *gin.Context) {
 		return
 	}
 
-	dto, err := ctl.biz.EndSession(c.Request.Context(), userID, id)
+	// 缺省 true（向后兼容）。空 body / 解析失败 → 指针为 nil → 保持默认 true。
+	generateSummary := true
+	var req struct {
+		GenerateSummary *bool `json:"generate_summary"`
+	}
+	_ = c.ShouldBindJSON(&req)
+	if req.GenerateSummary != nil {
+		generateSummary = *req.GenerateSummary
+	}
+
+	dto, err := ctl.biz.EndSession(c.Request.Context(), userID, id, generateSummary)
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
