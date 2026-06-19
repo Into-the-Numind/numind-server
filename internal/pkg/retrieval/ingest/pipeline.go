@@ -72,12 +72,15 @@ func NewIngestionPipeline(
 	return p
 }
 
-func (p *IngestionPipeline) Submit(doc *domain.KnowledgeDocument) {
+// Submit 把文档入队等待异步处理。返回 false 表示队列已满、文档被丢弃
+// （调用方据此告知用户重试，而非误报成功）。
+func (p *IngestionPipeline) Submit(doc *domain.KnowledgeDocument) bool {
 	select {
 	case p.docChan <- doc:
+		return true
 	default:
 		log.Printf("Pipeline queue full, dropping doc %d", doc.ID)
-		// Update status to FAILED in DB if possible
+		return false
 	}
 }
 
