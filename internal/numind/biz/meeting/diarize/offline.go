@@ -53,7 +53,9 @@ import (
 // average-linkage cosine distance is below this. 0.55 mirrors the online tauMatch boundary
 // (§5 D9 "AHC 余弦距离阈值 0.55") and is a D9 initial value to be re-calibrated on real
 // meetings in dev acceptance (§2 — synthetic purity is not production accuracy).
-const ahcCosineThreshold = 0.55
+// Calibration v1 (dev acceptance 2026-06-19): lowered 0.55→0.42 (merge only when cosine sim
+// > 0.58) so single-mic speakers at cross-cosine 0.45–0.66 stop collapsing into one cluster.
+const ahcCosineThreshold = 0.42
 
 // NOTE: a hard speaker-count cap (online maxSpeakers=8 parity) is intentionally NOT enforced
 // offline yet — AHC at the 0.55 cosine threshold rarely over-splits on single-mic audio, and the

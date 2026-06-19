@@ -44,9 +44,12 @@ import "math"
 // Clustering parameters (DIARIZATION_SPEC.md §5 D9 initial values).
 const (
 	// tauMatch is the high threshold: best cosine >= this ⇒ confident match, centroid updates.
-	tauMatch = 0.55
+	// Calibration v1 (dev acceptance 2026-06-19): real single-mic meetings showed cross-speaker
+	// cosine 0.45–0.66 to the centroid, so D9's 0.55/0.45 merged everyone into one speaker.
+	// Tightened to 0.64/0.55 so the other speaker's segments spawn a new cluster. To re-iterate.
+	tauMatch = 0.64
 	// tauNew is the low threshold: best cosine < this ⇒ a genuinely new speaker.
-	tauNew = 0.45
+	tauNew = 0.55
 	// stickyMargin keeps the previous speaker if it's within this of the best other cluster.
 	stickyMargin = 0.04
 	// minDurMs: segments shorter than this are weak ⇒ provisional, no centroid update, no new cluster.
