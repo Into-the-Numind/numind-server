@@ -27,6 +27,10 @@ func normalizeStrategy(s string) string {
 		return StrategySemantic
 	case StrategyNoSplit:
 		return StrategyNoSplit
+	case StrategyStructureFAQ, StrategyStructureOpinion, StrategyStructureCase, StrategyStructureGeneric:
+		// 结构感知档位是有效策略，原样保留（结构感知切块器通常不经本归一函数，
+		// 但若 SplitterAdapter 将来包裹它，避免被误判成兜底）。
+		return s
 	default: // "rule" / "rule_fallback" / 未知 → 一律兜底
 		return StrategyFallback
 	}

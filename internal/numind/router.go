@@ -593,5 +593,17 @@ func installNumindRouters(g *gin.Engine) error {
 		ragEvalGroup.POST("/retrieve", evalCtl.Retrieve)
 	}
 
+	// Chunker admin endpoints — 结构感知切块器调试工具（RAG upgrade item 1）。
+	// 刻意注册在【用户服务】而非 admin 服务：切块/向量化管道（AI gateway + sqlite-vec 卷）
+	// 只在用户服务进程里存在。复用 features.rag_eval.enabled 旗标（dev 开、prod 默认 OFF）
+	// + AdminAuthMiddleware 守卫，不对普通用户开放。
+	{
+		chunkerGroup := v1Group.Group("/admin/chunker")
+		chunkerGroup.Use(importMw.FeatureFlag("features.rag_eval.enabled"), importMw.AdminAuthMiddleware())
+		chunkerCtl := admincontroller.NewChunkerController(b.SalesRAG())
+		chunkerGroup.POST("/preview", chunkerCtl.Preview)
+		chunkerGroup.POST("/reindex", chunkerCtl.Reindex)
+	}
+
 	return nil
 }

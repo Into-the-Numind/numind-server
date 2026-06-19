@@ -13,6 +13,12 @@ type KnowledgeChunk struct {
 	Content    string    `json:"content"`
 	Vector     []float32 `json:"vector,omitempty"`
 
+	// EmbedText 是用于生成向量的文本（瞬态，不持久化到任何 store 的元数据列）。
+	// 结构感知切块器在此写入"标题面包屑 + 正文"，使向量带上文档/章节上下文，
+	// 同时 Content 保持干净（返回给 LLM / 展示时不含面包屑）。
+	// 为空时各 store 回退用 Content 生成向量（老调用方零回归）。见 TextForEmbedding。
+	EmbedText string `json:"-"`
+
 	Tags      []string `json:"tags"`
 	Summary   string   `json:"summary"`
 	SourceRef string   `json:"source_ref"` // 例如: "第3页"
@@ -20,6 +26,16 @@ type KnowledgeChunk struct {
 	// 检索时填充的字段
 	Score        float32 `json:"score,omitempty"`         // 检索匹配度 (0-1)
 	DocumentName string  `json:"document_name,omitempty"` // 来源文档名称
+}
+
+// TextForEmbedding 返回应被向量化的文本：优先 EmbedText（结构感知切块器注入的
+// 面包屑+正文），为空则回退 Content。各 VectorStore 的 embed 路径统一调用本方法，
+// 作为"嵌入用什么文本"的唯一真相源，使"向量带面包屑、Content 保持干净"成立。
+func (k KnowledgeChunk) TextForEmbedding() string {
+	if k.EmbedText != "" {
+		return k.EmbedText
+	}
+	return k.Content
 }
 
 // Validate 验证切片合法性

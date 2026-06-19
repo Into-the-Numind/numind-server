@@ -10,8 +10,11 @@ import (
 	"io"
 	"log"
 	"mime/multipart"
+	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -120,6 +123,10 @@ type SalesRAGBiz interface {
 	UpdateDocument(ctx context.Context, userID uint, docID uint, req UpdateDocumentRequest) error
 	// DeleteDocument 删除文档
 	DeleteDocument(ctx context.Context, userID uint, docID uint) error
+	// PreviewChunking 预览某段文本或某文档使用结构感知切块器后的结果（不写 DB）
+	PreviewChunking(ctx context.Context, userID uint, req ChunkPreviewRequest) (*ChunkPreviewResult, error)
+	// ReindexDocument 对已有文档重新切块 + 向量化（先删旧切片，再提交 pipeline 异步处理）
+	ReindexDocument(ctx context.Context, userID uint, docID uint) error
 	// ListDocumentChunks 获取文档的切片列表
 	ListDocumentChunks(ctx context.Context, userID uint, docID uint, limit int) ([]domain.KnowledgeChunk, error)
 
@@ -175,6 +182,31 @@ type IngestOptions struct {
 	Tags        []string
 }
 
+// ChunkPreviewRequest 切块预览请求（二选一：Text 或 DocumentID）
+type ChunkPreviewRequest struct {
+	Text       string // 直接预览这段文本（与 DocumentID 二选一）
+	DocumentID uint   // 预览某文档（从 COS 下载源文件 + 解析 + 切块）
+}
+
+// ChunkPreviewItem 单块预览信息
+type ChunkPreviewItem struct {
+	Seq       int      `json:"seq"`
+	Runes     int      `json:"runes"`
+	Headers   []string `json:"headers"`
+	Content   string   `json:"content"`    // 截断到 600 runes 防响应过大
+	EmbedText string   `json:"embed_text"` // 截断到 600 runes
+}
+
+// ChunkPreviewResult 切块预览结果
+type ChunkPreviewResult struct {
+	Profile     string             `json:"profile"`      // 同 Strategy（冗余字段，便于调试）
+	Strategy    string             `json:"strategy"`     // 策略归一值（structure_faq/structure_generic/rule_fallback/no_split）
+	Detail      string             `json:"detail"`       // 退化说明（正常为空）
+	SourceRunes int                `json:"source_runes"` // 源文本 rune 总数
+	ChunkCount  int                `json:"chunk_count"`  // 切块总数
+	Chunks      []ChunkPreviewItem `json:"chunks"`
+}
+
 type UpdateDocumentRequest struct {
 	Description *string  `json:"description"`
 	Tags        []string `json:"tags"`
@@ -226,6 +258,12 @@ type salesRAGBiz struct {
 	registry        registry.Registry // resolves task_profile.salesrag.chat → real provider+model for CheckAndEstimate; nil-safe (test fixtures construct &salesRAGBiz{} without it)
 	defaultModel    string            // fallback model tag for R2 estimation (empty → global coef)
 	defaultProvider string            // fallback provider tag (empty → global coef)
+
+	// previewSplitter 是 PreviewChunking 复用的单例结构感知切块器（empty DocName，
+	// 与生产 ingest wiring 一致，使预览忠实反映生产切块）。lazily 构造一次，避免每次
+	// 预览新建 gojieba（cgo 分配且无 Free 路径 → 泄漏）。
+	previewSplitterOnce sync.Once
+	previewSplitter     *ingest.StructureAwareSplitter
 }
 
 // VolcBiz 火山引擎服务接口（避免循环依赖）
@@ -730,6 +768,172 @@ func (b *salesRAGBiz) DeleteDocument(ctx context.Context, userID uint, docID uin
 
 	// 4. 从数据库删除文档记录
 	return b.ds.KnowledgeDocuments().Delete(ctx, docID)
+}
+
+// truncateRunes 截断字符串到最多 max runes。
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max])
+}
+
+// downloadAndParseCOSURL 从 COS URL 下载文件并解析为 markdown。
+func (b *salesRAGBiz) downloadAndParseCOSURL(ctx context.Context, filePath, parseName string) (string, error) {
+	if !strings.HasPrefix(filePath, "http://") && !strings.HasPrefix(filePath, "https://") {
+		return "", fmt.Errorf("document file_path is not a URL: %s", filePath)
+	}
+	downloadURL := filePath
+	if u, err := url.Parse(filePath); err == nil {
+		objectKey := strings.TrimPrefix(u.Path, "/")
+		if signed, err := util.GenerateSignedURL(ctx, objectKey, 600); err == nil && signed != "" {
+			downloadURL = signed
+		}
+	}
+	httpClient := &http.Client{Timeout: 120 * time.Second} // 限时，避免 COS 慢响应挂死请求 goroutine
+	resp, err := httpClient.Get(downloadURL)               //nolint:noctx // signed URL; timeout bounds worst case
+	if err != nil {
+		return "", fmt.Errorf("download file: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("download file status %d", resp.StatusCode)
+	}
+	content, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read downloaded content: %w", err)
+	}
+	markdown, err := b.parser.Parse(ctx, bytes.NewReader(content), parseName)
+	if err != nil {
+		return "", fmt.Errorf("parse: %w", err)
+	}
+	return markdown, nil
+}
+
+// getPreviewSplitter 返回复用的单例结构感知切块器（lazily 构造一次）。
+func (b *salesRAGBiz) getPreviewSplitter() *ingest.StructureAwareSplitter {
+	b.previewSplitterOnce.Do(func() {
+		b.previewSplitter = ingest.NewStructureAwareSplitter(ingest.StructureAwareSplitterConfig{})
+	})
+	return b.previewSplitter
+}
+
+// PreviewChunking 预览某段文本或某文档使用结构感知切块器后的结果（不写 DB）。
+func (b *salesRAGBiz) PreviewChunking(ctx context.Context, userID uint, req ChunkPreviewRequest) (*ChunkPreviewResult, error) {
+	var markdown string
+
+	switch {
+	case req.Text != "":
+		markdown = req.Text
+
+	case req.DocumentID != 0:
+		doc, err := b.ds.KnowledgeDocuments().GetByID(ctx, req.DocumentID)
+		if err != nil {
+			return nil, fmt.Errorf("get document: %w", err)
+		}
+		if userID != 0 && doc.UserID != userID {
+			return nil, fmt.Errorf("permission denied")
+		}
+		// parseName：用原始 URL 末尾文件名（保留扩展名供 parser 识别）
+		parseName := doc.Name
+		if u, err := url.Parse(doc.FilePath); err == nil && (strings.HasPrefix(doc.FilePath, "http://") || strings.HasPrefix(doc.FilePath, "https://")) {
+			parseName = filepath.Base(u.Path)
+		}
+		md, err := b.downloadAndParseCOSURL(ctx, doc.FilePath, parseName)
+		if err != nil {
+			return nil, fmt.Errorf("download/parse doc %d: %w", req.DocumentID, err)
+		}
+		markdown = md
+
+	default:
+		return nil, fmt.Errorf("text or document_id required")
+	}
+
+	// 复用单例 splitter（empty DocName，与生产 ingest 一致 → 预览忠实反映生产切块）。
+	splitter := b.getPreviewSplitter()
+	chunks, strategy, detail, _ := splitter.SplitWithStrategy(markdown)
+
+	const previewMax = 600
+	items := make([]ChunkPreviewItem, 0, len(chunks))
+	for i, c := range chunks {
+		headers := c.Headers
+		if headers == nil {
+			headers = []string{}
+		}
+		items = append(items, ChunkPreviewItem{
+			Seq:       i + 1,
+			Runes:     len([]rune(c.Content)),
+			Headers:   headers,
+			Content:   truncateRunes(c.Content, previewMax),
+			EmbedText: truncateRunes(c.EmbedText, previewMax),
+		})
+	}
+
+	return &ChunkPreviewResult{
+		Profile:     strategy,
+		Strategy:    strategy,
+		Detail:      detail,
+		SourceRunes: len([]rune(markdown)),
+		ChunkCount:  len(chunks),
+		Chunks:      items,
+	}, nil
+}
+
+// ReindexDocument 对已有文档重新切块 + 向量化（删旧切片后提交 pipeline 异步处理）。
+func (b *salesRAGBiz) ReindexDocument(ctx context.Context, userID uint, docID uint) error {
+	doc, err := b.ds.KnowledgeDocuments().GetByID(ctx, docID)
+	if err != nil {
+		return fmt.Errorf("get document %d: %w", docID, err)
+	}
+	if userID != 0 && doc.UserID != userID {
+		return fmt.Errorf("permission denied")
+	}
+
+	// 1. 删除旧切片（MySQL + 向量库，尽力而为）
+	if err := b.ds.KnowledgeChunks().DeleteByDocument(ctx, docID); err != nil {
+		log.Printf("Warning: ReindexDocument: delete MySQL chunks for doc %d: %v", docID, err)
+	}
+	if err := b.ragSvc.DeleteByDocumentID(ctx, docID); err != nil {
+		log.Printf("Warning: ReindexDocument: delete vector chunks for doc %d: %v", docID, err)
+	}
+
+	// 2. 重置文档状态为 pending
+	if err := b.ds.KnowledgeDocuments().UpdateStatus(ctx, docID, string(domain.DocStatusPending), ""); err != nil {
+		log.Printf("Warning: ReindexDocument: reset status for doc %d: %v", docID, err)
+	}
+
+	// 3. 解析 Tags
+	var tags []string
+	if doc.Tags != "" && doc.Tags != "[]" {
+		_ = json.Unmarshal([]byte(doc.Tags), &tags)
+	}
+
+	// 4. 决定 parseName（URL 末尾文件名保留扩展名）
+	parseName := doc.Name
+	if strings.HasPrefix(doc.FilePath, "http://") || strings.HasPrefix(doc.FilePath, "https://") {
+		if u, err := url.Parse(doc.FilePath); err == nil {
+			parseName = filepath.Base(u.Path)
+		}
+	}
+
+	// 5. 提交 pipeline（异步处理；worker 内部自建 billing ctx，按 doc.UserID 计费）。
+	// 队列满时 Submit 返回 false（文档被丢弃）→ 返回错误，避免向调用方误报成功。
+	if !b.ingestionPipeline.Submit(&domain.KnowledgeDocument{
+		ID:          doc.ID,
+		UserID:      doc.UserID,
+		Name:        parseName,
+		FilePath:    doc.FilePath,
+		Status:      domain.DocStatusPending,
+		Description: doc.Description,
+		Tags:        tags,
+		FileSize:    doc.FileSize,
+		IsEnabled:   doc.IsEnabled,
+	}) {
+		return fmt.Errorf("reindex queue full, doc %d dropped; retry later", docID)
+	}
+
+	return nil
 }
 
 func (b *salesRAGBiz) ListDocumentChunks(ctx context.Context, userID uint, docID uint, limit int) ([]domain.KnowledgeChunk, error) {

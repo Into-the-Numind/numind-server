@@ -47,8 +47,8 @@ func (s *ChromemStore) Upsert(ctx context.Context, chunks []domain.KnowledgeChun
 
 	docs := make([]chromem.Document, 0, len(chunks))
 	for _, chunk := range chunks {
-		// 生成向量
-		embedding, err := s.embeddingFunc(ctx, chunk.Content)
+		// 生成向量（优先 EmbedText：含面包屑；空则回退 Content）
+		embedding, err := s.embeddingFunc(ctx, chunk.TextForEmbedding())
 		if err != nil {
 			return fmt.Errorf("failed to embed content for chunk %s: %w", chunk.ID, err)
 		}

@@ -58,6 +58,9 @@ func NewVikingStore(ak, sk, region, host, collectionName, indexName string, embe
 func (s *VikingStore) Upsert(ctx context.Context, chunks []domain.KnowledgeChunk) error {
 	datas := make([]vikingdb.Data, 0, len(chunks))
 	for _, chunk := range chunks {
+		// VikingDB 走托管向量化（服务端对 content 字段嵌入），无客户端 embed 调用，
+		// 故此处用 chunk.Content。若将来改为客户端 embed，嵌入文本应取 chunk.TextForEmbedding()
+		// （含结构感知切块器注入的标题面包屑）。VikingStore 当前未接入 salesrag wiring。
 		fields := map[string]interface{}{
 			"id":         chunk.ID,
 			"doc_id":     int64(chunk.DocumentID),
