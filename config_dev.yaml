@@ -20,13 +20,15 @@ features:
   universal_rewriter:
     enabled: false            # 通用查询改写器。2026-06-19 A/B 实测：在切好的块上改写器无叠加增益（±4pp 噪声内）→ 保持关。见 docs/plans/2026-06-20-rag-upgrade-master-plan.md。
   answerability_gate:
-    enabled: false            # 可答性门（资料答不了就拒答，与阈值解耦）。默认关=放行(fail-open)。须等切块修好后再开,否则会大面积误拒(检索捞不到答案 chunk)。
+    enabled: true             # 可答性门（RAG 升级项5；资料答不了就拒答，与阈值解耦）。项1结构感知切块已上线=前提满足，dev 开启验证（与 kb_fallback 组合：门拒答致空→兜底优雅处理）。prod 不配=OFF=放行(fail-open)。仍须 harness A/B 确认 in-KB 不误拒/oob 拒答率。
   structure_aware_chunking:
     enabled: true             # 结构感知切块器（RAG 升级项1，地基）：FAQ→问答对/观点→单条/案例→单案例/通用→按节小块+标题面包屑。dev 开启验证；prod 不配=OFF。仅影响新入库/重灌文档（旧 chunk 不变，需 reindex 生效）。
   hybrid_retrieval:
     enabled: true             # 混合检索（RAG 升级项2）：dense + BM25(FTS5,jieba) + RRF 融合，命中产品码/精确措辞。dev 开启验证；prod 不配=OFF。须 sqlite_fts5 构建标签 + 文档重灌/新上传才有 BM25 数据（FTS5 缺失或空索引自动降级纯 dense）。
   rerank_hardening:
     enabled: true             # 重排硬化（RAG 升级项3）：rerank 输入 passage 去噪 + MMR-lite 去雷同 + 降级链(0结果阈值×0.7重试/top-1 floor≥0.15)。dev 开启验证；prod 不配=OFF（关=重排逐位维持现状）。复合分/每库校准阈值后续迭代。
+  kb_fallback:
+    enabled: true             # KB 优雅兜底（RAG 升级项5）：检索为空时把"库里有什么+如实拒答"指令注入答案 prompt，不编造不死板拒答。dev 开启验证；prod 不配=OFF。与 answerability_gate 组合。
   provider_prompt_cache:
     enabled: true             # 供应商原生 prompt 缓存（Claude ephemeral / Gemini implicit）全局开关，dev 开启验证；prod 默认 OFF（不配=false）
 

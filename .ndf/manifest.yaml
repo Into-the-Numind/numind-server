@@ -1,5 +1,22 @@
 schema_version: '2.0'
 features:
+- id: rag-refusal-fallback
+  track: standard
+  description: 'RAG 升级项5（第一阶段收尾）：拒答/兜底工程。检索为空时把"库内文档清单 + 如实拒答指令(只依据检索资料/没有就说没有/绝不编造价格政策数据)"注入 salesrag 答案 prompt(复用既有知识库区渲染,不改4个prompt builder签名),不 dead-end 不幻觉;启用上一session已建的 answerability_gate(项1切块完成=前提满足);reranker 分门控现状已具备。flag features.kb_fallback.enabled + answerability_gate.enabled 默认 OFF。依赖项1/3。'
+  classification_reason: 'Standard: 改 salesrag 答案生成 prompt 路径 + 新 verdict 字段 + 2 flag + config。无 DB schema/无新 API。flag OFF → prod 零影响。'
+  status: active
+  stage: S4
+  repos:
+    numind-server: /private/tmp/wt-rag-refusal-fallback-numind-server (feature/rag-refusal-fallback)
+  worktrees:
+    numind-server: /private/tmp/wt-rag-refusal-fallback-numind-server
+  progress: {total_tasks: 1, completed_tasks: 1, reviewed_tasks: 1}
+  artifacts:
+    design: .ndf/features/rag-refusal-fallback/design.md
+  decisions:
+  - 'S0-S4 (ai 2026-06-20): 项5。最低 churn 实现=空检索时 KBFallbackNote 填入 knowledgeContext 复用既有 KB 区渲染(不动 sales/free×langfuse/hardcoded 4 builder)。flag FlagKBFallback + RetrievalVerdict.KBFallbackNote + RetrieveStream 兜底生成(GetByIDs 取已启用COMPLETED文档名) + buildPromptMessagesV2 注入 + formatKBFallbackNote 纯函数+单测。config_dev 开 kb_fallback + answerability_gate(项1完成翻开)。reranker 分门控现状已具备。复合分/门的 harness 调参验证后续。'
+  - 'S4 双审 PASS (ai 2026-06-20): 链路验证通过(gate 拒答→chunks nil→verdict.Evidence 空→兜底触发)；无导入环；flag 关零回归；gate fail-open 确认安全(prod 不配=off)。P2 修：兜底 note 加首句"本段非带评分知识条目而是范围说明"消除与 KB 区"每条附带相关度"前缀的框架歧义。门禁 build/vet/gofmt/test 全绿。'
+  blockers: []
 - id: rag-rerank-hardening
   track: standard
   description: 'RAG 升级项3：重排硬化。passage 清洗(rerank 输入去 markdown/表格/链接/公式噪声,不改返回 Content) + MMR-lite 去雷同(trigram Jaccard>0.82 剔近重复) + 降级链(0结果→阈值×0.7重试→top-1 floor 仅当≥0.15,不 ground 在垃圾上)。全程 opts.RerankHardening flag 门控,关=逐位维持现状。复合分/每库校准阈值推迟(依赖调优数据,后续迭代)。flag features.rerank_hardening.enabled 默认 OFF。依赖项1/2。'

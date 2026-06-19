@@ -39,6 +39,11 @@ type RetrievalVerdict struct {
 
 	// V5 观点库独立通道
 	OpinionEvidence []domain.KnowledgeChunk `json:"opinion_evidence,omitempty"` // 观点库独立检索结果
+
+	// KBFallbackNote 检索为空时的优雅兜底说明（"库里有什么 + 如实拒答指令"）。
+	// 仅当 features.kb_fallback.enabled 开 + 主/观点通道都空时由 biz 填充；填入答案 prompt
+	// 的知识库区，让模型如实告知范围而非编造或干巴巴拒答（RAG 升级项5）。
+	KBFallbackNote string `json:"kb_fallback_note,omitempty"`
 }
 
 // SalesRAGService 销售智能体 RAG 服务

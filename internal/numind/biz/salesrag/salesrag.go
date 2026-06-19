@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"numind-server/internal/numind/biz/credit"
+	ragbiz "numind-server/internal/numind/biz/rag"
 	"numind-server/internal/numind/biz/salesrag/service"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"
@@ -1236,6 +1237,14 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 	b.enrichChunksWithDocNames(ctx, verdict.Evidence)
 	b.enrichChunksWithDocNames(ctx, verdict.OpinionEvidence)
 
+	// 7b. KB 优雅兜底（RAG 升级项5）：主通道 + 观点通道都空时，取库内文档清单生成
+	// "库里有什么 + 如实拒答"说明，注入答案 prompt（见 buildPromptMessagesV2）。flag 关
+	// 或有检索结果时不生成 → 零回归。与 answerability_gate 组合：门拒答致空也走此兜底。
+	if ragbiz.KBFallbackEnabled() && len(verdict.Evidence) == 0 && len(verdict.OpinionEvidence) == 0 {
+		scopeIDs := append(append([]uint{}, filteredDocIDs...), filteredOpinionDocIDs...)
+		verdict.KBFallbackNote = b.buildKBFallbackNote(ctx, scopeIDs)
+	}
+
 	// 8. 立即发送 verdict 事件
 	if err := onEvent("verdict", verdict); err != nil {
 		return err
@@ -1375,6 +1384,48 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 
 // buildPromptMessagesV2 根据检索结果构建 prompt 消息（优化版）
 // ocrTexts 非空时，将 OCR 识别的文字追加到 user message 中
+// buildKBFallbackNote 取检索范围内已启用且就绪的库内文档名，生成"检索为空"时的优雅兜底
+// 说明（列出库内容范围 + 如实拒答指令）。无可用文档名时返回空串（不注入）。RAG 升级项5。
+func (b *salesRAGBiz) buildKBFallbackNote(ctx context.Context, docIDs []uint) string {
+	if len(docIDs) == 0 {
+		return ""
+	}
+	docs, err := b.ds.KnowledgeDocuments().GetByIDs(ctx, docIDs)
+	if err != nil || len(docs) == 0 {
+		return ""
+	}
+	seen := make(map[string]bool)
+	var names []string
+	for _, d := range docs {
+		if d == nil || !d.IsEnabled || d.Name == "" || seen[d.Name] {
+			continue
+		}
+		if d.Status != string(domain.DocStatusCompleted) {
+			continue
+		}
+		seen[d.Name] = true
+		names = append(names, d.Name)
+		if len(names) >= 50 { // 防超长 prompt
+			break
+		}
+	}
+	return formatKBFallbackNote(names)
+}
+
+// formatKBFallbackNote 把库内文档名列表格式化为兜底说明（纯函数，可单测）。
+// 空列表返回空串。
+func formatKBFallbackNote(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	// 首句显式说明本段非"带相关度评分的知识条目"，而是范围说明——避免与知识库区前缀
+	// （"每条知识附带相关度百分比…"）的框架冲突，消除模型解读歧义。
+	return "（本段非带相关度评分的知识条目，而是知识库范围说明）\n" +
+		"【检索结果】未匹配到与当前问题直接相关的知识。本知识库收录内容范围：" +
+		strings.Join(names, " / ") +
+		"。\n回应要求：只依据已检索到的资料作答；若用户所问不在上述范围内，请如实说明\"这部分我们资料里暂时没有\"，可简要指出库里能帮到的相邻方向，但绝不编造具体产品价格、政策、数据或案例细节。"
+}
+
 func (b *salesRAGBiz) buildPromptMessagesV2(query string, ocrTexts []string, verdict *service.RetrievalVerdict, customerProfile string, languageStyle string, salesStage string) []map[string]interface{} {
 	// 上下文长度限制常量
 	const (
@@ -1453,6 +1504,13 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, ocrTexts []string, ver
 	var strategyContent string
 	if verdict.Strategy != nil {
 		strategyContent = verdict.Strategy.Content
+	}
+
+	// KB 优雅兜底（项5）：主/观点检索都空且兜底说明已生成时，把"库里有什么 + 如实拒答"
+	// 填入 knowledgeContext，复用既有知识库区渲染，让模型告知范围而非编造或干巴巴拒答。
+	// flag 关或有检索结果时 KBFallbackNote 为空 → 此分支不触发，零回归。
+	if knowledgeContext == "" && opinionContext == "" && verdict.KBFallbackNote != "" {
+		knowledgeContext = verdict.KBFallbackNote
 	}
 
 	var systemPrompt string
