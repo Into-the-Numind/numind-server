@@ -60,7 +60,7 @@ func (s *DashVectorStore) Upsert(ctx context.Context, chunks []domain.KnowledgeC
 		vector := chunk.Vector
 		if len(vector) == 0 && s.embedder != nil {
 			var err error
-			vector, err = s.embedder(ctx, chunk.Content)
+			vector, err = s.embedder(ctx, chunk.TextForEmbedding())
 			if err != nil {
 				return fmt.Errorf("failed to generate embedding for chunk %s: %w", chunk.ID, err)
 			}

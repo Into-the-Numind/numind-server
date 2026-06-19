@@ -18,6 +18,9 @@ type MarkdownSplitter struct {
 type SplitChunk struct {
 	Content string
 	Headers []string
+	// EmbedText 可选：用于向量化的文本（通常 = 标题面包屑 + Content）。
+	// 为空时管线/store 回退用 Content 向量化（老切块器零回归）。
+	EmbedText string
 }
 
 type Section struct {

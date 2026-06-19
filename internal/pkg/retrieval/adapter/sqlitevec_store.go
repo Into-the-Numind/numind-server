@@ -141,7 +141,7 @@ func (s *SQLiteVecStore) Upsert(ctx context.Context, chunks []domain.KnowledgeCh
 		// 如果没有预生成的向量，调用 embedder 生成
 		vector := chunk.Vector
 		if len(vector) == 0 && s.embedder != nil {
-			vector, err = s.embedder(ctx, chunk.Content)
+			vector, err = s.embedder(ctx, chunk.TextForEmbedding())
 			if err != nil {
 				return fmt.Errorf("failed to generate embedding for chunk %s: %w", chunk.ID, err)
 			}

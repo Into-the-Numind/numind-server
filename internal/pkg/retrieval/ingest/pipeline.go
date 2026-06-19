@@ -204,7 +204,8 @@ func (p *IngestionPipeline) process(ctx context.Context, doc *domain.KnowledgeDo
 			DocumentID: doc.ID,
 			UserID:     doc.UserID, // 传递用户ID用于数据隔离
 			Content:    sc.Content,
-			Tags:       tags, // Use merged tags
+			EmbedText:  sc.EmbedText, // 结构感知切块器注入面包屑；空则 store 回退 Content
+			Tags:       tags,         // Use merged tags
 		}
 	}
 
