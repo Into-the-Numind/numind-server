@@ -163,6 +163,9 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 		// 依据：iDriveCareer 真实数据评估，0.3 阈值 + no_floor 对硬负例拒答率 1.0、in-KB 召回 0.845。
 		// 见 scripts/rag_eval/REAL_DATA_RAG_FINDINGS.md。
 		RerankNoFloor: true,
+		// 混合检索（dense + BM25 + RRF）：flag 开 + store 支持关键词通道才生效（产品码/精确
+		// FAQ 措辞命中），否则底座自动退回纯向量（零回归）。仅主通道开，观点库通道不开。
+		Hybrid: ragbiz.HybridRetrievalEnabled(),
 	})
 
 	// 等待策略选择完成（与主通道并行后汇合，对齐原 wg.Wait 语义）。

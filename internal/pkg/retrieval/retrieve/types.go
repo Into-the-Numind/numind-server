@@ -42,6 +42,11 @@ type Options struct {
 	// 主答案通道（chatbot / salesrag 主通道）传 true；观点库等"始终给点视角"的通道传 false。
 	// gate 自身受 feature flag 控制，flag 关时门放行，故此项为 true 也不改变现状。
 	AnswerabilityCheck bool
+
+	// Hybrid 开启混合检索：dense（向量）+ keyword（BM25/FTS5）双通道并 RRF 融合。
+	// 仅当 store 实现 port.KeywordSearcher 且关键词通道有结果时才融合；否则退回纯向量
+	// （零回归）。受 feature flag features.hybrid_retrieval.enabled 控制（dev 开、prod 关）。
+	Hybrid bool
 }
 
 // RetrievalResult 检索结果。Chunks 为去重 + 可选重排后的最终切片，

@@ -11,7 +11,9 @@ ENV GOPROXY=https://goproxy.cn,direct
 RUN go mod download
 
 COPY . .
+# -tags sqlite_fts5：启用 FTS5 全文检索扩展（混合检索 BM25 关键词通道，与主服务一致）。
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
+    -tags sqlite_fts5 \
     -ldflags="-s -w" \
     -o /app/numind-admin \
     ./cmd/numind-admin
