@@ -384,6 +384,106 @@ func TestSQLiteVecStore_ConcurrentReads(t *testing.T) {
 	}
 }
 
+func TestSQLiteVecStore_SearchKeyword(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// 没有 -tags sqlite_fts5 构建时 FTS5 不可用 → 关键词通道降级。此时本测试无意义，跳过。
+	if !store.ftsAvailable {
+		t.Skip("FTS5 unavailable (build with -tags sqlite_fts5 to run this test)")
+	}
+
+	ctx := context.Background()
+
+	chunks := []domain.KnowledgeChunk{
+		{ID: "k1", DocumentID: 1, UserID: 10, Content: "产品 ABC-123 售价 5000 元，支持全国包邮"},
+		{ID: "k2", DocumentID: 1, UserID: 10, Content: "高级谈判策略与客户关系维护方法"},
+		{ID: "k3", DocumentID: 2, UserID: 10, Content: "另一款产品 XYZ-999 的功能介绍"},
+	}
+	require.NoError(t, store.Upsert(ctx, chunks))
+
+	filter := port.SearchFilter{UserID: 10, DocumentIDs: []uint{1}}
+
+	// 产品码精确命中（纯 dense 易糊掉的字面 token）
+	results, err := store.SearchKeyword(ctx, "ABC-123", filter, 10)
+	require.NoError(t, err)
+	require.NotEmpty(t, results, "关键词检索应命中含产品码 ABC-123 的 chunk")
+	assert.Equal(t, "k1", results[0].ID)
+	for _, r := range results {
+		assert.NotZero(t, r.Score, "命中结果应有归一化正分")
+		assert.Equal(t, uint(1), r.DocumentID)
+	}
+
+	// 含价格数字的措辞命中
+	priceResults, err := store.SearchKeyword(ctx, "售价 5000", filter, 10)
+	require.NoError(t, err)
+	require.NotEmpty(t, priceResults)
+	assert.Equal(t, "k1", priceResults[0].ID)
+}
+
+func TestSQLiteVecStore_SearchKeywordStrictAndDegrade(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	chunks := []domain.KnowledgeChunk{
+		{ID: "k1", DocumentID: 1, UserID: 10, Content: "产品 ABC-123 售价 5000 元"},
+	}
+	require.NoError(t, store.Upsert(ctx, chunks))
+
+	// 严格模式：空 DocumentIDs → 返回 nil（即便 FTS5 可用）
+	res, err := store.SearchKeyword(ctx, "ABC-123", port.SearchFilter{UserID: 10}, 10)
+	assert.NoError(t, err)
+	assert.Nil(t, res)
+
+	// 空 query 分词后为空 → 返回 nil
+	res, err = store.SearchKeyword(ctx, "   ", port.SearchFilter{UserID: 10, DocumentIDs: []uint{1}}, 10)
+	assert.NoError(t, err)
+	assert.Nil(t, res)
+}
+
+func TestSQLiteVecStore_SearchKeywordUserIsolation(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	if !store.ftsAvailable {
+		t.Skip("FTS5 unavailable (build with -tags sqlite_fts5 to run this test)")
+	}
+
+	ctx := context.Background()
+	chunks := []domain.KnowledgeChunk{
+		{ID: "k1", DocumentID: 1, UserID: 10, Content: "用户10 的产品 ABC-123 资料"},
+		{ID: "k2", DocumentID: 1, UserID: 20, Content: "用户20 的产品 ABC-123 资料"},
+	}
+	require.NoError(t, store.Upsert(ctx, chunks))
+
+	results, err := store.SearchKeyword(ctx, "ABC-123", port.SearchFilter{UserID: 10, DocumentIDs: []uint{1}}, 10)
+	require.NoError(t, err)
+	require.Len(t, results, 1, "关键词通道应叠加 user_id 隔离，仅返回 user=10 的 chunk")
+	assert.Equal(t, uint(10), results[0].UserID)
+}
+
+func TestSQLiteVecStore_SearchKeywordAfterDelete(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	if !store.ftsAvailable {
+		t.Skip("FTS5 unavailable (build with -tags sqlite_fts5 to run this test)")
+	}
+
+	ctx := context.Background()
+	chunks := []domain.KnowledgeChunk{
+		{ID: "k1", DocumentID: 1, UserID: 10, Content: "产品 ABC-123 售价 5000 元"},
+	}
+	require.NoError(t, store.Upsert(ctx, chunks))
+	require.NoError(t, store.DeleteByDocumentID(ctx, 1))
+
+	// 删文档后关键词索引应同步清除，不再命中
+	results, err := store.SearchKeyword(ctx, "ABC-123", port.SearchFilter{UserID: 10, DocumentIDs: []uint{1}}, 10)
+	require.NoError(t, err)
+	assert.Empty(t, results, "删文档后 FTS5 行应同步删除，关键词不应再命中")
+}
+
 func TestSQLiteVecStore_TagsPreservation(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()

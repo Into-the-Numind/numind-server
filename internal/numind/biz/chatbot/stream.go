@@ -13,6 +13,7 @@ import (
 
 	"numind-server/internal/numind/biz/contextbudget"
 	"numind-server/internal/numind/biz/multimodal"
+	ragbiz "numind-server/internal/numind/biz/rag"
 	"numind-server/internal/pkg/aiservice"
 	aismw "numind-server/internal/pkg/aiservice/middleware"
 	"numind-server/internal/pkg/aiservice/profile"
@@ -329,6 +330,9 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 				RerankNoFloor:  true,
 				History:        historyToStrings(historyMsgs),
 				BillingLabel:   chatStreamRetrieveBillingLabel,
+				// 混合检索（dense + BM25 + RRF）：flag 开 + store 支持关键词通道才生效，
+				// 否则底座自动退回纯向量（零回归）。
+				Hybrid: ragbiz.HybridRetrievalEnabled(),
 			}
 			result, retErr := b.retrieveSvc.Retrieve(retrieveCtx, effectiveQuery, retrieveScope, retrieveOpts)
 			// 安全网：改写后检索为空（改写可能过度抽象丢了锚词）→ 用原话再检一次，避免 ③ 改写

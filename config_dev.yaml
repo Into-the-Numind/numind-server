@@ -23,6 +23,8 @@ features:
     enabled: false            # 可答性门（资料答不了就拒答，与阈值解耦）。默认关=放行(fail-open)。须等切块修好后再开,否则会大面积误拒(检索捞不到答案 chunk)。
   structure_aware_chunking:
     enabled: true             # 结构感知切块器（RAG 升级项1，地基）：FAQ→问答对/观点→单条/案例→单案例/通用→按节小块+标题面包屑。dev 开启验证；prod 不配=OFF。仅影响新入库/重灌文档（旧 chunk 不变，需 reindex 生效）。
+  hybrid_retrieval:
+    enabled: true             # 混合检索（RAG 升级项2）：dense + BM25(FTS5,jieba) + RRF 融合，命中产品码/精确措辞。dev 开启验证；prod 不配=OFF。须 sqlite_fts5 构建标签 + 文档重灌/新上传才有 BM25 数据（FTS5 缺失或空索引自动降级纯 dense）。
   provider_prompt_cache:
     enabled: true             # 供应商原生 prompt 缓存（Claude ephemeral / Gemini implicit）全局开关，dev 开启验证；prod 默认 OFF（不配=false）
 

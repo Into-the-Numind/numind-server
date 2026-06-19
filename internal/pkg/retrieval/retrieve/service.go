@@ -15,6 +15,7 @@ package retrieve
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 
 	"numind-server/internal/pkg/aiservice"
@@ -32,6 +33,18 @@ import (
 // 低于此阈值的结果将被丢弃（最少保留 1 条）。
 // 数值与 sales_rag.go 的同名常量一致（0.3），保 T1.6 逐位一致。
 const rerankScoreThreshold = 0.3
+
+// RRF（Reciprocal Rank Fusion）融合参数（WeKnora 默认值）。
+//
+//	fused_score = rrfVecWeight/(rrfK + rankVec) + rrfKwWeight/(rrfK + rankKw)
+//
+// rank 为 1-based 位次（每路各自排名）；只出现在一路的 chunk 只得该路那一项。
+// k=60 削弱头部位次差异、平滑两路尺度；向量权重 > 关键词权重（语义为主、关键词补术语命中）。
+const (
+	rrfK         = 60.0
+	rrfVecWeight = 0.7
+	rrfKwWeight  = 0.3
+)
 
 // Service 领域无关检索主干。
 type Service struct {
@@ -84,6 +97,33 @@ func (s *Service) Retrieve(ctx context.Context, query string, scope Scope, opts 
 	chunks, err := s.parallelSearch(ctx, queries, filter, opts.TopK)
 	if err != nil {
 		return nil, fmt.Errorf("parallel search failed: %w", err)
+	}
+
+	// 3b. 混合检索（opts.Hybrid 且 store 实现 KeywordSearcher）：在 dense 结果之外加跑一路
+	// BM25 关键词检索，按 RRF 融合。任一条件不满足（flag 关 / store 无关键词能力 / 关键词
+	// 无结果）→ 保持 dense 结果原序原分不变（零回归）。融合在 rerank 之前，rerank 步骤不变。
+	if opts.Hybrid {
+		if ks, ok := s.store.(port.KeywordSearcher); ok {
+			// 关键词通道用**原始 query**（非改写词）：改写/HyDE 是为语义召回服务的，会冲淡
+			// 用户原话里的精确术语/产品码——而关键词通道的价值正是命中这些字面 token。
+			kwChunks, kwErr := ks.SearchKeyword(ctx, query, filter, opts.TopK)
+			if kwErr != nil {
+				// 接口约定关键词异常应返回 (nil,nil)；真出错也只 warn + 退回 dense，绝不杀检索。
+				log.C(ctx).Warnw("keyword search errored, using dense-only", "error", kwErr)
+			} else if len(kwChunks) > 0 && len(chunks) > 0 {
+				before := len(chunks)
+				chunks = fuseRRF(chunks, kwChunks, opts.TopK)
+				log.C(ctx).Infow("hybrid RRF fusion applied",
+					"dense_count", before, "keyword_count", len(kwChunks), "fused_count", len(chunks))
+			} else if len(chunks) == 0 && len(kwChunks) > 0 {
+				// 单检索器旁路（dense 空）：用 keyword 一路原样（截到 TopK），不丢弃。
+				if opts.TopK > 0 && len(kwChunks) > opts.TopK {
+					kwChunks = kwChunks[:opts.TopK]
+				}
+				chunks = kwChunks
+			}
+			// 单检索器旁路：dense 或 keyword 任一为空 → 不融合，保非空的一路原样（含 dense 原序原分）。
+		}
 	}
 
 	// 4. rerank（RerankTopN>0 才走；失败 fallback 原 topN，与 sales_rag.go 一致）
@@ -379,5 +419,72 @@ func applyRerankFilter(
 		}
 	}
 
+	return result
+}
+
+// fuseRRF 用 Reciprocal Rank Fusion 融合 dense 与 keyword 两路检索结果。纯函数（无 I/O），
+// 便于单测。
+//
+// 算法：
+//   - 每路按入参顺序赋 1-based 位次（rank=1 最相关）；
+//   - 每个 chunk 的融合分 = rrfVecWeight/(rrfK+rankVec) + rrfKwWeight/(rrfK+rankKw)；
+//     只出现在一路的 chunk 仅累加该路那一项；
+//   - 按 chunk.ID 去重（同 ID 视为同一 chunk，dense 的元数据优先保留）；
+//   - 按融合分降序排序（稳定排序保证同分时确定性），取前 topK。
+//
+// 单检索器旁路由调用方负责（dense/keyword 任一为空时根本不调本函数）。这里只处理两路都非空
+// 的真融合场景，但对其中一个入参为空仍能正确退化（等价于仅另一路按位次打分）。
+//
+// 注意：融合后写入 chunk.Score 为 RRF 分（量纲与向量/BM25 不同）。这是有意的——下游 rerank
+// 会以 Content 重新打分覆盖 Score，RRF 分只决定进入 rerank 的候选集与其顺序。
+func fuseRRF(dense, keyword []domain.KnowledgeChunk, topK int) []domain.KnowledgeChunk {
+	type fused struct {
+		chunk domain.KnowledgeChunk
+		score float64
+		// order 记录首次出现的全局顺序，作为同分时的稳定 tiebreaker（dense 优先于 keyword）。
+		order int
+	}
+
+	merged := make(map[string]*fused)
+	orderSeq := 0
+
+	accumulate := func(list []domain.KnowledgeChunk, weight float64) {
+		for i, c := range list {
+			rank := i + 1 // 1-based
+			contrib := weight / (rrfK + float64(rank))
+			if f, ok := merged[c.ID]; ok {
+				f.score += contrib
+			} else {
+				merged[c.ID] = &fused{chunk: c, score: contrib, order: orderSeq}
+				orderSeq++
+			}
+		}
+	}
+
+	// dense 先累加 → 同 ID 时保留 dense 的元数据（含 dense 算出的 Score 字段，虽随后被覆盖）。
+	accumulate(dense, rrfVecWeight)
+	accumulate(keyword, rrfKwWeight)
+
+	out := make([]*fused, 0, len(merged))
+	for _, f := range merged {
+		out = append(out, f)
+	}
+	// 融合分降序；同分按首次出现顺序升序（稳定、确定性，dense 优先）。
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].score != out[j].score {
+			return out[i].score > out[j].score
+		}
+		return out[i].order < out[j].order
+	})
+
+	result := make([]domain.KnowledgeChunk, 0, len(out))
+	for _, f := range out {
+		c := f.chunk
+		c.Score = float32(f.score)
+		result = append(result, c)
+		if topK > 0 && len(result) >= topK {
+			break
+		}
+	}
 	return result
 }

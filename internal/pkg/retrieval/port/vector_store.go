@@ -27,3 +27,14 @@ type VectorStore interface {
 	// 用于列表展示等场景，更高效且结果完整
 	FetchByDocumentID(ctx context.Context, documentID uint, limit int) ([]domain.KnowledgeChunk, error)
 }
+
+// KeywordSearcher 是 VectorStore 的**可选**扩展接口：提供 BM25/全文关键词检索通道，
+// 供 retrieve.Service 在混合检索（dense + keyword + RRF）开启时调用。
+//
+// 仅 SQLiteVecStore 实现本接口（基于 FTS5）。其它 store（memory/dashvector/chromem/
+// viking）不实现 → Service type-assert 失败 → 自动退回纯向量，零回归。
+type KeywordSearcher interface {
+	// SearchKeyword 关键词检索。约定：FTS5 不可用 / DocumentIDs 为空 / 查询分词后为空 /
+	// MATCH 语法错误等异常一律返回 (nil, nil)，使调用方优雅降级为纯向量，绝不杀检索。
+	SearchKeyword(ctx context.Context, query string, filter SearchFilter, limit int) ([]domain.KnowledgeChunk, error)
+}

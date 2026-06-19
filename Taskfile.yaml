@@ -35,13 +35,14 @@ tasks:
       - golangci-lint run ./...
 
   # 运行测试
+  # -tags sqlite_fts5：与生产构建一致，启用 FTS5 让混合检索关键词通道单测可跑。
   test:
     desc: 运行测试
     deps: [deps]
     cmds:
-      - go test -v ./...
-      - go test -v -race ./...
-      - go test -v -coverprofile=coverage.out ./...
+      - go test -tags sqlite_fts5 -v ./...
+      - go test -tags sqlite_fts5 -v -race ./...
+      - go test -tags sqlite_fts5 -v -coverprofile=coverage.out ./...
       - go tool cover -html=coverage.out -o coverage.html
 
   # 构建应用
@@ -50,7 +51,7 @@ tasks:
     deps: [deps, fmt]
     cmds:
       - mkdir -p {{.BUILD_DIR}}
-      - go build -ldflags="-s -w" -o {{.BUILD_DIR}}/{{.BINARY_NAME}} {{.MAIN_PATH}}
+      - go build -tags sqlite_fts5 -ldflags="-s -w" -o {{.BUILD_DIR}}/{{.BINARY_NAME}} {{.MAIN_PATH}}
     sources:
       - "**/*.go"
       - go.mod
@@ -64,7 +65,7 @@ tasks:
     deps: [deps, fmt]
     cmds:
       - mkdir -p {{.BUILD_DIR}}
-      - CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o {{.BUILD_DIR}}/{{.BINARY_NAME}}-linux-amd64 {{.MAIN_PATH}}
+      - CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -tags sqlite_fts5 -ldflags="-s -w" -o {{.BUILD_DIR}}/{{.BINARY_NAME}}-linux-amd64 {{.MAIN_PATH}}
     sources:
       - "**/*.go"
       - go.mod
@@ -78,7 +79,7 @@ tasks:
     deps: [deps, fmt]
     cmds:
       - mkdir -p {{.BUILD_DIR}}
-      - CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o {{.BUILD_DIR}}/{{.BINARY_NAME}}-linux-amd64 {{.MAIN_PATH}}
+      - CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -tags sqlite_fts5 -ldflags="-s -w" -o {{.BUILD_DIR}}/{{.BINARY_NAME}}-linux-amd64 {{.MAIN_PATH}}
 
   # 运行应用
   run:
@@ -92,7 +93,7 @@ tasks:
     desc: 开发模式运行
     deps: [deps]
     cmds:
-      - go run {{.MAIN_PATH}}
+      - go run -tags sqlite_fts5 {{.MAIN_PATH}}
 
   # 清理构建文件
   clean:
