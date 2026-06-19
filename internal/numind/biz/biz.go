@@ -33,6 +33,7 @@ import (
 	"numind-server/internal/numind/biz/payment"
 	"numind-server/internal/numind/biz/permission"
 	permvalidators "numind-server/internal/numind/biz/permission/validators"
+	ragbiz "numind-server/internal/numind/biz/rag"
 	"numind-server/internal/numind/biz/salesrag"
 	"numind-server/internal/numind/biz/salesrag/adapter"
 	"numind-server/internal/numind/biz/salesrag/seed"
@@ -260,9 +261,11 @@ func NewBiz(ds store.IStore) *biz {
 	// 含 docStore，使 Scope{AllEnabled:true} 可解析为该用户全部启用文档——
 	// kb_search 空 doc_ids 时即走 AllEnabled（翻全部启用且已完成文档）。
 	// chatMode="free" 避免销售话术污染纯知识库检索的 query 改写（与 chatbotRetrieve 一致）。
+	// 统一改写器（FlaggedRewriter：flag 开=通用中性改写器，flag 关=fallback 原销售-free 改写器，零回归）。
+	// agent kb_search 是工具，不挂可答性门（不硬拒答；由 agent LLM 自行处置空结果）。
 	agentRetrieve := retrieve.NewService(
 		vStore,
-		salesragservice.NewRouterRewriter(llmRouter, "free"),
+		ragbiz.NewFlaggedRewriter(ragbiz.NewUniversalRewriter(), salesragservice.NewRouterRewriter(llmRouter, "free")),
 		newKBDocStore(ds.KnowledgeDocuments()),
 	)
 
@@ -665,7 +668,8 @@ func NewBiz(ds store.IStore) *biz {
 	// T2.1：chatbot 改走底座检索（query 改写 + 多路检索 + rerank + grounding）修"回答怪"。
 	// chatMode="free" 避免销售话术污染纯知识库问答的 query 改写；docStore=nil 因为 chatbot
 	// 始终用显式 docIDs scope（不需要 AllEnabled 解析）。只有挂了 KB 且解析出 docIDs 才调它。
-	chatbotRetrieve := retrieve.NewService(vStore, salesragservice.NewRouterRewriter(llmRouter, "free"), nil)
+	// chatbot：统一改写器（fallback nil → flag 关时原 query，与改造前 RewriteQuery=false 逐位一致）+ 可答性门。
+	chatbotRetrieve := retrieve.NewService(vStore, ragbiz.NewFlaggedRewriter(ragbiz.NewUniversalRewriter(), nil), nil).WithGate(ragbiz.NewGate())
 	b.chatbotService = chatbotbiz.NewChatbotBiz(ds, chatbotRetrieve)
 	// rag-eval-harness：评估端点刻意复用 chatbot 的同一 *retrieve.Service 指针，
 	// 这样跑分用的就是生产 chatbot 真实检索栈（docStore=nil → 评估也只支持显式 docIDs）。

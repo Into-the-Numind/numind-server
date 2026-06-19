@@ -36,8 +36,15 @@ const rerankScoreThreshold = 0.3
 // Service 领域无关检索主干。
 type Service struct {
 	store    port.VectorStore
-	rewriter port.QueryRewriter // 可为 nil → 不改写
-	docStore DocStore           // 可为 nil → AllEnabled 不可用
+	rewriter port.QueryRewriter     // 可为 nil → 不改写
+	docStore DocStore               // 可为 nil → AllEnabled 不可用
+	gate     port.AnswerabilityGate // 可为 nil → 不做可答性判定（见 WithGate）
+}
+
+// WithGate 注入可答性门，返回自身以便链式调用。仅当 opts.AnswerabilityCheck=true 时生效。
+func (s *Service) WithGate(g port.AnswerabilityGate) *Service {
+	s.gate = g
+	return s
 }
 
 // NewService 创建检索服务。rewriter 与 docStore 均可为 nil：
@@ -92,6 +99,18 @@ func (s *Service) Retrieve(ctx context.Context, query string, scope Scope, opts 
 			}
 		}
 		chunks = reranked
+	}
+
+	// 5. 可答性门（与阈值解耦的拒答）：opts 开启 + 配置了 gate + 有 chunk 时，
+	// 判"资料能否回答 query"；不能 → 清空（拒答）。fail-open：门内部已保证出错时放行。
+	if opts.AnswerabilityCheck && s.gate != nil && len(chunks) > 0 {
+		canAnswer, reason, gateErr := s.gate.CanAnswer(ctx, query, chunks)
+		if gateErr != nil {
+			log.C(ctx).Warnw("answerability gate errored, keeping chunks (fail-open)", "error", gateErr)
+		} else if !canAnswer {
+			log.C(ctx).Infow("answerability gate refused: clearing chunks", "query", query, "reason", reason, "had_chunks", len(chunks))
+			chunks = nil
+		}
 	}
 
 	return &RetrievalResult{

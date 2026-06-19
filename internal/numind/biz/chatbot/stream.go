@@ -316,10 +316,12 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 			retrieveOpts := retrieve.Options{
 				TopK:       chatStreamRetrieveTopK,
 				RerankTopN: chatStreamMaxChunks,
-				// F1: 不走底座 RewriteQuery（salesrag「销售意图分析师」prompt 会把 educational
-				// 通用问答改写歪/销售视角污染）。chatbot 专属中性改写改在上面 effectiveQuery 处做，
-				// 传入已改写文本；底座保持 RewriteQuery=false，按传入文本语义检索。
-				RewriteQuery: false,
+				// 走底座统一改写器（FlaggedRewriter：flag 开=通用中性改写器，flag 关=nil→原 query）。
+				// 原 F1（不走底座因 salesrag 销售 prompt 会污染）已被通用【中性】改写器解决——它领域无关、
+				// 无销售视角。flag 关时返回原 query，与改造前 RewriteQuery=false 行为逐位一致（零回归）。
+				RewriteQuery: true,
+				// 可答性门（flag 控制，关时放行）：资料答不了就拒答（与下方阈值解耦）。
+				AnswerabilityCheck: true,
 				// F2: 高阈值 0.6 + 关闭保底 → 召回全是低相关度(40-50%)内容时返回空，
 				// chatbot 无 chunk → BuildChatContextFragments 走纯聊天，bot 从 system
 				// prompt 作答，不再 grounding 在不相关的「资料」上给困惑回答。

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 
+	ragbiz "numind-server/internal/numind/biz/rag"              // 通用改写器 + 可答性门（标准化，flag 控制）
 	sdomain "numind-server/internal/numind/biz/salesrag/domain" // MetaStrategy/BasicStrategy
 	sport "numind-server/internal/numind/biz/salesrag/port"     // IntentRouter/IntentType（销售意图，未搬迁）
 	"numind-server/internal/pkg/log"
@@ -59,7 +60,13 @@ func NewSalesRAGService(store port.VectorStore, router sport.IntentRouter) *Sale
 		store:       store,
 		router:      router,
 		strategySvc: NewStrategyService(),
-		retrieveSvc: retrieve.NewService(store, routerRewriter{router: router}, nil),
+		// 通用改写器（flag 开时）+ 销售改写器（flag 关时 fallback，保现状逐位一致）；
+		// 主通道挂可答性门（flag 控制，关时放行）。standardized——chatbot/agent 同源。
+		retrieveSvc: retrieve.NewService(
+			store,
+			ragbiz.NewFlaggedRewriter(ragbiz.NewUniversalRewriter(), routerRewriter{router: router}),
+			nil,
+		).WithGate(ragbiz.NewGate()),
 	}
 }
 
@@ -144,11 +151,12 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 		UserID:      userID,
 		DocumentIDs: docIDs,
 	}, retrieve.Options{
-		TopK:         10, // 每路召回 limit（对齐原 parallelSearch 写死的 10）
-		RerankTopN:   5,  // 常规知识库 rerank 保留 top5（对齐原 rerankChunks）
-		RewriteQuery: true,
-		History:      history,
-		BillingLabel: "salesrag_rerank",
+		TopK:               10, // 每路召回 limit（对齐原 parallelSearch 写死的 10）
+		RerankTopN:         5,  // 常规知识库 rerank 保留 top5（对齐原 rerankChunks）
+		RewriteQuery:       true,
+		History:            history,
+		BillingLabel:       "salesrag_rerank",
+		AnswerabilityCheck: true, // 主通道挂可答性门（flag 控制，关时放行）
 		// RerankNoFloor=true：关掉"保底 top-1"。所有片段都低于阈值(默认0.3)时返回空，
 		// 让下游走 len(Chunks)==0 的"未检索到相关知识"分支，而不是拿一个低相关度的 top-1
 		// 硬 grounding（防"在域但库外"——如莫小派别条产品线问题——被当成 iDC 内容乱答）。
