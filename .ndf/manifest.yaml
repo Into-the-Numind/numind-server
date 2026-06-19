@@ -12,8 +12,8 @@ features:
     numind-server: /private/tmp/wt-rag-chunking-numind-server
   progress:
     total_tasks: 4
-    completed_tasks: 0
-    reviewed_tasks: 0
+    completed_tasks: 1
+    reviewed_tasks: 1
   artifacts:
     requirement: .ndf/features/rag-chunking/requirement.md
     design: .ndf/features/rag-chunking/design.md
