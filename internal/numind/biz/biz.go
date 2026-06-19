@@ -231,11 +231,20 @@ func NewBiz(ds store.IStore) *biz {
 
 	// Initialize Pipeline Components
 	parser := docparser.NewDocumentParser()
-	// 使用增强版切分器（支持中文分词、语义边界、100字符重叠、Markdown分级）
-	splitter := ingest.NewCompatibilitySplitter(ingest.SplitterConfig{
-		MaxChunkSize: 1000,
-		MinChunkSize: 200,
-	})
+	// 切块器选择（flag 门控，prod 不配=OFF=现状）：
+	//   flag 开 → StructureAwareSplitter（结构感知小块 + 标题面包屑，RAG 升级项1）
+	//   flag 关 → CompatibilitySplitter（现状：语义优先/规则兜底，支持中文分词/Markdown分级）
+	// 两者都实现 TextSplitter + StrategyAwareSplitter，pipeline 一致消费。
+	var splitter ingest.TextSplitter
+	if viper.GetBool(ragbiz.FlagStructureAwareChunking) {
+		splitter = ingest.NewStructureAwareSplitter(ingest.StructureAwareSplitterConfig{})
+		log.Infow("salesrag ingest: using StructureAwareSplitter (structure-aware chunking ON)")
+	} else {
+		splitter = ingest.NewCompatibilitySplitter(ingest.SplitterConfig{
+			MaxChunkSize: 1000,
+			MinChunkSize: 200,
+		})
+	}
 	tagger := ingest.NewContentTagger()
 
 	// Initialize Ingestion Pipeline (托管模式下不需要传 embedder)
