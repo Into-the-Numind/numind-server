@@ -17,6 +17,16 @@ func HybridRetrievalEnabled() bool {
 	return viper.GetBool(FlagHybridRetrieval)
 }
 
+// FlagRerankHardening 控制重排硬化（passage 清洗去噪 + MMR-lite 去雷同 + 降级链：
+// 0 结果阈值×0.7 重试 / top-1 floor 仅当 ≥0.15）。关（默认/缺省）→ 重排逐位维持现状，
+// prod 零变化。dev 开启验证。复合分/每库校准阈值不在本 flag 范围（后续迭代）。
+const FlagRerankHardening = "features.rerank_hardening.enabled"
+
+// RerankHardeningEnabled 返回重排硬化 feature flag 是否开启。
+func RerankHardeningEnabled() bool {
+	return viper.GetBool(FlagRerankHardening)
+}
+
 // FlagStructureAwareChunking 控制 salesrag ingest 是否使用结构感知切块器
 // （StructureAwareSplitter：FAQ→问答对 / 观点→单条 / 案例→单案例 / 通用→按节小块
 // + 标题面包屑注入 EmbedText）。关（默认/缺省）→ 走现状 CompatibilitySplitter，
