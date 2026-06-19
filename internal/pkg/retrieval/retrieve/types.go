@@ -36,6 +36,12 @@ type Options struct {
 	// false(默认)=保留 rerank top-1（salesrag 现有行为，逐位一致）。
 	// chatbot 传 true：召回全是垃圾时返回空 → 走纯聊天而非 grounding 在垃圾上。
 	RerankNoFloor bool
+
+	// AnswerabilityCheck 开启可答性门：rerank 后，若配置了 gate（见 Service.WithGate）且
+	// 资料无法回答问题，则清空 chunks（拒答）。与阈值解耦——阈值管召回、门管拒答。
+	// 主答案通道（chatbot / salesrag 主通道）传 true；观点库等"始终给点视角"的通道传 false。
+	// gate 自身受 feature flag 控制，flag 关时门放行，故此项为 true 也不改变现状。
+	AnswerabilityCheck bool
 }
 
 // RetrievalResult 检索结果。Chunks 为去重 + 可选重排后的最终切片，

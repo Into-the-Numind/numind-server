@@ -17,6 +17,10 @@ features:
     enabled: false            # ③ chatbot 查询改写：iDriveCareer 真实数据评估证明"提召回的改写会破坏库外拒答"，结论=不上。dev 也关掉与结论一致（prod 本就 OFF）。
   rag_eval:
     enabled: true             # rag-eval 检索调试端点（/v1/admin/rag-eval/retrieve），admin-only 评估工具，dev 开启；prod 默认 OFF（不暴露 debug 端点）
+  universal_rewriter:
+    enabled: false            # 通用查询改写器（指代补全+多路改写+HyDE，所有 RAG 共用）。默认关=各消费方走原改写器(零回归)。与可答性门配对启用：先修切块,再两者同时开测试。
+  answerability_gate:
+    enabled: false            # 可答性门（资料答不了就拒答，与阈值解耦）。默认关=放行(fail-open)。须等切块修好后再开,否则会大面积误拒(检索捞不到答案 chunk)。
 
 # 后台管理系统配置
 admin:
