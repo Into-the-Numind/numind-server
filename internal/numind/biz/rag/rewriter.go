@@ -76,7 +76,11 @@ func (r *UniversalRewriter) Rewrite(ctx context.Context, query string, history [
 	}
 
 	// 组装检索 query：补全后的问题 + 多路改写 + 原问题（去重保序，原问题始终在内做兜底）。
-	queries := dedupeNonEmpty(append(append([]string{out.CompletedQuery}, out.SearchQueries...), query))
+	merged := make([]string, 0, 2+len(out.SearchQueries))
+	merged = append(merged, out.CompletedQuery)
+	merged = append(merged, out.SearchQueries...)
+	merged = append(merged, query)
+	queries := dedupeNonEmpty(merged)
 	if len(queries) == 0 {
 		queries = []string{query}
 	}

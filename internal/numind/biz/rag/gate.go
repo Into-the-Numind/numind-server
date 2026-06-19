@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/spf13/viper"
 
@@ -49,7 +50,7 @@ func (g *Gate) CanAnswer(ctx context.Context, query string, chunks []domain.Know
 	var sb strings.Builder
 	for i, c := range chunks {
 		content := c.Content
-		if len([]rune(content)) > gateMaxEvidenceChars {
+		if utf8.RuneCountInString(content) > gateMaxEvidenceChars {
 			content = string([]rune(content)[:gateMaxEvidenceChars])
 		}
 		sb.WriteString("- ")
@@ -61,6 +62,8 @@ func (g *Gate) CanAnswer(ctx context.Context, query string, chunks []domain.Know
 	}
 	userMsg := "【用户问题】\n" + query + "\n\n【检索到的资料片段】\n" + sb.String()
 
+	// TODO(rag): 暂复用 salesrag.intent 任务画像（→ deepseek-v4-flash 非思考，合适）。
+	// 后续给门一个独立 task_profile（rag.answerability）以便单独计费/观测/调模型。
 	resp, err := aiservice.Chat(ctx, profile.SalesragIntent, aiservice.ChatRequest{
 		Messages: []aiservice.ChatMessage{
 			{Role: aiservice.MessageRoleSystem, Content: aiservice.MessageContent{Text: gatePrompt}},

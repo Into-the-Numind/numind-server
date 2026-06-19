@@ -122,15 +122,24 @@ func TestDedupeNonEmpty(t *testing.T) {
 }
 
 func TestExtractJSON(t *testing.T) {
-	cases := map[string]string{
-		"```json\n{\"a\":1}\n```": `{"a":1}`,
-		"prefix {\"a\":1} suffix": `{"a":1}`,
-		"{\"a\":{\"b\":2}}":       `{"a":{"b":2}}`,
-		"no json here":            "no json here",
+	cases := []struct{ in, want string }{
+		{"```json\n{\"a\":1}\n```", `{"a":1}`},
+		{"prefix {\"a\":1} suffix", `{"a":1}`},
+		{"{\"a\":{\"b\":2}}", `{"a":{"b":2}}`},
+		{"no json here", "no json here"},
 	}
-	for in, want := range cases {
-		if got := extractJSON(in); got != want {
-			t.Fatalf("extractJSON(%q)=%q want %q", in, got, want)
+	for _, c := range cases {
+		if got := extractJSON(c.in); got != c.want {
+			t.Fatalf("extractJSON(%q)=%q want %q", c.in, got, c.want)
 		}
+	}
+}
+
+func TestDedupeNonEmpty_Empty(t *testing.T) {
+	if got := dedupeNonEmpty([]string{}); len(got) != 0 {
+		t.Fatalf("empty input should yield empty, got %v", got)
+	}
+	if got := dedupeNonEmpty([]string{"  ", ""}); len(got) != 0 {
+		t.Fatalf("all-blank input should yield empty, got %v", got)
 	}
 }
