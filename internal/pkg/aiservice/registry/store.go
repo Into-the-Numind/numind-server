@@ -91,25 +91,26 @@ type TaskBinding struct {
 // resolvedRouteRow is the internal flat struct populated by the JOIN query in GetResolvedRoute.
 // It is not exported; callers receive ResolvedRoute (see registry.go).
 type resolvedRouteRow struct {
-	ServiceID        uint64
-	ModelKey         string
-	DisplayName      string
-	ServiceType      string
-	CapabilityJSON   model.JSONMap
-	LatencyTier      string
-	QualityTier      string
-	DeprecatedAt     *time.Time
-	IsActive         bool
-	ProviderID       uint64
-	ProviderName     string
-	ProviderBaseURL  string
-	ProviderAPIKey   string
-	ProviderModelID  string
-	RoutePriority    int
-	RouteIsActive    bool
-	SupportsThinking bool
-	ThinkingOnly     bool
-	ThinkingStyle    string
+	ServiceID         uint64
+	ModelKey          string
+	DisplayName       string
+	ServiceType       string
+	CapabilityJSON    model.JSONMap
+	LatencyTier       string
+	QualityTier       string
+	DeprecatedAt      *time.Time
+	IsActive          bool
+	ProviderID        uint64
+	ProviderName      string
+	ProviderBaseURL   string
+	ProviderAPIKey    string
+	ProviderModelID   string
+	RoutePriority     int
+	RouteIsActive     bool
+	SupportsThinking  bool
+	ThinkingOnly      bool
+	ThinkingStyle     string
+	PromptCachePolicy string
 }
 
 // ----------------------------------------------------------------------------
@@ -328,6 +329,7 @@ SELECT
   s.supports_thinking      AS supports_thinking,
   s.thinking_only          AS thinking_only,
   s.thinking_style         AS thinking_style,
+  s.prompt_cache_policy    AS prompt_cache_policy,
   p.id                     AS provider_id,
   p.name                   AS provider_name,
   p.base_url               AS provider_base_url,
@@ -357,6 +359,7 @@ LIMIT 1
 		SupportsThinking  bool       `gorm:"column:supports_thinking"`
 		ThinkingOnly      bool       `gorm:"column:thinking_only"`
 		ThinkingStyle     string     `gorm:"column:thinking_style"`
+		PromptCachePolicy string     `gorm:"column:prompt_cache_policy"`
 		ProviderID        uint64     `gorm:"column:provider_id"`
 		ProviderName      string     `gorm:"column:provider_name"`
 		ProviderBaseURL   string     `gorm:"column:provider_base_url"`
@@ -384,25 +387,26 @@ LIMIT 1
 	}
 
 	return &resolvedRouteRow{
-		ServiceID:        row.ServiceID,
-		ModelKey:         row.ModelKey,
-		DisplayName:      row.DisplayName,
-		ServiceType:      row.ServiceType,
-		CapabilityJSON:   capJSON,
-		LatencyTier:      row.LatencyTier,
-		QualityTier:      row.QualityTier,
-		DeprecatedAt:     row.DeprecatedAt,
-		IsActive:         row.IsActive,
-		ProviderID:       row.ProviderID,
-		ProviderName:     row.ProviderName,
-		ProviderBaseURL:  row.ProviderBaseURL,
-		ProviderAPIKey:   row.ProviderAPIKey,
-		ProviderModelID:  row.ProviderModelID,
-		RoutePriority:    row.RoutePriority,
-		RouteIsActive:    row.RouteIsActive,
-		SupportsThinking: row.SupportsThinking,
-		ThinkingOnly:     row.ThinkingOnly,
-		ThinkingStyle:    row.ThinkingStyle,
+		ServiceID:         row.ServiceID,
+		ModelKey:          row.ModelKey,
+		DisplayName:       row.DisplayName,
+		ServiceType:       row.ServiceType,
+		CapabilityJSON:    capJSON,
+		LatencyTier:       row.LatencyTier,
+		QualityTier:       row.QualityTier,
+		DeprecatedAt:      row.DeprecatedAt,
+		IsActive:          row.IsActive,
+		ProviderID:        row.ProviderID,
+		ProviderName:      row.ProviderName,
+		ProviderBaseURL:   row.ProviderBaseURL,
+		ProviderAPIKey:    row.ProviderAPIKey,
+		ProviderModelID:   row.ProviderModelID,
+		RoutePriority:     row.RoutePriority,
+		RouteIsActive:     row.RouteIsActive,
+		SupportsThinking:  row.SupportsThinking,
+		ThinkingOnly:      row.ThinkingOnly,
+		ThinkingStyle:     row.ThinkingStyle,
+		PromptCachePolicy: row.PromptCachePolicy,
 	}, nil
 }
 
@@ -426,6 +430,7 @@ SELECT
   s.supports_thinking      AS supports_thinking,
   s.thinking_only          AS thinking_only,
   s.thinking_style         AS thinking_style,
+  s.prompt_cache_policy    AS prompt_cache_policy,
   p.id                     AS provider_id,
   p.name                   AS provider_name,
   p.base_url               AS provider_base_url,
@@ -455,6 +460,7 @@ LIMIT 1
 		SupportsThinking  bool       `gorm:"column:supports_thinking"`
 		ThinkingOnly      bool       `gorm:"column:thinking_only"`
 		ThinkingStyle     string     `gorm:"column:thinking_style"`
+		PromptCachePolicy string     `gorm:"column:prompt_cache_policy"`
 		ProviderID        uint64     `gorm:"column:provider_id"`
 		ProviderName      string     `gorm:"column:provider_name"`
 		ProviderBaseURL   string     `gorm:"column:provider_base_url"`
@@ -480,25 +486,26 @@ LIMIT 1
 	}
 
 	return &resolvedRouteRow{
-		ServiceID:        row.ServiceID,
-		ModelKey:         row.ModelKey,
-		DisplayName:      row.DisplayName,
-		ServiceType:      row.ServiceType,
-		CapabilityJSON:   capJSON,
-		LatencyTier:      row.LatencyTier,
-		QualityTier:      row.QualityTier,
-		DeprecatedAt:     row.DeprecatedAt,
-		IsActive:         row.IsActive,
-		ProviderID:       row.ProviderID,
-		ProviderName:     row.ProviderName,
-		ProviderBaseURL:  row.ProviderBaseURL,
-		ProviderAPIKey:   row.ProviderAPIKey,
-		ProviderModelID:  row.ProviderModelID,
-		RoutePriority:    row.RoutePriority,
-		RouteIsActive:    row.RouteIsActive,
-		SupportsThinking: row.SupportsThinking,
-		ThinkingOnly:     row.ThinkingOnly,
-		ThinkingStyle:    row.ThinkingStyle,
+		ServiceID:         row.ServiceID,
+		ModelKey:          row.ModelKey,
+		DisplayName:       row.DisplayName,
+		ServiceType:       row.ServiceType,
+		CapabilityJSON:    capJSON,
+		LatencyTier:       row.LatencyTier,
+		QualityTier:       row.QualityTier,
+		DeprecatedAt:      row.DeprecatedAt,
+		IsActive:          row.IsActive,
+		ProviderID:        row.ProviderID,
+		ProviderName:      row.ProviderName,
+		ProviderBaseURL:   row.ProviderBaseURL,
+		ProviderAPIKey:    row.ProviderAPIKey,
+		ProviderModelID:   row.ProviderModelID,
+		RoutePriority:     row.RoutePriority,
+		RouteIsActive:     row.RouteIsActive,
+		SupportsThinking:  row.SupportsThinking,
+		ThinkingOnly:      row.ThinkingOnly,
+		ThinkingStyle:     row.ThinkingStyle,
+		PromptCachePolicy: row.PromptCachePolicy,
 	}, nil
 }
 
@@ -522,6 +529,7 @@ SELECT
   s.supports_thinking      AS supports_thinking,
   s.thinking_only          AS thinking_only,
   s.thinking_style         AS thinking_style,
+  s.prompt_cache_policy    AS prompt_cache_policy,
   p.id                     AS provider_id,
   p.name                   AS provider_name,
   p.base_url               AS provider_base_url,
@@ -550,6 +558,7 @@ ORDER BY r.priority DESC, r.id ASC
 		SupportsThinking  bool       `gorm:"column:supports_thinking"`
 		ThinkingOnly      bool       `gorm:"column:thinking_only"`
 		ThinkingStyle     string     `gorm:"column:thinking_style"`
+		PromptCachePolicy string     `gorm:"column:prompt_cache_policy"`
 		ProviderID        uint64     `gorm:"column:provider_id"`
 		ProviderName      string     `gorm:"column:provider_name"`
 		ProviderBaseURL   string     `gorm:"column:provider_base_url"`
@@ -574,25 +583,26 @@ ORDER BY r.priority DESC, r.id ASC
 			}
 		}
 		out = append(out, &resolvedRouteRow{
-			ServiceID:        row.ServiceID,
-			ModelKey:         row.ModelKey,
-			DisplayName:      row.DisplayName,
-			ServiceType:      row.ServiceType,
-			CapabilityJSON:   capJSON,
-			LatencyTier:      row.LatencyTier,
-			QualityTier:      row.QualityTier,
-			DeprecatedAt:     row.DeprecatedAt,
-			IsActive:         row.IsActive,
-			ProviderID:       row.ProviderID,
-			ProviderName:     row.ProviderName,
-			ProviderBaseURL:  row.ProviderBaseURL,
-			ProviderAPIKey:   row.ProviderAPIKey,
-			ProviderModelID:  row.ProviderModelID,
-			RoutePriority:    row.RoutePriority,
-			RouteIsActive:    row.RouteIsActive,
-			SupportsThinking: row.SupportsThinking,
-			ThinkingOnly:     row.ThinkingOnly,
-			ThinkingStyle:    row.ThinkingStyle,
+			ServiceID:         row.ServiceID,
+			ModelKey:          row.ModelKey,
+			DisplayName:       row.DisplayName,
+			ServiceType:       row.ServiceType,
+			CapabilityJSON:    capJSON,
+			LatencyTier:       row.LatencyTier,
+			QualityTier:       row.QualityTier,
+			DeprecatedAt:      row.DeprecatedAt,
+			IsActive:          row.IsActive,
+			ProviderID:        row.ProviderID,
+			ProviderName:      row.ProviderName,
+			ProviderBaseURL:   row.ProviderBaseURL,
+			ProviderAPIKey:    row.ProviderAPIKey,
+			ProviderModelID:   row.ProviderModelID,
+			RoutePriority:     row.RoutePriority,
+			RouteIsActive:     row.RouteIsActive,
+			SupportsThinking:  row.SupportsThinking,
+			ThinkingOnly:      row.ThinkingOnly,
+			ThinkingStyle:     row.ThinkingStyle,
+			PromptCachePolicy: row.PromptCachePolicy,
 		})
 	}
 	return out, nil

@@ -18,7 +18,14 @@ type UsageRecord struct {
 	// prompt cache (OpenAI usage.prompt_tokens_details.cached_tokens / DeepSeek
 	// prompt_cache_hit_tokens, both via the OpenAI-compatible DMXAPI endpoint).
 	// Additive: default 0 = no cache = identical to pre-cache billing audit.
-	CachedPromptTokens    int    `gorm:"column:cached_prompt_tokens;default:0" json:"cached_prompt_tokens"`
+	CachedPromptTokens int `gorm:"column:cached_prompt_tokens;default:0" json:"cached_prompt_tokens"`
+	// CacheCreationTokens is the subset of PromptTokens that the provider WROTE
+	// into its prompt cache on this call (Anthropic cache_creation_input_tokens).
+	// It is a DISTINCT bucket from CachedPromptTokens (cache READ hits) and is
+	// billed at the creation PREMIUM. Written ONLY by the native Claude adapter;
+	// every other path leaves it 0 (int default:0 — not subject to the default:true
+	// bool GORM gotcha), so cost/usage stay byte-identical to pre-cache behavior.
+	CacheCreationTokens   int    `gorm:"column:cache_creation_tokens;default:0" json:"cache_creation_tokens"`
 	EstimatedPromptTokens int    `gorm:"default:0" json:"estimated_prompt_tokens"`
 	BytesUploaded         int64  `gorm:"default:0" json:"bytes_uploaded"`  // COS 上传字节数
 	ItemCount             int    `gorm:"default:0" json:"item_count"`      // 向量操作条数 / Rerank 文档数
@@ -82,13 +89,27 @@ type PricingRule struct {
 	// SellCachedInputPricePerMTok is the SELL price (¥/MTok) for cache-HIT prompt
 	// tokens. nil ⇒ the cached portion is billed at the full SellInputPricePerMTok.
 	// Paired with CachedInputPricePerMTok (set together or both NULL).
-	SellCachedInputPricePerMTok *float64  `gorm:"column:sell_cached_input_price_per_m_tok;type:decimal(10,4)" json:"sell_cached_input_price_per_mtok,omitempty"` // 售价：每百万缓存命中输入 tokens（元）；NULL=未设置，按全价计费
-	SellPricePerCall            float64   `gorm:"column:sell_price_per_call;type:decimal(10,4);default:0" json:"sell_price_per_call"`                            // 售价：每次调用（元）
-	SellPricePerGB              float64   `gorm:"column:sell_price_per_gb;type:decimal(10,4);default:0" json:"sell_price_per_gb"`                                // 售价：每 GB（元）
-	CreditMultiplier            float64   `gorm:"column:credit_multiplier;type:decimal(5,2);default:1.00" json:"credit_multiplier"`                              // 积分消耗倍率，默认 1.00
-	IsActive                    bool      `gorm:"default:true" json:"is_active"`
-	CreatedAt                   time.Time `json:"created_at"`
-	UpdatedAt                   time.Time `json:"updated_at"`
+	SellCachedInputPricePerMTok *float64 `gorm:"column:sell_cached_input_price_per_m_tok;type:decimal(10,4)" json:"sell_cached_input_price_per_mtok,omitempty"` // 售价：每百万缓存命中输入 tokens（元）；NULL=未设置，按全价计费
+	// CacheCreationInputPricePerMTok is the COST price (¥/MTok) for cache-CREATION
+	// (cache-WRITE) prompt tokens — the Anthropic prompt-cache write bucket, billed
+	// at a PREMIUM over input (opus ~1.84×, sonnet ~1.25×). Pointer + no default tag
+	// ⇒ column is NULLABLE; nil ⇒ "not set" ⇒ creation tokens are billed at the full
+	// InputPricePerMTok (byte-identical to pre-cache behavior, NO premium). This is a
+	// DISTINCT bucket from CachedInputPricePerMTok (a DISCOUNT for read hits) — a
+	// premium cannot reuse the discount column or it would silently under-bill.
+	// Paired with SellCacheCreationInputPricePerMTok.
+	CacheCreationInputPricePerMTok *float64 `gorm:"column:cache_creation_input_price_per_m_tok;type:decimal(10,4)" json:"cache_creation_input_price_per_mtok,omitempty"` // 成本价：每百万缓存创建（写入）输入 tokens（元）；NULL=未设置，按全价 input 计费
+	// SellCacheCreationInputPricePerMTok is the SELL price (¥/MTok) for
+	// cache-CREATION prompt tokens. nil ⇒ creation tokens are billed at the full
+	// SellInputPricePerMTok (no premium). Paired with CacheCreationInputPricePerMTok
+	// (set together or both NULL).
+	SellCacheCreationInputPricePerMTok *float64  `gorm:"column:sell_cache_creation_input_price_per_m_tok;type:decimal(10,4)" json:"sell_cache_creation_input_price_per_mtok,omitempty"` // 售价：每百万缓存创建（写入）输入 tokens（元）；NULL=未设置，按全价 sell_input 计费
+	SellPricePerCall                   float64   `gorm:"column:sell_price_per_call;type:decimal(10,4);default:0" json:"sell_price_per_call"`                                            // 售价：每次调用（元）
+	SellPricePerGB                     float64   `gorm:"column:sell_price_per_gb;type:decimal(10,4);default:0" json:"sell_price_per_gb"`                                                // 售价：每 GB（元）
+	CreditMultiplier                   float64   `gorm:"column:credit_multiplier;type:decimal(5,2);default:1.00" json:"credit_multiplier"`                                              // 积分消耗倍率，默认 1.00
+	IsActive                           bool      `gorm:"default:true" json:"is_active"`
+	CreatedAt                          time.Time `json:"created_at"`
+	UpdatedAt                          time.Time `json:"updated_at"`
 }
 
 // TableName 指定表名

@@ -40,6 +40,7 @@ func newStoreTestDB(t *testing.T) *gorm.DB {
 			supports_thinking INTEGER NOT NULL DEFAULT 0,
 			thinking_only     INTEGER NOT NULL DEFAULT 0,
 			thinking_style    TEXT    NOT NULL DEFAULT '',
+			prompt_cache_policy TEXT  NOT NULL DEFAULT 'off',
 			icon              TEXT,
 			sort_order        INTEGER DEFAULT 0,
 			is_active         INTEGER DEFAULT 1,
@@ -129,6 +130,120 @@ func seedRouteWithThinkingFlags(t *testing.T, db *gorm.DB, modelKey string, supp
 	).Error)
 
 	return serviceID
+}
+
+// seedRouteWithCachePolicy inserts one minimal triple (ai_service + llm_provider +
+// ai_service_route) carrying the given prompt_cache_policy on the ai_service row and
+// returns the freshly-created service ID. Used by the cache-policy propagation test.
+func seedRouteWithCachePolicy(t *testing.T, db *gorm.DB, modelKey, cachePolicy string) uint64 {
+	t.Helper()
+
+	require.NoError(t, db.Exec(`
+		INSERT INTO ai_service
+		  (model_key, display_name, service_type, is_active, prompt_cache_policy)
+		VALUES
+		  (?, ?, 'llm', 1, ?)`,
+		modelKey, modelKey+"-display", cachePolicy,
+	).Error)
+
+	var serviceID uint64
+	require.NoError(t, db.Raw(`SELECT id FROM ai_service WHERE model_key = ?`, modelKey).Scan(&serviceID).Error)
+	require.NotZero(t, serviceID)
+
+	providerName := "test-provider-" + modelKey
+	require.NoError(t, db.Exec(`
+		INSERT INTO llm_provider
+		  (name, display_name, base_url, api_key, is_active)
+		VALUES
+		  (?, ?, 'https://example.invalid', 'test-key', 1)`,
+		providerName, providerName+"-display",
+	).Error)
+
+	var providerID uint64
+	require.NoError(t, db.Raw(`SELECT id FROM llm_provider WHERE name = ?`, providerName).Scan(&providerID).Error)
+	require.NotZero(t, providerID)
+
+	require.NoError(t, db.Exec(`
+		INSERT INTO ai_service_route
+		  (model_id, provider_id, provider_model_id, priority, is_active)
+		VALUES
+		  (?, ?, ?, 100, 1)`,
+		serviceID, providerID, modelKey+"-provider-id",
+	).Error)
+
+	return serviceID
+}
+
+// TestStore_ResolvedRoute_ReadsPromptCachePolicy is the finding #5 propagation proof:
+// ai_service.prompt_cache_policy MUST flow through resolvedRouteRow via ALL THREE raw
+// JOIN SELECT paths (GetResolvedRoute, GetResolvedRouteByModelKey,
+// ListResolvedRoutesByModel). Missing the column on ANY one path leaves that routing
+// path with PromptCachePolicy=” and silently disables caching for it. A seeded
+// 'claude_ephemeral' value must surface identically on all three.
+func TestStore_ResolvedRoute_ReadsPromptCachePolicy(t *testing.T) {
+	cases := []struct {
+		name        string
+		modelKey    string
+		cachePolicy string
+	}{
+		{name: "claude_ephemeral", modelKey: "model-claude-ephemeral", cachePolicy: "claude_ephemeral"},
+		{name: "gemini_implicit", modelKey: "model-gemini-implicit", cachePolicy: "gemini_implicit"},
+		{name: "auto", modelKey: "model-auto", cachePolicy: "auto"},
+		{name: "off", modelKey: "model-off", cachePolicy: "off"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newStoreTestDB(t)
+			serviceID := seedRouteWithCachePolicy(t, db, tc.modelKey, tc.cachePolicy)
+
+			store := NewStore(db)
+
+			// Path 1: GetResolvedRoute (by service ID).
+			row, err := store.GetResolvedRoute(context.Background(), serviceID)
+			require.NoError(t, err)
+			require.NotNil(t, row)
+			assert.Equal(t, tc.cachePolicy, row.PromptCachePolicy, "GetResolvedRoute PromptCachePolicy")
+
+			// Path 2: GetResolvedRouteByModelKey (by model_key).
+			row2, err := store.GetResolvedRouteByModelKey(context.Background(), tc.modelKey)
+			require.NoError(t, err)
+			require.NotNil(t, row2)
+			assert.Equal(t, tc.cachePolicy, row2.PromptCachePolicy, "GetResolvedRouteByModelKey PromptCachePolicy")
+
+			// Path 3: ListResolvedRoutesByModel (all routes for the service).
+			rows, err := store.ListResolvedRoutesByModel(context.Background(), serviceID)
+			require.NoError(t, err)
+			require.NotEmpty(t, rows, "ListResolvedRoutesByModel should return the seeded route")
+			assert.Equal(t, tc.cachePolicy, rows[0].PromptCachePolicy, "ListResolvedRoutesByModel PromptCachePolicy")
+		})
+	}
+}
+
+// TestStore_GetResolvedRoute_PromptCachePolicyDefaultsOff asserts that a row seeded via
+// the thinking-flag helper (which does NOT set prompt_cache_policy) reads back the safe
+// DDL default 'off' through all three store paths — i.e. existing rows are never blank
+// and never NULL (finding #8: NOT NULL DEFAULT 'off').
+func TestStore_GetResolvedRoute_PromptCachePolicyDefaultsOff(t *testing.T) {
+	db := newStoreTestDB(t)
+	serviceID := seedRouteWithThinkingFlags(t, db, "model-default-cache", false, false, "")
+
+	store := NewStore(db)
+
+	row, err := store.GetResolvedRoute(context.Background(), serviceID)
+	require.NoError(t, err)
+	require.NotNil(t, row)
+	assert.Equal(t, "off", row.PromptCachePolicy, "GetResolvedRoute default PromptCachePolicy")
+
+	row2, err := store.GetResolvedRouteByModelKey(context.Background(), "model-default-cache")
+	require.NoError(t, err)
+	require.NotNil(t, row2)
+	assert.Equal(t, "off", row2.PromptCachePolicy, "GetResolvedRouteByModelKey default PromptCachePolicy")
+
+	rows, err := store.ListResolvedRoutesByModel(context.Background(), serviceID)
+	require.NoError(t, err)
+	require.NotEmpty(t, rows)
+	assert.Equal(t, "off", rows[0].PromptCachePolicy, "ListResolvedRoutesByModel default PromptCachePolicy")
 }
 
 // TestStore_GetResolvedRoute_ReadsThinkingFlags verifies that SupportsThinking and

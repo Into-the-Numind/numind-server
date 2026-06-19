@@ -76,7 +76,7 @@ for {
 
 `Fallback` 改：调 `next(ctx, route, req)` 拿 resp。
 - 若 `resp` 是 `<-chan ChatChunk` 且 err==nil：用 `wrapStreamWithReattempt` 包裹，reattempt = 「按序取下一个 alternate route，注入 `withSkipRetry`+`withFallbackFromServiceID(route.ServiceID)`，调 `next(fbCtx, &altRoute, req)` 取 channel；alternates 用尽则 more=false」，backoff=nil。
-  - alternates 来源：`deps.Resolver` 若实现 `ResolveModelAlternates`（type-assert，graceful）则取「同模型不同供应商」路由；空则无 fallback。
+  - alternates 来源：`deps.Resolver.ResolveModelAlternates(...)` **直接调用**（该方法已加在公共 `registry.Registry` 接口上，见 §6；**不用 type-assert**——避免 stub 未实现时 assert 静默失败导致 AC2 失效，S3 reviewer P2-c）。返回空则无 fallback。
   - 注：流式 Fallback 优先用同模型 alternates（满足需求「同一模型的另一个供应商」）。现有非流式 role=fallback cascade 路径保持不变。
 - 否则（非流式）：保留**现有**同步 cascade 逻辑（fallback.go:33-94 不动）。
 

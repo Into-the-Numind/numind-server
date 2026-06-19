@@ -40,6 +40,12 @@ func (m *mockPricingCalc) CalculateCostWithCache(_ context.Context, _, _, _ stri
 	return m.costCents, m.err
 }
 
+// CalculateCostWithCacheRW satisfies pricing.ICalculator; both cache buckets are
+// ignored (this mock returns a fixed cost regardless of inputs).
+func (m *mockPricingCalc) CalculateCostWithCacheRW(_ context.Context, _, _, _ string, _, _, _, _ int) (int64, error) {
+	return m.costCents, m.err
+}
+
 // ----------------------------------------------------------------------------
 // Mock UsageStore
 // ----------------------------------------------------------------------------

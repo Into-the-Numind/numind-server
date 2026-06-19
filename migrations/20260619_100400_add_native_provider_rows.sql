@@ -1,0 +1,78 @@
+-- Add the native-adapter llm_provider rows (claude-native / gemini-native), INERT.
+-- Feature: native-cache-adapters (T8). See spec §4 D1 / §5A / §5F, finding #1.
+--
+-- ============================================================================
+-- TWO-STEP ACTIVATION RUNBOOK (finding #1 — P0 silent prefix-fallback mitigation)
+-- ============================================================================
+-- These rows ship with is_active = 0 and NOTHING points at them. A route resolves
+-- to a native adapter ONLY after a deliberate, manual STEP-4 flip — by which point
+-- the adapter-carrying binary is proven live. This closes the half-deploy TOCTOU
+-- window where a route pointing at 'claude-native' on a binary that lacks the
+-- adapter would fall back to the hard-coded 'dmxapi' adapter (gateway.go) and ship
+-- an Anthropic body to the OpenAI /chat/completions endpoint.
+--
+--   STEP 1  SSH-apply THIS migration (and 20260619_100300_seed_native_cache_pricing.sql).
+--           Rows now exist but are INERT: is_active=0, no route repointed, no policy
+--           set. The startup assertion (assertNativeAdaptersRegistered) only checks
+--           is_active=true native rows, so it stays a NO-OP. Zero behavior change.
+--
+--   STEP 2  Deploy the binary that carries the ClaudeNativeAdapter / GeminiNativeAdapter
+--           (T4–T6). On boot it RegisterProvider-s both adapters into the gateway.
+--
+--   STEP 3  Verify health: GET /healthz/ai must list BOTH 'claude-native' and
+--           'gemini-native' in AdapterNames(). Do NOT proceed until confirmed.
+--
+--   STEP 4  Manual admin op (NOT this migration) — for the chosen Claude/Gemini
+--           model only, atomically:
+--             a) set the DMXAPI api_key on the native llm_provider row(s)
+--                  -- ops sets the SAME DMXAPI key used by the existing 'dmxapi' row:
+--                  UPDATE llm_provider
+--                     SET api_key = '<DMXAPI_KEY from secrets/config>'
+--                     WHERE name = 'claude-native';   -- and/or 'gemini-native'
+--             b) flip the provider row active:
+--                  UPDATE llm_provider SET is_active = 1 WHERE name = 'claude-native';
+--             c) repoint the chosen ai_service_route at the native provider:
+--                  UPDATE ai_service_route SET provider_id =
+--                     (SELECT id FROM llm_provider WHERE name = 'claude-native')
+--                     WHERE id = <chosen route id>;
+--             d) set the service policy:
+--                  UPDATE ai_service SET prompt_cache_policy = 'claude_ephemeral'
+--                     WHERE id = <chosen service id>;   -- or 'gemini_implicit'
+--           AFTER STEP 4 the binary-with-adapters is already live (STEP 3), the
+--           startup assertion now guards future boots, and only the chosen route
+--           uses the native path. Every other route stays on 'dmxapi' (unchanged).
+--
+--   ROLLBACK of activation: reverse STEP 4 (repoint route back to 'dmxapi', set
+--   is_active=0, prompt_cache_policy='off'). To remove the rows entirely run
+--   20260619_100400_add_native_provider_rows_rollback.sql.
+--
+-- ============================================================================
+-- This migration MUST NOT (enforced by native_cache_seed_test.go):
+--   - repoint any ai_service_route (no touch of ai_service_route)
+--   - set prompt_cache_policy
+--   - activate the rows (is_active stays 0)
+--   - hardcode a real DMXAPI api_key (CLAUDE.md §3) — api_key ships as '' placeholder;
+--     ops sets it at STEP 4 (the SAME DMXAPI key the 'dmxapi' provider already uses).
+--
+-- IDEMPOTENT: llm_provider.name has a UNIQUE index → INSERT IGNORE re-runs as a no-op.
+-- NOTE: CI does NOT auto-run migrations (CLAUDE.md §5.2); apply via SSH before deploy.
+-- Rollback: 20260619_100400_add_native_provider_rows_rollback.sql
+
+-- base_url = the DMXAPI host; both native adapters proxy through DMXAPI:
+--   Claude native → POST {base}/v1/messages (Anthropic Messages format)
+--   Gemini native → POST {base}/v1beta/models/{model}:generateContent?key=...
+-- api_key = '' placeholder; set by ops at STEP 4 (NOT synced by
+-- SyncProviderCredentials — these names are not in providerSeedEntries, so the
+-- placeholder is never overwritten/wiped at startup).
+INSERT IGNORE INTO llm_provider (name, display_name, base_url, api_key, is_active)
+VALUES
+  ('claude-native', 'Claude Native (DMXAPI /v1/messages)', 'https://www.dmxapi.cn', '', 0),
+  ('gemini-native', 'Gemini Native (DMXAPI :generateContent)', 'https://www.dmxapi.cn', '', 0);
+
+-- POST-APPLY VERIFICATION (run manually): both rows present and INERT (is_active=0),
+-- no route repointed by this migration.
+--   SELECT name, base_url, is_active FROM llm_provider
+--     WHERE name IN ('claude-native','gemini-native');
+--   SELECT COUNT(*) AS routes_on_native FROM ai_service_route r
+--     JOIN llm_provider p ON p.id = r.provider_id
+--     WHERE p.name IN ('claude-native','gemini-native');  -- expect 0 until STEP 4

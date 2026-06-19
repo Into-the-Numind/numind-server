@@ -395,3 +395,65 @@ func TestConvertToolInfos_BasicMapping(t *testing.T) {
 		t.Errorf("description: got %q", tools[0].Function.Description)
 	}
 }
+
+// TestNewAiserviceAdapter_SetsEnablePromptCache pins T7 Layer-3 opt-in: every
+// agent ReAct run reuses a long stable prefix (system prompt + skills + tool
+// schemas + growing history) across R≥2 turns, so the agent asserts the
+// per-call cache intent at construction. The constructor must set
+// enablePromptCache=true unconditionally (the actual caching is still gated by
+// the global flag + the model's prompt_cache_policy inside the native adapter —
+// this field only carries the "reused prefix" signal).
+func TestNewAiserviceAdapter_SetsEnablePromptCache(t *testing.T) {
+	a := NewAiserviceAdapter("glm-4-7-251222", "agent.task")
+	got := a.(*aiserviceAdapter).enablePromptCache
+	if !got {
+		t.Error("enablePromptCache: got false, want true (agent always opts in — T7)")
+	}
+}
+
+// TestWithTools_PreservesEnablePromptCache is the spec-mandated guard (T7
+// acceptance: "agent req carries EnablePromptCache=true across WithTools
+// clone"). Eino calls WithTools to produce the adapter that actually drives the
+// ReAct loop; if that clone dropped enablePromptCache, every real agent turn
+// would silently revert to no-cache-intent and the cache toggle would be inert
+// for the only caller that benefits from it.
+func TestWithTools_PreservesEnablePromptCache(t *testing.T) {
+	base := &aiserviceAdapter{taskID: "agent.run", enablePromptCache: true}
+	clone, err := base.WithTools(nil)
+	if err != nil {
+		t.Fatalf("WithTools: %v", err)
+	}
+	got := clone.(*aiserviceAdapter).enablePromptCache
+	if !got {
+		t.Error("clone enablePromptCache: got false, want true (must survive WithTools — T7)")
+	}
+}
+
+// TestConvertToAiserviceRequest_PropagatesEnablePromptCache verifies the
+// adapter's immutable enablePromptCache lands on req.EnablePromptCache, the
+// Layer-3 signal the native Claude adapter reads. Without this, the field stays
+// at the ChatRequest zero value (false) and Claude caching never engages for
+// agent runs.
+func TestConvertToAiserviceRequest_PropagatesEnablePromptCache(t *testing.T) {
+	a := &aiserviceAdapter{taskID: "agent.run", enablePromptCache: true}
+	req := a.convertToAiserviceRequest([]*schema.Message{
+		{Role: schema.User, Content: "hi"},
+	})
+	if !req.EnablePromptCache {
+		t.Error("req.EnablePromptCache: got false, want true (Layer-3 opt-in — T7)")
+	}
+}
+
+// TestConvertToAiserviceRequest_NoCacheWhenDisabled is the zero-regression
+// proof: an adapter constructed without the opt-in (the test-struct default, and
+// the resting state of any non-agent caller pattern) leaves
+// req.EnablePromptCache=false — byte-identical to the pre-T7 request shape.
+func TestConvertToAiserviceRequest_NoCacheWhenDisabled(t *testing.T) {
+	a := &aiserviceAdapter{taskID: "agent.run"} // enablePromptCache defaults false
+	req := a.convertToAiserviceRequest([]*schema.Message{
+		{Role: schema.User, Content: "hi"},
+	})
+	if req.EnablePromptCache {
+		t.Error("req.EnablePromptCache: got true, want false (no opt-in ⇒ no cache intent)")
+	}
+}

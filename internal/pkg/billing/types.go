@@ -28,6 +28,13 @@ type TokenUsage struct {
 	// Additive：provider 不上报缓存命中时该值为 0，cost/usage 与启用缓存前字节一致。
 	CachedPromptTokens int `json:"cached_prompt_tokens"`
 
+	// CacheCreationTokens 是本次调用 provider 写入前缀缓存的 token 数（Anthropic
+	// cache_creation_input_tokens——溢价 bucket，区别于 CachedPromptTokens 的读命中折扣）。
+	// 故意不加 omitempty：需在 JSON 往返序列化中稳定保留（与 CachedPromptTokens 一致）。
+	// 仅由原生 Claude 适配器写入；其余路径为 0，cost/usage 与启用缓存前字节一致。
+	// 注意 Normalize() 对该字段是有意的 NO-OP（见下）。
+	CacheCreationTokens int `json:"cache_creation_tokens"`
+
 	// Volcengine/OpenAI 兼容的嵌套结构
 	CompletionTokensDetails struct {
 		ReasoningTokens int `json:"reasoning_tokens"`
@@ -61,6 +68,13 @@ func (u *TokenUsage) Normalize() {
 			u.CachedPromptTokens = u.PromptCacheHitTokens
 		}
 	}
+	// CacheCreationTokens is INTENTIONALLY NOT normalized here (finding #7):
+	// unlike CachedPromptTokens (promoted from nested prompt_tokens_details.cached_tokens
+	// / DeepSeek prompt_cache_hit_tokens), Anthropic reports cache_creation_input_tokens
+	// as a TOP-LEVEL field that the native Claude adapter writes DIRECTLY into
+	// aiservice.TokenUsage.CacheCreationTokens. There is no nested/aliased source to
+	// promote, so Normalize() must leave it untouched — do NOT "fix" this by adding a
+	// promotion branch (it would have no source and risk double-counting).
 }
 
 // EmbeddingUsage Embedding API 使用统计

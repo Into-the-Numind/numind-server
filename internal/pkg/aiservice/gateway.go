@@ -273,6 +273,33 @@ func (g *Gateway) lookupProvider(name string) Provider {
 	return g.findAdapterByPrefix(name)
 }
 
+// LookupProviderExact resolves a registered provider by an EXACT name match only.
+// Unlike lookupProvider, it does NOT apply the findAdapterByPrefix fallback — so a
+// name that is not literally in the providers map returns nil rather than the
+// hard-coded dmxapi fallback.
+//
+// This is the lever the startup registration assertion relies on (spec D1 /
+// finding #1): an ai_service_route pointing at "claude-native" while the deployed
+// binary lacks that adapter must be DETECTABLE. lookupProvider would mask the gap
+// by falling back to dmxapi (silently routing an Anthropic body to
+// /chat/completions); LookupProviderExact returns nil so the assertion can
+// log.Fatalw and refuse to start. Exported because assertNativeAdaptersRegistered
+// lives in package numind.
+func (g *Gateway) LookupProviderExact(name string) Provider {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.providers[name]
+}
+
+// KnownNativeProviderNames returns the static list of provider-native adapter
+// names (the literals each native adapter's Name() returns and the T8 migration
+// inserts as llm_provider rows). It is the single source of truth shared by the
+// startup registration assertion and its tests — keeping the list here prevents
+// the assertion and the tests from drifting apart.
+func KnownNativeProviderNames() []string {
+	return []string{"claude-native", "gemini-native"}
+}
+
 // ----------------------------------------------------------------------------
 // Chat
 // ----------------------------------------------------------------------------

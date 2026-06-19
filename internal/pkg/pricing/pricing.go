@@ -80,6 +80,28 @@ type ICalculator interface {
 	CalculateCostWithCache(ctx context.Context, serviceType, provider, model string,
 		promptTokens, completionTokens, cachedTokens int) (costCents int64, err error)
 
+	// CalculateCostWithCacheRW is CalculateCostWithCache plus a cache-CREATION
+	// (cache-WRITE) bucket. Claude returns THREE disjoint prompt-side buckets:
+	// uncached input, cache-READ (cachedTokens, a discount), and cache-CREATION
+	// (cacheWriteTokens, a PREMIUM). The flat-mode formula carves write FIRST then
+	// read out of promptTokens, so normal = prompt - cw - cr can never go negative:
+	//
+	//	cw   = clamp(cacheWriteTokens, 0, promptTokens)
+	//	cr   = clamp(cachedTokens,    0, promptTokens - cw)
+	//	normal = promptTokens - cw - cr
+	//	writePrice  = CacheCreationInputPricePerMTok if set else InputPricePerMTok
+	//	cachedPrice = CachedInputPricePerMTok        if set else InputPricePerMTok
+	//	costYuan = cw/1e6*writePrice + cr/1e6*cachedPrice + normal/1e6*InputPricePerMTok
+	//	         + completion/1e6*OutputPricePerMTok
+	//
+	// Zero-regression: cacheWriteTokens=0 ⇒ cw=0 ⇒ the write term drops and
+	// normal = prompt - cr ⇒ byte-identical to CalculateCostWithCache (which is
+	// itself a thin delegate to this method with cacheWriteTokens=0). A NULL
+	// creation price ⇒ writePrice == InputPricePerMTok ⇒ no premium. Tiered rules
+	// ignore BOTH cache buckets (not cache-aware in Batch A).
+	CalculateCostWithCacheRW(ctx context.Context, serviceType, provider, model string,
+		promptTokens, completionTokens, cachedTokens, cacheWriteTokens int) (costCents int64, err error)
+
 	// IsFreeModel reports whether (serviceType, provider, model) resolves to a
 	// zero-priced model — a pricing rule exists and all of its COST components
 	// are 0 (input/output per-MTok and per-call), so a call charges the user 0
@@ -147,9 +169,13 @@ func (c *calculator) CalculateCost(ctx context.Context, serviceType, provider, m
 	return c.CalculateCostWithCache(ctx, serviceType, provider, model, promptTokens, completionTokens, 0)
 }
 
-// CalculateCostWithCache implements ICalculator with prompt-cache awareness.
+// CalculateCostWithCache implements ICalculator with prompt-cache (read)
+// awareness. It is a thin delegate to CalculateCostWithCacheRW with
+// cacheWriteTokens=0, so the formula lives in exactly one place and the
+// read-only path is provably identical to the read+write path's collapse — the
+// same single-source discipline as CalculateCost → CalculateCostWithCache.
 //
-// Flat billing_mode formula (cache-aware):
+// Flat billing_mode formula (cache-read-aware, the cw=0 collapse of ...RW):
 //
 //	cachedPrice = cached_input_price_per_mtok (if set) else input_price_per_mtok
 //	costYuan    = cached/1e6*cachedPrice + (prompt-cached)/1e6*input_price_per_mtok
@@ -160,24 +186,50 @@ func (c *calculator) CalculateCost(ctx context.Context, serviceType, provider, m
 //     formula collapses exactly to the legacy prompt/1e6*input + completion/1e6*output.
 //   - CachedInputPricePerMTok==nil (column NULL) ⇒ cachedPrice==input_price_per_mtok,
 //     so cached + non-cached portions sum to prompt/1e6*input regardless of split.
-//
-// cachedTokens is clamped to [0, promptTokens]. Tiered rules are billed at full
-// price (not cache-aware in Batch A). CreditMultiplier scaling is preserved.
 func (c *calculator) CalculateCostWithCache(ctx context.Context, serviceType, provider, model string,
 	promptTokens, completionTokens, cachedTokens int,
+) (int64, error) {
+	return c.CalculateCostWithCacheRW(ctx, serviceType, provider, model,
+		promptTokens, completionTokens, cachedTokens, 0)
+}
+
+// CalculateCostWithCacheRW implements ICalculator with the full 3-bucket
+// (uncached / read / write) flat-mode formula — see the interface doc for the
+// math. cacheWriteTokens is the cache-CREATION bucket billed at the PREMIUM
+// CacheCreationInputPricePerMTok; cachedTokens is the cache-READ bucket billed at
+// the DISCOUNT CachedInputPricePerMTok.
+//
+// Write is carved FIRST, then read, so normal = prompt - cw - cr can never go
+// negative even when a provider over-reports (cw+cr > prompt): cw clamps to
+// [0, prompt], cr clamps to [0, prompt-cw].
+//
+// Zero-regression: cacheWriteTokens=0 ⇒ cw=0 ⇒ write term drops, normal=prompt-cr
+// ⇒ byte-identical to the legacy read-only formula. NULL creation price ⇒
+// writePrice == InputPricePerMTok ⇒ no premium. Tiered rules ignore BOTH cache
+// buckets. CreditMultiplier scaling is preserved.
+func (c *calculator) CalculateCostWithCacheRW(ctx context.Context, serviceType, provider, model string,
+	promptTokens, completionTokens, cachedTokens, cacheWriteTokens int,
 ) (int64, error) {
 	rule, err := c.resolvePricingRule(ctx, serviceType, provider, model)
 	if err != nil {
 		return 0, err
 	}
 
-	// Clamp cachedTokens defensively — providers can in theory report a cache
-	// count larger than the prompt (e.g. on retries) and negatives are nonsense.
-	if cachedTokens < 0 {
-		cachedTokens = 0
+	// Carve write FIRST, then read, so normal never goes negative. Providers can
+	// over-report (retries) and negatives are nonsense — clamp both defensively.
+	cw := cacheWriteTokens
+	if cw < 0 {
+		cw = 0
 	}
-	if cachedTokens > promptTokens {
-		cachedTokens = promptTokens
+	if cw > promptTokens {
+		cw = promptTokens
+	}
+	cr := cachedTokens
+	if cr < 0 {
+		cr = 0
+	}
+	if cr > promptTokens-cw {
+		cr = promptTokens - cw
 	}
 
 	var costYuan float64
@@ -185,19 +237,24 @@ func (c *calculator) CalculateCostWithCache(ctx context.Context, serviceType, pr
 	case promptTokens > 0 || completionTokens > 0:
 		if rule.BillingMode == "tiered_token" {
 			// Tiered mode is NOT cache-aware in Batch A — bill full price
-			// (byte-identical to today; cachedTokens is intentionally ignored).
+			// (byte-identical to today; both cache buckets are intentionally ignored).
 			costYuan, err = c.calculateTieredCost(ctx, rule.ID, promptTokens, completionTokens)
 			if err != nil {
 				return 0, err
 			}
 		} else {
+			writePrice := rule.InputPricePerMTok
+			if rule.CacheCreationInputPricePerMTok != nil {
+				writePrice = *rule.CacheCreationInputPricePerMTok
+			}
 			cachedPrice := rule.InputPricePerMTok
 			if rule.CachedInputPricePerMTok != nil {
 				cachedPrice = *rule.CachedInputPricePerMTok
 			}
-			nonCached := promptTokens - cachedTokens
-			costYuan = float64(cachedTokens)/1_000_000*cachedPrice +
-				float64(nonCached)/1_000_000*rule.InputPricePerMTok +
+			normal := promptTokens - cw - cr
+			costYuan = float64(cw)/1_000_000*writePrice +
+				float64(cr)/1_000_000*cachedPrice +
+				float64(normal)/1_000_000*rule.InputPricePerMTok +
 				float64(completionTokens)/1_000_000*rule.OutputPricePerMTok
 		}
 	default:

@@ -130,6 +130,16 @@ type aiserviceAdapter struct {
 	// 由 runner.go 在 useCompactV2 == true 时注入；通过 WithTools 复制实例时共享指针
 	// （保 per-Run 状态一致性，与 usageStore 同理）。
 	compactor *adapterCompactor
+
+	// enablePromptCache is Layer 3 of the provider-native prompt-cache toggle (T7).
+	// Immutable after construction (set true in NewAiserviceAdapter, preserved by
+	// WithTools). Every agent ReAct run reuses a long stable prefix (system prompt
+	// + skills + tool schemas + growing history) across R≥2 turns, so the agent
+	// asserts "this call has a reused prefix" by setting req.EnablePromptCache.
+	// The actual caching is still gated by the global flag + the model's
+	// prompt_cache_policy inside the native Claude adapter — this field is only the
+	// per-call intent signal. chatbot/salesrag are single-shot and leave it false.
+	enablePromptCache bool
 }
 
 // Compile-time assertion: aiserviceAdapter must satisfy model.ToolCallingChatModel.
@@ -142,6 +152,9 @@ func NewAiserviceAdapter(modelName, taskID string) einomodel.ToolCallingChatMode
 		modelName:  modelName,
 		taskID:     taskID,
 		usageStore: &sync.Map{},
+		// T7: agent runs always carry a reused prefix (R≥2) → opt in to provider
+		// prompt caching. Gated downstream by the global flag + model policy.
+		enablePromptCache: true,
 	}
 }
 
@@ -154,13 +167,14 @@ func (a *aiserviceAdapter) WithTools(tools []*schema.ToolInfo) (einomodel.ToolCa
 	cloned := make([]*schema.ToolInfo, len(tools))
 	copy(cloned, tools)
 	return &aiserviceAdapter{
-		modelName:       a.modelName,
-		taskID:          a.taskID,
-		tools:           cloned,
-		systemPrompt:    a.systemPrompt,
-		usageStore:      a.usageStore,      // shared pointer — safe per-run isolation
-		compactor:       a.compactor,       // shared per-Run state (consecutiveFailures 等)
-		maxOutputTokens: a.maxOutputTokens, // resolved once at construction; immutable
+		modelName:         a.modelName,
+		taskID:            a.taskID,
+		tools:             cloned,
+		systemPrompt:      a.systemPrompt,
+		usageStore:        a.usageStore,        // shared pointer — safe per-run isolation
+		compactor:         a.compactor,         // shared per-Run state (consecutiveFailures 等)
+		maxOutputTokens:   a.maxOutputTokens,   // resolved once at construction; immutable
+		enablePromptCache: a.enablePromptCache, // T7: cache-intent must survive the tool-bound clone
 	}, nil
 }
 
@@ -323,6 +337,11 @@ func (a *aiserviceAdapter) convertToAiserviceRequest(in []*schema.Message) aiser
 
 	req := aiservice.ChatRequest{
 		Messages: msgs,
+		// T7 Layer-3 opt-in: carry the agent's per-call cache intent. Downstream
+		// the native Claude adapter still ANDs this with the global flag and the
+		// model's prompt_cache_policy; false (the zero value for non-agent callers)
+		// keeps the wire shape byte-identical to a non-cached call.
+		EnablePromptCache: a.enablePromptCache,
 	}
 	if a.modelName != "" {
 		req.ModelOverride = a.modelName

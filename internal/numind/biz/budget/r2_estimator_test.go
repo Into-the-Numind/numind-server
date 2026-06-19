@@ -35,6 +35,14 @@ func (m *mockPricer) CalculateCostWithCache(ctx context.Context, op, provider, m
 	return m.CalculateCost(ctx, op, provider, model, promptTokens, completionTokens)
 }
 
+// CalculateCostWithCacheRW satisfies pricing.ICalculator. This mock ignores both
+// cache buckets and delegates to CalculateCost (estimation never has cache
+// tokens pre-call).
+func (m *mockPricer) CalculateCostWithCacheRW(ctx context.Context, op, provider, model string,
+	promptTokens, completionTokens, _, _ int) (int64, error) {
+	return m.CalculateCost(ctx, op, provider, model, promptTokens, completionTokens)
+}
+
 func TestEstimateAgentTurn_NormalPath(t *testing.T) {
 	pc := &mockPricer{}
 	got, err := EstimateAgentTurn(context.Background(), pc, "ali", "qwen-turbo", 200, 0)

@@ -111,6 +111,11 @@ func wrapStreamForBilling(
 				// Written BEFORE publishCostToHolder so the cost reflects the
 				// cached discount on the streaming reconcile path.
 				record.CachedPromptTokens = chunk.Usage.CachedPromptTokens
+				// Cache-CREATION (write) subset — a PREMIUM bucket, distinct from
+				// the read hits above. Explicit copy (NOT via Normalize, which is a
+				// deliberate no-op for this field). 0 for every non-native-Claude
+				// call ⇒ byte-identical billing (zero regression). T2.
+				record.CacheCreationTokens = chunk.Usage.CacheCreationTokens
 				finalSeen = true
 				// Publish actual cost BEFORE forwarding the IsFinal chunk so
 				// that the outer ContextBudgetCredits goroutine reads a fully
@@ -497,6 +502,9 @@ func populateLLMUsage(r *model.UsageRecord, resp interface{}, callErr error, ctx
 		r.ReasoningTokens = chatResp.Usage.ReasoningTokens
 		// Prefix-cache HIT subset (Batch A). Additive: 0 ⇒ full-price billing.
 		r.CachedPromptTokens = chatResp.Usage.CachedPromptTokens
+		// Cache-CREATION (write) subset — PREMIUM bucket, distinct from read hits.
+		// Explicit copy (NOT via Normalize). 0 for non-native-Claude ⇒ byte-identical. T2.
+		r.CacheCreationTokens = chatResp.Usage.CacheCreationTokens
 		return
 	}
 
@@ -562,11 +570,12 @@ func publishCostToHolder(ctx context.Context, record *model.UsageRecord, calc pr
 	// Non-LLM calls (OCR/ASR/embed) still go through the holder path — if the
 	// calculator returns a non-zero cost we accept it; if not, the holder stays
 	// unset and finalizeReservationIfNeeded refunds the reservation (fix ③).
-	// CalculateCostWithCache bills the cache-HIT subset at the discounted cached
-	// input price when set; CachedPromptTokens==0 or NULL cached price ⇒
+	// CalculateCostWithCacheRW bills the 3-bucket carve: cache-WRITE (creation)
+	// at a PREMIUM, cache-READ at a DISCOUNT, the remainder at full input.
+	// CacheCreationTokens==0 AND CachedPromptTokens==0 (or NULL cache prices) ⇒
 	// byte-identical to CalculateCost (zero regression for the reconcile holder).
-	costCents, err := calc.CalculateCostWithCache(ctx, record.ServiceType, record.Provider, record.Model,
-		record.PromptTokens, record.CompletionTokens, record.CachedPromptTokens)
+	costCents, err := calc.CalculateCostWithCacheRW(ctx, record.ServiceType, record.Provider, record.Model,
+		record.PromptTokens, record.CompletionTokens, record.CachedPromptTokens, record.CacheCreationTokens)
 	if err != nil {
 		// Pricing rule miss or DB error — leave holder unset so the caller refunds.
 		return

@@ -205,6 +205,13 @@ func run() error {
 		adapter.NewBaiduOCRAdapter(),
 		adapter.NewBailianFileAdapter(),
 		adapter.NewFunASRAdapter(),
+		// Provider-native cache adapters (native-cache-adapters T4). ADDITIVE and
+		// OPT-IN: nothing routes to these until an admin activates a llm_provider
+		// row named exactly "claude-native"/"gemini-native" AND repoints a route at
+		// it (a separate manual step; the T8 migration inserts the rows is_active=0).
+		// Registering them unconditionally is safe — an unused adapter is inert.
+		adapter.NewClaudeNativeAdapter(),
+		adapter.NewGeminiNativeAdapter(),
 	} {
 		gateway.RegisterProvider(p)
 	}
@@ -214,6 +221,17 @@ func run() error {
 
 	aiservice.SetDefault(gateway)
 	log.Infow("AI Service Gateway initialised", "adapters", gateway.AdapterNames())
+
+	// Startup registration assertion (native-cache-adapters T4 / finding #1):
+	// refuse to start if a native llm_provider row is is_active=true but its
+	// adapter is NOT registered in this binary — closing the half-deploy TOCTOU
+	// window where the dmxapi prefix fallback would silently route an Anthropic /
+	// Gemini body to /chat/completions. No active native rows ⇒ no-op (the default
+	// state and the deploy-before-activate window), so zero impact on every
+	// existing deploy. Called AFTER SetDefault, BEFORE SyncProviderCredentials.
+	if err := assertNativeAdaptersRegistered(gateway, store.S.DB()); err != nil {
+		log.Fatalw(err.Error())
+	}
 
 	// 同步 provider 凭据（config → llm_provider 表）
 	if err := aiservice.SyncProviderCredentials(context.Background(), store.S.DB(), viper.GetViper()); err != nil {

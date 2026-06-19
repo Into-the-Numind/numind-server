@@ -626,9 +626,10 @@ func TestSalesRAGProfileAndChatStyleUseFragments(t *testing.T) {
 // CalculateCostWithCache so the salesrag reconcile chain can be verified to
 // thread the prompt-cache HIT count through to pricing.
 type spyPricingCalc struct {
-	gotCached int
-	gotPrompt int
-	cost      int64
+	gotCached   int
+	gotCreation int
+	gotPrompt   int
+	cost        int64
 }
 
 func (s *spyPricingCalc) CalculateCost(_ context.Context, _, _, _ string, pt, _ int) (int64, error) {
@@ -643,6 +644,13 @@ func (s *spyPricingCalc) IsFreeModel(_ context.Context, _, _, _ string) (bool, e
 func (s *spyPricingCalc) CalculateCostWithCache(_ context.Context, _, _, _ string, pt, _, cached int) (int64, error) {
 	s.gotPrompt = pt
 	s.gotCached = cached
+	return s.cost, nil
+}
+
+func (s *spyPricingCalc) CalculateCostWithCacheRW(_ context.Context, _, _, _ string, pt, _, cached, creation int) (int64, error) {
+	s.gotPrompt = pt
+	s.gotCached = cached
+	s.gotCreation = creation
 	return s.cost, nil
 }
 

@@ -21,6 +21,8 @@ features:
     enabled: false            # 通用查询改写器（指代补全+多路改写+HyDE，所有 RAG 共用）。默认关=各消费方走原改写器(零回归)。与可答性门配对启用：先修切块,再两者同时开测试。
   answerability_gate:
     enabled: false            # 可答性门（资料答不了就拒答，与阈值解耦）。默认关=放行(fail-open)。须等切块修好后再开,否则会大面积误拒(检索捞不到答案 chunk)。
+  provider_prompt_cache:
+    enabled: true             # 供应商原生 prompt 缓存（Claude ephemeral / Gemini implicit）全局开关，dev 开启验证；prod 默认 OFF（不配=false）
 
 # 后台管理系统配置
 admin:
