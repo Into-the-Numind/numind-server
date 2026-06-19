@@ -5376,12 +5376,12 @@ features:
   last_updated_at: '2026-06-19T01:10:00+0800'
   created_at: '2026-06-18T23:50:53+0800'
   track: standard
-  stage: S3
+  stage: S5
   status: active
   repos: [numind-server]
   branches: {numind-server: feature/native-cache-adapters}
   worktrees: {numind-server: /private/tmp/wt-native-cache-adapters-numind-server}
-  progress: {total_tasks: 9, completed_tasks: 0, reviewed_tasks: 0}
+  progress: {total_tasks: 9, completed_tasks: 8, reviewed_tasks: 8}
   artifacts:
     spec: requirements/native-cache-adapters-spec.md
   decisions:
