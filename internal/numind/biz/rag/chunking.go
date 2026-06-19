@@ -35,3 +35,14 @@ func RerankHardeningEnabled() bool {
 // 注意：本 flag 仅影响**新入库/重灌**的文档切块，不会改写已入库的旧 chunk；
 // 切换后需对目标文档走 reindex 才生效（见 chunker reindex 端点）。
 const FlagStructureAwareChunking = "features.structure_aware_chunking.enabled"
+
+// FlagKBFallback 控制检索为空时的"列出库里有什么"优雅兜底（RAG 升级项5）。关（默认/
+// 缺省）→ 现状（空检索不注入兜底）。开 → salesrag 把库内文档清单 + 如实拒答指令填入答案
+// prompt 的知识库区，让模型告知范围而非编造或死板拒答。与 answerability_gate 组合：门拒答
+// 致空 → 兜底优雅处理。
+const FlagKBFallback = "features.kb_fallback.enabled"
+
+// KBFallbackEnabled 返回 KB 兜底 feature flag 是否开启。
+func KBFallbackEnabled() bool {
+	return viper.GetBool(FlagKBFallback)
+}
