@@ -297,3 +297,55 @@ func TestStructureSplitter_TableNotBroken(t *testing.T) {
 		t.Errorf("table rows should stay in one chunk; chunks=%d", len(chunks))
 	}
 }
+
+// 真实 FAQ 文档常把多个问答挤在一行（"…收费。 2.设置退费… 3.…"）。归一化后
+// 应识别为 FAQ 档并按问答对切，而非退化成 generic。
+func TestStructureSplitter_InlineFAQ(t *testing.T) {
+	inline := `1.要求阶段性付费，服务好继续合作 回答：我们走长期陪伴，不适合阶段性拆分，所以不会拆阶段收费。 2.设置退费比例 回答：保offer会强迫你投递不想去的岗位；我们定价3万多，没有offer退30%。 3.售前承诺和交付不一致怎么办 回答：我们不靠画饼签单，而是靠大量真实案例和学员转介绍。 4.拿不到offer怎么办退多少钱 回答：我们不是结果导向的退费制服务，价值在过程中把你的竞争力拉高。`
+
+	s := newTestStructureSplitter()
+	chunks, strategy, _, err := s.SplitWithStrategy(inline)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if strategy != StrategyStructureFAQ {
+		t.Fatalf("expected inline FAQ to normalize → structure_faq, got %q", strategy)
+	}
+	if len(chunks) < 3 {
+		t.Fatalf("expected >=3 Q&A chunks from inline FAQ, got %d", len(chunks))
+	}
+	assertCleanContentAndBreadcrumb(t, chunks)
+	// "分期/退费" 问题应与其答案在同一块（答案可被检索到）。
+	var paired bool
+	for _, c := range chunks {
+		if strings.Contains(c.Content, "设置退费比例") && strings.Contains(c.Content, "退30%") {
+			paired = true
+		}
+	}
+	if !paired {
+		t.Errorf("inline FAQ Q2 should pair question with its answer in one chunk")
+	}
+}
+
+func TestNormalizeInlineMarkers(t *testing.T) {
+	// 句末标点 + 内联编号 → 插入换行。
+	got := normalizeInlineMarkers("收费。 2.设置退费")
+	if !strings.Contains(got, "收费。\n2.设置退费") {
+		t.Errorf("inline numbered marker not normalized: %q", got)
+	}
+	// 小数不应被误切（"。3.5" 的 3. 后跟数字，[^0-9] 守卫拦住）。
+	dec := normalizeInlineMarkers("总价是这样。3.5万元起步")
+	if strings.Contains(dec, "。\n3.5") {
+		t.Errorf("decimal 3.5 wrongly split: %q", dec)
+	}
+	// 已换行分隔的内容幂等不变。
+	nl := "收费。\n2.设置退费"
+	if normalizeInlineMarkers(nl) != nl {
+		t.Errorf("already-newline content should be idempotent, got %q", normalizeInlineMarkers(nl))
+	}
+	// 词性 marker（观点N）内联也归一化。
+	op := normalizeInlineMarkers("先建立信任。观点2用提问代替陈述")
+	if !strings.Contains(op, "信任。\n观点2") {
+		t.Errorf("inline 观点 marker not normalized: %q", op)
+	}
+}

@@ -68,7 +68,25 @@ var (
 	// "案例1" / "客户案例二" / "实例3"（容忍前导 "## "；要求显式编号，避免 "示例"/"案例" 裸词误判）。
 	caseMarkerRe = regexp.MustCompile(`^\s*#{0,6}\s*(案例|客户案例|实例|示例)\s*[一二三四五六七八九十百零\d]+`)
 	headerRe     = regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
+
+	// 内联 marker 归一化：真实解析出的 FAQ/案例/观点常把多个单元挤在一行
+	// （"…收费。 2.设置退费… 3.…"），行首锚定的 profile marker 会漏掉内联单元 →
+	// 误判成 generic。这两个正则在【句末标点 + 内联 marker】处插入换行，使
+	// profile/buildSegments 能识别单元。已换行分隔的内容因 [ \t]* 不跨 \n 而保持不变（幂等）。
+	//
+	// 编号：句末标点 + 可选空白 + "N." + 一个非数字字符（[^0-9] 守卫排除 "3.5" 这类小数）。
+	inlineNumberedRe = regexp.MustCompile(`([。！？；）)])[ \t]*(\d{1,3}[.、)）][^0-9])`)
+	// 词性 marker：句末标点 + 可选空白 + 观点N/案例N/问：等。
+	inlineWordMarkerRe = regexp.MustCompile(`([。！？；）)])[ \t]*((?:观点|看法|主张|案例|客户案例|实例|示例)[一二三四五六七八九十百零\d]+|(?:问|Q)[:：])`)
 )
+
+// normalizeInlineMarkers 在句末标点后紧跟的内联 marker 前插入换行，使结构感知切块器
+// 能识别挤在一行内的 FAQ 问答对 / 案例 / 观点单元。对已换行分隔的内容幂等无副作用。
+func normalizeInlineMarkers(s string) string {
+	s = inlineNumberedRe.ReplaceAllString(s, "$1\n$2")
+	s = inlineWordMarkerRe.ReplaceAllString(s, "$1\n$2")
+	return s
+}
 
 // Split 实现 TextSplitter 接口。
 func (s *StructureAwareSplitter) Split(text string) ([]SplitChunk, error) {
@@ -82,6 +100,10 @@ func (s *StructureAwareSplitter) SplitWithStrategy(text string) ([]SplitChunk, s
 	if strings.TrimSpace(text) == "" {
 		return []SplitChunk{}, StrategyNoSplit, "empty", nil
 	}
+
+	// 归一化内联 marker（"…收费。 2.设置…" → 换行分隔），使 FAQ/案例/观点的
+	// 行首锚定 profile 能识别挤在一行的单元。已换行内容幂等不变。
+	text = normalizeInlineMarkers(text)
 
 	profile := s.profile(text)
 	var (
