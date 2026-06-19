@@ -47,6 +47,11 @@ type Options struct {
 	// 仅当 store 实现 port.KeywordSearcher 且关键词通道有结果时才融合；否则退回纯向量
 	// （零回归）。受 feature flag features.hybrid_retrieval.enabled 控制（dev 开、prod 关）。
 	Hybrid bool
+
+	// RerankHardening 开启重排硬化：rerank 输入 passage 去噪清洗 + MMR-lite 去雷同 +
+	// 降级链（0 结果→阈值×0.7 重试→top-1 floor 仅当 ≥0.15）。关（默认）→ 重排逐位维持现状
+	// （零回归）。受 feature flag features.rerank_hardening.enabled 控制（dev 开、prod 关）。
+	RerankHardening bool
 }
 
 // RetrievalResult 检索结果。Chunks 为去重 + 可选重排后的最终切片，

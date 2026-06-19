@@ -333,6 +333,8 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 				// 混合检索（dense + BM25 + RRF）：flag 开 + store 支持关键词通道才生效，
 				// 否则底座自动退回纯向量（零回归）。
 				Hybrid: ragbiz.HybridRetrievalEnabled(),
+				// 重排硬化（passage 清洗 + 去雷同 + 降级链）：flag 开才生效，关=现状（零回归）。
+				RerankHardening: ragbiz.RerankHardeningEnabled(),
 			}
 			result, retErr := b.retrieveSvc.Retrieve(retrieveCtx, effectiveQuery, retrieveScope, retrieveOpts)
 			// 安全网：改写后检索为空（改写可能过度抽象丢了锚词）→ 用原话再检一次，避免 ③ 改写

@@ -166,6 +166,8 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 		// 混合检索（dense + BM25 + RRF）：flag 开 + store 支持关键词通道才生效（产品码/精确
 		// FAQ 措辞命中），否则底座自动退回纯向量（零回归）。仅主通道开，观点库通道不开。
 		Hybrid: ragbiz.HybridRetrievalEnabled(),
+		// 重排硬化（passage 清洗 + 去雷同 + 降级链）：flag 开才生效，关=现状（零回归）。仅主通道。
+		RerankHardening: ragbiz.RerankHardeningEnabled(),
 	})
 
 	// 等待策略选择完成（与主通道并行后汇合，对齐原 wg.Wait 语义）。

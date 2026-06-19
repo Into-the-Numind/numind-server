@@ -1,5 +1,22 @@
 schema_version: '2.0'
 features:
+- id: rag-rerank-hardening
+  track: standard
+  description: 'RAG 升级项3：重排硬化。passage 清洗(rerank 输入去 markdown/表格/链接/公式噪声,不改返回 Content) + MMR-lite 去雷同(trigram Jaccard>0.82 剔近重复) + 降级链(0结果→阈值×0.7重试→top-1 floor 仅当≥0.15,不 ground 在垃圾上)。全程 opts.RerankHardening flag 门控,关=逐位维持现状。复合分/每库校准阈值推迟(依赖调优数据,后续迭代)。flag features.rerank_hardening.enabled 默认 OFF。依赖项1/2。'
+  classification_reason: 'Standard: 改检索核心 rerank 路径 + 多文件(service/types/biz/config) + flag。无 DB schema/无新 API 端点。flag OFF → prod 零影响。'
+  status: active
+  stage: S4
+  repos:
+    numind-server: /private/tmp/wt-rag-rerank-hardening-numind-server (feature/rag-rerank-hardening)
+  worktrees:
+    numind-server: /private/tmp/wt-rag-rerank-hardening-numind-server
+  progress: {total_tasks: 3, completed_tasks: 3, reviewed_tasks: 3}
+  artifacts:
+    design: .ndf/features/rag-rerank-hardening/design.md
+  decisions:
+  - 'S0-S4 (ai 2026-06-20): 项3 重排硬化。范围 MVP=passage清洗+MMR-lite去雷同+降级链(确定性高价值)；推迟复合分(需召回分/源权重plumbing)+每库校准阈值(需每库30-50query跑分)=调参层后续迭代。实现 cleanPassageForRerank/trigramJaccard/dedupDiverse 纯函数 + applyRerankFilter 硬化分支(×0.7重试/0.15 floor) + rerankWithLimit 接清洗与去重。全程 opts.RerankHardening 门控零回归。biz chatbot/salesrag main 接线。config_dev 开。单测 5 个。'
+  - 'S4 双审 PASS (ai 2026-06-20): 两 P2 处理——①降级链在生产路径不可达(chatbot/salesrag main 都 NoFloor=true,门控 !NoFloor)：正确解读=降级链本为 floor-mode 保留,NoFloor(chatbot 0.6 阈值=iDriveCareer 校准的严格拒答)不该被 ×0.7 放松(会降拒答率),故不改 NoFloor、加明确注释说明 live 硬化收益来自清洗+去重(二者对所有 hardening 调用生效,与 NoFloor 无关),降级链为 rag-eval A/B/未来 floor 通道保留;②reMath 误删单 $ 价格→收紧只匹配 $$显示公式$$。补空串+价格保留测试。门禁 build/vet/gofmt/test 全绿。'
+  blockers: []
 - id: rag-hybrid-retrieval
   track: standard
   description: 'RAG 升级项 2：混合检索 dense + BM25(FTS5) + RRF。补关键词检索命中产品码/型号/精确 FAQ 措辞（纯 dense 糊掉）。FTS5 虚拟表(jieba 预分词)双写 + KeywordSearcher 可选接口 + retrieve.Service RRF 融合(k=60,vec0.7/kw0.3,单检索器旁路) + 构建标签 sqlite_fts5 + 降级守卫(FTS5缺失→纯dense)。flag features.hybrid_retrieval.enabled 默认 OFF。依赖项1。'

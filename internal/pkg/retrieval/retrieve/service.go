@@ -15,7 +15,9 @@ package retrieve
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
+	"strings"
 	"sync"
 
 	"numind-server/internal/pkg/aiservice"
@@ -309,7 +311,13 @@ func (s *Service) rerankWithLimit(
 
 	documents := make([]string, len(chunks))
 	for i, chunk := range chunks {
-		documents[i] = chunk.Content
+		// 重排硬化：清洗 passage 去除 markdown/表格/链接/公式噪声再喂 reranker
+		// （只清洗打分输入，返回的 chunk.Content 不变）。flag 关 → 原文，零回归。
+		if opts.RerankHardening {
+			documents[i] = cleanPassageForRerank(chunk.Content)
+		} else {
+			documents[i] = chunk.Content
+		}
 	}
 
 	// 注入 aiservice 上下文：userID + skip-legacy-billing
@@ -349,6 +357,12 @@ func (s *Service) rerankWithLimit(
 	}
 
 	result := applyRerankFilter(chunks, rerankResp.Results, opts)
+
+	// 重排硬化：MMR-lite 去雷同（trigram Jaccard 相似度 > 阈值的近重复块剔除），
+	// 避免返回多条几乎一样的内容（如 3 条雷同产品介绍）。flag 关 → 不去重，零回归。
+	if opts.RerankHardening {
+		result = dedupDiverse(result, rerankDedupSimThreshold)
+	}
 
 	log.C(ctx).Infow(label+" completed",
 		"input_count", len(chunks),
@@ -394,6 +408,33 @@ func applyRerankFilter(
 ) []domain.KnowledgeChunk {
 	threshold := rerankThreshold(opts)
 
+	// 重排硬化（floor 模式）：纯阈值过滤 → 0 结果则阈值×0.7 重试 → 仍空则 top-1 floor
+	// 仅当 ≥0.15（否则返回空，不 ground 在垃圾上）。NoFloor 模式不走此路（空=故意不 grounding）。
+	//
+	// 注意（live 可达性）：当前生产主通道（chatbot / salesrag main）均用 RerankNoFloor=true
+	// （chatbot 0.6 阈值是 iDriveCareer 数据校准过的严格拒答，故意不放松），故本降级链在生产
+	// 路径**不触发**——它为 floor-mode 调用方保留（如 rag-eval A/B / 未来需"尽量给点 grounding
+	// 但拒绝<0.15 垃圾"的通道）。NoFloor 通道的 live 硬化收益来自 passage 清洗 + dedupDiverse
+	// 去雷同（二者在 rerankWithLimit 中对所有 hardening 调用生效，与 NoFloor 无关）。
+	if opts.RerankHardening && !opts.RerankNoFloor {
+		if sel := filterByThreshold(chunks, results, threshold); len(sel) > 0 {
+			return sel
+		}
+		if sel := filterByThreshold(chunks, results, threshold*rerankRetryFactor); len(sel) > 0 {
+			return sel
+		}
+		if len(results) > 0 {
+			bestIdx := results[0].Index
+			if bestIdx >= 0 && bestIdx < len(chunks) && results[0].Score >= rerankTop1FloorMin {
+				chunk := chunks[bestIdx]
+				chunk.Score = float32(results[0].Score)
+				return []domain.KnowledgeChunk{chunk}
+			}
+		}
+		return nil
+	}
+
+	// --- 现状行为（hardening 关 / NoFloor），逐位一致 ---
 	result := make([]domain.KnowledgeChunk, 0, len(results))
 	for i, rr := range results {
 		if rr.Index < 0 || rr.Index >= len(chunks) {
@@ -420,6 +461,112 @@ func applyRerankFilter(
 	}
 
 	return result
+}
+
+// --- 重排硬化辅助（feature flag features.rerank_hardening.enabled）---
+
+const (
+	rerankDedupSimThreshold = 0.82 // trigram Jaccard 相似度 > 此值视为雷同块（去重）
+	rerankRetryFactor       = 0.7  // 0 结果时阈值降级系数
+	rerankTop1FloorMin      = 0.15 // top-1 兜底的最低分（低于则不强塞）
+)
+
+// filterByThreshold 纯阈值过滤（无 keepFloor 自动保留首条），用于硬化降级链。
+func filterByThreshold(chunks []domain.KnowledgeChunk, results []aiservice.RerankResult, threshold float64) []domain.KnowledgeChunk {
+	out := make([]domain.KnowledgeChunk, 0, len(results))
+	for _, rr := range results {
+		if rr.Index < 0 || rr.Index >= len(chunks) {
+			continue
+		}
+		if rr.Score < threshold {
+			continue
+		}
+		chunk := chunks[rr.Index]
+		chunk.Score = float32(rr.Score)
+		out = append(out, chunk)
+	}
+	return out
+}
+
+var (
+	reMdImage  = regexp.MustCompile(`!\[[^\]]*\]\([^)]*\)`)              // ![alt](url)
+	reMdLink   = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)             // [text](url) → text
+	reMath     = regexp.MustCompile(`\$\$[^$]*\$\$`)                     // 仅 $$显示公式$$（不碰单 $ 价格如 $100）
+	reMdHeader = regexp.MustCompile(`(?m)^[ \t]*#{1,6}[ \t]*`)           // # 标题号
+	reMdEmph   = regexp.MustCompile("[*_~`]+")                           // 强调/代码反引号
+	reTableSep = regexp.MustCompile(`(?m)^[ \t]*\|?[ \t:|-]+\|?[ \t]*$`) // 表格分隔行 ---|---
+	reInlineWS = regexp.MustCompile(`[ \t]+`)
+	reMultiNL  = regexp.MustCompile(`\n{2,}`)
+)
+
+// cleanPassageForRerank 去除 markdown/表格/链接/公式噪声，得到更干净的纯文本喂给
+// reranker 模型打分。**只用于 rerank 输入**，不改返回的 chunk.Content。
+func cleanPassageForRerank(s string) string {
+	s = domain.StripContextJoinMarker(s) // 剥旧切块器遗留的 [上下文衔接] 标记
+	s = reMdImage.ReplaceAllString(s, " ")
+	s = reMdLink.ReplaceAllString(s, "$1") // 保留链接锚文本
+	s = reMath.ReplaceAllString(s, " ")
+	s = reTableSep.ReplaceAllString(s, "") // 先去表格分隔行（整行）
+	s = strings.ReplaceAll(s, "|", " ")    // 再去表格竖线
+	s = reMdHeader.ReplaceAllString(s, "")
+	s = reMdEmph.ReplaceAllString(s, "")
+	s = reInlineWS.ReplaceAllString(s, " ")
+	s = reMultiNL.ReplaceAllString(s, "\n")
+	return strings.TrimSpace(s)
+}
+
+// trigramSet 返回字符串的 rune 三元组集合（用于轻量文本相似度）。
+func trigramSet(s string) map[string]struct{} {
+	r := []rune(s)
+	m := make(map[string]struct{})
+	for i := 0; i+3 <= len(r); i++ {
+		m[string(r[i:i+3])] = struct{}{}
+	}
+	return m
+}
+
+// trigramJaccard 计算两段文本的 trigram Jaccard 相似度 [0,1]。
+func trigramJaccard(a, b string) float64 {
+	ta, tb := trigramSet(a), trigramSet(b)
+	if len(ta) == 0 || len(tb) == 0 {
+		return 0
+	}
+	if len(ta) > len(tb) {
+		ta, tb = tb, ta
+	}
+	inter := 0
+	for k := range ta {
+		if _, ok := tb[k]; ok {
+			inter++
+		}
+	}
+	union := len(ta) + len(tb) - inter
+	if union == 0 {
+		return 0
+	}
+	return float64(inter) / float64(union)
+}
+
+// dedupDiverse 按输入（rerank）顺序贪心保留，剔除与已保留块相似度 > simThreshold 的近重复
+// （MMR-lite 多样性）。保持原相对顺序与分数。
+func dedupDiverse(chunks []domain.KnowledgeChunk, simThreshold float64) []domain.KnowledgeChunk {
+	if len(chunks) <= 1 {
+		return chunks
+	}
+	kept := make([]domain.KnowledgeChunk, 0, len(chunks))
+	for _, c := range chunks {
+		dup := false
+		for _, k := range kept {
+			if trigramJaccard(c.Content, k.Content) > simThreshold {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			kept = append(kept, c)
+		}
+	}
+	return kept
 }
 
 // fuseRRF 用 Reciprocal Rank Fusion 融合 dense 与 keyword 两路检索结果。纯函数（无 I/O），
