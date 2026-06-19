@@ -12,14 +12,15 @@ features:
     numind-server: /private/tmp/wt-rag-chunking-numind-server
   progress:
     total_tasks: 4
-    completed_tasks: 3
-    reviewed_tasks: 3
+    completed_tasks: 4
+    reviewed_tasks: 4
   artifacts:
     requirement: .ndf/features/rag-chunking/requirement.md
     design: .ndf/features/rag-chunking/design.md
     plan: .ndf/features/rag-chunking/plan.md
   decisions:
   - 'S0-S3 (ai 2026-06-20): 按 RAG 总计划项 1 推进。范围决策=结构感知小块+面包屑（已验证 +16pp 来源），父子块本期不做（结构感知使块自包含，父块边际收益低+改 schema 风险高；EmbedText 与 Content 解耦已为后续 ParentContent 留扩展位）。面包屑注入用新增瞬态 EmbedText 字段（Upsert 优先 embed 它）实现零 sqlite schema 变更。T1 EmbedText 贯通→T2 StructureAwareSplitter 核心+单测→T3 flag+biz 接线→T4 preview/reindex 端点。S5=后端 dev harness grounding-usefulness A/B 复现 +16pp。'
+  - 'S4 完成 (ai 2026-06-20): 4 task 全实现+每个双 Sonnet 审 PASS。T1(EmbedText 瞬态字段+TextForEmbedding 单一真相源,3 store embed 路径切换,零回归)；T2(StructureAwareSplitter:profile 按 marker 行密度+占比阈值选档,标题只进面包屑不生成碎片段,fragmentRunes 真碎片阈值避免误杀短单元如观点/案例,sentenceSplit 保护代码/表格,validator 退化 fallback；含 8 单测)；T3(flag features.structure_aware_chunking.enabled,biz.go 切块器选择,config_dev 开)；T4(preview 复用单例 splitter 空 DocName=忠实生产+消泄漏/reindex 删旧+Submit 返回 bool 队满报错,USER 服务路由 admin+flag 门控)。review 修复全折叠：caseMarkerRe 要求编号/profile 占比门/http 超时/合并 +2 分隔符/normalizeStrategy 认 structure_*。门禁 build+vet+gofmt+测试全绿。下一步 ndf-done→deploy dev→S5 harness 验证。'
   blockers: []
 - id: meeting-feedback-v2
   track: standard
