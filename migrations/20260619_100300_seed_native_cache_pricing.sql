@@ -18,7 +18,7 @@
 --     model              | input(miss) | output | creation(write) | hit(read)
 --     claude-opus-4-7     | 24.82       | 124.10 | 45.625          | 2.482
 --     claude-sonnet-4-6   | 15.00       | 75.00  | 18.75           | 1.5
---     gemini-3.1-pro      | 10.00       | 60.00  | (NULL — D5)     | 0.993
+--     gemini-3.1-pro-preview | 10.00    | 60.00  | (NULL — D5)     | 0.993
 --   Creation premium ratios match D3 (opus ~1.84×, sonnet ~1.25× over input).
 --   cost == sell (透传 pass-through; 积分制下加价由积分映射体现，不在此层加价),
 --   matching the Batch-A seed convention (20260609_121500_seed_cached_input_pricing).
@@ -65,8 +65,11 @@ VALUES
    15.00, 75.00, 0, 0,
    15.00, 75.00, 0, 0,
    1, NOW(3), NOW(3)),
-  -- Gemini 3.1 Pro (flat)
-  ('llm_chat', 'gemini-native', 'gemini-3.1-pro', 'flat', 'call',
+  -- Gemini 3.1 Pro (flat). Model MUST match the route's provider_model_id sent to
+  -- generateContent (dev/prod gemini routes use 'gemini-3.1-pro-preview'; verified
+  -- 2026-06-19 against DMXAPI :generateContent — implicit cache returns
+  -- cachedContentTokenCount on this exact name).
+  ('llm_chat', 'gemini-native', 'gemini-3.1-pro-preview', 'flat', 'call',
    10.00, 60.00, 0, 0,
    10.00, 60.00, 0, 0,
    1, NOW(3), NOW(3));
@@ -89,11 +92,11 @@ UPDATE pricing_rule
     AND LOWER(model) = 'claude-sonnet-4-6'
     AND cached_input_price_per_m_tok IS NULL;
 
--- gemini-3.1-pro: read ¥0.993 (cachedContentTokenCount discount)
+-- gemini-3.1-pro-preview: read ¥0.993 (cachedContentTokenCount discount)
 UPDATE pricing_rule
   SET cached_input_price_per_m_tok = 0.9930, sell_cached_input_price_per_m_tok = 0.9930
   WHERE service_type = 'llm_chat' AND billing_mode = 'flat' AND provider = 'gemini-native'
-    AND LOWER(model) = 'gemini-3.1-pro'
+    AND LOWER(model) = 'gemini-3.1-pro-preview'
     AND cached_input_price_per_m_tok IS NULL;
 
 -- ============================================================

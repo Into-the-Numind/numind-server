@@ -19,4 +19,4 @@ UPDATE pricing_rule
 DELETE FROM pricing_rule
   WHERE service_type = 'llm_chat'
     AND provider IN ('claude-native', 'gemini-native')
-    AND LOWER(model) IN ('claude-opus-4-7', 'claude-sonnet-4-6', 'gemini-3.1-pro');
+    AND LOWER(model) IN ('claude-opus-4-7', 'claude-sonnet-4-6', 'gemini-3.1-pro-preview');
