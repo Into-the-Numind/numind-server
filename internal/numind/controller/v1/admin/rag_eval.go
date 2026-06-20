@@ -45,6 +45,12 @@ type ragEvalRetrieveReq struct {
 	RerankMinScore float32 `json:"rerank_min_score"`
 	RerankNoFloor  bool    `json:"rerank_no_floor"`
 	RewriteQuery   bool    `json:"rewrite_query"`
+	// Phase-1 RAG 升级 lever，供 harness A/B 隔离测量（默认 false=纯 dense+标准 rerank，
+	// 与历史基线一致）：Hybrid=dense+BM25(FTS5)+RRF；RerankHardening=passage 清洗+去雷同+
+	// 降级链；AnswerabilityCheck=可答性门（wired service 已 WithGate，门受 flag 控）。
+	Hybrid             bool `json:"hybrid"`
+	RerankHardening    bool `json:"rerank_hardening"`
+	AnswerabilityCheck bool `json:"answerability_check"`
 }
 
 type ragEvalChunk struct {
@@ -85,12 +91,15 @@ func (ctl *RAGEvalController) Retrieve(c *gin.Context) {
 
 	scope := retrieve.Scope{UserID: req.UserID, DocumentIDs: req.DocumentIDs, AllEnabled: req.AllEnabled}
 	opts := retrieve.Options{
-		TopK:           req.TopK,
-		RerankTopN:     req.RerankTopN,
-		RerankMinScore: req.RerankMinScore,
-		RerankNoFloor:  req.RerankNoFloor,
-		RewriteQuery:   req.RewriteQuery,
-		BillingLabel:   "rag_eval",
+		TopK:               req.TopK,
+		RerankTopN:         req.RerankTopN,
+		RerankMinScore:     req.RerankMinScore,
+		RerankNoFloor:      req.RerankNoFloor,
+		RewriteQuery:       req.RewriteQuery,
+		Hybrid:             req.Hybrid,
+		RerankHardening:    req.RerankHardening,
+		AnswerabilityCheck: req.AnswerabilityCheck,
+		BillingLabel:       "rag_eval",
 	}
 
 	res, err := ctl.retr.Retrieve(c.Request.Context(), req.Query, scope, opts)
