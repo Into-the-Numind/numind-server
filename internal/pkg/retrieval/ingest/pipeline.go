@@ -47,6 +47,7 @@ type IngestionPipeline struct {
 	docStore   DocumentStatusUpdater     // 文档状态更新器
 	store      port.VectorStore          // 向量数据库
 	chunkStore store.KnowledgeChunkStore // MySQL切片存储
+	doc2query  *Doc2QueryGenerator       // 项4：ingest 期自动问题生成（flag 门控，内部 no-op）
 	docChan    chan *domain.KnowledgeDocument
 }
 
@@ -65,6 +66,7 @@ func NewIngestionPipeline(
 		docStore:   docStore,
 		store:      store,
 		chunkStore: chunkStore,
+		doc2query:  NewDoc2QueryGenerator(),
 		docChan:    make(chan *domain.KnowledgeDocument, 10),
 	}
 	// Start worker
@@ -227,6 +229,10 @@ func (p *IngestionPipeline) process(ctx context.Context, doc *domain.KnowledgeDo
 		p.fail(doc, fmt.Errorf("tagging failed: %w", err))
 		return
 	}
+
+	// 4b. doc2query（项4）：flag 开时给每块生成"可回答的问题"追加进 EmbedText（一起嵌入），
+	// 桥接情境提问↔答案片段的字面鸿沟。在向量化前、结构感知面包屑之后。flag 关 → no-op 零回归。
+	p.doc2query.MaybeAugment(ctx, kChunks)
 
 	// 5. Managed Embedding & Storage（托管向量化与存储）
 	// 更新状态为 EMBEDDING (在托管模式下，存储过程即包含向量化)

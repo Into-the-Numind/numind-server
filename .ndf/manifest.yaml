@@ -1,5 +1,21 @@
 schema_version: '2.0'
 features:
+- id: rag-doc2query
+  track: standard
+  description: 'RAG 升级项4（第二阶段，破情境教练类~60%天花板）：doc2query。ingest 期给每块 LLM 生成"它能回答哪些问题"(含口语化/情境化)追加进 EmbedText 一起嵌入,桥接情境提问↔答案片段的字面鸿沟(切块/BM25/重排都碰不到)。复用项1 EmbedText 机制零新 schema;走 v4-flash(profile.SalesragTagging)内部 userID=0 公司成本不扣用户;并发8 best-effort。flag features.doc2query.enabled 默认 OFF。依赖项1。'
+  classification_reason: 'Standard: ingest 核心加每块 LLM 调用(成本/延迟面)+新文件+pipeline 改+flag+config。无 DB schema/无新 API。flag OFF → prod 零影响。'
+  status: active
+  stage: S4
+  repos:
+    numind-server: /private/tmp/wt-rag-doc2query-numind-server (feature/rag-doc2query)
+  worktrees:
+    numind-server: /private/tmp/wt-rag-doc2query-numind-server
+  progress: {total_tasks: 1, completed_tasks: 1, reviewed_tasks: 1}
+  artifacts:
+    design: .ndf/features/rag-doc2query/design.md
+  decisions:
+  - 'S0-S4 (ai 2026-06-21): 项4。critique 确认 hybrid/hardening=0 正是 doc2query 该做的正面证据(phase-1 只有切块有效,情境教练类抽象鸿沟只能靠 doc2query 破)。Doc2QueryGenerator(MaybeAugment 并发8 best-effort/generate 走 SalesragTagging v4-flash/userID=0 不扣用户)+pipeline tagging 后注入 EmbedText+flag+config_dev 开+单测。S5 用 full-content harness 测情境教练桶。待双审。'
+  blockers: []
 - id: rag-refusal-fallback
   track: standard
   description: 'RAG 升级项5（第一阶段收尾）：拒答/兜底工程。检索为空时把"库内文档清单 + 如实拒答指令(只依据检索资料/没有就说没有/绝不编造价格政策数据)"注入 salesrag 答案 prompt(复用既有知识库区渲染,不改4个prompt builder签名),不 dead-end 不幻觉;启用上一session已建的 answerability_gate(项1切块完成=前提满足);reranker 分门控现状已具备。flag features.kb_fallback.enabled + answerability_gate.enabled 默认 OFF。依赖项1/3。'
