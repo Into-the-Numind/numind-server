@@ -236,6 +236,20 @@ func (p *IngestionPipeline) process(ctx context.Context, doc *domain.KnowledgeDo
 		}
 	}
 
+	// 5b. 删旧块（幂等自清，防孤儿残留）：chunk ID 是位置式 <docID>_<seq>，重切块产出更少
+	// 块时旧尾块（如 doc 重切 24→18，残留 _18.._23）会留在向量库且**可被检索到**→旧切块内容
+	// 泄漏。Upsert 只 REPLACE 当前批 ID，不会清掉超出范围的旧块。故写入前按 docID 整删一次。
+	// 首次入库时为 no-op；重切块/重试时清干净。best-effort：删失败只 warn 不杀入库（与
+	// ReindexDocument/DeleteDocument 一致）。
+	if err := p.store.DeleteByDocumentID(ctx, doc.ID); err != nil {
+		log.Printf("WARN: pre-store vector cleanup for doc %d failed (possible orphan residue): %v", doc.ID, err)
+	}
+	if p.chunkStore != nil {
+		if err := p.chunkStore.DeleteByDocument(ctx, doc.ID); err != nil {
+			log.Printf("WARN: pre-store MySQL chunk cleanup for doc %d failed: %v", doc.ID, err)
+		}
+	}
+
 	// 6. 先存储到MySQL（主数据源，优先写入）
 	log.Printf("Storing %d chunks to MySQL for doc %d", len(kChunks), doc.ID)
 	kChunksVal := make([]domain.KnowledgeChunk, len(kChunks))
