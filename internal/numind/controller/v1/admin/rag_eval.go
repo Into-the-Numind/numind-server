@@ -57,7 +57,11 @@ type ragEvalChunk struct {
 	DocumentID   uint    `json:"document_id"`
 	DocumentName string  `json:"document_name"`
 	Score        float32 `json:"score"`
-	Preview      string  `json:"preview"`
+	Preview      string  `json:"preview"` // 80 runes（向后兼容）
+	// Content 完整切片正文。grounding-usefulness judge 必须看完整内容，否则 80 字预览
+	// 会系统性夸大"小块 vs 大块"差距（大块的答案常在 80 字之后→judge 看到无关开头判没用）。
+	// dev-only 调试端点（features.rag_eval.enabled 门控），返回全文无敏感面。
+	Content string `json:"content"`
 }
 
 // Retrieve runs retrieval for one query and returns the ranked chunks.
@@ -119,6 +123,7 @@ func (ctl *RAGEvalController) Retrieve(c *gin.Context) {
 			DocumentName: ch.DocumentName,
 			Score:        ch.Score,
 			Preview:      preview,
+			Content:      ch.Content,
 		})
 	}
 	core.WriteResponse(c, nil, gin.H{"chunks": out, "rewrite_queries": res.RewriteQueries})
