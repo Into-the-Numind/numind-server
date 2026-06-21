@@ -29,6 +29,8 @@ features:
     enabled: true             # 重排硬化（RAG 升级项3）：rerank 输入 passage 去噪 + MMR-lite 去雷同 + 降级链(0结果阈值×0.7重试/top-1 floor≥0.15)。dev 开启验证；prod 不配=OFF（关=重排逐位维持现状）。复合分/每库校准阈值后续迭代。
   kb_fallback:
     enabled: true             # KB 优雅兜底（RAG 升级项5）：检索为空时把"库里有什么+如实拒答"指令注入答案 prompt，不编造不死板拒答。dev 开启验证；prod 不配=OFF。与 answerability_gate 组合。
+  doc2query:
+    enabled: true             # doc2query（RAG 升级项4，破情境教练类天花板）：ingest 期给每块 LLM 生成"可回答的问题"追加进 EmbedText 一起嵌入，桥接情境提问↔答案片段字面鸿沟。dev 开启验证；prod 不配=OFF。仅影响新入库/重灌文档；每块一次 v4-flash 调用(userID=0 公司成本不扣用户)。
   provider_prompt_cache:
     enabled: true             # 供应商原生 prompt 缓存（Claude ephemeral / Gemini implicit）全局开关，dev 开启验证；prod 默认 OFF（不配=false）
 
