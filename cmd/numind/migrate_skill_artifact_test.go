@@ -36,6 +36,8 @@ func newMigrationTestDB(t *testing.T) *gorm.DB {
 		`CREATE TABLE skill (
 			id                  INTEGER PRIMARY KEY AUTOINCREMENT,
 			parent_user_id      INTEGER NOT NULL,
+			owner_user_id       INTEGER NOT NULL DEFAULT 0,
+			visibility          TEXT    NOT NULL DEFAULT 'institution',
 			name                TEXT    NOT NULL,
 			description         TEXT    NOT NULL DEFAULT '',
 			when_to_use         TEXT    NOT NULL DEFAULT '',
@@ -46,6 +48,8 @@ func newMigrationTestDB(t *testing.T) *gorm.DB {
 			origin_type         TEXT    NOT NULL DEFAULT 'user',
 			version             INTEGER NOT NULL DEFAULT 1,
 			is_active           INTEGER NOT NULL DEFAULT 1,
+			subscription_id     INTEGER NOT NULL DEFAULT 0,
+			marketplace_id      INTEGER NOT NULL DEFAULT 0,
 			created_by          INTEGER NOT NULL,
 			created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
