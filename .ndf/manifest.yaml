@@ -5,24 +5,27 @@ features:
   description: '飞书集成：让每个 C 端用户通过 OAuth 绑定自己的飞书账号,agent 以该用户身份调用一整套飞书 OpenAPI 能力(云文档/消息/多维表格/日历/待办等)。生产不用 lark-cli 本地工具,复用其背后的 OAuth 授权码流程 + 飞书 OpenAPI,用官方 Go SDK larksuite/oapi-sdk-go 按每用户 token 服务端调用。复用 agent FullTool/BaseTool 框架 + context 里已有的 user_id;需新建 OAuth 地基 + user_third_party_account 加密 token 表 + 刷新中间件 + 飞书工具。'
   classification_reason: 'Standard: 新表存 token+migration(标准1) + OAuth 授权/回调 API 端点(标准2) + 飞书 OpenAPI 全新外部集成(标准3) + 后端地基+工具+前端绑定入口>3文件(标准4) + 处理用户授权凭据高风险(标准5)。5 条全中→Standard,提出人确认。'
   status: active
-  stage: S2
+  stage: S3
   repos:
     numind-server: /private/tmp/wt-feishu-integration-numind-server (feature/feishu-integration)
     numind-web-v3: /private/tmp/wt-feishu-integration-numind-web-v3 (feature/feishu-integration)
   worktrees:
     numind-server: /private/tmp/wt-feishu-integration-numind-server
     numind-web-v3: /private/tmp/wt-feishu-integration-numind-web-v3
-  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
+  progress: {total_tasks: 14, completed_tasks: 0, reviewed_tasks: 0}
   artifacts:
     requirement: .ndf/features/feishu-integration/requirement.md
     proposal: .ndf/features/feishu-integration/proposal.md
     design: .ndf/features/feishu-integration/design.md
+    plan: .ndf/features/feishu-integration/plan.md
   decisions:
   - 'S0 (ai 2026-06-23): 需求录入。档位判定→Standard(5 条全中),提出人确认。'
   - 'S0 修正 (ai 2026-06-23): 推翻初稿 ISV 判断。选定方案 A=每用户在自己组织建自建应用+agent 代办(Claude Code/lark-cli 同款),单租户永不跨组织→无需 ISV/无需审核。证据:读 lark-cli 二进制——建应用 API 真实存在(apps +create→/open-apis/spark/v1/apps),用户授权走 OAuth(/open-apis/authen/v2/oauth/token),底层 oapi-sdk-go,lark-cli MIT。唯一工程差异=有数托管 SaaS 须服务端按用户做 provisioning+凭据存储。个人版能否建自建应用=客户侧解决(用户拍板)。'
   - 'S1 (ai 2026-06-23): 提案产出 proposal.md。可行性✅(Explore+独立 Sonnet reviewer 双核实):agent yield/resume 挂起恢复属实(yieldError→persist messages+pending_question_json→waiting_for_user_choice→answer.go ExistingRunID 断点续,mergeResumeTranscript 撑多次暂停),user_id 已流入工具 context,yield 通用任何工具可触发,无现成 OAuth 基建。备选 A 包lark-cli/B 原生/C 混合 Spike→Native,推荐 C。reviewer 6/10 缺口已补:OAuth callback→biz.Answer 链路(state=HMAC/callback 不挂JWT/内部调 biz.Answer)、AES-256-GCM(新建 internal/pkg/crypto)、硬约束不新增 TerminalReason/LoopEvent(复用 waiting_for_user_choice+pause_type)、user_third_party_account 表草案、首批工具 scope。注:本次遇并行 session 把 manifest 退回旧快照,已重建 feishu 块。S1 gate 4 待确认:权限门槛/计费/首批工具/方案C。'
   - 'S1 gate (user 2026-06-23): 提案通过进 S2。决定:①不做功能层会员门(靠 agent runtime 积分消耗自然控制,非会员跑不了 agent)②飞书 API 调用不计 credits③首批工具=写文档/发消息/读多维表格④方案 C。'
   - 'S2 (ai 2026-06-23): 技术设计 design.md 产出。定:4 新端点(/v1/feishu connect/oauth-callback/status/connection,callback 无JWT靠 state HMAC)、user_third_party_account 表+migration、internal/pkg/crypto AES-256-GCM(密钥 config 注入 fail-fast)、yield 加 PauseType+AuthURL 不新增枚举(复用 waiting_for_user_choice)、callback 内部直调 biz.Answer(非HTTP /answer)、3 工具继承 BaseTool 全 returnSoftError、飞书 client 走 oapi-sdk-go 不走 aiservice、工具记 span 非 generation。Phase 0 Spike 先行打掉 bootstrap(R1),第2天不通切方案A wrapper。待 S2 gate 双审+人类确认设计方向。'
+  - 'S2 gate (user 2026-06-23): 确认设计方向,进 S3。'
+  - 'S3 (ai 2026-06-23): 实施计划 plan.md 产出,14 个原子 task(后端 T1-10 先于前端 T11-13,T14=S5 验证策略)。独立 Sonnet reviewer 原子性审 6/10,系统性 wiring 缺口已修:T8 加 SSE payload 传播(stream/events.go+runner_stream.go,否则前端永收不到 pause_type)、T3 加 IStore 扩展+mockgen、T7 加 biz.go IBiz wiring、T10 明确工具从 ds.ThirdPartyAccounts() 懒构建 client、T14 加 gstack OAuth 跨域跳转可行性+mock callback 降级。Phase 0 Spike=T1 先行。待 S3 gate 复审+人类确认。'
   blockers: []
 - id: xhs-collector
   track: standard
