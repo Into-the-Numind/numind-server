@@ -20,22 +20,35 @@ type XhsNoteFilter struct {
 	Keyword      string // 标题/正文模糊匹配，空 = 不过滤
 }
 
-// IXhsStore 定义小红书选题库（xhs_topic_note）的数据库操作接口。
-// 所有方法均带 user 隔离，确保多租户私有累积选题库互不可见。
-type IXhsStore interface {
-	// UpsertNote 按 uk_xtn_user_note(user_id, xhs_note_id) 唯一键 upsert 一条笔记。
+// IXhsTopicStore 定义小红书选题库（xhs_topic_note）的数据库操作接口。
+// 多数方法均带 user 隔离，确保多租户私有累积选题库互不可见。
+//
+// 例外（内部富化流水线专用，无 user_id 谓词，按主键定位）：
+//   - UpdateEnrichStatus / UpdateEnrichResult 是富化流水线内部 helper，
+//     调用方须在调用前通过 GetByIDs（已强制 user_id）确认所有权。
+type IXhsTopicStore interface {
+	// UpsertByUserNote 按 uk_xtn_user_note(user_id, xhs_note_id) 唯一键 upsert 一条笔记。
 	// 新建返回 hashChanged=true；命中已存在记录时比对 ContentHash：变化返回 true 并更新，
 	// 未变化返回 false 且不覆盖已有富化结果。
-	UpsertNote(ctx context.Context, n *model.XhsTopicNote) (hashChanged bool, err error)
+	//
+	// 注意：内容变化时底层用 Save 覆盖全部字段（含 6 个 AI 富化字段与 video_transcript），
+	// 调用方须传入 enrich_status=pending 且 AI 字段置零，以在内容变化时重置富化状态、
+	// 触发重新富化（避免旧内容的陈旧富化结果残留在新内容上）。
+	UpsertByUserNote(ctx context.Context, n *model.XhsTopicNote) (hashChanged bool, err error)
 	// ListNotes 分页查询某用户的选题库，支持 note_type/enrich_status/keyword 过滤。
 	ListNotes(ctx context.Context, userID uint, filter XhsNoteFilter, offset, limit int) ([]model.XhsTopicNote, int64, error)
+	// ListPendingEnrich 扫描 enrich_status='pending' 的待富化队列（跨用户，富化流水线用）。
+	// 不分页、不返回 total，按 crawled_at 升序（先来先富化）返回至多 limit 条。
+	ListPendingEnrich(ctx context.Context, limit int) ([]model.XhsTopicNote, error)
 	// GetNote 按 (user_id, id) 获取单条笔记；不存在返回 errno.ErrXhsNoteNotFound。
 	GetNote(ctx context.Context, userID uint, id uint64) (*model.XhsTopicNote, error)
 	// DeleteNote 按 (user_id, id) 删除单条笔记。
 	DeleteNote(ctx context.Context, userID uint, id uint64) error
 	// UpdateEnrichStatus 仅更新某条笔记的富化状态（富化状态机流转用）。
+	// 内部流水线 helper：按主键定位，无 user_id 隔离，调用方须先经 GetByIDs 确认所有权。
 	UpdateEnrichStatus(ctx context.Context, id uint64, status string) error
 	// UpdateEnrichResult 写回 LLM 富化结果（6 分析字段 + 转写 + enrich_status）。
+	// 内部流水线 helper：按主键定位，无 user_id 隔离，调用方须先经 GetByIDs 确认所有权。
 	UpdateEnrichResult(ctx context.Context, n *model.XhsTopicNote) error
 	// GetByIDs 按 (user_id, ids) 批量获取笔记（所有权校验 / 批量富化用）。
 	GetByIDs(ctx context.Context, userID uint, ids []uint64) ([]model.XhsTopicNote, error)
@@ -45,15 +58,18 @@ type xhsStore struct {
 	db *gorm.DB
 }
 
-var _ IXhsStore = (*xhsStore)(nil)
+var _ IXhsTopicStore = (*xhsStore)(nil)
 
-// NewXhsStore 创建一个 IXhsStore 实例。
-func NewXhsStore(db *gorm.DB) IXhsStore {
+// NewXhsStore 创建一个 IXhsTopicStore 实例。
+func NewXhsStore(db *gorm.DB) IXhsTopicStore {
 	return &xhsStore{db: db}
 }
 
-// UpsertNote 按 uk_xtn_user_note 唯一键 upsert，并返回内容是否变化。
-func (s *xhsStore) UpsertNote(ctx context.Context, n *model.XhsTopicNote) (bool, error) {
+// UpsertByUserNote 按 uk_xtn_user_note 唯一键 upsert，并返回内容是否变化。
+//
+// 内容变化路径使用 Save 覆盖全部字段：调用方须传入 enrich_status=pending 且
+// AI 字段置零，以重置富化状态，触发对新内容的重新富化。
+func (s *xhsStore) UpsertByUserNote(ctx context.Context, n *model.XhsTopicNote) (bool, error) {
 	hashChanged := true
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing model.XhsTopicNote
@@ -87,9 +103,24 @@ func (s *xhsStore) UpsertNote(ctx context.Context, n *model.XhsTopicNote) (bool,
 		return nil
 	})
 	if err != nil {
-		return false, fmt.Errorf("UpsertNote: %w", err)
+		return false, fmt.Errorf("UpsertByUserNote: %w", err)
 	}
 	return hashChanged, nil
+}
+
+// ListPendingEnrich 扫描待富化队列（enrich_status='pending'），按 crawled_at 升序返回至多 limit 条。
+func (s *xhsStore) ListPendingEnrich(ctx context.Context, limit int) ([]model.XhsTopicNote, error) {
+	var list []model.XhsTopicNote
+	query := s.db.WithContext(ctx).
+		Where("enrich_status = ?", model.XhsEnrichPending).
+		Order("crawled_at ASC")
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+	if err := query.Find(&list).Error; err != nil {
+		return nil, fmt.Errorf("ListPendingEnrich: %w", err)
+	}
+	return list, nil
 }
 
 // ListNotes 分页查询某用户的选题库列表。
