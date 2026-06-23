@@ -134,6 +134,33 @@ func TestListNotes_PageSizeClamp(t *testing.T) {
 	assert.Len(t, items, 3)
 }
 
+// TestNormalizePagination 锁定 controller List 回显契约：page=0/page_size=500 必须归一化为
+// 1/100（否则响应回显非法原值，前端分页状态错位）；合法值原样保留；幂等（再归一化不变）。
+func TestNormalizePagination(t *testing.T) {
+	cases := []struct {
+		name               string
+		inPage, inSize     int
+		wantPage, wantSize int
+	}{
+		{"zero page clamps to 1", 0, 20, 1, 20},
+		{"negative page clamps to 1", -5, 20, 1, 20},
+		{"oversize page_size clamps to 100", 1, 500, 1, 100},
+		{"zero page_size falls back to default", 1, 0, 1, defaultPageSize},
+		{"valid values preserved", 3, 50, 3, 50},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, s := NormalizePagination(tc.inPage, tc.inSize)
+			assert.Equal(t, tc.wantPage, p)
+			assert.Equal(t, tc.wantSize, s)
+			// 幂等：对归一化结果再归一化，值不变（controller 预归一化 + biz 内部再归一化纵深防御）。
+			p2, s2 := NormalizePagination(p, s)
+			assert.Equal(t, p, p2)
+			assert.Equal(t, s, s2)
+		})
+	}
+}
+
 // TestListNotes_UserIsolation 验证只返回查询用户自己的笔记（不串户）。
 func TestListNotes_UserIsolation(t *testing.T) {
 	b := NewXhsBiz(seedRows())

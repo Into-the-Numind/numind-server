@@ -84,7 +84,7 @@ type ListFilter struct {
 // 计算 offset 后委托 store（store 已强制 WHERE user_id 隔离），把 model 行映射为 NoteItem。
 // 返回 (列表, 总数, error)，total 供前端分页。
 func (b *XhsBiz) ListNotes(ctx context.Context, userID uint, filter ListFilter, page, pageSize int) ([]NoteItem, int64, error) {
-	page, pageSize = normalizePagination(page, pageSize)
+	page, pageSize = NormalizePagination(page, pageSize)
 	offset := (page - 1) * pageSize
 
 	rows, total, err := b.store.ListNotes(ctx, userID, store.XhsNoteFilter{
@@ -123,8 +123,12 @@ func (b *XhsBiz) DeleteNote(ctx context.Context, userID uint, id uint64) error {
 	return nil
 }
 
-// normalizePagination 归一化分页参数到合法区间。
-func normalizePagination(page, pageSize int) (int, int) {
+// NormalizePagination 归一化分页参数到合法区间（page<1→1；pageSize<1→默认 20；pageSize>100→100）。
+//
+// 导出供 controller 在调用 biz 前预归一化，使响应回显的 page/page_size 与实际查询用值一致
+// （否则客户端发 page=0/page_size=500 时响应会回显原始非法值，前端分页状态会错位）。
+// biz.ListNotes 内部仍会再调一次，对已归一化的值幂等，构成纵深防御。
+func NormalizePagination(page, pageSize int) (int, int) {
 	if page < 1 {
 		page = defaultPage
 	}

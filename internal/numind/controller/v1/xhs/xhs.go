@@ -90,12 +90,17 @@ func (ctl *Controller) List(c *gin.Context) {
 		return
 	}
 
+	// 先归一化分页参数（page<1→1；page_size<1→默认；>100→100），再用归一化后的值
+	// 既调用 biz 又回显到响应，避免客户端发 page=0/page_size=500 时响应回显非法原值、
+	// 导致前端分页状态错位（biz.ListNotes 内部仍会再归一化一次，幂等）。
+	page, pageSize := xhsbiz.NormalizePagination(q.Page, q.PageSize)
+
 	list, total, err := ctl.biz.ListNotes(c.Request.Context(), u.ID, xhsbiz.ListFilter{
 		NoteType:     q.NoteType,
 		Keyword:      q.Keyword,
 		EnrichStatus: q.EnrichStatus,
 		Sort:         q.Sort,
-	}, q.Page, q.PageSize)
+	}, page, pageSize)
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
@@ -104,8 +109,8 @@ func (ctl *Controller) List(c *gin.Context) {
 	core.WriteResponse(c, nil, gin.H{
 		"list":      list,
 		"total":     total,
-		"page":      q.Page,
-		"page_size": q.PageSize,
+		"page":      page,
+		"page_size": pageSize,
 	})
 }
 
