@@ -43,7 +43,7 @@ features:
   worktrees:
     numind-server: /private/tmp/wt-xhs-collector-numind-server
     numind-web-v3: /private/tmp/wt-xhs-collector-numind-web-v3
-  progress: {total_tasks: 12, completed_tasks: 6, reviewed_tasks: 6}
+  progress: {total_tasks: 12, completed_tasks: 10, reviewed_tasks: 10}
   artifacts:
     requirement: .ndf/features/xhs-collector/requirement.md
     proposal: .ndf/features/xhs-collector/proposal.md
