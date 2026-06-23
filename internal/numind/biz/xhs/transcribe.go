@@ -357,7 +357,7 @@ func recordTranscribeSpanError(ctx context.Context, userID uint, noteID uint64, 
 		spanID := langfuse.SpanID()
 		langfuse.CreateSpan(tc.TraceID, spanID, "xhs-video-transcribe-error",
 			langfuse.WithSpanParent(tc.ParentObservationID),
-			langfuse.WithSpanOutput(map[string]string{"error": cause.Error()}),
+			langfuse.WithSpanOutput(map[string]string{"error": cause.Error(), "note_id": fmt.Sprintf("%d", noteID), "user_id": fmt.Sprintf("%d", userID)}),
 		)
 		langfuse.EndSpan(tc.TraceID, spanID)
 	}
