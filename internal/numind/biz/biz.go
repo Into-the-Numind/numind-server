@@ -692,8 +692,12 @@ func NewBiz(ds store.IStore) *biz {
 	// 内部试用「仅记录用量、不扣费、不拦截」由 biz/meeting 的 internalCallCtx 保证。
 	b.meetingService = meetingbiz.NewMeetingBiz(ds)
 
-	// 初始化小红书选题采集摄入服务（xhs-collector）。仅依赖 ds.Xhs() store，无状态。
-	b.xhsService = xhsbiz.NewXhsBiz(ds.Xhs())
+	// 初始化小红书选题采集摄入服务（xhs-collector）+ 异步富化框架（T3b）。
+	// Enricher 拉起 worker pool 消费 pending 队列；Ingest 落库置 pending 后投递。
+	// worker 数 / ffmpeg 并发由 viper xhs.* 配置，无配置兜底默认值。
+	xhsEnricher := xhsbiz.NewEnricher(ds.Xhs())
+	xhsEnricher.StartWorkers()
+	b.xhsService = xhsbiz.NewXhsBizWithEnricher(ds.Xhs(), xhsEnricher)
 
 	// 初始化博主监控服务
 	monitorCooldown := monitor.NewCooldownManager(

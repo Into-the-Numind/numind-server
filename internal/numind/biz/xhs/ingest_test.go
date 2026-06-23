@@ -66,6 +66,7 @@ func (m *mockXhsStore) GetNote(context.Context, uint, uint64) (*model.XhsTopicNo
 }
 func (m *mockXhsStore) DeleteNote(context.Context, uint, uint64) error           { return nil }
 func (m *mockXhsStore) UpdateEnrichStatus(context.Context, uint64, string) error { return nil }
+func (m *mockXhsStore) ClaimForEnrich(context.Context, uint64) (bool, error)     { return false, nil }
 func (m *mockXhsStore) UpdateEnrichResult(context.Context, *model.XhsTopicNote) error {
 	return nil
 }

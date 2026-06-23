@@ -49,6 +49,12 @@ type IXhsTopicStore interface {
 	// UpdateEnrichStatus 仅更新某条笔记的富化状态（富化状态机流转用）。
 	// 内部流水线 helper：按主键定位，无 user_id 隔离，调用方须先经 GetByIDs 确认所有权。
 	UpdateEnrichStatus(ctx context.Context, id uint64, status string) error
+	// ClaimForEnrich 原子地把笔记从 pending 抢占为 enriching（CAS）。
+	// 只有 enrich_status 当前仍为 pending 的笔记会被更新并返回 claimed=true；
+	// 已被其它 worker 抢占（非 pending）返回 claimed=false。用于富化流水线的
+	// 并发二次保护：同一笔记被重复投递时只有一个 worker 抢到、只富化一次，
+	// 避免 read-then-update 的 TOCTOU 窗口导致重复富化重复扣分。
+	ClaimForEnrich(ctx context.Context, id uint64) (claimed bool, err error)
 	// UpdateEnrichResult 写回 LLM 富化结果（6 分析字段 + 转写 + enrich_status）。
 	// 内部流水线 helper：按主键定位，无 user_id 隔离，调用方须先经 GetByIDs 确认所有权。
 	UpdateEnrichResult(ctx context.Context, n *model.XhsTopicNote) error
@@ -229,6 +235,25 @@ func (s *xhsStore) UpdateEnrichStatus(ctx context.Context, id uint64, status str
 		return fmt.Errorf("UpdateEnrichStatus: %w", err)
 	}
 	return nil
+}
+
+// ClaimForEnrich 原子 CAS：仅当 enrich_status='pending' 时置为 'enriching'。
+//
+// 用 UPDATE ... WHERE enrich_status='pending' 的 RowsAffected 判定抢占成功，
+// 把 read-then-check-then-update 收敛为单条原子语句，杜绝两个 worker 同时读到
+// pending 后都富化的 TOCTOU 竞态（防重复富化重复扣分的并发正确性基石）。
+func (s *xhsStore) ClaimForEnrich(ctx context.Context, id uint64) (bool, error) {
+	res := s.db.WithContext(ctx).
+		Model(&model.XhsTopicNote{}).
+		Where("id = ? AND enrich_status = ?", id, model.XhsEnrichPending).
+		Updates(map[string]interface{}{
+			"enrich_status": model.XhsEnrichEnriching,
+			"updated_at":    time.Now(),
+		})
+	if res.Error != nil {
+		return false, fmt.Errorf("ClaimForEnrich: %w", res.Error)
+	}
+	return res.RowsAffected == 1, nil
 }
 
 // UpdateEnrichResult 写回 LLM 富化结果（6 分析字段 + 转写 + enrich_status）。

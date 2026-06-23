@@ -10,11 +10,22 @@ import (
 )
 
 // XhsBiz 持有 store 依赖，承载选题库的业务逻辑（采集摄入 / 富化编排等）。
+//
+// enricher 为可选的异步富化框架（T3b）：非 nil 时 Ingest 落库置 pending 后投递
+// 富化队列。为 nil 时仅落库置 pending，由后续 ListPendingEnrich 扫描兜底捡起，
+// 不丢数据（便于单测注入 nil enricher 隔离富化逻辑）。
 type XhsBiz struct {
-	store store.IXhsTopicStore
+	store    store.IXhsTopicStore
+	enricher *Enricher
 }
 
-// NewXhsBiz 创建一个 XhsBiz 实例。
+// NewXhsBiz 创建一个 XhsBiz 实例（不带富化框架，仅落库）。
 func NewXhsBiz(s store.IXhsTopicStore) *XhsBiz {
 	return &XhsBiz{store: s}
+}
+
+// NewXhsBizWithEnricher 创建一个 XhsBiz 实例并挂上异步富化框架。
+// 应用启动时使用此构造函数，使 Ingest 在落库后自动投递富化队列。
+func NewXhsBizWithEnricher(s store.IXhsTopicStore, e *Enricher) *XhsBiz {
+	return &XhsBiz{store: s, enricher: e}
 }

@@ -72,8 +72,10 @@ type NotePayload struct {
 //   - 阶段二：逐条 upsert。若中途某条 DB 出错，返回 (已成功提交的条数, 已成功的主键, err)
 //     —— 不再谎报 0；幂等设计下调用方可安全整批重试。
 //
-// TODO(T3b/T4/T5): 本 task 仅落库置 pending，不投递富化队列。
-// 后续 task 负责异步消费 pending 笔记走 aiservice.Chat/ASR 富化并扣减积分。
+// 富化投递（T3b）：当且仅当笔记为新增或内容变化（store 返回 hashChanged=true、
+// enrich_status 被重置为 pending）时投递富化队列。内容未变化（hashChanged=false）
+// 时保留已有富化结果、不重复投递，避免重复富化重复扣分。enricher 为 nil 时跳过
+// 投递（由 ListPendingEnrich 扫描兜底）。
 func (b *XhsBiz) Ingest(ctx context.Context, userID uint, payloads []NotePayload) (ingested int, ids []uint64, err error) {
 	if len(payloads) == 0 {
 		return 0, nil, errno.ErrBind.SetMessage("notes 不能为空")
@@ -99,10 +101,14 @@ func (b *XhsBiz) Ingest(ctx context.Context, userID uint, payloads []NotePayload
 		if uErr != nil {
 			return ingested, ids, errno.InternalServerError.SetMessage("Ingest: upsert 笔记 %s 失败: %v", note.XhsNoteID, uErr)
 		}
-		_ = hashChanged // enrich_status 已在 buildNote 中预置为 pending；未变化时 store 不覆盖已有记录
 
 		ingested++
 		ids = append(ids, note.ID)
+
+		// 仅新增或内容变化（已重置为 pending）的笔记才投递富化队列，避免重复富化扣分。
+		if hashChanged && b.enricher != nil {
+			b.enricher.Enqueue(userID, note.ID)
+		}
 	}
 
 	return ingested, ids, nil
