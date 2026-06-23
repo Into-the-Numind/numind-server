@@ -34,14 +34,14 @@ features:
   description: '小红书选题采集插件：把淘宝售卖的"小红书自动创建选题库(电脑插件版V3)"的小红书采集能力移植成有数自有浏览器插件,面向小红书IP陪跑客户。客户在已登录浏览器一键采集笔记(标题/正文/封面/视频/评论/标签/作者/互动数)进有数选题库喂内容生产SOP。采集=纯客户端(扒DOM+读__INITIAL_STATE__,零签名逆向,不经服务端)。明确不做抖音(解析重活在第三方服务端,另立项)。'
   classification_reason: 'Standard: 需新表存采集数据+migration(标准1) + ingest API端点(标准2) + 全新插件工件+后端+前端>3文件(标准4)。积分策略待定(标准5)。多条不满足→Standard。'
   status: active
-  stage: S3
+  stage: S4
   repos:
     numind-server: /private/tmp/wt-xhs-collector-numind-server (feature/xhs-collector)
     numind-web-v3: /private/tmp/wt-xhs-collector-numind-web-v3 (feature/xhs-collector)
   worktrees:
     numind-server: /private/tmp/wt-xhs-collector-numind-server
     numind-web-v3: /private/tmp/wt-xhs-collector-numind-web-v3
-  progress: {total_tasks: 12, completed_tasks: 0, reviewed_tasks: 0}
+  progress: {total_tasks: 12, completed_tasks: 4, reviewed_tasks: 4}
   artifacts:
     requirement: .ndf/features/xhs-collector/requirement.md
     proposal: .ndf/features/xhs-collector/proposal.md
@@ -52,6 +52,7 @@ features:
   - 'S1 (ai+user 2026-06-24,主 session 接手并行 session 的 xhs 工作): 4 决策定案,提案改 B 版(详见 proposal.md)。①数据落地=B 有数自建累积选题库表+列表页(复议:从导出docx改来,选题库本质是累积结构化记录,表是天然形态可直接喂SOP;docx降为可选导出;不连飞书) ②分发=自托管傻瓜引导先上+商店并行 ③LLM(分析)/云服务(ASR)才扣,采集+入库+看列表不扣(ASR现状只记成本不扣需补扣费) ④一键授权。工作量~12天(采集复用plugin3.2.1)。待 S1 gate 确认进 S2。'
   - 'S2 (ai 2026-06-24 自主/goal): design.md v2 产出 + 4维对抗 workflow review(completeness7/feasibility5/billing4/security5)。修全部 P0(无界goroutine→worker pool/异步无recover→defer+detached ctx/重复采集重复扣分→content_hash/ASR计费不动gateway改biz层Reserve/Reconcile/docx非agent调不通改CSV) + 关键 P1(越权防护 user_id from JWT+store WHERE user_id/ext-token加scope最小权限/未登录检测/task profile 三步注册/视频下载不依赖xhs-service)。analysis 定 6 字段。export v1=CSV(docx推v2)。S2 gate 自主通过进 S3。'
   - 'S3 (ai 2026-06-24 自主): plan.md v2(12 task)产出。独立 Sonnet 原子性 reviewer FAIL→修 4 个 P1:拆 T6→T6a(CRUD)/T6b(export),ext-token 并入 T7;enrichOne wiring 归 T4/T5(非 T6);T4 补 pricing_rule 非零验收;T5 repro-first 强制 commit 顺序(test FAIL→impl 分开)。S5 策略已审(ASR 高风险走 Go 持久化回归/插件无法 E2E 诚实声明)。S3 gate 自主通过进 S4。'
+  - 'S4-c1 (ai 自主 workflow): 后端基础 T1-T3b + T6a-ingest 实现(model/migration/store/ingest 校验+content_hash 去重/富化 worker pool+recover+detached ctx/ingest controller+router),16-agent workflow 串行实现+双审+修复。go build/xhs三包测试/vet/lint 全绿。坑:T1 fix-agent 在 worktree 误重建残缺 .ndf(worktree 从旧 develop 切),已同步回 develop 真 spec + manifest 还原切出点。cmd/numind+migrations 7 个测试失败=pre-existing develop 噪声(干净 checkout 同样失败,无关 xhs)。progress 4/12 reviewed4。下一步 T4/T5 计费。'
   blockers: []
 - id: rag-doc2query
   track: standard
