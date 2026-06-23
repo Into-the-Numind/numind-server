@@ -500,7 +500,16 @@ func (r *agentRunner) persistAndEmitYield(ctx context.Context, runID uint64, st 
 			MultiSelect: q.MultiSelect,
 		})
 	}
-	emit(stream.EventQuestionPrompt, stream.QuestionPromptPayload{Questions: qs})
+	// feishu-integration: forward PauseType/AuthURL so the streaming frontend can
+	// render an authorization card on an auth pause. Without this the SSE path
+	// carries only the questions and never the pause classification (only the
+	// persisted pending_question_json would), leaving the live-stream frontend
+	// unable to tell an auth pause from a question pause.
+	emit(stream.EventQuestionPrompt, stream.QuestionPromptPayload{
+		Questions: qs,
+		PauseType: p.PauseType,
+		AuthURL:   p.AuthURL,
+	})
 	// Drive the state machine (parity with runner.go's Run yield path) —
 	// this sets st.TerminalReason = TerminalWaitingForUserChoice.
 	st.Transition(LoopEventAskUserPaused)

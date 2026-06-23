@@ -10,13 +10,44 @@ import (
 // the user answers via POST /v1/agent-runs/:id/answer.
 var ErrYieldForUserQuestion = errors.New("agent: yield for user question")
 
+// PauseType classifies why a run yielded, so the frontend can pick the right
+// pause UI. It is carried on YieldPayload and surfaced over SSE
+// (QuestionPromptPayload). The empty string is treated as PauseTypeQuestion for
+// backward compatibility with rows/payloads persisted before feishu-integration.
+//
+// IMPORTANT: this is NOT a new TerminalReason/LoopEvent enum — those are fixed
+// compile-time arrays ([14]TerminalReason / [21]LoopEvent). An auth pause still
+// terminates the loop as TerminalWaitingForUserChoice via LoopEventAskUserPaused;
+// PauseType only refines the rendering of that single waiting state.
+const (
+	// PauseTypeQuestion is an ordinary ask_user_question pause (default).
+	PauseTypeQuestion = "question"
+	// PauseTypeAuth is a third-party authorization pause (e.g. Feishu OAuth):
+	// the frontend renders an authorization card from AuthURL instead of an
+	// options/free-text question card.
+	PauseTypeAuth = "auth"
+)
+
 // YieldPayload is the structured question payload carried by yieldError.
 // The runner serializes this to JSON and stores it in agent_run.pending_question_json.
 //
 // agent-multi-question: a single yield may pose 1-4 independent questions at once
 // (Claude Code's AskUserQuestion model), each with its own header/options/mode.
+//
+// feishu-integration: PauseType/AuthURL extend the payload to support
+// authorization pauses (PauseTypeAuth) without adding a TerminalReason/LoopEvent.
+// Both are omitempty so an ordinary question yield serializes identically to the
+// pre-feishu shape (backward compatible). For an auth pause the runner-persisted
+// pending_question_json carries them, and the SSE question_prompt event mirrors
+// them so the streaming frontend (T13) can render an authorization card.
 type YieldPayload struct {
 	Questions []YieldQuestion `json:"questions"`
+
+	// PauseType classifies the pause: "question" (default/empty) or "auth".
+	PauseType string `json:"pause_type,omitempty"`
+
+	// AuthURL is the third-party authorization URL, set only when PauseType=auth.
+	AuthURL string `json:"auth_url,omitempty"`
 }
 
 // YieldQuestion is one independent question with its own options/header/mode.
@@ -43,6 +74,10 @@ type YieldOption struct {
 func ParsePendingQuestion(raw []byte) (YieldPayload, error) {
 	var probe struct {
 		Questions []YieldQuestion `json:"questions"`
+		// feishu-integration: pause classification + auth URL (round-tripped so
+		// the reload/non-stream path sees the same shape the runner persisted).
+		PauseType string `json:"pause_type"`
+		AuthURL   string `json:"auth_url"`
 		// Legacy single-question top-level fields (pre-agent-multi-question).
 		Question    string        `json:"question"`
 		Header      string        `json:"header"`
@@ -60,7 +95,11 @@ func ParsePendingQuestion(raw []byte) (YieldPayload, error) {
 			MultiSelect: probe.MultiSelect,
 		}}
 	}
-	return YieldPayload{Questions: probe.Questions}, nil
+	return YieldPayload{
+		Questions: probe.Questions,
+		PauseType: probe.PauseType,
+		AuthURL:   probe.AuthURL,
+	}, nil
 }
 
 // yieldError wraps ErrYieldForUserQuestion with the payload.

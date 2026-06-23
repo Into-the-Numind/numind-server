@@ -223,8 +223,21 @@ type QuestionPromptItem struct {
 //
 // agent-multi-question: carries 1-4 independent questions (Claude Code's
 // AskUserQuestion model). The frontend renders a tabbed navigator over them.
+//
+// feishu-integration: PauseType/AuthURL mirror YieldPayload so the streaming
+// frontend can render an authorization card on an auth pause. Without these the
+// SSE path would never carry pause_type (only the non-stream
+// pending_question_json would), so the frontend (T13) could not distinguish an
+// auth pause from a question pause on a live stream. Both are omitempty so an
+// ordinary question prompt serializes identically to the pre-feishu shape.
 type QuestionPromptPayload struct {
 	Questions []QuestionPromptItem `json:"questions"`
+
+	// PauseType is "question" (default/empty) or "auth".
+	PauseType string `json:"pause_type,omitempty"`
+
+	// AuthURL is the third-party authorization URL, set only when PauseType=auth.
+	AuthURL string `json:"auth_url,omitempty"`
 }
 
 // TerminalPayload signals the end of the stream and carries run summary data.
