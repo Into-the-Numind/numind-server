@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS xhs_topic_note (
 
   enrich_status VARCHAR(24) DEFAULT 'pending' COMMENT 'pending/enriching/done/partial/failed/insufficient_credits',
   collected_at TIMESTAMP NULL COMMENT '客户端采集时刻(payload 传入)',
-  crawled_at TIMESTAMP NULL COMMENT '服务端入库时刻',
+  crawled_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '服务端入库时刻',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
