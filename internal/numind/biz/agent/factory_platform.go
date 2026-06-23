@@ -5,10 +5,16 @@ import (
 
 	"numind-server/internal/numind/biz/agent/skills"
 	"numind-server/internal/numind/biz/credit"
+	"numind-server/internal/numind/biz/feishu"
 	"numind-server/internal/numind/biz/memory"
 	"numind-server/internal/numind/biz/sandbox"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/crypto"
+	"numind-server/internal/pkg/log"
+	redispkg "numind-server/internal/pkg/redis"
 	"numind-server/internal/pkg/retrieval/retrieve"
+
+	"github.com/spf13/viper"
 )
 
 type platformToolFactory struct {
@@ -19,6 +25,11 @@ type platformToolFactory struct {
 	skillRegistry skills.Registry       // disk platform skills; nil = load_skill serves DB-bound skills only
 	skillPool     sandbox.SkillPool     // retained for forward compat (run_python uses sandbox.Pool, not SkillPool; load_skill does not need sandbox)
 	creditService credit.ICreditService // agent-mode-billing T9: image_gen explicit Reserve/Reconcile; nil = no billing (tests)
+
+	// larkProviderOverride is a test-only seam (feishu-integration T10): when set,
+	// newLarkProvider returns it instead of building a Redis-backed feishu.Client
+	// from config. Production always leaves it nil → the real lazy build runs.
+	larkProviderOverride feishu.LarkAPIProvider
 }
 
 // SetFactoryCreditService injects the credit service into a platform tool factory
@@ -102,7 +113,11 @@ func (f *platformToolFactory) DisplayName() string { return "平台内置工具"
 //	create_png_chart                                    (V1.5 output-skills task 4.3)
 //	run_python                                          (V1.5 output-skills task 4.9)
 //
-// When f.ds is non-nil, memory_write + memory_read are appended (20 tools, else 18).
+// When f.ds is non-nil, memory_write + memory_read are appended.
+//
+// feishu-integration T10: when a 飞书 LarkAPIProvider can be built (feature flag on
+// + ds + Redis), the three lark_* tools (lark_create_doc / lark_send_message /
+// lark_read_bitable) are additionally appended — see newLarkProvider.
 func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMetadata, error) {
 	var attStore store.IAgentAttachmentStore
 	if f.ds != nil {
@@ -188,7 +203,71 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 			ToolMetadata{ToolName: "memory_read", DisplayName: "记忆读取", Description: "Read learner's long-term memory by key or kind.", Source: "platform", Category: "记忆"},
 		)
 	}
+
+	// feishu-integration T10: the three 飞书 (Lark) tools. Registered ONLY when the
+	// integration is enabled AND a per-user LarkAPIProvider can be built from the
+	// store's ThirdPartyAccounts (lazy build — NewPlatformToolFactory's signature is
+	// unchanged; the feishu client is derived from the already-injected ds). When the
+	// flag is off, or the client can't be built (missing AES key / Redis down), the
+	// tools are simply not registered — they'd otherwise only soft-error per call.
+	if provider := f.newLarkProvider(); provider != nil {
+		tools = append(tools,
+			&larkCreateDocTool{provider: provider},
+			&larkSendMessageTool{provider: provider},
+			&larkReadBitableTool{provider: provider},
+		)
+		metadata = append(metadata,
+			ToolMetadata{ToolName: "lark_create_doc", DisplayName: "创建飞书文档", Description: "Create a 飞书 document and write content into it (scope docx:document).", Source: "platform", RiskLevel: "moderate", Category: "飞书"},
+			ToolMetadata{ToolName: "lark_send_message", DisplayName: "发送飞书消息", Description: "Send a 飞书 message to a user or chat (scope im:message).", Source: "platform", RiskLevel: "moderate", Category: "飞书"},
+			ToolMetadata{ToolName: "lark_read_bitable", DisplayName: "读取飞书多维表格", Description: "Read records from a 飞书 Bitable table (scope bitable:app:readonly).", Source: "platform", RiskLevel: "safe", Category: "飞书"},
+		)
+	}
 	return tools, metadata, nil
+}
+
+// newLarkProvider lazily builds the per-user feishu.LarkAPIProvider backing the
+// three 飞书 tools. It returns nil (→ tools not registered) when:
+//   - the store is absent (unit tests),
+//   - features.feishu_integration.enabled is false, or
+//   - a required dependency is missing (AES token key / Redis) — in which case it
+//     logs and degrades to "no 飞书 tools" rather than half-wiring them.
+//
+// Dependencies mirror biz/feishu_adapter.go's buildFeishuService: the token
+// cipher (security.thirdparty_token_key), the HTTP token refresher, and a
+// Redis-backed per-user refresh lock. The provider is built once per LoadTools.
+func (f *platformToolFactory) newLarkProvider() feishu.LarkAPIProvider {
+	// Test seam: a directly-injected provider short-circuits the config/Redis build.
+	if f.larkProviderOverride != nil {
+		return f.larkProviderOverride
+	}
+	if f.ds == nil {
+		return nil
+	}
+	if !viper.GetBool("features.feishu_integration.enabled") {
+		return nil
+	}
+
+	cipher, err := crypto.NewCipher(viper.GetString("security.thirdparty_token_key"))
+	if err != nil {
+		log.Errorw("feishu tools: build token cipher failed; 飞书 tools disabled", "err", err)
+		return nil
+	}
+	rdb := redispkg.GetClient()
+	if rdb == nil {
+		log.Errorw("feishu tools: redis unavailable (required for refresh lock); 飞书 tools disabled")
+		return nil
+	}
+	locker, err := feishu.NewRedisRefreshLocker(rdb)
+	if err != nil {
+		log.Errorw("feishu tools: build refresh locker failed; 飞书 tools disabled", "err", err)
+		return nil
+	}
+	client, err := feishu.NewClient(f.ds.ThirdPartyAccounts(), cipher, feishu.NewHTTPTokenRefresher(), locker)
+	if err != nil {
+		log.Errorw("feishu tools: build client failed; 飞书 tools disabled", "err", err)
+		return nil
+	}
+	return client
 }
 
 // newLoadSkillTool builds the load_skill tool, wiring a marketplace snapshot

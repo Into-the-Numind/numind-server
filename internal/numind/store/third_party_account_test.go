@@ -1,0 +1,244 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"numind-server/internal/pkg/crypto"
+	"numind-server/internal/pkg/model"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
+)
+
+// newThirdPartyAccountTestDB 创建 user_third_party_account store 测试用的内存 SQLite DB。
+// blob 列在 sqlite 下退化为 BLOB，[]byte 往返兼容；唯一索引由 GORM tag 在 AutoMigrate 建出。
+func newThirdPartyAccountTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared&_busy_timeout=5000"
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.UserThirdPartyAccount{}))
+
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1) // 同名内存库多连接会锁，限单连接
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	return db
+}
+
+// testCipher 构造一个固定 32 字节密钥的 crypto.Cipher，供加密往返断言用。
+func testCipher(t *testing.T) *crypto.Cipher {
+	t.Helper()
+	// base64 of 32 bytes "0123456789abcdef0123456789abcdef"
+	c, err := crypto.NewCipher("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	require.NoError(t, err)
+	return c
+}
+
+func TestThirdPartyAccountStore_UpsertAndGet_CryptoRoundTrip(t *testing.T) {
+	db := newThirdPartyAccountTestDB(t)
+	s := newThirdPartyAccountStore(db)
+	ctx := context.Background()
+	cph := testCipher(t)
+
+	// store 持久化的是密文（Enc 字段）。biz/store 边界负责加密 → 此处模拟边界。
+	secretEnc, err := cph.Encrypt([]byte("app-secret-plain"))
+	require.NoError(t, err)
+	accessEnc, err := cph.Encrypt([]byte("user-access-token-plain"))
+	require.NoError(t, err)
+	refreshEnc, err := cph.Encrypt([]byte("refresh-token-plain"))
+	require.NoError(t, err)
+
+	exp := time.Now().Add(2 * time.Hour).UTC().Truncate(time.Second)
+	acc := &model.UserThirdPartyAccount{
+		UserID:          7,
+		Provider:        "lark",
+		AppID:           "cli_app_001",
+		AppSecretEnc:    secretEnc,
+		AccessTokenEnc:  accessEnc,
+		RefreshTokenEnc: refreshEnc,
+		TokenExpiresAt:  &exp,
+		Scopes:          "docx:document im:message bitable:app:readonly",
+	}
+	require.NoError(t, s.Upsert(ctx, acc))
+	assert.NotZero(t, acc.ID, "Upsert 应回填自增 ID")
+
+	got, err := s.Get(ctx, 7, "lark")
+	require.NoError(t, err)
+	assert.Equal(t, "cli_app_001", got.AppID)
+	assert.Equal(t, "docx:document im:message bitable:app:readonly", got.Scopes)
+	require.NotNil(t, got.TokenExpiresAt)
+	assert.WithinDuration(t, exp, got.TokenExpiresAt.UTC(), time.Second)
+
+	// 加密往返：读出的密文用 crypto 解密应得原文。
+	gotSecret, err := cph.Decrypt(got.AppSecretEnc)
+	require.NoError(t, err)
+	assert.Equal(t, "app-secret-plain", string(gotSecret))
+	gotAccess, err := cph.Decrypt(got.AccessTokenEnc)
+	require.NoError(t, err)
+	assert.Equal(t, "user-access-token-plain", string(gotAccess))
+	gotRefresh, err := cph.Decrypt(got.RefreshTokenEnc)
+	require.NoError(t, err)
+	assert.Equal(t, "refresh-token-plain", string(gotRefresh))
+}
+
+func TestThirdPartyAccountStore_Upsert_Idempotent(t *testing.T) {
+	db := newThirdPartyAccountTestDB(t)
+	s := newThirdPartyAccountStore(db)
+	ctx := context.Background()
+
+	first := &model.UserThirdPartyAccount{
+		UserID: 7, Provider: "lark", AppID: "cli_app_001",
+		AppSecretEnc: []byte("e1"), AccessTokenEnc: []byte("a1"), Scopes: "docx:document",
+	}
+	require.NoError(t, s.Upsert(ctx, first))
+	firstID := first.ID
+	require.NotZero(t, firstID)
+
+	// 同 (user, provider) 二次 Upsert = 更新（幂等），不应新建行。
+	second := &model.UserThirdPartyAccount{
+		UserID: 7, Provider: "lark", AppID: "cli_app_002",
+		AppSecretEnc: []byte("e2"), AccessTokenEnc: []byte("a2"), Scopes: "docx:document im:message",
+	}
+	require.NoError(t, s.Upsert(ctx, second))
+
+	// 只有一行
+	var count int64
+	require.NoError(t, db.Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ?", 7, "lark").Count(&count).Error)
+	assert.EqualValues(t, 1, count, "重复授权应 UPSERT 更新，不新建行")
+
+	got, err := s.Get(ctx, 7, "lark")
+	require.NoError(t, err)
+	assert.Equal(t, "cli_app_002", got.AppID, "Upsert 应更新 AppID")
+	assert.Equal(t, "docx:document im:message", got.Scopes, "Upsert 应更新 Scopes")
+	assert.Equal(t, []byte("a2"), got.AccessTokenEnc, "Upsert 应更新 access token 密文")
+}
+
+func TestThirdPartyAccountStore_Get_Miss(t *testing.T) {
+	db := newThirdPartyAccountTestDB(t)
+	s := newThirdPartyAccountStore(db)
+	ctx := context.Background()
+
+	_, err := s.Get(ctx, 7, "lark")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, gorm.ErrRecordNotFound),
+		"未连接应返回 gorm.ErrRecordNotFound 供 biz 走未连接分支")
+}
+
+func TestThirdPartyAccountStore_Get_IsolatedByUserAndProvider(t *testing.T) {
+	db := newThirdPartyAccountTestDB(t)
+	s := newThirdPartyAccountStore(db)
+	ctx := context.Background()
+
+	require.NoError(t, s.Upsert(ctx, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: "lark", AppID: "a", AccessTokenEnc: []byte("x"),
+	}))
+
+	// 不同 user 不命中
+	_, err := s.Get(ctx, 8, "lark")
+	assert.True(t, errors.Is(err, gorm.ErrRecordNotFound), "跨用户应隔离")
+
+	// 不同 provider 不命中
+	_, err = s.Get(ctx, 7, "dingtalk")
+	assert.True(t, errors.Is(err, gorm.ErrRecordNotFound), "跨 provider 应隔离")
+}
+
+func TestThirdPartyAccountStore_Delete(t *testing.T) {
+	db := newThirdPartyAccountTestDB(t)
+	s := newThirdPartyAccountStore(db)
+	ctx := context.Background()
+
+	require.NoError(t, s.Upsert(ctx, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: "lark", AppID: "a", AccessTokenEnc: []byte("x"),
+	}))
+
+	require.NoError(t, s.Delete(ctx, 7, "lark"))
+
+	_, err := s.Get(ctx, 7, "lark")
+	assert.True(t, errors.Is(err, gorm.ErrRecordNotFound), "Delete 后应查不到")
+}
+
+func TestThirdPartyAccountStore_Delete_NotFound(t *testing.T) {
+	db := newThirdPartyAccountTestDB(t)
+	s := newThirdPartyAccountStore(db)
+	ctx := context.Background()
+
+	// 解绑幂等：删不存在的连接不报错（design §5 callback/解绑幂等心智）。
+	err := s.Delete(ctx, 7, "lark")
+	assert.NoError(t, err, "解绑不存在的连接应幂等无错")
+}
+
+func TestThirdPartyAccountStore_UpdateTokens(t *testing.T) {
+	db := newThirdPartyAccountTestDB(t)
+	s := newThirdPartyAccountStore(db)
+	ctx := context.Background()
+
+	require.NoError(t, s.Upsert(ctx, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: "lark", AppID: "a",
+		AccessTokenEnc: []byte("old-access"), RefreshTokenEnc: []byte("old-refresh"),
+	}))
+
+	newExp := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	require.NoError(t, s.UpdateTokens(ctx, 7, "lark",
+		[]byte("new-access"), []byte("new-refresh"), &newExp))
+
+	got, err := s.Get(ctx, 7, "lark")
+	require.NoError(t, err)
+	assert.Equal(t, []byte("new-access"), got.AccessTokenEnc)
+	assert.Equal(t, []byte("new-refresh"), got.RefreshTokenEnc)
+	require.NotNil(t, got.TokenExpiresAt)
+	assert.WithinDuration(t, newExp, got.TokenExpiresAt.UTC(), time.Second)
+	assert.Equal(t, "a", got.AppID, "UpdateTokens 不应改 AppID")
+}
+
+func TestThirdPartyAccountStore_UpdateTokens_NotFound(t *testing.T) {
+	db := newThirdPartyAccountTestDB(t)
+	s := newThirdPartyAccountStore(db)
+	ctx := context.Background()
+
+	err := s.UpdateTokens(ctx, 7, "lark", []byte("a"), []byte("r"), nil)
+	assert.True(t, errors.Is(err, gorm.ErrRecordNotFound),
+		"刷新不存在的连接应返回 ErrRecordNotFound 而非静默成功")
+}
+
+func TestThirdPartyAccountStore_UpdateTokens_NilRefreshAndExp(t *testing.T) {
+	db := newThirdPartyAccountTestDB(t)
+	s := newThirdPartyAccountStore(db)
+	ctx := context.Background()
+
+	require.NoError(t, s.Upsert(ctx, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: "lark", AppID: "a", AccessTokenEnc: []byte("old"),
+	}))
+
+	// 飞书未返回 refresh_token / 过期时间时，传 nil 应写入 NULL（指针字段不被误判过期）。
+	require.NoError(t, s.UpdateTokens(ctx, 7, "lark", []byte("new"), nil, nil))
+
+	got, err := s.Get(ctx, 7, "lark")
+	require.NoError(t, err)
+	assert.Equal(t, []byte("new"), got.AccessTokenEnc)
+	assert.Nil(t, got.TokenExpiresAt, "传 nil exp 应写入 NULL")
+}
+
+// 验证 datastore.ThirdPartyAccounts() 返回的实例可正常工作（IStore 扩展接通）。
+func TestDatastore_ThirdPartyAccounts(t *testing.T) {
+	db := newThirdPartyAccountTestDB(t)
+	ds := NewTestStore(db)
+	ctx := context.Background()
+
+	require.NoError(t, ds.ThirdPartyAccounts().Upsert(ctx, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: "lark", AppID: "a", AccessTokenEnc: []byte("x"),
+	}))
+	got, err := ds.ThirdPartyAccounts().Get(ctx, 7, "lark")
+	require.NoError(t, err)
+	assert.Equal(t, "a", got.AppID)
+}
