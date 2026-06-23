@@ -15,8 +15,11 @@ features:
   progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
   artifacts:
     requirement: .ndf/features/feishu-integration/requirement.md
+    proposal: .ndf/features/feishu-integration/proposal.md
   decisions:
-  - 'S0 (ai 2026-06-23): 需求录入。档位判定→Standard(5 条全中),提出人确认。硬约束已核实:C 端任意用户授权=必须做商店应用(ISV)+飞书官方审核(外部依赖,数周,gating 上线时间线);OAuth user_access_token 自建/商店一致(RFC 6749,≤6900s 需刷新)。OAuth 机制成熟、agent 工具框架+context user_id 现成,贵在 OAuth/token 存储/刷新地基(一次性)。5 个待决项留 S1:ISV 资质主体、首批能力范围、个人版安装路径、计费策略、token 安全加密。'
+  - 'S0 (ai 2026-06-23): 需求录入。档位判定→Standard(5 条全中),提出人确认。'
+  - 'S0 修正 (ai 2026-06-23): 推翻初稿 ISV 判断。选定方案 A=每用户在自己组织建自建应用+agent 代办(Claude Code/lark-cli 同款),单租户永不跨组织→无需 ISV/无需审核。证据:读 lark-cli 二进制——建应用 API 真实存在(apps +create→/open-apis/spark/v1/apps),用户授权走 OAuth(/open-apis/authen/v2/oauth/token),底层 oapi-sdk-go,lark-cli MIT。唯一工程差异=有数托管 SaaS 须服务端按用户做 provisioning+凭据存储。个人版能否建自建应用=客户侧解决(用户拍板)。'
+  - 'S1 (ai 2026-06-23): 提案产出 proposal.md。可行性✅(Explore+独立 Sonnet reviewer 双核实):agent yield/resume 挂起恢复属实(yieldError→persist messages+pending_question_json→waiting_for_user_choice→answer.go ExistingRunID 断点续,mergeResumeTranscript 撑多次暂停),user_id 已流入工具 context,yield 通用任何工具可触发,无现成 OAuth 基建。备选 A 包lark-cli/B 原生/C 混合 Spike→Native,推荐 C。reviewer 6/10 缺口已补:OAuth callback→biz.Answer 链路(state=HMAC/callback 不挂JWT/内部调 biz.Answer)、AES-256-GCM(新建 internal/pkg/crypto)、硬约束不新增 TerminalReason/LoopEvent(复用 waiting_for_user_choice+pause_type)、user_third_party_account 表草案、首批工具 scope。注:本次遇并行 session 把 manifest 退回旧快照,已重建 feishu 块。S1 gate 4 待确认:权限门槛/计费/首批工具/方案C。'
   blockers: []
 - id: xhs-collector
   track: standard
