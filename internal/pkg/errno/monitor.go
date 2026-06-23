@@ -11,4 +11,5 @@ var (
 	ErrXhsNotBound             = &Errno{HTTP: 400, Code: "Monitor.XhsNotBound", Message: "小红书账号未绑定"}
 	ErrXhsQRSessionNotFound    = &Errno{HTTP: 404, Code: "Monitor.XhsQRSessionNotFound", Message: "二维码会话不存在或已过期"}
 	ErrXhsQRLoginFailed        = &Errno{HTTP: 502, Code: "Monitor.XhsQRLoginFailed", Message: "小红书二维码登录失败"}
+	ErrXhsNoteNotFound         = &Errno{HTTP: 404, Code: "Monitor.XhsNoteNotFound", Message: "选题笔记不存在"}
 )
