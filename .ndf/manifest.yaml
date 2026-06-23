@@ -33,8 +33,10 @@ features:
   progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
   artifacts:
     requirement: .ndf/features/xhs-collector/requirement.md
+    proposal: .ndf/features/xhs-collector/proposal.md
   decisions:
   - 'S0 (ai 2026-06-23): 需求录入。逆向已完成(小红书纯客户端 DOM+__INITIAL_STATE__ 采集可自建;抖音排除)。档位判定→Standard,用户确认。4 个待决项留 S1:数据落地(有数/飞书/both)、插件分发(Chrome商店/自托管)、积分策略、客户鉴权。'
+  - 'S1 (用户拍板 2026-06-23): 4 决策锁定——①输出=导出 docx,不做选题库页面/不做飞书;②分发=v1 自托管+傻瓜引导(开发者模式),商店上架以后并行(同份插件不改码);③扣分=用 LLM 或外部云服务才扣→视频转文字稿(ASR)+AI分析扣,采集/拼docx不扣(注:ASR 现状只记成本不扣用户,需补扣费逻辑);④鉴权=一键授权(OAuth式回调,不手动输码)。提案+PRD 已出,涉及 numind-server+numind-web-v3(插件放 web-v3 新目录)。工作量~15 工作日。'
   blockers: []
 - id: rag-doc2query
   track: standard
