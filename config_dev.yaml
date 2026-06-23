@@ -216,6 +216,17 @@ monitor:
     request_interval_seconds: 5
     max_consecutive_failures: 5
 
+# 小红书选题采集（xhs-collector）富化 + 视频 ASR 转写配置
+xhs:
+  enrich_workers: 5          # 异步富化 worker 数
+  ffmpeg_workers: 2          # ffmpeg/ASR 本地并发上限（独立信号量，不复用 monitor）
+  enrich_queue_size: 256     # 富化队列缓冲容量
+  ffmpeg_path: "ffmpeg"      # ffmpeg 可执行路径
+  temp_dir: "/tmp/numind-xhs/"
+  # 视频转写 ASR 费率：积分/秒（0.008 = 0.00008 元/秒 ÷ 0.01 元/积分）。
+  # biz 层显式 Reserve(保守额 min(估时,600s)×费率) → ASR 后 Reconcile(ceil(实际秒×费率))。
+  asr_credits_per_second: 0.008
+
 # Langfuse AI 可观测性配置
 langfuse:
   enabled: true

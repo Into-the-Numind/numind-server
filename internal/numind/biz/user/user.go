@@ -47,6 +47,10 @@ type UserBiz interface {
 	// Web端登录
 	WebLogin(req *v1.WebLoginRequest) (*v1.WebLoginResponse, error)
 
+	// IssueScopedToken 为指定用户签发带 scope claim 的 web token（xhs-collector T7：
+	// 浏览器插件一键授权换发 scope="xhs" 受限 token）。返回 token 与到期时刻。
+	IssueScopedToken(ctx context.Context, userID uint, scope string) (string, time.Time, error)
+
 	// 客户管理
 	CreateCustomer(ctx context.Context, parentUserID uint, r *v1.CreateCustomerRequest) error
 	CheckUsernameUsage(ctx context.Context, username string) error
@@ -342,19 +346,50 @@ func (b *userBiz) Delete(ctx context.Context, username string) error {
 	return nil
 }
 
-// generateWebToken 生成Web端登录JWT token（7天有效期）
+// webTokenTTL 是 Web 端登录 / scope token 的有效期（7天）。
+const webTokenTTL = 7 * 24 * time.Hour
+
+// generateWebToken 生成Web端登录JWT token（7天有效期，无 scope —— 全功能放行）。
 func (s *userBiz) generateWebToken(user *model.User) (string, error) {
-	// Web端登录token有效期为7天
-	expireDays := 7
-	expireHours := expireDays * 24 // 7天 = 168小时
+	token, _, err := s.signWebToken(user.ID, "")
+	return token, err
+}
+
+// signWebToken 是 generateWebToken 的 scope 变体（xhs-collector T7）：
+// scope=="" 时签发与既有登录完全一致的 token（不写 scope claim，向后兼容旧 token）；
+// scope!="" 时额外写入 "scope" claim（如 "xhs"），由 user_token 中间件做最小权限收敛。
+// 复用同一 7 天 TTL。返回 token 字符串与到期时刻（供 ext-token 端点回显 expires_at）。
+func (s *userBiz) signWebToken(userID uint, scope string) (string, time.Time, error) {
+	expiresAt := time.Now().Add(webTokenTTL)
 
 	claims := jwt.MapClaims{
-		"user_id": user.ID,
-		"exp":     time.Now().Add(time.Duration(expireHours) * time.Hour).Unix(),
+		"user_id": userID,
+		"exp":     expiresAt.Unix(),
+	}
+	if scope != "" {
+		claims["scope"] = scope
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(viper.GetString("jwt.secret")))
+	signed, err := token.SignedString([]byte(viper.GetString("jwt.secret")))
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return signed, expiresAt, nil
+}
+
+// IssueScopedToken 为指定用户签发带 scope claim 的 web token（xhs-collector T7）。
+// 用于浏览器插件一键授权：换发 scope="xhs" 的受限 token，中间件仅放行 /v1/xhs/* 路由。
+//
+// tech debt（无 DB 吊销）：本 token 与普通 web token 一样是无状态 JWT，注销/改密不会
+// 主动失效，只能等 7 天 TTL 自然过期或加入 token 黑名单。后续如需即时吊销，应引入
+// 持久化的 token 记录表 + 吊销列表（已登记为 follow-up，不在 v1 范围）。
+func (s *userBiz) IssueScopedToken(ctx context.Context, userID uint, scope string) (string, time.Time, error) {
+	// 校验用户存在（避免为不存在/已删除用户签发 token）。
+	if _, err := s.ds.Users().GetUserByID(ctx, userID); err != nil {
+		return "", time.Time{}, err
+	}
+	return s.signWebToken(userID, scope)
 }
 
 // WebLogin Web端用户名密码登录

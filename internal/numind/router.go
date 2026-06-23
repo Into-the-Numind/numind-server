@@ -31,6 +31,7 @@ import (
 	sopcontroller "numind-server/internal/numind/controller/v1/sop"
 	"numind-server/internal/numind/controller/v1/user"
 	"numind-server/internal/numind/controller/v1/user_billing"
+	xhscontroller "numind-server/internal/numind/controller/v1/xhs"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/core"
@@ -344,6 +345,20 @@ func installNumindRouters(g *gin.Engine) error {
 		}
 	}
 
+	// 小红书选题采集（xhs-collector）：浏览器插件批量上送笔记 payload 落入用户私有累积选题库。
+	// AuthMiddleware 由 authGroup 继承；user_id 从鉴权上下文取，保证多租户归属不可伪造。
+	{
+		xhsCtrl := xhscontroller.NewController(b.Xhs(), b.Users())
+		xhsGroup := authGroup.Group("/xhs")
+		{
+			xhsGroup.GET("/ext-token", xhsCtrl.ExtToken)   // 换发 scope=xhs 受限 token 给浏览器插件（一键授权，不扣分）
+			xhsGroup.POST("/notes", xhsCtrl.Ingest)        // 批量摄入插件采集的笔记（去重 upsert，置 pending）
+			xhsGroup.GET("/notes", xhsCtrl.List)           // 分页查询当前用户选题库（note_type/keyword/enrich_status/sort 过滤）
+			xhsGroup.POST("/notes/export", xhsCtrl.Export) // 导出选中笔记为 CSV（≤200 条，COS + 1h 签名链接，不扣分）
+			xhsGroup.GET("/notes/:id", xhsCtrl.Get)        // 单条选题笔记详情（user 隔离）
+			xhsGroup.DELETE("/notes/:id", xhsCtrl.Delete)  // 删除单条选题笔记（user 隔离）
+		}
+	}
 	// 飞书集成（feishu-integration T7）：per-user 自建应用 + OAuth 连接 + 解绑。
 	// 整组套 FeatureFlag —— flag off（prod 默认）时所有路由返回 ErrFeatureDisabled(404)。
 	// b.FeishuSvc() 在 flag on 但服务构造失败（如 Redis 不可用）时为 nil → 跳过注册

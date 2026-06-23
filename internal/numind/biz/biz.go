@@ -45,6 +45,7 @@ import (
 	sopbiz "numind-server/internal/numind/biz/sop"
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/biz/volc"
+	xhsbiz "numind-server/internal/numind/biz/xhs"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/aiservice/registry"
@@ -95,6 +96,7 @@ type IBiz interface {
 	MemoryCadence() *memory.CadenceService          // Task 3.6 dialectic cadence gate (Task 3.7 caller)
 	SearchService() search.Service                  // Task 3.5 FULLTEXT search (router.go consumer)
 	RagRetrieve() *retrieve.Service                 // 底座检索服务（rag-eval-harness：admin 评估端点复用真实检索栈）
+	Xhs() *xhsbiz.XhsBiz                            // xhs-collector — 小红书选题采集摄入服务
 	FeishuSvc() feishu.IFeishuService               // feishu-integration T7: 飞书连接/OAuth 服务（flag off → nil）
 }
 
@@ -133,6 +135,8 @@ type biz struct {
 	uploadSvc         *attachment.UploadService    // wired with fallback (V1.5 task 1.2)
 	documentSvc       documentbiz.IDocumentService // document-system: 单实例(持久化导出并发守卫)
 	sandboxPool       sandbox.Pool                 // document-system 导出复用(spec §3.5b)；未来 healthcheck 可访问
+	xhsService        *xhsbiz.XhsBiz               // xhs-collector 小红书选题采集摄入服务
+	xhsEnricher       *xhsbiz.Enricher             // xhs-collector 异步富化 worker pool（Stop on shutdown）
 	feishuSvc         feishu.IFeishuService        // feishu-integration T7: 飞书连接/OAuth 服务（flag off → nil）
 }
 
@@ -692,6 +696,18 @@ func NewBiz(ds store.IStore) *biz {
 	// 内部试用「仅记录用量、不扣费、不拦截」由 biz/meeting 的 internalCallCtx 保证。
 	b.meetingService = meetingbiz.NewMeetingBiz(ds)
 
+	// 初始化小红书选题采集摄入服务（xhs-collector）+ 异步富化框架（T3b）。
+	// Enricher 拉起 worker pool 消费 pending 队列；Ingest 落库置 pending 后投递。
+	// worker 数 / ffmpeg 并发由 viper xhs.* 配置，无配置兜底默认值。
+	// WithBiller 注入 credit 服务 + 用户读取，激活视频 ASR 转写的 biz 层显式扣费（T5）。
+	// design §4.3：ASR 计费在 biz 层 Reserve/Reconcile，**不动 gateway**（避免误伤 monitor/
+	// 会议副驾的 ASR 透传路径）。须在 StartWorkers 前注入，确保 worker 富化时已挂上 biller。
+	xhsEnricher := xhsbiz.NewEnricher(ds.Xhs()).WithBiller(creditSvc, ds.Users())
+	xhsEnricher.StartWorkers()
+	b.xhsService = xhsbiz.NewXhsBizWithEnricher(ds.Xhs(), xhsEnricher)
+	// 存入 biz struct，供 numind.go shutdown 序列调 CloseXhsEnricher 优雅 drain。
+	b.xhsEnricher = xhsEnricher
+
 	// 初始化博主监控服务
 	monitorCooldown := monitor.NewCooldownManager(
 		viper.GetInt("monitor.cooldown.check_minutes"),
@@ -878,6 +894,11 @@ func (b *biz) Meeting() meetingbiz.IMeetingBiz {
 	return b.meetingService
 }
 
+// Xhs 返回小红书选题采集摄入服务实例（xhs-collector）。
+func (b *biz) Xhs() *xhsbiz.XhsBiz {
+	return b.xhsService
+}
+
 // Agents 返回 Agent Runtime 实例（agent-mode #2 runtime-skeleton）。
 func (b *biz) Agents() agent.AgentRunner {
 	return b.agentRunner
@@ -990,6 +1011,17 @@ func (b *biz) CloseMemoryExtractor(_ context.Context) {
 func (b *biz) CloseDigestCron(_ context.Context) {
 	if b.memoryDigestCron != nil {
 		b.memoryDigestCron.Stop()
+	}
+}
+
+// CloseXhsEnricher 优雅停止 xhs-collector 异步富化 worker pool（close enrichQ +
+// wg.Wait 等所有 worker 退出）。与 CloseMemoryExtractor / CloseDigestCron 同 shutdown
+// 模式：在 httpsrv.Shutdown 之后调用，此时不再有新 Enqueue。未调时进程退出 worker
+// 随之结束，但 in-flight job 可能把笔记卡在 enriching；调用 Stop 让其干净 drain。
+// Stop 内部用 sync.Once 保证幂等。xhs-collector T3b.
+func (b *biz) CloseXhsEnricher(_ context.Context) {
+	if b.xhsEnricher != nil {
+		b.xhsEnricher.Stop()
 	}
 }
 
