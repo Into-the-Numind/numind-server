@@ -31,7 +31,7 @@ var authoritativeNativeReadRows = []struct {
 }{
 	{"claude-native", "claude-opus-4-7", "2.4820"},
 	{"claude-native", "claude-sonnet-4-6", "1.5000"},
-	{"gemini-native", "gemini-3.1-pro", "0.9930"},
+	{"gemini-native", "gemini-3.1-pro-preview", "0.9930"},
 }
 
 // authoritativeNativeCreationRows = the Claude (provider, model) rows whose

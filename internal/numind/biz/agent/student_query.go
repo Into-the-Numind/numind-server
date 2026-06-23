@@ -495,6 +495,14 @@ type agentMessage struct {
 	// the frontend always sees a populated array on the messages it reads it from.
 	Questions    []questionPromptItem `json:"questions,omitempty"`
 	AnswerStatus string               `json:"answer_status,omitempty"` // 'pending' | 'answered'
+
+	// feishu-integration: pause classification + auth URL on a synthesized
+	// question_prompt card so a RELOADED / polled session (design §10 auto续显)
+	// renders an authorization card for an auth pause, not a plain question card.
+	// Mirrors the live SSE QuestionPromptPayload.PauseType/AuthURL. Both omitempty
+	// so ordinary question cards serialize unchanged.
+	PauseType string `json:"pause_type,omitempty"`
+	AuthURL   string `json:"auth_url,omitempty"`
 }
 
 // questionPromptOpt mirrors the frontend QuestionPromptOption {label, description}.
@@ -567,6 +575,9 @@ func synthesizeQuestionPrompt(run *model.AgentRun) (agentMessage, bool) {
 		Questions:    items,
 		AnswerStatus: "pending",
 		Timestamp:    ts,
+		// feishu-integration: carry the pause classification onto the reloaded card.
+		PauseType: payload.PauseType,
+		AuthURL:   payload.AuthURL,
 	}, true
 }
 

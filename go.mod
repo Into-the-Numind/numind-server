@@ -37,6 +37,7 @@ require (
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/gorilla/websocket v1.5.3
 	github.com/hashicorp/golang-lru/v2 v2.0.7
+	github.com/larksuite/oapi-sdk-go/v3 v3.9.6
 	github.com/mattn/go-sqlite3 v1.14.34
 	github.com/philippgille/chromem-go v0.7.0
 	github.com/pkoukk/tiktoken-go v0.1.8

@@ -33,6 +33,8 @@ features:
     enabled: true             # doc2query（RAG 升级项4，破情境教练类天花板）：ingest 期给每块 LLM 生成"可回答的问题"追加进 EmbedText 一起嵌入，桥接情境提问↔答案片段字面鸿沟。dev 开启验证；prod 不配=OFF。仅影响新入库/重灌文档；每块一次 v4-flash 调用(userID=0 公司成本不扣用户)。
   provider_prompt_cache:
     enabled: true             # 供应商原生 prompt 缓存（Claude ephemeral / Gemini implicit）全局开关，dev 开启验证；prod 默认 OFF（不配=false）
+  feishu_integration:
+    enabled: true             # 飞书集成（per-user 自建应用 + OAuth + agent 工具），dev 开启验证；prod 不配=OFF
 
 # 后台管理系统配置
 admin:
@@ -41,6 +43,26 @@ admin:
 jwt:
   secret: Rtg8BPKNEf2mB4mgvKONGPZZQSaJWNLijxR42qRgq0iBb5 # JWT 签发密钥
   expire-hours: 24 # JWT 过期时间，单位：小时
+
+# 安全密钥（feishu-integration）。两把独立密钥（泄露隔离）：
+#   thirdparty_token_key —— AES-256-GCM 加密第三方凭据（飞书 user_access_token / app_secret），32 字节 base64。
+#   feishu_state_key     —— HMAC-SHA256 签 OAuth callback 的 state（防 CSRF/重放），独立于上面的加密密钥。
+# 禁硬编码进业务代码、禁进 config_prod.yaml（prod 由运维另注）。缺失/非法 → 启动 fail-fast。
+security:
+  thirdparty_token_key: ADelMwutNZ6zrhIsxW9k7h5Ht29YHyQI0I6ib60jnpM=
+  feishu_state_key: HfG9iLmTU+6sj32w1iP6aq6zlKG8UW6+AegZIXISuKQ=
+
+# 飞书集成（feishu-integration T7）。OAuth/连接服务的环境相关 URL + scope。
+#   web_base_url —— 前端 base，callback 成功/失败后 302 回 ${web_base_url}/settings/connections。
+#   redirect_uri —— 注册到飞书开放平台「重定向 URL 白名单」的 callback 地址（须与对外路径一致）。
+#   authorize_url / scopes 留空时用代码默认（authen/v1/authorize + 首批全部 scope）。
+# dev 走 youshu.asia/dev 反代（与 payment notify_url 同前缀）；端到端验证须先在飞书后台把
+# redirect_uri 加进重定向白名单（见 plan S5 前置环境）。
+feishu:
+  web_base_url: "https://youshu.asia/dev"
+  redirect_uri: "https://youshu.asia/dev/api/v1/feishu/oauth/callback"
+  # authorize_url: ""   # 留空=默认 https://open.feishu.cn/open-apis/authen/v1/authorize
+  # scopes: ""          # 留空=默认 "docx:document im:message bitable:app:readonly"
 
 # MySQL 数据库相关配置
 db:

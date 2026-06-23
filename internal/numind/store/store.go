@@ -56,12 +56,13 @@ type IStore interface {
 	// V1.5 v2-compact-adapter-integration — V2 L0 工具写盘表（compact_dead_schema_cleanup
 	// 删了 IAgentCompactV2Store，V2 prevention 状态在 adapter compactor 内存里自管）。
 	ToolArtifact() IAgentToolArtifactStore
-	AgentAttachments() IAgentAttachmentStore // V1.5 multimodal fallback task 1.2
-	Marketplaces() IMarketplaceStore         // agent-mode-v2-skill-marketplace — skill_marketplace + skill_subscription
-	Announcements() IAnnouncementStore       // notification-center — 公告/问卷通知中心
-	Documents() IDocumentStore               // document-system — AI 生成产物的可编辑文档
-	Meetings() IMeetingStore                 // meeting-copilot — 会议副驾会话/分段/反馈/预设
-	Xhs() IXhsTopicStore                     // xhs-collector — 小红书选题采集累积选题库
+	AgentAttachments() IAgentAttachmentStore     // V1.5 multimodal fallback task 1.2
+	Marketplaces() IMarketplaceStore             // agent-mode-v2-skill-marketplace — skill_marketplace + skill_subscription
+	Announcements() IAnnouncementStore           // notification-center — 公告/问卷通知中心
+	Documents() IDocumentStore                   // document-system — AI 生成产物的可编辑文档
+	Meetings() IMeetingStore                     // meeting-copilot — 会议副驾会话/分段/反馈/预设
+	ThirdPartyAccounts() IThirdPartyAccountStore // feishu-integration — 第三方平台(飞书)加密凭据
+	Xhs() IXhsTopicStore                         // xhs-collector — 小红书选题采集累积选题库
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -310,4 +311,9 @@ func (ds *datastore) Meetings() IMeetingStore {
 // Xhs 返回一个实现了 IXhsTopicStore 接口的实例（xhs-collector）。
 func (ds *datastore) Xhs() IXhsTopicStore {
 	return NewXhsStore(ds.db)
+}
+
+// ThirdPartyAccounts 返回一个实现了 IThirdPartyAccountStore 接口的实例（feishu-integration）。
+func (ds *datastore) ThirdPartyAccounts() IThirdPartyAccountStore {
+	return newThirdPartyAccountStore(ds.db)
 }

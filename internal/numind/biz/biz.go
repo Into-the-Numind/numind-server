@@ -23,6 +23,7 @@ import (
 	"numind-server/internal/numind/biz/credit"
 	customerbiz "numind-server/internal/numind/biz/customer"
 	documentbiz "numind-server/internal/numind/biz/document"
+	"numind-server/internal/numind/biz/feishu"
 	kbbiz "numind-server/internal/numind/biz/knowledgebase"
 	"numind-server/internal/numind/biz/llmrouter"
 	meetingbiz "numind-server/internal/numind/biz/meeting"
@@ -96,6 +97,7 @@ type IBiz interface {
 	SearchService() search.Service                  // Task 3.5 FULLTEXT search (router.go consumer)
 	RagRetrieve() *retrieve.Service                 // 底座检索服务（rag-eval-harness：admin 评估端点复用真实检索栈）
 	Xhs() *xhsbiz.XhsBiz                            // xhs-collector — 小红书选题采集摄入服务
+	FeishuSvc() feishu.IFeishuService               // feishu-integration T7: 飞书连接/OAuth 服务（flag off → nil）
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -135,6 +137,7 @@ type biz struct {
 	sandboxPool       sandbox.Pool                 // document-system 导出复用(spec §3.5b)；未来 healthcheck 可访问
 	xhsService        *xhsbiz.XhsBiz               // xhs-collector 小红书选题采集摄入服务
 	xhsEnricher       *xhsbiz.Enricher             // xhs-collector 异步富化 worker pool（Stop on shutdown）
+	feishuSvc         feishu.IFeishuService        // feishu-integration T7: 飞书连接/OAuth 服务（flag off → nil）
 }
 
 // NewBiz 创建一个 IBiz 类型的实例.
@@ -779,6 +782,20 @@ func NewBiz(ds store.IStore) *biz {
 	b.attachFallbackSvc = agentatt.NewFallbackService(ds.AgentAttachments())
 	b.uploadSvc = attachment.NewUploadServiceWithFallback(ds.AgentAttachments(), b.attachFallbackSvc)
 
+	// feishu-integration T7: 飞书连接/OAuth 服务（仅 flag 开时构造，与 numind.go
+	// 的 crypto.MustInit / feishu.MustValidateStateKey fail-fast 对齐）。
+	// 构造失败（如 Redis 未就绪、密钥缺失）只 log 不阻塞启动——router.go 整组套
+	// FeatureFlag，flag off 时路由不注册，b.feishuSvc 留 nil 安全；flag on 但构造
+	// 失败则该 feature 端点会因 nil svc 而被 router 跳过（见 router 注册守卫）。
+	if viper.GetBool("features.feishu_integration.enabled") {
+		if fsvc, ferr := buildFeishuService(b.studentRunSvc, ds.ThirdPartyAccounts(), ds.AgentRuns()); ferr != nil {
+			log.Errorw("feishu-integration: service wiring failed; 飞书 endpoints disabled this process", "error", ferr)
+		} else {
+			b.feishuSvc = fsvc
+			log.Infow("feishu-integration: connection/OAuth service wired")
+		}
+	}
+
 	// 设置全局单例，供 middleware/cron 等无法注入 biz 的代码路径使用。
 	// 确保 store.S 已在 numind.go 中完成初始化后才调用 NewBiz。
 	B = b
@@ -935,6 +952,13 @@ func (b *biz) SearchService() search.Service {
 // AttachmentFallback 返回异步 fallback 生成服务实例（V1.5 task 1.2）。
 func (b *biz) AttachmentFallback() agentatt.FallbackService {
 	return b.attachFallbackSvc
+}
+
+// FeishuSvc 返回飞书连接/OAuth 服务实例（feishu-integration T7）。
+// 仅当 features.feishu_integration.enabled 开启时在 NewBiz 中构造；否则返回 nil
+// （router.go 整组套 FeatureFlag 中间件，flag off 时路由根本不注册，故 nil 安全）。
+func (b *biz) FeishuSvc() feishu.IFeishuService {
+	return b.feishuSvc
 }
 
 // PermissionGate 返回 Permission 网关实例（agent-mode #6 permission-pipeline）。

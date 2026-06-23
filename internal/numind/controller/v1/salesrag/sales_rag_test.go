@@ -29,6 +29,7 @@ import (
 	"numind-server/internal/numind/biz/credit"
 	customerbiz "numind-server/internal/numind/biz/customer"
 	documentbiz "numind-server/internal/numind/biz/document"
+	"numind-server/internal/numind/biz/feishu"
 	kbbiz "numind-server/internal/numind/biz/knowledgebase"
 	"numind-server/internal/numind/biz/llmrouter"
 	meetingbiz "numind-server/internal/numind/biz/meeting"
@@ -144,6 +145,7 @@ func (b *realBizOnlyCustomers) MemoryCadence() *memory.CadenceService        { r
 func (b *realBizOnlyCustomers) SearchService() search.Service                { return nil }
 func (b *realBizOnlyCustomers) RagRetrieve() *retrieve.Service               { return nil }
 func (b *realBizOnlyCustomers) Xhs() *xhsbiz.XhsBiz                          { return nil }
+func (b *realBizOnlyCustomers) FeishuSvc() feishu.IFeishuService             { return nil }
 
 // compile-time guard: this test struct must satisfy biz.IBiz or tests fail here.
 var _ biz.IBiz = (*realBizOnlyCustomers)(nil)
