@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	userbiz "numind-server/internal/numind/biz/user"
 	xhsbiz "numind-server/internal/numind/biz/xhs"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
@@ -18,12 +19,14 @@ import (
 
 // Controller 是小红书选题采集用户端控制器。
 type Controller struct {
-	biz *xhsbiz.XhsBiz
+	biz     *xhsbiz.XhsBiz
+	userBiz userbiz.UserBiz // 用于 ext-token 端点换发 scope=xhs token（T7）
 }
 
 // NewController 创建小红书选题采集控制器（沿用 NewXxxController(biz) 模式）。
-func NewController(biz *xhsbiz.XhsBiz) *Controller {
-	return &Controller{biz: biz}
+// userBiz 供 ext-token 端点签发浏览器插件授权 token。
+func NewController(biz *xhsbiz.XhsBiz, userBiz userbiz.UserBiz) *Controller {
+	return &Controller{biz: biz, userBiz: userBiz}
 }
 
 // IngestRequest 是 POST /v1/xhs/notes 的请求体：浏览器插件批量上送的笔记 payload。

@@ -22,6 +22,15 @@ import (
 // 由 numind.go 在 NewBiz 完成后注入，避免 middleware → biz → salesrag → middleware 循环依赖。
 var CheckFeaturePermissionFunc func(ctx context.Context, userID uint, featureKey string) (bool, error)
 
+// scopeXhs 是浏览器插件 ext-token 的 scope claim 值（xhs-collector T7）。
+// 携带此 scope 的 token 是最小权限令牌：只能访问 /v1/xhs/* 路由，打其它 /v1/* 路由被 403 拒绝。
+// 无 scope claim 的普通 web token 不受影响（向后兼容）。
+const scopeXhs = "xhs"
+
+// scopeXhsPathPrefix 是 scope=xhs token 唯一允许访问的路径前缀。
+// 注意带尾随斜杠，确保 /v1/xhs/notes 等子路由匹配；裸 /v1/xhs（无意义）不放行。
+const scopeXhsPathPrefix = "/v1/xhs/"
+
 // Logger 日志中间件
 func Logger() gin.HandlerFunc {
 	return gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
@@ -72,9 +81,52 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
+		// 最小权限收敛（xhs-collector T7）：scope=xhs 的 ext-token 仅放行 /v1/xhs/* 路由。
+		// 无 scope claim 的普通 web token 不受影响。enforceTokenScope 在被拒时已写响应并 Abort。
+		if !enforceTokenScope(c, token) {
+			return
+		}
+
 		c.Set("current_user", user)
 		c.Next()
 	}
+}
+
+// tokenScope 解析 JWT 的 "scope" claim（不做签名外的其它校验——token 已由 ValidateToken
+// 验签 + 验黑名单通过）。无 scope claim 或解析失败 → 返回空串（视为无 scope 的全功能 token）。
+func tokenScope(tokenString string) string {
+	parsed, _, err := jwt.NewParser().ParseUnverified(tokenString, jwt.MapClaims{})
+	if err != nil {
+		return ""
+	}
+	claims, ok := parsed.Claims.(jwt.MapClaims)
+	if !ok {
+		return ""
+	}
+	s, _ := claims["scope"].(string)
+	return s
+}
+
+// enforceTokenScope 对受限 scope token 做路径白名单校验（xhs-collector T7）。
+// scope=xhs 的 token 打非 /v1/xhs/* 路由 → 403 并 Abort，返回 false；否则放行返回 true。
+// 无 scope token 一律放行（向后兼容旧 token）。
+func enforceTokenScope(c *gin.Context, tokenString string) bool {
+	scope := tokenScope(tokenString)
+	if scope == "" {
+		return true
+	}
+	if scope == scopeXhs {
+		if !strings.HasPrefix(c.Request.URL.Path, scopeXhsPathPrefix) {
+			core.WriteResponse(c, errno.ErrForbidden.SetMessage("该令牌仅可访问小红书采集接口"), nil)
+			c.Abort()
+			return false
+		}
+		return true
+	}
+	// 未知 scope：保守拒绝，避免未来新增 scope 时遗漏中间件分支导致越权放行。
+	core.WriteResponse(c, errno.ErrForbidden.SetMessage("令牌权限范围不被支持"), nil)
+	c.Abort()
+	return false
 }
 
 // OptionalAuthMiddleware 可选认证中间件

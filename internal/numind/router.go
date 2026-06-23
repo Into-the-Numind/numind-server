@@ -347,9 +347,10 @@ func installNumindRouters(g *gin.Engine) error {
 	// 小红书选题采集（xhs-collector）：浏览器插件批量上送笔记 payload 落入用户私有累积选题库。
 	// AuthMiddleware 由 authGroup 继承；user_id 从鉴权上下文取，保证多租户归属不可伪造。
 	{
-		xhsCtrl := xhscontroller.NewController(b.Xhs())
+		xhsCtrl := xhscontroller.NewController(b.Xhs(), b.Users())
 		xhsGroup := authGroup.Group("/xhs")
 		{
+			xhsGroup.GET("/ext-token", xhsCtrl.ExtToken)   // 换发 scope=xhs 受限 token 给浏览器插件（一键授权，不扣分）
 			xhsGroup.POST("/notes", xhsCtrl.Ingest)        // 批量摄入插件采集的笔记（去重 upsert，置 pending）
 			xhsGroup.GET("/notes", xhsCtrl.List)           // 分页查询当前用户选题库（note_type/keyword/enrich_status/sort 过滤）
 			xhsGroup.POST("/notes/export", xhsCtrl.Export) // 导出选中笔记为 CSV（≤200 条，COS + 1h 签名链接，不扣分）
