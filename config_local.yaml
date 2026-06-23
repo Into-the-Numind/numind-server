@@ -11,6 +11,8 @@ features:
     enabled: true             # 文档系统 v1（agent 产物在线编辑/导出），local 开启
   meeting_copilot:
     enabled: true             # 会议副驾（实时转写 + 反馈 + AI 纪要），内部试用，local 开启
+  feishu_integration:
+    enabled: true             # 飞书集成（per-user 自建应用 + OAuth + agent 工具），local 开启
 
 # 后台管理系统配置
 admin:
@@ -19,6 +21,14 @@ admin:
 jwt:
   secret: Rtg8BPKNEf2mB4mgvKONGPZZQSaJWNLijxR42qRgq0iBb5 # JWT 签发密钥
   expire-hours: 24 # JWT 过期时间，单位：小时
+
+# 安全密钥（feishu-integration）。两把独立密钥（泄露隔离）：
+#   thirdparty_token_key —— AES-256-GCM 加密第三方凭据（飞书 user_access_token / app_secret），32 字节 base64。
+#   feishu_state_key     —— HMAC-SHA256 签 OAuth callback 的 state（防 CSRF/重放），独立于上面的加密密钥。
+# 禁硬编码进业务代码、禁进 config_prod.yaml（prod 由运维另注）。缺失/非法 → 启动 fail-fast。
+security:
+  thirdparty_token_key: oOC5Do7tGchC/tvBqIxuO3jCp+tCZ7BYfaXXomY30Io=
+  feishu_state_key: U0d7tf7JQqB6ZXm+CELBFPLTm1xUW02vexT360r7lj8=
 
 # MySQL 数据库相关配置
 db:

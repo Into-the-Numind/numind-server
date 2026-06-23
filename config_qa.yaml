@@ -7,6 +7,8 @@ addr: :9091                  # HTTP 服务器监听地址
 features:
   meeting_diarization:
     enabled: false            # 会议说话人分离（声纹引擎），qa 默认 OFF；effective = meeting_copilot.enabled && meeting_diarization.enabled
+  feishu_integration:
+    enabled: false            # 飞书集成（per-user 自建应用 + OAuth + agent 工具），qa 默认 OFF（新链路暂未跑通）；启用前确认下方 security 密钥已注入
 
 # 后台管理系统配置
 admin:
@@ -15,6 +17,14 @@ admin:
 jwt:
   secret: Rtg8BPKNEf2mB4mgvKONGPZZQSaJWNLijxR42qRgq0iBb5 # JWT 签发密钥
   expire-hours: 24 # JWT 过期时间，单位：小时
+
+# 安全密钥（feishu-integration）。两把独立密钥（泄露隔离）：
+#   thirdparty_token_key —— AES-256-GCM 加密第三方凭据（飞书 user_access_token / app_secret），32 字节 base64。
+#   feishu_state_key     —— HMAC-SHA256 签 OAuth callback 的 state（防 CSRF/重放），独立于上面的加密密钥。
+# 禁硬编码进业务代码、禁进 config_prod.yaml（prod 由运维另注）。缺失/非法 + flag 开启 → 启动 fail-fast。
+security:
+  thirdparty_token_key: rPahLTxmVzXvS59oyI17h/9h9IUZNbt1FaHYig42Beo=
+  feishu_state_key: ZAdLRIx2xhld6r+oZlTMb1aagdvDW49aUm/MUDR6LTs=
 
 # MySQL 数据库相关配置
 db:
