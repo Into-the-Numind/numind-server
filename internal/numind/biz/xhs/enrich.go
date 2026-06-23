@@ -3,6 +3,7 @@ package xhs
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/spf13/viper"
@@ -50,6 +51,8 @@ type Enricher struct {
 	enrichQ   chan enrichJob
 	workers   int
 	ffmpegSem chan struct{}
+	wg        sync.WaitGroup // 跟踪 worker goroutine，Stop 时 Wait 等其全部退出
+	stopOnce  sync.Once      // 保证 Stop 幂等（close channel 只发生一次）
 }
 
 // NewEnricher 创建富化框架。worker 数取 viper "xhs.enrich_workers"，
@@ -78,10 +81,25 @@ func NewEnricher(s store.IXhsTopicStore) *Enricher {
 
 // StartWorkers 拉起 worker pool。幂等性由调用方保证（应用启动时调用一次）。
 func (e *Enricher) StartWorkers() {
+	e.wg.Add(e.workers)
 	for i := 0; i < e.workers; i++ {
 		go e.worker()
 	}
 	log.Infow("xhs enricher started", "workers", e.workers, "queue_size", cap(e.enrichQ), "ffmpeg_workers", cap(e.ffmpegSem))
+}
+
+// Stop 优雅关闭富化框架：close enrichQ 让 worker 消费完缓冲队列后退出 range 循环，
+// 再 Wait 等所有 worker goroutine 真正退出，避免 SIGTERM 时 in-flight job 被强杀
+// 把笔记永久卡在 enriching 状态。
+//
+// 与 biz 层其它有状态后台服务（complianceAudit / memoryExtractor / memoryDigestCron）
+// 同 shutdown 模式：在 HTTP 已 Shutdown（不再有新 Enqueue）之后调用。stopOnce 保证
+// 幂等——重复调用不会二次 close 已关闭的 channel 而 panic。
+func (e *Enricher) Stop() {
+	e.stopOnce.Do(func() {
+		close(e.enrichQ)
+	})
+	e.wg.Wait()
 }
 
 // Enqueue 把一条待富化笔记投递到队列。
@@ -98,8 +116,10 @@ func (e *Enricher) Enqueue(userID uint, noteID uint64) {
 	}
 }
 
-// worker 持续消费 enrichQueue，逐个处理 job。
+// worker 持续消费 enrichQueue，逐个处理 job。enrichQ 被 Stop close 后 range 退出，
+// wg.Done 通知 Stop 该 worker 已干净退出。
 func (e *Enricher) worker() {
+	defer e.wg.Done()
 	for job := range e.enrichQ {
 		e.processJob(job)
 	}
@@ -119,10 +139,9 @@ func (e *Enricher) processJob(job enrichJob) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Errorw("xhs enrich job panicked", "user_id", job.userID, "note_id", job.noteID, "panic", r)
-			// panic 后用一个干净的短超时 ctx 置 failed（原 ctx 可能已被 defer cancel）。
-			failCtx, failCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer failCancel()
-			if err := e.store.UpdateEnrichStatus(failCtx, job.noteID, model.XhsEnrichFailed); err != nil {
+			// recover 闭包后于 cancel 注册，故按 defer LIFO 先于 cancel 执行：panic 触发
+			// 时 ctx 仍有效（cancel 尚未运行），直接用原 ctx 置 failed 即可。
+			if err := e.store.UpdateEnrichStatus(ctx, job.noteID, model.XhsEnrichFailed); err != nil {
 				log.Errorw("xhs enrich mark-failed after panic failed", "note_id", job.noteID, "error", err)
 			}
 		}

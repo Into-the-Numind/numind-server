@@ -134,6 +134,7 @@ type biz struct {
 	documentSvc       documentbiz.IDocumentService // document-system: 单实例(持久化导出并发守卫)
 	sandboxPool       sandbox.Pool                 // document-system 导出复用(spec §3.5b)；未来 healthcheck 可访问
 	xhsService        *xhsbiz.XhsBiz               // xhs-collector 小红书选题采集摄入服务
+	xhsEnricher       *xhsbiz.Enricher             // xhs-collector 异步富化 worker pool（Stop on shutdown）
 }
 
 // NewBiz 创建一个 IBiz 类型的实例.
@@ -698,6 +699,8 @@ func NewBiz(ds store.IStore) *biz {
 	xhsEnricher := xhsbiz.NewEnricher(ds.Xhs())
 	xhsEnricher.StartWorkers()
 	b.xhsService = xhsbiz.NewXhsBizWithEnricher(ds.Xhs(), xhsEnricher)
+	// 存入 biz struct，供 numind.go shutdown 序列调 CloseXhsEnricher 优雅 drain。
+	b.xhsEnricher = xhsEnricher
 
 	// 初始化博主监控服务
 	monitorCooldown := monitor.NewCooldownManager(
@@ -981,6 +984,17 @@ func (b *biz) CloseMemoryExtractor(_ context.Context) {
 func (b *biz) CloseDigestCron(_ context.Context) {
 	if b.memoryDigestCron != nil {
 		b.memoryDigestCron.Stop()
+	}
+}
+
+// CloseXhsEnricher 优雅停止 xhs-collector 异步富化 worker pool（close enrichQ +
+// wg.Wait 等所有 worker 退出）。与 CloseMemoryExtractor / CloseDigestCron 同 shutdown
+// 模式：在 httpsrv.Shutdown 之后调用，此时不再有新 Enqueue。未调时进程退出 worker
+// 随之结束，但 in-flight job 可能把笔记卡在 enriching；调用 Stop 让其干净 drain。
+// Stop 内部用 sync.Once 保证幂等。xhs-collector T3b.
+func (b *biz) CloseXhsEnricher(_ context.Context) {
+	if b.xhsEnricher != nil {
+		b.xhsEnricher.Stop()
 	}
 }
 

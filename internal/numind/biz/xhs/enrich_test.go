@@ -273,6 +273,58 @@ func TestEnricher_DoubleEnqueueSameID_EnrichesOnce(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&m.enrichCount), "同一 id 应只富化一次（ClaimForEnrich 原子二次保护）")
 }
 
+// TestEnricher_Stop_DrainsAndWaitsForWorkers 验证 Stop close 队列后等所有 worker
+// 退出：缓冲队列里的 job 全部处理完（不被强杀），且 Stop 返回时 worker 已干净退出。
+func TestEnricher_Stop_DrainsAndWaitsForWorkers(t *testing.T) {
+	viper.Reset()
+	viper.Set("xhs.enrich_workers", 2)
+	defer viper.Reset()
+
+	m := newEnrichMockStore()
+	const userID = uint(5)
+	const total = 6
+	for i := 1; i <= total; i++ {
+		m.seed(userID, uint64(i), model.XhsEnrichPending)
+	}
+
+	e := NewEnricher(m)
+	e.StartWorkers()
+	for i := 1; i <= total; i++ {
+		e.Enqueue(userID, uint64(i))
+	}
+
+	// Stop 应阻塞直到所有缓冲 job 处理完且 worker 退出。
+	done := make(chan struct{})
+	go func() {
+		e.Stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop 未在超时内返回（worker 未干净退出）")
+	}
+
+	// 所有 job 应已富化为 done，没有笔记被强杀卡在 pending/enriching。
+	for i := 1; i <= total; i++ {
+		assert.Equal(t, model.XhsEnrichDone, m.statusOf(uint64(i)), "Stop 应 drain 完所有 job")
+	}
+}
+
+// TestEnricher_Stop_Idempotent 验证 Stop 可重复调用而不 panic（sync.Once 保护 close）。
+func TestEnricher_Stop_Idempotent(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+
+	e := NewEnricher(newEnrichMockStore())
+	e.StartWorkers()
+
+	assert.NotPanics(t, func() {
+		e.Stop()
+		e.Stop() // 二次调用不应二次 close channel 而 panic
+	})
+}
+
 // TestEnricher_NoteNotPending_Skips 验证投递的笔记已非 pending（如已 done）时跳过，不重复富化。
 func TestEnricher_NoteNotPending_Skips(t *testing.T) {
 	viper.Reset()

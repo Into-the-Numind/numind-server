@@ -374,6 +374,11 @@ func run() error {
 	// in-flight LLM 调用中断无 DB 一致性风险 (UPSERT 幂等, 下次 cron 重跑覆盖).
 	bizLayer.CloseDigestCron(ctx)
 
+	// 优雅关闭 xhs-collector 异步富化 worker pool（close enrichQ + 等所有 worker 退出）。
+	// 在 httpsrv.Shutdown 之后调用：HTTP 已停，没有新的 Ingest 会再触发 Enqueue；
+	// 此处 drain 让 in-flight 富化 job 跑完，避免 SIGTERM 把笔记永久卡在 enriching。
+	bizLayer.CloseXhsEnricher(ctx)
+
 	// 优雅关闭 Langfuse 客户端
 	langfuse.C.Stop()
 

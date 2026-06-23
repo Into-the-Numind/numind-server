@@ -40,6 +40,7 @@ import (
 	sopbiz "numind-server/internal/numind/biz/sop"
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/biz/volc"
+	xhsbiz "numind-server/internal/numind/biz/xhs"
 	salesragctl "numind-server/internal/numind/controller/v1/salesrag"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/model"
@@ -142,6 +143,7 @@ func (b *realBizOnlyCustomers) AttachmentFallback() agentatt.FallbackService { r
 func (b *realBizOnlyCustomers) MemoryCadence() *memory.CadenceService        { return nil }
 func (b *realBizOnlyCustomers) SearchService() search.Service                { return nil }
 func (b *realBizOnlyCustomers) RagRetrieve() *retrieve.Service               { return nil }
+func (b *realBizOnlyCustomers) Xhs() *xhsbiz.XhsBiz                          { return nil }
 
 // compile-time guard: this test struct must satisfy biz.IBiz or tests fail here.
 var _ biz.IBiz = (*realBizOnlyCustomers)(nil)
