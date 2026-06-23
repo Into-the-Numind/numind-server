@@ -350,7 +350,10 @@ func installNumindRouters(g *gin.Engine) error {
 		xhsCtrl := xhscontroller.NewController(b.Xhs())
 		xhsGroup := authGroup.Group("/xhs")
 		{
-			xhsGroup.POST("/notes", xhsCtrl.Ingest) // 批量摄入插件采集的笔记（去重 upsert，置 pending）
+			xhsGroup.POST("/notes", xhsCtrl.Ingest)       // 批量摄入插件采集的笔记（去重 upsert，置 pending）
+			xhsGroup.GET("/notes", xhsCtrl.List)          // 分页查询当前用户选题库（note_type/keyword/enrich_status/sort 过滤）
+			xhsGroup.GET("/notes/:id", xhsCtrl.Get)       // 单条选题笔记详情（user 隔离）
+			xhsGroup.DELETE("/notes/:id", xhsCtrl.Delete) // 删除单条选题笔记（user 隔离）
 		}
 	}
 
