@@ -52,6 +52,18 @@ security:
   thirdparty_token_key: ADelMwutNZ6zrhIsxW9k7h5Ht29YHyQI0I6ib60jnpM=
   feishu_state_key: HfG9iLmTU+6sj32w1iP6aq6zlKG8UW6+AegZIXISuKQ=
 
+# 飞书集成（feishu-integration T7）。OAuth/连接服务的环境相关 URL + scope。
+#   web_base_url —— 前端 base，callback 成功/失败后 302 回 ${web_base_url}/settings/connections。
+#   redirect_uri —— 注册到飞书开放平台「重定向 URL 白名单」的 callback 地址（须与对外路径一致）。
+#   authorize_url / scopes 留空时用代码默认（authen/v1/authorize + 首批全部 scope）。
+# dev 走 youshu.asia/dev 反代（与 payment notify_url 同前缀）；端到端验证须先在飞书后台把
+# redirect_uri 加进重定向白名单（见 plan S5 前置环境）。
+feishu:
+  web_base_url: "https://youshu.asia/dev"
+  redirect_uri: "https://youshu.asia/dev/api/v1/feishu/oauth/callback"
+  # authorize_url: ""   # 留空=默认 https://open.feishu.cn/open-apis/authen/v1/authorize
+  # scopes: ""          # 留空=默认 "docx:document im:message bitable:app:readonly"
+
 # MySQL 数据库相关配置
 db:
   host: numind-mysql-dev:3306  # MySQL 机器 IP 和端口，连接服务器A本地MySQL
