@@ -32,9 +32,9 @@
 > 决策修正（2026-06-23）：S0 初稿误判「C 端=必做 ISV」。复核 lark-cli 二进制源码后推翻——飞书有程序化建应用能力，per-user 自建应用模型成立，ISV 不是必须。商店应用/ISV 仅在「一个共享 app 跨组织一键服务所有人」时才需要，本方案不采用。
 
 ### 已核实的底层机制（来自 lark-cli 二进制 strings + README）
-- ⚠️ **更正（S4 T1 Spike 2026-06-24，见 `spike-bootstrap.md`）**：原写「`apps +create`→`/open-apis/spark/v1/apps` = 建自建应用」**是错的**——那是飞书 aPaaS 应用引擎平台，不产生 appId/secret。开放平台「自建应用」**无公开创建 API**；lark-cli 靠特权专属端点 `application/v6/larksuite_cli_app/probe`，第三方不可复用。→ 建 app 只能：W 包 lark-cli / M 引导手动 / I 商店应用 ISV。
-- **用户授权 = OAuth**：`/open-apis/authen/v2/oauth/token`（标准 OAuth，公开可原生）。
-- 底层 `github.com/larksuite/oapi-sdk-go/v3`；**lark-cli 为 MIT 开源**（可包一层）。
+- ⚠️ **更正（S4 T1 Spike 2026-06-24 实测，见 `spike-bootstrap.md`）**：建 app = 标准 device-code 流（实跑 lark-cli 得 `open.feishu.cn/page/cli?user_code=...`，飞书公开官网，非私有后门）。**有数服务器跑 lark-cli 即可建 app，无需 ISV**——和所有 agent 同款。（澄清：`apps +create`→spark 是飞书 aPaaS 平台、不是建自建应用，别用错；裸 SDK 无建自建应用方法，故走 lark-cli device-code 流。）
+- **用户授权 = OAuth**：`/open-apis/authen/v2/oauth/token`（标准 OAuth）。
+- 底层 `github.com/larksuite/oapi-sdk-go/v3`；**lark-cli 为飞书官方 MIT 工具，专为 agent 驱动设计**（有数服务器跑它即可）。
 - 底层 `github.com/larksuite/oapi-sdk-go/v3`；**lark-cli 为 MIT 开源**（可包一层或参考重写）。
 - user_access_token 有效期 ≤6900s（约 115 分钟），需定期刷新。
 

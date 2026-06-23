@@ -12,12 +12,13 @@ features:
   worktrees:
     numind-server: /private/tmp/wt-feishu-integration-numind-server
     numind-web-v3: /private/tmp/wt-feishu-integration-numind-web-v3
-  progress: {total_tasks: 14, completed_tasks: 0, reviewed_tasks: 0}
+  progress: {total_tasks: 14, completed_tasks: 1, reviewed_tasks: 1}
   artifacts:
     requirement: .ndf/features/feishu-integration/requirement.md
     proposal: .ndf/features/feishu-integration/proposal.md
     design: .ndf/features/feishu-integration/design.md
     plan: .ndf/features/feishu-integration/plan.md
+    spike: .ndf/features/feishu-integration/spike-bootstrap.md
   decisions:
   - 'S0 (ai 2026-06-23): 需求录入。档位判定→Standard(5 条全中),提出人确认。'
   - 'S0 修正 (ai 2026-06-23): 推翻初稿 ISV 判断。选定方案 A=每用户在自己组织建自建应用+agent 代办(Claude Code/lark-cli 同款),单租户永不跨组织→无需 ISV/无需审核。证据:读 lark-cli 二进制——建应用 API 真实存在(apps +create→/open-apis/spark/v1/apps),用户授权走 OAuth(/open-apis/authen/v2/oauth/token),底层 oapi-sdk-go,lark-cli MIT。唯一工程差异=有数托管 SaaS 须服务端按用户做 provisioning+凭据存储。个人版能否建自建应用=客户侧解决(用户拍板)。'
@@ -26,6 +27,7 @@ features:
   - 'S2 (ai 2026-06-23): 技术设计 design.md 产出。定:4 新端点(/v1/feishu connect/oauth-callback/status/connection,callback 无JWT靠 state HMAC)、user_third_party_account 表+migration、internal/pkg/crypto AES-256-GCM(密钥 config 注入 fail-fast)、yield 加 PauseType+AuthURL 不新增枚举(复用 waiting_for_user_choice)、callback 内部直调 biz.Answer(非HTTP /answer)、3 工具继承 BaseTool 全 returnSoftError、飞书 client 走 oapi-sdk-go 不走 aiservice、工具记 span 非 generation。Phase 0 Spike 先行打掉 bootstrap(R1),第2天不通切方案A wrapper。待 S2 gate 双审+人类确认设计方向。'
   - 'S2 gate (user 2026-06-23): 确认设计方向,进 S3。'
   - 'S3 (ai 2026-06-23): 实施计划 plan.md 产出,14 个原子 task(后端 T1-10 先于前端 T11-13,T14=S5 验证策略)。独立 Sonnet reviewer 原子性审 6/10,系统性 wiring 缺口已修:T8 加 SSE payload 传播(stream/events.go+runner_stream.go,否则前端永收不到 pause_type)、T3 加 IStore 扩展+mockgen、T7 加 biz.go IBiz wiring、T10 明确工具从 ds.ThirdPartyAccounts() 懒构建 client、T14 加 gstack OAuth 跨域跳转可行性+mock callback 降级。Phase 0 Spike=T1 先行。待 S3 gate 复审+人类确认。'
+  - 'S4 T1 spike done (ai 2026-06-24): 实跑 lark-cli config init --new,得 open.feishu.cn/page/cli?user_code=... = 标准 device-code 流(飞书公开官网)。坐实:有数服务器跑 lark-cli 即可建 app,无需 ISV,和所有 agent 同款。⚠️ 纠正本 session 早先错误升级(误把 larksuite_cli_app probe 当特权专属→错推 ISV/trilemma,已全部收回)。T6 定为=有数服务器 os/exec lark-cli device-code 建 app+取凭据(原 6a 裸SDK建app作废=飞书无此API);OAuth/token/工具不变原生。refresh_token 待 dev 实测。未真实建 app(机制已坐实)。'
   blockers: []
 - id: xhs-collector
   track: standard

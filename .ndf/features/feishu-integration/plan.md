@@ -49,12 +49,11 @@
 **验收**：重放测试 PASS。**依赖**：T4。
 
 ### Task 6: provisioning + OAuth 换 token（分支二选一，按 T1 决策）
-> **S4 执行约定**：开 T6 前，主控先读 `spike-bootstrap.md` 确认分支，把选定的 `6a`/`6b` 写进 manifest progress，再 dispatch implementer——消除二选一歧义。
-**6a native** `internal/numind/biz/feishu/provisioner_native.go`：调 spark/apps 建 app + 授权码换 token。
-**6b wrapper** `internal/numind/biz/feishu/provisioner_larkcli.go`：包 lark-cli 仅做建 app（附 ToS 核实）；授权仍 native。
-**Interfaces 产出**：`Provisioner{ BuildAppURL(state)(string,error); ExchangeCode(code)(appID string, access,refresh []byte, exp *time.Time, scopes string, error) }`（接口统一，两实现互斥）。
-**消费**：crypto、httpclient/oapi-sdk-go。
-**验收**：能用 T1 测试账号换到 token（集成测试，dev 跑）。**依赖**：T1(决策)、T2、T5。
+> **Spike 已定（2026-06-24）**：建 app = 有数服务器跑 lark-cli 的 device-code 流（实测得 `open.feishu.cn/page/cli?user_code=...`），**无 ISV**。原「6a 裸 SDK 原生建 app」作废（飞书无此 API）；可选优化=将来参考 lark-cli MIT 源码在 Go 原生重实现 device-code 流，S4 先用 lark-cli 跑通。
+**实现** `internal/numind/biz/feishu/provisioner.go`：封装「调 lark-cli `config init --new --name <userid>`(独立 profile/config-home per user) → 解析输出取 `open.feishu.cn/page/cli` URL → 轮询直到建好 → 读该 profile 的 appId/appSecret」+ OAuth 换 token。
+**Interfaces 产出**：`Provisioner{ StartProvision(ctx,userID)(pageURL string,sessionRef string,error); PollCredentials(ctx,sessionRef)(appID string,appSecretEnc []byte,done bool,error); ExchangeCode(ctx,appID,code)(access,refresh []byte, exp *time.Time, scopes string, error) }`。
+**消费**：crypto、os/exec(lark-cli)、httpclient。
+**验收**：dev 用测试账号端到端跑通（拿到 page URL→建 app→取 appId/secret→换 token），refresh_token 有无确认。**依赖**：T2、T5。
 
 ### Task 7: OAuth 端点 + controller + router
 **Files**：Create `internal/numind/controller/v1/feishu/feishu.go`；`internal/numind/biz/feishu/service.go`；Modify `router.go`；**Modify `internal/numind/biz/biz.go`（`IBiz` 加 `FeishuSvc() feishu.IFeishuService` + 初始化 wiring，注入 store/state/provisioner/StudentRunService 以便 callback 内部调 `biz.Answer`）**。
