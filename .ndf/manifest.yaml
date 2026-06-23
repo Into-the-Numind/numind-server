@@ -44,8 +44,10 @@ features:
   progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
   artifacts:
     requirement: .ndf/features/xhs-collector/requirement.md
+    proposal: .ndf/features/xhs-collector/proposal.md
   decisions:
   - 'S0 (ai 2026-06-23): 需求录入。逆向已完成(小红书纯客户端 DOM+__INITIAL_STATE__ 采集可自建;抖音排除)。档位判定→Standard,用户确认。4 个待决项留 S1:数据落地(有数/飞书/both)、插件分发(Chrome商店/自托管)、积分策略、客户鉴权。'
+  - 'S1 (ai+user 2026-06-24,主 session 接手并行 session 的 xhs 工作): 4 决策定案,提案改 B 版(详见 proposal.md)。①数据落地=B 有数自建累积选题库表+列表页(复议:从导出docx改来,选题库本质是累积结构化记录,表是天然形态可直接喂SOP;docx降为可选导出;不连飞书) ②分发=自托管傻瓜引导先上+商店并行 ③LLM(分析)/云服务(ASR)才扣,采集+入库+看列表不扣(ASR现状只记成本不扣需补扣费) ④一键授权。工作量~12天(采集复用plugin3.2.1)。待 S1 gate 确认进 S2。'
   blockers: []
 - id: rag-doc2query
   track: standard
