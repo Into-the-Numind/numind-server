@@ -7,7 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
@@ -69,14 +71,31 @@ func NewXhsStore(db *gorm.DB) IXhsTopicStore {
 //
 // 内容变化路径使用 Save 覆盖全部字段：调用方须传入 enrich_status=pending 且
 // AI 字段置零，以重置富化状态，触发对新内容的重新富化。
+//
+// 并发安全：事务内 SELECT 加 FOR UPDATE 行锁（clause.Locking），避免两个并发请求
+// 对同一 (user_id, xhs_note_id) 同时读到 not-found 后都 Create。即便加锁后仍因隔离
+// 级别/无现存行而竞争到唯一索引冲突（MySQL 1062），Create 分支兜底降级为重新读取
+// 已存在行并按 hash 比对处理（幂等回退，镜像 store/monitor.go 的 1062 处理模式），
+// 不向调用方抛 500。
 func (s *xhsStore) UpsertByUserNote(ctx context.Context, n *model.XhsTopicNote) (bool, error) {
 	hashChanged := true
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing model.XhsTopicNote
-		err := tx.Where("user_id = ? AND xhs_note_id = ?", n.UserID, n.XhsNoteID).First(&existing).Error
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ? AND xhs_note_id = ?", n.UserID, n.XhsNoteID).
+			First(&existing).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// 新建：内容视为变化。
 			if cErr := tx.Create(n).Error; cErr != nil {
+				// TOCTOU 兜底：并发新建撞唯一键（1062）→ 降级为读已存在行按 hash 处理。
+				if isDuplicateKeyErr(cErr) {
+					changed, reErr := s.applyExistingInTx(tx, n)
+					if reErr != nil {
+						return reErr
+					}
+					hashChanged = changed
+					return nil
+				}
 				return fmt.Errorf("create: %w", cErr)
 			}
 			hashChanged = true
@@ -87,25 +106,49 @@ func (s *xhsStore) UpsertByUserNote(ctx context.Context, n *model.XhsTopicNote) 
 		}
 
 		// 命中已存在记录，比对 content_hash 判定内容是否变化。
-		if existing.ContentHash == n.ContentHash {
-			hashChanged = false
-			// 内容未变化：保留已有记录（含富化结果），把主键回填到入参便于调用方使用。
-			n.ID = existing.ID
-			return nil
+		changed, applyErr := applyAgainstExisting(tx, n, &existing)
+		if applyErr != nil {
+			return applyErr
 		}
-
-		// 内容变化：更新采集字段，复用已存在记录主键。
-		hashChanged = true
-		n.ID = existing.ID
-		if uErr := tx.Save(n).Error; uErr != nil {
-			return fmt.Errorf("update: %w", uErr)
-		}
+		hashChanged = changed
 		return nil
 	})
 	if err != nil {
 		return false, fmt.Errorf("UpsertByUserNote: %w", err)
 	}
 	return hashChanged, nil
+}
+
+// applyExistingInTx 在 Create 撞 1062 后重新读取已存在行并按 hash 处理（TOCTOU 兜底）。
+func (s *xhsStore) applyExistingInTx(tx *gorm.DB, n *model.XhsTopicNote) (bool, error) {
+	var existing model.XhsTopicNote
+	if err := tx.Where("user_id = ? AND xhs_note_id = ?", n.UserID, n.XhsNoteID).
+		First(&existing).Error; err != nil {
+		return false, fmt.Errorf("reload after duplicate: %w", err)
+	}
+	return applyAgainstExisting(tx, n, &existing)
+}
+
+// applyAgainstExisting 对已存在行比对 content_hash：未变化保留已有记录（含富化结果）
+// 并回填主键返回 false；变化则 Save 覆盖全字段返回 true。
+func applyAgainstExisting(tx *gorm.DB, n, existing *model.XhsTopicNote) (bool, error) {
+	if existing.ContentHash == n.ContentHash {
+		// 内容未变化：保留已有记录（含富化结果），把主键回填到入参便于调用方使用。
+		n.ID = existing.ID
+		return false, nil
+	}
+	// 内容变化：更新采集字段，复用已存在记录主键。
+	n.ID = existing.ID
+	if uErr := tx.Save(n).Error; uErr != nil {
+		return false, fmt.Errorf("update: %w", uErr)
+	}
+	return true, nil
+}
+
+// isDuplicateKeyErr 判定 err 是否为 MySQL 唯一索引冲突（1062）。
+func isDuplicateKeyErr(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1062
 }
 
 // ListPendingEnrich 扫描待富化队列（enrich_status='pending'），按 crawled_at 升序返回至多 limit 条。

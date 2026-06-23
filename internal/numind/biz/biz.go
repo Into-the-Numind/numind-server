@@ -44,6 +44,7 @@ import (
 	sopbiz "numind-server/internal/numind/biz/sop"
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/biz/volc"
+	xhsbiz "numind-server/internal/numind/biz/xhs"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/aiservice/registry"
@@ -94,6 +95,7 @@ type IBiz interface {
 	MemoryCadence() *memory.CadenceService          // Task 3.6 dialectic cadence gate (Task 3.7 caller)
 	SearchService() search.Service                  // Task 3.5 FULLTEXT search (router.go consumer)
 	RagRetrieve() *retrieve.Service                 // 底座检索服务（rag-eval-harness：admin 评估端点复用真实检索栈）
+	Xhs() *xhsbiz.XhsBiz                            // xhs-collector — 小红书选题采集摄入服务
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -131,6 +133,7 @@ type biz struct {
 	uploadSvc         *attachment.UploadService    // wired with fallback (V1.5 task 1.2)
 	documentSvc       documentbiz.IDocumentService // document-system: 单实例(持久化导出并发守卫)
 	sandboxPool       sandbox.Pool                 // document-system 导出复用(spec §3.5b)；未来 healthcheck 可访问
+	xhsService        *xhsbiz.XhsBiz               // xhs-collector 小红书选题采集摄入服务
 }
 
 // NewBiz 创建一个 IBiz 类型的实例.
@@ -689,6 +692,9 @@ func NewBiz(ds store.IStore) *biz {
 	// 内部试用「仅记录用量、不扣费、不拦截」由 biz/meeting 的 internalCallCtx 保证。
 	b.meetingService = meetingbiz.NewMeetingBiz(ds)
 
+	// 初始化小红书选题采集摄入服务（xhs-collector）。仅依赖 ds.Xhs() store，无状态。
+	b.xhsService = xhsbiz.NewXhsBiz(ds.Xhs())
+
 	// 初始化博主监控服务
 	monitorCooldown := monitor.NewCooldownManager(
 		viper.GetInt("monitor.cooldown.check_minutes"),
@@ -859,6 +865,11 @@ func (b *biz) RagRetrieve() *retrieve.Service {
 // Meeting 返回会议副驾服务实例（meeting-copilot）。
 func (b *biz) Meeting() meetingbiz.IMeetingBiz {
 	return b.meetingService
+}
+
+// Xhs 返回小红书选题采集摄入服务实例（xhs-collector）。
+func (b *biz) Xhs() *xhsbiz.XhsBiz {
+	return b.xhsService
 }
 
 // Agents 返回 Agent Runtime 实例（agent-mode #2 runtime-skeleton）。

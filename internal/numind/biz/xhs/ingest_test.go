@@ -126,7 +126,13 @@ func TestIngest_HashChange_ResetsEnrich(t *testing.T) {
 	require.NoError(t, err)
 	row := m.rows[key(testUserID, "note-1")]
 	row.EnrichStatus = model.XhsEnrichDone
+	// 预置全部 6 个 AI 富化字段，验证 hash 变化时一并被清空（回归覆盖缺口修复）。
 	row.AITopicAngle = "旧角度"
+	row.AIViralReason = "旧爆款原因"
+	row.AIBorrowable = "旧可借鉴点"
+	row.AITargetAudience = "旧目标人群"
+	row.AITitleFormula = "旧标题公式"
+	row.AIOneLine = "旧一句话总结"
 	oldHash := row.ContentHash
 
 	changed := basePayload()
@@ -137,7 +143,61 @@ func TestIngest_HashChange_ResetsEnrich(t *testing.T) {
 	after := m.rows[key(testUserID, "note-1")]
 	assert.NotEqual(t, oldHash, after.ContentHash, "标题变化应改变 content_hash")
 	assert.Equal(t, model.XhsEnrichPending, after.EnrichStatus, "hash 变化应重置 enrich_status=pending")
-	assert.Empty(t, after.AITopicAngle, "hash 变化应清空旧富化结果")
+	assert.Empty(t, after.AITopicAngle, "hash 变化应清空 ai_topic_angle")
+	assert.Empty(t, after.AIViralReason, "hash 变化应清空 ai_viral_reason")
+	assert.Empty(t, after.AIBorrowable, "hash 变化应清空 ai_borrowable")
+	assert.Empty(t, after.AITargetAudience, "hash 变化应清空 ai_target_audience")
+	assert.Empty(t, after.AITitleFormula, "hash 变化应清空 ai_title_formula")
+	assert.Empty(t, after.AIOneLine, "hash 变化应清空 ai_one_line")
+}
+
+// TestIngest_InvalidNoteType_Rejected 验证非枚举 note_type（如 'IMAGE'）整批拒绝、不落库，
+// 避免 T4 富化流水线按 note_type 误路由。
+func TestIngest_InvalidNoteType_Rejected(t *testing.T) {
+	m := newMockXhsStore()
+	b := NewXhsBiz(m)
+
+	for _, bad := range []string{"IMAGE", "reel", "INVALID", "Normal"} {
+		p := basePayload()
+		p.NoteType = bad
+		_, _, err := b.Ingest(context.Background(), testUserID, []NotePayload{p})
+		require.Error(t, err, "note_type=%q 应被拒绝", bad)
+		assert.True(t, errors.Is(err, errno.ErrBind), "非法 note_type 应返回 ErrBind: %q", bad)
+	}
+	assert.Empty(t, m.rows, "校验失败不应落库")
+}
+
+// TestIngest_ValidNoteType_Accepted 验证合法 note_type（normal/video/空）被接受。
+func TestIngest_ValidNoteType_Accepted(t *testing.T) {
+	for _, good := range []string{"", model.XhsNoteTypeNormal, model.XhsNoteTypeVideo} {
+		m := newMockXhsStore()
+		b := NewXhsBiz(m)
+		p := basePayload()
+		p.NoteType = good
+		n, _, err := b.Ingest(context.Background(), testUserID, []NotePayload{p})
+		require.NoError(t, err, "note_type=%q 应被接受", good)
+		assert.Equal(t, 1, n)
+	}
+}
+
+// TestIngest_PartialValidationFailure_NoCommit 验证两阶段语义：批中任一条校验失败时
+// 整批拒绝、一行都不落库（即便失败条排在合法条之后）。
+func TestIngest_PartialValidationFailure_NoCommit(t *testing.T) {
+	m := newMockXhsStore()
+	b := NewXhsBiz(m)
+
+	good := basePayload()
+	good.XhsNoteID = "note-good"
+	bad := basePayload()
+	bad.XhsNoteID = "note-bad"
+	bad.NoteType = "ILLEGAL"
+
+	ingested, ids, err := b.Ingest(context.Background(), testUserID, []NotePayload{good, bad})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errno.ErrBind))
+	assert.Equal(t, 0, ingested, "校验阶段失败应返回 0")
+	assert.Empty(t, ids)
+	assert.Empty(t, m.rows, "校验失败应一行都不落库（含失败条之前的合法条）")
 }
 
 // TestIngest_TextTooLarge_Rejected 验证正文超过 64KB 返回 ErrBind，且不落库。

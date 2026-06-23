@@ -30,6 +30,7 @@ import (
 	sopcontroller "numind-server/internal/numind/controller/v1/sop"
 	"numind-server/internal/numind/controller/v1/user"
 	"numind-server/internal/numind/controller/v1/user_billing"
+	xhscontroller "numind-server/internal/numind/controller/v1/xhs"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/core"
@@ -340,6 +341,16 @@ func installNumindRouters(g *gin.Engine) error {
 		wsGroup.Use(importMw.FeatureFlag("features.meeting_copilot.enabled"))
 		{
 			wsGroup.GET("/:id/asr-stream", meetingCtrl.AsrStream) // 实时流式转写（websocket，GET 升级）
+		}
+	}
+
+	// 小红书选题采集（xhs-collector）：浏览器插件批量上送笔记 payload 落入用户私有累积选题库。
+	// AuthMiddleware 由 authGroup 继承；user_id 从鉴权上下文取，保证多租户归属不可伪造。
+	{
+		xhsCtrl := xhscontroller.NewController(b.Xhs())
+		xhsGroup := authGroup.Group("/xhs")
+		{
+			xhsGroup.POST("/notes", xhsCtrl.Ingest) // 批量摄入插件采集的笔记（去重 upsert，置 pending）
 		}
 	}
 

@@ -66,6 +66,12 @@ type NotePayload struct {
 //
 // 返回成功摄入的条数与对应的笔记主键（按入参顺序）。
 //
+// 两阶段语义（避免部分提交导致的误导性返回值）：
+//   - 阶段一：先对全部 payload 跑 buildNote 校验，任一条非法立即返回 ErrBind，
+//     一行都不落库（校验层面 all-or-nothing）。
+//   - 阶段二：逐条 upsert。若中途某条 DB 出错，返回 (已成功提交的条数, 已成功的主键, err)
+//     —— 不再谎报 0；幂等设计下调用方可安全整批重试。
+//
 // TODO(T3b/T4/T5): 本 task 仅落库置 pending，不投递富化队列。
 // 后续 task 负责异步消费 pending 笔记走 aiservice.Chat/ASR 富化并扣减积分。
 func (b *XhsBiz) Ingest(ctx context.Context, userID uint, payloads []NotePayload) (ingested int, ids []uint64, err error) {
@@ -76,16 +82,22 @@ func (b *XhsBiz) Ingest(ctx context.Context, userID uint, payloads []NotePayload
 		return 0, nil, errno.ErrBind.SetMessage("单次最多摄入 %d 条笔记，收到 %d 条", maxNotesPerIngest, len(payloads))
 	}
 
-	ids = make([]uint64, 0, len(payloads))
+	// 阶段一：全量校验（不触 DB）。任一条非法即整批拒绝，保证校验层面 all-or-nothing。
+	notes := make([]*model.XhsTopicNote, len(payloads))
 	for i := range payloads {
 		note, vErr := buildNote(userID, &payloads[i])
 		if vErr != nil {
 			return 0, nil, vErr
 		}
+		notes[i] = note
+	}
 
+	// 阶段二：逐条 upsert。DB 出错时返回已实际提交的条数/主键（非谎报 0）。
+	ids = make([]uint64, 0, len(notes))
+	for _, note := range notes {
 		hashChanged, uErr := b.store.UpsertByUserNote(ctx, note)
 		if uErr != nil {
-			return 0, nil, errno.InternalServerError.SetMessage("Ingest: upsert 笔记 %s 失败: %v", note.XhsNoteID, uErr)
+			return ingested, ids, errno.InternalServerError.SetMessage("Ingest: upsert 笔记 %s 失败: %v", note.XhsNoteID, uErr)
 		}
 		_ = hashChanged // enrich_status 已在 buildNote 中预置为 pending；未变化时 store 不覆盖已有记录
 
@@ -115,6 +127,11 @@ func buildNote(userID uint, p *NotePayload) (*model.XhsTopicNote, error) {
 	noteType := p.NoteType
 	if noteType == "" {
 		noteType = model.XhsNoteTypeNormal
+	}
+	// note_type 必须落在枚举内（normal/video）。非法值会让 T4 富化流水线按
+	// note_type=="video" 的 ASR 分支误路由，故此处直接拒绝而非静默落库。
+	if noteType != model.XhsNoteTypeNormal && noteType != model.XhsNoteTypeVideo {
+		return nil, errno.ErrBind.SetMessage("笔记 %s note_type 非法: %s，仅支持 normal/video", p.XhsNoteID, noteType)
 	}
 
 	note := &model.XhsTopicNote{
