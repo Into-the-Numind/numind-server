@@ -5,7 +5,7 @@ features:
   description: '飞书集成：让每个 C 端用户通过 OAuth 绑定自己的飞书账号,agent 以该用户身份调用一整套飞书 OpenAPI 能力(云文档/消息/多维表格/日历/待办等)。生产不用 lark-cli 本地工具,复用其背后的 OAuth 授权码流程 + 飞书 OpenAPI,用官方 Go SDK larksuite/oapi-sdk-go 按每用户 token 服务端调用。复用 agent FullTool/BaseTool 框架 + context 里已有的 user_id;需新建 OAuth 地基 + user_third_party_account 加密 token 表 + 刷新中间件 + 飞书工具。'
   classification_reason: 'Standard: 新表存 token+migration(标准1) + OAuth 授权/回调 API 端点(标准2) + 飞书 OpenAPI 全新外部集成(标准3) + 后端地基+工具+前端绑定入口>3文件(标准4) + 处理用户授权凭据高风险(标准5)。5 条全中→Standard,提出人确认。'
   status: active
-  stage: S0
+  stage: S1
   repos:
     numind-server: /private/tmp/wt-feishu-integration-numind-server (feature/feishu-integration)
     numind-web-v3: /private/tmp/wt-feishu-integration-numind-web-v3 (feature/feishu-integration)
@@ -16,8 +16,7 @@ features:
   artifacts:
     requirement: .ndf/features/feishu-integration/requirement.md
   decisions:
-  - 'S0 (ai 2026-06-23): 需求录入。档位判定→Standard(5 条全中),提出人确认。'
-  - 'S0 修正 (ai 2026-06-23): 推翻初稿 ISV 判断。选定方案 A=每用户在自己组织建自建应用+agent 代办(Claude Code/lark-cli 同款),单租户永不跨组织→无需 ISV/无需审核。证据:读 lark-cli 二进制——建应用 API 真实存在(lark-cli apps +create→/open-apis/spark/v1/apps),用户授权走 device-code OAuth(/open-apis/authen/v2/oauth/token),底层 oapi-sdk-go,lark-cli MIT 开源。唯一工程差异=有数托管 SaaS 须服务端按用户做 provisioning+凭据存储(A1 包 lark-cli / A2 原生重写,S2 定)。S1 待落实(均非 ISV/非 blocker):①bootstrap client 机制②飞书个人版/无组织用户能否建自建应用(真正覆盖率风险)③首批 2-3 工具④计费⑤token 安全。'
+  - 'S0 (ai 2026-06-23): 需求录入。档位判定→Standard(5 条全中),提出人确认。硬约束已核实:C 端任意用户授权=必须做商店应用(ISV)+飞书官方审核(外部依赖,数周,gating 上线时间线);OAuth user_access_token 自建/商店一致(RFC 6749,≤6900s 需刷新)。OAuth 机制成熟、agent 工具框架+context user_id 现成,贵在 OAuth/token 存储/刷新地基(一次性)。5 个待决项留 S1:ISV 资质主体、首批能力范围、个人版安装路径、计费策略、token 安全加密。'
   blockers: []
 - id: xhs-collector
   track: standard
