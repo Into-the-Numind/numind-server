@@ -1,5 +1,23 @@
 schema_version: '2.0'
 features:
+- id: xhs-collector
+  track: standard
+  description: '小红书选题采集插件：把淘宝售卖的"小红书自动创建选题库(电脑插件版V3)"的小红书采集能力移植成有数自有浏览器插件,面向小红书IP陪跑客户。客户在已登录浏览器一键采集笔记(标题/正文/封面/视频/评论/标签/作者/互动数)进有数选题库喂内容生产SOP。采集=纯客户端(扒DOM+读__INITIAL_STATE__,零签名逆向,不经服务端)。明确不做抖音(解析重活在第三方服务端,另立项)。'
+  classification_reason: 'Standard: 需新表存采集数据+migration(标准1) + ingest API端点(标准2) + 全新插件工件+后端+前端>3文件(标准4)。积分策略待定(标准5)。多条不满足→Standard。'
+  status: active
+  stage: S0
+  repos:
+    numind-server: /private/tmp/wt-xhs-collector-numind-server (feature/xhs-collector)
+    numind-web-v3: /private/tmp/wt-xhs-collector-numind-web-v3 (feature/xhs-collector)
+  worktrees:
+    numind-server: /private/tmp/wt-xhs-collector-numind-server
+    numind-web-v3: /private/tmp/wt-xhs-collector-numind-web-v3
+  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
+  artifacts:
+    requirement: .ndf/features/xhs-collector/requirement.md
+  decisions:
+  - 'S0 (ai 2026-06-23): 需求录入。逆向已完成(小红书纯客户端 DOM+__INITIAL_STATE__ 采集可自建;抖音排除)。档位判定→Standard,用户确认。4 个待决项留 S1:数据落地(有数/飞书/both)、插件分发(Chrome商店/自托管)、积分策略、客户鉴权。'
+  blockers: []
 - id: rag-doc2query
   track: standard
   description: 'RAG 升级项4（第二阶段，破情境教练类~60%天花板）：doc2query。ingest 期给每块 LLM 生成"它能回答哪些问题"(含口语化/情境化)追加进 EmbedText 一起嵌入,桥接情境提问↔答案片段的字面鸿沟(切块/BM25/重排都碰不到)。复用项1 EmbedText 机制零新 schema;走 v4-flash(profile.SalesragTagging)内部 userID=0 公司成本不扣用户;并发8 best-effort。flag features.doc2query.enabled 默认 OFF。依赖项1。'
