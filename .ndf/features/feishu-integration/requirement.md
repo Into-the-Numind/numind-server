@@ -25,22 +25,34 @@
   5. 高风险业务逻辑（支付/权限）：**是**（处理用户授权凭据 / token，安全敏感）
 - 人类决定：**确认 Standard**（提出人已确认）
 
-## 关键外部约束（已核实，影响时间线）
-- **C 端任意用户授权 = 必须做「商店应用（ISV）」**：飞书规则——企业自建应用只能在同一企业内使用（单租户）；要服务任意企业/任意用户，必须上架飞书应用中心、需 ISV 资质、过飞书**官方审核**。([应用类型与能力](https://open.feishu.cn/document/platform-overveiw/overview)、[发布与审核](https://open.feishu.cn/document/best-practices/intro-to-custom-app-review))
-- **审核是外部依赖、不在团队掌控内**（数周量级，且审核要求应用已可用）→ 开发可并行推进，**上线时间线受审核 gating**。
-- **OAuth 机制本身成熟**：自建/商店应用获取 `user_access_token` 方式一致，标准 OAuth 2.0 授权码流程（RFC 6749）；user_access_token 有效期 ≤6900s（约 115 分钟），需定期刷新。([获取 user_access_token](https://open.feishu.cn/document/authentication-management/access-token/get-user-access-token))
+## 选定方案：方案 A —— 每用户自建应用 + agent 代办（无需 ISV）
+
+**模型 = Claude Code / lark-cli 同款**：每个用户在**自己的飞书组织**里建一个自建应用，agent 代办大部分步骤，用户只做两步浏览器操作（① 填应用名+头像创建应用 ② 点开通并授权 scope）。每个 app 单租户、永不跨组织 → **永远碰不到 ISV，无需官方审核**。账号间天然隔离。
+
+> 决策修正（2026-06-23）：S0 初稿误判「C 端=必做 ISV」。复核 lark-cli 二进制源码后推翻——飞书有程序化建应用能力，per-user 自建应用模型成立，ISV 不是必须。商店应用/ISV 仅在「一个共享 app 跨组织一键服务所有人」时才需要，本方案不采用。
+
+### 已核实的底层机制（来自 lark-cli 二进制 strings + README）
+- **建应用 API 存在**：`lark-cli apps +create --name "..."` → 端点 `/open-apis/spark/v1/apps`（配套 `skills/lark-apps/references/lark-apps-create.md`）。建应用不是只能后台手点。
+- **用户授权 = device-code OAuth**：`/open-apis/authen/v2/oauth/token` + `device_code` + `verification_uri_complete`（标准 OAuth 2.0 设备码流程，即「第二个网址点授权」）。
+- 底层 `github.com/larksuite/oapi-sdk-go/v3`；**lark-cli 为 MIT 开源**（可包一层或参考重写）。
+- user_access_token 有效期 ≤6900s（约 115 分钟），需定期刷新。
+
+### 唯一的工程差异：有数是托管 SaaS（lark-cli 是本地）
+provisioning + 凭据存储必须在**服务端按用户**做。两条实现路径，S2 定夺：
+- **A1 包一层 lark-cli**（快）：后台按 per-user profile 调 lark-cli `apps +create` / `auth login`，复用其全部 bootstrap 逻辑；代价=把 CLI 塞进生产、管多 profile，运维偏 hacky。
+- **A2 原生重写**（干净）：`oapi-sdk-go` + spark/apps + device-code 自实现；代价=要搞清 bootstrap client。
 
 ## 架构落点（贴现有代码，S2 细化）
 - **可复用**：agent 工具框架 `FullTool`/`BaseTool`（飞书工具同形状）；`user_id` 已通过 context 流进每个工具 `Execute`（`middleware.UserIDFromCtx` / `billing.FromContext`）→ 按当前用户取飞书 token 的前提天然具备；统一工具注册 Registry/Factory。
-- **需新建**：OAuth 授权码流程（授权 URL + 回调 controller）；`user_third_party_account` 表 + 加密 token 存储；token 自动刷新中间件（115 分钟级）；飞书 API 客户端封装（`larksuite/oapi-sdk-go`）；按能力逐个新增的飞书工具。
-- **成本结构**：贵的是「OAuth + token 存储 + 刷新」地基（一次性）；地基建好后每加一个飞书能力都是边际成本递减 → **不必一次做完「一整套」，先地基 + 2~3 个高价值工具打通，剩余增量加**。
+- **需新建**：per-user app provisioning（建 app + device-code 授权）流程 + 回调/轮询；`user_third_party_account` 表（存每用户 appId/secret/token，加密）；token 自动刷新中间件（115 分钟级）；飞书 API 客户端封装；按能力逐个新增的飞书工具。
+- **成本结构**：贵的是「provisioning + token 存储 + 刷新」地基（一次性）；地基建好后每加一个飞书能力边际成本递减 → 先地基 + 2~3 个高价值工具打通，剩余增量加。
 
-## S1 待决项（留到可行性与提案阶段）
-1. **ISV 资质主体**：用哪个公司主体申请飞书商店应用？能否拿到 ISV 资质？（总开关，提出人侧确认中）
-2. **首批能力范围**：第一阶段先做哪 2~3 个飞书工具？（建议从授权 scope 干净、价值高的入手，如「写飞书文档」「发消息/群通知」「读多维表格」）
-3. **飞书个人版 / 单人组织的安装路径**：商店应用需被安装进用户租户；C 端个人/单人组织如何自助安装 + 授权，需在 S1 验证 UX 路径。
+## S1 待落实项（都不是 ISV、不是 blocker）
+1. **Bootstrap 机制**（核心）：调 `/open-apis/spark/v1/apps` 建 app 需先有 token，拿 token 又需 OAuth client → lark-cli 内置「引导 client」解了鸡生蛋。有数借用还是自注册？决定走 A1 还是 A2。
+2. **飞书个人版 / 无组织用户能否建自建应用**（⚠️ 真正的覆盖率风险）：建自建应用要求账号在有开发者权限的组织里；纯个人版创作者能否建需向飞书确认——决定 C 端可用比例。
+3. **首批能力范围**：第一阶段先做哪 2~3 个飞书工具？（建议从 scope 干净、价值高入手，如「写飞书文档」「发消息」「读多维表格」）。
 4. **计费策略**：飞书 API 调用是否计入有数 credits？还是免费（仅 LLM 调用计费）？
-5. **token 安全**：加密存储方案（KMS / 应用层加密）、refresh 失败/过期后的重新授权 UX。
+5. **token/secret 安全**：每用户 appSecret/token 加密存储方案、refresh 失败/过期后的重新授权 UX。
 
 ## 备注
 - 当前另有活跃 feature `xhs-collector`（S0/S1，并行 session），与本 feature 互不冲突（NDF v3 多 feature 并行）。

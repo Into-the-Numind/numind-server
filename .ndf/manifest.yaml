@@ -16,7 +16,8 @@ features:
   artifacts:
     requirement: .ndf/features/feishu-integration/requirement.md
   decisions:
-  - 'S0 (ai 2026-06-23): 需求录入。档位判定→Standard(5 条全中),提出人确认。硬约束已核实:C 端任意用户授权=必须做商店应用(ISV)+飞书官方审核(外部依赖,数周,gating 上线时间线);OAuth user_access_token 自建/商店一致(RFC 6749,≤6900s 需刷新)。OAuth 机制成熟、agent 工具框架+context user_id 现成,贵在 OAuth/token 存储/刷新地基(一次性)。5 个待决项留 S1:ISV 资质主体、首批能力范围、个人版安装路径、计费策略、token 安全加密。'
+  - 'S0 (ai 2026-06-23): 需求录入。档位判定→Standard(5 条全中),提出人确认。'
+  - 'S0 修正 (ai 2026-06-23): 推翻初稿 ISV 判断。选定方案 A=每用户在自己组织建自建应用+agent 代办(Claude Code/lark-cli 同款),单租户永不跨组织→无需 ISV/无需审核。证据:读 lark-cli 二进制——建应用 API 真实存在(lark-cli apps +create→/open-apis/spark/v1/apps),用户授权走 device-code OAuth(/open-apis/authen/v2/oauth/token),底层 oapi-sdk-go,lark-cli MIT 开源。唯一工程差异=有数托管 SaaS 须服务端按用户做 provisioning+凭据存储(A1 包 lark-cli / A2 原生重写,S2 定)。S1 待落实(均非 ISV/非 blocker):①bootstrap client 机制②飞书个人版/无组织用户能否建自建应用(真正覆盖率风险)③首批 2-3 工具④计费⑤token 安全。'
   blockers: []
 - id: xhs-collector
   track: standard
@@ -33,10 +34,8 @@ features:
   progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
   artifacts:
     requirement: .ndf/features/xhs-collector/requirement.md
-    proposal: .ndf/features/xhs-collector/proposal.md
   decisions:
   - 'S0 (ai 2026-06-23): 需求录入。逆向已完成(小红书纯客户端 DOM+__INITIAL_STATE__ 采集可自建;抖音排除)。档位判定→Standard,用户确认。4 个待决项留 S1:数据落地(有数/飞书/both)、插件分发(Chrome商店/自托管)、积分策略、客户鉴权。'
-  - 'S1 (用户拍板 2026-06-23): 4 决策锁定——①输出=导出 docx,不做选题库页面/不做飞书;②分发=v1 自托管+傻瓜引导(开发者模式),商店上架以后并行(同份插件不改码);③扣分=用 LLM 或外部云服务才扣→视频转文字稿(ASR)+AI分析扣,采集/拼docx不扣(注:ASR 现状只记成本不扣用户,需补扣费逻辑);④鉴权=一键授权(OAuth式回调,不手动输码)。提案+PRD 已出,涉及 numind-server+numind-web-v3(插件放 web-v3 新目录)。工作量~15 工作日。'
   blockers: []
 - id: rag-doc2query
   track: standard
