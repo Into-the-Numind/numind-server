@@ -696,7 +696,10 @@ func NewBiz(ds store.IStore) *biz {
 	// 初始化小红书选题采集摄入服务（xhs-collector）+ 异步富化框架（T3b）。
 	// Enricher 拉起 worker pool 消费 pending 队列；Ingest 落库置 pending 后投递。
 	// worker 数 / ffmpeg 并发由 viper xhs.* 配置，无配置兜底默认值。
-	xhsEnricher := xhsbiz.NewEnricher(ds.Xhs())
+	// WithBiller 注入 credit 服务 + 用户读取，激活视频 ASR 转写的 biz 层显式扣费（T5）。
+	// design §4.3：ASR 计费在 biz 层 Reserve/Reconcile，**不动 gateway**（避免误伤 monitor/
+	// 会议副驾的 ASR 透传路径）。须在 StartWorkers 前注入，确保 worker 富化时已挂上 biller。
+	xhsEnricher := xhsbiz.NewEnricher(ds.Xhs()).WithBiller(creditSvc, ds.Users())
 	xhsEnricher.StartWorkers()
 	b.xhsService = xhsbiz.NewXhsBizWithEnricher(ds.Xhs(), xhsEnricher)
 	// 存入 biz struct，供 numind.go shutdown 序列调 CloseXhsEnricher 优雅 drain。

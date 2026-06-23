@@ -53,6 +53,21 @@ type Enricher struct {
 	ffmpegSem chan struct{}
 	wg        sync.WaitGroup // 跟踪 worker goroutine，Stop 时 Wait 等其全部退出
 	stopOnce  sync.Once      // 保证 Stop 幂等（close channel 只发生一次）
+
+	// 视频 ASR 转写扣费依赖（T5，可选）。biller/userStore 同时非 nil 时，视频转写在
+	// biz 层显式 Reserve/Reconcile 扣分（design §4.3：不动 gateway，避免误伤 monitor/会议
+	// 副驾的 ASR 透传路径）。任一为 nil 时退化为不在 biz 层扣费（monitor/会议语义）。
+	biller    asrBiller
+	userStore userGetter
+}
+
+// WithBiller 注入视频 ASR 转写的 biz 层显式扣费依赖（credit 服务 + 用户读取）。
+// 返回 e 以支持链式调用。应用启动时在 NewEnricher 后调用以激活 ASR 扣费；
+// 不调用则视频转写不在 biz 层扣费（便于单测隔离富化逻辑）。
+func (e *Enricher) WithBiller(b asrBiller, u userGetter) *Enricher {
+	e.biller = b
+	e.userStore = u
+	return e
 }
 
 // NewEnricher 创建富化框架。worker 数取 viper "xhs.enrich_workers"，
@@ -193,23 +208,48 @@ func (e *Enricher) processJob(job enrichJob) {
 // enrichOne 对单条笔记执行真实富化。调用方（processJob）已通过 ClaimForEnrich
 // 把状态原子置为 enriching，故此处不再重复置 enriching。
 //
-// 本 task（T3b）为 stub：仅把状态收尾为 done，真实的 LLM 6 字段分析
-// （aiservice.Chat）与视频 ASR 转写（aiservice.ASR，受 ffmpegSem 限流）由 T4/T5 填充。
+// 流程（design §4.1）：
+//   - AI 分析（扣分）：analyzeNote 用便宜模型生成 6 个 AI 字段，写回 note 内存对象。
+//     LLM 调用失败 → 返回 error，由 processJob 兜底置 failed（不阻塞入库的原始数据已落库）。
+//   - 视频 ASR 转写（T5 填充）：note_type==video 时获取 ffmpegSem 后走 aiservice.ASR
+//     转写 video_transcript + biz 层显式 Reserve/Reconcile 扣分；直链失效置 partial。
+//   - 收尾：经 UpdateEnrichResult 一次性写回 6 AI 字段 + 转写 + 终态 enrich_status。
 //
-// 状态机契约（供 T4/T5 实现时遵守）：
+// 状态机契约：
 //   - 进入时已是 enriching（由 ClaimForEnrich 抢占置位，避免并发重复富化）。
 //   - 成功置 done；部分成功（如视频直链失效）置 partial；失败返回 error 由
 //     processJob 置 failed；积分不足置 insufficient_credits 并保留原始采集数据。
-func (e *Enricher) enrichOne(ctx context.Context, _ uint, note *model.XhsTopicNote) error {
-	// TODO(T4/T5): 在此调用 aiservice.Chat 生成 6 个 AI 分析字段；
-	// note_type==video 时获取 ffmpegSem 后走 aiservice.ASR 转写 video_transcript；
-	// 计费 Reserve/Reconcile；积分不足置 insufficient_credits。
-	// 当前 stub 直接置 done。
+func (e *Enricher) enrichOne(ctx context.Context, userID uint, note *model.XhsTopicNote) error {
+	// AI 分析（扣分）：失败返回 error，processJob 置 failed。
+	if err := e.analyzeNote(ctx, userID, note); err != nil {
+		return fmt.Errorf("enrichOne: analyze: %w", err)
+	}
 
+	// 视频段（T5）：note_type==video 且有直链 → 转写 + biz 层显式扣费。
+	// 终态由视频段 outcome 决定（done/partial/insufficient_credits）；非视频笔记默认 done。
+	finalStatus := model.XhsEnrichDone
+	if note.NoteType == model.XhsNoteTypeVideo && note.VideoURL != "" {
+		outcome, err := e.transcribeVideo(ctx, userID, note)
+		if err != nil {
+			// 仅基础设施级失败（ffmpeg/IO/读文件/加载用户）才返回 error → processJob 置 failed。
+			// 业务降级（直链失效 / 余额不足 / ASR 失败）由 transcribeVideo 以 outcome.Status
+			// 表达、不返回 error，故不会阻塞 AI 分析结果落库。
+			return fmt.Errorf("enrichOne: transcribe: %w", err)
+		}
+		finalStatus = outcome.Status
+	}
+
+	// 收尾：一次性写回 6 AI 分析字段 + 转写 + 终态。
 	if err := e.store.UpdateEnrichResult(ctx, &model.XhsTopicNote{
-		ID:              note.ID,
-		EnrichStatus:    model.XhsEnrichDone,
-		VideoTranscript: note.VideoTranscript,
+		ID:               note.ID,
+		AITopicAngle:     note.AITopicAngle,
+		AIViralReason:    note.AIViralReason,
+		AIBorrowable:     note.AIBorrowable,
+		AITargetAudience: note.AITargetAudience,
+		AITitleFormula:   note.AITitleFormula,
+		AIOneLine:        note.AIOneLine,
+		VideoTranscript:  note.VideoTranscript,
+		EnrichStatus:     finalStatus,
 	}); err != nil {
 		return fmt.Errorf("enrichOne: write result: %w", err)
 	}

@@ -2,7 +2,6 @@ package xhs
 
 import (
 	"context"
-	"errors"
 	"math"
 	"sync"
 	"testing"
@@ -161,8 +160,9 @@ func TestTranscribeVideo_ChargesActualSeconds(t *testing.T) {
 		VideoURL: "https://sns-video.xhscdn.com/abc.mp4",
 	}
 
-	err := e.transcribeVideo(context.Background(), userID, note)
+	outcome, err := e.transcribeVideo(context.Background(), userID, note)
 	require.NoError(t, err)
+	assert.Equal(t, model.XhsEnrichDone, outcome.Status, "成功转写应为 done")
 
 	// 转写写回。
 	require.NotNil(t, note.VideoTranscript)
@@ -215,7 +215,7 @@ func TestTranscribeVideo_MonitorMeetingPathNotCharged(t *testing.T) {
 		VideoURL: "https://sns-video.xhscdn.com/def.mp4",
 	}
 
-	err := e.transcribeVideo(context.Background(), 7, note)
+	_, err := e.transcribeVideo(context.Background(), 7, note)
 	require.NoError(t, err)
 
 	assert.Equal(t, 0, biller.reserveCalls, "未 WithBiller 的路径（monitor/会议语义）biz 层必须 0 次 Reserve")
@@ -243,12 +243,11 @@ func TestTranscribeVideo_ExpiredLinkPartialNoCharge(t *testing.T) {
 		VideoURL: "https://sns-video.xhscdn.com/expired.mp4",
 	}
 
-	err := e.transcribeVideo(context.Background(), 9, note)
+	outcome, err := e.transcribeVideo(context.Background(), 9, note)
 	require.NoError(t, err, "直链失效应优雅降级（partial），不返回 error 阻塞富化")
 
 	assert.Nil(t, note.VideoTranscript, "直链失效转写应为 NULL")
-	assert.True(t, errors.Is(note.enrichErr, errVideoLinkExpired) || note.partial,
-		"直链失效应标记 partial")
+	assert.Equal(t, model.XhsEnrichPartial, outcome.Status, "直链失效应标记 partial")
 	assert.Equal(t, 0, biller.reserveCalls, "没下到视频不应预扣")
 	assert.Equal(t, 0, biller.reconcileCalls)
 }
@@ -274,10 +273,10 @@ func TestTranscribeVideo_InsufficientCreditsSkips(t *testing.T) {
 		VideoURL: "https://sns-video.xhscdn.com/x.mp4",
 	}
 
-	err := e.transcribeVideo(context.Background(), 11, note)
+	outcome, err := e.transcribeVideo(context.Background(), 11, note)
 	require.NoError(t, err, "余额不足应跳过 ASR 不报错")
 
-	assert.True(t, note.insufficientCredits, "余额不足应标记 insufficient_credits")
+	assert.Equal(t, model.XhsEnrichInsufficientCredits, outcome.Status, "余额不足应标记 insufficient_credits")
 	assert.Nil(t, note.VideoTranscript)
 
 	asrCap.mu.Lock()
