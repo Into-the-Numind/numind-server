@@ -1,25 +1,5 @@
 schema_version: '2.0'
 features:
-- id: xhs-collector
-  track: standard
-  description: '小红书选题采集 + 富化累积选题库。客户浏览器插件采集小红书笔记 payload POST 到有数后端 → 落入 per-user 累积选题库 → LLM 生成 6 个选题级分析字段(选题角度/爆款原因/可借鉴点/目标人群/标题公式/一句话总结),视频走 ASR 转写口播稿。去重防重复扣分靠 (user_id,xhs_note_id) 唯一 + content_hash;富化走积分 Reserve/Reconcile,积分不足优雅降级保留原始数据。跨仓库(numind-server 后端 + numind-web-v3 用户端)。'
-  classification_reason: 'Standard: 新增 DB 表 xhs_topic_note(schema 变更) + 新增多个 API 端点(采集摄入/列表/详情/富化) + 跨仓库前后端 + 涉及积分计费(高风险业务) + 集成 LLM/ASR。任一条触发 Standard 档。'
-  status: active
-  stage: S4
-  repos:
-    numind-server: /private/tmp/wt-xhs-collector-numind-server (feature/xhs-collector)
-    numind-web-v3: /private/tmp/wt-xhs-collector-numind-web-v3 (feature/xhs-collector)
-  worktrees:
-    numind-server: /private/tmp/wt-xhs-collector-numind-server
-    numind-web-v3: /private/tmp/wt-xhs-collector-numind-web-v3
-  progress: {total_tasks: 6, completed_tasks: 1, reviewed_tasks: 1}
-  artifacts:
-    design: .ndf/features/xhs-collector/design.md
-    plan: .ndf/features/xhs-collector/plan.md
-  decisions:
-  - 'S0-S4 T1 (ai 2026-06-24): 数据地基。xhs_topic_note 表 + XhsTopicNote GORM model(照 MonitorNote 约定:显式字段/无软删除/显式 TableName) + 5 索引(uk_xtn_user_note 去重 / idx_xtn_user_crawled 列表 / idx_xtn_enrich 富化队列 / idx_xtn_hash 内容变化 / idx_xtn_published) + 6 enrich 状态枚举 + in-memory SQLite AutoMigrate 单测。nullable 契约:指针字段(video_transcript/collected_at/published_at)→NULL,非指针 crawled_at time.Time→NOT NULL DEFAULT CURRENT_TIMESTAMP(与 GORM 渲染一致避免 schema drift)。'
-  - 'S4 T1 review 修复 (ai 2026-06-24): P0 补齐 NDF 工件(此前 S4 编码先于工件提交,违反 Rule 3)——建 .ndf/features/xhs-collector/{design,plan}.md(S0-S3 合并工件)+ 加 manifest 条目 stage S4 + .ndf-active 改 S4。P1 schema drift——migration crawled_at TIMESTAMP NULL 改 NOT NULL DEFAULT CURRENT_TIMESTAMP 对齐非指针 time.Time(GORM AutoMigrate 渲染 NOT NULL),与 user_id NOT NULL 处理一致,复合索引 idx_xtn_user_crawled 排序可靠。门禁 build/test/gofmt 全绿。'
-  blockers: []
 - id: rag-doc2query
   track: standard
   description: 'RAG 升级项4（第二阶段，破情境教练类~60%天花板）：doc2query。ingest 期给每块 LLM 生成"它能回答哪些问题"(含口语化/情境化)追加进 EmbedText 一起嵌入,桥接情境提问↔答案片段的字面鸿沟(切块/BM25/重排都碰不到)。复用项1 EmbedText 机制零新 schema;走 v4-flash(profile.SalesragTagging)内部 userID=0 公司成本不扣用户;并发8 best-effort。flag features.doc2query.enabled 默认 OFF。依赖项1。'
