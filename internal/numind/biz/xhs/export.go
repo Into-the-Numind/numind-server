@@ -6,6 +6,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"numind-server/internal/pkg/errno"
@@ -26,7 +27,7 @@ const (
 	csvTimeLayout = time.RFC3339
 )
 
-// exportCSVHeader 是导出 CSV 的列头（源字段 + 6 个 AI 分析字段）。
+// exportCSVHeader 是导出 CSV 的列头（源字段 + images + comments，AI 分析已移除）。
 // 顺序即 buildExportCSV 写每行的字段顺序，二者必须保持一致。
 var exportCSVHeader = []string{
 	"id",
@@ -49,14 +50,8 @@ var exportCSVHeader = []string{
 	"author_followers",
 	"enrich_status",
 	"collected_at",
-	"crawled_at",
-	// 6 个 AI 分析字段。
-	"ai_topic_angle",
-	"ai_viral_reason",
-	"ai_borrowable",
-	"ai_target_audience",
-	"ai_title_formula",
-	"ai_one_line",
+	"images",
+	"comments",
 }
 
 // Export 把 userID 选中的若干条笔记导出为 CSV，上传 COS 后返回 1 小时有效的签名下载链接。
@@ -105,6 +100,27 @@ func (b *XhsBiz) Export(ctx context.Context, userID uint, ids []uint64) (downloa
 	return url, nil
 }
 
+// formatCommentsForCSV 把评论（含一层回复）序列化成单元格：
+// "作者：正文（回复：作者：正文；…）"，多条评论用 " ||| " 分隔。
+func formatCommentsForCSV(comments []CommentItem) string {
+	if len(comments) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(comments))
+	for _, c := range comments {
+		seg := c.Author + "：" + c.Text
+		if len(c.Replies) > 0 {
+			rs := make([]string, 0, len(c.Replies))
+			for _, r := range c.Replies {
+				rs = append(rs, r.Author+"："+r.Text)
+			}
+			seg += "（回复：" + strings.Join(rs, "；") + "）"
+		}
+		parts = append(parts, seg)
+	}
+	return strings.Join(parts, " ||| ")
+}
+
 // buildExportCSV 把笔记行拼成 UTF-8（带 BOM）CSV 字节。
 //
 // 纯函数，无 COS / 网络依赖，便于单测断言 CSV 内容（列头 + 选中字段）。
@@ -144,13 +160,8 @@ func buildExportCSV(rows []model.XhsTopicNote) ([]byte, error) {
 			strconv.Itoa(item.AuthorFollowers),
 			item.EnrichStatus,
 			formatTimePtr(item.CollectedAt),
-			item.CrawledAt.Format(csvTimeLayout),
-			item.AITopicAngle,
-			item.AIViralReason,
-			item.AIBorrowable,
-			item.AITargetAudience,
-			item.AITitleFormula,
-			item.AIOneLine,
+			joinTags(item.Images),
+			formatCommentsForCSV(item.Comments),
 		}
 		if err := w.Write(record); err != nil {
 			return nil, fmt.Errorf("write row %d: %w", item.ID, err)

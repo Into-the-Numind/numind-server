@@ -21,10 +21,11 @@ const (
 
 // CommentItem 是 NoteItem 出参中的单条热门评论（与摄入侧 CommentPayload 对称）。
 type CommentItem struct {
-	Author     string `json:"author"`
-	Text       string `json:"text"`
-	LikeCount  int    `json:"like_count"`
-	IPLocation string `json:"ip_location"`
+	Author     string        `json:"author"`
+	Text       string        `json:"text"`
+	LikeCount  int           `json:"like_count"`
+	IPLocation string        `json:"ip_location"`
+	Replies    []CommentItem `json:"replies"`
 }
 
 // NoteItem 是选题库列表 / 详情的出参 DTO，包含全部展示字段 + enrich_status。
@@ -40,6 +41,7 @@ type NoteItem struct {
 	Content         string        `json:"content"`
 	Tags            []string      `json:"tags"`
 	CoverURL        string        `json:"cover_url"`
+	Images          []string      `json:"images"`
 	NoteURL         string        `json:"note_url"`
 	PublishedAt     *time.Time    `json:"published_at"`
 	VideoURL        string        `json:"video_url"`
@@ -151,6 +153,7 @@ func toNoteItem(n *model.XhsTopicNote) NoteItem {
 		Content:          n.Content,
 		Tags:             unmarshalTags(n.Tags),
 		CoverURL:         n.CoverURL,
+		Images:           unmarshalTags(n.Images),
 		NoteURL:          n.NoteURL,
 		PublishedAt:      n.PublishedAt,
 		VideoURL:         n.VideoURL,

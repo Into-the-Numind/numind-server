@@ -48,6 +48,8 @@ func exportSeed() *exportMockStore {
 			Title: "种草标题A", Content: "正文A内容", Tags: datatypes.JSON(`["美妆","平价"]`),
 			LikeCount: 1234, EnrichStatus: model.XhsEnrichDone,
 			AITopicAngle: "角度A", AIOneLine: "一句话A", PublishedAt: &pub,
+			Images:   datatypes.JSON(`["https://img/1.jpg","https://img/2.jpg"]`),
+			Comments: datatypes.JSON(`[{"author":"小明","text":"好棒","replies":[{"author":"楼主","text":"谢谢"}]}]`),
 		},
 		{
 			ID: 2, UserID: 100, XhsNoteID: "note-b", NoteType: model.XhsNoteTypeVideo,
@@ -82,11 +84,12 @@ func TestBuildExportCSV_ContainsSelectedFields(t *testing.T) {
 	require.Len(t, records, 2, "表头 + 1 条数据行")
 
 	header := records[0]
-	assert.Equal(t, exportCSVHeader, header, "表头列必须与 exportCSVHeader 一致（源字段 + 6 AI 字段）")
+	assert.Equal(t, exportCSVHeader, header, "表头列必须与 exportCSVHeader 一致（源字段 + images + comments，无 AI）")
 	// 关键列存在性（防漏列）。
-	assert.Contains(t, header, "ai_topic_angle")
-	assert.Contains(t, header, "ai_one_line")
+	assert.Contains(t, header, "comments")
+	assert.Contains(t, header, "images")
 	assert.Contains(t, header, "video_transcript")
+	assert.NotContains(t, header, "ai_topic_angle", "AI 列应已移除")
 
 	dataRow := records[1]
 	require.Len(t, dataRow, len(exportCSVHeader), "数据行列数须与表头一致")
@@ -106,8 +109,10 @@ func TestBuildExportCSV_ContainsSelectedFields(t *testing.T) {
 	assert.Equal(t, "正文A内容", dataRow[idx("content")])
 	assert.Equal(t, "美妆;平价", dataRow[idx("tags")], "tags 应以 ; 连接")
 	assert.Equal(t, "1234", dataRow[idx("like_count")])
-	assert.Equal(t, "角度A", dataRow[idx("ai_topic_angle")])
-	assert.Equal(t, "一句话A", dataRow[idx("ai_one_line")])
+	assert.Contains(t, dataRow[idx("images")], "https://img/1.jpg", "images 列应含图片 URL")
+	assert.Contains(t, dataRow[idx("comments")], "小明", "comments 列应含评论作者")
+	assert.Contains(t, dataRow[idx("comments")], "好棒", "comments 列应含评论正文")
+	assert.Contains(t, dataRow[idx("comments")], "谢谢", "comments 列应含回复内容")
 	assert.Equal(t, model.XhsEnrichDone, dataRow[idx("enrich_status")])
 	assert.NotEmpty(t, dataRow[idx("published_at")], "published_at 非空应格式化为 RFC3339")
 }

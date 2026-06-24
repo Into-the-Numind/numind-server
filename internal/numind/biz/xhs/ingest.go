@@ -20,7 +20,7 @@ const (
 	maxTextBytes      = 65536 // 单个长文本字段（content / video_transcript 等）字节上限 = 64KB
 	maxComments       = 100   // 每条笔记保留的顶层评论条数上限
 	maxReplies        = 30    // 每条评论保留的回复条数上限
-	maxCommentBytes   = 200   // 单条评论 text 字节上限（超出截断）
+	maxCommentBytes   = 2000  // 单条评论 text 字节上限（超出截断；中文约 660 字）
 )
 
 // CommentPayload 是插件上送的单条热门评论。
@@ -59,6 +59,7 @@ type NotePayload struct {
 	Content         string           `json:"content"`
 	Tags            []string         `json:"tags"`
 	CoverURL        string           `json:"cover_url"`
+	Images          []string         `json:"images"`
 	NoteURL         string           `json:"note_url"`
 	PublishedAt     string           `json:"published_at"`
 	VideoURL        string           `json:"video_url"`
@@ -167,6 +168,7 @@ func buildNote(userID uint, p *NotePayload) (*model.XhsTopicNote, error) {
 		Content:         p.Content,
 		Tags:            marshalJSON(p.Tags),
 		CoverURL:        p.CoverURL,
+		Images:          marshalJSON(p.Images),
 		NoteURL:         p.NoteURL,
 		PublishedAt:     parseFlexibleTime(p.PublishedAt),
 		VideoURL:        p.VideoURL,

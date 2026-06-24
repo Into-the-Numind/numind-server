@@ -35,6 +35,7 @@ type XhsTopicNote struct {
 	Content         string         `gorm:"type:text" json:"content"`
 	Tags            datatypes.JSON `json:"tags"`
 	CoverURL        string         `gorm:"size:1000" json:"cover_url"`
+	Images          datatypes.JSON `json:"images"` // 笔记全部图片 URL 数组
 	NoteURL         string         `gorm:"size:1000" json:"note_url"`
 	PublishedAt     *time.Time     `gorm:"index:idx_xtn_published" json:"published_at"`
 	VideoURL        string         `gorm:"size:1000" json:"video_url"`
