@@ -8,13 +8,18 @@
 // Key behaviours encoded here (from spike-bootstrap.md + verified lark-cli
 // reality on 2026-06-24):
 //
-//   - Per-user isolation: lark-cli has no dedicated config-home env var; it reads
-//     $HOME/.lark-cli/config.json . We override HOME per user so each user's app
-//     credentials live in their own scratch directory and never collide.
-//   - `lark-cli config init --new` (HOME=scratch) prints
+//   - Per-user isolation + persistence (G1-home): lark-cli has no dedicated
+//     config-home env var; it reads $HOME/.lark-cli/config.json . We override HOME
+//     per user (homeBase/u{userID}) so each user's app credentials + tokens live in
+//     their OWN PERSISTENT directory and never collide. homeBase comes from config
+//     (feishu.home_base) and MUST point at a durable volume (e.g. dev
+//     /opt/numind/dev/feishu-homes) so a redeploy does not wipe the homes and a
+//     user reconnecting reuses the same home (idempotent — MkdirAll is a no-op when
+//     it already exists, lark-cli reuses the existing config.json + tokens).
+//   - `lark-cli config init --new` (HOME=user's persistent home) prints
 //     "打开以下链接配置应用:\n  https://open.feishu.cn/page/cli?user_code=...\n等待配置应用..."
 //     and BLOCKS until the user finishes the browser step (creates the app), then
-//     exits 0 — having written the new app into that scratch's config.json:
+//     exits 0 — having written the new app into that home's config.json:
 //     {"apps":[{"appId":"cli_xxx","appSecret":"...","brand":"feishu",...}]} .
 //     We run it backgrounded, scrape the page URL from its early stdout, and let
 //     it finish on its own. config init self-bounds the wait (~10min); we add a
@@ -24,10 +29,10 @@
 //     +init` / `config show` materialization dance (lark-cli stores the secret in
 //     plaintext in config.json).
 //
-// The scratch HOME is the per-user durable store (homeBase/u{userID}): config.json
-// holds the persisted app creds and is the source ReadAppSecret reads from during
-// the later OAuth exchange ("一次绑永久用"). On completion we clean up only the
-// in-flight process tracking, not config.json.
+// The per-user home (homeBase/u{userID}) is the durable store: config.json holds
+// the persisted app creds and lark-cli's token store, and is the source
+// ReadAppSecret reads from during the later OAuth exchange ("一次绑永久用"). On
+// completion we clean up only the in-flight process tracking, not config.json.
 package feishu
 
 import (
@@ -71,12 +76,12 @@ const appCreateCeiling = 12 * time.Minute
 // State across HTTP requests: StartAppCreate launches a long-lived background
 // process (it blocks on the user's browser step). We track running sessions
 // in-process so a later PollAppCreated on the same server instance can observe
-// completion. The session ref is the per-user scratch-home path — durable, so
-// even if the in-memory entry is lost (restart), PollAppCreated can still read
-// whatever credentials lark-cli already persisted in that scratch's config.json.
+// completion. The session ref is the per-user home path — persistent, so even if
+// the in-memory entry is lost (restart), PollAppCreated can still read whatever
+// credentials lark-cli already persisted in that home's config.json.
 type larkCLIRunner struct {
 	bin      string // lark-cli binary (name on PATH or absolute path)
-	homeBase string // base dir under which per-user scratch HOMEs are created
+	homeBase string // PERSISTENT base dir under which per-user HOMEs (u{userID}) live
 
 	mu       sync.Mutex
 	sessions map[string]*cliSession
@@ -93,14 +98,21 @@ type cliSession struct {
 }
 
 // NewLarkCLIRunner builds a production cliRunner. bin defaults to "lark-cli" (on
-// PATH) when empty; homeBase defaults to a temp subdir when empty. It does NOT
-// verify lark-cli is installed here (so server startup doesn't hard-depend on it
-// when the feature is off) — a missing binary surfaces as a StartAppCreate error.
+// PATH) when empty. homeBase is the PERSISTENT per-user home base (feishu.home_base):
+// when empty it falls back to a temp subdir, but that fallback is NON-persistent
+// (lost on reboot / container replace) — production MUST set feishu.home_base to a
+// durable volume so credentials + tokens survive a redeploy. It does NOT verify
+// lark-cli is installed here (so server startup doesn't hard-depend on it when the
+// feature is off) — a missing binary surfaces as a StartAppCreate error.
+//
+// The home base is created 0700 and is owned by the running process user (we rely on
+// the process umask / default ownership — MkdirAll creates dirs as the current uid).
 func NewLarkCLIRunner(bin, homeBase string) (*larkCLIRunner, error) {
 	if bin == "" {
 		bin = defaultLarkCLIBin
 	}
 	if homeBase == "" {
+		// Non-persistent fallback only (feishu.home_base unset). Production sets it.
 		homeBase = filepath.Join(os.TempDir(), "numind-larkcli-homes")
 	}
 	if err := os.MkdirAll(homeBase, 0o700); err != nil {
@@ -113,12 +125,14 @@ func NewLarkCLIRunner(bin, homeBase string) (*larkCLIRunner, error) {
 	}, nil
 }
 
-// homeForUser returns this user's isolated scratch-home directory.
+// homeForUser returns this user's isolated PERSISTENT home directory
+// (homeBase/u{userID}). The path is deterministic, so the same user always maps to
+// the same home — reconnecting reuses the existing config.json + tokens (idempotent).
 func (r *larkCLIRunner) homeForUser(userID uint) string {
 	return filepath.Join(r.homeBase, fmt.Sprintf("u%d", userID))
 }
 
-// configPath returns the lark-cli config.json path inside a scratch home.
+// configPath returns the lark-cli config.json path inside a user's home.
 func configPath(home string) string {
 	return filepath.Join(home, ".lark-cli", "config.json")
 }
@@ -153,13 +167,15 @@ func (r *larkCLIRunner) env(home string) []string {
 }
 
 // StartAppCreate launches `lark-cli config init --new` in the user's isolated
-// scratch HOME, scrapes the page URL from its early stdout, and leaves the process
-// running in the background (it blocks until the user finishes in the browser).
-// The returned handle carries the scratch path + the process session tracking.
+// PERSISTENT home (homeBase/u{userID}), scrapes the page URL from its early stdout,
+// and leaves the process running in the background (it blocks until the user
+// finishes in the browser). The returned handle carries the home path + the process
+// session tracking. The home dir is created 0700 (owned by the running process
+// user); MkdirAll is a no-op when it already exists, so a re-provision reuses it.
 func (r *larkCLIRunner) StartAppCreate(ctx context.Context, userID uint) (pageURL string, handle *AppCreateHandle, err error) {
 	home := r.homeForUser(userID)
 	if err := os.MkdirAll(home, 0o700); err != nil {
-		return "", nil, fmt.Errorf("feishu: create user scratch home %q: %w", home, err)
+		return "", nil, fmt.Errorf("feishu: create user home %q: %w", home, err)
 	}
 
 	// Concurrency guard: reject a second StartAppCreate for the same user while a
@@ -352,7 +368,7 @@ func (r *larkCLIRunner) PollAppCreated(ctx context.Context, handle *AppCreateHan
 	return appID, appSecret, true, nil
 }
 
-// resolveHandle reconstructs an AppCreateHandle from a session ref (scratch path).
+// resolveHandle reconstructs an AppCreateHandle from a session ref (home path).
 // It prefers the live in-memory session (so a poll on the same instance observes
 // process exit), falling back to a path-only handle (session nil) so a post-
 // restart poll still reads config.json. An empty/unknown ref yields nil.
@@ -367,8 +383,8 @@ func (r *larkCLIRunner) resolveHandle(sessionRef string) *AppCreateHandle {
 }
 
 // sessionRefForUser returns the deterministic durable session ref for userID:
-// the per-user scratch home path (the same path StartAppCreate uses and that
-// PollAppCreated reads config.json from). userID 0 has no scratch home.
+// the per-user home path (the same path StartAppCreate uses and that PollAppCreated
+// reads config.json from). userID 0 has no home.
 func (r *larkCLIRunner) sessionRefForUser(userID uint) string {
 	if userID == 0 {
 		return ""
@@ -376,7 +392,7 @@ func (r *larkCLIRunner) sessionRefForUser(userID uint) string {
 	return r.homeForUser(userID)
 }
 
-// cleanupSession removes the in-flight process tracking for a scratch home. It
+// cleanupSession removes the in-flight process tracking for a user's home. It
 // does NOT delete config.json (the durable credential store).
 func (r *larkCLIRunner) cleanupSession(home string) {
 	r.mu.Lock()
@@ -387,8 +403,8 @@ func (r *larkCLIRunner) cleanupSession(home string) {
 // ReadAppSecret resolves the plaintext app_secret for an already-provisioned
 // appID (OAuth exchange path). The OAuth callback can land on any server instance
 // and after a restart the in-memory map is empty, so we resolve by scanning the
-// persisted per-user scratch homes under r.homeBase for a config.json whose
-// apps[0].appId matches.
+// persistent per-user homes under r.homeBase for a config.json whose apps[0].appId
+// matches.
 func (r *larkCLIRunner) ReadAppSecret(ctx context.Context, appID string) (string, error) {
 	entries, derr := os.ReadDir(r.homeBase)
 	if derr != nil {
@@ -421,7 +437,7 @@ type larkConfigApp struct {
 	AppSecret string `json:"appSecret"`
 }
 
-// readAppFromConfig reads apps[0].appId/appSecret from the scratch home's
+// readAppFromConfig reads apps[0].appId/appSecret from the user's home
 // config.json. It returns an error when the file is absent (app not created yet),
 // unparseable, or apps[0] is incomplete — so callers can distinguish
 // "in-progress" from "done".

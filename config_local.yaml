@@ -38,10 +38,14 @@ security:
 feishu:
   web_base_url: "http://localhost:5173"
   redirect_uri: "http://localhost:9091/v1/feishu/oauth/callback"
+  # home_base —— 每用户 lark-cli HOME 的持久化根目录（实际 HOME = ${home_base}/u<userID>）。
+  #   lark-cli 把自建应用凭据 + token 存进 ${HOME}/.lark-cli/，所以这个目录必须可写且持久，
+  #   同一用户重连复用同一 HOME（幂等）。本地用工作目录下一个可写目录即可。
+  home_base: "./data/feishu-homes"
   # authorize_url: ""   # 留空=默认 https://open.feishu.cn/open-apis/authen/v1/authorize
   # scopes: ""          # 留空=默认 "docx:document im:message bitable:app:readonly"
   # lark_cli_bin: ""    # 留空=PATH 上的 lark-cli
-  # lark_cli_home: ""   # 留空=系统临时目录下的 numind-larkcli-homes
+  # lark_cli_home: ""   # （已废弃，被 home_base 取代）留空即可，仅作旧配置回退
 
 # MySQL 数据库相关配置
 db:

@@ -116,10 +116,19 @@ func buildFeishuService(
 		return nil, fmt.Errorf("feishu: build state signer: %w", err)
 	}
 
-	// Provisioner: lark-cli device-code runner + HTTP OAuth token exchanger.
+	// Provisioner: lark-cli runner pinned to a PERSISTENT per-user home base.
+	// G1-home: each user's lark-cli home is <feishu.home_base>/u<userID>, which
+	// MUST live on a durable volume (e.g. dev /opt/numind/dev/feishu-homes) so the
+	// app credentials + tokens lark-cli stores there survive a redeploy and a user
+	// reconnecting reuses the same home (idempotent). feishu.lark_cli_home is the
+	// pre-G1 key, kept as a fallback so an un-migrated config does not break.
+	homeBase := viper.GetString("feishu.home_base")
+	if homeBase == "" {
+		homeBase = viper.GetString("feishu.lark_cli_home")
+	}
 	cliRunner, err := feishu.NewLarkCLIRunner(
 		viper.GetString("feishu.lark_cli_bin"),
-		viper.GetString("feishu.lark_cli_home"),
+		homeBase,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("feishu: build lark-cli runner: %w", err)

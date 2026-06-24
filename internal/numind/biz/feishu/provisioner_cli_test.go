@@ -151,6 +151,70 @@ func TestStartAppCreate_ScrapesURLThenPollReadsConfig(t *testing.T) {
 	}
 }
 
+// TestStartAppCreate_PersistentHomeIsReusedIdempotently is the G1-home regression:
+// the per-user HOME (homeBase/u{userID}) is deterministic and PERSISTENT, so a
+// second provision for the same user lands in the SAME directory (reuses the
+// existing config.json — no /tmp scratch wipe between connects). It also asserts the
+// home is created 0700 (owner-only).
+func TestStartAppCreate_PersistentHomeIsReusedIdempotently(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake lark-cli stub is a /bin/sh script")
+	}
+	homeBase := t.TempDir()
+	seedFakeCreds(t, homeBase, 42, "cli_persist", "secret-persist")
+
+	bin := writeFakeLarkCLI(t, fakeConfigInitScript)
+	r, err := NewLarkCLIRunner(bin, homeBase)
+	if err != nil {
+		t.Fatalf("NewLarkCLIRunner: %v", err)
+	}
+
+	wantHome := filepath.Join(homeBase, "u42")
+
+	// First provision → home created under homeBase, completes.
+	_, handle, err := r.StartAppCreate(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("first StartAppCreate: %v", err)
+	}
+	if handle.home != wantHome {
+		t.Fatalf("home not under persistent base: got %q want %q", handle.home, wantHome)
+	}
+	// The home must be created 0700 (owner-only) and owned by the running process.
+	info, err := os.Stat(wantHome)
+	if err != nil {
+		t.Fatalf("stat home: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Fatalf("home perm = %o, want 0700", perm)
+	}
+
+	// Drive to completion so the in-flight session is released.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, _, done, perr := r.PollAppCreated(context.Background(), handle)
+		if perr != nil {
+			t.Fatalf("PollAppCreated: %v", perr)
+		}
+		if done {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first provision never completed")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// A SECOND provision for the same user must reuse the SAME persistent home
+	// (idempotent — not a fresh scratch dir). Drive it to completion too.
+	_, handle2, err := r.StartAppCreate(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("second StartAppCreate: %v", err)
+	}
+	if handle2.home != wantHome {
+		t.Fatalf("re-provision used a different home: got %q want %q (must reuse)", handle2.home, wantHome)
+	}
+}
+
 // TestPollAppCreated_NilHandleIsInProgress confirms a nil/empty handle is treated
 // as still-in-progress (not a hard error), so a lost session ref does not surface
 // as a failure to the caller.

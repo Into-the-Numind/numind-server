@@ -10,20 +10,20 @@
 //     in a browser to create+configure the app, and lark-cli exits once the app is
 //     created — persisting the new app's appId/appSecret into that config home's
 //     ~/.lark-cli/config.json ({"apps":[{"appId":"cli_xxx","appSecret":"..."}]}).
-//   - 有数's server runs lark-cli once per user, each pinned to its own scratch
-//     HOME so the credentials never collide across users (lark-cli reads
-//     $HOME/.lark-cli/config.json).
+//   - 有数's server runs lark-cli once per user, each pinned to its own PERSISTENT
+//     HOME (feishu.home_base/u{userID}) so the credentials never collide across
+//     users and survive a redeploy (lark-cli reads $HOME/.lark-cli/config.json).
 //   - OAuth token exchange (`/open-apis/authen/v2/oauth/token`) is a plain REST
 //     call — done natively here, NOT through lark-cli.
 //
 // Provisioning is a two-call flow at the cliRunner seam (rewritten 2026-06-24):
 //
 //   - StartAppCreate(ctx, userID): launch `lark-cli config init --new` backgrounded
-//     in the user's scratch HOME, scrape the page URL from its stdout, return the
-//     URL + an opaque handle (scratch path + process). The process keeps blocking
-//     in the background until the user finishes in the browser.
+//     in the user's PERSISTENT HOME, scrape the page URL from its stdout, return the
+//     URL + an opaque handle (home path + process). The process keeps blocking in
+//     the background until the user finishes in the browser.
 //   - PollAppCreated(ctx, handle): report whether the process finished AND
-//     apps[0] is readable from scratch/.lark-cli/config.json; when done, return
+//     apps[0] is readable from <home>/.lark-cli/config.json; when done, return
 //     the appId + plaintext appSecret read straight from config.json.
 //
 // Security: app_secret / access_token / refresh_token are AES-256-GCM encrypted
@@ -56,12 +56,12 @@ type Encrypter interface {
 }
 
 // AppCreateHandle is the opaque token returned by StartAppCreate and passed back
-// to PollAppCreated. It carries the scratch config-home path (durable — survives a
-// poll on the same instance) plus the in-flight `config init` process tracking.
-// The fields are unexported so callers treat it as opaque; only the same-package
-// cliRunner reads them.
+// to PollAppCreated. It carries the persistent config-home path (durable — survives
+// a poll on the same instance and a restart) plus the in-flight `config init`
+// process tracking. The fields are unexported so callers treat it as opaque; only
+// the same-package cliRunner reads them.
 type AppCreateHandle struct {
-	// home is the per-user scratch HOME lark-cli reads/writes ($HOME/.lark-cli/).
+	// home is the per-user PERSISTENT HOME lark-cli reads/writes ($HOME/.lark-cli/).
 	// It doubles as a stable session ref so PollCredentials can re-resolve the
 	// handle by path even if the in-memory tracking is lost (restart).
 	home string
@@ -74,7 +74,7 @@ type AppCreateHandle struct {
 // orchestration can be unit-tested without spawning a real process.
 //
 //   - StartAppCreate kicks off `lark-cli config init --new` for userID in an
-//     isolated scratch HOME, returning the page URL the user must open and an
+//     isolated PERSISTENT HOME, returning the page URL the user must open and an
 //     opaque handle (used by PollAppCreated to observe completion + read creds).
 //   - PollAppCreated checks whether the user has finished the browser step (process
 //     exited AND apps[0] present in config.json). When done it returns the appId +
@@ -90,13 +90,13 @@ type cliRunner interface {
 	ReadAppSecret(ctx context.Context, appID string) (appSecret string, err error)
 
 	// resolveHandle reconstructs an AppCreateHandle from a durable session ref
-	// (the scratch path) so the string-based Provisioner.PollCredentials contract
+	// (the home path) so the string-based Provisioner.PollCredentials contract
 	// can bridge to the handle-based PollAppCreated even after the in-memory
 	// session map is lost. Returns nil for an empty/unknown ref (PollAppCreated
 	// then reports not-done rather than erroring on a stale ref).
 	resolveHandle(sessionRef string) *AppCreateHandle
 
-	// sessionRefForUser returns the DETERMINISTIC durable session ref (scratch
+	// sessionRefForUser returns the DETERMINISTIC durable session ref (persistent
 	// home path) for userID — the same path StartAppCreate uses. It lets the
 	// agent-driven connect tool poll a user's app-create progress WITHOUT
 	// carrying the sessionRef across an agent yield/resume: the tool re-derives
@@ -122,7 +122,7 @@ type tokenExchanger interface {
 
 // Provisioner orchestrates app provisioning + OAuth token exchange. Safe for
 // concurrent use: it holds only immutable dependencies; per-user state lives in
-// the cliRunner (isolated scratch homes keyed by userID / scratch path).
+// the cliRunner (isolated persistent homes keyed by userID / home path).
 type Provisioner struct {
 	cipher Encrypter
 	cli    cliRunner
@@ -148,7 +148,7 @@ func NewProvisioner(cipher Encrypter, cli cliRunner, ex tokenExchanger) (*Provis
 // StartProvision begins provisioning a 飞书 app for userID. It returns the page
 // URL (shown to the user so they open it in a browser to create the app) and an
 // opaque session ref the caller passes back to PollCredentials. The session ref
-// is the durable scratch-home path, so a later poll resolves the same flow even
+// is the durable per-user home path, so a later poll resolves the same flow even
 // across a server restart.
 func (p *Provisioner) StartProvision(ctx context.Context, userID uint) (pageURL, sessionRef string, err error) {
 	pageURL, handle, err := p.cli.StartAppCreate(ctx, userID)
@@ -158,7 +158,7 @@ func (p *Provisioner) StartProvision(ctx context.Context, userID uint) (pageURL,
 	if pageURL == "" || handle == nil || handle.home == "" {
 		return "", "", fmt.Errorf("feishu: start provision (user %d): empty page URL or handle", userID)
 	}
-	// Expose the durable scratch path as the opaque session ref.
+	// Expose the durable per-user home path as the opaque session ref.
 	return pageURL, handle.home, nil
 }
 
@@ -187,7 +187,7 @@ func (p *Provisioner) PollCredentials(ctx context.Context, sessionRef string) (a
 }
 
 // PollCredentialsForUser is the agent-driven variant of PollCredentials: it
-// re-derives the user's durable session ref (scratch home path) from userID, so
+// re-derives the user's durable session ref (persistent home path) from userID, so
 // the connect tool can poll app-create progress on a tool re-call WITHOUT having
 // carried the sessionRef across the agent yield/resume. The persistence contract
 // is identical to PollCredentials (done → appID + AES-256-GCM-encrypted secret;
