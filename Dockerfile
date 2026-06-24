@@ -57,6 +57,11 @@ FROM ccr.ccs.tencentyun.com/youshunumind/numind-ml-base:${ML_BASE_TAG}
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
 
+# ffmpeg：视频/音频转写抽音频必需（xhs 视频逐字稿 + monitor/会议）。ML base 不带，运行阶段装。
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg && \
+    rm -rf /var/lib/apt/lists/*
+
 # (agent-mode-sandbox-integration #4) docker CLI for the DooD pattern.
 # WITH_DOCKER_CLI=true is passed by the dev build script; prod default
 # (WITH_DOCKER_CLI=false) does NOT install docker-cli, keeping the
