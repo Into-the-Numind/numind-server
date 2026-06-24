@@ -35,6 +35,7 @@ import (
 	"encoding/json"
 
 	"numind-server/internal/numind/biz/feishu"
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 )
 
@@ -132,14 +133,21 @@ func (t *feishuConnectTool) Execute(ctx context.Context, _ ToolInput) (ToolResul
 	// (idempotent; a no-op when nothing is pending). A failure here is soft.
 	if _, err := t.connector.PollAndPersistApp(ctx, userID); err != nil {
 		endSpan(map[string]any{"outcome": "poll_error"}, err.Error())
-		return larkSoftError("%s时出错：%s。可稍后重试。", label, err.Error())
+		// Sanitize at the tool boundary: err may carry filesystem paths / internal
+		// process details. Log the full error for observability; hand the LLM only a
+		// short user-facing message (the endSpan above already captured err for trace).
+		log.C(ctx).Warnw("feishu_connect: poll error", "user_id", userID, "err", err)
+		return larkSoftError("%s时暂时出错，请稍后重试。", label)
 	}
 
 	// 2. Decide the next step from the (now up-to-date) DB row.
 	step, err := t.connector.NextConnectStep(ctx, userID, runID, feishuConnectPromptText)
 	if err != nil {
 		endSpan(map[string]any{"outcome": "step_error"}, err.Error())
-		return larkSoftError("%s时出错：%s。可稍后重试。", label, err.Error())
+		// Sanitize at the tool boundary (see PollAndPersistApp above): never leak
+		// infra error details into the LLM context; log full error separately.
+		log.C(ctx).Warnw("feishu_connect: step error", "user_id", userID, "err", err)
+		return larkSoftError("%s时暂时出错，请稍后重试。", label)
 	}
 
 	switch step.Phase {

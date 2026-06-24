@@ -145,6 +145,9 @@ func TestFeishuConnect_PollError_SoftError(t *testing.T) {
 	res, err := tool.Execute(ctxWithUserAndRun(7, 99), ToolInput(`{}`))
 	require.NoError(t, err, "a poll failure must soft-error, never kill the run")
 	assert.NotEmpty(t, decodeErr(t, res))
+	// The raw infra error must NOT leak into the LLM-facing tool result; it goes
+	// to the log + trace only (sanitize at the tool boundary).
+	assert.NotContains(t, string(res), "poll boom", "infra error detail must not leak to the LLM")
 }
 
 func TestFeishuConnect_StepError_SoftError(t *testing.T) {
@@ -153,6 +156,7 @@ func TestFeishuConnect_StepError_SoftError(t *testing.T) {
 	res, err := tool.Execute(ctxWithUserAndRun(7, 99), ToolInput(`{}`))
 	require.NoError(t, err, "a step failure must soft-error, never kill the run")
 	assert.NotEmpty(t, decodeErr(t, res))
+	assert.NotContains(t, string(res), "start provision failed", "infra error detail must not leak to the LLM")
 }
 
 // --- a create_app/authorize step with a blank URL must soft-error (never yield
