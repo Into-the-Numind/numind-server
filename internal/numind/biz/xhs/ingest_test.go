@@ -235,10 +235,15 @@ func TestIngest_CommentsTruncated(t *testing.T) {
 	b := NewXhsBiz(m)
 
 	p := basePayload()
-	for i := 0; i < 15; i++ {
-		p.Comments = append(p.Comments, CommentPayload{
-			Author: "u", Text: strings.Repeat("z", maxCommentBytes+50),
-		})
+	for i := 0; i < maxComments+5; i++ {
+		c := CommentPayload{Author: "u", Text: strings.Repeat("z", maxCommentBytes+50)}
+		if i == 0 {
+			// 首条带超量回复，验证回复也被截断
+			for j := 0; j < maxReplies+5; j++ {
+				c.Replies = append(c.Replies, CommentPayload{Author: "r", Text: strings.Repeat("y", maxCommentBytes+50)})
+			}
+		}
+		p.Comments = append(p.Comments, c)
 	}
 
 	_, _, err := b.Ingest(context.Background(), testUserID, []NotePayload{p})
@@ -249,9 +254,13 @@ func TestIngest_CommentsTruncated(t *testing.T) {
 	require.NotNil(t, row.Comments)
 
 	stored := decodeComments(t, []byte(row.Comments))
-	assert.Len(t, stored, maxComments, "评论应截到 10 条")
+	assert.Len(t, stored, maxComments, "顶层评论应截到上限条数")
 	for _, c := range stored {
 		assert.LessOrEqual(t, len(c.Text), maxCommentBytes, "单条评论 text 应截到 200 字节内")
+	}
+	assert.Len(t, stored[0].Replies, maxReplies, "回复应截到上限条数")
+	for _, r := range stored[0].Replies {
+		assert.LessOrEqual(t, len(r.Text), maxCommentBytes, "回复 text 应截到 200 字节内")
 	}
 }
 

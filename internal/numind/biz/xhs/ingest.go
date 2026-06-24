@@ -18,16 +18,18 @@ import (
 const (
 	maxNotesPerIngest = 50    // 单次摄入的笔记条数上限
 	maxTextBytes      = 65536 // 单个长文本字段（content / video_transcript 等）字节上限 = 64KB
-	maxComments       = 10    // 每条笔记保留的热门评论条数上限
+	maxComments       = 100   // 每条笔记保留的顶层评论条数上限
+	maxReplies        = 30    // 每条评论保留的回复条数上限
 	maxCommentBytes   = 200   // 单条评论 text 字节上限（超出截断）
 )
 
 // CommentPayload 是插件上送的单条热门评论。
 type CommentPayload struct {
-	Author     string `json:"author"`
-	Text       string `json:"text"`
-	LikeCount  int    `json:"like_count"`
-	IPLocation string `json:"ip_location"`
+	Author     string           `json:"author"`
+	Text       string           `json:"text"`
+	LikeCount  int              `json:"like_count"`
+	IPLocation string           `json:"ip_location"`
+	Replies    []CommentPayload `json:"replies"`
 }
 
 // NotePayload 是浏览器插件上送的单条小红书笔记的结构化数据。
@@ -208,6 +210,15 @@ func truncateComments(comments []CommentPayload) []CommentPayload {
 	for i, c := range comments {
 		if len(c.Text) > maxCommentBytes {
 			c.Text = truncateUTF8(c.Text, maxCommentBytes)
+		}
+		if len(c.Replies) > maxReplies {
+			c.Replies = c.Replies[:maxReplies]
+		}
+		for j := range c.Replies {
+			c.Replies[j].Replies = nil // 回复不再嵌套（只保留一层）
+			if len(c.Replies[j].Text) > maxCommentBytes {
+				c.Replies[j].Text = truncateUTF8(c.Replies[j].Text, maxCommentBytes)
+			}
 		}
 		out[i] = c
 	}
