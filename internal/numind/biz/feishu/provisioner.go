@@ -1,38 +1,48 @@
 // Package feishu — provisioner.go implements per-user 飞书自建应用 provisioning
-// (device-code flow via lark-cli) + the OAuth authorization-code → token
+// (config-init flow via lark-cli) + the OAuth authorization-code → token
 // exchange. This is the feishu-integration T6 building block.
 //
 // Architecture (design.md §5, spike-bootstrap.md):
 //
 //   - There is NO public REST API to create a 飞书 self-built app. The supported
-//     programmatic path is lark-cli's device-code flow ("Claude Code style"):
-//     `lark-cli config init --new` blocks, prints an open.feishu.cn/page/cli URL,
-//     the user opens it in a browser to create+configure the app, and lark-cli
-//     polls until done, persisting the appId/appSecret in an isolated config home.
-//   - 有数's server runs lark-cli once per user, each pinned to its own HOME so the
-//     credentials never collide across users (lark-cli reads ~/.lark-cli/).
+//     programmatic path is lark-cli's `config init --new` flow ("Claude Code
+//     style"): it BLOCKS, prints an open.feishu.cn/page/cli URL, the user opens it
+//     in a browser to create+configure the app, and lark-cli exits once the app is
+//     created — persisting the new app's appId/appSecret into that config home's
+//     ~/.lark-cli/config.json ({"apps":[{"appId":"cli_xxx","appSecret":"..."}]}).
+//   - 有数's server runs lark-cli once per user, each pinned to its own scratch
+//     HOME so the credentials never collide across users (lark-cli reads
+//     $HOME/.lark-cli/config.json).
 //   - OAuth token exchange (`/open-apis/authen/v2/oauth/token`) is a plain REST
 //     call — done natively here, NOT through lark-cli.
+//
+// Provisioning is a two-call flow at the cliRunner seam (rewritten 2026-06-24):
+//
+//   - StartAppCreate(ctx, userID): launch `lark-cli config init --new` backgrounded
+//     in the user's scratch HOME, scrape the page URL from its stdout, return the
+//     URL + an opaque handle (scratch path + process). The process keeps blocking
+//     in the background until the user finishes in the browser.
+//   - PollAppCreated(ctx, handle): report whether the process finished AND
+//     apps[0] is readable from scratch/.lark-cli/config.json; when done, return
+//     the appId + plaintext appSecret read straight from config.json.
 //
 // Security: app_secret / access_token / refresh_token are AES-256-GCM encrypted
 // at THIS boundary (via the injected crypto.Cipher) before being returned, so
 // callers (T7 service) get ciphertext to hand straight to the store. Plaintext
-// secrets are never returned, never logged. NOT routed through aiservice (飞书 is
-// an external business API, not an LLM gateway).
+// secrets are never returned to the LLM, never logged. NOT routed through
+// aiservice (飞书 is an external business API, not an LLM gateway).
 //
 // Testability: the lark-cli invocation (cliRunner) and the OAuth HTTP call
 // (tokenExchanger) are interfaces, so the orchestration is fully unit-tested with
-// in-memory fakes (no live 飞书, no os/exec). The real implementations live in
-// provisioner_cli.go and require a dev environment + browser to exercise
-// end-to-end (see blockers in the feature notes).
+// in-memory fakes. The real cliRunner (provisioner_cli.go) drives a real
+// `lark-cli config init` process; its config.json reader is exercised with a fake
+// lark-cli shell script (provisioner_cli_test.go).
 package feishu
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"numind-server/internal/pkg/errno"
@@ -45,24 +55,53 @@ type Encrypter interface {
 	Encrypt(plain []byte) ([]byte, error)
 }
 
-// cliRunner abstracts the lark-cli device-code interaction so the provisioner
+// AppCreateHandle is the opaque token returned by StartAppCreate and passed back
+// to PollAppCreated. It carries the scratch config-home path (durable — survives a
+// poll on the same instance) plus the in-flight `config init` process tracking.
+// The fields are unexported so callers treat it as opaque; only the same-package
+// cliRunner reads them.
+type AppCreateHandle struct {
+	// home is the per-user scratch HOME lark-cli reads/writes ($HOME/.lark-cli/).
+	// It doubles as a stable session ref so PollCredentials can re-resolve the
+	// handle by path even if the in-memory tracking is lost (restart).
+	home string
+	// session is the in-process tracking of the backgrounded `config init`. May be
+	// nil when the handle was reconstructed from a path alone (post-restart poll).
+	session *cliSession
+}
+
+// cliRunner abstracts the lark-cli config-init interaction so the provisioner
 // orchestration can be unit-tested without spawning a real process.
 //
-//   - StartInit kicks off `lark-cli config init --new` for userID in an isolated
-//     config home, returning the device-code page URL the user must open and an
-//     opaque session ref (used by ReadCredentials to find the same config home /
-//     background process).
-//   - ReadCredentials checks whether the user has finished the browser step. When
-//     done, it returns the appId + the (plaintext) appSecret materialized from
-//     lark-cli; otherwise done=false with empty creds.
+//   - StartAppCreate kicks off `lark-cli config init --new` for userID in an
+//     isolated scratch HOME, returning the page URL the user must open and an
+//     opaque handle (used by PollAppCreated to observe completion + read creds).
+//   - PollAppCreated checks whether the user has finished the browser step (process
+//     exited AND apps[0] present in config.json). When done it returns the appId +
+//     the (plaintext) appSecret read from config.json; otherwise done=false with
+//     empty creds.
 //   - ReadAppSecret resolves the plaintext app_secret for an already-provisioned
 //     appID (needed later as client_secret for the OAuth token exchange). It is
-//     separate from ReadCredentials because by exchange time we key off the appID,
-//     not the original session ref.
+//     separate from PollAppCreated because by exchange time we key off the appID,
+//     not the original handle.
 type cliRunner interface {
-	StartInit(ctx context.Context, userID uint) (pageURL, sessionRef string, err error)
-	ReadCredentials(ctx context.Context, sessionRef string) (appID, appSecret string, done bool, err error)
+	StartAppCreate(ctx context.Context, userID uint) (pageURL string, handle *AppCreateHandle, err error)
+	PollAppCreated(ctx context.Context, handle *AppCreateHandle) (appID, appSecret string, done bool, err error)
 	ReadAppSecret(ctx context.Context, appID string) (appSecret string, err error)
+
+	// resolveHandle reconstructs an AppCreateHandle from a durable session ref
+	// (the scratch path) so the string-based Provisioner.PollCredentials contract
+	// can bridge to the handle-based PollAppCreated even after the in-memory
+	// session map is lost. Returns nil for an empty/unknown ref (PollAppCreated
+	// then reports not-done rather than erroring on a stale ref).
+	resolveHandle(sessionRef string) *AppCreateHandle
+
+	// sessionRefForUser returns the DETERMINISTIC durable session ref (scratch
+	// home path) for userID — the same path StartAppCreate uses. It lets the
+	// agent-driven connect tool poll a user's app-create progress WITHOUT
+	// carrying the sessionRef across an agent yield/resume: the tool re-derives
+	// it from the userID on the next call. Returns "" only for userID 0.
+	sessionRefForUser(userID uint) string
 }
 
 // oauthTokenResp is the relevant subset of the 飞书 v2 OAuth token response
@@ -83,7 +122,7 @@ type tokenExchanger interface {
 
 // Provisioner orchestrates app provisioning + OAuth token exchange. Safe for
 // concurrent use: it holds only immutable dependencies; per-user state lives in
-// the cliRunner (isolated config homes keyed by session ref).
+// the cliRunner (isolated scratch homes keyed by userID / scratch path).
 type Provisioner struct {
 	cipher Encrypter
 	cli    cliRunner
@@ -106,18 +145,21 @@ func NewProvisioner(cipher Encrypter, cli cliRunner, ex tokenExchanger) (*Provis
 	return &Provisioner{cipher: cipher, cli: cli, ex: ex}, nil
 }
 
-// StartProvision begins provisioning a 飞书 app for userID. It returns the
-// device-code page URL (shown to the user so they open it in a browser to create
-// the app) and an opaque session ref the caller passes back to PollCredentials.
+// StartProvision begins provisioning a 飞书 app for userID. It returns the page
+// URL (shown to the user so they open it in a browser to create the app) and an
+// opaque session ref the caller passes back to PollCredentials. The session ref
+// is the durable scratch-home path, so a later poll resolves the same flow even
+// across a server restart.
 func (p *Provisioner) StartProvision(ctx context.Context, userID uint) (pageURL, sessionRef string, err error) {
-	pageURL, sessionRef, err = p.cli.StartInit(ctx, userID)
+	pageURL, handle, err := p.cli.StartAppCreate(ctx, userID)
 	if err != nil {
 		return "", "", fmt.Errorf("feishu: start provision (user %d): %w", userID, err)
 	}
-	if pageURL == "" || sessionRef == "" {
-		return "", "", fmt.Errorf("feishu: start provision (user %d): empty page URL or session ref", userID)
+	if pageURL == "" || handle == nil || handle.home == "" {
+		return "", "", fmt.Errorf("feishu: start provision (user %d): empty page URL or handle", userID)
 	}
-	return pageURL, sessionRef, nil
+	// Expose the durable scratch path as the opaque session ref.
+	return pageURL, handle.home, nil
 }
 
 // PollCredentials checks whether provisioning finished for the given session.
@@ -126,7 +168,8 @@ func (p *Provisioner) StartProvision(ctx context.Context, userID uint) (pageURL,
 // app_secret. A "done but blank secret" result is treated as a failure so an
 // empty/garbage credential is never persisted.
 func (p *Provisioner) PollCredentials(ctx context.Context, sessionRef string) (appID string, appSecretEnc []byte, done bool, err error) {
-	appID, appSecret, done, err := p.cli.ReadCredentials(ctx, sessionRef)
+	handle := p.cli.resolveHandle(sessionRef)
+	appID, appSecret, done, err := p.cli.PollAppCreated(ctx, handle)
 	if err != nil {
 		return "", nil, false, fmt.Errorf("feishu: poll credentials: %w", err)
 	}
@@ -141,6 +184,19 @@ func (p *Provisioner) PollCredentials(ctx context.Context, sessionRef string) (a
 		return "", nil, false, fmt.Errorf("feishu: encrypt app secret: %w", err)
 	}
 	return appID, secEnc, true, nil
+}
+
+// PollCredentialsForUser is the agent-driven variant of PollCredentials: it
+// re-derives the user's durable session ref (scratch home path) from userID, so
+// the connect tool can poll app-create progress on a tool re-call WITHOUT having
+// carried the sessionRef across the agent yield/resume. The persistence contract
+// is identical to PollCredentials (done → appID + AES-256-GCM-encrypted secret;
+// done-but-blank → error; not-yet → done=false, empty creds).
+func (p *Provisioner) PollCredentialsForUser(ctx context.Context, userID uint) (appID string, appSecretEnc []byte, done bool, err error) {
+	if userID == 0 {
+		return "", nil, false, fmt.Errorf("%w: missing user id for poll", errno.ErrLarkCallFailed)
+	}
+	return p.PollCredentials(ctx, p.cli.sessionRefForUser(userID))
 }
 
 // ExchangeCode exchanges an OAuth authorization code for a user_access_token (and
@@ -195,9 +251,8 @@ func (p *Provisioner) ExchangeCode(ctx context.Context, appID, code string) (acc
 }
 
 // appSecretFor reads the plaintext app_secret for appID from the user's lark-cli
-// config home. The OAuth token exchange needs it as client_secret. We resolve it
-// through the cliRunner (which knows how to materialize the secret lark-cli keeps
-// encrypted at rest) rather than asking callers to carry it.
+// config home (config.json). The OAuth token exchange needs it as client_secret.
+// We resolve it through the cliRunner rather than asking callers to carry it.
 func (p *Provisioner) appSecretFor(ctx context.Context, appID string) (string, error) {
 	secret, err := p.cli.ReadAppSecret(ctx, appID)
 	if err != nil {
@@ -207,84 +262,4 @@ func (p *Provisioner) appSecretFor(ctx context.Context, appID string) (string, e
 		return "", fmt.Errorf("%w: app secret unavailable for app %s", errno.ErrLarkCallFailed, appID)
 	}
 	return secret, nil
-}
-
-// --- pure parsers (shared by the real cliRunner, unit-tested in isolation) ---
-
-// deviceCodeURLMarker is the public 飞书 device-code page the lark-cli prints.
-// We match on this exact host+path so we don't accidentally grab some other URL
-// from the CLI output.
-const deviceCodeURLMarker = "https://open.feishu.cn/page/cli"
-
-// parseDeviceCodeURL extracts the device-code page URL from lark-cli's stdout.
-// Real output looks like:
-//
-//	打开以下链接配置应用:
-//	  https://open.feishu.cn/page/cli?user_code=2AF7-MFWU&lpv=1.0.56&from=cli
-//	等待配置应用...
-func parseDeviceCodeURL(cliOutput string) (string, error) {
-	sc := bufio.NewScanner(strings.NewReader(cliOutput))
-	// Allow long lines (the URL + flags can exceed the default 64KB only in
-	// pathological cases, but be safe).
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if idx := strings.Index(line, deviceCodeURLMarker); idx >= 0 {
-			// Take from the marker to the end of the (already trimmed) line; the
-			// query string is part of the URL.
-			return line[idx:], nil
-		}
-	}
-	if err := sc.Err(); err != nil {
-		return "", fmt.Errorf("feishu: scan cli output: %w", err)
-	}
-	return "", errors.New("feishu: device-code page URL not found in lark-cli output")
-}
-
-// parseEnvCredentials parses the FEISHU_APP_ID / FEISHU_APP_SECRET pair from the
-// dotenv-style file lark-cli materializes (e.g. `apps +init` / `env-pull` writes
-// a .env.local with these keys). Both keys are required; values may be optionally
-// single- or double-quoted.
-func parseEnvCredentials(envFileContent string) (appID, appSecret string, err error) {
-	sc := bufio.NewScanner(strings.NewReader(envFileContent))
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, val, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		key = strings.TrimSpace(key)
-		val = stripQuotes(strings.TrimSpace(val))
-		switch key {
-		case "FEISHU_APP_ID":
-			appID = val
-		case "FEISHU_APP_SECRET":
-			appSecret = val
-		}
-	}
-	if err := sc.Err(); err != nil {
-		return "", "", fmt.Errorf("feishu: scan env file: %w", err)
-	}
-	if appID == "" {
-		return "", "", errors.New("feishu: FEISHU_APP_ID not found in credential file")
-	}
-	if appSecret == "" {
-		return "", "", errors.New("feishu: FEISHU_APP_SECRET not found in credential file")
-	}
-	return appID, appSecret, nil
-}
-
-// stripQuotes removes a single matching pair of surrounding single or double
-// quotes, if present.
-func stripQuotes(s string) string {
-	if len(s) >= 2 {
-		if (s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'') {
-			return s[1 : len(s)-1]
-		}
-	}
-	return s
 }

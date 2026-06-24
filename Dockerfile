@@ -74,6 +74,57 @@ RUN if [ "$WITH_DOCKER_CLI" = "true" ]; then \
 # 固化进 base 镜像，此处不再 pip install——避免每次部署从 pytorch.org / PyPI 重下。
 # 校验 base 含这些依赖：scripts/cicd/verify-ml-base.sh
 
+# =====================================================
+# lark-cli (feishu-agent-connect / feishu-integration)
+# =====================================================
+# 把飞书官方 lark-cli (@larksuite/cli, MIT) 的 linux/amd64 standalone 二进制装到
+# PATH (/usr/local/bin/lark-cli)。用途：feishu provisioner 在用户「连接飞书」时
+# os/exec `lark-cli config init --new`，用标准 device-code 流帮用户建飞书自建应用、
+# 取 appId/appSecret（见 internal/numind/biz/feishu/provisioner_cli.go）。日常写
+# 文档/发消息走 oapi-sdk-go（DB 里的 token），不依赖 lark-cli。
+#
+# 为何下 standalone 二进制而非 npm i -g @larksuite/cli：
+#   - npm 包的 bin 是个 Node launcher (scripts/run.js)，真正的 lark-cli 是它在
+#     postinstall (scripts/install.js) 下载的自包含 Go 二进制。直接取那个二进制
+#     就免装 Node + npm，运行镜像更小、攻击面更少。
+#   - 实测 (2026-06-24)：tar 内 `lark-cli` = `ELF 64-bit ... x86-64, statically
+#     linked, Go ... stripped`，纯自包含，运行时无任何外部依赖。
+#
+# 版本固定 v1.0.56（与 spike-bootstrap 实跑验证 device-code 流 + Go 解析逻辑所依据
+# 的版本一致）。升级版本时：同步 bump LARK_CLI_VERSION + LARK_CLI_SHA256
+# （sha256 取自 npm 包内 checksums.txt 的 lark-cli-<ver>-linux-amd64.tar.gz 行）。
+#
+# 下载源顺序：npmmirror 国内镜像优先（构建机在成都骨干网，GitHub 跨境慢/不稳），
+# GitHub release 兜底。两源同一 artifact，SHA256 校验是完整性主控（镜像≠官方时
+# 直接 fail 构建）；下载主机仅这两个，避免被改成任意 URL。
+# 最后一步构建期自检 `lark-cli --version`：版本命令跑通=二进制可执行且架构匹配；
+# 关 update/skills notifier 避免 --version 探测去拉网络更新检查导致挂起/失败。
+ARG LARK_CLI_VERSION=1.0.56
+ARG LARK_CLI_SHA256=93c1254889ebf0a3a562869515af15188075a95bbe9a15e5711d9c9a4af4d8c2
+RUN set -eux; \
+    arch="$(uname -m)"; \
+    if [ "$arch" != "x86_64" ] && [ "$arch" != "amd64" ]; then \
+        echo "ERROR: lark-cli install only supports linux/amd64, got ${arch}" >&2; exit 1; \
+    fi; \
+    archive="lark-cli-${LARK_CLI_VERSION}-linux-amd64.tar.gz"; \
+    tmp="$(mktemp -d)"; \
+    mirror_url="https://registry.npmmirror.com/-/binary/lark-cli/v${LARK_CLI_VERSION}/${archive}"; \
+    github_url="https://github.com/larksuite/cli/releases/download/v${LARK_CLI_VERSION}/${archive}"; \
+    ( curl -fSL --connect-timeout 15 --max-time 180 -o "${tmp}/${archive}" "${mirror_url}" \
+      || curl -fSL --connect-timeout 15 --max-time 180 -o "${tmp}/${archive}" "${github_url}" ); \
+    echo "${LARK_CLI_SHA256}  ${tmp}/${archive}" | sha256sum -c -; \
+    tar -xzf "${tmp}/${archive}" -C "${tmp}" lark-cli; \
+    install -m 0755 "${tmp}/lark-cli" /usr/local/bin/lark-cli; \
+    rm -rf "${tmp}"; \
+    LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1 LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1 lark-cli --version
+
+# 把上面的自检 env 固化成运行期 ENV：否则容器内每次 lark-cli 调用（config show /
+# apps +init / config init --new）都可能触发 update-check / skills-notifier 的网络探测，
+# 在无外网或外网慢的环境下挂起，拖垮 PollCredentials。provisioner_cli.go 的 env()
+# 也会再注入一份，确保继承环境和显式构造环境两边都干净。
+ENV LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1
+ENV LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1
+
 # 第三层：预下载语义切分模型 (实现 99.9% 可用性)
 # 将模型固化在镜像中，避免由于网络问题导致的生产环境失效
 ENV SENTENCE_TRANSFORMERS_HOME=/app/model_cache
