@@ -229,6 +229,35 @@ func TestThirdPartyAccountStore_UpdateTokens_NilRefreshAndExp(t *testing.T) {
 	assert.Nil(t, got.TokenExpiresAt, "传 nil exp 应写入 NULL")
 }
 
+// MarkConnected：已存在的行被置 connected=true + connected_at；不存在则 ErrRecordNotFound。
+func TestThirdPartyAccountStore_MarkConnected(t *testing.T) {
+	db := newThirdPartyAccountTestDB(t)
+	s := newThirdPartyAccountStore(db)
+	ctx := context.Background()
+
+	// 目标不存在 → ErrRecordNotFound（避免静默 no-op）。
+	at := time.Now().UTC().Truncate(time.Second)
+	err := s.MarkConnected(ctx, 7, "lark", at)
+	assert.ErrorIs(t, err, gorm.ErrRecordNotFound, "目标不存在应返回 ErrRecordNotFound")
+
+	// 先建一行（仅 app 元信息，未连接）。
+	require.NoError(t, s.Upsert(ctx, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: "lark", AppID: "cli_app_x",
+	}))
+	pre, err := s.Get(ctx, 7, "lark")
+	require.NoError(t, err)
+	assert.False(t, pre.Connected, "初始应未连接")
+	assert.Nil(t, pre.ConnectedAt)
+
+	// 标记连接。
+	require.NoError(t, s.MarkConnected(ctx, 7, "lark", at))
+	got, err := s.Get(ctx, 7, "lark")
+	require.NoError(t, err)
+	assert.True(t, got.Connected, "MarkConnected 后 connected 应为 true")
+	require.NotNil(t, got.ConnectedAt)
+	assert.WithinDuration(t, at, *got.ConnectedAt, time.Second)
+}
+
 // 验证 datastore.ThirdPartyAccounts() 返回的实例可正常工作（IStore 扩展接通）。
 func TestDatastore_ThirdPartyAccounts(t *testing.T) {
 	db := newThirdPartyAccountTestDB(t)

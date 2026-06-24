@@ -359,29 +359,22 @@ func installNumindRouters(g *gin.Engine) error {
 			xhsGroup.DELETE("/notes/:id", xhsCtrl.Delete)  // 删除单条选题笔记（user 隔离）
 		}
 	}
-	// 飞书集成（feishu-integration T7）：per-user 自建应用 + OAuth 连接 + 解绑。
+	// 飞书集成（device-code 方案，G2-authorize）：per-user 自建应用 + device-code 授权 + 解绑。
 	// 整组套 FeatureFlag —— flag off（prod 默认）时所有路由返回 ErrFeatureDisabled(404)。
 	// b.FeishuSvc() 在 flag on 但服务构造失败（如 Redis 不可用）时为 nil → 跳过注册
 	// （此时端点未注册=404，避免 nil svc 解引用 panic）。
 	//   - connect / status / connection：user_token（继承 authGroup 的 AuthMiddleware）。
-	//   - oauth/callback：**无 JWT**（飞书浏览器重定向带不了 token），信任来自签名的
-	//     一次性 state（biz/feishu 校验），与 meetingGroup 平级注册到 v1Group 避免继承
-	//     AuthMiddleware，仅套 FeatureFlag。
+	// 注：device-code 方案无 OAuth 重定向回调（authorize 走 lark-cli device flow），故无
+	// 无 JWT 的 oauth/callback 端点。
 	if feishuSvc := b.FeishuSvc(); feishuSvc != nil {
 		feishuCtrl := feishucontroller.NewController(feishuSvc)
 
 		feishuAuthGroup := authGroup.Group("/feishu")
 		feishuAuthGroup.Use(importMw.FeatureFlag("features.feishu_integration.enabled"))
 		{
-			feishuAuthGroup.POST("/connect", feishuCtrl.Connect)     // 发起连接（建应用 URL 或授权 URL + state）
-			feishuAuthGroup.GET("/status", feishuCtrl.Status)        // 连接状态（none/active/expired + scopes）
-			feishuAuthGroup.DELETE("/connection", feishuCtrl.Unbind) // 解绑（删 token 行；飞书侧 app 保留）
-		}
-
-		feishuPublicGroup := v1Group.Group("/feishu")
-		feishuPublicGroup.Use(importMw.FeatureFlag("features.feishu_integration.enabled"))
-		{
-			feishuPublicGroup.GET("/oauth/callback", feishuCtrl.Callback) // 飞书授权重定向回调（无 JWT，验 state → 302）
+			feishuAuthGroup.POST("/connect", feishuCtrl.Connect)     // 发起/推进连接（create_app 页 URL 或 device-code 验证 URL）
+			feishuAuthGroup.GET("/status", feishuCtrl.Status)        // 连接状态（none/connected）
+			feishuAuthGroup.DELETE("/connection", feishuCtrl.Unbind) // 解绑（删连接行；飞书侧 app + lark-cli home 保留）
 		}
 	}
 

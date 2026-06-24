@@ -21,8 +21,7 @@ var (
 	// ErrLarkCallFailed 飞书开放平台接口调用失败（上游错误，用 SetMessage 附细节）。
 	// HTTP 502（Bad Gateway，区分本服务自身错误与上游飞书错误）。
 	ErrLarkCallFailed = &Errno{HTTP: 502, Code: "Lark.CallFailed", Message: "飞书接口调用失败"}
-
-	// ErrLarkStateInvalid OAuth callback 的 state 校验失败（HMAC 不符 / 过期 /
-	// nonce 已消费防重放 / 跨用户）。HTTP 400（callback 据此 302 到 ?feishu=error）。
-	ErrLarkStateInvalid = &Errno{HTTP: 400, Code: "Lark.StateInvalid", Message: "授权校验失败，请重新发起连接"}
 )
+
+// 注：device-code 方案（G2-authorize）移除了 redirect-OAuth callback，原
+// ErrLarkStateInvalid（state 校验失败）已随之删除。

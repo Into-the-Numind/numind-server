@@ -1,49 +1,47 @@
 // Package feishu — provisioner.go implements per-user 飞书自建应用 provisioning
-// (config-init flow via lark-cli) + the OAuth authorization-code → token
-// exchange. This is the feishu-integration T6 building block.
+// (config-init flow via lark-cli) + the device-code authorization (G2-authorize,
+// rewritten 2026-06-24 — replaces the old OAuth authorization-code token exchange).
 //
-// Architecture (design.md §5, spike-bootstrap.md):
+// Architecture (design.md §5, spike-bootstrap.md, verified lark-cli reality):
 //
 //   - There is NO public REST API to create a 飞书 self-built app. The supported
-//     programmatic path is lark-cli's `config init --new` flow ("Claude Code
-//     style"): it BLOCKS, prints an open.feishu.cn/page/cli URL, the user opens it
-//     in a browser to create+configure the app, and lark-cli exits once the app is
-//     created — persisting the new app's appId/appSecret into that config home's
-//     ~/.lark-cli/config.json ({"apps":[{"appId":"cli_xxx","appSecret":"..."}]}).
+//     programmatic path is lark-cli's `config init --new` flow: it BLOCKS, prints an
+//     open.feishu.cn/page/cli URL, the user opens it in a browser to create+configure
+//     the app, and lark-cli exits once the app is created — persisting the new app's
+//     appId/appSecret into that config home's ~/.lark-cli/config.json.
+//   - Authorization (G2) is ALSO lark-cli, via the device flow:
+//     `lark-cli auth login --no-wait --json --domain docs,im,base` returns a
+//     verification URL + device_code; after the user authorizes,
+//     `lark-cli auth login --device-code <code>` finishes it. lark-cli stores +
+//     auto-refreshes the user_access_token inside the home. There is NO redirect_uri,
+//     NO OAuth callback, NO token exchange done by us.
 //   - 有数's server runs lark-cli once per user, each pinned to its own PERSISTENT
-//     HOME (feishu.home_base/u{userID}) so the credentials never collide across
-//     users and survive a redeploy (lark-cli reads $HOME/.lark-cli/config.json).
-//   - OAuth token exchange (`/open-apis/authen/v2/oauth/token`) is a plain REST
-//     call — done natively here, NOT through lark-cli.
+//     HOME (feishu.home_base/u{userID}) so credentials + tokens never collide across
+//     users and survive a redeploy (lark-cli reads $HOME/.lark-cli/).
 //
-// Provisioning is a two-call flow at the cliRunner seam (rewritten 2026-06-24):
+// Provisioning (app-create) is a two-call flow at the cliRunner seam:
 //
 //   - StartAppCreate(ctx, userID): launch `lark-cli config init --new` backgrounded
 //     in the user's PERSISTENT HOME, scrape the page URL from its stdout, return the
-//     URL + an opaque handle (home path + process). The process keeps blocking in
-//     the background until the user finishes in the browser.
-//   - PollAppCreated(ctx, handle): report whether the process finished AND
-//     apps[0] is readable from <home>/.lark-cli/config.json; when done, return
-//     the appId + plaintext appSecret read straight from config.json.
+//     URL + an opaque handle. The process keeps blocking until the user finishes.
+//   - PollAppCreated(ctx, handle): report whether the process finished AND apps[0]
+//     is readable from config.json; when done, return the appId + plaintext appSecret.
 //
-// Security: app_secret / access_token / refresh_token are AES-256-GCM encrypted
-// at THIS boundary (via the injected crypto.Cipher) before being returned, so
-// callers (T7 service) get ciphertext to hand straight to the store. Plaintext
-// secrets are never returned to the LLM, never logged. NOT routed through
-// aiservice (飞书 is an external business API, not an LLM gateway).
+// Authorization (device-code) is the authRunner seam (auth_cli.go):
 //
-// Testability: the lark-cli invocation (cliRunner) and the OAuth HTTP call
-// (tokenExchanger) are interfaces, so the orchestration is fully unit-tested with
-// in-memory fakes. The real cliRunner (provisioner_cli.go) drives a real
-// `lark-cli config init` process; its config.json reader is exercised with a fake
-// lark-cli shell script (provisioner_cli_test.go).
+//   - StartAuthLogin / CompleteAuthLogin / HasPendingDeviceCode / AuthStatus.
+//
+// Security: the app_secret returned by PollCredentials is AES-256-GCM encrypted at
+// THIS boundary (via the injected crypto.Cipher) — though under device-code it is
+// no longer persisted (the token lives in lark-cli's home). Plaintext secrets /
+// tokens / device codes are never returned to the LLM, never logged. NOT routed
+// through aiservice (飞书 is an external business API, not an LLM gateway).
 package feishu
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"numind-server/internal/pkg/errno"
 )
@@ -78,71 +76,47 @@ type AppCreateHandle struct {
 //     opaque handle (used by PollAppCreated to observe completion + read creds).
 //   - PollAppCreated checks whether the user has finished the browser step (process
 //     exited AND apps[0] present in config.json). When done it returns the appId +
-//     the (plaintext) appSecret read from config.json; otherwise done=false with
-//     empty creds.
-//   - ReadAppSecret resolves the plaintext app_secret for an already-provisioned
-//     appID (needed later as client_secret for the OAuth token exchange). It is
-//     separate from PollAppCreated because by exchange time we key off the appID,
-//     not the original handle.
+//     the (plaintext) appSecret read from config.json; otherwise done=false.
 type cliRunner interface {
 	StartAppCreate(ctx context.Context, userID uint) (pageURL string, handle *AppCreateHandle, err error)
 	PollAppCreated(ctx context.Context, handle *AppCreateHandle) (appID, appSecret string, done bool, err error)
-	ReadAppSecret(ctx context.Context, appID string) (appSecret string, err error)
 
 	// resolveHandle reconstructs an AppCreateHandle from a durable session ref
 	// (the home path) so the string-based Provisioner.PollCredentials contract
 	// can bridge to the handle-based PollAppCreated even after the in-memory
-	// session map is lost. Returns nil for an empty/unknown ref (PollAppCreated
-	// then reports not-done rather than erroring on a stale ref).
+	// session map is lost. Returns nil for an empty/unknown ref.
 	resolveHandle(sessionRef string) *AppCreateHandle
 
 	// sessionRefForUser returns the DETERMINISTIC durable session ref (persistent
 	// home path) for userID — the same path StartAppCreate uses. It lets the
-	// agent-driven connect tool poll a user's app-create progress WITHOUT
-	// carrying the sessionRef across an agent yield/resume: the tool re-derives
-	// it from the userID on the next call. Returns "" only for userID 0.
+	// agent-driven connect tool poll a user's app-create progress WITHOUT carrying
+	// the sessionRef across an agent yield/resume. Returns "" only for userID 0.
 	sessionRefForUser(userID uint) string
+
+	// authRunner: the lark-cli device-code authorization seam (auth_cli.go). The
+	// production *LarkCLIRunner satisfies both cliRunner and authRunner.
+	authRunner
 }
 
-// oauthTokenResp is the relevant subset of the 飞书 v2 OAuth token response
-// (`POST /open-apis/authen/v2/oauth/token`). 飞书 nests these under "data" on
-// success; the tokenExchanger implementation unwraps that envelope.
-type oauthTokenResp struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	ExpiresIn    int    `json:"expires_in"` // seconds; 0 = unknown
-	Scope        string `json:"scope"`
-}
-
-// tokenExchanger performs the authorization-code → user_access_token exchange.
-// Abstracted so the HTTP call is mocked in tests.
-type tokenExchanger interface {
-	Exchange(ctx context.Context, appID, appSecret, code string) (*oauthTokenResp, error)
-}
-
-// Provisioner orchestrates app provisioning + OAuth token exchange. Safe for
+// Provisioner orchestrates app provisioning + device-code authorization. Safe for
 // concurrent use: it holds only immutable dependencies; per-user state lives in
 // the cliRunner (isolated persistent homes keyed by userID / home path).
 type Provisioner struct {
 	cipher Encrypter
 	cli    cliRunner
-	ex     tokenExchanger
 }
 
 // NewProvisioner wires the provisioner. All dependencies are required — a nil
 // cipher would mean storing plaintext credentials, so it fails fast rather than
 // silently degrading security.
-func NewProvisioner(cipher Encrypter, cli cliRunner, ex tokenExchanger) (*Provisioner, error) {
+func NewProvisioner(cipher Encrypter, cli cliRunner) (*Provisioner, error) {
 	if cipher == nil {
 		return nil, errors.New("feishu: nil cipher for provisioner")
 	}
 	if cli == nil {
 		return nil, errors.New("feishu: nil cli runner for provisioner")
 	}
-	if ex == nil {
-		return nil, errors.New("feishu: nil token exchanger for provisioner")
-	}
-	return &Provisioner{cipher: cipher, cli: cli, ex: ex}, nil
+	return &Provisioner{cipher: cipher, cli: cli}, nil
 }
 
 // StartProvision begins provisioning a 飞书 app for userID. It returns the page
@@ -189,9 +163,7 @@ func (p *Provisioner) PollCredentials(ctx context.Context, sessionRef string) (a
 // PollCredentialsForUser is the agent-driven variant of PollCredentials: it
 // re-derives the user's durable session ref (persistent home path) from userID, so
 // the connect tool can poll app-create progress on a tool re-call WITHOUT having
-// carried the sessionRef across the agent yield/resume. The persistence contract
-// is identical to PollCredentials (done → appID + AES-256-GCM-encrypted secret;
-// done-but-blank → error; not-yet → done=false, empty creds).
+// carried the sessionRef across the agent yield/resume.
 func (p *Provisioner) PollCredentialsForUser(ctx context.Context, userID uint) (appID string, appSecretEnc []byte, done bool, err error) {
 	if userID == 0 {
 		return "", nil, false, fmt.Errorf("%w: missing user id for poll", errno.ErrLarkCallFailed)
@@ -199,67 +171,42 @@ func (p *Provisioner) PollCredentialsForUser(ctx context.Context, userID uint) (
 	return p.PollCredentials(ctx, p.cli.sessionRefForUser(userID))
 }
 
-// ExchangeCode exchanges an OAuth authorization code for a user_access_token (and
-// refresh_token, if 飞书 returns one), encrypting both before returning.
-//
-//   - access is always non-nil on success (an empty access_token from upstream is
-//     an error — nothing usable to store).
-//   - refresh is nil when 飞书 omits a refresh_token (so the store writes NULL,
-//     not an encrypted empty string).
-//   - exp is the absolute expiry derived from expires_in; nil when expires_in is
-//     absent/zero (unknown — caller must not treat nil as "already expired").
-//
-// The app_secret needed for the exchange is read from the user's lark-cli config
-// home via the cliRunner (so we never require the caller to pass the plaintext
-// secret around). appID identifies which config home to read.
-func (p *Provisioner) ExchangeCode(ctx context.Context, appID, code string) (access, refresh []byte, exp *time.Time, scopes string, err error) {
-	if appID == "" || code == "" {
-		return nil, nil, nil, "", fmt.Errorf("%w: missing app_id or code", errno.ErrLarkCallFailed)
-	}
+// --- device-code authorization (Authorizer, consumed by ConnectOrchestrator) ---
 
-	appSecret, err := p.appSecretFor(ctx, appID)
-	if err != nil {
-		return nil, nil, nil, "", err
+// StartAuthorize starts the lark-cli device flow for userID and returns the
+// verification URL the user opens. The device_code is persisted inside the home
+// (never returned). NOT through aiservice.
+func (p *Provisioner) StartAuthorize(ctx context.Context, userID uint) (string, error) {
+	if userID == 0 {
+		return "", fmt.Errorf("%w: missing user id for authorize", errno.ErrLarkCallFailed)
 	}
-
-	resp, err := p.ex.Exchange(ctx, appID, appSecret, code)
-	if err != nil {
-		return nil, nil, nil, "", fmt.Errorf("feishu: exchange code: %w", err)
-	}
-	if resp == nil || resp.AccessToken == "" {
-		return nil, nil, nil, "", fmt.Errorf("%w: empty access_token in token response", errno.ErrLarkCallFailed)
-	}
-
-	access, err = p.cipher.Encrypt([]byte(resp.AccessToken))
-	if err != nil {
-		return nil, nil, nil, "", fmt.Errorf("feishu: encrypt access token: %w", err)
-	}
-
-	if resp.RefreshToken != "" {
-		refresh, err = p.cipher.Encrypt([]byte(resp.RefreshToken))
-		if err != nil {
-			return nil, nil, nil, "", fmt.Errorf("feishu: encrypt refresh token: %w", err)
-		}
-	}
-
-	if resp.ExpiresIn > 0 {
-		t := time.Now().Add(time.Duration(resp.ExpiresIn) * time.Second)
-		exp = &t
-	}
-
-	return access, refresh, exp, resp.Scope, nil
+	return p.cli.StartAuthLogin(ctx, userID)
 }
 
-// appSecretFor reads the plaintext app_secret for appID from the user's lark-cli
-// config home (config.json). The OAuth token exchange needs it as client_secret.
-// We resolve it through the cliRunner rather than asking callers to carry it.
-func (p *Provisioner) appSecretFor(ctx context.Context, appID string) (string, error) {
-	secret, err := p.cli.ReadAppSecret(ctx, appID)
-	if err != nil {
-		return "", fmt.Errorf("feishu: read app secret for exchange: %w", err)
+// CompleteAuthorize finishes the in-flight device flow for userID (after the user
+// authorized in the browser). On success lark-cli has stored the token in the home.
+func (p *Provisioner) CompleteAuthorize(ctx context.Context, userID uint) error {
+	if userID == 0 {
+		return fmt.Errorf("%w: missing user id for authorize completion", errno.ErrLarkCallFailed)
 	}
-	if secret == "" {
-		return "", fmt.Errorf("%w: app secret unavailable for app %s", errno.ErrLarkCallFailed, appID)
-	}
-	return secret, nil
+	return p.cli.CompleteAuthLogin(ctx, userID)
 }
+
+// HasPendingAuthorize reports whether a StartAuthorize is awaiting completion.
+func (p *Provisioner) HasPendingAuthorize(userID uint) bool {
+	if userID == 0 {
+		return false
+	}
+	return p.cli.HasPendingDeviceCode(userID)
+}
+
+// IsAuthorized reports whether the user's home holds a usable authorization.
+func (p *Provisioner) IsAuthorized(ctx context.Context, userID uint) (bool, error) {
+	if userID == 0 {
+		return false, fmt.Errorf("%w: missing user id for authorization check", errno.ErrLarkCallFailed)
+	}
+	return p.cli.AuthStatus(ctx, userID)
+}
+
+// compile-time guard: *Provisioner satisfies the orchestrator's Authorizer seam.
+var _ Authorizer = (*Provisioner)(nil)

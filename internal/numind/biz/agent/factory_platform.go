@@ -11,7 +11,6 @@ import (
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/crypto"
 	"numind-server/internal/pkg/log"
-	redispkg "numind-server/internal/pkg/redis"
 	"numind-server/internal/pkg/retrieval/retrieve"
 
 	"github.com/spf13/viper"
@@ -249,11 +248,12 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 //   - a required dependency is missing (AES token key / Redis) — in which case it
 //     logs and degrades to "no 飞书 tools" rather than half-wiring them.
 //
-// Dependencies mirror biz/feishu_adapter.go's buildFeishuService: the token
-// cipher (security.thirdparty_token_key), the HTTP token refresher, and a
-// Redis-backed per-user refresh lock. The provider is built once per LoadTools.
+// Dependencies (device-code): a lark-cli runner pinned to the persistent per-user
+// home base (feishu.home_base) — it manages the user's token (decrypt/refresh moved
+// into lark-cli, no cipher / Redis refresh lock needed here). The provider gates on
+// the DB connected flag + lark-cli auth status. Built once per LoadTools.
 func (f *platformToolFactory) newLarkProvider() feishu.LarkAPIProvider {
-	// Test seam: a directly-injected provider short-circuits the config/Redis build.
+	// Test seam: a directly-injected provider short-circuits the config build.
 	if f.larkProviderOverride != nil {
 		return f.larkProviderOverride
 	}
@@ -264,22 +264,11 @@ func (f *platformToolFactory) newLarkProvider() feishu.LarkAPIProvider {
 		return nil
 	}
 
-	cipher, err := crypto.NewCipher(viper.GetString("security.thirdparty_token_key"))
-	if err != nil {
-		log.Errorw("feishu tools: build token cipher failed; 飞书 tools disabled", "err", err)
+	runner := f.buildLarkRunner()
+	if runner == nil {
 		return nil
 	}
-	rdb := redispkg.GetClient()
-	if rdb == nil {
-		log.Errorw("feishu tools: redis unavailable (required for refresh lock); 飞书 tools disabled")
-		return nil
-	}
-	locker, err := feishu.NewRedisRefreshLocker(rdb)
-	if err != nil {
-		log.Errorw("feishu tools: build refresh locker failed; 飞书 tools disabled", "err", err)
-		return nil
-	}
-	client, err := feishu.NewClient(f.ds.ThirdPartyAccounts(), cipher, feishu.NewHTTPTokenRefresher(), locker)
+	client, err := feishu.NewClient(f.ds.ThirdPartyAccounts(), runner)
 	if err != nil {
 		log.Errorw("feishu tools: build client failed; 飞书 tools disabled", "err", err)
 		return nil
@@ -287,15 +276,31 @@ func (f *platformToolFactory) newLarkProvider() feishu.LarkAPIProvider {
 	return client
 }
 
+// buildLarkRunner builds the lark-cli runner pinned to the persistent per-user home
+// base (G1-home). Returns nil (logged) on a build failure. Shared by newLarkProvider
+// (ops) and newFeishuConnector (provisioning + device-code auth).
+func (f *platformToolFactory) buildLarkRunner() *feishu.LarkCLIRunner {
+	homeBase := viper.GetString("feishu.home_base")
+	if homeBase == "" {
+		homeBase = viper.GetString("feishu.lark_cli_home")
+	}
+	runner, err := feishu.NewLarkCLIRunner(viper.GetString("feishu.lark_cli_bin"), homeBase)
+	if err != nil {
+		log.Errorw("feishu: build lark-cli runner failed; 飞书 tools disabled", "err", err)
+		return nil
+	}
+	return runner
+}
+
 // newFeishuConnector lazily builds the feishu.ConnectOrchestrator backing the
-// feishu_connect tool (feishu-agent-connect R3). It returns nil (→ tool not
-// registered) under the SAME preconditions as newLarkProvider: store absent, flag
-// off, or a required dependency missing (AES key / Redis / signer / provisioner /
-// redirect_uri). Dependencies mirror biz/feishu_adapter.go's buildFeishuService
-// minus the agent answer/run seams the orchestrator does not need (the OAuth
-// callback, not the tool, drives run resume on the authorize phase).
+// feishu_connect tool. It returns nil (→ tool not registered) under the SAME
+// preconditions as newLarkProvider: store absent, flag off, or a required
+// dependency missing (AES key for the app-secret boundary / lark-cli runner).
+//
+// Device-code (G2-authorize): no signer / nonce / token exchanger / redirect_uri
+// anymore. Dependencies mirror biz/feishu_adapter.go's buildFeishuService.
 func (f *platformToolFactory) newFeishuConnector() feishuConnector {
-	// Test seam: a directly-injected connector short-circuits the config/Redis build.
+	// Test seam: a directly-injected connector short-circuits the config build.
 	if f.feishuConnectorOverride != nil {
 		return f.feishuConnectorOverride
 	}
@@ -311,71 +316,24 @@ func (f *platformToolFactory) newFeishuConnector() feishuConnector {
 		log.Errorw("feishu_connect: build token cipher failed; tool disabled", "err", err)
 		return nil
 	}
-	rdb := redispkg.GetClient()
-	if rdb == nil {
-		log.Errorw("feishu_connect: redis unavailable (required for OAuth state nonce); tool disabled")
-		return nil
-	}
-	nonceStore, err := feishu.NewRedisNonceStore(rdb)
-	if err != nil {
-		log.Errorw("feishu_connect: build nonce store failed; tool disabled", "err", err)
-		return nil
-	}
-	signer, err := feishu.NewStateSigner(viper.GetString("security.feishu_state_key"), nonceStore)
-	if err != nil {
-		log.Errorw("feishu_connect: build state signer failed; tool disabled", "err", err)
-		return nil
-	}
 
 	// G1-home: pin the runner to the PERSISTENT per-user home base so user homes
-	// created via the feishu_connect agent tool survive a redeploy — matching the
-	// OAuth path in feishu_adapter.go. feishu.lark_cli_home is the pre-G1 key, kept
-	// as a fallback so an un-migrated config does not break.
-	homeBase := viper.GetString("feishu.home_base")
-	if homeBase == "" {
-		homeBase = viper.GetString("feishu.lark_cli_home")
-	}
-	cliRunner, err := feishu.NewLarkCLIRunner(
-		viper.GetString("feishu.lark_cli_bin"),
-		homeBase,
-	)
-	if err != nil {
-		log.Errorw("feishu_connect: build lark-cli runner failed; tool disabled", "err", err)
+	// created via the feishu_connect agent tool survive a redeploy.
+	runner := f.buildLarkRunner()
+	if runner == nil {
 		return nil
 	}
-	redirectURI := viper.GetString("feishu.redirect_uri")
-	if redirectURI == "" {
-		log.Errorw("feishu_connect: feishu.redirect_uri not configured; tool disabled")
-		return nil
-	}
-	exchanger, err := feishu.NewHTTPTokenExchanger(redirectURI)
-	if err != nil {
-		log.Errorw("feishu_connect: build token exchanger failed; tool disabled", "err", err)
-		return nil
-	}
-	provisioner, err := feishu.NewProvisioner(cipher, cliRunner, exchanger)
+	provisioner, err := feishu.NewProvisioner(cipher, runner)
 	if err != nil {
 		log.Errorw("feishu_connect: build provisioner failed; tool disabled", "err", err)
 		return nil
 	}
 
-	authorizeURL := viper.GetString("feishu.authorize_url")
-	if authorizeURL == "" {
-		authorizeURL = feishu.DefaultAuthorizeURL
-	}
-	scopes := viper.GetString("feishu.scopes")
-	if scopes == "" {
-		scopes = feishu.DefaultScopes
-	}
-
 	orch, err := feishu.NewConnectOrchestrator(feishu.ConnectOrchestratorDeps{
-		Store:        f.ds.ThirdPartyAccounts(),
-		Signer:       signer,
-		Starter:      provisioner,
-		Poller:       provisioner,
-		AuthorizeURL: authorizeURL,
-		RedirectURI:  redirectURI,
-		ScopesCSV:    scopes,
+		Store:      f.ds.ThirdPartyAccounts(),
+		Starter:    provisioner,
+		Poller:     provisioner,
+		Authorizer: provisioner,
 	})
 	if err != nil {
 		log.Errorw("feishu_connect: build connect orchestrator failed; tool disabled", "err", err)

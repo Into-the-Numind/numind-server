@@ -43,7 +43,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,7 +50,6 @@ import (
 	"sync"
 	"time"
 
-	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
 )
 
@@ -71,7 +69,7 @@ const startInitTimeout = 30 * time.Second
 // overruns this so a never-finished browser step does not leak a process forever.
 const appCreateCeiling = 12 * time.Minute
 
-// larkCLIRunner is the production cliRunner over os/exec.
+// LarkCLIRunner is the production cliRunner over os/exec.
 //
 // State across HTTP requests: StartAppCreate launches a long-lived background
 // process (it blocks on the user's browser step). We track running sessions
@@ -79,7 +77,7 @@ const appCreateCeiling = 12 * time.Minute
 // completion. The session ref is the per-user home path — persistent, so even if
 // the in-memory entry is lost (restart), PollAppCreated can still read whatever
 // credentials lark-cli already persisted in that home's config.json.
-type larkCLIRunner struct {
+type LarkCLIRunner struct {
 	bin      string // lark-cli binary (name on PATH or absolute path)
 	homeBase string // PERSISTENT base dir under which per-user HOMEs (u{userID}) live
 
@@ -107,7 +105,7 @@ type cliSession struct {
 //
 // The home base is created 0700 and is owned by the running process user (we rely on
 // the process umask / default ownership — MkdirAll creates dirs as the current uid).
-func NewLarkCLIRunner(bin, homeBase string) (*larkCLIRunner, error) {
+func NewLarkCLIRunner(bin, homeBase string) (*LarkCLIRunner, error) {
 	if bin == "" {
 		bin = defaultLarkCLIBin
 	}
@@ -118,7 +116,7 @@ func NewLarkCLIRunner(bin, homeBase string) (*larkCLIRunner, error) {
 	if err := os.MkdirAll(homeBase, 0o700); err != nil {
 		return nil, fmt.Errorf("feishu: create lark-cli home base %q: %w", homeBase, err)
 	}
-	return &larkCLIRunner{
+	return &LarkCLIRunner{
 		bin:      bin,
 		homeBase: homeBase,
 		sessions: map[string]*cliSession{},
@@ -128,7 +126,7 @@ func NewLarkCLIRunner(bin, homeBase string) (*larkCLIRunner, error) {
 // homeForUser returns this user's isolated PERSISTENT home directory
 // (homeBase/u{userID}). The path is deterministic, so the same user always maps to
 // the same home — reconnecting reuses the existing config.json + tokens (idempotent).
-func (r *larkCLIRunner) homeForUser(userID uint) string {
+func (r *LarkCLIRunner) homeForUser(userID uint) string {
 	return filepath.Join(r.homeBase, fmt.Sprintf("u%d", userID))
 }
 
@@ -145,7 +143,7 @@ func configPath(home string) string {
 // no-outbound-internet container and stall the run). The Dockerfile sets the same
 // two as ENV; setting them here too keeps the child env clean even when the binary
 // runs outside that image (dev/test/local).
-func (r *larkCLIRunner) env(home string) []string {
+func (r *LarkCLIRunner) env(home string) []string {
 	base := os.Environ()
 	out := make([]string, 0, len(base)+3)
 	for _, kv := range base {
@@ -172,7 +170,7 @@ func (r *larkCLIRunner) env(home string) []string {
 // finishes in the browser). The returned handle carries the home path + the process
 // session tracking. The home dir is created 0700 (owned by the running process
 // user); MkdirAll is a no-op when it already exists, so a re-provision reuses it.
-func (r *larkCLIRunner) StartAppCreate(ctx context.Context, userID uint) (pageURL string, handle *AppCreateHandle, err error) {
+func (r *LarkCLIRunner) StartAppCreate(ctx context.Context, userID uint) (pageURL string, handle *AppCreateHandle, err error) {
 	home := r.homeForUser(userID)
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return "", nil, fmt.Errorf("feishu: create user home %q: %w", home, err)
@@ -332,7 +330,7 @@ func scrapePageURL(r io.ReadCloser, timeout time.Duration) (string, error) {
 // server restart that lost the in-memory session, where handle.session is nil).
 // On completion we clean up the in-flight process tracking (drop the session
 // entry); config.json itself is kept as the durable per-user credential store.
-func (r *larkCLIRunner) PollAppCreated(ctx context.Context, handle *AppCreateHandle) (appID, appSecret string, done bool, err error) {
+func (r *LarkCLIRunner) PollAppCreated(ctx context.Context, handle *AppCreateHandle) (appID, appSecret string, done bool, err error) {
 	if handle == nil || handle.home == "" {
 		// Unknown/stale ref → treat as still-in-progress rather than erroring, so a
 		// poll after a lost session ref does not surface a hard failure.
@@ -372,7 +370,7 @@ func (r *larkCLIRunner) PollAppCreated(ctx context.Context, handle *AppCreateHan
 // It prefers the live in-memory session (so a poll on the same instance observes
 // process exit), falling back to a path-only handle (session nil) so a post-
 // restart poll still reads config.json. An empty/unknown ref yields nil.
-func (r *larkCLIRunner) resolveHandle(sessionRef string) *AppCreateHandle {
+func (r *LarkCLIRunner) resolveHandle(sessionRef string) *AppCreateHandle {
 	if sessionRef == "" {
 		return nil
 	}
@@ -385,7 +383,7 @@ func (r *larkCLIRunner) resolveHandle(sessionRef string) *AppCreateHandle {
 // sessionRefForUser returns the deterministic durable session ref for userID:
 // the per-user home path (the same path StartAppCreate uses and that PollAppCreated
 // reads config.json from). userID 0 has no home.
-func (r *larkCLIRunner) sessionRefForUser(userID uint) string {
+func (r *LarkCLIRunner) sessionRefForUser(userID uint) string {
 	if userID == 0 {
 		return ""
 	}
@@ -394,33 +392,10 @@ func (r *larkCLIRunner) sessionRefForUser(userID uint) string {
 
 // cleanupSession removes the in-flight process tracking for a user's home. It
 // does NOT delete config.json (the durable credential store).
-func (r *larkCLIRunner) cleanupSession(home string) {
+func (r *LarkCLIRunner) cleanupSession(home string) {
 	r.mu.Lock()
 	delete(r.sessions, home)
 	r.mu.Unlock()
-}
-
-// ReadAppSecret resolves the plaintext app_secret for an already-provisioned
-// appID (OAuth exchange path). The OAuth callback can land on any server instance
-// and after a restart the in-memory map is empty, so we resolve by scanning the
-// persistent per-user homes under r.homeBase for a config.json whose apps[0].appId
-// matches.
-func (r *larkCLIRunner) ReadAppSecret(ctx context.Context, appID string) (string, error) {
-	entries, derr := os.ReadDir(r.homeBase)
-	if derr != nil {
-		return "", fmt.Errorf("%w: scan config homes for app %s: %v", errno.ErrLarkCallFailed, appID, derr)
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		home := filepath.Join(r.homeBase, entry.Name())
-		gotID, gotSecret, err := readAppFromConfig(home)
-		if err == nil && gotID == appID {
-			return gotSecret, nil
-		}
-	}
-	return "", fmt.Errorf("%w: no config home found for app %s", errno.ErrLarkCallFailed, appID)
 }
 
 // --- config.json reading (pure-ish helpers) ---------------------------------
@@ -498,93 +473,5 @@ func parseDeviceCodeURL(cliOutput string) (string, error) {
 	return "", errors.New("feishu: page URL not found in lark-cli output")
 }
 
-// compile-time guard: larkCLIRunner satisfies cliRunner.
-var _ cliRunner = (*larkCLIRunner)(nil)
-
-// --- 飞书 v2 OAuth token exchanger (HTTP) ------------------------------------
-
-// oauthTokenURL is the 飞书 v2 token endpoint (confirmed in lark-cli binary +
-// spike-bootstrap.md).
-const oauthTokenURL = "https://open.feishu.cn/open-apis/authen/v2/oauth/token"
-
-// oauthExchangeTimeout bounds the token POST.
-const oauthExchangeTimeout = 15 * time.Second
-
-// httpTokenExchanger performs the authorization-code → token exchange over HTTP.
-// It is deliberately a plain *http.Client (NOT aiservice): 飞书 is an external
-// business API, not an LLM gateway. redirectURI must match what was used to build
-// the authorize URL (T7) or 飞书 rejects the exchange.
-type httpTokenExchanger struct {
-	client      *http.Client
-	redirectURI string
-}
-
-// NewHTTPTokenExchanger builds the production tokenExchanger. redirectURI is the
-// OAuth callback URL registered in the 飞书 console (config-injected, per env).
-func NewHTTPTokenExchanger(redirectURI string) (*httpTokenExchanger, error) {
-	if redirectURI == "" {
-		return nil, errors.New("feishu: empty OAuth redirect URI")
-	}
-	return &httpTokenExchanger{
-		client:      &http.Client{Timeout: oauthExchangeTimeout},
-		redirectURI: redirectURI,
-	}, nil
-}
-
-// oauthTokenEnvelope is the 飞书 v2 token response envelope: a top-level code/msg
-// plus the token fields (which 飞书 returns at the top level for v2).
-type oauthTokenEnvelope struct {
-	Code int    `json:"code"`
-	Msg  string `json:"msg"`
-	oauthTokenResp
-}
-
-// Exchange POSTs the authorization-code grant and returns the token fields. On a
-// non-zero 飞书 business code or HTTP error it returns ErrLarkCallFailed (wrapped)
-// so callers can classify it; it never logs the secret or code.
-func (h *httpTokenExchanger) Exchange(ctx context.Context, appID, appSecret, code string) (*oauthTokenResp, error) {
-	body, err := json.Marshal(map[string]string{
-		"grant_type":    "authorization_code",
-		"client_id":     appID,
-		"client_secret": appSecret,
-		"code":          code,
-		"redirect_uri":  h.redirectURI,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("feishu: marshal token request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, oauthTokenURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("feishu: build token request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-
-	resp, err := h.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("%w: token request: %v", errno.ErrLarkCallFailed, err)
-	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, fmt.Errorf("%w: read token response: %v", errno.ErrLarkCallFailed, err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: token endpoint HTTP %d", errno.ErrLarkCallFailed, resp.StatusCode)
-	}
-
-	var env oauthTokenEnvelope
-	if jerr := json.Unmarshal(raw, &env); jerr != nil {
-		return nil, fmt.Errorf("%w: parse token response: %v", errno.ErrLarkCallFailed, jerr)
-	}
-	if env.Code != 0 {
-		// 飞书 msg is a generic error string, safe to include for diagnosis.
-		return nil, fmt.Errorf("%w: 飞书 code %d (%s)", errno.ErrLarkCallFailed, env.Code, env.Msg)
-	}
-
-	return &env.oauthTokenResp, nil
-}
-
-// compile-time guard: httpTokenExchanger satisfies tokenExchanger.
-var _ tokenExchanger = (*httpTokenExchanger)(nil)
+// compile-time guard: LarkCLIRunner satisfies cliRunner.
+var _ cliRunner = (*LarkCLIRunner)(nil)

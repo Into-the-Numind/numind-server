@@ -10,26 +10,21 @@ import (
 	"gorm.io/gorm"
 
 	feishubiz "numind-server/internal/numind/biz/feishu"
-	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
 )
 
-// fakeSvc is a scripted IFeishuService for controller tests.
+// fakeSvc is a scripted IFeishuService for controller tests (device-code).
 type fakeSvc struct {
-	connect  *feishubiz.ConnectResult
-	status   *feishubiz.StatusResult
-	callback *feishubiz.CallbackResult
-	connErr  error
-	statErr  error
-	unbErr   error
-	cbErr    error
+	connect *feishubiz.ConnectResult
+	status  *feishubiz.StatusResult
+	connErr error
+	statErr error
+	unbErr  error
 
-	gotCode  string
-	gotState string
-	unbinds  int
+	unbinds int
 }
 
-func (f *fakeSvc) Connect(_ context.Context, _ uint, _ uint64, _ string) (*feishubiz.ConnectResult, error) {
+func (f *fakeSvc) Connect(_ context.Context, _ uint) (*feishubiz.ConnectResult, error) {
 	return f.connect, f.connErr
 }
 func (f *fakeSvc) Status(_ context.Context, _ uint) (*feishubiz.StatusResult, error) {
@@ -38,11 +33,6 @@ func (f *fakeSvc) Status(_ context.Context, _ uint) (*feishubiz.StatusResult, er
 func (f *fakeSvc) Unbind(_ context.Context, _ uint) error {
 	f.unbinds++
 	return f.unbErr
-}
-func (f *fakeSvc) HandleCallback(_ context.Context, code, state string) (*feishubiz.CallbackResult, error) {
-	f.gotCode = code
-	f.gotState = state
-	return f.callback, f.cbErr
 }
 
 func init() { gin.SetMode(gin.TestMode) }
@@ -56,59 +46,8 @@ func withUser(uid uint) gin.HandlerFunc {
 	}
 }
 
-func TestCallback_StateInvalid_RedirectsToError(t *testing.T) {
-	svc := &fakeSvc{
-		callback: &feishubiz.CallbackResult{
-			RedirectURL: "https://youshu.asia/settings/connections?feishu=error&reason=invalid_state",
-			Success:     false,
-		},
-		cbErr: errno.ErrLarkStateInvalid,
-	}
-	c := NewController(svc)
-	r := gin.New()
-	r.GET("/v1/feishu/oauth/callback", c.Callback)
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/v1/feishu/oauth/callback?code=x&state=bad", nil)
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusFound {
-		t.Fatalf("status = %d, want 302", w.Code)
-	}
-	loc := w.Header().Get("Location")
-	if loc != svc.callback.RedirectURL {
-		t.Fatalf("Location = %q, want %q", loc, svc.callback.RedirectURL)
-	}
-	if svc.gotCode != "x" || svc.gotState != "bad" {
-		t.Fatalf("svc got code=%q state=%q", svc.gotCode, svc.gotState)
-	}
-}
-
-func TestCallback_Success_RedirectsToConnected(t *testing.T) {
-	svc := &fakeSvc{
-		callback: &feishubiz.CallbackResult{
-			RedirectURL: "https://youshu.asia/settings/connections?feishu=connected",
-			Success:     true,
-		},
-	}
-	c := NewController(svc)
-	r := gin.New()
-	r.GET("/v1/feishu/oauth/callback", c.Callback)
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/v1/feishu/oauth/callback?code=abc&state=ok", nil)
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusFound {
-		t.Fatalf("status = %d, want 302", w.Code)
-	}
-	if got := w.Header().Get("Location"); got != svc.callback.RedirectURL {
-		t.Fatalf("Location = %q", got)
-	}
-}
-
 func TestStatus_JSON(t *testing.T) {
-	svc := &fakeSvc{status: &feishubiz.StatusResult{Connected: true, Status: "active", AppID: "cli_app", Scopes: []string{"docx:document"}}}
+	svc := &fakeSvc{status: &feishubiz.StatusResult{Connected: true, Status: "connected", AppID: "cli_app"}}
 	c := NewController(svc)
 	r := gin.New()
 	r.GET("/v1/feishu/status", withUser(42), c.Status)
@@ -121,13 +60,13 @@ func TestStatus_JSON(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
 	body := w.Body.String()
-	if !contains(body, `"code":0`) || !contains(body, `"app_id":"cli_app"`) || !contains(body, `"status":"active"`) {
+	if !contains(body, `"code":0`) || !contains(body, `"app_id":"cli_app"`) || !contains(body, `"status":"connected"`) {
 		t.Fatalf("unexpected body: %s", body)
 	}
 }
 
 func TestConnect_JSON(t *testing.T) {
-	svc := &fakeSvc{connect: &feishubiz.ConnectResult{NextStep: feishubiz.NextStepAuthorize, URL: "https://open.feishu.cn/auth", State: "sig"}}
+	svc := &fakeSvc{connect: &feishubiz.ConnectResult{NextStep: feishubiz.NextStepAuthorize, URL: "https://open.feishu.cn/device"}}
 	c := NewController(svc)
 	r := gin.New()
 	r.POST("/v1/feishu/connect", withUser(42), c.Connect)
@@ -140,7 +79,7 @@ func TestConnect_JSON(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
 	body := w.Body.String()
-	if !contains(body, `"next_step":"authorize"`) || !contains(body, `"state":"sig"`) {
+	if !contains(body, `"next_step":"authorize"`) || !contains(body, `"url":"https://open.feishu.cn/device"`) {
 		t.Fatalf("unexpected body: %s", body)
 	}
 }

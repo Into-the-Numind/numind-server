@@ -5,12 +5,15 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"numind-server/internal/pkg/crypto"
 )
 
 // --- test doubles -----------------------------------------------------------
+
+// testKey is the deterministic base64 AES-256 key used across feishu package
+// tests (32 bytes "0123456789abcdef0123456789abcdef").
+const testKey = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
 
 // newTestCipher builds a real AES-256-GCM cipher from the deterministic test key
 // so encrypt/decrypt round-trips can be asserted in provisioner tests.
@@ -23,7 +26,8 @@ func newTestCipher(t *testing.T) *crypto.Cipher {
 	return c
 }
 
-// fakeCLIRunner implements cliRunner with scripted behaviour, no os/exec.
+// fakeCLIRunner implements cliRunner (config-init seam + authRunner device-code
+// seam) with scripted behaviour, no os/exec.
 //
 // The handle-based seam is bridged with a scratch-path session ref: startScript
 // returns the page URL + the scratch path that becomes handle.home; pollScript is
@@ -33,14 +37,20 @@ type fakeCLIRunner struct {
 	startScript func(userID uint) (pageURL, scratch string, err error)
 	// pollScript returns the credential snapshot for a scratch path (handle.home).
 	pollScript func(home string) (appID, appSecret string, done bool, err error)
-	// secretScript returns the plaintext app_secret for an appID (exchange path).
-	secretScript func(appID string) (string, error)
+
+	// device-code authRunner scripts (default to benign no-ops).
+	startAuthScript    func(userID uint) (string, error)
+	completeAuthScript func(userID uint) error
+	pendingScript      func(userID uint) bool
+	statusScript       func(userID uint) (bool, error)
 }
 
 func newFakeCLIRunner() *fakeCLIRunner {
 	return &fakeCLIRunner{
-		// default: exchange-path secret lookup succeeds (most tests don't care).
-		secretScript: func(appID string) (string, error) { return "default-secret", nil },
+		startAuthScript:    func(uint) (string, error) { return "https://verify", nil },
+		completeAuthScript: func(uint) error { return nil },
+		pendingScript:      func(uint) bool { return false },
+		statusScript:       func(uint) (bool, error) { return false, nil },
 	}
 }
 
@@ -60,10 +70,6 @@ func (f *fakeCLIRunner) PollAppCreated(_ context.Context, handle *AppCreateHandl
 	return f.pollScript(home)
 }
 
-func (f *fakeCLIRunner) ReadAppSecret(_ context.Context, appID string) (string, error) {
-	return f.secretScript(appID)
-}
-
 // resolveHandle mirrors the production seam: wrap a scratch-path ref into a
 // path-only handle (the fake keeps no in-memory sessions).
 func (f *fakeCLIRunner) resolveHandle(sessionRef string) *AppCreateHandle {
@@ -74,8 +80,6 @@ func (f *fakeCLIRunner) resolveHandle(sessionRef string) *AppCreateHandle {
 }
 
 // sessionRefForUser mirrors the production deterministic per-user scratch ref.
-// The fake keys pollScript by this ref, so PollCredentialsForUser resolves the
-// same snapshot a path-based PollCredentials would.
 func (f *fakeCLIRunner) sessionRefForUser(userID uint) string {
 	if userID == 0 {
 		return ""
@@ -83,28 +87,22 @@ func (f *fakeCLIRunner) sessionRefForUser(userID uint) string {
 	return "u" + itoa(userID)
 }
 
-// fakeExchanger implements tokenExchanger with a scripted token response.
-type fakeExchanger struct {
-	resp      *oauthTokenResp
-	err       error
-	gotApp    string
-	gotSecret string
-	gotCode   string
+// --- authRunner seam (device-code) ------------------------------------------
+
+func (f *fakeCLIRunner) StartAuthLogin(_ context.Context, userID uint) (string, error) {
+	return f.startAuthScript(userID)
+}
+func (f *fakeCLIRunner) CompleteAuthLogin(_ context.Context, userID uint) error {
+	return f.completeAuthScript(userID)
+}
+func (f *fakeCLIRunner) HasPendingDeviceCode(userID uint) bool { return f.pendingScript(userID) }
+func (f *fakeCLIRunner) AuthStatus(_ context.Context, userID uint) (bool, error) {
+	return f.statusScript(userID)
 }
 
-func (f *fakeExchanger) Exchange(_ context.Context, appID, appSecret, code string) (*oauthTokenResp, error) {
-	f.gotApp = appID
-	f.gotSecret = appSecret
-	f.gotCode = code
-	if f.err != nil {
-		return nil, f.err
-	}
-	return f.resp, nil
-}
-
-func newTestProvisioner(t *testing.T, cli cliRunner, ex tokenExchanger) *Provisioner {
+func newTestProvisioner(t *testing.T, cli cliRunner) *Provisioner {
 	t.Helper()
-	p, err := NewProvisioner(newTestCipher(t), cli, ex)
+	p, err := NewProvisioner(newTestCipher(t), cli)
 	if err != nil {
 		t.Fatalf("NewProvisioner: %v", err)
 	}
@@ -121,7 +119,7 @@ func TestStartProvision_ReturnsPageURLAndRef(t *testing.T) {
 		}
 		return "https://open.feishu.cn/page/cli?user_code=2AF7-MFWU&lpv=1.0.56&from=cli", "sess-7", nil
 	}
-	p := newTestProvisioner(t, cli, &fakeExchanger{})
+	p := newTestProvisioner(t, cli)
 
 	pageURL, ref, err := p.StartProvision(context.Background(), 7)
 	if err != nil {
@@ -140,7 +138,7 @@ func TestStartProvision_PropagatesError(t *testing.T) {
 	cli.startScript = func(uint) (string, string, error) {
 		return "", "", errors.New("lark-cli not found")
 	}
-	p := newTestProvisioner(t, cli, &fakeExchanger{})
+	p := newTestProvisioner(t, cli)
 
 	if _, _, err := p.StartProvision(context.Background(), 1); err == nil {
 		t.Fatal("StartProvision should surface CLI error")
@@ -154,7 +152,7 @@ func TestPollCredentials_NotReady(t *testing.T) {
 	cli.pollScript = func(ref string) (string, string, bool, error) {
 		return "", "", false, nil
 	}
-	p := newTestProvisioner(t, cli, &fakeExchanger{})
+	p := newTestProvisioner(t, cli)
 
 	appID, secEnc, done, err := p.PollCredentials(context.Background(), "sess-x")
 	if err != nil {
@@ -174,7 +172,7 @@ func TestPollCredentials_ReadyEncryptsSecret(t *testing.T) {
 	cli.pollScript = func(ref string) (string, string, bool, error) {
 		return "cli_abc123", "supersecret", true, nil
 	}
-	p, err := NewProvisioner(cipher, cli, &fakeExchanger{})
+	p, err := NewProvisioner(cipher, cli)
 	if err != nil {
 		t.Fatalf("NewProvisioner: %v", err)
 	}
@@ -209,7 +207,7 @@ func TestPollCredentials_DoneButEmptySecretIsError(t *testing.T) {
 		// never persist an empty/blank secret.
 		return "cli_abc", "", true, nil
 	}
-	p := newTestProvisioner(t, cli, &fakeExchanger{})
+	p := newTestProvisioner(t, cli)
 
 	if _, _, _, err := p.PollCredentials(context.Background(), "sess-1"); err == nil {
 		t.Fatal("done-but-empty-secret must be an error")
@@ -221,7 +219,7 @@ func TestPollCredentials_PropagatesError(t *testing.T) {
 	cli.pollScript = func(ref string) (string, string, bool, error) {
 		return "", "", false, errors.New("read config failed")
 	}
-	p := newTestProvisioner(t, cli, &fakeExchanger{})
+	p := newTestProvisioner(t, cli)
 
 	if _, _, _, err := p.PollCredentials(context.Background(), "sess-1"); err == nil {
 		t.Fatal("PollCredentials should surface CLI error")
@@ -241,7 +239,7 @@ func TestPollCredentialsForUser_DerivesRefAndEncrypts(t *testing.T) {
 		}
 		return "cli_u42", "user42-secret", true, nil
 	}
-	p, err := NewProvisioner(cipher, cli, &fakeExchanger{})
+	p, err := NewProvisioner(cipher, cli)
 	if err != nil {
 		t.Fatalf("NewProvisioner: %v", err)
 	}
@@ -265,7 +263,7 @@ func TestPollCredentialsForUser_DerivesRefAndEncrypts(t *testing.T) {
 func TestPollCredentialsForUser_NotReady(t *testing.T) {
 	cli := newFakeCLIRunner()
 	cli.pollScript = func(string) (string, string, bool, error) { return "", "", false, nil }
-	p := newTestProvisioner(t, cli, &fakeExchanger{})
+	p := newTestProvisioner(t, cli)
 
 	appID, secEnc, done, err := p.PollCredentialsForUser(context.Background(), 9)
 	if err != nil {
@@ -277,179 +275,100 @@ func TestPollCredentialsForUser_NotReady(t *testing.T) {
 }
 
 func TestPollCredentialsForUser_ZeroUserErrors(t *testing.T) {
-	p := newTestProvisioner(t, newFakeCLIRunner(), &fakeExchanger{})
+	p := newTestProvisioner(t, newFakeCLIRunner())
 	if _, _, _, err := p.PollCredentialsForUser(context.Background(), 0); err == nil {
 		t.Fatal("userID 0 must error")
 	}
 }
 
-// --- ExchangeCode -----------------------------------------------------------
+// --- device-code authorization (Authorizer) ---------------------------------
 
-func TestExchangeCode_EncryptsTokens(t *testing.T) {
-	cipher := newTestCipher(t)
-	ex := &fakeExchanger{resp: &oauthTokenResp{
-		AccessToken:  "u-at-xyz",
-		RefreshToken: "u-rt-abc",
-		ExpiresIn:    7200,
-		Scope:        "docx:document im:message",
-	}}
-	p, err := NewProvisioner(cipher, newFakeCLIRunner(), ex)
-	if err != nil {
-		t.Fatalf("NewProvisioner: %v", err)
-	}
-
-	before := time.Now()
-	access, refresh, exp, scopes, err := p.ExchangeCode(context.Background(), "cli_abc", "the-code")
-	if err != nil {
-		t.Fatalf("ExchangeCode: %v", err)
-	}
-	if ex.gotApp != "cli_abc" || ex.gotCode != "the-code" {
-		t.Fatalf("exchanger received wrong args: app=%q code=%q", ex.gotApp, ex.gotCode)
-	}
-	if scopes != "docx:document im:message" {
-		t.Fatalf("scopes mismatch: %q", scopes)
-	}
-	// Tokens must be ciphertext.
-	if string(access) == "u-at-xyz" || string(refresh) == "u-rt-abc" {
-		t.Fatal("tokens must be encrypted, not plaintext")
-	}
-	plainA, err := cipher.Decrypt(access)
-	if err != nil {
-		t.Fatalf("decrypt access: %v", err)
-	}
-	if string(plainA) != "u-at-xyz" {
-		t.Fatalf("access mismatch: %q", plainA)
-	}
-	plainR, err := cipher.Decrypt(refresh)
-	if err != nil {
-		t.Fatalf("decrypt refresh: %v", err)
-	}
-	if string(plainR) != "u-rt-abc" {
-		t.Fatalf("refresh mismatch: %q", plainR)
-	}
-	// exp ~= now + 7200s.
-	if exp == nil {
-		t.Fatal("exp must be set when expires_in > 0")
-	}
-	wantMin := before.Add(7100 * time.Second)
-	wantMax := before.Add(7300 * time.Second)
-	if exp.Before(wantMin) || exp.After(wantMax) {
-		t.Fatalf("exp out of expected window: %v (want ~%v)", exp, before.Add(7200*time.Second))
-	}
-}
-
-func TestExchangeCode_NoRefreshToken(t *testing.T) {
-	cipher := newTestCipher(t)
-	ex := &fakeExchanger{resp: &oauthTokenResp{
-		AccessToken: "u-at-only",
-		ExpiresIn:   3600,
-		Scope:       "docx:document",
-	}}
-	p, err := NewProvisioner(cipher, newFakeCLIRunner(), ex)
-	if err != nil {
-		t.Fatalf("NewProvisioner: %v", err)
-	}
-
-	access, refresh, exp, _, err := p.ExchangeCode(context.Background(), "cli_abc", "code")
-	if err != nil {
-		t.Fatalf("ExchangeCode: %v", err)
-	}
-	if access == nil {
-		t.Fatal("access token must be present")
-	}
-	// Feishu may omit refresh_token → refresh ciphertext must be nil (NOT an
-	// encrypted empty string), so the store writes NULL.
-	if refresh != nil {
-		t.Fatalf("refresh must be nil when none returned, got %v", refresh)
-	}
-	if exp == nil {
-		t.Fatal("exp must be set")
-	}
-}
-
-func TestExchangeCode_NoExpiresIn(t *testing.T) {
-	cipher := newTestCipher(t)
-	ex := &fakeExchanger{resp: &oauthTokenResp{
-		AccessToken: "u-at",
-		Scope:       "docx:document",
-		// ExpiresIn == 0 → unknown expiry.
-	}}
-	p, err := NewProvisioner(cipher, newFakeCLIRunner(), ex)
-	if err != nil {
-		t.Fatalf("NewProvisioner: %v", err)
-	}
-
-	_, _, exp, _, err := p.ExchangeCode(context.Background(), "cli_abc", "code")
-	if err != nil {
-		t.Fatalf("ExchangeCode: %v", err)
-	}
-	if exp != nil {
-		t.Fatalf("exp must be nil when expires_in absent, got %v", exp)
-	}
-}
-
-func TestExchangeCode_EmptyAccessTokenIsError(t *testing.T) {
-	cipher := newTestCipher(t)
-	ex := &fakeExchanger{resp: &oauthTokenResp{
-		// no access token → upstream gave us nothing usable
-		RefreshToken: "rt",
-		ExpiresIn:    3600,
-	}}
-	p, err := NewProvisioner(cipher, newFakeCLIRunner(), ex)
-	if err != nil {
-		t.Fatalf("NewProvisioner: %v", err)
-	}
-
-	if _, _, _, _, err := p.ExchangeCode(context.Background(), "cli_abc", "code"); err == nil {
-		t.Fatal("empty access token must be an error")
-	}
-}
-
-func TestExchangeCode_PropagatesExchangerError(t *testing.T) {
-	ex := &fakeExchanger{err: errors.New("feishu 400 invalid code")}
-	p := newTestProvisioner(t, newFakeCLIRunner(), ex)
-
-	if _, _, _, _, err := p.ExchangeCode(context.Background(), "cli_abc", "bad"); err == nil {
-		t.Fatal("ExchangeCode should surface exchanger error")
-	}
-}
-
-func TestExchangeCode_ResolvesAndPassesAppSecret(t *testing.T) {
+func TestStartAuthorize_ReturnsVerificationURL(t *testing.T) {
 	cli := newFakeCLIRunner()
-	cli.secretScript = func(appID string) (string, error) {
-		if appID != "cli_abc" {
-			t.Fatalf("ReadAppSecret got wrong appID %q", appID)
+	cli.startAuthScript = func(userID uint) (string, error) {
+		if userID != 11 {
+			t.Fatalf("unexpected userID %d", userID)
 		}
-		return "resolved-secret", nil
+		return "https://open.feishu.cn/device?user_code=ABCD", nil
 	}
-	ex := &fakeExchanger{resp: &oauthTokenResp{AccessToken: "at", ExpiresIn: 3600}}
-	p := newTestProvisioner(t, cli, ex)
+	p := newTestProvisioner(t, cli)
 
-	if _, _, _, _, err := p.ExchangeCode(context.Background(), "cli_abc", "code"); err != nil {
-		t.Fatalf("ExchangeCode: %v", err)
+	url, err := p.StartAuthorize(context.Background(), 11)
+	if err != nil {
+		t.Fatalf("StartAuthorize: %v", err)
 	}
-	if ex.gotSecret != "resolved-secret" {
-		t.Fatalf("exchanger should receive the resolved app secret, got %q", ex.gotSecret)
+	if !strings.HasPrefix(url, "https://open.feishu.cn/") {
+		t.Fatalf("verification URL mismatch: %q", url)
 	}
 }
 
-func TestExchangeCode_SecretResolutionFailure(t *testing.T) {
+func TestStartAuthorize_ZeroUserErrors(t *testing.T) {
+	p := newTestProvisioner(t, newFakeCLIRunner())
+	if _, err := p.StartAuthorize(context.Background(), 0); err == nil {
+		t.Fatal("userID 0 must error")
+	}
+}
+
+func TestStartAuthorize_PropagatesError(t *testing.T) {
 	cli := newFakeCLIRunner()
-	cli.secretScript = func(appID string) (string, error) { return "", errors.New("config home missing") }
-	p := newTestProvisioner(t, cli, &fakeExchanger{resp: &oauthTokenResp{AccessToken: "at"}})
-
-	if _, _, _, _, err := p.ExchangeCode(context.Background(), "cli_abc", "code"); err == nil {
-		t.Fatal("ExchangeCode must fail when app secret cannot be resolved")
+	cli.startAuthScript = func(uint) (string, error) { return "", errors.New("auth login boom") }
+	p := newTestProvisioner(t, cli)
+	if _, err := p.StartAuthorize(context.Background(), 3); err == nil {
+		t.Fatal("StartAuthorize should surface CLI error")
 	}
 }
 
-func TestExchangeCode_MissingArgs(t *testing.T) {
-	p := newTestProvisioner(t, newFakeCLIRunner(), &fakeExchanger{resp: &oauthTokenResp{AccessToken: "at"}})
-	if _, _, _, _, err := p.ExchangeCode(context.Background(), "", "code"); err == nil {
-		t.Fatal("empty appID must error")
+func TestCompleteAuthorize_DelegatesToCLI(t *testing.T) {
+	cli := newFakeCLIRunner()
+	called := false
+	cli.completeAuthScript = func(userID uint) error {
+		called = true
+		if userID != 12 {
+			t.Fatalf("unexpected userID %d", userID)
+		}
+		return nil
 	}
-	if _, _, _, _, err := p.ExchangeCode(context.Background(), "cli_abc", ""); err == nil {
-		t.Fatal("empty code must error")
+	p := newTestProvisioner(t, cli)
+	if err := p.CompleteAuthorize(context.Background(), 12); err != nil {
+		t.Fatalf("CompleteAuthorize: %v", err)
+	}
+	if !called {
+		t.Fatal("CompleteAuthorize must delegate to the CLI runner")
+	}
+}
+
+func TestCompleteAuthorize_ZeroUserErrors(t *testing.T) {
+	p := newTestProvisioner(t, newFakeCLIRunner())
+	if err := p.CompleteAuthorize(context.Background(), 0); err == nil {
+		t.Fatal("userID 0 must error")
+	}
+}
+
+func TestHasPendingAuthorize_Delegates(t *testing.T) {
+	cli := newFakeCLIRunner()
+	cli.pendingScript = func(userID uint) bool { return userID == 5 }
+	p := newTestProvisioner(t, cli)
+	if !p.HasPendingAuthorize(5) {
+		t.Fatal("expected pending for user 5")
+	}
+	if p.HasPendingAuthorize(6) {
+		t.Fatal("expected no pending for user 6")
+	}
+	if p.HasPendingAuthorize(0) {
+		t.Fatal("userID 0 must report no pending")
+	}
+}
+
+func TestIsAuthorized_Delegates(t *testing.T) {
+	cli := newFakeCLIRunner()
+	cli.statusScript = func(userID uint) (bool, error) { return userID == 8, nil }
+	p := newTestProvisioner(t, cli)
+	ok, err := p.IsAuthorized(context.Background(), 8)
+	if err != nil || !ok {
+		t.Fatalf("expected authorized for user 8, got ok=%t err=%v", ok, err)
+	}
+	if _, err := p.IsAuthorized(context.Background(), 0); err == nil {
+		t.Fatal("userID 0 must error")
 	}
 }
 
@@ -458,16 +377,12 @@ func TestExchangeCode_MissingArgs(t *testing.T) {
 func TestNewProvisioner_NilDeps(t *testing.T) {
 	cipher := newTestCipher(t)
 	cli := newFakeCLIRunner()
-	ex := &fakeExchanger{}
 
-	if _, err := NewProvisioner(nil, cli, ex); err == nil {
+	if _, err := NewProvisioner(nil, cli); err == nil {
 		t.Fatal("nil cipher must error")
 	}
-	if _, err := NewProvisioner(cipher, nil, ex); err == nil {
+	if _, err := NewProvisioner(cipher, nil); err == nil {
 		t.Fatal("nil cli runner must error")
-	}
-	if _, err := NewProvisioner(cipher, cli, nil); err == nil {
-		t.Fatal("nil exchanger must error")
 	}
 }
 

@@ -1,29 +1,25 @@
 // Package feishu implements the HTTP handlers for the 飞书 (Lark) integration
-// connection endpoints (feishu-integration T7). Handlers are THIN: auth/param
-// extraction → biz call → core.WriteResponse (JSON endpoints) or c.Redirect
-// (the no-JWT OAuth callback). All business logic lives in biz/feishu.
+// connection endpoints. Handlers are THIN: auth/param extraction → biz call →
+// core.WriteResponse. All business logic lives in biz/feishu.
 //
-// Endpoints (design.md §5):
+// G2-authorize device-code redesign (2026-06-24): connection goes entirely through
+// lark-cli (config init + device-code), so there is NO redirect-OAuth and NO no-JWT
+// callback endpoint anymore. The primary connect path is the agent feishu_connect
+// tool; the settings page uses Connect/Status/Unbind below.
 //
-//	POST   /v1/feishu/connect          user_token  发起连接
-//	GET    /v1/feishu/oauth/callback   NO JWT      飞书授权重定向回调 → 302
-//	GET    /v1/feishu/status           user_token  连接状态
-//	DELETE /v1/feishu/connection       user_token  解绑
+// Endpoints:
 //
-// The callback is the only no-JWT endpoint: 飞书 redirects the user's browser
-// here and a JWT cannot be attached. Its trust comes from the signed,
-// one-time-use OAuth state (verified in biz/feishu), NOT from a session token.
+//	POST   /v1/feishu/connect      user_token  发起/推进连接（device-code）
+//	GET    /v1/feishu/status       user_token  连接状态
+//	DELETE /v1/feishu/connection   user_token  解绑
 package feishu
 
 import (
-	"net/http"
-
 	"github.com/gin-gonic/gin"
 
 	feishubiz "numind-server/internal/numind/biz/feishu"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
-	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 )
 
@@ -38,17 +34,16 @@ func NewController(svc feishubiz.IFeishuService) *Controller {
 }
 
 // Connect handles POST /v1/feishu/connect. The body is empty (userID from the
-// token); the settings-initiated connect has no paused run, so runID=0 /
-// questionText="" — the callback will then connect the account but not resume
-// any run (run 0 is never waiting). Agent-card-initiated authorize URLs are
-// minted by the agent tool yield (T8/T10) with a real run context.
+// token). It advances the device-code connect flow one step and returns the next
+// action (create_app page URL / authorize verification URL / done). The user opens
+// the URL; a later Connect/Status call advances or completes the connection.
 func (h *Controller) Connect(c *gin.Context) {
 	user := middleware.GetCurrentUser(c)
 	if user == nil {
 		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
 		return
 	}
-	res, err := h.svc.Connect(c.Request.Context(), user.ID, 0, "")
+	res, err := h.svc.Connect(c.Request.Context(), user.ID)
 	core.WriteResponse(c, err, res)
 }
 
@@ -72,28 +67,4 @@ func (h *Controller) Unbind(c *gin.Context) {
 	}
 	err := h.svc.Unbind(c.Request.Context(), user.ID)
 	core.WriteResponse(c, err, nil)
-}
-
-// Callback handles GET /v1/feishu/oauth/callback?code=&state= (NO JWT). It NEVER
-// returns JSON: it always 302-redirects to the frontend (connected on success,
-// error+reason otherwise). The biz layer returns a redirect target even on
-// error so the user always lands on a friendly page; the error (if any) is
-// logged here for observability and swallowed from the HTTP surface.
-func (h *Controller) Callback(c *gin.Context) {
-	code := c.Query("code")
-	state := c.Query("state")
-
-	res, err := h.svc.HandleCallback(c.Request.Context(), code, state)
-	if err != nil {
-		// Log for diagnosis; do NOT echo the error to the browser (it may carry
-		// internal detail). The redirect target is the user-facing signal.
-		log.Warnw("feishu oauth callback handled with error", "error", err)
-	}
-	if res == nil || res.RedirectURL == "" {
-		// Defensive: biz always returns a redirect, but never leave the browser
-		// hanging. This path is unreachable in normal operation.
-		c.String(http.StatusBadRequest, "飞书授权回调处理失败")
-		return
-	}
-	c.Redirect(http.StatusFound, res.RedirectURL)
 }
