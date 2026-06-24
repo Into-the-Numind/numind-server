@@ -259,10 +259,30 @@ func (e *Enricher) transcribeVideo(ctx context.Context, userID uint, note *model
 // 调用方据此置 partial、transcript NULL、不扣费。
 //
 // 这是对 CDN 静态资源的裸 HTTP 下载（非 AI 服务调用），不在 aiservice 入口约束范围内。
+// downloadVideoFromURL 下载视频直链到本地，带 3 次退避重试（小红书 CDN 偶发瞬时 4xx/网络抖动，
+// 单次失败就判直链失效会误伤；重试后仍失败才返回 errVideoLinkExpired → partial）。
 func downloadVideoFromURL(ctx context.Context, videoURL, destPath string) error {
 	if videoURL == "" {
 		return fmt.Errorf("downloadVideoFromURL: empty video url")
 	}
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(attempt-1) * time.Second):
+			}
+		}
+		if lastErr = downloadVideoOnce(ctx, videoURL, destPath); lastErr == nil {
+			return nil
+		}
+	}
+	return lastErr
+}
+
+func downloadVideoOnce(ctx context.Context, videoURL, destPath string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, videoURL, nil)
 	if err != nil {
 		return fmt.Errorf("downloadVideoFromURL: build request: %w", err)
