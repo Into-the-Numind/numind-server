@@ -162,7 +162,6 @@ func TestEnricher_WorkerPoolBounded(t *testing.T) {
 	viper.Reset()
 	viper.Set("xhs.enrich_workers", 3)
 	defer viper.Reset()
-	withMockChatFn(t, successAnalyzeChatFn())
 
 	m := newEnrichMockStore()
 
@@ -209,7 +208,6 @@ func TestEnricher_WorkerPoolBounded(t *testing.T) {
 func TestEnricher_JobPanic_DoesNotCrash_AndMarksFailed(t *testing.T) {
 	viper.Reset()
 	defer viper.Reset()
-	withMockChatFn(t, successAnalyzeChatFn())
 
 	m := newEnrichMockStore()
 	const userID = uint(2)
@@ -242,7 +240,6 @@ func TestEnricher_DoubleEnqueueSameID_EnrichesOnce(t *testing.T) {
 	viper.Reset()
 	viper.Set("xhs.enrich_workers", 4)
 	defer viper.Reset()
-	withMockChatFn(t, successAnalyzeChatFn())
 
 	m := newEnrichMockStore()
 	const userID = uint(3)
@@ -282,7 +279,6 @@ func TestEnricher_Stop_DrainsAndWaitsForWorkers(t *testing.T) {
 	viper.Reset()
 	viper.Set("xhs.enrich_workers", 2)
 	defer viper.Reset()
-	withMockChatFn(t, successAnalyzeChatFn())
 
 	m := newEnrichMockStore()
 	const userID = uint(5)

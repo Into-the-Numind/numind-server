@@ -220,36 +220,22 @@ func (e *Enricher) processJob(job enrichJob) {
 //   - 成功置 done；部分成功（如视频直链失效）置 partial；失败返回 error 由
 //     processJob 置 failed；积分不足置 insufficient_credits 并保留原始采集数据。
 func (e *Enricher) enrichOne(ctx context.Context, userID uint, note *model.XhsTopicNote) error {
-	// AI 分析（扣分）：失败返回 error，processJob 置 failed。
-	if err := e.analyzeNote(ctx, userID, note); err != nil {
-		return fmt.Errorf("enrichOne: analyze: %w", err)
-	}
-
-	// 视频段（T5）：note_type==video 且有直链 → 转写 + biz 层显式扣费。
-	// 终态由视频段 outcome 决定（done/partial/insufficient_credits）；非视频笔记默认 done。
+	// AI 分析已按产品决定移除（2026-06-24）。富化仅做视频转写。
+	// 视频段：note_type==video 且有直链 → 转写 + biz 层显式扣费。
+	// 终态由视频段 outcome 决定（done/partial/insufficient_credits）；非视频笔记直接 done。
 	finalStatus := model.XhsEnrichDone
 	if note.NoteType == model.XhsNoteTypeVideo && note.VideoURL != "" {
 		outcome, err := e.transcribeVideo(ctx, userID, note)
 		if err != nil {
-			// 仅基础设施级失败（ffmpeg/IO/读文件/加载用户）才返回 error → processJob 置 failed。
-			// 业务降级（直链失效 / 余额不足 / ASR 失败）由 transcribeVideo 以 outcome.Status
-			// 表达、不返回 error，故不会阻塞 AI 分析结果落库。
 			return fmt.Errorf("enrichOne: transcribe: %w", err)
 		}
 		finalStatus = outcome.Status
 	}
 
-	// 收尾：一次性写回 6 AI 分析字段 + 转写 + 终态。
 	if err := e.store.UpdateEnrichResult(ctx, &model.XhsTopicNote{
-		ID:               note.ID,
-		AITopicAngle:     note.AITopicAngle,
-		AIViralReason:    note.AIViralReason,
-		AIBorrowable:     note.AIBorrowable,
-		AITargetAudience: note.AITargetAudience,
-		AITitleFormula:   note.AITitleFormula,
-		AIOneLine:        note.AIOneLine,
-		VideoTranscript:  note.VideoTranscript,
-		EnrichStatus:     finalStatus,
+		ID:              note.ID,
+		VideoTranscript: note.VideoTranscript,
+		EnrichStatus:    finalStatus,
 	}); err != nil {
 		return fmt.Errorf("enrichOne: write result: %w", err)
 	}
