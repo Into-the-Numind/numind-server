@@ -327,9 +327,17 @@ func (f *platformToolFactory) newFeishuConnector() feishuConnector {
 		return nil
 	}
 
+	// G1-home: pin the runner to the PERSISTENT per-user home base so user homes
+	// created via the feishu_connect agent tool survive a redeploy — matching the
+	// OAuth path in feishu_adapter.go. feishu.lark_cli_home is the pre-G1 key, kept
+	// as a fallback so an un-migrated config does not break.
+	homeBase := viper.GetString("feishu.home_base")
+	if homeBase == "" {
+		homeBase = viper.GetString("feishu.lark_cli_home")
+	}
 	cliRunner, err := feishu.NewLarkCLIRunner(
 		viper.GetString("feishu.lark_cli_bin"),
-		viper.GetString("feishu.lark_cli_home"),
+		homeBase,
 	)
 	if err != nil {
 		log.Errorw("feishu_connect: build lark-cli runner failed; tool disabled", "err", err)
