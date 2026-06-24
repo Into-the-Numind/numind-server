@@ -34,6 +34,22 @@ type CommentPayload struct {
 //
 // 不含 user_id —— user_id 从鉴权上下文获取，由 controller 传入 Ingest，
 // 避免插件伪造他人归属（多租户隔离）。
+// parseFlexibleTime 宽松解析小红书给的时间字符串（纯日期 / 日期时间 / RFC3339），解析不出返回 nil。
+// 小红书发布时间常为纯日期 "2026-06-23"，直接当 *time.Time 反序列化会 RFC3339 解析失败。
+func parseFlexibleTime(s string) *time.Time {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	layouts := []string{time.RFC3339, "2006-01-02T15:04:05", "2006-01-02 15:04:05", "2006-01-02 15:04", "2006-01-02", "2006/01/02"}
+	for _, l := range layouts {
+		if t, err := time.Parse(l, s); err == nil {
+			return &t
+		}
+	}
+	return nil
+}
+
 type NotePayload struct {
 	XhsNoteID       string           `json:"xhs_note_id"`
 	NoteType        string           `json:"note_type"` // normal/video，空 = normal
@@ -42,7 +58,7 @@ type NotePayload struct {
 	Tags            []string         `json:"tags"`
 	CoverURL        string           `json:"cover_url"`
 	NoteURL         string           `json:"note_url"`
-	PublishedAt     *time.Time       `json:"published_at"`
+	PublishedAt     string           `json:"published_at"`
 	VideoURL        string           `json:"video_url"`
 	VideoTranscript *string          `json:"video_transcript"`
 	LikeCount       int              `json:"like_count"`
@@ -53,7 +69,7 @@ type NotePayload struct {
 	AuthorName      string           `json:"author_name"`
 	AuthorLink      string           `json:"author_link"`
 	AuthorFollowers int              `json:"author_followers"`
-	CollectedAt     *time.Time       `json:"collected_at"`
+	CollectedAt     string           `json:"collected_at"`
 }
 
 // Ingest 批量摄入插件上送的小红书笔记到 userID 的私有累积选题库。
@@ -150,7 +166,7 @@ func buildNote(userID uint, p *NotePayload) (*model.XhsTopicNote, error) {
 		Tags:            marshalJSON(p.Tags),
 		CoverURL:        p.CoverURL,
 		NoteURL:         p.NoteURL,
-		PublishedAt:     p.PublishedAt,
+		PublishedAt:     parseFlexibleTime(p.PublishedAt),
 		VideoURL:        p.VideoURL,
 		VideoTranscript: p.VideoTranscript,
 		LikeCount:       p.LikeCount,
@@ -162,7 +178,7 @@ func buildNote(userID uint, p *NotePayload) (*model.XhsTopicNote, error) {
 		AuthorLink:      p.AuthorLink,
 		AuthorFollowers: p.AuthorFollowers,
 		EnrichStatus:    model.XhsEnrichPending,
-		CollectedAt:     p.CollectedAt,
+		CollectedAt:     parseFlexibleTime(p.CollectedAt),
 		CrawledAt:       time.Now(),
 	}
 	return note, nil

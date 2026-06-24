@@ -300,3 +300,25 @@ func decodeComments(t *testing.T, raw []byte) []CommentPayload {
 	require.NoError(t, json.Unmarshal(raw, &cs))
 	return cs
 }
+
+// TestParseFlexibleTime_DateOnly 复现并锁定:小红书纯日期 published_at 不应导致 ingest 失败
+// (bug: "2026-06-23" 当 *time.Time 反序列化触发 RFC3339 解析错误)。
+func TestParseFlexibleTime_DateOnly(t *testing.T) {
+	cases := map[string]bool{ // 输入 → 期望非 nil
+		"2026-06-23":                true,
+		"2026-06-23 15:04:05":       true,
+		"2026/06/23":                true,
+		"2026-06-23T15:04:05+08:00": true,
+		"":                          false,
+		"三天前":                       false, // 解析不出 → nil,不报错
+	}
+	for in, wantNonNil := range cases {
+		got := parseFlexibleTime(in)
+		if wantNonNil && got == nil {
+			t.Errorf("parseFlexibleTime(%q) = nil, want non-nil", in)
+		}
+		if !wantNonNil && got != nil {
+			t.Errorf("parseFlexibleTime(%q) = %v, want nil", in, got)
+		}
+	}
+}
