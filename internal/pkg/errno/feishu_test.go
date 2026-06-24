@@ -31,13 +31,6 @@ func TestFeishuErrnos(t *testing.T) {
 		assert.Equal(t, "Lark.CallFailed", ErrLarkCallFailed.Code)
 		assert.Equal(t, "飞书接口调用失败", ErrLarkCallFailed.Message)
 	})
-
-	t.Run("ErrLarkStateInvalid", func(t *testing.T) {
-		require.NotNil(t, ErrLarkStateInvalid)
-		assert.Equal(t, 400, ErrLarkStateInvalid.HTTP)
-		assert.Equal(t, "Lark.StateInvalid", ErrLarkStateInvalid.Code)
-		assert.Equal(t, "授权校验失败，请重新发起连接", ErrLarkStateInvalid.Message)
-	})
 }
 
 // SetMessage 必须返回副本（不污染全局），并保留 HTTP/Code 用于 callback 附细节。

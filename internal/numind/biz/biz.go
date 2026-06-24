@@ -782,17 +782,17 @@ func NewBiz(ds store.IStore) *biz {
 	b.attachFallbackSvc = agentatt.NewFallbackService(ds.AgentAttachments())
 	b.uploadSvc = attachment.NewUploadServiceWithFallback(ds.AgentAttachments(), b.attachFallbackSvc)
 
-	// feishu-integration T7: 飞书连接/OAuth 服务（仅 flag 开时构造，与 numind.go
-	// 的 crypto.MustInit / feishu.MustValidateStateKey fail-fast 对齐）。
-	// 构造失败（如 Redis 未就绪、密钥缺失）只 log 不阻塞启动——router.go 整组套
-	// FeatureFlag，flag off 时路由不注册，b.feishuSvc 留 nil 安全；flag on 但构造
-	// 失败则该 feature 端点会因 nil svc 而被 router 跳过（见 router 注册守卫）。
+	// feishu-integration（device-code 方案）: 飞书连接服务（仅 flag 开时构造，与 numind.go
+	// 的 crypto.MustInit fail-fast 对齐）。device-code 方案无 OAuth state 密钥/回调。
+	// 构造失败（如密钥缺失）只 log 不阻塞启动——router.go 整组套 FeatureFlag，flag off 时
+	// 路由不注册，b.feishuSvc 留 nil 安全；flag on 但构造失败则该 feature 端点会因 nil svc
+	// 而被 router 跳过（见 router 注册守卫）。
 	if viper.GetBool("features.feishu_integration.enabled") {
-		if fsvc, ferr := buildFeishuService(b.studentRunSvc, ds.ThirdPartyAccounts(), ds.AgentRuns()); ferr != nil {
+		if fsvc, ferr := buildFeishuService(ds.ThirdPartyAccounts()); ferr != nil {
 			log.Errorw("feishu-integration: service wiring failed; 飞书 endpoints disabled this process", "error", ferr)
 		} else {
 			b.feishuSvc = fsvc
-			log.Infow("feishu-integration: connection/OAuth service wired")
+			log.Infow("feishu-integration: connection service wired (device-code)")
 		}
 	}
 

@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
 
 	"gorm.io/gorm"
@@ -17,8 +16,8 @@ import (
 // --- service-test fakes (svc* prefix to avoid clashing with client/provisioner
 // test doubles in the same package) -----------------------------------------
 
-// svcAccountStore is a multi-row in-memory IThirdPartyAccountStore (the client
-// test's fakeAccountStore is single-row; the service flows need >1 user).
+// svcAccountStore is a multi-row in-memory IThirdPartyAccountStore (shared by the
+// service + orchestrator tests, which need >1 user).
 type svcAccountStore struct {
 	mu      sync.Mutex
 	rows    map[string]*model.UserThirdPartyAccount // key: provider|userID
@@ -70,381 +69,192 @@ func (f *svcAccountStore) UpdateTokens(_ context.Context, _ uint, _ string, _, _
 	return nil
 }
 
-// svcExchanger fakes CodeExchanger + AppStarter (the service's provisioner seam).
-type svcExchanger struct {
-	access, refresh []byte
-	exp             *time.Time
-	scopes          string
-	err             error
-	calls           int
-
-	pageURL    string
-	sessionRef string
-	startErr   error
-}
-
-func (f *svcExchanger) ExchangeCode(_ context.Context, _, _ string) (access, refresh []byte, exp *time.Time, scopes string, err error) {
-	f.calls++
-	if f.err != nil {
-		return nil, nil, nil, "", f.err
+func (f *svcAccountStore) MarkConnected(_ context.Context, userID uint, provider string, connectedAt time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	r, ok := f.rows[f.key(userID, provider)]
+	if !ok {
+		return gorm.ErrRecordNotFound
 	}
-	return f.access, f.refresh, f.exp, f.scopes, nil
+	r.Connected = true
+	at := connectedAt
+	r.ConnectedAt = &at
+	return nil
 }
 
-func (f *svcExchanger) StartProvision(_ context.Context, _ uint) (string, string, error) {
-	if f.startErr != nil {
-		return "", "", f.startErr
-	}
-	return f.pageURL, f.sessionRef, nil
+// svcStepper fakes the connectStepper (orchestrator) seam the service drives.
+type svcStepper struct {
+	step       *ConnectStep
+	stepErr    error
+	persistErr error
+	pollCalls  int
+	stepCalls  int
 }
 
-// svcAnswerResumer records the resume call (cross-user / idempotency assertions).
-type svcAnswerResumer struct {
-	gotUserID uint
-	gotRunID  uint64
-	gotKeys   []string
-	gotText   string
-	err       error
-	calls     int
+func (f *svcStepper) PollAndPersistApp(_ context.Context, _ uint) (bool, error) {
+	f.pollCalls++
+	return false, f.persistErr
 }
 
-func (f *svcAnswerResumer) ResumeWithAnswer(_ context.Context, userID uint, runID uint64, questionText, freeText string) error {
-	f.calls++
-	f.gotUserID = userID
-	f.gotRunID = runID
-	f.gotKeys = append(f.gotKeys, questionText)
-	f.gotText = freeText
-	return f.err
-}
-
-// svcRunReader fakes RunStateReader.
-type svcRunReader struct {
-	run *model.AgentRun
-	err error
-}
-
-func (f *svcRunReader) GetRun(_ context.Context, _ uint64) (*model.AgentRun, error) {
-	if f.err != nil {
-		return nil, f.err
-	}
-	return f.run, nil
+func (f *svcStepper) NextConnectStep(_ context.Context, _ uint, _ uint64, _ string) (*ConnectStep, error) {
+	f.stepCalls++
+	return f.step, f.stepErr
 }
 
 // --- helpers ---------------------------------------------------------------
 
-func newTestSvc(t *testing.T) (*FeishuService, *svcAccountStore, *svcExchanger, *svcAnswerResumer, *svcRunReader, *StateSigner) {
+func newTestSvc(t *testing.T, step *ConnectStep) (*FeishuService, *svcAccountStore, *svcStepper) {
 	t.Helper()
 	st := newSvcAccountStore()
-	ex := &svcExchanger{pageURL: "https://open.feishu.cn/page/cli?user_code=ABCD", sessionRef: "sess-1"}
-	ans := &svcAnswerResumer{}
-	rr := &svcRunReader{}
-	signer, err := NewStateSigner(testKey, newFakeNonceStore())
-	if err != nil {
-		t.Fatalf("NewStateSigner: %v", err)
-	}
-	svc, err := NewFeishuService(Deps{
-		Store:        st,
-		Signer:       signer,
-		Provisioner:  ex,
-		Answer:       ans,
-		Runs:         rr,
-		WebBaseURL:   "https://youshu.asia",
-		ScopesCSV:    "docx:document im:message bitable:app:readonly",
-		AuthorizeURL: "https://open.feishu.cn/open-apis/authen/v1/authorize",
-		RedirectURI:  "https://youshu.asia/api/v1/feishu/oauth/callback",
-	})
+	stepper := &svcStepper{step: step}
+	svc, err := NewFeishuService(Deps{Store: st, Orchestrator: stepper})
 	if err != nil {
 		t.Fatalf("NewFeishuService: %v", err)
 	}
-	return svc, st, ex, ans, rr, signer
-}
-
-func makeRun(userID uint, runID uint64, state, questionText string) *model.AgentRun {
-	pending := `{"questions":[{"question":"` + questionText + `"}],"pause_type":"auth"}`
-	return &model.AgentRun{
-		ID:                  runID,
-		UserID:              userID,
-		StateReason:         state,
-		PendingQuestionJSON: []byte(pending),
-	}
-}
-
-func signCallbackState(t *testing.T, signer *StateSigner, userID uint, runID uint64, qText string) string {
-	t.Helper()
-	state, err := signer.Sign(context.Background(), Payload{
-		UserID: userID, RunID: strconv.FormatUint(runID, 10), Step: "authorize", QuestionText: qText,
-	}, 10*time.Minute)
-	if err != nil {
-		t.Fatalf("Sign: %v", err)
-	}
-	return state
+	return svc, st, stepper
 }
 
 // --- Status ----------------------------------------------------------------
 
 func TestStatus_NotConnected(t *testing.T) {
-	svc, _, _, _, _, _ := newTestSvc(t)
+	svc, _, _ := newTestSvc(t, &ConnectStep{Phase: ConnectPhaseDone})
 	got, err := svc.Status(context.Background(), 42)
 	if err != nil {
 		t.Fatalf("Status: unexpected err: %v", err)
 	}
-	if got.Connected {
-		t.Fatalf("expected not connected")
-	}
-	if got.Status != "none" {
-		t.Fatalf("status = %q, want none", got.Status)
+	if got.Connected || got.Status != "none" {
+		t.Fatalf("no row must be not-connected/none, got %+v", got)
 	}
 }
 
-func TestStatus_Active(t *testing.T) {
-	svc, st, _, _, _, _ := newTestSvc(t)
-	exp := time.Now().Add(time.Hour)
+func TestStatus_Connected(t *testing.T) {
+	svc, st, _ := newTestSvc(t, &ConnectStep{Phase: ConnectPhaseDone})
+	at := time.Now()
 	st.put(&model.UserThirdPartyAccount{
-		UserID: 42, Provider: ProviderLark, AppID: "cli_app", Scopes: "docx:document im:message",
-		TokenExpiresAt: &exp,
+		UserID: 42, Provider: ProviderLark, AppID: "cli_app42", Connected: true, ConnectedAt: &at,
 	})
 	got, err := svc.Status(context.Background(), 42)
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if !got.Connected || got.Status != "active" {
-		t.Fatalf("got %+v, want connected/active", got)
+	if !got.Connected || got.Status != "connected" {
+		t.Fatalf("connected row must report connected, got %+v", got)
 	}
-	if got.AppID != "cli_app" {
-		t.Fatalf("app_id = %q", got.AppID)
-	}
-	if len(got.Scopes) != 2 {
-		t.Fatalf("scopes = %v, want 2", got.Scopes)
+	if got.AppID != "cli_app42" {
+		t.Fatalf("app_id mismatch: %q", got.AppID)
 	}
 }
 
-func TestStatus_Expired(t *testing.T) {
-	svc, st, _, _, _, _ := newTestSvc(t)
-	past := time.Now().Add(-time.Hour)
-	st.put(&model.UserThirdPartyAccount{
-		UserID: 42, Provider: ProviderLark, AppID: "cli_app", TokenExpiresAt: &past,
-	})
+func TestStatus_AppRowNotConnected_None(t *testing.T) {
+	svc, st, _ := newTestSvc(t, &ConnectStep{Phase: ConnectPhaseDone})
+	// App provisioned but not yet authorized → status none (app_id still surfaced).
+	st.put(&model.UserThirdPartyAccount{UserID: 42, Provider: ProviderLark, AppID: "cli_x"})
 	got, err := svc.Status(context.Background(), 42)
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if !got.Connected || got.Status != "expired" {
-		t.Fatalf("got %+v, want connected/expired", got)
+	if got.Connected || got.Status != "none" {
+		t.Fatalf("unconnected app row must be none, got %+v", got)
+	}
+	if got.AppID != "cli_x" {
+		t.Fatalf("app_id should be surfaced: %q", got.AppID)
 	}
 }
 
 // --- Connect ---------------------------------------------------------------
 
-func TestConnect_NoAppYet_ReturnsCreateApp(t *testing.T) {
-	svc, _, _, _, _, _ := newTestSvc(t)
-	got, err := svc.Connect(context.Background(), 42, 100, "请完成授权")
+func TestConnect_CreateApp_ReturnsPageURL(t *testing.T) {
+	svc, _, stepper := newTestSvc(t, &ConnectStep{Phase: ConnectPhaseCreateApp, URL: "https://open.feishu.cn/page/cli?u=1"})
+	res, err := svc.Connect(context.Background(), 7)
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	if got.NextStep != NextStepCreateApp {
-		t.Fatalf("next_step = %q, want %q", got.NextStep, NextStepCreateApp)
+	if res.NextStep != NextStepCreateApp {
+		t.Fatalf("next_step mismatch: %q", res.NextStep)
 	}
-	if got.URL == "" {
-		t.Fatalf("expected a non-empty url")
+	if res.URL == "" {
+		t.Fatal("create_app must carry a URL")
+	}
+	// Connect always bridges app-create first, then asks for the step.
+	if stepper.pollCalls != 1 || stepper.stepCalls != 1 {
+		t.Fatalf("Connect must poll then step once each, got poll=%d step=%d", stepper.pollCalls, stepper.stepCalls)
 	}
 }
 
-func TestConnect_HasApp_ReturnsAuthorizeURLWithState(t *testing.T) {
-	svc, st, _, _, _, signer := newTestSvc(t)
-	st.put(&model.UserThirdPartyAccount{UserID: 42, Provider: ProviderLark, AppID: "cli_app"})
-	got, err := svc.Connect(context.Background(), 42, 100, "请完成授权")
+func TestConnect_Authorize_ReturnsVerificationURL(t *testing.T) {
+	svc, _, _ := newTestSvc(t, &ConnectStep{Phase: ConnectPhaseAuthorize, URL: "https://open.feishu.cn/device?u=2"})
+	res, err := svc.Connect(context.Background(), 7)
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	if got.NextStep != NextStepAuthorize {
-		t.Fatalf("next_step = %q, want %q", got.NextStep, NextStepAuthorize)
+	if res.NextStep != NextStepAuthorize {
+		t.Fatalf("next_step mismatch: %q", res.NextStep)
 	}
-	if got.State == "" {
-		t.Fatalf("expected a non-empty state")
+	if res.URL == "" {
+		t.Fatal("authorize must carry a verification URL")
 	}
-	p, verr := signer.Verify(context.Background(), got.State)
-	if verr != nil {
-		t.Fatalf("Verify(state): %v", verr)
+}
+
+func TestConnect_Done(t *testing.T) {
+	svc, _, _ := newTestSvc(t, &ConnectStep{Phase: ConnectPhaseDone})
+	res, err := svc.Connect(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
 	}
-	if p.UserID != 42 || p.RunID != "100" || p.QuestionText != "请完成授权" {
-		t.Fatalf("payload mismatch: %+v", p)
+	if res.NextStep != NextStepDone {
+		t.Fatalf("done expected, got %q", res.NextStep)
+	}
+	if res.URL != "" {
+		t.Fatalf("done must carry no URL, got %q", res.URL)
+	}
+}
+
+func TestConnect_PollError_Propagates(t *testing.T) {
+	svc, _, stepper := newTestSvc(t, &ConnectStep{Phase: ConnectPhaseDone})
+	stepper.persistErr = errors.New("poll boom")
+	if _, err := svc.Connect(context.Background(), 7); err == nil {
+		t.Fatal("Connect must surface a poll error")
+	}
+}
+
+func TestConnect_StepError_Propagates(t *testing.T) {
+	svc, _, stepper := newTestSvc(t, nil)
+	stepper.stepErr = errors.New("step boom")
+	if _, err := svc.Connect(context.Background(), 7); err == nil {
+		t.Fatal("Connect must surface a step error")
 	}
 }
 
 // --- Unbind ----------------------------------------------------------------
 
 func TestUnbind_DeletesRow(t *testing.T) {
-	svc, st, _, _, _, _ := newTestSvc(t)
-	st.put(&model.UserThirdPartyAccount{UserID: 42, Provider: ProviderLark, AppID: "x"})
-	if err := svc.Unbind(context.Background(), 42); err != nil {
+	svc, st, _ := newTestSvc(t, &ConnectStep{Phase: ConnectPhaseDone})
+	st.put(&model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, AppID: "cli_x", Connected: true})
+	if err := svc.Unbind(context.Background(), 7); err != nil {
 		t.Fatalf("Unbind: %v", err)
 	}
+	if _, err := st.Get(context.Background(), 7, ProviderLark); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("row should be deleted, got %v", err)
+	}
 	if st.deletes != 1 {
-		t.Fatalf("deletes = %d, want 1", st.deletes)
+		t.Fatalf("expected 1 delete, got %d", st.deletes)
 	}
 }
 
-// --- HandleCallback --------------------------------------------------------
-
-func TestHandleCallback_StateInvalid(t *testing.T) {
-	svc, _, _, _, _, _ := newTestSvc(t)
-	res, err := svc.HandleCallback(context.Background(), "the-code", "not-a-valid-state")
-	if err == nil {
-		t.Fatalf("expected error for invalid state")
-	}
-	if !errors.Is(err, errno.ErrLarkStateInvalid) {
-		t.Fatalf("err = %v, want ErrLarkStateInvalid", err)
-	}
-	if res.RedirectURL == "" {
-		t.Fatalf("expected a redirect URL even on error")
-	}
-	if res.Success {
-		t.Fatalf("invalid state must be an error redirect")
+func TestUnbind_Idempotent(t *testing.T) {
+	svc, _, _ := newTestSvc(t, &ConnectStep{Phase: ConnectPhaseDone})
+	if err := svc.Unbind(context.Background(), 999); err != nil {
+		t.Fatalf("Unbind on missing row must be idempotent, got %v", err)
 	}
 }
 
-func TestHandleCallback_HappyPath_ExchangesUpsertsAndResumes(t *testing.T) {
-	svc, st, ex, ans, rr, signer := newTestSvc(t)
-	const userID = uint(42)
-	const runID = uint64(100)
-	const qText = "请完成授权"
+// --- constructor guards -----------------------------------------------------
 
-	st.put(&model.UserThirdPartyAccount{UserID: userID, Provider: ProviderLark, AppID: "cli_app"})
-	rr.run = makeRun(userID, runID, "waiting_for_user_choice", qText)
-	exp := time.Now().Add(time.Hour)
-	ex.access = []byte("enc-access")
-	ex.refresh = []byte("enc-refresh")
-	ex.exp = &exp
-	ex.scopes = "docx:document im:message"
-
-	state := signCallbackState(t, signer, userID, runID, qText)
-
-	res, err := svc.HandleCallback(context.Background(), "the-code", state)
-	if err != nil {
-		t.Fatalf("HandleCallback: %v", err)
+func TestNewFeishuService_NilDeps(t *testing.T) {
+	if _, err := NewFeishuService(Deps{Orchestrator: &svcStepper{}}); err == nil {
+		t.Fatal("nil store must error")
 	}
-	if ex.calls != 1 {
-		t.Fatalf("exchange calls = %d, want 1", ex.calls)
-	}
-	if st.upserts != 1 {
-		t.Fatalf("upserts = %d, want 1", st.upserts)
-	}
-	row, _ := st.Get(context.Background(), userID, ProviderLark)
-	if string(row.AccessTokenEnc) != "enc-access" || string(row.RefreshTokenEnc) != "enc-refresh" {
-		t.Fatalf("stored tokens mismatch: %+v", row)
-	}
-	if ans.calls != 1 || ans.gotUserID != userID || ans.gotRunID != runID {
-		t.Fatalf("resume mismatch: calls=%d user=%d run=%d", ans.calls, ans.gotUserID, ans.gotRunID)
-	}
-	if len(ans.gotKeys) != 1 || ans.gotKeys[0] != qText {
-		t.Fatalf("resume key = %v, want [%q]", ans.gotKeys, qText)
-	}
-	if ans.gotText != resumeFreeText {
-		t.Fatalf("resume free text = %q, want %q", ans.gotText, resumeFreeText)
-	}
-	if res.RedirectURL == "" || !res.Success {
-		t.Fatalf("expected success redirect, got %+v", res)
-	}
-}
-
-func TestHandleCallback_CrossUser_Rejected(t *testing.T) {
-	svc, st, ex, ans, rr, signer := newTestSvc(t)
-	const stateUserID = uint(42) // state claims user 42
-	const runOwnerID = uint(99)  // run actually belongs to 99
-	const runID = uint64(100)
-	const qText = "请完成授权"
-
-	st.put(&model.UserThirdPartyAccount{UserID: stateUserID, Provider: ProviderLark, AppID: "cli_app"})
-	rr.run = makeRun(runOwnerID, runID, "waiting_for_user_choice", qText)
-
-	state := signCallbackState(t, signer, stateUserID, runID, qText)
-	res, err := svc.HandleCallback(context.Background(), "the-code", state)
-	if err == nil {
-		t.Fatalf("expected cross-user rejection")
-	}
-	if !errors.Is(err, errno.ErrLarkStateInvalid) {
-		t.Fatalf("err = %v, want ErrLarkStateInvalid", err)
-	}
-	if ex.calls != 0 || st.upserts != 0 || ans.calls != 0 {
-		t.Fatalf("cross-user must not act: exchange=%d upsert=%d resume=%d", ex.calls, st.upserts, ans.calls)
-	}
-	if res.RedirectURL == "" || res.Success {
-		t.Fatalf("expected error redirect, got %+v", res)
-	}
-}
-
-func TestHandleCallback_Idempotent_RunNotWaiting(t *testing.T) {
-	svc, st, ex, ans, rr, signer := newTestSvc(t)
-	const userID = uint(42)
-	const runID = uint64(100)
-	const qText = "请完成授权"
-
-	st.put(&model.UserThirdPartyAccount{
-		UserID: userID, Provider: ProviderLark, AppID: "cli_app", AccessTokenEnc: []byte("enc-access"),
-	})
-	rr.run = makeRun(userID, runID, "completed", qText) // already left waiting
-
-	state := signCallbackState(t, signer, userID, runID, qText)
-	res, err := svc.HandleCallback(context.Background(), "the-code", state)
-	if err != nil {
-		t.Fatalf("idempotent callback should not error, got: %v", err)
-	}
-	if ex.calls != 0 {
-		t.Fatalf("idempotent must not re-exchange, calls=%d", ex.calls)
-	}
-	if ans.calls != 0 {
-		t.Fatalf("idempotent must not re-resume, calls=%d", ans.calls)
-	}
-	if !res.Success {
-		t.Fatalf("idempotent callback should still redirect to success, got %+v", res)
-	}
-}
-
-func TestHandleCallback_RunNotWaiting_NoTokenYet_StillExchanges(t *testing.T) {
-	svc, st, ex, ans, rr, signer := newTestSvc(t)
-	const userID = uint(42)
-	const runID = uint64(100)
-	const qText = "请完成授权"
-
-	st.put(&model.UserThirdPartyAccount{UserID: userID, Provider: ProviderLark, AppID: "cli_app"})
-	rr.run = makeRun(userID, runID, "completed", qText)
-	ex.access = []byte("enc-access")
-
-	state := signCallbackState(t, signer, userID, runID, qText)
-	res, err := svc.HandleCallback(context.Background(), "the-code", state)
-	if err != nil {
-		t.Fatalf("HandleCallback: %v", err)
-	}
-	if ex.calls != 1 || st.upserts != 1 {
-		t.Fatalf("expected one exchange+upsert, exchange=%d upsert=%d", ex.calls, st.upserts)
-	}
-	if ans.calls != 0 {
-		t.Fatalf("run not waiting → no resume, calls=%d", ans.calls)
-	}
-	if !res.Success {
-		t.Fatalf("expected success redirect")
-	}
-}
-
-func TestHandleCallback_ExchangeFails_ErrorRedirect(t *testing.T) {
-	svc, st, ex, ans, rr, signer := newTestSvc(t)
-	const userID = uint(42)
-	const runID = uint64(100)
-	const qText = "请完成授权"
-
-	st.put(&model.UserThirdPartyAccount{UserID: userID, Provider: ProviderLark, AppID: "cli_app"})
-	rr.run = makeRun(userID, runID, "waiting_for_user_choice", qText)
-	ex.err = errors.New("upstream 飞书 down")
-
-	state := signCallbackState(t, signer, userID, runID, qText)
-	res, err := svc.HandleCallback(context.Background(), "the-code", state)
-	if err == nil {
-		t.Fatalf("expected error on exchange failure")
-	}
-	if st.upserts != 0 || ans.calls != 0 {
-		t.Fatalf("failed exchange must not upsert/resume")
-	}
-	if res.RedirectURL == "" || res.Success {
-		t.Fatalf("expected error redirect")
+	if _, err := NewFeishuService(Deps{Store: newSvcAccountStore()}); err == nil {
+		t.Fatal("nil orchestrator must error")
 	}
 }

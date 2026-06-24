@@ -19,7 +19,6 @@ import (
 	"numind-server/internal/numind/biz/compactv2"
 	cbbiz "numind-server/internal/numind/biz/contextbudget"
 	"numind-server/internal/numind/biz/credit"
-	"numind-server/internal/numind/biz/feishu"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/adapter"
@@ -135,14 +134,10 @@ func run() error {
 	// 强制注入 AES-256-GCM 密钥（security.thirdparty_token_key，32 字节 base64）。
 	// 缺失/非法 → MustInit panic → 进程启动失败（fail-fast，绝不静默明文存储 token）。
 	// prod 默认不开此 flag、密钥由运维另注（禁进 config_prod.yaml），故不受影响。
+	// device-code 方案（G2-authorize）无 OAuth state 密钥/回调，不再校验 feishu_state_key。
 	if viper.GetBool("features.feishu_integration.enabled") {
 		crypto.MustInit(viper.GetString("security.thirdparty_token_key"))
-		// 同样对 OAuth state HMAC 密钥（security.feishu_state_key）做启动期 fail-fast
-		// 校验：缺失/非法 base64/不足 16 字节 → panic → 进程启动失败。此处只校验、
-		// 不构造 StateSigner（后者需要 Redis 支撑的 NonceStore，T7 wiring 时才就绪），
-		// 与 crypto.MustInit 对称，确保两个密钥都不留到运行时才暴露错配。
-		feishu.MustValidateStateKey(viper.GetString("security.feishu_state_key"))
-		log.Infow("feishu-integration: third-party credential cipher initialized; state key validated")
+		log.Infow("feishu-integration: third-party credential cipher initialized")
 	}
 
 	// 初始化 AI Service Gateway（DB ready 后，早于路由注册和服务器启动，

@@ -25,8 +25,8 @@ type fakeLarkAPI struct {
 	lastDoc struct{ title, content string }
 	lastMsg struct{ idType, id, msgType, content string }
 	lastBit struct {
-		appToken, tableID, pageToken string
-		pageSize                     int
+		appToken, tableID string
+		pageSize, offset  int
 	}
 }
 
@@ -40,8 +40,8 @@ func (f *fakeLarkAPI) SendMessage(_ context.Context, idType, id, msgType, conten
 	return f.msg, f.msgErr
 }
 
-func (f *fakeLarkAPI) ReadBitable(_ context.Context, appToken, tableID string, pageSize int, pageToken string) (*feishu.BitableResult, error) {
-	f.lastBit.appToken, f.lastBit.tableID, f.lastBit.pageSize, f.lastBit.pageToken = appToken, tableID, pageSize, pageToken
+func (f *fakeLarkAPI) ReadBitable(_ context.Context, appToken, tableID string, pageSize, pageOffset int) (*feishu.BitableResult, error) {
+	f.lastBit.appToken, f.lastBit.tableID, f.lastBit.pageSize, f.lastBit.offset = appToken, tableID, pageSize, pageOffset
 	return f.bit, f.bitErr
 }
 
@@ -162,25 +162,24 @@ func TestLarkCreateDoc_EmptyTitle_SoftError(t *testing.T) {
 	}
 }
 
-func TestLarkCreateDoc_PartialSuccess_ReportsDocID(t *testing.T) {
-	// API created the doc but failed to write content → returns DocResult + error.
-	api := &fakeLarkAPI{
-		doc:    &feishu.DocResult{DocumentID: "doc999", Title: "T", URL: "u"},
-		docErr: fmt.Errorf("%w: write content boom", errno.ErrLarkCallFailed),
-	}
+func TestLarkCreateDoc_CallFailed_SoftErrorNoDocID(t *testing.T) {
+	// `docs +create` imports the whole doc in one call: there is NO partial-success
+	// path. A CreateDoc error must produce a clean soft error with NO document_id —
+	// guards against re-introducing the removed "doc created but content failed" branch.
+	api := &fakeLarkAPI{docErr: fmt.Errorf("%w: 飞书 code 230002", errno.ErrLarkCallFailed)}
 	tool := &larkCreateDocTool{provider: &fakeLarkProvider{api: api}}
 	in, _ := json.Marshal(larkCreateDocInput{Title: "T", Content: "body"})
 	raw, err := tool.Execute(ctxWithUser(7), ToolInput(in))
 	if err != nil {
-		t.Fatalf("partial failure must be SOFT, got Go error: %v", err)
+		t.Fatalf("create-doc failure must be SOFT, got Go error: %v", err)
 	}
 	var out larkCreateDocOutput
 	_ = json.Unmarshal(raw, &out)
-	if out.DocumentID != "doc999" {
-		t.Fatalf("partial success should still report document_id; got %q", out.DocumentID)
+	if out.DocumentID != "" {
+		t.Fatalf("a failed create must NOT report a document_id; got %q", out.DocumentID)
 	}
 	if out.Error == "" {
-		t.Fatal("partial success should carry an error note about the content write")
+		t.Fatal("a failed create must carry an error field")
 	}
 }
 
@@ -291,7 +290,7 @@ func TestLarkSendMessage_EmptyText_SoftError(t *testing.T) {
 func TestLarkReadBitable_Success(t *testing.T) {
 	api := &fakeLarkAPI{bit: &feishu.BitableResult{
 		Records: []feishu.BitableRecord{{RecordID: "r1", Fields: map[string]any{"name": "alice"}}},
-		HasMore: true, PageToken: "pt2", Total: 1,
+		HasMore: true, Total: 1,
 	}}
 	tool := &larkReadBitableTool{provider: &fakeLarkProvider{api: api}}
 
@@ -305,11 +304,43 @@ func TestLarkReadBitable_Success(t *testing.T) {
 	if len(out.Records) != 1 || out.Records[0].RecordID != "r1" {
 		t.Fatalf("records mismatch: %+v", out.Records)
 	}
-	if !out.HasMore || out.PageToken != "pt2" || out.Total != 1 {
+	if !out.HasMore || out.Total != 1 {
 		t.Fatalf("paging fields mismatch: %+v", out)
+	}
+	// Offset-based paging: next_offset = offset(0) + len(records)(1) when has_more.
+	if out.NextOffset != 1 {
+		t.Fatalf("next_offset should be 1 when has_more; got %d", out.NextOffset)
 	}
 	if api.lastBit.appToken != "app1" || api.lastBit.tableID != "tbl1" || api.lastBit.pageSize != 5 {
 		t.Fatalf("API args mismatch: %+v", api.lastBit)
+	}
+	if api.lastBit.offset != 0 {
+		t.Fatalf("default offset should be 0; got %d", api.lastBit.offset)
+	}
+}
+
+func TestLarkReadBitable_OffsetPassedThrough(t *testing.T) {
+	api := &fakeLarkAPI{bit: &feishu.BitableResult{
+		Records: []feishu.BitableRecord{{RecordID: "r3"}},
+		HasMore: false, Total: 3,
+	}}
+	tool := &larkReadBitableTool{provider: &fakeLarkProvider{api: api}}
+	// LLM sends offset as a string — must be tolerated (json.Number).
+	raw, err := tool.Execute(ctxWithUser(7), ToolInput(`{"app_token":"a","table_id":"t","page_size":2,"offset":"2"}`))
+	if err != nil {
+		t.Fatalf("Execute Go error: %v", err)
+	}
+	if decodeErr(t, raw) != "" {
+		t.Fatalf("string offset should NOT error: %s", decodeErr(t, raw))
+	}
+	if api.lastBit.offset != 2 {
+		t.Fatalf("offset string should parse to 2; got %d", api.lastBit.offset)
+	}
+	var out larkReadBitableOutput
+	_ = json.Unmarshal(raw, &out)
+	// has_more=false → next_offset omitted (0).
+	if out.NextOffset != 0 {
+		t.Fatalf("next_offset should be omitted when has_more=false; got %d", out.NextOffset)
 	}
 }
 

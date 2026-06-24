@@ -36,8 +36,9 @@ func (t *larkReadBitableTool) Name() string { return "lark_read_bitable" }
 func (t *larkReadBitableTool) Description() string {
 	return "Read records from a 飞书 (Lark) Bitable (多维表格) table on behalf of the connected user. " +
 		"Read-only (scope bitable:app:readonly). " +
-		"Input: { app_token: string, table_id: string, page_size?: number, page_token?: string }. " +
-		"Returns: { records: [{record_id, fields}], has_more, page_token, total }."
+		"Input: { app_token: string, table_id: string, page_size?: number, offset?: number }. " +
+		"Paging is offset-based: to read the next page pass offset = previous offset + page_size while has_more is true. " +
+		"Returns: { records: [{record_id, fields}], has_more, next_offset, total }."
 }
 func (t *larkReadBitableTool) UserFacingName() string { return "读取飞书多维表格" }
 func (t *larkReadBitableTool) NarrationVerb() string  { return "读取飞书多维表格" }
@@ -50,32 +51,34 @@ func (t *larkReadBitableTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"app_token":  {"type": "string", "description": "The Bitable app token (the base id)."},
-			"table_id":   {"type": "string", "description": "The table id within the base."},
-			"page_size":  {"type": "integer", "description": "Number of records to return (default 20, max 100)."},
-			"page_token": {"type": "string", "description": "Paging token from a previous call's page_token to fetch the next page."}
+			"app_token": {"type": "string", "description": "The Bitable app token (the base id)."},
+			"table_id":  {"type": "string", "description": "The table id within the base."},
+			"page_size": {"type": "integer", "description": "Number of records to return (default 20, max 100)."},
+			"offset":    {"type": "integer", "description": "Number of records to skip for paging (default 0). To read the next page pass offset = previous offset + page_size while has_more is true."}
 		},
 		"required": ["app_token", "table_id"]
 	}`)
 }
 
-// larkReadBitableInput models the tool's parameters. PageSize is json.Number so a
-// model that sends a string ("20") or a number (20) both parse — LLMs are loose
-// with numeric types (CLAUDE.md: tools must tolerate string/number for numeric
-// fields rather than hard-erroring).
+// larkReadBitableInput models the tool's parameters. PageSize / Offset are
+// json.Number so a model that sends a string ("20") or a number (20) both parse —
+// LLMs are loose with numeric types (CLAUDE.md: tools must tolerate string/number for
+// numeric fields rather than hard-erroring).
 type larkReadBitableInput struct {
-	AppToken  string      `json:"app_token"`
-	TableID   string      `json:"table_id"`
-	PageSize  json.Number `json:"page_size,omitempty"`
-	PageToken string      `json:"page_token,omitempty"`
+	AppToken string      `json:"app_token"`
+	TableID  string      `json:"table_id"`
+	PageSize json.Number `json:"page_size,omitempty"`
+	Offset   json.Number `json:"offset,omitempty"`
 }
 
 type larkReadBitableOutput struct {
-	Records   []feishu.BitableRecord `json:"records"`
-	HasMore   bool                   `json:"has_more"`
-	PageToken string                 `json:"page_token,omitempty"`
-	Total     int                    `json:"total"`
-	Error     string                 `json:"error,omitempty"`
+	Records []feishu.BitableRecord `json:"records"`
+	HasMore bool                   `json:"has_more"`
+	// NextOffset is the offset to pass on the next call to continue paging (only
+	// meaningful when has_more is true).
+	NextOffset int    `json:"next_offset,omitempty"`
+	Total      int    `json:"total"`
+	Error      string `json:"error,omitempty"`
 }
 
 func (t *larkReadBitableTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
@@ -104,11 +107,20 @@ func (t *larkReadBitableTool) Execute(ctx context.Context, input ToolInput) (Too
 		pageSize = larkReadBitableMaxPageSize
 	}
 
+	offset := 0
+	if in.Offset != "" {
+		if v, err := in.Offset.Int64(); err == nil && v > 0 {
+			offset = int(v)
+		}
+		// A malformed/negative offset is tolerated (falls back to 0, the first page).
+	}
+
 	userID, _ := middleware.UserIDFromCtx(ctx)
 	endSpan := larkStartSpan(ctx, "read_bitable", userID, map[string]any{
 		"app_token": in.AppToken,
 		"table_id":  in.TableID,
 		"page_size": pageSize,
+		"offset":    offset,
 	})
 
 	api, soft, proceed := larkAPIFor(ctx, t.provider, label)
@@ -117,18 +129,22 @@ func (t *larkReadBitableTool) Execute(ctx context.Context, input ToolInput) (Too
 		return soft, nil
 	}
 
-	res, err := api.ReadBitable(ctx, in.AppToken, in.TableID, pageSize, in.PageToken)
+	res, err := api.ReadBitable(ctx, in.AppToken, in.TableID, pageSize, offset)
 	if err != nil {
 		endSpan(map[string]any{"outcome": "error"}, err.Error())
 		return larkSoftErrorForAPIErr(label, err)
 	}
 
+	out := larkReadBitableOutput{
+		Records: res.Records,
+		HasMore: res.HasMore,
+		Total:   res.Total,
+	}
+	// Offset-based paging: surface the next offset only when more pages remain.
+	if res.HasMore {
+		out.NextOffset = offset + len(res.Records)
+	}
 	endSpan(map[string]any{"records": len(res.Records), "has_more": res.HasMore, "outcome": "ok"}, "")
-	out, _ := json.Marshal(larkReadBitableOutput{
-		Records:   res.Records,
-		HasMore:   res.HasMore,
-		PageToken: res.PageToken,
-		Total:     res.Total,
-	})
-	return ToolResult(out), nil
+	outJSON, _ := json.Marshal(out)
+	return ToolResult(outJSON), nil
 }

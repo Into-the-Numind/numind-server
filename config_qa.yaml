@@ -26,6 +26,20 @@ security:
   thirdparty_token_key: rPahLTxmVzXvS59oyI17h/9h9IUZNbt1FaHYig42Beo=
   feishu_state_key: ZAdLRIx2xhld6r+oZlTMb1aagdvDW49aUm/MUDR6LTs=
 
+# 飞书集成（feishu-integration）。OAuth/连接服务的环境相关 URL + scope。
+#   web_base_url —— 前端 base，callback 成功/失败后 302 回 ${web_base_url}/settings/connections。
+#   redirect_uri —— 注册到飞书开放平台「重定向 URL 白名单」的 callback 地址（须与对外路径一致）。
+#   home_base    —— 每用户 lark-cli HOME 的持久化根目录（实际 HOME = ${home_base}/u<userID>）；
+#                   须可写且持久（重部署不丢），同一用户重连复用同一 HOME（幂等）。
+#   authorize_url / scopes 留空时用代码默认（authen/v1/authorize + 首批全部 scope）。
+# qa flag 默认 OFF（新链路暂未跑通）；启用前须在飞书后台把 redirect_uri 加进重定向白名单。
+feishu:
+  web_base_url: "https://youshu.asia/qa"
+  redirect_uri: "https://youshu.asia/qa/api/v1/feishu/oauth/callback"
+  home_base: "/opt/numind/qa/feishu-homes"
+  # authorize_url: ""   # 留空=默认 https://open.feishu.cn/open-apis/authen/v1/authorize
+  # scopes: ""          # 留空=默认 "docx:document im:message bitable:app:readonly"
+
 # MySQL 数据库相关配置
 db:
   host: numind-mysql-dev:3306  # 复用 dev 的 MySQL 容器（Docker 内部端口）

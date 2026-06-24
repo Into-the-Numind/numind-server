@@ -27,7 +27,14 @@ type IThirdPartyAccountStore interface {
 	// UpdateTokens 仅更新 token 三元组（access/refresh 密文 + 过期时间），用于刷新流程。
 	// 目标不存在返回 gorm.ErrRecordNotFound（避免静默 no-op）。
 	// refreshEnc/exp 传 nil 时写入 NULL（飞书未返回 refresh_token / 过期时间）。
+	//
+	// Deprecated（G2-authorize device-code）：token 不再入库，本方法仅为兼容历史调用保留，
+	// 新代码不应使用。
 	UpdateTokens(ctx context.Context, userID uint, provider string, accessEnc, refreshEnc []byte, exp *time.Time) error
+	// MarkConnected 将 (userID, provider) 标记为已完成 device-code 授权：
+	// connected=true + connected_at=connectedAt。目标不存在返回 gorm.ErrRecordNotFound
+	// （避免静默 no-op）。device-code 方案下连接状态的权威写入口。
+	MarkConnected(ctx context.Context, userID uint, provider string, connectedAt time.Time) error
 }
 
 // thirdPartyAccountStore 是 IThirdPartyAccountStore 的 GORM 实现。
@@ -52,7 +59,9 @@ func (s *thirdPartyAccountStore) Get(ctx context.Context, userID uint, provider 
 }
 
 // Upsert 按唯一键 (user_id, provider) 创建或更新。
-// 使用 ON CONFLICT DO UPDATE 保证重复授权幂等（design §3）。
+// 使用 ON CONFLICT DO UPDATE 保证重复连接幂等（design §3）。
+// device-code 方案下只更新连接元信息（app_id 等），不更新 connected/connected_at
+// （连接状态由 MarkConnected 单独写，避免 Upsert app 元信息时误清连接标志）。
 func (s *thirdPartyAccountStore) Upsert(ctx context.Context, acc *model.UserThirdPartyAccount) error {
 	return s.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
@@ -63,6 +72,26 @@ func (s *thirdPartyAccountStore) Upsert(ctx context.Context, acc *model.UserThir
 			}),
 		}).
 		Create(acc).Error
+}
+
+// MarkConnected 标记 (userID, provider) 已完成 device-code 授权。
+// 用 map 形式 Updates 显式包含每个键，确保 connected=true / connected_at 写入
+// （bool 零值/nil 不被 GORM 跳过，见 .claude/rules/database.md §6b）。
+func (s *thirdPartyAccountStore) MarkConnected(ctx context.Context, userID uint, provider string, connectedAt time.Time) error {
+	res := s.db.WithContext(ctx).
+		Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ?", userID, provider).
+		Updates(map[string]interface{}{
+			"connected":    true,
+			"connected_at": connectedAt,
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 // Delete 删除某用户某 provider 的连接（解绑）；目标不存在时幂等无错。
