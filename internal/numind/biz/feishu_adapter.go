@@ -65,10 +65,13 @@ var _ feishu.RunStateReader = (*feishuRunReaderAdapter)(nil)
 // key and AES token key are read from security.* (already fail-fast validated in
 // numind.go when the flag is on). The web base / redirect / authorize URLs are
 // config-overridable per env (feishu.*); the defaults match prod.
+//
+// The actual default values live in feishu.DefaultAuthorizeURL / DefaultScopes
+// (single source of truth) so the agent tool factory's connector build uses the
+// identical fallbacks.
 const (
-	defaultFeishuAuthorizeURL = "https://open.feishu.cn/open-apis/authen/v1/authorize"
-	// 首批全部 scope（design.md §8）：缺则后续 403。
-	defaultFeishuScopes = "docx:document im:message bitable:app:readonly"
+	defaultFeishuAuthorizeURL = feishu.DefaultAuthorizeURL
+	defaultFeishuScopes       = feishu.DefaultScopes
 )
 
 // buildFeishuService composes the biz/feishu service from its dependencies. It

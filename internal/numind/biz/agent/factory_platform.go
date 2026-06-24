@@ -30,6 +30,11 @@ type platformToolFactory struct {
 	// newLarkProvider returns it instead of building a Redis-backed feishu.Client
 	// from config. Production always leaves it nil → the real lazy build runs.
 	larkProviderOverride feishu.LarkAPIProvider
+
+	// feishuConnectorOverride is a test-only seam (feishu-agent-connect R3): when
+	// set, newFeishuConnector returns it instead of building a real orchestrator
+	// from config/Redis. Production always leaves it nil → the real lazy build runs.
+	feishuConnectorOverride feishuConnector
 }
 
 // SetFactoryCreditService injects the credit service into a platform tool factory
@@ -221,6 +226,18 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 			ToolMetadata{ToolName: "lark_send_message", DisplayName: "发送飞书消息", Description: "Send a 飞书 message to a user or chat (scope im:message).", Source: "platform", RiskLevel: "moderate", Category: "飞书"},
 			ToolMetadata{ToolName: "lark_read_bitable", DisplayName: "读取飞书多维表格", Description: "Read records from a 飞书 Bitable table (scope bitable:app:readonly).", Source: "platform", RiskLevel: "safe", Category: "飞书"},
 		)
+
+		// feishu-agent-connect R3: the feishu_connect tool models the CONNECTION
+		// itself as an agent tool (agent drives the link + resume; credentials never
+		// reach the LLM). Registered alongside the ops tools, gated on the same
+		// flag/Redis/key preconditions (newFeishuConnector returns nil → not
+		// registered). The agent uses it to connect 飞书 before the ops tools run.
+		if connector := f.newFeishuConnector(); connector != nil {
+			tools = append(tools, &feishuConnectTool{connector: connector})
+			metadata = append(metadata,
+				ToolMetadata{ToolName: "feishu_connect", DisplayName: "连接飞书", Description: "Connect the user's 飞书 account (agent-driven link + auto-resume; no credentials exposed).", Source: "platform", RiskLevel: "moderate", Category: "飞书"},
+			)
+		}
 	}
 	return tools, metadata, nil
 }
@@ -268,6 +285,95 @@ func (f *platformToolFactory) newLarkProvider() feishu.LarkAPIProvider {
 		return nil
 	}
 	return client
+}
+
+// newFeishuConnector lazily builds the feishu.ConnectOrchestrator backing the
+// feishu_connect tool (feishu-agent-connect R3). It returns nil (→ tool not
+// registered) under the SAME preconditions as newLarkProvider: store absent, flag
+// off, or a required dependency missing (AES key / Redis / signer / provisioner /
+// redirect_uri). Dependencies mirror biz/feishu_adapter.go's buildFeishuService
+// minus the agent answer/run seams the orchestrator does not need (the OAuth
+// callback, not the tool, drives run resume on the authorize phase).
+func (f *platformToolFactory) newFeishuConnector() feishuConnector {
+	// Test seam: a directly-injected connector short-circuits the config/Redis build.
+	if f.feishuConnectorOverride != nil {
+		return f.feishuConnectorOverride
+	}
+	if f.ds == nil {
+		return nil
+	}
+	if !viper.GetBool("features.feishu_integration.enabled") {
+		return nil
+	}
+
+	cipher, err := crypto.NewCipher(viper.GetString("security.thirdparty_token_key"))
+	if err != nil {
+		log.Errorw("feishu_connect: build token cipher failed; tool disabled", "err", err)
+		return nil
+	}
+	rdb := redispkg.GetClient()
+	if rdb == nil {
+		log.Errorw("feishu_connect: redis unavailable (required for OAuth state nonce); tool disabled")
+		return nil
+	}
+	nonceStore, err := feishu.NewRedisNonceStore(rdb)
+	if err != nil {
+		log.Errorw("feishu_connect: build nonce store failed; tool disabled", "err", err)
+		return nil
+	}
+	signer, err := feishu.NewStateSigner(viper.GetString("security.feishu_state_key"), nonceStore)
+	if err != nil {
+		log.Errorw("feishu_connect: build state signer failed; tool disabled", "err", err)
+		return nil
+	}
+
+	cliRunner, err := feishu.NewLarkCLIRunner(
+		viper.GetString("feishu.lark_cli_bin"),
+		viper.GetString("feishu.lark_cli_home"),
+	)
+	if err != nil {
+		log.Errorw("feishu_connect: build lark-cli runner failed; tool disabled", "err", err)
+		return nil
+	}
+	redirectURI := viper.GetString("feishu.redirect_uri")
+	if redirectURI == "" {
+		log.Errorw("feishu_connect: feishu.redirect_uri not configured; tool disabled")
+		return nil
+	}
+	exchanger, err := feishu.NewHTTPTokenExchanger(redirectURI)
+	if err != nil {
+		log.Errorw("feishu_connect: build token exchanger failed; tool disabled", "err", err)
+		return nil
+	}
+	provisioner, err := feishu.NewProvisioner(cipher, cliRunner, exchanger)
+	if err != nil {
+		log.Errorw("feishu_connect: build provisioner failed; tool disabled", "err", err)
+		return nil
+	}
+
+	authorizeURL := viper.GetString("feishu.authorize_url")
+	if authorizeURL == "" {
+		authorizeURL = feishu.DefaultAuthorizeURL
+	}
+	scopes := viper.GetString("feishu.scopes")
+	if scopes == "" {
+		scopes = feishu.DefaultScopes
+	}
+
+	orch, err := feishu.NewConnectOrchestrator(feishu.ConnectOrchestratorDeps{
+		Store:        f.ds.ThirdPartyAccounts(),
+		Signer:       signer,
+		Starter:      provisioner,
+		Poller:       provisioner,
+		AuthorizeURL: authorizeURL,
+		RedirectURI:  redirectURI,
+		ScopesCSV:    scopes,
+	})
+	if err != nil {
+		log.Errorw("feishu_connect: build connect orchestrator failed; tool disabled", "err", err)
+		return nil
+	}
+	return orch
 }
 
 // newLoadSkillTool builds the load_skill tool, wiring a marketplace snapshot

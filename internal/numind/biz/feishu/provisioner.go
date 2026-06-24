@@ -95,6 +95,13 @@ type cliRunner interface {
 	// session map is lost. Returns nil for an empty/unknown ref (PollAppCreated
 	// then reports not-done rather than erroring on a stale ref).
 	resolveHandle(sessionRef string) *AppCreateHandle
+
+	// sessionRefForUser returns the DETERMINISTIC durable session ref (scratch
+	// home path) for userID — the same path StartAppCreate uses. It lets the
+	// agent-driven connect tool poll a user's app-create progress WITHOUT
+	// carrying the sessionRef across an agent yield/resume: the tool re-derives
+	// it from the userID on the next call. Returns "" only for userID 0.
+	sessionRefForUser(userID uint) string
 }
 
 // oauthTokenResp is the relevant subset of the 飞书 v2 OAuth token response
@@ -177,6 +184,19 @@ func (p *Provisioner) PollCredentials(ctx context.Context, sessionRef string) (a
 		return "", nil, false, fmt.Errorf("feishu: encrypt app secret: %w", err)
 	}
 	return appID, secEnc, true, nil
+}
+
+// PollCredentialsForUser is the agent-driven variant of PollCredentials: it
+// re-derives the user's durable session ref (scratch home path) from userID, so
+// the connect tool can poll app-create progress on a tool re-call WITHOUT having
+// carried the sessionRef across the agent yield/resume. The persistence contract
+// is identical to PollCredentials (done → appID + AES-256-GCM-encrypted secret;
+// done-but-blank → error; not-yet → done=false, empty creds).
+func (p *Provisioner) PollCredentialsForUser(ctx context.Context, userID uint) (appID string, appSecretEnc []byte, done bool, err error) {
+	if userID == 0 {
+		return "", nil, false, fmt.Errorf("%w: missing user id for poll", errno.ErrLarkCallFailed)
+	}
+	return p.PollCredentials(ctx, p.cli.sessionRefForUser(userID))
 }
 
 // ExchangeCode exchanges an OAuth authorization code for a user_access_token (and

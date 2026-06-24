@@ -366,6 +366,16 @@ func (r *larkCLIRunner) resolveHandle(sessionRef string) *AppCreateHandle {
 	return &AppCreateHandle{home: sessionRef, session: sess}
 }
 
+// sessionRefForUser returns the deterministic durable session ref for userID:
+// the per-user scratch home path (the same path StartAppCreate uses and that
+// PollAppCreated reads config.json from). userID 0 has no scratch home.
+func (r *larkCLIRunner) sessionRefForUser(userID uint) string {
+	if userID == 0 {
+		return ""
+	}
+	return r.homeForUser(userID)
+}
+
 // cleanupSession removes the in-flight process tracking for a scratch home. It
 // does NOT delete config.json (the durable credential store).
 func (r *larkCLIRunner) cleanupSession(home string) {

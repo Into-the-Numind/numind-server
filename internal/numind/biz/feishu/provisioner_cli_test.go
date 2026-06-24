@@ -334,6 +334,50 @@ func TestStartAppCreate_RejectsConcurrentInFlightForSameUser(t *testing.T) {
 	}
 }
 
+// TestSessionRefForUser_MatchesScratchHome confirms the deterministic per-user
+// ref equals the scratch home StartAppCreate/PollAppCreated use, so a
+// poll-by-user resolves the same config.json a poll-by-handle would.
+func TestSessionRefForUser_MatchesScratchHome(t *testing.T) {
+	homeBase := t.TempDir()
+	bin := writeFakeLarkCLI(t, fakeConfigInitScript)
+	r, err := NewLarkCLIRunner(bin, homeBase)
+	if err != nil {
+		t.Fatalf("NewLarkCLIRunner: %v", err)
+	}
+	if got := r.sessionRefForUser(13); got != r.homeForUser(13) {
+		t.Fatalf("sessionRefForUser mismatch: %q != %q", got, r.homeForUser(13))
+	}
+	if got := r.sessionRefForUser(0); got != "" {
+		t.Fatalf("userID 0 must yield empty ref, got %q", got)
+	}
+}
+
+// TestPollByUserRef_ReadsConfigAfterRestart drives PollAppCreated through the
+// poll-by-user ref (resolveHandle(sessionRefForUser(uid))) — the exact path the
+// agent connect tool's Provisioner.PollCredentialsForUser takes on a re-call with
+// no in-memory session. It must read config.json off disk.
+func TestPollByUserRef_ReadsConfigAfterRestart(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake lark-cli stub is a /bin/sh script")
+	}
+	homeBase := t.TempDir()
+	writeConfigJSON(t, homeBase, 21, "cli_byuser", "secret-byuser")
+
+	bin := writeFakeLarkCLI(t, fakeConfigInitScript)
+	r, err := NewLarkCLIRunner(bin, homeBase)
+	if err != nil {
+		t.Fatalf("NewLarkCLIRunner: %v", err)
+	}
+	handle := r.resolveHandle(r.sessionRefForUser(21))
+	appID, secret, done, err := r.PollAppCreated(context.Background(), handle)
+	if err != nil || !done {
+		t.Fatalf("PollAppCreated via user ref: done=%t err=%v", done, err)
+	}
+	if appID != "cli_byuser" || secret != "secret-byuser" {
+		t.Fatalf("read wrong creds: appID=%q secret=%q", appID, secret)
+	}
+}
+
 // --- ReadAppSecret disk scan (OAuth exchange path) --------------------------
 
 // TestReadAppSecret_DiskScanFallbackAfterRestart is the regression for the P1:

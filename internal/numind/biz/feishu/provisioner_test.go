@@ -73,6 +73,16 @@ func (f *fakeCLIRunner) resolveHandle(sessionRef string) *AppCreateHandle {
 	return &AppCreateHandle{home: sessionRef}
 }
 
+// sessionRefForUser mirrors the production deterministic per-user scratch ref.
+// The fake keys pollScript by this ref, so PollCredentialsForUser resolves the
+// same snapshot a path-based PollCredentials would.
+func (f *fakeCLIRunner) sessionRefForUser(userID uint) string {
+	if userID == 0 {
+		return ""
+	}
+	return "u" + itoa(userID)
+}
+
 // fakeExchanger implements tokenExchanger with a scripted token response.
 type fakeExchanger struct {
 	resp      *oauthTokenResp
@@ -215,6 +225,61 @@ func TestPollCredentials_PropagatesError(t *testing.T) {
 
 	if _, _, _, err := p.PollCredentials(context.Background(), "sess-1"); err == nil {
 		t.Fatal("PollCredentials should surface CLI error")
+	}
+}
+
+// --- PollCredentialsForUser (agent-driven poll-by-user) ---------------------
+
+func TestPollCredentialsForUser_DerivesRefAndEncrypts(t *testing.T) {
+	cipher := newTestCipher(t)
+	cli := newFakeCLIRunner()
+	// pollScript is keyed by the ref; assert it received the per-user deterministic
+	// ref (so the tool need not carry the sessionRef across a yield).
+	cli.pollScript = func(ref string) (string, string, bool, error) {
+		if ref != "u42" {
+			t.Fatalf("PollCredentialsForUser must derive ref from userID, got %q", ref)
+		}
+		return "cli_u42", "user42-secret", true, nil
+	}
+	p, err := NewProvisioner(cipher, cli, &fakeExchanger{})
+	if err != nil {
+		t.Fatalf("NewProvisioner: %v", err)
+	}
+
+	appID, secEnc, done, err := p.PollCredentialsForUser(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("PollCredentialsForUser: %v", err)
+	}
+	if !done || appID != "cli_u42" {
+		t.Fatalf("expected done with appID cli_u42, got done=%t appID=%q", done, appID)
+	}
+	if string(secEnc) == "user42-secret" {
+		t.Fatal("secret must be encrypted, not plaintext")
+	}
+	plain, err := cipher.Decrypt(secEnc)
+	if err != nil || string(plain) != "user42-secret" {
+		t.Fatalf("decrypt mismatch: %q err=%v", plain, err)
+	}
+}
+
+func TestPollCredentialsForUser_NotReady(t *testing.T) {
+	cli := newFakeCLIRunner()
+	cli.pollScript = func(string) (string, string, bool, error) { return "", "", false, nil }
+	p := newTestProvisioner(t, cli, &fakeExchanger{})
+
+	appID, secEnc, done, err := p.PollCredentialsForUser(context.Background(), 9)
+	if err != nil {
+		t.Fatalf("PollCredentialsForUser: %v", err)
+	}
+	if done || appID != "" || secEnc != nil {
+		t.Fatalf("not-ready must yield empty creds, got done=%t appID=%q secEnc=%v", done, appID, secEnc)
+	}
+}
+
+func TestPollCredentialsForUser_ZeroUserErrors(t *testing.T) {
+	p := newTestProvisioner(t, newFakeCLIRunner(), &fakeExchanger{})
+	if _, _, _, err := p.PollCredentialsForUser(context.Background(), 0); err == nil {
+		t.Fatal("userID 0 must error")
 	}
 }
 
