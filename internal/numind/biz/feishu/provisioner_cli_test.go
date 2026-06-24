@@ -441,3 +441,240 @@ func TestPollByUserRef_ReadsConfigAfterRestart(t *testing.T) {
 		t.Fatalf("read wrong creds: appID=%q secret=%q", appID, secret)
 	}
 }
+
+// --- AppExists / AppID (home = phase truth source) --------------------------
+
+// TestAppExists_ReadsHomeConfig is the home-truth regression: AppExists reflects
+// whether config.json holds a built app, independent of any in-memory session or DB
+// row. A user with a written config.json reports true; a user with none reports
+// false (clean, no error) so the orchestrator routes to create_app.
+func TestAppExists_ReadsHomeConfig(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake lark-cli stub is a /bin/sh script")
+	}
+	homeBase := t.TempDir()
+	writeConfigJSON(t, homeBase, 31, "cli_exists", "secret-exists")
+
+	bin := writeFakeLarkCLI(t, fakeConfigInitScript)
+	r, err := NewLarkCLIRunner(bin, homeBase)
+	if err != nil {
+		t.Fatalf("NewLarkCLIRunner: %v", err)
+	}
+
+	ok, err := r.AppExists(context.Background(), 31)
+	if err != nil || !ok {
+		t.Fatalf("AppExists(31) with config.json must be (true,nil), got ok=%t err=%v", ok, err)
+	}
+	// A user with no home/config.json is a clean not-built (no error).
+	ok, err = r.AppExists(context.Background(), 99)
+	if err != nil || ok {
+		t.Fatalf("AppExists(99) with no config must be (false,nil), got ok=%t err=%v", ok, err)
+	}
+}
+
+// TestAppExists_IncompleteConfigIsFalse confirms a config.json that parses but lacks
+// a complete apps[0] (config init still in flight) is a clean not-built, not an error.
+func TestAppExists_IncompleteConfigIsFalse(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake lark-cli stub is a /bin/sh script")
+	}
+	homeBase := t.TempDir()
+	cfgDir := filepath.Join(homeBase, "u32", ".lark-cli")
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// apps[] present but empty → "not built yet".
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.json"), []byte(`{"apps":[]}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	bin := writeFakeLarkCLI(t, fakeConfigInitScript)
+	r, _ := NewLarkCLIRunner(bin, homeBase)
+	ok, err := r.AppExists(context.Background(), 32)
+	if err != nil || ok {
+		t.Fatalf("incomplete config.json must be (false,nil), got ok=%t err=%v", ok, err)
+	}
+}
+
+func TestAppID_ReadsHomeConfig(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake lark-cli stub is a /bin/sh script")
+	}
+	homeBase := t.TempDir()
+	writeConfigJSON(t, homeBase, 33, "cli_theid", "secret-theid")
+	bin := writeFakeLarkCLI(t, fakeConfigInitScript)
+	r, _ := NewLarkCLIRunner(bin, homeBase)
+
+	appID, err := r.AppID(context.Background(), 33)
+	if err != nil || appID != "cli_theid" {
+		t.Fatalf("AppID(33) must read config.json appId, got %q err=%v", appID, err)
+	}
+	if _, err := r.AppID(context.Background(), 99); err == nil {
+		t.Fatal("AppID with no config must error")
+	}
+}
+
+// --- lock self-heal (dead/finished session is reclaimable) ------------------
+
+// TestSpawnBlocking_DeadSessionIsReclaimable is the LOCK SELF-HEAL regression: a
+// session whose process has already exited (done=true) must NOT block a later spawn
+// — only a genuinely alive in-flight process does. This guards against the wedged
+// "provisioning already in progress" dead-end. We exercise it directly on the
+// session map: seed a DEAD session for a user's home, then StartAppCreate must be
+// allowed (reclaim the slot) rather than rejected.
+func TestSpawnBlocking_DeadSessionIsReclaimable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake lark-cli stub is a /bin/sh script")
+	}
+	homeBase := t.TempDir()
+	seedFakeCreds(t, homeBase, 55, "cli_heal", "secret-heal")
+	bin := writeFakeLarkCLI(t, fakeConfigInitScript)
+	r, err := NewLarkCLIRunner(bin, homeBase)
+	if err != nil {
+		t.Fatalf("NewLarkCLIRunner: %v", err)
+	}
+
+	// Seed a DEAD session (process exited) for user 55's home — simulating a prior
+	// run that crashed/was reaped and left a stale tracking entry.
+	home := r.homeForUser(55)
+	dead := &cliSession{home: home, done: true}
+	r.mu.Lock()
+	r.sessions[home] = dead
+	r.mu.Unlock()
+	if dead.isAlive() {
+		t.Fatal("precondition: seeded session must be dead")
+	}
+
+	// StartAppCreate must reclaim the dead slot (NOT reject as in-progress).
+	_, handle, err := r.StartAppCreate(context.Background(), 55)
+	if err != nil {
+		t.Fatalf("StartAppCreate must reclaim a dead session, got: %v", err)
+	}
+	if handle == nil {
+		t.Fatal("reclaimed StartAppCreate must return a handle")
+	}
+	// Drive to completion so the spawned process exits cleanly.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, _, done, perr := r.PollAppCreated(context.Background(), handle)
+		if perr != nil {
+			t.Fatalf("PollAppCreated: %v", perr)
+		}
+		if done {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("reclaimed provision never completed")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestStartAuthorizeLogin_SelfHealsDeadAuthSession confirms the authorize spawn is
+// isomorphic and self-healing: a DEAD prior auth-login session (keyed home#auth)
+// does not block a fresh StartAuthorizeLogin. It uses the auth fake (prints a URL,
+// writes a token, exits).
+func TestStartAuthorizeLogin_SelfHealsDeadAuthSession(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake lark-cli stub is a /bin/sh script")
+	}
+	homeBase := t.TempDir()
+	bin := writeFakeLarkCLI(t, fakeAuthLoginScript)
+	r, err := NewLarkCLIRunner(bin, homeBase)
+	if err != nil {
+		t.Fatalf("NewLarkCLIRunner: %v", err)
+	}
+	seedFakeAuthURL(t, homeBase, 66, "https://open.feishu.cn/suite/passport/oauth/device?user_code=HEAL")
+
+	// Seed a DEAD auth session under the auth-namespaced key.
+	authKey := authSessionKey(r.homeForUser(66))
+	r.mu.Lock()
+	r.sessions[authKey] = &cliSession{home: authKey, done: true}
+	r.mu.Unlock()
+
+	url, err := r.StartAuthorizeLogin(context.Background(), 66)
+	if err != nil {
+		t.Fatalf("StartAuthorizeLogin must reclaim a dead auth session, got: %v", err)
+	}
+	if url == "" {
+		t.Fatal("StartAuthorizeLogin must return a verification URL")
+	}
+}
+
+// blockingAuthLoginScript prints the verification URL like the real `auth login`,
+// then BLOCKS (waiting on $HOME/.unblock) before writing the token + exiting — so a
+// concurrency test can observe the auth-login process while it is genuinely ALIVE
+// (URL printed, process still running, not yet authorized). The status branch
+// mirrors fakeAuthLoginScript: authorized iff $HOME/.lark-cli/token exists.
+const blockingAuthLoginScript = `#!/bin/sh
+set -e
+if [ "$1" = "auth" ] && [ "$2" = "login" ]; then
+  url=$(cat "$HOME/.fake-auth/url" 2>/dev/null || true)
+  printf '请在浏览器中打开以下链接完成授权:\n'
+  printf '  %s\n' "$url"
+  printf '等待授权...\n'
+  i=0
+  while [ ! -f "$HOME/.unblock" ]; do
+    sleep 0.02
+    i=$((i+1))
+    [ "$i" -gt 500 ] && break
+  done
+  mkdir -p "$HOME/.lark-cli"
+  printf 'tok\n' > "$HOME/.lark-cli/token"
+  exit 0
+fi
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  if [ -f "$HOME/.lark-cli/token" ]; then
+    printf '{"appId":"cli_x","identities":{"user":{"status":"ready","available":true}}}\n'
+  else
+    printf '{"ok":false,"error":{"type":"config","subtype":"not_configured","message":"not configured"}}\n'
+  fi
+  exit 0
+fi
+echo "unhandled args: $@" >&2
+exit 1
+`
+
+// TestStartAuthorizeLogin_AliveSessionReturnsCachedURL is the P1 regression: a
+// second StartAuthorizeLogin while a previous auth-login is STILL ALIVE (the user
+// has not finished the browser step) must NOT error "already in progress" — it must
+// return the SAME verification URL the first call scraped, so the connect flow can
+// re-show the link and keep polling status instead of dead-ending. (App-create keeps
+// the rejection; only auth-login reuses the alive session's cached URL.)
+func TestStartAuthorizeLogin_AliveSessionReturnsCachedURL(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake lark-cli stub is a /bin/sh script")
+	}
+	homeBase := t.TempDir()
+	bin := writeFakeLarkCLI(t, blockingAuthLoginScript)
+	r, err := NewLarkCLIRunner(bin, homeBase)
+	if err != nil {
+		t.Fatalf("NewLarkCLIRunner: %v", err)
+	}
+	const wantURL = "https://open.feishu.cn/suite/passport/oauth/device?user_code=ALIVE"
+	seedFakeAuthURL(t, homeBase, 77, wantURL)
+
+	// First call launches and BLOCKS (script waits on $HOME/.unblock) — the auth-login
+	// process stays alive after the URL is scraped.
+	firstURL, err := r.StartAuthorizeLogin(context.Background(), 77)
+	if err != nil {
+		t.Fatalf("first StartAuthorizeLogin: %v", err)
+	}
+	if firstURL != wantURL {
+		t.Fatalf("first verification URL mismatch: got %q want %q", firstURL, wantURL)
+	}
+
+	// Second call while the first is still ALIVE must reuse the cached URL, NOT error.
+	secondURL, err := r.StartAuthorizeLogin(context.Background(), 77)
+	if err != nil {
+		t.Fatalf("second StartAuthorizeLogin on an alive session must NOT error, got: %v", err)
+	}
+	if secondURL != wantURL {
+		t.Fatalf("second call must return the cached verification URL: got %q want %q", secondURL, wantURL)
+	}
+
+	// Release the blocking process so it writes the token and exits cleanly.
+	if werr := os.WriteFile(filepath.Join(r.homeForUser(77), ".unblock"), []byte("1"), 0o600); werr != nil {
+		t.Fatalf("unblock auth login: %v", werr)
+	}
+}

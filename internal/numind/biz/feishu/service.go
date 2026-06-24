@@ -1,23 +1,24 @@
 // Package feishu — service.go is the feishu-integration connection service behind
-// the HTTP controller (controller/v1/feishu). Under the G2-authorize device-code
-// redesign (2026-06-24) it no longer does redirect-OAuth: there is NO authorize
-// URL / redirect_uri / OAuth callback / token exchange. Connection goes entirely
-// through lark-cli (config init for app-create, device-code for authorization),
-// driven by the shared *ConnectOrchestrator.
+// the HTTP controller (controller/v1/feishu). Connection goes entirely through
+// lark-cli — config init for app-create, blocking auth login for authorization —
+// with the connect PHASE read from the user's lark-cli HOME (the single truth
+// source), driven by the shared *ConnectOrchestrator (fix/feishu-phase-from-home,
+// 2026-06-24). There is NO redirect-OAuth / authorize URL / OAuth callback / token
+// exchange / device-code file.
 //
 // User-facing operations:
 //
-//   - Connect: advance the device-code connect flow one step and return the next
-//     action (create_app page URL, authorize verification URL, or done). The
-//     settings page shows the URL; the user opens it; a later Connect/Status call
-//     advances/completes. (The primary connect path is the agent feishu_connect
-//     tool, which drives the SAME orchestrator with auto-resume.)
-//   - Status:  report connection state from the durable DB connected flag.
+//   - Connect: advance the connect flow one step (phase read from the home) and
+//     return the next action (create_app page URL, authorize verification URL, or
+//     done). The settings page shows the URL; the user opens it; a later
+//     Connect/Status call advances. (The primary connect path is the agent
+//     feishu_connect tool, which drives the SAME orchestrator with auto-resume.)
+//   - Status:  report connection state from the durable DB connected flag (reconciled
+//     from the home on the done path).
 //   - Unbind:  delete the stored connection row (the 飞书 app + lark-cli home are kept).
 //
-// Layering: biz layer over the orchestrator + store. No agent imports (the device
-// flow needs no run-resume on the HTTP path — there is no OAuth callback to resume
-// from). NOT routed through aiservice (飞书 is an external business API).
+// Layering: biz layer over the orchestrator + store. No agent imports. NOT routed
+// through aiservice (飞书 is an external business API).
 package feishu
 
 import (

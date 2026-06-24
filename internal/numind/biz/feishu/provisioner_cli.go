@@ -85,7 +85,8 @@ type LarkCLIRunner struct {
 	sessions map[string]*cliSession
 }
 
-// cliSession tracks one backgrounded `config init` invocation.
+// cliSession tracks one backgrounded blocking lark-cli invocation (config init OR
+// auth login).
 type cliSession struct {
 	home string
 	cmd  *exec.Cmd
@@ -93,6 +94,38 @@ type cliSession struct {
 	mu      sync.Mutex
 	done    bool
 	exitErr error
+	// url is the verification/page URL scraped from the process's early stdout. It is
+	// cached so a SECOND spawn while THIS session is still alive can return the same
+	// URL instead of erroring "already in progress" — used by the auth-login path so a
+	// re-poll before the user finishes the browser step re-shows the link rather than
+	// dead-ending the connect flow (the app-create path does not reuse it).
+	url string
+}
+
+// isAlive reports whether the tracked process is still running (started and not yet
+// reaped). A reserved-but-not-yet-started session (cmd nil) counts as alive so a
+// concurrent spawn can't slip past the reservation; a reaped (done) session is dead
+// and therefore reclaimable. This is the LOCK SELF-HEAL primitive: only a live
+// process blocks a re-spawn, a dead/finished one is reclaimed.
+func (s *cliSession) isAlive() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.done
+}
+
+// setURL caches the scraped URL on the session (thread-safe).
+func (s *cliSession) setURL(u string) {
+	s.mu.Lock()
+	s.url = u
+	s.mu.Unlock()
+}
+
+// cachedURL returns the URL scraped from this session's process (thread-safe; "" if
+// not yet scraped).
+func (s *cliSession) cachedURL() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.url
 }
 
 // NewLarkCLIRunner builds a production cliRunner. bin defaults to "lark-cli" (on
@@ -170,119 +203,159 @@ func (r *LarkCLIRunner) env(home string) []string {
 // finishes in the browser). The returned handle carries the home path + the process
 // session tracking. The home dir is created 0700 (owned by the running process
 // user); MkdirAll is a no-op when it already exists, so a re-provision reuses it.
+//
+// LOCK SELF-HEAL (fix/feishu-phase-from-home): the orchestrator only ever calls this
+// when the home does NOT already hold a built app (AppExists==false). The in-flight
+// guard below now RECLAIMS a stale/dead session (process exited, e.g. crashed or
+// reaped) instead of permanently blocking — only a genuinely ALIVE in-flight process
+// is a blocker — so a wedged session can never dead-end the connect flow.
 func (r *LarkCLIRunner) StartAppCreate(ctx context.Context, userID uint) (pageURL string, handle *AppCreateHandle, err error) {
 	home := r.homeForUser(userID)
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return "", nil, fmt.Errorf("feishu: create user home %q: %w", home, err)
 	}
-
-	// Concurrency guard: reject a second StartAppCreate for the same user while a
-	// previous in-flight `config init` is still running. Without this, the second
-	// call would overwrite r.sessions[home] and orphan the first process (it would
-	// linger until appCreateCeiling reaps it, meanwhile both processes write the
-	// same config.json and can corrupt each other's write / file lock). A finished
-	// (done) session is NOT a blocker — the user may legitimately re-provision.
-	//
-	// The check-and-reserve is done atomically under r.mu so two concurrent callers
-	// can't both pass the check and then both spawn a process (TOCTOU): the winner
-	// reserves the slot with a placeholder session; losers see it and bail. We
-	// attach the actual *exec.Cmd to the reserved session after a successful Start,
-	// and release the reservation on any early-return failure path so a failed
-	// launch never blocks a later retry.
-	sess := &cliSession{home: home}
-	r.mu.Lock()
-	if existing := r.sessions[home]; existing != nil {
-		existing.mu.Lock()
-		inFlight := !existing.done
-		existing.mu.Unlock()
-		if inFlight {
-			r.mu.Unlock()
-			return "", nil, fmt.Errorf("feishu: provisioning already in progress for user %d", userID)
-		}
+	sess, scrapedURL, err := r.spawnBlocking(ctx, userID, home,
+		[]string{"config", "init", "--new"}, startInitTimeout, appCreateCeiling, "config init", false)
+	if err != nil {
+		return "", nil, err
 	}
-	r.sessions[home] = sess // reserve the slot before spawning
+	return scrapedURL, &AppCreateHandle{home: home, session: sess}, nil
+}
+
+// spawnBlockingURL is the StartAuthorizeLogin-facing wrapper around spawnBlocking: it
+// launches a blocking lark-cli command in the user's home, scrapes the URL it prints,
+// and returns only that URL (the auth-login flow tracks no handle — completion is
+// observed via AuthStatus). The sessionKey isolates the auth-login session from the
+// config-init session for the same home. It passes reuseAliveURL=true so a re-poll
+// while a previous auth-login is still alive returns the SAME cached verification URL
+// instead of erroring "already in progress" (the connect flow re-shows the link).
+func (r *LarkCLIRunner) spawnBlockingURL(ctx context.Context, userID uint, sessionKey string, args []string, scrapeTimeout, ceiling time.Duration) (string, error) {
+	_, url, err := r.spawnBlocking(ctx, userID, sessionKey, args, scrapeTimeout, ceiling, args[0]+" "+args[1], true)
+	return url, err
+}
+
+// spawnBlocking launches a blocking lark-cli command backgrounded, scrapes the first
+// feishu.cn URL it prints (bounded by scrapeTimeout), and leaves the process running
+// (it self-bounds; we also enforce a hard ceiling). It is the shared engine behind
+// BOTH app-create (config init --new) and authorize (auth login) — the only
+// per-command differences are the args, the timeouts, and the session key.
+//
+// Self-healing in-flight guard: a session is keyed by sessionKey in r.sessions; a
+// second call while an ALIVE process holds that key is normally rejected (avoids
+// orphaning the first / corrupting a shared config.json write), but a DEAD prior
+// session (process exited) is reclaimed, so a crashed/reaped run can never
+// permanently block a retry.
+//
+// reuseAliveURL changes the alive-session behaviour for the auth-login path: instead
+// of erroring "already in progress", a re-poll while THIS auth-login is still alive
+// returns the verification URL the live session already scraped, so the connect flow
+// re-shows the same link rather than dead-ending while the user finishes the browser
+// step. App-create passes reuseAliveURL=false to keep its strict rejection (a
+// concurrent config init must not be duplicated).
+func (r *LarkCLIRunner) spawnBlocking(ctx context.Context, userID uint, sessionKey string, args []string, scrapeTimeout, ceiling time.Duration, label string, reuseAliveURL bool) (*cliSession, string, error) {
+	// Atomically check-and-reserve the session slot under r.mu so two concurrent
+	// callers can't both spawn (TOCTOU). A finished (done) OR process-dead session is
+	// reclaimable; only a live in-flight one blocks.
+	sess := &cliSession{home: sessionKey}
+	r.mu.Lock()
+	if existing := r.sessions[sessionKey]; existing != nil && existing.isAlive() {
+		// Alive in-flight session. For auth-login, reuse its cached URL (the user is
+		// still completing the browser step) instead of erroring; only fall through to
+		// the rejection when no URL was cached yet (scrape still racing) or this is the
+		// app-create path.
+		if reuseAliveURL {
+			if cached := existing.cachedURL(); cached != "" {
+				r.mu.Unlock()
+				return existing, cached, nil
+			}
+		}
+		r.mu.Unlock()
+		return nil, "", fmt.Errorf("feishu: %s already in progress for user %d", label, userID)
+	}
+	r.sessions[sessionKey] = sess // reserve (replacing any dead/finished prior session)
 	r.mu.Unlock()
 
-	// releaseReservation drops our reserved slot on a failure path — but only if it
-	// is still OURS (a later successful StartAppCreate may have replaced it).
+	// releaseReservation drops our reserved slot on a failure path — but only if it is
+	// still OURS (a later successful spawn may have replaced it).
 	releaseReservation := func() {
 		r.mu.Lock()
-		if r.sessions[home] == sess {
-			delete(r.sessions, home)
+		if r.sessions[sessionKey] == sess {
+			delete(r.sessions, sessionKey)
 		}
 		r.mu.Unlock()
 	}
 
-	// Detach from the request ctx: the process must outlive this HTTP request
-	// (the user's browser step can take minutes). We bound the URL-scrape window
-	// (startInitTimeout) and the whole process lifetime (appCreateCeiling)
-	// separately, not via the request ctx.
-	//
-	// bgCtx keeps the request's log fields (request/user ID) but drops its
-	// cancellation, so the reaper goroutine below — which may log minutes after the
-	// HTTP request returned — does not attach to an already-cancelled ctx.
+	// Detach from the request ctx: the process must outlive this HTTP request (the
+	// user's browser step can take minutes). bgCtx keeps the request's log fields but
+	// drops cancellation so the reaper (logging minutes later) isn't on a dead ctx.
 	bgCtx := context.WithoutCancel(ctx)
 
-	cmd := exec.Command(r.bin, "config", "init", "--new") // #nosec G204 -- bin is config-pinned, no user-controlled args
-	cmd.Env = r.env(home)
+	cmd := exec.Command(r.bin, args...) // #nosec G204 -- bin is config-pinned; args are fixed verbs (no user-controlled args)
+	cmd.Env = r.env(r.homeForKey(sessionKey))
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		releaseReservation()
-		return "", nil, fmt.Errorf("feishu: stdout pipe: %w", err)
+		return nil, "", fmt.Errorf("feishu: stdout pipe: %w", err)
 	}
 	cmd.Stderr = cmd.Stdout // fold stderr into the same stream for scraping
 
 	if err := cmd.Start(); err != nil {
 		releaseReservation()
-		return "", nil, fmt.Errorf("feishu: start lark-cli: %w", err)
+		return nil, "", fmt.Errorf("feishu: start lark-cli: %w", err)
 	}
-
 	sess.cmd = cmd
 
-	// Hard ceiling: kill a process that never completes (user abandoned the
-	// browser step) so it doesn't leak. Cancelled by the reaper on normal exit.
-	ceiling := time.AfterFunc(appCreateCeiling, func() {
+	// Hard ceiling: kill a process that never completes (user abandoned the browser
+	// step). Cancelled by the reaper on normal exit.
+	ceilingTimer := time.AfterFunc(ceiling, func() {
 		sess.mu.Lock()
 		alreadyDone := sess.done
 		sess.mu.Unlock()
 		if alreadyDone {
 			return
 		}
-		log.C(bgCtx).Warnw("feishu: lark-cli config init exceeded ceiling, killing", "user_id", userID, "ceiling", appCreateCeiling.String())
+		log.C(bgCtx).Warnw("feishu: lark-cli exceeded ceiling, killing", "user_id", userID, "label", label, "ceiling", ceiling.String())
 		_ = cmd.Process.Kill()
 	})
 
-	// Reap the process in the background so its exit status is recorded and it
-	// doesn't become a zombie.
+	// Reap the process so its exit status is recorded and it doesn't become a zombie.
 	go func() {
 		exitErr := cmd.Wait()
-		ceiling.Stop()
+		ceilingTimer.Stop()
 		sess.mu.Lock()
 		sess.done = true
 		sess.exitErr = exitErr
 		sess.mu.Unlock()
 		if exitErr != nil {
-			log.C(bgCtx).Warnw("feishu: lark-cli config init exited with error", "user_id", userID, "error", exitErr.Error())
+			log.C(bgCtx).Warnw("feishu: lark-cli exited with error", "user_id", userID, "label", label, "error", exitErr.Error())
 		}
 	}()
 
-	// Scrape the page URL from the early output, bounded by startInitTimeout.
-	pageURL, scrapeErr := scrapePageURL(stdout, startInitTimeout)
+	// Scrape the URL from the early output, bounded by scrapeTimeout.
+	url, scrapeErr := scrapeURL(stdout, scrapeTimeout, parseFeishuURL)
 	if scrapeErr != nil {
-		// Kill the orphaned process — we never got a usable URL.
-		_ = cmd.Process.Kill()
+		_ = cmd.Process.Kill() // kill the orphaned process — we never got a usable URL
 		releaseReservation()
-		return "", nil, fmt.Errorf("feishu: scrape page URL: %w", scrapeErr)
+		return nil, "", fmt.Errorf("feishu: scrape %s URL: %w", label, scrapeErr)
 	}
-
-	return pageURL, &AppCreateHandle{home: home, session: sess}, nil
+	// Cache the URL on the session so a re-poll while this process is still alive can
+	// return it (auth-login path) instead of erroring "already in progress".
+	sess.setURL(url)
+	return sess, url, nil
 }
 
-// scrapePageURL reads lines from r until it finds the page URL or the timeout
-// elapses. It keeps draining the pipe in a goroutine so the child process never
-// blocks on a full stdout buffer after we return.
-func scrapePageURL(r io.ReadCloser, timeout time.Duration) (string, error) {
+// homeForKey maps a session key back to the home dir lark-cli uses as $HOME.
+// App-create keys are the bare home; auth-login keys carry the "#auth" suffix — both
+// map to the SAME home directory (the suffix only namespaces the in-memory session
+// slot so app-create and auth-login don't clobber each other's tracking).
+func (r *LarkCLIRunner) homeForKey(key string) string { return strings.TrimSuffix(key, "#auth") }
+
+// scrapeURL reads lines from r until parse extracts a URL or the timeout elapses.
+// It keeps draining the pipe in a goroutine so the child process never blocks on a
+// full stdout buffer after we return. parse is the per-command URL matcher (config
+// init's page URL or auth login's verification URL — both feishu.cn links).
+func scrapeURL(r io.ReadCloser, timeout time.Duration, parse func(string) (string, error)) (string, error) {
 	type result struct {
 		url string
 		err error
@@ -296,7 +369,7 @@ func scrapePageURL(r io.ReadCloser, timeout time.Duration) (string, error) {
 			n, rerr := r.Read(tmp)
 			if n > 0 {
 				buf.Write(tmp[:n])
-				if u, perr := parseDeviceCodeURL(buf.String()); perr == nil {
+				if u, perr := parse(buf.String()); perr == nil {
 					ch <- result{url: u}
 					// Keep draining so the child doesn't block on a full pipe.
 					go io.Copy(io.Discard, r) //nolint:errcheck
@@ -304,10 +377,10 @@ func scrapePageURL(r io.ReadCloser, timeout time.Duration) (string, error) {
 				}
 			}
 			if rerr != nil {
-				if u, perr := parseDeviceCodeURL(buf.String()); perr == nil {
+				if u, perr := parse(buf.String()); perr == nil {
 					ch <- result{url: u}
 				} else {
-					ch <- result{err: fmt.Errorf("lark-cli output ended before page URL: %w", rerr)}
+					ch <- result{err: fmt.Errorf("lark-cli output ended before URL: %w", rerr)}
 				}
 				return
 			}
@@ -318,7 +391,7 @@ func scrapePageURL(r io.ReadCloser, timeout time.Duration) (string, error) {
 	case res := <-ch:
 		return res.url, res.err
 	case <-time.After(timeout):
-		return "", fmt.Errorf("timed out after %s waiting for page URL", timeout)
+		return "", fmt.Errorf("timed out after %s waiting for URL", timeout)
 	}
 }
 
@@ -364,6 +437,46 @@ func (r *LarkCLIRunner) PollAppCreated(ctx context.Context, handle *AppCreateHan
 	// Done: drop the in-flight process tracking (config.json persists the creds).
 	r.cleanupSession(home)
 	return appID, appSecret, true, nil
+}
+
+// AppExists reports whether userID's PERSISTENT home already holds a built app —
+// the phase truth source for create_app vs authorize. It reads config.json apps[0]
+// directly (no process), so it is correct even when the in-memory session was lost
+// (restart) or the DB row is missing/stale. A missing/empty/incomplete config.json
+// (app not built yet) is a clean (false, nil); a genuinely unreadable file (e.g. a
+// permission error, not os.ErrNotExist) surfaces as an error.
+func (r *LarkCLIRunner) AppExists(_ context.Context, userID uint) (bool, error) {
+	if userID == 0 {
+		return false, nil
+	}
+	home := r.homeForUser(userID)
+	_, _, err := readAppFromConfig(home)
+	if err == nil {
+		return true, nil
+	}
+	// "no app yet" — file absent (config init not finished) or apps[]/fields not yet
+	// populated — is a clean not-built, NOT an error. Only an unexpected read failure
+	// (file present but unreadable) is surfaced.
+	if errors.Is(err, os.ErrNotExist) || isConfigIncomplete(err) {
+		return false, nil
+	}
+	if _, statErr := os.Stat(configPath(home)); errors.Is(statErr, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, fmt.Errorf("feishu: app-exists check (user %d): %w", userID, err)
+}
+
+// AppID returns the appId from userID's home (config.json apps[0]). Used to
+// reconcile the DB row (UI/status) on the done path. Errors when no app is present.
+func (r *LarkCLIRunner) AppID(_ context.Context, userID uint) (string, error) {
+	if userID == 0 {
+		return "", fmt.Errorf("feishu: app-id read: missing user id")
+	}
+	appID, _, err := readAppFromConfig(r.homeForUser(userID))
+	if err != nil {
+		return "", fmt.Errorf("feishu: app-id read (user %d): %w", userID, err)
+	}
+	return appID, nil
 }
 
 // resolveHandle reconstructs an AppCreateHandle from a session ref (home path).
@@ -424,53 +537,76 @@ func readAppFromConfig(home string) (appID, appSecret string, err error) {
 	return parseAppFromConfigJSON(raw)
 }
 
+// errConfigNoApp marks a config.json that parses fine but does not yet hold a
+// complete apps[0] (no apps / missing appId / missing appSecret) — i.e. the app is
+// "not built yet" rather than a corrupt/unreadable file. AppExists treats this as a
+// clean (false, nil); PollAppCreated treats it as still-in-progress.
+var errConfigNoApp = errors.New("feishu: config.json has no complete app yet")
+
+// isConfigIncomplete reports whether err means "app not built yet" (errConfigNoApp)
+// as opposed to a genuine read/parse failure.
+func isConfigIncomplete(err error) bool { return errors.Is(err, errConfigNoApp) }
+
 // parseAppFromConfigJSON parses apps[0].appId/appSecret out of lark-cli's
 // config.json bytes. Pure (no I/O) so it is unit-tested in isolation. Both fields
-// are required; a present-but-incomplete apps[0] is an error.
+// are required; a present-but-incomplete apps[0] is errConfigNoApp ("not built
+// yet"), distinct from an unparseable file (a real error).
 func parseAppFromConfigJSON(raw []byte) (appID, appSecret string, err error) {
 	var cfg larkConfigJSON
 	if jerr := json.Unmarshal(raw, &cfg); jerr != nil {
 		return "", "", fmt.Errorf("feishu: parse config.json: %w", jerr)
 	}
 	if len(cfg.Apps) == 0 {
-		return "", "", errors.New("feishu: config.json has no apps yet")
+		return "", "", fmt.Errorf("%w (no apps)", errConfigNoApp)
 	}
 	app := cfg.Apps[0]
 	if app.AppID == "" {
-		return "", "", errors.New("feishu: config.json apps[0] has no appId")
+		return "", "", fmt.Errorf("%w (apps[0] has no appId)", errConfigNoApp)
 	}
 	if app.AppSecret == "" {
-		return "", "", errors.New("feishu: config.json apps[0] has no appSecret")
+		return "", "", fmt.Errorf("%w (apps[0] has no appSecret)", errConfigNoApp)
 	}
 	return app.AppID, app.AppSecret, nil
 }
 
-// --- page URL parsing (pure helper) -----------------------------------------
+// --- URL parsing (pure helper) ----------------------------------------------
 
-// deviceCodeURLMarker is the public 飞书 page the lark-cli prints. We match on this
-// exact host+path so we don't accidentally grab some other URL from the output.
-const deviceCodeURLMarker = "https://open.feishu.cn/page/cli"
+// feishuURLPrefix is the scheme+host prefix every 飞书 link lark-cli prints starts
+// with. We match an https://...feishu.cn/... URL on a line so the SAME parser handles
+// both config-init's page URL (open.feishu.cn/page/cli?...) and auth-login's
+// verification URL (open.feishu.cn/suite/passport/oauth/device?... or similar) —
+// only links to the 飞书 domain are accepted so we never grab some unrelated URL.
+const feishuURLPrefix = "https://"
+const feishuURLHost = "feishu.cn"
 
-// parseDeviceCodeURL extracts the page URL from lark-cli's stdout. Real output:
+// parseFeishuURL extracts the first feishu.cn https URL from lark-cli's stdout. Real
+// config-init output:
 //
 //	打开以下链接配置应用:
 //	  https://open.feishu.cn/page/cli?user_code=2AF7-MFWU&lpv=1.0.56&from=cli
 //	等待配置应用...
-func parseDeviceCodeURL(cliOutput string) (string, error) {
+//
+// Real auth-login output prints the verification link the same way (a feishu.cn URL
+// on its own indented line).
+func parseFeishuURL(cliOutput string) (string, error) {
 	sc := bufio.NewScanner(strings.NewReader(cliOutput))
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
-		if idx := strings.Index(line, deviceCodeURLMarker); idx >= 0 {
-			// Take from the marker to the end of the (already trimmed) line; the
-			// query string is part of the URL.
-			return line[idx:], nil
+		idx := strings.Index(line, feishuURLPrefix)
+		if idx < 0 {
+			continue
+		}
+		candidate := line[idx:]
+		// Accept only a 飞书-domain URL (guard against grabbing an unrelated https link).
+		if strings.Contains(candidate, feishuURLHost) {
+			return candidate, nil
 		}
 	}
 	if err := sc.Err(); err != nil {
 		return "", fmt.Errorf("feishu: scan cli output: %w", err)
 	}
-	return "", errors.New("feishu: page URL not found in lark-cli output")
+	return "", errors.New("feishu: URL not found in lark-cli output")
 }
 
 // compile-time guard: LarkCLIRunner satisfies cliRunner.

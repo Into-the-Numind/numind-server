@@ -1,38 +1,39 @@
 // Package feishu — connect_orchestrator.go is the biz-layer engine behind the
-// agent-driven 飞书 connect tool (R3 connect-tool, rewritten 2026-06-24 for the
-// G2-authorize device-code redesign). It exposes the connect flow as a set of
-// non-agent primitives the agent tool drives, so the CONNECTION is modelled as an
-// agent tool (the agent gives the user a link and resumes on its own) WITHOUT
+// agent-driven 飞书 connect tool (R3 connect-tool). It exposes the connect flow as a
+// set of non-agent primitives the agent tool drives, so the CONNECTION is modelled as
+// an agent tool (the agent gives the user a link and resumes on its own) WITHOUT
 // biz/feishu depending on biz/agent.
 //
-// Device-code design (G2-authorize):
+// PHASE FROM HOME design (fix/feishu-phase-from-home, 2026-06-24):
 //
-//	Authorization no longer uses redirect-OAuth (no redirect_uri / authorize URL /
-//	OAuth callback / token exchange). BOTH connect steps go through lark-cli:
-//	  phase 1 (create_app): `lark-cli config init --new` — the user builds the app.
-//	  phase 2 (authorize):  `lark-cli auth login --no-wait --json --domain docs,im,base`
-//	                        returns a verification_url the user opens; on resume,
-//	                        `lark-cli auth login --device-code <code>` finishes it.
-//	lark-cli stores + auto-refreshes the token inside the user's persistent home;
-//	our DB row only carries CONNECTION METADATA (app_id + connected + connected_at).
-//	No token, no app_secret, no device_code ever enters the DB.
+//	The connect PHASE is read from lark-cli's per-user HOME — the SINGLE source of
+//	truth — NOT from the DB row (which was the root of the "re-create app + lock
+//	wedge" bug: DB and home drifting apart). Both connect steps go through lark-cli,
+//	BLOCKING + isomorphic to each other:
+//	  phase 1 (create_app): `lark-cli config init --new` — the user builds the app;
+//	                        the process prints a page URL and exits on completion.
+//	  phase 2 (authorize):  `lark-cli auth login --domain docs,im,base` — the user
+//	                        grants scopes; the process prints a verification URL and
+//	                        exits on completion (token persisted in the home).
+//	lark-cli stores + auto-refreshes the token inside the user's persistent home; our
+//	DB row carries ONLY connection metadata (app_id + connected) and is reconciled
+//	FROM the home on the done path — used for UI/status, NEVER as the phase truth.
 //
-// Phase routing (the DB row + lark-cli auth status are the durable truth; nothing
-// is carried across the agent yield):
+// Phase routing (home is authoritative):
 //
-//	· no row / no app_id                              → create_app  (StartProvision)
-//	· app, not connected, NO pending device code      → authorize   (StartAuthLogin)
-//	· app, not connected, pending device code present  → complete it (CompleteAuthLogin
-//	                                                     + verify) → done; on failure
-//	                                                     restart a fresh authorize
-//	· app, connected (DB flag, or lark-cli auth status) → done
+//	· home has NO app (AppExists=false)               → create_app (StartProvision)
+//	· home has app, NOT authorized (IsAuthorized=false) → authorize (StartAuthorize)
+//	· home has app, authorized (IsAuthorized=true)      → done + reconcile DB row
 //
-// Security (CLAUDE.md / .claude/rules): the orchestrator returns ONLY
-// non-sensitive info to its caller — a phase enum + a URL (device-code page /
-// verification). It NEVER returns app_secret / access_token / refresh_token /
-// device_code (the token lives only in lark-cli's home; the device_code lives only
-// in a home-local 0600 file). Plaintext secrets are never logged. 飞书 is an
-// external business API, NOT routed through aiservice.
+// Because the home is authoritative, a home that already has the app is NEVER
+// re-provisioned, and the in-memory provisioning lock is never consulted on the
+// app-exists path (no "already in progress" dead-end).
+//
+// Security (CLAUDE.md / .claude/rules): the orchestrator returns ONLY non-sensitive
+// info to its caller — a phase enum + a URL (config-init page / auth verification).
+// It NEVER returns app_secret / access_token / refresh_token (the token lives only in
+// lark-cli's home). Plaintext secrets/tokens are never logged. 飞书 is an external
+// business API, NOT routed through aiservice.
 package feishu
 
 import (
@@ -42,10 +43,7 @@ import (
 	"time"
 
 	"numind-server/internal/numind/store"
-	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
-
-	"gorm.io/gorm"
 )
 
 // DefaultScopes documents the first-batch business domains requested in one
@@ -56,46 +54,58 @@ const DefaultScopes = "docx:document im:message bitable:app:readonly"
 
 // Connect phase discriminants returned by NextConnectStep.
 const (
-	// ConnectPhaseDone: the user is already connected (lark-cli holds a token).
+	// ConnectPhaseDone: the home is authorized (lark-cli holds a usable token).
 	ConnectPhaseDone = "done"
-	// ConnectPhaseCreateApp: the user has no self-built 飞书 app yet → they must
-	// open the device-code page URL to create+configure it.
+	// ConnectPhaseCreateApp: the home has no self-built 飞书 app yet → the user opens
+	// the config-init page URL to create+configure it.
 	ConnectPhaseCreateApp = "create_app"
-	// ConnectPhaseAuthorize: the app exists → the user must open the device-code
-	// verification URL and grant scopes; the run resumes to complete it.
+	// ConnectPhaseAuthorize: the home has the app but is not authorized → the user
+	// opens the verification URL and grants scopes; the run resumes to re-check.
 	ConnectPhaseAuthorize = "authorize"
 )
 
-// AppStarter starts the device-code app-provisioning flow (connect's create_app
-// step). Concrete impl is *Provisioner; interface for testability. It returns the
-// page URL the user opens to create the app + an opaque session ref.
+// AppStarter starts the app-provisioning flow (connect's create_app step) AND
+// reports whether the user's lark-cli home already holds a built app — the latter
+// is the PHASE TRUTH SOURCE (the home's config.json), not the DB. Concrete impl is
+// *Provisioner; interface for testability. StartProvision returns the page URL the
+// user opens to create the app + an opaque session ref.
 type AppStarter interface {
 	StartProvision(ctx context.Context, userID uint) (pageURL, sessionRef string, err error)
+	// AppExists reports whether userID's lark-cli home already holds a built app
+	// (config.json apps[0].appId present). This is read as the create_app→authorize
+	// phase discriminant so a home that already has the app is never re-provisioned.
+	AppExists(ctx context.Context, userID uint) (bool, error)
+	// AppID returns the appId from userID's lark-cli home (config.json apps[0]). Used
+	// to reconcile the DB row (UI/status) on the done path. Returns "" + error when no
+	// app is present (callers only call it when AppExists already reported true).
+	AppID(ctx context.Context, userID uint) (string, error)
 }
 
 // AppPoller polls per-user lark-cli app-create progress and, when complete,
 // returns the appID + AES-256-GCM-encrypted app_secret. The concrete impl is
 // *Provisioner.PollCredentialsForUser; an interface so the orchestrator is unit
 // tested without a real lark-cli runner. The returned secret is ALWAYS ciphertext
-// (never plaintext) — under device-code it is no longer stored, but the seam is
-// kept so PollAndPersistApp can still detect app-create completion via the appID.
+// (never plaintext) — it is no longer persisted (token lives in lark-cli's home), but
+// the seam is kept so PollAndPersistApp can populate the DB app_id (UI/status) when an
+// app-create finishes.
 type AppPoller interface {
 	PollCredentialsForUser(ctx context.Context, userID uint) (appID string, appSecretEnc []byte, done bool, err error)
 }
 
-// Authorizer drives the lark-cli device-code authorization (G2-authorize). The
-// concrete impl is *Provisioner (delegating to the LarkCLIRunner); an interface so
-// the orchestrator is unit tested with a fake. It NEVER exposes the token or the
-// device_code — only the verification URL the user opens.
+// Authorizer drives the lark-cli authorization (G2-authorize, blocking auth-login
+// model — isomorphic to app-create). The concrete impl is *Provisioner (delegating
+// to the LarkCLIRunner); an interface so the orchestrator is unit tested with a fake.
+// It NEVER exposes the token — only the verification URL the user opens. There is no
+// separate "complete" step: once the user authorizes, lark-cli's background process
+// exits with the token persisted, and the next IsAuthorized read observes it.
 type Authorizer interface {
-	// StartAuthorize starts the device flow and returns the verification URL.
+	// StartAuthorize launches the blocking `auth login` and returns the verification
+	// URL the user opens. Self-healing: a concurrent in-flight login is not duplicated
+	// and does NOT error — it returns the same cached verification URL so a re-poll
+	// before the user finishes the browser step re-shows the link.
 	StartAuthorize(ctx context.Context, userID uint) (verificationURL string, err error)
-	// CompleteAuthorize finishes the in-flight device flow (after the user
-	// authorized in the browser). Returns nil on success (token now in the home).
-	CompleteAuthorize(ctx context.Context, userID uint) error
-	// HasPendingAuthorize reports whether a StartAuthorize is awaiting completion.
-	HasPendingAuthorize(userID uint) bool
-	// IsAuthorized reports whether the user's home holds a usable authorization.
+	// IsAuthorized reports whether the user's home holds a usable authorization
+	// (lark-cli auth status: identities.user.available == true).
 	IsAuthorized(ctx context.Context, userID uint) (bool, error)
 }
 
@@ -110,14 +120,14 @@ type ConnectStep struct {
 // ConnectOrchestratorDeps wires the orchestrator. All deps required.
 type ConnectOrchestratorDeps struct {
 	Store      store.IThirdPartyAccountStore
-	Starter    AppStarter // StartProvision (create_app)
-	Poller     AppPoller  // PollCredentialsForUser (create_app → app-row bridge)
-	Authorizer Authorizer // lark-cli device-code authorization (authorize / complete / status)
+	Starter    AppStarter // StartProvision + AppExists/AppID (create_app + home-truth)
+	Poller     AppPoller  // PollCredentialsForUser (app-create → DB app_id bridge)
+	Authorizer Authorizer // lark-cli authorization (StartAuthorize / IsAuthorized)
 }
 
-// ConnectOrchestrator drives the agent-tool connect flow. Safe for concurrent
-// use: it holds only immutable deps; per-user state lives in the DB row + the
-// user's lark-cli home.
+// ConnectOrchestrator drives the agent-tool connect flow. Safe for concurrent use:
+// it holds only immutable deps; per-user state lives in the user's lark-cli home (the
+// phase truth) with the DB row reconciled FROM it for UI/status.
 type ConnectOrchestrator struct {
 	store      store.IThirdPartyAccountStore
 	starter    AppStarter
@@ -150,75 +160,64 @@ func NewConnectOrchestrator(d ConnectOrchestratorDeps) (*ConnectOrchestrator, er
 	}, nil
 }
 
-// NextConnectStep decides where the user is in the device-code connect flow and
-// returns the non-sensitive next action (phase + URL). runID + questionText are
-// accepted for signature compatibility with the agent tool's yield contract but
-// are unused under device-code (there is no OAuth callback to sign them into; the
+// NextConnectStep decides where the user is in the connect flow and returns the
+// non-sensitive next action (phase + URL). runID + questionText are accepted for
+// signature compatibility with the agent tool's yield contract but are unused (the
 // run is resumed by the agent answer flow re-executing this tool).
 //
-//   - no app row    → ConnectPhaseCreateApp + device-code page URL (StartProvision).
-//   - app, pending device code → complete it; on success → ConnectPhaseDone, else
-//     restart a fresh authorize.
-//   - app, connected → ConnectPhaseDone.
-//   - app, not connected, none pending → ConnectPhaseAuthorize + verification URL.
+// ROOT FIX (fix/feishu-phase-from-home): the PHASE is read from lark-cli's per-user
+// HOME — the single source of truth — NOT from the (possibly stale) DB row:
+//
+//   - home has NO app (AppExists==false)                 → ConnectPhaseCreateApp
+//     (StartProvision; the user builds the app in a browser).
+//   - home HAS app, NOT authorized (IsAuthorized==false) → ConnectPhaseAuthorize
+//     (StartAuthorize; the user grants scopes in a browser).
+//   - home HAS app, authorized (IsAuthorized==true)      → ConnectPhaseDone, and the
+//     DB row is UPSERTed (connected=true + app_id) — the DB is reconciled to the home
+//     here, used ONLY for UI/status, never as the phase truth source.
+//
+// Because the home is authoritative, a home that already holds the app is NEVER
+// re-provisioned (the old DB-driven bug), and the in-memory provisioning lock is
+// never consulted on the app-exists path (no "already in progress" dead-end).
 func (o *ConnectOrchestrator) NextConnectStep(ctx context.Context, userID uint, _ uint64, _ string) (*ConnectStep, error) {
-	acc, err := o.store.Get(ctx, userID, ProviderLark)
-	switch {
-	case err == nil && acc.AppID != "":
-		return o.stepForExistingApp(ctx, userID, acc)
-	case err == nil || errors.Is(err, gorm.ErrRecordNotFound):
-		// No usable app row → create-app step.
+	// Phase truth source #1: does the user's lark-cli home already hold a built app?
+	appExists, err := o.starter.AppExists(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("feishu.NextConnectStep: app-exists (user %d): %w", userID, err)
+	}
+	if !appExists {
+		// No app in the home → create-app step. (Do NOT consult the DB: even if a stale
+		// row exists, the home is the truth — the app must be built first.)
 		pageURL, _, perr := o.starter.StartProvision(ctx, userID)
 		if perr != nil {
 			return nil, fmt.Errorf("feishu.NextConnectStep: start provision (user %d): %w", userID, perr)
 		}
 		return &ConnectStep{Phase: ConnectPhaseCreateApp, URL: pageURL}, nil
-	default:
-		return nil, fmt.Errorf("feishu.NextConnectStep: load account (user %d): %w", userID, err)
-	}
-}
-
-// stepForExistingApp resolves the authorize/complete/done branch for a user who
-// already has a self-built app (app_id present).
-func (o *ConnectOrchestrator) stepForExistingApp(ctx context.Context, userID uint, acc *model.UserThirdPartyAccount) (*ConnectStep, error) {
-	// Already connected per the durable DB flag → done (no extra round-trip).
-	if acc.Connected {
-		return &ConnectStep{Phase: ConnectPhaseDone}, nil
 	}
 
-	// A device flow is awaiting completion (the user just authorized in the
-	// browser and the run resumed) → finish it.
-	if o.authorizer.HasPendingAuthorize(userID) {
-		if cerr := o.authorizer.CompleteAuthorize(ctx, userID); cerr != nil {
-			// Completion failed (e.g. the device code expired before the user
-			// authorized). Don't dead-end: start a fresh authorize so the user gets
-			// a new link. Log the cause for diagnosis (it carries no secret).
-			log.C(ctx).Warnw("feishu connect: device-code completion failed, restarting authorize",
-				"user_id", userID, "err", cerr)
-			return o.startAuthorize(ctx, userID)
-		}
-		// Completed: lark-cli now holds the token. Persist the connection metadata.
-		if merr := o.markConnected(ctx, userID); merr != nil {
-			return nil, merr
+	// Phase truth source #2: is the home authorized? (auth status: user.available)
+	authorized, err := o.authorizer.IsAuthorized(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("feishu.NextConnectStep: auth-status (user %d): %w", userID, err)
+	}
+	if authorized {
+		// Done: reconcile the DB to the home (connected=true + app_id) for UI/status.
+		if rerr := o.reconcileConnected(ctx, userID); rerr != nil {
+			return nil, rerr
 		}
 		return &ConnectStep{Phase: ConnectPhaseDone}, nil
 	}
 
-	// Out-of-band check: lark-cli may already hold a valid token (e.g. a prior flow
-	// that never updated the DB). Treat that as connected and reconcile the flag.
-	if ok, serr := o.authorizer.IsAuthorized(ctx, userID); serr == nil && ok {
-		if merr := o.markConnected(ctx, userID); merr != nil {
-			return nil, merr
-		}
-		return &ConnectStep{Phase: ConnectPhaseDone}, nil
-	}
-
-	// App exists but no authorization yet → start the device flow.
+	// App exists but not authorized yet → start the blocking auth-login.
 	return o.startAuthorize(ctx, userID)
 }
 
 // startAuthorize begins the lark-cli device flow and returns the authorize step
-// carrying the verification URL the user opens.
+// carrying the verification URL the user opens. When a previous auth-login is still
+// alive (the user has not finished the browser step), StartAuthorize self-heals by
+// returning the SAME cached verification URL rather than an "already in progress"
+// error, so a re-poll yields a clean authorize step (the user re-opens the link)
+// instead of failing the whole connect flow.
 func (o *ConnectOrchestrator) startAuthorize(ctx context.Context, userID uint) (*ConnectStep, error) {
 	verifyURL, err := o.authorizer.StartAuthorize(ctx, userID)
 	if err != nil {
@@ -230,10 +229,27 @@ func (o *ConnectOrchestrator) startAuthorize(ctx context.Context, userID uint) (
 	return &ConnectStep{Phase: ConnectPhaseAuthorize, URL: verifyURL}, nil
 }
 
-// markConnected stamps the DB row connected=true + connected_at=now.
-func (o *ConnectOrchestrator) markConnected(ctx context.Context, userID uint) error {
-	if err := o.store.MarkConnected(ctx, userID, ProviderLark, o.now()); err != nil {
-		return fmt.Errorf("feishu.NextConnectStep: mark connected (user %d): %w", userID, err)
+// reconcileConnected makes the DB row mirror the (authorized) home: it ensures a row
+// with the home's app_id exists, then stamps connected=true + connected_at=now. The
+// DB is used ONLY for UI/status — this is a reconcile FROM the home, never the phase
+// truth. It upserts the app_id first (the row may not exist yet when the home is the
+// only place that knew about the app), then marks connected. Both steps are idempotent.
+func (o *ConnectOrchestrator) reconcileConnected(ctx context.Context, userID uint) error {
+	appID, err := o.starter.AppID(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("feishu.NextConnectStep: read app id (user %d): %w", userID, err)
+	}
+	// Ensure the row exists with the current app_id, preserving any existing connected
+	// flag (a no-op refresh when already present). Upsert does not clear connected.
+	if uerr := o.store.Upsert(ctx, &model.UserThirdPartyAccount{
+		UserID:   userID,
+		Provider: ProviderLark,
+		AppID:    appID,
+	}); uerr != nil {
+		return fmt.Errorf("feishu.NextConnectStep: upsert app id (user %d): %w", userID, uerr)
+	}
+	if merr := o.store.MarkConnected(ctx, userID, ProviderLark, o.now()); merr != nil {
+		return fmt.Errorf("feishu.NextConnectStep: mark connected (user %d): %w", userID, merr)
 	}
 	return nil
 }

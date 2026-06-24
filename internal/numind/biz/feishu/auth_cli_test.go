@@ -7,39 +7,33 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
-// fakeAuthCLIScript stands in for the real `lark-cli auth ...`. It is HOME-aware
-// (lark-cli reads/writes $HOME/.lark-cli/). It handles the three device-code verbs:
+// fakeAuthLoginScript stands in for the real blocking `lark-cli auth login` +
+// `lark-cli auth status --json`. It is HOME-aware (lark-cli reads/writes
+// $HOME/.lark-cli/):
 //
-//   - auth login --no-wait --json --domain ... → prints an {ok:true, verification_url,
-//     device_code} envelope, scraping the values from $HOME/.fake-auth/{url,code}.
-//   - auth login --device-code <code> --json → verifies the code matches the seeded
-//     one, writes a fake token marker into $HOME/.lark-cli/token, prints {ok:true}.
-//   - auth status --json → {ok:true} iff $HOME/.lark-cli/token exists, else {ok:false}.
-const fakeAuthCLIScript = `#!/bin/sh
+//   - auth login --domain ... → prints a verification URL (scraped from
+//     $HOME/.fake-auth/url), then — to simulate the user finishing in the browser —
+//     writes a token marker into $HOME/.lark-cli/token and exits 0 (BLOCKING model,
+//     isomorphic to config init).
+//   - auth status --json → emits the identities.user.available shape: available=true
+//     iff $HOME/.lark-cli/token exists, else the not_configured {ok:false} envelope.
+const fakeAuthLoginScript = `#!/bin/sh
 set -e
-if [ "$1" = "auth" ] && [ "$2" = "login" ] && [ "$3" = "--no-wait" ]; then
+if [ "$1" = "auth" ] && [ "$2" = "login" ]; then
   url=$(cat "$HOME/.fake-auth/url" 2>/dev/null || true)
-  code=$(cat "$HOME/.fake-auth/code" 2>/dev/null || true)
-  printf '{"ok":true,"verification_url":"%s","device_code":"%s"}\n' "$url" "$code"
-  exit 0
-fi
-if [ "$1" = "auth" ] && [ "$2" = "login" ] && [ "$3" = "--device-code" ]; then
-  got="$4"
-  want=$(cat "$HOME/.fake-auth/code" 2>/dev/null || true)
-  if [ "$got" != "$want" ]; then
-    printf '{"ok":false,"error":{"type":"auth","subtype":"invalid_grant","message":"device code mismatch"}}\n'
-    exit 0
-  fi
+  printf '请在浏览器中打开以下链接完成授权:\n'
+  printf '  %s\n' "$url"
+  printf '等待授权...\n'
   mkdir -p "$HOME/.lark-cli"
   printf 'tok\n' > "$HOME/.lark-cli/token"
-  printf '{"ok":true}\n'
   exit 0
 fi
 if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
   if [ -f "$HOME/.lark-cli/token" ]; then
-    printf '{"ok":true}\n'
+    printf '{"appId":"cli_x","identities":{"user":{"status":"ready","available":true}}}\n'
   else
     printf '{"ok":false,"error":{"type":"config","subtype":"not_configured","message":"not configured"}}\n'
   fi
@@ -49,9 +43,9 @@ echo "unhandled args: $@" >&2
 exit 1
 `
 
-// seedFakeAuth writes the verification url + device code the fakeAuthCLIScript emits
-// for a given user's home (homeBase/u{userID}).
-func seedFakeAuth(t *testing.T, homeBase string, userID uint, url, code string) {
+// seedFakeAuthURL writes the verification URL the fakeAuthLoginScript scrapes for a
+// given user's home (homeBase/u{userID}).
+func seedFakeAuthURL(t *testing.T, homeBase string, userID uint, url string) {
 	t.Helper()
 	dir := filepath.Join(homeBase, "u"+itoa(userID), ".fake-auth")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -60,18 +54,15 @@ func seedFakeAuth(t *testing.T, homeBase string, userID uint, url, code string) 
 	if err := os.WriteFile(filepath.Join(dir, "url"), []byte(url), 0o600); err != nil {
 		t.Fatalf("seed url: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "code"), []byte(code), 0o600); err != nil {
-		t.Fatalf("seed code: %v", err)
-	}
 }
 
-func newAuthTestRunner(t *testing.T) (*LarkCLIRunner, string) {
+func newAuthTestRunner(t *testing.T, script string) (*LarkCLIRunner, string) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("fake lark-cli stub is a /bin/sh script")
 	}
 	homeBase := t.TempDir()
-	bin := writeFakeLarkCLI(t, fakeAuthCLIScript)
+	bin := writeFakeLarkCLI(t, script)
 	r, err := NewLarkCLIRunner(bin, homeBase)
 	if err != nil {
 		t.Fatalf("NewLarkCLIRunner: %v", err)
@@ -79,90 +70,115 @@ func newAuthTestRunner(t *testing.T) (*LarkCLIRunner, string) {
 	return r, homeBase
 }
 
-// --- StartAuthLogin ---------------------------------------------------------
+// --- StartAuthorizeLogin (blocking, scrape URL) -----------------------------
 
-func TestStartAuthLogin_ReturnsURLAndPersistsDeviceCode(t *testing.T) {
-	r, homeBase := newAuthTestRunner(t)
-	seedFakeAuth(t, homeBase, 42, "https://open.feishu.cn/suite/passport/oauth/device?user_code=ABCD", "dev_code_42")
+func TestStartAuthorizeLogin_ReturnsVerificationURL(t *testing.T) {
+	r, homeBase := newAuthTestRunner(t, fakeAuthLoginScript)
+	seedFakeAuthURL(t, homeBase, 42, "https://open.feishu.cn/suite/passport/oauth/device?user_code=ABCD")
 
-	url, err := r.StartAuthLogin(context.Background(), 42)
+	url, err := r.StartAuthorizeLogin(context.Background(), 42)
 	if err != nil {
-		t.Fatalf("StartAuthLogin: %v", err)
+		t.Fatalf("StartAuthorizeLogin: %v", err)
 	}
 	if !strings.HasPrefix(url, "https://open.feishu.cn/") {
 		t.Fatalf("verification URL mismatch: %q", url)
 	}
-	// device_code must be persisted (so resume can complete) but NEVER returned.
-	if strings.Contains(url, "dev_code_42") {
-		t.Fatal("device_code must not leak into the returned URL")
-	}
-	if !r.HasPendingDeviceCode(42) {
-		t.Fatal("device_code should be persisted after StartAuthLogin")
-	}
-	codeRaw, err := os.ReadFile(r.pendingDeviceCodePath(42))
-	if err != nil {
-		t.Fatalf("read persisted device code: %v", err)
-	}
-	if strings.TrimSpace(string(codeRaw)) != "dev_code_42" {
-		t.Fatalf("persisted device code mismatch: %q", codeRaw)
+
+	// The process writes the token + exits; AuthStatus then reports authorized. Poll
+	// briefly since the background process completes asynchronously.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		ok, serr := r.AuthStatus(context.Background(), 42)
+		if serr != nil {
+			t.Fatalf("AuthStatus: %v", serr)
+		}
+		if ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("AuthStatus should report authorized after the login process finishes")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
-func TestStartAuthLogin_NoDeviceCodeInOutput_Errors(t *testing.T) {
-	r, homeBase := newAuthTestRunner(t)
-	// Seed empty code → fake prints empty device_code → StartAuthLogin must error.
-	seedFakeAuth(t, homeBase, 7, "https://x", "")
-
-	if _, err := r.StartAuthLogin(context.Background(), 7); err == nil {
-		t.Fatal("StartAuthLogin must error when device_code is absent")
-	}
-	if r.HasPendingDeviceCode(7) {
-		t.Fatal("no device_code should be persisted on failure")
-	}
-}
-
-// --- CompleteAuthLogin ------------------------------------------------------
-
-func TestCompleteAuthLogin_CompletesAndClearsPending(t *testing.T) {
-	r, homeBase := newAuthTestRunner(t)
-	seedFakeAuth(t, homeBase, 42, "https://open.feishu.cn/device", "dev_code_42")
-
-	if _, err := r.StartAuthLogin(context.Background(), 42); err != nil {
-		t.Fatalf("StartAuthLogin: %v", err)
-	}
-	if err := r.CompleteAuthLogin(context.Background(), 42); err != nil {
-		t.Fatalf("CompleteAuthLogin: %v", err)
-	}
-	// Pending device code file is consumed on success.
-	if r.HasPendingDeviceCode(42) {
-		t.Fatal("pending device code must be cleared after completion")
-	}
-	// And the home now reports connected.
-	ok, err := r.AuthStatus(context.Background(), 42)
-	if err != nil {
-		t.Fatalf("AuthStatus: %v", err)
-	}
-	if !ok {
-		t.Fatal("AuthStatus should be connected after completion")
-	}
-}
-
-func TestCompleteAuthLogin_NoPending_Errors(t *testing.T) {
-	r, _ := newAuthTestRunner(t)
-	if err := r.CompleteAuthLogin(context.Background(), 99); err == nil {
-		t.Fatal("CompleteAuthLogin without a pending device code must error")
-	}
-}
-
-// --- AuthStatus -------------------------------------------------------------
+// --- AuthStatus (identities.user.available parsing) -------------------------
 
 func TestAuthStatus_FalseWhenNotLoggedIn(t *testing.T) {
-	r, _ := newAuthTestRunner(t)
+	r, _ := newAuthTestRunner(t, fakeAuthLoginScript)
 	ok, err := r.AuthStatus(context.Background(), 5)
 	if err != nil {
 		t.Fatalf("AuthStatus: %v", err)
 	}
 	if ok {
 		t.Fatal("AuthStatus should be false before any login")
+	}
+}
+
+// --- parseAuthStatus (pure parser over real lark-cli shapes) ----------------
+
+func TestParseAuthStatus_AuthorizedShape(t *testing.T) {
+	// Real `auth status --json` shape when the user is authorized.
+	raw := []byte(`{"appId":"cli_x","brand":"feishu","identities":{"bot":{"status":"ready","available":true},"user":{"status":"ready","available":true}},"identity":"user"}`)
+	out, err := parseAuthStatus(raw)
+	if err != nil {
+		t.Fatalf("parseAuthStatus: %v", err)
+	}
+	if !out.authorized() {
+		t.Fatal("user.available=true must be authorized")
+	}
+}
+
+func TestParseAuthStatus_NeedsRefreshStillAuthorized(t *testing.T) {
+	// needs_refresh with available=true still counts (lark-cli auto-refreshes).
+	raw := []byte(`{"identities":{"user":{"status":"needs_refresh","available":true}}}`)
+	out, err := parseAuthStatus(raw)
+	if err != nil {
+		t.Fatalf("parseAuthStatus: %v", err)
+	}
+	if !out.authorized() {
+		t.Fatal("needs_refresh + available=true must still be authorized")
+	}
+}
+
+func TestParseAuthStatus_UserMissingNotAuthorized(t *testing.T) {
+	// App configured, bot ready, but the user identity is missing → not authorized.
+	raw := []byte(`{"appId":"cli_x","identities":{"bot":{"status":"ready","available":true},"user":{"status":"missing","available":false}},"identity":"bot"}`)
+	out, err := parseAuthStatus(raw)
+	if err != nil {
+		t.Fatalf("parseAuthStatus: %v", err)
+	}
+	if out.authorized() {
+		t.Fatal("user.available=false must NOT be authorized")
+	}
+}
+
+func TestParseAuthStatus_NotConfiguredEnvelope(t *testing.T) {
+	// No app configured → {ok:false,error:...} envelope (no identities) → not authorized.
+	raw := []byte(`{"ok":false,"error":{"type":"config","subtype":"not_configured","message":"not configured"}}`)
+	out, err := parseAuthStatus(raw)
+	if err != nil {
+		t.Fatalf("parseAuthStatus: %v", err)
+	}
+	if out.authorized() {
+		t.Fatal("not_configured envelope must NOT be authorized")
+	}
+}
+
+func TestParseAuthStatus_TrailingNonJSONTolerated(t *testing.T) {
+	// Some lark-cli commands append a trailing non-JSON line; decode only the first value.
+	raw := []byte("{\"identities\":{\"user\":{\"available\":true}}}\n\nConfig file path: /home/u1/.lark-cli/config.json\n")
+	out, err := parseAuthStatus(raw)
+	if err != nil {
+		t.Fatalf("parseAuthStatus must tolerate a trailing footer: %v", err)
+	}
+	if !out.authorized() {
+		t.Fatal("trailing footer must not break parsing")
+	}
+}
+
+func TestParseAuthStatus_Garbage(t *testing.T) {
+	if _, err := parseAuthStatus([]byte("not json")); err == nil {
+		t.Fatal("unparseable auth status must error")
 	}
 }
