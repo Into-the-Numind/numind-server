@@ -267,6 +267,9 @@ func downloadVideoFromURL(ctx context.Context, videoURL, destPath string) error 
 	if err != nil {
 		return fmt.Errorf("downloadVideoFromURL: build request: %w", err)
 	}
+	// 小红书视频 CDN 按 Referer 防盗链：不带小红书 Referer 的裸 GET 可能被 4xx 拒。
+	req.Header.Set("Referer", "https://www.xiaohongshu.com/")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
 	client := &http.Client{Timeout: asrDownloadTimeout}
 	resp, err := client.Do(req)
