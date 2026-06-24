@@ -113,19 +113,29 @@ func (r *larkCLIRunner) homeForUser(userID uint) string {
 // env builds the child-process environment: inherit the parent env but override
 // HOME so lark-cli reads/writes THIS user's ~/.lark-cli/ . We also strip the
 // agent-context vars (OPENCLAW_HOME / HERMES_HOME) that make `config init`
-// refuse to create a new app.
+// refuse to create a new app, and pin the notifier-off vars so no lark-cli call
+// triggers an update-check / skills-notifier network probe (which can hang in a
+// no-outbound-internet container and stall config show / apps +init). The
+// Dockerfile sets the same two as ENV; setting them here too keeps the child env
+// clean even when the binary runs outside that image (dev/test/local).
 func (r *larkCLIRunner) env(home string) []string {
 	base := os.Environ()
-	out := make([]string, 0, len(base)+1)
+	out := make([]string, 0, len(base)+3)
 	for _, kv := range base {
 		if strings.HasPrefix(kv, "HOME=") ||
 			strings.HasPrefix(kv, "OPENCLAW_HOME=") ||
-			strings.HasPrefix(kv, "HERMES_HOME=") {
+			strings.HasPrefix(kv, "HERMES_HOME=") ||
+			strings.HasPrefix(kv, "LARKSUITE_CLI_NO_UPDATE_NOTIFIER=") ||
+			strings.HasPrefix(kv, "LARKSUITE_CLI_NO_SKILLS_NOTIFIER=") {
 			continue
 		}
 		out = append(out, kv)
 	}
-	out = append(out, "HOME="+home)
+	out = append(out,
+		"HOME="+home,
+		"LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1",
+		"LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1",
+	)
 	return out
 }
 
@@ -142,6 +152,13 @@ func (r *larkCLIRunner) StartInit(ctx context.Context, userID uint) (pageURL, se
 	// Detach from the request ctx: the process must outlive this HTTP request
 	// (the user's browser step can take minutes). We bound only the URL-scrape
 	// window below, not the process lifetime.
+	//
+	// bgCtx keeps the request's log fields (request/user ID) but drops its
+	// cancellation, so the reaper goroutine below — which may log minutes after
+	// the HTTP request returned — does not attach to an already-cancelled ctx
+	// (which would mislead observability by hanging the warning off a dead trace).
+	bgCtx := context.WithoutCancel(ctx)
+
 	cmd := exec.Command(r.bin, "config", "init", "--new", "--name", fmt.Sprintf("%d", userID)) // #nosec G204 -- bin is config-pinned, userID is a uint
 	cmd.Env = r.env(home)
 
@@ -169,7 +186,7 @@ func (r *larkCLIRunner) StartInit(ctx context.Context, userID uint) (pageURL, se
 		sess.exitErr = exitErr
 		sess.mu.Unlock()
 		if exitErr != nil {
-			log.C(ctx).Warnw("feishu: lark-cli config init exited with error", "user_id", userID, "error", exitErr.Error())
+			log.C(bgCtx).Warnw("feishu: lark-cli config init exited with error", "user_id", userID, "error", exitErr.Error())
 		}
 	}()
 

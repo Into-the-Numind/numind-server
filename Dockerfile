@@ -118,6 +118,13 @@ RUN set -eux; \
     rm -rf "${tmp}"; \
     LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1 LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1 lark-cli --version
 
+# 把上面的自检 env 固化成运行期 ENV：否则容器内每次 lark-cli 调用（config show /
+# apps +init / config init --new）都可能触发 update-check / skills-notifier 的网络探测，
+# 在无外网或外网慢的环境下挂起，拖垮 PollCredentials。provisioner_cli.go 的 env()
+# 也会再注入一份，确保继承环境和显式构造环境两边都干净。
+ENV LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1
+ENV LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1
+
 # 第三层：预下载语义切分模型 (实现 99.9% 可用性)
 # 将模型固化在镜像中，避免由于网络问题导致的生产环境失效
 ENV SENTENCE_TRANSFORMERS_HOME=/app/model_cache
