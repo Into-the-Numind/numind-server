@@ -1,7 +1,8 @@
 // Package feishu — api.go is the narrow 飞书 (Lark) business API the agent tools
-// call. Under the G2-authorize device-code redesign it is backed by lark-cli (not
-// oapi-sdk-go): each method runs `lark-cli <docs|im|base>` (or `lark-cli api`) with
-// HOME pinned to the user's home, so lark-cli uses that user's auto-refreshed token.
+// call. Under the 甲方案 G3-ops redesign it is backed by lark-cli (not oapi-sdk-go):
+// each method runs a higher-level lark-cli shortcut verb (`docs +create` /
+// `im +messages-send` / `base +record-list`) with HOME pinned to the user's home, so
+// lark-cli uses that user's auto-refreshed token.
 //
 //	client.APIFor(ctx, userID)  ── gates connected+authorized, returns a LarkAPI
 //	                               bound to userID (token managed by lark-cli)
@@ -44,6 +45,10 @@ type BitableRecord struct {
 }
 
 // BitableResult is the outcome of ReadBitable: the page of records + paging info.
+// PageToken is surfaced when the `base +record-list` shortcut includes it in its
+// response (it wraps the bitable list API), but the request pages by offset/limit
+// (the shortcut's model), so callers advance pages by increasing the offset, not by
+// passing PageToken back.
 type BitableResult struct {
 	Records   []BitableRecord
 	HasMore   bool
@@ -65,8 +70,9 @@ type LarkAPI interface {
 	// (content is then the JSON `{"text":"..."}`).
 	SendMessage(ctx context.Context, receiveIDType, receiveID, msgType, content string) (*MsgResult, error)
 	// ReadBitable lists records of a bitable table (read-only). pageSize is clamped
-	// by the caller; pageToken empty = first page.
-	ReadBitable(ctx context.Context, appToken, tableID string, pageSize int, pageToken string) (*BitableResult, error)
+	// by the caller; pageOffset is the number of records to skip (0 = first page) —
+	// the lark-cli `base +record-list` shortcut pages by offset/limit, not a cursor.
+	ReadBitable(ctx context.Context, appToken, tableID string, pageSize, pageOffset int) (*BitableResult, error)
 }
 
 // LarkAPIProvider builds a per-user LarkAPI. *Client satisfies it (APIFor below).
@@ -115,6 +121,6 @@ func (a *cliLarkAPI) SendMessage(ctx context.Context, receiveIDType, receiveID, 
 	return a.ops.SendMessage(ctx, a.userID, receiveIDType, receiveID, msgType, content)
 }
 
-func (a *cliLarkAPI) ReadBitable(ctx context.Context, appToken, tableID string, pageSize int, pageToken string) (*BitableResult, error) {
-	return a.ops.ReadBitable(ctx, a.userID, appToken, tableID, pageSize, pageToken)
+func (a *cliLarkAPI) ReadBitable(ctx context.Context, appToken, tableID string, pageSize, pageOffset int) (*BitableResult, error) {
+	return a.ops.ReadBitable(ctx, a.userID, appToken, tableID, pageSize, pageOffset)
 }

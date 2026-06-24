@@ -39,7 +39,10 @@ const ProviderLark = "lark"
 type opsRunner interface {
 	CreateDoc(ctx context.Context, userID uint, title, contentMD string) (*DocResult, error)
 	SendMessage(ctx context.Context, userID uint, receiveIDType, receiveID, msgType, content string) (*MsgResult, error)
-	ReadBitable(ctx context.Context, userID uint, appToken, tableID string, pageSize int, pageToken string) (*BitableResult, error)
+	// ReadBitable pages by offset/limit (the lark-cli `base +record-list` shortcut's
+	// paging model — NOT a page_token cursor). pageOffset is the number of records to
+	// skip (0 = first page); pageSize is the page length.
+	ReadBitable(ctx context.Context, userID uint, appToken, tableID string, pageSize, pageOffset int) (*BitableResult, error)
 	// AuthStatus reports whether userID's home holds a usable authorization
 	// (the device-code authRunner method, reused here as a reauth gate).
 	AuthStatus(ctx context.Context, userID uint) (connected bool, err error)

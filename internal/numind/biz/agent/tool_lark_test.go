@@ -25,8 +25,8 @@ type fakeLarkAPI struct {
 	lastDoc struct{ title, content string }
 	lastMsg struct{ idType, id, msgType, content string }
 	lastBit struct {
-		appToken, tableID, pageToken string
-		pageSize                     int
+		appToken, tableID string
+		pageSize, offset  int
 	}
 }
 
@@ -40,8 +40,8 @@ func (f *fakeLarkAPI) SendMessage(_ context.Context, idType, id, msgType, conten
 	return f.msg, f.msgErr
 }
 
-func (f *fakeLarkAPI) ReadBitable(_ context.Context, appToken, tableID string, pageSize int, pageToken string) (*feishu.BitableResult, error) {
-	f.lastBit.appToken, f.lastBit.tableID, f.lastBit.pageSize, f.lastBit.pageToken = appToken, tableID, pageSize, pageToken
+func (f *fakeLarkAPI) ReadBitable(_ context.Context, appToken, tableID string, pageSize, pageOffset int) (*feishu.BitableResult, error) {
+	f.lastBit.appToken, f.lastBit.tableID, f.lastBit.pageSize, f.lastBit.offset = appToken, tableID, pageSize, pageOffset
 	return f.bit, f.bitErr
 }
 
@@ -291,7 +291,7 @@ func TestLarkSendMessage_EmptyText_SoftError(t *testing.T) {
 func TestLarkReadBitable_Success(t *testing.T) {
 	api := &fakeLarkAPI{bit: &feishu.BitableResult{
 		Records: []feishu.BitableRecord{{RecordID: "r1", Fields: map[string]any{"name": "alice"}}},
-		HasMore: true, PageToken: "pt2", Total: 1,
+		HasMore: true, Total: 1,
 	}}
 	tool := &larkReadBitableTool{provider: &fakeLarkProvider{api: api}}
 
@@ -305,11 +305,43 @@ func TestLarkReadBitable_Success(t *testing.T) {
 	if len(out.Records) != 1 || out.Records[0].RecordID != "r1" {
 		t.Fatalf("records mismatch: %+v", out.Records)
 	}
-	if !out.HasMore || out.PageToken != "pt2" || out.Total != 1 {
+	if !out.HasMore || out.Total != 1 {
 		t.Fatalf("paging fields mismatch: %+v", out)
+	}
+	// Offset-based paging: next_offset = offset(0) + len(records)(1) when has_more.
+	if out.NextOffset != 1 {
+		t.Fatalf("next_offset should be 1 when has_more; got %d", out.NextOffset)
 	}
 	if api.lastBit.appToken != "app1" || api.lastBit.tableID != "tbl1" || api.lastBit.pageSize != 5 {
 		t.Fatalf("API args mismatch: %+v", api.lastBit)
+	}
+	if api.lastBit.offset != 0 {
+		t.Fatalf("default offset should be 0; got %d", api.lastBit.offset)
+	}
+}
+
+func TestLarkReadBitable_OffsetPassedThrough(t *testing.T) {
+	api := &fakeLarkAPI{bit: &feishu.BitableResult{
+		Records: []feishu.BitableRecord{{RecordID: "r3"}},
+		HasMore: false, Total: 3,
+	}}
+	tool := &larkReadBitableTool{provider: &fakeLarkProvider{api: api}}
+	// LLM sends offset as a string — must be tolerated (json.Number).
+	raw, err := tool.Execute(ctxWithUser(7), ToolInput(`{"app_token":"a","table_id":"t","page_size":2,"offset":"2"}`))
+	if err != nil {
+		t.Fatalf("Execute Go error: %v", err)
+	}
+	if decodeErr(t, raw) != "" {
+		t.Fatalf("string offset should NOT error: %s", decodeErr(t, raw))
+	}
+	if api.lastBit.offset != 2 {
+		t.Fatalf("offset string should parse to 2; got %d", api.lastBit.offset)
+	}
+	var out larkReadBitableOutput
+	_ = json.Unmarshal(raw, &out)
+	// has_more=false → next_offset omitted (0).
+	if out.NextOffset != 0 {
+		t.Fatalf("next_offset should be omitted when has_more=false; got %d", out.NextOffset)
 	}
 }
 

@@ -11,40 +11,32 @@ import (
 	"numind-server/internal/pkg/errno"
 )
 
-// fakeOpsCLIScript stands in for the real `lark-cli api ...` ops calls. It is
-// HOME-aware and emits the lark-cli {ok,error,data} envelope, mirroring the real
-// 飞书 response data shapes for the three ops. It also records the invoked path +
-// payloads into $HOME/.ops-log so tests can assert the params/body passed.
+// fakeOpsCLIScript stands in for the real lark-cli ops SHORTCUTS (甲方案 G3-ops):
+// `docs +create`, `im +messages-send`, `base +record-list`. It is HOME-aware and
+// emits the lark-cli {ok,error,data} envelope, mirroring the real 飞书 response data
+// shapes. It records the full argv into $HOME/.ops-log/calls so tests can assert the
+// shortcut + flags passed (content / recipient flag / base-token / limit / offset).
 const fakeOpsCLIScript = `#!/bin/sh
 set -e
-# Args layout: api <METHOD> <PATH> --as user --json [--params P] [--data D]
-method="$2"
-path="$3"
-params=""
-data=""
-shift 3
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --params) params="$2"; shift 2 ;;
-    --data)   data="$2";   shift 2 ;;
-    *)        shift ;;
-  esac
-done
+svc="$1"
+verb="$2"
 mkdir -p "$HOME/.ops-log"
-printf '%s %s\nPARAMS:%s\nDATA:%s\n' "$method" "$path" "$params" "$data" >> "$HOME/.ops-log/calls"
+# Record the whole argv (one call per line) so tests can grep flags + values.
+printf '%s\n' "$*" >> "$HOME/.ops-log/calls"
 
-case "$path" in
-  /open-apis/docx/v1/documents)
-    printf '{"ok":true,"data":{"document":{"document_id":"docx_new_1","title":"T"}}}\n' ;;
-  */blocks/*/children)
-    printf '{"ok":true,"data":{"children":[]}}\n' ;;
-  /open-apis/im/v1/messages)
-    printf '{"ok":true,"data":{"message_id":"om_msg_1"}}\n' ;;
-  *records*)
-    printf '{"ok":true,"data":{"has_more":true,"page_token":"pt_next","total":2,"items":[{"record_id":"rec1","fields":{"Name":"A"}},{"record_id":"rec2","fields":{"Name":"B"}}]}}\n' ;;
-  *)
-    printf '{"ok":false,"error":{"type":"validation","subtype":"unknown_path","message":"unhandled %s"}}\n' "$path" ;;
-esac
+if [ "$svc" = "docs" ] && [ "$verb" = "+create" ]; then
+  printf '{"ok":true,"data":{"document":{"document_id":"docx_new_1","title":"T","url":"https://feishu.cn/docx/docx_new_1"}}}\n'
+  exit 0
+fi
+if [ "$svc" = "im" ] && [ "$verb" = "+messages-send" ]; then
+  printf '{"ok":true,"data":{"message_id":"om_msg_1"}}\n'
+  exit 0
+fi
+if [ "$svc" = "base" ] && [ "$verb" = "+record-list" ]; then
+  printf '{"ok":true,"data":{"has_more":true,"page_token":"pt_next","total":2,"items":[{"record_id":"rec1","fields":{"Name":"A"}},{"record_id":"rec2","fields":{"Name":"B"}}]}}\n'
+  exit 0
+fi
+printf '{"ok":false,"error":{"type":"validation","subtype":"unknown_verb","message":"unhandled %s %s"}}\n' "$svc" "$verb"
 exit 0
 `
 
@@ -71,7 +63,7 @@ func newOpsTestRunner(t *testing.T, script string) (*LarkCLIRunner, string) {
 
 // --- CreateDoc --------------------------------------------------------------
 
-func TestOpsCreateDoc_ParsesDocumentID(t *testing.T) {
+func TestOpsCreateDoc_ParsesDocumentIDAndURL(t *testing.T) {
 	r, _ := newOpsTestRunner(t, fakeOpsCLIScript)
 	res, err := r.CreateDoc(context.Background(), 7, "我的标题", "正文内容")
 	if err != nil {
@@ -80,31 +72,43 @@ func TestOpsCreateDoc_ParsesDocumentID(t *testing.T) {
 	if res.DocumentID != "docx_new_1" {
 		t.Fatalf("document_id mismatch: %q", res.DocumentID)
 	}
-	if !strings.Contains(res.URL, "docx_new_1") {
-		t.Fatalf("URL must embed the doc id: %q", res.URL)
+	// The shortcut returns the url directly; we must surface it.
+	if res.URL != "https://feishu.cn/docx/docx_new_1" {
+		t.Fatalf("URL should come from the shortcut response: %q", res.URL)
 	}
-	// Body write should have been issued (a second call to the children endpoint).
 	calls := readOpsCalls(t, r, 7)
-	if !strings.Contains(calls, "/open-apis/docx/v1/documents") {
-		t.Fatalf("expected a create-doc call, got:\n%s", calls)
+	// Must use the docs +create shortcut (NOT the generic api path).
+	if !strings.Contains(calls, "docs +create") {
+		t.Fatalf("expected docs +create shortcut, got:\n%s", calls)
 	}
-	if !strings.Contains(calls, "/children") {
-		t.Fatalf("expected a content-write call, got:\n%s", calls)
+	if !strings.Contains(calls, "--doc-format markdown") {
+		t.Fatalf("expected markdown import, got:\n%s", calls)
 	}
-	// The title must be passed in the body JSON (single argv element).
-	if !strings.Contains(calls, "我的标题") {
-		t.Fatalf("title must be passed in --data, got:\n%s", calls)
+	// The title must be embedded as the leading # heading inside --content.
+	if !strings.Contains(calls, "# 我的标题") {
+		t.Fatalf("title must be the leading markdown heading in --content, got:\n%s", calls)
+	}
+	if !strings.Contains(calls, "正文内容") {
+		t.Fatalf("body must be passed in --content, got:\n%s", calls)
+	}
+	// A single create call — no separate block-children write step anymore.
+	if strings.Contains(calls, "children") || strings.Contains(calls, " api ") {
+		t.Fatalf("must NOT issue a block-write / generic api call, got:\n%s", calls)
 	}
 }
 
-func TestOpsCreateDoc_NoContent_SkipsBodyWrite(t *testing.T) {
+func TestOpsCreateDoc_NoContent_TitleOnly(t *testing.T) {
 	r, _ := newOpsTestRunner(t, fakeOpsCLIScript)
 	if _, err := r.CreateDoc(context.Background(), 7, "标题", ""); err != nil {
 		t.Fatalf("CreateDoc: %v", err)
 	}
 	calls := readOpsCalls(t, r, 7)
-	if strings.Contains(calls, "/children") {
-		t.Fatalf("empty content must NOT issue a body-write call, got:\n%s", calls)
+	// Exactly one docs +create call, content is just the title heading.
+	if strings.Count(calls, "docs +create") != 1 {
+		t.Fatalf("title-only doc must be a single create call, got:\n%s", calls)
+	}
+	if !strings.Contains(calls, "# 标题") {
+		t.Fatalf("title heading must be present, got:\n%s", calls)
 	}
 }
 
@@ -118,10 +122,9 @@ func TestOpsCreateDoc_BusinessError_WrapsLarkCallFailed(t *testing.T) {
 
 // --- SendMessage ------------------------------------------------------------
 
-func TestOpsSendMessage_ParsesMessageIDAndPassesReceiveIDType(t *testing.T) {
+func TestOpsSendMessage_OpenID_UsesUserIDFlag(t *testing.T) {
 	r, _ := newOpsTestRunner(t, fakeOpsCLIScript)
-	content := `{"text":"hi"}`
-	res, err := r.SendMessage(context.Background(), 7, "open_id", "ou_abc", "text", content)
+	res, err := r.SendMessage(context.Background(), 7, "open_id", "ou_abc", "text", `{"text":"hi there"}`)
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
@@ -129,11 +132,31 @@ func TestOpsSendMessage_ParsesMessageIDAndPassesReceiveIDType(t *testing.T) {
 		t.Fatalf("message_id mismatch: %q", res.MessageID)
 	}
 	calls := readOpsCalls(t, r, 7)
-	if !strings.Contains(calls, "receive_id_type") || !strings.Contains(calls, "open_id") {
-		t.Fatalf("receive_id_type must be passed as a query param, got:\n%s", calls)
+	if !strings.Contains(calls, "im +messages-send") {
+		t.Fatalf("expected im +messages-send shortcut, got:\n%s", calls)
 	}
-	if !strings.Contains(calls, "ou_abc") {
-		t.Fatalf("receive_id must be passed in the body, got:\n%s", calls)
+	// open_id → --user-id (the shortcut's recipient flag).
+	if !strings.Contains(calls, "--user-id ou_abc") {
+		t.Fatalf("open_id should map to --user-id, got:\n%s", calls)
+	}
+	// Text is extracted from the content JSON and passed via --text.
+	if !strings.Contains(calls, "--text hi there") {
+		t.Fatalf("text should be extracted and passed via --text, got:\n%s", calls)
+	}
+}
+
+func TestOpsSendMessage_ChatID_UsesChatIDFlag(t *testing.T) {
+	r, _ := newOpsTestRunner(t, fakeOpsCLIScript)
+	_, err := r.SendMessage(context.Background(), 7, "chat_id", "oc_xyz", "text", `{"text":"team ping"}`)
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	calls := readOpsCalls(t, r, 7)
+	if !strings.Contains(calls, "--chat-id oc_xyz") {
+		t.Fatalf("chat_id should map to --chat-id, got:\n%s", calls)
+	}
+	if strings.Contains(calls, "--user-id") {
+		t.Fatalf("chat_id must NOT also pass --user-id, got:\n%s", calls)
 	}
 }
 
@@ -145,11 +168,25 @@ func TestOpsSendMessage_BusinessError_WrapsLarkCallFailed(t *testing.T) {
 	}
 }
 
+func TestOpsSendMessage_EmptyWrappedText_Errors(t *testing.T) {
+	r, _ := newOpsTestRunner(t, fakeOpsCLIScript)
+	// {"text":""} is the wrapper shape with an empty body → must NOT send a blank
+	// message (and must NOT leak the literal JSON as the message text).
+	_, err := r.SendMessage(context.Background(), 7, "open_id", "ou_abc", "text", `{"text":""}`)
+	if !errors.Is(err, errno.ErrLarkCallFailed) {
+		t.Fatalf("empty wrapped text must error with ErrLarkCallFailed, got %v", err)
+	}
+	// No shortcut call should have been issued for an empty message.
+	if _, statErr := os.Stat(r.homeForUser(7) + "/.ops-log/calls"); statErr == nil {
+		t.Fatal("empty-text message must not invoke the lark-cli shortcut")
+	}
+}
+
 // --- ReadBitable ------------------------------------------------------------
 
 func TestOpsReadBitable_ParsesRecordsAndPaging(t *testing.T) {
 	r, _ := newOpsTestRunner(t, fakeOpsCLIScript)
-	res, err := r.ReadBitable(context.Background(), 7, "bascABC", "tblXYZ", 20, "")
+	res, err := r.ReadBitable(context.Background(), 7, "bascABC", "tblXYZ", 20, 0)
 	if err != nil {
 		t.Fatalf("ReadBitable: %v", err)
 	}
@@ -159,21 +196,45 @@ func TestOpsReadBitable_ParsesRecordsAndPaging(t *testing.T) {
 	if res.Records[0].RecordID != "rec1" || res.Records[0].Fields["Name"] != "A" {
 		t.Fatalf("record parse mismatch: %+v", res.Records[0])
 	}
-	if !res.HasMore || res.PageToken != "pt_next" || res.Total != 2 {
-		t.Fatalf("paging parse mismatch: has_more=%t token=%q total=%d", res.HasMore, res.PageToken, res.Total)
+	if !res.HasMore || res.Total != 2 {
+		t.Fatalf("paging parse mismatch: has_more=%t total=%d", res.HasMore, res.Total)
 	}
 	calls := readOpsCalls(t, r, 7)
-	if !strings.Contains(calls, "bascABC") || !strings.Contains(calls, "tblXYZ") {
-		t.Fatalf("app_token/table_id must be in the path, got:\n%s", calls)
+	if !strings.Contains(calls, "base +record-list") {
+		t.Fatalf("expected base +record-list shortcut, got:\n%s", calls)
 	}
-	if !strings.Contains(calls, "page_size") {
-		t.Fatalf("page_size must be passed as a query param, got:\n%s", calls)
+	if !strings.Contains(calls, "--base-token bascABC") || !strings.Contains(calls, "--table-id tblXYZ") {
+		t.Fatalf("base-token/table-id must be flags, got:\n%s", calls)
+	}
+	if !strings.Contains(calls, "--limit 20") {
+		t.Fatalf("page size must be passed as --limit, got:\n%s", calls)
+	}
+	if !strings.Contains(calls, "--format json") {
+		t.Fatalf("must request --format json, got:\n%s", calls)
+	}
+	// offset 0 → no --offset flag (first page).
+	if strings.Contains(calls, "--offset") {
+		t.Fatalf("offset 0 should omit --offset, got:\n%s", calls)
+	}
+}
+
+func TestOpsReadBitable_OffsetPaging(t *testing.T) {
+	r, _ := newOpsTestRunner(t, fakeOpsCLIScript)
+	if _, err := r.ReadBitable(context.Background(), 7, "basc", "tbl", 50, 100); err != nil {
+		t.Fatalf("ReadBitable: %v", err)
+	}
+	calls := readOpsCalls(t, r, 7)
+	if !strings.Contains(calls, "--offset 100") {
+		t.Fatalf("non-zero offset must be passed as --offset, got:\n%s", calls)
+	}
+	if !strings.Contains(calls, "--limit 50") {
+		t.Fatalf("limit must be passed, got:\n%s", calls)
 	}
 }
 
 func TestOpsReadBitable_BusinessError_WrapsLarkCallFailed(t *testing.T) {
 	r, _ := newOpsTestRunner(t, fakeOpsErrorScript)
-	_, err := r.ReadBitable(context.Background(), 7, "basc", "tbl", 10, "")
+	_, err := r.ReadBitable(context.Background(), 7, "basc", "tbl", 10, 0)
 	if !errors.Is(err, errno.ErrLarkCallFailed) {
 		t.Fatalf("business error must wrap ErrLarkCallFailed, got %v", err)
 	}

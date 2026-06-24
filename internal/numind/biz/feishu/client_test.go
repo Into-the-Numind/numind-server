@@ -49,7 +49,7 @@ func (f *fakeAccountStore) MarkConnected(_ context.Context, _ uint, _ string, at
 }
 
 // fakeOpsRunner scripts the opsRunner seam for the client gate (only AuthStatus is
-// exercised here; the ops methods are covered by ops_cli_test.go via the real CLI).
+// exercised here; the ops methods are covered by api_test.go via the fake lark-cli).
 type fakeOpsRunner struct {
 	authOK  bool
 	authErr error
@@ -61,7 +61,7 @@ func (f *fakeOpsRunner) CreateDoc(context.Context, uint, string, string) (*DocRe
 func (f *fakeOpsRunner) SendMessage(context.Context, uint, string, string, string, string) (*MsgResult, error) {
 	return &MsgResult{MessageID: "msg"}, nil
 }
-func (f *fakeOpsRunner) ReadBitable(context.Context, uint, string, string, int, string) (*BitableResult, error) {
+func (f *fakeOpsRunner) ReadBitable(context.Context, uint, string, string, int, int) (*BitableResult, error) {
 	return &BitableResult{}, nil
 }
 func (f *fakeOpsRunner) AuthStatus(context.Context, uint) (bool, error) {
