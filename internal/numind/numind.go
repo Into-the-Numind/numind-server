@@ -221,6 +221,7 @@ func run() error {
 		adapter.NewBaiduOCRAdapter(),
 		adapter.NewBailianFileAdapter(),
 		adapter.NewFunASRAdapter(),
+		adapter.NewDashScopeASRAdapter(),
 		// Provider-native cache adapters (native-cache-adapters T4). ADDITIVE and
 		// OPT-IN: nothing routes to these until an admin activates a llm_provider
 		// row named exactly "claude-native"/"gemini-native" AND repoints a route at

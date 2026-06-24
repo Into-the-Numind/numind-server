@@ -434,7 +434,7 @@ func TestMatch_UnknownServiceType(t *testing.T) {
 
 func TestAllTaskIDs_Count(t *testing.T) {
 	ids := AllTaskIDs()
-	assert.Equal(t, 33, len(ids), "expected 33 task IDs (14 base + 7 agent-mode #14 + 1 agent-imagegen-via-aiservice: agent.image_gen + 2 V1.5 attachment + 4 V1.5 memory: extract + select + dialectic + digest + 1 v2 marketplace: skill.marketplace.sanitize + 1 adaptive-session-titles: session.title + 1 meeting-feedback-flash: meeting.feedback + 1 meeting-summary-flash: meeting.summary + 1 xhs-collector: xhs.note_analyze)")
+	assert.Equal(t, 34, len(ids), "expected 33 task IDs (14 base + 7 agent-mode #14 + 1 agent-imagegen-via-aiservice: agent.image_gen + 2 V1.5 attachment + 4 V1.5 memory: extract + select + dialectic + digest + 1 v2 marketplace: skill.marketplace.sanitize + 1 adaptive-session-titles: session.title + 1 meeting-feedback-flash: meeting.feedback + 1 meeting-summary-flash: meeting.summary + 1 xhs-collector: xhs.note_analyze + 1 xhs-collector video: xhs.transcribe)")
 
 	// Verify no duplicates.
 	seen := make(map[string]struct{}, len(ids))

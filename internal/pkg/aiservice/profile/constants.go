@@ -34,6 +34,8 @@ const (
 	MonitorAnalyze = "monitor.analyze"
 	// MonitorTranscribe is the monitor audio transcription task (ASR).
 	MonitorTranscribe = "monitor.transcribe"
+	// XhsTranscribe 是小红书视频笔记的 ASR 转写任务（走云 DashScope Paraformer，与 monitor 隔离）。
+	XhsTranscribe = "xhs.transcribe"
 	// OcrBaidu is the Baidu OCR high-accuracy task (OCR).
 	OcrBaidu = "ocr.baidu"
 	// AgentRun is the Agent ReAct main LLM call (#14 e2e rollout).
@@ -183,6 +185,7 @@ var allTaskIDsList = []string{
 	MonitorBriefing,
 	MonitorAnalyze,
 	MonitorTranscribe,
+	XhsTranscribe,
 	OcrBaidu,
 	AgentRun,
 	AgentEmbed,

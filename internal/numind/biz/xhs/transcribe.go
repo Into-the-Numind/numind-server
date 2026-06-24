@@ -218,7 +218,7 @@ func (e *Enricher) transcribeVideo(ctx context.Context, userID uint, note *model
 	)
 	asrCtx = langfuse.WithTrace(asrCtx, traceID)
 
-	asrResp, asrErr := asrFn(asrCtx, profile.MonitorTranscribe, aiservice.ASRRequest{
+	asrResp, asrErr := asrFn(asrCtx, profile.XhsTranscribe, aiservice.ASRRequest{
 		AudioBytes:  audioBytes,
 		AudioFormat: "wav",
 		Language:    "zh",

@@ -70,6 +70,12 @@ var providerSeedEntries = []providerSeedEntry{
 		name:          "funasr-local",
 		cfgKeyBaseURL: "ai_providers.funasr.base_url",
 	},
+	{
+		// 云 ASR(小红书视频转写)：复用 ali 的 DashScope api_key；base_url 不同步（保留 migration
+		// 固定的 https://dashscope.aliyuncs.com，ali.base_url 是 compatible-mode 不适用于录音文件识别）。
+		name:         "dashscope-asr",
+		cfgKeyAPIKey: "ai_providers.ali.api_key",
+	},
 }
 
 // SyncProviderCredentials syncs provider API keys from application config into the
