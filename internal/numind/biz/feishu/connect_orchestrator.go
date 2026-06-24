@@ -100,7 +100,9 @@ type AppPoller interface {
 // exits with the token persisted, and the next IsAuthorized read observes it.
 type Authorizer interface {
 	// StartAuthorize launches the blocking `auth login` and returns the verification
-	// URL the user opens. Self-healing: a concurrent in-flight login is not duplicated.
+	// URL the user opens. Self-healing: a concurrent in-flight login is not duplicated
+	// and does NOT error — it returns the same cached verification URL so a re-poll
+	// before the user finishes the browser step re-shows the link.
 	StartAuthorize(ctx context.Context, userID uint) (verificationURL string, err error)
 	// IsAuthorized reports whether the user's home holds a usable authorization
 	// (lark-cli auth status: identities.user.available == true).
@@ -211,7 +213,11 @@ func (o *ConnectOrchestrator) NextConnectStep(ctx context.Context, userID uint, 
 }
 
 // startAuthorize begins the lark-cli device flow and returns the authorize step
-// carrying the verification URL the user opens.
+// carrying the verification URL the user opens. When a previous auth-login is still
+// alive (the user has not finished the browser step), StartAuthorize self-heals by
+// returning the SAME cached verification URL rather than an "already in progress"
+// error, so a re-poll yields a clean authorize step (the user re-opens the link)
+// instead of failing the whole connect flow.
 func (o *ConnectOrchestrator) startAuthorize(ctx context.Context, userID uint) (*ConnectStep, error) {
 	verifyURL, err := o.authorizer.StartAuthorize(ctx, userID)
 	if err != nil {

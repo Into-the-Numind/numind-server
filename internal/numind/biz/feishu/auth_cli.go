@@ -114,8 +114,10 @@ func authSessionKey(home string) string { return home + "#auth" }
 // stdout, and leaves the process running in the background (it blocks until the user
 // finishes in the browser). It reuses the same background+scrape+reaper+ceiling
 // machinery as StartAppCreate (via spawnBlockingURL) and is self-healing: a second
-// call while a previous login is still alive does NOT spawn a duplicate — it returns
-// an error the orchestrator treats as "already in flight, just keep polling status".
+// call while a previous login is still alive does NOT spawn a duplicate and does NOT
+// error — it returns the SAME verification URL the live session already scraped, so
+// the connect flow re-shows the link and keeps polling status (a DEAD prior login is
+// reclaimed and a fresh login is started).
 func (r *LarkCLIRunner) StartAuthorizeLogin(ctx context.Context, userID uint) (string, error) {
 	home := r.homeForUser(userID)
 	if err := os.MkdirAll(home, 0o700); err != nil {

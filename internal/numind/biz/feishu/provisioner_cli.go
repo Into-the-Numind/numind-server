@@ -94,6 +94,12 @@ type cliSession struct {
 	mu      sync.Mutex
 	done    bool
 	exitErr error
+	// url is the verification/page URL scraped from the process's early stdout. It is
+	// cached so a SECOND spawn while THIS session is still alive can return the same
+	// URL instead of erroring "already in progress" — used by the auth-login path so a
+	// re-poll before the user finishes the browser step re-shows the link rather than
+	// dead-ending the connect flow (the app-create path does not reuse it).
+	url string
 }
 
 // isAlive reports whether the tracked process is still running (started and not yet
@@ -105,6 +111,21 @@ func (s *cliSession) isAlive() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return !s.done
+}
+
+// setURL caches the scraped URL on the session (thread-safe).
+func (s *cliSession) setURL(u string) {
+	s.mu.Lock()
+	s.url = u
+	s.mu.Unlock()
+}
+
+// cachedURL returns the URL scraped from this session's process (thread-safe; "" if
+// not yet scraped).
+func (s *cliSession) cachedURL() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.url
 }
 
 // NewLarkCLIRunner builds a production cliRunner. bin defaults to "lark-cli" (on
@@ -194,7 +215,7 @@ func (r *LarkCLIRunner) StartAppCreate(ctx context.Context, userID uint) (pageUR
 		return "", nil, fmt.Errorf("feishu: create user home %q: %w", home, err)
 	}
 	sess, scrapedURL, err := r.spawnBlocking(ctx, userID, home,
-		[]string{"config", "init", "--new"}, startInitTimeout, appCreateCeiling, "config init")
+		[]string{"config", "init", "--new"}, startInitTimeout, appCreateCeiling, "config init", false)
 	if err != nil {
 		return "", nil, err
 	}
@@ -205,9 +226,11 @@ func (r *LarkCLIRunner) StartAppCreate(ctx context.Context, userID uint) (pageUR
 // launches a blocking lark-cli command in the user's home, scrapes the URL it prints,
 // and returns only that URL (the auth-login flow tracks no handle — completion is
 // observed via AuthStatus). The sessionKey isolates the auth-login session from the
-// config-init session for the same home.
+// config-init session for the same home. It passes reuseAliveURL=true so a re-poll
+// while a previous auth-login is still alive returns the SAME cached verification URL
+// instead of erroring "already in progress" (the connect flow re-shows the link).
 func (r *LarkCLIRunner) spawnBlockingURL(ctx context.Context, userID uint, sessionKey string, args []string, scrapeTimeout, ceiling time.Duration) (string, error) {
-	_, url, err := r.spawnBlocking(ctx, userID, sessionKey, args, scrapeTimeout, ceiling, args[0]+" "+args[1])
+	_, url, err := r.spawnBlocking(ctx, userID, sessionKey, args, scrapeTimeout, ceiling, args[0]+" "+args[1], true)
 	return url, err
 }
 
@@ -218,16 +241,34 @@ func (r *LarkCLIRunner) spawnBlockingURL(ctx context.Context, userID uint, sessi
 // per-command differences are the args, the timeouts, and the session key.
 //
 // Self-healing in-flight guard: a session is keyed by sessionKey in r.sessions; a
-// second call while an ALIVE process holds that key is rejected (avoids orphaning the
-// first / corrupting a shared config.json write), but a DEAD prior session (process
-// exited) is reclaimed, so a crashed/reaped run can never permanently block a retry.
-func (r *LarkCLIRunner) spawnBlocking(ctx context.Context, userID uint, sessionKey string, args []string, scrapeTimeout, ceiling time.Duration, label string) (*cliSession, string, error) {
+// second call while an ALIVE process holds that key is normally rejected (avoids
+// orphaning the first / corrupting a shared config.json write), but a DEAD prior
+// session (process exited) is reclaimed, so a crashed/reaped run can never
+// permanently block a retry.
+//
+// reuseAliveURL changes the alive-session behaviour for the auth-login path: instead
+// of erroring "already in progress", a re-poll while THIS auth-login is still alive
+// returns the verification URL the live session already scraped, so the connect flow
+// re-shows the same link rather than dead-ending while the user finishes the browser
+// step. App-create passes reuseAliveURL=false to keep its strict rejection (a
+// concurrent config init must not be duplicated).
+func (r *LarkCLIRunner) spawnBlocking(ctx context.Context, userID uint, sessionKey string, args []string, scrapeTimeout, ceiling time.Duration, label string, reuseAliveURL bool) (*cliSession, string, error) {
 	// Atomically check-and-reserve the session slot under r.mu so two concurrent
 	// callers can't both spawn (TOCTOU). A finished (done) OR process-dead session is
 	// reclaimable; only a live in-flight one blocks.
 	sess := &cliSession{home: sessionKey}
 	r.mu.Lock()
 	if existing := r.sessions[sessionKey]; existing != nil && existing.isAlive() {
+		// Alive in-flight session. For auth-login, reuse its cached URL (the user is
+		// still completing the browser step) instead of erroring; only fall through to
+		// the rejection when no URL was cached yet (scrape still racing) or this is the
+		// app-create path.
+		if reuseAliveURL {
+			if cached := existing.cachedURL(); cached != "" {
+				r.mu.Unlock()
+				return existing, cached, nil
+			}
+		}
 		r.mu.Unlock()
 		return nil, "", fmt.Errorf("feishu: %s already in progress for user %d", label, userID)
 	}
@@ -298,6 +339,9 @@ func (r *LarkCLIRunner) spawnBlocking(ctx context.Context, userID uint, sessionK
 		releaseReservation()
 		return nil, "", fmt.Errorf("feishu: scrape %s URL: %w", label, scrapeErr)
 	}
+	// Cache the URL on the session so a re-poll while this process is still alive can
+	// return it (auth-login path) instead of erroring "already in progress".
+	sess.setURL(url)
 	return sess, url, nil
 }
 
