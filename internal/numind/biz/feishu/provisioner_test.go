@@ -24,11 +24,15 @@ func newTestCipher(t *testing.T) *crypto.Cipher {
 }
 
 // fakeCLIRunner implements cliRunner with scripted behaviour, no os/exec.
+//
+// The handle-based seam is bridged with a scratch-path session ref: startScript
+// returns the page URL + the scratch path that becomes handle.home; pollScript is
+// keyed by that same path (resolveHandle just wraps the ref into a handle).
 type fakeCLIRunner struct {
-	// startScript returns the page URL + session ref (or error) for StartProvision.
-	startScript func(userID uint) (pageURL, ref string, err error)
-	// pollScript returns the credential snapshot for a session ref.
-	pollScript func(ref string) (appID, appSecret string, done bool, err error)
+	// startScript returns the page URL + scratch path (or error) for StartAppCreate.
+	startScript func(userID uint) (pageURL, scratch string, err error)
+	// pollScript returns the credential snapshot for a scratch path (handle.home).
+	pollScript func(home string) (appID, appSecret string, done bool, err error)
 	// secretScript returns the plaintext app_secret for an appID (exchange path).
 	secretScript func(appID string) (string, error)
 }
@@ -40,16 +44,33 @@ func newFakeCLIRunner() *fakeCLIRunner {
 	}
 }
 
-func (f *fakeCLIRunner) StartInit(_ context.Context, userID uint) (pageURL, ref string, err error) {
-	return f.startScript(userID)
+func (f *fakeCLIRunner) StartAppCreate(_ context.Context, userID uint) (pageURL string, handle *AppCreateHandle, err error) {
+	url, scratch, serr := f.startScript(userID)
+	if serr != nil {
+		return "", nil, serr
+	}
+	return url, &AppCreateHandle{home: scratch}, nil
 }
 
-func (f *fakeCLIRunner) ReadCredentials(_ context.Context, ref string) (appID, appSecret string, done bool, err error) {
-	return f.pollScript(ref)
+func (f *fakeCLIRunner) PollAppCreated(_ context.Context, handle *AppCreateHandle) (appID, appSecret string, done bool, err error) {
+	home := ""
+	if handle != nil {
+		home = handle.home
+	}
+	return f.pollScript(home)
 }
 
 func (f *fakeCLIRunner) ReadAppSecret(_ context.Context, appID string) (string, error) {
 	return f.secretScript(appID)
+}
+
+// resolveHandle mirrors the production seam: wrap a scratch-path ref into a
+// path-only handle (the fake keeps no in-memory sessions).
+func (f *fakeCLIRunner) resolveHandle(sessionRef string) *AppCreateHandle {
+	if sessionRef == "" {
+		return nil
+	}
+	return &AppCreateHandle{home: sessionRef}
 }
 
 // fakeExchanger implements tokenExchanger with a scripted token response.
@@ -406,13 +427,13 @@ func TestParseDeviceCodeURL_NotFound(t *testing.T) {
 	}
 }
 
-// --- credential-file parsing (lark-cli .env.local FEISHU_APP_* output) ------
+// --- config.json parsing (lark-cli ~/.lark-cli/config.json apps[0]) ---------
 
-func TestParseEnvCredentials(t *testing.T) {
-	env := "# generated\nFEISHU_APP_ID=cli_abc123\nFEISHU_APP_SECRET=shhh-secret\nFEISHU_DOMAIN=feishu\n"
-	appID, secret, err := parseEnvCredentials(env)
+func TestParseAppFromConfigJSON(t *testing.T) {
+	raw := []byte(`{"apps":[{"appId":"cli_abc123","appSecret":"shhh-secret","brand":"feishu","users":[{"userOpenId":"ou_x","userName":"Z"}]}]}`)
+	appID, secret, err := parseAppFromConfigJSON(raw)
 	if err != nil {
-		t.Fatalf("parseEnvCredentials: %v", err)
+		t.Fatalf("parseAppFromConfigJSON: %v", err)
 	}
 	if appID != "cli_abc123" {
 		t.Fatalf("appID mismatch: %q", appID)
@@ -422,22 +443,39 @@ func TestParseEnvCredentials(t *testing.T) {
 	}
 }
 
-func TestParseEnvCredentials_Quoted(t *testing.T) {
-	env := "FEISHU_APP_ID=\"cli_q\"\nFEISHU_APP_SECRET='quoted-secret'\n"
-	appID, secret, err := parseEnvCredentials(env)
+func TestParseAppFromConfigJSON_FirstAppWins(t *testing.T) {
+	// apps[0] is the source of truth even if more apps are present.
+	raw := []byte(`{"apps":[{"appId":"cli_first","appSecret":"s1"},{"appId":"cli_second","appSecret":"s2"}]}`)
+	appID, secret, err := parseAppFromConfigJSON(raw)
 	if err != nil {
-		t.Fatalf("parseEnvCredentials: %v", err)
+		t.Fatalf("parseAppFromConfigJSON: %v", err)
 	}
-	if appID != "cli_q" || secret != "quoted-secret" {
-		t.Fatalf("quote stripping failed: appID=%q secret=%q", appID, secret)
+	if appID != "cli_first" || secret != "s1" {
+		t.Fatalf("expected apps[0], got appID=%q secret=%q", appID, secret)
 	}
 }
 
-func TestParseEnvCredentials_Missing(t *testing.T) {
-	if _, _, err := parseEnvCredentials("FEISHU_APP_ID=cli_only\n"); err == nil {
-		t.Fatal("missing FEISHU_APP_SECRET must error")
+func TestParseAppFromConfigJSON_NoApps(t *testing.T) {
+	// config init not finished yet → no apps → in-progress signal (error).
+	if _, _, err := parseAppFromConfigJSON([]byte(`{"apps":[]}`)); err == nil {
+		t.Fatal("empty apps must error (treated as in-progress)")
 	}
-	if _, _, err := parseEnvCredentials("FEISHU_APP_SECRET=only\n"); err == nil {
-		t.Fatal("missing FEISHU_APP_ID must error")
+	if _, _, err := parseAppFromConfigJSON([]byte(`{}`)); err == nil {
+		t.Fatal("missing apps must error (treated as in-progress)")
+	}
+}
+
+func TestParseAppFromConfigJSON_Incomplete(t *testing.T) {
+	if _, _, err := parseAppFromConfigJSON([]byte(`{"apps":[{"appId":"cli_only"}]}`)); err == nil {
+		t.Fatal("missing appSecret must error")
+	}
+	if _, _, err := parseAppFromConfigJSON([]byte(`{"apps":[{"appSecret":"only"}]}`)); err == nil {
+		t.Fatal("missing appId must error")
+	}
+}
+
+func TestParseAppFromConfigJSON_Garbage(t *testing.T) {
+	if _, _, err := parseAppFromConfigJSON([]byte(`not json`)); err == nil {
+		t.Fatal("unparseable config.json must error")
 	}
 }

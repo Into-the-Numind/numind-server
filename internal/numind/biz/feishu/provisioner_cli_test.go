@@ -2,79 +2,79 @@ package feishu
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
-// fakeLarkCLIScript is a tiny shell stub standing in for the real lark-cli binary.
-// It is HOME-aware (lark-cli reads ~/.lark-cli/), so a runner pointed at a
-// per-user homeBase/u{id} dir resolves that user's appId/secret from disk —
-// exactly the post-restart code path ReadAppSecret's disk-scan fallback must
-// handle (the in-memory sessions map is empty after a restart).
+// fakeConfigInitScript stands in for the real `lark-cli config init --new`. It is
+// HOME-aware (lark-cli reads $HOME/.lark-cli/config.json): it prints the page URL
+// the orchestration scrapes, then — to simulate the user finishing in the browser
+// — writes apps[0] into $HOME/.lark-cli/config.json from the appId/appSecret the
+// test seeds in $HOME/.fake-creds, then exits 0.
 //
-//   - `config show`           → emits {"appId":"<contents of $HOME/.lark-cli/appid>"}
-//   - `apps +init ... --dir D` → writes D/.env.local with the matching secret
-const fakeLarkCLIScript = `#!/bin/sh
+// A sleep before exit lets a test observe the "in-progress" window (URL printed,
+// process still running, config.json not yet written) if it polls fast enough;
+// here we keep it near-instant so the happy path is deterministic and fast.
+const fakeConfigInitScript = `#!/bin/sh
 set -e
-cmd="$1"
-sub="$2"
-case "$cmd" in
-  config)
-    if [ "$sub" = "show" ]; then
-      appid=$(cat "$HOME/.lark-cli/appid" 2>/dev/null || true)
-      printf '{"appId":"%s"}\n' "$appid"
-      exit 0
-    fi
-    ;;
-  apps)
-    # apps +init --app-id <id> --dir <dir>
-    appid=""
-    dir=""
-    shift 2
-    while [ "$#" -gt 0 ]; do
-      case "$1" in
-        --app-id) appid="$2"; shift 2 ;;
-        --dir) dir="$2"; shift 2 ;;
-        *) shift ;;
-      esac
-    done
-    secret=$(cat "$HOME/.lark-cli/secret" 2>/dev/null || true)
-    printf 'FEISHU_APP_ID=%s\nFEISHU_APP_SECRET=%s\n' "$appid" "$secret" > "$dir/.env.local"
-    echo "Local environment written to $dir/.env.local"
-    exit 0
-    ;;
-esac
+# StartAppCreate launches: lark-cli config init --new
+if [ "$1" = "config" ] && [ "$2" = "init" ]; then
+  printf '打开以下链接配置应用:\n'
+  printf '  https://open.feishu.cn/page/cli?user_code=2AF7-MFWU&lpv=1.0.56&from=cli\n'
+  printf '等待配置应用...\n'
+  appid=$(cat "$HOME/.fake-creds/appid" 2>/dev/null || true)
+  secret=$(cat "$HOME/.fake-creds/secret" 2>/dev/null || true)
+  mkdir -p "$HOME/.lark-cli"
+  printf '{"apps":[{"appId":"%s","appSecret":"%s","brand":"feishu"}]}\n' "$appid" "$secret" > "$HOME/.lark-cli/config.json"
+  exit 0
+fi
 echo "unhandled args: $@" >&2
 exit 1
 `
 
 // writeFakeLarkCLI drops the stub script into a temp dir and returns its path.
-func writeFakeLarkCLI(t *testing.T) string {
+func writeFakeLarkCLI(t *testing.T, script string) string {
 	t.Helper()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "lark-cli")
-	if err := os.WriteFile(bin, []byte(fakeLarkCLIScript), 0o700); err != nil { // #nosec G306 -- executable test stub
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil { // #nosec G306 -- executable test stub
 		t.Fatalf("write fake lark-cli: %v", err)
 	}
 	return bin
 }
 
-// seedUserHome creates homeBase/u{userID}/.lark-cli/{appid,secret} so the fake
-// CLI can report this provisioned user's credentials.
-func seedUserHome(t *testing.T, homeBase string, userID uint, appID, secret string) {
+// seedFakeCreds writes the appId/secret the fakeConfigInitScript will emit for a
+// given user's scratch HOME (homeBase/u{userID}).
+func seedFakeCreds(t *testing.T, homeBase string, userID uint, appID, secret string) {
 	t.Helper()
-	cfg := filepath.Join(homeBase, "u"+itoa(userID), ".lark-cli")
-	if err := os.MkdirAll(cfg, 0o700); err != nil {
-		t.Fatalf("mkdir user config home: %v", err)
+	dir := filepath.Join(homeBase, "u"+itoa(userID), ".fake-creds")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir fake creds: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(cfg, "appid"), []byte(appID), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "appid"), []byte(appID), 0o600); err != nil {
 		t.Fatalf("seed appid: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(cfg, "secret"), []byte(secret), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "secret"), []byte(secret), 0o600); err != nil {
 		t.Fatalf("seed secret: %v", err)
+	}
+}
+
+// writeConfigJSON writes a config.json with apps[0] directly under
+// homeBase/u{userID}/.lark-cli/ (simulates a previously-provisioned user).
+func writeConfigJSON(t *testing.T, homeBase string, userID uint, appID, secret string) {
+	t.Helper()
+	cfgDir := filepath.Join(homeBase, "u"+itoa(userID), ".lark-cli")
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	raw, _ := json.Marshal(larkConfigJSON{Apps: []larkConfigApp{{AppID: appID, AppSecret: secret}}})
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.json"), raw, 0o600); err != nil {
+		t.Fatalf("write config.json: %v", err)
 	}
 }
 
@@ -92,12 +92,133 @@ func itoa(u uint) string {
 	return string(b[i:])
 }
 
+// --- StartAppCreate + PollAppCreated (real os/exec over fake lark-cli) -------
+
+// TestStartAppCreate_ScrapesURLThenPollReadsConfig is the end-to-end happy path:
+// the runner launches the fake `config init`, scrapes the page URL, then polls
+// until config.json appears and reads appId/appSecret straight out of it.
+func TestStartAppCreate_ScrapesURLThenPollReadsConfig(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake lark-cli stub is a /bin/sh script")
+	}
+	homeBase := t.TempDir()
+	seedFakeCreds(t, homeBase, 42, "cli_e2e", "secret-e2e")
+
+	bin := writeFakeLarkCLI(t, fakeConfigInitScript)
+	r, err := NewLarkCLIRunner(bin, homeBase)
+	if err != nil {
+		t.Fatalf("NewLarkCLIRunner: %v", err)
+	}
+
+	pageURL, handle, err := r.StartAppCreate(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("StartAppCreate: %v", err)
+	}
+	if !strings.HasPrefix(pageURL, "https://open.feishu.cn/page/cli") {
+		t.Fatalf("page URL mismatch: %q", pageURL)
+	}
+	if handle == nil || handle.home == "" {
+		t.Fatal("handle must carry a scratch home")
+	}
+
+	// Poll until done (the fake exits near-instantly after writing config.json).
+	var appID, secret string
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var done bool
+		appID, secret, done, err = r.PollAppCreated(context.Background(), handle)
+		if err != nil {
+			t.Fatalf("PollAppCreated: %v", err)
+		}
+		if done {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("PollAppCreated never reported done")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if appID != "cli_e2e" || secret != "secret-e2e" {
+		t.Fatalf("read wrong creds from config.json: appID=%q secret=%q", appID, secret)
+	}
+
+	// On completion the in-flight session tracking is cleaned up.
+	r.mu.Lock()
+	_, present := r.sessions[handle.home]
+	r.mu.Unlock()
+	if present {
+		t.Fatal("PollAppCreated should drop the in-flight session on completion")
+	}
+}
+
+// TestPollAppCreated_NilHandleIsInProgress confirms a nil/empty handle is treated
+// as still-in-progress (not a hard error), so a lost session ref does not surface
+// as a failure to the caller.
+func TestPollAppCreated_NilHandleIsInProgress(t *testing.T) {
+	homeBase := t.TempDir()
+	bin := writeFakeLarkCLI(t, fakeConfigInitScript)
+	r, err := NewLarkCLIRunner(bin, homeBase)
+	if err != nil {
+		t.Fatalf("NewLarkCLIRunner: %v", err)
+	}
+	if _, _, done, err := r.PollAppCreated(context.Background(), nil); err != nil || done {
+		t.Fatalf("nil handle must be (done=false, err=nil), got done=%t err=%v", done, err)
+	}
+}
+
+// TestResolveHandle_PathOnlyAfterRestart confirms resolveHandle reconstructs a
+// usable handle from just the scratch path (post-restart, no in-memory session),
+// and PollAppCreated then reads config.json off disk.
+func TestResolveHandle_PathOnlyAfterRestart(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake lark-cli stub is a /bin/sh script")
+	}
+	homeBase := t.TempDir()
+	writeConfigJSON(t, homeBase, 5, "cli_restart", "secret-restart")
+
+	bin := writeFakeLarkCLI(t, fakeConfigInitScript)
+	r, err := NewLarkCLIRunner(bin, homeBase)
+	if err != nil {
+		t.Fatalf("NewLarkCLIRunner: %v", err)
+	}
+	if len(r.sessions) != 0 {
+		t.Fatalf("precondition: sessions empty (post-restart), got %d", len(r.sessions))
+	}
+
+	handle := r.resolveHandle(r.homeForUser(5))
+	if handle == nil {
+		t.Fatal("resolveHandle must reconstruct a path-only handle")
+	}
+	if handle.session != nil {
+		t.Fatal("post-restart handle must have no in-memory session")
+	}
+	appID, secret, done, err := r.PollAppCreated(context.Background(), handle)
+	if err != nil || !done {
+		t.Fatalf("PollAppCreated post-restart: done=%t err=%v", done, err)
+	}
+	if appID != "cli_restart" || secret != "secret-restart" {
+		t.Fatalf("read wrong creds: appID=%q secret=%q", appID, secret)
+	}
+}
+
+func TestResolveHandle_EmptyRefIsNil(t *testing.T) {
+	homeBase := t.TempDir()
+	bin := writeFakeLarkCLI(t, fakeConfigInitScript)
+	r, err := NewLarkCLIRunner(bin, homeBase)
+	if err != nil {
+		t.Fatalf("NewLarkCLIRunner: %v", err)
+	}
+	if h := r.resolveHandle(""); h != nil {
+		t.Fatalf("empty ref must resolve to nil, got %v", h)
+	}
+}
+
+// --- ReadAppSecret disk scan (OAuth exchange path) --------------------------
+
 // TestReadAppSecret_DiskScanFallbackAfterRestart is the regression for the P1:
 // after a server restart the in-memory sessions map is empty, but the OAuth
 // exchange callback still needs to resolve the app_secret from the per-user
-// config home persisted on disk under homeBase/u{userID}/.lark-cli/. Before the
-// fix, ReadAppSecret only scanned r.sessions (empty) and always returned
-// ErrLarkCallFailed for every provisioned user post-restart.
+// config.json persisted on disk under homeBase/u{userID}/.lark-cli/config.json.
 func TestReadAppSecret_DiskScanFallbackAfterRestart(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake lark-cli stub is a /bin/sh script")
@@ -105,10 +226,10 @@ func TestReadAppSecret_DiskScanFallbackAfterRestart(t *testing.T) {
 	homeBase := t.TempDir()
 	// Two provisioned users persisted on disk; NO in-memory sessions (fresh
 	// runner == the post-restart state).
-	seedUserHome(t, homeBase, 7, "cli_app7", "secret-seven")
-	seedUserHome(t, homeBase, 9, "cli_app9", "secret-nine")
+	writeConfigJSON(t, homeBase, 7, "cli_app7", "secret-seven")
+	writeConfigJSON(t, homeBase, 9, "cli_app9", "secret-nine")
 
-	bin := writeFakeLarkCLI(t)
+	bin := writeFakeLarkCLI(t, fakeConfigInitScript)
 	r, err := NewLarkCLIRunner(bin, homeBase)
 	if err != nil {
 		t.Fatalf("NewLarkCLIRunner: %v", err)
@@ -135,16 +256,16 @@ func TestReadAppSecret_DiskScanFallbackAfterRestart(t *testing.T) {
 	}
 }
 
-// TestReadAppSecret_UnknownAppStillErrors confirms the disk-scan fallback does
-// not paper over a genuinely-missing app: an unknown appID still yields an error.
+// TestReadAppSecret_UnknownAppStillErrors confirms the disk-scan does not paper
+// over a genuinely-missing app: an unknown appID still yields an error.
 func TestReadAppSecret_UnknownAppStillErrors(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake lark-cli stub is a /bin/sh script")
 	}
 	homeBase := t.TempDir()
-	seedUserHome(t, homeBase, 1, "cli_app1", "s1")
+	writeConfigJSON(t, homeBase, 1, "cli_app1", "s1")
 
-	bin := writeFakeLarkCLI(t)
+	bin := writeFakeLarkCLI(t, fakeConfigInitScript)
 	r, err := NewLarkCLIRunner(bin, homeBase)
 	if err != nil {
 		t.Fatalf("NewLarkCLIRunner: %v", err)
