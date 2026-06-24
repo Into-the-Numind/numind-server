@@ -600,3 +600,81 @@ func TestStartAuthorizeLogin_SelfHealsDeadAuthSession(t *testing.T) {
 		t.Fatal("StartAuthorizeLogin must return a verification URL")
 	}
 }
+
+// blockingAuthLoginScript prints the verification URL like the real `auth login`,
+// then BLOCKS (waiting on $HOME/.unblock) before writing the token + exiting — so a
+// concurrency test can observe the auth-login process while it is genuinely ALIVE
+// (URL printed, process still running, not yet authorized). The status branch
+// mirrors fakeAuthLoginScript: authorized iff $HOME/.lark-cli/token exists.
+const blockingAuthLoginScript = `#!/bin/sh
+set -e
+if [ "$1" = "auth" ] && [ "$2" = "login" ]; then
+  url=$(cat "$HOME/.fake-auth/url" 2>/dev/null || true)
+  printf '请在浏览器中打开以下链接完成授权:\n'
+  printf '  %s\n' "$url"
+  printf '等待授权...\n'
+  i=0
+  while [ ! -f "$HOME/.unblock" ]; do
+    sleep 0.02
+    i=$((i+1))
+    [ "$i" -gt 500 ] && break
+  done
+  mkdir -p "$HOME/.lark-cli"
+  printf 'tok\n' > "$HOME/.lark-cli/token"
+  exit 0
+fi
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  if [ -f "$HOME/.lark-cli/token" ]; then
+    printf '{"appId":"cli_x","identities":{"user":{"status":"ready","available":true}}}\n'
+  else
+    printf '{"ok":false,"error":{"type":"config","subtype":"not_configured","message":"not configured"}}\n'
+  fi
+  exit 0
+fi
+echo "unhandled args: $@" >&2
+exit 1
+`
+
+// TestStartAuthorizeLogin_AliveSessionReturnsCachedURL is the P1 regression: a
+// second StartAuthorizeLogin while a previous auth-login is STILL ALIVE (the user
+// has not finished the browser step) must NOT error "already in progress" — it must
+// return the SAME verification URL the first call scraped, so the connect flow can
+// re-show the link and keep polling status instead of dead-ending. (App-create keeps
+// the rejection; only auth-login reuses the alive session's cached URL.)
+func TestStartAuthorizeLogin_AliveSessionReturnsCachedURL(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake lark-cli stub is a /bin/sh script")
+	}
+	homeBase := t.TempDir()
+	bin := writeFakeLarkCLI(t, blockingAuthLoginScript)
+	r, err := NewLarkCLIRunner(bin, homeBase)
+	if err != nil {
+		t.Fatalf("NewLarkCLIRunner: %v", err)
+	}
+	const wantURL = "https://open.feishu.cn/suite/passport/oauth/device?user_code=ALIVE"
+	seedFakeAuthURL(t, homeBase, 77, wantURL)
+
+	// First call launches and BLOCKS (script waits on $HOME/.unblock) — the auth-login
+	// process stays alive after the URL is scraped.
+	firstURL, err := r.StartAuthorizeLogin(context.Background(), 77)
+	if err != nil {
+		t.Fatalf("first StartAuthorizeLogin: %v", err)
+	}
+	if firstURL != wantURL {
+		t.Fatalf("first verification URL mismatch: got %q want %q", firstURL, wantURL)
+	}
+
+	// Second call while the first is still ALIVE must reuse the cached URL, NOT error.
+	secondURL, err := r.StartAuthorizeLogin(context.Background(), 77)
+	if err != nil {
+		t.Fatalf("second StartAuthorizeLogin on an alive session must NOT error, got: %v", err)
+	}
+	if secondURL != wantURL {
+		t.Fatalf("second call must return the cached verification URL: got %q want %q", secondURL, wantURL)
+	}
+
+	// Release the blocking process so it writes the token and exits cleanly.
+	if werr := os.WriteFile(filepath.Join(r.homeForUser(77), ".unblock"), []byte("1"), 0o600); werr != nil {
+		t.Fatalf("unblock auth login: %v", werr)
+	}
+}

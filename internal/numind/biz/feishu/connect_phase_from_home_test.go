@@ -19,6 +19,9 @@ package feishu
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 
 	"gorm.io/gorm"
@@ -93,5 +96,63 @@ func TestNextConnectStep_NoAppInHome_GoesToCreateApp(t *testing.T) {
 	}
 	if _, gerr := store.Get(context.Background(), 3, ProviderLark); !errors.Is(gerr, gorm.ErrRecordNotFound) {
 		t.Fatalf("create_app must not write a DB row, got %v", gerr)
+	}
+}
+
+// --- regression (P1): alive in-flight auth-login → authorize, NOT a hard error ---
+
+// TestNextConnectStep_AuthLoginAlreadyInFlight_ReturnsAuthorizeNotError pins the P1
+// fix end-to-end through a REAL Provisioner + LarkCLIRunner (over the blocking auth
+// fake), so the in-flight session guard is genuinely exercised:
+//
+//	The agent gives the user the verification link; before the user finishes the
+//	browser step, the run re-executes NextConnectStep. AppExists=true (home has the
+//	app), IsAuthorized=false (not yet authorized), so it calls StartAuthorize again —
+//	but the previous `auth login` process is STILL ALIVE. Pre-fix this surfaced
+//	"auth login already in progress for user N" as a hard NextConnectStep failure.
+//	The fix returns the cached verification URL instead, so the step is a clean
+//	ConnectPhaseAuthorize and the user just re-opens the same link.
+func TestNextConnectStep_AuthLoginAlreadyInFlight_ReturnsAuthorizeNotError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake lark-cli stub is a /bin/sh script")
+	}
+	homeBase := t.TempDir()
+	bin := writeFakeLarkCLI(t, blockingAuthLoginScript)
+	runner, err := NewLarkCLIRunner(bin, homeBase)
+	if err != nil {
+		t.Fatalf("NewLarkCLIRunner: %v", err)
+	}
+	const wantURL = "https://open.feishu.cn/suite/passport/oauth/device?user_code=INFLIGHT"
+	// Home already holds the app (AppExists=true) but no token yet (not authorized).
+	writeConfigJSON(t, homeBase, 9, "cli_inflight", "secret-inflight")
+	seedFakeAuthURL(t, homeBase, 9, wantURL)
+
+	prov := newTestProvisioner(t, runner)
+	store := newSvcAccountStore()
+	o := newTestOrchestrator(t, store, prov, prov, prov)
+
+	// First call: home has the app, not authorized → launches the (blocking) auth
+	// login and returns the authorize step with the scraped URL.
+	step1, err := o.NextConnectStep(context.Background(), 9, 0, "")
+	if err != nil {
+		t.Fatalf("first NextConnectStep: %v", err)
+	}
+	if step1.Phase != ConnectPhaseAuthorize || step1.URL != wantURL {
+		t.Fatalf("first step mismatch: phase=%q url=%q", step1.Phase, step1.URL)
+	}
+
+	// Second call while the auth-login is STILL ALIVE must NOT error — it returns the
+	// same authorize step (cached URL), letting the user re-open the link.
+	step2, err := o.NextConnectStep(context.Background(), 9, 0, "")
+	if err != nil {
+		t.Fatalf("second NextConnectStep on an alive auth-login must NOT error, got: %v", err)
+	}
+	if step2.Phase != ConnectPhaseAuthorize || step2.URL != wantURL {
+		t.Fatalf("second step must be authorize with the cached URL: phase=%q url=%q", step2.Phase, step2.URL)
+	}
+
+	// Release the blocking auth-login process so it writes the token and exits cleanly.
+	if werr := os.WriteFile(filepath.Join(runner.homeForUser(9), ".unblock"), []byte("1"), 0o600); werr != nil {
+		t.Fatalf("unblock auth login: %v", werr)
 	}
 }
