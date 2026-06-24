@@ -162,25 +162,24 @@ func TestLarkCreateDoc_EmptyTitle_SoftError(t *testing.T) {
 	}
 }
 
-func TestLarkCreateDoc_PartialSuccess_ReportsDocID(t *testing.T) {
-	// API created the doc but failed to write content → returns DocResult + error.
-	api := &fakeLarkAPI{
-		doc:    &feishu.DocResult{DocumentID: "doc999", Title: "T", URL: "u"},
-		docErr: fmt.Errorf("%w: write content boom", errno.ErrLarkCallFailed),
-	}
+func TestLarkCreateDoc_CallFailed_SoftErrorNoDocID(t *testing.T) {
+	// `docs +create` imports the whole doc in one call: there is NO partial-success
+	// path. A CreateDoc error must produce a clean soft error with NO document_id —
+	// guards against re-introducing the removed "doc created but content failed" branch.
+	api := &fakeLarkAPI{docErr: fmt.Errorf("%w: 飞书 code 230002", errno.ErrLarkCallFailed)}
 	tool := &larkCreateDocTool{provider: &fakeLarkProvider{api: api}}
 	in, _ := json.Marshal(larkCreateDocInput{Title: "T", Content: "body"})
 	raw, err := tool.Execute(ctxWithUser(7), ToolInput(in))
 	if err != nil {
-		t.Fatalf("partial failure must be SOFT, got Go error: %v", err)
+		t.Fatalf("create-doc failure must be SOFT, got Go error: %v", err)
 	}
 	var out larkCreateDocOutput
 	_ = json.Unmarshal(raw, &out)
-	if out.DocumentID != "doc999" {
-		t.Fatalf("partial success should still report document_id; got %q", out.DocumentID)
+	if out.DocumentID != "" {
+		t.Fatalf("a failed create must NOT report a document_id; got %q", out.DocumentID)
 	}
 	if out.Error == "" {
-		t.Fatal("partial success should carry an error note about the content write")
+		t.Fatal("a failed create must carry an error field")
 	}
 }
 

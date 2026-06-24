@@ -28,7 +28,8 @@ func (t *larkSendMessageTool) Name() string { return "lark_send_message" }
 func (t *larkSendMessageTool) Description() string {
 	return "Send a 飞书 (Lark) message to a user or chat on behalf of the connected user. " +
 		"Requires the user to have connected 飞书 (scope im:message). " +
-		"Input: { receive_id: string, receive_id_type?: \"open_id\"|\"user_id\"|\"union_id\"|\"email\"|\"chat_id\", text: string }. " +
+		"Input: { receive_id: string, receive_id_type?: \"open_id\" (ou_xxx) | \"chat_id\" (oc_xxx), text: string }. " +
+		"receive_id_type defaults to open_id. Only open_id and chat_id are supported. " +
 		"Returns: { message_id }."
 }
 func (t *larkSendMessageTool) UserFacingName() string { return "发送飞书消息" }
@@ -43,7 +44,7 @@ func (t *larkSendMessageTool) InputSchema() json.RawMessage {
 		"type": "object",
 		"properties": {
 			"receive_id":      {"type": "string", "description": "The recipient id (interpretation depends on receive_id_type)."},
-			"receive_id_type": {"type": "string", "enum": ["open_id", "user_id", "union_id", "email", "chat_id"], "description": "How to interpret receive_id. Defaults to open_id."},
+			"receive_id_type": {"type": "string", "enum": ["open_id", "chat_id"], "description": "How to interpret receive_id: open_id (ou_xxx) or chat_id (oc_xxx). Defaults to open_id."},
 			"text":            {"type": "string", "description": "The plain text message to send."}
 		},
 		"required": ["receive_id", "text"]
@@ -61,13 +62,14 @@ type larkSendMessageOutput struct {
 	Error     string `json:"error,omitempty"`
 }
 
-// validReceiveIDTypes is the set of 飞书 receive_id_type enum values.
+// validReceiveIDTypes is the set of receive_id_type values the lark-cli ops shortcut
+// surface supports. `im +messages-send` accepts exactly two recipient flags
+// (--user-id for open_id, --chat-id for chat_id); user_id/union_id/email are NOT
+// supported (lark-cli validates --user-id as an open_id `ou_` format and rejects the
+// rest), so they are deliberately excluded from the enum.
 var validReceiveIDTypes = map[string]bool{
-	"open_id":  true,
-	"user_id":  true,
-	"union_id": true,
-	"email":    true,
-	"chat_id":  true,
+	"open_id": true,
+	"chat_id": true,
 }
 
 func (t *larkSendMessageTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
@@ -89,7 +91,7 @@ func (t *larkSendMessageTool) Execute(ctx context.Context, input ToolInput) (Too
 		receiveIDType = "open_id" // 飞书 default
 	}
 	if !validReceiveIDTypes[receiveIDType] {
-		return larkSoftError("lark_send_message 的 receive_id_type=%q 不合法，应为 open_id / user_id / union_id / email / chat_id 之一。", receiveIDType)
+		return larkSoftError("lark_send_message 的 receive_id_type=%q 不合法，应为 open_id（ou_xxx）或 chat_id（oc_xxx）之一。", receiveIDType)
 	}
 
 	// 飞书 text messages take JSON content {"text":"..."}.

@@ -65,9 +65,10 @@ type LarkAPI interface {
 	// CreateDoc creates a new 飞书 docx document with the given title and, when
 	// contentMD is non-empty, writes it as the document body.
 	CreateDoc(ctx context.Context, title, contentMD string) (*DocResult, error)
-	// SendMessage sends an im message. receiveIDType is one of the 飞书 enums
-	// (open_id / user_id / union_id / email / chat_id); msgType is e.g. "text"
-	// (content is then the JSON `{"text":"..."}`).
+	// SendMessage sends an im message. receiveIDType is one of the two supported
+	// recipient kinds (open_id / chat_id — the lark-cli `im +messages-send` shortcut
+	// only exposes --user-id/--chat-id); msgType is e.g. "text" (content is then the
+	// JSON `{"text":"..."}`).
 	SendMessage(ctx context.Context, receiveIDType, receiveID, msgType, content string) (*MsgResult, error)
 	// ReadBitable lists records of a bitable table (read-only). pageSize is clamped
 	// by the caller; pageOffset is the number of records to skip (0 = first page) —
@@ -109,7 +110,9 @@ var _ LarkAPI = (*cliLarkAPI)(nil)
 func (a *cliLarkAPI) CreateDoc(ctx context.Context, title, contentMD string) (*DocResult, error) {
 	res, err := a.ops.CreateDoc(ctx, a.userID, title, contentMD)
 	if err != nil {
-		return res, err // res may be non-nil on a partial (doc created, content failed)
+		// The `docs +create` shortcut imports the whole doc in one call: there is no
+		// partial-success (doc created, content failed) path — any failure means no doc.
+		return nil, err
 	}
 	if res == nil || res.DocumentID == "" {
 		return nil, errno.ErrLarkCallFailed.SetMessage("飞书创建文档未返回 document_id")

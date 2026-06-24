@@ -83,20 +83,8 @@ func (t *larkCreateDocTool) Execute(ctx context.Context, input ToolInput) (ToolR
 
 	res, err := api.CreateDoc(ctx, in.Title, in.Content)
 	if err != nil {
-		// Partial success: the doc may already exist (content-write failure path in
-		// the API layer returns the DocResult alongside the error). Report the id
-		// when we have it so the user isn't told "failed" about a doc that exists.
-		if res != nil && res.DocumentID != "" {
-			endSpan(map[string]any{"document_id": res.DocumentID, "outcome": "partial"}, err.Error())
-			out, _ := json.Marshal(larkCreateDocOutput{
-				DocumentID: res.DocumentID,
-				Title:      res.Title,
-				URL:        res.URL,
-				Error: "ERROR: 文档已创建，但写入内容失败：" + err.Error() +
-					"。可在飞书中打开该文档手动补充。",
-			})
-			return ToolResult(out), nil
-		}
+		// The `docs +create` shortcut imports the whole doc in one call — any failure
+		// means no doc was created (no partial-success path).
 		endSpan(map[string]any{"outcome": "error"}, err.Error())
 		return larkSoftErrorForAPIErr(label, err)
 	}

@@ -158,11 +158,11 @@ type msgCreateData struct {
 }
 
 // SendMessage sends an im message via `im +messages-send`. The shortcut accepts
-// exactly one recipient flag: --chat-id (oc_xxx) or --user-id (open_id). We map the
-// receiveIDType: "chat_id" → --chat-id, anything else (open_id / user_id / union_id /
-// email — the tool defaults to open_id) → --user-id. The text is extracted from the
-// content JSON ({"text":"..."}) and passed via --text (the shortcut auto-wraps it);
-// msgType is ignored (the shortcut infers "text" from --text).
+// exactly one recipient flag: --chat-id (oc_xxx) or --user-id (open_id, ou_xxx). The
+// tool layer only passes the two supported receiveIDTypes (it rejects everything else),
+// so the mapping is: "chat_id" → --chat-id, otherwise (open_id, the default) → --user-id.
+// The text is extracted from the content JSON ({"text":"..."}) and passed via --text
+// (the shortcut auto-wraps it); msgType is ignored (the shortcut infers "text").
 func (r *LarkCLIRunner) SendMessage(ctx context.Context, userID uint, receiveIDType, receiveID, msgType, content string) (*MsgResult, error) {
 	text, err := extractMessageText(content)
 	if err != nil {
