@@ -24,8 +24,10 @@ import (
 	"numind-server/internal/pkg/errno"
 )
 
-// DocResult is the outcome of CreateDoc: the new document's id and a best-effort
-// web URL (constructed from the id; 飞书 docs live at /docx/<id>).
+// DocResult is the outcome of CreateDoc: the new document's id, the title we sent
+// (the `docs +create` response carries no title — the doc's title is the heading in
+// our content), and the web URL (from the response, or constructed from the id since
+// 飞书 docs live at /docx/<id>).
 type DocResult struct {
 	DocumentID string
 	Title      string

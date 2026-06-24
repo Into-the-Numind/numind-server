@@ -12,19 +12,23 @@
 // Using them keeps this layer thin and insulates it from raw 飞书 REST endpoint drift.
 //
 // Verified shortcut shapes (本机 lark-cli 1.0.56, `lark-cli <svc> +<verb> --help` /
-// `lark-cli skills read ...`, 2026-06-24):
+// `lark-cli skills read ...`, re-verified 2026-06-25):
 //
 //   - docs +create --doc-format markdown --content <md> --as user --json
-//     title is the leading `# heading` of the markdown content (the shortcut rejects a
-//     separate --title flag); body follows. Output:
-//     {"ok":true,"data":{"document":{"document_id":"...","url":"...","revision_id":N}}}.
+//     title is the leading `# heading` of the markdown content (the shortcut takes no
+//     separate --title flag); body follows. Output data:
+//     {"document":{"document_id":"doxcn...","revision_id":N,"url":"https://...feishu.cn/docx/...","new_blocks":[...]}}.
+//     NOTE: the document object has NO `title` field — the created doc's title is the
+//     heading we sent, so CreateDoc returns the INPUT title (not a response field).
 //     One call imports the whole doc — no separate block-append step.
 //   - im +messages-send (--user-id ou_x | --chat-id oc_x) --text <t> --as user --json
-//     --user-id (open_id) XOR --chat-id are the only recipient flags; --text auto-wraps
-//     as a text message. Output: {"ok":true,"data":{"message_id":"om_..."}}.
+//     --user-id (open_id) XOR --chat-id are the only recipient flags (mutually
+//     exclusive); --text auto-wraps as a text message. Output data:
+//     {"message_id":"om_...","chat_id":"oc_...","create_time":"..."}.
 //   - base +record-list --base-token <t> --table-id <id> --limit N --offset M
 //     --format json --as user
-//     offset/limit paging (NOT a page_token cursor). Output data carries
+//     offset/limit paging (NOT a page_token cursor); --format defaults to markdown so
+//     --format json is REQUIRED to get the JSON envelope. Output data carries
 //     items[].record_id/fields, has_more, total (and page_token when present).
 //
 // lark-cli JSON envelope: {"ok":bool,"identity":...,"error":{...},"data":{...}}.
@@ -95,11 +99,12 @@ func shortcutLabel(args []string) string {
 // --- CreateDoc --------------------------------------------------------------
 
 // docCreateData is the relevant subset of `docs +create` data: the created
-// document's id + best-effort web URL (the shortcut returns it directly).
+// document's id + web URL (the shortcut returns both directly). The response object
+// carries NO `title` (verified lark-cli 1.0.56) — the doc's title is the heading we
+// sent, so CreateDoc surfaces the INPUT title rather than a response field.
 type docCreateData struct {
 	Document struct {
 		DocumentID string `json:"document_id"`
-		Title      string `json:"title"`
 		URL        string `json:"url"`
 	} `json:"document"`
 }
@@ -130,11 +135,9 @@ func (r *LarkCLIRunner) CreateDoc(ctx context.Context, userID uint, title, conte
 	if url == "" {
 		url = "https://feishu.cn/docx/" + docID // fallback if the shortcut omits url
 	}
-	docTitle := dc.Document.Title
-	if docTitle == "" {
-		docTitle = title
-	}
-	return &DocResult{DocumentID: docID, Title: docTitle, URL: url}, nil
+	// The response carries no title; the created doc's title is the heading we sent,
+	// so surface the input title (trimmed to match the heading we actually wrote).
+	return &DocResult{DocumentID: docID, Title: strings.TrimSpace(title), URL: url}, nil
 }
 
 // buildDocMarkdown composes the `docs +create --doc-format markdown` content: the

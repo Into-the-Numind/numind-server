@@ -25,15 +25,18 @@ mkdir -p "$HOME/.ops-log"
 printf '%s\n' "$*" >> "$HOME/.ops-log/calls"
 
 if [ "$svc" = "docs" ] && [ "$verb" = "+create" ]; then
-  printf '{"ok":true,"data":{"document":{"document_id":"docx_new_1","title":"T","url":"https://feishu.cn/docx/docx_new_1"}}}\n'
+  # Faithful to lark-cli 1.0.56: the document object has document_id/revision_id/url/
+  # new_blocks but NO title (the doc's title is the heading we sent).
+  printf '{"ok":true,"identity":"user","data":{"document":{"document_id":"docx_new_1","revision_id":1,"url":"https://feishu.cn/docx/docx_new_1","new_blocks":[]}}}\n'
   exit 0
 fi
 if [ "$svc" = "im" ] && [ "$verb" = "+messages-send" ]; then
-  printf '{"ok":true,"data":{"message_id":"om_msg_1"}}\n'
+  # Faithful to lark-cli 1.0.56 Return Value: {message_id,chat_id,create_time}.
+  printf '{"ok":true,"identity":"user","data":{"message_id":"om_msg_1","chat_id":"oc_z","create_time":"1234567890"}}\n'
   exit 0
 fi
 if [ "$svc" = "base" ] && [ "$verb" = "+record-list" ]; then
-  printf '{"ok":true,"data":{"has_more":true,"page_token":"pt_next","total":2,"items":[{"record_id":"rec1","fields":{"Name":"A"}},{"record_id":"rec2","fields":{"Name":"B"}}]}}\n'
+  printf '{"ok":true,"identity":"user","data":{"has_more":true,"page_token":"pt_next","total":2,"items":[{"record_id":"rec1","fields":{"Name":"A"}},{"record_id":"rec2","fields":{"Name":"B"}}]}}\n'
   exit 0
 fi
 printf '{"ok":false,"error":{"type":"validation","subtype":"unknown_verb","message":"unhandled %s %s"}}\n' "$svc" "$verb"
@@ -75,6 +78,11 @@ func TestOpsCreateDoc_ParsesDocumentIDAndURL(t *testing.T) {
 	// The shortcut returns the url directly; we must surface it.
 	if res.URL != "https://feishu.cn/docx/docx_new_1" {
 		t.Fatalf("URL should come from the shortcut response: %q", res.URL)
+	}
+	// The response carries NO title (lark-cli 1.0.56) — the result's title must be the
+	// INPUT title (the heading we sent), not anything scraped from the response.
+	if res.Title != "我的标题" {
+		t.Fatalf("title must come from the input (response has no title field): %q", res.Title)
 	}
 	calls := readOpsCalls(t, r, 7)
 	// Must use the docs +create shortcut (NOT the generic api path).
