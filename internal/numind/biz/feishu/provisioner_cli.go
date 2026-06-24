@@ -162,6 +162,43 @@ func (r *larkCLIRunner) StartAppCreate(ctx context.Context, userID uint) (pageUR
 		return "", nil, fmt.Errorf("feishu: create user scratch home %q: %w", home, err)
 	}
 
+	// Concurrency guard: reject a second StartAppCreate for the same user while a
+	// previous in-flight `config init` is still running. Without this, the second
+	// call would overwrite r.sessions[home] and orphan the first process (it would
+	// linger until appCreateCeiling reaps it, meanwhile both processes write the
+	// same config.json and can corrupt each other's write / file lock). A finished
+	// (done) session is NOT a blocker — the user may legitimately re-provision.
+	//
+	// The check-and-reserve is done atomically under r.mu so two concurrent callers
+	// can't both pass the check and then both spawn a process (TOCTOU): the winner
+	// reserves the slot with a placeholder session; losers see it and bail. We
+	// attach the actual *exec.Cmd to the reserved session after a successful Start,
+	// and release the reservation on any early-return failure path so a failed
+	// launch never blocks a later retry.
+	sess := &cliSession{home: home}
+	r.mu.Lock()
+	if existing := r.sessions[home]; existing != nil {
+		existing.mu.Lock()
+		inFlight := !existing.done
+		existing.mu.Unlock()
+		if inFlight {
+			r.mu.Unlock()
+			return "", nil, fmt.Errorf("feishu: provisioning already in progress for user %d", userID)
+		}
+	}
+	r.sessions[home] = sess // reserve the slot before spawning
+	r.mu.Unlock()
+
+	// releaseReservation drops our reserved slot on a failure path — but only if it
+	// is still OURS (a later successful StartAppCreate may have replaced it).
+	releaseReservation := func() {
+		r.mu.Lock()
+		if r.sessions[home] == sess {
+			delete(r.sessions, home)
+		}
+		r.mu.Unlock()
+	}
+
 	// Detach from the request ctx: the process must outlive this HTTP request
 	// (the user's browser step can take minutes). We bound the URL-scrape window
 	// (startInitTimeout) and the whole process lifetime (appCreateCeiling)
@@ -177,18 +214,17 @@ func (r *larkCLIRunner) StartAppCreate(ctx context.Context, userID uint) (pageUR
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		releaseReservation()
 		return "", nil, fmt.Errorf("feishu: stdout pipe: %w", err)
 	}
 	cmd.Stderr = cmd.Stdout // fold stderr into the same stream for scraping
 
 	if err := cmd.Start(); err != nil {
+		releaseReservation()
 		return "", nil, fmt.Errorf("feishu: start lark-cli: %w", err)
 	}
 
-	sess := &cliSession{home: home, cmd: cmd}
-	r.mu.Lock()
-	r.sessions[home] = sess
-	r.mu.Unlock()
+	sess.cmd = cmd
 
 	// Hard ceiling: kill a process that never completes (user abandoned the
 	// browser step) so it doesn't leak. Cancelled by the reaper on normal exit.
@@ -222,9 +258,7 @@ func (r *larkCLIRunner) StartAppCreate(ctx context.Context, userID uint) (pageUR
 	if scrapeErr != nil {
 		// Kill the orphaned process — we never got a usable URL.
 		_ = cmd.Process.Kill()
-		r.mu.Lock()
-		delete(r.sessions, home)
-		r.mu.Unlock()
+		releaseReservation()
 		return "", nil, fmt.Errorf("feishu: scrape page URL: %w", scrapeErr)
 	}
 
