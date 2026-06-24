@@ -178,22 +178,35 @@ func NewConnectOrchestrator(d ConnectOrchestratorDeps) (*ConnectOrchestrator, er
 // re-provisioned (the old DB-driven bug), and the in-memory provisioning lock is
 // never consulted on the app-exists path (no "already in progress" dead-end).
 func (o *ConnectOrchestrator) NextConnectStep(ctx context.Context, userID uint, _ uint64, _ string) (*ConnectStep, error) {
-	// REPRO-PLACEHOLDER (fix/feishu-phase-from-home): this commit lands ONLY the
-	// failing reproduction test (rule 11). The phase routing below is still the OLD
-	// DB-driven logic that the repro test catches as buggy; the home-truth fix lands
-	// in the next commit. The new home-truth seams (AppExists/AppID/StartAuthorize)
-	// exist but are not yet consulted here.
-	acc, gerr := o.store.Get(ctx, userID, ProviderLark)
-	if gerr != nil || acc.AppID == "" {
+	// Phase truth source #1: does the user's lark-cli home already hold a built app?
+	appExists, err := o.starter.AppExists(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("feishu.NextConnectStep: app-exists (user %d): %w", userID, err)
+	}
+	if !appExists {
+		// No app in the home → create-app step. (Do NOT consult the DB: even if a stale
+		// row exists, the home is the truth — the app must be built first.)
 		pageURL, _, perr := o.starter.StartProvision(ctx, userID)
 		if perr != nil {
 			return nil, fmt.Errorf("feishu.NextConnectStep: start provision (user %d): %w", userID, perr)
 		}
 		return &ConnectStep{Phase: ConnectPhaseCreateApp, URL: pageURL}, nil
 	}
-	if acc.Connected {
+
+	// Phase truth source #2: is the home authorized? (auth status: user.available)
+	authorized, err := o.authorizer.IsAuthorized(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("feishu.NextConnectStep: auth-status (user %d): %w", userID, err)
+	}
+	if authorized {
+		// Done: reconcile the DB to the home (connected=true + app_id) for UI/status.
+		if rerr := o.reconcileConnected(ctx, userID); rerr != nil {
+			return nil, rerr
+		}
 		return &ConnectStep{Phase: ConnectPhaseDone}, nil
 	}
+
+	// App exists but not authorized yet → start the blocking auth-login.
 	return o.startAuthorize(ctx, userID)
 }
 
