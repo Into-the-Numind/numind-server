@@ -1,23 +1,25 @@
 // Package feishu — provisioner.go implements per-user 飞书自建应用 provisioning
-// (config-init flow via lark-cli) + the device-code authorization (G2-authorize,
-// rewritten 2026-06-24 — replaces the old OAuth authorization-code token exchange).
+// (config-init flow via lark-cli) + authorization (blocking auth-login, isomorphic to
+// app-create; fix/feishu-phase-from-home, 2026-06-24).
 //
-// Architecture (design.md §5, spike-bootstrap.md, verified lark-cli reality):
+// Architecture (verified lark-cli reality on 2026-06-24):
 //
 //   - There is NO public REST API to create a 飞书 self-built app. The supported
 //     programmatic path is lark-cli's `config init --new` flow: it BLOCKS, prints an
 //     open.feishu.cn/page/cli URL, the user opens it in a browser to create+configure
 //     the app, and lark-cli exits once the app is created — persisting the new app's
 //     appId/appSecret into that config home's ~/.lark-cli/config.json.
-//   - Authorization (G2) is ALSO lark-cli, via the device flow:
-//     `lark-cli auth login --no-wait --json --domain docs,im,base` returns a
-//     verification URL + device_code; after the user authorizes,
-//     `lark-cli auth login --device-code <code>` finishes it. lark-cli stores +
-//     auto-refreshes the user_access_token inside the home. There is NO redirect_uri,
-//     NO OAuth callback, NO token exchange done by us.
+//   - Authorization is ALSO lark-cli, ISOMORPHIC to app-create: `lark-cli auth login
+//     --domain docs,im,base` BLOCKS, prints a verification URL, the user grants scopes
+//     in a browser, and lark-cli exits — persisting + auto-refreshing the
+//     user_access_token inside the home. There is NO redirect_uri / OAuth callback /
+//     token exchange / device-code file done by us.
 //   - 有数's server runs lark-cli once per user, each pinned to its own PERSISTENT
 //     HOME (feishu.home_base/u{userID}) so credentials + tokens never collide across
 //     users and survive a redeploy (lark-cli reads $HOME/.lark-cli/).
+//   - The HOME is the connect PHASE truth source: AppExists reads config.json (app
+//     built?), AuthStatus reads `auth status` (authorized?). The DB row is reconciled
+//     FROM the home (UI/status), never the phase truth.
 //
 // Provisioning (app-create) is a two-call flow at the cliRunner seam:
 //
@@ -27,15 +29,13 @@
 //   - PollAppCreated(ctx, handle): report whether the process finished AND apps[0]
 //     is readable from config.json; when done, return the appId + plaintext appSecret.
 //
-// Authorization (device-code) is the authRunner seam (auth_cli.go):
-//
-//   - StartAuthLogin / CompleteAuthLogin / HasPendingDeviceCode / AuthStatus.
+// Authorization is the authRunner seam (auth_cli.go): StartAuthorizeLogin (blocking
+// background spawn + scrape URL) / AuthStatus (identities.user.available).
 //
 // Security: the app_secret returned by PollCredentials is AES-256-GCM encrypted at
-// THIS boundary (via the injected crypto.Cipher) — though under device-code it is
-// no longer persisted (the token lives in lark-cli's home). Plaintext secrets /
-// tokens / device codes are never returned to the LLM, never logged. NOT routed
-// through aiservice (飞书 is an external business API, not an LLM gateway).
+// THIS boundary (via the injected crypto.Cipher). Plaintext secrets / tokens are
+// never returned to the LLM, never logged. NOT routed through aiservice (飞书 is an
+// external business API, not an LLM gateway).
 package feishu
 
 import (
@@ -80,6 +80,17 @@ type AppCreateHandle struct {
 type cliRunner interface {
 	StartAppCreate(ctx context.Context, userID uint) (pageURL string, handle *AppCreateHandle, err error)
 	PollAppCreated(ctx context.Context, handle *AppCreateHandle) (appID, appSecret string, done bool, err error)
+
+	// AppExists reports whether userID's PERSISTENT home already holds a built app
+	// (config.json apps[0].appId present). It reads the home (the phase truth source)
+	// directly — no process needed — so the orchestrator can route create_app vs
+	// authorize without consulting the (possibly stale) DB. A transient read failure
+	// returns an error; a clean "no app yet" is (false, nil).
+	AppExists(ctx context.Context, userID uint) (bool, error)
+
+	// AppID returns the appId from userID's home (config.json apps[0]). Used to
+	// reconcile the DB row on the done path. Errors when no app is present.
+	AppID(ctx context.Context, userID uint) (string, error)
 
 	// resolveHandle reconstructs an AppCreateHandle from a durable session ref
 	// (the home path) so the string-based Provisioner.PollCredentials contract
@@ -160,6 +171,17 @@ func (p *Provisioner) PollCredentials(ctx context.Context, sessionRef string) (a
 	return appID, secEnc, true, nil
 }
 
+// AppExists reports whether userID's lark-cli home already holds a built app
+// (config.json apps[0].appId present). It is the create_app→authorize phase
+// discriminant — read straight from the home (the truth source), independent of the
+// DB. userID 0 has no home → (false, error).
+func (p *Provisioner) AppExists(ctx context.Context, userID uint) (bool, error) {
+	if userID == 0 {
+		return false, fmt.Errorf("%w: missing user id for app-exists check", errno.ErrLarkCallFailed)
+	}
+	return p.cli.AppExists(ctx, userID)
+}
+
 // PollCredentialsForUser is the agent-driven variant of PollCredentials: it
 // re-derives the user's durable session ref (persistent home path) from userID, so
 // the connect tool can poll app-create progress on a tool re-call WITHOUT having
@@ -171,36 +193,30 @@ func (p *Provisioner) PollCredentialsForUser(ctx context.Context, userID uint) (
 	return p.PollCredentials(ctx, p.cli.sessionRefForUser(userID))
 }
 
-// --- device-code authorization (Authorizer, consumed by ConnectOrchestrator) ---
+// AppID returns the appId from userID's lark-cli home (config.json apps[0]) so the
+// orchestrator can reconcile the DB row (UI/status) on the done path. Returns "" +
+// error when no app is present. userID 0 errors.
+func (p *Provisioner) AppID(ctx context.Context, userID uint) (string, error) {
+	if userID == 0 {
+		return "", fmt.Errorf("%w: missing user id for app-id read", errno.ErrLarkCallFailed)
+	}
+	return p.cli.AppID(ctx, userID)
+}
 
-// StartAuthorize starts the lark-cli device flow for userID and returns the
-// verification URL the user opens. The device_code is persisted inside the home
-// (never returned). NOT through aiservice.
+// --- authorization (Authorizer, consumed by ConnectOrchestrator) ------------
+
+// StartAuthorize launches the blocking `lark-cli auth login` for userID and returns
+// the verification URL the user opens. The token is persisted inside the home by
+// lark-cli on completion (never returned). NOT through aiservice.
 func (p *Provisioner) StartAuthorize(ctx context.Context, userID uint) (string, error) {
 	if userID == 0 {
 		return "", fmt.Errorf("%w: missing user id for authorize", errno.ErrLarkCallFailed)
 	}
-	return p.cli.StartAuthLogin(ctx, userID)
+	return p.cli.StartAuthorizeLogin(ctx, userID)
 }
 
-// CompleteAuthorize finishes the in-flight device flow for userID (after the user
-// authorized in the browser). On success lark-cli has stored the token in the home.
-func (p *Provisioner) CompleteAuthorize(ctx context.Context, userID uint) error {
-	if userID == 0 {
-		return fmt.Errorf("%w: missing user id for authorize completion", errno.ErrLarkCallFailed)
-	}
-	return p.cli.CompleteAuthLogin(ctx, userID)
-}
-
-// HasPendingAuthorize reports whether a StartAuthorize is awaiting completion.
-func (p *Provisioner) HasPendingAuthorize(userID uint) bool {
-	if userID == 0 {
-		return false
-	}
-	return p.cli.HasPendingDeviceCode(userID)
-}
-
-// IsAuthorized reports whether the user's home holds a usable authorization.
+// IsAuthorized reports whether the user's home holds a usable authorization
+// (lark-cli auth status: identities.user.available == true).
 func (p *Provisioner) IsAuthorized(ctx context.Context, userID uint) (bool, error) {
 	if userID == 0 {
 		return false, fmt.Errorf("%w: missing user id for authorization check", errno.ErrLarkCallFailed)

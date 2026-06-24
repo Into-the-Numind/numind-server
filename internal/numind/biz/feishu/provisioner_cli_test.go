@@ -441,3 +441,162 @@ func TestPollByUserRef_ReadsConfigAfterRestart(t *testing.T) {
 		t.Fatalf("read wrong creds: appID=%q secret=%q", appID, secret)
 	}
 }
+
+// --- AppExists / AppID (home = phase truth source) --------------------------
+
+// TestAppExists_ReadsHomeConfig is the home-truth regression: AppExists reflects
+// whether config.json holds a built app, independent of any in-memory session or DB
+// row. A user with a written config.json reports true; a user with none reports
+// false (clean, no error) so the orchestrator routes to create_app.
+func TestAppExists_ReadsHomeConfig(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake lark-cli stub is a /bin/sh script")
+	}
+	homeBase := t.TempDir()
+	writeConfigJSON(t, homeBase, 31, "cli_exists", "secret-exists")
+
+	bin := writeFakeLarkCLI(t, fakeConfigInitScript)
+	r, err := NewLarkCLIRunner(bin, homeBase)
+	if err != nil {
+		t.Fatalf("NewLarkCLIRunner: %v", err)
+	}
+
+	ok, err := r.AppExists(context.Background(), 31)
+	if err != nil || !ok {
+		t.Fatalf("AppExists(31) with config.json must be (true,nil), got ok=%t err=%v", ok, err)
+	}
+	// A user with no home/config.json is a clean not-built (no error).
+	ok, err = r.AppExists(context.Background(), 99)
+	if err != nil || ok {
+		t.Fatalf("AppExists(99) with no config must be (false,nil), got ok=%t err=%v", ok, err)
+	}
+}
+
+// TestAppExists_IncompleteConfigIsFalse confirms a config.json that parses but lacks
+// a complete apps[0] (config init still in flight) is a clean not-built, not an error.
+func TestAppExists_IncompleteConfigIsFalse(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake lark-cli stub is a /bin/sh script")
+	}
+	homeBase := t.TempDir()
+	cfgDir := filepath.Join(homeBase, "u32", ".lark-cli")
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// apps[] present but empty → "not built yet".
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.json"), []byte(`{"apps":[]}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	bin := writeFakeLarkCLI(t, fakeConfigInitScript)
+	r, _ := NewLarkCLIRunner(bin, homeBase)
+	ok, err := r.AppExists(context.Background(), 32)
+	if err != nil || ok {
+		t.Fatalf("incomplete config.json must be (false,nil), got ok=%t err=%v", ok, err)
+	}
+}
+
+func TestAppID_ReadsHomeConfig(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake lark-cli stub is a /bin/sh script")
+	}
+	homeBase := t.TempDir()
+	writeConfigJSON(t, homeBase, 33, "cli_theid", "secret-theid")
+	bin := writeFakeLarkCLI(t, fakeConfigInitScript)
+	r, _ := NewLarkCLIRunner(bin, homeBase)
+
+	appID, err := r.AppID(context.Background(), 33)
+	if err != nil || appID != "cli_theid" {
+		t.Fatalf("AppID(33) must read config.json appId, got %q err=%v", appID, err)
+	}
+	if _, err := r.AppID(context.Background(), 99); err == nil {
+		t.Fatal("AppID with no config must error")
+	}
+}
+
+// --- lock self-heal (dead/finished session is reclaimable) ------------------
+
+// TestSpawnBlocking_DeadSessionIsReclaimable is the LOCK SELF-HEAL regression: a
+// session whose process has already exited (done=true) must NOT block a later spawn
+// — only a genuinely alive in-flight process does. This guards against the wedged
+// "provisioning already in progress" dead-end. We exercise it directly on the
+// session map: seed a DEAD session for a user's home, then StartAppCreate must be
+// allowed (reclaim the slot) rather than rejected.
+func TestSpawnBlocking_DeadSessionIsReclaimable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake lark-cli stub is a /bin/sh script")
+	}
+	homeBase := t.TempDir()
+	seedFakeCreds(t, homeBase, 55, "cli_heal", "secret-heal")
+	bin := writeFakeLarkCLI(t, fakeConfigInitScript)
+	r, err := NewLarkCLIRunner(bin, homeBase)
+	if err != nil {
+		t.Fatalf("NewLarkCLIRunner: %v", err)
+	}
+
+	// Seed a DEAD session (process exited) for user 55's home — simulating a prior
+	// run that crashed/was reaped and left a stale tracking entry.
+	home := r.homeForUser(55)
+	dead := &cliSession{home: home, done: true}
+	r.mu.Lock()
+	r.sessions[home] = dead
+	r.mu.Unlock()
+	if dead.isAlive() {
+		t.Fatal("precondition: seeded session must be dead")
+	}
+
+	// StartAppCreate must reclaim the dead slot (NOT reject as in-progress).
+	_, handle, err := r.StartAppCreate(context.Background(), 55)
+	if err != nil {
+		t.Fatalf("StartAppCreate must reclaim a dead session, got: %v", err)
+	}
+	if handle == nil {
+		t.Fatal("reclaimed StartAppCreate must return a handle")
+	}
+	// Drive to completion so the spawned process exits cleanly.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, _, done, perr := r.PollAppCreated(context.Background(), handle)
+		if perr != nil {
+			t.Fatalf("PollAppCreated: %v", perr)
+		}
+		if done {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("reclaimed provision never completed")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestStartAuthorizeLogin_SelfHealsDeadAuthSession confirms the authorize spawn is
+// isomorphic and self-healing: a DEAD prior auth-login session (keyed home#auth)
+// does not block a fresh StartAuthorizeLogin. It uses the auth fake (prints a URL,
+// writes a token, exits).
+func TestStartAuthorizeLogin_SelfHealsDeadAuthSession(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake lark-cli stub is a /bin/sh script")
+	}
+	homeBase := t.TempDir()
+	bin := writeFakeLarkCLI(t, fakeAuthLoginScript)
+	r, err := NewLarkCLIRunner(bin, homeBase)
+	if err != nil {
+		t.Fatalf("NewLarkCLIRunner: %v", err)
+	}
+	seedFakeAuthURL(t, homeBase, 66, "https://open.feishu.cn/suite/passport/oauth/device?user_code=HEAL")
+
+	// Seed a DEAD auth session under the auth-namespaced key.
+	authKey := authSessionKey(r.homeForUser(66))
+	r.mu.Lock()
+	r.sessions[authKey] = &cliSession{home: authKey, done: true}
+	r.mu.Unlock()
+
+	url, err := r.StartAuthorizeLogin(context.Background(), 66)
+	if err != nil {
+		t.Fatalf("StartAuthorizeLogin must reclaim a dead auth session, got: %v", err)
+	}
+	if url == "" {
+		t.Fatal("StartAuthorizeLogin must return a verification URL")
+	}
+}

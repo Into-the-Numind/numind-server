@@ -38,19 +38,23 @@ type fakeCLIRunner struct {
 	// pollScript returns the credential snapshot for a scratch path (handle.home).
 	pollScript func(home string) (appID, appSecret string, done bool, err error)
 
-	// device-code authRunner scripts (default to benign no-ops).
-	startAuthScript    func(userID uint) (string, error)
-	completeAuthScript func(userID uint) error
-	pendingScript      func(userID uint) bool
-	statusScript       func(userID uint) (bool, error)
+	// appExistsScript reports whether the user's home already holds a built app
+	// (home-truth phase source). Defaults to "no app yet".
+	appExistsScript func(userID uint) (bool, error)
+	// appIDScript returns the appId from the home. Defaults to a benign appId.
+	appIDScript func(userID uint) (string, error)
+
+	// authRunner scripts (default to benign no-ops).
+	startAuthScript func(userID uint) (string, error)
+	statusScript    func(userID uint) (bool, error)
 }
 
 func newFakeCLIRunner() *fakeCLIRunner {
 	return &fakeCLIRunner{
-		startAuthScript:    func(uint) (string, error) { return "https://verify", nil },
-		completeAuthScript: func(uint) error { return nil },
-		pendingScript:      func(uint) bool { return false },
-		statusScript:       func(uint) (bool, error) { return false, nil },
+		appExistsScript: func(uint) (bool, error) { return false, nil },
+		appIDScript:     func(uint) (string, error) { return "cli_fake", nil },
+		startAuthScript: func(uint) (string, error) { return "https://verify", nil },
+		statusScript:    func(uint) (bool, error) { return false, nil },
 	}
 }
 
@@ -87,15 +91,21 @@ func (f *fakeCLIRunner) sessionRefForUser(userID uint) string {
 	return "u" + itoa(userID)
 }
 
-// --- authRunner seam (device-code) ------------------------------------------
+// AppExists mirrors the production home-truth phase source.
+func (f *fakeCLIRunner) AppExists(_ context.Context, userID uint) (bool, error) {
+	return f.appExistsScript(userID)
+}
 
-func (f *fakeCLIRunner) StartAuthLogin(_ context.Context, userID uint) (string, error) {
+// AppID mirrors the production home-read of config.json apps[0].appId.
+func (f *fakeCLIRunner) AppID(_ context.Context, userID uint) (string, error) {
+	return f.appIDScript(userID)
+}
+
+// --- authRunner seam (blocking auth login, isomorphic to config init) -------
+
+func (f *fakeCLIRunner) StartAuthorizeLogin(_ context.Context, userID uint) (string, error) {
 	return f.startAuthScript(userID)
 }
-func (f *fakeCLIRunner) CompleteAuthLogin(_ context.Context, userID uint) error {
-	return f.completeAuthScript(userID)
-}
-func (f *fakeCLIRunner) HasPendingDeviceCode(userID uint) bool { return f.pendingScript(userID) }
 func (f *fakeCLIRunner) AuthStatus(_ context.Context, userID uint) (bool, error) {
 	return f.statusScript(userID)
 }
@@ -318,44 +328,38 @@ func TestStartAuthorize_PropagatesError(t *testing.T) {
 	}
 }
 
-func TestCompleteAuthorize_DelegatesToCLI(t *testing.T) {
+func TestAppExists_Delegates(t *testing.T) {
 	cli := newFakeCLIRunner()
-	called := false
-	cli.completeAuthScript = func(userID uint) error {
-		called = true
-		if userID != 12 {
-			t.Fatalf("unexpected userID %d", userID)
-		}
-		return nil
-	}
+	cli.appExistsScript = func(userID uint) (bool, error) { return userID == 5, nil }
 	p := newTestProvisioner(t, cli)
-	if err := p.CompleteAuthorize(context.Background(), 12); err != nil {
-		t.Fatalf("CompleteAuthorize: %v", err)
+	ok, err := p.AppExists(context.Background(), 5)
+	if err != nil || !ok {
+		t.Fatalf("expected app-exists for user 5, got ok=%t err=%v", ok, err)
 	}
-	if !called {
-		t.Fatal("CompleteAuthorize must delegate to the CLI runner")
+	ok, err = p.AppExists(context.Background(), 6)
+	if err != nil || ok {
+		t.Fatalf("expected no app for user 6, got ok=%t err=%v", ok, err)
 	}
-}
-
-func TestCompleteAuthorize_ZeroUserErrors(t *testing.T) {
-	p := newTestProvisioner(t, newFakeCLIRunner())
-	if err := p.CompleteAuthorize(context.Background(), 0); err == nil {
+	if _, err := p.AppExists(context.Background(), 0); err == nil {
 		t.Fatal("userID 0 must error")
 	}
 }
 
-func TestHasPendingAuthorize_Delegates(t *testing.T) {
+func TestAppID_Delegates(t *testing.T) {
 	cli := newFakeCLIRunner()
-	cli.pendingScript = func(userID uint) bool { return userID == 5 }
+	cli.appIDScript = func(userID uint) (string, error) {
+		if userID != 8 {
+			t.Fatalf("unexpected userID %d", userID)
+		}
+		return "cli_u8", nil
+	}
 	p := newTestProvisioner(t, cli)
-	if !p.HasPendingAuthorize(5) {
-		t.Fatal("expected pending for user 5")
+	appID, err := p.AppID(context.Background(), 8)
+	if err != nil || appID != "cli_u8" {
+		t.Fatalf("expected cli_u8, got %q err=%v", appID, err)
 	}
-	if p.HasPendingAuthorize(6) {
-		t.Fatal("expected no pending for user 6")
-	}
-	if p.HasPendingAuthorize(0) {
-		t.Fatal("userID 0 must report no pending")
+	if _, err := p.AppID(context.Background(), 0); err == nil {
+		t.Fatal("userID 0 must error")
 	}
 }
 
@@ -386,24 +390,45 @@ func TestNewProvisioner_NilDeps(t *testing.T) {
 	}
 }
 
-// --- page URL parsing (pure helper, exercised by real CLI output) -----------
+// --- URL parsing (pure helper, exercised by real CLI output) ----------------
 
-func TestParseDeviceCodeURL(t *testing.T) {
+func TestParseFeishuURL_ConfigInitPageURL(t *testing.T) {
 	out := "打开以下链接配置应用:\n" +
 		"  https://open.feishu.cn/page/cli?user_code=2AF7-MFWU&lpv=1.0.56&from=cli\n" +
 		"等待配置应用...\n"
-	got, err := parseDeviceCodeURL(out)
+	got, err := parseFeishuURL(out)
 	if err != nil {
-		t.Fatalf("parseDeviceCodeURL: %v", err)
+		t.Fatalf("parseFeishuURL: %v", err)
 	}
 	if got != "https://open.feishu.cn/page/cli?user_code=2AF7-MFWU&lpv=1.0.56&from=cli" {
 		t.Fatalf("parsed URL mismatch: %q", got)
 	}
 }
 
-func TestParseDeviceCodeURL_NotFound(t *testing.T) {
-	if _, err := parseDeviceCodeURL("some unrelated output without a link"); err == nil {
-		t.Fatal("parseDeviceCodeURL should error when no page URL present")
+func TestParseFeishuURL_AuthLoginVerificationURL(t *testing.T) {
+	// auth login prints its verification link the same way (a feishu.cn URL on a line).
+	out := "请在浏览器中打开以下链接完成授权:\n" +
+		"  https://open.feishu.cn/suite/passport/oauth/device?user_code=WXYZ\n" +
+		"等待授权...\n"
+	got, err := parseFeishuURL(out)
+	if err != nil {
+		t.Fatalf("parseFeishuURL: %v", err)
+	}
+	if got != "https://open.feishu.cn/suite/passport/oauth/device?user_code=WXYZ" {
+		t.Fatalf("parsed verification URL mismatch: %q", got)
+	}
+}
+
+func TestParseFeishuURL_NotFound(t *testing.T) {
+	if _, err := parseFeishuURL("some unrelated output without a link"); err == nil {
+		t.Fatal("parseFeishuURL should error when no feishu URL present")
+	}
+}
+
+func TestParseFeishuURL_IgnoresNonFeishuURL(t *testing.T) {
+	// A non-飞书 https URL must not be grabbed (guard against scraping junk).
+	if _, err := parseFeishuURL("see https://example.com/whatever for details"); err == nil {
+		t.Fatal("parseFeishuURL must ignore a non-feishu.cn URL")
 	}
 }
 

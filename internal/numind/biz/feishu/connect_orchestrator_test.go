@@ -23,6 +23,17 @@ type orchAppStarter struct {
 	ref     string
 	err     error
 	calls   int
+
+	// appExists models the home-truth phase source: whether the user's lark-cli home
+	// already holds a built app (config.json apps[0]). appExistsErr forces an error.
+	appExists      bool
+	appExistsErr   error
+	appExistsCalls int
+
+	// appID is returned by AppID (home reconcile on the done path); appIDErr forces
+	// an error. Defaults to a benign non-empty appId so the done path can reconcile.
+	appID    string
+	appIDErr error
 }
 
 func (f *orchAppStarter) StartProvision(_ context.Context, _ uint) (string, string, error) {
@@ -31,6 +42,21 @@ func (f *orchAppStarter) StartProvision(_ context.Context, _ uint) (string, stri
 		return "", "", f.err
 	}
 	return f.pageURL, f.ref, nil
+}
+
+func (f *orchAppStarter) AppExists(_ context.Context, _ uint) (bool, error) {
+	f.appExistsCalls++
+	return f.appExists, f.appExistsErr
+}
+
+func (f *orchAppStarter) AppID(_ context.Context, _ uint) (string, error) {
+	if f.appIDErr != nil {
+		return "", f.appIDErr
+	}
+	if f.appID == "" {
+		return "cli_fake_app", nil
+	}
+	return f.appID, nil
 }
 
 // orchAppPoller fakes the per-user poll-and-persist seam (PollCredentialsForUser).
@@ -47,14 +73,11 @@ func (f *orchAppPoller) PollCredentialsForUser(_ context.Context, _ uint) (strin
 	return f.appID, f.secEnc, f.done, f.err
 }
 
-// orchAuthorizer fakes the device-code Authorizer seam.
+// orchAuthorizer fakes the Authorizer seam (blocking auth-login model).
 type orchAuthorizer struct {
 	startURL      string
 	startErr      error
 	startCalls    int
-	completeErr   error
-	completeCalls int
-	pending       bool
 	authorized    bool
 	authStatusErr error
 }
@@ -63,11 +86,6 @@ func (f *orchAuthorizer) StartAuthorize(_ context.Context, _ uint) (string, erro
 	f.startCalls++
 	return f.startURL, f.startErr
 }
-func (f *orchAuthorizer) CompleteAuthorize(_ context.Context, _ uint) error {
-	f.completeCalls++
-	return f.completeErr
-}
-func (f *orchAuthorizer) HasPendingAuthorize(_ uint) bool { return f.pending }
 func (f *orchAuthorizer) IsAuthorized(_ context.Context, _ uint) (bool, error) {
 	return f.authorized, f.authStatusErr
 }
@@ -86,11 +104,12 @@ func newTestOrchestrator(t *testing.T, store *svcAccountStore, starter AppStarte
 	return o
 }
 
-// --- NextConnectStep --------------------------------------------------------
+// --- NextConnectStep (home-truth phase routing) -----------------------------
 
-func TestNextConnectStep_NoRow_StartsAppCreate(t *testing.T) {
+func TestNextConnectStep_NoAppInHome_StartsAppCreate(t *testing.T) {
 	store := newSvcAccountStore()
-	starter := &orchAppStarter{pageURL: "https://open.feishu.cn/page/cli?user_code=ABC", ref: "u5"}
+	// Home has NO app (appExists=false) → create_app, regardless of DB.
+	starter := &orchAppStarter{pageURL: "https://open.feishu.cn/page/cli?user_code=ABC", ref: "u5", appExists: false}
 	o := newTestOrchestrator(t, store, starter, &orchAppPoller{}, &orchAuthorizer{})
 
 	step, err := o.NextConnectStep(context.Background(), 5, 100, "授权提示")
@@ -108,17 +127,12 @@ func TestNextConnectStep_NoRow_StartsAppCreate(t *testing.T) {
 	}
 }
 
-func TestNextConnectStep_AppRowNotConnected_StartsAuthorize(t *testing.T) {
+func TestNextConnectStep_AppInHomeNotAuthorized_StartsAuthorize(t *testing.T) {
 	store := newSvcAccountStore()
-	// App provisioned (appID present) but not connected, nothing pending → start
-	// the device flow and return the verification URL.
-	store.put(&model.UserThirdPartyAccount{
-		UserID:   6,
-		Provider: ProviderLark,
-		AppID:    "cli_app6",
-	})
-	auth := &orchAuthorizer{startURL: "https://open.feishu.cn/device?user_code=XYZ"}
-	o := newTestOrchestrator(t, store, &orchAppStarter{}, &orchAppPoller{}, auth)
+	// Home has the app but is not authorized → start auth-login, return the URL.
+	starter := &orchAppStarter{appExists: true}
+	auth := &orchAuthorizer{startURL: "https://open.feishu.cn/device?user_code=XYZ", authorized: false}
+	o := newTestOrchestrator(t, store, starter, &orchAppPoller{}, auth)
 
 	step, err := o.NextConnectStep(context.Background(), 6, 200, "授权提示")
 	if err != nil {
@@ -133,19 +147,17 @@ func TestNextConnectStep_AppRowNotConnected_StartsAuthorize(t *testing.T) {
 	if auth.startCalls != 1 {
 		t.Fatalf("StartAuthorize should be called once, got %d", auth.startCalls)
 	}
+	if starter.calls != 0 {
+		t.Fatalf("must not re-provision when the home has an app, got %d", starter.calls)
+	}
 }
 
-func TestNextConnectStep_Connected_Done(t *testing.T) {
+func TestNextConnectStep_AppInHomeAuthorized_DoneReconciles(t *testing.T) {
 	store := newSvcAccountStore()
-	at := time.Now()
-	store.put(&model.UserThirdPartyAccount{
-		UserID:      7,
-		Provider:    ProviderLark,
-		AppID:       "cli_app7",
-		Connected:   true,
-		ConnectedAt: &at,
-	})
-	o := newTestOrchestrator(t, store, &orchAppStarter{}, &orchAppPoller{}, &orchAuthorizer{})
+	// Home has the app AND is authorized → done; DB reconciled (connected + app_id).
+	starter := &orchAppStarter{appExists: true, appID: "cli_app7"}
+	auth := &orchAuthorizer{authorized: true}
+	o := newTestOrchestrator(t, store, starter, &orchAppPoller{}, auth)
 
 	step, err := o.NextConnectStep(context.Background(), 7, 300, "授权提示")
 	if err != nil {
@@ -157,87 +169,42 @@ func TestNextConnectStep_Connected_Done(t *testing.T) {
 	if step.URL != "" {
 		t.Fatalf("done must carry no URL, got %q", step.URL)
 	}
-}
-
-func TestNextConnectStep_PendingDeviceCode_CompletesAndMarksConnected(t *testing.T) {
-	store := newSvcAccountStore()
-	store.put(&model.UserThirdPartyAccount{
-		UserID:   8,
-		Provider: ProviderLark,
-		AppID:    "cli_app8",
-	})
-	auth := &orchAuthorizer{pending: true}
-	o := newTestOrchestrator(t, store, &orchAppStarter{}, &orchAppPoller{}, auth)
-
-	step, err := o.NextConnectStep(context.Background(), 8, 400, "授权提示")
-	if err != nil {
-		t.Fatalf("NextConnectStep: %v", err)
+	row, gerr := store.Get(context.Background(), 7, ProviderLark)
+	if gerr != nil {
+		t.Fatalf("done must reconcile a DB row, got %v", gerr)
 	}
-	if step.Phase != ConnectPhaseDone {
-		t.Fatalf("pending device code completion should yield done, got %q", step.Phase)
-	}
-	if auth.completeCalls != 1 {
-		t.Fatalf("CompleteAuthorize should be called once, got %d", auth.completeCalls)
-	}
-	// DB must now reflect connected.
-	row, _ := store.Get(context.Background(), 8, ProviderLark)
 	if !row.Connected {
-		t.Fatal("DB row must be marked connected after device-code completion")
+		t.Fatal("done must reconcile connected=true")
+	}
+	if row.AppID != "cli_app7" {
+		t.Fatalf("done must reconcile app_id from the home, got %q", row.AppID)
 	}
 	if row.ConnectedAt == nil {
-		t.Fatal("connected_at must be set")
+		t.Fatal("connected_at must be set on reconcile")
 	}
 }
 
-func TestNextConnectStep_PendingButCompletionFails_RestartsAuthorize(t *testing.T) {
+func TestNextConnectStep_AppExistsError_Propagates(t *testing.T) {
 	store := newSvcAccountStore()
-	store.put(&model.UserThirdPartyAccount{
-		UserID:   9,
-		Provider: ProviderLark,
-		AppID:    "cli_app9",
-	})
-	// Completion fails (e.g. device code expired) → restart a fresh authorize.
-	auth := &orchAuthorizer{pending: true, completeErr: errors.New("device code expired"), startURL: "https://open.feishu.cn/device?fresh"}
-	o := newTestOrchestrator(t, store, &orchAppStarter{}, &orchAppPoller{}, auth)
+	starter := &orchAppStarter{appExistsErr: errors.New("home read boom")}
+	o := newTestOrchestrator(t, store, starter, &orchAppPoller{}, &orchAuthorizer{})
 
-	step, err := o.NextConnectStep(context.Background(), 9, 500, "授权提示")
-	if err != nil {
-		t.Fatalf("NextConnectStep: %v", err)
+	if _, err := o.NextConnectStep(context.Background(), 1, 0, ""); err == nil {
+		t.Fatal("AppExists error must propagate (never silently route to create_app)")
 	}
-	if step.Phase != ConnectPhaseAuthorize {
-		t.Fatalf("failed completion should restart authorize, got %q", step.Phase)
-	}
-	if auth.startCalls != 1 {
-		t.Fatalf("StartAuthorize should be called once on restart, got %d", auth.startCalls)
-	}
-	// Not connected (completion failed).
-	row, _ := store.Get(context.Background(), 9, ProviderLark)
-	if row.Connected {
-		t.Fatal("row must NOT be connected when completion failed")
+	if starter.calls != 0 {
+		t.Fatal("must not provision when the home-read failed")
 	}
 }
 
-func TestNextConnectStep_OutOfBandAuthorized_MarksConnectedDone(t *testing.T) {
+func TestNextConnectStep_AuthStatusError_Propagates(t *testing.T) {
 	store := newSvcAccountStore()
-	store.put(&model.UserThirdPartyAccount{
-		UserID:   10,
-		Provider: ProviderLark,
-		AppID:    "cli_app10",
-	})
-	// DB says not connected, nothing pending, but lark-cli reports an authorization.
-	auth := &orchAuthorizer{pending: false, authorized: true}
-	o := newTestOrchestrator(t, store, &orchAppStarter{}, &orchAppPoller{}, auth)
+	starter := &orchAppStarter{appExists: true}
+	auth := &orchAuthorizer{authStatusErr: errors.New("auth status boom")}
+	o := newTestOrchestrator(t, store, starter, &orchAppPoller{}, auth)
 
-	step, err := o.NextConnectStep(context.Background(), 10, 600, "授权提示")
-	if err != nil {
-		t.Fatalf("NextConnectStep: %v", err)
-	}
-	if step.Phase != ConnectPhaseDone {
-		t.Fatalf("out-of-band authorized should be done, got %q", step.Phase)
-	}
-	row, _ := store.Get(context.Background(), 10, ProviderLark)
-	if !row.Connected {
-		t.Fatal("out-of-band authorized must reconcile connected=true")
+	if _, err := o.NextConnectStep(context.Background(), 1, 0, ""); err == nil {
+		t.Fatal("IsAuthorized error must propagate")
 	}
 }
 
