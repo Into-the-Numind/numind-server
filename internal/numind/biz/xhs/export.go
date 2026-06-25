@@ -82,7 +82,7 @@ func (b *XhsBiz) Export(ctx context.Context, userID uint, ids []uint64) (downloa
 		return "", errno.ErrXhsNoteNotFound
 	}
 
-	csvBytes, err := buildExportCSV(rows)
+	csvBytes, err := buildExportCSV(ctx, rows)
 	if err != nil {
 		return "", fmt.Errorf("Export buildCSV: %w", err)
 	}
@@ -127,7 +127,7 @@ func formatCommentsForCSV(comments []CommentItem) string {
 // 写 BOM（EF BB BF）使 Excel 默认按 UTF-8 解析，避免中文乱码。
 // tags / comments 等 JSON 字段复用 toNoteItem 的解析（与列表 / 详情出参口径一致），
 // tags 用 “;” 连接成单元格；published_at/collected_at/crawled_at 用 RFC3339。
-func buildExportCSV(rows []model.XhsTopicNote) ([]byte, error) {
+func buildExportCSV(ctx context.Context, rows []model.XhsTopicNote) ([]byte, error) {
 	var buf bytes.Buffer
 	// UTF-8 BOM，便于 Excel 正确识别中文编码。
 	buf.Write([]byte{0xEF, 0xBB, 0xBF})
@@ -139,6 +139,7 @@ func buildExportCSV(rows []model.XhsTopicNote) ([]byte, error) {
 
 	for i := range rows {
 		item := toNoteItem(&rows[i])
+		resignNoteMedia(ctx, &item)
 		record := []string{
 			strconv.FormatUint(item.ID, 10),
 			item.XhsNoteID,

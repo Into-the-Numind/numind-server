@@ -166,6 +166,13 @@ func (e *Enricher) transcribeVideo(ctx context.Context, userID uint, note *model
 	}
 	defer os.Remove(videoPath)
 
+	// 把视频镜像到 COS（展示从 COS 读，小红书直链会过期）。失败保留原 video_url、不阻塞转写。
+	if vb, rdErr := os.ReadFile(videoPath); rdErr == nil && len(vb) > 0 {
+		if cosURL := mirrorVideoBytesToCOS(ctx, userID, note.ID, vb); cosURL != "" {
+			note.VideoURL = cosURL
+		}
+	}
+
 	// 2. ffmpeg 抽音。受本包 ffmpegSem 限流（design §4.1：独立信号量，不引 monitor 私有 sem）：
 	//    在此获取 slot（而非在 helper 内），让 extractAudioToWavFn seam 保持无状态便于单测替换。
 	//    ctx 取消时不阻塞在 sem 上，避免 detached ctx 超时后仍卡队列。

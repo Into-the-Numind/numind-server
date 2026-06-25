@@ -2,6 +2,7 @@ package xhs
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -223,6 +224,20 @@ func (e *Enricher) enrichOne(ctx context.Context, userID uint, note *model.XhsTo
 	// AI 分析已按产品决定移除（2026-06-24）。富化仅做视频转写。
 	// 视频段：note_type==video 且有直链 → 转写 + biz 层显式扣费。
 	// 终态由视频段 outcome 决定（done/partial/insufficient_credits）；非视频笔记直接 done。
+	// 1. 图片镜像到 COS（小红书直链会过期；展示从 COS 读）。封面取首图镜像结果。
+	var imgs []string
+	if len(note.Images) > 0 {
+		_ = json.Unmarshal(note.Images, &imgs)
+	}
+	mirroredImgs := mirrorImagesToCOS(ctx, userID, note.ID, imgs)
+	cover := note.CoverURL
+	if len(mirroredImgs) > 0 {
+		cover = mirroredImgs[0]
+	} else if cover != "" && !isCOSURL(cover) {
+		cover = mirrorImagesToCOS(ctx, userID, note.ID, []string{cover})[0]
+	}
+
+	// 2. 视频段：转写 +（transcribeVideo 内）把视频镜像到 COS，note.VideoURL 改写为 COS URL。
 	finalStatus := model.XhsEnrichDone
 	if note.NoteType == model.XhsNoteTypeVideo && note.VideoURL != "" {
 		outcome, err := e.transcribeVideo(ctx, userID, note)
@@ -232,8 +247,12 @@ func (e *Enricher) enrichOne(ctx context.Context, userID uint, note *model.XhsTo
 		finalStatus = outcome.Status
 	}
 
+	// 3. 写回：images/cover/video_url 全用镜像后的 COS 值（图文笔记 video_url 为空）。
 	if err := e.store.UpdateEnrichResult(ctx, &model.XhsTopicNote{
 		ID:              note.ID,
+		Images:          marshalJSON(mirroredImgs),
+		CoverURL:        cover,
+		VideoURL:        note.VideoURL,
 		VideoTranscript: note.VideoTranscript,
 		EnrichStatus:    finalStatus,
 	}); err != nil {

@@ -74,7 +74,7 @@ func parseExportCSV(t *testing.T, raw []byte) [][]string {
 // TestBuildExportCSV_ContainsSelectedFields 验证 CSV 含 BOM、表头、以及选中记录的源字段 + AI 字段。
 func TestBuildExportCSV_ContainsSelectedFields(t *testing.T) {
 	rows := exportSeed().rows[:1] // 只取笔记 1（用户 100）
-	csvBytes, err := buildExportCSV(rows)
+	csvBytes, err := buildExportCSV(context.Background(), rows)
 	require.NoError(t, err)
 
 	// 带 UTF-8 BOM。
@@ -129,7 +129,7 @@ func TestExport_UserIsolation(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, rows, 2, "用户 100 只应拿到自己的笔记 1、2，绝不含用户 200 的笔记 3")
 
-	csvBytes, err := buildExportCSV(rows)
+	csvBytes, err := buildExportCSV(context.Background(), rows)
 	require.NoError(t, err)
 	content := string(csvBytes)
 	assert.Contains(t, content, "种草标题A")

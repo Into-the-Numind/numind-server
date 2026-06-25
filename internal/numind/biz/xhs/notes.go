@@ -100,7 +100,9 @@ func (b *XhsBiz) ListNotes(ctx context.Context, userID uint, filter ListFilter, 
 
 	items := make([]NoteItem, 0, len(rows))
 	for i := range rows {
-		items = append(items, toNoteItem(&rows[i]))
+		it := toNoteItem(&rows[i])
+		resignNoteMedia(ctx, &it)
+		items = append(items, it)
 	}
 	return items, total, nil
 }
@@ -114,6 +116,7 @@ func (b *XhsBiz) GetNote(ctx context.Context, userID uint, id uint64) (*NoteItem
 		return nil, err
 	}
 	item := toNoteItem(row)
+	resignNoteMedia(ctx, &item)
 	return &item, nil
 }
 
