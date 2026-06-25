@@ -43,9 +43,12 @@ func parseFlexibleTime(s string) *time.Time {
 	if s == "" {
 		return nil
 	}
+	// 小红书展示的发布时间均为上海时间(+08:00)。按 CST 解析,否则"昨天 19:49"等无时区串
+	// 会被当 UTC 再 +8 偏移成次日凌晨。RFC3339 自带 offset 的串不受 loc 影响。
+	loc := time.FixedZone("CST", 8*3600)
 	layouts := []string{time.RFC3339, "2006-01-02T15:04:05", "2006-01-02 15:04:05", "2006-01-02 15:04", "2006-01-02", "2006/01/02"}
 	for _, l := range layouts {
-		if t, err := time.Parse(l, s); err == nil {
+		if t, err := time.ParseInLocation(l, s, loc); err == nil {
 			return &t
 		}
 	}
