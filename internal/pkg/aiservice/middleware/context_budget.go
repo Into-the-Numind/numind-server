@@ -927,9 +927,13 @@ func wrapStreamForContextBudget(
 
 	go func() {
 		defer close(out)
-		// sawContent records whether the provider streamed any actual output.
-		// Combined with CompletionTokens==0 it distinguishes an empty generation
-		// (nothing produced) from a real response. (empty-completion-refund-guard)
+		// sawContent records whether the provider streamed any VISIBLE output
+		// (Delta only). ReasoningDelta ("thinking") is deliberately excluded: a
+		// response with reasoning but no Delta yields no user-visible answer and
+		// is treated as an empty generation. Combined with CompletionTokens==0
+		// it distinguishes an empty generation from a real response — and is
+		// keyed on content, so a provider that streams content but misreports
+		// CompletionTokens==0 is still charged. (empty-completion-refund-guard)
 		var sawContent bool
 		for {
 			// Priority check: if context is already done, refund immediately
