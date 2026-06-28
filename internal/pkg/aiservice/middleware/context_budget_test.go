@@ -482,6 +482,107 @@ func TestContextBudgetCredits_StreamFinalUsageReconcilesOnce(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
+// Test: Streaming — empty completion (zero output tokens) must REFUND
+// ----------------------------------------------------------------------------
+
+// TestContextBudgetCredits_StreamEmptyCompletionRefunds reproduces a production
+// bug (user 600920v): when the provider stream ends with usage but ZERO
+// completion tokens (an empty generation — e.g. the prompt filled the model's
+// context window, leaving no room for output), the middleware reconciled it as a
+// normal "ok" success and charged the user for the wasted input prefill.
+// DeepSeek-V3.2/V4-pro returned such empty completions on ~123k-token prompts,
+// and the user was billed for 9 empty results.
+//
+// Correct behaviour: an empty completion is a FAILED generation — the
+// reservation must be REFUNDED (Refund=true, Status="failed"), not charged.
+func TestContextBudgetCredits_StreamEmptyCompletionRefunds(t *testing.T) {
+	renderedMsgs := []aiservice.ChatMessage{
+		{Role: aiservice.MessageRoleUser, Content: aiservice.MessageContent{Text: "oversized prompt"}},
+	}
+
+	budgetSvc := &mockContextBudgetService{
+		prepareResult: makePrepareResult(renderedMsgs, true),
+	}
+	creditSvc := &mockCreditService{
+		checkResult: &credit.PreCheckResult{
+			SkipDeduction:    false,
+			Sufficient:       true,
+			EstimatedCredits: 17,
+		},
+		reserveResult: &credit.Reservation{
+			ID:              4242,
+			ReservedCredits: 17,
+			Status:          credit.StatusReserved,
+		},
+	}
+
+	deps := Deps{
+		ContextBudget: budgetSvc,
+		CreditService: creditSvc,
+		Logger:        &mockLogger{},
+		Clock:         fixedClock{t: time.Now()},
+	}
+
+	// Provider produced NO content and reported zero completion tokens: the
+	// empty-generation signature (prompt prefilled, nothing generated).
+	chunks := []aiservice.ChatChunk{
+		{
+			Delta:   "",
+			Index:   0,
+			IsFinal: true,
+			Usage: &aiservice.TokenUsage{
+				PromptTokens:     124666,
+				CompletionTokens: 0,
+				TotalTokens:      124666,
+			},
+		},
+	}
+	adapter := streamHandler(chunks)
+
+	mw := ContextBudgetCredits(deps)
+	handler := mw(adapter)
+
+	fragment := simpleFragment("f1", "oversized input")
+	req := chatReqWithFragments(fragment)
+	ctx := billing.WithBillingMeta(context.Background(), 3, "sop_run", nil)
+	ctx = WithUserID(ctx, 3)
+
+	resp, err := handler(ctx, budgetRoute(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ch, ok := resp.(<-chan aiservice.ChatChunk)
+	if !ok {
+		t.Fatalf("expected <-chan ChatChunk, got %T", resp)
+	}
+	for range ch { //nolint:revive // drain
+	}
+
+	if budgetSvc.finalizeCallCount() != 1 {
+		t.Fatalf("Finalize calls: got %d, want 1", budgetSvc.finalizeCallCount())
+	}
+	fi := budgetSvc.lastFinalizeInput()
+	// An empty completion must REFUND the reservation, not charge it.
+	if !fi.Refund {
+		t.Errorf("FinalizeInput.Refund: got false, want true (empty completion must refund, not charge)")
+	}
+	if fi.Status != "failed" {
+		t.Errorf("FinalizeInput.Status: got %q, want %q", fi.Status, "failed")
+	}
+	if fi.ErrorCode != "empty_completion" {
+		t.Errorf("FinalizeInput.ErrorCode: got %q, want %q", fi.ErrorCode, "empty_completion")
+	}
+	// Usage must still be wired through (audit path in finalizeReservationIfNeeded
+	// inspects ActualPromptTokens to classify the event).
+	if fi.ActualPromptTokens != 124666 {
+		t.Errorf("FinalizeInput.ActualPromptTokens: got %d, want 124666", fi.ActualPromptTokens)
+	}
+	if fi.ActualCompletionTokens != 0 {
+		t.Errorf("FinalizeInput.ActualCompletionTokens: got %d, want 0", fi.ActualCompletionTokens)
+	}
+}
+
+// ----------------------------------------------------------------------------
 // Test: Streaming — channel close without usage finalizes with estimated
 // ----------------------------------------------------------------------------
 

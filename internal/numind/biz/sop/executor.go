@@ -642,8 +642,17 @@ func consumeGatewayStream(
 				if streamErr != nil {
 					return fullContent.String(), finalUsage, fmt.Errorf("executeViaGateway: stream error: %w", streamErr)
 				}
-				if fullContent.Len() == 0 && finalUsage == nil {
-					return "", nil, fmt.Errorf("executeViaGateway: empty response from Gateway (no chunks received)")
+				if fullContent.Len() == 0 {
+					if finalUsage == nil {
+						return "", nil, fmt.Errorf("executeViaGateway: empty response from Gateway (no chunks received)")
+					}
+					// Provider returned usage but no content — an empty generation
+					// (e.g. the prompt filled the model's context window, leaving no
+					// room for output). Treat as a failure so the node is marked
+					// failed instead of a silent empty success (which left the UI
+					// stuck on "等待执行"); the budget middleware refunds on the same
+					// signal. (empty-completion-refund-guard; prod bug user 600920v)
+					return "", finalUsage, fmt.Errorf("executeViaGateway: empty completion from provider (%d prompt tokens, 0 output — context likely too large)", finalUsage.PromptTokens)
 				}
 				return fullContent.String(), finalUsage, nil
 			}
