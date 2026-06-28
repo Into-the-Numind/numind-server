@@ -995,6 +995,10 @@ func wrapStreamForContextBudget(
 
 	go func() {
 		defer close(out)
+		// sawContent records whether the provider streamed any actual output.
+		// Combined with CompletionTokens==0 it distinguishes an empty generation
+		// (nothing produced) from a real response. (empty-completion-refund-guard)
+		var sawContent bool
 		for {
 			// Priority check: if context is already done, refund immediately
 			// regardless of whether src is also ready. This ensures cancellation
@@ -1046,6 +1050,10 @@ func wrapStreamForContextBudget(
 					return
 				}
 
+				if chunk.Delta != "" {
+					sawContent = true
+				}
+
 				// Forward the chunk to downstream consumers.
 				select {
 				case out <- chunk:
@@ -1081,11 +1089,22 @@ func wrapStreamForContextBudget(
 							finalize(fi)
 						}
 					} else if chunk.Usage != nil {
-						// Normal end with usage: reconcile.
+						// Normal end with usage. A zero-completion result with no
+						// streamed content is an EMPTY generation: the provider
+						// prefilled the prompt but produced no output (e.g. the
+						// prompt filled the model's context window). The input was
+						// wasted, so REFUND rather than charge the user for it.
+						// (empty-completion-refund-guard; prod bug user 600920v)
 						fi := baseFI
 						fi.ActualPromptTokens = chunk.Usage.PromptTokens
 						fi.ActualCompletionTokens = chunk.Usage.CompletionTokens
-						fi.Status = "ok"
+						if chunk.Usage.CompletionTokens == 0 && !sawContent {
+							fi.Refund = true
+							fi.ErrorCode = "empty_completion"
+							fi.Status = "failed"
+						} else {
+							fi.Status = "ok"
+						}
 						finalize(fi)
 					} else {
 						// IsFinal but no usage: calibration skipped.
