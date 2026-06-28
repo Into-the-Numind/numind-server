@@ -572,6 +572,14 @@ func TestContextBudgetCredits_StreamEmptyCompletionRefunds(t *testing.T) {
 	if fi.ErrorCode != "empty_completion" {
 		t.Errorf("FinalizeInput.ErrorCode: got %q, want %q", fi.ErrorCode, "empty_completion")
 	}
+	// Usage must still be wired through (audit path in finalizeReservationIfNeeded
+	// inspects ActualPromptTokens to classify the event).
+	if fi.ActualPromptTokens != 124666 {
+		t.Errorf("FinalizeInput.ActualPromptTokens: got %d, want 124666", fi.ActualPromptTokens)
+	}
+	if fi.ActualCompletionTokens != 0 {
+		t.Errorf("FinalizeInput.ActualCompletionTokens: got %d, want 0", fi.ActualCompletionTokens)
+	}
 }
 
 // ----------------------------------------------------------------------------

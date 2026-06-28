@@ -105,6 +105,26 @@ func TestConsumeGatewayStream_EmptyCompletionWithUsage(t *testing.T) {
 	assert.Equal(t, 0, usage.CompletionTokens)
 }
 
+// TestConsumeGatewayStream_PartialContentThenZeroUsage proves the empty-completion
+// guard is keyed on empty CONTENT, not on the reported completion count: when the
+// provider streams real content but then reports CompletionTokens==0 in the final
+// usage (a provider misreport), the streamed content WINS — the consumer returns
+// it as a success (no error, no spurious empty-completion failure).
+func TestConsumeGatewayStream_PartialContentThenZeroUsage(t *testing.T) {
+	ch := make(chan aiservice.ChatChunk, 3)
+	ch <- aiservice.ChatChunk{Delta: "partial answer"}
+	ch <- aiservice.ChatChunk{IsFinal: true, Model: "m", Provider: "p",
+		Usage: &aiservice.TokenUsage{PromptTokens: 100, CompletionTokens: 0, TotalTokens: 100}}
+	close(ch)
+
+	h, _, _ := collectHandler()
+	content, usage, err := consumeGatewayStream(context.Background(), ch, time.Minute, noopCancel, 1, h)
+
+	require.NoError(t, err, "streamed content must win over a 0-completion misreport")
+	assert.Equal(t, "partial answer", content)
+	require.NotNil(t, usage)
+}
+
 // TestConsumeGatewayStream_IdleTimeout feeds one chunk then stalls. The idle
 // timer must fire → cancelStream called → timeout error wrapping
 // context.DeadlineExceeded. The cancel stub closes the channel (simulating the
