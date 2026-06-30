@@ -6,15 +6,32 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 
 	"numind-server/internal/pkg/model"
 )
+
+func newUserTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.User{}))
+
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	return db
+}
 
 // TestStore_UpdateUser_ClearCompanyName 直打 store 层验证 GORM 零值落库行为（org-branding AC3）。
 // 隔离的 store 级回归守卫：UpdateUser 改用 map 形式后，company_name="" 必须能真正写入 DB
 // （struct 形式会跳过零值，见 .claude/rules/database.md §6b 的 TestStore_SaveService_UpdateIsActiveFalse 模式）。
 func TestStore_UpdateUser_ClearCompanyName(t *testing.T) {
-	db := newTestDB(t, &model.User{})
+	db := newUserTestDB(t)
 	st := NewUserStore(db)
 	ctx := context.Background()
 

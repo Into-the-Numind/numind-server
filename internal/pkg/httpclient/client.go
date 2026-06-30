@@ -62,6 +62,7 @@ func LLMStreamConfig() *Config {
 	c.Timeout = 0
 	return c
 }
+
 // Client 优化的HTTP客户端
 type Client struct {
 	config *Config
