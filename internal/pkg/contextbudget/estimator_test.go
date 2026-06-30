@@ -1,6 +1,7 @@
 package contextbudget_test
 
 import (
+	"encoding/json"
 	"testing"
 
 	"numind-server/internal/pkg/contextbudget"
@@ -134,5 +135,38 @@ func TestEstimatorSafetyMultiplierClampsToAtLeastOne(t *testing.T) {
 	if resultLow.PromptTokens != resultBase.PromptTokens {
 		t.Errorf("SafetyMultiplier=0.5 should produce identical result to safety=1.0 after clamping: got %d, want %d",
 			resultLow.PromptTokens, resultBase.PromptTokens)
+	}
+}
+
+func TestEstimatorUsesCalibrationBucketForRawPromptSize(t *testing.T) {
+	var profile contextbudget.TokenProfile
+	if err := json.Unmarshal([]byte(`{
+		"method": "bucketed",
+		"message_overhead_tokens": 0,
+		"fragment_overhead_tokens": 0,
+		"safety_multiplier": 1.0,
+		"calibration_multiplier": 1.0,
+		"classes": {
+			"en": {"token_per_char": 1.0}
+		},
+		"calibration_buckets": [
+			{"max_raw_tokens": 20, "multiplier": 1.10},
+			{"min_raw_tokens": 21, "multiplier": 2.00}
+		]
+	}`), &profile); err != nil {
+		t.Fatalf("unmarshal profile: %v", err)
+	}
+
+	short := contextbudget.ContextFragment{ID: "short", Content: "abcdefghij"}
+	long := contextbudget.ContextFragment{ID: "long", Content: "abcdefghijklmnopqrstuvwxyz1234"}
+
+	shortResult := contextbudget.EstimateFragments([]contextbudget.ContextFragment{short}, profile, 0, 0)
+	if shortResult.PromptTokens != 11 {
+		t.Fatalf("short prompt should use first bucket multiplier: got %d, want 11", shortResult.PromptTokens)
+	}
+
+	longResult := contextbudget.EstimateFragments([]contextbudget.ContextFragment{long}, profile, 0, 0)
+	if longResult.PromptTokens != 60 {
+		t.Fatalf("long prompt should use second bucket multiplier: got %d, want 60", longResult.PromptTokens)
 	}
 }

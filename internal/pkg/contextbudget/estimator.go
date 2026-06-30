@@ -12,6 +12,14 @@ type TokenClass struct {
 	TokenPerChar float64 `json:"token_per_char"`
 }
 
+// CalibrationBucket overrides the profile-level calibration multiplier for a
+// raw prompt-size range. Bounds are inclusive; zero MaxRawTokens means unbounded.
+type CalibrationBucket struct {
+	MinRawTokens int     `json:"min_raw_tokens,omitempty"`
+	MaxRawTokens int     `json:"max_raw_tokens,omitempty"`
+	Multiplier   float64 `json:"multiplier"`
+}
+
 // TokenProfile describes how to estimate token counts for a set of fragments.
 type TokenProfile struct {
 	// Method is a human-readable identifier for this estimation strategy.
@@ -27,6 +35,8 @@ type TokenProfile struct {
 	SafetyMultiplier float64 `json:"safety_multiplier"`
 	// CalibrationMultiplier adjusts the raw estimate to account for model-specific tokenization drift.
 	CalibrationMultiplier float64 `json:"calibration_multiplier"`
+	// CalibrationBuckets optionally adjust CalibrationMultiplier by raw prompt size.
+	CalibrationBuckets []CalibrationBucket `json:"calibration_buckets,omitempty"`
 }
 
 // EstimateResult holds the output of EstimateFragments.
@@ -56,10 +66,19 @@ func EstimateFragments(fragments []ContextFragment, profile TokenProfile, fixedO
 	}
 
 	perFragment := make(map[string]int, len(fragments))
+	rawPerFragment := make(map[string]int, len(fragments))
+	rawPromptTokens := profile.MessageOverheadTokens*messageCount + fixedOverhead
+	for _, f := range fragments {
+		raw := estimateRawFragment(f.Content, profile)
+		rawPerFragment[f.ID] = raw
+		rawPromptTokens += raw
+	}
+	calMul = calibrationMultiplierForRawPrompt(profile, rawPromptTokens, calMul)
+
 	total := 0
 
 	for _, f := range fragments {
-		est := estimateSingleFragment(f.Content, profile, safetyMul, calMul)
+		est := scaleRawFragment(rawPerFragment[f.ID], safetyMul, calMul)
 		perFragment[f.ID] = est
 		total += est
 	}
@@ -75,13 +94,21 @@ func EstimateFragments(fragments []ContextFragment, profile TokenProfile, fixedO
 
 // estimateSingleFragment computes the token estimate for a single fragment's content.
 func estimateSingleFragment(content string, profile TokenProfile, safetyMul, calMul float64) int {
+	return scaleRawFragment(estimateRawFragment(content, profile), safetyMul, calMul)
+}
+
+func scaleRawFragment(rawTokens int, safetyMul, calMul float64) int {
+	raw := math.Ceil(float64(rawTokens) * calMul * safetyMul)
+	est := int(raw)
+	if est < 1 {
+		est = 1
+	}
+	return est
+}
+
+func estimateRawFragment(content string, profile TokenProfile) int {
 	if content == "" {
-		raw := float64(profile.FragmentOverheadTokens)
-		raw = math.Ceil(raw * calMul * safetyMul)
-		if int(raw) < 1 {
-			return 1
-		}
-		return int(raw)
+		return profile.FragmentOverheadTokens
 	}
 
 	classified := classifyContent(content)
@@ -93,13 +120,23 @@ func estimateSingleFragment(content string, profile TokenProfile, safetyMul, cal
 	}
 
 	rawTokens += float64(profile.FragmentOverheadTokens)
-	rawTokens = math.Ceil(rawTokens * calMul * safetyMul)
+	return int(math.Ceil(rawTokens))
+}
 
-	est := int(rawTokens)
-	if est < 1 {
-		est = 1
+func calibrationMultiplierForRawPrompt(profile TokenProfile, rawPromptTokens int, fallback float64) float64 {
+	for _, bucket := range profile.CalibrationBuckets {
+		if bucket.Multiplier <= 0 {
+			continue
+		}
+		if bucket.MinRawTokens > 0 && rawPromptTokens < bucket.MinRawTokens {
+			continue
+		}
+		if bucket.MaxRawTokens > 0 && rawPromptTokens > bucket.MaxRawTokens {
+			continue
+		}
+		return bucket.Multiplier
 	}
-	return est
+	return fallback
 }
 
 // tokenClassFor returns the TokenClass for the given class name,

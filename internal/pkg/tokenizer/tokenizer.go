@@ -9,8 +9,9 @@ import (
 const (
 	// DeepSeek V3 Context Window
 	MaxContextWindow = 128000
-	// Safety Coefficient for estimation
-	SafetyCoefficient = 0.6
+	// SafetyCoefficient must not reduce the exact tiktoken count. Legacy callers
+	// use this estimate to decide whether to prune context before provider calls.
+	SafetyCoefficient = 1.0
 	// Target token count after pruning (to leave room for new input and generation)
 	TargetPrunedTokens = 80000
 )
@@ -41,7 +42,7 @@ func (t *Tokenizer) CountTokens(text string) int {
 	return len(t.tk.Encode(text, nil, nil))
 }
 
-// EstimateTokens returns the estimated token count with safety coefficient
+// EstimateTokens returns the estimated token count with safety coefficient.
 func (t *Tokenizer) EstimateTokens(text string) int {
 	count := t.CountTokens(text)
 	return int(float64(count) * SafetyCoefficient)

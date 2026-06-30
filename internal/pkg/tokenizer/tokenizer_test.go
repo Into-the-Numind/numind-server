@@ -39,14 +39,25 @@ func TestEstimateTokens(t *testing.T) {
 		t.Fatalf("Failed to create tokenizer: %v", err)
 	}
 
-	text := "Hello world"
-	rawCount := tokenizer.CountTokens(text)
-	estimated := tokenizer.EstimateTokens(text)
+	tests := []string{
+		"Hello world",
+		"你好世界",
+		"中英文 mixed content with symbols: {\"ok\": true}",
+	}
 
-	// SafetyCoefficient is 0.6 (conservative), so estimated = rawCount * 0.6
-	expected := int(float64(rawCount) * SafetyCoefficient)
-	if estimated != expected {
-		t.Errorf("Expected estimated count %d, got %d", expected, estimated)
+	if SafetyCoefficient < 1.0 {
+		t.Fatalf("SafetyCoefficient must not be below 1.0; got %.2f", SafetyCoefficient)
+	}
+
+	for _, text := range tests {
+		t.Run(text, func(t *testing.T) {
+			rawCount := tokenizer.CountTokens(text)
+			estimated := tokenizer.EstimateTokens(text)
+
+			if estimated < rawCount {
+				t.Errorf("EstimateTokens must not under-estimate exact tokens: estimated=%d raw=%d", estimated, rawCount)
+			}
+		})
 	}
 }
 
@@ -135,7 +146,7 @@ func TestTruncateText(t *testing.T) {
 	truncated := tokenizer.TruncateText(text, maxTokens)
 	// count := tokenizer.EstimateTokens(truncated)
 
-	// It should be close to maxTokens (but note EstimateTokens applies 1.1x)
+	// It should be close to maxTokens.
 	// TruncateText Logic:
 	// 1. Encode -> get tokens
 	// 2. Slice to maxTokens
