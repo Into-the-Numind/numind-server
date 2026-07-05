@@ -152,4 +152,38 @@ func TestXhsScriptNote_UniqueUserSourceNote(t *testing.T) {
 	assert.NoError(t, db.Create(&otherUser).Error, "same source_note_id is allowed for another user")
 }
 
+func TestXhsScriptQuotaLedger_UniqueIdempotencyKey(t *testing.T) {
+	db := newXhsScriptModelTestDB(t)
+
+	first := XhsScriptQuotaLedger{
+		UserID:  11,
+		Delta:   -1,
+		Bucket:  XhsScriptQuotaBucketFree,
+		Reason:  XhsScriptLedgerReasonGeneration,
+		RefType: XhsScriptLedgerRefTypeGeneration,
+		RefID:   "gen-idem",
+	}
+	require.NoError(t, db.Create(&first).Error)
+
+	duplicate := XhsScriptQuotaLedger{
+		UserID:  11,
+		Delta:   -1,
+		Bucket:  XhsScriptQuotaBucketFree,
+		Reason:  XhsScriptLedgerReasonGeneration,
+		RefType: XhsScriptLedgerRefTypeGeneration,
+		RefID:   "gen-idem",
+	}
+	assert.Error(t, db.Create(&duplicate).Error, "same ledger idempotency key must be unique")
+
+	otherRef := XhsScriptQuotaLedger{
+		UserID:  11,
+		Delta:   -1,
+		Bucket:  XhsScriptQuotaBucketFree,
+		Reason:  XhsScriptLedgerReasonGeneration,
+		RefType: XhsScriptLedgerRefTypeGeneration,
+		RefID:   "gen-idem-2",
+	}
+	assert.NoError(t, db.Create(&otherRef).Error, "different ref_id is a different idempotency key")
+}
+
 func ptrUint(v uint) *uint { return &v }

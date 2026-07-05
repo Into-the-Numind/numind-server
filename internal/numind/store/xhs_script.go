@@ -12,7 +12,10 @@ import (
 	"numind-server/internal/pkg/model"
 )
 
-var ErrXhsScriptQuotaInsufficient = errors.New("xhs script quota insufficient")
+var (
+	ErrXhsScriptQuotaInsufficient = errors.New("xhs script quota insufficient")
+	ErrXhsScriptQuotaRefRequired  = errors.New("xhs script quota ref id required")
+)
 
 type IXhsScriptStore interface {
 	GetOrCreateProfileByUser(ctx context.Context, userID uint) (*model.XhsScriptUserProfile, error)
@@ -84,12 +87,23 @@ func (s *xhsScriptStore) AddPaidQuota(ctx context.Context, userID uint, amount i
 	if amount <= 0 {
 		return errors.New("AddPaidQuota: amount must be positive")
 	}
+	if refID == "" {
+		return ErrXhsScriptQuotaRefRequired
+	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		applied, err := quotaLedgerExists(ctx, tx, userID, model.XhsScriptLedgerReasonPurchase, model.XhsScriptLedgerRefTypePurchase, refID)
-		if err != nil {
-			return fmt.Errorf("check ledger: %w", err)
+		ledger := model.XhsScriptQuotaLedger{
+			UserID:  userID,
+			Delta:   amount,
+			Bucket:  model.XhsScriptQuotaBucketPaid,
+			Reason:  model.XhsScriptLedgerReasonPurchase,
+			RefType: model.XhsScriptLedgerRefTypePurchase,
+			RefID:   refID,
 		}
-		if applied {
+		inserted, err := insertQuotaLedgerOnce(ctx, tx, &ledger)
+		if err != nil {
+			return fmt.Errorf("create ledger: %w", err)
+		}
+		if !inserted {
 			return nil
 		}
 
@@ -104,17 +118,6 @@ func (s *xhsScriptStore) AddPaidQuota(ctx context.Context, userID uint, amount i
 				"updated_at":     time.Now(),
 			}).Error; err != nil {
 			return fmt.Errorf("update paid quota: %w", err)
-		}
-		ledger := model.XhsScriptQuotaLedger{
-			UserID:  userID,
-			Delta:   amount,
-			Bucket:  model.XhsScriptQuotaBucketPaid,
-			Reason:  model.XhsScriptLedgerReasonPurchase,
-			RefType: model.XhsScriptLedgerRefTypePurchase,
-			RefID:   refID,
-		}
-		if err := tx.Create(&ledger).Error; err != nil {
-			return fmt.Errorf("create ledger: %w", err)
 		}
 		return nil
 	})
@@ -274,15 +277,10 @@ func (s *xhsScriptStore) CreateGeneration(ctx context.Context, userID uint, note
 }
 
 func (s *xhsScriptStore) DeductOneGeneration(ctx context.Context, userID uint, refID string) error {
+	if refID == "" {
+		return ErrXhsScriptQuotaRefRequired
+	}
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		applied, err := quotaLedgerExists(ctx, tx, userID, model.XhsScriptLedgerReasonGeneration, model.XhsScriptLedgerRefTypeGeneration, refID)
-		if err != nil {
-			return fmt.Errorf("check ledger: %w", err)
-		}
-		if applied {
-			return nil
-		}
-
 		account, err := findOrCreateQuotaAccountForUpdate(ctx, tx, userID)
 		if err != nil {
 			return fmt.Errorf("quota account: %w", err)
@@ -300,15 +298,6 @@ func (s *xhsScriptStore) DeductOneGeneration(ctx context.Context, userID uint, r
 			return ErrXhsScriptQuotaInsufficient
 		}
 
-		if err := tx.Model(&model.XhsScriptQuotaAccount{}).
-			Where("id = ?", account.ID).
-			Updates(map[string]interface{}{
-				"free_remaining": account.FreeRemaining,
-				"paid_remaining": account.PaidRemaining,
-				"updated_at":     time.Now(),
-			}).Error; err != nil {
-			return fmt.Errorf("update quota account: %w", err)
-		}
 		ledger := model.XhsScriptQuotaLedger{
 			UserID:  userID,
 			Delta:   -1,
@@ -317,8 +306,22 @@ func (s *xhsScriptStore) DeductOneGeneration(ctx context.Context, userID uint, r
 			RefType: model.XhsScriptLedgerRefTypeGeneration,
 			RefID:   refID,
 		}
-		if err := tx.Create(&ledger).Error; err != nil {
+		inserted, err := insertQuotaLedgerOnce(ctx, tx, &ledger)
+		if err != nil {
 			return fmt.Errorf("create ledger: %w", err)
+		}
+		if !inserted {
+			return nil
+		}
+
+		if err := tx.Model(&model.XhsScriptQuotaAccount{}).
+			Where("id = ?", account.ID).
+			Updates(map[string]interface{}{
+				"free_remaining": account.FreeRemaining,
+				"paid_remaining": account.PaidRemaining,
+				"updated_at":     time.Now(),
+			}).Error; err != nil {
+			return fmt.Errorf("update quota account: %w", err)
 		}
 		return nil
 	})
@@ -357,18 +360,20 @@ func findOrCreateQuotaAccountForUpdate(ctx context.Context, tx *gorm.DB, userID 
 	return &account, nil
 }
 
-func quotaLedgerExists(ctx context.Context, tx *gorm.DB, userID uint, reason, refType, refID string) (bool, error) {
-	if refID == "" {
-		return false, nil
+func insertQuotaLedgerOnce(ctx context.Context, tx *gorm.DB, ledger *model.XhsScriptQuotaLedger) (bool, error) {
+	res := tx.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{
+			{Name: "user_id"},
+			{Name: "reason"},
+			{Name: "ref_type"},
+			{Name: "ref_id"},
+		},
+		DoNothing: true,
+	}).Create(ledger)
+	if res.Error != nil {
+		return false, res.Error
 	}
-	var count int64
-	err := tx.WithContext(ctx).Model(&model.XhsScriptQuotaLedger{}).
-		Where("user_id = ? AND reason = ? AND ref_type = ? AND ref_id = ?", userID, reason, refType, refID).
-		Count(&count).Error
-	if err != nil {
-		return false, err
-	}
-	return count > 0, nil
+	return res.RowsAffected == 1, nil
 }
 
 func applyCapturedNoteDefaults(note *model.XhsScriptNote) {

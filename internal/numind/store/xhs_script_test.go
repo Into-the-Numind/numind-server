@@ -3,6 +3,9 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -32,6 +35,29 @@ func newXhsScriptStoreTestDB(t *testing.T) *gorm.DB {
 
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	return db
+}
+
+func newXhsScriptConcurrentStoreTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	dbName := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", dbName)), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(
+		&model.XhsScriptUserProfile{},
+		&model.XhsScriptQuotaAccount{},
+		&model.XhsScriptNote{},
+		&model.XhsScriptGeneration{},
+		&model.XhsScriptQuotaLedger{},
+		&model.XhsScriptAnalyticsEvent{},
+	), "auto-migrate")
+
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	return db
 }
@@ -230,6 +256,22 @@ func TestXhsScriptStore_DuplicateAddPaidQuotaIsIdempotent(t *testing.T) {
 	assert.EqualValues(t, 1, count)
 }
 
+func TestXhsScriptStore_AddPaidQuotaEmptyRefDoesNotChangeBalance(t *testing.T) {
+	s := NewXhsScriptStore(newXhsScriptStoreTestDB(t))
+	ctx := context.Background()
+
+	_, err := s.CreateOrGetQuotaAccount(ctx, 20)
+	require.NoError(t, err)
+
+	err = s.AddPaidQuota(ctx, 20, 5, "")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrXhsScriptQuotaRefRequired))
+
+	account, err := s.GetQuotaAccount(ctx, 20)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, account.PaidRemaining)
+}
+
 func TestXhsScriptStore_DuplicateDeductOneGenerationIsIdempotent(t *testing.T) {
 	db := newXhsScriptStoreTestDB(t)
 	s := NewXhsScriptStore(db)
@@ -247,6 +289,56 @@ func TestXhsScriptStore_DuplicateDeductOneGenerationIsIdempotent(t *testing.T) {
 	var count int64
 	require.NoError(t, db.Model(&model.XhsScriptQuotaLedger{}).
 		Where("user_id = ? AND reason = ? AND ref_type = ? AND ref_id = ?", 18, model.XhsScriptLedgerReasonGeneration, model.XhsScriptLedgerRefTypeGeneration, "gen-dup").
+		Count(&count).Error)
+	assert.EqualValues(t, 1, count)
+}
+
+func TestXhsScriptStore_DeductOneGenerationEmptyRefDoesNotChangeBalance(t *testing.T) {
+	s := NewXhsScriptStore(newXhsScriptStoreTestDB(t))
+	ctx := context.Background()
+
+	_, err := s.CreateOrGetQuotaAccount(ctx, 21)
+	require.NoError(t, err)
+
+	err = s.DeductOneGeneration(ctx, 21, "")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrXhsScriptQuotaRefRequired))
+
+	account, err := s.GetQuotaAccount(ctx, 21)
+	require.NoError(t, err)
+	assert.EqualValues(t, 3, account.FreeRemaining)
+}
+
+func TestXhsScriptStore_ConcurrentDuplicateDeductOneGenerationAppliesOnce(t *testing.T) {
+	db := newXhsScriptConcurrentStoreTestDB(t)
+	s := NewXhsScriptStore(db)
+	ctx := context.Background()
+
+	_, err := s.CreateOrGetQuotaAccount(ctx, 22)
+	require.NoError(t, err)
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- s.DeductOneGeneration(ctx, 22, "gen-concurrent")
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	account, err := s.GetQuotaAccount(ctx, 22)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, account.FreeRemaining)
+
+	var count int64
+	require.NoError(t, db.Model(&model.XhsScriptQuotaLedger{}).
+		Where("user_id = ? AND reason = ? AND ref_type = ? AND ref_id = ?", 22, model.XhsScriptLedgerReasonGeneration, model.XhsScriptLedgerRefTypeGeneration, "gen-concurrent").
 		Count(&count).Error)
 	assert.EqualValues(t, 1, count)
 }

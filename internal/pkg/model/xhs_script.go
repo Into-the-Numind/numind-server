@@ -112,12 +112,12 @@ func (XhsScriptGeneration) TableName() string { return "xhs_script_generation" }
 
 type XhsScriptQuotaLedger struct {
 	ID        uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
-	UserID    uint      `gorm:"not null;index:idx_xsql_user_created,priority:1" json:"user_id"`
+	UserID    uint      `gorm:"not null;index:idx_xsql_user_created,priority:1;uniqueIndex:uk_xsql_idem,priority:1" json:"user_id"`
 	Delta     int64     `gorm:"not null" json:"delta"`
 	Bucket    string    `gorm:"size:20;not null" json:"bucket"`
-	Reason    string    `gorm:"size:50;not null" json:"reason"`
-	RefType   string    `gorm:"size:50" json:"ref_type"`
-	RefID     string    `gorm:"size:128;index:idx_xsql_ref" json:"ref_id"`
+	Reason    string    `gorm:"size:50;not null;uniqueIndex:uk_xsql_idem,priority:2" json:"reason"`
+	RefType   string    `gorm:"size:50;not null;uniqueIndex:uk_xsql_idem,priority:3" json:"ref_type"`
+	RefID     string    `gorm:"size:128;not null;index:idx_xsql_ref;uniqueIndex:uk_xsql_idem,priority:4" json:"ref_id"`
 	CreatedAt time.Time `gorm:"index:idx_xsql_user_created,priority:2" json:"created_at"`
 }
 
