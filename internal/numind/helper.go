@@ -446,8 +446,16 @@ func autoMigrate(db *gorm.DB) error {
 
 	// xhs_topic_note 表（小红书选题采集累积选题库，xhs-collector）。
 	// 权威 schema 见 migrations/20260624_015740_create_xhs_topic_note.sql。
-	if err := db.AutoMigrate(&model.XhsTopicNote{}); err != nil {
-		return fmt.Errorf("failed to migrate xhs_topic_note table: %w", err)
+	if err := db.AutoMigrate(
+		&model.XhsTopicNote{},
+		&model.XhsScriptUserProfile{},
+		&model.XhsScriptQuotaAccount{},
+		&model.XhsScriptNote{},
+		&model.XhsScriptGeneration{},
+		&model.XhsScriptQuotaLedger{},
+		&model.XhsScriptAnalyticsEvent{},
+	); err != nil {
+		return fmt.Errorf("failed to migrate xhs product tables: %w", err)
 	}
 
 	log.Infow("All database schema migration completed")

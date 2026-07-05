@@ -63,6 +63,7 @@ type IStore interface {
 	Meetings() IMeetingStore                     // meeting-copilot — 会议副驾会话/分段/反馈/预设
 	ThirdPartyAccounts() IThirdPartyAccountStore // feishu-integration — 第三方平台(飞书)加密凭据
 	Xhs() IXhsTopicStore                         // xhs-collector — 小红书选题采集累积选题库
+	XhsScript() IXhsScriptStore                  // xhs-video-script — 小红书口播稿仿写 MVP
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -311,6 +312,11 @@ func (ds *datastore) Meetings() IMeetingStore {
 // Xhs 返回一个实现了 IXhsTopicStore 接口的实例（xhs-collector）。
 func (ds *datastore) Xhs() IXhsTopicStore {
 	return NewXhsStore(ds.db)
+}
+
+// XhsScript 返回一个实现了 IXhsScriptStore 接口的实例（xhs-video-script MVP）。
+func (ds *datastore) XhsScript() IXhsScriptStore {
+	return NewXhsScriptStore(ds.db)
 }
 
 // ThirdPartyAccounts 返回一个实现了 IThirdPartyAccountStore 接口的实例（feishu-integration）。
