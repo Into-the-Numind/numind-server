@@ -293,6 +293,36 @@ func TestXhsScriptStore_DuplicateDeductOneGenerationIsIdempotent(t *testing.T) {
 	assert.EqualValues(t, 1, count)
 }
 
+func TestXhsScriptStore_DuplicateDeductRemainsIdempotentAfterBalanceExhausted(t *testing.T) {
+	db := newXhsScriptStoreTestDB(t)
+	s := NewXhsScriptStore(db)
+	ctx := context.Background()
+
+	_, err := s.CreateOrGetQuotaAccount(ctx, 23)
+	require.NoError(t, err)
+	require.NoError(t, s.DeductOneGeneration(ctx, 23, "gen-original"))
+	require.NoError(t, s.DeductOneGeneration(ctx, 23, "gen-second"))
+	require.NoError(t, s.DeductOneGeneration(ctx, 23, "gen-third"))
+
+	account, err := s.GetQuotaAccount(ctx, 23)
+	require.NoError(t, err)
+	require.EqualValues(t, 0, account.FreeRemaining)
+	require.EqualValues(t, 0, account.PaidRemaining)
+
+	require.NoError(t, s.DeductOneGeneration(ctx, 23, "gen-original"))
+
+	account, err = s.GetQuotaAccount(ctx, 23)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, account.FreeRemaining)
+	assert.EqualValues(t, 0, account.PaidRemaining)
+
+	var count int64
+	require.NoError(t, db.Model(&model.XhsScriptQuotaLedger{}).
+		Where("user_id = ? AND reason = ? AND ref_type = ? AND ref_id = ?", 23, model.XhsScriptLedgerReasonGeneration, model.XhsScriptLedgerRefTypeGeneration, "gen-original").
+		Count(&count).Error)
+	assert.EqualValues(t, 1, count)
+}
+
 func TestXhsScriptStore_DeductOneGenerationEmptyRefDoesNotChangeBalance(t *testing.T) {
 	s := NewXhsScriptStore(newXhsScriptStoreTestDB(t))
 	ctx := context.Background()

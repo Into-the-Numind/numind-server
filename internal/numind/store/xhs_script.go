@@ -45,7 +45,16 @@ func NewXhsScriptStore(db *gorm.DB) IXhsScriptStore {
 
 func (s *xhsScriptStore) GetOrCreateProfileByUser(ctx context.Context, userID uint) (*model.XhsScriptUserProfile, error) {
 	profile := model.XhsScriptUserProfile{UserID: userID}
-	if err := s.db.WithContext(ctx).FirstOrCreate(&profile, model.XhsScriptUserProfile{UserID: userID}).Error; err != nil {
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&profile).Error; err != nil {
+			return fmt.Errorf("create profile: %w", err)
+		}
+		if err := tx.Where("user_id = ?", userID).First(&profile).Error; err != nil {
+			return fmt.Errorf("load profile: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
 		return nil, fmt.Errorf("GetOrCreateProfileByUser: %w", err)
 	}
 	return &profile, nil
@@ -69,7 +78,16 @@ func (s *xhsScriptStore) CreateOrGetQuotaAccount(ctx context.Context, userID uin
 		UserID:        userID,
 		FreeRemaining: 3,
 	}
-	if err := s.db.WithContext(ctx).FirstOrCreate(&account, model.XhsScriptQuotaAccount{UserID: userID}).Error; err != nil {
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&account).Error; err != nil {
+			return fmt.Errorf("create account: %w", err)
+		}
+		if err := tx.Where("user_id = ?", userID).First(&account).Error; err != nil {
+			return fmt.Errorf("load account: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
 		return nil, fmt.Errorf("CreateOrGetQuotaAccount: %w", err)
 	}
 	return &account, nil
@@ -286,6 +304,14 @@ func (s *xhsScriptStore) DeductOneGeneration(ctx context.Context, userID uint, r
 			return fmt.Errorf("quota account: %w", err)
 		}
 
+		applied, err := quotaLedgerExistsForUpdate(ctx, tx, userID, model.XhsScriptLedgerReasonGeneration, model.XhsScriptLedgerRefTypeGeneration, refID)
+		if err != nil {
+			return fmt.Errorf("check ledger: %w", err)
+		}
+		if applied {
+			return nil
+		}
+
 		bucket := ""
 		switch {
 		case account.FreeRemaining > 0:
@@ -374,6 +400,20 @@ func insertQuotaLedgerOnce(ctx context.Context, tx *gorm.DB, ledger *model.XhsSc
 		return false, res.Error
 	}
 	return res.RowsAffected == 1, nil
+}
+
+func quotaLedgerExistsForUpdate(ctx context.Context, tx *gorm.DB, userID uint, reason, refType, refID string) (bool, error) {
+	var ledger model.XhsScriptQuotaLedger
+	err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("user_id = ? AND reason = ? AND ref_type = ? AND ref_id = ?", userID, reason, refType, refID).
+		First(&ledger).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func applyCapturedNoteDefaults(note *model.XhsScriptNote) {
