@@ -47,10 +47,11 @@ const (
 )
 
 const (
-	ProductTypeTrial   = "trial"
-	ProductTypeMonthly = "monthly"
-	ProductTypeYearly  = "yearly"
-	ProductTypeBooster = "booster"
+	ProductTypeTrial         = "trial"
+	ProductTypeMonthly       = "monthly"
+	ProductTypeYearly        = "yearly"
+	ProductTypeBooster       = "booster"
+	ProductTypeXhsScriptPack = "xhs_script_pack"
 )
 
 const (

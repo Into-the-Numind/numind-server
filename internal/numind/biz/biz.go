@@ -46,6 +46,7 @@ import (
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/biz/volc"
 	xhsbiz "numind-server/internal/numind/biz/xhs"
+	xhsscriptbiz "numind-server/internal/numind/biz/xhsscript"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/aiservice/registry"
@@ -97,6 +98,7 @@ type IBiz interface {
 	SearchService() search.Service                  // Task 3.5 FULLTEXT search (router.go consumer)
 	RagRetrieve() *retrieve.Service                 // 底座检索服务（rag-eval-harness：admin 评估端点复用真实检索栈）
 	Xhs() *xhsbiz.XhsBiz                            // xhs-collector — 小红书选题采集摄入服务
+	XhsScript() *xhsscriptbiz.Service               // 小红书视频口播稿仿写 MVP
 	FeishuSvc() feishu.IFeishuService               // feishu-integration T7: 飞书连接/OAuth 服务（flag off → nil）
 }
 
@@ -137,6 +139,7 @@ type biz struct {
 	sandboxPool       sandbox.Pool                 // document-system 导出复用(spec §3.5b)；未来 healthcheck 可访问
 	xhsService        *xhsbiz.XhsBiz               // xhs-collector 小红书选题采集摄入服务
 	xhsEnricher       *xhsbiz.Enricher             // xhs-collector 异步富化 worker pool（Stop on shutdown）
+	xhsScriptService  *xhsscriptbiz.Service        // 小红书视频口播稿仿写 MVP
 	feishuSvc         feishu.IFeishuService        // feishu-integration T7: 飞书连接/OAuth 服务（flag off → nil）
 }
 
@@ -153,12 +156,13 @@ func NewBiz(ds store.IStore) *biz {
 	pricingCalc := pricing.NewCalculator(ds.Billing())
 	creditSvc := credit.NewCreditService(ds, creditBiz, pricingCalc, membershipSvc)
 	b := &biz{
-		ds:            ds,
-		credit:        creditBiz,
-		creditService: creditSvc,
-		pricing:       pricingCalc,
-		payment:       payment.NewPaymentBiz(ds, creditBiz),
-		llmRouterSvc:  llmrouter.New(ds),
+		ds:               ds,
+		credit:           creditBiz,
+		creditService:    creditSvc,
+		pricing:          pricingCalc,
+		payment:          payment.NewPaymentBiz(ds, creditBiz),
+		xhsScriptService: xhsscriptbiz.New(ds),
+		llmRouterSvc:     llmrouter.New(ds),
 		// agentRunner / agentToolRegistry initialized after vStore + llmRouter（agent factory 已不依赖 salesRAGService）
 	}
 
@@ -897,6 +901,11 @@ func (b *biz) Meeting() meetingbiz.IMeetingBiz {
 // Xhs 返回小红书选题采集摄入服务实例（xhs-collector）。
 func (b *biz) Xhs() *xhsbiz.XhsBiz {
 	return b.xhsService
+}
+
+// XhsScript 返回小红书视频口播稿仿写 MVP 服务实例。
+func (b *biz) XhsScript() *xhsscriptbiz.Service {
+	return b.xhsScriptService
 }
 
 // Agents 返回 Agent Runtime 实例（agent-mode #2 runtime-skeleton）。

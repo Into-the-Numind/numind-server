@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	membershipmodel "numind-server/internal/pkg/model/membership"
 
@@ -39,6 +40,9 @@ const (
 	// boosterMaxQuantity is the maximum number of booster units allowed per order.
 	// Spec §5.2: quantity ∈ [1, 10000].
 	boosterMaxQuantity = 10000
+
+	xhsScriptGenerationsPerPack int64 = 10
+	xhsScriptCentsPerPack       int64 = 1990
 )
 
 // IPaymentBiz 支付业务逻辑接口
@@ -132,9 +136,7 @@ func IsInternalCaller(ctx context.Context) bool {
 //     idempotency-key index, re-query and return the row inserted by the
 //     racing request — equivalent to (1) but resolved post-hoc.
 func (b *paymentBiz) CreateOrder(ctx context.Context, payerID, userID uint, productType string, quantity int, payChannel string, idempotencyKey string) (*model.Order, error) {
-	// §5.10: Only booster is accepted via the order interface. trial/monthly/yearly
-	// must go through the grant path. Reject everything else.
-	if productType != model.ProductTypeBooster {
+	if productType != model.ProductTypeBooster && productType != model.ProductTypeXhsScriptPack {
 		return nil, errno.ErrInvalidProductType
 	}
 
@@ -154,24 +156,10 @@ func (b *paymentBiz) CreateOrder(ctx context.Context, payerID, userID uint, prod
 		return existing, nil
 	}
 
-	// §5.2: Beneficiary must have an active membership (subscription or trial).
-	// Use the new membership store for accurate real-time check.
-	now := time.Now()
-	hasSub, err := b.ds.Membership().Subscriptions().HasActive(ctx, uint64(userID), now)
+	amount, productName, err := b.orderPricing(ctx, userID, productType, quantity)
 	if err != nil {
-		return nil, fmt.Errorf("check active subscription: %w", err)
+		return nil, err
 	}
-	hasTrial, err := b.ds.Membership().TrialGrants().HasActive(ctx, uint64(userID), now)
-	if err != nil {
-		return nil, fmt.Errorf("check active trial: %w", err)
-	}
-	if !hasSub && !hasTrial {
-		return nil, errno.ErrNotActiveMember
-	}
-
-	// Compute total amount: quantity × ¥29.9 per unit.
-	amount := boosterCentsPerUnit * int64(quantity)
-	productName := fmt.Sprintf("有数AI工作台-加量包 × %d", quantity)
 
 	// Generate order number and call payment channel.
 	orderNo := generateOrderNo()
@@ -215,6 +203,7 @@ func (b *paymentBiz) CreateOrder(ctx context.Context, payerID, userID uint, prod
 		PayerID:        payerID,
 		ProductType:    productType,
 		Months:         quantity, // repurposed: stores booster quantity for fulfillOrder
+		Quantity:       quantity,
 		Amount:         amount,
 		PayChannel:     payChannel,
 		PayStatus:      model.OrderStatusPending,
@@ -245,6 +234,31 @@ func (b *paymentBiz) CreateOrder(ctx context.Context, payerID, userID uint, prod
 	}
 
 	return order, nil
+}
+
+func (b *paymentBiz) orderPricing(ctx context.Context, userID uint, productType string, quantity int) (int64, string, error) {
+	switch productType {
+	case model.ProductTypeBooster:
+		// §5.2: Beneficiary must have an active membership (subscription or trial).
+		now := time.Now()
+		hasSub, err := b.ds.Membership().Subscriptions().HasActive(ctx, uint64(userID), now)
+		if err != nil {
+			return 0, "", fmt.Errorf("check active subscription: %w", err)
+		}
+		hasTrial, err := b.ds.Membership().TrialGrants().HasActive(ctx, uint64(userID), now)
+		if err != nil {
+			return 0, "", fmt.Errorf("check active trial: %w", err)
+		}
+		if !hasSub && !hasTrial {
+			return 0, "", errno.ErrNotActiveMember
+		}
+		return boosterCentsPerUnit * int64(quantity), fmt.Sprintf("有数AI工作台-加量包 × %d", quantity), nil
+	case model.ProductTypeXhsScriptPack:
+		generations := int64(quantity) * xhsScriptGenerationsPerPack
+		return xhsScriptCentsPerPack * int64(quantity), fmt.Sprintf("小红书口播稿生成 %d 次", generations), nil
+	default:
+		return 0, "", errno.ErrInvalidProductType
+	}
 }
 
 // isIdempotencyKeyConflict reports whether err is a UNIQUE-constraint
@@ -309,6 +323,10 @@ func (b *paymentBiz) fulfillOrder(ctx context.Context, orderNo string, tradeNo s
 	order, err := b.ds.Orders().GetByOrderNo(ctx, orderNo)
 	if err != nil {
 		return fmt.Errorf("get order by order_no %s: %w", orderNo, err)
+	}
+
+	if order.ProductType == model.ProductTypeXhsScriptPack {
+		return b.fulfillXhsScriptOrder(ctx, order, tradeNo)
 	}
 
 	// §5.10: Reject non-booster orders (legacy dirty rows).
@@ -396,6 +414,99 @@ func (b *paymentBiz) fulfillOrder(ctx context.Context, orderNo string, tradeNo s
 	log.Infow("Booster order fulfilled",
 		"order_no", orderNo, "trade_no", tradeNo,
 		"user_id", order.UserID, "quantity", quantity, "delta_credits", delta)
+	return nil
+}
+
+func (b *paymentBiz) fulfillXhsScriptOrder(ctx context.Context, order *model.Order, tradeNo string) error {
+	if order == nil {
+		return fmt.Errorf("nil order")
+	}
+	if order.PayStatus != model.OrderStatusPending {
+		log.Infow("XHS script order already processed, skipping", "order_no", order.OrderNo, "pay_status", order.PayStatus)
+		return nil
+	}
+	quantity := order.Months
+	if quantity < 1 {
+		quantity = order.Quantity
+	}
+	if quantity < 1 {
+		quantity = 1
+	}
+	delta := int64(quantity) * xhsScriptGenerationsPerPack
+	now := time.Now()
+
+	err := b.ds.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&model.Order{}).Where("id = ? AND pay_status = ?", order.ID, model.OrderStatusPending).
+			Updates(map[string]interface{}{
+				"pay_status": model.OrderStatusPaid,
+				"trade_no":   tradeNo,
+				"paid_at":    now,
+				"updated_at": now,
+			})
+		if result.Error != nil {
+			return fmt.Errorf("update order status: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			log.Infow("XHS script order already fulfilled by concurrent callback", "order_no", order.OrderNo)
+			return nil
+		}
+
+		if err := grantXhsScriptQuotaTx(ctx, tx, order.UserID, delta, order.OrderNo); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("fulfill xhs script order %s: %w", order.OrderNo, err)
+	}
+	log.Infow("XHS script order fulfilled",
+		"order_no", order.OrderNo, "trade_no", tradeNo,
+		"user_id", order.UserID, "quantity", quantity, "delta_generations", delta)
+	return nil
+}
+
+func grantXhsScriptQuotaTx(ctx context.Context, tx *gorm.DB, userID uint, delta int64, refID string) error {
+	if delta <= 0 {
+		return fmt.Errorf("xhs script quota delta must be positive")
+	}
+	account := model.XhsScriptQuotaAccount{
+		UserID:        userID,
+		FreeRemaining: 3,
+		PaidRemaining: 0,
+	}
+	if err := tx.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&account).Error; err != nil {
+		return fmt.Errorf("create xhs script quota account: %w", err)
+	}
+	if err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("user_id = ?", userID).
+		First(&account).Error; err != nil {
+		return fmt.Errorf("lock xhs script quota account: %w", err)
+	}
+
+	ledger := model.XhsScriptQuotaLedger{
+		UserID:  userID,
+		Delta:   delta,
+		Bucket:  model.XhsScriptQuotaBucketPaid,
+		Reason:  model.XhsScriptLedgerReasonPurchase,
+		RefType: model.XhsScriptLedgerRefTypePurchase,
+		RefID:   refID,
+	}
+	result := tx.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&ledger)
+	if result.Error != nil {
+		return fmt.Errorf("create xhs script purchase ledger: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return nil
+	}
+
+	if err := tx.WithContext(ctx).Model(&model.XhsScriptQuotaAccount{}).
+		Where("id = ?", account.ID).
+		Updates(map[string]interface{}{
+			"paid_remaining": account.PaidRemaining + delta,
+			"updated_at":     time.Now(),
+		}).Error; err != nil {
+		return fmt.Errorf("update xhs script paid quota: %w", err)
+	}
 	return nil
 }
 

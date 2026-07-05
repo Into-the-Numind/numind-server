@@ -17,6 +17,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/errno"
@@ -232,6 +233,49 @@ func TestFulfillOrder_BoosterPath_Idempotent(t *testing.T) {
 	assert.Equal(t, int64(2*600), credits, "idempotent: balance must not be doubled")
 }
 
+func TestFulfillOrder_XhsScriptPack_AddsGenerationQuota(t *testing.T) {
+	db := newPaymentTestDB(t)
+	ds := store.NewTestStore(db)
+	b, _ := newPaymentBizWithFakeCredit(ds)
+
+	uid := mustCreateUser(t, db)
+	order := mustCreatePendingXhsScriptOrder(t, db, uid, uid, 1)
+
+	require.NoError(t, b.fulfillOrder(context.Background(), order.OrderNo, "TRADE_XHS_SCRIPT"))
+
+	var account model.XhsScriptQuotaAccount
+	require.NoError(t, db.Where("user_id = ?", uid).First(&account).Error)
+	assert.Equal(t, int64(3), account.FreeRemaining)
+	assert.Equal(t, int64(10), account.PaidRemaining)
+
+	var ledger model.XhsScriptQuotaLedger
+	require.NoError(t, db.Where("user_id = ? AND reason = ?", uid, model.XhsScriptLedgerReasonPurchase).First(&ledger).Error)
+	assert.Equal(t, int64(10), ledger.Delta)
+	assert.Equal(t, order.OrderNo, ledger.RefID)
+}
+
+func TestFulfillOrder_XhsScriptPack_Idempotent(t *testing.T) {
+	db := newPaymentTestDB(t)
+	ds := store.NewTestStore(db)
+	b, _ := newPaymentBizWithFakeCredit(ds)
+
+	uid := mustCreateUser(t, db)
+	order := mustCreatePendingXhsScriptOrder(t, db, uid, uid, 2)
+
+	require.NoError(t, b.fulfillOrder(context.Background(), order.OrderNo, "TRADE_XHS_IDEM"))
+	require.NoError(t, b.fulfillOrder(context.Background(), order.OrderNo, "TRADE_XHS_IDEM"))
+
+	var account model.XhsScriptQuotaAccount
+	require.NoError(t, db.Where("user_id = ?", uid).First(&account).Error)
+	assert.Equal(t, int64(20), account.PaidRemaining)
+
+	var ledgers int64
+	require.NoError(t, db.Model(&model.XhsScriptQuotaLedger{}).
+		Where("user_id = ? AND reason = ?", uid, model.XhsScriptLedgerReasonPurchase).
+		Count(&ledgers).Error)
+	assert.Equal(t, int64(1), ledgers)
+}
+
 // ── Case 7: fulfillOrder rejects non-booster legacy orders ───────────────────
 
 func TestFulfillOrder_NonBoosterProductType_Rejected(t *testing.T) {
@@ -264,4 +308,22 @@ func TestFulfillOrder_NonBoosterProductType_Rejected(t *testing.T) {
 	var check model.Order
 	require.NoError(t, db.First(&check, legacyOrder.ID).Error)
 	assert.Equal(t, model.OrderStatusPending, check.PayStatus, "legacy order must remain pending")
+}
+
+func mustCreatePendingXhsScriptOrder(t *testing.T, db *gorm.DB, userID, payerID uint, quantity int) *model.Order {
+	t.Helper()
+	order := &model.Order{
+		OrderNo:     "TEST_XHS_SCRIPT_" + time.Now().Format("150405.000000000"),
+		UserID:      userID,
+		PayerID:     payerID,
+		ProductType: model.ProductTypeXhsScriptPack,
+		Months:      quantity,
+		Quantity:    quantity,
+		Amount:      xhsScriptCentsPerPack * int64(quantity),
+		PayChannel:  model.PayChannelWechat,
+		PayStatus:   model.OrderStatusPending,
+		ExpiredAt:   time.Now().Add(30 * time.Minute),
+	}
+	require.NoError(t, db.Create(order).Error)
+	return order
 }

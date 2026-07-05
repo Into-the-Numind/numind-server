@@ -32,6 +32,7 @@ import (
 	"numind-server/internal/numind/controller/v1/user"
 	"numind-server/internal/numind/controller/v1/user_billing"
 	xhscontroller "numind-server/internal/numind/controller/v1/xhs"
+	xhsscriptcontroller "numind-server/internal/numind/controller/v1/xhs_script"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/core"
@@ -85,11 +86,32 @@ func installNumindRouters(g *gin.Engine) error {
 
 	// 初始化 LLM 模型与偏好控制器
 	llmCtrl := llmcontroller.NewLLMController(b.LLMRouter())
+	xhsScriptCtrl := xhsscriptcontroller.NewController(b.XhsScript(), b.Payment())
 
 	v1Group := g.Group("/v1")
 
 	// 登录接口不需要鉴权
 	v1Group.POST("/web/login", uc.WebLogin)
+
+	// 小红书视频口播稿仿写 MVP：产品私有 session，支持匿名试用 cookie + 插件 ext-token。
+	{
+		xhsScriptGroup := v1Group.Group("/xhs-script")
+		{
+			xhsScriptGroup.POST("/trial", xhsScriptCtrl.Trial)
+			xhsScriptGroup.POST("/register", xhsScriptCtrl.Register)
+			xhsScriptGroup.POST("/login", xhsScriptCtrl.Login)
+			xhsScriptGroup.POST("/logout", xhsScriptCtrl.Logout)
+			xhsScriptGroup.GET("/me", xhsScriptCtrl.Me)
+			xhsScriptGroup.PUT("/profile", xhsScriptCtrl.SaveProfile)
+			xhsScriptGroup.GET("/ext-token", xhsScriptCtrl.ExtToken)
+			xhsScriptGroup.POST("/notes", xhsScriptCtrl.Ingest)
+			xhsScriptGroup.GET("/notes/:id", xhsScriptCtrl.GetNote)
+			xhsScriptGroup.POST("/notes/:id/generate", xhsScriptCtrl.Generate)
+			xhsScriptGroup.POST("/orders", xhsScriptCtrl.CreateOrder)
+			xhsScriptGroup.GET("/orders/:id/status", xhsScriptCtrl.GetOrderStatus)
+			xhsScriptGroup.POST("/analytics/events", xhsScriptCtrl.TrackEvents)
+		}
+	}
 
 	// 需要鉴权的接口
 	authGroup := v1Group.Group("")
