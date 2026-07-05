@@ -85,7 +85,7 @@ func TestXhsScriptModels_AutoMigrateAndRoundTrip(t *testing.T) {
 		Bucket:  XhsScriptQuotaBucketFree,
 		Reason:  XhsScriptLedgerReasonGeneration,
 		RefType: XhsScriptLedgerRefTypeGeneration,
-		RefID:   generation.ID,
+		RefID:   "generation-1",
 	}
 	require.NoError(t, db.Create(&ledger).Error)
 
@@ -119,6 +119,37 @@ func TestXhsScriptModels_UniqueUserScopedRecords(t *testing.T) {
 
 	require.NoError(t, db.Create(&XhsScriptAnalyticsEvent{EventID: "evt_unique", EventName: "open"}).Error)
 	assert.Error(t, db.Create(&XhsScriptAnalyticsEvent{EventID: "evt_unique", EventName: "open"}).Error, "event_id should be unique")
+}
+
+func TestXhsScriptNote_UniqueUserSourceNote(t *testing.T) {
+	db := newXhsScriptModelTestDB(t)
+
+	first := XhsScriptNote{
+		UserID:           9,
+		SourceNoteID:     "source_unique",
+		NoteType:         XhsScriptNoteTypeVideo,
+		TranscribeStatus: XhsScriptTranscribePending,
+		GenerateStatus:   XhsScriptGenerateNotReady,
+	}
+	require.NoError(t, db.Create(&first).Error)
+
+	duplicate := XhsScriptNote{
+		UserID:           9,
+		SourceNoteID:     "source_unique",
+		NoteType:         XhsScriptNoteTypeVideo,
+		TranscribeStatus: XhsScriptTranscribePending,
+		GenerateStatus:   XhsScriptGenerateNotReady,
+	}
+	assert.Error(t, db.Create(&duplicate).Error, "same (user_id, source_note_id) must be unique")
+
+	otherUser := XhsScriptNote{
+		UserID:           10,
+		SourceNoteID:     "source_unique",
+		NoteType:         XhsScriptNoteTypeVideo,
+		TranscribeStatus: XhsScriptTranscribePending,
+		GenerateStatus:   XhsScriptGenerateNotReady,
+	}
+	assert.NoError(t, db.Create(&otherUser).Error, "same source_note_id is allowed for another user")
 }
 
 func ptrUint(v uint) *uint { return &v }

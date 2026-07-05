@@ -19,15 +19,15 @@ type IXhsScriptStore interface {
 	SaveProfile(ctx context.Context, profile *model.XhsScriptUserProfile) error
 	CreateOrGetQuotaAccount(ctx context.Context, userID uint) (*model.XhsScriptQuotaAccount, error)
 	GetQuotaAccount(ctx context.Context, userID uint) (*model.XhsScriptQuotaAccount, error)
-	AddPaidQuota(ctx context.Context, userID uint, amount int64, refID uint64) error
+	AddPaidQuota(ctx context.Context, userID uint, amount int64, refID string) error
 	InsertAnalyticsEvent(ctx context.Context, event *model.XhsScriptAnalyticsEvent) error
 	CreateOrUpsertCapturedNote(ctx context.Context, note *model.XhsScriptNote) (*model.XhsScriptNote, error)
 	GetNote(ctx context.Context, userID uint, id uint64) (*model.XhsScriptNote, error)
 	ListNotes(ctx context.Context, userID uint, limit, offset int) ([]model.XhsScriptNote, error)
-	UpdateTranscribeStatus(ctx context.Context, id uint64, status string, transcript *string, lastError string) error
-	UpdateGenerateStatus(ctx context.Context, id uint64, status string, lastError string) error
+	UpdateTranscribeStatus(ctx context.Context, userID uint, id uint64, status string, transcript *string, lastError string) error
+	UpdateGenerateStatus(ctx context.Context, userID uint, id uint64, status string, lastError string) error
 	CreateGeneration(ctx context.Context, userID uint, noteID uint64, scriptText string, promptTokens, completionTokens int) (*model.XhsScriptGeneration, error)
-	DeductOneGeneration(ctx context.Context, userID uint, refID uint64) error
+	DeductOneGeneration(ctx context.Context, userID uint, refID string) error
 }
 
 type xhsScriptStore struct {
@@ -80,11 +80,19 @@ func (s *xhsScriptStore) GetQuotaAccount(ctx context.Context, userID uint) (*mod
 	return &account, nil
 }
 
-func (s *xhsScriptStore) AddPaidQuota(ctx context.Context, userID uint, amount int64, refID uint64) error {
+func (s *xhsScriptStore) AddPaidQuota(ctx context.Context, userID uint, amount int64, refID string) error {
 	if amount <= 0 {
 		return errors.New("AddPaidQuota: amount must be positive")
 	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		applied, err := quotaLedgerExists(ctx, tx, userID, model.XhsScriptLedgerReasonPurchase, model.XhsScriptLedgerRefTypePurchase, refID)
+		if err != nil {
+			return fmt.Errorf("check ledger: %w", err)
+		}
+		if applied {
+			return nil
+		}
+
 		account, err := findOrCreateQuotaAccountForUpdate(ctx, tx, userID)
 		if err != nil {
 			return fmt.Errorf("quota account: %w", err)
@@ -129,11 +137,9 @@ func (s *xhsScriptStore) CreateOrUpsertCapturedNote(ctx context.Context, note *m
 		return nil, errors.New("CreateOrUpsertCapturedNote: nil note")
 	}
 	if note.SourceNoteID == "" {
-		if err := s.db.WithContext(ctx).Create(note).Error; err != nil {
-			return nil, fmt.Errorf("CreateOrUpsertCapturedNote create: %w", err)
-		}
-		return note, nil
+		return nil, errors.New("CreateOrUpsertCapturedNote: source_note_id is required")
 	}
+	applyCapturedNoteDefaults(note)
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing model.XhsScriptNote
@@ -142,6 +148,9 @@ func (s *xhsScriptStore) CreateOrUpsertCapturedNote(ctx context.Context, note *m
 			First(&existing).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			if cErr := tx.Create(note).Error; cErr != nil {
+				if isDuplicateKeyErr(cErr) {
+					return updateCapturedNoteAfterDuplicate(ctx, tx, note)
+				}
 				return fmt.Errorf("create: %w", cErr)
 			}
 			return nil
@@ -150,7 +159,7 @@ func (s *xhsScriptStore) CreateOrUpsertCapturedNote(ctx context.Context, note *m
 			return fmt.Errorf("lookup: %w", err)
 		}
 		note.ID = existing.ID
-		updates := noteUpdateMap(note)
+		updates := capturedNoteMetadataUpdateMap(note)
 		if err := tx.Model(&model.XhsScriptNote{}).Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
 			return fmt.Errorf("update: %w", err)
 		}
@@ -160,6 +169,22 @@ func (s *xhsScriptStore) CreateOrUpsertCapturedNote(ctx context.Context, note *m
 		return nil, fmt.Errorf("CreateOrUpsertCapturedNote: %w", err)
 	}
 	return note, nil
+}
+
+func updateCapturedNoteAfterDuplicate(ctx context.Context, tx *gorm.DB, note *model.XhsScriptNote) error {
+	var existing model.XhsScriptNote
+	if err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("user_id = ? AND source_note_id = ?", note.UserID, note.SourceNoteID).
+		First(&existing).Error; err != nil {
+		return fmt.Errorf("reload after duplicate: %w", err)
+	}
+	note.ID = existing.ID
+	if err := tx.Model(&model.XhsScriptNote{}).
+		Where("id = ?", existing.ID).
+		Updates(capturedNoteMetadataUpdateMap(note)).Error; err != nil {
+		return fmt.Errorf("update after duplicate: %w", err)
+	}
+	return tx.WithContext(ctx).First(note, existing.ID).Error
 }
 
 func (s *xhsScriptStore) GetNote(ctx context.Context, userID uint, id uint64) (*model.XhsScriptNote, error) {
@@ -185,9 +210,9 @@ func (s *xhsScriptStore) ListNotes(ctx context.Context, userID uint, limit, offs
 	return notes, nil
 }
 
-func (s *xhsScriptStore) UpdateTranscribeStatus(ctx context.Context, id uint64, status string, transcript *string, lastError string) error {
+func (s *xhsScriptStore) UpdateTranscribeStatus(ctx context.Context, userID uint, id uint64, status string, transcript *string, lastError string) error {
 	if err := s.db.WithContext(ctx).Model(&model.XhsScriptNote{}).
-		Where("id = ?", id).
+		Where("user_id = ? AND id = ?", userID, id).
 		Updates(map[string]interface{}{
 			"transcribe_status": status,
 			"video_transcript":  transcript,
@@ -199,9 +224,9 @@ func (s *xhsScriptStore) UpdateTranscribeStatus(ctx context.Context, id uint64, 
 	return nil
 }
 
-func (s *xhsScriptStore) UpdateGenerateStatus(ctx context.Context, id uint64, status string, lastError string) error {
+func (s *xhsScriptStore) UpdateGenerateStatus(ctx context.Context, userID uint, id uint64, status string, lastError string) error {
 	if err := s.db.WithContext(ctx).Model(&model.XhsScriptNote{}).
-		Where("id = ?", id).
+		Where("user_id = ? AND id = ?", userID, id).
 		Updates(map[string]interface{}{
 			"generate_status": status,
 			"last_error":      lastError,
@@ -248,8 +273,16 @@ func (s *xhsScriptStore) CreateGeneration(ctx context.Context, userID uint, note
 	return &generation, nil
 }
 
-func (s *xhsScriptStore) DeductOneGeneration(ctx context.Context, userID uint, refID uint64) error {
+func (s *xhsScriptStore) DeductOneGeneration(ctx context.Context, userID uint, refID string) error {
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		applied, err := quotaLedgerExists(ctx, tx, userID, model.XhsScriptLedgerReasonGeneration, model.XhsScriptLedgerRefTypeGeneration, refID)
+		if err != nil {
+			return fmt.Errorf("check ledger: %w", err)
+		}
+		if applied {
+			return nil
+		}
+
 		account, err := findOrCreateQuotaAccountForUpdate(ctx, tx, userID)
 		if err != nil {
 			return fmt.Errorf("quota account: %w", err)
@@ -324,23 +357,45 @@ func findOrCreateQuotaAccountForUpdate(ctx context.Context, tx *gorm.DB, userID 
 	return &account, nil
 }
 
-func noteUpdateMap(note *model.XhsScriptNote) map[string]interface{} {
+func quotaLedgerExists(ctx context.Context, tx *gorm.DB, userID uint, reason, refType, refID string) (bool, error) {
+	if refID == "" {
+		return false, nil
+	}
+	var count int64
+	err := tx.WithContext(ctx).Model(&model.XhsScriptQuotaLedger{}).
+		Where("user_id = ? AND reason = ? AND ref_type = ? AND ref_id = ?", userID, reason, refType, refID).
+		Count(&count).Error
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func applyCapturedNoteDefaults(note *model.XhsScriptNote) {
+	if note.NoteType == "" {
+		note.NoteType = model.XhsScriptNoteTypeNormal
+	}
+	if note.TranscribeStatus == "" {
+		note.TranscribeStatus = model.XhsScriptTranscribePending
+	}
+	if note.GenerateStatus == "" {
+		note.GenerateStatus = model.XhsScriptGenerateNotReady
+	}
+}
+
+func capturedNoteMetadataUpdateMap(note *model.XhsScriptNote) map[string]interface{} {
 	return map[string]interface{}{
-		"note_url":          note.NoteURL,
-		"note_type":         note.NoteType,
-		"title":             note.Title,
-		"description":       note.Description,
-		"tags":              note.Tags,
-		"like_count":        note.LikeCount,
-		"collect_count":     note.CollectCount,
-		"comment_count":     note.CommentCount,
-		"hot_comments":      note.HotComments,
-		"cover_url":         note.CoverURL,
-		"video_url":         note.VideoURL,
-		"video_transcript":  note.VideoTranscript,
-		"transcribe_status": note.TranscribeStatus,
-		"generate_status":   note.GenerateStatus,
-		"last_error":        note.LastError,
-		"updated_at":        time.Now(),
+		"note_url":      note.NoteURL,
+		"note_type":     note.NoteType,
+		"title":         note.Title,
+		"description":   note.Description,
+		"tags":          note.Tags,
+		"like_count":    note.LikeCount,
+		"collect_count": note.CollectCount,
+		"comment_count": note.CommentCount,
+		"hot_comments":  note.HotComments,
+		"cover_url":     note.CoverURL,
+		"video_url":     note.VideoURL,
+		"updated_at":    time.Now(),
 	}
 }

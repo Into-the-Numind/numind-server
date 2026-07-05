@@ -72,8 +72,8 @@ func (XhsScriptQuotaAccount) TableName() string { return "xhs_script_quota_accou
 
 type XhsScriptNote struct {
 	ID           uint64         `gorm:"primaryKey;autoIncrement" json:"id"`
-	UserID       uint           `gorm:"not null;index:idx_xsn_user_created,priority:1;index:idx_xsn_user_source,priority:1" json:"user_id"`
-	SourceNoteID string         `gorm:"size:100;index:idx_xsn_user_source,priority:2" json:"source_note_id"`
+	UserID       uint           `gorm:"not null;index:idx_xsn_user_created,priority:1;uniqueIndex:uk_xsn_user_source,priority:1" json:"user_id"`
+	SourceNoteID string         `gorm:"size:100;not null;uniqueIndex:uk_xsn_user_source,priority:2" json:"source_note_id"`
 	NoteURL      string         `gorm:"size:1000" json:"note_url"`
 	NoteType     string         `gorm:"size:20;not null;default:'normal'" json:"note_type"`
 	Title        string         `gorm:"size:500" json:"title"`
@@ -117,7 +117,7 @@ type XhsScriptQuotaLedger struct {
 	Bucket    string    `gorm:"size:20;not null" json:"bucket"`
 	Reason    string    `gorm:"size:50;not null" json:"reason"`
 	RefType   string    `gorm:"size:50" json:"ref_type"`
-	RefID     uint64    `gorm:"index:idx_xsql_ref" json:"ref_id"`
+	RefID     string    `gorm:"size:128;index:idx_xsql_ref" json:"ref_id"`
 	CreatedAt time.Time `gorm:"index:idx_xsql_user_created,priority:2" json:"created_at"`
 }
 
