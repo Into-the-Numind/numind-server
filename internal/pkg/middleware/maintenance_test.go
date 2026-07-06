@@ -86,15 +86,26 @@ func TestMaintenanceMode_Enabled_PaymentNotifyExempt(t *testing.T) {
 	})
 	os.Setenv("MAINTENANCE_MODE", "true")
 
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/payment/wechat/notify", nil)
+	paths := []string{
+		"/v1/payment/wechat/notify",
+		"/api/v1/payment/wechat/notify",
+		"/v1/payment/alipay/notify",
+		"/api/v1/payment/alipay/notify",
+	}
 
-	handler := MaintenanceMode()
-	handler(c)
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, path, nil)
 
-	assert.Equal(t, http.StatusOK, c.Writer.Status())
-	assert.False(t, c.IsAborted())
+			handler := MaintenanceMode()
+			handler(c)
+
+			assert.Equal(t, http.StatusOK, c.Writer.Status())
+			assert.False(t, c.IsAborted())
+		})
+	}
 }
 
 // TestMaintenanceMode_Enabled_HeadPasses tests that HEAD requests pass when maintenance mode is enabled

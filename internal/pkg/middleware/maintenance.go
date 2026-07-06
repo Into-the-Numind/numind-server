@@ -24,8 +24,7 @@ func MaintenanceMode() gin.HandlerFunc {
 
 		// 支付回调豁免（保证回调不丢失）
 		path := c.Request.URL.Path
-		if strings.HasPrefix(path, "/v1/payment/") &&
-			(strings.HasSuffix(path, "/notify") || strings.HasSuffix(path, "/callback")) {
+		if isPaymentCallbackPath(path) {
 			c.Next()
 			return
 		}
@@ -42,4 +41,12 @@ func MaintenanceMode() gin.HandlerFunc {
 		core.WriteResponse(c, errno.ErrSystemMaintenance.SetMessage("系统维护中，请稍后再试"), nil)
 		c.Abort()
 	}
+}
+
+func isPaymentCallbackPath(path string) bool {
+	hasPaymentPrefix := strings.HasPrefix(path, "/v1/payment/") ||
+		strings.HasPrefix(path, "/api/v1/payment/")
+	hasCallbackSuffix := strings.HasSuffix(path, "/notify") ||
+		strings.HasSuffix(path, "/callback")
+	return hasPaymentPrefix && hasCallbackSuffix
 }

@@ -629,6 +629,12 @@ func installNumindRouters(g *gin.Engine) error {
 		paymentCtrl := paymentcontroller.New(b.Payment())
 		v1Group.POST("/payment/wechat/notify", paymentCtrl.WechatNotify)
 		v1Group.POST("/payment/alipay/notify", paymentCtrl.AlipayNotify)
+
+		// Existing payment configs and reverse proxies may publish callbacks under
+		// /api/v1. Keep both forms live so async payment fulfillment is not lost.
+		apiV1Group := g.Group("/api/v1")
+		apiV1Group.POST("/payment/wechat/notify", paymentCtrl.WechatNotify)
+		apiV1Group.POST("/payment/alipay/notify", paymentCtrl.AlipayNotify)
 	}
 
 	// Beacon 路由组（OptionalAuthMiddleware，让 controller 自己处理 query token）
