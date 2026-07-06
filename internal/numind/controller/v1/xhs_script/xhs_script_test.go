@@ -1,7 +1,9 @@
 package xhs_script
 
 import (
+	"bytes"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -116,6 +118,47 @@ func TestXhsScriptAdminMetricsAliasRejectsNonAdmin(t *testing.T) {
 	assert.Equal(t, 1, body.Code)
 }
 
+func TestXhsScriptProfileExtractText(t *testing.T) {
+	router, _, token, _ := newXhsScriptControllerTestRouter(t)
+	const path = "/v1/xhs-script/profile/extract-text"
+	const profileText = "产品定位：给创业者做短视频增长顾问"
+
+	t.Run("extracts text with product token", func(t *testing.T) {
+		resp := doXhsScriptMultipartRequest(t, router, path, token, "intro.txt", []byte(profileText))
+
+		require.Equal(t, http.StatusOK, resp.Code)
+		var body apiResponse
+		require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &body))
+		require.Equal(t, 0, body.Code)
+		var data struct {
+			Text       string `json:"text"`
+			TextLength int    `json:"text_length"`
+		}
+		require.NoError(t, json.Unmarshal(body.Data, &data))
+		assert.Contains(t, data.Text, profileText)
+		assert.Greater(t, data.TextLength, 0)
+	})
+
+	t.Run("rejects missing token", func(t *testing.T) {
+		resp := doXhsScriptMultipartRequest(t, router, path, "", "intro.txt", []byte(profileText))
+
+		assert.NotEqual(t, http.StatusOK, resp.Code)
+	})
+
+	t.Run("rejects missing file", func(t *testing.T) {
+		body := &bytes.Buffer{}
+		writer := multipart.NewWriter(body)
+		require.NoError(t, writer.Close())
+		req := httptest.NewRequest(http.MethodPost, path, body)
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		assert.NotEqual(t, http.StatusOK, w.Code)
+	})
+}
+
 func newXhsScriptControllerTestRouter(t *testing.T) (*gin.Engine, *gorm.DB, string, uint) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -153,6 +196,7 @@ func newXhsScriptControllerTestRouter(t *testing.T) (*gin.Engine, *gorm.DB, stri
 	group := router.Group("/v1/xhs-script")
 	group.GET("/ext-token", ctl.ExtToken)
 	group.POST("/ext-token", ctl.ExtToken)
+	group.POST("/profile/extract-text", ctl.ExtractProfileText)
 	group.GET("/notes", ctl.ListNotes)
 	group.GET("/notes/:id", ctl.GetNote)
 	group.GET("/quota", ctl.GetQuota)
@@ -169,6 +213,26 @@ func doXhsScriptRequest(router *gin.Engine, method, path, token string) *httptes
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	return w
+}
+
+func doXhsScriptMultipartRequest(t *testing.T, router *gin.Engine, path, token, filename string, content []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", filename)
+	require.NoError(t, err)
+	_, err = part.Write(content)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	req := httptest.NewRequest(http.MethodPost, path, body)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	return w

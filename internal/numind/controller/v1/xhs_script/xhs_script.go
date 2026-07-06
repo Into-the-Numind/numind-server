@@ -1,10 +1,13 @@
 package xhs_script
 
 import (
+	"bytes"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 
@@ -13,6 +16,12 @@ import (
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/parser"
+)
+
+const (
+	xhsScriptProfileExtractMaxFileSize = 10 * 1024 * 1024
+	xhsScriptProfileExtractMaxTextSize = 100000
 )
 
 type Controller struct {
@@ -122,6 +131,63 @@ func (ctl *Controller) SaveProfile(c *gin.Context) {
 	}
 	dto, err := ctl.biz.SaveProfile(c.Request.Context(), user.ID, req.ProfileText)
 	core.WriteResponse(c, err, dto)
+}
+
+func (ctl *Controller) ExtractProfileText(c *gin.Context) {
+	if _, ok := ctl.requireCurrentUser(c, false); !ok {
+		return
+	}
+
+	file, err := c.FormFile("file")
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("请上传文件"), nil)
+		return
+	}
+	if file.Size <= 0 {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("文件为空"), nil)
+		return
+	}
+	if file.Size > xhsScriptProfileExtractMaxFileSize {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("文件大小超过限制（最大%dMB）", xhsScriptProfileExtractMaxFileSize/(1024*1024)), nil)
+		return
+	}
+
+	src, err := file.Open()
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("打开文件失败"), nil)
+		return
+	}
+	defer src.Close()
+
+	fileData, err := io.ReadAll(io.LimitReader(src, xhsScriptProfileExtractMaxFileSize+1))
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("读取文件失败"), nil)
+		return
+	}
+	if len(fileData) == 0 {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("文件为空"), nil)
+		return
+	}
+	if int64(len(fileData)) > xhsScriptProfileExtractMaxFileSize {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("文件大小超过限制（最大%dMB）", xhsScriptProfileExtractMaxFileSize/(1024*1024)), nil)
+		return
+	}
+
+	text, err := parser.NewDocumentParser().Parse(c.Request.Context(), bytes.NewReader(fileData), file.Filename)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("文档文本提取失败: %s", err.Error()), nil)
+		return
+	}
+	text = truncateUTF8Bytes(sanitizeExtractedProfileText(text), xhsScriptProfileExtractMaxTextSize)
+	if strings.TrimSpace(text) == "" {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("未能从文件中提取到文本内容"), nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{
+		"text":        text,
+		"text_length": len(text),
+	})
 }
 
 func (ctl *Controller) ExtToken(c *gin.Context) {
@@ -427,4 +493,42 @@ func parseNonNegativeIntQuery(c *gin.Context, name string, defaultValue int) (in
 		return 0, errno.ErrBind.SetMessage("invalid %s: %s", name, raw)
 	}
 	return value, nil
+}
+
+func sanitizeExtractedProfileText(text string) string {
+	if !utf8.ValidString(text) {
+		text = strings.ToValidUTF8(text, "")
+	}
+
+	var result strings.Builder
+	result.Grow(len(text))
+	for _, r := range text {
+		if r == utf8.RuneError || r == 0xFFFD {
+			continue
+		}
+		if (r >= 0xE000 && r <= 0xF8FF) || (r >= 0xF0000 && r <= 0xFFFFD) || (r >= 0x100000 && r <= 0x10FFFD) {
+			continue
+		}
+		result.WriteRune(r)
+	}
+	return result.String()
+}
+
+func truncateUTF8Bytes(text string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(text) <= maxBytes {
+		return text
+	}
+
+	end := 0
+	for i, r := range text {
+		next := i + utf8.RuneLen(r)
+		if next > maxBytes {
+			break
+		}
+		end = next
+	}
+	return text[:end]
 }

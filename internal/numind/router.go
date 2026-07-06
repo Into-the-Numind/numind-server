@@ -103,6 +103,7 @@ func installNumindRouters(g *gin.Engine) error {
 			xhsScriptGroup.POST("/logout", xhsScriptCtrl.Logout)
 			xhsScriptGroup.GET("/me", xhsScriptCtrl.Me)
 			xhsScriptGroup.PUT("/profile", xhsScriptCtrl.SaveProfile)
+			xhsScriptGroup.POST("/profile/extract-text", xhsScriptCtrl.ExtractProfileText)
 			xhsScriptGroup.GET("/ext-token", xhsScriptCtrl.ExtToken)
 			xhsScriptGroup.POST("/ext-token", xhsScriptCtrl.ExtToken)
 			xhsScriptGroup.POST("/notes", xhsScriptCtrl.Ingest)
