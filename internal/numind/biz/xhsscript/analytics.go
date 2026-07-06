@@ -259,7 +259,7 @@ func isSensitiveAnalyticsPropertyKey(key string) bool {
 
 func isSafeAnalyticsMetricKey(normalized string) bool {
 	switch normalized {
-	case "title_length", "description_length", "hot_comments_count", "script_length", "transcript_length", "error_category":
+	case "title_length", "description_length", "hot_comments_count", "comment_count", "script_length", "transcript_length", "prompt_tokens", "completion_tokens", "error_category":
 		return true
 	default:
 		return false

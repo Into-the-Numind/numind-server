@@ -329,11 +329,16 @@ func TestTrackEventsRedactsPrefixedSensitiveTextFieldsButKeepsSafeMetrics(t *tes
 				"commentContent":      "评论正文",
 				"capturedHotComments": "高赞评论正文",
 				"noteContent":         "笔记正文",
+				"prompt":              "提示词正文",
+				"promptText":          "带前缀提示词正文",
 				"title_length":        float64(12),
 				"description_length":  float64(34),
 				"hot_comments_count":  float64(2),
+				"comment_count":       float64(5),
 				"script_length":       float64(56),
 				"transcript_length":   float64(78),
+				"prompt_tokens":       float64(90),
+				"completion_tokens":   float64(120),
 				"error_category":      "generation_failed",
 			},
 		},
@@ -348,6 +353,8 @@ func TestTrackEventsRedactsPrefixedSensitiveTextFieldsButKeepsSafeMetrics(t *tes
 	assert.NotContains(t, string(event.Properties), "评论正文")
 	assert.NotContains(t, string(event.Properties), "高赞评论正文")
 	assert.NotContains(t, string(event.Properties), "笔记正文")
+	assert.NotContains(t, string(event.Properties), "提示词正文")
+	assert.NotContains(t, string(event.Properties), "带前缀提示词正文")
 
 	var stored map[string]interface{}
 	require.NoError(t, json.Unmarshal(event.Properties, &stored))
@@ -356,11 +363,16 @@ func TestTrackEventsRedactsPrefixedSensitiveTextFieldsButKeepsSafeMetrics(t *tes
 	assert.NotContains(t, stored, "commentContent")
 	assert.NotContains(t, stored, "capturedHotComments")
 	assert.NotContains(t, stored, "noteContent")
+	assert.NotContains(t, stored, "prompt")
+	assert.NotContains(t, stored, "promptText")
 	assert.Equal(t, float64(12), stored["title_length"])
 	assert.Equal(t, float64(34), stored["description_length"])
 	assert.Equal(t, float64(2), stored["hot_comments_count"])
+	assert.Equal(t, float64(5), stored["comment_count"])
 	assert.Equal(t, float64(56), stored["script_length"])
 	assert.Equal(t, float64(78), stored["transcript_length"])
+	assert.Equal(t, float64(90), stored["prompt_tokens"])
+	assert.Equal(t, float64(120), stored["completion_tokens"])
 	assert.Equal(t, "generation_failed", stored["error_category"])
 }
 
