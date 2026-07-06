@@ -13,6 +13,7 @@ RELEASE_SH="$SCRIPT_DIR/release.sh"
 DEPLOY_REMOTE_SH="$SCRIPT_DIR/deploy-remote.sh"
 SECRET_HYGIENE_SH="$(cd "$SCRIPT_DIR/.." && pwd)/check_prod_secret_hygiene.sh"
 PROD_SECRETS_ENV_SH="$(cd "$SCRIPT_DIR/.." && pwd)/check_prod_secrets_env.sh"
+DOCKERIGNORE="$(cd "$SCRIPT_DIR/../.." && pwd)/.dockerignore"
 
 die() { echo "test setup error: $1" >&2; exit 2; }
 
@@ -20,6 +21,7 @@ die() { echo "test setup error: $1" >&2; exit 2; }
 [ -f "$DEPLOY_REMOTE_SH" ] || die "deploy-remote.sh not found at $DEPLOY_REMOTE_SH"
 [ -f "$SECRET_HYGIENE_SH" ] || die "check_prod_secret_hygiene.sh not found at $SECRET_HYGIENE_SH"
 [ -f "$PROD_SECRETS_ENV_SH" ] || die "check_prod_secrets_env.sh not found at $PROD_SECRETS_ENV_SH"
+[ -f "$DOCKERIGNORE" ] || die ".dockerignore not found at $DOCKERIGNORE"
 
 TMP="$(mktemp -d)" || die "mktemp"
 trap 'rm -rf "$TMP"' EXIT
@@ -225,6 +227,20 @@ else
   echo "PASS: clean tagged prod exclude inspection did not reach ssh"
 fi
 
+if grep -Fqx -- "--exclude=/data/" "$TMP/secret-exclude.out"; then
+  echo "PASS: prod rsync excludes root data directory"
+else
+  echo "FAIL: prod rsync output missing --exclude=/data/"
+  fail=1
+fi
+
+if grep -Eq '^/data/$' "$DOCKERIGNORE"; then
+  echo "PASS: dockerignore excludes root data directory"
+else
+  echo "FAIL: dockerignore missing /data/ root directory exclude"
+  fail=1
+fi
+
 HYGIENE_BUILD_ONLY_REPO="$TMP/hygiene-build-only-repo"
 make_repo "$HYGIENE_BUILD_ONLY_REPO"
 (
@@ -346,6 +362,13 @@ if [ "$qa_compat_rc" -eq 77 ]; then
   echo "PASS: qa release still reaches fake rsync for compatibility inspection"
 else
   echo "FAIL: qa release should reach fake rsync (rc=$qa_compat_rc)"
+  fail=1
+fi
+
+if grep -Fqx -- "--exclude=/data/" "$TMP/qa-compat.out"; then
+  echo "PASS: qa rsync excludes root data directory"
+else
+  echo "FAIL: qa rsync output missing --exclude=/data/"
   fail=1
 fi
 

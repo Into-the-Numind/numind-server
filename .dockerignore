@@ -75,6 +75,7 @@ vendor/
 *.a
 
 # Database
+/data/
 *.db
 *.sqlite
 

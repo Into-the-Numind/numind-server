@@ -109,6 +109,7 @@ do_rsync() {
     --exclude='.cursor/' \
     --exclude='coverage.out' \
     --exclude='coverage.html' \
+    --exclude='/data/' \
     --exclude='__pycache__/' \
     --exclude='*.pyc' \
     --exclude='vendor/' \
