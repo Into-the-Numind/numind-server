@@ -45,8 +45,11 @@ logs/
 
 # Environment files
 .env
+.env*
 .env.local
 .env.*.local
+/config_local.yaml
+/config_*.local.yaml
 
 # Temporary files
 tmp/
@@ -96,4 +99,4 @@ pip-delete-this-directory.txt
 # Backup files
 *.bak
 *.backup
-*.old 
+*.old

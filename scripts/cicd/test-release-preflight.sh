@@ -74,11 +74,19 @@ run_release_env() {
   local env="$1"
   local repo="$2"
   local out="$3"
+  local mode="${4:---build-only}"
   (
     cd "$repo" || exit 2
     PATH="$TMP/bin:$PATH" TMPDIR="$TMP/locks" \
-      bash scripts/cicd/release.sh "$env" server --build-only
+      bash scripts/cicd/release.sh "$env" server "$mode"
   ) > "$out" 2>&1
+}
+
+run_release_mode() {
+  local repo="$1"
+  local out="$2"
+  local mode="$3"
+  run_release_env prod "$repo" "$out" "$mode"
 }
 
 fail=0
@@ -192,7 +200,11 @@ for pattern in \
   "--exclude=*.crt" \
   "--exclude=*.crt.*" \
   "--exclude=configs/cert/" \
-  "--exclude=configs/ssl/"
+  "--exclude=configs/ssl/" \
+  "--exclude=/config_dev.yaml" \
+  "--exclude=/config_qa.yaml" \
+  "--exclude=/config_local.yaml" \
+  "--exclude=/config_*.local.yaml"
 do
   if grep -Fqx -- "$pattern" "$TMP/secret-exclude.out"; then
     echo "PASS: rsync excludes $pattern"
@@ -207,6 +219,114 @@ if grep -q "SSH_ARGS_BEGIN" "$TMP/secret-exclude.out"; then
   fail=1
 else
   echo "PASS: clean tagged prod exclude inspection did not reach ssh"
+fi
+
+HYGIENE_BUILD_ONLY_REPO="$TMP/hygiene-build-only-repo"
+make_repo "$HYGIENE_BUILD_ONLY_REPO"
+(
+  cd "$HYGIENE_BUILD_ONLY_REPO" || exit 2
+  cat > config_prod.yaml <<'YAML' || exit 2
+database:
+  password: build-mode-secret
+YAML
+  git add config_prod.yaml || exit 2
+  git commit -q -m "add secret prod config" || exit 2
+  git tag v1.2.5 || exit 2
+) || die "setup build-only hygiene repo"
+run_release_mode "$HYGIENE_BUILD_ONLY_REPO" "$TMP/hygiene-build-only.out" "--build-only"
+hygiene_build_only_rc=$?
+
+if [ "$hygiene_build_only_rc" -eq 1 ] && grep -q "prod-secret-hygiene blocked release" "$TMP/hygiene-build-only.out"; then
+  echo "PASS: prod --build-only runs secret hygiene before rsync"
+else
+  echo "FAIL: prod --build-only should run secret hygiene before rsync"
+  fail=1
+fi
+
+if grep -q "RSYNC_ARGS_BEGIN" "$TMP/hygiene-build-only.out" || grep -q "SSH_ARGS_BEGIN" "$TMP/hygiene-build-only.out"; then
+  echo "FAIL: prod --build-only hygiene failure should not reach rsync or ssh"
+  fail=1
+else
+  echo "PASS: prod --build-only hygiene failure stops before rsync and ssh"
+fi
+
+if grep -q "build-mode-secret" "$TMP/hygiene-build-only.out"; then
+  echo "FAIL: prod --build-only hygiene output leaked secret value"
+  fail=1
+else
+  echo "PASS: prod --build-only hygiene output does not leak secret value"
+fi
+
+HYGIENE_FULL_REPO="$TMP/hygiene-full-repo"
+make_repo "$HYGIENE_FULL_REPO"
+(
+  cd "$HYGIENE_FULL_REPO" || exit 2
+  cat > config_prod.yaml <<'YAML' || exit 2
+service:
+  api_key: full-mode-secret
+YAML
+  git add config_prod.yaml || exit 2
+  git commit -q -m "add secret prod config" || exit 2
+  git tag v1.2.6 || exit 2
+) || die "setup full hygiene repo"
+run_release_mode "$HYGIENE_FULL_REPO" "$TMP/hygiene-full.out" "full"
+hygiene_full_rc=$?
+
+if [ "$hygiene_full_rc" -eq 1 ] && grep -q "prod-secret-hygiene blocked release" "$TMP/hygiene-full.out"; then
+  echo "PASS: prod full release runs secret hygiene before rsync"
+else
+  echo "FAIL: prod full release should run secret hygiene before rsync"
+  fail=1
+fi
+
+if grep -q "RSYNC_ARGS_BEGIN" "$TMP/hygiene-full.out" || grep -q "SSH_ARGS_BEGIN" "$TMP/hygiene-full.out"; then
+  echo "FAIL: prod full hygiene failure should not reach rsync or ssh"
+  fail=1
+else
+  echo "PASS: prod full hygiene failure stops before rsync and ssh"
+fi
+
+if grep -q "full-mode-secret" "$TMP/hygiene-full.out"; then
+  echo "FAIL: prod full hygiene output leaked secret value"
+  fail=1
+else
+  echo "PASS: prod full hygiene output does not leak secret value"
+fi
+
+DEPLOY_ONLY_REPO="$TMP/deploy-only-repo"
+make_repo "$DEPLOY_ONLY_REPO"
+(
+  cd "$DEPLOY_ONLY_REPO" || exit 2
+  cat > config_prod.yaml <<'YAML' || exit 2
+database:
+  password: deploy-only-secret
+YAML
+  git add config_prod.yaml || exit 2
+  git commit -q -m "add secret prod config" || exit 2
+  git tag v1.2.7 || exit 2
+) || die "setup deploy-only repo"
+run_release_mode "$DEPLOY_ONLY_REPO" "$TMP/deploy-only.out" "--deploy-only"
+deploy_only_rc=$?
+
+if [ "$deploy_only_rc" -eq 78 ] && grep -q "SSH_ARGS_BEGIN" "$TMP/deploy-only.out"; then
+  echo "PASS: prod --deploy-only skips local config hygiene and reaches deploy ssh"
+else
+  echo "FAIL: prod --deploy-only should skip local config hygiene and reach deploy ssh"
+  fail=1
+fi
+
+if grep -q "prod-secret-hygiene blocked release" "$TMP/deploy-only.out"; then
+  echo "FAIL: prod --deploy-only should not run secret hygiene"
+  fail=1
+else
+  echo "PASS: prod --deploy-only does not run secret hygiene"
+fi
+
+if grep -q "deploy-only-secret" "$TMP/deploy-only.out"; then
+  echo "FAIL: prod --deploy-only output leaked secret value"
+  fail=1
+else
+  echo "PASS: prod --deploy-only output does not leak secret value"
 fi
 
 QA_COMPAT_REPO="$TMP/qa-compat-repo"
@@ -235,7 +355,11 @@ for pattern in \
   "--exclude=*.crt" \
   "--exclude=*.crt.*" \
   "--exclude=configs/cert/" \
-  "--exclude=configs/ssl/"
+  "--exclude=configs/ssl/" \
+  "--exclude=/config_dev.yaml" \
+  "--exclude=/config_qa.yaml" \
+  "--exclude=/config_local.yaml" \
+  "--exclude=/config_*.local.yaml"
 do
   if grep -Fqx -- "$pattern" "$TMP/qa-compat.out"; then
     echo "FAIL: qa release should not include prod-only secret exclude $pattern"
@@ -253,6 +377,12 @@ if [ "$fail" -ne 0 ]; then
   cat "$TMP/untagged.out" 2>/dev/null || true
   echo "---- clean tagged secret exclude output ----"
   cat "$TMP/secret-exclude.out" 2>/dev/null || true
+  echo "---- hygiene build-only output ----"
+  cat "$TMP/hygiene-build-only.out" 2>/dev/null || true
+  echo "---- hygiene full output ----"
+  cat "$TMP/hygiene-full.out" 2>/dev/null || true
+  echo "---- deploy-only output ----"
+  cat "$TMP/deploy-only.out" 2>/dev/null || true
   echo "---- qa compatibility output ----"
   cat "$TMP/qa-compat.out" 2>/dev/null || true
   echo "--------------------------------------"

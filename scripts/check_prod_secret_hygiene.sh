@@ -16,38 +16,45 @@ case "${ENV}" in
 esac
 
 CONFIG_FILE="${CONFIG_FILE:-config_${ENV}.yaml}"
-CONFIG_PATH="${CONFIG_FILE}"
-if [[ "${CONFIG_PATH}" != /* ]]; then
-  CONFIG_PATH="${REPO_ROOT}/${CONFIG_PATH}"
-fi
 
 display_path() {
   local path="$1"
   if [[ "${path}" == "${REPO_ROOT}/"* ]]; then
     printf '%s' "${path#"${REPO_ROOT}/"}"
   else
-    printf '%s' "${CONFIG_FILE}"
+    printf '%s' "${path}"
   fi
 }
 
-REL_CONFIG_PATH="$(display_path "${CONFIG_PATH}")"
-
 if [[ "${ENV}" != "prod" ]]; then
-  echo "prod-secret-hygiene: ENV=${ENV}; strict prod config scan skipped (${REL_CONFIG_PATH})"
+  echo "prod-secret-hygiene: ENV=${ENV}; strict prod config scan skipped (${CONFIG_FILE})"
   exit 0
 fi
 
-if [[ ! -f "${CONFIG_PATH}" ]]; then
-  echo "ERROR: prod-secret-hygiene: config file not found: ${REL_CONFIG_PATH}" >&2
-  exit 1
-fi
+scan_file() {
+  local path="$1"
+  local rel_path
 
-scan_output="$(
-  awk -v file="${REL_CONFIG_PATH}" '
+  if [[ "${path}" != /* ]]; then
+    path="${REPO_ROOT}/${path}"
+  fi
+  rel_path="$(display_path "${path}")"
+
+  if [[ ! -f "${path}" ]]; then
+    echo "ERROR: prod-secret-hygiene: config file not found: ${rel_path}" >&2
+    return 1
+  fi
+
+  awk -v file="${rel_path}" '
     function ltrim(s) { sub(/^[[:space:]]+/, "", s); return s }
     function rtrim(s) { sub(/[[:space:]]+$/, "", s); return s }
     function trim(s) { return rtrim(ltrim(s)) }
     function lower(s) { return tolower(s) }
+    function indent_of(s,    copy) {
+      copy = s
+      sub(/[^[:space:]].*$/, "", copy)
+      return length(copy)
+    }
     function strip_quotes(s) {
       s = trim(s)
       if ((s ~ /^".*"$/) || (s ~ /^\047.*\047$/)) {
@@ -102,7 +109,7 @@ scan_output="$(
       if (k == "wechatpay_cert_path") return 1
       if (k == "wechatpay_public_key_id") return 1
       if (k ~ /public_key_id$/) return 1
-      if ((k ~ /(^|_)(cert|certificate|key|private_key)(_|$)/ || k ~ /(cert|certificate|key)_path$/ || k ~ /_path$/ || k == "path") &&
+      if ((k ~ /(cert|certificate|key)_path$/ || k ~ /_path$/ || k == "path") &&
           (v ~ /^\// || v ~ /^\.\.?\// || v ~ /\// || v ~ /\.(pem|key|crt|cert|cer|p12|pfx)$/)) return 1
       return 0
     }
@@ -135,6 +142,21 @@ scan_output="$(
       raw = $0
       sub(/\r$/, "", raw)
       line = trim(raw)
+      indent = indent_of(raw)
+
+      if (in_sensitive_block) {
+        if (line == "" || line ~ /^#/) next
+        if (indent > block_indent) {
+          value = strip_inline_comment(raw)
+          if (!is_placeholder(value)) {
+            emit(NR, "multiline-secret-key-value", block_key)
+            scan_value(NR, block_key, value)
+          }
+          next
+        }
+        in_sensitive_block = 0
+      }
+
       if (line ~ /^#/) next
 
       if (raw ~ /BEGIN[[:space:]][A-Z0-9 ]*PRIVATE KEY/) {
@@ -152,6 +174,12 @@ scan_output="$(
         current_key = key
 
         if (lower(key) ~ /(secret|private_key|api_key|access_key|token|password)/) {
+          if (trim(value) == "|" || trim(value) == ">" || trim(value) == "|-" || trim(value) == ">-") {
+            in_sensitive_block = 1
+            block_key = key
+            block_indent = indent
+            next
+          }
           if (is_placeholder(value)) next
           if (is_low_risk_key_value(key, value)) next
           emit(NR, "secret-key-value", key)
@@ -166,9 +194,34 @@ scan_output="$(
       scan_value(NR, current_key, raw)
     }
     END { exit findings ? 1 : 0 }
-  ' "${CONFIG_PATH}"
-)" || scan_rc=$?
-scan_rc="${scan_rc:-0}"
+  ' "${path}"
+}
+
+declare -a SCAN_FILES=("${CONFIG_FILE}")
+if [[ -n "${EXTRA_CONFIG_FILES:-}" ]]; then
+  while IFS= read -r extra_config_file; do
+    [[ -n "${extra_config_file}" ]] || continue
+    SCAN_FILES+=("${extra_config_file}")
+  done < <(printf '%s\n' "${EXTRA_CONFIG_FILES}" | tr ':,' '\n')
+fi
+
+scan_rc=0
+scan_output=""
+for scan_path in "${SCAN_FILES[@]}"; do
+  if file_output="$(scan_file "${scan_path}")"; then
+    :
+  else
+    scan_rc=1
+  fi
+  if [[ -n "${file_output:-}" ]]; then
+    if [[ -n "${scan_output}" ]]; then
+      scan_output="${scan_output}"$'\n'"${file_output}"
+    else
+      scan_output="${file_output}"
+    fi
+  fi
+  unset file_output
+done
 
 if [[ "${scan_rc}" -ne 0 ]]; then
   if [[ "${ALLOW_PROD_CONFIG_SECRETS:-0}" == "1" ]]; then
@@ -182,4 +235,4 @@ if [[ "${scan_rc}" -ne 0 ]]; then
   exit 1
 fi
 
-echo "prod-secret-hygiene: ${REL_CONFIG_PATH} passed strict prod scan"
+echo "prod-secret-hygiene: scanned ${#SCAN_FILES[@]} config file(s); passed strict prod scan"

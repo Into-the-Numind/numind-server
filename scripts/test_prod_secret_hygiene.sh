@@ -70,7 +70,7 @@ assert_no_fixture_secret_leak() {
   local label="$1"
   local out="$2"
 
-  if grep -Eq 'super-secret|sk-test|AKIDEXAMPLE|PRIVATE KEY MATERIAL' "$out"; then
+  if grep -Eq 'super-secret|sk-test|AKIDEXAMPLE|PRIVATE KEY MATERIAL|extra-secret|plain-secret|slash-secret' "$out"; then
     echo "FAIL: $label leaked fixture secret material"
     cat "$out"
     fail=1
@@ -111,6 +111,43 @@ run_check "$PASSWORD" "$TMP/password.out" ENV=prod
 password_rc=$?
 assert_fail "secret-like password value is rejected" "$password_rc" "$TMP/password.out" "secret-key-value"
 assert_no_fixture_secret_leak "password rejection" "$TMP/password.out"
+
+MULTILINE="$TMP/multiline.yaml"
+write_fixture "$MULTILINE" \
+  "database:" \
+  "  password: |" \
+  "    super-secret-password" \
+  "llm:" \
+  "  api_key: >-" \
+  "    plain-secret-key-value"
+run_check "$MULTILINE" "$TMP/multiline.out" ENV=prod
+multiline_rc=$?
+assert_fail "multiline sensitive key values are rejected" "$multiline_rc" "$TMP/multiline.out" "multiline-secret-key-value"
+assert_no_fixture_secret_leak "multiline rejection" "$TMP/multiline.out"
+
+SLASH_KEYS="$TMP/slash-keys.yaml"
+write_fixture "$SLASH_KEYS" \
+  "llm:" \
+  "  api_key: sk-proj/slash-secret-value-abcdefghijklmnopqrstuvwxyz" \
+  "cloud:" \
+  "  access_key: ABCD/EFGH/slash-secret-value-1234567890"
+run_check "$SLASH_KEYS" "$TMP/slash-keys.out" ENV=prod
+slash_keys_rc=$?
+assert_fail "slash-containing api/access key values are rejected" "$slash_keys_rc" "$TMP/slash-keys.out" "secret-key-value"
+assert_no_fixture_secret_leak "slash-containing key rejection" "$TMP/slash-keys.out"
+
+TARGET_OK="$TMP/target-ok.yaml"
+EXTRA_BAD="$TMP/extra-bad.yaml"
+write_fixture "$TARGET_OK" \
+  "service:" \
+  "  api_key: \${NUMIND_API_KEY}"
+write_fixture "$EXTRA_BAD" \
+  "legacy:" \
+  "  password: extra-secret-password"
+run_check "$TARGET_OK" "$TMP/extra-config.out" ENV=prod EXTRA_CONFIG_FILES="$EXTRA_BAD"
+extra_config_rc=$?
+assert_fail "EXTRA_CONFIG_FILES secret is rejected" "$extra_config_rc" "$TMP/extra-config.out" "extra-bad.yaml"
+assert_no_fixture_secret_leak "EXTRA_CONFIG_FILES rejection" "$TMP/extra-config.out"
 
 API_KEY="$TMP/api-key.yaml"
 write_fixture "$API_KEY" \

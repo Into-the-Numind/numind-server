@@ -68,9 +68,15 @@ if [ "$ENV" = "prod" ]; then
     --exclude='*.crt.*'
     --exclude='configs/cert/'
     --exclude='configs/ssl/'
+    --exclude='/config_dev.yaml'
+    --exclude='/config_qa.yaml'
+    --exclude='/config_local.yaml'
+    --exclude='/config_*.local.yaml'
   )
 
-  ENV="$ENV" "${REPO_ROOT}/scripts/check_prod_secret_hygiene.sh"
+  case "$MODE" in
+    full|--build-only) ENV="$ENV" "${REPO_ROOT}/scripts/check_prod_secret_hygiene.sh" ;;
+  esac
 fi
 
 echo "==============================================="
