@@ -2,12 +2,14 @@ package payment
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -421,16 +423,13 @@ func (b *paymentBiz) fulfillXhsScriptOrder(ctx context.Context, order *model.Ord
 	if order == nil {
 		return fmt.Errorf("nil order")
 	}
+	quantity := xhsScriptOrderQuantity(order)
 	if order.PayStatus != model.OrderStatusPending {
 		log.Infow("XHS script order already processed, skipping", "order_no", order.OrderNo, "pay_status", order.PayStatus)
+		if order.PayStatus == model.OrderStatusPaid {
+			b.recordXhsScriptPaymentAnalyticsBestEffort(ctx, order, quantity)
+		}
 		return nil
-	}
-	quantity := order.Months
-	if quantity < 1 {
-		quantity = order.Quantity
-	}
-	if quantity < 1 {
-		quantity = 1
 	}
 	delta := int64(quantity) * xhsScriptGenerationsPerPack
 	now := time.Now()
@@ -459,10 +458,82 @@ func (b *paymentBiz) fulfillXhsScriptOrder(ctx context.Context, order *model.Ord
 	if err != nil {
 		return fmt.Errorf("fulfill xhs script order %s: %w", order.OrderNo, err)
 	}
+	b.recordXhsScriptPaymentAnalyticsBestEffort(ctx, order, quantity)
 	log.Infow("XHS script order fulfilled",
 		"order_no", order.OrderNo, "trade_no", tradeNo,
 		"user_id", order.UserID, "quantity", quantity, "delta_generations", delta)
 	return nil
+}
+
+func xhsScriptOrderQuantity(order *model.Order) int {
+	if order == nil {
+		return 1
+	}
+	quantity := order.Months
+	if quantity < 1 {
+		quantity = order.Quantity
+	}
+	if quantity < 1 {
+		quantity = 1
+	}
+	return quantity
+}
+
+func (b *paymentBiz) recordXhsScriptPaymentAnalyticsBestEffort(ctx context.Context, order *model.Order, quantity int) {
+	if order == nil {
+		return
+	}
+	props := map[string]interface{}{
+		"order_id":     order.ID,
+		"order_no":     order.OrderNo,
+		"amount_cents": order.Amount,
+		"quantity":     quantity,
+		"channel":      order.PayChannel,
+		"product_type": order.ProductType,
+	}
+	b.insertXhsScriptAnalyticsEventBestEffort(ctx, order.UserID, "backend:xhs_script:payment_success:"+order.OrderNo, "payment_success", props)
+
+	if !b.hasPreviousPaidXhsScriptOrder(ctx, order.UserID, order.ID) {
+		return
+	}
+	b.insertXhsScriptAnalyticsEventBestEffort(ctx, order.UserID, "backend:xhs_script:repeat_purchase_success:"+order.OrderNo, "repeat_purchase_success", props)
+}
+
+func (b *paymentBiz) hasPreviousPaidXhsScriptOrder(ctx context.Context, userID uint, currentOrderID uint64) bool {
+	var count int64
+	err := b.ds.DB().WithContext(ctx).Model(&model.Order{}).
+		Where("user_id = ? AND product_type = ? AND pay_status = ? AND id <> ?", userID, model.ProductTypeXhsScriptPack, model.OrderStatusPaid, currentOrderID).
+		Count(&count).Error
+	if err != nil {
+		log.Warnw("xhs-script repeat purchase analytics check failed", "user_id", userID, "order_id", currentOrderID, "error", err)
+		return false
+	}
+	return count > 0
+}
+
+func (b *paymentBiz) insertXhsScriptAnalyticsEventBestEffort(ctx context.Context, userID uint, eventID, eventName string, properties map[string]interface{}) {
+	userIDCopy := userID
+	event := &model.XhsScriptAnalyticsEvent{
+		EventID:    eventID,
+		EventName:  eventName,
+		UserID:     &userIDCopy,
+		Properties: paymentAnalyticsJSON(properties),
+		CreatedAt:  time.Now(),
+	}
+	if err := b.ds.XhsScript().InsertAnalyticsEvent(ctx, event); err != nil {
+		log.Warnw("xhs-script payment analytics event failed", "event_name", eventName, "event_id", eventID, "user_id", userID, "error", err)
+	}
+}
+
+func paymentAnalyticsJSON(properties map[string]interface{}) datatypes.JSON {
+	if properties == nil {
+		properties = map[string]interface{}{}
+	}
+	b, err := json.Marshal(properties)
+	if err != nil {
+		return datatypes.JSON([]byte("{}"))
+	}
+	return datatypes.JSON(b)
 }
 
 func grantXhsScriptQuotaTx(ctx context.Context, tx *gorm.DB, userID uint, delta int64, refID string) error {

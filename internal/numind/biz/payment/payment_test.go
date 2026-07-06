@@ -276,6 +276,52 @@ func TestFulfillOrder_XhsScriptPack_Idempotent(t *testing.T) {
 	assert.Equal(t, int64(1), ledgers)
 }
 
+func TestFulfillOrder_XhsScriptPack_RecordsPaymentAnalyticsEvents(t *testing.T) {
+	db := newPaymentTestDB(t)
+	ds := store.NewTestStore(db)
+	b, _ := newPaymentBizWithFakeCredit(ds)
+
+	uid := mustCreateUser(t, db)
+	previousPaidAt := time.Now().Add(-time.Hour)
+	require.NoError(t, db.Create(&model.Order{
+		OrderNo:     "TEST_XHS_SCRIPT_PREVIOUS",
+		UserID:      uid,
+		PayerID:     uid,
+		ProductType: model.ProductTypeXhsScriptPack,
+		Months:      1,
+		Quantity:    1,
+		Amount:      xhsScriptCentsPerPack,
+		PayChannel:  model.PayChannelWechat,
+		PayStatus:   model.OrderStatusPaid,
+		PaidAt:      &previousPaidAt,
+		ExpiredAt:   time.Now().Add(30 * time.Minute),
+	}).Error)
+	order := mustCreatePendingXhsScriptOrder(t, db, uid, uid, 2)
+
+	require.NoError(t, b.fulfillOrder(context.Background(), order.OrderNo, "TRADE_XHS_ANALYTICS"))
+	require.NoError(t, b.fulfillOrder(context.Background(), order.OrderNo, "TRADE_XHS_ANALYTICS"))
+
+	var paymentEvents []model.XhsScriptAnalyticsEvent
+	require.NoError(t, db.
+		Where("event_name = ?", "payment_success").
+		Order("event_id ASC").
+		Find(&paymentEvents).Error)
+	require.Len(t, paymentEvents, 1)
+	assert.Equal(t, "backend:xhs_script:payment_success:"+order.OrderNo, paymentEvents[0].EventID)
+	require.NotNil(t, paymentEvents[0].UserID)
+	assert.Equal(t, uid, *paymentEvents[0].UserID)
+	assert.Contains(t, string(paymentEvents[0].Properties), `"order_no":"`+order.OrderNo+`"`)
+	assert.Contains(t, string(paymentEvents[0].Properties), `"quantity":2`)
+	assert.Contains(t, string(paymentEvents[0].Properties), `"amount_cents":3980`)
+
+	var repeatEvents []model.XhsScriptAnalyticsEvent
+	require.NoError(t, db.
+		Where("event_name = ?", "repeat_purchase_success").
+		Find(&repeatEvents).Error)
+	require.Len(t, repeatEvents, 1)
+	assert.Equal(t, "backend:xhs_script:repeat_purchase_success:"+order.OrderNo, repeatEvents[0].EventID)
+}
+
 // ── Case 7: fulfillOrder rejects non-booster legacy orders ───────────────────
 
 func TestFulfillOrder_NonBoosterProductType_Rejected(t *testing.T) {

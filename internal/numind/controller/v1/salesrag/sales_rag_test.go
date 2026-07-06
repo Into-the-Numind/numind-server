@@ -42,6 +42,7 @@ import (
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/biz/volc"
 	xhsbiz "numind-server/internal/numind/biz/xhs"
+	xhsscriptbiz "numind-server/internal/numind/biz/xhsscript"
 	salesragctl "numind-server/internal/numind/controller/v1/salesrag"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/model"
@@ -145,6 +146,7 @@ func (b *realBizOnlyCustomers) MemoryCadence() *memory.CadenceService        { r
 func (b *realBizOnlyCustomers) SearchService() search.Service                { return nil }
 func (b *realBizOnlyCustomers) RagRetrieve() *retrieve.Service               { return nil }
 func (b *realBizOnlyCustomers) Xhs() *xhsbiz.XhsBiz                          { return nil }
+func (b *realBizOnlyCustomers) XhsScript() *xhsscriptbiz.Service             { return nil }
 func (b *realBizOnlyCustomers) FeishuSvc() feishu.IFeishuService             { return nil }
 
 // compile-time guard: this test struct must satisfy biz.IBiz or tests fail here.

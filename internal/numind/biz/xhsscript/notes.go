@@ -90,12 +90,16 @@ func (s *Service) IngestNotes(ctx context.Context, userID uint, payloads []Captu
 	for _, payload := range payloads {
 		note, err := payload.toModel(userID)
 		if err != nil {
+			if errors.Is(err, errno.ErrXhsScriptVideoOnly) {
+				s.RecordEventBestEffort(ctx, userID, "non_video_note_rejected", nonVideoRejectedProperties(payload))
+			}
 			return nil, err
 		}
 		saved, err := s.ds.XhsScript().CreateOrUpsertCapturedNote(ctx, note)
 		if err != nil {
 			return nil, err
 		}
+		s.RecordEventBestEffort(ctx, userID, "video_note_captured", capturedNoteProperties(saved))
 		if shouldTranscribe(saved) {
 			s.enqueueTranscription(saved.UserID, saved.ID)
 		}
@@ -162,6 +166,43 @@ func (p CapturePayload) toModel(userID uint) (*model.XhsScriptNote, error) {
 		VideoURL:     videoURL,
 		LastError:    "",
 	}, nil
+}
+
+func nonVideoRejectedProperties(payload CapturePayload) map[string]interface{} {
+	sourceID := firstNonEmpty(payload.SourceNoteID, payload.XhsNoteID, payload.NoteID)
+	if sourceID == "" && strings.TrimSpace(payload.NoteURL) != "" {
+		sourceID = "url_" + shortHash(payload.NoteURL)
+	}
+	noteType := strings.TrimSpace(payload.NoteType)
+	if noteType == "" {
+		noteType = "unknown"
+	}
+	return map[string]interface{}{
+		"source_note_id": sourceID,
+		"note_type":      noteType,
+		"has_video_url":  strings.TrimSpace(payload.VideoURL) != "",
+		"title_length":   textLength(payload.Title),
+	}
+}
+
+func capturedNoteProperties(note *model.XhsScriptNote) map[string]interface{} {
+	props := map[string]interface{}{
+		"note_id":             note.ID,
+		"source_note_id":      note.SourceNoteID,
+		"note_type":           note.NoteType,
+		"has_video_url":       strings.TrimSpace(note.VideoURL) != "",
+		"title_length":        textLength(note.Title),
+		"description_length":  textLength(note.Description),
+		"tags_count":          len(tagsFromJSON(note.Tags)),
+		"hot_comments_count":  len(commentsFromJSON(note.HotComments)),
+		"like_count":          note.LikeCount,
+		"collect_count":       note.CollectCount,
+		"comment_count":       note.CommentCount,
+		"transcribe_status":   note.TranscribeStatus,
+		"generation_status":   note.GenerateStatus,
+		"video_url_available": strings.TrimSpace(note.VideoURL) != "",
+	}
+	return props
 }
 
 func shouldTranscribe(note *model.XhsScriptNote) bool {

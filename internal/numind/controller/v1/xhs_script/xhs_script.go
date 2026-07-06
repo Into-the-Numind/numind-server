@@ -250,6 +250,17 @@ func (ctl *Controller) CreateOrder(c *gin.Context) {
 		payChannel,
 		idempotencyKey,
 	)
+	if err == nil && order != nil {
+		ctl.biz.RecordEventWithIDBestEffort(c.Request.Context(), user.ID, "backend:xhs_script:order_created:"+order.OrderNo, "order_created", map[string]interface{}{
+			"order_id":     order.ID,
+			"order_no":     order.OrderNo,
+			"amount_cents": order.Amount,
+			"quantity":     order.Quantity,
+			"channel":      order.PayChannel,
+			"product_type": order.ProductType,
+			"pay_status":   order.PayStatus,
+		})
+	}
 	core.WriteResponse(c, err, order)
 }
 

@@ -45,7 +45,10 @@ func (s *Service) transcribeNote(ctx context.Context, userID uint, noteID uint64
 	if note.TranscribeStatus == model.XhsScriptTranscribeReady && note.VideoTranscript != nil && strings.TrimSpace(*note.VideoTranscript) != "" {
 		return nil
 	}
+	baseProps := transcribeNoteProperties(note)
+	s.RecordEventBestEffort(ctx, userID, "video_transcribe_started", baseProps)
 	if err := s.ds.XhsScript().UpdateTranscribeStatus(ctx, userID, noteID, model.XhsScriptTranscribeTranscribing, nil, ""); err != nil {
+		s.recordTranscribeFail(ctx, userID, baseProps, "mark_transcribing", err)
 		return err
 	}
 	_ = s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateNotReady, "")
@@ -53,18 +56,33 @@ func (s *Service) transcribeNote(ctx context.Context, userID uint, noteID uint64
 	videoPath, cleanup, err := downloadVideoToTemp(ctx, note.VideoURL, noteID)
 	if err != nil {
 		_ = s.ds.XhsScript().UpdateTranscribeStatus(ctx, userID, noteID, model.XhsScriptTranscribeFailed, nil, err.Error())
+		props := mergeAnalyticsProperties(baseProps, map[string]interface{}{
+			"stage":          "download",
+			"error_category": analyticsErrorCategory(err),
+		})
+		s.RecordEventBestEffort(ctx, userID, "video_download_fail", props)
+		s.RecordEventBestEffort(ctx, userID, "video_transcribe_fail", props)
 		return err
 	}
 	defer cleanup()
+	var videoSize int64
+	if stat, statErr := os.Stat(videoPath); statErr == nil {
+		videoSize = stat.Size()
+	}
+	s.RecordEventBestEffort(ctx, userID, "video_download_success", mergeAnalyticsProperties(baseProps, map[string]interface{}{
+		"video_size_bytes": videoSize,
+	}))
 
 	audioPath := strings.TrimSuffix(videoPath, filepath.Ext(videoPath)) + ".wav"
 	if err := extractAudio(ctx, videoPath, audioPath); err != nil {
 		_ = s.ds.XhsScript().UpdateTranscribeStatus(ctx, userID, noteID, model.XhsScriptTranscribeFailed, nil, err.Error())
+		s.recordTranscribeFail(ctx, userID, baseProps, "extract_audio", err)
 		return err
 	}
 	audioBytes, err := os.ReadFile(audioPath)
 	if err != nil {
 		_ = s.ds.XhsScript().UpdateTranscribeStatus(ctx, userID, noteID, model.XhsScriptTranscribeFailed, nil, err.Error())
+		s.recordTranscribeFail(ctx, userID, baseProps, "read_audio", err)
 		return fmt.Errorf("read extracted audio: %w", err)
 	}
 
@@ -77,17 +95,49 @@ func (s *Service) transcribeNote(ctx context.Context, userID uint, noteID uint64
 	})
 	if err != nil {
 		_ = s.ds.XhsScript().UpdateTranscribeStatus(ctx, userID, noteID, model.XhsScriptTranscribeFailed, nil, err.Error())
+		s.recordTranscribeFail(ctx, userID, baseProps, "asr", err)
 		return fmt.Errorf("asr: %w", err)
 	}
 	transcript := strings.TrimSpace(resp.Text)
 	if transcript == "" {
 		_ = s.ds.XhsScript().UpdateTranscribeStatus(ctx, userID, noteID, model.XhsScriptTranscribeEmpty, nil, "视频转写结果为空")
+		props := mergeAnalyticsProperties(baseProps, map[string]interface{}{
+			"stage":          "asr",
+			"error_category": "transcript_empty",
+		})
+		s.RecordEventBestEffort(ctx, userID, "video_transcript_empty", props)
 		return fmt.Errorf("asr transcript empty")
 	}
 	if err := s.ds.XhsScript().UpdateTranscribeStatus(ctx, userID, noteID, model.XhsScriptTranscribeReady, &transcript, ""); err != nil {
+		s.recordTranscribeFail(ctx, userID, baseProps, "mark_ready", err)
 		return err
 	}
-	return s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateReady, "")
+	if err := s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateReady, ""); err != nil {
+		s.recordTranscribeFail(ctx, userID, baseProps, "mark_generate_ready", err)
+		return err
+	}
+	s.RecordEventBestEffort(ctx, userID, "video_transcribe_success", mergeAnalyticsProperties(baseProps, map[string]interface{}{
+		"transcript_length": textLength(transcript),
+	}))
+	return nil
+}
+
+func transcribeNoteProperties(note *model.XhsScriptNote) map[string]interface{} {
+	return map[string]interface{}{
+		"note_id":           note.ID,
+		"source_note_id":    note.SourceNoteID,
+		"note_type":         note.NoteType,
+		"has_video_url":     strings.TrimSpace(note.VideoURL) != "",
+		"transcribe_status": note.TranscribeStatus,
+		"generate_status":   note.GenerateStatus,
+	}
+}
+
+func (s *Service) recordTranscribeFail(ctx context.Context, userID uint, baseProps map[string]interface{}, stage string, err error) {
+	s.RecordEventBestEffort(ctx, userID, "video_transcribe_fail", mergeAnalyticsProperties(baseProps, map[string]interface{}{
+		"stage":          stage,
+		"error_category": analyticsErrorCategory(err),
+	}))
 }
 
 func downloadVideoToTemp(ctx context.Context, videoURL string, noteID uint64) (string, func(), error) {

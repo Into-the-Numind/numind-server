@@ -65,6 +65,7 @@ func newPaymentTestDB(t *testing.T) *gorm.DB {
 		&membershipmodel.CreditCycle{},
 		&model.XhsScriptQuotaAccount{},
 		&model.XhsScriptQuotaLedger{},
+		&model.XhsScriptAnalyticsEvent{},
 	), "auto-migrate")
 
 	sqlDB, err := db.DB()

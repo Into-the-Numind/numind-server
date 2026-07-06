@@ -15,32 +15,41 @@ import (
 )
 
 func (s *Service) GenerateScript(ctx context.Context, userID uint, noteID uint64) (*NoteDTO, error) {
+	baseProps := map[string]interface{}{
+		"note_id": noteID,
+	}
+	fail := func(stage string, err error) (*NoteDTO, error) {
+		s.recordGenerationFail(ctx, userID, baseProps, stage, err)
+		return nil, err
+	}
+
 	note, err := s.ds.XhsScript().GetNote(ctx, userID, noteID)
 	if err != nil {
-		return nil, errno.ErrXhsScriptNoteNotFound
+		return fail("load_note", errno.ErrXhsScriptNoteNotFound)
 	}
+	baseProps = generationNoteProperties(note)
 	if err := ensureNoteReadyForGeneration(note); err != nil {
-		return nil, err
+		return fail("transcript_not_ready", err)
 	}
 
 	account, err := s.ds.XhsScript().CreateOrGetQuotaAccount(ctx, userID)
 	if err != nil {
-		return nil, err
+		return fail("quota_account", err)
 	}
 	if account.FreeRemaining+account.PaidRemaining <= 0 {
-		return nil, errno.ErrXhsScriptQuotaInsufficient
+		return fail("quota_insufficient", errno.ErrXhsScriptQuotaInsufficient)
 	}
 
 	userProfile, err := s.ds.XhsScript().GetOrCreateProfileByUser(ctx, userID)
 	if err != nil {
-		return nil, err
+		return fail("profile_load", err)
 	}
 	if strings.TrimSpace(userProfile.ProfileText) == "" {
-		return nil, errno.ErrXhsScriptProfileRequired
+		return fail("profile_required", errno.ErrXhsScriptProfileRequired)
 	}
 
 	if err := s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateGenerating, ""); err != nil {
-		return nil, err
+		return fail("mark_generating", err)
 	}
 
 	aiCtx := aimw.WithUserID(ctx, userID)
@@ -61,30 +70,66 @@ func (s *Service) GenerateScript(ctx context.Context, userID uint, noteID uint64
 	})
 	if err != nil {
 		_ = s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateFailed, err.Error())
-		return nil, err
+		return fail("chat", err)
 	}
 	script := strings.TrimSpace(resp.Content)
 	if script == "" {
 		_ = s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateFailed, "生成结果为空")
-		return nil, errno.ErrInternalServer.SetMessage("生成结果为空，请稍后重试")
+		return fail("empty_output", errno.ErrInternalServer.SetMessage("生成结果为空，请稍后重试"))
 	}
 
 	generation, err := s.ds.XhsScript().CreateGeneration(ctx, userID, noteID, script, resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
 	if err != nil {
 		_ = s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateFailed, err.Error())
-		return nil, err
+		return fail("save_generation", err)
 	}
 	if err := s.ds.XhsScript().DeductOneGeneration(ctx, userID, fmt.Sprintf("%d", generation.ID)); err != nil {
 		_ = s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateFailed, err.Error())
 		if errors.Is(err, store.ErrXhsScriptQuotaInsufficient) {
-			return nil, errno.ErrXhsScriptQuotaInsufficient
+			return fail("quota_deduct", errno.ErrXhsScriptQuotaInsufficient)
 		}
-		return nil, err
+		return fail("quota_deduct", err)
 	}
+	successProps := mergeAnalyticsProperties(baseProps, map[string]interface{}{
+		"generation_id":      generation.ID,
+		"prompt_tokens":      resp.Usage.PromptTokens,
+		"completion_tokens":  resp.Usage.CompletionTokens,
+		"transcript_length":  noteTranscriptLength(note),
+		"script_length":      textLength(script),
+		"deducted_quantity":  1,
+		"free_before":        account.FreeRemaining,
+		"paid_before":        account.PaidRemaining,
+		"generation_version": generation.Version,
+	})
+	s.RecordEventBestEffort(ctx, userID, "quota_deducted", successProps)
 	if err := s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateGenerated, ""); err != nil {
-		return nil, err
+		return fail("mark_generated", err)
 	}
+	s.RecordEventBestEffort(ctx, userID, "generation_success", successProps)
 	return s.GetNoteDTO(ctx, userID, noteID)
+}
+
+func generationNoteProperties(note *model.XhsScriptNote) map[string]interface{} {
+	return map[string]interface{}{
+		"note_id":           note.ID,
+		"source_note_id":    note.SourceNoteID,
+		"transcribe_status": note.TranscribeStatus,
+		"generate_status":   note.GenerateStatus,
+	}
+}
+
+func noteTranscriptLength(note *model.XhsScriptNote) int {
+	if note == nil || note.VideoTranscript == nil {
+		return 0
+	}
+	return textLength(*note.VideoTranscript)
+}
+
+func (s *Service) recordGenerationFail(ctx context.Context, userID uint, baseProps map[string]interface{}, stage string, err error) {
+	s.RecordEventBestEffort(ctx, userID, "generation_fail", mergeAnalyticsProperties(baseProps, map[string]interface{}{
+		"stage":          stage,
+		"error_category": analyticsErrorCategory(err),
+	}))
 }
 
 func buildGenerationPrompt(profileText string, note *model.XhsScriptNote) string {
