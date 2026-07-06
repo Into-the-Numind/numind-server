@@ -27,6 +27,7 @@ type IXhsScriptStore interface {
 	CreateOrUpsertCapturedNote(ctx context.Context, note *model.XhsScriptNote) (*model.XhsScriptNote, error)
 	GetNote(ctx context.Context, userID uint, id uint64) (*model.XhsScriptNote, error)
 	ListNotes(ctx context.Context, userID uint, limit, offset int) ([]model.XhsScriptNote, error)
+	UpdateNoteVideoURL(ctx context.Context, userID uint, id uint64, videoURL string) error
 	UpdateTranscribeStatus(ctx context.Context, userID uint, id uint64, status string, transcript *string, lastError string) error
 	UpdateGenerateStatus(ctx context.Context, userID uint, id uint64, status string, lastError string) error
 	CreateGeneration(ctx context.Context, userID uint, noteID uint64, scriptText string, promptTokens, completionTokens int) (*model.XhsScriptGeneration, error)
@@ -237,6 +238,18 @@ func (s *xhsScriptStore) ListNotes(ctx context.Context, userID uint, limit, offs
 		return nil, fmt.Errorf("ListNotes: %w", err)
 	}
 	return notes, nil
+}
+
+func (s *xhsScriptStore) UpdateNoteVideoURL(ctx context.Context, userID uint, id uint64, videoURL string) error {
+	if err := s.db.WithContext(ctx).Model(&model.XhsScriptNote{}).
+		Where("user_id = ? AND id = ?", userID, id).
+		Updates(map[string]interface{}{
+			"video_url":  videoURL,
+			"updated_at": time.Now(),
+		}).Error; err != nil {
+		return fmt.Errorf("UpdateNoteVideoURL: %w", err)
+	}
+	return nil
 }
 
 func (s *xhsScriptStore) UpdateTranscribeStatus(ctx context.Context, userID uint, id uint64, status string, transcript *string, lastError string) error {

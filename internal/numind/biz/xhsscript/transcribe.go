@@ -18,6 +18,15 @@ import (
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/util"
+)
+
+var (
+	downloadVideoToTempFn   = downloadVideoToTemp
+	extractAudioFn          = extractAudio
+	readFileFn              = os.ReadFile
+	xhsScriptASRFn          = aiservice.ASR
+	mirrorVideoBytesToCOSFn = mirrorVideoBytesToCOS
 )
 
 func (s *Service) enqueueTranscription(userID uint, noteID uint64) {
@@ -53,7 +62,7 @@ func (s *Service) transcribeNote(ctx context.Context, userID uint, noteID uint64
 	}
 	_ = s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateNotReady, "")
 
-	videoPath, cleanup, err := downloadVideoToTemp(ctx, note.VideoURL, noteID)
+	videoPath, cleanup, err := downloadVideoToTempFn(ctx, note.VideoURL, noteID)
 	if err != nil {
 		_ = s.ds.XhsScript().UpdateTranscribeStatus(ctx, userID, noteID, model.XhsScriptTranscribeFailed, nil, err.Error())
 		props := mergeAnalyticsProperties(baseProps, map[string]interface{}{
@@ -73,13 +82,23 @@ func (s *Service) transcribeNote(ctx context.Context, userID uint, noteID uint64
 		"video_size_bytes": videoSize,
 	}))
 
+	if videoBytes, readErr := readFileFn(videoPath); readErr != nil {
+		log.C(ctx).Warnw("xhs-script mirror video read failed, keep original url", "user_id", userID, "note_id", noteID, "error", readErr)
+	} else if cosURL := mirrorVideoBytesToCOSFn(ctx, userID, noteID, videoBytes); strings.TrimSpace(cosURL) != "" {
+		if err := s.ds.XhsScript().UpdateNoteVideoURL(ctx, userID, noteID, cosURL); err != nil {
+			log.C(ctx).Warnw("xhs-script mirror video url persist failed, keep transcribing", "user_id", userID, "note_id", noteID, "error", err)
+		} else {
+			note.VideoURL = cosURL
+		}
+	}
+
 	audioPath := strings.TrimSuffix(videoPath, filepath.Ext(videoPath)) + ".wav"
-	if err := extractAudio(ctx, videoPath, audioPath); err != nil {
+	if err := extractAudioFn(ctx, videoPath, audioPath); err != nil {
 		_ = s.ds.XhsScript().UpdateTranscribeStatus(ctx, userID, noteID, model.XhsScriptTranscribeFailed, nil, err.Error())
 		s.recordTranscribeFail(ctx, userID, baseProps, "extract_audio", err)
 		return err
 	}
-	audioBytes, err := os.ReadFile(audioPath)
+	audioBytes, err := readFileFn(audioPath)
 	if err != nil {
 		_ = s.ds.XhsScript().UpdateTranscribeStatus(ctx, userID, noteID, model.XhsScriptTranscribeFailed, nil, err.Error())
 		s.recordTranscribeFail(ctx, userID, baseProps, "read_audio", err)
@@ -88,7 +107,7 @@ func (s *Service) transcribeNote(ctx context.Context, userID uint, noteID uint64
 
 	aiCtx := aimw.WithUserID(ctx, userID)
 	aiCtx = aiservice.WithSkipLegacyBilling(aiCtx)
-	resp, err := aiservice.ASR(aiCtx, profile.XhsTranscribe, aiservice.ASRRequest{
+	resp, err := xhsScriptASRFn(aiCtx, profile.XhsTranscribe, aiservice.ASRRequest{
 		AudioBytes:  audioBytes,
 		AudioFormat: "wav",
 		Language:    "zh",
@@ -120,6 +139,19 @@ func (s *Service) transcribeNote(ctx context.Context, userID uint, noteID uint64
 		"transcript_length": textLength(transcript),
 	}))
 	return nil
+}
+
+func mirrorVideoBytesToCOS(ctx context.Context, userID uint, noteID uint64, data []byte) string {
+	if len(data) == 0 || !util.IsCOSEnabled() {
+		return ""
+	}
+	key := fmt.Sprintf("xhs-script-media/%d/%d/video.mp4", userID, noteID)
+	cosURL, err := util.UploadBytesToCOS(ctx, key, "video/mp4", data)
+	if err != nil {
+		log.C(ctx).Warnw("xhs-script mirror video upload failed", "user_id", userID, "note_id", noteID, "error", err)
+		return ""
+	}
+	return cosURL
 }
 
 func transcribeNoteProperties(note *model.XhsScriptNote) map[string]interface{} {
