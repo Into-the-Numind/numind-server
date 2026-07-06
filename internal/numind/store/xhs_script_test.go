@@ -273,7 +273,7 @@ func TestXhsScriptStore_UpsertCapturedNoteUpdatesSameRow(t *testing.T) {
 }
 
 func TestXhsScriptStoreRecapturePreservesMirroredVideoURL(t *testing.T) {
-	db := newXhsScriptStoreTestDB(t)
+	db := newXhsScriptConcurrentStoreTestDB(t)
 	s := NewXhsScriptStore(db)
 	ctx := context.Background()
 
@@ -281,6 +281,7 @@ func TestXhsScriptStoreRecapturePreservesMirroredVideoURL(t *testing.T) {
 	require.NoError(t, err)
 	cosURL := fmt.Sprintf("https://bucket.cos.ap-beijing.myqcloud.com/xhs-script-media/15/%d/video.mp4", note.ID)
 	require.NoError(t, s.UpdateNoteVideoURL(ctx, 15, note.ID, cosURL))
+	assert.True(t, isXhsScriptMirroredVideoURL(cosURL, 15, note.ID))
 
 	recapture := newXhsScriptNote(15, "source-mirrored-video")
 	recapture.VideoURL = "https://sns-video.xhscdn.com/new.mp4"
@@ -298,6 +299,36 @@ func TestXhsScriptStoreRecapturePreservesMirroredVideoURL(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, createdRaw.ID, updatedRaw.ID)
 	assert.Equal(t, rawRecapture.VideoURL, updatedRaw.VideoURL)
+
+	evilHostNote, err := s.CreateOrUpsertCapturedNote(ctx, newXhsScriptNote(15, "source-evil-host-video"))
+	require.NoError(t, err)
+	evilHostURL := fmt.Sprintf("https://evil.test/xhs-script-media/15/%d/video.mp4", evilHostNote.ID)
+	require.NoError(t, s.UpdateNoteVideoURL(ctx, 15, evilHostNote.ID, evilHostURL))
+	gotEvilHost, err := s.GetNote(ctx, 15, evilHostNote.ID)
+	require.NoError(t, err)
+	assert.Equal(t, evilHostURL, gotEvilHost.VideoURL)
+	assert.False(t, isXhsScriptMirroredVideoURL(evilHostURL, 15, evilHostNote.ID))
+	evilHostRecapture := newXhsScriptNote(15, "source-evil-host-video")
+	evilHostRecapture.VideoURL = "https://sns-video.xhscdn.com/evil-host-new.mp4"
+	updatedEvilHost, err := s.CreateOrUpsertCapturedNote(ctx, evilHostRecapture)
+	require.NoError(t, err)
+	assert.Equal(t, evilHostNote.ID, updatedEvilHost.ID)
+	assert.Equal(t, evilHostRecapture.VideoURL, updatedEvilHost.VideoURL)
+
+	mismatchedKeyNote, err := s.CreateOrUpsertCapturedNote(ctx, newXhsScriptNote(15, "source-mismatched-key-video"))
+	require.NoError(t, err)
+	mismatchedKeyURL := fmt.Sprintf("https://bucket.cos.ap-beijing.myqcloud.com/xhs-script-media/14/%d/video.mp4", mismatchedKeyNote.ID)
+	require.NoError(t, s.UpdateNoteVideoURL(ctx, 15, mismatchedKeyNote.ID, mismatchedKeyURL))
+	gotMismatchedKey, err := s.GetNote(ctx, 15, mismatchedKeyNote.ID)
+	require.NoError(t, err)
+	assert.Equal(t, mismatchedKeyURL, gotMismatchedKey.VideoURL)
+	assert.False(t, isXhsScriptMirroredVideoURL(mismatchedKeyURL, 15, mismatchedKeyNote.ID))
+	mismatchedKeyRecapture := newXhsScriptNote(15, "source-mismatched-key-video")
+	mismatchedKeyRecapture.VideoURL = "https://sns-video.xhscdn.com/mismatched-key-new.mp4"
+	updatedMismatchedKey, err := s.CreateOrUpsertCapturedNote(ctx, mismatchedKeyRecapture)
+	require.NoError(t, err)
+	assert.Equal(t, mismatchedKeyNote.ID, updatedMismatchedKey.ID)
+	assert.Equal(t, mismatchedKeyRecapture.VideoURL, updatedMismatchedKey.VideoURL)
 }
 
 func TestXhsScriptStore_RecapturePreservesInternalProcessingFields(t *testing.T) {

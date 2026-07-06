@@ -2,6 +2,7 @@ package xhsscript
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"strings"
 
@@ -10,12 +11,15 @@ import (
 
 const xhsScriptVideoSignExpiry = int64(6 * 3600)
 
-var signXhsScriptVideoURLFn = func(ctx context.Context, objectKey string) (string, error) {
-	return util.GenerateSignedURL(ctx, objectKey, xhsScriptVideoSignExpiry)
-}
+var (
+	signXhsScriptVideoURLFn = func(ctx context.Context, objectKey string) (string, error) {
+		return util.GenerateSignedURL(ctx, objectKey, xhsScriptVideoSignExpiry)
+	}
+	xhsScriptCOSBucketHostFn = util.COSBucketHost
+)
 
-func resignXhsScriptVideoURL(ctx context.Context, rawURL string) string {
-	objectKey, ok := xhsScriptVideoObjectKey(rawURL)
+func resignXhsScriptVideoURL(ctx context.Context, userID uint, noteID uint64, rawURL string) string {
+	objectKey, ok := xhsScriptVideoObjectKey(rawURL, userID, noteID)
 	if !ok {
 		return rawURL
 	}
@@ -26,12 +30,16 @@ func resignXhsScriptVideoURL(ctx context.Context, rawURL string) string {
 	return signedURL
 }
 
-func xhsScriptVideoObjectKey(rawURL string) (string, bool) {
+func xhsScriptVideoObjectKey(rawURL string, userID uint, noteID uint64) (string, bool) {
 	if strings.TrimSpace(rawURL) == "" {
 		return "", false
 	}
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
+		return "", false
+	}
+	bucketHost := strings.TrimSpace(xhsScriptCOSBucketHostFn())
+	if bucketHost == "" || !strings.EqualFold(parsed.Hostname(), bucketHost) {
 		return "", false
 	}
 	objectKey := strings.TrimPrefix(parsed.EscapedPath(), "/")
@@ -41,9 +49,9 @@ func xhsScriptVideoObjectKey(rawURL string) (string, bool) {
 	if decoded, decErr := url.PathUnescape(objectKey); decErr == nil {
 		objectKey = decoded
 	}
-	idx := strings.Index(objectKey, "xhs-script-media/")
-	if idx < 0 {
+	expectedKey := fmt.Sprintf("xhs-script-media/%d/%d/video.mp4", userID, noteID)
+	if objectKey != expectedKey {
 		return "", false
 	}
-	return objectKey[idx:], true
+	return objectKey, true
 }

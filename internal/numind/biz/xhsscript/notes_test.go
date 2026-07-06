@@ -22,12 +22,19 @@ func TestNoteDTOResignsMirroredVideoURL(t *testing.T) {
 	var capturedObjectKey string
 	signerCalls := 0
 	prevSigner := signXhsScriptVideoURLFn
+	prevHost := xhsScriptCOSBucketHostFn
+	xhsScriptCOSBucketHostFn = func() string {
+		return "bucket.cos.ap-beijing.myqcloud.com"
+	}
 	signXhsScriptVideoURLFn = func(_ context.Context, objectKey string) (string, error) {
 		signerCalls++
 		capturedObjectKey = objectKey
 		return signedURL, nil
 	}
-	t.Cleanup(func() { signXhsScriptVideoURLFn = prevSigner })
+	t.Cleanup(func() {
+		signXhsScriptVideoURLFn = prevSigner
+		xhsScriptCOSBucketHostFn = prevHost
+	})
 
 	dto, err := svc.noteDTO(ctx, &model.XhsScriptNote{
 		ID:       100,
@@ -52,12 +59,31 @@ func TestNoteDTOResignsMirroredVideoURL(t *testing.T) {
 	assert.Equal(t, "xhs-script-media/99/101/video.mp4", capturedObjectKey)
 	assert.Equal(t, 1, signerCalls)
 
+	evilHostURL := "https://evil.test/xhs-script-media/99/102/video.mp4"
+	signXhsScriptVideoURLFn = func(context.Context, string) (string, error) {
+		t.Fatal("signer should not be called when mirrored path is on an untrusted host")
+		return "", errors.New("unexpected signer call")
+	}
+	dto, err = svc.noteDTO(ctx, &model.XhsScriptNote{ID: 102, UserID: 99, VideoURL: evilHostURL})
+	require.NoError(t, err)
+	assert.Equal(t, evilHostURL, dto.VideoURL)
+
+	wrongNoteURL := "https://bucket.cos.ap-beijing.myqcloud.com/xhs-script-media/99/999/video.mp4"
+	dto, err = svc.noteDTO(ctx, &model.XhsScriptNote{ID: 103, UserID: 99, VideoURL: wrongNoteURL})
+	require.NoError(t, err)
+	assert.Equal(t, wrongNoteURL, dto.VideoURL)
+
+	wrongUserURL := "https://bucket.cos.ap-beijing.myqcloud.com/xhs-script-media/98/104/video.mp4"
+	dto, err = svc.noteDTO(ctx, &model.XhsScriptNote{ID: 104, UserID: 99, VideoURL: wrongUserURL})
+	require.NoError(t, err)
+	assert.Equal(t, wrongUserURL, dto.VideoURL)
+
 	signXhsScriptVideoURLFn = func(context.Context, string) (string, error) {
 		t.Fatal("signer should not be called for non-mirrored video URL")
 		return "", errors.New("unexpected signer call")
 	}
 	rawURL := "https://sns-video.xhscdn.com/raw.mp4"
-	dto, err = svc.noteDTO(ctx, &model.XhsScriptNote{ID: 102, UserID: 99, VideoURL: rawURL})
+	dto, err = svc.noteDTO(ctx, &model.XhsScriptNote{ID: 105, UserID: 99, VideoURL: rawURL})
 	require.NoError(t, err)
 	assert.Equal(t, rawURL, dto.VideoURL)
 }

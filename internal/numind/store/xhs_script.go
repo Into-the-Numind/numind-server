@@ -192,7 +192,7 @@ func (s *xhsScriptStore) CreateOrUpsertCapturedNote(ctx context.Context, note *m
 		}
 		note.ID = existing.ID
 		updates := capturedNoteMetadataUpdateMap(note)
-		preserveMirroredVideoURLOnRecapture(updates, existing.VideoURL)
+		preserveMirroredVideoURLOnRecapture(updates, &existing)
 		if err := tx.Model(&model.XhsScriptNote{}).Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
 			return fmt.Errorf("update: %w", err)
 		}
@@ -213,7 +213,7 @@ func updateCapturedNoteAfterDuplicate(ctx context.Context, tx *gorm.DB, note *mo
 	}
 	note.ID = existing.ID
 	updates := capturedNoteMetadataUpdateMap(note)
-	preserveMirroredVideoURLOnRecapture(updates, existing.VideoURL)
+	preserveMirroredVideoURLOnRecapture(updates, &existing)
 	if err := tx.Model(&model.XhsScriptNote{}).
 		Where("id = ?", existing.ID).
 		Updates(updates).Error; err != nil {
@@ -566,15 +566,18 @@ func capturedNoteMetadataUpdateMap(note *model.XhsScriptNote) map[string]interfa
 	}
 }
 
-func preserveMirroredVideoURLOnRecapture(updates map[string]interface{}, existingVideoURL string) {
-	if isXhsScriptMirroredVideoURL(existingVideoURL) {
+func preserveMirroredVideoURLOnRecapture(updates map[string]interface{}, existing *model.XhsScriptNote) {
+	if existing != nil && isXhsScriptMirroredVideoURL(existing.VideoURL, existing.UserID, existing.ID) {
 		delete(updates, "video_url")
 	}
 }
 
-func isXhsScriptMirroredVideoURL(videoURL string) bool {
+func isXhsScriptMirroredVideoURL(videoURL string, userID uint, noteID uint64) bool {
 	parsed, err := url.Parse(strings.TrimSpace(videoURL))
 	if err != nil {
+		return false
+	}
+	if !isTencentCOSHost(parsed.Hostname()) {
 		return false
 	}
 	path := parsed.EscapedPath()
@@ -584,5 +587,12 @@ func isXhsScriptMirroredVideoURL(videoURL string) bool {
 	if decoded, decErr := url.PathUnescape(path); decErr == nil {
 		path = decoded
 	}
-	return strings.Contains(path, "/xhs-script-media/")
+	path = strings.TrimPrefix(path, "/")
+	expectedPath := fmt.Sprintf("xhs-script-media/%d/%d/video.mp4", userID, noteID)
+	return path == expectedPath
+}
+
+func isTencentCOSHost(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	return strings.Contains(host, ".cos.") && strings.HasSuffix(host, ".myqcloud.com")
 }
