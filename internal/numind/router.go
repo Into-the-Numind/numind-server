@@ -113,6 +113,12 @@ func installNumindRouters(g *gin.Engine) error {
 		}
 	}
 
+	{
+		xhsScriptAdminGroup := v1Group.Group("/admin/xhs-script")
+		xhsScriptAdminGroup.Use(importMw.AdminAuthMiddleware())
+		xhsScriptAdminGroup.GET("/analytics", xhsScriptCtrl.AdminAnalytics)
+	}
+
 	// 需要鉴权的接口
 	authGroup := v1Group.Group("")
 	authGroup.Use(importMw.AuthMiddleware())

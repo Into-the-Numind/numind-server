@@ -208,6 +208,20 @@ func (ctl *Controller) TrackEvents(c *gin.Context) {
 	core.WriteResponse(c, err, gin.H{"accepted": len(req.Events)})
 }
 
+func (ctl *Controller) AdminAnalytics(c *gin.Context) {
+	days := 30
+	if raw := strings.TrimSpace(c.Query("days")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			core.WriteResponse(c, errno.ErrBind.SetMessage("invalid days: %s", raw), nil)
+			return
+		}
+		days = parsed
+	}
+	summary, err := ctl.biz.GetAnalyticsSummary(c.Request.Context(), days)
+	core.WriteResponse(c, err, summary)
+}
+
 func (ctl *Controller) CreateOrder(c *gin.Context) {
 	user, ok := ctl.requireCurrentUser(c, false)
 	if !ok {
