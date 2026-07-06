@@ -101,6 +101,12 @@ scan_file() {
       if (v ~ /^(填写|待填写|占位|替换|请替换)$/) return 1
       return 0
     }
+    function is_numeric_token_count(key, value, k, v) {
+      k = lower(key)
+      v = strip_quotes(trim(value))
+      if ((k == "tokens" || k ~ /_tokens$/) && v ~ /^[0-9]+$/) return 1
+      return 0
+    }
     function is_low_risk_key_value(key, value, k, v) {
       k = lower(key)
       v = strip_quotes(trim(value))
@@ -180,6 +186,7 @@ scan_file() {
             block_indent = indent
             next
           }
+          if (is_numeric_token_count(key, value)) next
           if (is_placeholder(value)) next
           if (is_low_risk_key_value(key, value)) next
           emit(NR, "secret-key-value", key)

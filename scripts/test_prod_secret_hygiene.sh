@@ -70,7 +70,7 @@ assert_no_fixture_secret_leak() {
   local label="$1"
   local out="$2"
 
-  if grep -Eq 'super-secret|sk-test|AKIDEXAMPLE|PRIVATE KEY MATERIAL|extra-secret|plain-secret|slash-secret' "$out"; then
+  if grep -Eq 'super-secret|sk-test|AKIDEXAMPLE|PRIVATE KEY MATERIAL|extra-secret|plain-secret|slash-secret|real-secret-token|access-token-secret' "$out"; then
     echo "FAIL: $label leaked fixture secret material"
     cat "$out"
     fail=1
@@ -102,6 +102,38 @@ write_fixture "$PLACEHOLDER" \
   "  private_key: TODO"
 run_check "$PLACEHOLDER" "$TMP/placeholder.out" ENV=prod
 assert_pass "empty values, env references, and placeholders are allowed" "$?" "$TMP/placeholder.out"
+
+TOKEN_COUNTS="$TMP/token-counts.yaml"
+write_fixture "$TOKEN_COUNTS" \
+  "llm:" \
+  "  tokens: 4000" \
+  "  max_tokens: 8192" \
+  "  prompt_tokens: 123" \
+  "  completion_tokens: 456" \
+  "  total_tokens: 579" \
+  "  cached_tokens: 42"
+run_check "$TOKEN_COUNTS" "$TMP/token-counts.out" ENV=prod
+assert_pass "numeric token-count fields are allowed" "$?" "$TMP/token-counts.out"
+
+TOKEN_SECRET="$TMP/token-secret.yaml"
+write_fixture "$TOKEN_SECRET" \
+  "auth:" \
+  "  token: real-secret-token"
+run_check "$TOKEN_SECRET" "$TMP/token-secret.out" ENV=prod
+token_secret_rc=$?
+assert_fail "token string value is rejected" "$token_secret_rc" "$TMP/token-secret.out" "secret-key-value"
+assert_no_fixture_secret_leak "token secret rejection" "$TMP/token-secret.out"
+
+ACCESS_TOKEN_SECRET="$TMP/auth-token-values.yaml"
+write_fixture "$ACCESS_TOKEN_SECRET" \
+  "auth:" \
+  "  access_token: access-token-secret-value" \
+  "  refresh_token: access-token-secret-refresh" \
+  "  api_token: access-token-secret-api"
+run_check "$ACCESS_TOKEN_SECRET" "$TMP/auth-token-values.out" ENV=prod
+access_token_secret_rc=$?
+assert_fail "access/refresh/api token string values are rejected" "$access_token_secret_rc" "$TMP/auth-token-values.out" "secret-key-value"
+assert_no_fixture_secret_leak "access token secret rejection" "$TMP/auth-token-values.out"
 
 PASSWORD="$TMP/password.yaml"
 write_fixture "$PASSWORD" \
