@@ -69,6 +69,34 @@ func (s *Service) GetHome(ctx context.Context, user *model.User) (*HomeDTO, erro
 	}, nil
 }
 
+func (s *Service) ListNoteDTOs(ctx context.Context, userID uint, limit, offset int) ([]NoteDTO, error) {
+	notes, err := s.ds.XhsScript().ListNotes(ctx, userID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	dtos := make([]NoteDTO, 0, len(notes))
+	for i := range notes {
+		dto, err := s.noteDTO(ctx, &notes[i])
+		if err != nil {
+			return nil, err
+		}
+		dtos = append(dtos, dto)
+	}
+	return dtos, nil
+}
+
+func (s *Service) GetQuota(ctx context.Context, userID uint) (*QuotaDTO, error) {
+	account, err := s.ds.XhsScript().CreateOrGetQuotaAccount(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	quota, err := s.quotaDTO(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	return &quota, nil
+}
+
 func (s *Service) SaveProfile(ctx context.Context, userID uint, profileText string) (*ProfileDTO, error) {
 	profileText = strings.TrimSpace(profileText)
 	profile, err := s.ds.XhsScript().GetOrCreateProfileByUser(ctx, userID)

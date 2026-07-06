@@ -104,9 +104,12 @@ func installNumindRouters(g *gin.Engine) error {
 			xhsScriptGroup.GET("/me", xhsScriptCtrl.Me)
 			xhsScriptGroup.PUT("/profile", xhsScriptCtrl.SaveProfile)
 			xhsScriptGroup.GET("/ext-token", xhsScriptCtrl.ExtToken)
+			xhsScriptGroup.POST("/ext-token", xhsScriptCtrl.ExtToken)
 			xhsScriptGroup.POST("/notes", xhsScriptCtrl.Ingest)
+			xhsScriptGroup.GET("/notes", xhsScriptCtrl.ListNotes)
 			xhsScriptGroup.GET("/notes/:id", xhsScriptCtrl.GetNote)
 			xhsScriptGroup.POST("/notes/:id/generate", xhsScriptCtrl.Generate)
+			xhsScriptGroup.GET("/quota", xhsScriptCtrl.GetQuota)
 			xhsScriptGroup.POST("/orders", xhsScriptCtrl.CreateOrder)
 			xhsScriptGroup.GET("/orders/:id/status", xhsScriptCtrl.GetOrderStatus)
 			xhsScriptGroup.POST("/analytics/events", xhsScriptCtrl.TrackEvents)
@@ -117,6 +120,11 @@ func installNumindRouters(g *gin.Engine) error {
 		xhsScriptAdminGroup := v1Group.Group("/admin/xhs-script")
 		xhsScriptAdminGroup.Use(importMw.AdminAuthMiddleware())
 		xhsScriptAdminGroup.GET("/analytics", xhsScriptCtrl.AdminAnalytics)
+	}
+	{
+		xhsScriptProductAdminGroup := v1Group.Group("/xhs-script/admin")
+		xhsScriptProductAdminGroup.Use(importMw.AdminAuthMiddleware())
+		xhsScriptProductAdminGroup.GET("/metrics", xhsScriptCtrl.AdminAnalytics)
 	}
 
 	// 需要鉴权的接口

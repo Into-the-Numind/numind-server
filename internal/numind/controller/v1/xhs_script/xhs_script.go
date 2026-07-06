@@ -166,6 +166,20 @@ func (ctl *Controller) Ingest(c *gin.Context) {
 	})
 }
 
+func (ctl *Controller) ListNotes(c *gin.Context) {
+	user, ok := ctl.requireCurrentUser(c, false)
+	if !ok {
+		return
+	}
+	limit, offset, err := parseListNotesPagination(c)
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+	notes, err := ctl.biz.ListNoteDTOs(c.Request.Context(), user.ID, limit, offset)
+	core.WriteResponse(c, err, notes)
+}
+
 func (ctl *Controller) GetNote(c *gin.Context) {
 	user, ok := ctl.requireCurrentUser(c, false)
 	if !ok {
@@ -178,6 +192,15 @@ func (ctl *Controller) GetNote(c *gin.Context) {
 	}
 	dto, err := ctl.biz.GetNoteDTO(c.Request.Context(), user.ID, id)
 	core.WriteResponse(c, err, dto)
+}
+
+func (ctl *Controller) GetQuota(c *gin.Context) {
+	user, ok := ctl.requireCurrentUser(c, false)
+	if !ok {
+		return
+	}
+	quota, err := ctl.biz.GetQuota(c.Request.Context(), user.ID)
+	core.WriteResponse(c, err, quota)
 }
 
 func (ctl *Controller) Generate(c *gin.Context) {
@@ -365,4 +388,43 @@ func parseID(raw string) (uint64, error) {
 		return 0, errno.ErrBind.SetMessage("invalid id: %s", raw)
 	}
 	return id, nil
+}
+
+func parseListNotesPagination(c *gin.Context) (int, int, error) {
+	limit, err := parsePositiveIntQuery(c, "limit", 40)
+	if err != nil {
+		return 0, 0, err
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	offset, err := parseNonNegativeIntQuery(c, "offset", 0)
+	if err != nil {
+		return 0, 0, err
+	}
+	return limit, offset, nil
+}
+
+func parsePositiveIntQuery(c *gin.Context, name string, defaultValue int) (int, error) {
+	raw := strings.TrimSpace(c.Query(name))
+	if raw == "" {
+		return defaultValue, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return 0, errno.ErrBind.SetMessage("invalid %s: %s", name, raw)
+	}
+	return value, nil
+}
+
+func parseNonNegativeIntQuery(c *gin.Context, name string, defaultValue int) (int, error) {
+	raw := strings.TrimSpace(c.Query(name))
+	if raw == "" {
+		return defaultValue, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		return 0, errno.ErrBind.SetMessage("invalid %s: %s", name, raw)
+	}
+	return value, nil
 }
