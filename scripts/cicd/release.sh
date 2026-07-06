@@ -48,6 +48,13 @@ if [ "$ENV" = "prod" ]; then
     echo "ERROR: prod release requires HEAD to be on a git tag (got branch=$GIT_BRANCH, sha=$GIT_SHA)" >&2
     exit 1
   fi
+  PROD_WORKTREE_STATUS="$(git status --porcelain --untracked-files=all)"
+  if [ -n "$PROD_WORKTREE_STATUS" ]; then
+    echo "ERROR: prod release requires a clean worktree and exact tag." >&2
+    echo "Dirty items:" >&2
+    echo "$PROD_WORKTREE_STATUS" >&2
+    exit 1
+  fi
 fi
 
 echo "==============================================="
