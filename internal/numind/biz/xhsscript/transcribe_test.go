@@ -113,7 +113,7 @@ func TestTranscribeNoteEmptyTranscriptMarksEmptyAndDoesNotGenerateReady(t *testi
 	}
 	assert.Equal(t, model.XhsScriptTranscribeEmpty, got.TranscribeStatus)
 	assert.Equal(t, model.XhsScriptGenerateNotReady, got.GenerateStatus)
-	assert.Contains(t, got.LastError, "为空")
+	assert.Equal(t, "transcript_empty", got.LastError)
 }
 
 func TestTranscribeNoteDownloadFailureMarksFailed(t *testing.T) {
@@ -151,7 +151,100 @@ func TestTranscribeNoteDownloadFailureMarksFailed(t *testing.T) {
 	assert.Nil(t, got.VideoTranscript)
 	assert.Equal(t, model.XhsScriptTranscribeFailed, got.TranscribeStatus)
 	assert.Equal(t, model.XhsScriptGenerateNotReady, got.GenerateStatus)
-	assert.Contains(t, got.LastError, "download boom")
+	assert.Equal(t, "video_download_failed", got.LastError)
+	assert.NotContains(t, got.LastError, "download boom")
+}
+
+func TestTranscribeNoteFailuresPersistSafeLastErrorCategories(t *testing.T) {
+	t.Run("extract audio raw ffmpeg error is not persisted", func(t *testing.T) {
+		ctx := context.Background()
+		db := newXhsScriptTranscribeTestDB(t)
+		svc := New(store.NewTestStore(db))
+		userID := uint(104)
+		note := createTranscribeTestNote(t, db, userID, "extract-failed")
+		rawErr := errors.New("ffmpeg stderr: secret file path /tmp/private prompt text")
+
+		withTranscribeTestDeps(t, transcribeTestDeps{
+			downloadVideoToTemp: func(_ context.Context, _ string, _ uint64) (string, func(), error) {
+				videoPath := filepath.Join(t.TempDir(), "video.mp4")
+				require.NoError(t, os.WriteFile(videoPath, []byte("video"), 0o600))
+				return videoPath, func() { _ = os.Remove(videoPath) }, nil
+			},
+			mirrorVideoBytesToCOS: func(context.Context, uint, uint64, []byte) string { return "" },
+			extractAudio: func(context.Context, string, string) error {
+				return rawErr
+			},
+		})
+
+		err := svc.transcribeNote(ctx, userID, note.ID)
+		require.ErrorIs(t, err, rawErr)
+		got := loadTranscribeTestNote(t, db, userID, note.ID)
+		assert.Equal(t, "audio_extract_failed", got.LastError)
+		assert.NotContains(t, got.LastError, "ffmpeg stderr")
+		assert.NotContains(t, got.LastError, "/tmp/private")
+	})
+
+	t.Run("audio read raw error is not persisted", func(t *testing.T) {
+		ctx := context.Background()
+		db := newXhsScriptTranscribeTestDB(t)
+		svc := New(store.NewTestStore(db))
+		userID := uint(105)
+		note := createTranscribeTestNote(t, db, userID, "read-failed")
+		rawErr := errors.New("read /tmp/private.wav: permission denied with secret")
+
+		withTranscribeTestDeps(t, transcribeTestDeps{
+			downloadVideoToTemp: func(_ context.Context, _ string, _ uint64) (string, func(), error) {
+				videoPath := filepath.Join(t.TempDir(), "video.mp4")
+				require.NoError(t, os.WriteFile(videoPath, []byte("video"), 0o600))
+				return videoPath, func() { _ = os.Remove(videoPath) }, nil
+			},
+			mirrorVideoBytesToCOS: func(context.Context, uint, uint64, []byte) string { return "" },
+			extractAudio:          func(context.Context, string, string) error { return nil },
+			readFile: func(path string) ([]byte, error) {
+				if strings.HasSuffix(path, ".wav") {
+					return nil, rawErr
+				}
+				return []byte("video"), nil
+			},
+		})
+
+		err := svc.transcribeNote(ctx, userID, note.ID)
+		require.Error(t, err)
+		got := loadTranscribeTestNote(t, db, userID, note.ID)
+		assert.Equal(t, "audio_read_failed", got.LastError)
+		assert.NotContains(t, got.LastError, "/tmp/private.wav")
+	})
+
+	t.Run("asr raw error is not persisted", func(t *testing.T) {
+		ctx := context.Background()
+		db := newXhsScriptTranscribeTestDB(t)
+		svc := New(store.NewTestStore(db))
+		userID := uint(106)
+		note := createTranscribeTestNote(t, db, userID, "asr-failed")
+		rawErr := errors.New("asr provider returned transcript text and credential detail")
+
+		withTranscribeTestDeps(t, transcribeTestDeps{
+			downloadVideoToTemp: func(_ context.Context, _ string, _ uint64) (string, func(), error) {
+				videoPath := filepath.Join(t.TempDir(), "video.mp4")
+				require.NoError(t, os.WriteFile(videoPath, []byte("video"), 0o600))
+				return videoPath, func() { _ = os.Remove(videoPath) }, nil
+			},
+			mirrorVideoBytesToCOS: func(context.Context, uint, uint64, []byte) string { return "" },
+			extractAudio: func(_ context.Context, _ string, audioPath string) error {
+				return os.WriteFile(audioPath, []byte("wav"), 0o600)
+			},
+			asr: func(context.Context, string, aiservice.ASRRequest) (*aiservice.ASRResponse, error) {
+				return nil, rawErr
+			},
+		})
+
+		err := svc.transcribeNote(ctx, userID, note.ID)
+		require.Error(t, err)
+		got := loadTranscribeTestNote(t, db, userID, note.ID)
+		assert.Equal(t, "asr_failed", got.LastError)
+		assert.NotContains(t, got.LastError, "provider returned")
+		assert.NotContains(t, got.LastError, "credential")
+	})
 }
 
 type transcribeTestDeps struct {

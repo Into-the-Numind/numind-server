@@ -59,7 +59,7 @@ func (s *Service) recordEvent(ctx context.Context, userID *uint, eventID, eventN
 		EventID:    eventID,
 		EventName:  eventName,
 		UserID:     userID,
-		Properties: mustJSON(properties),
+		Properties: mustJSON(sanitizeAnalyticsProperties(properties)),
 		CreatedAt:  time.Now(),
 	}
 	return s.ds.XhsScript().InsertAnalyticsEvent(ctx, event)

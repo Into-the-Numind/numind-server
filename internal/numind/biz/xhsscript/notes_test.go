@@ -116,6 +116,26 @@ func TestIngestNotes_NonVideoRejectionRecordsAnalyticsEvent(t *testing.T) {
 	assert.NotContains(t, string(event.Properties), "这段内容不应进入 analytics properties")
 }
 
+func TestSaveProfileRejectsEmptyProfileText(t *testing.T) {
+	db := newAnalyticsSummaryTestDB(t)
+	svc := New(store.NewTestStore(db))
+	ctx := context.Background()
+	userID := uint(44)
+	require.NoError(t, db.Create(&model.XhsScriptUserProfile{
+		UserID:      userID,
+		ProfileText: "已有产品定位",
+	}).Error)
+
+	dto, err := svc.SaveProfile(ctx, userID, " \n\t ")
+
+	require.ErrorIs(t, err, errno.ErrXhsScriptProfileRequired)
+	assert.Nil(t, dto)
+
+	var profile model.XhsScriptUserProfile
+	require.NoError(t, db.Where("user_id = ?", userID).First(&profile).Error)
+	assert.Equal(t, "已有产品定位", profile.ProfileText)
+}
+
 func TestIngestNotes_DuplicateCaptureRecordsAnalyticsOnce(t *testing.T) {
 	db := newAnalyticsSummaryTestDB(t)
 	svc := New(store.NewTestStore(db))

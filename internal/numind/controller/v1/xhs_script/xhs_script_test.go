@@ -2,7 +2,9 @@ package xhs_script
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +22,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
+	paymentbiz "numind-server/internal/numind/biz/payment"
 	xhsscriptbiz "numind-server/internal/numind/biz/xhsscript"
 	"numind-server/internal/numind/store"
 	importMw "numind-server/internal/pkg/middleware"
@@ -107,6 +110,51 @@ func TestXhsScriptCompatibilityRoutes(t *testing.T) {
 
 	badPaginationResp := doXhsScriptRequest(router, http.MethodGet, "/v1/xhs-script/notes?offset=-1", token)
 	assert.NotEqual(t, http.StatusOK, badPaginationResp.Code)
+}
+
+func TestXhsScriptSaveProfileRejectsEmptyText(t *testing.T) {
+	router, db, token, userID := newXhsScriptControllerTestRouter(t)
+	require.NoError(t, db.Create(&model.XhsScriptUserProfile{
+		UserID:      userID,
+		ProfileText: "已有定位",
+	}).Error)
+
+	resp := doXhsScriptJSONRequest(t, router, http.MethodPut, "/v1/xhs-script/profile", token, map[string]string{
+		"profile_text": " \n\t ",
+	})
+
+	assert.NotEqual(t, http.StatusOK, resp.Code)
+	var profile model.XhsScriptUserProfile
+	require.NoError(t, db.Where("user_id = ?", userID).First(&profile).Error)
+	assert.Equal(t, "已有定位", profile.ProfileText)
+}
+
+func TestXhsScriptOrderDetailCompatibilityRoute(t *testing.T) {
+	router, _, token, userID := newXhsScriptControllerTestRouter(t)
+
+	legacyResp := doXhsScriptRequest(router, http.MethodGet, "/v1/xhs-script/orders/88/status", token)
+	require.Equal(t, http.StatusOK, legacyResp.Code)
+	detailResp := doXhsScriptRequest(router, http.MethodGet, "/v1/xhs-script/orders/88", token)
+	require.Equal(t, http.StatusOK, detailResp.Code)
+
+	var legacyBody apiResponse
+	var detailBody apiResponse
+	require.NoError(t, json.Unmarshal(legacyResp.Body.Bytes(), &legacyBody))
+	require.NoError(t, json.Unmarshal(detailResp.Body.Bytes(), &detailBody))
+	require.Equal(t, 0, legacyBody.Code)
+	require.Equal(t, 0, detailBody.Code)
+	assert.JSONEq(t, string(legacyBody.Data), string(detailBody.Data))
+
+	var data struct {
+		ID        uint64 `json:"id"`
+		PayStatus string `json:"pay_status"`
+		Amount    int64  `json:"amount"`
+	}
+	require.NoError(t, json.Unmarshal(detailBody.Data, &data))
+	assert.EqualValues(t, 88, data.ID)
+	assert.Equal(t, model.OrderStatusPending, data.PayStatus)
+	assert.Equal(t, xhsscriptbiz.PackAmountCents, data.Amount)
+	assert.NotZero(t, userID)
 }
 
 func TestXhsScriptAdminMetricsAliasRejectsNonAdmin(t *testing.T) {
@@ -247,6 +295,7 @@ func newXhsScriptControllerTestRouter(t *testing.T) (*gin.Engine, *gorm.DB, stri
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(
 		&model.User{},
+		&model.XhsScriptUserProfile{},
 		&model.XhsScriptQuotaAccount{},
 		&model.XhsScriptQuotaLedger{},
 		&model.XhsScriptNote{},
@@ -265,16 +314,31 @@ func newXhsScriptControllerTestRouter(t *testing.T) (*gin.Engine, *gorm.DB, stri
 	t.Cleanup(func() { store.S = previousStore })
 
 	svc := xhsscriptbiz.New(store.NewTestStore(db))
-	ctl := NewController(svc, nil)
+	ctl := NewController(svc, &xhsScriptControllerPaymentMock{order: &model.Order{
+		ID:          88,
+		OrderNo:     "order_88",
+		UserID:      user.ID,
+		PayerID:     user.ID,
+		ProductType: model.ProductTypeXhsScriptPack,
+		Quantity:    1,
+		Amount:      xhsscriptbiz.PackAmountCents,
+		PayChannel:  model.PayChannelWechat,
+		PayStatus:   model.OrderStatusPending,
+		CodeURL:     "weixin://wxpay/bizpayurl?pr=mock",
+		ExpiredAt:   time.Now().Add(time.Hour),
+	}})
 
 	router := gin.New()
 	group := router.Group("/v1/xhs-script")
 	group.GET("/ext-token", ctl.ExtToken)
 	group.POST("/ext-token", ctl.ExtToken)
+	group.PUT("/profile", ctl.SaveProfile)
 	group.POST("/profile/extract-text", ctl.ExtractProfileText)
 	group.GET("/notes", ctl.ListNotes)
 	group.GET("/notes/:id", ctl.GetNote)
 	group.GET("/quota", ctl.GetQuota)
+	group.GET("/orders/:id/status", ctl.GetOrderStatus)
+	group.GET("/orders/:id", ctl.GetOrderStatus)
 
 	adminGroup := router.Group("/v1/xhs-script/admin")
 	adminGroup.Use(importMw.AdminAuthMiddleware())
@@ -283,11 +347,58 @@ func newXhsScriptControllerTestRouter(t *testing.T) (*gin.Engine, *gorm.DB, stri
 	return router, db, signControllerTestToken(t, user.ID), user.ID
 }
 
+type xhsScriptControllerPaymentMock struct {
+	paymentbiz.IPaymentBiz
+	order *model.Order
+}
+
+func (m *xhsScriptControllerPaymentMock) CreateOrder(context.Context, uint, uint, string, int, string, string) (*model.Order, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (m *xhsScriptControllerPaymentMock) HandleWechatNotify(context.Context, *http.Request) error {
+	return errors.New("not implemented")
+}
+
+func (m *xhsScriptControllerPaymentMock) HandleAlipayNotify(context.Context, *http.Request) error {
+	return errors.New("not implemented")
+}
+
+func (m *xhsScriptControllerPaymentMock) GetOrder(_ context.Context, orderID uint64) (*model.Order, error) {
+	if m.order != nil && m.order.ID == orderID {
+		copy := *m.order
+		return &copy, nil
+	}
+	return nil, errors.New("order not found")
+}
+
+func (m *xhsScriptControllerPaymentMock) ListOrdersByPayer(context.Context, uint, int, int) ([]model.Order, int64, error) {
+	return nil, 0, errors.New("not implemented")
+}
+
+func (m *xhsScriptControllerPaymentMock) CloseExpiredOrders(context.Context) error {
+	return errors.New("not implemented")
+}
+
 func doXhsScriptRequest(router *gin.Engine, method, path, token string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, nil)
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	return w
+}
+
+func doXhsScriptJSONRequest(t *testing.T, router *gin.Engine, method, path, token string, payload interface{}) *httptest.ResponseRecorder {
+	t.Helper()
+	data, err := json.Marshal(payload)
+	require.NoError(t, err)
+	req := httptest.NewRequest(method, path, bytes.NewReader(data))
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	return w

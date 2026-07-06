@@ -111,7 +111,7 @@ func (s *Service) TrackEvents(ctx context.Context, userID *uint, events []Analyt
 			UserID:      userID,
 			SessionID:   strings.TrimSpace(input.SessionID),
 			Path:        strings.TrimSpace(input.Path),
-			Properties:  mustJSON(input.Properties),
+			Properties:  mustJSON(sanitizeAnalyticsProperties(input.Properties)),
 			CreatedAt:   createdAt,
 		}
 		if err := s.ds.XhsScript().InsertAnalyticsEvent(ctx, event); err != nil {
@@ -119,6 +119,152 @@ func (s *Service) TrackEvents(ctx context.Context, userID *uint, events []Analyt
 		}
 	}
 	return nil
+}
+
+const (
+	maxAnalyticsPropertyKeys        = 40
+	maxAnalyticsPropertyStringRunes = 200
+)
+
+var sensitiveAnalyticsPropertyKeys = map[string]struct{}{
+	"profile_text":     {},
+	"profile":          {},
+	"transcript":       {},
+	"video_transcript": {},
+	"script_text":      {},
+	"script":           {},
+	"generated_script": {},
+	"description":      {},
+	"title":            {},
+	"content":          {},
+	"comments":         {},
+	"hot_comments":     {},
+	"prompt":           {},
+	"raw_error":        {},
+	"error_message":    {},
+	"message":          {},
+}
+
+var preferredAnalyticsPropertyKeys = map[string]struct{}{
+	"id":                {},
+	"ids":               {},
+	"note_id":           {},
+	"source_note_id":    {},
+	"generation_id":     {},
+	"order_id":          {},
+	"order_no":          {},
+	"count":             {},
+	"counts":            {},
+	"quantity":          {},
+	"status":            {},
+	"pay_status":        {},
+	"length":            {},
+	"text_length":       {},
+	"script_length":     {},
+	"transcript_length": {},
+	"stage":             {},
+	"category":          {},
+	"error_category":    {},
+	"channel":           {},
+	"product_type":      {},
+	"amount":            {},
+	"amount_cents":      {},
+}
+
+func sanitizeAnalyticsProperties(input map[string]interface{}) map[string]interface{} {
+	if len(input) == 0 {
+		return map[string]interface{}{}
+	}
+	keys := make([]string, 0, len(input))
+	for key := range input {
+		keys = append(keys, key)
+	}
+	sort.SliceStable(keys, func(i, j int) bool {
+		leftPreferred := isPreferredAnalyticsPropertyKey(keys[i])
+		rightPreferred := isPreferredAnalyticsPropertyKey(keys[j])
+		if leftPreferred != rightPreferred {
+			return leftPreferred
+		}
+		return keys[i] < keys[j]
+	})
+
+	out := make(map[string]interface{}, minInt(len(keys), maxAnalyticsPropertyKeys))
+	for _, key := range keys {
+		key = strings.TrimSpace(key)
+		if key == "" || isSensitiveAnalyticsPropertyKey(key) {
+			continue
+		}
+		value, ok := sanitizeAnalyticsPropertyValue(input[key])
+		if !ok {
+			continue
+		}
+		out[key] = value
+		if len(out) >= maxAnalyticsPropertyKeys {
+			break
+		}
+	}
+	return out
+}
+
+func isSensitiveAnalyticsPropertyKey(key string) bool {
+	normalized := normalizeAnalyticsPropertyKey(key)
+	if _, ok := sensitiveAnalyticsPropertyKeys[normalized]; ok {
+		return true
+	}
+	parts := strings.FieldsFunc(normalized, func(r rune) bool { return r == '_' })
+	if len(parts) > 0 {
+		if _, ok := sensitiveAnalyticsPropertyKeys[parts[len(parts)-1]]; ok && strings.Contains(normalized, "error") {
+			return true
+		}
+	}
+	return false
+}
+
+func isPreferredAnalyticsPropertyKey(key string) bool {
+	_, ok := preferredAnalyticsPropertyKeys[normalizeAnalyticsPropertyKey(key)]
+	return ok
+}
+
+func normalizeAnalyticsPropertyKey(key string) string {
+	key = strings.ToLower(strings.TrimSpace(key))
+	replacer := strings.NewReplacer(".", "_", "-", "_", " ", "_")
+	return replacer.Replace(key)
+}
+
+func sanitizeAnalyticsPropertyValue(value interface{}) (interface{}, bool) {
+	switch v := value.(type) {
+	case nil:
+		return nil, true
+	case string:
+		return limitRunes(strings.TrimSpace(v), maxAnalyticsPropertyStringRunes), true
+	case bool:
+		return v, true
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+		return v, true
+	case map[string]interface{}:
+		sanitized := sanitizeAnalyticsProperties(v)
+		return sanitized, len(sanitized) > 0
+	default:
+		return nil, false
+	}
+}
+
+func limitRunes(value string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= max {
+		return value
+	}
+	return string(runes[:max])
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func clientAnalyticsEventID(eventID string) string {

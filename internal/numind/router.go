@@ -113,6 +113,7 @@ func installNumindRouters(g *gin.Engine) error {
 			xhsScriptGroup.GET("/quota", xhsScriptCtrl.GetQuota)
 			xhsScriptGroup.POST("/orders", xhsScriptCtrl.CreateOrder)
 			xhsScriptGroup.GET("/orders/:id/status", xhsScriptCtrl.GetOrderStatus)
+			xhsScriptGroup.GET("/orders/:id", xhsScriptCtrl.GetOrderStatus)
 			xhsScriptGroup.POST("/analytics/events", xhsScriptCtrl.TrackEvents)
 		}
 	}

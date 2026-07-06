@@ -14,6 +14,8 @@ import (
 	"numind-server/internal/pkg/model"
 )
 
+var xhsScriptChatFn = aiservice.Chat
+
 func (s *Service) GenerateScript(ctx context.Context, userID uint, noteID uint64) (*NoteDTO, error) {
 	baseProps := map[string]interface{}{
 		"note_id": noteID,
@@ -37,6 +39,7 @@ func (s *Service) GenerateScript(ctx context.Context, userID uint, noteID uint64
 		return fail("quota_account", err)
 	}
 	if account.FreeRemaining+account.PaidRemaining <= 0 {
+		_ = s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateFailed, "quota_insufficient")
 		return fail("quota_insufficient", errno.ErrXhsScriptQuotaInsufficient)
 	}
 
@@ -54,7 +57,7 @@ func (s *Service) GenerateScript(ctx context.Context, userID uint, noteID uint64
 
 	aiCtx := aimw.WithUserID(ctx, userID)
 	aiCtx = aiservice.WithSkipLegacyBilling(aiCtx)
-	resp, err := aiservice.Chat(aiCtx, profile.XhsNoteAnalyze, aiservice.ChatRequest{
+	resp, err := xhsScriptChatFn(aiCtx, profile.XhsNoteAnalyze, aiservice.ChatRequest{
 		Messages: []aiservice.ChatMessage{
 			{
 				Role:    aiservice.MessageRoleSystem,
@@ -69,21 +72,22 @@ func (s *Service) GenerateScript(ctx context.Context, userID uint, noteID uint64
 		MaxTokens:   2200,
 	})
 	if err != nil {
-		_ = s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateFailed, err.Error())
+		_ = s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateFailed, "generation_failed")
 		return fail("chat", err)
 	}
 	script := strings.TrimSpace(resp.Content)
 	if script == "" {
-		_ = s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateFailed, "生成结果为空")
+		_ = s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateFailed, "generation_empty")
 		return fail("empty_output", errno.ErrInternalServer.SetMessage("生成结果为空，请稍后重试"))
 	}
 
 	commit, err := s.ds.XhsScript().CreateGenerationAndDeductQuota(ctx, userID, noteID, script, resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
 	if err != nil {
-		_ = s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateFailed, err.Error())
 		if errors.Is(err, store.ErrXhsScriptQuotaInsufficient) {
+			_ = s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateFailed, "quota_insufficient")
 			return fail("quota_deduct", errno.ErrXhsScriptQuotaInsufficient)
 		}
+		_ = s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateFailed, "generation_commit_failed")
 		return fail("commit_generation", err)
 	}
 	generation := commit.Generation

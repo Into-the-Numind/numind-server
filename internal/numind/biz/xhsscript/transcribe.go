@@ -64,7 +64,7 @@ func (s *Service) transcribeNote(ctx context.Context, userID uint, noteID uint64
 
 	videoPath, cleanup, err := downloadVideoToTempFn(ctx, note.VideoURL, noteID)
 	if err != nil {
-		_ = s.ds.XhsScript().UpdateTranscribeStatus(ctx, userID, noteID, model.XhsScriptTranscribeFailed, nil, err.Error())
+		_ = s.ds.XhsScript().UpdateTranscribeStatus(ctx, userID, noteID, model.XhsScriptTranscribeFailed, nil, "video_download_failed")
 		props := mergeAnalyticsProperties(baseProps, map[string]interface{}{
 			"stage":          "download",
 			"error_category": analyticsErrorCategory(err),
@@ -94,13 +94,13 @@ func (s *Service) transcribeNote(ctx context.Context, userID uint, noteID uint64
 
 	audioPath := strings.TrimSuffix(videoPath, filepath.Ext(videoPath)) + ".wav"
 	if err := extractAudioFn(ctx, videoPath, audioPath); err != nil {
-		_ = s.ds.XhsScript().UpdateTranscribeStatus(ctx, userID, noteID, model.XhsScriptTranscribeFailed, nil, err.Error())
+		_ = s.ds.XhsScript().UpdateTranscribeStatus(ctx, userID, noteID, model.XhsScriptTranscribeFailed, nil, "audio_extract_failed")
 		s.recordTranscribeFail(ctx, userID, baseProps, "extract_audio", err)
 		return err
 	}
 	audioBytes, err := readFileFn(audioPath)
 	if err != nil {
-		_ = s.ds.XhsScript().UpdateTranscribeStatus(ctx, userID, noteID, model.XhsScriptTranscribeFailed, nil, err.Error())
+		_ = s.ds.XhsScript().UpdateTranscribeStatus(ctx, userID, noteID, model.XhsScriptTranscribeFailed, nil, "audio_read_failed")
 		s.recordTranscribeFail(ctx, userID, baseProps, "read_audio", err)
 		return fmt.Errorf("read extracted audio: %w", err)
 	}
@@ -113,13 +113,13 @@ func (s *Service) transcribeNote(ctx context.Context, userID uint, noteID uint64
 		Language:    "zh",
 	})
 	if err != nil {
-		_ = s.ds.XhsScript().UpdateTranscribeStatus(ctx, userID, noteID, model.XhsScriptTranscribeFailed, nil, err.Error())
+		_ = s.ds.XhsScript().UpdateTranscribeStatus(ctx, userID, noteID, model.XhsScriptTranscribeFailed, nil, "asr_failed")
 		s.recordTranscribeFail(ctx, userID, baseProps, "asr", err)
 		return fmt.Errorf("asr: %w", err)
 	}
 	transcript := strings.TrimSpace(resp.Text)
 	if transcript == "" {
-		_ = s.ds.XhsScript().UpdateTranscribeStatus(ctx, userID, noteID, model.XhsScriptTranscribeEmpty, nil, "视频转写结果为空")
+		_ = s.ds.XhsScript().UpdateTranscribeStatus(ctx, userID, noteID, model.XhsScriptTranscribeEmpty, nil, "transcript_empty")
 		props := mergeAnalyticsProperties(baseProps, map[string]interface{}{
 			"stage":          "asr",
 			"error_category": "transcript_empty",

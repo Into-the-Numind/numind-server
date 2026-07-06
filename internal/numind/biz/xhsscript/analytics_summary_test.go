@@ -2,6 +2,9 @@ package xhsscript
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -186,6 +189,62 @@ func TestTrackEventsDoesNotAcceptReservedBackendEventIDPrefix(t *testing.T) {
 	assert.EqualValues(t, 0, summary.Totals.PurchaseOrderCreated)
 }
 
+func TestTrackEventsRedactsSensitivePropertiesAndLimitsPayload(t *testing.T) {
+	db := newAnalyticsSummaryTestDB(t)
+	svc := New(store.NewTestStore(db))
+	ctx := context.Background()
+	userID := uint(14)
+
+	props := map[string]interface{}{
+		"profile_text":  "我的完整产品定位正文",
+		"transcript":    "完整视频转写正文",
+		"script_text":   "生成后的完整口播稿",
+		"title":         "用户采集的原始标题",
+		"error.message": "LLM upstream raw error with prompt text",
+		"note_id":       float64(123),
+		"count":         float64(9),
+		"status":        "failed",
+		"stage":         "generate",
+		"category":      "llm",
+		"channel":       "web",
+		"product_type":  model.ProductTypeXhsScriptPack,
+		"amount":        float64(1990),
+		"ids":           strings.Repeat("a", 260),
+	}
+	for i := 0; i < 60; i++ {
+		props[fmt.Sprintf("extra_%02d", i)] = "safe"
+	}
+
+	err := svc.TrackEvents(ctx, &userID, []AnalyticsEventInput{
+		{
+			EventID:    "evt_redact",
+			EventName:  "generation_fail",
+			Properties: props,
+		},
+	})
+	require.NoError(t, err)
+
+	var event model.XhsScriptAnalyticsEvent
+	require.NoError(t, db.Where("event_id = ?", "evt_redact").First(&event).Error)
+	assert.NotContains(t, string(event.Properties), "完整产品定位正文")
+	assert.NotContains(t, string(event.Properties), "完整视频转写正文")
+	assert.NotContains(t, string(event.Properties), "完整口播稿")
+	assert.NotContains(t, string(event.Properties), "用户采集的原始标题")
+	assert.NotContains(t, string(event.Properties), "LLM upstream raw error")
+
+	var stored map[string]interface{}
+	require.NoError(t, json.Unmarshal(event.Properties, &stored))
+	assert.LessOrEqual(t, len(stored), 40)
+	assert.NotContains(t, stored, "profile_text")
+	assert.NotContains(t, stored, "transcript")
+	assert.NotContains(t, stored, "script_text")
+	assert.NotContains(t, stored, "title")
+	assert.NotContains(t, stored, "error.message")
+	assert.Equal(t, "generate", stored["stage"])
+	assert.Equal(t, "failed", stored["status"])
+	assert.LessOrEqual(t, len(stored["ids"].(string)), 200)
+}
+
 func TestAnalyticsSummaryDoesNotCountLikeWildcardBackendPrefixSpoof(t *testing.T) {
 	db := newAnalyticsSummaryTestDB(t)
 	svc := New(store.NewTestStore(db))
@@ -213,6 +272,7 @@ func newAnalyticsSummaryTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(
 		&model.XhsScriptAnalyticsEvent{},
+		&model.XhsScriptUserProfile{},
 		&model.XhsScriptNote{},
 		&model.XhsScriptGeneration{},
 		&model.XhsScriptQuotaLedger{},
