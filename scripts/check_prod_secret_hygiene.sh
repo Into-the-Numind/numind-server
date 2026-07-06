@@ -107,6 +107,15 @@ scan_file() {
       if ((k == "tokens" || k ~ /_tokens$/) && v ~ /^[0-9]+$/) return 1
       return 0
     }
+    function is_sensitive_key(key, k) {
+      k = lower(key)
+      if (k ~ /(^|_)public_key(_id)?$/ || k ~ /public_key_id$/) return 0
+      if (k == "alipay_public_key") return 0
+      if (k ~ /(cert|certificate|key)_path$/ || k ~ /_path$/ || k == "path") return 0
+      if (k ~ /(secret|private_key|api_key|access_key|token|password)/) return 1
+      if (k ~ /(^|_)api_[A-Za-z0-9]+_key$/) return 1
+      return 0
+    }
     function is_low_risk_key_value(key, value, k, v) {
       k = lower(key)
       v = strip_quotes(trim(value))
@@ -179,7 +188,7 @@ scan_file() {
         value = strip_inline_comment(value)
         current_key = key
 
-        if (lower(key) ~ /(secret|private_key|api_key|access_key|token|password)/) {
+        if (is_sensitive_key(key)) {
           if (trim(value) == "|" || trim(value) == ">" || trim(value) == "|-" || trim(value) == ">-") {
             in_sensitive_block = 1
             block_key = key

@@ -8,7 +8,7 @@ admin:
   addr: :9099                # 后台管理系统监听地址
 
 jwt:
-  secret: Rtg8BPKNEf2mB4mgvKONGPZZQSaJWNLijxR42qRgq0iBb5 # JWT 签发密钥
+  secret: ${NUMIND_JWT_SECRET}
   expire-hours: 12 # JWT Token 过期时间，单位：小时
 
 # HTTPS 服务器相关配置
@@ -25,7 +25,7 @@ grpc:
 db:
   host: numind-mysql-prod:3306  # 使用 Docker 内部服务名
   username: root # MySQL 用户名(建议授权最小权限集)
-  password: Numind2025 # MySQL 用户密码
+  password: ${NUMIND_DB_PASSWORD}
   database: numind-prod # miniblog 系统所用的数据库名
   max-idle-connections: 100 # MySQL 最大空闲连接数，默认 100
   max-open-connections: 100 # MySQL 最大打开的连接数，默认 100
@@ -44,17 +44,17 @@ log:
 redis:
   host: numind-redis-prod  # 使用 Docker 内部服务名
   port: 6379           # Redis 内部端口
-  password: Numind2025  # Redis 密码
+  password: ${NUMIND_REDIS_PASSWORD}
   db: 3                 # Redis 数据库编号，生产环境使用 3
   pool_size: 10        # Redis 连接池大小
   min_idle_conns: 5    # Redis 最小空闲连接数
 
 wechat:
     app_id: "wxad0aec8b3d3b2ef4"
-    app_secret: "cd5e2a2a919fd6a06c52ae2a15286a36"
+    app_secret: ${NUMIND_WECHAT_APP_SECRET}
     mch_id: "1722456639"
     mch_cert_serial_no: "6D2DCAC8D07269DB7B19F4B644F2BDB1772B983B"
-    mch_api_v3_key: "fda9ba0b25b6822789676ee6dcbc01d2"
+    mch_api_v3_key: ${NUMIND_WECHAT_MCH_API_V3_KEY}
     mch_private_key_path: "/opt/numind/config/cert/apiclient_key.pem"
     wechatpay_cert_path: "/opt/numind/config/cert/pub_key.pem"
     wechatpay_public_key_id: "PUB_KEY_ID_0117224566392025080100292023002202"
@@ -62,7 +62,7 @@ wechat:
 
 alipay:
     app_id: "2021000105656380"
-    private_key: "MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCuyJ+AA5INqLp08h9aXcxSeZFI4QHpAStRer4tEZImQ5Ka0nR5NbdtijaULcLTnJ3nGEFZJvYDQmCdcvoQl0pNEch9eP9nocQbTyf2Xw/wABJDC2cxdGFH1jCC43DBgYZ9O1/e4Ne46dDyZt48gQ1AfJH8yROZnbL6PPt7fnVhj40Lw1HveWwWj24qCzmTg9zq/opDWdgIvHMw1InJAnEvfKMklPsjuqLEVJC/ynfGlPU6yUJ4oO/IRrmAnSkLMS3YLSAA7y1nxBMGhRJbvMdWnL5qfontsJaoBdNi2yddfHspUHX87n0vk433OYBZbIfe3zx69RQjRYifM9uJk3wdAgMBAAECggEAQMRM/mXUUEVu2nkCDz1kwkcUBBqE16+8OpQuNoslShKOF9rWmDfEgc3OjbgrUrjddk3xoTSjwu9s18tMSKuXN9nYHk6g7ejuv2PknhH52Ohd3AQ0uAm1JqaDEW1wUfRKPsuqqe9NYNMbv0dJIMh9faDrg+2K2siqErpYQhnJK14mlAOJM6RJoF60l4g18nZhgbOZZYARnkDc+Qza5Y7GJFVK97on/IHdJICNZbn3TLZCUkTmsGIXSUlz80OQqixfukwks+7CEsfkhI9YI6jFPR7EbwoQpVdjbvw9LiyHw5KMfzOufVHrXstDnncdRmv33oPudA10qFmAZ/kcEIbmTQKBgQDUMqKGaXez6lhUCXL22qF56+YuCIYzaWvLyMLnDqljVEZ26Ay3grP17bRVKfsdggm3QMnLx2kek0m72c+uI9hagPxccGbvHiB4Lb81VDlpYZNiRJ331GAk4MZrSrXsin5uiY240IWZZfaEgMT89ByxZ4OSo+aLfK1u467C2AhIgwKBgQDS3OEyKf7Wub3iyuUCFdM9KYYFtvq9fH3Pr7tSkOxdML2bTST0sqnfIMHBeDy9yGQUguXZKEPu0GTCO3FWdDkWD6WS+mKMAR0v7iRW4NvE3UP0SOQKy2w+pe3zaAAPp90mCs6/vCuSv2RckGk8kohDZZkGmEMYwUMuTfI+G+3G3wKBgQDEWhJf9Anq9qdDI/c4izguXGYDJKohuqQfzqbjLYL6QcpuTu0thglGQO3EfHM8a87XvmC8aspPm5T3+WWeStbxcDeUxgHJtAPxkMtE6qmxZLP/k2TlJaTNmxyfvWM3/TNez3PPl0x4lIwXMhyVwMEoO5PZRkaXvgex+4cEDukjRwKBgBuMQ9d76RFAfvBMNZMKKujIrfu9JhDvXLhvaveke1zJa1wIvhVB6jN+YhHWlYjtzzVmzISMYCOpEiDWBz6WPIcHUEhdcdZ8psWGRTUcd1nG1oPpqfFHFkMxBl9QbQGemqPHsa8W9FJdssztCPKi6i5z7YQRDGMFjLNV95npqCzdAoGBAJr3e/8f2hOrZJyxZj524uf0nE+LT7CObZwJQDWlIaazaz+hFq8KO+YvPFo63FUv/wVScNOG1wLsUO4zxwTfTqMWQ0ELZ0zbecNK2APwaJiBnrF220Wk4TAOoBz4oUfWxKCxVtU8nWMTkIL0hqRnaH8JR3fOwsOCIeZZw8EeQG3G"
+    private_key: ${NUMIND_ALIPAY_PRIVATE_KEY}
     alipay_public_key: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlvmuoFkLHUfogQsdasbAOAPTHk1WiNRiNHvC+2+18xjWY+HfbTJ13m1JMRTuU9Mx/nC6UmhlgkDLhNrOIXmM8A1giyepWaEAVurYc/tvrcIU+pFdpUaIDg8XC2MPgOek7nTtOUQLlzaU2QuoNHZj+bU++Ks7GVXbnGKww7zoGIC+AXbWZuBgJF726DKxWvceKsS1G9mEEfyE5FrZTqFYSEBdfzikstKgYOj+MsXJWQKtl8zjfTnoe4GDEMklwh0fXGwe15z/C7mgSmWy7E0gj6MrHn2Ab5sOyV5Vo86zyv5cB1rC7anQhyHuWvwGL+cZmMbx+86BOsSWHgpRelA50QIDAQAB"
     notify_url: "https://youshu.asia/api/v1/payment/alipay/notify"
     is_production: true
@@ -78,7 +78,7 @@ book:
     use_simplified_processing: true  # 启用简化处理模式
 
 volc:
-  api_key: "716dc07a-b121-4bae-a132-497117f74c7a"
+  api_key: ${NUMIND_VOLC_API_KEY}
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
   model: "deepseek-v3-2-251201"
   temperature: 0.7
@@ -105,22 +105,22 @@ rag:
 # 腾讯云 COS 配置
 cos:
   enabled: true           # 本地默认关闭，改为 true 启用
-  secret_id: "AKID26xnQq2ziEYeVAh3B6oIbwHh06zf7LMA"           # API 密钥 SecretId
-  secret_key: "e4FNTPI90jNzQfjbFgHk3CRaYMxRuFP5"          # API 密钥 SecretKey
+  secret_id: ${NUMIND_COS_SECRET_ID}
+  secret_key: ${NUMIND_COS_SECRET_KEY}
   bucket: "numind-product-1334169463" # BucketName-APPID 形式
   region: "ap-beijing"    # 地域，北京（与实际 Bucket 所在区域一致）
 
 baidu:
-  api_key: "CkJCFXHinJLBsnEFT9lscwZr"
-  secret_key: "YbJZuvunKGhlSwTZpotTKZxkty0h5enU"
+  api_key: ${NUMIND_BAIDU_API_KEY}
+  secret_key: ${NUMIND_BAIDU_SECRET_KEY}
 
 # 阿里云配置 - 优化后的统一配置
 ali:
   # 通用配置（所有服务共用）
-  access_key_id: "LTAI5t7S7S7S7S7S7S7S7S7S" # 阿里云 AccessKey ID
-  access_key_secret: "S7S7S7S7S7S7S7S7S7S7S7S7S7" # 阿里云 AccessKey Secret
+  access_key_id: ${NUMIND_ALI_ACCESS_KEY_ID}
+  access_key_secret: ${NUMIND_ALI_ACCESS_KEY_SECRET}
   workspace_id: "ws-7s7s7s7s7s7s" # 百炼 Workspace ID
-  api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"  # 文本服务API密钥
+  api_key: ${NUMIND_ALI_API_KEY}
   api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"  # 统一API地址
   
   # 文本生成服务
@@ -130,26 +130,26 @@ ali:
   
   # 图像生成服务
   image:
-    api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"  # 图像服务专用API密钥
+    api_key: ${NUMIND_ALI_IMAGE_API_KEY}
     model: "wanx2.1-t2i-turbo"  # 万象图像模型
     timeout: 180s        # 图像生成超时时间
   
   # Stable Diffusion服务
   stable_diffusion:
-    api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"  # 使用相同的API key
+    api_key: ${NUMIND_ALI_STABLE_DIFFUSION_API_KEY}
     model: "wan2.2-t2i-flash"  # SD模型
     timeout: 300s        # SD生成超时时间（5分钟）
 
   # 视觉理解服务
   vision:
-    api_key: "sk-31f08fc72a594fbca4e827d5465a941b"  # 视觉服务专用API密钥
+    api_key: ${NUMIND_ALI_VISION_API_KEY}
     model: "qwen3-vl-flash-2026-01-22" # 视觉模型
     timeout: 180s
 
   # DashVector 向量数据库配置
   dashvector:
     endpoint: "https://vrs-cn-62l4mht1d0001e.dashvector.cn-hangzhou.aliyuncs.com" # DashVector Endpoint
-    api_key: "sk-gMsgxE1A1QzoxexCdtuTaVjuF6w8Z52890CC5F85411F08940FAD61112A032"
+    api_key: ${NUMIND_ALI_DASHVECTOR_API_KEY}
     collection: "sales_rag_prod"
 
 # 卡片配置 - 统一的卡片渲染和分页配置中心
@@ -444,7 +444,7 @@ langfuse:
   enabled: true
   base_url: "http://110.42.221.25:3100"
   public_key: "pk-lf-41015256-bdc3-46aa-92b7-6ffe8de9605a"
-  secret_key: "sk-lf-5a6c2185-d8ce-4903-9930-c9d72a9d0112"
+  secret_key: ${NUMIND_LANGFUSE_SECRET_KEY}
 
 # AiHubMix（OpenAI 兼容聚合平台）— 当前作为 claude-sonnet-4-6 / gemini-3.1-pro-preview /
 # gpt-5.4 / deepseek-v3.2 的主路由（priority=5），DMXAPI 作 failover（priority=10）。
@@ -452,5 +452,5 @@ langfuse:
 # 未来 ai-service-manager 的 SyncProviderCredentials 实装后会读取此配置刷新 DB。
 aihubmix:
   base_url: "https://aihubmix.com/v1"
-  api_key: "sk-vduyVKfBuiI5p4P5B030A80938924aFe87Af360473612f68"
+  api_key: ${NUMIND_AIHUBMIX_API_KEY}
 

@@ -70,7 +70,7 @@ assert_no_fixture_secret_leak() {
   local label="$1"
   local out="$2"
 
-  if grep -Eq 'super-secret|sk-test|AKIDEXAMPLE|PRIVATE KEY MATERIAL|extra-secret|plain-secret|slash-secret|real-secret-token|access-token-secret' "$out"; then
+  if grep -Eq 'super-secret|sk-test|AKIDEXAMPLE|PRIVATE KEY MATERIAL|extra-secret|plain-secret|slash-secret|real-secret-token|access-token-secret|wechat-v3-secret' "$out"; then
     echo "FAIL: $label leaked fixture secret material"
     cat "$out"
     fail=1
@@ -102,6 +102,28 @@ write_fixture "$PLACEHOLDER" \
   "  private_key: TODO"
 run_check "$PLACEHOLDER" "$TMP/placeholder.out" ENV=prod
 assert_pass "empty values, env references, and placeholders are allowed" "$?" "$TMP/placeholder.out"
+
+API_V3_KEY_PLACEHOLDER="$TMP/api-v3-key-placeholder.yaml"
+write_fixture "$API_V3_KEY_PLACEHOLDER" \
+  "wechat:" \
+  "  mch_api_v3_key: \${NUMIND_WECHAT_MCH_API_V3_KEY}"
+run_check "$API_V3_KEY_PLACEHOLDER" "$TMP/api-v3-key-placeholder.out" ENV=prod
+assert_pass "api_v3_key env placeholder is allowed" "$?" "$TMP/api-v3-key-placeholder.out"
+
+API_V3_KEY_SECRET="$TMP/api-v3-key-secret.yaml"
+write_fixture "$API_V3_KEY_SECRET" \
+  "wechat:" \
+  "  mch_api_v3_key: wechat-v3-secret-value" \
+  "  api_v3_key: wechat-v3-secret-alias" \
+  "  provider_api_secret_key: wechat-v3-secret-provider" \
+  "  wechatpay_public_key_id: PUB_KEY_ID_0123456789" \
+  "alipay:" \
+  "  alipay_public_key: public-key-material"
+run_check "$API_V3_KEY_SECRET" "$TMP/api-v3-key-secret.out" ENV=prod
+api_v3_key_secret_rc=$?
+assert_fail "api_v3_key style values are rejected" "$api_v3_key_secret_rc" "$TMP/api-v3-key-secret.out" "secret-key-value"
+assert_fail "mch_api_v3_key is reported as sensitive" "$api_v3_key_secret_rc" "$TMP/api-v3-key-secret.out" "key=mch_api_v3_key"
+assert_no_fixture_secret_leak "api_v3_key rejection" "$TMP/api-v3-key-secret.out"
 
 TOKEN_COUNTS="$TMP/token-counts.yaml"
 write_fixture "$TOKEN_COUNTS" \
