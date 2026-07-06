@@ -10,11 +10,13 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RELEASE_SH="$SCRIPT_DIR/release.sh"
+DEPLOY_REMOTE_SH="$SCRIPT_DIR/deploy-remote.sh"
 SECRET_HYGIENE_SH="$(cd "$SCRIPT_DIR/.." && pwd)/check_prod_secret_hygiene.sh"
 
 die() { echo "test setup error: $1" >&2; exit 2; }
 
 [ -f "$RELEASE_SH" ] || die "release.sh not found at $RELEASE_SH"
+[ -f "$DEPLOY_REMOTE_SH" ] || die "deploy-remote.sh not found at $DEPLOY_REMOTE_SH"
 [ -f "$SECRET_HYGIENE_SH" ] || die "check_prod_secret_hygiene.sh not found at $SECRET_HYGIENE_SH"
 
 TMP="$(mktemp -d)" || die "mktemp"
@@ -369,6 +371,55 @@ do
   fi
 done
 
+DEPLOY_REMOTE_BIN="$TMP/deploy-remote-bin"
+mkdir -p "$DEPLOY_REMOTE_BIN" || die "mkdir deploy-remote bin"
+cat > "$DEPLOY_REMOTE_BIN/docker" <<'DOCKER' || die "write fake deploy-remote docker"
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_DOCKER_RUN_LOG:?}"
+case "${1:-}" in
+  inspect) exit 1 ;;
+  pull|network|rm|image|images|rmi|ps|logs) exit 0 ;;
+  run) exit 0 ;;
+  *) exit 0 ;;
+esac
+DOCKER
+chmod +x "$DEPLOY_REMOTE_BIN/docker" || die "chmod fake deploy-remote docker"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$DEPLOY_REMOTE_BIN/curl" || die "write fake deploy-remote curl"
+chmod +x "$DEPLOY_REMOTE_BIN/curl" || die "chmod fake deploy-remote curl"
+
+ADMIN_SECRETS_FILE="$TMP/admin-prod-secrets.env"
+printf 'NUMIND_FAKE_SECRET=\n' > "$ADMIN_SECRETS_FILE" || die "write fake admin secrets file"
+ADMIN_DOCKER_RUN_LOG="$TMP/admin-docker-run.log"
+(
+  PATH="$DEPLOY_REMOTE_BIN:$PATH" \
+  FAKE_DOCKER_RUN_LOG="$ADMIN_DOCKER_RUN_LOG" \
+  ENV=prod TARGET=admin IMAGE="example.invalid/numind-admin:prod-test" \
+  SECRETS_FILE="$ADMIN_SECRETS_FILE" \
+    bash "$DEPLOY_REMOTE_SH"
+) > "$TMP/admin-deploy-remote.out" 2>&1
+admin_deploy_remote_rc=$?
+
+if [ "$admin_deploy_remote_rc" -eq 0 ]; then
+  echo "PASS: prod admin deploy-remote succeeds with fake docker"
+else
+  echo "FAIL: prod admin deploy-remote should succeed with fake docker (rc=$admin_deploy_remote_rc)"
+  fail=1
+fi
+
+if grep -Fq -- "--env-file $ADMIN_SECRETS_FILE" "$ADMIN_DOCKER_RUN_LOG"; then
+  echo "PASS: prod admin docker run includes --env-file"
+else
+  echo "FAIL: prod admin docker run missing --env-file"
+  fail=1
+fi
+
+if grep -Fq "Secrets: $ADMIN_SECRETS_FILE (loaded)" "$TMP/admin-deploy-remote.out"; then
+  echo "PASS: prod admin deploy output reports loaded secrets env-file"
+else
+  echo "FAIL: prod admin deploy output missing loaded secrets env-file"
+  fail=1
+fi
+
 echo
 if [ "$fail" -ne 0 ]; then
   echo "---- tagged dirty release output ----"
@@ -385,6 +436,10 @@ if [ "$fail" -ne 0 ]; then
   cat "$TMP/deploy-only.out" 2>/dev/null || true
   echo "---- qa compatibility output ----"
   cat "$TMP/qa-compat.out" 2>/dev/null || true
+  echo "---- admin deploy-remote output ----"
+  cat "$TMP/admin-deploy-remote.out" 2>/dev/null || true
+  echo "---- admin docker run log ----"
+  cat "$ADMIN_DOCKER_RUN_LOG" 2>/dev/null || true
   echo "--------------------------------------"
   echo "release preflight test FAILED"
   exit 1

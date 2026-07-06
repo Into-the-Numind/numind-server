@@ -30,6 +30,15 @@ run_check() {
   ) > "$out" 2>&1
 }
 
+run_check_raw() {
+  local out="$1"
+  shift
+  (
+    cd "$TMP" || exit 2
+    env "$@" bash "$CHECK_SH"
+  ) > "$out" 2>&1
+}
+
 assert_pass() {
   local label="$1"
   local rc="$2"
@@ -109,6 +118,10 @@ write_fixture "$API_V3_KEY_PLACEHOLDER" \
   "  mch_api_v3_key: \${NUMIND_WECHAT_MCH_API_V3_KEY}"
 run_check "$API_V3_KEY_PLACEHOLDER" "$TMP/api-v3-key-placeholder.out" ENV=prod
 assert_pass "api_v3_key env placeholder is allowed" "$?" "$TMP/api-v3-key-placeholder.out"
+
+run_check_raw "$TMP/missing-override.out" ENV=prod CONFIG_FILE="$TMP/missing.yaml" ALLOW_PROD_CONFIG_SECRETS=1
+missing_override_rc=$?
+assert_fail "missing config fails even with emergency override" "$missing_override_rc" "$TMP/missing-override.out" "config file not found"
 
 API_V3_KEY_SECRET="$TMP/api-v3-key-secret.yaml"
 write_fixture "$API_V3_KEY_SECRET" \
@@ -223,6 +236,22 @@ run_check "$PRIVATE_KEY" "$TMP/private-key.out" ENV=prod
 private_key_rc=$?
 assert_fail "inline private key material is rejected" "$private_key_rc" "$TMP/private-key.out" "pem-private-key"
 assert_no_fixture_secret_leak "private key rejection" "$TMP/private-key.out"
+
+PRIVATE_KEY_PATH="$TMP/private-key-path.yaml"
+write_fixture "$PRIVATE_KEY_PATH" \
+  "signing:" \
+  "  private_key: /opt/numind/prod/certs/apiclient_key.pem"
+run_check "$PRIVATE_KEY_PATH" "$TMP/private-key-path.out" ENV=prod
+assert_pass "private_key path is allowed" "$?" "$TMP/private-key-path.out"
+
+PRIVATE_KEY_STRING="$TMP/private-key-string.yaml"
+write_fixture "$PRIVATE_KEY_STRING" \
+  "signing:" \
+  "  private_key: plain-secret-private-key-value"
+run_check "$PRIVATE_KEY_STRING" "$TMP/private-key-string.out" ENV=prod
+private_key_string_rc=$?
+assert_fail "private_key plain string is rejected" "$private_key_string_rc" "$TMP/private-key-string.out" "secret-key-value"
+assert_no_fixture_secret_leak "private_key plain string rejection" "$TMP/private-key-string.out"
 
 AKID="$TMP/akid.yaml"
 write_fixture "$AKID" \

@@ -42,7 +42,7 @@ scan_file() {
 
   if [[ ! -f "${path}" ]]; then
     echo "ERROR: prod-secret-hygiene: config file not found: ${rel_path}" >&2
-    return 1
+    return 2
   fi
 
   awk -v file="${rel_path}" '
@@ -124,6 +124,8 @@ scan_file() {
       if (k == "wechatpay_cert_path") return 1
       if (k == "wechatpay_public_key_id") return 1
       if (k ~ /public_key_id$/) return 1
+      if (k == "private_key" &&
+          (v ~ /^\// || v ~ /^\.\.?\// || v ~ /\// || v ~ /\.(pem|key|crt|cert|cer|p12|pfx)$/)) return 1
       if ((k ~ /(cert|certificate|key)_path$/ || k ~ /_path$/ || k == "path") &&
           (v ~ /^\// || v ~ /^\.\.?\// || v ~ /\// || v ~ /\.(pem|key|crt|cert|cer|p12|pfx)$/)) return 1
       return 0
@@ -222,12 +224,18 @@ if [[ -n "${EXTRA_CONFIG_FILES:-}" ]]; then
 fi
 
 scan_rc=0
+scan_fatal_rc=0
 scan_output=""
 for scan_path in "${SCAN_FILES[@]}"; do
   if file_output="$(scan_file "${scan_path}")"; then
     :
   else
-    scan_rc=1
+    file_rc=$?
+    if [[ "${file_rc}" -ge 2 ]]; then
+      scan_fatal_rc="${file_rc}"
+    else
+      scan_rc=1
+    fi
   fi
   if [[ -n "${file_output:-}" ]]; then
     if [[ -n "${scan_output}" ]]; then
@@ -237,7 +245,13 @@ for scan_path in "${SCAN_FILES[@]}"; do
     fi
   fi
   unset file_output
+  unset file_rc
 done
+
+if [[ "${scan_fatal_rc}" -ne 0 ]]; then
+  printf '%s\n' "${scan_output}" >&2
+  exit "${scan_fatal_rc}"
+fi
 
 if [[ "${scan_rc}" -ne 0 ]]; then
   if [[ "${ALLOW_PROD_CONFIG_SECRETS:-0}" == "1" ]]; then
