@@ -26,6 +26,8 @@ import (
 // 移植自 SOP PdfController，支持 Python 增强解析和文本清洗
 type DocumentParser struct{}
 
+const documentParserOutputLimit = 2 * 1024 * 1024
+
 func NewDocumentParser() *DocumentParser {
 	return &DocumentParser{}
 }
@@ -64,7 +66,7 @@ func (p *DocumentParser) Parse(ctx context.Context, file io.Reader, filename str
 
 	switch ext {
 	case ".pdf":
-		text, _, err = p.extractTextFromPDF(data)
+		text, _, err = p.extractTextFromPDF(ctx, data)
 		if err != nil {
 			return "", fmt.Errorf("PDF parsing failed: %w", err)
 		}
@@ -72,21 +74,21 @@ func (p *DocumentParser) Parse(ctx context.Context, file io.Reader, filename str
 		text = p.formatPdfText(text)
 
 	case ".docx":
-		text, err = p.extractTextFromDOCX(data)
+		text, err = p.extractTextFromDOCX(ctx, data)
 		if err != nil {
 			return "", fmt.Errorf("DOCX parsing failed: %w", err)
 		}
 		text = p.formatText(text)
 
 	case ".doc":
-		text, err = p.extractTextFromDOC(data)
+		text, err = p.extractTextFromDOC(ctx, data)
 		if err != nil {
 			return "", fmt.Errorf("DOC parsing failed: %w", err)
 		}
 		text = p.formatText(text)
 
 	case ".rtf":
-		text, err = p.extractTextFromRTF(data)
+		text, err = p.extractTextFromRTF(ctx, data)
 		if err != nil {
 			return "", fmt.Errorf("RTF parsing failed: %w", err)
 		}
@@ -103,7 +105,7 @@ func (p *DocumentParser) Parse(ctx context.Context, file io.Reader, filename str
 
 	case ".xlsx", ".pptx":
 		// Excel / PowerPoint 通过 Python MarkItDown 解析
-		text, _, err = p.runPythonParser(data, ext)
+		text, _, err = p.runPythonParser(ctx, data, ext)
 		if err != nil {
 			return "", fmt.Errorf("%s parsing failed: %w", ext, err)
 		}
@@ -127,9 +129,9 @@ func (p *DocumentParser) Parse(ctx context.Context, file io.Reader, filename str
 
 // extractTextFromPDF 尝试使用 Python 增强解析 (MarkItDown)，如果失败则降级到 go-fitz
 // 调用链: Go -> Python脚本(document_parser.py) -> MarkItDown -> (失败) -> go-fitz
-func (p *DocumentParser) extractTextFromPDF(data []byte) (string, int, error) {
+func (p *DocumentParser) extractTextFromPDF(ctx context.Context, data []byte) (string, int, error) {
 	// 1. 尝试使用 Python 增强解析 (MarkItDown 模式，支持多格式统一解析)
-	text, pages, err := p.extractTextFromPDFEnhanced(data)
+	text, pages, err := p.extractTextFromPDFEnhanced(ctx, data)
 	if err == nil && text != "" {
 		log.Infow("Successfully extracted PDF using enhanced Python parser", "pages", pages)
 		return text, pages, nil
@@ -143,9 +145,12 @@ func (p *DocumentParser) extractTextFromPDF(data []byte) (string, int, error) {
 // runPythonParser 通用 Python 文档解析入口。
 // ext 必须以 "." 开头（如 ".pdf" / ".doc" / ".xlsx"），Python 端按扩展名
 // 分派到对应解析器（.doc → antiword，其他 → MarkItDown）。
-func (p *DocumentParser) runPythonParser(data []byte, ext string) (string, int, error) {
+func (p *DocumentParser) runPythonParser(ctx context.Context, data []byte, ext string) (string, int, error) {
 	if len(ext) == 0 || ext[0] != '.' {
 		return "", 0, fmt.Errorf("ext must start with '.', got %q", ext)
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	tmpFile, err := os.CreateTemp("", "upload_*"+ext)
@@ -171,12 +176,17 @@ func (p *DocumentParser) runPythonParser(data []byte, ext string) (string, int, 
 		}
 	}
 
-	cmd := exec.Command("python3", scriptPath, tmpFile.Name())
-	var stdout, stderr strings.Builder
+	cmd := exec.CommandContext(ctx, "python3", scriptPath, tmpFile.Name())
+	var stdout, stderr limitedStringWriter
+	stdout.limit = documentParserOutputLimit
+	stderr.limit = documentParserOutputLimit / 4
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return "", 0, fmt.Errorf("python script execution cancelled: %w", ctx.Err())
+		}
 		return "", 0, fmt.Errorf("python script execution failed: %v, stderr: %s", err, stderr.String())
 	}
 
@@ -200,8 +210,8 @@ func (p *DocumentParser) runPythonParser(data []byte, ext string) (string, int, 
 }
 
 // extractTextFromPDFEnhanced 调用 Python MarkItDown 解析 PDF（保持向后兼容的入口名）
-func (p *DocumentParser) extractTextFromPDFEnhanced(data []byte) (string, int, error) {
-	return p.runPythonParser(data, ".pdf")
+func (p *DocumentParser) extractTextFromPDFEnhanced(ctx context.Context, data []byte) (string, int, error) {
+	return p.runPythonParser(ctx, data, ".pdf")
 }
 
 // extractTextFromPDFLegacy 使用原本的 go-fitz 提取 PDF 文本（作为降级方案）
@@ -483,9 +493,9 @@ func (p *DocumentParser) formatText(text string) string {
 
 // extractTextFromDOCX 从DOCX文件中提取文本，优先使用 Python 增强解析 (MarkItDown)
 // 调用链: Go -> Python脚本(document_parser.py) -> MarkItDown -> (失败) -> XML解析
-func (p *DocumentParser) extractTextFromDOCX(data []byte) (string, error) {
+func (p *DocumentParser) extractTextFromDOCX(ctx context.Context, data []byte) (string, error) {
 	// 使用 MarkItDown 进行高质量解析
-	text, err := p.extractTextFromDOCXEnhanced(data)
+	text, err := p.extractTextFromDOCXEnhanced(ctx, data)
 	if err == nil && text != "" {
 		log.Infow("Successfully extracted DOCX using MarkItDown")
 		return text, nil
@@ -497,55 +507,9 @@ func (p *DocumentParser) extractTextFromDOCX(data []byte) (string, error) {
 
 // extractTextFromDOCXEnhanced 使用外部 Python 脚本进行 DOCX 高质量解析
 // 脚本内部使用 MarkItDown 库统一处理文档解析
-func (p *DocumentParser) extractTextFromDOCXEnhanced(data []byte) (string, error) {
-	// 创建临时文件 - 注意使用 .docx 后缀，这样 MarkItDown 才能正确识别文件类型
-	tmpFile, err := os.CreateTemp("", "docx_upload_*.docx")
-	if err != nil {
-		return "", fmt.Errorf("failed to create temp file: %w", err)
-	}
-	defer os.Remove(tmpFile.Name())
-	defer tmpFile.Close()
-
-	if _, err := tmpFile.Write(data); err != nil {
-		return "", fmt.Errorf("failed to write data to temp file: %w", err)
-	}
-
-	// 执行 Python 脚本 (scripts/document_parser.py)
-	// 该脚本使用 MarkItDown 解析文档
-	scriptPath := "scripts/document_parser.py"
-	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-		// 尝试 Docker 容器内的常见路径
-		scriptPath = "/app/scripts/document_parser.py"
-		if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-			return "", fmt.Errorf("python parser script not found")
-		}
-	}
-
-	cmd := exec.Command("python3", scriptPath, tmpFile.Name())
-	var stdout, stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("python script execution failed: %v, stderr: %s", err, stderr.String())
-	}
-
-	// 解析输出的 JSON
-	var result struct {
-		Success bool   `json:"success"`
-		Content string `json:"content"`
-		Error   string `json:"error"`
-	}
-
-	if err := json.Unmarshal([]byte(stdout.String()), &result); err != nil {
-		return "", fmt.Errorf("failed to parse python output: %w", err)
-	}
-
-	if !result.Success {
-		return "", fmt.Errorf("python extraction error: %s", result.Error)
-	}
-
-	return result.Content, nil
+func (p *DocumentParser) extractTextFromDOCXEnhanced(ctx context.Context, data []byte) (string, error) {
+	content, _, err := p.runPythonParser(ctx, data, ".docx")
+	return content, err
 }
 
 // extractTextFromDOCXLegacy 原有的 DOCX XML 解析逻辑
@@ -644,13 +608,34 @@ func (p *DocumentParser) parseDOCXXMLWithParser(xmlData []byte) (string, error) 
 }
 
 // extractTextFromDOC 使用 Python + antiword 解析旧版 DOC 文件
-func (p *DocumentParser) extractTextFromDOC(data []byte) (string, error) {
-	content, _, err := p.runPythonParser(data, ".doc")
+func (p *DocumentParser) extractTextFromDOC(ctx context.Context, data []byte) (string, error) {
+	content, _, err := p.runPythonParser(ctx, data, ".doc")
 	return content, err
 }
 
 // extractTextFromRTF 通过 Python MarkItDown 解析 RTF 文件
-func (p *DocumentParser) extractTextFromRTF(data []byte) (string, error) {
-	content, _, err := p.runPythonParser(data, ".rtf")
+func (p *DocumentParser) extractTextFromRTF(ctx context.Context, data []byte) (string, error) {
+	content, _, err := p.runPythonParser(ctx, data, ".rtf")
 	return content, err
+}
+
+type limitedStringWriter struct {
+	strings.Builder
+	limit     int
+	truncated bool
+}
+
+func (w *limitedStringWriter) Write(p []byte) (int, error) {
+	if w.limit <= 0 || w.Builder.Len() >= w.limit {
+		w.truncated = true
+		return len(p), nil
+	}
+	remaining := w.limit - w.Builder.Len()
+	if len(p) > remaining {
+		w.truncated = true
+		_, _ = w.Builder.Write(p[:remaining])
+		return len(p), nil
+	}
+	_, _ = w.Builder.Write(p)
+	return len(p), nil
 }

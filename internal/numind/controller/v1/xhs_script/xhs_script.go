@@ -2,8 +2,10 @@ package xhs_script
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -20,8 +22,11 @@ import (
 )
 
 const (
-	xhsScriptProfileExtractMaxFileSize = 10 * 1024 * 1024
-	xhsScriptProfileExtractMaxTextSize = 100000
+	xhsScriptProfileExtractMaxFileSize    = 10 * 1024 * 1024
+	xhsScriptProfileExtractMaxBodySize    = xhsScriptProfileExtractMaxFileSize + 512*1024
+	xhsScriptProfileExtractMaxTextSize    = 100000
+	xhsScriptProfileExtractParserTimeout  = 20 * time.Second
+	xhsScriptProfileExtractSupportedTypes = ".txt, .md, .pdf, .doc, .docx"
 )
 
 type Controller struct {
@@ -138,6 +143,12 @@ func (ctl *Controller) ExtractProfileText(c *gin.Context) {
 		return
 	}
 
+	if c.Request.ContentLength > xhsScriptProfileExtractMaxBodySize {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("文件大小超过限制（最大%dMB）", xhsScriptProfileExtractMaxFileSize/(1024*1024)), nil)
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, xhsScriptProfileExtractMaxBodySize)
+
 	file, err := c.FormFile("file")
 	if err != nil {
 		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("请上传文件"), nil)
@@ -149,6 +160,10 @@ func (ctl *Controller) ExtractProfileText(c *gin.Context) {
 	}
 	if file.Size > xhsScriptProfileExtractMaxFileSize {
 		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("文件大小超过限制（最大%dMB）", xhsScriptProfileExtractMaxFileSize/(1024*1024)), nil)
+		return
+	}
+	if !isAllowedProfileExtractFile(file.Filename) {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("仅支持 %s 文件", xhsScriptProfileExtractSupportedTypes), nil)
 		return
 	}
 
@@ -173,9 +188,11 @@ func (ctl *Controller) ExtractProfileText(c *gin.Context) {
 		return
 	}
 
-	text, err := parser.NewDocumentParser().Parse(c.Request.Context(), bytes.NewReader(fileData), file.Filename)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), xhsScriptProfileExtractParserTimeout)
+	defer cancel()
+	text, err := parser.NewDocumentParser().Parse(ctx, bytes.NewReader(fileData), file.Filename)
 	if err != nil {
-		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("文档文本提取失败: %s", err.Error()), nil)
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("文档文本提取失败，请确认文件未加密且格式正确"), nil)
 		return
 	}
 	text = truncateUTF8Bytes(sanitizeExtractedProfileText(text), xhsScriptProfileExtractMaxTextSize)
@@ -188,6 +205,16 @@ func (ctl *Controller) ExtractProfileText(c *gin.Context) {
 		"text":        text,
 		"text_length": len(text),
 	})
+}
+
+func isAllowedProfileExtractFile(filename string) bool {
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(filename)))
+	switch ext {
+	case ".txt", ".md", ".pdf", ".doc", ".docx":
+		return true
+	default:
+		return false
+	}
 }
 
 func (ctl *Controller) ExtToken(c *gin.Context) {

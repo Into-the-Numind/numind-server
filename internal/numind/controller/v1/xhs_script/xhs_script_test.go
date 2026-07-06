@@ -6,8 +6,10 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -119,7 +121,7 @@ func TestXhsScriptAdminMetricsAliasRejectsNonAdmin(t *testing.T) {
 }
 
 func TestXhsScriptProfileExtractText(t *testing.T) {
-	router, _, token, _ := newXhsScriptControllerTestRouter(t)
+	router, _, token, userID := newXhsScriptControllerTestRouter(t)
 	const path = "/v1/xhs-script/profile/extract-text"
 	const profileText = "产品定位：给创业者做短视频增长顾问"
 
@@ -145,6 +147,13 @@ func TestXhsScriptProfileExtractText(t *testing.T) {
 		assert.NotEqual(t, http.StatusOK, resp.Code)
 	})
 
+	t.Run("rejects extension token", func(t *testing.T) {
+		extToken := signControllerTestTokenWithScope(t, userID, xhsscriptbiz.ExtTokenScope)
+		resp := doXhsScriptMultipartRequest(t, router, path, extToken, "intro.txt", []byte(profileText))
+
+		assert.NotEqual(t, http.StatusOK, resp.Code)
+	})
+
 	t.Run("rejects missing file", func(t *testing.T) {
 		body := &bytes.Buffer{}
 		writer := multipart.NewWriter(body)
@@ -156,6 +165,63 @@ func TestXhsScriptProfileExtractText(t *testing.T) {
 		router.ServeHTTP(w, req)
 
 		assert.NotEqual(t, http.StatusOK, w.Code)
+	})
+
+	t.Run("rejects empty file", func(t *testing.T) {
+		resp := doXhsScriptMultipartRequest(t, router, path, token, "intro.txt", nil)
+
+		assert.NotEqual(t, http.StatusOK, resp.Code)
+	})
+
+	t.Run("rejects unsupported extension before parsing", func(t *testing.T) {
+		resp := doXhsScriptMultipartRequest(t, router, path, token, "intro.html", []byte(profileText))
+
+		assert.NotEqual(t, http.StatusOK, resp.Code)
+		var body apiResponse
+		require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &body))
+		assert.Contains(t, body.Message, "仅支持")
+		assert.NotContains(t, body.Message, "intro.html")
+	})
+
+	t.Run("rejects oversized file", func(t *testing.T) {
+		resp := doXhsScriptMultipartRequest(t, router, path, token, "intro.txt", bytes.Repeat([]byte("x"), xhsScriptProfileExtractMaxFileSize+1))
+
+		assert.NotEqual(t, http.StatusOK, resp.Code)
+		var body apiResponse
+		require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &body))
+		assert.Contains(t, body.Message, "文件大小超过限制")
+	})
+
+	t.Run("sanitizes utf8 and truncates text", func(t *testing.T) {
+		raw := append([]byte("产品\xef\xbf\xbd"), []byte(strings.Repeat("好", xhsScriptProfileExtractMaxTextSize/3+10))...)
+		raw = append(raw, 0xff, 0xfe)
+		resp := doXhsScriptMultipartRequest(t, router, path, token, "intro.txt", raw)
+
+		require.Equal(t, http.StatusOK, resp.Code)
+		var body apiResponse
+		require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &body))
+		require.Equal(t, 0, body.Code)
+		var data struct {
+			Text       string `json:"text"`
+			TextLength int    `json:"text_length"`
+		}
+		require.NoError(t, json.Unmarshal(body.Data, &data))
+		assert.True(t, utf8.ValidString(data.Text))
+		assert.LessOrEqual(t, len(data.Text), xhsScriptProfileExtractMaxTextSize)
+		assert.NotContains(t, data.Text, string(utf8.RuneError))
+		assert.Equal(t, len(data.Text), data.TextLength)
+	})
+
+	t.Run("does not expose parser errors", func(t *testing.T) {
+		resp := doXhsScriptMultipartRequest(t, router, path, token, "broken.pdf", []byte("not a pdf"))
+
+		assert.NotEqual(t, http.StatusOK, resp.Code)
+		var body apiResponse
+		require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &body))
+		assert.Contains(t, body.Message, "文档文本提取失败")
+		assert.NotContains(t, body.Message, "broken.pdf")
+		assert.NotContains(t, body.Message, "python")
+		assert.NotContains(t, body.Message, "/")
 	})
 }
 
@@ -239,11 +305,19 @@ func doXhsScriptMultipartRequest(t *testing.T, router *gin.Engine, path, token, 
 }
 
 func signControllerTestToken(t *testing.T, userID uint) string {
+	return signControllerTestTokenWithScope(t, userID, "")
+}
+
+func signControllerTestTokenWithScope(t *testing.T, userID uint, scope string) string {
 	t.Helper()
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+	claims := jwt.MapClaims{
 		"user_id": userID,
 		"exp":     time.Now().Add(time.Hour).Unix(),
-	})
+	}
+	if scope != "" {
+		claims["scope"] = scope
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := token.SignedString([]byte(viper.GetString("jwt.secret")))
 	require.NoError(t, err)
 	return signed
