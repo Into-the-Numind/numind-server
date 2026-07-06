@@ -69,6 +69,8 @@ if [ "$ENV" = "prod" ]; then
     --exclude='configs/cert/'
     --exclude='configs/ssl/'
   )
+
+  ENV="$ENV" "${REPO_ROOT}/scripts/check_prod_secret_hygiene.sh"
 fi
 
 echo "==============================================="

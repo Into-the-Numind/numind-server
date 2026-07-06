@@ -160,6 +160,24 @@ check_file_contains() {
   fi
 }
 
+check_prod_secret_hygiene() {
+  local output rc
+
+  set +e
+  output="$(ENV="${ENV}" CONFIG_FILE="${CONFIG_FILE}" "${REPO_ROOT}/scripts/check_prod_secret_hygiene.sh" 2>&1)"
+  rc=$?
+  set -e
+
+  if [[ "${rc}" -eq 0 ]]; then
+    ok "prod config secret hygiene gate passed"
+    printf '%s\n' "${output}"
+    return
+  fi
+
+  not_ok "prod config secret hygiene gate failed (rc=${rc}); move prod secrets to runtime env-file"
+  printf '%s\n' "${output}"
+}
+
 read_wechat_field() {
   local field="$1"
   local var_name="$2"
@@ -269,6 +287,8 @@ if [[ -f "${CONFIG_PATH}" ]]; then
 else
   not_ok "config file missing: ${CONFIG_FILE}"
 fi
+
+check_prod_secret_hygiene
 
 wechat_app_id=""
 wechat_mch_id=""

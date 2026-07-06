@@ -10,10 +10,12 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RELEASE_SH="$SCRIPT_DIR/release.sh"
+SECRET_HYGIENE_SH="$(cd "$SCRIPT_DIR/.." && pwd)/check_prod_secret_hygiene.sh"
 
 die() { echo "test setup error: $1" >&2; exit 2; }
 
 [ -f "$RELEASE_SH" ] || die "release.sh not found at $RELEASE_SH"
+[ -f "$SECRET_HYGIENE_SH" ] || die "check_prod_secret_hygiene.sh not found at $SECRET_HYGIENE_SH"
 
 TMP="$(mktemp -d)" || die "mktemp"
 trap 'rm -rf "$TMP"' EXIT
@@ -42,12 +44,22 @@ make_repo() {
   local repo="$1"
   mkdir -p "$repo/scripts/cicd" || die "mkdir repo dirs"
   cp "$RELEASE_SH" "$repo/scripts/cicd/release.sh" || die "copy release.sh"
+  cp "$SECRET_HYGIENE_SH" "$repo/scripts/check_prod_secret_hygiene.sh" || die "copy check_prod_secret_hygiene.sh"
   (
     cd "$repo" || exit 2
+    cat > config_prod.yaml <<'YAML' || exit 2
+wechat:
+  notify_url: https://example.com/api/v1/payment/wechat/notify
+  mch_private_key_path: /opt/numind/prod/certs/apiclient_key.pem
+  wechatpay_cert_path: /opt/numind/prod/certs/wechatpay.pem
+  wechatpay_public_key_id: PUB_KEY_ID_0123456789
+llm:
+  api_key: ${NUMIND_LLM_API_KEY}
+YAML
     git init -q || exit 2
     git config user.email test@example.com || exit 2
     git config user.name "Release Preflight Test" || exit 2
-    git add scripts/cicd/release.sh || exit 2
+    git add scripts/cicd/release.sh scripts/check_prod_secret_hygiene.sh config_prod.yaml || exit 2
     git commit -q -m "seed release script" || exit 2
   ) || die "setup temporary git repo"
 }
