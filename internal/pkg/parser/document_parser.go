@@ -136,6 +136,9 @@ func (p *DocumentParser) extractTextFromPDF(ctx context.Context, data []byte) (s
 		log.Infow("Successfully extracted PDF using enhanced Python parser", "pages", pages)
 		return text, pages, nil
 	}
+	if ctx != nil && ctx.Err() != nil {
+		return "", 0, ctx.Err()
+	}
 
 	// 2. 如果增强解析失败或未安装环境，降级到原有的 go-fitz 解析
 	log.Warnw("Enhanced PDF parsing failed, falling back to legacy go-fitz", "error", err)
@@ -499,6 +502,9 @@ func (p *DocumentParser) extractTextFromDOCX(ctx context.Context, data []byte) (
 	if err == nil && text != "" {
 		log.Infow("Successfully extracted DOCX using MarkItDown")
 		return text, nil
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return "", ctx.Err()
 	}
 
 	log.Warnw("MarkItDown DOCX parsing failed, falling back to legacy XML parser", "error", err)

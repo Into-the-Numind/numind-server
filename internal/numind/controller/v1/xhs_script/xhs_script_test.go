@@ -192,6 +192,15 @@ func TestXhsScriptProfileExtractText(t *testing.T) {
 		assert.Contains(t, body.Message, "文件大小超过限制")
 	})
 
+	t.Run("rejects oversized request body before multipart parsing", func(t *testing.T) {
+		resp := doXhsScriptMultipartRequest(t, router, path, token, "intro.txt", bytes.Repeat([]byte("x"), xhsScriptProfileExtractMaxBodySize+1))
+
+		assert.NotEqual(t, http.StatusOK, resp.Code)
+		var body apiResponse
+		require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &body))
+		assert.Contains(t, body.Message, "文件大小超过限制")
+	})
+
 	t.Run("sanitizes utf8 and truncates text", func(t *testing.T) {
 		raw := append([]byte("产品\xef\xbf\xbd"), []byte(strings.Repeat("好", xhsScriptProfileExtractMaxTextSize/3+10))...)
 		raw = append(raw, 0xff, 0xfe)
