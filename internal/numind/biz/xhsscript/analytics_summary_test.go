@@ -171,7 +171,7 @@ func TestTrackEventsDoesNotAcceptReservedBackendEventIDPrefix(t *testing.T) {
 	ctx := context.Background()
 	userID := uint(12)
 
-	err := svc.TrackEvents(ctx, &userID, []AnalyticsEventInput{
+	accepted, err := svc.TrackEvents(ctx, &userID, []AnalyticsEventInput{
 		{
 			EventID:   backendEventIDPrefix + ":order_created:spoofed",
 			EventName: "order_created",
@@ -179,6 +179,7 @@ func TestTrackEventsDoesNotAcceptReservedBackendEventIDPrefix(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
+	assert.Equal(t, 1, accepted)
 
 	var event model.XhsScriptAnalyticsEvent
 	require.NoError(t, db.Where("event_name = ?", "order_created").First(&event).Error)
@@ -222,7 +223,7 @@ func TestTrackEventsRedactsSensitivePropertiesAndLimitsPayload(t *testing.T) {
 		props[fmt.Sprintf("extra_%02d", i)] = "safe"
 	}
 
-	err := svc.TrackEvents(ctx, &userID, []AnalyticsEventInput{
+	accepted, err := svc.TrackEvents(ctx, &userID, []AnalyticsEventInput{
 		{
 			EventID:    "evt_redact",
 			EventName:  "generation_fail",
@@ -230,6 +231,7 @@ func TestTrackEventsRedactsSensitivePropertiesAndLimitsPayload(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
+	assert.Equal(t, 1, accepted)
 
 	var event model.XhsScriptAnalyticsEvent
 	require.NoError(t, db.Where("event_id = ?", "evt_redact").First(&event).Error)
@@ -273,7 +275,7 @@ func TestTrackEventsRedactsNestedSensitiveProperties(t *testing.T) {
 	ctx := context.Background()
 	userID := uint(16)
 
-	require.NoError(t, svc.TrackEvents(ctx, &userID, []AnalyticsEventInput{
+	accepted, err := svc.TrackEvents(ctx, &userID, []AnalyticsEventInput{
 		{
 			EventID:   "evt_nested_redact",
 			EventName: "generation_fail",
@@ -291,7 +293,9 @@ func TestTrackEventsRedactsNestedSensitiveProperties(t *testing.T) {
 				},
 			},
 		},
-	}))
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, accepted)
 
 	var event model.XhsScriptAnalyticsEvent
 	require.NoError(t, db.Where("event_id = ?", "evt_nested_redact").First(&event).Error)
@@ -307,6 +311,57 @@ func TestTrackEventsRedactsNestedSensitiveProperties(t *testing.T) {
 	assert.Equal(t, "failed", child["status"])
 	assert.NotContains(t, child, "rawError")
 	assert.NotContains(t, child, "too_deep")
+}
+
+func TestTrackEventsRedactsPrefixedSensitiveTextFieldsButKeepsSafeMetrics(t *testing.T) {
+	db := newAnalyticsSummaryTestDB(t)
+	svc := New(store.NewTestStore(db))
+	ctx := context.Background()
+	userID := uint(17)
+
+	accepted, err := svc.TrackEvents(ctx, &userID, []AnalyticsEventInput{
+		{
+			EventID:   "evt_prefixed_redact",
+			EventName: "video_note_captured",
+			Properties: map[string]interface{}{
+				"noteTitle":           "带前缀的标题全文",
+				"noteDescription":     "带前缀的描述全文",
+				"commentContent":      "评论正文",
+				"capturedHotComments": "高赞评论正文",
+				"noteContent":         "笔记正文",
+				"title_length":        float64(12),
+				"description_length":  float64(34),
+				"hot_comments_count":  float64(2),
+				"script_length":       float64(56),
+				"transcript_length":   float64(78),
+				"error_category":      "generation_failed",
+			},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, accepted)
+
+	var event model.XhsScriptAnalyticsEvent
+	require.NoError(t, db.Where("event_id = ?", "evt_prefixed_redact").First(&event).Error)
+	assert.NotContains(t, string(event.Properties), "带前缀的标题全文")
+	assert.NotContains(t, string(event.Properties), "带前缀的描述全文")
+	assert.NotContains(t, string(event.Properties), "评论正文")
+	assert.NotContains(t, string(event.Properties), "高赞评论正文")
+	assert.NotContains(t, string(event.Properties), "笔记正文")
+
+	var stored map[string]interface{}
+	require.NoError(t, json.Unmarshal(event.Properties, &stored))
+	assert.NotContains(t, stored, "noteTitle")
+	assert.NotContains(t, stored, "noteDescription")
+	assert.NotContains(t, stored, "commentContent")
+	assert.NotContains(t, stored, "capturedHotComments")
+	assert.NotContains(t, stored, "noteContent")
+	assert.Equal(t, float64(12), stored["title_length"])
+	assert.Equal(t, float64(34), stored["description_length"])
+	assert.Equal(t, float64(2), stored["hot_comments_count"])
+	assert.Equal(t, float64(56), stored["script_length"])
+	assert.Equal(t, float64(78), stored["transcript_length"])
+	assert.Equal(t, "generation_failed", stored["error_category"])
 }
 
 func TestTrackEventsLimitsBatchAndStringFieldLengths(t *testing.T) {
@@ -326,7 +381,9 @@ func TestTrackEventsLimitsBatchAndStringFieldLengths(t *testing.T) {
 		})
 	}
 
-	require.NoError(t, svc.TrackEvents(ctx, &userID, events))
+	accepted, err := svc.TrackEvents(ctx, &userID, events)
+	require.NoError(t, err)
+	assert.Equal(t, 50, accepted)
 
 	var count int64
 	require.NoError(t, db.Model(&model.XhsScriptAnalyticsEvent{}).Count(&count).Error)

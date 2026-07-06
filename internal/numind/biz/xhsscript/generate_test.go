@@ -113,6 +113,29 @@ func TestGenerateScriptFailuresPersistSafeLastErrorCategories(t *testing.T) {
 		assert.NotContains(t, got.LastError, "xhs_script_quota_ledger")
 		assert.NotContains(t, got.LastError, "no such table")
 	})
+
+	t.Run("quota account failure uses stage category", func(t *testing.T) {
+		ctx := context.Background()
+		db := newXhsScriptGenerateTestDB(t)
+		svc := New(store.NewTestStore(db))
+		userID := uint(205)
+		note := createGenerateReadyNote(t, db, userID)
+		require.NoError(t, db.Migrator().DropTable(&model.XhsScriptQuotaAccount{}))
+
+		withGenerateTestChat(t, func(context.Context, string, aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
+			t.Fatal("chat should not be called when quota account load fails")
+			return nil, nil
+		})
+
+		_, err := svc.GenerateScript(ctx, userID, note.ID)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, errno.ErrInternalServer)
+		assert.NotContains(t, err.Error(), "xhs_script_quota_account")
+
+		got := loadGenerateTestNote(t, db, userID, note.ID)
+		assert.Equal(t, model.XhsScriptGenerateFailed, got.GenerateStatus)
+		assert.Equal(t, "quota_account_failed", got.LastError)
+	})
 }
 
 func withGenerateTestChat(t *testing.T, chat func(context.Context, string, aiservice.ChatRequest) (*aiservice.ChatResponse, error)) {

@@ -25,7 +25,7 @@ func (s *Service) GenerateScript(ctx context.Context, userID uint, noteID uint64
 		return nil, err
 	}
 	internalFail := func(stage, safeMessage string, err error) (*NoteDTO, error) {
-		_ = s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateFailed, "generation_commit_failed")
+		_ = s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateFailed, generationFailureLastError(stage))
 		s.recordGenerationFail(ctx, userID, baseProps, stage, err)
 		return nil, errno.ErrInternalServer.SetMessage("%s", safeMessage)
 	}
@@ -121,6 +121,21 @@ func generationNoteProperties(note *model.XhsScriptNote) map[string]interface{} 
 		"source_note_id":    note.SourceNoteID,
 		"transcribe_status": note.TranscribeStatus,
 		"generate_status":   note.GenerateStatus,
+	}
+}
+
+func generationFailureLastError(stage string) string {
+	switch stage {
+	case "quota_account":
+		return "quota_account_failed"
+	case "profile_load":
+		return "profile_load_failed"
+	case "mark_generating":
+		return "mark_generating_failed"
+	case "commit_generation":
+		return "generation_commit_failed"
+	default:
+		return "generation_failed"
 	}
 }
 

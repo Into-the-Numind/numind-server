@@ -91,10 +91,11 @@ type AnalyticsErrorDTO struct {
 	Count   int64  `json:"count"`
 }
 
-func (s *Service) TrackEvents(ctx context.Context, userID *uint, events []AnalyticsEventInput) error {
+func (s *Service) TrackEvents(ctx context.Context, userID *uint, events []AnalyticsEventInput) (int, error) {
 	if len(events) > maxAnalyticsEventsPerRequest {
 		events = events[:maxAnalyticsEventsPerRequest]
 	}
+	accepted := 0
 	for _, input := range events {
 		eventID := limitRunes(strings.TrimSpace(input.EventID), maxAnalyticsEventIDRunes)
 		eventName := limitRunes(strings.TrimSpace(input.EventName), maxAnalyticsEventNameRunes)
@@ -119,10 +120,11 @@ func (s *Service) TrackEvents(ctx context.Context, userID *uint, events []Analyt
 			CreatedAt:   createdAt,
 		}
 		if err := s.ds.XhsScript().InsertAnalyticsEvent(ctx, event); err != nil {
-			return err
+			return accepted, err
 		}
+		accepted++
 	}
-	return nil
+	return accepted, nil
 }
 
 const (
@@ -223,16 +225,45 @@ func sanitizeAnalyticsPropertiesDepth(input map[string]interface{}, depth int) m
 
 func isSensitiveAnalyticsPropertyKey(key string) bool {
 	normalized := normalizeAnalyticsPropertyKey(key)
+	if isSafeAnalyticsMetricKey(normalized) {
+		return false
+	}
 	if _, ok := sensitiveAnalyticsPropertyKeys[normalized]; ok {
 		return true
 	}
 	parts := strings.FieldsFunc(normalized, func(r rune) bool { return r == '_' })
-	if len(parts) > 0 {
-		if _, ok := sensitiveAnalyticsPropertyKeys[parts[len(parts)-1]]; ok && strings.Contains(normalized, "error") {
+	for _, part := range parts {
+		switch part {
+		case "title", "description", "content", "prompt", "message", "script", "transcript", "profile":
+			return true
+		case "comment", "comments":
+			return true
+		case "error":
+			if strings.Contains(normalized, "raw_error") || strings.Contains(normalized, "error_message") {
+				return true
+			}
+		}
+	}
+	for i := 0; i < len(parts)-1; i++ {
+		pair := parts[i] + "_" + parts[i+1]
+		switch pair {
+		case "hot_comments", "profile_text", "video_transcript", "script_text", "generated_script", "raw_error", "error_message":
+			return true
+		}
+		if _, ok := sensitiveAnalyticsPropertyKeys[pair]; ok {
 			return true
 		}
 	}
 	return false
+}
+
+func isSafeAnalyticsMetricKey(normalized string) bool {
+	switch normalized {
+	case "title_length", "description_length", "hot_comments_count", "script_length", "transcript_length", "error_category":
+		return true
+	default:
+		return false
+	}
 }
 
 func isPreferredAnalyticsPropertyKey(key string) bool {

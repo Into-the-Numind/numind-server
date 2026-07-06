@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -155,6 +156,36 @@ func TestXhsScriptOrderDetailCompatibilityRoute(t *testing.T) {
 	assert.Equal(t, model.OrderStatusPending, data.PayStatus)
 	assert.Equal(t, xhsscriptbiz.PackAmountCents, data.Amount)
 	assert.NotZero(t, userID)
+}
+
+func TestXhsScriptTrackEventsReturnsActualAcceptedCount(t *testing.T) {
+	router, db, token, _ := newXhsScriptControllerTestRouter(t)
+	events := make([]xhsscriptbiz.AnalyticsEventInput, 0, 55)
+	for i := 0; i < 55; i++ {
+		events = append(events, xhsscriptbiz.AnalyticsEventInput{
+			EventID:   "evt_batch_" + strconv.Itoa(i),
+			EventName: "script_page_view",
+			Path:      "/script/",
+		})
+	}
+
+	resp := doXhsScriptJSONRequest(t, router, http.MethodPost, "/v1/xhs-script/analytics/events", token, map[string]interface{}{
+		"events": events,
+	})
+
+	require.Equal(t, http.StatusOK, resp.Code)
+	var body apiResponse
+	require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &body))
+	require.Equal(t, 0, body.Code)
+	var data struct {
+		Accepted int `json:"accepted"`
+	}
+	require.NoError(t, json.Unmarshal(body.Data, &data))
+	assert.Equal(t, 50, data.Accepted)
+
+	var count int64
+	require.NoError(t, db.Model(&model.XhsScriptAnalyticsEvent{}).Count(&count).Error)
+	assert.EqualValues(t, 50, count)
 }
 
 func TestXhsScriptAdminMetricsAliasRejectsNonAdmin(t *testing.T) {
@@ -339,6 +370,7 @@ func newXhsScriptControllerTestRouter(t *testing.T) (*gin.Engine, *gorm.DB, stri
 	group.GET("/quota", ctl.GetQuota)
 	group.GET("/orders/:id/status", ctl.GetOrderStatus)
 	group.GET("/orders/:id", ctl.GetOrderStatus)
+	group.POST("/analytics/events", ctl.TrackEvents)
 
 	adminGroup := router.Group("/v1/xhs-script/admin")
 	adminGroup.Use(importMw.AdminAuthMiddleware())

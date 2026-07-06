@@ -320,8 +320,8 @@ func (ctl *Controller) TrackEvents(c *gin.Context) {
 	if user, err := ctl.optionalCurrentUser(c, false); err == nil && user != nil {
 		userID = &user.ID
 	}
-	err := ctl.biz.TrackEvents(c.Request.Context(), userID, req.Events)
-	core.WriteResponse(c, err, gin.H{"accepted": len(req.Events)})
+	accepted, err := ctl.biz.TrackEvents(c.Request.Context(), userID, req.Events)
+	core.WriteResponse(c, err, gin.H{"accepted": accepted})
 }
 
 func (ctl *Controller) AdminAnalytics(c *gin.Context) {
