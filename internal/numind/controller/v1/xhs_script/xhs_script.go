@@ -274,7 +274,7 @@ func (ctl *Controller) CreateOrder(c *gin.Context) {
 		idempotencyKey,
 	)
 	if err == nil && order != nil {
-		ctl.biz.RecordEventWithIDBestEffort(c.Request.Context(), user.ID, "backend:xhs_script:purchase_order_created:"+order.OrderNo, "purchase_order_created", map[string]interface{}{
+		ctl.biz.RecordEventWithIDBestEffort(c.Request.Context(), user.ID, "backend:xhs_script:order_created:"+order.OrderNo, "order_created", map[string]interface{}{
 			"order_id":     order.ID,
 			"order_no":     order.OrderNo,
 			"amount_cents": order.Amount,

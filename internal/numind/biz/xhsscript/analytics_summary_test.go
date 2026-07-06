@@ -133,6 +133,78 @@ func TestGetAnalyticsSummaryAggregatesMVPFunnel(t *testing.T) {
 	assert.Contains(t, analyticsErrorMap(summary.RecentErrors), "generate:model timeout")
 }
 
+func TestGetAnalyticsSummaryCountsCanonicalMVPEventNames(t *testing.T) {
+	db := newAnalyticsSummaryTestDB(t)
+	svc := New(store.NewTestStore(db))
+	ctx := context.Background()
+	now := time.Now()
+	userID := uint(11)
+
+	require.NoError(t, db.Create([]model.XhsScriptAnalyticsEvent{
+		{EventID: "evt_page", EventName: "script_page_view", AnonymousID: "anon_11", UserID: &userID, SessionID: "sess_11", Path: "/script/", CreatedAt: now},
+		{EventID: "evt_trial_canonical", EventName: "trial_user_created", AnonymousID: "anon_11", UserID: &userID, SessionID: "sess_11", Path: "/script/", CreatedAt: now},
+		{EventID: "evt_ext_canonical", EventName: "extension_authorize_success", AnonymousID: "anon_11", UserID: &userID, SessionID: "sess_11", Path: "/script/", CreatedAt: now},
+		{EventID: backendEventIDPrefix + ":order_created:order_11", EventName: "order_created", UserID: &userID, CreatedAt: now},
+	}).Error)
+
+	summary, err := svc.GetAnalyticsSummary(ctx, 7)
+	require.NoError(t, err)
+
+	assert.EqualValues(t, 1, summary.Totals.TrialStarted)
+	assert.EqualValues(t, 1, summary.Totals.ExtensionAuthorized)
+	assert.EqualValues(t, 1, summary.Totals.PurchaseOrderCreated)
+
+	today := summary.Daily[len(summary.Daily)-1]
+	assert.Equal(t, now.Format("2006-01-02"), today.Date)
+	assert.EqualValues(t, 1, today.Trials)
+	assert.Contains(t, analyticsEventCountMap(summary.EventCounts), "trial_user_created")
+	assert.Contains(t, analyticsEventCountMap(summary.EventCounts), "extension_authorize_success")
+	assert.Contains(t, analyticsEventCountMap(summary.EventCounts), "order_created")
+}
+
+func TestTrackEventsDoesNotAcceptReservedBackendEventIDPrefix(t *testing.T) {
+	db := newAnalyticsSummaryTestDB(t)
+	svc := New(store.NewTestStore(db))
+	ctx := context.Background()
+	userID := uint(12)
+
+	err := svc.TrackEvents(ctx, &userID, []AnalyticsEventInput{
+		{
+			EventID:   backendEventIDPrefix + ":order_created:spoofed",
+			EventName: "order_created",
+			Path:      "/script/",
+		},
+	})
+	require.NoError(t, err)
+
+	var event model.XhsScriptAnalyticsEvent
+	require.NoError(t, db.Where("event_name = ?", "order_created").First(&event).Error)
+	assert.NotContains(t, event.EventID, backendEventIDPrefix+":")
+
+	summary, err := svc.GetAnalyticsSummary(ctx, 7)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, summary.Totals.PurchaseOrderCreated)
+}
+
+func TestAnalyticsSummaryDoesNotCountLikeWildcardBackendPrefixSpoof(t *testing.T) {
+	db := newAnalyticsSummaryTestDB(t)
+	svc := New(store.NewTestStore(db))
+	ctx := context.Background()
+	now := time.Now()
+	userID := uint(13)
+
+	require.NoError(t, db.Create(&model.XhsScriptAnalyticsEvent{
+		EventID:   "backend:xhsAscript:orderXcreated:spoofed",
+		EventName: "order_created",
+		UserID:    &userID,
+		CreatedAt: now,
+	}).Error)
+
+	summary, err := svc.GetAnalyticsSummary(ctx, 7)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, summary.Totals.PurchaseOrderCreated)
+}
+
 func newAnalyticsSummaryTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(t.TempDir()+"/xhs_analytics_test.db?_busy_timeout=5000"), &gorm.Config{

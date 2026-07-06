@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"numind-server/internal/pkg/model"
 )
 
@@ -95,6 +97,7 @@ func (s *Service) TrackEvents(ctx context.Context, userID *uint, events []Analyt
 		if eventID == "" || eventName == "" {
 			continue
 		}
+		eventID = clientAnalyticsEventID(eventID)
 		createdAt := time.Now()
 		if input.OccurredAt != "" {
 			if parsed, err := time.Parse(time.RFC3339Nano, input.OccurredAt); err == nil {
@@ -118,6 +121,20 @@ func (s *Service) TrackEvents(ctx context.Context, userID *uint, events []Analyt
 	return nil
 }
 
+func clientAnalyticsEventID(eventID string) string {
+	eventID = strings.TrimSpace(eventID)
+	if strings.HasPrefix(eventID, backendEventIDPrefix+":") {
+		return newClientEventID(eventID)
+	}
+	return eventID
+}
+
+func newClientEventID(original string) string {
+	sum := shortHash(original)
+	compactUUID := strings.ReplaceAll(uuid.NewString(), "-", "")
+	return "client:xhs:" + sum + ":" + compactUUID
+}
+
 func (s *Service) GetAnalyticsSummary(ctx context.Context, days int) (*AnalyticsSummaryDTO, error) {
 	if days <= 0 {
 		days = 30
@@ -136,13 +153,13 @@ func (s *Service) GetAnalyticsSummary(ctx context.Context, days int) (*Analytics
 	if totals.PageViews, err = countAnalyticsEvents(ctx, s, from, "script_page_view"); err != nil {
 		return nil, err
 	}
-	if totals.TrialStarted, err = countAnalyticsEvents(ctx, s, from, "trial_started"); err != nil {
+	if totals.TrialStarted, err = countAnalyticsEventNames(ctx, s, from, []string{"trial_user_created", "trial_started"}); err != nil {
 		return nil, err
 	}
 	if totals.ProfileSaved, err = countAnalyticsEvents(ctx, s, from, "profile_saved"); err != nil {
 		return nil, err
 	}
-	if totals.ExtensionAuthorized, err = countAnalyticsEvents(ctx, s, from, "extension_token_issued"); err != nil {
+	if totals.ExtensionAuthorized, err = countAnalyticsEventNames(ctx, s, from, []string{"extension_authorize_success", "extension_token_issued"}); err != nil {
 		return nil, err
 	}
 	if totals.AccountRegistered, err = countAnalyticsEvents(ctx, s, from, "account_registered"); err != nil {
@@ -245,9 +262,13 @@ func beginningOfDay(t time.Time) time.Time {
 }
 
 func countAnalyticsEvents(ctx context.Context, s *Service, from time.Time, eventName string) (int64, error) {
+	return countAnalyticsEventNames(ctx, s, from, []string{eventName})
+}
+
+func countAnalyticsEventNames(ctx context.Context, s *Service, from time.Time, eventNames []string) (int64, error) {
 	var count int64
 	err := s.ds.DB().WithContext(ctx).Model(&model.XhsScriptAnalyticsEvent{}).
-		Where("created_at >= ? AND event_name = ?", from, eventName).
+		Where("created_at >= ? AND event_name IN ?", from, eventNames).
 		Count(&count).Error
 	return count, err
 }
@@ -255,9 +276,21 @@ func countAnalyticsEvents(ctx context.Context, s *Service, from time.Time, event
 func countBackendPurchaseOrderCreated(ctx context.Context, s *Service, from time.Time) (int64, error) {
 	var count int64
 	err := s.ds.DB().WithContext(ctx).Model(&model.XhsScriptAnalyticsEvent{}).
-		Where("created_at >= ? AND event_name = ? AND event_id LIKE ?", from, "purchase_order_created", backendEventIDPrefix+":purchase_order_created:%").
+		Where(
+			"created_at >= ? AND ((event_name = ? AND event_id LIKE ? ESCAPE '\\') OR (event_name = ? AND event_id LIKE ? ESCAPE '\\'))",
+			from,
+			"order_created",
+			escapedSQLLikePrefix(backendEventIDPrefix+":order_created:"),
+			"purchase_order_created",
+			escapedSQLLikePrefix(backendEventIDPrefix+":purchase_order_created:"),
+		).
 		Count(&count).Error
 	return count, err
+}
+
+func escapedSQLLikePrefix(prefix string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `_`, `\_`, `%`, `\%`)
+	return replacer.Replace(prefix) + "%"
 }
 
 func countUniqueVisitors(ctx context.Context, s *Service, from time.Time) (int64, error) {
@@ -327,7 +360,7 @@ func dailyAnalytics(ctx context.Context, s *Service, from time.Time, days int) (
 	}); err != nil {
 		return nil, err
 	}
-	if err := applyDailyEventCounts(ctx, s, from, byDate, "trial_started", func(row *AnalyticsDailyDTO, count int64) {
+	if err := applyDailyEventNameCounts(ctx, s, from, byDate, []string{"trial_user_created", "trial_started"}, func(row *AnalyticsDailyDTO, count int64) {
 		row.Trials = count
 	}); err != nil {
 		return nil, err
@@ -367,7 +400,11 @@ func dailyAnalytics(ctx context.Context, s *Service, from time.Time, days int) (
 }
 
 func applyDailyEventCounts(ctx context.Context, s *Service, from time.Time, byDate map[string]*AnalyticsDailyDTO, eventName string, apply func(*AnalyticsDailyDTO, int64)) error {
-	return applyDailyTableCounts(ctx, s, from, byDate, &model.XhsScriptAnalyticsEvent{}, "event_name = ?", []interface{}{eventName}, apply)
+	return applyDailyEventNameCounts(ctx, s, from, byDate, []string{eventName}, apply)
+}
+
+func applyDailyEventNameCounts(ctx context.Context, s *Service, from time.Time, byDate map[string]*AnalyticsDailyDTO, eventNames []string, apply func(*AnalyticsDailyDTO, int64)) error {
+	return applyDailyTableCounts(ctx, s, from, byDate, &model.XhsScriptAnalyticsEvent{}, "event_name IN ?", []interface{}{eventNames}, apply)
 }
 
 func applyDailyTableCounts(ctx context.Context, s *Service, from time.Time, byDate map[string]*AnalyticsDailyDTO, modelValue interface{}, clause string, args []interface{}, apply func(*AnalyticsDailyDTO, int64)) error {
