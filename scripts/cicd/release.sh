@@ -41,13 +41,21 @@ if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; th
 fi
 EFFECTIVE_SHA="${GIT_SHA}${GIT_DIRTY}"
 
+release_relevant_worktree_status() {
+  git status --porcelain --untracked-files=all -- \
+    . \
+    ':(exclude).DS_Store' \
+    ':(exclude)data/**' \
+    ':(exclude)**/.DS_Store'
+}
+
 GIT_TAG=""
 RSYNC_SECRET_EXCLUDES=()
 if [ "$ENV" = "prod" ]; then
   GIT_TAG=$(git describe --tags --exact-match HEAD 2>/dev/null || true)
-  PROD_WORKTREE_STATUS="$(git status --porcelain --untracked-files=all)"
+  PROD_WORKTREE_STATUS="$(release_relevant_worktree_status)"
   if [ -z "$GIT_TAG" ] || [ -n "$PROD_WORKTREE_STATUS" ]; then
-    echo "ERROR: prod release requires a clean worktree and exact tag." >&2
+    echo "ERROR: prod release requires a clean release-relevant worktree and exact tag." >&2
     if [ -z "$GIT_TAG" ]; then
       echo "Tag: missing exact tag (branch=$GIT_BRANCH, sha=$GIT_SHA)" >&2
     fi

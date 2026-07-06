@@ -110,10 +110,10 @@ assert_dirty_prod_rejected() {
     fail=1
   fi
 
-  if grep -q "prod release requires a clean worktree and exact tag" "$out"; then
-    echo "PASS: $label output explains clean worktree and exact tag requirement"
+  if grep -q "prod release requires a clean release-relevant worktree and exact tag" "$out"; then
+    echo "PASS: $label output explains release-relevant clean worktree and exact tag requirement"
   else
-    echo "FAIL: $label output missing clean worktree/exact tag error"
+    echo "FAIL: $label output missing release-relevant clean worktree/exact tag error"
     fail=1
   fi
 
@@ -164,6 +164,47 @@ if grep -q "Tag: missing exact tag" "$TMP/untagged.out"; then
   echo "PASS: dirty untagged prod release explains the missing tag"
 else
   echo "FAIL: dirty untagged prod release missing tag explanation"
+  fail=1
+fi
+
+DATA_EXCLUDED_REPO="$TMP/data-excluded-repo"
+make_repo "$DATA_EXCLUDED_REPO"
+(
+  cd "$DATA_EXCLUDED_REPO" || exit 2
+  git tag v1.2.35 || exit 2
+  mkdir -p data || exit 2
+  printf 'root finder metadata\n' > .DS_Store || exit 2
+  printf 'local rollback only\n' > data/revert_local.sql || exit 2
+  printf 'finder metadata\n' > data/.DS_Store || exit 2
+) || die "setup clean tagged repo with untracked excluded data"
+run_release "$DATA_EXCLUDED_REPO" "$TMP/data-excluded.out"
+data_excluded_rc=$?
+
+if [ "$data_excluded_rc" -eq 77 ]; then
+  echo "PASS: untracked excluded data does not block prod release preflight"
+else
+  echo "FAIL: untracked excluded data should reach fake rsync (rc=$data_excluded_rc)"
+  fail=1
+fi
+
+if grep -q "data/revert_local.sql" "$TMP/data-excluded.out"; then
+  echo "FAIL: untracked excluded data should not be listed as a dirty item"
+  fail=1
+else
+  echo "PASS: untracked excluded data is not listed as a dirty item"
+fi
+
+if grep -Fqx "?? .DS_Store" "$TMP/data-excluded.out" || grep -Fqx "?? data/.DS_Store" "$TMP/data-excluded.out"; then
+  echo "FAIL: untracked .DS_Store should not be listed as a dirty item"
+  fail=1
+else
+  echo "PASS: untracked .DS_Store is not listed as a dirty item"
+fi
+
+if grep -Fqx -- "--exclude=/data/" "$TMP/data-excluded.out"; then
+  echo "PASS: untracked excluded data release still excludes /data/ from rsync"
+else
+  echo "FAIL: untracked excluded data release missing --exclude=/data/"
   fail=1
 fi
 
