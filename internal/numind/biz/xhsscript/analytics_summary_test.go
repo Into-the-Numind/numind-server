@@ -196,20 +196,27 @@ func TestTrackEventsRedactsSensitivePropertiesAndLimitsPayload(t *testing.T) {
 	userID := uint(14)
 
 	props := map[string]interface{}{
-		"profile_text":  "我的完整产品定位正文",
-		"transcript":    "完整视频转写正文",
-		"script_text":   "生成后的完整口播稿",
-		"title":         "用户采集的原始标题",
-		"error.message": "LLM upstream raw error with prompt text",
-		"note_id":       float64(123),
-		"count":         float64(9),
-		"status":        "failed",
-		"stage":         "generate",
-		"category":      "llm",
-		"channel":       "web",
-		"product_type":  model.ProductTypeXhsScriptPack,
-		"amount":        float64(1990),
-		"ids":           strings.Repeat("a", 260),
+		"profile_text":    "我的完整产品定位正文",
+		"transcript":      "完整视频转写正文",
+		"script_text":     "生成后的完整口播稿",
+		"title":           "用户采集的原始标题",
+		"error.message":   "LLM upstream raw error with prompt text",
+		"profileText":     "camel 产品定位正文",
+		"scriptText":      "camel 口播稿",
+		"generatedScript": "camel 生成稿",
+		"hotComments":     "camel 高赞评论",
+		"rawError":        "camel raw error",
+		"errorMessage":    "camel error message",
+		"videoTranscript": "camel 视频转写",
+		" note_id ":       float64(123),
+		"count":           float64(9),
+		"status":          "failed",
+		"stage":           "generate",
+		"category":        "llm",
+		"channel":         "web",
+		"product_type":    model.ProductTypeXhsScriptPack,
+		"amount":          float64(1990),
+		"ids":             strings.Repeat("a", 260),
 	}
 	for i := 0; i < 60; i++ {
 		props[fmt.Sprintf("extra_%02d", i)] = "safe"
@@ -231,6 +238,13 @@ func TestTrackEventsRedactsSensitivePropertiesAndLimitsPayload(t *testing.T) {
 	assert.NotContains(t, string(event.Properties), "完整口播稿")
 	assert.NotContains(t, string(event.Properties), "用户采集的原始标题")
 	assert.NotContains(t, string(event.Properties), "LLM upstream raw error")
+	assert.NotContains(t, string(event.Properties), "camel 产品定位正文")
+	assert.NotContains(t, string(event.Properties), "camel 口播稿")
+	assert.NotContains(t, string(event.Properties), "camel 生成稿")
+	assert.NotContains(t, string(event.Properties), "camel 高赞评论")
+	assert.NotContains(t, string(event.Properties), "camel raw error")
+	assert.NotContains(t, string(event.Properties), "camel error message")
+	assert.NotContains(t, string(event.Properties), "camel 视频转写")
 
 	var stored map[string]interface{}
 	require.NoError(t, json.Unmarshal(event.Properties, &stored))
@@ -240,9 +254,94 @@ func TestTrackEventsRedactsSensitivePropertiesAndLimitsPayload(t *testing.T) {
 	assert.NotContains(t, stored, "script_text")
 	assert.NotContains(t, stored, "title")
 	assert.NotContains(t, stored, "error.message")
+	assert.NotContains(t, stored, "profileText")
+	assert.NotContains(t, stored, "scriptText")
+	assert.NotContains(t, stored, "generatedScript")
+	assert.NotContains(t, stored, "hotComments")
+	assert.NotContains(t, stored, "rawError")
+	assert.NotContains(t, stored, "errorMessage")
+	assert.NotContains(t, stored, "videoTranscript")
+	assert.Equal(t, float64(123), stored["note_id"])
 	assert.Equal(t, "generate", stored["stage"])
 	assert.Equal(t, "failed", stored["status"])
 	assert.LessOrEqual(t, len(stored["ids"].(string)), 200)
+}
+
+func TestTrackEventsRedactsNestedSensitiveProperties(t *testing.T) {
+	db := newAnalyticsSummaryTestDB(t)
+	svc := New(store.NewTestStore(db))
+	ctx := context.Background()
+	userID := uint(16)
+
+	require.NoError(t, svc.TrackEvents(ctx, &userID, []AnalyticsEventInput{
+		{
+			EventID:   "evt_nested_redact",
+			EventName: "generation_fail",
+			Properties: map[string]interface{}{
+				"nested": map[string]interface{}{
+					"scriptText": "nested 口播稿",
+					"safe_count": float64(3),
+					"child": map[string]interface{}{
+						"rawError": "nested raw error",
+						"status":   "failed",
+						"too_deep": map[string]interface{}{
+							"status": "dropped",
+						},
+					},
+				},
+			},
+		},
+	}))
+
+	var event model.XhsScriptAnalyticsEvent
+	require.NoError(t, db.Where("event_id = ?", "evt_nested_redact").First(&event).Error)
+	assert.NotContains(t, string(event.Properties), "nested 口播稿")
+	assert.NotContains(t, string(event.Properties), "nested raw error")
+
+	var stored map[string]interface{}
+	require.NoError(t, json.Unmarshal(event.Properties, &stored))
+	nested := stored["nested"].(map[string]interface{})
+	assert.Equal(t, float64(3), nested["safe_count"])
+	assert.NotContains(t, nested, "scriptText")
+	child := nested["child"].(map[string]interface{})
+	assert.Equal(t, "failed", child["status"])
+	assert.NotContains(t, child, "rawError")
+	assert.NotContains(t, child, "too_deep")
+}
+
+func TestTrackEventsLimitsBatchAndStringFieldLengths(t *testing.T) {
+	db := newAnalyticsSummaryTestDB(t)
+	svc := New(store.NewTestStore(db))
+	ctx := context.Background()
+	userID := uint(15)
+	events := make([]AnalyticsEventInput, 0, 55)
+	for i := 0; i < 55; i++ {
+		events = append(events, AnalyticsEventInput{
+			EventID:     fmt.Sprintf("evt_%02d_%s", i, strings.Repeat("e", 200)),
+			EventName:   "event_" + strings.Repeat("n", 120),
+			AnonymousID: "anon_" + strings.Repeat("a", 200),
+			SessionID:   "sess_" + strings.Repeat("s", 200),
+			Path:        "/script/" + strings.Repeat("p", 400),
+			Properties:  map[string]interface{}{"status": "ok"},
+		})
+	}
+
+	require.NoError(t, svc.TrackEvents(ctx, &userID, events))
+
+	var count int64
+	require.NoError(t, db.Model(&model.XhsScriptAnalyticsEvent{}).Count(&count).Error)
+	assert.EqualValues(t, 50, count)
+
+	var stored []model.XhsScriptAnalyticsEvent
+	require.NoError(t, db.Order("id ASC").Find(&stored).Error)
+	require.Len(t, stored, 50)
+	for _, event := range stored {
+		assert.LessOrEqual(t, len([]rune(event.EventID)), 128)
+		assert.LessOrEqual(t, len([]rune(event.EventName)), 80)
+		assert.LessOrEqual(t, len([]rune(event.AnonymousID)), 128)
+		assert.LessOrEqual(t, len([]rune(event.SessionID)), 128)
+		assert.LessOrEqual(t, len([]rune(event.Path)), 256)
+	}
 }
 
 func TestAnalyticsSummaryDoesNotCountLikeWildcardBackendPrefixSpoof(t *testing.T) {

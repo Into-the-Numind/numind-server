@@ -13,6 +13,7 @@ import (
 
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"
+	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
 )
 
@@ -30,7 +31,12 @@ func TestGenerateScriptFailuresPersistSafeLastErrorCategories(t *testing.T) {
 		})
 
 		dto, err := svc.GenerateScript(ctx, userID, note.ID)
-		require.ErrorIs(t, err, rawErr)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, errno.ErrInternalServer)
+		assert.NotErrorIs(t, err, rawErr)
+		assert.NotContains(t, err.Error(), "llm provider")
+		assert.NotContains(t, err.Error(), "完整产品定位")
+		assert.NotContains(t, err.Error(), "视频转写")
 		assert.Nil(t, dto)
 
 		got := loadGenerateTestNote(t, db, userID, note.ID)
@@ -53,6 +59,9 @@ func TestGenerateScriptFailuresPersistSafeLastErrorCategories(t *testing.T) {
 
 		_, err := svc.GenerateScript(ctx, userID, note.ID)
 		require.Error(t, err)
+		assert.ErrorIs(t, err, errno.ErrInternalServer)
+		assert.NotContains(t, err.Error(), "xhs_script_quota_ledger")
+		assert.NotContains(t, err.Error(), "no such table")
 
 		got := loadGenerateTestNote(t, db, userID, note.ID)
 		assert.Equal(t, model.XhsScriptGenerateFailed, got.GenerateStatus)

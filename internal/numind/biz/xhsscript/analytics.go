@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 
@@ -91,13 +92,16 @@ type AnalyticsErrorDTO struct {
 }
 
 func (s *Service) TrackEvents(ctx context.Context, userID *uint, events []AnalyticsEventInput) error {
+	if len(events) > maxAnalyticsEventsPerRequest {
+		events = events[:maxAnalyticsEventsPerRequest]
+	}
 	for _, input := range events {
-		eventID := strings.TrimSpace(input.EventID)
-		eventName := strings.TrimSpace(input.EventName)
+		eventID := limitRunes(strings.TrimSpace(input.EventID), maxAnalyticsEventIDRunes)
+		eventName := limitRunes(strings.TrimSpace(input.EventName), maxAnalyticsEventNameRunes)
 		if eventID == "" || eventName == "" {
 			continue
 		}
-		eventID = clientAnalyticsEventID(eventID)
+		eventID = limitRunes(clientAnalyticsEventID(eventID), maxAnalyticsEventIDRunes)
 		createdAt := time.Now()
 		if input.OccurredAt != "" {
 			if parsed, err := time.Parse(time.RFC3339Nano, input.OccurredAt); err == nil {
@@ -107,10 +111,10 @@ func (s *Service) TrackEvents(ctx context.Context, userID *uint, events []Analyt
 		event := &model.XhsScriptAnalyticsEvent{
 			EventID:     eventID,
 			EventName:   eventName,
-			AnonymousID: strings.TrimSpace(input.AnonymousID),
+			AnonymousID: limitRunes(strings.TrimSpace(input.AnonymousID), maxAnalyticsAnonymousIDRunes),
 			UserID:      userID,
-			SessionID:   strings.TrimSpace(input.SessionID),
-			Path:        strings.TrimSpace(input.Path),
+			SessionID:   limitRunes(strings.TrimSpace(input.SessionID), maxAnalyticsSessionIDRunes),
+			Path:        limitRunes(strings.TrimSpace(input.Path), maxAnalyticsPathRunes),
 			Properties:  mustJSON(sanitizeAnalyticsProperties(input.Properties)),
 			CreatedAt:   createdAt,
 		}
@@ -124,6 +128,13 @@ func (s *Service) TrackEvents(ctx context.Context, userID *uint, events []Analyt
 const (
 	maxAnalyticsPropertyKeys        = 40
 	maxAnalyticsPropertyStringRunes = 200
+	maxAnalyticsPropertyDepth       = 3
+	maxAnalyticsEventsPerRequest    = 50
+	maxAnalyticsEventIDRunes        = 128
+	maxAnalyticsEventNameRunes      = 80
+	maxAnalyticsAnonymousIDRunes    = 128
+	maxAnalyticsSessionIDRunes      = 128
+	maxAnalyticsPathRunes           = 256
 )
 
 var sensitiveAnalyticsPropertyKeys = map[string]struct{}{
@@ -172,6 +183,10 @@ var preferredAnalyticsPropertyKeys = map[string]struct{}{
 }
 
 func sanitizeAnalyticsProperties(input map[string]interface{}) map[string]interface{} {
+	return sanitizeAnalyticsPropertiesDepth(input, 0)
+}
+
+func sanitizeAnalyticsPropertiesDepth(input map[string]interface{}, depth int) map[string]interface{} {
 	if len(input) == 0 {
 		return map[string]interface{}{}
 	}
@@ -189,16 +204,16 @@ func sanitizeAnalyticsProperties(input map[string]interface{}) map[string]interf
 	})
 
 	out := make(map[string]interface{}, minInt(len(keys), maxAnalyticsPropertyKeys))
-	for _, key := range keys {
-		key = strings.TrimSpace(key)
-		if key == "" || isSensitiveAnalyticsPropertyKey(key) {
+	for _, originalKey := range keys {
+		storedKey := strings.TrimSpace(originalKey)
+		if storedKey == "" || isSensitiveAnalyticsPropertyKey(storedKey) {
 			continue
 		}
-		value, ok := sanitizeAnalyticsPropertyValue(input[key])
+		value, ok := sanitizeAnalyticsPropertyValue(input[originalKey], depth)
 		if !ok {
 			continue
 		}
-		out[key] = value
+		out[storedKey] = value
 		if len(out) >= maxAnalyticsPropertyKeys {
 			break
 		}
@@ -226,12 +241,33 @@ func isPreferredAnalyticsPropertyKey(key string) bool {
 }
 
 func normalizeAnalyticsPropertyKey(key string) string {
-	key = strings.ToLower(strings.TrimSpace(key))
+	key = strings.TrimSpace(key)
 	replacer := strings.NewReplacer(".", "_", "-", "_", " ", "_")
-	return replacer.Replace(key)
+	key = replacer.Replace(key)
+	var b strings.Builder
+	var prevUnderscore bool
+	var prevLowerOrDigit bool
+	for _, r := range key {
+		if r == '_' {
+			if !prevUnderscore && b.Len() > 0 {
+				b.WriteRune('_')
+				prevUnderscore = true
+			}
+			prevLowerOrDigit = false
+			continue
+		}
+		if unicode.IsUpper(r) && prevLowerOrDigit && !prevUnderscore {
+			b.WriteRune('_')
+		}
+		lower := unicode.ToLower(r)
+		b.WriteRune(lower)
+		prevUnderscore = false
+		prevLowerOrDigit = unicode.IsLower(lower) || unicode.IsDigit(lower)
+	}
+	return strings.Trim(b.String(), "_")
 }
 
-func sanitizeAnalyticsPropertyValue(value interface{}) (interface{}, bool) {
+func sanitizeAnalyticsPropertyValue(value interface{}, depth int) (interface{}, bool) {
 	switch v := value.(type) {
 	case nil:
 		return nil, true
@@ -242,7 +278,10 @@ func sanitizeAnalyticsPropertyValue(value interface{}) (interface{}, bool) {
 	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
 		return v, true
 	case map[string]interface{}:
-		sanitized := sanitizeAnalyticsProperties(v)
+		if depth+1 >= maxAnalyticsPropertyDepth {
+			return nil, false
+		}
+		sanitized := sanitizeAnalyticsPropertiesDepth(v, depth+1)
 		return sanitized, len(sanitized) > 0
 	default:
 		return nil, false

@@ -24,6 +24,11 @@ func (s *Service) GenerateScript(ctx context.Context, userID uint, noteID uint64
 		s.recordGenerationFail(ctx, userID, baseProps, stage, err)
 		return nil, err
 	}
+	internalFail := func(stage, safeMessage string, err error) (*NoteDTO, error) {
+		_ = s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateFailed, "generation_commit_failed")
+		s.recordGenerationFail(ctx, userID, baseProps, stage, err)
+		return nil, errno.ErrInternalServer.SetMessage("%s", safeMessage)
+	}
 
 	note, err := s.ds.XhsScript().GetNote(ctx, userID, noteID)
 	if err != nil {
@@ -36,7 +41,7 @@ func (s *Service) GenerateScript(ctx context.Context, userID uint, noteID uint64
 
 	account, err := s.ds.XhsScript().CreateOrGetQuotaAccount(ctx, userID)
 	if err != nil {
-		return fail("quota_account", err)
+		return internalFail("quota_account", "生成失败，请稍后重试", err)
 	}
 	if account.FreeRemaining+account.PaidRemaining <= 0 {
 		_ = s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateFailed, "quota_insufficient")
@@ -45,14 +50,14 @@ func (s *Service) GenerateScript(ctx context.Context, userID uint, noteID uint64
 
 	userProfile, err := s.ds.XhsScript().GetOrCreateProfileByUser(ctx, userID)
 	if err != nil {
-		return fail("profile_load", err)
+		return internalFail("profile_load", "生成失败，请稍后重试", err)
 	}
 	if strings.TrimSpace(userProfile.ProfileText) == "" {
 		return fail("profile_required", errno.ErrXhsScriptProfileRequired)
 	}
 
 	if err := s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateGenerating, ""); err != nil {
-		return fail("mark_generating", err)
+		return internalFail("mark_generating", "生成失败，请稍后重试", err)
 	}
 
 	aiCtx := aimw.WithUserID(ctx, userID)
@@ -72,8 +77,9 @@ func (s *Service) GenerateScript(ctx context.Context, userID uint, noteID uint64
 		MaxTokens:   2200,
 	})
 	if err != nil {
+		s.recordGenerationFail(ctx, userID, baseProps, "chat", err)
 		_ = s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateFailed, "generation_failed")
-		return fail("chat", err)
+		return nil, errno.ErrInternalServer.SetMessage("生成失败，请稍后重试")
 	}
 	script := strings.TrimSpace(resp.Content)
 	if script == "" {
@@ -88,7 +94,8 @@ func (s *Service) GenerateScript(ctx context.Context, userID uint, noteID uint64
 			return fail("quota_deduct", errno.ErrXhsScriptQuotaInsufficient)
 		}
 		_ = s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateFailed, "generation_commit_failed")
-		return fail("commit_generation", err)
+		s.recordGenerationFail(ctx, userID, baseProps, "commit_generation", err)
+		return nil, errno.ErrInternalServer.SetMessage("生成保存失败，请稍后重试")
 	}
 	generation := commit.Generation
 	successProps := mergeAnalyticsProperties(baseProps, map[string]interface{}{
