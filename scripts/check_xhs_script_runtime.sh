@@ -12,6 +12,8 @@
 #   BACKEND_BASE_URL=http://...     defaults: dev 9091, qa 9093, prod 9095
 #   CONTAINER_NAME=name             default: numind-server-${ENV}
 #   SKIP_HTTP=1                     run static + docker checks only
+#   CHECK_PROD_SECRETS_ENV=1        validate the runtime prod secrets env-file
+#   SECRETS_FILE=/path/secrets.env  default: /opt/numind/${ENV}/secrets.env
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,6 +40,7 @@ CONFIG_FILE="${CONFIG_FILE:-config_${ENV}.yaml}"
 BACKEND_BASE_URL="${BACKEND_BASE_URL:-${DEFAULT_BACKEND_BASE_URL}}"
 CONTAINER_NAME="${CONTAINER_NAME:-numind-server-${ENV}}"
 SKIP_HTTP="${SKIP_HTTP:-0}"
+CHECK_PROD_SECRETS_ENV="${CHECK_PROD_SECRETS_ENV:-0}"
 
 CONFIG_PATH="${CONFIG_FILE}"
 if [[ "${CONFIG_PATH}" != /* ]]; then
@@ -178,6 +181,40 @@ check_prod_secret_hygiene() {
   printf '%s\n' "${output}"
 }
 
+check_prod_secrets_env() {
+  local output rc
+  local -a check_env
+
+  if [[ "${ENV}" != "prod" ]]; then
+    skip "runtime prod secrets env-file check skipped because ENV=${ENV}"
+    return
+  fi
+
+  if [[ "${CHECK_PROD_SECRETS_ENV}" != "1" ]]; then
+    skip "runtime prod secrets env-file check skipped; set CHECK_PROD_SECRETS_ENV=1 to validate secrets.env"
+    return
+  fi
+
+  check_env=(ENV="${ENV}" CONFIG_FILE="${CONFIG_FILE}")
+  if [[ -n "${SECRETS_FILE:-}" ]]; then
+    check_env+=(SECRETS_FILE="${SECRETS_FILE}")
+  fi
+
+  set +e
+  output="$(env "${check_env[@]}" "${REPO_ROOT}/scripts/check_prod_secrets_env.sh" 2>&1)"
+  rc=$?
+  set -e
+
+  if [[ "${rc}" -eq 0 ]]; then
+    ok "runtime prod secrets env-file check passed"
+    printf '%s\n' "${output}"
+    return
+  fi
+
+  not_ok "runtime prod secrets env-file check failed (rc=${rc}); fill /opt/numind/prod/secrets.env from scripts/cicd/prod-secrets.env.example"
+  printf '%s\n' "${output}"
+}
+
 read_wechat_field() {
   local field="$1"
   local var_name="$2"
@@ -289,6 +326,7 @@ else
 fi
 
 check_prod_secret_hygiene
+check_prod_secrets_env
 
 wechat_app_id=""
 wechat_mch_id=""

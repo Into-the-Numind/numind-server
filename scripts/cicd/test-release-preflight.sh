@@ -12,12 +12,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RELEASE_SH="$SCRIPT_DIR/release.sh"
 DEPLOY_REMOTE_SH="$SCRIPT_DIR/deploy-remote.sh"
 SECRET_HYGIENE_SH="$(cd "$SCRIPT_DIR/.." && pwd)/check_prod_secret_hygiene.sh"
+PROD_SECRETS_ENV_SH="$(cd "$SCRIPT_DIR/.." && pwd)/check_prod_secrets_env.sh"
 
 die() { echo "test setup error: $1" >&2; exit 2; }
 
 [ -f "$RELEASE_SH" ] || die "release.sh not found at $RELEASE_SH"
 [ -f "$DEPLOY_REMOTE_SH" ] || die "deploy-remote.sh not found at $DEPLOY_REMOTE_SH"
 [ -f "$SECRET_HYGIENE_SH" ] || die "check_prod_secret_hygiene.sh not found at $SECRET_HYGIENE_SH"
+[ -f "$PROD_SECRETS_ENV_SH" ] || die "check_prod_secrets_env.sh not found at $PROD_SECRETS_ENV_SH"
 
 TMP="$(mktemp -d)" || die "mktemp"
 trap 'rm -rf "$TMP"' EXIT
@@ -395,6 +397,7 @@ ADMIN_DOCKER_RUN_LOG="$TMP/admin-docker-run.log"
   FAKE_DOCKER_RUN_LOG="$ADMIN_DOCKER_RUN_LOG" \
   ENV=prod TARGET=admin IMAGE="example.invalid/numind-admin:prod-test" \
   SECRETS_FILE="$ADMIN_SECRETS_FILE" \
+  REQUIRE_PROD_SECRETS_ENV=0 \
     bash "$DEPLOY_REMOTE_SH"
 ) > "$TMP/admin-deploy-remote.out" 2>&1
 admin_deploy_remote_rc=$?
@@ -420,6 +423,225 @@ else
   fail=1
 fi
 
+PROD_SECRETS_CONFIG="$TMP/prod-secrets-config.yaml"
+PROD_SECRETS_EXAMPLE="$TMP/prod-secrets.env.example"
+PROD_SECRETS_VALID="$TMP/prod-secrets-valid.env"
+cat > "$PROD_SECRETS_CONFIG" <<'YAML' || die "write prod secrets config"
+jwt:
+  secret: ${NUMIND_JWT_SECRET}
+database:
+  password: ${NUMIND_DB_PASSWORD}
+YAML
+cat > "$PROD_SECRETS_EXAMPLE" <<'ENVEXAMPLE' || die "write prod secrets example"
+NUMIND_JWT_SECRET=
+NUMIND_DB_PASSWORD=
+ENVEXAMPLE
+cat > "$PROD_SECRETS_VALID" <<'ENVFILE' || die "write prod secrets valid env"
+NUMIND_JWT_SECRET=fixture-jwt-secret
+NUMIND_DB_PASSWORD=fixture-db-secret
+ENVFILE
+chmod 600 "$PROD_SECRETS_VALID" || die "chmod prod secrets valid env"
+
+PROD_SECRETS_DOCKER_RUN_LOG="$TMP/prod-secrets-docker-run.log"
+(
+  PATH="$DEPLOY_REMOTE_BIN:$PATH" \
+  FAKE_DOCKER_RUN_LOG="$PROD_SECRETS_DOCKER_RUN_LOG" \
+  ENV=prod TARGET=admin IMAGE="example.invalid/numind-admin:prod-secrets-test" \
+  SECRETS_FILE="$PROD_SECRETS_VALID" \
+  PROD_SECRETS_CHECK_SCRIPT="$PROD_SECRETS_ENV_SH" \
+  PROD_SECRETS_CONFIG_FILE="$PROD_SECRETS_CONFIG" \
+  PROD_SECRETS_EXAMPLE="$PROD_SECRETS_EXAMPLE" \
+    bash "$DEPLOY_REMOTE_SH"
+) > "$TMP/prod-secrets-deploy-remote.out" 2>&1
+prod_secrets_deploy_rc=$?
+
+if [ "$prod_secrets_deploy_rc" -eq 0 ]; then
+  echo "PASS: prod deploy-remote validates complete secrets env-file"
+else
+  echo "FAIL: prod deploy-remote should accept complete secrets env-file (rc=$prod_secrets_deploy_rc)"
+  fail=1
+fi
+
+if grep -Fq "prod-secrets-env: checked" "$TMP/prod-secrets-deploy-remote.out"; then
+  echo "PASS: prod deploy-remote runs prod secrets env-file checker"
+else
+  echo "FAIL: prod deploy-remote output missing prod secrets checker evidence"
+  fail=1
+fi
+
+if grep -Eq 'fixture-jwt-secret|fixture-db-secret' "$TMP/prod-secrets-deploy-remote.out"; then
+  echo "FAIL: prod deploy-remote leaked fixture secret values"
+  fail=1
+else
+  echo "PASS: prod deploy-remote does not leak fixture secret values"
+fi
+
+MISSING_PROD_SECRETS_DOCKER_RUN_LOG="$TMP/missing-prod-secrets-docker-run.log"
+(
+  PATH="$DEPLOY_REMOTE_BIN:$PATH" \
+  FAKE_DOCKER_RUN_LOG="$MISSING_PROD_SECRETS_DOCKER_RUN_LOG" \
+  ENV=prod TARGET=admin IMAGE="example.invalid/numind-admin:missing-secrets-test" \
+  SECRETS_FILE="$TMP/missing-prod-secrets.env" \
+  PROD_SECRETS_CHECK_SCRIPT="$PROD_SECRETS_ENV_SH" \
+  PROD_SECRETS_CONFIG_FILE="$PROD_SECRETS_CONFIG" \
+  PROD_SECRETS_EXAMPLE="$PROD_SECRETS_EXAMPLE" \
+    bash "$DEPLOY_REMOTE_SH"
+) > "$TMP/missing-prod-secrets-deploy-remote.out" 2>&1
+missing_prod_secrets_deploy_rc=$?
+
+if [ "$missing_prod_secrets_deploy_rc" -ne 0 ]; then
+  echo "PASS: prod deploy-remote rejects missing secrets env-file"
+else
+  echo "FAIL: prod deploy-remote should reject missing secrets env-file"
+  fail=1
+fi
+
+if grep -Fq "secrets env-file not found" "$TMP/missing-prod-secrets-deploy-remote.out"; then
+  echo "PASS: prod deploy-remote explains missing secrets env-file"
+else
+  echo "FAIL: prod deploy-remote output missing missing-secrets explanation"
+  fail=1
+fi
+
+if grep -Eq '^pull( |$)' "$MISSING_PROD_SECRETS_DOCKER_RUN_LOG" 2>/dev/null; then
+  echo "FAIL: prod deploy-remote should fail before docker pull when secrets are missing"
+  fail=1
+else
+  echo "PASS: prod deploy-remote fails before docker pull when secrets are missing"
+fi
+
+if grep -Eq '^run( |$)' "$MISSING_PROD_SECRETS_DOCKER_RUN_LOG" 2>/dev/null; then
+  echo "FAIL: prod deploy-remote should fail before docker run when secrets are missing"
+  fail=1
+else
+  echo "PASS: prod deploy-remote fails before docker run when secrets are missing"
+fi
+
+PROD_SECRETS_BAD_MODE="$TMP/prod-secrets-bad-mode.env"
+cp "$PROD_SECRETS_VALID" "$PROD_SECRETS_BAD_MODE" || die "copy prod secrets bad mode"
+chmod 644 "$PROD_SECRETS_BAD_MODE" || die "chmod prod secrets bad mode"
+BAD_MODE_PROD_SECRETS_DOCKER_RUN_LOG="$TMP/bad-mode-prod-secrets-docker-run.log"
+(
+  PATH="$DEPLOY_REMOTE_BIN:$PATH" \
+  FAKE_DOCKER_RUN_LOG="$BAD_MODE_PROD_SECRETS_DOCKER_RUN_LOG" \
+  ENV=prod TARGET=admin IMAGE="example.invalid/numind-admin:bad-mode-secrets-test" \
+  SECRETS_FILE="$PROD_SECRETS_BAD_MODE" \
+  PROD_SECRETS_CHECK_SCRIPT="$PROD_SECRETS_ENV_SH" \
+  PROD_SECRETS_CONFIG_FILE="$PROD_SECRETS_CONFIG" \
+  PROD_SECRETS_EXAMPLE="$PROD_SECRETS_EXAMPLE" \
+    bash "$DEPLOY_REMOTE_SH"
+) > "$TMP/bad-mode-prod-secrets-deploy-remote.out" 2>&1
+bad_mode_prod_secrets_deploy_rc=$?
+
+if [ "$bad_mode_prod_secrets_deploy_rc" -ne 0 ]; then
+  echo "PASS: prod deploy-remote rejects group/world readable secrets env-file"
+else
+  echo "FAIL: prod deploy-remote should reject group/world readable secrets env-file"
+  fail=1
+fi
+
+if grep -Fq "chmod 600" "$TMP/bad-mode-prod-secrets-deploy-remote.out"; then
+  echo "PASS: prod deploy-remote explains bad secrets env-file mode"
+else
+  echo "FAIL: prod deploy-remote output missing bad-mode explanation"
+  fail=1
+fi
+
+if grep -Eq '^pull( |$)' "$BAD_MODE_PROD_SECRETS_DOCKER_RUN_LOG" 2>/dev/null; then
+  echo "FAIL: prod deploy-remote should fail before docker pull when secrets mode is unsafe"
+  fail=1
+else
+  echo "PASS: prod deploy-remote fails before docker pull when secrets mode is unsafe"
+fi
+
+if grep -Eq '^run( |$)' "$BAD_MODE_PROD_SECRETS_DOCKER_RUN_LOG" 2>/dev/null; then
+  echo "FAIL: prod deploy-remote should fail before docker run when secrets mode is unsafe"
+  fail=1
+else
+  echo "PASS: prod deploy-remote fails before docker run when secrets mode is unsafe"
+fi
+
+SERVER_POST_CHMOD_BIN="$TMP/server-post-chmod-bin"
+mkdir -p "$SERVER_POST_CHMOD_BIN" || die "mkdir server post-chmod bin"
+cp "$DEPLOY_REMOTE_BIN/docker" "$SERVER_POST_CHMOD_BIN/docker" || die "copy fake docker"
+cp "$DEPLOY_REMOTE_BIN/curl" "$SERVER_POST_CHMOD_BIN/curl" || die "copy fake curl"
+cat > "$SERVER_POST_CHMOD_BIN/chmod" <<'CHMOD' || die "write fake chmod"
+#!/usr/bin/env bash
+if [ "${1:-}" = "600" ] && [ "${2:-}" = "${FAIL_CHMOD_PATH:-}" ]; then
+  echo "chmod: fixture failure for $2" >&2
+  exit 1
+fi
+exec /bin/chmod "$@"
+CHMOD
+chmod +x "$SERVER_POST_CHMOD_BIN/chmod" || die "chmod fake chmod"
+cat > "$SERVER_POST_CHMOD_BIN/sudo" <<'SUDO' || die "write fake sudo"
+#!/usr/bin/env bash
+case "${1:-}" in
+  mkdir)
+    exit 0
+    ;;
+  chown)
+    exit 0
+    ;;
+  chmod)
+    if [ "${2:-}" = "600" ] && [ "${3:-}" = "${FAIL_CHMOD_PATH:-}" ]; then
+      echo "sudo chmod: fixture failure for $3" >&2
+      exit 1
+    fi
+    exit 0
+    ;;
+  *)
+    exec "$@"
+    ;;
+esac
+SUDO
+chmod +x "$SERVER_POST_CHMOD_BIN/sudo" || die "chmod fake sudo"
+
+SERVER_POST_CHMOD_SECRETS="$TMP/server-post-chmod-secrets.env"
+cp "$PROD_SECRETS_VALID" "$SERVER_POST_CHMOD_SECRETS" || die "copy server post-chmod secrets"
+chmod 600 "$SERVER_POST_CHMOD_SECRETS" || die "chmod server post-chmod secrets"
+SERVER_POST_CHMOD_DOCKER_RUN_LOG="$TMP/server-post-chmod-docker-run.log"
+(
+  PATH="$SERVER_POST_CHMOD_BIN:$PATH" \
+  FAKE_DOCKER_RUN_LOG="$SERVER_POST_CHMOD_DOCKER_RUN_LOG" \
+  FAIL_CHMOD_PATH="$SERVER_POST_CHMOD_SECRETS" \
+  ENV=prod TARGET=server IMAGE="example.invalid/numind-server:post-chmod-test" \
+  SECRETS_FILE="$SERVER_POST_CHMOD_SECRETS" \
+  PROD_SECRETS_CHECK_SCRIPT="$PROD_SECRETS_ENV_SH" \
+  PROD_SECRETS_CONFIG_FILE="$PROD_SECRETS_CONFIG" \
+  PROD_SECRETS_EXAMPLE="$PROD_SECRETS_EXAMPLE" \
+    bash "$DEPLOY_REMOTE_SH"
+) > "$TMP/server-post-chmod-deploy-remote.out" 2>&1
+server_post_chmod_rc=$?
+
+if [ "$server_post_chmod_rc" -ne 0 ]; then
+  echo "PASS: prod server deploy-remote fails when post-validation secrets chmod fails"
+else
+  echo "FAIL: prod server deploy-remote should fail when post-validation secrets chmod fails"
+  fail=1
+fi
+
+if grep -Fq "fixture failure" "$TMP/server-post-chmod-deploy-remote.out"; then
+  echo "PASS: prod server deploy-remote reports post-validation chmod failure"
+else
+  echo "FAIL: prod server deploy-remote output missing post-validation chmod failure"
+  fail=1
+fi
+
+if grep -Eq '^pull( |$)' "$SERVER_POST_CHMOD_DOCKER_RUN_LOG" 2>/dev/null; then
+  echo "PASS: prod server post-validation chmod check occurs after docker pull"
+else
+  echo "FAIL: prod server post-validation chmod regression did not reach docker pull"
+  fail=1
+fi
+
+if grep -Eq '^run( |$)' "$SERVER_POST_CHMOD_DOCKER_RUN_LOG" 2>/dev/null; then
+  echo "FAIL: prod server deploy-remote should fail before docker run when post-validation chmod fails"
+  fail=1
+else
+  echo "PASS: prod server deploy-remote fails before docker run when post-validation chmod fails"
+fi
+
 echo
 if [ "$fail" -ne 0 ]; then
   echo "---- tagged dirty release output ----"
@@ -440,6 +662,20 @@ if [ "$fail" -ne 0 ]; then
   cat "$TMP/admin-deploy-remote.out" 2>/dev/null || true
   echo "---- admin docker run log ----"
   cat "$ADMIN_DOCKER_RUN_LOG" 2>/dev/null || true
+  echo "---- prod secrets deploy-remote output ----"
+  cat "$TMP/prod-secrets-deploy-remote.out" 2>/dev/null || true
+  echo "---- missing prod secrets deploy-remote output ----"
+  cat "$TMP/missing-prod-secrets-deploy-remote.out" 2>/dev/null || true
+  echo "---- missing prod secrets docker run log ----"
+  cat "$MISSING_PROD_SECRETS_DOCKER_RUN_LOG" 2>/dev/null || true
+  echo "---- bad mode prod secrets deploy-remote output ----"
+  cat "$TMP/bad-mode-prod-secrets-deploy-remote.out" 2>/dev/null || true
+  echo "---- bad mode prod secrets docker run log ----"
+  cat "$BAD_MODE_PROD_SECRETS_DOCKER_RUN_LOG" 2>/dev/null || true
+  echo "---- server post-chmod deploy-remote output ----"
+  cat "$TMP/server-post-chmod-deploy-remote.out" 2>/dev/null || true
+  echo "---- server post-chmod docker run log ----"
+  cat "$SERVER_POST_CHMOD_DOCKER_RUN_LOG" 2>/dev/null || true
   echo "--------------------------------------"
   echo "release preflight test FAILED"
   exit 1

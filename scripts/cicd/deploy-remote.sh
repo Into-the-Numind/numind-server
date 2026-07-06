@@ -60,20 +60,60 @@ esac
 
 HEALTH_URL="http://localhost:${HEALTH_PORT}${HEALTH_PATH}"
 
-# Optional secrets file at /opt/numind/<env>/secrets.env for server/admin.
+# Runtime secrets file at /opt/numind/<env>/secrets.env for server/admin.
 # Format: KEY=value per line, no quotes. Used to inject runtime secrets that
 # must NOT live in config_*.yaml or the image (e.g. NUMIND_WEB_SEARCH_TAVILY_API_KEY).
 # File is owned by deploy server admin; deploy script reads it only — never writes.
-# Absence is fine: docker --env-file is skipped, and viper falls back to the
-# config_<env>.yaml value (typically empty string for secrets).
+# In prod, deploy.sh copies a checker/config/template to /tmp and this script
+# validates the real env-file before docker pull/run.
 ENV_FILE_FLAG=""
 SECRETS_FILE="${SECRETS_FILE:-/opt/numind/${ENV}/secrets.env}"
+PROD_SECRETS_CHECK_SCRIPT="${PROD_SECRETS_CHECK_SCRIPT:-/tmp/numind-check-prod-secrets-env.sh}"
+PROD_SECRETS_CONFIG_FILE="${PROD_SECRETS_CONFIG_FILE:-/tmp/numind-config-prod.yaml}"
+PROD_SECRETS_EXAMPLE="${PROD_SECRETS_EXAMPLE:-/tmp/numind-prod-secrets.env.example}"
+if [ -z "${REQUIRE_PROD_SECRETS_ENV:-}" ]; then
+  if [ "$ENV" = "prod" ]; then
+    REQUIRE_PROD_SECRETS_ENV=1
+  else
+    REQUIRE_PROD_SECRETS_ENV=0
+  fi
+fi
 if [ -f "$SECRETS_FILE" ]; then
   ENV_FILE_FLAG="--env-file $SECRETS_FILE"
   SECRETS_INFO="$SECRETS_FILE (loaded)"
 else
   SECRETS_INFO="$SECRETS_FILE (not present, skipping)"
 fi
+
+secure_secrets_file() {
+  [ -f "$SECRETS_FILE" ] || return 0
+  if [ "$(id -u)" -eq 0 ] && command -v sudo >/dev/null 2>&1; then
+    sudo chmod 600 "$SECRETS_FILE" || chmod 600 "$SECRETS_FILE"
+  else
+    chmod 600 "$SECRETS_FILE"
+  fi
+}
+
+validate_prod_secrets_file() {
+  [ "$ENV" = "prod" ] || return 0
+
+  if [ "$REQUIRE_PROD_SECRETS_ENV" != "1" ]; then
+    echo "WARNING: prod secrets env-file validation disabled by REQUIRE_PROD_SECRETS_ENV=$REQUIRE_PROD_SECRETS_ENV"
+    return 0
+  fi
+
+  if [ ! -f "$PROD_SECRETS_CHECK_SCRIPT" ]; then
+    echo "ERROR: prod secrets checker missing: $PROD_SECRETS_CHECK_SCRIPT" >&2
+    exit 1
+  fi
+
+  echo "Validating prod secrets env-file before deploy..."
+  ENV="$ENV" \
+    CONFIG_FILE="$PROD_SECRETS_CONFIG_FILE" \
+    SECRETS_EXAMPLE="$PROD_SECRETS_EXAMPLE" \
+    SECRETS_FILE="$SECRETS_FILE" \
+    bash "$PROD_SECRETS_CHECK_SCRIPT"
+}
 
 echo "==============================================="
 echo "Deploy: $CONTAINER"
@@ -82,6 +122,8 @@ echo "  Env    : $ENV"
 echo "  Health : $HEALTH_URL"
 echo "  Secrets: $SECRETS_INFO"
 echo "==============================================="
+
+validate_prod_secrets_file
 
 OLD_IMAGE=""
 if [ "$ENV" = "prod" ]; then
@@ -108,9 +150,7 @@ if [ "$TARGET" = "server" ]; then
   # Re-secure secrets file after the recursive chmod above. Mode 600 is
   # owner-only read/write; docker daemon runs as root and bypasses ACLs, so
   # --env-file still works regardless of ownership.
-  if [ -f "/opt/numind/${ENV}/secrets.env" ]; then
-    sudo chmod 600 "/opt/numind/${ENV}/secrets.env"
-  fi
+  secure_secrets_file
 fi
 
 start_container() {
