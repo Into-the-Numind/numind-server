@@ -30,7 +30,15 @@ type IXhsScriptStore interface {
 	UpdateTranscribeStatus(ctx context.Context, userID uint, id uint64, status string, transcript *string, lastError string) error
 	UpdateGenerateStatus(ctx context.Context, userID uint, id uint64, status string, lastError string) error
 	CreateGeneration(ctx context.Context, userID uint, noteID uint64, scriptText string, promptTokens, completionTokens int) (*model.XhsScriptGeneration, error)
+	CreateGenerationAndDeductQuota(ctx context.Context, userID uint, noteID uint64, scriptText string, promptTokens, completionTokens int) (*XhsScriptGenerationCommit, error)
 	DeductOneGeneration(ctx context.Context, userID uint, refID string) error
+}
+
+type XhsScriptGenerationCommit struct {
+	Generation *model.XhsScriptGeneration
+	Bucket     string
+	FreeBefore int64
+	PaidBefore int64
 }
 
 type xhsScriptStore struct {
@@ -292,6 +300,101 @@ func (s *xhsScriptStore) CreateGeneration(ctx context.Context, userID uint, note
 		return nil, fmt.Errorf("CreateGeneration: %w", err)
 	}
 	return &generation, nil
+}
+
+func (s *xhsScriptStore) CreateGenerationAndDeductQuota(ctx context.Context, userID uint, noteID uint64, scriptText string, promptTokens, completionTokens int) (*XhsScriptGenerationCommit, error) {
+	commit := &XhsScriptGenerationCommit{}
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var note model.XhsScriptNote
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ? AND id = ?", userID, noteID).
+			First(&note).Error; err != nil {
+			return fmt.Errorf("lock note: %w", err)
+		}
+
+		account, err := findOrCreateQuotaAccountForUpdate(ctx, tx, userID)
+		if err != nil {
+			return fmt.Errorf("quota account: %w", err)
+		}
+		commit.FreeBefore = account.FreeRemaining
+		commit.PaidBefore = account.PaidRemaining
+
+		switch {
+		case account.FreeRemaining > 0:
+			account.FreeRemaining--
+			commit.Bucket = model.XhsScriptQuotaBucketFree
+		case account.PaidRemaining > 0:
+			account.PaidRemaining--
+			commit.Bucket = model.XhsScriptQuotaBucketPaid
+		default:
+			return ErrXhsScriptQuotaInsufficient
+		}
+
+		var latestVersion int
+		if err := tx.Model(&model.XhsScriptGeneration{}).
+			Where("note_id = ?", noteID).
+			Select("COALESCE(MAX(version), 0)").
+			Scan(&latestVersion).Error; err != nil {
+			return fmt.Errorf("latest version: %w", err)
+		}
+		generation := &model.XhsScriptGeneration{
+			UserID:           userID,
+			NoteID:           noteID,
+			Version:          latestVersion + 1,
+			ScriptText:       scriptText,
+			PromptTokens:     promptTokens,
+			CompletionTokens: completionTokens,
+		}
+		if err := tx.Create(generation).Error; err != nil {
+			return fmt.Errorf("create generation: %w", err)
+		}
+
+		ledger := model.XhsScriptQuotaLedger{
+			UserID:  userID,
+			Delta:   -1,
+			Bucket:  commit.Bucket,
+			Reason:  model.XhsScriptLedgerReasonGeneration,
+			RefType: model.XhsScriptLedgerRefTypeGeneration,
+			RefID:   fmt.Sprintf("%d", generation.ID),
+		}
+		inserted, err := insertQuotaLedgerOnce(ctx, tx, &ledger)
+		if err != nil {
+			return fmt.Errorf("create ledger: %w", err)
+		}
+		if !inserted {
+			return fmt.Errorf("generation quota ledger already exists for generation %d", generation.ID)
+		}
+
+		if err := tx.Model(&model.XhsScriptQuotaAccount{}).
+			Where("id = ?", account.ID).
+			Updates(map[string]interface{}{
+				"free_remaining": account.FreeRemaining,
+				"paid_remaining": account.PaidRemaining,
+				"updated_at":     time.Now(),
+			}).Error; err != nil {
+			return fmt.Errorf("update quota account: %w", err)
+		}
+
+		if err := tx.Model(&model.XhsScriptNote{}).
+			Where("id = ?", note.ID).
+			Updates(map[string]interface{}{
+				"generate_status": model.XhsScriptGenerateGenerated,
+				"last_error":      "",
+				"updated_at":      time.Now(),
+			}).Error; err != nil {
+			return fmt.Errorf("mark generated: %w", err)
+		}
+
+		commit.Generation = generation
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, ErrXhsScriptQuotaInsufficient) {
+			return nil, ErrXhsScriptQuotaInsufficient
+		}
+		return nil, fmt.Errorf("CreateGenerationAndDeductQuota: %w", err)
+	}
+	return commit, nil
 }
 
 func (s *xhsScriptStore) DeductOneGeneration(ctx context.Context, userID uint, refID string) error {

@@ -185,6 +185,73 @@ func TestXhsScriptStore_CreateGenerationIncrementsVersionsPerNote(t *testing.T) 
 	assert.Equal(t, 1, genOther.Version)
 }
 
+func TestXhsScriptStore_CreateGenerationAndDeductQuotaCommitsTogether(t *testing.T) {
+	db := newXhsScriptStoreTestDB(t)
+	s := NewXhsScriptStore(db)
+	ctx := context.Background()
+
+	_, err := s.CreateOrGetQuotaAccount(ctx, 24)
+	require.NoError(t, err)
+	note := newXhsScriptNote(24, "source-commit")
+	note.TranscribeStatus = model.XhsScriptTranscribeReady
+	note.GenerateStatus = model.XhsScriptGenerateGenerating
+	created, err := s.CreateOrUpsertCapturedNote(ctx, note)
+	require.NoError(t, err)
+
+	commit, err := s.CreateGenerationAndDeductQuota(ctx, 24, created.ID, "原子提交口播稿", 31, 42)
+	require.NoError(t, err)
+	require.NotNil(t, commit.Generation)
+	assert.Equal(t, model.XhsScriptQuotaBucketFree, commit.Bucket)
+	assert.EqualValues(t, 3, commit.FreeBefore)
+	assert.EqualValues(t, 0, commit.PaidBefore)
+	assert.Equal(t, 1, commit.Generation.Version)
+
+	account, err := s.GetQuotaAccount(ctx, 24)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, account.FreeRemaining)
+
+	var ledger model.XhsScriptQuotaLedger
+	require.NoError(t, db.Where("user_id = ? AND reason = ?", 24, model.XhsScriptLedgerReasonGeneration).First(&ledger).Error)
+	assert.EqualValues(t, -1, ledger.Delta)
+	assert.Equal(t, fmt.Sprintf("%d", commit.Generation.ID), ledger.RefID)
+
+	got, err := s.GetNote(ctx, 24, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, model.XhsScriptGenerateGenerated, got.GenerateStatus)
+	assert.Empty(t, got.LastError)
+}
+
+func TestXhsScriptStore_CreateGenerationAndDeductQuotaRollsBackWhenQuotaInsufficient(t *testing.T) {
+	db := newXhsScriptStoreTestDB(t)
+	s := NewXhsScriptStore(db)
+	ctx := context.Background()
+
+	_, err := s.CreateOrGetQuotaAccount(ctx, 25)
+	require.NoError(t, err)
+	for _, refID := range []string{"gen-used-1", "gen-used-2", "gen-used-3"} {
+		require.NoError(t, s.DeductOneGeneration(ctx, 25, refID))
+	}
+	note := newXhsScriptNote(25, "source-no-quota")
+	note.TranscribeStatus = model.XhsScriptTranscribeReady
+	note.GenerateStatus = model.XhsScriptGenerateGenerating
+	created, err := s.CreateOrUpsertCapturedNote(ctx, note)
+	require.NoError(t, err)
+
+	commit, err := s.CreateGenerationAndDeductQuota(ctx, 25, created.ID, "不应该保存", 31, 42)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrXhsScriptQuotaInsufficient))
+	assert.Nil(t, commit)
+
+	var generations int64
+	require.NoError(t, db.Model(&model.XhsScriptGeneration{}).Where("user_id = ? AND note_id = ?", 25, created.ID).Count(&generations).Error)
+	assert.EqualValues(t, 0, generations)
+
+	account, err := s.GetQuotaAccount(ctx, 25)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, account.FreeRemaining)
+	assert.EqualValues(t, 0, account.PaidRemaining)
+}
+
 func TestXhsScriptStore_UpsertCapturedNoteUpdatesSameRow(t *testing.T) {
 	db := newXhsScriptStoreTestDB(t)
 	s := NewXhsScriptStore(db)

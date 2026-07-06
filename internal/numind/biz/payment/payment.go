@@ -49,9 +49,9 @@ const (
 
 // IPaymentBiz 支付业务逻辑接口
 type IPaymentBiz interface {
-	// CreateOrder creates a payment order. Only product_type=booster is accepted;
+	// CreateOrder creates a payment order for booster credits or XHS script packs.
 	// trial/monthly/yearly memberships are granted via the B2B grant path.
-	// quantity specifies the number of booster units (1–10000).
+	// quantity specifies the number of booster units or script packs (1–10000).
 	//
 	// idempotencyKey carries the value of the Idempotency-Key header from
 	// POST /v1/orders. When non-empty, a prior order with the same key is
@@ -161,6 +161,9 @@ func (b *paymentBiz) CreateOrder(ctx context.Context, payerID, userID uint, prod
 	amount, productName, err := b.orderPricing(ctx, userID, productType, quantity)
 	if err != nil {
 		return nil, err
+	}
+	if productType == model.ProductTypeXhsScriptPack && payChannel != model.PayChannelWechat {
+		return nil, errno.ErrInvalidParameter.SetMessage("小红书口播稿购买仅支持微信支付")
 	}
 
 	// Generate order number and call payment channel.

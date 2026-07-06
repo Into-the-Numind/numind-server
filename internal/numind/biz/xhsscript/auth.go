@@ -17,6 +17,7 @@ import (
 	"numind-server/internal/pkg/errno"
 	importMw "numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
+	passwordauth "numind-server/pkg/auth"
 )
 
 func (s *Service) Authenticate(ctx context.Context, token string, allowExtToken bool) (*model.User, error) {
@@ -73,9 +74,13 @@ func (s *Service) Register(ctx context.Context, current *model.User, username, p
 	if len(password) < 6 || len(password) > 72 {
 		return nil, errno.ErrInvalidParameter.SetMessage("密码需要至少 6 个字符")
 	}
+	hashedPassword, err := passwordauth.Encrypt(password)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt password: %w", err)
+	}
 
 	var user model.User
-	err := s.ds.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err = s.ds.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing model.User
 		existingErr := tx.Where("username = ?", username).First(&existing).Error
 		if existingErr == nil && (current == nil || existing.ID != current.ID) {
@@ -88,7 +93,7 @@ func (s *Service) Register(ctx context.Context, current *model.User, username, p
 		if current != nil && current.ID > 0 && IsAnonymousUsername(current.Username) {
 			updates := map[string]interface{}{
 				"username": username,
-				"password": password,
+				"password": hashedPassword,
 				"nickname": username,
 				"status":   1,
 			}
@@ -100,21 +105,21 @@ func (s *Service) Register(ctx context.Context, current *model.User, username, p
 
 		if existingErr == nil && current != nil && existing.ID == current.ID {
 			if err := tx.Model(&model.User{}).Where("id = ?", existing.ID).Updates(map[string]interface{}{
-				"password": password,
+				"password": hashedPassword,
 				"nickname": username,
 				"status":   1,
 			}).Error; err != nil {
 				return err
 			}
 			user = existing
-			user.Password = password
+			user.Password = hashedPassword
 			user.Nickname = username
 			return nil
 		}
 
 		user = model.User{
 			Username: username,
-			Password: password,
+			Password: hashedPassword,
 			Nickname: username,
 			Status:   1,
 		}
@@ -133,13 +138,34 @@ func (s *Service) Login(ctx context.Context, username, password string) (*Sessio
 	if err := s.ds.DB().WithContext(ctx).Where("username = ?", username).First(&user).Error; err != nil {
 		return nil, errno.ErrTokenInvalid.SetMessage("账号或密码不正确")
 	}
-	if user.Password != password || IsAnonymousUsername(user.Username) {
+	if IsAnonymousUsername(user.Username) || !s.passwordMatches(ctx, &user, password) {
 		return nil, errno.ErrTokenInvalid.SetMessage("账号或密码不正确")
 	}
 	now := time.Now()
 	_ = s.ds.DB().WithContext(ctx).Model(&model.User{}).Where("id = ?", user.ID).Update("last_login", &now).Error
 	user.LastLogin = &now
 	return s.sessionForUser(ctx, &user, "")
+}
+
+func (s *Service) passwordMatches(ctx context.Context, user *model.User, password string) bool {
+	if user == nil || strings.TrimSpace(user.Password) == "" {
+		return false
+	}
+	if err := passwordauth.Compare(user.Password, password); err == nil {
+		return true
+	}
+	if user.Password != password {
+		return false
+	}
+	hashed, err := passwordauth.Encrypt(password)
+	if err != nil {
+		return false
+	}
+	if err := s.ds.DB().WithContext(ctx).Model(&model.User{}).Where("id = ?", user.ID).Update("password", hashed).Error; err != nil {
+		return false
+	}
+	user.Password = hashed
+	return true
 }
 
 func (s *Service) IssueExtToken(ctx context.Context, userID uint) (string, time.Time, error) {

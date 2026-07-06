@@ -78,18 +78,15 @@ func (s *Service) GenerateScript(ctx context.Context, userID uint, noteID uint64
 		return fail("empty_output", errno.ErrInternalServer.SetMessage("生成结果为空，请稍后重试"))
 	}
 
-	generation, err := s.ds.XhsScript().CreateGeneration(ctx, userID, noteID, script, resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
+	commit, err := s.ds.XhsScript().CreateGenerationAndDeductQuota(ctx, userID, noteID, script, resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
 	if err != nil {
-		_ = s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateFailed, err.Error())
-		return fail("save_generation", err)
-	}
-	if err := s.ds.XhsScript().DeductOneGeneration(ctx, userID, fmt.Sprintf("%d", generation.ID)); err != nil {
 		_ = s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateFailed, err.Error())
 		if errors.Is(err, store.ErrXhsScriptQuotaInsufficient) {
 			return fail("quota_deduct", errno.ErrXhsScriptQuotaInsufficient)
 		}
-		return fail("quota_deduct", err)
+		return fail("commit_generation", err)
 	}
+	generation := commit.Generation
 	successProps := mergeAnalyticsProperties(baseProps, map[string]interface{}{
 		"generation_id":      generation.ID,
 		"prompt_tokens":      resp.Usage.PromptTokens,
@@ -97,14 +94,12 @@ func (s *Service) GenerateScript(ctx context.Context, userID uint, noteID uint64
 		"transcript_length":  noteTranscriptLength(note),
 		"script_length":      textLength(script),
 		"deducted_quantity":  1,
-		"free_before":        account.FreeRemaining,
-		"paid_before":        account.PaidRemaining,
+		"deducted_bucket":    commit.Bucket,
+		"free_before":        commit.FreeBefore,
+		"paid_before":        commit.PaidBefore,
 		"generation_version": generation.Version,
 	})
 	s.RecordEventBestEffort(ctx, userID, "quota_deducted", successProps)
-	if err := s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateGenerated, ""); err != nil {
-		return fail("mark_generated", err)
-	}
 	s.RecordEventBestEffort(ctx, userID, "generation_success", successProps)
 	return s.GetNoteDTO(ctx, userID, noteID)
 }

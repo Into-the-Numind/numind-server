@@ -233,6 +233,19 @@ func TestFulfillOrder_BoosterPath_Idempotent(t *testing.T) {
 	assert.Equal(t, int64(2*600), credits, "idempotent: balance must not be doubled")
 }
 
+func TestCreateOrder_XhsScriptPack_RejectsNonWechatChannel(t *testing.T) {
+	db := newPaymentTestDB(t)
+	ds := store.NewTestStore(db)
+	b := newPaymentBizForTest(ds)
+
+	uid := mustCreateUser(t, db)
+
+	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeXhsScriptPack, 1, model.PayChannelAlipay, "")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errno.ErrInvalidParameter)
+	assert.Contains(t, err.Error(), "微信支付")
+}
+
 func TestFulfillOrder_XhsScriptPack_AddsGenerationQuota(t *testing.T) {
 	db := newPaymentTestDB(t)
 	ds := store.NewTestStore(db)
