@@ -461,6 +461,13 @@ func (b *paymentBiz) fulfillXhsScriptOrder(ctx context.Context, order *model.Ord
 	if err != nil {
 		return fmt.Errorf("fulfill xhs script order %s: %w", order.OrderNo, err)
 	}
+	if err := b.ds.DB().WithContext(ctx).First(order, order.ID).Error; err != nil {
+		log.Warnw("reload paid XHS script order for analytics failed", "order_no", order.OrderNo, "error", err)
+		order.PayStatus = model.OrderStatusPaid
+		order.TradeNo = tradeNo
+		order.PaidAt = &now
+		order.UpdatedAt = now
+	}
 	b.recordXhsScriptPaymentAnalyticsBestEffort(ctx, order, quantity)
 	log.Infow("XHS script order fulfilled",
 		"order_no", order.OrderNo, "trade_no", tradeNo,
@@ -496,19 +503,30 @@ func (b *paymentBiz) recordXhsScriptPaymentAnalyticsBestEffort(ctx context.Conte
 	}
 	b.insertXhsScriptAnalyticsEventBestEffort(ctx, order.UserID, "backend:xhs_script:payment_success:"+order.OrderNo, "payment_success", props)
 
-	if !b.hasPreviousPaidXhsScriptOrder(ctx, order.UserID, order.ID) {
+	if !b.hasPreviousPaidXhsScriptOrder(ctx, order) {
 		return
 	}
 	b.insertXhsScriptAnalyticsEventBestEffort(ctx, order.UserID, "backend:xhs_script:repeat_purchase_success:"+order.OrderNo, "repeat_purchase_success", props)
 }
 
-func (b *paymentBiz) hasPreviousPaidXhsScriptOrder(ctx context.Context, userID uint, currentOrderID uint64) bool {
+func (b *paymentBiz) hasPreviousPaidXhsScriptOrder(ctx context.Context, order *model.Order) bool {
+	if order == nil {
+		return false
+	}
+	paidMoment := order.CreatedAt
+	if order.PaidAt != nil && !order.PaidAt.IsZero() {
+		paidMoment = *order.PaidAt
+	}
+	if paidMoment.IsZero() {
+		paidMoment = time.Now()
+	}
 	var count int64
 	err := b.ds.DB().WithContext(ctx).Model(&model.Order{}).
-		Where("user_id = ? AND product_type = ? AND pay_status = ? AND id <> ?", userID, model.ProductTypeXhsScriptPack, model.OrderStatusPaid, currentOrderID).
+		Where("user_id = ? AND product_type = ? AND pay_status = ? AND id <> ?", order.UserID, model.ProductTypeXhsScriptPack, model.OrderStatusPaid, order.ID).
+		Where("(COALESCE(paid_at, created_at) < ?) OR (COALESCE(paid_at, created_at) = ? AND id < ?)", paidMoment, paidMoment, order.ID).
 		Count(&count).Error
 	if err != nil {
-		log.Warnw("xhs-script repeat purchase analytics check failed", "user_id", userID, "order_id", currentOrderID, "error", err)
+		log.Warnw("xhs-script repeat purchase analytics check failed", "user_id", order.UserID, "order_id", order.ID, "error", err)
 		return false
 	}
 	return count > 0

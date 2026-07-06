@@ -335,6 +335,57 @@ func TestFulfillOrder_XhsScriptPack_RecordsPaymentAnalyticsEvents(t *testing.T) 
 	assert.Equal(t, "backend:xhs_script:repeat_purchase_success:"+order.OrderNo, repeatEvents[0].EventID)
 }
 
+func TestRecordXhsScriptPaymentAnalytics_DelayedFirstOrderReplayIsNotRepeat(t *testing.T) {
+	db := newPaymentTestDB(t)
+	ds := store.NewTestStore(db)
+	b, _ := newPaymentBizWithFakeCredit(ds)
+
+	uid := mustCreateUser(t, db)
+	firstPaidAt := time.Now().Add(-2 * time.Hour)
+	secondPaidAt := time.Now().Add(-time.Hour)
+	first := &model.Order{
+		OrderNo:     "TEST_XHS_SCRIPT_FIRST",
+		UserID:      uid,
+		PayerID:     uid,
+		ProductType: model.ProductTypeXhsScriptPack,
+		Months:      1,
+		Quantity:    1,
+		Amount:      xhsScriptCentsPerPack,
+		PayChannel:  model.PayChannelWechat,
+		PayStatus:   model.OrderStatusPaid,
+		PaidAt:      &firstPaidAt,
+		ExpiredAt:   time.Now().Add(30 * time.Minute),
+		CreatedAt:   firstPaidAt.Add(-time.Minute),
+	}
+	second := &model.Order{
+		OrderNo:     "TEST_XHS_SCRIPT_SECOND",
+		UserID:      uid,
+		PayerID:     uid,
+		ProductType: model.ProductTypeXhsScriptPack,
+		Months:      1,
+		Quantity:    1,
+		Amount:      xhsScriptCentsPerPack,
+		PayChannel:  model.PayChannelWechat,
+		PayStatus:   model.OrderStatusPaid,
+		PaidAt:      &secondPaidAt,
+		ExpiredAt:   time.Now().Add(30 * time.Minute),
+		CreatedAt:   secondPaidAt.Add(-time.Minute),
+	}
+	require.NoError(t, db.Create(first).Error)
+	require.NoError(t, db.Create(second).Error)
+
+	b.recordXhsScriptPaymentAnalyticsBestEffort(context.Background(), second, 1)
+	b.recordXhsScriptPaymentAnalyticsBestEffort(context.Background(), first, 1)
+
+	var repeatEvents []model.XhsScriptAnalyticsEvent
+	require.NoError(t, db.
+		Where("event_name = ?", "repeat_purchase_success").
+		Order("event_id ASC").
+		Find(&repeatEvents).Error)
+	require.Len(t, repeatEvents, 1)
+	assert.Equal(t, "backend:xhs_script:repeat_purchase_success:"+second.OrderNo, repeatEvents[0].EventID)
+}
+
 // ── Case 7: fulfillOrder rejects non-booster legacy orders ───────────────────
 
 func TestFulfillOrder_NonBoosterProductType_Rejected(t *testing.T) {

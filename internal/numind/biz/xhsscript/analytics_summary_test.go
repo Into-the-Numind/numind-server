@@ -28,7 +28,8 @@ func TestGetAnalyticsSummaryAggregatesMVPFunnel(t *testing.T) {
 		{EventID: "evt_trial", EventName: "trial_started", AnonymousID: "anon_1", UserID: &userOne, SessionID: "sess_1", Path: "/script/", CreatedAt: now},
 		{EventID: "evt_profile", EventName: "profile_saved", AnonymousID: "anon_1", UserID: &userOne, SessionID: "sess_1", Path: "/script/", CreatedAt: now},
 		{EventID: "evt_ext", EventName: "extension_token_issued", AnonymousID: "anon_1", UserID: &userOne, SessionID: "sess_1", Path: "/script/", CreatedAt: now},
-		{EventID: "evt_order", EventName: "purchase_order_created", AnonymousID: "anon_1", UserID: &userOne, SessionID: "sess_1", Path: "/script/", CreatedAt: now},
+		{EventID: "evt_client_order", EventName: "purchase_order_created", AnonymousID: "anon_1", UserID: &userOne, SessionID: "sess_1", Path: "/script/", CreatedAt: now},
+		{EventID: backendEventIDPrefix + ":purchase_order_created:order_1", EventName: "purchase_order_created", UserID: &userOne, CreatedAt: now},
 		{EventID: "evt_page_2", EventName: "script_page_view", AnonymousID: "anon_2", UserID: &userTwo, SessionID: "sess_2", Path: "/script/", CreatedAt: now},
 	}).Error)
 
@@ -134,7 +135,7 @@ func TestGetAnalyticsSummaryAggregatesMVPFunnel(t *testing.T) {
 
 func newAnalyticsSummaryTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+	db, err := gorm.Open(sqlite.Open(t.TempDir()+"/xhs_analytics_test.db?_busy_timeout=5000"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	require.NoError(t, err)

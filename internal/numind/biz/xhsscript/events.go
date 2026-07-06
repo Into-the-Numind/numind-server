@@ -9,6 +9,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 )
@@ -84,6 +86,18 @@ func analyticsErrorCategory(err error) string {
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "timeout"
+	}
+	switch {
+	case errors.Is(err, errno.ErrXhsScriptNoteNotFound):
+		return "not_found"
+	case errors.Is(err, errno.ErrXhsScriptVideoOnly):
+		return "video_only"
+	case errors.Is(err, errno.ErrXhsScriptTranscriptNotReady):
+		return "transcript_not_ready"
+	case errors.Is(err, errno.ErrXhsScriptProfileRequired):
+		return "profile_required"
+	case errors.Is(err, errno.ErrXhsScriptQuotaInsufficient), errors.Is(err, store.ErrXhsScriptQuotaInsufficient):
+		return "quota_insufficient"
 	}
 	msg := strings.ToLower(err.Error())
 	switch {

@@ -40,3 +40,35 @@ func TestIngestNotes_NonVideoRejectionRecordsAnalyticsEvent(t *testing.T) {
 	assert.Equal(t, model.XhsScriptNoteTypeNormal, props["note_type"])
 	assert.NotContains(t, string(event.Properties), "这段内容不应进入 analytics properties")
 }
+
+func TestIngestNotes_DuplicateCaptureRecordsAnalyticsOnce(t *testing.T) {
+	db := newAnalyticsSummaryTestDB(t)
+	svc := New(store.NewTestStore(db))
+	ctx := context.Background()
+	userID := uint(43)
+	payload := CapturePayload{
+		SourceNoteID: "video-note-1",
+		NoteType:     model.XhsScriptNoteTypeVideo,
+		Title:        "视频笔记",
+		VideoURL:     "https://sns-video.xhscdn.com/video-note-1.mp4",
+		LikeCount:    100,
+		CollectCount: 20,
+		CommentCount: 8,
+		HotComments:  []Comment{{Content: "有用"}},
+	}
+
+	_, err := svc.IngestNotes(ctx, userID, []CapturePayload{payload})
+	require.NoError(t, err)
+	_, err = svc.IngestNotes(ctx, userID, []CapturePayload{payload})
+	require.NoError(t, err)
+
+	var count int64
+	require.NoError(t, db.Model(&model.XhsScriptAnalyticsEvent{}).
+		Where("event_name = ?", "video_note_captured").
+		Count(&count).Error)
+	assert.EqualValues(t, 1, count)
+
+	var event model.XhsScriptAnalyticsEvent
+	require.NoError(t, db.Where("event_name = ?", "video_note_captured").First(&event).Error)
+	assert.Equal(t, capturedNoteEventID(userID, &model.XhsScriptNote{SourceNoteID: payload.SourceNoteID}), event.EventID)
+}

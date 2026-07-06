@@ -99,7 +99,7 @@ func (s *Service) IngestNotes(ctx context.Context, userID uint, payloads []Captu
 		if err != nil {
 			return nil, err
 		}
-		s.RecordEventBestEffort(ctx, userID, "video_note_captured", capturedNoteProperties(saved))
+		s.RecordEventWithIDBestEffort(ctx, userID, capturedNoteEventID(userID, saved), "video_note_captured", capturedNoteProperties(saved))
 		if shouldTranscribe(saved) {
 			s.enqueueTranscription(saved.UserID, saved.ID)
 		}
@@ -203,6 +203,13 @@ func capturedNoteProperties(note *model.XhsScriptNote) map[string]interface{} {
 		"video_url_available": strings.TrimSpace(note.VideoURL) != "",
 	}
 	return props
+}
+
+func capturedNoteEventID(userID uint, note *model.XhsScriptNote) string {
+	if note == nil {
+		return fmt.Sprintf("%s:video_note_captured:%d:unknown", backendEventIDPrefix, userID)
+	}
+	return fmt.Sprintf("%s:video_note_captured:%d:%s", backendEventIDPrefix, userID, shortHash(note.SourceNoteID))
 }
 
 func shouldTranscribe(note *model.XhsScriptNote) bool {

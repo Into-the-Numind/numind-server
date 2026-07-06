@@ -151,7 +151,7 @@ func (s *Service) GetAnalyticsSummary(ctx context.Context, days int) (*Analytics
 	if totals.AccountLoggedIn, err = countAnalyticsEvents(ctx, s, from, "account_logged_in"); err != nil {
 		return nil, err
 	}
-	if totals.PurchaseOrderCreated, err = countAnalyticsEvents(ctx, s, from, "purchase_order_created"); err != nil {
+	if totals.PurchaseOrderCreated, err = countBackendPurchaseOrderCreated(ctx, s, from); err != nil {
 		return nil, err
 	}
 	if totals.UniqueVisitors, err = countUniqueVisitors(ctx, s, from); err != nil {
@@ -248,6 +248,14 @@ func countAnalyticsEvents(ctx context.Context, s *Service, from time.Time, event
 	var count int64
 	err := s.ds.DB().WithContext(ctx).Model(&model.XhsScriptAnalyticsEvent{}).
 		Where("created_at >= ? AND event_name = ?", from, eventName).
+		Count(&count).Error
+	return count, err
+}
+
+func countBackendPurchaseOrderCreated(ctx context.Context, s *Service, from time.Time) (int64, error) {
+	var count int64
+	err := s.ds.DB().WithContext(ctx).Model(&model.XhsScriptAnalyticsEvent{}).
+		Where("created_at >= ? AND event_name = ? AND event_id LIKE ?", from, "purchase_order_created", backendEventIDPrefix+":purchase_order_created:%").
 		Count(&count).Error
 	return count, err
 }
