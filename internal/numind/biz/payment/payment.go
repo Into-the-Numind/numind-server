@@ -121,11 +121,11 @@ func IsInternalCaller(ctx context.Context) bool {
 	return v
 }
 
-// CreateOrder creates a payment order for a booster package.
+// CreateOrder creates a payment order for booster credits or XHS script packs.
 //
-// Spec §5.2: only product_type=booster is accepted. Trial/monthly/yearly memberships
-// are granted exclusively through the B2B grant path (POST /v1/users/children/:id/grant-membership).
-// quantity specifies the number of booster units to purchase (1–10000).
+// Trial/monthly/yearly memberships are granted exclusively through the B2B grant
+// path (POST /v1/users/children/:id/grant-membership). quantity specifies the
+// number of booster units or XHS script packs to purchase (1–10000).
 // payer = token subject; userID = beneficiary (self-purchase when equal).
 //
 // Audit P2#10: idempotencyKey, when non-empty, dedups double-submit retries.
