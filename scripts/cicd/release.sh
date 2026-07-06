@@ -42,19 +42,33 @@ fi
 EFFECTIVE_SHA="${GIT_SHA}${GIT_DIRTY}"
 
 GIT_TAG=""
+RSYNC_SECRET_EXCLUDES=()
 if [ "$ENV" = "prod" ]; then
   GIT_TAG=$(git describe --tags --exact-match HEAD 2>/dev/null || true)
-  if [ -z "$GIT_TAG" ]; then
-    echo "ERROR: prod release requires HEAD to be on a git tag (got branch=$GIT_BRANCH, sha=$GIT_SHA)" >&2
-    exit 1
-  fi
   PROD_WORKTREE_STATUS="$(git status --porcelain --untracked-files=all)"
-  if [ -n "$PROD_WORKTREE_STATUS" ]; then
+  if [ -z "$GIT_TAG" ] || [ -n "$PROD_WORKTREE_STATUS" ]; then
     echo "ERROR: prod release requires a clean worktree and exact tag." >&2
-    echo "Dirty items:" >&2
-    echo "$PROD_WORKTREE_STATUS" >&2
+    if [ -z "$GIT_TAG" ]; then
+      echo "Tag: missing exact tag (branch=$GIT_BRANCH, sha=$GIT_SHA)" >&2
+    fi
+    if [ -n "$PROD_WORKTREE_STATUS" ]; then
+      echo "Dirty items:" >&2
+      echo "$PROD_WORKTREE_STATUS" >&2
+    fi
     exit 1
   fi
+  RSYNC_SECRET_EXCLUDES=(
+    --exclude='.env'
+    --exclude='.env.*'
+    --exclude='secrets.env'
+    --exclude='*.pem'
+    --exclude='*.key'
+    --exclude='*.key.*'
+    --exclude='*.crt'
+    --exclude='*.crt.*'
+    --exclude='configs/cert/'
+    --exclude='configs/ssl/'
+  )
 fi
 
 echo "==============================================="
@@ -81,6 +95,7 @@ do_rsync() {
     --exclude='*.log' \
     --exclude='*.tar.gz' \
     --exclude='.DS_Store' \
+    ${RSYNC_SECRET_EXCLUDES[@]+"${RSYNC_SECRET_EXCLUDES[@]}"} \
     --exclude='.idea/' \
     --exclude='.vscode/' \
     --exclude='.cursor/' \
