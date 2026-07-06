@@ -272,6 +272,34 @@ func TestXhsScriptStore_UpsertCapturedNoteUpdatesSameRow(t *testing.T) {
 	assert.Equal(t, "更新后的标题", got.Title)
 }
 
+func TestXhsScriptStoreRecapturePreservesMirroredVideoURL(t *testing.T) {
+	db := newXhsScriptStoreTestDB(t)
+	s := NewXhsScriptStore(db)
+	ctx := context.Background()
+
+	note, err := s.CreateOrUpsertCapturedNote(ctx, newXhsScriptNote(15, "source-mirrored-video"))
+	require.NoError(t, err)
+	cosURL := fmt.Sprintf("https://bucket.cos.ap-beijing.myqcloud.com/xhs-script-media/15/%d/video.mp4", note.ID)
+	require.NoError(t, s.UpdateNoteVideoURL(ctx, 15, note.ID, cosURL))
+
+	recapture := newXhsScriptNote(15, "source-mirrored-video")
+	recapture.VideoURL = "https://sns-video.xhscdn.com/new.mp4"
+	updated, err := s.CreateOrUpsertCapturedNote(ctx, recapture)
+	require.NoError(t, err)
+	assert.Equal(t, cosURL, updated.VideoURL)
+
+	rawNote := newXhsScriptNote(15, "source-raw-video")
+	rawNote.VideoURL = "https://sns-video.xhscdn.com/old.mp4"
+	createdRaw, err := s.CreateOrUpsertCapturedNote(ctx, rawNote)
+	require.NoError(t, err)
+	rawRecapture := newXhsScriptNote(15, "source-raw-video")
+	rawRecapture.VideoURL = "https://sns-video.xhscdn.com/new-raw.mp4"
+	updatedRaw, err := s.CreateOrUpsertCapturedNote(ctx, rawRecapture)
+	require.NoError(t, err)
+	assert.Equal(t, createdRaw.ID, updatedRaw.ID)
+	assert.Equal(t, rawRecapture.VideoURL, updatedRaw.VideoURL)
+}
+
 func TestXhsScriptStore_RecapturePreservesInternalProcessingFields(t *testing.T) {
 	s := NewXhsScriptStore(newXhsScriptStoreTestDB(t))
 	ctx := context.Background()

@@ -218,7 +218,7 @@ func (s *Service) noteDTO(ctx context.Context, note *model.XhsScriptNote) (NoteD
 		Tags:            tagsFromJSON(note.Tags),
 		Author:          "小红书视频",
 		CoverURL:        note.CoverURL,
-		VideoURL:        note.VideoURL,
+		VideoURL:        resignXhsScriptVideoURL(ctx, note.VideoURL),
 		LikeCount:       note.LikeCount,
 		CollectCount:    note.CollectCount,
 		CommentCount:    note.CommentCount,

@@ -3,6 +3,7 @@ package xhsscript
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,6 +13,54 @@ import (
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
 )
+
+func TestNoteDTOResignsMirroredVideoURL(t *testing.T) {
+	ctx := context.Background()
+	svc := New(store.NewTestStore(newAnalyticsSummaryTestDB(t)))
+	signedURL := "https://signed.example/video.mp4?sign=1"
+
+	var capturedObjectKey string
+	signerCalls := 0
+	prevSigner := signXhsScriptVideoURLFn
+	signXhsScriptVideoURLFn = func(_ context.Context, objectKey string) (string, error) {
+		signerCalls++
+		capturedObjectKey = objectKey
+		return signedURL, nil
+	}
+	t.Cleanup(func() { signXhsScriptVideoURLFn = prevSigner })
+
+	dto, err := svc.noteDTO(ctx, &model.XhsScriptNote{
+		ID:       100,
+		UserID:   99,
+		VideoURL: "https://bucket.cos.ap-beijing.myqcloud.com/xhs-script-media/99/100/video.mp4?stale=1",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, signedURL, dto.VideoURL)
+	assert.Equal(t, "xhs-script-media/99/100/video.mp4", capturedObjectKey)
+	assert.Equal(t, 1, signerCalls)
+
+	signFailureURL := "https://bucket.cos.ap-beijing.myqcloud.com/xhs-script-media/99/101/video.mp4?stale=1"
+	signerCalls = 0
+	signXhsScriptVideoURLFn = func(_ context.Context, objectKey string) (string, error) {
+		signerCalls++
+		capturedObjectKey = objectKey
+		return "", errors.New("sign failed")
+	}
+	dto, err = svc.noteDTO(ctx, &model.XhsScriptNote{ID: 101, UserID: 99, VideoURL: signFailureURL})
+	require.NoError(t, err)
+	assert.Equal(t, signFailureURL, dto.VideoURL)
+	assert.Equal(t, "xhs-script-media/99/101/video.mp4", capturedObjectKey)
+	assert.Equal(t, 1, signerCalls)
+
+	signXhsScriptVideoURLFn = func(context.Context, string) (string, error) {
+		t.Fatal("signer should not be called for non-mirrored video URL")
+		return "", errors.New("unexpected signer call")
+	}
+	rawURL := "https://sns-video.xhscdn.com/raw.mp4"
+	dto, err = svc.noteDTO(ctx, &model.XhsScriptNote{ID: 102, UserID: 99, VideoURL: rawURL})
+	require.NoError(t, err)
+	assert.Equal(t, rawURL, dto.VideoURL)
+}
 
 func TestIngestNotes_NonVideoRejectionRecordsAnalyticsEvent(t *testing.T) {
 	db := newAnalyticsSummaryTestDB(t)

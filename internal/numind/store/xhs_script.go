@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -190,6 +192,7 @@ func (s *xhsScriptStore) CreateOrUpsertCapturedNote(ctx context.Context, note *m
 		}
 		note.ID = existing.ID
 		updates := capturedNoteMetadataUpdateMap(note)
+		preserveMirroredVideoURLOnRecapture(updates, existing.VideoURL)
 		if err := tx.Model(&model.XhsScriptNote{}).Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
 			return fmt.Errorf("update: %w", err)
 		}
@@ -209,9 +212,11 @@ func updateCapturedNoteAfterDuplicate(ctx context.Context, tx *gorm.DB, note *mo
 		return fmt.Errorf("reload after duplicate: %w", err)
 	}
 	note.ID = existing.ID
+	updates := capturedNoteMetadataUpdateMap(note)
+	preserveMirroredVideoURLOnRecapture(updates, existing.VideoURL)
 	if err := tx.Model(&model.XhsScriptNote{}).
 		Where("id = ?", existing.ID).
-		Updates(capturedNoteMetadataUpdateMap(note)).Error; err != nil {
+		Updates(updates).Error; err != nil {
 		return fmt.Errorf("update after duplicate: %w", err)
 	}
 	return tx.WithContext(ctx).First(note, existing.ID).Error
@@ -559,4 +564,25 @@ func capturedNoteMetadataUpdateMap(note *model.XhsScriptNote) map[string]interfa
 		"video_url":     note.VideoURL,
 		"updated_at":    time.Now(),
 	}
+}
+
+func preserveMirroredVideoURLOnRecapture(updates map[string]interface{}, existingVideoURL string) {
+	if isXhsScriptMirroredVideoURL(existingVideoURL) {
+		delete(updates, "video_url")
+	}
+}
+
+func isXhsScriptMirroredVideoURL(videoURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(videoURL))
+	if err != nil {
+		return false
+	}
+	path := parsed.EscapedPath()
+	if path == "" {
+		path = parsed.Path
+	}
+	if decoded, decErr := url.PathUnescape(path); decErr == nil {
+		path = decoded
+	}
+	return strings.Contains(path, "/xhs-script-media/")
 }
