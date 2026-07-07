@@ -140,6 +140,36 @@ func TestIngestNotes_NonVideoRejectionRecordsAnalyticsEvent(t *testing.T) {
 	assert.NotContains(t, string(event.Properties), "这段内容不应进入 analytics properties")
 }
 
+func TestIngestNotes_RejectsVideoCaptureWhenQuotaIsExhausted(t *testing.T) {
+	db := newAnalyticsSummaryTestDB(t)
+	svc := New(store.NewTestStore(db))
+	ctx := context.Background()
+	userID := uint(45)
+	_, err := svc.GetQuota(ctx, userID)
+	require.NoError(t, err)
+	require.NoError(t, db.Model(&model.XhsScriptQuotaAccount{}).
+		Where("user_id = ?", userID).
+		Updates(map[string]interface{}{"free_remaining": 0, "paid_remaining": 0}).Error)
+
+	notes, err := svc.IngestNotes(ctx, userID, []CapturePayload{
+		{
+			SourceNoteID: "video-note-no-quota",
+			NoteType:     model.XhsScriptNoteTypeVideo,
+			Title:        "余额不足时不应转写",
+			VideoURL:     "https://sns-video.xhscdn.com/no-quota.mp4",
+		},
+	})
+
+	require.ErrorIs(t, err, errno.ErrXhsScriptQuotaInsufficient)
+	assert.Nil(t, notes)
+
+	var noteCount int64
+	require.NoError(t, db.Model(&model.XhsScriptNote{}).
+		Where("user_id = ?", userID).
+		Count(&noteCount).Error)
+	assert.EqualValues(t, 0, noteCount)
+}
+
 func TestSaveProfileRejectsEmptyProfileText(t *testing.T) {
 	db := newAnalyticsSummaryTestDB(t)
 	svc := New(store.NewTestStore(db))

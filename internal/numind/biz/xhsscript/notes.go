@@ -117,7 +117,7 @@ func (s *Service) IngestNotes(ctx context.Context, userID uint, payloads []Captu
 	if len(payloads) == 0 {
 		return nil, errno.ErrInvalidParameter.SetMessage("没有收到可采集的视频笔记")
 	}
-	dtos := make([]NoteDTO, 0, len(payloads))
+	notes := make([]*model.XhsScriptNote, 0, len(payloads))
 	for _, payload := range payloads {
 		note, err := payload.toModel(userID)
 		if err != nil {
@@ -126,6 +126,14 @@ func (s *Service) IngestNotes(ctx context.Context, userID uint, payloads []Captu
 			}
 			return nil, err
 		}
+		notes = append(notes, note)
+	}
+	if err := s.ensureQuotaForVideoCapture(ctx, userID, len(notes)); err != nil {
+		return nil, err
+	}
+
+	dtos := make([]NoteDTO, 0, len(notes))
+	for _, note := range notes {
 		saved, err := s.ds.XhsScript().CreateOrUpsertCapturedNote(ctx, note)
 		if err != nil {
 			return nil, err
@@ -141,6 +149,22 @@ func (s *Service) IngestNotes(ctx context.Context, userID uint, payloads []Captu
 		dtos = append(dtos, dto)
 	}
 	return dtos, nil
+}
+
+func (s *Service) ensureQuotaForVideoCapture(ctx context.Context, userID uint, noteCount int) error {
+	account, err := s.ds.XhsScript().CreateOrGetQuotaAccount(ctx, userID)
+	if err != nil {
+		return err
+	}
+	remaining := account.FreeRemaining + account.PaidRemaining
+	if remaining < int64(noteCount) {
+		s.RecordEventBestEffort(ctx, userID, "capture_blocked_quota_insufficient", map[string]interface{}{
+			"notes_count": noteCount,
+			"remaining":   remaining,
+		})
+		return errno.ErrXhsScriptQuotaInsufficient
+	}
+	return nil
 }
 
 func (s *Service) GetNoteDTO(ctx context.Context, userID uint, id uint64) (*NoteDTO, error) {
