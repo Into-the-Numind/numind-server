@@ -43,8 +43,9 @@ const (
 	// Spec §5.2: quantity ∈ [1, 10000].
 	boosterMaxQuantity = 10000
 
-	xhsScriptGenerationsPerPack int64 = 10
-	xhsScriptCentsPerPack       int64 = 1990
+	xhsScriptLegacyGenerationsPerPack int64 = 10
+	xhsScriptLegacyCentsPerPack       int64 = 1990
+	xhsScriptCentsPerPack             int64 = xhsScriptLegacyCentsPerPack
 )
 
 // IPaymentBiz 支付业务逻辑接口
@@ -125,7 +126,7 @@ func IsInternalCaller(ctx context.Context) bool {
 //
 // Trial/monthly/yearly memberships are granted exclusively through the B2B grant
 // path (POST /v1/users/children/:id/grant-membership). quantity specifies the
-// number of booster units or XHS script packs to purchase (1–10000).
+// number of booster units, or the XHS script generation tier (1, 10, 50).
 // payer = token subject; userID = beneficiary (self-purchase when equal).
 //
 // Audit P2#10: idempotencyKey, when non-empty, dedups double-submit retries.
@@ -142,8 +143,9 @@ func (b *paymentBiz) CreateOrder(ctx context.Context, payerID, userID uint, prod
 		return nil, errno.ErrInvalidProductType
 	}
 
-	// §5.2: quantity ∈ [1, 10000].
-	if quantity < 1 || quantity > boosterMaxQuantity {
+	// §5.2: quantity ∈ [1, 10000]. XHS script packs are validated in
+	// orderPricing because their quantity means concrete generation count.
+	if quantity < 1 || (productType == model.ProductTypeBooster && quantity > boosterMaxQuantity) {
 		return nil, errno.ErrBoosterQuantityExceedsLimit
 	}
 
@@ -259,10 +261,26 @@ func (b *paymentBiz) orderPricing(ctx context.Context, userID uint, productType 
 		}
 		return boosterCentsPerUnit * int64(quantity), fmt.Sprintf("有数AI工作台-加量包 × %d", quantity), nil
 	case model.ProductTypeXhsScriptPack:
-		generations := int64(quantity) * xhsScriptGenerationsPerPack
-		return xhsScriptCentsPerPack * int64(quantity), fmt.Sprintf("小红书口播稿生成 %d 次", generations), nil
+		amount, ok := xhsScriptPackageAmount(quantity)
+		if !ok {
+			return 0, "", errno.ErrInvalidParameter.SetMessage("请选择 1、10 或 50 次套餐")
+		}
+		return amount, fmt.Sprintf("小红书口播稿生成 %d 次", quantity), nil
 	default:
 		return 0, "", errno.ErrInvalidProductType
+	}
+}
+
+func xhsScriptPackageAmount(quantity int) (int64, bool) {
+	switch quantity {
+	case 1:
+		return 200, true
+	case 10:
+		return 1800, true
+	case 50:
+		return 8000, true
+	default:
+		return 0, false
 	}
 }
 
@@ -427,14 +445,15 @@ func (b *paymentBiz) fulfillXhsScriptOrder(ctx context.Context, order *model.Ord
 		return fmt.Errorf("nil order")
 	}
 	quantity := xhsScriptOrderQuantity(order)
+	generations := xhsScriptOrderGenerations(order)
 	if order.PayStatus != model.OrderStatusPending {
 		log.Infow("XHS script order already processed, skipping", "order_no", order.OrderNo, "pay_status", order.PayStatus)
 		if order.PayStatus == model.OrderStatusPaid {
-			b.recordXhsScriptPaymentAnalyticsBestEffort(ctx, order, quantity)
+			b.recordXhsScriptPaymentAnalyticsBestEffort(ctx, order, int(generations))
 		}
 		return nil
 	}
-	delta := int64(quantity) * xhsScriptGenerationsPerPack
+	delta := generations
 	now := time.Now()
 
 	err := b.ds.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -468,7 +487,7 @@ func (b *paymentBiz) fulfillXhsScriptOrder(ctx context.Context, order *model.Ord
 		order.PaidAt = &now
 		order.UpdatedAt = now
 	}
-	b.recordXhsScriptPaymentAnalyticsBestEffort(ctx, order, quantity)
+	b.recordXhsScriptPaymentAnalyticsBestEffort(ctx, order, int(delta))
 	log.Infow("XHS script order fulfilled",
 		"order_no", order.OrderNo, "trade_no", tradeNo,
 		"user_id", order.UserID, "quantity", quantity, "delta_generations", delta)
@@ -487,6 +506,14 @@ func xhsScriptOrderQuantity(order *model.Order) int {
 		quantity = 1
 	}
 	return quantity
+}
+
+func xhsScriptOrderGenerations(order *model.Order) int64 {
+	quantity := xhsScriptOrderQuantity(order)
+	if order != nil && order.Amount == xhsScriptLegacyCentsPerPack*int64(quantity) {
+		return int64(quantity) * xhsScriptLegacyGenerationsPerPack
+	}
+	return int64(quantity)
 }
 
 func (b *paymentBiz) recordXhsScriptPaymentAnalyticsBestEffort(ctx context.Context, order *model.Order, quantity int) {

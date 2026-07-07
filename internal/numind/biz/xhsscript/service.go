@@ -20,7 +20,7 @@ const (
 
 	TrialFreeGenerations = int64(3)
 	PackGenerations      = int64(10)
-	PackAmountCents      = int64(1990)
+	PackAmountCents      = int64(1800)
 )
 
 type Service struct {
@@ -91,9 +91,34 @@ type NoteDTO struct {
 }
 
 type Comment struct {
-	Content  string `json:"content"`
-	Nickname string `json:"nickname,omitempty"`
-	Like     int64  `json:"like,omitempty"`
+	Content  string    `json:"content"`
+	Nickname string    `json:"nickname,omitempty"`
+	Like     int64     `json:"like,omitempty"`
+	Replies  []Comment `json:"replies,omitempty"`
+}
+
+func (c *Comment) UnmarshalJSON(data []byte) error {
+	type rawComment struct {
+		Content  string    `json:"content"`
+		Text     string    `json:"text"`
+		Nickname string    `json:"nickname"`
+		Author   string    `json:"author"`
+		Like     int64     `json:"like"`
+		Likes    int64     `json:"likes"`
+		Replies  []Comment `json:"replies"`
+	}
+	var raw rawComment
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	c.Content = strings.TrimSpace(firstNonEmpty(raw.Content, raw.Text))
+	c.Nickname = strings.TrimSpace(firstNonEmpty(raw.Nickname, raw.Author))
+	c.Like = raw.Like
+	if c.Like == 0 {
+		c.Like = raw.Likes
+	}
+	c.Replies = raw.Replies
+	return nil
 }
 
 func IsAnonymousUsername(username string) bool {

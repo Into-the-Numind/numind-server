@@ -88,6 +88,30 @@ func TestNoteDTOResignsMirroredVideoURL(t *testing.T) {
 	assert.Equal(t, rawURL, dto.VideoURL)
 }
 
+func TestCommentUnmarshalAcceptsExtensionAliasesAndReplies(t *testing.T) {
+	raw := []byte(`[
+		{
+			"author": "楼主A",
+			"text": "顶层评论A",
+			"likes": 88,
+			"replies": [
+				{ "author": "回复者X", "text": "回复A-1", "likes": 7 }
+			]
+		}
+	]`)
+
+	var comments []Comment
+	require.NoError(t, json.Unmarshal(raw, &comments))
+	require.Len(t, comments, 1)
+	assert.Equal(t, "顶层评论A", comments[0].Content)
+	assert.Equal(t, "楼主A", comments[0].Nickname)
+	assert.EqualValues(t, 88, comments[0].Like)
+	require.Len(t, comments[0].Replies, 1)
+	assert.Equal(t, "回复A-1", comments[0].Replies[0].Content)
+	assert.Equal(t, "回复者X", comments[0].Replies[0].Nickname)
+	assert.EqualValues(t, 7, comments[0].Replies[0].Like)
+}
+
 func TestIngestNotes_NonVideoRejectionRecordsAnalyticsEvent(t *testing.T) {
 	db := newAnalyticsSummaryTestDB(t)
 	svc := New(store.NewTestStore(db))

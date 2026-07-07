@@ -246,13 +246,47 @@ func TestCreateOrder_XhsScriptPack_RejectsNonWechatChannel(t *testing.T) {
 	assert.Contains(t, err.Error(), "微信支付")
 }
 
+func TestOrderPricing_XhsScriptPack_Tiers(t *testing.T) {
+	db := newPaymentTestDB(t)
+	ds := store.NewTestStore(db)
+	b := newPaymentBizForTest(ds)
+	uid := mustCreateUser(t, db)
+
+	tests := []struct {
+		quantity int
+		amount   int64
+		name     string
+	}{
+		{quantity: 1, amount: 200, name: "小红书口播稿生成 1 次"},
+		{quantity: 10, amount: 1800, name: "小红书口播稿生成 10 次"},
+		{quantity: 50, amount: 8000, name: "小红书口播稿生成 50 次"},
+	}
+	for _, tt := range tests {
+		amount, name, err := b.orderPricing(context.Background(), uid, model.ProductTypeXhsScriptPack, tt.quantity)
+		require.NoError(t, err)
+		assert.Equal(t, tt.amount, amount)
+		assert.Equal(t, tt.name, name)
+	}
+}
+
+func TestOrderPricing_XhsScriptPack_RejectsUnsupportedTier(t *testing.T) {
+	db := newPaymentTestDB(t)
+	ds := store.NewTestStore(db)
+	b := newPaymentBizForTest(ds)
+	uid := mustCreateUser(t, db)
+
+	_, _, err := b.orderPricing(context.Background(), uid, model.ProductTypeXhsScriptPack, 2)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errno.ErrInvalidParameter)
+}
+
 func TestFulfillOrder_XhsScriptPack_AddsGenerationQuota(t *testing.T) {
 	db := newPaymentTestDB(t)
 	ds := store.NewTestStore(db)
 	b, _ := newPaymentBizWithFakeCredit(ds)
 
 	uid := mustCreateUser(t, db)
-	order := mustCreatePendingXhsScriptOrder(t, db, uid, uid, 1)
+	order := mustCreatePendingXhsScriptOrder(t, db, uid, uid, 10)
 
 	require.NoError(t, b.fulfillOrder(context.Background(), order.OrderNo, "TRADE_XHS_SCRIPT"))
 
@@ -267,20 +301,35 @@ func TestFulfillOrder_XhsScriptPack_AddsGenerationQuota(t *testing.T) {
 	assert.Equal(t, order.OrderNo, ledger.RefID)
 }
 
+func TestFulfillOrder_XhsScriptPack_LegacyOnePackStillAddsTenGenerations(t *testing.T) {
+	db := newPaymentTestDB(t)
+	ds := store.NewTestStore(db)
+	b, _ := newPaymentBizWithFakeCredit(ds)
+
+	uid := mustCreateUser(t, db)
+	order := mustCreateLegacyPendingXhsScriptOrder(t, db, uid, uid, 1)
+
+	require.NoError(t, b.fulfillOrder(context.Background(), order.OrderNo, "TRADE_XHS_LEGACY"))
+
+	var account model.XhsScriptQuotaAccount
+	require.NoError(t, db.Where("user_id = ?", uid).First(&account).Error)
+	assert.Equal(t, int64(10), account.PaidRemaining)
+}
+
 func TestFulfillOrder_XhsScriptPack_Idempotent(t *testing.T) {
 	db := newPaymentTestDB(t)
 	ds := store.NewTestStore(db)
 	b, _ := newPaymentBizWithFakeCredit(ds)
 
 	uid := mustCreateUser(t, db)
-	order := mustCreatePendingXhsScriptOrder(t, db, uid, uid, 2)
+	order := mustCreatePendingXhsScriptOrder(t, db, uid, uid, 50)
 
 	require.NoError(t, b.fulfillOrder(context.Background(), order.OrderNo, "TRADE_XHS_IDEM"))
 	require.NoError(t, b.fulfillOrder(context.Background(), order.OrderNo, "TRADE_XHS_IDEM"))
 
 	var account model.XhsScriptQuotaAccount
 	require.NoError(t, db.Where("user_id = ?", uid).First(&account).Error)
-	assert.Equal(t, int64(20), account.PaidRemaining)
+	assert.Equal(t, int64(50), account.PaidRemaining)
 
 	var ledgers int64
 	require.NoError(t, db.Model(&model.XhsScriptQuotaLedger{}).
@@ -309,7 +358,7 @@ func TestFulfillOrder_XhsScriptPack_RecordsPaymentAnalyticsEvents(t *testing.T) 
 		PaidAt:      &previousPaidAt,
 		ExpiredAt:   time.Now().Add(30 * time.Minute),
 	}).Error)
-	order := mustCreatePendingXhsScriptOrder(t, db, uid, uid, 2)
+	order := mustCreatePendingXhsScriptOrder(t, db, uid, uid, 50)
 
 	require.NoError(t, b.fulfillOrder(context.Background(), order.OrderNo, "TRADE_XHS_ANALYTICS"))
 	require.NoError(t, b.fulfillOrder(context.Background(), order.OrderNo, "TRADE_XHS_ANALYTICS"))
@@ -324,8 +373,8 @@ func TestFulfillOrder_XhsScriptPack_RecordsPaymentAnalyticsEvents(t *testing.T) 
 	require.NotNil(t, paymentEvents[0].UserID)
 	assert.Equal(t, uid, *paymentEvents[0].UserID)
 	assert.Contains(t, string(paymentEvents[0].Properties), `"order_no":"`+order.OrderNo+`"`)
-	assert.Contains(t, string(paymentEvents[0].Properties), `"quantity":2`)
-	assert.Contains(t, string(paymentEvents[0].Properties), `"amount_cents":3980`)
+	assert.Contains(t, string(paymentEvents[0].Properties), `"quantity":50`)
+	assert.Contains(t, string(paymentEvents[0].Properties), `"amount_cents":8000`)
 
 	var repeatEvents []model.XhsScriptAnalyticsEvent
 	require.NoError(t, db.
@@ -422,6 +471,8 @@ func TestFulfillOrder_NonBoosterProductType_Rejected(t *testing.T) {
 
 func mustCreatePendingXhsScriptOrder(t *testing.T, db *gorm.DB, userID, payerID uint, quantity int) *model.Order {
 	t.Helper()
+	amount, ok := xhsScriptPackageAmount(quantity)
+	require.True(t, ok, "test helper only supports current XHS script package tiers")
 	order := &model.Order{
 		OrderNo:     "TEST_XHS_SCRIPT_" + time.Now().Format("150405.000000000"),
 		UserID:      userID,
@@ -429,7 +480,25 @@ func mustCreatePendingXhsScriptOrder(t *testing.T, db *gorm.DB, userID, payerID 
 		ProductType: model.ProductTypeXhsScriptPack,
 		Months:      quantity,
 		Quantity:    quantity,
-		Amount:      xhsScriptCentsPerPack * int64(quantity),
+		Amount:      amount,
+		PayChannel:  model.PayChannelWechat,
+		PayStatus:   model.OrderStatusPending,
+		ExpiredAt:   time.Now().Add(30 * time.Minute),
+	}
+	require.NoError(t, db.Create(order).Error)
+	return order
+}
+
+func mustCreateLegacyPendingXhsScriptOrder(t *testing.T, db *gorm.DB, userID, payerID uint, quantity int) *model.Order {
+	t.Helper()
+	order := &model.Order{
+		OrderNo:     "TEST_XHS_SCRIPT_LEGACY_" + time.Now().Format("150405.000000000"),
+		UserID:      userID,
+		PayerID:     payerID,
+		ProductType: model.ProductTypeXhsScriptPack,
+		Months:      quantity,
+		Quantity:    quantity,
+		Amount:      xhsScriptLegacyCentsPerPack * int64(quantity),
 		PayChannel:  model.PayChannelWechat,
 		PayStatus:   model.OrderStatusPending,
 		ExpiredAt:   time.Now().Add(30 * time.Minute),
