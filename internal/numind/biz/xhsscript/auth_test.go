@@ -20,20 +20,33 @@ func TestRegisterStoresHashedPasswordAndLogin(t *testing.T) {
 	svc, db := newAuthTestService(t)
 	ctx := context.Background()
 
-	session, err := svc.Register(ctx, nil, "creator_account", "secret123")
+	session, err := svc.Register(ctx, nil, "Creator2026", "secret123")
 	require.NoError(t, err)
 	assert.NotEmpty(t, session.AccessToken)
-	assert.Equal(t, "creator_account", session.User.Username)
+	assert.Equal(t, "creator2026", session.User.Username)
 
 	var user model.User
-	require.NoError(t, db.Where("username = ?", "creator_account").First(&user).Error)
+	require.NoError(t, db.Where("username = ?", "creator2026").First(&user).Error)
 	assert.NotEqual(t, "secret123", user.Password)
 	assert.NoError(t, passwordauth.Compare(user.Password, "secret123"))
 
-	loginSession, err := svc.Login(ctx, "creator_account", "secret123")
+	loginSession, err := svc.Login(ctx, "Creator2026", "secret123")
 	require.NoError(t, err)
 	assert.NotEmpty(t, loginSession.AccessToken)
 	assert.Equal(t, user.ID, loginSession.User.ID)
+}
+
+func TestRegisterRejectsNonAlphanumericUsername(t *testing.T) {
+	svc, _ := newAuthTestService(t)
+	ctx := context.Background()
+
+	for _, username := range []string{"creator_account", "中文账号", "creator-01", "ab", "abcdefghijklmnopqrstuvwxyzabcde"} {
+		t.Run(username, func(t *testing.T) {
+			_, err := svc.Register(ctx, nil, username, "secret123")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "账号只能使用 3-30 位英文或数字")
+		})
+	}
 }
 
 func TestLoginUpgradesLegacyPlaintextPassword(t *testing.T) {

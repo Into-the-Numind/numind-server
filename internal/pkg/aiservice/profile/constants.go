@@ -155,16 +155,12 @@ const (
 	// chatbot.stream. (The end-of-meeting final 纪要 still uses chatbot.stream/pro for quality.)
 	MeetingSummary = "meeting.summary"
 
-	// XhsNoteAnalyze is the xhs-collector single-note topic analysis task. The async
-	// enrich pipeline calls aiservice.Chat(ctx, profile.XhsNoteAnalyze, ...) to produce
-	// the 6 AI topic fields (topic_angle / viral_reason / borrowable / target_audience /
-	// title_formula / one_line) from a collected note's title + content + transcript + tags.
-	// Routed to the cheap non-thinking model deepseek-v4-flash with a NON-zero pricing_rule,
-	// so this is a NORMAL billable Reserve/Reconcile call (NOT the IsFreeModel zero-cost
-	// exemption): the enrich biz layer wraps the call in billing.WithBilling so the user is
-	// charged per the three-pool deduction. Requires the DB seed migration
-	// (migrations/*_seed_xhs_analyze.sql) to register the task_profile → deepseek-v4-flash
-	// binding + pricing_rule before this succeeds in dev/prod.
+	// XhsNoteAnalyze is the xhs-collector single-note task profile routed to
+	// deepseek-v4-flash. Callers choose thinking behavior through ChatRequest.Thinking;
+	// xhsscript.GenerateScript opts into thinking mode for productized rewrite quality.
+	// Requires the DB seed migration (migrations/*_seed_xhs_analyze.sql) to register the
+	// task_profile -> deepseek-v4-flash binding + pricing_rule before this succeeds in
+	// dev/prod.
 	XhsNoteAnalyze = "xhs.note_analyze"
 )
 

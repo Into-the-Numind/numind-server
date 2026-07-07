@@ -66,10 +66,10 @@ func (s *Service) EnsureTrial(ctx context.Context, anonymousID string) (*Session
 }
 
 func (s *Service) Register(ctx context.Context, current *model.User, username, password string) (*SessionDTO, error) {
-	username = strings.TrimSpace(username)
+	username = normalizeAccountUsername(username)
 	password = strings.TrimSpace(password)
-	if len(username) < 3 || len(username) > 50 {
-		return nil, errno.ErrInvalidParameter.SetMessage("账号需要 3-50 个字符")
+	if !validAccountUsername(username) {
+		return nil, errno.ErrInvalidParameter.SetMessage("账号只能使用 3-30 位英文或数字")
 	}
 	if len(password) < 6 || len(password) > 72 {
 		return nil, errno.ErrInvalidParameter.SetMessage("密码需要至少 6 个字符")
@@ -132,7 +132,7 @@ func (s *Service) Register(ctx context.Context, current *model.User, username, p
 }
 
 func (s *Service) Login(ctx context.Context, username, password string) (*SessionDTO, error) {
-	username = strings.TrimSpace(username)
+	username = normalizeAccountUsername(username)
 	password = strings.TrimSpace(password)
 	var user model.User
 	if err := s.ds.DB().WithContext(ctx).Where("username = ?", username).First(&user).Error; err != nil {
@@ -235,6 +235,23 @@ func tokenScope(tokenString string) string {
 func anonymousUsername(anonymousID string) string {
 	sum := sha256.Sum256([]byte(anonymousID))
 	return AnonymousPrefix + hex.EncodeToString(sum[:8])
+}
+
+func normalizeAccountUsername(username string) string {
+	return strings.ToLower(strings.TrimSpace(username))
+}
+
+func validAccountUsername(username string) bool {
+	if len(username) < 3 || len(username) > 30 {
+		return false
+	}
+	for _, r := range username {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func randomAnonymousID() string {

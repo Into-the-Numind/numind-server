@@ -16,6 +16,8 @@ import (
 
 var xhsScriptChatFn = aiservice.Chat
 
+const xhsScriptSystemPrompt = "你是小红书视频口播稿的「爆款结构解剖 + 产品转译」编剧。你擅长把参考视频的叙事骨架、心理触发、过渡方式和口播节奏拆出来，再迁移到用户自己的产品/服务上。你的任务不是照抄原文，而是保留爆款结构功能，重写出原创、可信、可直接拍摄的中文口播稿。最终只按固定格式输出标题、描述、标签和口播文稿，不输出分析、拆解、Markdown、原文引用或任何过程标签。"
+
 func (s *Service) GenerateScript(ctx context.Context, userID uint, noteID uint64) (*NoteDTO, error) {
 	baseProps := map[string]interface{}{
 		"note_id": noteID,
@@ -66,7 +68,7 @@ func (s *Service) GenerateScript(ctx context.Context, userID uint, noteID uint64
 		Messages: []aiservice.ChatMessage{
 			{
 				Role:    aiservice.MessageRoleSystem,
-				Content: aiservice.MessageContent{Text: "你是资深小红书短视频口播编导，擅长拆解爆款视频的开场钩子、情绪推进、信息密度和成交转化，并把结构迁移到新的产品/服务上。你的输出必须是原创口播稿，不能照抄原文表达。"},
+				Content: aiservice.MessageContent{Text: xhsScriptSystemPrompt},
 			},
 			{
 				Role:    aiservice.MessageRoleUser,
@@ -75,6 +77,7 @@ func (s *Service) GenerateScript(ctx context.Context, userID uint, noteID uint64
 		},
 		Temperature: 0.75,
 		MaxTokens:   2200,
+		Thinking:    true,
 	})
 	if err != nil {
 		s.recordGenerationFail(ctx, userID, baseProps, "chat", err)
@@ -158,23 +161,8 @@ func buildGenerationPrompt(profileText string, note *model.XhsScriptNote) string
 	if note.VideoTranscript != nil {
 		transcript = *note.VideoTranscript
 	}
-	comments := commentsFromJSON(note.HotComments)
-	var commentLines []string
-	for _, c := range comments {
-		line := strings.TrimSpace(c.Content)
-		if line != "" {
-			commentLines = append(commentLines, "- "+limitForPrompt(line, 80))
-		}
-		if len(commentLines) >= 8 {
-			break
-		}
-	}
-	hotComments := "无"
-	if len(commentLines) > 0 {
-		hotComments = strings.Join(commentLines, "\n")
-	}
 
-	return fmt.Sprintf(`请基于下面这条小红书视频笔记，生成一篇适合“我的产品/服务”的原创口播稿。
+	return fmt.Sprintf(`请把下方“小红书爆款视频逐字稿”转译成一篇适合“我的产品/服务”的原创口播稿。
 
 【我的产品/服务定位】
 %s
@@ -182,26 +170,51 @@ func buildGenerationPrompt(profileText string, note *model.XhsScriptNote) string
 【参考爆款信息】
 标题：%s
 描述：%s
-数据：点赞 %d，收藏 %d，评论 %d
-高赞评论：
-%s
 
 【视频转写】
 %s
 
-【创作要求】
-1. 先在心里拆解参考视频的结构：开头钩子、痛点、反差、案例/证据、行动号召，但不要把拆解过程写出来。
-2. 输出一篇可直接照着念的中文口播稿，语气自然、有短句、有停顿感，适合 45-90 秒短视频。
-3. 必须迁移结构和情绪节奏，不要照搬原视频的具体句子、品牌名、人名或不可验证承诺。
-4. 如果我的产品/服务信息不足，用更稳妥的表达，不要编造具体资质、价格、疗效、收益数字。
-5. 最终只输出口播稿正文，不要标题、不要 Markdown、不要解释。`,
+【内部工作流：必须执行，但不要输出拆解过程】
+1. 爆款结构拆解
+- 先把视频转写按自然段或每 2-3 句话划分为意群小节。
+- 在心里提炼整体框架：开场钩子、反差/痛点、观点推进、案例/证据、转折、结论或行动号召。
+- 判断每个小节在全文里的角色：反共识开场、提出问题、放大焦虑、给出方法、举例证明、承上启下、收束号召等。
+- 识别每个小节对应的痛点/痒点/爽点、叙事技巧和跨行业可复用文案公式。
+
+2. 产品转译映射
+- 从“我的产品/服务定位”中提取本次创作的核心论点、目标人群、核心卖点、可信证据和行动号召。
+- 为原视频每个结构单元匹配一个新的产品观点或业务表达，让新观点替换原文对应论证环节。
+- 如果产品信息不足以支撑某个具体论据，必须使用稳妥表达；不要编造资质、价格、案例结果、收益数字或客户细节。
+
+3. 1:1 结构仿写
+- 尽量保持原视频的自然段数量、段落功能、过渡位置、详略分布和情绪节奏。
+- 可以调整句子内容，但不要合并、跳过关键结构单元；让新稿像是同一套骨架里长出的全新内容。
+- 严禁照搬原视频的具体句子、品牌名、人名、案例细节或不可验证承诺。
+
+【输出要求】
+- 按指定格式输出，不要输出拆解过程、拆解小节标签、Markdown、解释或任何分析。
+- 【标题】要像小红书标题：短、具体、有点击欲，但不要标题党或虚假承诺。
+- 【描述】是发布小红书时放在正文区的简短说明，用 2-4 句话概括核心价值，可以自然引导收藏或评论。
+- 【标签】输出 3-8 个小红书标签，使用 # 开头，贴合产品人群、场景和内容主题，不要堆无关热词。
+- 【口播文稿】是可直接照着念的视频口播稿，语气自然，短句多，有停顿感，适合小红书视频。
+- 【口播文稿】字数尽量贴近原视频，不要明显过短或过长。
+- 所有具体论据必须来自“我的产品/服务定位”；信息不够时宁可克制，不要编造。
+
+【最终输出格式】
+【标题】
+这里输出 1 个小红书标题
+
+【描述】
+这里输出小红书发布描述
+
+【标签】
+#标签1 #标签2 #标签3
+
+【口播文稿】
+这里输出完整口播文稿`,
 		limitForPrompt(profileText, 3000),
 		limitForPrompt(note.Title, 300),
 		limitForPrompt(note.Description, 1000),
-		note.LikeCount,
-		note.CollectCount,
-		note.CommentCount,
-		hotComments,
 		limitForPrompt(transcript, 8000),
 	)
 }
