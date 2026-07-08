@@ -30,9 +30,9 @@ func TestBuildGenerationPromptOmitsMetricsAndHotComments(t *testing.T) {
 		VideoTranscript: &transcript,
 	}
 
-	prompt := buildGenerationPrompt("我的产品定位", note)
+	prompt := buildGenerationPrompt("我的创作定位", note)
 
-	assert.Contains(t, prompt, "我的产品定位")
+	assert.Contains(t, prompt, "我的创作定位")
 	assert.Contains(t, prompt, "爆款标题")
 	assert.Contains(t, prompt, "爆款描述")
 	assert.Contains(t, prompt, transcript)
@@ -52,7 +52,7 @@ func TestBuildGenerationPromptUsesInternalDeconstructionWorkflow(t *testing.T) {
 		VideoTranscript: &transcript,
 	}
 
-	prompt := buildGenerationPrompt("服务创业者的内容增长产品", note)
+	prompt := buildGenerationPrompt("服务创业者的内容增长主题", note)
 
 	assert.Contains(t, prompt, "内部工作流")
 	assert.Contains(t, prompt, "最高优先级原则")
@@ -60,7 +60,7 @@ func TestBuildGenerationPromptUsesInternalDeconstructionWorkflow(t *testing.T) {
 	assert.Contains(t, prompt, "原创表达，不洗稿")
 	assert.Contains(t, prompt, "爆款底层逻辑学习")
 	assert.Contains(t, prompt, "爆款结构拆解")
-	assert.Contains(t, prompt, "产品转译映射")
+	assert.Contains(t, prompt, "创作转译映射")
 	assert.Contains(t, prompt, "结构功能对齐，而不是表层仿写")
 	assert.Contains(t, prompt, "原创口播生成")
 	assert.Contains(t, prompt, "2-3 句话")
@@ -112,7 +112,7 @@ func TestBuildGenerationPromptUsesApprovedOutputCopy(t *testing.T) {
 	assert.NotContains(t, prompt, "45-90 秒")
 }
 
-func TestGenerateScriptUsesProductizedRewriteSystemPrompt(t *testing.T) {
+func TestGenerateScriptUsesCreatorRewriteSystemPrompt(t *testing.T) {
 	ctx := context.Background()
 	db := newXhsScriptGenerateTestDB(t)
 	svc := New(store.NewTestStore(db))
@@ -134,7 +134,7 @@ func TestGenerateScriptUsesProductizedRewriteSystemPrompt(t *testing.T) {
 
 	assert.Equal(t, profile.XhsNoteAnalyze, capturedTaskID)
 	assert.Contains(t, systemPrompt, "爆款结构解剖")
-	assert.Contains(t, systemPrompt, "产品转译")
+	assert.Contains(t, systemPrompt, "创作转译")
 	assert.Contains(t, systemPrompt, "不是简单替换关键词")
 	assert.Contains(t, systemPrompt, "结构功能、情绪功能和转化功能")
 	assert.Contains(t, systemPrompt, "最终只按固定格式输出标题、描述、标签和口播文稿")
