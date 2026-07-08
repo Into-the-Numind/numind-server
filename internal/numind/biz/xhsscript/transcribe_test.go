@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,6 +19,7 @@ import (
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/profile"
+	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
 )
 
@@ -153,6 +155,86 @@ func TestTranscribeNoteDownloadFailureMarksFailed(t *testing.T) {
 	assert.Equal(t, model.XhsScriptGenerateNotReady, got.GenerateStatus)
 	assert.Equal(t, "video_download_failed", got.LastError)
 	assert.NotContains(t, got.LastError, "download boom")
+}
+
+func TestRequestTranscriptionEnqueuesFailedNoteWhenQuotaAvailable(t *testing.T) {
+	ctx := context.Background()
+	db := newXhsScriptTranscribeTestDB(t)
+	svc := New(store.NewTestStore(db))
+	userID := uint(111)
+	transcript := "重新转写后的逐字稿"
+	tmpDir := t.TempDir()
+
+	note := createTranscribeTestNote(t, db, userID, "manual-retry")
+	require.NoError(t, db.Model(note).Updates(map[string]interface{}{
+		"transcribe_status": model.XhsScriptTranscribeFailed,
+		"last_error":        "asr_failed",
+	}).Error)
+	require.NoError(t, db.Create(&model.XhsScriptQuotaAccount{
+		UserID:        userID,
+		FreeRemaining: 1,
+	}).Error)
+
+	withTranscribeTestDeps(t, transcribeTestDeps{
+		downloadVideoToTemp: func(_ context.Context, _ string, noteID uint64) (string, func(), error) {
+			assert.Equal(t, note.ID, noteID)
+			videoPath := filepath.Join(tmpDir, fmt.Sprintf("manual-retry-%d.mp4", time.Now().UnixNano()))
+			require.NoError(t, os.WriteFile(videoPath, []byte("video"), 0o600))
+			return videoPath, func() { _ = os.Remove(videoPath) }, nil
+		},
+		mirrorVideoBytesToCOS: func(context.Context, uint, uint64, []byte) string { return "" },
+		extractAudio: func(_ context.Context, _ string, audioPath string) error {
+			return os.WriteFile(audioPath, []byte("wav"), 0o600)
+		},
+		asr: func(context.Context, string, aiservice.ASRRequest) (*aiservice.ASRResponse, error) {
+			return &aiservice.ASRResponse{Text: transcript}, nil
+		},
+	})
+
+	dto, err := svc.RequestTranscription(ctx, userID, note.ID)
+	require.NoError(t, err)
+	require.NotNil(t, dto)
+	assert.Contains(t, []string{"waiting_transcript", "transcribing", "ready_to_generate"}, dto.State)
+
+	require.Eventually(t, func() bool {
+		got := loadTranscribeTestNote(t, db, userID, note.ID)
+		return got.TranscribeStatus == model.XhsScriptTranscribeReady &&
+			got.VideoTranscript != nil &&
+			*got.VideoTranscript == transcript &&
+			got.GenerateStatus == model.XhsScriptGenerateReady
+	}, time.Second, 10*time.Millisecond)
+}
+
+func TestRequestTranscriptionRejectsWhenQuotaExhausted(t *testing.T) {
+	ctx := context.Background()
+	db := newXhsScriptTranscribeTestDB(t)
+	svc := New(store.NewTestStore(db))
+	userID := uint(112)
+
+	note := createTranscribeTestNote(t, db, userID, "manual-no-quota")
+	require.NoError(t, db.Model(note).Updates(map[string]interface{}{
+		"transcribe_status": model.XhsScriptTranscribeFailed,
+		"last_error":        "download_failed",
+	}).Error)
+	require.NoError(t, db.Create(&model.XhsScriptQuotaAccount{UserID: userID}).Error)
+
+	withTranscribeTestDeps(t, transcribeTestDeps{
+		downloadVideoToTemp: func(context.Context, string, uint64) (string, func(), error) {
+			t.Fatal("manual transcription should not start without quota")
+			return "", func() {}, nil
+		},
+	})
+
+	dto, err := svc.RequestTranscription(ctx, userID, note.ID)
+	require.ErrorIs(t, err, errno.ErrXhsScriptQuotaInsufficient)
+	assert.Nil(t, dto)
+
+	got := loadTranscribeTestNote(t, db, userID, note.ID)
+	assert.Equal(t, model.XhsScriptTranscribeFailed, got.TranscribeStatus)
+	assert.Equal(t, model.XhsScriptGenerateNotReady, got.GenerateStatus)
+
+	var event model.XhsScriptAnalyticsEvent
+	require.NoError(t, db.Where("event_name = ?", "transcribe_blocked_quota_insufficient").First(&event).Error)
 }
 
 func TestTranscribeNoteFailuresPersistSafeLastErrorCategories(t *testing.T) {
@@ -297,6 +379,7 @@ func newXhsScriptTranscribeTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, db.AutoMigrate(
 		&model.XhsScriptNote{},
 		&model.XhsScriptAnalyticsEvent{},
+		&model.XhsScriptQuotaAccount{},
 	))
 	sqlDB, err := db.DB()
 	require.NoError(t, err)

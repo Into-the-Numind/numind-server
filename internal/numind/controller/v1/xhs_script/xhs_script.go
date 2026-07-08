@@ -327,6 +327,20 @@ func (ctl *Controller) Generate(c *gin.Context) {
 	core.WriteResponse(c, err, dto)
 }
 
+func (ctl *Controller) Transcribe(c *gin.Context) {
+	user, ok := ctl.requireCurrentUser(c, false)
+	if !ok {
+		return
+	}
+	id, err := parseID(c.Param("id"))
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+	dto, err := ctl.biz.RequestTranscription(c.Request.Context(), user.ID, id)
+	core.WriteResponse(c, err, dto)
+}
+
 func (ctl *Controller) TrackEvents(c *gin.Context) {
 	var req analyticsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

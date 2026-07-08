@@ -16,6 +16,7 @@ import (
 	"numind-server/internal/pkg/aiservice"
 	aimw "numind-server/internal/pkg/aiservice/middleware"
 	"numind-server/internal/pkg/aiservice/profile"
+	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/util"
@@ -37,6 +38,52 @@ func (s *Service) enqueueTranscription(userID uint, noteID uint64) {
 			log.Errorw("xhs-script transcribe failed", "user_id", userID, "note_id", noteID, "error", err)
 		}
 	}()
+}
+
+func (s *Service) RequestTranscription(ctx context.Context, userID uint, noteID uint64) (*NoteDTO, error) {
+	note, err := s.ds.XhsScript().GetNote(ctx, userID, noteID)
+	if err != nil {
+		return nil, errno.ErrXhsScriptNoteNotFound
+	}
+	if note.NoteType != model.XhsScriptNoteTypeVideo || strings.TrimSpace(note.VideoURL) == "" {
+		return nil, errno.ErrXhsScriptVideoOnly
+	}
+	if note.TranscribeStatus == model.XhsScriptTranscribeReady && note.VideoTranscript != nil && strings.TrimSpace(*note.VideoTranscript) != "" {
+		dto, dtoErr := s.noteDTO(ctx, note)
+		if dtoErr != nil {
+			return nil, dtoErr
+		}
+		return &dto, nil
+	}
+	if note.TranscribeStatus == model.XhsScriptTranscribeTranscribing {
+		dto, dtoErr := s.noteDTO(ctx, note)
+		if dtoErr != nil {
+			return nil, dtoErr
+		}
+		return &dto, nil
+	}
+
+	account, err := s.ds.XhsScript().CreateOrGetQuotaAccount(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	remaining := account.FreeRemaining + account.PaidRemaining
+	if remaining <= 0 {
+		s.RecordEventBestEffort(ctx, userID, "transcribe_blocked_quota_insufficient", mergeAnalyticsProperties(transcribeNoteProperties(note), map[string]interface{}{
+			"remaining": remaining,
+		}))
+		return nil, errno.ErrXhsScriptQuotaInsufficient
+	}
+
+	if err := s.ds.XhsScript().UpdateTranscribeStatus(ctx, userID, noteID, model.XhsScriptTranscribePending, nil, ""); err != nil {
+		return nil, err
+	}
+	if err := s.ds.XhsScript().UpdateGenerateStatus(ctx, userID, noteID, model.XhsScriptGenerateNotReady, ""); err != nil {
+		return nil, err
+	}
+	s.RecordEventBestEffort(ctx, userID, "video_transcribe_requested", transcribeNoteProperties(note))
+	s.enqueueTranscription(userID, noteID)
+	return s.GetNoteDTO(ctx, userID, noteID)
 }
 
 func (s *Service) transcribeNote(ctx context.Context, userID uint, noteID uint64) error {

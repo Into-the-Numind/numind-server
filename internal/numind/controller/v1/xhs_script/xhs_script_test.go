@@ -225,6 +225,30 @@ func TestXhsScriptSaveProfileRejectsEmptyText(t *testing.T) {
 	assert.Equal(t, "已有定位", profile.ProfileText)
 }
 
+func TestXhsScriptTranscribeRejectsWhenQuotaExhausted(t *testing.T) {
+	router, db, token, userID := newXhsScriptControllerTestRouter(t)
+	note := model.XhsScriptNote{
+		UserID:           userID,
+		SourceNoteID:     "controller-manual-transcribe",
+		NoteType:         model.XhsScriptNoteTypeVideo,
+		Title:            "需要手动转写的笔记",
+		VideoURL:         "https://sns-video.xhscdn.com/controller-manual-transcribe.mp4",
+		TranscribeStatus: model.XhsScriptTranscribeFailed,
+		GenerateStatus:   model.XhsScriptGenerateNotReady,
+		LastError:        "asr_failed",
+	}
+	require.NoError(t, db.Create(&note).Error)
+	require.NoError(t, db.Create(&model.XhsScriptQuotaAccount{UserID: userID}).Error)
+
+	resp := doXhsScriptRequest(router, http.MethodPost, "/v1/xhs-script/notes/"+strconv.FormatUint(note.ID, 10)+"/transcribe", token)
+
+	assert.Equal(t, http.StatusPaymentRequired, resp.Code)
+	var body apiResponse
+	require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &body))
+	assert.Equal(t, 1, body.Code)
+	assert.Contains(t, body.Message, "生成次数不足")
+}
+
 func TestXhsScriptOrderDetailCompatibilityRoute(t *testing.T) {
 	router, _, token, userID := newXhsScriptControllerTestRouter(t)
 
@@ -469,6 +493,7 @@ func newXhsScriptControllerTestRouter(t *testing.T) (*gin.Engine, *gorm.DB, stri
 	group.POST("/notes", ctl.Ingest)
 	group.GET("/notes", ctl.ListNotes)
 	group.GET("/notes/:id", ctl.GetNote)
+	group.POST("/notes/:id/transcribe", ctl.Transcribe)
 	group.POST("/notes/:id/generate", ctl.Generate)
 	group.GET("/quota", ctl.GetQuota)
 	group.POST("/orders", ctl.CreateOrder)

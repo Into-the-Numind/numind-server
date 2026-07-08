@@ -109,6 +109,7 @@ func installNumindRouters(g *gin.Engine) error {
 			xhsScriptGroup.POST("/notes", xhsScriptCtrl.Ingest)
 			xhsScriptGroup.GET("/notes", xhsScriptCtrl.ListNotes)
 			xhsScriptGroup.GET("/notes/:id", xhsScriptCtrl.GetNote)
+			xhsScriptGroup.POST("/notes/:id/transcribe", xhsScriptCtrl.Transcribe)
 			xhsScriptGroup.POST("/notes/:id/generate", xhsScriptCtrl.Generate)
 			xhsScriptGroup.GET("/quota", xhsScriptCtrl.GetQuota)
 			xhsScriptGroup.POST("/orders", xhsScriptCtrl.CreateOrder)
