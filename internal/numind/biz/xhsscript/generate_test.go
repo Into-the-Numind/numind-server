@@ -55,11 +55,16 @@ func TestBuildGenerationPromptUsesInternalDeconstructionWorkflow(t *testing.T) {
 	prompt := buildGenerationPrompt("服务创业者的内容增长产品", note)
 
 	assert.Contains(t, prompt, "内部工作流")
+	assert.Contains(t, prompt, "最高优先级原则")
+	assert.Contains(t, prompt, "真实可信，不编造")
+	assert.Contains(t, prompt, "原创表达，不洗稿")
+	assert.Contains(t, prompt, "爆款底层逻辑学习")
 	assert.Contains(t, prompt, "爆款结构拆解")
 	assert.Contains(t, prompt, "产品转译映射")
-	assert.Contains(t, prompt, "1:1 结构仿写")
+	assert.Contains(t, prompt, "结构功能对齐，而不是表层仿写")
+	assert.Contains(t, prompt, "原创口播生成")
 	assert.Contains(t, prompt, "2-3 句话")
-	assert.Contains(t, prompt, "自然段数量")
+	assert.Contains(t, prompt, "不要为了追求 1:1 仿写而牺牲可信度和自然度")
 	assert.Contains(t, prompt, "按指定格式输出")
 	assert.Contains(t, prompt, "不要输出拆解过程")
 	assert.NotContains(t, prompt, "[STAGE_3_CACHE]")
@@ -99,12 +104,12 @@ func TestBuildGenerationPromptUsesApprovedOutputCopy(t *testing.T) {
 
 	prompt := buildGenerationPrompt("产品定位", note)
 
-	assert.Contains(t, prompt, "不要输出拆解过程、拆解小节标签、Markdown、解释或任何分析")
-	assert.Contains(t, prompt, "用 2-4 句话概括核心价值，可以自然引导收藏或评论")
+	assert.Contains(t, prompt, "不要输出拆解过程、小节标签、Markdown、解释或任何分析")
+	assert.Contains(t, prompt, "用 2-4 句话概括核心价值，可以自然引导收藏、评论或私信")
 	assert.Contains(t, prompt, "语气自然，短句多，有停顿感，适合小红书视频")
+	assert.Contains(t, prompt, "所有具体论据必须真实可信")
 	assert.NotContains(t, prompt, "适用人群和观看理由")
 	assert.NotContains(t, prompt, "45-90 秒")
-	assert.NotContains(t, prompt, "不要输出拆解过程、小节标签")
 }
 
 func TestGenerateScriptUsesProductizedRewriteSystemPrompt(t *testing.T) {
@@ -130,6 +135,8 @@ func TestGenerateScriptUsesProductizedRewriteSystemPrompt(t *testing.T) {
 	assert.Equal(t, profile.XhsNoteAnalyze, capturedTaskID)
 	assert.Contains(t, systemPrompt, "爆款结构解剖")
 	assert.Contains(t, systemPrompt, "产品转译")
+	assert.Contains(t, systemPrompt, "不是简单替换关键词")
+	assert.Contains(t, systemPrompt, "结构功能、情绪功能和转化功能")
 	assert.Contains(t, systemPrompt, "最终只按固定格式输出标题、描述、标签和口播文稿")
 	assert.Contains(t, systemPrompt, "不输出分析")
 	assert.True(t, capturedReq.Thinking, "xhs script generation should enable thinking mode")
