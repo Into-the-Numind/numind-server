@@ -13,12 +13,18 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/spf13/viper"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"numind-server/internal/pkg/errno"
 	importMw "numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
 	passwordauth "numind-server/pkg/auth"
 )
+
+type TrialClaimInput struct {
+	Type  string
+	Value string
+}
 
 func (s *Service) Authenticate(ctx context.Context, token string, allowExtToken bool) (*model.User, error) {
 	token = strings.TrimSpace(token)
@@ -40,32 +46,10 @@ func (s *Service) Authenticate(ctx context.Context, token string, allowExtToken 
 }
 
 func (s *Service) EnsureTrial(ctx context.Context, anonymousID string) (*SessionDTO, error) {
-	anonymousID = strings.TrimSpace(anonymousID)
-	if anonymousID == "" {
-		anonymousID = randomAnonymousID()
-	}
-	username := anonymousUsername(anonymousID)
-	var user model.User
-	err := s.ds.DB().WithContext(ctx).Where("username = ?", username).First(&user).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		user = model.User{
-			Username: username,
-			Nickname: "口播试用用户",
-			Password: "",
-			Status:   1,
-		}
-		if createErr := s.ds.DB().WithContext(ctx).Create(&user).Error; createErr != nil {
-			if reloadErr := s.ds.DB().WithContext(ctx).Where("username = ?", username).First(&user).Error; reloadErr != nil {
-				return nil, fmt.Errorf("create anonymous user: %w", createErr)
-			}
-		}
-	} else if err != nil {
-		return nil, fmt.Errorf("load anonymous user: %w", err)
-	}
-	return s.sessionForUser(ctx, &user, "")
+	return nil, errno.ErrInvalidParameter.SetMessage("请先注册账号，再领取 3 次免费生成")
 }
 
-func (s *Service) Register(ctx context.Context, current *model.User, username, password string) (*SessionDTO, error) {
+func (s *Service) Register(ctx context.Context, current *model.User, username, password string, trialClaims ...TrialClaimInput) (*SessionDTO, error) {
 	username = normalizeAccountUsername(username)
 	password = strings.TrimSpace(password)
 	if !validAccountUsername(username) {
@@ -81,6 +65,9 @@ func (s *Service) Register(ctx context.Context, current *model.User, username, p
 
 	var user model.User
 	err = s.ds.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if current != nil && IsAnonymousUsername(current.Username) {
+			current = nil
+		}
 		var existing model.User
 		existingErr := tx.Where("username = ?", username).First(&existing).Error
 		if existingErr == nil && (current == nil || existing.ID != current.ID) {
@@ -88,19 +75,6 @@ func (s *Service) Register(ctx context.Context, current *model.User, username, p
 		}
 		if existingErr != nil && !errors.Is(existingErr, gorm.ErrRecordNotFound) {
 			return existingErr
-		}
-
-		if current != nil && current.ID > 0 && IsAnonymousUsername(current.Username) {
-			updates := map[string]interface{}{
-				"username": username,
-				"password": hashedPassword,
-				"nickname": username,
-				"status":   1,
-			}
-			if err := tx.Model(&model.User{}).Where("id = ?", current.ID).Updates(updates).Error; err != nil {
-				return err
-			}
-			return tx.Where("id = ?", current.ID).First(&user).Error
 		}
 
 		if existingErr == nil && current != nil && existing.ID == current.ID {
@@ -123,12 +97,47 @@ func (s *Service) Register(ctx context.Context, current *model.User, username, p
 			Nickname: username,
 			Status:   1,
 		}
-		return tx.Create(&user).Error
+		if err := tx.Create(&user).Error; err != nil {
+			return err
+		}
+		freeGrant, err := s.claimTrialGrant(ctx, tx, user.ID, trialClaims)
+		if err != nil {
+			return err
+		}
+		account := model.XhsScriptQuotaAccount{
+			UserID:        user.ID,
+			FreeRemaining: freeGrant,
+			PaidRemaining: 0,
+		}
+		if err := tx.WithContext(ctx).
+			Select("UserID", "FreeRemaining", "PaidRemaining").
+			Clauses(clause.OnConflict{DoNothing: true}).
+			Create(&account).Error; err != nil {
+			return fmt.Errorf("create xhs script quota account: %w", err)
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	return s.sessionForUser(ctx, &user, "")
+}
+
+func (s *Service) claimTrialGrant(ctx context.Context, tx *gorm.DB, userID uint, inputs []TrialClaimInput) (int64, error) {
+	claims := normalizeTrialClaimRows(userID, inputs)
+	if len(claims) == 0 {
+		return TrialFreeGenerations, nil
+	}
+	result := tx.WithContext(ctx).
+		Clauses(clause.OnConflict{DoNothing: true}).
+		Create(&claims)
+	if result.Error != nil {
+		return 0, fmt.Errorf("claim trial grant: %w", result.Error)
+	}
+	if result.RowsAffected != int64(len(claims)) {
+		return 0, nil
+	}
+	return TrialFreeGenerations, nil
 }
 
 func (s *Service) Login(ctx context.Context, username, password string) (*SessionDTO, error) {
@@ -235,6 +244,43 @@ func tokenScope(tokenString string) string {
 func anonymousUsername(anonymousID string) string {
 	sum := sha256.Sum256([]byte(anonymousID))
 	return AnonymousPrefix + hex.EncodeToString(sum[:8])
+}
+
+func normalizeTrialClaimRows(userID uint, inputs []TrialClaimInput) []model.XhsScriptTrialClaim {
+	claims := make([]model.XhsScriptTrialClaim, 0, len(inputs))
+	seen := map[string]struct{}{}
+	for _, input := range inputs {
+		claimType := normalizeTrialClaimType(input.Type)
+		value := strings.TrimSpace(input.Value)
+		if claimType == "" || value == "" {
+			continue
+		}
+		sum := sha256.Sum256([]byte(claimType + ":" + value))
+		valueHash := hex.EncodeToString(sum[:])
+		claimKey := claimType + ":" + valueHash
+		if _, ok := seen[claimKey]; ok {
+			continue
+		}
+		seen[claimKey] = struct{}{}
+		claims = append(claims, model.XhsScriptTrialClaim{
+			UserID:         userID,
+			ClaimKey:       claimKey,
+			ClaimType:      claimType,
+			ClaimValueHash: valueHash,
+		})
+	}
+	return claims
+}
+
+func normalizeTrialClaimType(claimType string) string {
+	switch strings.ToLower(strings.TrimSpace(claimType)) {
+	case "visitor", "browser", "anonymous_id":
+		return "visitor"
+	case "ip", "client_ip":
+		return "ip"
+	default:
+		return ""
+	}
 }
 
 func normalizeAccountUsername(username string) string {

@@ -62,13 +62,24 @@ func (XhsScriptUserProfile) TableName() string { return "xhs_script_user_profile
 type XhsScriptQuotaAccount struct {
 	ID            uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
 	UserID        uint      `gorm:"not null;uniqueIndex:uk_xsqa_user" json:"user_id"`
-	FreeRemaining int64     `gorm:"not null;default:3" json:"free_remaining"`
+	FreeRemaining int64     `gorm:"not null;default:0" json:"free_remaining"`
 	PaidRemaining int64     `gorm:"not null;default:0" json:"paid_remaining"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 func (XhsScriptQuotaAccount) TableName() string { return "xhs_script_quota_account" }
+
+type XhsScriptTrialClaim struct {
+	ID             uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
+	UserID         uint      `gorm:"not null;index:idx_xstc_user" json:"user_id"`
+	ClaimKey       string    `gorm:"size:180;not null;uniqueIndex:uk_xstc_claim" json:"claim_key"`
+	ClaimType      string    `gorm:"size:32;not null;index:idx_xstc_type_hash,priority:1" json:"claim_type"`
+	ClaimValueHash string    `gorm:"size:128;not null;index:idx_xstc_type_hash,priority:2" json:"claim_value_hash"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+func (XhsScriptTrialClaim) TableName() string { return "xhs_script_trial_claim" }
 
 type XhsScriptNote struct {
 	ID           uint64         `gorm:"primaryKey;autoIncrement" json:"id"`

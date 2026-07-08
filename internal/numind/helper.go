@@ -450,6 +450,7 @@ func autoMigrate(db *gorm.DB) error {
 		&model.XhsTopicNote{},
 		&model.XhsScriptUserProfile{},
 		&model.XhsScriptQuotaAccount{},
+		&model.XhsScriptTrialClaim{},
 		&model.XhsScriptNote{},
 		&model.XhsScriptGeneration{},
 		&model.XhsScriptQuotaLedger{},

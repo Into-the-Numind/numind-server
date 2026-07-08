@@ -27,6 +27,7 @@ func newXhsScriptStoreTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, db.AutoMigrate(
 		&model.XhsScriptUserProfile{},
 		&model.XhsScriptQuotaAccount{},
+		&model.XhsScriptTrialClaim{},
 		&model.XhsScriptNote{},
 		&model.XhsScriptGeneration{},
 		&model.XhsScriptQuotaLedger{},
@@ -49,6 +50,7 @@ func newXhsScriptConcurrentStoreTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, db.AutoMigrate(
 		&model.XhsScriptUserProfile{},
 		&model.XhsScriptQuotaAccount{},
+		&model.XhsScriptTrialClaim{},
 		&model.XhsScriptNote{},
 		&model.XhsScriptGeneration{},
 		&model.XhsScriptQuotaLedger{},
@@ -75,19 +77,28 @@ func newXhsScriptNote(userID uint, sourceNoteID string) *model.XhsScriptNote {
 	}
 }
 
-func TestXhsScriptStore_DefaultQuotaIsThreeFree(t *testing.T) {
+func seedXhsScriptFreeQuota(t *testing.T, db *gorm.DB, userID uint, amount int64) {
+	t.Helper()
+	require.NoError(t, db.Create(&model.XhsScriptQuotaAccount{
+		UserID:        userID,
+		FreeRemaining: amount,
+		PaidRemaining: 0,
+	}).Error)
+}
+
+func TestXhsScriptStore_DefaultQuotaIsZeroUntilRegistrationGrant(t *testing.T) {
 	s := NewXhsScriptStore(newXhsScriptStoreTestDB(t))
 	ctx := context.Background()
 
 	account, err := s.CreateOrGetQuotaAccount(ctx, 11)
 	require.NoError(t, err)
 	assert.Equal(t, uint(11), account.UserID)
-	assert.EqualValues(t, 3, account.FreeRemaining)
+	assert.EqualValues(t, 0, account.FreeRemaining)
 	assert.EqualValues(t, 0, account.PaidRemaining)
 
 	got, err := s.GetQuotaAccount(ctx, 11)
 	require.NoError(t, err)
-	assert.EqualValues(t, 3, got.FreeRemaining)
+	assert.EqualValues(t, 0, got.FreeRemaining)
 }
 
 func TestXhsScriptStore_DeductConsumesFreeBeforePaidAndWritesLedger(t *testing.T) {
@@ -95,8 +106,7 @@ func TestXhsScriptStore_DeductConsumesFreeBeforePaidAndWritesLedger(t *testing.T
 	s := NewXhsScriptStore(db)
 	ctx := context.Background()
 
-	_, err := s.CreateOrGetQuotaAccount(ctx, 12)
-	require.NoError(t, err)
+	seedXhsScriptFreeQuota(t, db, 12, 3)
 	require.NoError(t, s.AddPaidQuota(ctx, 12, 2, "order-9001"))
 
 	for _, refID := range []string{"gen-1", "gen-2", "gen-3", "gen-4", "gen-5"} {
@@ -126,16 +136,16 @@ func TestXhsScriptStore_DeductConsumesFreeBeforePaidAndWritesLedger(t *testing.T
 }
 
 func TestXhsScriptStore_DeductInsufficientQuotaDoesNotGoNegative(t *testing.T) {
-	s := NewXhsScriptStore(newXhsScriptStoreTestDB(t))
+	db := newXhsScriptStoreTestDB(t)
+	s := NewXhsScriptStore(db)
 	ctx := context.Background()
 
-	_, err := s.CreateOrGetQuotaAccount(ctx, 13)
-	require.NoError(t, err)
+	seedXhsScriptFreeQuota(t, db, 13, 3)
 	for _, refID := range []string{"gen-1", "gen-2", "gen-3"} {
 		require.NoError(t, s.DeductOneGeneration(ctx, 13, refID))
 	}
 
-	err = s.DeductOneGeneration(ctx, 13, "gen-4")
+	err := s.DeductOneGeneration(ctx, 13, "gen-4")
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrXhsScriptQuotaInsufficient))
 
@@ -190,8 +200,7 @@ func TestXhsScriptStore_CreateGenerationAndDeductQuotaCommitsTogether(t *testing
 	s := NewXhsScriptStore(db)
 	ctx := context.Background()
 
-	_, err := s.CreateOrGetQuotaAccount(ctx, 24)
-	require.NoError(t, err)
+	seedXhsScriptFreeQuota(t, db, 24, 3)
 	note := newXhsScriptNote(24, "source-commit")
 	note.TranscribeStatus = model.XhsScriptTranscribeReady
 	note.GenerateStatus = model.XhsScriptGenerateGenerating
@@ -226,8 +235,7 @@ func TestXhsScriptStore_CreateGenerationAndDeductQuotaRollsBackWhenQuotaInsuffic
 	s := NewXhsScriptStore(db)
 	ctx := context.Background()
 
-	_, err := s.CreateOrGetQuotaAccount(ctx, 25)
-	require.NoError(t, err)
+	seedXhsScriptFreeQuota(t, db, 25, 3)
 	for _, refID := range []string{"gen-used-1", "gen-used-2", "gen-used-3"} {
 		require.NoError(t, s.DeductOneGeneration(ctx, 25, refID))
 	}
@@ -403,8 +411,7 @@ func TestXhsScriptStore_DuplicateDeductOneGenerationIsIdempotent(t *testing.T) {
 	s := NewXhsScriptStore(db)
 	ctx := context.Background()
 
-	_, err := s.CreateOrGetQuotaAccount(ctx, 18)
-	require.NoError(t, err)
+	seedXhsScriptFreeQuota(t, db, 18, 3)
 	require.NoError(t, s.DeductOneGeneration(ctx, 18, "gen-dup"))
 	require.NoError(t, s.DeductOneGeneration(ctx, 18, "gen-dup"))
 
@@ -424,8 +431,7 @@ func TestXhsScriptStore_DuplicateDeductRemainsIdempotentAfterBalanceExhausted(t 
 	s := NewXhsScriptStore(db)
 	ctx := context.Background()
 
-	_, err := s.CreateOrGetQuotaAccount(ctx, 23)
-	require.NoError(t, err)
+	seedXhsScriptFreeQuota(t, db, 23, 3)
 	require.NoError(t, s.DeductOneGeneration(ctx, 23, "gen-original"))
 	require.NoError(t, s.DeductOneGeneration(ctx, 23, "gen-second"))
 	require.NoError(t, s.DeductOneGeneration(ctx, 23, "gen-third"))
@@ -450,13 +456,13 @@ func TestXhsScriptStore_DuplicateDeductRemainsIdempotentAfterBalanceExhausted(t 
 }
 
 func TestXhsScriptStore_DeductOneGenerationEmptyRefDoesNotChangeBalance(t *testing.T) {
-	s := NewXhsScriptStore(newXhsScriptStoreTestDB(t))
+	db := newXhsScriptStoreTestDB(t)
+	s := NewXhsScriptStore(db)
 	ctx := context.Background()
 
-	_, err := s.CreateOrGetQuotaAccount(ctx, 21)
-	require.NoError(t, err)
+	seedXhsScriptFreeQuota(t, db, 21, 3)
 
-	err = s.DeductOneGeneration(ctx, 21, "")
+	err := s.DeductOneGeneration(ctx, 21, "")
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrXhsScriptQuotaRefRequired))
 
@@ -470,8 +476,7 @@ func TestXhsScriptStore_ConcurrentDuplicateDeductOneGenerationAppliesOnce(t *tes
 	s := NewXhsScriptStore(db)
 	ctx := context.Background()
 
-	_, err := s.CreateOrGetQuotaAccount(ctx, 22)
-	require.NoError(t, err)
+	seedXhsScriptFreeQuota(t, db, 22, 3)
 
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)

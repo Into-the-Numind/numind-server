@@ -24,6 +24,9 @@ func TestRegisterStoresHashedPasswordAndLogin(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, session.AccessToken)
 	assert.Equal(t, "creator2026", session.User.Username)
+	assert.False(t, session.User.IsAnonymous)
+	assert.EqualValues(t, 3, session.Quota.FreeRemaining)
+	assert.EqualValues(t, 3, session.Quota.Remaining)
 
 	var user model.User
 	require.NoError(t, db.Where("username = ?", "creator2026").First(&user).Error)
@@ -34,6 +37,57 @@ func TestRegisterStoresHashedPasswordAndLogin(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, loginSession.AccessToken)
 	assert.Equal(t, user.ID, loginSession.User.ID)
+}
+
+func TestEnsureTrialIsDisabledForForcedRegistration(t *testing.T) {
+	svc, db := newAuthTestService(t)
+	ctx := context.Background()
+
+	session, err := svc.EnsureTrial(ctx, "browser-anon-id")
+
+	require.Error(t, err)
+	assert.Nil(t, session)
+	assert.Contains(t, err.Error(), "请先注册账号")
+
+	var count int64
+	require.NoError(t, db.Model(&model.User{}).
+		Where("username LIKE ?", AnonymousPrefix+"%").
+		Count(&count).Error)
+	assert.EqualValues(t, 0, count)
+}
+
+func TestRegisterGrantsFreeQuotaOnlyOncePerTrialClaim(t *testing.T) {
+	svc, _ := newAuthTestService(t)
+	ctx := context.Background()
+
+	first, err := svc.Register(ctx, nil, "firstuser", "secret123",
+		TrialClaimInput{Type: "visitor", Value: "visitor-a"},
+		TrialClaimInput{Type: "ip", Value: "203.0.113.10"},
+	)
+	require.NoError(t, err)
+	assert.EqualValues(t, 3, first.Quota.FreeRemaining)
+
+	sameVisitor, err := svc.Register(ctx, nil, "seconduser", "secret123",
+		TrialClaimInput{Type: "visitor", Value: "visitor-a"},
+		TrialClaimInput{Type: "ip", Value: "203.0.113.11"},
+	)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, sameVisitor.Quota.FreeRemaining)
+	assert.EqualValues(t, 0, sameVisitor.Quota.Remaining)
+
+	sameIP, err := svc.Register(ctx, nil, "thirduser", "secret123",
+		TrialClaimInput{Type: "visitor", Value: "visitor-c"},
+		TrialClaimInput{Type: "ip", Value: "203.0.113.10"},
+	)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, sameIP.Quota.FreeRemaining)
+
+	freshClaims, err := svc.Register(ctx, nil, "fourthuser", "secret123",
+		TrialClaimInput{Type: "visitor", Value: "visitor-d"},
+		TrialClaimInput{Type: "ip", Value: "203.0.113.12"},
+	)
+	require.NoError(t, err)
+	assert.EqualValues(t, 3, freshClaims.Quota.FreeRemaining)
 }
 
 func TestRegisterRejectsNonAlphanumericUsername(t *testing.T) {
@@ -97,6 +151,7 @@ func newAuthTestService(t *testing.T) (*Service, *gorm.DB) {
 	require.NoError(t, db.AutoMigrate(
 		&model.User{},
 		&model.XhsScriptQuotaAccount{},
+		&model.XhsScriptTrialClaim{},
 		&model.XhsScriptQuotaLedger{},
 	))
 	sqlDB, err := db.DB()

@@ -195,6 +195,10 @@ func TestIngestNotes_DuplicateCaptureRecordsAnalyticsOnce(t *testing.T) {
 	svc := New(store.NewTestStore(db))
 	ctx := context.Background()
 	userID := uint(43)
+	require.NoError(t, db.Create(&model.XhsScriptQuotaAccount{
+		UserID:        userID,
+		FreeRemaining: 1,
+	}).Error)
 	payload := CapturePayload{
 		SourceNoteID: "video-note-1",
 		NoteType:     model.XhsScriptNoteTypeVideo,

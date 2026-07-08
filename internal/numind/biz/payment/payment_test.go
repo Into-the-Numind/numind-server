@@ -292,7 +292,7 @@ func TestFulfillOrder_XhsScriptPack_AddsGenerationQuota(t *testing.T) {
 
 	var account model.XhsScriptQuotaAccount
 	require.NoError(t, db.Where("user_id = ?", uid).First(&account).Error)
-	assert.Equal(t, int64(3), account.FreeRemaining)
+	assert.Equal(t, int64(0), account.FreeRemaining)
 	assert.Equal(t, int64(10), account.PaidRemaining)
 
 	var ledger model.XhsScriptQuotaLedger

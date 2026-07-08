@@ -113,6 +113,101 @@ func TestXhsScriptCompatibilityRoutes(t *testing.T) {
 	assert.NotEqual(t, http.StatusOK, badPaginationResp.Code)
 }
 
+func TestXhsScriptTrialEndpointNoLongerCreatesAnonymousUser(t *testing.T) {
+	router, db, _, _ := newXhsScriptControllerTestRouter(t)
+
+	resp := doXhsScriptJSONRequest(t, router, http.MethodPost, "/v1/xhs-script/trial", "", map[string]string{
+		"anonymous_id": "browser-anon-id",
+	})
+
+	assert.NotEqual(t, http.StatusOK, resp.Code)
+	var count int64
+	require.NoError(t, db.Model(&model.User{}).
+		Where("username LIKE ?", xhsscriptbiz.AnonymousPrefix+"%").
+		Count(&count).Error)
+	assert.EqualValues(t, 0, count)
+}
+
+func TestXhsScriptRegisterUsesVisitorClaimForFreeQuota(t *testing.T) {
+	router, _, _, _ := newXhsScriptControllerTestRouter(t)
+
+	firstResp := doXhsScriptJSONRequest(t, router, http.MethodPost, "/v1/xhs-script/register", "", map[string]string{
+		"username":   "visitorone",
+		"password":   "secret123",
+		"visitor_id": "browser-visitor-1",
+	})
+	require.Equal(t, http.StatusOK, firstResp.Code)
+	var firstBody apiResponse
+	require.NoError(t, json.Unmarshal(firstResp.Body.Bytes(), &firstBody))
+	require.Equal(t, 0, firstBody.Code)
+	var firstSession xhsscriptbiz.SessionDTO
+	require.NoError(t, json.Unmarshal(firstBody.Data, &firstSession))
+	assert.EqualValues(t, 3, firstSession.Quota.FreeRemaining)
+
+	secondResp := doXhsScriptJSONRequest(t, router, http.MethodPost, "/v1/xhs-script/register", "", map[string]string{
+		"username":   "visitortwo",
+		"password":   "secret123",
+		"visitor_id": "browser-visitor-1",
+	})
+	require.Equal(t, http.StatusOK, secondResp.Code)
+	var secondBody apiResponse
+	require.NoError(t, json.Unmarshal(secondResp.Body.Bytes(), &secondBody))
+	require.Equal(t, 0, secondBody.Code)
+	var secondSession xhsscriptbiz.SessionDTO
+	require.NoError(t, json.Unmarshal(secondBody.Data, &secondSession))
+	assert.EqualValues(t, 0, secondSession.Quota.FreeRemaining)
+	assert.EqualValues(t, 0, secondSession.Quota.Remaining)
+}
+
+func TestXhsScriptAnonymousTokenCannotUseWorkspaceOrExtension(t *testing.T) {
+	router, db, _, _ := newXhsScriptControllerTestRouter(t)
+	anonymous := model.User{
+		Username: xhsscriptbiz.AnonymousPrefix + "legacy",
+		Nickname: "legacy anonymous",
+		Status:   1,
+	}
+	require.NoError(t, db.Create(&anonymous).Error)
+	token := signControllerTestToken(t, anonymous.ID)
+
+	for name, tc := range map[string]struct {
+		method string
+		path   string
+		body   interface{}
+	}{
+		"me": {
+			method: http.MethodGet,
+			path:   "/v1/xhs-script/me",
+		},
+		"ext_token": {
+			method: http.MethodPost,
+			path:   "/v1/xhs-script/ext-token",
+		},
+		"capture": {
+			method: http.MethodPost,
+			path:   "/v1/xhs-script/notes",
+			body: map[string]interface{}{
+				"notes": []map[string]interface{}{{
+					"xhs_note_id": "legacy-video",
+					"note_type":   model.XhsScriptNoteTypeVideo,
+					"title":       "旧匿名不应采集",
+					"video_url":   "https://sns-video.xhscdn.com/legacy.mp4",
+				}},
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var resp *httptest.ResponseRecorder
+			if tc.body == nil {
+				resp = doXhsScriptRequest(router, tc.method, tc.path, token)
+			} else {
+				resp = doXhsScriptJSONRequest(t, router, tc.method, tc.path, token, tc.body)
+			}
+			assert.NotEqual(t, http.StatusOK, resp.Code)
+			assert.Contains(t, resp.Body.String(), "请先注册")
+		})
+	}
+}
+
 func TestXhsScriptSaveProfileRejectsEmptyText(t *testing.T) {
 	router, db, token, userID := newXhsScriptControllerTestRouter(t)
 	require.NoError(t, db.Create(&model.XhsScriptUserProfile{
@@ -328,6 +423,7 @@ func newXhsScriptControllerTestRouter(t *testing.T) (*gin.Engine, *gorm.DB, stri
 		&model.User{},
 		&model.XhsScriptUserProfile{},
 		&model.XhsScriptQuotaAccount{},
+		&model.XhsScriptTrialClaim{},
 		&model.XhsScriptQuotaLedger{},
 		&model.XhsScriptNote{},
 		&model.XhsScriptGeneration{},
@@ -361,13 +457,21 @@ func newXhsScriptControllerTestRouter(t *testing.T) (*gin.Engine, *gorm.DB, stri
 
 	router := gin.New()
 	group := router.Group("/v1/xhs-script")
+	group.POST("/trial", ctl.Trial)
+	group.POST("/register", ctl.Register)
+	group.POST("/login", ctl.Login)
+	group.POST("/logout", ctl.Logout)
+	group.GET("/me", ctl.Me)
 	group.GET("/ext-token", ctl.ExtToken)
 	group.POST("/ext-token", ctl.ExtToken)
 	group.PUT("/profile", ctl.SaveProfile)
 	group.POST("/profile/extract-text", ctl.ExtractProfileText)
+	group.POST("/notes", ctl.Ingest)
 	group.GET("/notes", ctl.ListNotes)
 	group.GET("/notes/:id", ctl.GetNote)
+	group.POST("/notes/:id/generate", ctl.Generate)
 	group.GET("/quota", ctl.GetQuota)
+	group.POST("/orders", ctl.CreateOrder)
 	group.GET("/orders/:id/status", ctl.GetOrderStatus)
 	group.GET("/orders/:id", ctl.GetOrderStatus)
 	group.POST("/analytics/events", ctl.TrackEvents)

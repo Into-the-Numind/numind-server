@@ -201,6 +201,7 @@ func (p CapturePayload) toModel(userID uint) (*model.XhsScriptNote, error) {
 	}
 
 	description := strings.TrimSpace(firstNonEmpty(p.Description, p.Content))
+	title := strings.TrimSpace(firstNonEmpty(p.Title, firstLine(description)))
 	comments := p.HotComments
 	if len(comments) == 0 {
 		comments = p.Comments
@@ -210,7 +211,7 @@ func (p CapturePayload) toModel(userID uint) (*model.XhsScriptNote, error) {
 		SourceNoteID: strings.TrimSpace(sourceID),
 		NoteURL:      noteURL,
 		NoteType:     model.XhsScriptNoteTypeVideo,
-		Title:        strings.TrimSpace(p.Title),
+		Title:        title,
 		Description:  description,
 		Tags:         mustJSON(p.Tags),
 		LikeCount:    p.LikeCount,
@@ -221,6 +222,19 @@ func (p CapturePayload) toModel(userID uint) (*model.XhsScriptNote, error) {
 		VideoURL:     videoURL,
 		LastError:    "",
 	}, nil
+}
+
+func firstLine(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	for _, sep := range []string{"\n", "\r", "。", "！", "？", ".", "!", "?"} {
+		if idx := strings.Index(value, sep); idx >= 0 {
+			return strings.TrimSpace(value[:idx])
+		}
+	}
+	return value
 }
 
 func nonVideoRejectedProperties(payload CapturePayload) map[string]interface{} {

@@ -590,10 +590,13 @@ func grantXhsScriptQuotaTx(ctx context.Context, tx *gorm.DB, userID uint, delta 
 	}
 	account := model.XhsScriptQuotaAccount{
 		UserID:        userID,
-		FreeRemaining: 3,
+		FreeRemaining: 0,
 		PaidRemaining: 0,
 	}
-	if err := tx.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&account).Error; err != nil {
+	if err := tx.WithContext(ctx).
+		Select("UserID", "FreeRemaining", "PaidRemaining").
+		Clauses(clause.OnConflict{DoNothing: true}).
+		Create(&account).Error; err != nil {
 		return fmt.Errorf("create xhs script quota account: %w", err)
 	}
 	if err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).

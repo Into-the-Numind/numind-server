@@ -43,8 +43,10 @@ type trialRequest struct {
 }
 
 type authRequest struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
+	Username    string `json:"username"`
+	Password    string `json:"password"`
+	VisitorID   string `json:"visitor_id"`
+	AnonymousID string `json:"anonymous_id"`
 }
 
 type profileRequest struct {
@@ -86,13 +88,28 @@ func (ctl *Controller) Register(c *gin.Context) {
 		return
 	}
 	current, _ := ctl.optionalCurrentUser(c, false)
-	session, err := ctl.biz.Register(c.Request.Context(), current, req.Username, req.Password)
+	session, err := ctl.biz.Register(c.Request.Context(), current, req.Username, req.Password, registrationTrialClaims(c, req)...)
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
 	}
 	setSessionCookie(c, session.AccessToken, session.ExpiresAt)
 	core.WriteResponse(c, nil, session)
+}
+
+func registrationTrialClaims(c *gin.Context, req authRequest) []xhsscriptbiz.TrialClaimInput {
+	visitorID := strings.TrimSpace(req.VisitorID)
+	if visitorID == "" {
+		visitorID = strings.TrimSpace(req.AnonymousID)
+	}
+	claims := make([]xhsscriptbiz.TrialClaimInput, 0, 2)
+	if visitorID != "" {
+		claims = append(claims, xhsscriptbiz.TrialClaimInput{Type: "visitor", Value: visitorID})
+	}
+	if ip := strings.TrimSpace(c.ClientIP()); ip != "" {
+		claims = append(claims, xhsscriptbiz.TrialClaimInput{Type: "ip", Value: ip})
+	}
+	return claims
 }
 
 func (ctl *Controller) Login(c *gin.Context) {
@@ -417,7 +434,11 @@ func (ctl *Controller) requireCurrentUser(c *gin.Context, allowExtToken bool) (*
 		return nil, false
 	}
 	if user == nil {
-		core.WriteResponse(c, errno.ErrTokenInvalid.SetMessage("请先登录或领取试用次数"), nil)
+		core.WriteResponse(c, errno.ErrTokenInvalid.SetMessage("请先注册或登录账号"), nil)
+		return nil, false
+	}
+	if xhsscriptbiz.IsAnonymousUsername(user.Username) {
+		core.WriteResponse(c, errno.ErrTokenInvalid.SetMessage("请先注册账号"), nil)
 		return nil, false
 	}
 	return user, true

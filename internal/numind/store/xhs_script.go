@@ -87,10 +87,12 @@ func (s *xhsScriptStore) SaveProfile(ctx context.Context, profile *model.XhsScri
 func (s *xhsScriptStore) CreateOrGetQuotaAccount(ctx context.Context, userID uint) (*model.XhsScriptQuotaAccount, error) {
 	account := model.XhsScriptQuotaAccount{
 		UserID:        userID,
-		FreeRemaining: 3,
+		FreeRemaining: 0,
 	}
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&account).Error; err != nil {
+		if err := tx.Select("UserID", "FreeRemaining", "PaidRemaining").
+			Clauses(clause.OnConflict{DoNothing: true}).
+			Create(&account).Error; err != nil {
 			return fmt.Errorf("create account: %w", err)
 		}
 		if err := tx.Where("user_id = ?", userID).First(&account).Error; err != nil {
@@ -487,8 +489,10 @@ func findOrCreateQuotaAccountForUpdate(ctx context.Context, tx *gorm.DB, userID 
 		Where("user_id = ?", userID).
 		First(&account).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		account = model.XhsScriptQuotaAccount{UserID: userID, FreeRemaining: 3}
-		if err := tx.WithContext(ctx).Create(&account).Error; err != nil {
+		account = model.XhsScriptQuotaAccount{UserID: userID, FreeRemaining: 0, PaidRemaining: 0}
+		if err := tx.WithContext(ctx).
+			Select("UserID", "FreeRemaining", "PaidRemaining").
+			Create(&account).Error; err != nil {
 			if isDuplicateKeyErr(err) {
 				if reloadErr := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
 					Where("user_id = ?", userID).

@@ -25,6 +25,7 @@ func newXhsScriptModelTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, db.AutoMigrate(
 		&XhsScriptUserProfile{},
 		&XhsScriptQuotaAccount{},
+		&XhsScriptTrialClaim{},
 		&XhsScriptNote{},
 		&XhsScriptGeneration{},
 		&XhsScriptQuotaLedger{},
@@ -36,6 +37,7 @@ func newXhsScriptModelTestDB(t *testing.T) *gorm.DB {
 func TestXhsScriptModels_TableNames(t *testing.T) {
 	assert.Equal(t, "xhs_script_user_profile", XhsScriptUserProfile{}.TableName())
 	assert.Equal(t, "xhs_script_quota_account", XhsScriptQuotaAccount{}.TableName())
+	assert.Equal(t, "xhs_script_trial_claim", XhsScriptTrialClaim{}.TableName())
 	assert.Equal(t, "xhs_script_note", XhsScriptNote{}.TableName())
 	assert.Equal(t, "xhs_script_generation", XhsScriptGeneration{}.TableName())
 	assert.Equal(t, "xhs_script_quota_ledger", XhsScriptQuotaLedger{}.TableName())
@@ -51,7 +53,7 @@ func TestXhsScriptModels_AutoMigrateAndRoundTrip(t *testing.T) {
 
 	quota := XhsScriptQuotaAccount{UserID: 42}
 	require.NoError(t, db.Create(&quota).Error)
-	assert.EqualValues(t, 3, quota.FreeRemaining)
+	assert.EqualValues(t, 0, quota.FreeRemaining)
 	assert.EqualValues(t, 0, quota.PaidRemaining)
 
 	transcript := "视频转写文本"
