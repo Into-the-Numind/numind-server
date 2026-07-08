@@ -40,11 +40,27 @@ func TestRegisterRejectsNonAlphanumericUsername(t *testing.T) {
 	svc, _ := newAuthTestService(t)
 	ctx := context.Background()
 
-	for _, username := range []string{"creator_account", "中文账号", "creator-01", "ab", "abcdefghijklmnopqrstuvwxyzabcde"} {
+	for _, username := range []string{"creator_account", "中文账号", "creator-01", "ab", "abcdefghijklmnopqrstu"} {
 		t.Run(username, func(t *testing.T) {
 			_, err := svc.Register(ctx, nil, username, "secret123")
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), "账号只能使用 3-30 位英文或数字")
+			assert.Contains(t, err.Error(), "账号只能使用 3-20 位英文或数字")
+		})
+	}
+}
+
+func TestRegisterRejectsPasswordOutsideAllowedLength(t *testing.T) {
+	svc, _ := newAuthTestService(t)
+	ctx := context.Background()
+
+	for name, password := range map[string]string{
+		"too_short": "12345",
+		"too_long":  "123456789012345678901",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := svc.Register(ctx, nil, "creator2026", password)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "密码需要 6-20 个字符")
 		})
 	}
 }

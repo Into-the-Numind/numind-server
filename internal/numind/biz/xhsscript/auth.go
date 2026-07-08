@@ -69,10 +69,10 @@ func (s *Service) Register(ctx context.Context, current *model.User, username, p
 	username = normalizeAccountUsername(username)
 	password = strings.TrimSpace(password)
 	if !validAccountUsername(username) {
-		return nil, errno.ErrInvalidParameter.SetMessage("账号只能使用 3-30 位英文或数字")
+		return nil, errno.ErrInvalidParameter.SetMessage("账号只能使用 3-20 位英文或数字")
 	}
-	if len(password) < 6 || len(password) > 72 {
-		return nil, errno.ErrInvalidParameter.SetMessage("密码需要至少 6 个字符")
+	if len(password) < 6 || len(password) > 20 {
+		return nil, errno.ErrInvalidParameter.SetMessage("密码需要 6-20 个字符")
 	}
 	hashedPassword, err := passwordauth.Encrypt(password)
 	if err != nil {
@@ -242,7 +242,7 @@ func normalizeAccountUsername(username string) string {
 }
 
 func validAccountUsername(username string) bool {
-	if len(username) < 3 || len(username) > 30 {
+	if len(username) < 3 || len(username) > 20 {
 		return false
 	}
 	for _, r := range username {
