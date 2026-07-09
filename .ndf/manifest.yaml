@@ -1,5 +1,22 @@
 schema_version: '2.0'
 features:
+- id: chatbot-full-history-context
+  ndf_version: '3.0'
+  description: 'Hotfix: 移除 chatbot 对话上下文“最近 20 条消息”的硬截断。ChatStream 改为读取同一会话完整历史, 后续由 context-budget 根据模型 context window / safe_input_budget 统一压缩或拒绝。'
+  classification_reason: 'Hotfix: 仅 numind-server; 无 DB schema; 无新增 API; 无新外部服务; 预计影响文件数 ≤3; 不涉及支付/权限高风险逻辑。用户确认 2026-07-09。'
+  last_updated_by: ai-h1
+  last_updated_at: '2026-07-09T15:11:00+0800'
+  created_at: '2026-07-09T15:03:25+0800'
+  track: hotfix
+  stage: H1
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: fix/chatbot-full-history-context}
+  worktrees: {numind-server: /private/tmp/wt-chatbot-full-history-context-numind-server}
+  progress: {total_tasks: 1, completed_tasks: 1, reviewed_tasks: 0}
+  decisions:
+  - 'H1 (ai 2026-07-09): TDD RED 已提交 test(chatbot): cover full session history context。旧实现 fetchRecentHistory 只返回 20 条(message-06..25), 新期望为完整 25 条历史。实现: ChatStream 调 fetchSessionHistory 全量读取; store ListMessages 仅 limit>0 时加 SQL LIMIT, API 默认分页不变。相关包测试已过。'
+  blockers: []
 - id: feishu-integration
   track: standard
   description: '飞书集成：让每个 C 端用户通过 OAuth 绑定自己的飞书账号,agent 以该用户身份调用一整套飞书 OpenAPI 能力(云文档/消息/多维表格/日历/待办等)。生产不用 lark-cli 本地工具,复用其背后的 OAuth 授权码流程 + 飞书 OpenAPI,用官方 Go SDK larksuite/oapi-sdk-go 按每用户 token 服务端调用。复用 agent FullTool/BaseTool 框架 + context 里已有的 user_id;需新建 OAuth 地基 + user_third_party_account 加密 token 表 + 刷新中间件 + 飞书工具。'

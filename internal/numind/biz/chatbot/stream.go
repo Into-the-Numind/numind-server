@@ -38,9 +38,6 @@ const ChatbotChatOperation = "chatbot_chat"
 // RoleRecent (the rest are classified as RoleDurable for compression purposes).
 const chatStreamRecentTurns = 10
 
-// chatStreamMaxHistory 历史消息上下文窗口（最近 N 条消息）
-const chatStreamMaxHistory = 20
-
 // chatStreamMaxChunks 检索 rerank 后保留的切片数（喂给 LLM 的知识条数上限）。
 // 统一为 5：真实数据评估显示 0.3 阈值下 in-KB 召回在 top-3 即到顶，>5 不再涨、只增噪声/token。
 const chatStreamMaxChunks = 5
@@ -264,8 +261,9 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 		langfuse.WithSpanInput(map[string]interface{}{"message": message}),
 	)
 
-	// 4a. 先取历史窗口（供改写多轮消歧 + fragment 构建复用，避免二次查询）。
-	historyMsgs := b.fetchRecentHistory(ctx, session.ID)
+	// 4a. 先取完整历史（供改写多轮消歧 + fragment 构建复用，避免二次查询）。
+	// 历史量不在这里按条数截断；由 context-budget 根据模型窗口统一压缩/裁剪。
+	historyMsgs := b.fetchSessionHistory(ctx, session.ID)
 
 	// 5. 知识库检索（走底座 retrieve.Service：query 改写 + 多路检索 + rerank + 严格 scope）。
 	//
@@ -759,22 +757,14 @@ func messageAttachmentsFrom(atts []*model.AgentAttachment) []model.MessageAttach
 	return out
 }
 
-// fetchRecentHistory 取会话最近 chatStreamMaxHistory 条消息（按 seq 升序）。
-// 用 offset 技巧：先取总数，超过窗口则只取最后 N 条。失败仅告警并返回 nil（不阻断对话）。
+// fetchSessionHistory 取会话完整历史消息（按 seq 升序）。
+// 失败仅告警并返回 nil（不阻断对话）。
 // 供 ChatStream 检索改写 + fragment 构建 + legacy buildChatMessages 复用同一批历史。
-func (b *chatbotBiz) fetchRecentHistory(ctx context.Context, sessionID uint) []model.ChatbotMessage {
-	historyMsgs, total, err := b.ds.ChatbotSession().ListMessages(ctx, sessionID, 0, chatStreamMaxHistory)
+func (b *chatbotBiz) fetchSessionHistory(ctx context.Context, sessionID uint) []model.ChatbotMessage {
+	historyMsgs, _, err := b.ds.ChatbotSession().ListMessages(ctx, sessionID, 0, 0)
 	if err != nil {
 		log.C(ctx).Warnw("ChatStream: fetch history failed", "error", err)
 		return nil
-	}
-	if total > int64(chatStreamMaxHistory) {
-		offset := int(total) - chatStreamMaxHistory
-		historyMsgs, _, err = b.ds.ChatbotSession().ListMessages(ctx, sessionID, offset, chatStreamMaxHistory)
-		if err != nil {
-			log.C(ctx).Warnw("ChatStream: fetch recent history failed", "error", err)
-			return nil
-		}
 	}
 	return historyMsgs
 }

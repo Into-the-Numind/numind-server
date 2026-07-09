@@ -14,7 +14,7 @@ import (
 	"numind-server/internal/pkg/model"
 )
 
-func TestFetchRecentHistoryReturnsFullSessionHistory(t *testing.T) {
+func TestFetchSessionHistoryReturnsFullSessionHistory(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
@@ -37,7 +37,7 @@ func TestFetchRecentHistoryReturnsFullSessionHistory(t *testing.T) {
 	}
 
 	b := &chatbotBiz{ds: store.NewTestStore(db)}
-	history := b.fetchRecentHistory(context.Background(), sessionID)
+	history := b.fetchSessionHistory(context.Background(), sessionID)
 
 	require.Len(t, history, 25)
 	require.Equal(t, "message-01", history[0].Content)

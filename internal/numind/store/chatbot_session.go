@@ -204,7 +204,13 @@ func (s *chatbotSessionStore) ListMessages(ctx context.Context, sessionID uint, 
 		return nil, 0, err
 	}
 
-	if err := query.Offset(offset).Limit(limit).Order("seq ASC").Find(&messages).Error; err != nil {
+	if offset > 0 {
+		query = query.Offset(offset)
+	}
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+	if err := query.Order("seq ASC").Find(&messages).Error; err != nil {
 		return nil, 0, err
 	}
 
