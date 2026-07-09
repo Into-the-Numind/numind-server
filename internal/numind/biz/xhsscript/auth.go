@@ -2,7 +2,6 @@ package xhsscript
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -241,11 +240,6 @@ func tokenScope(tokenString string) string {
 	return scope
 }
 
-func anonymousUsername(anonymousID string) string {
-	sum := sha256.Sum256([]byte(anonymousID))
-	return AnonymousPrefix + hex.EncodeToString(sum[:8])
-}
-
 func normalizeTrialClaimRows(userID uint, inputs []TrialClaimInput) []model.XhsScriptTrialClaim {
 	claims := make([]model.XhsScriptTrialClaim, 0, len(inputs))
 	seen := map[string]struct{}{}
@@ -298,12 +292,4 @@ func validAccountUsername(username string) bool {
 		return false
 	}
 	return true
-}
-
-func randomAnonymousID() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return fmt.Sprintf("%d", time.Now().UnixNano())
-	}
-	return hex.EncodeToString(b[:])
 }
