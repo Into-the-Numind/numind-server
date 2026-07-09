@@ -4,20 +4,22 @@ features:
   ndf_version: '3.0'
   description: 'Hotfix: 移除 chatbot 对话上下文“最近 20 条消息”的硬截断。ChatStream 改为读取同一会话完整历史, 后续由 context-budget 根据模型 context window / safe_input_budget 统一压缩或拒绝。'
   classification_reason: 'Hotfix: 仅 numind-server; 无 DB schema; 无新增 API; 无新外部服务; 预计影响文件数 ≤3; 不涉及支付/权限高风险逻辑。用户确认 2026-07-09。'
-  last_updated_by: ai-h3
-  last_updated_at: '2026-07-09T15:29:00+0800'
+  last_updated_by: ai-h3-completed
+  last_updated_at: '2026-07-09T15:29:43+0800'
   created_at: '2026-07-09T15:03:25+0800'
   track: hotfix
-  stage: H3
-  status: active
-  repos: [numind-server]
-  branches: {numind-server: fix/chatbot-full-history-context}
-  worktrees: {numind-server: /private/tmp/wt-chatbot-full-history-context-numind-server}
+  stage: H3 (deployed dev/prod 2026-07-09)
+  status: completed
+  deployed: 'dev develop-4cc08032; prod v2.1.60-4cc08032 2026-07-09。'
+  repos:
+    numind-server: develop (merged via ndf-done)
+  worktrees:
+    numind-server: (removed by ndf-done)
   progress: {total_tasks: 1, completed_tasks: 1, reviewed_tasks: 1}
   decisions:
   - 'H1 (ai 2026-07-09): TDD RED 已提交 test(chatbot): cover full session history context。旧实现 fetchRecentHistory 只返回 20 条(message-06..25), 新期望为完整 25 条历史。实现: ChatStream 调 fetchSessionHistory 全量读取; store ListMessages 仅 limit>0 时加 SQL LIMIT, API 默认分页不变。相关包测试已过。'
   - 'H2 (ai 2026-07-09): 自动验收通过。Fresh verification: go test ./... exit 0; PATH=$PATH:$(go env GOPATH)/bin task lint exit 0。仅有 sqlite-vec cgo macOS deprecation warning, 无 test/lint failure。未改前端,无需浏览器 QA。'
-  - 'H3 (ai 2026-07-09): ndf-done 已完成 merge→push→cleanup。develop/origin develop 已包含 merge commit 65127ec5。当前等待 dev 部署/验收; prod 尚未部署本次上下文热修。'
+  - 'H3 (ai 2026-07-09): ndf-done 已完成 merge→push→cleanup。develop/origin develop 已包含 merge commit 65127ec5。dev 已发布 develop-4cc08032 且 healthz OK; prod 已打 tag v2.1.60 并发布 v2.1.60-4cc08032, 容器 healthy, youshu.asia /healthz 与 /api/healthz OK。'
   blockers: []
 - id: feishu-integration
   track: standard
