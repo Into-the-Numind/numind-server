@@ -23,6 +23,12 @@ import (
 	"numind-server/internal/pkg/model"
 )
 
+func TestTranscribeRuntimeLimits(t *testing.T) {
+	assert.Equal(t, 30*time.Minute, xhsScriptTranscribeTimeout)
+	assert.Equal(t, int64(500*1024*1024), int64(defaultXhsScriptMaxVideoBytes))
+	assert.Equal(t, 30*time.Minute, defaultXhsScriptMaxVideoDuration)
+}
+
 func TestTranscribeNoteSuccessMirrorsVideoAndMarksReady(t *testing.T) {
 	ctx := context.Background()
 	db := newXhsScriptTranscribeTestDB(t)
@@ -155,6 +161,82 @@ func TestTranscribeNoteDownloadFailureMarksFailed(t *testing.T) {
 	assert.Equal(t, model.XhsScriptGenerateNotReady, got.GenerateStatus)
 	assert.Equal(t, "video_download_failed", got.LastError)
 	assert.NotContains(t, got.LastError, "download boom")
+}
+
+func TestTranscribeNoteVideoTooLargeMarksSpecificError(t *testing.T) {
+	ctx := context.Background()
+	db := newXhsScriptTranscribeTestDB(t)
+	svc := New(store.NewTestStore(db))
+	userID := uint(104)
+	downloadErr := errors.New("视频文件超过大小限制")
+
+	note := createTranscribeTestNote(t, db, userID, "download-too-large")
+
+	withTranscribeTestDeps(t, transcribeTestDeps{
+		downloadVideoToTemp: func(context.Context, string, uint64) (string, func(), error) {
+			return "", func() {}, downloadErr
+		},
+		mirrorVideoBytesToCOS: func(context.Context, uint, uint64, []byte) string {
+			t.Fatal("mirror should not be called when download fails")
+			return ""
+		},
+		extractAudio: func(context.Context, string, string) error {
+			t.Fatal("extractAudio should not be called when download fails")
+			return nil
+		},
+		asr: func(context.Context, string, aiservice.ASRRequest) (*aiservice.ASRResponse, error) {
+			t.Fatal("ASR should not be called when download fails")
+			return nil, nil
+		},
+	})
+
+	err := svc.transcribeNote(ctx, userID, note.ID)
+	require.ErrorIs(t, err, downloadErr)
+
+	got := loadTranscribeTestNote(t, db, userID, note.ID)
+	assert.Equal(t, model.XhsScriptTranscribeFailed, got.TranscribeStatus)
+	assert.Equal(t, xhsScriptLastErrorVideoTooLarge, got.LastError)
+}
+
+func TestTranscribeNoteVideoTooLongMarksSpecificError(t *testing.T) {
+	ctx := context.Background()
+	db := newXhsScriptTranscribeTestDB(t)
+	svc := New(store.NewTestStore(db))
+	userID := uint(105)
+	tmpDir := t.TempDir()
+
+	note := createTranscribeTestNote(t, db, userID, "video-too-long")
+
+	withTranscribeTestDeps(t, transcribeTestDeps{
+		downloadVideoToTemp: func(_ context.Context, _ string, noteID uint64) (string, func(), error) {
+			assert.Equal(t, note.ID, noteID)
+			videoPath := filepath.Join(tmpDir, "too-long.mp4")
+			require.NoError(t, os.WriteFile(videoPath, []byte("video"), 0o600))
+			return videoPath, func() { _ = os.Remove(videoPath) }, nil
+		},
+		probeVideoDuration: func(context.Context, string) (time.Duration, error) {
+			return 31 * time.Minute, nil
+		},
+		mirrorVideoBytesToCOS: func(context.Context, uint, uint64, []byte) string {
+			t.Fatal("mirror should not be called when video is too long")
+			return ""
+		},
+		extractAudio: func(context.Context, string, string) error {
+			t.Fatal("extractAudio should not be called when video is too long")
+			return nil
+		},
+		asr: func(context.Context, string, aiservice.ASRRequest) (*aiservice.ASRResponse, error) {
+			t.Fatal("ASR should not be called when video is too long")
+			return nil, nil
+		},
+	})
+
+	err := svc.transcribeNote(ctx, userID, note.ID)
+	require.Error(t, err)
+
+	got := loadTranscribeTestNote(t, db, userID, note.ID)
+	assert.Equal(t, model.XhsScriptTranscribeFailed, got.TranscribeStatus)
+	assert.Equal(t, xhsScriptLastErrorVideoTooLong, got.LastError)
 }
 
 func TestRequestTranscriptionEnqueuesFailedNoteWhenQuotaAvailable(t *testing.T) {
@@ -335,6 +417,7 @@ type transcribeTestDeps struct {
 	readFile              func(string) ([]byte, error)
 	asr                   func(context.Context, string, aiservice.ASRRequest) (*aiservice.ASRResponse, error)
 	mirrorVideoBytesToCOS func(context.Context, uint, uint64, []byte) string
+	probeVideoDuration    func(context.Context, string) (time.Duration, error)
 }
 
 func withTranscribeTestDeps(t *testing.T, deps transcribeTestDeps) {
@@ -344,6 +427,7 @@ func withTranscribeTestDeps(t *testing.T, deps transcribeTestDeps) {
 	prevRead := readFileFn
 	prevASR := xhsScriptASRFn
 	prevMirror := mirrorVideoBytesToCOSFn
+	prevProbeDuration := probeVideoDurationFn
 
 	if deps.downloadVideoToTemp != nil {
 		downloadVideoToTempFn = deps.downloadVideoToTemp
@@ -360,6 +444,9 @@ func withTranscribeTestDeps(t *testing.T, deps transcribeTestDeps) {
 	if deps.mirrorVideoBytesToCOS != nil {
 		mirrorVideoBytesToCOSFn = deps.mirrorVideoBytesToCOS
 	}
+	if deps.probeVideoDuration != nil {
+		probeVideoDurationFn = deps.probeVideoDuration
+	}
 
 	t.Cleanup(func() {
 		downloadVideoToTempFn = prevDownload
@@ -367,6 +454,7 @@ func withTranscribeTestDeps(t *testing.T, deps transcribeTestDeps) {
 		readFileFn = prevRead
 		xhsScriptASRFn = prevASR
 		mirrorVideoBytesToCOSFn = prevMirror
+		probeVideoDurationFn = prevProbeDuration
 	})
 }
 

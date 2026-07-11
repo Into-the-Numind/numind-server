@@ -109,6 +109,8 @@ func analyticsErrorCategory(err error) string {
 		return "http_status"
 	case strings.Contains(msg, "大小限制"):
 		return "video_too_large"
+	case strings.Contains(msg, "时长超过限制"):
+		return "video_too_long"
 	case strings.Contains(msg, "ffmpeg"):
 		return "audio_extract_failed"
 	case strings.Contains(msg, "read extracted audio"):

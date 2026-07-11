@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,11 +29,21 @@ var (
 	readFileFn              = os.ReadFile
 	xhsScriptASRFn          = aiservice.ASR
 	mirrorVideoBytesToCOSFn = mirrorVideoBytesToCOS
+	probeVideoDurationFn    = probeVideoDuration
+)
+
+const (
+	xhsScriptTranscribeTimeout       = 30 * time.Minute
+	defaultXhsScriptMaxVideoBytes    = 500 * 1024 * 1024
+	defaultXhsScriptMaxVideoDuration = 30 * time.Minute
+	xhsScriptLastErrorVideoTooLarge  = "video_too_large"
+	xhsScriptLastErrorVideoTooLong   = "video_too_long"
+	xhsScriptLastErrorDownloadFailed = "video_download_failed"
 )
 
 func (s *Service) enqueueTranscription(userID uint, noteID uint64) {
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), xhsScriptTranscribeTimeout)
 		defer cancel()
 		if err := s.transcribeNote(ctx, userID, noteID); err != nil {
 			log.Errorw("xhs-script transcribe failed", "user_id", userID, "note_id", noteID, "error", err)
@@ -111,10 +122,15 @@ func (s *Service) transcribeNote(ctx context.Context, userID uint, noteID uint64
 
 	videoPath, cleanup, err := downloadVideoToTempFn(ctx, note.VideoURL, noteID)
 	if err != nil {
-		_ = s.ds.XhsScript().UpdateTranscribeStatus(ctx, userID, noteID, model.XhsScriptTranscribeFailed, nil, "video_download_failed")
+		errorCategory := analyticsErrorCategory(err)
+		lastError := xhsScriptLastErrorDownloadFailed
+		if errorCategory == xhsScriptLastErrorVideoTooLarge {
+			lastError = xhsScriptLastErrorVideoTooLarge
+		}
+		_ = s.ds.XhsScript().UpdateTranscribeStatus(ctx, userID, noteID, model.XhsScriptTranscribeFailed, nil, lastError)
 		props := mergeAnalyticsProperties(baseProps, map[string]interface{}{
 			"stage":          "download",
-			"error_category": analyticsErrorCategory(err),
+			"error_category": errorCategory,
 		})
 		s.RecordEventBestEffort(ctx, userID, "video_download_fail", props)
 		s.RecordEventBestEffort(ctx, userID, "video_transcribe_fail", props)
@@ -125,9 +141,27 @@ func (s *Service) transcribeNote(ctx context.Context, userID uint, noteID uint64
 	if stat, statErr := os.Stat(videoPath); statErr == nil {
 		videoSize = stat.Size()
 	}
-	s.RecordEventBestEffort(ctx, userID, "video_download_success", mergeAnalyticsProperties(baseProps, map[string]interface{}{
+	videoDuration, durationErr := probeVideoDurationFn(ctx, videoPath)
+	if durationErr != nil {
+		log.C(ctx).Warnw("xhs-script video duration probe failed, continue transcribing", "user_id", userID, "note_id", noteID, "error", durationErr)
+	} else if videoDuration > maxXhsScriptVideoDuration() {
+		err := fmt.Errorf("视频时长超过限制")
+		_ = s.ds.XhsScript().UpdateTranscribeStatus(ctx, userID, noteID, model.XhsScriptTranscribeFailed, nil, xhsScriptLastErrorVideoTooLong)
+		props := mergeAnalyticsProperties(baseProps, map[string]interface{}{
+			"stage":                  "validate_duration",
+			"error_category":         analyticsErrorCategory(err),
+			"video_duration_seconds": videoDuration.Seconds(),
+		})
+		s.RecordEventBestEffort(ctx, userID, "video_transcribe_fail", props)
+		return err
+	}
+	downloadSuccessProps := map[string]interface{}{
 		"video_size_bytes": videoSize,
-	}))
+	}
+	if videoDuration > 0 {
+		downloadSuccessProps["video_duration_seconds"] = videoDuration.Seconds()
+	}
+	s.RecordEventBestEffort(ctx, userID, "video_download_success", mergeAnalyticsProperties(baseProps, downloadSuccessProps))
 
 	if videoBytes, readErr := readFileFn(videoPath); readErr != nil {
 		log.C(ctx).Warnw("xhs-script mirror video read failed, keep original url", "user_id", userID, "note_id", noteID, "error", readErr)
@@ -260,10 +294,7 @@ func downloadVideoToTemp(ctx context.Context, videoURL string, noteID uint64) (s
 	}
 	defer file.Close()
 
-	maxBytes := viper.GetInt64("xhs_script.max_video_bytes")
-	if maxBytes <= 0 {
-		maxBytes = 120 * 1024 * 1024
-	}
+	maxBytes := maxXhsScriptVideoBytes()
 	written, err := io.Copy(file, io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
 		return "", cleanup, err
@@ -272,6 +303,67 @@ func downloadVideoToTemp(ctx context.Context, videoURL string, noteID uint64) (s
 		return "", cleanup, fmt.Errorf("视频文件超过大小限制")
 	}
 	return videoPath, cleanup, nil
+}
+
+func maxXhsScriptVideoBytes() int64 {
+	maxBytes := viper.GetInt64("xhs_script.max_video_bytes")
+	if maxBytes > 0 {
+		return maxBytes
+	}
+	return defaultXhsScriptMaxVideoBytes
+}
+
+func maxXhsScriptVideoDuration() time.Duration {
+	maxSeconds := viper.GetFloat64("xhs_script.max_video_duration_seconds")
+	if maxSeconds > 0 {
+		return time.Duration(maxSeconds * float64(time.Second))
+	}
+	return defaultXhsScriptMaxVideoDuration
+}
+
+func probeVideoDuration(ctx context.Context, videoPath string) (time.Duration, error) {
+	ffprobe := ffprobePath()
+	cmd := exec.CommandContext(ctx, ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", videoPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return 0, fmt.Errorf("ffprobe 获取视频时长失败: %s: %w", limitForPrompt(string(out), 500), err)
+	}
+	seconds, err := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
+	if err != nil {
+		return 0, fmt.Errorf("ffprobe 视频时长解析失败: %w", err)
+	}
+	if seconds <= 0 {
+		return 0, nil
+	}
+	return time.Duration(seconds * float64(time.Second)), nil
+}
+
+func ffprobePath() string {
+	if ffprobe := strings.TrimSpace(viper.GetString("xhs_script.ffprobe_path")); ffprobe != "" {
+		return ffprobe
+	}
+	if ffprobe := siblingFFprobePath(viper.GetString("xhs_script.ffmpeg_path")); ffprobe != "" {
+		return ffprobe
+	}
+	if ffprobe := strings.TrimSpace(viper.GetString("monitor.ffprobe_path")); ffprobe != "" {
+		return ffprobe
+	}
+	if ffprobe := siblingFFprobePath(viper.GetString("monitor.ffmpeg_path")); ffprobe != "" {
+		return ffprobe
+	}
+	return "ffprobe"
+}
+
+func siblingFFprobePath(ffmpeg string) string {
+	ffmpeg = strings.TrimSpace(ffmpeg)
+	if ffmpeg == "" {
+		return ""
+	}
+	dir, base := filepath.Split(ffmpeg)
+	if !strings.Contains(base, "ffmpeg") {
+		return ""
+	}
+	return filepath.Join(dir, strings.Replace(base, "ffmpeg", "ffprobe", 1))
 }
 
 func extractAudio(ctx context.Context, videoPath, audioPath string) error {

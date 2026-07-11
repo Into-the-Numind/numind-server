@@ -365,6 +365,24 @@ check_file_contains \
   "Dockerfile does not appear to install ffmpeg"
 
 check_file_contains \
+  "${REPO_ROOT}/internal/numind/biz/xhsscript/transcribe.go" \
+  'xhsScriptTranscribeTimeout[[:space:]]*=[[:space:]]*30[[:space:]]*\*[[:space:]]*time\.Minute' \
+  "XHS script transcription timeout is 30 minutes" \
+  "XHS script transcription timeout is not 30 minutes"
+
+check_file_contains \
+  "${REPO_ROOT}/internal/numind/biz/xhsscript/transcribe.go" \
+  'defaultXhsScriptMaxVideoBytes[[:space:]]*=[[:space:]]*500[[:space:]]*\*[[:space:]]*1024[[:space:]]*\*[[:space:]]*1024' \
+  "XHS script default video download limit is 500MiB" \
+  "XHS script default video download limit is not 500MiB"
+
+check_file_contains \
+  "${REPO_ROOT}/internal/numind/biz/xhsscript/transcribe.go" \
+  'defaultXhsScriptMaxVideoDuration[[:space:]]*=[[:space:]]*30[[:space:]]*\*[[:space:]]*time\.Minute' \
+  "XHS script default video duration limit is 30 minutes" \
+  "XHS script default video duration limit is not 30 minutes"
+
+check_file_contains \
   "${REPO_ROOT}/internal/numind/router.go" \
   'v1Group\.POST\("[^"]*/?payment/wechat/notify"' \
   "router registers /v1 payment WeChat notify route" \
