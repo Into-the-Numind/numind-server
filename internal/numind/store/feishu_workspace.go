@@ -11,6 +11,8 @@ import (
 	"numind-server/internal/pkg/model"
 )
 
+const feishuSucceededCreateProofLimit = 32
+
 // IFeishuWorkspaceStore defines tenant- and generation-safe persistence primitives
 // for encrypted lark-cli workspaces, authorization sessions, and operations.
 type IFeishuWorkspaceStore interface {
@@ -22,6 +24,7 @@ type IFeishuWorkspaceStore interface {
 	ClaimSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
 	UpdateSessionState(ctx context.Context, userID uint, generation uint64, id, owner, state string, now time.Time, completedAt *time.Time) error
 	CreateOrGetOperation(ctx context.Context, operation *model.FeishuOperation) (*model.FeishuOperation, error)
+	ListSucceededCreatesForRun(ctx context.Context, userID uint, generation uint64, agentRunID uint64) ([]model.FeishuOperation, error)
 	GetOperationForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuOperation, error)
 	ClaimOperation(ctx context.Context, userID uint, generation uint64, id, owner string, expectedStates []string, now, leaseUntil time.Time) (bool, error)
 	TransitionOperation(ctx context.Context, userID uint, generation uint64, id, owner string, from []string, to string, now time.Time, fields map[string]any) error
@@ -222,6 +225,29 @@ func (s *feishuWorkspaceStore) CreateOrGetOperation(ctx context.Context, operati
 		return nil, fmt.Errorf("create or get feishu operation: %w", err)
 	}
 	return stored, nil
+}
+
+// ListSucceededCreatesForRun returns a small, deterministic proof-candidate
+// set. Callers must still authenticate and inspect each encrypted request and
+// result; this query alone never proves that an overwrite is safe.
+func (s *feishuWorkspaceStore) ListSucceededCreatesForRun(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	agentRunID uint64,
+) ([]model.FeishuOperation, error) {
+	var operations []model.FeishuOperation
+	if err := s.db.WithContext(ctx).
+		Where("user_id = ? AND generation = ? AND agent_run_id = ?", userID, generation, agentRunID).
+		Where("state = ?", model.FeishuOperationSucceeded).
+		Where("command_path IN ?", []string{"docs +create", "wiki +node-create"}).
+		Order("created_at DESC").
+		Order("id DESC").
+		Limit(feishuSucceededCreateProofLimit).
+		Find(&operations).Error; err != nil {
+		return nil, fmt.Errorf("list succeeded feishu create operations: %w", err)
+	}
+	return operations, nil
 }
 
 // GetOperationForUser returns an operation only when ID, tenant, and generation all match.

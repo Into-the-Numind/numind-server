@@ -75,6 +75,7 @@ type OperationAccountStore interface {
 // OperationStore is the encrypted operation persistence subset.
 type OperationStore interface {
 	CreateOrGetOperation(ctx context.Context, operation *model.FeishuOperation) (*model.FeishuOperation, error)
+	ListSucceededCreatesForRun(ctx context.Context, userID uint, generation uint64, agentRunID uint64) ([]model.FeishuOperation, error)
 	GetOperationForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuOperation, error)
 	ClaimOperation(ctx context.Context, userID uint, generation uint64, id, owner string, expectedStates []string, now, leaseUntil time.Time) (bool, error)
 	TransitionOperation(ctx context.Context, userID uint, generation uint64, id, owner string, from []string, to string, now time.Time, fields map[string]any) error
@@ -245,18 +246,20 @@ type operationSealedBlob struct {
 }
 
 type persistedOperationRequest struct {
-	AgentRunID            uint64          `json:"agent_run_id"`
-	ToolCallID            string          `json:"tool_call_id"`
-	IdempotencyKey        string          `json:"idempotency_key"`
-	CommandPath           string          `json:"command_path"`
-	Domain                string          `json:"domain"`
-	Action                string          `json:"action"`
-	Risk                  RiskLevel       `json:"risk"`
-	RequiresCLIYes        bool            `json:"requires_cli_yes"`
-	ReplaySafeOnAuthError bool            `json:"replay_safe_on_auth_error"`
-	Scopes                []string        `json:"scopes"`
-	Argv                  []string        `json:"argv"`
-	StdinJSON             json.RawMessage `json:"stdin_json,omitempty"`
+	AgentRunID              uint64          `json:"agent_run_id"`
+	ToolCallID              string          `json:"tool_call_id"`
+	IdempotencyKey          string          `json:"idempotency_key"`
+	CommandPath             string          `json:"command_path"`
+	Domain                  string          `json:"domain"`
+	Action                  string          `json:"action"`
+	Risk                    RiskLevel       `json:"risk"`
+	RequiresCLIYes          bool            `json:"requires_cli_yes"`
+	ReplaySafeOnAuthError   bool            `json:"replay_safe_on_auth_error"`
+	Scopes                  []string        `json:"scopes"`
+	Argv                    []string        `json:"argv"`
+	StdinJSON               json.RawMessage `json:"stdin_json,omitempty"`
+	SameRunEmptyCreateProof bool            `json:"same_run_empty_create_proof,omitempty"`
+	CreateProofOperationID  string          `json:"create_proof_operation_id,omitempty"`
 }
 
 type persistedOperationSummary struct {
@@ -348,6 +351,10 @@ func (s *FeishuOperationService) Execute(ctx context.Context, request ExecuteReq
 	}
 	operationID := uuid.NewString()
 	persisted := persistedRequestFromNormalized(request, normalized)
+	if proofOperationID := s.findSameRunEmptyCreateProof(ctx, account, normalized, request.AgentRunID); proofOperationID != "" {
+		persisted.SameRunEmptyCreateProof = true
+		persisted.CreateProofOperationID = proofOperationID
+	}
 	plaintext, err := json.Marshal(persisted)
 	if err != nil {
 		return nil, ErrOperationIntegrity
@@ -379,11 +386,15 @@ func (s *FeishuOperationService) Execute(ctx context.Context, request ExecuteReq
 		if err != nil {
 			return nil, err
 		}
-		storedPlaintext, marshalErr := json.Marshal(executionRequest)
+		storedComparable, marshalErr := canonicalIdempotencyRequest(executionRequest)
 		if marshalErr != nil {
 			return nil, ErrOperationIntegrity
 		}
-		if subtle.ConstantTimeCompare(storedPlaintext, plaintext) != 1 {
+		candidateComparable, marshalErr := canonicalIdempotencyRequest(persisted)
+		if marshalErr != nil {
+			return nil, ErrOperationIntegrity
+		}
+		if subtle.ConstantTimeCompare(storedComparable, candidateComparable) != 1 {
 			return nil, ErrOperationIdempotencyConflict
 		}
 	}
@@ -575,7 +586,7 @@ func (s *FeishuOperationService) executeClaimed(
 		return s.startRecoveryAndWait(ctx, operation, leaseOwner, persisted, kind, persisted.Scopes, waitingState, priorRecoverySignature, publicCode)
 	}
 
-	if persisted.Risk == RiskHigh {
+	if persisted.Risk == RiskHigh && !persisted.SameRunEmptyCreateProof {
 		action, err := s.confirmation.RequestConfirmation(ctx, operation.ID, ConfirmationSummary{
 			CommandPath: persisted.CommandPath, Domain: persisted.Domain, Action: persisted.Action,
 			Risk: persisted.Risk, RequiresCLIYes: persisted.RequiresCLIYes,
@@ -880,7 +891,8 @@ func (s *FeishuOperationService) openPersistedRequest(operation *model.FeishuOpe
 	if persisted.AgentRunID != operation.AgentRunID || persisted.ToolCallID != operation.ToolCallID ||
 		persisted.IdempotencyKey != operation.IdempotencyKey || persisted.CommandPath != operation.CommandPath ||
 		persisted.Domain != operation.Domain || string(persisted.Risk) != operation.RiskLevel ||
-		len(persisted.Argv) == 0 || validateControlledCLIInput(persisted.Argv, persisted.StdinJSON) != nil {
+		len(persisted.Argv) == 0 || validateControlledCLIInput(persisted.Argv, persisted.StdinJSON) != nil ||
+		!validPersistedCreateProof(persisted) {
 		return persistedOperationRequest{}, ErrOperationIntegrity
 	}
 	persisted.Argv = append([]string(nil), persisted.Argv...)
@@ -937,6 +949,149 @@ func persistedRequestFromNormalized(request ExecuteRequest, normalized *Normaliz
 		Scopes: append([]string(nil), normalized.Scopes...), Argv: append([]string(nil), normalized.Argv...),
 		StdinJSON: append(json.RawMessage(nil), normalized.StdinJSON...),
 	}
+}
+
+func canonicalIdempotencyRequest(request persistedOperationRequest) ([]byte, error) {
+	request.SameRunEmptyCreateProof = false
+	request.CreateProofOperationID = ""
+	return json.Marshal(request)
+}
+
+func (s *FeishuOperationService) findSameRunEmptyCreateProof(
+	ctx context.Context,
+	account *model.UserThirdPartyAccount,
+	command *NormalizedCommand,
+	agentRunID uint64,
+) string {
+	target, eligible := sameRunOverwriteTarget(command)
+	if !eligible {
+		return ""
+	}
+	candidates, err := s.operations.ListSucceededCreatesForRun(ctx, account.UserID, account.Generation, agentRunID)
+	if err != nil {
+		return ""
+	}
+	for index := range candidates {
+		candidate := &candidates[index]
+		if candidate.UserID != account.UserID || candidate.Generation != account.Generation ||
+			candidate.AgentRunID != agentRunID || candidate.State != model.FeishuOperationSucceeded {
+			continue
+		}
+		prior, openErr := s.openPersistedRequest(candidate)
+		if openErr != nil || !eligibleEmptyCreateRequest(prior) {
+			continue
+		}
+		result, resultErr := s.openSucceededResult(candidate)
+		if resultErr != nil || !createResultProvesTarget(prior.CommandPath, result, target) {
+			continue
+		}
+		return candidate.ID
+	}
+	return ""
+}
+
+func (s *FeishuOperationService) openSucceededResult(operation *model.FeishuOperation) (json.RawMessage, error) {
+	if operation == nil || operation.State != model.FeishuOperationSucceeded || len(operation.ResultCiphertext) == 0 {
+		return nil, ErrOperationIntegrity
+	}
+	owner := OperationCipherOwner{UserID: operation.UserID, Generation: operation.Generation, OperationID: operation.ID}
+	plaintext, _, err := s.openOperationBlob(OperationCipherPurposeResult, owner, "", operation.ResultCiphertext)
+	if err != nil || !json.Valid(plaintext) {
+		return nil, ErrOperationIntegrity
+	}
+	return append(json.RawMessage(nil), plaintext...), nil
+}
+
+func sameRunOverwriteTarget(command *NormalizedCommand) (string, bool) {
+	if command == nil || command.Path != "docs +update" || command.Risk != RiskHigh || command.Action != "update" ||
+		operationArgValue(command.Argv, "--command") != "overwrite" {
+		return "", false
+	}
+	target := operationArgValue(command.Argv, "--doc")
+	if !opaqueTokenPattern.MatchString(target) {
+		return "", false
+	}
+	return target, true
+}
+
+func eligibleEmptyCreateRequest(request persistedOperationRequest) bool {
+	switch request.CommandPath {
+	case "docs +create":
+		return operationArgValue(request.Argv, "--title") != "" && !operationHasArg(request.Argv, "--content")
+	case "wiki +node-create":
+		nodeType := operationArgValue(request.Argv, "--node-type")
+		objectType := operationArgValue(request.Argv, "--obj-type")
+		return operationArgValue(request.Argv, "--title") != "" &&
+			(nodeType == "" || nodeType == "origin") && (objectType == "" || objectType == "docx")
+	default:
+		return false
+	}
+}
+
+func createResultProvesTarget(commandPath string, result json.RawMessage, target string) bool {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(result, &fields); err != nil {
+		return false
+	}
+	switch commandPath {
+	case "docs +create":
+		documentID, ok := strictOpaqueResultField(fields, "document_id")
+		return ok && documentID == target
+	case "wiki +node-create":
+		objectType, ok := strictStringResultField(fields, "obj_type")
+		if !ok || objectType != "docx" {
+			return false
+		}
+		nodeToken, nodeOK := strictOpaqueResultField(fields, "node_token")
+		objectToken, objectOK := strictOpaqueResultField(fields, "obj_token")
+		return nodeOK && objectOK && (target == nodeToken || target == objectToken)
+	default:
+		return false
+	}
+}
+
+func strictOpaqueResultField(fields map[string]json.RawMessage, name string) (string, bool) {
+	value, ok := strictStringResultField(fields, name)
+	return value, ok && opaqueTokenPattern.MatchString(value)
+}
+
+func strictStringResultField(fields map[string]json.RawMessage, name string) (string, bool) {
+	raw, ok := fields[name]
+	if !ok {
+		return "", false
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil || value == "" {
+		return "", false
+	}
+	return value, true
+}
+
+func operationArgValue(argv []string, flag string) string {
+	for index := 0; index+1 < len(argv); index++ {
+		if argv[index] == flag {
+			return argv[index+1]
+		}
+	}
+	return ""
+}
+
+func operationHasArg(argv []string, flag string) bool {
+	for _, argument := range argv {
+		if argument == flag {
+			return true
+		}
+	}
+	return false
+}
+
+func validPersistedCreateProof(request persistedOperationRequest) bool {
+	if !request.SameRunEmptyCreateProof {
+		return request.CreateProofOperationID == ""
+	}
+	return validStableIdentifier(request.CreateProofOperationID, operationMaxOperationIDBytes) &&
+		request.CommandPath == "docs +update" && request.Risk == RiskHigh && request.Action == "update" &&
+		operationArgValue(request.Argv, "--command") == "overwrite"
 }
 
 func sameImmutableOperation(stored, candidate *model.FeishuOperation) bool {

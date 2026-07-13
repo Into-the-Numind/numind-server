@@ -175,6 +175,28 @@ type terminalBeforeClaimOperationStore struct {
 	db *gorm.DB
 }
 
+type disappearingProofOperationStore struct {
+	OperationStore
+	mu    sync.Mutex
+	calls int
+}
+
+func (s *disappearingProofOperationStore) ListSucceededCreatesForRun(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	agentRunID uint64,
+) ([]model.FeishuOperation, error) {
+	s.mu.Lock()
+	s.calls++
+	call := s.calls
+	s.mu.Unlock()
+	if call > 1 {
+		return nil, nil
+	}
+	return s.OperationStore.ListSucceededCreatesForRun(ctx, userID, generation, agentRunID)
+}
+
 func (s *terminalBeforeClaimOperationStore) ClaimOperation(
 	ctx context.Context,
 	userID uint,
@@ -310,6 +332,42 @@ func operationDocsFetchRequest(runID uint64, toolCallID string) ExecuteRequest {
 		Argv:           []string{"docs", "+fetch", "--doc", "doxcnABCDEFG123"},
 		SkillReceipts:  []string{"shared-receipt", "doc-receipt"},
 	}
+}
+
+func operationDocsCreateRequest(userID uint, runID uint64, toolCallID, title string, content *string) ExecuteRequest {
+	argv := []string{"docs", "+create", "--title", title}
+	if content != nil {
+		argv = append(argv, "--content", *content)
+	}
+	return ExecuteRequest{
+		UserID: userID, AgentRunID: runID, ToolCallID: toolCallID,
+		IdempotencyKey: fmt.Sprintf("%d:%s", runID, toolCallID),
+		Argv:           argv, SkillReceipts: []string{"shared", "doc"},
+	}
+}
+
+func operationDocsOverwriteRequest(userID uint, runID uint64, toolCallID, docToken string) ExecuteRequest {
+	return ExecuteRequest{
+		UserID: userID, AgentRunID: runID, ToolCallID: toolCallID,
+		IdempotencyKey: fmt.Sprintf("%d:%s", runID, toolCallID),
+		Argv:           []string{"docs", "+update", "--doc", docToken, "--command", "overwrite", "--content", "initial body"},
+		SkillReceipts:  []string{"shared", "wiki", "doc"},
+	}
+}
+
+func requirePersistedCreateProof(t *testing.T, h *operationHarness, operationID, proofOperationID string) {
+	t.Helper()
+	stored, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, operationID)
+	require.NoError(t, err)
+	owner := OperationCipherOwner{UserID: stored.UserID, Generation: stored.Generation, OperationID: stored.ID}
+	plaintext, _, err := h.service.openOperationBlob(
+		OperationCipherPurposeRequest, owner, stored.KeyVersion, stored.RequestCiphertext,
+	)
+	require.NoError(t, err)
+	var audit map[string]any
+	require.NoError(t, json.Unmarshal(plaintext, &audit))
+	require.Equal(t, true, audit["same_run_empty_create_proof"])
+	require.Equal(t, proofOperationID, audit["create_proof_operation_id"])
 }
 
 func operationOKResult(data string) *CLIResult {
@@ -788,6 +846,191 @@ func TestOperationService_HighRiskOnlyCreatesConfirmationWaiting(t *testing.T) {
 	})
 }
 
+func TestOperationService_SameRunEmptyDocsCreateProvesOverwrite(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	const token = "doxcnCreatedEmpty123"
+	h.runner.steps = []operationRunnerStep{
+		{result: operationOKResult(`{"document_id":"` + token + `"}`)},
+		{result: operationOKResult(`{"revision_id":2}`)},
+	}
+
+	created, err := h.service.Execute(h.ctx, operationDocsCreateRequest(7, 301, "tc-create-empty", "New document", nil))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, created.State)
+	overwrite, err := h.service.Execute(h.ctx, operationDocsOverwriteRequest(7, 301, "tc-initial-overwrite", token))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, overwrite.State)
+	require.Empty(t, h.confirmation.calls)
+	calls, _ := h.runner.snapshot()
+	require.Equal(t, 2, calls)
+	requirePersistedCreateProof(t, h, overwrite.OperationID, created.OperationID)
+}
+
+func TestOperationService_RepeatedOverwriteUsesPersistedProofWhenCandidateWindowChanges(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	proofStore := &disappearingProofOperationStore{OperationStore: h.dataStore.FeishuWorkspace()}
+	service, err := NewFeishuOperationService(OperationServiceDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: proofStore,
+		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: h.recovery,
+		Confirmation: h.confirmation, Vault: h.vault, Runner: h.runner, Cipher: h.cipher,
+		Now: h.service.now, LeaseDuration: time.Minute,
+	})
+	require.NoError(t, err)
+	const token = "doxcnStableProof123"
+	h.runner.steps = []operationRunnerStep{
+		{result: operationOKResult(`{"document_id":"` + token + `"}`)},
+		{result: operationOKResult(`{"revision_id":2}`)},
+	}
+	_, err = service.Execute(h.ctx, operationDocsCreateRequest(7, 305, "tc-create", "Empty", nil))
+	require.NoError(t, err)
+	overwriteRequest := operationDocsOverwriteRequest(7, 305, "tc-overwrite", token)
+	first, err := service.Execute(h.ctx, overwriteRequest)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, first.State)
+
+	repeated, err := service.Execute(h.ctx, overwriteRequest)
+	require.NoError(t, err)
+	require.Equal(t, first.OperationID, repeated.OperationID)
+	require.Equal(t, model.FeishuOperationSucceeded, repeated.State)
+	calls, _ := h.runner.snapshot()
+	require.Equal(t, 2, calls)
+}
+
+func TestOperationService_SameRunWikiDocxCreateProvesOverwriteByNodeOrObjectToken(t *testing.T) {
+	for index, target := range []string{"wikcnCreatedNode123", "doxcnCreatedObject123"} {
+		t.Run(target, func(t *testing.T) {
+			h := newOperationHarness(t)
+			h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+			h.runner.steps = []operationRunnerStep{
+				{result: operationOKResult(`{"node_token":"wikcnCreatedNode123","obj_token":"doxcnCreatedObject123","obj_type":"docx"}`)},
+				{result: operationOKResult(`{"revision_id":2}`)},
+			}
+			runID := uint64(302 + index)
+			createRequest := ExecuteRequest{
+				UserID: 7, AgentRunID: runID, ToolCallID: "tc-wiki-create", IdempotencyKey: fmt.Sprintf("%d:tc-wiki-create", runID),
+				Argv: []string{
+					"wiki", "+node-create", "--space-id", "my_library", "--title", "New wiki document",
+					"--node-type", "origin", "--obj-type", "docx",
+				},
+				SkillReceipts: []string{"shared", "wiki"},
+			}
+			created, err := h.service.Execute(h.ctx, createRequest)
+			require.NoError(t, err)
+			require.Equal(t, model.FeishuOperationSucceeded, created.State)
+
+			overwrite, err := h.service.Execute(h.ctx, operationDocsOverwriteRequest(7, runID, "tc-wiki-overwrite", target))
+			require.NoError(t, err)
+			require.Equal(t, model.FeishuOperationSucceeded, overwrite.State)
+			require.Empty(t, h.confirmation.calls)
+			calls, _ := h.runner.snapshot()
+			require.Equal(t, 2, calls)
+			requirePersistedCreateProof(t, h, overwrite.OperationID, created.OperationID)
+		})
+	}
+}
+
+func TestOperationService_OverwriteProofRequiresExactPersistedSucceededCreate(t *testing.T) {
+	const token = "doxcnProofTarget123"
+
+	t.Run("different user", func(t *testing.T) {
+		h := newOperationHarness(t)
+		h.createAccount(7, model.FeishuConnectionConnected, 1, "cli-user-7")
+		h.createAccount(8, model.FeishuConnectionConnected, 1, "cli-user-8")
+		h.runner.steps = []operationRunnerStep{{result: operationOKResult(`{"document_id":"` + token + `"}`)}}
+		_, err := h.service.Execute(h.ctx, operationDocsCreateRequest(7, 310, "tc-create", "Empty", nil))
+		require.NoError(t, err)
+		got, err := h.service.Execute(h.ctx, operationDocsOverwriteRequest(8, 310, "tc-overwrite", token))
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuOperationWaitingConfirmation, got.State)
+		require.Len(t, h.confirmation.calls, 1)
+	})
+
+	t.Run("different generation", func(t *testing.T) {
+		h := newOperationHarness(t)
+		h.createAccount(7, model.FeishuConnectionConnected, 1, "cli-existing")
+		h.runner.steps = []operationRunnerStep{{result: operationOKResult(`{"document_id":"` + token + `"}`)}}
+		_, err := h.service.Execute(h.ctx, operationDocsCreateRequest(7, 311, "tc-create", "Empty", nil))
+		require.NoError(t, err)
+		require.NoError(t, h.db.Model(&model.UserThirdPartyAccount{}).
+			Where("user_id = ? AND provider = ?", 7, ProviderLark).Update("generation", 2).Error)
+		got, err := h.service.Execute(h.ctx, operationDocsOverwriteRequest(7, 311, "tc-overwrite", token))
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuOperationWaitingConfirmation, got.State)
+		require.Len(t, h.confirmation.calls, 1)
+	})
+
+	t.Run("different run", func(t *testing.T) {
+		h := newOperationHarness(t)
+		h.createAccount(7, model.FeishuConnectionConnected, 1, "cli-existing")
+		h.runner.steps = []operationRunnerStep{{result: operationOKResult(`{"document_id":"` + token + `"}`)}}
+		_, err := h.service.Execute(h.ctx, operationDocsCreateRequest(7, 312, "tc-create", "Empty", nil))
+		require.NoError(t, err)
+		got, err := h.service.Execute(h.ctx, operationDocsOverwriteRequest(7, 313, "tc-overwrite", token))
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuOperationWaitingConfirmation, got.State)
+		require.Len(t, h.confirmation.calls, 1)
+	})
+
+	t.Run("non create operation", func(t *testing.T) {
+		h := newOperationHarness(t)
+		h.createAccount(7, model.FeishuConnectionConnected, 1, "cli-existing")
+		h.runner.steps = []operationRunnerStep{{result: operationOKResult(`{"document_id":"` + token + `"}`)}}
+		fetch := operationDocsFetchRequest(314, "tc-fetch")
+		fetch.Argv = []string{"docs", "+fetch", "--doc", token}
+		_, err := h.service.Execute(h.ctx, fetch)
+		require.NoError(t, err)
+		got, err := h.service.Execute(h.ctx, operationDocsOverwriteRequest(7, 314, "tc-overwrite", token))
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuOperationWaitingConfirmation, got.State)
+		require.Len(t, h.confirmation.calls, 1)
+	})
+
+	t.Run("create already has content", func(t *testing.T) {
+		h := newOperationHarness(t)
+		h.createAccount(7, model.FeishuConnectionConnected, 1, "cli-existing")
+		h.runner.steps = []operationRunnerStep{{result: operationOKResult(`{"document_id":"` + token + `"}`)}}
+		content := "existing body"
+		_, err := h.service.Execute(h.ctx, operationDocsCreateRequest(7, 315, "tc-create", "Not empty", &content))
+		require.NoError(t, err)
+		got, err := h.service.Execute(h.ctx, operationDocsOverwriteRequest(7, 315, "tc-overwrite", token))
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuOperationWaitingConfirmation, got.State)
+		require.Len(t, h.confirmation.calls, 1)
+	})
+
+	t.Run("token mismatch", func(t *testing.T) {
+		h := newOperationHarness(t)
+		h.createAccount(7, model.FeishuConnectionConnected, 1, "cli-existing")
+		h.runner.steps = []operationRunnerStep{{result: operationOKResult(`{"document_id":"` + token + `"}`)}}
+		_, err := h.service.Execute(h.ctx, operationDocsCreateRequest(7, 316, "tc-create", "Empty", nil))
+		require.NoError(t, err)
+		got, err := h.service.Execute(h.ctx, operationDocsOverwriteRequest(7, 316, "tc-overwrite", "doxcnDifferentTarget123"))
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuOperationWaitingConfirmation, got.State)
+		require.Len(t, h.confirmation.calls, 1)
+	})
+
+	t.Run("corrupted create proof is fail closed", func(t *testing.T) {
+		h := newOperationHarness(t)
+		h.createAccount(7, model.FeishuConnectionConnected, 1, "cli-existing")
+		h.runner.steps = []operationRunnerStep{{result: operationOKResult(`{"document_id":"` + token + `"}`)}}
+		created, err := h.service.Execute(h.ctx, operationDocsCreateRequest(7, 317, "tc-create", "Empty", nil))
+		require.NoError(t, err)
+		stored, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, created.OperationID)
+		require.NoError(t, err)
+		stored.ResultCiphertext[len(stored.ResultCiphertext)-1] ^= 0xff
+		require.NoError(t, h.db.Model(&model.FeishuOperation{}).Where("id = ?", stored.ID).
+			Update("result_ciphertext", stored.ResultCiphertext).Error)
+
+		got, err := h.service.Execute(h.ctx, operationDocsOverwriteRequest(7, 317, "tc-overwrite", token))
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuOperationWaitingConfirmation, got.State)
+		require.Len(t, h.confirmation.calls, 1)
+	})
+}
+
 func TestOperationService_ResumeReplaysEncryptedRequestAndStopsRepeatedRecovery(t *testing.T) {
 	h := newOperationHarness(t)
 	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
@@ -968,6 +1211,51 @@ func TestOperationService_TamperedAndNonCanonicalStoredRequestsFailClosed(t *tes
 		_, err = h.service.Resume(h.ctx, 7, stored.ID)
 		require.ErrorIs(t, err, ErrOperationIntegrity)
 	})
+}
+
+func TestOperationService_OpensHistoricalRequestWithoutDerivedProofFields(t *testing.T) {
+	h := newOperationHarness(t)
+	request := operationDocsFetchRequest(241, "tc-historical-request")
+	normalized, err := h.service.catalog.Normalize(request.Argv, request.StdinJSON)
+	require.NoError(t, err)
+	legacy := struct {
+		AgentRunID            uint64          `json:"agent_run_id"`
+		ToolCallID            string          `json:"tool_call_id"`
+		IdempotencyKey        string          `json:"idempotency_key"`
+		CommandPath           string          `json:"command_path"`
+		Domain                string          `json:"domain"`
+		Action                string          `json:"action"`
+		Risk                  RiskLevel       `json:"risk"`
+		RequiresCLIYes        bool            `json:"requires_cli_yes"`
+		ReplaySafeOnAuthError bool            `json:"replay_safe_on_auth_error"`
+		Scopes                []string        `json:"scopes"`
+		Argv                  []string        `json:"argv"`
+		StdinJSON             json.RawMessage `json:"stdin_json,omitempty"`
+	}{
+		AgentRunID: request.AgentRunID, ToolCallID: request.ToolCallID, IdempotencyKey: request.IdempotencyKey,
+		CommandPath: normalized.Path, Domain: normalized.Domain, Action: normalized.Action, Risk: normalized.Risk,
+		RequiresCLIYes: normalized.RequiresCLIYes, ReplaySafeOnAuthError: normalized.ReplaySafeOnAuthError,
+		Scopes: normalized.Scopes, Argv: normalized.Argv, StdinJSON: normalized.StdinJSON,
+	}
+	plaintext, err := json.Marshal(legacy)
+	require.NoError(t, err)
+	operationID := uuid.NewString()
+	owner := OperationCipherOwner{UserID: request.UserID, Generation: 1, OperationID: operationID}
+	ciphertext, keyVersion, err := h.service.sealOperationBlob(OperationCipherPurposeRequest, owner, plaintext)
+	require.NoError(t, err)
+	operation := &model.FeishuOperation{
+		ID: operationID, UserID: request.UserID, Generation: 1,
+		AgentRunID: request.AgentRunID, ToolCallID: request.ToolCallID, IdempotencyKey: request.IdempotencyKey,
+		CommandPath: normalized.Path, Domain: normalized.Domain, RiskLevel: string(normalized.Risk),
+		RequestCiphertext: ciphertext, KeyVersion: keyVersion, RequestFingerprint: operationFingerprint(ciphertext),
+		State: model.FeishuOperationNotStarted,
+	}
+
+	opened, err := h.service.openPersistedRequest(operation)
+	require.NoError(t, err)
+	require.Equal(t, normalized.Argv, opened.Argv)
+	require.False(t, opened.SameRunEmptyCreateProof)
+	require.Empty(t, opened.CreateProofOperationID)
 }
 
 func TestOperationService_GenerationBumpAfterRunnerStartCannotCommitOrSeal(t *testing.T) {

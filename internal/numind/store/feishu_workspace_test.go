@@ -26,6 +26,10 @@ func newFeishuWorkspaceTestStore(t *testing.T) *feishuWorkspaceStore {
 	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared&_busy_timeout=5000"
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = sqlDB.Close() })
 	require.NoError(t, db.AutoMigrate(
 		&model.UserThirdPartyAccount{},
 		&model.FeishuCLIVault{},
@@ -168,6 +172,53 @@ func TestFeishuWorkspaceStore_CreateOperationRejectsStaleAccountGenerationBefore
 		Where("id = ? OR (user_id = ? AND idempotency_key = ?)", stale.ID, stale.UserID, stale.IdempotencyKey).
 		Count(&count).Error)
 	require.Zero(t, count, "stale generation must be rejected before any operation row is inserted")
+}
+
+func TestFeishuWorkspaceStore_ListSucceededCreatesForRunIsBoundedAndDeterministic(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	baseTime := time.Date(2026, 7, 13, 10, 0, 0, 0, time.UTC)
+
+	for index := 0; index < 35; index++ {
+		op := newFeishuOperation(fmt.Sprintf("run-create-%02d", index), 7, 3, fmt.Sprintf("run-key-%02d", index))
+		op.AgentRunID = 77
+		op.State = model.FeishuOperationSucceeded
+		op.CommandPath = "docs +create"
+		if index%2 == 1 {
+			op.CommandPath = "wiki +node-create"
+		}
+		op.CreatedAt = baseTime.Add(time.Duration(index) * time.Second)
+		require.NoError(t, s.db.Create(op).Error)
+	}
+
+	for index, mutate := range []func(*model.FeishuOperation){
+		func(op *model.FeishuOperation) { op.UserID = 8 },
+		func(op *model.FeishuOperation) { op.Generation = 4 },
+		func(op *model.FeishuOperation) { op.AgentRunID = 78 },
+		func(op *model.FeishuOperation) { op.State = model.FeishuOperationFailed },
+		func(op *model.FeishuOperation) { op.CommandPath = "docs +fetch" },
+	} {
+		op := newFeishuOperation(fmt.Sprintf("filtered-create-%d", index), 7, 3, fmt.Sprintf("filtered-key-%d", index))
+		op.AgentRunID = 77
+		op.State = model.FeishuOperationSucceeded
+		op.CommandPath = "docs +create"
+		op.CreatedAt = baseTime.Add(time.Hour + time.Duration(index)*time.Second)
+		mutate(op)
+		require.NoError(t, s.db.Create(op).Error)
+	}
+
+	got, err := s.ListSucceededCreatesForRun(ctx, 7, 3, 77)
+	require.NoError(t, err)
+	require.Len(t, got, 32)
+	require.Equal(t, "run-create-34", got[0].ID)
+	require.Equal(t, "run-create-03", got[len(got)-1].ID)
+	for _, operation := range got {
+		require.Equal(t, uint(7), operation.UserID)
+		require.EqualValues(t, 3, operation.Generation)
+		require.EqualValues(t, 77, operation.AgentRunID)
+		require.Equal(t, model.FeishuOperationSucceeded, operation.State)
+		require.Contains(t, []string{"docs +create", "wiki +node-create"}, operation.CommandPath)
+	}
 }
 
 func TestFeishuWorkspaceStore_VaultRevisionCASAndOwnership(t *testing.T) {
