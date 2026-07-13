@@ -310,15 +310,15 @@ func TestRoundTrip_Ping(t *testing.T) {
 	assertEventFields(t, got, EventPing, 1, 42)
 }
 
-// TestAllEventTypesHaveConstants verifies the 15 declared EventType constants.
+// TestAllEventTypesHaveConstants verifies the 16 declared EventType constants.
 func TestAllEventTypesHaveConstants(t *testing.T) {
 	all := []EventType{
 		EventStreamStart, EventTokenDelta, EventReasoningDelta, EventAssistantMessage,
-		EventToolCallStart, EventToolCallProgress, EventToolCallResult, EventToolCallError,
+		EventToolCallStart, EventToolCallProgress, EventToolCallArgsDelta, EventToolCallResult, EventToolCallError,
 		EventStepDone, EventStateChange, EventQuestionPrompt, EventExternalAction, EventTerminal, EventError, EventPing,
 	}
-	if len(all) != 15 {
-		t.Errorf("expected 15 EventType constants, got %d", len(all))
+	if len(all) != 16 {
+		t.Errorf("expected 16 EventType constants, got %d", len(all))
 	}
 	seen := map[EventType]bool{}
 	for _, et := range all {
