@@ -32,6 +32,7 @@ type answerRunStore struct {
 	appendMessageErr    error
 	clearPendingErr     error
 	answerAndClearErr   error
+	failGetAfterAnswer  bool
 }
 
 func newAnswerRunStore() *answerRunStore {
@@ -46,6 +47,9 @@ func (s *answerRunStore) Create(_ context.Context, run *model.AgentRun) error {
 	return nil
 }
 func (s *answerRunStore) Get(_ context.Context, id uint64) (*model.AgentRun, error) {
+	if s.failGetAfterAnswer && len(s.answerAndClearCalls) > 0 {
+		return nil, errors.New("transient post-write read failure")
+	}
 	r, ok := s.runs[id]
 	if !ok {
 		return nil, errors.New("record not found")
@@ -448,6 +452,26 @@ func TestAnswer_Resume_InjectsPriorTranscriptAsHistory(t *testing.T) {
 	}
 	assert.Contains(t, joined, "为莫小派做小红书定位调研", "original task must survive into resume context")
 	assert.Contains(t, joined, "已找到部分信息", "agent's prior research must survive into resume context")
+}
+
+func TestAnswer_DoesNotDependOnReadAfterAtomicWrite(t *testing.T) {
+	rs := newAnswerRunStore()
+	rs.failGetAfterAnswer = true
+	runner := &answerRunner{runDone: make(chan struct{})}
+	svc := newAnswerServiceWithRunner(rs, runner)
+	runID := seedAnswerRunWithTranscript(rs, 7, `[{"role":"user","content":"原始问题"},{"role":"assistant","content":"需要确认"}]`)
+
+	_, err := svc.Answer(context.Background(), 7, runID, AnswerRequest{Answers: map[string]AnswerItem{
+		"公司全称?": {FreeText: "莫小派"},
+	}})
+	require.NoError(t, err, "request must be built from the already-validated pre-write snapshot, not a fallible post-write Get")
+	select {
+	case <-runner.runDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("answer runner did not start")
+	}
+	assert.Contains(t, runner.capturedReq.Input, "莫小派")
+	assert.Equal(t, runID, runner.capturedReq.ExistingRunID)
 }
 
 // ask-question-freetext: free-text-only answers (no option selected) are valid.

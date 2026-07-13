@@ -3,6 +3,8 @@ package store
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -93,6 +95,17 @@ type IExternalToolResumer interface {
 	ResumeExternalTool(ctx context.Context, runID uint64, operationID, toolCallID string, resultTurn json.RawMessage) (bool, error)
 }
 
+// IExternalToolResumeLease extends the atomic result claim with a durable
+// runner-start handshake. The pending identity is retained while synchronous
+// runner preflight owns the lease; Complete acknowledges a usable runner and
+// clears it, while Release makes the same result immediately reclaimable.
+type IExternalToolResumeLease interface {
+	IExternalToolResumer
+	ClaimExternalToolResume(ctx context.Context, runID uint64, operationID, toolCallID string, resultTurn json.RawMessage) (leaseToken string, claimed bool, err error)
+	CompleteExternalToolResume(ctx context.Context, runID uint64, operationID, toolCallID, leaseToken string) error
+	ReleaseExternalToolResume(ctx context.Context, runID uint64, operationID, toolCallID, leaseToken string) error
+}
+
 type agentRunStore struct {
 	db *gorm.DB
 }
@@ -104,6 +117,7 @@ func newAgentRunStore(db *gorm.DB) IAgentRunStore {
 var _ IAgentRunStore = (*agentRunStore)(nil)
 var _ IExternalActionWriter = (*agentRunStore)(nil)
 var _ IExternalToolResumer = (*agentRunStore)(nil)
+var _ IExternalToolResumeLease = (*agentRunStore)(nil)
 
 func (s *agentRunStore) Create(ctx context.Context, run *model.AgentRun) error {
 	if err := s.db.WithContext(ctx).Create(run).Error; err != nil {
@@ -336,7 +350,13 @@ func (s *agentRunStore) UpdatePendingExternalAction(ctx context.Context, id uint
 	return nil
 }
 
-const maxExternalToolResultBytes = 1 << 20
+const (
+	maxExternalToolResultBytes   = 1 << 20
+	externalResumeStartingPrefix = "ext_resume:"
+	externalResumeStateReady     = "external_resume_ready"
+	externalResumeLeaseDuration  = 30 * time.Second
+	externalOperationIDExtraKey  = "external_operation_id"
+)
 
 var errExternalResumeLostClaim = errors.New("external tool resume claim was already consumed")
 
@@ -351,14 +371,35 @@ func (s *agentRunStore) ResumeExternalTool(
 	toolCallID string,
 	resultTurn json.RawMessage,
 ) (bool, error) {
+	leaseToken, claimed, err := s.ClaimExternalToolResume(ctx, runID, operationID, toolCallID, resultTurn)
+	if err != nil || !claimed {
+		return claimed, err
+	}
+	if err := s.CompleteExternalToolResume(ctx, runID, operationID, toolCallID, leaseToken); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// ClaimExternalToolResume returns a fencing token only to the callback that
+// owns the current runner-start lease. Compatibility callers may continue to
+// use ResumeExternalTool's bool, but production continuation must complete or
+// release through this tokenized lifecycle.
+func (s *agentRunStore) ClaimExternalToolResume(
+	ctx context.Context,
+	runID uint64,
+	operationID string,
+	toolCallID string,
+	resultTurn json.RawMessage,
+) (string, bool, error) {
 	operationID = strings.TrimSpace(operationID)
 	toolCallID = strings.TrimSpace(toolCallID)
 	if runID == 0 || operationID == "" || toolCallID == "" {
-		return false, fmt.Errorf("agentRunStore.ResumeExternalTool: run, operation, and tool call identity are required")
+		return "", false, fmt.Errorf("agentRunStore.ResumeExternalTool: run, operation, and tool call identity are required")
 	}
 	canonicalResult, err := canonicalExternalToolResult(resultTurn)
 	if err != nil {
-		return false, fmt.Errorf("agentRunStore.ResumeExternalTool: invalid result: %w", err)
+		return "", false, fmt.Errorf("agentRunStore.ResumeExternalTool: invalid result: %w", err)
 	}
 
 	// SQLite can return SQLITE_BUSY when several deferred transactions read the
@@ -366,19 +407,20 @@ func (s *agentRunStore) ResumeExternalTool(
 	// UPDATE; bounded retry preserves the same observable single-winner contract
 	// in tests without weakening the transactional claim.
 	for attempt := 0; attempt < 20; attempt++ {
-		claimed, txErr := s.resumeExternalToolOnce(ctx, runID, operationID, toolCallID, canonicalResult)
+		token, claimed, txErr := s.resumeExternalToolOnce(ctx, runID, operationID, toolCallID, canonicalResult)
 		if txErr == nil {
-			return claimed, nil
+			return token, claimed, nil
 		}
 		if errors.Is(txErr, errExternalResumeLostClaim) {
-			return s.externalResumeAlreadyApplied(ctx, runID, toolCallID, canonicalResult)
+			claimed, verifyErr := s.externalResumeAlreadyApplied(ctx, runID, operationID, toolCallID, canonicalResult)
+			return "", claimed, verifyErr
 		}
 		if !isSQLiteBusy(txErr) || ctx.Err() != nil {
-			return false, txErr
+			return "", false, txErr
 		}
 		time.Sleep(time.Duration(attempt+1) * time.Millisecond)
 	}
-	return false, fmt.Errorf("agentRunStore.ResumeExternalTool(id=%d): database remained busy", runID)
+	return "", false, fmt.Errorf("agentRunStore.ResumeExternalTool(id=%d): database remained busy", runID)
 }
 
 func (s *agentRunStore) resumeExternalToolOnce(
@@ -387,9 +429,13 @@ func (s *agentRunStore) resumeExternalToolOnce(
 	operationID string,
 	toolCallID string,
 	canonicalResult json.RawMessage,
-) (bool, error) {
+) (string, bool, error) {
+	leaseToken, err := newExternalResumeLeaseToken()
+	if err != nil {
+		return "", false, err
+	}
 	claimed := false
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var run model.AgentRun
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&run, runID).Error; err != nil {
 			return fmt.Errorf("agentRunStore.ResumeExternalTool get(id=%d): %w", runID, err)
@@ -398,7 +444,7 @@ func (s *agentRunStore) resumeExternalToolOnce(
 			return nil
 		}
 		if !hasJSONValue(run.PendingExternalActionJSON) {
-			already, checkErr := transcriptHasExactToolResult(run.Messages, toolCallID, canonicalResult)
+			already, checkErr := transcriptHasExactToolResult(run.Messages, operationID, toolCallID, canonicalResult)
 			if checkErr != nil {
 				return fmt.Errorf("agentRunStore.ResumeExternalTool existing result(id=%d): %w", runID, checkErr)
 			}
@@ -406,12 +452,6 @@ func (s *agentRunStore) resumeExternalToolOnce(
 				return nil
 			}
 			return fmt.Errorf("agentRunStore.ResumeExternalTool(id=%d): no pending external wait or matching prior result", runID)
-		}
-		if run.Status != "terminated" || run.StateReason != "waiting_for_user_choice" {
-			return fmt.Errorf(
-				"agentRunStore.ResumeExternalTool(id=%d): unexpected run state status=%q reason=%q",
-				runID, run.Status, run.StateReason,
-			)
 		}
 		pending, parseErr := externalaction.Parse(run.PendingExternalActionJSON)
 		if parseErr != nil {
@@ -431,31 +471,79 @@ func (s *agentRunStore) resumeExternalToolOnce(
 		if err := validateExternalResumeTranscript(turns); err != nil {
 			return fmt.Errorf("agentRunStore.ResumeExternalTool(id=%d): corrupt transcript: %w", runID, err)
 		}
-		toolTurn, marshalErr := json.Marshal(schema.ToolMessage(string(canonicalResult), toolCallID))
-		if marshalErr != nil {
-			return fmt.Errorf("agentRunStore.ResumeExternalTool(id=%d): marshal tool result: %w", runID, marshalErr)
+		now := time.Now()
+		startingReason := externalResumeStartingPrefix + leaseToken
+		updates := map[string]interface{}{
+			"status":                     "running",
+			"state_reason":               startingReason,
+			"pending_external_action_at": now,
+			"pending_question_json":      nil,
+			"pending_question_at":        nil,
+			"ended_at":                   nil,
 		}
-		turns = append(turns, json.RawMessage(toolTurn))
-		newMessages, marshalErr := json.Marshal(turns)
-		if marshalErr != nil {
-			return fmt.Errorf("agentRunStore.ResumeExternalTool(id=%d): marshal transcript: %w", runID, marshalErr)
+
+		switch {
+		case run.StateReason == "waiting_for_user_choice":
+			if run.Status != "terminated" {
+				return fmt.Errorf("agentRunStore.ResumeExternalTool(id=%d): waiting run has status %q", runID, run.Status)
+			}
+			already, checkErr := transcriptHasExactToolResult(run.Messages, operationID, toolCallID, canonicalResult)
+			if checkErr != nil {
+				return fmt.Errorf("agentRunStore.ResumeExternalTool existing result(id=%d): %w", runID, checkErr)
+			}
+			if already {
+				return fmt.Errorf("agentRunStore.ResumeExternalTool(id=%d): waiting run already contains a consumed result", runID)
+			}
+			toolMessage := schema.ToolMessage(string(canonicalResult), toolCallID)
+			toolMessage.Extra = map[string]any{externalOperationIDExtraKey: operationID}
+			toolTurn, marshalErr := json.Marshal(toolMessage)
+			if marshalErr != nil {
+				return fmt.Errorf("agentRunStore.ResumeExternalTool(id=%d): marshal tool result: %w", runID, marshalErr)
+			}
+			turns = append(turns, json.RawMessage(toolTurn))
+			newMessages, marshalErr := json.Marshal(turns)
+			if marshalErr != nil {
+				return fmt.Errorf("agentRunStore.ResumeExternalTool(id=%d): marshal transcript: %w", runID, marshalErr)
+			}
+			updates["messages"] = datatypes.JSON(newMessages)
+		case run.StateReason == externalResumeStateReady:
+			if run.Status != "terminated" {
+				return fmt.Errorf("agentRunStore.ResumeExternalTool(id=%d): ready result has status %q", runID, run.Status)
+			}
+			already, checkErr := transcriptHasExactToolResult(run.Messages, operationID, toolCallID, canonicalResult)
+			if checkErr != nil || !already {
+				if checkErr == nil {
+					checkErr = fmt.Errorf("durable result is missing")
+				}
+				return fmt.Errorf("agentRunStore.ResumeExternalTool ready result(id=%d): %w", runID, checkErr)
+			}
+		case strings.HasPrefix(run.StateReason, externalResumeStartingPrefix):
+			if run.Status != "running" {
+				return fmt.Errorf("agentRunStore.ResumeExternalTool(id=%d): starting lease has status %q", runID, run.Status)
+			}
+			already, checkErr := transcriptHasExactToolResult(run.Messages, operationID, toolCallID, canonicalResult)
+			if checkErr != nil || !already {
+				if checkErr == nil {
+					checkErr = fmt.Errorf("durable result is missing")
+				}
+				return fmt.Errorf("agentRunStore.ResumeExternalTool starting result(id=%d): %w", runID, checkErr)
+			}
+			if run.PendingExternalActionAt != nil && now.Sub(*run.PendingExternalActionAt) < externalResumeLeaseDuration {
+				return nil
+			}
+		default:
+			return fmt.Errorf(
+				"agentRunStore.ResumeExternalTool(id=%d): unexpected run state status=%q reason=%q",
+				runID, run.Status, run.StateReason,
+			)
 		}
 
 		result := tx.Model(&model.AgentRun{}).
 			Where(
 				"id = ? AND status = ? AND state_reason = ? AND cancellation_requested_at IS NULL AND is_deleted = ? AND pending_external_action_json = ?",
-				runID, "terminated", "waiting_for_user_choice", false, string(run.PendingExternalActionJSON),
+				runID, run.Status, run.StateReason, false, string(run.PendingExternalActionJSON),
 			).
-			Updates(map[string]interface{}{
-				"messages":                     datatypes.JSON(newMessages),
-				"pending_external_action_json": nil,
-				"pending_external_action_at":   nil,
-				"pending_question_json":        nil,
-				"pending_question_at":          nil,
-				"status":                       "running",
-				"state_reason":                 "running",
-				"ended_at":                     nil,
-			})
+			Updates(updates)
 		if result.Error != nil {
 			return fmt.Errorf("agentRunStore.ResumeExternalTool update(id=%d): %w", runID, result.Error)
 		}
@@ -465,12 +553,16 @@ func (s *agentRunStore) resumeExternalToolOnce(
 		claimed = true
 		return nil
 	})
-	return claimed, err
+	if err != nil || !claimed {
+		return "", claimed, err
+	}
+	return leaseToken, true, nil
 }
 
 func (s *agentRunStore) externalResumeAlreadyApplied(
 	ctx context.Context,
 	runID uint64,
+	operationID string,
 	toolCallID string,
 	canonicalResult json.RawMessage,
 ) (bool, error) {
@@ -481,7 +573,7 @@ func (s *agentRunStore) externalResumeAlreadyApplied(
 	if run.CancellationRequestedAt != nil || run.IsDeleted {
 		return false, nil
 	}
-	already, err := transcriptHasExactToolResult(run.Messages, toolCallID, canonicalResult)
+	already, err := transcriptHasExactToolResult(run.Messages, operationID, toolCallID, canonicalResult)
 	if err != nil {
 		return false, fmt.Errorf("agentRunStore.ResumeExternalTool verify concurrent result(id=%d): %w", runID, err)
 	}
@@ -489,6 +581,80 @@ func (s *agentRunStore) externalResumeAlreadyApplied(
 		return false, fmt.Errorf("agentRunStore.ResumeExternalTool(id=%d): resume claim changed without the expected result", runID)
 	}
 	return false, nil
+}
+
+// CompleteExternalToolResume acknowledges that runner synchronous preflight
+// succeeded. Only then is the durable pending identity cleared.
+func (s *agentRunStore) CompleteExternalToolResume(ctx context.Context, runID uint64, operationID, toolCallID, leaseToken string) error {
+	return s.transitionExternalToolResumeLease(ctx, runID, operationID, toolCallID, leaseToken, true)
+}
+
+// ReleaseExternalToolResume returns a failed synchronous preflight to a durable
+// ready state so the next dispatcher callback can immediately reacquire it.
+func (s *agentRunStore) ReleaseExternalToolResume(ctx context.Context, runID uint64, operationID, toolCallID, leaseToken string) error {
+	return s.transitionExternalToolResumeLease(ctx, runID, operationID, toolCallID, leaseToken, false)
+}
+
+func (s *agentRunStore) transitionExternalToolResumeLease(
+	ctx context.Context,
+	runID uint64,
+	operationID string,
+	toolCallID string,
+	leaseToken string,
+	complete bool,
+) error {
+	leaseToken = strings.TrimSpace(leaseToken)
+	if leaseToken == "" {
+		return fmt.Errorf("agentRunStore transition external resume: lease token is required")
+	}
+	expectedState := externalResumeStartingPrefix + leaseToken
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var run model.AgentRun
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&run, runID).Error; err != nil {
+			return fmt.Errorf("agentRunStore transition external resume get(id=%d): %w", runID, err)
+		}
+		if run.CancellationRequestedAt != nil || run.IsDeleted {
+			if complete {
+				return fmt.Errorf("agentRunStore transition external resume(id=%d): run was cancelled or deleted", runID)
+			}
+			return nil
+		}
+		if run.StateReason != expectedState || run.Status != "running" {
+			return fmt.Errorf("agentRunStore transition external resume(id=%d): no active starting lease", runID)
+		}
+		pending, err := externalaction.Parse(run.PendingExternalActionJSON)
+		if err != nil {
+			return fmt.Errorf("agentRunStore transition external resume(id=%d): corrupt identity: %w", runID, err)
+		}
+		if pending.OperationID != operationID || pending.ToolCallID != toolCallID {
+			return fmt.Errorf("agentRunStore transition external resume(id=%d): identity mismatch", runID)
+		}
+		updates := map[string]interface{}{}
+		if complete {
+			updates["pending_external_action_json"] = nil
+			updates["pending_external_action_at"] = nil
+			updates["status"] = "running"
+			updates["state_reason"] = "running"
+		} else {
+			endedAt := time.Now()
+			updates["status"] = "terminated"
+			updates["state_reason"] = externalResumeStateReady
+			updates["ended_at"] = endedAt
+		}
+		result := tx.Model(&model.AgentRun{}).
+			Where(
+				"id = ? AND status = ? AND state_reason = ? AND cancellation_requested_at IS NULL AND is_deleted = ? AND pending_external_action_json = ?",
+				runID, "running", expectedState, false, string(run.PendingExternalActionJSON),
+			).
+			Updates(updates)
+		if result.Error != nil {
+			return fmt.Errorf("agentRunStore transition external resume update(id=%d): %w", runID, result.Error)
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("agentRunStore transition external resume(id=%d): lease changed concurrently", runID)
+		}
+		return nil
+	})
 }
 
 func canonicalExternalToolResult(raw json.RawMessage) (json.RawMessage, error) {
@@ -519,6 +685,14 @@ func canonicalExternalToolResult(raw json.RawMessage) (json.RawMessage, error) {
 		return nil, err
 	}
 	return json.RawMessage(canonical), nil
+}
+
+func newExternalResumeLeaseToken() (string, error) {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", fmt.Errorf("generate external resume lease token: %w", err)
+	}
+	return hex.EncodeToString(random[:]), nil
 }
 
 func validateStrictJSONObject(raw []byte) error {
@@ -602,7 +776,7 @@ func consumeStrictJSONValue(decoder *json.Decoder, token json.Token) error {
 	return nil
 }
 
-func transcriptHasExactToolResult(messages []byte, toolCallID string, canonicalResult json.RawMessage) (bool, error) {
+func transcriptHasExactToolResult(messages []byte, operationID, toolCallID string, canonicalResult json.RawMessage) (bool, error) {
 	var turns []json.RawMessage
 	if err := json.Unmarshal(messages, &turns); err != nil {
 		return false, fmt.Errorf("corrupt transcript: %w", err)
@@ -621,6 +795,13 @@ func transcriptHasExactToolResult(messages []byte, toolCallID string, canonicalR
 		}
 		if found {
 			return false, fmt.Errorf("duplicate tool result for tool_call_id %q", toolCallID)
+		}
+		storedOperationID, _ := msg.Extra[externalOperationIDExtraKey].(string)
+		if storedOperationID == "" {
+			return false, fmt.Errorf("tool result for tool_call_id %q has no consumed operation identity", toolCallID)
+		}
+		if storedOperationID != operationID {
+			return false, fmt.Errorf("conflicting operation identity for tool_call_id %q", toolCallID)
 		}
 		storedResult, err := canonicalExternalToolResult(json.RawMessage(msg.Content))
 		if err != nil {

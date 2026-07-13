@@ -140,6 +140,10 @@ func (s *StudentRunService) validateAndPersistAnswer(ctx context.Context, userID
 	if err != nil {
 		return RunRequest{}, fmt.Errorf("validateAndPersistAnswer: build answer turn: %w", err)
 	}
+	resumeReq, err := s.buildAnswerResumeRequest(ctx, run, userMsg)
+	if err != nil {
+		return RunRequest{}, fmt.Errorf("validateAndPersistAnswer: build resume request before commit: %w", err)
+	}
 	if err := s.runStore.AnswerAndClear(ctx, runID, turn); err != nil {
 		return RunRequest{}, fmt.Errorf("validateAndPersistAnswer: atomic answer+clear: %w", err)
 	}
@@ -147,67 +151,31 @@ func (s *StudentRunService) validateAndPersistAnswer(ctx context.Context, userID
 	// 4. Langfuse span for resume observability.
 	emitAnswerSpan(ctx, run, req)
 
-	// 5. Re-read the atomically updated transcript and build the common resume
-	// request. Ordinary Answer ends in role=user, while external-tool recovery
-	// ends in role=tool and uses the same helper without manufacturing user text.
-	return s.resumeRunFromStoredHistory(ctx, runID)
+	return resumeReq, nil
 }
 
-// resumeRunFromStoredHistory rebuilds the exact continuation request for one
-// existing run. The persisted tail selects the protocol: a user tail becomes
-// ordinary answer Input; a tool tail becomes provider-valid History and sets
-// ContinueWithoutUserInput. No operation result is ever converted to user text.
-func (s *StudentRunService) resumeRunFromStoredHistory(ctx context.Context, runID uint64) (RunRequest, error) {
-	if s == nil || s.runStore == nil || runID == 0 {
-		return RunRequest{}, fmt.Errorf("resumeRunFromStoredHistory: run store and run id are required")
-	}
-	run, err := s.runStore.Get(ctx, runID)
-	if err != nil {
-		return RunRequest{}, fmt.Errorf("resumeRunFromStoredHistory: get run %d: %w", runID, err)
+func (s *StudentRunService) buildAnswerResumeRequest(ctx context.Context, run *model.AgentRun, userMsg string) (RunRequest, error) {
+	if s == nil || s.runStore == nil || run == nil || run.ID == 0 || strings.TrimSpace(userMsg) == "" {
+		return RunRequest{}, fmt.Errorf("buildAnswerResumeRequest: service, run, and user answer are required")
 	}
 	var turns []map[string]any
-	if err := json.Unmarshal(run.Messages, &turns); err != nil || len(turns) == 0 {
-		if err == nil {
-			err = fmt.Errorf("empty transcript")
-		}
-		return RunRequest{}, fmt.Errorf("resumeRunFromStoredHistory: invalid transcript: %w", err)
+	if err := json.Unmarshal(run.Messages, &turns); err != nil {
+		return RunRequest{}, fmt.Errorf("buildAnswerResumeRequest: invalid transcript: %w", err)
 	}
 
-	last := turns[len(turns)-1]
-	lastRole, _ := last["role"].(string)
-	resumeHistory := s.loadSessionHistory(context.WithoutCancel(ctx), run.SessionID, runID)
-	input := ""
-	continueWithoutUser := false
-	switch lastRole {
-	case "user":
-		input = strings.TrimSpace(historyTurnText(last["content"]))
-		if input == "" {
-			return RunRequest{}, fmt.Errorf("resumeRunFromStoredHistory: empty user answer tail")
-		}
-		resumeHistory = append(resumeHistory, turnsToHistoryMessages(turns[:len(turns)-1])...)
-	case "tool":
-		currentHistory, historyErr := turnsToExternalResumeHistoryMessages(turns)
-		if historyErr != nil {
-			return RunRequest{}, fmt.Errorf("resumeRunFromStoredHistory: external transcript: %w", historyErr)
-		}
-		resumeHistory = append(resumeHistory, currentHistory...)
-		continueWithoutUser = true
-	default:
-		return RunRequest{}, fmt.Errorf("resumeRunFromStoredHistory: unsupported transcript tail role %q", lastRole)
-	}
-
+	resumeHistory := s.loadSessionHistory(context.WithoutCancel(ctx), run.SessionID, run.ID)
+	resumeHistory = append(resumeHistory, turnsToHistoryMessages(turns)...)
 	toolFlags := resolveToolFlags(context.WithoutCancel(ctx), s, run.AgentDefinitionID)
 	return RunRequest{
-		UserID:                   run.UserID,
-		SessionID:                run.SessionID,
-		Input:                    input,
-		History:                  resumeHistory,
-		ToolNames:                toolNamesFromFlags(toolFlags),
-		AgentDefinitionID:        run.AgentDefinitionID,
-		EnableMemory:             true,
-		ExistingRunID:            run.ID,
-		IsTest:                   run.IsTest,
-		ContinueWithoutUserInput: continueWithoutUser,
+		UserID:            run.UserID,
+		SessionID:         run.SessionID,
+		Input:             userMsg,
+		History:           resumeHistory,
+		ToolNames:         toolNamesFromFlags(toolFlags),
+		AgentDefinitionID: run.AgentDefinitionID,
+		EnableMemory:      true,
+		ExistingRunID:     run.ID,
+		IsTest:            run.IsTest,
 	}, nil
 }
 

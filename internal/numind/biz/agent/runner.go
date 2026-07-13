@@ -109,6 +109,10 @@ type RunRequest struct {
 	// model request and final persisted transcript from inventing an empty or
 	// natural-language user message. Model tool input can never set this flag.
 	ContinueWithoutUserInput bool
+	// ExternalContinuationReady is an internal runner-start handshake. It is
+	// invoked only after synchronous preflight and react.NewAgent succeed; the
+	// durable external resume lease is cleared by this callback. Never model-set.
+	ExternalContinuationReady func(context.Context) error
 }
 
 // displayUserText returns the text to PERSIST/DISPLAY as the user turn: DisplayInput
@@ -498,6 +502,7 @@ func NewAgentRunner(runStore store.IAgentRunStore, registry AgentToolRegistry, o
 // LLM 调用 / Eino agent.Generate 真实集成靠 Task 8 集成测试覆盖。
 func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResult, err error) {
 	startTime := time.Now()
+	externalContinuationAccepted := false
 
 	// 0. 注入 userID 到 context，供工具（如 kbSearchTool）读取。
 	ctx = middleware.NewContextWithUserID(ctx, req.UserID)
@@ -520,7 +525,14 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 			if run != nil {
 				rid = run.ID
 			}
-			result, err = nil, recoverAgentRunPanic(rec, rid, r.runStore, nil, startTime)
+			if req.ExternalContinuationReady != nil && !externalContinuationAccepted {
+				// The durable lease owner must release the result after a
+				// synchronous preflight panic. Persisting model_error here would
+				// overwrite the fencing state and make that release impossible.
+				result, err = nil, recoverAgentRunPanic(rec, rid, nil, nil, startTime)
+			} else {
+				result, err = nil, recoverAgentRunPanic(rec, rid, r.runStore, nil, startTime)
+			}
 		}
 	}()
 	// Evict this run's vision-tool quota counters on every exit path (run set lazily).
@@ -546,9 +558,11 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 		// NOTE: ended_at clearing is owned by AnswerAndClear (the sole resume
 		// entry today); a future non-answer resume entry must clear it itself
 		// (UpdateState with nil endedAt intentionally leaves the column alone).
-		if uerr := r.runStore.UpdateState(ctx, run.ID, "running", "running", nil); uerr != nil {
-			log.Warnw("AgentRunner.Run: mark resumed run running failed",
-				"agent_run_id", run.ID, "error", uerr)
+		if !req.ContinueWithoutUserInput {
+			if uerr := r.runStore.UpdateState(ctx, run.ID, "running", "running", nil); uerr != nil {
+				log.Warnw("AgentRunner.Run: mark resumed run running failed",
+					"agent_run_id", run.ID, "error", uerr)
+			}
 		}
 	} else {
 		run = &model.AgentRun{
@@ -1014,9 +1028,14 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 	// gate before calling it.
 	if len(einoTools) == 0 {
 		if req.ContinueWithoutUserInput {
-			endedAt := time.Now()
-			if uerr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalModelError), &endedAt); uerr != nil {
-				log.Warnw("AgentRunner.Run UpdateState failed on external-continuation configuration error", "agent_run_id", run.ID, "error", uerr)
+			// A leased external continuation must leave its fencing state intact
+			// until the resumer releases it. Otherwise the release CAS cannot make
+			// this durable result immediately retryable.
+			if req.ExternalContinuationReady == nil {
+				endedAt := time.Now()
+				if uerr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalModelError), &endedAt); uerr != nil {
+					log.Warnw("AgentRunner.Run UpdateState failed on external-continuation configuration error", "agent_run_id", run.ID, "error", uerr)
+				}
 			}
 			return nil, fmt.Errorf("AgentRunner.Run: external tool continuation requires a configured tool registry")
 		}
@@ -1119,11 +1138,19 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 		MaxStep: 120,
 	})
 	if err != nil {
-		endedAt := time.Now()
-		if uerr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalModelError), &endedAt); uerr != nil {
-			log.Warnw("AgentRunner.Run UpdateState failed on NewAgent error", "agent_run_id", run.ID, "error", uerr)
+		if req.ExternalContinuationReady == nil {
+			endedAt := time.Now()
+			if uerr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalModelError), &endedAt); uerr != nil {
+				log.Warnw("AgentRunner.Run UpdateState failed on NewAgent error", "agent_run_id", run.ID, "error", uerr)
+			}
 		}
 		return nil, fmt.Errorf("AgentRunner.Run NewAgent: %w", err)
+	}
+	if req.ExternalContinuationReady != nil {
+		if readyErr := req.ExternalContinuationReady(context.WithoutCancel(queryCtx)); readyErr != nil {
+			return nil, fmt.Errorf("AgentRunner.Run external continuation ready: %w", readyErr)
+		}
+		externalContinuationAccepted = true
 	}
 	// M-A1: Real ReAct loop — replace _ = einoAgent short-circuit.
 	// M-A3: Inject sessionID into queryCtx so downstream consumers (SyncTurn, narration) find it.

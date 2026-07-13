@@ -88,6 +88,7 @@ func (r *agentRunner) RunStream(
 	ch chan<- stream.Event,
 ) (result *RunResult, err error) {
 	startTime := time.Now()
+	externalContinuationAccepted := false
 
 	// Backstop panic guard for the detached run goroutine. Registered first so it
 	// runs last on unwind (after CloseRun etc.). Tool panics are contained earlier
@@ -95,7 +96,11 @@ func (r *agentRunner) RunStream(
 	// never crashes the process, and leaves a clean model_error terminal + SSE close.
 	defer func() {
 		if rec := recover(); rec != nil {
-			result, err = nil, recoverAgentRunPanic(rec, runID, r.runStore, ch, startTime)
+			if req.ExternalContinuationReady != nil && !externalContinuationAccepted {
+				result, err = nil, recoverAgentRunPanic(rec, runID, nil, nil, startTime)
+			} else {
+				result, err = nil, recoverAgentRunPanic(rec, runID, r.runStore, ch, startTime)
+			}
 		}
 	}()
 	// Evict this run's vision-tool quota counters on every exit path.
@@ -419,9 +424,11 @@ func (r *agentRunner) RunStream(
 	// full-open registers from the registry, not req.ToolNames).
 	if len(einoTools) == 0 {
 		if req.ContinueWithoutUserInput {
-			endedAt := time.Now()
-			if uerr := r.runStore.UpdateState(persistCtx, run.ID, "terminated", string(TerminalModelError), &endedAt); uerr != nil {
-				log.Warnw("AgentRunner.RunStream UpdateState failed on external-continuation configuration error", "agent_run_id", run.ID, "error", uerr)
+			if req.ExternalContinuationReady == nil {
+				endedAt := time.Now()
+				if uerr := r.runStore.UpdateState(persistCtx, run.ID, "terminated", string(TerminalModelError), &endedAt); uerr != nil {
+					log.Warnw("AgentRunner.RunStream UpdateState failed on external-continuation configuration error", "agent_run_id", run.ID, "error", uerr)
+				}
 			}
 			return nil, fmt.Errorf("AgentRunner.RunStream: external tool continuation requires a configured tool registry")
 		}
@@ -530,11 +537,19 @@ func (r *agentRunner) RunStream(
 		StreamToolCallChecker: streamScanToolCallChecker,
 	})
 	if err != nil {
-		endedAt := time.Now()
-		if uerr := r.runStore.UpdateState(persistCtx, run.ID, "terminated", string(TerminalModelError), &endedAt); uerr != nil {
-			log.Warnw("AgentRunner.RunStream UpdateState failed on NewAgent error", "agent_run_id", run.ID, "error", uerr)
+		if req.ExternalContinuationReady == nil {
+			endedAt := time.Now()
+			if uerr := r.runStore.UpdateState(persistCtx, run.ID, "terminated", string(TerminalModelError), &endedAt); uerr != nil {
+				log.Warnw("AgentRunner.RunStream UpdateState failed on NewAgent error", "agent_run_id", run.ID, "error", uerr)
+			}
 		}
 		return nil, fmt.Errorf("AgentRunner.RunStream NewAgent: %w", err)
+	}
+	if req.ExternalContinuationReady != nil {
+		if readyErr := req.ExternalContinuationReady(context.WithoutCancel(queryCtx)); readyErr != nil {
+			return nil, fmt.Errorf("AgentRunner.RunStream external continuation ready: %w", readyErr)
+		}
+		externalContinuationAccepted = true
 	}
 
 	// 8. Resolve sessionID + inject into queryCtx.
