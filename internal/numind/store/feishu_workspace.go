@@ -32,6 +32,7 @@ type IFeishuWorkspaceStore interface {
 	CreateOrGetOperation(ctx context.Context, operation *model.FeishuOperation) (*model.FeishuOperation, error)
 	CreateOrGetOperationWithProof(ctx context.Context, operation *model.FeishuOperation, sourceOperationID string) (*model.FeishuOperation, error)
 	TryClaimExecutionGate(ctx context.Context, userID uint, generation uint64, owner, operationID string, now, leaseUntil time.Time) (bool, error)
+	RenewExecutionGate(ctx context.Context, userID uint, generation uint64, owner, operationID string, now, leaseUntil time.Time) (bool, error)
 	ReleaseExecutionGate(ctx context.Context, userID uint, generation uint64, owner string, now time.Time) (bool, error)
 	ListSucceededCreatesForRun(ctx context.Context, userID uint, generation uint64, agentRunID uint64) ([]model.FeishuOperation, error)
 	IsOperationProofUsable(ctx context.Context, userID uint, generation uint64, agentRunID uint64, sourceOperationID, consumerOperationID string) (bool, error)
@@ -357,6 +358,8 @@ func (s *feishuWorkspaceStore) TryClaimExecutionGate(
 	owner, operationID string,
 	now, leaseUntil time.Time,
 ) (bool, error) {
+	now = feishuExecutionGateNow(now)
+	leaseUntil = feishuExecutionGateLeaseUntil(leaseUntil)
 	if userID == 0 || generation == 0 || owner == "" || operationID == "" || !leaseUntil.After(now) {
 		return false, nil
 	}
@@ -392,7 +395,7 @@ func (s *feishuWorkspaceStore) TryClaimExecutionGate(
 		}
 
 		active := gate.LeaseOwner != "" && gate.LeaseUntil != nil && gate.LeaseUntil.After(now)
-		sameOwner := gate.Generation == generation && gate.LeaseOwner == owner
+		sameOwner := gate.Generation == generation && gate.LeaseOwner == owner && gate.OperationID == operationID
 		if active && !sameOwner {
 			return nil
 		}
@@ -414,6 +417,77 @@ func (s *feishuWorkspaceStore) TryClaimExecutionGate(
 	return claimed, nil
 }
 
+// RenewExecutionGate extends only an active lease held by the exact current
+// generation, owner, and operation. An expired lease is never resurrected.
+func (s *feishuWorkspaceStore) RenewExecutionGate(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	owner, operationID string,
+	now, leaseUntil time.Time,
+) (bool, error) {
+	now = feishuExecutionGateNow(now)
+	leaseUntil = feishuExecutionGateLeaseUntil(leaseUntil)
+	if userID == 0 || generation == 0 || owner == "" || operationID == "" || !leaseUntil.After(now) {
+		return false, nil
+	}
+	renewed := false
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var account model.UserThirdPartyAccount
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ? AND provider = ?", userID, "lark").
+			Take(&account).Error; err != nil {
+			return err
+		}
+		if account.Generation != generation {
+			return nil
+		}
+
+		var gate model.FeishuOperationExecutionGate
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ?", userID).
+			Take(&gate).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		if gate.Generation != generation || gate.LeaseOwner != owner || gate.OperationID != operationID ||
+			gate.LeaseUntil == nil || !gate.LeaseUntil.After(now) {
+			return nil
+		}
+
+		result := tx.Model(&model.FeishuOperationExecutionGate{}).
+			Where("user_id = ? AND generation = ? AND lease_owner = ? AND operation_id = ?", userID, generation, owner, operationID).
+			Where("lease_until > ?", now).
+			Updates(map[string]any{"lease_until": leaseUntil, "updated_at": now})
+		if result.Error != nil {
+			return result.Error
+		}
+		// The locked row already proved the exact active tuple. MySQL may report
+		// zero affected rows when a same-timestamp renewal writes identical values.
+		renewed = true
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("renew feishu execution gate: %w", err)
+	}
+	return renewed, nil
+}
+
+func feishuExecutionGateNow(value time.Time) time.Time {
+	normalized := value.UTC()
+	millisecond := normalized.Truncate(time.Millisecond)
+	if normalized.After(millisecond) {
+		return millisecond.Add(time.Millisecond)
+	}
+	return millisecond
+}
+
+func feishuExecutionGateLeaseUntil(value time.Time) time.Time {
+	return value.UTC().Truncate(time.Millisecond)
+}
+
 // ReleaseExecutionGate clears only the caller's current-generation lease. A
 // stale owner cannot release a gate reclaimed after expiry.
 func (s *feishuWorkspaceStore) ReleaseExecutionGate(
@@ -423,6 +497,7 @@ func (s *feishuWorkspaceStore) ReleaseExecutionGate(
 	owner string,
 	now time.Time,
 ) (bool, error) {
+	now = feishuExecutionGateNow(now)
 	if userID == 0 || generation == 0 || owner == "" {
 		return false, nil
 	}

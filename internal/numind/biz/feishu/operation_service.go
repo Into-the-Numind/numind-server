@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -32,12 +33,13 @@ const (
 	operationMaxReceiptCount      = 4
 	operationDefaultLeaseDuration = 90 * time.Second
 	operationFinalizeTimeout      = 5 * time.Second
-	// The execution gate covers at most two 30-second read invocations plus
-	// vault and terminal-transition overhead. Expiry is the crash fallback.
-	operationExecutionGateLeaseDuration = 120 * time.Second
-	operationExecutionGateWaitTimeout   = 125 * time.Second
-	operationExecutionGatePollInterval  = 100 * time.Millisecond
-	operationExecutionGateOverhead      = 30 * time.Second
+	// Each execution-gate lease window is renewed by the heartbeat and again
+	// immediately before every runner invocation. Expiry is the crash fallback.
+	operationExecutionGateLeaseDuration     = 120 * time.Second
+	operationExecutionGateWaitTimeout       = 125 * time.Second
+	operationExecutionGatePollInterval      = 100 * time.Millisecond
+	operationExecutionGateHeartbeatInterval = 30 * time.Second
+	operationExecutionGateOverhead          = 30 * time.Second
 )
 
 var (
@@ -84,6 +86,7 @@ type OperationStore interface {
 	CreateOrGetOperation(ctx context.Context, operation *model.FeishuOperation) (*model.FeishuOperation, error)
 	CreateOrGetOperationWithProof(ctx context.Context, operation *model.FeishuOperation, sourceOperationID string) (*model.FeishuOperation, error)
 	TryClaimExecutionGate(ctx context.Context, userID uint, generation uint64, owner, operationID string, now, leaseUntil time.Time) (bool, error)
+	RenewExecutionGate(ctx context.Context, userID uint, generation uint64, owner, operationID string, now, leaseUntil time.Time) (bool, error)
 	ReleaseExecutionGate(ctx context.Context, userID uint, generation uint64, owner string, now time.Time) (bool, error)
 	IsOperationProofUsable(ctx context.Context, userID uint, generation uint64, agentRunID uint64, sourceOperationID, consumerOperationID string) (bool, error)
 	ListSucceededCreatesForRun(ctx context.Context, userID uint, generation uint64, agentRunID uint64) ([]model.FeishuOperation, error)
@@ -286,34 +289,49 @@ type persistedOperationSummary struct {
 
 // OperationServiceDeps wires only small one-way Feishu interfaces.
 type OperationServiceDeps struct {
-	Accounts      OperationAccountStore
-	Operations    OperationStore
-	Catalog       *CommandCatalog
-	Receipts      ReceiptVerifier
-	Recovery      RecoveryStarter
-	Confirmation  ConfirmationRequester
-	Vault         OperationHomeVault
-	Runner        OperationRunner
-	Cipher        *OperationCipherKeyring
-	Now           func() time.Time
-	LeaseDuration time.Duration
+	Accounts                       OperationAccountStore
+	Operations                     OperationStore
+	Catalog                        *CommandCatalog
+	Receipts                       ReceiptVerifier
+	Recovery                       RecoveryStarter
+	Confirmation                   ConfirmationRequester
+	Vault                          OperationHomeVault
+	Runner                         OperationRunner
+	Cipher                         *OperationCipherKeyring
+	Now                            func() time.Time
+	LeaseDuration                  time.Duration
+	ExecutionGateHeartbeatInterval time.Duration
 }
 
 // FeishuOperationService executes idempotent, encrypted personal-workspace
 // commands without importing the Agent package.
 type FeishuOperationService struct {
-	accounts      OperationAccountStore
-	operations    OperationStore
-	catalog       *CommandCatalog
-	receipts      ReceiptVerifier
-	recovery      RecoveryStarter
-	confirmation  ConfirmationRequester
-	vault         OperationHomeVault
-	runner        OperationRunner
-	cipher        *OperationCipherKeyring
-	classifier    *ErrorClassifier
-	now           func() time.Time
-	leaseDuration time.Duration
+	accounts                       OperationAccountStore
+	operations                     OperationStore
+	catalog                        *CommandCatalog
+	receipts                       ReceiptVerifier
+	recovery                       RecoveryStarter
+	confirmation                   ConfirmationRequester
+	vault                          OperationHomeVault
+	runner                         OperationRunner
+	cipher                         *OperationCipherKeyring
+	classifier                     *ErrorClassifier
+	now                            func() time.Time
+	leaseDuration                  time.Duration
+	executionGateHeartbeatInterval time.Duration
+}
+
+type executionGateGuard struct {
+	service     *FeishuOperationService
+	userID      uint
+	generation  uint64
+	operationID string
+	owner       string
+	ctx         context.Context
+	cancel      context.CancelFunc
+	stop        chan struct{}
+	done        chan struct{}
+	stopOnce    sync.Once
 }
 
 // NewFeishuOperationService validates all mandatory operation dependencies.
@@ -330,12 +348,93 @@ func NewFeishuOperationService(deps OperationServiceDeps) (*FeishuOperationServi
 	if leaseDuration <= 0 {
 		leaseDuration = operationDefaultLeaseDuration
 	}
+	heartbeatInterval := deps.ExecutionGateHeartbeatInterval
+	if heartbeatInterval <= 0 {
+		heartbeatInterval = operationExecutionGateHeartbeatInterval
+	}
+	if heartbeatInterval >= operationExecutionGateLeaseDuration {
+		return nil, errors.New("feishu operation execution gate heartbeat interval rejected")
+	}
 	return &FeishuOperationService{
 		accounts: deps.Accounts, operations: deps.Operations, catalog: deps.Catalog,
 		receipts: deps.Receipts, recovery: deps.Recovery, confirmation: deps.Confirmation,
 		vault: deps.Vault, runner: deps.Runner, cipher: deps.Cipher,
 		classifier: NewErrorClassifier(), now: now, leaseDuration: leaseDuration,
+		executionGateHeartbeatInterval: heartbeatInterval,
 	}, nil
+}
+
+func (s *FeishuOperationService) startExecutionGateGuard(
+	ctx context.Context,
+	operation *model.FeishuOperation,
+	owner string,
+) *executionGateGuard {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	executionCtx, cancel := context.WithCancel(ctx)
+	guard := &executionGateGuard{
+		service: s, userID: operation.UserID, generation: operation.Generation,
+		operationID: operation.ID, owner: owner, ctx: executionCtx, cancel: cancel,
+		stop: make(chan struct{}), done: make(chan struct{}),
+	}
+	go guard.heartbeat()
+	return guard
+}
+
+func (g *executionGateGuard) heartbeat() {
+	defer close(g.done)
+	ticker := time.NewTicker(g.service.executionGateHeartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if err := g.renew(); err != nil {
+				return
+			}
+		case <-g.ctx.Done():
+			return
+		case <-g.stop:
+			return
+		}
+	}
+}
+
+func (g *executionGateGuard) renew() error {
+	if g == nil || g.service == nil {
+		return ErrOperationUnavailable
+	}
+	if err := g.ctx.Err(); err != nil {
+		return ErrOperationUnavailable
+	}
+	now := g.service.now().UTC()
+	renewCtx, cancel := context.WithTimeout(g.ctx, operationFinalizeTimeout)
+	renewed, err := g.service.operations.RenewExecutionGate(
+		renewCtx,
+		g.userID,
+		g.generation,
+		g.owner,
+		g.operationID,
+		now,
+		now.Add(operationExecutionGateLeaseDuration),
+	)
+	cancel()
+	if err != nil || !renewed {
+		g.cancel()
+		return ErrOperationUnavailable
+	}
+	return nil
+}
+
+func (g *executionGateGuard) stopAndWait() {
+	if g == nil {
+		return
+	}
+	g.stopOnce.Do(func() {
+		close(g.stop)
+		g.cancel()
+		<-g.done
+	})
 }
 
 // Execute normalizes and verifies a new request before atomically creating or
@@ -490,12 +589,17 @@ func (s *FeishuOperationService) reclaimExpiredExecution(
 	}
 	owner := uuid.NewString()
 	gateHeld := false
+	var gateGuard *executionGateGuard
 	if account.ConnectionState == model.FeishuConnectionConnected && persisted.Risk == RiskRead {
 		if err := s.waitForExecutionGate(ctx, operation, owner); err != nil {
 			return nil, err
 		}
 		gateHeld = true
+		gateGuard = s.startExecutionGateGuard(ctx, operation, owner)
 		defer func() {
+			if gateGuard != nil {
+				gateGuard.stopAndWait()
+			}
 			if gateHeld {
 				s.releaseExecutionGateDetached(ctx, operation, owner)
 			}
@@ -506,6 +610,8 @@ func (s *FeishuOperationService) reclaimExpiredExecution(
 		}
 		account = currentAccount
 		if account.ConnectionState != model.FeishuConnectionConnected {
+			gateGuard.stopAndWait()
+			gateGuard = nil
 			s.releaseExecutionGateDetached(ctx, operation, owner)
 			gateHeld = false
 		}
@@ -545,7 +651,7 @@ func (s *FeishuOperationService) reclaimExpiredExecution(
 	}
 	operation.AttemptCount++
 	operation.StartedAt = &now
-	return s.executeClaimed(ctx, account, operation, owner, persisted, "", false)
+	return s.executeClaimed(ctx, account, operation, owner, persisted, "", false, gateGuard)
 }
 
 func (s *FeishuOperationService) loadOrCreateAccount(ctx context.Context, userID uint) (*model.UserThirdPartyAccount, error) {
@@ -575,13 +681,18 @@ func (s *FeishuOperationService) claimAndExecute(
 	}
 	owner := uuid.NewString()
 	gateHeld := false
+	var gateGuard *executionGateGuard
 	proofUsable := false
 	if operationRequiresExecutionGate(account, persisted) {
 		if err := s.waitForExecutionGate(ctx, operation, owner); err != nil {
 			return nil, err
 		}
 		gateHeld = true
+		gateGuard = s.startExecutionGateGuard(ctx, operation, owner)
 		defer func() {
+			if gateGuard != nil {
+				gateGuard.stopAndWait()
+			}
 			if gateHeld {
 				s.releaseExecutionGateDetached(ctx, operation, owner)
 			}
@@ -592,6 +703,8 @@ func (s *FeishuOperationService) claimAndExecute(
 		}
 		account = currentAccount
 		if account.ConnectionState != model.FeishuConnectionConnected {
+			gateGuard.stopAndWait()
+			gateGuard = nil
 			s.releaseExecutionGateDetached(ctx, operation, owner)
 			gateHeld = false
 		} else if persisted.SameRunEmptyCreateProof {
@@ -626,7 +739,7 @@ func (s *FeishuOperationService) claimAndExecute(
 	operation.AttemptCount++
 	operation.LeaseOwner = owner
 	operation.StartedAt = &now
-	return s.executeClaimed(ctx, account, operation, owner, persisted, priorRecoverySignature, proofUsable)
+	return s.executeClaimed(ctx, account, operation, owner, persisted, priorRecoverySignature, proofUsable, gateGuard)
 }
 
 func operationRequiresExecutionGate(account *model.UserThirdPartyAccount, persisted persistedOperationRequest) bool {
@@ -712,6 +825,7 @@ func (s *FeishuOperationService) executeClaimed(
 	persisted persistedOperationRequest,
 	priorRecoverySignature string,
 	proofUsable bool,
+	executionGate *executionGateGuard,
 ) (*OperationResult, error) {
 	if account.ConnectionState != model.FeishuConnectionConnected {
 		kind := RecoveryCreateApp
@@ -757,7 +871,7 @@ func (s *FeishuOperationService) executeClaimed(
 		maxInvocations = 2
 	}
 	for invocation := 0; invocation < maxInvocations; invocation++ {
-		result, runErr, vaultErr := s.invokeOnce(ctx, operation, persisted)
+		result, runErr, vaultErr := s.invokeOnce(operation, persisted, executionGate)
 		started := result != nil && result.InvocationStarted
 		if vaultErr == nil && runErr == nil && result != nil && started && result.Envelope != nil &&
 			result.Envelope.OK && json.Valid(result.Envelope.Data) {
@@ -830,17 +944,25 @@ func (s *FeishuOperationService) createOrGetOperation(
 }
 
 func (s *FeishuOperationService) invokeOnce(
-	ctx context.Context,
 	operation *model.FeishuOperation,
 	persisted persistedOperationRequest,
+	executionGate *executionGateGuard,
 ) (*CLIResult, error, error) {
+	if executionGate == nil {
+		return nil, nil, ErrOperationUnavailable
+	}
 	var result *CLIResult
 	var runErr error
-	vaultErr := s.vault.WithHome(ctx, operation.UserID, operation.Generation, func(home string) (bool, error) {
+	vaultErr := s.vault.WithHome(executionGate.ctx, operation.UserID, operation.Generation, func(home string) (bool, error) {
+		if err := executionGate.renew(); err != nil {
+			return false, ErrOperationUnavailable
+		}
 		argv := append([]string(nil), persisted.Argv...)
 		// Task 7 establishes confirmation waiting only. A later confirmed-state
 		// adapter must persist authorization before RequiresCLIYes can be appended.
-		result, runErr = s.runner.Run(ctx, home, argv, append([]byte(nil), persisted.StdinJSON...))
+		runCtx, cancel := context.WithTimeout(executionGate.ctx, ControlledLarkCLITimeout)
+		defer cancel()
+		result, runErr = s.runner.Run(runCtx, home, argv, append([]byte(nil), persisted.StdinJSON...))
 		return result != nil && result.InvocationStarted, nil
 	})
 	return result, runErr, vaultErr

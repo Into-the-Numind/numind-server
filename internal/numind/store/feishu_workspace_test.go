@@ -613,6 +613,9 @@ func TestFeishuWorkspaceStore_ExecutionGateClaimExpiryReleaseAndGenerationFence(
 	claimed, err := s.TryClaimExecutionGate(ctx, 7, 1, "owner-a", "operation-a", now, now.Add(2*time.Minute))
 	require.NoError(t, err)
 	require.True(t, claimed)
+	claimed, err = s.TryClaimExecutionGate(ctx, 7, 1, "owner-a", "operation-b", now.Add(time.Second), now.Add(2*time.Minute))
+	require.NoError(t, err)
+	require.False(t, claimed, "an active owner cannot move its lease to another operation")
 	claimed, err = s.TryClaimExecutionGate(ctx, 7, 1, "owner-b", "operation-b", now.Add(time.Second), now.Add(2*time.Minute))
 	require.NoError(t, err)
 	require.False(t, claimed)
@@ -644,6 +647,111 @@ func TestFeishuWorkspaceStore_ExecutionGateClaimExpiryReleaseAndGenerationFence(
 	claimed, err = s.TryClaimExecutionGate(ctx, 7, 2, "owner-current", "operation-current", now.Add(7*time.Minute), now.Add(9*time.Minute))
 	require.NoError(t, err)
 	require.True(t, claimed, "the current generation may recover an expired retired-generation gate")
+}
+
+func TestFeishuWorkspaceStore_RenewExecutionGateRequiresActiveExactLeaseTuple(t *testing.T) {
+	type executionGateRenewer interface {
+		RenewExecutionGate(
+			context.Context,
+			uint,
+			uint64,
+			string,
+			string,
+			time.Time,
+			time.Time,
+		) (bool, error)
+	}
+
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 1)
+	renewer, ok := any(s).(executionGateRenewer)
+	if !ok {
+		t.Fatal("workspace store must expose exact execution-gate renewal")
+	}
+	now := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	claimed, err := s.TryClaimExecutionGate(ctx, 7, 1, "owner-a", "operation-a", now, now.Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	renewedUntil := now.Add(2 * time.Minute)
+	renewed, err := renewer.RenewExecutionGate(ctx, 7, 1, "owner-a", "operation-a", now.Add(30*time.Second), renewedUntil)
+	require.NoError(t, err)
+	require.True(t, renewed)
+	var gate model.FeishuOperationExecutionGate
+	require.NoError(t, s.db.First(&gate, "user_id = ?", 7).Error)
+	require.NotNil(t, gate.LeaseUntil)
+	require.Equal(t, renewedUntil, gate.LeaseUntil.UTC())
+
+	for _, mismatch := range []struct {
+		name       string
+		generation uint64
+		owner      string
+		operation  string
+	}{
+		{name: "generation", generation: 2, owner: "owner-a", operation: "operation-a"},
+		{name: "owner", generation: 1, owner: "owner-b", operation: "operation-a"},
+		{name: "operation", generation: 1, owner: "owner-a", operation: "operation-b"},
+	} {
+		t.Run(mismatch.name, func(t *testing.T) {
+			renewed, err := renewer.RenewExecutionGate(
+				ctx, 7, mismatch.generation, mismatch.owner, mismatch.operation,
+				now.Add(40*time.Second), now.Add(3*time.Minute),
+			)
+			require.NoError(t, err)
+			require.False(t, renewed)
+		})
+	}
+
+	expiredNow := renewedUntil.Add(time.Millisecond)
+	renewed, err = renewer.RenewExecutionGate(ctx, 7, 1, "owner-a", "operation-a", expiredNow, expiredNow.Add(time.Minute))
+	require.NoError(t, err)
+	require.False(t, renewed, "an expired owner must never resurrect its lease")
+	claimed, err = s.TryClaimExecutionGate(ctx, 7, 1, "owner-b", "operation-b", expiredNow, expiredNow.Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, claimed)
+	renewed, err = renewer.RenewExecutionGate(ctx, 7, 1, "owner-a", "operation-a", expiredNow.Add(time.Second), expiredNow.Add(2*time.Minute))
+	require.NoError(t, err)
+	require.False(t, renewed, "a stale owner must not renew over the new owner")
+}
+
+func TestFeishuWorkspaceStore_RenewExecutionGateFailsClosedInsideExpiryMillisecond(t *testing.T) {
+	type executionGateRenewer interface {
+		RenewExecutionGate(
+			context.Context,
+			uint,
+			uint64,
+			string,
+			string,
+			time.Time,
+			time.Time,
+		) (bool, error)
+	}
+
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 1)
+	renewer, ok := any(s).(executionGateRenewer)
+	if !ok {
+		t.Fatal("workspace store must expose exact execution-gate renewal")
+	}
+	base := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	expiresAt := base.Add(time.Second + 123*time.Millisecond)
+	claimed, err := s.TryClaimExecutionGate(ctx, 7, 1, "owner-a", "operation-a", base, expiresAt)
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	renewed, err := renewer.RenewExecutionGate(
+		ctx,
+		7,
+		1,
+		"owner-a",
+		"operation-a",
+		expiresAt.Add(-500*time.Microsecond),
+		expiresAt.Add(time.Minute),
+	)
+	require.NoError(t, err)
+	require.False(t, renewed, "sub-millisecond time must fail closed at the DATETIME(3) boundary")
 }
 
 func TestFeishuWorkspaceStore_VaultRevisionCASAndOwnership(t *testing.T) {

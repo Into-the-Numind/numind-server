@@ -138,10 +138,11 @@ func (f *operationRunnerFake) snapshot() (int, [][]string) {
 }
 
 type operationVaultFake struct {
-	mu       sync.Mutex
-	changed  []bool
-	sealed   int
-	afterRun func(userID uint, generation uint64, changed bool) error
+	mu             sync.Mutex
+	changed        []bool
+	sealed         int
+	beforeCallback func()
+	afterRun       func(userID uint, generation uint64, changed bool) error
 }
 
 type recordingOperationStore struct {
@@ -241,6 +242,159 @@ type gateAttemptSignalOperationStore struct {
 
 type releaseFailOperationStore struct{ store.IFeishuWorkspaceStore }
 
+type executionGateRenewCall struct {
+	now        time.Time
+	leaseUntil time.Time
+}
+
+type renewalTrackingOperationStore struct {
+	store.IFeishuWorkspaceStore
+	mu      sync.Mutex
+	calls   []executionGateRenewCall
+	failAt  int
+	failErr error
+	renewed chan struct{}
+}
+
+func (s *renewalTrackingOperationStore) RenewExecutionGate(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	owner, operationID string,
+	now, leaseUntil time.Time,
+) (bool, error) {
+	s.mu.Lock()
+	s.calls = append(s.calls, executionGateRenewCall{now: now, leaseUntil: leaseUntil})
+	call := len(s.calls)
+	renewed := s.renewed
+	failAt := s.failAt
+	failErr := s.failErr
+	s.mu.Unlock()
+	if renewed != nil {
+		select {
+		case renewed <- struct{}{}:
+		default:
+		}
+	}
+	if failAt > 0 && call == failAt {
+		return false, failErr
+	}
+	return s.IFeishuWorkspaceStore.RenewExecutionGate(
+		ctx, userID, generation, owner, operationID, now, leaseUntil,
+	)
+}
+
+func (s *renewalTrackingOperationStore) snapshot() []executionGateRenewCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]executionGateRenewCall(nil), s.calls...)
+}
+
+type contextBlockingOperationRunner struct {
+	started chan struct{}
+	mu      sync.Mutex
+	calls   int
+}
+
+func (r *contextBlockingOperationRunner) Run(
+	ctx context.Context,
+	_ string,
+	_ []string,
+	_ []byte,
+) (*CLIResult, error) {
+	r.mu.Lock()
+	r.calls++
+	r.mu.Unlock()
+	select {
+	case r.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return &CLIResult{InvocationStarted: true, ExitCode: -1}, ctx.Err()
+}
+
+func (r *contextBlockingOperationRunner) callCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
+type deadlineRecordingOperationRunner struct {
+	deadline chan time.Time
+}
+
+func (r *deadlineRecordingOperationRunner) Run(
+	ctx context.Context,
+	_ string,
+	_ []string,
+	_ []byte,
+) (*CLIResult, error) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Time{}
+	}
+	r.deadline <- deadline
+	return operationOKResult(`{"document_id":"deadline-bounded"}`), nil
+}
+
+type drainingRenewalOperationStore struct {
+	store.IFeishuWorkspaceStore
+	mu                 sync.Mutex
+	calls              int
+	heartbeatStarted   chan struct{}
+	heartbeatReturned  chan struct{}
+	returnOnce         sync.Once
+	releaseBeforeDrain bool
+}
+
+func (s *drainingRenewalOperationStore) RenewExecutionGate(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	owner, operationID string,
+	now, leaseUntil time.Time,
+) (bool, error) {
+	s.mu.Lock()
+	s.calls++
+	call := s.calls
+	s.mu.Unlock()
+	if call == 1 {
+		return s.IFeishuWorkspaceStore.RenewExecutionGate(
+			ctx, userID, generation, owner, operationID, now, leaseUntil,
+		)
+	}
+	select {
+	case s.heartbeatStarted <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	s.returnOnce.Do(func() { close(s.heartbeatReturned) })
+	return false, ctx.Err()
+}
+
+func (s *drainingRenewalOperationStore) ReleaseExecutionGate(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	owner string,
+	now time.Time,
+) (bool, error) {
+	select {
+	case <-s.heartbeatReturned:
+	default:
+		s.mu.Lock()
+		s.releaseBeforeDrain = true
+		s.mu.Unlock()
+	}
+	return s.IFeishuWorkspaceStore.ReleaseExecutionGate(ctx, userID, generation, owner, now)
+}
+
+func (s *drainingRenewalOperationStore) releasedBeforeHeartbeatDrain() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.releaseBeforeDrain
+}
+
 func (s *releaseFailOperationStore) ReleaseExecutionGate(
 	context.Context,
 	uint,
@@ -308,6 +462,12 @@ func (f *operationVaultFake) WithHome(
 	generation uint64,
 	callback func(home string) (bool, error),
 ) error {
+	f.mu.Lock()
+	beforeCallback := f.beforeCallback
+	f.mu.Unlock()
+	if beforeCallback != nil {
+		beforeCallback()
+	}
 	changed, err := callback("/tmp/operation-home")
 	if err != nil {
 		return err
@@ -395,6 +555,26 @@ func newHarnessOperationService(t *testing.T, h *operationHarness, operations Op
 		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: h.recovery,
 		Confirmation: h.confirmation, Vault: h.vault, Runner: h.runner, Cipher: h.cipher,
 		Now: h.service.now, LeaseDuration: time.Minute,
+	})
+	require.NoError(t, err)
+	return service
+}
+
+func newHarnessOperationServiceWithRuntime(
+	t *testing.T,
+	h *operationHarness,
+	operations OperationStore,
+	runner OperationRunner,
+	now func() time.Time,
+	heartbeatInterval time.Duration,
+) *FeishuOperationService {
+	t.Helper()
+	service, err := NewFeishuOperationService(OperationServiceDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: operations,
+		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: h.recovery,
+		Confirmation: h.confirmation, Vault: h.vault, Runner: runner, Cipher: h.cipher,
+		Now: now, LeaseDuration: time.Minute,
+		ExecutionGateHeartbeatInterval: heartbeatInterval,
 	})
 	require.NoError(t, err)
 	return service
@@ -1399,6 +1579,293 @@ func TestOperationService_ReleaseFailureKeepsTerminalResultAndExpiresSafely(t *t
 	)
 	require.NoError(t, err)
 	require.True(t, claimed)
+}
+
+func TestOperationService_StaleOverwriteCannotStartRunnerAfterAnotherServiceTakesExpiredGate(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	const token = "doxcnExpiredGateOverwrite123"
+	h.runner.steps = []operationRunnerStep{
+		{result: operationOKResult(`{"document":{"document_id":"` + token + `","url":"https://acme.feishu.cn/docx/` + token + `"}}`)},
+		{result: operationOKResult(`{"document_id":"service-b"}`)},
+		{result: operationOKResult(`{"revision_id":2}`)},
+	}
+
+	clockMu := sync.Mutex{}
+	clockNow := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	now := func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		return clockNow
+	}
+	advance := func(value time.Time) {
+		clockMu.Lock()
+		clockNow = value
+		clockMu.Unlock()
+	}
+	newService := func() *FeishuOperationService {
+		service, err := NewFeishuOperationService(OperationServiceDeps{
+			Accounts: h.dataStore.ThirdPartyAccounts(), Operations: h.dataStore.FeishuWorkspace(),
+			Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: h.recovery,
+			Confirmation: h.confirmation, Vault: h.vault, Runner: h.runner, Cipher: h.cipher,
+			Now: now, LeaseDuration: time.Minute,
+		})
+		require.NoError(t, err)
+		return service
+	}
+	serviceA := newService()
+	serviceB := newService()
+	_, err := serviceA.Execute(h.ctx, operationDocsCreateRequest(7, 343, "tc-create", "Empty", nil))
+	require.NoError(t, err)
+
+	vaultArrived := make(chan struct{}, 1)
+	vaultRelease := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(vaultRelease)
+		}
+	}()
+	callbackMu := sync.Mutex{}
+	callbackCount := 0
+	h.vault.mu.Lock()
+	h.vault.beforeCallback = func() {
+		callbackMu.Lock()
+		callbackCount++
+		call := callbackCount
+		callbackMu.Unlock()
+		if call == 1 {
+			vaultArrived <- struct{}{}
+			<-vaultRelease
+		}
+	}
+	h.vault.mu.Unlock()
+
+	type callResult struct {
+		result *OperationResult
+		err    error
+	}
+	staleResult := make(chan callResult, 1)
+	go func() {
+		result, executeErr := serviceA.Execute(h.ctx, operationDocsOverwriteRequest(7, 343, "tc-overwrite", token))
+		staleResult <- callResult{result: result, err: executeErr}
+	}()
+	select {
+	case <-vaultArrived:
+	case <-time.After(time.Second):
+		t.Fatal("service A did not reach the unpacked vault before runner start")
+	}
+	advance(now().Add(operationExecutionGateLeaseDuration + time.Second))
+
+	serviceBResult, err := serviceB.Execute(h.ctx, operationDocsFetchRequest(344, "tc-service-b"))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, serviceBResult.State)
+	close(vaultRelease)
+	released = true
+	stale := <-staleResult
+	if stale.err == nil {
+		require.NotNil(t, stale.result)
+		require.NotEqual(t, model.FeishuOperationSucceeded, stale.result.State)
+	}
+	calls, _ := h.runner.snapshot()
+	require.Equal(t, 2, calls, "service A must synchronously revalidate the gate after vault unpack and never start its overwrite")
+}
+
+func TestOperationService_ExecutionGateHeartbeatExtendsLeaseWhileRunnerIsActive(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	h.runner.steps = []operationRunnerStep{{
+		result: operationOKResult(`{"document_id":"heartbeat"}`), started: started, release: release,
+	}}
+	renewed := make(chan struct{}, 8)
+	trackingStore := &renewalTrackingOperationStore{
+		IFeishuWorkspaceStore: h.dataStore.FeishuWorkspace(), renewed: renewed,
+	}
+	service := newHarnessOperationServiceWithRuntime(
+		t, h, trackingStore, h.runner, time.Now, 10*time.Millisecond,
+	)
+	type callResult struct {
+		result *OperationResult
+		err    error
+	}
+	resultCh := make(chan callResult, 1)
+	go func() {
+		result, err := service.Execute(h.ctx, operationDocsFetchRequest(345, "tc-heartbeat"))
+		resultCh <- callResult{result: result, err: err}
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("runner did not start after the synchronous renewal")
+	}
+	for index := 0; index < 2; index++ {
+		select {
+		case <-renewed:
+		case <-time.After(time.Second):
+			t.Fatal("execution gate heartbeat did not renew the active lease")
+		}
+	}
+	close(release)
+	got := <-resultCh
+	require.NoError(t, got.err)
+	require.Equal(t, model.FeishuOperationSucceeded, got.result.State)
+	calls := trackingStore.snapshot()
+	require.GreaterOrEqual(t, len(calls), 2)
+	require.True(t, calls[1].leaseUntil.After(calls[0].leaseUntil), "heartbeat must extend, not merely rewrite, the lease")
+}
+
+func TestOperationService_StopsAndDrainsHeartbeatBeforeReleasingGate(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	runnerStarted := make(chan struct{}, 1)
+	runnerRelease := make(chan struct{})
+	h.runner.steps = []operationRunnerStep{{
+		result: operationOKResult(`{"document_id":"drained"}`), started: runnerStarted, release: runnerRelease,
+	}}
+	drainingStore := &drainingRenewalOperationStore{
+		IFeishuWorkspaceStore: h.dataStore.FeishuWorkspace(),
+		heartbeatStarted:      make(chan struct{}, 1),
+		heartbeatReturned:     make(chan struct{}),
+	}
+	service := newHarnessOperationServiceWithRuntime(
+		t, h, drainingStore, h.runner, time.Now, 10*time.Millisecond,
+	)
+	type callResult struct {
+		result *OperationResult
+		err    error
+	}
+	resultCh := make(chan callResult, 1)
+	go func() {
+		result, err := service.Execute(h.ctx, operationDocsFetchRequest(350, "tc-heartbeat-drain"))
+		resultCh <- callResult{result: result, err: err}
+	}()
+	select {
+	case <-runnerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("runner did not start")
+	}
+	select {
+	case <-drainingStore.heartbeatStarted:
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat did not enter the blocking renewal")
+	}
+	close(runnerRelease)
+	got := <-resultCh
+	require.NoError(t, got.err)
+	require.Equal(t, model.FeishuOperationSucceeded, got.result.State)
+	select {
+	case <-drainingStore.heartbeatReturned:
+	default:
+		t.Fatal("service returned before the heartbeat goroutine drained")
+	}
+	require.False(t, drainingStore.releasedBeforeHeartbeatDrain(), "gate release must happen only after heartbeat join")
+}
+
+func TestOperationService_ExecutionGateHeartbeatLossCancelsActiveRunner(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	renewed := make(chan struct{}, 8)
+	trackingStore := &renewalTrackingOperationStore{
+		IFeishuWorkspaceStore: h.dataStore.FeishuWorkspace(), failAt: 2, renewed: renewed,
+	}
+	runner := &contextBlockingOperationRunner{started: make(chan struct{}, 1)}
+	service := newHarnessOperationServiceWithRuntime(
+		t, h, trackingStore, runner, time.Now, 10*time.Millisecond,
+	)
+	type callResult struct {
+		result *OperationResult
+		err    error
+	}
+	resultCh := make(chan callResult, 1)
+	go func() {
+		result, err := service.Execute(h.ctx, operationDocsCreateRequest(7, 346, "tc-heartbeat-loss", "Report", nil))
+		resultCh <- callResult{result: result, err: err}
+	}()
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("runner did not start after the first renewal")
+	}
+	select {
+	case got := <-resultCh:
+		if got.err == nil {
+			require.NotNil(t, got.result)
+			require.NotEqual(t, model.FeishuOperationSucceeded, got.result.State)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("lost execution gate did not cancel the active runner")
+	}
+	require.Equal(t, 1, runner.callCount())
+	require.GreaterOrEqual(t, len(trackingStore.snapshot()), 2)
+}
+
+func TestOperationService_PreRunRenewFailureNeverStartsRunner(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		err  error
+	}{
+		{name: "lease lost"},
+		{name: "store error", err: errors.New("renew failed")},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			h := newOperationHarness(t)
+			h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+			trackingStore := &renewalTrackingOperationStore{
+				IFeishuWorkspaceStore: h.dataStore.FeishuWorkspace(), failAt: 1, failErr: testCase.err,
+			}
+			service := newHarnessOperationServiceWithRuntime(
+				t, h, trackingStore, h.runner, time.Now, 0,
+			)
+
+			result, err := service.Execute(h.ctx, operationDocsFetchRequest(347, "tc-prerun-renew"))
+			if err == nil {
+				require.NotNil(t, result)
+				require.NotEqual(t, model.FeishuOperationSucceeded, result.State)
+			}
+			calls, _ := h.runner.snapshot()
+			require.Zero(t, calls)
+			require.Len(t, trackingStore.snapshot(), 1)
+		})
+	}
+}
+
+func TestOperationService_ReadRetryRenewsGateBeforeEveryInvocation(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	h.runner.steps = []operationRunnerStep{
+		{result: &CLIResult{InvocationStarted: true, ExitCode: -1}, err: context.DeadlineExceeded},
+		{result: operationOKResult(`{"document_id":"after-renewed-retry"}`)},
+	}
+	trackingStore := &renewalTrackingOperationStore{IFeishuWorkspaceStore: h.dataStore.FeishuWorkspace()}
+	service := newHarnessOperationServiceWithRuntime(
+		t, h, trackingStore, h.runner, time.Now, 0,
+	)
+
+	result, err := service.Execute(h.ctx, operationDocsFetchRequest(348, "tc-renewed-retry"))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, result.State)
+	require.Len(t, trackingStore.snapshot(), 2, "each read invocation, including the retry, must renew synchronously")
+}
+
+func TestOperationService_RunnerDeadlineIsStrictlyInsideRenewedGateLease(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	runner := &deadlineRecordingOperationRunner{deadline: make(chan time.Time, 1)}
+	service := newHarnessOperationServiceWithRuntime(
+		t, h, h.dataStore.FeishuWorkspace(), runner, time.Now, 0,
+	)
+
+	result, err := service.Execute(h.ctx, operationDocsFetchRequest(349, "tc-runner-deadline"))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, result.State)
+	deadline := <-runner.deadline
+	require.False(t, deadline.IsZero(), "service must impose a hard runner deadline")
+	remaining := time.Until(deadline)
+	require.Positive(t, remaining)
+	require.LessOrEqual(t, remaining, ControlledLarkCLITimeout+time.Second)
+	require.Less(t, ControlledLarkCLITimeout, operationExecutionGateLeaseDuration)
 }
 
 func TestOperationService_ExecutionGateLeaseCoversMaximumReadRuntime(t *testing.T) {
