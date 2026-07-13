@@ -72,13 +72,17 @@ const (
 // operation layer. Argv contains no binary path and always ends in JSON output
 // plus the platform-owned user identity.
 type NormalizedCommand struct {
-	Path                  string
-	Domain                string
-	Action                string
-	Risk                  RiskLevel
-	Scopes                []string
-	Argv                  []string
-	StdinJSON             []byte
+	Path           string
+	Domain         string
+	Action         string
+	Risk           RiskLevel
+	RequiresCLIYes bool
+	Scopes         []string
+	Argv           []string
+	StdinJSON      []byte
+	// ReplaySafeOnAuthError is the unconditional catalog baseline, so only
+	// reads are true. Task 7's structured classifier may separately prove that
+	// an exact write failed authentication before any side effect and replay it.
 	ReplaySafeOnAuthError bool
 }
 
@@ -137,14 +141,15 @@ func (p *parsedFlags) one(name string) string {
 }
 
 type commandSpec struct {
-	path     string
-	domain   string
-	action   string
-	risk     RiskLevel
-	scopes   []string
-	flags    map[string]flagRule
-	limits   map[string]int
-	validate func(*parsedFlags) (RiskLevel, error)
+	path           string
+	domain         string
+	action         string
+	risk           RiskLevel
+	requiresCLIYes bool
+	scopes         []string
+	flags          map[string]flagRule
+	limits         map[string]int
+	validate       func(*parsedFlags) (RiskLevel, error)
 }
 
 // CommandCatalog is immutable after construction and safe for concurrent use.
@@ -197,12 +202,18 @@ func (c *CommandCatalog) Normalize(argv []string, stdinJSON []byte) (*Normalized
 	normalizedArgv = append(normalizedArgv, argv[0], argv[1])
 	normalizedArgv = append(normalizedArgv, parsed.argv...)
 	normalizedArgv = append(normalizedArgv, "--format", "json", "--as", "user")
+	if err := validateControlledCLIInput(normalizedArgv, nil); err != nil {
+		// The runner's private sentinel belongs to process execution. The
+		// catalog exposes only its stable argument taxonomy to callers.
+		return nil, invalidf("normalized argv exceeds controlled runner limits")
+	}
 
 	return &NormalizedCommand{
 		Path:                  spec.path,
 		Domain:                spec.domain,
 		Action:                spec.action,
 		Risk:                  risk,
+		RequiresCLIYes:        spec.requiresCLIYes,
 		Scopes:                append([]string(nil), spec.scopes...),
 		Argv:                  normalizedArgv,
 		StdinJSON:             nil,
@@ -406,8 +417,11 @@ func validateDocsUpdate(p *parsedFlags) (RiskLevel, error) {
 		}
 		return RiskHigh, nil
 	case "str_replace":
-		if err := requireNonEmptyFlags(p, "pattern", "content"); err != nil {
+		if err := requireFlags(p, "pattern", "content"); err != nil {
 			return "", err
+		}
+		if p.one("pattern") == "" {
+			return "", invalidf("flag --pattern cannot be empty")
 		}
 		if p.has("block-id") {
 			return "", invalidf("str_replace does not accept block-id")
@@ -554,7 +568,7 @@ func (c *CommandCatalog) addBaseSpecs() {
 	fieldUpdateFlags := cloneFlagRules(fieldFlags)
 	fieldUpdateFlags["field-id"] = idOrName
 	c.register(commandSpec{
-		path: "base +field-update", domain: "base", action: "field-update", risk: RiskHigh, scopes: baseScopes["base +field-update"],
+		path: "base +field-update", domain: "base", action: "field-update", risk: RiskHigh, requiresCLIYes: true, scopes: baseScopes["base +field-update"],
 		flags:  fieldUpdateFlags,
 		limits: map[string]int{"json_bytes": CommandCatalogMaxJSONBytes, "stdout_bytes": CommandCatalogMaxStdoutBytes},
 		validate: func(p *parsedFlags) (RiskLevel, error) {
@@ -628,6 +642,12 @@ func validateRecordGet(p *parsedFlags) (RiskLevel, error) {
 		return "", invalidf("too many projected fields")
 	}
 	direct := len(p.values["record-id"])
+	if err := ensureUnique("record-id", p.values["record-id"]); err != nil {
+		return "", err
+	}
+	if err := ensureUnique("field-id", p.values["field-id"]); err != nil {
+		return "", err
+	}
 	if direct > 0 && p.has("json") {
 		return "", invalidf("record-id and json forms are mutually exclusive")
 	}
@@ -646,6 +666,9 @@ func validateRecordGet(p *parsedFlags) (RiskLevel, error) {
 		}
 		if len(payload.RecordIDs) == 0 || len(payload.RecordIDs) > CommandCatalogMaxRecordReadBatch {
 			return "", invalidf("record-get json record count is outside limits")
+		}
+		if err := ensureUnique("record_id_list", payload.RecordIDs); err != nil {
+			return "", err
 		}
 		for _, id := range payload.RecordIDs {
 			if _, err := normalizePrefixedID("record-id", "rec")(id); err != nil {
@@ -689,6 +712,12 @@ func validateRecordSearch(p *parsedFlags) (RiskLevel, error) {
 	if err := requireFlags(p, "keyword", "search-field"); err != nil {
 		return "", err
 	}
+	if err := ensureUnique("search-field", p.values["search-field"]); err != nil {
+		return "", err
+	}
+	if err := ensureUnique("field-id", p.values["field-id"]); err != nil {
+		return "", err
+	}
 	if len(p.values["search-field"]) > CommandCatalogMaxSearchFields || len(p.values["field-id"]) > CommandCatalogMaxProjectedFields {
 		return "", invalidf("record-search field count exceeds limits")
 	}
@@ -722,6 +751,9 @@ func validateRecordBatchCreate(p *parsedFlags) (RiskLevel, error) {
 			return "", err
 		}
 	}
+	if err := ensureUnique("fields", payload.Fields); err != nil {
+		return "", err
+	}
 	for _, row := range payload.Rows {
 		if len(row) != len(payload.Fields) {
 			return "", invalidf("record batch create row width does not match fields")
@@ -749,6 +781,9 @@ func validateRecordBatchUpdate(p *parsedFlags) (RiskLevel, error) {
 	}
 	if len(payload.Patch) == 0 || len(payload.Patch) > CommandCatalogMaxBaseFields {
 		return "", invalidf("record batch update patch is empty or too wide")
+	}
+	if err := ensureUnique("record_id_list", payload.RecordIDs); err != nil {
+		return "", err
 	}
 	for _, id := range payload.RecordIDs {
 		if _, err := normalizePrefixedID("record-id", "rec")(id); err != nil {
@@ -838,16 +873,23 @@ func (c *CommandCatalog) addWikiSpecs() {
 	})
 }
 
-type catalogManifestEntry struct {
-	Path         string         `json:"path"`
-	Domain       string         `json:"domain"`
-	Scopes       []string       `json:"scopes"`
-	Risk         RiskLevel      `json:"risk"`
-	Limits       map[string]int `json:"limits"`
-	AllowedFlags []string       `json:"allowed_flags"`
+type catalogManifest struct {
+	CLIVersion   string                 `json:"cli_version"`
+	GlobalLimits map[string]int         `json:"global_limits"`
+	Commands     []catalogManifestEntry `json:"commands"`
 }
 
-func (c *CommandCatalog) manifest() []catalogManifestEntry {
+type catalogManifestEntry struct {
+	Path           string         `json:"path"`
+	Domain         string         `json:"domain"`
+	Scopes         []string       `json:"scopes"`
+	Risk           RiskLevel      `json:"risk"`
+	RequiresCLIYes bool           `json:"requires_cli_yes"`
+	Limits         map[string]int `json:"limits"`
+	AllowedFlags   []string       `json:"allowed_flags"`
+}
+
+func (c *CommandCatalog) manifest() catalogManifest {
 	entries := make([]catalogManifestEntry, 0, len(c.specs))
 	for _, spec := range c.specs {
 		flags := make([]string, 0, len(spec.flags))
@@ -861,11 +903,20 @@ func (c *CommandCatalog) manifest() []catalogManifestEntry {
 		}
 		entries = append(entries, catalogManifestEntry{
 			Path: spec.path, Domain: spec.domain, Scopes: append([]string(nil), spec.scopes...),
-			Risk: spec.risk, Limits: limits, AllowedFlags: flags,
+			Risk: spec.risk, RequiresCLIYes: spec.requiresCLIYes, Limits: limits, AllowedFlags: flags,
 		})
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
-	return entries
+	return catalogManifest{
+		CLIVersion: LarkCLIVersion,
+		GlobalLimits: map[string]int{
+			"argv_bytes":       ControlledLarkCLIMaxArgvBytes,
+			"argv_count":       ControlledLarkCLIMaxArgvCount,
+			"stdin_json_bytes": ControlledLarkCLIMaxStdinBytes,
+			"stdout_bytes":     ControlledLarkCLIMaxStdoutBytes,
+		},
+		Commands: entries,
+	}
 }
 
 func valueRule(normalize func(string) (string, error)) flagRule {
@@ -904,6 +955,17 @@ func requireNonEmptyFlags(p *parsedFlags, names ...string) error {
 		if p.one(name) == "" {
 			return invalidf("flag --%s cannot be empty", name)
 		}
+	}
+	return nil
+}
+
+func ensureUnique(label string, values []string) error {
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if _, exists := seen[value]; exists {
+			return invalidf("%s contains duplicate values", label)
+		}
+		seen[value] = struct{}{}
 	}
 	return nil
 }
@@ -1198,6 +1260,12 @@ func validateSearchJSON(raw string) error {
 	}
 	if payload.Keyword == "" || len(payload.Keyword) > 4<<10 || len(payload.SearchFields) == 0 || len(payload.SearchFields) > CommandCatalogMaxSearchFields || len(payload.SelectFields) > CommandCatalogMaxProjectedFields || len(payload.Sort) > CommandCatalogMaxSortFields {
 		return invalidf("record-search json exceeds limits")
+	}
+	if err := ensureUnique("search_fields", payload.SearchFields); err != nil {
+		return err
+	}
+	if err := ensureUnique("select_fields", payload.SelectFields); err != nil {
+		return err
 	}
 	if payload.Offset != nil && (*payload.Offset < 0 || *payload.Offset > commandCatalogMaxOffset) {
 		return invalidf("record-search offset is outside limits")

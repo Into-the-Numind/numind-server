@@ -2,8 +2,11 @@ package feishu
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -61,6 +64,7 @@ func TestCommandCatalog_AllowedPathsAndExactContracts(t *testing.T) {
 			require.Equal(t, tt.risk, got.Risk)
 			require.Equal(t, tt.scopes, got.Scopes)
 			require.Equal(t, tt.replay, got.ReplaySafeOnAuthError)
+			require.Equal(t, tt.path == "base +field-update", got.RequiresCLIYes)
 			require.Equal(t, []string{"--format", "json", "--as", "user"}, got.Argv[len(got.Argv)-4:])
 			require.Nil(t, got.StdinJSON)
 		})
@@ -164,6 +168,7 @@ func TestCommandCatalog_DocsArgumentAndRiskPolicy(t *testing.T) {
 	}{
 		{name: "append", argv: []string{"docs", "+update", "--doc", "doxcnABCDEFG123", "--command", "append", "--content", "hello"}, risk: RiskWrite},
 		{name: "replace", argv: []string{"docs", "+update", "--doc", "doxcnABCDEFG123", "--command", "str_replace", "--pattern", "old", "--content", "new"}, risk: RiskWrite},
+		{name: "replace with empty content", argv: []string{"docs", "+update", "--doc", "doxcnABCDEFG123", "--command", "str_replace", "--pattern", "old", "--content", ""}, risk: RiskWrite},
 		{name: "insert", argv: []string{"docs", "+update", "--doc", "doxcnABCDEFG123", "--command", "block_insert_after", "--block-id", "blkABCDEFG123", "--content", "new"}, risk: RiskWrite},
 		{name: "block replace", argv: []string{"docs", "+update", "--doc", "doxcnABCDEFG123", "--command", "block_replace", "--block-id", "blkABCDEFG123", "--content", "new"}, risk: RiskWrite},
 		{name: "overwrite", argv: []string{"docs", "+update", "--doc", "doxcnABCDEFG123", "--command", "overwrite", "--content", "new"}, risk: RiskHigh},
@@ -173,6 +178,12 @@ func TestCommandCatalog_DocsArgumentAndRiskPolicy(t *testing.T) {
 			got, err := catalog.Normalize(tt.argv, nil)
 			require.NoError(t, err)
 			require.Equal(t, tt.risk, got.Risk)
+			if tt.name == "replace with empty content" {
+				require.Contains(t, got.Argv, "--content")
+				contentIndex := indexOf(got.Argv, "--content")
+				require.GreaterOrEqual(t, contentIndex, 0)
+				require.Equal(t, "", got.Argv[contentIndex+1])
+			}
 		})
 	}
 
@@ -185,13 +196,115 @@ func TestCommandCatalog_DocsArgumentAndRiskPolicy(t *testing.T) {
 		{"docs", "+fetch", "--doc", "doxcnABCDEFG123", "--scope", "range"},
 		{"docs", "+fetch", "--doc", "doxcnABCDEFG123", "--scope", "full", "--limit", "10"},
 		{"docs", "+update", "--doc", "doxcnABCDEFG123", "--command", "append"},
-		{"docs", "+update", "--doc", "doxcnABCDEFG123", "--command", "str_replace", "--pattern", "old", "--content", ""},
 		{"docs", "+update", "--doc", "doxcnABCDEFG123", "--command", "str_replace", "--content", "new"},
 		{"docs", "+update", "--doc", "doxcnABCDEFG123", "--command", "block_replace", "--content", "new"},
 	}
 	for _, argv := range invalid {
 		_, err := catalog.Normalize(argv, nil)
 		require.Error(t, err, "%v", argv)
+	}
+}
+
+func TestCommandCatalog_ValidatesFinalArgvAgainstRunnerLimits(t *testing.T) {
+	t.Parallel()
+
+	catalog := NewCommandCatalog()
+	fitContent := strings.Repeat("x", 128<<10)
+	_, err := catalog.Normalize([]string{"docs", "+create", "--content", fitContent}, nil)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		argv []string
+	}{
+		{
+			name: "aggregate argv bytes",
+			argv: []string{"docs", "+create", "--content", strings.Repeat("x", ControlledLarkCLIMaxArgvBytes)},
+		},
+		{
+			name: "record get repeated IDs exceed argv count",
+			argv: append(
+				[]string{"base", "+record-get", "--base-token", "bascnABCDEFG123", "--table-id", "Tasks"},
+				repeatedFlagArgs("--record-id", "recABCDEFG", 100)...,
+			),
+		},
+		{
+			name: "record search valid semantic counts exceed argv count",
+			argv: append(
+				append(
+					[]string{"base", "+record-search", "--base-token", "bascnABCDEFG123", "--table-id", "Tasks", "--keyword", "Alice"},
+					repeatedFlagArgs("--search-field", "SearchField", 20)...,
+				),
+				repeatedFlagArgs("--field-id", "ProjectedField", 50)...,
+			),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := catalog.Normalize(tt.argv, nil)
+			require.ErrorIs(t, err, ErrCommandInvalidArgument)
+			require.False(t, errors.Is(err, errControlledCLIInvalidInput), "runner-only sentinel must not escape")
+		})
+	}
+
+	fitSearch := append(
+		append(
+			[]string{"base", "+record-search", "--base-token", "bascnABCDEFG123", "--table-id", "Tasks", "--keyword", "Alice"},
+			repeatedFlagArgs("--search-field", "SearchField", 20)...,
+		),
+		repeatedFlagArgs("--field-id", "ProjectedField", 30)...,
+	)
+	_, err = catalog.Normalize(fitSearch, nil)
+	require.NoError(t, err)
+}
+
+func TestCommandCatalog_RejectsDuplicateRecordAndFieldSelectors(t *testing.T) {
+	t.Parallel()
+
+	tests := [][]string{
+		{"base", "+record-get", "--base-token", "bascnABCDEFG123", "--table-id", "Tasks", "--record-id", "recABCDEFG123", "--record-id", "recABCDEFG123"},
+		{"base", "+record-get", "--base-token", "bascnABCDEFG123", "--table-id", "Tasks", "--json", `{"record_id_list":["recABCDEFG123","recABCDEFG123"]}`},
+		{"base", "+record-batch-create", "--base-token", "bascnABCDEFG123", "--table-id", "Tasks", "--json", `{"fields":["Name","Name"],"rows":[["Alice","Alice"]]}`},
+		{"base", "+record-batch-update", "--base-token", "bascnABCDEFG123", "--table-id", "Tasks", "--json", `{"record_id_list":["recABCDEFG123","recABCDEFG123"],"patch":{"Status":"Done"}}`},
+		{"base", "+record-search", "--base-token", "bascnABCDEFG123", "--table-id", "Tasks", "--keyword", "Alice", "--search-field", "Name", "--search-field", "Name"},
+		{"base", "+record-search", "--base-token", "bascnABCDEFG123", "--table-id", "Tasks", "--keyword", "Alice", "--search-field", "Name", "--field-id", "Status", "--field-id", "Status"},
+	}
+	for _, argv := range tests {
+		_, err := NewCommandCatalog().Normalize(argv, nil)
+		require.ErrorIs(t, err, ErrCommandInvalidArgument, "%v", argv)
+	}
+}
+
+func TestCommandCatalog_CLIYesConfirmationHandoff(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		argv        []string
+		requiresYes bool
+	}{
+		{
+			name:        "field update requires CLI yes after platform confirmation",
+			argv:        []string{"base", "+field-update", "--base-token", "bascnABCDEFG123", "--table-id", "Tasks", "--field-id", "Status", "--json", `{"name":"Status","type":"text"}`},
+			requiresYes: true,
+		},
+		{
+			name: "docs overwrite uses platform confirmation only",
+			argv: []string{"docs", "+update", "--doc", "doxcnABCDEFG123", "--command", "overwrite", "--content", "new"},
+		},
+		{
+			name: "large record batch uses platform confirmation only",
+			argv: []string{"base", "+record-batch-create", "--base-token", "bascnABCDEFG123", "--table-id", "Tasks", "--json", batchCreatePayload(21)},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := NewCommandCatalog().Normalize(tt.argv, nil)
+			require.NoError(t, err)
+			require.Equal(t, RiskHigh, got.Risk)
+			require.Equal(t, tt.requiresYes, got.RequiresCLIYes)
+			require.NotContains(t, got.Argv, "--yes")
+		})
 	}
 }
 
@@ -251,7 +364,7 @@ func TestCommandCatalog_BaseRecordLimitsAndJSONShapes(t *testing.T) {
 	updateJSON := func(records int) string {
 		ids := make([]string, records)
 		for i := range ids {
-			ids[i] = "recABCDEFG" + string(rune('A'+i%26)) + "123"
+			ids[i] = fmt.Sprintf("recABCDEFG%03d", i)
 		}
 		encoded, err := json.Marshal(map[string]any{"record_id_list": ids, "patch": map[string]any{"Status": "Done"}})
 		require.NoError(t, err)
@@ -353,8 +466,40 @@ func TestCommandCatalogManifest_1068(t *testing.T) {
 	got, err := json.MarshalIndent(NewCommandCatalog().manifest(), "", "  ")
 	require.NoError(t, err)
 	got = append(got, '\n')
+	require.Equal(t, LarkCLIVersion, NewCommandCatalog().manifest().CLIVersion)
+	require.Equal(t, ControlledLarkCLIMaxArgvCount, NewCommandCatalog().manifest().GlobalLimits["argv_count"])
+	require.Equal(t, ControlledLarkCLIMaxArgvBytes, NewCommandCatalog().manifest().GlobalLimits["argv_bytes"])
 
-	want, err := os.ReadFile(filepath.Join("testdata", "command_catalog_1.0.68.json"))
+	want, err := os.ReadFile(filepath.Join("testdata", fmt.Sprintf("command_catalog_%s.json", LarkCLIVersion)))
 	require.NoError(t, err)
 	require.Equal(t, string(want), string(got))
+}
+
+func indexOf(values []string, target string) int {
+	for i, value := range values {
+		if value == target {
+			return i
+		}
+	}
+	return -1
+}
+
+func repeatedFlagArgs(flag, prefix string, count int) []string {
+	args := make([]string, 0, count*2)
+	for i := 0; i < count; i++ {
+		args = append(args, flag, fmt.Sprintf("%s%03d", prefix, i))
+	}
+	return args
+}
+
+func batchCreatePayload(rows int) string {
+	payload := map[string]any{"fields": []string{"Name"}, "rows": make([][]any, rows)}
+	for i := range payload["rows"].([][]any) {
+		payload["rows"].([][]any)[i] = []any{"Alice"}
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
 }
