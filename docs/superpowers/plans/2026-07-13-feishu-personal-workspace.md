@@ -100,7 +100,7 @@
 
 **Files:** migration、`internal/pkg/model/{user_third_party_account,feishu_workspace}.go`、`internal/numind/store/{store,feishu_workspace}.go`、`internal/numind/helper.go`。
 
-- [ ] **Step 1: 写 store 红测**
+- [x] **Step 1: 写 store 红测**
 
 测试必须覆盖：`(user_id,idempotency_key)` 唯一；不同用户可复用相同 key；vault revision CAS；session/operation claim 只允许 lease 过期或同 owner；所有按 ID 查询同时校验 user_id + generation；解绑代际增加后旧 operation 不能 claim。
 
@@ -119,13 +119,13 @@ func TestFeishuWorkspaceStore_IdempotencyIsPerUser(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 运行红测**
+- [x] **Step 2: 运行红测**
 
 Run: `go test ./internal/numind/store -run 'TestFeishuWorkspaceStore' -count=1`
 
 Expected: FAIL，缺少 `newFeishuWorkspaceTestStore`、新 models 和 store 方法。
 
-- [ ] **Step 3: 创建 migration 与 model**
+- [x] **Step 3: 创建 migration 与 model**
 
 模型状态值必须逐字固定：
 
@@ -143,7 +143,7 @@ const (
 )
 
 type FeishuCLIVault struct {
-	UserID uint `gorm:"primaryKey"`
+	UserID uint `gorm:"type:bigint unsigned;primaryKey;autoIncrement:false"`
 	Generation uint64 `gorm:"not null"`
 	Ciphertext []byte `gorm:"type:longblob;not null"`
 	KeyVersion string `gorm:"size:32;not null"`
@@ -158,7 +158,7 @@ type FeishuCLIVault struct {
 
 同一 migration 给 `agent_run` 增加 `pending_external_action_json JSON NULL` 与 `pending_external_action_at DATETIME(3) NULL`。JSON 只保存 operation/session/phase/expiry/tool_call_id，不保存 URL；不新增 `TerminalReason` 或 `LoopEvent` 枚举。
 
-- [ ] **Step 4: 实现 store 原语**
+- [x] **Step 4: 实现 store 原语**
 
 Store 接口固定为：
 
@@ -169,19 +169,19 @@ type IFeishuWorkspaceStore interface {
 	DeleteVault(ctx context.Context, userID uint, generation uint64) error
 	CreateSession(ctx context.Context, session *model.FeishuAuthSession) error
 	GetSessionForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuAuthSession, error)
-	ClaimSession(ctx context.Context, id, owner string, now, leaseUntil time.Time) (bool, error)
-	UpdateSessionState(ctx context.Context, id, owner, state string, completedAt *time.Time) error
+	ClaimSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
+	UpdateSessionState(ctx context.Context, userID uint, generation uint64, id, owner, state string, now time.Time, completedAt *time.Time) error
 	CreateOrGetOperation(ctx context.Context, operation *model.FeishuOperation) (*model.FeishuOperation, error)
 	GetOperationForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuOperation, error)
-	ClaimOperation(ctx context.Context, id, owner string, now, leaseUntil time.Time) (bool, error)
-	TransitionOperation(ctx context.Context, id, owner, from []string, to string, fields map[string]any) error
+	ClaimOperation(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
+	TransitionOperation(ctx context.Context, userID uint, generation uint64, id, owner string, from []string, to string, now time.Time, fields map[string]any) error
 	CancelPendingForGeneration(ctx context.Context, userID uint, generation uint64) error
 }
 ```
 
-使用 GORM transaction 和条件 UPDATE 检查 `RowsAffected == 1`。任何客户端可见 ID 的读取都走 `Get*ForUser`，查不到和归属不符都返回 `gorm.ErrRecordNotFound`。
+使用 GORM transaction 和条件 UPDATE 检查 `RowsAffected == 1`。Claim/transition 必须在同一个 UPDATE 中绑定调用方 `user_id + generation`，状态提交还必须校验 `lease_until > now`；`TransitionOperation.fields` 只能写审计/结果白名单字段。任何客户端可见 ID 的读取都走 `Get*ForUser`，查不到和归属不符都返回 `gorm.ErrRecordNotFound`。Vault CAS 必须先锁定当前 `(user_id, provider='lark')` 账号行并核对 generation。
 
-- [ ] **Step 5: 绿测和 migration 静态检查**
+- [x] **Step 5: 绿测和 migration 静态检查**
 
 Run: `go test ./internal/numind/store ./internal/pkg/model -run 'Feishu|ThirdParty' -count=1`
 
@@ -191,7 +191,7 @@ Run: `rg -n 'uniq_feishu_operation_user_key|lease_until|request_ciphertext|gener
 
 Expected: 四类字段/索引均命中。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add migrations/20260713_130000_feishu_personal_workspace* internal/pkg/model internal/numind/store internal/numind/helper.go
@@ -1221,7 +1221,7 @@ git commit -m "refactor(feishu): remove fixed legacy tools"
 
 - [ ] **Step 1: 写完整集成测试**
 
-覆盖 never-connected → create app → app scope → user auth → exact replay；connected 无 auth status；resource ACL 不 OAuth；重复 resume 单副作用；三个 phase 模拟 restart；双用户隔离；撤销后 reauth；解绑 generation 失效；写 timeout unknown；同 tool_call_id 恢复无第二条 argv。
+覆盖 never-connected → create app → app scope → user auth → exact replay；connected 无 auth status；resource ACL 不 OAuth；重复 resume 单副作用；三个 phase 模拟 restart；双用户隔离；撤销后 reauth；解绑 generation 失效；写 timeout unknown；同 tool_call_id 恢复无第二条 argv。另用真实 MySQL 8 环境执行本 feature migration → AutoMigrate → information_schema schema diff，并并发验证 generation bump 与 `PutVaultCAS` 的 `SELECT ... FOR UPDATE` 互斥语义；SQLite 只承担逻辑单测，不作为该并发 Gate 的替代。
 
 - [ ] **Step 2: 运行完整集成测试**
 
