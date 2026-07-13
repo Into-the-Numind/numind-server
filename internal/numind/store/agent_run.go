@@ -1,13 +1,19 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"strings"
 	"time"
 
+	"github.com/cloudwego/eino/schema"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"numind-server/internal/pkg/externalaction"
 	"numind-server/internal/pkg/model"
@@ -79,6 +85,14 @@ type IExternalActionWriter interface {
 	UpdatePendingExternalAction(ctx context.Context, runID uint64, payloadJSON []byte) error
 }
 
+// IExternalToolResumer is the narrow store capability used after an external
+// operation completes. It atomically claims the pending wait and appends the
+// original tool call's result. bool is true only for the callback that won the
+// claim; duplicate callbacks return false without appending another turn.
+type IExternalToolResumer interface {
+	ResumeExternalTool(ctx context.Context, runID uint64, operationID, toolCallID string, resultTurn json.RawMessage) (bool, error)
+}
+
 type agentRunStore struct {
 	db *gorm.DB
 }
@@ -89,6 +103,7 @@ func newAgentRunStore(db *gorm.DB) IAgentRunStore {
 
 var _ IAgentRunStore = (*agentRunStore)(nil)
 var _ IExternalActionWriter = (*agentRunStore)(nil)
+var _ IExternalToolResumer = (*agentRunStore)(nil)
 
 func (s *agentRunStore) Create(ctx context.Context, run *model.AgentRun) error {
 	if err := s.db.WithContext(ctx).Create(run).Error; err != nil {
@@ -319,6 +334,338 @@ func (s *agentRunStore) UpdatePendingExternalAction(ctx context.Context, id uint
 		return fmt.Errorf("agentRunStore.UpdatePendingExternalAction: no row matched id=%d", id)
 	}
 	return nil
+}
+
+const maxExternalToolResultBytes = 1 << 20
+
+var errExternalResumeLostClaim = errors.New("external tool resume claim was already consumed")
+
+// ResumeExternalTool atomically replaces a durable external wait with the
+// original tool call's result. The transaction locks the run on databases that
+// support SELECT FOR UPDATE; the conditional UPDATE is the cross-database
+// compare-and-swap backstop used by SQLite tests and concurrent callbacks.
+func (s *agentRunStore) ResumeExternalTool(
+	ctx context.Context,
+	runID uint64,
+	operationID string,
+	toolCallID string,
+	resultTurn json.RawMessage,
+) (bool, error) {
+	operationID = strings.TrimSpace(operationID)
+	toolCallID = strings.TrimSpace(toolCallID)
+	if runID == 0 || operationID == "" || toolCallID == "" {
+		return false, fmt.Errorf("agentRunStore.ResumeExternalTool: run, operation, and tool call identity are required")
+	}
+	canonicalResult, err := canonicalExternalToolResult(resultTurn)
+	if err != nil {
+		return false, fmt.Errorf("agentRunStore.ResumeExternalTool: invalid result: %w", err)
+	}
+
+	// SQLite can return SQLITE_BUSY when several deferred transactions read the
+	// same row before upgrading to a writer. Production MySQL serializes on FOR
+	// UPDATE; bounded retry preserves the same observable single-winner contract
+	// in tests without weakening the transactional claim.
+	for attempt := 0; attempt < 20; attempt++ {
+		claimed, txErr := s.resumeExternalToolOnce(ctx, runID, operationID, toolCallID, canonicalResult)
+		if txErr == nil {
+			return claimed, nil
+		}
+		if errors.Is(txErr, errExternalResumeLostClaim) {
+			return s.externalResumeAlreadyApplied(ctx, runID, toolCallID, canonicalResult)
+		}
+		if !isSQLiteBusy(txErr) || ctx.Err() != nil {
+			return false, txErr
+		}
+		time.Sleep(time.Duration(attempt+1) * time.Millisecond)
+	}
+	return false, fmt.Errorf("agentRunStore.ResumeExternalTool(id=%d): database remained busy", runID)
+}
+
+func (s *agentRunStore) resumeExternalToolOnce(
+	ctx context.Context,
+	runID uint64,
+	operationID string,
+	toolCallID string,
+	canonicalResult json.RawMessage,
+) (bool, error) {
+	claimed := false
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var run model.AgentRun
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&run, runID).Error; err != nil {
+			return fmt.Errorf("agentRunStore.ResumeExternalTool get(id=%d): %w", runID, err)
+		}
+		if run.CancellationRequestedAt != nil || run.IsDeleted {
+			return nil
+		}
+		if !hasJSONValue(run.PendingExternalActionJSON) {
+			already, checkErr := transcriptHasExactToolResult(run.Messages, toolCallID, canonicalResult)
+			if checkErr != nil {
+				return fmt.Errorf("agentRunStore.ResumeExternalTool existing result(id=%d): %w", runID, checkErr)
+			}
+			if already {
+				return nil
+			}
+			return fmt.Errorf("agentRunStore.ResumeExternalTool(id=%d): no pending external wait or matching prior result", runID)
+		}
+		if run.Status != "terminated" || run.StateReason != "waiting_for_user_choice" {
+			return fmt.Errorf(
+				"agentRunStore.ResumeExternalTool(id=%d): unexpected run state status=%q reason=%q",
+				runID, run.Status, run.StateReason,
+			)
+		}
+		pending, parseErr := externalaction.Parse(run.PendingExternalActionJSON)
+		if parseErr != nil {
+			return fmt.Errorf("agentRunStore.ResumeExternalTool(id=%d): corrupt pending external action: %w", runID, parseErr)
+		}
+		if pending.OperationID != operationID || pending.ToolCallID != toolCallID {
+			return fmt.Errorf("agentRunStore.ResumeExternalTool(id=%d): pending operation/tool identity mismatch", runID)
+		}
+
+		var turns []json.RawMessage
+		if err := json.Unmarshal(run.Messages, &turns); err != nil {
+			return fmt.Errorf("agentRunStore.ResumeExternalTool(id=%d): corrupt transcript: %w", runID, err)
+		}
+		if turns == nil && !bytes.Equal(bytes.TrimSpace(run.Messages), []byte("[]")) {
+			return fmt.Errorf("agentRunStore.ResumeExternalTool(id=%d): transcript must be a JSON array", runID)
+		}
+		if err := validateExternalResumeTranscript(turns); err != nil {
+			return fmt.Errorf("agentRunStore.ResumeExternalTool(id=%d): corrupt transcript: %w", runID, err)
+		}
+		toolTurn, marshalErr := json.Marshal(schema.ToolMessage(string(canonicalResult), toolCallID))
+		if marshalErr != nil {
+			return fmt.Errorf("agentRunStore.ResumeExternalTool(id=%d): marshal tool result: %w", runID, marshalErr)
+		}
+		turns = append(turns, json.RawMessage(toolTurn))
+		newMessages, marshalErr := json.Marshal(turns)
+		if marshalErr != nil {
+			return fmt.Errorf("agentRunStore.ResumeExternalTool(id=%d): marshal transcript: %w", runID, marshalErr)
+		}
+
+		result := tx.Model(&model.AgentRun{}).
+			Where(
+				"id = ? AND status = ? AND state_reason = ? AND cancellation_requested_at IS NULL AND is_deleted = ? AND pending_external_action_json = ?",
+				runID, "terminated", "waiting_for_user_choice", false, string(run.PendingExternalActionJSON),
+			).
+			Updates(map[string]interface{}{
+				"messages":                     datatypes.JSON(newMessages),
+				"pending_external_action_json": nil,
+				"pending_external_action_at":   nil,
+				"pending_question_json":        nil,
+				"pending_question_at":          nil,
+				"status":                       "running",
+				"state_reason":                 "running",
+				"ended_at":                     nil,
+			})
+		if result.Error != nil {
+			return fmt.Errorf("agentRunStore.ResumeExternalTool update(id=%d): %w", runID, result.Error)
+		}
+		if result.RowsAffected != 1 {
+			return errExternalResumeLostClaim
+		}
+		claimed = true
+		return nil
+	})
+	return claimed, err
+}
+
+func (s *agentRunStore) externalResumeAlreadyApplied(
+	ctx context.Context,
+	runID uint64,
+	toolCallID string,
+	canonicalResult json.RawMessage,
+) (bool, error) {
+	run, err := s.Get(ctx, runID)
+	if err != nil {
+		return false, err
+	}
+	if run.CancellationRequestedAt != nil || run.IsDeleted {
+		return false, nil
+	}
+	already, err := transcriptHasExactToolResult(run.Messages, toolCallID, canonicalResult)
+	if err != nil {
+		return false, fmt.Errorf("agentRunStore.ResumeExternalTool verify concurrent result(id=%d): %w", runID, err)
+	}
+	if !already {
+		return false, fmt.Errorf("agentRunStore.ResumeExternalTool(id=%d): resume claim changed without the expected result", runID)
+	}
+	return false, nil
+}
+
+func canonicalExternalToolResult(raw json.RawMessage) (json.RawMessage, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || len(trimmed) > maxExternalToolResultBytes {
+		return nil, fmt.Errorf("result must be a non-empty JSON object within %d bytes", maxExternalToolResultBytes)
+	}
+	if err := validateStrictJSONObject(trimmed); err != nil {
+		return nil, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	if _, ok := value.(map[string]any); !ok {
+		return nil, fmt.Errorf("result must be a JSON object")
+	}
+	if trailing, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, fmt.Errorf("unexpected trailing JSON token %v", trailing)
+		}
+		return nil, err
+	}
+	canonical, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(canonical), nil
+}
+
+func validateStrictJSONObject(raw []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	first, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if first != json.Delim('{') {
+		return fmt.Errorf("result must be a JSON object")
+	}
+	if err := consumeStrictJSONValue(decoder, first); err != nil {
+		return err
+	}
+	if trailing, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return fmt.Errorf("unexpected trailing JSON token %v", trailing)
+		}
+		return err
+	}
+	return nil
+}
+
+func consumeStrictJSONValue(decoder *json.Decoder, token json.Token) error {
+	delim, isDelim := token.(json.Delim)
+	if !isDelim {
+		return nil
+	}
+	switch delim {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return fmt.Errorf("JSON object key must be a string")
+			}
+			if _, duplicate := seen[key]; duplicate {
+				return fmt.Errorf("duplicate JSON object key %q", key)
+			}
+			seen[key] = struct{}{}
+			valueToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			if err := consumeStrictJSONValue(decoder, valueToken); err != nil {
+				return err
+			}
+		}
+		end, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if end != json.Delim('}') {
+			return fmt.Errorf("JSON object is not closed")
+		}
+	case '[':
+		for decoder.More() {
+			valueToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			if err := consumeStrictJSONValue(decoder, valueToken); err != nil {
+				return err
+			}
+		}
+		end, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if end != json.Delim(']') {
+			return fmt.Errorf("JSON array is not closed")
+		}
+	default:
+		return fmt.Errorf("unexpected JSON delimiter %q", delim)
+	}
+	return nil
+}
+
+func transcriptHasExactToolResult(messages []byte, toolCallID string, canonicalResult json.RawMessage) (bool, error) {
+	var turns []json.RawMessage
+	if err := json.Unmarshal(messages, &turns); err != nil {
+		return false, fmt.Errorf("corrupt transcript: %w", err)
+	}
+	if err := validateExternalResumeTranscript(turns); err != nil {
+		return false, err
+	}
+	found := false
+	for _, turn := range turns {
+		var msg schema.Message
+		if err := json.Unmarshal(turn, &msg); err != nil {
+			return false, fmt.Errorf("corrupt transcript turn: %w", err)
+		}
+		if msg.Role != schema.Tool || msg.ToolCallID != toolCallID {
+			continue
+		}
+		if found {
+			return false, fmt.Errorf("duplicate tool result for tool_call_id %q", toolCallID)
+		}
+		storedResult, err := canonicalExternalToolResult(json.RawMessage(msg.Content))
+		if err != nil {
+			return false, fmt.Errorf("invalid stored tool result: %w", err)
+		}
+		if !bytes.Equal(storedResult, canonicalResult) {
+			return false, fmt.Errorf("conflicting tool result for tool_call_id %q", toolCallID)
+		}
+		found = true
+	}
+	return found, nil
+}
+
+func validateExternalResumeTranscript(turns []json.RawMessage) error {
+	for index, raw := range turns {
+		trimmed := bytes.TrimSpace(raw)
+		if len(trimmed) == 0 || trimmed[0] != '{' {
+			return fmt.Errorf("turn %d must be a JSON object", index)
+		}
+		var envelope struct {
+			Role string `json:"role"`
+		}
+		if err := json.Unmarshal(trimmed, &envelope); err != nil {
+			return fmt.Errorf("decode turn %d: %w", index, err)
+		}
+		switch envelope.Role {
+		case "user", "assistant", "tool", "tool_group":
+		default:
+			return fmt.Errorf("turn %d has unsupported role %q", index, envelope.Role)
+		}
+	}
+	return nil
+}
+
+func hasJSONValue(raw []byte) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null"))
+}
+
+func isSQLiteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "database is locked") || strings.Contains(message, "database table is locked")
 }
 
 // ClearPendingQuestion nulls out the pending_question fields and resets state_reason to "running".

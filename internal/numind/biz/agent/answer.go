@@ -147,37 +147,78 @@ func (s *StudentRunService) validateAndPersistAnswer(ctx context.Context, userID
 	// 4. Langfuse span for resume observability.
 	emitAnswerSpan(ctx, run, req)
 
-	// Snapshot the fields the resumed run needs (AnswerAndClear has already
-	// mutated the row; read from the pre-resume copy captured above).
-	agentDefID := run.AgentDefinitionID
-	sessionID := run.SessionID
-	toolFlags := resolveToolFlags(context.Background(), s, agentDefID)
+	// 5. Re-read the atomically updated transcript and build the common resume
+	// request. Ordinary Answer ends in role=user, while external-tool recovery
+	// ends in role=tool and uses the same helper without manufacturing user text.
+	return s.resumeRunFromStoredHistory(ctx, runID)
+}
 
-	// 5. HW-33: rebuild the conversation context the resumed agent must see. The
-	// run paused mid-ReAct persisted its pre-yield transcript in run.Messages
-	// (captured here BEFORE AnswerAndClear appended the answer). loadSessionHistory
-	// excludes the current run by design, so the agent would otherwise resume with
-	// ZERO memory of the research it did before pausing (dev run #119: it re-asked
-	// for the company name it was already researching). Inject prior runs' history
-	// PLUS this run's pre-yield transcript as History; the answer becomes Input.
-	resumeHistory := s.loadSessionHistory(context.Background(), sessionID, runID)
-	if len(run.Messages) > 0 && string(run.Messages) != "null" {
-		var turns []map[string]any
-		if uerr := json.Unmarshal(run.Messages, &turns); uerr == nil {
-			resumeHistory = append(resumeHistory, turnsToHistoryMessages(turns)...)
+// resumeRunFromStoredHistory rebuilds the exact continuation request for one
+// existing run. The persisted tail selects the protocol: a user tail becomes
+// ordinary answer Input; a tool tail becomes provider-valid History and sets
+// ContinueWithoutUserInput. No operation result is ever converted to user text.
+func (s *StudentRunService) resumeRunFromStoredHistory(ctx context.Context, runID uint64) (RunRequest, error) {
+	if s == nil || s.runStore == nil || runID == 0 {
+		return RunRequest{}, fmt.Errorf("resumeRunFromStoredHistory: run store and run id are required")
+	}
+	run, err := s.runStore.Get(ctx, runID)
+	if err != nil {
+		return RunRequest{}, fmt.Errorf("resumeRunFromStoredHistory: get run %d: %w", runID, err)
+	}
+	var turns []map[string]any
+	if err := json.Unmarshal(run.Messages, &turns); err != nil || len(turns) == 0 {
+		if err == nil {
+			err = fmt.Errorf("empty transcript")
 		}
+		return RunRequest{}, fmt.Errorf("resumeRunFromStoredHistory: invalid transcript: %w", err)
 	}
 
+	last := turns[len(turns)-1]
+	lastRole, _ := last["role"].(string)
+	resumeHistory := s.loadSessionHistory(context.WithoutCancel(ctx), run.SessionID, runID)
+	input := ""
+	continueWithoutUser := false
+	switch lastRole {
+	case "user":
+		input = strings.TrimSpace(historyTurnText(last["content"]))
+		if input == "" {
+			return RunRequest{}, fmt.Errorf("resumeRunFromStoredHistory: empty user answer tail")
+		}
+		resumeHistory = append(resumeHistory, turnsToHistoryMessages(turns[:len(turns)-1])...)
+	case "tool":
+		currentHistory, historyErr := turnsToExternalResumeHistoryMessages(turns)
+		if historyErr != nil {
+			return RunRequest{}, fmt.Errorf("resumeRunFromStoredHistory: external transcript: %w", historyErr)
+		}
+		resumeHistory = append(resumeHistory, currentHistory...)
+		continueWithoutUser = true
+	default:
+		return RunRequest{}, fmt.Errorf("resumeRunFromStoredHistory: unsupported transcript tail role %q", lastRole)
+	}
+
+	toolFlags := resolveToolFlags(context.WithoutCancel(ctx), s, run.AgentDefinitionID)
 	return RunRequest{
-		UserID:            userID,
-		SessionID:         sessionID,
-		Input:             userMsg,
-		History:           resumeHistory,
-		ToolNames:         toolNamesFromFlags(toolFlags),
-		AgentDefinitionID: agentDefID,
-		EnableMemory:      true,
-		ExistingRunID:     runID,
+		UserID:                   run.UserID,
+		SessionID:                run.SessionID,
+		Input:                    input,
+		History:                  resumeHistory,
+		ToolNames:                toolNamesFromFlags(toolFlags),
+		AgentDefinitionID:        run.AgentDefinitionID,
+		EnableMemory:             true,
+		ExistingRunID:            run.ID,
+		IsTest:                   run.IsTest,
+		ContinueWithoutUserInput: continueWithoutUser,
 	}, nil
+}
+
+func (s *StudentRunService) startDetachedResume(runReq RunRequest) {
+	go s.forwardNarration(runReq.ExistingRunID)
+	go func() {
+		bgCtx := middleware.NewContextWithUserID(context.Background(), runReq.UserID)
+		if _, runErr := s.runner.Run(bgCtx, runReq); runErr != nil {
+			log.Errorw("agent resume: restart runner failed", "run_id", runReq.ExistingRunID, "error", runErr)
+		}
+	}()
 }
 
 // Answer handles POST /v1/agent-runs/:id/answer business logic (poll path).
@@ -193,21 +234,9 @@ func (s *StudentRunService) Answer(ctx context.Context, userID uint, runID uint6
 		return nil, err
 	}
 
-	// Re-establish the narration→buffer forwarder for the resumed run. Phase 1's
-	// forwarder exited when RunStream's defer CloseRun closed the channel on yield, so
-	// without this the resumed runner's narration (web_search, chart, image_gen, …) is
-	// emitted but never drained into the poll buffer → PollNarration returns the stale
-	// pre-yield events forever and the UI looks frozen ("答完就停"). Same bridge as
-	// Create/RunStream start (student_run_lifecycle.go). nil-safe (graceful degrade).
-	go s.forwardNarration(runID)
-
-	// Restart runner in a detached goroutine (detached ctx, same as Create).
-	go func() {
-		bgCtx := middleware.NewContextWithUserID(context.Background(), userID)
-		if _, runErr := s.runner.Run(bgCtx, runReq); runErr != nil {
-			log.Errorw("Answer: restart runner failed", "run_id", runID, "error", runErr)
-		}
-	}()
+	// Ordinary answers and external results share one detached resume launcher;
+	// only transcript construction differs (user tail vs tool tail).
+	s.startDetachedResume(runReq)
 
 	return &AnswerResponse{RunID: runID, Status: "resumed"}, nil
 }

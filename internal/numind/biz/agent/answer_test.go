@@ -94,9 +94,31 @@ func (s *answerRunStore) AppendUserMessage(_ context.Context, id uint64, _ strin
 	s.appendMessageCalls = append(s.appendMessageCalls, id)
 	return s.appendMessageErr
 }
-func (s *answerRunStore) AnswerAndClear(_ context.Context, id uint64, _ json.RawMessage) error {
+func (s *answerRunStore) AnswerAndClear(_ context.Context, id uint64, turn json.RawMessage) error {
 	s.answerAndClearCalls = append(s.answerAndClearCalls, id)
-	return s.answerAndClearErr
+	if s.answerAndClearErr != nil {
+		return s.answerAndClearErr
+	}
+	run, ok := s.runs[id]
+	if !ok {
+		return errors.New("not found")
+	}
+	var turns []json.RawMessage
+	if err := json.Unmarshal(run.Messages, &turns); err != nil {
+		return err
+	}
+	turns = append(turns, append(json.RawMessage(nil), turn...))
+	messages, err := json.Marshal(turns)
+	if err != nil {
+		return err
+	}
+	run.Messages = datatypes.JSON(messages)
+	run.PendingQuestionJSON = nil
+	run.PendingQuestionAt = nil
+	run.Status = "running"
+	run.StateReason = "running"
+	run.EndedAt = nil
+	return nil
 }
 func (s *answerRunStore) UpdateSessionPinned(_ context.Context, _ string, _ bool) error {
 	return nil

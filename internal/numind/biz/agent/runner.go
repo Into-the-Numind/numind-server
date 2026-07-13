@@ -104,6 +104,11 @@ type RunRequest struct {
 	// buildEinoMessages 将其前置到当前 Input 之前，使 LLM 获得多轮上下文（修复多轮失忆）。
 	// 为空表示新会话或首轮；加载失败时 fail-open 为 nil（不阻断本轮 run）。
 	History []*schema.Message
+	// ContinueWithoutUserInput is a server-only continuation used after an
+	// external tool result has been appended to History. It prevents both the
+	// model request and final persisted transcript from inventing an empty or
+	// natural-language user message. Model tool input can never set this flag.
+	ContinueWithoutUserInput bool
 }
 
 // displayUserText returns the text to PERSIST/DISPLAY as the user turn: DisplayInput
@@ -796,13 +801,16 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 	// 和后续 extractor enqueue，省钱 + 体验流畅。trivial 决策在两处都用同一份
 	// memory.IsTrivial 结果以保持一致性（避免 selector 跳过但 extractor 入队的
 	// 不对齐场景）。
-	isTrivial := memory.IsTrivial(req.Input)
+	isTrivial := false
+	if !req.ContinueWithoutUserInput {
+		isTrivial = memory.IsTrivial(req.Input)
+	}
 	if isTrivial {
 		metrics.MemoryTrivialCountInc()
 	}
 
 	var selectorBlock string
-	if r.memorySelector != nil && req.UserID != 0 && !isTrivial {
+	if r.memorySelector != nil && req.UserID != 0 && !isTrivial && !req.ContinueWithoutUserInput {
 		facts, selErr := r.memorySelector.SelectTop5(ctx, req.UserID, req.Input)
 		if selErr != nil {
 			// SelectTop5 errors are non-fatal — log and continue with no
@@ -1005,6 +1013,13 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 	// the production path. react.NewAgent requires at least one tool so we must
 	// gate before calling it.
 	if len(einoTools) == 0 {
+		if req.ContinueWithoutUserInput {
+			endedAt := time.Now()
+			if uerr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalModelError), &endedAt); uerr != nil {
+				log.Warnw("AgentRunner.Run UpdateState failed on external-continuation configuration error", "agent_run_id", run.ID, "error", uerr)
+			}
+			return nil, fmt.Errorf("AgentRunner.Run: external tool continuation requires a configured tool registry")
+		}
 		log.Warnw("AgentRunner.Run: no tools resolved from registry; using pre-ReAct short-circuit",
 			"agent_run_id", run.ID, "registry_nil", r.registry == nil)
 		endedAt := time.Now()
@@ -1477,6 +1492,7 @@ func (r *agentRunner) finalizeRun(
 		}
 		turns = append(turns, assistantTurn(assistantContent, finalReasoning))
 	}
+	turns = removeContinuationUserTurn(turns, req.ContinueWithoutUserInput)
 	// answer-resume-lifecycle F2: a resumed run appends to its pre-yield
 	// transcript instead of overwriting it (dev run 148 history loss).
 	// Carry the user's uploaded attachments onto the user turn so a reloaded session
@@ -1524,7 +1540,7 @@ func (r *agentRunner) finalizeRun(
 	// caused SyncTurn to silently never fire for streaming completions, breaking
 	// the memory pipeline. Run() callers always set finalText on completion, so
 	// removing the output gate is safe for both code paths.
-	if r.memoryProvider != nil && st.TerminalReason == TerminalCompleted {
+	if r.memoryProvider != nil && st.TerminalReason == TerminalCompleted && !req.ContinueWithoutUserInput {
 		userMsg := memory.Message{Role: "user", Content: req.displayUserText()}
 		asstMsg := memory.Message{Role: "assistant", Content: finalText}
 		go func() {
@@ -1544,7 +1560,7 @@ func (r *agentRunner) finalizeRun(
 	//
 	// Enqueue is non-blocking by contract — queue-full path drops + warns, so
 	// this CANNOT delay the runner return. No goroutine wrap needed.
-	if r.memoryExtractor != nil && req.UserID != 0 {
+	if r.memoryExtractor != nil && req.UserID != 0 && !req.ContinueWithoutUserInput {
 		extractMsgs := []memory.ChatMessage{
 			{Role: "user", Content: req.displayUserText()},
 			{Role: "assistant", Content: finalText},
@@ -1698,10 +1714,29 @@ func buildEinoMessages(req RunRequest) []*schema.Message {
 	// Prepend prior-turn history (same session) so the LLM has multi-turn context,
 	// then append the current user input last (recency). req.History is already
 	// chronological user/assistant text pairs loaded by StudentRunService.
-	msgs := make([]*schema.Message, 0, len(req.History)+1)
+	capacity := len(req.History)
+	if !req.ContinueWithoutUserInput {
+		capacity++
+	}
+	msgs := make([]*schema.Message, 0, capacity)
 	msgs = append(msgs, req.History...)
-	msgs = append(msgs, &schema.Message{Role: schema.User, Content: req.Input})
+	if !req.ContinueWithoutUserInput {
+		msgs = append(msgs, &schema.Message{Role: schema.User, Content: req.Input})
+	}
 	return msgs
+}
+
+// removeContinuationUserTurn removes the synthetic leading user turn produced
+// by the shared transcript builder when a server continuation has no new user
+// input. Ordinary answer and create flows remain byte-for-byte unchanged.
+func removeContinuationUserTurn(turns []map[string]any, continuation bool) []map[string]any {
+	if !continuation || len(turns) == 0 {
+		return turns
+	}
+	if role, _ := turns[0]["role"].(string); role != "user" {
+		return turns
+	}
+	return turns[1:]
 }
 
 // V1.5 compact-v1-removal — einoMessagesToCompact / compactMessagesToEino

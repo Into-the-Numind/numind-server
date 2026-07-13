@@ -307,13 +307,16 @@ func (r *agentRunner) RunStream(
 		agentMdBlock = "\n\n## Agent Rules (developer-defined)\n" + agentMdResult.Content + "\n"
 	}
 
-	isTrivial := memory.IsTrivial(req.Input)
+	isTrivial := false
+	if !req.ContinueWithoutUserInput {
+		isTrivial = memory.IsTrivial(req.Input)
+	}
 	if isTrivial {
 		metrics.MemoryTrivialCountInc()
 	}
 
 	var selectorBlock string
-	if r.memorySelector != nil && req.UserID != 0 && !isTrivial {
+	if r.memorySelector != nil && req.UserID != 0 && !isTrivial && !req.ContinueWithoutUserInput {
 		facts, selErr := r.memorySelector.SelectTop5(ctx, req.UserID, req.Input)
 		if selErr != nil {
 			log.Warnw("memorySelector.SelectTop5 failed; continuing without injection",
@@ -415,6 +418,13 @@ func (r *agentRunner) RunStream(
 	// 6. Short-circuit when no tools resolved (same as Run; nil/empty registry only —
 	// full-open registers from the registry, not req.ToolNames).
 	if len(einoTools) == 0 {
+		if req.ContinueWithoutUserInput {
+			endedAt := time.Now()
+			if uerr := r.runStore.UpdateState(persistCtx, run.ID, "terminated", string(TerminalModelError), &endedAt); uerr != nil {
+				log.Warnw("AgentRunner.RunStream UpdateState failed on external-continuation configuration error", "agent_run_id", run.ID, "error", uerr)
+			}
+			return nil, fmt.Errorf("AgentRunner.RunStream: external tool continuation requires a configured tool registry")
+		}
 		log.Warnw("AgentRunner.RunStream: no tools resolved from registry; using pre-ReAct short-circuit",
 			"agent_run_id", run.ID, "registry_nil", r.registry == nil)
 		endedAt := time.Now()
