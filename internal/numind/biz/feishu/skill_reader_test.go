@@ -461,12 +461,28 @@ func TestSkillReader_ConcurrentReadAndVerify(t *testing.T) {
 }
 
 func TestSkillReader_ProcessLimitIsSharedAndWaitingCancellationDoesNotStartCLI(t *testing.T) {
-	t.Parallel()
-
 	h := newSkillReaderHarness(t, skillReaderOptions{})
 	h.writeResource("lark-doc", "SKILL.md", "# stable", true)
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseAll := func() { releaseOnce.Do(func() { close(release) }) }
 	started := make(chan struct{}, SkillReaderMaxConcurrentProcesses*2)
+	var wg sync.WaitGroup
+	var cancelWaiting context.CancelFunc
+	defer func() {
+		if cancelWaiting != nil {
+			cancelWaiting()
+		}
+		releaseAll()
+		wg.Wait()
+		if slots := len(skillProcessSlots); slots != 0 {
+			t.Errorf("shared skill process slots leaked after cleanup: %d", slots)
+		}
+	}()
+	if slots := len(skillProcessSlots); slots != 0 {
+		t.Fatalf("shared skill process slots dirty at test start: %d", slots)
+	}
+
 	var current atomic.Int64
 	var maximum atomic.Int64
 	onStarted := func() {
@@ -495,7 +511,6 @@ func TestSkillReader_ProcessLimitIsSharedAndWaitingCancellationDoesNotStartCLI(t
 	readers := []*SkillReader{firstReader, secondReader}
 
 	errs := make(chan error, SkillReaderMaxConcurrentProcesses*2)
-	var wg sync.WaitGroup
 	startReads := func(count int) {
 		for index := 0; index < count; index++ {
 			wg.Add(1)
@@ -517,9 +532,12 @@ func TestSkillReader_ProcessLimitIsSharedAndWaitingCancellationDoesNotStartCLI(t
 	}
 	require.Empty(t, h.invocations(), "probe blocks before any CLI process starts")
 
-	waitingCtx, cancelWaiting := context.WithCancel(context.Background())
+	waitingCtx, cancel := context.WithCancel(context.Background())
+	cancelWaiting = cancel
 	waitingDone := make(chan error, 1)
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		_, waitErr := secondReader.Read(waitingCtx, SkillReadRequest{AgentRunID: 10, Skill: "lark-doc"})
 		waitingDone <- waitErr
 	}()
@@ -529,6 +547,7 @@ func TestSkillReader_ProcessLimitIsSharedAndWaitingCancellationDoesNotStartCLI(t
 	case <-time.After(100 * time.Millisecond):
 	}
 	cancelWaiting()
+	cancelWaiting = nil
 	select {
 	case waitErr := <-waitingDone:
 		require.Error(t, waitErr)
@@ -538,7 +557,7 @@ func TestSkillReader_ProcessLimitIsSharedAndWaitingCancellationDoesNotStartCLI(t
 	require.Empty(t, h.invocations(), "canceled waiter must not start an extra CLI")
 
 	startReads(SkillReaderMaxConcurrentProcesses)
-	close(release)
+	releaseAll()
 	wg.Wait()
 	close(errs)
 	for readErr := range errs {
@@ -546,6 +565,7 @@ func TestSkillReader_ProcessLimitIsSharedAndWaitingCancellationDoesNotStartCLI(t
 	}
 	require.LessOrEqual(t, maximum.Load(), int64(SkillReaderMaxConcurrentProcesses))
 	require.Zero(t, current.Load())
+	require.Zero(t, len(skillProcessSlots))
 	require.Len(t, h.invocations(), SkillReaderMaxConcurrentProcesses*2)
 }
 
