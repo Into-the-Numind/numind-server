@@ -308,22 +308,24 @@ func TestGetSessionSnapshot_ExternalActionHasNoURLOrDuplicateQuestion(t *testing
 	assert.NotContains(t, string(encoded), "url")
 }
 
-func TestGetSessionSnapshot_ExternalActionRejectsUnknownOrSensitiveFields(t *testing.T) {
-	for name, extra := range map[string]string{
-		"url":          `,"url":"https://sensitive.example"`,
-		"device_code":  `,"device_code":"ABC"`,
-		"secret":       `,"secret":"shh"`,
-		"future_field": `,"future_sensitive":"unknown"`,
+func TestGetSessionSnapshot_CorruptExternalActionNeverFallsBackToStaleQuestion(t *testing.T) {
+	for name, raw := range map[string]string{
+		"url":              `{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"call-1","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z","url":"https://sensitive.example"}`,
+		"device_code":      `{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"call-1","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z","device_code":"ABC"}`,
+		"secret":           `{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"call-1","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z","secret":"shh"}`,
+		"unknown_field":    `{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"call-1","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z","future_sensitive":"unknown"}`,
+		"missing_identity": `{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`,
+		"malformed_json":   `{"provider":"feishu"`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			svc, db := newSQServiceFull(t)
-			raw := `{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"call-1","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"` + extra + `}`
 			run := &model.AgentRun{
 				UserID:                    12,
 				SessionID:                 "snapshot-external-action-" + name,
 				Status:                    "terminated",
 				StateReason:               string(TerminalWaitingForUserChoice),
 				Messages:                  datatypes.JSON(`[]`),
+				PendingQuestionJSON:       datatypes.JSON(`{"questions":[{"question":"stale question","options":[]}]}`),
 				PendingExternalActionJSON: datatypes.JSON(raw),
 				StartedAt:                 time.Now(),
 			}
@@ -333,7 +335,8 @@ func TestGetSessionSnapshot_ExternalActionRejectsUnknownOrSensitiveFields(t *tes
 
 			snapshot, err := svc.GetSessionSnapshot(context.Background(), run.UserID, run.SessionID)
 			require.NoError(t, err)
-			assert.Empty(t, snapshot.Messages.([]agentMessage), "unsafe persisted payload must fail closed")
+			assert.Empty(t, snapshot.Messages.([]agentMessage),
+				"present-but-invalid external payload must suppress both external_action and stale question_prompt")
 		})
 	}
 }
@@ -448,6 +451,35 @@ func TestAnswer_ExternalActionIsNotAQuestion(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, response)
-	assert.Contains(t, err.Error(), "no pending question json")
+	assert.Contains(t, err.Error(), "external action")
+	assert.Empty(t, runStore.answerAndClearCalls)
+}
+
+func TestAnswer_ExternalActionTakesPrecedenceOverStaleQuestion(t *testing.T) {
+	runStore := newAnswerRunStore()
+	action := externalActionFixture().Persistent()
+	raw, err := json.Marshal(action)
+	require.NoError(t, err)
+	run := &model.AgentRun{
+		UserID:                    22,
+		SessionID:                 "answer-external-action-stale-question",
+		Status:                    "terminated",
+		StateReason:               string(TerminalWaitingForUserChoice),
+		Messages:                  datatypes.JSON(`[]`),
+		PendingQuestionJSON:       datatypes.JSON(`{"questions":[{"question":"Which region?","options":[],"multi_select":false}]}`),
+		PendingExternalActionJSON: datatypes.JSON(raw),
+		StartedAt:                 time.Now(),
+	}
+	require.NoError(t, runStore.Create(context.Background(), run))
+	svc := newAnswerService(runStore)
+
+	response, err := svc.Answer(context.Background(), run.UserID, run.ID, AnswerRequest{
+		Answers: map[string]AnswerItem{"Which region?": {FreeText: "华北"}},
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, response)
+	assert.Contains(t, err.Error(), "external action")
+	assert.NotContains(t, err.Error(), action.OperationID, "error must not leak persisted action identity")
 	assert.Empty(t, runStore.answerAndClearCalls)
 }

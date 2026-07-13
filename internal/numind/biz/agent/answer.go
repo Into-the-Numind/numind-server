@@ -88,6 +88,11 @@ func (s *StudentRunService) validateAndPersistAnswer(ctx context.Context, userID
 			"answer: run is not waiting for user choice (state_reason=%s)", run.StateReason,
 		)
 	}
+	if hasPendingExternalAction(run.PendingExternalActionJSON) {
+		return RunRequest{}, errno.ErrInvalidInput.SetMessage(
+			"answer: run is waiting for an external action",
+		)
+	}
 
 	// 2b. pending_question_json IS NOT NULL guard (spec §2.3c).
 	// Defends against a corrupted row where state_reason was set but the JSON

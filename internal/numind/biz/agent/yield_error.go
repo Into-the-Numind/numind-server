@@ -20,6 +20,11 @@ var ErrYieldForUserQuestion = errors.New("agent: yield for user question")
 // yields, SSE events, and session snapshots.
 type ExternalActionPayload = stream.ExternalActionPayload
 
+func hasPendingExternalAction(raw []byte) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null"))
+}
+
 // ParsePendingExternalAction accepts only the restart-safe external-action
 // identity persisted on agent_run. Unknown fields fail closed so a transient
 // URL, credential, device code, or future unreviewed field is never replayed.

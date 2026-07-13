@@ -288,8 +288,10 @@ func (s *StudentQueryService) GetSessionSnapshot(ctx context.Context, userID uin
 		// A run paused at ask_user_question has no assistant turn for the
 		// question; synthesize an interactive card so a reloaded session can
 		// render it and resume (yield-session-reload fix).
-		if action, ok := synthesizeExternalAction(&runs[i]); ok {
-			allMessages = append(allMessages, action)
+		if hasPendingExternalAction(runs[i].PendingExternalActionJSON) {
+			if action, ok := synthesizeExternalAction(&runs[i]); ok {
+				allMessages = append(allMessages, action)
+			}
 		} else if q, ok := synthesizeQuestionPrompt(&runs[i]); ok {
 			allMessages = append(allMessages, q)
 		}
@@ -519,7 +521,7 @@ func synthesizeExternalAction(run *model.AgentRun) (agentMessage, bool) {
 	if run.StateReason != string(TerminalWaitingForUserChoice) {
 		return agentMessage{}, false
 	}
-	if len(run.PendingExternalActionJSON) == 0 || string(run.PendingExternalActionJSON) == "null" {
+	if !hasPendingExternalAction(run.PendingExternalActionJSON) {
 		return agentMessage{}, false
 	}
 	payload, err := ParsePendingExternalAction(run.PendingExternalActionJSON)
