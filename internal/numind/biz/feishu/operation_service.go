@@ -1008,7 +1008,8 @@ func sameRunOverwriteTarget(command *NormalizedCommand) (string, bool) {
 		return "", false
 	}
 	target := operationArgValue(command.Argv, "--doc")
-	if !opaqueTokenPattern.MatchString(target) {
+	target, err := normalizeSupportedRef("document", map[string]bool{"docx": true, "wiki": true}, true)(target)
+	if err != nil {
 		return "", false
 	}
 	return target, true
@@ -1035,7 +1036,15 @@ func createResultProvesTarget(commandPath string, result json.RawMessage, target
 	}
 	switch commandPath {
 	case "docs +create":
-		documentID, ok := strictOpaqueResultField(fields, "document_id")
+		documentRaw, ok := fields["document"]
+		if !ok {
+			return false
+		}
+		var document map[string]json.RawMessage
+		if err := json.Unmarshal(documentRaw, &document); err != nil || document == nil {
+			return false
+		}
+		documentID, ok := strictOpaqueResultField(document, "document_id")
 		return ok && documentID == target
 	case "wiki +node-create":
 		objectType, ok := strictStringResultField(fields, "obj_type")

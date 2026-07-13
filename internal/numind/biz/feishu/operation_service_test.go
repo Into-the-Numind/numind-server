@@ -851,7 +851,7 @@ func TestOperationService_SameRunEmptyDocsCreateProvesOverwrite(t *testing.T) {
 	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
 	const token = "doxcnCreatedEmpty123"
 	h.runner.steps = []operationRunnerStep{
-		{result: operationOKResult(`{"document_id":"` + token + `"}`)},
+		{result: operationOKResult(`{"document":{"document_id":"` + token + `","url":"https://acme.feishu.cn/docx/` + token + `"}}`)},
 		{result: operationOKResult(`{"revision_id":2}`)},
 	}
 
@@ -880,7 +880,7 @@ func TestOperationService_RepeatedOverwriteUsesPersistedProofWhenCandidateWindow
 	require.NoError(t, err)
 	const token = "doxcnStableProof123"
 	h.runner.steps = []operationRunnerStep{
-		{result: operationOKResult(`{"document_id":"` + token + `"}`)},
+		{result: operationOKResult(`{"document":{"document_id":"` + token + `","url":"https://acme.feishu.cn/docx/` + token + `"}}`)},
 		{result: operationOKResult(`{"revision_id":2}`)},
 	}
 	_, err = service.Execute(h.ctx, operationDocsCreateRequest(7, 305, "tc-create", "Empty", nil))
@@ -931,8 +931,95 @@ func TestOperationService_SameRunWikiDocxCreateProvesOverwriteByNodeOrObjectToke
 	}
 }
 
+func TestOperationService_SameRunCreateProofAcceptsSupportedDocumentURLs(t *testing.T) {
+	t.Run("docs docx URL", func(t *testing.T) {
+		h := newOperationHarness(t)
+		h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+		const token = "doxcnCreatedURL123"
+		h.runner.steps = []operationRunnerStep{
+			{result: operationOKResult(`{"document":{"document_id":"` + token + `","url":"https://acme.feishu.cn/docx/` + token + `"}}`)},
+			{result: operationOKResult(`{"revision_id":2}`)},
+		}
+		created, err := h.service.Execute(h.ctx, operationDocsCreateRequest(7, 306, "tc-create", "Empty", nil))
+		require.NoError(t, err)
+		overwrite, err := h.service.Execute(h.ctx, operationDocsOverwriteRequest(
+			7, 306, "tc-overwrite", "https://acme.feishu.cn/docx/"+token,
+		))
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuOperationSucceeded, overwrite.State)
+		require.Empty(t, h.confirmation.calls)
+		requirePersistedCreateProof(t, h, overwrite.OperationID, created.OperationID)
+	})
+
+	t.Run("wiki node URL", func(t *testing.T) {
+		h := newOperationHarness(t)
+		h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+		const nodeToken = "wikcnCreatedURL123"
+		h.runner.steps = []operationRunnerStep{
+			{result: operationOKResult(`{"node_token":"` + nodeToken + `","obj_token":"doxcnCreatedURLObject123","obj_type":"docx"}`)},
+			{result: operationOKResult(`{"revision_id":2}`)},
+		}
+		createRequest := ExecuteRequest{
+			UserID: 7, AgentRunID: 307, ToolCallID: "tc-wiki-create", IdempotencyKey: "307:tc-wiki-create",
+			Argv: []string{
+				"wiki", "+node-create", "--space-id", "my_library", "--title", "Empty",
+				"--node-type", "origin", "--obj-type", "docx",
+			},
+			SkillReceipts: []string{"shared", "wiki"},
+		}
+		created, err := h.service.Execute(h.ctx, createRequest)
+		require.NoError(t, err)
+		overwrite, err := h.service.Execute(h.ctx, operationDocsOverwriteRequest(
+			7, 307, "tc-overwrite", "https://acme.larksuite.com/wiki/"+nodeToken,
+		))
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuOperationSucceeded, overwrite.State)
+		require.Empty(t, h.confirmation.calls)
+		requirePersistedCreateProof(t, h, overwrite.OperationID, created.OperationID)
+	})
+}
+
+func TestOperationService_OverwriteRejectsMaliciousDocumentURLHosts(t *testing.T) {
+	for index, target := range []string{
+		"https://evil.example/docx/doxcnTarget123",
+		"https://acme.feishu.cn.evil.example/wiki/wikcnTarget123",
+	} {
+		t.Run(strconv.Itoa(index), func(t *testing.T) {
+			h := newOperationHarness(t)
+			h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+			_, err := h.service.Execute(h.ctx, operationDocsOverwriteRequest(7, uint64(308+index), "tc-overwrite", target))
+			require.ErrorIs(t, err, ErrOperationRequestRejected)
+			require.Empty(t, h.confirmation.calls)
+			calls, _ := h.runner.snapshot()
+			require.Zero(t, calls)
+			var count int64
+			require.NoError(t, h.db.Model(&model.FeishuOperation{}).Count(&count).Error)
+			require.Zero(t, count)
+		})
+	}
+}
+
 func TestOperationService_OverwriteProofRequiresExactPersistedSucceededCreate(t *testing.T) {
 	const token = "doxcnProofTarget123"
+
+	for index, malformedResult := range []string{
+		`{"document_id":"` + token + `"}`,
+		`{"document":"wrong-type"}`,
+		`{"document":{"document_id":123}}`,
+	} {
+		t.Run("malformed docs result "+strconv.Itoa(index), func(t *testing.T) {
+			h := newOperationHarness(t)
+			h.createAccount(7, model.FeishuConnectionConnected, 1, "cli-existing")
+			h.runner.steps = []operationRunnerStep{{result: operationOKResult(malformedResult)}}
+			runID := uint64(318 + index)
+			_, err := h.service.Execute(h.ctx, operationDocsCreateRequest(7, runID, "tc-create", "Empty", nil))
+			require.NoError(t, err)
+			got, err := h.service.Execute(h.ctx, operationDocsOverwriteRequest(7, runID, "tc-overwrite", token))
+			require.NoError(t, err)
+			require.Equal(t, model.FeishuOperationWaitingConfirmation, got.State)
+			require.Len(t, h.confirmation.calls, 1)
+		})
+	}
 
 	t.Run("different user", func(t *testing.T) {
 		h := newOperationHarness(t)
