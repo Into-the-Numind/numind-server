@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: '重新校准并完成飞书个人工作空间连接：每个有数账号连接自己的飞书账号并长期保持；首次授权后 Agent 自动执行文档、多维表格、知识库能力。现有 feishu-integration 仅作待审计资产，不作为产品前提。'
   classification_reason: 'Standard：飞书外部集成+长期授权凭据+自动写操作属高风险，预计涉及 DB/API/biz/前端/部署/E2E 且文件数 >3。用户于 2026-07-13 确认 Standard。'
-  last_updated_by: ai-s0-gate-passed
-  last_updated_at: '2026-07-13T11:31:00+0800'
+  last_updated_by: ai-s1-product-alignment
+  last_updated_at: '2026-07-13T13:20:00+0800'
   created_at: '2026-07-13T11:14:14+0800'
   track: standard
   stage: S1
@@ -22,6 +22,8 @@ features:
   decisions:
   - 'S0 (user+ai 2026-07-13): 用户确认 Standard；产品目标=每个有数账号连接自己的飞书账号并持续保持，首次授权后自动执行；首批方向=文档/多维表格/知识库。待澄清 C 是账号一对一语义，还是同时强制每用户自建应用。'
   - 'S0 gate (user 2026-07-13): 明确采用个人自建应用模型，复刻 Claude Code+lark-cli：Agent 自动发起建应用和权限申请，用户只在飞书官方页面确认/授权，不手工搬运 app 凭据；进入 S1 评估独立配置 Agent 是否必要。'
+  - 'S1 product alignment (user 2026-07-13): 不新增独立飞书 Agent；现有 Agent 调用确定性连接状态机。每用户独立自建应用，权限按能力渐进申请，授权后自动恢复原任务，设置页仅作状态/重连/解绑入口。'
+  - 'S1 launch boundary (user chose A, 2026-07-13): 首版只支持有权创建个人自建应用并能完成所需管理员审批的用户；无权限时明确引导联系飞书管理员，不在首版增加共享应用路径。'
   blockers: []
 - id: chatbot-full-history-context
   ndf_version: '3.0'
