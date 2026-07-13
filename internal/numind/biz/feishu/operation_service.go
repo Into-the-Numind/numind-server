@@ -71,8 +71,10 @@ type RecoveryStarter interface {
 	Abort(sessionID string)
 }
 
-// ConfirmationRequester publishes a high-risk confirmation action. The
-// OperationService owns the lease-fenced state transition itself.
+// ConfirmationRequester publishes a high-risk confirmation action. A successful
+// action must include a durable, non-empty SessionID and a future ExpiresAt so it
+// can survive process restart; OperationService validates the server-normalized
+// action before it owns the lease-fenced waiting transition.
 type ConfirmationRequester interface {
 	RequestConfirmation(ctx context.Context, operationID string, summary ConfirmationSummary) (*OperationAction, error)
 }
@@ -858,11 +860,12 @@ func (s *FeishuOperationService) executeClaimed(
 		action.OperationID = operation.ID
 		action.Phase = "confirmation"
 		action.Scopes = nil
-		summary := persistedOperationSummary{Status: model.FeishuOperationWaitingConfirmation, Phase: action.Phase, SessionID: action.SessionID}
-		if !action.ExpiresAt.IsZero() {
-			expires := action.ExpiresAt.UTC()
-			summary.ExpiresAt = &expires
+		if strings.TrimSpace(action.SessionID) == "" || !action.ExpiresAt.After(s.now().UTC()) {
+			return s.commitTerminal(ctx, operation, leaseOwner, model.FeishuOperationFailed, PublicCodeFailed, nil, false)
 		}
+		summary := persistedOperationSummary{Status: model.FeishuOperationWaitingConfirmation, Phase: action.Phase, SessionID: action.SessionID}
+		expires := action.ExpiresAt.UTC()
+		summary.ExpiresAt = &expires
 		if err := s.transitionWaiting(ctx, operation, leaseOwner, model.FeishuOperationWaitingConfirmation, summary, ""); err != nil {
 			return nil, err
 		}

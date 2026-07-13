@@ -600,7 +600,10 @@ func newOperationHarness(t *testing.T) *operationHarness {
 	dataStore := store.NewTestStore(db)
 	receipts := &operationReceiptFake{}
 	recovery := &operationRecoveryFake{action: &OperationAction{Provider: ProviderLark, Phase: "create_app", SessionID: "session-1"}}
-	confirmation := &operationConfirmationFake{action: &OperationAction{Provider: ProviderLark, Phase: "confirmation", SessionID: "confirmation-1"}}
+	confirmation := &operationConfirmationFake{action: &OperationAction{
+		Provider: ProviderLark, Phase: "confirmation", SessionID: "confirmation-1",
+		ExpiresAt: time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC),
+	}}
 	runner := &operationRunnerFake{steps: []operationRunnerStep{{result: operationOKResult(`{"document_id":"doc1"}`)}}}
 	vault := &operationVaultFake{}
 	cipher := newOperationTestCipherKeyring(t, "v1")
@@ -1291,6 +1294,7 @@ func TestOperationService_HighRiskOnlyCreatesConfirmationWaiting(t *testing.T) {
 	h.confirmation.action = &OperationAction{
 		Provider: ProviderLark, Phase: "confirmation", SessionID: "confirm-1",
 		URL: "https://confirmation.example/transient", Scopes: []string{"must-copy-defensively"},
+		ExpiresAt: h.service.now().Add(10 * time.Minute),
 	}
 	req := ExecuteRequest{
 		UserID: 7, AgentRunID: 18, ToolCallID: "tc-high",
@@ -1356,6 +1360,51 @@ func TestOperationService_HighRiskOnlyCreatesConfirmationWaiting(t *testing.T) {
 		require.NoError(t, h.db.Model(&model.FeishuOperationExecutionGate{}).Count(&gateCount).Error)
 		require.Zero(t, gateCount)
 	})
+}
+
+func TestOperationService_ConfirmationRequiresDurableActionIdentity(t *testing.T) {
+	for name, action := range map[string]*OperationAction{
+		"missing session": {
+			Provider:  ProviderLark,
+			Phase:     "confirmation",
+			ExpiresAt: time.Date(2026, 7, 13, 12, 10, 0, 0, time.UTC),
+		},
+		"missing expiry": {
+			Provider:  ProviderLark,
+			Phase:     "confirmation",
+			SessionID: "confirmation-missing-expiry",
+		},
+		"expired": {
+			Provider:  ProviderLark,
+			Phase:     "confirmation",
+			SessionID: "confirmation-expired",
+			ExpiresAt: time.Date(2026, 7, 13, 11, 59, 0, 0, time.UTC),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newOperationHarness(t)
+			h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+			h.confirmation.action = action
+
+			got, err := h.service.Execute(h.ctx, operationDocsOverwriteRequest(
+				7,
+				181,
+				"tc-invalid-confirmation",
+				"doxcnABCDEFG123",
+			))
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			require.Equal(t, model.FeishuOperationFailed, got.State,
+				"an unpersistable confirmation action must fail before entering waiting_confirmation")
+			require.Nil(t, got.Action)
+
+			stored, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, got.OperationID)
+			require.NoError(t, err)
+			require.Equal(t, model.FeishuOperationFailed, stored.State)
+			require.Empty(t, stored.LeaseOwner)
+			require.Nil(t, stored.LeaseUntil)
+		})
+	}
 }
 
 func TestOperationService_SameRunEmptyDocsCreateProvesOverwrite(t *testing.T) {

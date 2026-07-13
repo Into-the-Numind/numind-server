@@ -319,6 +319,54 @@ func TestLarkPersonalWorkspace_ExecuteWaitingYieldsDurableExternalAction(t *test
 	}
 }
 
+func TestLarkPersonalWorkspace_ExecuteReloadedActionWithoutURLStillYields(t *testing.T) {
+	expiresAt := time.Date(2026, 7, 13, 12, 30, 0, 0, time.UTC)
+	live := ExternalActionPayload{
+		Provider:    "lark",
+		OperationID: "op-reloaded-confirmation",
+		SessionID:   "session-reloaded-confirmation",
+		ToolCallID:  "original-tool-call",
+		Phase:       "confirmation",
+		URL:         "https://confirmation.example/live-only",
+		ExpiresAt:   expiresAt,
+	}
+	persisted, err := json.Marshal(live.Persistent())
+	require.NoError(t, err)
+	reloaded, err := ParsePendingExternalAction(persisted)
+	require.NoError(t, err)
+	require.Empty(t, reloaded.URL, "cross-process reload must not recover the transient URL")
+
+	executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+		OperationID: reloaded.OperationID,
+		State:       model.FeishuOperationWaitingConfirmation,
+		Action: &feishu.OperationAction{
+			Provider:    reloaded.Provider,
+			OperationID: reloaded.OperationID,
+			SessionID:   reloaded.SessionID,
+			Phase:       reloaded.Phase,
+			ExpiresAt:   reloaded.ExpiresAt,
+		},
+	}}
+	result, err := (&larkExecuteTool{executor: executor}).Execute(
+		larkPersonalWorkspaceContext(7, 601, "reloaded-context-call"),
+		ToolInput(`{"argv":["docs"],"skill_receipts":["receipt"]}`),
+	)
+	assert.Nil(t, result)
+	var yielded *yieldError
+	require.ErrorAs(t, err, &yielded)
+	require.NotNil(t, yielded.Payload.ExternalAction)
+	assert.Empty(t, yielded.Payload.ExternalAction.URL)
+	assert.Equal(t, reloaded.Provider, yielded.Payload.ExternalAction.Provider)
+	assert.Equal(t, reloaded.OperationID, yielded.Payload.ExternalAction.OperationID)
+	assert.Equal(t, reloaded.SessionID, yielded.Payload.ExternalAction.SessionID)
+	assert.Equal(t, reloaded.Phase, yielded.Payload.ExternalAction.Phase)
+	assert.Equal(t, reloaded.ExpiresAt, yielded.Payload.ExternalAction.ExpiresAt)
+
+	repersisted, err := json.Marshal(yielded.Payload.ExternalAction.Persistent())
+	require.NoError(t, err)
+	assert.NotContains(t, string(repersisted), "url")
+}
+
 func TestLarkPersonalWorkspace_ExecuteInvalidWaitingAndExecutorErrorsAreSafe(t *testing.T) {
 	invalidWaiting := &fakeLarkExecutor{result: &feishu.OperationResult{
 		OperationID: "op-sensitive",
