@@ -7,6 +7,7 @@ import (
 	"numind-server/internal/numind/biz/agent/stream"
 	"numind-server/internal/numind/biz/narration"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -41,6 +42,102 @@ func (f *fakeFullTool) Execute(_ context.Context, _ ToolInput) (ToolResult, erro
 		return nil, f.err
 	}
 	return ToolResult(f.out), nil
+}
+
+type toolCallIDCapturingFullTool struct {
+	BaseTool
+	mu  sync.Mutex
+	ids []string
+}
+
+func (t *toolCallIDCapturingFullTool) Name() string { return "tool_call_id_probe" }
+func (t *toolCallIDCapturingFullTool) Description() string {
+	return "capture adapter tool call identity"
+}
+func (t *toolCallIDCapturingFullTool) UserFacingName() string { return "工具调用标识探针" }
+func (t *toolCallIDCapturingFullTool) NarrationVerb() string  { return "检查" }
+func (t *toolCallIDCapturingFullTool) Execute(ctx context.Context, _ ToolInput) (ToolResult, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.ids = append(t.ids, ToolCallIDFromContext(ctx))
+	return ToolResult(`{"ok":true}`), nil
+}
+
+func (t *toolCallIDCapturingFullTool) snapshotIDs() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]string(nil), t.ids...)
+}
+
+func TestToolCallID_AdapterThreadsSyntheticIDAcrossExecuteNarrationAndSSE(t *testing.T) {
+	const runID uint64 = 810
+	provider, err := narration.NewProvider(narration.Config{
+		YAMLBytes:  []byte(narrationFixtureYAML),
+		BufferSize: 16,
+	})
+	require.NoError(t, err)
+	narrationCh, cleanup := provider.Subscribe(runID)
+	defer cleanup()
+
+	probe := &toolCallIDCapturingFullTool{}
+	adapter := adaptFullToEinoTool(probe, &RunHooks{NarrationProvider: provider})
+	streamCh := make(chan stream.Event, 16)
+	ctx := WithStreamState(WithRunID(context.Background(), runID), &StreamSessionState{Ch: streamCh, RunID: runID})
+
+	invokeAndCollect := func() (string, []narration.Event, []stream.Event) {
+		t.Helper()
+		_, invokeErr := adapter.InvokableRun(ctx, `{}`)
+		require.NoError(t, invokeErr)
+		ids := probe.snapshotIDs()
+		require.NotEmpty(t, ids)
+		executeID := ids[len(ids)-1]
+		require.NotEmpty(t, executeID, "adapter must inject the already-generated synthetic ID into Execute context")
+
+		narrationEvents := drainEvents(narrationCh, 100*time.Millisecond)
+		var streamEvents []stream.Event
+		for {
+			select {
+			case event := <-streamCh:
+				streamEvents = append(streamEvents, event)
+			default:
+				return executeID, narrationEvents, streamEvents
+			}
+		}
+	}
+
+	firstID, firstNarration, firstStream := invokeAndCollect()
+	require.Len(t, firstNarration, 2, "successful invocation emits use and result narration")
+	for _, event := range firstNarration {
+		assert.Equal(t, firstID, event.ToolCallID)
+	}
+	require.Len(t, firstStream, 2, "successful invocation emits start and result SSE")
+	for _, event := range firstStream {
+		switch event.Type {
+		case stream.EventToolCallStart:
+			var payload stream.ToolCallStartPayload
+			require.NoError(t, json.Unmarshal(event.Data, &payload))
+			assert.Equal(t, firstID, payload.ToolCallID)
+		case stream.EventToolCallResult:
+			var payload stream.ToolCallResultPayload
+			require.NoError(t, json.Unmarshal(event.Data, &payload))
+			assert.Equal(t, firstID, payload.ToolCallID)
+		default:
+			t.Fatalf("unexpected stream event %q", event.Type)
+		}
+	}
+
+	secondID, secondNarration, secondStream := invokeAndCollect()
+	assert.NotEqual(t, firstID, secondID, "different invocations must receive different synthetic IDs")
+	for _, event := range secondNarration {
+		assert.Equal(t, secondID, event.ToolCallID)
+	}
+	for _, event := range secondStream {
+		var payload struct {
+			ToolCallID string `json:"tool_call_id"`
+		}
+		require.NoError(t, json.Unmarshal(event.Data, &payload))
+		assert.Equal(t, secondID, payload.ToolCallID)
+	}
 }
 
 // ── tests: nil hooks back-compat ─────────────────────────────────────────────

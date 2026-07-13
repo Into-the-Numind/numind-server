@@ -169,7 +169,7 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 	}
 
 	// Execute the underlying tool (panic-guarded — see invokeToolGuarded).
-	result, execErr := a.invokeToolGuarded(ctx, input)
+	result, execErr := a.invokeToolGuarded(WithToolCallID(ctx, toolCallID), input)
 	var output string
 	if result != nil {
 		output = string(result)

@@ -25,6 +25,11 @@ type platformToolFactory struct {
 	skillPool     sandbox.SkillPool     // retained for forward compat (run_python uses sandbox.Pool, not SkillPool; load_skill does not need sandbox)
 	creditService credit.ICreditService // agent-mode-billing T9: image_gen explicit Reserve/Reconcile; nil = no billing (tests)
 
+	// lark workspace dependencies are injected as a complete pair. LoadTools
+	// fails closed to no Lark workspace tools when either side is absent.
+	larkSkillReader SkillReadExecutor
+	larkExecutor    LarkExecutor
+
 	// larkProviderOverride is a test-only seam (feishu-integration T10): when set,
 	// newLarkProvider returns it instead of building a Redis-backed feishu.Client
 	// from config. Production always leaves it nil → the real lazy build runs.
@@ -43,6 +48,23 @@ func SetFactoryCreditService(f ToolFactory, cs credit.ICreditService) {
 	if pf, ok := f.(*platformToolFactory); ok {
 		pf.creditService = cs
 	}
+}
+
+// SetFactoryLarkWorkspaceExecutors injects the controlled skill reader and
+// operation executor used by lark_skill_read and lark_execute. The pair is
+// all-or-nothing: passing either dependency as nil clears both registrations.
+func SetFactoryLarkWorkspaceExecutors(f ToolFactory, reader SkillReadExecutor, executor LarkExecutor) {
+	pf, ok := f.(*platformToolFactory)
+	if !ok {
+		return
+	}
+	if reader == nil || executor == nil {
+		pf.larkSkillReader = nil
+		pf.larkExecutor = nil
+		return
+	}
+	pf.larkSkillReader = reader
+	pf.larkExecutor = executor
 }
 
 // NewPlatformToolFactory returns a ToolFactory that loads all platform built-in tools.
@@ -119,9 +141,9 @@ func (f *platformToolFactory) DisplayName() string { return "平台内置工具"
 //
 // When f.ds is non-nil, memory_write + memory_read are appended.
 //
-// feishu-integration T10: when a 飞书 LarkAPIProvider can be built (feature flag on
-// + ds + Redis), the three lark_* tools (lark_create_doc / lark_send_message /
-// lark_read_bitable) are additionally appended — see newLarkProvider.
+// When both controlled Lark workspace dependencies are injected,
+// lark_skill_read and lark_execute are appended. Partial injection registers
+// neither tool. Legacy direct API/connect tools are intentionally not registered.
 func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMetadata, error) {
 	var attStore store.IAgentAttachmentStore
 	if f.ds != nil {
@@ -208,35 +230,15 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		)
 	}
 
-	// feishu-integration T10: the three 飞书 (Lark) tools. Registered ONLY when the
-	// integration is enabled AND a per-user LarkAPIProvider can be built from the
-	// store's ThirdPartyAccounts (lazy build — NewPlatformToolFactory's signature is
-	// unchanged; the feishu client is derived from the already-injected ds). When the
-	// flag is off, or the client can't be built (missing AES key / Redis down), the
-	// tools are simply not registered — they'd otherwise only soft-error per call.
-	if provider := f.newLarkProvider(); provider != nil {
+	if f.larkSkillReader != nil && f.larkExecutor != nil {
 		tools = append(tools,
-			&larkCreateDocTool{provider: provider},
-			&larkSendMessageTool{provider: provider},
-			&larkReadBitableTool{provider: provider},
+			&larkSkillReadTool{executor: f.larkSkillReader},
+			&larkExecuteTool{executor: f.larkExecutor},
 		)
 		metadata = append(metadata,
-			ToolMetadata{ToolName: "lark_create_doc", DisplayName: "创建飞书文档", Description: "Create a 飞书 document and write content into it (scope docx:document).", Source: "platform", RiskLevel: "moderate", Category: "飞书"},
-			ToolMetadata{ToolName: "lark_send_message", DisplayName: "发送飞书消息", Description: "Send a 飞书 message to a user or chat (scope im:message).", Source: "platform", RiskLevel: "moderate", Category: "飞书"},
-			ToolMetadata{ToolName: "lark_read_bitable", DisplayName: "读取飞书多维表格", Description: "Read records from a 飞书 Bitable table (scope bitable:app:readonly).", Source: "platform", RiskLevel: "safe", Category: "飞书"},
+			ToolMetadata{ToolName: "lark_skill_read", DisplayName: "读取飞书技能", Description: "Read one controlled page from the official embedded lark-cli skills.", Source: "platform", RiskLevel: "safe", Category: "飞书"},
+			ToolMetadata{ToolName: "lark_execute", DisplayName: "执行飞书工作区操作", Description: "Execute controlled Docs/Base/Wiki argv with verified skill receipts.", Source: "platform", RiskLevel: "moderate", Category: "飞书"},
 		)
-
-		// feishu-agent-connect R3: the feishu_connect tool models the CONNECTION
-		// itself as an agent tool (agent drives the link + resume; credentials never
-		// reach the LLM). Registered alongside the ops tools, gated on the same
-		// flag/Redis/key preconditions (newFeishuConnector returns nil → not
-		// registered). The agent uses it to connect 飞书 before the ops tools run.
-		if connector := f.newFeishuConnector(); connector != nil {
-			tools = append(tools, &feishuConnectTool{connector: connector})
-			metadata = append(metadata,
-				ToolMetadata{ToolName: "feishu_connect", DisplayName: "连接飞书", Description: "Connect the user's 飞书 account (agent-driven link + auto-resume; no credentials exposed).", Source: "platform", RiskLevel: "moderate", Category: "飞书"},
-			)
-		}
 	}
 	return tools, metadata, nil
 }
@@ -252,6 +254,8 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 // home base (feishu.home_base) — it manages the user's token (decrypt/refresh moved
 // into lark-cli, no cipher / Redis refresh lock needed here). The provider gates on
 // the DB connected flag + lark-cli auth status. Built once per LoadTools.
+//
+//nolint:unused // Kept only for Task20's atomic legacy source removal.
 func (f *platformToolFactory) newLarkProvider() feishu.LarkAPIProvider {
 	// Test seam: a directly-injected provider short-circuits the config build.
 	if f.larkProviderOverride != nil {
@@ -279,6 +283,8 @@ func (f *platformToolFactory) newLarkProvider() feishu.LarkAPIProvider {
 // buildLarkRunner builds the lark-cli runner pinned to the persistent per-user home
 // base (G1-home). Returns nil (logged) on a build failure. Shared by newLarkProvider
 // (ops) and newFeishuConnector (provisioning + device-code auth).
+//
+//nolint:unused // Kept only for Task20's atomic legacy source removal.
 func (f *platformToolFactory) buildLarkRunner() *feishu.LarkCLIRunner {
 	homeBase := viper.GetString("feishu.home_base")
 	if homeBase == "" {
@@ -299,6 +305,8 @@ func (f *platformToolFactory) buildLarkRunner() *feishu.LarkCLIRunner {
 //
 // Device-code (G2-authorize): no signer / nonce / token exchanger / redirect_uri
 // anymore. Dependencies mirror biz/feishu_adapter.go's buildFeishuService.
+//
+//nolint:unused // Kept only for Task20's atomic legacy source removal.
 func (f *platformToolFactory) newFeishuConnector() feishuConnector {
 	// Test seam: a directly-injected connector short-circuits the config build.
 	if f.feishuConnectorOverride != nil {
