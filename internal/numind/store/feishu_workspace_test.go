@@ -880,6 +880,62 @@ func TestFeishuWorkspaceStore_SessionLeaseAndTenantGeneration(t *testing.T) {
 	require.NotNil(t, got.CompletedAt)
 }
 
+func TestFeishuWorkspaceStore_CreateOrGetPendingSessionSerializesIntentAcrossInstances(t *testing.T) {
+	ctx := context.Background()
+	firstStore := newFeishuWorkspaceTestStore(t)
+	secondStore := newFeishuWorkspaceStore(firstStore.db)
+	createFeishuAccount(t, firstStore, 7, 3)
+	operationID := "operation-1"
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	first := newFeishuSession("session-first", 7, 3)
+	first.OperationID = &operationID
+	first.RequestedScopesJSON = []byte(`["docx:document:readonly","offline_access"]`)
+	first.CreatedAt = now
+	stored, created, err := firstStore.CreateOrGetPendingSession(ctx, first)
+	require.NoError(t, err)
+	require.True(t, created)
+	require.Equal(t, "session-first", stored.ID)
+
+	duplicate := newFeishuSession("session-duplicate", 7, 3)
+	duplicate.OperationID = &operationID
+	duplicate.RequestedScopesJSON = append([]byte(nil), first.RequestedScopesJSON...)
+	got, created, err := secondStore.CreateOrGetPendingSession(ctx, duplicate)
+	require.NoError(t, err)
+	require.False(t, created)
+	require.Equal(t, "session-first", got.ID, "the durable pending session is the cross-instance SOT")
+
+	claimed, err := firstStore.ClaimSession(ctx, 7, 3, stored.ID, "worker-complete", now, now.Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, claimed)
+	completedAt := now.Add(time.Second)
+	require.NoError(t, firstStore.UpdateSessionState(
+		ctx, 7, 3, stored.ID, "worker-complete", model.FeishuAuthSessionCompleted, completedAt, &completedAt,
+	))
+	afterCompletion := newFeishuSession("session-after-completion", 7, 3)
+	afterCompletion.OperationID = &operationID
+	afterCompletion.RequestedScopesJSON = append([]byte(nil), first.RequestedScopesJSON...)
+	got, created, err = secondStore.CreateOrGetPendingSession(ctx, afterCompletion)
+	require.NoError(t, err)
+	require.False(t, created)
+	require.Equal(t, stored.ID, got.ID, "an operation recovery must observe its durable completion after restart")
+	require.Equal(t, model.FeishuAuthSessionCompleted, got.State)
+
+	wrongGeneration := newFeishuSession("session-stale", 7, 2)
+	wrongGeneration.OperationID = &operationID
+	wrongGeneration.RequestedScopesJSON = append([]byte(nil), first.RequestedScopesJSON...)
+	_, _, err = secondStore.CreateOrGetPendingSession(ctx, wrongGeneration)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+
+	manual := newFeishuSession("session-manual", 7, 3)
+	manual.OperationID = nil
+	manual.RequestedScopesJSON = []byte(`["offline_access"]`)
+	manualStored, created, err := secondStore.CreateOrGetPendingSession(ctx, manual)
+	require.NoError(t, err)
+	require.True(t, created)
+	require.Equal(t, "session-manual", manualStored.ID, "manual intent must not alias an operation recovery")
+}
+
 func TestFeishuWorkspaceStore_OperationLeaseRejectsStaleGeneration(t *testing.T) {
 	ctx := context.Background()
 	s := newFeishuWorkspaceTestStore(t)

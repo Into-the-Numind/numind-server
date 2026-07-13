@@ -873,6 +873,22 @@ func TestOperationService_NeverConnectedCreatesPlaceholderWithoutOverwritingExis
 	})
 }
 
+func TestOperationService_AppReadyContinuesToExactUserAuthorization(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionAppReady, 1, "cli_app_ready")
+	h.recovery.action = &OperationAction{SessionID: "session-user-after-app"}
+
+	got, err := h.service.Execute(h.ctx, operationDocsFetchRequest(13, "tc-app-ready"))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingUserAuth, got.State)
+	require.Equal(t, model.FeishuAuthPhaseUserAuth, got.Action.Phase)
+	require.Equal(t, []string{"docx:document:readonly"}, got.Action.Scopes)
+	calls := h.recovery.snapshot()
+	require.Len(t, calls, 1)
+	require.Equal(t, RecoveryReauth, calls[0].Kind)
+	require.Equal(t, []string{"docx:document:readonly"}, calls[0].Scopes)
+}
+
 func TestOperationService_ConcurrentSameKeyRunsOnce(t *testing.T) {
 	h := newOperationHarness(t)
 	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
@@ -994,6 +1010,42 @@ func TestOperationService_StructuredRecoveryUsesExactScopesAndSealsVault(t *test
 	require.Nil(t, stored.LeaseUntil)
 	require.NotContains(t, string(stored.ResultSummaryJSON), "verification.example")
 	require.NotContains(t, string(stored.ResultSummaryJSON), "raw CLI")
+}
+
+func TestOperationService_AppScopeRecoveryPassesConsoleURLTransientlyOnly(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	h.recovery.action = &OperationAction{SessionID: "session-app-scope", URL: "https://open.feishu.cn/app/cli_test/auth"}
+	h.runner.steps = []operationRunnerStep{{
+		result: &CLIResult{
+			InvocationStarted: true,
+			ExitCode:          1,
+			Envelope: &CLIEnvelope{OK: false, Identity: "user", Error: &CLIError{
+				Type:                 "authorization",
+				Subtype:              "app_scope_not_applied",
+				Identity:             "user",
+				ConsoleURL:           "https://open.feishu.cn/app/cli_test/auth",
+				MissingScopes:        []string{"docx:document:readonly"},
+				PermissionViolations: json.RawMessage(`[{"level":"app"}]`),
+			}},
+		},
+		err: errors.New("structured app-scope failure"),
+	}}
+
+	got, err := h.service.Execute(h.ctx, operationDocsFetchRequest(151, "tc-app-scope"))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingAppScope, got.State)
+	require.Equal(t, model.FeishuAuthPhaseAppScope, got.Action.Phase)
+
+	calls := h.recovery.snapshot()
+	require.Len(t, calls, 1)
+	require.Equal(t, RecoveryAppScope, calls[0].Kind)
+	require.Equal(t, "https://open.feishu.cn/app/cli_test/auth", calls[0].ConsoleURL)
+
+	stored, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, got.OperationID)
+	require.NoError(t, err)
+	require.NotContains(t, string(stored.ResultSummaryJSON), "open.feishu.cn")
+	require.NotContains(t, string(stored.ResultSummaryJSON), "console")
 }
 
 func TestOperationService_CreateAppAndReauthRecoveriesUseCatalogScopes(t *testing.T) {
@@ -1406,7 +1458,8 @@ func TestOperationService_ConnectionWaitThenAppendInvalidatesProofBeforeResume(t
 	require.Equal(t, model.FeishuOperationSucceeded, appendResult.State)
 	h.recovery.action = nil
 
-	resumed, err := h.service.Resume(h.ctx, 7, waiting.OperationID)
+	restartedService := newHarnessOperationService(t, h, h.dataStore.FeishuWorkspace())
+	resumed, err := restartedService.Resume(h.ctx, 7, waiting.OperationID)
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationWaitingConfirmation, resumed.State)
 	require.Len(t, h.confirmation.calls, 1)
@@ -2398,7 +2451,8 @@ func TestOperationService_ResumeReplaysEncryptedRequestAndStopsRepeatedRecovery(
 	require.Equal(t, model.FeishuOperationWaitingUserAuth, waiting.State)
 	req.Argv[3] = "mutated-after-persist"
 
-	resumed, err := h.service.Resume(h.ctx, 7, waiting.OperationID)
+	restartedService := newHarnessOperationService(t, h, h.dataStore.FeishuWorkspace())
+	resumed, err := restartedService.Resume(h.ctx, 7, waiting.OperationID)
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationFailed, resumed.State)
 	calls, argv := h.runner.snapshot()

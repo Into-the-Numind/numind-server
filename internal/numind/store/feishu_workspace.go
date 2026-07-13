@@ -26,9 +26,11 @@ type IFeishuWorkspaceStore interface {
 	PutVaultCAS(ctx context.Context, vault *model.FeishuCLIVault, expectedRevision uint64) error
 	DeleteVault(ctx context.Context, userID uint, generation uint64) error
 	CreateSession(ctx context.Context, session *model.FeishuAuthSession) error
+	CreateOrGetPendingSession(ctx context.Context, session *model.FeishuAuthSession) (*model.FeishuAuthSession, bool, error)
 	GetSessionForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuAuthSession, error)
 	ClaimSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
 	UpdateSessionState(ctx context.Context, userID uint, generation uint64, id, owner, state string, now time.Time, completedAt *time.Time) error
+	UpdateAccountConnectionState(ctx context.Context, userID uint, generation uint64, state string, connected bool, now time.Time) error
 	CreateOrGetOperation(ctx context.Context, operation *model.FeishuOperation) (*model.FeishuOperation, error)
 	CreateOrGetOperationWithProof(ctx context.Context, operation *model.FeishuOperation, sourceOperationID string) (*model.FeishuOperation, error)
 	TryClaimExecutionGate(ctx context.Context, userID uint, generation uint64, owner, operationID string, now, leaseUntil time.Time) (bool, error)
@@ -136,6 +138,85 @@ func (s *feishuWorkspaceStore) CreateSession(ctx context.Context, session *model
 	return nil
 }
 
+// CreateOrGetPendingSession serializes one authorization intent through the
+// tenant's account row. The intent key is tenant generation, optional operation,
+// phase, and canonical requested scopes. URLs are deliberately not part of the
+// persisted session and therefore cannot influence reuse.
+func (s *feishuWorkspaceStore) CreateOrGetPendingSession(
+	ctx context.Context,
+	session *model.FeishuAuthSession,
+) (*model.FeishuAuthSession, bool, error) {
+	if session == nil {
+		return nil, false, errors.New("create or get feishu auth session: nil session")
+	}
+	var stored *model.FeishuAuthSession
+	created := false
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var account model.UserThirdPartyAccount
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ? AND provider = ?", session.UserID, "lark").
+			Take(&account).Error; err != nil {
+			return err
+		}
+		if account.Generation != session.Generation {
+			return gorm.ErrRecordNotFound
+		}
+
+		query := tx.Where(
+			"user_id = ? AND generation = ? AND phase = ? AND requested_scopes_json = ? AND state = ?",
+			session.UserID,
+			session.Generation,
+			session.Phase,
+			string(session.RequestedScopesJSON),
+			model.FeishuAuthSessionPending,
+		)
+		if session.OperationID == nil {
+			query = query.Where("operation_id IS NULL")
+		} else {
+			query = query.Where("operation_id = ?", *session.OperationID)
+		}
+		var existing model.FeishuAuthSession
+		if err := query.Order("created_at ASC, id ASC").Take(&existing).Error; err == nil {
+			stored = &existing
+			return nil
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		// Operation recovery completion is durable: after the worker dispatches a
+		// resume, another service instance must observe the completed intent rather
+		// than opening the same authorization flow again. Manual intents are
+		// intentionally excluded so a later explicit reconnect can start fresh.
+		if session.OperationID != nil {
+			if err := tx.Where(
+				"user_id = ? AND generation = ? AND operation_id = ? AND phase = ? AND requested_scopes_json = ? AND state = ?",
+				session.UserID,
+				session.Generation,
+				*session.OperationID,
+				session.Phase,
+				string(session.RequestedScopesJSON),
+				model.FeishuAuthSessionCompleted,
+			).Order("completed_at DESC, id ASC").Take(&existing).Error; err == nil {
+				stored = &existing
+				return nil
+			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+		}
+
+		candidate := *session
+		if err := tx.Create(&candidate).Error; err != nil {
+			return err
+		}
+		stored = &candidate
+		created = true
+		return nil
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("create or get feishu auth session: %w", err)
+	}
+	return stored, created, nil
+}
+
 // GetSessionForUser returns a session only when ID, tenant, and generation all match.
 func (s *feishuWorkspaceStore) GetSessionForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuAuthSession, error) {
 	var session model.FeishuAuthSession
@@ -190,6 +271,39 @@ func (s *feishuWorkspaceStore) UpdateSessionState(ctx context.Context, userID ui
 		})
 	if result.Error != nil {
 		return fmt.Errorf("update feishu auth session state: %w", result.Error)
+	}
+	if result.RowsAffected != 1 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+// UpdateAccountConnectionState changes only the active tenant generation. It
+// keeps the compatibility Connected fields synchronized with the new state
+// machine without touching app metadata or credentials.
+func (s *feishuWorkspaceStore) UpdateAccountConnectionState(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	state string,
+	connected bool,
+	now time.Time,
+) error {
+	var connectedAt *time.Time
+	if connected {
+		value := now.UTC()
+		connectedAt = &value
+	}
+	result := s.db.WithContext(ctx).
+		Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ? AND generation = ?", userID, "lark", generation).
+		Updates(map[string]any{
+			"connection_state": state,
+			"connected":        connected,
+			"connected_at":     connectedAt,
+		})
+	if result.Error != nil {
+		return fmt.Errorf("update feishu account connection state: %w", result.Error)
 	}
 	if result.RowsAffected != 1 {
 		return gorm.ErrRecordNotFound

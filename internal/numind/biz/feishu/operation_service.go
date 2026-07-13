@@ -115,6 +115,9 @@ type RecoveryRequest struct {
 	ToolCallID  string
 	Kind        RecoveryKind
 	Scopes      []string
+	// ConsoleURL is transient evidence from the current, classifier-approved
+	// app-scope error. It must never be copied into operation/session persistence.
+	ConsoleURL string
 }
 
 // ConfirmationSummary is the non-sensitive, server-owned high-risk metadata
@@ -831,12 +834,13 @@ func (s *FeishuOperationService) executeClaimed(
 		kind := RecoveryCreateApp
 		waitingState := model.FeishuOperationWaitingConnection
 		publicCode := PublicCodeConnectionRequired
-		if account.ConnectionState == model.FeishuConnectionReauthRequired {
+		switch account.ConnectionState {
+		case model.FeishuConnectionAppReady, model.FeishuConnectionWaitingUserAuth, model.FeishuConnectionReauthRequired:
 			kind = RecoveryReauth
 			waitingState = model.FeishuOperationWaitingUserAuth
 			publicCode = PublicCodeReauthRequired
 		}
-		return s.startRecoveryAndWait(ctx, operation, leaseOwner, persisted, kind, persisted.Scopes, waitingState, priorRecoverySignature, publicCode)
+		return s.startRecoveryAndWait(ctx, operation, leaseOwner, persisted, kind, persisted.Scopes, waitingState, priorRecoverySignature, publicCode, "")
 	}
 
 	if persisted.Risk == RiskHigh && !proofUsable {
@@ -895,8 +899,12 @@ func (s *FeishuOperationService) executeClaimed(
 					(classification.Recovery == RecoveryCreateApp || classification.Recovery == RecoveryReauth) {
 					recoveryScopes = append([]string(nil), persisted.Scopes...)
 				}
+				consoleURL := ""
+				if classification.Recovery == RecoveryAppScope && result != nil && result.Envelope != nil && result.Envelope.Error != nil {
+					consoleURL = result.Envelope.Error.ConsoleURL
+				}
 				return s.startRecoveryAndWait(ctx, operation, leaseOwner, persisted, classification.Recovery,
-					recoveryScopes, waitingState, priorRecoverySignature, classification.PublicCode)
+					recoveryScopes, waitingState, priorRecoverySignature, classification.PublicCode, consoleURL)
 			}
 		}
 		terminal := classification.TerminalState
@@ -994,6 +1002,7 @@ func (s *FeishuOperationService) startRecoveryAndWait(
 	waitingState string,
 	priorSignature string,
 	publicCode string,
+	consoleURL string,
 ) (*OperationResult, error) {
 	signature := operationRecoverySignature(kind, scopes)
 	if priorSignature != "" && priorSignature == signature {
@@ -1002,7 +1011,7 @@ func (s *FeishuOperationService) startRecoveryAndWait(
 	action, err := s.recovery.StartRecovery(ctx, RecoveryRequest{
 		UserID: operation.UserID, Generation: operation.Generation, OperationID: operation.ID,
 		AgentRunID: operation.AgentRunID, ToolCallID: operation.ToolCallID,
-		Kind: kind, Scopes: append([]string(nil), scopes...),
+		Kind: kind, Scopes: append([]string(nil), scopes...), ConsoleURL: consoleURL,
 	})
 	if err != nil || action == nil {
 		return s.commitTerminal(ctx, operation, leaseOwner, model.FeishuOperationFailed, PublicCodeFailed, nil, false)

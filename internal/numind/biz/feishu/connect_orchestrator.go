@@ -12,9 +12,9 @@
 //	BLOCKING + isomorphic to each other:
 //	  phase 1 (create_app): `lark-cli config init --new` — the user builds the app;
 //	                        the process prints a page URL and exits on completion.
-//	  phase 2 (authorize):  `lark-cli auth login --domain docs,im,base` — the user
-//	                        grants scopes; the process prints a verification URL and
-//	                        exits on completion (token persisted in the home).
+//	  phase 2 (authorize):  the compatibility authorizer starts its fixed login;
+//	                        the process prints a verification URL and exits on
+//	                        completion (token persisted in the home).
 //	lark-cli stores + auto-refreshes the token inside the user's persistent home; our
 //	DB row carries ONLY connection metadata (app_id + connected) and is reconciled
 //	FROM the home on the done path — used for UI/status, NEVER as the phase truth.
@@ -46,11 +46,10 @@ import (
 	"numind-server/internal/pkg/model"
 )
 
-// DefaultScopes documents the first-batch business domains requested in one
-// device-code grant (docs / im / base) so every 飞书 ops tool works after a single
-// authorization. Kept exported for parity with the pre-device-code wiring; the
-// actual request uses lark-cli's --domain (authLoginDomains).
-const DefaultScopes = "docx:document im:message bitable:app:readonly"
+// DefaultScopes is retained for compatibility with callers that render the
+// settings-page connection description. New incremental authorization requests
+// only the durable identity scope here; business scopes come from the Catalog.
+const DefaultScopes = "offline_access"
 
 // Connect phase discriminants returned by NextConnectStep.
 const (
