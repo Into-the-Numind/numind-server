@@ -490,3 +490,79 @@ func TestFeishuWorkspaceStore_TransitionAllowsBusinessResultFields(t *testing.T)
 	require.EqualValues(t, 1, got.AttemptCount)
 	require.Equal(t, []byte("encrypted-result"), got.ResultCiphertext)
 }
+
+func TestFeishuWorkspaceStore_TransitionReleasesLeaseOutsideExecuting(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 1)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	for index, target := range []string{
+		model.FeishuOperationWaitingConnection,
+		model.FeishuOperationWaitingAppScope,
+		model.FeishuOperationWaitingUserAuth,
+		model.FeishuOperationWaitingConfirmation,
+		model.FeishuOperationSucceeded,
+		model.FeishuOperationFailed,
+		model.FeishuOperationUnknown,
+		model.FeishuOperationCancelled,
+	} {
+		t.Run(target, func(t *testing.T) {
+			op := newFeishuOperation(
+				fmt.Sprintf("operation-release-%d", index),
+				7,
+				1,
+				fmt.Sprintf("key-release-%d", index),
+			)
+			stored, err := s.CreateOrGetOperation(ctx, op)
+			require.NoError(t, err)
+			claimed, err := s.ClaimOperation(ctx, 7, 1, stored.ID, "worker-a", now, now.Add(time.Minute))
+			require.NoError(t, err)
+			require.True(t, claimed)
+
+			require.NoError(t, s.TransitionOperation(
+				ctx,
+				7,
+				1,
+				stored.ID,
+				"worker-a",
+				[]string{model.FeishuOperationNotStarted},
+				target,
+				now.Add(time.Second),
+				nil,
+			))
+
+			got, err := s.GetOperationForUser(ctx, 7, 1, stored.ID)
+			require.NoError(t, err)
+			require.Empty(t, got.LeaseOwner)
+			require.Nil(t, got.LeaseUntil)
+		})
+	}
+
+	t.Run("executing retains lease", func(t *testing.T) {
+		op := newFeishuOperation("operation-retain", 7, 1, "key-retain")
+		stored, err := s.CreateOrGetOperation(ctx, op)
+		require.NoError(t, err)
+		leaseUntil := now.Add(time.Minute)
+		claimed, err := s.ClaimOperation(ctx, 7, 1, stored.ID, "worker-a", now, leaseUntil)
+		require.NoError(t, err)
+		require.True(t, claimed)
+		require.NoError(t, s.TransitionOperation(
+			ctx,
+			7,
+			1,
+			stored.ID,
+			"worker-a",
+			[]string{model.FeishuOperationNotStarted},
+			model.FeishuOperationExecuting,
+			now.Add(time.Second),
+			nil,
+		))
+
+		got, err := s.GetOperationForUser(ctx, 7, 1, stored.ID)
+		require.NoError(t, err)
+		require.Equal(t, "worker-a", got.LeaseOwner)
+		require.NotNil(t, got.LeaseUntil)
+		require.WithinDuration(t, leaseUntil, *got.LeaseUntil, time.Millisecond)
+	})
+}

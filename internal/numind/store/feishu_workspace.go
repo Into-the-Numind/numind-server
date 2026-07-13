@@ -266,6 +266,10 @@ func (s *feishuWorkspaceStore) TransitionOperation(ctx context.Context, userID u
 		updates[key] = value
 	}
 	updates["state"] = to
+	if to != model.FeishuOperationExecuting {
+		updates["lease_owner"] = ""
+		updates["lease_until"] = nil
+	}
 
 	activeGeneration := s.db.WithContext(ctx).
 		Model(&model.UserThirdPartyAccount{}).
