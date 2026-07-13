@@ -447,7 +447,7 @@ git commit -m "feat(feishu): enforce docs base wiki command policy"
 
 **Files:** `error_classifier.go`、`error_classifier_test.go`、`.ndf/features/feishu-personal-workspace/fixtures/*.json`。
 
-- [ ] **Step 1: 把 S2 脱敏错误保存为 fixtures 并写红测**
+- [x] **Step 1: 把 S2 脱敏错误保存为 fixtures 并写红测**
 
 只保留 `ok/type/subtype/code/missing_scopes/permission_violations/identity/console_url_present`，删除 URL 值、app id 和用户信息。分类断言：missing_scope exact scopes → user/app scope；unauthorized/revoked → reauth；资源 ACL → 不 OAuth；429/5xx/network/timeout；未知 code fail closed。
 
@@ -467,13 +467,13 @@ func TestErrorClassifier_TimeoutAfterWriteIsUnknown(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 运行红测**
+- [x] **Step 2: 运行红测**
 
 Run: `go test ./internal/numind/biz/feishu -run 'ErrorClassifier' -count=1`
 
 Expected: FAIL，classifier 不存在。
 
-- [ ] **Step 3: 实现固定 code/subtype 分类表**
+- [x] **Step 3: 实现固定 code/subtype 分类表**
 
 ```go
 type RecoveryKind string
@@ -497,13 +497,13 @@ type Classification struct {
 
 只允许 fixture 覆盖的 code/subtype 设置 `ProvenNoSideEffect=true`。不得用中文/英文 message substring 猜授权类型。相同 scopes 连续两次返回同一 recovery 时由上层停止循环。
 
-- [ ] **Step 4: 绿测**
+- [x] **Step 4: 绿测**
 
 Run: `go test ./internal/numind/biz/feishu -run 'ErrorClassifier' -count=1`
 
 Expected: PASS。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/numind/biz/feishu/error_classifier* .ndf/features/feishu-personal-workspace/fixtures
