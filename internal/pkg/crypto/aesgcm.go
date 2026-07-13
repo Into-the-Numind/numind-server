@@ -66,25 +66,37 @@ func NewCipher(keyB64 string) (*Cipher, error) {
 // nonce || ciphertext(+tag). A nil/empty plaintext is valid (yields a blob that
 // decrypts back to an empty slice).
 func (c *Cipher) Encrypt(plain []byte) ([]byte, error) {
+	return c.EncryptWithAAD(plain, nil)
+}
+
+// EncryptWithAAD seals plaintext and authenticates aad without including it in
+// the ciphertext. Decryption must supply the exact same aad byte sequence.
+func (c *Cipher) EncryptWithAAD(plain, aad []byte) ([]byte, error) {
 	nonce := make([]byte, c.aead.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, fmt.Errorf("crypto: read nonce: %w", err)
 	}
 	// Seal appends the ciphertext to its first arg (the nonce), giving the
 	// nonce-prefixed wire format in a single allocation.
-	return c.aead.Seal(nonce, nonce, plain, nil), nil
+	return c.aead.Seal(nonce, nonce, plain, aad), nil
 }
 
 // Decrypt parses nonce || ciphertext and returns the authenticated plaintext.
 // It errors (never panics) on blobs shorter than the nonce, on a wrong key, or
 // on any tampering (GCM auth-tag mismatch).
 func (c *Cipher) Decrypt(blob []byte) ([]byte, error) {
+	return c.DecryptWithAAD(blob, nil)
+}
+
+// DecryptWithAAD opens a blob only when its authentication tag and the exact
+// aad supplied at encryption time both verify.
+func (c *Cipher) DecryptWithAAD(blob, aad []byte) ([]byte, error) {
 	ns := c.aead.NonceSize()
 	if len(blob) < ns {
 		return nil, fmt.Errorf("crypto: ciphertext too short: %d < nonce size %d", len(blob), ns)
 	}
 	nonce, ct := blob[:ns], blob[ns:]
-	plain, err := c.aead.Open(nil, nonce, ct, nil)
+	plain, err := c.aead.Open(nil, nonce, ct, aad)
 	if err != nil {
 		// Do NOT include the blob contents in the error (avoid leaking ciphertext).
 		return nil, fmt.Errorf("crypto: decrypt failed (wrong key or tampered): %w", err)
