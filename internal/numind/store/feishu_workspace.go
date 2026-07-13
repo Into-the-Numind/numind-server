@@ -269,9 +269,7 @@ func (s *feishuWorkspaceStore) CreateOrGetOperationWithProof(
 			}
 			return err
 		}
-		if source.UserID != operation.UserID || source.Generation != operation.Generation ||
-			source.AgentRunID != operation.AgentRunID || source.State != model.FeishuOperationSucceeded ||
-			(source.CommandPath != "docs +create" && source.CommandPath != "wiki +node-create") {
+		if !isSucceededCreateProofSource(&source, operation.UserID, operation.Generation, operation.AgentRunID) {
 			return ErrFeishuProofReservationUnavailable
 		}
 
@@ -298,12 +296,8 @@ func (s *feishuWorkspaceStore) CreateOrGetOperationWithProof(
 			return err
 		}
 
-		var intermediateWrites int64
-		if err := tx.Model(&model.FeishuOperation{}).
-			Where("user_id = ? AND generation = ? AND agent_run_id = ?", operation.UserID, operation.Generation, operation.AgentRunID).
-			Where("command_path = ?", "docs +update").
-			Where("created_at >= ?", source.CreatedAt).
-			Count(&intermediateWrites).Error; err != nil {
+		intermediateWrites, err := countProofBlockingDocumentUpdates(tx, &source, operation.ID)
+		if err != nil {
 			return err
 		}
 		if intermediateWrites != 0 {
@@ -486,9 +480,44 @@ func (s *feishuWorkspaceStore) isOperationProofBound(
 	return count == 1, nil
 }
 
+func isSucceededCreateProofSource(
+	source *model.FeishuOperation,
+	userID uint,
+	generation uint64,
+	agentRunID uint64,
+) bool {
+	return source != nil && source.UserID == userID && source.Generation == generation &&
+		source.AgentRunID == agentRunID && source.State == model.FeishuOperationSucceeded &&
+		source.FinishedAt != nil &&
+		(source.CommandPath == "docs +create" || source.CommandPath == "wiki +node-create")
+}
+
+func countProofBlockingDocumentUpdates(
+	db *gorm.DB,
+	source *model.FeishuOperation,
+	consumerOperationID string,
+) (int64, error) {
+	if db == nil || source == nil || source.FinishedAt == nil {
+		return 0, ErrFeishuProofReservationUnavailable
+	}
+	query := db.Model(&model.FeishuOperation{}).
+		Where("user_id = ? AND generation = ? AND agent_run_id = ?", source.UserID, source.Generation, source.AgentRunID).
+		Where("command_path = ?", "docs +update").
+		Where("(created_at >= ? OR started_at >= ?)", *source.FinishedAt, *source.FinishedAt)
+	if consumerOperationID != "" {
+		query = query.Where("id <> ?", consumerOperationID)
+	}
+	var count int64
+	if err := query.Count(&count).Error; err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 // IsOperationProofUsable revalidates the durable proof binding and rejects it
-// when any other document update was created after the source. Callers must
-// hold the account execution gate while checking and acting on this result.
+// when any other document update was created or started on/after the source's
+// execution finish. Callers must hold the account execution gate while checking
+// and acting on this result.
 func (s *feishuWorkspaceStore) IsOperationProofUsable(
 	ctx context.Context,
 	userID uint,
@@ -505,21 +534,19 @@ func (s *feishuWorkspaceStore) IsOperationProofUsable(
 
 	var source model.FeishuOperation
 	if err := s.db.WithContext(ctx).
-		Where("id = ? AND user_id = ? AND generation = ? AND agent_run_id = ?", sourceOperationID, userID, generation, agentRunID).
-		Where("state = ? AND command_path IN ?", model.FeishuOperationSucceeded, []string{"docs +create", "wiki +node-create"}).
+		Where("id = ?", sourceOperationID).
 		Take(&source).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return false, nil
 		}
 		return false, fmt.Errorf("load feishu proof source: %w", err)
 	}
+	if !isSucceededCreateProofSource(&source, userID, generation, agentRunID) {
+		return false, nil
+	}
 
-	var intermediateWrites int64
-	if err := s.db.WithContext(ctx).Model(&model.FeishuOperation{}).
-		Where("user_id = ? AND generation = ? AND agent_run_id = ?", userID, generation, agentRunID).
-		Where("command_path = ? AND id <> ?", "docs +update", consumerOperationID).
-		Where("created_at >= ?", source.CreatedAt).
-		Count(&intermediateWrites).Error; err != nil {
+	intermediateWrites, err := countProofBlockingDocumentUpdates(s.db.WithContext(ctx), &source, consumerOperationID)
+	if err != nil {
 		return false, fmt.Errorf("revalidate feishu proof usage: %w", err)
 	}
 	return intermediateWrites == 0, nil

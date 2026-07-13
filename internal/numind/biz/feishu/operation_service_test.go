@@ -1234,6 +1234,55 @@ func TestOperationService_ConnectionWaitThenAppendInvalidatesProofBeforeResume(t
 	require.Equal(t, 2, calls)
 }
 
+func TestOperationService_UpdateCreatedBeforeCreateButStartedAfterFinishInvalidatesOverwriteProof(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionNone, 1, "")
+	const (
+		existingToken = "doxcnExistingBeforeCreate123"
+		createdToken  = "doxcnCreatedAfterWait123"
+	)
+	h.runner.steps = []operationRunnerStep{
+		{result: operationOKResult(`{"document":{"document_id":"` + createdToken + `","url":"https://acme.feishu.cn/docx/` + createdToken + `"}}`)},
+		{result: operationOKResult(`{"revision_id":2}`)},
+		{result: operationOKResult(`{"revision_id":3}`)},
+	}
+
+	waiting, err := h.service.Execute(h.ctx, operationDocsAppendRequest(7, 340, "tc-append-waiting", existingToken))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingConnection, waiting.State)
+	require.NoError(t, h.db.Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ?", 7, ProviderLark).
+		Updates(map[string]any{
+			"connection_state": model.FeishuConnectionConnected,
+			"connected":        true,
+			"app_id":           "cli_existing",
+		}).Error)
+
+	created, err := h.service.Execute(h.ctx, operationDocsCreateRequest(7, 340, "tc-create", "Empty", nil))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, created.State)
+	h.recovery.action = nil
+	resumed, err := h.service.Resume(h.ctx, 7, waiting.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, resumed.State)
+
+	storedWaiting, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, waiting.OperationID)
+	require.NoError(t, err)
+	storedCreated, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, created.OperationID)
+	require.NoError(t, err)
+	require.True(t, storedWaiting.CreatedAt.Before(storedCreated.CreatedAt), "the waiting update must predate the create row")
+	require.NotNil(t, storedWaiting.StartedAt)
+	require.NotNil(t, storedCreated.FinishedAt)
+	require.False(t, storedWaiting.StartedAt.Before(*storedCreated.FinishedAt), "the resumed update starts on or after the create execution boundary")
+
+	overwrite, err := h.service.Execute(h.ctx, operationDocsOverwriteRequest(7, 340, "tc-overwrite", createdToken))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingConfirmation, overwrite.State)
+	require.Len(t, h.confirmation.calls, 1)
+	calls, _ := h.runner.snapshot()
+	require.Equal(t, 2, calls, "the unsafe overwrite runner must not start")
+}
+
 func TestOperationService_CancelledGateWaitLeavesOperationUnclaimed(t *testing.T) {
 	h := newOperationHarness(t)
 	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")

@@ -276,8 +276,12 @@ func TestFeishuWorkspaceStore_ProofReservationIsAtomicSingleUseAndIdempotent(t *
 	source.CommandPath = "docs +create"
 	storedSource, err := s.CreateOrGetOperation(ctx, source)
 	require.NoError(t, err)
+	sourceFinishedAt := storedSource.CreatedAt.Add(time.Millisecond)
 	require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", storedSource.ID).
-		Updates(map[string]any{"state": model.FeishuOperationSucceeded, "command_path": "docs +create"}).Error)
+		Updates(map[string]any{
+			"state": model.FeishuOperationSucceeded, "command_path": "docs +create", "finished_at": sourceFinishedAt,
+		}).Error)
+	storedSource.FinishedAt = &sourceFinishedAt
 
 	first := newFeishuOperation("proof-consumer-first", 7, 1, "proof-consumer-key")
 	first.AgentRunID = 700
@@ -353,8 +357,12 @@ func TestFeishuWorkspaceStore_ProofReservationRejectsIneligibleSourceWithoutGhos
 			source.AgentRunID = 701
 			storedSource, err := s.CreateOrGetOperation(ctx, source)
 			require.NoError(t, err)
+			sourceFinishedAt := storedSource.CreatedAt.Add(time.Millisecond)
 			require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", storedSource.ID).
-				Updates(map[string]any{"state": model.FeishuOperationSucceeded, "command_path": "docs +create"}).Error)
+				Updates(map[string]any{
+					"state": model.FeishuOperationSucceeded, "command_path": "docs +create", "finished_at": sourceFinishedAt,
+				}).Error)
+			storedSource.FinishedAt = &sourceFinishedAt
 			consumer := newFeishuOperation("ineligible-consumer", 7, 1, "ineligible-consumer-key")
 			consumer.AgentRunID = 701
 			testCase.mutate(s, storedSource, consumer)
@@ -382,6 +390,7 @@ func TestFeishuWorkspaceStore_ProofReservationRejectsSucceededIntermediateUpdate
 	source.CommandPath = "docs +create"
 	source.State = model.FeishuOperationSucceeded
 	source.CreatedAt = baseTime
+	source.FinishedAt = &baseTime
 	require.NoError(t, s.db.Create(source).Error)
 	intermediate := newFeishuOperation("intermediate-update", 7, 1, "intermediate-update-key")
 	intermediate.AgentRunID = 702
@@ -410,6 +419,7 @@ func TestFeishuWorkspaceStore_ProofReservationRejectsSameMillisecondLowerUUIDUpd
 	source.CommandPath = "docs +create"
 	source.State = model.FeishuOperationSucceeded
 	source.CreatedAt = sameMillisecond
+	source.FinishedAt = &sameMillisecond
 	require.NoError(t, s.db.Create(source).Error)
 	intermediate := newFeishuOperation("00000000-0000-4000-8000-000000000000", 7, 1, "same-ms-update-key")
 	intermediate.AgentRunID = 703
@@ -453,6 +463,7 @@ func TestFeishuWorkspaceStore_ProofReservationRejectsIntermediateUpdateInEverySt
 			source.CommandPath = "docs +create"
 			source.State = model.FeishuOperationSucceeded
 			source.CreatedAt = baseTime
+			source.FinishedAt = &baseTime
 			require.NoError(t, s.db.Create(source).Error)
 			intermediate := newFeishuOperation(fmt.Sprintf("state-update-%d", index), 7, 1, fmt.Sprintf("state-update-key-%d", index))
 			intermediate.AgentRunID = 704
@@ -471,6 +482,126 @@ func TestFeishuWorkspaceStore_ProofReservationRejectsIntermediateUpdateInEverySt
 			require.Zero(t, operationCount)
 		})
 	}
+}
+
+func TestFeishuWorkspaceStore_ProofBoundaryUsesSourceFinishAndUpdateStart(t *testing.T) {
+	finishedAt := time.Date(2026, 7, 13, 12, 0, 0, 123000000, time.UTC)
+	testCases := []struct {
+		name      string
+		createdAt time.Time
+		startedAt *time.Time
+		blocks    bool
+	}{
+		{
+			name:      "created before source but started after finish",
+			createdAt: finishedAt.Add(-2 * time.Second),
+			startedAt: timePointer(finishedAt.Add(time.Millisecond)),
+			blocks:    true,
+		},
+		{
+			name:      "started at exact finish millisecond",
+			createdAt: finishedAt.Add(-2 * time.Second),
+			startedAt: timePointer(finishedAt),
+			blocks:    true,
+		},
+		{
+			name:      "nil start created at exact finish millisecond",
+			createdAt: finishedAt,
+			blocks:    true,
+		},
+		{
+			name:      "nil start created after finish",
+			createdAt: finishedAt.Add(time.Millisecond),
+			blocks:    true,
+		},
+		{
+			name:      "created and started before finish",
+			createdAt: finishedAt.Add(-2 * time.Second),
+			startedAt: timePointer(finishedAt.Add(-time.Millisecond)),
+			blocks:    false,
+		},
+	}
+
+	for caseIndex, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			for _, phase := range []string{"reservation", "revalidation"} {
+				t.Run(phase, func(t *testing.T) {
+					ctx := context.Background()
+					s := newFeishuWorkspaceTestStore(t)
+					createFeishuAccount(t, s, 7, 1)
+					source := newFeishuOperation(fmt.Sprintf("finish-source-%d", caseIndex), 7, 1, fmt.Sprintf("finish-source-key-%d", caseIndex))
+					source.AgentRunID = 705
+					source.CommandPath = "docs +create"
+					source.State = model.FeishuOperationSucceeded
+					source.CreatedAt = finishedAt.Add(-10 * time.Second)
+					source.FinishedAt = timePointer(finishedAt)
+					require.NoError(t, s.db.Create(source).Error)
+
+					consumer := newFeishuOperation(fmt.Sprintf("finish-consumer-%d", caseIndex), 7, 1, fmt.Sprintf("finish-consumer-key-%d", caseIndex))
+					consumer.AgentRunID = 705
+					consumer.CommandPath = "docs +update"
+					blocker := newFeishuOperation(fmt.Sprintf("finish-blocker-%d", caseIndex), 7, 1, fmt.Sprintf("finish-blocker-key-%d", caseIndex))
+					blocker.AgentRunID = 705
+					blocker.CommandPath = "docs +update"
+					blocker.State = model.FeishuOperationSucceeded
+					blocker.CreatedAt = testCase.createdAt
+					blocker.StartedAt = testCase.startedAt
+
+					if phase == "reservation" {
+						require.NoError(t, s.db.Create(blocker).Error)
+						stored, err := s.CreateOrGetOperationWithProof(ctx, consumer, source.ID)
+						if testCase.blocks {
+							require.ErrorIs(t, err, ErrFeishuProofReservationUnavailable)
+							require.Nil(t, stored)
+							return
+						}
+						require.NoError(t, err)
+						require.Equal(t, consumer.ID, stored.ID)
+						return
+					}
+
+					stored, err := s.CreateOrGetOperationWithProof(ctx, consumer, source.ID)
+					require.NoError(t, err)
+					require.NoError(t, s.db.Create(blocker).Error)
+					usable, err := s.IsOperationProofUsable(ctx, 7, 1, 705, source.ID, stored.ID)
+					require.NoError(t, err)
+					require.Equal(t, !testCase.blocks, usable)
+				})
+			}
+		})
+	}
+}
+
+func TestFeishuWorkspaceStore_ProofSourceWithoutFinishFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 1)
+	source := newFeishuOperation("unfinished-proof-source", 7, 1, "unfinished-proof-source-key")
+	source.AgentRunID = 706
+	source.CommandPath = "docs +create"
+	source.State = model.FeishuOperationSucceeded
+	require.Nil(t, source.FinishedAt)
+	require.NoError(t, s.db.Create(source).Error)
+
+	consumer := newFeishuOperation("unfinished-proof-consumer", 7, 1, "unfinished-proof-consumer-key")
+	consumer.AgentRunID = 706
+	consumer.CommandPath = "docs +update"
+	stored, err := s.CreateOrGetOperationWithProof(ctx, consumer, source.ID)
+	require.ErrorIs(t, err, ErrFeishuProofReservationUnavailable)
+	require.Nil(t, stored)
+
+	require.NoError(t, s.db.Create(consumer).Error)
+	require.NoError(t, s.db.Create(&model.FeishuOperationProofConsumption{
+		SourceOperationID: source.ID, ConsumerOperationID: consumer.ID,
+		UserID: 7, Generation: 1, AgentRunID: 706,
+	}).Error)
+	usable, err := s.IsOperationProofUsable(ctx, 7, 1, 706, source.ID, consumer.ID)
+	require.NoError(t, err)
+	require.False(t, usable)
+}
+
+func timePointer(value time.Time) *time.Time {
+	return &value
 }
 
 func TestFeishuWorkspaceStore_ExecutionGateClaimExpiryReleaseAndGenerationFence(t *testing.T) {
