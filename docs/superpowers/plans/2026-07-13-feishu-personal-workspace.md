@@ -561,7 +561,7 @@ git commit -m "feat(feishu): read versioned official lark skills"
 
 **Files:** `operation_service.go`、`operation_service_test.go`。
 
-- [ ] **Step 1: 写 operation 红测**
+- [x] **Step 1: 写 operation 红测**
 
 覆盖：connected 直接调用真实业务命令且 `AuthStatus` 调用数为 0；none 进入 waiting_connection；同 user+key 并发 20 次只有一次 runner 调用；授权错误保存规范化请求；resume 只读密文原请求；写 timeout → unknown；读 timeout 有界重试；generation 不符取消；成功结果幂等返回。用 barrier 模拟 runner 已开始后 generation bump：旧执行不能提交 succeeded 或写回旧 Vault；写操作按 unknown 交给解绑层收口，且不得再 claim。
 
@@ -582,13 +582,13 @@ func TestOperationService_ConnectedHotPathSkipsAuthStatus(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 运行红测**
+- [x] **Step 2: 运行红测**
 
 Run: `go test ./internal/numind/biz/feishu -run 'OperationService' -count=1`
 
 Expected: FAIL，service 不存在。
 
-- [ ] **Step 3: 定义依赖倒置接口**
+- [x] **Step 3: 定义依赖倒置接口**
 
 ```go
 type ReceiptVerifier interface {
@@ -604,7 +604,7 @@ type ConfirmationRequester interface {
 
 `operation_service.go` 不得 import `biz/agent`。本任务的 tests 为三接口注入 fake；Task 6 的 `SkillReader` 满足 `ReceiptVerifier`，Task 8 的 `AuthSessionService` 满足 `RecoveryStarter`，Task 12 才做生产装配。
 
-- [ ] **Step 4: 实现请求、结果和执行算法**
+- [x] **Step 4: 实现请求、结果和执行算法**
 
 ```go
 type ExecuteRequest struct {
@@ -628,17 +628,17 @@ type OperationResult struct {
 
 执行顺序固定为：验 receipt → catalog Normalize → 加密规范化请求 → CreateOrGetOperation → claim lease → 明确 none 调 `RecoveryStarter` → connected 直接 `vault.WithHome` + controlled runner → classifier → proven-no-side-effect 权限错误调 `RecoveryStarter` → 成功/失败/unknown 收口。High-risk 只调 `ConfirmationRequester` 并返回 `waiting_confirmation`；不直接调用 Agent 包。成功密文在消费后可擦除，其他 operation 密文最多保留 7 天。
 
-- [ ] **Step 5: 实现 Resume**
+- [x] **Step 5: 实现 Resume**
 
 `Resume(ctx,userID,operationID)` 只能读取已存 request ciphertext；等待 session 未完成时返回现状；完成时 CAS waiting → executing 后重放；terminal 原样返回摘要。重复点击和后台 dispatcher 共用此入口。
 
-- [ ] **Step 6: 绿测和 race**
+- [x] **Step 6: 绿测和 race**
 
 Run: `go test -race ./internal/numind/biz/feishu -run 'OperationService' -count=1`
 
 Expected: PASS，无 data race，同幂等键 runner 调用一次。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/numind/biz/feishu/operation_service.go internal/numind/biz/feishu/operation_service_test.go
