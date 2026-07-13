@@ -706,9 +706,9 @@ Body：
 
 ### 16.5 S2 真实账号 spike 状态
 
-已完成源码级验证：lark-cli 已固定并升级到 1.0.68；官方 `cmd/auth`、`internal/cmdpolicy` 测试通过；Docs/Base/Wiki 命令、scope 和 risk 元数据已从同版本源码/帮助确认。
+PASS（2026-07-13）。已完成源码级验证和真实飞书租户验证：个人应用由 CLI 自动创建；初始仅授权 `offline_access`；Docs/Base/Wiki 在缺少业务 scope 时均稳定返回 exit 3 + `authorization/missing_scope` + exact `missing_scopes`；Docs create/read/update 在增量授权后原命令重放成功，最终复读确认 revision 和正文已更新。
 
-尚未完成真实租户 spike，因为当前 session 未获准使用某个具体飞书测试租户创建应用和申请权限。S2 Gate 前仍需由用户在飞书官方页面确认一次，验证 app scope 与 user scope 的真实错误 JSON；该 spike 不要求用户手工配置 app_id/app_secret。
+本测试租户没有出现独立管理员审批步骤；产品仍保留 `waiting_app_approval`，处理企业策略或错误返回 `console_url` 的情况。完整证据见 `.ndf/features/feishu-personal-workspace/s2-real-tenant-spike.md`。
 
 ## 17. 实施顺序约束
 
@@ -728,4 +728,4 @@ S3 实施计划必须按以下依赖排序：
 
 技术路线已锁定：**Agent 按需读取官方技能并选择命令，受控 lark-cli 执行，确定性编排连接与恢复**。不再采用“三个固定飞书工具 + 每次 auth status”的旧架构。
 
-进入 S3 前需要同时满足：用户批准本设计作为实现基线，以及完成一个真实飞书测试租户的最小 spike。完整 Docs/Base/Wiki 真实 E2E 仍是发布硬 Gate。真实 spike 中用户只需在飞书官方页面确认，其他步骤由 Agent/lark-cli 推进。
+S2 Gate 已满足：用户批准本设计，真实飞书测试租户最小 spike 通过。可以进入 S3 实施计划；完整 Docs/Base/Wiki 真实 E2E 仍是发布硬 Gate。
