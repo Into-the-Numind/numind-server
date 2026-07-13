@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -12,6 +13,11 @@ import (
 )
 
 const feishuSucceededCreateProofLimit = 32
+
+// ErrFeishuProofReservationUnavailable means a candidate cannot atomically
+// reserve the requested one-shot proof. Callers may safely retry creation only
+// after removing the proof exemption from the encrypted request.
+var ErrFeishuProofReservationUnavailable = errors.New("feishu operation proof reservation unavailable")
 
 // IFeishuWorkspaceStore defines tenant- and generation-safe persistence primitives
 // for encrypted lark-cli workspaces, authorization sessions, and operations.
@@ -24,7 +30,9 @@ type IFeishuWorkspaceStore interface {
 	ClaimSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
 	UpdateSessionState(ctx context.Context, userID uint, generation uint64, id, owner, state string, now time.Time, completedAt *time.Time) error
 	CreateOrGetOperation(ctx context.Context, operation *model.FeishuOperation) (*model.FeishuOperation, error)
+	CreateOrGetOperationWithProof(ctx context.Context, operation *model.FeishuOperation, sourceOperationID string) (*model.FeishuOperation, error)
 	ListSucceededCreatesForRun(ctx context.Context, userID uint, generation uint64, agentRunID uint64) ([]model.FeishuOperation, error)
+	IsOperationProofBound(ctx context.Context, userID uint, generation uint64, agentRunID uint64, sourceOperationID, consumerOperationID string) (bool, error)
 	GetOperationForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuOperation, error)
 	ClaimOperation(ctx context.Context, userID uint, generation uint64, id, owner string, expectedStates []string, now, leaseUntil time.Time) (bool, error)
 	TransitionOperation(ctx context.Context, userID uint, generation uint64, id, owner string, from []string, to string, now time.Time, fields map[string]any) error
@@ -227,6 +235,99 @@ func (s *feishuWorkspaceStore) CreateOrGetOperation(ctx context.Context, operati
 	return stored, nil
 }
 
+// CreateOrGetOperationWithProof creates a consumer and reserves its proof in
+// one transaction. Lock order is account -> source -> consumer -> consumption.
+// The consumption is permanent even if the consumer later waits or fails.
+func (s *feishuWorkspaceStore) CreateOrGetOperationWithProof(
+	ctx context.Context,
+	operation *model.FeishuOperation,
+	sourceOperationID string,
+) (*model.FeishuOperation, error) {
+	if operation == nil || sourceOperationID == "" {
+		return nil, ErrFeishuProofReservationUnavailable
+	}
+	var stored *model.FeishuOperation
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var account model.UserThirdPartyAccount
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ? AND provider = ?", operation.UserID, "lark").
+			Take(&account).Error; err != nil {
+			return err
+		}
+		if account.Generation != operation.Generation {
+			return ErrFeishuProofReservationUnavailable
+		}
+
+		var source model.FeishuOperation
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ?", sourceOperationID).
+			Take(&source).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrFeishuProofReservationUnavailable
+			}
+			return err
+		}
+		if source.UserID != operation.UserID || source.Generation != operation.Generation ||
+			source.AgentRunID != operation.AgentRunID || source.State != model.FeishuOperationSucceeded ||
+			(source.CommandPath != "docs +create" && source.CommandPath != "wiki +node-create") {
+			return ErrFeishuProofReservationUnavailable
+		}
+
+		var intermediateWrites int64
+		if err := tx.Model(&model.FeishuOperation{}).
+			Where("user_id = ? AND generation = ? AND agent_run_id = ?", operation.UserID, operation.Generation, operation.AgentRunID).
+			Where("state = ? AND command_path = ?", model.FeishuOperationSucceeded, "docs +update").
+			Where("created_at > ? OR (created_at = ? AND id > ?)", source.CreatedAt, source.CreatedAt, source.ID).
+			Count(&intermediateWrites).Error; err != nil {
+			return err
+		}
+		if intermediateWrites != 0 {
+			return ErrFeishuProofReservationUnavailable
+		}
+
+		result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(operation)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			var existing model.FeishuOperation
+			if err := tx.Where("user_id = ? AND idempotency_key = ?", operation.UserID, operation.IdempotencyKey).
+				Take(&existing).Error; err != nil {
+				return err
+			}
+			stored = &existing
+			return nil
+		}
+
+		var existingConsumption model.FeishuOperationProofConsumption
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("source_operation_id = ?", source.ID).
+			Take(&existingConsumption).Error
+		if err == nil {
+			return ErrFeishuProofReservationUnavailable
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		consumption := &model.FeishuOperationProofConsumption{
+			SourceOperationID: source.ID, ConsumerOperationID: operation.ID,
+			UserID: operation.UserID, Generation: operation.Generation, AgentRunID: operation.AgentRunID,
+		}
+		if err := tx.Create(consumption).Error; err != nil {
+			return fmt.Errorf("create feishu proof consumption: %w", err)
+		}
+		stored = operation
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, ErrFeishuProofReservationUnavailable) {
+			return nil, ErrFeishuProofReservationUnavailable
+		}
+		return nil, fmt.Errorf("create or get feishu operation with proof: %w", err)
+	}
+	return stored, nil
+}
+
 // ListSucceededCreatesForRun returns a small, deterministic proof-candidate
 // set. Callers must still authenticate and inspect each encrypted request and
 // result; this query alone never proves that an overwrite is safe.
@@ -248,6 +349,25 @@ func (s *feishuWorkspaceStore) ListSucceededCreatesForRun(
 		return nil, fmt.Errorf("list succeeded feishu create operations: %w", err)
 	}
 	return operations, nil
+}
+
+// IsOperationProofBound verifies the immutable audit tuple for a source and
+// consumer. It deliberately has no release/delete counterpart.
+func (s *feishuWorkspaceStore) IsOperationProofBound(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	agentRunID uint64,
+	sourceOperationID, consumerOperationID string,
+) (bool, error) {
+	var count int64
+	if err := s.db.WithContext(ctx).Model(&model.FeishuOperationProofConsumption{}).
+		Where("source_operation_id = ? AND consumer_operation_id = ?", sourceOperationID, consumerOperationID).
+		Where("user_id = ? AND generation = ? AND agent_run_id = ?", userID, generation, agentRunID).
+		Count(&count).Error; err != nil {
+		return false, fmt.Errorf("verify feishu proof consumption: %w", err)
+	}
+	return count == 1, nil
 }
 
 // GetOperationForUser returns an operation only when ID, tenant, and generation all match.

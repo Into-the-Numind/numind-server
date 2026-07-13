@@ -35,6 +35,7 @@ func newFeishuWorkspaceTestStore(t *testing.T) *feishuWorkspaceStore {
 		&model.FeishuCLIVault{},
 		&model.FeishuAuthSession{},
 		&model.FeishuOperation{},
+		&model.FeishuOperationProofConsumption{},
 	))
 
 	return newFeishuWorkspaceStore(db)
@@ -116,12 +117,35 @@ func TestFeishuWorkspaceMigration_ExplicitlyMigratesExistingAccountUserID(t *tes
 	})
 }
 
+func TestFeishuOperationProofConsumptionMigrationHasForwardAndRollback(t *testing.T) {
+	forward := readFeishuWorkspaceMigration(t, "20260713_210000_feishu_operation_proof_consumption.sql")
+	rollback := readFeishuWorkspaceMigration(t, "20260713_210000_feishu_operation_proof_consumption_rollback.sql")
+
+	for _, fragment := range []string{
+		"CREATE TABLE `feishu_operation_proof_consumption`",
+		"`source_operation_id` CHAR(36) NOT NULL",
+		"`consumer_operation_id` CHAR(36) NOT NULL",
+		"PRIMARY KEY (`source_operation_id`)",
+		"UNIQUE KEY `uniq_feishu_proof_consumer` (`consumer_operation_id`)",
+		"`user_id` BIGINT UNSIGNED NOT NULL",
+		"`generation` BIGINT UNSIGNED NOT NULL",
+		"`agent_run_id` BIGINT UNSIGNED NOT NULL",
+		"FOREIGN KEY (`source_operation_id`) REFERENCES `feishu_operation` (`id`)",
+		"FOREIGN KEY (`consumer_operation_id`) REFERENCES `feishu_operation` (`id`)",
+	} {
+		require.Contains(t, forward, fragment)
+	}
+	require.Contains(t, rollback, "DROP TABLE IF EXISTS `feishu_operation_proof_consumption`")
+}
+
 func TestFeishuWorkspaceModels_MySQLSchemaContract(t *testing.T) {
 	requireGormTagContains(t, reflect.TypeOf(model.UserThirdPartyAccount{}), "UserID", "type:bigint unsigned")
 	requireGormTagContains(t, reflect.TypeOf(model.FeishuCLIVault{}), "UserID", "type:bigint unsigned", "primaryKey", "autoIncrement:false")
 	requireGormTagContains(t, reflect.TypeOf(model.FeishuAuthSession{}), "UserID", "type:bigint unsigned")
 	requireGormTagContains(t, reflect.TypeOf(model.FeishuOperation{}), "UserID", "type:bigint unsigned")
 	requireGormTagContains(t, reflect.TypeOf(model.FeishuOperation{}), "AttemptCount", "type:int unsigned")
+	requireGormTagContains(t, reflect.TypeOf(model.FeishuOperationProofConsumption{}), "SourceOperationID", "primaryKey", "type:char(36)")
+	requireGormTagContains(t, reflect.TypeOf(model.FeishuOperationProofConsumption{}), "ConsumerOperationID", "uniqueIndex:uniq_feishu_proof_consumer")
 
 	for _, item := range []struct {
 		modelType reflect.Type
@@ -130,6 +154,7 @@ func TestFeishuWorkspaceModels_MySQLSchemaContract(t *testing.T) {
 		{reflect.TypeOf(model.FeishuCLIVault{}), []string{"CreatedAt", "UpdatedAt"}},
 		{reflect.TypeOf(model.FeishuAuthSession{}), []string{"ExpiresAt", "CreatedAt", "UpdatedAt"}},
 		{reflect.TypeOf(model.FeishuOperation{}), []string{"CreatedAt", "UpdatedAt"}},
+		{reflect.TypeOf(model.FeishuOperationProofConsumption{}), []string{"CreatedAt"}},
 	} {
 		for _, field := range item.fields {
 			requireGormTagContains(t, item.modelType, field, "not null")
@@ -219,6 +244,128 @@ func TestFeishuWorkspaceStore_ListSucceededCreatesForRunIsBoundedAndDeterministi
 		require.Equal(t, model.FeishuOperationSucceeded, operation.State)
 		require.Contains(t, []string{"docs +create", "wiki +node-create"}, operation.CommandPath)
 	}
+}
+
+func TestFeishuWorkspaceStore_ProofReservationIsAtomicSingleUseAndIdempotent(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 1)
+	source := newFeishuOperation("proof-source", 7, 1, "proof-source-key")
+	source.AgentRunID = 700
+	source.CommandPath = "docs +create"
+	storedSource, err := s.CreateOrGetOperation(ctx, source)
+	require.NoError(t, err)
+	require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", storedSource.ID).
+		Updates(map[string]any{"state": model.FeishuOperationSucceeded, "command_path": "docs +create"}).Error)
+
+	first := newFeishuOperation("proof-consumer-first", 7, 1, "proof-consumer-key")
+	first.AgentRunID = 700
+	storedFirst, err := s.CreateOrGetOperationWithProof(ctx, first, storedSource.ID)
+	require.NoError(t, err)
+	require.Equal(t, first.ID, storedFirst.ID)
+	bound, err := s.IsOperationProofBound(ctx, 7, 1, 700, storedSource.ID, storedFirst.ID)
+	require.NoError(t, err)
+	require.True(t, bound)
+
+	retry := newFeishuOperation("proof-consumer-retry", 7, 1, "proof-consumer-key")
+	retry.AgentRunID = 700
+	storedRetry, err := s.CreateOrGetOperationWithProof(ctx, retry, storedSource.ID)
+	require.NoError(t, err)
+	require.Equal(t, storedFirst.ID, storedRetry.ID)
+
+	second := newFeishuOperation("proof-consumer-second", 7, 1, "proof-consumer-second-key")
+	second.AgentRunID = 700
+	storedSecond, err := s.CreateOrGetOperationWithProof(ctx, second, storedSource.ID)
+	require.ErrorIs(t, err, ErrFeishuProofReservationUnavailable)
+	require.Nil(t, storedSecond)
+
+	var secondCount int64
+	require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", second.ID).Count(&secondCount).Error)
+	require.Zero(t, secondCount, "reservation conflict must roll back the candidate operation")
+	var consumptionCount int64
+	require.NoError(t, s.db.Table("feishu_operation_proof_consumption").Count(&consumptionCount).Error)
+	require.EqualValues(t, 1, consumptionCount)
+}
+
+func TestFeishuWorkspaceStore_ProofReservationRejectsIneligibleSourceWithoutGhostRows(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		mutate func(s *feishuWorkspaceStore, source, consumer *model.FeishuOperation)
+	}{
+		{name: "different user", mutate: func(s *feishuWorkspaceStore, _ *model.FeishuOperation, consumer *model.FeishuOperation) {
+			createFeishuAccount(t, s, 8, 1)
+			consumer.UserID = 8
+		}},
+		{name: "different generation", mutate: func(s *feishuWorkspaceStore, _ *model.FeishuOperation, consumer *model.FeishuOperation) {
+			require.NoError(t, s.db.Model(&model.UserThirdPartyAccount{}).
+				Where("user_id = ? AND provider = ?", 7, "lark").Update("generation", 2).Error)
+			consumer.Generation = 2
+		}},
+		{name: "different run", mutate: func(_ *feishuWorkspaceStore, _ *model.FeishuOperation, consumer *model.FeishuOperation) {
+			consumer.AgentRunID++
+		}},
+		{name: "non create source", mutate: func(s *feishuWorkspaceStore, source, _ *model.FeishuOperation) {
+			require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", source.ID).
+				Update("command_path", "docs +fetch").Error)
+		}},
+		{name: "non succeeded source", mutate: func(s *feishuWorkspaceStore, source, _ *model.FeishuOperation) {
+			require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", source.ID).
+				Update("state", model.FeishuOperationFailed).Error)
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx := context.Background()
+			s := newFeishuWorkspaceTestStore(t)
+			createFeishuAccount(t, s, 7, 1)
+			source := newFeishuOperation("ineligible-source", 7, 1, "ineligible-source-key")
+			source.AgentRunID = 701
+			storedSource, err := s.CreateOrGetOperation(ctx, source)
+			require.NoError(t, err)
+			require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", storedSource.ID).
+				Updates(map[string]any{"state": model.FeishuOperationSucceeded, "command_path": "docs +create"}).Error)
+			consumer := newFeishuOperation("ineligible-consumer", 7, 1, "ineligible-consumer-key")
+			consumer.AgentRunID = 701
+			testCase.mutate(s, storedSource, consumer)
+
+			stored, err := s.CreateOrGetOperationWithProof(ctx, consumer, storedSource.ID)
+			require.ErrorIs(t, err, ErrFeishuProofReservationUnavailable)
+			require.Nil(t, stored)
+			var operationCount int64
+			require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", consumer.ID).Count(&operationCount).Error)
+			require.Zero(t, operationCount)
+			var consumptionCount int64
+			require.NoError(t, s.db.Table("feishu_operation_proof_consumption").Count(&consumptionCount).Error)
+			require.Zero(t, consumptionCount)
+		})
+	}
+}
+
+func TestFeishuWorkspaceStore_ProofReservationRejectsSucceededIntermediateUpdate(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 1)
+	baseTime := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	source := newFeishuOperation("intermediate-source", 7, 1, "intermediate-source-key")
+	source.AgentRunID = 702
+	source.CommandPath = "docs +create"
+	source.State = model.FeishuOperationSucceeded
+	source.CreatedAt = baseTime
+	require.NoError(t, s.db.Create(source).Error)
+	intermediate := newFeishuOperation("intermediate-update", 7, 1, "intermediate-update-key")
+	intermediate.AgentRunID = 702
+	intermediate.CommandPath = "docs +update"
+	intermediate.State = model.FeishuOperationSucceeded
+	intermediate.CreatedAt = baseTime.Add(time.Second)
+	require.NoError(t, s.db.Create(intermediate).Error)
+	consumer := newFeishuOperation("intermediate-consumer", 7, 1, "intermediate-consumer-key")
+	consumer.AgentRunID = 702
+
+	stored, err := s.CreateOrGetOperationWithProof(ctx, consumer, source.ID)
+	require.ErrorIs(t, err, ErrFeishuProofReservationUnavailable)
+	require.Nil(t, stored)
+	var operationCount int64
+	require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", consumer.ID).Count(&operationCount).Error)
+	require.Zero(t, operationCount)
 }
 
 func TestFeishuWorkspaceStore_VaultRevisionCASAndOwnership(t *testing.T) {

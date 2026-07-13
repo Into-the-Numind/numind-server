@@ -19,6 +19,7 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
+	"numind-server/internal/numind/store"
 	pkgcrypto "numind-server/internal/pkg/crypto"
 	"numind-server/internal/pkg/model"
 )
@@ -75,6 +76,8 @@ type OperationAccountStore interface {
 // OperationStore is the encrypted operation persistence subset.
 type OperationStore interface {
 	CreateOrGetOperation(ctx context.Context, operation *model.FeishuOperation) (*model.FeishuOperation, error)
+	CreateOrGetOperationWithProof(ctx context.Context, operation *model.FeishuOperation, sourceOperationID string) (*model.FeishuOperation, error)
+	IsOperationProofBound(ctx context.Context, userID uint, generation uint64, agentRunID uint64, sourceOperationID, consumerOperationID string) (bool, error)
 	ListSucceededCreatesForRun(ctx context.Context, userID uint, generation uint64, agentRunID uint64) ([]model.FeishuOperation, error)
 	GetOperationForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuOperation, error)
 	ClaimOperation(ctx context.Context, userID uint, generation uint64, id, owner string, expectedStates []string, now, leaseUntil time.Time) (bool, error)
@@ -373,7 +376,7 @@ func (s *FeishuOperationService) Execute(ctx context.Context, request ExecuteReq
 		RequestCiphertext: requestCiphertext, KeyVersion: keyVersion,
 		RequestFingerprint: fingerprint, State: model.FeishuOperationNotStarted,
 	}
-	stored, err := s.operations.CreateOrGetOperation(ctx, candidate)
+	stored, err := s.createOrGetOperation(ctx, candidate, &persisted, owner)
 	if err != nil {
 		return nil, ErrOperationUnavailable
 	}
@@ -586,7 +589,18 @@ func (s *FeishuOperationService) executeClaimed(
 		return s.startRecoveryAndWait(ctx, operation, leaseOwner, persisted, kind, persisted.Scopes, waitingState, priorRecoverySignature, publicCode)
 	}
 
-	if persisted.Risk == RiskHigh && !persisted.SameRunEmptyCreateProof {
+	proofBound := false
+	if persisted.SameRunEmptyCreateProof {
+		proofBound, _ = s.operations.IsOperationProofBound(
+			ctx,
+			operation.UserID,
+			operation.Generation,
+			operation.AgentRunID,
+			persisted.CreateProofOperationID,
+			operation.ID,
+		)
+	}
+	if persisted.Risk == RiskHigh && !proofBound {
 		action, err := s.confirmation.RequestConfirmation(ctx, operation.ID, ConfirmationSummary{
 			CommandPath: persisted.CommandPath, Domain: persisted.Domain, Action: persisted.Action,
 			Risk: persisted.Risk, RequiresCLIYes: persisted.RequiresCLIYes,
@@ -653,6 +667,41 @@ func (s *FeishuOperationService) executeClaimed(
 		return s.commitTerminal(ctx, operation, leaseOwner, terminal, classification.PublicCode, nil, started)
 	}
 	return s.commitTerminal(ctx, operation, leaseOwner, model.FeishuOperationFailed, PublicCodeFailed, nil, false)
+}
+
+// createOrGetOperation makes proof reservation and consumer creation one
+// transaction. If another distinct operation already consumed the proof, the
+// request is resealed without proof metadata and follows the normal high-risk
+// confirmation path.
+func (s *FeishuOperationService) createOrGetOperation(
+	ctx context.Context,
+	candidate *model.FeishuOperation,
+	persisted *persistedOperationRequest,
+	owner OperationCipherOwner,
+) (*model.FeishuOperation, error) {
+	if !persisted.SameRunEmptyCreateProof {
+		return s.operations.CreateOrGetOperation(ctx, candidate)
+	}
+
+	stored, err := s.operations.CreateOrGetOperationWithProof(ctx, candidate, persisted.CreateProofOperationID)
+	if !errors.Is(err, store.ErrFeishuProofReservationUnavailable) {
+		return stored, err
+	}
+
+	persisted.SameRunEmptyCreateProof = false
+	persisted.CreateProofOperationID = ""
+	plaintext, err := json.Marshal(persisted)
+	if err != nil {
+		return nil, ErrOperationIntegrity
+	}
+	requestCiphertext, keyVersion, err := s.sealOperationBlob(OperationCipherPurposeRequest, owner, plaintext)
+	if err != nil {
+		return nil, err
+	}
+	candidate.RequestCiphertext = requestCiphertext
+	candidate.KeyVersion = keyVersion
+	candidate.RequestFingerprint = operationFingerprint(requestCiphertext)
+	return s.operations.CreateOrGetOperation(ctx, candidate)
 }
 
 func (s *FeishuOperationService) invokeOnce(

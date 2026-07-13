@@ -122,3 +122,20 @@ type FeishuOperation struct {
 
 // TableName returns the Feishu operation table name.
 func (FeishuOperation) TableName() string { return "feishu_operation" }
+
+// FeishuOperationProofConsumption is the durable, one-shot binding between a
+// succeeded empty-resource create and the single operation allowed to use it
+// as an overwrite-confirmation exemption.
+type FeishuOperationProofConsumption struct {
+	SourceOperationID   string    `gorm:"type:char(36);primaryKey" json:"source_operation_id"`
+	ConsumerOperationID string    `gorm:"type:char(36);not null;uniqueIndex:uniq_feishu_proof_consumer" json:"consumer_operation_id"`
+	UserID              uint      `gorm:"type:bigint unsigned;not null;index:idx_feishu_proof_audit,priority:1" json:"user_id"`
+	Generation          uint64    `gorm:"not null;index:idx_feishu_proof_audit,priority:2" json:"generation"`
+	AgentRunID          uint64    `gorm:"not null;index:idx_feishu_proof_audit,priority:3" json:"agent_run_id"`
+	CreatedAt           time.Time `gorm:"not null;autoCreateTime" json:"created_at"`
+}
+
+// TableName returns the Feishu proof-consumption table name.
+func (FeishuOperationProofConsumption) TableName() string {
+	return "feishu_operation_proof_consumption"
+}

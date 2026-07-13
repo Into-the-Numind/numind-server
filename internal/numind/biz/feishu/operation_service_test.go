@@ -181,6 +181,36 @@ type disappearingProofOperationStore struct {
 	calls int
 }
 
+type proofQueryBarrierOperationStore struct {
+	OperationStore
+	arrived chan struct{}
+	release <-chan struct{}
+}
+
+func (s *proofQueryBarrierOperationStore) ListSucceededCreatesForRun(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	agentRunID uint64,
+) ([]model.FeishuOperation, error) {
+	s.arrived <- struct{}{}
+	<-s.release
+	return s.OperationStore.ListSucceededCreatesForRun(ctx, userID, generation, agentRunID)
+}
+
+type unboundProofOperationStore struct{ OperationStore }
+
+func (s *unboundProofOperationStore) IsOperationProofBound(
+	context.Context,
+	uint,
+	uint64,
+	uint64,
+	string,
+	string,
+) (bool, error) {
+	return false, nil
+}
+
 func (s *disappearingProofOperationStore) ListSucceededCreatesForRun(
 	ctx context.Context,
 	userID uint,
@@ -270,6 +300,7 @@ func newOperationHarness(t *testing.T) *operationHarness {
 		&model.FeishuCLIVault{},
 		&model.FeishuAuthSession{},
 		&model.FeishuOperation{},
+		&model.FeishuOperationProofConsumption{},
 	))
 	dataStore := store.NewTestStore(db)
 	receipts := &operationReceiptFake{}
@@ -865,6 +896,208 @@ func TestOperationService_SameRunEmptyDocsCreateProvesOverwrite(t *testing.T) {
 	calls, _ := h.runner.snapshot()
 	require.Equal(t, 2, calls)
 	requirePersistedCreateProof(t, h, overwrite.OperationID, created.OperationID)
+}
+
+func TestOperationService_EmptyCreateProofCanBeConsumedByOnlyOneDistinctOperation(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	const token = "doxcnSingleUseProof123"
+	h.runner.steps = []operationRunnerStep{
+		{result: operationOKResult(`{"document":{"document_id":"` + token + `","url":"https://acme.feishu.cn/docx/` + token + `"}}`)},
+		{result: operationOKResult(`{"revision_id":2}`)},
+		{result: operationOKResult(`{"revision_id":3}`)},
+	}
+	_, err := h.service.Execute(h.ctx, operationDocsCreateRequest(7, 330, "tc-create", "Empty", nil))
+	require.NoError(t, err)
+
+	first, err := h.service.Execute(h.ctx, operationDocsOverwriteRequest(7, 330, "tc-overwrite-1", token))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, first.State)
+	second, err := h.service.Execute(h.ctx, operationDocsOverwriteRequest(7, 330, "tc-overwrite-2", token))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingConfirmation, second.State)
+	require.Len(t, h.confirmation.calls, 1)
+	calls, _ := h.runner.snapshot()
+	require.Equal(t, 2, calls)
+}
+
+func TestOperationService_ConcurrentDistinctOverwritesAtomicallyConsumeOneProof(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	arrived := make(chan struct{}, 2)
+	release := make(chan struct{})
+	barrierStore := &proofQueryBarrierOperationStore{
+		OperationStore: h.dataStore.FeishuWorkspace(), arrived: arrived, release: release,
+	}
+	service, err := NewFeishuOperationService(OperationServiceDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: barrierStore,
+		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: h.recovery,
+		Confirmation: h.confirmation, Vault: h.vault, Runner: h.runner, Cipher: h.cipher,
+		Now: h.service.now, LeaseDuration: time.Minute,
+	})
+	require.NoError(t, err)
+	const token = "doxcnConcurrentProof123"
+	h.runner.steps = []operationRunnerStep{
+		{result: operationOKResult(`{"document":{"document_id":"` + token + `","url":"https://acme.feishu.cn/docx/` + token + `"}}`)},
+		{result: operationOKResult(`{"revision_id":2}`)},
+		{result: operationOKResult(`{"revision_id":3}`)},
+	}
+	_, err = service.Execute(h.ctx, operationDocsCreateRequest(7, 331, "tc-create", "Empty", nil))
+	require.NoError(t, err)
+
+	requests := []ExecuteRequest{
+		operationDocsOverwriteRequest(7, 331, "tc-overwrite-a", token),
+		operationDocsOverwriteRequest(7, 331, "tc-overwrite-b", token),
+	}
+	results := make(chan *OperationResult, len(requests))
+	errs := make(chan error, len(requests))
+	var wg sync.WaitGroup
+	for index := range requests {
+		request := requests[index]
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			result, executeErr := service.Execute(h.ctx, request)
+			results <- result
+			errs <- executeErr
+		}()
+	}
+	<-arrived
+	<-arrived
+	close(release)
+	wg.Wait()
+	close(results)
+	close(errs)
+	for executeErr := range errs {
+		require.NoError(t, executeErr)
+	}
+	states := make([]string, 0, len(requests))
+	for result := range results {
+		require.NotNil(t, result)
+		states = append(states, result.State)
+	}
+	require.ElementsMatch(t, []string{model.FeishuOperationSucceeded, model.FeishuOperationWaitingConfirmation}, states)
+	require.Len(t, h.confirmation.calls, 1)
+	calls, _ := h.runner.snapshot()
+	require.Equal(t, 2, calls)
+}
+
+func TestOperationService_ConcurrentSameIdempotencyReusesOneProofConsumer(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	const token = "doxcnSharedConsumer123"
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	h.runner.steps = []operationRunnerStep{
+		{result: operationOKResult(`{"document":{"document_id":"` + token + `","url":"https://acme.feishu.cn/docx/` + token + `"}}`)},
+		{result: operationOKResult(`{"revision_id":2}`), started: started, release: release},
+	}
+	source, err := h.service.Execute(h.ctx, operationDocsCreateRequest(7, 333, "tc-create", "Empty", nil))
+	require.NoError(t, err)
+	request := operationDocsOverwriteRequest(7, 333, "tc-overwrite-shared", token)
+
+	const workers = 20
+	results := make(chan *OperationResult, workers)
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for index := 0; index < workers; index++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			result, executeErr := h.service.Execute(h.ctx, request)
+			results <- result
+			errs <- executeErr
+		}()
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("proof consumer runner did not start")
+	}
+	close(release)
+	wg.Wait()
+	close(results)
+	close(errs)
+	for executeErr := range errs {
+		require.NoError(t, executeErr)
+	}
+	var consumerID string
+	for result := range results {
+		require.NotNil(t, result)
+		if consumerID == "" {
+			consumerID = result.OperationID
+		}
+		require.Equal(t, consumerID, result.OperationID)
+	}
+	calls, _ := h.runner.snapshot()
+	require.Equal(t, 2, calls)
+	bound, err := h.dataStore.FeishuWorkspace().IsOperationProofBound(h.ctx, 7, 1, 333, source.OperationID, consumerID)
+	require.NoError(t, err)
+	require.True(t, bound)
+}
+
+func TestOperationService_ResumeCannotTrustUnboundEncryptedProof(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	storeWithoutBinding := &unboundProofOperationStore{OperationStore: h.dataStore.FeishuWorkspace()}
+	service, err := NewFeishuOperationService(OperationServiceDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: storeWithoutBinding,
+		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: h.recovery,
+		Confirmation: h.confirmation, Vault: h.vault, Runner: h.runner, Cipher: h.cipher,
+		Now: h.service.now, LeaseDuration: time.Minute,
+	})
+	require.NoError(t, err)
+	const token = "doxcnUnboundProof123"
+	h.runner.steps = []operationRunnerStep{
+		{result: operationOKResult(`{"document":{"document_id":"` + token + `","url":"https://acme.feishu.cn/docx/` + token + `"}}`)},
+		{result: operationOKResult(`{"revision_id":2}`)},
+	}
+	created, err := service.Execute(h.ctx, operationDocsCreateRequest(7, 332, "tc-create", "Empty", nil))
+	require.NoError(t, err)
+	require.NoError(t, h.db.Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ?", 7, ProviderLark).
+		Updates(map[string]any{"connection_state": model.FeishuConnectionNone, "connected": false}).Error)
+
+	waiting, err := service.Execute(h.ctx, operationDocsOverwriteRequest(7, 332, "tc-overwrite", token))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingConnection, waiting.State)
+	bound, err := h.dataStore.FeishuWorkspace().IsOperationProofBound(
+		h.ctx, 7, 1, 332, created.OperationID, waiting.OperationID,
+	)
+	require.NoError(t, err)
+	require.True(t, bound, "authorization waiting must not release a consumed proof")
+	require.NoError(t, h.db.Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ?", 7, ProviderLark).
+		Updates(map[string]any{"connection_state": model.FeishuConnectionConnected, "connected": true}).Error)
+	h.recovery.action = nil
+
+	resumed, err := service.Resume(h.ctx, 7, waiting.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingConfirmation, resumed.State)
+	require.Len(t, h.confirmation.calls, 1)
+	calls, _ := h.runner.snapshot()
+	require.Equal(t, 1, calls)
+}
+
+func TestOperationService_FailedProofConsumerDoesNotReleaseProof(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	const token = "doxcnFailedConsumer123"
+	h.runner.steps = []operationRunnerStep{
+		{result: operationOKResult(`{"document":{"document_id":"` + token + `","url":"https://acme.feishu.cn/docx/` + token + `"}}`)},
+		{result: &CLIResult{InvocationStarted: false, ExitCode: -1}, err: errors.New("runner start failed")},
+	}
+	created, err := h.service.Execute(h.ctx, operationDocsCreateRequest(7, 334, "tc-create", "Empty", nil))
+	require.NoError(t, err)
+	failed, err := h.service.Execute(h.ctx, operationDocsOverwriteRequest(7, 334, "tc-overwrite", token))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationFailed, failed.State)
+
+	bound, err := h.dataStore.FeishuWorkspace().IsOperationProofBound(
+		h.ctx, 7, 1, 334, created.OperationID, failed.OperationID,
+	)
+	require.NoError(t, err)
+	require.True(t, bound, "terminal failure must not release a consumed proof")
 }
 
 func TestOperationService_RepeatedOverwriteUsesPersistedProofWhenCandidateWindowChanges(t *testing.T) {
