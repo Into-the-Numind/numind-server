@@ -31,10 +31,12 @@ type classifierFixture struct {
 func TestErrorClassifier_RealS2MissingScopeIsReplayable(t *testing.T) {
 	t.Parallel()
 
-	// This is the sanitized tuple observed in the S2 real-tenant spike. All
-	// other fixtures in this file are fixed contract cases, not observations.
+	// This is the sanitized tuple observed in the S2 real-tenant spike. The
+	// config/not_configured and authentication/token_missing fixtures were also
+	// observed with an isolated HOME; all remaining fixtures are fixed synthetic
+	// contract cases. None contain URLs, app IDs, or user identifiers.
 	envelope := loadErrorClassifierFixture(t, "real-docs-create-missing-scope.json")
-	got := NewErrorClassifier().ClassifyEnvelope(envelope, RiskWrite, true)
+	got := NewErrorClassifier().ClassifyEnvelope(envelope, docsCreateScopes(), RiskWrite, true)
 
 	require.Equal(t, RecoveryUserScope, got.Recovery)
 	require.Equal(t, []string{"docx:document:create"}, got.MissingScopes)
@@ -44,7 +46,7 @@ func TestErrorClassifier_RealS2MissingScopeIsReplayable(t *testing.T) {
 	require.Equal(t, PublicCodeScopeRequired, got.PublicCode)
 }
 
-func TestErrorClassifier_FixedAppScopeContractsRequireStructuredEvidence(t *testing.T) {
+func TestErrorClassifier_SyntheticAppScopeContractsDoNotProveStartedWrites(t *testing.T) {
 	t.Parallel()
 
 	classifier := NewErrorClassifier()
@@ -52,6 +54,7 @@ func TestErrorClassifier_FixedAppScopeContractsRequireStructuredEvidence(t *test
 		name    string
 		fixture string
 		scopes  []string
+		expect  []string
 	}{
 		{
 			name:    "missing scope with exact app evidence",
@@ -63,22 +66,43 @@ func TestErrorClassifier_FixedAppScopeContractsRequireStructuredEvidence(t *test
 				"base:table:read",
 				"base:table:update",
 			},
+			expect: baseCreateScopes(),
 		},
 		{
 			name:    "fixed cli app scope subtype",
 			fixture: "fixed-app-scope-not-applied.json",
 			scopes:  []string{"wiki:space:write_only"},
+			expect:  wikiSpaceCreateScopes(),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := classifier.ClassifyEnvelope(loadErrorClassifierFixture(t, tt.fixture), RiskWrite, true)
-			require.Equal(t, RecoveryAppScope, got.Recovery)
-			require.Equal(t, tt.scopes, got.MissingScopes)
-			require.True(t, got.ProvenNoSideEffect)
-			require.Empty(t, got.TerminalState)
-			require.Equal(t, PublicCodeScopeRequired, got.PublicCode)
+			envelope := loadErrorClassifierFixture(t, tt.fixture)
+
+			startedWrite := classifier.ClassifyEnvelope(envelope, tt.expect, RiskWrite, true)
+			require.Equal(t, RecoveryNone, startedWrite.Recovery)
+			require.Empty(t, startedWrite.MissingScopes)
+			require.False(t, startedWrite.ProvenNoSideEffect)
+			require.Equal(t, model.FeishuOperationUnknown, startedWrite.TerminalState)
+			require.Equal(t, PublicCodeUnknownResult, startedWrite.PublicCode)
+			startedHighRisk := classifier.ClassifyEnvelope(envelope, tt.expect, RiskHigh, true)
+			require.Equal(t, RecoveryNone, startedHighRisk.Recovery)
+			require.False(t, startedHighRisk.ProvenNoSideEffect)
+			require.Equal(t, model.FeishuOperationUnknown, startedHighRisk.TerminalState)
+
+			read := classifier.ClassifyEnvelope(envelope, tt.expect, RiskRead, true)
+			require.Equal(t, RecoveryAppScope, read.Recovery)
+			require.Equal(t, tt.scopes, read.MissingScopes)
+			require.False(t, read.ProvenNoSideEffect)
+			require.Empty(t, read.TerminalState)
+			require.Equal(t, PublicCodeScopeRequired, read.PublicCode)
+
+			notStartedWrite := classifier.ClassifyEnvelope(envelope, tt.expect, RiskWrite, false)
+			require.Equal(t, RecoveryAppScope, notStartedWrite.Recovery)
+			require.Equal(t, tt.scopes, notStartedWrite.MissingScopes)
+			require.False(t, notStartedWrite.ProvenNoSideEffect)
+			require.Empty(t, notStartedWrite.TerminalState)
 		})
 	}
 }
@@ -93,16 +117,15 @@ func TestErrorClassifier_FixedConnectionAndReauthContracts(t *testing.T) {
 		recovery RecoveryKind
 		public   string
 	}{
-		{name: "real cli not configured tuple", fixture: "fixed-connection-not-configured.json", recovery: RecoveryCreateApp, public: PublicCodeConnectionRequired},
-		{name: "real cli token missing tuple", fixture: "fixed-authentication-token-missing.json", recovery: RecoveryReauth, public: PublicCodeReauthRequired},
-		{name: "refresh token invalid", fixture: "fixed-refresh-token-invalid.json", recovery: RecoveryReauth, public: PublicCodeReauthRequired},
-		{name: "refresh token expired", fixture: "fixed-refresh-token-expired.json", recovery: RecoveryReauth, public: PublicCodeReauthRequired},
-		{name: "refresh token revoked", fixture: "fixed-refresh-token-revoked.json", recovery: RecoveryReauth, public: PublicCodeReauthRequired},
+		// The first two tuples were observed with an isolated lark-cli 1.0.68
+		// HOME in this session. The fixtures contain no URL, app, or user IDs.
+		{name: "observed cli not configured tuple", fixture: "fixed-connection-not-configured.json", recovery: RecoveryCreateApp, public: PublicCodeConnectionRequired},
+		{name: "observed cli token missing tuple", fixture: "fixed-authentication-token-missing.json", recovery: RecoveryReauth, public: PublicCodeReauthRequired},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := classifier.ClassifyEnvelope(loadErrorClassifierFixture(t, tt.fixture), RiskWrite, true)
+			got := classifier.ClassifyEnvelope(loadErrorClassifierFixture(t, tt.fixture), docsCreateScopes(), RiskWrite, true)
 			require.Equal(t, tt.recovery, got.Recovery)
 			require.True(t, got.ProvenNoSideEffect)
 			require.Empty(t, got.TerminalState)
@@ -111,10 +134,47 @@ func TestErrorClassifier_FixedConnectionAndReauthContracts(t *testing.T) {
 	}
 }
 
+func TestErrorClassifier_SyntheticRefreshTokenContractsDoNotProveStartedWrites(t *testing.T) {
+	t.Parallel()
+
+	classifier := NewErrorClassifier()
+	for _, fixture := range []string{
+		"fixed-refresh-token-invalid.json",
+		"fixed-refresh-token-expired.json",
+		"fixed-refresh-token-revoked.json",
+	} {
+		fixture := fixture
+		t.Run(fixture, func(t *testing.T) {
+			t.Parallel()
+			envelope := loadErrorClassifierFixture(t, fixture)
+
+			startedWrite := classifier.ClassifyEnvelope(envelope, docsCreateScopes(), RiskWrite, true)
+			require.Equal(t, RecoveryNone, startedWrite.Recovery)
+			require.False(t, startedWrite.ProvenNoSideEffect)
+			require.Equal(t, model.FeishuOperationUnknown, startedWrite.TerminalState)
+			require.Equal(t, PublicCodeUnknownResult, startedWrite.PublicCode)
+			startedHighRisk := classifier.ClassifyEnvelope(envelope, docsCreateScopes(), RiskHigh, true)
+			require.Equal(t, RecoveryNone, startedHighRisk.Recovery)
+			require.False(t, startedHighRisk.ProvenNoSideEffect)
+			require.Equal(t, model.FeishuOperationUnknown, startedHighRisk.TerminalState)
+
+			read := classifier.ClassifyEnvelope(envelope, docsReadScopes(), RiskRead, true)
+			require.Equal(t, RecoveryReauth, read.Recovery)
+			require.False(t, read.ProvenNoSideEffect)
+			require.Empty(t, read.TerminalState)
+
+			notStartedWrite := classifier.ClassifyEnvelope(envelope, docsCreateScopes(), RiskWrite, false)
+			require.Equal(t, RecoveryReauth, notStartedWrite.Recovery)
+			require.False(t, notStartedWrite.ProvenNoSideEffect)
+			require.Empty(t, notStartedWrite.TerminalState)
+		})
+	}
+}
+
 func TestErrorClassifier_ResourceACLNeverRequestsOAuthOrReplay(t *testing.T) {
 	t.Parallel()
 
-	got := NewErrorClassifier().ClassifyEnvelope(loadErrorClassifierFixture(t, "fixed-resource-acl.json"), RiskWrite, true)
+	got := NewErrorClassifier().ClassifyEnvelope(loadErrorClassifierFixture(t, "fixed-resource-acl.json"), docsCreateScopes(), RiskWrite, true)
 	require.Equal(t, RecoveryResourceACL, got.Recovery)
 	require.Empty(t, got.MissingScopes)
 	require.False(t, got.ProvenNoSideEffect)
@@ -133,19 +193,19 @@ func TestErrorClassifier_StructuredTransientReadRetriesButStartedWriteIsUnknown(
 			t.Parallel()
 			envelope := loadErrorClassifierFixture(t, fixture)
 
-			read := classifier.ClassifyEnvelope(envelope, RiskRead, true)
+			read := classifier.ClassifyEnvelope(envelope, docsReadScopes(), RiskRead, true)
 			require.Equal(t, RecoveryNone, read.Recovery)
 			require.True(t, read.RetryRead)
 			require.Empty(t, read.TerminalState)
 			require.Contains(t, []string{PublicCodeRateLimited, PublicCodeTemporaryError}, read.PublicCode)
 
-			write := classifier.ClassifyEnvelope(envelope, RiskWrite, true)
+			write := classifier.ClassifyEnvelope(envelope, docsCreateScopes(), RiskWrite, true)
 			require.Equal(t, RecoveryNone, write.Recovery)
 			require.False(t, write.RetryRead)
 			require.Equal(t, model.FeishuOperationUnknown, write.TerminalState)
 			require.Equal(t, PublicCodeUnknownResult, write.PublicCode)
 
-			notStarted := classifier.ClassifyEnvelope(envelope, RiskWrite, false)
+			notStarted := classifier.ClassifyEnvelope(envelope, docsCreateScopes(), RiskWrite, false)
 			require.Equal(t, model.FeishuOperationFailed, notStarted.TerminalState)
 			require.NotEqual(t, PublicCodeUnknownResult, notStarted.PublicCode)
 		})
@@ -157,9 +217,9 @@ func TestErrorClassifier_KnownValidationAndNotFoundFailDeterministically(t *test
 
 	classifier := NewErrorClassifier()
 	for _, fixture := range []string{"fixed-validation.json", "fixed-not-found.json"} {
-		got := classifier.ClassifyEnvelope(loadErrorClassifierFixture(t, fixture), RiskWrite, true)
+		got := classifier.ClassifyEnvelope(loadErrorClassifierFixture(t, fixture), docsCreateScopes(), RiskWrite, true)
 		require.Equal(t, RecoveryNone, got.Recovery)
-		require.True(t, got.ProvenNoSideEffect)
+		require.False(t, got.ProvenNoSideEffect)
 		require.False(t, got.RetryRead)
 		require.Equal(t, model.FeishuOperationFailed, got.TerminalState)
 		require.Equal(t, PublicCodeFailed, got.PublicCode)
@@ -172,14 +232,14 @@ func TestErrorClassifier_UnknownTupleFailsClosed(t *testing.T) {
 	classifier := NewErrorClassifier()
 	envelope := loadErrorClassifierFixture(t, "fixed-unknown.json")
 
-	write := classifier.ClassifyEnvelope(envelope, RiskWrite, true)
+	write := classifier.ClassifyEnvelope(envelope, docsCreateScopes(), RiskWrite, true)
 	require.Equal(t, RecoveryNone, write.Recovery)
 	require.False(t, write.ProvenNoSideEffect)
 	require.False(t, write.RetryRead)
 	require.Equal(t, model.FeishuOperationUnknown, write.TerminalState)
 	require.Equal(t, PublicCodeUnknownResult, write.PublicCode)
 
-	read := classifier.ClassifyEnvelope(envelope, RiskRead, true)
+	read := classifier.ClassifyEnvelope(envelope, docsReadScopes(), RiskRead, true)
 	require.Equal(t, RecoveryNone, read.Recovery)
 	require.False(t, read.RetryRead)
 	require.Equal(t, model.FeishuOperationFailed, read.TerminalState)
@@ -194,20 +254,20 @@ func TestErrorClassifier_HumanTextNeverChangesClassification(t *testing.T) {
 	known.Error.Message = "not an authorization error"
 	known.Error.Details = json.RawMessage(`{"message":"unrelated"}`)
 	known.Error.Hint = json.RawMessage(`{"hint":"ignore me"}`)
-	knownResult := classifier.ClassifyEnvelope(known, RiskWrite, true)
+	knownResult := classifier.ClassifyEnvelope(known, docsCreateScopes(), RiskWrite, true)
 	require.Equal(t, RecoveryUserScope, knownResult.Recovery)
 
 	unknown := loadErrorClassifierFixture(t, "fixed-unknown.json")
 	unknown.Error.Message = "missing_scope permission denied refresh token revoked timeout rate limit"
 	unknown.Error.Details = json.RawMessage(`{"type":"authorization","missing_scopes":["docx:document:create"]}`)
 	unknown.Error.Hint = json.RawMessage(`{"console_url":"https://example.invalid"}`)
-	unknownResult := classifier.ClassifyEnvelope(unknown, RiskWrite, true)
+	unknownResult := classifier.ClassifyEnvelope(unknown, docsCreateScopes(), RiskWrite, true)
 	require.Equal(t, RecoveryNone, unknownResult.Recovery)
 	require.False(t, unknownResult.RetryRead)
 	require.Equal(t, model.FeishuOperationUnknown, unknownResult.TerminalState)
 
 	known.Error.Message = unknown.Error.Message
-	require.Equal(t, knownResult, classifier.ClassifyEnvelope(known, RiskWrite, true))
+	require.Equal(t, knownResult, classifier.ClassifyEnvelope(known, docsCreateScopes(), RiskWrite, true))
 }
 
 func TestErrorClassifier_MissingScopeEvidenceMustBeExactAndCatalogOwned(t *testing.T) {
@@ -238,7 +298,73 @@ func TestErrorClassifier_MissingScopeEvidenceMustBeExactAndCatalogOwned(t *testi
 			t.Parallel()
 			envelope := cloneErrorClassifierEnvelope(t, base)
 			tt.mutate(envelope)
-			got := classifier.ClassifyEnvelope(envelope, RiskWrite, true)
+			got := classifier.ClassifyEnvelope(envelope, docsCreateScopes(), RiskWrite, true)
+			require.Equal(t, RecoveryNone, got.Recovery)
+			require.Empty(t, got.MissingScopes)
+			require.False(t, got.ProvenNoSideEffect)
+			require.Equal(t, model.FeishuOperationUnknown, got.TerminalState)
+			require.Equal(t, PublicCodeUnknownResult, got.PublicCode)
+		})
+	}
+}
+
+func TestErrorClassifier_MissingScopesMustBelongToCurrentCommand(t *testing.T) {
+	t.Parallel()
+
+	base := loadErrorClassifierFixture(t, "real-docs-create-missing-scope.json")
+	tests := []struct {
+		name           string
+		returnedScopes []string
+		expectedScopes []string
+	}{
+		{
+			name:           "cross domain base scope for docs command",
+			returnedScopes: []string{"base:record:create"},
+			expectedScopes: docsCreateScopes(),
+		},
+		{
+			name:           "same domain different docs command scope",
+			returnedScopes: []string{"docx:document:readonly"},
+			expectedScopes: docsCreateScopes(),
+		},
+		{
+			name:           "nil expected scopes",
+			returnedScopes: []string{"docx:document:create"},
+			expectedScopes: nil,
+		},
+		{
+			name:           "empty expected scopes",
+			returnedScopes: []string{"docx:document:create"},
+			expectedScopes: []string{},
+		},
+		{
+			name:           "off catalog expected scope",
+			returnedScopes: []string{"docx:document:create"},
+			expectedScopes: []string{"im:message:send"},
+		},
+		{
+			name:           "mixed command expected scope set",
+			returnedScopes: []string{"docx:document:create"},
+			expectedScopes: []string{"docx:document:create", "base:record:create"},
+		},
+		{
+			name:           "duplicate expected scope",
+			returnedScopes: []string{"docx:document:create"},
+			expectedScopes: []string{"docx:document:create", "docx:document:create"},
+		},
+		{
+			name:           "malformed expected scope",
+			returnedScopes: []string{"docx:document:create"},
+			expectedScopes: []string{" docx:document:create"},
+		},
+	}
+	classifier := NewErrorClassifier()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			envelope := cloneErrorClassifierEnvelope(t, base)
+			envelope.Error.MissingScopes = append([]string(nil), tt.returnedScopes...)
+			got := classifier.ClassifyEnvelope(envelope, tt.expectedScopes, RiskWrite, true)
 			require.Equal(t, RecoveryNone, got.Recovery)
 			require.Empty(t, got.MissingScopes)
 			require.False(t, got.ProvenNoSideEffect)
@@ -257,13 +383,13 @@ func TestErrorClassifier_CodeCanonicalizationIsNarrow(t *testing.T) {
 	numberCode.Error.Code = json.RawMessage(`99991672`)
 	require.Equal(
 		t,
-		classifier.ClassifyEnvelope(stringCode, RiskWrite, true),
-		classifier.ClassifyEnvelope(numberCode, RiskWrite, true),
+		classifier.ClassifyEnvelope(stringCode, docsCreateScopes(), RiskWrite, true),
+		classifier.ClassifyEnvelope(numberCode, docsCreateScopes(), RiskWrite, true),
 	)
 
 	exponent := cloneErrorClassifierEnvelope(t, stringCode)
 	exponent.Error.Code = json.RawMessage(`9.9991672e7`)
-	got := classifier.ClassifyEnvelope(exponent, RiskWrite, true)
+	got := classifier.ClassifyEnvelope(exponent, docsCreateScopes(), RiskWrite, true)
 	require.Equal(t, RecoveryNone, got.Recovery)
 	require.Equal(t, model.FeishuOperationUnknown, got.TerminalState)
 }
@@ -274,17 +400,17 @@ func TestErrorClassifier_EnvelopeIdentityIsOuterAndConflictsFailClosed(t *testin
 	classifier := NewErrorClassifier()
 	envelope := loadErrorClassifierFixture(t, "real-docs-create-missing-scope.json")
 	envelope.Error.Identity = "user"
-	require.Equal(t, RecoveryUserScope, classifier.ClassifyEnvelope(envelope, RiskWrite, true).Recovery)
+	require.Equal(t, RecoveryUserScope, classifier.ClassifyEnvelope(envelope, docsCreateScopes(), RiskWrite, true).Recovery)
 
 	conflicting := cloneErrorClassifierEnvelope(t, envelope)
 	conflicting.Error.Identity = "bot"
-	got := classifier.ClassifyEnvelope(conflicting, RiskWrite, true)
+	got := classifier.ClassifyEnvelope(conflicting, docsCreateScopes(), RiskWrite, true)
 	require.Equal(t, RecoveryNone, got.Recovery)
 	require.Equal(t, model.FeishuOperationUnknown, got.TerminalState)
 
 	missingOuter := cloneErrorClassifierEnvelope(t, envelope)
 	missingOuter.Identity = ""
-	require.Equal(t, RecoveryUserScope, classifier.ClassifyEnvelope(missingOuter, RiskWrite, true).Recovery)
+	require.Equal(t, RecoveryUserScope, classifier.ClassifyEnvelope(missingOuter, docsCreateScopes(), RiskWrite, true).Recovery)
 }
 
 func TestErrorClassifier_InvalidEnvelopeFailsClosed(t *testing.T) {
@@ -296,12 +422,12 @@ func TestErrorClassifier_InvalidEnvelopeFailsClosed(t *testing.T) {
 		{OK: true, Identity: "user", Error: loadErrorClassifierFixture(t, "real-docs-create-missing-scope.json").Error},
 		{OK: false, Identity: "user", Error: nil},
 	} {
-		got := classifier.ClassifyEnvelope(envelope, RiskWrite, true)
+		got := classifier.ClassifyEnvelope(envelope, docsCreateScopes(), RiskWrite, true)
 		require.Equal(t, RecoveryNone, got.Recovery)
 		require.Equal(t, model.FeishuOperationUnknown, got.TerminalState)
 	}
 
-	got := classifier.Classify(nil, RiskRead, true)
+	got := classifier.Classify(nil, docsReadScopes(), RiskRead, true)
 	require.Equal(t, RecoveryNone, got.Recovery)
 	require.Equal(t, model.FeishuOperationFailed, got.TerminalState)
 }
@@ -321,6 +447,8 @@ func TestErrorClassifier_TransportClassificationUsesErrorTypes(t *testing.T) {
 	}{
 		{name: "deadline read retries", err: context.DeadlineExceeded, risk: RiskRead, started: true, retry: true, public: PublicCodeTemporaryError},
 		{name: "wrapped network read retries", err: fmt.Errorf("wrapped: %w", classifierNetError{}), risk: RiskRead, started: true, retry: true, public: PublicCodeTemporaryError},
+		{name: "permanent network error fails closed", err: classifierPermanentNetError{}, risk: RiskRead, started: true, terminal: model.FeishuOperationFailed, public: PublicCodeFailed},
+		{name: "wrapped permanent network error fails closed", err: fmt.Errorf("wrapped: %w", classifierPermanentNetError{}), risk: RiskRead, started: true, terminal: model.FeishuOperationFailed, public: PublicCodeFailed},
 		{name: "deadline started write unknown", err: context.DeadlineExceeded, risk: RiskWrite, started: true, terminal: model.FeishuOperationUnknown, public: PublicCodeUnknownResult},
 		{name: "network started high risk unknown", err: classifierNetError{}, risk: RiskHigh, started: true, terminal: model.FeishuOperationUnknown, public: PublicCodeUnknownResult},
 		{name: "deadline write not started failed", err: context.DeadlineExceeded, risk: RiskWrite, started: false, terminal: model.FeishuOperationFailed, public: PublicCodeTemporaryError},
@@ -346,9 +474,9 @@ func TestErrorClassifier_ReturnsDefensiveCopiesAndIsConcurrentSafe(t *testing.T)
 
 	classifier := NewErrorClassifier()
 	envelope := loadErrorClassifierFixture(t, "fixed-base-app-scope-missing.json")
-	want := classifier.ClassifyEnvelope(envelope, RiskWrite, true)
+	want := classifier.ClassifyEnvelope(envelope, baseCreateScopes(), RiskRead, true)
 	want.MissingScopes[0] = "im:message:send"
-	again := classifier.ClassifyEnvelope(envelope, RiskWrite, true)
+	again := classifier.ClassifyEnvelope(envelope, baseCreateScopes(), RiskRead, true)
 	require.Equal(t, "base:app:create", again.MissingScopes[0])
 
 	const workers = 64
@@ -357,13 +485,13 @@ func TestErrorClassifier_ReturnsDefensiveCopiesAndIsConcurrentSafe(t *testing.T)
 	for i := 0; i < workers; i++ {
 		go func() {
 			defer wg.Done()
-			got := classifier.ClassifyEnvelope(envelope, RiskWrite, true)
+			got := classifier.ClassifyEnvelope(envelope, baseCreateScopes(), RiskRead, true)
 			require.Equal(t, RecoveryAppScope, got.Recovery)
 			got.MissingScopes[0] = "mutated"
 		}()
 	}
 	wg.Wait()
-	require.Equal(t, "base:app:create", classifier.ClassifyEnvelope(envelope, RiskWrite, true).MissingScopes[0])
+	require.Equal(t, "base:app:create", classifier.ClassifyEnvelope(envelope, baseCreateScopes(), RiskRead, true).MissingScopes[0])
 }
 
 func loadErrorClassifierFixture(t *testing.T, name string) *CLIEnvelope {
@@ -416,3 +544,31 @@ type classifierNetError struct{}
 func (classifierNetError) Error() string   { return "classified network failure" }
 func (classifierNetError) Timeout() bool   { return true }
 func (classifierNetError) Temporary() bool { return true }
+
+type classifierPermanentNetError struct{}
+
+func (classifierPermanentNetError) Error() string   { return "permanent classified network failure" }
+func (classifierPermanentNetError) Timeout() bool   { return false }
+func (classifierPermanentNetError) Temporary() bool { return false }
+
+func docsCreateScopes() []string {
+	return []string{"docx:document:create"}
+}
+
+func docsReadScopes() []string {
+	return []string{"docx:document:readonly"}
+}
+
+func baseCreateScopes() []string {
+	return []string{
+		"base:app:create",
+		"base:table:read",
+		"base:table:create",
+		"base:table:update",
+		"base:table:delete",
+	}
+}
+
+func wikiSpaceCreateScopes() []string {
+	return []string{"wiki:space:write_only"}
+}
