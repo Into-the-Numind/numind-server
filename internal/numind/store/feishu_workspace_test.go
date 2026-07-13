@@ -368,6 +368,79 @@ func TestFeishuWorkspaceStore_ProofReservationRejectsSucceededIntermediateUpdate
 	require.Zero(t, operationCount)
 }
 
+func TestFeishuWorkspaceStore_ProofReservationRejectsSameMillisecondLowerUUIDUpdate(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 1)
+	sameMillisecond := time.Date(2026, 7, 13, 12, 0, 0, 123000000, time.UTC)
+	source := newFeishuOperation("ffffffff-ffff-4fff-bfff-ffffffffffff", 7, 1, "same-ms-source-key")
+	source.AgentRunID = 703
+	source.CommandPath = "docs +create"
+	source.State = model.FeishuOperationSucceeded
+	source.CreatedAt = sameMillisecond
+	require.NoError(t, s.db.Create(source).Error)
+	intermediate := newFeishuOperation("00000000-0000-4000-8000-000000000000", 7, 1, "same-ms-update-key")
+	intermediate.AgentRunID = 703
+	intermediate.CommandPath = "docs +update"
+	intermediate.State = model.FeishuOperationSucceeded
+	intermediate.CreatedAt = sameMillisecond
+	require.Less(t, intermediate.ID, source.ID, "the later UUID must sort before the source UUID")
+	require.NoError(t, s.db.Create(intermediate).Error)
+	consumer := newFeishuOperation("same-ms-consumer", 7, 1, "same-ms-consumer-key")
+	consumer.AgentRunID = 703
+
+	stored, err := s.CreateOrGetOperationWithProof(ctx, consumer, source.ID)
+	require.ErrorIs(t, err, ErrFeishuProofReservationUnavailable)
+	require.Nil(t, stored)
+	var operationCount int64
+	require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", consumer.ID).Count(&operationCount).Error)
+	require.Zero(t, operationCount)
+}
+
+func TestFeishuWorkspaceStore_ProofReservationRejectsIntermediateUpdateInEveryState(t *testing.T) {
+	states := []string{
+		model.FeishuOperationNotStarted,
+		model.FeishuOperationExecuting,
+		model.FeishuOperationWaitingConnection,
+		model.FeishuOperationWaitingAppScope,
+		model.FeishuOperationWaitingUserAuth,
+		model.FeishuOperationWaitingConfirmation,
+		model.FeishuOperationUnknown,
+		model.FeishuOperationSucceeded,
+		model.FeishuOperationFailed,
+		model.FeishuOperationCancelled,
+	}
+	for index, state := range states {
+		t.Run(state, func(t *testing.T) {
+			ctx := context.Background()
+			s := newFeishuWorkspaceTestStore(t)
+			createFeishuAccount(t, s, 7, 1)
+			baseTime := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+			source := newFeishuOperation(fmt.Sprintf("state-source-%d", index), 7, 1, fmt.Sprintf("state-source-key-%d", index))
+			source.AgentRunID = 704
+			source.CommandPath = "docs +create"
+			source.State = model.FeishuOperationSucceeded
+			source.CreatedAt = baseTime
+			require.NoError(t, s.db.Create(source).Error)
+			intermediate := newFeishuOperation(fmt.Sprintf("state-update-%d", index), 7, 1, fmt.Sprintf("state-update-key-%d", index))
+			intermediate.AgentRunID = 704
+			intermediate.CommandPath = "docs +update"
+			intermediate.State = state
+			intermediate.CreatedAt = baseTime.Add(time.Millisecond)
+			require.NoError(t, s.db.Create(intermediate).Error)
+			consumer := newFeishuOperation(fmt.Sprintf("state-consumer-%d", index), 7, 1, fmt.Sprintf("state-consumer-key-%d", index))
+			consumer.AgentRunID = 704
+
+			stored, err := s.CreateOrGetOperationWithProof(ctx, consumer, source.ID)
+			require.ErrorIs(t, err, ErrFeishuProofReservationUnavailable)
+			require.Nil(t, stored)
+			var operationCount int64
+			require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", consumer.ID).Count(&operationCount).Error)
+			require.Zero(t, operationCount)
+		})
+	}
+}
+
 func TestFeishuWorkspaceStore_VaultRevisionCASAndOwnership(t *testing.T) {
 	ctx := context.Background()
 	s := newFeishuWorkspaceTestStore(t)

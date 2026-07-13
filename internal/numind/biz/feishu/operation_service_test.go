@@ -921,6 +921,90 @@ func TestOperationService_EmptyCreateProofCanBeConsumedByOnlyOneDistinctOperatio
 	require.Equal(t, 2, calls)
 }
 
+func TestOperationService_SameMillisecondLowerUUIDUpdateInvalidatesCreateProof(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	const token = "doxcnSameMillisecondProof123"
+	h.runner.steps = []operationRunnerStep{
+		{result: operationOKResult(`{"document":{"document_id":"` + token + `","url":"https://acme.feishu.cn/docx/` + token + `"}}`)},
+		{result: operationOKResult(`{"revision_id":2}`)},
+	}
+	created, err := h.service.Execute(h.ctx, operationDocsCreateRequest(7, 335, "tc-create", "Empty", nil))
+	require.NoError(t, err)
+	sameMillisecond := time.Date(2026, 7, 13, 12, 0, 0, 123000000, time.UTC)
+	require.NoError(t, h.db.Model(&model.FeishuOperation{}).Where("id = ?", created.OperationID).
+		Update("created_at", sameMillisecond).Error)
+	intermediate := &model.FeishuOperation{
+		ID: "00000000-0000-4000-8000-000000000000", UserID: 7, Generation: 1,
+		AgentRunID: 335, ToolCallID: "tc-intermediate", IdempotencyKey: "335:tc-intermediate",
+		CommandPath: "docs +update", Domain: "docs", RiskLevel: string(RiskHigh),
+		RequestCiphertext: []byte("opaque-intermediate-request"), KeyVersion: "v1",
+		RequestFingerprint: "opaque-intermediate-fingerprint", State: model.FeishuOperationSucceeded,
+		CreatedAt: sameMillisecond, UpdatedAt: sameMillisecond,
+	}
+	require.Less(t, intermediate.ID, created.OperationID, "the later UUID must sort before the source UUID")
+	require.NoError(t, h.db.Create(intermediate).Error)
+
+	overwrite, err := h.service.Execute(h.ctx, operationDocsOverwriteRequest(7, 335, "tc-overwrite", token))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingConfirmation, overwrite.State)
+	require.Len(t, h.confirmation.calls, 1)
+	calls, _ := h.runner.snapshot()
+	require.Equal(t, 1, calls)
+}
+
+func TestOperationService_ExecutingIntermediateUpdateInvalidatesCreateProof(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	const token = "doxcnExecutingIntermediate123"
+	h.runner.steps = []operationRunnerStep{
+		{result: operationOKResult(`{"document":{"document_id":"` + token + `","url":"https://acme.feishu.cn/docx/` + token + `"}}`)},
+		{result: operationOKResult(`{"revision_id":2}`)},
+	}
+	created, err := h.service.Execute(h.ctx, operationDocsCreateRequest(7, 336, "tc-create", "Empty", nil))
+	require.NoError(t, err)
+	storedSource, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, created.OperationID)
+	require.NoError(t, err)
+
+	arrived := make(chan struct{}, 1)
+	release := make(chan struct{})
+	barrierStore := &proofQueryBarrierOperationStore{
+		OperationStore: h.dataStore.FeishuWorkspace(), arrived: arrived, release: release,
+	}
+	service, err := NewFeishuOperationService(OperationServiceDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: barrierStore,
+		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: h.recovery,
+		Confirmation: h.confirmation, Vault: h.vault, Runner: h.runner, Cipher: h.cipher,
+		Now: h.service.now, LeaseDuration: time.Minute,
+	})
+	require.NoError(t, err)
+	resultCh := make(chan *OperationResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		result, executeErr := service.Execute(h.ctx, operationDocsOverwriteRequest(7, 336, "tc-overwrite", token))
+		resultCh <- result
+		errCh <- executeErr
+	}()
+	<-arrived
+	intermediate := &model.FeishuOperation{
+		ID: "00000000-0000-4000-8000-000000000000", UserID: 7, Generation: 1,
+		AgentRunID: 336, ToolCallID: "tc-intermediate", IdempotencyKey: "336:tc-intermediate",
+		CommandPath: "docs +update", Domain: "docs", RiskLevel: string(RiskHigh),
+		RequestCiphertext: []byte("opaque-intermediate-request"), KeyVersion: "v1",
+		RequestFingerprint: "opaque-intermediate-fingerprint", State: model.FeishuOperationExecuting,
+		CreatedAt: storedSource.CreatedAt.Add(time.Millisecond), UpdatedAt: storedSource.CreatedAt.Add(time.Millisecond),
+	}
+	require.NoError(t, h.db.Create(intermediate).Error)
+	close(release)
+
+	overwrite := <-resultCh
+	require.NoError(t, <-errCh)
+	require.Equal(t, model.FeishuOperationWaitingConfirmation, overwrite.State)
+	require.Len(t, h.confirmation.calls, 1)
+	calls, _ := h.runner.snapshot()
+	require.Equal(t, 1, calls)
+}
+
 func TestOperationService_ConcurrentDistinctOverwritesAtomicallyConsumeOneProof(t *testing.T) {
 	h := newOperationHarness(t)
 	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")

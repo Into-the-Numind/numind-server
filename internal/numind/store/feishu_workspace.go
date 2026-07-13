@@ -276,8 +276,8 @@ func (s *feishuWorkspaceStore) CreateOrGetOperationWithProof(
 		var intermediateWrites int64
 		if err := tx.Model(&model.FeishuOperation{}).
 			Where("user_id = ? AND generation = ? AND agent_run_id = ?", operation.UserID, operation.Generation, operation.AgentRunID).
-			Where("state = ? AND command_path = ?", model.FeishuOperationSucceeded, "docs +update").
-			Where("created_at > ? OR (created_at = ? AND id > ?)", source.CreatedAt, source.CreatedAt, source.ID).
+			Where("command_path = ?", "docs +update").
+			Where("created_at >= ?", source.CreatedAt).
 			Count(&intermediateWrites).Error; err != nil {
 			return err
 		}
