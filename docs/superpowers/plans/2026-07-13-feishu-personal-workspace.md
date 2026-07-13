@@ -772,7 +772,7 @@ git commit -m "feat(agent): persist external action waits"
 
 **Files:** `tool_call_ctx.go`、`tool_call_ctx_test.go`、`adapter_full_to_eino.go`、`adapter_full_to_eino_test.go`、`tool_lark_skill_read.go`、`tool_lark_execute.go`、`tool_lark_personal_workspace_test.go`、`factory_platform.go`、`factory_platform_test.go`。
 
-- [ ] **Step 1: 写 adapter/tool 红测**
+- [x] **Step 1: 写 adapter/tool 红测**
 
 断言 Execute 能读同一 synthetic toolCallID；`lark_execute` 不接受 user_id；idempotency key 固定 `<runID>:<toolCallID>`；waiting 发 Task 9 external action；skill read 不要求连接；factory 查不到四个旧工具。
 
@@ -785,13 +785,13 @@ func TestFullToolAdapterInjectsToolCallID(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 运行红测**
+- [x] **Step 2: 运行红测**
 
 Run: `go test ./internal/numind/biz/agent -run 'ToolCallID|LarkPersonalWorkspace|PlatformTool' -count=1`
 
 Expected: FAIL，新工具不存在。
 
-- [ ] **Step 3: 注入 tool call ID**
+- [x] **Step 3: 注入 tool call ID**
 
 ```go
 func WithToolCallID(ctx context.Context, id string) context.Context
@@ -800,7 +800,7 @@ func ToolCallIDFromContext(ctx context.Context) string
 
 Execute 唯一调用点改为 `invokeToolGuarded(WithToolCallID(ctx, toolCallID), input)`。
 
-- [ ] **Step 4: 通过小接口实现两个 FullTool**
+- [x] **Step 4: 通过小接口实现两个 FullTool**
 
 ```go
 type SkillReadExecutor interface { Read(context.Context, feishu.SkillReadRequest) (*feishu.SkillReadPage, error) }
@@ -809,7 +809,7 @@ type LarkExecutor interface { Execute(context.Context, feishu.ExecuteRequest) (*
 
 `lark_skill_read` input 为 skill/reference/cursor；`lark_execute` input 只含 argv/stdin_json/skill_receipts。userID/runID/toolCallID 只取 context。Factory 接受接口依赖并 nil-safe；本任务不构造具体 operation/auth 服务，Task 12 才装配。
 
-- [ ] **Step 5: 收缩 registry 并绿测**
+- [x] **Step 5: 收缩 registry 并绿测**
 
 Factory 只注册 `lark_skill_read`、`lark_execute`；旧源文件保留到 Task 20，但 registry 查不到 `lark_create_doc/lark_read_bitable/lark_send_message/feishu_connect`。
 
@@ -817,7 +817,7 @@ Run: `go test ./internal/numind/biz/agent -run 'ToolCallID|LarkPersonalWorkspace
 
 Expected: PASS。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/numind/biz/agent/tool_call_ctx.go internal/numind/biz/agent/tool_call_ctx_test.go internal/numind/biz/agent/adapter_full_to_eino.go internal/numind/biz/agent/adapter_full_to_eino_test.go internal/numind/biz/agent/tool_lark_skill_read.go internal/numind/biz/agent/tool_lark_execute.go internal/numind/biz/agent/tool_lark_personal_workspace_test.go internal/numind/biz/agent/factory_platform.go internal/numind/biz/agent/factory_platform_test.go
