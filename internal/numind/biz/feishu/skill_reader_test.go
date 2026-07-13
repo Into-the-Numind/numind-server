@@ -80,6 +80,25 @@ func TestSkillReader_InvalidRequestDoesNotStartCLI(t *testing.T) {
 	require.Empty(t, h.invocations())
 }
 
+func TestSkillReader_OnlyExposesDeclaredReferencesNamespace(t *testing.T) {
+	t.Parallel()
+
+	// This mirrors the real lark-doc 1.0.68 shape: the main skill links both
+	// the supported reference and a helper script. Only references/ is readable.
+	content := "Read [word stats](references/lark-doc-word-stat.md) and " +
+		"run [the helper](scripts/doc_word_stat.py); ignore [assets](assets/template.md)."
+	require.Equal(t, []string{"references/lark-doc-word-stat.md"}, declaredSkillReferences(content))
+	require.True(t, validSkillReference("references/lark-doc-word-stat.md"))
+	require.False(t, validSkillReference("scripts/doc_word_stat.py"))
+	require.False(t, validSkillReference("assets/template.md"))
+
+	h := newSkillReaderHarness(t, skillReaderOptions{})
+	h.writeResource("lark-doc", "SKILL.md", content, true)
+	_, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 1, Skill: "lark-doc", Reference: "scripts/doc_word_stat.py"})
+	require.Error(t, err)
+	require.Empty(t, h.invocations(), "non-reference namespaces must fail before CLI start")
+}
+
 func TestSkillReader_UndeclaredReferenceAndResponseMismatchFailClosed(t *testing.T) {
 	t.Parallel()
 
@@ -196,7 +215,7 @@ func TestSkillReader_CursorRejectsExpiredOutOfBoundsAndNonUTF8Offsets(t *testing
 	require.Len(t, h.invocations(), before, "expired cursor must fail before CLI start")
 }
 
-func TestSkillReader_ReferenceFinalPageNeverMintsReceipt(t *testing.T) {
+func TestSkillReader_ReceiptProvesMainDeliveryButReferencesNeverMintReceipt(t *testing.T) {
 	t.Parallel()
 
 	h := newSkillReaderHarness(t, skillReaderOptions{pageBytes: 16})
@@ -232,15 +251,29 @@ func TestSkillReceipt_ExpiryDomainRequirementsAndDuplicates(t *testing.T) {
 		receipts[skill] = page.Receipt
 	}
 
-	require.NoError(t, h.reader.VerifyRequired([]string{receipts["lark-shared"], receipts["lark-doc"]}, 77, "docs"))
-	require.NoError(t, h.reader.VerifyRequired([]string{receipts["lark-shared"], receipts["lark-base"]}, 77, "base"))
-	require.NoError(t, h.reader.VerifyRequired([]string{receipts["lark-shared"], receipts["lark-wiki"]}, 77, "wiki"))
+	require.NoError(t, h.reader.VerifyRequired([]string{receipts["lark-shared"], receipts["lark-doc"]}, 77, SkillDomainDocs))
+	require.NoError(t, h.reader.VerifyRequired([]string{receipts["lark-shared"], receipts["lark-base"]}, 77, SkillDomainBase))
+	require.NoError(t, h.reader.VerifyRequired([]string{receipts["lark-shared"], receipts["lark-wiki"]}, 77, SkillDomainWiki))
+	require.NoError(t, h.reader.VerifyRequired([]string{receipts["lark-shared"], receipts["lark-wiki"], receipts["lark-doc"]}, 77, SkillDomainWikiContent))
 	require.Error(t, h.reader.VerifyRequired(nil, 77, "unknown"))
-	require.Error(t, h.reader.VerifyRequired([]string{receipts["lark-shared"]}, 77, "docs"))
-	require.Error(t, h.reader.VerifyRequired([]string{receipts["lark-shared"], receipts["lark-shared"]}, 77, "docs"))
-	require.Error(t, h.reader.VerifyRequired([]string{receipts["lark-shared"], "malformed"}, 77, "docs"))
-	require.Error(t, h.reader.VerifyRequired([]string{receipts["lark-shared"], receipts["lark-doc"], "malformed"}, 77, "docs"))
-	require.Error(t, h.reader.VerifyRequired([]string{receipts["lark-shared"], receipts["lark-base"]}, 77, "docs"))
+	require.Error(t, h.reader.VerifyRequired([]string{receipts["lark-shared"]}, 77, SkillDomainDocs))
+	require.Error(t, h.reader.VerifyRequired([]string{receipts["lark-shared"], receipts["lark-shared"]}, 77, SkillDomainDocs))
+	require.Error(t, h.reader.VerifyRequired([]string{receipts["lark-shared"], "malformed"}, 77, SkillDomainDocs))
+	require.Error(t, h.reader.VerifyRequired([]string{receipts["lark-shared"], receipts["lark-doc"], "malformed"}, 77, SkillDomainDocs))
+	require.Error(t, h.reader.VerifyRequired([]string{receipts["lark-shared"], receipts["lark-base"]}, 77, SkillDomainDocs))
+
+	for _, invalidWikiContent := range [][]string{
+		{receipts["lark-shared"], receipts["lark-wiki"]},
+		{receipts["lark-shared"], receipts["lark-doc"]},
+		{receipts["lark-wiki"], receipts["lark-doc"]},
+		{receipts["lark-shared"], receipts["lark-wiki"], receipts["lark-wiki"]},
+		{receipts["lark-shared"], receipts["lark-wiki"], receipts["lark-doc"], receipts["lark-base"]},
+	} {
+		require.Error(t, h.reader.VerifyRequired(invalidWikiContent, 77, SkillDomainWikiContent))
+	}
+	otherRun, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 78, Skill: "lark-doc"})
+	require.NoError(t, err)
+	require.Error(t, h.reader.VerifyRequired([]string{receipts["lark-shared"], receipts["lark-wiki"], otherRun.Receipt}, 77, SkillDomainWikiContent))
 
 	h.advance(16 * time.Minute)
 	require.Error(t, h.reader.Verify(receipts["lark-doc"], 77, "lark-doc", LarkCLIVersion))
@@ -283,6 +316,43 @@ func TestSkillReceipt_KeyDerivationAndTokenShapeFailClosed(t *testing.T) {
 	}
 }
 
+func TestSkillReader_TokensRequireCanonicalRawURLWithoutCRLF(t *testing.T) {
+	t.Parallel()
+
+	h := newSkillReaderHarness(t, skillReaderOptions{pageBytes: 8})
+	h.writeResource("lark-doc", "SKILL.md", strings.Repeat("content-", 8), true)
+	first, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 7, Skill: "lark-doc"})
+	require.NoError(t, err)
+	require.NotEmpty(t, first.Cursor)
+
+	aliasCursor := aliasRawURLTokenForTest(t, first.Cursor)
+	before := len(h.invocations())
+	_, err = h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 7, Skill: "lark-doc", Cursor: aliasCursor})
+	require.Error(t, err)
+	require.Len(t, h.invocations(), before, "non-canonical cursor must not start CLI")
+
+	parts := strings.Split(first.Cursor, ".")
+	for _, invalid := range []string{
+		parts[0] + ".\n" + parts[1],
+		parts[0] + ".\r" + parts[1],
+		"." + parts[1],
+		parts[0] + ".",
+	} {
+		_, err = h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 7, Skill: "lark-doc", Cursor: invalid})
+		require.Error(t, err)
+		require.Len(t, h.invocations(), before)
+	}
+
+	h.writeResource("lark-doc", "SKILL.md", "short", true)
+	page, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 8, Skill: "lark-doc"})
+	require.NoError(t, err)
+	require.NotEmpty(t, page.Receipt)
+	require.Error(t, h.reader.Verify(aliasRawURLTokenForTest(t, page.Receipt), 8, "lark-doc", LarkCLIVersion))
+	receiptParts := strings.Split(page.Receipt, ".")
+	require.Error(t, h.reader.Verify(receiptParts[0]+".\n"+receiptParts[1], 8, "lark-doc", LarkCLIVersion))
+	require.Error(t, h.reader.Verify(receiptParts[0]+".\r"+receiptParts[1], 8, "lark-doc", LarkCLIVersion))
+}
+
 func TestSkillReader_KeyAndTTLBoundaries(t *testing.T) {
 	t.Parallel()
 
@@ -316,6 +386,11 @@ func TestSkillReader_StrictOutputAndProcessFailures(t *testing.T) {
 		{name: "unknown field", raw: `{"skill":"lark-doc","path":"SKILL.md","content":"x","guidance":"g","extra":true}`},
 		{name: "trailing json", raw: `{"skill":"lark-doc","path":"SKILL.md","content":"x","guidance":"g"}{}`},
 		{name: "missing content", raw: `{"skill":"lark-doc","path":"SKILL.md","guidance":"g"}`},
+		{name: "missing main guidance", raw: `{"skill":"lark-doc","path":"SKILL.md","content":"x"}`},
+		{name: "empty main guidance", raw: `{"skill":"lark-doc","path":"SKILL.md","content":"x","guidance":""}`},
+		{name: "whitespace main guidance", raw: `{"skill":"lark-doc","path":"SKILL.md","content":"x","guidance":"  "}`},
+		{name: "empty main content", raw: `{"skill":"lark-doc","path":"SKILL.md","content":"","guidance":"g"}`},
+		{name: "whitespace main content", raw: `{"skill":"lark-doc","path":"SKILL.md","content":" \n\t","guidance":"g"}`},
 		{name: "array", raw: `[]`},
 	}
 	for _, tt := range tests {
@@ -335,6 +410,17 @@ func TestSkillReader_StrictOutputAndProcessFailures(t *testing.T) {
 		h.writeResource("lark-doc", "SKILL.md", strings.Repeat("x", 512), true)
 		_, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 1, Skill: "lark-doc"})
 		require.Error(t, err)
+	})
+
+	t.Run("empty reference content", func(t *testing.T) {
+		t.Parallel()
+		h := newSkillReaderHarness(t, skillReaderOptions{})
+		h.writeResource("lark-doc", "SKILL.md", "[Empty](references/empty.md)", true)
+		for _, content := range []string{"", " \n\t"} {
+			h.writeResource("lark-doc", "references/empty.md", content, false)
+			_, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 1, Skill: "lark-doc", Reference: "references/empty.md"})
+			require.Error(t, err)
+		}
 	})
 
 	t.Run("exit nonzero", func(t *testing.T) {
@@ -374,6 +460,95 @@ func TestSkillReader_ConcurrentReadAndVerify(t *testing.T) {
 	}
 }
 
+func TestSkillReader_ProcessLimitIsSharedAndWaitingCancellationDoesNotStartCLI(t *testing.T) {
+	t.Parallel()
+
+	h := newSkillReaderHarness(t, skillReaderOptions{})
+	h.writeResource("lark-doc", "SKILL.md", "# stable", true)
+	release := make(chan struct{})
+	started := make(chan struct{}, SkillReaderMaxConcurrentProcesses*2)
+	var current atomic.Int64
+	var maximum atomic.Int64
+	onStarted := func() {
+		value := current.Add(1)
+		for {
+			old := maximum.Load()
+			if value <= old || maximum.CompareAndSwap(old, value) {
+				break
+			}
+		}
+		started <- struct{}{}
+		<-release
+	}
+	onFinished := func() { current.Add(-1) }
+	options := skillReaderOptions{
+		binary:          filepath.Join(h.root, "lark-cli"),
+		now:             h.reader.now,
+		processStarted:  onStarted,
+		processFinished: onFinished,
+	}
+	key := base64.StdEncoding.EncodeToString(h.rawKey)
+	firstReader, err := newSkillReaderWithOptions(key, options)
+	require.NoError(t, err)
+	secondReader, err := newSkillReaderWithOptions(key, options)
+	require.NoError(t, err)
+	readers := []*SkillReader{firstReader, secondReader}
+
+	errs := make(chan error, SkillReaderMaxConcurrentProcesses*2)
+	var wg sync.WaitGroup
+	startReads := func(count int) {
+		for index := 0; index < count; index++ {
+			wg.Add(1)
+			reader := readers[index%len(readers)]
+			go func() {
+				defer wg.Done()
+				_, readErr := reader.Read(context.Background(), SkillReadRequest{AgentRunID: 9, Skill: "lark-doc"})
+				errs <- readErr
+			}()
+		}
+	}
+	startReads(SkillReaderMaxConcurrentProcesses)
+	for index := 0; index < SkillReaderMaxConcurrentProcesses; index++ {
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out filling shared process slots")
+		}
+	}
+	require.Empty(t, h.invocations(), "probe blocks before any CLI process starts")
+
+	waitingCtx, cancelWaiting := context.WithCancel(context.Background())
+	waitingDone := make(chan error, 1)
+	go func() {
+		_, waitErr := secondReader.Read(waitingCtx, SkillReadRequest{AgentRunID: 10, Skill: "lark-doc"})
+		waitingDone <- waitErr
+	}()
+	select {
+	case <-started:
+		t.Fatal("a request exceeded the shared process limit")
+	case <-time.After(100 * time.Millisecond):
+	}
+	cancelWaiting()
+	select {
+	case waitErr := <-waitingDone:
+		require.Error(t, waitErr)
+	case <-time.After(5 * time.Second):
+		t.Fatal("canceled semaphore waiter did not return")
+	}
+	require.Empty(t, h.invocations(), "canceled waiter must not start an extra CLI")
+
+	startReads(SkillReaderMaxConcurrentProcesses)
+	close(release)
+	wg.Wait()
+	close(errs)
+	for readErr := range errs {
+		require.NoError(t, readErr)
+	}
+	require.LessOrEqual(t, maximum.Load(), int64(SkillReaderMaxConcurrentProcesses))
+	require.Zero(t, current.Load())
+	require.Len(t, h.invocations(), SkillReaderMaxConcurrentProcesses*2)
+}
+
 type skillReaderHarness struct {
 	t           *testing.T
 	root        string
@@ -391,11 +566,9 @@ func newSkillReaderHarness(t *testing.T, options skillReaderOptions) *skillReade
 	script := fmt.Sprintf(`#!/bin/sh
 home=unset
 [ "${HOME+x}" = x ] && home=set
-{
-  printf 'HOME=%%s|%%s' "$home" "$#"
-  for arg in "$@"; do printf '|%%s' "$arg"; done
-  printf '\n'
-} >> %q
+line="HOME=$home|$#"
+for arg in "$@"; do line="$line|$arg"; done
+printf '%%s\n' "$line" >> %q
 [ -f %q ] && exit 7
 skill="$3"
 if [ "$4" = "--json" ]; then resource="SKILL.md"; else resource="$4"; fi
@@ -476,4 +649,25 @@ func tamperSkillToken(token string) string {
 		replacement = 'B'
 	}
 	return token[:len(token)-1] + string(replacement)
+}
+
+func aliasRawURLTokenForTest(t *testing.T, token string) string {
+	t.Helper()
+	payloadPart, signaturePart, found := strings.Cut(token, ".")
+	require.True(t, found)
+	want, err := base64.RawURLEncoding.DecodeString(signaturePart)
+	require.NoError(t, err)
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	for index := 0; index < len(alphabet); index++ {
+		candidate := signaturePart[:len(signaturePart)-1] + string(alphabet[index])
+		if candidate == signaturePart {
+			continue
+		}
+		decoded, decodeErr := base64.RawURLEncoding.DecodeString(candidate)
+		if decodeErr == nil && hmac.Equal(decoded, want) {
+			return payloadPart + "." + candidate
+		}
+	}
+	t.Fatal("signature had no non-canonical RawURL alias")
+	return ""
 }

@@ -29,6 +29,19 @@ const (
 	SkillReaderMinTTL = time.Minute
 	// SkillReaderMaxTTL limits replay lifetime if a receipt is exposed.
 	SkillReaderMaxTTL = time.Hour
+	// SkillReaderMaxConcurrentProcesses is the process-wide embedded skill read
+	// ceiling shared by all reader instances.
+	SkillReaderMaxConcurrentProcesses = 4
+
+	// SkillDomainDocs requires lark-shared and lark-doc.
+	SkillDomainDocs = "docs"
+	// SkillDomainBase requires lark-shared and lark-base.
+	SkillDomainBase = "base"
+	// SkillDomainWiki requires lark-shared and lark-wiki.
+	SkillDomainWiki = "wiki"
+	// SkillDomainWikiContent requires shared, Wiki, and Docs receipts because
+	// Wiki node content is manipulated through Docs commands.
+	SkillDomainWikiContent = "wiki_content"
 
 	skillReaderTokenVersion  = 1
 	skillReaderMaxTokenBytes = 4096
@@ -50,6 +63,7 @@ var (
 	ErrSkillReceiptInvalid = errors.New("feishu skill receipt rejected")
 
 	markdownLinkPattern = regexp.MustCompile(`\]\(([^)\s]+)`)
+	skillProcessSlots   = make(chan struct{}, SkillReaderMaxConcurrentProcesses)
 )
 
 // SkillReadRequest asks for one page of a fixed embedded lark-cli skill.
@@ -73,21 +87,25 @@ type SkillReadPage struct {
 // SkillReader reads only fixed lark-cli resources and verifies opaque receipts.
 // All fields are immutable after construction; methods are concurrent-safe.
 type SkillReader struct {
-	runner         *ControlledLarkCLIRunner
-	cursorKey      []byte
-	receiptKey     []byte
-	now            func() time.Time
-	ttl            time.Duration
-	pageBytes      int
-	maxOutputBytes int
+	runner          *ControlledLarkCLIRunner
+	cursorKey       []byte
+	receiptKey      []byte
+	now             func() time.Time
+	ttl             time.Duration
+	pageBytes       int
+	maxOutputBytes  int
+	processStarted  func()
+	processFinished func()
 }
 
 type skillReaderOptions struct {
-	binary         string
-	now            func() time.Time
-	ttl            time.Duration
-	pageBytes      int
-	maxOutputBytes int
+	binary          string
+	now             func() time.Time
+	ttl             time.Duration
+	pageBytes       int
+	maxOutputBytes  int
+	processStarted  func()
+	processFinished func()
 }
 
 type skillCLIResource struct {
@@ -150,18 +168,22 @@ func newSkillReaderWithOptions(thirdPartyTokenKeyBase64 string, options skillRea
 		return nil, fmt.Errorf("feishu: initialize skill reader runner: %w", ErrSkillReadInvalid)
 	}
 	return &SkillReader{
-		runner:         runner,
-		cursorKey:      deriveSkillKey(rawKey, "feishu-skill-cursor-v1"),
-		receiptKey:     deriveSkillKey(rawKey, "feishu-skill-receipt-v1"),
-		now:            now,
-		ttl:            ttl,
-		pageBytes:      pageBytes,
-		maxOutputBytes: maxOutputBytes,
+		runner:          runner,
+		cursorKey:       deriveSkillKey(rawKey, "feishu-skill-cursor-v1"),
+		receiptKey:      deriveSkillKey(rawKey, "feishu-skill-receipt-v1"),
+		now:             now,
+		ttl:             ttl,
+		pageBytes:       pageBytes,
+		maxOutputBytes:  maxOutputBytes,
+		processStarted:  options.processStarted,
+		processFinished: options.processFinished,
 	}, nil
 }
 
 // Read re-reads the complete fixed resource on every page, binds continuation
 // to its digest, and mints a receipt only after the main SKILL.md final page.
+// The receipt proves delivery of that main file only. References remain
+// instruction-driven reads and intentionally never mint or extend a receipt.
 func (r *SkillReader) Read(ctx context.Context, request SkillReadRequest) (*SkillReadPage, error) {
 	if r == nil || ctx == nil || request.AgentRunID == 0 || !allowedSkill(request.Skill) {
 		return nil, ErrSkillReadInvalid
@@ -275,17 +297,21 @@ func (r *SkillReader) Verify(receipt string, runID uint64, skill, cliVersion str
 	return nil
 }
 
-// VerifyRequired validates the exact two-skill receipt set for a command
-// domain. Wiki content written through Docs uses domain="docs" upstream.
+// VerifyRequired validates the exact main-skill receipt set for a command
+// domain. These receipts do not claim that task-specific references were read;
+// the main skill instructs the Agent to fetch those references when needed.
+// Wiki content therefore has an explicit composite domain for Task 7 to select.
 func (r *SkillReader) VerifyRequired(receipts []string, runID uint64, domain string) error {
 	var required map[string]struct{}
 	switch domain {
-	case "docs":
+	case SkillDomainDocs:
 		required = map[string]struct{}{"lark-shared": {}, "lark-doc": {}}
-	case "base":
+	case SkillDomainBase:
 		required = map[string]struct{}{"lark-shared": {}, "lark-base": {}}
-	case "wiki":
+	case SkillDomainWiki:
 		required = map[string]struct{}{"lark-shared": {}, "lark-wiki": {}}
+	case SkillDomainWikiContent:
+		required = map[string]struct{}{"lark-shared": {}, "lark-wiki": {}, "lark-doc": {}}
 	default:
 		return ErrSkillReceiptInvalid
 	}
@@ -323,6 +349,16 @@ func (r *SkillReader) readResource(ctx context.Context, skill, reference string)
 	if err := validateControlledCLIInput(argv, nil); err != nil {
 		return nil, ErrSkillReadInvalid
 	}
+	if !acquireSkillProcessSlot(ctx) {
+		return nil, ErrSkillReadFailed
+	}
+	defer releaseSkillProcessSlot()
+	if r.processStarted != nil {
+		if r.processFinished != nil {
+			defer r.processFinished()
+		}
+		r.processStarted()
+	}
 	binary, err := r.runner.binaryPath()
 	if err != nil {
 		return nil, ErrSkillReadFailed
@@ -335,7 +371,10 @@ func (r *SkillReader) readResource(ctx context.Context, skill, reference string)
 		return nil, ErrSkillReadFailed
 	}
 	resource, err := decodeSkillCLIResource(result.Stdout)
-	if err != nil || resource.Skill != skill || resource.Path != expectedPath || !utf8.ValidString(resource.Content) {
+	if err != nil || resource.Skill != skill || resource.Path != expectedPath || !utf8.ValidString(resource.Content) || strings.TrimSpace(resource.Content) == "" {
+		return nil, ErrSkillReadFailed
+	}
+	if reference == "" && (resource.Guidance == nil || strings.TrimSpace(*resource.Guidance) == "") {
 		return nil, ErrSkillReadFailed
 	}
 	return resource, nil
@@ -376,7 +415,7 @@ func allowedSkill(skill string) bool {
 // the fixed CLI's embedded resource registry and never resolves, stats, or
 // follows it through the server OS filesystem.
 func validSkillReference(reference string) bool {
-	if reference == "" || reference == "SKILL.md" || len(reference) > skillReaderMaxPathBytes || !utf8.ValidString(reference) || strings.IndexByte(reference, 0) >= 0 || strings.Contains(reference, `\`) || strings.HasPrefix(reference, "/") || path.IsAbs(reference) || path.Clean(reference) != reference {
+	if reference == "" || !strings.HasPrefix(reference, "references/") || len(reference) > skillReaderMaxPathBytes || !utf8.ValidString(reference) || strings.IndexByte(reference, 0) >= 0 || strings.Contains(reference, `\`) || strings.HasPrefix(reference, "/") || path.IsAbs(reference) || path.Clean(reference) != reference {
 		return false
 	}
 	for _, segment := range strings.Split(reference, "/") {
@@ -436,16 +475,19 @@ func (r *SkillReader) encodeToken(payload skillTokenPayload) (string, error) {
 }
 
 func (r *SkillReader) decodeToken(token, expectedKind string) (*skillTokenPayload, error) {
-	if r == nil || token == "" || len(token) > skillReaderMaxTokenBytes || strings.Count(token, ".") != 1 {
+	if r == nil || token == "" || len(token) > skillReaderMaxTokenBytes || strings.ContainsAny(token, "\r\n") || strings.Count(token, ".") != 1 {
 		return nil, ErrSkillReceiptInvalid
 	}
 	payloadPart, signaturePart, _ := strings.Cut(token, ".")
+	if payloadPart == "" || signaturePart == "" {
+		return nil, ErrSkillReceiptInvalid
+	}
 	payloadRaw, err := base64.RawURLEncoding.DecodeString(payloadPart)
-	if err != nil || len(payloadRaw) == 0 || len(payloadRaw) > skillReaderMaxTokenBytes {
+	if err != nil || len(payloadRaw) == 0 || len(payloadRaw) > skillReaderMaxTokenBytes || base64.RawURLEncoding.EncodeToString(payloadRaw) != payloadPart {
 		return nil, ErrSkillReceiptInvalid
 	}
 	signature, err := base64.RawURLEncoding.DecodeString(signaturePart)
-	if err != nil || len(signature) != sha256.Size {
+	if err != nil || len(signature) != sha256.Size || base64.RawURLEncoding.EncodeToString(signature) != signaturePart {
 		return nil, ErrSkillReceiptInvalid
 	}
 	key := r.tokenKey(expectedKind)
@@ -479,6 +521,26 @@ func (r *SkillReader) decodeToken(token, expectedKind string) (*skillTokenPayloa
 		return nil, ErrSkillReceiptInvalid
 	}
 	return &payload, nil
+}
+
+func acquireSkillProcessSlot(ctx context.Context) bool {
+	if ctx == nil || ctx.Err() != nil {
+		return false
+	}
+	select {
+	case skillProcessSlots <- struct{}{}:
+		if ctx.Err() != nil {
+			<-skillProcessSlots
+			return false
+		}
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func releaseSkillProcessSlot() {
+	<-skillProcessSlots
 }
 
 func (r *SkillReader) tokenKey(kind string) []byte {
