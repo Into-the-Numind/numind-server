@@ -1,0 +1,479 @@
+package feishu
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+	"unicode/utf8"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestSkillReader_UsesExactControlledCLIAndDeclaredReferences(t *testing.T) {
+	t.Parallel()
+
+	h := newSkillReaderHarness(t, skillReaderOptions{})
+	main := "# Doc\n[Fetch](references/fetch.md)\n[Style](references/style/guide.md)\n" +
+		"[Cross](../lark-base/references/no.md)\n[Absolute](/tmp/no.md)\n"
+	h.writeResource("lark-doc", "SKILL.md", main, true)
+	h.writeResource("lark-doc", "references/fetch.md", "fetch reference", false)
+
+	page, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 11, Skill: "lark-doc"})
+	require.NoError(t, err)
+	require.Equal(t, main, page.Content)
+	require.Equal(t, []string{"references/fetch.md", "references/style/guide.md"}, page.References)
+	require.Empty(t, page.Cursor)
+	require.NotEmpty(t, page.Receipt)
+	require.Equal(t, []string{"HOME=unset|4|skills|read|lark-doc|--json"}, h.invocations())
+
+	reference, err := h.reader.Read(h.context(), SkillReadRequest{
+		AgentRunID: 11,
+		Skill:      "lark-doc",
+		Reference:  "references/fetch.md",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "fetch reference", reference.Content)
+	require.Empty(t, reference.Receipt, "a reference can never mint a skill receipt")
+	require.Equal(t, []string{
+		"HOME=unset|4|skills|read|lark-doc|--json",
+		"HOME=unset|4|skills|read|lark-doc|--json",
+		"HOME=unset|5|skills|read|lark-doc|references/fetch.md|--json",
+	}, h.invocations())
+
+	page.References[0] = "mutated"
+	again, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 11, Skill: "lark-doc"})
+	require.NoError(t, err)
+	require.Equal(t, "references/fetch.md", again.References[0])
+}
+
+func TestSkillReader_InvalidRequestDoesNotStartCLI(t *testing.T) {
+	t.Parallel()
+
+	h := newSkillReaderHarness(t, skillReaderOptions{})
+	h.writeResource("lark-doc", "SKILL.md", "# Doc", true)
+	tests := []SkillReadRequest{
+		{AgentRunID: 0, Skill: "lark-doc"},
+		{AgentRunID: 1, Skill: "lark-im"},
+		{AgentRunID: 1, Skill: "lark-doc", Reference: "/absolute.md"},
+		{AgentRunID: 1, Skill: "lark-doc", Reference: "../lark-base/x.md"},
+		{AgentRunID: 1, Skill: "lark-doc", Reference: "references/../x.md"},
+		{AgentRunID: 1, Skill: "lark-doc", Reference: `references\x.md`},
+		{AgentRunID: 1, Skill: "lark-doc", Reference: "references//x.md"},
+		{AgentRunID: 1, Skill: "lark-doc", Reference: "./references/x.md"},
+		{AgentRunID: 1, Skill: "lark-doc", Reference: "references/x\x00.md"},
+		{AgentRunID: 1, Skill: "lark-doc", Cursor: "malformed"},
+	}
+	for _, request := range tests {
+		_, err := h.reader.Read(h.context(), request)
+		require.Error(t, err, "%+v", request)
+	}
+	require.Empty(t, h.invocations())
+}
+
+func TestSkillReader_UndeclaredReferenceAndResponseMismatchFailClosed(t *testing.T) {
+	t.Parallel()
+
+	h := newSkillReaderHarness(t, skillReaderOptions{})
+	h.writeResource("lark-doc", "SKILL.md", "# Doc\n[Allowed](references/allowed.md)", true)
+	h.writeResource("lark-doc", "references/allowed.md", "allowed", false)
+
+	_, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 1, Skill: "lark-doc", Reference: "references/other.md"})
+	require.Error(t, err)
+	require.Len(t, h.invocations(), 1, "undeclared reference must not invoke the reference command")
+
+	h.resetInvocations()
+	h.writeRawResource("lark-doc", "SKILL.md", `{"skill":"lark-base","path":"SKILL.md","content":"# Doc","guidance":"g"}`)
+	_, err = h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 1, Skill: "lark-doc"})
+	require.Error(t, err)
+
+	h.writeRawResource("lark-doc", "SKILL.md", `{"skill":"lark-doc","path":"references/wrong.md","content":"# Doc","guidance":"g"}`)
+	_, err = h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 1, Skill: "lark-doc"})
+	require.Error(t, err)
+
+	h.writeResource("lark-doc", "SKILL.md", "[Allowed](references/allowed.md)", true)
+	h.writeRawResource("lark-doc", "references/allowed.md", `{"skill":"lark-doc","path":"references/other.md","content":"allowed"}`)
+	_, err = h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 1, Skill: "lark-doc", Reference: "references/allowed.md"})
+	require.Error(t, err)
+}
+
+func TestSkillReader_PaginationUTF8DriftAndReceiptBinding(t *testing.T) {
+	t.Parallel()
+
+	h := newSkillReaderHarness(t, skillReaderOptions{pageBytes: 17})
+	content := "标题-你好吗-" + strings.Repeat("abcdef", 12)
+	h.writeResource("lark-doc", "SKILL.md", content, true)
+
+	request := SkillReadRequest{AgentRunID: 88, Skill: "lark-doc"}
+	var assembled strings.Builder
+	for pageNumber := 0; ; pageNumber++ {
+		page, err := h.reader.Read(h.context(), request)
+		require.NoError(t, err)
+		require.True(t, utf8.ValidString(page.Content))
+		require.LessOrEqual(t, len([]byte(page.Content)), 17)
+		assembled.WriteString(page.Content)
+		if page.Cursor == "" {
+			require.NotEmpty(t, page.Receipt)
+			require.NoError(t, h.reader.Verify(page.Receipt, 88, "lark-doc", LarkCLIVersion))
+			require.Error(t, h.reader.Verify(page.Receipt, 89, "lark-doc", LarkCLIVersion))
+			require.Error(t, h.reader.Verify(page.Receipt, 88, "lark-base", LarkCLIVersion))
+			require.Error(t, h.reader.Verify(page.Receipt, 88, "lark-doc", "1.0.69"))
+			tampered := tamperSkillToken(page.Receipt)
+			require.Error(t, h.reader.Verify(tampered, 88, "lark-doc", LarkCLIVersion))
+			break
+		}
+		require.Empty(t, page.Receipt, "intermediate main pages cannot mint a receipt")
+		request.Cursor = page.Cursor
+		require.Less(t, pageNumber, 100)
+	}
+	require.Equal(t, content, assembled.String())
+
+	first, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 90, Skill: "lark-doc"})
+	require.NoError(t, err)
+	require.NotEmpty(t, first.Cursor)
+	h.writeResource("lark-doc", "SKILL.md", content+" drift", true)
+	_, err = h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 90, Skill: "lark-doc", Cursor: first.Cursor})
+	require.Error(t, err, "cursor digest must prevent cross-version page splicing")
+
+	before := len(h.invocations())
+	_, err = h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 91, Skill: "lark-doc", Cursor: first.Cursor})
+	require.Error(t, err)
+	require.Len(t, h.invocations(), before, "cursor bound to another run must fail before CLI start")
+	_, err = h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 90, Skill: "lark-base", Cursor: first.Cursor})
+	require.Error(t, err)
+	require.Len(t, h.invocations(), before, "cursor bound to another skill must fail before CLI start")
+	_, err = h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 90, Skill: "lark-doc", Reference: "references/fetch.md", Cursor: first.Cursor})
+	require.Error(t, err)
+	require.Len(t, h.invocations(), before, "cursor bound to main cannot be reused for a reference")
+	tamperedCursor := tamperSkillToken(first.Cursor)
+	_, err = h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 90, Skill: "lark-doc", Cursor: tamperedCursor})
+	require.Error(t, err)
+	require.Len(t, h.invocations(), before, "tampered cursor must fail before CLI start")
+}
+
+func TestSkillReader_CursorRejectsExpiredOutOfBoundsAndNonUTF8Offsets(t *testing.T) {
+	t.Parallel()
+
+	h := newSkillReaderHarness(t, skillReaderOptions{pageBytes: 8})
+	content := "你abc-defghijklmnop"
+	h.writeResource("lark-doc", "SKILL.md", content, true)
+	digestRaw := sha256.Sum256([]byte(content))
+	digest := base64.RawURLEncoding.EncodeToString(digestRaw[:])
+	makeCursor := func(offset int64) string {
+		cursor, err := h.reader.encodeToken(skillTokenPayload{
+			Kind:      skillCursorKind,
+			Version:   skillReaderTokenVersion,
+			RunID:     10,
+			Skill:     "lark-doc",
+			Offset:    offset,
+			Digest:    digest,
+			ExpiresAt: h.reader.now().Add(5 * time.Minute).Unix(),
+		})
+		require.NoError(t, err)
+		return cursor
+	}
+	for _, offset := range []int64{1, 2, int64(len([]byte(content))), int64(len([]byte(content)) + 1)} {
+		_, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 10, Skill: "lark-doc", Cursor: makeCursor(offset)})
+		require.Error(t, err, "offset=%d", offset)
+	}
+
+	first, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 12, Skill: "lark-doc"})
+	require.NoError(t, err)
+	require.NotEmpty(t, first.Cursor)
+	h.advance(16 * time.Minute)
+	before := len(h.invocations())
+	_, err = h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 12, Skill: "lark-doc", Cursor: first.Cursor})
+	require.Error(t, err)
+	require.Len(t, h.invocations(), before, "expired cursor must fail before CLI start")
+}
+
+func TestSkillReader_ReferenceFinalPageNeverMintsReceipt(t *testing.T) {
+	t.Parallel()
+
+	h := newSkillReaderHarness(t, skillReaderOptions{pageBytes: 16})
+	h.writeResource("lark-doc", "SKILL.md", "[Long](references/long.md)", true)
+	h.writeResource("lark-doc", "references/long.md", strings.Repeat("reference-", 10), false)
+
+	request := SkillReadRequest{AgentRunID: 5, Skill: "lark-doc", Reference: "references/long.md"}
+	pages := 0
+	for {
+		page, err := h.reader.Read(h.context(), request)
+		require.NoError(t, err)
+		require.Empty(t, page.Receipt)
+		pages++
+		if page.Cursor == "" {
+			break
+		}
+		request.Cursor = page.Cursor
+	}
+	require.Greater(t, pages, 1)
+}
+
+func TestSkillReceipt_ExpiryDomainRequirementsAndDuplicates(t *testing.T) {
+	t.Parallel()
+
+	h := newSkillReaderHarness(t, skillReaderOptions{})
+	for _, skill := range []string{"lark-shared", "lark-doc", "lark-base", "lark-wiki"} {
+		h.writeResource(skill, "SKILL.md", "# "+skill, true)
+	}
+	receipts := make(map[string]string)
+	for _, skill := range []string{"lark-shared", "lark-doc", "lark-base", "lark-wiki"} {
+		page, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 77, Skill: skill})
+		require.NoError(t, err)
+		receipts[skill] = page.Receipt
+	}
+
+	require.NoError(t, h.reader.VerifyRequired([]string{receipts["lark-shared"], receipts["lark-doc"]}, 77, "docs"))
+	require.NoError(t, h.reader.VerifyRequired([]string{receipts["lark-shared"], receipts["lark-base"]}, 77, "base"))
+	require.NoError(t, h.reader.VerifyRequired([]string{receipts["lark-shared"], receipts["lark-wiki"]}, 77, "wiki"))
+	require.Error(t, h.reader.VerifyRequired(nil, 77, "unknown"))
+	require.Error(t, h.reader.VerifyRequired([]string{receipts["lark-shared"]}, 77, "docs"))
+	require.Error(t, h.reader.VerifyRequired([]string{receipts["lark-shared"], receipts["lark-shared"]}, 77, "docs"))
+	require.Error(t, h.reader.VerifyRequired([]string{receipts["lark-shared"], "malformed"}, 77, "docs"))
+	require.Error(t, h.reader.VerifyRequired([]string{receipts["lark-shared"], receipts["lark-doc"], "malformed"}, 77, "docs"))
+	require.Error(t, h.reader.VerifyRequired([]string{receipts["lark-shared"], receipts["lark-base"]}, 77, "docs"))
+
+	h.advance(16 * time.Minute)
+	require.Error(t, h.reader.Verify(receipts["lark-doc"], 77, "lark-doc", LarkCLIVersion))
+}
+
+func TestSkillReceipt_KeyDerivationAndTokenShapeFailClosed(t *testing.T) {
+	t.Parallel()
+
+	h := newSkillReaderHarness(t, skillReaderOptions{})
+	digest := sha256.Sum256([]byte("content"))
+	payload := skillTokenPayload{
+		Kind:       skillReceiptKind,
+		Version:    skillReaderTokenVersion,
+		RunID:      7,
+		Skill:      "lark-doc",
+		Digest:     base64.RawURLEncoding.EncodeToString(digest[:]),
+		CLIVersion: LarkCLIVersion,
+		ExpiresAt:  h.reader.now().Add(5 * time.Minute).Unix(),
+	}
+	payloadRaw, err := json.Marshal(payload)
+	require.NoError(t, err)
+	wrongSignature := signWithRawKeyForTest(h.rawKey, payloadRaw)
+	wrongToken := base64.RawURLEncoding.EncodeToString(payloadRaw) + "." + base64.RawURLEncoding.EncodeToString(wrongSignature)
+	require.Error(t, h.reader.Verify(wrongToken, 7, "lark-doc", LarkCLIVersion), "the raw third-party key must not sign receipts directly")
+
+	for _, mutate := range []func(*skillTokenPayload){
+		func(p *skillTokenPayload) { p.Kind = skillCursorKind },
+		func(p *skillTokenPayload) { p.Version++ },
+		func(p *skillTokenPayload) { p.Reference = "references/x.md" },
+		func(p *skillTokenPayload) { p.Offset = 1 },
+		func(p *skillTokenPayload) { p.Digest = "bad" },
+	} {
+		changed := payload
+		mutate(&changed)
+		token, signErr := h.reader.encodeToken(changed)
+		if signErr != nil {
+			continue
+		}
+		require.Error(t, h.reader.Verify(token, 7, "lark-doc", LarkCLIVersion))
+	}
+}
+
+func TestSkillReader_KeyAndTTLBoundaries(t *testing.T) {
+	t.Parallel()
+
+	validKey := base64.StdEncoding.EncodeToString(bytesOf(0x22, 32))
+	for _, key := range []string{"", "not-base64", base64.StdEncoding.EncodeToString(bytesOf(1, 31))} {
+		_, err := newSkillReaderWithOptions(key, skillReaderOptions{})
+		require.Error(t, err)
+	}
+	for _, ttl := range []time.Duration{SkillReaderMinTTL - time.Nanosecond, SkillReaderMaxTTL + time.Nanosecond} {
+		_, err := newSkillReaderWithOptions(validKey, skillReaderOptions{ttl: ttl})
+		require.Error(t, err)
+	}
+	for _, ttl := range []time.Duration{SkillReaderMinTTL, SkillReaderMaxTTL} {
+		reader, err := newSkillReaderWithOptions(validKey, skillReaderOptions{ttl: ttl})
+		require.NoError(t, err)
+		require.Equal(t, ttl, reader.ttl)
+	}
+	for _, size := range []int{utf8.UTFMax - 1, SkillReaderPageBytes + 1} {
+		_, err := newSkillReaderWithOptions(validKey, skillReaderOptions{pageBytes: size})
+		require.Error(t, err)
+	}
+}
+
+func TestSkillReader_StrictOutputAndProcessFailures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "unknown field", raw: `{"skill":"lark-doc","path":"SKILL.md","content":"x","guidance":"g","extra":true}`},
+		{name: "trailing json", raw: `{"skill":"lark-doc","path":"SKILL.md","content":"x","guidance":"g"}{}`},
+		{name: "missing content", raw: `{"skill":"lark-doc","path":"SKILL.md","guidance":"g"}`},
+		{name: "array", raw: `[]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h := newSkillReaderHarness(t, skillReaderOptions{})
+			h.writeRawResource("lark-doc", "SKILL.md", tt.raw)
+			_, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 1, Skill: "lark-doc"})
+			require.Error(t, err)
+			require.NotContains(t, err.Error(), "content")
+		})
+	}
+
+	t.Run("reader output ceiling", func(t *testing.T) {
+		t.Parallel()
+		h := newSkillReaderHarness(t, skillReaderOptions{maxOutputBytes: 256})
+		h.writeResource("lark-doc", "SKILL.md", strings.Repeat("x", 512), true)
+		_, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 1, Skill: "lark-doc"})
+		require.Error(t, err)
+	})
+
+	t.Run("exit nonzero", func(t *testing.T) {
+		t.Parallel()
+		h := newSkillReaderHarness(t, skillReaderOptions{})
+		h.writeResource("lark-doc", "SKILL.md", "secret body", true)
+		require.NoError(t, os.WriteFile(filepath.Join(h.root, "exit-nonzero"), []byte("1"), 0o600))
+		_, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 1, Skill: "lark-doc"})
+		require.Error(t, err)
+		require.NotContains(t, err.Error(), "secret body")
+	})
+}
+
+func TestSkillReader_ConcurrentReadAndVerify(t *testing.T) {
+	t.Parallel()
+
+	h := newSkillReaderHarness(t, skillReaderOptions{})
+	h.writeResource("lark-doc", "SKILL.md", "# stable", true)
+	const workers = 32
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			page, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 42, Skill: "lark-doc"})
+			if err == nil {
+				err = h.reader.Verify(page.Receipt, 42, "lark-doc", LarkCLIVersion)
+			}
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+}
+
+type skillReaderHarness struct {
+	t           *testing.T
+	root        string
+	reader      *SkillReader
+	rawKey      []byte
+	nowUnixNano atomic.Int64
+}
+
+func newSkillReaderHarness(t *testing.T, options skillReaderOptions) *skillReaderHarness {
+	t.Helper()
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "resources"), 0o700))
+	logPath := filepath.Join(root, "invocations.log")
+	scriptPath := filepath.Join(root, "lark-cli")
+	script := fmt.Sprintf(`#!/bin/sh
+home=unset
+[ "${HOME+x}" = x ] && home=set
+{
+  printf 'HOME=%%s|%%s' "$home" "$#"
+  for arg in "$@"; do printf '|%%s' "$arg"; done
+  printf '\n'
+} >> %q
+[ -f %q ] && exit 7
+skill="$3"
+if [ "$4" = "--json" ]; then resource="SKILL.md"; else resource="$4"; fi
+/bin/cat %q/"$skill"/"$resource".json
+`, logPath, filepath.Join(root, "exit-nonzero"), filepath.Join(root, "resources"))
+	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o700))
+
+	rawKey := bytesOf(0x5a, 32)
+	keyB64 := base64.StdEncoding.EncodeToString(rawKey)
+	h := &skillReaderHarness{t: t, root: root, rawKey: rawKey}
+	h.nowUnixNano.Store(time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC).UnixNano())
+	options.binary = scriptPath
+	options.now = func() time.Time { return time.Unix(0, h.nowUnixNano.Load()).UTC() }
+	reader, err := newSkillReaderWithOptions(keyB64, options)
+	require.NoError(t, err)
+	h.reader = reader
+	return h
+}
+
+func (h *skillReaderHarness) context() context.Context {
+	return context.Background()
+}
+
+func (h *skillReaderHarness) writeResource(skill, resource, content string, guidance bool) {
+	h.t.Helper()
+	value := map[string]any{"skill": skill, "path": resource, "content": content}
+	if guidance {
+		value["guidance"] = "read the complete skill"
+	}
+	raw, err := json.Marshal(value)
+	require.NoError(h.t, err)
+	h.writeRawResource(skill, resource, string(raw))
+}
+
+func (h *skillReaderHarness) writeRawResource(skill, resource, raw string) {
+	h.t.Helper()
+	path := filepath.Join(h.root, "resources", skill, filepath.FromSlash(resource)+".json")
+	require.NoError(h.t, os.MkdirAll(filepath.Dir(path), 0o700))
+	require.NoError(h.t, os.WriteFile(path, []byte(raw), 0o600))
+}
+
+func (h *skillReaderHarness) invocations() []string {
+	h.t.Helper()
+	raw, err := os.ReadFile(filepath.Join(h.root, "invocations.log"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	require.NoError(h.t, err)
+	return strings.Split(strings.TrimSpace(string(raw)), "\n")
+}
+
+func (h *skillReaderHarness) resetInvocations() {
+	h.t.Helper()
+	require.NoError(h.t, os.Remove(filepath.Join(h.root, "invocations.log")))
+}
+
+func (h *skillReaderHarness) advance(duration time.Duration) {
+	h.nowUnixNano.Add(int64(duration))
+}
+
+func bytesOf(value byte, count int) []byte {
+	result := make([]byte, count)
+	for index := range result {
+		result[index] = value
+	}
+	return result
+}
+
+func signWithRawKeyForTest(rawKey []byte, payload []byte) []byte {
+	mac := hmac.New(sha256.New, rawKey)
+	_, _ = mac.Write(payload)
+	return mac.Sum(nil)
+}
+
+func tamperSkillToken(token string) string {
+	replacement := byte('A')
+	if token[len(token)-1] == replacement {
+		replacement = 'B'
+	}
+	return token[:len(token)-1] + string(replacement)
+}
