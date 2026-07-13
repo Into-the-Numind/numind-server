@@ -376,6 +376,26 @@ func TestControlledLarkCLIRunner_RunExitZeroOKFalseIsFailure(t *testing.T) {
 	}
 }
 
+func TestControlledLarkCLIRunner_PreservesTopLevelIdentity(t *testing.T) {
+	home := controlledTestHome(t)
+	const stdout = `{"ok":false,"identity":"user","error":{"type":"authentication","subtype":"token_missing","message":"sensitive","user_open_id":"ou_sensitive"}}`
+	bin := writeControlledFakeBinary(t, fmt.Sprintf("printf '%%s' %s", shellQuoteForControlledTest(stdout)))
+
+	result, err := controlledRunner(bin).Run(context.Background(), home, []string{"wiki", "+node-list"}, nil)
+	if err == nil {
+		t.Fatal("ok=false must fail")
+	}
+	if result == nil || result.Envelope == nil {
+		t.Fatalf("structured envelope was not preserved: %+v", result)
+	}
+	if result.Envelope.Identity != "user" {
+		t.Fatalf("top-level identity lost: got %q", result.Envelope.Identity)
+	}
+	if strings.Contains(err.Error(), "sensitive") || strings.Contains(err.Error(), "ou_sensitive") {
+		t.Fatalf("sensitive envelope fields leaked through error: %v", err)
+	}
+}
+
 func TestControlledLarkCLIRunner_RunNonZeroPreservesEnvelopeExitAndBoundedStderr(t *testing.T) {
 	home := controlledTestHome(t)
 	const stdout = `{"ok":false,"error":{"type":"api","subtype":"permission_denied","code":403,"message":"no scope"}}`

@@ -65,9 +65,10 @@ type CLIError struct {
 
 // CLIEnvelope is the machine-readable lark-cli result contract.
 type CLIEnvelope struct {
-	OK    bool            `json:"ok"`
-	Data  json.RawMessage `json:"data,omitempty"`
-	Error *CLIError       `json:"error,omitempty"`
+	OK       bool            `json:"ok"`
+	Identity string          `json:"identity,omitempty"`
+	Data     json.RawMessage `json:"data,omitempty"`
+	Error    *CLIError       `json:"error,omitempty"`
 }
 
 // CLIResult preserves the bounded process evidence needed by the operation state
