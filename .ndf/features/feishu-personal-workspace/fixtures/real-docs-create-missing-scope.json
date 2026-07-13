@@ -1,0 +1,10 @@
+{
+  "ok": false,
+  "type": "authorization",
+  "subtype": "missing_scope",
+  "code": "99991672",
+  "missing_scopes": ["docx:document:create"],
+  "permission_violations": [],
+  "identity": "user",
+  "console_url_present": false
+}

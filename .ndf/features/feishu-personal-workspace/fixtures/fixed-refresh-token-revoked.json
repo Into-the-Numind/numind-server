@@ -1,0 +1,9 @@
+{
+  "ok": false,
+  "type": "authorization",
+  "subtype": "refresh_token_revoked",
+  "missing_scopes": [],
+  "permission_violations": [],
+  "identity": "user",
+  "console_url_present": false
+}
