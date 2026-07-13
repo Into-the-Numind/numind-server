@@ -263,7 +263,7 @@ git commit -m "feat(feishu): encrypt per-user cli homes"
 
 **Files:** `Dockerfile`、`internal/numind/biz/feishu/controlled_runner.go`、`controlled_runner_test.go`。本任务不修改旧 `provisioner_cli.go`，旧 `LarkCLIRunner` 保留到 Task 20 清理，避免同名类型和中间态编译失败。
 
-- [ ] **Step 1: 写 runner contract 红测**
+- [x] **Step 1: 写 runner contract 红测**
 
 测试 fake executable 的 argv/env/stdout/stderr，断言：启动先校验版本 `1.0.68`；调用使用 `exec.CommandContext(binary, argv...)`；环境含隔离 HOME、`LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1`；stdout/stderr 分别限长；exit 0 + `ok:false` 仍失败；非 JSON、超限、timeout 失败；中文和空格保持一个 argv 元素。另验证 timeout/取消不会留下可继续改写 HOME 的子进程；若当前运行模型无法提供独立 UID/sandbox，必须把同 UID 主动 symlink/root-rename 竞态作为明确 P2 带入 Task 23，而不是声称 Vault 已抵御恶意本地进程。
 
@@ -276,13 +276,13 @@ func TestControlledLarkCLIRunner_DoesNotUseShell(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 运行红测**
+- [x] **Step 2: 运行红测**
 
 Run: `go test ./internal/numind/biz/feishu -run 'ControlledLarkCLIRunner' -count=1`
 
 Expected: FAIL，旧 runner 没有通用受控 Run 和版本 fail-closed。
 
-- [ ] **Step 3: 实现 runner 和 envelope**
+- [x] **Step 3: 实现 runner 和 envelope**
 
 固定类型：
 
@@ -301,7 +301,7 @@ func (r *ControlledLarkCLIRunner) Run(ctx context.Context, home string, argv []s
 
 写命令开始后若 context timeout、进程被杀、输出损坏或无完整 envelope，`CLIResult` 必须保留 `InvocationStarted=true` 供 operation service 判定 unknown。
 
-- [ ] **Step 4: 更新 Dockerfile**
+- [x] **Step 4: 更新 Dockerfile**
 
 固定：
 
@@ -312,7 +312,7 @@ ARG LARK_CLI_SHA256=8daaeb11b7cadcc77f07fd9ae7948f6c370e8305337888cb930ac7362a05
 
 保留下载后 `sha256sum -c -` 和 `lark-cli version` 构建检查，更新注释为 Docs/Base/Wiki 受控执行，不再描述 IM 或持久明文 HOME。
 
-- [ ] **Step 5: 绿测和 Dockerfile 检查**
+- [x] **Step 5: 绿测和 Dockerfile 检查**
 
 Run: `go test ./internal/numind/biz/feishu -run 'ControlledLarkCLIRunner' -count=1`
 
@@ -322,7 +322,7 @@ Run: `rg -n '1\.0\.68|8daaeb11b7cadcc77f07fd9ae7948f6c370e8305337888cb930ac7362a
 
 Expected: version 与 hash 均命中。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add Dockerfile internal/numind/biz/feishu/controlled_runner.go internal/numind/biz/feishu/controlled_runner_test.go
@@ -1298,6 +1298,10 @@ Expected: 无未提交业务文件。
 Run: `rg -n 'token|app_secret|device_code|https://.*feishu' internal/numind/biz/feishu src/components/agent src/components/feishu`
 
 Expected: 仅结构字段/测试 opaque fixture，无真实凭据或真实授权 URL。
+
+- [ ] **Step 4: 本地执行隔离风险 Gate**
+
+重复运行 runner 的取消、超时、正常 leader 退出 child-marker 测试，确认进程组残留清理无回归；核对生产只使用固定 hash/绝对路径/无 shell。明确复审 ADR 0004 中仍存在的 defense-in-depth P2：同 UID 主动 symlink/root rename、descendant `setsid` 逃逸、post-Wait PGID 理论复用。若首版信任固定官方 CLI 的边界不再成立，必须新增独立 fix task 实现 supervisor/cgroup/独立 UID sandbox，不得直接通过 Gate。
 
 ## Task 24: S5 本地真实飞书 Gate（不计入 S4 manifest progress）
 
