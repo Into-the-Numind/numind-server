@@ -227,6 +227,66 @@ func TestControlledLarkCLIRunner_RunRejectsInvalidInputBeforeStart(t *testing.T)
 	}
 }
 
+func TestControlledLarkCLIRunner_RunRejectsInvalidStdinJSONBeforeStart(t *testing.T) {
+	invalid := []struct {
+		name  string
+		stdin []byte
+	}{
+		{name: "not json", stdin: []byte("not-json")},
+		{name: "concatenated json", stdin: []byte(`{}{} `)},
+		{name: "nul suffix", stdin: []byte("{\"x\":1}\x00")},
+	}
+	for _, tt := range invalid {
+		t.Run(tt.name, func(t *testing.T) {
+			home := controlledTestHome(t)
+			marker := filepath.Join(t.TempDir(), "started")
+			bin := writeControlledFakeBinary(t, `
+touch "$1"
+printf '{"ok":true}'
+`)
+			result, err := controlledRunner(bin).Run(context.Background(), home, []string{marker}, tt.stdin)
+			if err == nil {
+				t.Fatal("invalid stdin JSON unexpectedly succeeded")
+			}
+			if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("invalid stdin JSON reached cmd.Start: %v", statErr)
+			}
+			if result == nil || result.InvocationStarted || result.ExitCode != -1 {
+				t.Fatalf("pre-start stdin rejection metadata mismatch: %+v", result)
+			}
+		})
+	}
+}
+
+func TestControlledLarkCLIRunner_RunPassesWhitespaceWrappedJSONUnchanged(t *testing.T) {
+	home := controlledTestHome(t)
+	marker := filepath.Join(t.TempDir(), "started")
+	captured := filepath.Join(t.TempDir(), "stdin")
+	bin := writeControlledFakeBinary(t, `
+touch "$1"
+cat > "$2"
+printf '{"ok":true}'
+`)
+	stdin := []byte(" \n\t{\"x\":[1,true]}\r\n")
+	result, err := controlledRunner(bin).Run(context.Background(), home, []string{marker, captured}, stdin)
+	if err != nil {
+		t.Fatalf("valid whitespace-wrapped JSON: %v", err)
+	}
+	if result == nil || !result.InvocationStarted || result.ExitCode != 0 {
+		t.Fatalf("valid stdin invocation metadata mismatch: %+v", result)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("valid stdin did not reach cmd.Start: %v", err)
+	}
+	got, err := os.ReadFile(captured)
+	if err != nil {
+		t.Fatalf("read captured stdin: %v", err)
+	}
+	if !bytes.Equal(got, stdin) {
+		t.Fatalf("valid stdin was rewritten: got %q want %q", got, stdin)
+	}
+}
+
 func TestControlledLarkCLIRunner_RunStartFailureReportsNotStarted(t *testing.T) {
 	home := controlledTestHome(t)
 	r := controlledRunner(filepath.Join(t.TempDir(), "missing-lark-cli"))

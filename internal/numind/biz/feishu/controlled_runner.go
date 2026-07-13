@@ -203,6 +203,9 @@ func validateControlledCLIInput(argv []string, stdinJSON []byte) error {
 	if len(stdinJSON) > ControlledLarkCLIMaxStdinBytes {
 		return fmt.Errorf("feishu: lark-cli stdin rejected: %w", errControlledCLIInvalidInput)
 	}
+	if len(stdinJSON) > 0 && (bytes.IndexByte(stdinJSON, 0) >= 0 || !json.Valid(stdinJSON)) {
+		return fmt.Errorf("feishu: lark-cli stdin JSON rejected: %w", errControlledCLIInvalidInput)
+	}
 	return nil
 }
 
