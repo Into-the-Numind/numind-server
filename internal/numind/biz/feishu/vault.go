@@ -42,14 +42,41 @@ type CLIHomeSnapshotStore interface {
 	PutVaultCAS(ctx context.Context, vault *model.FeishuCLIVault, expectedRevision uint64) error
 }
 
+type cliHomeCipherKeyring struct {
+	ciphers map[string]*pkgcrypto.Cipher
+}
+
+func newCLIHomeCipherKeyring(ciphers map[string]*pkgcrypto.Cipher) (*cliHomeCipherKeyring, error) {
+	if len(ciphers) == 0 {
+		return nil, errors.New("feishu CLI home vault: empty cipher keyring")
+	}
+	frozen := make(map[string]*pkgcrypto.Cipher, len(ciphers))
+	for version, cipher := range ciphers {
+		if err := validateCLIHomeKeyVersion(version); err != nil {
+			return nil, fmt.Errorf("feishu CLI home vault: invalid keyring version: %w", err)
+		}
+		if cipher == nil {
+			return nil, errors.New("feishu CLI home vault: keyring contains nil cipher")
+		}
+		frozen[version] = cipher
+	}
+	return &cliHomeCipherKeyring{ciphers: frozen}, nil
+}
+
+func (k *cliHomeCipherKeyring) cipher(version string) (*pkgcrypto.Cipher, bool) {
+	cipher, ok := k.ciphers[version]
+	return cipher, ok
+}
+
 // EncryptedCLIHomeVault materializes one lark-cli HOME only for the duration of
 // a callback and persists changed snapshots using authenticated encryption.
 type EncryptedCLIHomeVault struct {
-	accounts    CLIHomeAccountStore
-	snapshots   CLIHomeSnapshotStore
-	cipher      *pkgcrypto.Cipher
-	keyVersion  string
-	runtimeBase string
+	accounts      CLIHomeAccountStore
+	snapshots     CLIHomeSnapshotStore
+	keyring       *cliHomeCipherKeyring
+	currentCipher *pkgcrypto.Cipher
+	keyVersion    string
+	runtimeBase   string
 }
 
 // NewEncryptedCLIHomeVault constructs a generation-fenced encrypted HOME vault.
@@ -60,17 +87,41 @@ func NewEncryptedCLIHomeVault(
 	keyVersion string,
 	runtimeBase string,
 ) (*EncryptedCLIHomeVault, error) {
+	return NewEncryptedCLIHomeVaultWithKeyring(
+		accounts,
+		snapshots,
+		map[string]*pkgcrypto.Cipher{keyVersion: cipher},
+		keyVersion,
+		runtimeBase,
+	)
+}
+
+// NewEncryptedCLIHomeVaultWithKeyring constructs a vault that can read
+// historical key versions and always writes with currentKeyVersion. It copies
+// the caller-owned cipher map so later map mutation cannot race with vault use.
+func NewEncryptedCLIHomeVaultWithKeyring(
+	accounts CLIHomeAccountStore,
+	snapshots CLIHomeSnapshotStore,
+	ciphers map[string]*pkgcrypto.Cipher,
+	currentKeyVersion string,
+	runtimeBase string,
+) (*EncryptedCLIHomeVault, error) {
 	if accounts == nil {
 		return nil, errors.New("feishu CLI home vault: nil account store")
 	}
 	if snapshots == nil {
 		return nil, errors.New("feishu CLI home vault: nil snapshot store")
 	}
-	if cipher == nil {
-		return nil, errors.New("feishu CLI home vault: nil cipher")
+	if err := validateCLIHomeKeyVersion(currentKeyVersion); err != nil {
+		return nil, fmt.Errorf("feishu CLI home vault: invalid current key version: %w", err)
 	}
-	if keyVersion == "" || strings.Contains(keyVersion, "|") {
-		return nil, errors.New("feishu CLI home vault: invalid key version")
+	keyring, err := newCLIHomeCipherKeyring(ciphers)
+	if err != nil {
+		return nil, err
+	}
+	currentCipher, ok := keyring.cipher(currentKeyVersion)
+	if !ok {
+		return nil, errors.New("feishu CLI home vault: current key version is absent from keyring")
 	}
 	if runtimeBase == "" {
 		return nil, errors.New("feishu CLI home vault: empty runtime base")
@@ -80,11 +131,12 @@ func NewEncryptedCLIHomeVault(
 		return nil, fmt.Errorf("feishu CLI home vault: resolve runtime base: %w", err)
 	}
 	return &EncryptedCLIHomeVault{
-		accounts:    accounts,
-		snapshots:   snapshots,
-		cipher:      cipher,
-		keyVersion:  keyVersion,
-		runtimeBase: absRuntimeBase,
+		accounts:      accounts,
+		snapshots:     snapshots,
+		keyring:       keyring,
+		currentCipher: currentCipher,
+		keyVersion:    currentKeyVersion,
+		runtimeBase:   absRuntimeBase,
 	}, nil
 }
 
@@ -92,6 +144,59 @@ func NewEncryptedCLIHomeVault(
 // HOME directories. Callers may use it for startup cleanup of abandoned homes.
 func (v *EncryptedCLIHomeVault) RuntimeBase() string {
 	return v.runtimeBase
+}
+
+// CleanupRuntimeHomesAtStartup removes abandoned lark-home-* direct children
+// beneath RuntimeBase. It must only be called during process startup, before
+// any WithHome callbacks can be active, because it intentionally treats every
+// matching child as stale. It never follows a symlink used as RuntimeBase and
+// leaves all non-matching children untouched.
+func (v *EncryptedCLIHomeVault) CleanupRuntimeHomesAtStartup() error {
+	baseInfo, err := os.Lstat(v.runtimeBase)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("feishu CLI home vault: inspect startup runtime base: %w", err)
+	}
+	if baseInfo.Mode()&os.ModeSymlink != 0 || !baseInfo.IsDir() {
+		return errors.New("feishu CLI home vault: startup runtime base is not a real directory")
+	}
+
+	entries, err := os.ReadDir(v.runtimeBase)
+	if err != nil {
+		return fmt.Errorf("feishu CLI home vault: list startup runtime base: %w", err)
+	}
+	freshBaseInfo, err := os.Lstat(v.runtimeBase)
+	if err != nil {
+		return fmt.Errorf("feishu CLI home vault: recheck startup runtime base: %w", err)
+	}
+	if freshBaseInfo.Mode()&os.ModeSymlink != 0 || !freshBaseInfo.IsDir() || !os.SameFile(baseInfo, freshBaseInfo) {
+		return errors.New("feishu CLI home vault: startup runtime base changed during cleanup")
+	}
+
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), cliHomeRuntimePrefix) {
+			continue
+		}
+		candidate := filepath.Join(v.runtimeBase, entry.Name())
+		relative, err := filepath.Rel(v.runtimeBase, candidate)
+		if err != nil {
+			return fmt.Errorf("feishu CLI home vault: resolve stale runtime HOME: %w", err)
+		}
+		if relative == "." || relative == ".." || filepath.IsAbs(relative) || filepath.Dir(relative) != "." {
+			return errors.New("feishu CLI home vault: stale runtime HOME escapes runtime base")
+		}
+		if _, err := os.Lstat(candidate); errors.Is(err, fs.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return fmt.Errorf("feishu CLI home vault: inspect stale runtime HOME: %w", err)
+		}
+		if err := os.RemoveAll(candidate); err != nil {
+			return fmt.Errorf("feishu CLI home vault: remove stale runtime HOME: %w", err)
+		}
+	}
+	return nil
 }
 
 // WithHome opens the active user's encrypted HOME, invokes callback, and only
@@ -175,7 +280,7 @@ func (v *EncryptedCLIHomeVault) WithHome(
 		return fmt.Errorf("feishu CLI home vault: pack snapshot: %w", err)
 	}
 	aad := cliHomeAAD(userID, generation, v.keyVersion)
-	ciphertext, err := v.cipher.EncryptWithAAD(archive, aad)
+	ciphertext, err := v.currentCipher.EncryptWithAAD(archive, aad)
 	if err != nil {
 		return fmt.Errorf("feishu CLI home vault: encrypt snapshot: %w", err)
 	}
@@ -212,8 +317,8 @@ func (v *EncryptedCLIHomeVault) openSnapshot(
 	if snapshot.Revision == 0 {
 		return nil, errors.New("feishu CLI home vault: persisted snapshot has zero revision")
 	}
-	if snapshot.KeyVersion == "" || strings.Contains(snapshot.KeyVersion, "|") {
-		return nil, errors.New("feishu CLI home vault: snapshot has invalid key version")
+	if err := validateCLIHomeKeyVersion(snapshot.KeyVersion); err != nil {
+		return nil, fmt.Errorf("feishu CLI home vault: snapshot has invalid key version: %w", err)
 	}
 	if len(snapshot.Ciphertext) > maxCLIHomeCiphertextBytes {
 		return nil, fmt.Errorf("feishu CLI home vault: encrypted snapshot exceeds %d bytes", maxCLIHomeCiphertextBytes)
@@ -223,7 +328,11 @@ func (v *EncryptedCLIHomeVault) openSnapshot(
 		subtle.ConstantTimeCompare([]byte(snapshot.Checksum), []byte(checksum)) != 1 {
 		return nil, errors.New("feishu CLI home vault: ciphertext checksum mismatch")
 	}
-	archive, err := v.cipher.DecryptWithAAD(
+	snapshotCipher, ok := v.keyring.cipher(snapshot.KeyVersion)
+	if !ok {
+		return nil, errors.New("feishu CLI home vault: snapshot key version is unavailable")
+	}
+	archive, err := snapshotCipher.DecryptWithAAD(
 		snapshot.Ciphertext,
 		cliHomeAAD(userID, generation, snapshot.KeyVersion),
 	)
@@ -238,6 +347,23 @@ func (v *EncryptedCLIHomeVault) openSnapshot(
 
 func cliHomeAAD(userID uint, generation uint64, keyVersion string) []byte {
 	return []byte(fmt.Sprintf("lark|%d|%d|%s", userID, generation, keyVersion))
+}
+
+func validateCLIHomeKeyVersion(version string) error {
+	if len(version) < 1 || len(version) > 32 {
+		return errors.New("key version must be 1 to 32 ASCII bytes")
+	}
+	for i := 0; i < len(version); i++ {
+		char := version[i]
+		if (char >= 'A' && char <= 'Z') ||
+			(char >= 'a' && char <= 'z') ||
+			(char >= '0' && char <= '9') ||
+			char == '.' || char == '_' || char == '-' {
+			continue
+		}
+		return errors.New("key version contains an unstable identifier byte")
+	}
+	return nil
 }
 
 func cliHomeCiphertextChecksum(ciphertext []byte) string {
@@ -504,7 +630,31 @@ func writeCLIHomeTarFile(writer *tar.Writer, filePath, relative string, info fs.
 	if err != nil {
 		return fmt.Errorf("open HOME regular file: %w", err)
 	}
-	defer func() { _ = file.Close() }()
+	return writeCLIHomeTarOpenedFile(writer, file, relative, info)
+}
+
+type cliHomeTarReadFile interface {
+	io.Reader
+	Stat() (fs.FileInfo, error)
+	Close() error
+}
+
+func writeCLIHomeTarOpenedFile(
+	writer *tar.Writer,
+	file cliHomeTarReadFile,
+	relative string,
+	info fs.FileInfo,
+) (retErr error) {
+	closed := false
+	defer func() {
+		if closed {
+			return
+		}
+		if closeErr := file.Close(); closeErr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close HOME regular file after packing failure: %w", closeErr))
+		}
+	}()
+
 	openedInfo, err := file.Stat()
 	if err != nil {
 		return fmt.Errorf("inspect opened HOME regular file: %w", err)
@@ -517,6 +667,10 @@ func writeCLIHomeTarFile(writer *tar.Writer, filePath, relative string, info fs.
 	}
 	if _, err := io.CopyN(writer, file, openedInfo.Size()); err != nil {
 		return fmt.Errorf("write HOME regular file: %w", err)
+	}
+	closed = true
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close HOME regular file: %w", err)
 	}
 	return nil
 }

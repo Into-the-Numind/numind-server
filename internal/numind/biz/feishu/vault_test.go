@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -98,14 +99,20 @@ type task2VaultFixture struct {
 	keyVersion  string
 }
 
-func newTask2VaultFixture(t *testing.T, userID uint, generation uint64) *task2VaultFixture {
+func task2NewCipher(t *testing.T) *pkgcrypto.Cipher {
 	t.Helper()
-
 	rawKey := make([]byte, pkgcrypto.KeyLen)
 	_, err := rand.Read(rawKey)
 	require.NoError(t, err)
 	cipher, err := pkgcrypto.NewCipher(base64.StdEncoding.EncodeToString(rawKey))
 	require.NoError(t, err)
+	return cipher
+}
+
+func newTask2VaultFixture(t *testing.T, userID uint, generation uint64) *task2VaultFixture {
+	t.Helper()
+
+	cipher := task2NewCipher(t)
 
 	runtimeBase := filepath.Join(t.TempDir(), "runtime-homes")
 	require.NoError(t, os.Mkdir(runtimeBase, 0o755))
@@ -127,16 +134,73 @@ func newTask2VaultFixture(t *testing.T, userID uint, generation uint64) *task2Va
 	}
 }
 
+func newTask2KeyringVaultFixture(
+	t *testing.T,
+	userID uint,
+	generation uint64,
+	ciphers map[string]*pkgcrypto.Cipher,
+	currentKeyVersion string,
+) *task2VaultFixture {
+	t.Helper()
+	runtimeBase := filepath.Join(t.TempDir(), "runtime-homes")
+	require.NoError(t, os.Mkdir(runtimeBase, 0o700))
+	accounts := &task2FakeVaultAccountStore{accounts: map[uint]*model.UserThirdPartyAccount{
+		userID: {UserID: userID, Provider: ProviderLark, Generation: generation},
+	}}
+	store := &task2FakeCLIHomeVaultStore{vaults: make(map[uint]*model.FeishuCLIVault)}
+	vault, err := NewEncryptedCLIHomeVaultWithKeyring(
+		accounts,
+		store,
+		ciphers,
+		currentKeyVersion,
+		runtimeBase,
+	)
+	require.NoError(t, err)
+	return &task2VaultFixture{
+		vault:       vault,
+		cipher:      ciphers[currentKeyVersion],
+		accounts:    accounts,
+		store:       store,
+		runtimeBase: runtimeBase,
+		userID:      userID,
+		generation:  generation,
+		keyVersion:  currentKeyVersion,
+	}
+}
+
 func (f *task2VaultFixture) putEncryptedArchive(t *testing.T, archive []byte, revision uint64) {
 	t.Helper()
-	aad := []byte(fmt.Sprintf("lark|%d|%d|%s", f.userID, f.generation, f.keyVersion))
-	ciphertext, err := f.cipher.EncryptWithAAD(archive, aad)
+	task2PutEncryptedArchive(
+		t,
+		f.store,
+		f.cipher,
+		f.userID,
+		f.generation,
+		f.keyVersion,
+		revision,
+		archive,
+	)
+}
+
+func task2PutEncryptedArchive(
+	t *testing.T,
+	store *task2FakeCLIHomeVaultStore,
+	cipher *pkgcrypto.Cipher,
+	userID uint,
+	generation uint64,
+	keyVersion string,
+	revision uint64,
+	archive []byte,
+) {
+	t.Helper()
+	aad := []byte(fmt.Sprintf("lark|%d|%d|%s", userID, generation, keyVersion))
+	ciphertext, err := cipher.EncryptWithAAD(archive, aad)
 	require.NoError(t, err)
-	f.store.vaults[f.userID] = &model.FeishuCLIVault{
-		UserID:     f.userID,
-		Generation: f.generation,
+	store.vaults[userID] = &model.FeishuCLIVault{
+		UserID:     userID,
+		Generation: generation,
 		Ciphertext: ciphertext,
-		KeyVersion: f.keyVersion,
+		KeyVersion: keyVersion,
 		Checksum:   task2CiphertextChecksum(ciphertext),
 		Revision:   revision,
 	}
@@ -195,6 +259,231 @@ func task2RequireNoRuntimeHomes(t *testing.T, base string) {
 	entries, err := os.ReadDir(base)
 	require.NoError(t, err)
 	require.Empty(t, entries)
+}
+
+func TestEncryptedCLIHomeVault_KeyRotationReadsOldVersionWithoutResealing(t *testing.T) {
+	v1 := task2NewCipher(t)
+	v2 := task2NewCipher(t)
+	inputKeyring := map[string]*pkgcrypto.Cipher{"v1": v1, "v2": v2}
+	f := newTask2KeyringVaultFixture(t, 7, 1, inputKeyring, "v2")
+	task2PutEncryptedArchive(
+		t,
+		f.store,
+		v1,
+		f.userID,
+		f.generation,
+		"v1",
+		1,
+		task2TarArchive(t, task2TarEntry{
+			name: "config.json", typeflag: tar.TypeReg, body: []byte(`{"key":"v1"}`),
+		}),
+	)
+	original := cloneTask2Vault(f.store.vaults[f.userID])
+	delete(inputKeyring, "v1") // The vault must use a frozen copy, not this caller-owned map.
+
+	err := f.vault.WithHome(context.Background(), f.userID, f.generation, func(home string) (bool, error) {
+		body, readErr := os.ReadFile(filepath.Join(home, "config.json"))
+		require.NoError(t, readErr)
+		require.JSONEq(t, `{"key":"v1"}`, string(body))
+		return false, nil
+	})
+	require.NoError(t, err)
+	require.Zero(t, f.store.putCalls)
+	require.Equal(t, original, f.store.vaults[f.userID])
+	task2RequireNoRuntimeHomes(t, f.runtimeBase)
+}
+
+func TestEncryptedCLIHomeVault_KeyRotationResealsChangedSnapshotWithCurrentKey(t *testing.T) {
+	v1 := task2NewCipher(t)
+	v2 := task2NewCipher(t)
+	f := newTask2KeyringVaultFixture(
+		t,
+		7,
+		1,
+		map[string]*pkgcrypto.Cipher{"v1": v1, "v2": v2},
+		"v2",
+	)
+	task2PutEncryptedArchive(
+		t,
+		f.store,
+		v1,
+		f.userID,
+		f.generation,
+		"v1",
+		1,
+		task2TarArchive(t, task2TarEntry{
+			name: "config.json", typeflag: tar.TypeReg, body: []byte(`{"key":"v1"}`),
+		}),
+	)
+
+	err := f.vault.WithHome(context.Background(), f.userID, f.generation, func(home string) (bool, error) {
+		return true, os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"key":"v2"}`), 0o600)
+	})
+	require.NoError(t, err)
+	stored := f.store.vaults[f.userID]
+	require.Equal(t, "v2", stored.KeyVersion)
+	require.Equal(t, uint64(2), stored.Revision)
+	require.Equal(t, task2CiphertextChecksum(stored.Ciphertext), stored.Checksum)
+	_, err = v2.DecryptWithAAD(stored.Ciphertext, []byte("lark|7|1|v2"))
+	require.NoError(t, err)
+	_, err = v1.DecryptWithAAD(stored.Ciphertext, []byte("lark|7|1|v2"))
+	require.Error(t, err)
+
+	err = f.vault.WithHome(context.Background(), f.userID, f.generation, func(home string) (bool, error) {
+		body, readErr := os.ReadFile(filepath.Join(home, "config.json"))
+		require.NoError(t, readErr)
+		require.JSONEq(t, `{"key":"v2"}`, string(body))
+		return false, nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, f.store.putCalls)
+	task2RequireNoRuntimeHomes(t, f.runtimeBase)
+}
+
+func TestEncryptedCLIHomeVault_KeyRotationRejectsMissingHistoricalKey(t *testing.T) {
+	v1 := task2NewCipher(t)
+	v2 := task2NewCipher(t)
+	f := newTask2KeyringVaultFixture(
+		t,
+		7,
+		1,
+		map[string]*pkgcrypto.Cipher{"v2": v2},
+		"v2",
+	)
+	task2PutEncryptedArchive(
+		t,
+		f.store,
+		v1,
+		f.userID,
+		f.generation,
+		"v1",
+		1,
+		task2TarArchive(t, task2TarEntry{
+			name: "config.json", typeflag: tar.TypeReg, body: []byte(`{"key":"v1"}`),
+		}),
+	)
+
+	callbackCalled := false
+	err := f.vault.WithHome(context.Background(), f.userID, f.generation, func(string) (bool, error) {
+		callbackCalled = true
+		return false, nil
+	})
+	require.Error(t, err)
+	require.False(t, callbackCalled)
+	require.Zero(t, f.store.putCalls)
+	task2RequireNoRuntimeHomes(t, f.runtimeBase)
+}
+
+func TestEncryptedCLIHomeVault_KeyVersionValidation(t *testing.T) {
+	f := newTask2VaultFixture(t, 7, 1)
+	validVersions := []string{"v", "v1.release-2_key", strings.Repeat("A", 32)}
+	for _, version := range validVersions {
+		t.Run("valid_"+version, func(t *testing.T) {
+			_, err := NewEncryptedCLIHomeVault(f.accounts, f.store, f.cipher, version, f.runtimeBase)
+			require.NoError(t, err)
+		})
+	}
+
+	invalidVersions := []string{
+		"",
+		strings.Repeat("A", 33),
+		"版本1",
+		"v1|next",
+		"v1 next",
+		"v1/next",
+	}
+	for _, version := range invalidVersions {
+		t.Run("invalid_"+version, func(t *testing.T) {
+			_, err := NewEncryptedCLIHomeVault(f.accounts, f.store, f.cipher, version, f.runtimeBase)
+			require.Error(t, err)
+		})
+	}
+
+	_, err := NewEncryptedCLIHomeVaultWithKeyring(
+		f.accounts,
+		f.store,
+		map[string]*pkgcrypto.Cipher{"v2": f.cipher, "old/version": task2NewCipher(t)},
+		"v2",
+		f.runtimeBase,
+	)
+	require.Error(t, err, "every historical key version must be validated")
+
+	_, err = NewEncryptedCLIHomeVaultWithKeyring(
+		f.accounts,
+		f.store,
+		map[string]*pkgcrypto.Cipher{"v1": f.cipher},
+		"v2",
+		f.runtimeBase,
+	)
+	require.Error(t, err, "the current key version must exist in the keyring")
+
+	_, err = NewEncryptedCLIHomeVaultWithKeyring(
+		f.accounts,
+		f.store,
+		map[string]*pkgcrypto.Cipher{"v1": nil},
+		"v1",
+		f.runtimeBase,
+	)
+	require.Error(t, err, "nil ciphers must fail closed")
+}
+
+func TestEncryptedCLIHomeVault_CleanupRuntimeHomesAtStartup(t *testing.T) {
+	f := newTask2VaultFixture(t, 7, 1)
+	staleDir := filepath.Join(f.runtimeBase, cliHomeRuntimePrefix+"stale")
+	staleFile := filepath.Join(f.runtimeBase, cliHomeRuntimePrefix+"partial")
+	keepFile := filepath.Join(f.runtimeBase, "keep.txt")
+	keepDir := filepath.Join(f.runtimeBase, "persistent")
+	require.NoError(t, os.Mkdir(staleDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(staleDir, "secret"), []byte("plaintext"), 0o600))
+	require.NoError(t, os.WriteFile(staleFile, []byte("partial"), 0o600))
+	require.NoError(t, os.WriteFile(keepFile, []byte("keep"), 0o600))
+	require.NoError(t, os.Mkdir(keepDir, 0o700))
+
+	require.NoError(t, f.vault.CleanupRuntimeHomesAtStartup())
+	require.NoFileExists(t, staleDir)
+	require.NoFileExists(t, staleFile)
+	require.FileExists(t, keepFile)
+	require.DirExists(t, keepDir)
+}
+
+func TestEncryptedCLIHomeVault_CleanupRuntimeHomesAtStartupRejectsSymlinkBase(t *testing.T) {
+	f := newTask2VaultFixture(t, 7, 1)
+	outside := t.TempDir()
+	outsideStale := filepath.Join(outside, cliHomeRuntimePrefix+"outside")
+	require.NoError(t, os.Mkdir(outsideStale, 0o700))
+	runtimeLink := filepath.Join(t.TempDir(), "runtime-link")
+	require.NoError(t, os.Symlink(outside, runtimeLink))
+	vault, err := NewEncryptedCLIHomeVault(f.accounts, f.store, f.cipher, "v1", runtimeLink)
+	require.NoError(t, err)
+
+	require.Error(t, vault.CleanupRuntimeHomesAtStartup())
+	require.DirExists(t, outsideStale)
+}
+
+type task2CloseErrorFile struct {
+	*os.File
+	closeErr error
+}
+
+func (f *task2CloseErrorFile) Close() error {
+	_ = f.File.Close()
+	return f.closeErr
+}
+
+func TestWriteCLIHomeTarOpenedFile_PreservesCloseError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"apps":[]}`), 0o600))
+	file, err := os.Open(path)
+	require.NoError(t, err)
+	info, err := file.Stat()
+	require.NoError(t, err)
+	closeErr := errors.New("close failed")
+	wrapped := &task2CloseErrorFile{File: file, closeErr: closeErr}
+	var buffer bytes.Buffer
+	writer := tar.NewWriter(&buffer)
+
+	err = writeCLIHomeTarOpenedFile(writer, wrapped, "config.json", info)
+	require.ErrorIs(t, err, closeErr)
 }
 
 func TestEncryptedCLIHomeVault_RuntimePermissionsCleanupAndRevisionCAS(t *testing.T) {
