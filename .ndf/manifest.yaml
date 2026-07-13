@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: '重新校准并完成飞书个人工作空间连接：每个有数账号连接自己的飞书账号并长期保持；首次授权后 Agent 自动执行文档、多维表格、知识库能力。现有 feishu-integration 仅作待审计资产，不作为产品前提。'
   classification_reason: 'Standard：飞书外部集成+长期授权凭据+自动写操作属高风险，预计涉及 DB/API/biz/前端/部署/E2E 且文件数 >3。用户于 2026-07-13 确认 Standard。'
-  last_updated_by: ai-s4-task3-reviewed
-  last_updated_at: '2026-07-13T14:28:27+0800'
+  last_updated_by: ai-s4-task4-reviewed
+  last_updated_at: '2026-07-13T15:06:26+0800'
   created_at: '2026-07-13T11:14:14+0800'
   track: standard
   stage: S4
@@ -16,7 +16,7 @@ features:
   worktrees:
     numind-server: /private/tmp/wt-feishu-personal-workspace-numind-server
     numind-web-v3: /private/tmp/wt-feishu-personal-workspace-numind-web-v3
-  progress: {total_tasks: 23, completed_tasks: 3, reviewed_tasks: 3}
+  progress: {total_tasks: 23, completed_tasks: 4, reviewed_tasks: 4}
   artifacts:
     requirement: requirements/feishu-personal-workspace.md
     proposal: proposals/feishu-personal-workspace-proposal.md
@@ -37,6 +37,7 @@ features:
   - 'S4 Task 1 gate (2026-07-13): 持久化底座完成并经需求/质量双审 PASS；review 驱动补齐 tenant+generation 原子 WHERE、lease expiry fencing、transition 字段白名单、vault generation row lock/CAS、BIGINT migration/model 对齐。真实 MySQL 8 FOR UPDATE/schema 并发验证登记到 Task 21。'
   - 'S4 Task 2 gate (2026-07-13): AAD 加密 HOME vault 完成并经需求/质量双审 PASS；支持历史 key_version 解密与 current key 重封、tar 路径/链接拒绝、0700/0600、CAS、启动残留清理。执行期 generation fencing 归 Task 7/13/21；同 UID 主动文件竞态列为 Task 3/最终安全 Gate 的 defense-in-depth P2。'
   - 'S4 Task 3 gate (2026-07-13): lark-cli 固定 1.0.68 + SHA256，ControlledLarkCLIRunner 双审 PASS；无 shell、固定绝对路径、输入/输出限额、stdin JSON pre-start gate、完整 envelope、InvocationStarted、macOS/Linux 进程组取消与残留 child 清理均有测试。独立 UID/sandbox、setsid 逃逸和 PGID 复用保留为 Task 23 P2 风险 Gate。'
+  - 'S4 Task 4 gate (2026-07-13): 1.0.68 CommandCatalog 双审 PASS；25 条 Docs/Base/Wiki 真实路径、exact scopes、逐命令 flags、永久拒绝项、URL/token、批量风险与版本快照已固定。纠正不存在的 record-create/update 为 batch-create/upsert/batch-update；Catalog 与 runner argv count/bytes 闭合并为 field-update 确认后 --yes 预留边界；风险、CLI yes 与授权错误可重放语义分离，详见 ADR 0005/0006。'
   blockers: []
 - id: chatbot-full-history-context
   ndf_version: '3.0'

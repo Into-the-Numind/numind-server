@@ -333,16 +333,16 @@ git commit -m "feat(feishu): pin and harden lark cli runner"
 
 **Files:** `command_catalog.go`、`command_catalog_test.go`。
 
-- [ ] **Step 1: 写完整 catalog 红测**
+- [x] **Step 1: 写完整 catalog 红测**
 
-测试表逐项覆盖设计 spec §5。最低允许集合：Docs `+create/+fetch/+update`；Base 的 app/table/field/view/record create/get/list/search/upsert/update；Wiki space/node create/get/list 及 Wiki 内容经 Docs fetch/update。拒绝含 delete/remove/trash/purge、IM、`api/auth/config`、`--as/--home/--profile/--brand`、未知 flag、超过 20 条 record 批次、Docs `block_delete`、已有资源无确认的 overwrite。
+测试表逐项覆盖设计 spec §5。最低允许集合：Docs `+create/+fetch/+update`；Base 的 app/table/field/view 读写与真实的 record `+record-get/+record-list/+record-search/+record-batch-create/+record-upsert/+record-batch-update`；Wiki space/node create/get/list 及 Wiki 内容经 Docs fetch/update。拒绝含 delete/remove/trash/purge、IM、`api/auth/config`、`--as/--home/--profile/--brand`、未知 flag、超过 lark-cli 上限的 record 批次、Docs `block_delete`、已有资源无确认的 overwrite；21 条以上且未超过 CLI 上限的 record 写入标为高风险，交给通用确认状态机。
 
 ```go
 func TestCommandCatalog_PermanentDenials(t *testing.T) {
 	c := NewCommandCatalog()
 	for _, argv := range [][]string{
 		{"im", "+messages-send"}, {"api", "post", "/x"}, {"auth", "status"},
-		{"docs", "+update", "doc", "--command", "block_delete"},
+		{"docs", "+update", "--doc", "doxcnEXAMPLE123", "--command", "block_delete"},
 		{"base", "+record-delete", "app", "table", "record"},
 	} {
 		_, err := c.Normalize(argv, nil)
@@ -351,13 +351,13 @@ func TestCommandCatalog_PermanentDenials(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 运行红测**
+- [x] **Step 2: 运行红测**
 
 Run: `go test ./internal/numind/biz/feishu -run 'CommandCatalog' -count=1`
 
 Expected: FAIL，catalog 不存在。
 
-- [ ] **Step 3: 实现 catalog**
+- [x] **Step 3: 实现 catalog**
 
 ```go
 type RiskLevel string
@@ -375,11 +375,14 @@ type NormalizedCommand struct {
 	Scopes []string
 	Argv []string
 	StdinJSON []byte
+	RequiresCLIYes bool
 	ReplaySafeOnAuthError bool
 }
 ```
 
-Catalog 自行计算 scopes/risk，忽略模型声明；末尾统一追加 `--as user`。Flag parser 必须逐命令允许，不使用“未知 flag 原样透传”。URL/token 只接受飞书支持 host 和 spec 允许的 opaque token 形状；正文长度、数组长度、分页上限和 stdout 上限写成命名常量。
+Catalog 自行计算 scopes/risk，忽略模型声明；末尾统一追加 `--as user`。Flag parser 必须逐命令允许，不使用“未知 flag 原样透传”。URL/token 只接受飞书支持 host 和 spec 允许的 opaque token 形状；正文长度、数组长度、分页上限、runner argv count/bytes 和 stdout 上限写成命名常量。最终规范化 argv 必须在返回前通过 Task 3 runner 的同一输入 Gate；`RequiresCLIYes` 命令还必须用未来末尾追加 `--yes` 的精确 argv 预留 count/bytes，禁止出现“Catalog 允许但确认后 runner 必然拒绝”的命令。
+
+`RequiresCLIYes` 是服务端静态元数据：1.0.68 只有 `base +field-update` 为 true；Docs overwrite 和大批量 record 虽然同为 `RiskHigh`，CLI 并不接受 `--yes`。模型永远不能自行传 `--yes`，Task 7 只在高风险状态已确认且该字段为 true 时追加。`ReplaySafeOnAuthError` 只表达 catalog 的无条件基线（首版仅 read=true）；写命令是否能在授权后精确重放，必须由 Task 7 固定错误分类器证明本次请求未产生副作用。
 
 Scope manifest 必须把以下值作为 contract test 的精确期望，不使用 domain shortcut：
 
@@ -406,9 +409,9 @@ var baseScopes = map[string][]string{
 	"base +table-update":  {"base:table:update"},
 	"base +field-create":  {"base:field:create"},
 	"base +field-update":  {"base:field:update"},
-	"base +record-create": {"base:record:create"},
-	"base +record-upsert": {"base:record:create", "base:record:update"},
-	"base +record-update": {"base:record:update"},
+	"base +record-batch-create": {"base:record:create"},
+	"base +record-upsert":       {"base:record:create", "base:record:update"},
+	"base +record-batch-update": {"base:record:update"},
 }
 
 var wikiScopes = map[string][]string{
@@ -419,19 +422,21 @@ var wikiScopes = map[string][]string{
 }
 ```
 
+> 版本事实校正：固定的 lark-cli 1.0.68 不存在 `+record-create` / `+record-update`。单条创建或更新由 `+record-upsert` 根据是否带 `--record-id` 完成；多条写入使用上面的两个 batch shortcut。Catalog 只登记真实可执行路径，详见 ADR 0005。
+
 `base:table:delete` 只因 lark-cli 1.0.68 `+base-create` 替换默认表而出现在授权说明中；catalog 仍必须拒绝所有删除命令。改变既有字段类型、超过 20 条 record 写入和覆盖既有 Doc 进入 `waiting_confirmation`；该确认复用 Agent 通用高风险确认，不借 OAuth 页面替代。
 
-- [ ] **Step 4: 写版本 manifest 快照测试**
+- [x] **Step 4: 写版本 manifest 快照测试**
 
-`TestCommandCatalogManifest_1068` 序列化 `path/domain/scopes/risk/limits` 并与 testdata 固定 JSON 比较。任何 CLI 升级必须显式更新该快照和审阅差异。
+`TestCommandCatalogManifest_1068` 从 `LarkCLIVersion` 推导 testdata 文件名，并把 `cli_version`、runner 全局限制、`path/domain/scopes/risk/limits/requires_cli_yes` 序列化到固定 JSON。任何 CLI 版本常量升级都会先因缺少新版快照而失败，必须显式审阅并更新快照。
 
-- [ ] **Step 5: 绿测**
+- [x] **Step 5: 绿测**
 
 Run: `go test ./internal/numind/biz/feishu -run 'CommandCatalog' -count=1`
 
 Expected: PASS，拒绝表全部通过。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/numind/biz/feishu/command_catalog* internal/numind/biz/feishu/testdata

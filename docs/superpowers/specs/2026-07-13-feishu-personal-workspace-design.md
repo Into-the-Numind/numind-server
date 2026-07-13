@@ -189,9 +189,9 @@ Agent 仍有自主判断：它读取官方技能、选择具体命令、解析�
 |---|---|---|---|
 | 创建文档 | `docs +create` | `docx:document:create` | 允许；按 idempotency key 防重复 |
 | 读取文档 | `docs +fetch` | `docx:document:readonly` | 允许 |
-| 更新文档 | `docs +update` | `docx:document:write_only`、`docx:document:readonly` | append、精确替换、插入允许；删除 block 禁止；已有文档全量 overwrite 进入高风险确认 |
+| 更新文档 | `docs +update` | `docx:document:write_only`、`docx:document:readonly` | append、精确替换（显式空 replacement 也属于精确替换）、插入允许；删除 block 禁止；已有文档全量 overwrite 进入高风险确认 |
 
-为刚由同一 operation chain 创建的空文档写入初始内容，可使用 overwrite，不视为覆盖既有用户内容；需要用上一步返回的文档 token 证明资源由当前 chain 新建。
+为刚由同一 operation chain 创建的空文档写入初始内容，可使用 overwrite，不视为覆盖既有用户内容；需要用上一步返回的文档 token 证明资源由当前 chain 新建。CommandCatalog 在没有 operation 上下文时一律给 overwrite 标记 `high`；Task 7 只能凭已持久化的同 chain 新建资源证明豁免额外询问，不能由模型声明降级。
 
 ### 5.2 Base
 
@@ -201,12 +201,12 @@ Agent 仍有自主判断：它读取官方技能、选择具体命令、解析�
 | 读取 Base/表/字段/视图 | `+base-get`、`+table-list/get`、field list/get | `base:app:read`、`base:table:read`、`base:field:read`、`base:view:read` | 允许 |
 | 读取记录 | record get/list/search | `base:record:read` | 允许；分页和总量设上限 |
 | 创建/更新表 | `+table-create/update` | `base:table:create/update`、相关 field/view scopes | 允许；删除表禁止 |
-| 创建/更新字段 | field create/update | `base:field:create/update` | 创建/重命名允许；改变已有字段类型进入高风险确认 |
-| 创建/更新记录 | record create/upsert/update | `base:record:create/update` | 允许单条或受限批次；超阈值进入高风险确认 |
+| 创建/更新字段 | field create/update | `base:field:create/update` | 1.0.68 的 field-update 是 full PUT 且 CLI 强制 `--yes`，Catalog 统一标为 high；用户已明确要求且目标无歧义时可由通用确认策略认定意图，改变字段类型必须展示数据风险 |
+| 创建/更新记录 | `+record-upsert`、`+record-batch-create/update` | `base:record:create/update` | 允许单条或受限批次；超阈值进入高风险确认 |
 
 已知限制：lark-cli 1.0.68 的 `+base-create` 为替换默认初始表而声明了 `base:table:delete`。这是官方 shortcut 的 scope 粒度，不代表有数开放删除能力。产品授权说明必须如实提示该 scope；服务端命令与参数策略仍禁止所有 delete 路径。若真实租户验证发现该 scope 无法接受，后续只替换 Base create adapter，不改变上层 Agent/operation 契约。
 
-默认批量阈值：一次最多更新 20 条记录；更大批次要求 Agent 拆分且进入通用高风险确认。任何 delete、truncate、清空字段值的无条件全表操作均拒绝。
+默认批量阈值：一次最多 20 条记录可直接执行；21 条以上且未超过 lark-cli 单次上限的批次进入通用高风险确认，Agent 也可按业务边界拆分。任何 delete、truncate、清空字段值的无条件全表操作均拒绝。固定的 lark-cli 1.0.68 没有 `+record-create` / `+record-update`，单条写入由 `+record-upsert` 承担，Catalog 不登记不存在的别名。
 
 ### 5.3 Wiki
 
@@ -341,6 +341,8 @@ stateDiagram-v2
 ```
 
 只有错误分类明确保证原请求未产生副作用时，`executing` 才能进入授权等待并在之后自动重放。超时、连接断开、飞书 5xx、CLI 被杀、输出损坏等发生在写命令时，一律进入 `unknown`，禁止自动重试。
+
+`NormalizedCommand.ReplaySafeOnAuthError` 只记录 catalog 的无条件重放基线，首版只有读命令为 true。写命令即使遇到授权错误也不能只看该布尔值决定重放；Task 7 必须同时命中固定版本、结构化且经 contract test 证明“请求未产生副作用”的错误分类。`RiskHigh` 也不等于 CLI 接受 `--yes`：只有 `RequiresCLIYes=true` 的 `base +field-update` 在确认后追加该参数，Docs overwrite 与大批量 record 确认后不追加。
 
 ### 7.3 多步任务
 
