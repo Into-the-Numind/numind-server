@@ -177,6 +177,39 @@ func TestLarkPersonalWorkspace_SkillReadStrictInputAndSafeFailures(t *testing.T)
 	}
 }
 
+func TestLarkPersonalWorkspace_SkillReadOptionalStringsRejectNonStrings(t *testing.T) {
+	invalidValues := map[string]string{
+		"null":   "null",
+		"object": `{}`,
+		"array":  `[]`,
+		"number": `42`,
+		"bool":   `true`,
+	}
+	for _, field := range []string{"reference", "cursor"} {
+		for valueName, value := range invalidValues {
+			t.Run(field+"_"+valueName, func(t *testing.T) {
+				executor := &fakeSkillReadExecutor{result: &feishu.SkillReadPage{Skill: "lark-doc"}}
+				input := ToolInput(`{"skill":"lark-doc","` + field + `":` + value + `}`)
+				result, err := (&larkSkillReadTool{executor: executor}).Execute(WithRunID(context.Background(), 12), input)
+				requireSafeLarkSoftError(t, result, err)
+				assert.Empty(t, executor.snapshot(), "non-string optional input must not reach the skill reader")
+			})
+		}
+	}
+
+	executor := &fakeSkillReadExecutor{result: &feishu.SkillReadPage{Skill: "lark-doc"}}
+	result, err := (&larkSkillReadTool{executor: executor}).Execute(
+		WithRunID(context.Background(), 13),
+		ToolInput(`{"skill":"lark-doc","reference":"","cursor":""}`),
+	)
+	require.NoError(t, err)
+	assert.NotContains(t, string(result), "ERROR")
+	requests := executor.snapshot()
+	require.Len(t, requests, 1)
+	assert.Empty(t, requests[0].Reference)
+	assert.Empty(t, requests[0].Cursor)
+}
+
 func TestLarkPersonalWorkspace_ExecuteDerivesTenantAndIdempotencyFromContext(t *testing.T) {
 	executor := &fakeLarkExecutor{result: &feishu.OperationResult{
 		OperationID: "op-success",
@@ -409,6 +442,31 @@ func TestLarkPersonalWorkspace_ExecuteTerminalStatesNeverFakeSuccess(t *testing.
 			require.NoError(t, json.Unmarshal(result, &output))
 			assert.False(t, output.OK)
 			assert.Equal(t, state, output.State)
+		})
+	}
+}
+
+func TestLarkPersonalWorkspace_ExecuteRejectsNonTerminalNonWaitingStates(t *testing.T) {
+	for name, state := range map[string]string{
+		"executing":      model.FeishuOperationExecuting,
+		"not started":    model.FeishuOperationNotStarted,
+		"unknown string": "provider_future_state_sensitive",
+		"empty":          "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+				OperationID: "op-sensitive-active-state",
+				State:       state,
+				Data:        json.RawMessage(`{"secret":"active-lease-data"}`),
+			}}
+			result, err := (&larkExecuteTool{executor: executor}).Execute(
+				larkPersonalWorkspaceContext(7, 9, "tc-active-state"),
+				ToolInput(`{"argv":["docs"],"skill_receipts":["receipt"]}`),
+			)
+			requireSafeLarkSoftError(t, result, err,
+				state, "op-sensitive-active-state", "active-lease-data")
+			var yielded *yieldError
+			assert.False(t, errors.As(err, &yielded), "active or unrecognized states must fail closed, not yield")
 		})
 	}
 }

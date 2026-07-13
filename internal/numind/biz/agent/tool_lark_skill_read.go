@@ -197,7 +197,11 @@ func decodeOptionalString(fields map[string]json.RawMessage, name string, target
 	if !ok {
 		return nil
 	}
-	if err := json.Unmarshal(raw, target); err != nil {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) < 2 || trimmed[0] != '"' {
+		return errors.New("invalid string")
+	}
+	if err := json.Unmarshal(trimmed, target); err != nil {
 		return errors.New("invalid string")
 	}
 	return nil

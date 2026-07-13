@@ -95,6 +95,9 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 	if isLarkWaitingState(result.State) {
 		return larkWaitingYield(result, toolCallID)
 	}
+	if !isLarkTerminalState(result.State) {
+		return larkWorkspaceSoftError(larkWorkspaceErrorInvalidResult)
+	}
 	if len(result.Data) > 0 && !json.Valid(result.Data) {
 		return larkWorkspaceSoftError(larkWorkspaceErrorInvalidResult)
 	}
@@ -136,6 +139,18 @@ func isLarkWaitingState(state string) bool {
 		model.FeishuOperationWaitingAppScope,
 		model.FeishuOperationWaitingUserAuth,
 		model.FeishuOperationWaitingConfirmation:
+		return true
+	default:
+		return false
+	}
+}
+
+func isLarkTerminalState(state string) bool {
+	switch state {
+	case model.FeishuOperationSucceeded,
+		model.FeishuOperationFailed,
+		model.FeishuOperationUnknown,
+		model.FeishuOperationCancelled:
 		return true
 	default:
 		return false
