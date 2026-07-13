@@ -647,9 +647,9 @@ git commit -m "feat(feishu): execute idempotent personal operations"
 
 ## Task 8: AuthSessionService 与确定性连接编排
 
-**Files:** `auth_session_service.go`、`auth_session_service_test.go`、`connect_orchestrator.go`、`connect_orchestrator_test.go`。
+**Files:** `auth_session_service.go`、`auth_session_service_test.go`、`connect_orchestrator.go`、`connect_orchestrator_test.go`；实现期为闭合跨实例会话复用、瞬时 console URL 与 operation activation barrier，扩展 `operation_service.go`、`operation_service_test.go`、`store/feishu_workspace.go`、`store/feishu_workspace_test.go`。
 
-- [ ] **Step 1: 写状态机红测**
+- [x] **Step 1: 写状态机红测**
 
 覆盖 manual connect 只申请 `offline_access`；业务 operation 只使用 exact scopes；create_app/app_scope/user_auth；URL 不落 DB；lease 丢失 supersede；worker 成功调用 dispatcher；相同 scopes 连续两次停止；有 `console_url` 时 waiting_app_approval。
 
@@ -663,13 +663,13 @@ func TestAuthSessionService_ManualConnectRequestsOfflineAccessOnly(t *testing.T)
 }
 ```
 
-- [ ] **Step 2: 运行红测**
+- [x] **Step 2: 运行红测**
 
 Run: `go test ./internal/numind/biz/feishu -run 'AuthSession|ConnectOrchestrator' -count=1`
 
 Expected: FAIL，新状态机不存在。
 
-- [ ] **Step 3: 定义单向恢复接口并实现 worker**
+- [x] **Step 3: 定义单向恢复接口并实现 worker**
 
 ```go
 type OperationResumeDispatcher interface {
@@ -677,9 +677,9 @@ type OperationResumeDispatcher interface {
 }
 ```
 
-`AuthSessionService` 只依赖该接口，不持有具体 `OperationService`。Blocking worker 持 DB lease；从 CLI 输出提取 URL 后只放内存 registry；DB 保存 phase/scopes/state/lease/expiry。成功后 seal HOME、标 session completed、调用 dispatcher。过期 lease 先用 recovery 专用 `auth status` 检查 vault，再完成或 supersede。
+`AuthSessionService` 只依赖该接口，不持有具体 `OperationService`。Blocking worker 持 DB lease；从 CLI 输出提取 URL 后只放内存 registry；DB 保存 phase/scopes/state/lease/expiry。成功后 seal HOME、标 session completed、调用 dispatcher。过期 lease 先用 recovery 专用 `auth status` 检查 vault，再完成或 supersede。Operation-linked worker 必须在 URL ready 后等待 `Activate`，由 `OperationService` 持久化 waiting 后放行；`Abort` 终止未能持久化的恢复。`RecoveryStarter` 在生产依赖中强制包含 Start/Activate/Abort，不得通过可选 type assertion 静默绕过。
 
-- [ ] **Step 4: 新路径只生成 exact scope auth**
+- [x] **Step 4: 新路径只生成 exact scope auth**
 
 ```go
 []string{"auth", "login", "--json", "--scope", strings.Join(exactScopes, " ")}
@@ -687,7 +687,7 @@ type OperationResumeDispatcher interface {
 
 新 `auth_session_service.go` 和 `connect_orchestrator.go` 不得出现 `--domain`、IM scope。旧 `auth_cli.go` 在 Task 20 前保持未注册状态，避免本任务同时承担清理。
 
-- [ ] **Step 5: 绿测**
+- [x] **Step 5: 绿测**
 
 Run: `go test -race ./internal/numind/biz/feishu -run 'AuthSession|ConnectOrchestrator' -count=1`
 
@@ -697,7 +697,7 @@ Run: `rg -n -- '--domain|docs,im,base|im:message' internal/numind/biz/feishu/aut
 
 Expected: 零命中。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/numind/biz/feishu/auth_session_service.go internal/numind/biz/feishu/auth_session_service_test.go internal/numind/biz/feishu/connect_orchestrator.go internal/numind/biz/feishu/connect_orchestrator_test.go
