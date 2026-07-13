@@ -258,6 +258,37 @@ func TestCommandCatalog_ValidatesFinalArgvAgainstRunnerLimits(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestCommandCatalog_ReservesRunnerBudgetForConfirmedCLIYes(t *testing.T) {
+	t.Parallel()
+
+	catalog := NewCommandCatalog()
+	baseArgv := []string{
+		"base", "+field-update",
+		"--base-token", "bascnABCDEFG123",
+		"--table-id", "Tasks",
+		"--field-id", "Status",
+		"--json", `{"x":1}`,
+	}
+	baseline, err := catalog.Normalize(baseArgv, nil)
+	require.NoError(t, err)
+	overheadWithoutPayload := argvBytes(baseline.Argv) - len(`{"x":1}`)
+
+	preConfirmationBoundary := exactLengthJSONObject(ControlledLarkCLIMaxArgvBytes - overheadWithoutPayload)
+	boundaryArgv := append([]string(nil), baseArgv...)
+	boundaryArgv[len(boundaryArgv)-1] = preConfirmationBoundary
+	_, err = catalog.Normalize(boundaryArgv, nil)
+	require.ErrorIs(t, err, ErrCommandInvalidArgument, "catalog must reserve the future --yes bytes")
+
+	confirmedBoundary := exactLengthJSONObject(ControlledLarkCLIMaxArgvBytes - overheadWithoutPayload - len("--yes"))
+	insideArgv := append([]string(nil), baseArgv...)
+	insideArgv[len(insideArgv)-1] = confirmedBoundary
+	got, err := catalog.Normalize(insideArgv, nil)
+	require.NoError(t, err)
+	require.True(t, got.RequiresCLIYes)
+	require.Equal(t, ControlledLarkCLIMaxArgvBytes-len("--yes"), argvBytes(got.Argv))
+	require.NotContains(t, got.Argv, "--yes")
+}
+
 func TestCommandCatalog_RejectsDuplicateRecordAndFieldSelectors(t *testing.T) {
 	t.Parallel()
 
@@ -268,6 +299,7 @@ func TestCommandCatalog_RejectsDuplicateRecordAndFieldSelectors(t *testing.T) {
 		{"base", "+record-batch-update", "--base-token", "bascnABCDEFG123", "--table-id", "Tasks", "--json", `{"record_id_list":["recABCDEFG123","recABCDEFG123"],"patch":{"Status":"Done"}}`},
 		{"base", "+record-search", "--base-token", "bascnABCDEFG123", "--table-id", "Tasks", "--keyword", "Alice", "--search-field", "Name", "--search-field", "Name"},
 		{"base", "+record-search", "--base-token", "bascnABCDEFG123", "--table-id", "Tasks", "--keyword", "Alice", "--search-field", "Name", "--field-id", "Status", "--field-id", "Status"},
+		{"base", "+record-list", "--base-token", "bascnABCDEFG123", "--table-id", "Tasks", "--field-id", "Status", "--field-id", "Status"},
 	}
 	for _, argv := range tests {
 		_, err := NewCommandCatalog().Normalize(argv, nil)
@@ -438,6 +470,8 @@ func TestCommandCatalog_BaseSchemaAndWikiConstraints(t *testing.T) {
 	invalid := [][]string{
 		{"base", "+base-create", "--name", "Pipeline", "--table-name", "Tasks"},
 		{"base", "+base-create", "--name", "Pipeline", "--fields", `[{"name":"Title","type":"text"}]`},
+		{"base", "+base-create", "--name", "Pipeline", "--table-name", "Tasks", "--fields", `[{"name":"Title","type":"text"},{"name":"Title","type":"number"}]`},
+		{"base", "+table-create", "--base-token", "bascnABCDEFG123", "--name", "Tasks", "--fields", `[{"name":"Title","type":"text"},{"name":"Title","type":"number"}]`},
 		{"base", "+field-create", "--base-token", "bascnABCDEFG123", "--table-id", "Tasks", "--json", `[]`},
 		{"base", "+field-update", "--base-token", "bascnABCDEFG123", "--table-id", "Tasks", "--field-id", "Status", "--json", `{"name":"Status","type":"text"}`, "--yes"},
 		{"wiki", "+space-create"},
@@ -502,4 +536,21 @@ func batchCreatePayload(rows int) string {
 		panic(err)
 	}
 	return string(encoded)
+}
+
+func argvBytes(argv []string) int {
+	total := 0
+	for _, arg := range argv {
+		total += len(arg)
+	}
+	return total
+}
+
+func exactLengthJSONObject(length int) string {
+	const prefix = `{"padding":"`
+	const suffix = `"}`
+	if length < len(prefix)+len(suffix) {
+		panic("requested JSON length is too small")
+	}
+	return prefix + strings.Repeat("x", length-len(prefix)-len(suffix)) + suffix
 }

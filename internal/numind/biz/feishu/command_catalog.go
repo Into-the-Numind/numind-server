@@ -207,6 +207,17 @@ func (c *CommandCatalog) Normalize(argv []string, stdinJSON []byte) (*Normalized
 		// catalog exposes only its stable argument taxonomy to callers.
 		return nil, invalidf("normalized argv exceeds controlled runner limits")
 	}
+	if spec.requiresCLIYes {
+		// Reserve the exact post-confirmation argv now. Task 7 must append this
+		// literal at the end in this order (and may revalidate before execution),
+		// while the pre-confirmation command returned below remains free of --yes.
+		confirmedArgv := make([]string, 0, len(normalizedArgv)+1)
+		confirmedArgv = append(confirmedArgv, normalizedArgv...)
+		confirmedArgv = append(confirmedArgv, "--yes")
+		if err := validateControlledCLIInput(confirmedArgv, nil); err != nil {
+			return nil, invalidf("normalized argv cannot reserve confirmed CLI arguments")
+		}
+	}
 
 	return &NormalizedCommand{
 		Path:                  spec.path,
@@ -685,6 +696,9 @@ func validateRecordList(p *parsedFlags) (RiskLevel, error) {
 	}
 	if len(p.values["field-id"]) > CommandCatalogMaxProjectedFields {
 		return "", invalidf("too many projected fields")
+	}
+	if err := ensureUnique("field-id", p.values["field-id"]); err != nil {
+		return "", err
 	}
 	if p.has("sort-json") {
 		if err := validateSortJSON(p.one("sort-json")); err != nil {
@@ -1187,12 +1201,17 @@ func validateFieldArray(raw string) error {
 	if err := json.Unmarshal([]byte(raw), &fields); err != nil || len(fields) == 0 || len(fields) > CommandCatalogMaxBaseFields {
 		return invalidf("fields must be a bounded non-empty JSON array")
 	}
+	names := make([]string, 0, len(fields))
 	for _, field := range fields {
 		name, nameOK := field["name"].(string)
 		typeName, typeOK := field["type"].(string)
 		if !nameOK || !typeOK || name == "" || typeName == "" {
 			return invalidf("each field requires name and type")
 		}
+		names = append(names, name)
+	}
+	if err := ensureUnique("field names", names); err != nil {
+		return err
 	}
 	return nil
 }
