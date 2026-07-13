@@ -308,6 +308,38 @@ func TestErrorClassifier_MissingScopeEvidenceMustBeExactAndCatalogOwned(t *testi
 	}
 }
 
+func TestErrorClassifier_ReturnedDuplicateScopesFailClosed(t *testing.T) {
+	t.Parallel()
+
+	classifier := NewErrorClassifier()
+	t.Run("observed docs tuple cannot prove a duplicated response", func(t *testing.T) {
+		t.Parallel()
+		envelope := loadErrorClassifierFixture(t, "real-docs-create-missing-scope.json")
+		envelope.Error.MissingScopes = append(envelope.Error.MissingScopes, "docx:document:create")
+
+		got := classifier.ClassifyEnvelope(envelope, docsCreateScopes(), RiskWrite, true)
+		require.Equal(t, RecoveryNone, got.Recovery)
+		require.Empty(t, got.MissingScopes)
+		require.False(t, got.ProvenNoSideEffect)
+		require.Equal(t, model.FeishuOperationUnknown, got.TerminalState)
+		require.Equal(t, PublicCodeUnknownResult, got.PublicCode)
+	})
+
+	t.Run("duplicate returned scope is invalid for any recovery", func(t *testing.T) {
+		t.Parallel()
+		envelope := loadErrorClassifierFixture(t, "fixed-base-app-scope-missing.json")
+		envelope.Error.MissingScopes = append(envelope.Error.MissingScopes, "base:app:create")
+
+		got := classifier.ClassifyEnvelope(envelope, baseCreateScopes(), RiskRead, true)
+		require.Equal(t, RecoveryNone, got.Recovery)
+		require.Empty(t, got.MissingScopes)
+		require.False(t, got.ProvenNoSideEffect)
+		require.False(t, got.RetryRead)
+		require.Equal(t, model.FeishuOperationFailed, got.TerminalState)
+		require.Equal(t, PublicCodeFailed, got.PublicCode)
+	})
+}
+
 func TestErrorClassifier_MissingScopesMustBelongToCurrentCommand(t *testing.T) {
 	t.Parallel()
 

@@ -339,6 +339,9 @@ func (c *ErrorClassifier) normalizeMissingScopes(scopes []string, expectedScopes
 		if _, expected := expectedScopes[scope]; !expected {
 			return nil, false
 		}
+		if _, duplicate := unique[scope]; duplicate {
+			return nil, false
+		}
 		unique[scope] = struct{}{}
 	}
 	normalized := make([]string, 0, len(unique))

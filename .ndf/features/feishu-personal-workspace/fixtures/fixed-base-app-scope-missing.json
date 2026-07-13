@@ -4,11 +4,10 @@
   "subtype": "missing_scope",
   "code": 99991672,
   "missing_scopes": [
-    "base:table:update",
     "base:app:create",
-    "base:table:read",
     "base:table:create",
     "base:table:delete",
+    "base:table:read",
     "base:table:update"
   ],
   "permission_violations": [{"level": "app"}],
