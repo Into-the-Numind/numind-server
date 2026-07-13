@@ -67,11 +67,6 @@ type ReceiptVerifier interface {
 // A non-nil action means recovery is still waiting; nil means it completed.
 type RecoveryStarter interface {
 	StartRecovery(ctx context.Context, req RecoveryRequest) (*OperationAction, error)
-}
-
-// RecoveryActivator releases a blocking authorization worker only after the
-// operation waiting state is durable, or aborts it when persistence fails.
-type RecoveryActivator interface {
 	Activate(ctx context.Context, sessionID string) error
 	Abort(sessionID string)
 }
@@ -1037,16 +1032,12 @@ func (s *FeishuOperationService) startRecoveryAndWait(
 		summary.ExpiresAt = &expires
 	}
 	if err := s.transitionWaiting(ctx, operation, leaseOwner, waitingState, summary, publicCode); err != nil {
-		if activator, ok := s.recovery.(RecoveryActivator); ok {
-			activator.Abort(action.SessionID)
-		}
+		s.recovery.Abort(action.SessionID)
 		return nil, err
 	}
-	if activator, ok := s.recovery.(RecoveryActivator); ok {
-		if err := activator.Activate(ctx, action.SessionID); err != nil {
-			activator.Abort(action.SessionID)
-			return nil, ErrOperationUnavailable
-		}
+	if err := s.recovery.Activate(ctx, action.SessionID); err != nil {
+		s.recovery.Abort(action.SessionID)
+		return nil, ErrOperationUnavailable
 	}
 	result := baseOperationResult(operation)
 	result.State = waitingState

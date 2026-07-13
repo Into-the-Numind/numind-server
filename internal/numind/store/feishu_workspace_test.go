@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -897,6 +898,64 @@ func TestFeishuWorkspaceStore_SessionLeaseAndTenantGeneration(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, renewed, "terminal sessions cannot be renewed")
 	require.ErrorIs(t, s.UpdateSessionState(ctx, 7, 3, "session-1", "worker-c", model.FeishuAuthSessionSuperseded, updateNow, nil), gorm.ErrRecordNotFound)
+}
+
+func TestFeishuWorkspaceStore_AuthSessionMutationsLockAccountBeforeSessionCAS(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 3)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	require.NoError(t, s.CreateSession(ctx, newFeishuSession("session-lock-order", 7, 3)))
+
+	var mu sync.Mutex
+	events := make([]string, 0, 4)
+	record := func(kind string, tx *gorm.DB) {
+		table := tx.Statement.Table
+		if table == "" && tx.Statement.Schema != nil {
+			table = tx.Statement.Schema.Table
+		}
+		mu.Lock()
+		events = append(events, kind+":"+table)
+		mu.Unlock()
+	}
+	require.NoError(t, s.db.Callback().Query().Before("gorm:query").Register(
+		"test:feishu_auth_account_lock_order", func(tx *gorm.DB) { record("query", tx) },
+	))
+	require.NoError(t, s.db.Callback().Update().Before("gorm:update").Register(
+		"test:feishu_auth_session_cas_order", func(tx *gorm.DB) { record("update", tx) },
+	))
+	resetEvents := func() {
+		mu.Lock()
+		events = events[:0]
+		mu.Unlock()
+	}
+	requireAccountThenSession := func(label string) {
+		mu.Lock()
+		got := append([]string(nil), events...)
+		mu.Unlock()
+		require.NotEmpty(t, got, label)
+		require.Equal(t, "query:user_third_party_account", got[0], label)
+		require.Contains(t, got, "update:feishu_auth_session", label)
+	}
+
+	claimed, err := s.ClaimSession(ctx, 7, 3, "session-lock-order", "token-lock-order", now, now.Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, claimed)
+	requireAccountThenSession("claim")
+
+	resetEvents()
+	renewed, err := s.RenewSession(ctx, 7, 3, "session-lock-order", "token-lock-order", now.Add(time.Second), now.Add(2*time.Minute))
+	require.NoError(t, err)
+	require.True(t, renewed)
+	requireAccountThenSession("renew")
+
+	resetEvents()
+	completedAt := now.Add(2 * time.Second)
+	require.NoError(t, s.UpdateSessionState(ctx, 7, 3, "session-lock-order", "token-lock-order",
+		model.FeishuAuthSessionCompleted, completedAt, &completedAt))
+	requireAccountThenSession("terminal update")
+	// Task 21 owns real-MySQL interleaving coverage; this SQLite callback test
+	// protects the explicit account -> session mutation order in every dialect.
 }
 
 func TestFeishuWorkspaceStore_FinalizeSessionCompletedAtomicallyFencesAccountAndPendingState(t *testing.T) {

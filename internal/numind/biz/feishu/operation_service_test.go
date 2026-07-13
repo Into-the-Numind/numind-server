@@ -55,6 +55,39 @@ type operationRecoveryFake struct {
 	onActivate func(string) error
 }
 
+type reentrantOperationResumeDispatcher struct {
+	mu      sync.Mutex
+	service *FeishuOperationService
+	active  bool
+	calls   int
+}
+
+func (d *reentrantOperationResumeDispatcher) DispatchResume(ctx context.Context, userID uint, operationID string) error {
+	d.mu.Lock()
+	d.calls++
+	if d.active {
+		d.mu.Unlock()
+		return errors.New("recursive operation resume")
+	}
+	d.active = true
+	service := d.service
+	d.mu.Unlock()
+	if service == nil {
+		return errors.New("operation service unavailable")
+	}
+	_, err := service.Resume(ctx, userID, operationID)
+	d.mu.Lock()
+	d.active = false
+	d.mu.Unlock()
+	return err
+}
+
+func (d *reentrantOperationResumeDispatcher) callCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.calls
+}
+
 func (f *operationRecoveryFake) StartRecovery(_ context.Context, req RecoveryRequest) (*OperationAction, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -969,6 +1002,47 @@ func TestOperationService_AppReadyContinuesToExactUserAuthorization(t *testing.T
 	require.Len(t, calls, 1)
 	require.Equal(t, RecoveryReauth, calls[0].Kind)
 	require.Equal(t, []string{"docx:document:readonly"}, calls[0].Scopes)
+}
+
+func TestOperationService_CompletedAuthRecoveryContinuesWithoutRecursiveDispatcher(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionAppReady, 1, "cli_app_ready")
+	waiting, err := h.service.Execute(h.ctx, operationDocsFetchRequest(132, "tc-no-recursive-dispatch"))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingUserAuth, waiting.State)
+
+	operationID := waiting.OperationID
+	require.NoError(t, h.db.Create(&model.FeishuAuthSession{
+		ID: "00000000-0000-4000-8000-555555555555", UserID: 7, Generation: 1,
+		OperationID: &operationID, Phase: model.FeishuAuthPhaseUserAuth,
+		RequestedScopesJSON: []byte(`["docx:document:readonly"]`),
+		State:               model.FeishuAuthSessionCompleted, ExpiresAt: h.service.now().Add(10 * time.Minute),
+	}).Error)
+	require.NoError(t, h.db.Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ?", 7, ProviderLark).
+		Updates(map[string]any{"connection_state": model.FeishuConnectionConnected, "connected": true}).Error)
+
+	dispatcher := &reentrantOperationResumeDispatcher{}
+	authService, err := NewAuthSessionService(AuthSessionServiceDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Sessions: h.dataStore.FeishuWorkspace(),
+		Vault: h.vault, CLI: &authSessionCLIFake{}, Dispatcher: dispatcher, Owner: "recursive-integration",
+		Now: h.service.now, LeaseDuration: time.Minute, SessionDuration: 10 * time.Minute,
+		HeartbeatInterval: 30 * time.Second, StartTimeout: time.Second,
+	})
+	require.NoError(t, err)
+	service, err := NewFeishuOperationService(OperationServiceDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: h.dataStore.FeishuWorkspace(),
+		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: authService,
+		Confirmation: h.confirmation, Vault: h.vault, Runner: h.runner, Cipher: h.cipher,
+		Now: h.service.now, LeaseDuration: time.Minute,
+	})
+	require.NoError(t, err)
+	dispatcher.service = service
+
+	result, err := service.Resume(h.ctx, 7, waiting.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, result.State)
+	require.Zero(t, dispatcher.callCount(), "StartRecovery must not re-enter Operation.Resume for completed user auth")
 }
 
 func TestOperationService_ConcurrentSameKeyRunsOnce(t *testing.T) {

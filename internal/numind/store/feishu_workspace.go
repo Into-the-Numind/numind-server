@@ -267,30 +267,34 @@ func (s *feishuWorkspaceStore) ClaimSession(ctx context.Context, userID uint, ge
 	if owner == "" || !leaseUntil.After(now) {
 		return false, nil
 	}
-	activeGeneration := s.db.WithContext(ctx).
-		Model(&model.UserThirdPartyAccount{}).
-		Select("1").
-		Where("user_third_party_account.user_id = feishu_auth_session.user_id").
-		Where("user_third_party_account.provider = ?", "lark").
-		Where("user_third_party_account.generation = feishu_auth_session.generation")
-	result := s.db.WithContext(ctx).
-		Model(&model.FeishuAuthSession{}).
-		Where("id = ? AND user_id = ? AND generation = ?", id, userID, generation).
-		Where("state = ?", model.FeishuAuthSessionPending).
-		Where("EXISTS (?)", activeGeneration).
-		Where(
-			"((lease_owner IS NULL OR lease_owner = '') AND lease_until IS NULL) OR (lease_until <= ? AND lease_owner <> ?)",
-			now,
-			owner,
-		).
-		Updates(map[string]any{
-			"lease_owner": owner,
-			"lease_until": leaseUntil,
-		})
-	if result.Error != nil {
-		return false, fmt.Errorf("claim feishu auth session: %w", result.Error)
+	claimed := false
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		active, err := lockFeishuAuthAccount(tx, userID, generation)
+		if err != nil {
+			return err
+		}
+		if !active {
+			return nil
+		}
+		result := tx.Model(&model.FeishuAuthSession{}).
+			Where("id = ? AND user_id = ? AND generation = ?", id, userID, generation).
+			Where("state = ?", model.FeishuAuthSessionPending).
+			Where(
+				"((COALESCE(lease_owner, '') = '') AND lease_until IS NULL) OR (lease_until <= ? AND COALESCE(lease_owner, '') <> ?)",
+				now,
+				owner,
+			).
+			Updates(map[string]any{"lease_owner": owner, "lease_until": leaseUntil})
+		if result.Error != nil {
+			return result.Error
+		}
+		claimed = result.RowsAffected == 1
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("claim feishu auth session: %w", err)
 	}
-	return result.RowsAffected == 1, nil
+	return claimed, nil
 }
 
 // RenewSession extends an unexpired pending lease only for its exact token and
@@ -299,53 +303,82 @@ func (s *feishuWorkspaceStore) RenewSession(ctx context.Context, userID uint, ge
 	if owner == "" || !leaseUntil.After(now) {
 		return false, nil
 	}
-	activeGeneration := s.db.WithContext(ctx).
-		Model(&model.UserThirdPartyAccount{}).
-		Select("1").
-		Where("user_third_party_account.user_id = feishu_auth_session.user_id").
-		Where("user_third_party_account.provider = ?", "lark").
-		Where("user_third_party_account.generation = feishu_auth_session.generation")
-	result := s.db.WithContext(ctx).
-		Model(&model.FeishuAuthSession{}).
-		Where("id = ? AND user_id = ? AND generation = ?", id, userID, generation).
-		Where("state = ?", model.FeishuAuthSessionPending).
-		Where("lease_owner = ? AND lease_until > ?", owner, now).
-		Where("EXISTS (?)", activeGeneration).
-		Update("lease_until", leaseUntil)
-	if result.Error != nil {
-		return false, fmt.Errorf("renew feishu auth session: %w", result.Error)
+	renewed := false
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		active, err := lockFeishuAuthAccount(tx, userID, generation)
+		if err != nil {
+			return err
+		}
+		if !active {
+			return nil
+		}
+		result := tx.Model(&model.FeishuAuthSession{}).
+			Where("id = ? AND user_id = ? AND generation = ?", id, userID, generation).
+			Where("state = ?", model.FeishuAuthSessionPending).
+			Where("lease_owner = ? AND lease_until > ?", owner, now).
+			Update("lease_until", leaseUntil)
+		if result.Error != nil {
+			return result.Error
+		}
+		renewed = result.RowsAffected == 1
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("renew feishu auth session: %w", err)
 	}
-	return result.RowsAffected == 1, nil
+	return renewed, nil
 }
 
 // UpdateSessionState terminally changes a pending session only for its current
 // unexpired lease token and active generation.
 func (s *feishuWorkspaceStore) UpdateSessionState(ctx context.Context, userID uint, generation uint64, id, owner, state string, now time.Time, completedAt *time.Time) error {
-	activeGeneration := s.db.WithContext(ctx).
-		Model(&model.UserThirdPartyAccount{}).
-		Select("1").
-		Where("user_third_party_account.user_id = feishu_auth_session.user_id").
-		Where("user_third_party_account.provider = ?", "lark").
-		Where("user_third_party_account.generation = feishu_auth_session.generation")
-	result := s.db.WithContext(ctx).
-		Model(&model.FeishuAuthSession{}).
-		Where("id = ? AND user_id = ? AND generation = ?", id, userID, generation).
-		Where("state = ?", model.FeishuAuthSessionPending).
-		Where("lease_owner = ? AND lease_until > ?", owner, now).
-		Where("EXISTS (?)", activeGeneration).
-		Updates(map[string]any{
-			"state":        state,
-			"completed_at": completedAt,
-			"lease_owner":  "",
-			"lease_until":  nil,
-		})
-	if result.Error != nil {
-		return fmt.Errorf("update feishu auth session state: %w", result.Error)
-	}
-	if result.RowsAffected != 1 {
-		return gorm.ErrRecordNotFound
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		active, err := lockFeishuAuthAccount(tx, userID, generation)
+		if err != nil {
+			return err
+		}
+		if !active {
+			return gorm.ErrRecordNotFound
+		}
+		result := tx.Model(&model.FeishuAuthSession{}).
+			Where("id = ? AND user_id = ? AND generation = ?", id, userID, generation).
+			Where("state = ?", model.FeishuAuthSessionPending).
+			Where("lease_owner = ? AND lease_until > ?", owner, now).
+			Updates(map[string]any{
+				"state":        state,
+				"completed_at": completedAt,
+				"lease_owner":  "",
+				"lease_until":  nil,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return gorm.ErrRecordNotFound
+		}
+		return fmt.Errorf("update feishu auth session state: %w", err)
 	}
 	return nil
+}
+
+func lockFeishuAuthAccount(tx *gorm.DB, userID uint, generation uint64) (bool, error) {
+	var account model.UserThirdPartyAccount
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("user_id = ? AND provider = ?", userID, "lark").
+		Take(&account).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return account.Generation == generation, nil
 }
 
 // FinalizeSessionCompleted atomically updates the generation-fenced account and

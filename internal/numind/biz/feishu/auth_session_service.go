@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -371,11 +372,6 @@ func (s *AuthSessionService) start(
 		return nil, ErrAuthSessionUnavailable
 	}
 	if session.State == model.FeishuAuthSessionCompleted {
-		if session.OperationID != nil && *session.OperationID != "" {
-			if err := s.dispatchResumeDetached(ctx, session.UserID, *session.OperationID); err != nil {
-				return nil, err
-			}
-		}
 		return nil, nil
 	}
 
@@ -572,11 +568,6 @@ func (s *AuthSessionService) recoverExpired(
 			return nil, ErrAuthSessionUnavailable
 		}
 		if fresh.State == model.FeishuAuthSessionCompleted {
-			if fresh.OperationID != nil && *fresh.OperationID != "" {
-				if dispatchErr := s.dispatchResumeDetached(ctx, fresh.UserID, *fresh.OperationID); dispatchErr != nil {
-					return nil, dispatchErr
-				}
-			}
 			return nil, nil
 		}
 		if fresh.State != model.FeishuAuthSessionPending {
@@ -598,7 +589,7 @@ func (s *AuthSessionService) recoverExpired(
 		return nil, ErrAuthSessionUnavailable
 	}
 	if authorized {
-		if err := s.completeOwned(ctx, session, leaseToken, now, true); err != nil {
+		if err := s.completeOwned(ctx, session, leaseToken, now, true, false); err != nil {
 			return nil, err
 		}
 		return nil, nil
@@ -689,6 +680,7 @@ func (s *AuthSessionService) runWorker(
 	defer s.removeActivation(session.ID, activation)
 	heartbeatDone := make(chan struct{})
 	go s.runHeartbeat(ctx, session, leaseToken, cancel, heartbeatDone)
+	var activationPassed atomic.Bool
 
 	runErr := s.vault.WithHome(ctx, session.UserID, session.Generation, func(home string) (bool, error) {
 		err := s.cli.RunBlocking(ctx, home, append([]string(nil), argv...), func(rawURL string) error {
@@ -700,10 +692,19 @@ func (s *AuthSessionService) runWorker(
 			case urlReady <- struct{}{}:
 			default:
 			}
-			return s.waitForActivation(ctx, activation)
+			if err := s.waitForActivation(ctx, activation); err != nil {
+				return err
+			}
+			if activation != nil {
+				activationPassed.Store(true)
+			}
+			return nil
 		})
 		return err == nil, err
 	})
+	if runErr == nil && activation != nil && !activationPassed.Load() {
+		runErr = ErrAuthSessionUnavailable
+	}
 	cancel()
 	<-heartbeatDone
 	if runErr != nil {
@@ -715,7 +716,7 @@ func (s *AuthSessionService) runWorker(
 		s.urls.remove(authSessionRegistryKey(session))
 		return ErrAuthSessionUnavailable
 	}
-	if err := s.completeOwned(ctx, session, leaseToken, s.now().UTC(), false); err != nil {
+	if err := s.completeOwned(ctx, session, leaseToken, s.now().UTC(), false, session.OperationID != nil); err != nil {
 		return err
 	}
 	return nil
@@ -754,6 +755,7 @@ func (s *AuthSessionService) completeOwned(
 	leaseToken string,
 	now time.Time,
 	authorizedRecovery bool,
+	dispatch bool,
 ) error {
 	completedAt := now.UTC()
 	state := model.FeishuConnectionConnected
@@ -771,11 +773,11 @@ func (s *AuthSessionService) completeOwned(
 		return ErrAuthSessionUnavailable
 	}
 	s.urls.remove(authSessionRegistryKey(session))
-	if session.OperationID != nil && *session.OperationID != "" {
+	if dispatch && session.OperationID != nil && *session.OperationID != "" {
 		return s.dispatchResumeDetached(ctx, session.UserID, *session.OperationID)
 	}
 	if session.Phase == model.FeishuAuthPhaseCreateApp && !authorizedRecovery {
-		chainCtx, chainCancel := authSessionDetachedContext(ctx)
+		chainCtx, chainCancel := authSessionManualChainContext(ctx, s.startTimeout)
 		_, chainErr := s.start(chainCtx, RecoveryRequest{
 			UserID: session.UserID, Generation: session.Generation, Kind: RecoveryReauth,
 			Scopes: []string{"offline_access"},
@@ -786,6 +788,21 @@ func (s *AuthSessionService) completeOwned(
 		}
 	}
 	return nil
+}
+
+func authSessionManualChainContext(ctx context.Context, startTimeout time.Duration) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if startTimeout <= 0 {
+		startTimeout = authSessionDefaultStartTimeout
+	}
+	// The chain is bounded by the CLI hard ceiling, while preserving the full
+	// configured URL-start window plus detached finalization overhead.
+	if startTimeout > authSessionCLIHardCeiling {
+		startTimeout = authSessionCLIHardCeiling
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), startTimeout+authSessionFinalizeTimeout)
 }
 
 func authSessionDetachedContext(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -833,7 +850,16 @@ func (s *AuthSessionService) CompleteAppApproval(
 	sessionID string,
 ) error {
 	session, err := s.sessions.GetSessionForUser(ctx, userID, generation, sessionID)
-	if err != nil || session.Phase != model.FeishuAuthPhaseAppScope || session.State != model.FeishuAuthSessionPending {
+	if err != nil || session.Phase != model.FeishuAuthPhaseAppScope {
+		return ErrAuthSessionUnavailable
+	}
+	if session.State == model.FeishuAuthSessionCompleted {
+		if session.OperationID == nil || *session.OperationID == "" {
+			return ErrAuthSessionUnavailable
+		}
+		return s.dispatchResumeDetached(ctx, session.UserID, *session.OperationID)
+	}
+	if session.State != model.FeishuAuthSessionPending {
 		return ErrAuthSessionUnavailable
 	}
 	now := s.now().UTC()
@@ -845,7 +871,7 @@ func (s *AuthSessionService) CompleteAppApproval(
 	if err != nil || !claimed {
 		return ErrAuthSessionUnavailable
 	}
-	return s.completeOwned(ctx, session, leaseToken, now, true)
+	return s.completeOwned(ctx, session, leaseToken, now, true, true)
 }
 
 type authSessionStreamState struct {
@@ -854,6 +880,7 @@ type authSessionStreamState struct {
 	once   sync.Once
 	mu     sync.Mutex
 	err    error
+	seen   bool
 }
 
 func (s *authSessionStreamState) observeLine(line []byte) {
@@ -867,7 +894,11 @@ func (s *authSessionStreamState) observeLine(line []byte) {
 	s.once.Do(func() {
 		if err := s.onURL(candidate); err != nil {
 			s.fail(err)
+			return
 		}
+		s.mu.Lock()
+		s.seen = true
+		s.mu.Unlock()
 	})
 }
 
@@ -887,6 +918,12 @@ func (s *authSessionStreamState) snapshotError() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.err
+}
+
+func (s *authSessionStreamState) observedURL() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.seen
 }
 
 func authSessionURLFromLine(line string) string {
@@ -1084,6 +1121,9 @@ func (r *ControlledLarkCLIRunner) RunBlocking(
 	}
 	if waitErr != nil {
 		return fmt.Errorf("feishu: auth lark-cli process failed: %w", waitErr)
+	}
+	if !streamState.observedURL() {
+		return fmt.Errorf("feishu: auth lark-cli URL missing: %w", errControlledCLIInvalidJSON)
 	}
 	if err := decodeAuthSessionFinalEnvelope(stdout.bytes); err != nil {
 		return fmt.Errorf("feishu: auth lark-cli final envelope rejected: %w", err)
