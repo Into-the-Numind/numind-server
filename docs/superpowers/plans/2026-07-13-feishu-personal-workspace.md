@@ -202,7 +202,7 @@ git commit -m "feat(feishu): add personal workspace persistence"
 
 **Files:** `internal/pkg/crypto/aesgcm.go`、`aesgcm_test.go`、`internal/numind/biz/feishu/vault.go`、`vault_test.go`。
 
-- [ ] **Step 1: 写加密与 vault 红测**
+- [x] **Step 1: 写加密与 vault 红测**
 
 ```go
 func TestCipherAADRejectsDifferentUser(t *testing.T) {
@@ -225,34 +225,34 @@ func TestEncryptedCLIHomeVault_RuntimePermissionsAndCleanup(t *testing.T) {
 }
 ```
 
-另测：tar 中 `../escape`、绝对路径、symlink 一律拒绝；其他用户/generation 无法解密；CAS 冲突不覆盖新快照；callback 出错也清理临时目录；文件解封后统一收紧到 `0600`。
+另测：tar 中 `../escape`、绝对路径、symlink 一律拒绝；其他用户/generation 无法解密；CAS 冲突不覆盖新快照；callback 出错也清理临时目录；文件解封后统一收紧到 `0600`；v1 快照可由同时配置 v1/v2 且 current=v2 的 keyring 读取，changed=true 时用 v2 重封，缺失历史 key 时 fail closed。
 
-- [ ] **Step 2: 运行红测**
+- [x] **Step 2: 运行红测**
 
 Run: `go test ./internal/pkg/crypto ./internal/numind/biz/feishu -run 'CipherAAD|EncryptedCLIHomeVault' -count=1`
 
 Expected: FAIL，缺少 AAD API 和 vault。
 
-- [ ] **Step 3: 实现 AAD API**
+- [x] **Step 3: 实现 AAD API**
 
 ```go
 func (c *Cipher) EncryptWithAAD(plaintext, aad []byte) ([]byte, error)
 func (c *Cipher) DecryptWithAAD(ciphertext, aad []byte) ([]byte, error)
 ```
 
-旧 `Encrypt`/`Decrypt` 调用新方法并传 `nil`，保证其他业务零回归。Vault AAD 精确编码为 `lark|<userID>|<generation>|<keyVersion>`，checksum 使用密文 SHA-256 hex。
+旧 `Encrypt`/`Decrypt` 调用新方法并传 `nil`，保证其他业务零回归。Vault AAD 精确编码为 `lark|<userID>|<generation>|<keyVersion>`，checksum 使用密文 SHA-256 hex。Vault keyring 按快照版本选择历史 Cipher 解密，始终用 current key/version 加密；key version 只允许 1–32 字节稳定 ASCII 标识，构造后 keyring map 冻结。
 
-- [ ] **Step 4: 实现安全打包和 WithHome**
+- [x] **Step 4: 实现安全打包和 WithHome**
 
-`WithHome` 固定算法：读取当前连接 generation → 取 vault → 校验 checksum → AAD 解密 → 新建随机 temp HOME → chmod 0700 → 安全解包并将普通文件 chmod 0600 → 执行 callback → 仅当 callback 报告 changed 时重新打包、加密并 CAS → defer `os.RemoveAll`。任何解包条目经 `filepath.Clean` 后必须仍在 temp HOME 内，拒绝非普通文件/目录。
+`WithHome` 固定算法：读取当前连接 generation → 取 vault → 校验 checksum → AAD 解密 → 新建随机 temp HOME → chmod 0700 → 安全解包并将普通文件 chmod 0600 → 执行 callback → 仅当 callback 报告 changed 时重新打包、加密并 CAS → defer `os.RemoveAll`。任何解包条目经 `filepath.Clean` 后必须仍在 temp HOME 内，拒绝非普通文件/目录。提供 startup-only 残留清理 API，只删除 runtime base 的直属 `lark-home-*`；Task 12 必须在发布 service/启动 worker 前调用，失败则阻止飞书能力启动。
 
-- [ ] **Step 5: 绿测**
+- [x] **Step 5: 绿测**
 
 Run: `go test ./internal/pkg/crypto ./internal/numind/biz/feishu -run 'Cipher|Vault' -count=1`
 
 Expected: PASS。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/pkg/crypto internal/numind/biz/feishu/vault.go internal/numind/biz/feishu/vault_test.go
@@ -265,7 +265,7 @@ git commit -m "feat(feishu): encrypt per-user cli homes"
 
 - [ ] **Step 1: 写 runner contract 红测**
 
-测试 fake executable 的 argv/env/stdout/stderr，断言：启动先校验版本 `1.0.68`；调用使用 `exec.CommandContext(binary, argv...)`；环境含隔离 HOME、`LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1`；stdout/stderr 分别限长；exit 0 + `ok:false` 仍失败；非 JSON、超限、timeout 失败；中文和空格保持一个 argv 元素。
+测试 fake executable 的 argv/env/stdout/stderr，断言：启动先校验版本 `1.0.68`；调用使用 `exec.CommandContext(binary, argv...)`；环境含隔离 HOME、`LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1`；stdout/stderr 分别限长；exit 0 + `ok:false` 仍失败；非 JSON、超限、timeout 失败；中文和空格保持一个 argv 元素。另验证 timeout/取消不会留下可继续改写 HOME 的子进程；若当前运行模型无法提供独立 UID/sandbox，必须把同 UID 主动 symlink/root-rename 竞态作为明确 P2 带入 Task 23，而不是声称 Vault 已抵御恶意本地进程。
 
 ```go
 func TestControlledLarkCLIRunner_DoesNotUseShell(t *testing.T) {
@@ -558,7 +558,7 @@ git commit -m "feat(feishu): read versioned official lark skills"
 
 - [ ] **Step 1: 写 operation 红测**
 
-覆盖：connected 直接调用真实业务命令且 `AuthStatus` 调用数为 0；none 进入 waiting_connection；同 user+key 并发 20 次只有一次 runner 调用；授权错误保存规范化请求；resume 只读密文原请求；写 timeout → unknown；读 timeout 有界重试；generation 不符取消；成功结果幂等返回。
+覆盖：connected 直接调用真实业务命令且 `AuthStatus` 调用数为 0；none 进入 waiting_connection；同 user+key 并发 20 次只有一次 runner 调用；授权错误保存规范化请求；resume 只读密文原请求；写 timeout → unknown；读 timeout 有界重试；generation 不符取消；成功结果幂等返回。用 barrier 模拟 runner 已开始后 generation bump：旧执行不能提交 succeeded 或写回旧 Vault；写操作按 unknown 交给解绑层收口，且不得再 claim。
 
 ```go
 func TestOperationService_ConnectedHotPathSkipsAuthStatus(t *testing.T) {
@@ -876,7 +876,7 @@ git commit -m "feat(agent): resume original external tool calls"
 
 - [ ] **Step 1: 写 composition 红测**
 
-Feature flag off 返回 nil；版本不符 fail closed；flag on 构造 controlled runner/vault/catalog/classifier/skill reader/operation/auth/resumer；高风险返回 waiting_confirmation；auth worker 自动完成后原 tool result 只回填一次；Agent registry 只暴露两个新工具；生产热路径不构造旧 Client。
+Feature flag off 返回 nil；版本不符 fail closed；flag on 构造 controlled runner/vault/catalog/classifier/skill reader/operation/auth/resumer；高风险返回 waiting_confirmation；auth worker 自动完成后原 tool result 只回填一次；Agent registry 只暴露两个新工具；生产热路径不构造旧 Client。Vault startup cleanup 必须在 service/factory 对外可见及 worker 启动前完成，cleanup 失败时 fail closed。
 
 - [ ] **Step 2: 运行红测**
 
@@ -902,7 +902,7 @@ dispatcher 调 `operation.Resume`；结果 succeeded 时读取 OperationResult �
 
 - [ ] **Step 5: 构造无包循环 bridge**
 
-在 `feishu_adapter.go` 用 closure bridge 装配：先创建引用 `authSvc` 的 `RecoveryStarterFunc`，用 receipt verifier + recovery starter + non-nil confirmation requester 构造 operation；创建 AgentRunResumer 和共用 dispatcher；再构造 AuthSessionService 并注入 dispatcher；最后赋值 authSvc。构造函数返回前全部 bridge 必须完整。
+在 `feishu_adapter.go` 用 closure bridge 装配：先构造 keyring vault 并同步执行 startup cleanup；再创建引用 `authSvc` 的 `RecoveryStarterFunc`，用 receipt verifier + recovery starter + non-nil confirmation requester 构造 operation；创建 AgentRunResumer 和共用 dispatcher；再构造 AuthSessionService 并注入 dispatcher；最后赋值 authSvc。构造函数返回前全部 bridge 必须完整，cleanup/版本验证任一失败都不得发布半初始化 service。
 
 - [ ] **Step 6: 注入 Agent factory**
 
@@ -925,7 +925,7 @@ git commit -m "feat(feishu): compose personal workspace services"
 
 - [ ] **Step 1: 写 HTTP/service 红测**
 
-覆盖 GET status 不生成 URL；manual connect；resume body 只允许 `user_completed/confirmed/cancelled` 且不接受 argv/scopes；refresh 校验归属；跨用户统一 404；HTTP user_completed 与 worker 并发只回填一次；DELETE generation+1、取消等待、删 vault、停止 worker、清能力并说明远端 app 保留。
+覆盖 GET status 不生成 URL；manual connect；resume body 只允许 `user_completed/confirmed/cancelled` 且不接受 argv/scopes；refresh 校验归属；跨用户统一 404；HTTP user_completed 与 worker 并发只回填一次；DELETE generation+1、取消等待、删 vault、停止 worker、清能力并说明远端 app 保留。另用 barrier 覆盖解绑与 executing write 交错：解绑必须等待有效 execution lease 或将结果收口 unknown，不能让旧 generation 成功提交/重领。
 
 ```go
 func TestResumeRejectsCrossUserAsNotFound(t *testing.T) {
@@ -955,7 +955,7 @@ Controller 只解析鉴权 userID/path/body；biz service 推进状态。`user_c
 
 - [ ] **Step 4: 实现安全解绑**
 
-事务先 disconnecting + generation+1；取消旧 generation 等待；执行中写按 unknown；尽力 logout/remove 后删除本地 vault/temp HOME；最终 none/connected false。远端 app 删除不作成功承诺。
+事务先 disconnecting + generation+1；取消旧 generation 等待；执行中写等待租约或按 unknown 收口；停止相应 worker，再尽力 logout/remove、删除本地 vault/temp HOME；最终 none/connected false。锁顺序保持 account → operation/session → vault，旧 generation 不得成功提交或重领。远端 app 删除不作成功承诺。
 
 - [ ] **Step 5: 绿测和 Commit**
 
