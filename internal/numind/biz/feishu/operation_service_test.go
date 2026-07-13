@@ -1463,6 +1463,67 @@ func TestOperationService_UpdateCreatedBeforeCreateButStartedAfterFinishInvalida
 	require.Equal(t, 2, calls, "the unsafe overwrite runner must not start")
 }
 
+func TestOperationService_ClockSkewedResumedUpdateInvalidatesOverwriteProof(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionNone, 1, "")
+	const (
+		existingToken = "doxcnClockSkewExisting123"
+		createdToken  = "doxcnClockSkewCreated123"
+	)
+	h.runner.steps = []operationRunnerStep{
+		{result: operationOKResult(`{"document":{"document_id":"` + createdToken + `","url":"https://acme.feishu.cn/docx/` + createdToken + `"}}`)},
+		{result: operationOKResult(`{"revision_id":2}`)},
+		{result: operationOKResult(`{"revision_id":3}`)},
+	}
+	base := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	slowService := newHarnessOperationServiceWithRuntime(
+		t, h, h.dataStore.FeishuWorkspace(), h.runner,
+		func() time.Time { return base.Add(-2 * time.Hour) }, 0,
+	)
+	fastService := newHarnessOperationServiceWithRuntime(
+		t, h, h.dataStore.FeishuWorkspace(), h.runner,
+		func() time.Time { return base.Add(2 * time.Hour) }, 0,
+	)
+
+	waiting, err := slowService.Execute(h.ctx, operationDocsAppendRequest(7, 351, "tc-skewed-append", existingToken))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingConnection, waiting.State)
+	require.NoError(t, h.db.Model(&model.FeishuOperation{}).
+		Where("id = ?", waiting.OperationID).
+		Update("created_at", base.Add(-3*time.Hour)).Error)
+	require.NoError(t, h.db.Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ?", 7, ProviderLark).
+		Updates(map[string]any{
+			"connection_state": model.FeishuConnectionConnected,
+			"connected":        true,
+			"app_id":           "cli_existing",
+		}).Error)
+
+	created, err := fastService.Execute(h.ctx, operationDocsCreateRequest(7, 351, "tc-skewed-create", "Empty", nil))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, created.State)
+	h.recovery.action = nil
+	resumed, err := slowService.Resume(h.ctx, 7, waiting.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, resumed.State)
+
+	storedWaiting, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, waiting.OperationID)
+	require.NoError(t, err)
+	storedCreated, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, created.OperationID)
+	require.NoError(t, err)
+	require.NotNil(t, storedWaiting.StartedAt)
+	require.NotNil(t, storedCreated.FinishedAt)
+	require.True(t, storedWaiting.CreatedAt.Before(*storedCreated.FinishedAt))
+	require.True(t, storedWaiting.StartedAt.Before(*storedCreated.FinishedAt), "slow service clock must reproduce the timestamp inversion")
+
+	overwrite, err := fastService.Execute(h.ctx, operationDocsOverwriteRequest(7, 351, "tc-skewed-overwrite", createdToken))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingConfirmation, overwrite.State)
+	require.Len(t, h.confirmation.calls, 1)
+	calls, _ := h.runner.snapshot()
+	require.Equal(t, 2, calls, "clock skew must not let the overwrite runner start")
+}
+
 func TestOperationService_CancelledGateWaitLeavesOperationUnclaimed(t *testing.T) {
 	h := newOperationHarness(t)
 	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")

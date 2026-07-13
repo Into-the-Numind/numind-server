@@ -576,13 +576,12 @@ func countProofBlockingDocumentUpdates(
 	source *model.FeishuOperation,
 	consumerOperationID string,
 ) (int64, error) {
-	if db == nil || source == nil || source.FinishedAt == nil {
+	if db == nil || source == nil {
 		return 0, ErrFeishuProofReservationUnavailable
 	}
 	query := db.Model(&model.FeishuOperation{}).
 		Where("user_id = ? AND generation = ? AND agent_run_id = ?", source.UserID, source.Generation, source.AgentRunID).
-		Where("command_path = ?", "docs +update").
-		Where("(created_at >= ? OR started_at >= ?)", *source.FinishedAt, *source.FinishedAt)
+		Where("command_path = ?", "docs +update")
 	if consumerOperationID != "" {
 		query = query.Where("id <> ?", consumerOperationID)
 	}
@@ -594,9 +593,9 @@ func countProofBlockingDocumentUpdates(
 }
 
 // IsOperationProofUsable revalidates the durable proof binding and rejects it
-// when any other document update was created or started on/after the source's
-// execution finish. Callers must hold the account execution gate while checking
-// and acting on this result.
+// when the same run contains any other document update. This conservative rule
+// avoids ordering operations by clocks from different service instances. Callers
+// must hold the account execution gate while checking and acting on this result.
 func (s *feishuWorkspaceStore) IsOperationProofUsable(
 	ctx context.Context,
 	userID uint,

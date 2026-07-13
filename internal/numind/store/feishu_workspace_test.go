@@ -484,41 +484,35 @@ func TestFeishuWorkspaceStore_ProofReservationRejectsIntermediateUpdateInEverySt
 	}
 }
 
-func TestFeishuWorkspaceStore_ProofBoundaryUsesSourceFinishAndUpdateStart(t *testing.T) {
+func TestFeishuWorkspaceStore_ProofRejectsAnyOtherUpdateRegardlessOfTimestamps(t *testing.T) {
 	finishedAt := time.Date(2026, 7, 13, 12, 0, 0, 123000000, time.UTC)
 	testCases := []struct {
 		name      string
 		createdAt time.Time
 		startedAt *time.Time
-		blocks    bool
 	}{
 		{
 			name:      "created before source but started after finish",
 			createdAt: finishedAt.Add(-2 * time.Second),
 			startedAt: timePointer(finishedAt.Add(time.Millisecond)),
-			blocks:    true,
 		},
 		{
 			name:      "started at exact finish millisecond",
 			createdAt: finishedAt.Add(-2 * time.Second),
 			startedAt: timePointer(finishedAt),
-			blocks:    true,
 		},
 		{
 			name:      "nil start created at exact finish millisecond",
 			createdAt: finishedAt,
-			blocks:    true,
 		},
 		{
 			name:      "nil start created after finish",
 			createdAt: finishedAt.Add(time.Millisecond),
-			blocks:    true,
 		},
 		{
 			name:      "created and started before finish",
 			createdAt: finishedAt.Add(-2 * time.Second),
 			startedAt: timePointer(finishedAt.Add(-time.Millisecond)),
-			blocks:    false,
 		},
 	}
 
@@ -550,13 +544,8 @@ func TestFeishuWorkspaceStore_ProofBoundaryUsesSourceFinishAndUpdateStart(t *tes
 					if phase == "reservation" {
 						require.NoError(t, s.db.Create(blocker).Error)
 						stored, err := s.CreateOrGetOperationWithProof(ctx, consumer, source.ID)
-						if testCase.blocks {
-							require.ErrorIs(t, err, ErrFeishuProofReservationUnavailable)
-							require.Nil(t, stored)
-							return
-						}
-						require.NoError(t, err)
-						require.Equal(t, consumer.ID, stored.ID)
+						require.ErrorIs(t, err, ErrFeishuProofReservationUnavailable)
+						require.Nil(t, stored)
 						return
 					}
 
@@ -565,7 +554,7 @@ func TestFeishuWorkspaceStore_ProofBoundaryUsesSourceFinishAndUpdateStart(t *tes
 					require.NoError(t, s.db.Create(blocker).Error)
 					usable, err := s.IsOperationProofUsable(ctx, 7, 1, 705, source.ID, stored.ID)
 					require.NoError(t, err)
-					require.Equal(t, !testCase.blocks, usable)
+					require.False(t, usable)
 				})
 			}
 		})
