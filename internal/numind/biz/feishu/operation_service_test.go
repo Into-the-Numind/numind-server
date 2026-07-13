@@ -200,7 +200,7 @@ func (s *proofQueryBarrierOperationStore) ListSucceededCreatesForRun(
 
 type unboundProofOperationStore struct{ OperationStore }
 
-func (s *unboundProofOperationStore) IsOperationProofBound(
+func (s *unboundProofOperationStore) IsOperationProofUsable(
 	context.Context,
 	uint,
 	uint64,
@@ -209,6 +209,63 @@ func (s *unboundProofOperationStore) IsOperationProofBound(
 	string,
 ) (bool, error) {
 	return false, nil
+}
+
+type gateClaimBarrierOperationStore struct {
+	store.IFeishuWorkspaceStore
+	arrived chan struct{}
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (s *gateClaimBarrierOperationStore) TryClaimExecutionGate(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	owner, operationID string,
+	now, leaseUntil time.Time,
+) (bool, error) {
+	s.once.Do(func() {
+		s.arrived <- struct{}{}
+		<-s.release
+	})
+	return s.IFeishuWorkspaceStore.TryClaimExecutionGate(
+		ctx, userID, generation, owner, operationID, now, leaseUntil,
+	)
+}
+
+type gateAttemptSignalOperationStore struct {
+	store.IFeishuWorkspaceStore
+	attempted chan struct{}
+}
+
+type releaseFailOperationStore struct{ store.IFeishuWorkspaceStore }
+
+func (s *releaseFailOperationStore) ReleaseExecutionGate(
+	context.Context,
+	uint,
+	uint64,
+	string,
+	time.Time,
+) (bool, error) {
+	return false, errors.New("simulated gate release failure")
+}
+
+func (s *gateAttemptSignalOperationStore) TryClaimExecutionGate(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	owner, operationID string,
+	now, leaseUntil time.Time,
+) (bool, error) {
+	claimed, err := s.IFeishuWorkspaceStore.TryClaimExecutionGate(
+		ctx, userID, generation, owner, operationID, now, leaseUntil,
+	)
+	select {
+	case s.attempted <- struct{}{}:
+	default:
+	}
+	return claimed, err
 }
 
 func (s *disappearingProofOperationStore) ListSucceededCreatesForRun(
@@ -301,6 +358,7 @@ func newOperationHarness(t *testing.T) *operationHarness {
 		&model.FeishuAuthSession{},
 		&model.FeishuOperation{},
 		&model.FeishuOperationProofConsumption{},
+		&model.FeishuOperationExecutionGate{},
 	))
 	dataStore := store.NewTestStore(db)
 	receipts := &operationReceiptFake{}
@@ -328,6 +386,18 @@ func newOperationHarness(t *testing.T) *operationHarness {
 		receipts: receipts, recovery: recovery, confirmation: confirmation,
 		runner: runner, vault: vault, cipher: cipher, service: service,
 	}
+}
+
+func newHarnessOperationService(t *testing.T, h *operationHarness, operations OperationStore) *FeishuOperationService {
+	t.Helper()
+	service, err := NewFeishuOperationService(OperationServiceDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: operations,
+		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: h.recovery,
+		Confirmation: h.confirmation, Vault: h.vault, Runner: h.runner, Cipher: h.cipher,
+		Now: h.service.now, LeaseDuration: time.Minute,
+	})
+	require.NoError(t, err)
+	return service
 }
 
 func newOperationTestCipherKeyring(t *testing.T, current string) *OperationCipherKeyring {
@@ -383,6 +453,17 @@ func operationDocsOverwriteRequest(userID uint, runID uint64, toolCallID, docTok
 		IdempotencyKey: fmt.Sprintf("%d:%s", runID, toolCallID),
 		Argv:           []string{"docs", "+update", "--doc", docToken, "--command", "overwrite", "--content", "initial body"},
 		SkillReceipts:  []string{"shared", "wiki", "doc"},
+	}
+}
+
+func operationDocsAppendRequest(userID uint, runID uint64, toolCallID, docToken string) ExecuteRequest {
+	return ExecuteRequest{
+		UserID: userID, AgentRunID: runID, ToolCallID: toolCallID,
+		IdempotencyKey: fmt.Sprintf("%d:%s", runID, toolCallID),
+		Argv: []string{
+			"docs", "+update", "--doc", docToken, "--command", "append", "--content", "later body",
+		},
+		SkillReceipts: []string{"shared", "doc"},
 	}
 }
 
@@ -584,6 +665,9 @@ func TestOperationService_NeverConnectedCreatesPlaceholderWithoutOverwritingExis
 		require.Empty(t, account.AppID)
 		calls, _ := h.runner.snapshot()
 		require.Zero(t, calls)
+		var gateCount int64
+		require.NoError(t, h.db.Model(&model.FeishuOperationExecutionGate{}).Count(&gateCount).Error)
+		require.Zero(t, gateCount, "initial connection recovery must not acquire the CLI gate")
 	})
 
 	t.Run("existing metadata is untouched", func(t *testing.T) {
@@ -603,6 +687,9 @@ func TestOperationService_NeverConnectedCreatesPlaceholderWithoutOverwritingExis
 		stored, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 8, got.OperationID)
 		require.NoError(t, err)
 		require.Contains(t, string(stored.ResultSummaryJSON), PublicCodeReauthRequired)
+		var gateCount int64
+		require.NoError(t, h.db.Model(&model.FeishuOperationExecutionGate{}).Count(&gateCount).Error)
+		require.Zero(t, gateCount, "reauth recovery must not acquire the CLI gate")
 	})
 }
 
@@ -843,6 +930,9 @@ func TestOperationService_HighRiskOnlyCreatesConfirmationWaiting(t *testing.T) {
 	require.Empty(t, stored.ErrorType)
 	require.Empty(t, stored.ErrorSubtype)
 	require.NotContains(t, string(stored.ResultSummaryJSON), "confirmation.example")
+	var gateCount int64
+	require.NoError(t, h.db.Model(&model.FeishuOperationExecutionGate{}).Count(&gateCount).Error)
+	require.Zero(t, gateCount, "ordinary high-risk confirmation must not acquire the CLI gate")
 
 	resumed, err := h.service.Resume(h.ctx, 7, got.OperationID)
 	require.NoError(t, err)
@@ -874,6 +964,9 @@ func TestOperationService_HighRiskOnlyCreatesConfirmationWaiting(t *testing.T) {
 		calls, argv := h.runner.snapshot()
 		require.Zero(t, calls)
 		require.Empty(t, argv)
+		var gateCount int64
+		require.NoError(t, h.db.Model(&model.FeishuOperationExecutionGate{}).Count(&gateCount).Error)
+		require.Zero(t, gateCount)
 	})
 }
 
@@ -1005,6 +1098,269 @@ func TestOperationService_ExecutingIntermediateUpdateInvalidatesCreateProof(t *t
 	require.Equal(t, 1, calls)
 }
 
+func TestOperationService_ProofReservationPausedThenAppendSucceedsForcesConfirmation(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	const token = "doxcnGateRecheck123"
+	h.runner.steps = []operationRunnerStep{
+		{result: operationOKResult(`{"document":{"document_id":"` + token + `","url":"https://acme.feishu.cn/docx/` + token + `"}}`)},
+		{result: operationOKResult(`{"revision_id":2}`)},
+		{result: operationOKResult(`{"revision_id":3}`)},
+	}
+	_, err := h.service.Execute(h.ctx, operationDocsCreateRequest(7, 337, "tc-create", "Empty", nil))
+	require.NoError(t, err)
+
+	arrived := make(chan struct{}, 1)
+	release := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+	overwriteStore := &gateClaimBarrierOperationStore{
+		IFeishuWorkspaceStore: h.dataStore.FeishuWorkspace(), arrived: arrived, release: release,
+	}
+	overwriteService := newHarnessOperationService(t, h, overwriteStore)
+	appendService := newHarnessOperationService(t, h, h.dataStore.FeishuWorkspace())
+	type callResult struct {
+		result *OperationResult
+		err    error
+	}
+	overwriteCh := make(chan callResult, 1)
+	go func() {
+		result, executeErr := overwriteService.Execute(h.ctx, operationDocsOverwriteRequest(7, 337, "tc-overwrite", token))
+		overwriteCh <- callResult{result: result, err: executeErr}
+	}()
+	select {
+	case <-arrived:
+	case <-time.After(time.Second):
+		t.Fatal("overwrite did not pause after proof reservation and before gate claim")
+	}
+	appendResult, err := appendService.Execute(h.ctx, operationDocsAppendRequest(7, 337, "tc-append", token))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, appendResult.State)
+	close(release)
+	released = true
+	overwrite := <-overwriteCh
+	require.NoError(t, overwrite.err)
+	require.Equal(t, model.FeishuOperationWaitingConfirmation, overwrite.result.State)
+	require.Len(t, h.confirmation.calls, 1)
+	calls, _ := h.runner.snapshot()
+	require.Equal(t, 2, calls, "the overwrite runner must not start after proof invalidation")
+}
+
+func TestOperationService_ProofConsumerHoldingGateRunsBeforeLaterAppend(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	const token = "doxcnGateOrder123"
+	overwriteStarted := make(chan struct{}, 1)
+	overwriteRelease := make(chan struct{})
+	appendStarted := make(chan struct{}, 1)
+	h.runner.steps = []operationRunnerStep{
+		{result: operationOKResult(`{"document":{"document_id":"` + token + `","url":"https://acme.feishu.cn/docx/` + token + `"}}`)},
+		{result: operationOKResult(`{"revision_id":2}`), started: overwriteStarted, release: overwriteRelease},
+		{result: operationOKResult(`{"revision_id":3}`), started: appendStarted},
+	}
+	_, err := h.service.Execute(h.ctx, operationDocsCreateRequest(7, 338, "tc-create", "Empty", nil))
+	require.NoError(t, err)
+	overwriteService := newHarnessOperationService(t, h, h.dataStore.FeishuWorkspace())
+	appendService := newHarnessOperationService(t, h, h.dataStore.FeishuWorkspace())
+	type callResult struct {
+		result *OperationResult
+		err    error
+	}
+	overwriteCh := make(chan callResult, 1)
+	appendCh := make(chan callResult, 1)
+	go func() {
+		result, executeErr := overwriteService.Execute(h.ctx, operationDocsOverwriteRequest(7, 338, "tc-overwrite", token))
+		overwriteCh <- callResult{result: result, err: executeErr}
+	}()
+	select {
+	case <-overwriteStarted:
+	case <-time.After(time.Second):
+		t.Fatal("proof overwrite runner did not start")
+	}
+	go func() {
+		result, executeErr := appendService.Execute(h.ctx, operationDocsAppendRequest(7, 338, "tc-append", token))
+		appendCh <- callResult{result: result, err: executeErr}
+	}()
+	ranBeforeRelease := false
+	select {
+	case <-appendStarted:
+		ranBeforeRelease = true
+	case <-time.After(150 * time.Millisecond):
+	}
+	close(overwriteRelease)
+	overwrite := <-overwriteCh
+	appendResult := <-appendCh
+	require.False(t, ranBeforeRelease, "append runner must wait for the proof consumer's gate")
+	require.NoError(t, overwrite.err)
+	require.Equal(t, model.FeishuOperationSucceeded, overwrite.result.State)
+	require.NoError(t, appendResult.err)
+	require.Equal(t, model.FeishuOperationSucceeded, appendResult.result.State)
+}
+
+func TestOperationService_ConnectionWaitThenAppendInvalidatesProofBeforeResume(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	const token = "doxcnResumeGateRecheck123"
+	h.runner.steps = []operationRunnerStep{
+		{result: operationOKResult(`{"document":{"document_id":"` + token + `","url":"https://acme.feishu.cn/docx/` + token + `"}}`)},
+		{result: operationOKResult(`{"revision_id":2}`)},
+		{result: operationOKResult(`{"revision_id":3}`)},
+	}
+	_, err := h.service.Execute(h.ctx, operationDocsCreateRequest(7, 339, "tc-create", "Empty", nil))
+	require.NoError(t, err)
+	require.NoError(t, h.db.Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ?", 7, ProviderLark).
+		Updates(map[string]any{"connection_state": model.FeishuConnectionNone, "connected": false}).Error)
+	waiting, err := h.service.Execute(h.ctx, operationDocsOverwriteRequest(7, 339, "tc-overwrite", token))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingConnection, waiting.State)
+	require.NoError(t, h.db.Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ?", 7, ProviderLark).
+		Updates(map[string]any{"connection_state": model.FeishuConnectionConnected, "connected": true}).Error)
+	appendResult, err := h.service.Execute(h.ctx, operationDocsAppendRequest(7, 339, "tc-append", token))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, appendResult.State)
+	h.recovery.action = nil
+
+	resumed, err := h.service.Resume(h.ctx, 7, waiting.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingConfirmation, resumed.State)
+	require.Len(t, h.confirmation.calls, 1)
+	calls, _ := h.runner.snapshot()
+	require.Equal(t, 2, calls)
+}
+
+func TestOperationService_CancelledGateWaitLeavesOperationUnclaimed(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	now := h.service.now().UTC()
+	claimed, err := h.dataStore.FeishuWorkspace().TryClaimExecutionGate(
+		h.ctx, 7, 1, "crashed-owner", "crashed-operation", now, now.Add(2*time.Minute),
+	)
+	require.NoError(t, err)
+	require.True(t, claimed)
+	attempted := make(chan struct{}, 1)
+	waitStore := &gateAttemptSignalOperationStore{
+		IFeishuWorkspaceStore: h.dataStore.FeishuWorkspace(), attempted: attempted,
+	}
+	service := newHarnessOperationService(t, h, waitStore)
+	ctx, cancel := context.WithCancel(h.ctx)
+	type callResult struct {
+		result *OperationResult
+		err    error
+	}
+	resultCh := make(chan callResult, 1)
+	go func() {
+		result, executeErr := service.Execute(ctx, operationDocsFetchRequest(340, "tc-gate-cancel"))
+		resultCh <- callResult{result: result, err: executeErr}
+	}()
+	select {
+	case <-attempted:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("operation did not attempt the occupied execution gate")
+	}
+	cancel()
+	got := <-resultCh
+	require.Nil(t, got.result)
+	require.ErrorIs(t, got.err, context.Canceled)
+	var operation model.FeishuOperation
+	require.NoError(t, h.db.Where("user_id = ? AND idempotency_key = ?", 7, "340:tc-gate-cancel").Take(&operation).Error)
+	require.Equal(t, model.FeishuOperationNotStarted, operation.State)
+	require.Zero(t, operation.AttemptCount)
+	require.Empty(t, operation.LeaseOwner)
+	require.Nil(t, operation.LeaseUntil)
+	var gate model.FeishuOperationExecutionGate
+	require.NoError(t, h.db.First(&gate, "user_id = ?", 7).Error)
+	require.Equal(t, "crashed-owner", gate.LeaseOwner)
+	require.Equal(t, "crashed-operation", gate.OperationID)
+	calls, _ := h.runner.snapshot()
+	require.Zero(t, calls)
+}
+
+func TestOperationService_GenerationBumpWhileWaitingRejectsOldOperationBeforeClaim(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	arrived := make(chan struct{}, 1)
+	release := make(chan struct{})
+	barrierStore := &gateClaimBarrierOperationStore{
+		IFeishuWorkspaceStore: h.dataStore.FeishuWorkspace(), arrived: arrived, release: release,
+	}
+	service := newHarnessOperationService(t, h, barrierStore)
+	type callResult struct {
+		result *OperationResult
+		err    error
+	}
+	resultCh := make(chan callResult, 1)
+	go func() {
+		result, executeErr := service.Execute(h.ctx, operationDocsFetchRequest(342, "tc-generation-gate"))
+		resultCh <- callResult{result: result, err: executeErr}
+	}()
+	select {
+	case <-arrived:
+	case <-time.After(time.Second):
+		t.Fatal("operation did not reach execution gate")
+	}
+	require.NoError(t, h.db.Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ?", 7, ProviderLark).
+		Update("generation", 2).Error)
+	close(release)
+	got := <-resultCh
+	require.Nil(t, got.result)
+	require.ErrorIs(t, got.err, ErrOperationUnavailable)
+	var operation model.FeishuOperation
+	require.NoError(t, h.db.Where("user_id = ? AND idempotency_key = ?", 7, "342:tc-generation-gate").Take(&operation).Error)
+	require.Equal(t, model.FeishuOperationNotStarted, operation.State)
+	require.Empty(t, operation.LeaseOwner)
+	require.Nil(t, operation.LeaseUntil)
+	var gateCount int64
+	require.NoError(t, h.db.Model(&model.FeishuOperationExecutionGate{}).Count(&gateCount).Error)
+	require.Zero(t, gateCount)
+	calls, _ := h.runner.snapshot()
+	require.Zero(t, calls)
+}
+
+func TestOperationService_ReleaseFailureKeepsTerminalResultAndExpiresSafely(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	service := newHarnessOperationService(t, h, &releaseFailOperationStore{
+		IFeishuWorkspaceStore: h.dataStore.FeishuWorkspace(),
+	})
+
+	result, err := service.Execute(h.ctx, operationDocsFetchRequest(341, "tc-release-failure"))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, result.State)
+	stored, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, result.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, stored.State)
+	require.Empty(t, stored.LeaseOwner)
+	require.Nil(t, stored.LeaseUntil)
+	var gate model.FeishuOperationExecutionGate
+	require.NoError(t, h.db.First(&gate, "user_id = ?", 7).Error)
+	require.NotEmpty(t, gate.LeaseOwner, "failed release leaves only the bounded gate lease")
+
+	crashRecoveryNow := h.service.now().UTC().Add(operationExecutionGateLeaseDuration + time.Second)
+	claimed, err := h.dataStore.FeishuWorkspace().TryClaimExecutionGate(
+		h.ctx, 7, 1, "recovery-owner", "recovery-operation",
+		crashRecoveryNow, crashRecoveryNow.Add(operationExecutionGateLeaseDuration),
+	)
+	require.NoError(t, err)
+	require.True(t, claimed)
+}
+
+func TestOperationService_ExecutionGateLeaseCoversMaximumReadRuntime(t *testing.T) {
+	require.GreaterOrEqual(
+		t,
+		operationExecutionGateLeaseDuration,
+		2*ControlledLarkCLITimeout+operationExecutionGateOverhead,
+	)
+	require.Greater(t, operationExecutionGateWaitTimeout, operationExecutionGateLeaseDuration)
+}
+
 func TestOperationService_ConcurrentDistinctOverwritesAtomicallyConsumeOneProof(t *testing.T) {
 	h := newOperationHarness(t)
 	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
@@ -1060,10 +1416,10 @@ func TestOperationService_ConcurrentDistinctOverwritesAtomicallyConsumeOneProof(
 		require.NotNil(t, result)
 		states = append(states, result.State)
 	}
-	require.ElementsMatch(t, []string{model.FeishuOperationSucceeded, model.FeishuOperationWaitingConfirmation}, states)
-	require.Len(t, h.confirmation.calls, 1)
+	require.ElementsMatch(t, []string{model.FeishuOperationWaitingConfirmation, model.FeishuOperationWaitingConfirmation}, states)
+	require.Len(t, h.confirmation.calls, 2)
 	calls, _ := h.runner.snapshot()
-	require.Equal(t, 2, calls)
+	require.Equal(t, 1, calls, "competing overwrite rows invalidate the proof before either runner starts")
 }
 
 func TestOperationService_ConcurrentSameIdempotencyReusesOneProofConsumer(t *testing.T) {
@@ -1115,7 +1471,7 @@ func TestOperationService_ConcurrentSameIdempotencyReusesOneProofConsumer(t *tes
 	}
 	calls, _ := h.runner.snapshot()
 	require.Equal(t, 2, calls)
-	bound, err := h.dataStore.FeishuWorkspace().IsOperationProofBound(h.ctx, 7, 1, 333, source.OperationID, consumerID)
+	bound, err := h.dataStore.FeishuWorkspace().IsOperationProofUsable(h.ctx, 7, 1, 333, source.OperationID, consumerID)
 	require.NoError(t, err)
 	require.True(t, bound)
 }
@@ -1145,7 +1501,7 @@ func TestOperationService_ResumeCannotTrustUnboundEncryptedProof(t *testing.T) {
 	waiting, err := service.Execute(h.ctx, operationDocsOverwriteRequest(7, 332, "tc-overwrite", token))
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationWaitingConnection, waiting.State)
-	bound, err := h.dataStore.FeishuWorkspace().IsOperationProofBound(
+	bound, err := h.dataStore.FeishuWorkspace().IsOperationProofUsable(
 		h.ctx, 7, 1, 332, created.OperationID, waiting.OperationID,
 	)
 	require.NoError(t, err)
@@ -1177,7 +1533,7 @@ func TestOperationService_FailedProofConsumerDoesNotReleaseProof(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationFailed, failed.State)
 
-	bound, err := h.dataStore.FeishuWorkspace().IsOperationProofBound(
+	bound, err := h.dataStore.FeishuWorkspace().IsOperationProofUsable(
 		h.ctx, 7, 1, 334, created.OperationID, failed.OperationID,
 	)
 	require.NoError(t, err)

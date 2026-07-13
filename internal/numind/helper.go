@@ -445,6 +445,7 @@ func autoMigrate(db *gorm.DB) error {
 			&model.FeishuAuthSession{},
 			&model.FeishuOperation{},
 			&model.FeishuOperationProofConsumption{},
+			&model.FeishuOperationExecutionGate{},
 		); err != nil {
 			return fmt.Errorf("failed to migrate feishu workspace tables: %w", err)
 		}

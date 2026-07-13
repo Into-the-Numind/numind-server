@@ -32,6 +32,12 @@ const (
 	operationMaxReceiptCount      = 4
 	operationDefaultLeaseDuration = 90 * time.Second
 	operationFinalizeTimeout      = 5 * time.Second
+	// The execution gate covers at most two 30-second read invocations plus
+	// vault and terminal-transition overhead. Expiry is the crash fallback.
+	operationExecutionGateLeaseDuration = 120 * time.Second
+	operationExecutionGateWaitTimeout   = 125 * time.Second
+	operationExecutionGatePollInterval  = 100 * time.Millisecond
+	operationExecutionGateOverhead      = 30 * time.Second
 )
 
 var (
@@ -77,7 +83,9 @@ type OperationAccountStore interface {
 type OperationStore interface {
 	CreateOrGetOperation(ctx context.Context, operation *model.FeishuOperation) (*model.FeishuOperation, error)
 	CreateOrGetOperationWithProof(ctx context.Context, operation *model.FeishuOperation, sourceOperationID string) (*model.FeishuOperation, error)
-	IsOperationProofBound(ctx context.Context, userID uint, generation uint64, agentRunID uint64, sourceOperationID, consumerOperationID string) (bool, error)
+	TryClaimExecutionGate(ctx context.Context, userID uint, generation uint64, owner, operationID string, now, leaseUntil time.Time) (bool, error)
+	ReleaseExecutionGate(ctx context.Context, userID uint, generation uint64, owner string, now time.Time) (bool, error)
+	IsOperationProofUsable(ctx context.Context, userID uint, generation uint64, agentRunID uint64, sourceOperationID, consumerOperationID string) (bool, error)
 	ListSucceededCreatesForRun(ctx context.Context, userID uint, generation uint64, agentRunID uint64) ([]model.FeishuOperation, error)
 	GetOperationForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuOperation, error)
 	ClaimOperation(ctx context.Context, userID uint, generation uint64, id, owner string, expectedStates []string, now, leaseUntil time.Time) (bool, error)
@@ -481,6 +489,27 @@ func (s *FeishuOperationService) reclaimExpiredExecution(
 		return s.resultFromOperation(operation)
 	}
 	owner := uuid.NewString()
+	gateHeld := false
+	if account.ConnectionState == model.FeishuConnectionConnected && persisted.Risk == RiskRead {
+		if err := s.waitForExecutionGate(ctx, operation, owner); err != nil {
+			return nil, err
+		}
+		gateHeld = true
+		defer func() {
+			if gateHeld {
+				s.releaseExecutionGateDetached(ctx, operation, owner)
+			}
+		}()
+		currentAccount, err := s.accounts.Get(ctx, operation.UserID, ProviderLark)
+		if err != nil || !validOperationAccount(currentAccount, operation.UserID) || currentAccount.Generation != operation.Generation {
+			return nil, ErrOperationUnavailable
+		}
+		account = currentAccount
+		if account.ConnectionState != model.FeishuConnectionConnected {
+			s.releaseExecutionGateDetached(ctx, operation, owner)
+			gateHeld = false
+		}
+	}
 	claimed, err := s.operations.ClaimOperation(
 		ctx,
 		operation.UserID,
@@ -516,7 +545,7 @@ func (s *FeishuOperationService) reclaimExpiredExecution(
 	}
 	operation.AttemptCount++
 	operation.StartedAt = &now
-	return s.executeClaimed(ctx, account, operation, owner, persisted, "")
+	return s.executeClaimed(ctx, account, operation, owner, persisted, "", false)
 }
 
 func (s *FeishuOperationService) loadOrCreateAccount(ctx context.Context, userID uint) (*model.UserThirdPartyAccount, error) {
@@ -545,6 +574,37 @@ func (s *FeishuOperationService) claimAndExecute(
 		return s.resultFromOperation(operation)
 	}
 	owner := uuid.NewString()
+	gateHeld := false
+	proofUsable := false
+	if operationRequiresExecutionGate(account, persisted) {
+		if err := s.waitForExecutionGate(ctx, operation, owner); err != nil {
+			return nil, err
+		}
+		gateHeld = true
+		defer func() {
+			if gateHeld {
+				s.releaseExecutionGateDetached(ctx, operation, owner)
+			}
+		}()
+		currentAccount, err := s.accounts.Get(ctx, operation.UserID, ProviderLark)
+		if err != nil || !validOperationAccount(currentAccount, operation.UserID) || currentAccount.Generation != operation.Generation {
+			return nil, ErrOperationUnavailable
+		}
+		account = currentAccount
+		if account.ConnectionState != model.FeishuConnectionConnected {
+			s.releaseExecutionGateDetached(ctx, operation, owner)
+			gateHeld = false
+		} else if persisted.SameRunEmptyCreateProof {
+			proofUsable, _ = s.operations.IsOperationProofUsable(
+				ctx,
+				operation.UserID,
+				operation.Generation,
+				operation.AgentRunID,
+				persisted.CreateProofOperationID,
+				operation.ID,
+			)
+		}
+	}
 	now := s.now().UTC()
 	claimed, err := s.operations.ClaimOperation(
 		ctx, operation.UserID, operation.Generation, operation.ID, owner,
@@ -566,7 +626,82 @@ func (s *FeishuOperationService) claimAndExecute(
 	operation.AttemptCount++
 	operation.LeaseOwner = owner
 	operation.StartedAt = &now
-	return s.executeClaimed(ctx, account, operation, owner, persisted, priorRecoverySignature)
+	return s.executeClaimed(ctx, account, operation, owner, persisted, priorRecoverySignature, proofUsable)
+}
+
+func operationRequiresExecutionGate(account *model.UserThirdPartyAccount, persisted persistedOperationRequest) bool {
+	if account == nil || account.ConnectionState != model.FeishuConnectionConnected {
+		return false
+	}
+	return persisted.Risk != RiskHigh || persisted.SameRunEmptyCreateProof
+}
+
+func (s *FeishuOperationService) waitForExecutionGate(
+	ctx context.Context,
+	operation *model.FeishuOperation,
+	owner string,
+) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, operationExecutionGateWaitTimeout)
+	defer cancel()
+	for {
+		now := s.now().UTC()
+		claimed, err := s.operations.TryClaimExecutionGate(
+			waitCtx,
+			operation.UserID,
+			operation.Generation,
+			owner,
+			operation.ID,
+			now,
+			now.Add(operationExecutionGateLeaseDuration),
+		)
+		if err != nil {
+			if waitCtx.Err() != nil {
+				return waitCtx.Err()
+			}
+			return ErrOperationUnavailable
+		}
+		if claimed {
+			return nil
+		}
+		currentAccount, err := s.accounts.Get(waitCtx, operation.UserID, ProviderLark)
+		if err != nil {
+			if waitCtx.Err() != nil {
+				return waitCtx.Err()
+			}
+			return ErrOperationUnavailable
+		}
+		if !validOperationAccount(currentAccount, operation.UserID) || currentAccount.Generation != operation.Generation {
+			return ErrOperationUnavailable
+		}
+		timer := time.NewTimer(operationExecutionGatePollInterval)
+		select {
+		case <-waitCtx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return waitCtx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (s *FeishuOperationService) releaseExecutionGateDetached(
+	ctx context.Context,
+	operation *model.FeishuOperation,
+	owner string,
+) {
+	finalizeCtx, cancel := operationFinalizeContext(ctx)
+	defer cancel()
+	_, _ = s.operations.ReleaseExecutionGate(
+		finalizeCtx,
+		operation.UserID,
+		operation.Generation,
+		owner,
+		s.now().UTC(),
+	)
 }
 
 func (s *FeishuOperationService) executeClaimed(
@@ -576,6 +711,7 @@ func (s *FeishuOperationService) executeClaimed(
 	leaseOwner string,
 	persisted persistedOperationRequest,
 	priorRecoverySignature string,
+	proofUsable bool,
 ) (*OperationResult, error) {
 	if account.ConnectionState != model.FeishuConnectionConnected {
 		kind := RecoveryCreateApp
@@ -589,18 +725,7 @@ func (s *FeishuOperationService) executeClaimed(
 		return s.startRecoveryAndWait(ctx, operation, leaseOwner, persisted, kind, persisted.Scopes, waitingState, priorRecoverySignature, publicCode)
 	}
 
-	proofBound := false
-	if persisted.SameRunEmptyCreateProof {
-		proofBound, _ = s.operations.IsOperationProofBound(
-			ctx,
-			operation.UserID,
-			operation.Generation,
-			operation.AgentRunID,
-			persisted.CreateProofOperationID,
-			operation.ID,
-		)
-	}
-	if persisted.Risk == RiskHigh && !proofBound {
+	if persisted.Risk == RiskHigh && !proofUsable {
 		action, err := s.confirmation.RequestConfirmation(ctx, operation.ID, ConfirmationSummary{
 			CommandPath: persisted.CommandPath, Domain: persisted.Domain, Action: persisted.Action,
 			Risk: persisted.Risk, RequiresCLIYes: persisted.RequiresCLIYes,

@@ -36,6 +36,7 @@ func newFeishuWorkspaceTestStore(t *testing.T) *feishuWorkspaceStore {
 		&model.FeishuAuthSession{},
 		&model.FeishuOperation{},
 		&model.FeishuOperationProofConsumption{},
+		&model.FeishuOperationExecutionGate{},
 	))
 
 	return newFeishuWorkspaceStore(db)
@@ -138,6 +139,24 @@ func TestFeishuOperationProofConsumptionMigrationHasForwardAndRollback(t *testin
 	require.Contains(t, rollback, "DROP TABLE IF EXISTS `feishu_operation_proof_consumption`")
 }
 
+func TestFeishuOperationExecutionGateMigrationHasForwardAndRollback(t *testing.T) {
+	forward := readFeishuWorkspaceMigration(t, "20260713_220000_feishu_operation_execution_gate.sql")
+	rollback := readFeishuWorkspaceMigration(t, "20260713_220000_feishu_operation_execution_gate_rollback.sql")
+
+	for _, fragment := range []string{
+		"CREATE TABLE `feishu_operation_execution_gate`",
+		"`user_id` BIGINT UNSIGNED NOT NULL",
+		"`generation` BIGINT UNSIGNED NOT NULL",
+		"`lease_owner` VARCHAR(128) NOT NULL",
+		"`operation_id` CHAR(36) NOT NULL",
+		"`lease_until` DATETIME(3) NULL",
+		"PRIMARY KEY (`user_id`)",
+	} {
+		require.Contains(t, forward, fragment)
+	}
+	require.Contains(t, rollback, "DROP TABLE IF EXISTS `feishu_operation_execution_gate`")
+}
+
 func TestFeishuWorkspaceModels_MySQLSchemaContract(t *testing.T) {
 	requireGormTagContains(t, reflect.TypeOf(model.UserThirdPartyAccount{}), "UserID", "type:bigint unsigned")
 	requireGormTagContains(t, reflect.TypeOf(model.FeishuCLIVault{}), "UserID", "type:bigint unsigned", "primaryKey", "autoIncrement:false")
@@ -146,6 +165,7 @@ func TestFeishuWorkspaceModels_MySQLSchemaContract(t *testing.T) {
 	requireGormTagContains(t, reflect.TypeOf(model.FeishuOperation{}), "AttemptCount", "type:int unsigned")
 	requireGormTagContains(t, reflect.TypeOf(model.FeishuOperationProofConsumption{}), "SourceOperationID", "primaryKey", "type:char(36)")
 	requireGormTagContains(t, reflect.TypeOf(model.FeishuOperationProofConsumption{}), "ConsumerOperationID", "uniqueIndex:uniq_feishu_proof_consumer")
+	requireGormTagContains(t, reflect.TypeOf(model.FeishuOperationExecutionGate{}), "UserID", "primaryKey", "autoIncrement:false", "type:bigint unsigned")
 
 	for _, item := range []struct {
 		modelType reflect.Type
@@ -155,6 +175,7 @@ func TestFeishuWorkspaceModels_MySQLSchemaContract(t *testing.T) {
 		{reflect.TypeOf(model.FeishuAuthSession{}), []string{"ExpiresAt", "CreatedAt", "UpdatedAt"}},
 		{reflect.TypeOf(model.FeishuOperation{}), []string{"CreatedAt", "UpdatedAt"}},
 		{reflect.TypeOf(model.FeishuOperationProofConsumption{}), []string{"CreatedAt"}},
+		{reflect.TypeOf(model.FeishuOperationExecutionGate{}), []string{"UpdatedAt"}},
 	} {
 		for _, field := range item.fields {
 			requireGormTagContains(t, item.modelType, field, "not null")
@@ -260,12 +281,13 @@ func TestFeishuWorkspaceStore_ProofReservationIsAtomicSingleUseAndIdempotent(t *
 
 	first := newFeishuOperation("proof-consumer-first", 7, 1, "proof-consumer-key")
 	first.AgentRunID = 700
+	first.CommandPath = "docs +update"
 	storedFirst, err := s.CreateOrGetOperationWithProof(ctx, first, storedSource.ID)
 	require.NoError(t, err)
 	require.Equal(t, first.ID, storedFirst.ID)
-	bound, err := s.IsOperationProofBound(ctx, 7, 1, 700, storedSource.ID, storedFirst.ID)
+	usable, err := s.IsOperationProofUsable(ctx, 7, 1, 700, storedSource.ID, storedFirst.ID)
 	require.NoError(t, err)
-	require.True(t, bound)
+	require.True(t, usable, "the proof consumer itself is excluded from intermediate writes")
 
 	retry := newFeishuOperation("proof-consumer-retry", 7, 1, "proof-consumer-key")
 	retry.AgentRunID = 700
@@ -285,6 +307,16 @@ func TestFeishuWorkspaceStore_ProofReservationIsAtomicSingleUseAndIdempotent(t *
 	var consumptionCount int64
 	require.NoError(t, s.db.Table("feishu_operation_proof_consumption").Count(&consumptionCount).Error)
 	require.EqualValues(t, 1, consumptionCount)
+
+	intermediate := newFeishuOperation("proof-intermediate", 7, 1, "proof-intermediate-key")
+	intermediate.AgentRunID = 700
+	intermediate.CommandPath = "docs +update"
+	intermediate.State = model.FeishuOperationExecuting
+	intermediate.CreatedAt = storedSource.CreatedAt.Add(time.Millisecond)
+	require.NoError(t, s.db.Create(intermediate).Error)
+	usable, err = s.IsOperationProofUsable(ctx, 7, 1, 700, storedSource.ID, storedFirst.ID)
+	require.NoError(t, err)
+	require.False(t, usable)
 }
 
 func TestFeishuWorkspaceStore_ProofReservationRejectsIneligibleSourceWithoutGhostRows(t *testing.T) {
@@ -439,6 +471,48 @@ func TestFeishuWorkspaceStore_ProofReservationRejectsIntermediateUpdateInEverySt
 			require.Zero(t, operationCount)
 		})
 	}
+}
+
+func TestFeishuWorkspaceStore_ExecutionGateClaimExpiryReleaseAndGenerationFence(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 1)
+	now := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+
+	claimed, err := s.TryClaimExecutionGate(ctx, 7, 1, "owner-a", "operation-a", now, now.Add(2*time.Minute))
+	require.NoError(t, err)
+	require.True(t, claimed)
+	claimed, err = s.TryClaimExecutionGate(ctx, 7, 1, "owner-b", "operation-b", now.Add(time.Second), now.Add(2*time.Minute))
+	require.NoError(t, err)
+	require.False(t, claimed)
+	claimed, err = s.TryClaimExecutionGate(ctx, 7, 1, "owner-a", "operation-a", now.Add(2*time.Second), now.Add(2*time.Minute))
+	require.NoError(t, err)
+	require.True(t, claimed, "the same owner may renew its gate")
+	claimed, err = s.TryClaimExecutionGate(ctx, 7, 1, "owner-b", "operation-b", now.Add(3*time.Minute), now.Add(5*time.Minute))
+	require.NoError(t, err)
+	require.True(t, claimed, "an expired gate must be crash-recoverable")
+
+	released, err := s.ReleaseExecutionGate(ctx, 7, 1, "owner-a", now.Add(3*time.Minute))
+	require.NoError(t, err)
+	require.False(t, released, "a stale owner cannot release the current gate")
+	released, err = s.ReleaseExecutionGate(ctx, 7, 1, "owner-b", now.Add(3*time.Minute))
+	require.NoError(t, err)
+	require.True(t, released)
+
+	claimed, err = s.TryClaimExecutionGate(ctx, 7, 1, "owner-old-generation", "operation-old", now.Add(4*time.Minute), now.Add(6*time.Minute))
+	require.NoError(t, err)
+	require.True(t, claimed)
+	require.NoError(t, s.db.Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ?", 7, "lark").Update("generation", 2).Error)
+	claimed, err = s.TryClaimExecutionGate(ctx, 7, 1, "owner-stale", "operation-stale", now.Add(4*time.Minute), now.Add(6*time.Minute))
+	require.NoError(t, err)
+	require.False(t, claimed, "a retired generation cannot claim or renew the gate")
+	claimed, err = s.TryClaimExecutionGate(ctx, 7, 2, "owner-current", "operation-current", now.Add(4*time.Minute), now.Add(6*time.Minute))
+	require.NoError(t, err)
+	require.False(t, claimed, "a current generation cannot overlap an active retired-generation CLI")
+	claimed, err = s.TryClaimExecutionGate(ctx, 7, 2, "owner-current", "operation-current", now.Add(7*time.Minute), now.Add(9*time.Minute))
+	require.NoError(t, err)
+	require.True(t, claimed, "the current generation may recover an expired retired-generation gate")
 }
 
 func TestFeishuWorkspaceStore_VaultRevisionCASAndOwnership(t *testing.T) {

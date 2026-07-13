@@ -31,8 +31,10 @@ type IFeishuWorkspaceStore interface {
 	UpdateSessionState(ctx context.Context, userID uint, generation uint64, id, owner, state string, now time.Time, completedAt *time.Time) error
 	CreateOrGetOperation(ctx context.Context, operation *model.FeishuOperation) (*model.FeishuOperation, error)
 	CreateOrGetOperationWithProof(ctx context.Context, operation *model.FeishuOperation, sourceOperationID string) (*model.FeishuOperation, error)
+	TryClaimExecutionGate(ctx context.Context, userID uint, generation uint64, owner, operationID string, now, leaseUntil time.Time) (bool, error)
+	ReleaseExecutionGate(ctx context.Context, userID uint, generation uint64, owner string, now time.Time) (bool, error)
 	ListSucceededCreatesForRun(ctx context.Context, userID uint, generation uint64, agentRunID uint64) ([]model.FeishuOperation, error)
-	IsOperationProofBound(ctx context.Context, userID uint, generation uint64, agentRunID uint64, sourceOperationID, consumerOperationID string) (bool, error)
+	IsOperationProofUsable(ctx context.Context, userID uint, generation uint64, agentRunID uint64, sourceOperationID, consumerOperationID string) (bool, error)
 	GetOperationForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuOperation, error)
 	ClaimOperation(ctx context.Context, userID uint, generation uint64, id, owner string, expectedStates []string, now, leaseUntil time.Time) (bool, error)
 	TransitionOperation(ctx context.Context, userID uint, generation uint64, id, owner string, from []string, to string, now time.Time, fields map[string]any) error
@@ -273,6 +275,29 @@ func (s *feishuWorkspaceStore) CreateOrGetOperationWithProof(
 			return ErrFeishuProofReservationUnavailable
 		}
 
+		// A retry of the same idempotency key must reuse the already-bound
+		// consumer even though that consumer is itself a later docs update.
+		var existing model.FeishuOperation
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ? AND idempotency_key = ?", operation.UserID, operation.IdempotencyKey).
+			Take(&existing).Error
+		if err == nil {
+			var consumption model.FeishuOperationProofConsumption
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Where("source_operation_id = ? AND consumer_operation_id = ?", source.ID, existing.ID).
+				Take(&consumption).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrFeishuProofReservationUnavailable
+				}
+				return err
+			}
+			stored = &existing
+			return nil
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+
 		var intermediateWrites int64
 		if err := tx.Model(&model.FeishuOperation{}).
 			Where("user_id = ? AND generation = ? AND agent_run_id = ?", operation.UserID, operation.Generation, operation.AgentRunID).
@@ -300,7 +325,7 @@ func (s *feishuWorkspaceStore) CreateOrGetOperationWithProof(
 		}
 
 		var existingConsumption model.FeishuOperationProofConsumption
-		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("source_operation_id = ?", source.ID).
 			Take(&existingConsumption).Error
 		if err == nil {
@@ -328,6 +353,97 @@ func (s *feishuWorkspaceStore) CreateOrGetOperationWithProof(
 	return stored, nil
 }
 
+// TryClaimExecutionGate serializes business CLI invocations account-wide. Its
+// global lock order is account -> execution gate; an active gate from any
+// generation blocks all other owners until release or expiry.
+func (s *feishuWorkspaceStore) TryClaimExecutionGate(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	owner, operationID string,
+	now, leaseUntil time.Time,
+) (bool, error) {
+	if userID == 0 || generation == 0 || owner == "" || operationID == "" || !leaseUntil.After(now) {
+		return false, nil
+	}
+	claimed := false
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var account model.UserThirdPartyAccount
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ? AND provider = ?", userID, "lark").
+			Take(&account).Error; err != nil {
+			return err
+		}
+		if account.Generation != generation {
+			return nil
+		}
+
+		var gate model.FeishuOperationExecutionGate
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ?", userID).
+			Take(&gate).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			gate = model.FeishuOperationExecutionGate{
+				UserID: userID, Generation: generation, LeaseOwner: owner,
+				OperationID: operationID, LeaseUntil: &leaseUntil, UpdatedAt: now,
+			}
+			if err := tx.Create(&gate).Error; err != nil {
+				return err
+			}
+			claimed = true
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
+		active := gate.LeaseOwner != "" && gate.LeaseUntil != nil && gate.LeaseUntil.After(now)
+		sameOwner := gate.Generation == generation && gate.LeaseOwner == owner
+		if active && !sameOwner {
+			return nil
+		}
+		result := tx.Model(&model.FeishuOperationExecutionGate{}).
+			Where("user_id = ?", userID).
+			Updates(map[string]any{
+				"generation": generation, "lease_owner": owner, "operation_id": operationID,
+				"lease_until": leaseUntil, "updated_at": now,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		claimed = result.RowsAffected == 1
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("claim feishu execution gate: %w", err)
+	}
+	return claimed, nil
+}
+
+// ReleaseExecutionGate clears only the caller's current-generation lease. A
+// stale owner cannot release a gate reclaimed after expiry.
+func (s *feishuWorkspaceStore) ReleaseExecutionGate(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	owner string,
+	now time.Time,
+) (bool, error) {
+	if userID == 0 || generation == 0 || owner == "" {
+		return false, nil
+	}
+	result := s.db.WithContext(ctx).
+		Model(&model.FeishuOperationExecutionGate{}).
+		Where("user_id = ? AND generation = ? AND lease_owner = ?", userID, generation, owner).
+		Updates(map[string]any{
+			"lease_owner": "", "operation_id": "", "lease_until": nil, "updated_at": now,
+		})
+	if result.Error != nil {
+		return false, fmt.Errorf("release feishu execution gate: %w", result.Error)
+	}
+	return result.RowsAffected == 1, nil
+}
+
 // ListSucceededCreatesForRun returns a small, deterministic proof-candidate
 // set. Callers must still authenticate and inspect each encrypted request and
 // result; this query alone never proves that an overwrite is safe.
@@ -351,9 +467,9 @@ func (s *feishuWorkspaceStore) ListSucceededCreatesForRun(
 	return operations, nil
 }
 
-// IsOperationProofBound verifies the immutable audit tuple for a source and
+// isOperationProofBound verifies the immutable audit tuple for a source and
 // consumer. It deliberately has no release/delete counterpart.
-func (s *feishuWorkspaceStore) IsOperationProofBound(
+func (s *feishuWorkspaceStore) isOperationProofBound(
 	ctx context.Context,
 	userID uint,
 	generation uint64,
@@ -368,6 +484,45 @@ func (s *feishuWorkspaceStore) IsOperationProofBound(
 		return false, fmt.Errorf("verify feishu proof consumption: %w", err)
 	}
 	return count == 1, nil
+}
+
+// IsOperationProofUsable revalidates the durable proof binding and rejects it
+// when any other document update was created after the source. Callers must
+// hold the account execution gate while checking and acting on this result.
+func (s *feishuWorkspaceStore) IsOperationProofUsable(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	agentRunID uint64,
+	sourceOperationID, consumerOperationID string,
+) (bool, error) {
+	bound, err := s.isOperationProofBound(
+		ctx, userID, generation, agentRunID, sourceOperationID, consumerOperationID,
+	)
+	if err != nil || !bound {
+		return false, err
+	}
+
+	var source model.FeishuOperation
+	if err := s.db.WithContext(ctx).
+		Where("id = ? AND user_id = ? AND generation = ? AND agent_run_id = ?", sourceOperationID, userID, generation, agentRunID).
+		Where("state = ? AND command_path IN ?", model.FeishuOperationSucceeded, []string{"docs +create", "wiki +node-create"}).
+		Take(&source).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("load feishu proof source: %w", err)
+	}
+
+	var intermediateWrites int64
+	if err := s.db.WithContext(ctx).Model(&model.FeishuOperation{}).
+		Where("user_id = ? AND generation = ? AND agent_run_id = ?", userID, generation, agentRunID).
+		Where("command_path = ? AND id <> ?", "docs +update", consumerOperationID).
+		Where("created_at >= ?", source.CreatedAt).
+		Count(&intermediateWrites).Error; err != nil {
+		return false, fmt.Errorf("revalidate feishu proof usage: %w", err)
+	}
+	return intermediateWrites == 0, nil
 }
 
 // GetOperationForUser returns an operation only when ID, tenant, and generation all match.

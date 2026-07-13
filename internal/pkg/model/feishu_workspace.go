@@ -139,3 +139,19 @@ type FeishuOperationProofConsumption struct {
 func (FeishuOperationProofConsumption) TableName() string {
 	return "feishu_operation_proof_consumption"
 }
+
+// FeishuOperationExecutionGate serializes real business CLI invocations for
+// one user's active account generation across every server process.
+type FeishuOperationExecutionGate struct {
+	UserID      uint       `gorm:"type:bigint unsigned;primaryKey;autoIncrement:false" json:"user_id"`
+	Generation  uint64     `gorm:"not null" json:"generation"`
+	LeaseOwner  string     `gorm:"size:128;not null;default:''" json:"-"`
+	OperationID string     `gorm:"type:char(36);not null;default:''" json:"operation_id,omitempty"`
+	LeaseUntil  *time.Time `gorm:"index:idx_feishu_execution_gate_lease" json:"lease_until,omitempty"`
+	UpdatedAt   time.Time  `gorm:"not null;autoUpdateTime" json:"updated_at"`
+}
+
+// TableName returns the Feishu business execution gate table name.
+func (FeishuOperationExecutionGate) TableName() string {
+	return "feishu_operation_execution_gate"
+}
