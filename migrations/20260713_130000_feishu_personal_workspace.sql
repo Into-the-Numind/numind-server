@@ -2,6 +2,7 @@
 -- The feature remains gated by features.feishu_integration.enabled.
 
 ALTER TABLE `user_third_party_account`
+  MODIFY COLUMN `user_id` BIGINT UNSIGNED NOT NULL,
   ADD COLUMN `connection_state` VARCHAR(32) NOT NULL DEFAULT 'none' AFTER `connected_at`,
   ADD COLUMN `lark_cli_version` VARCHAR(32) NULL AFTER `connection_state`,
   ADD COLUMN `granted_scopes_json` JSON NULL AFTER `lark_cli_version`,

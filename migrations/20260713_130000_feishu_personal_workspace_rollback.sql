@@ -16,3 +16,8 @@ ALTER TABLE `user_third_party_account`
   DROP COLUMN `granted_scopes_json`,
   DROP COLUMN `lark_cli_version`,
   DROP COLUMN `connection_state`;
+
+-- Local pre-production rollback only: restoring the legacy INT width is destructive
+-- once any user_id exceeds UINT32. Do not execute this rollback in that case.
+ALTER TABLE `user_third_party_account`
+  MODIFY COLUMN `user_id` INT UNSIGNED NOT NULL;

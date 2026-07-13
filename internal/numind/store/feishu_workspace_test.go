@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -82,6 +85,31 @@ func requireGormTagContains(t *testing.T, modelType reflect.Type, fieldName stri
 	for _, value := range values {
 		require.Contains(t, tag, value, "%s.%s gorm tag", modelType.Name(), fieldName)
 	}
+}
+
+func readFeishuWorkspaceMigration(t *testing.T, filename string) string {
+	t.Helper()
+	_, testFile, _, ok := runtime.Caller(0)
+	require.True(t, ok, "runtime must report the current test file")
+	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(testFile), "..", "..", ".."))
+	contents, err := os.ReadFile(filepath.Join(repoRoot, "migrations", filename))
+	require.NoError(t, err)
+	return string(contents)
+}
+
+func TestFeishuWorkspaceMigration_ExplicitlyMigratesExistingAccountUserID(t *testing.T) {
+	forward := readFeishuWorkspaceMigration(t, "20260713_130000_feishu_personal_workspace.sql")
+	rollback := readFeishuWorkspaceMigration(t, "20260713_130000_feishu_personal_workspace_rollback.sql")
+
+	t.Run("forward to bigint unsigned", func(t *testing.T) {
+		require.Contains(t, forward, "MODIFY COLUMN `user_id` BIGINT UNSIGNED NOT NULL")
+	})
+	t.Run("local rollback to int unsigned", func(t *testing.T) {
+		require.Contains(t, rollback, "MODIFY COLUMN `user_id` INT UNSIGNED NOT NULL")
+	})
+	t.Run("rollback warns about uint32 overflow", func(t *testing.T) {
+		require.Contains(t, rollback, "UINT32")
+	})
 }
 
 func TestFeishuWorkspaceModels_MySQLSchemaContract(t *testing.T) {
