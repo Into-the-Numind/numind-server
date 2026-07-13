@@ -21,7 +21,7 @@
 - 不修改 `config_prod.yaml`，不把密钥、Token、device code、完整授权 URL、App Secret 或测试账号写入代码和测试快照。
 - 旧 `feishu-integration` worktree 只作历史参考，不从它合并代码；本 worktree 中已经存在的飞书代码必须通过测试驱动逐步替换。
 - 首版不注册 `lark_send_message`，不允许 IM、删除、权限管理、任意 `api`、`auth`、`config` 或 shell。
-- 每个任务先红测、再最小实现、再绿测、再 commit。后端每次修改后至少跑相关 `go test`；任务 15 统一跑 `task lint`。前端每次修改后至少跑相关 Vitest；任务 15 统一跑 `npm run lint && npm run type-check`。
+- 每个实现任务先红测、再最小实现、再绿测、再 commit。后端每次修改后至少跑相关 `go test`；Task 23 统一跑 `task lint`。前端每次修改后至少跑相关 Vitest；Task 23 统一跑 `npm run lint && npm run type-check`。
 
 ## 1. 文件结构与职责
 
@@ -36,8 +36,8 @@
 | `internal/numind/store/feishu_workspace_test.go` | store 归属、代际、CAS、lease、幂等事务测试 |
 | `internal/numind/biz/feishu/vault.go` | HOME 打包、AAD 加密、临时解封、权限和清理 |
 | `internal/numind/biz/feishu/vault_test.go` | 跨用户解密失败、路径穿越、权限、CAS、清理测试 |
-| `internal/numind/biz/feishu/runner.go` | 固定版本、无 shell、限时限长、JSON envelope 的 CLI 运行器 |
-| `internal/numind/biz/feishu/runner_test.go` | fake binary contract tests |
+| `internal/numind/biz/feishu/controlled_runner.go` | 固定版本、无 shell、限时限长、JSON envelope 的新 CLI 运行器 |
+| `internal/numind/biz/feishu/controlled_runner_test.go` | fake binary contract tests |
 | `internal/numind/biz/feishu/command_catalog.go` | Docs/Base/Wiki 命令、exact scopes、风险和 argv 规则 |
 | `internal/numind/biz/feishu/command_catalog_test.go` | 允许项与永久拒绝项完整测试 |
 | `internal/numind/biz/feishu/error_classifier.go` | 固定版本结构化错误到恢复动作的 fail-closed 分类 |
@@ -259,16 +259,16 @@ git add internal/pkg/crypto internal/numind/biz/feishu/vault.go internal/numind/
 git commit -m "feat(feishu): encrypt per-user cli homes"
 ```
 
-## Task 3: 固定 lark-cli 1.0.68 与受控 Runner
+## Task 3: 固定 lark-cli 1.0.68 与 ControlledLarkCLIRunner
 
-**Files:** `Dockerfile`、`internal/numind/biz/feishu/runner.go`、`runner_test.go`；替换旧 runner 的调用点但暂不删除旧固定业务工具。
+**Files:** `Dockerfile`、`internal/numind/biz/feishu/controlled_runner.go`、`controlled_runner_test.go`。本任务不修改旧 `provisioner_cli.go`，旧 `LarkCLIRunner` 保留到 Task 20 清理，避免同名类型和中间态编译失败。
 
 - [ ] **Step 1: 写 runner contract 红测**
 
 测试 fake executable 的 argv/env/stdout/stderr，断言：启动先校验版本 `1.0.68`；调用使用 `exec.CommandContext(binary, argv...)`；环境含隔离 HOME、`LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1`；stdout/stderr 分别限长；exit 0 + `ok:false` 仍失败；非 JSON、超限、timeout 失败；中文和空格保持一个 argv 元素。
 
 ```go
-func TestLarkCLIRunner_DoesNotUseShell(t *testing.T) {
+func TestControlledLarkCLIRunner_DoesNotUseShell(t *testing.T) {
 	r := newFakeBinaryRunner(t, `{"ok":true,"data":{"argv":["docs","+create","a; touch /tmp/pwned"]}}`)
 	_, err := r.Run(context.Background(), testHome(t), []string{"docs", "+create", "a; touch /tmp/pwned"}, nil)
 	require.NoError(t, err)
@@ -278,7 +278,7 @@ func TestLarkCLIRunner_DoesNotUseShell(t *testing.T) {
 
 - [ ] **Step 2: 运行红测**
 
-Run: `go test ./internal/numind/biz/feishu -run 'LarkCLIRunner' -count=1`
+Run: `go test ./internal/numind/biz/feishu -run 'ControlledLarkCLIRunner' -count=1`
 
 Expected: FAIL，旧 runner 没有通用受控 Run 和版本 fail-closed。
 
@@ -295,8 +295,8 @@ type CLIEnvelope struct {
 	Error *CLIError `json:"error,omitempty"`
 }
 
-func (r *LarkCLIRunner) VerifyVersion(ctx context.Context) error
-func (r *LarkCLIRunner) Run(ctx context.Context, home string, argv []string, stdinJSON []byte) (*CLIResult, error)
+func (r *ControlledLarkCLIRunner) VerifyVersion(ctx context.Context) error
+func (r *ControlledLarkCLIRunner) Run(ctx context.Context, home string, argv []string, stdinJSON []byte) (*CLIResult, error)
 ```
 
 写命令开始后若 context timeout、进程被杀、输出损坏或无完整 envelope，`CLIResult` 必须保留 `InvocationStarted=true` 供 operation service 判定 unknown。
@@ -314,7 +314,7 @@ ARG LARK_CLI_SHA256=8daaeb11b7cadcc77f07fd9ae7948f6c370e8305337888cb930ac7362a05
 
 - [ ] **Step 5: 绿测和 Dockerfile 检查**
 
-Run: `go test ./internal/numind/biz/feishu -run 'LarkCLIRunner' -count=1`
+Run: `go test ./internal/numind/biz/feishu -run 'ControlledLarkCLIRunner' -count=1`
 
 Expected: PASS。
 
@@ -325,7 +325,7 @@ Expected: version 与 hash 均命中。
 - [ ] **Step 6: Commit**
 
 ```bash
-git add Dockerfile internal/numind/biz/feishu/runner.go internal/numind/biz/feishu/runner_test.go
+git add Dockerfile internal/numind/biz/feishu/controlled_runner.go internal/numind/biz/feishu/controlled_runner_test.go
 git commit -m "feat(feishu): pin and harden lark cli runner"
 ```
 
@@ -505,135 +505,7 @@ git add internal/numind/biz/feishu/error_classifier* .ndf/features/feishu-person
 git commit -m "feat(feishu): classify cli recovery errors"
 ```
 
-## Task 6: FeishuOperationService 幂等执行和精确重放
-
-**Files:** `operation_service.go`、`operation_service_test.go`。
-
-- [ ] **Step 1: 写 operation 红测**
-
-覆盖：本地 connected 直接调用真实业务命令且 `AuthStatus` 调用数为 0；none 直接 waiting_connection；同 user+key 并发 20 次只有一次 runner 调用；授权错误保存规范化请求并等待；resume 读取密文原请求而不是接收新 argv；写 timeout → unknown 且重复 resume 不执行；读 timeout 最多有界重试；generation 不符取消；成功结果幂等返回。
-
-```go
-func TestOperationService_ConnectedHotPathSkipsAuthStatus(t *testing.T) {
-	d := newOperationHarness(t)
-	d.connection.State = model.FeishuConnectionConnected
-	d.runner.Result = okCLIResult(`{"document_id":"doc1"}`)
-	got, err := d.service.Execute(d.ctx, ExecuteRequest{
-		UserID: 7, AgentRunID: 9, ToolCallID: "tc1",
-		IdempotencyKey: "9:tc1", Argv: []string{"docs", "+create", "--title", "报告"},
-		SkillReceipts: d.validReceipts("lark-shared", "lark-doc"),
-	})
-	require.NoError(t, err)
-	require.Equal(t, "succeeded", got.State)
-	require.Zero(t, d.runner.AuthStatusCalls)
-	require.Equal(t, 1, d.runner.BusinessCalls)
-}
-```
-
-- [ ] **Step 2: 运行红测**
-
-Run: `go test ./internal/numind/biz/feishu -run 'OperationService' -count=1`
-
-Expected: FAIL，service 不存在。
-
-- [ ] **Step 3: 实现请求、结果和执行算法**
-
-```go
-type ExecuteRequest struct {
-	UserID uint
-	AgentRunID uint64
-	ToolCallID string
-	IdempotencyKey string
-	Argv []string
-	StdinJSON json.RawMessage
-	SkillReceipts []string
-}
-
-type OperationResult struct {
-	OperationID string `json:"operation_id"`
-	State string `json:"state"`
-	Data json.RawMessage `json:"data,omitempty"`
-	Action *ExternalAction `json:"action,omitempty"`
-}
-```
-
-执行顺序固定为：鉴权 context 的 userID → 验 receipt → catalog Normalize → 加密规范化请求 → CreateOrGetOperation → terminal 则返回旧结果 → claim lease → connection 明确 none 时创建 auth session → connected 时直接 `vault.WithHome` + runner.Run → classifier → 只对 proven-no-side-effect 授权错误进入 waiting → 写入结果或 unknown → release/finish lease。日志只写 operation id、path、domain、risk、state、错误 code，不写 argv/stdin/data。
-
-High-risk command 在 runner 前转 `waiting_confirmation` 并调用现有 Agent 通用确认契约；用户确认后仍从加密 request 恢复，拒绝后转 cancelled。增加清理入口：成功 operation 的 request/result 正文在 Agent 消费后可立即擦除，其他密文最多保留 7 天；审计摘要不含正文、URL 或资源字段值。
-
-- [ ] **Step 4: 实现 Resume**
-
-`Resume(ctx,userID,operationID)` 只能读取已存 request ciphertext，拒绝 body 中 argv/scopes；等待 session 未完成时返回现状；session completed 时 CAS waiting → executing 后重放；terminal 时原样返回摘要。重复点击和 auth worker 自动回调共享同一入口。
-
-- [ ] **Step 5: 绿测和 race**
-
-Run: `go test -race ./internal/numind/biz/feishu -run 'OperationService' -count=1`
-
-Expected: PASS，无 data race，同幂等键 runner 调用一次。
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add internal/numind/biz/feishu/operation_service*
-git commit -m "feat(feishu): execute idempotent personal operations"
-```
-
-## Task 7: AuthSessionService 与确定性连接编排
-
-**Files:** `auth_session_service.go`、`auth_session_service_test.go`、改写 `connect_orchestrator.go` 及测试。
-
-- [ ] **Step 1: 写状态机红测**
-
-覆盖：manual connect 只申请 `offline_access`；业务 operation 只使用 catalog exact scopes；create_app、app_scope、user_auth 三 phase；URL 只存在 worker 内存和返回值，不落 DB；session lease 丢失后 supersede 并生成新链接；auth worker 正常退出自动调用 operation Resume；用户点击完成调用同一 Resume；相同 scopes 连续两次不循环；本租户无管理员步骤可直接跳过；有 `console_url` 时显示 waiting_app_approval。
-
-```go
-func TestAuthSessionService_ManualConnectRequestsOfflineAccessOnly(t *testing.T) {
-	h := newAuthHarness(t)
-	action, err := h.service.ConnectManual(h.ctx, 7)
-	require.NoError(t, err)
-	require.Equal(t, []string{"offline_access"}, h.worker.RequestedScopes)
-	require.Equal(t, "user_auth", action.Phase)
-}
-```
-
-- [ ] **Step 2: 运行红测**
-
-Run: `go test ./internal/numind/biz/feishu -run 'AuthSession|ConnectOrchestrator' -count=1`
-
-Expected: FAIL，旧 orchestrator 仍以 HOME/in-memory session 为真相并请求 broad domains。
-
-- [ ] **Step 3: 实现 DB 状态机和 worker**
-
-`AuthSessionService` 依赖 store、vault、runner、instanceID、clock、operation resumer。Blocking worker 持 DB lease；从 CLI 输出解析原始 URL 后通过内存 registry 通知 caller/UI；DB 仅保存 phase/scopes/state/lease/expires_at。worker 成功后 seal HOME、session completed、调用 `Resume`。进程/实例丢失时 recovery job 将过期 lease session 标 superseded，先用连接恢复专用 `auth status` 检查 vault，再决定完成或新建链接。
-
-- [ ] **Step 4: 删除 broad domain 行为**
-
-删除 `auth login --domain docs,im,base`。内部 auth 命令只能由 orchestrator 生成：
-
-```go
-[]string{"auth", "login", "--json", "--scope", strings.Join(exactScopes, " ")}
-```
-
-Business runner/catalog 永远不能接受 `auth` argv。
-
-- [ ] **Step 5: 绿测**
-
-Run: `go test -race ./internal/numind/biz/feishu -run 'AuthSession|ConnectOrchestrator' -count=1`
-
-Expected: PASS，IM scope/`--domain` 在 production path 不出现。
-
-Run: `rg -n -- '--domain|docs,im,base|im:message' internal/numind/biz/feishu`
-
-Expected: 只允许历史测试说明命中；任何可执行生产代码命中必须删除。
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add internal/numind/biz/feishu/auth_session_service* internal/numind/biz/feishu/connect_orchestrator*
-git commit -m "feat(feishu): orchestrate incremental authorization"
-```
-
-## Task 8: 官方技能读取与签名 receipt
+## Task 6: 官方技能读取与签名 receipt
 
 **Files:** `skill_reader.go`、`skill_reader_test.go`。
 
@@ -663,9 +535,9 @@ Expected: FAIL，reader 不存在。
 
 技能内容从固定 lark-cli 1.0.68 自带 `skills read` 读取，不走用户 HOME、不联网。Cursor 使用 HMAC 签名的 `skill|reference|offset|runID|expiresAt`；单页最大 32 KiB；只有最后一页签发 receipt。Receipt HMAC key 从现有第三方密钥经 domain separation `HMAC(key,"feishu-skill-receipt-v1")` 派生，不新增明文配置。
 
-- [ ] **Step 4: 实现执行前 required receipt**
+- [ ] **Step 4: 提供无反向依赖的 receipt verifier 方法**
 
-Domain 映射固定：Docs 要 `lark-shared+lark-doc`；Base 要 `lark-shared+lark-base`；Wiki 命令要 `lark-shared+lark-wiki`，Wiki 内容经 Docs 操作时还要 `lark-doc`。Operation service 在持久化/执行前完成校验，缺失返回 `skill_required`，不创建副作用 operation。
+`SkillReader` 提供 `VerifyRequired(receipts []string, runID uint64, domain string) error`。Domain 映射固定：Docs 要 `lark-shared+lark-doc`；Base 要 `lark-shared+lark-base`；Wiki 命令要 `lark-shared+lark-wiki`，Wiki 内容经 Docs 操作时还要 `lark-doc`。本任务不修改 `operation_service.go`；Task 7 只通过小接口依赖该方法。
 
 - [ ] **Step 5: 绿测**
 
@@ -680,13 +552,224 @@ git add internal/numind/biz/feishu/skill_reader*
 git commit -m "feat(feishu): read versioned official lark skills"
 ```
 
-## Task 9: Agent 工具与 tool call context
+## Task 7: FeishuOperationService 幂等执行和精确重放
 
-**Files:** `tool_call_ctx.go`、`adapter_full_to_eino.go`、`tool_lark_skill_read.go`、`tool_lark_execute.go`、`factory_platform.go` 和测试。
+**Files:** `operation_service.go`、`operation_service_test.go`。
+
+- [ ] **Step 1: 写 operation 红测**
+
+覆盖：connected 直接调用真实业务命令且 `AuthStatus` 调用数为 0；none 进入 waiting_connection；同 user+key 并发 20 次只有一次 runner 调用；授权错误保存规范化请求；resume 只读密文原请求；写 timeout → unknown；读 timeout 有界重试；generation 不符取消；成功结果幂等返回。
+
+```go
+func TestOperationService_ConnectedHotPathSkipsAuthStatus(t *testing.T) {
+	d := newOperationHarness(t)
+	d.connection.State = model.FeishuConnectionConnected
+	d.runner.Result = okCLIResult(`{"document_id":"doc1"}`)
+	got, err := d.service.Execute(d.ctx, ExecuteRequest{
+		UserID: 7, AgentRunID: 9, ToolCallID: "tc1",
+		IdempotencyKey: "9:tc1", Argv: []string{"docs", "+create", "--title", "报告"},
+		SkillReceipts: d.validReceipts("lark-shared", "lark-doc"),
+	})
+	require.NoError(t, err)
+	require.Equal(t, "succeeded", got.State)
+	require.Zero(t, d.runner.AuthStatusCalls)
+	require.Equal(t, 1, d.runner.BusinessCalls)
+}
+```
+
+- [ ] **Step 2: 运行红测**
+
+Run: `go test ./internal/numind/biz/feishu -run 'OperationService' -count=1`
+
+Expected: FAIL，service 不存在。
+
+- [ ] **Step 3: 定义依赖倒置接口**
+
+```go
+type ReceiptVerifier interface {
+	VerifyRequired(receipts []string, runID uint64, domain string) error
+}
+type RecoveryStarter interface {
+	StartRecovery(ctx context.Context, req RecoveryRequest) (*OperationAction, error)
+}
+type ConfirmationRequester interface {
+	RequestConfirmation(ctx context.Context, operationID string, summary ConfirmationSummary) (*OperationAction, error)
+}
+```
+
+`operation_service.go` 不得 import `biz/agent`。本任务的 tests 为三接口注入 fake；Task 6 的 `SkillReader` 满足 `ReceiptVerifier`，Task 8 的 `AuthSessionService` 满足 `RecoveryStarter`，Task 12 才做生产装配。
+
+- [ ] **Step 4: 实现请求、结果和执行算法**
+
+```go
+type ExecuteRequest struct {
+	UserID uint
+	AgentRunID uint64
+	ToolCallID string
+	IdempotencyKey string
+	Argv []string
+	StdinJSON json.RawMessage
+	SkillReceipts []string
+}
+type OperationResult struct {
+	OperationID string `json:"operation_id"`
+	State string `json:"state"`
+	Data json.RawMessage `json:"data,omitempty"`
+	Action *OperationAction `json:"action,omitempty"`
+	AgentRunID uint64 `json:"-"`
+	ToolCallID string `json:"-"`
+}
+```
+
+执行顺序固定为：验 receipt → catalog Normalize → 加密规范化请求 → CreateOrGetOperation → claim lease → 明确 none 调 `RecoveryStarter` → connected 直接 `vault.WithHome` + controlled runner → classifier → proven-no-side-effect 权限错误调 `RecoveryStarter` → 成功/失败/unknown 收口。High-risk 只调 `ConfirmationRequester` 并返回 `waiting_confirmation`；不直接调用 Agent 包。成功密文在消费后可擦除，其他 operation 密文最多保留 7 天。
+
+- [ ] **Step 5: 实现 Resume**
+
+`Resume(ctx,userID,operationID)` 只能读取已存 request ciphertext；等待 session 未完成时返回现状；完成时 CAS waiting → executing 后重放；terminal 原样返回摘要。重复点击和后台 dispatcher 共用此入口。
+
+- [ ] **Step 6: 绿测和 race**
+
+Run: `go test -race ./internal/numind/biz/feishu -run 'OperationService' -count=1`
+
+Expected: PASS，无 data race，同幂等键 runner 调用一次。
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add internal/numind/biz/feishu/operation_service.go internal/numind/biz/feishu/operation_service_test.go
+git commit -m "feat(feishu): execute idempotent personal operations"
+```
+
+## Task 8: AuthSessionService 与确定性连接编排
+
+**Files:** `auth_session_service.go`、`auth_session_service_test.go`、`connect_orchestrator.go`、`connect_orchestrator_test.go`。
+
+- [ ] **Step 1: 写状态机红测**
+
+覆盖 manual connect 只申请 `offline_access`；业务 operation 只使用 exact scopes；create_app/app_scope/user_auth；URL 不落 DB；lease 丢失 supersede；worker 成功调用 dispatcher；相同 scopes 连续两次停止；有 `console_url` 时 waiting_app_approval。
+
+```go
+func TestAuthSessionService_ManualConnectRequestsOfflineAccessOnly(t *testing.T) {
+	h := newAuthHarness(t)
+	action, err := h.service.ConnectManual(h.ctx, 7)
+	require.NoError(t, err)
+	require.Equal(t, []string{"offline_access"}, h.worker.RequestedScopes)
+	require.Equal(t, "user_auth", action.Phase)
+}
+```
+
+- [ ] **Step 2: 运行红测**
+
+Run: `go test ./internal/numind/biz/feishu -run 'AuthSession|ConnectOrchestrator' -count=1`
+
+Expected: FAIL，新状态机不存在。
+
+- [ ] **Step 3: 定义单向恢复接口并实现 worker**
+
+```go
+type OperationResumeDispatcher interface {
+	DispatchResume(ctx context.Context, userID uint, operationID string) error
+}
+```
+
+`AuthSessionService` 只依赖该接口，不持有具体 `OperationService`。Blocking worker 持 DB lease；从 CLI 输出提取 URL 后只放内存 registry；DB 保存 phase/scopes/state/lease/expiry。成功后 seal HOME、标 session completed、调用 dispatcher。过期 lease 先用 recovery 专用 `auth status` 检查 vault，再完成或 supersede。
+
+- [ ] **Step 4: 新路径只生成 exact scope auth**
+
+```go
+[]string{"auth", "login", "--json", "--scope", strings.Join(exactScopes, " ")}
+```
+
+新 `auth_session_service.go` 和 `connect_orchestrator.go` 不得出现 `--domain`、IM scope。旧 `auth_cli.go` 在 Task 20 前保持未注册状态，避免本任务同时承担清理。
+
+- [ ] **Step 5: 绿测**
+
+Run: `go test -race ./internal/numind/biz/feishu -run 'AuthSession|ConnectOrchestrator' -count=1`
+
+Expected: PASS。
+
+Run: `rg -n -- '--domain|docs,im,base|im:message' internal/numind/biz/feishu/auth_session_service.go internal/numind/biz/feishu/connect_orchestrator.go`
+
+Expected: 零命中。
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add internal/numind/biz/feishu/auth_session_service.go internal/numind/biz/feishu/auth_session_service_test.go internal/numind/biz/feishu/connect_orchestrator.go internal/numind/biz/feishu/connect_orchestrator_test.go
+git commit -m "feat(feishu): orchestrate incremental authorization"
+```
+
+## Task 9: External Action 传输与持久等待契约
+
+**Files:** `internal/pkg/model/agent_run.go`、`internal/numind/store/agent_run.go`、`internal/numind/store/agent_run_external_action_test.go`、`internal/numind/biz/agent/yield_error.go`、`yield_external_action_test.go`、`runner.go`、`runner_stream.go`、`student_query.go`、`stream/events.go` 及各文件对应 external-action tests。
+
+- [ ] **Step 1: 写 transport 红测**
+
+覆盖 external action 产生独立 `external_action` SSE；普通 question 不回归；持久化只含 operation/session/phase/expiry/tool_call_id，不含 URL；session snapshot 可重建无 URL 的等待卡；answer API 拒绝 external action。
+
+```go
+func TestExternalActionPersistenceOmitsURL(t *testing.T) {
+	p := ExternalActionPayload{OperationID: "op-1", SessionID: "s-1", ToolCallID: "tc-1", Phase: "user_auth", URL: "https://opaque", ExpiresAt: time.Now()}
+	stored := p.Persistent()
+	b, err := json.Marshal(stored)
+	require.NoError(t, err)
+	require.NotContains(t, string(b), "https://opaque")
+}
+```
+
+- [ ] **Step 2: 运行红测**
+
+Run: `go test ./internal/numind/biz/agent ./internal/numind/biz/agent/stream ./internal/numind/store -run 'ExternalAction' -count=1`
+
+Expected: FAIL，独立 event 和等待字段不存在。
+
+- [ ] **Step 3: 定义 payload/event/model**
+
+```go
+type ExternalActionPayload struct {
+	Provider string `json:"provider"`
+	OperationID string `json:"operation_id"`
+	SessionID string `json:"session_id"`
+	ToolCallID string `json:"tool_call_id"`
+	Phase string `json:"phase"`
+	URL string `json:"url,omitempty"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+PendingExternalActionJSON datatypes.JSON `gorm:"type:json;column:pending_external_action_json" json:"pending_external_action_json,omitempty"`
+PendingExternalActionAt *time.Time `gorm:"column:pending_external_action_at" json:"pending_external_action_at,omitempty"`
+```
+
+`stream.EventExternalAction = "external_action"`。Live event 可含 URL；`Persistent()` 必须清空 URL。不要修改固定 `TerminalReason`/`LoopEvent` 数量。
+
+- [ ] **Step 4: 添加独立 writer 接口和 runner 分支**
+
+```go
+type IExternalActionWriter interface {
+	UpdatePendingExternalAction(ctx context.Context, runID uint64, payloadJSON []byte) error
+}
+```
+
+具体 `agentRunStore` 实现该接口；不向 `IAgentRunStore` 强加新方法，避免所有旧测试 fake 同步修改。Runner 发现 external action 时用 `writer, ok := r.runStore.(store.IExternalActionWriter)` 获取能力，生产 store 缺能力则 fail closed；随后发独立 SSE、进入既有 waiting_for_user_choice 状态。普通 question 继续调用 `UpdatePendingQuestion`。
+
+- [ ] **Step 5: 绿测与精确提交**
+
+Run: `go test ./internal/numind/biz/agent ./internal/numind/biz/agent/stream ./internal/numind/store -run 'ExternalAction|QuestionPrompt' -count=1`
+
+Expected: PASS。
+
+```bash
+git add internal/pkg/model/agent_run.go internal/numind/store/agent_run.go internal/numind/store/agent_run_external_action_test.go internal/numind/biz/agent/yield_error.go internal/numind/biz/agent/yield_external_action_test.go internal/numind/biz/agent/runner.go internal/numind/biz/agent/runner_stream.go internal/numind/biz/agent/student_query.go internal/numind/biz/agent/stream/events.go internal/numind/biz/agent/stream/events_external_action_test.go
+git commit -m "feat(agent): persist external action waits"
+```
+
+## Task 10: Agent 飞书工具与 tool call context
+
+**Files:** `tool_call_ctx.go`、`tool_call_ctx_test.go`、`adapter_full_to_eino.go`、`adapter_full_to_eino_test.go`、`tool_lark_skill_read.go`、`tool_lark_execute.go`、`tool_lark_personal_workspace_test.go`、`factory_platform.go`、`factory_platform_test.go`。
 
 - [ ] **Step 1: 写 adapter/tool 红测**
 
-断言 FullTool.Execute 能读到 adapter 生成的同一 synthetic toolCallID；`lark_execute` 不接受 user_id；idempotency key 固定为 `<runID>:<toolCallID>`，不信任模型输入；waiting 返回 external action yield；skill read 不需要连接；两个工具 soft error 不终止 Agent。
+断言 Execute 能读同一 synthetic toolCallID；`lark_execute` 不接受 user_id；idempotency key 固定 `<runID>:<toolCallID>`；waiting 发 Task 9 external action；skill read 不要求连接；factory 查不到四个旧工具。
 
 ```go
 func TestFullToolAdapterInjectsToolCallID(t *testing.T) {
@@ -699,9 +782,9 @@ func TestFullToolAdapterInjectsToolCallID(t *testing.T) {
 
 - [ ] **Step 2: 运行红测**
 
-Run: `go test ./internal/numind/biz/agent -run 'ToolCallID|LarkPersonalWorkspace' -count=1`
+Run: `go test ./internal/numind/biz/agent -run 'ToolCallID|LarkPersonalWorkspace|PlatformTool' -count=1`
 
-Expected: FAIL，context helper 与新工具不存在。
+Expected: FAIL，新工具不存在。
 
 - [ ] **Step 3: 注入 tool call ID**
 
@@ -710,43 +793,44 @@ func WithToolCallID(ctx context.Context, id string) context.Context
 func ToolCallIDFromContext(ctx context.Context) string
 ```
 
-在 `adapter_full_to_eino.go` 唯一 Execute 调用点改为 `invokeToolGuarded(WithToolCallID(ctx, toolCallID), input)`；SSE/narration 继续复用同一 ID。
+Execute 唯一调用点改为 `invokeToolGuarded(WithToolCallID(ctx, toolCallID), input)`。
 
-- [ ] **Step 4: 实现两个 FullTool**
+- [ ] **Step 4: 通过小接口实现两个 FullTool**
 
-`lark_skill_read` input 为 `skill/reference/cursor`；`lark_execute` input 只含 `argv/stdin_json/skill_receipts`。后者从 middleware context 取 userID，从 Agent context 取 runID/toolCallID，内部生成 idempotency key。任何缺 context ID 都返回 soft error，不降级生成随机业务 key。
+```go
+type SkillReadExecutor interface { Read(context.Context, feishu.SkillReadRequest) (*feishu.SkillReadPage, error) }
+type LarkExecutor interface { Execute(context.Context, feishu.ExecuteRequest) (*feishu.OperationResult, error) }
+```
 
-- [ ] **Step 5: 收缩 Agent 工具目录**
+`lark_skill_read` input 为 skill/reference/cursor；`lark_execute` input 只含 argv/stdin_json/skill_receipts。userID/runID/toolCallID 只取 context。Factory 接受接口依赖并 nil-safe；本任务不构造具体 operation/auth 服务，Task 12 才装配。
 
-`factory_platform.go` 只向模型注册 `lark_skill_read` 和 `lark_execute`。移除 `lark_create_doc`、`lark_read_bitable`、`lark_send_message`、`feishu_connect` 的注册；旧源文件可在本任务保留以减小迁移风险，但测试必须断言 registry 查不到这四个名字，尤其不能查到 IM。
+- [ ] **Step 5: 收缩 registry 并绿测**
 
-- [ ] **Step 6: 绿测**
+Factory 只注册 `lark_skill_read`、`lark_execute`；旧源文件保留到 Task 20，但 registry 查不到 `lark_create_doc/lark_read_bitable/lark_send_message/feishu_connect`。
 
 Run: `go test ./internal/numind/biz/agent -run 'ToolCallID|LarkPersonalWorkspace|PlatformTool' -count=1`
 
 Expected: PASS。
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add internal/numind/biz/agent/tool_call_ctx* internal/numind/biz/agent/adapter_full_to_eino.go internal/numind/biz/agent/tool_lark_skill_read.go internal/numind/biz/agent/tool_lark_execute.go internal/numind/biz/agent/tool_lark_personal_workspace_test.go internal/numind/biz/agent/factory_platform.go
+git add internal/numind/biz/agent/tool_call_ctx.go internal/numind/biz/agent/tool_call_ctx_test.go internal/numind/biz/agent/adapter_full_to_eino.go internal/numind/biz/agent/adapter_full_to_eino_test.go internal/numind/biz/agent/tool_lark_skill_read.go internal/numind/biz/agent/tool_lark_execute.go internal/numind/biz/agent/tool_lark_personal_workspace_test.go internal/numind/biz/agent/factory_platform.go internal/numind/biz/agent/factory_platform_test.go
 git commit -m "feat(agent): add controlled lark workspace tools"
 ```
 
-## Task 10: 外部操作暂停与原 tool call 精确恢复
+## Task 11: 原 tool call 精确结果恢复
 
-**Files:** `yield_error.go`、`agent_run.go` model/store、`external_tool_resume.go`、相关 tests、runner snapshot/SSE 代码。
+**Files:** `internal/numind/store/agent_run.go`、`agent_run_external_resume_test.go`、`internal/numind/biz/agent/external_tool_resume.go`、`external_tool_resume_test.go`、`answer.go`、`answer_external_resume_test.go`。
 
 - [ ] **Step 1: 写恢复红测**
 
-场景：`lark_execute` 返回 waiting_user_auth；run 持久化 `operation_id/tool_call_id/phase/expires_at`；resume 成功后原子清等待态并向 messages 添加 role=tool、相同 tool_call_id、真实 result；恢复 Agent 时没有新增 role=user “已完成”；runner 不再次调用 `lark_execute` 生成 argv；原 run 已取消时只保存结果状态不新建 run。
+resume 原子追加相同 tool_call_id 的 role=tool；不新增 role=user “我已完成”；不调用第二次 lark_execute；重复结果幂等；原 run 已取消只保存 operation 结果不新建 run。
 
 ```go
 func TestExternalToolResumeAppendsOriginalToolResultWithoutUserAnswer(t *testing.T) {
 	h := newExternalResumeHarness(t)
-	require.NoError(t, h.resumer.Resume(h.ctx, ExternalToolResult{
-		RunID: 41, ToolCallID: "tc-9", OperationID: "op-1", Result: json.RawMessage(`{"ok":true}`),
-	}))
+	require.NoError(t, h.resumer.Resume(h.ctx, ExternalToolResult{RunID: 41, ToolCallID: "tc-9", OperationID: "op-1", Result: json.RawMessage(`{"ok":true}`)}))
 	msgs := h.store.Messages(41)
 	require.Equal(t, "tool", msgs[len(msgs)-1].Role)
 	require.Equal(t, "tc-9", msgs[len(msgs)-1].ToolCallID)
@@ -757,65 +841,91 @@ func TestExternalToolResumeAppendsOriginalToolResultWithoutUserAnswer(t *testing
 
 - [ ] **Step 2: 运行红测**
 
-Run: `go test ./internal/numind/biz/agent ./internal/numind/store -run 'ExternalTool|ExternalAction' -count=1`
+Run: `go test ./internal/numind/biz/agent ./internal/numind/store -run 'ExternalToolResume' -count=1`
 
-Expected: FAIL，当前 auth pause 走普通 question answer。
+Expected: FAIL，resumer 不存在。
 
-- [ ] **Step 3: 扩展 yield/SSE 契约**
+- [ ] **Step 3: 实现原子 resumer store**
 
 ```go
-type ExternalActionPayload struct {
-	Provider string `json:"provider"`
-	OperationID string `json:"operation_id"`
-	SessionID string `json:"session_id"`
-	Phase string `json:"phase"`
-	URL string `json:"url,omitempty"`
-	ExpiresAt time.Time `json:"expires_at"`
-}
-
-type YieldPayload struct {
-	Questions []YieldQuestion `json:"questions,omitempty"`
-	PauseType string `json:"pause_type,omitempty"`
-	ExternalAction *ExternalActionPayload `json:"external_action,omitempty"`
+type IExternalToolResumer interface {
+	ResumeExternalTool(ctx context.Context, runID uint64, operationID, toolCallID string, resultTurn json.RawMessage) (bool, error)
 }
 ```
 
-普通 question 继续走 answer API；external action 不允许 answer API 消费。授权 URL 可出现在当前 SSE/消息卡 payload，但不得写 `agent_run.pending_question_json` 的长期字段；长期快照只保存 session/operation/phase/expiry，刷新链接从 action endpoint 获取。
+事务锁 agent_run，验证等待 JSON，append `schema.ToolMessage(string(result), toolCallID)` 序列化 turn，清 external waiting，状态回 running。bool=false 表示已恢复。
 
-- [ ] **Step 4: 实现原子 store 与 resumer**
+- [ ] **Step 4: 抽取无用户消息的 runner 恢复入口**
 
-`AgentRun` 增加以下固定字段；`IAgentRunStore` 增加两个固定方法：
+在 `answer.go` 抽取 `resumeRunFromStoredHistory(ctx, runID)`；普通 Answer 先 `AnswerAndClear` 再调用它，ExternalToolResumer 在 store transaction 后直接调用它。两条路径共用生成逻辑但只有普通 Answer 追加 user turn。
 
-```go
-PendingExternalActionJSON datatypes.JSON `gorm:"type:json;column:pending_external_action_json" json:"pending_external_action_json,omitempty"`
-PendingExternalActionAt *time.Time `gorm:"column:pending_external_action_at" json:"pending_external_action_at,omitempty"`
+- [ ] **Step 5: 绿测和 Commit**
 
-UpdatePendingExternalAction(ctx context.Context, runID uint64, payloadJSON []byte) error
-ResumeExternalTool(ctx context.Context, runID uint64, operationID, toolCallID string, resultTurn json.RawMessage) (bool, error)
-```
-
-Store transaction 锁 agent_run，验证等待 JSON 中的 operation/toolCallID，append 由 `schema.ToolMessage(string(result), toolCallID)` 序列化出的 tool turn，清 external waiting，状态回 running。返回 bool=false 表示相同 operation 已恢复过，调用方幂等结束。`AgentRunResumer` 调现有 runner 的非流式恢复入口，输入为更新后的 history，不追加自然语言。
-
-- [ ] **Step 5: 绿测**
-
-Run: `go test -race ./internal/numind/biz/agent ./internal/numind/store -run 'ExternalTool|ExternalAction' -count=1`
+Run: `go test -race ./internal/numind/biz/agent ./internal/numind/store -run 'ExternalToolResume|Answer' -count=1`
 
 Expected: PASS。
 
-- [ ] **Step 6: Commit**
-
 ```bash
-git add internal/numind/biz/agent internal/numind/store/agent_run.go internal/pkg/model/agent_run.go
-git commit -m "feat(agent): resume external tool calls exactly"
+git add internal/numind/store/agent_run.go internal/numind/store/agent_run_external_resume_test.go internal/numind/biz/agent/external_tool_resume.go internal/numind/biz/agent/external_tool_resume_test.go internal/numind/biz/agent/answer.go internal/numind/biz/agent/answer_external_resume_test.go
+git commit -m "feat(agent): resume original external tool calls"
 ```
 
-## Task 11: HTTP API、解绑、旧 HOME 迁移和 composition root
+## Task 12: 后端 composition 与 Agent factory 注入
 
-**Files:** controller/router/service/adapter/biz、`home_migrator.go`、tests。
+**Files:** `internal/numind/biz/feishu_resume_dispatcher.go`、`feishu_resume_dispatcher_test.go`、`internal/numind/biz/feishu/operation_confirmation.go`、`operation_confirmation_test.go`、`internal/numind/biz/feishu_adapter.go`、`feishu_adapter_test.go`、`internal/numind/biz/biz.go`、`internal/numind/biz/agent/factory_platform.go`、`factory_platform_test.go`。
 
-- [ ] **Step 1: 写 HTTP 与 service 红测**
+- [ ] **Step 1: 写 composition 红测**
 
-覆盖 GET status 不生成 URL；POST connect body 只允许 intent=manual；POST operation resume 不接受 argv/scopes；POST action refresh 校验归属并 supersede 旧 session；跨用户 ID 统一 404；DELETE generation+1、取消等待、删除 vault、停止 worker、清能力，返回远端 app 保留说明。
+Feature flag off 返回 nil；版本不符 fail closed；flag on 构造 controlled runner/vault/catalog/classifier/skill reader/operation/auth/resumer；高风险返回 waiting_confirmation；auth worker 自动完成后原 tool result 只回填一次；Agent registry 只暴露两个新工具；生产热路径不构造旧 Client。
+
+- [ ] **Step 2: 运行红测**
+
+Run: `go test ./internal/numind/biz/feishu ./internal/numind/biz ./internal/numind/biz/agent -run 'ResumeDispatcher|OperationConfirmation|BuildFeishu|FeishuComposition|PlatformTool' -count=1`
+
+Expected: FAIL，生产依赖尚未装配。
+
+- [ ] **Step 3: 实现共用 resume dispatcher**
+
+```go
+type WorkspaceResumeDispatcher struct {
+	operations *feishu.OperationService
+	agentResumer *agent.AgentRunResumer
+}
+func (d *WorkspaceResumeDispatcher) DispatchResume(ctx context.Context, userID uint, operationID string) error
+```
+
+dispatcher 调 `operation.Resume`；结果 succeeded 时读取 OperationResult 内部 `AgentRunID/ToolCallID`（字段 `json:"-"`），调用 Task 11 resumer；waiting/failed/unknown 不回填成功 result。用 operationID 幂等保证 auth worker 与用户点击并发时只回填一次。Task 8 worker 和 Task 13 service 必须持有这个 dispatcher，不可各自直接调 operation.Resume。
+
+- [ ] **Step 4: 实现生产 ConfirmationRequester**
+
+`NewOperationConfirmationRequester(store)` 实现 Task 7 接口，把 operation 置 `waiting_confirmation` 并返回 `OperationAction{Phase:"confirmation"}`；不得返回 nil 让高风险静默通过。Task 13 接受 `confirmed/cancelled` 后由同一 dispatcher 继续或取消加密 operation。该 adapter 位于 `biz/feishu`，不 import `biz/agent`。`WorkspaceResumeDispatcher` 位于外层 `package biz`，由它同时 import `biz/feishu` 与 `biz/agent`，从而避免 `feishu → agent → feishu` 包循环。
+
+- [ ] **Step 5: 构造无包循环 bridge**
+
+在 `feishu_adapter.go` 用 closure bridge 装配：先创建引用 `authSvc` 的 `RecoveryStarterFunc`，用 receipt verifier + recovery starter + non-nil confirmation requester 构造 operation；创建 AgentRunResumer 和共用 dispatcher；再构造 AuthSessionService 并注入 dispatcher；最后赋值 authSvc。构造函数返回前全部 bridge 必须完整。
+
+- [ ] **Step 6: 注入 Agent factory**
+
+Factory 获得 Task 6 `SkillReader` 与 Task 7 `OperationService` 的接口；移除旧 client/orchestrator 的 production registration。启动时先 `ControlledLarkCLIRunner.VerifyVersion`，失败则不注册飞书 service/tools。
+
+- [ ] **Step 7: 绿测和 Commit**
+
+Run: `go test ./internal/numind/biz/feishu ./internal/numind/biz ./internal/numind/biz/agent -run 'ResumeDispatcher|OperationConfirmation|Feishu|PlatformTool' -count=1`
+
+Expected: PASS。
+
+```bash
+git add internal/numind/biz/feishu_resume_dispatcher.go internal/numind/biz/feishu_resume_dispatcher_test.go internal/numind/biz/feishu/operation_confirmation.go internal/numind/biz/feishu/operation_confirmation_test.go internal/numind/biz/feishu_adapter.go internal/numind/biz/feishu_adapter_test.go internal/numind/biz/biz.go internal/numind/biz/agent/factory_platform.go internal/numind/biz/agent/factory_platform_test.go
+git commit -m "feat(feishu): compose personal workspace services"
+```
+
+## Task 13: Lifecycle HTTP API 与安全解绑
+
+**Files:** `internal/numind/biz/feishu/service.go`、`service_test.go`、`internal/numind/controller/v1/feishu/feishu.go`、`feishu_test.go`、`internal/numind/router.go`。
+
+- [ ] **Step 1: 写 HTTP/service 红测**
+
+覆盖 GET status 不生成 URL；manual connect；resume body 只允许 `user_completed/confirmed/cancelled` 且不接受 argv/scopes；refresh 校验归属；跨用户统一 404；HTTP user_completed 与 worker 并发只回填一次；DELETE generation+1、取消等待、删 vault、停止 worker、清能力并说明远端 app 保留。
 
 ```go
 func TestResumeRejectsCrossUserAsNotFound(t *testing.T) {
@@ -827,13 +937,11 @@ func TestResumeRejectsCrossUserAsNotFound(t *testing.T) {
 
 - [ ] **Step 2: 运行红测**
 
-Run: `go test ./internal/numind/controller/v1/feishu ./internal/numind/biz/feishu -run 'Status|Connect|Resume|Refresh|Unbind|HomeMigrator' -count=1`
+Run: `go test ./internal/numind/controller/v1/feishu ./internal/numind/biz/feishu -run 'Status|Connect|Resume|Refresh|Unbind' -count=1`
 
-Expected: FAIL，新 API 和迁移器缺失。
+Expected: FAIL，新 API 缺失。
 
-- [ ] **Step 3: 实现 service/controller/router**
-
-注册：
+- [ ] **Step 3: 实现 routes 与薄 controller**
 
 ```go
 feishuAuthGroup.GET("/status", feishuCtrl.Status)
@@ -843,38 +951,84 @@ feishuAuthGroup.POST("/actions/:session_id/refresh", feishuCtrl.RefreshAction)
 feishuAuthGroup.DELETE("/connection", feishuCtrl.Unbind)
 ```
 
-Controller 只解析登录 userID、path/body DTO 和写 response；状态推进全部调用 biz service。Status 返回 spec §10.1 的 state/connected/app_id_masked/cli_version/capabilities/active_action，active action 的 `link_available` 不含 URL。
+Controller 只解析鉴权 userID/path/body；biz service 推进状态。`user_completed` 调 Task 12 共用 `DispatchResume`；`confirmed/cancelled` 只在 waiting_confirmation 合法，并由同一 dispatcher 重放或取消。Status 返回 spec §10.1，不含当前 URL。
 
 - [ ] **Step 4: 实现安全解绑**
 
-事务先置 disconnecting 并 generation+1，再取消旧 generation 等待项；执行中写操作按 unknown 收口；尽力运行 logout/remove，但远端失败不保留本地 vault；删除 vault 和 temp HOME；最终 state none/connected false。响应文案明确远端个人应用仍保留。
+事务先 disconnecting + generation+1；取消旧 generation 等待；执行中写按 unknown；尽力 logout/remove 后删除本地 vault/temp HOME；最终 none/connected false。远端 app 删除不作成功承诺。
 
-- [ ] **Step 5: 实现旧 HOME 迁移**
+- [ ] **Step 5: 绿测和 Commit**
 
-启动时仅在 feature flag 开启且 runner 版本正确时扫描配置的旧 `u<userID>` 目录。逐用户锁定 → 权限校验 → 打包加密 → PutVaultCAS → 立刻解密 checksum 自检 → 成功才删除旧目录。失败时保留旧目录但该用户新 feature fail closed，不能让新旧 runner 同时使用。测试不得使用真实凭据。
-
-- [ ] **Step 6: 组合依赖并删除旧热路径 auth gate**
-
-`buildFeishuService` 构造 cipher/store/vault/runner/catalog/classifier/skill reader/auth/operation/resumer；启动时 VerifyVersion 失败则服务不注册。删除 `Client.gate` 每次调用 `AuthStatus` 的生产使用，设置页 refresh/recovery 才可调用 status。
-
-在现有 trace provider 上增加 `tool.lark_skill_read`、`tool.lark_execute`、`feishu.operation.execute`、`feishu.connect`、`feishu.auth`、`feishu.operation.resume`、`feishu.vault.open`、`feishu.vault.seal` spans。Metric 标签只含 domain/path/risk/state/error code/CLI version；禁止把 argv、stdin、内容、完整 URL、完整 app id 或密文作为 tag。相同 scope 授权循环和 unknown 写操作必须有独立 counter。
-
-- [ ] **Step 7: 绿测**
-
-Run: `go test ./internal/numind/controller/v1/feishu ./internal/numind/biz/feishu ./internal/numind/biz -count=1`
+Run: `go test ./internal/numind/controller/v1/feishu ./internal/numind/biz/feishu -run 'Status|Connect|Resume|Refresh|Unbind' -count=1`
 
 Expected: PASS。
 
-- [ ] **Step 8: Commit**
-
 ```bash
-git add internal/numind/controller/v1/feishu internal/numind/router.go internal/numind/biz/feishu internal/numind/biz/feishu_adapter.go internal/numind/biz/biz.go
-git commit -m "feat(feishu): expose personal workspace lifecycle api"
+git add internal/numind/biz/feishu/service.go internal/numind/biz/feishu/service_test.go internal/numind/controller/v1/feishu/feishu.go internal/numind/controller/v1/feishu/feishu_test.go internal/numind/router.go
+git commit -m "feat(feishu): expose workspace lifecycle api"
 ```
 
-## Task 12: 前端改动前 Playwright 运行时诊断
+## Task 14: 旧明文 HOME 安全迁移
 
-**Files:** 只生成不进 Git 的诊断输出；不改业务代码。
+**Files:** `internal/numind/biz/feishu/home_migrator.go`、`home_migrator_test.go`、`internal/numind/biz/feishu_adapter.go`、`feishu_adapter_test.go`。
+
+- [ ] **Step 1: 写 migrator 红测**
+
+覆盖合法 `u<userID>`；成功自检后删除；加密/CAS/自检失败保留原目录；非法权限/软链拒绝；vault 已存在幂等；迁移失败使该用户 fail closed。
+
+- [ ] **Step 2: 运行红测**
+
+Run: `go test ./internal/numind/biz/feishu ./internal/numind/biz -run 'HomeMigrator' -count=1`
+
+Expected: FAIL，migrator 不存在。
+
+- [ ] **Step 3: 实现一次性迁移并接启动**
+
+只在 feature flag 开启且 CLI 版本正确时扫描旧目录：逐用户锁 → 权限校验 → vault 打包加密 → PutVaultCAS → 立即解密 checksum 自检 → 成功才删除。失败保留旧数据且不允许新旧 runner 同时使用。
+
+- [ ] **Step 4: 绿测和 Commit**
+
+Run: `go test ./internal/numind/biz/feishu ./internal/numind/biz -run 'HomeMigrator' -count=1`
+
+Expected: PASS。
+
+```bash
+git add internal/numind/biz/feishu/home_migrator.go internal/numind/biz/feishu/home_migrator_test.go internal/numind/biz/feishu_adapter.go internal/numind/biz/feishu_adapter_test.go
+git commit -m "feat(feishu): migrate legacy cli homes"
+```
+
+## Task 15: 飞书 operation 可观测性
+
+**Files:** `internal/numind/biz/feishu/observability.go`、`observability_test.go`、`operation_service.go`、`auth_session_service.go`、`vault.go`、`internal/numind/biz/agent/tool_lark_skill_read.go`、`tool_lark_execute.go`。
+
+- [ ] **Step 1: 写脱敏 span/metric 红测**
+
+断言 8 个 span 名称；允许标签只有 user hash/run/tool/operation/path/domain/risk/state/version/duration/exit/error code/scope count/attempt；argv/stdin/正文/完整 URL/app id/密文不出现；授权循环和 unknown 写有独立 counter。
+
+- [ ] **Step 2: 运行红测**
+
+Run: `go test ./internal/numind/biz/feishu ./internal/numind/biz/agent -run 'FeishuObservability' -count=1`
+
+Expected: FAIL，observability wrapper 不存在。
+
+- [ ] **Step 3: 实现 spans 与 metrics**
+
+固定 span：`tool.lark_skill_read`、`tool.lark_execute`、`feishu.operation.execute`、`feishu.connect`、`feishu.auth`、`feishu.operation.resume`、`feishu.vault.open`、`feishu.vault.seal`。沿用原 Agent trace，不新增 LLM generation。
+
+- [ ] **Step 4: 绿测和 Commit**
+
+Run: `go test ./internal/numind/biz/feishu ./internal/numind/biz/agent -run 'FeishuObservability' -count=1`
+
+Expected: PASS。
+
+```bash
+git add internal/numind/biz/feishu/observability.go internal/numind/biz/feishu/observability_test.go internal/numind/biz/feishu/operation_service.go internal/numind/biz/feishu/auth_session_service.go internal/numind/biz/feishu/vault.go internal/numind/biz/agent/tool_lark_skill_read.go internal/numind/biz/agent/tool_lark_execute.go
+git commit -m "feat(feishu): trace workspace operations safely"
+```
+
+## Task 16: 前端改动前 Playwright 运行时诊断
+
+**Files:** `.ndf/features/feishu-personal-workspace/s3-frontend-baseline.md`（脱敏结论进 Git）；Playwright trace/screenshot 留在临时输出且不进 Git；不改业务代码。
 
 - [ ] **Step 1: 启动当前前端并使用现有诊断 helper**
 
@@ -895,7 +1049,7 @@ git add .ndf/features/feishu-personal-workspace/s3-frontend-baseline.md
 git commit -m "docs(feishu): capture frontend authorization baseline"
 ```
 
-## Task 13: 前端 API 与 Pinia 状态契约
+## Task 17: 前端 API 与 Pinia 状态契约
 
 **Files:** `src/api/feishu.ts`、`src/stores/feishu.ts`、`src/stores/agentChat.ts` 及 tests。
 
@@ -932,7 +1086,7 @@ export interface FeishuExternalAction {
   provider: 'lark'
   operation_id: string
   session_id: string
-  phase: 'create_app' | 'app_scope' | 'user_auth'
+  phase: 'create_app' | 'app_scope' | 'user_auth' | 'confirmation'
   url?: string
   expires_at: string
 }
@@ -957,13 +1111,13 @@ git add src/api/feishu.ts src/api/feishu.test.ts src/stores/feishu.ts src/stores
 git commit -m "feat(feishu): add personal workspace client state"
 ```
 
-## Task 14: Agent 飞书 Action Card 与设置页
+## Task 18: Agent 飞书 Action Card
 
-**Files:** `FeishuActionCard.vue`、`AgentMessageItem.vue`、`FeishuConnection.vue` 及 tests。
+**Files:** `src/components/agent/FeishuActionCard.vue`、`src/components/agent/__tests__/FeishuActionCard.spec.ts`、`src/components/agent/AgentMessageItem.vue`、`src/components/agent/__tests__/AgentMessageItem.spec.ts`。
 
 - [ ] **Step 1: 写组件红测**
 
-覆盖 create_app/app_scope/user_auth/继续原任务四阶段；URL 展示值和复制值完整一致；二维码 payload 与 URL 字节相同；过期后禁用旧 continue 并显示刷新；resume/refresh 独立 emit；`aria-live=polite`、错误 `role=alert`；375px 无横向溢出；设置页 loading/empty/error/success；解绑用现有 ConfirmModal；页面不出现“消息/IM/发送飞书消息”。
+覆盖 create_app/app_scope/user_auth/confirmation/继续原任务；URL 展示值和复制值完整一致；二维码 payload 与 URL 字节相同；过期后禁用旧 continue 并显示刷新；resume/refresh/confirmed/cancelled 独立 emit；`aria-live=polite`、错误 `role=alert`；375px 无横向溢出。
 
 ```ts
 it('emits operation resume instead of a question answer', async () => {
@@ -976,7 +1130,7 @@ it('emits operation resume instead of a question answer', async () => {
 
 - [ ] **Step 2: 运行红测**
 
-Run: `npm run test:unit -- src/components/agent/__tests__/FeishuActionCard.spec.ts src/components/agent/__tests__/AgentMessageItem.spec.ts src/components/feishu/__tests__/FeishuConnection.spec.ts`
+Run: `npm run test:unit -- src/components/agent/__tests__/FeishuActionCard.spec.ts src/components/agent/__tests__/AgentMessageItem.spec.ts`
 
 Expected: FAIL，新卡不存在且旧卡走 answer-submitted。
 
@@ -988,44 +1142,130 @@ Expected: FAIL，新卡不存在且旧卡走 answer-submitted。
 
 `external_action` 渲染新卡；普通 `pause_type=question` 仍渲染 QuestionPrompt。删去旧 `pause_type=auth` → ordinary answer 的桥接代码。resume 调 store operation API，结果更新原 message，不创建用户气泡。
 
-- [ ] **Step 5: 重写 FeishuConnection**
+- [ ] **Step 5: 绿测**
 
-单卡展示真实 connection state、脱敏 app id、Docs/Base/Wiki 最近状态、连接/继续连接/重新授权/解绑。empty 文案说明可直接在 Agent 里提出飞书任务；明确“具体能力首次使用时按需授权，不包含消息发送”；unknown 显示“尚未验证”，不能显示已授权。
-
-- [ ] **Step 6: 绿测**
-
-Run: `npm run test:unit -- src/components/agent/__tests__/FeishuActionCard.spec.ts src/components/agent/__tests__/AgentMessageItem.spec.ts src/components/feishu/__tests__/FeishuConnection.spec.ts`
+Run: `npm run test:unit -- src/components/agent/__tests__/FeishuActionCard.spec.ts src/components/agent/__tests__/AgentMessageItem.spec.ts`
 
 Expected: PASS。
 
-- [ ] **Step 7: Commit（前端仓库）**
+- [ ] **Step 6: Commit（前端仓库）**
 
 ```bash
-git add src/components/agent src/components/feishu
-git commit -m "feat(feishu): add recoverable authorization experience"
+git add src/components/agent/FeishuActionCard.vue src/components/agent/__tests__/FeishuActionCard.spec.ts src/components/agent/AgentMessageItem.vue src/components/agent/__tests__/AgentMessageItem.spec.ts
+git commit -m "feat(feishu): add recoverable agent action card"
 ```
 
-## Task 15: 自动化集成、质量门禁与旧工具清理
+## Task 19: 设置页飞书连接卡
 
-**Files:** 后端集成测试、前端 E2E、删除未再引用的旧 lark 工具/runner 文件。
+**Files:** `src/components/feishu/FeishuConnection.vue`、`src/components/feishu/__tests__/FeishuConnection.spec.ts`。
 
-- [ ] **Step 1: 写后端集成测试**
+- [ ] **Step 1: 写设置卡红测**
 
-覆盖 never-connected → create app → app scope → user auth → exact replay；connected hot path 无 auth status；resource ACL 不触发 OAuth；重复 resume 无重复副作用；三个阶段模拟 process restart；两个用户隔离；撤销后 reauth；解绑后旧 generation 失效；写 timeout unknown。
+覆盖 loading/empty/error/success；脱敏 app id；Docs/Base/Wiki unknown/available/revoked；连接/继续/重新授权；解绑使用现有 ConfirmModal；文案不出现 IM/发送消息；empty 引导用户直接在 Agent 提需求。
 
-- [ ] **Step 2: 写 mocked Playwright E2E**
+- [ ] **Step 2: 运行红测**
 
-`e2e/feishu-personal-workspace.spec.ts` mock status/SSE/resume/refresh，验证：对话卡四阶段；完整 URL/二维码；过期刷新；resume request 无 argv/scopes；成功回到原任务；设置页能力状态；375×812 和 desktop；键盘可操作。
+Run: `npm run test:unit -- src/components/feishu/__tests__/FeishuConnection.spec.ts`
 
-- [ ] **Step 3: 删除旧工具暴露和死代码**
+Expected: FAIL，旧设置卡状态不足且含旧能力文案。
 
-确认没有调用后删除 `tool_lark_create_doc.go`、`tool_lark_read_bitable.go`、`tool_lark_send_message.go`、`tool_feishu_connect.go` 及对应旧 tests；删除旧 `client.go/ops_cli.go/auth_cli.go/provisioner_cli.go` 中被新实现完全替代的路径。保留仍被新 runner/orchestrator复用的纯解析 helper，并改成职责明确的小文件。
+- [ ] **Step 3: 实现单一连接卡**
+
+单卡展示真实 connection state、app id mask、三域最近状态；unknown 显示“尚未验证”；empty 说明具体能力首次使用时按需授权且“不包含消息发送”；解绑确认明确远端 app 保留。使用现有 AppButton/ConfirmModal 和设计 token。
+
+- [ ] **Step 4: 绿测和 Commit**
+
+Run: `npm run test:unit -- src/components/feishu/__tests__/FeishuConnection.spec.ts`
+
+Expected: PASS。
+
+```bash
+git add src/components/feishu/FeishuConnection.vue src/components/feishu/__tests__/FeishuConnection.spec.ts
+git commit -m "feat(feishu): show personal workspace status"
+```
+
+## Task 20: 清理旧固定飞书实现
+
+**Files:** 删除 `internal/numind/biz/agent/tool_lark_create_doc.go`、`tool_lark_read_bitable.go`、`tool_lark_send_message.go`、`tool_lark_common.go`、`tool_lark_test.go`、`tool_feishu_connect.go`、`tool_feishu_connect_test.go`、`yield_authpause_test.go`；删除 `internal/numind/biz/feishu/api.go`、`api_test.go`、`client.go`、`client_test.go`、`ops_cli.go`、`auth_cli.go`、`auth_cli_test.go`、`provisioner.go`、`provisioner_test.go`、`provisioner_cli.go`、`provisioner_cli_test.go`、`connect_phase_from_home_test.go` 中已被新架构替代且无引用的代码。
+
+- [ ] **Step 1: 先证明新 production graph 不引用旧实现**
+
+Run: `go list -deps ./cmd/numind | rg 'biz/feishu'`
+
+Expected: production composition 只构造 Task 1-15 新实现。再用 `rg` 核对每个待删 symbol 无新调用。
+
+- [ ] **Step 2: 删除旧文件并保留必要纯 helper**
+
+若 `decodeFirstJSON`、CLI error envelope 等纯 helper 仍被新实现使用，先移动到 `controlled_runner.go` 并由新 tests 覆盖，再删除旧文件。禁止保留旧 IM/broad auth 的可执行路径。
+
+- [ ] **Step 3: 验证无旧工具/IM/broad auth**
 
 Run: `rg -n 'lark_create_doc|lark_read_bitable|lark_send_message|feishu_connect|docs,im,base|im:message' internal/numind`
 
-Expected: 不再有模型注册、production IM scope 或旧 broad auth；允许 migration/spec 注释以外零命中。
+Expected: 零 production 命中。
 
-- [ ] **Step 4: 后端全量验证**
+Run: `go test ./internal/numind/biz/feishu ./internal/numind/biz/agent -count=1`
+
+Expected: PASS。
+
+- [ ] **Step 4: Commit 删除清单**
+
+```bash
+git add -A internal/numind/biz/feishu internal/numind/biz/agent/tool_lark_create_doc.go internal/numind/biz/agent/tool_lark_read_bitable.go internal/numind/biz/agent/tool_lark_send_message.go internal/numind/biz/agent/tool_lark_common.go internal/numind/biz/agent/tool_lark_test.go internal/numind/biz/agent/tool_feishu_connect.go internal/numind/biz/agent/tool_feishu_connect_test.go internal/numind/biz/agent/yield_authpause_test.go
+git commit -m "refactor(feishu): remove fixed legacy tools"
+```
+
+## Task 21: 后端恢复链路集成测试
+
+**Files:** `internal/numind/biz/feishu/personal_workspace_integration_test.go`、`internal/numind/biz/agent/lark_external_resume_integration_test.go`。
+
+- [ ] **Step 1: 写完整集成测试**
+
+覆盖 never-connected → create app → app scope → user auth → exact replay；connected 无 auth status；resource ACL 不 OAuth；重复 resume 单副作用；三个 phase 模拟 restart；双用户隔离；撤销后 reauth；解绑 generation 失效；写 timeout unknown；同 tool_call_id 恢复无第二条 argv。
+
+- [ ] **Step 2: 运行完整集成测试**
+
+Run: `go test ./internal/numind/biz/feishu ./internal/numind/biz/agent -run 'PersonalWorkspaceIntegration|LarkExternalResumeIntegration' -count=1`
+
+Expected: PASS。Task 21 是纯测试任务，不允许修改生产文件；如果测试发现生产缺陷，立即停止 Task 21，在 plan/manifest 新增一个独立 fix task，完成双 review 后再返回本任务。
+
+- [ ] **Step 3: 绿测和 Commit**
+
+Run: `go test -race ./internal/numind/biz/feishu ./internal/numind/biz/agent -run 'PersonalWorkspaceIntegration|LarkExternalResumeIntegration' -count=1`
+
+Expected: PASS。
+
+```bash
+git add internal/numind/biz/feishu/personal_workspace_integration_test.go internal/numind/biz/agent/lark_external_resume_integration_test.go
+git commit -m "test(feishu): cover workspace recovery integration"
+```
+
+## Task 22: 前端 Playwright E2E
+
+**Files:** `e2e/feishu-personal-workspace.spec.ts`。
+
+- [ ] **Step 1: 写 mocked E2E**
+
+Mock status/SSE/resume/refresh，验证四阶段、完整 URL/二维码、过期刷新、resume 无 argv/scopes、成功回原任务、设置能力状态、375×812/desktop、键盘操作。
+
+- [ ] **Step 2: 运行并修复 E2E**
+
+Run: `npm run test:e2e -- e2e/feishu-personal-workspace.spec.ts --project=chromium`
+
+Expected: PASS，trace 中无普通 answer request。
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add e2e/feishu-personal-workspace.spec.ts
+git commit -m "test(feishu): cover workspace authorization ui"
+```
+
+## Task 23: S4 最终质量 Gate
+
+**Files:** 无；本任务只验证，不产生兜底 commit。
+
+- [ ] **Step 1: 后端全量验证**
 
 Run: `go test ./...`
 
@@ -1035,7 +1275,7 @@ Run: `task lint`
 
 Expected: exit 0，无 lint error。
 
-- [ ] **Step 5: 前端全量验证**
+- [ ] **Step 2: 前端全量验证**
 
 Run in web worktree: `npm run test:unit`
 
@@ -1049,56 +1289,53 @@ Run: `npm run test:e2e -- e2e/feishu-personal-workspace.spec.ts`
 
 Expected: Chromium PASS，mobile/desktop assertions PASS。
 
-- [ ] **Step 6: 分仓 Commit**
+- [ ] **Step 3: 状态与敏感信息检查**
 
-Backend:
+Run: `git status --short` in both worktrees。
 
-```bash
-git add internal migrations Dockerfile .ndf
-git commit -m "test(feishu): cover personal workspace recovery"
-```
+Expected: 无未提交业务文件。
 
-Frontend:
+Run: `rg -n 'token|app_secret|device_code|https://.*feishu' internal/numind/biz/feishu src/components/agent src/components/feishu`
 
-```bash
-git add e2e src
-git commit -m "test(feishu): cover workspace authorization flow"
-```
+Expected: 仅结构字段/测试 opaque fixture，无真实凭据或真实授权 URL。
 
-## Task 16: dev 部署与真实飞书发布 Gate
+## Task 24: S5 本地真实飞书 Gate（不计入 S4 manifest progress）
 
 **Files:** `.ndf/features/feishu-personal-workspace/s5-real-tenant-e2e.md`，不保存凭据或完整 URL。
 
-- [ ] **Step 1: 部署前 DB 和二进制检查**
+- [ ] **Step 1: 在两个 feature worktree 启动本地环境**
 
-在 dev 运行 migration，确认三表/新列存在；构建镜像中运行 `lark-cli version`，必须为 1.0.68；检查应用启动日志只有版本/状态，没有 argv、正文、URL、app id 或 token。
+本地数据库应用 migration；本地后端 `task dev`，前端 `npm run dev`；确认 lark-cli 1.0.68。不得先 merge 或部署 dev。
 
-- [ ] **Step 2: 部署 backend 与 frontend 到 dev**
-
-分别使用项目 `/deploy-dev server` 和前端 `/deploy-dev` 工作流。健康检查通过后再开始真实写操作。
-
-- [ ] **Step 3: 真实账号 E2E**
+- [ ] **Step 2: 真实账号 E2E**
 
 按顺序执行并记录脱敏结果：首次连接仅 offline_access；Docs 创建/读取/更新；Base 创建、表/字段/记录读取与更新；Wiki 创建节点、解析、读取/更新内容；app/user missing_scope；三个授权阶段重启；两个用户隔离；撤销后 reauth；写 timeout unknown；解绑后不可访问且无明文 HOME。
 
-- [ ] **Step 4: 验证一次副作用与热路径**
+- [ ] **Step 3: 验证一次副作用与热路径**
 
 同一 operation 重复点击 resume，飞书侧资源只出现一次；已连接且权限足够的操作 trace 中没有前置 `auth status`；第二次缺相同 scopes 不进入无限授权循环。
 
-- [ ] **Step 5: 写 Gate 证据**
+- [ ] **Step 4: 写 Gate 证据**
 
 `s5-real-tenant-e2e.md` 记录每项 PASS/FAIL、operation 状态、脱敏资源类型、后端版本和 CLI 版本。不得记录测试账号、完整资源 URL、device code、Token、app secret、完整 app id。
 
-- [ ] **Step 6: Gate 决策**
+- [ ] **Step 5: Gate 决策并停止本地服务**
 
-只有 Docs/Base/Wiki 三域、重启、撤销、unknown、解绑、双用户隔离全部 PASS 才进入 NDF S5/S6。若错误结构无法证明写请求未产生副作用，将对应写操作自动重放关闭并更新 CommandCatalog/测试/设计 ADR 后重新验收。
+只有 Docs/Base/Wiki 三域、重启、撤销、unknown、解绑、双用户隔离全部 PASS 才进入 S6。若错误结构无法证明写请求未产生副作用，关闭对应自动重放并回 S4 修复。完成后停止本地前后端。
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit Gate 证据**
 
 ```bash
 git add .ndf/features/feishu-personal-workspace/s5-real-tenant-e2e.md
 git commit -m "docs(feishu): record real tenant acceptance"
 ```
+
+## S6 checklist（不属于实现 Task）
+
+1. 在两个 worktree 分别运行 `ndf-done`，原子化 merge develop、push、清理分支/worktree。
+2. 使用 `/deploy-dev server` 部署后端，使用前端 `/deploy-dev` 部署用户端。
+3. 健康检查通过后，向用户提供基于 PRD 的 dev 验收步骤。
+4. 只有用户确认 dev 产品可用后才进入 S7；生产部署仍需单独授权。
 
 ---
 
@@ -1106,22 +1343,24 @@ git commit -m "docs(feishu): record real tenant acceptance"
 
 | Spec 要求 | 实施任务 |
 |---|---|
-| 每用户独立连接、generation、加密 HOME、多租户 | 1、2、6、11 |
+| 每用户独立连接、generation、加密 HOME、多租户 | 1、2、7、8、13、14 |
 | 固定 1.0.68、无 shell、限长、JSON fail closed | 3 |
-| Docs/Base/Wiki create/read/update；无 IM/删除/raw API | 4、9、15 |
-| exact scopes、增量授权、无热路径 auth status | 4、6、7 |
-| 错误分类、ACL、不确定写结果 | 5、6 |
-| operation 幂等、lease、跨重启恢复 | 1、6、7 |
-| 官方技能与 receipt | 8、9 |
-| 原 tool_call 精确结果恢复 | 9、10 |
-| status/connect/resume/refresh/unbind API | 11 |
-| Agent 状态卡、设置页、可访问性、移动端 | 12、13、14 |
-| 旧工具下线、质量门禁 | 15 |
-| 真实租户 E2E 与发布硬 Gate | 16 |
+| Docs/Base/Wiki create/read/update；无 IM/删除/raw API | 4、7、10、20 |
+| exact scopes、增量授权、无热路径 auth status | 4、7、8 |
+| 错误分类、ACL、不确定写结果 | 5、7 |
+| operation 幂等、lease、跨重启恢复 | 1、7、8、21 |
+| 官方技能与 receipt | 6、10 |
+| 原 tool_call 精确结果恢复 | 9、10、11 |
+| status/connect/resume/refresh/unbind API | 13 |
+| 可观测性和敏感信息脱敏 | 15、23 |
+| Agent 状态卡、设置页、可访问性、移动端 | 16、17、18、19、22 |
+| 旧工具下线、集成测试、质量门禁 | 20、21、22、23 |
+| 本地真实租户 E2E 与发布硬 Gate | 24、S6 checklist |
 
 ## 完成标准
 
-- 所有 16 个任务 checkbox 已完成并有对应 Conventional Commit。
+- S4 Task 1-22 已完成并有对应 Conventional Commit；Task 23 质量 Gate 通过。Manifest `total_tasks=23` 只统计 S4。
+- S5 Task 24 已通过并提交脱敏证据；S6 checklist 在 `ndf-done` 后执行。
 - 后端 `go test ./...`、`task lint` 通过。
 - 前端 unit、`npm run lint && npm run type-check`、目标 Playwright E2E 通过。
 - Agent registry 只暴露 `lark_skill_read`、`lark_execute` 两个飞书工具。
