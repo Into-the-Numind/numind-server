@@ -125,6 +125,38 @@ func TestAgentRunStore_UpdatePendingExternalAction_RequiresCompleteRestartIdenti
 	}
 }
 
+func TestAgentRunStore_UpdatePendingExternalAction_RejectsDuplicateAndCaseVariantKeys(t *testing.T) {
+	for name, raw := range map[string][]byte{
+		"exact_duplicate": []byte(`{"provider":"feishu","provider":"lark","operation_id":"op-1","session_id":"auth-1","tool_call_id":"call-1","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`),
+		"case_variant":    []byte(`{"Provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"call-1","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`),
+		"mixed_duplicate": []byte(`{"provider":"feishu","Provider":"lark","operation_id":"op-1","session_id":"auth-1","tool_call_id":"call-1","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`),
+		"trailing":        []byte(`{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"call-1","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"} {}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, writer := newExternalActionAgentRunStore(t)
+			err := writer.UpdatePendingExternalAction(context.Background(), 1, raw)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid payload")
+		})
+	}
+}
+
+func TestAgentRunStore_UpdatePendingExternalAction_PersistsCanonicalJSON(t *testing.T) {
+	s, writer := newExternalActionAgentRunStore(t)
+	run := &model.AgentRun{UserID: 10, Status: "running", Messages: datatypes.JSON(`[]`), StartedAt: time.Now()}
+	require.NoError(t, s.Create(context.Background(), run))
+	raw := []byte(" \n {\"expires_at\":\"2026-07-13T09:30:00Z\",\"phase\":\"user_auth\",\"tool_call_id\":\"call-1\",\"session_id\":\"auth-1\",\"operation_id\":\"op-1\",\"provider\":\"feishu\"} \t")
+
+	require.NoError(t, writer.UpdatePendingExternalAction(context.Background(), run.ID, raw))
+
+	got, err := s.Get(context.Background(), run.ID)
+	require.NoError(t, err)
+	assert.Equal(t,
+		`{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"call-1","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`,
+		string(got.PendingExternalActionJSON),
+	)
+}
+
 func TestAgentRunStore_UpdatePendingExternalAction_NotFound(t *testing.T) {
 	_, writer := newExternalActionAgentRunStore(t)
 	err := writer.UpdatePendingExternalAction(context.Background(), 9999, []byte(`{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"call-1","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`))

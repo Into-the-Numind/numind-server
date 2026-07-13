@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"numind-server/internal/pkg/externalaction"
 )
 
 // EventType identifies the kind of a streaming event.
@@ -260,8 +262,8 @@ type ExternalActionPayload struct {
 // Persistent returns the restart-safe projection of an external action. It
 // copies only explicitly allowlisted identity fields, so new transient fields
 // added to the live payload are excluded by default.
-func (p ExternalActionPayload) Persistent() ExternalActionPayload {
-	return ExternalActionPayload{
+func (p ExternalActionPayload) Persistent() externalaction.Payload {
+	return externalaction.Payload{
 		Provider:    p.Provider,
 		OperationID: p.OperationID,
 		SessionID:   p.SessionID,

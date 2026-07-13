@@ -30,7 +30,6 @@ func TestExternalActionPayload_PersistentStripsTransientURL(t *testing.T) {
 	}
 
 	persistent := live.Persistent()
-	assert.Empty(t, persistent.URL)
 	assert.Equal(t, live.Provider, persistent.Provider)
 	assert.Equal(t, live.OperationID, persistent.OperationID)
 	assert.Equal(t, live.SessionID, persistent.SessionID)
@@ -310,12 +309,16 @@ func TestGetSessionSnapshot_ExternalActionHasNoURLOrDuplicateQuestion(t *testing
 
 func TestGetSessionSnapshot_CorruptExternalActionNeverFallsBackToStaleQuestion(t *testing.T) {
 	for name, raw := range map[string]string{
+		"exact_duplicate":  `{"provider":"feishu","provider":"lark","operation_id":"op-1","session_id":"auth-1","tool_call_id":"call-1","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`,
+		"case_variant":     `{"Provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"call-1","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`,
+		"mixed_duplicate":  `{"provider":"feishu","Provider":"lark","operation_id":"op-1","session_id":"auth-1","tool_call_id":"call-1","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`,
 		"url":              `{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"call-1","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z","url":"https://sensitive.example"}`,
 		"device_code":      `{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"call-1","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z","device_code":"ABC"}`,
 		"secret":           `{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"call-1","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z","secret":"shh"}`,
 		"unknown_field":    `{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"call-1","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z","future_sensitive":"unknown"}`,
 		"missing_identity": `{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`,
 		"malformed_json":   `{"provider":"feishu"`,
+		"trailing_json":    `{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"call-1","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"} {}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			svc, db := newSQServiceFull(t)

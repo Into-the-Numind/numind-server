@@ -4,11 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
-	"time"
 
 	"numind-server/internal/numind/biz/agent/stream"
+	"numind-server/internal/pkg/externalaction"
 )
 
 // ErrYieldForUserQuestion is the sentinel error returned by ask_user_question
@@ -29,29 +27,9 @@ func hasPendingExternalAction(raw []byte) bool {
 // identity persisted on agent_run. Unknown fields fail closed so a transient
 // URL, credential, device code, or future unreviewed field is never replayed.
 func ParsePendingExternalAction(raw []byte) (ExternalActionPayload, error) {
-	var persisted struct {
-		Provider    string    `json:"provider"`
-		OperationID string    `json:"operation_id"`
-		SessionID   string    `json:"session_id"`
-		ToolCallID  string    `json:"tool_call_id"`
-		Phase       string    `json:"phase"`
-		ExpiresAt   time.Time `json:"expires_at"`
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&persisted); err != nil {
+	persisted, err := externalaction.Parse(raw)
+	if err != nil {
 		return ExternalActionPayload{}, err
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return ExternalActionPayload{}, fmt.Errorf("multiple JSON values")
-		}
-		return ExternalActionPayload{}, err
-	}
-	if persisted.Provider == "" || persisted.OperationID == "" || persisted.SessionID == "" ||
-		persisted.ToolCallID == "" || persisted.Phase == "" || persisted.ExpiresAt.IsZero() {
-		return ExternalActionPayload{}, fmt.Errorf("provider, operation_id, session_id, tool_call_id, phase, and expires_at are required")
 	}
 	return ExternalActionPayload{
 		Provider:    persisted.Provider,
