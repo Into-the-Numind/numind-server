@@ -44,6 +44,21 @@ type displayAttachment struct {
 	Filename string
 }
 
+func (r *agentRunner) persistExternalAction(ctx context.Context, runID uint64, action ExternalActionPayload) ([]byte, error) {
+	writer, ok := r.runStore.(store.IExternalActionWriter)
+	if !ok {
+		return nil, fmt.Errorf("external action persistence capability unavailable")
+	}
+	payloadJSON, err := json.Marshal(action.Persistent())
+	if err != nil {
+		return nil, fmt.Errorf("marshal external action identity: %w", err)
+	}
+	if err := writer.UpdatePendingExternalAction(ctx, runID, payloadJSON); err != nil {
+		return nil, fmt.Errorf("persist external action identity: %w", err)
+	}
+	return payloadJSON, nil
+}
+
 type RunRequest struct {
 	UserID    uint
 	SessionID string
@@ -1212,35 +1227,57 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 		// Must be checked BEFORE HandleLLMError so the sentinel is not misclassified.
 		var yieldErr *yieldError
 		if errors.As(runErr, &yieldErr) {
-			// 1. Serialize payload to JSON.
-			payloadJSON, mErr := json.Marshal(yieldErr.Payload)
-			if mErr != nil {
-				log.Errorw("AgentRunner.Run yield handler: marshal payload failed",
-					"agent_run_id", run.ID, "error", mErr)
-				st.TerminalReason = TerminalModelError
-				break
-			}
-			// 2. Persist pending_question_json to agent_run.
-			if pErr := r.runStore.UpdatePendingQuestion(attemptCtx, run.ID, payloadJSON); pErr != nil {
-				log.Warnw("AgentRunner.Run yield UpdatePendingQuestion failed",
-					"agent_run_id", run.ID, "error", pErr)
-				// Non-fatal: continue to drive state machine to waiting_for_user_choice.
+			var (
+				payloadLen int
+				spanName   = "tool.ask_user_question.yield"
+				spanInput  any
+			)
+			if yieldErr.Payload.ExternalAction != nil {
+				// External actions must be restart-safe before they become visible.
+				// Missing writer capability or any persistence error is fatal: do
+				// not leave the run waiting on an unrecoverable action.
+				payloadJSON, pErr := r.persistExternalAction(attemptCtx, run.ID, *yieldErr.Payload.ExternalAction)
+				if pErr != nil {
+					log.Errorw("AgentRunner.Run external action persistence failed",
+						"agent_run_id", run.ID, "error", pErr)
+					st.TerminalReason = TerminalModelError
+					break
+				}
+				payloadLen = len(payloadJSON)
+				spanName = "tool.external_action.yield"
+				spanInput = yieldErr.Payload.ExternalAction.Persistent()
+			} else {
+				// Ordinary ask_user_question retains the existing question path.
+				payloadJSON, mErr := json.Marshal(yieldErr.Payload)
+				if mErr != nil {
+					log.Errorw("AgentRunner.Run yield handler: marshal payload failed",
+						"agent_run_id", run.ID, "error", mErr)
+					st.TerminalReason = TerminalModelError
+					break
+				}
+				payloadLen = len(payloadJSON)
+				spanInput = yieldErr.Payload
+				if pErr := r.runStore.UpdatePendingQuestion(attemptCtx, run.ID, payloadJSON); pErr != nil {
+					log.Warnw("AgentRunner.Run yield UpdatePendingQuestion failed",
+						"agent_run_id", run.ID, "error", pErr)
+					// Existing question behavior is best-effort for compatibility.
+				}
 			}
 			// 2b. HW-33: persist the pre-yield transcript so the resumed agent
 			// retains the work it did before pausing (the non-stream Run path is
 			// also the answer endpoint's re-run path, so a second yield here must
 			// keep prior context too).
 			r.persistYieldTranscript(attemptCtx, run.ID, req.displayUserText(), req.DisplayAttachments)
-			log.Infow("AgentRunner.Run yield: ask_user_question paused run",
+			log.Infow("AgentRunner.Run yield: paused run",
 				"agent_run_id", run.ID,
-				"payload_len", len(payloadJSON),
+				"payload_len", payloadLen,
 			)
 			// 3. Langfuse Span for observability.
 			if tc := langfuse.FromContext(attemptCtx); tc != nil {
 				spanID := langfuse.SpanID()
-				langfuse.CreateSpan(tc.TraceID, spanID, "tool.ask_user_question.yield",
+				langfuse.CreateSpan(tc.TraceID, spanID, spanName,
 					langfuse.WithSpanParent(tc.ParentObservationID),
-					langfuse.WithSpanInput(yieldErr.Payload),
+					langfuse.WithSpanInput(spanInput),
 				)
 				langfuse.EndSpan(tc.TraceID, spanID)
 			}

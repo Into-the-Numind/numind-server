@@ -54,6 +54,11 @@ const (
 	// EventQuestionPrompt is emitted when the agent yields an ask_user_question.
 	EventQuestionPrompt EventType = "question_prompt"
 
+	// EventExternalAction is emitted when the agent must pause for an action in
+	// an external provider. Unlike question_prompt, it is not answerable through
+	// the agent answer API.
+	EventExternalAction EventType = "external_action"
+
 	// EventTerminal signals the end of the stream (contains TerminalReason).
 	EventTerminal EventType = "terminal"
 
@@ -238,6 +243,32 @@ type QuestionPromptPayload struct {
 
 	// AuthURL is the third-party authorization URL, set only when PauseType=auth.
 	AuthURL string `json:"auth_url,omitempty"`
+}
+
+// ExternalActionPayload identifies a resumable action owned by an external
+// provider. URL is live-transport-only and must never be persisted.
+type ExternalActionPayload struct {
+	Provider    string    `json:"provider"`
+	OperationID string    `json:"operation_id"`
+	SessionID   string    `json:"session_id"`
+	ToolCallID  string    `json:"tool_call_id"`
+	Phase       string    `json:"phase"`
+	URL         string    `json:"url,omitempty"`
+	ExpiresAt   time.Time `json:"expires_at"`
+}
+
+// Persistent returns the restart-safe projection of an external action. It
+// copies only explicitly allowlisted identity fields, so new transient fields
+// added to the live payload are excluded by default.
+func (p ExternalActionPayload) Persistent() ExternalActionPayload {
+	return ExternalActionPayload{
+		Provider:    p.Provider,
+		OperationID: p.OperationID,
+		SessionID:   p.SessionID,
+		ToolCallID:  p.ToolCallID,
+		Phase:       p.Phase,
+		ExpiresAt:   p.ExpiresAt,
+	}
 }
 
 // TerminalPayload signals the end of the stream and carries run summary data.

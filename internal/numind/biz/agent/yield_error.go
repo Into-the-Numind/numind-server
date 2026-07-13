@@ -1,14 +1,62 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"time"
+
+	"numind-server/internal/numind/biz/agent/stream"
 )
 
 // ErrYieldForUserQuestion is the sentinel error returned by ask_user_question
 // tool.Execute() to signal the runner that the run should yield (pause) until
 // the user answers via POST /v1/agent-runs/:id/answer.
 var ErrYieldForUserQuestion = errors.New("agent: yield for user question")
+
+// ExternalActionPayload is the external-action transport shared by runner
+// yields, SSE events, and session snapshots.
+type ExternalActionPayload = stream.ExternalActionPayload
+
+// ParsePendingExternalAction accepts only the restart-safe external-action
+// identity persisted on agent_run. Unknown fields fail closed so a transient
+// URL, credential, device code, or future unreviewed field is never replayed.
+func ParsePendingExternalAction(raw []byte) (ExternalActionPayload, error) {
+	var persisted struct {
+		Provider    string    `json:"provider"`
+		OperationID string    `json:"operation_id"`
+		SessionID   string    `json:"session_id"`
+		ToolCallID  string    `json:"tool_call_id"`
+		Phase       string    `json:"phase"`
+		ExpiresAt   time.Time `json:"expires_at"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&persisted); err != nil {
+		return ExternalActionPayload{}, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return ExternalActionPayload{}, fmt.Errorf("multiple JSON values")
+		}
+		return ExternalActionPayload{}, err
+	}
+	if persisted.Provider == "" || persisted.OperationID == "" || persisted.SessionID == "" ||
+		persisted.ToolCallID == "" || persisted.Phase == "" || persisted.ExpiresAt.IsZero() {
+		return ExternalActionPayload{}, fmt.Errorf("provider, operation_id, session_id, tool_call_id, phase, and expires_at are required")
+	}
+	return ExternalActionPayload{
+		Provider:    persisted.Provider,
+		OperationID: persisted.OperationID,
+		SessionID:   persisted.SessionID,
+		ToolCallID:  persisted.ToolCallID,
+		Phase:       persisted.Phase,
+		ExpiresAt:   persisted.ExpiresAt,
+	}, nil
+}
 
 // PauseType classifies why a run yielded, so the frontend can pick the right
 // pause UI. It is carried on YieldPayload and surfaced over SSE
@@ -42,6 +90,11 @@ const (
 // them so the streaming frontend (T13) can render an authorization card.
 type YieldPayload struct {
 	Questions []YieldQuestion `json:"questions"`
+
+	// ExternalAction is the independent external-wait branch of a yield. It is
+	// excluded from question JSON; runners persist its sanitized projection via
+	// store.IExternalActionWriter and emit it as external_action instead.
+	ExternalAction *ExternalActionPayload `json:"-"`
 
 	// PauseType classifies the pause: "question" (default/empty) or "auth".
 	PauseType string `json:"pause_type,omitempty"`

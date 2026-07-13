@@ -1,9 +1,11 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"time"
 
 	"gorm.io/datatypes"
@@ -71,6 +73,13 @@ type IAgentRunStore interface {
 	UpdateSessionDeleted(ctx context.Context, sessionID string, isDeleted bool) error
 }
 
+// IExternalActionWriter is the narrow capability used by agent runners to
+// persist restart-safe external waits without expanding every IAgentRunStore
+// fake in the codebase.
+type IExternalActionWriter interface {
+	UpdatePendingExternalAction(ctx context.Context, runID uint64, payloadJSON []byte) error
+}
+
 type agentRunStore struct {
 	db *gorm.DB
 }
@@ -80,6 +89,7 @@ func newAgentRunStore(db *gorm.DB) IAgentRunStore {
 }
 
 var _ IAgentRunStore = (*agentRunStore)(nil)
+var _ IExternalActionWriter = (*agentRunStore)(nil)
 
 func (s *agentRunStore) Create(ctx context.Context, run *model.AgentRun) error {
 	if err := s.db.WithContext(ctx).Create(run).Error; err != nil {
@@ -270,15 +280,71 @@ func (s *agentRunStore) UpdatePendingQuestion(ctx context.Context, id uint64, pa
 	result := s.db.WithContext(ctx).Model(&model.AgentRun{}).
 		Where("id = ?", id).
 		Updates(map[string]interface{}{
-			"pending_question_json": datatypes.JSON(payloadJSON),
-			"pending_question_at":   now,
-			"state_reason":          "waiting_for_user_choice",
+			"pending_question_json":        datatypes.JSON(payloadJSON),
+			"pending_question_at":          now,
+			"pending_external_action_json": nil,
+			"pending_external_action_at":   nil,
+			"state_reason":                 "waiting_for_user_choice",
 		})
 	if result.Error != nil {
 		return fmt.Errorf("agentRunStore.UpdatePendingQuestion(id=%d): %w", id, result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return fmt.Errorf("agentRunStore.UpdatePendingQuestion: no row matched id=%d", id)
+	}
+	return nil
+}
+
+// UpdatePendingExternalAction stores only the allowlisted restart identity for
+// an external wait. The strict decoder rejects URLs, secrets, device codes, and
+// any future field until it is deliberately reviewed and allowlisted.
+func (s *agentRunStore) UpdatePendingExternalAction(ctx context.Context, id uint64, payloadJSON []byte) error {
+	if err := validatePersistentExternalActionJSON(payloadJSON); err != nil {
+		return fmt.Errorf("agentRunStore.UpdatePendingExternalAction: invalid payload: %w", err)
+	}
+	now := time.Now()
+	result := s.db.WithContext(ctx).Model(&model.AgentRun{}).
+		Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"pending_external_action_json": datatypes.JSON(payloadJSON),
+			"pending_external_action_at":   now,
+			"pending_question_json":        nil,
+			"pending_question_at":          nil,
+			"state_reason":                 "waiting_for_user_choice",
+		})
+	if result.Error != nil {
+		return fmt.Errorf("agentRunStore.UpdatePendingExternalAction(id=%d): %w", id, result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("agentRunStore.UpdatePendingExternalAction: no row matched id=%d", id)
+	}
+	return nil
+}
+
+func validatePersistentExternalActionJSON(payloadJSON []byte) error {
+	var payload struct {
+		Provider    string    `json:"provider"`
+		OperationID string    `json:"operation_id"`
+		SessionID   string    `json:"session_id"`
+		ToolCallID  string    `json:"tool_call_id"`
+		Phase       string    `json:"phase"`
+		ExpiresAt   time.Time `json:"expires_at"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payloadJSON))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&payload); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("multiple JSON values")
+		}
+		return err
+	}
+	if payload.Provider == "" || payload.OperationID == "" || payload.SessionID == "" ||
+		payload.ToolCallID == "" || payload.Phase == "" || payload.ExpiresAt.IsZero() {
+		return fmt.Errorf("provider, operation_id, session_id, tool_call_id, phase, and expires_at are required")
 	}
 	return nil
 }

@@ -288,7 +288,9 @@ func (s *StudentQueryService) GetSessionSnapshot(ctx context.Context, userID uin
 		// A run paused at ask_user_question has no assistant turn for the
 		// question; synthesize an interactive card so a reloaded session can
 		// render it and resume (yield-session-reload fix).
-		if q, ok := synthesizeQuestionPrompt(&runs[i]); ok {
+		if action, ok := synthesizeExternalAction(&runs[i]); ok {
+			allMessages = append(allMessages, action)
+		} else if q, ok := synthesizeQuestionPrompt(&runs[i]); ok {
 			allMessages = append(allMessages, q)
 		}
 	}
@@ -496,6 +498,11 @@ type agentMessage struct {
 	Questions    []questionPromptItem `json:"questions,omitempty"`
 	AnswerStatus string               `json:"answer_status,omitempty"` // 'pending' | 'answered'
 
+	// ExternalActionPayload is anonymously embedded so external_action snapshot
+	// messages use the same flat payload shape as live SSE. A nil pointer adds no
+	// fields to ordinary messages; synthesized actions always use Persistent().
+	*ExternalActionPayload
+
 	// feishu-integration: pause classification + auth URL on a synthesized
 	// question_prompt card so a RELOADED / polled session (design §10 auto续显)
 	// renders an authorization card for an auth pause, not a plain question card.
@@ -503,6 +510,33 @@ type agentMessage struct {
 	// so ordinary question cards serialize unchanged.
 	PauseType string `json:"pause_type,omitempty"`
 	AuthURL   string `json:"auth_url,omitempty"`
+}
+
+// synthesizeExternalAction builds an external_action waiting card from the
+// restart-safe identity stored on agent_run. The live URL is deliberately not
+// recoverable after reload; unknown or transient fields fail closed.
+func synthesizeExternalAction(run *model.AgentRun) (agentMessage, bool) {
+	if run.StateReason != string(TerminalWaitingForUserChoice) {
+		return agentMessage{}, false
+	}
+	if len(run.PendingExternalActionJSON) == 0 || string(run.PendingExternalActionJSON) == "null" {
+		return agentMessage{}, false
+	}
+	payload, err := ParsePendingExternalAction(run.PendingExternalActionJSON)
+	if err != nil {
+		return agentMessage{}, false
+	}
+	ts := run.StartedAt.UTC().Format(time.RFC3339)
+	if run.PendingExternalActionAt != nil {
+		ts = run.PendingExternalActionAt.UTC().Format(time.RFC3339)
+	}
+	return agentMessage{
+		ID:                    "external-action-" + strconv.FormatUint(run.ID, 10),
+		Type:                  "external_action",
+		RunID:                 run.ID,
+		Timestamp:             ts,
+		ExternalActionPayload: &payload,
+	}, true
 }
 
 // questionPromptOpt mirrors the frontend QuestionPromptOption {label, description}.

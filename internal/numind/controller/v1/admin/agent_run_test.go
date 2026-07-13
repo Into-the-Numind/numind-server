@@ -53,6 +53,8 @@ func newARTestDB(t *testing.T) *gorm.DB {
 			agent_definition_id        INTEGER NOT NULL DEFAULT 0,
 			pending_question_json      TEXT,
 			pending_question_at        DATETIME,
+			pending_external_action_json TEXT,
+			pending_external_action_at   DATETIME,
 			created_at                 DATETIME,
 			updated_at                 DATETIME,
 			-- V1.5 板块 2 task 2.1 — context-management V2 columns

@@ -614,7 +614,11 @@ func (r *agentRunner) RunStream(
 			yieldSt := &LoopState{StepCount: int(sharedState.StepIdx.Load())}
 			result, _ := r.persistAndEmitYield(ctx, run.ID, yieldSt, newChanEmitter(sharedState), startTime, *p)
 			endedAt := time.Now()
-			if uErr := r.runStore.UpdateState(persistCtx, run.ID, "terminated", string(TerminalWaitingForUserChoice), &endedAt); uErr != nil {
+			terminalReason := TerminalModelError
+			if result != nil && result.TerminalReason != "" {
+				terminalReason = result.TerminalReason
+			}
+			if uErr := r.runStore.UpdateState(persistCtx, run.ID, "terminated", string(terminalReason), &endedAt); uErr != nil {
 				log.Warnw("AgentRunner.RunStream yield UpdateState failed (errpath)", "agent_run_id", run.ID, "error", uErr)
 			}
 			if result != nil {

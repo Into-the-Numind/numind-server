@@ -457,6 +457,45 @@ func truncateMapValues(m map[string]any, maxLen int) map[string]any {
 // from drifting.
 func (r *agentRunner) persistAndEmitYield(ctx context.Context, runID uint64, st *LoopState,
 	emit func(stream.EventType, any), startTime time.Time, p YieldPayload) (*RunResult, error) {
+	if p.ExternalAction != nil {
+		if _, pErr := r.persistExternalAction(ctx, runID, *p.ExternalAction); pErr != nil {
+			// Fail closed: the live card is emitted only after its restart identity
+			// is durable. The error contains no live payload or URL.
+			log.Errorw("persistAndEmitYield: external action persistence failed",
+				"agent_run_id", runID, "error", pErr)
+			st.TerminalReason = TerminalModelError
+			emit(stream.EventTerminal, stream.TerminalPayload{
+				Reason:      string(TerminalModelError),
+				DurationMs:  time.Since(startTime).Milliseconds(),
+				StepCount:   st.StepCount,
+				UserMessage: UserFacingTerminalMessage(TerminalModelError),
+			})
+			return &RunResult{AgentRunID: runID, TerminalReason: TerminalModelError, StepCount: st.StepCount, Duration: time.Since(startTime)}, nil
+		}
+		if tc := langfuse.FromContext(ctx); tc != nil {
+			spanID := langfuse.SpanID()
+			langfuse.CreateSpan(tc.TraceID, spanID, "tool.external_action.yield",
+				langfuse.WithSpanParent(tc.ParentObservationID),
+				langfuse.WithSpanInput(p.ExternalAction.Persistent()),
+			)
+			langfuse.EndSpan(tc.TraceID, spanID)
+		}
+		emit(stream.EventExternalAction, *p.ExternalAction)
+		st.Transition(LoopEventAskUserPaused)
+		emit(stream.EventTerminal, stream.TerminalPayload{
+			Reason:      string(TerminalWaitingForUserChoice),
+			DurationMs:  time.Since(startTime).Milliseconds(),
+			StepCount:   st.StepCount,
+			UserMessage: UserFacingTerminalMessage(TerminalWaitingForUserChoice),
+		})
+		return &RunResult{
+			AgentRunID:     runID,
+			TerminalReason: TerminalWaitingForUserChoice,
+			StepCount:      st.StepCount,
+			Duration:       time.Since(startTime),
+		}, nil
+	}
+
 	payloadJSON, mErr := json.Marshal(p)
 	if mErr != nil {
 		log.Errorw("persistAndEmitYield: marshal yield payload failed",
