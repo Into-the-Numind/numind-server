@@ -4,11 +4,11 @@ features:
   ndf_version: '3.0'
   description: '重新校准并完成飞书个人工作空间连接：每个有数账号连接自己的飞书账号并长期保持；首次授权后 Agent 自动执行文档、多维表格、知识库能力。现有 feishu-integration 仅作待审计资产，不作为产品前提。'
   classification_reason: 'Standard：飞书外部集成+长期授权凭据+自动写操作属高风险，预计涉及 DB/API/biz/前端/部署/E2E 且文件数 >3。用户于 2026-07-13 确认 Standard。'
-  last_updated_by: ai-s1-proposal-review-fixes
-  last_updated_at: '2026-07-13T11:50:00+0800'
+  last_updated_by: user-s1-gate-approved
+  last_updated_at: '2026-07-13T11:55:00+0800'
   created_at: '2026-07-13T11:14:14+0800'
   track: standard
-  stage: S1
+  stage: S2
   status: active
   repos:
     numind-server: /private/tmp/wt-feishu-personal-workspace-numind-server
@@ -27,6 +27,7 @@ features:
   - 'S1 launch boundary (user chose A, 2026-07-13): 首版只支持有权创建个人自建应用并能完成所需管理员审批的用户；无权限时明确引导联系飞书管理员，不在首版增加共享应用路径。'
   - 'S1 execution semantics (user correction, 2026-07-13): 飞书指令默认直接尝试执行，不做逐次权限预检；仅在明确的未连接/缺权限/授权失效错误后按需配置，完成后幂等重试原操作。已知未连接时可直接进入配置。'
   - 'S1 architecture (user chose B, 2026-07-13): 采用确定性连接编排器 + lark-cli adapter；DB 管理产品状态和待重试操作，lark-cli 负责建应用、授权与首版飞书执行，adapter 为未来 OpenAPI 迁移留接口。'
+  - 'S1 gate (user chose A, 2026-07-13): 批准 feishu-personal-workspace proposal；两轮独立评审最终 9.5/10 PASS，进入 S2 技术设计。'
   blockers: []
 - id: chatbot-full-history-context
   ndf_version: '3.0'
