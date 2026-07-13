@@ -57,6 +57,17 @@ func (f *svcAccountStore) Upsert(_ context.Context, acc *model.UserThirdPartyAcc
 	return nil
 }
 
+func (f *svcAccountStore) EnsurePlaceholder(_ context.Context, userID uint, provider string) (*model.UserThirdPartyAccount, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := f.key(userID, provider)
+	if _, ok := f.rows[key]; !ok {
+		f.put(&model.UserThirdPartyAccount{UserID: userID, Provider: provider, ConnectionState: model.FeishuConnectionNone, Generation: 1})
+	}
+	cp := *f.rows[key]
+	return &cp, nil
+}
+
 func (f *svcAccountStore) Delete(_ context.Context, userID uint, provider string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

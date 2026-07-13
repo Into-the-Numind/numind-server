@@ -22,6 +22,9 @@ type IThirdPartyAccountStore interface {
 	Get(ctx context.Context, userID uint, provider string) (*model.UserThirdPartyAccount, error)
 	// Upsert 按唯一键 (user_id, provider) 创建或更新（幂等）。重复授权 = 更新现有行。
 	Upsert(ctx context.Context, acc *model.UserThirdPartyAccount) error
+	// EnsurePlaceholder atomically creates a generation-1 disconnected row when
+	// none exists and never mutates an existing account.
+	EnsurePlaceholder(ctx context.Context, userID uint, provider string) (*model.UserThirdPartyAccount, error)
 	// Delete 删除某用户某 provider 的连接（解绑）。目标不存在时幂等无错。
 	Delete(ctx context.Context, userID uint, provider string) error
 	// UpdateTokens 仅更新 token 三元组（access/refresh 密文 + 过期时间），用于刷新流程。
@@ -72,6 +75,25 @@ func (s *thirdPartyAccountStore) Upsert(ctx context.Context, acc *model.UserThir
 			}),
 		}).
 		Create(acc).Error
+}
+
+// EnsurePlaceholder creates the minimum row required by generation-fenced
+// Feishu operation claims. ON CONFLICT DO NOTHING is intentional: a concurrent
+// connection flow may have populated app and generation metadata after the
+// caller's initial read, and the placeholder path must never overwrite it.
+func (s *thirdPartyAccountStore) EnsurePlaceholder(ctx context.Context, userID uint, provider string) (*model.UserThirdPartyAccount, error) {
+	placeholder := &model.UserThirdPartyAccount{
+		UserID:          userID,
+		Provider:        provider,
+		ConnectionState: model.FeishuConnectionNone,
+		Generation:      1,
+	}
+	if err := s.db.WithContext(ctx).
+		Clauses(clause.OnConflict{DoNothing: true}).
+		Create(placeholder).Error; err != nil {
+		return nil, err
+	}
+	return s.Get(ctx, userID, provider)
 }
 
 // MarkConnected 标记 (userID, provider) 已完成 device-code 授权。

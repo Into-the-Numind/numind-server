@@ -32,6 +32,13 @@ func (f *fakeAccountStore) Upsert(_ context.Context, acc *model.UserThirdPartyAc
 	f.acc = &cp
 	return nil
 }
+func (f *fakeAccountStore) EnsurePlaceholder(_ context.Context, userID uint, provider string) (*model.UserThirdPartyAccount, error) {
+	if f.acc == nil {
+		f.acc = &model.UserThirdPartyAccount{UserID: userID, Provider: provider, ConnectionState: model.FeishuConnectionNone, Generation: 1}
+	}
+	cp := *f.acc
+	return &cp, nil
+}
 func (f *fakeAccountStore) Delete(_ context.Context, _ uint, _ string) error {
 	f.acc = nil
 	return nil

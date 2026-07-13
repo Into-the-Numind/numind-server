@@ -1,0 +1,1069 @@
+package feishu
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/url"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/google/uuid"
+	"gorm.io/datatypes"
+	"gorm.io/gorm"
+
+	pkgcrypto "numind-server/internal/pkg/crypto"
+	"numind-server/internal/pkg/model"
+)
+
+const (
+	operationMaxToolCallIDBytes   = 128
+	operationMaxIdempotencyBytes  = 191
+	operationMaxOperationIDBytes  = 64
+	operationMaxReceiptBytes      = 4096
+	operationMaxReceiptCount      = 4
+	operationDefaultLeaseDuration = 90 * time.Second
+	operationFinalizeTimeout      = 5 * time.Second
+)
+
+var (
+	// ErrOperationRequestRejected collapses malformed, denied, and receipt-invalid
+	// model input without echoing any supplied value.
+	ErrOperationRequestRejected = errors.New("feishu operation request rejected")
+	// ErrOperationIdempotencyConflict means a user reused a key for different
+	// immutable operation metadata or request content.
+	ErrOperationIdempotencyConflict = errors.New("feishu operation idempotency conflict")
+	// ErrOperationIntegrity means authenticated persisted operation data could
+	// not be safely opened or matched to its row metadata.
+	ErrOperationIntegrity = errors.New("feishu operation integrity check failed")
+	// ErrOperationUnavailable is a safe dependency/persistence failure. Raw CLI
+	// errors and stderr are never wrapped into this sentinel.
+	ErrOperationUnavailable = errors.New("feishu operation unavailable")
+)
+
+// ReceiptVerifier proves that the Agent received the fixed-version skills for
+// the server-selected command domain.
+type ReceiptVerifier interface {
+	VerifyRequired(receipts []string, runID uint64, domain string) error
+}
+
+// RecoveryStarter starts or inspects one deterministic authorization recovery.
+// A non-nil action means recovery is still waiting; nil means it completed.
+type RecoveryStarter interface {
+	StartRecovery(ctx context.Context, req RecoveryRequest) (*OperationAction, error)
+}
+
+// ConfirmationRequester publishes a high-risk confirmation action. The
+// OperationService owns the lease-fenced state transition itself.
+type ConfirmationRequester interface {
+	RequestConfirmation(ctx context.Context, operationID string, summary ConfirmationSummary) (*OperationAction, error)
+}
+
+// OperationAccountStore is the account subset required by operation fencing.
+type OperationAccountStore interface {
+	Get(ctx context.Context, userID uint, provider string) (*model.UserThirdPartyAccount, error)
+	EnsurePlaceholder(ctx context.Context, userID uint, provider string) (*model.UserThirdPartyAccount, error)
+}
+
+// OperationStore is the encrypted operation persistence subset.
+type OperationStore interface {
+	CreateOrGetOperation(ctx context.Context, operation *model.FeishuOperation) (*model.FeishuOperation, error)
+	GetOperationForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuOperation, error)
+	ClaimOperation(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
+	TransitionOperation(ctx context.Context, userID uint, generation uint64, id, owner string, from []string, to string, now time.Time, fields map[string]any) error
+}
+
+// OperationHomeVault materializes and generation-fences one temporary CLI HOME.
+type OperationHomeVault interface {
+	WithHome(ctx context.Context, userID uint, generation uint64, callback func(home string) (changed bool, err error)) error
+}
+
+// OperationRunner executes only already-normalized argv inside a vault HOME.
+type OperationRunner interface {
+	Run(ctx context.Context, home string, argv []string, stdinJSON []byte) (*CLIResult, error)
+}
+
+// RecoveryRequest contains only server-owned operation metadata and exact
+// Catalog scopes. It never contains a verification URL.
+type RecoveryRequest struct {
+	UserID      uint
+	Generation  uint64
+	OperationID string
+	AgentRunID  uint64
+	ToolCallID  string
+	Kind        RecoveryKind
+	Scopes      []string
+}
+
+// ConfirmationSummary is the non-sensitive, server-owned high-risk metadata
+// shown to a confirmation adapter. Raw argv and document content are excluded.
+type ConfirmationSummary struct {
+	CommandPath    string
+	Domain         string
+	Action         string
+	Risk           RiskLevel
+	RequiresCLIYes bool
+}
+
+// OperationAction is a transient external action. URL may be returned live but
+// is deliberately never stored in FeishuOperation.ResultSummaryJSON.
+type OperationAction struct {
+	Provider    string    `json:"provider"`
+	OperationID string    `json:"operation_id"`
+	SessionID   string    `json:"session_id,omitempty"`
+	Phase       string    `json:"phase"`
+	URL         string    `json:"url,omitempty"`
+	Scopes      []string  `json:"scopes,omitempty"`
+	ExpiresAt   time.Time `json:"expires_at,omitempty"`
+}
+
+// ExecuteRequest is model-supplied only for IDs, raw allowlisted argv, and
+// opaque skill receipts. Risk, scopes, domain, and normalized argv are derived.
+type ExecuteRequest struct {
+	UserID         uint
+	AgentRunID     uint64
+	ToolCallID     string
+	IdempotencyKey string
+	Argv           []string
+	StdinJSON      json.RawMessage
+	SkillReceipts  []string
+}
+
+// OperationResult is a defensive, non-sensitive view of a persisted operation.
+type OperationResult struct {
+	OperationID string           `json:"operation_id"`
+	State       string           `json:"state"`
+	Data        json.RawMessage  `json:"data,omitempty"`
+	Action      *OperationAction `json:"action,omitempty"`
+	AgentRunID  uint64           `json:"-"`
+	ToolCallID  string           `json:"-"`
+}
+
+// OperationCipherPurpose separates request and result ciphertext domains.
+type OperationCipherPurpose string
+
+const (
+	OperationCipherPurposeRequest OperationCipherPurpose = "request"
+	OperationCipherPurposeResult  OperationCipherPurpose = "result"
+)
+
+// OperationCipherOwner binds ciphertext to one user generation and operation.
+type OperationCipherOwner struct {
+	UserID      uint
+	Generation  uint64
+	OperationID string
+}
+
+// OperationCipherKeyring reads historical key versions and always writes with
+// the configured current version. The input map is frozen at construction.
+type OperationCipherKeyring struct {
+	ciphers        map[string]*pkgcrypto.Cipher
+	currentVersion string
+	currentCipher  *pkgcrypto.Cipher
+}
+
+// NewOperationCipherKeyring constructs the AES-GCM operation payload keyring.
+func NewOperationCipherKeyring(ciphers map[string]*pkgcrypto.Cipher, currentVersion string) (*OperationCipherKeyring, error) {
+	if len(ciphers) == 0 || validateCLIHomeKeyVersion(currentVersion) != nil {
+		return nil, errors.New("feishu operation cipher keyring rejected")
+	}
+	frozen := make(map[string]*pkgcrypto.Cipher, len(ciphers))
+	for version, cipher := range ciphers {
+		if validateCLIHomeKeyVersion(version) != nil || cipher == nil {
+			return nil, errors.New("feishu operation cipher keyring rejected")
+		}
+		frozen[version] = cipher
+	}
+	current, ok := frozen[currentVersion]
+	if !ok {
+		return nil, errors.New("feishu operation current cipher unavailable")
+	}
+	return &OperationCipherKeyring{ciphers: frozen, currentVersion: currentVersion, currentCipher: current}, nil
+}
+
+// Seal encrypts plaintext using the current key and ownership-bound AAD.
+func (k *OperationCipherKeyring) Seal(purpose OperationCipherPurpose, owner OperationCipherOwner, plaintext []byte) ([]byte, string, error) {
+	if k == nil || k.currentCipher == nil || !validOperationCipherContext(purpose, owner) {
+		return nil, "", ErrOperationIntegrity
+	}
+	ciphertext, err := k.currentCipher.EncryptWithAAD(plaintext, operationCipherAAD(purpose, owner, k.currentVersion))
+	if err != nil {
+		return nil, "", ErrOperationIntegrity
+	}
+	return ciphertext, k.currentVersion, nil
+}
+
+// Open decrypts ciphertext only for the exact purpose, owner, generation,
+// operation ID, and historical key version.
+func (k *OperationCipherKeyring) Open(purpose OperationCipherPurpose, owner OperationCipherOwner, keyVersion string, ciphertext []byte) ([]byte, error) {
+	if k == nil || !validOperationCipherContext(purpose, owner) || validateCLIHomeKeyVersion(keyVersion) != nil {
+		return nil, ErrOperationIntegrity
+	}
+	cipher, ok := k.ciphers[keyVersion]
+	if !ok {
+		return nil, ErrOperationIntegrity
+	}
+	plaintext, err := cipher.DecryptWithAAD(ciphertext, operationCipherAAD(purpose, owner, keyVersion))
+	if err != nil {
+		return nil, ErrOperationIntegrity
+	}
+	return plaintext, nil
+}
+
+type operationCipherAADPayload struct {
+	Protocol   string                 `json:"protocol"`
+	Purpose    OperationCipherPurpose `json:"purpose"`
+	UserID     uint                   `json:"user_id"`
+	Generation uint64                 `json:"generation"`
+	Operation  string                 `json:"operation_id"`
+	KeyVersion string                 `json:"key_version"`
+}
+
+func operationCipherAAD(purpose OperationCipherPurpose, owner OperationCipherOwner, keyVersion string) []byte {
+	encoded, _ := json.Marshal(operationCipherAADPayload{
+		Protocol: "feishu-operation-v1", Purpose: purpose, UserID: owner.UserID,
+		Generation: owner.Generation, Operation: owner.OperationID, KeyVersion: keyVersion,
+	})
+	return encoded
+}
+
+func validOperationCipherContext(purpose OperationCipherPurpose, owner OperationCipherOwner) bool {
+	return (purpose == OperationCipherPurposeRequest || purpose == OperationCipherPurposeResult) &&
+		owner.UserID != 0 && owner.Generation != 0 && validStableIdentifier(owner.OperationID, operationMaxOperationIDBytes)
+}
+
+type operationSealedBlob struct {
+	KeyVersion string `json:"key_version"`
+	Ciphertext []byte `json:"ciphertext"`
+}
+
+type persistedOperationRequest struct {
+	AgentRunID            uint64          `json:"agent_run_id"`
+	ToolCallID            string          `json:"tool_call_id"`
+	IdempotencyKey        string          `json:"idempotency_key"`
+	CommandPath           string          `json:"command_path"`
+	Domain                string          `json:"domain"`
+	Action                string          `json:"action"`
+	Risk                  RiskLevel       `json:"risk"`
+	RequiresCLIYes        bool            `json:"requires_cli_yes"`
+	ReplaySafeOnAuthError bool            `json:"replay_safe_on_auth_error"`
+	Scopes                []string        `json:"scopes"`
+	Argv                  []string        `json:"argv"`
+	StdinJSON             json.RawMessage `json:"stdin_json,omitempty"`
+}
+
+type persistedOperationSummary struct {
+	Status            string       `json:"status"`
+	PublicCode        string       `json:"public_code,omitempty"`
+	Phase             string       `json:"phase,omitempty"`
+	SessionID         string       `json:"session_id,omitempty"`
+	ExpiresAt         *time.Time   `json:"expires_at,omitempty"`
+	RecoveryKind      RecoveryKind `json:"recovery_kind,omitempty"`
+	RecoveryScopes    []string     `json:"recovery_scopes,omitempty"`
+	RecoverySignature string       `json:"recovery_signature,omitempty"`
+}
+
+// OperationServiceDeps wires only small one-way Feishu interfaces.
+type OperationServiceDeps struct {
+	Accounts      OperationAccountStore
+	Operations    OperationStore
+	Catalog       *CommandCatalog
+	Receipts      ReceiptVerifier
+	Recovery      RecoveryStarter
+	Confirmation  ConfirmationRequester
+	Vault         OperationHomeVault
+	Runner        OperationRunner
+	Cipher        *OperationCipherKeyring
+	Now           func() time.Time
+	LeaseDuration time.Duration
+}
+
+// FeishuOperationService executes idempotent, encrypted personal-workspace
+// commands without importing the Agent package.
+type FeishuOperationService struct {
+	accounts      OperationAccountStore
+	operations    OperationStore
+	catalog       *CommandCatalog
+	receipts      ReceiptVerifier
+	recovery      RecoveryStarter
+	confirmation  ConfirmationRequester
+	vault         OperationHomeVault
+	runner        OperationRunner
+	cipher        *OperationCipherKeyring
+	classifier    *ErrorClassifier
+	now           func() time.Time
+	leaseDuration time.Duration
+}
+
+// NewFeishuOperationService validates all mandatory operation dependencies.
+func NewFeishuOperationService(deps OperationServiceDeps) (*FeishuOperationService, error) {
+	if deps.Accounts == nil || deps.Operations == nil || deps.Catalog == nil || deps.Receipts == nil ||
+		deps.Recovery == nil || deps.Confirmation == nil || deps.Vault == nil || deps.Runner == nil || deps.Cipher == nil {
+		return nil, errors.New("feishu operation service dependencies rejected")
+	}
+	now := deps.Now
+	if now == nil {
+		now = func() time.Time { return time.Now().UTC() }
+	}
+	leaseDuration := deps.LeaseDuration
+	if leaseDuration <= 0 {
+		leaseDuration = operationDefaultLeaseDuration
+	}
+	return &FeishuOperationService{
+		accounts: deps.Accounts, operations: deps.Operations, catalog: deps.Catalog,
+		receipts: deps.Receipts, recovery: deps.Recovery, confirmation: deps.Confirmation,
+		vault: deps.Vault, runner: deps.Runner, cipher: deps.Cipher,
+		classifier: NewErrorClassifier(), now: now, leaseDuration: leaseDuration,
+	}, nil
+}
+
+// Execute normalizes and verifies a new request before atomically creating or
+// returning the per-user idempotent operation.
+func (s *FeishuOperationService) Execute(ctx context.Context, request ExecuteRequest) (*OperationResult, error) {
+	if err := validateExecuteRequestIdentity(request); err != nil {
+		return nil, err
+	}
+	normalized, err := s.catalog.Normalize(append([]string(nil), request.Argv...), append([]byte(nil), request.StdinJSON...))
+	if err != nil {
+		return nil, ErrOperationRequestRejected
+	}
+	if err := validateOperationReceipts(request.SkillReceipts); err != nil {
+		return nil, err
+	}
+	receiptDomain := operationReceiptDomain(normalized)
+	if err := s.receipts.VerifyRequired(append([]string(nil), request.SkillReceipts...), request.AgentRunID, receiptDomain); err != nil {
+		return nil, ErrOperationRequestRejected
+	}
+
+	account, err := s.loadOrCreateAccount(ctx, request.UserID)
+	if err != nil {
+		return nil, err
+	}
+	operationID := uuid.NewString()
+	persisted := persistedRequestFromNormalized(request, normalized)
+	plaintext, err := json.Marshal(persisted)
+	if err != nil {
+		return nil, ErrOperationIntegrity
+	}
+	fingerprint := operationFingerprint(plaintext)
+	owner := OperationCipherOwner{UserID: request.UserID, Generation: account.Generation, OperationID: operationID}
+	requestCiphertext, keyVersion, err := s.sealOperationBlob(OperationCipherPurposeRequest, owner, plaintext)
+	if err != nil {
+		return nil, err
+	}
+	candidate := &model.FeishuOperation{
+		ID: operationID, UserID: request.UserID, Generation: account.Generation,
+		AgentRunID: request.AgentRunID, ToolCallID: request.ToolCallID,
+		IdempotencyKey: request.IdempotencyKey, CommandPath: normalized.Path,
+		Domain: normalized.Domain, RiskLevel: string(normalized.Risk),
+		RequestCiphertext: requestCiphertext, KeyVersion: keyVersion,
+		RequestFingerprint: fingerprint, State: model.FeishuOperationNotStarted,
+	}
+	stored, err := s.operations.CreateOrGetOperation(ctx, candidate)
+	if err != nil {
+		return nil, ErrOperationUnavailable
+	}
+	if !sameImmutableOperation(stored, candidate) {
+		return nil, ErrOperationIdempotencyConflict
+	}
+	executionRequest := persisted
+	if stored.ID != candidate.ID &&
+		(stored.State == model.FeishuOperationExecuting || stored.State == model.FeishuOperationNotStarted) {
+		executionRequest, err = s.openPersistedRequest(stored)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if stored.State == model.FeishuOperationExecuting {
+		return s.reclaimExpiredExecution(ctx, account, stored, executionRequest)
+	}
+	if stored.State != model.FeishuOperationNotStarted {
+		return s.resultFromOperation(stored)
+	}
+	return s.claimAndExecute(ctx, account, stored, executionRequest, "")
+}
+
+// Resume advances only an existing encrypted operation for the account's
+// current generation. It accepts no argv, receipts, or replacement metadata.
+func (s *FeishuOperationService) Resume(ctx context.Context, userID uint, operationID string) (*OperationResult, error) {
+	if userID == 0 || !validStableIdentifier(operationID, operationMaxOperationIDBytes) {
+		return nil, ErrOperationRequestRejected
+	}
+	account, err := s.accounts.Get(ctx, userID, ProviderLark)
+	if err != nil || !validOperationAccount(account, userID) {
+		return nil, ErrOperationUnavailable
+	}
+	operation, err := s.operations.GetOperationForUser(ctx, userID, account.Generation, operationID)
+	if err != nil {
+		return nil, ErrOperationUnavailable
+	}
+	if terminalOperationState(operation.State) {
+		return s.resultFromOperation(operation)
+	}
+	if operation.State == model.FeishuOperationWaitingConfirmation {
+		return s.resultFromOperation(operation)
+	}
+
+	persisted, err := s.openPersistedRequest(operation)
+	if err != nil {
+		return nil, err
+	}
+	if operation.State == model.FeishuOperationExecuting {
+		return s.reclaimExpiredExecution(ctx, account, operation, persisted)
+	}
+	priorSignature := ""
+	if recoveryWaitingState(operation.State) {
+		summary, summaryErr := decodeOperationSummary(operation.ResultSummaryJSON)
+		if summaryErr != nil || summary.RecoveryKind == "" || summary.RecoverySignature == "" {
+			return nil, ErrOperationIntegrity
+		}
+		priorSignature = summary.RecoverySignature
+		action, recoveryErr := s.recovery.StartRecovery(ctx, RecoveryRequest{
+			UserID: operation.UserID, Generation: operation.Generation, OperationID: operation.ID,
+			AgentRunID: operation.AgentRunID, ToolCallID: operation.ToolCallID,
+			Kind: summary.RecoveryKind, Scopes: append([]string(nil), summary.RecoveryScopes...),
+		})
+		if recoveryErr != nil {
+			return nil, ErrOperationUnavailable
+		}
+		if action != nil {
+			result := baseOperationResult(operation)
+			result.Action = cloneOperationAction(action)
+			result.Action.Provider = ProviderLark
+			result.Action.OperationID = operation.ID
+			result.Action.Phase = summary.Phase
+			result.Action.Scopes = append([]string(nil), summary.RecoveryScopes...)
+			return result, nil
+		}
+		account, err = s.accounts.Get(ctx, userID, ProviderLark)
+		if err != nil || !validOperationAccount(account, userID) || account.Generation != operation.Generation {
+			return nil, ErrOperationUnavailable
+		}
+	}
+	return s.claimAndExecute(ctx, account, operation, persisted, priorSignature)
+}
+
+func (s *FeishuOperationService) reclaimExpiredExecution(
+	ctx context.Context,
+	account *model.UserThirdPartyAccount,
+	operation *model.FeishuOperation,
+	persisted persistedOperationRequest,
+) (*OperationResult, error) {
+	now := s.now().UTC()
+	if operation.LeaseUntil != nil && operation.LeaseUntil.After(now) {
+		return s.resultFromOperation(operation)
+	}
+	owner := uuid.NewString()
+	claimed, err := s.operations.ClaimOperation(
+		ctx,
+		operation.UserID,
+		operation.Generation,
+		operation.ID,
+		owner,
+		now,
+		now.Add(s.leaseDuration),
+	)
+	if err != nil {
+		return nil, ErrOperationUnavailable
+	}
+	if !claimed {
+		return s.reloadResult(ctx, operation)
+	}
+	operation.LeaseOwner = owner
+	if persisted.Risk != RiskRead {
+		return s.commitTerminal(ctx, operation, owner, model.FeishuOperationUnknown, PublicCodeUnknownResult, nil, true)
+	}
+	if err := s.operations.TransitionOperation(
+		ctx,
+		operation.UserID,
+		operation.Generation,
+		operation.ID,
+		owner,
+		[]string{model.FeishuOperationExecuting},
+		model.FeishuOperationExecuting,
+		now,
+		map[string]any{"attempt_count": operation.AttemptCount + 1, "started_at": now},
+	); err != nil {
+		return s.reloadResult(ctx, operation)
+	}
+	operation.AttemptCount++
+	operation.StartedAt = &now
+	return s.executeClaimed(ctx, account, operation, owner, persisted, "")
+}
+
+func (s *FeishuOperationService) loadOrCreateAccount(ctx context.Context, userID uint) (*model.UserThirdPartyAccount, error) {
+	account, err := s.accounts.Get(ctx, userID, ProviderLark)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		account, err = s.accounts.EnsurePlaceholder(ctx, userID, ProviderLark)
+	}
+	if err != nil || !validOperationAccount(account, userID) {
+		return nil, ErrOperationUnavailable
+	}
+	return account, nil
+}
+
+func validOperationAccount(account *model.UserThirdPartyAccount, userID uint) bool {
+	return account != nil && account.UserID == userID && account.Provider == ProviderLark && account.Generation != 0
+}
+
+func (s *FeishuOperationService) claimAndExecute(
+	ctx context.Context,
+	account *model.UserThirdPartyAccount,
+	operation *model.FeishuOperation,
+	persisted persistedOperationRequest,
+	priorRecoverySignature string,
+) (*OperationResult, error) {
+	if terminalOperationState(operation.State) || operation.State == model.FeishuOperationExecuting || operation.State == model.FeishuOperationWaitingConfirmation {
+		return s.resultFromOperation(operation)
+	}
+	owner := uuid.NewString()
+	now := s.now().UTC()
+	claimed, err := s.operations.ClaimOperation(ctx, operation.UserID, operation.Generation, operation.ID, owner, now, now.Add(s.leaseDuration))
+	if err != nil {
+		return nil, ErrOperationUnavailable
+	}
+	if !claimed {
+		return s.reloadResult(ctx, operation)
+	}
+	from := operation.State
+	if err := s.operations.TransitionOperation(ctx, operation.UserID, operation.Generation, operation.ID, owner,
+		[]string{from}, model.FeishuOperationExecuting, now,
+		map[string]any{"attempt_count": operation.AttemptCount + 1, "started_at": now}); err != nil {
+		return s.reloadResult(ctx, operation)
+	}
+	operation.State = model.FeishuOperationExecuting
+	operation.AttemptCount++
+	operation.LeaseOwner = owner
+	operation.StartedAt = &now
+	return s.executeClaimed(ctx, account, operation, owner, persisted, priorRecoverySignature)
+}
+
+func (s *FeishuOperationService) executeClaimed(
+	ctx context.Context,
+	account *model.UserThirdPartyAccount,
+	operation *model.FeishuOperation,
+	leaseOwner string,
+	persisted persistedOperationRequest,
+	priorRecoverySignature string,
+) (*OperationResult, error) {
+	if account.ConnectionState != model.FeishuConnectionConnected {
+		kind := RecoveryCreateApp
+		waitingState := model.FeishuOperationWaitingConnection
+		publicCode := PublicCodeConnectionRequired
+		if account.ConnectionState == model.FeishuConnectionReauthRequired {
+			kind = RecoveryReauth
+			waitingState = model.FeishuOperationWaitingUserAuth
+			publicCode = PublicCodeReauthRequired
+		}
+		return s.startRecoveryAndWait(ctx, operation, leaseOwner, persisted, kind, persisted.Scopes, waitingState, priorRecoverySignature, publicCode)
+	}
+
+	if persisted.Risk == RiskHigh {
+		action, err := s.confirmation.RequestConfirmation(ctx, operation.ID, ConfirmationSummary{
+			CommandPath: persisted.CommandPath, Domain: persisted.Domain, Action: persisted.Action,
+			Risk: persisted.Risk, RequiresCLIYes: persisted.RequiresCLIYes,
+		})
+		if err != nil || action == nil {
+			return s.commitTerminal(ctx, operation, leaseOwner, model.FeishuOperationFailed, PublicCodeFailed, nil, false)
+		}
+		action = cloneOperationAction(action)
+		action.Provider = ProviderLark
+		action.OperationID = operation.ID
+		action.Phase = "confirmation"
+		action.Scopes = nil
+		summary := persistedOperationSummary{Status: model.FeishuOperationWaitingConfirmation, Phase: action.Phase, SessionID: action.SessionID}
+		if !action.ExpiresAt.IsZero() {
+			expires := action.ExpiresAt.UTC()
+			summary.ExpiresAt = &expires
+		}
+		if err := s.transitionWaiting(ctx, operation, leaseOwner, model.FeishuOperationWaitingConfirmation, summary, ""); err != nil {
+			return nil, err
+		}
+		result := baseOperationResult(operation)
+		result.State = model.FeishuOperationWaitingConfirmation
+		result.Action = cloneOperationAction(action)
+		return result, nil
+	}
+
+	maxInvocations := 1
+	if persisted.Risk == RiskRead {
+		maxInvocations = 2
+	}
+	for invocation := 0; invocation < maxInvocations; invocation++ {
+		result, runErr, vaultErr := s.invokeOnce(ctx, operation, persisted)
+		started := result != nil && result.InvocationStarted
+		if vaultErr == nil && runErr == nil && result != nil && started && result.Envelope != nil &&
+			result.Envelope.OK && json.Valid(result.Envelope.Data) {
+			return s.commitTerminal(ctx, operation, leaseOwner, model.FeishuOperationSucceeded, "", result.Envelope.Data, true)
+		}
+
+		classification := s.classifyInvocation(result, runErr, vaultErr, persisted.Scopes, persisted.Risk)
+		if classification.RetryRead && invocation+1 < maxInvocations {
+			continue
+		}
+		if classification.RetryRead {
+			classification.RetryRead = false
+			classification.TerminalState = model.FeishuOperationFailed
+		}
+		if classification.Recovery != RecoveryNone &&
+			(persisted.ReplaySafeOnAuthError || classification.ProvenNoSideEffect) {
+			waitingState := waitingStateForRecovery(classification.Recovery)
+			if waitingState != "" {
+				return s.startRecoveryAndWait(ctx, operation, leaseOwner, persisted, classification.Recovery,
+					classification.MissingScopes, waitingState, priorRecoverySignature, classification.PublicCode)
+			}
+		}
+		terminal := classification.TerminalState
+		if terminal == "" {
+			terminal = model.FeishuOperationFailed
+		}
+		return s.commitTerminal(ctx, operation, leaseOwner, terminal, classification.PublicCode, nil, started)
+	}
+	return s.commitTerminal(ctx, operation, leaseOwner, model.FeishuOperationFailed, PublicCodeFailed, nil, false)
+}
+
+func (s *FeishuOperationService) invokeOnce(
+	ctx context.Context,
+	operation *model.FeishuOperation,
+	persisted persistedOperationRequest,
+) (*CLIResult, error, error) {
+	var result *CLIResult
+	var runErr error
+	vaultErr := s.vault.WithHome(ctx, operation.UserID, operation.Generation, func(home string) (bool, error) {
+		argv := append([]string(nil), persisted.Argv...)
+		// Task 7 establishes confirmation waiting only. A later confirmed-state
+		// adapter must persist authorization before RequiresCLIYes can be appended.
+		result, runErr = s.runner.Run(ctx, home, argv, append([]byte(nil), persisted.StdinJSON...))
+		return result != nil && result.InvocationStarted, nil
+	})
+	return result, runErr, vaultErr
+}
+
+func (s *FeishuOperationService) classifyInvocation(
+	result *CLIResult,
+	runErr, vaultErr error,
+	expectedScopes []string,
+	risk RiskLevel,
+) Classification {
+	started := result != nil && result.InvocationStarted
+	if vaultErr != nil {
+		return s.classifier.ClassifyTransport(vaultErr, risk, started)
+	}
+	if result != nil && result.Envelope != nil && !result.Envelope.OK {
+		return s.classifier.ClassifyEnvelope(result.Envelope, expectedScopes, risk, started)
+	}
+	return s.classifier.ClassifyTransport(runErr, risk, started)
+}
+
+func (s *FeishuOperationService) startRecoveryAndWait(
+	ctx context.Context,
+	operation *model.FeishuOperation,
+	leaseOwner string,
+	persisted persistedOperationRequest,
+	kind RecoveryKind,
+	scopes []string,
+	waitingState string,
+	priorSignature string,
+	publicCode string,
+) (*OperationResult, error) {
+	signature := operationRecoverySignature(kind, scopes)
+	if priorSignature != "" && priorSignature == signature {
+		return s.commitTerminal(ctx, operation, leaseOwner, model.FeishuOperationFailed, PublicCodeFailed, nil, false)
+	}
+	action, err := s.recovery.StartRecovery(ctx, RecoveryRequest{
+		UserID: operation.UserID, Generation: operation.Generation, OperationID: operation.ID,
+		AgentRunID: operation.AgentRunID, ToolCallID: operation.ToolCallID,
+		Kind: kind, Scopes: append([]string(nil), scopes...),
+	})
+	if err != nil || action == nil {
+		return s.commitTerminal(ctx, operation, leaseOwner, model.FeishuOperationFailed, PublicCodeFailed, nil, false)
+	}
+	action = cloneOperationAction(action)
+	action.Provider = ProviderLark
+	action.OperationID = operation.ID
+	action.Phase = phaseForRecovery(kind)
+	action.Scopes = append([]string(nil), scopes...)
+	summary := persistedOperationSummary{
+		Status: waitingState, PublicCode: publicCode, Phase: action.Phase, SessionID: action.SessionID,
+		RecoveryKind: kind, RecoveryScopes: append([]string(nil), scopes...), RecoverySignature: signature,
+	}
+	if !action.ExpiresAt.IsZero() {
+		expires := action.ExpiresAt.UTC()
+		summary.ExpiresAt = &expires
+	}
+	if err := s.transitionWaiting(ctx, operation, leaseOwner, waitingState, summary, publicCode); err != nil {
+		return nil, err
+	}
+	result := baseOperationResult(operation)
+	result.State = waitingState
+	result.Action = cloneOperationAction(action)
+	return result, nil
+}
+
+func (s *FeishuOperationService) transitionWaiting(
+	ctx context.Context,
+	operation *model.FeishuOperation,
+	leaseOwner string,
+	waitingState string,
+	summary persistedOperationSummary,
+	publicCode string,
+) error {
+	now := s.now().UTC()
+	summaryJSON, err := json.Marshal(summary)
+	if err != nil {
+		return ErrOperationIntegrity
+	}
+	fields := map[string]any{
+		"error_type": "", "error_subtype": "", "error_code": "",
+		"result_summary_json": datatypes.JSON(summaryJSON),
+	}
+	if publicCode != "" {
+		fields["error_type"] = "classified"
+		fields["error_subtype"] = publicCode
+	}
+	finalizeCtx, cancel := operationFinalizeContext(ctx)
+	defer cancel()
+	if err := s.operations.TransitionOperation(finalizeCtx, operation.UserID, operation.Generation, operation.ID,
+		leaseOwner, []string{model.FeishuOperationExecuting}, waitingState, now, fields); err != nil {
+		return ErrOperationUnavailable
+	}
+	operation.State = waitingState
+	operation.ResultSummaryJSON = append(datatypes.JSON(nil), summaryJSON...)
+	return nil
+}
+
+func (s *FeishuOperationService) commitTerminal(
+	ctx context.Context,
+	operation *model.FeishuOperation,
+	leaseOwner string,
+	state string,
+	publicCode string,
+	data json.RawMessage,
+	invocationStarted bool,
+) (*OperationResult, error) {
+	now := s.now().UTC()
+	fields := map[string]any{"finished_at": now, "error_type": "", "error_subtype": "", "error_code": ""}
+	summary := persistedOperationSummary{Status: state, PublicCode: publicCode}
+	if state == model.FeishuOperationSucceeded {
+		owner := OperationCipherOwner{UserID: operation.UserID, Generation: operation.Generation, OperationID: operation.ID}
+		ciphertext, _, err := s.sealOperationBlob(OperationCipherPurposeResult, owner, append([]byte(nil), data...))
+		if err != nil {
+			if invocationStarted && writeLikeRisk(RiskLevel(operation.RiskLevel)) {
+				state = model.FeishuOperationUnknown
+				summary = persistedOperationSummary{Status: state, PublicCode: PublicCodeUnknownResult}
+			} else {
+				state = model.FeishuOperationFailed
+				summary = persistedOperationSummary{Status: state, PublicCode: PublicCodeFailed}
+			}
+		} else {
+			fields["result_ciphertext"] = ciphertext
+		}
+	}
+	if state != model.FeishuOperationSucceeded {
+		fields["error_type"] = "classified"
+		fields["error_subtype"] = summary.PublicCode
+	}
+	summaryJSON, err := json.Marshal(summary)
+	if err != nil {
+		return nil, ErrOperationIntegrity
+	}
+	fields["result_summary_json"] = datatypes.JSON(summaryJSON)
+	finalizeCtx, cancel := operationFinalizeContext(ctx)
+	defer cancel()
+	transitionErr := s.operations.TransitionOperation(finalizeCtx, operation.UserID, operation.Generation, operation.ID,
+		leaseOwner, []string{model.FeishuOperationExecuting}, state, now, fields)
+	if transitionErr != nil {
+		if invocationStarted && writeLikeRisk(RiskLevel(operation.RiskLevel)) {
+			result := baseOperationResult(operation)
+			result.State = model.FeishuOperationUnknown
+			return result, nil
+		}
+		return nil, ErrOperationUnavailable
+	}
+	operation.State = state
+	operation.FinishedAt = &now
+	operation.ResultSummaryJSON = append(datatypes.JSON(nil), summaryJSON...)
+	if ciphertext, ok := fields["result_ciphertext"].([]byte); ok {
+		operation.ResultCiphertext = append([]byte(nil), ciphertext...)
+	}
+	return s.resultFromOperation(operation)
+}
+
+func operationFinalizeContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), operationFinalizeTimeout)
+}
+
+func (s *FeishuOperationService) resultFromOperation(operation *model.FeishuOperation) (*OperationResult, error) {
+	result := baseOperationResult(operation)
+	if operation.State == model.FeishuOperationSucceeded {
+		if len(operation.ResultCiphertext) == 0 {
+			return nil, ErrOperationIntegrity
+		}
+		owner := OperationCipherOwner{UserID: operation.UserID, Generation: operation.Generation, OperationID: operation.ID}
+		plaintext, _, err := s.openOperationBlob(OperationCipherPurposeResult, owner, "", operation.ResultCiphertext)
+		if err != nil || !json.Valid(plaintext) {
+			return nil, ErrOperationIntegrity
+		}
+		result.Data = append(json.RawMessage(nil), plaintext...)
+		return result, nil
+	}
+	if recoveryWaitingState(operation.State) || operation.State == model.FeishuOperationWaitingConfirmation {
+		summary, err := decodeOperationSummary(operation.ResultSummaryJSON)
+		if err != nil {
+			return nil, ErrOperationIntegrity
+		}
+		result.Action = &OperationAction{
+			Provider: ProviderLark, OperationID: operation.ID, SessionID: summary.SessionID,
+			Phase: summary.Phase, Scopes: append([]string(nil), summary.RecoveryScopes...),
+		}
+		if summary.ExpiresAt != nil {
+			result.Action.ExpiresAt = summary.ExpiresAt.UTC()
+		}
+	}
+	return result, nil
+}
+
+func (s *FeishuOperationService) reloadResult(ctx context.Context, operation *model.FeishuOperation) (*OperationResult, error) {
+	latest, err := s.operations.GetOperationForUser(ctx, operation.UserID, operation.Generation, operation.ID)
+	if err != nil {
+		return nil, ErrOperationUnavailable
+	}
+	return s.resultFromOperation(latest)
+}
+
+func (s *FeishuOperationService) openPersistedRequest(operation *model.FeishuOperation) (persistedOperationRequest, error) {
+	owner := OperationCipherOwner{UserID: operation.UserID, Generation: operation.Generation, OperationID: operation.ID}
+	plaintext, keyVersion, err := s.openOperationBlob(OperationCipherPurposeRequest, owner, operation.KeyVersion, operation.RequestCiphertext)
+	if err != nil || keyVersion != operation.KeyVersion || operationFingerprint(plaintext) != operation.RequestFingerprint {
+		return persistedOperationRequest{}, ErrOperationIntegrity
+	}
+	decoder := json.NewDecoder(bytes.NewReader(plaintext))
+	decoder.DisallowUnknownFields()
+	var persisted persistedOperationRequest
+	if err := decoder.Decode(&persisted); err != nil {
+		return persistedOperationRequest{}, ErrOperationIntegrity
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return persistedOperationRequest{}, ErrOperationIntegrity
+	}
+	canonical, err := json.Marshal(persisted)
+	if err != nil || !bytes.Equal(canonical, plaintext) {
+		return persistedOperationRequest{}, ErrOperationIntegrity
+	}
+	if persisted.AgentRunID != operation.AgentRunID || persisted.ToolCallID != operation.ToolCallID ||
+		persisted.IdempotencyKey != operation.IdempotencyKey || persisted.CommandPath != operation.CommandPath ||
+		persisted.Domain != operation.Domain || string(persisted.Risk) != operation.RiskLevel ||
+		len(persisted.Argv) == 0 || validateControlledCLIInput(persisted.Argv, persisted.StdinJSON) != nil {
+		return persistedOperationRequest{}, ErrOperationIntegrity
+	}
+	persisted.Argv = append([]string(nil), persisted.Argv...)
+	persisted.Scopes = append([]string(nil), persisted.Scopes...)
+	persisted.StdinJSON = append(json.RawMessage(nil), persisted.StdinJSON...)
+	return persisted, nil
+}
+
+func (s *FeishuOperationService) sealOperationBlob(
+	purpose OperationCipherPurpose,
+	owner OperationCipherOwner,
+	plaintext []byte,
+) ([]byte, string, error) {
+	ciphertext, keyVersion, err := s.cipher.Seal(purpose, owner, plaintext)
+	if err != nil {
+		return nil, "", ErrOperationIntegrity
+	}
+	blob, err := json.Marshal(operationSealedBlob{KeyVersion: keyVersion, Ciphertext: ciphertext})
+	if err != nil {
+		return nil, "", ErrOperationIntegrity
+	}
+	return blob, keyVersion, nil
+}
+
+func (s *FeishuOperationService) openOperationBlob(
+	purpose OperationCipherPurpose,
+	owner OperationCipherOwner,
+	expectedKeyVersion string,
+	blob []byte,
+) ([]byte, string, error) {
+	decoder := json.NewDecoder(bytes.NewReader(blob))
+	decoder.DisallowUnknownFields()
+	var sealed operationSealedBlob
+	if err := decoder.Decode(&sealed); err != nil || len(sealed.Ciphertext) == 0 ||
+		(expectedKeyVersion != "" && sealed.KeyVersion != expectedKeyVersion) {
+		return nil, "", ErrOperationIntegrity
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return nil, "", ErrOperationIntegrity
+	}
+	plaintext, err := s.cipher.Open(purpose, owner, sealed.KeyVersion, sealed.Ciphertext)
+	if err != nil {
+		return nil, "", ErrOperationIntegrity
+	}
+	return plaintext, sealed.KeyVersion, nil
+}
+
+func persistedRequestFromNormalized(request ExecuteRequest, normalized *NormalizedCommand) persistedOperationRequest {
+	return persistedOperationRequest{
+		AgentRunID: request.AgentRunID, ToolCallID: request.ToolCallID, IdempotencyKey: request.IdempotencyKey,
+		CommandPath: normalized.Path, Domain: normalized.Domain, Action: normalized.Action, Risk: normalized.Risk,
+		RequiresCLIYes: normalized.RequiresCLIYes, ReplaySafeOnAuthError: normalized.ReplaySafeOnAuthError,
+		Scopes: append([]string(nil), normalized.Scopes...), Argv: append([]string(nil), normalized.Argv...),
+		StdinJSON: append(json.RawMessage(nil), normalized.StdinJSON...),
+	}
+}
+
+func sameImmutableOperation(stored, candidate *model.FeishuOperation) bool {
+	return stored != nil && candidate != nil && stored.UserID == candidate.UserID && stored.Generation == candidate.Generation &&
+		stored.AgentRunID == candidate.AgentRunID && stored.ToolCallID == candidate.ToolCallID &&
+		stored.IdempotencyKey == candidate.IdempotencyKey && stored.CommandPath == candidate.CommandPath &&
+		stored.Domain == candidate.Domain && stored.RiskLevel == candidate.RiskLevel &&
+		stored.RequestFingerprint == candidate.RequestFingerprint
+}
+
+func validateExecuteRequestIdentity(request ExecuteRequest) error {
+	if request.UserID == 0 || request.AgentRunID == 0 || !validStableIdentifier(request.ToolCallID, operationMaxToolCallIDBytes) {
+		return ErrOperationRequestRejected
+	}
+	expected := fmt.Sprintf("%d:%s", request.AgentRunID, request.ToolCallID)
+	if len(expected) > operationMaxIdempotencyBytes || request.IdempotencyKey != expected {
+		return ErrOperationRequestRejected
+	}
+	return nil
+}
+
+func validStableIdentifier(value string, maxBytes int) bool {
+	if value == "" || len(value) > maxBytes || !utf8.ValidString(value) || strings.TrimSpace(value) != value || strings.IndexByte(value, 0) >= 0 {
+		return false
+	}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+func validateOperationReceipts(receipts []string) error {
+	if len(receipts) == 0 || len(receipts) > operationMaxReceiptCount {
+		return ErrOperationRequestRejected
+	}
+	for _, receipt := range receipts {
+		if receipt == "" || len(receipt) > operationMaxReceiptBytes || strings.TrimSpace(receipt) != receipt || strings.IndexByte(receipt, 0) >= 0 {
+			return ErrOperationRequestRejected
+		}
+	}
+	return nil
+}
+
+func operationReceiptDomain(command *NormalizedCommand) string {
+	if command.Domain == SkillDomainDocs {
+		for index, argument := range command.Argv {
+			if argument != "--doc" || index+1 >= len(command.Argv) {
+				continue
+			}
+			parsed, err := url.Parse(command.Argv[index+1])
+			if err == nil && parsed.Scheme == "https" && strings.HasPrefix(parsed.EscapedPath(), "/wiki/") {
+				return SkillDomainWikiContent
+			}
+		}
+	}
+	return command.Domain
+}
+
+func operationFingerprint(canonical []byte) string {
+	sum := sha256.Sum256(canonical)
+	return hex.EncodeToString(sum[:])
+}
+
+func operationRecoverySignature(kind RecoveryKind, scopes []string) string {
+	canonical, _ := json.Marshal(struct {
+		Kind   RecoveryKind `json:"kind"`
+		Scopes []string     `json:"scopes"`
+	}{Kind: kind, Scopes: append([]string(nil), scopes...)})
+	return string(canonical)
+}
+
+func waitingStateForRecovery(kind RecoveryKind) string {
+	switch kind {
+	case RecoveryCreateApp:
+		return model.FeishuOperationWaitingConnection
+	case RecoveryAppScope:
+		return model.FeishuOperationWaitingAppScope
+	case RecoveryUserScope, RecoveryReauth:
+		return model.FeishuOperationWaitingUserAuth
+	default:
+		return ""
+	}
+}
+
+func phaseForRecovery(kind RecoveryKind) string {
+	switch kind {
+	case RecoveryCreateApp:
+		return model.FeishuAuthPhaseCreateApp
+	case RecoveryAppScope:
+		return model.FeishuAuthPhaseAppScope
+	case RecoveryUserScope, RecoveryReauth:
+		return model.FeishuAuthPhaseUserAuth
+	default:
+		return ""
+	}
+}
+
+func terminalOperationState(state string) bool {
+	switch state {
+	case model.FeishuOperationSucceeded, model.FeishuOperationFailed, model.FeishuOperationUnknown, model.FeishuOperationCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+func recoveryWaitingState(state string) bool {
+	switch state {
+	case model.FeishuOperationWaitingConnection, model.FeishuOperationWaitingAppScope, model.FeishuOperationWaitingUserAuth:
+		return true
+	default:
+		return false
+	}
+}
+
+func baseOperationResult(operation *model.FeishuOperation) *OperationResult {
+	return &OperationResult{
+		OperationID: operation.ID, State: operation.State,
+		AgentRunID: operation.AgentRunID, ToolCallID: operation.ToolCallID,
+	}
+}
+
+func cloneOperationAction(action *OperationAction) *OperationAction {
+	if action == nil {
+		return nil
+	}
+	clone := *action
+	clone.Scopes = append([]string(nil), action.Scopes...)
+	return &clone
+}
+
+func decodeOperationSummary(raw []byte) (persistedOperationSummary, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var summary persistedOperationSummary
+	if err := decoder.Decode(&summary); err != nil || summary.Status == "" {
+		return persistedOperationSummary{}, ErrOperationIntegrity
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return persistedOperationSummary{}, ErrOperationIntegrity
+	}
+	summary.RecoveryScopes = append([]string(nil), summary.RecoveryScopes...)
+	return summary, nil
+}

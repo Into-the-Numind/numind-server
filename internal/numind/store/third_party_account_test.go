@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -133,6 +134,53 @@ func TestThirdPartyAccountStore_Get_Miss(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, gorm.ErrRecordNotFound),
 		"未连接应返回 gorm.ErrRecordNotFound 供 biz 走未连接分支")
+}
+
+func TestThirdPartyAccountStore_EnsurePlaceholderNeverOverwritesExistingAccount(t *testing.T) {
+	db := newThirdPartyAccountTestDB(t)
+	s := newThirdPartyAccountStore(db)
+	ctx := context.Background()
+
+	placeholder, err := s.EnsurePlaceholder(ctx, 7, "lark")
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuConnectionNone, placeholder.ConnectionState)
+	require.EqualValues(t, 1, placeholder.Generation)
+	require.Empty(t, placeholder.AppID)
+
+	require.NoError(t, db.Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ?", 7, "lark").
+		Updates(map[string]any{
+			"app_id": "cli_keep", "connection_state": model.FeishuConnectionConnected,
+			"connected": true, "generation": 8,
+		}).Error)
+
+	const workers = 20
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for index := 0; index < workers; index++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, ensureErr := s.EnsurePlaceholder(ctx, 7, "lark")
+			errs <- ensureErr
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for ensureErr := range errs {
+		require.NoError(t, ensureErr)
+	}
+
+	got, err := s.Get(ctx, 7, "lark")
+	require.NoError(t, err)
+	require.Equal(t, "cli_keep", got.AppID)
+	require.Equal(t, model.FeishuConnectionConnected, got.ConnectionState)
+	require.True(t, got.Connected)
+	require.EqualValues(t, 8, got.Generation)
+	var count int64
+	require.NoError(t, db.Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ?", 7, "lark").Count(&count).Error)
+	require.EqualValues(t, 1, count)
 }
 
 func TestThirdPartyAccountStore_Get_IsolatedByUserAndProvider(t *testing.T) {
