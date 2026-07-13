@@ -31,6 +31,7 @@ const (
 	authSessionCLIHardCeiling           = 12 * time.Minute
 	authSessionCLIStatusTimeout         = 15 * time.Second
 	authSessionCLIMaxLineBytes          = 1 << 20
+	authSessionFinalizeTimeout          = 5 * time.Second
 )
 
 var (
@@ -66,7 +67,9 @@ type AuthSessionStore interface {
 	CreateOrGetPendingSession(ctx context.Context, session *model.FeishuAuthSession) (*model.FeishuAuthSession, bool, error)
 	GetSessionForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuAuthSession, error)
 	ClaimSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
+	RenewSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
 	UpdateSessionState(ctx context.Context, userID uint, generation uint64, id, owner, state string, now time.Time, completedAt *time.Time) error
+	FinalizeSessionCompleted(ctx context.Context, userID uint, generation uint64, id, owner, accountState string, connected bool, now time.Time) error
 	UpdateAccountConnectionState(ctx context.Context, userID uint, generation uint64, state string, connected bool, now time.Time) error
 }
 
@@ -82,6 +85,7 @@ type AuthSessionServiceDeps struct {
 
 	Now               func() time.Time
 	NewID             func() string
+	NewLeaseToken     func() string
 	LeaseDuration     time.Duration
 	SessionDuration   time.Duration
 	HeartbeatInterval time.Duration
@@ -102,6 +106,24 @@ type authSessionURLValue struct {
 type authSessionURLRegistry struct {
 	mu     sync.RWMutex
 	values map[authSessionURLKey]authSessionURLValue
+}
+
+type authSessionActivation struct {
+	activate chan struct{}
+	abort    chan struct{}
+	once     sync.Once
+}
+
+func newAuthSessionActivation() *authSessionActivation {
+	return &authSessionActivation{activate: make(chan struct{}), abort: make(chan struct{})}
+}
+
+func (a *authSessionActivation) allow() {
+	a.once.Do(func() { close(a.activate) })
+}
+
+func (a *authSessionActivation) stop() {
+	a.once.Do(func() { close(a.abort) })
 }
 
 func newAuthSessionURLRegistry() *authSessionURLRegistry {
@@ -138,15 +160,17 @@ type AuthSessionService struct {
 	vault      OperationHomeVault
 	cli        AuthSessionCLI
 	dispatcher OperationResumeDispatcher
-	owner      string
 
 	now               func() time.Time
 	newID             func() string
+	newLeaseToken     func() string
 	leaseDuration     time.Duration
 	sessionDuration   time.Duration
 	heartbeatInterval time.Duration
 	startTimeout      time.Duration
 	urls              *authSessionURLRegistry
+	activationMu      sync.Mutex
+	activations       map[string]*authSessionActivation
 }
 
 // NewAuthSessionService validates the one-way authorization dependencies.
@@ -163,6 +187,14 @@ func NewAuthSessionService(deps AuthSessionServiceDeps) (*AuthSessionService, er
 	if newID == nil {
 		newID = func() string { return uuid.NewString() }
 	}
+	newLeaseToken := deps.NewLeaseToken
+	if newLeaseToken == nil {
+		ownerPrefix := strings.TrimSpace(deps.Owner)
+		if len(ownerPrefix) > 80 {
+			ownerPrefix = ownerPrefix[:80]
+		}
+		newLeaseToken = func() string { return ownerPrefix + ":" + uuid.NewString() }
+	}
 	leaseDuration := positiveDurationOr(deps.LeaseDuration, authSessionDefaultLeaseDuration)
 	sessionDuration := positiveDurationOr(deps.SessionDuration, authSessionDefaultDuration)
 	heartbeatInterval := positiveDurationOr(deps.HeartbeatInterval, authSessionDefaultHeartbeatInterval)
@@ -172,10 +204,10 @@ func NewAuthSessionService(deps AuthSessionServiceDeps) (*AuthSessionService, er
 	}
 	return &AuthSessionService{
 		accounts: deps.Accounts, sessions: deps.Sessions, vault: deps.Vault, cli: deps.CLI,
-		dispatcher: deps.Dispatcher, owner: strings.TrimSpace(deps.Owner), now: now, newID: newID,
+		dispatcher: deps.Dispatcher, now: now, newID: newID, newLeaseToken: newLeaseToken,
 		leaseDuration: leaseDuration, sessionDuration: sessionDuration,
 		heartbeatInterval: heartbeatInterval, startTimeout: startTimeout,
-		urls: newAuthSessionURLRegistry(),
+		urls: newAuthSessionURLRegistry(), activations: make(map[string]*authSessionActivation),
 	}, nil
 }
 
@@ -184,6 +216,78 @@ func positiveDurationOr(value, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return value
+}
+
+func (s *AuthSessionService) leaseToken() (string, error) {
+	token := strings.TrimSpace(s.newLeaseToken())
+	if token == "" || len(token) > 128 {
+		return "", ErrAuthSessionUnavailable
+	}
+	return token, nil
+}
+
+// Activate releases an operation-linked worker only after the operation's
+// waiting state has been durably persisted. App-scope sessions have no worker,
+// so an unknown session is an intentional no-op.
+func (s *AuthSessionService) Activate(ctx context.Context, sessionID string) error {
+	if err := ctx.Err(); err != nil {
+		return ErrAuthSessionUnavailable
+	}
+	s.activationMu.Lock()
+	activation := s.activations[sessionID]
+	s.activationMu.Unlock()
+	if activation != nil {
+		activation.allow()
+	}
+	return nil
+}
+
+// Abort cancels a worker that must not complete because waiting persistence or
+// activation failed.
+func (s *AuthSessionService) Abort(sessionID string) {
+	s.activationMu.Lock()
+	activation := s.activations[sessionID]
+	s.activationMu.Unlock()
+	if activation != nil {
+		activation.stop()
+	}
+}
+
+func (s *AuthSessionService) registerActivation(sessionID string) (*authSessionActivation, error) {
+	activation := newAuthSessionActivation()
+	s.activationMu.Lock()
+	defer s.activationMu.Unlock()
+	if _, exists := s.activations[sessionID]; exists {
+		return nil, ErrAuthSessionUnavailable
+	}
+	s.activations[sessionID] = activation
+	return activation, nil
+}
+
+func (s *AuthSessionService) removeActivation(sessionID string, activation *authSessionActivation) {
+	s.activationMu.Lock()
+	defer s.activationMu.Unlock()
+	if s.activations[sessionID] == activation {
+		delete(s.activations, sessionID)
+	}
+}
+
+func (s *AuthSessionService) waitForActivation(ctx context.Context, activation *authSessionActivation) error {
+	if activation == nil {
+		return nil
+	}
+	timer := time.NewTimer(s.startTimeout)
+	defer timer.Stop()
+	select {
+	case <-activation.activate:
+		return nil
+	case <-activation.abort:
+		return ErrAuthSessionUnavailable
+	case <-ctx.Done():
+		return ErrAuthSessionUnavailable
+	case <-timer.C:
+		return ErrAuthSessionUnavailable
+	}
 }
 
 // ConnectManual requests only the long-lived identity scope. Business scopes
@@ -267,6 +371,11 @@ func (s *AuthSessionService) start(
 		return nil, ErrAuthSessionUnavailable
 	}
 	if session.State == model.FeishuAuthSessionCompleted {
+		if session.OperationID != nil && *session.OperationID != "" {
+			if err := s.dispatchResumeDetached(ctx, session.UserID, *session.OperationID); err != nil {
+				return nil, err
+			}
+		}
 		return nil, nil
 	}
 
@@ -287,6 +396,8 @@ func (s *AuthSessionService) start(
 
 	if !created {
 		if session.LeaseUntil != nil && session.LeaseUntil.After(now) {
+			// Another process owns the live worker. Its transient URL is not in
+			// this process; Task 13 may add an explicit same-session URL refresh.
 			return s.actionFor(session, scopes), nil
 		}
 		return s.recoverExpired(ctx, session, request, scopes)
@@ -354,13 +465,30 @@ func authSessionMatches(
 ) bool {
 	if session == nil || session.UserID != userID || session.Generation != generation || session.Phase != phase ||
 		(session.State != model.FeishuAuthSessionPending && session.State != model.FeishuAuthSessionCompleted) ||
-		string(session.RequestedScopesJSON) != string(scopesJSON) {
+		!authSessionScopeJSONEqual(session.RequestedScopesJSON, scopesJSON) {
 		return false
 	}
 	if operationID == nil {
 		return session.OperationID == nil
 	}
 	return session.OperationID != nil && *session.OperationID == *operationID
+}
+
+func authSessionScopeJSONEqual(left, right []byte) bool {
+	var leftScopes []string
+	if err := json.Unmarshal(left, &leftScopes); err != nil {
+		return false
+	}
+	var rightScopes []string
+	if err := json.Unmarshal(right, &rightScopes); err != nil || len(leftScopes) != len(rightScopes) {
+		return false
+	}
+	for index := range leftScopes {
+		if leftScopes[index] != rightScopes[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func parseOfficialLarkURL(raw string) (*url.URL, error) {
@@ -428,8 +556,12 @@ func (s *AuthSessionService) recoverExpired(
 	scopes []string,
 ) (*OperationAction, error) {
 	now := s.now().UTC()
+	leaseToken, err := s.leaseToken()
+	if err != nil {
+		return nil, err
+	}
 	claimed, err := s.sessions.ClaimSession(
-		ctx, session.UserID, session.Generation, session.ID, s.owner, now, now.Add(s.leaseDuration),
+		ctx, session.UserID, session.Generation, session.ID, leaseToken, now, now.Add(s.leaseDuration),
 	)
 	if err != nil {
 		return nil, ErrAuthSessionUnavailable
@@ -438,6 +570,17 @@ func (s *AuthSessionService) recoverExpired(
 		fresh, getErr := s.sessions.GetSessionForUser(ctx, session.UserID, session.Generation, session.ID)
 		if getErr != nil {
 			return nil, ErrAuthSessionUnavailable
+		}
+		if fresh.State == model.FeishuAuthSessionCompleted {
+			if fresh.OperationID != nil && *fresh.OperationID != "" {
+				if dispatchErr := s.dispatchResumeDetached(ctx, fresh.UserID, *fresh.OperationID); dispatchErr != nil {
+					return nil, dispatchErr
+				}
+			}
+			return nil, nil
+		}
+		if fresh.State != model.FeishuAuthSessionPending {
+			return s.start(ctx, request, request.OperationID == "")
 		}
 		return s.actionFor(fresh, scopes), nil
 	}
@@ -449,21 +592,20 @@ func (s *AuthSessionService) recoverExpired(
 		return false, checkErr
 	})
 	if statusErr != nil {
+		if supersedeErr := s.supersedeOwned(ctx, session, leaseToken, now); supersedeErr != nil {
+			return nil, supersedeErr
+		}
 		return nil, ErrAuthSessionUnavailable
 	}
 	if authorized {
-		if err := s.completeOwned(ctx, session, now, true); err != nil {
+		if err := s.completeOwned(ctx, session, leaseToken, now, true); err != nil {
 			return nil, err
 		}
 		return nil, nil
 	}
-	if err := s.sessions.UpdateSessionState(
-		ctx, session.UserID, session.Generation, session.ID, s.owner,
-		model.FeishuAuthSessionSuperseded, now, nil,
-	); err != nil {
+	if err := s.supersedeOwned(ctx, session, leaseToken, now); err != nil {
 		return nil, ErrAuthSessionUnavailable
 	}
-	s.urls.remove(authSessionRegistryKey(session))
 	return s.start(ctx, request, request.OperationID == "")
 }
 
@@ -475,8 +617,12 @@ func (s *AuthSessionService) claimAndStart(
 	scopes []string,
 ) (*OperationAction, error) {
 	now := s.now().UTC()
+	leaseToken, err := s.leaseToken()
+	if err != nil {
+		return nil, err
+	}
 	claimed, err := s.sessions.ClaimSession(
-		ctx, session.UserID, session.Generation, session.ID, s.owner, now, now.Add(s.leaseDuration),
+		ctx, session.UserID, session.Generation, session.ID, leaseToken, now, now.Add(s.leaseDuration),
 	)
 	if err != nil || !claimed {
 		return nil, ErrAuthSessionUnavailable
@@ -486,14 +632,27 @@ func (s *AuthSessionService) claimAndStart(
 		state = model.FeishuConnectionCreatingApp
 	}
 	if err := s.sessions.UpdateAccountConnectionState(ctx, session.UserID, session.Generation, state, false, now); err != nil {
+		if supersedeErr := s.supersedeOwned(ctx, session, leaseToken, now); supersedeErr != nil {
+			return nil, supersedeErr
+		}
 		return nil, ErrAuthSessionUnavailable
+	}
+	var activation *authSessionActivation
+	if request.OperationID != "" {
+		activation, err = s.registerActivation(session.ID)
+		if err != nil {
+			if supersedeErr := s.supersedeOwned(ctx, session, leaseToken, now); supersedeErr != nil {
+				return nil, supersedeErr
+			}
+			return nil, err
+		}
 	}
 
 	urlReady := make(chan struct{}, 1)
 	done := make(chan error, 1)
 	workerContext, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	go func() {
-		done <- s.runWorker(workerContext, cancel, session, argv, urlReady)
+		done <- s.runWorker(workerContext, cancel, session, leaseToken, argv, urlReady, activation)
 	}()
 
 	timer := time.NewTimer(s.startTimeout)
@@ -507,9 +666,11 @@ func (s *AuthSessionService) claimAndStart(
 		}
 		return nil, nil
 	case <-timer.C:
+		s.Abort(session.ID)
 		cancel()
 		return nil, ErrAuthSessionUnavailable
 	case <-ctx.Done():
+		s.Abort(session.ID)
 		cancel()
 		return nil, ErrAuthSessionUnavailable
 	}
@@ -519,12 +680,15 @@ func (s *AuthSessionService) runWorker(
 	ctx context.Context,
 	cancel context.CancelFunc,
 	session *model.FeishuAuthSession,
+	leaseToken string,
 	argv []string,
 	urlReady chan<- struct{},
+	activation *authSessionActivation,
 ) error {
 	defer cancel()
+	defer s.removeActivation(session.ID, activation)
 	heartbeatDone := make(chan struct{})
-	go s.runHeartbeat(ctx, session, cancel, heartbeatDone)
+	go s.runHeartbeat(ctx, session, leaseToken, cancel, heartbeatDone)
 
 	runErr := s.vault.WithHome(ctx, session.UserID, session.Generation, func(home string) (bool, error) {
 		err := s.cli.RunBlocking(ctx, home, append([]string(nil), argv...), func(rawURL string) error {
@@ -536,7 +700,7 @@ func (s *AuthSessionService) runWorker(
 			case urlReady <- struct{}{}:
 			default:
 			}
-			return nil
+			return s.waitForActivation(ctx, activation)
 		})
 		return err == nil, err
 	})
@@ -544,13 +708,14 @@ func (s *AuthSessionService) runWorker(
 	<-heartbeatDone
 	if runErr != nil {
 		now := s.now().UTC()
-		_ = s.sessions.UpdateSessionState(
-			context.WithoutCancel(ctx), session.UserID, session.Generation, session.ID, s.owner,
-			model.FeishuAuthSessionFailed, now, nil,
-		)
+		finalizeCtx, finalizeCancel := authSessionDetachedContext(ctx)
+		_ = s.sessions.UpdateSessionState(finalizeCtx, session.UserID, session.Generation, session.ID, leaseToken,
+			model.FeishuAuthSessionFailed, now, nil)
+		finalizeCancel()
+		s.urls.remove(authSessionRegistryKey(session))
 		return ErrAuthSessionUnavailable
 	}
-	if err := s.completeOwned(context.WithoutCancel(ctx), session, s.now().UTC(), false); err != nil {
+	if err := s.completeOwned(ctx, session, leaseToken, s.now().UTC(), false); err != nil {
 		return err
 	}
 	return nil
@@ -559,6 +724,7 @@ func (s *AuthSessionService) runWorker(
 func (s *AuthSessionService) runHeartbeat(
 	ctx context.Context,
 	session *model.FeishuAuthSession,
+	leaseToken string,
 	cancel context.CancelFunc,
 	done chan<- struct{},
 ) {
@@ -571,10 +737,10 @@ func (s *AuthSessionService) runHeartbeat(
 			return
 		case <-ticker.C:
 			now := s.now().UTC()
-			claimed, err := s.sessions.ClaimSession(
-				ctx, session.UserID, session.Generation, session.ID, s.owner, now, now.Add(s.leaseDuration),
+			renewed, err := s.sessions.RenewSession(
+				ctx, session.UserID, session.Generation, session.ID, leaseToken, now, now.Add(s.leaseDuration),
 			)
-			if err != nil || !claimed {
+			if err != nil || !renewed {
 				cancel()
 				return
 			}
@@ -585,32 +751,74 @@ func (s *AuthSessionService) runHeartbeat(
 func (s *AuthSessionService) completeOwned(
 	ctx context.Context,
 	session *model.FeishuAuthSession,
+	leaseToken string,
 	now time.Time,
 	authorizedRecovery bool,
 ) error {
 	completedAt := now.UTC()
-	if err := s.sessions.UpdateSessionState(
-		ctx, session.UserID, session.Generation, session.ID, s.owner,
-		model.FeishuAuthSessionCompleted, completedAt, &completedAt,
-	); err != nil {
-		return ErrAuthSessionUnavailable
-	}
 	state := model.FeishuConnectionConnected
 	connected := true
 	if session.Phase == model.FeishuAuthPhaseCreateApp && !authorizedRecovery {
 		state = model.FeishuConnectionAppReady
 		connected = false
 	}
-	if err := s.sessions.UpdateAccountConnectionState(
-		ctx, session.UserID, session.Generation, state, connected, completedAt,
-	); err != nil {
+	finalizeCtx, finalizeCancel := authSessionDetachedContext(ctx)
+	err := s.sessions.FinalizeSessionCompleted(
+		finalizeCtx, session.UserID, session.Generation, session.ID, leaseToken, state, connected, completedAt,
+	)
+	finalizeCancel()
+	if err != nil {
 		return ErrAuthSessionUnavailable
 	}
 	s.urls.remove(authSessionRegistryKey(session))
 	if session.OperationID != nil && *session.OperationID != "" {
-		if err := s.dispatcher.DispatchResume(ctx, session.UserID, *session.OperationID); err != nil {
+		return s.dispatchResumeDetached(ctx, session.UserID, *session.OperationID)
+	}
+	if session.Phase == model.FeishuAuthPhaseCreateApp && !authorizedRecovery {
+		chainCtx, chainCancel := authSessionDetachedContext(ctx)
+		_, chainErr := s.start(chainCtx, RecoveryRequest{
+			UserID: session.UserID, Generation: session.Generation, Kind: RecoveryReauth,
+			Scopes: []string{"offline_access"},
+		}, true)
+		chainCancel()
+		if chainErr != nil {
 			return ErrAuthSessionUnavailable
 		}
+	}
+	return nil
+}
+
+func authSessionDetachedContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), authSessionFinalizeTimeout)
+}
+
+func (s *AuthSessionService) dispatchResumeDetached(ctx context.Context, userID uint, operationID string) error {
+	dispatchCtx, dispatchCancel := authSessionDetachedContext(ctx)
+	defer dispatchCancel()
+	if err := s.dispatcher.DispatchResume(dispatchCtx, userID, operationID); err != nil {
+		return ErrAuthSessionUnavailable
+	}
+	return nil
+}
+
+func (s *AuthSessionService) supersedeOwned(
+	ctx context.Context,
+	session *model.FeishuAuthSession,
+	leaseToken string,
+	now time.Time,
+) error {
+	finalizeCtx, finalizeCancel := authSessionDetachedContext(ctx)
+	err := s.sessions.UpdateSessionState(
+		finalizeCtx, session.UserID, session.Generation, session.ID, leaseToken,
+		model.FeishuAuthSessionSuperseded, now.UTC(), nil,
+	)
+	finalizeCancel()
+	s.urls.remove(authSessionRegistryKey(session))
+	if err != nil {
+		return ErrAuthSessionUnavailable
 	}
 	return nil
 }
@@ -629,11 +837,15 @@ func (s *AuthSessionService) CompleteAppApproval(
 		return ErrAuthSessionUnavailable
 	}
 	now := s.now().UTC()
-	claimed, err := s.sessions.ClaimSession(ctx, userID, generation, sessionID, s.owner, now, now.Add(s.leaseDuration))
+	leaseToken, err := s.leaseToken()
+	if err != nil {
+		return err
+	}
+	claimed, err := s.sessions.ClaimSession(ctx, userID, generation, sessionID, leaseToken, now, now.Add(s.leaseDuration))
 	if err != nil || !claimed {
 		return ErrAuthSessionUnavailable
 	}
-	return s.completeOwned(ctx, session, now, true)
+	return s.completeOwned(ctx, session, leaseToken, now, true)
 }
 
 type authSessionStreamState struct {

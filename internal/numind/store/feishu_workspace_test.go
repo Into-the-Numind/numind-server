@@ -864,20 +864,76 @@ func TestFeishuWorkspaceStore_SessionLeaseAndTenantGeneration(t *testing.T) {
 	claimed, err = s.ClaimSession(ctx, 7, 3, "session-1", "worker-b", now.Add(10*time.Second), now.Add(2*time.Minute))
 	require.NoError(t, err)
 	require.False(t, claimed)
-	claimed, err = s.ClaimSession(ctx, 7, 3, "session-1", "worker-a", now.Add(20*time.Second), now.Add(3*time.Minute))
+	renewed, err := s.RenewSession(ctx, 7, 3, "session-1", "worker-a", now.Add(20*time.Second), now.Add(3*time.Minute))
 	require.NoError(t, err)
-	require.True(t, claimed, "the current owner may renew an unexpired lease")
+	require.True(t, renewed, "the exact current token may renew an unexpired pending lease")
 	claimed, err = s.ClaimSession(ctx, 7, 3, "session-1", "worker-b", now.Add(4*time.Minute), now.Add(5*time.Minute))
 	require.NoError(t, err)
 	require.True(t, claimed, "another owner may claim an expired lease")
+	renewed, err = s.RenewSession(ctx, 7, 3, "session-1", "worker-a", now.Add(4*time.Minute), now.Add(6*time.Minute))
+	require.NoError(t, err)
+	require.False(t, renewed, "an expired/taken-over token must never revive")
+	claimed, err = s.ClaimSession(ctx, 7, 3, "session-1", "worker-a", now.Add(4*time.Minute), now.Add(6*time.Minute))
+	require.NoError(t, err)
+	require.False(t, claimed, "a stale token must not reacquire the session it previously owned")
+	claimed, err = s.ClaimSession(ctx, 7, 3, "session-1", "worker-b", now.Add(6*time.Minute), now.Add(7*time.Minute))
+	require.NoError(t, err)
+	require.False(t, claimed, "an expired token must not revive its own lease")
+	claimed, err = s.ClaimSession(ctx, 7, 3, "session-1", "worker-c", now.Add(6*time.Minute), now.Add(7*time.Minute))
+	require.NoError(t, err)
+	require.True(t, claimed, "a fresh token may take over an expired lease")
 
-	updateNow := now.Add(4*time.Minute + 30*time.Second)
+	updateNow := now.Add(6*time.Minute + 30*time.Second)
 	require.ErrorIs(t, s.UpdateSessionState(ctx, 7, 3, "session-1", "worker-a", model.FeishuAuthSessionCompleted, updateNow, &updateNow), gorm.ErrRecordNotFound)
-	require.NoError(t, s.UpdateSessionState(ctx, 7, 3, "session-1", "worker-b", model.FeishuAuthSessionCompleted, updateNow, &updateNow))
+	require.ErrorIs(t, s.UpdateSessionState(ctx, 7, 3, "session-1", "worker-b", model.FeishuAuthSessionCompleted, updateNow, &updateNow), gorm.ErrRecordNotFound)
+	require.NoError(t, s.UpdateSessionState(ctx, 7, 3, "session-1", "worker-c", model.FeishuAuthSessionCompleted, updateNow, &updateNow))
 	got, err := s.GetSessionForUser(ctx, 7, 3, "session-1")
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuAuthSessionCompleted, got.State)
 	require.NotNil(t, got.CompletedAt)
+	require.Empty(t, got.LeaseOwner)
+	require.Nil(t, got.LeaseUntil)
+	renewed, err = s.RenewSession(ctx, 7, 3, "session-1", "worker-c", updateNow, updateNow.Add(time.Minute))
+	require.NoError(t, err)
+	require.False(t, renewed, "terminal sessions cannot be renewed")
+	require.ErrorIs(t, s.UpdateSessionState(ctx, 7, 3, "session-1", "worker-c", model.FeishuAuthSessionSuperseded, updateNow, nil), gorm.ErrRecordNotFound)
+}
+
+func TestFeishuWorkspaceStore_FinalizeSessionCompletedAtomicallyFencesAccountAndPendingState(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 3)
+	require.NoError(t, s.db.Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ?", 7, "lark").
+		Updates(map[string]any{"connection_state": model.FeishuConnectionWaitingUserAuth, "connected": false}).Error)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	require.NoError(t, s.CreateSession(ctx, newFeishuSession("session-finalize", 7, 3)))
+	claimed, err := s.ClaimSession(ctx, 7, 3, "session-finalize", "token-finalize", now, now.Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	err = s.FinalizeSessionCompleted(ctx, 7, 3, "session-finalize", "stale-token", model.FeishuConnectionConnected, true, now.Add(time.Second))
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	pending, err := s.GetSessionForUser(ctx, 7, 3, "session-finalize")
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionPending, pending.State)
+	var unchanged model.UserThirdPartyAccount
+	require.NoError(t, s.db.Where("user_id = ? AND provider = ?", 7, "lark").Take(&unchanged).Error)
+	require.NotEqual(t, model.FeishuConnectionConnected, unchanged.ConnectionState)
+
+	completedAt := now.Add(2 * time.Second)
+	require.NoError(t, s.FinalizeSessionCompleted(
+		ctx, 7, 3, "session-finalize", "token-finalize", model.FeishuConnectionConnected, true, completedAt,
+	))
+	completed, err := s.GetSessionForUser(ctx, 7, 3, "session-finalize")
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionCompleted, completed.State)
+	require.Empty(t, completed.LeaseOwner)
+	require.Nil(t, completed.LeaseUntil)
+	var connected model.UserThirdPartyAccount
+	require.NoError(t, s.db.Where("user_id = ? AND provider = ?", 7, "lark").Take(&connected).Error)
+	require.Equal(t, model.FeishuConnectionConnected, connected.ConnectionState)
+	require.True(t, connected.Connected)
 }
 
 func TestFeishuWorkspaceStore_CreateOrGetPendingSessionSerializesIntentAcrossInstances(t *testing.T) {
@@ -899,7 +955,7 @@ func TestFeishuWorkspaceStore_CreateOrGetPendingSessionSerializesIntentAcrossIns
 
 	duplicate := newFeishuSession("session-duplicate", 7, 3)
 	duplicate.OperationID = &operationID
-	duplicate.RequestedScopesJSON = append([]byte(nil), first.RequestedScopesJSON...)
+	duplicate.RequestedScopesJSON = []byte(`[ "docx:document:readonly" , "offline_access" ]`)
 	got, created, err := secondStore.CreateOrGetPendingSession(ctx, duplicate)
 	require.NoError(t, err)
 	require.False(t, created)

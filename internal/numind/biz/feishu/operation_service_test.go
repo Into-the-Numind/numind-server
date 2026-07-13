@@ -45,11 +45,14 @@ func (f *operationReceiptFake) snapshot() ([]string, []uint64) {
 }
 
 type operationRecoveryFake struct {
-	mu      sync.Mutex
-	action  *OperationAction
-	actions []*OperationAction
-	err     error
-	calls   []RecoveryRequest
+	mu         sync.Mutex
+	action     *OperationAction
+	actions    []*OperationAction
+	err        error
+	calls      []RecoveryRequest
+	activated  []string
+	aborted    []string
+	onActivate func(string) error
 }
 
 func (f *operationRecoveryFake) StartRecovery(_ context.Context, req RecoveryRequest) (*OperationAction, error) {
@@ -72,6 +75,29 @@ func (f *operationRecoveryFake) snapshot() []RecoveryRequest {
 		result[index] = cloneTestRecoveryRequest(f.calls[index])
 	}
 	return result
+}
+
+func (f *operationRecoveryFake) Activate(_ context.Context, sessionID string) error {
+	f.mu.Lock()
+	f.activated = append(f.activated, sessionID)
+	onActivate := f.onActivate
+	f.mu.Unlock()
+	if onActivate != nil {
+		return onActivate(sessionID)
+	}
+	return nil
+}
+
+func (f *operationRecoveryFake) Abort(sessionID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.aborted = append(f.aborted, sessionID)
+}
+
+func (f *operationRecoveryFake) activationSnapshot() (activated, aborted []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.activated...), append([]string(nil), f.aborted...)
 }
 
 type operationConfirmationFake struct {
@@ -174,6 +200,24 @@ func (s *recordingOperationStore) snapshotOwners() []string {
 type terminalBeforeClaimOperationStore struct {
 	OperationStore
 	db *gorm.DB
+}
+
+type waitingTransitionFailOperationStore struct{ OperationStore }
+
+func (s *waitingTransitionFailOperationStore) TransitionOperation(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	id, owner string,
+	from []string,
+	to string,
+	now time.Time,
+	fields map[string]any,
+) error {
+	if recoveryWaitingState(to) {
+		return errors.New("waiting transition failed")
+	}
+	return s.OperationStore.TransitionOperation(ctx, userID, generation, id, owner, from, to, now, fields)
 }
 
 type disappearingProofOperationStore struct {
@@ -871,6 +915,44 @@ func TestOperationService_NeverConnectedCreatesPlaceholderWithoutOverwritingExis
 		require.NoError(t, h.db.Model(&model.FeishuOperationExecutionGate{}).Count(&gateCount).Error)
 		require.Zero(t, gateCount, "reauth recovery must not acquire the CLI gate")
 	})
+}
+
+func TestOperationService_ActivatesRecoveryOnlyAfterWaitingIsPersisted(t *testing.T) {
+	h := newOperationHarness(t)
+	h.recovery.onActivate = func(sessionID string) error {
+		if sessionID != "session-1" {
+			return errors.New("unexpected session")
+		}
+		var operation model.FeishuOperation
+		if err := h.db.Where("user_id = ? AND idempotency_key = ?", 7, "130:tc-activation-order").Take(&operation).Error; err != nil {
+			return err
+		}
+		if operation.State != model.FeishuOperationWaitingConnection {
+			return fmt.Errorf("operation state at activation = %s", operation.State)
+		}
+		return nil
+	}
+
+	got, err := h.service.Execute(h.ctx, operationDocsFetchRequest(130, "tc-activation-order"))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingConnection, got.State)
+	activated, aborted := h.recovery.activationSnapshot()
+	require.Equal(t, []string{"session-1"}, activated)
+	require.Empty(t, aborted)
+}
+
+func TestOperationService_WaitingTransitionFailureAbortsRecoveryBarrier(t *testing.T) {
+	h := newOperationHarness(t)
+	service := newHarnessOperationService(t, h, &waitingTransitionFailOperationStore{
+		OperationStore: h.dataStore.FeishuWorkspace(),
+	})
+
+	got, err := service.Execute(h.ctx, operationDocsFetchRequest(131, "tc-activation-abort"))
+	require.Nil(t, got)
+	require.ErrorIs(t, err, ErrOperationUnavailable)
+	activated, aborted := h.recovery.activationSnapshot()
+	require.Empty(t, activated)
+	require.Equal(t, []string{"session-1"}, aborted)
 }
 
 func TestOperationService_AppReadyContinuesToExactUserAuthorization(t *testing.T) {

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -29,7 +30,9 @@ type IFeishuWorkspaceStore interface {
 	CreateOrGetPendingSession(ctx context.Context, session *model.FeishuAuthSession) (*model.FeishuAuthSession, bool, error)
 	GetSessionForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuAuthSession, error)
 	ClaimSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
+	RenewSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
 	UpdateSessionState(ctx context.Context, userID uint, generation uint64, id, owner, state string, now time.Time, completedAt *time.Time) error
+	FinalizeSessionCompleted(ctx context.Context, userID uint, generation uint64, id, owner, accountState string, connected bool, now time.Time) error
 	UpdateAccountConnectionState(ctx context.Context, userID uint, generation uint64, state string, connected bool, now time.Time) error
 	CreateOrGetOperation(ctx context.Context, operation *model.FeishuOperation) (*model.FeishuOperation, error)
 	CreateOrGetOperationWithProof(ctx context.Context, operation *model.FeishuOperation, sourceOperationID string) (*model.FeishuOperation, error)
@@ -162,22 +165,9 @@ func (s *feishuWorkspaceStore) CreateOrGetPendingSession(
 			return gorm.ErrRecordNotFound
 		}
 
-		query := tx.Where(
-			"user_id = ? AND generation = ? AND phase = ? AND requested_scopes_json = ? AND state = ?",
-			session.UserID,
-			session.Generation,
-			session.Phase,
-			string(session.RequestedScopesJSON),
-			model.FeishuAuthSessionPending,
-		)
-		if session.OperationID == nil {
-			query = query.Where("operation_id IS NULL")
-		} else {
-			query = query.Where("operation_id = ?", *session.OperationID)
-		}
-		var existing model.FeishuAuthSession
-		if err := query.Order("created_at ASC, id ASC").Take(&existing).Error; err == nil {
-			stored = &existing
+		existing, err := findMatchingAuthSession(tx, session, model.FeishuAuthSessionPending, "created_at ASC, id ASC")
+		if err == nil {
+			stored = existing
 			return nil
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
@@ -187,16 +177,9 @@ func (s *feishuWorkspaceStore) CreateOrGetPendingSession(
 		// than opening the same authorization flow again. Manual intents are
 		// intentionally excluded so a later explicit reconnect can start fresh.
 		if session.OperationID != nil {
-			if err := tx.Where(
-				"user_id = ? AND generation = ? AND operation_id = ? AND phase = ? AND requested_scopes_json = ? AND state = ?",
-				session.UserID,
-				session.Generation,
-				*session.OperationID,
-				session.Phase,
-				string(session.RequestedScopesJSON),
-				model.FeishuAuthSessionCompleted,
-			).Order("completed_at DESC, id ASC").Take(&existing).Error; err == nil {
-				stored = &existing
+			existing, err = findMatchingAuthSession(tx, session, model.FeishuAuthSessionCompleted, "completed_at DESC, id ASC")
+			if err == nil {
+				stored = existing
 				return nil
 			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 				return err
@@ -217,6 +200,56 @@ func (s *feishuWorkspaceStore) CreateOrGetPendingSession(
 	return stored, created, nil
 }
 
+func findMatchingAuthSession(
+	tx *gorm.DB,
+	intent *model.FeishuAuthSession,
+	state string,
+	order string,
+) (*model.FeishuAuthSession, error) {
+	query := tx.Where(
+		"user_id = ? AND generation = ? AND phase = ? AND state = ?",
+		intent.UserID,
+		intent.Generation,
+		intent.Phase,
+		state,
+	)
+	if intent.OperationID == nil {
+		query = query.Where("operation_id IS NULL")
+	} else {
+		query = query.Where("operation_id = ?", *intent.OperationID)
+	}
+	var candidates []model.FeishuAuthSession
+	if err := query.Order(order).Find(&candidates).Error; err != nil {
+		return nil, err
+	}
+	for i := range candidates {
+		if equalRequestedScopes(candidates[i].RequestedScopesJSON, intent.RequestedScopesJSON) {
+			return &candidates[i], nil
+		}
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+
+func equalRequestedScopes(left, right []byte) bool {
+	var leftScopes []string
+	if err := json.Unmarshal(left, &leftScopes); err != nil {
+		return false
+	}
+	var rightScopes []string
+	if err := json.Unmarshal(right, &rightScopes); err != nil {
+		return false
+	}
+	if len(leftScopes) != len(rightScopes) {
+		return false
+	}
+	for i := range leftScopes {
+		if leftScopes[i] != rightScopes[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // GetSessionForUser returns a session only when ID, tenant, and generation all match.
 func (s *feishuWorkspaceStore) GetSessionForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuAuthSession, error) {
 	var session model.FeishuAuthSession
@@ -228,9 +261,12 @@ func (s *feishuWorkspaceStore) GetSessionForUser(ctx context.Context, userID uin
 	return &session, nil
 }
 
-// ClaimSession acquires or renews a lease when it is free, expired, or already
-// belongs to owner. Sessions from an inactive account generation cannot be claimed.
+// ClaimSession acquires a pending session with a fresh token. A token may not
+// reclaim its own expired lease; workers must use RenewSession before expiry.
 func (s *feishuWorkspaceStore) ClaimSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error) {
+	if owner == "" || !leaseUntil.After(now) {
+		return false, nil
+	}
 	activeGeneration := s.db.WithContext(ctx).
 		Model(&model.UserThirdPartyAccount{}).
 		Select("1").
@@ -240,8 +276,13 @@ func (s *feishuWorkspaceStore) ClaimSession(ctx context.Context, userID uint, ge
 	result := s.db.WithContext(ctx).
 		Model(&model.FeishuAuthSession{}).
 		Where("id = ? AND user_id = ? AND generation = ?", id, userID, generation).
+		Where("state = ?", model.FeishuAuthSessionPending).
 		Where("EXISTS (?)", activeGeneration).
-		Where("lease_until IS NULL OR lease_until <= ? OR lease_owner = ?", now, owner).
+		Where(
+			"((lease_owner IS NULL OR lease_owner = '') AND lease_until IS NULL) OR (lease_until <= ? AND lease_owner <> ?)",
+			now,
+			owner,
+		).
 		Updates(map[string]any{
 			"lease_owner": owner,
 			"lease_until": leaseUntil,
@@ -252,7 +293,33 @@ func (s *feishuWorkspaceStore) ClaimSession(ctx context.Context, userID uint, ge
 	return result.RowsAffected == 1, nil
 }
 
-// UpdateSessionState changes a session only for its current lease owner and active generation.
+// RenewSession extends an unexpired pending lease only for its exact token and
+// active account generation.
+func (s *feishuWorkspaceStore) RenewSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error) {
+	if owner == "" || !leaseUntil.After(now) {
+		return false, nil
+	}
+	activeGeneration := s.db.WithContext(ctx).
+		Model(&model.UserThirdPartyAccount{}).
+		Select("1").
+		Where("user_third_party_account.user_id = feishu_auth_session.user_id").
+		Where("user_third_party_account.provider = ?", "lark").
+		Where("user_third_party_account.generation = feishu_auth_session.generation")
+	result := s.db.WithContext(ctx).
+		Model(&model.FeishuAuthSession{}).
+		Where("id = ? AND user_id = ? AND generation = ?", id, userID, generation).
+		Where("state = ?", model.FeishuAuthSessionPending).
+		Where("lease_owner = ? AND lease_until > ?", owner, now).
+		Where("EXISTS (?)", activeGeneration).
+		Update("lease_until", leaseUntil)
+	if result.Error != nil {
+		return false, fmt.Errorf("renew feishu auth session: %w", result.Error)
+	}
+	return result.RowsAffected == 1, nil
+}
+
+// UpdateSessionState terminally changes a pending session only for its current
+// unexpired lease token and active generation.
 func (s *feishuWorkspaceStore) UpdateSessionState(ctx context.Context, userID uint, generation uint64, id, owner, state string, now time.Time, completedAt *time.Time) error {
 	activeGeneration := s.db.WithContext(ctx).
 		Model(&model.UserThirdPartyAccount{}).
@@ -263,11 +330,14 @@ func (s *feishuWorkspaceStore) UpdateSessionState(ctx context.Context, userID ui
 	result := s.db.WithContext(ctx).
 		Model(&model.FeishuAuthSession{}).
 		Where("id = ? AND user_id = ? AND generation = ?", id, userID, generation).
+		Where("state = ?", model.FeishuAuthSessionPending).
 		Where("lease_owner = ? AND lease_until > ?", owner, now).
 		Where("EXISTS (?)", activeGeneration).
 		Updates(map[string]any{
 			"state":        state,
 			"completed_at": completedAt,
+			"lease_owner":  "",
+			"lease_until":  nil,
 		})
 	if result.Error != nil {
 		return fmt.Errorf("update feishu auth session state: %w", result.Error)
@@ -276,6 +346,76 @@ func (s *feishuWorkspaceStore) UpdateSessionState(ctx context.Context, userID ui
 		return gorm.ErrRecordNotFound
 	}
 	return nil
+}
+
+// FinalizeSessionCompleted atomically updates the generation-fenced account and
+// moves its pending authorization session to completed. The lock order is
+// always account then session.
+func (s *feishuWorkspaceStore) FinalizeSessionCompleted(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	id string,
+	owner string,
+	accountState string,
+	connected bool,
+	now time.Time,
+) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var account model.UserThirdPartyAccount
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ? AND provider = ?", userID, "lark").
+			Take(&account).Error; err != nil {
+			return err
+		}
+		if account.Generation != generation {
+			return gorm.ErrRecordNotFound
+		}
+
+		var session model.FeishuAuthSession
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND user_id = ? AND generation = ?", id, userID, generation).
+			Where("state = ?", model.FeishuAuthSessionPending).
+			Where("lease_owner = ? AND lease_until > ?", owner, now).
+			Take(&session).Error; err != nil {
+			return err
+		}
+
+		var connectedAt *time.Time
+		if connected {
+			value := now.UTC()
+			connectedAt = &value
+		}
+		accountResult := tx.Model(&model.UserThirdPartyAccount{}).
+			Where("user_id = ? AND provider = ? AND generation = ?", userID, "lark", generation).
+			Updates(map[string]any{
+				"connection_state": accountState,
+				"connected":        connected,
+				"connected_at":     connectedAt,
+			})
+		if accountResult.Error != nil {
+			return fmt.Errorf("finalize feishu account connection: %w", accountResult.Error)
+		}
+		if accountResult.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+
+		sessionResult := tx.Model(&model.FeishuAuthSession{}).
+			Where("id = ? AND state = ? AND lease_owner = ?", session.ID, model.FeishuAuthSessionPending, owner).
+			Updates(map[string]any{
+				"state":        model.FeishuAuthSessionCompleted,
+				"completed_at": now,
+				"lease_owner":  "",
+				"lease_until":  nil,
+			})
+		if sessionResult.Error != nil {
+			return fmt.Errorf("finalize feishu auth session: %w", sessionResult.Error)
+		}
+		if sessionResult.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		return nil
+	})
 }
 
 // UpdateAccountConnectionState changes only the active tenant generation. It
