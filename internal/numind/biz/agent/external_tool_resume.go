@@ -8,7 +8,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"sync/atomic"
+	"sync"
+	"time"
 
 	"github.com/cloudwego/eino/schema"
 
@@ -19,6 +20,8 @@ import (
 )
 
 const externalOperationIDExtraKey = "external_operation_id"
+
+var errExternalContinuationFirstCall = errors.New("external continuation first model call did not start durably")
 
 // ExternalToolResult is the server-owned result of one persisted external
 // operation. None of these fields comes from model tool input.
@@ -35,6 +38,141 @@ type ExternalToolResult struct {
 type AgentRunResumer struct {
 	store       store.IExternalToolResumeLease
 	studentRuns *StudentRunService
+}
+
+// ExternalResumeReclaimer makes durable completed external actions self-heal
+// after a process crash. ClaimExternalToolResume supplies the cross-instance
+// fence, so several application instances may scan the same candidates.
+type ExternalResumeReclaimer struct {
+	store    store.IExternalToolResumeLease
+	resumer  *AgentRunResumer
+	interval time.Duration
+	cancel   context.CancelFunc
+	done     chan struct{}
+	mu       sync.Mutex
+}
+
+func NewExternalResumeReclaimer(s store.IExternalToolResumeLease, resumer *AgentRunResumer, interval time.Duration) *ExternalResumeReclaimer {
+	if interval <= 0 {
+		interval = 15 * time.Second
+	}
+	return &ExternalResumeReclaimer{store: s, resumer: resumer, interval: interval}
+}
+
+func (r *ExternalResumeReclaimer) Start() {
+	if r == nil || r.store == nil || r.resumer == nil {
+		return
+	}
+	r.mu.Lock()
+	if r.cancel != nil {
+		r.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	r.cancel, r.done = cancel, make(chan struct{})
+	done := r.done
+	r.mu.Unlock()
+	go func() {
+		defer close(done)
+		r.scan(ctx)
+		ticker := time.NewTicker(r.interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				r.scan(ctx)
+			}
+		}
+	}()
+}
+
+func (r *ExternalResumeReclaimer) Stop(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	cancel, done := r.cancel, r.done
+	r.cancel = nil
+	r.done = nil
+	r.mu.Unlock()
+	if cancel == nil {
+		return nil
+	}
+	cancel()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (r *ExternalResumeReclaimer) scan(ctx context.Context) {
+	runs, err := r.store.ListExternalToolResumeCandidates(ctx, time.Now().Add(-30*time.Second), 100)
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Warnw("external resume reclaimer scan failed", "error", err)
+		}
+		return
+	}
+	for i := range runs {
+		if ctx.Err() != nil {
+			return
+		}
+		result, err := reconstructExternalToolResult(&runs[i])
+		if err != nil {
+			log.Warnw("external resume reclaimer found invalid durable result", "agent_run_id", runs[i].ID, "error", err)
+			continue
+		}
+		if err := r.resumer.Resume(ctx, result); err != nil && ctx.Err() == nil {
+			log.Warnw("external resume reclaimer could not resume run", "agent_run_id", runs[i].ID, "error", err)
+		}
+	}
+}
+
+func reconstructExternalToolResult(run *model.AgentRun) (ExternalToolResult, error) {
+	if run == nil || !hasPendingExternalAction(run.PendingExternalActionJSON) {
+		return ExternalToolResult{}, fmt.Errorf("external recovery candidate has no pending identity")
+	}
+	pending, err := ParsePendingExternalAction(run.PendingExternalActionJSON)
+	if err != nil {
+		return ExternalToolResult{}, err
+	}
+	var turns []map[string]any
+	if err := json.Unmarshal(run.Messages, &turns); err != nil {
+		return ExternalToolResult{}, err
+	}
+	var result json.RawMessage
+	for _, turn := range turns {
+		if role, _ := turn["role"].(string); role != "tool" {
+			continue
+		}
+		raw, err := json.Marshal(turn)
+		if err != nil {
+			return ExternalToolResult{}, err
+		}
+		var msg schema.Message
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			return ExternalToolResult{}, err
+		}
+		opID, _ := msg.Extra[externalOperationIDExtraKey].(string)
+		if msg.ToolCallID != pending.ToolCallID || opID != pending.OperationID {
+			continue
+		}
+		if result != nil {
+			return ExternalToolResult{}, fmt.Errorf("duplicate durable external result")
+		}
+		result, err = compactExternalResult(json.RawMessage(msg.Content))
+		if err != nil {
+			return ExternalToolResult{}, err
+		}
+	}
+	if result == nil {
+		return ExternalToolResult{}, fmt.Errorf("durable external result is missing")
+	}
+	return ExternalToolResult{RunID: run.ID, OperationID: pending.OperationID, ToolCallID: pending.ToolCallID, Result: result}, nil
 }
 
 // NewAgentRunResumer constructs the bridge used by the outer Feishu
@@ -79,47 +217,18 @@ func (r *AgentRunResumer) Resume(ctx context.Context, result ExternalToolResult)
 	return r.startClaimedContinuation(result, leaseToken, runReq)
 }
 
-type externalContinuationReadySignal struct {
-	err error
-	ack chan struct{}
-}
-
 func (r *AgentRunResumer) startClaimedContinuation(result ExternalToolResult, leaseToken string, runReq RunRequest) error {
-	readyCh := make(chan externalContinuationReadySignal, 1)
+	startedCh := make(chan error, 1)
 	finishedCh := make(chan error, 1)
-	abandoned := make(chan struct{})
-	var accepted atomic.Bool
-	var readyInvoked atomic.Bool
-	runReq.ExternalContinuationReady = func(readyCtx context.Context) error {
-		if !readyInvoked.CompareAndSwap(false, true) {
-			return fmt.Errorf("external continuation readiness was already acknowledged")
-		}
-		err := r.store.CompleteExternalToolResume(
-			readyCtx, result.RunID, result.OperationID, result.ToolCallID, leaseToken,
-		)
-		signal := externalContinuationReadySignal{err: err, ack: make(chan struct{})}
-		select {
-		case readyCh <- signal:
-		case <-abandoned:
-			return fmt.Errorf("external continuation readiness was abandoned")
-		}
-		select {
-		case <-signal.ack:
-		case <-abandoned:
-			return fmt.Errorf("external continuation readiness was abandoned")
-		}
-		return err
-	}
+	gate := newExternalContinuationGate(r.store, result, leaseToken, startedCh)
+	runReq.ExternalContinuationGate = gate
 
 	go r.studentRuns.forwardNarration(result.RunID)
 	go func() {
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				panicErr := fmt.Errorf("runner preflight panic: %v", recovered)
-				if accepted.Load() {
-					log.Errorw("external tool continuation panicked after runner start", "run_id", result.RunID, "error", panicErr)
-					return
-				}
+				_ = gate.Finish(context.Background(), panicErr)
 				select {
 				case finishedCh <- panicErr:
 				default:
@@ -128,11 +237,8 @@ func (r *AgentRunResumer) startClaimedContinuation(result ExternalToolResult, le
 		}()
 		bgCtx := middleware.NewContextWithUserID(context.Background(), runReq.UserID)
 		_, runErr := r.studentRuns.runner.Run(bgCtx, runReq)
-		if accepted.Load() {
-			if runErr != nil {
-				log.Errorw("external tool continuation failed after runner start", "run_id", result.RunID, "error", runErr)
-			}
-			return
+		if gate.Begun() && !gate.Finished() {
+			_ = gate.Finish(context.Background(), runErr)
 		}
 		select {
 		case finishedCh <- runErr:
@@ -141,24 +247,212 @@ func (r *AgentRunResumer) startClaimedContinuation(result ExternalToolResult, le
 	}()
 
 	select {
-	case signal := <-readyCh:
-		if signal.err == nil {
-			accepted.Store(true)
-		}
-		close(signal.ack)
-		if signal.err != nil {
-			releaseErr := r.store.ReleaseExternalToolResume(context.Background(), result.RunID, result.OperationID, result.ToolCallID, leaseToken)
-			return errors.Join(fmt.Errorf("AgentRunResumer.Resume: acknowledge runner start: %w", signal.err), releaseErr)
+	case startErr := <-startedCh:
+		if startErr != nil {
+			return fmt.Errorf("AgentRunResumer.Resume: first model boundary: %w", startErr)
 		}
 		return nil
 	case runErr := <-finishedCh:
-		close(abandoned)
-		if runErr == nil {
-			runErr = fmt.Errorf("runner exited before external continuation readiness")
+		if gate.Begun() {
+			select {
+			case startErr := <-startedCh:
+				if startErr == nil {
+					return nil
+				}
+				return fmt.Errorf("AgentRunResumer.Resume: first model boundary: %w", startErr)
+			default:
+			}
 		}
-		releaseErr := r.store.ReleaseExternalToolResume(context.Background(), result.RunID, result.OperationID, result.ToolCallID, leaseToken)
+		if runErr == nil {
+			runErr = fmt.Errorf("runner exited before the first model boundary")
+		}
+		releaseErr := gate.ReleaseIfUnstarted(context.Background())
 		return errors.Join(fmt.Errorf("AgentRunResumer.Resume: runner preflight: %w", runErr), releaseErr)
 	}
+}
+
+type externalContinuationGate struct {
+	store   store.IExternalToolResumeLease
+	result  ExternalToolResult
+	token   string
+	started chan<- error
+
+	mu                    sync.Mutex
+	begun                 bool
+	finished              bool
+	completedSuccessfully bool
+	finalErr              error
+	hbCancel              context.CancelFunc
+	hbDone                chan struct{}
+	hbErr                 error
+	heartbeatInterval     time.Duration
+}
+
+func newExternalContinuationGate(s store.IExternalToolResumeLease, result ExternalToolResult, token string, started chan<- error) *externalContinuationGate {
+	return &externalContinuationGate{
+		store: s, result: result, token: token, started: started,
+		heartbeatInterval: 10 * time.Second,
+	}
+}
+
+func (g *externalContinuationGate) BeginCall(ctx context.Context) (bool, context.Context, error) {
+	if err := ctx.Err(); err != nil {
+		g.failBeforeStart(err)
+		return true, ctx, err
+	}
+	g.mu.Lock()
+	if g.finished {
+		g.mu.Unlock()
+		return false, ctx, nil
+	}
+	if g.begun {
+		g.mu.Unlock()
+		return true, ctx, fmt.Errorf("external continuation first model boundary was already entered")
+	}
+	g.begun = true
+	g.mu.Unlock()
+	err := g.store.TouchExternalToolResume(ctx, g.result.RunID, g.result.OperationID, g.result.ToolCallID, g.token)
+	if err != nil {
+		g.failBeforeStart(err)
+		return true, ctx, err
+	}
+	providerCtx, cancel := context.WithCancel(ctx)
+	g.startHeartbeat(providerCtx, cancel)
+	g.signalStarted(nil)
+	return true, providerCtx, nil
+}
+
+func (g *externalContinuationGate) startHeartbeat(ctx context.Context, cancel context.CancelFunc) {
+	done := make(chan struct{})
+	g.mu.Lock()
+	g.hbCancel, g.hbDone = cancel, done
+	g.mu.Unlock()
+	go func() {
+		defer close(done)
+		interval := g.heartbeatInterval
+		if interval <= 0 {
+			interval = 10 * time.Second
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := g.store.TouchExternalToolResume(ctx, g.result.RunID, g.result.OperationID, g.result.ToolCallID, g.token); err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					g.mu.Lock()
+					g.hbErr = err
+					g.mu.Unlock()
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+}
+
+func (g *externalContinuationGate) stopHeartbeat() error {
+	g.mu.Lock()
+	cancel, done := g.hbCancel, g.hbDone
+	g.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		<-done
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.hbErr
+}
+
+func (g *externalContinuationGate) Finish(ctx context.Context, callErr error) error {
+	g.mu.Lock()
+	if g.finished {
+		err := g.finalErr
+		g.mu.Unlock()
+		return err
+	}
+	g.finished = true
+	g.mu.Unlock()
+	if hbErr := g.stopHeartbeat(); callErr == nil && hbErr != nil {
+		callErr = hbErr
+	}
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	var transitionErr error
+	if callErr == nil {
+		transitionErr = g.store.CompleteExternalToolResume(persistCtx, g.result.RunID, g.result.OperationID, g.result.ToolCallID, g.token)
+		if transitionErr == nil {
+			g.mu.Lock()
+			g.completedSuccessfully = true
+			g.mu.Unlock()
+		}
+	} else {
+		transitionErr = g.release(persistCtx)
+	}
+	if callErr != nil || transitionErr != nil {
+		g.mu.Lock()
+		g.finalErr = errors.Join(errExternalContinuationFirstCall, callErr, transitionErr)
+		g.mu.Unlock()
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.finalErr
+}
+
+func (g *externalContinuationGate) failBeforeStart(cause error) {
+	persistCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	releaseErr := g.release(persistCtx)
+	cancel()
+	g.mu.Lock()
+	g.finished = true
+	g.finalErr = errors.Join(errExternalContinuationFirstCall, cause, releaseErr)
+	g.mu.Unlock()
+	g.signalStarted(cause)
+}
+
+func (g *externalContinuationGate) release(ctx context.Context) error {
+	return g.store.ReleaseExternalToolResume(ctx, g.result.RunID, g.result.OperationID, g.result.ToolCallID, g.token)
+}
+
+func (g *externalContinuationGate) ReleaseIfUnstarted(ctx context.Context) error {
+	g.mu.Lock()
+	begun, finished := g.begun, g.finished
+	g.mu.Unlock()
+	if begun || finished {
+		return nil
+	}
+	return g.release(ctx)
+}
+
+func (g *externalContinuationGate) signalStarted(err error) {
+	select {
+	case g.started <- err:
+	default:
+	}
+}
+
+func (g *externalContinuationGate) Begun() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.begun
+}
+
+func (g *externalContinuationGate) Finished() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.finished
+}
+
+func (g *externalContinuationGate) CompletedSuccessfully() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.completedSuccessfully
 }
 
 func (s *StudentRunService) buildExternalResumeRequest(
@@ -207,7 +501,7 @@ func (s *StudentRunService) buildExternalResumeRequest(
 		}
 		turns = append(turns, turn)
 	}
-	history, err := turnsToExternalResumeHistoryMessages(turns)
+	history, err := turnsToExternalResumeHistoryMessages(turns, result.ToolCallID)
 	if err != nil {
 		return RunRequest{}, err
 	}
@@ -305,7 +599,24 @@ func externalJSONEqual(left, right []byte) (bool, error) {
 // reconstructed immediately before an orphan tool result. It carries only the
 // original call ID and empty arguments; persisted argv is never replayed or
 // exposed to the model.
-func turnsToExternalResumeHistoryMessages(turns []map[string]any) ([]*schema.Message, error) {
+func turnsToExternalResumeHistoryMessages(turns []map[string]any, targetToolCallID string) ([]*schema.Message, error) {
+	toolNames := make(map[string]string)
+	for _, turn := range turns {
+		if role, _ := turn["role"].(string); role != "assistant" {
+			continue
+		}
+		calls, _ := turn["tool_calls"].([]any)
+		for _, rawCall := range calls {
+			call, _ := rawCall.(map[string]any)
+			id, _ := call["id"].(string)
+			fn, _ := call["function"].(map[string]any)
+			name, _ := fn["name"].(string)
+			id, name = strings.TrimSpace(id), strings.TrimSpace(name)
+			if id != "" && isSafeExternalResumeToolName(name) {
+				toolNames[id] = name
+			}
+		}
+	}
 	out := make([]*schema.Message, 0, len(turns)+1)
 	for index, turn := range turns {
 		role, ok := turn["role"].(string)
@@ -330,15 +641,22 @@ func turnsToExternalResumeHistoryMessages(turns []map[string]any) ([]*schema.Mes
 			if toolCallID == "" || !contentOK || strings.TrimSpace(content) == "" || !json.Valid([]byte(content)) {
 				return nil, fmt.Errorf("external resume transcript tool turn %d is invalid", index)
 			}
+			toolName := toolNames[toolCallID]
+			if toolCallID == targetToolCallID {
+				toolName = "lark_execute"
+			}
+			if toolName == "" {
+				continue
+			}
 			out = append(out, schema.AssistantMessage("", []schema.ToolCall{{
 				ID:   toolCallID,
 				Type: "function",
 				Function: schema.FunctionCall{
-					Name:      "lark_execute",
+					Name:      toolName,
 					Arguments: `{}`,
 				},
 			}}))
-			out = append(out, schema.ToolMessage(content, toolCallID, schema.WithToolName("lark_execute")))
+			out = append(out, schema.ToolMessage(content, toolCallID, schema.WithToolName(toolName)))
 		case "tool_group":
 			// UI narration only; it is not a provider protocol message.
 		default:
@@ -346,4 +664,18 @@ func turnsToExternalResumeHistoryMessages(turns []map[string]any) ([]*schema.Mes
 		}
 	}
 	return out, nil
+}
+
+func isSafeExternalResumeToolName(name string) bool {
+	if name == "" || len(name) > 128 {
+		return false
+	}
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }

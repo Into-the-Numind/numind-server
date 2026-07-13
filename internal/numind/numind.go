@@ -177,6 +177,7 @@ func run() error {
 
 	// Build ContextBudgetCreditService adapter wrapping the ICreditService.
 	bizLayer := biz.NewBiz(store.S)
+	bizLayer.StartExternalResumeReclaimer()
 
 	// 注入 middleware 功能权限检查函数，避免 middleware → biz → salesrag → middleware 循环依赖。
 	// biz.B 在 NewBiz 内已初始化，此处安全引用。
@@ -379,6 +380,7 @@ func run() error {
 	// 在 httpsrv.Shutdown 之后调用：HTTP 已经停了，没有新的 agentRunner.Run 会再次
 	// 触发 Enqueue；此处 Stop close(jobQueue) + ctx cancel 让 worker 干净退出。
 	bizLayer.CloseMemoryExtractor(ctx)
+	bizLayer.CloseExternalResumeReclaimer(ctx)
 
 	// 优雅关闭 Task 3.8 memory digest cron (4 个 job: daily/weekly/monthly/quarterly).
 	// 等待 in-flight job drain (worker pool + Redis lock release best-effort).

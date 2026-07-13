@@ -24,6 +24,8 @@ func TestFrontendStatus(t *testing.T) {
 		{"aborted_streaming_to_cancelled", "terminated", "aborted_streaming", "cancelled"},
 		{"aborted_tools_to_cancelled", "terminated", "aborted_tools", "cancelled"},
 		{"waiting_for_user_choice_to_running", "terminated", "waiting_for_user_choice", "running"},
+		{"external_resume_ready_to_running", "terminated", "external_resume_ready", "running"},
+		{"external_resume_starting_to_running", "running", "ext_resume:0123456789abcdef0123456789abcdef", "running"},
 		{"unknown_to_failed", "terminated", "model_error", "failed"},
 	}
 	for _, c := range cases {

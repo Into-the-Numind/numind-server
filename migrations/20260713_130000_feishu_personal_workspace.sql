@@ -85,3 +85,19 @@ CREATE TABLE `feishu_operation` (
 ALTER TABLE `agent_run`
   ADD COLUMN `pending_external_action_json` JSON NULL AFTER `pending_question_at`,
   ADD COLUMN `pending_external_action_at` DATETIME(3) NULL AFTER `pending_external_action_json`;
+
+ALTER TABLE `agent_run`
+  DROP CHECK `chk_ar_state_reason`,
+  ADD CONSTRAINT `chk_ar_state_reason` CHECK (
+    `state_reason` IS NULL OR
+    `state_reason` IN (
+      'completed', 'blocking_limit', 'image_error', 'model_error',
+      'aborted_streaming', 'prompt_too_long', 'stop_hook_prevented',
+      'aborted_tools', 'hook_stopped', 'max_turns', 'error_max_budget',
+      'error_max_retries', 'next_turn', 'collapse_drain_retry',
+      'reactive_compact_retry', 'max_output_escalate', 'max_output_recovery',
+      'stop_hook_blocking', 'token_budget_continue', 'running',
+      'waiting_for_user_choice', 'permission_denied', 'context_exhausted',
+      'cancelled', 'external_resume_ready'
+    ) OR state_reason LIKE 'ext_resume:%'
+  );

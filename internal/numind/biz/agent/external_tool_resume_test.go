@@ -15,21 +15,27 @@ import (
 	"gorm.io/datatypes"
 
 	"numind-server/internal/numind/biz/agent/stream"
+	storepkg "numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/model"
 )
 
 type externalResumeStoreStub struct {
-	mu        sync.Mutex
-	claimed   bool
-	leaseSeq  int
-	lease     string
-	calls     int
-	runStore  *mockAgentRunStore
-	result    json.RawMessage
-	returnOK  bool
-	err       error
-	releases  int
-	completes int
+	mu            sync.Mutex
+	claimed       bool
+	leaseSeq      int
+	lease         string
+	calls         int
+	runStore      *mockAgentRunStore
+	result        json.RawMessage
+	returnOK      bool
+	err           error
+	releases      int
+	completes     int
+	candidates    []model.AgentRun
+	lists         int
+	touches       int
+	touchErrAfter int
 }
 
 func (s *externalResumeStoreStub) ResumeExternalTool(_ context.Context, runID uint64, operationID, toolCallID string, result json.RawMessage) (bool, error) {
@@ -128,6 +134,144 @@ func (s *externalResumeStoreStub) ReleaseExternalToolResume(_ context.Context, r
 	return nil
 }
 
+func (s *externalResumeStoreStub) TouchExternalToolResume(_ context.Context, runID uint64, operationID, toolCallID, leaseToken string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.touches++
+	if s.touchErrAfter > 0 && s.touches >= s.touchErrAfter {
+		return errors.New("external resume heartbeat lost lease")
+	}
+	if !s.claimed || leaseToken != s.lease {
+		return errors.New("external resume lease changed")
+	}
+	run, err := s.runStore.Get(context.Background(), runID)
+	if err != nil {
+		return err
+	}
+	if run.CancellationRequestedAt != nil || run.IsDeleted || run.StateReason != "ext_resume:"+leaseToken {
+		return errors.New("external resume was cancelled, deleted, or reclaimed")
+	}
+	_, _ = operationID, toolCallID
+	now := time.Now()
+	run.PendingExternalActionAt = &now
+	return nil
+}
+
+func TestExternalContinuationGate_FirstProviderCallIsOneShotAndCompletesAfterResponse(t *testing.T) {
+	runStore := newMockStore()
+	run := &model.AgentRun{
+		UserID: 7, SessionID: "s", Status: "running", StateReason: "ext_resume:lease-1",
+		PendingExternalActionJSON: datatypes.JSON(`{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"tc-9","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`),
+		StartedAt:                 time.Now(),
+	}
+	require.NoError(t, runStore.Create(context.Background(), run))
+	resumeStore := &externalResumeStoreStub{runStore: runStore, claimed: true, lease: "lease-1"}
+	started := make(chan error, 1)
+	gate := newExternalContinuationGate(resumeStore, ExternalToolResult{RunID: run.ID, OperationID: "op-1", ToolCallID: "tc-9"}, "lease-1", started)
+	baseAdapter := &aiserviceAdapter{taskID: "agent.run", usageStore: &sync.Map{}, externalContinuationGate: gate}
+	cloned, err := baseAdapter.WithTools(nil)
+	require.NoError(t, err)
+	adapter := cloned.(*aiserviceAdapter)
+
+	original := chatFn
+	t.Cleanup(func() { chatFn = original })
+	providerRelease := make(chan struct{})
+	var providerCalls int
+	chatFn = func(ctx context.Context, _ string, _ aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
+		providerCalls++
+		select {
+		case <-providerRelease:
+			return &aiservice.ChatResponse{Content: "ok", FinishReason: "stop"}, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := adapter.Generate(context.Background(), []*schema.Message{schema.UserMessage("continue")})
+		errCh <- err
+	}()
+	select {
+	case err := <-started:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("first provider boundary was not acknowledged")
+	}
+	resumeStore.mu.Lock()
+	assert.Zero(t, resumeStore.completes, "lease must remain pending until an actual model response")
+	resumeStore.mu.Unlock()
+	close(providerRelease)
+	require.NoError(t, <-errCh)
+
+	_, err = adapter.Generate(context.Background(), []*schema.Message{schema.UserMessage("second round")})
+	require.NoError(t, err)
+	resumeStore.mu.Lock()
+	assert.Equal(t, 1, resumeStore.touches)
+	assert.Equal(t, 1, resumeStore.completes)
+	resumeStore.mu.Unlock()
+	assert.Equal(t, 2, providerCalls)
+}
+
+func TestExternalContinuationGate_DeleteBeforeProviderBoundaryMakesNoModelCall(t *testing.T) {
+	runStore := newMockStore()
+	run := &model.AgentRun{
+		UserID: 7, SessionID: "s", Status: "running", StateReason: "ext_resume:lease-1", IsDeleted: true,
+		PendingExternalActionJSON: datatypes.JSON(`{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"tc-9","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`),
+		StartedAt:                 time.Now(),
+	}
+	require.NoError(t, runStore.Create(context.Background(), run))
+	resumeStore := &externalResumeStoreStub{runStore: runStore, claimed: true, lease: "lease-1"}
+	gate := newExternalContinuationGate(resumeStore, ExternalToolResult{RunID: run.ID, OperationID: "op-1", ToolCallID: "tc-9"}, "lease-1", make(chan error, 1))
+	adapter := &aiserviceAdapter{taskID: "agent.run", usageStore: &sync.Map{}, externalContinuationGate: gate}
+	original := chatFn
+	t.Cleanup(func() { chatFn = original })
+	providerCalls := 0
+	chatFn = func(context.Context, string, aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
+		providerCalls++
+		return &aiservice.ChatResponse{Content: "must not happen"}, nil
+	}
+	_, err := adapter.Generate(context.Background(), []*schema.Message{schema.UserMessage("continue")})
+	require.ErrorIs(t, err, errExternalContinuationFirstCall)
+	assert.Zero(t, providerCalls)
+}
+
+func TestExternalContinuationGate_HeartbeatFailureCancelsProviderAndReleases(t *testing.T) {
+	runStore := newMockStore()
+	run := &model.AgentRun{
+		UserID: 7, SessionID: "s", Status: "running", StateReason: "ext_resume:lease-1",
+		PendingExternalActionJSON: datatypes.JSON(`{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"tc-9","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`),
+		StartedAt:                 time.Now(),
+	}
+	require.NoError(t, runStore.Create(context.Background(), run))
+	resumeStore := &externalResumeStoreStub{runStore: runStore, claimed: true, lease: "lease-1", touchErrAfter: 2}
+	gate := newExternalContinuationGate(resumeStore, ExternalToolResult{RunID: run.ID, OperationID: "op-1", ToolCallID: "tc-9"}, "lease-1", make(chan error, 1))
+	gate.heartbeatInterval = 5 * time.Millisecond
+	adapter := &aiserviceAdapter{taskID: "agent.run", usageStore: &sync.Map{}, externalContinuationGate: gate}
+	original := chatFn
+	t.Cleanup(func() { chatFn = original })
+	chatFn = func(ctx context.Context, _ string, _ aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	_, err := adapter.Generate(context.Background(), []*schema.Message{schema.UserMessage("continue")})
+	require.ErrorIs(t, err, errExternalContinuationFirstCall)
+	resumeStore.mu.Lock()
+	assert.GreaterOrEqual(t, resumeStore.touches, 2)
+	assert.Equal(t, 1, resumeStore.releases)
+	assert.Zero(t, resumeStore.completes)
+	resumeStore.mu.Unlock()
+	got, getErr := runStore.Get(context.Background(), run.ID)
+	require.NoError(t, getErr)
+	assert.Equal(t, "external_resume_ready", got.StateReason)
+}
+
+func (s *externalResumeStoreStub) ListExternalToolResumeCandidates(context.Context, time.Time, int) ([]model.AgentRun, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lists++
+	return append([]model.AgentRun(nil), s.candidates...), nil
+}
+
 type externalResumeRunner struct {
 	mu       sync.Mutex
 	calls    int
@@ -137,8 +281,8 @@ type externalResumeRunner struct {
 }
 
 func (r *externalResumeRunner) Run(_ context.Context, req RunRequest) (*RunResult, error) {
-	if req.ExternalContinuationReady != nil {
-		if err := req.ExternalContinuationReady(context.Background()); err != nil {
+	if req.ExternalContinuationGate != nil {
+		if _, _, err := req.ExternalContinuationGate.BeginCall(context.Background()); err != nil {
 			return nil, err
 		}
 	}
@@ -269,7 +413,7 @@ func TestExternalResumeHistory_RebuildsProviderValidToolPair(t *testing.T) {
 		{"role": "assistant", "content": "开始执行"},
 		{"role": "tool", "content": `{"ok":true}`, "tool_call_id": "tc-original"},
 	}
-	history, err := turnsToExternalResumeHistoryMessages(turns)
+	history, err := turnsToExternalResumeHistoryMessages(turns, "tc-original")
 	require.NoError(t, err)
 	req := RunRequest{History: history, ContinueWithoutUserInput: true}
 	msgs := buildEinoMessages(req)
@@ -296,7 +440,7 @@ func TestExternalResumeHistory_StripsPersistedSecretToolArguments(t *testing.T) 
 		},
 		{"role": "tool", "content": `{"ok":true}`, "tool_call_id": "tc-original"},
 	}
-	history, err := turnsToExternalResumeHistoryMessages(turns)
+	history, err := turnsToExternalResumeHistoryMessages(turns, "tc-original")
 	require.NoError(t, err)
 	raw, err := json.Marshal(history)
 	require.NoError(t, err)
@@ -308,6 +452,125 @@ func TestExternalResumeHistory_StripsPersistedSecretToolArguments(t *testing.T) 
 	assert.Equal(t, "tc-original", call.ToolCalls[0].ID)
 	assert.Equal(t, "lark_execute", call.ToolCalls[0].Function.Name)
 	assert.JSONEq(t, `{}`, call.ToolCalls[0].Function.Arguments)
+}
+
+func TestExternalResumeHistory_PreservesNonTargetToolNamesButStripsAllArguments(t *testing.T) {
+	turns := []map[string]any{
+		{"role": "user", "content": "先搜索再写飞书"},
+		{"role": "assistant", "content": "", "tool_calls": []any{
+			map[string]any{"id": "tc-search", "function": map[string]any{"name": "web_search", "arguments": `{"query":"SECRET"}`}},
+			map[string]any{"id": "tc-target", "function": map[string]any{"name": "lark_execute", "arguments": `{"argv":["--token","LEAK"]}`}},
+			map[string]any{"id": "tc-unknown", "function": map[string]any{"name": "", "arguments": `{"secret":"DROP"}`}},
+		}},
+		{"role": "tool", "content": `{"items":[]}`, "tool_call_id": "tc-search"},
+		{"role": "tool", "content": `{"ok":true}`, "tool_call_id": "tc-target"},
+		{"role": "tool", "content": `{"ignored":true}`, "tool_call_id": "tc-unknown"},
+	}
+	history, err := turnsToExternalResumeHistoryMessages(turns, "tc-target")
+	require.NoError(t, err)
+	raw, err := json.Marshal(history)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "SECRET")
+	assert.NotContains(t, string(raw), "LEAK")
+	assert.NotContains(t, string(raw), "DROP")
+	var names []string
+	for _, msg := range history {
+		for _, call := range msg.ToolCalls {
+			names = append(names, call.Function.Name)
+			assert.JSONEq(t, `{}`, call.Function.Arguments)
+		}
+	}
+	assert.Equal(t, []string{"web_search", "lark_execute"}, names)
+}
+
+func TestExternalResumeReclaimer_ImmediateScanStartsOneFencedContinuation(t *testing.T) {
+	runStore := newMockStore()
+	toolResult := schema.ToolMessage(`{"ok":true}`, "tc-9")
+	toolResult.Extra = map[string]any{externalOperationIDExtraKey: "op-1"}
+	toolRaw, err := json.Marshal(toolResult)
+	require.NoError(t, err)
+	run := &model.AgentRun{
+		UserID: 7, SessionID: "s", Status: "terminated", StateReason: "external_resume_ready",
+		Messages:                  datatypes.JSON(fmt.Sprintf(`[{"role":"user","content":"写飞书"},%s]`, toolRaw)),
+		PendingExternalActionJSON: datatypes.JSON(`{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"tc-9","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`),
+		StartedAt:                 time.Now(),
+	}
+	require.NoError(t, runStore.Create(context.Background(), run))
+	runner := &externalResumeRunner{done: make(chan struct{})}
+	resumeStore := &externalResumeStoreStub{runStore: runStore, returnOK: true, candidates: []model.AgentRun{*run}}
+	resumer := NewAgentRunResumer(resumeStore, NewStudentRunService(runner, runStore, nil, nil, nil, nil))
+	reclaimer := NewExternalResumeReclaimer(resumeStore, resumer, 10*time.Millisecond)
+	reclaimer.Start()
+	select {
+	case <-runner.done:
+	case <-time.After(time.Second):
+		t.Fatal("startup scan did not resume durable external result")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, reclaimer.Stop(ctx))
+	runner.mu.Lock()
+	assert.Equal(t, 1, runner.calls)
+	runner.mu.Unlock()
+}
+
+func TestExternalResumeReclaimer_TwoInstancesFenceToOneRunner(t *testing.T) {
+	db := newSQTestDB(t)
+	ds := storepkg.NewTestStore(db)
+	runStore := ds.AgentRuns()
+	lease, ok := runStore.(storepkg.IExternalToolResumeLease)
+	require.True(t, ok)
+	run := &model.AgentRun{
+		UserID: 7, SessionID: "s", Status: "terminated", StateReason: string(TerminalWaitingForUserChoice),
+		Messages:                  datatypes.JSON(`[{"role":"user","content":"写飞书"}]`),
+		PendingExternalActionJSON: datatypes.JSON(`{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"tc-9","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`),
+		StartedAt:                 time.Now(),
+	}
+	require.NoError(t, runStore.Create(context.Background(), run))
+	token, claimed, err := lease.ClaimExternalToolResume(context.Background(), run.ID, "op-1", "tc-9", json.RawMessage(`{"ok":true}`))
+	require.NoError(t, err)
+	require.True(t, claimed)
+	require.NoError(t, lease.ReleaseExternalToolResume(context.Background(), run.ID, "op-1", "tc-9", token))
+
+	runner := &externalResumeRunner{done: make(chan struct{})}
+	studentRuns := NewStudentRunService(runner, runStore, nil, nil, nil, nil)
+	r1 := NewExternalResumeReclaimer(lease, NewAgentRunResumer(lease, studentRuns), 5*time.Millisecond)
+	r2 := NewExternalResumeReclaimer(lease, NewAgentRunResumer(lease, studentRuns), 5*time.Millisecond)
+	r1.Start()
+	r2.Start()
+	select {
+	case <-runner.done:
+	case <-time.After(time.Second):
+		t.Fatal("neither reclaimer started the durable continuation")
+	}
+	time.Sleep(30 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, r1.Stop(ctx))
+	require.NoError(t, r2.Stop(ctx))
+	runner.mu.Lock()
+	assert.Equal(t, 1, runner.calls)
+	runner.mu.Unlock()
+}
+
+func TestExternalResumeReclaimer_PeriodicallyScansAndStops(t *testing.T) {
+	runStore := newMockStore()
+	resumeStore := &externalResumeStoreStub{runStore: runStore}
+	resumer := NewAgentRunResumer(resumeStore, NewStudentRunService(&externalResumeRunner{}, runStore, nil, nil, nil, nil))
+	reclaimer := NewExternalResumeReclaimer(resumeStore, resumer, 5*time.Millisecond)
+	reclaimer.Start()
+	time.Sleep(25 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, reclaimer.Stop(ctx))
+	resumeStore.mu.Lock()
+	listsAtStop := resumeStore.lists
+	resumeStore.mu.Unlock()
+	assert.GreaterOrEqual(t, listsAtStop, 2)
+	time.Sleep(15 * time.Millisecond)
+	resumeStore.mu.Lock()
+	assert.Equal(t, listsAtStop, resumeStore.lists, "Stop must terminate the ticker goroutine")
+	resumeStore.mu.Unlock()
 }
 
 func TestExternalToolResume_InvalidHistoryDoesNotClaimDurableResult(t *testing.T) {
@@ -418,10 +681,10 @@ type duplicateReadyRunner struct {
 }
 
 func (r *duplicateReadyRunner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
-	if err := req.ExternalContinuationReady(ctx); err != nil {
+	if _, _, err := req.ExternalContinuationGate.BeginCall(ctx); err != nil {
 		return nil, err
 	}
-	err := req.ExternalContinuationReady(ctx)
+	_, _, err := req.ExternalContinuationGate.BeginCall(ctx)
 	close(r.done)
 	return nil, err
 }
@@ -463,7 +726,7 @@ func (r *cancelBeforeReadyRunner) Run(ctx context.Context, req RunRequest) (*Run
 	if err := r.runStore.SetCancellationRequested(ctx, r.runID, nil); err != nil {
 		return nil, err
 	}
-	if err := req.ExternalContinuationReady(ctx); err != nil {
+	if _, _, err := req.ExternalContinuationGate.BeginCall(ctx); err != nil {
 		return nil, err
 	}
 	r.accepted = true
@@ -493,7 +756,7 @@ func TestExternalToolResume_CancelAfterClaimIsNeverAcceptedByRunner(t *testing.T
 	require.Error(t, err)
 	assert.False(t, runner.accepted, "a cancelled run must stop before the LLM continuation")
 	resumeStore.mu.Lock()
-	assert.Equal(t, 1, resumeStore.completes)
+	assert.Equal(t, 0, resumeStore.completes)
 	assert.Equal(t, 1, resumeStore.releases)
 	resumeStore.mu.Unlock()
 }

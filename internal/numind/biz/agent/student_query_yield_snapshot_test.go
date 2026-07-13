@@ -101,6 +101,37 @@ func TestGetSessionSnapshot_WaitingRun_AppendsQuestionAfterTranscript(t *testing
 	assert.Equal(t, "question_prompt", msgs[2].Type)
 }
 
+func TestSynthesizeExternalAction_DurableResumeStatesKeepRunningCard(t *testing.T) {
+	pendingAt := time.Now().UTC()
+	for _, tc := range []struct {
+		name   string
+		status string
+		state  string
+	}{
+		{name: "ready", status: "terminated", state: "external_resume_ready"},
+		{name: "starting", status: "running", state: "ext_resume:0123456789abcdef0123456789abcdef"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := &model.AgentRun{
+				ID: 41, Status: tc.status, StateReason: tc.state, StartedAt: pendingAt,
+				PendingExternalActionAt: &pendingAt,
+				PendingExternalActionJSON: datatypes.JSON(
+					`{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"tc-9","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`,
+				),
+			}
+			msg, ok := synthesizeExternalAction(run)
+			require.True(t, ok)
+			assert.Equal(t, "running", frontendStatus(run.Status, run.StateReason))
+			assert.Equal(t, "external_action", msg.Type)
+			require.NotNil(t, msg.ExternalActionPayload)
+			assert.Equal(t, "op-1", msg.OperationID)
+			assert.Equal(t, "auth-1", msg.SessionID)
+			assert.Equal(t, "tc-9", msg.ToolCallID)
+			assert.Empty(t, msg.AuthURL, "restart-safe cards intentionally have no persisted URL")
+		})
+	}
+}
+
 // A completed run (not waiting) must NOT synthesize a question even if a stale
 // pending_question_json lingers — only waiting_for_user_choice triggers it.
 func TestGetSessionSnapshot_CompletedRun_NoQuestionSynthesized(t *testing.T) {

@@ -104,6 +104,8 @@ type IExternalToolResumeLease interface {
 	ClaimExternalToolResume(ctx context.Context, runID uint64, operationID, toolCallID string, resultTurn json.RawMessage) (leaseToken string, claimed bool, err error)
 	CompleteExternalToolResume(ctx context.Context, runID uint64, operationID, toolCallID, leaseToken string) error
 	ReleaseExternalToolResume(ctx context.Context, runID uint64, operationID, toolCallID, leaseToken string) error
+	TouchExternalToolResume(ctx context.Context, runID uint64, operationID, toolCallID, leaseToken string) error
+	ListExternalToolResumeCandidates(ctx context.Context, expiredBefore time.Time, limit int) ([]model.AgentRun, error)
 }
 
 type agentRunStore struct {
@@ -593,6 +595,59 @@ func (s *agentRunStore) CompleteExternalToolResume(ctx context.Context, runID ui
 // ready state so the next dispatcher callback can immediately reacquire it.
 func (s *agentRunStore) ReleaseExternalToolResume(ctx context.Context, runID uint64, operationID, toolCallID, leaseToken string) error {
 	return s.transitionExternalToolResumeLease(ctx, runID, operationID, toolCallID, leaseToken, false)
+}
+
+// TouchExternalToolResume renews an exact lease and doubles as the durable
+// cancellation/deletion check immediately before (and during) the first model
+// call. The full identity is fenced so another process can safely reclaim an
+// expired lease without the old owner reviving it.
+func (s *agentRunStore) TouchExternalToolResume(ctx context.Context, runID uint64, operationID, toolCallID, leaseToken string) error {
+	leaseToken = strings.TrimSpace(leaseToken)
+	if leaseToken == "" {
+		return fmt.Errorf("agentRunStore touch external resume: lease token is required")
+	}
+	run, err := s.Get(ctx, runID)
+	if err != nil {
+		return err
+	}
+	if run.CancellationRequestedAt != nil || run.IsDeleted || run.Status != "running" ||
+		run.StateReason != externalResumeStartingPrefix+leaseToken {
+		return fmt.Errorf("agentRunStore touch external resume(id=%d): lease is no longer active", runID)
+	}
+	pending, err := externalaction.Parse(run.PendingExternalActionJSON)
+	if err != nil || pending.OperationID != operationID || pending.ToolCallID != toolCallID {
+		return fmt.Errorf("agentRunStore touch external resume(id=%d): identity mismatch", runID)
+	}
+	res := s.db.WithContext(ctx).Model(&model.AgentRun{}).
+		Where("id = ? AND status = ? AND state_reason = ? AND cancellation_requested_at IS NULL AND is_deleted = ? AND pending_external_action_json = ?",
+			runID, "running", externalResumeStartingPrefix+leaseToken, false, string(run.PendingExternalActionJSON)).
+		Update("pending_external_action_at", time.Now())
+	if res.Error != nil {
+		return fmt.Errorf("agentRunStore touch external resume(id=%d): %w", runID, res.Error)
+	}
+	if res.RowsAffected != 1 {
+		return fmt.Errorf("agentRunStore touch external resume(id=%d): lease changed concurrently", runID)
+	}
+	return nil
+}
+
+// ListExternalToolResumeCandidates returns only durable ready results and
+// expired starting leases. Active leases, cancelled runs and deleted sessions
+// are deliberately excluded; ClaimExternalToolResume remains the final fence.
+func (s *agentRunStore) ListExternalToolResumeCandidates(ctx context.Context, expiredBefore time.Time, limit int) ([]model.AgentRun, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	var runs []model.AgentRun
+	err := s.db.WithContext(ctx).
+		Where("pending_external_action_json IS NOT NULL AND cancellation_requested_at IS NULL AND is_deleted = ?", false).
+		Where("(status = ? AND state_reason = ?) OR (status = ? AND state_reason LIKE ? AND (pending_external_action_at IS NULL OR pending_external_action_at <= ?))",
+			"terminated", externalResumeStateReady, "running", externalResumeStartingPrefix+"%", expiredBefore).
+		Order("id ASC").Limit(limit).Find(&runs).Error
+	if err != nil {
+		return nil, fmt.Errorf("agentRunStore.ListExternalToolResumeCandidates: %w", err)
+	}
+	return runs, nil
 }
 
 func (s *agentRunStore) transitionExternalToolResumeLease(

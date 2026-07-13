@@ -107,40 +107,41 @@ var _ IBiz = (*biz)(nil)
 
 // biz 是 IBiz 的一个具体实现.
 type biz struct {
-	ds                store.IStore
-	sopService        sopbiz.ISopBiz
-	salesRAGService   salesrag.SalesRAGBiz
-	credit            credit.ICreditBiz
-	creditService     credit.ICreditService
-	pricing           pricing.ICalculator
-	payment           payment.IPaymentBiz
-	monitorService    monitor.IMonitorBiz
-	kbService         kbbiz.IKnowledgeBaseBiz
-	chatbotService    chatbotbiz.IChatbotBiz
-	ragRetrieve       *retrieve.Service      // 底座检索服务（rag-eval-harness 评估端点复用）
-	meetingService    meetingbiz.IMeetingBiz // 会议副驾服务（meeting-copilot）
-	llmRouterSvc      *llmrouter.Router
-	agentRunner       agent.AgentRunner
-	agentToolRegistry agent.AgentToolRegistry
-	permissionGate    *permission.PermissionGate   // #6 agent-mode-permission-pipeline
-	complianceGate    compliance.ComplianceGate    // #13 agent-mode-compliance-3layer
-	complianceAudit   *compliance.AuditLogger      // #13 agent-mode-compliance-3layer (Stop on shutdown)
-	memoryExtractor   *memory.ExtractorService     // Task 3.3 LLM extraction (Stop on shutdown)
-	memoryCadence     *memory.CadenceService       // Task 3.6 dialectic cadence gate (read-only)
-	memoryDialectic   memory.DialecticService      // Task 3.7 Layer A dialectic insight provider (background goroutine-based)
-	memoryTemporal    memory.TemporalService       // Task 3.8 temporal digest injector (per-turn read-only, 4 granularities)
-	memoryDigestCron  *memory.CronRunner           // Task 3.8 cron scheduler (4 jobs: daily/weekly/monthly/quarterly); Stop on shutdown
-	searchService     search.Service               // Task 3.5 FULLTEXT ngram search (also wired into AgentRunner via WithSearchService)
-	studentQuerySvc   *agent.StudentQueryService   // #14 follow-up ALPHA student-facing queries
-	studentRunSvc     *agent.StudentRunService     // #14 BETA student-facing run lifecycle
-	attachFallbackSvc agentatt.FallbackService     // V1.5 multimodal fallback (task 1.2)
-	uploadSvc         *attachment.UploadService    // wired with fallback (V1.5 task 1.2)
-	documentSvc       documentbiz.IDocumentService // document-system: 单实例(持久化导出并发守卫)
-	sandboxPool       sandbox.Pool                 // document-system 导出复用(spec §3.5b)；未来 healthcheck 可访问
-	xhsService        *xhsbiz.XhsBiz               // xhs-collector 小红书选题采集摄入服务
-	xhsEnricher       *xhsbiz.Enricher             // xhs-collector 异步富化 worker pool（Stop on shutdown）
-	xhsScriptService  *xhsscriptbiz.Service        // 小红书视频口播稿仿写 MVP
-	feishuSvc         feishu.IFeishuService        // feishu-integration T7: 飞书连接/OAuth 服务（flag off → nil）
+	ds                      store.IStore
+	sopService              sopbiz.ISopBiz
+	salesRAGService         salesrag.SalesRAGBiz
+	credit                  credit.ICreditBiz
+	creditService           credit.ICreditService
+	pricing                 pricing.ICalculator
+	payment                 payment.IPaymentBiz
+	monitorService          monitor.IMonitorBiz
+	kbService               kbbiz.IKnowledgeBaseBiz
+	chatbotService          chatbotbiz.IChatbotBiz
+	ragRetrieve             *retrieve.Service      // 底座检索服务（rag-eval-harness 评估端点复用）
+	meetingService          meetingbiz.IMeetingBiz // 会议副驾服务（meeting-copilot）
+	llmRouterSvc            *llmrouter.Router
+	agentRunner             agent.AgentRunner
+	agentToolRegistry       agent.AgentToolRegistry
+	permissionGate          *permission.PermissionGate   // #6 agent-mode-permission-pipeline
+	complianceGate          compliance.ComplianceGate    // #13 agent-mode-compliance-3layer
+	complianceAudit         *compliance.AuditLogger      // #13 agent-mode-compliance-3layer (Stop on shutdown)
+	memoryExtractor         *memory.ExtractorService     // Task 3.3 LLM extraction (Stop on shutdown)
+	memoryCadence           *memory.CadenceService       // Task 3.6 dialectic cadence gate (read-only)
+	memoryDialectic         memory.DialecticService      // Task 3.7 Layer A dialectic insight provider (background goroutine-based)
+	memoryTemporal          memory.TemporalService       // Task 3.8 temporal digest injector (per-turn read-only, 4 granularities)
+	memoryDigestCron        *memory.CronRunner           // Task 3.8 cron scheduler (4 jobs: daily/weekly/monthly/quarterly); Stop on shutdown
+	searchService           search.Service               // Task 3.5 FULLTEXT ngram search (also wired into AgentRunner via WithSearchService)
+	studentQuerySvc         *agent.StudentQueryService   // #14 follow-up ALPHA student-facing queries
+	studentRunSvc           *agent.StudentRunService     // #14 BETA student-facing run lifecycle
+	attachFallbackSvc       agentatt.FallbackService     // V1.5 multimodal fallback (task 1.2)
+	uploadSvc               *attachment.UploadService    // wired with fallback (V1.5 task 1.2)
+	documentSvc             documentbiz.IDocumentService // document-system: 单实例(持久化导出并发守卫)
+	sandboxPool             sandbox.Pool                 // document-system 导出复用(spec §3.5b)；未来 healthcheck 可访问
+	xhsService              *xhsbiz.XhsBiz               // xhs-collector 小红书选题采集摄入服务
+	xhsEnricher             *xhsbiz.Enricher             // xhs-collector 异步富化 worker pool（Stop on shutdown）
+	xhsScriptService        *xhsscriptbiz.Service        // 小红书视频口播稿仿写 MVP
+	feishuSvc               feishu.IFeishuService        // feishu-integration T7: 飞书连接/OAuth 服务（flag off → nil）
+	externalResumeReclaimer *agent.ExternalResumeReclaimer
 }
 
 // NewBiz 创建一个 IBiz 类型的实例.
@@ -760,6 +761,7 @@ func NewBiz(ds store.IStore) *biz {
 		ds.Users(),
 		agent.WithQuerySkillStore(ds.AgentDefinitions()),
 		agent.WithQueryCreditStore(ds.Credits()),
+		agent.WithQueryRunCanceller(b.agentRunner),
 	)
 
 	// #14 BETA: student-facing run lifecycle service.
@@ -781,6 +783,14 @@ func NewBiz(ds store.IStore) *biz {
 		narrationProv,
 		narrationBuf,
 	).WithUserStore(ds.Users()) // b2b2c-student-agent-access: resolve caller parent_user_id for tenant access
+	if viper.GetBool("features.feishu_integration.enabled") {
+		if resumeStore, ok := ds.AgentRuns().(store.IExternalToolResumeLease); ok {
+			resumer := agent.NewAgentRunResumer(resumeStore, b.studentRunSvc)
+			b.externalResumeReclaimer = agent.NewExternalResumeReclaimer(resumeStore, resumer, 15*time.Second)
+		} else {
+			log.Errorw("feishu-integration: agent run store lacks durable external resume support")
+		}
+	}
 
 	// V1.5 task 1.2: wire attachment fallback service + upload service with fallback.
 	b.attachFallbackSvc = agentatt.NewFallbackService(ds.AgentAttachments())
@@ -1031,6 +1041,22 @@ func (b *biz) CloseDigestCron(_ context.Context) {
 func (b *biz) CloseXhsEnricher(_ context.Context) {
 	if b.xhsEnricher != nil {
 		b.xhsEnricher.Stop()
+	}
+}
+
+// StartExternalResumeReclaimer is called by process entrypoints only after
+// NewBiz has fully wired the runner and StudentRunService.
+func (b *biz) StartExternalResumeReclaimer() {
+	if b != nil && b.externalResumeReclaimer != nil {
+		b.externalResumeReclaimer.Start()
+	}
+}
+
+func (b *biz) CloseExternalResumeReclaimer(ctx context.Context) {
+	if b != nil && b.externalResumeReclaimer != nil {
+		if err := b.externalResumeReclaimer.Stop(ctx); err != nil {
+			log.Warnw("external resume reclaimer did not stop cleanly", "error", err)
+		}
 	}
 }
 

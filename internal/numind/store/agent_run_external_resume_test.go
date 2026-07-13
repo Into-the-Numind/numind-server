@@ -210,6 +210,64 @@ func TestExternalToolResume_CompleteRejectsCancellationOrDeletionAfterClaim(t *t
 	}
 }
 
+func TestExternalToolResume_TouchRenewsExactLeaseAndRejectsDelete(t *testing.T) {
+	s, _ := newExternalActionAgentRunStore(t)
+	lease := externalToolResumeLease(t, s)
+	runID := seedExternalResumeRun(t, s, nil)
+	token, claimed, err := lease.ClaimExternalToolResume(context.Background(), runID, "op-1", "tc-9", json.RawMessage(`{"ok":true}`))
+	require.NoError(t, err)
+	require.True(t, claimed)
+	old := time.Now().Add(-time.Minute)
+	db := s.(*agentRunStore).db
+	require.NoError(t, db.Model(&model.AgentRun{}).Where("id = ?", runID).Update("pending_external_action_at", old).Error)
+	require.NoError(t, lease.TouchExternalToolResume(context.Background(), runID, "op-1", "tc-9", token))
+	got, err := s.Get(context.Background(), runID)
+	require.NoError(t, err)
+	require.NotNil(t, got.PendingExternalActionAt)
+	assert.True(t, got.PendingExternalActionAt.After(old))
+
+	require.NoError(t, db.Model(&model.AgentRun{}).Where("id = ?", runID).Update("is_deleted", true).Error)
+	require.Error(t, lease.TouchExternalToolResume(context.Background(), runID, "op-1", "tc-9", token))
+}
+
+func TestExternalToolResume_CandidateScanOnlyReturnsReadyAndExpired(t *testing.T) {
+	s, _ := newExternalActionAgentRunStore(t)
+	lease := externalToolResumeLease(t, s)
+	makeClaim := func() (uint64, string) {
+		id := seedExternalResumeRun(t, s, nil)
+		token, claimed, err := lease.ClaimExternalToolResume(context.Background(), id, "op-1", "tc-9", json.RawMessage(`{"ok":true}`))
+		require.NoError(t, err)
+		require.True(t, claimed)
+		return id, token
+	}
+	readyID, readyToken := makeClaim()
+	require.NoError(t, lease.ReleaseExternalToolResume(context.Background(), readyID, "op-1", "tc-9", readyToken))
+	expiredID, _ := makeClaim()
+	activeID, _ := makeClaim()
+	cancelledID, cancelledToken := makeClaim()
+	deletedID, _ := makeClaim()
+	db := s.(*agentRunStore).db
+	require.NoError(t, db.Model(&model.AgentRun{}).Where("id = ?", expiredID).Update("pending_external_action_at", time.Now().Add(-time.Minute)).Error)
+	require.NoError(t, db.Model(&model.AgentRun{}).Where("id = ?", cancelledID).Updates(map[string]any{
+		"pending_external_action_at": time.Now().Add(-time.Minute), "cancellation_requested_at": time.Now(),
+	}).Error)
+	require.NoError(t, db.Model(&model.AgentRun{}).Where("id = ?", deletedID).Updates(map[string]any{
+		"pending_external_action_at": time.Now().Add(-time.Minute), "is_deleted": true,
+	}).Error)
+	_ = cancelledToken
+
+	candidates, err := lease.ListExternalToolResumeCandidates(context.Background(), time.Now().Add(-30*time.Second), 100)
+	require.NoError(t, err)
+	var ids []uint64
+	for i := range candidates {
+		ids = append(ids, candidates[i].ID)
+	}
+	assert.ElementsMatch(t, []uint64{readyID, expiredID}, ids)
+	assert.NotContains(t, ids, activeID)
+	assert.NotContains(t, ids, cancelledID)
+	assert.NotContains(t, ids, deletedID)
+}
+
 func TestExternalToolResume_ConcurrentCallbacksHaveOneWinner(t *testing.T) {
 	s, _ := newExternalActionAgentRunStore(t)
 	r := externalToolResumer(t, s)

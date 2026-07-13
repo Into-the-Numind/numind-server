@@ -47,6 +47,7 @@ func startServer() error {
 
 	// Start monitor scheduler
 	bizLayer := biz.NewBiz(store.S)
+	bizLayer.StartExternalResumeReclaimer()
 	go func() {
 		if err := bizLayer.Monitor().StartScheduler(context.Background()); err != nil {
 			log.Printf("Failed to start monitor scheduler: %v", err)
@@ -104,6 +105,7 @@ func startServer() error {
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Fatal("Server forced to shutdown:", err)
 	}
+	bizLayer.CloseExternalResumeReclaimer(ctx)
 	log.Println("Server exited")
 	return nil
 }

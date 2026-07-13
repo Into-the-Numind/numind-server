@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -61,6 +62,9 @@ type RunSummary struct {
 // state_reason (TerminalReason) carries the granular outcome. The frontend never
 // learned the "terminated" status, so we collapse it here at the response boundary.
 func frontendStatus(status, stateReason string) string {
+	if stateReason == "external_resume_ready" || strings.HasPrefix(stateReason, "ext_resume:") {
+		return "running"
+	}
 	switch status {
 	case "running", "pending":
 		return status
@@ -176,10 +180,16 @@ type SessionSnapshot struct {
 // StudentQueryService handles the student-facing read + session-management endpoints.
 // (#14 follow-up ALPHA).
 type StudentQueryService struct {
-	runStore    store.IAgentRunStore
-	userStore   store.UserStore
-	skillStore  store.IAgentDefinitionStore // for agent_name/emoji
-	creditStore store.CreditStore           // for credits_used computation (SumByReservationIDs)
+	runStore     store.IAgentRunStore
+	userStore    store.UserStore
+	skillStore   store.IAgentDefinitionStore // for agent_name/emoji
+	creditStore  store.CreditStore           // for credits_used computation (SumByReservationIDs)
+	runCanceller RunCanceller
+}
+
+// RunCanceller is the narrow active-run capability needed by session deletion.
+type RunCanceller interface {
+	Cancel(runID uint64) bool
 }
 
 // NewStudentQueryService constructs a StudentQueryService.
@@ -209,6 +219,10 @@ func WithQuerySkillStore(s store.IAgentDefinitionStore) StudentQueryOption {
 // WithQueryCreditStore injects a CreditStore so credits_used can be computed.
 func WithQueryCreditStore(s store.CreditStore) StudentQueryOption {
 	return func(svc *StudentQueryService) { svc.creditStore = s }
+}
+
+func WithQueryRunCanceller(c RunCanceller) StudentQueryOption {
+	return func(svc *StudentQueryService) { svc.runCanceller = c }
 }
 
 // ListRecentSessions returns the last N sessions for the learner, ordered by
@@ -518,7 +532,9 @@ type agentMessage struct {
 // restart-safe identity stored on agent_run. The live URL is deliberately not
 // recoverable after reload; unknown or transient fields fail closed.
 func synthesizeExternalAction(run *model.AgentRun) (agentMessage, bool) {
-	if run.StateReason != string(TerminalWaitingForUserChoice) {
+	if run.StateReason != string(TerminalWaitingForUserChoice) &&
+		run.StateReason != "external_resume_ready" &&
+		!strings.HasPrefix(run.StateReason, "ext_resume:") {
 		return agentMessage{}, false
 	}
 	if !hasPendingExternalAction(run.PendingExternalActionJSON) {
@@ -839,10 +855,38 @@ func (s *StudentQueryService) GenerateSessionTitle(ctx context.Context, userID u
 
 // DeleteSession logical-deletes the whole session (and all its runs) for the user.
 func (s *StudentQueryService) DeleteSession(ctx context.Context, userID uint, sessionID string) error {
-	if err := s.verifySessionOwnership(ctx, userID, sessionID); err != nil {
+	const pageSize = 200
+	var runs []model.AgentRun
+	for offset := 0; ; {
+		batch, total, err := s.runStore.ListBySession(ctx, sessionID, offset, pageSize)
+		if err != nil {
+			return fmt.Errorf("StudentQueryService.DeleteSession list: %w", err)
+		}
+		runs = append(runs, batch...)
+		if len(batch) == 0 || int64(len(runs)) >= total {
+			break
+		}
+		offset += len(batch)
+	}
+	if len(runs) == 0 {
+		return errno.ErrAgentRunNotFound
+	}
+	if runs[0].UserID != userID {
+		return errno.ErrForbidden.SetMessage("access to another user's session is not allowed")
+	}
+	// Persist deletion first. A concurrently arriving first-model gate observes
+	// is_deleted and refuses entry before the provider call.
+	if err := s.runStore.UpdateSessionDeleted(ctx, sessionID, true); err != nil {
 		return err
 	}
-	return s.runStore.UpdateSessionDeleted(ctx, sessionID, true)
+	if s.runCanceller != nil {
+		for i := range runs {
+			if runs[i].Status == "running" {
+				s.runCanceller.Cancel(runs[i].ID)
+			}
+		}
+	}
+	return nil
 }
 
 // verifySessionOwnership checks if the first run in this session belongs to the userID.

@@ -176,6 +176,32 @@ func seedRun(t *testing.T, db *gorm.DB, userID uint, sessionID string, status st
 	return run.ID
 }
 
+type recordingRunCanceller struct {
+	ids []uint64
+}
+
+func (c *recordingRunCanceller) Cancel(id uint64) bool {
+	c.ids = append(c.ids, id)
+	return true
+}
+
+func TestDeleteSession_PersistsDeleteThenCancelsActiveRuns(t *testing.T) {
+	svc, db := newSQService(t)
+	activeID := seedRun(t, db, 101, "delete-active", "running")
+	_ = seedRun(t, db, 101, "delete-active", "terminated")
+	canceller := &recordingRunCanceller{}
+	svc.runCanceller = canceller
+
+	require.NoError(t, svc.DeleteSession(context.Background(), 101, "delete-active"))
+	assert.Equal(t, []uint64{activeID}, canceller.ids)
+	var rows []model.AgentRun
+	require.NoError(t, db.Unscoped().Where("session_id = ?", "delete-active").Find(&rows).Error)
+	require.Len(t, rows, 2)
+	for i := range rows {
+		assert.True(t, rows[i].IsDeleted)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // TestListRecentSessions_FiltersByUser
 // ---------------------------------------------------------------------------

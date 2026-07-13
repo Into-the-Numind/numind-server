@@ -88,7 +88,6 @@ func (r *agentRunner) RunStream(
 	ch chan<- stream.Event,
 ) (result *RunResult, err error) {
 	startTime := time.Now()
-	externalContinuationAccepted := false
 
 	// Backstop panic guard for the detached run goroutine. Registered first so it
 	// runs last on unwind (after CloseRun etc.). Tool panics are contained earlier
@@ -96,7 +95,7 @@ func (r *agentRunner) RunStream(
 	// never crashes the process, and leaves a clean model_error terminal + SSE close.
 	defer func() {
 		if rec := recover(); rec != nil {
-			if req.ExternalContinuationReady != nil && !externalContinuationAccepted {
+			if req.ExternalContinuationGate != nil && !req.ExternalContinuationGate.CompletedSuccessfully() {
 				result, err = nil, recoverAgentRunPanic(rec, runID, nil, nil, startTime)
 			} else {
 				result, err = nil, recoverAgentRunPanic(rec, runID, r.runStore, ch, startTime)
@@ -424,7 +423,7 @@ func (r *agentRunner) RunStream(
 	// full-open registers from the registry, not req.ToolNames).
 	if len(einoTools) == 0 {
 		if req.ContinueWithoutUserInput {
-			if req.ExternalContinuationReady == nil {
+			if req.ExternalContinuationGate == nil {
 				endedAt := time.Now()
 				if uerr := r.runStore.UpdateState(persistCtx, run.ID, "terminated", string(TerminalModelError), &endedAt); uerr != nil {
 					log.Warnw("AgentRunner.RunStream UpdateState failed on external-continuation configuration error", "agent_run_id", run.ID, "error", uerr)
@@ -498,7 +497,8 @@ func (r *agentRunner) RunStream(
 		usageStore: r.adapterUsageStore(),
 		// Explicit output cap so a thinking model never truncates its trailing tool
 		// call at the provider default (dev run 133). Resolved once from capability.
-		maxOutputTokens: agentMaxOutputTokens(queryCtx),
+		maxOutputTokens:          agentMaxOutputTokens(queryCtx),
+		externalContinuationGate: req.ExternalContinuationGate,
 	}
 	if useCompactV2 {
 		ctxWindow := 0
@@ -537,19 +537,13 @@ func (r *agentRunner) RunStream(
 		StreamToolCallChecker: streamScanToolCallChecker,
 	})
 	if err != nil {
-		if req.ExternalContinuationReady == nil {
+		if req.ExternalContinuationGate == nil {
 			endedAt := time.Now()
 			if uerr := r.runStore.UpdateState(persistCtx, run.ID, "terminated", string(TerminalModelError), &endedAt); uerr != nil {
 				log.Warnw("AgentRunner.RunStream UpdateState failed on NewAgent error", "agent_run_id", run.ID, "error", uerr)
 			}
 		}
 		return nil, fmt.Errorf("AgentRunner.RunStream NewAgent: %w", err)
-	}
-	if req.ExternalContinuationReady != nil {
-		if readyErr := req.ExternalContinuationReady(context.WithoutCancel(queryCtx)); readyErr != nil {
-			return nil, fmt.Errorf("AgentRunner.RunStream external continuation ready: %w", readyErr)
-		}
-		externalContinuationAccepted = true
 	}
 
 	// 8. Resolve sessionID + inject into queryCtx.
@@ -599,6 +593,9 @@ func (r *agentRunner) RunStream(
 	sr, streamErr := einoAgent.Stream(attemptCtx, einoMessages)
 
 	if streamErr != nil {
+		if errors.Is(streamErr, errExternalContinuationFirstCall) {
+			return nil, streamErr
+		}
 		// P1 fix (T05-2): both error branches must emit EventError + EventTerminal so
 		// the SSE client can distinguish "runner failed before first byte" from a clean
 		// EOF. Previously these paths returned immediately without emitting anything,
@@ -669,6 +666,9 @@ func (r *agentRunner) RunStream(
 	// and sets st.TerminalReason. sr.Close() is deferred inside consumeEinoStream.
 	st := &LoopState{}
 	result, consumeErr := r.consumeEinoStream(attemptCtx, run, sr, ch, st, startTime)
+	if errors.Is(consumeErr, errExternalContinuationFirstCall) {
+		return nil, consumeErr
+	}
 	if consumeErr != nil {
 		// consumeEinoStream already emitted error + terminal events onto ch and set
 		// st.TerminalReason. We still call finalizeRun to persist state.

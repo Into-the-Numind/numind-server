@@ -109,10 +109,10 @@ type RunRequest struct {
 	// model request and final persisted transcript from inventing an empty or
 	// natural-language user message. Model tool input can never set this flag.
 	ContinueWithoutUserInput bool
-	// ExternalContinuationReady is an internal runner-start handshake. It is
-	// invoked only after synchronous preflight and react.NewAgent succeed; the
-	// durable external resume lease is cleared by this callback. Never model-set.
-	ExternalContinuationReady func(context.Context) error
+	// ExternalContinuationGate is a server-only, one-shot lease boundary shared
+	// by every adapter clone. It enters immediately before the first provider
+	// call and completes only after the first model response. Never model-set.
+	ExternalContinuationGate *externalContinuationGate
 }
 
 // displayUserText returns the text to PERSIST/DISPLAY as the user turn: DisplayInput
@@ -502,7 +502,6 @@ func NewAgentRunner(runStore store.IAgentRunStore, registry AgentToolRegistry, o
 // LLM 调用 / Eino agent.Generate 真实集成靠 Task 8 集成测试覆盖。
 func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResult, err error) {
 	startTime := time.Now()
-	externalContinuationAccepted := false
 
 	// 0. 注入 userID 到 context，供工具（如 kbSearchTool）读取。
 	ctx = middleware.NewContextWithUserID(ctx, req.UserID)
@@ -525,7 +524,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 			if run != nil {
 				rid = run.ID
 			}
-			if req.ExternalContinuationReady != nil && !externalContinuationAccepted {
+			if req.ExternalContinuationGate != nil && !req.ExternalContinuationGate.CompletedSuccessfully() {
 				// The durable lease owner must release the result after a
 				// synchronous preflight panic. Persisting model_error here would
 				// overwrite the fencing state and make that release impossible.
@@ -996,7 +995,8 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 		usageStore: r.adapterUsageStore(),
 		// Explicit output cap so the resume path's thinking model never truncates a
 		// trailing tool call at the provider default (dev run 133).
-		maxOutputTokens: agentMaxOutputTokens(queryCtx),
+		maxOutputTokens:          agentMaxOutputTokens(queryCtx),
+		externalContinuationGate: req.ExternalContinuationGate,
 	}
 	// V1.5 v2-compact-adapter-integration — V2 compact 接入 Eino per-ReAct-round
 	// LLM 调用层。useCompactV2 true 时注入 compactor；nil → adapter.Generate 中所有
@@ -1031,7 +1031,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 			// A leased external continuation must leave its fencing state intact
 			// until the resumer releases it. Otherwise the release CAS cannot make
 			// this durable result immediately retryable.
-			if req.ExternalContinuationReady == nil {
+			if req.ExternalContinuationGate == nil {
 				endedAt := time.Now()
 				if uerr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalModelError), &endedAt); uerr != nil {
 					log.Warnw("AgentRunner.Run UpdateState failed on external-continuation configuration error", "agent_run_id", run.ID, "error", uerr)
@@ -1138,19 +1138,13 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 		MaxStep: 120,
 	})
 	if err != nil {
-		if req.ExternalContinuationReady == nil {
+		if req.ExternalContinuationGate == nil {
 			endedAt := time.Now()
 			if uerr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalModelError), &endedAt); uerr != nil {
 				log.Warnw("AgentRunner.Run UpdateState failed on NewAgent error", "agent_run_id", run.ID, "error", uerr)
 			}
 		}
 		return nil, fmt.Errorf("AgentRunner.Run NewAgent: %w", err)
-	}
-	if req.ExternalContinuationReady != nil {
-		if readyErr := req.ExternalContinuationReady(context.WithoutCancel(queryCtx)); readyErr != nil {
-			return nil, fmt.Errorf("AgentRunner.Run external continuation ready: %w", readyErr)
-		}
-		externalContinuationAccepted = true
 	}
 	// M-A1: Real ReAct loop — replace _ = einoAgent short-circuit.
 	// M-A3: Inject sessionID into queryCtx so downstream consumers (SyncTurn, narration) find it.
@@ -1236,6 +1230,9 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 		}
 
 		output, runErr = einoAgent.Generate(attemptCtx, einoMessages)
+		if errors.Is(runErr, errExternalContinuationFirstCall) {
+			return nil, runErr
+		}
 		// T6: drop this attempt's stashed usage that no PostToolCall consumed
 		// (the final-answer turn has no following tool call) — bounds the store.
 		r.deleteCallUsage(callID)
