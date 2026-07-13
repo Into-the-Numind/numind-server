@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -154,18 +155,42 @@ func (s *recordingOperationStore) ClaimOperation(
 	userID uint,
 	generation uint64,
 	id, owner string,
+	expectedStates []string,
 	now, leaseUntil time.Time,
 ) (bool, error) {
 	s.mu.Lock()
 	s.owners = append(s.owners, owner)
 	s.mu.Unlock()
-	return s.OperationStore.ClaimOperation(ctx, userID, generation, id, owner, now, leaseUntil)
+	return s.OperationStore.ClaimOperation(ctx, userID, generation, id, owner, expectedStates, now, leaseUntil)
 }
 
 func (s *recordingOperationStore) snapshotOwners() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.owners...)
+}
+
+type terminalBeforeClaimOperationStore struct {
+	OperationStore
+	db *gorm.DB
+}
+
+func (s *terminalBeforeClaimOperationStore) ClaimOperation(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	id, owner string,
+	expectedStates []string,
+	now, leaseUntil time.Time,
+) (bool, error) {
+	if err := s.db.WithContext(ctx).Model(&model.FeishuOperation{}).
+		Where("id = ? AND user_id = ? AND generation = ?", id, userID, generation).
+		Updates(map[string]any{
+			"state": model.FeishuOperationFailed, "lease_owner": "", "lease_until": nil,
+		}).Error; err != nil {
+		return false, err
+	}
+	return s.OperationStore.ClaimOperation(ctx, userID, generation, id, owner, expectedStates, now, leaseUntil)
 }
 
 func (f *operationVaultFake) WithHome(
@@ -315,6 +340,31 @@ func TestOperationService_ConnectedHotPathSkipsAuthStatus(t *testing.T) {
 	require.NotContains(t, string(stored.ResultSummaryJSON), "doc1")
 }
 
+func TestOperationService_StaleNotStartedSnapshotCannotLeaseTerminalOperation(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	racingStore := &terminalBeforeClaimOperationStore{OperationStore: h.dataStore.FeishuWorkspace(), db: h.db}
+	service, err := NewFeishuOperationService(OperationServiceDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: racingStore,
+		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: h.recovery,
+		Confirmation: h.confirmation, Vault: h.vault, Runner: h.runner, Cipher: h.cipher,
+		Now: h.service.now, LeaseDuration: time.Minute,
+	})
+	require.NoError(t, err)
+
+	got, err := service.Execute(h.ctx, operationDocsFetchRequest(901, "tc-terminal-race"))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationFailed, got.State)
+	calls, _ := h.runner.snapshot()
+	require.Zero(t, calls)
+
+	stored, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, got.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationFailed, stored.State)
+	require.Empty(t, stored.LeaseOwner)
+	require.Nil(t, stored.LeaseUntil)
+}
+
 func TestOperationService_StrictInputAndServerOwnedReceiptDomain(t *testing.T) {
 	t.Run("normalize happens before receipt verification", func(t *testing.T) {
 		h := newOperationHarness(t)
@@ -340,6 +390,30 @@ func TestOperationService_StrictInputAndServerOwnedReceiptDomain(t *testing.T) {
 		require.Equal(t, []string{SkillDomainWikiContent}, domains)
 		require.Equal(t, []uint64{10}, runs)
 	})
+
+	for index, testCase := range []struct {
+		name string
+		argv []string
+	}{
+		{name: "fetch wikcn token", argv: []string{"docs", "+fetch", "--doc", "wikcnABCDEFG123"}},
+		{name: "fetch wikc token", argv: []string{"docs", "+fetch", "--doc", "wikcABCDEFG123"}},
+		{name: "update wikcn token", argv: []string{"docs", "+update", "--doc", "wikcnABCDEFG123", "--command", "append", "--content", "hello"}},
+		{name: "update wikc token", argv: []string{"docs", "+update", "--doc", "wikcABCDEFG123", "--command", "append", "--content", "hello"}},
+	} {
+		t.Run("bare wiki token "+testCase.name, func(t *testing.T) {
+			h := newOperationHarness(t)
+			h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+			runID := uint64(110 + index)
+			req := operationDocsFetchRequest(runID, "tc-bare-wiki-"+strconv.Itoa(index))
+			req.IdempotencyKey = fmt.Sprintf("%d:%s", runID, req.ToolCallID)
+			req.Argv = testCase.argv
+
+			_, err := h.service.Execute(h.ctx, req)
+			require.NoError(t, err)
+			domains, _ := h.receipts.snapshot()
+			require.Equal(t, []string{SkillDomainWikiContent}, domains)
+		})
+	}
 
 	t.Run("wiki-looking document content does not change domain", func(t *testing.T) {
 		h := newOperationHarness(t)
@@ -566,6 +640,47 @@ func TestOperationService_StructuredRecoveryUsesExactScopesAndSealsVault(t *test
 	require.NotContains(t, string(stored.ResultSummaryJSON), "raw CLI")
 }
 
+func TestOperationService_CreateAppAndReauthRecoveriesUseCatalogScopes(t *testing.T) {
+	for index, testCase := range []struct {
+		name      string
+		errorType string
+		subtype   string
+		kind      RecoveryKind
+		waitState string
+	}{
+		{name: "create app", errorType: "config", subtype: "not_configured", kind: RecoveryCreateApp, waitState: model.FeishuOperationWaitingConnection},
+		{name: "reauth", errorType: "authentication", subtype: "token_missing", kind: RecoveryReauth, waitState: model.FeishuOperationWaitingUserAuth},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			h := newOperationHarness(t)
+			h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+			h.recovery.action = &OperationAction{SessionID: "catalog-scope-recovery"}
+			h.runner.steps = []operationRunnerStep{{
+				result: &CLIResult{InvocationStarted: true, ExitCode: 1, Envelope: &CLIEnvelope{
+					OK: false, Identity: "user", Error: &CLIError{Type: testCase.errorType, Subtype: testCase.subtype},
+				}},
+				err: errors.New("structured business failure"),
+			}}
+			runID := uint64(150 + index)
+			toolCallID := "tc-catalog-scope-" + strconv.Itoa(index)
+			req := ExecuteRequest{
+				UserID: 7, AgentRunID: runID, ToolCallID: toolCallID,
+				IdempotencyKey: fmt.Sprintf("%d:%s", runID, toolCallID),
+				Argv:           []string{"docs", "+create", "--title", "报告"}, SkillReceipts: []string{"shared", "doc"},
+			}
+
+			got, err := h.service.Execute(h.ctx, req)
+			require.NoError(t, err)
+			require.Equal(t, testCase.waitState, got.State)
+			calls := h.recovery.snapshot()
+			require.Len(t, calls, 1)
+			require.Equal(t, testCase.kind, calls[0].Kind)
+			require.Equal(t, []string{"docx:document:create"}, calls[0].Scopes)
+			require.Equal(t, calls[0].Scopes, got.Action.Scopes)
+		})
+	}
+}
+
 func TestOperationService_ReadTransientFailureRetriesOnce(t *testing.T) {
 	h := newOperationHarness(t)
 	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
@@ -789,6 +904,32 @@ func TestOperationService_RejectsIdempotencyReuseWithDifferentCanonicalRequest(t
 	require.Equal(t, 1, calls)
 }
 
+func TestOperationService_RequestFingerprintCannotBeRecomputedFromShortTitleDictionary(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	request := ExecuteRequest{
+		UserID: 7, AgentRunID: 221, ToolCallID: "tc-short-title", IdempotencyKey: "221:tc-short-title",
+		Argv: []string{"docs", "+create", "--title", "B"}, SkillReceipts: []string{"shared", "doc"},
+	}
+
+	result, err := h.service.Execute(h.ctx, request)
+	require.NoError(t, err)
+	stored, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, result.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, operationFingerprint(stored.RequestCiphertext), stored.RequestFingerprint)
+
+	for _, title := range []string{"A", "B", "C"} {
+		candidate := request
+		candidate.Argv = []string{"docs", "+create", "--title", title}
+		normalized, err := h.service.catalog.Normalize(candidate.Argv, candidate.StdinJSON)
+		require.NoError(t, err)
+		plaintext, err := json.Marshal(persistedRequestFromNormalized(candidate, normalized))
+		require.NoError(t, err)
+		require.NotEqual(t, operationFingerprint(plaintext), stored.RequestFingerprint,
+			"a plaintext dictionary must not reproduce the persisted fingerprint")
+	}
+}
+
 func TestOperationService_TamperedAndNonCanonicalStoredRequestsFailClosed(t *testing.T) {
 	t.Run("tampered ciphertext", func(t *testing.T) {
 		h := newOperationHarness(t)
@@ -820,7 +961,7 @@ func TestOperationService_TamperedAndNonCanonicalStoredRequestsFailClosed(t *tes
 		require.NoError(t, err)
 		require.NoError(t, h.db.Model(&model.FeishuOperation{}).Where("id = ?", stored.ID).Updates(map[string]any{
 			"request_ciphertext":  ciphertext,
-			"request_fingerprint": operationFingerprint(nonCanonical),
+			"request_fingerprint": operationFingerprint(ciphertext),
 			"key_version":         keyVersion,
 		}).Error)
 
@@ -855,7 +996,10 @@ func TestOperationService_GenerationBumpAfterRunnerStartCannotCommitOrSeal(t *te
 	var stored model.FeishuOperation
 	require.NoError(t, h.db.First(&stored, "id = ?", got.OperationID).Error)
 	require.NotEqual(t, model.FeishuOperationSucceeded, stored.State)
-	claimed, err := h.dataStore.FeishuWorkspace().ClaimOperation(h.ctx, 7, 1, stored.ID, "new-owner", time.Now().UTC(), time.Now().UTC().Add(time.Minute))
+	claimed, err := h.dataStore.FeishuWorkspace().ClaimOperation(
+		h.ctx, 7, 1, stored.ID, "new-owner", []string{model.FeishuOperationExecuting},
+		time.Now().UTC(), time.Now().UTC().Add(time.Minute),
+	)
 	require.NoError(t, err)
 	require.False(t, claimed)
 }
@@ -1097,7 +1241,7 @@ func (h *operationHarness) insertExecutingOperation(request ExecuteRequest, leas
 		ID: operationID, UserID: request.UserID, Generation: 1,
 		AgentRunID: request.AgentRunID, ToolCallID: request.ToolCallID, IdempotencyKey: request.IdempotencyKey,
 		CommandPath: normalized.Path, Domain: normalized.Domain, RiskLevel: string(normalized.Risk),
-		RequestCiphertext: ciphertext, KeyVersion: keyVersion, RequestFingerprint: operationFingerprint(plaintext),
+		RequestCiphertext: ciphertext, KeyVersion: keyVersion, RequestFingerprint: operationFingerprint(ciphertext),
 		State: model.FeishuOperationExecuting, AttemptCount: 1, LeaseOwner: "crashed-owner",
 		LeaseUntil: &leaseUntil, StartedAt: &startedAt,
 	}

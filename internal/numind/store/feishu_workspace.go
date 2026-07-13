@@ -23,7 +23,7 @@ type IFeishuWorkspaceStore interface {
 	UpdateSessionState(ctx context.Context, userID uint, generation uint64, id, owner, state string, now time.Time, completedAt *time.Time) error
 	CreateOrGetOperation(ctx context.Context, operation *model.FeishuOperation) (*model.FeishuOperation, error)
 	GetOperationForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuOperation, error)
-	ClaimOperation(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
+	ClaimOperation(ctx context.Context, userID uint, generation uint64, id, owner string, expectedStates []string, now, leaseUntil time.Time) (bool, error)
 	TransitionOperation(ctx context.Context, userID uint, generation uint64, id, owner string, from []string, to string, now time.Time, fields map[string]any) error
 	CancelPendingForGeneration(ctx context.Context, userID uint, generation uint64) error
 }
@@ -188,6 +188,19 @@ func (s *feishuWorkspaceStore) UpdateSessionState(ctx context.Context, userID ui
 func (s *feishuWorkspaceStore) CreateOrGetOperation(ctx context.Context, operation *model.FeishuOperation) (*model.FeishuOperation, error) {
 	var stored *model.FeishuOperation
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// All generation-changing flows must use the same account -> operation
+		// lock order. This makes operation creation and future generation bumps
+		// mutually exclusive on MySQL without introducing an inverse-order deadlock.
+		var account model.UserThirdPartyAccount
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ? AND provider = ?", operation.UserID, "lark").
+			Take(&account).Error; err != nil {
+			return err
+		}
+		if account.Generation != operation.Generation {
+			return gorm.ErrRecordNotFound
+		}
+
 		result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(operation)
 		if result.Error != nil {
 			return result.Error
@@ -224,7 +237,10 @@ func (s *feishuWorkspaceStore) GetOperationForUser(ctx context.Context, userID u
 
 // ClaimOperation acquires or renews an operation lease only for the account's
 // active generation and only when the prior lease is free, expired, or same-owner.
-func (s *feishuWorkspaceStore) ClaimOperation(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error) {
+func (s *feishuWorkspaceStore) ClaimOperation(ctx context.Context, userID uint, generation uint64, id, owner string, expectedStates []string, now, leaseUntil time.Time) (bool, error) {
+	if len(expectedStates) == 0 {
+		return false, fmt.Errorf("claim feishu operation: expected source state is required")
+	}
 	activeGeneration := s.db.WithContext(ctx).
 		Model(&model.UserThirdPartyAccount{}).
 		Select("1").
@@ -234,6 +250,7 @@ func (s *feishuWorkspaceStore) ClaimOperation(ctx context.Context, userID uint, 
 	result := s.db.WithContext(ctx).
 		Model(&model.FeishuOperation{}).
 		Where("id = ? AND user_id = ? AND generation = ?", id, userID, generation).
+		Where("state IN ?", expectedStates).
 		Where("EXISTS (?)", activeGeneration).
 		Where("lease_until IS NULL OR lease_until <= ? OR lease_owner = ?", now, owner).
 		Updates(map[string]any{
@@ -317,8 +334,8 @@ func (s *feishuWorkspaceStore) CancelPendingForGeneration(ctx context.Context, u
 		if err := tx.Model(&model.FeishuOperation{}).
 			Where("user_id = ? AND generation = ? AND state IN ?", userID, generation, pendingStates).
 			Updates(map[string]any{
-				"state":       model.FeishuOperationCancelled,
-				"finished_at": now,
+				"state": model.FeishuOperationCancelled, "finished_at": now,
+				"lease_owner": "", "lease_until": nil,
 			}).Error; err != nil {
 			return fmt.Errorf("cancel feishu operations: %w", err)
 		}

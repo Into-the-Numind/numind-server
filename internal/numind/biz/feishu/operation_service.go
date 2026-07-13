@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -75,7 +76,7 @@ type OperationAccountStore interface {
 type OperationStore interface {
 	CreateOrGetOperation(ctx context.Context, operation *model.FeishuOperation) (*model.FeishuOperation, error)
 	GetOperationForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuOperation, error)
-	ClaimOperation(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
+	ClaimOperation(ctx context.Context, userID uint, generation uint64, id, owner string, expectedStates []string, now, leaseUntil time.Time) (bool, error)
 	TransitionOperation(ctx context.Context, userID uint, generation uint64, id, owner string, from []string, to string, now time.Time, fields map[string]any) error
 }
 
@@ -351,12 +352,12 @@ func (s *FeishuOperationService) Execute(ctx context.Context, request ExecuteReq
 	if err != nil {
 		return nil, ErrOperationIntegrity
 	}
-	fingerprint := operationFingerprint(plaintext)
 	owner := OperationCipherOwner{UserID: request.UserID, Generation: account.Generation, OperationID: operationID}
 	requestCiphertext, keyVersion, err := s.sealOperationBlob(OperationCipherPurposeRequest, owner, plaintext)
 	if err != nil {
 		return nil, err
 	}
+	fingerprint := operationFingerprint(requestCiphertext)
 	candidate := &model.FeishuOperation{
 		ID: operationID, UserID: request.UserID, Generation: account.Generation,
 		AgentRunID: request.AgentRunID, ToolCallID: request.ToolCallID,
@@ -373,11 +374,17 @@ func (s *FeishuOperationService) Execute(ctx context.Context, request ExecuteReq
 		return nil, ErrOperationIdempotencyConflict
 	}
 	executionRequest := persisted
-	if stored.ID != candidate.ID &&
-		(stored.State == model.FeishuOperationExecuting || stored.State == model.FeishuOperationNotStarted) {
+	if stored.ID != candidate.ID {
 		executionRequest, err = s.openPersistedRequest(stored)
 		if err != nil {
 			return nil, err
+		}
+		storedPlaintext, marshalErr := json.Marshal(executionRequest)
+		if marshalErr != nil {
+			return nil, ErrOperationIntegrity
+		}
+		if subtle.ConstantTimeCompare(storedPlaintext, plaintext) != 1 {
+			return nil, ErrOperationIdempotencyConflict
 		}
 	}
 	if stored.State == model.FeishuOperationExecuting {
@@ -466,6 +473,7 @@ func (s *FeishuOperationService) reclaimExpiredExecution(
 		operation.Generation,
 		operation.ID,
 		owner,
+		[]string{model.FeishuOperationExecuting},
 		now,
 		now.Add(s.leaseDuration),
 	)
@@ -524,7 +532,10 @@ func (s *FeishuOperationService) claimAndExecute(
 	}
 	owner := uuid.NewString()
 	now := s.now().UTC()
-	claimed, err := s.operations.ClaimOperation(ctx, operation.UserID, operation.Generation, operation.ID, owner, now, now.Add(s.leaseDuration))
+	claimed, err := s.operations.ClaimOperation(
+		ctx, operation.UserID, operation.Generation, operation.ID, owner,
+		[]string{operation.State}, now, now.Add(s.leaseDuration),
+	)
 	if err != nil {
 		return nil, ErrOperationUnavailable
 	}
@@ -615,8 +626,13 @@ func (s *FeishuOperationService) executeClaimed(
 			(persisted.ReplaySafeOnAuthError || classification.ProvenNoSideEffect) {
 			waitingState := waitingStateForRecovery(classification.Recovery)
 			if waitingState != "" {
+				recoveryScopes := append([]string(nil), classification.MissingScopes...)
+				if len(recoveryScopes) == 0 &&
+					(classification.Recovery == RecoveryCreateApp || classification.Recovery == RecoveryReauth) {
+					recoveryScopes = append([]string(nil), persisted.Scopes...)
+				}
 				return s.startRecoveryAndWait(ctx, operation, leaseOwner, persisted, classification.Recovery,
-					classification.MissingScopes, waitingState, priorRecoverySignature, classification.PublicCode)
+					recoveryScopes, waitingState, priorRecoverySignature, classification.PublicCode)
 			}
 		}
 		terminal := classification.TerminalState
@@ -843,7 +859,8 @@ func (s *FeishuOperationService) reloadResult(ctx context.Context, operation *mo
 func (s *FeishuOperationService) openPersistedRequest(operation *model.FeishuOperation) (persistedOperationRequest, error) {
 	owner := OperationCipherOwner{UserID: operation.UserID, Generation: operation.Generation, OperationID: operation.ID}
 	plaintext, keyVersion, err := s.openOperationBlob(OperationCipherPurposeRequest, owner, operation.KeyVersion, operation.RequestCiphertext)
-	if err != nil || keyVersion != operation.KeyVersion || operationFingerprint(plaintext) != operation.RequestFingerprint {
+	if err != nil || keyVersion != operation.KeyVersion ||
+		operationFingerprint(operation.RequestCiphertext) != operation.RequestFingerprint {
 		return persistedOperationRequest{}, ErrOperationIntegrity
 	}
 	decoder := json.NewDecoder(bytes.NewReader(plaintext))
@@ -926,8 +943,7 @@ func sameImmutableOperation(stored, candidate *model.FeishuOperation) bool {
 	return stored != nil && candidate != nil && stored.UserID == candidate.UserID && stored.Generation == candidate.Generation &&
 		stored.AgentRunID == candidate.AgentRunID && stored.ToolCallID == candidate.ToolCallID &&
 		stored.IdempotencyKey == candidate.IdempotencyKey && stored.CommandPath == candidate.CommandPath &&
-		stored.Domain == candidate.Domain && stored.RiskLevel == candidate.RiskLevel &&
-		stored.RequestFingerprint == candidate.RequestFingerprint
+		stored.Domain == candidate.Domain && stored.RiskLevel == candidate.RiskLevel
 }
 
 func validateExecuteRequestIdentity(request ExecuteRequest) error {
@@ -971,7 +987,12 @@ func operationReceiptDomain(command *NormalizedCommand) string {
 			if argument != "--doc" || index+1 >= len(command.Argv) {
 				continue
 			}
-			parsed, err := url.Parse(command.Argv[index+1])
+			docRef := command.Argv[index+1]
+			if !strings.Contains(docRef, "://") &&
+				(strings.HasPrefix(docRef, "wikcn") || strings.HasPrefix(docRef, "wikc")) {
+				return SkillDomainWikiContent
+			}
+			parsed, err := url.Parse(docRef)
 			if err == nil && parsed.Scheme == "https" && strings.HasPrefix(parsed.EscapedPath(), "/wiki/") {
 				return SkillDomainWikiContent
 			}

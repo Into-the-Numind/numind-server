@@ -136,6 +136,8 @@ func TestFeishuWorkspaceModels_MySQLSchemaContract(t *testing.T) {
 func TestFeishuWorkspaceStore_IdempotencyIsPerUser(t *testing.T) {
 	ctx := context.Background()
 	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 1)
+	createFeishuAccount(t, s, 8, 1)
 
 	a, err := s.CreateOrGetOperation(ctx, newFeishuOperation("op-a", 7, 1, "same-key"))
 	require.NoError(t, err)
@@ -149,6 +151,23 @@ func TestFeishuWorkspaceStore_IdempotencyIsPerUser(t *testing.T) {
 	var count int64
 	require.NoError(t, s.db.Model(&model.FeishuOperation{}).Count(&count).Error)
 	require.EqualValues(t, 2, count)
+}
+
+func TestFeishuWorkspaceStore_CreateOperationRejectsStaleAccountGenerationBeforeInsert(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 2)
+
+	stale := newFeishuOperation("operation-stale-create", 7, 1, "key-stale-create")
+	stored, err := s.CreateOrGetOperation(ctx, stale)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	require.Nil(t, stored)
+
+	var count int64
+	require.NoError(t, s.db.Model(&model.FeishuOperation{}).
+		Where("id = ? OR (user_id = ? AND idempotency_key = ?)", stale.ID, stale.UserID, stale.IdempotencyKey).
+		Count(&count).Error)
+	require.Zero(t, count, "stale generation must be rejected before any operation row is inserted")
 }
 
 func TestFeishuWorkspaceStore_VaultRevisionCASAndOwnership(t *testing.T) {
@@ -265,25 +284,56 @@ func TestFeishuWorkspaceStore_OperationLeaseRejectsStaleGeneration(t *testing.T)
 	_, err = s.GetOperationForUser(ctx, 7, 2, op.ID)
 	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
 
-	claimed, err := s.ClaimOperation(ctx, 7, 1, op.ID, "worker-a", now, now.Add(time.Minute))
+	claimed, err := s.ClaimOperation(ctx, 7, 1, op.ID, "worker-a", []string{model.FeishuOperationNotStarted}, now, now.Add(time.Minute))
 	require.NoError(t, err)
 	require.True(t, claimed)
-	claimed, err = s.ClaimOperation(ctx, 7, 1, op.ID, "worker-b", now.Add(10*time.Second), now.Add(2*time.Minute))
+	claimed, err = s.ClaimOperation(ctx, 7, 1, op.ID, "worker-b", []string{model.FeishuOperationNotStarted}, now.Add(10*time.Second), now.Add(2*time.Minute))
 	require.NoError(t, err)
 	require.False(t, claimed)
-	claimed, err = s.ClaimOperation(ctx, 7, 1, op.ID, "worker-a", now.Add(20*time.Second), now.Add(3*time.Minute))
+	claimed, err = s.ClaimOperation(ctx, 7, 1, op.ID, "worker-a", []string{model.FeishuOperationNotStarted}, now.Add(20*time.Second), now.Add(3*time.Minute))
 	require.NoError(t, err)
 	require.True(t, claimed)
-	claimed, err = s.ClaimOperation(ctx, 7, 1, op.ID, "worker-b", now.Add(4*time.Minute), now.Add(5*time.Minute))
+	claimed, err = s.ClaimOperation(ctx, 7, 1, op.ID, "worker-b", []string{model.FeishuOperationNotStarted}, now.Add(4*time.Minute), now.Add(5*time.Minute))
 	require.NoError(t, err)
 	require.True(t, claimed)
 
 	require.NoError(t, s.db.Model(&model.UserThirdPartyAccount{}).
 		Where("user_id = ? AND provider = ?", 7, "lark").
 		Update("generation", 2).Error)
-	claimed, err = s.ClaimOperation(ctx, 7, 1, op.ID, "worker-c", now.Add(6*time.Minute), now.Add(7*time.Minute))
+	claimed, err = s.ClaimOperation(ctx, 7, 1, op.ID, "worker-c", []string{model.FeishuOperationNotStarted}, now.Add(6*time.Minute), now.Add(7*time.Minute))
 	require.NoError(t, err)
 	require.False(t, claimed, "an operation from a previous account generation must never be revived")
+}
+
+func TestFeishuWorkspaceStore_OperationClaimBindsExpectedSourceState(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 1)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	for index, state := range []string{
+		model.FeishuOperationWaitingConnection,
+		model.FeishuOperationSucceeded,
+	} {
+		op, err := s.CreateOrGetOperation(ctx, newFeishuOperation(
+			fmt.Sprintf("operation-state-bound-%d", index), 7, 1, fmt.Sprintf("key-state-bound-%d", index),
+		))
+		require.NoError(t, err)
+		require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", op.ID).Update("state", state).Error)
+
+		claimed, err := s.ClaimOperation(
+			ctx, 7, 1, op.ID, "stale-worker",
+			[]string{model.FeishuOperationNotStarted}, now, now.Add(time.Minute),
+		)
+		require.NoError(t, err)
+		require.False(t, claimed)
+
+		stored, err := s.GetOperationForUser(ctx, 7, 1, op.ID)
+		require.NoError(t, err)
+		require.Equal(t, state, stored.State)
+		require.Empty(t, stored.LeaseOwner)
+		require.Nil(t, stored.LeaseUntil)
+	}
 }
 
 func TestFeishuWorkspaceStore_TransitionAndCancelAreConditional(t *testing.T) {
@@ -294,7 +344,7 @@ func TestFeishuWorkspaceStore_TransitionAndCancelAreConditional(t *testing.T) {
 
 	first, err := s.CreateOrGetOperation(ctx, newFeishuOperation("operation-first", 7, 1, "key-first"))
 	require.NoError(t, err)
-	claimed, err := s.ClaimOperation(ctx, 7, 1, first.ID, "worker-a", now, now.Add(time.Minute))
+	claimed, err := s.ClaimOperation(ctx, 7, 1, first.ID, "worker-a", []string{model.FeishuOperationNotStarted}, now, now.Add(time.Minute))
 	require.NoError(t, err)
 	require.True(t, claimed)
 	transitionNow := now.Add(30 * time.Second)
@@ -308,17 +358,22 @@ func TestFeishuWorkspaceStore_TransitionAndCancelAreConditional(t *testing.T) {
 
 	second, err := s.CreateOrGetOperation(ctx, newFeishuOperation("operation-second", 7, 1, "key-second"))
 	require.NoError(t, err)
+	require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", second.ID).Updates(map[string]any{
+		"lease_owner": "stale-worker", "lease_until": now.Add(time.Minute),
+	}).Error)
 	terminal, err := s.CreateOrGetOperation(ctx, newFeishuOperation("operation-terminal", 7, 1, "key-terminal"))
 	require.NoError(t, err)
 	require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", terminal.ID).Update("state", model.FeishuOperationSucceeded).Error)
-	otherGeneration, err := s.CreateOrGetOperation(ctx, newFeishuOperation("operation-new-generation", 7, 2, "key-new-generation"))
-	require.NoError(t, err)
+	otherGeneration := newFeishuOperation("operation-new-generation", 7, 2, "key-new-generation")
+	require.NoError(t, s.db.Create(otherGeneration).Error)
 
 	require.NoError(t, s.CancelPendingForGeneration(ctx, 7, 1))
 	for _, id := range []string{first.ID, second.ID} {
 		var got model.FeishuOperation
 		require.NoError(t, s.db.First(&got, "id = ?", id).Error)
 		require.Equal(t, model.FeishuOperationCancelled, got.State)
+		require.Empty(t, got.LeaseOwner)
+		require.Nil(t, got.LeaseUntil)
 	}
 	var gotTerminal model.FeishuOperation
 	require.NoError(t, s.db.First(&gotTerminal, "id = ?", terminal.ID).Error)
@@ -381,13 +436,13 @@ func TestFeishuWorkspaceStore_OperationMutationsFenceTenantGenerationAndExpiredL
 	op, err := s.CreateOrGetOperation(ctx, newFeishuOperation("operation-fenced", 7, 3, "key-fenced"))
 	require.NoError(t, err)
 
-	claimed, err := s.ClaimOperation(ctx, 8, 3, op.ID, "worker-a", now, now.Add(time.Minute))
+	claimed, err := s.ClaimOperation(ctx, 8, 3, op.ID, "worker-a", []string{model.FeishuOperationNotStarted}, now, now.Add(time.Minute))
 	require.NoError(t, err)
 	require.False(t, claimed)
-	claimed, err = s.ClaimOperation(ctx, 7, 4, op.ID, "worker-a", now, now.Add(time.Minute))
+	claimed, err = s.ClaimOperation(ctx, 7, 4, op.ID, "worker-a", []string{model.FeishuOperationNotStarted}, now, now.Add(time.Minute))
 	require.NoError(t, err)
 	require.False(t, claimed)
-	claimed, err = s.ClaimOperation(ctx, 7, 3, op.ID, "worker-a", now, now.Add(time.Minute))
+	claimed, err = s.ClaimOperation(ctx, 7, 3, op.ID, "worker-a", []string{model.FeishuOperationNotStarted}, now, now.Add(time.Minute))
 	require.NoError(t, err)
 	require.True(t, claimed)
 
@@ -424,7 +479,7 @@ func TestFeishuWorkspaceStore_ExpiredOperationLeaseCannotTransition(t *testing.T
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	op, err := s.CreateOrGetOperation(ctx, newFeishuOperation("operation-expired", 7, 1, "key-expired"))
 	require.NoError(t, err)
-	claimed, err := s.ClaimOperation(ctx, 7, 1, op.ID, "worker-a", now, now.Add(time.Minute))
+	claimed, err := s.ClaimOperation(ctx, 7, 1, op.ID, "worker-a", []string{model.FeishuOperationNotStarted}, now, now.Add(time.Minute))
 	require.NoError(t, err)
 	require.True(t, claimed)
 
@@ -447,7 +502,7 @@ func TestFeishuWorkspaceStore_TransitionRejectsFieldsOutsideAllowlist(t *testing
 			op := newFeishuOperation(fmt.Sprintf("operation-protected-%d", i), 7, 1, fmt.Sprintf("key-protected-%d", i))
 			stored, err := s.CreateOrGetOperation(ctx, op)
 			require.NoError(t, err)
-			claimed, err := s.ClaimOperation(ctx, 7, 1, stored.ID, "worker-a", now, now.Add(time.Minute))
+			claimed, err := s.ClaimOperation(ctx, 7, 1, stored.ID, "worker-a", []string{model.FeishuOperationNotStarted}, now, now.Add(time.Minute))
 			require.NoError(t, err)
 			require.True(t, claimed)
 
@@ -468,7 +523,7 @@ func TestFeishuWorkspaceStore_TransitionAllowsBusinessResultFields(t *testing.T)
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	op, err := s.CreateOrGetOperation(ctx, newFeishuOperation("operation-result", 7, 1, "key-result"))
 	require.NoError(t, err)
-	claimed, err := s.ClaimOperation(ctx, 7, 1, op.ID, "worker-a", now, now.Add(time.Minute))
+	claimed, err := s.ClaimOperation(ctx, 7, 1, op.ID, "worker-a", []string{model.FeishuOperationNotStarted}, now, now.Add(time.Minute))
 	require.NoError(t, err)
 	require.True(t, claimed)
 
@@ -516,7 +571,7 @@ func TestFeishuWorkspaceStore_TransitionReleasesLeaseOutsideExecuting(t *testing
 			)
 			stored, err := s.CreateOrGetOperation(ctx, op)
 			require.NoError(t, err)
-			claimed, err := s.ClaimOperation(ctx, 7, 1, stored.ID, "worker-a", now, now.Add(time.Minute))
+			claimed, err := s.ClaimOperation(ctx, 7, 1, stored.ID, "worker-a", []string{model.FeishuOperationNotStarted}, now, now.Add(time.Minute))
 			require.NoError(t, err)
 			require.True(t, claimed)
 
@@ -544,7 +599,7 @@ func TestFeishuWorkspaceStore_TransitionReleasesLeaseOutsideExecuting(t *testing
 		stored, err := s.CreateOrGetOperation(ctx, op)
 		require.NoError(t, err)
 		leaseUntil := now.Add(time.Minute)
-		claimed, err := s.ClaimOperation(ctx, 7, 1, stored.ID, "worker-a", now, leaseUntil)
+		claimed, err := s.ClaimOperation(ctx, 7, 1, stored.ID, "worker-a", []string{model.FeishuOperationNotStarted}, now, leaseUntil)
 		require.NoError(t, err)
 		require.True(t, claimed)
 		require.NoError(t, s.TransitionOperation(
