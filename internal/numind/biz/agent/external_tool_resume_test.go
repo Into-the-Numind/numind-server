@@ -38,6 +38,36 @@ type externalResumeStoreStub struct {
 	touchErrAfter int
 }
 
+// updateRunCopyOnWrite mirrors the production store's snapshot semantics:
+// GORM Get returns a fresh AgentRun value, while mockAgentRunStore.Get returns
+// its map pointer. Replacing a cloned value keeps snapshots already handed to
+// the resumer immutable and prevents the test double from inventing data races
+// that cannot occur in the production store.
+func (s *externalResumeStoreStub) updateRunCopyOnWrite(runID uint64, mutate func(*model.AgentRun) error) error {
+	s.runStore.mu.Lock()
+	defer s.runStore.mu.Unlock()
+	current, ok := s.runStore.runs[runID]
+	if !ok {
+		return errors.New("run not found")
+	}
+	cloned := *current
+	cloned.Messages = append(datatypes.JSON(nil), current.Messages...)
+	cloned.PendingExternalActionJSON = append(datatypes.JSON(nil), current.PendingExternalActionJSON...)
+	if current.PendingExternalActionAt != nil {
+		pendingAt := *current.PendingExternalActionAt
+		cloned.PendingExternalActionAt = &pendingAt
+	}
+	if current.EndedAt != nil {
+		endedAt := *current.EndedAt
+		cloned.EndedAt = &endedAt
+	}
+	if err := mutate(&cloned); err != nil {
+		return err
+	}
+	s.runStore.runs[runID] = &cloned
+	return nil
+}
+
 func (s *externalResumeStoreStub) ResumeExternalTool(_ context.Context, runID uint64, operationID, toolCallID string, result json.RawMessage) (bool, error) {
 	_, claimed, err := s.ClaimExternalToolResume(context.Background(), runID, operationID, toolCallID, result)
 	return claimed, err
@@ -57,29 +87,31 @@ func (s *externalResumeStoreStub) ClaimExternalToolResume(_ context.Context, run
 	s.leaseSeq++
 	s.lease = fmt.Sprintf("lease-%d", s.leaseSeq)
 	s.result = append(json.RawMessage(nil), result...)
-	run, getErr := s.runStore.Get(context.Background(), runID)
-	if getErr != nil {
-		return "", false, getErr
-	}
-	var turns []json.RawMessage
-	if err := json.Unmarshal(run.Messages, &turns); err != nil {
-		return "", false, err
-	}
-	toolMessage := schema.ToolMessage(string(result), toolCallID)
-	toolMessage.Extra = map[string]any{externalOperationIDExtraKey: operationID}
-	turn, err := json.Marshal(toolMessage)
+	err := s.updateRunCopyOnWrite(runID, func(run *model.AgentRun) error {
+		var turns []json.RawMessage
+		if err := json.Unmarshal(run.Messages, &turns); err != nil {
+			return err
+		}
+		toolMessage := schema.ToolMessage(string(result), toolCallID)
+		toolMessage.Extra = map[string]any{externalOperationIDExtraKey: operationID}
+		turn, err := json.Marshal(toolMessage)
+		if err != nil {
+			return err
+		}
+		turns = append(turns, turn)
+		messages, err := json.Marshal(turns)
+		if err != nil {
+			return err
+		}
+		run.Messages = datatypes.JSON(messages)
+		run.Status = "running"
+		run.StateReason = "ext_resume:" + s.lease
+		run.EndedAt = nil
+		return nil
+	})
 	if err != nil {
 		return "", false, err
 	}
-	turns = append(turns, turn)
-	messages, err := json.Marshal(turns)
-	if err != nil {
-		return "", false, err
-	}
-	run.Messages = datatypes.JSON(messages)
-	run.Status = "running"
-	run.StateReason = "ext_resume:" + s.lease
-	run.EndedAt = nil
 	return s.lease, true, nil
 }
 
@@ -90,45 +122,47 @@ func (s *externalResumeStoreStub) CompleteExternalToolResume(_ context.Context, 
 	if !s.claimed || leaseToken != s.lease {
 		return errors.New("external resume lease changed")
 	}
-	run, err := s.runStore.Get(context.Background(), runID)
-	if err != nil {
-		return err
-	}
-	if run.CancellationRequestedAt != nil || run.IsDeleted {
-		return errors.New("external resume was cancelled or deleted")
-	}
-	if run.Status != "running" || run.StateReason != "ext_resume:"+leaseToken {
-		return errors.New("external resume lease state changed")
-	}
-	run.PendingExternalActionJSON = nil
-	run.PendingExternalActionAt = nil
-	run.Status = "running"
-	run.StateReason = "running"
 	_, _ = operationID, toolCallID
-	return nil
+	return s.updateRunCopyOnWrite(runID, func(run *model.AgentRun) error {
+		if run.CancellationRequestedAt != nil || run.IsDeleted {
+			return errors.New("external resume was cancelled or deleted")
+		}
+		if run.Status != "running" || run.StateReason != "ext_resume:"+leaseToken {
+			return errors.New("external resume lease state changed")
+		}
+		run.PendingExternalActionJSON = nil
+		run.PendingExternalActionAt = nil
+		run.Status = "running"
+		run.StateReason = "running"
+		return nil
+	})
 }
 
 func (s *externalResumeStoreStub) ReleaseExternalToolResume(_ context.Context, runID uint64, operationID, toolCallID, leaseToken string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.releases++
-	run, err := s.runStore.Get(context.Background(), runID)
+	transitioned := false
+	err := s.updateRunCopyOnWrite(runID, func(run *model.AgentRun) error {
+		if run.CancellationRequestedAt != nil || run.IsDeleted {
+			return nil
+		}
+		if !s.claimed || leaseToken != s.lease {
+			return errors.New("external resume lease changed")
+		}
+		if run.Status != "running" || run.StateReason != "ext_resume:"+leaseToken {
+			return errors.New("external resume lease state changed")
+		}
+		run.Status = "terminated"
+		run.StateReason = "external_resume_ready"
+		transitioned = true
+		return nil
+	})
 	if err != nil {
 		return err
 	}
-	if run.CancellationRequestedAt != nil || run.IsDeleted {
-		return nil
-	}
-	if !s.claimed || leaseToken != s.lease {
-		return errors.New("external resume lease changed")
-	}
-	if run.Status != "running" || run.StateReason != "ext_resume:"+leaseToken {
-		return errors.New("external resume lease state changed")
-	}
-	s.claimed = false
-	if err == nil {
-		run.Status = "terminated"
-		run.StateReason = "external_resume_ready"
+	if transitioned {
+		s.claimed = false
 	}
 	_, _ = operationID, toolCallID
 	return nil
@@ -144,17 +178,15 @@ func (s *externalResumeStoreStub) TouchExternalToolResume(_ context.Context, run
 	if !s.claimed || leaseToken != s.lease {
 		return errors.New("external resume lease changed")
 	}
-	run, err := s.runStore.Get(context.Background(), runID)
-	if err != nil {
-		return err
-	}
-	if run.CancellationRequestedAt != nil || run.IsDeleted || run.StateReason != "ext_resume:"+leaseToken {
-		return errors.New("external resume was cancelled, deleted, or reclaimed")
-	}
 	_, _ = operationID, toolCallID
-	now := time.Now()
-	run.PendingExternalActionAt = &now
-	return nil
+	return s.updateRunCopyOnWrite(runID, func(run *model.AgentRun) error {
+		if run.CancellationRequestedAt != nil || run.IsDeleted || run.StateReason != "ext_resume:"+leaseToken {
+			return errors.New("external resume was cancelled, deleted, or reclaimed")
+		}
+		now := time.Now()
+		run.PendingExternalActionAt = &now
+		return nil
+	})
 }
 
 func TestExternalContinuationGate_FirstProviderCallIsOneShotAndCompletesAfterResponse(t *testing.T) {
