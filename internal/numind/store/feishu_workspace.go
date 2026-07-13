@@ -358,7 +358,7 @@ func (s *feishuWorkspaceStore) TryClaimExecutionGate(
 	owner, operationID string,
 	now, leaseUntil time.Time,
 ) (bool, error) {
-	now = feishuExecutionGateNow(now)
+	now = feishuExecutionGateClaimNow(now)
 	leaseUntil = feishuExecutionGateLeaseUntil(leaseUntil)
 	if userID == 0 || generation == 0 || owner == "" || operationID == "" || !leaseUntil.After(now) {
 		return false, nil
@@ -426,7 +426,7 @@ func (s *feishuWorkspaceStore) RenewExecutionGate(
 	owner, operationID string,
 	now, leaseUntil time.Time,
 ) (bool, error) {
-	now = feishuExecutionGateNow(now)
+	now = feishuExecutionGateRenewNow(now)
 	leaseUntil = feishuExecutionGateLeaseUntil(leaseUntil)
 	if userID == 0 || generation == 0 || owner == "" || operationID == "" || !leaseUntil.After(now) {
 		return false, nil
@@ -475,7 +475,11 @@ func (s *feishuWorkspaceStore) RenewExecutionGate(
 	return renewed, nil
 }
 
-func feishuExecutionGateNow(value time.Time) time.Time {
+func feishuExecutionGateClaimNow(value time.Time) time.Time {
+	return value.UTC().Truncate(time.Millisecond)
+}
+
+func feishuExecutionGateRenewNow(value time.Time) time.Time {
 	normalized := value.UTC()
 	millisecond := normalized.Truncate(time.Millisecond)
 	if normalized.After(millisecond) {
@@ -497,7 +501,7 @@ func (s *feishuWorkspaceStore) ReleaseExecutionGate(
 	owner string,
 	now time.Time,
 ) (bool, error) {
-	now = feishuExecutionGateNow(now)
+	now = feishuExecutionGateRenewNow(now)
 	if userID == 0 || generation == 0 || owner == "" {
 		return false, nil
 	}

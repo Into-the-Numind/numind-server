@@ -649,6 +649,42 @@ func TestFeishuWorkspaceStore_ExecutionGateClaimExpiryReleaseAndGenerationFence(
 	require.True(t, claimed, "the current generation may recover an expired retired-generation gate")
 }
 
+func TestFeishuWorkspaceStore_ExecutionGateClaimUsesFloorAtExpiryMillisecond(t *testing.T) {
+	base := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	expiresAt := base.Add(time.Second + 123*time.Millisecond)
+	for _, testCase := range []struct {
+		name    string
+		now     time.Time
+		claimed bool
+	}{
+		{name: "500 microseconds before expiry", now: expiresAt.Add(-500 * time.Microsecond), claimed: false},
+		{name: "at expiry", now: expiresAt, claimed: true},
+		{name: "500 microseconds after expiry", now: expiresAt.Add(500 * time.Microsecond), claimed: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx := context.Background()
+			s := newFeishuWorkspaceTestStore(t)
+			createFeishuAccount(t, s, 7, 1)
+			claimed, err := s.TryClaimExecutionGate(ctx, 7, 1, "owner-a", "operation-a", base, expiresAt)
+			require.NoError(t, err)
+			require.True(t, claimed)
+
+			claimed, err = s.TryClaimExecutionGate(
+				ctx, 7, 1, "owner-b", "operation-b", testCase.now, testCase.now.Add(time.Minute),
+			)
+			require.NoError(t, err)
+			require.Equal(t, testCase.claimed, claimed)
+			var gate model.FeishuOperationExecutionGate
+			require.NoError(t, s.db.First(&gate, "user_id = ?", 7).Error)
+			if testCase.claimed {
+				require.Equal(t, "owner-b", gate.LeaseOwner)
+			} else {
+				require.Equal(t, "owner-a", gate.LeaseOwner)
+			}
+		})
+	}
+}
+
 func TestFeishuWorkspaceStore_RenewExecutionGateRequiresActiveExactLeaseTuple(t *testing.T) {
 	type executionGateRenewer interface {
 		RenewExecutionGate(
