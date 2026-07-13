@@ -514,7 +514,7 @@ git commit -m "feat(feishu): classify cli recovery errors"
 
 **Files:** `skill_reader.go`、`skill_reader_test.go`。
 
-- [ ] **Step 1: 写 reader 红测**
+- [x] **Step 1: 写 reader 红测**
 
 只允许 `lark-shared/lark-doc/lark-base/lark-wiki`；reference 必须来自该技能主文件声明的清单；拒绝绝对路径、`..`、symlink；分页未读完无 receipt；最终 receipt 绑定 runID/skill/version/expiry；换 run、换 skill、换 version、过期、篡改均拒绝。
 
@@ -530,27 +530,27 @@ func TestSkillReceiptIsBoundToRunAndVersion(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 运行红测**
+- [x] **Step 2: 运行红测**
 
 Run: `go test ./internal/numind/biz/feishu -run 'SkillReader|SkillReceipt' -count=1`
 
 Expected: FAIL，reader 不存在。
 
-- [ ] **Step 3: 实现 reader 和 receipt signer**
+- [x] **Step 3: 实现 reader 和 receipt signer**
 
 技能内容从固定 lark-cli 1.0.68 自带 `skills read` 读取，不走用户 HOME、不联网。Cursor 使用 HMAC 签名的 `skill|reference|offset|runID|expiresAt`；单页最大 32 KiB；只有最后一页签发 receipt。Receipt HMAC key 从现有第三方密钥经 domain separation `HMAC(key,"feishu-skill-receipt-v1")` 派生，不新增明文配置。
 
-- [ ] **Step 4: 提供无反向依赖的 receipt verifier 方法**
+- [x] **Step 4: 提供无反向依赖的 receipt verifier 方法**
 
 `SkillReader` 提供 `VerifyRequired(receipts []string, runID uint64, domain string) error`。Domain 映射固定：Docs 要 `lark-shared+lark-doc`；Base 要 `lark-shared+lark-base`；Wiki 命令要 `lark-shared+lark-wiki`，Wiki 内容经 Docs 操作时还要 `lark-doc`。本任务不修改 `operation_service.go`；Task 7 只通过小接口依赖该方法。
 
-- [ ] **Step 5: 绿测**
+- [x] **Step 5: 绿测**
 
 Run: `go test ./internal/numind/biz/feishu -run 'SkillReader|SkillReceipt' -count=1`
 
 Expected: PASS。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/numind/biz/feishu/skill_reader*
