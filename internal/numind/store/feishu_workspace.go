@@ -19,12 +19,12 @@ type IFeishuWorkspaceStore interface {
 	DeleteVault(ctx context.Context, userID uint, generation uint64) error
 	CreateSession(ctx context.Context, session *model.FeishuAuthSession) error
 	GetSessionForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuAuthSession, error)
-	ClaimSession(ctx context.Context, id, owner string, now, leaseUntil time.Time) (bool, error)
-	UpdateSessionState(ctx context.Context, id, owner, state string, completedAt *time.Time) error
+	ClaimSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
+	UpdateSessionState(ctx context.Context, userID uint, generation uint64, id, owner, state string, now time.Time, completedAt *time.Time) error
 	CreateOrGetOperation(ctx context.Context, operation *model.FeishuOperation) (*model.FeishuOperation, error)
 	GetOperationForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuOperation, error)
-	ClaimOperation(ctx context.Context, id, owner string, now, leaseUntil time.Time) (bool, error)
-	TransitionOperation(ctx context.Context, id, owner string, from []string, to string, fields map[string]any) error
+	ClaimOperation(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
+	TransitionOperation(ctx context.Context, userID uint, generation uint64, id, owner string, from []string, to string, now time.Time, fields map[string]any) error
 	CancelPendingForGeneration(ctx context.Context, userID uint, generation uint64) error
 }
 
@@ -52,33 +52,49 @@ func (s *feishuWorkspaceStore) GetVault(ctx context.Context, userID uint, genera
 // PutVaultCAS creates revision 1 when expectedRevision is zero or replaces the
 // encrypted snapshot only when the persisted revision matches expectedRevision.
 func (s *feishuWorkspaceStore) PutVaultCAS(ctx context.Context, vault *model.FeishuCLIVault, expectedRevision uint64) error {
-	db := s.db.WithContext(ctx)
-	if expectedRevision == 0 {
-		vault.Revision = 1
-		if err := db.Create(vault).Error; err != nil {
-			var existing model.FeishuCLIVault
-			if lookupErr := db.Where("user_id = ?", vault.UserID).Take(&existing).Error; lookupErr == nil {
-				return gorm.ErrRecordNotFound
+	nextRevision := expectedRevision + 1
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var account model.UserThirdPartyAccount
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ? AND provider = ?", vault.UserID, "lark").
+			Take(&account).Error; err != nil {
+			return err
+		}
+		if account.Generation != vault.Generation {
+			return gorm.ErrRecordNotFound
+		}
+
+		if expectedRevision == 0 {
+			candidate := *vault
+			candidate.Revision = nextRevision
+			if err := tx.Create(&candidate).Error; err != nil {
+				var existing model.FeishuCLIVault
+				if lookupErr := tx.Where("user_id = ?", vault.UserID).Take(&existing).Error; lookupErr == nil {
+					return gorm.ErrRecordNotFound
+				}
+				return fmt.Errorf("create feishu CLI vault: %w", err)
 			}
-			return fmt.Errorf("create feishu CLI vault: %w", err)
+			return nil
+		}
+
+		result := tx.Model(&model.FeishuCLIVault{}).
+			Where("user_id = ? AND generation = ? AND revision = ?", vault.UserID, vault.Generation, expectedRevision).
+			Updates(map[string]any{
+				"ciphertext":  vault.Ciphertext,
+				"key_version": vault.KeyVersion,
+				"checksum":    vault.Checksum,
+				"revision":    nextRevision,
+			})
+		if result.Error != nil {
+			return fmt.Errorf("update feishu CLI vault: %w", result.Error)
+		}
+		if result.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
 		}
 		return nil
-	}
-
-	nextRevision := expectedRevision + 1
-	result := db.Model(&model.FeishuCLIVault{}).
-		Where("user_id = ? AND generation = ? AND revision = ?", vault.UserID, vault.Generation, expectedRevision).
-		Updates(map[string]any{
-			"ciphertext":  vault.Ciphertext,
-			"key_version": vault.KeyVersion,
-			"checksum":    vault.Checksum,
-			"revision":    nextRevision,
-		})
-	if result.Error != nil {
-		return fmt.Errorf("update feishu CLI vault: %w", result.Error)
-	}
-	if result.RowsAffected != 1 {
-		return gorm.ErrRecordNotFound
+	})
+	if err != nil {
+		return err
 	}
 	vault.Revision = nextRevision
 	return nil
@@ -119,7 +135,7 @@ func (s *feishuWorkspaceStore) GetSessionForUser(ctx context.Context, userID uin
 
 // ClaimSession acquires or renews a lease when it is free, expired, or already
 // belongs to owner. Sessions from an inactive account generation cannot be claimed.
-func (s *feishuWorkspaceStore) ClaimSession(ctx context.Context, id, owner string, now, leaseUntil time.Time) (bool, error) {
+func (s *feishuWorkspaceStore) ClaimSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error) {
 	activeGeneration := s.db.WithContext(ctx).
 		Model(&model.UserThirdPartyAccount{}).
 		Select("1").
@@ -128,7 +144,7 @@ func (s *feishuWorkspaceStore) ClaimSession(ctx context.Context, id, owner strin
 		Where("user_third_party_account.generation = feishu_auth_session.generation")
 	result := s.db.WithContext(ctx).
 		Model(&model.FeishuAuthSession{}).
-		Where("id = ?", id).
+		Where("id = ? AND user_id = ? AND generation = ?", id, userID, generation).
 		Where("EXISTS (?)", activeGeneration).
 		Where("lease_until IS NULL OR lease_until <= ? OR lease_owner = ?", now, owner).
 		Updates(map[string]any{
@@ -142,7 +158,7 @@ func (s *feishuWorkspaceStore) ClaimSession(ctx context.Context, id, owner strin
 }
 
 // UpdateSessionState changes a session only for its current lease owner and active generation.
-func (s *feishuWorkspaceStore) UpdateSessionState(ctx context.Context, id, owner, state string, completedAt *time.Time) error {
+func (s *feishuWorkspaceStore) UpdateSessionState(ctx context.Context, userID uint, generation uint64, id, owner, state string, now time.Time, completedAt *time.Time) error {
 	activeGeneration := s.db.WithContext(ctx).
 		Model(&model.UserThirdPartyAccount{}).
 		Select("1").
@@ -151,7 +167,8 @@ func (s *feishuWorkspaceStore) UpdateSessionState(ctx context.Context, id, owner
 		Where("user_third_party_account.generation = feishu_auth_session.generation")
 	result := s.db.WithContext(ctx).
 		Model(&model.FeishuAuthSession{}).
-		Where("id = ? AND lease_owner = ?", id, owner).
+		Where("id = ? AND user_id = ? AND generation = ?", id, userID, generation).
+		Where("lease_owner = ? AND lease_until > ?", owner, now).
 		Where("EXISTS (?)", activeGeneration).
 		Updates(map[string]any{
 			"state":        state,
@@ -207,7 +224,7 @@ func (s *feishuWorkspaceStore) GetOperationForUser(ctx context.Context, userID u
 
 // ClaimOperation acquires or renews an operation lease only for the account's
 // active generation and only when the prior lease is free, expired, or same-owner.
-func (s *feishuWorkspaceStore) ClaimOperation(ctx context.Context, id, owner string, now, leaseUntil time.Time) (bool, error) {
+func (s *feishuWorkspaceStore) ClaimOperation(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error) {
 	activeGeneration := s.db.WithContext(ctx).
 		Model(&model.UserThirdPartyAccount{}).
 		Select("1").
@@ -216,7 +233,7 @@ func (s *feishuWorkspaceStore) ClaimOperation(ctx context.Context, id, owner str
 		Where("user_third_party_account.generation = feishu_operation.generation")
 	result := s.db.WithContext(ctx).
 		Model(&model.FeishuOperation{}).
-		Where("id = ?", id).
+		Where("id = ? AND user_id = ? AND generation = ?", id, userID, generation).
 		Where("EXISTS (?)", activeGeneration).
 		Where("lease_until IS NULL OR lease_until <= ? OR lease_owner = ?", now, owner).
 		Updates(map[string]any{
@@ -230,9 +247,22 @@ func (s *feishuWorkspaceStore) ClaimOperation(ctx context.Context, id, owner str
 }
 
 // TransitionOperation performs a lease-owner and source-state conditional update.
-func (s *feishuWorkspaceStore) TransitionOperation(ctx context.Context, id, owner string, from []string, to string, fields map[string]any) error {
+func (s *feishuWorkspaceStore) TransitionOperation(ctx context.Context, userID uint, generation uint64, id, owner string, from []string, to string, now time.Time, fields map[string]any) error {
+	allowedFields := map[string]struct{}{
+		"attempt_count":       {},
+		"started_at":          {},
+		"finished_at":         {},
+		"error_type":          {},
+		"error_subtype":       {},
+		"error_code":          {},
+		"result_ciphertext":   {},
+		"result_summary_json": {},
+	}
 	updates := make(map[string]any, len(fields)+1)
 	for key, value := range fields {
+		if _, ok := allowedFields[key]; !ok {
+			return fmt.Errorf("transition feishu operation field %q is not allowed", key)
+		}
 		updates[key] = value
 	}
 	updates["state"] = to
@@ -245,7 +275,8 @@ func (s *feishuWorkspaceStore) TransitionOperation(ctx context.Context, id, owne
 		Where("user_third_party_account.generation = feishu_operation.generation")
 	result := s.db.WithContext(ctx).
 		Model(&model.FeishuOperation{}).
-		Where("id = ? AND lease_owner = ?", id, owner).
+		Where("id = ? AND user_id = ? AND generation = ?", id, userID, generation).
+		Where("lease_owner = ? AND lease_until > ?", owner, now).
 		Where("state IN ?", from).
 		Where("EXISTS (?)", activeGeneration).
 		Updates(updates)

@@ -17,7 +17,7 @@ SET `connection_state` = 'connected'
 WHERE `connected` = 1;
 
 CREATE TABLE `feishu_cli_vault` (
-  `user_id` INT UNSIGNED NOT NULL,
+  `user_id` BIGINT UNSIGNED NOT NULL,
   `generation` BIGINT UNSIGNED NOT NULL,
   `ciphertext` LONGBLOB NOT NULL,
   `key_version` VARCHAR(32) NOT NULL,
@@ -30,7 +30,7 @@ CREATE TABLE `feishu_cli_vault` (
 
 CREATE TABLE `feishu_auth_session` (
   `id` CHAR(36) NOT NULL,
-  `user_id` INT UNSIGNED NOT NULL,
+  `user_id` BIGINT UNSIGNED NOT NULL,
   `generation` BIGINT UNSIGNED NOT NULL,
   `operation_id` CHAR(36) NULL,
   `phase` VARCHAR(32) NOT NULL,
@@ -50,7 +50,7 @@ CREATE TABLE `feishu_auth_session` (
 
 CREATE TABLE `feishu_operation` (
   `id` CHAR(36) NOT NULL,
-  `user_id` INT UNSIGNED NOT NULL,
+  `user_id` BIGINT UNSIGNED NOT NULL,
   `generation` BIGINT UNSIGNED NOT NULL,
   `agent_run_id` BIGINT UNSIGNED NOT NULL,
   `tool_call_id` VARCHAR(128) NOT NULL,

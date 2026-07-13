@@ -24,7 +24,7 @@ import (
 type UserThirdPartyAccount struct {
 	ID uint64 `gorm:"primaryKey;autoIncrement" json:"id"`
 	// UserID 凭据归属用户。(user_id, provider) 唯一。
-	UserID uint `gorm:"not null;uniqueIndex:uniq_user_provider,priority:1" json:"user_id"`
+	UserID uint `gorm:"type:bigint unsigned;not null;uniqueIndex:uniq_user_provider,priority:1" json:"user_id"`
 	// Provider 第三方平台标识，首批仅 "lark"（飞书）。
 	Provider string `gorm:"size:32;not null;uniqueIndex:uniq_user_provider,priority:2" json:"provider"`
 	// AppID 用户自建应用的 app_id（非敏感，明文存储）。

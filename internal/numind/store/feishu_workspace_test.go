@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -73,6 +74,37 @@ func createFeishuAccount(t *testing.T, s *feishuWorkspaceStore, userID uint, gen
 	}).Error)
 }
 
+func requireGormTagContains(t *testing.T, modelType reflect.Type, fieldName string, values ...string) {
+	t.Helper()
+	field, ok := modelType.FieldByName(fieldName)
+	require.True(t, ok, "%s.%s must exist", modelType.Name(), fieldName)
+	tag := field.Tag.Get("gorm")
+	for _, value := range values {
+		require.Contains(t, tag, value, "%s.%s gorm tag", modelType.Name(), fieldName)
+	}
+}
+
+func TestFeishuWorkspaceModels_MySQLSchemaContract(t *testing.T) {
+	requireGormTagContains(t, reflect.TypeOf(model.UserThirdPartyAccount{}), "UserID", "type:bigint unsigned")
+	requireGormTagContains(t, reflect.TypeOf(model.FeishuCLIVault{}), "UserID", "type:bigint unsigned", "primaryKey", "autoIncrement:false")
+	requireGormTagContains(t, reflect.TypeOf(model.FeishuAuthSession{}), "UserID", "type:bigint unsigned")
+	requireGormTagContains(t, reflect.TypeOf(model.FeishuOperation{}), "UserID", "type:bigint unsigned")
+	requireGormTagContains(t, reflect.TypeOf(model.FeishuOperation{}), "AttemptCount", "type:int unsigned")
+
+	for _, item := range []struct {
+		modelType reflect.Type
+		fields    []string
+	}{
+		{reflect.TypeOf(model.FeishuCLIVault{}), []string{"CreatedAt", "UpdatedAt"}},
+		{reflect.TypeOf(model.FeishuAuthSession{}), []string{"ExpiresAt", "CreatedAt", "UpdatedAt"}},
+		{reflect.TypeOf(model.FeishuOperation{}), []string{"CreatedAt", "UpdatedAt"}},
+	} {
+		for _, field := range item.fields {
+			requireGormTagContains(t, item.modelType, field, "not null")
+		}
+	}
+}
+
 func TestFeishuWorkspaceStore_IdempotencyIsPerUser(t *testing.T) {
 	ctx := context.Background()
 	s := newFeishuWorkspaceTestStore(t)
@@ -94,6 +126,7 @@ func TestFeishuWorkspaceStore_IdempotencyIsPerUser(t *testing.T) {
 func TestFeishuWorkspaceStore_VaultRevisionCASAndOwnership(t *testing.T) {
 	ctx := context.Background()
 	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 1)
 	vault := &model.FeishuCLIVault{
 		UserID:     7,
 		Generation: 1,
@@ -129,6 +162,34 @@ func TestFeishuWorkspaceStore_VaultRevisionCASAndOwnership(t *testing.T) {
 	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
 }
 
+func TestFeishuWorkspaceStore_VaultRejectsStaleGenerationBeforeFirstWrite(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 2)
+
+	stale := &model.FeishuCLIVault{
+		UserID:     7,
+		Generation: 1,
+		Ciphertext: []byte("stale-vault"),
+		KeyVersion: "v1",
+		Checksum:   "stale-checksum",
+	}
+	require.ErrorIs(t, s.PutVaultCAS(ctx, stale, 0), gorm.ErrRecordNotFound)
+	var count int64
+	require.NoError(t, s.db.Model(&model.FeishuCLIVault{}).Where("user_id = ?", 7).Count(&count).Error)
+	require.Zero(t, count, "a stale first write must not occupy the user's vault primary key")
+
+	current := &model.FeishuCLIVault{
+		UserID:     7,
+		Generation: 2,
+		Ciphertext: []byte("current-vault"),
+		KeyVersion: "v1",
+		Checksum:   "current-checksum",
+	}
+	require.NoError(t, s.PutVaultCAS(ctx, current, 0))
+	require.EqualValues(t, 1, current.Revision)
+}
+
 func TestFeishuWorkspaceStore_SessionLeaseAndTenantGeneration(t *testing.T) {
 	ctx := context.Background()
 	s := newFeishuWorkspaceTestStore(t)
@@ -141,21 +202,22 @@ func TestFeishuWorkspaceStore_SessionLeaseAndTenantGeneration(t *testing.T) {
 	_, err = s.GetSessionForUser(ctx, 7, 4, "session-1")
 	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
 
-	claimed, err := s.ClaimSession(ctx, "session-1", "worker-a", now, now.Add(time.Minute))
+	claimed, err := s.ClaimSession(ctx, 7, 3, "session-1", "worker-a", now, now.Add(time.Minute))
 	require.NoError(t, err)
 	require.True(t, claimed)
-	claimed, err = s.ClaimSession(ctx, "session-1", "worker-b", now.Add(10*time.Second), now.Add(2*time.Minute))
+	claimed, err = s.ClaimSession(ctx, 7, 3, "session-1", "worker-b", now.Add(10*time.Second), now.Add(2*time.Minute))
 	require.NoError(t, err)
 	require.False(t, claimed)
-	claimed, err = s.ClaimSession(ctx, "session-1", "worker-a", now.Add(20*time.Second), now.Add(3*time.Minute))
+	claimed, err = s.ClaimSession(ctx, 7, 3, "session-1", "worker-a", now.Add(20*time.Second), now.Add(3*time.Minute))
 	require.NoError(t, err)
 	require.True(t, claimed, "the current owner may renew an unexpired lease")
-	claimed, err = s.ClaimSession(ctx, "session-1", "worker-b", now.Add(4*time.Minute), now.Add(5*time.Minute))
+	claimed, err = s.ClaimSession(ctx, 7, 3, "session-1", "worker-b", now.Add(4*time.Minute), now.Add(5*time.Minute))
 	require.NoError(t, err)
 	require.True(t, claimed, "another owner may claim an expired lease")
 
-	require.ErrorIs(t, s.UpdateSessionState(ctx, "session-1", "worker-a", model.FeishuAuthSessionCompleted, &now), gorm.ErrRecordNotFound)
-	require.NoError(t, s.UpdateSessionState(ctx, "session-1", "worker-b", model.FeishuAuthSessionCompleted, &now))
+	updateNow := now.Add(4*time.Minute + 30*time.Second)
+	require.ErrorIs(t, s.UpdateSessionState(ctx, 7, 3, "session-1", "worker-a", model.FeishuAuthSessionCompleted, updateNow, &updateNow), gorm.ErrRecordNotFound)
+	require.NoError(t, s.UpdateSessionState(ctx, 7, 3, "session-1", "worker-b", model.FeishuAuthSessionCompleted, updateNow, &updateNow))
 	got, err := s.GetSessionForUser(ctx, 7, 3, "session-1")
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuAuthSessionCompleted, got.State)
@@ -175,23 +237,23 @@ func TestFeishuWorkspaceStore_OperationLeaseRejectsStaleGeneration(t *testing.T)
 	_, err = s.GetOperationForUser(ctx, 7, 2, op.ID)
 	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
 
-	claimed, err := s.ClaimOperation(ctx, op.ID, "worker-a", now, now.Add(time.Minute))
+	claimed, err := s.ClaimOperation(ctx, 7, 1, op.ID, "worker-a", now, now.Add(time.Minute))
 	require.NoError(t, err)
 	require.True(t, claimed)
-	claimed, err = s.ClaimOperation(ctx, op.ID, "worker-b", now.Add(10*time.Second), now.Add(2*time.Minute))
+	claimed, err = s.ClaimOperation(ctx, 7, 1, op.ID, "worker-b", now.Add(10*time.Second), now.Add(2*time.Minute))
 	require.NoError(t, err)
 	require.False(t, claimed)
-	claimed, err = s.ClaimOperation(ctx, op.ID, "worker-a", now.Add(20*time.Second), now.Add(3*time.Minute))
+	claimed, err = s.ClaimOperation(ctx, 7, 1, op.ID, "worker-a", now.Add(20*time.Second), now.Add(3*time.Minute))
 	require.NoError(t, err)
 	require.True(t, claimed)
-	claimed, err = s.ClaimOperation(ctx, op.ID, "worker-b", now.Add(4*time.Minute), now.Add(5*time.Minute))
+	claimed, err = s.ClaimOperation(ctx, 7, 1, op.ID, "worker-b", now.Add(4*time.Minute), now.Add(5*time.Minute))
 	require.NoError(t, err)
 	require.True(t, claimed)
 
 	require.NoError(t, s.db.Model(&model.UserThirdPartyAccount{}).
 		Where("user_id = ? AND provider = ?", 7, "lark").
 		Update("generation", 2).Error)
-	claimed, err = s.ClaimOperation(ctx, op.ID, "worker-c", now.Add(6*time.Minute), now.Add(7*time.Minute))
+	claimed, err = s.ClaimOperation(ctx, 7, 1, op.ID, "worker-c", now.Add(6*time.Minute), now.Add(7*time.Minute))
 	require.NoError(t, err)
 	require.False(t, claimed, "an operation from a previous account generation must never be revived")
 }
@@ -204,16 +266,17 @@ func TestFeishuWorkspaceStore_TransitionAndCancelAreConditional(t *testing.T) {
 
 	first, err := s.CreateOrGetOperation(ctx, newFeishuOperation("operation-first", 7, 1, "key-first"))
 	require.NoError(t, err)
-	claimed, err := s.ClaimOperation(ctx, first.ID, "worker-a", now, now.Add(time.Minute))
+	claimed, err := s.ClaimOperation(ctx, 7, 1, first.ID, "worker-a", now, now.Add(time.Minute))
 	require.NoError(t, err)
 	require.True(t, claimed)
-	require.ErrorIs(t, s.TransitionOperation(ctx, first.ID, "worker-b", []string{model.FeishuOperationNotStarted}, model.FeishuOperationExecuting, nil), gorm.ErrRecordNotFound)
-	require.ErrorIs(t, s.TransitionOperation(ctx, first.ID, "worker-a", []string{model.FeishuOperationWaitingConnection}, model.FeishuOperationExecuting, nil), gorm.ErrRecordNotFound)
-	require.NoError(t, s.TransitionOperation(ctx, first.ID, "worker-a", []string{model.FeishuOperationNotStarted}, model.FeishuOperationExecuting, map[string]any{
+	transitionNow := now.Add(30 * time.Second)
+	require.ErrorIs(t, s.TransitionOperation(ctx, 7, 1, first.ID, "worker-b", []string{model.FeishuOperationNotStarted}, model.FeishuOperationExecuting, transitionNow, nil), gorm.ErrRecordNotFound)
+	require.ErrorIs(t, s.TransitionOperation(ctx, 7, 1, first.ID, "worker-a", []string{model.FeishuOperationWaitingConnection}, model.FeishuOperationExecuting, transitionNow, nil), gorm.ErrRecordNotFound)
+	require.NoError(t, s.TransitionOperation(ctx, 7, 1, first.ID, "worker-a", []string{model.FeishuOperationNotStarted}, model.FeishuOperationExecuting, transitionNow, map[string]any{
 		"started_at":    now,
 		"attempt_count": 1,
 	}))
-	require.NoError(t, s.TransitionOperation(ctx, first.ID, "worker-a", []string{model.FeishuOperationExecuting}, model.FeishuOperationWaitingConnection, nil))
+	require.NoError(t, s.TransitionOperation(ctx, 7, 1, first.ID, "worker-a", []string{model.FeishuOperationExecuting}, model.FeishuOperationWaitingConnection, transitionNow, nil))
 
 	second, err := s.CreateOrGetOperation(ctx, newFeishuOperation("operation-second", 7, 1, "key-second"))
 	require.NoError(t, err)
@@ -248,8 +311,154 @@ func TestFeishuWorkspaceStore_MissingConditionalRowsUseRecordNotFound(t *testing
 	s := newFeishuWorkspaceTestStore(t)
 	now := time.Now().UTC()
 
-	err := s.UpdateSessionState(ctx, "missing", "worker", model.FeishuAuthSessionFailed, &now)
+	err := s.UpdateSessionState(ctx, 7, 1, "missing", "worker", model.FeishuAuthSessionFailed, now, &now)
 	require.True(t, errors.Is(err, gorm.ErrRecordNotFound))
-	err = s.TransitionOperation(ctx, "missing", "worker", []string{model.FeishuOperationExecuting}, model.FeishuOperationFailed, nil)
+	err = s.TransitionOperation(ctx, 7, 1, "missing", "worker", []string{model.FeishuOperationExecuting}, model.FeishuOperationFailed, now, nil)
 	require.True(t, errors.Is(err, gorm.ErrRecordNotFound))
+}
+
+func TestFeishuWorkspaceStore_SessionMutationsFenceTenantGenerationAndExpiredLease(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 3)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	require.NoError(t, s.CreateSession(ctx, newFeishuSession("session-fenced", 7, 3)))
+
+	claimed, err := s.ClaimSession(ctx, 8, 3, "session-fenced", "worker-a", now, now.Add(time.Minute))
+	require.NoError(t, err)
+	require.False(t, claimed)
+	claimed, err = s.ClaimSession(ctx, 7, 4, "session-fenced", "worker-a", now, now.Add(time.Minute))
+	require.NoError(t, err)
+	require.False(t, claimed)
+	claimed, err = s.ClaimSession(ctx, 7, 3, "session-fenced", "worker-a", now, now.Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	completedAt := now.Add(30 * time.Second)
+	require.ErrorIs(t, s.UpdateSessionState(ctx, 8, 3, "session-fenced", "worker-a", model.FeishuAuthSessionCompleted, completedAt, &completedAt), gorm.ErrRecordNotFound)
+	require.ErrorIs(t, s.UpdateSessionState(ctx, 7, 4, "session-fenced", "worker-a", model.FeishuAuthSessionCompleted, completedAt, &completedAt), gorm.ErrRecordNotFound)
+	expiredNow := now.Add(2 * time.Minute)
+	require.ErrorIs(t, s.UpdateSessionState(ctx, 7, 3, "session-fenced", "worker-a", model.FeishuAuthSessionCompleted, expiredNow, &expiredNow), gorm.ErrRecordNotFound)
+
+	got, err := s.GetSessionForUser(ctx, 7, 3, "session-fenced")
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionPending, got.State)
+}
+
+func TestFeishuWorkspaceStore_OperationMutationsFenceTenantGenerationAndExpiredLease(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 3)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	op, err := s.CreateOrGetOperation(ctx, newFeishuOperation("operation-fenced", 7, 3, "key-fenced"))
+	require.NoError(t, err)
+
+	claimed, err := s.ClaimOperation(ctx, 8, 3, op.ID, "worker-a", now, now.Add(time.Minute))
+	require.NoError(t, err)
+	require.False(t, claimed)
+	claimed, err = s.ClaimOperation(ctx, 7, 4, op.ID, "worker-a", now, now.Add(time.Minute))
+	require.NoError(t, err)
+	require.False(t, claimed)
+	claimed, err = s.ClaimOperation(ctx, 7, 3, op.ID, "worker-a", now, now.Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	transitionNow := now.Add(30 * time.Second)
+	require.ErrorIs(t, s.TransitionOperation(ctx, 8, 3, op.ID, "worker-a", []string{model.FeishuOperationNotStarted}, model.FeishuOperationExecuting, transitionNow, nil), gorm.ErrRecordNotFound)
+	require.ErrorIs(t, s.TransitionOperation(ctx, 7, 4, op.ID, "worker-a", []string{model.FeishuOperationNotStarted}, model.FeishuOperationExecuting, transitionNow, nil), gorm.ErrRecordNotFound)
+	expiredNow := now.Add(2 * time.Minute)
+	require.ErrorIs(t, s.TransitionOperation(ctx, 7, 3, op.ID, "worker-a", []string{model.FeishuOperationNotStarted}, model.FeishuOperationExecuting, expiredNow, nil), gorm.ErrRecordNotFound)
+
+	got, err := s.GetOperationForUser(ctx, 7, 3, op.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationNotStarted, got.State)
+}
+
+func TestFeishuWorkspaceStore_ExpiredSessionLeaseCannotComplete(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 1)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	require.NoError(t, s.CreateSession(ctx, newFeishuSession("session-expired", 7, 1)))
+	claimed, err := s.ClaimSession(ctx, 7, 1, "session-expired", "worker-a", now, now.Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	expiredNow := now.Add(2 * time.Minute)
+	err = s.UpdateSessionState(ctx, 7, 1, "session-expired", "worker-a", model.FeishuAuthSessionCompleted, expiredNow, &expiredNow)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+}
+
+func TestFeishuWorkspaceStore_ExpiredOperationLeaseCannotTransition(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 1)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	op, err := s.CreateOrGetOperation(ctx, newFeishuOperation("operation-expired", 7, 1, "key-expired"))
+	require.NoError(t, err)
+	claimed, err := s.ClaimOperation(ctx, 7, 1, op.ID, "worker-a", now, now.Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	expiredNow := now.Add(2 * time.Minute)
+	err = s.TransitionOperation(ctx, 7, 1, op.ID, "worker-a", []string{model.FeishuOperationNotStarted}, model.FeishuOperationExecuting, expiredNow, nil)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+}
+
+func TestFeishuWorkspaceStore_TransitionRejectsFieldsOutsideAllowlist(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 1)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	for i, field := range []string{
+		"id", "user_id", "generation", "lease_owner", "lease_until", "state",
+		"command_path", "request_ciphertext", "idempotency_key",
+	} {
+		t.Run(field, func(t *testing.T) {
+			op := newFeishuOperation(fmt.Sprintf("operation-protected-%d", i), 7, 1, fmt.Sprintf("key-protected-%d", i))
+			stored, err := s.CreateOrGetOperation(ctx, op)
+			require.NoError(t, err)
+			claimed, err := s.ClaimOperation(ctx, 7, 1, stored.ID, "worker-a", now, now.Add(time.Minute))
+			require.NoError(t, err)
+			require.True(t, claimed)
+
+			err = s.TransitionOperation(ctx, 7, 1, stored.ID, "worker-a", []string{model.FeishuOperationNotStarted}, model.FeishuOperationExecuting, now.Add(time.Second), map[string]any{field: "mutated"})
+			require.Error(t, err)
+			require.ErrorContains(t, err, field)
+			got, getErr := s.GetOperationForUser(ctx, 7, 1, stored.ID)
+			require.NoError(t, getErr)
+			require.Equal(t, model.FeishuOperationNotStarted, got.State)
+		})
+	}
+}
+
+func TestFeishuWorkspaceStore_TransitionAllowsBusinessResultFields(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 1)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	op, err := s.CreateOrGetOperation(ctx, newFeishuOperation("operation-result", 7, 1, "key-result"))
+	require.NoError(t, err)
+	claimed, err := s.ClaimOperation(ctx, 7, 1, op.ID, "worker-a", now, now.Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	finishedAt := now.Add(10 * time.Second)
+	require.NoError(t, s.TransitionOperation(ctx, 7, 1, op.ID, "worker-a", []string{model.FeishuOperationNotStarted}, model.FeishuOperationFailed, finishedAt, map[string]any{
+		"attempt_count":       uint(1),
+		"started_at":          now,
+		"finished_at":         finishedAt,
+		"error_type":          "permission",
+		"error_subtype":       "missing_scope",
+		"error_code":          "99991672",
+		"result_ciphertext":   []byte("encrypted-result"),
+		"result_summary_json": []byte(`{"ok":false}`),
+	}))
+
+	got, err := s.GetOperationForUser(ctx, 7, 1, op.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationFailed, got.State)
+	require.EqualValues(t, 1, got.AttemptCount)
+	require.Equal(t, []byte("encrypted-result"), got.ResultCiphertext)
 }
