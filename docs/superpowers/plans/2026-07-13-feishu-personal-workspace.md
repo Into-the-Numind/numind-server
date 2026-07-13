@@ -706,9 +706,9 @@ git commit -m "feat(feishu): orchestrate incremental authorization"
 
 ## Task 9: External Action 传输与持久等待契约
 
-**Files:** `internal/pkg/model/agent_run.go`、`internal/numind/store/agent_run.go`、`internal/numind/store/agent_run_external_action_test.go`、`internal/numind/biz/agent/yield_error.go`、`yield_external_action_test.go`、`runner.go`、`runner_stream.go`、`student_query.go`、`stream/events.go` 及各文件对应 external-action tests。
+**Files:** `internal/pkg/model/agent_run.go`、`internal/pkg/externalaction/`、`internal/numind/store/agent_run.go`、`internal/numind/store/agent_run_external_action_test.go`、`internal/numind/biz/agent/yield_error.go`、`yield_external_action_test.go`、`runner.go`、`runner_stream.go`、`runner_runstream.go`、`student_query.go`、`answer.go`、`stream/events.go` 及对应 external-action tests；为保持既有 SQLite 手写 schema 与正式 migration 一致，机械补齐相关测试 fixture 两列。
 
-- [ ] **Step 1: 写 transport 红测**
+- [x] **Step 1: 写 transport 红测**
 
 覆盖 external action 产生独立 `external_action` SSE；普通 question 不回归；持久化只含 operation/session/phase/expiry/tool_call_id，不含 URL；session snapshot 可重建无 URL 的等待卡；answer API 拒绝 external action。
 
@@ -722,13 +722,13 @@ func TestExternalActionPersistenceOmitsURL(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 运行红测**
+- [x] **Step 2: 运行红测**
 
 Run: `go test ./internal/numind/biz/agent ./internal/numind/biz/agent/stream ./internal/numind/store -run 'ExternalAction' -count=1`
 
 Expected: FAIL，独立 event 和等待字段不存在。
 
-- [ ] **Step 3: 定义 payload/event/model**
+- [x] **Step 3: 定义 payload/event/model**
 
 ```go
 type ExternalActionPayload struct {
@@ -745,9 +745,9 @@ PendingExternalActionJSON datatypes.JSON `gorm:"type:json;column:pending_externa
 PendingExternalActionAt *time.Time `gorm:"column:pending_external_action_at" json:"pending_external_action_at,omitempty"`
 ```
 
-`stream.EventExternalAction = "external_action"`。Live event 可含 URL；`Persistent()` 必须清空 URL。不要修改固定 `TerminalReason`/`LoopEvent` 数量。
+`stream.EventExternalAction = "external_action"`。Live event 可含 URL；`Persistent()` 返回不包含 URL 字段的中立 durable DTO。共享 token parser 要求 6 个精确小写字段各出现一次，拒绝重复、大小写变体、未知/敏感字段和 trailing JSON；store 只保存重新序列化的 canonical JSON。不要修改固定 `TerminalReason`/`LoopEvent` 数量。
 
-- [ ] **Step 4: 添加独立 writer 接口和 runner 分支**
+- [x] **Step 4: 添加独立 writer 接口和 runner 分支**
 
 ```go
 type IExternalActionWriter interface {
@@ -755,9 +755,9 @@ type IExternalActionWriter interface {
 }
 ```
 
-具体 `agentRunStore` 实现该接口；不向 `IAgentRunStore` 强加新方法，避免所有旧测试 fake 同步修改。Runner 发现 external action 时用 `writer, ok := r.runStore.(store.IExternalActionWriter)` 获取能力，生产 store 缺能力则 fail closed；随后发独立 SSE、进入既有 waiting_for_user_choice 状态。普通 question 继续调用 `UpdatePendingQuestion`。
+具体 `agentRunStore` 实现该接口；不向 `IAgentRunStore` 强加新方法，避免所有旧测试 fake 同步修改。Runner 发现 external action 时用 `writer, ok := r.runStore.(store.IExternalActionWriter)` 获取能力，生产 store 缺能力或写入失败则 fail closed；只有 durable identity 写入后才发独立 SSE、进入既有 waiting_for_user_choice 状态。普通 question 继续调用 `UpdatePendingQuestion`。快照只要检测到 external JSON 就不得回退 stale question；Answer API 在普通 question 解析前明确拒绝 external wait。
 
-- [ ] **Step 5: 绿测与精确提交**
+- [x] **Step 5: 绿测与精确提交**
 
 Run: `go test ./internal/numind/biz/agent ./internal/numind/biz/agent/stream ./internal/numind/store -run 'ExternalAction|QuestionPrompt' -count=1`
 

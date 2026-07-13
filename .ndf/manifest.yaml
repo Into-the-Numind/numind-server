@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: '重新校准并完成飞书个人工作空间连接：每个有数账号连接自己的飞书账号并长期保持；首次授权后 Agent 自动执行文档、多维表格、知识库能力。现有 feishu-integration 仅作待审计资产，不作为产品前提。'
   classification_reason: 'Standard：飞书外部集成+长期授权凭据+自动写操作属高风险，预计涉及 DB/API/biz/前端/部署/E2E 且文件数 >3。用户于 2026-07-13 确认 Standard。'
-  last_updated_by: ai-s4-task8-reviewed
-  last_updated_at: '2026-07-13T20:34:16+0800'
+  last_updated_by: ai-s4-task9-reviewed
+  last_updated_at: '2026-07-13T21:34:13+0800'
   created_at: '2026-07-13T11:14:14+0800'
   track: standard
   stage: S4
@@ -16,7 +16,7 @@ features:
   worktrees:
     numind-server: /private/tmp/wt-feishu-personal-workspace-numind-server
     numind-web-v3: /private/tmp/wt-feishu-personal-workspace-numind-web-v3
-  progress: {total_tasks: 23, completed_tasks: 8, reviewed_tasks: 8}
+  progress: {total_tasks: 23, completed_tasks: 9, reviewed_tasks: 9}
   artifacts:
     requirement: requirements/feishu-personal-workspace.md
     proposal: proposals/feishu-personal-workspace-proposal.md
@@ -42,6 +42,7 @@ features:
   - 'S4 Task 6 gate (2026-07-13): 固定 1.0.68 官方技能读取与 HMAC receipt 双审 PASS；仅四技能与主文件声明的 references/ 内嵌引用，32KiB UTF-8 分页、内容摘要 cursor、主 SKILL.md 最终页 receipt、run/skill/version/expiry/canonical token 绑定均 fail closed。wiki_content 精确要求 shared+wiki+doc；receipt 只证明主技能完整送达，task-specific references 由 Agent 按主文按需读取并在 Task 17/21 集成验证。全 Reader 共享最多 4 个技能读取进程。详见 ADR 0008。'
   - 'S4 Task 7 gate (2026-07-13): 幂等 operation 执行与精确恢复经规格/质量双审最终 PASS，P0/P1/P2 均为 0；连接热路径不做 auth status，规范请求/结果加密、generation/lease fencing、读超时单次重试、写超时 unknown、exact-scope 恢复及 one-shot 空资源覆盖凭证已闭合。跨进程账号级 CLI gate 使用 120s lease + heartbeat + runner deadline；claim 到期边界向下截断避免提前接管，renew 向上取整 fail closed。覆盖凭证不依赖跨实例应用时钟，同 run 存在任何其他 docs update 即保守要求确认。全仓 go test、聚焦 race、lint 均 PASS。详见 ADR 0009/0010。'
   - 'S4 Task 8 gate (2026-07-13): 确定性 AuthSessionService 经两轮 FAIL 返工后规格/质量双审最终 PASS，P0/P1/P2 均为 0；manual create 自动串联 offline_access，operation 只申请 exact scopes，create_app/app_scope/user_auth、官方 URL allowlist、加密 HOME seal 与自动 resume 完成。每 worker 唯一 lease token，Claim/Renew/terminal/finalize 统一 account→session 锁序和 pending CAS；account state + session completed 原子提交。Operation-linked worker 通过强制 Start/Activate/Abort barrier 在 operation waiting 持久化后才可完成；无合法 URL fail closed，completed/expired 恢复不递归 dispatch。跨进程只复用 durable session 并返回无 URL 等待卡，Task 13 refresh 负责重生链接，URL/device code 永不落库。完整 race、全仓测试、lint 均 PASS。详见 ADR 0011。'
+  - 'S4 Task 9 gate (2026-07-13): Agent external_action 独立传输与持久等待经规格/质量返工复审最终 PASS，P0/P1/P2 均为 0；live SSE 可含 URL，但 durable DTO 类型不含 URL，neutral token parser 要求六个精确字段各一次并拒绝 duplicate/case/unknown/sensitive/trailing，store 只落 canonical JSON。writer 能力不污染 IAgentRunStore，卡片只在持久化后发送；缺 writer/写失败时 SSE、RunResult、DB 一致 model_error。snapshot 对 corrupt external 不回退 stale question，Answer 明确拒绝 external wait；普通 question 双向清 stale 无回归。16 个 SSE 事件穷举、三轮 race、全仓测试、lint 均 PASS。详见 ADR 0012。'
   blockers: []
 - id: chatbot-full-history-context
   ndf_version: '3.0'
