@@ -435,12 +435,17 @@ func autoMigrate(db *gorm.DB) error {
 	}
 
 	// feishu-integration: 条件 AutoMigrate —— 仅 features.feishu_integration.enabled 开启时建
-	// user_third_party_account 表（加密的第三方平台凭据）。
+	// user_third_party_account 及个人工作空间 vault/session/operation 表。
 	// prod 默认 flag off → 表永不在 prod 出现，保证合 develop 不影响 prod 打 tag 部署。
 	// 权威 schema 见 migrations/20260624_120000_create_user_third_party_account.sql。
 	if viper.GetBool("features.feishu_integration.enabled") {
-		if err := db.AutoMigrate(&model.UserThirdPartyAccount{}); err != nil {
-			return fmt.Errorf("failed to migrate user_third_party_account table: %w", err)
+		if err := db.AutoMigrate(
+			&model.UserThirdPartyAccount{},
+			&model.FeishuCLIVault{},
+			&model.FeishuAuthSession{},
+			&model.FeishuOperation{},
+		); err != nil {
+			return fmt.Errorf("failed to migrate feishu workspace tables: %w", err)
 		}
 	}
 

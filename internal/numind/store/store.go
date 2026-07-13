@@ -62,6 +62,7 @@ type IStore interface {
 	Documents() IDocumentStore                   // document-system — AI 生成产物的可编辑文档
 	Meetings() IMeetingStore                     // meeting-copilot — 会议副驾会话/分段/反馈/预设
 	ThirdPartyAccounts() IThirdPartyAccountStore // feishu-integration — 第三方平台(飞书)加密凭据
+	FeishuWorkspace() IFeishuWorkspaceStore      // feishu personal workspace — vault/session/operation persistence
 	Xhs() IXhsTopicStore                         // xhs-collector — 小红书选题采集累积选题库
 	XhsScript() IXhsScriptStore                  // xhs-video-script — 小红书口播稿仿写 MVP
 }
@@ -322,4 +323,9 @@ func (ds *datastore) XhsScript() IXhsScriptStore {
 // ThirdPartyAccounts 返回一个实现了 IThirdPartyAccountStore 接口的实例（feishu-integration）。
 func (ds *datastore) ThirdPartyAccounts() IThirdPartyAccountStore {
 	return newThirdPartyAccountStore(ds.db)
+}
+
+// FeishuWorkspace returns the personal Feishu workspace persistence store.
+func (ds *datastore) FeishuWorkspace() IFeishuWorkspaceStore {
+	return newFeishuWorkspaceStore(ds.db)
 }

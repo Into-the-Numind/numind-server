@@ -1,6 +1,10 @@
 package model
 
-import "time"
+import (
+	"time"
+
+	"gorm.io/datatypes"
+)
 
 // UserThirdPartyAccount 保存某个有数用户对接的第三方平台账号连接元信息
 // （feishu-integration feature；首批 provider="lark"）。
@@ -29,6 +33,20 @@ type UserThirdPartyAccount struct {
 	Connected bool `gorm:"not null;default:false" json:"connected"`
 	// ConnectedAt 完成授权的时间；未连接时为 nil。
 	ConnectedAt *time.Time `gorm:"column:connected_at" json:"connected_at,omitempty"`
+	// ConnectionState 是个人工作空间连接状态机的顶层状态；Connected 在兼容期由 biz 同步。
+	ConnectionState string `gorm:"size:32;not null;default:'none'" json:"connection_state"`
+	// LarkCLIVersion 是最近成功写入 vault 或执行命令的 lark-cli 版本。
+	LarkCLIVersion string `gorm:"size:32" json:"lark_cli_version,omitempty"`
+	// GrantedScopesJSON 是最近已知授权 scope 缓存，不作为权限判断的唯一依据。
+	GrantedScopesJSON datatypes.JSON `gorm:"type:json" json:"granted_scopes_json,omitempty"`
+	// CapabilityStateJSON 缓存 Docs/Base/Wiki 最近已知能力状态。
+	CapabilityStateJSON datatypes.JSON `gorm:"type:json" json:"capability_state_json,omitempty"`
+	// LastSuccessAt 是最近一次飞书业务操作成功时间。
+	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
+	// LastErrorCode 是最近一次脱敏后的结构化错误码。
+	LastErrorCode *string `gorm:"size:128" json:"last_error_code,omitempty"`
+	// Generation 在解绑/重连时递增，使旧 session 和 operation 永久失效。
+	Generation uint64 `gorm:"not null;default:1" json:"generation"`
 	// AppSecretEnc 自建应用 app_secret 的 AES-256-GCM 密文（device-code 方案遗留，不再写入）。
 	AppSecretEnc []byte `gorm:"type:blob" json:"-"`
 	// AccessTokenEnc user_access_token 的 AES-256-GCM 密文（device-code 方案遗留，不再写入）。
