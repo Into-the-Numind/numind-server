@@ -950,7 +950,7 @@ git commit -m "feat(feishu): compose personal workspace services"
 
 **Files:** `internal/numind/biz/feishu/service.go`、`service_test.go`、`internal/numind/controller/v1/feishu/feishu.go`、`feishu_test.go`、`internal/numind/router.go`。
 
-- [ ] **Step 1: 写 HTTP/service 红测**
+- [x] **Step 1: 写 HTTP/service 红测**
 
 覆盖 GET status 不生成 URL；manual connect；resume body 只允许 `user_completed/confirmed/cancelled` 且不接受 argv/scopes；refresh 校验归属；跨用户统一 404；HTTP user_completed 与 worker 并发只回填一次；DELETE generation+1、取消等待、删 vault、停止 worker、清能力并说明远端 app 保留。另用 barrier 覆盖解绑与 executing write 交错：解绑必须等待有效 execution lease 或将结果收口 unknown，不能让旧 generation 成功提交/重领。
 
@@ -962,13 +962,13 @@ func TestResumeRejectsCrossUserAsNotFound(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 运行红测**
+- [x] **Step 2: 运行红测**
 
 Run: `go test ./internal/numind/controller/v1/feishu ./internal/numind/biz/feishu -run 'Status|Connect|Resume|Refresh|Unbind' -count=1`
 
 Expected: FAIL，新 API 缺失。
 
-- [ ] **Step 3: 实现 routes 与薄 controller**
+- [x] **Step 3: 实现 routes 与薄 controller**
 
 ```go
 feishuAuthGroup.GET("/status", feishuCtrl.Status)
@@ -980,11 +980,11 @@ feishuAuthGroup.DELETE("/connection", feishuCtrl.Unbind)
 
 Controller 只解析鉴权 userID/path/body；biz service 推进状态。`user_completed` 调 Task 12 共用 `DispatchResume`；`confirmed/cancelled` 只在 waiting_confirmation 合法，并由同一 dispatcher 重放或取消。Status 返回 spec §10.1，不含当前 URL。
 
-- [ ] **Step 4: 实现安全解绑**
+- [x] **Step 4: 实现安全解绑**
 
 事务先 disconnecting + generation+1；取消旧 generation 等待；执行中写等待租约或按 unknown 收口；停止相应 worker，再尽力 logout/remove、删除本地 vault/temp HOME；最终 none/connected false。锁顺序保持 account → operation/session → vault，旧 generation 不得成功提交或重领。远端 app 删除不作成功承诺。
 
-- [ ] **Step 5: 绿测和 Commit**
+- [x] **Step 5: 绿测和 Commit**
 
 Run: `go test ./internal/numind/controller/v1/feishu ./internal/numind/biz/feishu -run 'Status|Connect|Resume|Refresh|Unbind' -count=1`
 
@@ -994,6 +994,8 @@ Expected: PASS。
 git add internal/numind/biz/feishu/service.go internal/numind/biz/feishu/service_test.go internal/numind/controller/v1/feishu/feishu.go internal/numind/controller/v1/feishu/feishu_test.go internal/numind/router.go
 git commit -m "feat(feishu): expose workspace lifecycle api"
 ```
+
+**一期收口（2026-07-14）：** 生命周期 API 与安全解绑经多轮独立规格、质量、并发复审最终 PASS（P0/P1/P2=0）。五个接口严格从登录态推导用户；外显 action 只允许 operation/session、phase、expiry 和 connect/refresh 的即时 URL，不返回 scopes、provider、token 或 device code。授权完成、app scope 批准、成功 operation 的 Agent 回填失败都通过同一 dispatcher 幂等恢复；取消或解绑将精确终结原 Agent external wait（未知写入明确提示核对，绝不重跑 CLI）。解绑以 generation fence 为起点，依次收敛 auth worker、本机业务执行和跨实例 gate；retired teardown 用 owner-fenced heartbeat lease，vault 删除与账户清空单事务完成，失败保持 `disconnecting`。连接元数据仅由受控 CLI/version、已验证 app ID 与结构化业务结果写入；退役登记表可在安全屏障后回收，重复/跨实例解绑幂等。详见 ADR 0017。
 
 ## Task 14: 旧明文 HOME 安全迁移（二期；一期按需升级）
 
