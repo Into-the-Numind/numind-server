@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -42,6 +43,29 @@ type externalResumeStoreStub struct {
 	lists                  int
 	touches                int
 	touchErrAfter          int
+}
+
+func registerTestSupervisorStop(t *testing.T, supervisor *ExternalContinuationSupervisor) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		require.NoError(t, supervisor.Stop(ctx))
+	})
+}
+
+func newTestAgentRunResumer(t *testing.T, runStore storepkg.IExternalToolResumeLease, studentRuns *StudentRunService) *AgentRunResumer {
+	t.Helper()
+	supervisor := NewExternalContinuationSupervisor(ExternalContinuationLimit)
+	registerTestSupervisorStop(t, supervisor)
+	return NewAgentRunResumer(runStore, studentRuns, supervisor)
+}
+
+func TestNewAgentRunResumer_RequiresExplicitLifecycleOwner(t *testing.T) {
+	constructor := reflect.TypeOf(NewAgentRunResumer)
+	assert.False(t, constructor.IsVariadic())
+	require.Equal(t, 3, constructor.NumIn())
+	assert.Equal(t, reflect.TypeOf((*ExternalContinuationSupervisor)(nil)), constructor.In(2))
 }
 
 // updateRunCopyOnWrite mirrors the production store's snapshot semantics:
@@ -773,6 +797,7 @@ func TestExternalToolResume_HTTPRequestCancellationDoesNotCancelAcceptedRunner(t
 	})
 	resumeStore := &externalResumeStoreStub{runStore: runStore, returnOK: true}
 	supervisor := NewExternalContinuationSupervisor(externalResumeWorkerLimit)
+	registerTestSupervisorStop(t, supervisor)
 	provider := newExternalResumeNarrationProvider(t)
 	buffer := NewNarrationBuffer(8, time.Minute)
 	resumer := NewAgentRunResumer(resumeStore, NewStudentRunService(runner, runStore, nil, nil, provider, buffer), supervisor)
@@ -806,7 +831,7 @@ func TestExternalToolResume_HTTPRequestCancellationDoesNotCancelAcceptedRunner(t
 		"application shutdown returned while the accepted continuation narration forwarder was still subscribed")
 }
 
-func TestExternalContinuationSupervisor_FullCapacityDoesNotClaim(t *testing.T) {
+func TestExternalContinuationSupervisor_FullCapacityPublishesDurableReady(t *testing.T) {
 	supervisor := NewExternalContinuationSupervisor(externalResumeWorkerLimit)
 	releases := make([]func(), 0, externalResumeWorkerLimit)
 	for i := 0; i < externalResumeWorkerLimit; i++ {
@@ -832,13 +857,15 @@ func TestExternalContinuationSupervisor_FullCapacityDoesNotClaim(t *testing.T) {
 	resumeStore := &externalResumeStoreStub{runStore: runStore, returnOK: true}
 	resumer := NewAgentRunResumer(resumeStore, NewStudentRunService(&externalResumeRunner{}, runStore, nil, nil, nil, nil), supervisor)
 	err := resumer.Resume(context.Background(), ExternalToolResult{RunID: run.ID, OperationID: "op-1", ToolCallID: "tc-9", Result: json.RawMessage(`{"ok":true}`)})
-	require.ErrorIs(t, err, ErrExternalContinuationCapacity)
+	require.NoError(t, err)
 	resumeStore.mu.Lock()
-	assert.Zero(t, resumeStore.calls, "a full supervisor must reject before the durable result is claimed")
+	assert.Equal(t, 1, resumeStore.calls)
+	assert.Equal(t, 1, resumeStore.releases)
 	resumeStore.mu.Unlock()
 	got, getErr := runStore.Get(context.Background(), run.ID)
 	require.NoError(t, getErr)
-	assert.Equal(t, string(TerminalWaitingForUserChoice), got.StateReason)
+	assert.Equal(t, "external_resume_ready", got.StateReason)
+	assert.Contains(t, string(got.Messages), `\"ok\":true`)
 }
 
 func TestExternalContinuationSupervisor_JobExitReleasesSlot(t *testing.T) {
@@ -893,7 +920,7 @@ func TestExternalToolResume_ContinuesOriginalToolCallWithoutUserInput(t *testing
 	skillStore.defs[99] = &model.AgentDefinition{ID: 99, ToolFlags: datatypes.JSON(`{"web_search":false,"custom_resume_tool":true}`)}
 	studentRuns := NewStudentRunService(runner, runStore, skillStore, nil, nil, nil)
 	resumeStore := &externalResumeStoreStub{runStore: runStore, returnOK: true}
-	resumer := NewAgentRunResumer(resumeStore, studentRuns)
+	resumer := newTestAgentRunResumer(t, resumeStore, studentRuns)
 
 	err := resumer.Resume(context.Background(), ExternalToolResult{
 		RunID: run.ID, ToolCallID: "tc-9", OperationID: "op-1", Result: json.RawMessage(`{"ok":true,"state":"succeeded","operation_id":"op-1"}`),
@@ -959,7 +986,7 @@ func TestExternalToolResume_StoreNoopDoesNotStartRunner(t *testing.T) {
 	runner := &externalResumeRunner{done: make(chan struct{})}
 	studentRuns := NewStudentRunService(runner, runStore, nil, nil, nil, nil)
 	resumeStore := &externalResumeStoreStub{runStore: runStore, returnOK: false}
-	resumer := NewAgentRunResumer(resumeStore, studentRuns)
+	resumer := newTestAgentRunResumer(t, resumeStore, studentRuns)
 
 	require.NoError(t, resumer.Resume(context.Background(), ExternalToolResult{
 		RunID: run.ID, ToolCallID: "tc-9", OperationID: "op-1", Result: json.RawMessage(`{"ok":true}`),
@@ -1060,7 +1087,7 @@ func TestExternalResumeReclaimer_ImmediateScanStartsOneFencedContinuation(t *tes
 	require.NoError(t, runStore.Create(context.Background(), run))
 	runner := &externalResumeRunner{done: make(chan struct{})}
 	resumeStore := &externalResumeStoreStub{runStore: runStore, returnOK: true, candidates: []model.AgentRun{*run}}
-	resumer := NewAgentRunResumer(resumeStore, NewStudentRunService(runner, runStore, nil, nil, nil, nil))
+	resumer := newTestAgentRunResumer(t, resumeStore, NewStudentRunService(runner, runStore, nil, nil, nil, nil))
 	reclaimer := NewExternalResumeReclaimer(resumeStore, resumer, 10*time.Millisecond)
 	reclaimer.Start()
 	select {
@@ -1096,8 +1123,8 @@ func TestExternalResumeReclaimer_TwoInstancesFenceToOneRunner(t *testing.T) {
 
 	runner := &externalResumeRunner{done: make(chan struct{})}
 	studentRuns := NewStudentRunService(runner, runStore, nil, nil, nil, nil)
-	r1 := NewExternalResumeReclaimer(lease, NewAgentRunResumer(lease, studentRuns), 5*time.Millisecond)
-	r2 := NewExternalResumeReclaimer(lease, NewAgentRunResumer(lease, studentRuns), 5*time.Millisecond)
+	r1 := NewExternalResumeReclaimer(lease, newTestAgentRunResumer(t, lease, studentRuns), 5*time.Millisecond)
+	r2 := NewExternalResumeReclaimer(lease, newTestAgentRunResumer(t, lease, studentRuns), 5*time.Millisecond)
 	r1.Start()
 	r2.Start()
 	select {
@@ -1117,7 +1144,7 @@ func TestExternalResumeReclaimer_TwoInstancesFenceToOneRunner(t *testing.T) {
 func TestExternalResumeReclaimer_PeriodicallyScansAndStops(t *testing.T) {
 	runStore := newMockStore()
 	resumeStore := &externalResumeStoreStub{runStore: runStore}
-	resumer := NewAgentRunResumer(resumeStore, NewStudentRunService(&externalResumeRunner{}, runStore, nil, nil, nil, nil))
+	resumer := newTestAgentRunResumer(t, resumeStore, NewStudentRunService(&externalResumeRunner{}, runStore, nil, nil, nil, nil))
 	reclaimer := NewExternalResumeReclaimer(resumeStore, resumer, 5*time.Millisecond)
 	reclaimer.Start()
 	require.Eventually(t, func() bool {
@@ -1149,7 +1176,7 @@ func TestExternalToolResume_InvalidHistoryDoesNotClaimDurableResult(t *testing.T
 	runner := &externalResumeRunner{done: make(chan struct{})}
 	studentRuns := NewStudentRunService(runner, runStore, nil, nil, nil, nil)
 	resumeStore := &externalResumeStoreStub{runStore: runStore, returnOK: true}
-	resumer := NewAgentRunResumer(resumeStore, studentRuns)
+	resumer := newTestAgentRunResumer(t, resumeStore, studentRuns)
 
 	err := resumer.Resume(context.Background(), ExternalToolResult{
 		RunID: run.ID, OperationID: "op-1", ToolCallID: "tc-9", Result: json.RawMessage(`{"ok":true}`),
@@ -1188,7 +1215,7 @@ func TestExternalToolResume_RunnerPreludeFailureReleasesForImmediateRetry(t *tes
 	runner := &immediatePreflightFailureRunner{}
 	studentRuns := NewStudentRunService(runner, runStore, nil, nil, nil, nil)
 	resumeStore := &externalResumeStoreStub{runStore: runStore, returnOK: true}
-	resumer := NewAgentRunResumer(resumeStore, studentRuns)
+	resumer := newTestAgentRunResumer(t, resumeStore, studentRuns)
 	result := ExternalToolResult{RunID: run.ID, OperationID: "op-1", ToolCallID: "tc-9", Result: json.RawMessage(`{"ok":true}`)}
 
 	require.Error(t, resumer.Resume(context.Background(), result))
@@ -1222,7 +1249,7 @@ func TestExternalToolResume_RunnerPreludePanicReleasesWithoutHanging(t *testing.
 	}
 	require.NoError(t, runStore.Create(context.Background(), run))
 	resumeStore := &externalResumeStoreStub{runStore: runStore, returnOK: true}
-	resumer := NewAgentRunResumer(resumeStore, NewStudentRunService(&panicPreflightRunner{}, runStore, nil, nil, nil, nil))
+	resumer := newTestAgentRunResumer(t, resumeStore, NewStudentRunService(&panicPreflightRunner{}, runStore, nil, nil, nil, nil))
 	result := ExternalToolResult{RunID: run.ID, OperationID: "op-1", ToolCallID: "tc-9", Result: json.RawMessage(`{"ok":true}`)}
 
 	errCh := make(chan error, 1)
@@ -1268,7 +1295,7 @@ func TestExternalToolResume_DuplicateReadinessCallbackCannotLeakRunner(t *testin
 	require.NoError(t, runStore.Create(context.Background(), run))
 	runner := &duplicateReadyRunner{done: make(chan struct{})}
 	resumeStore := &externalResumeStoreStub{runStore: runStore, returnOK: true}
-	resumer := NewAgentRunResumer(resumeStore, NewStudentRunService(runner, runStore, nil, nil, nil, nil))
+	resumer := newTestAgentRunResumer(t, resumeStore, NewStudentRunService(runner, runStore, nil, nil, nil, nil))
 
 	require.NoError(t, resumer.Resume(context.Background(), ExternalToolResult{
 		RunID: run.ID, OperationID: "op-1", ToolCallID: "tc-9", Result: json.RawMessage(`{"ok":true}`),
@@ -1312,7 +1339,7 @@ func TestExternalToolResume_CancelAfterClaimIsNeverAcceptedByRunner(t *testing.T
 	require.NoError(t, runStore.Create(context.Background(), run))
 	runner := &cancelBeforeReadyRunner{runStore: runStore, runID: run.ID}
 	resumeStore := &externalResumeStoreStub{runStore: runStore, returnOK: true}
-	resumer := NewAgentRunResumer(resumeStore, NewStudentRunService(runner, runStore, nil, nil, nil, nil))
+	resumer := newTestAgentRunResumer(t, resumeStore, NewStudentRunService(runner, runStore, nil, nil, nil, nil))
 
 	err := resumer.Resume(context.Background(), ExternalToolResult{
 		RunID: run.ID, OperationID: "op-1", ToolCallID: "tc-9", Result: json.RawMessage(`{"ok":true}`),
@@ -1336,7 +1363,7 @@ func TestExternalToolResume_RealRunnerMissingRegistryReleasesLease(t *testing.T)
 	require.NoError(t, runStore.Create(context.Background(), run))
 	resumeStore := &externalResumeStoreStub{runStore: runStore, returnOK: true}
 	runner := NewAgentRunner(runStore, nil)
-	resumer := NewAgentRunResumer(resumeStore, NewStudentRunService(runner, runStore, nil, nil, nil, nil))
+	resumer := newTestAgentRunResumer(t, resumeStore, NewStudentRunService(runner, runStore, nil, nil, nil, nil))
 	result := ExternalToolResult{RunID: run.ID, OperationID: "op-1", ToolCallID: "tc-9", Result: json.RawMessage(`{"ok":true}`)}
 
 	require.Error(t, resumer.Resume(context.Background(), result))
@@ -1369,7 +1396,7 @@ func TestExternalToolResume_RealRunnerRecoveredPreflightPanicStillReleasesLease(
 	require.NoError(t, runStore.Create(context.Background(), run))
 	resumeStore := &externalResumeStoreStub{runStore: runStore, returnOK: true}
 	runner := NewAgentRunner(runStore, &panicRegistry{})
-	resumer := NewAgentRunResumer(resumeStore, NewStudentRunService(runner, runStore, nil, nil, nil, nil))
+	resumer := newTestAgentRunResumer(t, resumeStore, NewStudentRunService(runner, runStore, nil, nil, nil, nil))
 
 	err := resumer.Resume(context.Background(), ExternalToolResult{
 		RunID: run.ID, OperationID: "op-1", ToolCallID: "tc-9", Result: json.RawMessage(`{"ok":true}`),

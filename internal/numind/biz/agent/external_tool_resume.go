@@ -148,8 +148,8 @@ type ExternalToolResult struct {
 }
 
 // AgentRunResumer atomically installs an external result and continues the
-// original run. The narrow store claim is the single source of concurrency
-// ownership: only the callback receiving true may start the runner.
+// original run. The supervisor bounds process-local runners; the tokenized
+// store claim fences ownership across callbacks and application instances.
 type AgentRunResumer struct {
 	store            store.IExternalToolResumeLease
 	studentRuns      *StudentRunService
@@ -362,15 +362,9 @@ func reconstructExternalToolResult(run *model.AgentRun) (ExternalToolResult, err
 // NewAgentRunResumer constructs the bridge used by the outer Feishu
 // composition layer. Keeping the dependencies narrow avoids a feishu→agent
 // package cycle and keeps the tokenized store lease as the only restoration
-// capability exposed at composition time.
-func NewAgentRunResumer(runStore store.IExternalToolResumeLease, studentRuns *StudentRunService, supervisors ...*ExternalContinuationSupervisor) *AgentRunResumer {
-	var supervisor *ExternalContinuationSupervisor
-	if len(supervisors) > 0 {
-		supervisor = supervisors[0]
-	}
-	if supervisor == nil {
-		supervisor = NewExternalContinuationSupervisor(externalResumeWorkerLimit)
-	}
+// capability exposed at composition time. The application-owned supervisor is
+// required so every accepted continuation participates in process shutdown.
+func NewAgentRunResumer(runStore store.IExternalToolResumeLease, studentRuns *StudentRunService, supervisor *ExternalContinuationSupervisor) *AgentRunResumer {
 	return &AgentRunResumer{store: runStore, studentRuns: studentRuns, supervisor: supervisor, preflightTimeout: 10 * time.Second}
 }
 
@@ -385,7 +379,7 @@ func (r *AgentRunResumer) resumeManaged(ctx context.Context, result ExternalTool
 }
 
 func (r *AgentRunResumer) resume(ctx context.Context, result ExternalToolResult, managed bool) error {
-	if r == nil || r.store == nil || r.studentRuns == nil || r.studentRuns.runner == nil {
+	if r == nil || r.store == nil || r.studentRuns == nil || r.studentRuns.runner == nil || r.supervisor == nil {
 		return fmt.Errorf("AgentRunResumer.Resume: resumer is not configured")
 	}
 	snapshot, err := r.studentRuns.runStore.Get(ctx, result.RunID)
@@ -400,13 +394,12 @@ func (r *AgentRunResumer) resume(ctx context.Context, result ExternalToolResult,
 	if err != nil {
 		return fmt.Errorf("AgentRunResumer.Resume: validate continuation before claim: %w", err)
 	}
-	var runnerParent context.Context
-	releaseJob := func() {}
-	if !managed {
-		runnerParent, releaseJob, err = r.supervisor.Acquire()
-		if err != nil {
-			return fmt.Errorf("AgentRunResumer.Resume: reserve continuation: %w", err)
+	runnerParent, releaseJob, err := r.supervisor.Acquire()
+	if err != nil {
+		if !managed && (errors.Is(err, ErrExternalContinuationCapacity) || errors.Is(err, ErrExternalContinuationStopped)) {
+			return r.persistDurableReady(ctx, result)
 		}
+		return fmt.Errorf("AgentRunResumer.Resume: reserve continuation: %w", err)
 	}
 	leaseToken, claimed, err := r.store.ClaimExternalToolResume(
 		ctx,
@@ -424,15 +417,43 @@ func (r *AgentRunResumer) resume(ctx context.Context, result ExternalToolResult,
 		return nil
 	}
 	if managed {
-		return r.runClaimedContinuation(ctx, result, leaseToken, runReq)
+		return r.runClaimedContinuation(ctx, runnerParent, releaseJob, result, leaseToken, runReq)
 	}
 	return r.startClaimedContinuation(ctx, runnerParent, releaseJob, result, leaseToken, runReq)
 }
 
-func (r *AgentRunResumer) runClaimedContinuation(ctx context.Context, result ExternalToolResult, leaseToken string, runReq RunRequest) error {
+// persistDurableReady accepts a completed external operation without starting
+// a fifth runner: Claim stores the exact result and Release publishes it to the
+// reclaimer's durable ready queue.
+func (r *AgentRunResumer) persistDurableReady(ctx context.Context, result ExternalToolResult) error {
+	claimCtx, cancelClaim := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	leaseToken, claimed, err := r.store.ClaimExternalToolResume(
+		claimCtx, result.RunID, result.OperationID, result.ToolCallID, result.Result,
+	)
+	cancelClaim()
+	if err != nil {
+		return fmt.Errorf("AgentRunResumer.Resume: queue external result: %w", err)
+	}
+	if !claimed {
+		return nil
+	}
+	releaseCtx, cancelRelease := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancelRelease()
+	if err := r.store.ReleaseExternalToolResume(
+		releaseCtx, result.RunID, result.OperationID, result.ToolCallID, leaseToken,
+	); err != nil {
+		return fmt.Errorf("AgentRunResumer.Resume: publish queued external result: %w", err)
+	}
+	return nil
+}
+
+func (r *AgentRunResumer) runClaimedContinuation(ctx, runnerParent context.Context, releaseJob func(), result ExternalToolResult, leaseToken string, runReq RunRequest) error {
+	defer releaseJob()
 	gate := newExternalContinuationGate(r.store, result, leaseToken, make(chan error, 1))
 	runReq.ExternalContinuationGate = gate
-	runnerCtx, cancelRunner := context.WithCancel(ctx)
+	runnerCtx, cancelRunner := context.WithCancel(runnerParent)
+	stopManagedCancel := context.AfterFunc(ctx, cancelRunner)
+	defer stopManagedCancel()
 	narrationDone := r.startNarrationForwarder(runnerCtx, result.RunID)
 	runErr := r.callRunner(runnerCtx, runReq)
 	cancelRunner()
