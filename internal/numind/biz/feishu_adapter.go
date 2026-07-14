@@ -201,7 +201,8 @@ func buildFeishuService(deps feishuCompositionDeps) (*feishuPersonalWorkspace, e
 	lifecycleService, err := feishu.NewWorkspaceLifecycleService(feishu.WorkspaceLifecycleDeps{
 		Accounts: deps.dataStore.ThirdPartyAccounts(), Workspace: deps.dataStore.FeishuWorkspace(),
 		Auth: authService, Dispatcher: dispatcher, Operations: operationService,
-		Teardown: teardown,
+		Executions: operationService,
+		Teardown:   teardown,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("feishu: build lifecycle service: %w", err)

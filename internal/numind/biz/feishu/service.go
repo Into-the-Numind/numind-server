@@ -131,6 +131,14 @@ type WorkspaceLifecycleOperations interface {
 	Cancel(context.Context, uint, string) (*OperationResult, error)
 }
 
+// WorkspaceLifecycleExecutions is the narrow app-lifecycle boundary for
+// locally running CLI callbacks and the durable account-wide execution gate.
+// It intentionally exposes neither arbitrary cancellation nor a runner: the
+// lifecycle service can only retire and join one already-fenced generation.
+type WorkspaceLifecycleExecutions interface {
+	StopGenerationAndWait(context.Context, uint, uint64) error
+}
+
 // WorkspaceLifecycleTeardown runs only a fixed logout command after the
 // account generation has been retired. Its result records advisory CLI logout
 // status. A non-nil error means retired HOME materialization/cleanup failed,
@@ -148,6 +156,7 @@ type WorkspaceLifecycleDeps struct {
 	Auth       WorkspaceLifecycleAuth
 	Dispatcher WorkspaceLifecycleDispatcher
 	Operations WorkspaceLifecycleOperations
+	Executions WorkspaceLifecycleExecutions
 	Teardown   WorkspaceLifecycleTeardown
 }
 
@@ -160,6 +169,7 @@ type WorkspaceLifecycleService struct {
 	auth           WorkspaceLifecycleAuth
 	dispatcher     WorkspaceLifecycleDispatcher
 	operations     WorkspaceLifecycleOperations
+	executions     WorkspaceLifecycleExecutions
 	teardown       WorkspaceLifecycleTeardown
 	cleanupTimeout time.Duration
 }
@@ -169,12 +179,12 @@ var _ IFeishuService = (*WorkspaceLifecycleService)(nil)
 // NewWorkspaceLifecycleService validates that the endpoint cannot publish a
 // half-composed lifecycle path.
 func NewWorkspaceLifecycleService(deps WorkspaceLifecycleDeps) (*WorkspaceLifecycleService, error) {
-	if deps.Accounts == nil || deps.Workspace == nil || deps.Auth == nil || deps.Dispatcher == nil || deps.Operations == nil || deps.Teardown == nil {
+	if deps.Accounts == nil || deps.Workspace == nil || deps.Auth == nil || deps.Dispatcher == nil || deps.Operations == nil || deps.Executions == nil || deps.Teardown == nil {
 		return nil, fmt.Errorf("%w: incomplete workspace graph", ErrWorkspaceLifecycleUnavailable)
 	}
 	return &WorkspaceLifecycleService{
 		accounts: deps.Accounts, workspace: deps.Workspace, auth: deps.Auth,
-		dispatcher: deps.Dispatcher, operations: deps.Operations, teardown: deps.Teardown,
+		dispatcher: deps.Dispatcher, operations: deps.Operations, executions: deps.Executions, teardown: deps.Teardown,
 		cleanupTimeout: workspaceLifecycleCleanupTimeout,
 	}, nil
 }
@@ -484,6 +494,15 @@ func (s *WorkspaceLifecycleService) Unbind(ctx context.Context, userID uint) (*U
 	cleanupCtx, cleanupCancel := workspaceLifecycleCleanupContext(ctx, s.cleanupTimeout)
 	defer cleanupCancel()
 	if err := s.auth.StopGenerationAndWait(cleanupCtx, userID, retiredGeneration); err != nil {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	// RetireGeneration makes old operation results durable-unknown, but it does
+	// not itself terminate a local CLI process. Join all local callbacks and
+	// wait for the account-wide durable execution gate (including another
+	// service instance) to release or expire before materializing/deleting a
+	// retired HOME. Failure deliberately leaves this same generation in
+	// disconnecting for a safe retry.
+	if err := s.executions.StopGenerationAndWait(cleanupCtx, userID, retiredGeneration); err != nil {
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
 	// lark-cli auth logout only clears the local user login; it cannot revoke or

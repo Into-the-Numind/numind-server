@@ -92,6 +92,7 @@ type OperationStore interface {
 	TryClaimExecutionGate(ctx context.Context, userID uint, generation uint64, owner, operationID string, now, leaseUntil time.Time) (bool, error)
 	RenewExecutionGate(ctx context.Context, userID uint, generation uint64, owner, operationID string, now, leaseUntil time.Time) (bool, error)
 	ReleaseExecutionGate(ctx context.Context, userID uint, generation uint64, owner string, now time.Time) (bool, error)
+	RetiredExecutionGateDrained(ctx context.Context, userID uint, retiredGeneration uint64, now time.Time) (bool, error)
 	IsOperationProofUsable(ctx context.Context, userID uint, generation uint64, agentRunID uint64, sourceOperationID, consumerOperationID string) (bool, error)
 	ListSucceededCreatesForRun(ctx context.Context, userID uint, generation uint64, agentRunID uint64) ([]model.FeishuOperation, error)
 	GetOperationForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuOperation, error)
@@ -326,19 +327,127 @@ type FeishuOperationService struct {
 	now                            func() time.Time
 	leaseDuration                  time.Duration
 	executionGateHeartbeatInterval time.Duration
+	executions                     *executionRegistry
 }
 
 type executionGateGuard struct {
-	service     *FeishuOperationService
+	service      *FeishuOperationService
+	userID       uint
+	generation   uint64
+	operationID  string
+	owner        string
+	ctx          context.Context
+	cancel       context.CancelFunc
+	stop         chan struct{}
+	done         chan struct{}
+	stopOnce     sync.Once
+	registration *executionRegistration
+}
+
+// executionKey identifies the lifetime that can still hold a materialized
+// plaintext CLI HOME. It is deliberately narrower than a user-wide mutex: a
+// registry entry exists only after the durable execution gate was claimed and
+// before an OperationRunner can be invoked.
+type executionKey struct {
 	userID      uint
 	generation  uint64
 	operationID string
-	owner       string
-	ctx         context.Context
-	cancel      context.CancelFunc
-	stop        chan struct{}
-	done        chan struct{}
-	stopOnce    sync.Once
+}
+
+type executionRegistration struct {
+	cancel   context.CancelFunc
+	done     chan struct{}
+	doneOnce sync.Once
+}
+
+func (r *executionRegistration) finish() {
+	if r == nil {
+		return
+	}
+	r.doneOnce.Do(func() { close(r.done) })
+}
+
+// executionRegistry is a process-local lifecycle bridge. Durable operation
+// leases remain the cross-instance source of truth; this registry adds the
+// missing guarantee that this process has cancelled and joined every callback
+// that could still hold a plaintext runtime HOME before Unbind deletes the
+// encrypted snapshot. It holds no database, vault, or account locks.
+type executionRegistry struct {
+	mu      sync.Mutex
+	active  map[executionKey]*executionRegistration
+	retired map[uint]uint64
+}
+
+func newExecutionRegistry() *executionRegistry {
+	return &executionRegistry{
+		active:  make(map[executionKey]*executionRegistration),
+		retired: make(map[uint]uint64),
+	}
+}
+
+func (r *executionRegistry) register(key executionKey, cancel context.CancelFunc) (*executionRegistration, error) {
+	if r == nil || key.userID == 0 || key.generation == 0 || key.operationID == "" || cancel == nil {
+		return nil, ErrOperationUnavailable
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if retiredGeneration := r.retired[key.userID]; retiredGeneration >= key.generation {
+		return nil, ErrOperationUnavailable
+	}
+	if _, exists := r.active[key]; exists {
+		return nil, ErrOperationUnavailable
+	}
+	registration := &executionRegistration{cancel: cancel, done: make(chan struct{})}
+	r.active[key] = registration
+	return registration, nil
+}
+
+func (r *executionRegistry) unregister(key executionKey, registration *executionRegistration) {
+	if r == nil || registration == nil {
+		return
+	}
+	r.mu.Lock()
+	if current := r.active[key]; current == registration {
+		delete(r.active, key)
+	}
+	r.mu.Unlock()
+	registration.finish()
+}
+
+// stopGenerationAndWait establishes the local retired-generation fence and
+// waits for every registration observed before that fence. A concurrent late
+// registration sees retired[user] while holding the same mutex and is rejected
+// before it can open a vault HOME or call the runner.
+func (r *executionRegistry) stopGenerationAndWait(ctx context.Context, userID uint, generation uint64) error {
+	if r == nil || userID == 0 || generation == 0 {
+		return ErrOperationUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	r.mu.Lock()
+	if generation > r.retired[userID] {
+		r.retired[userID] = generation
+	}
+	registrations := make([]*executionRegistration, 0)
+	for key, registration := range r.active {
+		if key.userID == userID && key.generation == generation {
+			registrations = append(registrations, registration)
+		}
+	}
+	r.mu.Unlock()
+
+	for _, registration := range registrations {
+		registration.cancel()
+	}
+	for _, registration := range registrations {
+		select {
+		case <-registration.done:
+		case <-ctx.Done():
+			return ErrOperationUnavailable
+		}
+	}
+	return nil
 }
 
 // NewFeishuOperationService validates all mandatory operation dependencies.
@@ -368,6 +477,7 @@ func NewFeishuOperationService(deps OperationServiceDeps) (*FeishuOperationServi
 		vault: deps.Vault, runner: deps.Runner, cipher: deps.Cipher,
 		classifier: NewErrorClassifier(), now: now, leaseDuration: leaseDuration,
 		executionGateHeartbeatInterval: heartbeatInterval,
+		executions:                     newExecutionRegistry(),
 	}, nil
 }
 
@@ -375,7 +485,10 @@ func (s *FeishuOperationService) startExecutionGateGuard(
 	ctx context.Context,
 	operation *model.FeishuOperation,
 	owner string,
-) *executionGateGuard {
+) (*executionGateGuard, error) {
+	if s == nil || s.executions == nil || operation == nil || owner == "" {
+		return nil, ErrOperationUnavailable
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -385,8 +498,16 @@ func (s *FeishuOperationService) startExecutionGateGuard(
 		operationID: operation.ID, owner: owner, ctx: executionCtx, cancel: cancel,
 		stop: make(chan struct{}), done: make(chan struct{}),
 	}
+	registration, err := s.executions.register(executionKey{
+		userID: operation.UserID, generation: operation.Generation, operationID: operation.ID,
+	}, cancel)
+	if err != nil {
+		cancel()
+		return nil, ErrOperationUnavailable
+	}
+	guard.registration = registration
 	go guard.heartbeat()
-	return guard
+	return guard, nil
 }
 
 func (g *executionGateGuard) heartbeat() {
@@ -441,7 +562,48 @@ func (g *executionGateGuard) stopAndWait() {
 		close(g.stop)
 		g.cancel()
 		<-g.done
+		if g.service != nil && g.service.executions != nil {
+			g.service.executions.unregister(executionKey{
+				userID: g.userID, generation: g.generation, operationID: g.operationID,
+			}, g.registration)
+		}
 	})
+}
+
+// StopGenerationAndWait prevents any late local execution from opening a
+// retired HOME, cancels and joins every already-running local execution, then
+// waits for the durable account-wide execution gate to be released or expire.
+// The durable part is necessary because another service process can hold a CLI
+// invocation that this process cannot cancel. Any timeout/error deliberately
+// leaves the account disconnecting so the caller cannot report local deletion.
+func (s *FeishuOperationService) StopGenerationAndWait(ctx context.Context, userID uint, generation uint64) error {
+	if s == nil || s.executions == nil || userID == 0 || generation == 0 {
+		return ErrOperationUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := s.executions.stopGenerationAndWait(ctx, userID, generation); err != nil {
+		return ErrOperationUnavailable
+	}
+	for {
+		drained, err := s.operations.RetiredExecutionGateDrained(ctx, userID, generation, s.now().UTC())
+		if err != nil {
+			return ErrOperationUnavailable
+		}
+		if drained {
+			return nil
+		}
+		timer := time.NewTimer(operationExecutionGatePollInterval)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ErrOperationUnavailable
+		case <-timer.C:
+		}
+	}
 }
 
 // Execute normalizes and verifies a new request before atomically creating or
@@ -698,7 +860,12 @@ func (s *FeishuOperationService) reclaimExpiredExecution(
 			return nil, err
 		}
 		gateHeld = true
-		gateGuard = s.startExecutionGateGuard(ctx, operation, owner)
+		var guardErr error
+		gateGuard, guardErr = s.startExecutionGateGuard(ctx, operation, owner)
+		if guardErr != nil {
+			s.releaseExecutionGateDetached(ctx, operation, owner)
+			return nil, guardErr
+		}
 		defer func() {
 			if gateGuard != nil {
 				gateGuard.stopAndWait()
@@ -800,7 +967,12 @@ func (s *FeishuOperationService) claimAndExecute(
 			return nil, err
 		}
 		gateHeld = true
-		gateGuard = s.startExecutionGateGuard(ctx, operation, owner)
+		var guardErr error
+		gateGuard, guardErr = s.startExecutionGateGuard(ctx, operation, owner)
+		if guardErr != nil {
+			s.releaseExecutionGateDetached(ctx, operation, owner)
+			return nil, guardErr
+		}
 		defer func() {
 			if gateGuard != nil {
 				gateGuard.stopAndWait()

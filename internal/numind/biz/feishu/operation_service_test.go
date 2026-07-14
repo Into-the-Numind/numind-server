@@ -1929,6 +1929,37 @@ func TestOperationService_GenerationBumpWhileWaitingRejectsOldOperationBeforeCla
 	require.Zero(t, calls)
 }
 
+func TestOperationServiceRetiredExecutionRegistryRejectsLateOldGenerationRegistration(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 4, "cli_existing")
+	retiredGeneration, _, err := h.dataStore.ThirdPartyAccounts().RetireGeneration(h.ctx, 7, ProviderLark)
+	require.NoError(t, err)
+	require.Equal(t, uint64(4), retiredGeneration)
+	require.NoError(t, h.service.StopGenerationAndWait(context.Background(), 7, retiredGeneration))
+
+	guard, err := h.service.startExecutionGateGuard(context.Background(), &model.FeishuOperation{
+		ID: "late-retired-operation", UserID: 7, Generation: retiredGeneration,
+	}, "late-owner")
+	require.Nil(t, guard)
+	require.ErrorIs(t, err, ErrOperationUnavailable)
+	calls, _ := h.runner.snapshot()
+	require.Zero(t, calls, "a late old-generation registration must not reach the runner")
+}
+
+func TestOperationServiceStopGenerationAcceptsOnlyExpiredCrossInstanceGate(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 4, "cli_existing")
+	now := h.service.now().UTC()
+	claimed, err := h.dataStore.FeishuWorkspace().TryClaimExecutionGate(
+		h.ctx, 7, 4, "other-instance", "remote-operation", now.Add(-2*time.Minute), now.Add(-time.Minute),
+	)
+	require.NoError(t, err)
+	require.True(t, claimed)
+	retiredGeneration, _, err := h.dataStore.ThirdPartyAccounts().RetireGeneration(h.ctx, 7, ProviderLark)
+	require.NoError(t, err)
+	require.NoError(t, h.service.StopGenerationAndWait(context.Background(), 7, retiredGeneration), "an expired remote gate is the bounded crash fallback")
+}
+
 func TestOperationService_ReleaseFailureKeepsTerminalResultAndExpiresSafely(t *testing.T) {
 	h := newOperationHarness(t)
 	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")

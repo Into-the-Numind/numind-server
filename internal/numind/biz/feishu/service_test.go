@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
+	"numind-server/internal/numind/store"
+	pkgcrypto "numind-server/internal/pkg/crypto"
 	"numind-server/internal/pkg/model"
 
 	"github.com/stretchr/testify/require"
@@ -285,6 +288,19 @@ type lifecycleOperationsFake struct {
 	cancel    func(context.Context, uint, string) (*OperationResult, error)
 }
 
+type lifecycleExecutionsFake struct {
+	stopped  []uint64
+	stopWait func(context.Context) error
+}
+
+func (f *lifecycleExecutionsFake) StopGenerationAndWait(ctx context.Context, _ uint, generation uint64) error {
+	f.stopped = append(f.stopped, generation)
+	if f.stopWait != nil {
+		return f.stopWait(ctx)
+	}
+	return nil
+}
+
 func (f *lifecycleOperationsFake) Confirm(ctx context.Context, userID uint, id string) (*OperationResult, error) {
 	f.confirmed++
 	if f.confirm != nil {
@@ -311,6 +327,66 @@ func (f *lifecycleTeardownFake) LogoutRetired(_ context.Context, _ uint, generat
 	return RetiredWorkspaceTeardownResult{LogoutAttempted: true, LogoutSucceeded: f.err == nil}, f.err
 }
 
+// lifecycleTrackingWorkspace records the irreversible delete boundary while
+// delegating all tenant-fenced reads to the real workspace store.
+type lifecycleTrackingWorkspace struct {
+	store.IFeishuWorkspaceStore
+
+	mu               sync.Mutex
+	deleteVaultCalls int
+}
+
+func (s *lifecycleTrackingWorkspace) DeleteVault(ctx context.Context, userID uint, generation uint64) error {
+	s.mu.Lock()
+	s.deleteVaultCalls++
+	s.mu.Unlock()
+	return s.IFeishuWorkspaceStore.DeleteVault(ctx, userID, generation)
+}
+
+func (s *lifecycleTrackingWorkspace) deleteCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.deleteVaultCalls
+}
+
+// lifecycleBlockingRunner represents a controlled child process that has seen
+// cancellation but has not yet exited. It lets the test prove Unbind waits for
+// WithHome's deferred temporary-HOME removal instead of only observing a
+// context cancellation request.
+type lifecycleBlockingRunner struct {
+	started   chan struct{}
+	cancelled chan struct{}
+	release   <-chan struct{}
+
+	mu    sync.Mutex
+	home  string
+	calls int
+}
+
+func (r *lifecycleBlockingRunner) Run(ctx context.Context, home string, _ []string, _ []byte) (*CLIResult, error) {
+	r.mu.Lock()
+	r.calls++
+	r.home = home
+	r.mu.Unlock()
+	select {
+	case r.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	select {
+	case r.cancelled <- struct{}{}:
+	default:
+	}
+	<-r.release
+	return &CLIResult{InvocationStarted: true, ExitCode: -1}, ctx.Err()
+}
+
+func (r *lifecycleBlockingRunner) snapshot() (home string, calls int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.home, r.calls
+}
+
 func newLifecycleService(t *testing.T, account *model.UserThirdPartyAccount, operation *model.FeishuOperation) (*WorkspaceLifecycleService, *lifecycleAccountFake, *lifecycleWorkspaceFake, *lifecycleAuthFake, *lifecycleDispatcherFake, *lifecycleOperationsFake, *lifecycleTeardownFake) {
 	t.Helper()
 	accounts := &lifecycleAccountFake{account: account}
@@ -318,9 +394,11 @@ func newLifecycleService(t *testing.T, account *model.UserThirdPartyAccount, ope
 	auth := &lifecycleAuthFake{action: &OperationAction{Provider: ProviderLark, SessionID: "session-1", Phase: model.FeishuAuthPhaseUserAuth, URL: "https://open.feishu.cn/suite/passport/oauth/device", ExpiresAt: time.Now().Add(time.Minute)}}
 	dispatcher := &lifecycleDispatcherFake{}
 	operations := &lifecycleOperationsFake{}
+	executions := &lifecycleExecutionsFake{}
 	teardown := &lifecycleTeardownFake{}
 	svc, err := NewWorkspaceLifecycleService(WorkspaceLifecycleDeps{
-		Accounts: accounts, Workspace: workspace, Auth: auth, Dispatcher: dispatcher, Operations: operations, Teardown: teardown,
+		Accounts: accounts, Workspace: workspace, Auth: auth, Dispatcher: dispatcher, Operations: operations,
+		Executions: executions, Teardown: teardown,
 	})
 	require.NoError(t, err)
 	return svc, accounts, workspace, auth, dispatcher, operations, teardown
@@ -825,6 +903,153 @@ func TestWorkspaceLifecycleUnbindLeavesRetiredGenerationDisconnectingWhenTeardow
 	require.Equal(t, 1, workspace.deleteVaultCalls)
 	require.Equal(t, 1, accounts.finalizeCalls)
 	require.Equal(t, model.FeishuConnectionNone, accounts.account.ConnectionState)
+}
+
+func TestWorkspaceLifecycleUnbindJoinsExecutingCLIAndRuntimeHomeBeforeLocalDeletion(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 4, "cli_existing")
+	runtimeBase := t.TempDir()
+	vault, err := NewEncryptedCLIHomeVaultWithKeyring(
+		h.dataStore.ThirdPartyAccounts(), h.dataStore.FeishuWorkspace(),
+		map[string]*pkgcrypto.Cipher{"v1": h.cipher.ciphers["v1"]}, "v1", runtimeBase,
+	)
+	require.NoError(t, err)
+	releaseRunner := make(chan struct{})
+	runner := &lifecycleBlockingRunner{
+		started: make(chan struct{}, 1), cancelled: make(chan struct{}, 1), release: releaseRunner,
+	}
+	operationService, err := NewFeishuOperationService(OperationServiceDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: h.dataStore.FeishuWorkspace(),
+		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: h.recovery,
+		Confirmation: h.confirmation, Vault: vault, Runner: runner, Cipher: h.cipher,
+		Now: h.service.now, LeaseDuration: time.Minute,
+	})
+	require.NoError(t, err)
+	workspace := &lifecycleTrackingWorkspace{IFeishuWorkspaceStore: h.dataStore.FeishuWorkspace()}
+	auth := &lifecycleAuthFake{}
+	teardown := &lifecycleTeardownFake{}
+	lifecycle, err := NewWorkspaceLifecycleService(WorkspaceLifecycleDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Workspace: workspace, Auth: auth,
+		Dispatcher: &lifecycleDispatcherFake{}, Operations: operationService,
+		Executions: operationService, Teardown: teardown,
+	})
+	require.NoError(t, err)
+
+	type executeResult struct {
+		result *OperationResult
+		err    error
+	}
+	executeDone := make(chan executeResult, 1)
+	go func() {
+		result, executeErr := operationService.Execute(context.Background(), operationDocsAppendRequest(
+			7, 991, "unbind-executing", "doxcnABCDEFG123",
+		))
+		executeDone <- executeResult{result: result, err: executeErr}
+	}()
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("operation did not start its controlled runner")
+	}
+	home, calls := runner.snapshot()
+	require.Equal(t, 1, calls)
+	require.NotEmpty(t, home)
+	_, err = os.Stat(home)
+	require.NoError(t, err, "real vault HOME must exist while controlled CLI is still running")
+
+	type unbindResult struct {
+		result *UnbindResult
+		err    error
+	}
+	unbound := make(chan unbindResult, 1)
+	go func() {
+		result, unbindErr := lifecycle.Unbind(context.Background(), 7)
+		unbound <- unbindResult{result: result, err: unbindErr}
+	}()
+	select {
+	case <-runner.cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("unbind did not cancel the registered execution")
+	}
+	require.Zero(t, workspace.deleteCount(), "encrypted vault deletion must wait for CLI exit and HOME cleanup")
+	require.Zero(t, teardown.calls, "retired HOME teardown must not overlap the active runtime HOME")
+	_, err = os.Stat(home)
+	require.NoError(t, err, "runtime HOME must remain until the controlled CLI exits")
+	select {
+	case premature := <-unbound:
+		t.Fatalf("unbind returned before execution cleanup: %#v", premature)
+	default:
+	}
+
+	close(releaseRunner)
+	select {
+	case completed := <-unbound:
+		require.NoError(t, completed.err)
+		require.Equal(t, model.FeishuConnectionNone, completed.result.State)
+	case <-time.After(time.Second):
+		t.Fatal("unbind did not finish after controlled CLI cleanup")
+	}
+	select {
+	case completed := <-executeDone:
+		require.NoError(t, completed.err)
+		require.Equal(t, model.FeishuOperationUnknown, completed.result.State)
+	case <-time.After(time.Second):
+		t.Fatal("execution did not exit after cancellation")
+	}
+	_, err = os.Stat(home)
+	require.True(t, os.IsNotExist(err), "vault callback must remove the plaintext runtime HOME before unbind succeeds")
+	require.Equal(t, 1, workspace.deleteCount())
+	require.Equal(t, []uint64{4}, auth.stopped)
+	require.Equal(t, []uint64{4}, teardown.calls)
+	_, calls = runner.snapshot()
+	require.Equal(t, 1, calls, "an interrupted write must close unknown instead of invoking CLI again")
+
+	var stored model.FeishuOperation
+	require.NoError(t, h.db.Where("user_id = ? AND idempotency_key = ?", 7, "991:unbind-executing").Take(&stored).Error)
+	require.Equal(t, model.FeishuOperationUnknown, stored.State, "retire must keep an interrupted execution unknown")
+}
+
+func TestWorkspaceLifecycleUnbindWaitsForCrossInstanceExecutionGateOrLeavesDisconnecting(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 4, "cli_existing")
+	now := h.service.now().UTC()
+	claimed, err := h.dataStore.FeishuWorkspace().TryClaimExecutionGate(
+		context.Background(), 7, 4, "other-instance", "remote-operation", now, now.Add(time.Hour),
+	)
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	workspace := &lifecycleTrackingWorkspace{IFeishuWorkspaceStore: h.dataStore.FeishuWorkspace()}
+	auth := &lifecycleAuthFake{}
+	teardown := &lifecycleTeardownFake{}
+	lifecycle, err := NewWorkspaceLifecycleService(WorkspaceLifecycleDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Workspace: workspace, Auth: auth,
+		Dispatcher: &lifecycleDispatcherFake{}, Operations: h.service, Executions: h.service,
+		Teardown: teardown,
+	})
+	require.NoError(t, err)
+	lifecycle.cleanupTimeout = 25 * time.Millisecond
+
+	result, err := lifecycle.Unbind(context.Background(), 7)
+	require.Nil(t, result)
+	require.ErrorIs(t, err, ErrWorkspaceLifecycleUnavailable)
+	require.Zero(t, workspace.deleteCount(), "a remote active CLI gate must block local vault deletion")
+	require.Empty(t, teardown.calls, "retired HOME cleanup cannot begin while another instance holds the gate")
+	account, err := h.dataStore.ThirdPartyAccounts().Get(context.Background(), 7, ProviderLark)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuConnectionDisconnecting, account.ConnectionState)
+	require.Equal(t, uint64(5), account.Generation)
+	require.Equal(t, []uint64{4}, auth.stopped)
+
+	released, err := h.dataStore.FeishuWorkspace().ReleaseExecutionGate(context.Background(), 7, 4, "other-instance", now)
+	require.NoError(t, err)
+	require.True(t, released)
+	result, err = lifecycle.Unbind(context.Background(), 7)
+	require.NoError(t, err, "retry must reuse the same retired generation after the cross-instance gate drains")
+	require.Equal(t, model.FeishuConnectionNone, result.State)
+	require.Equal(t, 1, workspace.deleteCount())
+	require.Equal(t, []uint64{4, 4}, auth.stopped)
+	require.Equal(t, []uint64{4}, teardown.calls)
 }
 
 func TestNewWorkspaceLifecycleServiceRejectsIncompleteGraph(t *testing.T) {

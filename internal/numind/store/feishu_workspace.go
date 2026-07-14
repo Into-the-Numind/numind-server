@@ -41,6 +41,7 @@ type IFeishuWorkspaceStore interface {
 	TryClaimExecutionGate(ctx context.Context, userID uint, generation uint64, owner, operationID string, now, leaseUntil time.Time) (bool, error)
 	RenewExecutionGate(ctx context.Context, userID uint, generation uint64, owner, operationID string, now, leaseUntil time.Time) (bool, error)
 	ReleaseExecutionGate(ctx context.Context, userID uint, generation uint64, owner string, now time.Time) (bool, error)
+	RetiredExecutionGateDrained(ctx context.Context, userID uint, retiredGeneration uint64, now time.Time) (bool, error)
 	ListSucceededCreatesForRun(ctx context.Context, userID uint, generation uint64, agentRunID uint64) ([]model.FeishuOperation, error)
 	IsOperationProofUsable(ctx context.Context, userID uint, generation uint64, agentRunID uint64, sourceOperationID, consumerOperationID string) (bool, error)
 	GetOperationForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuOperation, error)
@@ -851,6 +852,54 @@ func (s *feishuWorkspaceStore) ReleaseExecutionGate(
 		return false, fmt.Errorf("release feishu execution gate: %w", result.Error)
 	}
 	return result.RowsAffected == 1, nil
+}
+
+// RetiredExecutionGateDrained reports whether no active account-wide business
+// CLI lease remains after the supplied generation has been retired. It locks
+// account then gate, matching the claim/renew order, but does not modify either
+// row. An active lease from any generation blocks completion: while an account
+// is disconnecting no new gate may be claimed, so release or expiry is the
+// only safe cross-instance drain boundary before local vault deletion.
+func (s *feishuWorkspaceStore) RetiredExecutionGateDrained(
+	ctx context.Context,
+	userID uint,
+	retiredGeneration uint64,
+	now time.Time,
+) (bool, error) {
+	if userID == 0 || retiredGeneration == 0 {
+		return false, nil
+	}
+	now = feishuExecutionGateClaimNow(now)
+	drained := false
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var account model.UserThirdPartyAccount
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ? AND provider = ?", userID, "lark").
+			Take(&account).Error; err != nil {
+			return err
+		}
+		if account.Generation != retiredGeneration+1 || account.ConnectionState != model.FeishuConnectionDisconnecting {
+			return gorm.ErrRecordNotFound
+		}
+
+		var gate model.FeishuOperationExecutionGate
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ?", userID).
+			Take(&gate).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			drained = true
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		drained = gate.LeaseOwner == "" || gate.LeaseUntil == nil || !gate.LeaseUntil.After(now)
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("observe retired feishu execution gate: %w", err)
+	}
+	return drained, nil
 }
 
 // ListSucceededCreatesForRun returns a small, deterministic proof-candidate
