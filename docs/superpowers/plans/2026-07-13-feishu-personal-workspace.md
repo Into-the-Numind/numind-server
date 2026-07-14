@@ -1283,28 +1283,30 @@ git commit -m "test(feishu): cover workspace recovery integration"
 
 **Files:** `e2e/feishu-personal-workspace.spec.ts`。
 
-- [ ] **Step 1: 写 mocked E2E**
+- [x] **Step 1: 写 mocked E2E**
 
 一期：Mock status/SSE/resume/refresh，验证关键授权/恢复 happy path、过期刷新、resume 无 argv/scopes、成功回原任务、375×812 与 desktop 冒烟；trace 中不得出现普通 answer request。二期再补四阶段穷举、设置能力全矩阵、键盘操作和视觉回归。
 
-- [ ] **Step 2: 运行并修复 E2E**
+- [x] **Step 2: 运行并修复 E2E**
 
-Run: `npm run test:e2e -- e2e/feishu-personal-workspace.spec.ts --project=chromium`
+Run: `npm run test:e2e -- e2e/feishu-personal-workspace.spec.ts --project=mocked`
 
 Expected: PASS，trace 中无普通 answer request。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add e2e/feishu-personal-workspace.spec.ts
 git commit -m "test(feishu): cover workspace authorization ui"
 ```
 
+**一期收口（2026-07-15）：** 使用独立 `mocked` Playwright project，使完全 route-mock 的浏览器契约测试不依赖不可用的本地登录后端。桌面端覆盖原 Agent 任务 → external action → 生命周期恢复；375×812 覆盖过期链接 refresh → 继续。两条用例均断言 resume body 只有 `action=user_completed`、没有 `argv/scopes` 等命令或权限数据，也没有普通 `/answer` 或 `/answer-stream` 请求。`npm run test:e2e -- e2e/feishu-personal-workspace.spec.ts --project=mocked`、`npm run lint` 和 `npm run type-check` 全部通过；提交 `a0766b0`。
+
 ## Task 23: S4 最终质量 Gate
 
 **Files:** 无；本任务只验证，不产生兜底 commit。
 
-- [ ] **Step 1: 后端全量验证**
+- [x] **Step 1: 后端全量验证**
 
 Run: `go test ./...`
 
@@ -1314,7 +1316,7 @@ Run: `task lint`
 
 Expected: exit 0，无 lint error。
 
-- [ ] **Step 2: 前端全量验证**
+- [x] **Step 2: 前端全量验证**
 
 Run in web worktree: `npm run test:unit`
 
@@ -1328,7 +1330,7 @@ Run: `npm run test:e2e -- e2e/feishu-personal-workspace.spec.ts`
 
 Expected: Chromium PASS，mobile/desktop assertions PASS。
 
-- [ ] **Step 3: 状态与敏感信息检查**
+- [x] **Step 3: 状态与敏感信息检查**
 
 Run: `git status --short` in both worktrees。
 
@@ -1338,9 +1340,11 @@ Run: `rg -n 'token|app_secret|device_code|https://.*feishu' internal/numind/biz/
 
 Expected: 仅结构字段/测试 opaque fixture，无真实凭据或真实授权 URL。
 
-- [ ] **Step 4: 本地执行隔离风险 Gate**
+- [x] **Step 4: 本地执行隔离风险 Gate**
 
 重复运行 runner 的取消、超时、正常 leader 退出 child-marker 测试，确认进程组残留清理无回归；核对生产只使用固定 hash/绝对路径/无 shell。明确复审 ADR 0004 中仍存在的 defense-in-depth P2：同 UID 主动 symlink/root rename、descendant `setsid` 逃逸、post-Wait PGID 理论复用。若首版信任固定官方 CLI 的边界不再成立，必须新增独立 fix task 实现 supervisor/cgroup/独立 UID sandbox，不得直接通过 Gate。
+
+**一期收口（2026-07-15）：** `go test ./...`、`task lint`、`npm run test:unit`（96 files / 1051 passed）、`npm run lint && npm run type-check` 与 Task 22 mocked Playwright 全部通过。飞书 controller 的严格 body/allowlist 测试和 ControlledLarkCLIRunner 的取消、超时、正常 leader 退出 child-marker 用例再次通过。敏感信息扫描只命中结构字段、注释及脱敏 fixture；浏览器公开类型不含 token、secret、argv 或 scopes 字段。P2 边界维持 ADR 0004 结论：固定官方 CLI、绝对路径、无 shell 和进程组收敛是首版信任边界；同 UID 主动文件竞态、`setsid` 逃逸与理论 PGID 复用尚未实现独立 UID/sandbox，不能声称已抵御恶意本机进程。
 
 ## Task 24: S5 本地真实飞书 Gate（不计入 S4 manifest progress）
 
