@@ -63,9 +63,13 @@ func withUser(uid uint) gin.HandlerFunc {
 }
 
 func TestStatus_JSONIsReadOnlyShape(t *testing.T) {
+	expiresAt := time.Date(2026, 7, 14, 12, 2, 0, 0, time.UTC)
 	svc := &lifecycleServiceFake{status: &feishubiz.StatusResult{
 		State: "connected", Connected: true, AppIDMasked: "cli_****5678",
 		Capabilities: map[string]feishubiz.CapabilityStatus{"docs": {State: "available"}},
+		ActiveAction: &feishubiz.StatusAction{
+			OperationID: "operation-0", SessionID: "session-0", Phase: "user_auth", ExpiresAt: expiresAt, LinkAvailable: true,
+		},
 	}}
 	ctrl := NewController(svc)
 	r := gin.New()
@@ -75,13 +79,16 @@ func TestStatus_JSONIsReadOnlyShape(t *testing.T) {
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/feishu/status", nil))
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Contains(t, w.Body.String(), `"state":"connected"`)
+	require.Contains(t, w.Body.String(), `"phase":"user_auth"`)
 	require.NotContains(t, w.Body.String(), `"url"`)
 	require.NotContains(t, w.Body.String(), "device_code")
 }
 
 func TestConnectAcceptsOnlyManualIntent(t *testing.T) {
+	expiresAt := time.Date(2026, 7, 14, 12, 3, 0, 0, time.UTC)
 	service := &lifecycleServiceFake{connect: &feishubiz.ConnectResult{State: "user_auth", Action: &feishubiz.OperationAction{
-		Provider: "lark", SessionID: "session-1", URL: "https://open.feishu.cn/suite/passport/oauth/device", ExpiresAt: time.Now().Add(time.Minute),
+		Provider: "lark", OperationID: "operation-1", SessionID: "session-1", Phase: "user_auth",
+		URL: "https://open.feishu.cn/suite/passport/oauth/device", Scopes: []string{"docx:document:create"}, ExpiresAt: expiresAt,
 	}}}
 	ctrl := NewController(service)
 	r := gin.New()
@@ -96,6 +103,21 @@ func TestConnectAcceptsOnlyManualIntent(t *testing.T) {
 	r.ServeHTTP(valid, httptest.NewRequest(http.MethodPost, "/v1/feishu/connect", strings.NewReader(`{"intent":"manual"}`)))
 	require.Equal(t, http.StatusOK, valid.Code)
 	require.Equal(t, 1, service.connectCalls)
+	require.JSONEq(t, `{
+		"code": 0,
+		"message": "",
+		"data": {
+			"state": "user_auth",
+			"action": {
+				"operation_id": "operation-1",
+				"session_id": "session-1",
+				"phase": "user_auth",
+				"url": "https://open.feishu.cn/suite/passport/oauth/device",
+				"expires_at": "2026-07-14T12:03:00Z"
+			}
+		}
+	}`, valid.Body.String())
+	require.NotContains(t, valid.Body.String(), `"scopes"`)
 }
 
 func TestResumeAllowsOnlyFixedActionAndCollapsesCrossUserTo404(t *testing.T) {
@@ -115,9 +137,47 @@ func TestResumeAllowsOnlyFixedActionAndCollapsesCrossUserTo404(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, notFound.Code)
 }
 
+func TestResumePublicActionOmitsInternalScopes(t *testing.T) {
+	expiresAt := time.Date(2026, 7, 14, 12, 5, 0, 0, time.UTC)
+	service := &lifecycleServiceFake{resume: &feishubiz.OperationResult{
+		OperationID: "operation-3", State: "waiting_user_auth",
+		Action: &feishubiz.OperationAction{
+			Provider: "lark", OperationID: "operation-3", SessionID: "session-3", Phase: "user_auth",
+			URL: "https://open.feishu.cn/suite/passport/oauth/device", Scopes: []string{"wiki:node:create"}, ExpiresAt: expiresAt,
+		},
+	}}
+	ctrl := NewController(service)
+	r := gin.New()
+	r.POST("/v1/feishu/operations/:id/resume", withUser(8), ctrl.ResumeOperation)
+
+	response := httptest.NewRecorder()
+	r.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1/feishu/operations/operation-3/resume", strings.NewReader(`{"action":"user_completed"}`)))
+	require.Equal(t, http.StatusOK, response.Code)
+	require.JSONEq(t, `{
+		"code": 0,
+		"message": "",
+		"data": {
+			"operation_id": "operation-3",
+			"state": "waiting_user_auth",
+			"action": {
+				"operation_id": "operation-3",
+				"session_id": "session-3",
+				"phase": "user_auth",
+				"expires_at": "2026-07-14T12:05:00Z"
+			}
+		}
+	}`, response.Body.String())
+	require.NotContains(t, response.Body.String(), `"scopes"`)
+	require.NotContains(t, response.Body.String(), `"url"`)
+}
+
 func TestRefreshUsesPathSessionOnlyAndUnbindReturnsRemoteAppDisclosure(t *testing.T) {
+	expiresAt := time.Date(2026, 7, 14, 12, 4, 0, 0, time.UTC)
 	service := &lifecycleServiceFake{
-		refresh: &feishubiz.OperationAction{Provider: "lark", SessionID: "fresh", URL: "https://open.feishu.cn/suite/passport/oauth/device"},
+		refresh: &feishubiz.OperationAction{
+			Provider: "lark", OperationID: "operation-2", SessionID: "fresh", Phase: "app_scope",
+			URL: "https://open.feishu.cn/suite/passport/oauth/device", Scopes: []string{"base:record:update"}, ExpiresAt: expiresAt,
+		},
 		unbound: &feishubiz.UnbindResult{State: "none", Connected: false, Message: "有数侧连接已删除；飞书侧个人自建应用仍保留，可在飞书开放平台自行删除"},
 	}
 	ctrl := NewController(service)
@@ -134,6 +194,18 @@ func TestRefreshUsesPathSessionOnlyAndUnbindReturnsRemoteAppDisclosure(t *testin
 	r.ServeHTTP(refresh, httptest.NewRequest(http.MethodPost, "/v1/feishu/actions/old-session/refresh", nil))
 	require.Equal(t, http.StatusOK, refresh.Code)
 	require.Equal(t, "old-session", service.refreshID)
+	require.JSONEq(t, `{
+		"code": 0,
+		"message": "",
+		"data": {
+			"operation_id": "operation-2",
+			"session_id": "fresh",
+			"phase": "app_scope",
+			"url": "https://open.feishu.cn/suite/passport/oauth/device",
+			"expires_at": "2026-07-14T12:04:00Z"
+		}
+	}`, refresh.Body.String())
+	require.NotContains(t, refresh.Body.String(), `"scopes"`)
 
 	unbound := httptest.NewRecorder()
 	r.ServeHTTP(unbound, httptest.NewRequest(http.MethodDelete, "/v1/feishu/connection", nil))

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -37,6 +38,41 @@ type resumeRequest struct {
 	Action string `json:"action"`
 }
 
+// lifecycleActionResponse is the allowlisted public projection of an internal
+// OperationAction for non-live routes. Internal actions carry server-owned
+// recovery scopes; those scopes must never cross an HTTP boundary because the
+// client neither selects nor needs them. The transient URL is also excluded:
+// only the direct connect/refresh endpoints may return a live URL.
+type lifecycleActionResponse struct {
+	OperationID string    `json:"operation_id,omitempty"`
+	SessionID   string    `json:"session_id,omitempty"`
+	Phase       string    `json:"phase"`
+	ExpiresAt   time.Time `json:"expires_at,omitempty"`
+}
+
+// liveLifecycleActionResponse is the explicit allowlist for the two routes
+// that create or refresh a server-owned authorization worker. It adds only the
+// current live URL; recovery scopes and provider metadata remain private.
+type liveLifecycleActionResponse struct {
+	OperationID string    `json:"operation_id,omitempty"`
+	SessionID   string    `json:"session_id,omitempty"`
+	Phase       string    `json:"phase"`
+	URL         string    `json:"url,omitempty"`
+	ExpiresAt   time.Time `json:"expires_at,omitempty"`
+}
+
+type connectResponse struct {
+	State  string                       `json:"state"`
+	Action *liveLifecycleActionResponse `json:"action,omitempty"`
+}
+
+type operationResponse struct {
+	OperationID string                   `json:"operation_id"`
+	State       string                   `json:"state"`
+	Data        json.RawMessage          `json:"data,omitempty"`
+	Action      *lifecycleActionResponse `json:"action,omitempty"`
+}
+
 // Connect handles POST /v1/feishu/connect. The only accepted body is the
 // explicit manual intent; scopes, argv, app ids, operation ids, and user ids
 // are rejected before the service is called.
@@ -51,7 +87,7 @@ func (h *Controller) Connect(c *gin.Context) {
 		return
 	}
 	result, err := h.svc.Connect(c.Request.Context(), user.ID)
-	writeLifecycleResponse(c, err, result)
+	writeLifecycleResponse(c, err, publicConnectResponse(result))
 }
 
 // Status handles GET /v1/feishu/status. It has no body and invokes the
@@ -80,7 +116,7 @@ func (h *Controller) ResumeOperation(c *gin.Context) {
 		return
 	}
 	result, err := h.svc.Resume(c.Request.Context(), user.ID, operationID, request.Action)
-	writeLifecycleResponse(c, err, result)
+	writeLifecycleResponse(c, err, publicOperationResponse(result))
 }
 
 // RefreshAction handles POST /v1/feishu/actions/:session_id/refresh. The
@@ -97,7 +133,7 @@ func (h *Controller) RefreshAction(c *gin.Context) {
 		return
 	}
 	result, err := h.svc.RefreshAction(c.Request.Context(), user.ID, sessionID)
-	writeLifecycleResponse(c, err, result)
+	writeLifecycleResponse(c, err, publicLiveLifecycleAction(result))
 }
 
 // Unbind handles DELETE /v1/feishu/connection. The result explicitly says the
@@ -151,6 +187,50 @@ func requireEmptyBody(c *gin.Context) error {
 		return nil
 	}
 	return errno.ErrInvalidParameter
+}
+
+func publicConnectResponse(result *feishubiz.ConnectResult) *connectResponse {
+	if result == nil {
+		return nil
+	}
+	return &connectResponse{State: result.State, Action: publicLiveLifecycleAction(result.Action)}
+}
+
+func publicOperationResponse(result *feishubiz.OperationResult) *operationResponse {
+	if result == nil {
+		return nil
+	}
+	return &operationResponse{
+		OperationID: result.OperationID,
+		State:       result.State,
+		Data:        result.Data,
+		Action:      publicLifecycleAction(result.Action),
+	}
+}
+
+func publicLifecycleAction(action *feishubiz.OperationAction) *lifecycleActionResponse {
+	if action == nil {
+		return nil
+	}
+	return &lifecycleActionResponse{
+		OperationID: action.OperationID,
+		SessionID:   action.SessionID,
+		Phase:       action.Phase,
+		ExpiresAt:   action.ExpiresAt,
+	}
+}
+
+func publicLiveLifecycleAction(action *feishubiz.OperationAction) *liveLifecycleActionResponse {
+	if action == nil {
+		return nil
+	}
+	return &liveLifecycleActionResponse{
+		OperationID: action.OperationID,
+		SessionID:   action.SessionID,
+		Phase:       action.Phase,
+		URL:         action.URL,
+		ExpiresAt:   action.ExpiresAt,
+	}
 }
 
 func writeLifecycleResponse(c *gin.Context, err error, data any) {
