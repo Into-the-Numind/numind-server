@@ -239,7 +239,13 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 		return nil, err
 	}
 	operation, err := s.workspace.GetOperationForUser(ctx, userID, account.Generation, operationID)
-	if err != nil || operation == nil || operation.UserID != userID || operation.Generation != account.Generation {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrWorkspaceLifecycleNotFound
+	}
+	if err != nil {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	if operation == nil || operation.UserID != userID || operation.Generation != account.Generation {
 		return nil, ErrWorkspaceLifecycleNotFound
 	}
 
@@ -375,9 +381,28 @@ func (s *WorkspaceLifecycleService) RefreshAction(ctx context.Context, userID ui
 	if err != nil {
 		return nil, err
 	}
+	// Authenticate the browser-controlled opaque ID against the caller's
+	// current account generation before asking AuthSessionService to retire its
+	// worker and create a fresh URL. A missing or stale ID is intentionally
+	// indistinguishable from an unowned one; a persistence failure must not be
+	// misreported as a 404 because that would hide an unavailable dependency.
+	session, sessionErr := s.workspace.GetSessionForUser(ctx, userID, account.Generation, sessionID)
+	if errors.Is(sessionErr, gorm.ErrRecordNotFound) {
+		return nil, ErrWorkspaceLifecycleNotFound
+	}
+	if sessionErr != nil {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	if session == nil || session.ID != sessionID || session.UserID != userID || session.Generation != account.Generation ||
+		session.State != model.FeishuAuthSessionPending {
+		return nil, ErrWorkspaceLifecycleNotFound
+	}
+	if !validAuthPhase(session.Phase) {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
 	action, refreshErr := s.auth.RefreshAction(ctx, userID, account.Generation, sessionID)
 	if refreshErr != nil || action == nil || strings.TrimSpace(action.SessionID) == "" {
-		return nil, ErrWorkspaceLifecycleNotFound
+		return nil, ErrWorkspaceLifecycleUnavailable
 	}
 	return cloneOperationAction(action), nil
 }

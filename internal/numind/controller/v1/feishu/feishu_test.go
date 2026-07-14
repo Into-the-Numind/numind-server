@@ -142,6 +142,25 @@ func TestRefreshUsesPathSessionOnlyAndUnbindReturnsRemoteAppDisclosure(t *testin
 	require.Equal(t, 1, service.unbindCalls)
 }
 
+func TestRefreshUnavailableResponseDoesNotLeakLiveAction(t *testing.T) {
+	service := &lifecycleServiceFake{
+		refresh: &feishubiz.OperationAction{
+			Provider: "lark", SessionID: "fresh", URL: "https://open.feishu.cn/device?device_code=secret",
+		},
+		err: feishubiz.ErrWorkspaceLifecycleUnavailable,
+	}
+	ctrl := NewController(service)
+	r := gin.New()
+	r.POST("/v1/feishu/actions/:session_id/refresh", withUser(8), ctrl.RefreshAction)
+
+	response := httptest.NewRecorder()
+	r.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1/feishu/actions/session-1/refresh", nil))
+	require.Equal(t, http.StatusInternalServerError, response.Code)
+	require.NotContains(t, response.Body.String(), "https://open.feishu.cn")
+	require.NotContains(t, response.Body.String(), "device_code")
+	require.NotContains(t, response.Body.String(), "secret")
+}
+
 func TestUnbindRejectsAnyRequestBodyBeforeInvokingLifecycleService(t *testing.T) {
 	service := &lifecycleServiceFake{unbound: &feishubiz.UnbindResult{State: "none"}}
 	ctrl := NewController(service)

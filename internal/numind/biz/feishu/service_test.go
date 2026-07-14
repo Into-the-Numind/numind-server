@@ -173,6 +173,7 @@ type lifecycleWorkspaceFake struct {
 	operationErr     error
 	activeSession    *model.FeishuAuthSession
 	activeSessionErr error
+	getSession       func(context.Context, uint, uint64, string) (*model.FeishuAuthSession, error)
 	deleteVaultCalls int
 }
 
@@ -198,7 +199,10 @@ func (f *lifecycleWorkspaceFake) FindActiveSessionForUser(_ context.Context, _ u
 	return &copy, nil
 }
 
-func (f *lifecycleWorkspaceFake) GetSessionForUser(_ context.Context, userID uint, generation uint64, sessionID string) (*model.FeishuAuthSession, error) {
+func (f *lifecycleWorkspaceFake) GetSessionForUser(ctx context.Context, userID uint, generation uint64, sessionID string) (*model.FeishuAuthSession, error) {
+	if f.getSession != nil {
+		return f.getSession(ctx, userID, generation, sessionID)
+	}
 	if f.activeSessionErr != nil {
 		return nil, f.activeSessionErr
 	}
@@ -217,6 +221,7 @@ func (f *lifecycleWorkspaceFake) DeleteVault(_ context.Context, _ uint, _ uint64
 type lifecycleAuthFake struct {
 	connectCalls             int
 	refreshCalls             int
+	refreshErr               error
 	completeAppApprovalCalls []lifecycleAppApprovalCall
 	completeAppApproval      func(context.Context, uint, uint64, string) error
 	stopped                  []uint64
@@ -237,7 +242,7 @@ func (f *lifecycleAuthFake) ConnectManual(_ context.Context, _ uint) (*Operation
 
 func (f *lifecycleAuthFake) RefreshAction(_ context.Context, _ uint, _ uint64, _ string) (*OperationAction, error) {
 	f.refreshCalls++
-	return cloneOperationAction(f.action), nil
+	return cloneOperationAction(f.action), f.refreshErr
 }
 
 func (f *lifecycleAuthFake) CompleteAppApproval(ctx context.Context, userID uint, generation uint64, sessionID string) error {
@@ -480,13 +485,112 @@ func TestWorkspaceLifecycleResumeCollapsesCrossUserToNotFound(t *testing.T) {
 	require.ErrorIs(t, err, ErrWorkspaceLifecycleNotFound)
 }
 
+func TestWorkspaceLifecycleResumeMapsOperationReadFailureToUnavailableWithoutDispatch(t *testing.T) {
+	svc, _, workspace, _, dispatcher, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 2,
+	}, nil)
+	workspace.operationErr = errors.New("simulated operation store outage")
+
+	result, err := svc.Resume(context.Background(), 7, "op-1", ResumeActionUserCompleted)
+	require.Nil(t, result)
+	require.ErrorIs(t, err, ErrWorkspaceLifecycleUnavailable)
+	require.NotErrorIs(t, err, ErrWorkspaceLifecycleNotFound)
+	require.Zero(t, dispatcher.calls)
+}
+
 func TestWorkspaceLifecycleRefreshUsesCurrentGenerationAndReturnsNewLiveAction(t *testing.T) {
-	svc, _, _, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 9}, nil)
+	svc, _, workspace, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 9}, nil)
+	workspace.activeSession = &model.FeishuAuthSession{
+		ID: "session-1", UserID: 7, Generation: 9, Phase: model.FeishuAuthPhaseUserAuth,
+		State: model.FeishuAuthSessionPending,
+	}
 
 	action, err := svc.RefreshAction(context.Background(), 7, "session-1")
 	require.NoError(t, err)
 	require.Equal(t, "session-1", action.SessionID)
 	require.Equal(t, 1, auth.refreshCalls)
+}
+
+func TestWorkspaceLifecycleRefreshClassifiesSessionBeforeCallingAuth(t *testing.T) {
+	validSession := func() *model.FeishuAuthSession {
+		return &model.FeishuAuthSession{
+			ID: "session-1", UserID: 7, Generation: 9, Phase: model.FeishuAuthPhaseUserAuth,
+			State: model.FeishuAuthSessionPending,
+		}
+	}
+
+	t.Run("missing session is uniformly not found", func(t *testing.T) {
+		svc, _, _, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 9}, nil)
+
+		action, err := svc.RefreshAction(context.Background(), 7, "session-1")
+		require.Nil(t, action)
+		require.ErrorIs(t, err, ErrWorkspaceLifecycleNotFound)
+		require.Zero(t, auth.refreshCalls)
+	})
+
+	t.Run("unowned session is uniformly not found", func(t *testing.T) {
+		svc, _, workspace, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 9}, nil)
+		workspace.getSession = func(context.Context, uint, uint64, string) (*model.FeishuAuthSession, error) {
+			return &model.FeishuAuthSession{
+				ID: "session-1", UserID: 8, Generation: 9, Phase: model.FeishuAuthPhaseUserAuth,
+				State: model.FeishuAuthSessionPending,
+			}, nil
+		}
+
+		action, err := svc.RefreshAction(context.Background(), 7, "session-1")
+		require.Nil(t, action)
+		require.ErrorIs(t, err, ErrWorkspaceLifecycleNotFound)
+		require.Zero(t, auth.refreshCalls)
+	})
+
+	t.Run("wrong generation session is uniformly not found", func(t *testing.T) {
+		svc, _, workspace, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 9}, nil)
+		workspace.getSession = func(context.Context, uint, uint64, string) (*model.FeishuAuthSession, error) {
+			return &model.FeishuAuthSession{
+				ID: "session-1", UserID: 7, Generation: 8, Phase: model.FeishuAuthPhaseUserAuth,
+				State: model.FeishuAuthSessionPending,
+			}, nil
+		}
+
+		action, err := svc.RefreshAction(context.Background(), 7, "session-1")
+		require.Nil(t, action)
+		require.ErrorIs(t, err, ErrWorkspaceLifecycleNotFound)
+		require.Zero(t, auth.refreshCalls)
+	})
+
+	t.Run("disconnecting account is uniformly not found", func(t *testing.T) {
+		svc, _, _, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+			UserID: 7, Provider: ProviderLark, Generation: 9, ConnectionState: model.FeishuConnectionDisconnecting,
+		}, nil)
+
+		action, err := svc.RefreshAction(context.Background(), 7, "session-1")
+		require.Nil(t, action)
+		require.ErrorIs(t, err, ErrWorkspaceLifecycleNotFound)
+		require.Zero(t, auth.refreshCalls)
+	})
+
+	t.Run("session store failure is unavailable", func(t *testing.T) {
+		svc, _, workspace, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 9}, nil)
+		workspace.activeSessionErr = errors.New("simulated session store outage")
+
+		action, err := svc.RefreshAction(context.Background(), 7, "session-1")
+		require.Nil(t, action)
+		require.ErrorIs(t, err, ErrWorkspaceLifecycleUnavailable)
+		require.NotErrorIs(t, err, ErrWorkspaceLifecycleNotFound)
+		require.Zero(t, auth.refreshCalls)
+	})
+
+	t.Run("auth dependency failure is unavailable and returns no live action", func(t *testing.T) {
+		svc, _, workspace, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 9}, nil)
+		workspace.activeSession = validSession()
+		auth.refreshErr = errors.New("simulated auth worker outage")
+
+		action, err := svc.RefreshAction(context.Background(), 7, "session-1")
+		require.Nil(t, action)
+		require.ErrorIs(t, err, ErrWorkspaceLifecycleUnavailable)
+		require.NotErrorIs(t, err, ErrWorkspaceLifecycleNotFound)
+		require.Equal(t, 1, auth.refreshCalls)
+	})
 }
 
 func TestWorkspaceLifecycleResumeAndRefreshMapAccountStoreFailureToUnavailable(t *testing.T) {
