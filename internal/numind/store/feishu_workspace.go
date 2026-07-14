@@ -81,7 +81,7 @@ func (s *feishuWorkspaceStore) PutVaultCAS(ctx context.Context, vault *model.Fei
 			Take(&account).Error; err != nil {
 			return err
 		}
-		if account.Generation != vault.Generation {
+		if !feishuAccountGenerationActive(&account, vault.Generation) {
 			return gorm.ErrRecordNotFound
 		}
 
@@ -163,7 +163,7 @@ func (s *feishuWorkspaceStore) CreateOrGetPendingSession(
 			Take(&account).Error; err != nil {
 			return err
 		}
-		if account.Generation != session.Generation {
+		if !feishuAccountGenerationActive(&account, session.Generation) {
 			return gorm.ErrRecordNotFound
 		}
 
@@ -423,7 +423,11 @@ func lockFeishuAuthAccount(tx *gorm.DB, userID uint, generation uint64) (bool, e
 	if err != nil {
 		return false, err
 	}
-	return account.Generation == generation, nil
+	return feishuAccountGenerationActive(&account, generation), nil
+}
+
+func feishuAccountGenerationActive(account *model.UserThirdPartyAccount, generation uint64) bool {
+	return account != nil && account.Generation == generation && account.ConnectionState != model.FeishuConnectionDisconnecting
 }
 
 // FinalizeSessionCompleted atomically updates the generation-fenced account and
@@ -446,7 +450,7 @@ func (s *feishuWorkspaceStore) FinalizeSessionCompleted(
 			Take(&account).Error; err != nil {
 			return err
 		}
-		if account.Generation != generation {
+		if !feishuAccountGenerationActive(&account, generation) {
 			return gorm.ErrRecordNotFound
 		}
 
@@ -514,7 +518,7 @@ func (s *feishuWorkspaceStore) UpdateAccountConnectionState(
 	}
 	result := s.db.WithContext(ctx).
 		Model(&model.UserThirdPartyAccount{}).
-		Where("user_id = ? AND provider = ? AND generation = ?", userID, "lark", generation).
+		Where("user_id = ? AND provider = ? AND generation = ? AND connection_state <> ?", userID, "lark", generation, model.FeishuConnectionDisconnecting).
 		Updates(map[string]any{
 			"connection_state": state,
 			"connected":        connected,
@@ -543,7 +547,7 @@ func (s *feishuWorkspaceStore) CreateOrGetOperation(ctx context.Context, operati
 			Take(&account).Error; err != nil {
 			return err
 		}
-		if account.Generation != operation.Generation {
+		if !feishuAccountGenerationActive(&account, operation.Generation) {
 			return gorm.ErrRecordNotFound
 		}
 
@@ -589,7 +593,7 @@ func (s *feishuWorkspaceStore) CreateOrGetOperationWithProof(
 			Take(&account).Error; err != nil {
 			return err
 		}
-		if account.Generation != operation.Generation {
+		if !feishuAccountGenerationActive(&account, operation.Generation) {
 			return ErrFeishuProofReservationUnavailable
 		}
 
@@ -703,7 +707,7 @@ func (s *feishuWorkspaceStore) TryClaimExecutionGate(
 			Take(&account).Error; err != nil {
 			return err
 		}
-		if account.Generation != generation {
+		if !feishuAccountGenerationActive(&account, generation) {
 			return nil
 		}
 
@@ -771,7 +775,7 @@ func (s *feishuWorkspaceStore) RenewExecutionGate(
 			Take(&account).Error; err != nil {
 			return err
 		}
-		if account.Generation != generation {
+		if !feishuAccountGenerationActive(&account, generation) {
 			return nil
 		}
 
@@ -984,7 +988,8 @@ func (s *feishuWorkspaceStore) ClaimOperation(ctx context.Context, userID uint, 
 		Select("1").
 		Where("user_third_party_account.user_id = feishu_operation.user_id").
 		Where("user_third_party_account.provider = ?", "lark").
-		Where("user_third_party_account.generation = feishu_operation.generation")
+		Where("user_third_party_account.generation = feishu_operation.generation").
+		Where("user_third_party_account.connection_state <> ?", model.FeishuConnectionDisconnecting)
 	result := s.db.WithContext(ctx).
 		Model(&model.FeishuOperation{}).
 		Where("id = ? AND user_id = ? AND generation = ?", id, userID, generation).
@@ -1031,7 +1036,8 @@ func (s *feishuWorkspaceStore) TransitionOperation(ctx context.Context, userID u
 		Select("1").
 		Where("user_third_party_account.user_id = feishu_operation.user_id").
 		Where("user_third_party_account.provider = ?", "lark").
-		Where("user_third_party_account.generation = feishu_operation.generation")
+		Where("user_third_party_account.generation = feishu_operation.generation").
+		Where("user_third_party_account.connection_state <> ?", model.FeishuConnectionDisconnecting)
 	result := s.db.WithContext(ctx).
 		Model(&model.FeishuOperation{}).
 		Where("id = ? AND user_id = ? AND generation = ?", id, userID, generation).

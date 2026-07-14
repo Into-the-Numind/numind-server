@@ -30,9 +30,10 @@ var (
 )
 
 const (
-	ResumeActionUserCompleted = "user_completed"
-	ResumeActionConfirmed     = "confirmed"
-	ResumeActionCancelled     = "cancelled"
+	ResumeActionUserCompleted        = "user_completed"
+	ResumeActionConfirmed            = "confirmed"
+	ResumeActionCancelled            = "cancelled"
+	workspaceLifecycleCleanupTimeout = 5 * time.Second
 )
 
 // CapabilityStatus is the durable, last-known status of one supported domain.
@@ -110,7 +111,7 @@ type WorkspaceLifecycleStore interface {
 type WorkspaceLifecycleAuth interface {
 	ConnectManual(context.Context, uint) (*OperationAction, error)
 	RefreshAction(context.Context, uint, uint64, string) (*OperationAction, error)
-	StopGeneration(uint, uint64)
+	StopGenerationAndWait(context.Context, uint, uint64) error
 }
 
 // WorkspaceLifecycleDispatcher is implemented by the Task12-composed outer
@@ -149,12 +150,13 @@ type WorkspaceLifecycleDeps struct {
 // It does not construct a runner, vault, auth session service, or Agent
 // resumer; those must be the already-validated Task12 instances.
 type WorkspaceLifecycleService struct {
-	accounts   WorkspaceLifecycleAccountStore
-	workspace  WorkspaceLifecycleStore
-	auth       WorkspaceLifecycleAuth
-	dispatcher WorkspaceLifecycleDispatcher
-	operations WorkspaceLifecycleOperations
-	teardown   WorkspaceLifecycleTeardown
+	accounts       WorkspaceLifecycleAccountStore
+	workspace      WorkspaceLifecycleStore
+	auth           WorkspaceLifecycleAuth
+	dispatcher     WorkspaceLifecycleDispatcher
+	operations     WorkspaceLifecycleOperations
+	teardown       WorkspaceLifecycleTeardown
+	cleanupTimeout time.Duration
 }
 
 var _ IFeishuService = (*WorkspaceLifecycleService)(nil)
@@ -168,6 +170,7 @@ func NewWorkspaceLifecycleService(deps WorkspaceLifecycleDeps) (*WorkspaceLifecy
 	return &WorkspaceLifecycleService{
 		accounts: deps.Accounts, workspace: deps.Workspace, auth: deps.Auth,
 		dispatcher: deps.Dispatcher, operations: deps.Operations, teardown: deps.Teardown,
+		cleanupTimeout: workspaceLifecycleCleanupTimeout,
 	}, nil
 }
 
@@ -317,20 +320,37 @@ func (s *WorkspaceLifecycleService) Unbind(ctx context.Context, userID uint) (*U
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
 
-	// Stop only local workers; multi-instance persistence is already fenced by
-	// the retired generation before this best-effort local step begins.
-	s.auth.StopGeneration(userID, retiredGeneration)
+	// Do not delete the retired vault while a local worker may still be running
+	// against a materialized HOME. The store fence is cross-instance safety; this
+	// bounded local join makes the deletion claim truthful. On failure the row
+	// intentionally stays disconnecting and RetireGeneration will reuse the same
+	// retired generation on a later retry.
+	cleanupCtx, cleanupCancel := workspaceLifecycleCleanupContext(ctx, s.cleanupTimeout)
+	defer cleanupCancel()
+	if err := s.auth.StopGenerationAndWait(cleanupCtx, userID, retiredGeneration); err != nil {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
 	// lark-cli auth logout only clears the local user login; it cannot revoke or
 	// delete the remote self-built app. The fenced retired HOME is removed below
 	// regardless, so a logout failure is deliberately advisory.
-	_ = s.teardown.LogoutRetired(ctx, userID, retiredGeneration)
-	if err := s.workspace.DeleteVault(ctx, userID, retiredGeneration); err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+	_ = s.teardown.LogoutRetired(cleanupCtx, userID, retiredGeneration)
+	if err := s.workspace.DeleteVault(cleanupCtx, userID, retiredGeneration); err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
-	if err := s.accounts.FinalizeDisconnect(ctx, userID, ProviderLark, nextGeneration); err != nil {
+	if err := s.accounts.FinalizeDisconnect(cleanupCtx, userID, ProviderLark, nextGeneration); err != nil {
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
 	return unboundWorkspaceResult(), nil
+}
+
+func workspaceLifecycleCleanupContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if timeout <= 0 {
+		timeout = workspaceLifecycleCleanupTimeout
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
 }
 
 func (s *WorkspaceLifecycleService) currentAccount(ctx context.Context, userID uint) (*model.UserThirdPartyAccount, error) {

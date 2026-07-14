@@ -163,6 +163,35 @@ type authSessionCompleteBeforeClaimStore struct {
 	once sync.Once
 }
 
+// authSessionUpdateBarrierStore holds the start path after its last durable
+// state write and before local worker registration. It models the only window
+// where RetireGeneration can commit before StopGenerationAndWait snapshots the
+// local registry.
+type authSessionUpdateBarrierStore struct {
+	AuthSessionStore
+	arrived chan<- struct{}
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (s *authSessionUpdateBarrierStore) UpdateAccountConnectionState(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	state string,
+	connected bool,
+	now time.Time,
+) error {
+	if err := s.AuthSessionStore.UpdateAccountConnectionState(ctx, userID, generation, state, connected, now); err != nil {
+		return err
+	}
+	s.once.Do(func() {
+		s.arrived <- struct{}{}
+		<-s.release
+	})
+	return nil
+}
+
 func (s *authSessionCompleteBeforeClaimStore) ClaimSession(
 	_ context.Context,
 	userID uint,
@@ -427,6 +456,45 @@ func TestAuthSessionService_StopGenerationAndWaitJoinsRetiredWorkerBeforeReturni
 	case <-time.After(time.Second):
 		t.Fatal("generation stop did not join the retired worker")
 	}
+}
+
+func TestAuthSessionService_RetireBeforeLateWorkerRegistrationCannotStartRetiredGeneration(t *testing.T) {
+	h := newAuthSessionHarness(t)
+	h.createAccount(model.FeishuConnectionAppReady)
+	h.cli.urls = []string{"https://open.feishu.cn/suite/passport/oauth/device?user_code=LATE"}
+	arrived := make(chan struct{}, 1)
+	release := make(chan struct{})
+	service := h.newServiceWithSessions("late-register-owner", &authSessionUpdateBarrierStore{
+		AuthSessionStore: h.dataStore.FeishuWorkspace(), arrived: arrived, release: release,
+	})
+
+	resultCh := make(chan *OperationAction, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		result, err := service.ConnectManual(h.ctx, 7)
+		resultCh <- result
+		errCh <- err
+	}()
+	select {
+	case <-arrived:
+	case <-time.After(time.Second):
+		t.Fatal("manual connect did not reach the worker-registration barrier")
+	}
+	retiredGeneration, _, err := h.dataStore.ThirdPartyAccounts().RetireGeneration(h.ctx, 7, ProviderLark)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, retiredGeneration)
+	require.NoError(t, service.StopGenerationAndWait(context.Background(), 7, retiredGeneration))
+	close(release)
+
+	select {
+	case err := <-errCh:
+		require.ErrorIs(t, err, ErrAuthSessionUnavailable)
+	case <-time.After(time.Second):
+		t.Fatal("late worker registration did not stop")
+	}
+	require.Nil(t, <-resultCh)
+	argv, _ := h.cli.snapshot()
+	require.Empty(t, argv, "a late retired worker must never reach lark-cli")
 }
 
 func TestAuthSessionService_ManualConnectCreatesAppBeforeOfflineAuthorization(t *testing.T) {

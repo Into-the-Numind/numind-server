@@ -33,6 +33,7 @@ const (
 	authSessionCLIStatusTimeout         = 15 * time.Second
 	authSessionCLIMaxLineBytes          = 1 << 20
 	authSessionFinalizeTimeout          = 5 * time.Second
+	authSessionStopTimeout              = 5 * time.Second
 )
 
 var (
@@ -105,6 +106,11 @@ type authSessionURLValue struct {
 	expiresAt time.Time
 }
 
+type authSessionWorker struct {
+	cancel context.CancelFunc
+	exited chan struct{}
+}
+
 type authSessionURLRegistry struct {
 	mu     sync.RWMutex
 	values map[authSessionURLKey]authSessionURLValue
@@ -174,7 +180,13 @@ type AuthSessionService struct {
 	activationMu      sync.Mutex
 	activations       map[string]*authSessionActivation
 	workerMu          sync.Mutex
-	workers           map[authSessionURLKey]context.CancelFunc
+	workers           map[authSessionURLKey]*authSessionWorker
+	// retiredGeneration is an in-process complement to the durable account
+	// generation fence. It closes the narrow handoff race where RetireGeneration
+	// commits after a worker has been planned but before it registers locally.
+	// One maximum per user is sufficient because account generations are
+	// monotonic; it never blocks a later, fully finalized reconnect generation.
+	retiredGeneration map[uint]uint64
 }
 
 // NewAuthSessionService validates the one-way authorization dependencies.
@@ -212,26 +224,31 @@ func NewAuthSessionService(deps AuthSessionServiceDeps) (*AuthSessionService, er
 		leaseDuration: leaseDuration, sessionDuration: sessionDuration,
 		heartbeatInterval: heartbeatInterval, startTimeout: startTimeout,
 		urls: newAuthSessionURLRegistry(), activations: make(map[string]*authSessionActivation),
-		workers: make(map[authSessionURLKey]context.CancelFunc),
+		workers: make(map[authSessionURLKey]*authSessionWorker), retiredGeneration: make(map[uint]uint64),
 	}, nil
 }
 
-func (s *AuthSessionService) registerWorker(session *model.FeishuAuthSession, cancel context.CancelFunc) {
-	if session == nil || cancel == nil {
-		return
+func (s *AuthSessionService) registerWorker(session *model.FeishuAuthSession, worker *authSessionWorker) bool {
+	if session == nil || worker == nil || worker.cancel == nil || worker.exited == nil {
+		return false
 	}
+	key := authSessionRegistryKey(session)
 	s.workerMu.Lock()
-	s.workers[authSessionRegistryKey(session)] = cancel
-	s.workerMu.Unlock()
+	defer s.workerMu.Unlock()
+	if s.retiredGeneration[session.UserID] >= session.Generation {
+		return false
+	}
+	s.workers[key] = worker
+	return true
 }
 
-func (s *AuthSessionService) removeWorker(session *model.FeishuAuthSession, cancel context.CancelFunc) {
+func (s *AuthSessionService) removeWorker(session *model.FeishuAuthSession, worker *authSessionWorker) {
 	if session == nil {
 		return
 	}
 	key := authSessionRegistryKey(session)
 	s.workerMu.Lock()
-	if current := s.workers[key]; current != nil {
+	if current := s.workers[key]; current == worker {
 		delete(s.workers, key)
 	}
 	s.workerMu.Unlock()
@@ -242,30 +259,59 @@ func (s *AuthSessionService) removeWorker(session *model.FeishuAuthSession, canc
 // lifecycle store first, so this is a prompt cleanup measure rather than the
 // cross-process safety boundary.
 func (s *AuthSessionService) StopGeneration(userID uint, generation uint64) {
+	stopCtx, cancel := context.WithTimeout(context.Background(), authSessionStopTimeout)
+	defer cancel()
+	_ = s.StopGenerationAndWait(stopCtx, userID, generation)
+}
+
+// StopGenerationAndWait blocks until every locally-owned worker for the
+// retired generation has exited its vault callback and cleaned its temporary
+// HOME. A deadline/error leaves the durable account disconnecting so Unbind can
+// retry the same retired generation without claiming a false local deletion.
+func (s *AuthSessionService) StopGenerationAndWait(ctx context.Context, userID uint, generation uint64) error {
 	if s == nil || userID == 0 || generation == 0 {
-		return
+		return ErrAuthSessionUnavailable
 	}
-	sessionIDs := make([]string, 0)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	type stoppedWorker struct {
+		sessionID string
+		worker    *authSessionWorker
+	}
+	workers := make([]stoppedWorker, 0)
 	s.workerMu.Lock()
-	for key := range s.workers {
+	if generation > s.retiredGeneration[userID] {
+		s.retiredGeneration[userID] = generation
+	}
+	for key, worker := range s.workers {
 		if key.userID == userID && key.generation == generation {
-			sessionIDs = append(sessionIDs, key.sessionID)
+			workers = append(workers, stoppedWorker{sessionID: key.sessionID, worker: worker})
 		}
 	}
 	s.workerMu.Unlock()
-	for _, sessionID := range sessionIDs {
-		s.stopSession(userID, generation, sessionID)
+	for _, worker := range workers {
+		s.Abort(worker.sessionID)
+		worker.worker.cancel()
 	}
+	for _, worker := range workers {
+		select {
+		case <-worker.worker.exited:
+		case <-ctx.Done():
+			return ErrAuthSessionUnavailable
+		}
+	}
+	return nil
 }
 
 func (s *AuthSessionService) stopSession(userID uint, generation uint64, sessionID string) {
 	key := authSessionURLKey{userID: userID, generation: generation, sessionID: sessionID}
 	s.workerMu.Lock()
-	cancel := s.workers[key]
+	worker := s.workers[key]
 	s.workerMu.Unlock()
 	s.Abort(sessionID)
-	if cancel != nil {
-		cancel()
+	if worker != nil {
+		worker.cancel()
 	}
 }
 
@@ -358,7 +404,7 @@ func (s *AuthSessionService) ConnectManual(ctx context.Context, userID uint) (*O
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		account, err = s.accounts.EnsurePlaceholder(ctx, userID, ProviderLark)
 	}
-	if err != nil || account == nil || account.Generation == 0 {
+	if err != nil || account == nil || account.Generation == 0 || account.ConnectionState == model.FeishuConnectionDisconnecting {
 		return nil, ErrAuthSessionUnavailable
 	}
 	kind := RecoveryReauth
@@ -388,7 +434,7 @@ func (s *AuthSessionService) start(
 	if errors.Is(err, gorm.ErrRecordNotFound) && request.Kind == RecoveryCreateApp {
 		account, err = s.accounts.EnsurePlaceholder(ctx, request.UserID, ProviderLark)
 	}
-	if err != nil || account == nil || account.Generation != request.Generation {
+	if err != nil || account == nil || account.Generation != request.Generation || account.ConnectionState == model.FeishuConnectionDisconnecting {
 		return nil, ErrAuthSessionUnavailable
 	}
 
@@ -699,9 +745,19 @@ func (s *AuthSessionService) claimAndStart(
 	urlReady := make(chan struct{}, 1)
 	done := make(chan error, 1)
 	workerContext, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	s.registerWorker(session, cancel)
+	worker := &authSessionWorker{cancel: cancel, exited: make(chan struct{})}
+	if !s.registerWorker(session, worker) {
+		s.removeActivation(session.ID, activation)
+		s.Abort(session.ID)
+		cancel()
+		if supersedeErr := s.supersedeOwned(ctx, session, leaseToken, now); supersedeErr != nil {
+			return nil, supersedeErr
+		}
+		return nil, ErrAuthSessionUnavailable
+	}
 	go func() {
-		defer s.removeWorker(session, cancel)
+		defer close(worker.exited)
+		defer s.removeWorker(session, worker)
 		done <- s.runWorker(workerContext, cancel, session, leaseToken, argv, urlReady, activation)
 	}()
 

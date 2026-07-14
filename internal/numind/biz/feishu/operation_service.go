@@ -769,7 +769,8 @@ func (s *FeishuOperationService) loadOrCreateAccount(ctx context.Context, userID
 }
 
 func validOperationAccount(account *model.UserThirdPartyAccount, userID uint) bool {
-	return account != nil && account.UserID == userID && account.Provider == ProviderLark && account.Generation != 0
+	return account != nil && account.UserID == userID && account.Provider == ProviderLark && account.Generation != 0 &&
+		account.ConnectionState != model.FeishuConnectionDisconnecting
 }
 
 func (s *FeishuOperationService) claimAndExecute(

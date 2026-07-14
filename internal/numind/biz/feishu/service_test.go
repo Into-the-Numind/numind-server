@@ -196,6 +196,7 @@ type lifecycleAuthFake struct {
 	refreshCalls int
 	stopped      []uint64
 	action       *OperationAction
+	stopWait     func(context.Context) error
 }
 
 func (f *lifecycleAuthFake) ConnectManual(_ context.Context, _ uint) (*OperationAction, error) {
@@ -208,8 +209,12 @@ func (f *lifecycleAuthFake) RefreshAction(_ context.Context, _ uint, _ uint64, _
 	return cloneOperationAction(f.action), nil
 }
 
-func (f *lifecycleAuthFake) StopGeneration(_ uint, generation uint64) {
+func (f *lifecycleAuthFake) StopGenerationAndWait(ctx context.Context, _ uint, generation uint64) error {
 	f.stopped = append(f.stopped, generation)
+	if f.stopWait != nil {
+		return f.stopWait(ctx)
+	}
+	return nil
 }
 
 type lifecycleDispatcherFake struct{ calls int }
@@ -360,6 +365,69 @@ func TestWorkspaceLifecycleUnbindRetiresGenerationStopsWorkersDeletesVaultAndKee
 	require.Equal(t, 1, workspace.deleteVaultCalls)
 	require.Equal(t, []uint64{4}, auth.stopped)
 	require.Equal(t, []uint64{4}, teardown.calls)
+}
+
+func TestWorkspaceLifecycleUnbindWaitsForWorkerExitBeforeDeletingRetiredVault(t *testing.T) {
+	svc, accounts, workspace, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 4, Connected: true,
+		ConnectionState: model.FeishuConnectionConnected,
+	}, nil)
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	auth.stopWait = func(ctx context.Context) error {
+		started <- struct{}{}
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	resultCh := make(chan *UnbindResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		result, err := svc.Unbind(context.Background(), 7)
+		resultCh <- result
+		errCh <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("unbind did not request a worker join")
+	}
+	require.Zero(t, workspace.deleteVaultCalls, "vault deletion must wait for worker/temp HOME cleanup")
+	require.Zero(t, accounts.finalizeCalls, "unbind must not report none before worker exit")
+	close(release)
+	select {
+	case err := <-errCh:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("unbind did not finish after worker exit")
+	}
+	result := <-resultCh
+	require.Equal(t, model.FeishuConnectionNone, result.State)
+	require.Equal(t, 1, workspace.deleteVaultCalls)
+	require.Equal(t, 1, accounts.finalizeCalls)
+}
+
+func TestWorkspaceLifecycleUnbindWorkerJoinTimeoutLeavesDisconnectingForSafeRetry(t *testing.T) {
+	svc, accounts, workspace, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 4, Connected: true,
+		ConnectionState: model.FeishuConnectionConnected,
+	}, nil)
+	svc.cleanupTimeout = 25 * time.Millisecond
+	auth.stopWait = func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	_, err := svc.Unbind(context.Background(), 7)
+	require.ErrorIs(t, err, ErrWorkspaceLifecycleUnavailable)
+	require.Equal(t, model.FeishuConnectionDisconnecting, accounts.account.ConnectionState)
+	require.False(t, accounts.account.Connected)
+	require.Zero(t, workspace.deleteVaultCalls)
+	require.Zero(t, accounts.finalizeCalls)
 }
 
 func TestNewWorkspaceLifecycleServiceRejectsIncompleteGraph(t *testing.T) {
