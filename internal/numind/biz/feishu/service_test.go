@@ -180,6 +180,14 @@ type lifecycleWorkspaceFake struct {
 	deleteVaultCalls int
 }
 
+func (f *lifecycleWorkspaceFake) ClaimRetiredTeardown(_ context.Context, _ uint, _ uint64, _ uint64, _ string, _, _ time.Time) (bool, error) {
+	return true, nil
+}
+
+func (f *lifecycleWorkspaceFake) ReleaseRetiredTeardown(_ context.Context, _ uint, _ uint64, _ string, _ time.Time) error {
+	return nil
+}
+
 func (f *lifecycleWorkspaceFake) GetOperationForUser(_ context.Context, _ uint, _ uint64, _ string) (*model.FeishuOperation, error) {
 	if f.operationErr != nil {
 		return nil, f.operationErr
@@ -322,6 +330,31 @@ type lifecycleTeardownFake struct {
 	err   error
 }
 
+type lifecycleTeardownBarrier struct {
+	entered chan struct{}
+	release <-chan struct{}
+	mu      sync.Mutex
+	calls   int
+}
+
+func (t *lifecycleTeardownBarrier) LogoutRetired(ctx context.Context, _ uint, _ uint64) (RetiredWorkspaceTeardownResult, error) {
+	t.mu.Lock()
+	t.calls++
+	t.mu.Unlock()
+	select {
+	case t.entered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-t.release:
+		return RetiredWorkspaceTeardownResult{LogoutAttempted: true, LogoutSucceeded: true}, nil
+	case <-ctx.Done():
+		return RetiredWorkspaceTeardownResult{}, ctx.Err()
+	}
+}
+
+func (t *lifecycleTeardownBarrier) count() int { t.mu.Lock(); defer t.mu.Unlock(); return t.calls }
+
 func (f *lifecycleTeardownFake) LogoutRetired(_ context.Context, _ uint, generation uint64) (RetiredWorkspaceTeardownResult, error) {
 	f.calls = append(f.calls, generation)
 	return RetiredWorkspaceTeardownResult{LogoutAttempted: true, LogoutSucceeded: f.err == nil}, f.err
@@ -409,6 +442,7 @@ func TestWorkspaceLifecycleStatusIsReadOnlyAndNeverReturnsAuthorizationURL(t *te
 	svc, _, workspace, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
 		UserID: 7, Provider: ProviderLark, AppID: appID, Generation: 3,
 		ConnectionState:     model.FeishuConnectionWaitingUserAuth,
+		LarkCLIVersion:      LarkCLIVersion,
 		CapabilityStateJSON: []byte(`{"docs":{"state":"available"}}`),
 	}, nil)
 	workspace.activeSession = &model.FeishuAuthSession{
@@ -422,6 +456,8 @@ func TestWorkspaceLifecycleStatusIsReadOnlyAndNeverReturnsAuthorizationURL(t *te
 	require.False(t, status.Connected)
 	require.NotEqual(t, appID, status.AppIDMasked)
 	require.NotContains(t, status.AppIDMasked, "12345678")
+	require.Equal(t, LarkCLIVersion, status.CLIVersion)
+	require.Equal(t, model.FeishuCapabilityAvailable, status.Capabilities["docs"].State)
 	require.Equal(t, 0, auth.connectCalls, "GET status must not create a worker or URL")
 	require.NotNil(t, status.ActiveAction)
 	require.Equal(t, "session-active", status.ActiveAction.SessionID)
@@ -812,6 +848,115 @@ func TestWorkspaceLifecycleUnbindRetiresGenerationStopsWorkersDeletesVaultAndKee
 	require.Equal(t, 1, workspace.deleteVaultCalls)
 	require.Equal(t, []uint64{4}, auth.stopped)
 	require.Equal(t, []uint64{4}, teardown.calls)
+}
+
+func TestWorkspaceLifecycleUnbindConcurrentAndRepeatedCallsShareOneTeardown(t *testing.T) {
+	svc, accounts, workspace, auth, _, _, teardown := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 4, Connected: true,
+		ConnectionState: model.FeishuConnectionConnected,
+	}, nil)
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	auth.stopWait = func(ctx context.Context) error {
+		entered <- struct{}{}
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	type callResult struct {
+		result *UnbindResult
+		err    error
+	}
+	first := make(chan callResult, 1)
+	second := make(chan callResult, 1)
+	go func() {
+		result, err := svc.Unbind(context.Background(), 7)
+		first <- callResult{result: result, err: err}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("first unbind did not become the cleanup owner")
+	}
+	go func() {
+		result, err := svc.Unbind(context.Background(), 7)
+		second <- callResult{result: result, err: err}
+	}()
+	select {
+	case outcome := <-second:
+		t.Fatalf("second unbind returned before the owner completed: %+v", outcome)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	for _, resultCh := range []<-chan callResult{first, second} {
+		select {
+		case outcome := <-resultCh:
+			require.NoError(t, outcome.err)
+			require.NotNil(t, outcome.result)
+			require.Equal(t, model.FeishuConnectionNone, outcome.result.State)
+		case <-time.After(time.Second):
+			t.Fatal("concurrent unbind did not complete")
+		}
+	}
+	require.Equal(t, 1, accounts.retireCalls)
+	require.Equal(t, 1, accounts.finalizeCalls)
+	require.Equal(t, 1, workspace.deleteVaultCalls)
+	require.Equal(t, []uint64{4}, teardown.calls)
+
+	// A successful local deletion is terminally idempotent: it must not create
+	// a second retired generation or repeat destructive cleanup.
+	repeated, err := svc.Unbind(context.Background(), 7)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuConnectionNone, repeated.State)
+	require.Equal(t, 1, accounts.retireCalls)
+	require.Equal(t, 1, accounts.finalizeCalls)
+	require.Equal(t, 1, workspace.deleteVaultCalls)
+}
+
+func TestWorkspaceLifecycleUnbindDurablySerializesTwoServiceInstances(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 4, "cli-existing")
+	release := make(chan struct{})
+	teardown := &lifecycleTeardownBarrier{entered: make(chan struct{}, 2), release: release}
+	makeService := func() *WorkspaceLifecycleService {
+		svc, err := NewWorkspaceLifecycleService(WorkspaceLifecycleDeps{Accounts: h.dataStore.ThirdPartyAccounts(), Workspace: h.dataStore.FeishuWorkspace(), Auth: &lifecycleAuthFake{}, Dispatcher: &lifecycleDispatcherFake{}, Operations: &lifecycleOperationsFake{}, Executions: &lifecycleExecutionsFake{}, Teardown: teardown})
+		require.NoError(t, err)
+		return svc
+	}
+	firstSvc, secondSvc := makeService(), makeService()
+	type outcome struct {
+		result *UnbindResult
+		err    error
+	}
+	first, second := make(chan outcome, 1), make(chan outcome, 1)
+	go func() { r, e := firstSvc.Unbind(context.Background(), 7); first <- outcome{r, e} }()
+	select {
+	case <-teardown.entered:
+	case <-time.After(time.Second):
+		t.Fatal("first instance did not acquire durable teardown lease")
+	}
+	go func() { r, e := secondSvc.Unbind(context.Background(), 7); second <- outcome{r, e} }()
+	select {
+	case got := <-second:
+		t.Fatalf("loser returned before durable owner finalized: %+v", got)
+	case <-time.After(75 * time.Millisecond):
+	}
+	close(release)
+	for _, ch := range []<-chan outcome{first, second} {
+		select {
+		case got := <-ch:
+			require.NoError(t, got.err)
+			require.Equal(t, model.FeishuConnectionNone, got.result.State)
+		case <-time.After(time.Second):
+			t.Fatal("instance did not finish")
+		}
+	}
+	require.Equal(t, 1, teardown.count(), "only the durable owner may logout/delete/finalize")
 }
 
 func TestWorkspaceLifecycleUnbindWaitsForWorkerExitBeforeDeletingRetiredVault(t *testing.T) {

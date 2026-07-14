@@ -56,6 +56,13 @@ type AuthSessionCLI interface {
 	AuthStatus(ctx context.Context, home string) (bool, error)
 }
 
+// AuthSessionAppIDEvidence exposes the non-secret app identifier only after a
+// successful create-app worker has written the official lark-cli config in the
+// isolated HOME. It is deliberately optional for recovery-only adapters.
+type AuthSessionAppIDEvidence interface {
+	AppIDFromHome(ctx context.Context, home string) (string, error)
+}
+
 // AuthSessionAccountStore is the account subset required to establish the
 // active tenant generation before creating a durable auth session.
 type AuthSessionAccountStore interface {
@@ -72,7 +79,7 @@ type AuthSessionStore interface {
 	ClaimSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
 	RenewSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
 	UpdateSessionState(ctx context.Context, userID uint, generation uint64, id, owner, state string, now time.Time, completedAt *time.Time) error
-	FinalizeSessionCompleted(ctx context.Context, userID uint, generation uint64, id, owner, accountState string, connected bool, now time.Time) error
+	FinalizeSessionCompleted(ctx context.Context, userID uint, generation uint64, id, owner, accountState string, connected bool, now time.Time, evidence model.FeishuConnectionEvidence) error
 	UpdateAccountConnectionState(ctx context.Context, userID uint, generation uint64, state string, connected bool, now time.Time) error
 }
 
@@ -93,6 +100,9 @@ type AuthSessionServiceDeps struct {
 	SessionDuration   time.Duration
 	HeartbeatInterval time.Duration
 	StartTimeout      time.Duration
+	// VerifiedCLIVersion is supplied only after the controlled lark-cli
+	// --version probe has accepted the fixed release.
+	VerifiedCLIVersion string
 }
 
 type authSessionURLKey struct {
@@ -109,6 +119,23 @@ type authSessionURLValue struct {
 type authSessionWorker struct {
 	cancel context.CancelFunc
 	exited chan struct{}
+}
+
+// authSessionStart covers the small interval after a caller has selected a
+// durable session but before its worker is visible in workers. Retire must
+// cancel and join this interval too; otherwise pruning a retired-generation
+// tombstone could let a paused old start register after Unbind finalized.
+type authSessionStart struct {
+	cancel   context.CancelFunc
+	done     chan struct{}
+	doneOnce sync.Once
+}
+
+func (s *authSessionStart) finish() {
+	if s == nil {
+		return
+	}
+	s.doneOnce.Do(func() { close(s.done) })
 }
 
 type authSessionURLRegistry struct {
@@ -169,18 +196,20 @@ type AuthSessionService struct {
 	cli        AuthSessionCLI
 	dispatcher OperationResumeDispatcher
 
-	now               func() time.Time
-	newID             func() string
-	newLeaseToken     func() string
-	leaseDuration     time.Duration
-	sessionDuration   time.Duration
-	heartbeatInterval time.Duration
-	startTimeout      time.Duration
-	urls              *authSessionURLRegistry
-	activationMu      sync.Mutex
-	activations       map[string]*authSessionActivation
-	workerMu          sync.Mutex
-	workers           map[authSessionURLKey]*authSessionWorker
+	now                func() time.Time
+	newID              func() string
+	newLeaseToken      func() string
+	leaseDuration      time.Duration
+	sessionDuration    time.Duration
+	heartbeatInterval  time.Duration
+	startTimeout       time.Duration
+	verifiedCLIVersion string
+	urls               *authSessionURLRegistry
+	activationMu       sync.Mutex
+	activations        map[string]*authSessionActivation
+	workerMu           sync.Mutex
+	workers            map[authSessionURLKey]*authSessionWorker
+	starts             map[authSessionURLKey]*authSessionStart
 	// retiredGeneration is an in-process complement to the durable account
 	// generation fence. It closes the narrow handoff race where RetireGeneration
 	// commits after a worker has been planned but before it registers locally.
@@ -218,14 +247,59 @@ func NewAuthSessionService(deps AuthSessionServiceDeps) (*AuthSessionService, er
 	if heartbeatInterval >= leaseDuration {
 		return nil, fmt.Errorf("%w: heartbeat must precede lease expiry", ErrAuthSessionUnavailable)
 	}
+	if deps.VerifiedCLIVersion != "" && deps.VerifiedCLIVersion != LarkCLIVersion {
+		return nil, fmt.Errorf("%w: CLI evidence rejected", ErrAuthSessionUnavailable)
+	}
 	return &AuthSessionService{
 		accounts: deps.Accounts, sessions: deps.Sessions, vault: deps.Vault, cli: deps.CLI,
 		dispatcher: deps.Dispatcher, now: now, newID: newID, newLeaseToken: newLeaseToken,
 		leaseDuration: leaseDuration, sessionDuration: sessionDuration,
-		heartbeatInterval: heartbeatInterval, startTimeout: startTimeout,
+		heartbeatInterval: heartbeatInterval, startTimeout: startTimeout, verifiedCLIVersion: deps.VerifiedCLIVersion,
 		urls: newAuthSessionURLRegistry(), activations: make(map[string]*authSessionActivation),
-		workers: make(map[authSessionURLKey]*authSessionWorker), retiredGeneration: make(map[uint]uint64),
+		workers: make(map[authSessionURLKey]*authSessionWorker), starts: make(map[authSessionURLKey]*authSessionStart),
+		retiredGeneration: make(map[uint]uint64),
 	}, nil
+}
+
+// beginWorkerStart registers the pre-worker handoff before any durable claim
+// or account write can race RetireGeneration. Its returned context is cancelled
+// by StopGenerationAndWait; callers must finish it after either registering a
+// worker (which Stop joins separately) or abandoning the start.
+func (s *AuthSessionService) beginWorkerStart(ctx context.Context, session *model.FeishuAuthSession) (context.Context, *authSessionStart, bool) {
+	if s == nil || session == nil || session.UserID == 0 || session.Generation == 0 {
+		return nil, nil, false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	key := authSessionRegistryKey(session)
+	startCtx, cancel := context.WithCancel(ctx)
+	start := &authSessionStart{cancel: cancel, done: make(chan struct{})}
+	s.workerMu.Lock()
+	defer s.workerMu.Unlock()
+	if s.retiredGeneration[session.UserID] >= session.Generation {
+		cancel()
+		return nil, nil, false
+	}
+	if _, exists := s.starts[key]; exists {
+		cancel()
+		return nil, nil, false
+	}
+	s.starts[key] = start
+	return startCtx, start, true
+}
+
+func (s *AuthSessionService) finishWorkerStart(session *model.FeishuAuthSession, start *authSessionStart) {
+	if s == nil || session == nil || start == nil {
+		return
+	}
+	key := authSessionRegistryKey(session)
+	s.workerMu.Lock()
+	if s.starts[key] == start {
+		delete(s.starts, key)
+	}
+	s.workerMu.Unlock()
+	start.finish()
 }
 
 func (s *AuthSessionService) registerWorker(session *model.FeishuAuthSession, worker *authSessionWorker) bool {
@@ -279,7 +353,11 @@ func (s *AuthSessionService) StopGenerationAndWait(ctx context.Context, userID u
 		sessionID string
 		worker    *authSessionWorker
 	}
+	type stoppedStart struct {
+		start *authSessionStart
+	}
 	workers := make([]stoppedWorker, 0)
+	starts := make([]stoppedStart, 0)
 	s.workerMu.Lock()
 	if generation > s.retiredGeneration[userID] {
 		s.retiredGeneration[userID] = generation
@@ -289,7 +367,15 @@ func (s *AuthSessionService) StopGenerationAndWait(ctx context.Context, userID u
 			workers = append(workers, stoppedWorker{sessionID: key.sessionID, worker: worker})
 		}
 	}
+	for key, start := range s.starts {
+		if key.userID == userID && key.generation == generation {
+			starts = append(starts, stoppedStart{start: start})
+		}
+	}
 	s.workerMu.Unlock()
+	for _, start := range starts {
+		start.start.cancel()
+	}
 	for _, worker := range workers {
 		s.Abort(worker.sessionID)
 		worker.worker.cancel()
@@ -301,6 +387,23 @@ func (s *AuthSessionService) StopGenerationAndWait(ctx context.Context, userID u
 			return ErrAuthSessionUnavailable
 		}
 	}
+	for _, start := range starts {
+		select {
+		case <-start.start.done:
+		case <-ctx.Done():
+			return ErrAuthSessionUnavailable
+		}
+	}
+	// Every possible local old-generation start was either observed above or
+	// rejected by retiredGeneration while holding workerMu. Once those starts
+	// and workers have joined, the durable account-generation fence prevents a
+	// later stale caller from claiming a session, so the per-user tombstone can
+	// be released instead of retaining an entry forever.
+	s.workerMu.Lock()
+	if s.retiredGeneration[userID] == generation {
+		delete(s.retiredGeneration, userID)
+	}
+	s.workerMu.Unlock()
 	return nil
 }
 
@@ -692,7 +795,7 @@ func (s *AuthSessionService) recoverExpired(
 		return nil, ErrAuthSessionUnavailable
 	}
 	if authorized {
-		if err := s.completeOwned(ctx, session, leaseToken, now, true, false); err != nil {
+		if err := s.completeOwned(ctx, session, leaseToken, now, true, false, ""); err != nil {
 			return nil, err
 		}
 		return nil, nil
@@ -710,6 +813,13 @@ func (s *AuthSessionService) claimAndStart(
 	argv []string,
 	scopes []string,
 ) (*OperationAction, error) {
+	workerParent := ctx
+	startCtx, start, accepted := s.beginWorkerStart(ctx, session)
+	if !accepted {
+		return nil, ErrAuthSessionUnavailable
+	}
+	defer s.finishWorkerStart(session, start)
+	ctx = startCtx
 	now := s.now().UTC()
 	leaseToken, err := s.leaseToken()
 	if err != nil {
@@ -744,7 +854,10 @@ func (s *AuthSessionService) claimAndStart(
 
 	urlReady := make(chan struct{}, 1)
 	done := make(chan error, 1)
-	workerContext, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	if workerParent == nil {
+		workerParent = context.Background()
+	}
+	workerContext, cancel := context.WithCancel(context.WithoutCancel(workerParent))
 	worker := &authSessionWorker{cancel: cancel, exited: make(chan struct{})}
 	if !s.registerWorker(session, worker) {
 		s.removeActivation(session.ID, activation)
@@ -865,6 +978,7 @@ func (s *AuthSessionService) runWorker(
 	go s.runHeartbeat(ctx, session, leaseToken, cancel, heartbeatDone)
 	var activationPassed atomic.Bool
 
+	appID := ""
 	runErr := s.vault.WithHome(ctx, session.UserID, session.Generation, func(home string) (bool, error) {
 		err := s.cli.RunBlocking(ctx, home, append([]string(nil), argv...), func(rawURL string) error {
 			if err := validateOfficialWorkerURL(rawURL, session.Phase); err != nil {
@@ -883,7 +997,21 @@ func (s *AuthSessionService) runWorker(
 			}
 			return nil
 		})
-		return err == nil, err
+		if err != nil {
+			return false, err
+		}
+		if session.Phase == model.FeishuAuthPhaseCreateApp {
+			evidence, ok := s.cli.(AuthSessionAppIDEvidence)
+			if !ok {
+				return false, ErrAuthSessionUnavailable
+			}
+			value, evidenceErr := evidence.AppIDFromHome(ctx, home)
+			if evidenceErr != nil || !validAuthSessionAppID(value) {
+				return false, ErrAuthSessionUnavailable
+			}
+			appID = value
+		}
+		return true, nil
 	})
 	if runErr == nil && activation != nil && !activationPassed.Load() {
 		runErr = ErrAuthSessionUnavailable
@@ -899,7 +1027,7 @@ func (s *AuthSessionService) runWorker(
 		s.urls.remove(authSessionRegistryKey(session))
 		return ErrAuthSessionUnavailable
 	}
-	if err := s.completeOwned(ctx, session, leaseToken, s.now().UTC(), false, session.OperationID != nil); err != nil {
+	if err := s.completeOwned(ctx, session, leaseToken, s.now().UTC(), false, session.OperationID != nil, appID); err != nil {
 		return err
 	}
 	return nil
@@ -939,6 +1067,7 @@ func (s *AuthSessionService) completeOwned(
 	now time.Time,
 	authorizedRecovery bool,
 	dispatch bool,
+	appID string,
 ) error {
 	completedAt := now.UTC()
 	state := model.FeishuConnectionConnected
@@ -950,6 +1079,7 @@ func (s *AuthSessionService) completeOwned(
 	finalizeCtx, finalizeCancel := authSessionDetachedContext(ctx)
 	err := s.sessions.FinalizeSessionCompleted(
 		finalizeCtx, session.UserID, session.Generation, session.ID, leaseToken, state, connected, completedAt,
+		model.FeishuConnectionEvidence{AppID: appID, CLIVersion: s.verifiedCLIVersion},
 	)
 	finalizeCancel()
 	if err != nil {
@@ -1054,7 +1184,20 @@ func (s *AuthSessionService) CompleteAppApproval(
 	if err != nil || !claimed {
 		return ErrAuthSessionUnavailable
 	}
-	return s.completeOwned(ctx, session, leaseToken, now, true, true)
+	return s.completeOwned(ctx, session, leaseToken, now, true, true, "")
+}
+
+func validAuthSessionAppID(appID string) bool {
+	if appID == "" || len(appID) > 64 || strings.TrimSpace(appID) != appID {
+		return false
+	}
+	for _, char := range appID {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '_' || char == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 type authSessionStreamState struct {
@@ -1359,8 +1502,27 @@ func (r *ControlledLarkCLIRunner) AuthStatus(ctx context.Context, home string) (
 	return status.Identities != nil && status.Identities.User != nil && status.Identities.User.Available, nil
 }
 
+// AppIDFromHome reads only the non-secret appId from the already-isolated HOME
+// after a successful official config-init flow. readAppFromConfig also checks
+// that lark-cli wrote a complete app record, but its appSecret result is
+// deliberately discarded and never persisted or logged here.
+func (r *ControlledLarkCLIRunner) AppIDFromHome(ctx context.Context, home string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := validateControlledCLIHome(home); err != nil {
+		return "", err
+	}
+	appID, _, err := readAppFromConfig(home)
+	if err != nil || !validAuthSessionAppID(appID) {
+		return "", errControlledCLIInvalidJSON
+	}
+	return appID, nil
+}
+
 var (
-	_ RecoveryStarter  = (*AuthSessionService)(nil)
-	_ AuthSessionStore = (store.IFeishuWorkspaceStore)(nil)
-	_ AuthSessionCLI   = (*ControlledLarkCLIRunner)(nil)
+	_ RecoveryStarter          = (*AuthSessionService)(nil)
+	_ AuthSessionStore         = (store.IFeishuWorkspaceStore)(nil)
+	_ AuthSessionCLI           = (*ControlledLarkCLIRunner)(nil)
+	_ AuthSessionAppIDEvidence = (*ControlledLarkCLIRunner)(nil)
 )

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -34,19 +35,23 @@ type IFeishuWorkspaceStore interface {
 	ClaimSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
 	RenewSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
 	UpdateSessionState(ctx context.Context, userID uint, generation uint64, id, owner, state string, now time.Time, completedAt *time.Time) error
-	FinalizeSessionCompleted(ctx context.Context, userID uint, generation uint64, id, owner, accountState string, connected bool, now time.Time) error
+	FinalizeSessionCompleted(ctx context.Context, userID uint, generation uint64, id, owner, accountState string, connected bool, now time.Time, evidence model.FeishuConnectionEvidence) error
 	UpdateAccountConnectionState(ctx context.Context, userID uint, generation uint64, state string, connected bool, now time.Time) error
+	RecordCapabilityOutcome(ctx context.Context, userID uint, generation uint64, outcome model.FeishuCapabilityOutcome) error
 	CreateOrGetOperation(ctx context.Context, operation *model.FeishuOperation) (*model.FeishuOperation, error)
 	CreateOrGetOperationWithProof(ctx context.Context, operation *model.FeishuOperation, sourceOperationID string) (*model.FeishuOperation, error)
 	TryClaimExecutionGate(ctx context.Context, userID uint, generation uint64, owner, operationID string, now, leaseUntil time.Time) (bool, error)
 	RenewExecutionGate(ctx context.Context, userID uint, generation uint64, owner, operationID string, now, leaseUntil time.Time) (bool, error)
 	ReleaseExecutionGate(ctx context.Context, userID uint, generation uint64, owner string, now time.Time) (bool, error)
 	RetiredExecutionGateDrained(ctx context.Context, userID uint, retiredGeneration uint64, now time.Time) (bool, error)
+	ClaimRetiredTeardown(ctx context.Context, userID uint, retiredGeneration, disconnectingGeneration uint64, owner string, now, leaseUntil time.Time) (bool, error)
+	ReleaseRetiredTeardown(ctx context.Context, userID uint, retiredGeneration uint64, owner string, now time.Time) error
 	ListSucceededCreatesForRun(ctx context.Context, userID uint, generation uint64, agentRunID uint64) ([]model.FeishuOperation, error)
 	IsOperationProofUsable(ctx context.Context, userID uint, generation uint64, agentRunID uint64, sourceOperationID, consumerOperationID string) (bool, error)
 	GetOperationForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuOperation, error)
 	ClaimOperation(ctx context.Context, userID uint, generation uint64, id, owner string, expectedStates []string, now, leaseUntil time.Time) (bool, error)
 	TransitionOperation(ctx context.Context, userID uint, generation uint64, id, owner string, from []string, to string, now time.Time, fields map[string]any) error
+	TransitionOperationWithCapabilityOutcome(ctx context.Context, userID uint, generation uint64, id, owner string, from []string, to string, now time.Time, fields map[string]any, outcome model.FeishuCapabilityOutcome) error
 	CancelPendingForGeneration(ctx context.Context, userID uint, generation uint64) error
 }
 
@@ -443,6 +448,7 @@ func (s *feishuWorkspaceStore) FinalizeSessionCompleted(
 	accountState string,
 	connected bool,
 	now time.Time,
+	evidence model.FeishuConnectionEvidence,
 ) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var account model.UserThirdPartyAccount
@@ -469,13 +475,20 @@ func (s *feishuWorkspaceStore) FinalizeSessionCompleted(
 			value := now.UTC()
 			connectedAt = &value
 		}
+		accountUpdates := map[string]any{
+			"connection_state": accountState,
+			"connected":        connected,
+			"connected_at":     connectedAt,
+		}
+		if validFeishuAppIDEvidence(evidence.AppID) {
+			accountUpdates["app_id"] = evidence.AppID
+		}
+		if validFeishuCLIVersionEvidence(evidence.CLIVersion) {
+			accountUpdates["lark_cli_version"] = evidence.CLIVersion
+		}
 		accountResult := tx.Model(&model.UserThirdPartyAccount{}).
 			Where("user_id = ? AND provider = ? AND generation = ?", userID, "lark", generation).
-			Updates(map[string]any{
-				"connection_state": accountState,
-				"connected":        connected,
-				"connected_at":     connectedAt,
-			})
+			Updates(accountUpdates)
 		if accountResult.Error != nil {
 			return fmt.Errorf("finalize feishu account connection: %w", accountResult.Error)
 		}
@@ -499,6 +512,130 @@ func (s *feishuWorkspaceStore) FinalizeSessionCompleted(
 		}
 		return nil
 	})
+}
+
+// RecordCapabilityOutcome persists only catalog-derived, classified outcome
+// metadata for the active generation. It never receives scopes, identifiers,
+// raw CLI data, or credentials. The account row lock prevents concurrent Docs,
+// Base, and Wiki commands from dropping each other's last-known state.
+func (s *feishuWorkspaceStore) RecordCapabilityOutcome(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	outcome model.FeishuCapabilityOutcome,
+) error {
+	if !validFeishuCapabilityOutcome(outcome) {
+		return gorm.ErrRecordNotFound
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var account model.UserThirdPartyAccount
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ? AND provider = ? AND generation = ? AND connection_state <> ?", userID, "lark", generation, model.FeishuConnectionDisconnecting).
+			Take(&account).Error; err != nil {
+			return err
+		}
+
+		return recordFeishuCapabilityOutcome(tx, &account, outcome)
+	})
+}
+
+func recordFeishuCapabilityOutcome(tx *gorm.DB, account *model.UserThirdPartyAccount, outcome model.FeishuCapabilityOutcome) error {
+	if tx == nil || account == nil || !validFeishuCapabilityOutcome(outcome) {
+		return gorm.ErrRecordNotFound
+	}
+	states := decodeFeishuCapabilityStates(account.CapabilityStateJSON)
+	states[outcome.Domain] = feishuStoredCapabilityState{State: outcome.State}
+	if outcome.SucceededAt != nil {
+		at := outcome.SucceededAt.UTC()
+		states[outcome.Domain] = feishuStoredCapabilityState{State: outcome.State, LastSuccessAt: &at}
+	}
+	encoded, err := json.Marshal(states)
+	if err != nil {
+		return fmt.Errorf("encode feishu capability outcome: %w", err)
+	}
+	updates := map[string]any{"capability_state_json": encoded}
+	if outcome.SucceededAt != nil {
+		at := outcome.SucceededAt.UTC()
+		updates["last_success_at"] = &at
+	}
+	if outcome.CLIVersion != "" {
+		updates["lark_cli_version"] = outcome.CLIVersion
+	}
+	result := tx.Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ? AND generation = ? AND connection_state <> ?", account.UserID, "lark", account.Generation, model.FeishuConnectionDisconnecting).
+		Updates(updates)
+	if result.Error != nil {
+		return fmt.Errorf("record feishu capability outcome: %w", result.Error)
+	}
+	if result.RowsAffected != 1 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+type feishuStoredCapabilityState struct {
+	State         string     `json:"state"`
+	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
+}
+
+func decodeFeishuCapabilityStates(raw []byte) map[string]feishuStoredCapabilityState {
+	decoded := make(map[string]feishuStoredCapabilityState)
+	if len(raw) > 0 && json.Unmarshal(raw, &decoded) != nil {
+		decoded = make(map[string]feishuStoredCapabilityState)
+	}
+	clean := make(map[string]feishuStoredCapabilityState, 3)
+	for _, domain := range []string{"docs", "base", "wiki"} {
+		state, found := decoded[domain]
+		if !found || !validFeishuCapabilityState(state.State) {
+			continue
+		}
+		if state.LastSuccessAt != nil {
+			at := state.LastSuccessAt.UTC()
+			state.LastSuccessAt = &at
+		}
+		clean[domain] = state
+	}
+	return clean
+}
+
+func validFeishuCapabilityDomain(domain string) bool {
+	return domain == "docs" || domain == "base" || domain == "wiki"
+}
+
+func validFeishuCapabilityState(state string) bool {
+	switch state {
+	case model.FeishuCapabilityAvailable, model.FeishuCapabilityNeedsAppScope, model.FeishuCapabilityNeedsUserScope,
+		model.FeishuCapabilityRevoked, model.FeishuCapabilityResourceDenied:
+		return true
+	default:
+		return false
+	}
+}
+
+func validFeishuCapabilityOutcome(outcome model.FeishuCapabilityOutcome) bool {
+	return validFeishuCapabilityDomain(outcome.Domain) && validFeishuCapabilityState(outcome.State) &&
+		(outcome.SucceededAt == nil || outcome.State == model.FeishuCapabilityAvailable) &&
+		(outcome.CLIVersion == "" || validFeishuCLIVersionEvidence(outcome.CLIVersion))
+}
+
+func validFeishuAppIDEvidence(appID string) bool {
+	if appID == "" {
+		return false
+	}
+	if len(appID) > 64 || strings.TrimSpace(appID) != appID {
+		return false
+	}
+	for _, char := range appID {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '_' || char == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validFeishuCLIVersionEvidence(version string) bool {
+	return version == "1.0.68"
 }
 
 // UpdateAccountConnectionState changes only the active tenant generation. It
@@ -902,6 +1039,58 @@ func (s *feishuWorkspaceStore) RetiredExecutionGateDrained(
 	return drained, nil
 }
 
+// ClaimRetiredTeardown reuses the account-wide execution-gate row as the
+// durable single-owner lease for destructive retired-HOME cleanup. It is called
+// only after RetiredExecutionGateDrained, so it cannot overlap a business CLI.
+func (s *feishuWorkspaceStore) ClaimRetiredTeardown(ctx context.Context, userID uint, retiredGeneration, disconnectingGeneration uint64, owner string, now, leaseUntil time.Time) (bool, error) {
+	if userID == 0 || retiredGeneration == 0 || disconnectingGeneration != retiredGeneration+1 || owner == "" || !leaseUntil.After(now) {
+		return false, nil
+	}
+	claimed := false
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var account model.UserThirdPartyAccount
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("user_id = ? AND provider = ?", userID, "lark").Take(&account).Error; err != nil {
+			return err
+		}
+		if account.Generation != disconnectingGeneration || account.ConnectionState != model.FeishuConnectionDisconnecting {
+			return nil
+		}
+		var gate model.FeishuOperationExecutionGate
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("user_id = ?", userID).Take(&gate).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			if err := tx.Create(&model.FeishuOperationExecutionGate{UserID: userID, Generation: retiredGeneration, LeaseOwner: owner, OperationID: "retired-teardown", LeaseUntil: &leaseUntil, UpdatedAt: now}).Error; err != nil {
+				return err
+			}
+			claimed = true
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if gate.LeaseOwner != "" && gate.LeaseUntil != nil && gate.LeaseUntil.After(now) {
+			return nil
+		}
+		if err := tx.Model(&model.FeishuOperationExecutionGate{}).Where("user_id = ?", userID).Updates(map[string]any{"generation": retiredGeneration, "lease_owner": owner, "operation_id": "retired-teardown", "lease_until": leaseUntil, "updated_at": now}).Error; err != nil {
+			return err
+		}
+		claimed = true
+		return nil
+	})
+	return claimed, err
+}
+
+// ReleaseRetiredTeardown releases only the exact durable teardown owner.
+func (s *feishuWorkspaceStore) ReleaseRetiredTeardown(ctx context.Context, userID uint, retiredGeneration uint64, owner string, now time.Time) error {
+	if userID == 0 || retiredGeneration == 0 || owner == "" {
+		return gorm.ErrRecordNotFound
+	}
+	result := s.db.WithContext(ctx).Model(&model.FeishuOperationExecutionGate{}).Where("user_id = ? AND generation = ? AND lease_owner = ? AND operation_id = ?", userID, retiredGeneration, owner, "retired-teardown").Updates(map[string]any{"lease_owner": "", "operation_id": "", "lease_until": nil, "updated_at": now})
+	if result.Error != nil {
+		return result.Error
+	}
+	return nil
+}
+
 // ListSucceededCreatesForRun returns a small, deterministic proof-candidate
 // set. Callers must still authenticate and inspect each encrypted request and
 // result; this query alone never proves that an overwrite is safe.
@@ -1057,6 +1246,42 @@ func (s *feishuWorkspaceStore) ClaimOperation(ctx context.Context, userID uint, 
 
 // TransitionOperation performs a lease-owner and source-state conditional update.
 func (s *feishuWorkspaceStore) TransitionOperation(ctx context.Context, userID uint, generation uint64, id, owner string, from []string, to string, now time.Time, fields map[string]any) error {
+	return transitionFeishuOperation(s.db.WithContext(ctx), userID, generation, id, owner, from, to, now, fields)
+}
+
+// TransitionOperationWithCapabilityOutcome commits the operation transition and
+// its status-cache evidence together. The account row is locked before the
+// operation row, matching create/retire lock order and preventing a success
+// result from becoming durable while its Status metadata is lost.
+func (s *feishuWorkspaceStore) TransitionOperationWithCapabilityOutcome(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	id, owner string,
+	from []string,
+	to string,
+	now time.Time,
+	fields map[string]any,
+	outcome model.FeishuCapabilityOutcome,
+) error {
+	if !validFeishuCapabilityOutcome(outcome) {
+		return gorm.ErrRecordNotFound
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var account model.UserThirdPartyAccount
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ? AND provider = ? AND generation = ? AND connection_state <> ?", userID, "lark", generation, model.FeishuConnectionDisconnecting).
+			Take(&account).Error; err != nil {
+			return err
+		}
+		if err := transitionFeishuOperation(tx, userID, generation, id, owner, from, to, now, fields); err != nil {
+			return err
+		}
+		return recordFeishuCapabilityOutcome(tx, &account, outcome)
+	})
+}
+
+func transitionFeishuOperation(db *gorm.DB, userID uint, generation uint64, id, owner string, from []string, to string, now time.Time, fields map[string]any) error {
 	allowedFields := map[string]struct{}{
 		"attempt_count":       {},
 		"started_at":          {},
@@ -1080,14 +1305,14 @@ func (s *feishuWorkspaceStore) TransitionOperation(ctx context.Context, userID u
 		updates["lease_until"] = nil
 	}
 
-	activeGeneration := s.db.WithContext(ctx).
+	activeGeneration := db.
 		Model(&model.UserThirdPartyAccount{}).
 		Select("1").
 		Where("user_third_party_account.user_id = feishu_operation.user_id").
 		Where("user_third_party_account.provider = ?", "lark").
 		Where("user_third_party_account.generation = feishu_operation.generation").
 		Where("user_third_party_account.connection_state <> ?", model.FeishuConnectionDisconnecting)
-	result := s.db.WithContext(ctx).
+	result := db.
 		Model(&model.FeishuOperation{}).
 		Where("id = ? AND user_id = ? AND generation = ?", id, userID, generation).
 		Where("lease_owner = ? AND lease_until > ?", owner, now).

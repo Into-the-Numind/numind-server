@@ -168,15 +168,16 @@ func buildFeishuService(deps feishuCompositionDeps) (*feishuPersonalWorkspace, e
 		receiptVerifier = deps.receiptVerifier
 	}
 	operationService, err := feishu.NewFeishuOperationService(feishu.OperationServiceDeps{
-		Accounts:     deps.dataStore.ThirdPartyAccounts(),
-		Operations:   deps.dataStore.FeishuWorkspace(),
-		Catalog:      catalog,
-		Receipts:     receiptVerifier,
-		Recovery:     recovery,
-		Confirmation: confirmation,
-		Vault:        vault,
-		Runner:       runner,
-		Cipher:       operationCipher,
+		Accounts:           deps.dataStore.ThirdPartyAccounts(),
+		Operations:         deps.dataStore.FeishuWorkspace(),
+		Catalog:            catalog,
+		Receipts:           receiptVerifier,
+		Recovery:           recovery,
+		Confirmation:       confirmation,
+		Vault:              vault,
+		Runner:             runner,
+		Cipher:             operationCipher,
+		VerifiedCLIVersion: feishu.LarkCLIVersion,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("feishu: build operation service: %w", err)
@@ -184,12 +185,13 @@ func buildFeishuService(deps feishuCompositionDeps) (*feishuPersonalWorkspace, e
 	resumer := agent.NewAgentRunResumer(deps.resumeStore, deps.studentRuns, deps.supervisor)
 	dispatcher := NewWorkspaceResumeDispatcher(operationService, resumer)
 	authService, err = feishu.NewAuthSessionService(feishu.AuthSessionServiceDeps{
-		Accounts:   deps.dataStore.ThirdPartyAccounts(),
-		Sessions:   deps.dataStore.FeishuWorkspace(),
-		Vault:      vault,
-		CLI:        runner,
-		Dispatcher: dispatcher,
-		Owner:      deps.authOwner,
+		Accounts:           deps.dataStore.ThirdPartyAccounts(),
+		Sessions:           deps.dataStore.FeishuWorkspace(),
+		Vault:              vault,
+		CLI:                runner,
+		Dispatcher:         dispatcher,
+		Owner:              deps.authOwner,
+		VerifiedCLIVersion: feishu.LarkCLIVersion,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("feishu: build authorization service: %w", err)

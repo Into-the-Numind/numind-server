@@ -18,6 +18,27 @@ const (
 	FeishuConnectionDisconnecting      = "disconnecting"
 )
 
+// FeishuCapabilityOutcome is the strictly-derived, non-secret account metadata
+// observed from one fixed catalog operation. It intentionally carries neither
+// requested scopes nor raw CLI output; the status surface stores only the
+// supported domain, its classified state, a true success time, and verified
+// lark-cli release evidence.
+type FeishuCapabilityOutcome struct {
+	Domain      string
+	State       string
+	SucceededAt *time.Time
+	CLIVersion  string
+}
+
+// FeishuConnectionEvidence is metadata proven by a controlled authorization
+// flow. AppID is populated only from the local lark-cli configuration created
+// by the official app flow; CLIVersion is populated only after the fixed binary
+// probe succeeded during composition.
+type FeishuConnectionEvidence struct {
+	AppID      string
+	CLIVersion string
+}
+
 const (
 	FeishuCapabilityUnknown        = "unknown"
 	FeishuCapabilityAvailable      = "available"

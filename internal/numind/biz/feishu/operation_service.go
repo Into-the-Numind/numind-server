@@ -98,6 +98,7 @@ type OperationStore interface {
 	GetOperationForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuOperation, error)
 	ClaimOperation(ctx context.Context, userID uint, generation uint64, id, owner string, expectedStates []string, now, leaseUntil time.Time) (bool, error)
 	TransitionOperation(ctx context.Context, userID uint, generation uint64, id, owner string, from []string, to string, now time.Time, fields map[string]any) error
+	TransitionOperationWithCapabilityOutcome(ctx context.Context, userID uint, generation uint64, id, owner string, from []string, to string, now time.Time, fields map[string]any, outcome model.FeishuCapabilityOutcome) error
 }
 
 // OperationHomeVault materializes and generation-fences one temporary CLI HOME.
@@ -309,6 +310,10 @@ type OperationServiceDeps struct {
 	Now                            func() time.Time
 	LeaseDuration                  time.Duration
 	ExecutionGateHeartbeatInterval time.Duration
+	// VerifiedCLIVersion is set by the one composition root only after the
+	// controlled --version probe succeeded. Empty preserves metadata omission
+	// for isolated tests; any other release is rejected.
+	VerifiedCLIVersion string
 }
 
 // FeishuOperationService executes idempotent, encrypted personal-workspace
@@ -327,6 +332,7 @@ type FeishuOperationService struct {
 	now                            func() time.Time
 	leaseDuration                  time.Duration
 	executionGateHeartbeatInterval time.Duration
+	verifiedCLIVersion             string
 	executions                     *executionRegistry
 }
 
@@ -367,6 +373,23 @@ func (r *executionRegistration) finish() {
 	r.doneOnce.Do(func() { close(r.done) })
 }
 
+// executionStart covers the pre-registration interval from durable execution
+// gate acquisition through local guard registration. Retire joins it in
+// addition to active callbacks so retired tombstones can be reclaimed without
+// reopening a paused old-generation invocation.
+type executionStart struct {
+	cancel   context.CancelFunc
+	done     chan struct{}
+	doneOnce sync.Once
+}
+
+func (s *executionStart) finish() {
+	if s == nil {
+		return
+	}
+	s.doneOnce.Do(func() { close(s.done) })
+}
+
 // executionRegistry is a process-local lifecycle bridge. Durable operation
 // leases remain the cross-instance source of truth; this registry adds the
 // missing guarantee that this process has cancelled and joined every callback
@@ -375,14 +398,54 @@ func (r *executionRegistration) finish() {
 type executionRegistry struct {
 	mu      sync.Mutex
 	active  map[executionKey]*executionRegistration
+	starts  map[executionKey]*executionStart
 	retired map[uint]uint64
 }
 
 func newExecutionRegistry() *executionRegistry {
 	return &executionRegistry{
 		active:  make(map[executionKey]*executionRegistration),
+		starts:  make(map[executionKey]*executionStart),
 		retired: make(map[uint]uint64),
 	}
+}
+
+// begin registers an execution before it attempts the durable CLI gate. Stop
+// can cancel and join this handoff even when a goroutine has claimed the
+// durable gate but has not yet registered its local guard.
+func (r *executionRegistry) begin(ctx context.Context, key executionKey) (context.Context, *executionStart, error) {
+	if r == nil || key.userID == 0 || key.generation == 0 || key.operationID == "" {
+		return nil, nil, ErrOperationUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	startCtx, cancel := context.WithCancel(ctx)
+	start := &executionStart{cancel: cancel, done: make(chan struct{})}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.retired[key.userID] >= key.generation {
+		cancel()
+		return nil, nil, ErrOperationUnavailable
+	}
+	if _, exists := r.starts[key]; exists {
+		cancel()
+		return nil, nil, ErrOperationUnavailable
+	}
+	r.starts[key] = start
+	return startCtx, start, nil
+}
+
+func (r *executionRegistry) finishStart(key executionKey, start *executionStart) {
+	if r == nil || start == nil {
+		return
+	}
+	r.mu.Lock()
+	if r.starts[key] == start {
+		delete(r.starts, key)
+	}
+	r.mu.Unlock()
+	start.finish()
 }
 
 func (r *executionRegistry) register(key executionKey, cancel context.CancelFunc) (*executionRegistration, error) {
@@ -430,13 +493,22 @@ func (r *executionRegistry) stopGenerationAndWait(ctx context.Context, userID ui
 		r.retired[userID] = generation
 	}
 	registrations := make([]*executionRegistration, 0)
+	starts := make([]*executionStart, 0)
 	for key, registration := range r.active {
 		if key.userID == userID && key.generation == generation {
 			registrations = append(registrations, registration)
 		}
 	}
+	for key, start := range r.starts {
+		if key.userID == userID && key.generation == generation {
+			starts = append(starts, start)
+		}
+	}
 	r.mu.Unlock()
 
+	for _, start := range starts {
+		start.cancel()
+	}
 	for _, registration := range registrations {
 		registration.cancel()
 	}
@@ -447,6 +519,22 @@ func (r *executionRegistry) stopGenerationAndWait(ctx context.Context, userID ui
 			return ErrOperationUnavailable
 		}
 	}
+	for _, start := range starts {
+		select {
+		case <-start.done:
+		case <-ctx.Done():
+			return ErrOperationUnavailable
+		}
+	}
+	// All locally-started old-generation work is now joined. Any future stale
+	// caller must first pass the durable account-generation predicate in the
+	// execution-gate store, so retaining this per-user tombstone forever adds
+	// memory without adding safety.
+	r.mu.Lock()
+	if r.retired[userID] == generation {
+		delete(r.retired, userID)
+	}
+	r.mu.Unlock()
 	return nil
 }
 
@@ -455,6 +543,9 @@ func NewFeishuOperationService(deps OperationServiceDeps) (*FeishuOperationServi
 	if deps.Accounts == nil || deps.Operations == nil || deps.Catalog == nil || deps.Receipts == nil ||
 		deps.Recovery == nil || deps.Confirmation == nil || deps.Vault == nil || deps.Runner == nil || deps.Cipher == nil {
 		return nil, errors.New("feishu operation service dependencies rejected")
+	}
+	if deps.VerifiedCLIVersion != "" && deps.VerifiedCLIVersion != LarkCLIVersion {
+		return nil, errors.New("feishu operation service CLI evidence rejected")
 	}
 	now := deps.Now
 	if now == nil {
@@ -477,6 +568,7 @@ func NewFeishuOperationService(deps OperationServiceDeps) (*FeishuOperationServi
 		vault: deps.Vault, runner: deps.Runner, cipher: deps.Cipher,
 		classifier: NewErrorClassifier(), now: now, leaseDuration: leaseDuration,
 		executionGateHeartbeatInterval: heartbeatInterval,
+		verifiedCLIVersion:             deps.VerifiedCLIVersion,
 		executions:                     newExecutionRegistry(),
 	}, nil
 }
@@ -491,6 +583,14 @@ func (s *FeishuOperationService) startExecutionGateGuard(
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	// This is deliberately repeated at the local-registration boundary. The
+	// normal caller has already passed the durable execution gate, but a
+	// generation can retire between that claim and guard registration. It also
+	// makes this private primitive fail closed if reused by a future caller.
+	account, err := s.accounts.Get(ctx, operation.UserID, ProviderLark)
+	if err != nil || !validOperationAccount(account, operation.UserID) || account.Generation != operation.Generation {
+		return nil, ErrOperationUnavailable
 	}
 	executionCtx, cancel := context.WithCancel(ctx)
 	guard := &executionGateGuard{
@@ -508,6 +608,24 @@ func (s *FeishuOperationService) startExecutionGateGuard(
 	guard.registration = registration
 	go guard.heartbeat()
 	return guard, nil
+}
+
+// beginExecutionStart keeps the local handoff visible to lifecycle teardown
+// before the durable CLI gate is claimed. The returned release must cover both
+// gate acquisition and the eventual guarded invocation.
+func (s *FeishuOperationService) beginExecutionStart(
+	ctx context.Context,
+	operation *model.FeishuOperation,
+) (context.Context, func(), error) {
+	if s == nil || s.executions == nil || operation == nil {
+		return nil, nil, ErrOperationUnavailable
+	}
+	key := executionKey{userID: operation.UserID, generation: operation.Generation, operationID: operation.ID}
+	startCtx, start, err := s.executions.begin(ctx, key)
+	if err != nil {
+		return nil, nil, ErrOperationUnavailable
+	}
+	return startCtx, func() { s.executions.finishStart(key, start) }, nil
 }
 
 func (g *executionGateGuard) heartbeat() {
@@ -856,12 +974,17 @@ func (s *FeishuOperationService) reclaimExpiredExecution(
 	gateHeld := false
 	var gateGuard *executionGateGuard
 	if account.ConnectionState == model.FeishuConnectionConnected && persisted.Risk == RiskRead {
-		if err := s.waitForExecutionGate(ctx, operation, owner); err != nil {
+		executionCtx, finishStart, startErr := s.beginExecutionStart(ctx, operation)
+		if startErr != nil {
+			return nil, startErr
+		}
+		defer finishStart()
+		if err := s.waitForExecutionGate(executionCtx, operation, owner); err != nil {
 			return nil, err
 		}
 		gateHeld = true
 		var guardErr error
-		gateGuard, guardErr = s.startExecutionGateGuard(ctx, operation, owner)
+		gateGuard, guardErr = s.startExecutionGateGuard(executionCtx, operation, owner)
 		if guardErr != nil {
 			s.releaseExecutionGateDetached(ctx, operation, owner)
 			return nil, guardErr
@@ -874,7 +997,7 @@ func (s *FeishuOperationService) reclaimExpiredExecution(
 				s.releaseExecutionGateDetached(ctx, operation, owner)
 			}
 		}()
-		currentAccount, err := s.accounts.Get(ctx, operation.UserID, ProviderLark)
+		currentAccount, err := s.accounts.Get(executionCtx, operation.UserID, ProviderLark)
 		if err != nil || !validOperationAccount(currentAccount, operation.UserID) || currentAccount.Generation != operation.Generation {
 			return nil, ErrOperationUnavailable
 		}
@@ -963,12 +1086,17 @@ func (s *FeishuOperationService) claimAndExecute(
 	// waiting for a human. Once confirmed, however, their real invocation must
 	// acquire the same account-wide gate as every other CLI write.
 	if operationRequiresExecutionGate(account, persisted) || confirmed {
-		if err := s.waitForExecutionGate(ctx, operation, owner); err != nil {
+		executionCtx, finishStart, startErr := s.beginExecutionStart(ctx, operation)
+		if startErr != nil {
+			return nil, startErr
+		}
+		defer finishStart()
+		if err := s.waitForExecutionGate(executionCtx, operation, owner); err != nil {
 			return nil, err
 		}
 		gateHeld = true
 		var guardErr error
-		gateGuard, guardErr = s.startExecutionGateGuard(ctx, operation, owner)
+		gateGuard, guardErr = s.startExecutionGateGuard(executionCtx, operation, owner)
 		if guardErr != nil {
 			s.releaseExecutionGateDetached(ctx, operation, owner)
 			return nil, guardErr
@@ -981,7 +1109,7 @@ func (s *FeishuOperationService) claimAndExecute(
 				s.releaseExecutionGateDetached(ctx, operation, owner)
 			}
 		}()
-		currentAccount, err := s.accounts.Get(ctx, operation.UserID, ProviderLark)
+		currentAccount, err := s.accounts.Get(executionCtx, operation.UserID, ProviderLark)
 		if err != nil || !validOperationAccount(currentAccount, operation.UserID) || currentAccount.Generation != operation.Generation {
 			return nil, ErrOperationUnavailable
 		}
@@ -1351,8 +1479,16 @@ func (s *FeishuOperationService) transitionWaiting(
 	}
 	finalizeCtx, cancel := operationFinalizeContext(ctx)
 	defer cancel()
-	if err := s.operations.TransitionOperation(finalizeCtx, operation.UserID, operation.Generation, operation.ID,
-		leaseOwner, []string{model.FeishuOperationExecuting}, waitingState, now, fields); err != nil {
+	outcome := s.capabilityOutcome(operation, waitingState, publicCode, nil)
+	var transitionErr error
+	if outcome != nil {
+		transitionErr = s.operations.TransitionOperationWithCapabilityOutcome(finalizeCtx, operation.UserID, operation.Generation, operation.ID,
+			leaseOwner, []string{model.FeishuOperationExecuting}, waitingState, now, fields, *outcome)
+	} else {
+		transitionErr = s.operations.TransitionOperation(finalizeCtx, operation.UserID, operation.Generation, operation.ID,
+			leaseOwner, []string{model.FeishuOperationExecuting}, waitingState, now, fields)
+	}
+	if transitionErr != nil {
 		return ErrOperationUnavailable
 	}
 	operation.State = waitingState
@@ -1398,8 +1534,15 @@ func (s *FeishuOperationService) commitTerminal(
 	fields["result_summary_json"] = datatypes.JSON(summaryJSON)
 	finalizeCtx, cancel := operationFinalizeContext(ctx)
 	defer cancel()
-	transitionErr := s.operations.TransitionOperation(finalizeCtx, operation.UserID, operation.Generation, operation.ID,
-		leaseOwner, []string{model.FeishuOperationExecuting}, state, now, fields)
+	outcome := s.capabilityOutcome(operation, state, summary.PublicCode, operationSuccessTime(state, now))
+	var transitionErr error
+	if outcome != nil {
+		transitionErr = s.operations.TransitionOperationWithCapabilityOutcome(finalizeCtx, operation.UserID, operation.Generation, operation.ID,
+			leaseOwner, []string{model.FeishuOperationExecuting}, state, now, fields, *outcome)
+	} else {
+		transitionErr = s.operations.TransitionOperation(finalizeCtx, operation.UserID, operation.Generation, operation.ID,
+			leaseOwner, []string{model.FeishuOperationExecuting}, state, now, fields)
+	}
 	if transitionErr != nil {
 		if invocationStarted && writeLikeRisk(RiskLevel(operation.RiskLevel)) {
 			result := baseOperationResult(operation)
@@ -1415,6 +1558,52 @@ func (s *FeishuOperationService) commitTerminal(
 		operation.ResultCiphertext = append([]byte(nil), ciphertext...)
 	}
 	return s.resultFromOperation(operation)
+}
+
+func operationSuccessTime(state string, now time.Time) *time.Time {
+	if state != model.FeishuOperationSucceeded {
+		return nil
+	}
+	at := now.UTC()
+	return &at
+}
+
+// capabilityOutcome maps only fixed catalog domain and classifier-derived
+// states to the status cache. Unknown, transport, and generic failures do not
+// fabricate a capability conclusion.
+func (s *FeishuOperationService) capabilityOutcome(
+	operation *model.FeishuOperation,
+	operationState string,
+	publicCode string,
+	succeededAt *time.Time,
+) *model.FeishuCapabilityOutcome {
+	if s == nil || operation == nil || !supportedCapabilityDomain(operation.Domain) {
+		return nil
+	}
+	state := ""
+	switch {
+	case operationState == model.FeishuOperationSucceeded:
+		state = model.FeishuCapabilityAvailable
+	case operationState == model.FeishuOperationWaitingAppScope:
+		state = model.FeishuCapabilityNeedsAppScope
+	case operationState == model.FeishuOperationWaitingUserAuth:
+		state = model.FeishuCapabilityNeedsUserScope
+	case operationState == model.FeishuOperationFailed && publicCode == PublicCodeResourceDenied:
+		state = model.FeishuCapabilityResourceDenied
+	default:
+		return nil
+	}
+	outcome := &model.FeishuCapabilityOutcome{Domain: operation.Domain, State: state}
+	if state == model.FeishuCapabilityAvailable && succeededAt != nil {
+		at := succeededAt.UTC()
+		outcome.SucceededAt = &at
+		outcome.CLIVersion = s.verifiedCLIVersion
+	}
+	return outcome
+}
+
+func supportedCapabilityDomain(domain string) bool {
+	return domain == "docs" || domain == "base" || domain == "wiki"
 }
 
 func operationFinalizeContext(ctx context.Context) (context.Context, context.CancelFunc) {

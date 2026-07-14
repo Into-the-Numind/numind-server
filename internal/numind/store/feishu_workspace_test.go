@@ -971,7 +971,7 @@ func TestFeishuWorkspaceStore_FinalizeSessionCompletedAtomicallyFencesAccountAnd
 	require.NoError(t, err)
 	require.True(t, claimed)
 
-	err = s.FinalizeSessionCompleted(ctx, 7, 3, "session-finalize", "stale-token", model.FeishuConnectionConnected, true, now.Add(time.Second))
+	err = s.FinalizeSessionCompleted(ctx, 7, 3, "session-finalize", "stale-token", model.FeishuConnectionConnected, true, now.Add(time.Second), model.FeishuConnectionEvidence{})
 	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
 	pending, err := s.GetSessionForUser(ctx, 7, 3, "session-finalize")
 	require.NoError(t, err)
@@ -983,6 +983,7 @@ func TestFeishuWorkspaceStore_FinalizeSessionCompletedAtomicallyFencesAccountAnd
 	completedAt := now.Add(2 * time.Second)
 	require.NoError(t, s.FinalizeSessionCompleted(
 		ctx, 7, 3, "session-finalize", "token-finalize", model.FeishuConnectionConnected, true, completedAt,
+		model.FeishuConnectionEvidence{},
 	))
 	completed, err := s.GetSessionForUser(ctx, 7, 3, "session-finalize")
 	require.NoError(t, err)

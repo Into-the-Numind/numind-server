@@ -37,6 +37,8 @@ type authSessionCLIFake struct {
 	urlDelays       []time.Duration
 	argv            [][]string
 	statusCalls     int
+	appID           string
+	appIDErr        error
 }
 
 func (f *authSessionCLIFake) RunBlocking(
@@ -102,6 +104,12 @@ func (f *authSessionCLIFake) AuthStatus(context.Context, string) (bool, error) {
 	defer f.mu.Unlock()
 	f.statusCalls++
 	return f.status, f.statusErr
+}
+
+func (f *authSessionCLIFake) AppIDFromHome(context.Context, string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.appID, f.appIDErr
 }
 
 func (f *authSessionCLIFake) snapshot() ([][]string, int) {
@@ -187,7 +195,10 @@ func (s *authSessionUpdateBarrierStore) UpdateAccountConnectionState(
 	}
 	s.once.Do(func() {
 		s.arrived <- struct{}{}
-		<-s.release
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+		}
 	})
 	return nil
 }
@@ -282,7 +293,7 @@ func newAuthSessionHarness(t *testing.T) *authSessionHarness {
 	))
 	return &authSessionHarness{
 		t: t, ctx: context.Background(), db: db, dataStore: store.NewTestStore(db),
-		cli: &authSessionCLIFake{}, vault: &authSessionVaultFake{},
+		cli: &authSessionCLIFake{appID: "cli_test_app"}, vault: &authSessionVaultFake{},
 		dispatcher: &authSessionDispatcherFake{ready: make(chan struct{}, 8)},
 		now:        time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC),
 	}
@@ -458,6 +469,38 @@ func TestAuthSessionService_StopGenerationAndWaitJoinsRetiredWorkerBeforeReturni
 	}
 }
 
+func TestAuthSessionService_StopGenerationReclaimsRetiredTombstoneAfterAllStartsJoin(t *testing.T) {
+	h := newAuthSessionHarness(t)
+	h.createAccount(model.FeishuConnectionAppReady)
+	h.cli.urls = []string{"https://open.feishu.cn/suite/passport/oauth/device?user_code=RECLAIM"}
+	h.cli.release = make(chan struct{})
+	service := h.newService("retired-tombstone-reclaim")
+
+	_, err := service.ConnectManual(h.ctx, 7)
+	require.NoError(t, err)
+	retired, _, err := h.dataStore.ThirdPartyAccounts().RetireGeneration(h.ctx, 7, ProviderLark)
+	require.NoError(t, err)
+	require.NoError(t, service.StopGenerationAndWait(context.Background(), 7, retired))
+
+	service.workerMu.Lock()
+	_, retiredStillTracked := service.retiredGeneration[7]
+	require.Empty(t, service.workers)
+	require.Empty(t, service.starts)
+	service.workerMu.Unlock()
+	require.False(t, retiredStillTracked, "a completed local join may reclaim its per-user tombstone")
+
+	// Releasing the in-memory tombstone must not reopen a retired generation:
+	// the durable account fence rejects a stale recovery before it can register
+	// another local worker.
+	_, err = service.StartRecovery(h.ctx, RecoveryRequest{
+		UserID: 7, Generation: retired, OperationID: "retired-after-reclaim",
+		Kind: RecoveryUserScope, Scopes: []string{"docx:document:readonly"},
+	})
+	require.ErrorIs(t, err, ErrAuthSessionUnavailable)
+	argv, _ := h.cli.snapshot()
+	require.Len(t, argv, 1)
+}
+
 func TestAuthSessionService_RetireBeforeLateWorkerRegistrationCannotStartRetiredGeneration(t *testing.T) {
 	h := newAuthSessionHarness(t)
 	h.createAccount(model.FeishuConnectionAppReady)
@@ -533,6 +576,36 @@ func TestAuthSessionService_ManualConnectCreatesAppBeforeOfflineAuthorization(t 
 		account, getErr := h.dataStore.ThirdPartyAccounts().Get(h.ctx, 7, ProviderLark)
 		return getErr == nil && account.Connected && account.ConnectionState == model.FeishuConnectionConnected
 	}, 2*time.Second, 10*time.Millisecond)
+}
+
+func TestAuthSessionService_CreateAppPersistsOnlyProvenStatusMetadata(t *testing.T) {
+	h := newAuthSessionHarness(t)
+	h.cli.urls = []string{"https://open.feishu.cn/page/cli?user_code=METADATA"}
+	release := make(chan struct{})
+	h.cli.release = release
+	service := h.newService("metadata-create")
+	service.verifiedCLIVersion = LarkCLIVersion
+
+	action, err := service.StartRecovery(h.ctx, RecoveryRequest{
+		UserID: 7, Generation: 1, OperationID: "metadata-create-operation",
+		Kind: RecoveryCreateApp, Scopes: []string{"docx:document:create"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, service.Activate(h.ctx, action.SessionID))
+	close(release)
+	require.Eventually(t, func() bool {
+		account, getErr := h.dataStore.ThirdPartyAccounts().Get(h.ctx, 7, ProviderLark)
+		return getErr == nil && account.ConnectionState == model.FeishuConnectionAppReady
+	}, time.Second, 10*time.Millisecond)
+
+	account, err := h.dataStore.ThirdPartyAccounts().Get(h.ctx, 7, ProviderLark)
+	require.NoError(t, err)
+	require.Equal(t, "cli_test_app", account.AppID)
+	require.Equal(t, LarkCLIVersion, account.LarkCLIVersion)
+	require.Empty(t, account.AppSecretEnc)
+	require.Empty(t, account.AccessTokenEnc)
+	require.Empty(t, account.RefreshTokenEnc)
+	require.Empty(t, account.GrantedScopesJSON, "requested scopes must not be presented as granted capability metadata")
 }
 
 func TestAuthSessionService_ManualChainAllowsURLAfterFinalizeWindow(t *testing.T) {

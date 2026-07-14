@@ -10,7 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/google/uuid"
 
 	"numind-server/internal/pkg/model"
 
@@ -105,6 +108,8 @@ type WorkspaceLifecycleStore interface {
 	GetSessionForUser(context.Context, uint, uint64, string) (*model.FeishuAuthSession, error)
 	FindActiveSessionForUser(context.Context, uint, uint64) (*model.FeishuAuthSession, error)
 	DeleteVault(context.Context, uint, uint64) error
+	ClaimRetiredTeardown(context.Context, uint, uint64, uint64, string, time.Time, time.Time) (bool, error)
+	ReleaseRetiredTeardown(context.Context, uint, uint64, string, time.Time) error
 }
 
 // WorkspaceLifecycleAuth owns in-memory worker cancellation and creates a
@@ -172,6 +177,18 @@ type WorkspaceLifecycleService struct {
 	executions     WorkspaceLifecycleExecutions
 	teardown       WorkspaceLifecycleTeardown
 	cleanupTimeout time.Duration
+	// unbinds serializes destructive local teardown per user without holding a
+	// global mutex while a database, vault, or lark-cli dependency is running.
+	// A concurrent caller joins the owner and observes its one durable result;
+	// it never starts a second generation retirement or vault deletion.
+	unbindMu sync.Mutex
+	unbinds  map[uint]*workspaceUnbindFlight
+}
+
+type workspaceUnbindFlight struct {
+	done   chan struct{}
+	result *UnbindResult
+	err    error
 }
 
 var _ IFeishuService = (*WorkspaceLifecycleService)(nil)
@@ -186,6 +203,7 @@ func NewWorkspaceLifecycleService(deps WorkspaceLifecycleDeps) (*WorkspaceLifecy
 		accounts: deps.Accounts, workspace: deps.Workspace, auth: deps.Auth,
 		dispatcher: deps.Dispatcher, operations: deps.Operations, executions: deps.Executions, teardown: deps.Teardown,
 		cleanupTimeout: workspaceLifecycleCleanupTimeout,
+		unbinds:        make(map[uint]*workspaceUnbindFlight),
 	}, nil
 }
 
@@ -478,6 +496,70 @@ func (s *WorkspaceLifecycleService) Unbind(ctx context.Context, userID uint) (*U
 	if s == nil || userID == 0 {
 		return nil, ErrWorkspaceLifecycleInvalid
 	}
+	flight, owner := s.beginUnbind(userID)
+	if !owner {
+		return waitForWorkspaceUnbind(ctx, flight)
+	}
+	result, err := s.unbindOnce(ctx, userID)
+	s.completeUnbind(userID, flight, result, err)
+	return result, err
+}
+
+// beginUnbind elects exactly one cleanup owner for one user. It never calls a
+// dependency while holding the mutex, so a blocked vault or runner cannot
+// serialize unrelated users or deadlock a re-entrant completion path.
+func (s *WorkspaceLifecycleService) beginUnbind(userID uint) (*workspaceUnbindFlight, bool) {
+	s.unbindMu.Lock()
+	defer s.unbindMu.Unlock()
+	if existing := s.unbinds[userID]; existing != nil {
+		return existing, false
+	}
+	flight := &workspaceUnbindFlight{done: make(chan struct{})}
+	s.unbinds[userID] = flight
+	return flight, true
+}
+
+func (s *WorkspaceLifecycleService) completeUnbind(userID uint, flight *workspaceUnbindFlight, result *UnbindResult, err error) {
+	if s == nil || flight == nil {
+		return
+	}
+	s.unbindMu.Lock()
+	if s.unbinds[userID] == flight {
+		flight.result = cloneUnbindResult(result)
+		flight.err = err
+		delete(s.unbinds, userID)
+		close(flight.done)
+	}
+	s.unbindMu.Unlock()
+}
+
+func waitForWorkspaceUnbind(ctx context.Context, flight *workspaceUnbindFlight) (*UnbindResult, error) {
+	if flight == nil || flight.done == nil {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-flight.done:
+		return cloneUnbindResult(flight.result), flight.err
+	case <-ctx.Done():
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+}
+
+// unbindOnce owns one complete local teardown. A finalized none row is a
+// terminal idempotent state: it must not increment generation or reopen any
+// retired HOME cleanup work on a repeated DELETE.
+func (s *WorkspaceLifecycleService) unbindOnce(ctx context.Context, userID uint) (*UnbindResult, error) {
+	account, accountErr := s.accounts.Get(ctx, userID, ProviderLark)
+	if errors.Is(accountErr, gorm.ErrRecordNotFound) ||
+		(accountErr == nil && account != nil && account.UserID == userID && account.Provider == ProviderLark && account.ConnectionState == model.FeishuConnectionNone) {
+		return unboundWorkspaceResult(), nil
+	}
+	if accountErr != nil || !lifecycleAccountOwned(account, userID) {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
 	retiredGeneration, nextGeneration, err := s.accounts.RetireGeneration(ctx, userID, ProviderLark)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return unboundWorkspaceResult(), nil
@@ -505,6 +587,20 @@ func (s *WorkspaceLifecycleService) Unbind(ctx context.Context, userID uint) (*U
 	if err := s.executions.StopGenerationAndWait(cleanupCtx, userID, retiredGeneration); err != nil {
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
+	teardownOwner := uuid.NewString()
+	claimedTeardown, claimErr := s.claimRetiredTeardown(cleanupCtx, userID, retiredGeneration, nextGeneration, teardownOwner)
+	if claimErr != nil {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	if !claimedTeardown {
+		return unboundWorkspaceResult(), nil
+	}
+	completedTeardown := false
+	defer func() {
+		if !completedTeardown {
+			_ = s.workspace.ReleaseRetiredTeardown(context.Background(), userID, retiredGeneration, teardownOwner, time.Now().UTC())
+		}
+	}()
 	// lark-cli auth logout only clears the local user login; it cannot revoke or
 	// delete the remote self-built app. Its command failure is deliberately
 	// advisory, but LogoutRetired structurally returns an error only when its
@@ -520,7 +616,35 @@ func (s *WorkspaceLifecycleService) Unbind(ctx context.Context, userID uint) (*U
 	if err := s.accounts.FinalizeDisconnect(cleanupCtx, userID, ProviderLark, nextGeneration); err != nil {
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
+	completedTeardown = true
+	_ = s.workspace.ReleaseRetiredTeardown(context.Background(), userID, retiredGeneration, teardownOwner, time.Now().UTC())
 	return unboundWorkspaceResult(), nil
+}
+
+func (s *WorkspaceLifecycleService) claimRetiredTeardown(ctx context.Context, userID uint, retiredGeneration, nextGeneration uint64, owner string) (bool, error) {
+	for {
+		now := time.Now().UTC()
+		claimed, err := s.workspace.ClaimRetiredTeardown(ctx, userID, retiredGeneration, nextGeneration, owner, now, now.Add(s.cleanupTimeout))
+		if err != nil || claimed {
+			return claimed, err
+		}
+		account, getErr := s.accounts.Get(ctx, userID, ProviderLark)
+		if errors.Is(getErr, gorm.ErrRecordNotFound) || (getErr == nil && account != nil && account.ConnectionState == model.FeishuConnectionNone) {
+			return false, nil
+		}
+		if getErr != nil || account == nil || account.Generation != nextGeneration || account.ConnectionState != model.FeishuConnectionDisconnecting {
+			return false, ErrWorkspaceLifecycleUnavailable
+		}
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return false, ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func workspaceLifecycleCleanupContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
@@ -646,4 +770,12 @@ func unboundWorkspaceResult() *UnbindResult {
 		State: model.FeishuConnectionNone, Connected: false,
 		Message: "有数侧连接已删除；飞书侧个人自建应用仍保留，可在飞书开放平台自行删除",
 	}
+}
+
+func cloneUnbindResult(source *UnbindResult) *UnbindResult {
+	if source == nil {
+		return nil
+	}
+	copy := *source
+	return &copy
 }

@@ -753,6 +753,7 @@ func operationOKResult(data string) *CLIResult {
 func TestOperationService_ConnectedHotPathSkipsAuthStatus(t *testing.T) {
 	h := newOperationHarness(t)
 	h.createAccount(7, model.FeishuConnectionConnected, 3, "cli_existing")
+	h.service.verifiedCLIVersion = LarkCLIVersion
 
 	got, err := h.service.Execute(h.ctx, operationDocsFetchRequest(9, "tc1"))
 	require.NoError(t, err)
@@ -768,6 +769,11 @@ func TestOperationService_ConnectedHotPathSkipsAuthStatus(t *testing.T) {
 	require.EqualValues(t, 1, stored.AttemptCount)
 	require.NotEmpty(t, stored.ResultCiphertext)
 	require.NotContains(t, string(stored.ResultSummaryJSON), "doc1")
+	account, err := h.dataStore.ThirdPartyAccounts().Get(h.ctx, 7, ProviderLark)
+	require.NoError(t, err)
+	require.Equal(t, LarkCLIVersion, account.LarkCLIVersion)
+	require.NotNil(t, account.LastSuccessAt)
+	require.JSONEq(t, `{"docs":{"state":"available","last_success_at":"2026-07-13T12:00:00Z"}}`, string(account.CapabilityStateJSON))
 }
 
 func TestOperationService_StaleNotStartedSnapshotCannotLeaseTerminalOperation(t *testing.T) {
@@ -1026,6 +1032,9 @@ func TestOperationService_AppReadyContinuesToExactUserAuthorization(t *testing.T
 	require.Len(t, calls, 1)
 	require.Equal(t, RecoveryReauth, calls[0].Kind)
 	require.Equal(t, []string{"docx:document:readonly"}, calls[0].Scopes)
+	account, err := h.dataStore.ThirdPartyAccounts().Get(h.ctx, 7, ProviderLark)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"docs":{"state":"needs_user_scope"}}`, string(account.CapabilityStateJSON))
 }
 
 func TestOperationService_CompletedAuthRecoveryContinuesWithoutRecursiveDispatcher(t *testing.T) {
@@ -1226,6 +1235,9 @@ func TestOperationService_AppScopeRecoveryPassesConsoleURLTransientlyOnly(t *tes
 	require.NoError(t, err)
 	require.NotContains(t, string(stored.ResultSummaryJSON), "open.feishu.cn")
 	require.NotContains(t, string(stored.ResultSummaryJSON), "console")
+	account, err := h.dataStore.ThirdPartyAccounts().Get(h.ctx, 7, ProviderLark)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"docs":{"state":"needs_app_scope"}}`, string(account.CapabilityStateJSON))
 }
 
 func TestOperationService_CreateAppAndReauthRecoveriesUseCatalogScopes(t *testing.T) {
@@ -1307,6 +1319,9 @@ func TestOperationService_ResourceACLDoesNotStartOAuthRecovery(t *testing.T) {
 	stored, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, got.OperationID)
 	require.NoError(t, err)
 	require.Contains(t, string(stored.ResultSummaryJSON), PublicCodeResourceDenied)
+	account, err := h.dataStore.ThirdPartyAccounts().Get(h.ctx, 7, ProviderLark)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"docs":{"state":"resource_denied"}}`, string(account.CapabilityStateJSON))
 }
 
 func TestOperationService_HighRiskOnlyCreatesConfirmationWaiting(t *testing.T) {
@@ -1936,6 +1951,12 @@ func TestOperationServiceRetiredExecutionRegistryRejectsLateOldGenerationRegistr
 	require.NoError(t, err)
 	require.Equal(t, uint64(4), retiredGeneration)
 	require.NoError(t, h.service.StopGenerationAndWait(context.Background(), 7, retiredGeneration))
+	h.service.executions.mu.Lock()
+	_, retiredStillTracked := h.service.executions.retired[7]
+	require.Empty(t, h.service.executions.active)
+	require.Empty(t, h.service.executions.starts)
+	h.service.executions.mu.Unlock()
+	require.False(t, retiredStillTracked, "completed execution joins must reclaim the per-user retired tombstone")
 
 	guard, err := h.service.startExecutionGateGuard(context.Background(), &model.FeishuOperation{
 		ID: "late-retired-operation", UserID: 7, Generation: retiredGeneration,
