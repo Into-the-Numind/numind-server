@@ -177,7 +177,6 @@ func run() error {
 
 	// Build ContextBudgetCreditService adapter wrapping the ICreditService.
 	bizLayer := biz.NewBiz(store.S)
-	bizLayer.StartExternalResumeReclaimer()
 
 	// 注入 middleware 功能权限检查函数，避免 middleware → biz → salesrag → middleware 循环依赖。
 	// biz.B 在 NewBiz 内已初始化，此处安全引用。
@@ -252,9 +251,10 @@ func run() error {
 		// Non-fatal: service continues; /healthz/ai will show degraded state.
 	}
 
-	if err := installNumindRouters(g); err != nil {
+	if err := installNumindRouters(g, bizLayer); err != nil {
 		return err
 	}
+	bizLayer.StartExternalResumeReclaimer()
 
 	// 创建并运行 HTTP 服务器
 	httpsrv := startInsecureServer(g)

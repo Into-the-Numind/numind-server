@@ -24,9 +24,11 @@ func startServer() error {
 	g := gin.Default()
 	// Register maintenance mode middleware before routes (and JWT)
 	g.Use(middleware.MaintenanceMode())
-	if err := installNumindRouters(g); err != nil {
+	bizLayer := biz.NewBiz(store.S)
+	if err := installNumindRouters(g, bizLayer); err != nil {
 		return fmt.Errorf("failed to install routers: %w", err)
 	}
+	bizLayer.StartExternalResumeReclaimer()
 
 	port := viper.GetString("server.port")
 	if port == "" {
@@ -46,8 +48,6 @@ func startServer() error {
 	defer lifecycleCancel()
 
 	// Start monitor scheduler
-	bizLayer := biz.NewBiz(store.S)
-	bizLayer.StartExternalResumeReclaimer()
 	go func() {
 		if err := bizLayer.Monitor().StartScheduler(context.Background()); err != nil {
 			log.Printf("Failed to start monitor scheduler: %v", err)

@@ -185,6 +185,9 @@ func (r *agentRunner) RunStream(
 	r.registerCancel(run.ID, queryCancel)
 	defer r.unregisterCancel(run.ID)
 	defer queryCancel()
+	if activeErr := r.ensureDurablyRunnable(queryCtx, run.ID); activeErr != nil {
+		return nil, activeErr
+	}
 
 	// 4. #5 skill-system: load agent_definition and assemble SystemPrompt.
 	var skillVer int

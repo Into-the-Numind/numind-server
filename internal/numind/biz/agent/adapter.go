@@ -191,6 +191,21 @@ func (a *aiserviceAdapter) WithTools(tools []*schema.ToolInfo) (einomodel.ToolCa
 // This is a defence-in-depth layer; it triggers only when the capability matrix
 // (Task 1.1) has a gap for the active model.
 func (a *aiserviceAdapter) Generate(ctx context.Context, in []*schema.Message, opts ...einomodel.Option) (*schema.Message, error) {
+	// The external lease covers the entire provider lifecycle of this Generate,
+	// including the optional autocompaction LLM below. Entering after
+	// MaybeCompact would allow a deleted/reclaimed run to call AgentCompact and
+	// would leave long compactions without a heartbeat.
+	firstExternalCall := false
+	if a.externalContinuationGate != nil {
+		var beginErr error
+		firstExternalCall, ctx, beginErr = a.externalContinuationGate.BeginCall(ctx)
+		if beginErr != nil {
+			return nil, fmt.Errorf("%w: %v", errExternalContinuationFirstCall, beginErr)
+		}
+		if firstExternalCall && ctx.Err() != nil {
+			return nil, a.externalContinuationGate.Finish(ctx, ctx.Err())
+		}
+	}
 	// V1.5 v2-compact-adapter-integration — PRE-CALL V2 compact：
 	// 每一轮 ReAct 调 LLM 之前评估 in 的 token 用量，达 85% → 跑 L3 autocompact
 	// 替换 in 成 [system, summary, recent 5]；达 95% + 连续 3 次失败 → ErrContextExhausted。
@@ -202,6 +217,9 @@ func (a *aiserviceAdapter) Generate(ctx context.Context, in []*schema.Message, o
 		compacted, didCompact, cerr := a.compactor.MaybeCompact(ctx, in)
 		if cerr != nil {
 			// ErrContextExhausted 或其他不可恢复错误 → 上抛让 runner terminate
+			if firstExternalCall {
+				return nil, a.externalContinuationGate.Finish(ctx, cerr)
+			}
 			return nil, cerr
 		}
 		if didCompact {
@@ -210,14 +228,6 @@ func (a *aiserviceAdapter) Generate(ctx context.Context, in []*schema.Message, o
 	}
 
 	req := a.convertToAiserviceRequest(in)
-	firstExternalCall := false
-	if a.externalContinuationGate != nil {
-		var beginErr error
-		firstExternalCall, ctx, beginErr = a.externalContinuationGate.BeginCall(ctx)
-		if beginErr != nil {
-			return nil, fmt.Errorf("%w: %v", errExternalContinuationFirstCall, beginErr)
-		}
-	}
 	// Task 1.5: use the strip-retry wrapper instead of bare chatFn.
 	resp, err := callAIServiceWithStripRetry(ctx, a.taskID, req, a.modelName)
 

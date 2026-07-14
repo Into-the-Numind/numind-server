@@ -17,6 +17,7 @@ import (
 	"numind-server/internal/numind/biz/agent/stream"
 	storepkg "numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"
+	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/model"
 )
 
@@ -295,6 +296,244 @@ func TestExternalContinuationGate_HeartbeatFailureCancelsProviderAndReleases(t *
 	got, getErr := runStore.Get(context.Background(), run.ID)
 	require.NoError(t, getErr)
 	assert.Equal(t, "external_resume_ready", got.StateReason)
+}
+
+func TestExternalContinuationGate_DeletedRunBlocksAutocompactProvider(t *testing.T) {
+	runStore := newMockStore()
+	run := &model.AgentRun{
+		UserID: 7, SessionID: "s", Status: "running", StateReason: "ext_resume:lease-1", IsDeleted: true,
+		PendingExternalActionJSON: datatypes.JSON(`{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"tc-9","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`),
+		StartedAt:                 time.Now(),
+	}
+	require.NoError(t, runStore.Create(context.Background(), run))
+	resumeStore := &externalResumeStoreStub{runStore: runStore, claimed: true, lease: "lease-1"}
+	gate := newExternalContinuationGate(resumeStore, ExternalToolResult{RunID: run.ID, OperationID: "op-1", ToolCallID: "tc-9"}, "lease-1", make(chan error, 1))
+	adapter := &aiserviceAdapter{
+		taskID: profile.AgentRun, compactor: newAdapterCompactor(1_000), usageStore: &sync.Map{}, externalContinuationGate: gate,
+	}
+	original := chatFn
+	t.Cleanup(func() { chatFn = original })
+	providerCalls := 0
+	chatFn = func(context.Context, string, aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
+		providerCalls++
+		return &aiservice.ChatResponse{Content: validSummary}, nil
+	}
+	_, err := adapter.Generate(context.Background(), buildLongConversation(5_000))
+	require.ErrorIs(t, err, errExternalContinuationFirstCall)
+	assert.Zero(t, providerCalls, "durable delete fencing must run before the compaction LLM")
+}
+
+func TestExternalContinuationGate_AutocompactFailureReleasesLease(t *testing.T) {
+	runStore := newMockStore()
+	run := &model.AgentRun{
+		UserID: 7, SessionID: "s", Status: "running", StateReason: "ext_resume:lease-1",
+		PendingExternalActionJSON: datatypes.JSON(`{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"tc-9","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`),
+		StartedAt:                 time.Now(),
+	}
+	require.NoError(t, runStore.Create(context.Background(), run))
+	resumeStore := &externalResumeStoreStub{runStore: runStore, claimed: true, lease: "lease-1"}
+	gate := newExternalContinuationGate(resumeStore, ExternalToolResult{RunID: run.ID, OperationID: "op-1", ToolCallID: "tc-9"}, "lease-1", make(chan error, 1))
+	adapter := &aiserviceAdapter{
+		taskID: profile.AgentRun, compactor: newAdapterCompactor(1_000), usageStore: &sync.Map{}, externalContinuationGate: gate,
+	}
+	original := chatFn
+	t.Cleanup(func() { chatFn = original })
+	chatFn = func(context.Context, string, aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
+		return nil, errors.New("compact provider failed")
+	}
+	_, err := adapter.Generate(context.Background(), buildLongConversation(5_000))
+	require.ErrorIs(t, err, errExternalContinuationFirstCall)
+	resumeStore.mu.Lock()
+	assert.Equal(t, 1, resumeStore.releases)
+	assert.Zero(t, resumeStore.completes)
+	resumeStore.mu.Unlock()
+}
+
+func TestExternalContinuationGate_AutocompactAndMainSuccessCompletesOnce(t *testing.T) {
+	runStore := newMockStore()
+	run := &model.AgentRun{
+		UserID: 7, SessionID: "s", Status: "running", StateReason: "ext_resume:lease-1",
+		PendingExternalActionJSON: datatypes.JSON(`{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"tc-9","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`),
+		StartedAt:                 time.Now(),
+	}
+	require.NoError(t, runStore.Create(context.Background(), run))
+	resumeStore := &externalResumeStoreStub{runStore: runStore, claimed: true, lease: "lease-1"}
+	gate := newExternalContinuationGate(resumeStore, ExternalToolResult{RunID: run.ID, OperationID: "op-1", ToolCallID: "tc-9"}, "lease-1", make(chan error, 1))
+	adapter := &aiserviceAdapter{
+		taskID: profile.AgentRun, compactor: newAdapterCompactor(1_000), usageStore: &sync.Map{}, externalContinuationGate: gate,
+	}
+	original := chatFn
+	t.Cleanup(func() { chatFn = original })
+	calls := 0
+	chatFn = func(_ context.Context, taskID string, _ aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
+		calls++
+		if taskID == profile.AgentCompact {
+			return &aiservice.ChatResponse{Content: validSummary}, nil
+		}
+		return &aiservice.ChatResponse{Content: "done", FinishReason: "stop"}, nil
+	}
+	_, err := adapter.Generate(context.Background(), buildLongConversation(5_000))
+	require.NoError(t, err)
+	assert.Equal(t, 2, calls)
+	resumeStore.mu.Lock()
+	assert.Equal(t, 1, resumeStore.completes)
+	assert.Zero(t, resumeStore.releases)
+	resumeStore.mu.Unlock()
+}
+
+func TestExternalContinuationGate_MainProviderFailureAfterAutocompactReleasesLease(t *testing.T) {
+	runStore := newMockStore()
+	run := &model.AgentRun{
+		UserID: 7, SessionID: "s", Status: "running", StateReason: "ext_resume:lease-1",
+		PendingExternalActionJSON: datatypes.JSON(`{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"tc-9","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`),
+		StartedAt:                 time.Now(),
+	}
+	require.NoError(t, runStore.Create(context.Background(), run))
+	resumeStore := &externalResumeStoreStub{runStore: runStore, claimed: true, lease: "lease-1"}
+	gate := newExternalContinuationGate(resumeStore, ExternalToolResult{RunID: run.ID, OperationID: "op-1", ToolCallID: "tc-9"}, "lease-1", make(chan error, 1))
+	adapter := &aiserviceAdapter{
+		taskID: profile.AgentRun, compactor: newAdapterCompactor(1_000), usageStore: &sync.Map{}, externalContinuationGate: gate,
+	}
+	original := chatFn
+	t.Cleanup(func() { chatFn = original })
+	chatFn = func(_ context.Context, taskID string, _ aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
+		if taskID == profile.AgentCompact {
+			return &aiservice.ChatResponse{Content: validSummary}, nil
+		}
+		return nil, errors.New("main provider failed")
+	}
+
+	_, err := adapter.Generate(context.Background(), buildLongConversation(5_000))
+	require.ErrorIs(t, err, errExternalContinuationFirstCall)
+	resumeStore.mu.Lock()
+	assert.Equal(t, 1, resumeStore.releases)
+	assert.Zero(t, resumeStore.completes)
+	resumeStore.mu.Unlock()
+}
+
+func TestExternalContinuationGate_HeartbeatCoversAutocompactAndMainProvider(t *testing.T) {
+	runStore := newMockStore()
+	run := &model.AgentRun{
+		UserID: 7, SessionID: "s", Status: "running", StateReason: "ext_resume:lease-1",
+		PendingExternalActionJSON: datatypes.JSON(`{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"tc-9","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`),
+		StartedAt:                 time.Now(),
+	}
+	require.NoError(t, runStore.Create(context.Background(), run))
+	resumeStore := &externalResumeStoreStub{runStore: runStore, claimed: true, lease: "lease-1"}
+	gate := newExternalContinuationGate(resumeStore, ExternalToolResult{RunID: run.ID, OperationID: "op-1", ToolCallID: "tc-9"}, "lease-1", make(chan error, 1))
+	gate.heartbeatInterval = 5 * time.Millisecond
+	adapter := &aiserviceAdapter{
+		taskID: profile.AgentRun, compactor: newAdapterCompactor(1_000), usageStore: &sync.Map{}, externalContinuationGate: gate,
+	}
+	original := chatFn
+	t.Cleanup(func() { chatFn = original })
+	compactStarted := make(chan struct{})
+	compactRelease := make(chan struct{})
+	mainStarted := make(chan struct{})
+	mainRelease := make(chan struct{})
+	chatFn = func(ctx context.Context, taskID string, _ aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
+		if taskID == profile.AgentCompact {
+			close(compactStarted)
+			select {
+			case <-compactRelease:
+				return &aiservice.ChatResponse{Content: validSummary}, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		close(mainStarted)
+		select {
+		case <-mainRelease:
+			return &aiservice.ChatResponse{Content: "done", FinishReason: "stop"}, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := adapter.Generate(context.Background(), buildLongConversation(5_000))
+		errCh <- err
+	}()
+
+	select {
+	case <-compactStarted:
+	case <-time.After(time.Second):
+		t.Fatal("autocompact provider did not start")
+	}
+	require.Eventually(t, func() bool {
+		resumeStore.mu.Lock()
+		defer resumeStore.mu.Unlock()
+		return resumeStore.touches >= 2
+	}, time.Second, 5*time.Millisecond, "heartbeat must run while autocompact is blocked")
+	resumeStore.mu.Lock()
+	touchesAfterCompact := resumeStore.touches
+	resumeStore.mu.Unlock()
+	close(compactRelease)
+	select {
+	case <-mainStarted:
+	case <-time.After(time.Second):
+		t.Fatal("main provider did not start after autocompact")
+	}
+	require.Eventually(t, func() bool {
+		resumeStore.mu.Lock()
+		defer resumeStore.mu.Unlock()
+		return resumeStore.touches > touchesAfterCompact
+	}, time.Second, 5*time.Millisecond, "heartbeat must remain active while the main provider is blocked")
+	close(mainRelease)
+	require.NoError(t, <-errCh)
+	resumeStore.mu.Lock()
+	assert.Equal(t, 1, resumeStore.completes)
+	assert.Zero(t, resumeStore.releases)
+	resumeStore.mu.Unlock()
+}
+
+func TestExternalContinuationGate_StreamKeepsStreamingBoundaryAndCompletesOnFirstChunk(t *testing.T) {
+	runStore := newMockStore()
+	run := &model.AgentRun{
+		UserID: 7, SessionID: "s", Status: "running", StateReason: "ext_resume:lease-1",
+		PendingExternalActionJSON: datatypes.JSON(`{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"tc-9","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`),
+		StartedAt:                 time.Now(),
+	}
+	require.NoError(t, runStore.Create(context.Background(), run))
+	resumeStore := &externalResumeStoreStub{runStore: runStore, claimed: true, lease: "lease-1"}
+	gate := newExternalContinuationGate(resumeStore, ExternalToolResult{RunID: run.ID, OperationID: "op-1", ToolCallID: "tc-9"}, "lease-1", make(chan error, 1))
+	adapter := &aiserviceAdapter{taskID: profile.AgentRun, usageStore: &sync.Map{}, externalContinuationGate: gate}
+
+	originalChat, originalStream := chatFn, chatStreamFn
+	t.Cleanup(func() { chatFn, chatStreamFn = originalChat, originalStream })
+	generateCalls, streamCalls := 0, 0
+	chatFn = func(context.Context, string, aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
+		generateCalls++
+		return nil, errors.New("stream path must not fall back to Generate")
+	}
+	chunks := make(chan aiservice.ChatChunk, 2)
+	chatStreamFn = func(context.Context, string, aiservice.ChatRequest) (<-chan aiservice.ChatChunk, error) {
+		streamCalls++
+		return chunks, nil
+	}
+
+	sr, err := adapter.Stream(context.Background(), []*schema.Message{schema.UserMessage("continue")})
+	require.NoError(t, err)
+	resumeStore.mu.Lock()
+	assert.Zero(t, resumeStore.completes, "opening a stream is not yet a provider response")
+	resumeStore.mu.Unlock()
+	chunks <- aiservice.ChatChunk{Delta: "hello"}
+	msg, err := sr.Recv()
+	require.NoError(t, err)
+	assert.Equal(t, "hello", msg.Content)
+	resumeStore.mu.Lock()
+	assert.Equal(t, 1, resumeStore.completes)
+	resumeStore.mu.Unlock()
+	chunks <- aiservice.ChatChunk{IsFinal: true, FinishReason: "stop"}
+	close(chunks)
+	for {
+		if _, recvErr := sr.Recv(); recvErr != nil {
+			break
+		}
+	}
+	sr.Close()
+	assert.Zero(t, generateCalls)
+	assert.Equal(t, 1, streamCalls)
 }
 
 func (s *externalResumeStoreStub) ListExternalToolResumeCandidates(context.Context, time.Time, int) ([]model.AgentRun, error) {

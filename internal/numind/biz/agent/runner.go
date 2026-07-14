@@ -636,6 +636,9 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 	r.registerCancel(run.ID, queryCancel)
 	defer r.unregisterCancel(run.ID)
 	defer queryCancel()
+	if activeErr := r.ensureDurablyRunnable(queryCtx, run.ID); activeErr != nil {
+		return nil, activeErr
+	}
 
 	// 4. #5 skill-system: 装载 agent_definition 并组装 SystemPrompt（若指定了 AgentDefinitionID）。
 	// #12 agent-mode-billing-integration: ad 在 if 块外可见，供下方 budget tracker 读取 limits（reviewer S3-P0-1 fix）。
@@ -1658,6 +1661,22 @@ func (r *agentRunner) unregisterCancel(runID uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.cancels, runID)
+}
+
+// ensureDurablyRunnable closes the register-vs-delete race. Registration
+// happens first so a later DeleteSession can cancel this runner; the fresh DB
+// read then catches a delete/cancel that committed before registration (when
+// Cancel necessarily returned false). Together those orderings make durable
+// state authoritative without holding a DB lock across model execution.
+func (r *agentRunner) ensureDurablyRunnable(ctx context.Context, runID uint64) error {
+	fresh, err := r.runStore.Get(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("AgentRunner durable activity check: %w", err)
+	}
+	if fresh.IsDeleted || fresh.CancellationRequestedAt != nil {
+		return fmt.Errorf("AgentRunner: run %d was deleted or cancelled before execution", runID)
+	}
+	return nil
 }
 
 // ── M-A9 helpers ─────────────────────────────────────────────────────────────

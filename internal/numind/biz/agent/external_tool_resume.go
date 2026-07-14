@@ -21,6 +21,8 @@ import (
 
 const externalOperationIDExtraKey = "external_operation_id"
 
+const externalResumeWorkerLimit = 4
+
 var errExternalContinuationFirstCall = errors.New("external continuation first model call did not start durably")
 
 // ExternalToolResult is the server-owned result of one persisted external
@@ -36,27 +38,33 @@ type ExternalToolResult struct {
 // original run. The narrow store claim is the single source of concurrency
 // ownership: only the callback receiving true may start the runner.
 type AgentRunResumer struct {
-	store       store.IExternalToolResumeLease
-	studentRuns *StudentRunService
+	store            store.IExternalToolResumeLease
+	studentRuns      *StudentRunService
+	preflightTimeout time.Duration
 }
 
 // ExternalResumeReclaimer makes durable completed external actions self-heal
 // after a process crash. ClaimExternalToolResume supplies the cross-instance
 // fence, so several application instances may scan the same candidates.
 type ExternalResumeReclaimer struct {
-	store    store.IExternalToolResumeLease
-	resumer  *AgentRunResumer
-	interval time.Duration
-	cancel   context.CancelFunc
-	done     chan struct{}
-	mu       sync.Mutex
+	store       store.IExternalToolResumeLease
+	resumer     *AgentRunResumer
+	interval    time.Duration
+	cancel      context.CancelFunc
+	done        chan struct{}
+	mu          sync.Mutex
+	workers     sync.WaitGroup
+	workerSlots chan struct{}
 }
 
 func NewExternalResumeReclaimer(s store.IExternalToolResumeLease, resumer *AgentRunResumer, interval time.Duration) *ExternalResumeReclaimer {
 	if interval <= 0 {
 		interval = 15 * time.Second
 	}
-	return &ExternalResumeReclaimer{store: s, resumer: resumer, interval: interval}
+	return &ExternalResumeReclaimer{
+		store: s, resumer: resumer, interval: interval,
+		workerSlots: make(chan struct{}, externalResumeWorkerLimit),
+	}
 }
 
 func (r *ExternalResumeReclaimer) Start() {
@@ -94,8 +102,6 @@ func (r *ExternalResumeReclaimer) Stop(ctx context.Context) error {
 	}
 	r.mu.Lock()
 	cancel, done := r.cancel, r.done
-	r.cancel = nil
-	r.done = nil
 	r.mu.Unlock()
 	if cancel == nil {
 		return nil
@@ -103,6 +109,22 @@ func (r *ExternalResumeReclaimer) Stop(ctx context.Context) error {
 	cancel()
 	select {
 	case <-done:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	workersDone := make(chan struct{})
+	go func() {
+		r.workers.Wait()
+		close(workersDone)
+	}()
+	select {
+	case <-workersDone:
+		r.mu.Lock()
+		if r.done == done {
+			r.cancel = nil
+			r.done = nil
+		}
+		r.mu.Unlock()
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -126,9 +148,21 @@ func (r *ExternalResumeReclaimer) scan(ctx context.Context) {
 			log.Warnw("external resume reclaimer found invalid durable result", "agent_run_id", runs[i].ID, "error", err)
 			continue
 		}
-		if err := r.resumer.Resume(ctx, result); err != nil && ctx.Err() == nil {
-			log.Warnw("external resume reclaimer could not resume run", "agent_run_id", runs[i].ID, "error", err)
+		select {
+		case r.workerSlots <- struct{}{}:
+		case <-ctx.Done():
+			return
 		}
+		r.workers.Add(1)
+		go func(candidate ExternalToolResult) {
+			defer func() {
+				<-r.workerSlots
+				r.workers.Done()
+			}()
+			if err := r.resumer.Resume(ctx, candidate); err != nil && ctx.Err() == nil {
+				log.Warnw("external resume reclaimer could not resume run", "agent_run_id", candidate.RunID, "error", err)
+			}
+		}(result)
 	}
 }
 
@@ -180,7 +214,7 @@ func reconstructExternalToolResult(run *model.AgentRun) (ExternalToolResult, err
 // package cycle and lets DataStore's concrete agent-run store be asserted to
 // IExternalToolResumer at composition time.
 func NewAgentRunResumer(runStore store.IExternalToolResumeLease, studentRuns *StudentRunService) *AgentRunResumer {
-	return &AgentRunResumer{store: runStore, studentRuns: studentRuns}
+	return &AgentRunResumer{store: runStore, studentRuns: studentRuns, preflightTimeout: 10 * time.Second}
 }
 
 // Resume appends the original tool result once and resumes the same run. A
@@ -214,17 +248,25 @@ func (r *AgentRunResumer) Resume(ctx context.Context, result ExternalToolResult)
 	if !claimed {
 		return nil
 	}
-	return r.startClaimedContinuation(result, leaseToken, runReq)
+	return r.startClaimedContinuation(ctx, result, leaseToken, runReq)
 }
 
-func (r *AgentRunResumer) startClaimedContinuation(result ExternalToolResult, leaseToken string, runReq RunRequest) error {
+func (r *AgentRunResumer) startClaimedContinuation(ctx context.Context, result ExternalToolResult, leaseToken string, runReq RunRequest) error {
 	startedCh := make(chan error, 1)
 	finishedCh := make(chan error, 1)
 	gate := newExternalContinuationGate(r.store, result, leaseToken, startedCh)
 	runReq.ExternalContinuationGate = gate
+	preflightTimeout := r.preflightTimeout
+	if preflightTimeout <= 0 {
+		preflightTimeout = 10 * time.Second
+	}
+	waitCtx, stopWaiting := context.WithTimeout(ctx, preflightTimeout)
+	defer stopWaiting()
+	runnerCtx, cancelRunner := context.WithCancel(context.Background())
 
 	go r.studentRuns.forwardNarration(result.RunID)
 	go func() {
+		defer cancelRunner()
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				panicErr := fmt.Errorf("runner preflight panic: %v", recovered)
@@ -235,7 +277,7 @@ func (r *AgentRunResumer) startClaimedContinuation(result ExternalToolResult, le
 				}
 			}
 		}()
-		bgCtx := middleware.NewContextWithUserID(context.Background(), runReq.UserID)
+		bgCtx := middleware.NewContextWithUserID(runnerCtx, runReq.UserID)
 		_, runErr := r.studentRuns.runner.Run(bgCtx, runReq)
 		if gate.Begun() && !gate.Finished() {
 			_ = gate.Finish(context.Background(), runErr)
@@ -268,6 +310,10 @@ func (r *AgentRunResumer) startClaimedContinuation(result ExternalToolResult, le
 		}
 		releaseErr := gate.ReleaseIfUnstarted(context.Background())
 		return errors.Join(fmt.Errorf("AgentRunResumer.Resume: runner preflight: %w", runErr), releaseErr)
+	case <-waitCtx.Done():
+		cancelRunner()
+		abortErr := gate.Abort(waitCtx.Err())
+		return errors.Join(fmt.Errorf("AgentRunResumer.Resume: runner preflight cancelled: %w", waitCtx.Err()), abortErr)
 	}
 }
 
@@ -302,8 +348,16 @@ func (g *externalContinuationGate) BeginCall(ctx context.Context) (bool, context
 	}
 	g.mu.Lock()
 	if g.finished {
+		finalErr := g.finalErr
+		completedSuccessfully := g.completedSuccessfully
 		g.mu.Unlock()
-		return false, ctx, nil
+		if completedSuccessfully {
+			return false, ctx, nil
+		}
+		if finalErr == nil {
+			finalErr = errExternalContinuationFirstCall
+		}
+		return true, ctx, finalErr
 	}
 	if g.begun {
 		g.mu.Unlock()
@@ -317,42 +371,46 @@ func (g *externalContinuationGate) BeginCall(ctx context.Context) (bool, context
 		return true, ctx, err
 	}
 	providerCtx, cancel := context.WithCancel(ctx)
-	g.startHeartbeat(providerCtx, cancel)
+	done := make(chan struct{})
+	g.mu.Lock()
+	if g.finished {
+		finalErr := g.finalErr
+		g.mu.Unlock()
+		cancel()
+		return true, providerCtx, finalErr
+	}
+	g.hbCancel, g.hbDone = cancel, done
+	g.mu.Unlock()
+	go g.runHeartbeat(providerCtx, cancel, done)
 	g.signalStarted(nil)
 	return true, providerCtx, nil
 }
 
-func (g *externalContinuationGate) startHeartbeat(ctx context.Context, cancel context.CancelFunc) {
-	done := make(chan struct{})
-	g.mu.Lock()
-	g.hbCancel, g.hbDone = cancel, done
-	g.mu.Unlock()
-	go func() {
-		defer close(done)
-		interval := g.heartbeatInterval
-		if interval <= 0 {
-			interval = 10 * time.Second
-		}
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if err := g.store.TouchExternalToolResume(ctx, g.result.RunID, g.result.OperationID, g.result.ToolCallID, g.token); err != nil {
-					if ctx.Err() != nil {
-						return
-					}
-					g.mu.Lock()
-					g.hbErr = err
-					g.mu.Unlock()
-					cancel()
+func (g *externalContinuationGate) runHeartbeat(ctx context.Context, cancel context.CancelFunc, done chan struct{}) {
+	defer close(done)
+	interval := g.heartbeatInterval
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := g.store.TouchExternalToolResume(ctx, g.result.RunID, g.result.OperationID, g.result.ToolCallID, g.token); err != nil {
+				if ctx.Err() != nil {
 					return
 				}
+				g.mu.Lock()
+				g.hbErr = err
+				g.mu.Unlock()
+				cancel()
+				return
 			}
 		}
-	}()
+	}
 }
 
 func (g *externalContinuationGate) stopHeartbeat() error {
@@ -406,14 +464,31 @@ func (g *externalContinuationGate) Finish(ctx context.Context, callErr error) er
 }
 
 func (g *externalContinuationGate) failBeforeStart(cause error) {
+	_ = g.Abort(cause)
+}
+
+func (g *externalContinuationGate) Abort(cause error) error {
+	g.mu.Lock()
+	if g.finished {
+		err := g.finalErr
+		g.mu.Unlock()
+		return err
+	}
+	g.finished = true
+	cancelProvider := g.hbCancel
+	g.mu.Unlock()
+	if cancelProvider != nil {
+		cancelProvider()
+	}
 	persistCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	releaseErr := g.release(persistCtx)
 	cancel()
 	g.mu.Lock()
-	g.finished = true
 	g.finalErr = errors.Join(errExternalContinuationFirstCall, cause, releaseErr)
+	finalErr := g.finalErr
 	g.mu.Unlock()
 	g.signalStarted(cause)
+	return finalErr
 }
 
 func (g *externalContinuationGate) release(ctx context.Context) error {

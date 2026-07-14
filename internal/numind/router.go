@@ -47,7 +47,7 @@ import (
 )
 
 // installNumindRouters 注册所有 Numind 工作台业务路由
-func installNumindRouters(g *gin.Engine) error {
+func installNumindRouters(g *gin.Engine, b biz.IBiz) error {
 	// 注册 404 Handler.
 	g.NoRoute(func(c *gin.Context) {
 		core.WriteResponse(c, errno.ErrPageNotFound, nil)
@@ -66,7 +66,6 @@ func installNumindRouters(g *gin.Engine) error {
 	pprof.Register(g)
 
 	uc := user.New(store.S)
-	b := biz.NewBiz(store.S)
 	alic := ali.New(b.Ali())
 	salesRAGc := salesrag.NewSalesRAGController(b, b.Credit())
 

@@ -881,9 +881,12 @@ func (s *StudentQueryService) DeleteSession(ctx context.Context, userID uint, se
 	}
 	if s.runCanceller != nil {
 		for i := range runs {
-			if runs[i].Status == "running" {
-				s.runCanceller.Cancel(runs[i].ID)
-			}
+			// Cancel every known run ID, not only rows that looked running in
+			// the pre-delete snapshot. An external callback can claim a
+			// terminated wait and register its runner between this snapshot
+			// and the durable delete. Cancel is intentionally a safe no-op for
+			// IDs that are not active in this process.
+			s.runCanceller.Cancel(runs[i].ID)
 		}
 	}
 	return nil
