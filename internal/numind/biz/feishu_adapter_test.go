@@ -44,7 +44,7 @@ func newFeishuCompositionDeps(t *testing.T) feishuCompositionDeps {
 		enabled:       true,
 		dataStore:     ds,
 		tokenKey:      tokenKey,
-		cipherKeys:    map[string]string{"test-v1": tokenKey},
+		cipherKeys:    []feishuCipherKeyringEntry{feishuCompositionKeyringEntry("test-v1", tokenKey)},
 		keyVersion:    "test-v1",
 		runtimeBase:   filepath.Join(t.TempDir(), "runtime"),
 		authOwner:     "test-feishu-auth-worker",
@@ -57,6 +57,10 @@ func newFeishuCompositionDeps(t *testing.T) feishuCompositionDeps {
 
 func feishuCompositionKey(seed byte) string {
 	return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{seed}, crypto.KeyLen))
+}
+
+func feishuCompositionKeyringEntry(version, key string) feishuCipherKeyringEntry {
+	return feishuCipherKeyringEntry{Version: version, Key: key}
 }
 
 func prepareHistoricalCompositionVault(t *testing.T, deps feishuCompositionDeps, keyVersion, key string) {
@@ -114,7 +118,10 @@ func TestBuildFeishuService_KeyRotationReadsHistoricalVault(t *testing.T) {
 	deps := newFeishuCompositionDeps(t)
 	deps.keyVersion = "v2"
 	deps.tokenKey = feishuCompositionKey(9)
-	deps.cipherKeys = map[string]string{"v1": feishuCompositionKey(1), "v2": feishuCompositionKey(2)}
+	deps.cipherKeys = []feishuCipherKeyringEntry{
+		feishuCompositionKeyringEntry("v1", feishuCompositionKey(1)),
+		feishuCompositionKeyringEntry("v2", feishuCompositionKey(2)),
+	}
 	prepareHistoricalCompositionVault(t, deps, "v1", feishuCompositionKey(1))
 
 	composition, err := buildFeishuService(deps)
@@ -131,7 +138,7 @@ func TestBuildFeishuService_MissingHistoricalKeyFailsClosedBeforePublication(t *
 	deps := newFeishuCompositionDeps(t)
 	deps.keyVersion = "v2"
 	deps.tokenKey = feishuCompositionKey(9)
-	deps.cipherKeys = map[string]string{"v2": feishuCompositionKey(2)}
+	deps.cipherKeys = []feishuCipherKeyringEntry{feishuCompositionKeyringEntry("v2", feishuCompositionKey(2))}
 	prepareHistoricalCompositionVault(t, deps, "v1", feishuCompositionKey(1))
 
 	composition, err := buildFeishuService(deps)
@@ -143,7 +150,10 @@ func TestBuildFeishuService_KeyRotationReadsHistoricalSucceededOperation(t *test
 	deps := newFeishuCompositionDeps(t)
 	deps.keyVersion = "v2"
 	deps.tokenKey = feishuCompositionKey(9)
-	deps.cipherKeys = map[string]string{"v1": feishuCompositionKey(1), "v2": feishuCompositionKey(2)}
+	deps.cipherKeys = []feishuCipherKeyringEntry{
+		feishuCompositionKeyringEntry("v1", feishuCompositionKey(1)),
+		feishuCompositionKeyringEntry("v2", feishuCompositionKey(2)),
+	}
 	prepareHistoricalCompositionVault(t, deps, "v1", feishuCompositionKey(1))
 
 	historicalCipher, err := crypto.NewCipher(feishuCompositionKey(1))
@@ -182,7 +192,10 @@ func TestBuildFeishuService_MissingRetainedResultKeyFailsClosedBeforePublication
 	deps := newFeishuCompositionDeps(t)
 	deps.keyVersion = "v3"
 	deps.tokenKey = feishuCompositionKey(9)
-	deps.cipherKeys = map[string]string{"v1": feishuCompositionKey(1), "v3": feishuCompositionKey(3)}
+	deps.cipherKeys = []feishuCipherKeyringEntry{
+		feishuCompositionKeyringEntry("v1", feishuCompositionKey(1)),
+		feishuCompositionKeyringEntry("v3", feishuCompositionKey(3)),
+	}
 	prepareHistoricalCompositionVault(t, deps, "v1", feishuCompositionKey(1))
 
 	operationID := uuid.NewString()
@@ -216,7 +229,7 @@ func TestBuildFeishuService_MissingRetainedResultKeyFailsClosedBeforePublication
 	require.Error(t, err)
 	require.Nil(t, composition)
 
-	deps.cipherKeys["v2"] = feishuCompositionKey(2)
+	deps.cipherKeys = append(deps.cipherKeys, feishuCompositionKeyringEntry("v2", feishuCompositionKey(2)))
 	composition, err = buildFeishuService(deps)
 	require.NoError(t, err)
 	require.NotNil(t, composition)
@@ -241,7 +254,7 @@ func TestBuildFeishuService_InvalidRetainedResultBlobFailsClosedBeforePublicatio
 		t.Run(name, func(t *testing.T) {
 			deps := newFeishuCompositionDeps(t)
 			deps.keyVersion = "v1"
-			deps.cipherKeys = map[string]string{"v1": feishuCompositionKey(1)}
+			deps.cipherKeys = []feishuCipherKeyringEntry{feishuCompositionKeyringEntry("v1", feishuCompositionKey(1))}
 			deps.verifyVersion = func(context.Context) error { return nil }
 			require.NoError(t, deps.dataStore.DB().Create(&model.FeishuOperation{
 				ID: uuid.NewString(), UserID: 7, Generation: 1, AgentRunID: 91, ToolCallID: "call-invalid-result",
@@ -261,7 +274,10 @@ func TestBuildFeishuService_KeyRotationNewVaultWriteUsesCurrentVersion(t *testin
 	deps := newFeishuCompositionDeps(t)
 	deps.keyVersion = "v2"
 	deps.tokenKey = feishuCompositionKey(9)
-	deps.cipherKeys = map[string]string{"v1": feishuCompositionKey(1), "v2": feishuCompositionKey(2)}
+	deps.cipherKeys = []feishuCipherKeyringEntry{
+		feishuCompositionKeyringEntry("v1", feishuCompositionKey(1)),
+		feishuCompositionKeyringEntry("v2", feishuCompositionKey(2)),
+	}
 	prepareHistoricalCompositionVault(t, deps, "v1", feishuCompositionKey(1))
 
 	composition, err := buildFeishuService(deps)
@@ -278,7 +294,10 @@ func TestBuildFeishuService_KeyRotationNewOperationWriteUsesCurrentVersion(t *te
 	deps := newFeishuCompositionDeps(t)
 	deps.keyVersion = "v2"
 	deps.tokenKey = feishuCompositionKey(9)
-	deps.cipherKeys = map[string]string{"v1": feishuCompositionKey(1), "v2": feishuCompositionKey(2)}
+	deps.cipherKeys = []feishuCipherKeyringEntry{
+		feishuCompositionKeyringEntry("v1", feishuCompositionKey(1)),
+		feishuCompositionKeyringEntry("v2", feishuCompositionKey(2)),
+	}
 	deps.receiptVerifier = compositionReceiptVerifier{}
 	prepareHistoricalCompositionVault(t, deps, "v1", feishuCompositionKey(1))
 
@@ -300,29 +319,36 @@ func TestBuildFeishuService_RejectsInvalidEncryptionKeyring(t *testing.T) {
 	valid := feishuCompositionKey(7)
 	for name, mutate := range map[string]func(*feishuCompositionDeps){
 		"missing keyring": func(deps *feishuCompositionDeps) { deps.cipherKeys = nil },
-		"invalid base64":  func(deps *feishuCompositionDeps) { deps.cipherKeys = map[string]string{"test-v1": "not-base64"} },
+		"invalid base64": func(deps *feishuCompositionDeps) {
+			deps.cipherKeys = []feishuCipherKeyringEntry{feishuCompositionKeyringEntry("test-v1", "not-base64")}
+		},
 		"noncanonical base64": func(deps *feishuCompositionDeps) {
-			deps.cipherKeys = map[string]string{"test-v1": valid + "\n"}
+			deps.cipherKeys = []feishuCipherKeyringEntry{feishuCompositionKeyringEntry("test-v1", valid+"\n")}
 		},
 		"wrong decoded length": func(deps *feishuCompositionDeps) {
-			deps.cipherKeys = map[string]string{"test-v1": base64.StdEncoding.EncodeToString([]byte("short"))}
+			deps.cipherKeys = []feishuCipherKeyringEntry{feishuCompositionKeyringEntry("test-v1", base64.StdEncoding.EncodeToString([]byte("short")))}
 		},
-		"invalid version": func(deps *feishuCompositionDeps) { deps.cipherKeys = map[string]string{"bad/version": valid} },
+		"invalid version": func(deps *feishuCompositionDeps) {
+			deps.cipherKeys = []feishuCipherKeyringEntry{feishuCompositionKeyringEntry("bad/version", valid)}
+		},
 		"uppercase current and configured version": func(deps *feishuCompositionDeps) {
 			deps.keyVersion = "V1"
-			deps.cipherKeys = map[string]string{"V1": valid}
+			deps.cipherKeys = []feishuCipherKeyringEntry{feishuCompositionKeyringEntry("V1", valid)}
 		},
 		"noncanonical current version": func(deps *feishuCompositionDeps) {
 			deps.keyVersion = " v2"
-			deps.cipherKeys = map[string]string{" v2": valid}
+			deps.cipherKeys = []feishuCipherKeyringEntry{feishuCompositionKeyringEntry(" v2", valid)}
 		},
 		"current version absent": func(deps *feishuCompositionDeps) {
 			deps.keyVersion = "v2"
-			deps.cipherKeys = map[string]string{"v1": valid}
+			deps.cipherKeys = []feishuCipherKeyringEntry{feishuCompositionKeyringEntry("v1", valid)}
 		},
 		"duplicate material": func(deps *feishuCompositionDeps) {
 			deps.keyVersion = "v2"
-			deps.cipherKeys = map[string]string{"v1": valid, "v2": valid}
+			deps.cipherKeys = []feishuCipherKeyringEntry{
+				feishuCompositionKeyringEntry("v1", valid),
+				feishuCompositionKeyringEntry("v2", valid),
+			}
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -359,7 +385,7 @@ func TestBuildFeishuService_NoncanonicalPersistedKeyVersionsFailClosed(t *testin
 		t.Run(name, func(t *testing.T) {
 			deps := newFeishuCompositionDeps(t)
 			deps.keyVersion = "v1"
-			deps.cipherKeys = map[string]string{"v1": feishuCompositionKey(1)}
+			deps.cipherKeys = []feishuCipherKeyringEntry{feishuCompositionKeyringEntry("v1", feishuCompositionKey(1))}
 			deps.verifyVersion = func(context.Context) error { return nil }
 			persist(t, deps)
 
@@ -374,13 +400,94 @@ func TestBuildFeishuCipherKeyring_RejectsNoncanonicalViperVersion(t *testing.T) 
 	key := feishuCompositionKey(7)
 	config := viper.New()
 	config.SetConfigType("yaml")
-	require.NoError(t, config.ReadConfig(strings.NewReader("feishu:\n  key_version: V1\n  keyring:\n    V1: "+key+"\n")))
+	require.NoError(t, config.ReadConfig(strings.NewReader("feishu:\n  key_version: V1\n  keyring:\n    - version: V1\n      key: "+key+"\n")))
 
 	require.Equal(t, "V1", config.GetString("feishu.key_version"))
-	require.Equal(t, map[string]string{"v1": key}, config.GetStringMapString("feishu.keyring"))
-	_, err := buildFeishuCipherKeyring(config.GetString("feishu.key_version"), config.GetStringMapString("feishu.keyring"))
+	entries, err := readFeishuCipherKeyring(config)
+	require.NoError(t, err)
+	require.Equal(t, []feishuCipherKeyringEntry{feishuCompositionKeyringEntry("V1", key)}, entries)
+	_, err = buildFeishuCipherKeyring(config.GetString("feishu.key_version"), entries)
 	require.Error(t, err)
 	require.NotContains(t, err.Error(), key)
+}
+
+func TestBuildConfiguredFeishuService_RejectsAmbiguousLegacyViperKeyringMap(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+
+	firstKey := feishuCompositionKey(1)
+	secondKey := feishuCompositionKey(2)
+	viper.SetConfigType("yaml")
+	require.NoError(t, viper.ReadConfig(strings.NewReader("features:\n  feishu_integration:\n    enabled: true\nsecurity:\n  thirdparty_token_key: "+feishuCompositionKey(9)+"\nfeishu:\n  key_version: v1\n  keyring:\n    V1: "+firstKey+"\n    v1: "+secondKey+"\n  runtime_base: "+filepath.Join(t.TempDir(), "runtime")+"\n  auth_owner: test-feishu-auth-worker\n")))
+
+	deps := newFeishuCompositionDeps(t)
+	workspace, err := buildConfiguredFeishuService(deps.dataStore, deps.studentRuns, deps.resumeStore, deps.supervisor)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "keyring configuration")
+	require.Nil(t, workspace)
+	require.NotContains(t, err.Error(), firstKey)
+	require.NotContains(t, err.Error(), secondKey)
+}
+
+func TestBuildFeishuCipherKeyring_RejectsDuplicateCanonicalViperListVersions(t *testing.T) {
+	firstKey := feishuCompositionKey(1)
+	secondKey := feishuCompositionKey(2)
+	config := viper.New()
+	config.SetConfigType("yaml")
+	require.NoError(t, config.ReadConfig(strings.NewReader("feishu:\n  keyring:\n    - version: v1\n      key: "+firstKey+"\n    - version: v1\n      key: "+secondKey+"\n")))
+
+	entries, err := readFeishuCipherKeyring(config)
+	require.NoError(t, err)
+	require.Equal(t, []feishuCipherKeyringEntry{
+		feishuCompositionKeyringEntry("v1", firstKey),
+		feishuCompositionKeyringEntry("v1", secondKey),
+	}, entries)
+
+	_, err = buildFeishuCipherKeyring("v1", entries)
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), firstKey)
+	require.NotContains(t, err.Error(), secondKey)
+}
+
+func TestBuildFeishuCipherKeyring_RejectsNoncanonicalViperListVersions(t *testing.T) {
+	uppercaseKey := feishuCompositionKey(1)
+	canonicalKey := feishuCompositionKey(2)
+	config := viper.New()
+	config.SetConfigType("yaml")
+	require.NoError(t, config.ReadConfig(strings.NewReader("feishu:\n  keyring:\n    - version: V1\n      key: "+uppercaseKey+"\n    - version: v1\n      key: "+canonicalKey+"\n")))
+
+	entries, err := readFeishuCipherKeyring(config)
+	require.NoError(t, err)
+	require.Equal(t, []feishuCipherKeyringEntry{
+		feishuCompositionKeyringEntry("V1", uppercaseKey),
+		feishuCompositionKeyringEntry("v1", canonicalKey),
+	}, entries)
+
+	_, err = buildFeishuCipherKeyring("v1", entries)
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), uppercaseKey)
+	require.NotContains(t, err.Error(), canonicalKey)
+}
+
+func TestBuildFeishuCipherKeyring_ReadsOrderedViperList(t *testing.T) {
+	v1Key := feishuCompositionKey(1)
+	v2Key := feishuCompositionKey(2)
+	config := viper.New()
+	config.SetConfigType("yaml")
+	require.NoError(t, config.ReadConfig(strings.NewReader("feishu:\n  key_version: v2\n  keyring:\n    - version: v1\n      key: "+v1Key+"\n    - version: v2\n      key: "+v2Key+"\n")))
+
+	entries, err := readFeishuCipherKeyring(config)
+	require.NoError(t, err)
+	require.Equal(t, []feishuCipherKeyringEntry{
+		feishuCompositionKeyringEntry("v1", v1Key),
+		feishuCompositionKeyringEntry("v2", v2Key),
+	}, entries)
+
+	ciphers, err := buildFeishuCipherKeyring(config.GetString("feishu.key_version"), entries)
+	require.NoError(t, err)
+	require.Len(t, ciphers, 2)
+	require.Contains(t, ciphers, "v1")
+	require.Contains(t, ciphers, "v2")
 }
 
 func TestFeishuWorkspacePublication_UsesOneComposedGraph(t *testing.T) {

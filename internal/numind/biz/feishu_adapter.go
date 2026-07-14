@@ -39,13 +39,21 @@ type feishuPersonalWorkspace struct {
 	supervisor           *agent.ExternalContinuationSupervisor
 }
 
+// feishuCipherKeyringEntry is one ordered, explicit keyring configuration
+// entry. Version is a value rather than a map key so Viper cannot collapse
+// differently-cased labels before validation.
+type feishuCipherKeyringEntry struct {
+	Version string
+	Key     string
+}
+
 type feishuCompositionDeps struct {
 	enabled   bool
 	dataStore store.IStore
 	// tokenKey is exclusively the SkillReader receipt/cursor HMAC root. It is
 	// intentionally separate from the versioned encryption keyring below.
 	tokenKey    string
-	cipherKeys  map[string]string
+	cipherKeys  []feishuCipherKeyringEntry
 	keyVersion  string
 	runtimeBase string
 	authOwner   string
@@ -193,17 +201,24 @@ func buildFeishuService(deps feishuCompositionDeps) (*feishuPersonalWorkspace, e
 // AES-256 key. The current version is the only writer; historical entries stay
 // available only so existing vault snapshots and operation blobs can open.
 // Errors intentionally omit key material.
-func buildFeishuCipherKeyring(currentVersion string, configured map[string]string) (map[string]*crypto.Cipher, error) {
+func buildFeishuCipherKeyring(currentVersion string, configured []feishuCipherKeyringEntry) (map[string]*crypto.Cipher, error) {
 	if !validFeishuCipherKeyVersion(currentVersion) || len(configured) == 0 {
 		return nil, fmt.Errorf("invalid keyring configuration")
 	}
 
 	ciphers := make(map[string]*crypto.Cipher, len(configured))
 	seenMaterial := make(map[[crypto.KeyLen]byte]struct{}, len(configured))
-	for version, encodedKey := range configured {
+	seenVersions := make(map[string]struct{}, len(configured))
+	for _, entry := range configured {
+		version := entry.Version
+		encodedKey := entry.Key
 		if !validFeishuCipherKeyVersion(version) {
 			return nil, fmt.Errorf("invalid keyring configuration")
 		}
+		if _, duplicate := seenVersions[version]; duplicate {
+			return nil, fmt.Errorf("invalid keyring configuration")
+		}
+		seenVersions[version] = struct{}{}
 		decoded, err := base64.StdEncoding.DecodeString(encodedKey)
 		if err != nil || len(decoded) != crypto.KeyLen || base64.StdEncoding.EncodeToString(decoded) != encodedKey {
 			return nil, fmt.Errorf("invalid keyring configuration")
@@ -289,6 +304,34 @@ func verifyFeishuPersistedKeyVersion(version string, ciphers map[string]*crypto.
 	return nil
 }
 
+// readFeishuCipherKeyring reads the only supported, ordered Viper keyring
+// form. It deliberately rejects maps before extracting any material: Viper
+// normalizes map keys and would otherwise erase a duplicate version label.
+func readFeishuCipherKeyring(config *viper.Viper) ([]feishuCipherKeyringEntry, error) {
+	if config == nil {
+		return nil, fmt.Errorf("invalid keyring configuration")
+	}
+	raw, found := config.Get("feishu.keyring").([]any)
+	if !found || len(raw) == 0 {
+		return nil, fmt.Errorf("invalid keyring configuration")
+	}
+
+	entries := make([]feishuCipherKeyringEntry, 0, len(raw))
+	for _, rawEntry := range raw {
+		entry, found := rawEntry.(map[string]any)
+		if !found || len(entry) != 2 {
+			return nil, fmt.Errorf("invalid keyring configuration")
+		}
+		version, versionFound := entry["version"].(string)
+		key, keyFound := entry["key"].(string)
+		if !versionFound || !keyFound {
+			return nil, fmt.Errorf("invalid keyring configuration")
+		}
+		entries = append(entries, feishuCipherKeyringEntry{Version: version, Key: key})
+	}
+	return entries, nil
+}
+
 // buildConfiguredFeishuService reads only explicit production configuration.
 // The runtime root and key version intentionally have no defaults: an enabled
 // feature without either is safer disabled than pointed at an implicit shared
@@ -299,11 +342,15 @@ func buildConfiguredFeishuService(
 	resumeStore store.IExternalToolResumeLease,
 	supervisor *agent.ExternalContinuationSupervisor,
 ) (*feishuPersonalWorkspace, error) {
+	cipherKeys, err := readFeishuCipherKeyring(viper.GetViper())
+	if err != nil {
+		return nil, fmt.Errorf("feishu keyring configuration rejected")
+	}
 	return buildFeishuService(feishuCompositionDeps{
 		enabled:     viper.GetBool("features.feishu_integration.enabled"),
 		dataStore:   dataStore,
 		tokenKey:    viper.GetString("security.thirdparty_token_key"),
-		cipherKeys:  viper.GetStringMapString("feishu.keyring"),
+		cipherKeys:  cipherKeys,
 		keyVersion:  viper.GetString("feishu.key_version"),
 		runtimeBase: viper.GetString("feishu.runtime_base"),
 		authOwner:   viper.GetString("feishu.auth_owner"),
