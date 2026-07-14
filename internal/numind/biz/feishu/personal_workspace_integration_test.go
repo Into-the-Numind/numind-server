@@ -1,0 +1,383 @@
+package feishu
+
+import (
+	"encoding/json"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+
+	"numind-server/internal/pkg/model"
+)
+
+// newPersonalWorkspaceIntegrationOperationService intentionally recreates the
+// operation coordinator against the same durable stores. The integration tests
+// use it at every recovery boundary to prove that a process restart cannot
+// change the encrypted command or the owning user/generation.
+func newPersonalWorkspaceIntegrationOperationService(
+	t *testing.T,
+	h *operationHarness,
+	recovery RecoveryStarter,
+) *FeishuOperationService {
+	t.Helper()
+	service, err := NewFeishuOperationService(OperationServiceDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: h.dataStore.FeishuWorkspace(),
+		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: recovery,
+		Confirmation: h.confirmation, Vault: h.vault, Runner: h.runner, Cipher: h.cipher,
+		Now: h.service.now, LeaseDuration: time.Minute,
+	})
+	require.NoError(t, err)
+	return service
+}
+
+func setPersonalWorkspaceIntegrationDispatcher(
+	dispatcher *reentrantOperationResumeDispatcher,
+	service *FeishuOperationService,
+) {
+	dispatcher.mu.Lock()
+	dispatcher.service = service
+	dispatcher.mu.Unlock()
+}
+
+func newPersonalWorkspaceIntegrationAuthService(
+	t *testing.T,
+	h *operationHarness,
+	cli *authSessionCLIFake,
+	dispatcher OperationResumeDispatcher,
+	owner string,
+) *AuthSessionService {
+	t.Helper()
+	auth, err := NewAuthSessionService(AuthSessionServiceDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Sessions: h.dataStore.FeishuWorkspace(),
+		Vault: h.vault, CLI: cli, Dispatcher: dispatcher, Owner: owner,
+		Now: h.service.now, LeaseDuration: time.Minute, SessionDuration: 10 * time.Minute,
+		HeartbeatInterval: 30 * time.Second, StartTimeout: time.Second,
+	})
+	require.NoError(t, err)
+	return auth
+}
+
+func TestPersonalWorkspaceIntegration_PhaseRecoveriesSurviveCoordinatorRestarts(t *testing.T) {
+	h := newOperationHarness(t)
+	createRelease := make(chan struct{})
+	initialUserRelease := make(chan struct{})
+	releaseCreate := releaseAuthSessionCLIFake(t, createRelease)
+	releaseInitialUser := releaseAuthSessionCLIFake(t, initialUserRelease)
+	cli := &authSessionCLIFake{
+		appID: "cli_personal_workspace",
+		urls: []string{
+			"https://open.feishu.cn/page/cli?user_code=CREATE_PERSONAL",
+			"https://open.feishu.cn/suite/passport/oauth/device?user_code=INITIAL_USER_SCOPE",
+		},
+		releases: []<-chan struct{}{createRelease, initialUserRelease},
+	}
+	dispatcher := &reentrantOperationResumeDispatcher{}
+	authBeforeCreate := newPersonalWorkspaceIntegrationAuthService(t, h, cli, dispatcher, "personal-workspace-create")
+
+	appScopeRequired := &CLIResult{
+		InvocationStarted: true,
+		ExitCode:          1,
+		Envelope: &CLIEnvelope{OK: false, Identity: "user", Error: &CLIError{
+			Type: "authorization", Subtype: "app_scope_not_applied", Identity: "user",
+			ConsoleURL:    "https://open.feishu.cn/app/cli_personal_workspace/auth",
+			MissingScopes: []string{"docx:document:readonly"}, PermissionViolations: json.RawMessage(`[{"level":"app"}]`),
+		}},
+	}
+	h.runner.steps = []operationRunnerStep{
+		{result: appScopeRequired, err: errors.New("app permission has not been approved")},
+		{result: operationOKResult(`{"document_id":"replayed-exactly-once"}`)},
+	}
+
+	firstCoordinator := newPersonalWorkspaceIntegrationOperationService(t, h, authBeforeCreate)
+	setPersonalWorkspaceIntegrationDispatcher(dispatcher, firstCoordinator)
+	request := operationDocsFetchRequest(900, "tool-personal-workspace")
+	waitingCreate, err := firstCoordinator.Execute(h.ctx, request)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingConnection, waitingCreate.State)
+	require.Equal(t, model.FeishuAuthPhaseCreateApp, waitingCreate.Action.Phase)
+
+	require.Eventually(t, func() bool {
+		argv, _ := cli.snapshot()
+		return len(argv) == 1
+	}, time.Second, 10*time.Millisecond, "creating the app must begin after the operation is durably waiting")
+
+	// Hold the old worker after its durable completion, rebuild both services,
+	// then let the new process perform the replay.
+	createDispatchRelease := make(chan struct{})
+	releaseCreateDispatch := releaseAuthSessionCLIFake(t, createDispatchRelease)
+	createDispatchEntered := dispatcher.blockNextDispatch(createDispatchRelease)
+	releaseCreate()
+	select {
+	case <-createDispatchEntered:
+	case <-time.After(time.Second):
+		t.Fatal("create-app completion did not reach the restart boundary")
+	}
+	authAfterCreate := newPersonalWorkspaceIntegrationAuthService(t, h, cli, dispatcher, "personal-workspace-after-create")
+	afterCreateRestart := newPersonalWorkspaceIntegrationOperationService(t, h, authAfterCreate)
+	setPersonalWorkspaceIntegrationDispatcher(dispatcher, afterCreateRestart)
+	releaseCreateDispatch()
+
+	// A newly created app has no user identity yet. Completing that first
+	// account-level authorization replays the exact operation, whose structured
+	// result can then ask for app approval without treating an ACL failure as an
+	// OAuth failure.
+	var initialUserAuthSession model.FeishuAuthSession
+	require.Eventually(t, func() bool {
+		return h.db.Where("operation_id = ? AND phase = ? AND state = ?", waitingCreate.OperationID,
+			model.FeishuAuthPhaseUserAuth, model.FeishuAuthSessionPending).
+			Order("created_at DESC").Take(&initialUserAuthSession).Error == nil
+	}, 2*time.Second, 10*time.Millisecond, "app creation must lead to the first exact user authorization")
+	require.JSONEq(t, `["docx:document:readonly"]`, string(initialUserAuthSession.RequestedScopesJSON))
+	require.Eventually(t, func() bool {
+		argv, _ := cli.snapshot()
+		return len(argv) == 2
+	}, time.Second, 10*time.Millisecond, "initial user authorization must be started once")
+
+	userDispatchRelease := make(chan struct{})
+	releaseUserDispatch := releaseAuthSessionCLIFake(t, userDispatchRelease)
+	userDispatchEntered := dispatcher.blockNextDispatch(userDispatchRelease)
+	releaseInitialUser()
+	select {
+	case <-userDispatchEntered:
+	case <-time.After(time.Second):
+		t.Fatal("user authorization completion did not reach the restart boundary")
+	}
+	authAfterUserAuth := newPersonalWorkspaceIntegrationAuthService(t, h, cli, dispatcher, "personal-workspace-after-user-auth")
+	afterInitialUserAuthRestart := newPersonalWorkspaceIntegrationOperationService(t, h, authAfterUserAuth)
+	setPersonalWorkspaceIntegrationDispatcher(dispatcher, afterInitialUserAuthRestart)
+	releaseUserDispatch()
+
+	var appScopeSession model.FeishuAuthSession
+	require.Eventually(t, func() bool {
+		return h.db.Where("operation_id = ? AND phase = ? AND state = ?", waitingCreate.OperationID,
+			model.FeishuAuthPhaseAppScope, model.FeishuAuthSessionPending).
+			Order("created_at DESC").Take(&appScopeSession).Error == nil
+	}, 2*time.Second, 10*time.Millisecond, "the exact operation must move to app-scope approval after the structured app error")
+
+	// The browser acknowledgement is durable too. Pause it after completion,
+	// rebuild the whole composition, and only then deliver the exact replay.
+	appScopeDispatchRelease := make(chan struct{})
+	releaseAppScopeDispatch := releaseAuthSessionCLIFake(t, appScopeDispatchRelease)
+	appScopeDispatchEntered := dispatcher.blockNextDispatch(appScopeDispatchRelease)
+	appScopeCompleted := make(chan error, 1)
+	go func() {
+		appScopeCompleted <- authAfterUserAuth.CompleteAppApproval(h.ctx, 7, 1, appScopeSession.ID)
+	}()
+	select {
+	case <-appScopeDispatchEntered:
+	case <-time.After(time.Second):
+		t.Fatal("app-scope completion did not reach the restart boundary")
+	}
+	authAfterAppScope := newPersonalWorkspaceIntegrationAuthService(t, h, cli, dispatcher, "personal-workspace-after-app-scope")
+	afterAppScopeRestart := newPersonalWorkspaceIntegrationOperationService(t, h, authAfterAppScope)
+	setPersonalWorkspaceIntegrationDispatcher(dispatcher, afterAppScopeRestart)
+	releaseAppScopeDispatch()
+	require.NoError(t, <-appScopeCompleted)
+
+	var completed model.FeishuOperation
+	require.Eventually(t, func() bool {
+		return h.db.Where("id = ?", waitingCreate.OperationID).Take(&completed).Error == nil &&
+			completed.State == model.FeishuOperationSucceeded
+	}, 2*time.Second, 10*time.Millisecond, "completed authorization must replay the original operation")
+	result, err := afterAppScopeRestart.Resume(h.ctx, 7, waitingCreate.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, result.State)
+	require.JSONEq(t, `{"document_id":"replayed-exactly-once"}`, string(result.Data))
+
+	calls, argv := h.runner.snapshot()
+	require.Equal(t, 2, calls, "app-scope recovery must replay the exact original business operation once")
+	for _, invocation := range argv {
+		require.Equal(t, []string{"docs", "+fetch", "--doc", "doxcnABCDEFG123", "--format", "json", "--as", "user"}, invocation)
+	}
+	require.Equal(t, 3, dispatcher.callCount(), "each completed phase dispatches one exact-operation continuation")
+}
+
+func TestPersonalWorkspaceIntegration_UserScopeRecoveryReplaysExactRequestAfterRestart(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_personal_workspace")
+	userRelease := make(chan struct{})
+	releaseUser := releaseAuthSessionCLIFake(t, userRelease)
+	cli := &authSessionCLIFake{
+		urls:     []string{"https://open.feishu.cn/suite/passport/oauth/device?user_code=RECOVER_USER_SCOPE"},
+		releases: []<-chan struct{}{userRelease},
+	}
+	dispatcher := &reentrantOperationResumeDispatcher{}
+	authBeforeRestart := newPersonalWorkspaceIntegrationAuthService(t, h, cli, dispatcher, "personal-workspace-user-scope")
+	h.runner.steps = []operationRunnerStep{
+		{result: userScopeRequiredCLIResult(), err: errors.New("user permission has not been granted")},
+		{result: operationOKResult(`{"document_id":"replayed-after-user-scope"}`)},
+	}
+
+	firstCoordinator := newPersonalWorkspaceIntegrationOperationService(t, h, authBeforeRestart)
+	setPersonalWorkspaceIntegrationDispatcher(dispatcher, firstCoordinator)
+	request := operationDocsFetchRequest(905, "tool-user-scope-recovery")
+	waiting, err := firstCoordinator.Execute(h.ctx, request)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingUserAuth, waiting.State)
+	request.Argv[3] = "mutated-after-persist"
+
+	userDispatchRelease := make(chan struct{})
+	releaseUserDispatch := releaseAuthSessionCLIFake(t, userDispatchRelease)
+	userDispatchEntered := dispatcher.blockNextDispatch(userDispatchRelease)
+	releaseUser()
+	select {
+	case <-userDispatchEntered:
+	case <-time.After(time.Second):
+		t.Fatal("user-scope completion did not reach the restart boundary")
+	}
+	authAfterRestart := newPersonalWorkspaceIntegrationAuthService(t, h, cli, dispatcher, "personal-workspace-user-scope-restarted")
+	afterUserScopeRestart := newPersonalWorkspaceIntegrationOperationService(t, h, authAfterRestart)
+	setPersonalWorkspaceIntegrationDispatcher(dispatcher, afterUserScopeRestart)
+	releaseUserDispatch()
+
+	var completed model.FeishuOperation
+	require.Eventually(t, func() bool {
+		return h.db.Where("id = ?", waiting.OperationID).Take(&completed).Error == nil &&
+			completed.State == model.FeishuOperationSucceeded
+	}, 2*time.Second, 10*time.Millisecond, "completed user authorization must resume the persisted request")
+	duplicate, err := afterUserScopeRestart.Resume(h.ctx, 7, waiting.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, duplicate.State)
+	calls, argv := h.runner.snapshot()
+	require.Equal(t, 2, calls)
+	for _, invocation := range argv {
+		require.Equal(t, []string{"docs", "+fetch", "--doc", "doxcnABCDEFG123", "--format", "json", "--as", "user"}, invocation)
+	}
+}
+
+func TestPersonalWorkspaceIntegration_RevokedRefreshRecoversOriginalOperationAfterRestart(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_personal_workspace")
+	userRelease := make(chan struct{})
+	releaseUser := releaseAuthSessionCLIFake(t, userRelease)
+	cli := &authSessionCLIFake{
+		urls:     []string{"https://open.feishu.cn/suite/passport/oauth/device?user_code=REAUTH_REVOKED"},
+		releases: []<-chan struct{}{userRelease},
+	}
+	dispatcher := &reentrantOperationResumeDispatcher{}
+	authBeforeRestart := newPersonalWorkspaceIntegrationAuthService(t, h, cli, dispatcher, "personal-workspace-reauth")
+	h.runner.steps = []operationRunnerStep{
+		{result: &CLIResult{InvocationStarted: true, ExitCode: 1, Envelope: &CLIEnvelope{
+			OK: false, Identity: "user", Error: &CLIError{
+				Type: "authorization", Subtype: "refresh_token_revoked", Identity: "user",
+			},
+		}}, err: errors.New("refresh token was revoked")},
+		{result: operationOKResult(`{"document_id":"replayed-after-reauth"}`)},
+	}
+
+	firstCoordinator := newPersonalWorkspaceIntegrationOperationService(t, h, authBeforeRestart)
+	setPersonalWorkspaceIntegrationDispatcher(dispatcher, firstCoordinator)
+	waiting, err := firstCoordinator.Execute(h.ctx, operationDocsFetchRequest(906, "tool-reauth-recovery"))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingUserAuth, waiting.State)
+	require.Equal(t, model.FeishuAuthPhaseUserAuth, waiting.Action.Phase)
+
+	userDispatchRelease := make(chan struct{})
+	releaseUserDispatch := releaseAuthSessionCLIFake(t, userDispatchRelease)
+	userDispatchEntered := dispatcher.blockNextDispatch(userDispatchRelease)
+	releaseUser()
+	select {
+	case <-userDispatchEntered:
+	case <-time.After(time.Second):
+		t.Fatal("reauthorization completion did not reach the restart boundary")
+	}
+	authAfterRestart := newPersonalWorkspaceIntegrationAuthService(t, h, cli, dispatcher, "personal-workspace-reauth-restarted")
+	afterReauthRestart := newPersonalWorkspaceIntegrationOperationService(t, h, authAfterRestart)
+	setPersonalWorkspaceIntegrationDispatcher(dispatcher, afterReauthRestart)
+	releaseUserDispatch()
+	require.Eventually(t, func() bool {
+		operation, getErr := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, waiting.OperationID)
+		return getErr == nil && operation.State == model.FeishuOperationSucceeded
+	}, 2*time.Second, 10*time.Millisecond, "reauthorization must replay the original encrypted operation")
+	calls, argv := h.runner.snapshot()
+	require.Equal(t, 2, calls)
+	for _, invocation := range argv {
+		require.Equal(t, []string{"docs", "+fetch", "--doc", "doxcnABCDEFG123", "--format", "json", "--as", "user"}, invocation)
+	}
+}
+
+func userScopeRequiredCLIResult() *CLIResult {
+	return &CLIResult{
+		InvocationStarted: true,
+		ExitCode:          1,
+		Envelope: &CLIEnvelope{OK: false, Identity: "user", Error: &CLIError{
+			Type: "authorization", Subtype: "missing_scope", Code: json.RawMessage(`99991672`),
+			Identity: "user", MissingScopes: []string{"docx:document:readonly"},
+		}},
+	}
+}
+
+func TestPersonalWorkspaceIntegration_TenantAndGenerationFencesRejectStaleRecovery(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_user_seven")
+	h.createAccount(8, model.FeishuConnectionConnected, 1, "cli_user_eight")
+	h.runner.steps = []operationRunnerStep{
+		{result: operationOKResult(`{"document_id":"user-seven"}`)},
+		{result: operationOKResult(`{"document_id":"user-eight"}`)},
+	}
+
+	userSevenRequest := operationDocsFetchRequest(901, "tool-user-seven")
+	userSeven, err := h.service.Execute(h.ctx, userSevenRequest)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, userSeven.State)
+
+	_, err = h.service.Resume(h.ctx, 8, userSeven.OperationID)
+	require.ErrorIs(t, err, ErrOperationUnavailable, "another account must not observe or replay this operation")
+
+	retiredGeneration, nextGeneration, err := h.dataStore.ThirdPartyAccounts().RetireGeneration(h.ctx, 7, ProviderLark)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, retiredGeneration)
+	require.EqualValues(t, 2, nextGeneration)
+	_, err = h.service.Resume(h.ctx, 7, userSeven.OperationID)
+	require.ErrorIs(t, err, ErrOperationUnavailable, "unbinding must invalidate all old-generation operation IDs")
+
+	userEightRequest := operationDocsFetchRequest(902, "tool-user-eight")
+	userEightRequest.UserID = 8
+	userEightRequest.IdempotencyKey = "902:tool-user-eight"
+	userEight, err := h.service.Execute(h.ctx, userEightRequest)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, userEight.State)
+
+	calls, _ := h.runner.snapshot()
+	require.Equal(t, 2, calls, "stale and cross-tenant resumes must never invoke lark-cli")
+}
+
+func TestPersonalWorkspaceIntegration_ResourceACLAndUnknownWriteNeverBecomeOAuthReplay(t *testing.T) {
+	t.Run("resource ACL is a sharing failure, not OAuth", func(t *testing.T) {
+		h := newOperationHarness(t)
+		h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+		h.runner.steps = []operationRunnerStep{{
+			result: &CLIResult{InvocationStarted: true, ExitCode: 1, Envelope: &CLIEnvelope{
+				OK: false, Identity: "user", Error: &CLIError{
+					Type: "api", Subtype: "permission_denied", Code: json.RawMessage(`"RESOURCE_ACCESS_DENIED"`), Identity: "user",
+				},
+			}},
+			err: errors.New("the document is not shared with this user"),
+		}}
+
+		got, err := h.service.Execute(h.ctx, operationDocsFetchRequest(903, "tool-resource-acl"))
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuOperationFailed, got.State)
+		require.Empty(t, h.recovery.snapshot())
+	})
+
+	t.Run("started write with unknown result is terminal", func(t *testing.T) {
+		h := newOperationHarness(t)
+		h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+		h.runner.steps = []operationRunnerStep{{
+			result: &CLIResult{InvocationStarted: true, ExitCode: -1},
+			err:    errors.New("transport ended after command start"),
+		}}
+		request := operationDocsCreateRequest(7, 904, "tool-unknown-write", "不可重试", nil)
+		got, err := h.service.Execute(h.ctx, request)
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuOperationUnknown, got.State)
+
+		resumed, err := h.service.Resume(h.ctx, 7, got.OperationID)
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuOperationUnknown, resumed.State)
+		calls, _ := h.runner.snapshot()
+		require.Equal(t, 1, calls, "an unknown write must never be retried automatically")
+	})
+}

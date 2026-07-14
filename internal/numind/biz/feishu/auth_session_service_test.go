@@ -41,6 +41,16 @@ type authSessionCLIFake struct {
 	appIDErr        error
 }
 
+func releaseAuthSessionCLIFake(t *testing.T, release chan struct{}) func() {
+	t.Helper()
+	var once sync.Once
+	releaseOnce := func() {
+		once.Do(func() { close(release) })
+	}
+	t.Cleanup(releaseOnce)
+	return releaseOnce
+}
+
 func (f *authSessionCLIFake) RunBlocking(
 	ctx context.Context,
 	_ string,
@@ -576,6 +586,38 @@ func TestAuthSessionService_ManualConnectCreatesAppBeforeOfflineAuthorization(t 
 		account, getErr := h.dataStore.ThirdPartyAccounts().Get(h.ctx, 7, ProviderLark)
 		return getErr == nil && account.Connected && account.ConnectionState == model.FeishuConnectionConnected
 	}, 2*time.Second, 10*time.Millisecond)
+}
+
+func TestAuthSessionService_OperationCreateAppDoesNotStartManualOfflineAuthorization(t *testing.T) {
+	h := newAuthSessionHarness(t)
+	createRelease := make(chan struct{})
+	releaseCreate := releaseAuthSessionCLIFake(t, createRelease)
+	h.cli.urls = []string{"https://open.feishu.cn/page/cli?user_code=OPERATION_CREATE"}
+	h.cli.release = createRelease
+	service := h.newService("worker-operation-create")
+
+	action, err := service.StartRecovery(h.ctx, RecoveryRequest{
+		UserID: 7, Generation: 1, OperationID: "operation-create-recovery",
+		Kind: RecoveryCreateApp, Scopes: []string{"docx:document:readonly"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthPhaseCreateApp, action.Phase)
+	require.NoError(t, service.Activate(h.ctx, action.SessionID))
+	releaseCreate()
+
+	require.Eventually(t, func() bool {
+		calls := h.dispatcher.snapshot()
+		return len(calls) == 1 && calls[0] == "operation-create-recovery"
+	}, time.Second, 10*time.Millisecond, "operation-bound app creation must dispatch its original operation")
+
+	require.Never(t, func() bool {
+		var count int64
+		err := h.db.Model(&model.FeishuAuthSession{}).
+			Where("operation_id IS NULL AND phase = ?", model.FeishuAuthPhaseUserAuth).
+			Count(&count).Error
+		return err == nil && count > 0
+	}, 250*time.Millisecond, 10*time.Millisecond,
+		"operation-bound app creation must not start the settings-only offline_access chain")
 }
 
 func TestAuthSessionService_CreateAppPersistsOnlyProvenStatusMetadata(t *testing.T) {

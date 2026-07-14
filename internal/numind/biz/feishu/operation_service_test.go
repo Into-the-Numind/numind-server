@@ -56,10 +56,12 @@ type operationRecoveryFake struct {
 }
 
 type reentrantOperationResumeDispatcher struct {
-	mu      sync.Mutex
-	service *FeishuOperationService
-	active  bool
-	calls   int
+	mu                  sync.Mutex
+	service             *FeishuOperationService
+	active              bool
+	calls               int
+	nextDispatchBlock   <-chan struct{}
+	nextDispatchEntered chan<- struct{}
 }
 
 func (d *reentrantOperationResumeDispatcher) DispatchResume(ctx context.Context, userID uint, operationID string) error {
@@ -70,16 +72,50 @@ func (d *reentrantOperationResumeDispatcher) DispatchResume(ctx context.Context,
 		return errors.New("recursive operation resume")
 	}
 	d.active = true
+	block := d.nextDispatchBlock
+	entered := d.nextDispatchEntered
+	d.nextDispatchBlock = nil
+	d.nextDispatchEntered = nil
+	d.mu.Unlock()
+	defer func() {
+		d.mu.Lock()
+		d.active = false
+		d.mu.Unlock()
+	}()
+	if entered != nil {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+	}
+	if block != nil {
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	d.mu.Lock()
 	service := d.service
 	d.mu.Unlock()
 	if service == nil {
 		return errors.New("operation service unavailable")
 	}
 	_, err := service.Resume(ctx, userID, operationID)
-	d.mu.Lock()
-	d.active = false
-	d.mu.Unlock()
 	return err
+}
+
+// blockNextDispatch stops one already-durable phase completion immediately
+// before it resumes the operation. Integration tests use this as the precise
+// process-restart boundary: the old worker has committed its terminal state,
+// then a fresh process constructs its services before processing the replay.
+func (d *reentrantOperationResumeDispatcher) blockNextDispatch(block <-chan struct{}) <-chan struct{} {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	entered := make(chan struct{}, 1)
+	d.nextDispatchBlock = block
+	d.nextDispatchEntered = entered
+	return entered
 }
 
 func (d *reentrantOperationResumeDispatcher) callCount() int {
