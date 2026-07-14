@@ -1148,7 +1148,7 @@ git commit -m "feat(feishu): add personal workspace client state"
 
 **Files:** `src/components/agent/FeishuActionCard.vue`、`src/components/agent/__tests__/FeishuActionCard.spec.ts`、`src/components/agent/AgentMessageItem.vue`、`src/components/agent/__tests__/AgentMessageItem.spec.ts`。
 
-- [ ] **Step 1: 写组件红测**
+- [x] **Step 1: 写组件红测**
 
 覆盖 create_app/app_scope/user_auth/confirmation/继续原任务；URL 展示值和复制值完整一致；二维码 payload 与 URL 字节相同；过期后禁用旧 continue 并显示刷新；resume/refresh/confirmed/cancelled 独立 emit；`aria-live=polite`、错误 `role=alert`；375px 无横向溢出。
 
@@ -1161,32 +1161,34 @@ it('emits operation resume instead of a question answer', async () => {
 })
 ```
 
-- [ ] **Step 2: 运行红测**
+- [x] **Step 2: 运行红测**
 
 Run: `npm run test:unit -- src/components/agent/__tests__/FeishuActionCard.spec.ts src/components/agent/__tests__/AgentMessageItem.spec.ts`
 
 Expected: FAIL，新卡不存在且旧卡走 answer-submitted。
 
-- [ ] **Step 3: 实现 FeishuActionCard**
+- [x] **Step 3: 实现 FeishuActionCard**
 
 用现有 `AppButton` 和 `qrcode`，不引入 UI 框架。卡片使用 `var(--surface)`、`var(--border)`、`var(--shadow-card)`、`var(--radius-md)`、T-shirt spacing token；主 CTA 使用翠绿 `var(--primary)`；heading 使用 `var(--font-heading)`。阶段文案严格采用 spec §12.1；URL 使用 `overflow-wrap:anywhere`；二维码容器在移动端限制 `max-width:100%`。
 
-- [ ] **Step 4: 接入 AgentMessageItem**
+- [x] **Step 4: 接入 AgentMessageItem**
 
 `external_action` 渲染新卡；普通 `pause_type=question` 仍渲染 QuestionPrompt。删去旧 `pause_type=auth` → ordinary answer 的桥接代码。resume 调 store operation API，结果更新原 message，不创建用户气泡。
 
-- [ ] **Step 5: 绿测**
+- [x] **Step 5: 绿测**
 
 Run: `npm run test:unit -- src/components/agent/__tests__/FeishuActionCard.spec.ts src/components/agent/__tests__/AgentMessageItem.spec.ts`
 
 Expected: PASS。
 
-- [ ] **Step 6: Commit（前端仓库）**
+- [x] **Step 6: Commit（前端仓库）**
 
 ```bash
 git add src/components/agent/FeishuActionCard.vue src/components/agent/__tests__/FeishuActionCard.spec.ts src/components/agent/AgentMessageItem.vue src/components/agent/__tests__/AgentMessageItem.spec.ts
 git commit -m "feat(feishu): add recoverable agent action card"
 ```
+
+**一期收口（2026-07-15）：** Task 18 最终规格、质量复审 PASS（P0/P1/P2=0）。`external_action` 是唯一可恢复的飞书动作路径，不会伪装成普通 question answer；原消息原位更新且不会产生用户气泡。创建应用和用户授权阶段保持 URL/复制/二维码的原始字节一致；只有这两种阶段可刷新。`app_scope`、`confirmation` 和旧 `pause_type=auth` 失效时只给安全的“重新发起”提示。前端在 reducer 处拒绝非官方 HTTPS URL，refresh 使用 epoch、run、session、operation 和当前 pending 身份围栏，迟到响应不能在会话重置、替换或 completed/terminal SSE 后复活链接；终态立即清理计时器。提交：`c841fd5`、`603f01f`、`5f0373a`。详见 ADR 0019。
 
 ## Task 19: 设置页飞书连接卡
 
