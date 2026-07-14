@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: '重新校准并完成飞书个人工作空间连接：每个有数账号连接自己的飞书账号并长期保持；首次授权后 Agent 自动执行文档、多维表格、知识库能力。现有 feishu-integration 仅作待审计资产，不作为产品前提。'
   classification_reason: 'Standard：飞书外部集成+长期授权凭据+自动写操作属高风险，预计涉及 DB/API/biz/前端/部署/E2E 且文件数 >3。用户于 2026-07-13 确认 Standard。'
-  last_updated_by: ai-s4-task16-diagnosed
-  last_updated_at: '2026-07-14T23:10:00+0800'
+  last_updated_by: ai-s4-task17-reviewed
+  last_updated_at: '2026-07-15T00:47:57+0800'
   created_at: '2026-07-13T11:14:14+0800'
   track: standard
   stage: S4
@@ -16,7 +16,7 @@ features:
   worktrees:
     numind-server: /private/tmp/wt-feishu-personal-workspace-numind-server
     numind-web-v3: /private/tmp/wt-feishu-personal-workspace-numind-web-v3
-  progress: {total_tasks: 20, completed_tasks: 14, reviewed_tasks: 14}
+  progress: {total_tasks: 20, completed_tasks: 15, reviewed_tasks: 15}
   artifacts:
     requirement: requirements/feishu-personal-workspace.md
     proposal: proposals/feishu-personal-workspace-proposal.md
@@ -49,6 +49,7 @@ features:
   - 'S4 Task 12 gate (2026-07-14): 后端 composition 与 Agent factory 经多轮规格审查和最终质量审查 PASS，P0/P1/P2=0。完整 graph 仅在 flag on、lark-cli 1.0.68、vault cleanup、catalog、confirmation、auth/recovery bridge、Task 11 resumer/reclaimer/supervisor 与运行时 keyring 同时成功时发布；factory 只注册两个受控工具，旧 Client/ConnectOrchestrator 不进入生产热路径。keyring current-write/historical-read，配置只接受有序 entries，严格 JSON 的 NUMIND_FEISHU_KEYRING 为安全部署入口；map/非规范或重复版本/重复材料/非法或尾随 JSON/缺 current 及 retained vault/request/result 未知版本均 fail closed。详见 ADR 0016。'
   - 'S4 Task 13 gate (2026-07-14): Lifecycle HTTP API 与安全解绑经多轮独立规格和最终质量审查 PASS，P0/P1/P2=0。五接口仅从登录态识别用户；public action 只含 allowlist 字段，status/resume 不泄露 URL、scope、provider、token 或 device code。manual/app scope/user auth 与成功 operation continuation 均经同一 dispatcher 幂等恢复；cancel/unbind 精确终结关联 Agent external wait，unknown 写明确收口而不重跑 CLI。解绑 generation fence 后 join auth/本机 execution、drain 跨实例 gate，并用 heartbeat 的 owner-fenced retired teardown lease 原子删除 vault+清空账户；失败保留 disconnecting，同实例/跨实例重复 DELETE 均幂等。受控连接证据和 capability outcome 原子写入状态，退役表安全回收。详见 ADR 0017。'
   - 'S4 Task 16 gate (2026-07-14): 前端改动前 Playwright 运行时诊断完成。实际 Playwright project 为 setup/e2e；本地 Vite proxy 的真实登录 API 被拒绝，使用既有 page.route 脱敏 fallback 运行 DOM/请求/设置页四态/375px 诊断。旧 auth card 的继续动作仍是 Agent answer-stream→answer fallback，不是 lifecycle resume；余额 DTO 需含 cycle_remaining 才能进入正常卡片。设置页四态及移动端无横向溢出均有证据。真实 API/飞书租户验证归 Task 21/24；trace、截图、临时 spec 均未入 Git。详见 .ndf/features/feishu-personal-workspace/s3-frontend-baseline.md。'
+  - 'S4 Task 17 gate (2026-07-15): 前端 API 与 Pinia 状态契约经多轮独立规格、最终质量审查 PASS，P0/P1/P2=0。仅调用五条 lifecycle API，公开 action 运行时 allowlist 不含 scope/provider/token/argv；live URL 仅内存保存，snapshot/status/terminal/URL-less successor 均剥离。expiry、visible/hidden、terminal SSE、Task11 external_resume_ready/ext_resume queue、reload 与严格 stream_start 都收敛为一个 external action 状态机；session epoch + run/session fence 阻止旧会话异步、SSE、poll、resume 返回污染新会话，timer/listener/observer 受 session switch/terminal/dispose 管理。普通 question 不回归；旧设置页 connect-poll 调用点归 Task 19。详见 ADR 0018。'
   blockers: []
 - id: chatbot-full-history-context
   ndf_version: '3.0'

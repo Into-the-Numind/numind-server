@@ -1084,7 +1084,7 @@ git commit -m "docs(feishu): capture frontend authorization baseline"
 
 **Files:** `src/api/feishu.ts`、`src/stores/feishu.ts`、`src/stores/agentChat.ts` 及 tests。
 
-- [ ] **Step 1: 写 API/store 红测**
+- [x] **Step 1: 写 API/store 红测**
 
 测试状态 union 完整；status 不假设 unknown=available；resume 只发 `{action:'user_completed'}`；refresh path 只含 session id；SSE/快照 external action 转为同一 message；成功后原卡变 completed；普通 question answer 行为不回归。
 
@@ -1097,13 +1097,13 @@ it('resumes an operation without sending argv or scopes', async () => {
 })
 ```
 
-- [ ] **Step 2: 运行红测**
+- [x] **Step 2: 运行红测**
 
 Run: `npm run test:unit -- src/api/feishu.test.ts src/stores/__tests__/feishu.spec.ts src/stores/__tests__/agentChat-resume.spec.ts`
 
 Expected: FAIL，新类型/方法/message 不存在。
 
-- [ ] **Step 3: 实现类型和 API**
+- [x] **Step 3: 实现类型和 API**
 
 ```ts
 export type FeishuConnectionState =
@@ -1125,22 +1125,24 @@ export interface FeishuExternalAction {
 
 所有请求复用 `src/api/request.ts`；不 import 原生 axios。
 
-- [ ] **Step 4: 实现 stores**
+- [x] **Step 4: 实现 stores**
 
 `feishu` store 管 status/connect/refresh/unbind；`agentChat` store 接 external action event 并提供 `resumeFeishuOperation`，不调用 `startResume` 的普通 answer path。轮询采用有限截止时间；页面隐藏或 action terminal 时停止。
 
-- [ ] **Step 5: 绿测**
+- [x] **Step 5: 绿测**
 
 Run: `npm run test:unit -- src/api/feishu.test.ts src/stores/__tests__/feishu.spec.ts src/stores/__tests__/agentChat-resume.spec.ts`
 
 Expected: PASS。
 
-- [ ] **Step 6: Commit（前端仓库）**
+- [x] **Step 6: Commit（前端仓库）**
 
 ```bash
 git add src/api/feishu.ts src/api/feishu.test.ts src/stores/feishu.ts src/stores/__tests__/feishu.spec.ts src/stores/agentChat.ts src/stores/__tests__/agentChat-resume.spec.ts
 git commit -m "feat(feishu): add personal workspace client state"
 ```
+
+**一期收口（2026-07-15）：** API/Pinia 状态契约与最终规格、质量复审 PASS（P0/P1/P2=0）。前端只使用五条 lifecycle API，public action allowlist 不含 scope/provider/token/argv；即时 URL 仅内存保存，snapshot/status/terminal 均剥离。SSE、snapshot、过期、Task 11 queued continuation 与终态统一收敛外部 action；expiry、hidden/visible、terminal、session epoch 与 UUID 路由切换都停止旧 timer/listener/observer，防止 A 会话延迟回调或旧 URL 污染 B。`stream_start` 严格绑定服务器 session/run，普通 question path 保持原行为。设置页旧 connect-poll 调用点明确留给 Task 19 重写。详见 ADR 0018。
 
 ## Task 18: Agent 飞书 Action Card
 
