@@ -5,9 +5,12 @@ package biz
 // biz/feishu; the lower Feishu package never imports Agent.
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 
 	"numind-server/internal/numind/biz/agent"
@@ -43,8 +46,8 @@ type feishuPersonalWorkspace struct {
 // entry. Version is a value rather than a map key so Viper cannot collapse
 // differently-cased labels before validation.
 type feishuCipherKeyringEntry struct {
-	Version string
-	Key     string
+	Version string `json:"version"`
+	Key     string `json:"key"`
 }
 
 type feishuCompositionDeps struct {
@@ -305,17 +308,108 @@ func verifyFeishuPersistedKeyVersion(version string, ciphers map[string]*crypto.
 }
 
 // readFeishuCipherKeyring reads the only supported, ordered Viper keyring
-// form. It deliberately rejects maps before extracting any material: Viper
-// normalizes map keys and would otherwise erase a duplicate version label.
+// form. YAML lists arrive as []any while Viper environment overrides arrive as
+// strings, so the latter is accepted only as one strict JSON array. It
+// deliberately rejects maps before extracting any material: Viper normalizes
+// map keys and would otherwise erase a duplicate version label.
 func readFeishuCipherKeyring(config *viper.Viper) ([]feishuCipherKeyringEntry, error) {
 	if config == nil {
 		return nil, fmt.Errorf("invalid keyring configuration")
 	}
-	raw, found := config.Get("feishu.keyring").([]any)
-	if !found || len(raw) == 0 {
+
+	switch raw := config.Get("feishu.keyring").(type) {
+	case string:
+		return decodeFeishuCipherKeyringJSON(raw)
+	case []any:
+		return decodeFeishuCipherKeyringViperList(raw)
+	default:
 		return nil, fmt.Errorf("invalid keyring configuration")
 	}
+}
 
+// decodeFeishuCipherKeyringJSON accepts the string-only Viper environment
+// representation. Decoder strictness and the explicit EOF check make a JSON
+// object, unknown entry field, or concatenated second value fail closed.
+func decodeFeishuCipherKeyringJSON(raw string) ([]feishuCipherKeyringEntry, error) {
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var entries []feishuCipherKeyringEntry
+	if err := decoder.Decode(&entries); err != nil {
+		return nil, fmt.Errorf("invalid keyring configuration")
+	}
+	if err := requireFeishuJSONEOF(decoder); err != nil || len(entries) == 0 {
+		return nil, fmt.Errorf("invalid keyring configuration")
+	}
+	return entries, nil
+}
+
+func requireFeishuJSONEOF(decoder *json.Decoder) error {
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return fmt.Errorf("unexpected trailing JSON")
+	}
+	return nil
+}
+
+// UnmarshalJSON rejects the case-insensitive field matching and duplicate
+// field overwrites that encoding/json's default struct decoder would allow.
+// Keeping version and key as exact lower-case names prevents two textual
+// representations from silently becoming one trusted keyring entry.
+func (entry *feishuCipherKeyringEntry) UnmarshalJSON(raw []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	first, err := decoder.Token()
+	if err != nil {
+		return fmt.Errorf("invalid keyring entry")
+	}
+	if delimiter, ok := first.(json.Delim); !ok || delimiter != '{' {
+		return fmt.Errorf("invalid keyring entry")
+	}
+
+	var decoded feishuCipherKeyringEntry
+	seenVersion, seenKey := false, false
+	for decoder.More() {
+		field, err := decoder.Token()
+		if err != nil {
+			return fmt.Errorf("invalid keyring entry")
+		}
+		name, ok := field.(string)
+		if !ok {
+			return fmt.Errorf("invalid keyring entry")
+		}
+		switch name {
+		case "version":
+			if seenVersion || decoder.Decode(&decoded.Version) != nil {
+				return fmt.Errorf("invalid keyring entry")
+			}
+			seenVersion = true
+		case "key":
+			if seenKey || decoder.Decode(&decoded.Key) != nil {
+				return fmt.Errorf("invalid keyring entry")
+			}
+			seenKey = true
+		default:
+			return fmt.Errorf("invalid keyring entry")
+		}
+	}
+	last, err := decoder.Token()
+	if err != nil {
+		return fmt.Errorf("invalid keyring entry")
+	}
+	if delimiter, ok := last.(json.Delim); !ok || delimiter != '}' || !seenVersion || !seenKey {
+		return fmt.Errorf("invalid keyring entry")
+	}
+	if err := requireFeishuJSONEOF(decoder); err != nil {
+		return fmt.Errorf("invalid keyring entry")
+	}
+	*entry = decoded
+	return nil
+}
+
+func decodeFeishuCipherKeyringViperList(raw []any) ([]feishuCipherKeyringEntry, error) {
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("invalid keyring configuration")
+	}
 	entries := make([]feishuCipherKeyringEntry, 0, len(raw))
 	for _, rawEntry := range raw {
 		entry, found := rawEntry.(map[string]any)
@@ -342,12 +436,16 @@ func buildConfiguredFeishuService(
 	resumeStore store.IExternalToolResumeLease,
 	supervisor *agent.ExternalContinuationSupervisor,
 ) (*feishuPersonalWorkspace, error) {
+	enabled := viper.GetBool("features.feishu_integration.enabled")
+	if !enabled {
+		return nil, nil
+	}
 	cipherKeys, err := readFeishuCipherKeyring(viper.GetViper())
 	if err != nil {
 		return nil, fmt.Errorf("feishu keyring configuration rejected")
 	}
 	return buildFeishuService(feishuCompositionDeps{
-		enabled:     viper.GetBool("features.feishu_integration.enabled"),
+		enabled:     enabled,
 		dataStore:   dataStore,
 		tokenKey:    viper.GetString("security.thirdparty_token_key"),
 		cipherKeys:  cipherKeys,

@@ -42,6 +42,11 @@ feishu:
   #   lark-cli 把自建应用凭据 + token 存进 ${HOME}/.lark-cli/，所以这个目录必须可写且持久，
   #   同一用户重连复用同一 HOME（幂等）。本地用工作目录下一个可写目录即可。
   home_base: "./data/feishu-homes"
+  # runtime_base 是新个人工作空间短暂解密 lark-cli HOME 的根目录，与上面的遗留持久 home_base 分离。
+  # keyring 只从 NUMIND_FEISHU_KEYRING 的严格 JSON 数组读取，绝不能写进本文件。
+  runtime_base: "./data/feishu-runtime"
+  key_version: "v1"
+  auth_owner: "numind-local-feishu"
   # authorize_url: ""   # 留空=默认 https://open.feishu.cn/open-apis/authen/v1/authorize
   # scopes: ""          # 留空=默认 "docx:document im:message bitable:app:readonly"
   # lark_cli_bin: ""    # 留空=PATH 上的 lark-cli

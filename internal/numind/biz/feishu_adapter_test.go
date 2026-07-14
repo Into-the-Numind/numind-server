@@ -13,6 +13,7 @@ import (
 
 	"numind-server/internal/numind/biz/agent"
 	"numind-server/internal/numind/biz/feishu"
+	numindconfig "numind-server/internal/numind/config"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/crypto"
 	"numind-server/internal/pkg/model"
@@ -429,6 +430,18 @@ func TestBuildConfiguredFeishuService_RejectsAmbiguousLegacyViperKeyringMap(t *t
 	require.NotContains(t, err.Error(), secondKey)
 }
 
+func TestBuildConfiguredFeishuService_FeatureFlagOffDoesNotRequireKeyring(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	viper.SetConfigType("yaml")
+	require.NoError(t, viper.ReadConfig(strings.NewReader("features:\n  feishu_integration:\n    enabled: false\n")))
+
+	deps := newFeishuCompositionDeps(t)
+	workspace, err := buildConfiguredFeishuService(deps.dataStore, deps.studentRuns, deps.resumeStore, deps.supervisor)
+	require.NoError(t, err)
+	require.Nil(t, workspace)
+}
+
 func TestBuildFeishuCipherKeyring_RejectsDuplicateCanonicalViperListVersions(t *testing.T) {
 	firstKey := feishuCompositionKey(1)
 	secondKey := feishuCompositionKey(2)
@@ -488,6 +501,72 @@ func TestBuildFeishuCipherKeyring_ReadsOrderedViperList(t *testing.T) {
 	require.Len(t, ciphers, 2)
 	require.Contains(t, ciphers, "v1")
 	require.Contains(t, ciphers, "v2")
+}
+
+func TestReadFeishuCipherKeyring_RuntimeViperEnvironmentIsStrictJSON(t *testing.T) {
+	firstKey := feishuCompositionKey(1)
+	secondKey := feishuCompositionKey(2)
+
+	for _, testCase := range []struct {
+		name     string
+		raw      string
+		wantOK   bool
+		wantKeys []string
+	}{
+		{
+			name:     "ordered list",
+			raw:      `[{"version":"v1","key":"` + firstKey + `"},{"version":"v2","key":"` + secondKey + `"}]`,
+			wantOK:   true,
+			wantKeys: []string{"v1", "v2"},
+		},
+		{name: "object map", raw: `{"v1":"` + firstKey + `"}`},
+		{name: "unknown entry field", raw: `[{"version":"v1","key":"` + firstKey + `","extra":true}]`},
+		{name: "uppercase entry field", raw: `[{"Version":"v1","key":"` + firstKey + `"}]`},
+		{name: "duplicate entry field", raw: `[{"version":"v1","version":"v2","key":"` + firstKey + `"}]`},
+		{name: "trailing data", raw: `[{"version":"v1","key":"` + firstKey + `"}] {}`},
+		{name: "duplicate version", raw: `[{"version":"v1","key":"` + firstKey + `"},{"version":"v1","key":"` + secondKey + `"}]`},
+		{name: "uppercase version", raw: `[{"version":"V1","key":"` + firstKey + `"}]`},
+		{name: "invalid base64", raw: `[{"version":"v1","key":"not-base64"}]`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			config := viper.New()
+			config.SetConfigType("yaml")
+			// A legacy map in file configuration must not bypass the environment
+			// value. The environment is the only runtime secret entry point.
+			require.NoError(t, config.ReadConfig(strings.NewReader("feishu:\n  keyring:\n    V1: ignored-file-value\n")))
+			numindconfig.SetupViperEnvBindings(config)
+			t.Setenv("NUMIND_SECURITY_THIRDPARTY_TOKEN_KEY", feishuCompositionKey(9))
+			t.Setenv("NUMIND_FEISHU_KEYRING", testCase.raw)
+			t.Setenv("NUMIND_FEISHU_KEY_VERSION", "v2")
+			t.Setenv("NUMIND_FEISHU_RUNTIME_BASE", filepath.Join(t.TempDir(), "runtime"))
+			t.Setenv("NUMIND_FEISHU_AUTH_OWNER", "test-feishu-auth-worker")
+			t.Setenv("NUMIND_FEATURES_FEISHU_INTEGRATION_ENABLED", "true")
+
+			require.Equal(t, feishuCompositionKey(9), config.GetString("security.thirdparty_token_key"))
+			require.Equal(t, "v2", config.GetString("feishu.key_version"))
+			require.NotEmpty(t, config.GetString("feishu.runtime_base"))
+			require.Equal(t, "test-feishu-auth-worker", config.GetString("feishu.auth_owner"))
+			require.True(t, config.GetBool("features.feishu_integration.enabled"))
+
+			entries, err := readFeishuCipherKeyring(config)
+			if !testCase.wantOK && err == nil {
+				_, err = buildFeishuCipherKeyring(config.GetString("feishu.key_version"), entries)
+			}
+			if !testCase.wantOK {
+				require.Error(t, err)
+				require.NotContains(t, err.Error(), firstKey)
+				require.NotContains(t, err.Error(), secondKey)
+				return
+			}
+			require.NoError(t, err)
+
+			ciphers, err := buildFeishuCipherKeyring(config.GetString("feishu.key_version"), entries)
+			require.NoError(t, err)
+			for _, version := range testCase.wantKeys {
+				require.Contains(t, ciphers, version)
+			}
+		})
+	}
 }
 
 func TestFeishuWorkspacePublication_UsesOneComposedGraph(t *testing.T) {

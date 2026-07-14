@@ -65,6 +65,10 @@ feishu:
   #   /opt/numind/dev 是部署机已挂的持久盘（重部署不丢），容器以 uid 1001 跑、该目录已 chown 1001
   #   可写。lark-cli 把自建应用凭据 + token 存进 ${HOME}/.lark-cli/，同一用户重连复用同一 HOME（幂等）。
   home_base: "/opt/numind/dev/feishu-homes"
+  # 新个人工作空间只在 runtime_base 暂时解密 HOME；Keyring 只经 NUMIND_FEISHU_KEYRING 注入，不能写入 YAML。
+  runtime_base: "/opt/numind/dev/feishu-runtime"
+  key_version: "v1"
+  auth_owner: "numind-dev-feishu"
   # authorize_url: ""   # 留空=默认 https://open.feishu.cn/open-apis/authen/v1/authorize
   # scopes: ""          # 留空=默认 "docx:document im:message bitable:app:readonly"
 
