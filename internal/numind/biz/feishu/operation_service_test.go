@@ -3118,11 +3118,13 @@ func TestOperationService_ConcurrentResumeUsesUniqueOwnersAndOneReplay(t *testin
 	const workers = 20
 	var wg sync.WaitGroup
 	errs := make(chan error, workers)
+	results := make(chan *OperationResult, workers)
 	for index := 0; index < workers; index++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, resumeErr := service.Resume(h.ctx, 7, waiting.OperationID)
+			result, resumeErr := service.Resume(h.ctx, 7, waiting.OperationID)
+			results <- result
 			errs <- resumeErr
 		}()
 	}
@@ -3134,8 +3136,13 @@ func TestOperationService_ConcurrentResumeUsesUniqueOwnersAndOneReplay(t *testin
 	close(release)
 	wg.Wait()
 	close(errs)
+	close(results)
 	for resumeErr := range errs {
 		require.NoError(t, resumeErr)
+	}
+	for result := range results {
+		require.NotNil(t, result)
+		require.Contains(t, []string{model.FeishuOperationExecuting, model.FeishuOperationSucceeded}, result.State)
 	}
 	calls, _ := h.runner.snapshot()
 	require.Equal(t, 2, calls)

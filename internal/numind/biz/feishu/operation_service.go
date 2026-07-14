@@ -412,10 +412,12 @@ func newExecutionRegistry() *executionRegistry {
 
 // begin registers an execution before it attempts the durable CLI gate. Stop
 // can cancel and join this handoff even when a goroutine has claimed the
-// durable gate but has not yet registered its local guard.
-func (r *executionRegistry) begin(ctx context.Context, key executionKey) (context.Context, *executionStart, error) {
+// durable gate but has not yet registered its local guard. A concurrent caller
+// for the same durable operation joins the existing local execution instead of
+// treating normal idempotent recovery as an infrastructure failure.
+func (r *executionRegistry) begin(ctx context.Context, key executionKey) (context.Context, *executionStart, <-chan struct{}, error) {
 	if r == nil || key.userID == 0 || key.generation == 0 || key.operationID == "" {
-		return nil, nil, ErrOperationUnavailable
+		return nil, nil, nil, ErrOperationUnavailable
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -426,14 +428,18 @@ func (r *executionRegistry) begin(ctx context.Context, key executionKey) (contex
 	defer r.mu.Unlock()
 	if r.retired[key.userID] >= key.generation {
 		cancel()
-		return nil, nil, ErrOperationUnavailable
+		return nil, nil, nil, ErrOperationUnavailable
 	}
-	if _, exists := r.starts[key]; exists {
+	if existing, exists := r.starts[key]; exists {
 		cancel()
-		return nil, nil, ErrOperationUnavailable
+		return nil, nil, existing.done, nil
+	}
+	if existing, exists := r.active[key]; exists {
+		cancel()
+		return nil, nil, existing.done, nil
 	}
 	r.starts[key] = start
-	return startCtx, start, nil
+	return startCtx, start, nil, nil
 }
 
 func (r *executionRegistry) finishStart(key executionKey, start *executionStart) {
@@ -616,16 +622,41 @@ func (s *FeishuOperationService) startExecutionGateGuard(
 func (s *FeishuOperationService) beginExecutionStart(
 	ctx context.Context,
 	operation *model.FeishuOperation,
-) (context.Context, func(), error) {
+) (context.Context, func(), <-chan struct{}, error) {
 	if s == nil || s.executions == nil || operation == nil {
-		return nil, nil, ErrOperationUnavailable
+		return nil, nil, nil, ErrOperationUnavailable
 	}
 	key := executionKey{userID: operation.UserID, generation: operation.Generation, operationID: operation.ID}
-	startCtx, start, err := s.executions.begin(ctx, key)
+	startCtx, start, joined, err := s.executions.begin(ctx, key)
 	if err != nil {
-		return nil, nil, ErrOperationUnavailable
+		return nil, nil, nil, ErrOperationUnavailable
 	}
-	return startCtx, func() { s.executions.finishStart(key, start) }, nil
+	if joined != nil {
+		return nil, nil, joined, nil
+	}
+	return startCtx, func() { s.executions.finishStart(key, start) }, nil, nil
+}
+
+// joinExecutionStart waits for the local owner to finish its current attempt,
+// then returns the durable operation result. The first owner alone may invoke
+// the CLI; followers must not acquire a second lease or replay the command.
+func (s *FeishuOperationService) joinExecutionStart(
+	ctx context.Context,
+	operation *model.FeishuOperation,
+	done <-chan struct{},
+) (*OperationResult, error) {
+	if operation == nil || done == nil {
+		return nil, ErrOperationUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-done:
+		return s.reloadResult(ctx, operation)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func (g *executionGateGuard) heartbeat() {
@@ -974,9 +1005,12 @@ func (s *FeishuOperationService) reclaimExpiredExecution(
 	gateHeld := false
 	var gateGuard *executionGateGuard
 	if account.ConnectionState == model.FeishuConnectionConnected && persisted.Risk == RiskRead {
-		executionCtx, finishStart, startErr := s.beginExecutionStart(ctx, operation)
+		executionCtx, finishStart, joinedStart, startErr := s.beginExecutionStart(ctx, operation)
 		if startErr != nil {
 			return nil, startErr
+		}
+		if joinedStart != nil {
+			return s.joinExecutionStart(ctx, operation, joinedStart)
 		}
 		defer finishStart()
 		if err := s.waitForExecutionGate(executionCtx, operation, owner); err != nil {
@@ -1086,9 +1120,12 @@ func (s *FeishuOperationService) claimAndExecute(
 	// waiting for a human. Once confirmed, however, their real invocation must
 	// acquire the same account-wide gate as every other CLI write.
 	if operationRequiresExecutionGate(account, persisted) || confirmed {
-		executionCtx, finishStart, startErr := s.beginExecutionStart(ctx, operation)
+		executionCtx, finishStart, joinedStart, startErr := s.beginExecutionStart(ctx, operation)
 		if startErr != nil {
 			return nil, startErr
+		}
+		if joinedStart != nil {
+			return s.joinExecutionStart(ctx, operation, joinedStart)
 		}
 		defer finishStart()
 		if err := s.waitForExecutionGate(executionCtx, operation, owner); err != nil {
