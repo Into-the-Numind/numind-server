@@ -1059,7 +1059,7 @@ git commit -m "feat(feishu): trace workspace operations safely"
 
 **Files:** `.ndf/features/feishu-personal-workspace/s3-frontend-baseline.md`（脱敏结论进 Git）；Playwright trace/screenshot 留在临时输出且不进 Git；不改业务代码。
 
-- [ ] **Step 1: 启动当前前端并使用现有诊断 helper**
+- [x] **Step 1: 启动当前前端并使用现有诊断 helper**
 
 Run in web worktree: `npm run dev -- --host 127.0.0.1`
 
@@ -1067,16 +1067,18 @@ Run: `npx playwright test e2e/agent-ask-user-question.spec.ts --project=chromium
 
 Expected: 当前普通 question/auth card 基线可复现；若环境 API 不可用，用现有 route mock，不修改生产代码。
 
-- [ ] **Step 2: 记录基线证据**
+- [x] **Step 2: 记录基线证据**
 
 使用 `e2e/helpers/diagnose.ts` 记录：auth question_prompt DOM、Pinia message snapshot、点击“我已完成”发出的旧 answer request、设置页飞书 card 四态、375px viewport 溢出。把结论写到 plan 同目录旁的 `.ndf/features/feishu-personal-workspace/s3-frontend-baseline.md`，只写结构和请求路径，不写真实 URL/token。
 
-- [ ] **Step 3: Commit 诊断文档到 server worktree**
+- [x] **Step 3: Commit 诊断文档到 server worktree**
 
 ```bash
 git add .ndf/features/feishu-personal-workspace/s3-frontend-baseline.md
 git commit -m "docs(feishu): capture frontend authorization baseline"
 ```
+
+**一期收口（2026-07-14）：** 使用 `e2e/helpers/diagnose.ts` 的 Playwright 运行时基线已提交（`e3619163`）。实际项目为 `setup/e2e`，计划中的 chromium project 已过时；本地 Vite proxy 登录被拒绝，故以现有 `page.route` 脱敏 fallback 取证。旧 auth card 的“我已完成”仍向 Agent 普通 answer 路径发 `{answers:[...]}`，不是飞书 lifecycle resume；设置页 loading/empty/success/error 与 375px（无横溢）均有运行时证据。真实飞书/API 链路留给 Task 21/24 验证；trace/screenshot 与临时 spec 未入 Git。
 
 ## Task 17: 前端 API 与 Pinia 状态契约
 
