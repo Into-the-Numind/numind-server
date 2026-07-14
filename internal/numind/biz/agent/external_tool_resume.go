@@ -14,6 +14,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/externalaction"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
@@ -372,6 +373,45 @@ func NewAgentRunResumer(runStore store.IExternalToolResumeLease, studentRuns *St
 // duplicate, cancelled, or deleted callback is a successful no-op.
 func (r *AgentRunResumer) Resume(ctx context.Context, result ExternalToolResult) error {
 	return r.resume(ctx, result, false)
+}
+
+// FinalizeExternalToolWait ends one exact Feishu external wait without starting
+// a model continuation. It is intentionally separate from Resume: a cancelled
+// or unknown operation must append its fixed tool error and make the original
+// Agent run terminal, never be treated as a successful external result.
+//
+// The durable store transition happens before the in-memory cancellation. That
+// ordering closes register-vs-cancel races: a continuation which registers
+// afterwards observes cancellation_requested_at during its durable preflight,
+// while an already registered provider call is cancelled immediately after the
+// committed fence.
+func (r *AgentRunResumer) FinalizeExternalToolWait(
+	ctx context.Context,
+	userID uint,
+	runID uint64,
+	operationID string,
+	toolCallID string,
+	outcome externalaction.TerminalOutcome,
+) (bool, error) {
+	if r == nil || r.store == nil || r.studentRuns == nil || r.studentRuns.runner == nil {
+		return false, fmt.Errorf("AgentRunResumer.FinalizeExternalToolWait: resumer is not configured")
+	}
+	finalizer, ok := r.store.(store.IExternalToolWaitFinalizer)
+	if !ok {
+		return false, fmt.Errorf("AgentRunResumer.FinalizeExternalToolWait: store does not support terminal external waits")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	finalized, err := finalizer.FinalizeExternalToolWait(ctx, userID, runID, operationID, toolCallID, outcome)
+	if err != nil || !finalized {
+		return finalized, err
+	}
+	// This is best-effort process-local acceleration only. The committed
+	// cancellation marker and exact external identity remain the cross-instance
+	// fence used by Task11's gate/reclaimer.
+	r.studentRuns.runner.Cancel(runID)
+	return true, nil
 }
 
 func (r *AgentRunResumer) resumeManaged(ctx context.Context, result ExternalToolResult) error {

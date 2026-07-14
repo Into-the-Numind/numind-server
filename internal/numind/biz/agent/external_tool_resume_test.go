@@ -20,6 +20,7 @@ import (
 	storepkg "numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/profile"
+	"numind-server/internal/pkg/externalaction"
 	"numind-server/internal/pkg/model"
 )
 
@@ -66,6 +67,72 @@ func TestNewAgentRunResumer_RequiresExplicitLifecycleOwner(t *testing.T) {
 	assert.False(t, constructor.IsVariadic())
 	require.Equal(t, 3, constructor.NumIn())
 	assert.Equal(t, reflect.TypeOf((*ExternalContinuationSupervisor)(nil)), constructor.In(2))
+}
+
+type terminalExternalWaitRunner struct {
+	mu        sync.Mutex
+	cancelled []uint64
+}
+
+func (*terminalExternalWaitRunner) Run(context.Context, RunRequest) (*RunResult, error) {
+	return nil, errors.New("not used")
+}
+
+func (*terminalExternalWaitRunner) RunStream(context.Context, RunRequest, uint64, chan<- stream.Event) (*RunResult, error) {
+	return nil, errors.New("not used")
+}
+
+func (r *terminalExternalWaitRunner) Cancel(runID uint64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cancelled = append(r.cancelled, runID)
+	return true
+}
+
+func (r *terminalExternalWaitRunner) snapshot() []uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]uint64(nil), r.cancelled...)
+}
+
+func TestAgentRunResumerFinalizeExternalToolWaitDurablyFencesAndCancelsRunnerOnce(t *testing.T) {
+	db := newSQTestDB(t)
+	ds := storepkg.NewTestStore(db)
+	runStore := ds.AgentRuns()
+	lease, ok := runStore.(storepkg.IExternalToolResumeLease)
+	require.True(t, ok)
+	writer, ok := runStore.(storepkg.IExternalActionWriter)
+	require.True(t, ok)
+	run := &model.AgentRun{
+		UserID: 7, SessionID: "terminal-wait", Status: "terminated", StateReason: string(TerminalWaitingForUserChoice),
+		Messages: datatypes.JSON(`[{"role":"user","content":"写入飞书"}]`), StartedAt: time.Now().UTC(),
+	}
+	require.NoError(t, runStore.Create(context.Background(), run))
+	require.NoError(t, writer.UpdatePendingExternalAction(context.Background(), run.ID, []byte(
+		`{"provider":"feishu","operation_id":"op-terminal","session_id":"auth-terminal","tool_call_id":"tool-terminal","phase":"user_auth","expires_at":"2027-01-01T00:00:00Z"}`,
+	)))
+	runner := &terminalExternalWaitRunner{}
+	studentRuns := NewStudentRunService(runner, runStore, nil, nil, nil, nil)
+	resumer := newTestAgentRunResumer(t, lease, studentRuns)
+
+	finalized, err := resumer.FinalizeExternalToolWait(
+		context.Background(), 7, run.ID, "op-terminal", "tool-terminal", externalaction.TerminalOutcomeUnknown,
+	)
+	require.NoError(t, err)
+	require.True(t, finalized)
+	require.Equal(t, []uint64{run.ID}, runner.snapshot(), "the in-process continuation receives only a post-commit cancel")
+
+	finalized, err = resumer.FinalizeExternalToolWait(
+		context.Background(), 7, run.ID, "op-terminal", "tool-terminal", externalaction.TerminalOutcomeUnknown,
+	)
+	require.NoError(t, err)
+	require.False(t, finalized)
+	require.Equal(t, []uint64{run.ID}, runner.snapshot(), "duplicate lifecycle delivery cannot issue another continuation or runner cancel")
+	stored, err := runStore.Get(context.Background(), run.ID)
+	require.NoError(t, err)
+	require.Equal(t, "aborted_tools", stored.StateReason)
+	require.NotNil(t, stored.CancellationRequestedAt)
+	require.Empty(t, stored.PendingExternalActionJSON)
 }
 
 // updateRunCopyOnWrite mirrors the production store's snapshot semantics:

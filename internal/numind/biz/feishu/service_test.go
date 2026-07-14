@@ -12,6 +12,7 @@ import (
 
 	"numind-server/internal/numind/store"
 	pkgcrypto "numind-server/internal/pkg/crypto"
+	"numind-server/internal/pkg/externalaction"
 	"numind-server/internal/pkg/model"
 
 	"github.com/stretchr/testify/require"
@@ -178,14 +179,48 @@ type lifecycleWorkspaceFake struct {
 	activeSessionErr error
 	getSession       func(context.Context, uint, uint64, string) (*model.FeishuAuthSession, error)
 	deleteVaultCalls int
+	completeCalls    int
+	renewTeardown    func(context.Context, uint, uint64, uint64, string, time.Time, time.Time) (bool, error)
+	completeTeardown func(context.Context, uint, uint64, uint64, string, time.Time) (bool, error)
+}
+
+func (f *lifecycleWorkspaceFake) ListTerminalOperationsForGeneration(_ context.Context, userID uint, generation uint64, states []string) ([]model.FeishuOperation, error) {
+	if f.operationErr != nil {
+		return nil, f.operationErr
+	}
+	if f.operation == nil {
+		return nil, nil
+	}
+	for _, state := range states {
+		if f.operation.UserID == userID && f.operation.Generation == generation && f.operation.State == state {
+			return []model.FeishuOperation{*f.operation}, nil
+		}
+	}
+	return nil, nil
 }
 
 func (f *lifecycleWorkspaceFake) ClaimRetiredTeardown(_ context.Context, _ uint, _ uint64, _ uint64, _ string, _, _ time.Time) (bool, error) {
 	return true, nil
 }
 
+func (f *lifecycleWorkspaceFake) RenewRetiredTeardown(ctx context.Context, userID uint, retiredGeneration, disconnectingGeneration uint64, owner string, now, leaseUntil time.Time) (bool, error) {
+	if f.renewTeardown != nil {
+		return f.renewTeardown(ctx, userID, retiredGeneration, disconnectingGeneration, owner, now, leaseUntil)
+	}
+	return true, nil
+}
+
 func (f *lifecycleWorkspaceFake) ReleaseRetiredTeardown(_ context.Context, _ uint, _ uint64, _ string, _ time.Time) error {
 	return nil
+}
+
+func (f *lifecycleWorkspaceFake) CompleteRetiredTeardown(ctx context.Context, userID uint, retiredGeneration, disconnectingGeneration uint64, owner string, now time.Time) (bool, error) {
+	f.completeCalls++
+	if f.completeTeardown != nil {
+		return f.completeTeardown(ctx, userID, retiredGeneration, disconnectingGeneration, owner, now)
+	}
+	f.deleteVaultCalls++
+	return true, nil
 }
 
 func (f *lifecycleWorkspaceFake) GetOperationForUser(_ context.Context, _ uint, _ uint64, _ string) (*model.FeishuOperation, error) {
@@ -301,6 +336,29 @@ type lifecycleExecutionsFake struct {
 	stopWait func(context.Context) error
 }
 
+type lifecycleAgentWaitCall struct {
+	userID      uint
+	runID       uint64
+	operationID string
+	toolCallID  string
+	outcome     externalaction.TerminalOutcome
+}
+
+type lifecycleAgentWaitFake struct {
+	calls    []lifecycleAgentWaitCall
+	finalize func(context.Context, uint, uint64, string, string, externalaction.TerminalOutcome) (bool, error)
+}
+
+func (f *lifecycleAgentWaitFake) FinalizeExternalToolWait(ctx context.Context, userID uint, runID uint64, operationID, toolCallID string, outcome externalaction.TerminalOutcome) (bool, error) {
+	f.calls = append(f.calls, lifecycleAgentWaitCall{
+		userID: userID, runID: runID, operationID: operationID, toolCallID: toolCallID, outcome: outcome,
+	})
+	if f.finalize != nil {
+		return f.finalize(ctx, userID, runID, operationID, toolCallID, outcome)
+	}
+	return true, nil
+}
+
 func (f *lifecycleExecutionsFake) StopGenerationAndWait(ctx context.Context, _ uint, generation uint64) error {
 	f.stopped = append(f.stopped, generation)
 	if f.stopWait != nil {
@@ -335,6 +393,7 @@ type lifecycleTeardownBarrier struct {
 	release <-chan struct{}
 	mu      sync.Mutex
 	calls   int
+	err     error
 }
 
 func (t *lifecycleTeardownBarrier) LogoutRetired(ctx context.Context, _ uint, _ uint64) (RetiredWorkspaceTeardownResult, error) {
@@ -347,7 +406,7 @@ func (t *lifecycleTeardownBarrier) LogoutRetired(ctx context.Context, _ uint, _ 
 	}
 	select {
 	case <-t.release:
-		return RetiredWorkspaceTeardownResult{LogoutAttempted: true, LogoutSucceeded: true}, nil
+		return RetiredWorkspaceTeardownResult{LogoutAttempted: true, LogoutSucceeded: t.err == nil}, t.err
 	case <-ctx.Done():
 		return RetiredWorkspaceTeardownResult{}, ctx.Err()
 	}
@@ -358,6 +417,40 @@ func (t *lifecycleTeardownBarrier) count() int { t.mu.Lock(); defer t.mu.Unlock(
 func (f *lifecycleTeardownFake) LogoutRetired(_ context.Context, _ uint, generation uint64) (RetiredWorkspaceTeardownResult, error) {
 	f.calls = append(f.calls, generation)
 	return RetiredWorkspaceTeardownResult{LogoutAttempted: true, LogoutSucceeded: f.err == nil}, f.err
+}
+
+// lifecycleUncooperativeTeardown models a misbehaving child cleanup that
+// ignores cancellation until its underlying operation eventually returns. The
+// lifecycle lease must expire at the application cleanup deadline, so another
+// service can safely take over while this stale owner is still blocked; when it
+// returns, its owner-fenced checkpoint must prevent a stale completion.
+type lifecycleUncooperativeTeardown struct {
+	entered     chan struct{}
+	deadlineHit chan struct{}
+	release     <-chan struct{}
+	mu          sync.Mutex
+	calls       int
+}
+
+func (t *lifecycleUncooperativeTeardown) LogoutRetired(ctx context.Context, _ uint, _ uint64) (RetiredWorkspaceTeardownResult, error) {
+	t.mu.Lock()
+	t.calls++
+	t.mu.Unlock()
+	select {
+	case t.entered <- struct{}{}:
+	default:
+	}
+	if t.deadlineHit != nil {
+		go func() {
+			<-ctx.Done()
+			select {
+			case t.deadlineHit <- struct{}{}:
+			default:
+			}
+		}()
+	}
+	<-t.release
+	return RetiredWorkspaceTeardownResult{LogoutAttempted: true, LogoutSucceeded: true}, nil
 }
 
 // lifecycleTrackingWorkspace records the irreversible delete boundary while
@@ -376,10 +469,48 @@ func (s *lifecycleTrackingWorkspace) DeleteVault(ctx context.Context, userID uin
 	return s.IFeishuWorkspaceStore.DeleteVault(ctx, userID, generation)
 }
 
+func (s *lifecycleTrackingWorkspace) CompleteRetiredTeardown(ctx context.Context, userID uint, retiredGeneration, disconnectingGeneration uint64, owner string, now time.Time) (bool, error) {
+	completed, err := s.IFeishuWorkspaceStore.CompleteRetiredTeardown(ctx, userID, retiredGeneration, disconnectingGeneration, owner, now)
+	if completed {
+		s.mu.Lock()
+		s.deleteVaultCalls++
+		s.mu.Unlock()
+	}
+	return completed, err
+}
+
 func (s *lifecycleTrackingWorkspace) deleteCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.deleteVaultCalls
+}
+
+// lifecycleCompletionWorkspace keeps the real operation-list query in tests
+// while making the final local-vault concern irrelevant to an Agent-wait
+// assertion. Production CompleteRetiredTeardown is separately tested for its
+// atomic vault/finalization fence.
+type lifecycleCompletionWorkspace struct {
+	store.IFeishuWorkspaceStore
+	complete func(context.Context, uint, uint64) error
+}
+
+func (*lifecycleCompletionWorkspace) ClaimRetiredTeardown(context.Context, uint, uint64, uint64, string, time.Time, time.Time) (bool, error) {
+	return true, nil
+}
+
+func (*lifecycleCompletionWorkspace) RenewRetiredTeardown(context.Context, uint, uint64, uint64, string, time.Time, time.Time) (bool, error) {
+	return true, nil
+}
+
+func (*lifecycleCompletionWorkspace) ReleaseRetiredTeardown(context.Context, uint, uint64, string, time.Time) error {
+	return nil
+}
+
+func (s *lifecycleCompletionWorkspace) CompleteRetiredTeardown(ctx context.Context, userID uint, _ uint64, disconnectingGeneration uint64, _ string, _ time.Time) (bool, error) {
+	if s.complete == nil {
+		return false, errors.New("test completion is not configured")
+	}
+	return true, s.complete(ctx, userID, disconnectingGeneration)
 }
 
 // lifecycleBlockingRunner represents a controlled child process that has seen
@@ -428,13 +559,164 @@ func newLifecycleService(t *testing.T, account *model.UserThirdPartyAccount, ope
 	dispatcher := &lifecycleDispatcherFake{}
 	operations := &lifecycleOperationsFake{}
 	executions := &lifecycleExecutionsFake{}
+	agentWaits := &lifecycleAgentWaitFake{}
 	teardown := &lifecycleTeardownFake{}
 	svc, err := NewWorkspaceLifecycleService(WorkspaceLifecycleDeps{
 		Accounts: accounts, Workspace: workspace, Auth: auth, Dispatcher: dispatcher, Operations: operations,
-		Executions: executions, Teardown: teardown,
+		Executions: executions, AgentWaits: agentWaits, Teardown: teardown,
 	})
 	require.NoError(t, err)
+	workspace.completeTeardown = func(_ context.Context, _ uint, _ uint64, disconnectingGeneration uint64, _ string, _ time.Time) (bool, error) {
+		workspace.deleteVaultCalls++
+		return true, accounts.FinalizeDisconnect(context.Background(), 7, ProviderLark, disconnectingGeneration)
+	}
 	return svc, accounts, workspace, auth, dispatcher, operations, teardown
+}
+
+// seedLifecycleExternalWait uses the production Agent-run store so lifecycle
+// tests exercise the actual cross-store terminalization contract rather than
+// only a hand-written interface fake.
+func seedLifecycleExternalWait(t *testing.T, h *operationHarness, userID uint, operationID, toolCallID string) (store.IAgentRunStore, uint64) {
+	t.Helper()
+	// Match the Agent-store SQLite test DDL. AutoMigrate emits datetime(3),
+	// which SQLite returns as text and cannot scan into AgentRun.StartedAt.
+	require.NoError(t, h.db.Exec(`
+		CREATE TABLE agent_run (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id INTEGER NOT NULL,
+			session_id TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'running',
+			state_reason TEXT NOT NULL DEFAULT '',
+			terminal_metadata TEXT,
+			messages TEXT NOT NULL DEFAULT '[]',
+			reservation_id INTEGER,
+			started_at DATETIME NOT NULL,
+			ended_at DATETIME,
+			cancellation_requested_at DATETIME,
+			agent_definition_id INTEGER NOT NULL DEFAULT 0,
+			pending_question_json TEXT,
+			pending_question_at DATETIME,
+			pending_external_action_json TEXT,
+			pending_external_action_at DATETIME,
+			created_at DATETIME,
+			updated_at DATETIME,
+			use_compact_v2 INTEGER NOT NULL DEFAULT 0,
+			is_pinned INTEGER NOT NULL DEFAULT 0,
+			session_name TEXT NOT NULL DEFAULT '',
+			is_deleted INTEGER NOT NULL DEFAULT 0,
+			is_test INTEGER NOT NULL DEFAULT 0
+		)`).Error)
+	runStore := h.dataStore.AgentRuns()
+	run := &model.AgentRun{
+		UserID: userID, SessionID: "lifecycle-external-wait", Status: "terminated",
+		StateReason: "waiting_for_user_choice", Messages: []byte(`[{"role":"user","content":"写入飞书"}]`),
+		StartedAt: time.Now().UTC().Add(-time.Minute),
+	}
+	require.NoError(t, runStore.Create(context.Background(), run))
+	writer, ok := runStore.(store.IExternalActionWriter)
+	require.True(t, ok, "production Agent store must accept a durable external wait")
+	payload := []byte(`{"provider":"feishu","operation_id":"` + operationID + `","session_id":"auth-lifecycle","tool_call_id":"` + toolCallID + `","phase":"user_auth","expires_at":"2027-01-01T00:00:00Z"}`)
+	require.NoError(t, writer.UpdatePendingExternalAction(context.Background(), run.ID, payload))
+	return runStore, run.ID
+}
+
+func TestWorkspaceLifecycleUnbindTerminalizesOnlyItsLinkedAgentWait(t *testing.T) {
+	tests := []struct {
+		name       string
+		state      string
+		outcome    externalaction.TerminalOutcome
+		resultCode string
+		linked     bool
+	}{
+		{name: "pending operation becomes cancelled", state: model.FeishuOperationWaitingConfirmation, outcome: externalaction.TerminalOutcomeCancelled, resultCode: "feishu_operation_cancelled", linked: true},
+		{name: "executing operation becomes unknown", state: model.FeishuOperationExecuting, outcome: externalaction.TerminalOutcomeUnknown, resultCode: "feishu_operation_result_unknown", linked: true},
+		{name: "manual operation without agent link is safe", state: model.FeishuOperationWaitingConfirmation, linked: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newOperationHarness(t)
+			h.createAccount(7, model.FeishuConnectionConnected, 4, "cli-existing")
+			operationID := "op-lifecycle-" + strconv.Itoa(len(tc.name))
+			toolCallID := "tool-lifecycle-" + strconv.Itoa(len(tc.name))
+			var runStore store.IAgentRunStore
+			var runID uint64
+			if tc.linked {
+				runStore, runID = seedLifecycleExternalWait(t, h, 7, operationID, toolCallID)
+			} else {
+				toolCallID = ""
+			}
+			op := &model.FeishuOperation{
+				ID: operationID, UserID: 7, Generation: 4, State: tc.state,
+				AgentRunID: runID, ToolCallID: toolCallID,
+				IdempotencyKey: operationID + ":key", CommandPath: "docs +create", Domain: "docs", RiskLevel: "write",
+				RequestCiphertext: []byte("cipher"), KeyVersion: "v1", RequestFingerprint: operationID + "-fingerprint",
+			}
+			require.NoError(t, h.db.Create(op).Error)
+			waits := &lifecycleAgentWaitFake{}
+			if tc.linked {
+				finalizer, ok := runStore.(store.IExternalToolWaitFinalizer)
+				require.True(t, ok)
+				waits.finalize = finalizer.FinalizeExternalToolWait
+			}
+			dispatcher := &lifecycleDispatcherFake{}
+			operations := &lifecycleOperationsFake{}
+			workspace := &lifecycleCompletionWorkspace{IFeishuWorkspaceStore: h.dataStore.FeishuWorkspace()}
+			workspace.complete = func(ctx context.Context, userID uint, disconnectingGeneration uint64) error {
+				return h.dataStore.ThirdPartyAccounts().FinalizeDisconnect(ctx, userID, ProviderLark, disconnectingGeneration)
+			}
+			svc, err := NewWorkspaceLifecycleService(WorkspaceLifecycleDeps{
+				Accounts: h.dataStore.ThirdPartyAccounts(), Workspace: workspace,
+				Auth: &lifecycleAuthFake{}, Dispatcher: dispatcher, Operations: operations,
+				Executions: &lifecycleExecutionsFake{}, AgentWaits: waits, Teardown: &lifecycleTeardownFake{},
+			})
+			require.NoError(t, err)
+
+			result, err := svc.Unbind(context.Background(), 7)
+			require.NoError(t, err)
+			require.Equal(t, model.FeishuConnectionNone, result.State)
+			require.Zero(t, dispatcher.calls, "terminal cancellation must never start a Task11 continuation")
+			require.Zero(t, operations.cancelled, "unbind retires durable operations; it must not call the interactive cancel path")
+
+			var storedOperation model.FeishuOperation
+			require.NoError(t, h.db.Where("id = ?", operationID).Take(&storedOperation).Error)
+			if tc.state == model.FeishuOperationExecuting {
+				require.Equal(t, model.FeishuOperationUnknown, storedOperation.State)
+			} else {
+				require.Equal(t, model.FeishuOperationCancelled, storedOperation.State)
+			}
+			if !tc.linked {
+				require.Empty(t, waits.calls, "a legacy/manual operation must not scan or modify Agent runs")
+				return
+			}
+
+			require.Len(t, waits.calls, 1)
+			require.Equal(t, tc.outcome, waits.calls[0].outcome)
+			run, getErr := runStore.Get(context.Background(), runID)
+			require.NoError(t, getErr)
+			require.Equal(t, "terminated", run.Status)
+			require.Equal(t, "aborted_tools", run.StateReason)
+			require.Empty(t, run.PendingExternalActionJSON)
+			require.NotNil(t, run.CancellationRequestedAt)
+			var turns []json.RawMessage
+			require.NoError(t, json.Unmarshal(run.Messages, &turns))
+			require.Len(t, turns, 2, "retries/races must not append a synthetic user or second tool turn")
+			var terminalTurn struct {
+				Role       string `json:"role"`
+				Content    string `json:"content"`
+				ToolCallID string `json:"tool_call_id"`
+			}
+			require.NoError(t, json.Unmarshal(turns[1], &terminalTurn))
+			require.Equal(t, "tool", terminalTurn.Role)
+			require.Equal(t, toolCallID, terminalTurn.ToolCallID)
+			require.Contains(t, terminalTurn.Content, tc.resultCode)
+
+			// A completed disconnect cannot re-run terminalization or any Feishu
+			// command when the user repeats DELETE.
+			_, err = svc.Unbind(context.Background(), 7)
+			require.NoError(t, err)
+			require.Len(t, waits.calls, 1)
+		})
+	}
 }
 
 func TestWorkspaceLifecycleStatusIsReadOnlyAndNeverReturnsAuthorizationURL(t *testing.T) {
@@ -702,6 +984,66 @@ func TestWorkspaceLifecycleResumeCancelledSucceededOperationOnlyReturnsSummary(t
 	require.Zero(t, operations.cancelled, "a completed operation must not be cancelled after its write succeeded")
 }
 
+func TestWorkspaceLifecycleResumeCancelledRetriesTerminalAgentWaitWithoutReCancellingOperation(t *testing.T) {
+	const operationID = "op-cancelled-terminal-wait-retry"
+	op := &model.FeishuOperation{
+		ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingConfirmation,
+		AgentRunID: 44, ToolCallID: "tool-cancelled-terminal-wait-retry",
+	}
+	svc, _, workspace, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 2,
+	}, op)
+	agentWaits := svc.agentWaits.(*lifecycleAgentWaitFake)
+	agentWaits.finalize = func(_ context.Context, _ uint, _ uint64, _ string, _ string, _ externalaction.TerminalOutcome) (bool, error) {
+		if len(agentWaits.calls) == 1 {
+			return false, errors.New("agent wait store temporarily unavailable")
+		}
+		return true, nil
+	}
+	operations.cancel = func(_ context.Context, userID uint, id string) (*OperationResult, error) {
+		require.Equal(t, uint(7), userID)
+		require.Equal(t, operationID, id)
+		workspace.operation.State = model.FeishuOperationCancelled
+		return &OperationResult{OperationID: id, State: model.FeishuOperationCancelled}, nil
+	}
+
+	// Cancel has committed, but terminating the Agent's external wait has not.
+	// The retry must compensate that exact wait instead of rejecting the now
+	// terminal operation and leaving the frontend stuck in a running state.
+	result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionCancelled)
+	require.Nil(t, result)
+	require.ErrorIs(t, err, ErrWorkspaceLifecycleUnavailable)
+	require.Equal(t, model.FeishuOperationCancelled, workspace.operation.State)
+	require.Equal(t, 1, operations.cancelled)
+	require.Len(t, agentWaits.calls, 1)
+	require.Equal(t, externalaction.TerminalOutcomeCancelled, agentWaits.calls[0].outcome)
+
+	result, err = svc.Resume(context.Background(), 7, operationID, ResumeActionCancelled)
+	require.NoError(t, err)
+	require.Equal(t, &OperationResult{OperationID: operationID, State: model.FeishuOperationCancelled}, result)
+	require.Equal(t, 1, operations.cancelled, "retry must not call Operation.Cancel or execute a CLI command again")
+	require.Len(t, agentWaits.calls, 2)
+	require.Zero(t, dispatcher.calls, "terminalization must never resume the Agent model continuation")
+
+	// An already-unknown result is terminalized with its honest unknown result,
+	// never rewritten as a cancelled or successful Feishu write.
+	unknown := &model.FeishuOperation{
+		ID: "op-unknown-terminal-wait-retry", UserID: 7, Generation: 2, State: model.FeishuOperationUnknown,
+		AgentRunID: 45, ToolCallID: "tool-unknown-terminal-wait-retry",
+	}
+	unknownSvc, _, _, _, unknownDispatcher, unknownOperations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 2,
+	}, unknown)
+	unknownWaits := unknownSvc.agentWaits.(*lifecycleAgentWaitFake)
+	result, err = unknownSvc.Resume(context.Background(), 7, unknown.ID, ResumeActionCancelled)
+	require.NoError(t, err)
+	require.Equal(t, &OperationResult{OperationID: unknown.ID, State: model.FeishuOperationUnknown}, result)
+	require.Len(t, unknownWaits.calls, 1)
+	require.Equal(t, externalaction.TerminalOutcomeUnknown, unknownWaits.calls[0].outcome)
+	require.Zero(t, unknownOperations.cancelled)
+	require.Zero(t, unknownDispatcher.calls)
+}
+
 func TestWorkspaceLifecycleResumeCollapsesCrossUserToNotFound(t *testing.T) {
 	svc, _, workspace, _, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 8, Provider: ProviderLark, Generation: 1}, nil)
 	workspace.operationErr = gorm.ErrRecordNotFound
@@ -924,7 +1266,7 @@ func TestWorkspaceLifecycleUnbindDurablySerializesTwoServiceInstances(t *testing
 	release := make(chan struct{})
 	teardown := &lifecycleTeardownBarrier{entered: make(chan struct{}, 2), release: release}
 	makeService := func() *WorkspaceLifecycleService {
-		svc, err := NewWorkspaceLifecycleService(WorkspaceLifecycleDeps{Accounts: h.dataStore.ThirdPartyAccounts(), Workspace: h.dataStore.FeishuWorkspace(), Auth: &lifecycleAuthFake{}, Dispatcher: &lifecycleDispatcherFake{}, Operations: &lifecycleOperationsFake{}, Executions: &lifecycleExecutionsFake{}, Teardown: teardown})
+		svc, err := NewWorkspaceLifecycleService(WorkspaceLifecycleDeps{Accounts: h.dataStore.ThirdPartyAccounts(), Workspace: h.dataStore.FeishuWorkspace(), Auth: &lifecycleAuthFake{}, Dispatcher: &lifecycleDispatcherFake{}, Operations: &lifecycleOperationsFake{}, Executions: &lifecycleExecutionsFake{}, AgentWaits: &lifecycleAgentWaitFake{}, Teardown: teardown})
 		require.NoError(t, err)
 		return svc
 	}
@@ -957,6 +1299,176 @@ func TestWorkspaceLifecycleUnbindDurablySerializesTwoServiceInstances(t *testing
 		}
 	}
 	require.Equal(t, 1, teardown.count(), "only the durable owner may logout/delete/finalize")
+}
+
+func TestWorkspaceLifecycleUnbindRenewsRetiredTeardownLeaseUntilOwnerFailure(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 4, "cli-existing")
+	firstRelease := make(chan struct{})
+	secondRelease := make(chan struct{})
+	close(secondRelease)
+	firstTeardown := &lifecycleTeardownBarrier{
+		entered: make(chan struct{}, 1), release: firstRelease, err: errRetiredWorkspaceCleanup,
+	}
+	secondTeardown := &lifecycleTeardownBarrier{
+		entered: make(chan struct{}, 1), release: secondRelease,
+	}
+	makeService := func(teardown WorkspaceLifecycleTeardown) *WorkspaceLifecycleService {
+		svc, err := NewWorkspaceLifecycleService(WorkspaceLifecycleDeps{
+			Accounts: h.dataStore.ThirdPartyAccounts(), Workspace: h.dataStore.FeishuWorkspace(),
+			Auth: &lifecycleAuthFake{}, Dispatcher: &lifecycleDispatcherFake{}, Operations: &lifecycleOperationsFake{},
+			Executions: &lifecycleExecutionsFake{}, AgentWaits: &lifecycleAgentWaitFake{}, Teardown: teardown,
+		})
+		require.NoError(t, err)
+		// Keep this test's total cleanup deadline materially longer than its
+		// short, renewable teardown lease.
+		svc.cleanupTimeout = 600 * time.Millisecond
+		return svc
+	}
+	firstSvc, secondSvc := makeService(firstTeardown), makeService(secondTeardown)
+	type outcome struct {
+		result *UnbindResult
+		err    error
+	}
+	first := make(chan outcome, 1)
+	second := make(chan outcome, 1)
+	go func() { r, e := firstSvc.Unbind(context.Background(), 7); first <- outcome{r, e} }()
+	select {
+	case <-firstTeardown.entered:
+	case <-time.After(time.Second):
+		t.Fatal("first instance did not acquire the retired teardown lease")
+	}
+
+	// This crosses multiple initial lease durations. A missing heartbeat would
+	// let the second service claim and start a second local logout here.
+	time.Sleep(firstSvc.retiredTeardownLeaseDuration() * 2)
+	go func() { r, e := secondSvc.Unbind(context.Background(), 7); second <- outcome{r, e} }()
+	select {
+	case <-secondTeardown.entered:
+		t.Fatal("second instance started retired HOME cleanup while first owner was renewing")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(firstRelease)
+	select {
+	case got := <-first:
+		require.Nil(t, got.result)
+		require.ErrorIs(t, got.err, ErrWorkspaceLifecycleUnavailable)
+	case <-time.After(time.Second):
+		t.Fatal("failed teardown owner did not release its durable lease")
+	}
+	select {
+	case <-secondTeardown.entered:
+	case <-time.After(time.Second):
+		t.Fatal("second instance did not take over after first owner failure")
+	}
+	select {
+	case got := <-second:
+		require.NoError(t, got.err)
+		require.Equal(t, model.FeishuConnectionNone, got.result.State)
+	case <-time.After(time.Second):
+		t.Fatal("second instance did not complete after first owner released")
+	}
+	require.Equal(t, 1, secondTeardown.count(), "only the replacement owner may complete after failure")
+}
+
+func TestWorkspaceLifecycleUnbindLeaseExpiryPreventsStaleOwnerCompletion(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 4, "cli-existing")
+	workspace := &lifecycleTrackingWorkspace{IFeishuWorkspaceStore: h.dataStore.FeishuWorkspace()}
+	firstRelease := make(chan struct{})
+	var firstReleaseOnce sync.Once
+	releaseFirst := func() { firstReleaseOnce.Do(func() { close(firstRelease) }) }
+	secondRelease := make(chan struct{})
+	close(secondRelease)
+	firstTeardown := &lifecycleUncooperativeTeardown{entered: make(chan struct{}, 1), deadlineHit: make(chan struct{}, 1), release: firstRelease}
+	secondTeardown := &lifecycleTeardownBarrier{entered: make(chan struct{}, 1), release: secondRelease}
+	makeService := func(teardown WorkspaceLifecycleTeardown) *WorkspaceLifecycleService {
+		svc, err := NewWorkspaceLifecycleService(WorkspaceLifecycleDeps{
+			Accounts: h.dataStore.ThirdPartyAccounts(), Workspace: workspace,
+			Auth: &lifecycleAuthFake{}, Dispatcher: &lifecycleDispatcherFake{}, Operations: &lifecycleOperationsFake{},
+			Executions: &lifecycleExecutionsFake{}, AgentWaits: &lifecycleAgentWaitFake{}, Teardown: teardown,
+		})
+		require.NoError(t, err)
+		svc.cleanupTimeout = 120 * time.Millisecond
+		return svc
+	}
+	firstSvc, secondSvc := makeService(firstTeardown), makeService(secondTeardown)
+	type outcome struct {
+		result *UnbindResult
+		err    error
+	}
+	first := make(chan outcome, 1)
+	second := make(chan outcome, 1)
+	firstFinished := make(chan struct{})
+	go func() {
+		defer close(firstFinished)
+		r, e := firstSvc.Unbind(context.Background(), 7)
+		first <- outcome{r, e}
+	}()
+	t.Cleanup(func() {
+		releaseFirst()
+		select {
+		case <-firstFinished:
+		case <-time.After(time.Second):
+			t.Errorf("uncooperative teardown did not exit during test cleanup")
+		}
+	})
+	select {
+	case <-firstTeardown.entered:
+	case <-time.After(time.Second):
+		t.Fatal("first instance did not enter its controlled uncooperative cleanup")
+	}
+
+	// Simulate a crashed/stuck owner. The actual handoff is the observable
+	// contract: after the first service's bounded cleanup deadline, the second
+	// independently composed service must acquire the durable lease and finish.
+	// Avoid polling the single-connection SQLite test DB while the heartbeat is
+	// committing, because that only tests test-driver scheduling rather than
+	// ownership semantics.
+	select {
+	case <-firstTeardown.deadlineHit:
+	case <-time.After(time.Second):
+		t.Fatal("stuck teardown did not receive the bounded cleanup deadline")
+	}
+	time.Sleep(firstSvc.retiredTeardownLeaseDuration() * 2)
+
+	secondFinished := make(chan struct{})
+	go func() {
+		defer close(secondFinished)
+		r, e := secondSvc.Unbind(context.Background(), 7)
+		second <- outcome{r, e}
+	}()
+	t.Cleanup(func() {
+		select {
+		case <-secondFinished:
+		case <-time.After(time.Second):
+			t.Errorf("replacement teardown did not exit during test cleanup")
+		}
+	})
+	select {
+	case <-secondTeardown.entered:
+	case <-time.After(time.Second):
+		t.Fatal("replacement instance did not claim the expired teardown lease")
+	}
+	select {
+	case got := <-second:
+		require.NoError(t, got.err)
+		require.Equal(t, model.FeishuConnectionNone, got.result.State)
+	case <-time.After(time.Second):
+		t.Fatal("replacement instance did not atomically delete/finalize")
+	}
+	require.Equal(t, 1, workspace.deleteCount(), "only the replacement owner may cross the atomic delete/finalize boundary")
+
+	releaseFirst()
+	select {
+	case got := <-first:
+		require.Nil(t, got.result)
+		require.ErrorIs(t, got.err, ErrWorkspaceLifecycleUnavailable)
+	case <-time.After(time.Second):
+		t.Fatal("stale owner did not return after its child cleanup released")
+	}
+	require.Equal(t, 1, workspace.deleteCount(), "stale owner must not delete/finalize after lease loss")
 }
 
 func TestWorkspaceLifecycleUnbindWaitsForWorkerExitBeforeDeletingRetiredVault(t *testing.T) {
@@ -1076,7 +1588,7 @@ func TestWorkspaceLifecycleUnbindJoinsExecutingCLIAndRuntimeHomeBeforeLocalDelet
 	lifecycle, err := NewWorkspaceLifecycleService(WorkspaceLifecycleDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Workspace: workspace, Auth: auth,
 		Dispatcher: &lifecycleDispatcherFake{}, Operations: operationService,
-		Executions: operationService, Teardown: teardown,
+		Executions: operationService, AgentWaits: &lifecycleAgentWaitFake{}, Teardown: teardown,
 	})
 	require.NoError(t, err)
 
@@ -1169,7 +1681,7 @@ func TestWorkspaceLifecycleUnbindWaitsForCrossInstanceExecutionGateOrLeavesDisco
 	teardown := &lifecycleTeardownFake{}
 	lifecycle, err := NewWorkspaceLifecycleService(WorkspaceLifecycleDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Workspace: workspace, Auth: auth,
-		Dispatcher: &lifecycleDispatcherFake{}, Operations: h.service, Executions: h.service,
+		Dispatcher: &lifecycleDispatcherFake{}, Operations: h.service, Executions: h.service, AgentWaits: &lifecycleAgentWaitFake{},
 		Teardown: teardown,
 	})
 	require.NoError(t, err)

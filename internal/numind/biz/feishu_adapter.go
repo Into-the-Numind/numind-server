@@ -204,6 +204,7 @@ func buildFeishuService(deps feishuCompositionDeps) (*feishuPersonalWorkspace, e
 		Accounts: deps.dataStore.ThirdPartyAccounts(), Workspace: deps.dataStore.FeishuWorkspace(),
 		Auth: authService, Dispatcher: dispatcher, Operations: operationService,
 		Executions: operationService,
+		AgentWaits: resumer,
 		Teardown:   teardown,
 	})
 	if err != nil {

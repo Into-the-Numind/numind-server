@@ -14,6 +14,7 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
+	"numind-server/internal/pkg/externalaction"
 	"numind-server/internal/pkg/model"
 )
 
@@ -44,6 +45,95 @@ func externalToolResumeLease(t *testing.T, s IAgentRunStore) IExternalToolResume
 	r, ok := s.(IExternalToolResumeLease)
 	require.True(t, ok, "production agentRunStore must expose the narrow external resume lease lifecycle")
 	return r
+}
+
+func externalToolWaitFinalizer(t *testing.T, s IAgentRunStore) IExternalToolWaitFinalizer {
+	t.Helper()
+	finalizer, ok := s.(IExternalToolWaitFinalizer)
+	require.True(t, ok, "production agentRunStore must expose the narrow external wait terminalizer")
+	return finalizer
+}
+
+func TestExternalToolWaitFinalizerConsumesExactWaitOnceAndClearsRunningCard(t *testing.T) {
+	s, _ := newExternalActionAgentRunStore(t)
+	runID := seedExternalResumeRun(t, s, nil)
+	finalizer := externalToolWaitFinalizer(t, s)
+
+	finalized, err := finalizer.FinalizeExternalToolWait(
+		context.Background(), 7, runID, "op-1", "tc-9", externalaction.TerminalOutcomeCancelled,
+	)
+	require.NoError(t, err)
+	require.True(t, finalized)
+
+	got, err := s.Get(context.Background(), runID)
+	require.NoError(t, err)
+	assert.Equal(t, "terminated", got.Status)
+	assert.Equal(t, "aborted_tools", got.StateReason)
+	assert.Empty(t, got.PendingExternalActionJSON)
+	assert.Nil(t, got.PendingExternalActionAt)
+	assert.NotNil(t, got.CancellationRequestedAt)
+	assert.NotNil(t, got.EndedAt)
+	var metadata map[string]any
+	require.NoError(t, json.Unmarshal(got.TerminalMetadata, &metadata))
+	assert.Equal(t, map[string]any{"provider": "feishu", "outcome": string(externalaction.TerminalOutcomeCancelled)}, metadata["external_action"])
+
+	msgs := decodeStoredSchemaMessages(t, got.Messages)
+	require.Len(t, msgs, 2)
+	assert.Equal(t, schema.Tool, msgs[1].Role)
+	assert.Equal(t, "tc-9", msgs[1].ToolCallID)
+	assert.JSONEq(t, `{"ok":false,"operation_state":"cancelled","error":{"code":"feishu_operation_cancelled","message":"飞书操作已取消，未执行。"}}`, msgs[1].Content)
+	assert.Equal(t, "op-1", msgs[1].Extra[externalOperationIDExtraKey])
+
+	finalized, err = finalizer.FinalizeExternalToolWait(
+		context.Background(), 7, runID, "op-1", "tc-9", externalaction.TerminalOutcomeCancelled,
+	)
+	require.NoError(t, err)
+	assert.False(t, finalized, "repeated lifecycle delivery must not append a second tool result")
+	got, err = s.Get(context.Background(), runID)
+	require.NoError(t, err)
+	assert.Len(t, decodeStoredSchemaMessages(t, got.Messages), 2)
+	lease := externalToolResumeLease(t, s)
+	candidates, err := lease.ListExternalToolResumeCandidates(context.Background(), time.Now().Add(time.Hour), 10)
+	require.NoError(t, err)
+	assert.Empty(t, candidates, "Task11's reclaimer must not reclaim a durably cancelled external wait")
+}
+
+func TestExternalToolWaitFinalizerRejectsCrossUserWrongIdentityAndContradictorySuccess(t *testing.T) {
+	s, _ := newExternalActionAgentRunStore(t)
+	finalizer := externalToolWaitFinalizer(t, s)
+
+	t.Run("cross user", func(t *testing.T) {
+		runID := seedExternalResumeRun(t, s, nil)
+		finalized, err := finalizer.FinalizeExternalToolWait(context.Background(), 8, runID, "op-1", "tc-9", externalaction.TerminalOutcomeCancelled)
+		require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+		assert.False(t, finalized)
+		got, getErr := s.Get(context.Background(), runID)
+		require.NoError(t, getErr)
+		assert.NotEmpty(t, got.PendingExternalActionJSON)
+	})
+
+	t.Run("wrong operation identity", func(t *testing.T) {
+		runID := seedExternalResumeRun(t, s, nil)
+		finalized, err := finalizer.FinalizeExternalToolWait(context.Background(), 7, runID, "op-other", "tc-9", externalaction.TerminalOutcomeCancelled)
+		require.Error(t, err)
+		assert.False(t, finalized)
+	})
+
+	t.Run("completed success cannot be overwritten", func(t *testing.T) {
+		runID := seedExternalResumeRun(t, s, nil)
+		lease := externalToolResumeLease(t, s)
+		token, claimed, err := lease.ClaimExternalToolResume(context.Background(), runID, "op-1", "tc-9", json.RawMessage(`{"ok":true}`))
+		require.NoError(t, err)
+		require.True(t, claimed)
+		require.NotEmpty(t, token)
+		finalized, err := finalizer.FinalizeExternalToolWait(context.Background(), 7, runID, "op-1", "tc-9", externalaction.TerminalOutcomeUnknown)
+		require.Error(t, err, "a terminal callback must not append a contradictory second tool result")
+		assert.False(t, finalized)
+		got, getErr := s.Get(context.Background(), runID)
+		require.NoError(t, getErr)
+		assert.Len(t, decodeStoredSchemaMessages(t, got.Messages), 2)
+		assert.NotEqual(t, "aborted_tools", got.StateReason)
+	})
 }
 
 func TestExternalToolResumeLease_DoesNotExposeUntokenizedResume(t *testing.T) {

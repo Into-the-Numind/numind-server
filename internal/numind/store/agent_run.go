@@ -87,6 +87,14 @@ type IExternalActionWriter interface {
 	UpdatePendingExternalAction(ctx context.Context, runID uint64, payloadJSON []byte) error
 }
 
+// IExternalToolWaitFinalizer is the narrow terminal counterpart to the
+// tokenized success-resume lease. It ends one exact external wait using the
+// durable user/run/operation/tool-call identity; it never scans or changes
+// unrelated Agent runs.
+type IExternalToolWaitFinalizer interface {
+	FinalizeExternalToolWait(ctx context.Context, userID uint, runID uint64, operationID, toolCallID string, outcome externalaction.TerminalOutcome) (finalized bool, err error)
+}
+
 // IExternalToolResumeLease is the only production capability for restoring an
 // external result. The pending identity is retained while synchronous
 // runner preflight owns the lease; Complete acknowledges a usable runner and
@@ -109,6 +117,7 @@ func newAgentRunStore(db *gorm.DB) IAgentRunStore {
 
 var _ IAgentRunStore = (*agentRunStore)(nil)
 var _ IExternalActionWriter = (*agentRunStore)(nil)
+var _ IExternalToolWaitFinalizer = (*agentRunStore)(nil)
 var _ IExternalToolResumeLease = (*agentRunStore)(nil)
 
 func (s *agentRunStore) Create(ctx context.Context, run *model.AgentRun) error {
@@ -351,6 +360,183 @@ const (
 )
 
 var errExternalResumeLostClaim = errors.New("external tool resume claim was already consumed")
+
+// FinalizeExternalToolWait durably consumes one exact external wait when its
+// Feishu operation becomes cancelled or unknown. It appends a fixed structured
+// tool error to the original tool_call_id, clears the external-action card,
+// prevents every later Task11 claim, and marks the Agent run terminal. The
+// whole transition is one transaction, so duplicate lifecycle callbacks cannot
+// append a second tool turn or leave a stale waiting card behind.
+func (s *agentRunStore) FinalizeExternalToolWait(
+	ctx context.Context,
+	userID uint,
+	runID uint64,
+	operationID string,
+	toolCallID string,
+	outcome externalaction.TerminalOutcome,
+) (bool, error) {
+	operationID = strings.TrimSpace(operationID)
+	toolCallID = strings.TrimSpace(toolCallID)
+	if userID == 0 || runID == 0 || operationID == "" || toolCallID == "" {
+		return false, fmt.Errorf("agentRunStore.FinalizeExternalToolWait: user, run, operation, and tool call identity are required")
+	}
+	terminalResult, err := externalaction.TerminalToolResult(outcome)
+	if err != nil {
+		return false, fmt.Errorf("agentRunStore.FinalizeExternalToolWait: invalid outcome: %w", err)
+	}
+	canonicalResult, err := canonicalExternalToolResult(terminalResult)
+	if err != nil {
+		return false, fmt.Errorf("agentRunStore.FinalizeExternalToolWait: canonicalize outcome: %w", err)
+	}
+
+	// Mirrors the bounded SQLite contention retry used by the success resumer.
+	// MySQL serializes the row through FOR UPDATE; the retry only preserves that
+	// same exact-once behavior in the lightweight test runtime.
+	for attempt := 0; attempt < 20; attempt++ {
+		finalized, txErr := s.finalizeExternalToolWaitOnce(ctx, userID, runID, operationID, toolCallID, outcome, canonicalResult)
+		if txErr == nil {
+			return finalized, nil
+		}
+		if !isSQLiteBusy(txErr) || ctx.Err() != nil {
+			return false, txErr
+		}
+		time.Sleep(time.Duration(attempt+1) * time.Millisecond)
+	}
+	return false, fmt.Errorf("agentRunStore.FinalizeExternalToolWait(id=%d): database remained busy", runID)
+}
+
+func (s *agentRunStore) finalizeExternalToolWaitOnce(
+	ctx context.Context,
+	userID uint,
+	runID uint64,
+	operationID string,
+	toolCallID string,
+	outcome externalaction.TerminalOutcome,
+	canonicalResult json.RawMessage,
+) (finalized bool, retErr error) {
+	retErr = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var run model.AgentRun
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&run, runID).Error; err != nil {
+			return fmt.Errorf("agentRunStore.FinalizeExternalToolWait get(id=%d): %w", runID, err)
+		}
+		// The Feishu operation has already been tenant-fenced by its own store
+		// transition. This second check prevents a corrupt operation link from
+		// ending another user's Agent run.
+		if run.UserID != userID {
+			return gorm.ErrRecordNotFound
+		}
+		if run.IsDeleted {
+			return nil
+		}
+
+		if !hasJSONValue(run.PendingExternalActionJSON) {
+			already, err := transcriptHasExactToolResult(run.Messages, operationID, toolCallID, canonicalResult)
+			if err != nil {
+				return fmt.Errorf("agentRunStore.FinalizeExternalToolWait existing result(id=%d): %w", runID, err)
+			}
+			if already && run.Status == "terminated" && run.StateReason == "aborted_tools" {
+				return nil
+			}
+			return fmt.Errorf("agentRunStore.FinalizeExternalToolWait(id=%d): no matching external wait", runID)
+		}
+		pending, err := externalaction.Parse(run.PendingExternalActionJSON)
+		if err != nil {
+			return fmt.Errorf("agentRunStore.FinalizeExternalToolWait(id=%d): corrupt pending external action: %w", runID, err)
+		}
+		if pending.OperationID != operationID || pending.ToolCallID != toolCallID {
+			return fmt.Errorf("agentRunStore.FinalizeExternalToolWait(id=%d): pending operation/tool identity mismatch", runID)
+		}
+
+		var turns []json.RawMessage
+		if err := json.Unmarshal(run.Messages, &turns); err != nil {
+			return fmt.Errorf("agentRunStore.FinalizeExternalToolWait(id=%d): corrupt transcript: %w", runID, err)
+		}
+		if turns == nil && !bytes.Equal(bytes.TrimSpace(run.Messages), []byte("[]")) {
+			return fmt.Errorf("agentRunStore.FinalizeExternalToolWait(id=%d): transcript must be a JSON array", runID)
+		}
+		if err := validateExternalResumeTranscript(turns); err != nil {
+			return fmt.Errorf("agentRunStore.FinalizeExternalToolWait(id=%d): corrupt transcript: %w", runID, err)
+		}
+		// A success continuation has already written one result for this exact
+		// tool call. A later cancellation/unknown callback must not overwrite it
+		// or manufacture a second tool turn; its operation-state fencing should
+		// have prevented this contradictory path in the first place.
+		already, err := transcriptHasExactToolResult(run.Messages, operationID, toolCallID, canonicalResult)
+		if err != nil {
+			return fmt.Errorf("agentRunStore.FinalizeExternalToolWait existing tool result(id=%d): %w", runID, err)
+		}
+		if already {
+			return fmt.Errorf("agentRunStore.FinalizeExternalToolWait(id=%d): pending wait already has a terminal result", runID)
+		}
+
+		switch {
+		case run.Status == "terminated" && run.StateReason == "waiting_for_user_choice":
+		case run.Status == "terminated" && run.StateReason == externalResumeStateReady:
+		case run.Status == "running" && strings.HasPrefix(run.StateReason, externalResumeStartingPrefix):
+		default:
+			return fmt.Errorf("agentRunStore.FinalizeExternalToolWait(id=%d): unexpected run state status=%q reason=%q", runID, run.Status, run.StateReason)
+		}
+
+		toolMessage := schema.ToolMessage(string(canonicalResult), toolCallID)
+		toolMessage.Extra = map[string]any{externalOperationIDExtraKey: operationID}
+		toolTurn, err := json.Marshal(toolMessage)
+		if err != nil {
+			return fmt.Errorf("agentRunStore.FinalizeExternalToolWait(id=%d): marshal tool result: %w", runID, err)
+		}
+		turns = append(turns, json.RawMessage(toolTurn))
+		messages, err := json.Marshal(turns)
+		if err != nil {
+			return fmt.Errorf("agentRunStore.FinalizeExternalToolWait(id=%d): marshal transcript: %w", runID, err)
+		}
+		metadata, err := externalWaitTerminalMetadata(run.TerminalMetadata, outcome)
+		if err != nil {
+			return fmt.Errorf("agentRunStore.FinalizeExternalToolWait(id=%d): terminal metadata: %w", runID, err)
+		}
+		now := time.Now().UTC()
+		result := tx.Model(&model.AgentRun{}).
+			Where("id = ? AND user_id = ? AND status = ? AND state_reason = ? AND is_deleted = ? AND pending_external_action_json = ?",
+				runID, userID, run.Status, run.StateReason, false, string(run.PendingExternalActionJSON)).
+			Updates(map[string]any{
+				"messages":                     datatypes.JSON(messages),
+				"pending_external_action_json": nil,
+				"pending_external_action_at":   nil,
+				"pending_question_json":        nil,
+				"pending_question_at":          nil,
+				"status":                       "terminated",
+				"state_reason":                 "aborted_tools",
+				"ended_at":                     now,
+				"cancellation_requested_at":    now,
+				"terminal_metadata":            datatypes.JSON(metadata),
+			})
+		if result.Error != nil {
+			return fmt.Errorf("agentRunStore.FinalizeExternalToolWait update(id=%d): %w", runID, result.Error)
+		}
+		if result.RowsAffected != 1 {
+			return errExternalResumeLostClaim
+		}
+		finalized = true
+		return nil
+	})
+	return finalized, retErr
+}
+
+func externalWaitTerminalMetadata(existing datatypes.JSON, outcome externalaction.TerminalOutcome) ([]byte, error) {
+	metadata := make(map[string]any)
+	if hasJSONValue(existing) {
+		if err := json.Unmarshal(existing, &metadata); err != nil || metadata == nil {
+			metadata = make(map[string]any)
+		}
+	}
+	metadata["external_action"] = map[string]string{
+		"provider": "feishu",
+		"outcome":  string(outcome),
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		return nil, err
+	}
+	return encoded, nil
+}
 
 // ClaimExternalToolResume returns a fencing token only to the callback that
 // owns the current runner-start lease. Every production continuation must

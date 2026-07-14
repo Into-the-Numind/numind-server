@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"numind-server/internal/pkg/externalaction"
 	"numind-server/internal/pkg/model"
 
 	"gorm.io/gorm"
@@ -105,11 +106,13 @@ type WorkspaceLifecycleAccountStore interface {
 // resume and teardown. It intentionally has no broad query or raw DB API.
 type WorkspaceLifecycleStore interface {
 	GetOperationForUser(context.Context, uint, uint64, string) (*model.FeishuOperation, error)
+	ListTerminalOperationsForGeneration(context.Context, uint, uint64, []string) ([]model.FeishuOperation, error)
 	GetSessionForUser(context.Context, uint, uint64, string) (*model.FeishuAuthSession, error)
 	FindActiveSessionForUser(context.Context, uint, uint64) (*model.FeishuAuthSession, error)
-	DeleteVault(context.Context, uint, uint64) error
 	ClaimRetiredTeardown(context.Context, uint, uint64, uint64, string, time.Time, time.Time) (bool, error)
+	RenewRetiredTeardown(context.Context, uint, uint64, uint64, string, time.Time, time.Time) (bool, error)
 	ReleaseRetiredTeardown(context.Context, uint, uint64, string, time.Time) error
+	CompleteRetiredTeardown(context.Context, uint, uint64, uint64, string, time.Time) (bool, error)
 }
 
 // WorkspaceLifecycleAuth owns in-memory worker cancellation and creates a
@@ -144,6 +147,14 @@ type WorkspaceLifecycleExecutions interface {
 	StopGenerationAndWait(context.Context, uint, uint64) error
 }
 
+// WorkspaceLifecycleAgentWaits is the only bridge from a terminal Feishu
+// operation to its exact Agent external wait. Unlike the Task11 success
+// dispatcher it never starts a model continuation: it persists a fixed tool
+// error and makes the Agent run terminal.
+type WorkspaceLifecycleAgentWaits interface {
+	FinalizeExternalToolWait(context.Context, uint, uint64, string, string, externalaction.TerminalOutcome) (bool, error)
+}
+
 // WorkspaceLifecycleTeardown runs only a fixed logout command after the
 // account generation has been retired. Its result records advisory CLI logout
 // status. A non-nil error means retired HOME materialization/cleanup failed,
@@ -162,6 +173,7 @@ type WorkspaceLifecycleDeps struct {
 	Dispatcher WorkspaceLifecycleDispatcher
 	Operations WorkspaceLifecycleOperations
 	Executions WorkspaceLifecycleExecutions
+	AgentWaits WorkspaceLifecycleAgentWaits
 	Teardown   WorkspaceLifecycleTeardown
 }
 
@@ -175,6 +187,7 @@ type WorkspaceLifecycleService struct {
 	dispatcher     WorkspaceLifecycleDispatcher
 	operations     WorkspaceLifecycleOperations
 	executions     WorkspaceLifecycleExecutions
+	agentWaits     WorkspaceLifecycleAgentWaits
 	teardown       WorkspaceLifecycleTeardown
 	cleanupTimeout time.Duration
 	// unbinds serializes destructive local teardown per user without holding a
@@ -191,17 +204,39 @@ type workspaceUnbindFlight struct {
 	err    error
 }
 
+// retiredTeardownLease supervises one short durable teardown lease while the
+// bounded local cleanup runs. The heartbeat deliberately stops at the cleanup
+// context deadline: a stuck runner or os.RemoveAll must not preserve ownership
+// forever. Once ownership is lost, callers must not perform another
+// destructive step; CompleteRetiredTeardown independently enforces the same
+// owner/generation fence in the database.
+type retiredTeardownLease struct {
+	workspace               WorkspaceLifecycleStore
+	userID                  uint
+	retiredGeneration       uint64
+	disconnectingGeneration uint64
+	owner                   string
+	leaseDuration           time.Duration
+	cleanupCtx              context.Context
+
+	mu      sync.Mutex
+	lost    bool
+	stopped bool
+	cancel  context.CancelFunc
+	done    chan struct{}
+}
+
 var _ IFeishuService = (*WorkspaceLifecycleService)(nil)
 
 // NewWorkspaceLifecycleService validates that the endpoint cannot publish a
 // half-composed lifecycle path.
 func NewWorkspaceLifecycleService(deps WorkspaceLifecycleDeps) (*WorkspaceLifecycleService, error) {
-	if deps.Accounts == nil || deps.Workspace == nil || deps.Auth == nil || deps.Dispatcher == nil || deps.Operations == nil || deps.Executions == nil || deps.Teardown == nil {
+	if deps.Accounts == nil || deps.Workspace == nil || deps.Auth == nil || deps.Dispatcher == nil || deps.Operations == nil || deps.Executions == nil || deps.AgentWaits == nil || deps.Teardown == nil {
 		return nil, fmt.Errorf("%w: incomplete workspace graph", ErrWorkspaceLifecycleUnavailable)
 	}
 	return &WorkspaceLifecycleService{
 		accounts: deps.Accounts, workspace: deps.Workspace, auth: deps.Auth,
-		dispatcher: deps.Dispatcher, operations: deps.Operations, executions: deps.Executions, teardown: deps.Teardown,
+		dispatcher: deps.Dispatcher, operations: deps.Operations, executions: deps.Executions, agentWaits: deps.AgentWaits, teardown: deps.Teardown,
 		cleanupTimeout: workspaceLifecycleCleanupTimeout,
 		unbinds:        make(map[uint]*workspaceUnbindFlight),
 	}, nil
@@ -365,12 +400,35 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 		if operation.State == model.FeishuOperationSucceeded {
 			return lifecycleStoredOperationSummary(operation), nil
 		}
+		// Operation.Cancel commits its terminal operation transition before this
+		// service can terminalize the linked Agent wait. If that second durable
+		// step was temporarily unavailable, a retry must finish exactly that
+		// wait; returning "invalid" here would strand the Agent run forever.
+		// Neither terminal branch invokes Cancel nor the CLI again.
+		switch operation.State {
+		case model.FeishuOperationCancelled:
+			if err := s.finalizeTerminalOperationWait(ctx, userID, operation, externalaction.TerminalOutcomeCancelled); err != nil {
+				return nil, err
+			}
+			return lifecycleStoredOperationSummary(operation), nil
+		case model.FeishuOperationUnknown:
+			if err := s.finalizeTerminalOperationWait(ctx, userID, operation, externalaction.TerminalOutcomeUnknown); err != nil {
+				return nil, err
+			}
+			return lifecycleStoredOperationSummary(operation), nil
+		}
 		if operation.State != model.FeishuOperationWaitingConfirmation {
 			return nil, ErrWorkspaceLifecycleInvalid
 		}
 		result, cancelErr := s.operations.Cancel(ctx, userID, operationID)
 		if cancelErr != nil || result == nil {
 			return nil, ErrWorkspaceLifecycleUnavailable
+		}
+		if result.OperationID != operation.ID || result.State != model.FeishuOperationCancelled {
+			return nil, ErrWorkspaceLifecycleUnavailable
+		}
+		if err := s.finalizeTerminalOperationWait(ctx, userID, operation, externalaction.TerminalOutcomeCancelled); err != nil {
+			return nil, err
 		}
 		return lifecycleResultSummary(result), nil
 	default:
@@ -403,6 +461,77 @@ func (s *WorkspaceLifecycleService) compensateSucceededOperation(
 		return ErrWorkspaceLifecycleUnavailable
 	}
 	if err := s.dispatcher.DispatchResume(ctx, userID, operation.ID); err != nil {
+		return ErrWorkspaceLifecycleUnavailable
+	}
+	return nil
+}
+
+// finalizeRetiredGenerationAgentWaits consumes only exact Agent links from
+// operations that RetireGeneration has already atomically closed. It queries a
+// single user/generation/state set, never a broad agent_run list. A teardown
+// retry repeats the call safely because AgentRunResumer's terminal store path
+// is idempotent for the same operation/tool-result tuple.
+func (s *WorkspaceLifecycleService) finalizeRetiredGenerationAgentWaits(
+	ctx context.Context,
+	userID uint,
+	retiredGeneration uint64,
+) error {
+	if s == nil || userID == 0 || retiredGeneration == 0 {
+		return ErrWorkspaceLifecycleUnavailable
+	}
+	operations, err := s.workspace.ListTerminalOperationsForGeneration(ctx, userID, retiredGeneration, []string{
+		model.FeishuOperationCancelled,
+		model.FeishuOperationUnknown,
+	})
+	if err != nil {
+		return ErrWorkspaceLifecycleUnavailable
+	}
+	for index := range operations {
+		operation := &operations[index]
+		if operation.UserID != userID || operation.Generation != retiredGeneration {
+			return ErrWorkspaceLifecycleUnavailable
+		}
+		var outcome externalaction.TerminalOutcome
+		switch operation.State {
+		case model.FeishuOperationCancelled:
+			outcome = externalaction.TerminalOutcomeCancelled
+		case model.FeishuOperationUnknown:
+			outcome = externalaction.TerminalOutcomeUnknown
+		default:
+			return ErrWorkspaceLifecycleUnavailable
+		}
+		if err := s.finalizeTerminalOperationWait(ctx, userID, operation, outcome); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// finalizeTerminalOperationWait is deliberately terminal-only. A successful
+// operation remains owned by Task12's shared dispatcher and Task11 resumer;
+// this path is for cancelled and unknown operation states, where automatic
+// continuation would be both misleading and unsafe.
+func (s *WorkspaceLifecycleService) finalizeTerminalOperationWait(
+	ctx context.Context,
+	userID uint,
+	operation *model.FeishuOperation,
+	outcome externalaction.TerminalOutcome,
+) error {
+	if s == nil || s.agentWaits == nil || operation == nil || operation.UserID != userID || userID == 0 ||
+		strings.TrimSpace(operation.ID) == "" {
+		return ErrWorkspaceLifecycleUnavailable
+	}
+	if operation.AgentRunID == 0 && strings.TrimSpace(operation.ToolCallID) == "" {
+		// Manual/non-Agent operations intentionally have no Agent transcript to
+		// modify. This is a safe no-op, not a missing continuation.
+		return nil
+	}
+	if operation.AgentRunID == 0 || !validStableIdentifier(operation.ToolCallID, operationMaxToolCallIDBytes) {
+		return ErrWorkspaceLifecycleUnavailable
+	}
+	if _, err := s.agentWaits.FinalizeExternalToolWait(
+		ctx, userID, operation.AgentRunID, operation.ID, operation.ToolCallID, outcome,
+	); err != nil {
 		return ErrWorkspaceLifecycleUnavailable
 	}
 	return nil
@@ -575,6 +704,9 @@ func (s *WorkspaceLifecycleService) unbindOnce(ctx context.Context, userID uint)
 	// retired generation on a later retry.
 	cleanupCtx, cleanupCancel := workspaceLifecycleCleanupContext(ctx, s.cleanupTimeout)
 	defer cleanupCancel()
+	if err := s.finalizeRetiredGenerationAgentWaits(cleanupCtx, userID, retiredGeneration); err != nil {
+		return nil, err
+	}
 	if err := s.auth.StopGenerationAndWait(cleanupCtx, userID, retiredGeneration); err != nil {
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
@@ -595,8 +727,10 @@ func (s *WorkspaceLifecycleService) unbindOnce(ctx context.Context, userID uint)
 	if !claimedTeardown {
 		return unboundWorkspaceResult(), nil
 	}
+	teardownLease := s.startRetiredTeardownLease(cleanupCtx, userID, retiredGeneration, nextGeneration, teardownOwner)
 	completedTeardown := false
 	defer func() {
+		teardownLease.stop()
 		if !completedTeardown {
 			_ = s.workspace.ReleaseRetiredTeardown(context.Background(), userID, retiredGeneration, teardownOwner, time.Now().UTC())
 		}
@@ -607,24 +741,31 @@ func (s *WorkspaceLifecycleService) unbindOnce(ctx context.Context, userID uint)
 	// retired HOME could not be materialized or removed. In that case deleting
 	// the vault would falsely claim local credential removal, so leave the row
 	// disconnecting for the same-generation retry.
+	if !teardownLease.checkpoint() {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
 	if _, err := s.teardown.LogoutRetired(cleanupCtx, userID, retiredGeneration); err != nil {
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
-	if err := s.workspace.DeleteVault(cleanupCtx, userID, retiredGeneration); err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+	if !teardownLease.checkpoint() {
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
-	if err := s.accounts.FinalizeDisconnect(cleanupCtx, userID, ProviderLark, nextGeneration); err != nil {
+	// The vault delete and connection finalization are intentionally one
+	// owner-fenced transaction. A teardown worker that lost a short lease while
+	// an uncooperative logout/cleanup was blocked cannot commit either half.
+	teardownLease.stop()
+	completed, err := s.workspace.CompleteRetiredTeardown(cleanupCtx, userID, retiredGeneration, nextGeneration, teardownOwner, time.Now().UTC())
+	if err != nil || !completed {
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
 	completedTeardown = true
-	_ = s.workspace.ReleaseRetiredTeardown(context.Background(), userID, retiredGeneration, teardownOwner, time.Now().UTC())
 	return unboundWorkspaceResult(), nil
 }
 
 func (s *WorkspaceLifecycleService) claimRetiredTeardown(ctx context.Context, userID uint, retiredGeneration, nextGeneration uint64, owner string) (bool, error) {
 	for {
 		now := time.Now().UTC()
-		claimed, err := s.workspace.ClaimRetiredTeardown(ctx, userID, retiredGeneration, nextGeneration, owner, now, now.Add(s.cleanupTimeout))
+		claimed, err := s.workspace.ClaimRetiredTeardown(ctx, userID, retiredGeneration, nextGeneration, owner, now, now.Add(s.retiredTeardownLeaseDuration()))
 		if err != nil || claimed {
 			return claimed, err
 		}
@@ -644,6 +785,154 @@ func (s *WorkspaceLifecycleService) claimRetiredTeardown(ctx context.Context, us
 			return false, ctx.Err()
 		case <-timer.C:
 		}
+	}
+}
+
+func (s *WorkspaceLifecycleService) retiredTeardownLeaseDuration() time.Duration {
+	timeout := s.cleanupTimeout
+	if timeout <= 0 {
+		timeout = workspaceLifecycleCleanupTimeout
+	}
+	lease := timeout / 4
+	if lease <= 0 {
+		return time.Nanosecond
+	}
+	return lease
+}
+
+func (s *WorkspaceLifecycleService) startRetiredTeardownLease(
+	cleanupCtx context.Context,
+	userID uint,
+	retiredGeneration, disconnectingGeneration uint64,
+	owner string,
+) *retiredTeardownLease {
+	if cleanupCtx == nil {
+		cleanupCtx = context.Background()
+	}
+	heartbeatCtx, cancel := context.WithCancel(cleanupCtx)
+	lease := &retiredTeardownLease{
+		workspace:               s.workspace,
+		userID:                  userID,
+		retiredGeneration:       retiredGeneration,
+		disconnectingGeneration: disconnectingGeneration,
+		owner:                   owner,
+		leaseDuration:           s.retiredTeardownLeaseDuration(),
+		cleanupCtx:              heartbeatCtx,
+		cancel:                  cancel,
+		done:                    make(chan struct{}),
+	}
+	go lease.run()
+	return lease
+}
+
+func (l *retiredTeardownLease) run() {
+	defer close(l.done)
+	interval := l.leaseDuration / 3
+	if interval <= 0 {
+		interval = time.Nanosecond
+	}
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	for {
+		select {
+		case <-l.cleanupCtx.Done():
+			l.mu.Lock()
+			l.lost = true
+			l.mu.Unlock()
+			return
+		case <-timer.C:
+			l.mu.Lock()
+			continueRenewing := !l.stopped && !l.lost && l.renewLocked()
+			l.mu.Unlock()
+			if !continueRenewing {
+				return
+			}
+			timer.Reset(interval)
+		}
+	}
+}
+
+// checkpoint makes the durable lease freshly live before an irreversible
+// boundary. It holds the local heartbeat mutex so a failed renew cannot race a
+// caller into continuing after lease loss.
+func (l *retiredTeardownLease) checkpoint() bool {
+	if l == nil {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.stopped || l.lost {
+		return false
+	}
+	return l.renewLocked()
+}
+
+func (l *retiredTeardownLease) renewLocked() bool {
+	if l.cleanupCtx == nil || l.cleanupCtx.Err() != nil || l.workspace == nil {
+		l.lost = true
+		return false
+	}
+	now := time.Now().UTC()
+	leaseUntil := now.Add(l.leaseDuration)
+	if deadline, ok := l.cleanupCtx.Deadline(); ok {
+		if !deadline.After(now) {
+			l.lost = true
+			return false
+		}
+		if deadline.Before(leaseUntil) {
+			leaseUntil = deadline
+		}
+	}
+	callCtx, cancel := retiredTeardownLeaseCallContext(l.cleanupCtx, l.leaseDuration)
+	defer cancel()
+	renewed, err := l.workspace.RenewRetiredTeardown(
+		callCtx, l.userID, l.retiredGeneration, l.disconnectingGeneration, l.owner, now, leaseUntil,
+	)
+	if err != nil || !renewed {
+		l.lost = true
+		return false
+	}
+	return true
+}
+
+// retiredTeardownLeaseCallContext detaches the durability check from a client
+// request cancellation, while preserving the lifecycle cleanup deadline and a
+// short maximum database-call deadline. It prevents a wedged store call from
+// keeping the heartbeat goroutine alive indefinitely.
+func retiredTeardownLeaseCallContext(cleanupCtx context.Context, leaseDuration time.Duration) (context.Context, context.CancelFunc) {
+	limit := leaseDuration
+	if limit <= 0 || limit > time.Second {
+		limit = time.Second
+	}
+	if cleanupCtx != nil {
+		if deadline, ok := cleanupCtx.Deadline(); ok {
+			remaining := time.Until(deadline)
+			if remaining > 0 && remaining < limit {
+				limit = remaining
+			}
+		}
+	}
+	if limit <= 0 {
+		limit = time.Nanosecond
+	}
+	return context.WithTimeout(context.Background(), limit)
+}
+
+// stop joins a bounded in-flight renewal before the caller releases or
+// completes the durable lease. It is safe to call more than once.
+func (l *retiredTeardownLease) stop() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	alreadyStopped := l.stopped
+	l.stopped = true
+	l.mu.Unlock()
+	if !alreadyStopped && l.cancel != nil {
+		l.cancel()
+	}
+	if l.done != nil {
+		<-l.done
 	}
 }
 
