@@ -111,6 +111,7 @@ func TestBuildFeishuService_ComposesCompleteWorkspaceBeforePublishing(t *testing
 	require.NotNil(t, composition.authSessionService)
 	require.NotNil(t, composition.resumer)
 	require.NotNil(t, composition.dispatcher)
+	require.NotNil(t, composition.lifecycleService, "Task13 must publish the same Task12 graph to HTTP")
 	require.Same(t, composition.dispatcher, composition.authWorkerDispatcher)
 	require.NotNil(t, composition.supervisor)
 }

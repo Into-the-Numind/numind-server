@@ -323,6 +323,36 @@ func TestAuthSessionService_ManualConnectRequestsOfflineAccessOnly(t *testing.T)
 	close(release)
 }
 
+func TestAuthSessionService_RefreshSupersedesLiveSessionStopsWorkerAndStartsNewURL(t *testing.T) {
+	h := newAuthSessionHarness(t)
+	h.createAccount(model.FeishuConnectionAppReady)
+	release := make(chan struct{})
+	defer close(release)
+	h.cli.urls = []string{
+		"https://open.feishu.cn/suite/passport/oauth/device?user_code=OLD",
+		"https://open.feishu.cn/suite/passport/oauth/device?user_code=NEW",
+	}
+	h.cli.releases = []<-chan struct{}{release, release}
+	service := h.newService("refresh-owner")
+
+	first, err := service.ConnectManual(h.ctx, 7)
+	require.NoError(t, err)
+	require.NotNil(t, first)
+	require.Contains(t, first.URL, "OLD")
+
+	refreshed, err := service.RefreshAction(h.ctx, 7, 1, first.SessionID)
+	require.NoError(t, err)
+	require.NotNil(t, refreshed)
+	require.NotEqual(t, first.SessionID, refreshed.SessionID)
+	require.Contains(t, refreshed.URL, "NEW")
+
+	var oldSession model.FeishuAuthSession
+	require.NoError(t, h.db.Where("id = ?", first.SessionID).Take(&oldSession).Error)
+	require.Equal(t, model.FeishuAuthSessionSuperseded, oldSession.State)
+
+	service.StopGeneration(7, 1)
+}
+
 func TestAuthSessionService_ManualConnectCreatesAppBeforeOfflineAuthorization(t *testing.T) {
 	h := newAuthSessionHarness(t)
 	createRelease := make(chan struct{})

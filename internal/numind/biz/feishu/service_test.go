@@ -88,13 +88,40 @@ func (f *svcAccountStore) MarkConnected(_ context.Context, userID uint, provider
 	return nil
 }
 
+func (f *svcAccountStore) RetireGeneration(_ context.Context, userID uint, provider string) (uint64, uint64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	row, found := f.rows[f.key(userID, provider)]
+	if !found || row.Generation == 0 {
+		return 0, 0, gorm.ErrRecordNotFound
+	}
+	old := row.Generation
+	row.Generation++
+	row.ConnectionState = model.FeishuConnectionDisconnecting
+	row.Connected = false
+	return old, row.Generation, nil
+}
+
+func (f *svcAccountStore) FinalizeDisconnect(_ context.Context, userID uint, provider string, generation uint64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	row, found := f.rows[f.key(userID, provider)]
+	if !found || row.Generation != generation {
+		return gorm.ErrRecordNotFound
+	}
+	row.ConnectionState = model.FeishuConnectionNone
+	row.Connected = false
+	row.AppID = ""
+	return nil
+}
+
 // Task13 lifecycle fakes deliberately expose only server-owned identifiers.
 // They make the HTTP/service contract prove that browser input cannot inject
 // argv, scopes, app ids, or another user's operation/session identity.
 type lifecycleAccountFake struct {
-	account          *model.UserThirdPartyAccount
-	retireCalls      int
-	finalizeCalls    int
+	account           *model.UserThirdPartyAccount
+	retireCalls       int
+	finalizeCalls     int
 	retiredGeneration uint64
 }
 
@@ -130,8 +157,10 @@ func (f *lifecycleAccountFake) FinalizeDisconnect(_ context.Context, _ uint, _ s
 }
 
 type lifecycleWorkspaceFake struct {
-	operation       *model.FeishuOperation
-	operationErr    error
+	operation        *model.FeishuOperation
+	operationErr     error
+	activeSession    *model.FeishuAuthSession
+	activeSessionErr error
 	deleteVaultCalls int
 }
 
@@ -143,6 +172,17 @@ func (f *lifecycleWorkspaceFake) GetOperationForUser(_ context.Context, _ uint, 
 		return nil, gorm.ErrRecordNotFound
 	}
 	copy := *f.operation
+	return &copy, nil
+}
+
+func (f *lifecycleWorkspaceFake) FindActiveSessionForUser(_ context.Context, _ uint, _ uint64) (*model.FeishuAuthSession, error) {
+	if f.activeSessionErr != nil {
+		return nil, f.activeSessionErr
+	}
+	if f.activeSession == nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+	copy := *f.activeSession
 	return &copy, nil
 }
 
@@ -194,27 +234,39 @@ func (f *lifecycleOperationsFake) Cancel(_ context.Context, _ uint, id string) (
 	return &OperationResult{OperationID: id, State: model.FeishuOperationCancelled}, nil
 }
 
-func newLifecycleService(t *testing.T, account *model.UserThirdPartyAccount, operation *model.FeishuOperation) (*WorkspaceLifecycleService, *lifecycleAccountFake, *lifecycleWorkspaceFake, *lifecycleAuthFake, *lifecycleDispatcherFake, *lifecycleOperationsFake) {
+type lifecycleTeardownFake struct{ calls []uint64 }
+
+func (f *lifecycleTeardownFake) LogoutRetired(_ context.Context, _ uint, generation uint64) error {
+	f.calls = append(f.calls, generation)
+	return nil
+}
+
+func newLifecycleService(t *testing.T, account *model.UserThirdPartyAccount, operation *model.FeishuOperation) (*WorkspaceLifecycleService, *lifecycleAccountFake, *lifecycleWorkspaceFake, *lifecycleAuthFake, *lifecycleDispatcherFake, *lifecycleOperationsFake, *lifecycleTeardownFake) {
 	t.Helper()
 	accounts := &lifecycleAccountFake{account: account}
 	workspace := &lifecycleWorkspaceFake{operation: operation}
 	auth := &lifecycleAuthFake{action: &OperationAction{Provider: ProviderLark, SessionID: "session-1", Phase: model.FeishuAuthPhaseUserAuth, URL: "https://open.feishu.cn/suite/passport/oauth/device", ExpiresAt: time.Now().Add(time.Minute)}}
 	dispatcher := &lifecycleDispatcherFake{}
 	operations := &lifecycleOperationsFake{}
+	teardown := &lifecycleTeardownFake{}
 	svc, err := NewWorkspaceLifecycleService(WorkspaceLifecycleDeps{
-		Accounts: accounts, Workspace: workspace, Auth: auth, Dispatcher: dispatcher, Operations: operations,
+		Accounts: accounts, Workspace: workspace, Auth: auth, Dispatcher: dispatcher, Operations: operations, Teardown: teardown,
 	})
 	require.NoError(t, err)
-	return svc, accounts, workspace, auth, dispatcher, operations
+	return svc, accounts, workspace, auth, dispatcher, operations, teardown
 }
 
 func TestWorkspaceLifecycleStatusIsReadOnlyAndNeverReturnsAuthorizationURL(t *testing.T) {
 	appID := "cli_12345678"
-	svc, _, _, auth, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+	svc, _, workspace, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
 		UserID: 7, Provider: ProviderLark, AppID: appID, Generation: 3,
-		ConnectionState: model.FeishuConnectionWaitingUserAuth,
+		ConnectionState:     model.FeishuConnectionWaitingUserAuth,
 		CapabilityStateJSON: []byte(`{"docs":{"state":"available"}}`),
 	}, nil)
+	workspace.activeSession = &model.FeishuAuthSession{
+		ID: "session-active", UserID: 7, Generation: 3, Phase: model.FeishuAuthPhaseUserAuth,
+		State: model.FeishuAuthSessionPending, ExpiresAt: time.Now().Add(time.Minute),
+	}
 
 	status, err := svc.Status(context.Background(), 7)
 	require.NoError(t, err)
@@ -223,21 +275,24 @@ func TestWorkspaceLifecycleStatusIsReadOnlyAndNeverReturnsAuthorizationURL(t *te
 	require.NotEqual(t, appID, status.AppIDMasked)
 	require.NotContains(t, status.AppIDMasked, "12345678")
 	require.Equal(t, 0, auth.connectCalls, "GET status must not create a worker or URL")
-	require.Nil(t, status.ActiveAction, "status may expose metadata only, never a live authorization URL")
+	require.NotNil(t, status.ActiveAction)
+	require.Equal(t, "session-active", status.ActiveAction.SessionID)
+	require.False(t, status.ActiveAction.LinkAvailable, "status may expose metadata only, never a live authorization URL")
 }
 
 func TestWorkspaceLifecycleConnectUsesOnlyManualOfflineAccessFlow(t *testing.T) {
-	svc, _, _, auth, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 1}, nil)
+	svc, _, _, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 1}, nil)
 
 	result, err := svc.Connect(context.Background(), 7)
 	require.NoError(t, err)
 	require.NotNil(t, result.Action)
+	require.Equal(t, model.FeishuConnectionWaitingUserAuth, result.State, "connect returns a lifecycle state, not an internal auth phase")
 	require.Equal(t, 1, auth.connectCalls)
 }
 
 func TestWorkspaceLifecycleResumeUsesSharedDispatcherForUserCompleted(t *testing.T) {
 	op := &model.FeishuOperation{ID: "op-1", UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth}
-	svc, _, _, _, dispatcher, operations := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 2}, op)
+	svc, _, _, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 2}, op)
 
 	result, err := svc.Resume(context.Background(), 7, "op-1", ResumeActionUserCompleted)
 	require.NoError(t, err)
@@ -247,9 +302,18 @@ func TestWorkspaceLifecycleResumeUsesSharedDispatcherForUserCompleted(t *testing
 	require.Zero(t, operations.cancelled)
 }
 
+func TestWorkspaceLifecycleResumeUserCompletedRequiresRecoverableWait(t *testing.T) {
+	op := &model.FeishuOperation{ID: "op-1", UserID: 7, Generation: 2, State: model.FeishuOperationNotStarted}
+	svc, _, _, _, dispatcher, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 2}, op)
+
+	_, err := svc.Resume(context.Background(), 7, "op-1", ResumeActionUserCompleted)
+	require.ErrorIs(t, err, ErrWorkspaceLifecycleInvalid)
+	require.Zero(t, dispatcher.calls, "an arbitrary operation must not be resumed by a browser acknowledgement")
+}
+
 func TestWorkspaceLifecycleResumeConfirmationActionsRequireWaitingConfirmation(t *testing.T) {
 	op := &model.FeishuOperation{ID: "op-1", UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth}
-	svc, _, _, _, dispatcher, operations := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 2}, op)
+	svc, _, _, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 2}, op)
 
 	_, err := svc.Resume(context.Background(), 7, "op-1", ResumeActionConfirmed)
 	require.ErrorIs(t, err, ErrWorkspaceLifecycleInvalid)
@@ -264,7 +328,7 @@ func TestWorkspaceLifecycleResumeConfirmationActionsRequireWaitingConfirmation(t
 }
 
 func TestWorkspaceLifecycleResumeCollapsesCrossUserToNotFound(t *testing.T) {
-	svc, _, workspace, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 8, Provider: ProviderLark, Generation: 1}, nil)
+	svc, _, workspace, _, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 8, Provider: ProviderLark, Generation: 1}, nil)
 	workspace.operationErr = gorm.ErrRecordNotFound
 
 	_, err := svc.Resume(context.Background(), 8, "op-owned-by-7", ResumeActionUserCompleted)
@@ -272,7 +336,7 @@ func TestWorkspaceLifecycleResumeCollapsesCrossUserToNotFound(t *testing.T) {
 }
 
 func TestWorkspaceLifecycleRefreshUsesCurrentGenerationAndReturnsNewLiveAction(t *testing.T) {
-	svc, _, _, auth, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 9}, nil)
+	svc, _, _, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 9}, nil)
 
 	action, err := svc.RefreshAction(context.Background(), 7, "session-1")
 	require.NoError(t, err)
@@ -281,7 +345,7 @@ func TestWorkspaceLifecycleRefreshUsesCurrentGenerationAndReturnsNewLiveAction(t
 }
 
 func TestWorkspaceLifecycleUnbindRetiresGenerationStopsWorkersDeletesVaultAndKeepsRemoteApp(t *testing.T) {
-	svc, accounts, workspace, auth, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+	svc, accounts, workspace, auth, _, _, teardown := newLifecycleService(t, &model.UserThirdPartyAccount{
 		UserID: 7, Provider: ProviderLark, Generation: 4, AppID: "cli_keep_remote", Connected: true,
 		ConnectionState: model.FeishuConnectionConnected,
 	}, nil)
@@ -295,6 +359,7 @@ func TestWorkspaceLifecycleUnbindRetiresGenerationStopsWorkersDeletesVaultAndKee
 	require.Equal(t, 1, accounts.finalizeCalls)
 	require.Equal(t, 1, workspace.deleteVaultCalls)
 	require.Equal(t, []uint64{4}, auth.stopped)
+	require.Equal(t, []uint64{4}, teardown.calls)
 }
 
 func TestNewWorkspaceLifecycleServiceRejectsIncompleteGraph(t *testing.T) {

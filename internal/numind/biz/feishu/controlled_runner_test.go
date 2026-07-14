@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func writeControlledFakeBinary(t *testing.T, body string) string {
@@ -103,6 +105,18 @@ func TestControlledLarkCLIRunner_RequiresAbsoluteFixedBinary(t *testing.T) {
 	if result == nil || result.InvocationStarted {
 		t.Fatalf("validation rejection must report InvocationStarted=false, got %+v", result)
 	}
+}
+
+func TestControlledLarkCLIRunner_LogoutUsesOnlyFixedJSONCommand(t *testing.T) {
+	home := controlledTestHome(t)
+	bin := writeControlledFakeBinary(t, `
+printf '%s\000' "$@" > "$HOME/logout-argv"
+printf '{"ok":true,"data":{"loggedOut":true}}\n'
+`)
+	require.NoError(t, controlledRunner(bin).Logout(context.Background(), home))
+	argv, err := os.ReadFile(filepath.Join(home, "logout-argv"))
+	require.NoError(t, err)
+	require.Equal(t, []byte("auth\x00logout\x00--json\x00"), argv)
 }
 
 func TestControlledLarkCLIRunner_RunPreservesArgvStdinAndSafeEnvironment(t *testing.T) {

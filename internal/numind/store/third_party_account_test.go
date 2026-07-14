@@ -92,6 +92,61 @@ func TestThirdPartyAccountStore_UpsertAndGet_CryptoRoundTrip(t *testing.T) {
 	assert.Equal(t, "refresh-token-plain", string(gotRefresh))
 }
 
+func TestThirdPartyAccountStore_RetireGenerationFencesOldWorkAndFinalizesLocalState(t *testing.T) {
+	db := newThirdPartyAccountTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.FeishuAuthSession{}, &model.FeishuOperation{}))
+	s := newThirdPartyAccountStore(db)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	require.NoError(t, db.Create(&model.UserThirdPartyAccount{
+		UserID: 7, Provider: "lark", AppID: "cli_local", Generation: 4, Connected: true,
+		AppSecretEnc: []byte("legacy-app-secret"), AccessTokenEnc: []byte("legacy-access"),
+		RefreshTokenEnc: []byte("legacy-refresh"), TokenExpiresAt: &now, Scopes: "legacy:scope",
+		ConnectionState: model.FeishuConnectionConnected, CapabilityStateJSON: []byte(`{"docs":{"state":"available"}}`),
+	}).Error)
+	require.NoError(t, db.Create(&model.FeishuAuthSession{
+		ID: "session-old", UserID: 7, Generation: 4, Phase: model.FeishuAuthPhaseUserAuth,
+		RequestedScopesJSON: []byte(`[]`), State: model.FeishuAuthSessionPending, ExpiresAt: now.Add(time.Minute),
+	}).Error)
+	require.NoError(t, db.Create(&model.FeishuOperation{
+		ID: "op-executing", UserID: 7, Generation: 4, AgentRunID: 1, ToolCallID: "tool-1",
+		IdempotencyKey: "key-1", CommandPath: "docs +create", Domain: "docs", RiskLevel: "write",
+		RequestCiphertext: []byte("cipher"), KeyVersion: "v1", RequestFingerprint: "fingerprint", State: model.FeishuOperationExecuting,
+	}).Error)
+
+	oldGeneration, newGeneration, err := s.RetireGeneration(ctx, 7, "lark")
+	require.NoError(t, err)
+	require.EqualValues(t, 4, oldGeneration)
+	require.EqualValues(t, 5, newGeneration)
+
+	var oldSession model.FeishuAuthSession
+	require.NoError(t, db.Where("id = ?", "session-old").Take(&oldSession).Error)
+	require.Equal(t, model.FeishuAuthSessionSuperseded, oldSession.State)
+	var oldOperation model.FeishuOperation
+	require.NoError(t, db.Where("id = ?", "op-executing").Take(&oldOperation).Error)
+	require.Equal(t, model.FeishuOperationUnknown, oldOperation.State)
+
+	// A retry after vault cleanup failure must continue cleaning the same retired
+	// generation, never advance again and strand its ciphertext permanently.
+	retryOld, retryNew, err := s.RetireGeneration(ctx, 7, "lark")
+	require.NoError(t, err)
+	require.EqualValues(t, 4, retryOld)
+	require.EqualValues(t, 5, retryNew)
+
+	require.NoError(t, s.FinalizeDisconnect(ctx, 7, "lark", newGeneration))
+	account, err := s.Get(ctx, 7, "lark")
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuConnectionNone, account.ConnectionState)
+	require.False(t, account.Connected)
+	require.Empty(t, account.AppID)
+	require.Empty(t, account.CapabilityStateJSON)
+	require.Empty(t, account.AppSecretEnc)
+	require.Empty(t, account.AccessTokenEnc)
+	require.Empty(t, account.RefreshTokenEnc)
+	require.Nil(t, account.TokenExpiresAt)
+	require.Empty(t, account.Scopes)
+}
+
 func TestThirdPartyAccountStore_Upsert_Idempotent(t *testing.T) {
 	db := newThirdPartyAccountTestDB(t)
 	s := newThirdPartyAccountStore(db)

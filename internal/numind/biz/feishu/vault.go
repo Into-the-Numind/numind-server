@@ -306,6 +306,64 @@ func (v *EncryptedCLIHomeVault) WithHome(
 	return nil
 }
 
+// WithRetiredHome materializes a retired snapshot only while the account is in
+// the immediately-following disconnecting generation. It is intentionally
+// read-only: callers may run a fixed local credential-revocation command, but
+// may not reseal or otherwise revive the retired HOME after unbinding fenced it.
+func (v *EncryptedCLIHomeVault) WithRetiredHome(
+	ctx context.Context,
+	userID uint,
+	retiredGeneration uint64,
+	callback func(home string) error,
+) (retErr error) {
+	if callback == nil || userID == 0 || retiredGeneration == 0 {
+		return errors.New("feishu CLI home vault: invalid retired HOME callback")
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("feishu CLI home vault: retired context unavailable: %w", err)
+	}
+	account, err := v.accounts.Get(ctx, userID, ProviderLark)
+	if err != nil || account == nil || account.UserID != userID || account.Provider != ProviderLark ||
+		account.Generation != retiredGeneration+1 || account.ConnectionState != model.FeishuConnectionDisconnecting {
+		return fmt.Errorf("feishu CLI home vault: retired generation is not disconnecting: %w", gorm.ErrRecordNotFound)
+	}
+	snapshot, err := v.snapshots.GetVault(ctx, userID, retiredGeneration)
+	if err != nil {
+		return fmt.Errorf("feishu CLI home vault: read retired snapshot: %w", err)
+	}
+	archive, err := v.openSnapshot(userID, retiredGeneration, snapshot)
+	if err != nil {
+		return err
+	}
+	if err := ensureCLIHomeRuntimeBase(v.runtimeBase); err != nil {
+		return err
+	}
+	home, err := os.MkdirTemp(v.runtimeBase, cliHomeRuntimePrefix)
+	if err != nil {
+		return fmt.Errorf("feishu CLI home vault: create retired temporary HOME: %w", err)
+	}
+	defer func() {
+		if cleanupErr := os.RemoveAll(home); cleanupErr != nil {
+			wrapped := fmt.Errorf("feishu CLI home vault: remove retired temporary HOME: %w", cleanupErr)
+			if retErr == nil {
+				retErr = wrapped
+			} else {
+				retErr = errors.Join(retErr, wrapped)
+			}
+		}
+	}()
+	if err := os.Chmod(home, 0o700); err != nil {
+		return fmt.Errorf("feishu CLI home vault: restrict retired temporary HOME: %w", err)
+	}
+	if err := unpackCLIHome(archive, home); err != nil {
+		return fmt.Errorf("feishu CLI home vault: unpack retired snapshot: %w", err)
+	}
+	if err := callback(home); err != nil {
+		return fmt.Errorf("feishu CLI home vault: retired callback failed: %w", err)
+	}
+	return nil
+}
+
 func (v *EncryptedCLIHomeVault) openSnapshot(
 	userID uint,
 	generation uint64,

@@ -521,7 +521,7 @@ func (s *FeishuOperationService) Execute(ctx context.Context, request ExecuteReq
 	if stored.State != model.FeishuOperationNotStarted {
 		return s.resultFromOperation(stored)
 	}
-	return s.claimAndExecute(ctx, account, stored, executionRequest, "")
+	return s.claimAndExecute(ctx, account, stored, executionRequest, "", false)
 }
 
 // Resume advances only an existing encrypted operation for the account's
@@ -581,7 +581,103 @@ func (s *FeishuOperationService) Resume(ctx context.Context, userID uint, operat
 			return nil, ErrOperationUnavailable
 		}
 	}
-	return s.claimAndExecute(ctx, account, operation, persisted, priorSignature)
+	return s.claimAndExecute(ctx, account, operation, persisted, priorSignature, false)
+}
+
+// Confirm advances exactly one high-risk operation from its persisted
+// waiting_confirmation state. The browser cannot supply argv or an override:
+// the encrypted request is re-opened only after user/generation ownership and
+// the state transition are checked under the existing operation lease.
+func (s *FeishuOperationService) Confirm(ctx context.Context, userID uint, operationID string) (*OperationResult, error) {
+	if userID == 0 || !validStableIdentifier(operationID, operationMaxOperationIDBytes) {
+		return nil, ErrOperationRequestRejected
+	}
+	account, err := s.accounts.Get(ctx, userID, ProviderLark)
+	if err != nil || !validOperationAccount(account, userID) {
+		return nil, ErrOperationUnavailable
+	}
+	existing, err := s.operations.GetOperationForUser(ctx, userID, account.Generation, operationID)
+	if err != nil || existing == nil {
+		return nil, ErrOperationUnavailable
+	}
+	if terminalOperationState(existing.State) {
+		return s.resultFromOperation(existing)
+	}
+	account, operation, persisted, err := s.loadWaitingConfirmation(ctx, userID, operationID)
+	if err != nil {
+		return nil, err
+	}
+	return s.claimAndExecute(ctx, account, operation, persisted, "", true)
+}
+
+// Cancel closes exactly one high-risk operation while it is still waiting for
+// confirmation. Once execution starts, cancellation is intentionally rejected:
+// a write that may have reached Feishu must follow the unknown-result rules.
+func (s *FeishuOperationService) Cancel(ctx context.Context, userID uint, operationID string) (*OperationResult, error) {
+	account, operation, _, err := s.loadWaitingConfirmation(ctx, userID, operationID)
+	if err != nil {
+		return nil, err
+	}
+	now := s.now().UTC()
+	owner := uuid.NewString()
+	claimed, err := s.operations.ClaimOperation(
+		ctx, userID, account.Generation, operation.ID, owner,
+		[]string{model.FeishuOperationWaitingConfirmation}, now, now.Add(s.leaseDuration),
+	)
+	if err != nil {
+		return nil, ErrOperationUnavailable
+	}
+	if !claimed {
+		return s.reloadResult(ctx, operation)
+	}
+	summaryJSON, err := json.Marshal(persistedOperationSummary{Status: model.FeishuOperationCancelled})
+	if err != nil {
+		return nil, ErrOperationIntegrity
+	}
+	finalizeCtx, cancel := operationFinalizeContext(ctx)
+	defer cancel()
+	if err := s.operations.TransitionOperation(
+		finalizeCtx, userID, account.Generation, operation.ID, owner,
+		[]string{model.FeishuOperationWaitingConfirmation}, model.FeishuOperationCancelled, now,
+		map[string]any{
+			"finished_at": now, "error_type": "", "error_subtype": "", "error_code": "",
+			"result_summary_json": datatypes.JSON(summaryJSON),
+		},
+	); err != nil {
+		return s.reloadResult(ctx, operation)
+	}
+	operation.State = model.FeishuOperationCancelled
+	operation.FinishedAt = &now
+	operation.ResultSummaryJSON = append(datatypes.JSON(nil), summaryJSON...)
+	return s.resultFromOperation(operation)
+}
+
+func (s *FeishuOperationService) loadWaitingConfirmation(
+	ctx context.Context,
+	userID uint,
+	operationID string,
+) (*model.UserThirdPartyAccount, *model.FeishuOperation, persistedOperationRequest, error) {
+	if userID == 0 || !validStableIdentifier(operationID, operationMaxOperationIDBytes) {
+		return nil, nil, persistedOperationRequest{}, ErrOperationRequestRejected
+	}
+	account, err := s.accounts.Get(ctx, userID, ProviderLark)
+	if err != nil || !validOperationAccount(account, userID) {
+		return nil, nil, persistedOperationRequest{}, ErrOperationUnavailable
+	}
+	operation, err := s.operations.GetOperationForUser(ctx, userID, account.Generation, operationID)
+	if err != nil || operation == nil || operation.State != model.FeishuOperationWaitingConfirmation {
+		return nil, nil, persistedOperationRequest{}, ErrOperationUnavailable
+	}
+	persisted, err := s.openPersistedRequest(operation)
+	if err != nil || persisted.Risk != RiskHigh {
+		return nil, nil, persistedOperationRequest{}, ErrOperationIntegrity
+	}
+	summary, err := decodeOperationSummary(operation.ResultSummaryJSON)
+	if err != nil || summary.Phase != "confirmation" || strings.TrimSpace(summary.SessionID) == "" ||
+		summary.ExpiresAt == nil || !summary.ExpiresAt.After(s.now().UTC()) {
+		return nil, nil, persistedOperationRequest{}, ErrOperationUnavailable
+	}
+	return account, operation, persisted, nil
 }
 
 func (s *FeishuOperationService) reclaimExpiredExecution(
@@ -658,7 +754,7 @@ func (s *FeishuOperationService) reclaimExpiredExecution(
 	}
 	operation.AttemptCount++
 	operation.StartedAt = &now
-	return s.executeClaimed(ctx, account, operation, owner, persisted, "", false, gateGuard)
+	return s.executeClaimed(ctx, account, operation, owner, persisted, "", false, false, gateGuard)
 }
 
 func (s *FeishuOperationService) loadOrCreateAccount(ctx context.Context, userID uint) (*model.UserThirdPartyAccount, error) {
@@ -682,15 +778,23 @@ func (s *FeishuOperationService) claimAndExecute(
 	operation *model.FeishuOperation,
 	persisted persistedOperationRequest,
 	priorRecoverySignature string,
+	confirmed bool,
 ) (*OperationResult, error) {
-	if terminalOperationState(operation.State) || operation.State == model.FeishuOperationExecuting || operation.State == model.FeishuOperationWaitingConfirmation {
+	if terminalOperationState(operation.State) || operation.State == model.FeishuOperationExecuting ||
+		(operation.State == model.FeishuOperationWaitingConfirmation && !confirmed) {
 		return s.resultFromOperation(operation)
+	}
+	if confirmed && operation.State != model.FeishuOperationWaitingConfirmation {
+		return nil, ErrOperationUnavailable
 	}
 	owner := uuid.NewString()
 	gateHeld := false
 	var gateGuard *executionGateGuard
 	proofUsable := false
-	if operationRequiresExecutionGate(account, persisted) {
+	// High-risk operations intentionally do not hold the business CLI gate while
+	// waiting for a human. Once confirmed, however, their real invocation must
+	// acquire the same account-wide gate as every other CLI write.
+	if operationRequiresExecutionGate(account, persisted) || confirmed {
 		if err := s.waitForExecutionGate(ctx, operation, owner); err != nil {
 			return nil, err
 		}
@@ -746,7 +850,7 @@ func (s *FeishuOperationService) claimAndExecute(
 	operation.AttemptCount++
 	operation.LeaseOwner = owner
 	operation.StartedAt = &now
-	return s.executeClaimed(ctx, account, operation, owner, persisted, priorRecoverySignature, proofUsable, gateGuard)
+	return s.executeClaimed(ctx, account, operation, owner, persisted, priorRecoverySignature, proofUsable, confirmed, gateGuard)
 }
 
 func operationRequiresExecutionGate(account *model.UserThirdPartyAccount, persisted persistedOperationRequest) bool {
@@ -832,6 +936,7 @@ func (s *FeishuOperationService) executeClaimed(
 	persisted persistedOperationRequest,
 	priorRecoverySignature string,
 	proofUsable bool,
+	confirmed bool,
 	executionGate *executionGateGuard,
 ) (*OperationResult, error) {
 	if account.ConnectionState != model.FeishuConnectionConnected {
@@ -847,7 +952,7 @@ func (s *FeishuOperationService) executeClaimed(
 		return s.startRecoveryAndWait(ctx, operation, leaseOwner, persisted, kind, persisted.Scopes, waitingState, priorRecoverySignature, publicCode, "")
 	}
 
-	if persisted.Risk == RiskHigh && !proofUsable {
+	if persisted.Risk == RiskHigh && !proofUsable && !confirmed {
 		action, err := s.confirmation.RequestConfirmation(ctx, operation.ID, ConfirmationSummary{
 			CommandPath: persisted.CommandPath, Domain: persisted.Domain, Action: persisted.Action,
 			Risk: persisted.Risk, RequiresCLIYes: persisted.RequiresCLIYes,
@@ -880,7 +985,7 @@ func (s *FeishuOperationService) executeClaimed(
 		maxInvocations = 2
 	}
 	for invocation := 0; invocation < maxInvocations; invocation++ {
-		result, runErr, vaultErr := s.invokeOnce(operation, persisted, executionGate)
+		result, runErr, vaultErr := s.invokeOnce(operation, persisted, confirmed, executionGate)
 		started := result != nil && result.InvocationStarted
 		if vaultErr == nil && runErr == nil && result != nil && started && result.Envelope != nil &&
 			result.Envelope.OK && json.Valid(result.Envelope.Data) {
@@ -959,6 +1064,7 @@ func (s *FeishuOperationService) createOrGetOperation(
 func (s *FeishuOperationService) invokeOnce(
 	operation *model.FeishuOperation,
 	persisted persistedOperationRequest,
+	confirmed bool,
 	executionGate *executionGateGuard,
 ) (*CLIResult, error, error) {
 	if executionGate == nil {
@@ -971,8 +1077,9 @@ func (s *FeishuOperationService) invokeOnce(
 			return false, ErrOperationUnavailable
 		}
 		argv := append([]string(nil), persisted.Argv...)
-		// Task 7 establishes confirmation waiting only. A later confirmed-state
-		// adapter must persist authorization before RequiresCLIYes can be appended.
+		if confirmed && persisted.RequiresCLIYes {
+			argv = append(argv, "--yes")
+		}
 		runCtx, cancel := context.WithTimeout(executionGate.ctx, ControlledLarkCLITimeout)
 		defer cancel()
 		result, runErr = s.runner.Run(runCtx, home, argv, append([]byte(nil), persisted.StdinJSON...))

@@ -67,6 +67,7 @@ type AuthSessionAccountStore interface {
 type AuthSessionStore interface {
 	CreateOrGetPendingSession(ctx context.Context, session *model.FeishuAuthSession) (*model.FeishuAuthSession, bool, error)
 	GetSessionForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuAuthSession, error)
+	SupersedeSessionForUser(ctx context.Context, userID uint, generation uint64, id string, now time.Time) error
 	ClaimSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
 	RenewSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
 	UpdateSessionState(ctx context.Context, userID uint, generation uint64, id, owner, state string, now time.Time, completedAt *time.Time) error
@@ -172,6 +173,8 @@ type AuthSessionService struct {
 	urls              *authSessionURLRegistry
 	activationMu      sync.Mutex
 	activations       map[string]*authSessionActivation
+	workerMu          sync.Mutex
+	workers           map[authSessionURLKey]context.CancelFunc
 }
 
 // NewAuthSessionService validates the one-way authorization dependencies.
@@ -209,7 +212,61 @@ func NewAuthSessionService(deps AuthSessionServiceDeps) (*AuthSessionService, er
 		leaseDuration: leaseDuration, sessionDuration: sessionDuration,
 		heartbeatInterval: heartbeatInterval, startTimeout: startTimeout,
 		urls: newAuthSessionURLRegistry(), activations: make(map[string]*authSessionActivation),
+		workers: make(map[authSessionURLKey]context.CancelFunc),
 	}, nil
+}
+
+func (s *AuthSessionService) registerWorker(session *model.FeishuAuthSession, cancel context.CancelFunc) {
+	if session == nil || cancel == nil {
+		return
+	}
+	s.workerMu.Lock()
+	s.workers[authSessionRegistryKey(session)] = cancel
+	s.workerMu.Unlock()
+}
+
+func (s *AuthSessionService) removeWorker(session *model.FeishuAuthSession, cancel context.CancelFunc) {
+	if session == nil {
+		return
+	}
+	key := authSessionRegistryKey(session)
+	s.workerMu.Lock()
+	if current := s.workers[key]; current != nil {
+		delete(s.workers, key)
+	}
+	s.workerMu.Unlock()
+}
+
+// StopGeneration stops only locally-owned workers for an already-retired
+// account generation. The persistent generation fence is established by the
+// lifecycle store first, so this is a prompt cleanup measure rather than the
+// cross-process safety boundary.
+func (s *AuthSessionService) StopGeneration(userID uint, generation uint64) {
+	if s == nil || userID == 0 || generation == 0 {
+		return
+	}
+	sessionIDs := make([]string, 0)
+	s.workerMu.Lock()
+	for key := range s.workers {
+		if key.userID == userID && key.generation == generation {
+			sessionIDs = append(sessionIDs, key.sessionID)
+		}
+	}
+	s.workerMu.Unlock()
+	for _, sessionID := range sessionIDs {
+		s.stopSession(userID, generation, sessionID)
+	}
+}
+
+func (s *AuthSessionService) stopSession(userID uint, generation uint64, sessionID string) {
+	key := authSessionURLKey{userID: userID, generation: generation, sessionID: sessionID}
+	s.workerMu.Lock()
+	cancel := s.workers[key]
+	s.workerMu.Unlock()
+	s.Abort(sessionID)
+	if cancel != nil {
+		cancel()
+	}
 }
 
 func positiveDurationOr(value, fallback time.Duration) time.Duration {
@@ -642,7 +699,9 @@ func (s *AuthSessionService) claimAndStart(
 	urlReady := make(chan struct{}, 1)
 	done := make(chan error, 1)
 	workerContext, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	s.registerWorker(session, cancel)
 	go func() {
+		defer s.removeWorker(session, cancel)
 		done <- s.runWorker(workerContext, cancel, session, leaseToken, argv, urlReady, activation)
 	}()
 
@@ -664,6 +723,74 @@ func (s *AuthSessionService) claimAndStart(
 		s.Abort(session.ID)
 		cancel()
 		return nil, ErrAuthSessionUnavailable
+	}
+}
+
+// RefreshAction replaces one still-pending authorization session with a fresh
+// worker and a new transient URL. The old URL/device flow is never reused or
+// persisted. The session must belong to the caller's current generation.
+func (s *AuthSessionService) RefreshAction(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	sessionID string,
+) (*OperationAction, error) {
+	if s == nil || userID == 0 || generation == 0 || strings.TrimSpace(sessionID) == "" {
+		return nil, ErrAuthSessionUnavailable
+	}
+	session, err := s.sessions.GetSessionForUser(ctx, userID, generation, sessionID)
+	if err != nil || session == nil || session.State != model.FeishuAuthSessionPending {
+		return nil, ErrAuthSessionUnavailable
+	}
+	var scopes []string
+	if err := json.Unmarshal(session.RequestedScopesJSON, &scopes); err != nil {
+		return nil, ErrAuthSessionUnavailable
+	}
+	canonicalScopes, err := canonicalAuthScopes(scopes)
+	if err != nil || !authSessionScopeJSONEqual(session.RequestedScopesJSON, mustMarshalAuthScopes(canonicalScopes)) {
+		return nil, ErrAuthSessionUnavailable
+	}
+	kind, err := refreshRecoveryKind(session)
+	if err != nil {
+		return nil, ErrAuthSessionUnavailable
+	}
+	if err := s.sessions.SupersedeSessionForUser(ctx, userID, generation, sessionID, s.now().UTC()); err != nil {
+		return nil, ErrAuthSessionUnavailable
+	}
+	s.stopSession(userID, generation, sessionID)
+	s.urls.remove(authSessionRegistryKey(session))
+	request := RecoveryRequest{UserID: userID, Generation: generation, Kind: kind, Scopes: canonicalScopes}
+	manual := session.OperationID == nil
+	if session.OperationID != nil {
+		request.OperationID = *session.OperationID
+	}
+	return s.start(ctx, request, manual)
+}
+
+func mustMarshalAuthScopes(scopes []string) []byte {
+	encoded, _ := json.Marshal(scopes)
+	return encoded
+}
+
+func refreshRecoveryKind(session *model.FeishuAuthSession) (RecoveryKind, error) {
+	if session == nil {
+		return RecoveryNone, ErrAuthSessionUnavailable
+	}
+	switch session.Phase {
+	case model.FeishuAuthPhaseCreateApp:
+		return RecoveryCreateApp, nil
+	case model.FeishuAuthPhaseUserAuth:
+		if session.OperationID == nil {
+			return RecoveryReauth, nil
+		}
+		return RecoveryUserScope, nil
+	// App-scope console URLs are transient classifier evidence. Recreating a
+	// URL without that evidence would either persist it or guess a broad flow,
+	// both of which violate the fail-closed contract.
+	case model.FeishuAuthPhaseAppScope:
+		return RecoveryNone, ErrAuthSessionUnavailable
+	default:
+		return RecoveryNone, ErrAuthSessionUnavailable
 	}
 }
 

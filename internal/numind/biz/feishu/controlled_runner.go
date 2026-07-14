@@ -165,6 +165,29 @@ func (r *ControlledLarkCLIRunner) Run(
 	return result, nil
 }
 
+// Logout removes the current user login from one already-isolated temporary
+// HOME. It is a fixed, server-owned command used only during local workspace
+// teardown; callers cannot append argv, scopes, or an identity selector.
+func (r *ControlledLarkCLIRunner) Logout(ctx context.Context, home string) error {
+	result, err := r.Run(ctx, home, []string{"auth", "logout", "--json"}, nil)
+	if err != nil || result == nil || result.Envelope == nil || !result.Envelope.OK {
+		return fmt.Errorf("feishu: fixed auth logout failed: %w", errControlledCLIBusiness)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(result.Envelope.Data))
+	decoder.DisallowUnknownFields()
+	var payload struct {
+		LoggedOut bool `json:"loggedOut"`
+	}
+	if err := decoder.Decode(&payload); err != nil || !payload.LoggedOut {
+		return fmt.Errorf("feishu: fixed auth logout rejected: %w", errControlledCLIInvalidJSON)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("feishu: fixed auth logout has trailing JSON: %w", errControlledCLIInvalidJSON)
+	}
+	return nil
+}
+
 func (r *ControlledLarkCLIRunner) binaryPath() (string, error) {
 	binary := controlledLarkCLIBinary
 	if r != nil && r.binary != "" {

@@ -829,10 +829,11 @@ func NewBiz(ds store.IStore) *biz {
 // intentionally leaves every field nil so a failed composition cannot leak a
 // partial feature to future HTTP wiring.
 func (b *biz) publishFeishuPersonalWorkspace(workspace *feishuPersonalWorkspace, resumeStore store.IExternalToolResumeLease) {
-	if b == nil || workspace == nil || resumeStore == nil || workspace.resumer == nil || workspace.dispatcher == nil || workspace.supervisor == nil {
+	if b == nil || workspace == nil || resumeStore == nil || workspace.resumer == nil || workspace.dispatcher == nil || workspace.supervisor == nil || workspace.lifecycleService == nil {
 		return
 	}
 	b.feishuWorkspace = workspace
+	b.feishuSvc = workspace.lifecycleService
 	b.externalResumeSupervisor = workspace.supervisor
 	b.externalResumeReclaimer = agent.NewExternalResumeReclaimer(resumeStore, workspace.resumer, 15*time.Second)
 }

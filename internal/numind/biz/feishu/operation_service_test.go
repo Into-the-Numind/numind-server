@@ -1362,6 +1362,42 @@ func TestOperationService_HighRiskOnlyCreatesConfirmationWaiting(t *testing.T) {
 	})
 }
 
+func TestOperationService_ConfirmationDecisionExecutesExactlyOnceOrCancelsWithoutRunner(t *testing.T) {
+	t.Run("confirmed", func(t *testing.T) {
+		h := newOperationHarness(t)
+		h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+		waiting, err := h.service.Execute(h.ctx, operationDocsOverwriteRequest(7, 188, "confirm-execute", "doxcnABCDEFG123"))
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuOperationWaitingConfirmation, waiting.State)
+
+		completed, err := h.service.Confirm(h.ctx, 7, waiting.OperationID)
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuOperationSucceeded, completed.State)
+		calls, _ := h.runner.snapshot()
+		require.Equal(t, 1, calls)
+
+		idempotent, err := h.service.Confirm(h.ctx, 7, waiting.OperationID)
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuOperationSucceeded, idempotent.State)
+		calls, _ = h.runner.snapshot()
+		require.Equal(t, 1, calls, "repeat confirmation must not invoke the write twice")
+	})
+
+	t.Run("cancelled", func(t *testing.T) {
+		h := newOperationHarness(t)
+		h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+		waiting, err := h.service.Execute(h.ctx, operationDocsOverwriteRequest(7, 189, "confirm-cancel", "doxcnABCDEFG123"))
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuOperationWaitingConfirmation, waiting.State)
+
+		cancelled, err := h.service.Cancel(h.ctx, 7, waiting.OperationID)
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuOperationCancelled, cancelled.State)
+		calls, _ := h.runner.snapshot()
+		require.Zero(t, calls)
+	})
+}
+
 func TestOperationService_ConfirmationRequiresDurableActionIdentity(t *testing.T) {
 	for name, action := range map[string]*OperationAction{
 		"missing session": {

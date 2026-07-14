@@ -1,153 +1,446 @@
-// Package feishu — service.go is the feishu-integration connection service behind
-// the HTTP controller (controller/v1/feishu). Connection goes entirely through
-// lark-cli — config init for app-create, blocking auth login for authorization —
-// with the connect PHASE read from the user's lark-cli HOME (the single truth
-// source), driven by the shared *ConnectOrchestrator (fix/feishu-phase-from-home,
-// 2026-06-24). There is NO redirect-OAuth / authorize URL / OAuth callback / token
-// exchange / device-code file.
-//
-// User-facing operations:
-//
-//   - Connect: advance the connect flow one step (phase read from the home) and
-//     return the next action (create_app page URL, authorize verification URL, or
-//     done). The settings page shows the URL; the user opens it; a later
-//     Connect/Status call advances. (The primary connect path is the agent
-//     feishu_connect tool, which drives the SAME orchestrator with auto-resume.)
-//   - Status:  report connection state from the durable DB connected flag (reconciled
-//     from the home on the done path).
-//   - Unbind:  delete the stored connection row (the 飞书 app + lark-cli home are kept).
-//
-// Layering: biz layer over the orchestrator + store. No agent imports. NOT routed
-// through aiservice (飞书 is an external business API).
+// Package feishu exposes the server-owned lifecycle surface for a personal
+// Lark workspace. HTTP callers provide only an intent/action and opaque IDs;
+// account ownership, generation, scopes, argv, application identity, and the
+// one Agent continuation path all remain inside the composed workspace graph.
 package feishu
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
-	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/model"
 
 	"gorm.io/gorm"
 )
 
-// Next-step discriminants returned by Connect (device-code connect contract).
-const (
-	// NextStepCreateApp: the user has no self-built 飞书 app yet → open the
-	// device-code page URL (config init) to create it.
-	NextStepCreateApp = "create_app"
-	// NextStepAuthorize: the app exists → open the verification URL and grant scopes
-	// (device-code); a later Connect/Status call completes it.
-	NextStepAuthorize = "authorize"
-	// NextStepDone: already connected.
-	NextStepDone = "done"
+var (
+	// ErrWorkspaceLifecycleNotFound deliberately collapses a missing, stale, or
+	// cross-tenant operation/session to one public result.
+	ErrWorkspaceLifecycleNotFound = errors.New("feishu workspace resource not found")
+	// ErrWorkspaceLifecycleInvalid is a safe public validation failure. It never
+	// includes client-supplied identifiers or command data.
+	ErrWorkspaceLifecycleInvalid = errors.New("feishu workspace lifecycle request rejected")
+	// ErrWorkspaceLifecycleUnavailable is used for dependency or persistence
+	// failures without exposing internal runner/vault details to HTTP callers.
+	ErrWorkspaceLifecycleUnavailable = errors.New("feishu workspace lifecycle unavailable")
 )
 
-// --- DTOs ------------------------------------------------------------------
+const (
+	ResumeActionUserCompleted = "user_completed"
+	ResumeActionConfirmed     = "confirmed"
+	ResumeActionCancelled     = "cancelled"
+)
 
-// ConnectResult is the POST /v1/feishu/connect response data.
-type ConnectResult struct {
-	NextStep string `json:"next_step"` // create_app | authorize | done
-	URL      string `json:"url"`       // device-code page URL or verification URL ("" for done)
+// CapabilityStatus is the durable, last-known status of one supported domain.
+// It is cache metadata only; real operation results remain authoritative.
+type CapabilityStatus struct {
+	State         string     `json:"state"`
+	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
 }
 
-// StatusResult is the GET /v1/feishu/status response data.
+// StatusAction intentionally excludes URL and device_code. A live URL is only
+// emitted by connect/refresh in the same process that owns the auth worker.
+type StatusAction struct {
+	OperationID   string    `json:"operation_id,omitempty"`
+	SessionID     string    `json:"session_id"`
+	Phase         string    `json:"phase"`
+	ExpiresAt     time.Time `json:"expires_at"`
+	LinkAvailable bool      `json:"link_available"`
+}
+
+// StatusResult is the GET /v1/feishu/status DTO. It contains no live URL,
+// device code, raw app id, requested scopes, or credential material.
 type StatusResult struct {
+	State        string                      `json:"state"`
+	Connected    bool                        `json:"connected"`
+	AppIDMasked  string                      `json:"app_id_masked,omitempty"`
+	CLIVersion   string                      `json:"cli_version,omitempty"`
+	Capabilities map[string]CapabilityStatus `json:"capabilities"`
+	ActiveAction *StatusAction               `json:"active_action,omitempty"`
+}
+
+// ConnectResult is returned only by the explicit manual settings action. The
+// action's URL is transient and is never written to an account/session DTO.
+type ConnectResult struct {
+	State  string           `json:"state"`
+	Action *OperationAction `json:"action,omitempty"`
+}
+
+// UnbindResult explicitly describes the local-only deletion guarantee.
+type UnbindResult struct {
+	State     string `json:"state"`
 	Connected bool   `json:"connected"`
-	Status    string `json:"status"` // none | connected
-	AppID     string `json:"app_id"`
+	Message   string `json:"message"`
 }
 
-// --- service ---------------------------------------------------------------
-
-// connectStepper is the orchestrator surface the service drives (the concrete
-// *ConnectOrchestrator satisfies it). Declared as an interface so the service is
-// unit-tested with a fake.
-type connectStepper interface {
-	PollAndPersistApp(ctx context.Context, userID uint) (bool, error)
-	NextConnectStep(ctx context.Context, userID uint, runID uint64, questionText string) (*ConnectStep, error)
-}
-
-// Deps wires FeishuService. All deps are required.
-type Deps struct {
-	Store        store.IThirdPartyAccountStore
-	Orchestrator connectStepper
-}
-
-// FeishuService is the IFeishuService implementation.
-type FeishuService struct {
-	store        store.IThirdPartyAccountStore
-	orchestrator connectStepper
-}
-
-// IFeishuService is the biz interface exposed via biz.IBiz.FeishuSvc().
+// IFeishuService is the narrow lifecycle API exposed by biz to HTTP routing.
+// It has no parameter that can carry an app id, scopes, argv, user id, or
+// client-generated authorization URL.
 type IFeishuService interface {
-	Connect(ctx context.Context, userID uint) (*ConnectResult, error)
-	Status(ctx context.Context, userID uint) (*StatusResult, error)
-	Unbind(ctx context.Context, userID uint) error
+	Connect(context.Context, uint) (*ConnectResult, error)
+	Status(context.Context, uint) (*StatusResult, error)
+	Resume(context.Context, uint, string, string) (*OperationResult, error)
+	RefreshAction(context.Context, uint, string) (*OperationAction, error)
+	Unbind(context.Context, uint) (*UnbindResult, error)
 }
 
-// compile-time guard.
-var _ IFeishuService = (*FeishuService)(nil)
-
-// NewFeishuService builds the service, failing fast on a missing required dep.
-func NewFeishuService(d Deps) (*FeishuService, error) {
-	if d.Store == nil {
-		return nil, errors.New("feishu: nil store for service")
-	}
-	if d.Orchestrator == nil {
-		return nil, errors.New("feishu: nil orchestrator for service")
-	}
-	return &FeishuService{store: d.Store, orchestrator: d.Orchestrator}, nil
+// WorkspaceLifecycleAccountStore is the account-only lifecycle subset. Its
+// RetireGeneration operation is atomic with cancellation/unknown closure of
+// the retired generation in the store implementation.
+type WorkspaceLifecycleAccountStore interface {
+	Get(context.Context, uint, string) (*model.UserThirdPartyAccount, error)
+	RetireGeneration(context.Context, uint, string) (uint64, uint64, error)
+	FinalizeDisconnect(context.Context, uint, string, uint64) error
 }
 
-// Connect advances the device-code connect flow one step. It first bridges any
-// just-finished app-create (poll+persist), then asks the orchestrator for the next
-// step. runID/questionText are 0/"" on the HTTP path (no agent run to resume).
-func (s *FeishuService) Connect(ctx context.Context, userID uint) (*ConnectResult, error) {
-	if _, err := s.orchestrator.PollAndPersistApp(ctx, userID); err != nil {
-		return nil, fmt.Errorf("feishu.Connect: poll app (user %d): %w", userID, err)
+// WorkspaceLifecycleStore is the tenant-fenced persistence surface needed by
+// resume and teardown. It intentionally has no broad query or raw DB API.
+type WorkspaceLifecycleStore interface {
+	GetOperationForUser(context.Context, uint, uint64, string) (*model.FeishuOperation, error)
+	FindActiveSessionForUser(context.Context, uint, uint64) (*model.FeishuAuthSession, error)
+	DeleteVault(context.Context, uint, uint64) error
+}
+
+// WorkspaceLifecycleAuth owns in-memory worker cancellation and creates a
+// replacement URL only after it supersedes the old server-owned session.
+type WorkspaceLifecycleAuth interface {
+	ConnectManual(context.Context, uint) (*OperationAction, error)
+	RefreshAction(context.Context, uint, uint64, string) (*OperationAction, error)
+	StopGeneration(uint, uint64)
+}
+
+// WorkspaceLifecycleDispatcher is implemented by the Task12-composed outer
+// dispatcher. It is intentionally the same interface used by auth workers;
+// no HTTP-specific resumer may be constructed.
+type WorkspaceLifecycleDispatcher interface {
+	DispatchResume(context.Context, uint, string) error
+}
+
+// WorkspaceLifecycleOperations supplies the only two confirmation transitions
+// that a browser is allowed to request. The service validates ownership/state
+// before invoking either transition.
+type WorkspaceLifecycleOperations interface {
+	Confirm(context.Context, uint, string) (*OperationResult, error)
+	Cancel(context.Context, uint, string) (*OperationResult, error)
+}
+
+// WorkspaceLifecycleTeardown runs only a fixed logout command after the
+// account generation has been retired. It receives no browser-controlled data.
+type WorkspaceLifecycleTeardown interface {
+	LogoutRetired(context.Context, uint, uint64) error
+}
+
+// WorkspaceLifecycleDeps is the complete lifecycle graph. All dependencies
+// must come from the one Task12 composition root.
+type WorkspaceLifecycleDeps struct {
+	Accounts   WorkspaceLifecycleAccountStore
+	Workspace  WorkspaceLifecycleStore
+	Auth       WorkspaceLifecycleAuth
+	Dispatcher WorkspaceLifecycleDispatcher
+	Operations WorkspaceLifecycleOperations
+	Teardown   WorkspaceLifecycleTeardown
+}
+
+// WorkspaceLifecycleService is the stateful personal-workspace HTTP service.
+// It does not construct a runner, vault, auth session service, or Agent
+// resumer; those must be the already-validated Task12 instances.
+type WorkspaceLifecycleService struct {
+	accounts   WorkspaceLifecycleAccountStore
+	workspace  WorkspaceLifecycleStore
+	auth       WorkspaceLifecycleAuth
+	dispatcher WorkspaceLifecycleDispatcher
+	operations WorkspaceLifecycleOperations
+	teardown   WorkspaceLifecycleTeardown
+}
+
+var _ IFeishuService = (*WorkspaceLifecycleService)(nil)
+
+// NewWorkspaceLifecycleService validates that the endpoint cannot publish a
+// half-composed lifecycle path.
+func NewWorkspaceLifecycleService(deps WorkspaceLifecycleDeps) (*WorkspaceLifecycleService, error) {
+	if deps.Accounts == nil || deps.Workspace == nil || deps.Auth == nil || deps.Dispatcher == nil || deps.Operations == nil || deps.Teardown == nil {
+		return nil, fmt.Errorf("%w: incomplete workspace graph", ErrWorkspaceLifecycleUnavailable)
 	}
-	step, err := s.orchestrator.NextConnectStep(ctx, userID, 0, "")
+	return &WorkspaceLifecycleService{
+		accounts: deps.Accounts, workspace: deps.Workspace, auth: deps.Auth,
+		dispatcher: deps.Dispatcher, operations: deps.Operations, teardown: deps.Teardown,
+	}, nil
+}
+
+// Status is strictly read-only. In particular it must never call ConnectManual,
+// AuthStatus, RefreshAction, or create an authorization worker.
+func (s *WorkspaceLifecycleService) Status(ctx context.Context, userID uint) (*StatusResult, error) {
+	if s == nil || userID == 0 {
+		return nil, ErrWorkspaceLifecycleInvalid
+	}
+	account, err := s.accounts.Get(ctx, userID, ProviderLark)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return emptyWorkspaceStatus(), nil
+	}
+	if err != nil || !lifecycleAccountOwned(account, userID) {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	status := workspaceStatusFromAccount(account)
+	session, sessionErr := s.workspace.FindActiveSessionForUser(ctx, userID, account.Generation)
+	if errors.Is(sessionErr, gorm.ErrRecordNotFound) {
+		return status, nil
+	}
+	if sessionErr != nil || session == nil || session.UserID != userID || session.Generation != account.Generation ||
+		session.State != model.FeishuAuthSessionPending || !validAuthPhase(session.Phase) {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	status.ActiveAction = &StatusAction{
+		SessionID: session.ID, Phase: session.Phase, ExpiresAt: session.ExpiresAt.UTC(), LinkAvailable: false,
+	}
+	if session.OperationID != nil {
+		status.ActiveAction.OperationID = *session.OperationID
+	}
+	return status, nil
+}
+
+// Connect starts only the server-owned manual flow. AuthSessionService enforces
+// its fixed offline_access scope set and creates an app only where necessary.
+func (s *WorkspaceLifecycleService) Connect(ctx context.Context, userID uint) (*ConnectResult, error) {
+	if s == nil || userID == 0 {
+		return nil, ErrWorkspaceLifecycleInvalid
+	}
+	action, err := s.auth.ConnectManual(ctx, userID)
 	if err != nil {
-		return nil, fmt.Errorf("feishu.Connect: next step (user %d): %w", userID, err)
+		return nil, ErrWorkspaceLifecycleUnavailable
 	}
-	return &ConnectResult{NextStep: mapPhase(step.Phase), URL: step.URL}, nil
+	result := &ConnectResult{Action: cloneOperationAction(action)}
+	if action != nil {
+		result.State = connectionStateForAction(action.Phase)
+	}
+	return result, nil
 }
 
-// Status reports the connection state for userID from the durable DB connected
-// flag. No row → none. A connected row → connected.
-func (s *FeishuService) Status(ctx context.Context, userID uint) (*StatusResult, error) {
-	acc, err := s.store.Get(ctx, userID, ProviderLark)
+// Resume processes one of the three fixed browser actions. The operation is
+// first loaded through the caller's current account generation, making stale
+// and cross-user IDs indistinguishable from a missing resource.
+func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, operationID, action string) (*OperationResult, error) {
+	if s == nil || userID == 0 || strings.TrimSpace(operationID) == "" || !validResumeAction(action) {
+		return nil, ErrWorkspaceLifecycleInvalid
+	}
+	account, err := s.currentAccount(ctx, userID)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return &StatusResult{Connected: false, Status: "none"}, nil
+		return nil, err
+	}
+	operation, err := s.workspace.GetOperationForUser(ctx, userID, account.Generation, operationID)
+	if err != nil || operation == nil || operation.UserID != userID || operation.Generation != account.Generation {
+		return nil, ErrWorkspaceLifecycleNotFound
+	}
+
+	switch action {
+	case ResumeActionUserCompleted:
+		if operation.State == model.FeishuOperationSucceeded {
+			return lifecycleStoredOperationSummary(operation), nil
 		}
-		return nil, fmt.Errorf("feishu.Status: load account (user %d): %w", userID, err)
-	}
-	if acc.Connected {
-		return &StatusResult{Connected: true, Status: "connected", AppID: acc.AppID}, nil
-	}
-	return &StatusResult{Connected: false, Status: "none", AppID: acc.AppID}, nil
-}
-
-// Unbind deletes the stored connection row (the 飞书 app itself + the lark-cli home
-// are kept). Idempotent: deleting a non-existent connection is not an error.
-func (s *FeishuService) Unbind(ctx context.Context, userID uint) error {
-	if err := s.store.Delete(ctx, userID, ProviderLark); err != nil {
-		return fmt.Errorf("feishu.Unbind: delete account (user %d): %w", userID, err)
-	}
-	return nil
-}
-
-// mapPhase maps an orchestrator ConnectPhase to the HTTP next_step discriminant.
-func mapPhase(phase string) string {
-	switch phase {
-	case ConnectPhaseCreateApp:
-		return NextStepCreateApp
-	case ConnectPhaseAuthorize:
-		return NextStepAuthorize
+		if !recoveryWaitingState(operation.State) {
+			return nil, ErrWorkspaceLifecycleInvalid
+		}
+		// The exact Task12 dispatcher performs OperationService.Resume and, only
+		// on success, the durable Task11 tool-result continuation. It is shared
+		// with the auth worker, so concurrent user/worker callbacks cannot invoke
+		// the original CLI command a second time.
+		if err := s.dispatcher.DispatchResume(ctx, userID, operationID); err != nil {
+			return nil, ErrWorkspaceLifecycleUnavailable
+		}
+		updated, updateErr := s.workspace.GetOperationForUser(ctx, userID, account.Generation, operationID)
+		if updateErr != nil || updated == nil || updated.UserID != userID || updated.Generation != account.Generation {
+			return nil, ErrWorkspaceLifecycleUnavailable
+		}
+		return lifecycleStoredOperationSummary(updated), nil
+	case ResumeActionConfirmed:
+		if operation.State != model.FeishuOperationWaitingConfirmation {
+			return nil, ErrWorkspaceLifecycleInvalid
+		}
+		result, confirmErr := s.operations.Confirm(ctx, userID, operationID)
+		if confirmErr != nil || result == nil {
+			return nil, ErrWorkspaceLifecycleUnavailable
+		}
+		if result.State == model.FeishuOperationSucceeded {
+			if err := s.dispatcher.DispatchResume(ctx, userID, operationID); err != nil {
+				return nil, ErrWorkspaceLifecycleUnavailable
+			}
+		}
+		return lifecycleResultSummary(result), nil
+	case ResumeActionCancelled:
+		if operation.State != model.FeishuOperationWaitingConfirmation {
+			return nil, ErrWorkspaceLifecycleInvalid
+		}
+		result, cancelErr := s.operations.Cancel(ctx, userID, operationID)
+		if cancelErr != nil || result == nil {
+			return nil, ErrWorkspaceLifecycleUnavailable
+		}
+		return lifecycleResultSummary(result), nil
 	default:
-		return NextStepDone
+		return nil, ErrWorkspaceLifecycleInvalid
+	}
+}
+
+// RefreshAction validates the caller's current generation before delegating to
+// AuthSessionService, which supersedes the old worker/session and returns a
+// newly-created live URL. It never accepts or returns a device code.
+func (s *WorkspaceLifecycleService) RefreshAction(ctx context.Context, userID uint, sessionID string) (*OperationAction, error) {
+	if s == nil || userID == 0 || strings.TrimSpace(sessionID) == "" {
+		return nil, ErrWorkspaceLifecycleInvalid
+	}
+	account, err := s.currentAccount(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	action, refreshErr := s.auth.RefreshAction(ctx, userID, account.Generation, sessionID)
+	if refreshErr != nil || action == nil || strings.TrimSpace(action.SessionID) == "" {
+		return nil, ErrWorkspaceLifecycleNotFound
+	}
+	return cloneOperationAction(action), nil
+}
+
+// Unbind first retires the active generation atomically. That database fence
+// cancels waiting work and converts executing work to unknown before local
+// worker cancellation, vault deletion, and final metadata clearing. The remote
+// self-built Feishu app is intentionally not claimed as deleted.
+func (s *WorkspaceLifecycleService) Unbind(ctx context.Context, userID uint) (*UnbindResult, error) {
+	if s == nil || userID == 0 {
+		return nil, ErrWorkspaceLifecycleInvalid
+	}
+	retiredGeneration, nextGeneration, err := s.accounts.RetireGeneration(ctx, userID, ProviderLark)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return unboundWorkspaceResult(), nil
+	}
+	if err != nil || retiredGeneration == 0 || nextGeneration <= retiredGeneration {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+
+	// Stop only local workers; multi-instance persistence is already fenced by
+	// the retired generation before this best-effort local step begins.
+	s.auth.StopGeneration(userID, retiredGeneration)
+	// lark-cli auth logout only clears the local user login; it cannot revoke or
+	// delete the remote self-built app. The fenced retired HOME is removed below
+	// regardless, so a logout failure is deliberately advisory.
+	_ = s.teardown.LogoutRetired(ctx, userID, retiredGeneration)
+	if err := s.workspace.DeleteVault(ctx, userID, retiredGeneration); err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	if err := s.accounts.FinalizeDisconnect(ctx, userID, ProviderLark, nextGeneration); err != nil {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	return unboundWorkspaceResult(), nil
+}
+
+func (s *WorkspaceLifecycleService) currentAccount(ctx context.Context, userID uint) (*model.UserThirdPartyAccount, error) {
+	account, err := s.accounts.Get(ctx, userID, ProviderLark)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrWorkspaceLifecycleNotFound
+	}
+	if err != nil || !lifecycleAccountOwned(account, userID) || account.ConnectionState == model.FeishuConnectionDisconnecting {
+		return nil, ErrWorkspaceLifecycleNotFound
+	}
+	return account, nil
+}
+
+func lifecycleAccountOwned(account *model.UserThirdPartyAccount, userID uint) bool {
+	return account != nil && account.UserID == userID && account.Provider == ProviderLark && account.Generation != 0
+}
+
+func validResumeAction(action string) bool {
+	return action == ResumeActionUserCompleted || action == ResumeActionConfirmed || action == ResumeActionCancelled
+}
+
+func emptyWorkspaceStatus() *StatusResult {
+	return &StatusResult{State: model.FeishuConnectionNone, Connected: false, Capabilities: defaultWorkspaceCapabilities()}
+}
+
+func workspaceStatusFromAccount(account *model.UserThirdPartyAccount) *StatusResult {
+	status := &StatusResult{
+		State: account.ConnectionState, Connected: account.ConnectionState == model.FeishuConnectionConnected && account.Connected,
+		AppIDMasked: maskWorkspaceAppID(account.AppID), CLIVersion: account.LarkCLIVersion,
+		Capabilities: defaultWorkspaceCapabilities(),
+	}
+	if status.State == "" {
+		status.State = model.FeishuConnectionNone
+	}
+	var raw map[string]struct {
+		State         string     `json:"state"`
+		LastSuccessAt *time.Time `json:"last_success_at"`
+	}
+	if len(account.CapabilityStateJSON) > 0 && json.Unmarshal(account.CapabilityStateJSON, &raw) == nil {
+		for _, domain := range []string{"docs", "base", "wiki"} {
+			if value, found := raw[domain]; found && validCapabilityState(value.State) {
+				status.Capabilities[domain] = CapabilityStatus{State: value.State, LastSuccessAt: value.LastSuccessAt}
+			}
+		}
+	}
+	return status
+}
+
+func defaultWorkspaceCapabilities() map[string]CapabilityStatus {
+	return map[string]CapabilityStatus{
+		"docs": {State: model.FeishuCapabilityUnknown},
+		"base": {State: model.FeishuCapabilityUnknown},
+		"wiki": {State: model.FeishuCapabilityUnknown},
+	}
+}
+
+func validCapabilityState(state string) bool {
+	switch state {
+	case model.FeishuCapabilityUnknown, model.FeishuCapabilityAvailable, model.FeishuCapabilityNeedsAppScope,
+		model.FeishuCapabilityNeedsUserScope, model.FeishuCapabilityRevoked, model.FeishuCapabilityResourceDenied:
+		return true
+	default:
+		return false
+	}
+}
+
+func validAuthPhase(phase string) bool {
+	return phase == model.FeishuAuthPhaseCreateApp || phase == model.FeishuAuthPhaseAppScope || phase == model.FeishuAuthPhaseUserAuth
+}
+
+func connectionStateForAction(phase string) string {
+	switch phase {
+	case model.FeishuAuthPhaseCreateApp:
+		return model.FeishuConnectionCreatingApp
+	case model.FeishuAuthPhaseAppScope:
+		return model.FeishuConnectionWaitingAppApproval
+	case model.FeishuAuthPhaseUserAuth:
+		return model.FeishuConnectionWaitingUserAuth
+	default:
+		return model.FeishuConnectionError
+	}
+}
+
+func maskWorkspaceAppID(appID string) string {
+	if len(appID) <= 4 {
+		return ""
+	}
+	if len(appID) <= 8 {
+		return appID[:2] + "****"
+	}
+	return appID[:4] + "****" + appID[len(appID)-4:]
+}
+
+func lifecycleStoredOperationSummary(source *model.FeishuOperation) *OperationResult {
+	if source == nil {
+		return nil
+	}
+	return &OperationResult{OperationID: source.ID, State: source.State}
+}
+
+func lifecycleResultSummary(source *OperationResult) *OperationResult {
+	if source == nil {
+		return nil
+	}
+	return &OperationResult{OperationID: source.OperationID, State: source.State}
+}
+
+func unboundWorkspaceResult() *UnbindResult {
+	return &UnbindResult{
+		State: model.FeishuConnectionNone, Connected: false,
+		Message: "有数侧连接已删除；飞书侧个人自建应用仍保留，可在飞书开放平台自行删除",
 	}
 }

@@ -32,8 +32,12 @@ type feishuPersonalWorkspace struct {
 	skillReader        *feishu.SkillReader
 	operationService   *feishu.FeishuOperationService
 	authSessionService *feishu.AuthSessionService
-	resumer            *agent.AgentRunResumer
-	dispatcher         *WorkspaceResumeDispatcher
+	// lifecycleService is the only HTTP-facing view of this graph. It uses the
+	// same auth instance, operation instance, and dispatcher below; it must not
+	// reconstruct a legacy orchestrator or an additional Agent resumer.
+	lifecycleService feishu.IFeishuService
+	resumer          *agent.AgentRunResumer
+	dispatcher       *WorkspaceResumeDispatcher
 	// authWorkerDispatcher records the exact dispatcher handed to the
 	// authorization worker. Keeping this immutable composition edge explicit
 	// prevents a later HTTP adapter from accidentally constructing a second
@@ -190,11 +194,24 @@ func buildFeishuService(deps feishuCompositionDeps) (*feishuPersonalWorkspace, e
 	if err != nil {
 		return nil, fmt.Errorf("feishu: build authorization service: %w", err)
 	}
+	teardown, err := feishu.NewRetiredWorkspaceTeardown(vault, runner)
+	if err != nil {
+		return nil, fmt.Errorf("feishu: build workspace teardown: %w", err)
+	}
+	lifecycleService, err := feishu.NewWorkspaceLifecycleService(feishu.WorkspaceLifecycleDeps{
+		Accounts: deps.dataStore.ThirdPartyAccounts(), Workspace: deps.dataStore.FeishuWorkspace(),
+		Auth: authService, Dispatcher: dispatcher, Operations: operationService,
+		Teardown: teardown,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("feishu: build lifecycle service: %w", err)
+	}
 
 	return &feishuPersonalWorkspace{
 		runner: runner, vault: vault, catalog: catalog, skillReader: skillReader,
 		operationService: operationService, authSessionService: authService,
-		resumer: resumer, dispatcher: dispatcher, authWorkerDispatcher: dispatcher,
+		lifecycleService: lifecycleService,
+		resumer:          resumer, dispatcher: dispatcher, authWorkerDispatcher: dispatcher,
 		supervisor: deps.supervisor,
 	}, nil
 }

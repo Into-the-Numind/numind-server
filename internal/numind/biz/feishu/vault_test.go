@@ -564,6 +564,28 @@ func TestEncryptedCLIHomeVault_RejectsInactiveGenerationBeforeReadingVault(t *te
 	task2RequireNoRuntimeHomes(t, f.runtimeBase)
 }
 
+func TestEncryptedCLIHomeVault_WithRetiredHomeOnlyAllowsDisconnectingNewerGenerationAndNeverReseals(t *testing.T) {
+	fixture := newTask2VaultFixture(t, 7, 4)
+	require.NoError(t, fixture.vault.WithHome(context.Background(), 7, 4, func(home string) (bool, error) {
+		return true, os.WriteFile(filepath.Join(home, "state.json"), []byte(`{"token":"local"}`), 0o600)
+	}))
+	putsBefore := fixture.store.putCalls
+	fixture.accounts.accounts[7].Generation = 5
+	fixture.accounts.accounts[7].ConnectionState = model.FeishuConnectionDisconnecting
+
+	var contents []byte
+	err := fixture.vault.WithRetiredHome(context.Background(), 7, 4, func(home string) error {
+		contents, _ = os.ReadFile(filepath.Join(home, "state.json"))
+		return nil
+	})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"token":"local"}`, string(contents))
+	require.Equal(t, putsBefore, fixture.store.putCalls, "retired teardown must never reseal a deleted generation")
+
+	fixture.accounts.accounts[7].ConnectionState = model.FeishuConnectionConnected
+	require.Error(t, fixture.vault.WithRetiredHome(context.Background(), 7, 4, func(string) error { return nil }))
+}
+
 func TestEncryptedCLIHomeVault_RejectsChecksumTampering(t *testing.T) {
 	f := newTask2VaultFixture(t, 7, 1)
 	f.putEncryptedArchive(t, task2TarArchive(t, task2TarEntry{

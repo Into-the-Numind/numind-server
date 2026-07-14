@@ -2,43 +2,56 @@ package feishu
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
 	feishubiz "numind-server/internal/numind/biz/feishu"
 	"numind-server/internal/pkg/model"
 )
 
-// fakeSvc is a scripted IFeishuService for controller tests (device-code).
-type fakeSvc struct {
+type lifecycleServiceFake struct {
 	connect *feishubiz.ConnectResult
 	status  *feishubiz.StatusResult
-	connErr error
-	statErr error
-	unbErr  error
+	resume  *feishubiz.OperationResult
+	refresh *feishubiz.OperationAction
+	unbound *feishubiz.UnbindResult
+	err     error
 
-	unbinds int
+	connectCalls int
+	resumeID     string
+	resumeAction string
+	refreshID    string
 }
 
-func (f *fakeSvc) Connect(_ context.Context, _ uint) (*feishubiz.ConnectResult, error) {
-	return f.connect, f.connErr
+func (f *lifecycleServiceFake) Connect(_ context.Context, _ uint) (*feishubiz.ConnectResult, error) {
+	f.connectCalls++
+	return f.connect, f.err
 }
-func (f *fakeSvc) Status(_ context.Context, _ uint) (*feishubiz.StatusResult, error) {
-	return f.status, f.statErr
+func (f *lifecycleServiceFake) Status(context.Context, uint) (*feishubiz.StatusResult, error) {
+	return f.status, f.err
 }
-func (f *fakeSvc) Unbind(_ context.Context, _ uint) error {
-	f.unbinds++
-	return f.unbErr
+func (f *lifecycleServiceFake) Resume(_ context.Context, _ uint, operationID, action string) (*feishubiz.OperationResult, error) {
+	f.resumeID, f.resumeAction = operationID, action
+	return f.resume, f.err
+}
+func (f *lifecycleServiceFake) RefreshAction(_ context.Context, _ uint, sessionID string) (*feishubiz.OperationAction, error) {
+	f.refreshID = sessionID
+	return f.refresh, f.err
+}
+func (f *lifecycleServiceFake) Unbind(context.Context, uint) (*feishubiz.UnbindResult, error) {
+	return f.unbound, f.err
 }
 
 func init() { gin.SetMode(gin.TestMode) }
 
-// withUser injects a current-user into the gin context (mirrors AuthMiddleware,
-// which c.Set("current_user", *model.User); middleware.GetCurrentUser reads it).
 func withUser(uid uint) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Set("current_user", &model.User{Model: gorm.Model{ID: uid}})
@@ -46,87 +59,90 @@ func withUser(uid uint) gin.HandlerFunc {
 	}
 }
 
-func TestStatus_JSON(t *testing.T) {
-	svc := &fakeSvc{status: &feishubiz.StatusResult{Connected: true, Status: "connected", AppID: "cli_app"}}
-	c := NewController(svc)
+func TestStatus_JSONIsReadOnlyShape(t *testing.T) {
+	svc := &lifecycleServiceFake{status: &feishubiz.StatusResult{
+		State: "connected", Connected: true, AppIDMasked: "cli_****5678",
+		Capabilities: map[string]feishubiz.CapabilityStatus{"docs": {State: "available"}},
+	}}
+	ctrl := NewController(svc)
 	r := gin.New()
-	r.GET("/v1/feishu/status", withUser(42), c.Status)
+	r.GET("/v1/feishu/status", withUser(42), ctrl.Status)
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/v1/feishu/status", nil)
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
-	}
-	body := w.Body.String()
-	if !contains(body, `"code":0`) || !contains(body, `"app_id":"cli_app"`) || !contains(body, `"status":"connected"`) {
-		t.Fatalf("unexpected body: %s", body)
-	}
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/feishu/status", nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Contains(t, w.Body.String(), `"state":"connected"`)
+	require.NotContains(t, w.Body.String(), `"url"`)
+	require.NotContains(t, w.Body.String(), "device_code")
 }
 
-func TestConnect_JSON(t *testing.T) {
-	svc := &fakeSvc{connect: &feishubiz.ConnectResult{NextStep: feishubiz.NextStepAuthorize, URL: "https://open.feishu.cn/device"}}
-	c := NewController(svc)
+func TestConnectAcceptsOnlyManualIntent(t *testing.T) {
+	service := &lifecycleServiceFake{connect: &feishubiz.ConnectResult{State: "user_auth", Action: &feishubiz.OperationAction{
+		Provider: "lark", SessionID: "session-1", URL: "https://open.feishu.cn/suite/passport/oauth/device", ExpiresAt: time.Now().Add(time.Minute),
+	}}}
+	ctrl := NewController(service)
 	r := gin.New()
-	r.POST("/v1/feishu/connect", withUser(42), c.Connect)
+	r.POST("/v1/feishu/connect", withUser(42), ctrl.Connect)
 
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/feishu/connect", nil)
-	r.ServeHTTP(w, req)
+	invalid := httptest.NewRecorder()
+	r.ServeHTTP(invalid, httptest.NewRequest(http.MethodPost, "/v1/feishu/connect", strings.NewReader(`{"intent":"manual","scopes":["im:message"]}`)))
+	require.Equal(t, http.StatusBadRequest, invalid.Code)
+	require.Zero(t, service.connectCalls)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
-	}
-	body := w.Body.String()
-	if !contains(body, `"next_step":"authorize"`) || !contains(body, `"url":"https://open.feishu.cn/device"`) {
-		t.Fatalf("unexpected body: %s", body)
-	}
+	valid := httptest.NewRecorder()
+	r.ServeHTTP(valid, httptest.NewRequest(http.MethodPost, "/v1/feishu/connect", strings.NewReader(`{"intent":"manual"}`)))
+	require.Equal(t, http.StatusOK, valid.Code)
+	require.Equal(t, 1, service.connectCalls)
 }
 
-func TestUnbind_JSON(t *testing.T) {
-	svc := &fakeSvc{}
-	c := NewController(svc)
+func TestResumeAllowsOnlyFixedActionAndCollapsesCrossUserTo404(t *testing.T) {
+	service := &lifecycleServiceFake{resume: &feishubiz.OperationResult{OperationID: "op-1", State: "waiting_user_auth"}}
+	ctrl := NewController(service)
 	r := gin.New()
-	r.DELETE("/v1/feishu/connection", withUser(42), c.Unbind)
+	r.POST("/v1/feishu/operations/:id/resume", withUser(8), ctrl.ResumeOperation)
 
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodDelete, "/v1/feishu/connection", nil)
-	r.ServeHTTP(w, req)
+	invalid := httptest.NewRecorder()
+	r.ServeHTTP(invalid, httptest.NewRequest(http.MethodPost, "/v1/feishu/operations/op-1/resume", strings.NewReader(`{"action":"user_completed","argv":["docs"]}`)))
+	require.Equal(t, http.StatusBadRequest, invalid.Code)
+	require.Empty(t, service.resumeID)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
-	}
-	if svc.unbinds != 1 {
-		t.Fatalf("unbinds = %d, want 1", svc.unbinds)
-	}
+	service.err = feishubiz.ErrWorkspaceLifecycleNotFound
+	notFound := httptest.NewRecorder()
+	r.ServeHTTP(notFound, httptest.NewRequest(http.MethodPost, "/v1/feishu/operations/op-owned-by-7/resume", strings.NewReader(`{"action":"user_completed"}`)))
+	require.Equal(t, http.StatusNotFound, notFound.Code)
 }
 
-func TestUnauthenticated_Connect(t *testing.T) {
-	svc := &fakeSvc{}
-	c := NewController(svc)
+func TestRefreshUsesPathSessionOnlyAndUnbindReturnsRemoteAppDisclosure(t *testing.T) {
+	service := &lifecycleServiceFake{
+		refresh: &feishubiz.OperationAction{Provider: "lark", SessionID: "fresh", URL: "https://open.feishu.cn/suite/passport/oauth/device"},
+		unbound: &feishubiz.UnbindResult{State: "none", Connected: false, Message: "有数侧连接已删除；飞书侧个人自建应用仍保留，可在飞书开放平台自行删除"},
+	}
+	ctrl := NewController(service)
 	r := gin.New()
-	r.POST("/v1/feishu/connect", c.Connect) // no user injected
+	r.POST("/v1/feishu/actions/:session_id/refresh", withUser(8), ctrl.RefreshAction)
+	r.DELETE("/v1/feishu/connection", withUser(8), ctrl.Unbind)
 
+	refresh := httptest.NewRecorder()
+	r.ServeHTTP(refresh, httptest.NewRequest(http.MethodPost, "/v1/feishu/actions/old-session/refresh", strings.NewReader(`{"device_code":"never"}`)))
+	require.Equal(t, http.StatusBadRequest, refresh.Code)
+	require.Empty(t, service.refreshID)
+
+	refresh = httptest.NewRecorder()
+	r.ServeHTTP(refresh, httptest.NewRequest(http.MethodPost, "/v1/feishu/actions/old-session/refresh", nil))
+	require.Equal(t, http.StatusOK, refresh.Code)
+	require.Equal(t, "old-session", service.refreshID)
+
+	unbound := httptest.NewRecorder()
+	r.ServeHTTP(unbound, httptest.NewRequest(http.MethodDelete, "/v1/feishu/connection", nil))
+	require.Equal(t, http.StatusOK, unbound.Code)
+	require.Contains(t, unbound.Body.String(), "飞书侧个人自建应用仍保留")
+}
+
+func TestUnauthenticatedLifecycleActionFails(t *testing.T) {
+	ctrl := NewController(&lifecycleServiceFake{err: errors.New("must not be reached")})
+	r := gin.New()
+	r.POST("/v1/feishu/connect", ctrl.Connect)
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/feishu/connect", nil)
-	r.ServeHTTP(w, req)
-
-	body := w.Body.String()
-	if contains(body, `"code":0`) {
-		t.Fatalf("expected an auth error, got success: %s", body)
-	}
-}
-
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && indexOf(s, sub) >= 0
-}
-
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/feishu/connect", strings.NewReader(`{"intent":"manual"}`)))
+	require.NotEqual(t, http.StatusOK, w.Code)
 }

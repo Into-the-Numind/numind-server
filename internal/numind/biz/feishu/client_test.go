@@ -54,6 +54,25 @@ func (f *fakeAccountStore) MarkConnected(_ context.Context, _ uint, _ string, at
 	f.acc.ConnectedAt = &at
 	return nil
 }
+func (f *fakeAccountStore) RetireGeneration(_ context.Context, _ uint, _ string) (uint64, uint64, error) {
+	if f.acc == nil || f.acc.Generation == 0 {
+		return 0, 0, gorm.ErrRecordNotFound
+	}
+	old := f.acc.Generation
+	f.acc.Generation++
+	f.acc.ConnectionState = model.FeishuConnectionDisconnecting
+	f.acc.Connected = false
+	return old, f.acc.Generation, nil
+}
+func (f *fakeAccountStore) FinalizeDisconnect(_ context.Context, _ uint, _ string, generation uint64) error {
+	if f.acc == nil || f.acc.Generation != generation {
+		return gorm.ErrRecordNotFound
+	}
+	f.acc.ConnectionState = model.FeishuConnectionNone
+	f.acc.Connected = false
+	f.acc.AppID = ""
+	return nil
+}
 
 // fakeOpsRunner scripts the opsRunner seam for the client gate (only AuthStatus is
 // exercised here; the ops methods are covered by api_test.go via the fake lark-cli).

@@ -29,6 +29,8 @@ type IFeishuWorkspaceStore interface {
 	CreateSession(ctx context.Context, session *model.FeishuAuthSession) error
 	CreateOrGetPendingSession(ctx context.Context, session *model.FeishuAuthSession) (*model.FeishuAuthSession, bool, error)
 	GetSessionForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuAuthSession, error)
+	FindActiveSessionForUser(ctx context.Context, userID uint, generation uint64) (*model.FeishuAuthSession, error)
+	SupersedeSessionForUser(ctx context.Context, userID uint, generation uint64, id string, now time.Time) error
 	ClaimSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
 	RenewSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
 	UpdateSessionState(ctx context.Context, userID uint, generation uint64, id, owner, state string, now time.Time, completedAt *time.Time) error
@@ -259,6 +261,49 @@ func (s *feishuWorkspaceStore) GetSessionForUser(ctx context.Context, userID uin
 		return nil, err
 	}
 	return &session, nil
+}
+
+// FindActiveSessionForUser returns the most recently touched pending session
+// for a current account generation. It intentionally returns metadata only;
+// verification URLs and device codes are never persisted on this model.
+func (s *feishuWorkspaceStore) FindActiveSessionForUser(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+) (*model.FeishuAuthSession, error) {
+	var session model.FeishuAuthSession
+	if err := s.db.WithContext(ctx).
+		Where("user_id = ? AND generation = ? AND state = ?", userID, generation, model.FeishuAuthSessionPending).
+		Order("updated_at DESC, id DESC").Take(&session).Error; err != nil {
+		return nil, err
+	}
+	return &session, nil
+}
+
+// SupersedeSessionForUser retires one still-pending session regardless of its
+// live worker lease. A caller uses this only after validating the current
+// account generation; releasing the lease prevents the old worker from later
+// finalizing a stale authorization result.
+func (s *feishuWorkspaceStore) SupersedeSessionForUser(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	id string,
+	now time.Time,
+) error {
+	result := s.db.WithContext(ctx).Model(&model.FeishuAuthSession{}).
+		Where("id = ? AND user_id = ? AND generation = ? AND state = ?", id, userID, generation, model.FeishuAuthSessionPending).
+		Updates(map[string]any{
+			"state": model.FeishuAuthSessionSuperseded, "completed_at": now.UTC(),
+			"lease_owner": "", "lease_until": nil,
+		})
+	if result.Error != nil {
+		return fmt.Errorf("supersede feishu auth session: %w", result.Error)
+	}
+	if result.RowsAffected != 1 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 // ClaimSession acquires a pending session with a fresh token. A token may not
