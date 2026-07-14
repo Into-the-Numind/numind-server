@@ -132,9 +132,12 @@ type WorkspaceLifecycleOperations interface {
 }
 
 // WorkspaceLifecycleTeardown runs only a fixed logout command after the
-// account generation has been retired. It receives no browser-controlled data.
+// account generation has been retired. Its result records advisory CLI logout
+// status. A non-nil error means retired HOME materialization/cleanup failed,
+// so Unbind must retain the encrypted vault and disconnecting generation.
+// It receives no browser-controlled data.
 type WorkspaceLifecycleTeardown interface {
-	LogoutRetired(context.Context, uint, uint64) error
+	LogoutRetired(context.Context, uint, uint64) (RetiredWorkspaceTeardownResult, error)
 }
 
 // WorkspaceLifecycleDeps is the complete lifecycle graph. All dependencies
@@ -406,9 +409,14 @@ func (s *WorkspaceLifecycleService) Unbind(ctx context.Context, userID uint) (*U
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
 	// lark-cli auth logout only clears the local user login; it cannot revoke or
-	// delete the remote self-built app. The fenced retired HOME is removed below
-	// regardless, so a logout failure is deliberately advisory.
-	_ = s.teardown.LogoutRetired(cleanupCtx, userID, retiredGeneration)
+	// delete the remote self-built app. Its command failure is deliberately
+	// advisory, but LogoutRetired structurally returns an error only when its
+	// retired HOME could not be materialized or removed. In that case deleting
+	// the vault would falsely claim local credential removal, so leave the row
+	// disconnecting for the same-generation retry.
+	if _, err := s.teardown.LogoutRetired(cleanupCtx, userID, retiredGeneration); err != nil {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
 	if err := s.workspace.DeleteVault(cleanupCtx, userID, retiredGeneration); err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
@@ -433,7 +441,10 @@ func (s *WorkspaceLifecycleService) currentAccount(ctx context.Context, userID u
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrWorkspaceLifecycleNotFound
 	}
-	if err != nil || !lifecycleAccountOwned(account, userID) || account.ConnectionState == model.FeishuConnectionDisconnecting {
+	if err != nil {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	if !lifecycleAccountOwned(account, userID) || account.ConnectionState == model.FeishuConnectionDisconnecting {
 		return nil, ErrWorkspaceLifecycleNotFound
 	}
 	return account, nil

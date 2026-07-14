@@ -121,12 +121,16 @@ func (f *svcAccountStore) FinalizeDisconnect(_ context.Context, userID uint, pro
 // argv, scopes, app ids, or another user's operation/session identity.
 type lifecycleAccountFake struct {
 	account           *model.UserThirdPartyAccount
+	getErr            error
 	retireCalls       int
 	finalizeCalls     int
 	retiredGeneration uint64
 }
 
 func (f *lifecycleAccountFake) Get(_ context.Context, _ uint, _ string) (*model.UserThirdPartyAccount, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
 	if f.account == nil {
 		return nil, gorm.ErrRecordNotFound
 	}
@@ -138,6 +142,13 @@ func (f *lifecycleAccountFake) RetireGeneration(_ context.Context, _ uint, _ str
 	f.retireCalls++
 	if f.account == nil {
 		return 0, 0, gorm.ErrRecordNotFound
+	}
+	if f.account.ConnectionState == model.FeishuConnectionDisconnecting {
+		if f.account.Generation <= 1 {
+			return 0, 0, gorm.ErrRecordNotFound
+		}
+		f.retiredGeneration = f.account.Generation - 1
+		return f.retiredGeneration, f.account.Generation, nil
 	}
 	f.retiredGeneration = f.account.Generation
 	f.account.Generation++
@@ -269,11 +280,14 @@ func (f *lifecycleOperationsFake) Cancel(_ context.Context, _ uint, id string) (
 	return &OperationResult{OperationID: id, State: model.FeishuOperationCancelled}, nil
 }
 
-type lifecycleTeardownFake struct{ calls []uint64 }
+type lifecycleTeardownFake struct {
+	calls []uint64
+	err   error
+}
 
-func (f *lifecycleTeardownFake) LogoutRetired(_ context.Context, _ uint, generation uint64) error {
+func (f *lifecycleTeardownFake) LogoutRetired(_ context.Context, _ uint, generation uint64) (RetiredWorkspaceTeardownResult, error) {
 	f.calls = append(f.calls, generation)
-	return nil
+	return RetiredWorkspaceTeardownResult{LogoutAttempted: true, LogoutSucceeded: f.err == nil}, f.err
 }
 
 func newLifecycleService(t *testing.T, account *model.UserThirdPartyAccount, operation *model.FeishuOperation) (*WorkspaceLifecycleService, *lifecycleAccountFake, *lifecycleWorkspaceFake, *lifecycleAuthFake, *lifecycleDispatcherFake, *lifecycleOperationsFake, *lifecycleTeardownFake) {
@@ -475,6 +489,20 @@ func TestWorkspaceLifecycleRefreshUsesCurrentGenerationAndReturnsNewLiveAction(t
 	require.Equal(t, 1, auth.refreshCalls)
 }
 
+func TestWorkspaceLifecycleResumeAndRefreshMapAccountStoreFailureToUnavailable(t *testing.T) {
+	svc, accounts, _, _, dispatcher, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 2,
+	}, &model.FeishuOperation{ID: "op-1", UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth})
+	accounts.getErr = errors.New("simulated account store outage")
+
+	_, err := svc.Resume(context.Background(), 7, "op-1", ResumeActionUserCompleted)
+	require.ErrorIs(t, err, ErrWorkspaceLifecycleUnavailable)
+	require.Zero(t, dispatcher.calls)
+
+	_, err = svc.RefreshAction(context.Background(), 7, "session-1")
+	require.ErrorIs(t, err, ErrWorkspaceLifecycleUnavailable)
+}
+
 func TestWorkspaceLifecycleUnbindRetiresGenerationStopsWorkersDeletesVaultAndKeepsRemoteApp(t *testing.T) {
 	svc, accounts, workspace, auth, _, _, teardown := newLifecycleService(t, &model.UserThirdPartyAccount{
 		UserID: 7, Provider: ProviderLark, Generation: 4, AppID: "cli_keep_remote", Connected: true,
@@ -554,6 +582,34 @@ func TestWorkspaceLifecycleUnbindWorkerJoinTimeoutLeavesDisconnectingForSafeRetr
 	require.False(t, accounts.account.Connected)
 	require.Zero(t, workspace.deleteVaultCalls)
 	require.Zero(t, accounts.finalizeCalls)
+}
+
+func TestWorkspaceLifecycleUnbindLeavesRetiredGenerationDisconnectingWhenTeardownCannotCleanHome(t *testing.T) {
+	svc, accounts, workspace, auth, _, _, teardown := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 4, Connected: true,
+		ConnectionState: model.FeishuConnectionConnected,
+	}, nil)
+	teardown.err = errRetiredWorkspaceCleanup
+
+	_, err := svc.Unbind(context.Background(), 7)
+	require.ErrorIs(t, err, ErrWorkspaceLifecycleUnavailable)
+	require.Equal(t, model.FeishuConnectionDisconnecting, accounts.account.ConnectionState)
+	require.False(t, accounts.account.Connected)
+	require.Equal(t, uint64(5), accounts.account.Generation)
+	require.Equal(t, uint64(4), accounts.retiredGeneration)
+	require.Equal(t, []uint64{4}, auth.stopped)
+	require.Equal(t, []uint64{4}, teardown.calls)
+	require.Zero(t, workspace.deleteVaultCalls, "critical retired HOME cleanup failure must keep the encrypted vault for a safe retry")
+	require.Zero(t, accounts.finalizeCalls, "a connection must not claim local deletion while a readable retired HOME may remain")
+
+	teardown.err = nil
+	_, err = svc.Unbind(context.Background(), 7)
+	require.NoError(t, err, "retry reuses the same retired generation after teardown cleanup succeeds")
+	require.Equal(t, []uint64{4, 4}, auth.stopped)
+	require.Equal(t, []uint64{4, 4}, teardown.calls)
+	require.Equal(t, 1, workspace.deleteVaultCalls)
+	require.Equal(t, 1, accounts.finalizeCalls)
+	require.Equal(t, model.FeishuConnectionNone, accounts.account.ConnectionState)
 }
 
 func TestNewWorkspaceLifecycleServiceRejectsIncompleteGraph(t *testing.T) {

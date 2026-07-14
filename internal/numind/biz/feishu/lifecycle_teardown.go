@@ -5,6 +5,36 @@ import (
 	"errors"
 )
 
+var errRetiredWorkspaceCleanup = errors.New("feishu retired workspace cleanup unavailable")
+
+// retiredWorkspaceCleanupError means the temporary retired HOME could not be
+// safely materialized or removed. Its Error text is deliberately generic: the
+// wrapped cause can contain local paths and is never returned by HTTP.
+//
+// A fixed CLI logout error is intentionally not represented by this type. It
+// is advisory because the encrypted vault deletion below is the authoritative
+// Numind-side credential removal. In contrast, this type stops unbind before
+// vault deletion because a failed cleanup can leave readable local material.
+type retiredWorkspaceCleanupError struct{ cause error }
+
+func (e *retiredWorkspaceCleanupError) Error() string {
+	return errRetiredWorkspaceCleanup.Error()
+}
+
+func (e *retiredWorkspaceCleanupError) Unwrap() error { return e.cause }
+
+func (e *retiredWorkspaceCleanupError) Is(target error) bool {
+	return target == errRetiredWorkspaceCleanup
+}
+
+// RetiredWorkspaceTeardownResult separates the best-effort CLI logout result
+// from errors materializing or cleaning the retired HOME. The latter are
+// returned as an error; callers must not delete the vault after one.
+type RetiredWorkspaceTeardownResult struct {
+	LogoutAttempted bool
+	LogoutSucceeded bool
+}
+
 // retiredHomeOpener is the deliberately narrow post-retirement vault surface.
 // It permits a fixed local logout command but never a reseal of old credentials.
 type retiredHomeOpener interface {
@@ -33,13 +63,31 @@ func NewRetiredWorkspaceTeardown(vault retiredHomeOpener, runner fixedLogoutRunn
 }
 
 // LogoutRetired runs the fixed logout command in a temporary, retired vault
-// HOME. The caller owns whether a failure is advisory or terminal; lifecycle
-// unbind treats it as best effort because vault deletion remains authoritative.
-func (t *RetiredWorkspaceTeardown) LogoutRetired(ctx context.Context, userID uint, retiredGeneration uint64) error {
+// HOME. CLI logout failures are recorded in the result and remain advisory.
+// Any returned error is structurally a critical retired-HOME materialization or
+// cleanup failure, so lifecycle unbind must preserve disconnecting state and
+// retry before it can delete the encrypted vault.
+func (t *RetiredWorkspaceTeardown) LogoutRetired(
+	ctx context.Context,
+	userID uint,
+	retiredGeneration uint64,
+) (RetiredWorkspaceTeardownResult, error) {
+	result := RetiredWorkspaceTeardownResult{}
 	if t == nil || t.vault == nil || t.runner == nil || userID == 0 || retiredGeneration == 0 {
-		return errors.New("feishu retired workspace teardown unavailable")
+		return result, &retiredWorkspaceCleanupError{cause: errors.New("retired workspace teardown unavailable")}
 	}
-	return t.vault.WithRetiredHome(ctx, userID, retiredGeneration, func(home string) error {
-		return t.runner.Logout(ctx, home)
+	var logoutErr error
+	err := t.vault.WithRetiredHome(ctx, userID, retiredGeneration, func(home string) error {
+		result.LogoutAttempted = true
+		logoutErr = t.runner.Logout(ctx, home)
+		// Do not return logoutErr to WithRetiredHome: it is an advisory fixed-CLI
+		// failure. Returning nil lets the vault report only materialization and
+		// cleanup errors, including a deferred os.RemoveAll failure.
+		return nil
 	})
+	result.LogoutSucceeded = result.LogoutAttempted && logoutErr == nil
+	if err != nil {
+		return result, &retiredWorkspaceCleanupError{cause: err}
+	}
+	return result, nil
 }

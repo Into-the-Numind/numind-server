@@ -108,6 +108,10 @@ func (h *Controller) Unbind(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if requireEmptyBody(c) != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
 	result, err := h.svc.Unbind(c.Request.Context(), user.ID)
 	writeLifecycleResponse(c, err, result)
 }

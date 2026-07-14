@@ -29,6 +29,7 @@ type lifecycleServiceFake struct {
 	resumeID     string
 	resumeAction string
 	refreshID    string
+	unbindCalls  int
 }
 
 func (f *lifecycleServiceFake) Connect(_ context.Context, _ uint) (*feishubiz.ConnectResult, error) {
@@ -46,7 +47,9 @@ func (f *lifecycleServiceFake) RefreshAction(_ context.Context, _ uint, sessionI
 	f.refreshID = sessionID
 	return f.refresh, f.err
 }
+
 func (f *lifecycleServiceFake) Unbind(context.Context, uint) (*feishubiz.UnbindResult, error) {
+	f.unbindCalls++
 	return f.unbound, f.err
 }
 
@@ -136,6 +139,21 @@ func TestRefreshUsesPathSessionOnlyAndUnbindReturnsRemoteAppDisclosure(t *testin
 	r.ServeHTTP(unbound, httptest.NewRequest(http.MethodDelete, "/v1/feishu/connection", nil))
 	require.Equal(t, http.StatusOK, unbound.Code)
 	require.Contains(t, unbound.Body.String(), "飞书侧个人自建应用仍保留")
+	require.Equal(t, 1, service.unbindCalls)
+}
+
+func TestUnbindRejectsAnyRequestBodyBeforeInvokingLifecycleService(t *testing.T) {
+	service := &lifecycleServiceFake{unbound: &feishubiz.UnbindResult{State: "none"}}
+	ctrl := NewController(service)
+	r := gin.New()
+	r.DELETE("/v1/feishu/connection", withUser(8), ctrl.Unbind)
+
+	for _, body := range []string{`{"argv":["auth","logout"]}`, `{"scopes":["im:message"]}`, `null`, `trailing bytes`} {
+		response := httptest.NewRecorder()
+		r.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/v1/feishu/connection", strings.NewReader(body)))
+		require.Equal(t, http.StatusBadRequest, response.Code, body)
+	}
+	require.Zero(t, service.unbindCalls)
 }
 
 func TestUnauthenticatedLifecycleActionFails(t *testing.T) {
