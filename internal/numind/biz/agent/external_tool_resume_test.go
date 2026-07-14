@@ -33,6 +33,8 @@ type externalResumeStoreStub struct {
 	err           error
 	releases      int
 	completes     int
+	completeErr   error
+	releaseErr    error
 	candidates    []model.AgentRun
 	lists         int
 	touches       int
@@ -120,6 +122,9 @@ func (s *externalResumeStoreStub) CompleteExternalToolResume(_ context.Context, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.completes++
+	if s.completeErr != nil {
+		return s.completeErr
+	}
 	if !s.claimed || leaseToken != s.lease {
 		return errors.New("external resume lease changed")
 	}
@@ -143,6 +148,9 @@ func (s *externalResumeStoreStub) ReleaseExternalToolResume(_ context.Context, r
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.releases++
+	if s.releaseErr != nil {
+		return s.releaseErr
+	}
 	transitioned := false
 	err := s.updateRunCopyOnWrite(runID, func(run *model.AgentRun) error {
 		if run.CancellationRequestedAt != nil || run.IsDeleted {
@@ -194,6 +202,7 @@ func TestExternalContinuationGate_FirstProviderCallIsOneShotAndCompletesAfterRes
 	runStore := newMockStore()
 	run := &model.AgentRun{
 		UserID: 7, SessionID: "s", Status: "running", StateReason: "ext_resume:lease-1",
+		Messages:                  datatypes.JSON(`[]`),
 		PendingExternalActionJSON: datatypes.JSON(`{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"tc-9","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`),
 		StartedAt:                 time.Now(),
 	}
@@ -411,6 +420,83 @@ func TestExternalContinuationGate_MainProviderFailureAfterAutocompactReleasesLea
 	resumeStore.mu.Unlock()
 }
 
+func TestExternalContinuationGate_CompleteFailureImmediatelyReleasesAndAllowsReclaim(t *testing.T) {
+	runStore := newMockStore()
+	run := &model.AgentRun{
+		UserID: 7, SessionID: "s", Status: "running", StateReason: "ext_resume:lease-1",
+		Messages:                  datatypes.JSON(`[]`),
+		PendingExternalActionJSON: datatypes.JSON(`{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"tc-9","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`),
+		StartedAt:                 time.Now(),
+	}
+	require.NoError(t, runStore.Create(context.Background(), run))
+	completeErr := errors.New("temporary complete failure")
+	resumeStore := &externalResumeStoreStub{
+		runStore: runStore, claimed: true, lease: "lease-1", returnOK: true, completeErr: completeErr,
+	}
+	result := ExternalToolResult{RunID: run.ID, OperationID: "op-1", ToolCallID: "tc-9", Result: json.RawMessage(`{"ok":true}`)}
+	gate := newExternalContinuationGate(resumeStore, result, "lease-1", make(chan error, 1))
+	adapter := &aiserviceAdapter{taskID: profile.AgentRun, usageStore: &sync.Map{}, externalContinuationGate: gate}
+	original := chatFn
+	t.Cleanup(func() { chatFn = original })
+	providerCalls := 0
+	chatFn = func(context.Context, string, aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
+		providerCalls++
+		return &aiservice.ChatResponse{Content: "done", FinishReason: "stop"}, nil
+	}
+
+	_, err := adapter.Generate(context.Background(), []*schema.Message{schema.UserMessage("continue")})
+	require.ErrorIs(t, err, completeErr)
+	resumeStore.mu.Lock()
+	assert.Equal(t, 1, resumeStore.completes)
+	assert.Equal(t, 1, resumeStore.releases, "Complete failure must immediately best-effort Release")
+	assert.False(t, resumeStore.claimed)
+	resumeStore.completeErr = nil
+	resumeStore.mu.Unlock()
+
+	newToken, claimed, claimErr := resumeStore.ClaimExternalToolResume(
+		context.Background(), result.RunID, result.OperationID, result.ToolCallID, result.Result,
+	)
+	require.NoError(t, claimErr)
+	require.True(t, claimed, "released result must be reclaimable immediately")
+	assert.NotEmpty(t, newToken)
+	assert.Equal(t, 1, providerCalls, "reclaim itself must not make a second provider call")
+}
+
+func TestExternalContinuationGate_CompleteAndReleaseFailuresAreBothPreserved(t *testing.T) {
+	runStore := newMockStore()
+	run := &model.AgentRun{
+		UserID: 7, SessionID: "s", Status: "running", StateReason: "ext_resume:lease-1",
+		PendingExternalActionJSON: datatypes.JSON(`{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"tc-9","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`),
+		StartedAt:                 time.Now(),
+	}
+	require.NoError(t, runStore.Create(context.Background(), run))
+	completeErr := errors.New("complete failed")
+	releaseErr := errors.New("release failed")
+	resumeStore := &externalResumeStoreStub{
+		runStore: runStore, claimed: true, lease: "lease-1", completeErr: completeErr, releaseErr: releaseErr,
+	}
+	gate := newExternalContinuationGate(
+		resumeStore,
+		ExternalToolResult{RunID: run.ID, OperationID: "op-1", ToolCallID: "tc-9"},
+		"lease-1",
+		make(chan error, 1),
+	)
+	adapter := &aiserviceAdapter{taskID: profile.AgentRun, usageStore: &sync.Map{}, externalContinuationGate: gate}
+	original := chatFn
+	t.Cleanup(func() { chatFn = original })
+	chatFn = func(context.Context, string, aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
+		return &aiservice.ChatResponse{Content: "done", FinishReason: "stop"}, nil
+	}
+
+	_, err := adapter.Generate(context.Background(), []*schema.Message{schema.UserMessage("continue")})
+	require.ErrorIs(t, err, completeErr)
+	require.ErrorIs(t, err, releaseErr)
+	resumeStore.mu.Lock()
+	assert.Equal(t, 1, resumeStore.completes)
+	assert.Equal(t, 1, resumeStore.releases)
+	resumeStore.mu.Unlock()
+}
+
 func TestExternalContinuationGate_HeartbeatCoversAutocompactAndMainProvider(t *testing.T) {
 	runStore := newMockStore()
 	run := &model.AgentRun{
@@ -577,6 +663,75 @@ func (r *externalResumeRunner) RunStream(_ context.Context, _ RunRequest, _ uint
 	return nil, nil
 }
 func (r *externalResumeRunner) Cancel(_ uint64) bool { return false }
+
+type requestDetachedResumeRunner struct {
+	started     chan struct{}
+	allowFinish chan struct{}
+	ctxCanceled chan struct{}
+}
+
+func (r *requestDetachedResumeRunner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
+	if _, _, err := req.ExternalContinuationGate.BeginCall(ctx); err != nil {
+		return nil, err
+	}
+	close(r.started)
+	select {
+	case <-r.allowFinish:
+		return &RunResult{AgentRunID: req.ExistingRunID, TerminalReason: TerminalCompleted}, nil
+	case <-ctx.Done():
+		close(r.ctxCanceled)
+		return nil, ctx.Err()
+	}
+}
+
+func (r *requestDetachedResumeRunner) RunStream(context.Context, RunRequest, uint64, chan<- stream.Event) (*RunResult, error) {
+	return nil, errors.New("not used")
+}
+func (r *requestDetachedResumeRunner) Cancel(uint64) bool { return false }
+
+func TestExternalToolResume_HTTPRequestCancellationDoesNotCancelAcceptedRunner(t *testing.T) {
+	runStore := newMockStore()
+	run := &model.AgentRun{
+		UserID: 7, SessionID: "request-detached", Status: "terminated", StateReason: string(TerminalWaitingForUserChoice),
+		Messages:                  datatypes.JSON(`[{"role":"user","content":"写飞书"}]`),
+		PendingExternalActionJSON: datatypes.JSON(`{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"tc-9","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`),
+		StartedAt:                 time.Now(),
+	}
+	require.NoError(t, runStore.Create(context.Background(), run))
+	runner := &requestDetachedResumeRunner{
+		started: make(chan struct{}), allowFinish: make(chan struct{}), ctxCanceled: make(chan struct{}),
+	}
+	t.Cleanup(func() {
+		select {
+		case <-runner.allowFinish:
+		default:
+			close(runner.allowFinish)
+		}
+	})
+	resumeStore := &externalResumeStoreStub{runStore: runStore, returnOK: true}
+	resumer := NewAgentRunResumer(resumeStore, NewStudentRunService(runner, runStore, nil, nil, nil, nil))
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	require.NoError(t, resumer.Resume(requestCtx, ExternalToolResult{
+		RunID: run.ID, OperationID: "op-1", ToolCallID: "tc-9", Result: json.RawMessage(`{"ok":true}`),
+	}))
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("accepted HTTP continuation did not start")
+	}
+	cancelRequest()
+	select {
+	case <-runner.ctxCanceled:
+		t.Fatal("ordinary HTTP request cancellation leaked into the accepted continuation")
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(runner.allowFinish)
+	require.Eventually(t, func() bool {
+		resumeStore.mu.Lock()
+		defer resumeStore.mu.Unlock()
+		return resumeStore.completes == 1
+	}, time.Second, 5*time.Millisecond)
+}
 
 func TestExternalToolResume_ContinuesOriginalToolCallWithoutUserInput(t *testing.T) {
 	runStore := newMockStore()

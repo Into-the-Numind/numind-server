@@ -5,17 +5,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/datatypes"
 
 	"numind-server/internal/numind/biz/agent/stream"
+	"numind-server/internal/numind/biz/narration"
 	storepkg "numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/model"
 )
 
@@ -92,6 +97,195 @@ func TestExternalResumeReclaimer_BlockedCandidateDoesNotBlockNextAndStopCancelsP
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	require.NoError(t, reclaimer.Stop(ctx), "Stop must cancel and join blocked recovery preflights")
+}
+
+type cooperativeStopRunner struct {
+	started chan struct{}
+	exited  chan struct{}
+}
+
+func (r *cooperativeStopRunner) Run(ctx context.Context, _ RunRequest) (*RunResult, error) {
+	close(r.started)
+	<-ctx.Done()
+	close(r.exited)
+	return nil, ctx.Err()
+}
+
+func (r *cooperativeStopRunner) RunStream(context.Context, RunRequest, uint64, chan<- stream.Event) (*RunResult, error) {
+	return nil, errors.New("not used")
+}
+func (r *cooperativeStopRunner) Cancel(uint64) bool { return false }
+
+func newExternalResumeNarrationProvider(t *testing.T) *narration.Provider {
+	t.Helper()
+	provider, err := narration.NewProvider(narration.Config{
+		YAMLBytes: []byte(`tools: {}
+defaults:
+  verb: "执行"
+  detail_template: "{{ .ToolName }}"
+  use_template: "{{ .verb }}"
+  result_template: "完成"
+  error_template: "失败"
+  rejected_template: "拒绝"
+`),
+		BufferSize: 8,
+	})
+	require.NoError(t, err)
+	return provider
+}
+
+func TestExternalResumeReclaimer_StopJoinsCooperativeRunnerAndNarrationBeforeReturning(t *testing.T) {
+	runStore := newMockStore()
+	toolResult := schema.ToolMessage(`{"ok":true}`, "tc-9")
+	toolResult.Extra = map[string]any{externalOperationIDExtraKey: "op-1"}
+	toolRaw, err := json.Marshal(toolResult)
+	require.NoError(t, err)
+	run := &model.AgentRun{
+		UserID: 7, SessionID: "managed", Status: "terminated", StateReason: "external_resume_ready",
+		Messages:                  datatypes.JSON(fmt.Sprintf(`[{"role":"user","content":"写飞书"},%s]`, toolRaw)),
+		PendingExternalActionJSON: datatypes.JSON(`{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"tc-9","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`),
+		StartedAt:                 time.Now(),
+	}
+	require.NoError(t, runStore.Create(context.Background(), run))
+	resumeStore := &externalResumeStoreStub{runStore: runStore, returnOK: true, candidates: []model.AgentRun{*run}}
+	runner := &cooperativeStopRunner{started: make(chan struct{}), exited: make(chan struct{})}
+	provider := newExternalResumeNarrationProvider(t)
+	buffer := NewNarrationBuffer(8, time.Minute)
+	studentRuns := NewStudentRunService(runner, runStore, nil, nil, provider, buffer)
+	reclaimer := NewExternalResumeReclaimer(resumeStore, NewAgentRunResumer(resumeStore, studentRuns), time.Hour)
+	reclaimer.Start()
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("managed runner did not start")
+	}
+	provider.Emit(context.Background(), run.ID, "test", narration.StateUse, narration.EmitPayload{})
+	require.Eventually(t, func() bool {
+		return len(buffer.QuerySince(run.ID, time.Time{})) == 1
+	}, time.Second, 5*time.Millisecond, "narration forwarder never subscribed")
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, reclaimer.Stop(stopCtx))
+	select {
+	case <-runner.exited:
+	default:
+		t.Fatal("Stop returned before the cooperative runner exited")
+	}
+	resumeStore.mu.Lock()
+	assert.Equal(t, 1, resumeStore.releases)
+	resumeStore.mu.Unlock()
+	provider.Emit(context.Background(), run.ID, "test", narration.StateUse, narration.EmitPayload{})
+	time.Sleep(30 * time.Millisecond)
+	assert.Len(t, buffer.QuerySince(run.ID, time.Time{}), 1,
+		"Stop returned while the narration forwarder was still subscribed")
+}
+
+type nonCooperativeStopRunner struct {
+	started chan struct{}
+	unblock chan struct{}
+	exited  chan struct{}
+}
+
+func (r *nonCooperativeStopRunner) Run(context.Context, RunRequest) (*RunResult, error) {
+	close(r.started)
+	<-r.unblock
+	close(r.exited)
+	return nil, errors.New("unblocked non-cooperative runner")
+}
+
+func (r *nonCooperativeStopRunner) RunStream(context.Context, RunRequest, uint64, chan<- stream.Event) (*RunResult, error) {
+	return nil, errors.New("not used")
+}
+func (r *nonCooperativeStopRunner) Cancel(uint64) bool { return false }
+
+func externalResumeStopWaiterCount() int {
+	buf := make([]byte, 1<<20)
+	n := runtime.Stack(buf, true)
+	return strings.Count(string(buf[:n]), "ExternalResumeReclaimer).Stop.func1")
+}
+
+func TestExternalResumeReclaimer_NonCooperativeRunnerRemainsOwnedUntilItExits(t *testing.T) {
+	db := newSQTestDB(t)
+	ds := storepkg.NewTestStore(db)
+	runStore := ds.AgentRuns()
+	lease, ok := runStore.(storepkg.IExternalToolResumeLease)
+	require.True(t, ok)
+	seedReadyResumeCandidate(t, runStore, lease, "non-cooperative")
+	runner := &nonCooperativeStopRunner{
+		started: make(chan struct{}), unblock: make(chan struct{}), exited: make(chan struct{}),
+	}
+	t.Cleanup(func() {
+		select {
+		case <-runner.unblock:
+		default:
+			close(runner.unblock)
+		}
+	})
+	studentRuns := NewStudentRunService(runner, runStore, nil, nil, nil, nil)
+	reclaimer := NewExternalResumeReclaimer(lease, NewAgentRunResumer(lease, studentRuns), time.Hour)
+	reclaimer.Start()
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("non-cooperative runner did not start")
+	}
+	firstCtx, cancelFirst := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	err := reclaimer.Stop(firstCtx)
+	cancelFirst()
+	require.ErrorIs(t, err, context.DeadlineExceeded,
+		"Stop must not report success while an owned runner is still alive")
+
+	secondResult := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		secondResult <- reclaimer.Stop(ctx)
+	}()
+	select {
+	case err := <-secondResult:
+		t.Fatalf("managed ownership was dropped before runner exit: %v", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	assert.Zero(t, externalResumeStopWaiterCount(), "Stop must not create an unbounded Wait helper goroutine")
+	close(runner.unblock)
+	require.NoError(t, <-secondResult)
+	select {
+	case <-runner.exited:
+	default:
+		t.Fatal("managed runner did not exit before Stop completed")
+	}
+}
+
+func TestAgentRunner_Run_CancellationInterruptsBlockingProvider(t *testing.T) {
+	providerStarted := make(chan struct{})
+	original := chatFn
+	t.Cleanup(func() { chatFn = original })
+	chatFn = func(ctx context.Context, _ string, _ aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
+		close(providerStarted)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	runStore := newMockStore()
+	runner, toolName := newReActRunner(runStore)
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := runner.Run(ctx, newReActRequest(toolName, "block"))
+		result <- err
+	}()
+	select {
+	case <-providerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("production runner did not reach provider boundary")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		require.NoError(t, err, "runner converts provider cancellation into a terminal result")
+	case <-time.After(time.Second):
+		t.Fatal("production AgentRunner.Run ignored provider ctx cancellation")
+	}
 }
 
 type lateBoundaryRunner struct {

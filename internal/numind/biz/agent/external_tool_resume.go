@@ -53,8 +53,11 @@ type ExternalResumeReclaimer struct {
 	cancel      context.CancelFunc
 	done        chan struct{}
 	mu          sync.Mutex
-	workers     sync.WaitGroup
 	workerSlots chan struct{}
+	workers     int
+	stopping    bool
+	drained     chan struct{}
+	drainClosed bool
 }
 
 func NewExternalResumeReclaimer(s store.IExternalToolResumeLease, resumer *AgentRunResumer, interval time.Duration) *ExternalResumeReclaimer {
@@ -78,6 +81,10 @@ func (r *ExternalResumeReclaimer) Start() {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancel, r.done = cancel, make(chan struct{})
+	r.workers = 0
+	r.stopping = false
+	r.drained = make(chan struct{})
+	r.drainClosed = false
 	done := r.done
 	r.mu.Unlock()
 	go func() {
@@ -101,7 +108,11 @@ func (r *ExternalResumeReclaimer) Stop(ctx context.Context) error {
 		return nil
 	}
 	r.mu.Lock()
-	cancel, done := r.cancel, r.done
+	cancel, done, drained := r.cancel, r.done, r.drained
+	if cancel != nil {
+		r.stopping = true
+		r.closeDrainIfIdleLocked()
+	}
 	r.mu.Unlock()
 	if cancel == nil {
 		return nil
@@ -112,17 +123,13 @@ func (r *ExternalResumeReclaimer) Stop(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	workersDone := make(chan struct{})
-	go func() {
-		r.workers.Wait()
-		close(workersDone)
-	}()
 	select {
-	case <-workersDone:
+	case <-drained:
 		r.mu.Lock()
 		if r.done == done {
 			r.cancel = nil
 			r.done = nil
+			r.drained = nil
 		}
 		r.mu.Unlock()
 		return nil
@@ -153,16 +160,45 @@ func (r *ExternalResumeReclaimer) scan(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		}
-		r.workers.Add(1)
+		if !r.beginWorker() {
+			<-r.workerSlots
+			return
+		}
 		go func(candidate ExternalToolResult) {
 			defer func() {
 				<-r.workerSlots
-				r.workers.Done()
+				r.finishWorker()
 			}()
-			if err := r.resumer.Resume(ctx, candidate); err != nil && ctx.Err() == nil {
+			if err := r.resumer.resumeManaged(ctx, candidate); err != nil && ctx.Err() == nil {
 				log.Warnw("external resume reclaimer could not resume run", "agent_run_id", candidate.RunID, "error", err)
 			}
 		}(result)
+	}
+}
+
+func (r *ExternalResumeReclaimer) beginWorker() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopping {
+		return false
+	}
+	r.workers++
+	return true
+}
+
+func (r *ExternalResumeReclaimer) finishWorker() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.workers > 0 {
+		r.workers--
+	}
+	r.closeDrainIfIdleLocked()
+}
+
+func (r *ExternalResumeReclaimer) closeDrainIfIdleLocked() {
+	if r.stopping && r.workers == 0 && !r.drainClosed && r.drained != nil {
+		close(r.drained)
+		r.drainClosed = true
 	}
 }
 
@@ -220,6 +256,14 @@ func NewAgentRunResumer(runStore store.IExternalToolResumeLease, studentRuns *St
 // Resume appends the original tool result once and resumes the same run. A
 // duplicate, cancelled, or deleted callback is a successful no-op.
 func (r *AgentRunResumer) Resume(ctx context.Context, result ExternalToolResult) error {
+	return r.resume(ctx, result, false)
+}
+
+func (r *AgentRunResumer) resumeManaged(ctx context.Context, result ExternalToolResult) error {
+	return r.resume(ctx, result, true)
+}
+
+func (r *AgentRunResumer) resume(ctx context.Context, result ExternalToolResult, managed bool) error {
 	if r == nil || r.store == nil || r.studentRuns == nil || r.studentRuns.runner == nil {
 		return fmt.Errorf("AgentRunResumer.Resume: resumer is not configured")
 	}
@@ -248,7 +292,53 @@ func (r *AgentRunResumer) Resume(ctx context.Context, result ExternalToolResult)
 	if !claimed {
 		return nil
 	}
+	if managed {
+		return r.runClaimedContinuation(ctx, result, leaseToken, runReq)
+	}
 	return r.startClaimedContinuation(ctx, result, leaseToken, runReq)
+}
+
+func (r *AgentRunResumer) runClaimedContinuation(ctx context.Context, result ExternalToolResult, leaseToken string, runReq RunRequest) error {
+	gate := newExternalContinuationGate(r.store, result, leaseToken, make(chan error, 1))
+	runReq.ExternalContinuationGate = gate
+	runnerCtx, cancelRunner := context.WithCancel(ctx)
+	narrationDone := r.startNarrationForwarder(runnerCtx, result.RunID)
+	runErr := r.callRunner(runnerCtx, runReq)
+	cancelRunner()
+	<-narrationDone
+
+	if gate.Begun() && !gate.Finished() {
+		runErr = errors.Join(runErr, gate.Finish(context.Background(), runErr))
+	} else if !gate.Begun() {
+		if runErr == nil {
+			runErr = fmt.Errorf("runner exited before the first model boundary")
+		}
+		persistCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		releaseErr := gate.ReleaseIfUnstarted(persistCtx)
+		cancel()
+		runErr = errors.Join(runErr, releaseErr)
+	}
+	return runErr
+}
+
+func (r *AgentRunResumer) callRunner(ctx context.Context, runReq RunRequest) (runErr error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			runErr = fmt.Errorf("runner preflight panic: %v", recovered)
+		}
+	}()
+	bgCtx := middleware.NewContextWithUserID(ctx, runReq.UserID)
+	_, runErr = r.studentRuns.runner.Run(bgCtx, runReq)
+	return runErr
+}
+
+func (r *AgentRunResumer) startNarrationForwarder(ctx context.Context, runID uint64) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.studentRuns.forwardNarrationUntil(ctx, runID)
+	}()
+	return done
 }
 
 func (r *AgentRunResumer) startClaimedContinuation(ctx context.Context, result ExternalToolResult, leaseToken string, runReq RunRequest) error {
@@ -264,9 +354,12 @@ func (r *AgentRunResumer) startClaimedContinuation(ctx context.Context, result E
 	defer stopWaiting()
 	runnerCtx, cancelRunner := context.WithCancel(context.Background())
 
-	go r.studentRuns.forwardNarration(result.RunID)
+	narrationDone := r.startNarrationForwarder(runnerCtx, result.RunID)
 	go func() {
-		defer cancelRunner()
+		defer func() {
+			cancelRunner()
+			<-narrationDone
+		}()
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				panicErr := fmt.Errorf("runner preflight panic: %v", recovered)
@@ -449,6 +542,8 @@ func (g *externalContinuationGate) Finish(ctx context.Context, callErr error) er
 			g.mu.Lock()
 			g.completedSuccessfully = true
 			g.mu.Unlock()
+		} else {
+			transitionErr = errors.Join(transitionErr, g.release(persistCtx))
 		}
 	} else {
 		transitionErr = g.release(persistCtx)

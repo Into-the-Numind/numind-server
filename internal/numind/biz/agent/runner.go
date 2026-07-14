@@ -163,6 +163,10 @@ type RunResult struct {
 
 // AgentRunner 是 Agent 运行时主接口（蓝本 §4.1.9）。
 type AgentRunner interface {
+	// Run implementations must cooperatively return when ctx is cancelled. In
+	// particular, setup, provider calls, and CLI/tool boundaries before the first
+	// model response must not detach from ctx. External resume recovery relies on
+	// this contract so shutdown can join every managed continuation.
 	Run(ctx context.Context, req RunRequest) (*RunResult, error)
 	// RunStream executes the agent in streaming mode. Events are sent on ch
 	// (buffered by caller; ownership transfers to RunStream — it does NOT close ch).

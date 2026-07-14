@@ -93,14 +93,26 @@ func (s *StudentRunService) WithUserStore(userStore store.UserStore) *StudentRun
 // runner.go's defer runs provider.CloseRun(runID), which closes the channel.
 // Safe to call when narrationProv or narrationBuf is nil (graceful degrade).
 func (s *StudentRunService) forwardNarration(runID uint64) {
+	s.forwardNarrationUntil(context.Background(), runID)
+}
+
+func (s *StudentRunService) forwardNarrationUntil(ctx context.Context, runID uint64) {
 	if s.narrationProv == nil || s.narrationBuf == nil {
 		return
 	}
 	ch, cleanup := s.narrationProv.Subscribe(runID)
 	defer cleanup()
-	for ev := range ch {
-		evCopy := ev // pin the loop var; AppendEvent stores by pointer
-		s.narrationBuf.AppendEvent(runID, &evCopy)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, ok := <-ch:
+			if !ok {
+				return
+			}
+			evCopy := ev // pin the loop var; AppendEvent stores by pointer
+			s.narrationBuf.AppendEvent(runID, &evCopy)
+		}
 	}
 }
 
