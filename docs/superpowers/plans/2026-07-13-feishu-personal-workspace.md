@@ -1194,21 +1194,21 @@ git commit -m "feat(feishu): add recoverable agent action card"
 
 **Files:** `src/components/feishu/FeishuConnection.vue`、`src/components/feishu/__tests__/FeishuConnection.spec.ts`。
 
-- [ ] **Step 1: 写设置卡红测**
+- [x] **Step 1: 写设置卡红测**
 
 覆盖 loading/empty/error/success；脱敏 app id；Docs/Base/Wiki unknown/available/revoked；连接/继续/重新授权；解绑使用现有 ConfirmModal；文案不出现 IM/发送消息；empty 引导用户直接在 Agent 提需求。
 
-- [ ] **Step 2: 运行红测**
+- [x] **Step 2: 运行红测**
 
 Run: `npm run test:unit -- src/components/feishu/__tests__/FeishuConnection.spec.ts`
 
 Expected: FAIL，旧设置卡状态不足且含旧能力文案。
 
-- [ ] **Step 3: 实现单一连接卡**
+- [x] **Step 3: 实现单一连接卡**
 
 单卡展示真实 connection state、app id mask、三域最近状态；unknown 显示“尚未验证”；empty 说明具体能力首次使用时按需授权且“不包含消息发送”；解绑确认明确远端 app 保留。使用现有 AppButton/ConfirmModal 和设计 token。
 
-- [ ] **Step 4: 绿测和 Commit**
+- [x] **Step 4: 绿测和 Commit**
 
 Run: `npm run test:unit -- src/components/feishu/__tests__/FeishuConnection.spec.ts`
 
@@ -1218,6 +1218,8 @@ Expected: PASS。
 git add src/components/feishu/FeishuConnection.vue src/components/feishu/__tests__/FeishuConnection.spec.ts
 git commit -m "feat(feishu): show personal workspace status"
 ```
+
+**一期收口（2026-07-15）：** Task 19 最终规格、质量复审 PASS（P0/P1/P2=0）。设置页只用 `GET /v1/feishu/status` 呈现真实状态，彻底移除旧的 `POST connect` 轮询、弹新标签和临时 URL。未连接、等待授权与重新授权均把用户带到 Agent；连接已处于 `disconnecting` 时只可刷新状态，不能开始新连接。脱敏应用 ID 在 connected 和已有应用的等待/reauth 状态均保留；Docs/Base/Wiki 分别显示最近状态，`unknown` 永远不是已授权。解绑经 ConfirmModal，明确远端应用和已有资源保留。目标组件测试 8 通过、全量单测 1050 通过（11 skipped/3 todo）、lint 0 error、type-check 通过；375px route-mock Playwright 冒烟无横向溢出且无 connect 请求。提交：`d07ada7`、`a57c5ce`、`e89512f`。详见 ADR 0020。
 
 ## Task 20: 清理旧固定飞书实现（二期；一期必须证明未进入 production graph）
 
