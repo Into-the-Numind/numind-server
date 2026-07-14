@@ -329,6 +329,12 @@ func (v *EncryptedCLIHomeVault) WithRetiredHome(
 		return fmt.Errorf("feishu CLI home vault: retired generation is not disconnecting: %w", gorm.ErrRecordNotFound)
 	}
 	snapshot, err := v.snapshots.GetVault(ctx, userID, retiredGeneration)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		// The generation has already been fenced above. If no snapshot was ever
+		// sealed for it (for example, an early authorization worker did not
+		// materialize HOME yet), there are no local credentials to revoke.
+		return errRetiredWorkspaceNoVault
+	}
 	if err != nil {
 		return fmt.Errorf("feishu CLI home vault: read retired snapshot: %w", err)
 	}

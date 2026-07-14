@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"numind-server/internal/pkg/model"
 )
 
 type retiredHomeFake struct {
@@ -59,6 +61,24 @@ func TestRetiredWorkspaceTeardownKeepsCLILogoutFailureAdvisory(t *testing.T) {
 	require.False(t, result.LogoutSucceeded)
 	require.Equal(t, 1, vault.calls)
 	require.Equal(t, 1, runner.calls)
+}
+
+func TestRetiredWorkspaceTeardownSkipsLogoutWhenRetiredVaultWasNeverMaterialized(t *testing.T) {
+	fixture := newTask2VaultFixture(t, 7, 4)
+	fixture.accounts.accounts[fixture.userID].Generation = fixture.generation + 1
+	fixture.accounts.accounts[fixture.userID].ConnectionState = model.FeishuConnectionDisconnecting
+	runner := &logoutFake{}
+	teardown, err := NewRetiredWorkspaceTeardown(fixture.vault, runner)
+	require.NoError(t, err)
+
+	for range 2 {
+		result, err := teardown.LogoutRetired(context.Background(), fixture.userID, fixture.generation)
+		require.NoError(t, err, "a fenced generation without a credential snapshot is a safe teardown no-op")
+		require.False(t, result.LogoutAttempted)
+		require.False(t, result.LogoutSucceeded)
+	}
+	require.Zero(t, runner.calls, "there is no materialized HOME in which to run logout")
+	task2RequireNoRuntimeHomes(t, fixture.runtimeBase)
 }
 
 func TestRetiredWorkspaceTeardownReturnsTypedCriticalFailureForHomeCleanup(t *testing.T) {

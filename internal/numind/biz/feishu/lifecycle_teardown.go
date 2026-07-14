@@ -5,7 +5,14 @@ import (
 	"errors"
 )
 
-var errRetiredWorkspaceCleanup = errors.New("feishu retired workspace cleanup unavailable")
+var (
+	errRetiredWorkspaceCleanup = errors.New("feishu retired workspace cleanup unavailable")
+	// errRetiredWorkspaceNoVault is returned only after the retired account
+	// generation fence has been checked and the matching vault snapshot was not
+	// found. A connection can legitimately reach that state before its first
+	// auth worker materializes a HOME, so it is safe to skip the fixed logout.
+	errRetiredWorkspaceNoVault = errors.New("feishu retired workspace vault absent")
+)
 
 // retiredWorkspaceCleanupError means the temporary retired HOME could not be
 // safely materialized or removed. Its Error text is deliberately generic: the
@@ -86,6 +93,9 @@ func (t *RetiredWorkspaceTeardown) LogoutRetired(
 		return nil
 	})
 	result.LogoutSucceeded = result.LogoutAttempted && logoutErr == nil
+	if errors.Is(err, errRetiredWorkspaceNoVault) {
+		return result, nil
+	}
 	if err != nil {
 		return result, &retiredWorkspaceCleanupError{cause: err}
 	}
