@@ -147,6 +147,47 @@ func TestThirdPartyAccountStore_RetireGenerationFencesOldWorkAndFinalizesLocalSt
 	require.Empty(t, account.Scopes)
 }
 
+func TestThirdPartyAccountStore_DisconnectingGenerationRejectsNewSessionAndOperation(t *testing.T) {
+	db := newThirdPartyAccountTestDB(t)
+	require.NoError(t, db.AutoMigrate(
+		&model.FeishuAuthSession{}, &model.FeishuOperation{}, &model.FeishuOperationProofConsumption{}, &model.FeishuOperationExecutionGate{},
+	))
+	accounts := newThirdPartyAccountStore(db)
+	workspace := newFeishuWorkspaceStore(db)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	require.NoError(t, db.Create(&model.UserThirdPartyAccount{
+		UserID: 7, Provider: "lark", Generation: 4, Connected: true,
+		ConnectionState: model.FeishuConnectionConnected,
+	}).Error)
+
+	retiredGeneration, disconnectingGeneration, err := accounts.RetireGeneration(ctx, 7, "lark")
+	require.NoError(t, err)
+	require.EqualValues(t, 4, retiredGeneration)
+	require.EqualValues(t, 5, disconnectingGeneration)
+
+	_, _, err = workspace.CreateOrGetPendingSession(ctx, &model.FeishuAuthSession{
+		ID: "session-disconnecting", UserID: 7, Generation: disconnectingGeneration,
+		Phase: model.FeishuAuthPhaseUserAuth, RequestedScopesJSON: []byte(`["offline_access"]`),
+		State: model.FeishuAuthSessionPending, ExpiresAt: now.Add(time.Minute),
+	})
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound, "a disconnecting generation is not an active auth-worker generation")
+
+	_, err = workspace.CreateOrGetOperation(ctx, &model.FeishuOperation{
+		ID: "operation-disconnecting", UserID: 7, Generation: disconnectingGeneration,
+		AgentRunID: 17, ToolCallID: "tool-disconnecting", IdempotencyKey: "17:tool-disconnecting",
+		CommandPath: "docs +fetch", Domain: "docs", RiskLevel: "read",
+		RequestCiphertext: []byte("cipher"), KeyVersion: "v1", RequestFingerprint: "fingerprint",
+		State: model.FeishuOperationNotStarted,
+	})
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound, "a disconnecting generation is not an active operation generation")
+
+	account, err := accounts.Get(ctx, 7, "lark")
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuConnectionDisconnecting, account.ConnectionState)
+	require.EqualValues(t, disconnectingGeneration, account.Generation)
+}
+
 func TestThirdPartyAccountStore_Upsert_Idempotent(t *testing.T) {
 	db := newThirdPartyAccountTestDB(t)
 	s := newThirdPartyAccountStore(db)

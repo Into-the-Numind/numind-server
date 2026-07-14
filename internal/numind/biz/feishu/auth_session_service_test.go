@@ -22,16 +22,21 @@ import (
 )
 
 type authSessionCLIFake struct {
-	mu          sync.Mutex
-	urls        []string
-	runErr      error
-	status      bool
-	statusErr   error
-	release     <-chan struct{}
-	releases    []<-chan struct{}
-	urlDelays   []time.Duration
-	argv        [][]string
-	statusCalls int
+	mu        sync.Mutex
+	urls      []string
+	runErr    error
+	status    bool
+	statusErr error
+	release   <-chan struct{}
+	releases  []<-chan struct{}
+	// holdAfterCancel deliberately keeps the fake runner (and therefore the
+	// temporary HOME owned by the vault callback) alive after cancellation. It
+	// makes lifecycle teardown ordering observable without timing guesses.
+	holdAfterCancel <-chan struct{}
+	cancelObserved  chan<- struct{}
+	urlDelays       []time.Duration
+	argv            [][]string
+	statusCalls     int
 }
 
 func (f *authSessionCLIFake) RunBlocking(
@@ -77,6 +82,17 @@ func (f *authSessionCLIFake) RunBlocking(
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+	}
+	if f.holdAfterCancel != nil {
+		<-ctx.Done()
+		if f.cancelObserved != nil {
+			select {
+			case f.cancelObserved <- struct{}{}:
+			default:
+			}
+		}
+		<-f.holdAfterCancel
+		return ctx.Err()
 	}
 	return runErr
 }
@@ -323,6 +339,25 @@ func TestAuthSessionService_ManualConnectRequestsOfflineAccessOnly(t *testing.T)
 	close(release)
 }
 
+func TestAuthSessionService_ManualConnectRejectsDisconnectingGeneration(t *testing.T) {
+	h := newAuthSessionHarness(t)
+	h.createAccount(model.FeishuConnectionConnected)
+	_, nextGeneration, err := h.dataStore.ThirdPartyAccounts().RetireGeneration(h.ctx, 7, ProviderLark)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, nextGeneration)
+	service := h.newService("disconnecting-manual-owner")
+
+	_, err = service.ConnectManual(h.ctx, 7)
+	require.ErrorIs(t, err, ErrAuthSessionUnavailable)
+	argv, _ := h.cli.snapshot()
+	require.Empty(t, argv, "disconnecting accounts must not start another authorization worker")
+
+	account, getErr := h.dataStore.ThirdPartyAccounts().Get(h.ctx, 7, ProviderLark)
+	require.NoError(t, getErr)
+	require.Equal(t, model.FeishuConnectionDisconnecting, account.ConnectionState)
+	require.EqualValues(t, nextGeneration, account.Generation)
+}
+
 func TestAuthSessionService_RefreshSupersedesLiveSessionStopsWorkerAndStartsNewURL(t *testing.T) {
 	h := newAuthSessionHarness(t)
 	h.createAccount(model.FeishuConnectionAppReady)
@@ -351,6 +386,47 @@ func TestAuthSessionService_RefreshSupersedesLiveSessionStopsWorkerAndStartsNewU
 	require.Equal(t, model.FeishuAuthSessionSuperseded, oldSession.State)
 
 	service.StopGeneration(7, 1)
+}
+
+func TestAuthSessionService_StopGenerationAndWaitJoinsRetiredWorkerBeforeReturning(t *testing.T) {
+	h := newAuthSessionHarness(t)
+	h.createAccount(model.FeishuConnectionAppReady)
+	h.cli.urls = []string{"https://open.feishu.cn/suite/passport/oauth/device?user_code=STOP"}
+	hold := make(chan struct{})
+	h.cli.holdAfterCancel = hold
+	cancelObserved := make(chan struct{}, 1)
+	h.cli.cancelObserved = cancelObserved
+	service := h.newService("stop-join-owner")
+
+	_, err := service.ConnectManual(h.ctx, 7)
+	require.NoError(t, err)
+
+	waiter, ok := any(service).(interface {
+		StopGenerationAndWait(context.Context, uint, uint64) error
+	})
+	require.True(t, ok, "authorization teardown must expose a joinable generation stop")
+
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- waiter.StopGenerationAndWait(context.Background(), 7, 1)
+	}()
+	select {
+	case <-cancelObserved:
+	case <-time.After(time.Second):
+		t.Fatal("generation stop did not cancel the retired worker")
+	}
+	select {
+	case err := <-stopDone:
+		t.Fatalf("generation stop returned before retired worker and temporary HOME exited: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(hold)
+	select {
+	case err := <-stopDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("generation stop did not join the retired worker")
+	}
 }
 
 func TestAuthSessionService_ManualConnectCreatesAppBeforeOfflineAuthorization(t *testing.T) {

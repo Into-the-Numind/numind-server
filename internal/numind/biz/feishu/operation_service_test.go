@@ -953,6 +953,27 @@ func TestOperationService_NeverConnectedCreatesPlaceholderWithoutOverwritingExis
 	})
 }
 
+func TestOperationService_DisconnectingGenerationRejectsNewAgentOperation(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli-app")
+	_, nextGeneration, err := h.dataStore.ThirdPartyAccounts().RetireGeneration(h.ctx, 7, ProviderLark)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, nextGeneration)
+
+	_, err = h.service.Execute(h.ctx, operationDocsFetchRequest(992, "disconnecting-operation"))
+	require.ErrorIs(t, err, ErrOperationUnavailable)
+	runnerCalls, _ := h.runner.snapshot()
+	require.Zero(t, runnerCalls, "disconnecting accounts must not start a lark-cli invocation")
+
+	var count int64
+	require.NoError(t, h.db.Model(&model.FeishuOperation{}).Where("user_id = ?", 7).Count(&count).Error)
+	require.Zero(t, count, "disconnecting accounts must not create a new-generation operation")
+	account, getErr := h.dataStore.ThirdPartyAccounts().Get(h.ctx, 7, ProviderLark)
+	require.NoError(t, getErr)
+	require.Equal(t, model.FeishuConnectionDisconnecting, account.ConnectionState)
+	require.EqualValues(t, nextGeneration, account.Generation)
+}
+
 func TestOperationService_ActivatesRecoveryOnlyAfterWaitingIsPersisted(t *testing.T) {
 	h := newOperationHarness(t)
 	h.recovery.onActivate = func(sessionID string) error {
