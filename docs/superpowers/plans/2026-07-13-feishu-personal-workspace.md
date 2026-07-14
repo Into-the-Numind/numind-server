@@ -899,17 +899,17 @@ git commit -m "feat(agent): resume original external tool calls"
 
 **Files:** `internal/numind/biz/feishu_resume_dispatcher.go`、`feishu_resume_dispatcher_test.go`、`internal/numind/biz/feishu/operation_confirmation.go`、`operation_confirmation_test.go`、`internal/numind/biz/feishu_adapter.go`、`feishu_adapter_test.go`、`internal/numind/biz/biz.go`、`internal/numind/biz/agent/factory_platform.go`、`factory_platform_test.go`。
 
-- [ ] **Step 1: 写 composition 红测**
+- [x] **Step 1: 写 composition 红测**
 
 Feature flag off 返回 nil；版本不符 fail closed；flag on 构造 controlled runner/vault/catalog/classifier/skill reader/operation/auth/resumer；高风险返回 waiting_confirmation；auth worker 自动完成后原 tool result 只回填一次；Agent registry 只暴露两个新工具；生产热路径不构造旧 Client。Vault startup cleanup 必须在 service/factory 对外可见及 worker 启动前完成，cleanup 失败时 fail closed。
 
-- [ ] **Step 2: 运行红测**
+- [x] **Step 2: 运行红测**
 
 Run: `go test ./internal/numind/biz/feishu ./internal/numind/biz ./internal/numind/biz/agent -run 'ResumeDispatcher|OperationConfirmation|BuildFeishu|FeishuComposition|PlatformTool' -count=1`
 
 Expected: FAIL，生产依赖尚未装配。
 
-- [ ] **Step 3: 实现共用 resume dispatcher**
+- [x] **Step 3: 实现共用 resume dispatcher**
 
 ```go
 type WorkspaceResumeDispatcher struct {
@@ -921,19 +921,19 @@ func (d *WorkspaceResumeDispatcher) DispatchResume(ctx context.Context, userID u
 
 dispatcher 调 `operation.Resume`；结果 succeeded 时读取 OperationResult 内部 `AgentRunID/ToolCallID`（字段 `json:"-"`），调用 Task 11 resumer；waiting/failed/unknown 不回填成功 result。用 operationID 幂等保证 auth worker 与用户点击并发时只回填一次。Task 8 worker 和 Task 13 service 必须持有这个 dispatcher，不可各自直接调 operation.Resume。
 
-- [ ] **Step 4: 实现生产 ConfirmationRequester**
+- [x] **Step 4: 实现生产 ConfirmationRequester**
 
 `NewOperationConfirmationRequester(store)` 实现 Task 7 接口，把 operation 置 `waiting_confirmation` 并返回 `OperationAction{Phase:"confirmation"}`；不得返回 nil 让高风险静默通过。Task 13 接受 `confirmed/cancelled` 后由同一 dispatcher 继续或取消加密 operation。该 adapter 位于 `biz/feishu`，不 import `biz/agent`。`WorkspaceResumeDispatcher` 位于外层 `package biz`，由它同时 import `biz/feishu` 与 `biz/agent`，从而避免 `feishu → agent → feishu` 包循环。
 
-- [ ] **Step 5: 构造无包循环 bridge**
+- [x] **Step 5: 构造无包循环 bridge**
 
 在 `feishu_adapter.go` 用 closure bridge 装配：先构造 keyring vault 并同步执行 startup cleanup；再创建引用 `authSvc` 的 `RecoveryStarterFunc`，用 receipt verifier + recovery starter + non-nil confirmation requester 构造 operation；创建 AgentRunResumer 和共用 dispatcher；再构造 AuthSessionService 并注入 dispatcher；最后赋值 authSvc。构造函数返回前全部 bridge 必须完整，cleanup/版本验证任一失败都不得发布半初始化 service。
 
-- [ ] **Step 6: 注入 Agent factory**
+- [x] **Step 6: 注入 Agent factory**
 
 Factory 获得 Task 6 `SkillReader` 与 Task 7 `OperationService` 的接口；移除旧 client/orchestrator 的 production registration。启动时先 `ControlledLarkCLIRunner.VerifyVersion`，失败则不注册飞书 service/tools。
 
-- [ ] **Step 7: 绿测和 Commit**
+- [x] **Step 7: 绿测和 Commit**
 
 Run: `go test ./internal/numind/biz/feishu ./internal/numind/biz ./internal/numind/biz/agent -run 'ResumeDispatcher|OperationConfirmation|Feishu|PlatformTool' -count=1`
 
@@ -943,6 +943,8 @@ Expected: PASS。
 git add internal/numind/biz/feishu_resume_dispatcher.go internal/numind/biz/feishu_resume_dispatcher_test.go internal/numind/biz/feishu/operation_confirmation.go internal/numind/biz/feishu/operation_confirmation_test.go internal/numind/biz/feishu_adapter.go internal/numind/biz/feishu_adapter_test.go internal/numind/biz/biz.go internal/numind/biz/agent/factory_platform.go internal/numind/biz/agent/factory_platform_test.go
 git commit -m "feat(feishu): compose personal workspace services"
 ```
+
+**一期收口（2026-07-14）：** composition 与 Agent factory 已完成，并经两轮独立规格复审和独立质量审查最终 PASS（P0/P1/P2=0）。完整图只在 feature 开启且受控 CLI、vault cleanup、运行时 keyring、catalog、confirmation、auth/recovery bridge 与 Task 11 resumer/reclaimer/supervisor 均成功装配后发布；旧 Client/ConnectOrchestrator 不进入生产工具注册。keyring 采用 current-write/historical-read 的版本化 AES 密钥环：配置只接受有序条目列表，部署可用严格 JSON 的 `NUMIND_FEISHU_KEYRING` 注入，map、非规范/重复版本、重复材料、未知/尾随 JSON 或缺 current 均 fail closed，并扫描 retained vault/operation/result 版本。详见 ADR 0016。
 
 ## Task 13: Lifecycle HTTP API 与安全解绑
 
