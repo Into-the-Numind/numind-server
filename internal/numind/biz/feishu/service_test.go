@@ -263,25 +263,41 @@ func (f *lifecycleAuthFake) StopGenerationAndWait(ctx context.Context, _ uint, g
 	return nil
 }
 
-type lifecycleDispatcherFake struct{ calls int }
+type lifecycleDispatcherFake struct {
+	calls   int
+	results []error
+}
 
 func (f *lifecycleDispatcherFake) DispatchResume(_ context.Context, _ uint, _ string) error {
 	f.calls++
+	if len(f.results) > 0 {
+		err := f.results[0]
+		f.results = f.results[1:]
+		return err
+	}
 	return nil
 }
 
 type lifecycleOperationsFake struct {
 	confirmed int
 	cancelled int
+	confirm   func(context.Context, uint, string) (*OperationResult, error)
+	cancel    func(context.Context, uint, string) (*OperationResult, error)
 }
 
-func (f *lifecycleOperationsFake) Confirm(_ context.Context, _ uint, id string) (*OperationResult, error) {
+func (f *lifecycleOperationsFake) Confirm(ctx context.Context, userID uint, id string) (*OperationResult, error) {
 	f.confirmed++
+	if f.confirm != nil {
+		return f.confirm(ctx, userID, id)
+	}
 	return &OperationResult{OperationID: id, State: model.FeishuOperationExecuting}, nil
 }
 
-func (f *lifecycleOperationsFake) Cancel(_ context.Context, _ uint, id string) (*OperationResult, error) {
+func (f *lifecycleOperationsFake) Cancel(ctx context.Context, userID uint, id string) (*OperationResult, error) {
 	f.cancelled++
+	if f.cancel != nil {
+		return f.cancel(ctx, userID, id)
+	}
 	return &OperationResult{OperationID: id, State: model.FeishuOperationCancelled}, nil
 }
 
@@ -475,6 +491,101 @@ func TestWorkspaceLifecycleResumeConfirmationActionsRequireWaitingConfirmation(t
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationExecuting, result.State)
 	require.Equal(t, 1, operations.confirmed)
+}
+
+func TestWorkspaceLifecycleResumeConfirmedRetriesSucceededContinuationWithoutReexecutingOperation(t *testing.T) {
+	const operationID = "op-confirmed-continuation"
+	op := &model.FeishuOperation{
+		ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingConfirmation,
+		AgentRunID: 41, ToolCallID: "tool-confirmed-continuation",
+	}
+	svc, _, workspace, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 2,
+	}, op)
+	// This simulates a Task11 handoff failure before it can durably claim the
+	// continuation. The operation itself has already committed success, so a
+	// retry must only compensate through the existing shared dispatcher.
+	dispatcher.results = []error{errors.New("task11 continuation was not claimed"), nil, nil}
+	operations.confirm = func(_ context.Context, userID uint, id string) (*OperationResult, error) {
+		require.Equal(t, uint(7), userID)
+		require.Equal(t, operationID, id)
+		workspace.operation.State = model.FeishuOperationSucceeded
+		return &OperationResult{OperationID: id, State: model.FeishuOperationSucceeded}, nil
+	}
+
+	result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionConfirmed)
+	require.Nil(t, result)
+	require.ErrorIs(t, err, ErrWorkspaceLifecycleUnavailable)
+	require.Equal(t, 1, operations.confirmed)
+	require.Equal(t, 1, dispatcher.calls)
+	require.Equal(t, model.FeishuOperationSucceeded, workspace.operation.State)
+
+	result, err = svc.Resume(context.Background(), 7, operationID, ResumeActionConfirmed)
+	require.NoError(t, err)
+	require.Equal(t, &OperationResult{OperationID: operationID, State: model.FeishuOperationSucceeded}, result)
+	require.Equal(t, 1, operations.confirmed, "retry must not execute the confirmed Feishu operation again")
+	require.Equal(t, 2, dispatcher.calls, "retry must use the same Task12 dispatcher for durable compensation")
+
+	result, err = svc.Resume(context.Background(), 7, operationID, ResumeActionConfirmed)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, result.State)
+	require.Equal(t, 1, operations.confirmed, "repeated confirmation remains operation-idempotent")
+	require.Equal(t, 3, dispatcher.calls, "Task11 owns durable continuation idempotence across compensation attempts")
+}
+
+func TestWorkspaceLifecycleResumeUserCompletedRetriesSucceededContinuation(t *testing.T) {
+	const operationID = "op-user-completed-continuation"
+	op := &model.FeishuOperation{
+		ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationSucceeded,
+		AgentRunID: 42, ToolCallID: "tool-user-completed-continuation",
+	}
+	svc, _, _, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 2,
+	}, op)
+	dispatcher.results = []error{errors.New("task11 continuation was not claimed"), nil}
+
+	result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionUserCompleted)
+	require.Nil(t, result)
+	require.ErrorIs(t, err, ErrWorkspaceLifecycleUnavailable)
+	require.Equal(t, 1, dispatcher.calls)
+	require.Zero(t, operations.confirmed)
+	require.Zero(t, operations.cancelled)
+
+	result, err = svc.Resume(context.Background(), 7, operationID, ResumeActionUserCompleted)
+	require.NoError(t, err)
+	require.Equal(t, &OperationResult{OperationID: operationID, State: model.FeishuOperationSucceeded}, result)
+	require.Equal(t, 2, dispatcher.calls)
+	require.Zero(t, operations.confirmed)
+	require.Zero(t, operations.cancelled)
+}
+
+func TestWorkspaceLifecycleResumeSucceededOperationWithoutAgentContinuationOnlyReturnsSummary(t *testing.T) {
+	op := &model.FeishuOperation{ID: "op-no-agent-continuation", UserID: 7, Generation: 2, State: model.FeishuOperationSucceeded}
+	svc, _, _, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 2,
+	}, op)
+
+	result, err := svc.Resume(context.Background(), 7, op.ID, ResumeActionUserCompleted)
+	require.NoError(t, err)
+	require.Equal(t, &OperationResult{OperationID: op.ID, State: model.FeishuOperationSucceeded}, result)
+	require.Zero(t, dispatcher.calls, "an operation with no original tool call has no Agent continuation to dispatch")
+	require.Zero(t, operations.confirmed)
+}
+
+func TestWorkspaceLifecycleResumeCancelledSucceededOperationOnlyReturnsSummary(t *testing.T) {
+	op := &model.FeishuOperation{
+		ID: "op-cancelled-after-success", UserID: 7, Generation: 2, State: model.FeishuOperationSucceeded,
+		AgentRunID: 43, ToolCallID: "tool-cancelled-after-success",
+	}
+	svc, _, _, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 2,
+	}, op)
+
+	result, err := svc.Resume(context.Background(), 7, op.ID, ResumeActionCancelled)
+	require.NoError(t, err)
+	require.Equal(t, &OperationResult{OperationID: op.ID, State: model.FeishuOperationSucceeded}, result)
+	require.Zero(t, dispatcher.calls, "a cancellation acknowledgement must never restart a successful continuation")
+	require.Zero(t, operations.cancelled, "a completed operation must not be cancelled after its write succeeded")
 }
 
 func TestWorkspaceLifecycleResumeCollapsesCrossUserToNotFound(t *testing.T) {

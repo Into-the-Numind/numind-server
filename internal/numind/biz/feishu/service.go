@@ -252,6 +252,9 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 	switch action {
 	case ResumeActionUserCompleted:
 		if operation.State == model.FeishuOperationSucceeded {
+			if err := s.compensateSucceededOperation(ctx, userID, operation); err != nil {
+				return nil, err
+			}
 			return lifecycleStoredOperationSummary(operation), nil
 		}
 		if !recoveryWaitingState(operation.State) {
@@ -300,6 +303,16 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 		}
 		return lifecycleStoredOperationSummary(updated), nil
 	case ResumeActionConfirmed:
+		// A confirmation may have durably completed its one Feishu write before
+		// the Task11 handoff was interrupted. Retrying the same acknowledgement
+		// must therefore compensate through the shared dispatcher, not call
+		// Confirm again (which would be the only path that can invoke the CLI).
+		if operation.State == model.FeishuOperationSucceeded {
+			if err := s.compensateSucceededOperation(ctx, userID, operation); err != nil {
+				return nil, err
+			}
+			return lifecycleStoredOperationSummary(operation), nil
+		}
 		if operation.State != model.FeishuOperationWaitingConfirmation {
 			return nil, ErrWorkspaceLifecycleInvalid
 		}
@@ -308,12 +321,22 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 			return nil, ErrWorkspaceLifecycleUnavailable
 		}
 		if result.State == model.FeishuOperationSucceeded {
-			if err := s.dispatcher.DispatchResume(ctx, userID, operationID); err != nil {
-				return nil, ErrWorkspaceLifecycleUnavailable
+			// Confirm has committed the terminal transition before returning its
+			// result. Preserve the immutable Agent linkage from the browser-verified
+			// row while reflecting that committed state for the compensation helper.
+			operation.State = model.FeishuOperationSucceeded
+			if err := s.compensateSucceededOperation(ctx, userID, operation); err != nil {
+				return nil, err
 			}
 		}
 		return lifecycleResultSummary(result), nil
 	case ResumeActionCancelled:
+		// Cancellation is idempotent after the write has succeeded, but it must
+		// never become a second continuation trigger. A user can retry
+		// user_completed/confirmed to compensate Task11 instead.
+		if operation.State == model.FeishuOperationSucceeded {
+			return lifecycleStoredOperationSummary(operation), nil
+		}
 		if operation.State != model.FeishuOperationWaitingConfirmation {
 			return nil, ErrWorkspaceLifecycleInvalid
 		}
@@ -325,6 +348,36 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 	default:
 		return nil, ErrWorkspaceLifecycleInvalid
 	}
+}
+
+// compensateSucceededOperation retries only the durable Task11 continuation
+// for a committed operation. It deliberately does not call Confirm or any CLI
+// runner: WorkspaceResumeDispatcher's OperationService.Resume sees succeeded
+// and returns the encrypted result without replaying the Feishu operation.
+//
+// All normal lark_execute operations carry both AgentRunID and ToolCallID. A
+// legacy/non-Agent operation carries neither and has no continuation to
+// dispatch. A partially populated link is corrupt, so fail closed instead of
+// silently dropping an original Agent tool result.
+func (s *WorkspaceLifecycleService) compensateSucceededOperation(
+	ctx context.Context,
+	userID uint,
+	operation *model.FeishuOperation,
+) error {
+	if s == nil || operation == nil || operation.State != model.FeishuOperationSucceeded ||
+		operation.UserID != userID || userID == 0 {
+		return ErrWorkspaceLifecycleUnavailable
+	}
+	if operation.AgentRunID == 0 && strings.TrimSpace(operation.ToolCallID) == "" {
+		return nil
+	}
+	if operation.AgentRunID == 0 || !validStableIdentifier(operation.ToolCallID, operationMaxToolCallIDBytes) {
+		return ErrWorkspaceLifecycleUnavailable
+	}
+	if err := s.dispatcher.DispatchResume(ctx, userID, operation.ID); err != nil {
+		return ErrWorkspaceLifecycleUnavailable
+	}
+	return nil
 }
 
 // recoverySession resolves an authorization session only through the durable
