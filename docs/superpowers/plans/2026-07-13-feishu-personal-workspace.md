@@ -12,6 +12,24 @@
 
 ---
 
+## 一期交付边界（2026-07-14 经用户确认）
+
+本计划原本把核心闭环、生产增强、历史清理和完整验收合并为一个 23-task 的首发版本。现拆为两期；**本 feature 的 S4/S5 只以一期范围作为完成标准**，二期必须作为新的 Standard feature 重新立项，不得静默遗漏。
+
+### 一期：可用且安全的个人飞书工作空间闭环
+
+一期必须交付：每个有数账号独立、加密保存的个人自建应用连接；受控的 lark-cli Docs/Base/Wiki 创建、读取、更新；业务操作优先、仅在确定的未连接/缺 scope/授权失效时发起配置；用户完成飞书授权后自动继续**原始** Agent tool call；最小连接状态/解绑入口；必要的后端集成、前端单元与关键 Playwright E2E，以及本地真实账号 Gate。
+
+纳入一期的 S4 tasks：**1–13、16–19、21–23**；Task 24 是一期的 S5 本地真实飞书 Gate。Task 22 在一期只覆盖关键授权/恢复 happy path、过期刷新、无普通 answer 回退及 mobile/desktop 冒烟；其完整状态矩阵、键盘细节和视觉回归扩展留到二期。
+
+一期不可降级的安全承诺：不共用用户凭据；不执行 IM/删除/raw API/shell；不泄露 argv、token 或完整授权 URL；不把授权完成伪造成用户消息；不会因为重复 resume 重复写业务资源；用户删除会话后不得继续执行飞书写操作。Task 11 的恢复、删除与租约修复属于这些承诺，不能后置。
+
+### 二期：增强与遗留收口
+
+二期单独立项并覆盖：Task 14 的旧明文 HOME 迁移、Task 15 的完整 trace/metric、Task 20 的遗留文件彻底删除，以及 Task 22 的完整前端 E2E/视觉与键盘矩阵。例外：若一期发布前探测到仍在使用的旧明文 HOME，Task 14 自动升级为一期发布阻塞项；若旧实现仍进入 production graph 或暴露 IM/broad auth，必须在一期通过禁用/隔离证明，否则不得发布。
+
+---
+
 ## 0. 实施边界与工作方式
 
 - 后端只在 `/private/tmp/wt-feishu-personal-workspace-numind-server` 修改，分支 `feature/feishu-personal-workspace`。
@@ -973,7 +991,7 @@ git add internal/numind/biz/feishu/service.go internal/numind/biz/feishu/service
 git commit -m "feat(feishu): expose workspace lifecycle api"
 ```
 
-## Task 14: 旧明文 HOME 安全迁移
+## Task 14: 旧明文 HOME 安全迁移（二期；一期按需升级）
 
 **Files:** `internal/numind/biz/feishu/home_migrator.go`、`home_migrator_test.go`、`internal/numind/biz/feishu_adapter.go`、`feishu_adapter_test.go`。
 
@@ -1002,7 +1020,7 @@ git add internal/numind/biz/feishu/home_migrator.go internal/numind/biz/feishu/h
 git commit -m "feat(feishu): migrate legacy cli homes"
 ```
 
-## Task 15: 飞书 operation 可观测性
+## Task 15: 飞书 operation 可观测性（二期）
 
 **Files:** `internal/numind/biz/feishu/observability.go`、`observability_test.go`、`operation_service.go`、`auth_session_service.go`、`vault.go`、`internal/numind/biz/agent/tool_lark_skill_read.go`、`tool_lark_execute.go`。
 
@@ -1189,7 +1207,7 @@ git add src/components/feishu/FeishuConnection.vue src/components/feishu/__tests
 git commit -m "feat(feishu): show personal workspace status"
 ```
 
-## Task 20: 清理旧固定飞书实现
+## Task 20: 清理旧固定飞书实现（二期；一期必须证明未进入 production graph）
 
 **Files:** 删除 `internal/numind/biz/agent/tool_lark_create_doc.go`、`tool_lark_read_bitable.go`、`tool_lark_send_message.go`、`tool_lark_common.go`、`tool_lark_test.go`、`tool_feishu_connect.go`、`tool_feishu_connect_test.go`、`yield_authpause_test.go`；删除 `internal/numind/biz/feishu/api.go`、`api_test.go`、`client.go`、`client_test.go`、`ops_cli.go`、`auth_cli.go`、`auth_cli_test.go`、`provisioner.go`、`provisioner_test.go`、`provisioner_cli.go`、`provisioner_cli_test.go`、`connect_phase_from_home_test.go` 中已被新架构替代且无引用的代码。
 
@@ -1245,13 +1263,13 @@ git add internal/numind/biz/feishu/personal_workspace_integration_test.go intern
 git commit -m "test(feishu): cover workspace recovery integration"
 ```
 
-## Task 22: 前端 Playwright E2E
+## Task 22: 前端 Playwright E2E（一期关键路径；二期扩展完整矩阵）
 
 **Files:** `e2e/feishu-personal-workspace.spec.ts`。
 
 - [ ] **Step 1: 写 mocked E2E**
 
-Mock status/SSE/resume/refresh，验证四阶段、完整 URL/二维码、过期刷新、resume 无 argv/scopes、成功回原任务、设置能力状态、375×812/desktop、键盘操作。
+一期：Mock status/SSE/resume/refresh，验证关键授权/恢复 happy path、过期刷新、resume 无 argv/scopes、成功回原任务、375×812 与 desktop 冒烟；trace 中不得出现普通 answer request。二期再补四阶段穷举、设置能力全矩阵、键盘操作和视觉回归。
 
 - [ ] **Step 2: 运行并修复 E2E**
 
