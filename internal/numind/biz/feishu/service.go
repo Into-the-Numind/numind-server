@@ -102,6 +102,7 @@ type WorkspaceLifecycleAccountStore interface {
 // resume and teardown. It intentionally has no broad query or raw DB API.
 type WorkspaceLifecycleStore interface {
 	GetOperationForUser(context.Context, uint, uint64, string) (*model.FeishuOperation, error)
+	GetSessionForUser(context.Context, uint, uint64, string) (*model.FeishuAuthSession, error)
 	FindActiveSessionForUser(context.Context, uint, uint64) (*model.FeishuAuthSession, error)
 	DeleteVault(context.Context, uint, uint64) error
 }
@@ -111,6 +112,7 @@ type WorkspaceLifecycleStore interface {
 type WorkspaceLifecycleAuth interface {
 	ConnectManual(context.Context, uint) (*OperationAction, error)
 	RefreshAction(context.Context, uint, uint64, string) (*OperationAction, error)
+	CompleteAppApproval(context.Context, uint, uint64, string) error
 	StopGenerationAndWait(context.Context, uint, uint64) error
 }
 
@@ -246,6 +248,36 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 		if !recoveryWaitingState(operation.State) {
 			return nil, ErrWorkspaceLifecycleInvalid
 		}
+		session, sessionErr := s.recoverySession(ctx, userID, account.Generation, operation)
+		if sessionErr != nil {
+			return nil, ErrWorkspaceLifecycleUnavailable
+		}
+		if operation.State == model.FeishuOperationWaitingAppScope {
+			// App-scope approval has no local auth worker. The browser's fixed
+			// acknowledgement is therefore completed through AuthSessionService,
+			// which owns the session lease and the same Task12 dispatcher used by
+			// workers. Do not dispatch again here: that would create a second
+			// continuation path for the original Agent tool call.
+			if err := s.auth.CompleteAppApproval(ctx, userID, account.Generation, session.ID); err != nil {
+				return nil, ErrWorkspaceLifecycleUnavailable
+			}
+			updated, updateErr := s.workspace.GetOperationForUser(ctx, userID, account.Generation, operationID)
+			if updateErr != nil || updated == nil || updated.UserID != userID || updated.Generation != account.Generation {
+				return nil, ErrWorkspaceLifecycleUnavailable
+			}
+			return lifecycleStoredOperationSummary(updated), nil
+		}
+		// Create-app and user-auth recovery are completed by the server-owned
+		// auth worker. A premature browser acknowledgement simply returns the
+		// durable waiting state; it never reconstructs a URL or starts a second
+		// worker. Once a completed session is observed, the shared dispatcher is
+		// safe to retry after a worker-side dispatch interruption.
+		if session.State == model.FeishuAuthSessionPending {
+			return lifecycleStoredOperationSummary(operation), nil
+		}
+		if session.State != model.FeishuAuthSessionCompleted {
+			return nil, ErrWorkspaceLifecycleUnavailable
+		}
 		// The exact Task12 dispatcher performs OperationService.Resume and, only
 		// on success, the durable Task11 tool-result continuation. It is shared
 		// with the auth worker, so concurrent user/worker callbacks cannot invoke
@@ -283,6 +315,49 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 		return lifecycleResultSummary(result), nil
 	default:
 		return nil, ErrWorkspaceLifecycleInvalid
+	}
+}
+
+// recoverySession resolves an authorization session only through the durable
+// operation summary. The route exposes an operation ID, never a session ID;
+// checking the stored session's tenant, generation, phase, and operation
+// linkage prevents an unrelated active session from authorizing this replay.
+func (s *WorkspaceLifecycleService) recoverySession(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	operation *model.FeishuOperation,
+) (*model.FeishuAuthSession, error) {
+	if s == nil || operation == nil || operation.UserID != userID || operation.Generation != generation {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	expectedPhase := lifecycleRecoveryPhase(operation.State)
+	if expectedPhase == "" {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	summary, err := decodeOperationSummary(operation.ResultSummaryJSON)
+	if err != nil || summary.Status != operation.State || summary.SessionID == "" || summary.Phase != expectedPhase ||
+		phaseForRecovery(summary.RecoveryKind) != expectedPhase {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	session, err := s.workspace.GetSessionForUser(ctx, userID, generation, summary.SessionID)
+	if err != nil || session == nil || session.UserID != userID || session.Generation != generation ||
+		session.Phase != expectedPhase || session.OperationID == nil || *session.OperationID != operation.ID {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	return session, nil
+}
+
+func lifecycleRecoveryPhase(operationState string) string {
+	switch operationState {
+	case model.FeishuOperationWaitingConnection:
+		return model.FeishuAuthPhaseCreateApp
+	case model.FeishuOperationWaitingAppScope:
+		return model.FeishuAuthPhaseAppScope
+	case model.FeishuOperationWaitingUserAuth:
+		return model.FeishuAuthPhaseUserAuth
+	default:
+		return ""
 	}
 }
 
