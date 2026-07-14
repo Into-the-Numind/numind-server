@@ -22,23 +22,25 @@ import (
 )
 
 type externalResumeStoreStub struct {
-	mu            sync.Mutex
-	claimed       bool
-	leaseSeq      int
-	lease         string
-	calls         int
-	runStore      *mockAgentRunStore
-	result        json.RawMessage
-	returnOK      bool
-	err           error
-	releases      int
-	completes     int
-	completeErr   error
-	releaseErr    error
-	candidates    []model.AgentRun
-	lists         int
-	touches       int
-	touchErrAfter int
+	mu                     sync.Mutex
+	claimed                bool
+	leaseSeq               int
+	lease                  string
+	calls                  int
+	runStore               *mockAgentRunStore
+	result                 json.RawMessage
+	returnOK               bool
+	err                    error
+	releases               int
+	completes              int
+	completeErr            error
+	completeWaitForContext bool
+	releaseErr             error
+	releaseCtxErr          error
+	candidates             []model.AgentRun
+	lists                  int
+	touches                int
+	touchErrAfter          int
 }
 
 // updateRunCopyOnWrite mirrors the production store's snapshot semantics:
@@ -118,10 +120,21 @@ func (s *externalResumeStoreStub) ClaimExternalToolResume(_ context.Context, run
 	return s.lease, true, nil
 }
 
-func (s *externalResumeStoreStub) CompleteExternalToolResume(_ context.Context, runID uint64, operationID, toolCallID, leaseToken string) error {
+func (s *externalResumeStoreStub) CompleteExternalToolResume(ctx context.Context, runID uint64, operationID, toolCallID, leaseToken string) error {
+	s.mu.Lock()
+	s.completes++
+	waitForContext := s.completeWaitForContext
+	completeErr := s.completeErr
+	s.mu.Unlock()
+	if waitForContext {
+		<-ctx.Done()
+		if completeErr != nil {
+			return completeErr
+		}
+		return ctx.Err()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.completes++
 	if s.completeErr != nil {
 		return s.completeErr
 	}
@@ -144,10 +157,14 @@ func (s *externalResumeStoreStub) CompleteExternalToolResume(_ context.Context, 
 	})
 }
 
-func (s *externalResumeStoreStub) ReleaseExternalToolResume(_ context.Context, runID uint64, operationID, toolCallID, leaseToken string) error {
+func (s *externalResumeStoreStub) ReleaseExternalToolResume(ctx context.Context, runID uint64, operationID, toolCallID, leaseToken string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.releases++
+	s.releaseCtxErr = ctx.Err()
+	if s.releaseCtxErr != nil {
+		return s.releaseCtxErr
+	}
 	if s.releaseErr != nil {
 		return s.releaseErr
 	}
@@ -495,6 +512,51 @@ func TestExternalContinuationGate_CompleteAndReleaseFailuresAreBothPreserved(t *
 	assert.Equal(t, 1, resumeStore.completes)
 	assert.Equal(t, 1, resumeStore.releases)
 	resumeStore.mu.Unlock()
+}
+
+func TestExternalContinuationGate_CompleteDeadlineGetsFreshReleaseBudget(t *testing.T) {
+	runStore := newMockStore()
+	run := &model.AgentRun{
+		UserID: 7, SessionID: "s", Status: "running", StateReason: "ext_resume:lease-1",
+		Messages:                  datatypes.JSON(`[]`),
+		PendingExternalActionJSON: datatypes.JSON(`{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"tc-9","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`),
+		StartedAt:                 time.Now(),
+	}
+	require.NoError(t, runStore.Create(context.Background(), run))
+	resumeStore := &externalResumeStoreStub{
+		runStore: runStore, claimed: true, lease: "lease-1", returnOK: true, completeWaitForContext: true,
+	}
+	result := ExternalToolResult{RunID: run.ID, OperationID: "op-1", ToolCallID: "tc-9", Result: json.RawMessage(`{"ok":true}`)}
+	gate := newExternalContinuationGate(resumeStore, result, "lease-1", make(chan error, 1))
+	gate.transitionTimeout = 20 * time.Millisecond
+	adapter := &aiserviceAdapter{taskID: profile.AgentRun, usageStore: &sync.Map{}, externalContinuationGate: gate}
+	original := chatFn
+	t.Cleanup(func() { chatFn = original })
+	providerCalls := 0
+	chatFn = func(context.Context, string, aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
+		providerCalls++
+		return &aiservice.ChatResponse{Content: "done", FinishReason: "stop"}, nil
+	}
+
+	_, err := adapter.Generate(context.Background(), []*schema.Message{schema.UserMessage("continue")})
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	resumeStore.mu.Lock()
+	assert.Equal(t, 1, resumeStore.completes)
+	assert.Equal(t, 1, resumeStore.releases)
+	assert.NoError(t, resumeStore.releaseCtxErr, "Release must receive a fresh, live detached context")
+	assert.False(t, resumeStore.claimed)
+	resumeStore.mu.Unlock()
+	got, getErr := runStore.Get(context.Background(), run.ID)
+	require.NoError(t, getErr)
+	assert.Equal(t, "external_resume_ready", got.StateReason)
+
+	newToken, claimed, claimErr := resumeStore.ClaimExternalToolResume(
+		context.Background(), result.RunID, result.OperationID, result.ToolCallID, result.Result,
+	)
+	require.NoError(t, claimErr)
+	require.True(t, claimed)
+	assert.NotEmpty(t, newToken)
+	assert.Equal(t, 1, providerCalls, "compensating Release and re-claim must not call the provider")
 }
 
 func TestExternalContinuationGate_HeartbeatCoversAutocompactAndMainProvider(t *testing.T) {

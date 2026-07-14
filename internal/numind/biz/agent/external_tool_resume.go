@@ -425,12 +425,13 @@ type externalContinuationGate struct {
 	hbDone                chan struct{}
 	hbErr                 error
 	heartbeatInterval     time.Duration
+	transitionTimeout     time.Duration
 }
 
 func newExternalContinuationGate(s store.IExternalToolResumeLease, result ExternalToolResult, token string, started chan<- error) *externalContinuationGate {
 	return &externalContinuationGate{
 		store: s, result: result, token: token, started: started,
-		heartbeatInterval: 10 * time.Second,
+		heartbeatInterval: 10 * time.Second, transitionTimeout: 5 * time.Second,
 	}
 }
 
@@ -533,7 +534,11 @@ func (g *externalContinuationGate) Finish(ctx context.Context, callErr error) er
 	if hbErr := g.stopHeartbeat(); callErr == nil && hbErr != nil {
 		callErr = hbErr
 	}
-	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	transitionTimeout := g.transitionTimeout
+	if transitionTimeout <= 0 {
+		transitionTimeout = 5 * time.Second
+	}
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), transitionTimeout)
 	defer cancel()
 	var transitionErr error
 	if callErr == nil {
@@ -543,7 +548,10 @@ func (g *externalContinuationGate) Finish(ctx context.Context, callErr error) er
 			g.completedSuccessfully = true
 			g.mu.Unlock()
 		} else {
-			transitionErr = errors.Join(transitionErr, g.release(persistCtx))
+			releaseCtx, cancelRelease := context.WithTimeout(context.WithoutCancel(ctx), transitionTimeout)
+			releaseErr := g.release(releaseCtx)
+			cancelRelease()
+			transitionErr = errors.Join(transitionErr, releaseErr)
 		}
 	} else {
 		transitionErr = g.release(persistCtx)
