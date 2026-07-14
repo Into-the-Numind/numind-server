@@ -582,7 +582,10 @@ type operationHarness struct {
 
 func newOperationHarness(t *testing.T) *operationHarness {
 	t.Helper()
-	dsn := "file:" + t.Name() + "?mode=memory&cache=shared&_busy_timeout=5000"
+	// t.Name() is reused by `go test -count=N`. Give every harness an isolated
+	// shared-memory database so a deliberately blocked goroutine in one test
+	// cannot share (or outlive cleanup of) a later invocation's SQLite schema.
+	dsn := "file:" + t.Name() + "-" + uuid.NewString() + "?mode=memory&cache=shared&_busy_timeout=5000"
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	require.NoError(t, err)
 	sqlDB, err := db.DB()
