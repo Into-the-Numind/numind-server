@@ -218,7 +218,8 @@ func (v *EncryptedCLIHomeVault) WithHome(
 	if err != nil {
 		return fmt.Errorf("feishu CLI home vault: read active account: %w", err)
 	}
-	if account.UserID != userID || account.Provider != ProviderLark || account.Generation != generation {
+	if account == nil || account.UserID != userID || account.Provider != ProviderLark ||
+		account.Generation != generation || account.ConnectionState == model.FeishuConnectionDisconnecting {
 		return fmt.Errorf("feishu CLI home vault: inactive account generation: %w", gorm.ErrRecordNotFound)
 	}
 

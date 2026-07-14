@@ -564,6 +564,39 @@ func TestEncryptedCLIHomeVault_RejectsInactiveGenerationBeforeReadingVault(t *te
 	task2RequireNoRuntimeHomes(t, f.runtimeBase)
 }
 
+func TestEncryptedCLIHomeVault_RejectsDisconnectingAccountBeforeMaterializingRuntimeHome(t *testing.T) {
+	f := newTask2VaultFixture(t, 7, 4)
+	f.accounts.accounts[f.userID].Generation = 5
+	f.accounts.accounts[f.userID].ConnectionState = model.FeishuConnectionDisconnecting
+
+	callbackCalled := false
+	err := f.vault.WithHome(context.Background(), f.userID, 5, func(string) (bool, error) {
+		callbackCalled = true
+		return false, nil
+	})
+
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	require.False(t, callbackCalled, "a disconnecting account must not expose a normal CLI HOME")
+	require.Zero(t, f.store.getCalls, "a disconnecting account must be rejected before opening its snapshot")
+	task2RequireNoRuntimeHomes(t, f.runtimeBase)
+}
+
+func TestEncryptedCLIHomeVault_AllowsCurrentGenerationAfterUnbindFinalizesToNone(t *testing.T) {
+	f := newTask2VaultFixture(t, 7, 4)
+	f.accounts.accounts[f.userID].Generation = 5
+	f.accounts.accounts[f.userID].ConnectionState = model.FeishuConnectionNone
+
+	callbackCalled := false
+	err := f.vault.WithHome(context.Background(), f.userID, 5, func(string) (bool, error) {
+		callbackCalled = true
+		return false, nil
+	})
+
+	require.NoError(t, err)
+	require.True(t, callbackCalled, "the current generation must remain usable for a later reconnect")
+	task2RequireNoRuntimeHomes(t, f.runtimeBase)
+}
+
 func TestEncryptedCLIHomeVault_WithRetiredHomeOnlyAllowsDisconnectingNewerGenerationAndNeverReseals(t *testing.T) {
 	fixture := newTask2VaultFixture(t, 7, 4)
 	require.NoError(t, fixture.vault.WithHome(context.Background(), 7, 4, func(home string) (bool, error) {
