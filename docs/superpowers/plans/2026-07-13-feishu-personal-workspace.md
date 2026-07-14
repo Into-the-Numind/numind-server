@@ -846,7 +846,7 @@ git commit -m "feat(agent): add controlled lark workspace tools"
 
 **Files:** `internal/numind/store/agent_run.go`、`agent_run_external_resume_test.go`、`internal/numind/biz/agent/external_tool_resume.go`、`external_tool_resume_test.go`、`answer.go`、`answer_external_resume_test.go`。
 
-- [ ] **Step 1: 写恢复红测**
+- [x] **Step 1: 写恢复红测**
 
 resume 原子追加相同 tool_call_id 的 role=tool；不新增 role=user “我已完成”；不调用第二次 lark_execute；重复结果幂等；原 run 已取消只保存 operation 结果不新建 run。
 
@@ -862,13 +862,13 @@ func TestExternalToolResumeAppendsOriginalToolResultWithoutUserAnswer(t *testing
 }
 ```
 
-- [ ] **Step 2: 运行红测**
+- [x] **Step 2: 运行红测**
 
 Run: `go test ./internal/numind/biz/agent ./internal/numind/store -run 'ExternalToolResume' -count=1`
 
 Expected: FAIL，resumer 不存在。
 
-- [ ] **Step 3: 实现原子 resumer store**
+- [x] **Step 3: 实现原子 resumer store**
 
 ```go
 type IExternalToolResumer interface {
@@ -878,11 +878,11 @@ type IExternalToolResumer interface {
 
 事务锁 agent_run，验证等待 JSON，append `schema.ToolMessage(string(result), toolCallID)` 序列化 turn，清 external waiting，状态回 running。bool=false 表示已恢复。
 
-- [ ] **Step 4: 抽取无用户消息的 runner 恢复入口**
+- [x] **Step 4: 抽取无用户消息的 runner 恢复入口**
 
 在 `answer.go` 抽取 `resumeRunFromStoredHistory(ctx, runID)`；普通 Answer 先 `AnswerAndClear` 再调用它，ExternalToolResumer 在 store transaction 后直接调用它。两条路径共用生成逻辑但只有普通 Answer 追加 user turn。
 
-- [ ] **Step 5: 绿测和 Commit**
+- [x] **Step 5: 绿测和 Commit**
 
 Run: `go test -race ./internal/numind/biz/agent ./internal/numind/store -run 'ExternalToolResume|Answer' -count=1`
 
@@ -892,6 +892,8 @@ Expected: PASS。
 git add internal/numind/store/agent_run.go internal/numind/store/agent_run_external_resume_test.go internal/numind/biz/agent/external_tool_resume.go internal/numind/biz/agent/external_tool_resume_test.go internal/numind/biz/agent/answer.go internal/numind/biz/agent/answer_external_resume_test.go
 git commit -m "feat(agent): resume original external tool calls"
 ```
+
+**一期收口（2026-07-14）：** 该 task 扩展并完成了持久租约、自动 reclaimer、共享应用级 continuation supervisor、容量满 durable-ready 自动重试、删除/停机收敛与原 tool call 精确恢复。最终提交包括 `adfbbe40`、`34f75ad3`、`c717bc06`、`f446f822`、`8de978ad`、`700eed15`、`ed761ac3`、`02eb1055`、`eff84223`；规格审查和质量审查最终均为 P0/P1/P2=0。详见 ADR 0015。
 
 ## Task 12: 后端 composition 与 Agent factory 注入
 
