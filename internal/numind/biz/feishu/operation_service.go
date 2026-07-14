@@ -1238,15 +1238,8 @@ func (s *FeishuOperationService) openOperationBlob(
 	expectedKeyVersion string,
 	blob []byte,
 ) ([]byte, string, error) {
-	decoder := json.NewDecoder(bytes.NewReader(blob))
-	decoder.DisallowUnknownFields()
-	var sealed operationSealedBlob
-	if err := decoder.Decode(&sealed); err != nil || len(sealed.Ciphertext) == 0 ||
-		(expectedKeyVersion != "" && sealed.KeyVersion != expectedKeyVersion) {
-		return nil, "", ErrOperationIntegrity
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+	sealed, err := parseOperationSealedBlob(blob)
+	if err != nil || (expectedKeyVersion != "" && sealed.KeyVersion != expectedKeyVersion) {
 		return nil, "", ErrOperationIntegrity
 	}
 	plaintext, err := s.cipher.Open(purpose, owner, sealed.KeyVersion, sealed.Ciphertext)
@@ -1254,6 +1247,31 @@ func (s *FeishuOperationService) openOperationBlob(
 		return nil, "", ErrOperationIntegrity
 	}
 	return plaintext, sealed.KeyVersion, nil
+}
+
+// OperationSealedBlobKeyVersion returns the canonical version embedded in a
+// persisted operation blob without exposing its ciphertext or plaintext.
+func OperationSealedBlobKeyVersion(blob []byte) (string, error) {
+	sealed, err := parseOperationSealedBlob(blob)
+	if err != nil {
+		return "", ErrOperationIntegrity
+	}
+	return sealed.KeyVersion, nil
+}
+
+func parseOperationSealedBlob(blob []byte) (operationSealedBlob, error) {
+	decoder := json.NewDecoder(bytes.NewReader(blob))
+	decoder.DisallowUnknownFields()
+	var sealed operationSealedBlob
+	if err := decoder.Decode(&sealed); err != nil || len(sealed.Ciphertext) == 0 ||
+		validateCLIHomeKeyVersion(sealed.KeyVersion) != nil || sealed.KeyVersion != strings.ToLower(sealed.KeyVersion) {
+		return operationSealedBlob{}, ErrOperationIntegrity
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return operationSealedBlob{}, ErrOperationIntegrity
+	}
+	return sealed, nil
 }
 
 func persistedRequestFromNormalized(request ExecuteRequest, normalized *NormalizedCommand) persistedOperationRequest {

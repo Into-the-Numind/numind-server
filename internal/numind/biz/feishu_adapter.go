@@ -231,8 +231,8 @@ func validFeishuCipherKeyVersion(version string) bool {
 		return false
 	}
 	for _, char := range version {
-		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') &&
-			(char < '0' || char > '9') && char != '.' && char != '_' && char != '-' {
+		if (char < 'a' || char > 'z') && (char < '0' || char > '9') &&
+			char != '.' && char != '_' && char != '-' {
 			return false
 		}
 	}
@@ -253,13 +253,38 @@ func verifyFeishuPersistedKeyVersions(dataStore store.IStore, ciphers map[string
 			return fmt.Errorf("persistent key version store unavailable")
 		}
 		for _, version := range versions {
-			if !validFeishuCipherKeyVersion(version) {
-				return fmt.Errorf("persistent key version is invalid")
-			}
-			if _, found := ciphers[version]; !found {
-				return fmt.Errorf("persistent key version is unavailable")
+			if err := verifyFeishuPersistedKeyVersion(version, ciphers); err != nil {
+				return err
 			}
 		}
+	}
+	var resultBlobs []struct {
+		ResultCiphertext []byte `gorm:"column:result_ciphertext"`
+	}
+	if err := dataStore.DB().Model(&model.FeishuOperation{}).
+		Select("result_ciphertext").
+		Where("state = ? OR (result_ciphertext IS NOT NULL AND length(result_ciphertext) > 0)", model.FeishuOperationSucceeded).
+		Find(&resultBlobs).Error; err != nil {
+		return fmt.Errorf("persistent key version store unavailable")
+	}
+	for _, resultBlob := range resultBlobs {
+		version, err := feishu.OperationSealedBlobKeyVersion(resultBlob.ResultCiphertext)
+		if err != nil {
+			return fmt.Errorf("persistent result encryption is invalid")
+		}
+		if err := verifyFeishuPersistedKeyVersion(version, ciphers); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func verifyFeishuPersistedKeyVersion(version string, ciphers map[string]*crypto.Cipher) error {
+	if !validFeishuCipherKeyVersion(version) {
+		return fmt.Errorf("persistent key version is invalid")
+	}
+	if _, found := ciphers[version]; !found {
+		return fmt.Errorf("persistent key version is unavailable")
 	}
 	return nil
 }

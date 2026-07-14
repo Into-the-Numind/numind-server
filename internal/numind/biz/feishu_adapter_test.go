@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"numind-server/internal/numind/biz/agent"
@@ -17,6 +18,7 @@ import (
 	"numind-server/internal/pkg/model"
 
 	"github.com/google/uuid"
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -176,6 +178,85 @@ func TestBuildFeishuService_KeyRotationReadsHistoricalSucceededOperation(t *test
 	require.JSONEq(t, `{"document_id":"historical"}`, string(backfills[0].Result))
 }
 
+func TestBuildFeishuService_MissingRetainedResultKeyFailsClosedBeforePublication(t *testing.T) {
+	deps := newFeishuCompositionDeps(t)
+	deps.keyVersion = "v3"
+	deps.tokenKey = feishuCompositionKey(9)
+	deps.cipherKeys = map[string]string{"v1": feishuCompositionKey(1), "v3": feishuCompositionKey(3)}
+	prepareHistoricalCompositionVault(t, deps, "v1", feishuCompositionKey(1))
+
+	operationID := uuid.NewString()
+	owner := feishu.OperationCipherOwner{UserID: 7, Generation: 1, OperationID: operationID}
+	v1Cipher, err := crypto.NewCipher(feishuCompositionKey(1))
+	require.NoError(t, err)
+	v1Keyring, err := feishu.NewOperationCipherKeyring(map[string]*crypto.Cipher{"v1": v1Cipher}, "v1")
+	require.NoError(t, err)
+	requestCiphertext, requestKeyVersion, err := v1Keyring.Seal(feishu.OperationCipherPurposeRequest, owner, []byte(`{"argv":["docs","+fetch"]}`))
+	require.NoError(t, err)
+
+	v2Cipher, err := crypto.NewCipher(feishuCompositionKey(2))
+	require.NoError(t, err)
+	v2Keyring, err := feishu.NewOperationCipherKeyring(map[string]*crypto.Cipher{"v2": v2Cipher}, "v2")
+	require.NoError(t, err)
+	resultCiphertext, resultKeyVersion, err := v2Keyring.Seal(feishu.OperationCipherPurposeResult, owner, []byte(`{"document_id":"rotated"}`))
+	require.NoError(t, err)
+	resultBlob, err := json.Marshal(struct {
+		KeyVersion string `json:"key_version"`
+		Ciphertext []byte `json:"ciphertext"`
+	}{KeyVersion: resultKeyVersion, Ciphertext: resultCiphertext})
+	require.NoError(t, err)
+	require.NoError(t, deps.dataStore.DB().Create(&model.FeishuOperation{
+		ID: operationID, UserID: 7, Generation: 1, AgentRunID: 91, ToolCallID: "call-rotated",
+		IdempotencyKey: "rotated-result", CommandPath: "docs +fetch", Domain: "docs", RiskLevel: "read",
+		RequestCiphertext: requestCiphertext, KeyVersion: requestKeyVersion,
+		RequestFingerprint: "rotated-request", State: model.FeishuOperationSucceeded, ResultCiphertext: resultBlob,
+	}).Error)
+
+	composition, err := buildFeishuService(deps)
+	require.Error(t, err)
+	require.Nil(t, composition)
+
+	deps.cipherKeys["v2"] = feishuCompositionKey(2)
+	composition, err = buildFeishuService(deps)
+	require.NoError(t, err)
+	require.NotNil(t, composition)
+	resumer := &dispatcherAgentResumerFake{}
+	composition.dispatcher.agentResumer = resumer
+	require.NoError(t, composition.dispatcher.DispatchResume(context.Background(), 7, operationID))
+	backfills := resumer.snapshot()
+	require.Len(t, backfills, 1)
+	require.Equal(t, uint64(91), backfills[0].RunID)
+	require.Equal(t, "call-rotated", backfills[0].ToolCallID)
+	require.JSONEq(t, `{"document_id":"rotated"}`, string(backfills[0].Result))
+}
+
+func TestBuildFeishuService_InvalidRetainedResultBlobFailsClosedBeforePublication(t *testing.T) {
+	for name, blob := range map[string][]byte{
+		"missing result blob":  nil,
+		"missing key version":  []byte(`{"ciphertext":"AQ=="}`),
+		"empty ciphertext":     []byte(`{"key_version":"v1","ciphertext":""}`),
+		"unknown field":        []byte(`{"key_version":"v1","ciphertext":"AQ==","unexpected":true}`),
+		"noncanonical version": []byte(`{"key_version":"V1","ciphertext":"AQ=="}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			deps := newFeishuCompositionDeps(t)
+			deps.keyVersion = "v1"
+			deps.cipherKeys = map[string]string{"v1": feishuCompositionKey(1)}
+			deps.verifyVersion = func(context.Context) error { return nil }
+			require.NoError(t, deps.dataStore.DB().Create(&model.FeishuOperation{
+				ID: uuid.NewString(), UserID: 7, Generation: 1, AgentRunID: 91, ToolCallID: "call-invalid-result",
+				IdempotencyKey: "invalid-result-" + name, CommandPath: "docs +fetch", Domain: "docs", RiskLevel: "read",
+				RequestCiphertext: []byte("unread-terminal-request"), KeyVersion: "v1",
+				RequestFingerprint: "invalid-result", State: model.FeishuOperationSucceeded, ResultCiphertext: blob,
+			}).Error)
+
+			composition, err := buildFeishuService(deps)
+			require.Error(t, err)
+			require.Nil(t, composition)
+		})
+	}
+}
+
 func TestBuildFeishuService_KeyRotationNewVaultWriteUsesCurrentVersion(t *testing.T) {
 	deps := newFeishuCompositionDeps(t)
 	deps.keyVersion = "v2"
@@ -227,6 +308,10 @@ func TestBuildFeishuService_RejectsInvalidEncryptionKeyring(t *testing.T) {
 			deps.cipherKeys = map[string]string{"test-v1": base64.StdEncoding.EncodeToString([]byte("short"))}
 		},
 		"invalid version": func(deps *feishuCompositionDeps) { deps.cipherKeys = map[string]string{"bad/version": valid} },
+		"uppercase current and configured version": func(deps *feishuCompositionDeps) {
+			deps.keyVersion = "V1"
+			deps.cipherKeys = map[string]string{"V1": valid}
+		},
 		"noncanonical current version": func(deps *feishuCompositionDeps) {
 			deps.keyVersion = " v2"
 			deps.cipherKeys = map[string]string{" v2": valid}
@@ -250,6 +335,52 @@ func TestBuildFeishuService_RejectsInvalidEncryptionKeyring(t *testing.T) {
 			require.NotContains(t, err.Error(), valid)
 		})
 	}
+}
+
+func TestBuildFeishuService_NoncanonicalPersistedKeyVersionsFailClosed(t *testing.T) {
+	for name, persist := range map[string]func(*testing.T, feishuCompositionDeps){
+		"vault": func(t *testing.T, deps feishuCompositionDeps) {
+			t.Helper()
+			require.NoError(t, deps.dataStore.DB().Create(&model.FeishuCLIVault{
+				UserID: 7, Generation: 1, Ciphertext: []byte("vault-ciphertext"), KeyVersion: "V1",
+				Checksum: "checksum", Revision: 1,
+			}).Error)
+		},
+		"operation request": func(t *testing.T, deps feishuCompositionDeps) {
+			t.Helper()
+			require.NoError(t, deps.dataStore.DB().Create(&model.FeishuOperation{
+				ID: uuid.NewString(), UserID: 7, Generation: 1, AgentRunID: 91, ToolCallID: "call-noncanonical-request",
+				IdempotencyKey: "noncanonical-request", CommandPath: "docs +fetch", Domain: "docs", RiskLevel: "read",
+				RequestCiphertext: []byte("request-ciphertext"), KeyVersion: "V1", RequestFingerprint: "request",
+				State: model.FeishuOperationWaitingConfirmation,
+			}).Error)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			deps := newFeishuCompositionDeps(t)
+			deps.keyVersion = "v1"
+			deps.cipherKeys = map[string]string{"v1": feishuCompositionKey(1)}
+			deps.verifyVersion = func(context.Context) error { return nil }
+			persist(t, deps)
+
+			composition, err := buildFeishuService(deps)
+			require.Error(t, err)
+			require.Nil(t, composition)
+		})
+	}
+}
+
+func TestBuildFeishuCipherKeyring_RejectsNoncanonicalViperVersion(t *testing.T) {
+	key := feishuCompositionKey(7)
+	config := viper.New()
+	config.SetConfigType("yaml")
+	require.NoError(t, config.ReadConfig(strings.NewReader("feishu:\n  key_version: V1\n  keyring:\n    V1: "+key+"\n")))
+
+	require.Equal(t, "V1", config.GetString("feishu.key_version"))
+	require.Equal(t, map[string]string{"v1": key}, config.GetStringMapString("feishu.keyring"))
+	_, err := buildFeishuCipherKeyring(config.GetString("feishu.key_version"), config.GetStringMapString("feishu.keyring"))
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), key)
 }
 
 func TestFeishuWorkspacePublication_UsesOneComposedGraph(t *testing.T) {
