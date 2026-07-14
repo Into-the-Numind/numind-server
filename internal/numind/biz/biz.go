@@ -146,6 +146,10 @@ type biz struct {
 	feishuSvc                feishu.IFeishuService        // feishu-integration T7: 飞书连接/OAuth 服务（flag off → nil）
 	externalResumeReclaimer  *agent.ExternalResumeReclaimer
 	externalResumeSupervisor *agent.ExternalContinuationSupervisor
+	// feishuWorkspace is the private Task 12 composition root. Task 13 must
+	// consume this already-validated graph rather than constructing a parallel
+	// legacy ConnectOrchestrator or callback path.
+	feishuWorkspace *feishuPersonalWorkspace
 }
 
 // NewBiz 创建一个 IBiz 类型的实例.
@@ -347,10 +351,9 @@ func NewBiz(ds store.IStore) *biz {
 	if err := agentToolRegistry.RegisterFactory(platformFactory); err != nil {
 		log.Warnw("AgentToolRegistry.RegisterFactory failed", "error", err)
 	}
-	if err := agentToolRegistry.LoadAll(context.Background()); err != nil {
-		log.Warnw("AgentToolRegistry.LoadAll failed", "error", err)
-	}
-	b.agentToolRegistry = agentToolRegistry
+	// LoadAll deliberately happens after the flag-gated Feishu composition below.
+	// The controlled workspace pair must be injected before the factory snapshots
+	// its registrations; a failed composition therefore exposes neither tool.
 
 	// #6 agent-mode-permission-pipeline: PermissionGate + 7 Validators + WrapHooks
 	// 顺序：permission → sandbox（避免 deny 时白启容器；S0 P0 reviewer fix）
@@ -788,38 +791,50 @@ func NewBiz(ds store.IStore) *biz {
 		narrationBuf,
 	).WithUserStore(ds.Users()) // b2b2c-student-agent-access: resolve caller parent_user_id for tenant access
 	if viper.GetBool("features.feishu_integration.enabled") {
-		if resumeStore, ok := ds.AgentRuns().(store.IExternalToolResumeLease); ok {
-			b.externalResumeSupervisor = agent.NewExternalContinuationSupervisor(agent.ExternalContinuationLimit)
-			resumer := agent.NewAgentRunResumer(resumeStore, b.studentRunSvc, b.externalResumeSupervisor)
-			b.externalResumeReclaimer = agent.NewExternalResumeReclaimer(resumeStore, resumer, 15*time.Second)
-		} else {
+		if resumeStore, ok := ds.AgentRuns().(store.IExternalToolResumeLease); !ok {
 			log.Errorw("feishu-integration: agent run store lacks durable external resume support")
+		} else {
+			supervisor := agent.NewExternalContinuationSupervisor(agent.ExternalContinuationLimit)
+			workspace, workspaceErr := buildConfiguredFeishuService(ds, b.studentRunSvc, resumeStore, supervisor)
+			if workspaceErr != nil {
+				// Do not publish a service, supervisor, reclaimer, or tool pair after
+				// an explicit configuration, cleanup, or pinned-version failure.
+				log.Errorw("feishu-integration: personal workspace wiring failed; feature disabled this process", "error", workspaceErr)
+			} else if workspace != nil {
+				agent.SetFactoryLarkWorkspaceExecutors(platformFactory, workspace.skillReader, workspace.operationService)
+				b.publishFeishuPersonalWorkspace(workspace, resumeStore)
+				log.Infow("feishu-integration: personal workspace wired")
+			}
 		}
 	}
+
+	if err := agentToolRegistry.LoadAll(context.Background()); err != nil {
+		log.Warnw("AgentToolRegistry.LoadAll failed", "error", err)
+	}
+	b.agentToolRegistry = agentToolRegistry
 
 	// V1.5 task 1.2: wire attachment fallback service + upload service with fallback.
 	b.attachFallbackSvc = agentatt.NewFallbackService(ds.AgentAttachments())
 	b.uploadSvc = attachment.NewUploadServiceWithFallback(ds.AgentAttachments(), b.attachFallbackSvc)
-
-	// feishu-integration（device-code 方案）: 飞书连接服务（仅 flag 开时构造，与 numind.go
-	// 的 crypto.MustInit fail-fast 对齐）。device-code 方案无 OAuth state 密钥/回调。
-	// 构造失败（如密钥缺失）只 log 不阻塞启动——router.go 整组套 FeatureFlag，flag off 时
-	// 路由不注册，b.feishuSvc 留 nil 安全；flag on 但构造失败则该 feature 端点会因 nil svc
-	// 而被 router 跳过（见 router 注册守卫）。
-	if viper.GetBool("features.feishu_integration.enabled") {
-		if fsvc, ferr := buildFeishuService(ds.ThirdPartyAccounts()); ferr != nil {
-			log.Errorw("feishu-integration: service wiring failed; 飞书 endpoints disabled this process", "error", ferr)
-		} else {
-			b.feishuSvc = fsvc
-			log.Infow("feishu-integration: connection service wired (device-code)")
-		}
-	}
 
 	// 设置全局单例，供 middleware/cron 等无法注入 biz 的代码路径使用。
 	// 确保 store.S 已在 numind.go 中完成初始化后才调用 NewBiz。
 	B = b
 
 	return b
+}
+
+// publishFeishuPersonalWorkspace exposes a fully built graph only as one
+// indivisible set of process-lifetime dependencies. A nil/invalid workspace
+// intentionally leaves every field nil so a failed composition cannot leak a
+// partial feature to future HTTP wiring.
+func (b *biz) publishFeishuPersonalWorkspace(workspace *feishuPersonalWorkspace, resumeStore store.IExternalToolResumeLease) {
+	if b == nil || workspace == nil || resumeStore == nil || workspace.resumer == nil || workspace.dispatcher == nil || workspace.supervisor == nil {
+		return
+	}
+	b.feishuWorkspace = workspace
+	b.externalResumeSupervisor = workspace.supervisor
+	b.externalResumeReclaimer = agent.NewExternalResumeReclaimer(resumeStore, workspace.resumer, 15*time.Second)
 }
 
 // Users 返回一个实现了 UserBiz 接口的实例.
