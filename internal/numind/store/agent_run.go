@@ -87,20 +87,11 @@ type IExternalActionWriter interface {
 	UpdatePendingExternalAction(ctx context.Context, runID uint64, payloadJSON []byte) error
 }
 
-// IExternalToolResumer is the narrow store capability used after an external
-// operation completes. It atomically claims the pending wait and appends the
-// original tool call's result. bool is true only for the callback that won the
-// claim; duplicate callbacks return false without appending another turn.
-type IExternalToolResumer interface {
-	ResumeExternalTool(ctx context.Context, runID uint64, operationID, toolCallID string, resultTurn json.RawMessage) (bool, error)
-}
-
-// IExternalToolResumeLease extends the atomic result claim with a durable
-// runner-start handshake. The pending identity is retained while synchronous
+// IExternalToolResumeLease is the only production capability for restoring an
+// external result. The pending identity is retained while synchronous
 // runner preflight owns the lease; Complete acknowledges a usable runner and
 // clears it, while Release makes the same result immediately reclaimable.
 type IExternalToolResumeLease interface {
-	IExternalToolResumer
 	ClaimExternalToolResume(ctx context.Context, runID uint64, operationID, toolCallID string, resultTurn json.RawMessage) (leaseToken string, claimed bool, err error)
 	CompleteExternalToolResume(ctx context.Context, runID uint64, operationID, toolCallID, leaseToken string) error
 	ReleaseExternalToolResume(ctx context.Context, runID uint64, operationID, toolCallID, leaseToken string) error
@@ -118,7 +109,6 @@ func newAgentRunStore(db *gorm.DB) IAgentRunStore {
 
 var _ IAgentRunStore = (*agentRunStore)(nil)
 var _ IExternalActionWriter = (*agentRunStore)(nil)
-var _ IExternalToolResumer = (*agentRunStore)(nil)
 var _ IExternalToolResumeLease = (*agentRunStore)(nil)
 
 func (s *agentRunStore) Create(ctx context.Context, run *model.AgentRun) error {
@@ -362,31 +352,9 @@ const (
 
 var errExternalResumeLostClaim = errors.New("external tool resume claim was already consumed")
 
-// ResumeExternalTool atomically replaces a durable external wait with the
-// original tool call's result. The transaction locks the run on databases that
-// support SELECT FOR UPDATE; the conditional UPDATE is the cross-database
-// compare-and-swap backstop used by SQLite tests and concurrent callbacks.
-func (s *agentRunStore) ResumeExternalTool(
-	ctx context.Context,
-	runID uint64,
-	operationID string,
-	toolCallID string,
-	resultTurn json.RawMessage,
-) (bool, error) {
-	leaseToken, claimed, err := s.ClaimExternalToolResume(ctx, runID, operationID, toolCallID, resultTurn)
-	if err != nil || !claimed {
-		return claimed, err
-	}
-	if err := s.CompleteExternalToolResume(ctx, runID, operationID, toolCallID, leaseToken); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
 // ClaimExternalToolResume returns a fencing token only to the callback that
-// owns the current runner-start lease. Compatibility callers may continue to
-// use ResumeExternalTool's bool, but production continuation must complete or
-// release through this tokenized lifecycle.
+// owns the current runner-start lease. Every production continuation must
+// complete or release through this tokenized lifecycle.
 func (s *agentRunStore) ClaimExternalToolResume(
 	ctx context.Context,
 	runID uint64,

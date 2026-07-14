@@ -15,6 +15,7 @@ import (
 	"gorm.io/datatypes"
 
 	"numind-server/internal/numind/biz/agent/stream"
+	"numind-server/internal/numind/biz/narration"
 	storepkg "numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/profile"
@@ -71,11 +72,6 @@ func (s *externalResumeStoreStub) updateRunCopyOnWrite(runID uint64, mutate func
 	}
 	s.runStore.runs[runID] = &cloned
 	return nil
-}
-
-func (s *externalResumeStoreStub) ResumeExternalTool(_ context.Context, runID uint64, operationID, toolCallID string, result json.RawMessage) (bool, error) {
-	_, claimed, err := s.ClaimExternalToolResume(context.Background(), runID, operationID, toolCallID, result)
-	return claimed, err
 }
 
 func (s *externalResumeStoreStub) ClaimExternalToolResume(_ context.Context, runID uint64, operationID, toolCallID string, result json.RawMessage) (string, bool, error) {
@@ -730,6 +726,7 @@ type requestDetachedResumeRunner struct {
 	started     chan struct{}
 	allowFinish chan struct{}
 	ctxCanceled chan struct{}
+	probe       chan chan error
 }
 
 func (r *requestDetachedResumeRunner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
@@ -737,12 +734,16 @@ func (r *requestDetachedResumeRunner) Run(ctx context.Context, req RunRequest) (
 		return nil, err
 	}
 	close(r.started)
-	select {
-	case <-r.allowFinish:
-		return &RunResult{AgentRunID: req.ExistingRunID, TerminalReason: TerminalCompleted}, nil
-	case <-ctx.Done():
-		close(r.ctxCanceled)
-		return nil, ctx.Err()
+	for {
+		select {
+		case <-r.allowFinish:
+			return &RunResult{AgentRunID: req.ExistingRunID, TerminalReason: TerminalCompleted}, nil
+		case <-ctx.Done():
+			close(r.ctxCanceled)
+			return nil, ctx.Err()
+		case response := <-r.probe:
+			response <- ctx.Err()
+		}
 	}
 }
 
@@ -761,7 +762,7 @@ func TestExternalToolResume_HTTPRequestCancellationDoesNotCancelAcceptedRunner(t
 	}
 	require.NoError(t, runStore.Create(context.Background(), run))
 	runner := &requestDetachedResumeRunner{
-		started: make(chan struct{}), allowFinish: make(chan struct{}), ctxCanceled: make(chan struct{}),
+		started: make(chan struct{}), allowFinish: make(chan struct{}), ctxCanceled: make(chan struct{}), probe: make(chan chan error),
 	}
 	t.Cleanup(func() {
 		select {
@@ -771,7 +772,10 @@ func TestExternalToolResume_HTTPRequestCancellationDoesNotCancelAcceptedRunner(t
 		}
 	})
 	resumeStore := &externalResumeStoreStub{runStore: runStore, returnOK: true}
-	resumer := NewAgentRunResumer(resumeStore, NewStudentRunService(runner, runStore, nil, nil, nil, nil))
+	supervisor := NewExternalContinuationSupervisor(externalResumeWorkerLimit)
+	provider := newExternalResumeNarrationProvider(t)
+	buffer := NewNarrationBuffer(8, time.Minute)
+	resumer := NewAgentRunResumer(resumeStore, NewStudentRunService(runner, runStore, nil, nil, provider, buffer), supervisor)
 	requestCtx, cancelRequest := context.WithCancel(context.Background())
 	require.NoError(t, resumer.Resume(requestCtx, ExternalToolResult{
 		RunID: run.ID, OperationID: "op-1", ToolCallID: "tc-9", Result: json.RawMessage(`{"ok":true}`),
@@ -781,18 +785,90 @@ func TestExternalToolResume_HTTPRequestCancellationDoesNotCancelAcceptedRunner(t
 	case <-time.After(time.Second):
 		t.Fatal("accepted HTTP continuation did not start")
 	}
+	provider.Emit(context.Background(), run.ID, "test", narration.StateUse, narration.EmitPayload{})
+	require.Eventually(t, func() bool {
+		return len(buffer.QuerySince(run.ID, time.Time{})) == 1
+	}, time.Second, time.Millisecond, "accepted continuation narration forwarder never subscribed")
 	cancelRequest()
+	probeResult := make(chan error, 1)
+	runner.probe <- probeResult
+	assert.NoError(t, <-probeResult, "ordinary HTTP request cancellation must not reach an accepted continuation")
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), time.Second)
+	defer cancelShutdown()
+	require.NoError(t, supervisor.Stop(shutdownCtx))
 	select {
 	case <-runner.ctxCanceled:
-		t.Fatal("ordinary HTTP request cancellation leaked into the accepted continuation")
-	case <-time.After(30 * time.Millisecond):
+	default:
+		t.Fatal("application shutdown must cancel and join the accepted continuation")
 	}
-	close(runner.allowFinish)
-	require.Eventually(t, func() bool {
-		resumeStore.mu.Lock()
-		defer resumeStore.mu.Unlock()
-		return resumeStore.completes == 1
-	}, time.Second, 5*time.Millisecond)
+	provider.Emit(context.Background(), run.ID, "test", narration.StateUse, narration.EmitPayload{})
+	assert.Len(t, buffer.QuerySince(run.ID, time.Time{}), 1,
+		"application shutdown returned while the accepted continuation narration forwarder was still subscribed")
+}
+
+func TestExternalContinuationSupervisor_FullCapacityDoesNotClaim(t *testing.T) {
+	supervisor := NewExternalContinuationSupervisor(externalResumeWorkerLimit)
+	releases := make([]func(), 0, externalResumeWorkerLimit)
+	for i := 0; i < externalResumeWorkerLimit; i++ {
+		_, release, err := supervisor.Acquire()
+		require.NoError(t, err)
+		releases = append(releases, release)
+	}
+	t.Cleanup(func() {
+		for _, release := range releases {
+			release()
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = supervisor.Stop(ctx)
+	})
+
+	runStore := newMockStore()
+	run := &model.AgentRun{
+		UserID: 7, SessionID: "capacity", Status: "terminated", StateReason: string(TerminalWaitingForUserChoice),
+		Messages: datatypes.JSON(`[{"role":"user","content":"写飞书"}]`), PendingExternalActionJSON: datatypes.JSON(`{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"tc-9","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`), StartedAt: time.Now(),
+	}
+	require.NoError(t, runStore.Create(context.Background(), run))
+	resumeStore := &externalResumeStoreStub{runStore: runStore, returnOK: true}
+	resumer := NewAgentRunResumer(resumeStore, NewStudentRunService(&externalResumeRunner{}, runStore, nil, nil, nil, nil), supervisor)
+	err := resumer.Resume(context.Background(), ExternalToolResult{RunID: run.ID, OperationID: "op-1", ToolCallID: "tc-9", Result: json.RawMessage(`{"ok":true}`)})
+	require.ErrorIs(t, err, ErrExternalContinuationCapacity)
+	resumeStore.mu.Lock()
+	assert.Zero(t, resumeStore.calls, "a full supervisor must reject before the durable result is claimed")
+	resumeStore.mu.Unlock()
+	got, getErr := runStore.Get(context.Background(), run.ID)
+	require.NoError(t, getErr)
+	assert.Equal(t, string(TerminalWaitingForUserChoice), got.StateReason)
+}
+
+func TestExternalContinuationSupervisor_JobExitReleasesSlot(t *testing.T) {
+	supervisor := NewExternalContinuationSupervisor(1)
+	_, release, err := supervisor.Acquire()
+	require.NoError(t, err)
+	_, _, err = supervisor.Acquire()
+	require.ErrorIs(t, err, ErrExternalContinuationCapacity)
+	release()
+	_, releaseAgain, err := supervisor.Acquire()
+	require.NoError(t, err)
+	releaseAgain()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, supervisor.Stop(ctx))
+	_, _, err = supervisor.Acquire()
+	require.ErrorIs(t, err, ErrExternalContinuationStopped)
+}
+
+func TestExternalContinuationSupervisor_TimeoutKeepsJobTracked(t *testing.T) {
+	supervisor := NewExternalContinuationSupervisor(1)
+	_, release, err := supervisor.Acquire()
+	require.NoError(t, err)
+	timedOut, cancelTimedOut := context.WithCancel(context.Background())
+	cancelTimedOut()
+	require.ErrorIs(t, supervisor.Stop(timedOut), context.Canceled)
+	release()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, supervisor.Stop(ctx), "a timed-out shutdown must retain the job tracking needed to join later")
 }
 
 func TestExternalToolResume_ContinuesOriginalToolCallWithoutUserInput(t *testing.T) {
@@ -866,7 +942,6 @@ func TestExternalToolResume_ContinuesOriginalToolCallWithoutUserInput(t *testing
 	require.NoError(t, resumer.Resume(context.Background(), ExternalToolResult{
 		RunID: run.ID, ToolCallID: "tc-9", OperationID: "op-1", Result: json.RawMessage(`{"ok":true,"state":"succeeded","operation_id":"op-1"}`),
 	}))
-	time.Sleep(20 * time.Millisecond)
 	runner.mu.Lock()
 	assert.Equal(t, 1, runner.calls)
 	runner.mu.Unlock()
@@ -889,7 +964,6 @@ func TestExternalToolResume_StoreNoopDoesNotStartRunner(t *testing.T) {
 	require.NoError(t, resumer.Resume(context.Background(), ExternalToolResult{
 		RunID: run.ID, ToolCallID: "tc-9", OperationID: "op-1", Result: json.RawMessage(`{"ok":true}`),
 	}))
-	time.Sleep(20 * time.Millisecond)
 	runner.mu.Lock()
 	assert.Zero(t, runner.calls)
 	runner.mu.Unlock()
@@ -1031,7 +1105,6 @@ func TestExternalResumeReclaimer_TwoInstancesFenceToOneRunner(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("neither reclaimer started the durable continuation")
 	}
-	time.Sleep(30 * time.Millisecond)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	require.NoError(t, r1.Stop(ctx))
@@ -1047,7 +1120,11 @@ func TestExternalResumeReclaimer_PeriodicallyScansAndStops(t *testing.T) {
 	resumer := NewAgentRunResumer(resumeStore, NewStudentRunService(&externalResumeRunner{}, runStore, nil, nil, nil, nil))
 	reclaimer := NewExternalResumeReclaimer(resumeStore, resumer, 5*time.Millisecond)
 	reclaimer.Start()
-	time.Sleep(25 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		resumeStore.mu.Lock()
+		defer resumeStore.mu.Unlock()
+		return resumeStore.lists >= 2
+	}, time.Second, time.Millisecond)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	require.NoError(t, reclaimer.Stop(ctx))
@@ -1055,7 +1132,6 @@ func TestExternalResumeReclaimer_PeriodicallyScansAndStops(t *testing.T) {
 	listsAtStop := resumeStore.lists
 	resumeStore.mu.Unlock()
 	assert.GreaterOrEqual(t, listsAtStop, 2)
-	time.Sleep(15 * time.Millisecond)
 	resumeStore.mu.Lock()
 	assert.Equal(t, listsAtStop, resumeStore.lists, "Stop must terminate the ticker goroutine")
 	resumeStore.mu.Unlock()

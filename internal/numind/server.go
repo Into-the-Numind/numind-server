@@ -105,7 +105,9 @@ func startServer() error {
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Fatal("Server forced to shutdown:", err)
 	}
-	bizLayer.CloseExternalResumeReclaimer(ctx)
+	if err := bizLayer.CloseExternalResumeLifecycle(ctx); err != nil {
+		log.Printf("External resume lifecycle did not stop cleanly: %v", err)
+	}
 	log.Println("Server exited")
 	return nil
 }

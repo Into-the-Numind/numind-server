@@ -21,9 +21,122 @@ import (
 
 const externalOperationIDExtraKey = "external_operation_id"
 
-const externalResumeWorkerLimit = 4
+const ExternalContinuationLimit = 4
+
+const externalResumeWorkerLimit = ExternalContinuationLimit
 
 var errExternalContinuationFirstCall = errors.New("external continuation first model call did not start durably")
+
+var (
+	ErrExternalContinuationCapacity = errors.New("external continuation capacity is full")
+	ErrExternalContinuationStopped  = errors.New("external continuation supervisor is stopped")
+)
+
+// ExternalContinuationSupervisor owns accepted HTTP continuations after their
+// request has returned. It bounds detached work and makes process shutdown
+// cancel and join every registered runner (including its narration forwarder).
+type ExternalContinuationSupervisor struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	slots  chan struct{}
+
+	mu          sync.Mutex
+	active      int
+	stopping    bool
+	drained     chan struct{}
+	drainClosed bool
+}
+
+func NewExternalContinuationSupervisor(limit int) *ExternalContinuationSupervisor {
+	if limit <= 0 {
+		limit = externalResumeWorkerLimit
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &ExternalContinuationSupervisor{
+		ctx: ctx, cancel: cancel, slots: make(chan struct{}, limit), drained: make(chan struct{}),
+	}
+}
+
+// Acquire reserves capacity before the durable result is claimed. A full or
+// stopping supervisor fails synchronously so the run remains waiting/retryable.
+func (s *ExternalContinuationSupervisor) Acquire() (context.Context, func(), error) {
+	if s == nil {
+		return nil, nil, ErrExternalContinuationStopped
+	}
+	s.mu.Lock()
+	if s.stopping {
+		s.mu.Unlock()
+		return nil, nil, ErrExternalContinuationStopped
+	}
+	s.mu.Unlock()
+	select {
+	case s.slots <- struct{}{}:
+	default:
+		return nil, nil, ErrExternalContinuationCapacity
+	}
+	s.mu.Lock()
+	if s.stopping {
+		s.mu.Unlock()
+		<-s.slots
+		return nil, nil, ErrExternalContinuationStopped
+	}
+	s.active++
+	s.mu.Unlock()
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			<-s.slots
+			s.mu.Lock()
+			s.active--
+			s.closeDrainIfIdleLocked()
+			s.mu.Unlock()
+		})
+	}
+	return s.ctx, release, nil
+}
+
+func (s *ExternalContinuationSupervisor) closeDrainIfIdleLocked() {
+	if s.stopping && s.active == 0 && !s.drainClosed {
+		close(s.drained)
+		s.drainClosed = true
+	}
+}
+
+func (s *ExternalContinuationSupervisor) BeginStop() <-chan struct{} {
+	if s == nil {
+		done := make(chan struct{})
+		close(done)
+		return done
+	}
+	s.mu.Lock()
+	if !s.stopping {
+		s.stopping = true
+		s.cancel()
+		s.closeDrainIfIdleLocked()
+	}
+	drained := s.drained
+	s.mu.Unlock()
+	return drained
+}
+
+func (s *ExternalContinuationSupervisor) Wait(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	drained := s.BeginStop()
+	select {
+	case <-drained:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Stop first rejects and cancels new work, then waits for all registered jobs.
+// A timeout leaves the tracking state intact so a later call can keep waiting.
+func (s *ExternalContinuationSupervisor) Stop(ctx context.Context) error {
+	return s.Wait(ctx)
+}
 
 // ExternalToolResult is the server-owned result of one persisted external
 // operation. None of these fields comes from model tool input.
@@ -40,6 +153,7 @@ type ExternalToolResult struct {
 type AgentRunResumer struct {
 	store            store.IExternalToolResumeLease
 	studentRuns      *StudentRunService
+	supervisor       *ExternalContinuationSupervisor
 	preflightTimeout time.Duration
 }
 
@@ -247,10 +361,17 @@ func reconstructExternalToolResult(run *model.AgentRun) (ExternalToolResult, err
 
 // NewAgentRunResumer constructs the bridge used by the outer Feishu
 // composition layer. Keeping the dependencies narrow avoids a feishu→agent
-// package cycle and lets DataStore's concrete agent-run store be asserted to
-// IExternalToolResumer at composition time.
-func NewAgentRunResumer(runStore store.IExternalToolResumeLease, studentRuns *StudentRunService) *AgentRunResumer {
-	return &AgentRunResumer{store: runStore, studentRuns: studentRuns, preflightTimeout: 10 * time.Second}
+// package cycle and keeps the tokenized store lease as the only restoration
+// capability exposed at composition time.
+func NewAgentRunResumer(runStore store.IExternalToolResumeLease, studentRuns *StudentRunService, supervisors ...*ExternalContinuationSupervisor) *AgentRunResumer {
+	var supervisor *ExternalContinuationSupervisor
+	if len(supervisors) > 0 {
+		supervisor = supervisors[0]
+	}
+	if supervisor == nil {
+		supervisor = NewExternalContinuationSupervisor(externalResumeWorkerLimit)
+	}
+	return &AgentRunResumer{store: runStore, studentRuns: studentRuns, supervisor: supervisor, preflightTimeout: 10 * time.Second}
 }
 
 // Resume appends the original tool result once and resumes the same run. A
@@ -279,6 +400,14 @@ func (r *AgentRunResumer) resume(ctx context.Context, result ExternalToolResult,
 	if err != nil {
 		return fmt.Errorf("AgentRunResumer.Resume: validate continuation before claim: %w", err)
 	}
+	var runnerParent context.Context
+	releaseJob := func() {}
+	if !managed {
+		runnerParent, releaseJob, err = r.supervisor.Acquire()
+		if err != nil {
+			return fmt.Errorf("AgentRunResumer.Resume: reserve continuation: %w", err)
+		}
+	}
 	leaseToken, claimed, err := r.store.ClaimExternalToolResume(
 		ctx,
 		result.RunID,
@@ -287,15 +416,17 @@ func (r *AgentRunResumer) resume(ctx context.Context, result ExternalToolResult,
 		result.Result,
 	)
 	if err != nil {
+		releaseJob()
 		return fmt.Errorf("AgentRunResumer.Resume: claim external result: %w", err)
 	}
 	if !claimed {
+		releaseJob()
 		return nil
 	}
 	if managed {
 		return r.runClaimedContinuation(ctx, result, leaseToken, runReq)
 	}
-	return r.startClaimedContinuation(ctx, result, leaseToken, runReq)
+	return r.startClaimedContinuation(ctx, runnerParent, releaseJob, result, leaseToken, runReq)
 }
 
 func (r *AgentRunResumer) runClaimedContinuation(ctx context.Context, result ExternalToolResult, leaseToken string, runReq RunRequest) error {
@@ -341,7 +472,7 @@ func (r *AgentRunResumer) startNarrationForwarder(ctx context.Context, runID uin
 	return done
 }
 
-func (r *AgentRunResumer) startClaimedContinuation(ctx context.Context, result ExternalToolResult, leaseToken string, runReq RunRequest) error {
+func (r *AgentRunResumer) startClaimedContinuation(ctx, runnerParent context.Context, releaseJob func(), result ExternalToolResult, leaseToken string, runReq RunRequest) error {
 	startedCh := make(chan error, 1)
 	finishedCh := make(chan error, 1)
 	gate := newExternalContinuationGate(r.store, result, leaseToken, startedCh)
@@ -352,13 +483,14 @@ func (r *AgentRunResumer) startClaimedContinuation(ctx context.Context, result E
 	}
 	waitCtx, stopWaiting := context.WithTimeout(ctx, preflightTimeout)
 	defer stopWaiting()
-	runnerCtx, cancelRunner := context.WithCancel(context.Background())
+	runnerCtx, cancelRunner := context.WithCancel(runnerParent)
 
 	narrationDone := r.startNarrationForwarder(runnerCtx, result.RunID)
 	go func() {
 		defer func() {
 			cancelRunner()
 			<-narrationDone
+			releaseJob()
 		}()
 		defer func() {
 			if recovered := recover(); recovered != nil {

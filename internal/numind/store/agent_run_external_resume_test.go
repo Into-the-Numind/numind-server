@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -38,18 +39,17 @@ func seedExternalResumeRun(t *testing.T, s IAgentRunStore, mutate func(*model.Ag
 	return run.ID
 }
 
-func externalToolResumer(t *testing.T, s IAgentRunStore) IExternalToolResumer {
-	t.Helper()
-	r, ok := s.(IExternalToolResumer)
-	require.True(t, ok, "production agentRunStore must expose only the narrow external resume capability")
-	return r
-}
-
 func externalToolResumeLease(t *testing.T, s IAgentRunStore) IExternalToolResumeLease {
 	t.Helper()
 	r, ok := s.(IExternalToolResumeLease)
 	require.True(t, ok, "production agentRunStore must expose the narrow external resume lease lifecycle")
 	return r
+}
+
+func TestExternalToolResumeLease_DoesNotExposeUntokenizedResume(t *testing.T) {
+	leaseType := reflect.TypeOf((*IExternalToolResumeLease)(nil)).Elem()
+	_, exposed := leaseType.MethodByName("ResumeExternalTool")
+	assert.False(t, exposed, "production lease capability must require the tokenized runner handshake")
 }
 
 func decodeStoredSchemaMessages(t *testing.T, raw []byte) []*schema.Message {
@@ -67,7 +67,6 @@ func decodeStoredSchemaMessages(t *testing.T, raw []byte) []*schema.Message {
 
 func TestExternalToolResume_AppendsOriginalToolResultAndClaimsOnce(t *testing.T) {
 	s, _ := newExternalActionAgentRunStore(t)
-	r := externalToolResumer(t, s)
 	runID := seedExternalResumeRun(t, s, nil)
 	result := json.RawMessage(`{"ok":true}`)
 
@@ -97,16 +96,16 @@ func TestExternalToolResume_AppendsOriginalToolResultAndClaimsOnce(t *testing.T)
 	assert.Nil(t, got.PendingExternalActionAt)
 	assert.Equal(t, "running", got.StateReason)
 
-	claimed, err = r.ResumeExternalTool(context.Background(), runID, "op-1", "tc-9", result)
+	_, claimed, err = lease.ClaimExternalToolResume(context.Background(), runID, "op-1", "tc-9", result)
 	require.NoError(t, err)
 	assert.False(t, claimed)
 	got, err = s.Get(context.Background(), runID)
 	require.NoError(t, err)
 	assert.Len(t, decodeStoredSchemaMessages(t, got.Messages), 2, "idempotent callback must not append twice")
 
-	_, err = r.ResumeExternalTool(context.Background(), runID, "op-1", "tc-9", json.RawMessage(`{"ok":false}`))
+	_, _, err = lease.ClaimExternalToolResume(context.Background(), runID, "op-1", "tc-9", json.RawMessage(`{"ok":false}`))
 	require.Error(t, err, "a different result for the same already-resumed tool call is an integrity error")
-	_, err = r.ResumeExternalTool(context.Background(), runID, "op-other", "tc-9", result)
+	_, _, err = lease.ClaimExternalToolResume(context.Background(), runID, "op-other", "tc-9", result)
 	require.Error(t, err, "consumed identity must include operation_id, not only tool_call_id and result")
 }
 
@@ -121,7 +120,7 @@ func TestExternalToolResume_ReleasedPreludeLeaseCanBeReclaimed(t *testing.T) {
 	require.True(t, claimed)
 
 	// Concurrent duplicate while preflight owns a live lease must not launch.
-	claimed, err = lease.ResumeExternalTool(context.Background(), runID, "op-1", "tc-9", result)
+	_, claimed, err = lease.ClaimExternalToolResume(context.Background(), runID, "op-1", "tc-9", result)
 	require.NoError(t, err)
 	assert.False(t, claimed)
 
@@ -270,27 +269,30 @@ func TestExternalToolResume_CandidateScanOnlyReturnsReadyAndExpired(t *testing.T
 
 func TestExternalToolResume_ConcurrentCallbacksHaveOneWinner(t *testing.T) {
 	s, _ := newExternalActionAgentRunStore(t)
-	r := externalToolResumer(t, s)
+	lease := externalToolResumeLease(t, s)
 	runID := seedExternalResumeRun(t, s, nil)
 	const workers = 12
 
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	claimed := make(chan bool, workers)
+	tokens := make(chan string, workers)
 	errs := make(chan error, workers)
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			<-start
-			ok, err := r.ResumeExternalTool(context.Background(), runID, "op-1", "tc-9", json.RawMessage(`{"ok":true}`))
+			token, ok, err := lease.ClaimExternalToolResume(context.Background(), runID, "op-1", "tc-9", json.RawMessage(`{"ok":true}`))
 			claimed <- ok
+			tokens <- token
 			errs <- err
 		}()
 	}
 	close(start)
 	wg.Wait()
 	close(claimed)
+	close(tokens)
 	close(errs)
 
 	winners := 0
@@ -303,10 +305,18 @@ func TestExternalToolResume_ConcurrentCallbacksHaveOneWinner(t *testing.T) {
 		require.NoError(t, err)
 	}
 	assert.Equal(t, 1, winners)
+	var winnerToken string
+	for token := range tokens {
+		if token != "" {
+			winnerToken = token
+		}
+	}
+	require.NotEmpty(t, winnerToken)
+	require.NoError(t, lease.CompleteExternalToolResume(context.Background(), runID, "op-1", "tc-9", winnerToken))
 	got, err := s.Get(context.Background(), runID)
 	require.NoError(t, err)
 	assert.Len(t, decodeStoredSchemaMessages(t, got.Messages), 2)
-	assert.Empty(t, got.PendingExternalActionJSON, "legacy one-shot resume must not strand an unfinishable lease")
+	assert.Empty(t, got.PendingExternalActionJSON, "tokenized handshake must clear the wait only after runner acknowledgement")
 	assert.Equal(t, "running", got.StateReason)
 }
 
@@ -331,14 +341,14 @@ func TestExternalToolResume_FailsClosedWithoutClearingWait(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			s, _ := newExternalActionAgentRunStore(t)
-			r := externalToolResumer(t, s)
+			lease := externalToolResumeLease(t, s)
 			runID := seedExternalResumeRun(t, s, tc.mutate)
 			before, err := s.Get(context.Background(), runID)
 			require.NoError(t, err)
 			beforeWait := append([]byte(nil), before.PendingExternalActionJSON...)
 			beforeMessages := append([]byte(nil), before.Messages...)
 
-			claimed, err := r.ResumeExternalTool(context.Background(), runID, tc.operation, tc.toolCall, tc.result)
+			_, claimed, err := lease.ClaimExternalToolResume(context.Background(), runID, tc.operation, tc.toolCall, tc.result)
 			require.Error(t, err)
 			assert.False(t, claimed)
 			after, getErr := s.Get(context.Background(), runID)
@@ -363,10 +373,10 @@ func TestExternalToolResume_DoesNotReviveCancelledOrDeletedRuns(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			s, _ := newExternalActionAgentRunStore(t)
-			r := externalToolResumer(t, s)
+			lease := externalToolResumeLease(t, s)
 			runID := seedExternalResumeRun(t, s, tc.mutate)
 
-			claimed, err := r.ResumeExternalTool(context.Background(), runID, "op-1", "tc-9", json.RawMessage(`{"ok":true}`))
+			_, claimed, err := lease.ClaimExternalToolResume(context.Background(), runID, "op-1", "tc-9", json.RawMessage(`{"ok":true}`))
 			require.NoError(t, err)
 			assert.False(t, claimed)
 			got, getErr := s.Get(context.Background(), runID)
@@ -389,10 +399,10 @@ func TestExternalToolResume_UnexpectedRunStateOrMissingWaitFailsClosed(t *testin
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			s, _ := newExternalActionAgentRunStore(t)
-			r := externalToolResumer(t, s)
+			lease := externalToolResumeLease(t, s)
 			runID := seedExternalResumeRun(t, s, tc.mutate)
 
-			claimed, err := r.ResumeExternalTool(context.Background(), runID, "op-1", "tc-9", json.RawMessage(`{"ok":true}`))
+			_, claimed, err := lease.ClaimExternalToolResume(context.Background(), runID, "op-1", "tc-9", json.RawMessage(`{"ok":true}`))
 			require.Error(t, err)
 			assert.False(t, claimed)
 			got, getErr := s.Get(context.Background(), runID)
