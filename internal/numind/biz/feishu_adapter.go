@@ -6,6 +6,7 @@ package biz
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"strings"
 
@@ -13,6 +14,7 @@ import (
 	"numind-server/internal/numind/biz/feishu"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/crypto"
+	"numind-server/internal/pkg/model"
 
 	"github.com/spf13/viper"
 )
@@ -38,9 +40,12 @@ type feishuPersonalWorkspace struct {
 }
 
 type feishuCompositionDeps struct {
-	enabled     bool
-	dataStore   store.IStore
+	enabled   bool
+	dataStore store.IStore
+	// tokenKey is exclusively the SkillReader receipt/cursor HMAC root. It is
+	// intentionally separate from the versioned encryption keyring below.
 	tokenKey    string
+	cipherKeys  map[string]string
 	keyVersion  string
 	runtimeBase string
 	authOwner   string
@@ -49,6 +54,10 @@ type feishuCompositionDeps struct {
 	resumeStore store.IExternalToolResumeLease
 	supervisor  *agent.ExternalContinuationSupervisor
 	runner      *feishu.ControlledLarkCLIRunner
+	// receiptVerifier is a test seam for exercising operation persistence
+	// without invoking the controlled skill reader. Production always uses the
+	// SkillReader built from tokenKey.
+	receiptVerifier feishu.ReceiptVerifier
 
 	// verifyVersion is a test seam. Production leaves it nil so the fixed
 	// ControlledLarkCLIRunner probe is always performed.
@@ -69,11 +78,13 @@ func buildFeishuService(deps feishuCompositionDeps) (*feishuPersonalWorkspace, e
 		return nil, fmt.Errorf("feishu personal workspace configuration is incomplete")
 	}
 
-	cipher, err := crypto.NewCipher(deps.tokenKey)
+	ciphers, err := buildFeishuCipherKeyring(deps.keyVersion, deps.cipherKeys)
 	if err != nil {
-		return nil, fmt.Errorf("feishu: build token cipher: %w", err)
+		return nil, fmt.Errorf("feishu: build encryption keyring: %w", err)
 	}
-	ciphers := map[string]*crypto.Cipher{deps.keyVersion: cipher}
+	if err := verifyFeishuPersistedKeyVersions(deps.dataStore, ciphers); err != nil {
+		return nil, fmt.Errorf("feishu: validate persisted encryption versions: %w", err)
+	}
 	vault, err := feishu.NewEncryptedCLIHomeVaultWithKeyring(
 		deps.dataStore.ThirdPartyAccounts(), deps.dataStore.FeishuWorkspace(),
 		ciphers, deps.keyVersion, deps.runtimeBase,
@@ -137,11 +148,15 @@ func buildFeishuService(deps feishuCompositionDeps) (*feishuPersonalWorkspace, e
 			}
 		},
 	}
+	receiptVerifier := feishu.ReceiptVerifier(skillReader)
+	if deps.receiptVerifier != nil {
+		receiptVerifier = deps.receiptVerifier
+	}
 	operationService, err := feishu.NewFeishuOperationService(feishu.OperationServiceDeps{
 		Accounts:     deps.dataStore.ThirdPartyAccounts(),
 		Operations:   deps.dataStore.FeishuWorkspace(),
 		Catalog:      catalog,
-		Receipts:     skillReader,
+		Receipts:     receiptVerifier,
 		Recovery:     recovery,
 		Confirmation: confirmation,
 		Vault:        vault,
@@ -173,6 +188,82 @@ func buildFeishuService(deps feishuCompositionDeps) (*feishuPersonalWorkspace, e
 	}, nil
 }
 
+// buildFeishuCipherKeyring freezes the configured decryption window. Every
+// configured entry must be a canonical key version and a strict base64-encoded
+// AES-256 key. The current version is the only writer; historical entries stay
+// available only so existing vault snapshots and operation blobs can open.
+// Errors intentionally omit key material.
+func buildFeishuCipherKeyring(currentVersion string, configured map[string]string) (map[string]*crypto.Cipher, error) {
+	if !validFeishuCipherKeyVersion(currentVersion) || len(configured) == 0 {
+		return nil, fmt.Errorf("invalid keyring configuration")
+	}
+
+	ciphers := make(map[string]*crypto.Cipher, len(configured))
+	seenMaterial := make(map[[crypto.KeyLen]byte]struct{}, len(configured))
+	for version, encodedKey := range configured {
+		if !validFeishuCipherKeyVersion(version) {
+			return nil, fmt.Errorf("invalid keyring configuration")
+		}
+		decoded, err := base64.StdEncoding.DecodeString(encodedKey)
+		if err != nil || len(decoded) != crypto.KeyLen || base64.StdEncoding.EncodeToString(decoded) != encodedKey {
+			return nil, fmt.Errorf("invalid keyring configuration")
+		}
+		var material [crypto.KeyLen]byte
+		copy(material[:], decoded)
+		if _, duplicate := seenMaterial[material]; duplicate {
+			return nil, fmt.Errorf("duplicate keyring material")
+		}
+		seenMaterial[material] = struct{}{}
+		cipher, err := crypto.NewCipher(encodedKey)
+		if err != nil {
+			return nil, fmt.Errorf("invalid keyring configuration")
+		}
+		ciphers[version] = cipher
+	}
+	if _, found := ciphers[currentVersion]; !found {
+		return nil, fmt.Errorf("current key version unavailable")
+	}
+	return ciphers, nil
+}
+
+func validFeishuCipherKeyVersion(version string) bool {
+	if len(version) == 0 || len(version) > 32 || strings.TrimSpace(version) != version {
+		return false
+	}
+	for _, char := range version {
+		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') &&
+			(char < '0' || char > '9') && char != '.' && char != '_' && char != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+// verifyFeishuPersistedKeyVersions makes an enabled feature fail at startup
+// when retained data refers to a key outside the configured decryption window.
+// This keeps an incomplete rotation from publishing tools that would otherwise
+// fail only after a user callback reaches an old vault or operation result.
+func verifyFeishuPersistedKeyVersions(dataStore store.IStore, ciphers map[string]*crypto.Cipher) error {
+	if dataStore == nil || dataStore.DB() == nil {
+		return fmt.Errorf("persistent key version store unavailable")
+	}
+	for _, persisted := range []any{&model.FeishuCLIVault{}, &model.FeishuOperation{}} {
+		var versions []string
+		if err := dataStore.DB().Model(persisted).Distinct().Pluck("key_version", &versions).Error; err != nil {
+			return fmt.Errorf("persistent key version store unavailable")
+		}
+		for _, version := range versions {
+			if !validFeishuCipherKeyVersion(version) {
+				return fmt.Errorf("persistent key version is invalid")
+			}
+			if _, found := ciphers[version]; !found {
+				return fmt.Errorf("persistent key version is unavailable")
+			}
+		}
+	}
+	return nil
+}
+
 // buildConfiguredFeishuService reads only explicit production configuration.
 // The runtime root and key version intentionally have no defaults: an enabled
 // feature without either is safer disabled than pointed at an implicit shared
@@ -187,6 +278,7 @@ func buildConfiguredFeishuService(
 		enabled:     viper.GetBool("features.feishu_integration.enabled"),
 		dataStore:   dataStore,
 		tokenKey:    viper.GetString("security.thirdparty_token_key"),
+		cipherKeys:  viper.GetStringMapString("feishu.keyring"),
 		keyVersion:  viper.GetString("feishu.key_version"),
 		runtimeBase: viper.GetString("feishu.runtime_base"),
 		authOwner:   viper.GetString("feishu.auth_owner"),

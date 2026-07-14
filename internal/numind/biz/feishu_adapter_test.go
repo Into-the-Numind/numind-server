@@ -1,16 +1,22 @@
 package biz
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"numind-server/internal/numind/biz/agent"
+	"numind-server/internal/numind/biz/feishu"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/crypto"
+	"numind-server/internal/pkg/model"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -23,13 +29,20 @@ func newFeishuCompositionDeps(t *testing.T) feishuCompositionDeps {
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(
+		&model.UserThirdPartyAccount{},
+		&model.FeishuCLIVault{},
+		&model.FeishuOperation{},
+	))
 	ds := store.NewTestStore(db)
 	resumeStore, ok := ds.AgentRuns().(store.IExternalToolResumeLease)
 	require.True(t, ok)
+	tokenKey := feishuCompositionKey(0)
 	return feishuCompositionDeps{
 		enabled:       true,
 		dataStore:     ds,
-		tokenKey:      base64.StdEncoding.EncodeToString(make([]byte, 32)),
+		tokenKey:      tokenKey,
+		cipherKeys:    map[string]string{"test-v1": tokenKey},
 		keyVersion:    "test-v1",
 		runtimeBase:   filepath.Join(t.TempDir(), "runtime"),
 		authOwner:     "test-feishu-auth-worker",
@@ -39,6 +52,33 @@ func newFeishuCompositionDeps(t *testing.T) feishuCompositionDeps {
 		verifyVersion: func(context.Context) error { return nil },
 	}
 }
+
+func feishuCompositionKey(seed byte) string {
+	return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{seed}, crypto.KeyLen))
+}
+
+func prepareHistoricalCompositionVault(t *testing.T, deps feishuCompositionDeps, keyVersion, key string) {
+	t.Helper()
+	require.NoError(t, deps.dataStore.DB().Create(&model.UserThirdPartyAccount{
+		UserID: 7, Provider: feishu.ProviderLark, AppID: "app-7",
+		ConnectionState: model.FeishuConnectionConnected, Connected: true, Generation: 1,
+	}).Error)
+
+	historicalCipher, err := crypto.NewCipher(key)
+	require.NoError(t, err)
+	historicalVault, err := feishu.NewEncryptedCLIHomeVaultWithKeyring(
+		deps.dataStore.ThirdPartyAccounts(), deps.dataStore.FeishuWorkspace(),
+		map[string]*crypto.Cipher{keyVersion: historicalCipher}, keyVersion, deps.runtimeBase,
+	)
+	require.NoError(t, err)
+	require.NoError(t, historicalVault.WithHome(context.Background(), 7, 1, func(home string) (bool, error) {
+		return true, os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"key":"historical"}`), 0o600)
+	}))
+}
+
+type compositionReceiptVerifier struct{}
+
+func (compositionReceiptVerifier) VerifyRequired([]string, uint64, string) error { return nil }
 
 func TestBuildFeishuService_FeatureFlagOffReturnsNil(t *testing.T) {
 	composition, err := buildFeishuService(feishuCompositionDeps{enabled: false})
@@ -66,6 +106,150 @@ func TestBuildFeishuService_ComposesCompleteWorkspaceBeforePublishing(t *testing
 	require.NotNil(t, composition.dispatcher)
 	require.Same(t, composition.dispatcher, composition.authWorkerDispatcher)
 	require.NotNil(t, composition.supervisor)
+}
+
+func TestBuildFeishuService_KeyRotationReadsHistoricalVault(t *testing.T) {
+	deps := newFeishuCompositionDeps(t)
+	deps.keyVersion = "v2"
+	deps.tokenKey = feishuCompositionKey(9)
+	deps.cipherKeys = map[string]string{"v1": feishuCompositionKey(1), "v2": feishuCompositionKey(2)}
+	prepareHistoricalCompositionVault(t, deps, "v1", feishuCompositionKey(1))
+
+	composition, err := buildFeishuService(deps)
+	require.NoError(t, err)
+	require.NoError(t, composition.vault.WithHome(context.Background(), 7, 1, func(home string) (bool, error) {
+		contents, readErr := os.ReadFile(filepath.Join(home, "config.json"))
+		require.NoError(t, readErr)
+		require.JSONEq(t, `{"key":"historical"}`, string(contents))
+		return false, nil
+	}))
+}
+
+func TestBuildFeishuService_MissingHistoricalKeyFailsClosedBeforePublication(t *testing.T) {
+	deps := newFeishuCompositionDeps(t)
+	deps.keyVersion = "v2"
+	deps.tokenKey = feishuCompositionKey(9)
+	deps.cipherKeys = map[string]string{"v2": feishuCompositionKey(2)}
+	prepareHistoricalCompositionVault(t, deps, "v1", feishuCompositionKey(1))
+
+	composition, err := buildFeishuService(deps)
+	require.Error(t, err)
+	require.Nil(t, composition)
+}
+
+func TestBuildFeishuService_KeyRotationReadsHistoricalSucceededOperation(t *testing.T) {
+	deps := newFeishuCompositionDeps(t)
+	deps.keyVersion = "v2"
+	deps.tokenKey = feishuCompositionKey(9)
+	deps.cipherKeys = map[string]string{"v1": feishuCompositionKey(1), "v2": feishuCompositionKey(2)}
+	prepareHistoricalCompositionVault(t, deps, "v1", feishuCompositionKey(1))
+
+	historicalCipher, err := crypto.NewCipher(feishuCompositionKey(1))
+	require.NoError(t, err)
+	historicalKeyring, err := feishu.NewOperationCipherKeyring(map[string]*crypto.Cipher{"v1": historicalCipher}, "v1")
+	require.NoError(t, err)
+	operationID := uuid.NewString()
+	owner := feishu.OperationCipherOwner{UserID: 7, Generation: 1, OperationID: operationID}
+	ciphertext, keyVersion, err := historicalKeyring.Seal(feishu.OperationCipherPurposeResult, owner, []byte(`{"document_id":"historical"}`))
+	require.NoError(t, err)
+	resultBlob, err := json.Marshal(struct {
+		KeyVersion string `json:"key_version"`
+		Ciphertext []byte `json:"ciphertext"`
+	}{KeyVersion: keyVersion, Ciphertext: ciphertext})
+	require.NoError(t, err)
+	require.NoError(t, deps.dataStore.DB().Create(&model.FeishuOperation{
+		ID: operationID, UserID: 7, Generation: 1, AgentRunID: 91, ToolCallID: "call-historical",
+		IdempotencyKey: "historical-result", CommandPath: "docs +fetch", Domain: "docs", RiskLevel: "read",
+		RequestCiphertext: []byte("unread-terminal-request"), KeyVersion: keyVersion,
+		RequestFingerprint: "historical-request", State: model.FeishuOperationSucceeded, ResultCiphertext: resultBlob,
+	}).Error)
+
+	composition, err := buildFeishuService(deps)
+	require.NoError(t, err)
+	resumer := &dispatcherAgentResumerFake{}
+	composition.dispatcher.agentResumer = resumer
+	require.NoError(t, composition.dispatcher.DispatchResume(context.Background(), 7, operationID))
+	backfills := resumer.snapshot()
+	require.Len(t, backfills, 1)
+	require.Equal(t, uint64(91), backfills[0].RunID)
+	require.Equal(t, "call-historical", backfills[0].ToolCallID)
+	require.JSONEq(t, `{"document_id":"historical"}`, string(backfills[0].Result))
+}
+
+func TestBuildFeishuService_KeyRotationNewVaultWriteUsesCurrentVersion(t *testing.T) {
+	deps := newFeishuCompositionDeps(t)
+	deps.keyVersion = "v2"
+	deps.tokenKey = feishuCompositionKey(9)
+	deps.cipherKeys = map[string]string{"v1": feishuCompositionKey(1), "v2": feishuCompositionKey(2)}
+	prepareHistoricalCompositionVault(t, deps, "v1", feishuCompositionKey(1))
+
+	composition, err := buildFeishuService(deps)
+	require.NoError(t, err)
+	require.NoError(t, composition.vault.WithHome(context.Background(), 7, 1, func(home string) (bool, error) {
+		return true, os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"key":"current"}`), 0o600)
+	}))
+	stored, err := deps.dataStore.FeishuWorkspace().GetVault(context.Background(), 7, 1)
+	require.NoError(t, err)
+	require.Equal(t, "v2", stored.KeyVersion)
+}
+
+func TestBuildFeishuService_KeyRotationNewOperationWriteUsesCurrentVersion(t *testing.T) {
+	deps := newFeishuCompositionDeps(t)
+	deps.keyVersion = "v2"
+	deps.tokenKey = feishuCompositionKey(9)
+	deps.cipherKeys = map[string]string{"v1": feishuCompositionKey(1), "v2": feishuCompositionKey(2)}
+	deps.receiptVerifier = compositionReceiptVerifier{}
+	prepareHistoricalCompositionVault(t, deps, "v1", feishuCompositionKey(1))
+
+	composition, err := buildFeishuService(deps)
+	require.NoError(t, err)
+	result, err := composition.operationService.Execute(context.Background(), feishu.ExecuteRequest{
+		UserID: 7, AgentRunID: 92, ToolCallID: "call-current", IdempotencyKey: "92:call-current",
+		Argv:          []string{"docs", "+update", "--doc", "doxcnABCDEFG123", "--command", "overwrite", "--content", "current"},
+		SkillReceipts: []string{"test-receipt"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingConfirmation, result.State)
+	stored, err := deps.dataStore.FeishuWorkspace().GetOperationForUser(context.Background(), 7, 1, result.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, "v2", stored.KeyVersion)
+}
+
+func TestBuildFeishuService_RejectsInvalidEncryptionKeyring(t *testing.T) {
+	valid := feishuCompositionKey(7)
+	for name, mutate := range map[string]func(*feishuCompositionDeps){
+		"missing keyring": func(deps *feishuCompositionDeps) { deps.cipherKeys = nil },
+		"invalid base64":  func(deps *feishuCompositionDeps) { deps.cipherKeys = map[string]string{"test-v1": "not-base64"} },
+		"noncanonical base64": func(deps *feishuCompositionDeps) {
+			deps.cipherKeys = map[string]string{"test-v1": valid + "\n"}
+		},
+		"wrong decoded length": func(deps *feishuCompositionDeps) {
+			deps.cipherKeys = map[string]string{"test-v1": base64.StdEncoding.EncodeToString([]byte("short"))}
+		},
+		"invalid version": func(deps *feishuCompositionDeps) { deps.cipherKeys = map[string]string{"bad/version": valid} },
+		"noncanonical current version": func(deps *feishuCompositionDeps) {
+			deps.keyVersion = " v2"
+			deps.cipherKeys = map[string]string{" v2": valid}
+		},
+		"current version absent": func(deps *feishuCompositionDeps) {
+			deps.keyVersion = "v2"
+			deps.cipherKeys = map[string]string{"v1": valid}
+		},
+		"duplicate material": func(deps *feishuCompositionDeps) {
+			deps.keyVersion = "v2"
+			deps.cipherKeys = map[string]string{"v1": valid, "v2": valid}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			deps := newFeishuCompositionDeps(t)
+			mutate(&deps)
+
+			composition, err := buildFeishuService(deps)
+			require.Error(t, err)
+			require.Nil(t, composition)
+			require.NotContains(t, err.Error(), valid)
+		})
+	}
 }
 
 func TestFeishuWorkspacePublication_UsesOneComposedGraph(t *testing.T) {
