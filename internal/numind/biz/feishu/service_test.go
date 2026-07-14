@@ -10,19 +10,16 @@ import (
 
 	"numind-server/internal/pkg/model"
 
+	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
 
-// --- service-test fakes (svc* prefix to avoid clashing with client/provisioner
-// test doubles in the same package) -----------------------------------------
-
-// svcAccountStore is a multi-row in-memory IThirdPartyAccountStore (shared by the
-// service + orchestrator tests, which need >1 user).
+// svcAccountStore remains shared test support for the legacy orchestrator
+// package tests while Task 13 replaces the HTTP entry point above it.
 type svcAccountStore struct {
 	mu      sync.Mutex
-	rows    map[string]*model.UserThirdPartyAccount // key: provider|userID
+	rows    map[string]*model.UserThirdPartyAccount
 	upserts int
-	deletes int
 }
 
 func newSvcAccountStore() *svcAccountStore {
@@ -34,26 +31,26 @@ func (f *svcAccountStore) key(userID uint, provider string) string {
 }
 
 func (f *svcAccountStore) put(acc *model.UserThirdPartyAccount) {
-	cp := *acc
-	f.rows[f.key(acc.UserID, acc.Provider)] = &cp
+	copy := *acc
+	f.rows[f.key(acc.UserID, acc.Provider)] = &copy
 }
 
 func (f *svcAccountStore) Get(_ context.Context, userID uint, provider string) (*model.UserThirdPartyAccount, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	r, ok := f.rows[f.key(userID, provider)]
-	if !ok {
+	row, found := f.rows[f.key(userID, provider)]
+	if !found {
 		return nil, gorm.ErrRecordNotFound
 	}
-	cp := *r
-	return &cp, nil
+	copy := *row
+	return &copy, nil
 }
 
-func (f *svcAccountStore) Upsert(_ context.Context, acc *model.UserThirdPartyAccount) error {
+func (f *svcAccountStore) Upsert(_ context.Context, account *model.UserThirdPartyAccount) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.upserts++
-	f.put(acc)
+	f.put(account)
 	return nil
 }
 
@@ -61,17 +58,16 @@ func (f *svcAccountStore) EnsurePlaceholder(_ context.Context, userID uint, prov
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	key := f.key(userID, provider)
-	if _, ok := f.rows[key]; !ok {
-		f.put(&model.UserThirdPartyAccount{UserID: userID, Provider: provider, ConnectionState: model.FeishuConnectionNone, Generation: 1})
+	if _, found := f.rows[key]; !found {
+		f.put(&model.UserThirdPartyAccount{UserID: userID, Provider: provider, Generation: 1, ConnectionState: model.FeishuConnectionNone})
 	}
-	cp := *f.rows[key]
-	return &cp, nil
+	copy := *f.rows[key]
+	return &copy, nil
 }
 
 func (f *svcAccountStore) Delete(_ context.Context, userID uint, provider string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.deletes++
 	delete(f.rows, f.key(userID, provider))
 	return nil
 }
@@ -83,189 +79,226 @@ func (f *svcAccountStore) UpdateTokens(_ context.Context, _ uint, _ string, _, _
 func (f *svcAccountStore) MarkConnected(_ context.Context, userID uint, provider string, connectedAt time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	r, ok := f.rows[f.key(userID, provider)]
-	if !ok {
+	row, found := f.rows[f.key(userID, provider)]
+	if !found {
 		return gorm.ErrRecordNotFound
 	}
-	r.Connected = true
-	at := connectedAt
-	r.ConnectedAt = &at
+	row.Connected = true
+	row.ConnectedAt = &connectedAt
 	return nil
 }
 
-// svcStepper fakes the connectStepper (orchestrator) seam the service drives.
-type svcStepper struct {
-	step       *ConnectStep
-	stepErr    error
-	persistErr error
-	pollCalls  int
-	stepCalls  int
+// Task13 lifecycle fakes deliberately expose only server-owned identifiers.
+// They make the HTTP/service contract prove that browser input cannot inject
+// argv, scopes, app ids, or another user's operation/session identity.
+type lifecycleAccountFake struct {
+	account          *model.UserThirdPartyAccount
+	retireCalls      int
+	finalizeCalls    int
+	retiredGeneration uint64
 }
 
-func (f *svcStepper) PollAndPersistApp(_ context.Context, _ uint) (bool, error) {
-	f.pollCalls++
-	return false, f.persistErr
+func (f *lifecycleAccountFake) Get(_ context.Context, _ uint, _ string) (*model.UserThirdPartyAccount, error) {
+	if f.account == nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+	copy := *f.account
+	return &copy, nil
 }
 
-func (f *svcStepper) NextConnectStep(_ context.Context, _ uint, _ uint64, _ string) (*ConnectStep, error) {
-	f.stepCalls++
-	return f.step, f.stepErr
+func (f *lifecycleAccountFake) RetireGeneration(_ context.Context, _ uint, _ string) (uint64, uint64, error) {
+	f.retireCalls++
+	if f.account == nil {
+		return 0, 0, gorm.ErrRecordNotFound
+	}
+	f.retiredGeneration = f.account.Generation
+	f.account.Generation++
+	f.account.ConnectionState = model.FeishuConnectionDisconnecting
+	f.account.Connected = false
+	return f.retiredGeneration, f.account.Generation, nil
 }
 
-// --- helpers ---------------------------------------------------------------
+func (f *lifecycleAccountFake) FinalizeDisconnect(_ context.Context, _ uint, _ string, generation uint64) error {
+	f.finalizeCalls++
+	if f.account == nil || f.account.Generation != generation {
+		return gorm.ErrRecordNotFound
+	}
+	f.account.ConnectionState = model.FeishuConnectionNone
+	f.account.Connected = false
+	f.account.AppID = ""
+	return nil
+}
 
-func newTestSvc(t *testing.T, step *ConnectStep) (*FeishuService, *svcAccountStore, *svcStepper) {
+type lifecycleWorkspaceFake struct {
+	operation       *model.FeishuOperation
+	operationErr    error
+	deleteVaultCalls int
+}
+
+func (f *lifecycleWorkspaceFake) GetOperationForUser(_ context.Context, _ uint, _ uint64, _ string) (*model.FeishuOperation, error) {
+	if f.operationErr != nil {
+		return nil, f.operationErr
+	}
+	if f.operation == nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+	copy := *f.operation
+	return &copy, nil
+}
+
+func (f *lifecycleWorkspaceFake) DeleteVault(_ context.Context, _ uint, _ uint64) error {
+	f.deleteVaultCalls++
+	return nil
+}
+
+type lifecycleAuthFake struct {
+	connectCalls int
+	refreshCalls int
+	stopped      []uint64
+	action       *OperationAction
+}
+
+func (f *lifecycleAuthFake) ConnectManual(_ context.Context, _ uint) (*OperationAction, error) {
+	f.connectCalls++
+	return cloneOperationAction(f.action), nil
+}
+
+func (f *lifecycleAuthFake) RefreshAction(_ context.Context, _ uint, _ uint64, _ string) (*OperationAction, error) {
+	f.refreshCalls++
+	return cloneOperationAction(f.action), nil
+}
+
+func (f *lifecycleAuthFake) StopGeneration(_ uint, generation uint64) {
+	f.stopped = append(f.stopped, generation)
+}
+
+type lifecycleDispatcherFake struct{ calls int }
+
+func (f *lifecycleDispatcherFake) DispatchResume(_ context.Context, _ uint, _ string) error {
+	f.calls++
+	return nil
+}
+
+type lifecycleOperationsFake struct {
+	confirmed int
+	cancelled int
+}
+
+func (f *lifecycleOperationsFake) Confirm(_ context.Context, _ uint, id string) (*OperationResult, error) {
+	f.confirmed++
+	return &OperationResult{OperationID: id, State: model.FeishuOperationExecuting}, nil
+}
+
+func (f *lifecycleOperationsFake) Cancel(_ context.Context, _ uint, id string) (*OperationResult, error) {
+	f.cancelled++
+	return &OperationResult{OperationID: id, State: model.FeishuOperationCancelled}, nil
+}
+
+func newLifecycleService(t *testing.T, account *model.UserThirdPartyAccount, operation *model.FeishuOperation) (*WorkspaceLifecycleService, *lifecycleAccountFake, *lifecycleWorkspaceFake, *lifecycleAuthFake, *lifecycleDispatcherFake, *lifecycleOperationsFake) {
 	t.Helper()
-	st := newSvcAccountStore()
-	stepper := &svcStepper{step: step}
-	svc, err := NewFeishuService(Deps{Store: st, Orchestrator: stepper})
-	if err != nil {
-		t.Fatalf("NewFeishuService: %v", err)
-	}
-	return svc, st, stepper
-}
-
-// --- Status ----------------------------------------------------------------
-
-func TestStatus_NotConnected(t *testing.T) {
-	svc, _, _ := newTestSvc(t, &ConnectStep{Phase: ConnectPhaseDone})
-	got, err := svc.Status(context.Background(), 42)
-	if err != nil {
-		t.Fatalf("Status: unexpected err: %v", err)
-	}
-	if got.Connected || got.Status != "none" {
-		t.Fatalf("no row must be not-connected/none, got %+v", got)
-	}
-}
-
-func TestStatus_Connected(t *testing.T) {
-	svc, st, _ := newTestSvc(t, &ConnectStep{Phase: ConnectPhaseDone})
-	at := time.Now()
-	st.put(&model.UserThirdPartyAccount{
-		UserID: 42, Provider: ProviderLark, AppID: "cli_app42", Connected: true, ConnectedAt: &at,
+	accounts := &lifecycleAccountFake{account: account}
+	workspace := &lifecycleWorkspaceFake{operation: operation}
+	auth := &lifecycleAuthFake{action: &OperationAction{Provider: ProviderLark, SessionID: "session-1", Phase: model.FeishuAuthPhaseUserAuth, URL: "https://open.feishu.cn/suite/passport/oauth/device", ExpiresAt: time.Now().Add(time.Minute)}}
+	dispatcher := &lifecycleDispatcherFake{}
+	operations := &lifecycleOperationsFake{}
+	svc, err := NewWorkspaceLifecycleService(WorkspaceLifecycleDeps{
+		Accounts: accounts, Workspace: workspace, Auth: auth, Dispatcher: dispatcher, Operations: operations,
 	})
-	got, err := svc.Status(context.Background(), 42)
-	if err != nil {
-		t.Fatalf("Status: %v", err)
-	}
-	if !got.Connected || got.Status != "connected" {
-		t.Fatalf("connected row must report connected, got %+v", got)
-	}
-	if got.AppID != "cli_app42" {
-		t.Fatalf("app_id mismatch: %q", got.AppID)
-	}
+	require.NoError(t, err)
+	return svc, accounts, workspace, auth, dispatcher, operations
 }
 
-func TestStatus_AppRowNotConnected_None(t *testing.T) {
-	svc, st, _ := newTestSvc(t, &ConnectStep{Phase: ConnectPhaseDone})
-	// App provisioned but not yet authorized → status none (app_id still surfaced).
-	st.put(&model.UserThirdPartyAccount{UserID: 42, Provider: ProviderLark, AppID: "cli_x"})
-	got, err := svc.Status(context.Background(), 42)
-	if err != nil {
-		t.Fatalf("Status: %v", err)
-	}
-	if got.Connected || got.Status != "none" {
-		t.Fatalf("unconnected app row must be none, got %+v", got)
-	}
-	if got.AppID != "cli_x" {
-		t.Fatalf("app_id should be surfaced: %q", got.AppID)
-	}
+func TestWorkspaceLifecycleStatusIsReadOnlyAndNeverReturnsAuthorizationURL(t *testing.T) {
+	appID := "cli_12345678"
+	svc, _, _, auth, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, AppID: appID, Generation: 3,
+		ConnectionState: model.FeishuConnectionWaitingUserAuth,
+		CapabilityStateJSON: []byte(`{"docs":{"state":"available"}}`),
+	}, nil)
+
+	status, err := svc.Status(context.Background(), 7)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuConnectionWaitingUserAuth, status.State)
+	require.False(t, status.Connected)
+	require.NotEqual(t, appID, status.AppIDMasked)
+	require.NotContains(t, status.AppIDMasked, "12345678")
+	require.Equal(t, 0, auth.connectCalls, "GET status must not create a worker or URL")
+	require.Nil(t, status.ActiveAction, "status may expose metadata only, never a live authorization URL")
 }
 
-// --- Connect ---------------------------------------------------------------
+func TestWorkspaceLifecycleConnectUsesOnlyManualOfflineAccessFlow(t *testing.T) {
+	svc, _, _, auth, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 1}, nil)
 
-func TestConnect_CreateApp_ReturnsPageURL(t *testing.T) {
-	svc, _, stepper := newTestSvc(t, &ConnectStep{Phase: ConnectPhaseCreateApp, URL: "https://open.feishu.cn/page/cli?u=1"})
-	res, err := svc.Connect(context.Background(), 7)
-	if err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
-	if res.NextStep != NextStepCreateApp {
-		t.Fatalf("next_step mismatch: %q", res.NextStep)
-	}
-	if res.URL == "" {
-		t.Fatal("create_app must carry a URL")
-	}
-	// Connect always bridges app-create first, then asks for the step.
-	if stepper.pollCalls != 1 || stepper.stepCalls != 1 {
-		t.Fatalf("Connect must poll then step once each, got poll=%d step=%d", stepper.pollCalls, stepper.stepCalls)
-	}
+	result, err := svc.Connect(context.Background(), 7)
+	require.NoError(t, err)
+	require.NotNil(t, result.Action)
+	require.Equal(t, 1, auth.connectCalls)
 }
 
-func TestConnect_Authorize_ReturnsVerificationURL(t *testing.T) {
-	svc, _, _ := newTestSvc(t, &ConnectStep{Phase: ConnectPhaseAuthorize, URL: "https://open.feishu.cn/device?u=2"})
-	res, err := svc.Connect(context.Background(), 7)
-	if err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
-	if res.NextStep != NextStepAuthorize {
-		t.Fatalf("next_step mismatch: %q", res.NextStep)
-	}
-	if res.URL == "" {
-		t.Fatal("authorize must carry a verification URL")
-	}
+func TestWorkspaceLifecycleResumeUsesSharedDispatcherForUserCompleted(t *testing.T) {
+	op := &model.FeishuOperation{ID: "op-1", UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth}
+	svc, _, _, _, dispatcher, operations := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 2}, op)
+
+	result, err := svc.Resume(context.Background(), 7, "op-1", ResumeActionUserCompleted)
+	require.NoError(t, err)
+	require.Equal(t, "op-1", result.OperationID)
+	require.Equal(t, 1, dispatcher.calls)
+	require.Zero(t, operations.confirmed)
+	require.Zero(t, operations.cancelled)
 }
 
-func TestConnect_Done(t *testing.T) {
-	svc, _, _ := newTestSvc(t, &ConnectStep{Phase: ConnectPhaseDone})
-	res, err := svc.Connect(context.Background(), 7)
-	if err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
-	if res.NextStep != NextStepDone {
-		t.Fatalf("done expected, got %q", res.NextStep)
-	}
-	if res.URL != "" {
-		t.Fatalf("done must carry no URL, got %q", res.URL)
-	}
+func TestWorkspaceLifecycleResumeConfirmationActionsRequireWaitingConfirmation(t *testing.T) {
+	op := &model.FeishuOperation{ID: "op-1", UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth}
+	svc, _, _, _, dispatcher, operations := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 2}, op)
+
+	_, err := svc.Resume(context.Background(), 7, "op-1", ResumeActionConfirmed)
+	require.ErrorIs(t, err, ErrWorkspaceLifecycleInvalid)
+	require.Zero(t, dispatcher.calls)
+	require.Zero(t, operations.confirmed)
+
+	op.State = model.FeishuOperationWaitingConfirmation
+	result, err := svc.Resume(context.Background(), 7, "op-1", ResumeActionConfirmed)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationExecuting, result.State)
+	require.Equal(t, 1, operations.confirmed)
 }
 
-func TestConnect_PollError_Propagates(t *testing.T) {
-	svc, _, stepper := newTestSvc(t, &ConnectStep{Phase: ConnectPhaseDone})
-	stepper.persistErr = errors.New("poll boom")
-	if _, err := svc.Connect(context.Background(), 7); err == nil {
-		t.Fatal("Connect must surface a poll error")
-	}
+func TestWorkspaceLifecycleResumeCollapsesCrossUserToNotFound(t *testing.T) {
+	svc, _, workspace, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 8, Provider: ProviderLark, Generation: 1}, nil)
+	workspace.operationErr = gorm.ErrRecordNotFound
+
+	_, err := svc.Resume(context.Background(), 8, "op-owned-by-7", ResumeActionUserCompleted)
+	require.ErrorIs(t, err, ErrWorkspaceLifecycleNotFound)
 }
 
-func TestConnect_StepError_Propagates(t *testing.T) {
-	svc, _, stepper := newTestSvc(t, nil)
-	stepper.stepErr = errors.New("step boom")
-	if _, err := svc.Connect(context.Background(), 7); err == nil {
-		t.Fatal("Connect must surface a step error")
-	}
+func TestWorkspaceLifecycleRefreshUsesCurrentGenerationAndReturnsNewLiveAction(t *testing.T) {
+	svc, _, _, auth, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 9}, nil)
+
+	action, err := svc.RefreshAction(context.Background(), 7, "session-1")
+	require.NoError(t, err)
+	require.Equal(t, "session-1", action.SessionID)
+	require.Equal(t, 1, auth.refreshCalls)
 }
 
-// --- Unbind ----------------------------------------------------------------
+func TestWorkspaceLifecycleUnbindRetiresGenerationStopsWorkersDeletesVaultAndKeepsRemoteApp(t *testing.T) {
+	svc, accounts, workspace, auth, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 4, AppID: "cli_keep_remote", Connected: true,
+		ConnectionState: model.FeishuConnectionConnected,
+	}, nil)
 
-func TestUnbind_DeletesRow(t *testing.T) {
-	svc, st, _ := newTestSvc(t, &ConnectStep{Phase: ConnectPhaseDone})
-	st.put(&model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, AppID: "cli_x", Connected: true})
-	if err := svc.Unbind(context.Background(), 7); err != nil {
-		t.Fatalf("Unbind: %v", err)
-	}
-	if _, err := st.Get(context.Background(), 7, ProviderLark); !errors.Is(err, gorm.ErrRecordNotFound) {
-		t.Fatalf("row should be deleted, got %v", err)
-	}
-	if st.deletes != 1 {
-		t.Fatalf("expected 1 delete, got %d", st.deletes)
-	}
+	result, err := svc.Unbind(context.Background(), 7)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuConnectionNone, result.State)
+	require.False(t, result.Connected)
+	require.Contains(t, result.Message, "飞书侧个人自建应用仍保留")
+	require.Equal(t, 1, accounts.retireCalls)
+	require.Equal(t, 1, accounts.finalizeCalls)
+	require.Equal(t, 1, workspace.deleteVaultCalls)
+	require.Equal(t, []uint64{4}, auth.stopped)
 }
 
-func TestUnbind_Idempotent(t *testing.T) {
-	svc, _, _ := newTestSvc(t, &ConnectStep{Phase: ConnectPhaseDone})
-	if err := svc.Unbind(context.Background(), 999); err != nil {
-		t.Fatalf("Unbind on missing row must be idempotent, got %v", err)
-	}
-}
-
-// --- constructor guards -----------------------------------------------------
-
-func TestNewFeishuService_NilDeps(t *testing.T) {
-	if _, err := NewFeishuService(Deps{Orchestrator: &svcStepper{}}); err == nil {
-		t.Fatal("nil store must error")
-	}
-	if _, err := NewFeishuService(Deps{Store: newSvcAccountStore()}); err == nil {
-		t.Fatal("nil orchestrator must error")
-	}
+func TestNewWorkspaceLifecycleServiceRejectsIncompleteGraph(t *testing.T) {
+	_, err := NewWorkspaceLifecycleService(WorkspaceLifecycleDeps{})
+	require.Error(t, err)
+	require.False(t, errors.Is(err, ErrWorkspaceLifecycleNotFound))
 }
