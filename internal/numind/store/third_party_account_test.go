@@ -188,6 +188,62 @@ func TestThirdPartyAccountStore_DisconnectingGenerationRejectsNewSessionAndOpera
 	require.EqualValues(t, disconnectingGeneration, account.Generation)
 }
 
+func TestFeishuWorkspaceStore_RetiredTeardownRenewAndCompleteFenceExactOwner(t *testing.T) {
+	db := newThirdPartyAccountTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.FeishuCLIVault{}, &model.FeishuOperationExecutionGate{}, &model.FeishuAuthSession{}, &model.FeishuOperation{}))
+	accounts := newThirdPartyAccountStore(db)
+	workspace := newFeishuWorkspaceStore(db)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	require.NoError(t, db.Create(&model.UserThirdPartyAccount{
+		UserID: 7, Provider: "lark", Generation: 4, Connected: true, ConnectionState: model.FeishuConnectionConnected,
+	}).Error)
+	retiredGeneration, disconnectingGeneration, err := accounts.RetireGeneration(ctx, 7, "lark")
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&model.FeishuCLIVault{
+		UserID: 7, Generation: retiredGeneration, Ciphertext: []byte("cipher"), KeyVersion: "v1", Checksum: "checksum", Revision: 1,
+	}).Error)
+
+	claimed, err := workspace.ClaimRetiredTeardown(ctx, 7, retiredGeneration, disconnectingGeneration, "owner-a", now, now.Add(10*time.Millisecond))
+	require.NoError(t, err)
+	require.True(t, claimed)
+	renewed, err := workspace.RenewRetiredTeardown(ctx, 7, retiredGeneration, disconnectingGeneration, "owner-a", now.Add(5*time.Millisecond), now.Add(100*time.Millisecond))
+	require.NoError(t, err)
+	require.True(t, renewed)
+
+	// Owner B cannot claim while A's renewed lease remains live.
+	claimed, err = workspace.ClaimRetiredTeardown(ctx, 7, retiredGeneration, disconnectingGeneration, "owner-b", now.Add(20*time.Millisecond), now.Add(200*time.Millisecond))
+	require.NoError(t, err)
+	require.False(t, claimed)
+
+	// A crashed after the renewal. Once its durable lease expires, B may take
+	// over the same retired generation, but A's stale token cannot renew,
+	// delete the vault, or finalize the account.
+	claimed, err = workspace.ClaimRetiredTeardown(ctx, 7, retiredGeneration, disconnectingGeneration, "owner-b", now.Add(110*time.Millisecond), now.Add(210*time.Millisecond))
+	require.NoError(t, err)
+	require.True(t, claimed)
+	renewed, err = workspace.RenewRetiredTeardown(ctx, 7, retiredGeneration, disconnectingGeneration, "owner-a", now.Add(111*time.Millisecond), now.Add(211*time.Millisecond))
+	require.NoError(t, err)
+	require.False(t, renewed)
+	completed, err := workspace.CompleteRetiredTeardown(ctx, 7, retiredGeneration, disconnectingGeneration, "owner-a", now.Add(112*time.Millisecond))
+	require.NoError(t, err)
+	require.False(t, completed)
+
+	var retained model.FeishuCLIVault
+	require.NoError(t, db.Where("user_id = ? AND generation = ?", 7, retiredGeneration).Take(&retained).Error)
+	account, err := accounts.Get(ctx, 7, "lark")
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuConnectionDisconnecting, account.ConnectionState)
+
+	completed, err = workspace.CompleteRetiredTeardown(ctx, 7, retiredGeneration, disconnectingGeneration, "owner-b", now.Add(112*time.Millisecond))
+	require.NoError(t, err)
+	require.True(t, completed)
+	require.ErrorIs(t, db.Where("user_id = ? AND generation = ?", 7, retiredGeneration).Take(&model.FeishuCLIVault{}).Error, gorm.ErrRecordNotFound)
+	account, err = accounts.Get(ctx, 7, "lark")
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuConnectionNone, account.ConnectionState)
+}
+
 func TestThirdPartyAccountStore_Upsert_Idempotent(t *testing.T) {
 	db := newThirdPartyAccountTestDB(t)
 	s := newThirdPartyAccountStore(db)

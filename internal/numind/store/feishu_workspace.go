@@ -45,10 +45,17 @@ type IFeishuWorkspaceStore interface {
 	ReleaseExecutionGate(ctx context.Context, userID uint, generation uint64, owner string, now time.Time) (bool, error)
 	RetiredExecutionGateDrained(ctx context.Context, userID uint, retiredGeneration uint64, now time.Time) (bool, error)
 	ClaimRetiredTeardown(ctx context.Context, userID uint, retiredGeneration, disconnectingGeneration uint64, owner string, now, leaseUntil time.Time) (bool, error)
+	RenewRetiredTeardown(ctx context.Context, userID uint, retiredGeneration, disconnectingGeneration uint64, owner string, now, leaseUntil time.Time) (bool, error)
 	ReleaseRetiredTeardown(ctx context.Context, userID uint, retiredGeneration uint64, owner string, now time.Time) error
+	CompleteRetiredTeardown(ctx context.Context, userID uint, retiredGeneration, disconnectingGeneration uint64, owner string, now time.Time) (bool, error)
 	ListSucceededCreatesForRun(ctx context.Context, userID uint, generation uint64, agentRunID uint64) ([]model.FeishuOperation, error)
 	IsOperationProofUsable(ctx context.Context, userID uint, generation uint64, agentRunID uint64, sourceOperationID, consumerOperationID string) (bool, error)
 	GetOperationForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuOperation, error)
+	// ListTerminalOperationsForGeneration returns only the supplied terminal
+	// states for one tenant and one retired generation. Lifecycle teardown uses
+	// it to finish the exact linked Agent waits after RetireGeneration has
+	// atomically fenced their operations; it is not a broad Agent-run scan.
+	ListTerminalOperationsForGeneration(ctx context.Context, userID uint, generation uint64, states []string) ([]model.FeishuOperation, error)
 	ClaimOperation(ctx context.Context, userID uint, generation uint64, id, owner string, expectedStates []string, now, leaseUntil time.Time) (bool, error)
 	TransitionOperation(ctx context.Context, userID uint, generation uint64, id, owner string, from []string, to string, now time.Time, fields map[string]any) error
 	TransitionOperationWithCapabilityOutcome(ctx context.Context, userID uint, generation uint64, id, owner string, from []string, to string, now time.Time, fields map[string]any, outcome model.FeishuCapabilityOutcome) error
@@ -1079,6 +1086,43 @@ func (s *feishuWorkspaceStore) ClaimRetiredTeardown(ctx context.Context, userID 
 	return claimed, err
 }
 
+// RenewRetiredTeardown extends an already-held retired-workspace cleanup
+// lease. It never revives an expired lease: ownership, generation, operation
+// marker, and the old unexpired deadline must all still match in one
+// account-then-gate transaction. A false result is an ownership loss, not a
+// retry invitation for a stale cleanup worker.
+func (s *feishuWorkspaceStore) RenewRetiredTeardown(
+	ctx context.Context,
+	userID uint,
+	retiredGeneration, disconnectingGeneration uint64,
+	owner string,
+	now, leaseUntil time.Time,
+) (bool, error) {
+	if userID == 0 || retiredGeneration == 0 || disconnectingGeneration != retiredGeneration+1 || owner == "" || !leaseUntil.After(now) {
+		return false, nil
+	}
+	renewed := false
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var account model.UserThirdPartyAccount
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ? AND provider = ?", userID, "lark").Take(&account).Error; err != nil {
+			return err
+		}
+		if account.Generation != disconnectingGeneration || account.ConnectionState != model.FeishuConnectionDisconnecting {
+			return nil
+		}
+		result := tx.Model(&model.FeishuOperationExecutionGate{}).
+			Where("user_id = ? AND generation = ? AND lease_owner = ? AND operation_id = ? AND lease_until > ?", userID, retiredGeneration, owner, "retired-teardown", now).
+			Updates(map[string]any{"lease_until": leaseUntil, "updated_at": now})
+		if result.Error != nil {
+			return result.Error
+		}
+		renewed = result.RowsAffected == 1
+		return nil
+	})
+	return renewed, err
+}
+
 // ReleaseRetiredTeardown releases only the exact durable teardown owner.
 func (s *feishuWorkspaceStore) ReleaseRetiredTeardown(ctx context.Context, userID uint, retiredGeneration uint64, owner string, now time.Time) error {
 	if userID == 0 || retiredGeneration == 0 || owner == "" {
@@ -1089,6 +1133,81 @@ func (s *feishuWorkspaceStore) ReleaseRetiredTeardown(ctx context.Context, userI
 		return result.Error
 	}
 	return nil
+}
+
+// CompleteRetiredTeardown is the only destructive completion boundary for a
+// retired workspace. It deletes the retired vault and clears the disconnecting
+// account only while the exact live teardown lease is still owned by caller.
+// Keeping those writes in one transaction prevents a worker that lost its
+// lease from deleting credentials or finalizing a newer owner's teardown.
+func (s *feishuWorkspaceStore) CompleteRetiredTeardown(
+	ctx context.Context,
+	userID uint,
+	retiredGeneration, disconnectingGeneration uint64,
+	owner string,
+	now time.Time,
+) (bool, error) {
+	if userID == 0 || retiredGeneration == 0 || disconnectingGeneration != retiredGeneration+1 || owner == "" {
+		return false, nil
+	}
+	completed := false
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var account model.UserThirdPartyAccount
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ? AND provider = ?", userID, "lark").Take(&account).Error; err != nil {
+			return err
+		}
+		if account.Generation != disconnectingGeneration || account.ConnectionState != model.FeishuConnectionDisconnecting {
+			return nil
+		}
+
+		var gate model.FeishuOperationExecutionGate
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("user_id = ?", userID).Take(&gate).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		if gate.Generation != retiredGeneration || gate.LeaseOwner != owner || gate.OperationID != "retired-teardown" || gate.LeaseUntil == nil || !gate.LeaseUntil.After(now) {
+			return nil
+		}
+
+		if result := tx.Where("user_id = ? AND generation = ?", userID, retiredGeneration).Delete(&model.FeishuCLIVault{}); result.Error != nil {
+			return fmt.Errorf("delete retired feishu CLI vault: %w", result.Error)
+		}
+		accountResult := tx.Model(&model.UserThirdPartyAccount{}).
+			Where("user_id = ? AND provider = ? AND generation = ? AND connection_state = ?", userID, "lark", disconnectingGeneration, model.FeishuConnectionDisconnecting).
+			Updates(map[string]any{
+				"app_id":                "",
+				"app_secret_enc":        nil,
+				"access_token_enc":      nil,
+				"refresh_token_enc":     nil,
+				"token_expires_at":      nil,
+				"scopes":                "",
+				"connected":             false,
+				"connected_at":          nil,
+				"connection_state":      model.FeishuConnectionNone,
+				"lark_cli_version":      "",
+				"granted_scopes_json":   nil,
+				"capability_state_json": nil,
+				"last_success_at":       nil,
+				"last_error_code":       nil,
+			})
+		if accountResult.Error != nil {
+			return fmt.Errorf("complete feishu retired teardown: %w", accountResult.Error)
+		}
+		if accountResult.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		if result := tx.Model(&model.FeishuOperationExecutionGate{}).
+			Where("user_id = ? AND generation = ? AND lease_owner = ? AND operation_id = ?", userID, retiredGeneration, owner, "retired-teardown").
+			Updates(map[string]any{"lease_owner": "", "operation_id": "", "lease_until": nil, "updated_at": now}); result.Error != nil {
+			return fmt.Errorf("release completed feishu retired teardown: %w", result.Error)
+		}
+		completed = true
+		return nil
+	})
+	return completed, err
 }
 
 // ListSucceededCreatesForRun returns a small, deterministic proof-candidate
@@ -1213,6 +1332,28 @@ func (s *feishuWorkspaceStore) GetOperationForUser(ctx context.Context, userID u
 		return nil, err
 	}
 	return &operation, nil
+}
+
+// ListTerminalOperationsForGeneration returns the lifecycle-selected terminal
+// operations for exactly one user and generation. The caller supplies only
+// fixed server state constants; no browser input reaches this query.
+func (s *feishuWorkspaceStore) ListTerminalOperationsForGeneration(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	states []string,
+) ([]model.FeishuOperation, error) {
+	if userID == 0 || generation == 0 || len(states) == 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var operations []model.FeishuOperation
+	if err := s.db.WithContext(ctx).
+		Where("user_id = ? AND generation = ? AND state IN ?", userID, generation, states).
+		Order("created_at ASC, id ASC").
+		Find(&operations).Error; err != nil {
+		return nil, fmt.Errorf("list terminal feishu operations: %w", err)
+	}
+	return operations, nil
 }
 
 // ClaimOperation acquires or renews an operation lease only for the account's
