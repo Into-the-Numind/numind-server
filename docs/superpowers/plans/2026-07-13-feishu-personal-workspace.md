@@ -1256,17 +1256,17 @@ git commit -m "refactor(feishu): remove fixed legacy tools"
 
 **Files:** `internal/numind/biz/feishu/personal_workspace_integration_test.go`、`internal/numind/biz/agent/lark_external_resume_integration_test.go`。
 
-- [ ] **Step 1: 写完整集成测试**
+- [x] **Step 1: 写完整集成测试**
 
 覆盖 never-connected → create app → app scope → user auth → exact replay；connected 无 auth status；resource ACL 不 OAuth；重复 resume 单副作用；三个 phase 模拟 restart；双用户隔离；撤销后 reauth；解绑 generation 失效；写 timeout unknown；同 tool_call_id 恢复无第二条 argv。另用真实 MySQL 8 环境执行本 feature migration → AutoMigrate → information_schema schema diff，并并发验证 generation bump 与 `PutVaultCAS` 的 `SELECT ... FOR UPDATE` 互斥语义；SQLite 只承担逻辑单测，不作为该并发 Gate 的替代。
 
-- [ ] **Step 2: 运行完整集成测试**
+- [x] **Step 2: 运行完整集成测试**
 
 Run: `go test ./internal/numind/biz/feishu ./internal/numind/biz/agent -run 'PersonalWorkspaceIntegration|LarkExternalResumeIntegration' -count=1`
 
 Expected: PASS。Task 21 是纯测试任务，不允许修改生产文件；如果测试发现生产缺陷，立即停止 Task 21，在 plan/manifest 新增一个独立 fix task，完成双 review 后再返回本任务。
 
-- [ ] **Step 3: 绿测和 Commit**
+- [x] **Step 3: 绿测和 Commit**
 
 Run: `go test -race ./internal/numind/biz/feishu ./internal/numind/biz/agent -run 'PersonalWorkspaceIntegration|LarkExternalResumeIntegration' -count=1`
 
@@ -1276,6 +1276,8 @@ Expected: PASS。
 git add internal/numind/biz/feishu/personal_workspace_integration_test.go internal/numind/biz/agent/lark_external_resume_integration_test.go
 git commit -m "test(feishu): cover workspace recovery integration"
 ```
+
+**一期收口（2026-07-15）：** `b76088cd` 以 SQLite durable store 覆盖 create-app、user-auth、app-scope 三个完成落库后的服务重建、精确 argv replay、revoked reauth、隔离/generation fence、ACL/unknown write 与 Agent resumer 跨进程重建；所有阻塞 worker/dispatcher 均有 cleanup。真实 MySQL 8 空临时库自动建立 pre-feature baseline，依次执行三份正式 migration，在 AutoMigrate 前后核对 columns(type/null/default)、索引、外键和 CHECK；通过 `performance_schema` 确认旧 generation CAS 已等待账户 `FOR UPDATE` 行锁后，再执行真实 `RetireGeneration`。定向 test ×10、race、lint、真实 MySQL Gate、规格/质量双审均 PASS，未发现生产缺陷。
 
 ## Task 22: 前端 Playwright E2E（一期关键路径；二期扩展完整矩阵）
 
