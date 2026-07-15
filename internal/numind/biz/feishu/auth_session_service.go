@@ -76,6 +76,8 @@ type AuthSessionStore interface {
 	CreateOrGetPendingSession(ctx context.Context, session *model.FeishuAuthSession) (*model.FeishuAuthSession, bool, error)
 	GetSessionForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuAuthSession, error)
 	SupersedeSessionForUser(ctx context.Context, userID uint, generation uint64, id string, now time.Time) error
+	RefreshOperationSession(ctx context.Context, userID uint, generation uint64, oldSessionID, operationID, waitingState, connectionState string, replacement *model.FeishuAuthSession, replacementSummary []byte, now time.Time) (*model.FeishuAuthSession, error)
+	RestoreOperationSessionRefresh(ctx context.Context, userID uint, generation uint64, oldSessionID, replacementSessionID, operationID, waitingState string, oldSummary []byte, now time.Time) error
 	ClaimSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
 	RenewSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
 	UpdateSessionState(ctx context.Context, userID uint, generation uint64, id, owner, state string, now time.Time, completedAt *time.Time) error
@@ -604,7 +606,7 @@ func (s *AuthSessionService) start(
 		}
 		return s.recoverExpired(ctx, session, request, scopes)
 	}
-	return s.claimAndStart(ctx, session, request, argv, scopes)
+	return s.claimAndStart(ctx, session, request, argv, scopes, false)
 }
 
 func authSessionPlan(kind RecoveryKind, requested []string) (string, []string, []string, error) {
@@ -812,6 +814,7 @@ func (s *AuthSessionService) claimAndStart(
 	request RecoveryRequest,
 	argv []string,
 	scopes []string,
+	connectionStatePrepared bool,
 ) (*OperationAction, error) {
 	workerParent := ctx
 	startCtx, start, accepted := s.beginWorkerStart(ctx, session)
@@ -831,15 +834,17 @@ func (s *AuthSessionService) claimAndStart(
 	if err != nil || !claimed {
 		return nil, ErrAuthSessionUnavailable
 	}
-	state := model.FeishuConnectionWaitingUserAuth
-	if session.Phase == model.FeishuAuthPhaseCreateApp {
-		state = model.FeishuConnectionCreatingApp
-	}
-	if err := s.sessions.UpdateAccountConnectionState(ctx, session.UserID, session.Generation, state, false, now); err != nil {
-		if supersedeErr := s.supersedeOwned(ctx, session, leaseToken, now); supersedeErr != nil {
-			return nil, supersedeErr
+	if !connectionStatePrepared {
+		state := model.FeishuConnectionWaitingUserAuth
+		if session.Phase == model.FeishuAuthPhaseCreateApp {
+			state = model.FeishuConnectionCreatingApp
 		}
-		return nil, ErrAuthSessionUnavailable
+		if err := s.sessions.UpdateAccountConnectionState(ctx, session.UserID, session.Generation, state, false, now); err != nil {
+			if supersedeErr := s.supersedeOwned(ctx, session, leaseToken, now); supersedeErr != nil {
+				return nil, supersedeErr
+			}
+			return nil, ErrAuthSessionUnavailable
+		}
 	}
 	var activation *authSessionActivation
 	if request.OperationID != "" {
@@ -908,7 +913,7 @@ func (s *AuthSessionService) RefreshAction(
 		return nil, ErrAuthSessionUnavailable
 	}
 	session, err := s.sessions.GetSessionForUser(ctx, userID, generation, sessionID)
-	if err != nil || session == nil || session.State != model.FeishuAuthSessionPending {
+	if err != nil || session == nil || session.State != model.FeishuAuthSessionPending || session.OperationID != nil {
 		return nil, ErrAuthSessionUnavailable
 	}
 	var scopes []string
@@ -929,11 +934,185 @@ func (s *AuthSessionService) RefreshAction(
 	s.stopSession(userID, generation, sessionID)
 	s.urls.remove(authSessionRegistryKey(session))
 	request := RecoveryRequest{UserID: userID, Generation: generation, Kind: kind, Scopes: canonicalScopes}
-	manual := session.OperationID == nil
-	if session.OperationID != nil {
-		request.OperationID = *session.OperationID
+	return s.start(ctx, request, true)
+}
+
+// RefreshOperationAction atomically swaps an operation's pending authorization
+// session before a replacement worker is allowed to run. Unlike manual refresh,
+// it never permits an operation summary to point at a superseded session.
+func (s *AuthSessionService) RefreshOperationAction(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	oldSessionID, operationID, waitingState string,
+	operationSummary []byte,
+) (*OperationAction, error) {
+	if s == nil || userID == 0 || generation == 0 || strings.TrimSpace(oldSessionID) == "" ||
+		strings.TrimSpace(operationID) == "" || strings.TrimSpace(waitingState) == "" {
+		return nil, ErrAuthSessionUnavailable
 	}
-	return s.start(ctx, request, manual)
+	oldSession, err := s.sessions.GetSessionForUser(ctx, userID, generation, oldSessionID)
+	if err != nil || oldSession == nil || oldSession.State != model.FeishuAuthSessionPending || oldSession.OperationID == nil ||
+		*oldSession.OperationID != operationID {
+		return nil, ErrAuthSessionUnavailable
+	}
+	var scopes []string
+	if err := json.Unmarshal(oldSession.RequestedScopesJSON, &scopes); err != nil {
+		return nil, ErrAuthSessionUnavailable
+	}
+	canonicalScopes, err := canonicalAuthScopes(scopes)
+	if err != nil || !authSessionScopeJSONEqual(oldSession.RequestedScopesJSON, mustMarshalAuthScopes(canonicalScopes)) {
+		return nil, ErrAuthSessionUnavailable
+	}
+	kind, err := refreshRecoveryKind(oldSession)
+	if err != nil {
+		return nil, ErrAuthSessionUnavailable
+	}
+	phase, argv, plannedScopes, err := authSessionPlan(kind, canonicalScopes)
+	if err != nil || phase != oldSession.Phase {
+		return nil, ErrAuthSessionUnavailable
+	}
+	summary, err := decodeOperationSummary(operationSummary)
+	if err != nil || summary.Status != waitingState || summary.SessionID != oldSessionID || summary.Phase != phase ||
+		phaseForRecovery(summary.RecoveryKind) != phase {
+		return nil, ErrAuthSessionUnavailable
+	}
+	now := s.now().UTC()
+	connectionState := model.FeishuConnectionWaitingUserAuth
+	if phase == model.FeishuAuthPhaseCreateApp {
+		connectionState = model.FeishuConnectionCreatingApp
+	} else if phase == model.FeishuAuthPhaseAppScope {
+		connectionState = model.FeishuConnectionWaitingAppApproval
+	}
+	replacement := &model.FeishuAuthSession{
+		ID: s.newID(), UserID: userID, Generation: generation, OperationID: &operationID,
+		Phase: phase, RequestedScopesJSON: mustMarshalAuthScopes(plannedScopes), State: model.FeishuAuthSessionPending,
+		ExpiresAt: now.Add(s.sessionDuration),
+	}
+	summary.SessionID = replacement.ID
+	expiresAt := replacement.ExpiresAt.UTC()
+	summary.ExpiresAt = &expiresAt
+	replacementSummary, err := json.Marshal(summary)
+	if err != nil {
+		return nil, ErrAuthSessionUnavailable
+	}
+	stored, err := s.sessions.RefreshOperationSession(
+		ctx, userID, generation, oldSessionID, operationID, waitingState, connectionState, replacement, replacementSummary, now,
+	)
+	if err != nil || stored == nil {
+		return nil, ErrAuthSessionUnavailable
+	}
+	consoleURL := s.urls.get(authSessionRegistryKey(oldSession), now)
+	s.stopSession(userID, generation, oldSessionID)
+	s.urls.remove(authSessionRegistryKey(oldSession))
+	if phase == model.FeishuAuthPhaseAppScope {
+		if consoleURL != "" {
+			s.urls.put(authSessionRegistryKey(stored), consoleURL, stored.ExpiresAt)
+		}
+		return s.actionFor(stored, plannedScopes), nil
+	}
+	action, err := s.claimAndStart(ctx, stored, RecoveryRequest{
+		UserID: userID, Generation: generation, OperationID: operationID, Kind: kind, Scopes: plannedScopes,
+	}, argv, plannedScopes, true)
+	if err != nil || action == nil {
+		if restoreErr := s.restoreOperationRefresh(ctx, oldSession, stored, operationID, waitingState, operationSummary); restoreErr != nil {
+			return nil, ErrAuthSessionUnavailable
+		}
+		return nil, ErrAuthSessionUnavailable
+	}
+	if err := s.Activate(context.WithoutCancel(ctx), action.SessionID); err != nil {
+		if restoreErr := s.restoreOperationRefresh(ctx, oldSession, stored, operationID, waitingState, operationSummary); restoreErr != nil {
+			return nil, ErrAuthSessionUnavailable
+		}
+		return nil, ErrAuthSessionUnavailable
+	}
+	return action, nil
+}
+
+// RecoverOperationRefreshAction is the retry path for an original browser card
+// when a prior post-commit compensation could not reach storage. That card has
+// never received the replacement session ID, so after re-validating the exact
+// durable replacement we restore its old binding and immediately mint a fresh
+// action from that same opaque card ID.
+func (s *AuthSessionService) RecoverOperationRefreshAction(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	oldSessionID, operationID, waitingState string,
+	operationSummary []byte,
+) (*OperationAction, error) {
+	if s == nil || userID == 0 || generation == 0 || strings.TrimSpace(oldSessionID) == "" ||
+		strings.TrimSpace(operationID) == "" || strings.TrimSpace(waitingState) == "" {
+		return nil, ErrAuthSessionUnavailable
+	}
+	oldSession, err := s.sessions.GetSessionForUser(ctx, userID, generation, oldSessionID)
+	if err != nil || oldSession == nil || oldSession.State != model.FeishuAuthSessionSuperseded || oldSession.OperationID == nil ||
+		*oldSession.OperationID != operationID {
+		return nil, ErrAuthSessionUnavailable
+	}
+	currentSummary, err := decodeOperationSummary(operationSummary)
+	if err != nil || currentSummary.Status != waitingState || currentSummary.SessionID == "" ||
+		currentSummary.SessionID == oldSessionID || currentSummary.Phase != oldSession.Phase ||
+		phaseForRecovery(currentSummary.RecoveryKind) != oldSession.Phase {
+		return nil, ErrAuthSessionUnavailable
+	}
+	replacement, err := s.sessions.GetSessionForUser(ctx, userID, generation, currentSummary.SessionID)
+	if err != nil || replacement == nil || replacement.OperationID == nil || *replacement.OperationID != operationID ||
+		replacement.Phase != oldSession.Phase || !authSessionScopeJSONEqual(replacement.RequestedScopesJSON, oldSession.RequestedScopesJSON) {
+		return nil, ErrAuthSessionUnavailable
+	}
+	now := s.now().UTC()
+	if replacement.State != model.FeishuAuthSessionFailed && replacement.State != model.FeishuAuthSessionSuperseded &&
+		(replacement.State != model.FeishuAuthSessionPending || (replacement.LeaseUntil != nil && replacement.LeaseUntil.After(now))) {
+		// A stale browser card must never displace a replacement that still has
+		// a live worker lease. The caller can retry after that lease resolves.
+		return nil, ErrAuthSessionUnavailable
+	}
+	oldSummary := currentSummary
+	oldSummary.SessionID = oldSessionID
+	expiresAt := oldSession.ExpiresAt.UTC()
+	oldSummary.ExpiresAt = &expiresAt
+	encodedOldSummary, err := json.Marshal(oldSummary)
+	if err != nil {
+		return nil, ErrAuthSessionUnavailable
+	}
+	if err := s.restoreOperationRefresh(ctx, oldSession, replacement, operationID, waitingState, encodedOldSummary); err != nil {
+		return nil, ErrAuthSessionUnavailable
+	}
+	return s.RefreshOperationAction(ctx, userID, generation, oldSessionID, operationID, waitingState, encodedOldSummary)
+}
+
+// restoreOperationRefresh makes a failed post-commit replacement retryable by
+// the original card. The browser only knows the old opaque session ID until a
+// new URL is returned, so leaving the operation bound to a failed replacement
+// would strand that card forever.
+func (s *AuthSessionService) restoreOperationRefresh(
+	ctx context.Context,
+	oldSession, replacement *model.FeishuAuthSession,
+	operationID, waitingState string,
+	oldSummary []byte,
+) error {
+	if s == nil || oldSession == nil || replacement == nil || oldSession.UserID != replacement.UserID ||
+		oldSession.Generation != replacement.Generation || strings.TrimSpace(operationID) == "" || strings.TrimSpace(waitingState) == "" {
+		return ErrAuthSessionUnavailable
+	}
+	// The durable transaction is the authority on whether this replacement has
+	// acquired a live lease. Do not cancel a local worker before it passes that
+	// fence: a stale card must never interrupt a newer recovery that won it.
+	restoreCtx, restoreCancel := authSessionDetachedContext(ctx)
+	err := s.sessions.RestoreOperationSessionRefresh(
+		restoreCtx, oldSession.UserID, oldSession.Generation, oldSession.ID, replacement.ID,
+		operationID, waitingState, append([]byte(nil), oldSummary...), s.now().UTC(),
+	)
+	restoreCancel()
+	if err != nil {
+		return ErrAuthSessionUnavailable
+	}
+	// After the committed transaction supersedes the replacement, no worker can
+	// finalize it. Stop the local copy and discard any transient URL last.
+	s.stopSession(replacement.UserID, replacement.Generation, replacement.ID)
+	s.urls.remove(authSessionRegistryKey(replacement))
+	return nil
 }
 
 func mustMarshalAuthScopes(scopes []string) []byte {

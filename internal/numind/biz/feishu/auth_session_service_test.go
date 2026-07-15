@@ -181,6 +181,79 @@ type authSessionCompleteBeforeClaimStore struct {
 	once sync.Once
 }
 
+// authSessionRefreshClaimFailureStore fails exactly one replacement-worker
+// claim after the first operation worker has started. It makes the durable
+// post-refresh recovery boundary observable without relying on timing.
+type authSessionRefreshClaimFailureStore struct {
+	AuthSessionStore
+	mu              sync.Mutex
+	claims          int
+	failOnClaim     int
+	restoreFailures int
+}
+
+// authSessionRestoreRaceStore claims the replacement immediately before the
+// durable restore transaction. It models another local recovery that wins the
+// lease after a stale-card precheck but before the authoritative store fence.
+type authSessionRestoreRaceStore struct {
+	AuthSessionStore
+	onRestore func()
+	once      sync.Once
+}
+
+func (s *authSessionRestoreRaceStore) RestoreOperationSessionRefresh(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	oldSessionID, replacementSessionID, operationID, waitingState string,
+	oldSummary []byte,
+	now time.Time,
+) error {
+	s.once.Do(s.onRestore)
+	return s.AuthSessionStore.RestoreOperationSessionRefresh(
+		ctx, userID, generation, oldSessionID, replacementSessionID, operationID, waitingState, oldSummary, now,
+	)
+}
+
+func (s *authSessionRefreshClaimFailureStore) ClaimSession(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	id, owner string,
+	now, leaseUntil time.Time,
+) (bool, error) {
+	s.mu.Lock()
+	s.claims++
+	shouldFail := s.claims == s.failOnClaim
+	s.mu.Unlock()
+	if shouldFail {
+		return false, errors.New("replacement worker claim unavailable")
+	}
+	return s.AuthSessionStore.ClaimSession(ctx, userID, generation, id, owner, now, leaseUntil)
+}
+
+func (s *authSessionRefreshClaimFailureStore) RestoreOperationSessionRefresh(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	oldSessionID, replacementSessionID, operationID, waitingState string,
+	oldSummary []byte,
+	now time.Time,
+) error {
+	s.mu.Lock()
+	shouldFail := s.restoreFailures > 0
+	if shouldFail {
+		s.restoreFailures--
+	}
+	s.mu.Unlock()
+	if shouldFail {
+		return errors.New("operation refresh restore unavailable")
+	}
+	return s.AuthSessionStore.RestoreOperationSessionRefresh(
+		ctx, userID, generation, oldSessionID, replacementSessionID, operationID, waitingState, oldSummary, now,
+	)
+}
+
 // authSessionUpdateBarrierStore holds the start path after its last durable
 // state write and before local worker registration. It models the only window
 // where RetireGeneration can commit before StopGenerationAndWait snapshots the
@@ -436,6 +509,264 @@ func TestAuthSessionService_RefreshSupersedesLiveSessionStopsWorkerAndStartsNewU
 	require.Equal(t, model.FeishuAuthSessionSuperseded, oldSession.State)
 
 	service.StopGeneration(7, 1)
+}
+
+func TestAuthSessionService_RefreshOperationAtomicallyRebindsBeforeActivatingReplacement(t *testing.T) {
+	h := newAuthSessionHarness(t)
+	oldRelease := make(chan struct{})
+	newRelease := make(chan struct{})
+	releaseNew := releaseAuthSessionCLIFake(t, newRelease)
+	h.cli.urls = []string{
+		"https://open.feishu.cn/page/cli?user_code=OLD_OPERATION",
+		"https://open.feishu.cn/page/cli?user_code=NEW_OPERATION",
+	}
+	h.cli.releases = []<-chan struct{}{oldRelease, newRelease}
+	service := h.newService("refresh-operation-owner")
+	operation := &model.FeishuOperation{
+		ID: "operation-refresh-atomic", UserID: 7, Generation: 1, AgentRunID: 7, ToolCallID: "tool-refresh-atomic",
+		IdempotencyKey: "refresh-atomic", CommandPath: "docs document get", Domain: "docs", RiskLevel: string(RiskRead),
+		RequestCiphertext: []byte("encrypted-request"), KeyVersion: "v1", RequestFingerprint: "refresh-atomic-fingerprint",
+		State: model.FeishuOperationWaitingConnection,
+	}
+	require.NoError(t, h.db.Create(operation).Error)
+
+	first, err := service.StartRecovery(h.ctx, RecoveryRequest{
+		UserID: 7, Generation: 1, OperationID: operation.ID, Kind: RecoveryCreateApp, Scopes: []string{"docx:document:readonly"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, service.Activate(h.ctx, first.SessionID))
+	oldSummary, err := json.Marshal(persistedOperationSummary{
+		Status: model.FeishuOperationWaitingConnection, Phase: model.FeishuAuthPhaseCreateApp,
+		SessionID: first.SessionID, RecoveryKind: RecoveryCreateApp,
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.db.Model(&model.FeishuOperation{}).Where("id = ?", operation.ID).
+		Update("result_summary_json", oldSummary).Error)
+
+	refreshed, err := service.RefreshOperationAction(
+		h.ctx, 7, 1, first.SessionID, operation.ID, model.FeishuOperationWaitingConnection, oldSummary,
+	)
+	require.NoError(t, err)
+	require.NotEqual(t, first.SessionID, refreshed.SessionID)
+	require.Contains(t, refreshed.URL, "NEW_OPERATION")
+
+	storedOperation, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, operation.ID)
+	require.NoError(t, err)
+	storedSummary, err := decodeOperationSummary(storedOperation.ResultSummaryJSON)
+	require.NoError(t, err)
+	require.Equal(t, refreshed.SessionID, storedSummary.SessionID)
+	require.NotNil(t, storedSummary.ExpiresAt)
+	var storedOld model.FeishuAuthSession
+	require.NoError(t, h.db.Where("id = ?", first.SessionID).Take(&storedOld).Error)
+	require.Equal(t, model.FeishuAuthSessionSuperseded, storedOld.State)
+	storedNew, err := h.dataStore.FeishuWorkspace().GetSessionForUser(h.ctx, 7, 1, refreshed.SessionID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionPending, storedNew.State)
+
+	releaseNew()
+	waitAuthDispatch(t, h.dispatcher)
+	require.Equal(t, []string{operation.ID}, h.dispatcher.snapshot())
+	close(oldRelease)
+}
+
+func TestAuthSessionService_RefreshOperationRestoresOriginalBindingWhenReplacementCannotStart(t *testing.T) {
+	h := newAuthSessionHarness(t)
+	oldRelease := make(chan struct{})
+	recoveredRelease := make(chan struct{})
+	releaseRecovered := releaseAuthSessionCLIFake(t, recoveredRelease)
+	h.cli.urls = []string{
+		"https://open.feishu.cn/page/cli?user_code=OLD_OPERATION",
+		"https://open.feishu.cn/page/cli?user_code=RECOVERED_OPERATION",
+	}
+	h.cli.releases = []<-chan struct{}{oldRelease, recoveredRelease}
+	sessions := &authSessionRefreshClaimFailureStore{
+		AuthSessionStore: h.dataStore.FeishuWorkspace(),
+		failOnClaim:      2,
+	}
+	service := h.newServiceWithSessions("refresh-operation-compensation", sessions)
+	operation := &model.FeishuOperation{
+		ID: "operation-refresh-compensation", UserID: 7, Generation: 1, AgentRunID: 7, ToolCallID: "tool-refresh-compensation",
+		IdempotencyKey: "refresh-compensation", CommandPath: "docs document get", Domain: "docs", RiskLevel: string(RiskRead),
+		RequestCiphertext: []byte("encrypted-request"), KeyVersion: "v1", RequestFingerprint: "refresh-compensation-fingerprint",
+		State: model.FeishuOperationWaitingConnection,
+	}
+	require.NoError(t, h.db.Create(operation).Error)
+
+	first, err := service.StartRecovery(h.ctx, RecoveryRequest{
+		UserID: 7, Generation: 1, OperationID: operation.ID, Kind: RecoveryCreateApp, Scopes: []string{"docx:document:readonly"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, service.Activate(h.ctx, first.SessionID))
+	oldSummary, err := json.Marshal(persistedOperationSummary{
+		Status: model.FeishuOperationWaitingConnection, Phase: model.FeishuAuthPhaseCreateApp,
+		SessionID: first.SessionID, RecoveryKind: RecoveryCreateApp,
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.db.Model(&model.FeishuOperation{}).Where("id = ?", operation.ID).
+		Update("result_summary_json", oldSummary).Error)
+
+	_, err = service.RefreshOperationAction(
+		h.ctx, 7, 1, first.SessionID, operation.ID, model.FeishuOperationWaitingConnection, oldSummary,
+	)
+	require.ErrorIs(t, err, ErrAuthSessionUnavailable)
+
+	storedOperation, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, operation.ID)
+	require.NoError(t, err)
+	storedSummary, err := decodeOperationSummary(storedOperation.ResultSummaryJSON)
+	require.NoError(t, err)
+	require.Equal(t, first.SessionID, storedSummary.SessionID)
+	var restoredOld model.FeishuAuthSession
+	require.NoError(t, h.db.Where("id = ?", first.SessionID).Take(&restoredOld).Error)
+	require.Equal(t, model.FeishuAuthSessionPending, restoredOld.State)
+	require.Empty(t, restoredOld.LeaseOwner)
+	require.Nil(t, restoredOld.LeaseUntil)
+
+	// The original card retains its session ID after a failed refresh. It must
+	// therefore be able to retry that exact refresh and receive a new action.
+	retried, err := service.RefreshOperationAction(
+		h.ctx, 7, 1, first.SessionID, operation.ID, model.FeishuOperationWaitingConnection, oldSummary,
+	)
+	require.NoError(t, err)
+	require.NotEqual(t, first.SessionID, retried.SessionID)
+	require.Contains(t, retried.URL, "RECOVERED_OPERATION")
+	require.NoError(t, service.Activate(h.ctx, retried.SessionID))
+	releaseRecovered()
+	close(oldRelease)
+}
+
+func TestAuthSessionService_RecoverOperationRefreshRetriesFailedCompensationFromOriginalCard(t *testing.T) {
+	h := newAuthSessionHarness(t)
+	oldRelease := make(chan struct{})
+	recoveredRelease := make(chan struct{})
+	releaseRecovered := releaseAuthSessionCLIFake(t, recoveredRelease)
+	h.cli.urls = []string{
+		"https://open.feishu.cn/page/cli?user_code=OLD_COMPENSATION",
+		"https://open.feishu.cn/page/cli?user_code=RECOVERED_COMPENSATION",
+	}
+	h.cli.releases = []<-chan struct{}{oldRelease, recoveredRelease}
+	sessions := &authSessionRefreshClaimFailureStore{
+		AuthSessionStore: h.dataStore.FeishuWorkspace(),
+		failOnClaim:      2,
+		restoreFailures:  1,
+	}
+	service := h.newServiceWithSessions("refresh-operation-reconcile", sessions)
+	operation := &model.FeishuOperation{
+		ID: "operation-refresh-reconcile", UserID: 7, Generation: 1, AgentRunID: 7, ToolCallID: "tool-refresh-reconcile",
+		IdempotencyKey: "refresh-reconcile", CommandPath: "docs document get", Domain: "docs", RiskLevel: string(RiskRead),
+		RequestCiphertext: []byte("encrypted-request"), KeyVersion: "v1", RequestFingerprint: "refresh-reconcile-fingerprint",
+		State: model.FeishuOperationWaitingConnection,
+	}
+	require.NoError(t, h.db.Create(operation).Error)
+
+	first, err := service.StartRecovery(h.ctx, RecoveryRequest{
+		UserID: 7, Generation: 1, OperationID: operation.ID, Kind: RecoveryCreateApp, Scopes: []string{"docx:document:readonly"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, service.Activate(h.ctx, first.SessionID))
+	oldSummary, err := json.Marshal(persistedOperationSummary{
+		Status: model.FeishuOperationWaitingConnection, Phase: model.FeishuAuthPhaseCreateApp,
+		SessionID: first.SessionID, RecoveryKind: RecoveryCreateApp,
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.db.Model(&model.FeishuOperation{}).Where("id = ?", operation.ID).
+		Update("result_summary_json", oldSummary).Error)
+
+	_, err = service.RefreshOperationAction(
+		h.ctx, 7, 1, first.SessionID, operation.ID, model.FeishuOperationWaitingConnection, oldSummary,
+	)
+	require.ErrorIs(t, err, ErrAuthSessionUnavailable)
+	storedOperation, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, operation.ID)
+	require.NoError(t, err)
+
+	// The first compensating database write is unavailable, so the original
+	// card's ID is superseded while the operation names its replacement. Once
+	// storage recovers, retrying that exact old ID must repair and refresh it.
+	recovered, err := service.RecoverOperationRefreshAction(
+		h.ctx, 7, 1, first.SessionID, operation.ID, model.FeishuOperationWaitingConnection,
+		storedOperation.ResultSummaryJSON,
+	)
+	require.NoError(t, err)
+	require.NotEqual(t, first.SessionID, recovered.SessionID)
+	require.Contains(t, recovered.URL, "RECOVERED_COMPENSATION")
+	require.NoError(t, service.Activate(h.ctx, recovered.SessionID))
+	releaseRecovered()
+	close(oldRelease)
+}
+
+func TestAuthSessionService_RecoverOperationRefreshDoesNotStopWorkerClaimedAfterStalePrecheck(t *testing.T) {
+	h := newAuthSessionHarness(t)
+	h.createAccount(model.FeishuConnectionAppReady)
+	operation := &model.FeishuOperation{
+		ID: "operation-refresh-live-race", UserID: 7, Generation: 1, AgentRunID: 7, ToolCallID: "tool-refresh-live-race",
+		IdempotencyKey: "refresh-live-race", CommandPath: "docs document get", Domain: "docs", RiskLevel: string(RiskRead),
+		RequestCiphertext: []byte("encrypted-request"), KeyVersion: "v1", RequestFingerprint: "refresh-live-race-fingerprint",
+		State: model.FeishuOperationWaitingConnection,
+	}
+	require.NoError(t, h.db.Create(operation).Error)
+	oldSession := &model.FeishuAuthSession{
+		ID: "session-old-live-race", UserID: 7, Generation: 1, OperationID: &operation.ID,
+		Phase: model.FeishuAuthPhaseCreateApp, RequestedScopesJSON: []byte(`["docx:document:readonly"]`),
+		State: model.FeishuAuthSessionPending, ExpiresAt: h.now.Add(10 * time.Minute),
+	}
+	oldSummary := []byte(`{"status":"waiting_connection","phase":"create_app","session_id":"session-old-live-race","recovery_kind":"create_app"}`)
+	replacement := &model.FeishuAuthSession{
+		ID: "session-new-live-race", UserID: 7, Generation: 1, OperationID: &operation.ID,
+		Phase: model.FeishuAuthPhaseCreateApp, RequestedScopesJSON: []byte(`["docx:document:readonly"]`),
+		State: model.FeishuAuthSessionPending, ExpiresAt: h.now.Add(10 * time.Minute),
+	}
+	replacementSummary := []byte(`{"status":"waiting_connection","phase":"create_app","session_id":"session-new-live-race","recovery_kind":"create_app"}`)
+	require.NoError(t, h.db.Model(&model.FeishuOperation{}).Where("id = ?", operation.ID).Updates(map[string]any{
+		"state": model.FeishuOperationWaitingConnection, "result_summary_json": oldSummary,
+	}).Error)
+	base := h.dataStore.FeishuWorkspace()
+	require.NoError(t, base.CreateSession(h.ctx, oldSession))
+	_, err := base.RefreshOperationSession(
+		h.ctx, 7, 1, oldSession.ID, operation.ID, model.FeishuOperationWaitingConnection,
+		model.FeishuConnectionCreatingApp, replacement, replacementSummary, h.now,
+	)
+	require.NoError(t, err)
+
+	var claimed bool
+	var claimErr error
+	raceStore := &authSessionRestoreRaceStore{AuthSessionStore: base}
+	raceStore.onRestore = func() {
+		claimed, claimErr = base.ClaimSession(h.ctx, 7, 1, replacement.ID, "racing-worker", h.now, h.now.Add(time.Minute))
+	}
+	service := h.newServiceWithSessions("refresh-operation-live-race", raceStore)
+	cancelled := make(chan struct{})
+	var cancelOnce sync.Once
+	key := authSessionRegistryKey(replacement)
+	service.workerMu.Lock()
+	service.workers[key] = &authSessionWorker{
+		cancel: func() { cancelOnce.Do(func() { close(cancelled) }) },
+		exited: make(chan struct{}),
+	}
+	service.workerMu.Unlock()
+	t.Cleanup(func() {
+		service.workerMu.Lock()
+		delete(service.workers, key)
+		service.workerMu.Unlock()
+	})
+
+	_, err = service.RecoverOperationRefreshAction(
+		h.ctx, 7, 1, oldSession.ID, operation.ID, model.FeishuOperationWaitingConnection, replacementSummary,
+	)
+	require.ErrorIs(t, err, ErrAuthSessionUnavailable)
+	require.NoError(t, claimErr)
+	require.True(t, claimed)
+	select {
+	case <-cancelled:
+		t.Fatal("a stale card must not cancel a worker that acquired the replacement lease")
+	default:
+	}
+
+	stored, err := base.GetOperationForUser(h.ctx, 7, 1, operation.ID)
+	require.NoError(t, err)
+	require.JSONEq(t, string(replacementSummary), string(stored.ResultSummaryJSON))
+	storedReplacement, err := base.GetSessionForUser(h.ctx, 7, 1, replacement.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionPending, storedReplacement.State)
+	require.Equal(t, "racing-worker", storedReplacement.LeaseOwner)
 }
 
 func TestAuthSessionService_StopGenerationAndWaitJoinsRetiredWorkerBeforeReturning(t *testing.T) {

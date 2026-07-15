@@ -32,6 +32,8 @@ type IFeishuWorkspaceStore interface {
 	GetSessionForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuAuthSession, error)
 	FindActiveSessionForUser(ctx context.Context, userID uint, generation uint64) (*model.FeishuAuthSession, error)
 	SupersedeSessionForUser(ctx context.Context, userID uint, generation uint64, id string, now time.Time) error
+	RefreshOperationSession(ctx context.Context, userID uint, generation uint64, oldSessionID, operationID, waitingState, connectionState string, replacement *model.FeishuAuthSession, replacementSummary []byte, now time.Time) (*model.FeishuAuthSession, error)
+	RestoreOperationSessionRefresh(ctx context.Context, userID uint, generation uint64, oldSessionID, replacementSessionID, operationID, waitingState string, oldSummary []byte, now time.Time) error
 	ClaimSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
 	RenewSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
 	UpdateSessionState(ctx context.Context, userID uint, generation uint64, id, owner, state string, now time.Time, completedAt *time.Time) error
@@ -1332,6 +1334,242 @@ func (s *feishuWorkspaceStore) GetOperationForUser(ctx context.Context, userID u
 		return nil, err
 	}
 	return &operation, nil
+}
+
+type feishuOperationRecoveryBinding struct {
+	Status    string `json:"status"`
+	SessionID string `json:"session_id"`
+	Phase     string `json:"phase"`
+}
+
+// RefreshOperationSession atomically supersedes the old authorization session,
+// creates its replacement, and moves the waiting operation's durable binding.
+// No partially refreshed operation can be committed if any tenant, state, or
+// session fence fails.
+func (s *feishuWorkspaceStore) RefreshOperationSession(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	oldSessionID, operationID, waitingState, connectionState string,
+	replacement *model.FeishuAuthSession,
+	replacementSummary []byte,
+	now time.Time,
+) (*model.FeishuAuthSession, error) {
+	if userID == 0 || generation == 0 || strings.TrimSpace(oldSessionID) == "" || strings.TrimSpace(operationID) == "" ||
+		strings.TrimSpace(waitingState) == "" || !refreshableFeishuConnectionState(connectionState) || replacement == nil || replacement.ID == oldSessionID ||
+		replacement.UserID != userID || replacement.Generation != generation || replacement.OperationID == nil ||
+		*replacement.OperationID != operationID || replacement.State != model.FeishuAuthSessionPending || !json.Valid(replacementSummary) {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var nextBinding feishuOperationRecoveryBinding
+	if err := json.Unmarshal(replacementSummary, &nextBinding); err != nil || nextBinding.Status != waitingState ||
+		nextBinding.SessionID != replacement.ID || nextBinding.Phase != replacement.Phase {
+		return nil, gorm.ErrRecordNotFound
+	}
+
+	var refreshed *model.FeishuAuthSession
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		active, err := lockFeishuAuthAccount(tx, userID, generation)
+		if err != nil {
+			return fmt.Errorf("lock feishu account for session refresh: %w", err)
+		}
+		if !active {
+			return gorm.ErrRecordNotFound
+		}
+		var oldSession model.FeishuAuthSession
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND user_id = ? AND generation = ? AND state = ?", oldSessionID, userID, generation, model.FeishuAuthSessionPending).
+			Take(&oldSession).Error; err != nil {
+			return err
+		}
+		if oldSession.OperationID == nil || *oldSession.OperationID != operationID || oldSession.Phase != replacement.Phase ||
+			!equalRequestedScopes(oldSession.RequestedScopesJSON, replacement.RequestedScopesJSON) {
+			return gorm.ErrRecordNotFound
+		}
+
+		var operation model.FeishuOperation
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND user_id = ? AND generation = ? AND state = ?", operationID, userID, generation, waitingState).
+			Take(&operation).Error; err != nil {
+			return err
+		}
+		var current feishuOperationRecoveryBinding
+		if err := json.Unmarshal(operation.ResultSummaryJSON, &current); err != nil || current.Status != waitingState ||
+			current.SessionID != oldSessionID || current.Phase != replacement.Phase {
+			return gorm.ErrRecordNotFound
+		}
+		candidate := *replacement
+		if err := tx.Create(&candidate).Error; err != nil {
+			return fmt.Errorf("create replacement feishu auth session: %w", err)
+		}
+		oldResult := tx.Model(&model.FeishuAuthSession{}).
+			Where("id = ? AND user_id = ? AND generation = ? AND state = ?", oldSessionID, userID, generation, model.FeishuAuthSessionPending).
+			Updates(map[string]any{
+				"state": model.FeishuAuthSessionSuperseded, "completed_at": now.UTC(),
+				"lease_owner": "", "lease_until": nil,
+			})
+		if oldResult.Error != nil {
+			return fmt.Errorf("supersede refreshed feishu auth session: %w", oldResult.Error)
+		}
+		if oldResult.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		accountResult := tx.Model(&model.UserThirdPartyAccount{}).
+			Where("user_id = ? AND provider = ? AND generation = ? AND connection_state <> ?", userID, "lark", generation, model.FeishuConnectionDisconnecting).
+			Updates(map[string]any{"connection_state": connectionState, "connected": false})
+		if accountResult.Error != nil {
+			return fmt.Errorf("update refreshed feishu account state: %w", accountResult.Error)
+		}
+		if accountResult.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+
+		result := tx.Model(&model.FeishuOperation{}).
+			Where("id = ? AND user_id = ? AND generation = ? AND state = ?", operationID, userID, generation, waitingState).
+			Update("result_summary_json", append([]byte(nil), replacementSummary...))
+		if result.Error != nil {
+			return fmt.Errorf("refresh feishu operation recovery session: %w", result.Error)
+		}
+		if result.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		refreshed = &candidate
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return refreshed, nil
+}
+
+// RestoreOperationSessionRefresh compensates a replacement that committed but
+// could not start a usable local authorization worker. Until a new URL reaches
+// the browser, that browser can only retry the original session ID; restoring
+// the exact old summary keeps that retry path durable and tenant-fenced.
+func (s *feishuWorkspaceStore) RestoreOperationSessionRefresh(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	oldSessionID, replacementSessionID, operationID, waitingState string,
+	oldSummary []byte,
+	now time.Time,
+) error {
+	if userID == 0 || generation == 0 || strings.TrimSpace(oldSessionID) == "" ||
+		strings.TrimSpace(replacementSessionID) == "" || replacementSessionID == oldSessionID ||
+		strings.TrimSpace(operationID) == "" || strings.TrimSpace(waitingState) == "" || !json.Valid(oldSummary) {
+		return gorm.ErrRecordNotFound
+	}
+	var oldBinding feishuOperationRecoveryBinding
+	if err := json.Unmarshal(oldSummary, &oldBinding); err != nil || oldBinding.Status != waitingState || oldBinding.SessionID != oldSessionID {
+		return gorm.ErrRecordNotFound
+	}
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		active, err := lockFeishuAuthAccount(tx, userID, generation)
+		if err != nil {
+			return fmt.Errorf("lock feishu account for session refresh restore: %w", err)
+		}
+		if !active {
+			return gorm.ErrRecordNotFound
+		}
+
+		var oldSession model.FeishuAuthSession
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND user_id = ? AND generation = ? AND state = ?", oldSessionID, userID, generation, model.FeishuAuthSessionSuperseded).
+			Take(&oldSession).Error; err != nil {
+			return err
+		}
+		if oldSession.OperationID == nil || *oldSession.OperationID != operationID || oldSession.Phase != oldBinding.Phase {
+			return gorm.ErrRecordNotFound
+		}
+
+		var replacement model.FeishuAuthSession
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND user_id = ? AND generation = ?", replacementSessionID, userID, generation).
+			Where("state IN ?", []string{
+				model.FeishuAuthSessionPending,
+				model.FeishuAuthSessionFailed,
+				model.FeishuAuthSessionSuperseded,
+			}).
+			Take(&replacement).Error; err != nil {
+			return err
+		}
+		if replacement.OperationID == nil || *replacement.OperationID != operationID || replacement.Phase != oldSession.Phase ||
+			!equalRequestedScopes(replacement.RequestedScopesJSON, oldSession.RequestedScopesJSON) {
+			return gorm.ErrRecordNotFound
+		}
+		if replacement.State == model.FeishuAuthSessionPending && replacement.LeaseUntil != nil && replacement.LeaseUntil.After(now) {
+			// A historical browser card must never supersede a replacement that
+			// still has a live worker in this or another service instance.
+			return gorm.ErrRecordNotFound
+		}
+
+		var operation model.FeishuOperation
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND user_id = ? AND generation = ? AND state = ?", operationID, userID, generation, waitingState).
+			Take(&operation).Error; err != nil {
+			return err
+		}
+		var current feishuOperationRecoveryBinding
+		if err := json.Unmarshal(operation.ResultSummaryJSON, &current); err != nil || current.Status != waitingState ||
+			current.SessionID != replacementSessionID || current.Phase != oldSession.Phase {
+			return gorm.ErrRecordNotFound
+		}
+
+		replacementResult := tx.Model(&model.FeishuAuthSession{}).
+			Where("id = ? AND user_id = ? AND generation = ?", replacementSessionID, userID, generation).
+			Where("state IN ?", []string{
+				model.FeishuAuthSessionPending,
+				model.FeishuAuthSessionFailed,
+				model.FeishuAuthSessionSuperseded,
+			}).
+			Updates(map[string]any{
+				"state": model.FeishuAuthSessionSuperseded, "completed_at": now.UTC(),
+				"lease_owner": "", "lease_until": nil,
+			})
+		if replacementResult.Error != nil {
+			return fmt.Errorf("retire failed replacement feishu auth session: %w", replacementResult.Error)
+		}
+		if replacementResult.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+
+		oldResult := tx.Model(&model.FeishuAuthSession{}).
+			Where("id = ? AND user_id = ? AND generation = ? AND state = ?", oldSessionID, userID, generation, model.FeishuAuthSessionSuperseded).
+			Updates(map[string]any{
+				"state": model.FeishuAuthSessionPending, "completed_at": nil,
+				"lease_owner": "", "lease_until": nil,
+			})
+		if oldResult.Error != nil {
+			return fmt.Errorf("restore original feishu auth session: %w", oldResult.Error)
+		}
+		if oldResult.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+
+		result := tx.Model(&model.FeishuOperation{}).
+			Where("id = ? AND user_id = ? AND generation = ? AND state = ?", operationID, userID, generation, waitingState).
+			Update("result_summary_json", append([]byte(nil), oldSummary...))
+		if result.Error != nil {
+			return fmt.Errorf("restore feishu operation recovery session: %w", result.Error)
+		}
+		if result.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return gorm.ErrRecordNotFound
+		}
+		return fmt.Errorf("restore feishu operation session refresh: %w", err)
+	}
+	return nil
+}
+
+func refreshableFeishuConnectionState(state string) bool {
+	return state == model.FeishuConnectionCreatingApp || state == model.FeishuConnectionWaitingAppApproval ||
+		state == model.FeishuConnectionWaitingUserAuth
 }
 
 // ListTerminalOperationsForGeneration returns the lifecycle-selected terminal

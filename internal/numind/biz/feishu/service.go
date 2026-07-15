@@ -120,6 +120,8 @@ type WorkspaceLifecycleStore interface {
 type WorkspaceLifecycleAuth interface {
 	ConnectManual(context.Context, uint) (*OperationAction, error)
 	RefreshAction(context.Context, uint, uint64, string) (*OperationAction, error)
+	RefreshOperationAction(context.Context, uint, uint64, string, string, string, []byte) (*OperationAction, error)
+	RecoverOperationRefreshAction(context.Context, uint, uint64, string, string, string, []byte) (*OperationAction, error)
 	CompleteAppApproval(context.Context, uint, uint64, string) error
 	StopGenerationAndWait(context.Context, uint, uint64) error
 }
@@ -603,14 +605,53 @@ func (s *WorkspaceLifecycleService) RefreshAction(ctx context.Context, userID ui
 	if sessionErr != nil {
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
-	if session == nil || session.ID != sessionID || session.UserID != userID || session.Generation != account.Generation ||
-		session.State != model.FeishuAuthSessionPending {
+	if session == nil || session.ID != sessionID || session.UserID != userID || session.Generation != account.Generation {
 		return nil, ErrWorkspaceLifecycleNotFound
 	}
 	if !validAuthPhase(session.Phase) {
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
-	action, refreshErr := s.auth.RefreshAction(ctx, userID, account.Generation, sessionID)
+	if session.OperationID == nil {
+		if session.State != model.FeishuAuthSessionPending {
+			return nil, ErrWorkspaceLifecycleNotFound
+		}
+		action, refreshErr := s.auth.RefreshAction(ctx, userID, account.Generation, sessionID)
+		if refreshErr != nil || action == nil || strings.TrimSpace(action.SessionID) == "" {
+			return nil, ErrWorkspaceLifecycleUnavailable
+		}
+		return cloneOperationAction(action), nil
+	}
+	operation, operationErr := s.workspace.GetOperationForUser(ctx, userID, account.Generation, *session.OperationID)
+	if operationErr != nil || operation == nil || operation.UserID != userID || operation.Generation != account.Generation {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	boundSession, bindingErr := s.recoverySession(ctx, userID, account.Generation, operation)
+	if bindingErr != nil || boundSession == nil {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	var action *OperationAction
+	var refreshErr error
+	switch session.State {
+	case model.FeishuAuthSessionPending:
+		if boundSession.ID != session.ID {
+			return nil, ErrWorkspaceLifecycleUnavailable
+		}
+		action, refreshErr = s.auth.RefreshOperationAction(
+			ctx, userID, account.Generation, sessionID, operation.ID, operation.State, operation.ResultSummaryJSON,
+		)
+	case model.FeishuAuthSessionSuperseded:
+		if boundSession.ID == session.ID {
+			return nil, ErrWorkspaceLifecycleUnavailable
+		}
+		// A failed post-commit compensation may leave the browser's original
+		// card on a superseded ID. It can only repair the exact operation's
+		// current replacement; it cannot refresh arbitrary historical sessions.
+		action, refreshErr = s.auth.RecoverOperationRefreshAction(
+			ctx, userID, account.Generation, sessionID, operation.ID, operation.State, operation.ResultSummaryJSON,
+		)
+	default:
+		return nil, ErrWorkspaceLifecycleNotFound
+	}
 	if refreshErr != nil || action == nil || strings.TrimSpace(action.SessionID) == "" {
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
