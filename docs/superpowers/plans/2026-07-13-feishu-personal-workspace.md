@@ -18,9 +18,11 @@
 
 ### 一期：可用且安全的个人飞书工作空间闭环
 
-一期必须交付：每个有数账号独立、加密保存的个人自建应用连接；受控的 lark-cli Docs/Base/Wiki 创建、读取、更新；业务操作优先、仅在确定的未连接/缺 scope/授权失效时发起配置；用户完成飞书授权后自动继续**原始** Agent tool call；最小连接状态/解绑入口；必要的后端集成、前端单元与关键 Playwright E2E，以及本地真实账号 Gate。
+一期必须交付：每个有数账号独立、加密保存的个人自建应用连接；受控的 lark-cli Docs/Base/Wiki 创建、读取、更新；业务操作优先、仅在确定的未连接/缺 scope/授权失效时发起配置；用户完成飞书授权后自动继续**原始** Agent tool call；最小连接状态/解绑入口；必要的后端集成、前端单元与关键 Playwright E2E，以及真实账号 Gate。
 
-纳入一期的 S4 tasks：**1–13、16–19、21–23**；Task 24 是一期的 S5 本地真实飞书 Gate。Task 22 在一期只覆盖关键授权/恢复 happy path、过期刷新、无普通 answer 回退及 mobile/desktop 冒烟；其完整状态矩阵、键盘细节和视觉回归扩展留到二期。
+纳入一期的 S4 tasks：**1–13、16–19、21–23**；Task 24 是一期的真实飞书 Gate。Task 22 在一期只覆盖关键授权/恢复 happy path、过期刷新、无普通 answer 回退及 mobile/desktop 冒烟；其完整状态矩阵、键盘细节和视觉回归扩展留到二期。
+
+**验收环境修订（用户明确授权，2026-07-15）：** 原计划的本机 S5 依赖受控 CLI 固定路径和持久 keyring，二者均不是产品运行环境的条件。改为：保留全部已通过的本地自动化验证，先经 `ndf-done` 原子合并到 `develop`，仅部署云端 **dev** 后端与前端，再在与生产同构的容器运行时完成 Task 24。不得部署生产。此修订不缩小验收项，且创建飞书应用、审批权限和写入真实测试资源仍须在操作当刻由用户于飞书官方页面确认。
 
 一期不可降级的安全承诺：不共用用户凭据；不执行 IM/删除/raw API/shell；不泄露 argv、token 或完整授权 URL；不把授权完成伪造成用户消息；不会因为重复 resume 重复写业务资源；用户删除会话后不得继续执行飞书写操作。Task 11 的恢复、删除与租约修复属于这些承诺，不能后置。
 
@@ -1346,13 +1348,13 @@ Expected: 仅结构字段/测试 opaque fixture，无真实凭据或真实授权
 
 **一期收口（2026-07-15）：** `go test ./...`、`task lint`、`npm run test:unit`（96 files / 1051 passed）、`npm run lint && npm run type-check` 与 Task 22 mocked Playwright 全部通过。飞书 controller 的严格 body/allowlist 测试和 ControlledLarkCLIRunner 的取消、超时、正常 leader 退出 child-marker 用例再次通过。敏感信息扫描只命中结构字段、注释及脱敏 fixture；浏览器公开类型不含 token、secret、argv 或 scopes 字段。P2 边界维持 ADR 0004 结论：固定官方 CLI、绝对路径、无 shell 和进程组收敛是首版信任边界；同 UID 主动文件竞态、`setsid` 逃逸与理论 PGID 复用尚未实现独立 UID/sandbox，不能声称已抵御恶意本机进程。
 
-## Task 24: S5 本地真实飞书 Gate（不计入 S4 manifest progress）
+## Task 24: 真实飞书 Dev Gate（不计入 S4 manifest progress）
 
 **Files:** `.ndf/features/feishu-personal-workspace/s5-real-tenant-e2e.md`，不保存凭据或完整 URL。
 
-- [ ] **Step 1: 在两个 feature worktree 启动本地环境**
+- [ ] **Step 1: 合并并部署云端 dev 环境**
 
-本地数据库应用 migration；本地后端 `task dev`，前端 `npm run dev`；确认 lark-cli 1.0.68。不得先 merge 或部署 dev。
+保留已经通过的本地自动化测试记录；在 dev 服务器的受限 `secrets.env` 注入独立的 `NUMIND_FEISHU_KEYRING`，不得写入 Git、镜像、配置 YAML、日志或本文件。分别执行 `ndf-done` 合并后端和前端，再部署 dev 后端与用户端。确认容器健康、`/usr/local/bin/lark-cli` 为 1.0.68，且挂载的 `feishu-runtime` 可写。禁止部署生产。
 
 - [ ] **Step 2: 真实账号 E2E**
 
@@ -1366,9 +1368,9 @@ Expected: 仅结构字段/测试 opaque fixture，无真实凭据或真实授权
 
 `s5-real-tenant-e2e.md` 记录每项 PASS/FAIL、operation 状态、脱敏资源类型、后端版本和 CLI 版本。不得记录测试账号、完整资源 URL、device code、Token、app secret、完整 app id。
 
-- [ ] **Step 5: Gate 决策并停止本地服务**
+- [ ] **Step 5: Gate 决策**
 
-只有 Docs/Base/Wiki 三域、重启、撤销、unknown、解绑、双用户隔离全部 PASS 才进入 S6。若错误结构无法证明写请求未产生副作用，关闭对应自动重放并回 S4 修复。完成后停止本地前后端。
+只有 Docs/Base/Wiki 三域、重启、撤销、unknown、解绑、双用户隔离全部 PASS 才完成 S6 dev 验收。若错误结构无法证明写请求未产生副作用，关闭对应自动重放并回 S4 修复。
 
 - [ ] **Step 6: Commit Gate 证据**
 
@@ -1379,10 +1381,9 @@ git commit -m "docs(feishu): record real tenant acceptance"
 
 ## S6 checklist（不属于实现 Task）
 
-1. 在两个 worktree 分别运行 `ndf-done`，原子化 merge develop、push、清理分支/worktree。
-2. 使用 `/deploy-dev server` 部署后端，使用前端 `/deploy-dev` 部署用户端。
-3. 健康检查通过后，向用户提供基于 PRD 的 dev 验收步骤。
-4. 只有用户确认 dev 产品可用后才进入 S7；生产部署仍需单独授权。
+1. 本用户授权下，Task 24 已在 dev 环境与合并/部署串行执行，具体证据写入 Gate 文件。
+2. 健康检查通过后，向用户提供基于 PRD 的 dev 验收步骤。
+3. 只有用户确认 dev 产品可用后才进入 S7；生产部署仍需单独授权。
 
 ---
 
@@ -1402,12 +1403,12 @@ git commit -m "docs(feishu): record real tenant acceptance"
 | 可观测性和敏感信息脱敏 | 15、23 |
 | Agent 状态卡、设置页、可访问性、移动端 | 16、17、18、19、22 |
 | 旧工具下线、集成测试、质量门禁 | 20、21、22、23 |
-| 本地真实租户 E2E 与发布硬 Gate | 24、S6 checklist |
+| Dev 真实租户 E2E 与发布硬 Gate | 24、S6 checklist |
 
 ## 完成标准
 
 - S4 Task 1-22 已完成并有对应 Conventional Commit；Task 23 质量 Gate 通过。Manifest `total_tasks=23` 只统计 S4。
-- S5 Task 24 已通过并提交脱敏证据；S6 checklist 在 `ndf-done` 后执行。
+- Task 24 已在 dev 通过并提交脱敏证据；S6 dev 验收完成后才能进入 S7。
 - 后端 `go test ./...`、`task lint` 通过。
 - 前端 unit、`npm run lint && npm run type-check`、目标 Playwright E2E 通过。
 - Agent registry 只暴露 `lark_skill_read`、`lark_execute` 两个飞书工具。

@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: '重新校准并完成飞书个人工作空间连接：每个有数账号连接自己的飞书账号并长期保持；首次授权后 Agent 自动执行文档、多维表格、知识库能力。现有 feishu-integration 仅作待审计资产，不作为产品前提。'
   classification_reason: 'Standard：飞书外部集成+长期授权凭据+自动写操作属高风险，预计涉及 DB/API/biz/前端/部署/E2E 且文件数 >3。用户于 2026-07-13 确认 Standard。'
-  last_updated_by: ai-s5-real-tenant-preflight
-  last_updated_at: '2026-07-15T02:31:03+0800'
+  last_updated_by: ai-s5-dev-runtime-acceptance
+  last_updated_at: '2026-07-15T03:10:00+0800'
   created_at: '2026-07-13T11:14:14+0800'
   track: standard
   stage: S5
@@ -55,9 +55,10 @@ features:
   - 'S4 Task 21 test-fixture correction (2026-07-15): 初版跨组件 red test 漏填 lark-cli app_scope_not_applied 的 permission_violations 结构化证据；分类器按 fail-closed 终止 operation，非生产恢复缺陷。operation-bound create_app 未产生 manual session，撤回临时 Task 21a/ADR 0021；修正 fixture 后继续 Task 21。'
   - 'S4 Task 21 gate (2026-07-15): 后端恢复集成测试经独立规格/质量复审最终 PASS，P0/P1/P2=0。SQLite durable store 覆盖 create-app/user-auth/app-scope 各自 completion 持久化后的 Auth+Operation 服务重建、精确 argv、revoke reauth、tenant/generation 与 unknown write；Agent resumer 以持久 AgentRun 跨实例重建且同 tool_call 仅一次。真实 MySQL 8 空临时库内嵌前置 baseline，三份正式 migration 在 AutoMigrate 前后按 columns(type/null/default)/index/FK/CHECK 校验；performance_schema 确认 CAS 等待账户 RECORD FOR UPDATE 后执行真实 RetireGeneration，旧 generation 不能提交。定向×10、race、lint、真实 MySQL Gate 全绿，无生产缺陷。'
   - 'S4 Task 22/23 gate (2026-07-15): 前端 mocked Playwright 覆盖 desktop 原任务恢复与 375×812 过期 refresh；resume 请求只含固定 action 且 trace 无普通 answer。go test ./...、task lint、前端 1051 单测、lint/type-check、controller allowlist 及进程组取消/timeout/leader-exit Gate 全绿。浏览器公开类型与扫描未发现 token/secret/argv/scopes 泄露；同 UID 文件竞态、setsid 逃逸与理论 PGID 复用维持 ADR 0004 P2 边界。S4 一期 20/20 完成，进入 S5。'
-  - 'S5 preflight (2026-07-15): 本机 lark-cli 为 1.0.68，但仅位于用户目录；ControlledLarkCLIRunner 所需的 /usr/local/bin/lark-cli 不存在且当前用户无写权。NUMIND_FEISHU_KEYRING 及 settings.local 中的持久 keyring 均未配置。未启动本地服务、未触发飞书页面、未产生真实租户副作用；等待受控系统路径安装、持久 keyring 与用户在官方页面的确认。'
+  - 'S5 preflight (2026-07-15): 本机 lark-cli 为 1.0.68，但仅位于用户目录；ControlledLarkCLIRunner 所需的 /usr/local/bin/lark-cli 不存在且当前用户无写权。NUMIND_FEISHU_KEYRING 及 settings.local 中的持久 keyring 均未配置。未启动本地服务、未触发飞书页面、未产生真实租户副作用。'
+  - 'S5/S6 environment amendment (user authorized 2026-07-15): 本机受控路径/keyring 属于开发机限制，而非云端产品运行条件。用户明确授权将真实账号 Gate 改在合并到 develop 后的 dev 容器执行，先安全注入独立 dev keyring，再部署 server/web 并验收；不部署生产。验收范围不缩减，飞书应用创建、权限审批和真实资源写入仍在操作当刻由用户于官方页面确认。详见 ADR 0021。'
   blockers:
-  - 'S5 real tenant requires local fixed-path CLI installation and persistent NUMIND_FEISHU_KEYRING; Feishu official creation/authorization confirmations remain user-owned.'
+  - 'Waiting for authorized dev keyring provisioning, develop deployment and real-tenant confirmation steps; production is explicitly out of scope.'
 - id: chatbot-full-history-context
   ndf_version: '3.0'
   description: 'Hotfix: 移除 chatbot 对话上下文“最近 20 条消息”的硬截断。ChatStream 改为读取同一会话完整历史, 后续由 context-budget 根据模型 context window / safe_input_budget 统一压缩或拒绝。'
