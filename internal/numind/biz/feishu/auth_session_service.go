@@ -1096,11 +1096,9 @@ func (s *AuthSessionService) restoreOperationRefresh(
 		oldSession.Generation != replacement.Generation || strings.TrimSpace(operationID) == "" || strings.TrimSpace(waitingState) == "" {
 		return ErrAuthSessionUnavailable
 	}
-	// No replacement worker may be allowed to finish after its durable binding
-	// has been restored to the original session. The store transaction then
-	// fences its pending/failed state before re-opening that original binding.
-	s.stopSession(replacement.UserID, replacement.Generation, replacement.ID)
-	s.urls.remove(authSessionRegistryKey(replacement))
+	// The durable transaction is the authority on whether this replacement has
+	// acquired a live lease. Do not cancel a local worker before it passes that
+	// fence: a stale card must never interrupt a newer recovery that won it.
 	restoreCtx, restoreCancel := authSessionDetachedContext(ctx)
 	err := s.sessions.RestoreOperationSessionRefresh(
 		restoreCtx, oldSession.UserID, oldSession.Generation, oldSession.ID, replacement.ID,
@@ -1110,6 +1108,10 @@ func (s *AuthSessionService) restoreOperationRefresh(
 	if err != nil {
 		return ErrAuthSessionUnavailable
 	}
+	// After the committed transaction supersedes the replacement, no worker can
+	// finalize it. Stop the local copy and discard any transient URL last.
+	s.stopSession(replacement.UserID, replacement.Generation, replacement.ID)
+	s.urls.remove(authSessionRegistryKey(replacement))
 	return nil
 }
 
