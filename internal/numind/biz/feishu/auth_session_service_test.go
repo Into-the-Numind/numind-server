@@ -438,6 +438,64 @@ func TestAuthSessionService_RefreshSupersedesLiveSessionStopsWorkerAndStartsNewU
 	service.StopGeneration(7, 1)
 }
 
+func TestAuthSessionService_RefreshOperationAtomicallyRebindsBeforeActivatingReplacement(t *testing.T) {
+	h := newAuthSessionHarness(t)
+	oldRelease := make(chan struct{})
+	newRelease := make(chan struct{})
+	releaseNew := releaseAuthSessionCLIFake(t, newRelease)
+	h.cli.urls = []string{
+		"https://open.feishu.cn/page/cli?user_code=OLD_OPERATION",
+		"https://open.feishu.cn/page/cli?user_code=NEW_OPERATION",
+	}
+	h.cli.releases = []<-chan struct{}{oldRelease, newRelease}
+	service := h.newService("refresh-operation-owner")
+	operation := &model.FeishuOperation{
+		ID: "operation-refresh-atomic", UserID: 7, Generation: 1, AgentRunID: 7, ToolCallID: "tool-refresh-atomic",
+		IdempotencyKey: "refresh-atomic", CommandPath: "docs document get", Domain: "docs", RiskLevel: string(RiskRead),
+		RequestCiphertext: []byte("encrypted-request"), KeyVersion: "v1", RequestFingerprint: "refresh-atomic-fingerprint",
+		State: model.FeishuOperationWaitingConnection,
+	}
+	require.NoError(t, h.db.Create(operation).Error)
+
+	first, err := service.StartRecovery(h.ctx, RecoveryRequest{
+		UserID: 7, Generation: 1, OperationID: operation.ID, Kind: RecoveryCreateApp, Scopes: []string{"docx:document:readonly"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, service.Activate(h.ctx, first.SessionID))
+	oldSummary, err := json.Marshal(persistedOperationSummary{
+		Status: model.FeishuOperationWaitingConnection, Phase: model.FeishuAuthPhaseCreateApp,
+		SessionID: first.SessionID, RecoveryKind: RecoveryCreateApp,
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.db.Model(&model.FeishuOperation{}).Where("id = ?", operation.ID).
+		Update("result_summary_json", oldSummary).Error)
+
+	refreshed, err := service.RefreshOperationAction(
+		h.ctx, 7, 1, first.SessionID, operation.ID, model.FeishuOperationWaitingConnection, oldSummary,
+	)
+	require.NoError(t, err)
+	require.NotEqual(t, first.SessionID, refreshed.SessionID)
+	require.Contains(t, refreshed.URL, "NEW_OPERATION")
+
+	storedOperation, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, operation.ID)
+	require.NoError(t, err)
+	storedSummary, err := decodeOperationSummary(storedOperation.ResultSummaryJSON)
+	require.NoError(t, err)
+	require.Equal(t, refreshed.SessionID, storedSummary.SessionID)
+	require.NotNil(t, storedSummary.ExpiresAt)
+	var storedOld model.FeishuAuthSession
+	require.NoError(t, h.db.Where("id = ?", first.SessionID).Take(&storedOld).Error)
+	require.Equal(t, model.FeishuAuthSessionSuperseded, storedOld.State)
+	storedNew, err := h.dataStore.FeishuWorkspace().GetSessionForUser(h.ctx, 7, 1, refreshed.SessionID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionPending, storedNew.State)
+
+	releaseNew()
+	waitAuthDispatch(t, h.dispatcher)
+	require.Equal(t, []string{operation.ID}, h.dispatcher.snapshot())
+	close(oldRelease)
+}
+
 func TestAuthSessionService_StopGenerationAndWaitJoinsRetiredWorkerBeforeReturning(t *testing.T) {
 	h := newAuthSessionHarness(t)
 	h.createAccount(model.FeishuConnectionAppReady)

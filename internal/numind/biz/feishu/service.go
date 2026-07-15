@@ -106,7 +106,6 @@ type WorkspaceLifecycleAccountStore interface {
 // resume and teardown. It intentionally has no broad query or raw DB API.
 type WorkspaceLifecycleStore interface {
 	GetOperationForUser(context.Context, uint, uint64, string) (*model.FeishuOperation, error)
-	RebindOperationRecoverySession(context.Context, uint, uint64, string, string, string, []byte) error
 	ListTerminalOperationsForGeneration(context.Context, uint, uint64, []string) ([]model.FeishuOperation, error)
 	GetSessionForUser(context.Context, uint, uint64, string) (*model.FeishuAuthSession, error)
 	FindActiveSessionForUser(context.Context, uint, uint64) (*model.FeishuAuthSession, error)
@@ -121,8 +120,7 @@ type WorkspaceLifecycleStore interface {
 type WorkspaceLifecycleAuth interface {
 	ConnectManual(context.Context, uint) (*OperationAction, error)
 	RefreshAction(context.Context, uint, uint64, string) (*OperationAction, error)
-	Activate(context.Context, string) error
-	Abort(string)
+	RefreshOperationAction(context.Context, uint, uint64, string, string, string, []byte) (*OperationAction, error)
 	CompleteAppApproval(context.Context, uint, uint64, string) error
 	StopGenerationAndWait(context.Context, uint, uint64) error
 }
@@ -613,49 +611,25 @@ func (s *WorkspaceLifecycleService) RefreshAction(ctx context.Context, userID ui
 	if !validAuthPhase(session.Phase) {
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
-	var operation *model.FeishuOperation
-	if session.OperationID != nil {
-		operation, err = s.workspace.GetOperationForUser(ctx, userID, account.Generation, *session.OperationID)
-		if err != nil || operation == nil || operation.UserID != userID || operation.Generation != account.Generation {
+	if session.OperationID == nil {
+		action, refreshErr := s.auth.RefreshAction(ctx, userID, account.Generation, sessionID)
+		if refreshErr != nil || action == nil || strings.TrimSpace(action.SessionID) == "" {
 			return nil, ErrWorkspaceLifecycleUnavailable
 		}
-		boundSession, bindingErr := s.recoverySession(ctx, userID, account.Generation, operation)
-		if bindingErr != nil || boundSession == nil || boundSession.ID != session.ID {
-			return nil, ErrWorkspaceLifecycleUnavailable
-		}
-	}
-	action, refreshErr := s.auth.RefreshAction(ctx, userID, account.Generation, sessionID)
-	if refreshErr != nil || action == nil || strings.TrimSpace(action.SessionID) == "" {
-		return nil, ErrWorkspaceLifecycleUnavailable
-	}
-	if operation == nil {
 		return cloneOperationAction(action), nil
 	}
-	replacement, replacementErr := s.workspace.GetSessionForUser(ctx, userID, account.Generation, action.SessionID)
-	if replacementErr != nil || replacement == nil || replacement.ID != action.SessionID || replacement.UserID != userID ||
-		replacement.Generation != account.Generation || replacement.State != model.FeishuAuthSessionPending ||
-		replacement.Phase != session.Phase || action.Phase != session.Phase || replacement.OperationID == nil ||
-		*replacement.OperationID != operation.ID {
-		s.auth.Abort(action.SessionID)
+	operation, operationErr := s.workspace.GetOperationForUser(ctx, userID, account.Generation, *session.OperationID)
+	if operationErr != nil || operation == nil || operation.UserID != userID || operation.Generation != account.Generation {
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
-	summary, summaryErr := decodeOperationSummary(operation.ResultSummaryJSON)
-	if summaryErr != nil {
-		s.auth.Abort(action.SessionID)
+	boundSession, bindingErr := s.recoverySession(ctx, userID, account.Generation, operation)
+	if bindingErr != nil || boundSession == nil || boundSession.ID != session.ID {
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
-	summary.SessionID = replacement.ID
-	expiresAt := replacement.ExpiresAt.UTC()
-	summary.ExpiresAt = &expiresAt
-	replacementSummary, marshalErr := json.Marshal(summary)
-	if marshalErr != nil || s.workspace.RebindOperationRecoverySession(
-		ctx, userID, account.Generation, operation.ID, operation.State, session.ID, replacementSummary,
-	) != nil {
-		s.auth.Abort(action.SessionID)
-		return nil, ErrWorkspaceLifecycleUnavailable
-	}
-	if err := s.auth.Activate(ctx, action.SessionID); err != nil {
-		s.auth.Abort(action.SessionID)
+	action, refreshErr := s.auth.RefreshOperationAction(
+		ctx, userID, account.Generation, sessionID, operation.ID, operation.State, operation.ResultSummaryJSON,
+	)
+	if refreshErr != nil || action == nil || strings.TrimSpace(action.SessionID) == "" {
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
 	return cloneOperationAction(action), nil
