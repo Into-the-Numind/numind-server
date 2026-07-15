@@ -1029,6 +1029,59 @@ func (s *AuthSessionService) RefreshOperationAction(
 	return action, nil
 }
 
+// RecoverOperationRefreshAction is the retry path for an original browser card
+// when a prior post-commit compensation could not reach storage. That card has
+// never received the replacement session ID, so after re-validating the exact
+// durable replacement we restore its old binding and immediately mint a fresh
+// action from that same opaque card ID.
+func (s *AuthSessionService) RecoverOperationRefreshAction(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	oldSessionID, operationID, waitingState string,
+	operationSummary []byte,
+) (*OperationAction, error) {
+	if s == nil || userID == 0 || generation == 0 || strings.TrimSpace(oldSessionID) == "" ||
+		strings.TrimSpace(operationID) == "" || strings.TrimSpace(waitingState) == "" {
+		return nil, ErrAuthSessionUnavailable
+	}
+	oldSession, err := s.sessions.GetSessionForUser(ctx, userID, generation, oldSessionID)
+	if err != nil || oldSession == nil || oldSession.State != model.FeishuAuthSessionSuperseded || oldSession.OperationID == nil ||
+		*oldSession.OperationID != operationID {
+		return nil, ErrAuthSessionUnavailable
+	}
+	currentSummary, err := decodeOperationSummary(operationSummary)
+	if err != nil || currentSummary.Status != waitingState || currentSummary.SessionID == "" ||
+		currentSummary.SessionID == oldSessionID || currentSummary.Phase != oldSession.Phase ||
+		phaseForRecovery(currentSummary.RecoveryKind) != oldSession.Phase {
+		return nil, ErrAuthSessionUnavailable
+	}
+	replacement, err := s.sessions.GetSessionForUser(ctx, userID, generation, currentSummary.SessionID)
+	if err != nil || replacement == nil || replacement.OperationID == nil || *replacement.OperationID != operationID ||
+		replacement.Phase != oldSession.Phase || !authSessionScopeJSONEqual(replacement.RequestedScopesJSON, oldSession.RequestedScopesJSON) {
+		return nil, ErrAuthSessionUnavailable
+	}
+	now := s.now().UTC()
+	if replacement.State != model.FeishuAuthSessionFailed && replacement.State != model.FeishuAuthSessionSuperseded &&
+		(replacement.State != model.FeishuAuthSessionPending || (replacement.LeaseUntil != nil && replacement.LeaseUntil.After(now))) {
+		// A stale browser card must never displace a replacement that still has
+		// a live worker lease. The caller can retry after that lease resolves.
+		return nil, ErrAuthSessionUnavailable
+	}
+	oldSummary := currentSummary
+	oldSummary.SessionID = oldSessionID
+	expiresAt := oldSession.ExpiresAt.UTC()
+	oldSummary.ExpiresAt = &expiresAt
+	encodedOldSummary, err := json.Marshal(oldSummary)
+	if err != nil {
+		return nil, ErrAuthSessionUnavailable
+	}
+	if err := s.restoreOperationRefresh(ctx, oldSession, replacement, operationID, waitingState, encodedOldSummary); err != nil {
+		return nil, ErrAuthSessionUnavailable
+	}
+	return s.RefreshOperationAction(ctx, userID, generation, oldSessionID, operationID, waitingState, encodedOldSummary)
+}
+
 // restoreOperationRefresh makes a failed post-commit replacement retryable by
 // the original card. The browser only knows the old opaque session ID until a
 // new URL is returned, so leaving the operation bound to a failed replacement

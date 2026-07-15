@@ -1498,6 +1498,11 @@ func (s *feishuWorkspaceStore) RestoreOperationSessionRefresh(
 			!equalRequestedScopes(replacement.RequestedScopesJSON, oldSession.RequestedScopesJSON) {
 			return gorm.ErrRecordNotFound
 		}
+		if replacement.State == model.FeishuAuthSessionPending && replacement.LeaseUntil != nil && replacement.LeaseUntil.After(now) {
+			// A historical browser card must never supersede a replacement that
+			// still has a live worker in this or another service instance.
+			return gorm.ErrRecordNotFound
+		}
 
 		var operation model.FeishuOperation
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).

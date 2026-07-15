@@ -270,6 +270,7 @@ type lifecycleAuthFake struct {
 	refreshErr               error
 	refresh                  func()
 	refreshOperation         func(context.Context, uint, uint64, string, string, string, []byte) (*OperationAction, error)
+	recoverOperation         func(context.Context, uint, uint64, string, string, string, []byte) (*OperationAction, error)
 	completeAppApprovalCalls []lifecycleAppApprovalCall
 	completeAppApproval      func(context.Context, uint, uint64, string) error
 	stopped                  []uint64
@@ -300,6 +301,17 @@ func (f *lifecycleAuthFake) RefreshOperationAction(ctx context.Context, userID u
 	f.refreshCalls++
 	if f.refreshOperation != nil {
 		return f.refreshOperation(ctx, userID, generation, sessionID, operationID, waitingState, summary)
+	}
+	if f.refresh != nil {
+		f.refresh()
+	}
+	return cloneOperationAction(f.action), f.refreshErr
+}
+
+func (f *lifecycleAuthFake) RecoverOperationRefreshAction(ctx context.Context, userID uint, generation uint64, sessionID, operationID, waitingState string, summary []byte) (*OperationAction, error) {
+	f.refreshCalls++
+	if f.recoverOperation != nil {
+		return f.recoverOperation(ctx, userID, generation, sessionID, operationID, waitingState, summary)
 	}
 	if f.refresh != nil {
 		f.refresh()
@@ -1154,6 +1166,52 @@ func TestWorkspaceLifecycleRefreshRebindsOperationSessionBeforeResume(t *testing
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationWaitingConnection, result.State)
 	require.Zero(t, dispatcher.calls, "a pending replacement session must not dispatch the operation")
+}
+
+func TestWorkspaceLifecycleRefreshRecoversOriginalCardAfterFailedCompensation(t *testing.T) {
+	operationID := "op-refresh-recover"
+	const oldSessionID = "session-original"
+	const replacementSessionID = "session-replacement"
+	op := &model.FeishuOperation{
+		ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingConnection,
+		ResultSummaryJSON: lifecycleRecoverySummary(t, model.FeishuOperationWaitingConnection, replacementSessionID, model.FeishuAuthPhaseCreateApp, RecoveryCreateApp),
+	}
+	svc, _, workspace, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 2,
+	}, op)
+	workspace.getSession = func(_ context.Context, _ uint, _ uint64, sessionID string) (*model.FeishuAuthSession, error) {
+		switch sessionID {
+		case oldSessionID:
+			return &model.FeishuAuthSession{
+				ID: oldSessionID, UserID: 7, Generation: 2, OperationID: &operationID,
+				Phase: model.FeishuAuthPhaseCreateApp, State: model.FeishuAuthSessionSuperseded,
+			}, nil
+		case replacementSessionID:
+			return &model.FeishuAuthSession{
+				ID: replacementSessionID, UserID: 7, Generation: 2, OperationID: &operationID,
+				Phase: model.FeishuAuthPhaseCreateApp, State: model.FeishuAuthSessionFailed,
+			}, nil
+		default:
+			return nil, gorm.ErrRecordNotFound
+		}
+	}
+	auth.recoverOperation = func(_ context.Context, _ uint, _ uint64, sessionID, gotOperationID, waitingState string, summary []byte) (*OperationAction, error) {
+		require.Equal(t, oldSessionID, sessionID)
+		require.Equal(t, operationID, gotOperationID)
+		require.Equal(t, model.FeishuOperationWaitingConnection, waitingState)
+		decoded, err := decodeOperationSummary(summary)
+		require.NoError(t, err)
+		require.Equal(t, replacementSessionID, decoded.SessionID)
+		return &OperationAction{
+			Provider: ProviderLark, SessionID: "session-recovered", OperationID: operationID,
+			Phase: model.FeishuAuthPhaseCreateApp, URL: "https://open.feishu.cn/page/cli",
+		}, nil
+	}
+
+	action, err := svc.RefreshAction(context.Background(), 7, oldSessionID)
+	require.NoError(t, err)
+	require.Equal(t, "session-recovered", action.SessionID)
+	require.Equal(t, 1, auth.refreshCalls)
 }
 
 func TestWorkspaceLifecycleRefreshMapsAtomicRefreshFailureToUnavailable(t *testing.T) {

@@ -1410,6 +1410,51 @@ func TestFeishuWorkspaceStore_RestoreOperationSessionRefresh(t *testing.T) {
 	require.Equal(t, model.FeishuAuthSessionSuperseded, storedReplacement.State)
 }
 
+func TestFeishuWorkspaceStore_RestoreOperationSessionRefreshRejectsLiveReplacementLease(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 1)
+	op, err := s.CreateOrGetOperation(ctx, newFeishuOperation("operation-rebind-live-lease", 7, 1, "key-rebind-live-lease"))
+	require.NoError(t, err)
+	oldSummary := []byte(`{"status":"waiting_connection","phase":"create_app","session_id":"session-old-live-lease","recovery_kind":"create_app"}`)
+	replacementSummary := []byte(`{"status":"waiting_connection","phase":"create_app","session_id":"session-new-live-lease","recovery_kind":"create_app"}`)
+	require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", op.ID).Updates(map[string]any{
+		"state": model.FeishuOperationWaitingConnection, "result_summary_json": oldSummary,
+	}).Error)
+	oldSession := newFeishuSession("session-old-live-lease", 7, 1)
+	oldSession.OperationID = &op.ID
+	oldSession.Phase = model.FeishuAuthPhaseCreateApp
+	oldSession.RequestedScopesJSON = []byte(`["offline_access"]`)
+	require.NoError(t, s.CreateSession(ctx, oldSession))
+	replacement := newFeishuSession("session-new-live-lease", 7, 1)
+	replacement.OperationID = &op.ID
+	replacement.Phase = model.FeishuAuthPhaseCreateApp
+	replacement.RequestedScopesJSON = []byte(`["offline_access"]`)
+	now := time.Now().UTC()
+	_, err = s.RefreshOperationSession(
+		ctx, 7, 1, oldSession.ID, op.ID, model.FeishuOperationWaitingConnection, model.FeishuConnectionCreatingApp, replacement, replacementSummary, now,
+	)
+	require.NoError(t, err)
+	require.NoError(t, s.db.Model(&model.FeishuAuthSession{}).Where("id = ?", replacement.ID).Updates(map[string]any{
+		"lease_owner": "another-service", "lease_until": now.Add(time.Minute),
+	}).Error)
+
+	err = s.RestoreOperationSessionRefresh(
+		ctx, 7, 1, oldSession.ID, replacement.ID, op.ID, model.FeishuOperationWaitingConnection, oldSummary, now,
+	)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	stored, err := s.GetOperationForUser(ctx, 7, 1, op.ID)
+	require.NoError(t, err)
+	require.JSONEq(t, string(replacementSummary), string(stored.ResultSummaryJSON))
+	storedOld, err := s.GetSessionForUser(ctx, 7, 1, oldSession.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionSuperseded, storedOld.State)
+	storedReplacement, err := s.GetSessionForUser(ctx, 7, 1, replacement.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionPending, storedReplacement.State)
+	require.Equal(t, "another-service", storedReplacement.LeaseOwner)
+}
+
 func TestFeishuWorkspaceStore_RefreshOperationSessionRejectsStaleOrRetiredBindingWithoutPartialWrite(t *testing.T) {
 	ctx := context.Background()
 	newWaitingOperation := func(t *testing.T) (*feishuWorkspaceStore, *model.FeishuOperation, *model.FeishuAuthSession, *model.FeishuAuthSession, []byte, []byte) {
