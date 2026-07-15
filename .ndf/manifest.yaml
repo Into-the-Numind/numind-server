@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: '重新校准并完成飞书个人工作空间连接：每个有数账号连接自己的飞书账号并长期保持；首次授权后 Agent 自动执行文档、多维表格、知识库能力。现有 feishu-integration 仅作待审计资产，不作为产品前提。'
   classification_reason: 'Standard：飞书外部集成+长期授权凭据+自动写操作属高风险，预计涉及 DB/API/biz/前端/部署/E2E 且文件数 >3。用户于 2026-07-13 确认 Standard。'
-  last_updated_by: ai-s5-develop-boundary-check
-  last_updated_at: '2026-07-15T03:25:00+0800'
+  last_updated_by: ai-s5-develop-boundary-cleared
+  last_updated_at: '2026-07-15T03:45:00+0800'
   created_at: '2026-07-13T11:14:14+0800'
   track: standard
   stage: S5
@@ -59,8 +59,9 @@ features:
   - 'S5/S6 environment amendment (user authorized 2026-07-15): 本机受控路径/keyring 属于开发机限制，而非云端产品运行条件。用户明确授权将真实账号 Gate 改在合并到 develop 后的 dev 容器执行，先安全注入独立 dev keyring，再部署 server/web 并验收；不部署生产。验收范围不缩减，飞书应用创建、权限审批和真实资源写入仍在操作当刻由用户于官方页面确认。详见 ADR 0021。'
   - 'S5 dev keyring (2026-07-15): 已在 dev 服务器权限 0600 的 secrets.env 生成独立 AES-256 keyring；仅服务器内执行严格 JSON/32-byte 校验，未读取、输出或提交密钥。'
   - 'S5 develop boundary check (2026-07-15): 主 web develop 比 origin/develop 多 6 个未推送的小红书扩展 commits，且有同目录未提交改动；飞书分支以该本地 develop 为祖先。当前 ndf-done 会把无关 XHS commit 一同 push/deploy，超出本 feature 授权，故停止等待用户决定如何隔离或发布该组变更。'
+  - 'S5 develop boundary cleared (2026-07-15): 用户授权提交并推送所有前端小红书扩展改动。6 个既有 commits 与 14 个工作区文件已作为独立 commit 595ce98 推到 web origin/develop；extension 37/37、package check、lint/type-check 通过。web 主工作区干净，飞书可按 ndf-done 原子合并。server 未跟踪 data/revert_user355_annual_20260610.sql 为用户定向 SQL，未读取或提交，不属本 feature 且 ndf-done 忽略未跟踪文件。'
   blockers:
-  - 'Web develop contains six unpushed XHS extension commits and dirty extension files; ndf-done would push/deploy them with Feishu. Await user decision; production remains out of scope.'
+  - 'Ready for develop merge and dev deployment; real Feishu app creation, permission confirmation and resource writes remain user-confirmed steps. Production remains out of scope.'
 - id: chatbot-full-history-context
   ndf_version: '3.0'
   description: 'Hotfix: 移除 chatbot 对话上下文“最近 20 条消息”的硬截断。ChatStream 改为读取同一会话完整历史, 后续由 context-budget 根据模型 context window / safe_input_budget 统一压缩或拒绝。'
