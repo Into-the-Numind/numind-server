@@ -268,6 +268,7 @@ type lifecycleAuthFake struct {
 	connectCalls             int
 	refreshCalls             int
 	refreshErr               error
+	refresh                  func()
 	completeAppApprovalCalls []lifecycleAppApprovalCall
 	completeAppApproval      func(context.Context, uint, uint64, string) error
 	stopped                  []uint64
@@ -288,6 +289,9 @@ func (f *lifecycleAuthFake) ConnectManual(_ context.Context, _ uint) (*Operation
 
 func (f *lifecycleAuthFake) RefreshAction(_ context.Context, _ uint, _ uint64, _ string) (*OperationAction, error) {
 	f.refreshCalls++
+	if f.refresh != nil {
+		f.refresh()
+	}
 	return cloneOperationAction(f.action), f.refreshErr
 }
 
@@ -1076,6 +1080,53 @@ func TestWorkspaceLifecycleRefreshUsesCurrentGenerationAndReturnsNewLiveAction(t
 	require.NoError(t, err)
 	require.Equal(t, "session-1", action.SessionID)
 	require.Equal(t, 1, auth.refreshCalls)
+}
+
+func TestWorkspaceLifecycleRefreshRebindsOperationSessionBeforeResume(t *testing.T) {
+	operationID := "op-refresh-create-app"
+	const oldSessionID = "session-old"
+	const replacementSessionID = "session-new"
+	op := &model.FeishuOperation{
+		ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingConnection,
+		ResultSummaryJSON: lifecycleRecoverySummary(t, model.FeishuOperationWaitingConnection, oldSessionID, model.FeishuAuthPhaseCreateApp, RecoveryCreateApp),
+	}
+	svc, _, workspace, auth, dispatcher, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 2,
+	}, op)
+	oldSession := &model.FeishuAuthSession{
+		ID: oldSessionID, UserID: 7, Generation: 2, OperationID: &operationID,
+		Phase: model.FeishuAuthPhaseCreateApp, State: model.FeishuAuthSessionPending,
+	}
+	replacementSession := &model.FeishuAuthSession{
+		ID: replacementSessionID, UserID: 7, Generation: 2, OperationID: &operationID,
+		Phase: model.FeishuAuthPhaseCreateApp, State: model.FeishuAuthSessionPending,
+	}
+	refreshed := false
+	workspace.getSession = func(_ context.Context, _ uint, _ uint64, sessionID string) (*model.FeishuAuthSession, error) {
+		if !refreshed && sessionID == oldSessionID {
+			copy := *oldSession
+			return &copy, nil
+		}
+		if refreshed && sessionID == replacementSessionID {
+			copy := *replacementSession
+			return &copy, nil
+		}
+		return nil, gorm.ErrRecordNotFound
+	}
+	auth.action = &OperationAction{
+		Provider: ProviderLark, SessionID: replacementSessionID, Phase: model.FeishuAuthPhaseCreateApp,
+		URL: "https://open.feishu.cn/page/cli", ExpiresAt: time.Now().Add(time.Minute),
+	}
+	auth.refresh = func() { refreshed = true }
+
+	action, err := svc.RefreshAction(context.Background(), 7, oldSessionID)
+	require.NoError(t, err)
+	require.Equal(t, replacementSessionID, action.SessionID)
+
+	result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionUserCompleted)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingConnection, result.State)
+	require.Zero(t, dispatcher.calls, "a pending replacement session must not dispatch the operation")
 }
 
 func TestWorkspaceLifecycleRefreshClassifiesSessionBeforeCallingAuth(t *testing.T) {
