@@ -251,9 +251,10 @@ func run() error {
 		// Non-fatal: service continues; /healthz/ai will show degraded state.
 	}
 
-	if err := installNumindRouters(g); err != nil {
+	if err := installNumindRouters(g, bizLayer); err != nil {
 		return err
 	}
+	bizLayer.StartExternalResumeReclaimer()
 
 	// 创建并运行 HTTP 服务器
 	httpsrv := startInsecureServer(g)
@@ -379,6 +380,9 @@ func run() error {
 	// 在 httpsrv.Shutdown 之后调用：HTTP 已经停了，没有新的 agentRunner.Run 会再次
 	// 触发 Enqueue；此处 Stop close(jobQueue) + ctx cancel 让 worker 干净退出。
 	bizLayer.CloseMemoryExtractor(ctx)
+	if err := bizLayer.CloseExternalResumeLifecycle(ctx); err != nil {
+		log.Warnw("external resume lifecycle did not stop cleanly", "error", err)
+	}
 
 	// 优雅关闭 Task 3.8 memory digest cron (4 个 job: daily/weekly/monthly/quarterly).
 	// 等待 in-flight job drain (worker pool + Redis lock release best-effort).

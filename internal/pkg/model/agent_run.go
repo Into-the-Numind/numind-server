@@ -34,8 +34,13 @@ type AgentRun struct {
 	PendingQuestionJSON datatypes.JSON `gorm:"type:json;column:pending_question_json" json:"pending_question_json,omitempty"`
 	// PendingQuestionAt records when the question was enqueued (for SLA / timeout tracking).
 	PendingQuestionAt *time.Time `gorm:"column:pending_question_at" json:"pending_question_at,omitempty"`
-	CreatedAt         time.Time  `gorm:"type:datetime(3);autoCreateTime" json:"created_at"`
-	UpdatedAt         time.Time  `gorm:"type:datetime(3);autoUpdateTime" json:"updated_at"`
+	// PendingExternalActionJSON stores only restart-safe external-action identity.
+	// Transient URLs and credentials are forbidden by the store writer.
+	PendingExternalActionJSON datatypes.JSON `gorm:"type:json;column:pending_external_action_json" json:"pending_external_action_json,omitempty"`
+	// PendingExternalActionAt records when the external wait was persisted.
+	PendingExternalActionAt *time.Time `gorm:"column:pending_external_action_at" json:"pending_external_action_at,omitempty"`
+	CreatedAt               time.Time  `gorm:"type:datetime(3);autoCreateTime" json:"created_at"`
+	UpdatedAt               time.Time  `gorm:"type:datetime(3);autoUpdateTime" json:"updated_at"`
 	// V2 compact feature flag — 由 v2-compact-adapter-integration feature 接入
 	// adapter.Generate 层；compact-dead-schema-cleanup（migration 20260523_180000）
 	// 把死字段 compact_state_v2 / total_tokens_used_v2 / context_window_limit_v2 删

@@ -83,10 +83,9 @@ RUN if [ "$WITH_DOCKER_CLI" = "true" ]; then \
 # lark-cli (feishu-agent-connect / feishu-integration)
 # =====================================================
 # 把飞书官方 lark-cli (@larksuite/cli, MIT) 的 linux/amd64 standalone 二进制装到
-# PATH (/usr/local/bin/lark-cli)。用途：feishu provisioner 在用户「连接飞书」时
-# os/exec `lark-cli config init --new`，用标准 device-code 流帮用户建飞书自建应用、
-# 取 appId/appSecret（见 internal/numind/biz/feishu/provisioner_cli.go）。日常写
-# 文档/发消息走 oapi-sdk-go（DB 里的 token），不依赖 lark-cli。
+# 固定绝对路径 /usr/local/bin/lark-cli。用途：在服务端策略允许后受控执行 Docs、
+# Base、Wiki 命令；每次调用只使用从 AES-GCM vault 短期解封出的隔离 HOME，调用后
+# 立即重新加密并清理临时目录。
 #
 # 为何下 standalone 二进制而非 npm i -g @larksuite/cli：
 #   - npm 包的 bin 是个 Node launcher (scripts/run.js)，真正的 lark-cli 是它在
@@ -95,8 +94,8 @@ RUN if [ "$WITH_DOCKER_CLI" = "true" ]; then \
 #   - 实测 (2026-06-24)：tar 内 `lark-cli` = `ELF 64-bit ... x86-64, statically
 #     linked, Go ... stripped`，纯自包含，运行时无任何外部依赖。
 #
-# 版本固定 v1.0.56（与 spike-bootstrap 实跑验证 device-code 流 + Go 解析逻辑所依据
-# 的版本一致）。升级版本时：同步 bump LARK_CLI_VERSION + LARK_CLI_SHA256
+# 版本固定 v1.0.68（与受控命令目录、官方技能和 contract tests 同版本）。升级时
+# 必须同步 bump LARK_CLI_VERSION + LARK_CLI_SHA256，并重跑命令/scopes/risk contract
 # （sha256 取自 npm 包内 checksums.txt 的 lark-cli-<ver>-linux-amd64.tar.gz 行）。
 #
 # 下载源顺序：npmmirror 国内镜像优先（构建机在成都骨干网，GitHub 跨境慢/不稳），
@@ -104,8 +103,8 @@ RUN if [ "$WITH_DOCKER_CLI" = "true" ]; then \
 # 直接 fail 构建）；下载主机仅这两个，避免被改成任意 URL。
 # 最后一步构建期自检 `lark-cli --version`：版本命令跑通=二进制可执行且架构匹配；
 # 关 update/skills notifier 避免 --version 探测去拉网络更新检查导致挂起/失败。
-ARG LARK_CLI_VERSION=1.0.56
-ARG LARK_CLI_SHA256=93c1254889ebf0a3a562869515af15188075a95bbe9a15e5711d9c9a4af4d8c2
+ARG LARK_CLI_VERSION=1.0.68
+ARG LARK_CLI_SHA256=8daaeb11b7cadcc77f07fd9ae7948f6c370e8305337888cb930ac7362a05cad8
 RUN set -eux; \
     arch="$(uname -m)"; \
     if [ "$arch" != "x86_64" ] && [ "$arch" != "amd64" ]; then \
@@ -123,10 +122,9 @@ RUN set -eux; \
     rm -rf "${tmp}"; \
     LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1 LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1 lark-cli --version
 
-# 把上面的自检 env 固化成运行期 ENV：否则容器内每次 lark-cli 调用（config show /
-# apps +init / config init --new）都可能触发 update-check / skills-notifier 的网络探测，
-# 在无外网或外网慢的环境下挂起，拖垮 PollCredentials。provisioner_cli.go 的 env()
-# 也会再注入一份，确保继承环境和显式构造环境两边都干净。
+# 把上面的自检 env 固化成运行期 ENV：否则每次受控 Docs/Base/Wiki 调用都可能触发
+# update-check / skills-notifier 网络探测，在无外网或外网慢的环境下破坏机器输出。
+# ControlledLarkCLIRunner 也会在每次短期 HOME 调用中显式覆盖这两个变量。
 ENV LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1
 ENV LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1
 

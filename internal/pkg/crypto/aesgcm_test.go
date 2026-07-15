@@ -46,6 +46,48 @@ func TestNewCipher_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestCipherAADRejectsDifferentBinding(t *testing.T) {
+	c, err := NewCipher(newKeyB64(t))
+	require.NoError(t, err)
+
+	plain := []byte("encrypted lark-cli home")
+	originalAAD := []byte("lark|7|1|v1")
+	sealed, err := c.EncryptWithAAD(plain, originalAAD)
+	require.NoError(t, err)
+
+	got, err := c.DecryptWithAAD(sealed, originalAAD)
+	require.NoError(t, err)
+	require.Equal(t, plain, got)
+
+	for name, aad := range map[string][]byte{
+		"different user":        []byte("lark|8|1|v1"),
+		"different generation":  []byte("lark|7|2|v1"),
+		"different key version": []byte("lark|7|1|v2"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := c.DecryptWithAAD(sealed, aad)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestCipherAADLegacyEncryptDecryptCompatibility(t *testing.T) {
+	c, err := NewCipher(newKeyB64(t))
+	require.NoError(t, err)
+
+	legacyCiphertext, err := c.Encrypt([]byte("legacy payload"))
+	require.NoError(t, err)
+	got, err := c.DecryptWithAAD(legacyCiphertext, nil)
+	require.NoError(t, err)
+	require.Equal(t, []byte("legacy payload"), got)
+
+	newCiphertext, err := c.EncryptWithAAD([]byte("new payload without AAD"), nil)
+	require.NoError(t, err)
+	got, err = c.Decrypt(newCiphertext)
+	require.NoError(t, err)
+	require.Equal(t, []byte("new payload without AAD"), got)
+}
+
 // TestEncrypt_NonceUnique ensures every Encrypt call uses a fresh random nonce,
 // so encrypting identical plaintext twice yields distinct ciphertext.
 func TestEncrypt_NonceUnique(t *testing.T) {

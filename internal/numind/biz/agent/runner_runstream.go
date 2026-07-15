@@ -95,7 +95,11 @@ func (r *agentRunner) RunStream(
 	// never crashes the process, and leaves a clean model_error terminal + SSE close.
 	defer func() {
 		if rec := recover(); rec != nil {
-			result, err = nil, recoverAgentRunPanic(rec, runID, r.runStore, ch, startTime)
+			if req.ExternalContinuationGate != nil && !req.ExternalContinuationGate.CompletedSuccessfully() {
+				result, err = nil, recoverAgentRunPanic(rec, runID, nil, nil, startTime)
+			} else {
+				result, err = nil, recoverAgentRunPanic(rec, runID, r.runStore, ch, startTime)
+			}
 		}
 	}()
 	// Evict this run's vision-tool quota counters on every exit path.
@@ -181,6 +185,9 @@ func (r *agentRunner) RunStream(
 	r.registerCancel(run.ID, queryCancel)
 	defer r.unregisterCancel(run.ID)
 	defer queryCancel()
+	if activeErr := r.ensureDurablyRunnable(queryCtx, run.ID); activeErr != nil {
+		return nil, activeErr
+	}
 
 	// 4. #5 skill-system: load agent_definition and assemble SystemPrompt.
 	var skillVer int
@@ -307,13 +314,16 @@ func (r *agentRunner) RunStream(
 		agentMdBlock = "\n\n## Agent Rules (developer-defined)\n" + agentMdResult.Content + "\n"
 	}
 
-	isTrivial := memory.IsTrivial(req.Input)
+	isTrivial := false
+	if !req.ContinueWithoutUserInput {
+		isTrivial = memory.IsTrivial(req.Input)
+	}
 	if isTrivial {
 		metrics.MemoryTrivialCountInc()
 	}
 
 	var selectorBlock string
-	if r.memorySelector != nil && req.UserID != 0 && !isTrivial {
+	if r.memorySelector != nil && req.UserID != 0 && !isTrivial && !req.ContinueWithoutUserInput {
 		facts, selErr := r.memorySelector.SelectTop5(ctx, req.UserID, req.Input)
 		if selErr != nil {
 			log.Warnw("memorySelector.SelectTop5 failed; continuing without injection",
@@ -415,6 +425,15 @@ func (r *agentRunner) RunStream(
 	// 6. Short-circuit when no tools resolved (same as Run; nil/empty registry only —
 	// full-open registers from the registry, not req.ToolNames).
 	if len(einoTools) == 0 {
+		if req.ContinueWithoutUserInput {
+			if req.ExternalContinuationGate == nil {
+				endedAt := time.Now()
+				if uerr := r.runStore.UpdateState(persistCtx, run.ID, "terminated", string(TerminalModelError), &endedAt); uerr != nil {
+					log.Warnw("AgentRunner.RunStream UpdateState failed on external-continuation configuration error", "agent_run_id", run.ID, "error", uerr)
+				}
+			}
+			return nil, fmt.Errorf("AgentRunner.RunStream: external tool continuation requires a configured tool registry")
+		}
 		log.Warnw("AgentRunner.RunStream: no tools resolved from registry; using pre-ReAct short-circuit",
 			"agent_run_id", run.ID, "registry_nil", r.registry == nil)
 		endedAt := time.Now()
@@ -481,7 +500,8 @@ func (r *agentRunner) RunStream(
 		usageStore: r.adapterUsageStore(),
 		// Explicit output cap so a thinking model never truncates its trailing tool
 		// call at the provider default (dev run 133). Resolved once from capability.
-		maxOutputTokens: agentMaxOutputTokens(queryCtx),
+		maxOutputTokens:          agentMaxOutputTokens(queryCtx),
+		externalContinuationGate: req.ExternalContinuationGate,
 	}
 	if useCompactV2 {
 		ctxWindow := 0
@@ -520,9 +540,11 @@ func (r *agentRunner) RunStream(
 		StreamToolCallChecker: streamScanToolCallChecker,
 	})
 	if err != nil {
-		endedAt := time.Now()
-		if uerr := r.runStore.UpdateState(persistCtx, run.ID, "terminated", string(TerminalModelError), &endedAt); uerr != nil {
-			log.Warnw("AgentRunner.RunStream UpdateState failed on NewAgent error", "agent_run_id", run.ID, "error", uerr)
+		if req.ExternalContinuationGate == nil {
+			endedAt := time.Now()
+			if uerr := r.runStore.UpdateState(persistCtx, run.ID, "terminated", string(TerminalModelError), &endedAt); uerr != nil {
+				log.Warnw("AgentRunner.RunStream UpdateState failed on NewAgent error", "agent_run_id", run.ID, "error", uerr)
+			}
 		}
 		return nil, fmt.Errorf("AgentRunner.RunStream NewAgent: %w", err)
 	}
@@ -574,6 +596,9 @@ func (r *agentRunner) RunStream(
 	sr, streamErr := einoAgent.Stream(attemptCtx, einoMessages)
 
 	if streamErr != nil {
+		if errors.Is(streamErr, errExternalContinuationFirstCall) {
+			return nil, streamErr
+		}
 		// P1 fix (T05-2): both error branches must emit EventError + EventTerminal so
 		// the SSE client can distinguish "runner failed before first byte" from a clean
 		// EOF. Previously these paths returned immediately without emitting anything,
@@ -614,7 +639,11 @@ func (r *agentRunner) RunStream(
 			yieldSt := &LoopState{StepCount: int(sharedState.StepIdx.Load())}
 			result, _ := r.persistAndEmitYield(ctx, run.ID, yieldSt, newChanEmitter(sharedState), startTime, *p)
 			endedAt := time.Now()
-			if uErr := r.runStore.UpdateState(persistCtx, run.ID, "terminated", string(TerminalWaitingForUserChoice), &endedAt); uErr != nil {
+			terminalReason := TerminalModelError
+			if result != nil && result.TerminalReason != "" {
+				terminalReason = result.TerminalReason
+			}
+			if uErr := r.runStore.UpdateState(persistCtx, run.ID, "terminated", string(terminalReason), &endedAt); uErr != nil {
 				log.Warnw("AgentRunner.RunStream yield UpdateState failed (errpath)", "agent_run_id", run.ID, "error", uErr)
 			}
 			if result != nil {
@@ -640,6 +669,9 @@ func (r *agentRunner) RunStream(
 	// and sets st.TerminalReason. sr.Close() is deferred inside consumeEinoStream.
 	st := &LoopState{}
 	result, consumeErr := r.consumeEinoStream(attemptCtx, run, sr, ch, st, startTime)
+	if errors.Is(consumeErr, errExternalContinuationFirstCall) {
+		return nil, consumeErr
+	}
 	if consumeErr != nil {
 		// consumeEinoStream already emitted error + terminal events onto ch and set
 		// st.TerminalReason. We still call finalizeRun to persist state.

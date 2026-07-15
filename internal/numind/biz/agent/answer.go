@@ -88,6 +88,11 @@ func (s *StudentRunService) validateAndPersistAnswer(ctx context.Context, userID
 			"answer: run is not waiting for user choice (state_reason=%s)", run.StateReason,
 		)
 	}
+	if hasPendingExternalAction(run.PendingExternalActionJSON) {
+		return RunRequest{}, errno.ErrInvalidInput.SetMessage(
+			"answer: run is waiting for an external action",
+		)
+	}
 
 	// 2b. pending_question_json IS NOT NULL guard (spec §2.3c).
 	// Defends against a corrupted row where state_reason was set but the JSON
@@ -135,6 +140,10 @@ func (s *StudentRunService) validateAndPersistAnswer(ctx context.Context, userID
 	if err != nil {
 		return RunRequest{}, fmt.Errorf("validateAndPersistAnswer: build answer turn: %w", err)
 	}
+	resumeReq, err := s.buildAnswerResumeRequest(ctx, run, userMsg)
+	if err != nil {
+		return RunRequest{}, fmt.Errorf("validateAndPersistAnswer: build resume request before commit: %w", err)
+	}
 	if err := s.runStore.AnswerAndClear(ctx, runID, turn); err != nil {
 		return RunRequest{}, fmt.Errorf("validateAndPersistAnswer: atomic answer+clear: %w", err)
 	}
@@ -142,37 +151,42 @@ func (s *StudentRunService) validateAndPersistAnswer(ctx context.Context, userID
 	// 4. Langfuse span for resume observability.
 	emitAnswerSpan(ctx, run, req)
 
-	// Snapshot the fields the resumed run needs (AnswerAndClear has already
-	// mutated the row; read from the pre-resume copy captured above).
-	agentDefID := run.AgentDefinitionID
-	sessionID := run.SessionID
-	toolFlags := resolveToolFlags(context.Background(), s, agentDefID)
+	return resumeReq, nil
+}
 
-	// 5. HW-33: rebuild the conversation context the resumed agent must see. The
-	// run paused mid-ReAct persisted its pre-yield transcript in run.Messages
-	// (captured here BEFORE AnswerAndClear appended the answer). loadSessionHistory
-	// excludes the current run by design, so the agent would otherwise resume with
-	// ZERO memory of the research it did before pausing (dev run #119: it re-asked
-	// for the company name it was already researching). Inject prior runs' history
-	// PLUS this run's pre-yield transcript as History; the answer becomes Input.
-	resumeHistory := s.loadSessionHistory(context.Background(), sessionID, runID)
-	if len(run.Messages) > 0 && string(run.Messages) != "null" {
-		var turns []map[string]any
-		if uerr := json.Unmarshal(run.Messages, &turns); uerr == nil {
-			resumeHistory = append(resumeHistory, turnsToHistoryMessages(turns)...)
-		}
+func (s *StudentRunService) buildAnswerResumeRequest(ctx context.Context, run *model.AgentRun, userMsg string) (RunRequest, error) {
+	if s == nil || s.runStore == nil || run == nil || run.ID == 0 || strings.TrimSpace(userMsg) == "" {
+		return RunRequest{}, fmt.Errorf("buildAnswerResumeRequest: service, run, and user answer are required")
+	}
+	var turns []map[string]any
+	if err := json.Unmarshal(run.Messages, &turns); err != nil {
+		return RunRequest{}, fmt.Errorf("buildAnswerResumeRequest: invalid transcript: %w", err)
 	}
 
+	resumeHistory := s.loadSessionHistory(context.WithoutCancel(ctx), run.SessionID, run.ID)
+	resumeHistory = append(resumeHistory, turnsToHistoryMessages(turns)...)
+	toolFlags := resolveToolFlags(context.WithoutCancel(ctx), s, run.AgentDefinitionID)
 	return RunRequest{
-		UserID:            userID,
-		SessionID:         sessionID,
+		UserID:            run.UserID,
+		SessionID:         run.SessionID,
 		Input:             userMsg,
 		History:           resumeHistory,
 		ToolNames:         toolNamesFromFlags(toolFlags),
-		AgentDefinitionID: agentDefID,
+		AgentDefinitionID: run.AgentDefinitionID,
 		EnableMemory:      true,
-		ExistingRunID:     runID,
+		ExistingRunID:     run.ID,
+		IsTest:            run.IsTest,
 	}, nil
+}
+
+func (s *StudentRunService) startDetachedResume(runReq RunRequest) {
+	go s.forwardNarration(runReq.ExistingRunID)
+	go func() {
+		bgCtx := middleware.NewContextWithUserID(context.Background(), runReq.UserID)
+		if _, runErr := s.runner.Run(bgCtx, runReq); runErr != nil {
+			log.Errorw("agent resume: restart runner failed", "run_id", runReq.ExistingRunID, "error", runErr)
+		}
+	}()
 }
 
 // Answer handles POST /v1/agent-runs/:id/answer business logic (poll path).
@@ -188,21 +202,9 @@ func (s *StudentRunService) Answer(ctx context.Context, userID uint, runID uint6
 		return nil, err
 	}
 
-	// Re-establish the narration→buffer forwarder for the resumed run. Phase 1's
-	// forwarder exited when RunStream's defer CloseRun closed the channel on yield, so
-	// without this the resumed runner's narration (web_search, chart, image_gen, …) is
-	// emitted but never drained into the poll buffer → PollNarration returns the stale
-	// pre-yield events forever and the UI looks frozen ("答完就停"). Same bridge as
-	// Create/RunStream start (student_run_lifecycle.go). nil-safe (graceful degrade).
-	go s.forwardNarration(runID)
-
-	// Restart runner in a detached goroutine (detached ctx, same as Create).
-	go func() {
-		bgCtx := middleware.NewContextWithUserID(context.Background(), userID)
-		if _, runErr := s.runner.Run(bgCtx, runReq); runErr != nil {
-			log.Errorw("Answer: restart runner failed", "run_id", runID, "error", runErr)
-		}
-	}()
+	// Ordinary answers and external results share one detached resume launcher;
+	// only transcript construction differs (user tail vs tool tail).
+	s.startDetachedResume(runReq)
 
 	return &AnswerResponse{RunID: runID, Status: "resumed"}, nil
 }

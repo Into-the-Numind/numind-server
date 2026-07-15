@@ -1,0 +1,9 @@
+{
+  "ok": false,
+  "type": "authorization",
+  "subtype": "app_scope_not_applied",
+  "missing_scopes": ["wiki:space:write_only"],
+  "permission_violations": [{"level": "app"}],
+  "identity": "user",
+  "console_url_present": true
+}

@@ -1,0 +1,16 @@
+{
+  "ok": false,
+  "type": "authorization",
+  "subtype": "missing_scope",
+  "code": 99991672,
+  "missing_scopes": [
+    "base:app:create",
+    "base:table:create",
+    "base:table:delete",
+    "base:table:read",
+    "base:table:update"
+  ],
+  "permission_violations": [{"level": "app"}],
+  "identity": "user",
+  "console_url_present": true
+}

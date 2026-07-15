@@ -1,0 +1,520 @@
+{
+  "cli_version": "1.0.68",
+  "global_limits": {
+    "argv_bytes": 262144,
+    "argv_count": 128,
+    "stdin_json_bytes": 1048576,
+    "stdout_bytes": 4194304
+  },
+  "commands": [
+    {
+      "path": "base +base-create",
+      "domain": "base",
+      "scopes": [
+        "base:app:create",
+        "base:table:read",
+        "base:table:create",
+        "base:table:update",
+        "base:table:delete"
+      ],
+      "risk": "write",
+      "requires_cli_yes": false,
+      "limits": {
+        "fields": 100,
+        "json_bytes": 262144,
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--fields",
+        "--folder-token",
+        "--name",
+        "--table-name",
+        "--time-zone"
+      ]
+    },
+    {
+      "path": "base +base-get",
+      "domain": "base",
+      "scopes": [
+        "base:app:read"
+      ],
+      "risk": "read",
+      "requires_cli_yes": false,
+      "limits": {
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--base-token"
+      ]
+    },
+    {
+      "path": "base +field-create",
+      "domain": "base",
+      "scopes": [
+        "base:field:create"
+      ],
+      "risk": "write",
+      "requires_cli_yes": false,
+      "limits": {
+        "json_bytes": 262144,
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--base-token",
+        "--json",
+        "--table-id"
+      ]
+    },
+    {
+      "path": "base +field-get",
+      "domain": "base",
+      "scopes": [
+        "base:field:read"
+      ],
+      "risk": "read",
+      "requires_cli_yes": false,
+      "limits": {
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--base-token",
+        "--field-id",
+        "--table-id"
+      ]
+    },
+    {
+      "path": "base +field-list",
+      "domain": "base",
+      "scopes": [
+        "base:field:read"
+      ],
+      "risk": "read",
+      "requires_cli_yes": false,
+      "limits": {
+        "page_size": 100,
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--base-token",
+        "--limit",
+        "--offset",
+        "--table-id"
+      ]
+    },
+    {
+      "path": "base +field-update",
+      "domain": "base",
+      "scopes": [
+        "base:field:update"
+      ],
+      "risk": "high",
+      "requires_cli_yes": true,
+      "limits": {
+        "json_bytes": 262144,
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--base-token",
+        "--field-id",
+        "--json",
+        "--table-id"
+      ]
+    },
+    {
+      "path": "base +record-batch-create",
+      "domain": "base",
+      "scopes": [
+        "base:record:create"
+      ],
+      "risk": "write",
+      "requires_cli_yes": false,
+      "limits": {
+        "confirmation_batch": 20,
+        "json_bytes": 262144,
+        "records": 200,
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--base-token",
+        "--json",
+        "--table-id"
+      ]
+    },
+    {
+      "path": "base +record-batch-update",
+      "domain": "base",
+      "scopes": [
+        "base:record:update"
+      ],
+      "risk": "write",
+      "requires_cli_yes": false,
+      "limits": {
+        "confirmation_batch": 20,
+        "json_bytes": 262144,
+        "records": 200,
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--base-token",
+        "--json",
+        "--table-id"
+      ]
+    },
+    {
+      "path": "base +record-get",
+      "domain": "base",
+      "scopes": [
+        "base:record:read"
+      ],
+      "risk": "read",
+      "requires_cli_yes": false,
+      "limits": {
+        "projected_fields": 50,
+        "records": 100,
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--base-token",
+        "--field-id",
+        "--json",
+        "--record-id",
+        "--table-id"
+      ]
+    },
+    {
+      "path": "base +record-list",
+      "domain": "base",
+      "scopes": [
+        "base:record:read"
+      ],
+      "risk": "read",
+      "requires_cli_yes": false,
+      "limits": {
+        "page_size": 100,
+        "projected_fields": 50,
+        "sort_fields": 10,
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--base-token",
+        "--field-id",
+        "--filter-json",
+        "--limit",
+        "--offset",
+        "--sort-json",
+        "--table-id",
+        "--view-id"
+      ]
+    },
+    {
+      "path": "base +record-search",
+      "domain": "base",
+      "scopes": [
+        "base:record:read"
+      ],
+      "risk": "read",
+      "requires_cli_yes": false,
+      "limits": {
+        "page_size": 100,
+        "projected_fields": 50,
+        "search_fields": 20,
+        "sort_fields": 10,
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--base-token",
+        "--field-id",
+        "--filter-json",
+        "--json",
+        "--keyword",
+        "--limit",
+        "--offset",
+        "--search-field",
+        "--sort-json",
+        "--table-id",
+        "--view-id"
+      ]
+    },
+    {
+      "path": "base +record-upsert",
+      "domain": "base",
+      "scopes": [
+        "base:record:create",
+        "base:record:update"
+      ],
+      "risk": "write",
+      "requires_cli_yes": false,
+      "limits": {
+        "fields": 100,
+        "json_bytes": 262144,
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--base-token",
+        "--json",
+        "--record-id",
+        "--table-id"
+      ]
+    },
+    {
+      "path": "base +table-create",
+      "domain": "base",
+      "scopes": [
+        "base:table:create"
+      ],
+      "risk": "write",
+      "requires_cli_yes": false,
+      "limits": {
+        "fields": 100,
+        "json_bytes": 262144,
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--base-token",
+        "--fields",
+        "--name",
+        "--view"
+      ]
+    },
+    {
+      "path": "base +table-get",
+      "domain": "base",
+      "scopes": [
+        "base:table:read"
+      ],
+      "risk": "read",
+      "requires_cli_yes": false,
+      "limits": {
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--base-token",
+        "--table-id"
+      ]
+    },
+    {
+      "path": "base +table-list",
+      "domain": "base",
+      "scopes": [
+        "base:table:read"
+      ],
+      "risk": "read",
+      "requires_cli_yes": false,
+      "limits": {
+        "page_size": 100,
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--base-token",
+        "--limit",
+        "--offset"
+      ]
+    },
+    {
+      "path": "base +table-update",
+      "domain": "base",
+      "scopes": [
+        "base:table:update"
+      ],
+      "risk": "write",
+      "requires_cli_yes": false,
+      "limits": {
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--base-token",
+        "--name",
+        "--table-id"
+      ]
+    },
+    {
+      "path": "base +view-get",
+      "domain": "base",
+      "scopes": [
+        "base:view:read"
+      ],
+      "risk": "read",
+      "requires_cli_yes": false,
+      "limits": {
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--base-token",
+        "--table-id",
+        "--view-id"
+      ]
+    },
+    {
+      "path": "base +view-list",
+      "domain": "base",
+      "scopes": [
+        "base:view:read"
+      ],
+      "risk": "read",
+      "requires_cli_yes": false,
+      "limits": {
+        "page_size": 100,
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--base-token",
+        "--limit",
+        "--offset",
+        "--table-id"
+      ]
+    },
+    {
+      "path": "docs +create",
+      "domain": "docs",
+      "scopes": [
+        "docx:document:create"
+      ],
+      "risk": "write",
+      "requires_cli_yes": false,
+      "limits": {
+        "content_bytes": 524288,
+        "json_bytes": 262144,
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--content",
+        "--doc-format",
+        "--parent-position",
+        "--parent-token",
+        "--reference-map",
+        "--title"
+      ]
+    },
+    {
+      "path": "docs +fetch",
+      "domain": "docs",
+      "scopes": [
+        "docx:document:readonly"
+      ],
+      "risk": "read",
+      "requires_cli_yes": false,
+      "limits": {
+        "context_blocks": 10,
+        "depth": 10,
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--context-after",
+        "--context-before",
+        "--detail",
+        "--doc",
+        "--doc-format",
+        "--end-block-id",
+        "--keyword",
+        "--lang",
+        "--max-depth",
+        "--revision-id",
+        "--scope",
+        "--start-block-id"
+      ]
+    },
+    {
+      "path": "docs +update",
+      "domain": "docs",
+      "scopes": [
+        "docx:document:write_only",
+        "docx:document:readonly"
+      ],
+      "risk": "write",
+      "requires_cli_yes": false,
+      "limits": {
+        "content_bytes": 524288,
+        "json_bytes": 262144,
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--block-id",
+        "--command",
+        "--content",
+        "--doc",
+        "--doc-format",
+        "--pattern",
+        "--reference-map",
+        "--revision-id"
+      ]
+    },
+    {
+      "path": "wiki +node-create",
+      "domain": "wiki",
+      "scopes": [
+        "wiki:node:create",
+        "wiki:node:read",
+        "wiki:space:read"
+      ],
+      "risk": "write",
+      "requires_cli_yes": false,
+      "limits": {
+        "stdout_bytes": 4194304,
+        "title_bytes": 512
+      },
+      "allowed_flags": [
+        "--node-type",
+        "--obj-type",
+        "--parent-node-token",
+        "--space-id",
+        "--title"
+      ]
+    },
+    {
+      "path": "wiki +node-get",
+      "domain": "wiki",
+      "scopes": [
+        "wiki:node:retrieve"
+      ],
+      "risk": "read",
+      "requires_cli_yes": false,
+      "limits": {
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--node-token",
+        "--obj-type",
+        "--space-id"
+      ]
+    },
+    {
+      "path": "wiki +node-list",
+      "domain": "wiki",
+      "scopes": [
+        "wiki:node:retrieve"
+      ],
+      "risk": "read",
+      "requires_cli_yes": false,
+      "limits": {
+        "page_size": 50,
+        "pages": 10,
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--page-all",
+        "--page-limit",
+        "--page-size",
+        "--page-token",
+        "--parent-node-token",
+        "--space-id"
+      ]
+    },
+    {
+      "path": "wiki +space-create",
+      "domain": "wiki",
+      "scopes": [
+        "wiki:space:write_only"
+      ],
+      "risk": "write",
+      "requires_cli_yes": false,
+      "limits": {
+        "description_bytes": 4096,
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--description",
+        "--name"
+      ]
+    }
+  ]
+}

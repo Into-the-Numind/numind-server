@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -91,6 +92,158 @@ func TestThirdPartyAccountStore_UpsertAndGet_CryptoRoundTrip(t *testing.T) {
 	assert.Equal(t, "refresh-token-plain", string(gotRefresh))
 }
 
+func TestThirdPartyAccountStore_RetireGenerationFencesOldWorkAndFinalizesLocalState(t *testing.T) {
+	db := newThirdPartyAccountTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.FeishuAuthSession{}, &model.FeishuOperation{}))
+	s := newThirdPartyAccountStore(db)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	require.NoError(t, db.Create(&model.UserThirdPartyAccount{
+		UserID: 7, Provider: "lark", AppID: "cli_local", Generation: 4, Connected: true,
+		AppSecretEnc: []byte("legacy-app-secret"), AccessTokenEnc: []byte("legacy-access"),
+		RefreshTokenEnc: []byte("legacy-refresh"), TokenExpiresAt: &now, Scopes: "legacy:scope",
+		ConnectionState: model.FeishuConnectionConnected, CapabilityStateJSON: []byte(`{"docs":{"state":"available"}}`),
+	}).Error)
+	require.NoError(t, db.Create(&model.FeishuAuthSession{
+		ID: "session-old", UserID: 7, Generation: 4, Phase: model.FeishuAuthPhaseUserAuth,
+		RequestedScopesJSON: []byte(`[]`), State: model.FeishuAuthSessionPending, ExpiresAt: now.Add(time.Minute),
+	}).Error)
+	require.NoError(t, db.Create(&model.FeishuOperation{
+		ID: "op-executing", UserID: 7, Generation: 4, AgentRunID: 1, ToolCallID: "tool-1",
+		IdempotencyKey: "key-1", CommandPath: "docs +create", Domain: "docs", RiskLevel: "write",
+		RequestCiphertext: []byte("cipher"), KeyVersion: "v1", RequestFingerprint: "fingerprint", State: model.FeishuOperationExecuting,
+	}).Error)
+
+	oldGeneration, newGeneration, err := s.RetireGeneration(ctx, 7, "lark")
+	require.NoError(t, err)
+	require.EqualValues(t, 4, oldGeneration)
+	require.EqualValues(t, 5, newGeneration)
+
+	var oldSession model.FeishuAuthSession
+	require.NoError(t, db.Where("id = ?", "session-old").Take(&oldSession).Error)
+	require.Equal(t, model.FeishuAuthSessionSuperseded, oldSession.State)
+	var oldOperation model.FeishuOperation
+	require.NoError(t, db.Where("id = ?", "op-executing").Take(&oldOperation).Error)
+	require.Equal(t, model.FeishuOperationUnknown, oldOperation.State)
+
+	// A retry after vault cleanup failure must continue cleaning the same retired
+	// generation, never advance again and strand its ciphertext permanently.
+	retryOld, retryNew, err := s.RetireGeneration(ctx, 7, "lark")
+	require.NoError(t, err)
+	require.EqualValues(t, 4, retryOld)
+	require.EqualValues(t, 5, retryNew)
+
+	require.NoError(t, s.FinalizeDisconnect(ctx, 7, "lark", newGeneration))
+	account, err := s.Get(ctx, 7, "lark")
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuConnectionNone, account.ConnectionState)
+	require.False(t, account.Connected)
+	require.Empty(t, account.AppID)
+	require.Empty(t, account.CapabilityStateJSON)
+	require.Empty(t, account.AppSecretEnc)
+	require.Empty(t, account.AccessTokenEnc)
+	require.Empty(t, account.RefreshTokenEnc)
+	require.Nil(t, account.TokenExpiresAt)
+	require.Empty(t, account.Scopes)
+}
+
+func TestThirdPartyAccountStore_DisconnectingGenerationRejectsNewSessionAndOperation(t *testing.T) {
+	db := newThirdPartyAccountTestDB(t)
+	require.NoError(t, db.AutoMigrate(
+		&model.FeishuAuthSession{}, &model.FeishuOperation{}, &model.FeishuOperationProofConsumption{}, &model.FeishuOperationExecutionGate{},
+	))
+	accounts := newThirdPartyAccountStore(db)
+	workspace := newFeishuWorkspaceStore(db)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	require.NoError(t, db.Create(&model.UserThirdPartyAccount{
+		UserID: 7, Provider: "lark", Generation: 4, Connected: true,
+		ConnectionState: model.FeishuConnectionConnected,
+	}).Error)
+
+	retiredGeneration, disconnectingGeneration, err := accounts.RetireGeneration(ctx, 7, "lark")
+	require.NoError(t, err)
+	require.EqualValues(t, 4, retiredGeneration)
+	require.EqualValues(t, 5, disconnectingGeneration)
+
+	_, _, err = workspace.CreateOrGetPendingSession(ctx, &model.FeishuAuthSession{
+		ID: "session-disconnecting", UserID: 7, Generation: disconnectingGeneration,
+		Phase: model.FeishuAuthPhaseUserAuth, RequestedScopesJSON: []byte(`["offline_access"]`),
+		State: model.FeishuAuthSessionPending, ExpiresAt: now.Add(time.Minute),
+	})
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound, "a disconnecting generation is not an active auth-worker generation")
+
+	_, err = workspace.CreateOrGetOperation(ctx, &model.FeishuOperation{
+		ID: "operation-disconnecting", UserID: 7, Generation: disconnectingGeneration,
+		AgentRunID: 17, ToolCallID: "tool-disconnecting", IdempotencyKey: "17:tool-disconnecting",
+		CommandPath: "docs +fetch", Domain: "docs", RiskLevel: "read",
+		RequestCiphertext: []byte("cipher"), KeyVersion: "v1", RequestFingerprint: "fingerprint",
+		State: model.FeishuOperationNotStarted,
+	})
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound, "a disconnecting generation is not an active operation generation")
+
+	account, err := accounts.Get(ctx, 7, "lark")
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuConnectionDisconnecting, account.ConnectionState)
+	require.EqualValues(t, disconnectingGeneration, account.Generation)
+}
+
+func TestFeishuWorkspaceStore_RetiredTeardownRenewAndCompleteFenceExactOwner(t *testing.T) {
+	db := newThirdPartyAccountTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.FeishuCLIVault{}, &model.FeishuOperationExecutionGate{}, &model.FeishuAuthSession{}, &model.FeishuOperation{}))
+	accounts := newThirdPartyAccountStore(db)
+	workspace := newFeishuWorkspaceStore(db)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	require.NoError(t, db.Create(&model.UserThirdPartyAccount{
+		UserID: 7, Provider: "lark", Generation: 4, Connected: true, ConnectionState: model.FeishuConnectionConnected,
+	}).Error)
+	retiredGeneration, disconnectingGeneration, err := accounts.RetireGeneration(ctx, 7, "lark")
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&model.FeishuCLIVault{
+		UserID: 7, Generation: retiredGeneration, Ciphertext: []byte("cipher"), KeyVersion: "v1", Checksum: "checksum", Revision: 1,
+	}).Error)
+
+	claimed, err := workspace.ClaimRetiredTeardown(ctx, 7, retiredGeneration, disconnectingGeneration, "owner-a", now, now.Add(10*time.Millisecond))
+	require.NoError(t, err)
+	require.True(t, claimed)
+	renewed, err := workspace.RenewRetiredTeardown(ctx, 7, retiredGeneration, disconnectingGeneration, "owner-a", now.Add(5*time.Millisecond), now.Add(100*time.Millisecond))
+	require.NoError(t, err)
+	require.True(t, renewed)
+
+	// Owner B cannot claim while A's renewed lease remains live.
+	claimed, err = workspace.ClaimRetiredTeardown(ctx, 7, retiredGeneration, disconnectingGeneration, "owner-b", now.Add(20*time.Millisecond), now.Add(200*time.Millisecond))
+	require.NoError(t, err)
+	require.False(t, claimed)
+
+	// A crashed after the renewal. Once its durable lease expires, B may take
+	// over the same retired generation, but A's stale token cannot renew,
+	// delete the vault, or finalize the account.
+	claimed, err = workspace.ClaimRetiredTeardown(ctx, 7, retiredGeneration, disconnectingGeneration, "owner-b", now.Add(110*time.Millisecond), now.Add(210*time.Millisecond))
+	require.NoError(t, err)
+	require.True(t, claimed)
+	renewed, err = workspace.RenewRetiredTeardown(ctx, 7, retiredGeneration, disconnectingGeneration, "owner-a", now.Add(111*time.Millisecond), now.Add(211*time.Millisecond))
+	require.NoError(t, err)
+	require.False(t, renewed)
+	completed, err := workspace.CompleteRetiredTeardown(ctx, 7, retiredGeneration, disconnectingGeneration, "owner-a", now.Add(112*time.Millisecond))
+	require.NoError(t, err)
+	require.False(t, completed)
+
+	var retained model.FeishuCLIVault
+	require.NoError(t, db.Where("user_id = ? AND generation = ?", 7, retiredGeneration).Take(&retained).Error)
+	account, err := accounts.Get(ctx, 7, "lark")
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuConnectionDisconnecting, account.ConnectionState)
+
+	completed, err = workspace.CompleteRetiredTeardown(ctx, 7, retiredGeneration, disconnectingGeneration, "owner-b", now.Add(112*time.Millisecond))
+	require.NoError(t, err)
+	require.True(t, completed)
+	require.ErrorIs(t, db.Where("user_id = ? AND generation = ?", 7, retiredGeneration).Take(&model.FeishuCLIVault{}).Error, gorm.ErrRecordNotFound)
+	account, err = accounts.Get(ctx, 7, "lark")
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuConnectionNone, account.ConnectionState)
+}
+
 func TestThirdPartyAccountStore_Upsert_Idempotent(t *testing.T) {
 	db := newThirdPartyAccountTestDB(t)
 	s := newThirdPartyAccountStore(db)
@@ -133,6 +286,53 @@ func TestThirdPartyAccountStore_Get_Miss(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, gorm.ErrRecordNotFound),
 		"未连接应返回 gorm.ErrRecordNotFound 供 biz 走未连接分支")
+}
+
+func TestThirdPartyAccountStore_EnsurePlaceholderNeverOverwritesExistingAccount(t *testing.T) {
+	db := newThirdPartyAccountTestDB(t)
+	s := newThirdPartyAccountStore(db)
+	ctx := context.Background()
+
+	placeholder, err := s.EnsurePlaceholder(ctx, 7, "lark")
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuConnectionNone, placeholder.ConnectionState)
+	require.EqualValues(t, 1, placeholder.Generation)
+	require.Empty(t, placeholder.AppID)
+
+	require.NoError(t, db.Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ?", 7, "lark").
+		Updates(map[string]any{
+			"app_id": "cli_keep", "connection_state": model.FeishuConnectionConnected,
+			"connected": true, "generation": 8,
+		}).Error)
+
+	const workers = 20
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for index := 0; index < workers; index++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, ensureErr := s.EnsurePlaceholder(ctx, 7, "lark")
+			errs <- ensureErr
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for ensureErr := range errs {
+		require.NoError(t, ensureErr)
+	}
+
+	got, err := s.Get(ctx, 7, "lark")
+	require.NoError(t, err)
+	require.Equal(t, "cli_keep", got.AppID)
+	require.Equal(t, model.FeishuConnectionConnected, got.ConnectionState)
+	require.True(t, got.Connected)
+	require.EqualValues(t, 8, got.Generation)
+	var count int64
+	require.NoError(t, db.Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ?", 7, "lark").Count(&count).Error)
+	require.EqualValues(t, 1, count)
 }
 
 func TestThirdPartyAccountStore_Get_IsolatedByUserAndProvider(t *testing.T) {

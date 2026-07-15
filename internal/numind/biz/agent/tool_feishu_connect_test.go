@@ -184,10 +184,9 @@ func TestFeishuConnect_Metadata(t *testing.T) {
 
 // --- factory registration ---------------------------------------------------
 
-// TestPlatformFactory_RegistersFeishuConnect_WhenConnectorPresent verifies that
-// with BOTH a lark provider AND a feishu connector injected, feishu_connect is
-// appended after the three ops tools (base 21 + 3 lark + 1 connect = 25).
-func TestPlatformFactory_RegistersFeishuConnect_WhenConnectorPresent(t *testing.T) {
+// TestPlatformFactory_DoesNotRegisterLegacyFeishuConnect verifies the old
+// connector seam cannot re-enable the retired factory registration.
+func TestPlatformFactory_DoesNotRegisterLegacyFeishuConnect(t *testing.T) {
 	db := newFactoryTestDB(t)
 	ds := store.NewTestStore(db)
 	f := &platformToolFactory{
@@ -198,19 +197,19 @@ func TestPlatformFactory_RegistersFeishuConnect_WhenConnectorPresent(t *testing.
 
 	tools, metadata, err := f.LoadTools(context.Background())
 	require.NoError(t, err)
-	assert.Len(t, tools, 25, "base 21 + 3 lark + 1 feishu_connect")
-	assert.Len(t, metadata, 25)
+	assert.Len(t, tools, 21)
+	assert.Len(t, metadata, 21)
 
 	got := map[string]bool{}
 	for _, tl := range tools {
 		got[tl.Name()] = true
 	}
-	assert.True(t, got["feishu_connect"], "feishu_connect must be registered")
+	assert.False(t, got["feishu_connect"], "legacy feishu_connect must not be registered")
 }
 
 // TestPlatformFactory_NoFeishuConnect_WhenConnectorAbsent verifies feishu_connect
 // is NOT registered when the connector cannot be built (flag off / no Redis),
-// even if the lark provider is present — count stays at 24.
+// even if the old lark provider seam is present — count stays at 21.
 func TestPlatformFactory_NoFeishuConnect_WhenConnectorAbsent(t *testing.T) {
 	db := newFactoryTestDB(t)
 	ds := store.NewTestStore(db)
@@ -218,7 +217,7 @@ func TestPlatformFactory_NoFeishuConnect_WhenConnectorAbsent(t *testing.T) {
 
 	tools, _, err := f.LoadTools(context.Background())
 	require.NoError(t, err)
-	assert.Len(t, tools, 24, "no connector → feishu_connect absent (21 + 3 lark)")
+	assert.Len(t, tools, 21, "legacy provider must not register old lark tools")
 	for _, tl := range tools {
 		assert.NotEqual(t, "feishu_connect", tl.Name())
 	}

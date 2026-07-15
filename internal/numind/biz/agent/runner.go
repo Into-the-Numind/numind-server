@@ -44,6 +44,21 @@ type displayAttachment struct {
 	Filename string
 }
 
+func (r *agentRunner) persistExternalAction(ctx context.Context, runID uint64, action ExternalActionPayload) ([]byte, error) {
+	writer, ok := r.runStore.(store.IExternalActionWriter)
+	if !ok {
+		return nil, fmt.Errorf("external action persistence capability unavailable")
+	}
+	payloadJSON, err := json.Marshal(action.Persistent())
+	if err != nil {
+		return nil, fmt.Errorf("marshal external action identity: %w", err)
+	}
+	if err := writer.UpdatePendingExternalAction(ctx, runID, payloadJSON); err != nil {
+		return nil, fmt.Errorf("persist external action identity: %w", err)
+	}
+	return payloadJSON, nil
+}
+
 type RunRequest struct {
 	UserID    uint
 	SessionID string
@@ -89,6 +104,15 @@ type RunRequest struct {
 	// buildEinoMessages 将其前置到当前 Input 之前，使 LLM 获得多轮上下文（修复多轮失忆）。
 	// 为空表示新会话或首轮；加载失败时 fail-open 为 nil（不阻断本轮 run）。
 	History []*schema.Message
+	// ContinueWithoutUserInput is a server-only continuation used after an
+	// external tool result has been appended to History. It prevents both the
+	// model request and final persisted transcript from inventing an empty or
+	// natural-language user message. Model tool input can never set this flag.
+	ContinueWithoutUserInput bool
+	// ExternalContinuationGate is a server-only, one-shot lease boundary shared
+	// by every adapter clone. It enters immediately before the first provider
+	// call and completes only after the first model response. Never model-set.
+	ExternalContinuationGate *externalContinuationGate
 }
 
 // displayUserText returns the text to PERSIST/DISPLAY as the user turn: DisplayInput
@@ -139,6 +163,10 @@ type RunResult struct {
 
 // AgentRunner 是 Agent 运行时主接口（蓝本 §4.1.9）。
 type AgentRunner interface {
+	// Run implementations must cooperatively return when ctx is cancelled. In
+	// particular, setup, provider calls, and CLI/tool boundaries before the first
+	// model response must not detach from ctx. External resume recovery relies on
+	// this contract so shutdown can join every managed continuation.
 	Run(ctx context.Context, req RunRequest) (*RunResult, error)
 	// RunStream executes the agent in streaming mode. Events are sent on ch
 	// (buffered by caller; ownership transfers to RunStream — it does NOT close ch).
@@ -500,7 +528,14 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 			if run != nil {
 				rid = run.ID
 			}
-			result, err = nil, recoverAgentRunPanic(rec, rid, r.runStore, nil, startTime)
+			if req.ExternalContinuationGate != nil && !req.ExternalContinuationGate.CompletedSuccessfully() {
+				// The durable lease owner must release the result after a
+				// synchronous preflight panic. Persisting model_error here would
+				// overwrite the fencing state and make that release impossible.
+				result, err = nil, recoverAgentRunPanic(rec, rid, nil, nil, startTime)
+			} else {
+				result, err = nil, recoverAgentRunPanic(rec, rid, r.runStore, nil, startTime)
+			}
 		}
 	}()
 	// Evict this run's vision-tool quota counters on every exit path (run set lazily).
@@ -526,9 +561,11 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 		// NOTE: ended_at clearing is owned by AnswerAndClear (the sole resume
 		// entry today); a future non-answer resume entry must clear it itself
 		// (UpdateState with nil endedAt intentionally leaves the column alone).
-		if uerr := r.runStore.UpdateState(ctx, run.ID, "running", "running", nil); uerr != nil {
-			log.Warnw("AgentRunner.Run: mark resumed run running failed",
-				"agent_run_id", run.ID, "error", uerr)
+		if !req.ContinueWithoutUserInput {
+			if uerr := r.runStore.UpdateState(ctx, run.ID, "running", "running", nil); uerr != nil {
+				log.Warnw("AgentRunner.Run: mark resumed run running failed",
+					"agent_run_id", run.ID, "error", uerr)
+			}
 		}
 	} else {
 		run = &model.AgentRun{
@@ -603,6 +640,9 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 	r.registerCancel(run.ID, queryCancel)
 	defer r.unregisterCancel(run.ID)
 	defer queryCancel()
+	if activeErr := r.ensureDurablyRunnable(queryCtx, run.ID); activeErr != nil {
+		return nil, activeErr
+	}
 
 	// 4. #5 skill-system: 装载 agent_definition 并组装 SystemPrompt（若指定了 AgentDefinitionID）。
 	// #12 agent-mode-billing-integration: ad 在 if 块外可见，供下方 budget tracker 读取 limits（reviewer S3-P0-1 fix）。
@@ -781,13 +821,16 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 	// 和后续 extractor enqueue，省钱 + 体验流畅。trivial 决策在两处都用同一份
 	// memory.IsTrivial 结果以保持一致性（避免 selector 跳过但 extractor 入队的
 	// 不对齐场景）。
-	isTrivial := memory.IsTrivial(req.Input)
+	isTrivial := false
+	if !req.ContinueWithoutUserInput {
+		isTrivial = memory.IsTrivial(req.Input)
+	}
 	if isTrivial {
 		metrics.MemoryTrivialCountInc()
 	}
 
 	var selectorBlock string
-	if r.memorySelector != nil && req.UserID != 0 && !isTrivial {
+	if r.memorySelector != nil && req.UserID != 0 && !isTrivial && !req.ContinueWithoutUserInput {
 		facts, selErr := r.memorySelector.SelectTop5(ctx, req.UserID, req.Input)
 		if selErr != nil {
 			// SelectTop5 errors are non-fatal — log and continue with no
@@ -959,7 +1002,8 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 		usageStore: r.adapterUsageStore(),
 		// Explicit output cap so the resume path's thinking model never truncates a
 		// trailing tool call at the provider default (dev run 133).
-		maxOutputTokens: agentMaxOutputTokens(queryCtx),
+		maxOutputTokens:          agentMaxOutputTokens(queryCtx),
+		externalContinuationGate: req.ExternalContinuationGate,
 	}
 	// V1.5 v2-compact-adapter-integration — V2 compact 接入 Eino per-ReAct-round
 	// LLM 调用层。useCompactV2 true 时注入 compactor；nil → adapter.Generate 中所有
@@ -990,6 +1034,18 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 	// the production path. react.NewAgent requires at least one tool so we must
 	// gate before calling it.
 	if len(einoTools) == 0 {
+		if req.ContinueWithoutUserInput {
+			// A leased external continuation must leave its fencing state intact
+			// until the resumer releases it. Otherwise the release CAS cannot make
+			// this durable result immediately retryable.
+			if req.ExternalContinuationGate == nil {
+				endedAt := time.Now()
+				if uerr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalModelError), &endedAt); uerr != nil {
+					log.Warnw("AgentRunner.Run UpdateState failed on external-continuation configuration error", "agent_run_id", run.ID, "error", uerr)
+				}
+			}
+			return nil, fmt.Errorf("AgentRunner.Run: external tool continuation requires a configured tool registry")
+		}
 		log.Warnw("AgentRunner.Run: no tools resolved from registry; using pre-ReAct short-circuit",
 			"agent_run_id", run.ID, "registry_nil", r.registry == nil)
 		endedAt := time.Now()
@@ -1089,9 +1145,11 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 		MaxStep: 120,
 	})
 	if err != nil {
-		endedAt := time.Now()
-		if uerr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalModelError), &endedAt); uerr != nil {
-			log.Warnw("AgentRunner.Run UpdateState failed on NewAgent error", "agent_run_id", run.ID, "error", uerr)
+		if req.ExternalContinuationGate == nil {
+			endedAt := time.Now()
+			if uerr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalModelError), &endedAt); uerr != nil {
+				log.Warnw("AgentRunner.Run UpdateState failed on NewAgent error", "agent_run_id", run.ID, "error", uerr)
+			}
 		}
 		return nil, fmt.Errorf("AgentRunner.Run NewAgent: %w", err)
 	}
@@ -1179,6 +1237,9 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 		}
 
 		output, runErr = einoAgent.Generate(attemptCtx, einoMessages)
+		if errors.Is(runErr, errExternalContinuationFirstCall) {
+			return nil, runErr
+		}
 		// T6: drop this attempt's stashed usage that no PostToolCall consumed
 		// (the final-answer turn has no following tool call) — bounds the store.
 		r.deleteCallUsage(callID)
@@ -1212,35 +1273,57 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 		// Must be checked BEFORE HandleLLMError so the sentinel is not misclassified.
 		var yieldErr *yieldError
 		if errors.As(runErr, &yieldErr) {
-			// 1. Serialize payload to JSON.
-			payloadJSON, mErr := json.Marshal(yieldErr.Payload)
-			if mErr != nil {
-				log.Errorw("AgentRunner.Run yield handler: marshal payload failed",
-					"agent_run_id", run.ID, "error", mErr)
-				st.TerminalReason = TerminalModelError
-				break
-			}
-			// 2. Persist pending_question_json to agent_run.
-			if pErr := r.runStore.UpdatePendingQuestion(attemptCtx, run.ID, payloadJSON); pErr != nil {
-				log.Warnw("AgentRunner.Run yield UpdatePendingQuestion failed",
-					"agent_run_id", run.ID, "error", pErr)
-				// Non-fatal: continue to drive state machine to waiting_for_user_choice.
+			var (
+				payloadLen int
+				spanName   = "tool.ask_user_question.yield"
+				spanInput  any
+			)
+			if yieldErr.Payload.ExternalAction != nil {
+				// External actions must be restart-safe before they become visible.
+				// Missing writer capability or any persistence error is fatal: do
+				// not leave the run waiting on an unrecoverable action.
+				payloadJSON, pErr := r.persistExternalAction(attemptCtx, run.ID, *yieldErr.Payload.ExternalAction)
+				if pErr != nil {
+					log.Errorw("AgentRunner.Run external action persistence failed",
+						"agent_run_id", run.ID, "error", pErr)
+					st.TerminalReason = TerminalModelError
+					break
+				}
+				payloadLen = len(payloadJSON)
+				spanName = "tool.external_action.yield"
+				spanInput = yieldErr.Payload.ExternalAction.Persistent()
+			} else {
+				// Ordinary ask_user_question retains the existing question path.
+				payloadJSON, mErr := json.Marshal(yieldErr.Payload)
+				if mErr != nil {
+					log.Errorw("AgentRunner.Run yield handler: marshal payload failed",
+						"agent_run_id", run.ID, "error", mErr)
+					st.TerminalReason = TerminalModelError
+					break
+				}
+				payloadLen = len(payloadJSON)
+				spanInput = yieldErr.Payload
+				if pErr := r.runStore.UpdatePendingQuestion(attemptCtx, run.ID, payloadJSON); pErr != nil {
+					log.Warnw("AgentRunner.Run yield UpdatePendingQuestion failed",
+						"agent_run_id", run.ID, "error", pErr)
+					// Existing question behavior is best-effort for compatibility.
+				}
 			}
 			// 2b. HW-33: persist the pre-yield transcript so the resumed agent
 			// retains the work it did before pausing (the non-stream Run path is
 			// also the answer endpoint's re-run path, so a second yield here must
 			// keep prior context too).
 			r.persistYieldTranscript(attemptCtx, run.ID, req.displayUserText(), req.DisplayAttachments)
-			log.Infow("AgentRunner.Run yield: ask_user_question paused run",
+			log.Infow("AgentRunner.Run yield: paused run",
 				"agent_run_id", run.ID,
-				"payload_len", len(payloadJSON),
+				"payload_len", payloadLen,
 			)
 			// 3. Langfuse Span for observability.
 			if tc := langfuse.FromContext(attemptCtx); tc != nil {
 				spanID := langfuse.SpanID()
-				langfuse.CreateSpan(tc.TraceID, spanID, "tool.ask_user_question.yield",
+				langfuse.CreateSpan(tc.TraceID, spanID, spanName,
 					langfuse.WithSpanParent(tc.ParentObservationID),
-					langfuse.WithSpanInput(yieldErr.Payload),
+					langfuse.WithSpanInput(spanInput),
 				)
 				langfuse.EndSpan(tc.TraceID, spanID)
 			}
@@ -1440,6 +1523,7 @@ func (r *agentRunner) finalizeRun(
 		}
 		turns = append(turns, assistantTurn(assistantContent, finalReasoning))
 	}
+	turns = removeContinuationUserTurn(turns, req.ContinueWithoutUserInput)
 	// answer-resume-lifecycle F2: a resumed run appends to its pre-yield
 	// transcript instead of overwriting it (dev run 148 history loss).
 	// Carry the user's uploaded attachments onto the user turn so a reloaded session
@@ -1487,7 +1571,7 @@ func (r *agentRunner) finalizeRun(
 	// caused SyncTurn to silently never fire for streaming completions, breaking
 	// the memory pipeline. Run() callers always set finalText on completion, so
 	// removing the output gate is safe for both code paths.
-	if r.memoryProvider != nil && st.TerminalReason == TerminalCompleted {
+	if r.memoryProvider != nil && st.TerminalReason == TerminalCompleted && !req.ContinueWithoutUserInput {
 		userMsg := memory.Message{Role: "user", Content: req.displayUserText()}
 		asstMsg := memory.Message{Role: "assistant", Content: finalText}
 		go func() {
@@ -1507,7 +1591,7 @@ func (r *agentRunner) finalizeRun(
 	//
 	// Enqueue is non-blocking by contract — queue-full path drops + warns, so
 	// this CANNOT delay the runner return. No goroutine wrap needed.
-	if r.memoryExtractor != nil && req.UserID != 0 {
+	if r.memoryExtractor != nil && req.UserID != 0 && !req.ContinueWithoutUserInput {
 		extractMsgs := []memory.ChatMessage{
 			{Role: "user", Content: req.displayUserText()},
 			{Role: "assistant", Content: finalText},
@@ -1581,6 +1665,22 @@ func (r *agentRunner) unregisterCancel(runID uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.cancels, runID)
+}
+
+// ensureDurablyRunnable closes the register-vs-delete race. Registration
+// happens first so a later DeleteSession can cancel this runner; the fresh DB
+// read then catches a delete/cancel that committed before registration (when
+// Cancel necessarily returned false). Together those orderings make durable
+// state authoritative without holding a DB lock across model execution.
+func (r *agentRunner) ensureDurablyRunnable(ctx context.Context, runID uint64) error {
+	fresh, err := r.runStore.Get(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("AgentRunner durable activity check: %w", err)
+	}
+	if fresh.IsDeleted || fresh.CancellationRequestedAt != nil {
+		return fmt.Errorf("AgentRunner: run %d was deleted or cancelled before execution", runID)
+	}
+	return nil
 }
 
 // ── M-A9 helpers ─────────────────────────────────────────────────────────────
@@ -1661,10 +1761,29 @@ func buildEinoMessages(req RunRequest) []*schema.Message {
 	// Prepend prior-turn history (same session) so the LLM has multi-turn context,
 	// then append the current user input last (recency). req.History is already
 	// chronological user/assistant text pairs loaded by StudentRunService.
-	msgs := make([]*schema.Message, 0, len(req.History)+1)
+	capacity := len(req.History)
+	if !req.ContinueWithoutUserInput {
+		capacity++
+	}
+	msgs := make([]*schema.Message, 0, capacity)
 	msgs = append(msgs, req.History...)
-	msgs = append(msgs, &schema.Message{Role: schema.User, Content: req.Input})
+	if !req.ContinueWithoutUserInput {
+		msgs = append(msgs, &schema.Message{Role: schema.User, Content: req.Input})
+	}
 	return msgs
+}
+
+// removeContinuationUserTurn removes the synthetic leading user turn produced
+// by the shared transcript builder when a server continuation has no new user
+// input. Ordinary answer and create flows remain byte-for-byte unchanged.
+func removeContinuationUserTurn(turns []map[string]any, continuation bool) []map[string]any {
+	if !continuation || len(turns) == 0 {
+		return turns
+	}
+	if role, _ := turns[0]["role"].(string); role != "user" {
+		return turns
+	}
+	return turns[1:]
 }
 
 // V1.5 compact-v1-removal — einoMessagesToCompact / compactMessagesToEino

@@ -73,6 +73,8 @@ func newDigestTestStores(t *testing.T) (
 			agent_definition_id       INTEGER,
 			pending_question_json     TEXT,
 			pending_question_at       DATETIME,
+			pending_external_action_json TEXT,
+			pending_external_action_at   DATETIME,
 			compact_state_v2          TEXT,
 			total_tokens_used_v2      INTEGER NOT NULL DEFAULT 0,
 			use_compact_v2            INTEGER NOT NULL DEFAULT 0,

@@ -32,6 +32,13 @@ func (f *fakeAccountStore) Upsert(_ context.Context, acc *model.UserThirdPartyAc
 	f.acc = &cp
 	return nil
 }
+func (f *fakeAccountStore) EnsurePlaceholder(_ context.Context, userID uint, provider string) (*model.UserThirdPartyAccount, error) {
+	if f.acc == nil {
+		f.acc = &model.UserThirdPartyAccount{UserID: userID, Provider: provider, ConnectionState: model.FeishuConnectionNone, Generation: 1}
+	}
+	cp := *f.acc
+	return &cp, nil
+}
 func (f *fakeAccountStore) Delete(_ context.Context, _ uint, _ string) error {
 	f.acc = nil
 	return nil
@@ -45,6 +52,25 @@ func (f *fakeAccountStore) MarkConnected(_ context.Context, _ uint, _ string, at
 	}
 	f.acc.Connected = true
 	f.acc.ConnectedAt = &at
+	return nil
+}
+func (f *fakeAccountStore) RetireGeneration(_ context.Context, _ uint, _ string) (uint64, uint64, error) {
+	if f.acc == nil || f.acc.Generation == 0 {
+		return 0, 0, gorm.ErrRecordNotFound
+	}
+	old := f.acc.Generation
+	f.acc.Generation++
+	f.acc.ConnectionState = model.FeishuConnectionDisconnecting
+	f.acc.Connected = false
+	return old, f.acc.Generation, nil
+}
+func (f *fakeAccountStore) FinalizeDisconnect(_ context.Context, _ uint, _ string, generation uint64) error {
+	if f.acc == nil || f.acc.Generation != generation {
+		return gorm.ErrRecordNotFound
+	}
+	f.acc.ConnectionState = model.FeishuConnectionNone
+	f.acc.Connected = false
+	f.acc.AppID = ""
 	return nil
 }
 

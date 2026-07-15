@@ -416,10 +416,10 @@ func TestLarkTools_ImplementFullTool(t *testing.T) {
 	var _ FullTool = (*larkReadBitableTool)(nil)
 }
 
-// TestPlatformFactory_RegistersLarkTools_WhenProviderPresent verifies the
-// acceptance criterion "factory LoadTools 数量+3": with a 飞书 provider injected,
-// the three lark tools (and their metadata) are appended after the memory tools.
-func TestPlatformFactory_RegistersLarkTools_WhenProviderPresent(t *testing.T) {
+// TestPlatformFactory_DoesNotRegisterLegacyLarkTools verifies the old direct
+// provider seam cannot re-enable the retired factory registrations. Direct tool
+// tests above remain until the legacy source is removed separately.
+func TestPlatformFactory_DoesNotRegisterLegacyLarkTools(t *testing.T) {
 	db := newFactoryTestDB(t)
 	ds := store.NewTestStore(db)
 	f := &platformToolFactory{ds: ds, larkProviderOverride: &fakeLarkProvider{api: &fakeLarkAPI{}}}
@@ -428,20 +428,19 @@ func TestPlatformFactory_RegistersLarkTools_WhenProviderPresent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadTools: %v", err)
 	}
-	// Base 19 + memory_write + memory_read (21) + 3 lark = 24.
-	if len(tools) != 24 {
-		t.Fatalf("expected 24 tools (21 + 3 lark); got %d", len(tools))
+	if len(tools) != 21 {
+		t.Fatalf("expected 21 tools with legacy lark registrations removed; got %d", len(tools))
 	}
-	if len(metadata) != 24 {
-		t.Fatalf("expected 24 metadata entries; got %d", len(metadata))
+	if len(metadata) != 21 {
+		t.Fatalf("expected 21 metadata entries; got %d", len(metadata))
 	}
 	got := map[string]bool{}
 	for _, tl := range tools {
 		got[tl.Name()] = true
 	}
-	for _, want := range []string{"lark_create_doc", "lark_send_message", "lark_read_bitable"} {
-		if !got[want] {
-			t.Fatalf("lark tool %q not registered", want)
+	for _, retired := range []string{"lark_create_doc", "lark_send_message", "lark_read_bitable"} {
+		if got[retired] {
+			t.Fatalf("legacy lark tool %q must not be registered", retired)
 		}
 	}
 }

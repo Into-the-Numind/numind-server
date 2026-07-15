@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	"gorm.io/gorm/logger"
 
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
 )
@@ -76,6 +79,8 @@ func newSQTestDB(t *testing.T) *gorm.DB {
 			agent_definition_id       INTEGER NOT NULL DEFAULT 0,
 			pending_question_json     TEXT,
 			pending_question_at       DATETIME,
+			pending_external_action_json TEXT,
+			pending_external_action_at   DATETIME,
 			created_at                DATETIME,
 			updated_at                DATETIME,
 			-- V1.5 板块 2 task 2.1 — context-management V2 columns
@@ -172,6 +177,131 @@ func seedRun(t *testing.T, db *gorm.DB, userID uint, sessionID string, status st
 	}
 	require.NoError(t, db.Create(run).Error)
 	return run.ID
+}
+
+type recordingRunCanceller struct {
+	ids []uint64
+}
+
+func (c *recordingRunCanceller) Cancel(id uint64) bool {
+	c.ids = append(c.ids, id)
+	return true
+}
+
+func TestDeleteSession_PersistsDeleteThenCancelsActiveRuns(t *testing.T) {
+	svc, db := newSQService(t)
+	activeID := seedRun(t, db, 101, "delete-active", "running")
+	terminatedID := seedRun(t, db, 101, "delete-active", "terminated")
+	canceller := &recordingRunCanceller{}
+	svc.runCanceller = canceller
+
+	require.NoError(t, svc.DeleteSession(context.Background(), 101, "delete-active"))
+	assert.ElementsMatch(t, []uint64{activeID, terminatedID}, canceller.ids,
+		"durable delete must cancel every run ID; a stale terminated snapshot may already be starting externally")
+	var rows []model.AgentRun
+	require.NoError(t, db.Unscoped().Where("session_id = ?", "delete-active").Find(&rows).Error)
+	require.Len(t, rows, 2)
+	for i := range rows {
+		assert.True(t, rows[i].IsDeleted)
+	}
+}
+
+type deleteRaceBarrierStore struct {
+	store.IAgentRunStore
+	getCalls         atomic.Int32
+	secondGet        chan struct{}
+	releaseSecondGet chan struct{}
+}
+
+func (s *deleteRaceBarrierStore) Get(ctx context.Context, id uint64) (*model.AgentRun, error) {
+	if s.getCalls.Add(1) == 2 {
+		close(s.secondGet)
+		select {
+		case <-s.releaseSecondGet:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return s.IAgentRunStore.Get(ctx, id)
+}
+
+type deleteRaceTool struct {
+	BaseTool
+	calls *atomic.Int32
+}
+
+func (t *deleteRaceTool) Name() string           { return "delete_race_tool" }
+func (t *deleteRaceTool) Description() string    { return "must not execute after durable delete" }
+func (t *deleteRaceTool) UserFacingName() string { return "delete race tool" }
+func (t *deleteRaceTool) NarrationVerb() string  { return "执行" }
+func (t *deleteRaceTool) Execute(context.Context, ToolInput) (ToolResult, error) {
+	t.calls.Add(1)
+	return ToolResult(`{"ok":true}`), nil
+}
+
+func newDeleteRaceRunner(t *testing.T, runStore store.IAgentRunStore, providerCalls, toolCalls *atomic.Int32) AgentRunner {
+	t.Helper()
+	original := chatFn
+	t.Cleanup(func() { chatFn = original })
+	chatFn = func(context.Context, string, aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
+		providerCalls.Add(1)
+		return nil, errors.New("provider must not be reached after session deletion")
+	}
+	return NewAgentRunner(runStore, newStaticRegistry(&deleteRaceTool{calls: toolCalls}))
+}
+
+func TestDeleteSession_DeleteBeforeRunnerRegisterBlocksProviderAndTool(t *testing.T) {
+	db := newSQTestDB(t)
+	ds := store.NewTestStore(db)
+	runStore := ds.AgentRuns()
+	runID := seedRun(t, db, 101, "delete-before-register", "running")
+	var providerCalls, toolCalls atomic.Int32
+	runner := newDeleteRaceRunner(t, runStore, &providerCalls, &toolCalls)
+	query := NewStudentQueryService(runStore, ds.Users(), WithQueryRunCanceller(runner))
+
+	require.NoError(t, query.DeleteSession(context.Background(), 101, "delete-before-register"))
+	_, err := runner.Run(context.Background(), RunRequest{
+		UserID: 101, SessionID: "delete-before-register", ExistingRunID: runID, ContinueWithoutUserInput: true,
+	})
+	require.Error(t, err)
+	assert.Zero(t, providerCalls.Load())
+	assert.Zero(t, toolCalls.Load())
+}
+
+func TestDeleteSession_RunnerRegisterBeforeDeleteCancelsBeforeProviderAndTool(t *testing.T) {
+	db := newSQTestDB(t)
+	ds := store.NewTestStore(db)
+	baseStore := ds.AgentRuns()
+	runID := seedRun(t, db, 101, "register-before-delete", "running")
+	barrierStore := &deleteRaceBarrierStore{
+		IAgentRunStore: baseStore, secondGet: make(chan struct{}), releaseSecondGet: make(chan struct{}),
+	}
+	var providerCalls, toolCalls atomic.Int32
+	runner := newDeleteRaceRunner(t, barrierStore, &providerCalls, &toolCalls)
+	query := NewStudentQueryService(barrierStore, ds.Users(), WithQueryRunCanceller(runner))
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := runner.Run(context.Background(), RunRequest{
+			UserID: 101, SessionID: "register-before-delete", ExistingRunID: runID, ContinueWithoutUserInput: true,
+		})
+		errCh <- err
+	}()
+
+	select {
+	case <-barrierStore.secondGet:
+	case <-time.After(time.Second):
+		t.Fatal("runner did not register cancellation before its durable activity check")
+	}
+	require.NoError(t, query.DeleteSession(context.Background(), 101, "register-before-delete"))
+	close(barrierStore.releaseSecondGet)
+	select {
+	case err := <-errCh:
+		require.Error(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("deleted runner did not exit")
+	}
+	assert.Zero(t, providerCalls.Load())
+	assert.Zero(t, toolCalls.Load())
 }
 
 // ---------------------------------------------------------------------------

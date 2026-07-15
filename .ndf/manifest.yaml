@@ -1,5 +1,67 @@
 schema_version: '2.0'
 features:
+- id: feishu-personal-workspace
+  ndf_version: '3.0'
+  description: '重新校准并完成飞书个人工作空间连接：每个有数账号连接自己的飞书账号并长期保持；首次授权后 Agent 自动执行文档、多维表格、知识库能力。现有 feishu-integration 仅作待审计资产，不作为产品前提。'
+  classification_reason: 'Standard：飞书外部集成+长期授权凭据+自动写操作属高风险，预计涉及 DB/API/biz/前端/部署/E2E 且文件数 >3。用户于 2026-07-13 确认 Standard。'
+  last_updated_by: ai-s5-develop-boundary-cleared
+  last_updated_at: '2026-07-15T03:45:00+0800'
+  created_at: '2026-07-13T11:14:14+0800'
+  track: standard
+  stage: S5
+  status: active
+  repos:
+    numind-server: /private/tmp/wt-feishu-personal-workspace-numind-server
+    numind-web-v3: /private/tmp/wt-feishu-personal-workspace-numind-web-v3
+  worktrees:
+    numind-server: /private/tmp/wt-feishu-personal-workspace-numind-server
+    numind-web-v3: /private/tmp/wt-feishu-personal-workspace-numind-web-v3
+  progress: {total_tasks: 20, completed_tasks: 20, reviewed_tasks: 18}
+  artifacts:
+    requirement: requirements/feishu-personal-workspace.md
+    proposal: proposals/feishu-personal-workspace-proposal.md
+    spec: docs/superpowers/specs/2026-07-13-feishu-personal-workspace-design.md
+    s2_spike: .ndf/features/feishu-personal-workspace/s2-real-tenant-spike.md
+    plan: docs/superpowers/plans/2026-07-13-feishu-personal-workspace.md
+  decisions:
+  - 'S0 (user+ai 2026-07-13): 用户确认 Standard；产品目标=每个有数账号连接自己的飞书账号并持续保持，首次授权后自动执行；首批方向=文档/多维表格/知识库。待澄清 C 是账号一对一语义，还是同时强制每用户自建应用。'
+  - 'S0 gate (user 2026-07-13): 明确采用个人自建应用模型，复刻 Claude Code+lark-cli：Agent 自动发起建应用和权限申请，用户只在飞书官方页面确认/授权，不手工搬运 app 凭据；进入 S1 评估独立配置 Agent 是否必要。'
+  - 'S1 product alignment (user 2026-07-13): 不新增独立飞书 Agent；现有 Agent 调用确定性连接状态机。每用户独立自建应用，权限按能力渐进申请，授权后自动恢复原任务，设置页仅作状态/重连/解绑入口。'
+  - 'S1 launch boundary (user chose A, 2026-07-13): 首版只支持有权创建个人自建应用并能完成所需管理员审批的用户；无权限时明确引导联系飞书管理员，不在首版增加共享应用路径。'
+  - 'S1 execution semantics (user correction, 2026-07-13): 飞书指令默认直接尝试执行，不做逐次权限预检；仅在明确的未连接/缺权限/授权失效错误后按需配置，完成后幂等重试原操作。已知未连接时可直接进入配置。'
+  - 'S1 architecture (user chose B, 2026-07-13): 采用确定性连接编排器 + lark-cli adapter；DB 管理产品状态和待重试操作，lark-cli 负责建应用、授权与首版飞书执行，adapter 为未来 OpenAPI 迁移留接口。'
+  - 'S1 gate (user chose A, 2026-07-13): 批准 feishu-personal-workspace proposal；两轮独立评审最终 9.5/10 PASS，进入 S2 技术设计。'
+  - 'S2 architecture amendment (user approved, 2026-07-13): 现有 Agent 按需读取与 lark-cli 同版本的官方技能，自主选择 Docs/Base/Wiki 命令；受控 argv 执行器限定命令/参数/身份/风险；确定性编排器负责个人应用、授权、隔离和原 operation 精确恢复。固定 lark-cli 1.0.68。'
+  - 'S2 gate (user approved + real tenant spike PASS, 2026-07-13): CLI 自动创建个人应用；仅 offline_access 初始连接；Docs/Base/Wiki 缺 scope 均返回 exit 3 + authorization/missing_scope + exact missing_scopes；Docs create/read/update 增量授权后原命令重放成功。进入 S3。'
+  - 'S3 gate (user chose subagent-driven + independent reviewer PASS, 2026-07-13): 23 个 S4 原子任务 + 1 个 S5 本地真实租户 Gate；修复 runner 同名、operation/auth/receipt、external-action/resume 和 package import cycles；后端先于前端，部署归 S6。进入 S4。'
+  - 'S4 Task 1 gate (2026-07-13): 持久化底座完成并经需求/质量双审 PASS；review 驱动补齐 tenant+generation 原子 WHERE、lease expiry fencing、transition 字段白名单、vault generation row lock/CAS、BIGINT migration/model 对齐。真实 MySQL 8 FOR UPDATE/schema 并发验证登记到 Task 21。'
+  - 'S4 Task 2 gate (2026-07-13): AAD 加密 HOME vault 完成并经需求/质量双审 PASS；支持历史 key_version 解密与 current key 重封、tar 路径/链接拒绝、0700/0600、CAS、启动残留清理。执行期 generation fencing 归 Task 7/13/21；同 UID 主动文件竞态列为 Task 3/最终安全 Gate 的 defense-in-depth P2。'
+  - 'S4 Task 3 gate (2026-07-13): lark-cli 固定 1.0.68 + SHA256，ControlledLarkCLIRunner 双审 PASS；无 shell、固定绝对路径、输入/输出限额、stdin JSON pre-start gate、完整 envelope、InvocationStarted、macOS/Linux 进程组取消与残留 child 清理均有测试。独立 UID/sandbox、setsid 逃逸和 PGID 复用保留为 Task 23 P2 风险 Gate。'
+  - 'S4 Task 4 gate (2026-07-13): 1.0.68 CommandCatalog 双审 PASS；25 条 Docs/Base/Wiki 真实路径、exact scopes、逐命令 flags、永久拒绝项、URL/token、批量风险与版本快照已固定。纠正不存在的 record-create/update 为 batch-create/upsert/batch-update；Catalog 与 runner argv count/bytes 闭合并为 field-update 确认后 --yes 预留边界；风险、CLI yes 与授权错误可重放语义分离，详见 ADR 0005/0006。'
+  - 'S4 Task 5 gate (2026-07-13): lark-cli 1.0.68 结构化错误分类器经需求/质量/独立对抗复审 PASS；恢复权限严格绑定本次 Catalog 命令 exact scope 集，返回 scope 跨命令、重复或非法即 fail closed；只有真实观测且明确在请求前失败的 Docs missing_scope、config/not_configured、authentication/token_missing 可证明 started write 无副作用，合成授权 tuple 与 started-write timeout/5xx/network 一律 unknown 禁止重放。runner 同步保留 CLI envelope 顶层 identity。详见 ADR 0007。'
+  - 'S4 Task 6 gate (2026-07-13): 固定 1.0.68 官方技能读取与 HMAC receipt 双审 PASS；仅四技能与主文件声明的 references/ 内嵌引用，32KiB UTF-8 分页、内容摘要 cursor、主 SKILL.md 最终页 receipt、run/skill/version/expiry/canonical token 绑定均 fail closed。wiki_content 精确要求 shared+wiki+doc；receipt 只证明主技能完整送达，task-specific references 由 Agent 按主文按需读取并在 Task 17/21 集成验证。全 Reader 共享最多 4 个技能读取进程。详见 ADR 0008。'
+  - 'S4 Task 7 gate (2026-07-13): 幂等 operation 执行与精确恢复经规格/质量双审最终 PASS，P0/P1/P2 均为 0；连接热路径不做 auth status，规范请求/结果加密、generation/lease fencing、读超时单次重试、写超时 unknown、exact-scope 恢复及 one-shot 空资源覆盖凭证已闭合。跨进程账号级 CLI gate 使用 120s lease + heartbeat + runner deadline；claim 到期边界向下截断避免提前接管，renew 向上取整 fail closed。覆盖凭证不依赖跨实例应用时钟，同 run 存在任何其他 docs update 即保守要求确认。全仓 go test、聚焦 race、lint 均 PASS。详见 ADR 0009/0010。'
+  - 'S4 Task 8 gate (2026-07-13): 确定性 AuthSessionService 经两轮 FAIL 返工后规格/质量双审最终 PASS，P0/P1/P2 均为 0；manual create 自动串联 offline_access，operation 只申请 exact scopes，create_app/app_scope/user_auth、官方 URL allowlist、加密 HOME seal 与自动 resume 完成。每 worker 唯一 lease token，Claim/Renew/terminal/finalize 统一 account→session 锁序和 pending CAS；account state + session completed 原子提交。Operation-linked worker 通过强制 Start/Activate/Abort barrier 在 operation waiting 持久化后才可完成；无合法 URL fail closed，completed/expired 恢复不递归 dispatch。跨进程只复用 durable session 并返回无 URL 等待卡，Task 13 refresh 负责重生链接，URL/device code 永不落库。完整 race、全仓测试、lint 均 PASS。详见 ADR 0011。'
+  - 'S4 Task 9 gate (2026-07-13): Agent external_action 独立传输与持久等待经规格/质量返工复审最终 PASS，P0/P1/P2 均为 0；live SSE 可含 URL，但 durable DTO 类型不含 URL，neutral token parser 要求六个精确字段各一次并拒绝 duplicate/case/unknown/sensitive/trailing，store 只落 canonical JSON。writer 能力不污染 IAgentRunStore，卡片只在持久化后发送；缺 writer/写失败时 SSE、RunResult、DB 一致 model_error。snapshot 对 corrupt external 不回退 stale question，Answer 明确拒绝 external wait；普通 question 双向清 stale 无回归。16 个 SSE 事件穷举、三轮 race、全仓测试、lint 均 PASS。详见 ADR 0012。'
+  - 'S4 Task 10 gate (2026-07-13): Agent 仅暴露受控 lark_skill_read/lark_execute；synthetic toolCallID 同源贯穿 Execute/narration/SSE，用户、run、tool call 与幂等身份全部取可信 context，严格输入拒绝 duplicate/case/unknown/trailing 与非字符串 optional 值。Factory both-or-none 且旧四工具不再注册，CLI 版本与新 soft-error helper 不依赖 Task 20 待删 legacy common。四 waiting 产生 durable external action，四 terminal 显式 allowlist；executing/not_started/未来未知状态 fail closed。OperationService 只接受带 session 与未来 expiry 的 confirmation，跨进程无 URL 仍可等待。两轮规格/质量返工后最终 P0/P1/P2 均为 0；Agent/Feishu 全包、race、lint 均 PASS。详见 ADR 0013。'
+  - 'S4 scope amendment (user 2026-07-14): 用户确认拆为两期并要求先完成一期。当前 feature 的 S4 total_tasks 从 23 调整为 20：一期包含 Task 1–13、16–19、21–23，Task 24 为一期 S5 真实账号 Gate；Task 14（旧明文 HOME 迁移）、15（完整 observability）、20（遗留彻底清理）及 Task 22 的完整 E2E 矩阵进入后续 Standard feature。若发现 live 明文 HOME，或旧实现仍进入 production graph/暴露 IM 或 broad auth，相应工作自动恢复为一期 release blocker。详见 ADR 0014。'
+  - 'S4 Task 11 gate (2026-07-14): 原 tool call 精确恢复经多轮规格与质量审查最终 PASS，P0/P1/P2=0。授权/外部结果只回填原 tool_call_id 的 tool turn，不添加用户消息且不二次执行 lark-cli；lease/identity/历史脱敏/普通 Answer 兼容闭合。启动立即扫描+周期 reclaimer、shared app-lifecycle supervisor 与四槽容量共同管理 HTTP/reclaimer continuation；容量满时 Claim→Release 为 durable ready，槽释放后自动重试。删除、请求取消、应用停机、Complete/Release 超时均有受管收敛与回归测试。详见 ADR 0015。'
+  - 'S4 Task 12 gate (2026-07-14): 后端 composition 与 Agent factory 经多轮规格审查和最终质量审查 PASS，P0/P1/P2=0。完整 graph 仅在 flag on、lark-cli 1.0.68、vault cleanup、catalog、confirmation、auth/recovery bridge、Task 11 resumer/reclaimer/supervisor 与运行时 keyring 同时成功时发布；factory 只注册两个受控工具，旧 Client/ConnectOrchestrator 不进入生产热路径。keyring current-write/historical-read，配置只接受有序 entries，严格 JSON 的 NUMIND_FEISHU_KEYRING 为安全部署入口；map/非规范或重复版本/重复材料/非法或尾随 JSON/缺 current 及 retained vault/request/result 未知版本均 fail closed。详见 ADR 0016。'
+  - 'S4 Task 13 gate (2026-07-14): Lifecycle HTTP API 与安全解绑经多轮独立规格和最终质量审查 PASS，P0/P1/P2=0。五接口仅从登录态识别用户；public action 只含 allowlist 字段，status/resume 不泄露 URL、scope、provider、token 或 device code。manual/app scope/user auth 与成功 operation continuation 均经同一 dispatcher 幂等恢复；cancel/unbind 精确终结关联 Agent external wait，unknown 写明确收口而不重跑 CLI。解绑 generation fence 后 join auth/本机 execution、drain 跨实例 gate，并用 heartbeat 的 owner-fenced retired teardown lease 原子删除 vault+清空账户；失败保留 disconnecting，同实例/跨实例重复 DELETE 均幂等。受控连接证据和 capability outcome 原子写入状态，退役表安全回收。详见 ADR 0017。'
+  - 'S4 Task 16 gate (2026-07-14): 前端改动前 Playwright 运行时诊断完成。实际 Playwright project 为 setup/e2e；本地 Vite proxy 的真实登录 API 被拒绝，使用既有 page.route 脱敏 fallback 运行 DOM/请求/设置页四态/375px 诊断。旧 auth card 的继续动作仍是 Agent answer-stream→answer fallback，不是 lifecycle resume；余额 DTO 需含 cycle_remaining 才能进入正常卡片。设置页四态及移动端无横向溢出均有证据。真实 API/飞书租户验证归 Task 21/24；trace、截图、临时 spec 均未入 Git。详见 .ndf/features/feishu-personal-workspace/s3-frontend-baseline.md。'
+  - 'S4 Task 17 gate (2026-07-15): 前端 API 与 Pinia 状态契约经多轮独立规格、最终质量审查 PASS，P0/P1/P2=0。仅调用五条 lifecycle API，公开 action 运行时 allowlist 不含 scope/provider/token/argv；live URL 仅内存保存，snapshot/status/terminal/URL-less successor 均剥离。expiry、visible/hidden、terminal SSE、Task11 external_resume_ready/ext_resume queue、reload 与严格 stream_start 都收敛为一个 external action 状态机；session epoch + run/session fence 阻止旧会话异步、SSE、poll、resume 返回污染新会话，timer/listener/observer 受 session switch/terminal/dispose 管理。普通 question 不回归；旧设置页 connect-poll 调用点归 Task 19。详见 ADR 0018。'
+  - 'S4 Task 18 gate (2026-07-15): Agent 飞书 action card 经两轮独立规格与质量复审最终 PASS，P0/P1/P2=0。external_action 独立于普通 answer，创建应用/用户授权的 URL、复制和二维码字节一致；仅这两类可安全 refresh。app_scope、confirmation 和 legacy auth 失效时提供非交互、重新发起提示，绝不调用错误 refresh 或旧 answer。前端 reducer 以与后端一致的官方 HTTPS allowlist（open.feishu.cn/open.larksuite.com，无 userinfo/fragment/非443）fail closed；refresh 以 epoch/run/session/operation/current pending 身份围栏，终态 SSE 或 session reset 后的迟到回包不能复活 URL。计时器在终态立即清理，ARIA/375px 约束保持。详见 ADR 0019。'
+  - 'S4 Task 19 gate (2026-07-15): 设置页个人工作空间状态卡经规格/质量复审最终 PASS，P0/P1/P2=0。loading/empty/error/success 及 disconnecting 均有明确下一步；仅 GET status 驱动，无 POST connect、定时轮询、window.open 或临时 URL。未连接、等待和重新授权入口只引导 Agent；disconnecting 只允许刷新状态，不能开启新操作。脱敏 app ID 在已连接及已有应用的等待/reauth 状态保留；Docs/Base/Wiki 独立展示 unknown/available/revoked 等最近状态，明确首次使用按需授权且不含消息发送。解绑使用 ConfirmModal 并说明远端应用保留；375px 冒烟无横溢。详见 ADR 0020。'
+  - 'S4 Task 21 test-fixture correction (2026-07-15): 初版跨组件 red test 漏填 lark-cli app_scope_not_applied 的 permission_violations 结构化证据；分类器按 fail-closed 终止 operation，非生产恢复缺陷。operation-bound create_app 未产生 manual session，撤回临时 Task 21a/ADR 0021；修正 fixture 后继续 Task 21。'
+  - 'S4 Task 21 gate (2026-07-15): 后端恢复集成测试经独立规格/质量复审最终 PASS，P0/P1/P2=0。SQLite durable store 覆盖 create-app/user-auth/app-scope 各自 completion 持久化后的 Auth+Operation 服务重建、精确 argv、revoke reauth、tenant/generation 与 unknown write；Agent resumer 以持久 AgentRun 跨实例重建且同 tool_call 仅一次。真实 MySQL 8 空临时库内嵌前置 baseline，三份正式 migration 在 AutoMigrate 前后按 columns(type/null/default)/index/FK/CHECK 校验；performance_schema 确认 CAS 等待账户 RECORD FOR UPDATE 后执行真实 RetireGeneration，旧 generation 不能提交。定向×10、race、lint、真实 MySQL Gate 全绿，无生产缺陷。'
+  - 'S4 Task 22/23 gate (2026-07-15): 前端 mocked Playwright 覆盖 desktop 原任务恢复与 375×812 过期 refresh；resume 请求只含固定 action 且 trace 无普通 answer。go test ./...、task lint、前端 1051 单测、lint/type-check、controller allowlist 及进程组取消/timeout/leader-exit Gate 全绿。浏览器公开类型与扫描未发现 token/secret/argv/scopes 泄露；同 UID 文件竞态、setsid 逃逸与理论 PGID 复用维持 ADR 0004 P2 边界。S4 一期 20/20 完成，进入 S5。'
+  - 'S5 preflight (2026-07-15): 本机 lark-cli 为 1.0.68，但仅位于用户目录；ControlledLarkCLIRunner 所需的 /usr/local/bin/lark-cli 不存在且当前用户无写权。NUMIND_FEISHU_KEYRING 及 settings.local 中的持久 keyring 均未配置。未启动本地服务、未触发飞书页面、未产生真实租户副作用。'
+  - 'S5/S6 environment amendment (user authorized 2026-07-15): 本机受控路径/keyring 属于开发机限制，而非云端产品运行条件。用户明确授权将真实账号 Gate 改在合并到 develop 后的 dev 容器执行，先安全注入独立 dev keyring，再部署 server/web 并验收；不部署生产。验收范围不缩减，飞书应用创建、权限审批和真实资源写入仍在操作当刻由用户于官方页面确认。详见 ADR 0021。'
+  - 'S5 dev keyring (2026-07-15): 已在 dev 服务器权限 0600 的 secrets.env 生成独立 AES-256 keyring；仅服务器内执行严格 JSON/32-byte 校验，未读取、输出或提交密钥。'
+  - 'S5 develop boundary check (2026-07-15): 主 web develop 比 origin/develop 多 6 个未推送的小红书扩展 commits，且有同目录未提交改动；飞书分支以该本地 develop 为祖先。当前 ndf-done 会把无关 XHS commit 一同 push/deploy，超出本 feature 授权，故停止等待用户决定如何隔离或发布该组变更。'
+  - 'S5 develop boundary cleared (2026-07-15): 用户授权提交并推送所有前端小红书扩展改动。6 个既有 commits 与 14 个工作区文件已作为独立 commit 595ce98 推到 web origin/develop；extension 37/37、package check、lint/type-check 通过。web 主工作区干净，飞书可按 ndf-done 原子合并。server 未跟踪 data/revert_user355_annual_20260610.sql 为用户定向 SQL，未读取或提交，不属本 feature 且 ndf-done 忽略未跟踪文件。'
+  blockers:
+  - 'Ready for develop merge and dev deployment; real Feishu app creation, permission confirmation and resource writes remain user-confirmed steps. Production remains out of scope.'
 - id: chatbot-full-history-context
   ndf_version: '3.0'
   description: 'Hotfix: 移除 chatbot 对话上下文“最近 20 条消息”的硬截断。ChatStream 改为读取同一会话完整历史, 后续由 context-budget 根据模型 context window / safe_input_budget 统一压缩或拒绝。'

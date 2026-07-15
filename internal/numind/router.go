@@ -47,7 +47,7 @@ import (
 )
 
 // installNumindRouters 注册所有 Numind 工作台业务路由
-func installNumindRouters(g *gin.Engine) error {
+func installNumindRouters(g *gin.Engine, b biz.IBiz) error {
 	// 注册 404 Handler.
 	g.NoRoute(func(c *gin.Context) {
 		core.WriteResponse(c, errno.ErrPageNotFound, nil)
@@ -66,7 +66,6 @@ func installNumindRouters(g *gin.Engine) error {
 	pprof.Register(g)
 
 	uc := user.New(store.S)
-	b := biz.NewBiz(store.S)
 	alic := ali.New(b.Ali())
 	salesRAGc := salesrag.NewSalesRAGController(b, b.Credit())
 
@@ -398,22 +397,20 @@ func installNumindRouters(g *gin.Engine) error {
 			xhsGroup.DELETE("/notes/:id", xhsCtrl.Delete)  // 删除单条选题笔记（user 隔离）
 		}
 	}
-	// 飞书集成（device-code 方案，G2-authorize）：per-user 自建应用 + device-code 授权 + 解绑。
-	// 整组套 FeatureFlag —— flag off（prod 默认）时所有路由返回 ErrFeatureDisabled(404)。
-	// b.FeishuSvc() 在 flag on 但服务构造失败（如 Redis 不可用）时为 nil → 跳过注册
-	// （此时端点未注册=404，避免 nil svc 解引用 panic）。
-	//   - connect / status / connection：user_token（继承 authGroup 的 AuthMiddleware）。
-	// 注：device-code 方案无 OAuth 重定向回调（authorize 走 lark-cli device flow），故无
-	// 无 JWT 的 oauth/callback 端点。
+	// 飞书个人工作空间：所有接口从 authGroup 取 user_id；浏览器不能提交
+	// argv/scopes/app/user。live authorization URL 只由 connect/refresh 返回，
+	// status 永远是纯读。flag/完整 composition 任一失败则不注册整个组。
 	if feishuSvc := b.FeishuSvc(); feishuSvc != nil {
 		feishuCtrl := feishucontroller.NewController(feishuSvc)
 
 		feishuAuthGroup := authGroup.Group("/feishu")
 		feishuAuthGroup.Use(importMw.FeatureFlag("features.feishu_integration.enabled"))
 		{
-			feishuAuthGroup.POST("/connect", feishuCtrl.Connect)     // 发起/推进连接（create_app 页 URL 或 device-code 验证 URL）
-			feishuAuthGroup.GET("/status", feishuCtrl.Status)        // 连接状态（none/connected）
-			feishuAuthGroup.DELETE("/connection", feishuCtrl.Unbind) // 解绑（删连接行；飞书侧 app + lark-cli home 保留）
+			feishuAuthGroup.GET("/status", feishuCtrl.Status)
+			feishuAuthGroup.POST("/connect", feishuCtrl.Connect)
+			feishuAuthGroup.POST("/operations/:id/resume", feishuCtrl.ResumeOperation)
+			feishuAuthGroup.POST("/actions/:session_id/refresh", feishuCtrl.RefreshAction)
+			feishuAuthGroup.DELETE("/connection", feishuCtrl.Unbind)
 		}
 	}
 

@@ -14,6 +14,12 @@ import (
 
 var errPollBoom = errors.New("poll boom")
 
+func TestConnectOrchestrator_DefaultScopesIsOfflineAccessOnly(t *testing.T) {
+	if DefaultScopes != "offline_access" {
+		t.Fatalf("manual connection must not preload business scopes, got %q", DefaultScopes)
+	}
+}
+
 // --- orchestrator test doubles ----------------------------------------------
 
 // orchAppStarter fakes the AppStarter seam (StartProvision) for the create-app

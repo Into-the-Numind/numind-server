@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -139,7 +140,8 @@ type aiserviceAdapter struct {
 	// The actual caching is still gated by the global flag + the model's
 	// prompt_cache_policy inside the native Claude adapter — this field is only the
 	// per-call intent signal. chatbot/salesrag are single-shot and leave it false.
-	enablePromptCache bool
+	enablePromptCache        bool
+	externalContinuationGate *externalContinuationGate
 }
 
 // Compile-time assertion: aiserviceAdapter must satisfy model.ToolCallingChatModel.
@@ -167,14 +169,15 @@ func (a *aiserviceAdapter) WithTools(tools []*schema.ToolInfo) (einomodel.ToolCa
 	cloned := make([]*schema.ToolInfo, len(tools))
 	copy(cloned, tools)
 	return &aiserviceAdapter{
-		modelName:         a.modelName,
-		taskID:            a.taskID,
-		tools:             cloned,
-		systemPrompt:      a.systemPrompt,
-		usageStore:        a.usageStore,        // shared pointer — safe per-run isolation
-		compactor:         a.compactor,         // shared per-Run state (consecutiveFailures 等)
-		maxOutputTokens:   a.maxOutputTokens,   // resolved once at construction; immutable
-		enablePromptCache: a.enablePromptCache, // T7: cache-intent must survive the tool-bound clone
+		modelName:                a.modelName,
+		taskID:                   a.taskID,
+		tools:                    cloned,
+		systemPrompt:             a.systemPrompt,
+		usageStore:               a.usageStore,        // shared pointer — safe per-run isolation
+		compactor:                a.compactor,         // shared per-Run state (consecutiveFailures 等)
+		maxOutputTokens:          a.maxOutputTokens,   // resolved once at construction; immutable
+		enablePromptCache:        a.enablePromptCache, // T7: cache-intent must survive the tool-bound clone
+		externalContinuationGate: a.externalContinuationGate,
 	}, nil
 }
 
@@ -188,6 +191,21 @@ func (a *aiserviceAdapter) WithTools(tools []*schema.ToolInfo) (einomodel.ToolCa
 // This is a defence-in-depth layer; it triggers only when the capability matrix
 // (Task 1.1) has a gap for the active model.
 func (a *aiserviceAdapter) Generate(ctx context.Context, in []*schema.Message, opts ...einomodel.Option) (*schema.Message, error) {
+	// The external lease covers the entire provider lifecycle of this Generate,
+	// including the optional autocompaction LLM below. Entering after
+	// MaybeCompact would allow a deleted/reclaimed run to call AgentCompact and
+	// would leave long compactions without a heartbeat.
+	firstExternalCall := false
+	if a.externalContinuationGate != nil {
+		var beginErr error
+		firstExternalCall, ctx, beginErr = a.externalContinuationGate.BeginCall(ctx)
+		if beginErr != nil {
+			return nil, fmt.Errorf("%w: %v", errExternalContinuationFirstCall, beginErr)
+		}
+		if firstExternalCall && ctx.Err() != nil {
+			return nil, a.externalContinuationGate.Finish(ctx, ctx.Err())
+		}
+	}
 	// V1.5 v2-compact-adapter-integration — PRE-CALL V2 compact：
 	// 每一轮 ReAct 调 LLM 之前评估 in 的 token 用量，达 85% → 跑 L3 autocompact
 	// 替换 in 成 [system, summary, recent 5]；达 95% + 连续 3 次失败 → ErrContextExhausted。
@@ -199,6 +217,9 @@ func (a *aiserviceAdapter) Generate(ctx context.Context, in []*schema.Message, o
 		compacted, didCompact, cerr := a.compactor.MaybeCompact(ctx, in)
 		if cerr != nil {
 			// ErrContextExhausted 或其他不可恢复错误 → 上抛让 runner terminate
+			if firstExternalCall {
+				return nil, a.externalContinuationGate.Finish(ctx, cerr)
+			}
 			return nil, cerr
 		}
 		if didCompact {
@@ -218,6 +239,9 @@ func (a *aiserviceAdapter) Generate(ctx context.Context, in []*schema.Message, o
 		recovered, didCompact, rerr := a.compactor.ForcePTLRecover(ctx, in)
 		if rerr != nil {
 			// PTL recovery 自己失败（如 ErrContextExhausted）→ 上抛 recovery error
+			if firstExternalCall {
+				return nil, a.externalContinuationGate.Finish(ctx, rerr)
+			}
 			return nil, rerr
 		}
 		if didCompact {
@@ -229,7 +253,18 @@ func (a *aiserviceAdapter) Generate(ctx context.Context, in []*schema.Message, o
 	}
 
 	if err != nil {
+		if firstExternalCall {
+			return nil, a.externalContinuationGate.Finish(ctx, err)
+		}
 		return nil, err
+	}
+	if firstExternalCall && ctx.Err() != nil {
+		return nil, a.externalContinuationGate.Finish(ctx, ctx.Err())
+	}
+	if firstExternalCall {
+		if finishErr := a.externalContinuationGate.Finish(ctx, nil); finishErr != nil {
+			return nil, finishErr
+		}
 	}
 	// Stash token usage keyed by call-id so PostToolCall (#14/A8b) can correlate.
 	// Guard nil: manually-constructed adapters in tests may omit usageStore.
@@ -266,8 +301,19 @@ func (a *aiserviceAdapter) LookupUsage(callID string) (Usage, bool) {
 // callAIServiceWithStripRetry to maintain Layer 4 defense.
 func (a *aiserviceAdapter) Stream(ctx context.Context, in []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
 	req := a.convertToAiserviceRequest(in)
+	firstExternalCall := false
+	if a.externalContinuationGate != nil {
+		var beginErr error
+		firstExternalCall, ctx, beginErr = a.externalContinuationGate.BeginCall(ctx)
+		if beginErr != nil {
+			return nil, fmt.Errorf("%w: %v", errExternalContinuationFirstCall, beginErr)
+		}
+	}
 	ch, err := chatStreamFn(ctx, a.taskID, req)
 	if err != nil {
+		if firstExternalCall {
+			return nil, a.externalContinuationGate.Finish(ctx, err)
+		}
 		return nil, err
 	}
 	// Stash the final chunk's token usage keyed by call-id, mirroring Generate, so
@@ -281,7 +327,16 @@ func (a *aiserviceAdapter) Stream(ctx context.Context, in []*schema.Message, opt
 			a.usageStore.Store(callID, u)
 		}
 	}
-	return wrapChannelAsStreamReader(ch, onFinalUsage), nil
+	var onFirst func(error) error
+	if firstExternalCall {
+		onFirst = func(firstErr error) error {
+			if firstErr == nil {
+				firstErr = ctx.Err()
+			}
+			return a.externalContinuationGate.Finish(ctx, firstErr)
+		}
+	}
+	return wrapChannelAsStreamReader(ch, onFinalUsage, onFirst), nil
 }
 
 // convertToAiserviceRequest converts Eino []*schema.Message to aiservice.ChatRequest,
@@ -455,11 +510,21 @@ func convertToolInfos(infos []*schema.ToolInfo) []aiservice.Tool {
 // eino boundary. react.Agent.Stream() received zero schema.Message chunks,
 // the SSE consumer terminated with step_count=0, and the frontend showed an
 // empty assistant bubble (dev agent_run 48/54, agent_id=100003 web_search).
-func wrapChannelAsStreamReader(ch <-chan aiservice.ChatChunk, onFinalUsage func(Usage)) *schema.StreamReader[*schema.Message] {
+func wrapChannelAsStreamReader(ch <-chan aiservice.ChatChunk, onFinalUsage func(Usage), onFirst ...func(error) error) *schema.StreamReader[*schema.Message] {
 	sr, sw := schema.Pipe[*schema.Message](16)
 	go func() {
 		defer sw.Close()
+		firstSeen := false
 		for chunk := range ch {
+			if !firstSeen {
+				firstSeen = true
+				if len(onFirst) > 0 && onFirst[0] != nil {
+					if firstErr := onFirst[0](chunk.Err); firstErr != nil {
+						sw.Send(nil, firstErr)
+						return
+					}
+				}
+			}
 			if chunk.Err != nil {
 				sw.Send(nil, chunk.Err)
 				return
@@ -542,6 +607,12 @@ func wrapChannelAsStreamReader(ch <-chan aiservice.ChatChunk, onFinalUsage func(
 				// Consumer closed the reader early; drain channel to avoid goroutine leak.
 				for range ch { //nolint:revive
 				}
+				return
+			}
+		}
+		if !firstSeen && len(onFirst) > 0 && onFirst[0] != nil {
+			if firstErr := onFirst[0](io.ErrUnexpectedEOF); firstErr != nil {
+				sw.Send(nil, firstErr)
 				return
 			}
 		}

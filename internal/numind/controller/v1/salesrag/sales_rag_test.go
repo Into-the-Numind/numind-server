@@ -5,6 +5,7 @@
 package salesrag_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -114,6 +115,9 @@ func seedSalesAgentOwner(t *testing.T, db *gorm.DB, parentID uint) {
 type realBizOnlyCustomers struct {
 	customers customerbiz.ICustomerBiz
 }
+
+func (b *realBizOnlyCustomers) StartExternalResumeReclaimer()                      {}
+func (b *realBizOnlyCustomers) CloseExternalResumeLifecycle(context.Context) error { return nil }
 
 func (b *realBizOnlyCustomers) Users() user.UserBiz                            { return nil }
 func (b *realBizOnlyCustomers) Ali() ali.AliBiz                                { return nil }
