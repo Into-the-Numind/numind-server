@@ -1327,6 +1327,74 @@ func TestFeishuWorkspaceStore_TransitionAllowsBusinessResultFields(t *testing.T)
 	require.Equal(t, []byte("encrypted-result"), got.ResultCiphertext)
 }
 
+func TestFeishuWorkspaceStore_RebindOperationRecoverySession(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 1)
+	op, err := s.CreateOrGetOperation(ctx, newFeishuOperation("operation-rebind", 7, 1, "key-rebind"))
+	require.NoError(t, err)
+	oldSummary := []byte(`{"status":"waiting_connection","phase":"create_app","session_id":"session-old","recovery_kind":"create_app"}`)
+	replacementSummary := []byte(`{"status":"waiting_connection","phase":"create_app","session_id":"session-new","recovery_kind":"create_app"}`)
+	require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", op.ID).Updates(map[string]any{
+		"state": model.FeishuOperationWaitingConnection, "result_summary_json": oldSummary,
+	}).Error)
+
+	require.NoError(t, s.RebindOperationRecoverySession(
+		ctx, 7, 1, op.ID, model.FeishuOperationWaitingConnection, "session-old", replacementSummary,
+	))
+	stored, err := s.GetOperationForUser(ctx, 7, 1, op.ID)
+	require.NoError(t, err)
+	require.JSONEq(t, string(replacementSummary), string(stored.ResultSummaryJSON))
+}
+
+func TestFeishuWorkspaceStore_RebindOperationRecoverySessionRejectsStaleOrRetiredBinding(t *testing.T) {
+	ctx := context.Background()
+	newWaitingOperation := func(t *testing.T) (*feishuWorkspaceStore, *model.FeishuOperation, []byte) {
+		t.Helper()
+		s := newFeishuWorkspaceTestStore(t)
+		createFeishuAccount(t, s, 7, 1)
+		op, err := s.CreateOrGetOperation(ctx, newFeishuOperation("operation-rebind-"+strings.ReplaceAll(t.Name(), "/", "-"), 7, 1, "key-rebind-"+strings.ReplaceAll(t.Name(), "/", "-")))
+		require.NoError(t, err)
+		oldSummary := []byte(`{"status":"waiting_connection","phase":"create_app","session_id":"session-old","recovery_kind":"create_app"}`)
+		require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", op.ID).Updates(map[string]any{
+			"state": model.FeishuOperationWaitingConnection, "result_summary_json": oldSummary,
+		}).Error)
+		return s, op, oldSummary
+	}
+	replacementSummary := []byte(`{"status":"waiting_connection","phase":"create_app","session_id":"session-new","recovery_kind":"create_app"}`)
+
+	t.Run("old session mismatch", func(t *testing.T) {
+		s, op, oldSummary := newWaitingOperation(t)
+		err := s.RebindOperationRecoverySession(ctx, 7, 1, op.ID, model.FeishuOperationWaitingConnection, "session-other", replacementSummary)
+		require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+		stored, readErr := s.GetOperationForUser(ctx, 7, 1, op.ID)
+		require.NoError(t, readErr)
+		require.JSONEq(t, string(oldSummary), string(stored.ResultSummaryJSON))
+	})
+
+	t.Run("operation state mismatch", func(t *testing.T) {
+		s, op, oldSummary := newWaitingOperation(t)
+		require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", op.ID).Update("state", model.FeishuOperationWaitingUserAuth).Error)
+		err := s.RebindOperationRecoverySession(ctx, 7, 1, op.ID, model.FeishuOperationWaitingConnection, "session-old", replacementSummary)
+		require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+		stored, readErr := s.GetOperationForUser(ctx, 7, 1, op.ID)
+		require.NoError(t, readErr)
+		require.JSONEq(t, string(oldSummary), string(stored.ResultSummaryJSON))
+	})
+
+	t.Run("retired account", func(t *testing.T) {
+		s, op, oldSummary := newWaitingOperation(t)
+		require.NoError(t, s.db.Model(&model.UserThirdPartyAccount{}).
+			Where("user_id = ? AND provider = ?", 7, "lark").
+			Update("connection_state", model.FeishuConnectionDisconnecting).Error)
+		err := s.RebindOperationRecoverySession(ctx, 7, 1, op.ID, model.FeishuOperationWaitingConnection, "session-old", replacementSummary)
+		require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+		stored, readErr := s.GetOperationForUser(ctx, 7, 1, op.ID)
+		require.NoError(t, readErr)
+		require.JSONEq(t, string(oldSummary), string(stored.ResultSummaryJSON))
+	})
+}
+
 func TestFeishuWorkspaceStore_TransitionReleasesLeaseOutsideExecuting(t *testing.T) {
 	ctx := context.Background()
 	s := newFeishuWorkspaceTestStore(t)

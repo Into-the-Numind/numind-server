@@ -178,6 +178,7 @@ type lifecycleWorkspaceFake struct {
 	activeSession    *model.FeishuAuthSession
 	activeSessionErr error
 	getSession       func(context.Context, uint, uint64, string) (*model.FeishuAuthSession, error)
+	rebindSession    func(context.Context, uint, uint64, string, string, string, []byte) error
 	deleteVaultCalls int
 	completeCalls    int
 	renewTeardown    func(context.Context, uint, uint64, uint64, string, time.Time, time.Time) (bool, error)
@@ -234,6 +235,21 @@ func (f *lifecycleWorkspaceFake) GetOperationForUser(_ context.Context, _ uint, 
 	return &copy, nil
 }
 
+func (f *lifecycleWorkspaceFake) RebindOperationRecoverySession(ctx context.Context, userID uint, generation uint64, operationID, waitingState, expectedSessionID string, replacementSummary []byte) error {
+	if f.rebindSession != nil {
+		return f.rebindSession(ctx, userID, generation, operationID, waitingState, expectedSessionID, replacementSummary)
+	}
+	if f.operation == nil || f.operation.ID != operationID || f.operation.UserID != userID || f.operation.Generation != generation || f.operation.State != waitingState {
+		return gorm.ErrRecordNotFound
+	}
+	summary, err := decodeOperationSummary(f.operation.ResultSummaryJSON)
+	if err != nil || summary.SessionID != expectedSessionID {
+		return gorm.ErrRecordNotFound
+	}
+	f.operation.ResultSummaryJSON = append([]byte(nil), replacementSummary...)
+	return nil
+}
+
 func (f *lifecycleWorkspaceFake) FindActiveSessionForUser(_ context.Context, _ uint, _ uint64) (*model.FeishuAuthSession, error) {
 	if f.activeSessionErr != nil {
 		return nil, f.activeSessionErr
@@ -269,6 +285,9 @@ type lifecycleAuthFake struct {
 	refreshCalls             int
 	refreshErr               error
 	refresh                  func()
+	activateErr              error
+	activated                []string
+	aborted                  []string
 	completeAppApprovalCalls []lifecycleAppApprovalCall
 	completeAppApproval      func(context.Context, uint, uint64, string) error
 	stopped                  []uint64
@@ -293,6 +312,15 @@ func (f *lifecycleAuthFake) RefreshAction(_ context.Context, _ uint, _ uint64, _
 		f.refresh()
 	}
 	return cloneOperationAction(f.action), f.refreshErr
+}
+
+func (f *lifecycleAuthFake) Activate(_ context.Context, sessionID string) error {
+	f.activated = append(f.activated, sessionID)
+	return f.activateErr
+}
+
+func (f *lifecycleAuthFake) Abort(sessionID string) {
+	f.aborted = append(f.aborted, sessionID)
 }
 
 func (f *lifecycleAuthFake) CompleteAppApproval(ctx context.Context, userID uint, generation uint64, sessionID string) error {
@@ -1097,9 +1125,10 @@ func TestWorkspaceLifecycleRefreshRebindsOperationSessionBeforeResume(t *testing
 		ID: oldSessionID, UserID: 7, Generation: 2, OperationID: &operationID,
 		Phase: model.FeishuAuthPhaseCreateApp, State: model.FeishuAuthSessionPending,
 	}
+	replacementExpiry := time.Now().Add(time.Minute).UTC()
 	replacementSession := &model.FeishuAuthSession{
 		ID: replacementSessionID, UserID: 7, Generation: 2, OperationID: &operationID,
-		Phase: model.FeishuAuthPhaseCreateApp, State: model.FeishuAuthSessionPending,
+		Phase: model.FeishuAuthPhaseCreateApp, State: model.FeishuAuthSessionPending, ExpiresAt: replacementExpiry,
 	}
 	refreshed := false
 	workspace.getSession = func(_ context.Context, _ uint, _ uint64, sessionID string) (*model.FeishuAuthSession, error) {
@@ -1115,18 +1144,65 @@ func TestWorkspaceLifecycleRefreshRebindsOperationSessionBeforeResume(t *testing
 	}
 	auth.action = &OperationAction{
 		Provider: ProviderLark, SessionID: replacementSessionID, Phase: model.FeishuAuthPhaseCreateApp,
-		URL: "https://open.feishu.cn/page/cli", ExpiresAt: time.Now().Add(time.Minute),
+		URL: "https://open.feishu.cn/page/cli", ExpiresAt: replacementExpiry,
 	}
 	auth.refresh = func() { refreshed = true }
 
 	action, err := svc.RefreshAction(context.Background(), 7, oldSessionID)
 	require.NoError(t, err)
 	require.Equal(t, replacementSessionID, action.SessionID)
+	refreshedSummary, summaryErr := decodeOperationSummary(workspace.operation.ResultSummaryJSON)
+	require.NoError(t, summaryErr)
+	require.Equal(t, replacementSessionID, refreshedSummary.SessionID)
+	require.Equal(t, []string{replacementSessionID}, auth.activated)
 
 	result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionUserCompleted)
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationWaitingConnection, result.State)
 	require.Zero(t, dispatcher.calls, "a pending replacement session must not dispatch the operation")
+}
+
+func TestWorkspaceLifecycleRefreshAbortsReplacementWhenRebindFails(t *testing.T) {
+	operationID := "op-refresh-rebind-failure"
+	oldSessionID := "session-old"
+	replacementSessionID := "session-new"
+	op := &model.FeishuOperation{
+		ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingConnection,
+		ResultSummaryJSON: lifecycleRecoverySummary(t, model.FeishuOperationWaitingConnection, oldSessionID, model.FeishuAuthPhaseCreateApp, RecoveryCreateApp),
+	}
+	svc, _, workspace, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 2,
+	}, op)
+	refreshed := false
+	workspace.getSession = func(_ context.Context, _ uint, _ uint64, sessionID string) (*model.FeishuAuthSession, error) {
+		if !refreshed && sessionID == oldSessionID {
+			return &model.FeishuAuthSession{
+				ID: oldSessionID, UserID: 7, Generation: 2, OperationID: &operationID,
+				Phase: model.FeishuAuthPhaseCreateApp, State: model.FeishuAuthSessionPending,
+			}, nil
+		}
+		if refreshed && sessionID == replacementSessionID {
+			return &model.FeishuAuthSession{
+				ID: replacementSessionID, UserID: 7, Generation: 2, OperationID: &operationID,
+				Phase: model.FeishuAuthPhaseCreateApp, State: model.FeishuAuthSessionPending, ExpiresAt: time.Now().Add(time.Minute),
+			}, nil
+		}
+		return nil, gorm.ErrRecordNotFound
+	}
+	workspace.rebindSession = func(context.Context, uint, uint64, string, string, string, []byte) error {
+		return errors.New("simulated durable rebind failure")
+	}
+	auth.action = &OperationAction{
+		Provider: ProviderLark, SessionID: replacementSessionID, Phase: model.FeishuAuthPhaseCreateApp,
+		URL: "https://open.feishu.cn/page/cli", ExpiresAt: time.Now().Add(time.Minute),
+	}
+	auth.refresh = func() { refreshed = true }
+
+	action, err := svc.RefreshAction(context.Background(), 7, oldSessionID)
+	require.Nil(t, action)
+	require.ErrorIs(t, err, ErrWorkspaceLifecycleUnavailable)
+	require.Empty(t, auth.activated)
+	require.Equal(t, []string{replacementSessionID}, auth.aborted)
 }
 
 func TestWorkspaceLifecycleRefreshClassifiesSessionBeforeCallingAuth(t *testing.T) {
