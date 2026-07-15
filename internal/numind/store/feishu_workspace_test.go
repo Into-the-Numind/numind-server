@@ -1368,6 +1368,48 @@ func TestFeishuWorkspaceStore_RefreshOperationSession(t *testing.T) {
 	require.False(t, account.Connected)
 }
 
+func TestFeishuWorkspaceStore_RestoreOperationSessionRefresh(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 1)
+	op, err := s.CreateOrGetOperation(ctx, newFeishuOperation("operation-rebind-restore", 7, 1, "key-rebind-restore"))
+	require.NoError(t, err)
+	oldSummary := []byte(`{"status":"waiting_connection","phase":"create_app","session_id":"session-old-restore","recovery_kind":"create_app"}`)
+	replacementSummary := []byte(`{"status":"waiting_connection","phase":"create_app","session_id":"session-new-restore","recovery_kind":"create_app"}`)
+	require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", op.ID).Updates(map[string]any{
+		"state": model.FeishuOperationWaitingConnection, "result_summary_json": oldSummary,
+	}).Error)
+	oldSession := newFeishuSession("session-old-restore", 7, 1)
+	oldSession.OperationID = &op.ID
+	oldSession.Phase = model.FeishuAuthPhaseCreateApp
+	oldSession.RequestedScopesJSON = []byte(`["offline_access"]`)
+	require.NoError(t, s.CreateSession(ctx, oldSession))
+	replacement := newFeishuSession("session-new-restore", 7, 1)
+	replacement.OperationID = &op.ID
+	replacement.Phase = model.FeishuAuthPhaseCreateApp
+	replacement.RequestedScopesJSON = []byte(`["offline_access"]`)
+	now := time.Now().UTC()
+	_, err = s.RefreshOperationSession(
+		ctx, 7, 1, oldSession.ID, op.ID, model.FeishuOperationWaitingConnection, model.FeishuConnectionCreatingApp, replacement, replacementSummary, now,
+	)
+	require.NoError(t, err)
+
+	require.NoError(t, s.RestoreOperationSessionRefresh(
+		ctx, 7, 1, oldSession.ID, replacement.ID, op.ID, model.FeishuOperationWaitingConnection, oldSummary, now.Add(time.Second),
+	))
+	stored, err := s.GetOperationForUser(ctx, 7, 1, op.ID)
+	require.NoError(t, err)
+	require.JSONEq(t, string(oldSummary), string(stored.ResultSummaryJSON))
+	storedOld, err := s.GetSessionForUser(ctx, 7, 1, oldSession.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionPending, storedOld.State)
+	require.Empty(t, storedOld.LeaseOwner)
+	require.Nil(t, storedOld.LeaseUntil)
+	storedReplacement, err := s.GetSessionForUser(ctx, 7, 1, replacement.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionSuperseded, storedReplacement.State)
+}
+
 func TestFeishuWorkspaceStore_RefreshOperationSessionRejectsStaleOrRetiredBindingWithoutPartialWrite(t *testing.T) {
 	ctx := context.Background()
 	newWaitingOperation := func(t *testing.T) (*feishuWorkspaceStore, *model.FeishuOperation, *model.FeishuAuthSession, *model.FeishuAuthSession, []byte, []byte) {

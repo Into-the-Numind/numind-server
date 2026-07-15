@@ -77,6 +77,7 @@ type AuthSessionStore interface {
 	GetSessionForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuAuthSession, error)
 	SupersedeSessionForUser(ctx context.Context, userID uint, generation uint64, id string, now time.Time) error
 	RefreshOperationSession(ctx context.Context, userID uint, generation uint64, oldSessionID, operationID, waitingState, connectionState string, replacement *model.FeishuAuthSession, replacementSummary []byte, now time.Time) (*model.FeishuAuthSession, error)
+	RestoreOperationSessionRefresh(ctx context.Context, userID uint, generation uint64, oldSessionID, replacementSessionID, operationID, waitingState string, oldSummary []byte, now time.Time) error
 	ClaimSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
 	RenewSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
 	UpdateSessionState(ctx context.Context, userID uint, generation uint64, id, owner, state string, now time.Time, completedAt *time.Time) error
@@ -1014,13 +1015,49 @@ func (s *AuthSessionService) RefreshOperationAction(
 		UserID: userID, Generation: generation, OperationID: operationID, Kind: kind, Scopes: plannedScopes,
 	}, argv, plannedScopes, true)
 	if err != nil || action == nil {
+		if restoreErr := s.restoreOperationRefresh(ctx, oldSession, stored, operationID, waitingState, operationSummary); restoreErr != nil {
+			return nil, ErrAuthSessionUnavailable
+		}
 		return nil, ErrAuthSessionUnavailable
 	}
 	if err := s.Activate(context.WithoutCancel(ctx), action.SessionID); err != nil {
-		s.Abort(action.SessionID)
+		if restoreErr := s.restoreOperationRefresh(ctx, oldSession, stored, operationID, waitingState, operationSummary); restoreErr != nil {
+			return nil, ErrAuthSessionUnavailable
+		}
 		return nil, ErrAuthSessionUnavailable
 	}
 	return action, nil
+}
+
+// restoreOperationRefresh makes a failed post-commit replacement retryable by
+// the original card. The browser only knows the old opaque session ID until a
+// new URL is returned, so leaving the operation bound to a failed replacement
+// would strand that card forever.
+func (s *AuthSessionService) restoreOperationRefresh(
+	ctx context.Context,
+	oldSession, replacement *model.FeishuAuthSession,
+	operationID, waitingState string,
+	oldSummary []byte,
+) error {
+	if s == nil || oldSession == nil || replacement == nil || oldSession.UserID != replacement.UserID ||
+		oldSession.Generation != replacement.Generation || strings.TrimSpace(operationID) == "" || strings.TrimSpace(waitingState) == "" {
+		return ErrAuthSessionUnavailable
+	}
+	// No replacement worker may be allowed to finish after its durable binding
+	// has been restored to the original session. The store transaction then
+	// fences its pending/failed state before re-opening that original binding.
+	s.stopSession(replacement.UserID, replacement.Generation, replacement.ID)
+	s.urls.remove(authSessionRegistryKey(replacement))
+	restoreCtx, restoreCancel := authSessionDetachedContext(ctx)
+	err := s.sessions.RestoreOperationSessionRefresh(
+		restoreCtx, oldSession.UserID, oldSession.Generation, oldSession.ID, replacement.ID,
+		operationID, waitingState, append([]byte(nil), oldSummary...), s.now().UTC(),
+	)
+	restoreCancel()
+	if err != nil {
+		return ErrAuthSessionUnavailable
+	}
+	return nil
 }
 
 func mustMarshalAuthScopes(scopes []string) []byte {
