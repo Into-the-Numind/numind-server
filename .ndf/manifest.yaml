@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: '重新校准并完成飞书个人工作空间连接：每个有数账号连接自己的飞书账号并长期保持；首次授权后 Agent 自动执行文档、多维表格、知识库能力。现有 feishu-integration 仅作待审计资产，不作为产品前提。'
   classification_reason: 'Standard：飞书外部集成+长期授权凭据+自动写操作属高风险，预计涉及 DB/API/biz/前端/部署/E2E 且文件数 >3。用户于 2026-07-13 确认 Standard。'
-  last_updated_by: ai-s5-dev-runtime-acceptance
-  last_updated_at: '2026-07-15T03:10:00+0800'
+  last_updated_by: ai-s5-develop-boundary-check
+  last_updated_at: '2026-07-15T03:25:00+0800'
   created_at: '2026-07-13T11:14:14+0800'
   track: standard
   stage: S5
@@ -57,8 +57,10 @@ features:
   - 'S4 Task 22/23 gate (2026-07-15): 前端 mocked Playwright 覆盖 desktop 原任务恢复与 375×812 过期 refresh；resume 请求只含固定 action 且 trace 无普通 answer。go test ./...、task lint、前端 1051 单测、lint/type-check、controller allowlist 及进程组取消/timeout/leader-exit Gate 全绿。浏览器公开类型与扫描未发现 token/secret/argv/scopes 泄露；同 UID 文件竞态、setsid 逃逸与理论 PGID 复用维持 ADR 0004 P2 边界。S4 一期 20/20 完成，进入 S5。'
   - 'S5 preflight (2026-07-15): 本机 lark-cli 为 1.0.68，但仅位于用户目录；ControlledLarkCLIRunner 所需的 /usr/local/bin/lark-cli 不存在且当前用户无写权。NUMIND_FEISHU_KEYRING 及 settings.local 中的持久 keyring 均未配置。未启动本地服务、未触发飞书页面、未产生真实租户副作用。'
   - 'S5/S6 environment amendment (user authorized 2026-07-15): 本机受控路径/keyring 属于开发机限制，而非云端产品运行条件。用户明确授权将真实账号 Gate 改在合并到 develop 后的 dev 容器执行，先安全注入独立 dev keyring，再部署 server/web 并验收；不部署生产。验收范围不缩减，飞书应用创建、权限审批和真实资源写入仍在操作当刻由用户于官方页面确认。详见 ADR 0021。'
+  - 'S5 dev keyring (2026-07-15): 已在 dev 服务器权限 0600 的 secrets.env 生成独立 AES-256 keyring；仅服务器内执行严格 JSON/32-byte 校验，未读取、输出或提交密钥。'
+  - 'S5 develop boundary check (2026-07-15): 主 web develop 比 origin/develop 多 6 个未推送的小红书扩展 commits，且有同目录未提交改动；飞书分支以该本地 develop 为祖先。当前 ndf-done 会把无关 XHS commit 一同 push/deploy，超出本 feature 授权，故停止等待用户决定如何隔离或发布该组变更。'
   blockers:
-  - 'Waiting for authorized dev keyring provisioning, develop deployment and real-tenant confirmation steps; production is explicitly out of scope.'
+  - 'Web develop contains six unpushed XHS extension commits and dirty extension files; ndf-done would push/deploy them with Feishu. Await user decision; production remains out of scope.'
 - id: chatbot-full-history-context
   ndf_version: '3.0'
   description: 'Hotfix: 移除 chatbot 对话上下文“最近 20 条消息”的硬截断。ChatStream 改为读取同一会话完整历史, 后续由 context-budget 根据模型 context window / safe_input_budget 统一压缩或拒绝。'
