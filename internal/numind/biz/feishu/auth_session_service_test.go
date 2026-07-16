@@ -1618,7 +1618,7 @@ exit 2
 	require.True(t, authorized)
 }
 
-func TestControlledLarkCLIRunner_ConfigInitAcceptsPlainCompletionAfterWritingCompleteAppConfig(t *testing.T) {
+func TestControlledLarkCLIRunner_ConfigInitAcceptsOfficialKeychainBackedAppEvidence(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test CLI uses a POSIX shell")
 	}
@@ -1627,8 +1627,11 @@ func TestControlledLarkCLIRunner_ConfigInitAcceptsPlainCompletionAfterWritingCom
 	script := `#!/bin/sh
 if [ "$1" = "config" ] && [ "$2" = "init" ] && [ "$3" = "--new" ]; then
   mkdir -p "$HOME/.lark-cli"
+  mkdir -p "$HOME/.local/share/lark-cli"
   echo 'https://open.feishu.cn/page/cli?user_code=CREATED'
-  printf '{"apps":[{"appId":"cli_created","appSecret":"test-secret","brand":"feishu"}]}\n' > "$HOME/.lark-cli/config.json"
+  printf '{"apps":[{"appId":"cli_created","appSecret":{"source":"keychain","id":"appsecret:cli_created"},"brand":"feishu"}]}\n' > "$HOME/.lark-cli/config.json"
+  printf 'test-master-key' > "$HOME/.local/share/lark-cli/master.key"
+  printf 'encrypted-test-secret' > "$HOME/.local/share/lark-cli/appsecret_cli_created.enc"
   echo '应用创建完成'
   exit 0
 fi
@@ -1647,6 +1650,8 @@ exit 2
 	appID, evidenceErr := runner.AppIDFromHome(context.Background(), home)
 	require.NoError(t, evidenceErr)
 	require.Equal(t, "cli_created", appID)
+	require.FileExists(t, filepath.Join(home, ".local", "share", "lark-cli", "master.key"))
+	require.FileExists(t, filepath.Join(home, ".local", "share", "lark-cli", "appsecret_cli_created.enc"))
 }
 
 func TestControlledLarkCLIRunner_AuthSessionSuccessWithoutURLFailsClosed(t *testing.T) {
