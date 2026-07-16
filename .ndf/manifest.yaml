@@ -1,11 +1,41 @@
 schema_version: '2.0'
 features:
+- id: feishu-create-app-finalization
+  ndf_version: '3.0'
+  description: Correctly finalize personal Feishu app creation and safely retry an exactly bound failed authorization card
+  classification_reason: 'Standard: customer-reported third-party authorization lifecycle defect; changes durable authorization state recovery across biz/store and requires strict identity fences.'
+  last_updated_by: ai-s3-plan-recorded
+  last_updated_at: '2026-07-16T10:55:00+08:00'
+  created_at: '2026-07-16T10:40:00+08:00'
+  track: standard
+  stage: S3
+  status: active
+  repos:
+    numind-server: /private/tmp/wt-feishu-create-app-finalization-numind-server
+  worktrees:
+    numind-server: /private/tmp/wt-feishu-create-app-finalization-numind-server
+  branches:
+    numind-server: feature/feishu-create-app-finalization
+  progress:
+    total_tasks: 4
+    completed_tasks: 0
+    reviewed_tasks: 0
+  artifacts:
+    requirement: requirements/feishu-create-app-finalization.md
+    proposal: proposals/feishu-create-app-finalization-proposal.md
+    design: docs/superpowers/specs/2026-07-16-feishu-create-app-finalization-design.md
+    plan: docs/superpowers/plans/2026-07-16-feishu-create-app-finalization.md
+  decisions:
+  - 'S0: config init --new has no JSON output mode; its valid completion proof is successful controlled execution followed by complete app configuration validation.'
+  - 'S2: only a failed session exactly named by the current operation summary may create a replacement; user, generation, operation, phase, scopes and live-lease fences remain.'
+  blockers: []
+
 - id: feishu-legacy-refresh-recovery
   ndf_version: '3.0'
   description: Recover pre-fix Feishu authorization cards whose operation summary still names a superseded session
   classification_reason: 'Standard: third-party authorization and durable Agent-operation recovery boundary; this is a customer-reported 500 during live dev validation.'
-  last_updated_by: ai-s7-dev-deployed
-  last_updated_at: '2026-07-16T09:22:00+08:00'
+  last_updated_by: ai-s7-validation-followup
+  last_updated_at: '2026-07-16T10:40:00+08:00'
   created_at: '2026-07-16T09:05:00+08:00'
   track: standard
   stage: S7-dev-deployed
@@ -30,6 +60,7 @@ features:
   - 'S4: any live pending authorization session for the same operation and phase blocks legacy refresh, regardless of requested scope.'
   - 'S6: merged commit 80b25e0c is on develop.'
   - 'S7: dev image develop-39dfdfd0 deployed and /healthz returned {status:ok}; awaiting user validation of the original historical card.'
+  - 'S7 validation: refresh repaired the old binding, then exposed a separate config-init completion protocol mismatch. Follow-up feishu-create-app-finalization owns that repair.'
   blockers: []
 
 - id: feishu-refresh-resume
