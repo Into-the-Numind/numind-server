@@ -42,6 +42,20 @@ func controlledRunner(binary string) *ControlledLarkCLIRunner {
 	return &ControlledLarkCLIRunner{binary: binary}
 }
 
+// controlledDeviceAuthCompleteScript validates the real secret-bearing argv in
+// the child process, but persists only a redacted snapshot for test assertions.
+// A mismatch exits without echoing argv or the secret into test output.
+func controlledDeviceAuthCompleteScript(deviceCode, stdout string, exitCode int) string {
+	return fmt.Sprintf(`
+if [ "$#" -ne 5 ] || [ "$1" != "auth" ] || [ "$2" != "login" ] || [ "$3" != "--device-code" ] || [ "$4" != %s ] || [ "$5" != "--json" ]; then
+  exit 97
+fi
+printf 'auth\000login\000--device-code\000[REDACTED]\000--json\000' > "$HOME/device-auth-argv-redacted"
+printf '%%s' %s
+exit %d
+`, shellQuoteForControlledTest(deviceCode), shellQuoteForControlledTest(stdout), exitCode)
+}
+
 func TestControlledLarkCLIRunner_VerifyVersionAcceptsOnlyPinnedVersion(t *testing.T) {
 	accepted := []string{
 		"1.0.68",
