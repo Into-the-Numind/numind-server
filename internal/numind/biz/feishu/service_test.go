@@ -805,6 +805,40 @@ func TestWorkspaceLifecycleResumeUsesSharedDispatcherForUserCompleted(t *testing
 	require.Zero(t, operations.cancelled)
 }
 
+func TestWorkspaceLifecycleResumeUserCompletedFinalizesTerminalAgentWaits(t *testing.T) {
+	tests := []struct {
+		state   string
+		outcome externalaction.TerminalOutcome
+	}{
+		{state: model.FeishuOperationFailed, outcome: externalaction.TerminalOutcomeFailed},
+		{state: model.FeishuOperationUnknown, outcome: externalaction.TerminalOutcomeUnknown},
+		{state: model.FeishuOperationCancelled, outcome: externalaction.TerminalOutcomeCancelled},
+	}
+	for index, tc := range tests {
+		t.Run(tc.state, func(t *testing.T) {
+			operationID := fmt.Sprintf("op-user-completed-%s", tc.state)
+			op := &model.FeishuOperation{
+				ID: operationID, UserID: 7, Generation: 2, State: tc.state,
+				AgentRunID: uint64(60 + index), ToolCallID: fmt.Sprintf("tool-user-completed-%d", index),
+			}
+			svc, _, _, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+				UserID: 7, Provider: ProviderLark, Generation: 2,
+			}, op)
+
+			result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionUserCompleted)
+
+			require.NoError(t, err)
+			require.Equal(t, &OperationResult{OperationID: operationID, State: tc.state}, result)
+			require.Zero(t, dispatcher.calls, "terminal operations must never resume the Agent model continuation")
+			require.Zero(t, operations.confirmed)
+			require.Zero(t, operations.cancelled)
+			calls := svc.agentWaits.(*lifecycleAgentWaitFake).calls
+			require.Len(t, calls, 1, "user_completed must durably close the exact Agent wait")
+			require.Equal(t, tc.outcome, calls[0].outcome)
+		})
+	}
+}
+
 func TestWorkspaceLifecycleResumeCompletesOwnedAppScopeThenReplaysExactlyOnce(t *testing.T) {
 	operationID := "op-app-scope"
 	op := &model.FeishuOperation{
