@@ -4,11 +4,11 @@ features:
   ndf_version: '3.0'
   description: Recover pre-fix Feishu authorization cards whose operation summary still names a superseded session
   classification_reason: 'Standard: third-party authorization and durable Agent-operation recovery boundary; this is a customer-reported 500 during live dev validation.'
-  last_updated_by: ai-s6-ndf-done-complete
-  last_updated_at: '2026-07-16T09:38:00+08:00'
+  last_updated_by: ai-s7-dev-deployed
+  last_updated_at: '2026-07-16T09:22:00+08:00'
   created_at: '2026-07-16T09:05:00+08:00'
   track: standard
-  stage: S6
+  stage: S7-dev-deployed
   status: active
   repos:
     numind-server: /private/tmp/wt-feishu-legacy-refresh-recovery-numind-server
@@ -28,7 +28,8 @@ features:
   decisions:
   - 'S0: treat only the exact legacy pattern—waiting operation summary points at its own superseded authorization session—as recoverable.'
   - 'S4: any live pending authorization session for the same operation and phase blocks legacy refresh, regardless of requested scope.'
-  - 'S6: merged commit 80b25e0c is on develop; development deployment and manual historical-card validation remain.'
+  - 'S6: merged commit 80b25e0c is on develop.'
+  - 'S7: dev image develop-39dfdfd0 deployed and /healthz returned {status:ok}; awaiting user validation of the original historical card.'
   blockers: []
 
 - id: feishu-refresh-resume
