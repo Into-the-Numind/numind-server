@@ -1,5 +1,35 @@
 schema_version: '2.0'
 features:
+- id: feishu-stage-handoff
+  ndf_version: '3.0'
+  description: Give post-authorization stage handoff its own bounded runtime and make stale completion acknowledgements idempotent
+  classification_reason: 'Standard: customer-reported third-party authorization lifecycle and operation replay-safety boundary; no DB/API/frontend change, but timeout and terminal-state semantics are security-sensitive.'
+  last_updated_by: ai-s2-design-complete
+  last_updated_at: '2026-07-16T14:30:00+08:00'
+  created_at: '2026-07-16T14:15:00+08:00'
+  track: standard
+  stage: S2
+  status: active
+  repos:
+    numind-server: /private/tmp/wt-feishu-stage-handoff-numind-server
+  worktrees:
+    numind-server: /private/tmp/wt-feishu-stage-handoff-numind-server
+  branches:
+    numind-server: feature/feishu-stage-handoff
+  progress:
+    total_tasks: 3
+    completed_tasks: 0
+    reviewed_tasks: 0
+  artifacts:
+    requirement: requirements/feishu-stage-handoff.md
+    proposal: proposals/feishu-stage-handoff-proposal.md
+    design: docs/superpowers/specs/2026-07-16-feishu-stage-handoff-design.md
+  decisions:
+  - 'S0: dev logs prove create_app completed, operation entered executing, user_auth was claimed, then both failed exactly at the five-second authSessionFinalizeTimeout boundary; stale user_completed received 400.'
+  - 'S1: user chose A—separate the durable dispatch time budget and make stale browser acknowledgements idempotent. Do not merely lengthen database finalization or add a new queue.'
+  - 'S2: dispatch remains bounded by the existing 12-minute CLI hard ceiling; executing and stored terminal acknowledgements are read-only. Never auto-replay failed/unknown writes.'
+  blockers: []
+
 - id: feishu-keychain-app-evidence
   ndf_version: '3.0'
   description: Accept the pinned lark-cli keychain-backed application evidence after successful personal Feishu app creation
