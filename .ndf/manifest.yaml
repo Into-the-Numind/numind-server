@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: Align hosted per-user Feishu authorization with the pinned lark-cli split device-code protocol and resume the exact original Agent operation
   classification_reason: 'Standard: customer-reported third-party OAuth and durable write-resume boundary; affects authentication state machine, secure resume credentials, Agent guidance, real CLI fixtures, and more than 3 files.'
-  last_updated_by: ai-s4-task1
-  last_updated_at: '2026-07-16T23:44:38+08:00'
+  last_updated_by: ai-s4-task2
+  last_updated_at: '2026-07-17T00:46:41+08:00'
   created_at: '2026-07-16T18:53:00+08:00'
   track: standard
   stage: S4
@@ -13,7 +13,7 @@ features:
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/feishu-device-code-auth, numind-web-v3: feature/feishu-device-code-auth}
   worktrees: {numind-server: /private/tmp/wt-feishu-device-code-auth-numind-server, numind-web-v3: /private/tmp/wt-feishu-device-code-auth-numind-web-v3}
-  progress: {total_tasks: 19, completed_tasks: 1, reviewed_tasks: 1}
+  progress: {total_tasks: 19, completed_tasks: 2, reviewed_tasks: 2}
   artifacts:
     requirement: requirements/feishu-device-code-auth.md
     proposal: proposals/feishu-device-code-auth-proposal.md
@@ -26,6 +26,7 @@ features:
   - 'S3: approved 19-task backend-first plan with RED-first customer regressions, separate cipher/CLI/Vault/start/complete/replacement/dispatch/API/cleanup boundaries, Playwright-first frontend diagnosis, same-card continuation, independent atomicity review, and final read-only quality gates.'
   - 'S4 started after explicit user approval; existing NDF worktrees are clean, backend implementation runs before frontend, and every task uses RED-GREEN-REFACTOR plus independent spec/code review.'
   - 'S4 Task 1: commit c11e1e83 is the first customer RED and proves blocking worker retention, missing split argv/credential persistence, and failed second-instance exact-operation recovery. Spec and quality reviews passed after removing graceful-shutdown contamination.'
+  - 'S4 Task 2: commit 44db9eb0 adds protocol-v2 schema and fenced credential store primitives. Dual review passed after enforcing CHAR(64), session/resume expiry bounds, v2-only user-auth replacement, irreversible legacy user-auth retirement, and failure-only terminalization.'
   blockers: []
 
 - id: agent-stream-start-order
