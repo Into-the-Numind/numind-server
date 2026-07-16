@@ -613,6 +613,48 @@ func TestAuthSessionService_RefreshOperationRepairsLegacySupersededBinding(t *te
 	releaseWorker()
 }
 
+func TestAuthSessionService_RefreshOperationRetriesCurrentFailedBinding(t *testing.T) {
+	h := newAuthSessionHarness(t)
+	h.createAccount(model.FeishuConnectionAppReady)
+	release := make(chan struct{})
+	releaseWorker := releaseAuthSessionCLIFake(t, release)
+	h.cli.urls = []string{"https://open.feishu.cn/page/cli?user_code=FAILED_RETRY"}
+	h.cli.releases = []<-chan struct{}{release}
+	service := h.newService("refresh-operation-failed")
+	operation := &model.FeishuOperation{
+		ID: "operation-refresh-failed", UserID: 7, Generation: 1, AgentRunID: 7, ToolCallID: "tool-refresh-failed",
+		IdempotencyKey: "refresh-failed", CommandPath: "docs document get", Domain: "docs", RiskLevel: string(RiskRead),
+		RequestCiphertext: []byte("encrypted-request"), KeyVersion: "v1", RequestFingerprint: "refresh-failed-fingerprint",
+		State: model.FeishuOperationWaitingConnection,
+	}
+	require.NoError(t, h.db.Create(operation).Error)
+	failed := &model.FeishuAuthSession{
+		ID: "00000000-0000-4000-8000-000000000177", UserID: 7, Generation: 1, OperationID: &operation.ID,
+		Phase: model.FeishuAuthPhaseCreateApp, RequestedScopesJSON: []byte(`["docx:document:readonly"]`),
+		State: model.FeishuAuthSessionFailed, ExpiresAt: h.now.Add(10 * time.Minute),
+	}
+	require.NoError(t, h.dataStore.FeishuWorkspace().CreateSession(h.ctx, failed))
+	failedSummary, err := json.Marshal(persistedOperationSummary{
+		Status: model.FeishuOperationWaitingConnection, Phase: model.FeishuAuthPhaseCreateApp,
+		SessionID: failed.ID, RecoveryKind: RecoveryCreateApp,
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.db.Model(&model.FeishuOperation{}).Where("id = ?", operation.ID).
+		Update("result_summary_json", failedSummary).Error)
+
+	action, err := service.RefreshOperationAction(
+		h.ctx, 7, 1, failed.ID, operation.ID, model.FeishuOperationWaitingConnection, failedSummary,
+	)
+	require.NoError(t, err)
+	require.NotEqual(t, failed.ID, action.SessionID)
+	require.Contains(t, action.URL, "FAILED_RETRY")
+	storedFailed, err := h.dataStore.FeishuWorkspace().GetSessionForUser(h.ctx, 7, 1, failed.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionSuperseded, storedFailed.State)
+	require.NoError(t, service.Activate(h.ctx, action.SessionID))
+	releaseWorker()
+}
+
 func TestAuthSessionService_RefreshOperationRestoresOriginalBindingWhenReplacementCannotStart(t *testing.T) {
 	h := newAuthSessionHarness(t)
 	oldRelease := make(chan struct{})
@@ -1574,6 +1616,37 @@ exit 2
 	authorized, err := runner.AuthStatus(context.Background(), home)
 	require.NoError(t, err)
 	require.True(t, authorized)
+}
+
+func TestControlledLarkCLIRunner_ConfigInitAcceptsPlainCompletionAfterWritingCompleteAppConfig(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test CLI uses a POSIX shell")
+	}
+	home := t.TempDir()
+	binary := filepath.Join(t.TempDir(), "lark-cli")
+	script := `#!/bin/sh
+if [ "$1" = "config" ] && [ "$2" = "init" ] && [ "$3" = "--new" ]; then
+  mkdir -p "$HOME/.lark-cli"
+  echo 'https://open.feishu.cn/page/cli?user_code=CREATED'
+  printf '{"apps":[{"appId":"cli_created","appSecret":"test-secret","brand":"feishu"}]}\n' > "$HOME/.lark-cli/config.json"
+  echo '应用创建完成'
+  exit 0
+fi
+exit 2
+`
+	require.NoError(t, os.WriteFile(binary, []byte(script), 0o700))
+	runner := &ControlledLarkCLIRunner{binary: binary}
+
+	var observedURL string
+	err := runner.RunBlocking(context.Background(), home, []string{"config", "init", "--new"}, func(value string) error {
+		observedURL = value
+		return nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, "https://open.feishu.cn/page/cli?user_code=CREATED", observedURL)
+	appID, evidenceErr := runner.AppIDFromHome(context.Background(), home)
+	require.NoError(t, evidenceErr)
+	require.Equal(t, "cli_created", appID)
 }
 
 func TestControlledLarkCLIRunner_AuthSessionSuccessWithoutURLFailsClosed(t *testing.T) {

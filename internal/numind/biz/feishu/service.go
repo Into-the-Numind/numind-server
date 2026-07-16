@@ -632,7 +632,7 @@ func (s *WorkspaceLifecycleService) RefreshAction(ctx context.Context, userID ui
 	var action *OperationAction
 	var refreshErr error
 	switch session.State {
-	case model.FeishuAuthSessionPending:
+	case model.FeishuAuthSessionPending, model.FeishuAuthSessionFailed:
 		if boundSession.ID != session.ID {
 			return nil, ErrWorkspaceLifecycleUnavailable
 		}

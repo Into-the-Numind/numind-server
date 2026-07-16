@@ -1368,6 +1368,41 @@ func TestFeishuWorkspaceStore_RefreshOperationSession(t *testing.T) {
 	require.False(t, account.Connected)
 }
 
+func TestFeishuWorkspaceStore_RefreshOperationSessionReplacesCurrentFailedSource(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 1)
+	op, err := s.CreateOrGetOperation(ctx, newFeishuOperation("operation-rebind-failed", 7, 1, "key-rebind-failed"))
+	require.NoError(t, err)
+	oldSummary := []byte(`{"status":"waiting_connection","phase":"create_app","session_id":"session-failed","recovery_kind":"create_app"}`)
+	replacementSummary := []byte(`{"status":"waiting_connection","phase":"create_app","session_id":"session-failed-retry","recovery_kind":"create_app"}`)
+	require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", op.ID).Updates(map[string]any{
+		"state": model.FeishuOperationWaitingConnection, "result_summary_json": oldSummary,
+	}).Error)
+	failed := newFeishuSession("session-failed", 7, 1)
+	failed.OperationID = &op.ID
+	failed.Phase = model.FeishuAuthPhaseCreateApp
+	failed.RequestedScopesJSON = []byte(`["offline_access"]`)
+	failed.State = model.FeishuAuthSessionFailed
+	require.NoError(t, s.CreateSession(ctx, failed))
+	replacement := newFeishuSession("session-failed-retry", 7, 1)
+	replacement.OperationID = &op.ID
+	replacement.Phase = model.FeishuAuthPhaseCreateApp
+	replacement.RequestedScopesJSON = []byte(`["offline_access"]`)
+
+	refreshed, err := s.RefreshOperationSession(
+		ctx, 7, 1, failed.ID, op.ID, model.FeishuOperationWaitingConnection, model.FeishuConnectionCreatingApp, replacement, replacementSummary, time.Now().UTC(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, replacement.ID, refreshed.ID)
+	stored, err := s.GetOperationForUser(ctx, 7, 1, op.ID)
+	require.NoError(t, err)
+	require.JSONEq(t, string(replacementSummary), string(stored.ResultSummaryJSON))
+	storedFailed, err := s.GetSessionForUser(ctx, 7, 1, failed.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionSuperseded, storedFailed.State)
+}
+
 func TestFeishuWorkspaceStore_RefreshOperationSessionRejectsLegacySourceWithLiveOrphanReplacement(t *testing.T) {
 	ctx := context.Background()
 	s := newFeishuWorkspaceTestStore(t)
