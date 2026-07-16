@@ -339,12 +339,16 @@ func (f *lifecycleAuthFake) StopGenerationAndWait(ctx context.Context, _ uint, g
 }
 
 type lifecycleDispatcherFake struct {
-	calls   int
-	results []error
+	calls    int
+	results  []error
+	dispatch func(context.Context, uint, string) error
 }
 
-func (f *lifecycleDispatcherFake) DispatchResume(_ context.Context, _ uint, _ string) error {
+func (f *lifecycleDispatcherFake) DispatchResume(ctx context.Context, userID uint, operationID string) error {
 	f.calls++
+	if f.dispatch != nil {
+		return f.dispatch(ctx, userID, operationID)
+	}
 	if len(f.results) > 0 {
 		err := f.results[0]
 		f.results = f.results[1:]
@@ -873,6 +877,88 @@ func TestWorkspaceLifecycleResumeCompletesOwnedAppScopeThenReplaysExactlyOnce(t 
 	require.Equal(t, model.FeishuOperationSucceeded, result.State)
 	require.Len(t, auth.completeAppApprovalCalls, 1, "a duplicate acknowledgement must not repeat the CLI write path")
 	require.Equal(t, 1, dispatcher.calls, "a succeeded operation must not be resumed again")
+}
+
+func TestWorkspaceLifecycleResumeAppScopeFinalizesTerminalStateCreatedDuringHandoff(t *testing.T) {
+	tests := []struct {
+		state   string
+		outcome externalaction.TerminalOutcome
+	}{
+		{state: model.FeishuOperationFailed, outcome: externalaction.TerminalOutcomeFailed},
+		{state: model.FeishuOperationUnknown, outcome: externalaction.TerminalOutcomeUnknown},
+		{state: model.FeishuOperationCancelled, outcome: externalaction.TerminalOutcomeCancelled},
+	}
+	for index, tc := range tests {
+		t.Run(tc.state, func(t *testing.T) {
+			operationID := "op-app-scope-handoff-" + tc.state
+			op := &model.FeishuOperation{
+				ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingAppScope,
+				AgentRunID: uint64(90 + index), ToolCallID: fmt.Sprintf("tool-app-scope-handoff-%d", index),
+				ResultSummaryJSON: lifecycleRecoverySummary(t, model.FeishuOperationWaitingAppScope, "session-app-scope-handoff", model.FeishuAuthPhaseAppScope, RecoveryAppScope),
+			}
+			svc, _, workspace, auth, dispatcher, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+				UserID: 7, Provider: ProviderLark, Generation: 2,
+			}, op)
+			workspace.activeSession = &model.FeishuAuthSession{
+				ID: "session-app-scope-handoff", UserID: 7, Generation: 2, OperationID: &operationID,
+				Phase: model.FeishuAuthPhaseAppScope, State: model.FeishuAuthSessionPending,
+			}
+			auth.completeAppApproval = func(_ context.Context, _ uint, _ uint64, _ string) error {
+				workspace.operation.State = tc.state
+				return nil
+			}
+
+			result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionUserCompleted)
+
+			require.NoError(t, err)
+			require.Equal(t, &OperationResult{OperationID: operationID, State: tc.state}, result)
+			require.Zero(t, dispatcher.calls)
+			calls := svc.agentWaits.(*lifecycleAgentWaitFake).calls
+			require.Len(t, calls, 1, "a terminal state committed during app approval must close the Agent wait")
+			require.Equal(t, tc.outcome, calls[0].outcome)
+		})
+	}
+}
+
+func TestWorkspaceLifecycleResumeCompletedAuthFinalizesTerminalStateCreatedDuringDispatch(t *testing.T) {
+	tests := []struct {
+		state   string
+		outcome externalaction.TerminalOutcome
+	}{
+		{state: model.FeishuOperationFailed, outcome: externalaction.TerminalOutcomeFailed},
+		{state: model.FeishuOperationUnknown, outcome: externalaction.TerminalOutcomeUnknown},
+		{state: model.FeishuOperationCancelled, outcome: externalaction.TerminalOutcomeCancelled},
+	}
+	for index, tc := range tests {
+		t.Run(tc.state, func(t *testing.T) {
+			operationID := "op-completed-auth-handoff-" + tc.state
+			op := &model.FeishuOperation{
+				ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth,
+				AgentRunID: uint64(100 + index), ToolCallID: fmt.Sprintf("tool-completed-auth-handoff-%d", index),
+				ResultSummaryJSON: lifecycleRecoverySummary(t, model.FeishuOperationWaitingUserAuth, "session-completed-auth-handoff", model.FeishuAuthPhaseUserAuth, RecoveryUserScope),
+			}
+			svc, _, workspace, _, dispatcher, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+				UserID: 7, Provider: ProviderLark, Generation: 2,
+			}, op)
+			workspace.activeSession = &model.FeishuAuthSession{
+				ID: "session-completed-auth-handoff", UserID: 7, Generation: 2, OperationID: &operationID,
+				Phase: model.FeishuAuthPhaseUserAuth, State: model.FeishuAuthSessionCompleted,
+			}
+			dispatcher.dispatch = func(_ context.Context, _ uint, _ string) error {
+				workspace.operation.State = tc.state
+				return nil
+			}
+
+			result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionUserCompleted)
+
+			require.NoError(t, err)
+			require.Equal(t, &OperationResult{OperationID: operationID, State: tc.state}, result)
+			require.Equal(t, 1, dispatcher.calls)
+			calls := svc.agentWaits.(*lifecycleAgentWaitFake).calls
+			require.Len(t, calls, 1, "a terminal state committed during dispatch must close the Agent wait")
+			require.Equal(t, tc.outcome, calls[0].outcome)
+		})
+	}
 }
 
 func TestWorkspaceLifecycleResumeKeepsPendingUserAuthWaitingWithoutDispatch(t *testing.T) {
