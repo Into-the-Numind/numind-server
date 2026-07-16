@@ -4,11 +4,11 @@ features:
   ndf_version: '3.0'
   description: Give post-authorization handoff its own bounded runtime and settle stale expired cards through an explicit terminal refresh result
   classification_reason: 'Standard: customer-reported third-party authorization lifecycle and replay-safety boundary with a coordinated backend/frontend API contract change.'
-  last_updated_by: ai-s3-plan-complete
-  last_updated_at: '2026-07-16T16:05:00+08:00'
+  last_updated_by: ai-s5-qa-complete
+  last_updated_at: '2026-07-16T16:34:00+08:00'
   created_at: '2026-07-16T14:15:00+08:00'
   track: standard
-  stage: S3
+  stage: S5
   status: active
   repos:
     numind-server: /private/tmp/wt-feishu-stage-handoff-numind-server
@@ -21,19 +21,22 @@ features:
     numind-web-v3: feature/feishu-stage-handoff
   progress:
     total_tasks: 5
-    completed_tasks: 0
-    reviewed_tasks: 0
+    completed_tasks: 4
+    reviewed_tasks: 4
   artifacts:
     requirement: requirements/feishu-stage-handoff.md
     proposal: proposals/feishu-stage-handoff-proposal.md
     design: docs/superpowers/specs/2026-07-16-feishu-stage-handoff-design.md
     plan: docs/superpowers/plans/2026-07-16-feishu-stage-handoff.md
+    qa: docs/superpowers/qa/2026-07-16-feishu-stage-handoff-s5-acceptance.md
   decisions:
   - 'S0: dev logs prove create_app completed, operation entered executing, user_auth was claimed, then both failed exactly at the five-second authSessionFinalizeTimeout boundary; stale user_completed received 400.'
   - 'S1: user chose A—separate the durable dispatch time budget and make stale browser acknowledgements idempotent. Do not merely lengthen database finalization or add a new queue.'
   - 'S2: dispatch remains bounded by the existing 12-minute CLI hard ceiling; executing and stored terminal acknowledgements are read-only. Never auto-replay failed/unknown writes.'
   - 'S2 addendum: an expired stale card can only refresh; terminal refresh therefore returns a typed 200 terminal result and the frontend settles the card without replay.'
   - 'S3: backend and frontend ship together. Customer-bug commits begin with failing reproduction tests in each repository.'
+  - 'S4 correction: every committed terminal state repairs the exact Agent handoff. Succeeded compensates only Task11; failed/unknown/cancelled terminalize the wait. This also applies to states created during the current request and confirm/cancel races.'
+  - 'S5: dual independent review and automated QA pass. Refresh is an exclusive fail-closed union, terminal copy is state-specific, and stale responses cannot mutate a newer route or shared connection state.'
   blockers: []
 
 - id: feishu-keychain-app-evidence

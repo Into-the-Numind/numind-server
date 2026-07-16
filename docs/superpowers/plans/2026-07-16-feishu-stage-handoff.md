@@ -173,6 +173,14 @@ git commit -m "fix(feishu): close terminal authorization cards"
 
 ### Task 5: Review, integrate, deploy, and validate dev
 
+**S4 implementation addendum (supersedes the earlier “read-only terminal” wording):**
+
+- All lifecycle entries share one committed-state matrix: `succeeded` performs only idempotent Agent-continuation compensation; `failed`, `unknown`, and `cancelled` terminalize the exact Agent wait.
+- Apply the matrix both to operations already terminal at request entry and operations that become terminal during app approval, completed-auth dispatch, confirm, or a concurrent cancel race.
+- Refresh returns a runtime-validated exclusive `action | terminal` union and has no shared store side effect before route/session identity checks.
+- The frontend keeps observing `succeeded` via `external_resume_ready`; failed/unknown/cancelled unlock the exact run and display state-specific guidance.
+- Automatic Feishu replay remains forbidden in every repair path.
+
 **Files:**
 - Modify: `.ndf/manifest.yaml`
 - Modify: each worktree `.ndf-active` stage metadata
