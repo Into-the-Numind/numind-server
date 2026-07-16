@@ -4,22 +4,24 @@ features:
   ndf_version: '3.0'
   description: Align hosted per-user Feishu authorization with the pinned lark-cli split device-code protocol and resume the exact original Agent operation
   classification_reason: 'Standard: customer-reported third-party OAuth and durable write-resume boundary; affects authentication state machine, secure resume credentials, Agent guidance, real CLI fixtures, and more than 3 files.'
-  last_updated_by: ai-s1
-  last_updated_at: '2026-07-16T19:36:44+08:00'
+  last_updated_by: ai-s2
+  last_updated_at: '2026-07-16T22:00:54+08:00'
   created_at: '2026-07-16T18:53:00+08:00'
   track: standard
-  stage: S1
+  stage: S2
   status: active
-  repos: [numind-server]
-  branches: {numind-server: feature/feishu-device-code-auth}
-  worktrees: {numind-server: /private/tmp/wt-feishu-device-code-auth-numind-server}
+  repos: [numind-server, numind-web-v3]
+  branches: {numind-server: feature/feishu-device-code-auth, numind-web-v3: feature/feishu-device-code-auth}
+  worktrees: {numind-server: /private/tmp/wt-feishu-device-code-auth-numind-server, numind-web-v3: /private/tmp/wt-feishu-device-code-auth-numind-web-v3}
   progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
   artifacts:
     requirement: requirements/feishu-device-code-auth.md
     proposal: proposals/feishu-device-code-auth-proposal.md
+    spec: docs/superpowers/specs/2026-07-16-feishu-device-code-auth-design.md
   decisions:
   - 'S0: dev run 195 proved app creation succeeded but user authorization did not. Pinned lark-cli requires a no-wait URL/device-code start followed by a later device-code continuation; the platform still assumes one blocking JSON process.'
   - 'S1: customer selected server-owned split device flow. Start returns URL plus an encrypted exact-session resume credential; confirm completes with device-code, fenced-publishes HOME, then resumes the persisted operation at most once. ADR: .ndf/decisions/feishu-device-code-auth/0001-split-device-flow.md.'
+  - 'S2: extract a focused DeviceAuthFlow; persist protocol-v2 encrypted resume credentials; atomically fence session/account/Vault publication; extend the existing resume response with optional live replacement action plus safe notice_code; preserve execute-first scopes and at-most-once writes. Frontend scope is limited to same-card recovery.'
   blockers: []
 
 - id: agent-stream-start-order
