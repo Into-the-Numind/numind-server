@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: Align hosted per-user Feishu authorization with the pinned lark-cli split device-code protocol and resume the exact original Agent operation
   classification_reason: 'Standard: customer-reported third-party OAuth and durable write-resume boundary; affects authentication state machine, secure resume credentials, Agent guidance, real CLI fixtures, and more than 3 files.'
-  last_updated_by: ai-s4-task4
-  last_updated_at: '2026-07-17T01:40:39+08:00'
+  last_updated_by: ai-s4-task5
+  last_updated_at: '2026-07-17T02:11:58+08:00'
   created_at: '2026-07-16T18:53:00+08:00'
   track: standard
   stage: S4
@@ -13,7 +13,7 @@ features:
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/feishu-device-code-auth, numind-web-v3: feature/feishu-device-code-auth}
   worktrees: {numind-server: /private/tmp/wt-feishu-device-code-auth-numind-server, numind-web-v3: /private/tmp/wt-feishu-device-code-auth-numind-web-v3}
-  progress: {total_tasks: 19, completed_tasks: 4, reviewed_tasks: 4}
+  progress: {total_tasks: 19, completed_tasks: 5, reviewed_tasks: 5}
   artifacts:
     requirement: requirements/feishu-device-code-auth.md
     proposal: proposals/feishu-device-code-auth-proposal.md
@@ -29,6 +29,7 @@ features:
   - 'S4 Task 2: commit 44db9eb0 adds protocol-v2 schema and fenced credential store primitives. Dual review passed after enforcing CHAR(64), session/resume expiry bounds, v2-only user-auth replacement, irreversible legacy user-auth retirement, and failure-only terminalization.'
   - 'S4 Task 3: commit 960848ad adds purpose-separated AES-GCM resume credential encryption. Dual review passed after requiring exact DATETIME(3)-safe millisecond expiry before both sealing and persistence, preserving all-field AAD and configured-key rotation.'
   - 'S4 Task 4: commit 27713985 adds the strict lark-cli 1.0.68 split adapter. Dual review passed after fail-closing cross-shape envelopes and URL parameters, preventing duration overflow, redacting device-code argv evidence, and treating any unproven post-start process outcome as ambiguous for reconciliation.'
+  - 'S4 Task 5: commit 92254b50 adds unpublished HOME candidates and the fenced account-session-operation-vault success transaction. Triple review passed after enforcing the 64 MiB vault ceiling and correcting the MySQL attach-release/fresh-completion-claim rollback fixture.'
   blockers: []
 
 - id: agent-stream-start-order
