@@ -4,18 +4,18 @@ features:
   ndf_version: '3.0'
   description: Correctly finalize personal Feishu app creation and safely retry an exactly bound failed authorization card
   classification_reason: 'Standard: customer-reported third-party authorization lifecycle defect; changes durable authorization state recovery across biz/store and requires strict identity fences.'
-  last_updated_by: ai-s5-verified
-  last_updated_at: '2026-07-16T11:15:00+08:00'
+  last_updated_by: ai-s6-develop-merge-complete
+  last_updated_at: '2026-07-16T11:20:00+08:00'
   created_at: '2026-07-16T10:40:00+08:00'
   track: standard
-  stage: S5
+  stage: S6
   status: active
   repos:
-    numind-server: /private/tmp/wt-feishu-create-app-finalization-numind-server
+    numind-server: develop (merged via ndf-done)
   worktrees:
-    numind-server: /private/tmp/wt-feishu-create-app-finalization-numind-server
+    numind-server: (removed by ndf-done)
   branches:
-    numind-server: feature/feishu-create-app-finalization
+    numind-server: develop
   progress:
     total_tasks: 4
     completed_tasks: 4
@@ -30,6 +30,7 @@ features:
   - 'S0: config init --new has no JSON output mode; its valid completion proof is successful controlled execution followed by complete app configuration validation.'
   - 'S2: only a failed session exactly named by the current operation summary may create a replacement; user, generation, operation, phase, scopes and live-lease fences remain.'
   - 'S5: repro-first tests, task lint and task test passed; independent specification and code-quality reviews found no P0/P1.'
+  - 'S6: ndf-done merged and pushed develop commit 46a45c2b; awaiting dev deployment and user validation.'
   blockers: []
 
 - id: feishu-legacy-refresh-recovery
