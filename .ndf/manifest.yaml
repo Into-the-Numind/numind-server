@@ -1,5 +1,25 @@
 schema_version: '2.0'
 features:
+- id: feishu-device-code-auth
+  ndf_version: '3.0'
+  description: Align hosted per-user Feishu authorization with the pinned lark-cli split device-code protocol and resume the exact original Agent operation
+  classification_reason: 'Standard: customer-reported third-party OAuth and durable write-resume boundary; affects authentication state machine, secure resume credentials, Agent guidance, real CLI fixtures, and more than 3 files.'
+  last_updated_by: ai-s0
+  last_updated_at: '2026-07-16T18:56:00+08:00'
+  created_at: '2026-07-16T18:53:00+08:00'
+  track: standard
+  stage: S0
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: feature/feishu-device-code-auth}
+  worktrees: {numind-server: /private/tmp/wt-feishu-device-code-auth-numind-server}
+  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
+  artifacts:
+    requirement: requirements/feishu-device-code-auth.md
+  decisions:
+  - 'S0: dev run 195 proved app creation succeeded but user authorization did not. Pinned lark-cli requires a no-wait URL/device-code start followed by a later device-code continuation; the platform still assumes one blocking JSON process.'
+  blockers: []
+
 - id: agent-stream-start-order
   ndf_version: '3.0'
   description: Emit stream_start before any live Agent reasoning or answer event so the frontend can bind and render the run without a refresh
