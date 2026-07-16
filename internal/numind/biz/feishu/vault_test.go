@@ -526,6 +526,40 @@ func TestEncryptedCLIHomeVault_RuntimePermissionsCleanupAndRevisionCAS(t *testin
 	task2RequireNoRuntimeHomes(t, f.runtimeBase)
 }
 
+func TestEncryptedCLIHomeVault_PreservesOfficialLarkKeychainFiles(t *testing.T) {
+	f := newTask2VaultFixture(t, 7, 1)
+	want := map[string][]byte{
+		filepath.Join(".lark-cli", "config.json"):                                 []byte(`{"apps":[{"appId":"cli_created","appSecret":{"source":"keychain","id":"appsecret:cli_created"}}]}`),
+		filepath.Join(".local", "share", "lark-cli", "master.key"):                []byte("test-master-key"),
+		filepath.Join(".local", "share", "lark-cli", "appsecret_cli_created.enc"): []byte("encrypted-test-secret"),
+	}
+
+	err := f.vault.WithHome(context.Background(), f.userID, f.generation, func(home string) (bool, error) {
+		for relative, body := range want {
+			path := filepath.Join(home, relative)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				return false, err
+			}
+			if err := os.WriteFile(path, body, 0o600); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
+	})
+	require.NoError(t, err)
+
+	err = f.vault.WithHome(context.Background(), f.userID, f.generation, func(home string) (bool, error) {
+		for relative, body := range want {
+			got, readErr := os.ReadFile(filepath.Join(home, relative))
+			require.NoError(t, readErr)
+			require.Equal(t, body, got, "vault changed %s", relative)
+		}
+		return false, nil
+	})
+	require.NoError(t, err)
+	task2RequireNoRuntimeHomes(t, f.runtimeBase)
+}
+
 func TestEncryptedCLIHomeVault_ChangedFalseDoesNotCreateVault(t *testing.T) {
 	f := newTask2VaultFixture(t, 7, 1)
 
