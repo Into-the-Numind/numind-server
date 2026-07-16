@@ -41,6 +41,8 @@ type authSessionCLIFake struct {
 	appID           string
 	appIDErr        error
 	activeRuns      int
+	deviceCodes     []string
+	deviceExpiresIn time.Duration
 }
 
 func releaseAuthSessionCLIFake(t *testing.T, release chan struct{}) func() {
@@ -123,6 +125,34 @@ func (f *authSessionCLIFake) ActiveRuns() int {
 	return f.activeRuns
 }
 
+func (f *authSessionCLIFake) StartUserAuth(_ context.Context, _ string, scopes []string) (DeviceAuthStart, error) {
+	f.mu.Lock()
+	f.activeRuns++
+	defer func() {
+		f.activeRuns--
+		f.mu.Unlock()
+	}()
+	index := len(f.argv)
+	f.argv = append(f.argv, []string{"auth", "login", "--scope", strings.Join(scopes, " "), "--no-wait", "--json"})
+	url := ""
+	if index < len(f.urls) {
+		url = f.urls[index]
+	}
+	deviceCode := "restart-safe-device-code"
+	if index < len(f.deviceCodes) {
+		deviceCode = f.deviceCodes[index]
+	}
+	expiresIn := f.deviceExpiresIn
+	if expiresIn <= 0 {
+		expiresIn = 10 * time.Minute
+	}
+	return DeviceAuthStart{VerificationURL: url, DeviceCode: deviceCode, ExpiresIn: expiresIn}, f.runErr
+}
+
+func (f *authSessionCLIFake) CompleteUserAuth(context.Context, string, string) (DeviceAuthOutcome, error) {
+	return DeviceAuthProtocolFailure, errors.New("completion is outside auth-session start tests")
+}
+
 func (f *authSessionCLIFake) AuthStatus(context.Context, string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -174,6 +204,10 @@ func (f *authSessionVaultFake) WithHome(
 	f.changed = append(f.changed, changed)
 	f.mu.Unlock()
 	return err
+}
+
+func (f *authSessionVaultFake) WithHomeCandidate(context.Context, uint, uint64, func(string) error) (*CLIHomeCandidate, error) {
+	return nil, errors.New("completion candidate is outside auth-session start tests")
 }
 
 func (f *authSessionVaultFake) snapshot() (int, []bool) {
@@ -434,9 +468,10 @@ func (h *authSessionHarness) newService(owner string) *AuthSessionService {
 
 func (h *authSessionHarness) newServiceWithSessions(owner string, sessions AuthSessionStore) *AuthSessionService {
 	h.t.Helper()
+	deviceAuth := h.newDeviceAuthFlow(owner+"-device-auth", h.cli)
 	service, err := NewAuthSessionService(AuthSessionServiceDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Sessions: sessions,
-		Vault: h.vault, CLI: h.cli, Dispatcher: h.dispatcher, Owner: owner,
+		Vault: h.vault, CLI: h.cli, DeviceAuth: deviceAuth, Dispatcher: h.dispatcher, Owner: owner,
 		Now: func() time.Time { return h.now },
 		NewID: func() string {
 			h.idMu.Lock()
@@ -455,6 +490,26 @@ func (h *authSessionHarness) newServiceWithSessions(owner string, sessions AuthS
 	})
 	require.NoError(h.t, err)
 	return service
+}
+
+func (h *authSessionHarness) newDeviceAuthFlow(owner string, cli DeviceAuthCLI) *DeviceAuthFlow {
+	h.t.Helper()
+	deviceAuth, err := NewDeviceAuthFlow(DeviceAuthFlowDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Sessions: h.dataStore.FeishuWorkspace(),
+		Vault: h.vault, CLI: cli, Cipher: newDeviceAuthFlowCredentialCipher(h.t), Dispatcher: h.dispatcher,
+		Owner: owner, Now: func() time.Time { return h.now },
+		NewID: func() string { return "00000000-0000-4000-8000-999999999999" },
+		NewLeaseToken: func() string {
+			h.leaseMu.Lock()
+			defer h.leaseMu.Unlock()
+			h.nextLease++
+			return "device-lease-" + leftPad12(h.nextLease)
+		},
+		LeaseDuration: time.Minute, SessionDuration: 10 * time.Minute,
+		HeartbeatInterval: 30 * time.Second, StartTimeout: time.Second, CompletionTimeout: 30 * time.Second,
+	})
+	require.NoError(h.t, err)
+	return deviceAuth
 }
 
 func leftPad12(value int) string {
@@ -488,7 +543,7 @@ func TestAuthSessionService_ManualConnectRequestsOfflineAccessOnly(t *testing.T)
 	require.Equal(t, model.FeishuAuthPhaseUserAuth, action.Phase)
 	require.Equal(t, []string{"offline_access"}, action.Scopes)
 	argv, _ := h.cli.snapshot()
-	require.Equal(t, [][]string{{"auth", "login", "--json", "--scope", "offline_access"}}, argv)
+	require.Equal(t, [][]string{{"auth", "login", "--scope", "offline_access", "--no-wait", "--json"}}, argv)
 
 	stored, err := h.dataStore.FeishuWorkspace().GetSessionForUser(h.ctx, 7, 1, action.SessionID)
 	require.NoError(t, err)
@@ -540,6 +595,31 @@ func TestAuthSessionService_UserAuthStartLeavesNoWorkerAndPersistsExactOperation
 		assert.Equal(t, operationID, persisted.OperationID)
 		assert.NotEmpty(t, persisted.Ciphertext)
 	}
+}
+
+func TestAuthSessionService_UserAuthUsesRestartSafeSplitProtocol(t *testing.T) {
+	h := newAuthSessionHarness(t)
+	h.createAccount(model.FeishuConnectionAppReady)
+	h.cli.urls = []string{"https://open.feishu.cn/suite/passport/oauth/device?user_code=SPLIT"}
+	service := h.newService("split-protocol-service")
+
+	action, err := service.StartRecovery(h.ctx, RecoveryRequest{
+		UserID: 7, Generation: 1, OperationID: "operation-split", Kind: RecoveryUserScope,
+		Scopes: []string{"offline_access"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, action)
+	require.NotEmpty(t, action.URL)
+	service.workerMu.Lock()
+	require.Empty(t, service.workers, "user-auth must not register a blocking worker")
+	require.Empty(t, service.starts, "short start must leave no pre-worker handoff")
+	service.workerMu.Unlock()
+	stored, err := h.dataStore.FeishuWorkspace().GetSessionForUser(h.ctx, 7, 1, action.SessionID)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, stored.ProtocolVersion)
+	require.NotEmpty(t, stored.ResumeCredentialCiphertext)
+	require.Empty(t, stored.LeaseOwner)
+	require.Nil(t, stored.LeaseUntil)
 }
 
 func TestAuthSessionService_ManualConnectRejectsDisconnectingGeneration(t *testing.T) {
@@ -1075,13 +1155,13 @@ func TestAuthSessionService_ManualConnectCreatesAppBeforeOfflineAuthorization(t 
 	argv, _ := h.cli.snapshot()
 	require.Equal(t, [][]string{
 		{"config", "init", "--new"},
-		{"auth", "login", "--json", "--scope", "offline_access"},
+		{"auth", "login", "--scope", "offline_access", "--no-wait", "--json"},
 	}, argv, "reading the pending action must not launch a duplicate login")
 
 	close(userRelease)
 	require.Eventually(t, func() bool {
 		account, getErr := h.dataStore.ThirdPartyAccounts().Get(h.ctx, 7, ProviderLark)
-		return getErr == nil && account.Connected && account.ConnectionState == model.FeishuConnectionConnected
+		return getErr == nil && !account.Connected && account.ConnectionState == model.FeishuConnectionWaitingUserAuth
 	}, 2*time.Second, 10*time.Millisecond)
 }
 
@@ -1206,7 +1286,7 @@ func TestAuthSessionService_OperationUsesExactCanonicalScopes(t *testing.T) {
 	require.Equal(t, []string{"docx:document:readonly", "docx:document:write_only"}, action.Scopes)
 	argv, _ := h.cli.snapshot()
 	require.Equal(t, []string{
-		"auth", "login", "--json", "--scope", "docx:document:readonly docx:document:write_only",
+		"auth", "login", "--scope", "docx:document:readonly docx:document:write_only", "--no-wait", "--json",
 	}, argv[0])
 	require.NoError(t, service.Activate(h.ctx, action.SessionID))
 	close(release)
@@ -1612,7 +1692,8 @@ func TestAuthSessionService_PendingIntentIsReusedAcrossServiceInstances(t *testi
 	secondCLI := &authSessionCLIFake{}
 	second, err := NewAuthSessionService(AuthSessionServiceDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Sessions: h.dataStore.FeishuWorkspace(),
-		Vault: h.vault, CLI: secondCLI, Dispatcher: h.dispatcher, Owner: "instance-b",
+		Vault: h.vault, CLI: secondCLI, DeviceAuth: h.newDeviceAuthFlow("instance-b-device-auth", secondCLI),
+		Dispatcher: h.dispatcher, Owner: "instance-b",
 		Now: func() time.Time { return h.now }, NewID: func() string { return "00000000-0000-4000-8000-222222222222" },
 		LeaseDuration: time.Minute, SessionDuration: 10 * time.Minute,
 		HeartbeatInterval: 30 * time.Second, StartTimeout: time.Second,
@@ -1637,6 +1718,15 @@ func TestAuthSessionService_ConstructorRejectsMissingDependencies(t *testing.T) 
 	_, err := NewAuthSessionService(AuthSessionServiceDeps{})
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrAuthSessionUnavailable))
+}
+
+func TestAuthSessionService_ConstructorRejectsMissingDeviceAuth(t *testing.T) {
+	h := newAuthSessionHarness(t)
+	_, err := NewAuthSessionService(AuthSessionServiceDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Sessions: h.dataStore.FeishuWorkspace(),
+		Vault: h.vault, CLI: h.cli, Dispatcher: h.dispatcher, Owner: "missing-device-auth",
+	})
+	require.ErrorIs(t, err, ErrAuthSessionUnavailable)
 }
 
 func TestControlledLarkCLIRunner_AuthSessionStreamsURLBeforeBlockingCompletion(t *testing.T) {

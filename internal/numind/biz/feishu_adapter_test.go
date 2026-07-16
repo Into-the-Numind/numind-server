@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"numind-server/internal/numind/biz/agent"
 	"numind-server/internal/numind/biz/feishu"
@@ -35,6 +36,7 @@ func newFeishuCompositionDeps(t *testing.T) feishuCompositionDeps {
 	require.NoError(t, db.AutoMigrate(
 		&model.UserThirdPartyAccount{},
 		&model.FeishuCLIVault{},
+		&model.FeishuAuthSession{},
 		&model.FeishuOperation{},
 	))
 	ds := store.NewTestStore(db)
@@ -83,6 +85,18 @@ func prepareHistoricalCompositionVault(t *testing.T, deps feishuCompositionDeps,
 	}))
 }
 
+func prepareHistoricalCompositionAuthSession(t *testing.T, deps feishuCompositionDeps, keyVersion string) {
+	t.Helper()
+	resumeExpiry := time.Date(2026, 7, 17, 6, 0, 0, 0, time.UTC)
+	require.NoError(t, deps.dataStore.DB().Create(&model.FeishuAuthSession{
+		ID: "00000000-0000-4000-8000-000000000071", UserID: 7, Generation: 1,
+		Phase: model.FeishuAuthPhaseUserAuth, RequestedScopesJSON: []byte(`["docx:document:readonly"]`),
+		State: model.FeishuAuthSessionPending, ProtocolVersion: 2,
+		ResumeCredentialCiphertext: []byte("historical-device-code"), ResumeKeyVersion: keyVersion,
+		ResumeExpiresAt: &resumeExpiry, ScopeHash: strings.Repeat("a", 64), ExpiresAt: resumeExpiry,
+	}).Error)
+}
+
 type compositionReceiptVerifier struct{}
 
 func (compositionReceiptVerifier) VerifyRequired([]string, uint64, string) error { return nil }
@@ -109,11 +123,32 @@ func TestBuildFeishuService_ComposesCompleteWorkspaceBeforePublishing(t *testing
 	require.NotNil(t, composition.skillReader)
 	require.NotNil(t, composition.operationService)
 	require.NotNil(t, composition.authSessionService)
+	require.NotNil(t, composition.deviceAuthFlow)
 	require.NotNil(t, composition.resumer)
 	require.NotNil(t, composition.dispatcher)
 	require.NotNil(t, composition.lifecycleService, "Task13 must publish the same Task12 graph to HTTP")
 	require.Same(t, composition.dispatcher, composition.authWorkerDispatcher)
 	require.NotNil(t, composition.supervisor)
+}
+
+func TestBuildFeishuService_DeviceAuthCompositionFailsClosed(t *testing.T) {
+	t.Run("missing cipher", func(t *testing.T) {
+		deps := newFeishuCompositionDeps(t)
+		deps.cipherKeys = nil
+		composition, err := buildFeishuService(deps)
+		require.Error(t, err)
+		require.Nil(t, composition)
+	})
+
+	t.Run("missing flow", func(t *testing.T) {
+		deps := newFeishuCompositionDeps(t)
+		deps.deviceAuthFactory = func(feishu.DeviceAuthFlowDeps) (*feishu.DeviceAuthFlow, error) {
+			return nil, nil
+		}
+		composition, err := buildFeishuService(deps)
+		require.Error(t, err)
+		require.Nil(t, composition)
+	})
 }
 
 func TestBuildFeishuService_KeyRotationReadsHistoricalVault(t *testing.T) {
@@ -142,6 +177,33 @@ func TestBuildFeishuService_MissingHistoricalKeyFailsClosedBeforePublication(t *
 	deps.tokenKey = feishuCompositionKey(9)
 	deps.cipherKeys = []feishuCipherKeyringEntry{feishuCompositionKeyringEntry("v2", feishuCompositionKey(2))}
 	prepareHistoricalCompositionVault(t, deps, "v1", feishuCompositionKey(1))
+
+	composition, err := buildFeishuService(deps)
+	require.Error(t, err)
+	require.Nil(t, composition)
+}
+
+func TestBuildFeishuService_KeyRotationRetainsHistoricalAuthSessionKey(t *testing.T) {
+	deps := newFeishuCompositionDeps(t)
+	deps.keyVersion = "v2"
+	deps.tokenKey = feishuCompositionKey(9)
+	deps.cipherKeys = []feishuCipherKeyringEntry{
+		feishuCompositionKeyringEntry("v1", feishuCompositionKey(1)),
+		feishuCompositionKeyringEntry("v2", feishuCompositionKey(2)),
+	}
+	prepareHistoricalCompositionAuthSession(t, deps, "v1")
+
+	composition, err := buildFeishuService(deps)
+	require.NoError(t, err)
+	require.NotNil(t, composition)
+}
+
+func TestBuildFeishuService_MissingHistoricalAuthSessionKeyFailsClosedBeforePublication(t *testing.T) {
+	deps := newFeishuCompositionDeps(t)
+	deps.keyVersion = "v2"
+	deps.tokenKey = feishuCompositionKey(9)
+	deps.cipherKeys = []feishuCipherKeyringEntry{feishuCompositionKeyringEntry("v2", feishuCompositionKey(2))}
+	prepareHistoricalCompositionAuthSession(t, deps, "v1")
 
 	composition, err := buildFeishuService(deps)
 	require.Error(t, err)

@@ -92,6 +92,7 @@ type AuthSessionServiceDeps struct {
 	Sessions   AuthSessionStore
 	Vault      OperationHomeVault
 	CLI        AuthSessionCLI
+	DeviceAuth *DeviceAuthFlow
 	Dispatcher OperationResumeDispatcher
 	Owner      string
 
@@ -196,6 +197,7 @@ type AuthSessionService struct {
 	sessions   AuthSessionStore
 	vault      OperationHomeVault
 	cli        AuthSessionCLI
+	deviceAuth *DeviceAuthFlow
 	dispatcher OperationResumeDispatcher
 
 	now                func() time.Time
@@ -222,7 +224,7 @@ type AuthSessionService struct {
 
 // NewAuthSessionService validates the one-way authorization dependencies.
 func NewAuthSessionService(deps AuthSessionServiceDeps) (*AuthSessionService, error) {
-	if deps.Accounts == nil || deps.Sessions == nil || deps.Vault == nil || deps.CLI == nil ||
+	if deps.Accounts == nil || deps.Sessions == nil || deps.Vault == nil || deps.CLI == nil || deps.DeviceAuth == nil ||
 		deps.Dispatcher == nil || strings.TrimSpace(deps.Owner) == "" {
 		return nil, fmt.Errorf("%w: missing dependency", ErrAuthSessionUnavailable)
 	}
@@ -253,7 +255,7 @@ func NewAuthSessionService(deps AuthSessionServiceDeps) (*AuthSessionService, er
 		return nil, fmt.Errorf("%w: CLI evidence rejected", ErrAuthSessionUnavailable)
 	}
 	return &AuthSessionService{
-		accounts: deps.Accounts, sessions: deps.Sessions, vault: deps.Vault, cli: deps.CLI,
+		accounts: deps.Accounts, sessions: deps.Sessions, vault: deps.Vault, cli: deps.CLI, deviceAuth: deps.DeviceAuth,
 		dispatcher: deps.Dispatcher, now: now, newID: newID, newLeaseToken: newLeaseToken,
 		leaseDuration: leaseDuration, sessionDuration: sessionDuration,
 		heartbeatInterval: heartbeatInterval, startTimeout: startTimeout, verifiedCLIVersion: deps.VerifiedCLIVersion,
@@ -572,6 +574,10 @@ func (s *AuthSessionService) start(
 		OperationID: operationIDPointer, Phase: phase, RequestedScopesJSON: requestedScopesJSON,
 		State: model.FeishuAuthSessionPending, ExpiresAt: now.Add(s.sessionDuration),
 	}
+	if phase == model.FeishuAuthPhaseUserAuth {
+		candidate.ProtocolVersion = 2
+		candidate.ScopeHash = deviceAuthScopeHash(scopes)
+	}
 	session, created, err := s.sessions.CreateOrGetPendingSession(ctx, candidate)
 	if err != nil || session == nil {
 		return nil, ErrAuthSessionUnavailable
@@ -596,6 +602,21 @@ func (s *AuthSessionService) start(
 			return nil, ErrAuthSessionUnavailable
 		}
 		return s.actionFor(session, scopes), nil
+	}
+	if phase == model.FeishuAuthPhaseUserAuth {
+		if session.ProtocolVersion != 2 || session.ScopeHash != deviceAuthScopeHash(scopes) {
+			return nil, ErrAuthSessionUnavailable
+		}
+		if !created {
+			if len(session.ResumeCredentialCiphertext) > 0 && session.ResumeKeyVersion != "" && session.ResumeExpiresAt != nil {
+				url := s.deviceAuth.liveURLs.get(authSessionRegistryKey(session), now)
+				return s.deviceAuth.actionFor(session, scopes, url, *session.ResumeExpiresAt), nil
+			}
+			if session.LeaseUntil != nil && session.LeaseUntil.After(now) {
+				return s.deviceAuth.actionFor(session, scopes, "", session.ExpiresAt), nil
+			}
+		}
+		return s.deviceAuth.StartUserAuthorization(ctx, account, session, scopes)
 	}
 
 	if !created {
@@ -623,8 +644,7 @@ func authSessionPlan(kind RecoveryKind, requested []string) (string, []string, [
 		if len(scopes) == 0 {
 			return "", nil, nil, ErrAuthSessionUnavailable
 		}
-		return model.FeishuAuthPhaseUserAuth,
-			[]string{"auth", "login", "--json", "--scope", strings.Join(scopes, " ")}, scopes, nil
+		return model.FeishuAuthPhaseUserAuth, nil, scopes, nil
 	default:
 		return "", nil, nil, ErrAuthSessionUnavailable
 	}

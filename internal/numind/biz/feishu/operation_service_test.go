@@ -602,6 +602,15 @@ func (f *operationVaultFake) WithHome(
 	return nil
 }
 
+func (f *operationVaultFake) WithHomeCandidate(
+	context.Context,
+	uint,
+	uint64,
+	func(string) error,
+) (*CLIHomeCandidate, error) {
+	return nil, errors.New("completion candidate is outside operation fixture tests")
+}
+
 type operationHarness struct {
 	t            *testing.T
 	ctx          context.Context
@@ -1088,16 +1097,27 @@ func TestOperationService_CompletedAuthRecoveryContinuesWithoutRecursiveDispatch
 		ID: "00000000-0000-4000-8000-555555555555", UserID: 7, Generation: 1,
 		OperationID: &operationID, Phase: model.FeishuAuthPhaseUserAuth,
 		RequestedScopesJSON: []byte(`["docx:document:readonly"]`),
-		State:               model.FeishuAuthSessionCompleted, ExpiresAt: h.service.now().Add(10 * time.Minute),
+		State:               model.FeishuAuthSessionCompleted, ProtocolVersion: 2,
+		ScopeHash: deviceAuthScopeHash([]string{"docx:document:readonly"}),
+		ExpiresAt: h.service.now().Add(10 * time.Minute),
 	}).Error)
 	require.NoError(t, h.db.Model(&model.UserThirdPartyAccount{}).
 		Where("user_id = ? AND provider = ?", 7, ProviderLark).
 		Updates(map[string]any{"connection_state": model.FeishuConnectionConnected, "connected": true}).Error)
 
 	dispatcher := &reentrantOperationResumeDispatcher{}
+	cli := &authSessionCLIFake{}
+	deviceAuth, err := NewDeviceAuthFlow(DeviceAuthFlowDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Sessions: h.dataStore.FeishuWorkspace(),
+		Vault: h.vault, CLI: cli, Cipher: newDeviceAuthFlowCredentialCipher(t), Dispatcher: dispatcher,
+		Owner: "recursive-integration-device-auth", Now: h.service.now,
+		LeaseDuration: time.Minute, SessionDuration: 10 * time.Minute,
+		HeartbeatInterval: 30 * time.Second, StartTimeout: time.Second, CompletionTimeout: 30 * time.Second,
+	})
+	require.NoError(t, err)
 	authService, err := NewAuthSessionService(AuthSessionServiceDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Sessions: h.dataStore.FeishuWorkspace(),
-		Vault: h.vault, CLI: &authSessionCLIFake{}, Dispatcher: dispatcher, Owner: "recursive-integration",
+		Vault: h.vault, CLI: cli, DeviceAuth: deviceAuth, Dispatcher: dispatcher, Owner: "recursive-integration",
 		Now: h.service.now, LeaseDuration: time.Minute, SessionDuration: 10 * time.Minute,
 		HeartbeatInterval: 30 * time.Second, StartTimeout: time.Second,
 	})

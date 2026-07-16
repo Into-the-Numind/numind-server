@@ -102,9 +102,17 @@ func newPersonalWorkspaceIntegrationAuthService(
 	owner string,
 ) *AuthSessionService {
 	t.Helper()
+	deviceAuth, err := NewDeviceAuthFlow(DeviceAuthFlowDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Sessions: h.dataStore.FeishuWorkspace(),
+		Vault: h.vault, CLI: cli, Cipher: newDeviceAuthFlowCredentialCipher(t), Dispatcher: dispatcher,
+		Owner: owner + "-device-auth", Now: h.service.now,
+		LeaseDuration: time.Minute, SessionDuration: 10 * time.Minute,
+		HeartbeatInterval: 30 * time.Second, StartTimeout: time.Second, CompletionTimeout: 30 * time.Second,
+	})
+	require.NoError(t, err)
 	auth, err := NewAuthSessionService(AuthSessionServiceDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Sessions: h.dataStore.FeishuWorkspace(),
-		Vault: h.vault, CLI: cli, Dispatcher: dispatcher, Owner: owner,
+		Vault: h.vault, CLI: cli, DeviceAuth: deviceAuth, Dispatcher: dispatcher, Owner: owner,
 		Now: h.service.now, LeaseDuration: time.Minute, SessionDuration: 10 * time.Minute,
 		HeartbeatInterval: 30 * time.Second, StartTimeout: time.Second,
 	})
@@ -316,9 +324,18 @@ func TestPersonalWorkspaceIntegration_UserAuthResumeSurvivesServiceRestart(t *te
 		release: instanceARelease,
 	}
 	instanceADispatcher := &personalWorkspaceRestartDispatcher{}
+	instanceADeviceAuth, err := NewDeviceAuthFlow(DeviceAuthFlowDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Sessions: h.dataStore.FeishuWorkspace(),
+		Vault: vault, CLI: instanceACLI, Cipher: newDeviceAuthFlowCredentialCipher(t), Dispatcher: instanceADispatcher,
+		Owner: "instance-a-device-auth", Now: h.service.now,
+		LeaseDuration: time.Minute, SessionDuration: 10 * time.Minute,
+		HeartbeatInterval: 30 * time.Second, StartTimeout: time.Second, CompletionTimeout: 30 * time.Second,
+	})
+	require.NoError(t, err)
 	instanceAAuth, err := NewAuthSessionService(AuthSessionServiceDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Sessions: h.dataStore.FeishuWorkspace(),
-		Vault: vault, CLI: instanceACLI, Dispatcher: instanceADispatcher, Owner: "instance-a",
+		Vault: vault, CLI: instanceACLI, DeviceAuth: instanceADeviceAuth,
+		Dispatcher: instanceADispatcher, Owner: "instance-a",
 		Now: h.service.now, LeaseDuration: time.Minute, SessionDuration: 10 * time.Minute,
 		HeartbeatInterval: 30 * time.Second, StartTimeout: time.Second,
 	})
@@ -354,9 +371,18 @@ func TestPersonalWorkspaceIntegration_UserAuthResumeSurvivesServiceRestart(t *te
 
 	instanceBCLI := &authSessionCLIFake{}
 	instanceBDispatcher := &personalWorkspaceRestartDispatcher{}
+	instanceBDeviceAuth, err := NewDeviceAuthFlow(DeviceAuthFlowDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Sessions: h.dataStore.FeishuWorkspace(),
+		Vault: vault, CLI: instanceBCLI, Cipher: newDeviceAuthFlowCredentialCipher(t), Dispatcher: instanceBDispatcher,
+		Owner: "instance-b-device-auth", Now: h.service.now,
+		LeaseDuration: time.Minute, SessionDuration: 10 * time.Minute,
+		HeartbeatInterval: 30 * time.Second, StartTimeout: time.Second, CompletionTimeout: 30 * time.Second,
+	})
+	require.NoError(t, err)
 	instanceBAuth, err := NewAuthSessionService(AuthSessionServiceDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Sessions: h.dataStore.FeishuWorkspace(),
-		Vault: vault, CLI: instanceBCLI, Dispatcher: instanceBDispatcher, Owner: "instance-b",
+		Vault: vault, CLI: instanceBCLI, DeviceAuth: instanceBDeviceAuth,
+		Dispatcher: instanceBDispatcher, Owner: "instance-b",
 		Now: h.service.now, LeaseDuration: time.Minute, SessionDuration: 10 * time.Minute,
 		HeartbeatInterval: 30 * time.Second, StartTimeout: time.Second,
 	})

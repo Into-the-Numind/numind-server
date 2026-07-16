@@ -32,6 +32,7 @@ type feishuPersonalWorkspace struct {
 	skillReader        *feishu.SkillReader
 	operationService   *feishu.FeishuOperationService
 	authSessionService *feishu.AuthSessionService
+	deviceAuthFlow     *feishu.DeviceAuthFlow
 	// lifecycleService is the only HTTP-facing view of this graph. It uses the
 	// same auth instance, operation instance, and dispatcher below; it must not
 	// reconstruct a legacy orchestrator or an additional Agent resumer.
@@ -77,6 +78,9 @@ type feishuCompositionDeps struct {
 	// verifyVersion is a test seam. Production leaves it nil so the fixed
 	// ControlledLarkCLIRunner probe is always performed.
 	verifyVersion func(context.Context) error
+	// deviceAuthFactory is a fail-closed composition seam. Production always
+	// uses NewDeviceAuthFlow; tests can prove a nil flow is never published.
+	deviceAuthFactory func(feishu.DeviceAuthFlowDeps) (*feishu.DeviceAuthFlow, error)
 }
 
 // buildFeishuService composes the flag-gated personal workspace graph. It
@@ -129,6 +133,10 @@ func buildFeishuService(deps feishuCompositionDeps) (*feishuPersonalWorkspace, e
 	operationCipher, err := feishu.NewOperationCipherKeyring(ciphers, deps.keyVersion)
 	if err != nil {
 		return nil, fmt.Errorf("feishu: build operation cipher keyring: %w", err)
+	}
+	deviceAuthCipher, err := feishu.NewDeviceAuthCredentialCipher(ciphers, deps.keyVersion)
+	if err != nil {
+		return nil, fmt.Errorf("feishu: build device authorization cipher: %w", err)
 	}
 	skillReader, err := feishu.NewSkillReader(deps.tokenKey)
 	if err != nil {
@@ -184,11 +192,27 @@ func buildFeishuService(deps feishuCompositionDeps) (*feishuPersonalWorkspace, e
 	}
 	resumer := agent.NewAgentRunResumer(deps.resumeStore, deps.studentRuns, deps.supervisor)
 	dispatcher := NewWorkspaceResumeDispatcher(operationService, resumer)
+	deviceAuthFactory := deps.deviceAuthFactory
+	if deviceAuthFactory == nil {
+		deviceAuthFactory = feishu.NewDeviceAuthFlow
+	}
+	deviceAuthFlow, err := deviceAuthFactory(feishu.DeviceAuthFlowDeps{
+		Accounts: deps.dataStore.ThirdPartyAccounts(), Sessions: deps.dataStore.FeishuWorkspace(),
+		Vault: vault, CLI: runner, Cipher: deviceAuthCipher, Dispatcher: dispatcher,
+		Owner: deps.authOwner,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("feishu: build device authorization flow: %w", err)
+	}
+	if deviceAuthFlow == nil {
+		return nil, fmt.Errorf("feishu: build device authorization flow: unavailable")
+	}
 	authService, err = feishu.NewAuthSessionService(feishu.AuthSessionServiceDeps{
 		Accounts:           deps.dataStore.ThirdPartyAccounts(),
 		Sessions:           deps.dataStore.FeishuWorkspace(),
 		Vault:              vault,
 		CLI:                runner,
+		DeviceAuth:         deviceAuthFlow,
 		Dispatcher:         dispatcher,
 		Owner:              deps.authOwner,
 		VerifiedCLIVersion: feishu.LarkCLIVersion,
@@ -213,7 +237,7 @@ func buildFeishuService(deps feishuCompositionDeps) (*feishuPersonalWorkspace, e
 
 	return &feishuPersonalWorkspace{
 		runner: runner, vault: vault, catalog: catalog, skillReader: skillReader,
-		operationService: operationService, authSessionService: authService,
+		operationService: operationService, authSessionService: authService, deviceAuthFlow: deviceAuthFlow,
 		lifecycleService: lifecycleService,
 		resumer:          resumer, dispatcher: dispatcher, authWorkerDispatcher: dispatcher,
 		supervisor: deps.supervisor,
@@ -295,6 +319,17 @@ func verifyFeishuPersistedKeyVersions(dataStore store.IStore, ciphers map[string
 			if err := verifyFeishuPersistedKeyVersion(version, ciphers); err != nil {
 				return err
 			}
+		}
+	}
+	var resumeVersions []string
+	if err := dataStore.DB().Model(&model.FeishuAuthSession{}).
+		Where("resume_key_version IS NOT NULL AND resume_key_version <> ''").
+		Distinct().Pluck("resume_key_version", &resumeVersions).Error; err != nil {
+		return fmt.Errorf("persistent key version store unavailable")
+	}
+	for _, version := range resumeVersions {
+		if err := verifyFeishuPersistedKeyVersion(version, ciphers); err != nil {
+			return err
 		}
 	}
 	var resultBlobs []struct {
