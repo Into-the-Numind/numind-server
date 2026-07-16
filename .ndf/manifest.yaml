@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: Give post-authorization handoff its own bounded runtime and settle stale expired cards through an explicit terminal refresh result
   classification_reason: 'Standard: customer-reported third-party authorization lifecycle and replay-safety boundary with a coordinated backend/frontend API contract change.'
-  last_updated_by: ai-s5-qa-complete
-  last_updated_at: '2026-07-16T16:34:00+08:00'
+  last_updated_by: ai-s5-final-review-pass
+  last_updated_at: '2026-07-16T16:38:37+08:00'
   created_at: '2026-07-16T14:15:00+08:00'
   track: standard
   stage: S5
@@ -22,7 +22,7 @@ features:
   progress:
     total_tasks: 5
     completed_tasks: 4
-    reviewed_tasks: 4
+    reviewed_tasks: 5
   artifacts:
     requirement: requirements/feishu-stage-handoff.md
     proposal: proposals/feishu-stage-handoff-proposal.md

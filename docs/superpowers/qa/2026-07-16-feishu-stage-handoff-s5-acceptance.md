@@ -46,7 +46,7 @@ One default-concurrency backend run triggered the pre-existing controlled-runner
 ## Independent review
 
 - Code-quality/state-machine review: PASS, P0/P1/P2 = 0.
-- Specification review: code PASS; final documentation re-review required after this S4 wording correction.
+- Specification review: PASS, P0/P1/P2 = 0. Final requirements, proposal, design, plan, backend, and frontend state machines are aligned.
 
 ## Remaining acceptance
 
