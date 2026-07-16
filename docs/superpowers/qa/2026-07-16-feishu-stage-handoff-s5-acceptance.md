@@ -48,6 +48,14 @@ One default-concurrency backend run triggered the pre-existing controlled-runner
 - Code-quality/state-machine review: PASS, P0/P1/P2 = 0.
 - Specification review: PASS, P0/P1/P2 = 0. Final requirements, proposal, design, plan, backend, and frontend state machines are aligned.
 
-## Remaining acceptance
+## Dev deployment
 
-Merge and push both `develop` branches, deploy server then web to dev, health-check both services, and repeat the real expired-card flow. Production deployment is explicitly out of scope.
+- Backend merged and pushed as `a7b96778`, then deployed as `develop-a7b96778`; `/healthz` returned `status=ok`.
+- Frontend merged and pushed as `9a57eba`, then deployed as `develop-9a57eba`; `/health` was healthy and the public page returned HTTP 200.
+- Browser canary loaded in 0.878 seconds with real content and no console errors.
+- Authenticated Agent page loaded successfully; all observed application API requests returned HTTP 200.
+- Running container image identities matched both deployed commits; post-deploy critical-log scan found zero `panic`/`fatal` lines.
+
+## Remaining product acceptance
+
+The original account must repeat the expired-card action once to confirm its exact persisted operation is settled. Production deployment is explicitly out of scope.

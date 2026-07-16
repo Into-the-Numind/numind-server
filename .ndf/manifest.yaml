@@ -4,24 +4,25 @@ features:
   ndf_version: '3.0'
   description: Give post-authorization handoff its own bounded runtime and settle stale expired cards through an explicit terminal refresh result
   classification_reason: 'Standard: customer-reported third-party authorization lifecycle and replay-safety boundary with a coordinated backend/frontend API contract change.'
-  last_updated_by: ai-s5-final-review-pass
-  last_updated_at: '2026-07-16T16:38:37+08:00'
+  last_updated_by: ai-s7-dev-deployed
+  last_updated_at: '2026-07-16T16:55:57+08:00'
   created_at: '2026-07-16T14:15:00+08:00'
   track: standard
-  stage: S5
+  stage: S7-dev-deployed
   status: active
+  deployed: 'dev server develop-a7b96778; web develop-9a57eba on 2026-07-16. Health, image identity, authenticated Agent page, network, console, and critical-log checks passed. Production not deployed.'
   repos:
-    numind-server: /private/tmp/wt-feishu-stage-handoff-numind-server
-    numind-web-v3: /private/tmp/wt-feishu-stage-handoff-numind-web-v3
+    numind-server: develop (merged via ndf-done a7b96778)
+    numind-web-v3: develop (merged via ndf-done 9a57eba)
   worktrees:
-    numind-server: /private/tmp/wt-feishu-stage-handoff-numind-server
-    numind-web-v3: /private/tmp/wt-feishu-stage-handoff-numind-web-v3
+    numind-server: (removed by ndf-done)
+    numind-web-v3: (removed by ndf-done)
   branches:
-    numind-server: feature/feishu-stage-handoff
-    numind-web-v3: feature/feishu-stage-handoff
+    numind-server: develop
+    numind-web-v3: develop
   progress:
     total_tasks: 5
-    completed_tasks: 4
+    completed_tasks: 5
     reviewed_tasks: 5
   artifacts:
     requirement: requirements/feishu-stage-handoff.md
@@ -37,6 +38,7 @@ features:
   - 'S3: backend and frontend ship together. Customer-bug commits begin with failing reproduction tests in each repository.'
   - 'S4 correction: every committed terminal state repairs the exact Agent handoff. Succeeded compensates only Task11; failed/unknown/cancelled terminalize the wait. This also applies to states created during the current request and confirm/cancel races.'
   - 'S5: dual independent review and automated QA pass. Refresh is an exclusive fail-closed union, terminal copy is state-specific, and stale responses cannot mutate a newer route or shared connection state.'
+  - 'S6-S7: ndf-done merged and pushed both develop branches. Dev deployed server a7b96778 then web 9a57eba; public health and page checks passed, authenticated Agent page loaded with all observed API calls at 200, browser console had zero errors, and both containers had zero panic/fatal lines after deployment. Original-account expired-card click remains the final product acceptance; prod is out of scope.'
   blockers: []
 
 - id: feishu-keychain-app-evidence
