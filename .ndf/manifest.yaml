@@ -1,5 +1,24 @@
 schema_version: '2.0'
 features:
+- id: agent-stream-start-order
+  ndf_version: '3.0'
+  description: Emit stream_start before any live Agent reasoning or answer event so the frontend can bind and render the run without a refresh
+  classification_reason: 'Hotfix: no DB, API, external integration, payment, or permission change; exactly 3 affected code/test files. User confirmed on 2026-07-16.'
+  last_updated_by: ai-h2-verified
+  last_updated_at: '2026-07-16T18:26:00+08:00'
+  created_at: '2026-07-16T18:12:00+08:00'
+  track: hotfix
+  stage: H2
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: fix/agent-stream-start-order}
+  worktrees: {numind-server: /private/tmp/wt-agent-stream-start-order-numind-server}
+  progress: {total_tasks: 1, completed_tasks: 1, reviewed_tasks: 1}
+  decisions:
+  - 'Runtime SSE capture and the committed failing test both proved token_delta preceded stream_start. RunStream now emits stream_start with seq=1 before entering einoAgent.Stream; an atomic guard preserves exactly-once fallback behavior.'
+  - 'H2: focused ordering regression, Agent race suite, full repository tests, and task lint all passed. The first full run exposed one pre-existing Feishu concurrency-test flake; the isolated test passed 10/10 and the fresh full run passed.'
+  blockers: []
+
 - id: agent-immediate-feedback
   ndf_version: '3.0'
   description: Show an immediate Agent working indicator after send, before the backend emits stream_start
