@@ -1233,6 +1233,91 @@ func TestWorkspaceLifecycleResumeCancelledSucceededOperationCompensatesContinuat
 	require.Zero(t, operations.cancelled, "a completed operation must not be cancelled after its write succeeded")
 }
 
+func TestWorkspaceLifecycleResumeCancelledSettlesConcurrentTerminalResult(t *testing.T) {
+	tests := []struct {
+		state   string
+		outcome externalaction.TerminalOutcome
+	}{
+		{state: model.FeishuOperationSucceeded},
+		{state: model.FeishuOperationFailed, outcome: externalaction.TerminalOutcomeFailed},
+		{state: model.FeishuOperationUnknown, outcome: externalaction.TerminalOutcomeUnknown},
+		{state: model.FeishuOperationCancelled, outcome: externalaction.TerminalOutcomeCancelled},
+	}
+	for index, tc := range tests {
+		t.Run(tc.state, func(t *testing.T) {
+			operationID := "op-cancel-race-result-" + tc.state
+			op := &model.FeishuOperation{
+				ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingConfirmation,
+				AgentRunID: uint64(110 + index), ToolCallID: fmt.Sprintf("tool-cancel-race-result-%d", index),
+			}
+			svc, _, _, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+				UserID: 7, Provider: ProviderLark, Generation: 2,
+			}, op)
+			operations.cancel = func(_ context.Context, _ uint, id string) (*OperationResult, error) {
+				return &OperationResult{OperationID: id, State: tc.state}, nil
+			}
+
+			result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionCancelled)
+
+			require.NoError(t, err)
+			require.Equal(t, &OperationResult{OperationID: operationID, State: tc.state}, result)
+			require.Equal(t, 1, operations.cancelled)
+			calls := svc.agentWaits.(*lifecycleAgentWaitFake).calls
+			if tc.state == model.FeishuOperationSucceeded {
+				require.Equal(t, 1, dispatcher.calls)
+				require.Empty(t, calls)
+			} else {
+				require.Zero(t, dispatcher.calls)
+				require.Len(t, calls, 1)
+				require.Equal(t, tc.outcome, calls[0].outcome)
+			}
+		})
+	}
+}
+
+func TestWorkspaceLifecycleResumeCancelledReloadsConcurrentTerminalAfterCancelError(t *testing.T) {
+	tests := []struct {
+		state   string
+		outcome externalaction.TerminalOutcome
+	}{
+		{state: model.FeishuOperationSucceeded},
+		{state: model.FeishuOperationFailed, outcome: externalaction.TerminalOutcomeFailed},
+		{state: model.FeishuOperationUnknown, outcome: externalaction.TerminalOutcomeUnknown},
+		{state: model.FeishuOperationCancelled, outcome: externalaction.TerminalOutcomeCancelled},
+	}
+	for index, tc := range tests {
+		t.Run(tc.state, func(t *testing.T) {
+			operationID := "op-cancel-race-error-" + tc.state
+			op := &model.FeishuOperation{
+				ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingConfirmation,
+				AgentRunID: uint64(120 + index), ToolCallID: fmt.Sprintf("tool-cancel-race-error-%d", index),
+			}
+			svc, _, workspace, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+				UserID: 7, Provider: ProviderLark, Generation: 2,
+			}, op)
+			operations.cancel = func(_ context.Context, _ uint, _ string) (*OperationResult, error) {
+				workspace.operation.State = tc.state
+				return nil, errors.New("concurrent terminal transition")
+			}
+
+			result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionCancelled)
+
+			require.NoError(t, err)
+			require.Equal(t, &OperationResult{OperationID: operationID, State: tc.state}, result)
+			require.Equal(t, 1, operations.cancelled)
+			calls := svc.agentWaits.(*lifecycleAgentWaitFake).calls
+			if tc.state == model.FeishuOperationSucceeded {
+				require.Equal(t, 1, dispatcher.calls)
+				require.Empty(t, calls)
+			} else {
+				require.Zero(t, dispatcher.calls)
+				require.Len(t, calls, 1)
+				require.Equal(t, tc.outcome, calls[0].outcome)
+			}
+		})
+	}
+}
+
 func TestWorkspaceLifecycleResumeCancelledRetriesTerminalAgentWaitWithoutReCancellingOperation(t *testing.T) {
 	const operationID = "op-cancelled-terminal-wait-retry"
 	op := &model.FeishuOperation{
