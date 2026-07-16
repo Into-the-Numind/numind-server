@@ -1576,6 +1576,37 @@ exit 2
 	require.True(t, authorized)
 }
 
+func TestControlledLarkCLIRunner_ConfigInitAcceptsPlainCompletionAfterWritingCompleteAppConfig(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test CLI uses a POSIX shell")
+	}
+	home := t.TempDir()
+	binary := filepath.Join(t.TempDir(), "lark-cli")
+	script := `#!/bin/sh
+if [ "$1" = "config" ] && [ "$2" = "init" ] && [ "$3" = "--new" ]; then
+  mkdir -p "$HOME/.lark-cli"
+  echo 'https://open.feishu.cn/page/cli?user_code=CREATED'
+  printf '{"apps":[{"appId":"cli_created","appSecret":"test-secret","brand":"feishu"}]}\n' > "$HOME/.lark-cli/config.json"
+  echo '应用创建完成'
+  exit 0
+fi
+exit 2
+`
+	require.NoError(t, os.WriteFile(binary, []byte(script), 0o700))
+	runner := &ControlledLarkCLIRunner{binary: binary}
+
+	var observedURL string
+	err := runner.RunBlocking(context.Background(), home, []string{"config", "init", "--new"}, func(value string) error {
+		observedURL = value
+		return nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, "https://open.feishu.cn/page/cli?user_code=CREATED", observedURL)
+	appID, evidenceErr := runner.AppIDFromHome(context.Background(), home)
+	require.NoError(t, evidenceErr)
+	require.Equal(t, "cli_created", appID)
+}
+
 func TestControlledLarkCLIRunner_AuthSessionSuccessWithoutURLFailsClosed(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test CLI uses a POSIX shell")
