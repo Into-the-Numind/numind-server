@@ -362,7 +362,7 @@ const (
 var errExternalResumeLostClaim = errors.New("external tool resume claim was already consumed")
 
 // FinalizeExternalToolWait durably consumes one exact external wait when its
-// Feishu operation becomes cancelled or unknown. It appends a fixed structured
+// Feishu operation becomes failed, cancelled, or unknown. It appends a fixed structured
 // tool error to the original tool_call_id, clears the external-action card,
 // prevents every later Task11 claim, and marks the Agent run terminal. The
 // whole transition is one transaction, so duplicate lifecycle callbacks cannot

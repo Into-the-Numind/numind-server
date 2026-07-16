@@ -13,6 +13,7 @@ func TestTerminalToolResultIsFixedStructuredAndNonSensitive(t *testing.T) {
 		state   string
 	}{
 		{outcome: TerminalOutcomeCancelled, state: "cancelled"},
+		{outcome: TerminalOutcomeFailed, state: "failed"},
 		{outcome: TerminalOutcomeUnknown, state: "unknown"},
 	} {
 		t.Run(string(tc.outcome), func(t *testing.T) {
@@ -31,8 +32,12 @@ func TestTerminalToolResultIsFixedStructuredAndNonSensitive(t *testing.T) {
 }
 
 func terminalMessageForTest(outcome TerminalOutcome) string {
-	if outcome == TerminalOutcomeCancelled {
+	switch outcome {
+	case TerminalOutcomeCancelled:
 		return "飞书操作已取消，未执行。"
+	case TerminalOutcomeFailed:
+		return "飞书操作未完成，请重新发起原任务。"
+	default:
+		return "飞书操作结果未知，请先在飞书中核对后再试。"
 	}
-	return "飞书操作结果未知，请先在飞书中核对后再试。"
 }

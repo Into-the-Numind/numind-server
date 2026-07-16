@@ -14,13 +14,13 @@ The defect is a context-boundary mismatch. `dispatchResumeDetached` currently us
 
 For `action=user_completed`:
 
-- `succeeded`: retain existing compensation behavior.
+- `succeeded`: compensate only the idempotent Agent continuation; never re-run Confirm, Cancel, or lark-cli.
 - `executing`: return `{state:"executing"}` without dispatching, claiming, or mutating.
-- `failed`, `unknown`, `cancelled`: return the stored terminal state without replaying or dispatching.
+- `failed`, `unknown`, `cancelled`: terminalize the exact linked Agent wait and return the stored state without replaying Feishu.
 - recovery waiting states: retain existing exact-session behavior.
 - all other states remain invalid.
 
-This makes a stale click safe without turning it into an implicit retry.
+The same terminal settlement is applied after app-scope completion and completed-auth dispatch, because the operation can become terminal inside the current request. Confirmation and cancellation use the same matrix. A concurrent cancel that observes a committed success compensates continuation; one that observes failed/unknown/cancelled terminalizes the wait. This makes every stale or racing click safe without turning it into a Feishu retry.
 
 ## Expired-card refresh contract
 
@@ -36,26 +36,26 @@ or, when the session is linked to a terminal operation:
 {"terminal":{"operation_id":"...","state":"failed"}}
 ```
 
-Only `succeeded`, `failed`, `unknown`, and `cancelled` are allowed terminal states. A terminal result contains no action URL, device code, scopes, or authorization payload. `WorkspaceLifecycleService.RefreshAction` checks the stored operation immediately after loading it and returns the terminal variant before any call to authorization-session recovery.
+Only `succeeded`, `failed`, `unknown`, and `cancelled` are allowed terminal states. A terminal result contains no action URL, device code, scopes, or authorization payload. `WorkspaceLifecycleService.RefreshAction` checks the stored operation immediately after loading it, compensates/terminalizes the exact Agent handoff, and returns the terminal variant before any authorization-session recovery.
 
 The controller uses an allowlisted response DTO for both variants. This is a coordinated backend/frontend contract change: the two applications must be deployed together.
 
 ## Frontend settlement
 
-The Feishu API and store return the tagged result. They update the live-action cache only for the `action` variant. For `terminal`, `AgentMessageItem` verifies that the returned operation ID matches the card that initiated the request, then asks the Agent chat store to settle that external action as terminal using the existing operation/run identity fences.
+The Feishu API models an exclusive tagged union and validates exactly one well-formed branch at runtime before any store mutation. Refresh has no shared connection-store side effect; the route owner applies a live action only after its session epoch, operation, session, and run identity fences pass. For `terminal`, `AgentMessageItem` also verifies the returned operation ID before settling the exact action.
 
-The settled card removes its URL and buttons and displays `原飞书任务已结束，请重新发送原指令。` It does not submit the original Agent prompt, call resume, or retry refresh. Automatic replay remains forbidden.
+The settled card removes its URL and buttons. `failed` displays `原飞书任务已结束，请重新发送原指令。`; `unknown` requires the user to verify Feishu; `cancelled` reports cancellation; `succeeded` reports that the original task is continuing. Failed/unknown/cancelled set the exact current run to the terminal `aborted_tools` projection and unlock input. Succeeded sets the run to `external_resume_ready`, preserving status observation until the original continuation finishes. No branch submits a new Agent prompt or retries the Feishu write.
 
 ## Current failed operation
 
-The current dev operation is already terminal `failed`; automatically resurrecting it would weaken write-safety because a generic historical failure is not sufficient proof that no remote side effect occurred. After deployment, refreshing its expired card returns the typed terminal result with HTTP 200 and closes the card. Reissuing the original instruction creates a fresh idempotent operation while reusing the app-ready account and encrypted lark-cli HOME.
+The current dev operation is already terminal `failed`; automatically replaying its Feishu command would weaken write-safety. After deployment, refreshing its expired card terminalizes the linked Agent wait, returns the typed terminal result with HTTP 200, closes the card, and unlocks input. Reissuing the original instruction creates a fresh idempotent operation while reusing the app-ready account and encrypted lark-cli HOME.
 
 ## Tests
 
 - A customer regression test proves the post-auth dispatcher receives a deadline longer than the authorization start window; the old five-second context fails this test immediately.
-- Lifecycle service tests prove `user_completed` during `executing` and after terminal failure returns stored state and invokes neither operation resume nor Agent continuation.
+- Lifecycle service tests prove `user_completed` during `executing` is read-only; all four lifecycle entries compensate success or terminalize failed/unknown/cancelled Agent waits, including terminal transitions created during the current request and concurrent confirm/cancel races.
 - Lifecycle/controller tests prove a terminal refresh returns only the terminal variant, does not invoke auth recovery, and does not leak action fields.
-- Frontend unit and Playwright tests prove the expired card consumes the terminal result, becomes noninteractive, shows the reissue instruction, and causes no Agent or repeat refresh request.
+- Frontend unit and Playwright tests prove the expired card consumes the terminal result, becomes noninteractive, uses state-specific copy, unlocks or continues observing the exact run, and causes no ordinary Agent request or repeat Feishu write.
 - Existing success compensation, confirmation, cancellation, auth-session, and integration suites remain green.
 - Run focused race tests, `go test ./...`, `task lint`, frontend unit/E2E tests, `npm run lint`, and `npm run type-check` before merge.
 

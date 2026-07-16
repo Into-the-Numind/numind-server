@@ -20,7 +20,7 @@ Playwright runtime diagnosis confirms the expired card deliberately hides its UR
 
 ### A — Separate dispatch budget plus explicit terminal handoff (chosen)
 
-Use a dedicated bounded context for durable post-auth dispatch, sized to the existing lark-cli hard ceiling. Treat `executing` and stored terminal acknowledgements as read-only state observations. Refresh returns one of two explicit outcomes: a fresh live action, or a terminal operation result. The frontend turns the latter into a closed card and a safe reissue instruction.
+Use a dedicated bounded context for durable post-auth dispatch, sized to the existing lark-cli hard ceiling. Treat `executing` as a read-only observation. Treat every committed terminal operation as an Agent-handoff repair: success compensates only the idempotent continuation, while failure/unknown/cancellation terminalizes the exact Agent wait. Refresh returns one of two explicit outcomes: a fresh live action, or a terminal operation result. The frontend turns the latter into a settled card and state-specific next-step guidance.
 
 This fixes both the real stage boundary and the stale-card recovery path without weakening replay safety. It requires a coordinated backend/frontend response-shape change, but no schema or permission change.
 
@@ -41,6 +41,7 @@ Rejected because the browser would still have to infer whether a generic error m
 - Backend auth-session dispatch context.
 - Backend lifecycle acknowledgement semantics.
 - Backend refresh result union (`action` or `terminal`).
-- Frontend API/store/message-card handling for the terminal outcome.
+- Backend exact Agent-wait settlement for terminal states observed before, during, or after an acknowledgement.
+- Frontend API/store/message-card/run handling for the terminal outcome, including fail-closed union validation and stale-response fencing.
 - Reproduction and regression tests.
 - No DB schema, permission, secret, or production-configuration changes; no automatic replay of terminal writes.

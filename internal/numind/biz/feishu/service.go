@@ -75,6 +75,22 @@ type ConnectResult struct {
 	Action *OperationAction `json:"action,omitempty"`
 }
 
+// RefreshActionResult is a tagged refresh response. Exactly one branch is
+// populated: Action for a new live URL, or Terminal when the historical
+// operation can no longer be refreshed safely.
+type RefreshActionResult struct {
+	Action   *OperationAction       `json:"action,omitempty"`
+	Terminal *RefreshTerminalResult `json:"terminal,omitempty"`
+}
+
+// RefreshTerminalResult deliberately contains no authorization material.
+// The browser only needs the exact operation identity and its stored state to
+// settle the stale external-action card without replaying the operation.
+type RefreshTerminalResult struct {
+	OperationID string `json:"operation_id"`
+	State       string `json:"state"`
+}
+
 // UnbindResult explicitly describes the local-only deletion guarantee.
 type UnbindResult struct {
 	State     string `json:"state"`
@@ -89,7 +105,7 @@ type IFeishuService interface {
 	Connect(context.Context, uint) (*ConnectResult, error)
 	Status(context.Context, uint) (*StatusResult, error)
 	Resume(context.Context, uint, string, string) (*OperationResult, error)
-	RefreshAction(context.Context, uint, string) (*OperationAction, error)
+	RefreshAction(context.Context, uint, string) (*RefreshActionResult, error)
 	Unbind(context.Context, uint) (*UnbindResult, error)
 }
 
@@ -322,6 +338,25 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 			}
 			return lifecycleStoredOperationSummary(operation), nil
 		}
+		switch operation.State {
+		case model.FeishuOperationExecuting:
+			return lifecycleStoredOperationSummary(operation), nil
+		case model.FeishuOperationFailed:
+			if err := s.finalizeTerminalOperationWait(ctx, userID, operation, externalaction.TerminalOutcomeFailed); err != nil {
+				return nil, err
+			}
+			return lifecycleStoredOperationSummary(operation), nil
+		case model.FeishuOperationUnknown:
+			if err := s.finalizeTerminalOperationWait(ctx, userID, operation, externalaction.TerminalOutcomeUnknown); err != nil {
+				return nil, err
+			}
+			return lifecycleStoredOperationSummary(operation), nil
+		case model.FeishuOperationCancelled:
+			if err := s.finalizeTerminalOperationWait(ctx, userID, operation, externalaction.TerminalOutcomeCancelled); err != nil {
+				return nil, err
+			}
+			return lifecycleStoredOperationSummary(operation), nil
+		}
 		if !recoveryWaitingState(operation.State) {
 			return nil, ErrWorkspaceLifecycleInvalid
 		}
@@ -341,6 +376,9 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 			updated, updateErr := s.workspace.GetOperationForUser(ctx, userID, account.Generation, operationID)
 			if updateErr != nil || updated == nil || updated.UserID != userID || updated.Generation != account.Generation {
 				return nil, ErrWorkspaceLifecycleUnavailable
+			}
+			if _, finalizeErr := s.finalizeTerminalOperationIfNeeded(ctx, userID, updated); finalizeErr != nil {
+				return nil, finalizeErr
 			}
 			return lifecycleStoredOperationSummary(updated), nil
 		}
@@ -366,6 +404,9 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 		if updateErr != nil || updated == nil || updated.UserID != userID || updated.Generation != account.Generation {
 			return nil, ErrWorkspaceLifecycleUnavailable
 		}
+		if _, finalizeErr := s.finalizeTerminalOperationIfNeeded(ctx, userID, updated); finalizeErr != nil {
+			return nil, finalizeErr
+		}
 		return lifecycleStoredOperationSummary(updated), nil
 	case ResumeActionConfirmed:
 		// A confirmation may have durably completed its one Feishu write before
@@ -378,28 +419,42 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 			}
 			return lifecycleStoredOperationSummary(operation), nil
 		}
+		if outcome, ok := terminalOutcomeForOperationState(operation.State); ok {
+			if err := s.finalizeTerminalOperationWait(ctx, userID, operation, outcome); err != nil {
+				return nil, err
+			}
+			return lifecycleStoredOperationSummary(operation), nil
+		}
 		if operation.State != model.FeishuOperationWaitingConfirmation {
 			return nil, ErrWorkspaceLifecycleInvalid
 		}
 		result, confirmErr := s.operations.Confirm(ctx, userID, operationID)
-		if confirmErr != nil || result == nil {
+		if confirmErr != nil || result == nil || result.OperationID != operation.ID {
 			return nil, ErrWorkspaceLifecycleUnavailable
 		}
+		operation.State = result.State
 		if result.State == model.FeishuOperationSucceeded {
 			// Confirm has committed the terminal transition before returning its
 			// result. Preserve the immutable Agent linkage from the browser-verified
 			// row while reflecting that committed state for the compensation helper.
-			operation.State = model.FeishuOperationSucceeded
 			if err := s.compensateSucceededOperation(ctx, userID, operation); err != nil {
+				return nil, err
+			}
+		} else if outcome, ok := terminalOutcomeForOperationState(result.State); ok {
+			if err := s.finalizeTerminalOperationWait(ctx, userID, operation, outcome); err != nil {
 				return nil, err
 			}
 		}
 		return lifecycleResultSummary(result), nil
 	case ResumeActionCancelled:
-		// Cancellation is idempotent after the write has succeeded, but it must
-		// never become a second continuation trigger. A user can retry
-		// user_completed/confirmed to compensate Task11 instead.
+		// Cancellation cannot undo a committed Feishu write. Once the operation
+		// succeeded, every acknowledgement is therefore a safe Task11 repair:
+		// the shared dispatcher returns the stored result and never replays the
+		// Feishu command.
 		if operation.State == model.FeishuOperationSucceeded {
+			if err := s.compensateSucceededOperation(ctx, userID, operation); err != nil {
+				return nil, err
+			}
 			return lifecycleStoredOperationSummary(operation), nil
 		}
 		// Operation.Cancel commits its terminal operation transition before this
@@ -407,14 +462,8 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 		// step was temporarily unavailable, a retry must finish exactly that
 		// wait; returning "invalid" here would strand the Agent run forever.
 		// Neither terminal branch invokes Cancel nor the CLI again.
-		switch operation.State {
-		case model.FeishuOperationCancelled:
-			if err := s.finalizeTerminalOperationWait(ctx, userID, operation, externalaction.TerminalOutcomeCancelled); err != nil {
-				return nil, err
-			}
-			return lifecycleStoredOperationSummary(operation), nil
-		case model.FeishuOperationUnknown:
-			if err := s.finalizeTerminalOperationWait(ctx, userID, operation, externalaction.TerminalOutcomeUnknown); err != nil {
+		if outcome, ok := terminalOutcomeForOperationState(operation.State); ok {
+			if err := s.finalizeTerminalOperationWait(ctx, userID, operation, outcome); err != nil {
 				return nil, err
 			}
 			return lifecycleStoredOperationSummary(operation), nil
@@ -424,13 +473,29 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 		}
 		result, cancelErr := s.operations.Cancel(ctx, userID, operationID)
 		if cancelErr != nil || result == nil {
+			updated, updateErr := s.workspace.GetOperationForUser(ctx, userID, account.Generation, operationID)
+			if updateErr != nil || updated == nil || updated.UserID != userID || updated.Generation != account.Generation {
+				return nil, ErrWorkspaceLifecycleUnavailable
+			}
+			settled, settleErr := s.settleCommittedOperation(ctx, userID, updated)
+			if settleErr != nil {
+				return nil, settleErr
+			}
+			if settled || updated.State == model.FeishuOperationExecuting {
+				return lifecycleStoredOperationSummary(updated), nil
+			}
 			return nil, ErrWorkspaceLifecycleUnavailable
 		}
-		if result.OperationID != operation.ID || result.State != model.FeishuOperationCancelled {
+		if result.OperationID != operation.ID {
 			return nil, ErrWorkspaceLifecycleUnavailable
 		}
-		if err := s.finalizeTerminalOperationWait(ctx, userID, operation, externalaction.TerminalOutcomeCancelled); err != nil {
-			return nil, err
+		operation.State = result.State
+		settled, settleErr := s.settleCommittedOperation(ctx, userID, operation)
+		if settleErr != nil {
+			return nil, settleErr
+		}
+		if !settled && result.State != model.FeishuOperationExecuting {
+			return nil, ErrWorkspaceLifecycleUnavailable
 		}
 		return lifecycleResultSummary(result), nil
 	default:
@@ -511,7 +576,7 @@ func (s *WorkspaceLifecycleService) finalizeRetiredGenerationAgentWaits(
 
 // finalizeTerminalOperationWait is deliberately terminal-only. A successful
 // operation remains owned by Task12's shared dispatcher and Task11 resumer;
-// this path is for cancelled and unknown operation states, where automatic
+// this path is for failed, cancelled, and unknown operation states, where automatic
 // continuation would be both misleading and unsafe.
 func (s *WorkspaceLifecycleService) finalizeTerminalOperationWait(
 	ctx context.Context,
@@ -521,6 +586,10 @@ func (s *WorkspaceLifecycleService) finalizeTerminalOperationWait(
 ) error {
 	if s == nil || s.agentWaits == nil || operation == nil || operation.UserID != userID || userID == 0 ||
 		strings.TrimSpace(operation.ID) == "" {
+		return ErrWorkspaceLifecycleUnavailable
+	}
+	expectedOutcome, ok := terminalOutcomeForOperationState(operation.State)
+	if !ok || expectedOutcome != outcome {
 		return ErrWorkspaceLifecycleUnavailable
 	}
 	if operation.AgentRunID == 0 && strings.TrimSpace(operation.ToolCallID) == "" {
@@ -537,6 +606,51 @@ func (s *WorkspaceLifecycleService) finalizeTerminalOperationWait(
 		return ErrWorkspaceLifecycleUnavailable
 	}
 	return nil
+}
+
+func (s *WorkspaceLifecycleService) finalizeTerminalOperationIfNeeded(
+	ctx context.Context,
+	userID uint,
+	operation *model.FeishuOperation,
+) (bool, error) {
+	if operation == nil {
+		return false, ErrWorkspaceLifecycleUnavailable
+	}
+	outcome, ok := terminalOutcomeForOperationState(operation.State)
+	if !ok {
+		return false, nil
+	}
+	if err := s.finalizeTerminalOperationWait(ctx, userID, operation, outcome); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *WorkspaceLifecycleService) settleCommittedOperation(
+	ctx context.Context,
+	userID uint,
+	operation *model.FeishuOperation,
+) (bool, error) {
+	if operation != nil && operation.State == model.FeishuOperationSucceeded {
+		if err := s.compensateSucceededOperation(ctx, userID, operation); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return s.finalizeTerminalOperationIfNeeded(ctx, userID, operation)
+}
+
+func terminalOutcomeForOperationState(state string) (externalaction.TerminalOutcome, bool) {
+	switch state {
+	case model.FeishuOperationFailed:
+		return externalaction.TerminalOutcomeFailed, true
+	case model.FeishuOperationUnknown:
+		return externalaction.TerminalOutcomeUnknown, true
+	case model.FeishuOperationCancelled:
+		return externalaction.TerminalOutcomeCancelled, true
+	default:
+		return "", false
+	}
 }
 
 // recoverySession resolves an authorization session only through the durable
@@ -582,10 +696,10 @@ func lifecycleRecoveryPhase(operationState string) string {
 	}
 }
 
-// RefreshAction validates the caller's current generation before delegating to
-// AuthSessionService, which supersedes the old worker/session and returns a
-// newly-created live URL. It never accepts or returns a device code.
-func (s *WorkspaceLifecycleService) RefreshAction(ctx context.Context, userID uint, sessionID string) (*OperationAction, error) {
+// RefreshAction validates the caller's current generation before either
+// delegating to AuthSessionService for a new live URL or returning the linked
+// operation's stored terminal state. It never accepts or returns a device code.
+func (s *WorkspaceLifecycleService) RefreshAction(ctx context.Context, userID uint, sessionID string) (*RefreshActionResult, error) {
 	if s == nil || userID == 0 || strings.TrimSpace(sessionID) == "" {
 		return nil, ErrWorkspaceLifecycleInvalid
 	}
@@ -619,11 +733,38 @@ func (s *WorkspaceLifecycleService) RefreshAction(ctx context.Context, userID ui
 		if refreshErr != nil || action == nil || strings.TrimSpace(action.SessionID) == "" {
 			return nil, ErrWorkspaceLifecycleUnavailable
 		}
-		return cloneOperationAction(action), nil
+		return &RefreshActionResult{Action: cloneOperationAction(action)}, nil
+	}
+	if strings.TrimSpace(*session.OperationID) == "" {
+		return nil, ErrWorkspaceLifecycleUnavailable
 	}
 	operation, operationErr := s.workspace.GetOperationForUser(ctx, userID, account.Generation, *session.OperationID)
 	if operationErr != nil || operation == nil || operation.UserID != userID || operation.Generation != account.Generation {
 		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	if refreshTerminalOperationState(operation.State) {
+		switch operation.State {
+		case model.FeishuOperationSucceeded:
+			if err := s.compensateSucceededOperation(ctx, userID, operation); err != nil {
+				return nil, err
+			}
+		case model.FeishuOperationFailed:
+			if err := s.finalizeTerminalOperationWait(ctx, userID, operation, externalaction.TerminalOutcomeFailed); err != nil {
+				return nil, err
+			}
+		case model.FeishuOperationUnknown:
+			if err := s.finalizeTerminalOperationWait(ctx, userID, operation, externalaction.TerminalOutcomeUnknown); err != nil {
+				return nil, err
+			}
+		case model.FeishuOperationCancelled:
+			if err := s.finalizeTerminalOperationWait(ctx, userID, operation, externalaction.TerminalOutcomeCancelled); err != nil {
+				return nil, err
+			}
+		}
+		return &RefreshActionResult{Terminal: &RefreshTerminalResult{
+			OperationID: operation.ID,
+			State:       operation.State,
+		}}, nil
 	}
 	boundSession, bindingErr := s.recoverySession(ctx, userID, account.Generation, operation)
 	if bindingErr != nil || boundSession == nil {
@@ -661,7 +802,19 @@ func (s *WorkspaceLifecycleService) RefreshAction(ctx context.Context, userID ui
 	if refreshErr != nil || action == nil || strings.TrimSpace(action.SessionID) == "" {
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
-	return cloneOperationAction(action), nil
+	return &RefreshActionResult{Action: cloneOperationAction(action)}, nil
+}
+
+func refreshTerminalOperationState(state string) bool {
+	switch state {
+	case model.FeishuOperationSucceeded,
+		model.FeishuOperationFailed,
+		model.FeishuOperationUnknown,
+		model.FeishuOperationCancelled:
+		return true
+	default:
+		return false
+	}
 }
 
 // Unbind first retires the active generation atomically. That database fence

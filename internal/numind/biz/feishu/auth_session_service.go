@@ -1305,8 +1305,15 @@ func authSessionDetachedContext(ctx context.Context) (context.Context, context.C
 	return context.WithTimeout(context.WithoutCancel(ctx), authSessionFinalizeTimeout)
 }
 
+func authSessionDispatchContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), authSessionCLIHardCeiling)
+}
+
 func (s *AuthSessionService) dispatchResumeDetached(ctx context.Context, userID uint, operationID string) error {
-	dispatchCtx, dispatchCancel := authSessionDetachedContext(ctx)
+	dispatchCtx, dispatchCancel := authSessionDispatchContext(ctx)
 	defer dispatchCancel()
 	if err := s.dispatcher.DispatchResume(dispatchCtx, userID, operationID); err != nil {
 		return ErrAuthSessionUnavailable
