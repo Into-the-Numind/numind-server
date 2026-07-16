@@ -21,6 +21,47 @@ const feishuSucceededCreateProofLimit = 32
 // after removing the proof exemption from the encrypted request.
 var ErrFeishuProofReservationUnavailable = errors.New("feishu operation proof reservation unavailable")
 
+var errFeishuAuthSessionInvalidProtocolShape = errors.New("invalid feishu auth session protocol shape")
+
+// FeishuDeviceAuthCredentialAttach is the complete, encrypted protocol-v2
+// credential written after a worker starts a device authorization flow.
+type FeishuDeviceAuthCredentialAttach struct {
+	UserID       uint
+	Generation   uint64
+	SessionID    string
+	LeaseOwner   string
+	AppID        string
+	Ciphertext   []byte
+	KeyVersion   string
+	ResumeExpiry time.Time
+	ScopeHash    string
+	Now          time.Time
+}
+
+// FeishuDeviceAuthReplacement binds one terminal device authorization attempt
+// to its protocol-v2 retry and the exact waiting operation summary.
+type FeishuDeviceAuthReplacement struct {
+	UserID               uint
+	Generation           uint64
+	OldSessionID         string
+	LeaseOwner           string
+	TerminalState        string
+	NewSession           *model.FeishuAuthSession
+	OperationID          string
+	ExpectedWaitingState string
+	OldSummary           []byte
+	NewSummary           []byte
+	Now                  time.Time
+}
+
+// FeishuDeviceAuthCleanupPage reports one bounded primary-key sweep page.
+type FeishuDeviceAuthCleanupPage struct {
+	NextSessionID string
+	Scanned       int
+	Cleared       int
+	Done          bool
+}
+
 // IFeishuWorkspaceStore defines tenant- and generation-safe persistence primitives
 // for encrypted lark-cli workspaces, authorization sessions, and operations.
 type IFeishuWorkspaceStore interface {
@@ -32,6 +73,11 @@ type IFeishuWorkspaceStore interface {
 	GetSessionForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuAuthSession, error)
 	FindActiveSessionForUser(ctx context.Context, userID uint, generation uint64) (*model.FeishuAuthSession, error)
 	SupersedeSessionForUser(ctx context.Context, userID uint, generation uint64, id string, now time.Time) error
+	AttachDeviceAuthCredential(ctx context.Context, input FeishuDeviceAuthCredentialAttach) error
+	ReleaseDeviceAuthLease(ctx context.Context, userID uint, generation uint64, sessionID, leaseOwner string, now time.Time) (bool, error)
+	TerminalizeDeviceAuthSession(ctx context.Context, userID uint, generation uint64, sessionID, leaseOwner, terminalState string, now time.Time) error
+	ReplaceDeviceAuthSession(ctx context.Context, input FeishuDeviceAuthReplacement) (*model.FeishuAuthSession, error)
+	SweepDeviceAuthCredentials(ctx context.Context, before time.Time, afterSessionID string, scanLimit int) (FeishuDeviceAuthCleanupPage, error)
 	RefreshOperationSession(ctx context.Context, userID uint, generation uint64, oldSessionID, operationID, waitingState, connectionState string, replacement *model.FeishuAuthSession, replacementSummary []byte, now time.Time) (*model.FeishuAuthSession, error)
 	RestoreOperationSessionRefresh(ctx context.Context, userID uint, generation uint64, oldSessionID, replacementSessionID, operationID, waitingState string, oldSummary []byte, now time.Time) error
 	ClaimSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
@@ -169,6 +215,10 @@ func (s *feishuWorkspaceStore) CreateOrGetPendingSession(
 	if session == nil {
 		return nil, false, errors.New("create or get feishu auth session: nil session")
 	}
+	protocolVersion := normalizedFeishuAuthProtocolVersion(session.ProtocolVersion)
+	if !validFeishuAuthSessionCreationShape(session, protocolVersion) {
+		return nil, false, errFeishuAuthSessionInvalidProtocolShape
+	}
 	var stored *model.FeishuAuthSession
 	created := false
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -204,6 +254,7 @@ func (s *feishuWorkspaceStore) CreateOrGetPendingSession(
 		}
 
 		candidate := *session
+		candidate.ProtocolVersion = protocolVersion
 		if err := tx.Create(&candidate).Error; err != nil {
 			return err
 		}
@@ -224,11 +275,12 @@ func findMatchingAuthSession(
 	order string,
 ) (*model.FeishuAuthSession, error) {
 	query := tx.Where(
-		"user_id = ? AND generation = ? AND phase = ? AND state = ?",
+		"user_id = ? AND generation = ? AND phase = ? AND state = ? AND protocol_version = ?",
 		intent.UserID,
 		intent.Generation,
 		intent.Phase,
 		state,
+		normalizedFeishuAuthProtocolVersion(intent.ProtocolVersion),
 	)
 	if intent.OperationID == nil {
 		query = query.Where("operation_id IS NULL")
@@ -241,6 +293,9 @@ func findMatchingAuthSession(
 	}
 	for i := range candidates {
 		if equalRequestedScopes(candidates[i].RequestedScopesJSON, intent.RequestedScopesJSON) {
+			if !validPersistedFeishuAuthSessionShape(&candidates[i]) {
+				return nil, errFeishuAuthSessionInvalidProtocolShape
+			}
 			return &candidates[i], nil
 		}
 	}
@@ -295,10 +350,9 @@ func (s *feishuWorkspaceStore) FindActiveSessionForUser(
 	return &session, nil
 }
 
-// SupersedeSessionForUser retires one still-pending session regardless of its
-// live worker lease. A caller uses this only after validating the current
-// account generation; releasing the lease prevents the old worker from later
-// finalizing a stale authorization result.
+// SupersedeSessionForUser retires one still-pending legacy session after locking
+// its current account generation. Protocol v2 is fenced while any live worker
+// owns it and must instead use an exact-owner terminal or replacement primitive.
 func (s *feishuWorkspaceStore) SupersedeSessionForUser(
 	ctx context.Context,
 	userID uint,
@@ -306,19 +360,570 @@ func (s *feishuWorkspaceStore) SupersedeSessionForUser(
 	id string,
 	now time.Time,
 ) error {
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		active, err := lockFeishuAuthAccount(tx, userID, generation)
+		if err != nil {
+			return err
+		}
+		if !active {
+			return gorm.ErrRecordNotFound
+		}
+		result := tx.Model(&model.FeishuAuthSession{}).
+			Where("id = ? AND user_id = ? AND generation = ? AND state = ?", id, userID, generation, model.FeishuAuthSessionPending).
+			Where("protocol_version = 1 OR COALESCE(lease_owner, '') = '' OR lease_until IS NULL OR lease_until <= ?", now).
+			Updates(map[string]any{
+				"state": model.FeishuAuthSessionSuperseded, "completed_at": now.UTC(),
+				"resume_credential_ciphertext": nil, "resume_key_version": nil, "resume_expires_at": nil,
+				"lease_owner": "", "lease_until": nil,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return gorm.ErrRecordNotFound
+		}
+		return fmt.Errorf("supersede feishu auth session: %w", err)
+	}
+	return nil
+}
+
+// AttachDeviceAuthCredential atomically moves an owned protocol-v2 session to
+// its durable waiting shape and releases the start lease.
+func (s *feishuWorkspaceStore) AttachDeviceAuthCredential(ctx context.Context, input FeishuDeviceAuthCredentialAttach) error {
+	if input.UserID == 0 || input.Generation == 0 || strings.TrimSpace(input.SessionID) == "" ||
+		strings.TrimSpace(input.LeaseOwner) == "" || strings.TrimSpace(input.AppID) == "" ||
+		len(input.Ciphertext) == 0 || !validFeishuResumeKeyVersion(input.KeyVersion) ||
+		!input.ResumeExpiry.After(input.Now) || !validFeishuScopeHash(input.ScopeHash) {
+		return gorm.ErrRecordNotFound
+	}
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var account model.UserThirdPartyAccount
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ? AND provider = ?", input.UserID, "lark").
+			Take(&account).Error; err != nil {
+			return err
+		}
+		if !feishuAccountGenerationActive(&account, input.Generation) || account.AppID != input.AppID {
+			return gorm.ErrRecordNotFound
+		}
+
+		var session model.FeishuAuthSession
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND user_id = ? AND generation = ?", input.SessionID, input.UserID, input.Generation).
+			Where("state = ? AND protocol_version = ?", model.FeishuAuthSessionPending, 2).
+			Where("lease_owner = ? AND lease_until > ?", input.LeaseOwner, input.Now).
+			Take(&session).Error; err != nil {
+			return err
+		}
+		if session.Phase != model.FeishuAuthPhaseUserAuth || session.ScopeHash != input.ScopeHash || !validFeishuDeviceAuthPreStartShape(&session) {
+			return gorm.ErrRecordNotFound
+		}
+		if !session.ExpiresAt.After(input.Now) || input.ResumeExpiry.After(session.ExpiresAt) {
+			return gorm.ErrRecordNotFound
+		}
+
+		accountResult := tx.Model(&model.UserThirdPartyAccount{}).
+			Where("user_id = ? AND provider = ? AND generation = ? AND app_id = ? AND connection_state <> ?", input.UserID, "lark", input.Generation, input.AppID, model.FeishuConnectionDisconnecting).
+			Updates(map[string]any{"connection_state": model.FeishuConnectionWaitingUserAuth, "connected": false, "connected_at": nil, "updated_at": input.Now.UTC()})
+		if accountResult.Error != nil {
+			return fmt.Errorf("update feishu device auth account: %w", accountResult.Error)
+		}
+		if accountResult.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+
+		credentialResult := tx.Model(&model.FeishuAuthSession{}).
+			Where("id = ? AND user_id = ? AND generation = ?", input.SessionID, input.UserID, input.Generation).
+			Where("state = ? AND protocol_version = ?", model.FeishuAuthSessionPending, 2).
+			Where("lease_owner = ? AND lease_until > ?", input.LeaseOwner, input.Now).
+			Updates(map[string]any{
+				"resume_credential_ciphertext": append([]byte(nil), input.Ciphertext...),
+				"resume_key_version":           input.KeyVersion,
+				"resume_expires_at":            input.ResumeExpiry.UTC(),
+				"scope_hash":                   input.ScopeHash,
+			})
+		if credentialResult.Error != nil {
+			return fmt.Errorf("persist feishu device auth credential: %w", credentialResult.Error)
+		}
+		if credentialResult.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+
+		leaseResult := tx.Model(&model.FeishuAuthSession{}).
+			Where("id = ? AND user_id = ? AND generation = ?", input.SessionID, input.UserID, input.Generation).
+			Where("state = ? AND protocol_version = ?", model.FeishuAuthSessionPending, 2).
+			Where("lease_owner = ? AND lease_until > ?", input.LeaseOwner, input.Now).
+			Updates(map[string]any{"lease_owner": "", "lease_until": nil})
+		if leaseResult.Error != nil {
+			return fmt.Errorf("release feishu device auth start lease: %w", leaseResult.Error)
+		}
+		if leaseResult.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return gorm.ErrRecordNotFound
+		}
+		return fmt.Errorf("attach feishu device auth credential: %w", err)
+	}
+	return nil
+}
+
+// ReleaseDeviceAuthLease releases only an exact live protocol-v2 owner and
+// deliberately retains the encrypted resume credential.
+func (s *feishuWorkspaceStore) ReleaseDeviceAuthLease(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	sessionID string,
+	leaseOwner string,
+	now time.Time,
+) (bool, error) {
+	if userID == 0 || generation == 0 || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(leaseOwner) == "" {
+		return false, nil
+	}
+	released := false
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		active, err := lockFeishuAuthAccount(tx, userID, generation)
+		if err != nil {
+			return err
+		}
+		if !active {
+			return nil
+		}
+		var session model.FeishuAuthSession
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND user_id = ? AND generation = ?", sessionID, userID, generation).
+			Where("state = ? AND protocol_version = ?", model.FeishuAuthSessionPending, 2).
+			Where("lease_owner = ? AND lease_until > ?", leaseOwner, now).
+			Take(&session).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		if session.Phase != model.FeishuAuthPhaseUserAuth || !validFeishuDeviceAuthShape(&session) {
+			return nil
+		}
+		result := tx.Model(&model.FeishuAuthSession{}).
+			Where("id = ? AND user_id = ? AND generation = ?", sessionID, userID, generation).
+			Where("state = ? AND protocol_version = ?", model.FeishuAuthSessionPending, 2).
+			Where("lease_owner = ? AND lease_until > ?", leaseOwner, now).
+			Updates(map[string]any{"lease_owner": "", "lease_until": nil})
+		if result.Error != nil {
+			return result.Error
+		}
+		released = result.RowsAffected == 1
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("release feishu device auth lease: %w", err)
+	}
+	return released, nil
+}
+
+// TerminalizeDeviceAuthSession terminally updates an exact owned device-auth
+// session while clearing every persisted resume secret in the same transaction.
+func (s *feishuWorkspaceStore) TerminalizeDeviceAuthSession(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	sessionID string,
+	leaseOwner string,
+	terminalState string,
+	now time.Time,
+) error {
+	if userID == 0 || generation == 0 || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(leaseOwner) == "" ||
+		!validFeishuDeviceAuthFailureTerminalState(terminalState) {
+		return gorm.ErrRecordNotFound
+	}
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		active, err := lockFeishuAuthAccount(tx, userID, generation)
+		if err != nil {
+			return err
+		}
+		if !active {
+			return gorm.ErrRecordNotFound
+		}
+		var session model.FeishuAuthSession
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND user_id = ? AND generation = ?", sessionID, userID, generation).
+			Where("state = ? AND protocol_version = ?", model.FeishuAuthSessionPending, 2).
+			Where("lease_owner = ? AND lease_until > ?", leaseOwner, now).
+			Take(&session).Error; err != nil {
+			return err
+		}
+		if session.Phase != model.FeishuAuthPhaseUserAuth || !validFeishuDeviceAuthShape(&session) {
+			return gorm.ErrRecordNotFound
+		}
+		result := tx.Model(&model.FeishuAuthSession{}).
+			Where("id = ? AND user_id = ? AND generation = ?", sessionID, userID, generation).
+			Where("state = ? AND protocol_version = ?", model.FeishuAuthSessionPending, 2).
+			Where("lease_owner = ? AND lease_until > ?", leaseOwner, now).
+			Updates(map[string]any{
+				"state": terminalState, "completed_at": now.UTC(),
+				"resume_credential_ciphertext": nil, "resume_key_version": nil, "resume_expires_at": nil,
+				"lease_owner": "", "lease_until": nil,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return gorm.ErrRecordNotFound
+		}
+		return fmt.Errorf("terminalize feishu device auth session: %w", err)
+	}
+	return nil
+}
+
+// ReplaceDeviceAuthSession atomically terminalizes the exact source attempt,
+// creates a credential-free protocol-v2 retry, and rebinds its operation.
+func (s *feishuWorkspaceStore) ReplaceDeviceAuthSession(
+	ctx context.Context,
+	input FeishuDeviceAuthReplacement,
+) (*model.FeishuAuthSession, error) {
+	if !validFeishuDeviceAuthReplacementInput(input) {
+		return nil, gorm.ErrRecordNotFound
+	}
+	oldBinding, newBinding, ok := validFeishuDeviceAuthReplacementBindings(input)
+	if !ok {
+		return nil, gorm.ErrRecordNotFound
+	}
+
+	var stored *model.FeishuAuthSession
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		active, err := lockFeishuAuthAccount(tx, input.UserID, input.Generation)
+		if err != nil {
+			return fmt.Errorf("lock feishu account for device auth replacement: %w", err)
+		}
+		if !active {
+			return gorm.ErrRecordNotFound
+		}
+
+		var old model.FeishuAuthSession
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND user_id = ? AND generation = ?", input.OldSessionID, input.UserID, input.Generation).
+			Where("state IN ?", []string{model.FeishuAuthSessionPending, model.FeishuAuthSessionRejected, model.FeishuAuthSessionExpired, model.FeishuAuthSessionSuperseded}).
+			Take(&old).Error; err != nil {
+			return err
+		}
+		if old.OperationID == nil || *old.OperationID != input.OperationID || old.Phase != model.FeishuAuthPhaseUserAuth ||
+			!equalRequestedScopes(old.RequestedScopesJSON, input.NewSession.RequestedScopesJSON) ||
+			(old.ProtocolVersion == 2 && old.ScopeHash != input.NewSession.ScopeHash) {
+			return gorm.ErrRecordNotFound
+		}
+		if !replaceableFeishuDeviceAuthSource(&old, input) {
+			return gorm.ErrRecordNotFound
+		}
+
+		var operation model.FeishuOperation
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND user_id = ? AND generation = ? AND state = ?", input.OperationID, input.UserID, input.Generation, input.ExpectedWaitingState).
+			Take(&operation).Error; err != nil {
+			return err
+		}
+		var currentBinding feishuOperationRecoveryBinding
+		if err := json.Unmarshal(operation.ResultSummaryJSON, &currentBinding); err != nil || currentBinding != oldBinding ||
+			!equivalentJSON(operation.ResultSummaryJSON, input.OldSummary) {
+			return gorm.ErrRecordNotFound
+		}
+
+		if old.State == model.FeishuAuthSessionPending {
+			result := tx.Model(&model.FeishuAuthSession{}).
+				Where("id = ? AND user_id = ? AND generation = ?", old.ID, input.UserID, input.Generation).
+				Where("state = ? AND protocol_version = ?", model.FeishuAuthSessionPending, old.ProtocolVersion).
+				Where("lease_owner = ? AND lease_until > ?", input.LeaseOwner, input.Now).
+				Updates(feishuTerminalAuthSessionUpdates(input.TerminalState, input.Now))
+			if result.Error != nil {
+				return fmt.Errorf("terminalize replaced feishu device auth session: %w", result.Error)
+			}
+			if result.RowsAffected != 1 {
+				return gorm.ErrRecordNotFound
+			}
+		} else {
+			result := tx.Model(&model.FeishuAuthSession{}).
+				Where("id = ? AND user_id = ? AND generation = ? AND state = ?", old.ID, input.UserID, input.Generation, old.State).
+				Updates(map[string]any{
+					"resume_credential_ciphertext": nil, "resume_key_version": nil, "resume_expires_at": nil,
+					"lease_owner": "", "lease_until": nil,
+				})
+			if result.Error != nil {
+				return fmt.Errorf("clean replaced feishu auth session: %w", result.Error)
+			}
+		}
+
+		candidate := *input.NewSession
+		if err := tx.Create(&candidate).Error; err != nil {
+			return fmt.Errorf("create replacement feishu device auth session: %w", err)
+		}
+		accountResult := tx.Model(&model.UserThirdPartyAccount{}).
+			Where("user_id = ? AND provider = ? AND generation = ? AND connection_state <> ?", input.UserID, "lark", input.Generation, model.FeishuConnectionDisconnecting).
+			Updates(map[string]any{"connection_state": model.FeishuConnectionWaitingUserAuth, "connected": false, "connected_at": nil, "updated_at": input.Now.UTC()})
+		if accountResult.Error != nil {
+			return fmt.Errorf("update replacement feishu device auth account: %w", accountResult.Error)
+		}
+		if accountResult.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		operationResult := tx.Model(&model.FeishuOperation{}).
+			Where("id = ? AND user_id = ? AND generation = ? AND state = ?", input.OperationID, input.UserID, input.Generation, input.ExpectedWaitingState).
+			Update("result_summary_json", append([]byte(nil), input.NewSummary...))
+		if operationResult.Error != nil {
+			return fmt.Errorf("rebind replacement feishu device auth operation: %w", operationResult.Error)
+		}
+		if operationResult.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		if newBinding.SessionID != candidate.ID {
+			return gorm.ErrRecordNotFound
+		}
+		stored = &candidate
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, gorm.ErrRecordNotFound
+		}
+		return nil, fmt.Errorf("replace feishu device auth session: %w", err)
+	}
+	return stored, nil
+}
+
+// SweepDeviceAuthCredentials scans at most 100 primary-key rows and clears
+// only terminal or expired credentials from that bounded page.
+func (s *feishuWorkspaceStore) SweepDeviceAuthCredentials(
+	ctx context.Context,
+	before time.Time,
+	afterSessionID string,
+	scanLimit int,
+) (FeishuDeviceAuthCleanupPage, error) {
+	if scanLimit <= 0 || scanLimit > 100 {
+		scanLimit = 100
+	}
+	page := FeishuDeviceAuthCleanupPage{Done: true}
+	var sessions []model.FeishuAuthSession
+	if err := s.db.WithContext(ctx).
+		Select("id", "state", "protocol_version", "resume_credential_ciphertext", "resume_key_version", "resume_expires_at").
+		Where("id > ?", afterSessionID).
+		Order("id ASC").
+		Limit(scanLimit).
+		Find(&sessions).Error; err != nil {
+		return page, fmt.Errorf("scan feishu device auth credential page: %w", err)
+	}
+	page.Scanned = len(sessions)
+	page.Done = len(sessions) < scanLimit
+	if len(sessions) == 0 {
+		return page, nil
+	}
+	page.NextSessionID = sessions[len(sessions)-1].ID
+	ids := make([]string, 0, len(sessions))
+	for index := range sessions {
+		session := &sessions[index]
+		if session.ProtocolVersion != 2 || !feishuSessionHasResumeCredential(session) {
+			continue
+		}
+		if validFeishuAuthTerminalState(session.State) || (session.ResumeExpiresAt != nil && !session.ResumeExpiresAt.After(before)) {
+			ids = append(ids, session.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return page, nil
+	}
 	result := s.db.WithContext(ctx).Model(&model.FeishuAuthSession{}).
-		Where("id = ? AND user_id = ? AND generation = ? AND state = ?", id, userID, generation, model.FeishuAuthSessionPending).
+		Where("id IN ? AND protocol_version = ?", ids, 2).
+		Where(
+			"state IN ? OR (resume_expires_at IS NOT NULL AND resume_expires_at <= ? AND (COALESCE(lease_owner, '') = '' OR lease_until IS NULL OR lease_until <= ?))",
+			feishuAuthTerminalStates(), before, before,
+		).
+		Where("resume_credential_ciphertext IS NOT NULL OR resume_key_version IS NOT NULL OR resume_expires_at IS NOT NULL").
 		Updates(map[string]any{
-			"state": model.FeishuAuthSessionSuperseded, "completed_at": now.UTC(),
+			"resume_credential_ciphertext": nil, "resume_key_version": nil, "resume_expires_at": nil,
 			"lease_owner": "", "lease_until": nil,
 		})
 	if result.Error != nil {
-		return fmt.Errorf("supersede feishu auth session: %w", result.Error)
+		return page, fmt.Errorf("clear feishu device auth credential page: %w", result.Error)
 	}
-	if result.RowsAffected != 1 {
-		return gorm.ErrRecordNotFound
+	page.Cleared = int(result.RowsAffected)
+	return page, nil
+}
+
+func validFeishuResumeKeyVersion(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	return value == trimmed && value != "" && len(value) <= 32
+}
+
+func normalizedFeishuAuthProtocolVersion(version uint8) uint8 {
+	if version == 0 {
+		return 1
 	}
-	return nil
+	return version
+}
+
+func validFeishuAuthSessionCreationShape(session *model.FeishuAuthSession, protocolVersion uint8) bool {
+	if session == nil {
+		return false
+	}
+	switch protocolVersion {
+	case 1:
+		return session.ScopeHash == "" && !feishuSessionHasResumeCredential(session)
+	case 2:
+		return session.Phase == model.FeishuAuthPhaseUserAuth && session.State == model.FeishuAuthSessionPending &&
+			session.CompletedAt == nil && session.LeaseOwner == "" && session.LeaseUntil == nil &&
+			validFeishuDeviceAuthPreStartShape(session)
+	default:
+		return false
+	}
+}
+
+func validPersistedFeishuAuthSessionShape(session *model.FeishuAuthSession) bool {
+	if session == nil {
+		return false
+	}
+	switch normalizedFeishuAuthProtocolVersion(session.ProtocolVersion) {
+	case 1:
+		return session.ScopeHash == "" && !feishuSessionHasResumeCredential(session)
+	case 2:
+		if session.Phase != model.FeishuAuthPhaseUserAuth {
+			return false
+		}
+		if validFeishuAuthTerminalState(session.State) {
+			return session.LeaseOwner == "" && session.LeaseUntil == nil && validFeishuDeviceAuthPreStartShape(session)
+		}
+		return validFeishuDeviceAuthShape(session)
+	default:
+		return false
+	}
+}
+
+func validFeishuScopeHash(value string) bool {
+	return len(value) == 64 && strings.TrimSpace(value) == value
+}
+
+func validFeishuDeviceAuthPreStartShape(session *model.FeishuAuthSession) bool {
+	return session != nil && session.ProtocolVersion == 2 && validFeishuScopeHash(session.ScopeHash) &&
+		!feishuSessionHasResumeCredential(session)
+}
+
+func validFeishuDeviceAuthWaitingShape(session *model.FeishuAuthSession) bool {
+	return session != nil && session.ProtocolVersion == 2 && validFeishuScopeHash(session.ScopeHash) &&
+		len(session.ResumeCredentialCiphertext) > 0 && validFeishuResumeKeyVersion(session.ResumeKeyVersion) && session.ResumeExpiresAt != nil
+}
+
+func validFeishuDeviceAuthShape(session *model.FeishuAuthSession) bool {
+	return validFeishuDeviceAuthPreStartShape(session) || validFeishuDeviceAuthWaitingShape(session)
+}
+
+func feishuSessionHasResumeCredential(session *model.FeishuAuthSession) bool {
+	return session != nil && (len(session.ResumeCredentialCiphertext) > 0 || session.ResumeKeyVersion != "" || session.ResumeExpiresAt != nil)
+}
+
+func feishuAuthTerminalStates() []string {
+	return []string{
+		model.FeishuAuthSessionCompleted,
+		model.FeishuAuthSessionExpired,
+		model.FeishuAuthSessionRejected,
+		model.FeishuAuthSessionFailed,
+		model.FeishuAuthSessionSuperseded,
+	}
+}
+
+func validFeishuAuthTerminalState(state string) bool {
+	for _, candidate := range feishuAuthTerminalStates() {
+		if state == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func validFeishuDeviceAuthFailureTerminalState(state string) bool {
+	switch state {
+	case model.FeishuAuthSessionExpired,
+		model.FeishuAuthSessionRejected,
+		model.FeishuAuthSessionFailed,
+		model.FeishuAuthSessionSuperseded:
+		return true
+	default:
+		return false
+	}
+}
+
+func validFeishuDeviceAuthReplacementInput(input FeishuDeviceAuthReplacement) bool {
+	newSession := input.NewSession
+	return input.UserID != 0 && input.Generation != 0 && strings.TrimSpace(input.OldSessionID) != "" &&
+		strings.TrimSpace(input.OperationID) != "" && input.ExpectedWaitingState == model.FeishuOperationWaitingUserAuth &&
+		newSession != nil && newSession.ID != input.OldSessionID && newSession.UserID == input.UserID &&
+		newSession.Generation == input.Generation && newSession.OperationID != nil && *newSession.OperationID == input.OperationID &&
+		newSession.Phase == model.FeishuAuthPhaseUserAuth && newSession.State == model.FeishuAuthSessionPending &&
+		newSession.LeaseOwner == "" && newSession.LeaseUntil == nil && newSession.CompletedAt == nil &&
+		validFeishuDeviceAuthPreStartShape(newSession) && json.Valid(input.OldSummary) && json.Valid(input.NewSummary)
+}
+
+func validFeishuDeviceAuthReplacementBindings(input FeishuDeviceAuthReplacement) (feishuOperationRecoveryBinding, feishuOperationRecoveryBinding, bool) {
+	var oldBinding feishuOperationRecoveryBinding
+	var newBinding feishuOperationRecoveryBinding
+	if json.Unmarshal(input.OldSummary, &oldBinding) != nil || json.Unmarshal(input.NewSummary, &newBinding) != nil {
+		return oldBinding, newBinding, false
+	}
+	valid := oldBinding.Status == input.ExpectedWaitingState && oldBinding.SessionID == input.OldSessionID && oldBinding.Phase == model.FeishuAuthPhaseUserAuth &&
+		newBinding.Status == input.ExpectedWaitingState && newBinding.SessionID == input.NewSession.ID && newBinding.Phase == model.FeishuAuthPhaseUserAuth
+	return oldBinding, newBinding, valid
+}
+
+func replaceableFeishuDeviceAuthSource(old *model.FeishuAuthSession, input FeishuDeviceAuthReplacement) bool {
+	if old == nil {
+		return false
+	}
+	switch old.State {
+	case model.FeishuAuthSessionPending:
+		owned := old.LeaseOwner == input.LeaseOwner && old.LeaseOwner != "" && old.LeaseUntil != nil && old.LeaseUntil.After(input.Now)
+		if !owned {
+			return false
+		}
+		if old.ProtocolVersion == 2 {
+			return (input.TerminalState == model.FeishuAuthSessionRejected || input.TerminalState == model.FeishuAuthSessionExpired) && validFeishuDeviceAuthShape(old)
+		}
+		return old.ProtocolVersion == 1 && input.TerminalState == model.FeishuAuthSessionSuperseded && !feishuSessionHasResumeCredential(old)
+	case model.FeishuAuthSessionRejected, model.FeishuAuthSessionExpired:
+		return old.ProtocolVersion == 2 && input.TerminalState == old.State && validFeishuDeviceAuthPreStartShape(old) && old.LeaseOwner == "" && old.LeaseUntil == nil
+	case model.FeishuAuthSessionSuperseded:
+		return old.ProtocolVersion == 1 && input.TerminalState == model.FeishuAuthSessionSuperseded && !feishuSessionHasResumeCredential(old) && old.LeaseOwner == "" && old.LeaseUntil == nil
+	default:
+		return false
+	}
+}
+
+func feishuTerminalAuthSessionUpdates(state string, now time.Time) map[string]any {
+	return map[string]any{
+		"state": state, "completed_at": now.UTC(),
+		"resume_credential_ciphertext": nil, "resume_key_version": nil, "resume_expires_at": nil,
+		"lease_owner": "", "lease_until": nil,
+	}
+}
+
+func equivalentJSON(left, right []byte) bool {
+	var leftValue any
+	var rightValue any
+	if json.Unmarshal(left, &leftValue) != nil || json.Unmarshal(right, &rightValue) != nil {
+		return false
+	}
+	leftCanonical, leftErr := json.Marshal(leftValue)
+	rightCanonical, rightErr := json.Marshal(rightValue)
+	return leftErr == nil && rightErr == nil && string(leftCanonical) == string(rightCanonical)
 }
 
 // ClaimSession acquires a pending session with a fresh token. A token may not
@@ -405,10 +1010,13 @@ func (s *feishuWorkspaceStore) UpdateSessionState(ctx context.Context, userID ui
 			Where("state = ?", model.FeishuAuthSessionPending).
 			Where("lease_owner = ? AND lease_until > ?", owner, now).
 			Updates(map[string]any{
-				"state":        state,
-				"completed_at": completedAt,
-				"lease_owner":  "",
-				"lease_until":  nil,
+				"state":                        state,
+				"completed_at":                 completedAt,
+				"resume_credential_ciphertext": nil,
+				"resume_key_version":           nil,
+				"resume_expires_at":            nil,
+				"lease_owner":                  "",
+				"lease_until":                  nil,
 			})
 		if result.Error != nil {
 			return result.Error
@@ -508,10 +1116,13 @@ func (s *feishuWorkspaceStore) FinalizeSessionCompleted(
 		sessionResult := tx.Model(&model.FeishuAuthSession{}).
 			Where("id = ? AND state = ? AND lease_owner = ?", session.ID, model.FeishuAuthSessionPending, owner).
 			Updates(map[string]any{
-				"state":        model.FeishuAuthSessionCompleted,
-				"completed_at": now,
-				"lease_owner":  "",
-				"lease_until":  nil,
+				"state":                        model.FeishuAuthSessionCompleted,
+				"completed_at":                 now,
+				"resume_credential_ciphertext": nil,
+				"resume_key_version":           nil,
+				"resume_expires_at":            nil,
+				"lease_owner":                  "",
+				"lease_until":                  nil,
 			})
 		if sessionResult.Error != nil {
 			return fmt.Errorf("finalize feishu auth session: %w", sessionResult.Error)
@@ -1381,12 +1992,35 @@ func (s *feishuWorkspaceStore) RefreshOperationSession(
 		var oldSession model.FeishuAuthSession
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("id = ? AND user_id = ? AND generation = ?", oldSessionID, userID, generation).
-			Where("state IN ?", []string{model.FeishuAuthSessionPending, model.FeishuAuthSessionFailed, model.FeishuAuthSessionSuperseded}).
+			Where("state IN ?", []string{
+				model.FeishuAuthSessionPending,
+				model.FeishuAuthSessionRejected,
+				model.FeishuAuthSessionExpired,
+				model.FeishuAuthSessionFailed,
+				model.FeishuAuthSessionSuperseded,
+			}).
 			Take(&oldSession).Error; err != nil {
 			return err
 		}
 		if oldSession.OperationID == nil || *oldSession.OperationID != operationID || oldSession.Phase != replacement.Phase ||
 			!equalRequestedScopes(oldSession.RequestedScopesJSON, replacement.RequestedScopesJSON) {
+			return gorm.ErrRecordNotFound
+		}
+		if oldSession.Phase == model.FeishuAuthPhaseUserAuth && !validFeishuAuthSessionCreationShape(replacement, 2) {
+			return gorm.ErrRecordNotFound
+		}
+		if oldSession.ProtocolVersion == 2 && replacement.ScopeHash != oldSession.ScopeHash {
+			return gorm.ErrRecordNotFound
+		}
+		if (oldSession.State == model.FeishuAuthSessionRejected || oldSession.State == model.FeishuAuthSessionExpired) && oldSession.ProtocolVersion != 2 {
+			return gorm.ErrRecordNotFound
+		}
+		if oldSession.ProtocolVersion == 2 && oldSession.LeaseOwner != "" && oldSession.LeaseUntil != nil && oldSession.LeaseUntil.After(now) {
+			// This legacy API carries no lease owner. It must never replace a live
+			// protocol-v2 worker; ReplaceDeviceAuthSession is the owned primitive.
+			return gorm.ErrRecordNotFound
+		}
+		if oldSession.State == model.FeishuAuthSessionSuperseded && oldSession.ProtocolVersion != 1 {
 			return gorm.ErrRecordNotFound
 		}
 
@@ -1425,6 +2059,7 @@ func (s *feishuWorkspaceStore) RefreshOperationSession(
 					Where("id = ? AND user_id = ? AND generation = ? AND state = ?", orphan.ID, userID, generation, model.FeishuAuthSessionPending).
 					Updates(map[string]any{
 						"state": model.FeishuAuthSessionSuperseded, "completed_at": now.UTC(),
+						"resume_credential_ciphertext": nil, "resume_key_version": nil, "resume_expires_at": nil,
 						"lease_owner": "", "lease_until": nil,
 					})
 				if result.Error != nil {
@@ -1441,9 +2076,16 @@ func (s *feishuWorkspaceStore) RefreshOperationSession(
 		}
 		oldResult := tx.Model(&model.FeishuAuthSession{}).
 			Where("id = ? AND user_id = ? AND generation = ?", oldSessionID, userID, generation).
-			Where("state IN ?", []string{model.FeishuAuthSessionPending, model.FeishuAuthSessionFailed, model.FeishuAuthSessionSuperseded}).
+			Where("state IN ?", []string{
+				model.FeishuAuthSessionPending,
+				model.FeishuAuthSessionRejected,
+				model.FeishuAuthSessionExpired,
+				model.FeishuAuthSessionFailed,
+				model.FeishuAuthSessionSuperseded,
+			}).
 			Updates(map[string]any{
 				"state": model.FeishuAuthSessionSuperseded, "completed_at": now.UTC(),
+				"resume_credential_ciphertext": nil, "resume_key_version": nil, "resume_expires_at": nil,
 				"lease_owner": "", "lease_until": nil,
 			})
 		if oldResult.Error != nil {
@@ -1484,6 +2126,7 @@ func (s *feishuWorkspaceStore) RefreshOperationSession(
 // could not start a usable local authorization worker. Until a new URL reaches
 // the browser, that browser can only retry the original session ID; restoring
 // the exact old summary keeps that retry path durable and tenant-fenced.
+// User-auth replacements are intentionally irreversible and are never restored.
 func (s *feishuWorkspaceStore) RestoreOperationSessionRefresh(
 	ctx context.Context,
 	userID uint,
@@ -1499,6 +2142,9 @@ func (s *feishuWorkspaceStore) RestoreOperationSessionRefresh(
 	}
 	var oldBinding feishuOperationRecoveryBinding
 	if err := json.Unmarshal(oldSummary, &oldBinding); err != nil || oldBinding.Status != waitingState || oldBinding.SessionID != oldSessionID {
+		return gorm.ErrRecordNotFound
+	}
+	if oldBinding.Phase == model.FeishuAuthPhaseUserAuth {
 		return gorm.ErrRecordNotFound
 	}
 
@@ -1563,6 +2209,7 @@ func (s *feishuWorkspaceStore) RestoreOperationSessionRefresh(
 			}).
 			Updates(map[string]any{
 				"state": model.FeishuAuthSessionSuperseded, "completed_at": now.UTC(),
+				"resume_credential_ciphertext": nil, "resume_key_version": nil, "resume_expires_at": nil,
 				"lease_owner": "", "lease_until": nil,
 			})
 		if replacementResult.Error != nil {
@@ -1753,8 +2400,13 @@ func (s *feishuWorkspaceStore) CancelPendingForGeneration(ctx context.Context, u
 		if err := tx.Model(&model.FeishuAuthSession{}).
 			Where("user_id = ? AND generation = ? AND state = ?", userID, generation, model.FeishuAuthSessionPending).
 			Updates(map[string]any{
-				"state":        model.FeishuAuthSessionSuperseded,
-				"completed_at": now,
+				"state":                        model.FeishuAuthSessionSuperseded,
+				"completed_at":                 now,
+				"resume_credential_ciphertext": nil,
+				"resume_key_version":           nil,
+				"resume_expires_at":            nil,
+				"lease_owner":                  "",
+				"lease_until":                  nil,
 			}).Error; err != nil {
 			return fmt.Errorf("supersede feishu auth sessions: %w", err)
 		}

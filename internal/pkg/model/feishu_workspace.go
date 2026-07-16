@@ -91,22 +91,28 @@ type FeishuCLIVault struct {
 // TableName returns the feishu CLI vault table name.
 func (FeishuCLIVault) TableName() string { return "feishu_cli_vault" }
 
-// FeishuAuthSession stores restart-safe metadata for one external authorization step.
-// Verification URLs and device codes are deliberately excluded.
+// FeishuAuthSession stores restart-safe metadata for one external authorization
+// step. Verification URLs and plaintext device codes are deliberately excluded;
+// protocol v2 may retain only the authenticated ciphertext needed to resume.
 type FeishuAuthSession struct {
-	ID                  string         `gorm:"type:char(36);primaryKey" json:"id"`
-	UserID              uint           `gorm:"type:bigint unsigned;not null;index:idx_feishu_auth_session_user_generation,priority:1" json:"user_id"`
-	Generation          uint64         `gorm:"not null;index:idx_feishu_auth_session_user_generation,priority:2" json:"generation"`
-	OperationID         *string        `gorm:"type:char(36);index:idx_feishu_auth_session_operation" json:"operation_id,omitempty"`
-	Phase               string         `gorm:"size:32;not null" json:"phase"`
-	RequestedScopesJSON datatypes.JSON `gorm:"type:json;not null" json:"requested_scopes_json"`
-	State               string         `gorm:"size:32;not null;index:idx_feishu_auth_session_lease,priority:1" json:"state"`
-	LeaseOwner          string         `gorm:"size:128" json:"-"`
-	LeaseUntil          *time.Time     `gorm:"index:idx_feishu_auth_session_lease,priority:2" json:"lease_until,omitempty"`
-	ExpiresAt           time.Time      `gorm:"not null" json:"expires_at"`
-	CreatedAt           time.Time      `gorm:"not null;autoCreateTime" json:"created_at"`
-	UpdatedAt           time.Time      `gorm:"not null;autoUpdateTime" json:"updated_at"`
-	CompletedAt         *time.Time     `json:"completed_at,omitempty"`
+	ID                         string         `gorm:"type:char(36);primaryKey" json:"id"`
+	UserID                     uint           `gorm:"type:bigint unsigned;not null;index:idx_feishu_auth_session_user_generation,priority:1" json:"user_id"`
+	Generation                 uint64         `gorm:"not null;index:idx_feishu_auth_session_user_generation,priority:2" json:"generation"`
+	OperationID                *string        `gorm:"type:char(36);index:idx_feishu_auth_session_operation" json:"operation_id,omitempty"`
+	Phase                      string         `gorm:"size:32;not null" json:"phase"`
+	RequestedScopesJSON        datatypes.JSON `gorm:"type:json;not null" json:"requested_scopes_json"`
+	State                      string         `gorm:"size:32;not null;index:idx_feishu_auth_session_lease,priority:1" json:"state"`
+	ProtocolVersion            uint8          `gorm:"type:tinyint unsigned;not null;default:1" json:"-"`
+	ResumeCredentialCiphertext []byte         `gorm:"type:longblob" json:"-"`
+	ResumeKeyVersion           string         `gorm:"size:32" json:"-"`
+	ResumeExpiresAt            *time.Time     `json:"-"`
+	ScopeHash                  string         `gorm:"type:char(64)" json:"-"`
+	LeaseOwner                 string         `gorm:"size:128" json:"-"`
+	LeaseUntil                 *time.Time     `gorm:"index:idx_feishu_auth_session_lease,priority:2" json:"lease_until,omitempty"`
+	ExpiresAt                  time.Time      `gorm:"not null" json:"expires_at"`
+	CreatedAt                  time.Time      `gorm:"not null;autoCreateTime" json:"created_at"`
+	UpdatedAt                  time.Time      `gorm:"not null;autoUpdateTime" json:"updated_at"`
+	CompletedAt                *time.Time     `json:"completed_at,omitempty"`
 }
 
 // TableName returns the Feishu auth session table name.

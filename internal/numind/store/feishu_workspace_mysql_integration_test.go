@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	_ "embed"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -122,6 +123,99 @@ func TestFeishuWorkspaceMySQLIntegration_MigrationAutoMigrateAndLocks(t *testing
 		UserID: userID, Generation: 1, Ciphertext: []byte("stale"), KeyVersion: "v1", Checksum: "stale",
 	}
 	require.ErrorIs(t, workspace.PutVaultCAS(context.Background(), stale, 1), gorm.ErrRecordNotFound)
+	requireMySQLDeviceAuthConcurrencyAndSweep(t, db, driverConfig.FormatDSN(), userID+1)
+}
+
+func requireMySQLDeviceAuthConcurrencyAndSweep(t *testing.T, firstDB *gorm.DB, dsn string, userID uint) {
+	t.Helper()
+	secondDB, err := gorm.Open(mysql.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	secondSQLDB, err := secondDB.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secondSQLDB.Close() })
+	first := newFeishuWorkspaceStore(firstDB)
+	second := newFeishuWorkspaceStore(secondDB)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	require.NoError(t, firstDB.Create(&model.UserThirdPartyAccount{
+		UserID: userID, Provider: "lark", AppID: "app-mysql-device", Connected: false,
+		ConnectionState: model.FeishuConnectionAppReady, Generation: 1,
+	}).Error)
+	op := newFeishuOperation("mysql-device-operation", userID, 1, "mysql-device-operation-key")
+	require.NoError(t, firstDB.Create(op).Error)
+	old := newFeishuSession("mysql-device-old", userID, 1)
+	old.ProtocolVersion = 2
+	old.OperationID = &op.ID
+	old.ScopeHash = strings.Repeat("a", 64)
+	old.LeaseOwner = "mysql-owner-a"
+	leaseUntil := now.Add(time.Minute)
+	old.LeaseUntil = &leaseUntil
+	require.NoError(t, first.CreateSession(ctx, old))
+	oldSummary := []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"mysql-device-old"}`)
+	require.NoError(t, firstDB.Model(&model.FeishuOperation{}).Where("id = ?", op.ID).Updates(map[string]any{
+		"state": model.FeishuOperationWaitingUserAuth, "result_summary_json": oldSummary,
+	}).Error)
+
+	attach := FeishuDeviceAuthCredentialAttach{
+		UserID: userID, Generation: 1, SessionID: old.ID, LeaseOwner: "mysql-owner-b", AppID: "app-mysql-device",
+		Ciphertext: []byte("mysql-encrypted-device-code"), KeyVersion: "mysql-key-v2", ResumeExpiry: now.Add(5 * time.Minute),
+		ScopeHash: old.ScopeHash, Now: now,
+	}
+	require.ErrorIs(t, second.AttachDeviceAuthCredential(ctx, attach), gorm.ErrRecordNotFound)
+	require.ErrorIs(t, second.TerminalizeDeviceAuthSession(ctx, userID, 1, old.ID, "mysql-owner-b", model.FeishuAuthSessionRejected, now), gorm.ErrRecordNotFound)
+	replacement := newFeishuSession("mysql-device-new", userID, 1)
+	replacement.ProtocolVersion = 2
+	replacement.OperationID = &op.ID
+	replacement.ScopeHash = old.ScopeHash
+	newSummary := []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"mysql-device-new"}`)
+	_, err = second.ReplaceDeviceAuthSession(ctx, FeishuDeviceAuthReplacement{
+		UserID: userID, Generation: 1, OldSessionID: old.ID, LeaseOwner: "mysql-owner-b", TerminalState: model.FeishuAuthSessionExpired,
+		NewSession: replacement, OperationID: op.ID, ExpectedWaitingState: model.FeishuOperationWaitingUserAuth,
+		OldSummary: oldSummary, NewSummary: newSummary, Now: now,
+	})
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	storedOld, err := first.GetSessionForUser(ctx, userID, 1, old.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionPending, storedOld.State)
+	require.Equal(t, "mysql-owner-a", storedOld.LeaseOwner)
+	require.Empty(t, storedOld.ResumeCredentialCiphertext)
+	_, err = first.GetSessionForUser(ctx, userID, 1, replacement.ID)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	storedOperation, err := first.GetOperationForUser(ctx, userID, 1, op.ID)
+	require.NoError(t, err)
+	require.JSONEq(t, string(oldSummary), string(storedOperation.ResultSummaryJSON))
+	var account model.UserThirdPartyAccount
+	require.NoError(t, firstDB.Where("user_id = ? AND provider = ?", userID, "lark").Take(&account).Error)
+	require.Equal(t, model.FeishuConnectionAppReady, account.ConnectionState)
+
+	sweepSessions := make([]model.FeishuAuthSession, 0, 105)
+	for index := 0; index < 105; index++ {
+		expiresAt := now.Add(-time.Minute)
+		sweepSessions = append(sweepSessions, model.FeishuAuthSession{
+			ID: fmt.Sprintf("zz-sweep-%027d", index), UserID: userID, Generation: 1,
+			Phase: model.FeishuAuthPhaseUserAuth, RequestedScopesJSON: []byte(`[]`), State: model.FeishuAuthSessionPending,
+			ProtocolVersion: 2, ResumeCredentialCiphertext: []byte("encrypted"), ResumeKeyVersion: "mysql-key-v2",
+			ResumeExpiresAt: &expiresAt, ScopeHash: strings.Repeat("b", 64), ExpiresAt: now.Add(time.Minute),
+		})
+	}
+	require.NoError(t, firstDB.Create(&sweepSessions).Error)
+	page, err := second.SweepDeviceAuthCredentials(ctx, now, "zz-sweep-", 1000)
+	require.NoError(t, err)
+	require.Equal(t, 100, page.Scanned)
+	require.Equal(t, 100, page.Cleared)
+	require.False(t, page.Done)
+	require.Equal(t, "zz-sweep-000000000000000000000000099", page.NextSessionID)
+
+	var explain struct {
+		AccessType string  `gorm:"column:type"`
+		Key        *string `gorm:"column:key"`
+		Rows       int64   `gorm:"column:rows"`
+	}
+	require.NoError(t, secondDB.Raw(`EXPLAIN SELECT id, state, protocol_version, resume_credential_ciphertext, resume_key_version, resume_expires_at FROM feishu_auth_session WHERE id > ? ORDER BY id ASC LIMIT 100`, "zz-sweep-").Scan(&explain).Error)
+	require.NotNil(t, explain.Key)
+	require.Equal(t, "PRIMARY", *explain.Key)
+	require.Equal(t, "range", strings.ToLower(explain.AccessType))
+	require.Positive(t, explain.Rows)
 }
 
 func requireMySQLFeishuTablesAbsent(t *testing.T, db *gorm.DB) {
@@ -164,6 +258,7 @@ func applyFeishuWorkspaceMigrations(t *testing.T, db *gorm.DB, migrationsDir str
 		"20260713_130000_feishu_personal_workspace.sql",
 		"20260713_210000_feishu_operation_proof_consumption.sql",
 		"20260713_220000_feishu_operation_execution_gate.sql",
+		"20260716_230000_feishu_device_code_auth.sql",
 	} {
 		contents, err := os.ReadFile(filepath.Join(migrationsDir, filename))
 		require.NoErrorf(t, err, "read checked-in migration %s", filename)
@@ -213,6 +308,9 @@ var mysqlFeishuExpectedColumns = map[string]map[string]mysqlColumnExpectation{
 		"id": {"char(36)", "NO", nil}, "user_id": {"bigint unsigned", "NO", nil}, "generation": {"bigint unsigned", "NO", nil},
 		"operation_id": {"char(36)", "YES", nil}, "phase": {"varchar(32)", "NO", nil}, "requested_scopes_json": {"json", "NO", nil},
 		"state": {"varchar(32)", "NO", nil}, "lease_owner": {"varchar(128)", "YES", nil}, "lease_until": {"datetime(3)", "YES", nil},
+		"protocol_version":             {"tinyint unsigned", "NO", mysqlDefault("1")},
+		"resume_credential_ciphertext": {"longblob", "YES", nil}, "resume_key_version": {"varchar(32)", "YES", nil},
+		"resume_expires_at": {"datetime(3)", "YES", nil}, "scope_hash": {"char(64)", "YES", nil},
 		"expires_at": {"datetime(3)", "NO", nil}, "created_at": {"datetime(3)", "NO", nil}, "updated_at": {"datetime(3)", "NO", nil},
 		"completed_at": {"datetime(3)", "YES", nil},
 	},

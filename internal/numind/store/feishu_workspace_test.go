@@ -167,6 +167,15 @@ func TestFeishuWorkspaceModels_MySQLSchemaContract(t *testing.T) {
 	requireGormTagContains(t, reflect.TypeOf(model.FeishuOperationProofConsumption{}), "SourceOperationID", "primaryKey", "type:char(36)")
 	requireGormTagContains(t, reflect.TypeOf(model.FeishuOperationProofConsumption{}), "ConsumerOperationID", "uniqueIndex:uniq_feishu_proof_consumer")
 	requireGormTagContains(t, reflect.TypeOf(model.FeishuOperationExecutionGate{}), "UserID", "primaryKey", "autoIncrement:false", "type:bigint unsigned")
+	requireGormTagContains(t, reflect.TypeOf(model.FeishuAuthSession{}), "ProtocolVersion", "type:tinyint unsigned", "not null", "default:1")
+	requireGormTagContains(t, reflect.TypeOf(model.FeishuAuthSession{}), "ResumeCredentialCiphertext", "type:longblob")
+	requireGormTagContains(t, reflect.TypeOf(model.FeishuAuthSession{}), "ResumeKeyVersion", "size:32")
+	requireGormTagContains(t, reflect.TypeOf(model.FeishuAuthSession{}), "ScopeHash", "type:char(64)")
+	for _, fieldName := range []string{"ProtocolVersion", "ResumeCredentialCiphertext", "ResumeKeyVersion", "ResumeExpiresAt", "ScopeHash"} {
+		field, ok := reflect.TypeOf(model.FeishuAuthSession{}).FieldByName(fieldName)
+		require.True(t, ok)
+		require.Equal(t, "-", field.Tag.Get("json"), "%s must never be serialized", fieldName)
+	}
 
 	for _, item := range []struct {
 		modelType reflect.Type
@@ -1584,6 +1593,44 @@ func TestFeishuWorkspaceStore_RestoreOperationSessionRefresh(t *testing.T) {
 	require.Equal(t, model.FeishuAuthSessionSuperseded, storedReplacement.State)
 }
 
+func TestFeishuWorkspaceStore_RestoreOperationSessionRefreshAllowsAppScope(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 1)
+	op := newFeishuOperation("operation-app-scope-restore", 7, 1, "key-app-scope-restore")
+	require.NoError(t, s.db.Create(op).Error)
+
+	oldSession := newFeishuSession("session-app-scope-old", 7, 1)
+	oldSession.OperationID = &op.ID
+	oldSession.Phase = model.FeishuAuthPhaseAppScope
+	oldSession.State = model.FeishuAuthSessionSuperseded
+	require.NoError(t, s.CreateSession(ctx, oldSession))
+	replacement := newFeishuSession("session-app-scope-replacement", 7, 1)
+	replacement.OperationID = &op.ID
+	replacement.Phase = model.FeishuAuthPhaseAppScope
+	require.NoError(t, s.CreateSession(ctx, replacement))
+
+	oldSummary := []byte(`{"status":"waiting_app_scope","phase":"app_scope","session_id":"session-app-scope-old"}`)
+	replacementSummary := []byte(`{"status":"waiting_app_scope","phase":"app_scope","session_id":"session-app-scope-replacement"}`)
+	require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", op.ID).Updates(map[string]any{
+		"state": model.FeishuOperationWaitingAppScope, "result_summary_json": replacementSummary,
+	}).Error)
+	now := time.Now().UTC()
+
+	require.NoError(t, s.RestoreOperationSessionRefresh(
+		ctx, 7, 1, oldSession.ID, replacement.ID, op.ID, model.FeishuOperationWaitingAppScope, oldSummary, now,
+	))
+	storedOld, err := s.GetSessionForUser(ctx, 7, 1, oldSession.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionPending, storedOld.State)
+	storedReplacement, err := s.GetSessionForUser(ctx, 7, 1, replacement.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionSuperseded, storedReplacement.State)
+	storedOperation, err := s.GetOperationForUser(ctx, 7, 1, op.ID)
+	require.NoError(t, err)
+	require.JSONEq(t, string(oldSummary), string(storedOperation.ResultSummaryJSON))
+}
+
 func TestFeishuWorkspaceStore_RestoreOperationSessionRefreshRejectsLiveReplacementLease(t *testing.T) {
 	ctx := context.Background()
 	s := newFeishuWorkspaceTestStore(t)
@@ -1627,6 +1674,44 @@ func TestFeishuWorkspaceStore_RestoreOperationSessionRefreshRejectsLiveReplaceme
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuAuthSessionPending, storedReplacement.State)
 	require.Equal(t, "another-service", storedReplacement.LeaseOwner)
+}
+
+func TestFeishuWorkspaceStore_RestoreOperationSessionRefreshRejectsUserAuth(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 1)
+	op := newFeishuOperation("operation-user-auth-no-restore", 7, 1, "key-user-auth-no-restore")
+	require.NoError(t, s.db.Create(op).Error)
+	old := newFeishuSession("session-user-auth-old-terminal", 7, 1)
+	old.ProtocolVersion = 1
+	old.OperationID = &op.ID
+	old.State = model.FeishuAuthSessionSuperseded
+	require.NoError(t, s.CreateSession(ctx, old))
+	replacement := newFeishuSession("session-user-auth-replacement", 7, 1)
+	replacement.ProtocolVersion = 2
+	replacement.OperationID = &op.ID
+	replacement.ScopeHash = strings.Repeat("f", 64)
+	require.NoError(t, s.CreateSession(ctx, replacement))
+	oldSummary := []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"session-user-auth-old-terminal"}`)
+	replacementSummary := []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"session-user-auth-replacement"}`)
+	require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", op.ID).Updates(map[string]any{
+		"state": model.FeishuOperationWaitingUserAuth, "result_summary_json": replacementSummary,
+	}).Error)
+	now := time.Now().UTC()
+
+	err := s.RestoreOperationSessionRefresh(ctx, 7, 1, old.ID, replacement.ID, op.ID, model.FeishuOperationWaitingUserAuth, oldSummary, now)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	storedOld, err := s.GetSessionForUser(ctx, 7, 1, old.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionSuperseded, storedOld.State, "legacy user-auth source must stay terminal")
+	storedReplacement, err := s.GetSessionForUser(ctx, 7, 1, replacement.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionPending, storedReplacement.State, "v2 replacement must remain reclaimable")
+	require.Empty(t, storedReplacement.LeaseOwner)
+	require.Empty(t, storedReplacement.ResumeCredentialCiphertext)
+	storedOperation, err := s.GetOperationForUser(ctx, 7, 1, op.ID)
+	require.NoError(t, err)
+	require.JSONEq(t, string(replacementSummary), string(storedOperation.ResultSummaryJSON))
 }
 
 func TestFeishuWorkspaceStore_RefreshOperationSessionRejectsStaleOrRetiredBindingWithoutPartialWrite(t *testing.T) {
@@ -1775,4 +1860,609 @@ func TestFeishuWorkspaceStore_TransitionReleasesLeaseOutsideExecuting(t *testing
 		require.NotNil(t, got.LeaseUntil)
 		require.WithinDuration(t, leaseUntil, *got.LeaseUntil, time.Millisecond)
 	})
+}
+
+func newFeishuDeviceAuthSession(id string, userID uint, generation uint64, owner string, now time.Time) *model.FeishuAuthSession {
+	session := newFeishuSession(id, userID, generation)
+	session.ProtocolVersion = 2
+	session.ScopeHash = strings.Repeat("a", 64)
+	session.ExpiresAt = now.Add(10 * time.Minute)
+	session.LeaseOwner = owner
+	leaseUntil := now.Add(time.Minute)
+	session.LeaseUntil = &leaseUntil
+	return session
+}
+
+func TestFeishuWorkspaceDeviceAuthMigrationHasForwardAndRollback(t *testing.T) {
+	forward := readFeishuWorkspaceMigration(t, "20260716_230000_feishu_device_code_auth.sql")
+	rollback := readFeishuWorkspaceMigration(t, "20260716_230000_feishu_device_code_auth_rollback.sql")
+
+	for _, fragment := range []string{
+		"`protocol_version` TINYINT UNSIGNED NOT NULL DEFAULT 1",
+		"`resume_credential_ciphertext` LONGBLOB NULL",
+		"`resume_key_version` VARCHAR(32) NULL",
+		"`resume_expires_at` DATETIME(3) NULL",
+		"`scope_hash` CHAR(64) NULL",
+		"`phase` = 'user_auth'",
+		"`state` = 'pending'",
+		"`state` = 'superseded'",
+		"`completed_at` = COALESCE(`completed_at`, CURRENT_TIMESTAMP(3))",
+		"`lease_owner` = ''",
+		"`lease_until` = NULL",
+	} {
+		require.Contains(t, forward, fragment)
+	}
+	for _, column := range []string{"protocol_version", "resume_credential_ciphertext", "resume_key_version", "resume_expires_at", "scope_hash"} {
+		require.Contains(t, rollback, "DROP COLUMN IF EXISTS `"+column+"`")
+	}
+	require.Contains(t, strings.ToLower(rollback), "irreversible")
+	require.Contains(t, strings.ToLower(rollback), "production")
+}
+
+func TestFeishuWorkspaceStore_AttachDeviceAuthCredentialRequiresOwnedLeaseAndReleasesIt(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 16, 23, 0, 0, 0, time.UTC)
+
+	t.Run("owned live lease attaches atomically", func(t *testing.T) {
+		s := newFeishuWorkspaceTestStore(t)
+		createFeishuAccount(t, s, 7, 3)
+		session := newFeishuDeviceAuthSession("device-attach", 7, 3, "worker-a", now)
+		require.NoError(t, s.CreateSession(ctx, session))
+
+		err := s.AttachDeviceAuthCredential(ctx, FeishuDeviceAuthCredentialAttach{
+			UserID: 7, Generation: 3, SessionID: session.ID, LeaseOwner: "worker-a", AppID: "app-7",
+			Ciphertext: []byte("encrypted-device-code"), KeyVersion: "key-v2", ResumeExpiry: now.Add(5 * time.Minute),
+			ScopeHash: session.ScopeHash, Now: now,
+		})
+		require.NoError(t, err)
+
+		stored, err := s.GetSessionForUser(ctx, 7, 3, session.ID)
+		require.NoError(t, err)
+		require.Equal(t, []byte("encrypted-device-code"), stored.ResumeCredentialCiphertext)
+		require.Equal(t, "key-v2", stored.ResumeKeyVersion)
+		require.NotNil(t, stored.ResumeExpiresAt)
+		require.Equal(t, now.Add(5*time.Minute), stored.ResumeExpiresAt.UTC())
+		require.Equal(t, session.ScopeHash, stored.ScopeHash)
+		require.Empty(t, stored.LeaseOwner)
+		require.Nil(t, stored.LeaseUntil)
+
+		var account model.UserThirdPartyAccount
+		require.NoError(t, s.db.Where("user_id = ? AND provider = ?", 7, "lark").Take(&account).Error)
+		require.Equal(t, model.FeishuConnectionWaitingUserAuth, account.ConnectionState)
+		require.False(t, account.Connected)
+	})
+
+	t.Run("expired session rejects attach without partial writes", func(t *testing.T) {
+		s := newFeishuWorkspaceTestStore(t)
+		createFeishuAccount(t, s, 7, 3)
+		session := newFeishuDeviceAuthSession("device-attach-expired-session", 7, 3, "worker-a", now)
+		session.ExpiresAt = now.Add(-time.Second)
+		require.NoError(t, s.CreateSession(ctx, session))
+
+		err := s.AttachDeviceAuthCredential(ctx, FeishuDeviceAuthCredentialAttach{
+			UserID: 7, Generation: 3, SessionID: session.ID, LeaseOwner: "worker-a", AppID: "app-7",
+			Ciphertext: []byte("encrypted-device-code"), KeyVersion: "key-v2", ResumeExpiry: now.Add(5 * time.Minute),
+			ScopeHash: session.ScopeHash, Now: now,
+		})
+		require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+		stored, readErr := s.GetSessionForUser(ctx, 7, 3, session.ID)
+		require.NoError(t, readErr)
+		require.Equal(t, model.FeishuAuthSessionPending, stored.State)
+		require.Empty(t, stored.ResumeCredentialCiphertext)
+		require.Empty(t, stored.ResumeKeyVersion)
+		require.Nil(t, stored.ResumeExpiresAt)
+		require.Equal(t, "worker-a", stored.LeaseOwner)
+		var account model.UserThirdPartyAccount
+		require.NoError(t, s.db.Where("user_id = ? AND provider = ?", 7, "lark").Take(&account).Error)
+		require.Equal(t, model.FeishuConnectionConnected, account.ConnectionState)
+	})
+
+	t.Run("resume expiry beyond session rejects attach without partial writes", func(t *testing.T) {
+		s := newFeishuWorkspaceTestStore(t)
+		createFeishuAccount(t, s, 7, 3)
+		session := newFeishuDeviceAuthSession("device-attach-resume-too-long", 7, 3, "worker-a", now)
+		session.ExpiresAt = now.Add(2 * time.Minute)
+		require.NoError(t, s.CreateSession(ctx, session))
+
+		err := s.AttachDeviceAuthCredential(ctx, FeishuDeviceAuthCredentialAttach{
+			UserID: 7, Generation: 3, SessionID: session.ID, LeaseOwner: "worker-a", AppID: "app-7",
+			Ciphertext: []byte("encrypted-device-code"), KeyVersion: "key-v2", ResumeExpiry: now.Add(5 * time.Minute),
+			ScopeHash: session.ScopeHash, Now: now,
+		})
+		require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+		stored, readErr := s.GetSessionForUser(ctx, 7, 3, session.ID)
+		require.NoError(t, readErr)
+		require.Equal(t, model.FeishuAuthSessionPending, stored.State)
+		require.Empty(t, stored.ResumeCredentialCiphertext)
+		require.Empty(t, stored.ResumeKeyVersion)
+		require.Nil(t, stored.ResumeExpiresAt)
+		require.Equal(t, "worker-a", stored.LeaseOwner)
+		var account model.UserThirdPartyAccount
+		require.NoError(t, s.db.Where("user_id = ? AND provider = ?", 7, "lark").Take(&account).Error)
+		require.Equal(t, model.FeishuConnectionConnected, account.ConnectionState)
+	})
+
+	t.Run("nonowner and account write failure leave no partial credential", func(t *testing.T) {
+		s := newFeishuWorkspaceTestStore(t)
+		createFeishuAccount(t, s, 7, 3)
+		session := newFeishuDeviceAuthSession("device-attach-rollback", 7, 3, "worker-a", now)
+		require.NoError(t, s.CreateSession(ctx, session))
+		input := FeishuDeviceAuthCredentialAttach{
+			UserID: 7, Generation: 3, SessionID: session.ID, LeaseOwner: "worker-b", AppID: "app-7",
+			Ciphertext: []byte("encrypted-device-code"), KeyVersion: "key-v2", ResumeExpiry: now.Add(5 * time.Minute),
+			ScopeHash: session.ScopeHash, Now: now,
+		}
+		require.ErrorIs(t, s.AttachDeviceAuthCredential(ctx, input), gorm.ErrRecordNotFound)
+
+		require.NoError(t, s.db.Callback().Update().Before("gorm:update").Register("test:fail_device_account_update", func(tx *gorm.DB) {
+			if tx.Statement.Table == "user_third_party_account" {
+				tx.AddError(errors.New("injected account update failure"))
+			}
+		}))
+		input.LeaseOwner = "worker-a"
+		require.Error(t, s.AttachDeviceAuthCredential(ctx, input))
+		stored, err := s.GetSessionForUser(ctx, 7, 3, session.ID)
+		require.NoError(t, err)
+		require.Empty(t, stored.ResumeCredentialCiphertext)
+		require.Empty(t, stored.ResumeKeyVersion)
+		require.Nil(t, stored.ResumeExpiresAt)
+		require.Equal(t, "worker-a", stored.LeaseOwner)
+		require.NotNil(t, stored.LeaseUntil)
+	})
+}
+
+func TestFeishuWorkspaceStore_ReleaseDeviceAuthLeaseRetainsCredential(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 3)
+	now := time.Date(2026, 7, 16, 23, 0, 0, 0, time.UTC)
+	session := newFeishuDeviceAuthSession("device-release", 7, 3, "worker-a", now)
+	session.ResumeCredentialCiphertext = []byte("encrypted-device-code")
+	session.ResumeKeyVersion = "key-v2"
+	expiresAt := now.Add(5 * time.Minute)
+	session.ResumeExpiresAt = &expiresAt
+	require.NoError(t, s.CreateSession(ctx, session))
+
+	released, err := s.ReleaseDeviceAuthLease(ctx, 7, 3, session.ID, "worker-b", now)
+	require.NoError(t, err)
+	require.False(t, released)
+	released, err = s.ReleaseDeviceAuthLease(ctx, 7, 3, session.ID, "worker-a", now)
+	require.NoError(t, err)
+	require.True(t, released)
+
+	stored, err := s.GetSessionForUser(ctx, 7, 3, session.ID)
+	require.NoError(t, err)
+	require.Equal(t, session.ResumeCredentialCiphertext, stored.ResumeCredentialCiphertext)
+	require.Equal(t, session.ResumeKeyVersion, stored.ResumeKeyVersion)
+	require.NotNil(t, stored.ResumeExpiresAt)
+	require.Empty(t, stored.LeaseOwner)
+	require.Nil(t, stored.LeaseUntil)
+	preStart := newFeishuDeviceAuthSession("device-release-pre-start", 7, 3, "worker-a", now)
+	require.NoError(t, s.CreateSession(ctx, preStart))
+	released, err = s.ReleaseDeviceAuthLease(ctx, 7, 3, preStart.ID, "worker-a", now)
+	require.NoError(t, err)
+	require.True(t, released, "a valid credential-free pre-start shape must be reclaimable")
+
+	partial := newFeishuDeviceAuthSession("device-release-partial", 7, 3, "worker-a", now)
+	partial.ResumeCredentialCiphertext = []byte("partial-secret")
+	require.NoError(t, s.CreateSession(ctx, partial))
+	released, err = s.ReleaseDeviceAuthLease(ctx, 7, 3, partial.ID, "worker-a", now)
+	require.NoError(t, err)
+	require.False(t, released, "a partial credential shape must fail closed")
+	storedPartial, err := s.GetSessionForUser(ctx, 7, 3, partial.ID)
+	require.NoError(t, err)
+	require.Equal(t, "worker-a", storedPartial.LeaseOwner)
+	require.ErrorIs(t, s.TerminalizeDeviceAuthSession(ctx, 7, 3, partial.ID, "worker-a", model.FeishuAuthSessionRejected, now), gorm.ErrRecordNotFound)
+}
+
+func TestFeishuWorkspaceStore_TerminalDeviceAuthClearsCredential(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 3)
+	now := time.Date(2026, 7, 16, 23, 0, 0, 0, time.UTC)
+	session := newFeishuDeviceAuthSession("device-terminal", 7, 3, "worker-a", now)
+	session.ResumeCredentialCiphertext = []byte("encrypted-device-code")
+	session.ResumeKeyVersion = "key-v2"
+	expiresAt := now.Add(5 * time.Minute)
+	session.ResumeExpiresAt = &expiresAt
+	require.NoError(t, s.CreateSession(ctx, session))
+
+	require.ErrorIs(t, s.TerminalizeDeviceAuthSession(ctx, 7, 3, session.ID, "worker-a", model.FeishuAuthSessionCompleted, now), gorm.ErrRecordNotFound)
+	unchanged, err := s.GetSessionForUser(ctx, 7, 3, session.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionPending, unchanged.State)
+	require.Equal(t, session.ResumeCredentialCiphertext, unchanged.ResumeCredentialCiphertext)
+	require.Equal(t, "worker-a", unchanged.LeaseOwner)
+	require.ErrorIs(t, s.TerminalizeDeviceAuthSession(ctx, 7, 3, session.ID, "worker-b", model.FeishuAuthSessionRejected, now), gorm.ErrRecordNotFound)
+	require.NoError(t, s.TerminalizeDeviceAuthSession(ctx, 7, 3, session.ID, "worker-a", model.FeishuAuthSessionRejected, now))
+	stored, err := s.GetSessionForUser(ctx, 7, 3, session.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionRejected, stored.State)
+	require.NotNil(t, stored.CompletedAt)
+	require.Empty(t, stored.ResumeCredentialCiphertext)
+	require.Empty(t, stored.ResumeKeyVersion)
+	require.Nil(t, stored.ResumeExpiresAt)
+	require.Equal(t, session.ScopeHash, stored.ScopeHash)
+	require.Empty(t, stored.LeaseOwner)
+	require.Nil(t, stored.LeaseUntil)
+}
+
+func TestFeishuWorkspaceStore_ReplaceDeviceAuthSessionRebindsExactOperation(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 3)
+	now := time.Date(2026, 7, 16, 23, 0, 0, 0, time.UTC)
+	op, err := s.CreateOrGetOperation(ctx, newFeishuOperation("device-operation", 7, 3, "device-operation-key"))
+	require.NoError(t, err)
+	old := newFeishuDeviceAuthSession("device-old", 7, 3, "worker-a", now)
+	old.OperationID = &op.ID
+	old.ResumeCredentialCiphertext = []byte("old-encrypted-device-code")
+	old.ResumeKeyVersion = "key-v2"
+	resumeExpiry := now.Add(5 * time.Minute)
+	old.ResumeExpiresAt = &resumeExpiry
+	require.NoError(t, s.CreateSession(ctx, old))
+	oldSummary := []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"device-old"}`)
+	newSummary := []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"device-new"}`)
+	require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", op.ID).Updates(map[string]any{
+		"state": model.FeishuOperationWaitingUserAuth, "result_summary_json": oldSummary,
+	}).Error)
+	replacement := newFeishuSession("device-new", 7, 3)
+	replacement.ProtocolVersion = 2
+	replacement.OperationID = &op.ID
+	replacement.ScopeHash = old.ScopeHash
+	conflict := newFeishuSession("device-conflict", 7, 3)
+	conflict.ProtocolVersion = 2
+	conflict.OperationID = &op.ID
+	conflict.ScopeHash = old.ScopeHash
+	_, err = s.ReplaceDeviceAuthSession(ctx, FeishuDeviceAuthReplacement{
+		UserID: 7, Generation: 3, OldSessionID: old.ID, LeaseOwner: "worker-b", TerminalState: model.FeishuAuthSessionExpired,
+		NewSession: conflict, OperationID: op.ID, ExpectedWaitingState: model.FeishuOperationWaitingUserAuth,
+		OldSummary: oldSummary, NewSummary: []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"device-conflict"}`), Now: now,
+	})
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	_, err = s.GetSessionForUser(ctx, 7, 3, conflict.ID)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	unchangedOld, err := s.GetSessionForUser(ctx, 7, 3, old.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionPending, unchangedOld.State)
+	require.Equal(t, "worker-a", unchangedOld.LeaseOwner)
+	unchangedOperation, err := s.GetOperationForUser(ctx, 7, 3, op.ID)
+	require.NoError(t, err)
+	require.JSONEq(t, string(oldSummary), string(unchangedOperation.ResultSummaryJSON))
+
+	storedReplacement, err := s.ReplaceDeviceAuthSession(ctx, FeishuDeviceAuthReplacement{
+		UserID: 7, Generation: 3, OldSessionID: old.ID, LeaseOwner: "worker-a", TerminalState: model.FeishuAuthSessionRejected,
+		NewSession: replacement, OperationID: op.ID, ExpectedWaitingState: model.FeishuOperationWaitingUserAuth,
+		OldSummary: oldSummary, NewSummary: newSummary, Now: now,
+	})
+	require.NoError(t, err)
+	require.Equal(t, replacement.ID, storedReplacement.ID)
+	storedOld, err := s.GetSessionForUser(ctx, 7, 3, old.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionRejected, storedOld.State)
+	require.Empty(t, storedOld.ResumeCredentialCiphertext)
+	require.Empty(t, storedOld.ResumeKeyVersion)
+	require.Nil(t, storedOld.ResumeExpiresAt)
+	require.Empty(t, storedOld.LeaseOwner)
+	require.Nil(t, storedOld.LeaseUntil)
+	storedOperation, err := s.GetOperationForUser(ctx, 7, 3, op.ID)
+	require.NoError(t, err)
+	require.JSONEq(t, string(newSummary), string(storedOperation.ResultSummaryJSON))
+
+	t.Run("owned legacy pending source is superseded", func(t *testing.T) {
+		legacyStore := newFeishuWorkspaceTestStore(t)
+		createFeishuAccount(t, legacyStore, 9, 1)
+		legacyOperation := newFeishuOperation("device-legacy-operation", 9, 1, "device-legacy-operation-key")
+		require.NoError(t, legacyStore.db.Create(legacyOperation).Error)
+		legacyOld := newFeishuSession("device-legacy-old", 9, 1)
+		legacyOld.OperationID = &legacyOperation.ID
+		legacyOld.ProtocolVersion = 1
+		legacyOld.LeaseOwner = "legacy-owner"
+		legacyLeaseUntil := now.Add(time.Minute)
+		legacyOld.LeaseUntil = &legacyLeaseUntil
+		require.NoError(t, legacyStore.CreateSession(ctx, legacyOld))
+		legacyOldSummary := []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"device-legacy-old"}`)
+		require.NoError(t, legacyStore.db.Model(&model.FeishuOperation{}).Where("id = ?", legacyOperation.ID).Updates(map[string]any{
+			"state": model.FeishuOperationWaitingUserAuth, "result_summary_json": legacyOldSummary,
+		}).Error)
+		legacyReplacement := newFeishuSession("device-legacy-new", 9, 1)
+		legacyReplacement.ProtocolVersion = 2
+		legacyReplacement.OperationID = &legacyOperation.ID
+		legacyReplacement.ScopeHash = strings.Repeat("c", 64)
+		legacyNewSummary := []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"device-legacy-new"}`)
+
+		storedLegacyReplacement, err := legacyStore.ReplaceDeviceAuthSession(ctx, FeishuDeviceAuthReplacement{
+			UserID: 9, Generation: 1, OldSessionID: legacyOld.ID, LeaseOwner: "legacy-owner", TerminalState: model.FeishuAuthSessionSuperseded,
+			NewSession: legacyReplacement, OperationID: legacyOperation.ID, ExpectedWaitingState: model.FeishuOperationWaitingUserAuth,
+			OldSummary: legacyOldSummary, NewSummary: legacyNewSummary, Now: now,
+		})
+		require.NoError(t, err)
+		require.Equal(t, legacyReplacement.ID, storedLegacyReplacement.ID)
+		storedLegacyOld, err := legacyStore.GetSessionForUser(ctx, 9, 1, legacyOld.ID)
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuAuthSessionSuperseded, storedLegacyOld.State)
+		require.Empty(t, storedLegacyOld.LeaseOwner)
+		require.Nil(t, storedLegacyOld.LeaseUntil)
+	})
+
+}
+
+func TestFeishuWorkspaceStore_SweepDeviceAuthCredentialsUsesBoundedKeysetPage(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	now := time.Date(2026, 7, 16, 23, 0, 0, 0, time.UTC)
+	for index := 0; index < 105; index++ {
+		session := newFeishuSession(fmt.Sprintf("device-sweep-%03d", index), 7, 3)
+		session.ProtocolVersion = 2
+		session.ScopeHash = strings.Repeat("a", 64)
+		session.ResumeCredentialCiphertext = []byte("encrypted")
+		session.ResumeKeyVersion = "key-v2"
+		expiry := now.Add(-time.Minute)
+		session.ResumeExpiresAt = &expiry
+		require.NoError(t, s.CreateSession(ctx, session))
+	}
+	op := newFeishuOperation("device-sweep-operation", 7, 3, "device-sweep-operation-key")
+	op.State = model.FeishuOperationWaitingUserAuth
+	op.ResultSummaryJSON = []byte(`{"status":"waiting_user_auth","session_id":"device-sweep-104"}`)
+	require.NoError(t, s.db.Create(op).Error)
+
+	first, err := s.SweepDeviceAuthCredentials(ctx, now, "", 500)
+	require.NoError(t, err)
+	require.Equal(t, 100, first.Scanned)
+	require.Equal(t, 100, first.Cleared)
+	require.Equal(t, "device-sweep-099", first.NextSessionID)
+	require.False(t, first.Done)
+	var remaining int64
+	require.NoError(t, s.db.Model(&model.FeishuAuthSession{}).Where("resume_credential_ciphertext IS NOT NULL").Count(&remaining).Error)
+	require.EqualValues(t, 5, remaining)
+
+	second, err := s.SweepDeviceAuthCredentials(ctx, now, first.NextSessionID, 500)
+	require.NoError(t, err)
+	require.Equal(t, 5, second.Scanned)
+	require.Equal(t, 5, second.Cleared)
+	require.Equal(t, "device-sweep-104", second.NextSessionID)
+	require.True(t, second.Done)
+	storedOperation, err := s.GetOperationForUser(ctx, 7, 3, op.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingUserAuth, storedOperation.State)
+	require.JSONEq(t, string(op.ResultSummaryJSON), string(storedOperation.ResultSummaryJSON))
+
+	t.Run("expired pending credential keeps a newly live lease", func(t *testing.T) {
+		liveStore := newFeishuWorkspaceTestStore(t)
+		live := newFeishuDeviceAuthSession("device-sweep-live-lease", 7, 3, "completion-worker", now)
+		live.ResumeCredentialCiphertext = []byte("expired-encrypted")
+		live.ResumeKeyVersion = "key-v2"
+		expiredAt := now.Add(-time.Minute)
+		live.ResumeExpiresAt = &expiredAt
+		require.NoError(t, liveStore.CreateSession(ctx, live))
+
+		blocked, err := liveStore.SweepDeviceAuthCredentials(ctx, now, "", 100)
+		require.NoError(t, err)
+		require.Equal(t, 1, blocked.Scanned)
+		require.Zero(t, blocked.Cleared, "sweep must not steal a lease claimed after its scan")
+		storedLive, err := liveStore.GetSessionForUser(ctx, 7, 3, live.ID)
+		require.NoError(t, err)
+		require.Equal(t, "completion-worker", storedLive.LeaseOwner)
+		require.Equal(t, live.ResumeCredentialCiphertext, storedLive.ResumeCredentialCiphertext)
+
+		afterLease := now.Add(2 * time.Minute)
+		cleared, err := liveStore.SweepDeviceAuthCredentials(ctx, afterLease, "", 100)
+		require.NoError(t, err)
+		require.Equal(t, 1, cleared.Cleared)
+		storedCleared, err := liveStore.GetSessionForUser(ctx, 7, 3, live.ID)
+		require.NoError(t, err)
+		require.Empty(t, storedCleared.LeaseOwner)
+		require.Empty(t, storedCleared.ResumeCredentialCiphertext)
+	})
+}
+
+func TestFeishuWorkspaceStore_RefreshOperationSessionSupportsTerminalV2AndFencesLiveLease(t *testing.T) {
+	ctx := context.Background()
+	t.Run("legacy user auth requires v2 replacement", func(t *testing.T) {
+		s := newFeishuWorkspaceTestStore(t)
+		createFeishuAccount(t, s, 7, 3)
+		op := newFeishuOperation("refresh-legacy-user-auth", 7, 3, "refresh-legacy-user-auth-key")
+		require.NoError(t, s.db.Create(op).Error)
+		old := newFeishuSession("refresh-legacy-user-auth-old", 7, 3)
+		old.ProtocolVersion = 1
+		old.OperationID = &op.ID
+		old.State = model.FeishuAuthSessionSuperseded
+		require.NoError(t, s.CreateSession(ctx, old))
+		oldSummary := []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"refresh-legacy-user-auth-old"}`)
+		require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", op.ID).Updates(map[string]any{
+			"state": model.FeishuOperationWaitingUserAuth, "result_summary_json": oldSummary,
+		}).Error)
+		legacyReplacement := newFeishuSession("refresh-legacy-user-auth-v1", 7, 3)
+		legacyReplacement.ProtocolVersion = 1
+		legacyReplacement.OperationID = &op.ID
+		legacySummary := []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"refresh-legacy-user-auth-v1"}`)
+		now := time.Now().UTC()
+
+		_, err := s.RefreshOperationSession(ctx, 7, 3, old.ID, op.ID, model.FeishuOperationWaitingUserAuth,
+			model.FeishuConnectionWaitingUserAuth, legacyReplacement, legacySummary, now)
+		require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+		storedOld, err := s.GetSessionForUser(ctx, 7, 3, old.ID)
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuAuthSessionSuperseded, storedOld.State)
+		storedOperation, err := s.GetOperationForUser(ctx, 7, 3, op.ID)
+		require.NoError(t, err)
+		require.JSONEq(t, string(oldSummary), string(storedOperation.ResultSummaryJSON))
+		_, err = s.GetSessionForUser(ctx, 7, 3, legacyReplacement.ID)
+		require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+
+		v2Replacement := newFeishuSession("refresh-legacy-user-auth-v2", 7, 3)
+		v2Replacement.ProtocolVersion = 2
+		v2Replacement.OperationID = &op.ID
+		v2Replacement.ScopeHash = strings.Repeat("a", 64)
+		v2Summary := []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"refresh-legacy-user-auth-v2"}`)
+		refreshed, err := s.RefreshOperationSession(ctx, 7, 3, old.ID, op.ID, model.FeishuOperationWaitingUserAuth,
+			model.FeishuConnectionWaitingUserAuth, v2Replacement, v2Summary, now)
+		require.NoError(t, err)
+		require.Equal(t, v2Replacement.ID, refreshed.ID)
+	})
+
+	for _, terminalState := range []string{model.FeishuAuthSessionRejected, model.FeishuAuthSessionExpired} {
+		t.Run(terminalState, func(t *testing.T) {
+			s := newFeishuWorkspaceTestStore(t)
+			createFeishuAccount(t, s, 7, 3)
+			op := newFeishuOperation("refresh-terminal-"+terminalState, 7, 3, "refresh-terminal-key-"+terminalState)
+			require.NoError(t, s.db.Create(op).Error)
+			old := newFeishuSession("refresh-terminal-old-"+terminalState, 7, 3)
+			old.ProtocolVersion = 2
+			old.OperationID = &op.ID
+			old.State = terminalState
+			old.ScopeHash = strings.Repeat("a", 64)
+			old.ResumeCredentialCiphertext = []byte("terminal-residue")
+			old.ResumeKeyVersion = "key-v2"
+			resumeExpiry := time.Now().UTC().Add(time.Minute)
+			old.ResumeExpiresAt = &resumeExpiry
+			require.NoError(t, s.CreateSession(ctx, old))
+			oldSummary := []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"` + old.ID + `"}`)
+			require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", op.ID).Updates(map[string]any{
+				"state": model.FeishuOperationWaitingUserAuth, "result_summary_json": oldSummary,
+			}).Error)
+			replacement := newFeishuSession("refresh-terminal-new-"+terminalState, 7, 3)
+			replacement.ProtocolVersion = 2
+			replacement.OperationID = &op.ID
+			replacement.ScopeHash = old.ScopeHash
+			newSummary := []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"` + replacement.ID + `"}`)
+
+			_, err := s.RefreshOperationSession(ctx, 7, 3, old.ID, op.ID, model.FeishuOperationWaitingUserAuth,
+				model.FeishuConnectionWaitingUserAuth, replacement, newSummary, time.Now().UTC())
+			require.NoError(t, err)
+			storedOld, err := s.GetSessionForUser(ctx, 7, 3, old.ID)
+			require.NoError(t, err)
+			require.Equal(t, model.FeishuAuthSessionSuperseded, storedOld.State)
+			require.Empty(t, storedOld.ResumeCredentialCiphertext)
+			require.Empty(t, storedOld.ResumeKeyVersion)
+			require.Nil(t, storedOld.ResumeExpiresAt)
+		})
+	}
+
+	t.Run("protocol v2 source rejects legacy replacement shape", func(t *testing.T) {
+		s := newFeishuWorkspaceTestStore(t)
+		createFeishuAccount(t, s, 7, 3)
+		op := newFeishuOperation("refresh-v2-shape", 7, 3, "refresh-v2-shape-key")
+		require.NoError(t, s.db.Create(op).Error)
+		old := newFeishuSession("refresh-v2-shape-old", 7, 3)
+		old.ProtocolVersion = 2
+		old.OperationID = &op.ID
+		old.State = model.FeishuAuthSessionRejected
+		old.ScopeHash = strings.Repeat("d", 64)
+		require.NoError(t, s.CreateSession(ctx, old))
+		oldSummary := []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"refresh-v2-shape-old"}`)
+		require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", op.ID).Updates(map[string]any{
+			"state": model.FeishuOperationWaitingUserAuth, "result_summary_json": oldSummary,
+		}).Error)
+		legacyReplacement := newFeishuSession("refresh-v2-shape-new", 7, 3)
+		legacyReplacement.OperationID = &op.ID
+		newSummary := []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"refresh-v2-shape-new"}`)
+
+		_, err := s.RefreshOperationSession(ctx, 7, 3, old.ID, op.ID, model.FeishuOperationWaitingUserAuth,
+			model.FeishuConnectionWaitingUserAuth, legacyReplacement, newSummary, time.Now().UTC())
+		require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+		storedOld, err := s.GetSessionForUser(ctx, 7, 3, old.ID)
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuAuthSessionRejected, storedOld.State)
+		storedOperation, err := s.GetOperationForUser(ctx, 7, 3, op.ID)
+		require.NoError(t, err)
+		require.JSONEq(t, string(oldSummary), string(storedOperation.ResultSummaryJSON))
+		_, err = s.GetSessionForUser(ctx, 7, 3, legacyReplacement.ID)
+		require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	})
+
+	t.Run("live protocol v2 lease", func(t *testing.T) {
+		s := newFeishuWorkspaceTestStore(t)
+		createFeishuAccount(t, s, 7, 3)
+		op := newFeishuOperation("refresh-live-v2", 7, 3, "refresh-live-v2-key")
+		require.NoError(t, s.db.Create(op).Error)
+		now := time.Now().UTC()
+		old := newFeishuDeviceAuthSession("refresh-live-v2-old", 7, 3, "current-owner", now)
+		old.OperationID = &op.ID
+		require.NoError(t, s.CreateSession(ctx, old))
+		oldSummary := []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"refresh-live-v2-old"}`)
+		require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", op.ID).Updates(map[string]any{
+			"state": model.FeishuOperationWaitingUserAuth, "result_summary_json": oldSummary,
+		}).Error)
+		replacement := newFeishuSession("refresh-live-v2-new", 7, 3)
+		replacement.ProtocolVersion = 2
+		replacement.OperationID = &op.ID
+		replacement.ScopeHash = old.ScopeHash
+		newSummary := []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"refresh-live-v2-new"}`)
+
+		_, err := s.RefreshOperationSession(ctx, 7, 3, old.ID, op.ID, model.FeishuOperationWaitingUserAuth,
+			model.FeishuConnectionWaitingUserAuth, replacement, newSummary, now)
+		require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+		storedOld, err := s.GetSessionForUser(ctx, 7, 3, old.ID)
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuAuthSessionPending, storedOld.State)
+		require.Equal(t, "current-owner", storedOld.LeaseOwner)
+		_, err = s.GetSessionForUser(ctx, 7, 3, replacement.ID)
+		require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	})
+}
+
+func TestFeishuWorkspaceStore_SupersedeSessionForUserFencesLiveProtocolV2Lease(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 3)
+	now := time.Date(2026, 7, 16, 23, 0, 0, 0, time.UTC)
+	liveV2 := newFeishuDeviceAuthSession("supersede-live-v2", 7, 3, "device-worker", now)
+	require.NoError(t, s.CreateSession(ctx, liveV2))
+
+	require.ErrorIs(t, s.SupersedeSessionForUser(ctx, 7, 3, liveV2.ID, now), gorm.ErrRecordNotFound)
+	storedV2, err := s.GetSessionForUser(ctx, 7, 3, liveV2.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionPending, storedV2.State)
+	require.Equal(t, "device-worker", storedV2.LeaseOwner)
+
+	liveV1 := newFeishuSession("supersede-live-v1", 7, 3)
+	liveV1.LeaseOwner = "legacy-worker"
+	leaseUntil := now.Add(time.Minute)
+	liveV1.LeaseUntil = &leaseUntil
+	require.NoError(t, s.CreateSession(ctx, liveV1))
+	require.NoError(t, s.SupersedeSessionForUser(ctx, 7, 3, liveV1.ID, now))
+	storedV1, err := s.GetSessionForUser(ctx, 7, 3, liveV1.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionSuperseded, storedV1.State)
+	require.Empty(t, storedV1.LeaseOwner)
+}
+
+func TestFeishuWorkspaceStore_CreateOrGetPendingSessionSeparatesProtocolVersions(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 3)
+	operationID := "protocol-version-operation"
+	legacy := newFeishuSession("protocol-v1-session", 7, 3)
+	legacy.OperationID = &operationID
+	legacy.ProtocolVersion = 1
+	require.NoError(t, s.CreateSession(ctx, legacy))
+
+	v2 := newFeishuSession("protocol-v2-session", 7, 3)
+	v2.OperationID = &operationID
+	v2.ProtocolVersion = 2
+	v2.ScopeHash = strings.Repeat("e", 64)
+	stored, created, err := s.CreateOrGetPendingSession(ctx, v2)
+	require.NoError(t, err)
+	require.True(t, created, "a v1 row must never satisfy a protocol-v2 intent")
+	require.Equal(t, v2.ID, stored.ID)
+	require.EqualValues(t, 2, stored.ProtocolVersion)
+
+	duplicate := newFeishuSession("protocol-v2-duplicate", 7, 3)
+	duplicate.OperationID = &operationID
+	duplicate.ProtocolVersion = 2
+	duplicate.ScopeHash = v2.ScopeHash
+	stored, created, err = s.CreateOrGetPendingSession(ctx, duplicate)
+	require.NoError(t, err)
+	require.False(t, created)
+	require.Equal(t, v2.ID, stored.ID)
+
+	malformed := newFeishuSession("protocol-v2-malformed", 7, 3)
+	malformed.ProtocolVersion = 2
+	malformed.ScopeHash = v2.ScopeHash
+	malformed.ResumeKeyVersion = "partial-key-only"
+	_, _, err = s.CreateOrGetPendingSession(ctx, malformed)
+	require.Error(t, err)
+	_, err = s.GetSessionForUser(ctx, 7, 3, malformed.ID)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
 }
