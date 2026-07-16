@@ -1380,6 +1380,134 @@ func validAuthSessionAppID(appID string) bool {
 	return true
 }
 
+const authSessionCLIConfigMaxBytes = 1 << 20
+
+// readControlledAppIDEvidence reads only the non-secret application identity
+// written by the pinned lark-cli. The official CLI may keep appSecret as an
+// encrypted keychain reference; callers never need or receive that secret.
+func readControlledAppIDEvidence(home string) (string, error) {
+	raw, err := os.ReadFile(configPath(home)) // #nosec G304 -- validated isolated HOME plus fixed relative path
+	if err != nil {
+		return "", err
+	}
+	if len(raw) == 0 || len(raw) > authSessionCLIConfigMaxBytes {
+		return "", errControlledCLIInvalidJSON
+	}
+	return parseControlledAppIDEvidence(raw)
+}
+
+func parseControlledAppIDEvidence(raw []byte) (string, error) {
+	var appsRaw json.RawMessage
+	if err := visitJSONObject(raw, func(name string, value json.RawMessage) error {
+		if strings.EqualFold(name, "apps") && name != "apps" {
+			return errControlledCLIInvalidJSON
+		}
+		if name == "apps" {
+			appsRaw = append(appsRaw[:0], value...)
+		}
+		return nil
+	}); err != nil || len(appsRaw) == 0 {
+		return "", errControlledCLIInvalidJSON
+	}
+
+	var apps []json.RawMessage
+	if err := json.Unmarshal(appsRaw, &apps); err != nil || len(apps) == 0 {
+		return "", errControlledCLIInvalidJSON
+	}
+
+	var appID string
+	var secretRaw json.RawMessage
+	if err := visitJSONObject(apps[0], func(name string, value json.RawMessage) error {
+		switch name {
+		case "appId":
+			if err := json.Unmarshal(value, &appID); err != nil {
+				return errControlledCLIInvalidJSON
+			}
+		case "appSecret":
+			secretRaw = append(secretRaw[:0], value...)
+		default:
+			if strings.EqualFold(name, "appId") || strings.EqualFold(name, "appSecret") {
+				return errControlledCLIInvalidJSON
+			}
+		}
+		return nil
+	}); err != nil || !validAuthSessionAppID(appID) || len(secretRaw) == 0 {
+		return "", errControlledCLIInvalidJSON
+	}
+	if !validControlledAppSecretEvidence(secretRaw, appID) {
+		return "", errControlledCLIInvalidJSON
+	}
+	return appID, nil
+}
+
+func validControlledAppSecretEvidence(raw json.RawMessage, appID string) bool {
+	var plaintext string
+	if err := json.Unmarshal(raw, &plaintext); err == nil {
+		return plaintext != ""
+	}
+
+	var source string
+	var id string
+	err := visitJSONObject(raw, func(name string, value json.RawMessage) error {
+		switch name {
+		case "source":
+			if err := json.Unmarshal(value, &source); err != nil {
+				return errControlledCLIInvalidJSON
+			}
+		case "id":
+			if err := json.Unmarshal(value, &id); err != nil {
+				return errControlledCLIInvalidJSON
+			}
+		default:
+			return errControlledCLIInvalidJSON
+		}
+		return nil
+	})
+	return err == nil && source == "keychain" && id == "appsecret:"+appID
+}
+
+// visitJSONObject preserves JSON field identity and rejects duplicates. This
+// avoids encoding/json's case-insensitive struct matching at the credential
+// evidence boundary while still allowing unrelated official config fields.
+func visitJSONObject(raw []byte, visit func(string, json.RawMessage) error) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('{') {
+		return errControlledCLIInvalidJSON
+	}
+	seen := make(map[string]struct{})
+	for decoder.More() {
+		key, err := decoder.Token()
+		if err != nil {
+			return errControlledCLIInvalidJSON
+		}
+		name, ok := key.(string)
+		if !ok {
+			return errControlledCLIInvalidJSON
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return errControlledCLIInvalidJSON
+		}
+		seen[name] = struct{}{}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return errControlledCLIInvalidJSON
+		}
+		if err := visit(name, value); err != nil {
+			return err
+		}
+	}
+	closing, err := decoder.Token()
+	if err != nil || closing != json.Delim('}') {
+		return errControlledCLIInvalidJSON
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return errControlledCLIInvalidJSON
+	}
+	return nil
+}
+
 type authSessionStreamState struct {
 	onURL  func(string) error
 	cancel context.CancelFunc
@@ -1690,9 +1818,8 @@ func (r *ControlledLarkCLIRunner) AuthStatus(ctx context.Context, home string) (
 }
 
 // AppIDFromHome reads only the non-secret appId from the already-isolated HOME
-// after a successful official config-init flow. readAppFromConfig also checks
-// that lark-cli wrote a complete app record, but its appSecret result is
-// deliberately discarded and never persisted or logged here.
+// after a successful official config-init flow. The completion evidence may be
+// backed by lark-cli's encrypted keychain; no secret is returned or logged.
 func (r *ControlledLarkCLIRunner) AppIDFromHome(ctx context.Context, home string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -1700,7 +1827,7 @@ func (r *ControlledLarkCLIRunner) AppIDFromHome(ctx context.Context, home string
 	if err := validateControlledCLIHome(home); err != nil {
 		return "", err
 	}
-	appID, _, err := readAppFromConfig(home)
+	appID, err := readControlledAppIDEvidence(home)
 	if err != nil || !validAuthSessionAppID(appID) {
 		return "", errControlledCLIInvalidJSON
 	}

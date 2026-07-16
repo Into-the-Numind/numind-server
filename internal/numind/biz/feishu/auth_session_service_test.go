@@ -1654,6 +1654,73 @@ exit 2
 	require.FileExists(t, filepath.Join(home, ".local", "share", "lark-cli", "appsecret_cli_created.enc"))
 }
 
+func TestParseControlledAppIDEvidence_StrictlyBindsOfficialKeychainReference(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		wantID  string
+		wantErr bool
+	}{
+		{
+			name:   "official keychain reference",
+			raw:    `{"apps":[{"appId":"cli_created","appSecret":{"source":"keychain","id":"appsecret:cli_created"},"brand":"feishu","users":[]}]}`,
+			wantID: "cli_created",
+		},
+		{
+			name:   "legacy nonempty plaintext",
+			raw:    `{"apps":[{"appId":"cli_legacy","appSecret":"legacy-secret"}]}`,
+			wantID: "cli_legacy",
+		},
+		{
+			name:    "wrong source",
+			raw:     `{"apps":[{"appId":"cli_created","appSecret":{"source":"file","id":"appsecret:cli_created"}}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "reference belongs to another app",
+			raw:     `{"apps":[{"appId":"cli_created","appSecret":{"source":"keychain","id":"appsecret:cli_other"}}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "unknown reference field",
+			raw:     `{"apps":[{"appId":"cli_created","appSecret":{"source":"keychain","id":"appsecret:cli_created","path":"elsewhere"}}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "duplicate reference field",
+			raw:     `{"apps":[{"appId":"cli_created","appSecret":{"source":"keychain","source":"keychain","id":"appsecret:cli_created"}}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "case variant reference field",
+			raw:     `{"apps":[{"appId":"cli_created","appSecret":{"Source":"keychain","id":"appsecret:cli_created"}}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "case variant app secret field",
+			raw:     `{"apps":[{"appId":"cli_created","AppSecret":{"source":"keychain","id":"appsecret:cli_created"}}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "empty plaintext",
+			raw:     `{"apps":[{"appId":"cli_created","appSecret":""}]}`,
+			wantErr: true,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			got, err := parseControlledAppIDEvidence([]byte(testCase.raw))
+			if testCase.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, testCase.wantID, got)
+		})
+	}
+}
+
 func TestControlledLarkCLIRunner_AuthSessionSuccessWithoutURLFailsClosed(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test CLI uses a POSIX shell")
