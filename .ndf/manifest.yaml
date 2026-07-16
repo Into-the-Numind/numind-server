@@ -1,5 +1,24 @@
 schema_version: '2.0'
 features:
+- id: agent-immediate-feedback
+  ndf_version: '3.0'
+  description: Show an immediate Agent working indicator after send, before the backend emits stream_start
+  classification_reason: 'Hotfix by user choice: frontend-only customer UX bug; no DB, API, new integration, payment or permission change; exactly 3 affected files including the regression test.'
+  last_updated_by: ai-h2-browser-verified
+  last_updated_at: '2026-07-16T17:50:00+08:00'
+  created_at: '2026-07-16T17:38:29+08:00'
+  track: hotfix
+  stage: H2
+  status: active
+  repos: [numind-web-v3]
+  branches: {numind-web-v3: fix/agent-immediate-feedback}
+  worktrees: {numind-web-v3: /private/tmp/wt-agent-immediate-feedback-numind-web-v3}
+  progress: {total_tasks: 1, completed_tasks: 1, reviewed_tasks: 1}
+  decisions:
+  - 'H1: first commit reproduces the blank pre-stream_start UI. The frontend now owns an optimistic pending signal from send until stream completion; AgentRunPulse renders it without waiting for currentRun.'
+  - 'H2: 1065 unit tests passed; lint had 0 errors; type-check passed. Playwright held the SSE request open and verified 处理中… appeared in 40 ms, cleared after request end, rendered on 1440×900 and 375×812, with zero console errors.'
+  blockers: []
+
 - id: feishu-stage-handoff
   ndf_version: '3.0'
   description: Give post-authorization handoff its own bounded runtime and settle stale expired cards through an explicit terminal refresh result
