@@ -1168,6 +1168,44 @@ func TestWorkspaceLifecycleRefreshRebindsOperationSessionBeforeResume(t *testing
 	require.Zero(t, dispatcher.calls, "a pending replacement session must not dispatch the operation")
 }
 
+func TestWorkspaceLifecycleRefreshRepairsLegacySupersededBinding(t *testing.T) {
+	operationID := "op-refresh-legacy"
+	oldSessionID := "session-legacy-superseded"
+	op := &model.FeishuOperation{
+		ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingConnection,
+		ResultSummaryJSON: lifecycleRecoverySummary(t, model.FeishuOperationWaitingConnection, oldSessionID, model.FeishuAuthPhaseCreateApp, RecoveryCreateApp),
+	}
+	svc, _, workspace, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 2,
+	}, op)
+	workspace.getSession = func(_ context.Context, _ uint, _ uint64, sessionID string) (*model.FeishuAuthSession, error) {
+		if sessionID != oldSessionID {
+			return nil, gorm.ErrRecordNotFound
+		}
+		return &model.FeishuAuthSession{
+			ID: oldSessionID, UserID: 7, Generation: 2, OperationID: &operationID,
+			Phase: model.FeishuAuthPhaseCreateApp, State: model.FeishuAuthSessionSuperseded,
+		}, nil
+	}
+	auth.refreshOperation = func(_ context.Context, _ uint, _ uint64, sessionID, gotOperationID, waitingState string, summary []byte) (*OperationAction, error) {
+		require.Equal(t, oldSessionID, sessionID)
+		require.Equal(t, operationID, gotOperationID)
+		require.Equal(t, model.FeishuOperationWaitingConnection, waitingState)
+		decoded, err := decodeOperationSummary(summary)
+		require.NoError(t, err)
+		require.Equal(t, oldSessionID, decoded.SessionID)
+		return &OperationAction{
+			Provider: ProviderLark, SessionID: "session-legacy-repaired", OperationID: operationID,
+			Phase: model.FeishuAuthPhaseCreateApp, URL: "https://open.feishu.cn/page/cli",
+		}, nil
+	}
+
+	action, err := svc.RefreshAction(context.Background(), 7, oldSessionID)
+	require.NoError(t, err)
+	require.Equal(t, "session-legacy-repaired", action.SessionID)
+	require.Equal(t, 1, auth.refreshCalls)
+}
+
 func TestWorkspaceLifecycleRefreshRecoversOriginalCardAfterFailedCompensation(t *testing.T) {
 	operationID := "op-refresh-recover"
 	const oldSessionID = "session-original"
