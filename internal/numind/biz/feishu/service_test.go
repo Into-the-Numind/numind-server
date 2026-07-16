@@ -978,6 +978,80 @@ func TestWorkspaceLifecycleResumeConfirmationActionsRequireWaitingConfirmation(t
 	require.Equal(t, 1, operations.confirmed)
 }
 
+func TestWorkspaceLifecycleResumeConfirmedFinalizesTerminalExecutionResult(t *testing.T) {
+	tests := []struct {
+		state   string
+		outcome externalaction.TerminalOutcome
+	}{
+		{state: model.FeishuOperationFailed, outcome: externalaction.TerminalOutcomeFailed},
+		{state: model.FeishuOperationUnknown, outcome: externalaction.TerminalOutcomeUnknown},
+		{state: model.FeishuOperationCancelled, outcome: externalaction.TerminalOutcomeCancelled},
+	}
+	for index, tc := range tests {
+		t.Run(tc.state, func(t *testing.T) {
+			operationID := fmt.Sprintf("op-confirm-result-%s", tc.state)
+			op := &model.FeishuOperation{
+				ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingConfirmation,
+				AgentRunID: uint64(70 + index), ToolCallID: fmt.Sprintf("tool-confirm-result-%d", index),
+			}
+			svc, _, workspace, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+				UserID: 7, Provider: ProviderLark, Generation: 2,
+			}, op)
+			operations.confirm = func(_ context.Context, _ uint, id string) (*OperationResult, error) {
+				workspace.operation.State = tc.state
+				return &OperationResult{OperationID: id, State: tc.state}, nil
+			}
+
+			result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionConfirmed)
+
+			require.NoError(t, err)
+			require.Equal(t, &OperationResult{OperationID: operationID, State: tc.state}, result)
+			require.Zero(t, dispatcher.calls)
+			require.Equal(t, 1, operations.confirmed)
+			calls := svc.agentWaits.(*lifecycleAgentWaitFake).calls
+			require.Len(t, calls, 1, "a terminal write result must durably close the exact Agent wait")
+			require.Equal(t, tc.outcome, calls[0].outcome)
+		})
+	}
+}
+
+func TestWorkspaceLifecycleResumeTerminalConfirmationActionsRepairAgentWait(t *testing.T) {
+	tests := []struct {
+		name    string
+		action  string
+		state   string
+		outcome externalaction.TerminalOutcome
+	}{
+		{name: "confirm_failed", action: ResumeActionConfirmed, state: model.FeishuOperationFailed, outcome: externalaction.TerminalOutcomeFailed},
+		{name: "confirm_unknown", action: ResumeActionConfirmed, state: model.FeishuOperationUnknown, outcome: externalaction.TerminalOutcomeUnknown},
+		{name: "confirm_cancelled", action: ResumeActionConfirmed, state: model.FeishuOperationCancelled, outcome: externalaction.TerminalOutcomeCancelled},
+		{name: "cancel_failed", action: ResumeActionCancelled, state: model.FeishuOperationFailed, outcome: externalaction.TerminalOutcomeFailed},
+	}
+	for index, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			operationID := "op-terminal-action-" + tc.name
+			op := &model.FeishuOperation{
+				ID: operationID, UserID: 7, Generation: 2, State: tc.state,
+				AgentRunID: uint64(80 + index), ToolCallID: fmt.Sprintf("tool-terminal-action-%d", index),
+			}
+			svc, _, _, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+				UserID: 7, Provider: ProviderLark, Generation: 2,
+			}, op)
+
+			result, err := svc.Resume(context.Background(), 7, operationID, tc.action)
+
+			require.NoError(t, err)
+			require.Equal(t, &OperationResult{OperationID: operationID, State: tc.state}, result)
+			require.Zero(t, dispatcher.calls)
+			require.Zero(t, operations.confirmed, "repair must not execute the Feishu write again")
+			require.Zero(t, operations.cancelled, "repair must not mutate the Feishu operation again")
+			calls := svc.agentWaits.(*lifecycleAgentWaitFake).calls
+			require.Len(t, calls, 1)
+			require.Equal(t, tc.outcome, calls[0].outcome)
+		})
+	}
+}
+
 func TestWorkspaceLifecycleResumeConfirmedRetriesSucceededContinuationWithoutReexecutingOperation(t *testing.T) {
 	const operationID = "op-confirmed-continuation"
 	op := &model.FeishuOperation{
