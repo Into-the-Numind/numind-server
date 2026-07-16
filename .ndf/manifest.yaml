@@ -1,5 +1,24 @@
 schema_version: '2.0'
 features:
+- id: dashscope-key-rotation
+  ndf_version: '3.0'
+  description: Rotate the exposed DashScope credential, remove tracked plaintext copies, and restore the production AI-service registry without committing the replacement secret.
+  classification_reason: 'Hotfix: no schema, API, external integration, payment, or permission logic change; three configuration surfaces and one regression test. User confirmed on 2026-07-16.'
+  last_updated_by: ai-h2-verified
+  last_updated_at: '2026-07-16T23:43:00+08:00'
+  created_at: '2026-07-16T23:22:00+08:00'
+  track: hotfix
+  stage: H2
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: fix/dashscope-key-rotation}
+  worktrees: {numind-server: /private/tmp/wt-dashscope-key-rotation-numind-server}
+  progress: {total_tasks: 1, completed_tasks: 1, reviewed_tasks: 0}
+  decisions:
+  - 'H1: committed a red regression test first; scrubbed the leaked DashScope values from tracked dev/local configuration and verified the test green. Production registry credentials were rotated in runtime storage; the replacement secret was never committed or logged.'
+  - 'H2: go test ./..., go vet ./..., and golangci-lint run ./... each exited 0. Production user API restarted after registry rotation and health check returned healthy.'
+  blockers: []
+
 - id: feishu-device-code-auth
   ndf_version: '3.0'
   description: Align hosted per-user Feishu authorization with the pinned lark-cli split device-code protocol and resume the exact original Agent operation
