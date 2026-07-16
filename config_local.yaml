@@ -144,7 +144,7 @@ ali:
   access_key_id: "LTAI5t7S7S7S7S7S7S7S7S7S" # 阿里云 AccessKey ID
   access_key_secret: "S7S7S7S7S7S7S7S7S7S7S7S7S7" # 阿里云 AccessKey Secret
   workspace_id: "ws-7s7s7s7s7s7s" # 百炼 Workspace ID
-  api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"  # 文本服务API密钥
+  api_key: ""  # 文本服务API密钥
   # 文本生成服务
   text:
     # model: 已由 AI Gateway Registry + Task Profile 管理，此字段不再读取
@@ -152,7 +152,8 @@ ali:
 
   # 视觉理解服务
   vision:
-    api_key: "sk-31f08fc72a594fbca4e827d5465a941b"  # 视觉服务专用API密钥
+    api_key: ""
+
     # model: 已由 AI Gateway Registry + Task Profile 管理，此字段不再读取
     timeout: 180s
 
@@ -167,7 +168,7 @@ ali:
 # 运行时 Gateway 从 DB 读取（单一来源），此段仅用于初始化/密钥轮换。
 ai_providers:
   ali:
-    api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"   # 与 ali.api_key 同值（ali-dashscope 行）
+    api_key: ""   # 与 ali.api_key 同值（ali-dashscope 行）
     base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
   volc:
     api_key: "716dc07a-b121-4bae-a132-497117f74c7a"  # 与 volc.api_key 同值（volc-ark 行）
@@ -179,7 +180,7 @@ ai_providers:
     api_key: "CkJCFXHinJLBsnEFT9lscwZr"             # 与 baidu.api_key 同值
     secret_key: "YbJZuvunKGhlSwTZpotTKZxkty0h5enU"  # 与 baidu.secret_key 同值（baidu-ocr 行）
   bailian:
-    api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"   # 复用 ali api_key（百炼同一账号）
+    api_key: ""   # 复用 ali api_key（百炼同一账号）
     base_url: "https://bailian.cn-hangzhou.aliyuncs.com"
     workspace_id: "ws-7s7s7s7s7s7s"                 # 与 ali.workspace_id 同值
   funasr:
