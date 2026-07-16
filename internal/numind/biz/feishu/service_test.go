@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"sync"
@@ -1138,6 +1139,7 @@ func TestWorkspaceLifecycleRefreshReturnsTerminalResultWithoutAuthRecovery(t *te
 	operationID := "op-terminal-refresh"
 	op := &model.FeishuOperation{
 		ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationFailed,
+		AgentRunID: 42, ToolCallID: "tool-terminal-refresh",
 	}
 	svc, _, workspace, auth, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
 		UserID: 7, Provider: ProviderLark, Generation: 2,
@@ -1156,6 +1158,70 @@ func TestWorkspaceLifecycleRefreshReturnsTerminalResultWithoutAuthRecovery(t *te
 	require.Zero(t, dispatcher.calls)
 	require.Zero(t, operations.confirmed)
 	require.Zero(t, operations.cancelled)
+	agentWaits := svc.agentWaits.(*lifecycleAgentWaitFake)
+	require.Len(t, agentWaits.calls, 1, "failed operation must durably close its exact Agent wait")
+	require.Equal(t, externalaction.TerminalOutcomeFailed, agentWaits.calls[0].outcome)
+}
+
+func TestWorkspaceLifecycleRefreshCompensatesSucceededOperationWithoutReexecution(t *testing.T) {
+	operationID := "op-succeeded-refresh"
+	op := &model.FeishuOperation{
+		ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationSucceeded,
+		AgentRunID: 43, ToolCallID: "tool-succeeded-refresh",
+	}
+	svc, _, workspace, auth, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 2,
+	}, op)
+	workspace.activeSession = &model.FeishuAuthSession{
+		ID: "session-succeeded", UserID: 7, Generation: 2, OperationID: &operationID,
+		Phase: model.FeishuAuthPhaseCreateApp, State: model.FeishuAuthSessionCompleted,
+	}
+
+	result, err := svc.RefreshAction(context.Background(), 7, "session-succeeded")
+
+	require.NoError(t, err)
+	require.Equal(t, &RefreshTerminalResult{OperationID: operationID, State: model.FeishuOperationSucceeded}, result.Terminal)
+	require.Zero(t, auth.refreshCalls)
+	require.Equal(t, 1, dispatcher.calls, "succeeded refresh may only compensate the Agent continuation")
+	require.Zero(t, operations.confirmed)
+	require.Zero(t, operations.cancelled)
+	require.Empty(t, svc.agentWaits.(*lifecycleAgentWaitFake).calls)
+}
+
+func TestWorkspaceLifecycleRefreshFinalizesUnknownAndCancelledAgentWaits(t *testing.T) {
+	tests := []struct {
+		state   string
+		outcome externalaction.TerminalOutcome
+	}{
+		{state: model.FeishuOperationUnknown, outcome: externalaction.TerminalOutcomeUnknown},
+		{state: model.FeishuOperationCancelled, outcome: externalaction.TerminalOutcomeCancelled},
+	}
+	for index, tc := range tests {
+		t.Run(tc.state, func(t *testing.T) {
+			operationID := fmt.Sprintf("op-terminal-refresh-%d", index)
+			op := &model.FeishuOperation{
+				ID: operationID, UserID: 7, Generation: 2, State: tc.state,
+				AgentRunID: uint64(50 + index), ToolCallID: fmt.Sprintf("tool-terminal-%d", index),
+			}
+			svc, _, workspace, auth, dispatcher, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+				UserID: 7, Provider: ProviderLark, Generation: 2,
+			}, op)
+			workspace.activeSession = &model.FeishuAuthSession{
+				ID: "session-" + tc.state, UserID: 7, Generation: 2, OperationID: &operationID,
+				Phase: model.FeishuAuthPhaseUserAuth, State: model.FeishuAuthSessionFailed,
+			}
+
+			result, err := svc.RefreshAction(context.Background(), 7, workspace.activeSession.ID)
+
+			require.NoError(t, err)
+			require.Equal(t, tc.state, result.Terminal.State)
+			require.Zero(t, auth.refreshCalls)
+			require.Zero(t, dispatcher.calls)
+			calls := svc.agentWaits.(*lifecycleAgentWaitFake).calls
+			require.Len(t, calls, 1)
+			require.Equal(t, tc.outcome, calls[0].outcome)
+		})
+	}
 }
 
 func TestWorkspaceLifecycleRefreshRebindsOperationSessionBeforeResume(t *testing.T) {
