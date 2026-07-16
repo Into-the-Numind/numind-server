@@ -1401,6 +1401,40 @@ func (s *feishuWorkspaceStore) RefreshOperationSession(
 			current.SessionID != oldSessionID || current.Phase != replacement.Phase {
 			return gorm.ErrRecordNotFound
 		}
+		if oldSession.State == model.FeishuAuthSessionSuperseded {
+			// The pre-atomic implementation could have created a second pending
+			// session without moving the operation summary to it. Before repairing
+			// that exact legacy source, fence every matching orphan: a live lease
+			// wins, while an unleased/expired one is retired in this transaction.
+			var orphans []model.FeishuAuthSession
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Where("user_id = ? AND generation = ? AND operation_id = ? AND phase = ? AND state = ?", userID, generation, operationID, replacement.Phase, model.FeishuAuthSessionPending).
+				Where("id <> ?", oldSessionID).
+				Find(&orphans).Error; err != nil {
+				return err
+			}
+			for index := range orphans {
+				orphan := &orphans[index]
+				if !equalRequestedScopes(orphan.RequestedScopesJSON, replacement.RequestedScopesJSON) {
+					continue
+				}
+				if orphan.LeaseUntil != nil && orphan.LeaseUntil.After(now) {
+					return gorm.ErrRecordNotFound
+				}
+				result := tx.Model(&model.FeishuAuthSession{}).
+					Where("id = ? AND user_id = ? AND generation = ? AND state = ?", orphan.ID, userID, generation, model.FeishuAuthSessionPending).
+					Updates(map[string]any{
+						"state": model.FeishuAuthSessionSuperseded, "completed_at": now.UTC(),
+						"lease_owner": "", "lease_until": nil,
+					})
+				if result.Error != nil {
+					return fmt.Errorf("retire legacy orphan feishu auth session: %w", result.Error)
+				}
+				if result.RowsAffected != 1 {
+					return gorm.ErrRecordNotFound
+				}
+			}
+		}
 		candidate := *replacement
 		if err := tx.Create(&candidate).Error; err != nil {
 			return fmt.Errorf("create replacement feishu auth session: %w", err)
