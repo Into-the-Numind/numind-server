@@ -378,6 +378,11 @@ func TestRunStream_HappyPath(t *testing.T) {
 	for i, ev := range evs {
 		types[i] = ev.Type
 	}
+	require.NotEmpty(t, evs)
+	assert.Equal(t, stream.EventStreamStart, evs[0].Type,
+		"stream_start must bind the run before any reasoning, token, or assistant event")
+	assert.Equal(t, uint64(1), evs[0].Seq,
+		"stream_start must own the first sequence number for the run")
 	assert.Contains(t, types, stream.EventStreamStart, "must emit stream_start")
 	assert.Contains(t, types, stream.EventTerminal, "must emit terminal")
 
