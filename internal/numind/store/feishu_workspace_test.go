@@ -1413,6 +1413,51 @@ func TestFeishuWorkspaceStore_RefreshOperationSessionRejectsLegacySourceWithLive
 	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
 }
 
+func TestFeishuWorkspaceStore_RefreshOperationSessionRejectsLiveLegacyOrphanWithDifferentScopes(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 1)
+	op, err := s.CreateOrGetOperation(ctx, newFeishuOperation("operation-legacy-live-mismatched-scopes", 7, 1, "key-legacy-live-mismatched-scopes"))
+	require.NoError(t, err)
+	oldSummary := []byte(`{"status":"waiting_connection","phase":"create_app","session_id":"session-legacy-mismatched-source","recovery_kind":"create_app"}`)
+	replacementSummary := []byte(`{"status":"waiting_connection","phase":"create_app","session_id":"session-legacy-mismatched-next","recovery_kind":"create_app"}`)
+	require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", op.ID).Updates(map[string]any{
+		"state": model.FeishuOperationWaitingConnection, "result_summary_json": oldSummary,
+	}).Error)
+	old := newFeishuSession("session-legacy-mismatched-source", 7, 1)
+	old.OperationID = &op.ID
+	old.Phase = model.FeishuAuthPhaseCreateApp
+	old.RequestedScopesJSON = []byte(`["offline_access"]`)
+	old.State = model.FeishuAuthSessionSuperseded
+	require.NoError(t, s.CreateSession(ctx, old))
+	orphan := newFeishuSession("session-legacy-mismatched-orphan", 7, 1)
+	orphan.OperationID = &op.ID
+	orphan.Phase = model.FeishuAuthPhaseCreateApp
+	orphan.RequestedScopesJSON = []byte(`["offline_access","drive:drive"]`)
+	orphan.LeaseOwner = "legacy-worker"
+	leaseUntil := time.Now().UTC().Add(time.Minute)
+	orphan.LeaseUntil = &leaseUntil
+	require.NoError(t, s.CreateSession(ctx, orphan))
+	candidate := newFeishuSession("session-legacy-mismatched-next", 7, 1)
+	candidate.OperationID = &op.ID
+	candidate.Phase = model.FeishuAuthPhaseCreateApp
+	candidate.RequestedScopesJSON = []byte(`["offline_access"]`)
+
+	_, err = s.RefreshOperationSession(
+		ctx, 7, 1, old.ID, op.ID, model.FeishuOperationWaitingConnection, model.FeishuConnectionCreatingApp, candidate, replacementSummary, time.Now().UTC(),
+	)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	stored, err := s.GetOperationForUser(ctx, 7, 1, op.ID)
+	require.NoError(t, err)
+	require.JSONEq(t, string(oldSummary), string(stored.ResultSummaryJSON))
+	storedOrphan, err := s.GetSessionForUser(ctx, 7, 1, orphan.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionPending, storedOrphan.State)
+	require.Equal(t, "legacy-worker", storedOrphan.LeaseOwner)
+	_, err = s.GetSessionForUser(ctx, 7, 1, candidate.ID)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+}
+
 func TestFeishuWorkspaceStore_RefreshOperationSessionRetiresExpiredLegacyOrphanReplacement(t *testing.T) {
 	ctx := context.Background()
 	s := newFeishuWorkspaceTestStore(t)

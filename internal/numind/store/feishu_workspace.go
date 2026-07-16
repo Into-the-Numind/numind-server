@@ -1415,11 +1415,11 @@ func (s *feishuWorkspaceStore) RefreshOperationSession(
 			}
 			for index := range orphans {
 				orphan := &orphans[index]
-				if !equalRequestedScopes(orphan.RequestedScopesJSON, replacement.RequestedScopesJSON) {
-					continue
-				}
 				if orphan.LeaseUntil != nil && orphan.LeaseUntil.After(now) {
 					return gorm.ErrRecordNotFound
+				}
+				if !equalRequestedScopes(orphan.RequestedScopesJSON, replacement.RequestedScopesJSON) {
+					continue
 				}
 				result := tx.Model(&model.FeishuAuthSession{}).
 					Where("id = ? AND user_id = ? AND generation = ? AND state = ?", orphan.ID, userID, generation, model.FeishuAuthSessionPending).
