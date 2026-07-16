@@ -141,11 +141,17 @@ func (r *agentRunner) consumeEinoStream(
 		return r.persistAndEmitYield(ctx, run.ID, st, emit, startTime, p)
 	}
 
-	// Emit stream_start immediately.
-	emit(stream.EventStreamStart, map[string]any{
-		"session_id": run.SessionID,
-		"run_id":     run.ID,
-	})
+	// RunStream normally emits stream_start before einoAgent.Stream begins,
+	// because the live checker can emit content from inside that call. Keep the
+	// guarded fallback here for direct/no-checker callers without duplicating it.
+	if hasState {
+		emitStreamStart(ctx, state, run.SessionID)
+	} else {
+		emit(stream.EventStreamStart, map[string]any{
+			"session_id": run.SessionID,
+			"run_id":     run.ID,
+		})
+	}
 
 	for {
 		// Check ctx before blocking on Recv.

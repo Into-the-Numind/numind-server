@@ -58,6 +58,10 @@ type StreamSessionState struct {
 	// Every emitter takes its next seq via Seq.Add(1). The WIRE field
 	// stream.Event.Seq stays a plain uint64; only this internal counter is atomic.
 	Seq atomic.Uint64
+	// StreamStarted guarantees stream_start is emitted exactly once before any
+	// live checker/tool event. RunStream emits it before einoAgent.Stream starts;
+	// consumeEinoStream keeps a guarded fallback for direct callers.
+	StreamStarted atomic.Bool
 	// PendingYield is set by the tool adapter (fullToolEinoAdapter.InvokableRun)
 	// when ask_user_question returns its yield sentinel during streaming. The
 	// stream drain (consumeEinoStream) reads it to surface a question_prompt +
@@ -592,6 +596,11 @@ func (r *agentRunner) RunStream(
 	// (see artifact_collector.go).
 	attemptCtx = withArtifactCollector(attemptCtx)
 
+	// Bind the frontend to this run before eino starts. The StreamToolCallChecker
+	// executes inside einoAgent.Stream and can emit reasoning/token events before
+	// that call returns, so waiting until consumeEinoStream is too late.
+	emitStreamStart(attemptCtx, sharedState, run.SessionID)
+
 	// 12. Call einoAgent.Stream — this is the key divergence from Run.
 	sr, streamErr := einoAgent.Stream(attemptCtx, einoMessages)
 
@@ -767,6 +776,30 @@ func newChanEmitter(state *StreamSessionState) func(stream.EventType, any) {
 		case state.Ch <- ev:
 		default:
 		}
+	}
+}
+
+// emitStreamStart binds the SSE stream to a run exactly once. It must run before
+// einoAgent.Stream because the live StreamToolCallChecker emits from inside that
+// call. The guarded fallback in consumeEinoStream preserves direct callers.
+func emitStreamStart(ctx context.Context, state *StreamSessionState, sessionID string) {
+	if state == nil || state.Ch == nil || !state.StreamStarted.CompareAndSwap(false, true) {
+		return
+	}
+	seq := state.Seq.Add(1)
+	ev, err := stream.Encode(stream.EventStreamStart, map[string]any{
+		"session_id": sessionID,
+		"run_id":     state.RunID,
+	}, seq, state.RunID, 0)
+	if err != nil {
+		state.StreamStarted.Store(false)
+		log.Warnw("emitStreamStart: stream.Encode failed", "agent_run_id", state.RunID, "error", err)
+		return
+	}
+	select {
+	case state.Ch <- ev:
+	case <-ctx.Done():
+		state.StreamStarted.Store(false)
 	}
 }
 
