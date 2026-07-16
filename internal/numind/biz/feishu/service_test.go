@@ -901,6 +901,32 @@ func TestWorkspaceLifecycleResumeUserCompletedRequiresRecoverableWait(t *testing
 	require.Zero(t, dispatcher.calls, "an arbitrary operation must not be resumed by a browser acknowledgement")
 }
 
+func TestWorkspaceLifecycleResumeUserCompletedObservesExecutingAndTerminalStates(t *testing.T) {
+	states := []string{
+		model.FeishuOperationExecuting,
+		model.FeishuOperationFailed,
+		model.FeishuOperationUnknown,
+		model.FeishuOperationCancelled,
+	}
+	for _, state := range states {
+		t.Run(state, func(t *testing.T) {
+			op := &model.FeishuOperation{ID: "op-stale-ack", UserID: 7, Generation: 2, State: state}
+			svc, _, _, auth, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+				UserID: 7, Provider: ProviderLark, Generation: 2,
+			}, op)
+
+			result, err := svc.Resume(context.Background(), 7, op.ID, ResumeActionUserCompleted)
+
+			require.NoError(t, err)
+			require.Equal(t, &OperationResult{OperationID: op.ID, State: state}, result)
+			require.Zero(t, dispatcher.calls, "a stale acknowledgement must not dispatch or replay")
+			require.Zero(t, operations.confirmed)
+			require.Zero(t, operations.cancelled)
+			require.Empty(t, auth.completeAppApprovalCalls)
+		})
+	}
+}
+
 func TestWorkspaceLifecycleResumeConfirmationActionsRequireWaitingConfirmation(t *testing.T) {
 	op := &model.FeishuOperation{ID: "op-1", UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth}
 	svc, _, _, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 2}, op)

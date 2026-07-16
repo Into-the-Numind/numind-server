@@ -175,6 +175,16 @@ type authSessionDispatcherFake struct {
 	ready chan struct{}
 }
 
+type authSessionDeadlineDispatcherFake struct {
+	deadline time.Time
+	has      bool
+}
+
+func (f *authSessionDeadlineDispatcherFake) DispatchResume(ctx context.Context, _ uint, _ string) error {
+	f.deadline, f.has = ctx.Deadline()
+	return nil
+}
+
 type authSessionCompleteBeforeClaimStore struct {
 	AuthSessionStore
 	db   *gorm.DB
@@ -339,6 +349,20 @@ func (f *authSessionDispatcherFake) snapshot() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.calls...)
+}
+
+func TestAuthSessionService_DispatchResumeDetachedOutlivesAuthorizationStartWindow(t *testing.T) {
+	dispatcher := &authSessionDeadlineDispatcherFake{}
+	service := &AuthSessionService{dispatcher: dispatcher}
+	startedAt := time.Now()
+
+	require.NoError(t, service.dispatchResumeDetached(context.Background(), 7, "operation-stage-handoff"))
+	require.True(t, dispatcher.has, "durable dispatch must remain bounded")
+	budget := dispatcher.deadline.Sub(startedAt)
+	require.Greater(t, budget, authSessionDefaultStartTimeout,
+		"dispatch must outlive the authorization URL-start window")
+	require.LessOrEqual(t, budget, authSessionCLIHardCeiling+time.Second,
+		"dispatch must not exceed the controlled CLI ceiling")
 }
 
 type authSessionHarness struct {
