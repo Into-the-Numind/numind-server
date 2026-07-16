@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -39,6 +40,7 @@ type authSessionCLIFake struct {
 	statusCalls     int
 	appID           string
 	appIDErr        error
+	activeRuns      int
 }
 
 func releaseAuthSessionCLIFake(t *testing.T, release chan struct{}) func() {
@@ -58,6 +60,12 @@ func (f *authSessionCLIFake) RunBlocking(
 	onURL func(string) error,
 ) error {
 	f.mu.Lock()
+	f.activeRuns++
+	defer func() {
+		f.mu.Lock()
+		f.activeRuns--
+		f.mu.Unlock()
+	}()
 	index := len(f.argv)
 	f.argv = append(f.argv, append([]string(nil), argv...))
 	url := ""
@@ -107,6 +115,12 @@ func (f *authSessionCLIFake) RunBlocking(
 		return ctx.Err()
 	}
 	return runErr
+}
+
+func (f *authSessionCLIFake) ActiveRuns() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.activeRuns
 }
 
 func (f *authSessionCLIFake) AuthStatus(context.Context, string) (bool, error) {
@@ -484,6 +498,48 @@ func TestAuthSessionService_ManualConnectRequestsOfflineAccessOnly(t *testing.T)
 	require.NotContains(t, string(serialized), "open.feishu.cn")
 	require.NotContains(t, string(serialized), "user_code")
 	close(release)
+}
+
+func TestAuthSessionService_UserAuthStartLeavesNoWorkerAndPersistsExactOperationCredential(t *testing.T) {
+	h := newAuthSessionHarness(t)
+	h.createAccount(model.FeishuConnectionAppReady)
+	release := make(chan struct{})
+	releaseAuthSessionCLIFake(t, release)
+	h.cli.urls = []string{"https://open.feishu.cn/suite/passport/oauth/device?user_code=RESTART_SAFE"}
+	h.cli.release = release
+	service := h.newService("split-protocol-regression")
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = service.StopGenerationAndWait(stopCtx, 7, 1)
+	})
+	operationID := "op-restart-safe"
+
+	action, err := service.StartRecovery(h.ctx, RecoveryRequest{
+		UserID: 7, Generation: 1, Kind: RecoveryUserScope,
+		OperationID: operationID, Scopes: []string{"offline_access"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, action)
+	require.Equal(t, operationID, action.OperationID)
+	require.Equal(t, model.FeishuAuthPhaseUserAuth, action.Phase)
+	assert.Eventually(t, func() bool { return h.cli.ActiveRuns() == 0 }, time.Second, 10*time.Millisecond,
+		"split user authorization start must not leave a blocking worker")
+	argv, _ := h.cli.snapshot()
+	assert.Equal(t, [][]string{{
+		"auth", "login", "--scope", "offline_access", "--no-wait", "--json",
+	}}, argv)
+
+	var persisted struct {
+		OperationID string
+		Ciphertext  []byte
+	}
+	err = h.db.Raw(`SELECT operation_id, resume_credential_ciphertext AS ciphertext
+		FROM feishu_auth_session WHERE id = ?`, action.SessionID).Scan(&persisted).Error
+	if assert.NoError(t, err) {
+		assert.Equal(t, operationID, persisted.OperationID)
+		assert.NotEmpty(t, persisted.Ciphertext)
+	}
 }
 
 func TestAuthSessionService_ManualConnectRejectsDisconnectingGeneration(t *testing.T) {

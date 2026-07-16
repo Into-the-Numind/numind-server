@@ -1,15 +1,51 @@
 package feishu
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"numind-server/internal/pkg/model"
 )
+
+type personalWorkspaceRestartDispatcher struct {
+	mu       sync.Mutex
+	delegate *reentrantOperationResumeDispatcher
+	calls    []string
+}
+
+func (d *personalWorkspaceRestartDispatcher) DispatchResume(
+	ctx context.Context,
+	userID uint,
+	operationID string,
+) error {
+	d.mu.Lock()
+	d.calls = append(d.calls, operationID)
+	delegate := d.delegate
+	d.mu.Unlock()
+	if delegate == nil {
+		return errors.New("restart dispatcher unavailable")
+	}
+	return delegate.DispatchResume(ctx, userID, operationID)
+}
+
+func (d *personalWorkspaceRestartDispatcher) setService(service *FeishuOperationService) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.delegate = &reentrantOperationResumeDispatcher{service: service}
+}
+
+func (d *personalWorkspaceRestartDispatcher) snapshot() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.calls...)
+}
 
 // newPersonalWorkspaceIntegrationOperationService intentionally recreates the
 // operation coordinator against the same durable stores. The integration tests
@@ -25,6 +61,24 @@ func newPersonalWorkspaceIntegrationOperationService(
 		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: h.dataStore.FeishuWorkspace(),
 		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: recovery,
 		Confirmation: h.confirmation, Vault: h.vault, Runner: h.runner, Cipher: h.cipher,
+		Now: h.service.now, LeaseDuration: time.Minute,
+	})
+	require.NoError(t, err)
+	return service
+}
+
+func newPersonalWorkspaceRestartOperationService(
+	t *testing.T,
+	h *operationHarness,
+	recovery RecoveryStarter,
+	vault OperationHomeVault,
+	runner OperationRunner,
+) *FeishuOperationService {
+	t.Helper()
+	service, err := NewFeishuOperationService(OperationServiceDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: h.dataStore.FeishuWorkspace(),
+		Catalog: NewCommandCatalog(), Receipts: &operationReceiptFake{}, Recovery: recovery,
+		Confirmation: &operationConfirmationFake{}, Vault: vault, Runner: runner, Cipher: h.cipher,
 		Now: h.service.now, LeaseDuration: time.Minute,
 	})
 	require.NoError(t, err)
@@ -243,6 +297,104 @@ func TestPersonalWorkspaceIntegration_UserScopeRecoveryReplaysExactRequestAfterR
 	require.Equal(t, 2, calls)
 	for _, invocation := range argv {
 		require.Equal(t, []string{"docs", "+fetch", "--doc", "doxcnABCDEFG123", "--format", "json", "--as", "user"}, invocation)
+	}
+}
+
+func TestPersonalWorkspaceIntegration_UserAuthResumeSurvivesServiceRestart(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_personal_workspace")
+	vault, err := NewEncryptedCLIHomeVault(
+		h.dataStore.ThirdPartyAccounts(), h.dataStore.FeishuWorkspace(),
+		h.cipher.currentCipher, h.cipher.currentVersion, t.TempDir(),
+	)
+	require.NoError(t, err)
+
+	instanceARelease := make(chan struct{})
+	releaseAuthSessionCLIFake(t, instanceARelease)
+	instanceACLI := &authSessionCLIFake{
+		urls:    []string{"https://open.feishu.cn/suite/passport/oauth/device?user_code=INSTANCE_A"},
+		release: instanceARelease,
+	}
+	instanceADispatcher := &personalWorkspaceRestartDispatcher{}
+	instanceAAuth, err := NewAuthSessionService(AuthSessionServiceDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Sessions: h.dataStore.FeishuWorkspace(),
+		Vault: vault, CLI: instanceACLI, Dispatcher: instanceADispatcher, Owner: "instance-a",
+		Now: h.service.now, LeaseDuration: time.Minute, SessionDuration: 10 * time.Minute,
+		HeartbeatInterval: 30 * time.Second, StartTimeout: time.Second,
+	})
+	require.NoError(t, err)
+	instanceAAuthForCleanup := instanceAAuth
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if stopErr := instanceAAuthForCleanup.StopGenerationAndWait(stopCtx, 7, 1); stopErr != nil {
+			t.Errorf("join instance A authorization worker: %v", stopErr)
+		}
+	})
+	instanceARunner := &operationRunnerFake{steps: []operationRunnerStep{
+		{result: userScopeRequiredCLIResult(), err: errors.New("user permission has not been granted")},
+	}}
+	instanceAOperations := newPersonalWorkspaceRestartOperationService(t, h, instanceAAuth, vault, instanceARunner)
+	instanceADispatcher.setService(instanceAOperations)
+
+	waiting, err := instanceAOperations.Execute(h.ctx, operationDocsFetchRequest(907, "tool-device-auth-restart"))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingUserAuth, waiting.State)
+	require.NotNil(t, waiting.Action)
+	require.Equal(t, waiting.OperationID, waiting.Action.OperationID)
+	assert.Zero(t, instanceACLI.ActiveRuns(),
+		"split user authorization start must not depend on an instance-local blocking worker")
+
+	// A hard process loss cannot gracefully stop its worker first: doing so
+	// would persist a failed session and replace the restart boundary with a
+	// teardown boundary. From here on instance A's auth service, worker, URL
+	// registry, CLI, and dispatcher are deliberately unused; the unconditional
+	// cleanup above joins its goroutine only after instance B has attempted the
+	// durable recovery.
+
+	instanceBCLI := &authSessionCLIFake{}
+	instanceBDispatcher := &personalWorkspaceRestartDispatcher{}
+	instanceBAuth, err := NewAuthSessionService(AuthSessionServiceDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Sessions: h.dataStore.FeishuWorkspace(),
+		Vault: vault, CLI: instanceBCLI, Dispatcher: instanceBDispatcher, Owner: "instance-b",
+		Now: h.service.now, LeaseDuration: time.Minute, SessionDuration: 10 * time.Minute,
+		HeartbeatInterval: 30 * time.Second, StartTimeout: time.Second,
+	})
+	require.NoError(t, err)
+	instanceBAuthForCleanup := instanceBAuth
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if stopErr := instanceBAuthForCleanup.StopGenerationAndWait(stopCtx, 7, 1); stopErr != nil {
+			t.Errorf("join instance B authorization worker: %v", stopErr)
+		}
+	})
+	instanceBRunner := &operationRunnerFake{steps: []operationRunnerStep{{
+		result: operationOKResult(`{"document_id":"completed-after-service-restart"}`),
+	}}}
+	instanceBOperations := newPersonalWorkspaceRestartOperationService(t, h, instanceBAuth, vault, instanceBRunner)
+	instanceBDispatcher.setService(instanceBOperations)
+	instanceBLifecycle, err := NewWorkspaceLifecycleService(WorkspaceLifecycleDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Workspace: h.dataStore.FeishuWorkspace(),
+		Auth: instanceBAuth, Dispatcher: instanceBDispatcher, Operations: instanceBOperations,
+		Executions: instanceBOperations, AgentWaits: &lifecycleAgentWaitFake{}, Teardown: &lifecycleTeardownFake{},
+	})
+	require.NoError(t, err)
+
+	result, err := instanceBLifecycle.Resume(h.ctx, 7, waiting.OperationID, ResumeActionUserCompleted)
+	if assert.NoError(t, err) && assert.NotNil(t, result) {
+		assert.Equal(t, model.FeishuOperationSucceeded, result.State)
+		assert.Equal(t, waiting.OperationID, result.OperationID)
+	}
+	assert.Equal(t, []string{waiting.OperationID}, instanceBDispatcher.snapshot(),
+		"instance B must dispatch the exact durable operation once")
+	instanceACalls, instanceAArgv := instanceARunner.snapshot()
+	instanceBCalls, instanceBArgv := instanceBRunner.snapshot()
+	assert.Equal(t, 1, instanceACalls)
+	assert.Equal(t, 1, instanceBCalls, "the original business operation must complete exactly once after authorization")
+	if len(instanceAArgv) == 1 && len(instanceBArgv) == 1 {
+		assert.Equal(t, instanceAArgv[0], instanceBArgv[0],
+			"restart recovery must replay the persisted exact operation")
 	}
 }
 
