@@ -613,6 +613,48 @@ func TestAuthSessionService_RefreshOperationRepairsLegacySupersededBinding(t *te
 	releaseWorker()
 }
 
+func TestAuthSessionService_RefreshOperationRetriesCurrentFailedBinding(t *testing.T) {
+	h := newAuthSessionHarness(t)
+	h.createAccount(model.FeishuConnectionAppReady)
+	release := make(chan struct{})
+	releaseWorker := releaseAuthSessionCLIFake(t, release)
+	h.cli.urls = []string{"https://open.feishu.cn/page/cli?user_code=FAILED_RETRY"}
+	h.cli.releases = []<-chan struct{}{release}
+	service := h.newService("refresh-operation-failed")
+	operation := &model.FeishuOperation{
+		ID: "operation-refresh-failed", UserID: 7, Generation: 1, AgentRunID: 7, ToolCallID: "tool-refresh-failed",
+		IdempotencyKey: "refresh-failed", CommandPath: "docs document get", Domain: "docs", RiskLevel: string(RiskRead),
+		RequestCiphertext: []byte("encrypted-request"), KeyVersion: "v1", RequestFingerprint: "refresh-failed-fingerprint",
+		State: model.FeishuOperationWaitingConnection,
+	}
+	require.NoError(t, h.db.Create(operation).Error)
+	failed := &model.FeishuAuthSession{
+		ID: "00000000-0000-4000-8000-000000000177", UserID: 7, Generation: 1, OperationID: &operation.ID,
+		Phase: model.FeishuAuthPhaseCreateApp, RequestedScopesJSON: []byte(`["docx:document:readonly"]`),
+		State: model.FeishuAuthSessionFailed, ExpiresAt: h.now.Add(10 * time.Minute),
+	}
+	require.NoError(t, h.dataStore.FeishuWorkspace().CreateSession(h.ctx, failed))
+	failedSummary, err := json.Marshal(persistedOperationSummary{
+		Status: model.FeishuOperationWaitingConnection, Phase: model.FeishuAuthPhaseCreateApp,
+		SessionID: failed.ID, RecoveryKind: RecoveryCreateApp,
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.db.Model(&model.FeishuOperation{}).Where("id = ?", operation.ID).
+		Update("result_summary_json", failedSummary).Error)
+
+	action, err := service.RefreshOperationAction(
+		h.ctx, 7, 1, failed.ID, operation.ID, model.FeishuOperationWaitingConnection, failedSummary,
+	)
+	require.NoError(t, err)
+	require.NotEqual(t, failed.ID, action.SessionID)
+	require.Contains(t, action.URL, "FAILED_RETRY")
+	storedFailed, err := h.dataStore.FeishuWorkspace().GetSessionForUser(h.ctx, 7, 1, failed.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionSuperseded, storedFailed.State)
+	require.NoError(t, service.Activate(h.ctx, action.SessionID))
+	releaseWorker()
+}
+
 func TestAuthSessionService_RefreshOperationRestoresOriginalBindingWhenReplacementCannotStart(t *testing.T) {
 	h := newAuthSessionHarness(t)
 	oldRelease := make(chan struct{})

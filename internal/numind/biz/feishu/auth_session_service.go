@@ -939,8 +939,8 @@ func (s *AuthSessionService) RefreshAction(
 
 // RefreshOperationAction atomically swaps an operation authorization session
 // before a replacement worker is allowed to run. Besides the normal pending
-// source, it accepts the narrow legacy state where the operation summary still
-// points at its own superseded source session.
+// source, it accepts a failed source only when the waiting operation still
+// names that exact session, plus the narrow legacy superseded binding.
 func (s *AuthSessionService) RefreshOperationAction(
 	ctx context.Context,
 	userID uint,
@@ -953,7 +953,7 @@ func (s *AuthSessionService) RefreshOperationAction(
 		return nil, ErrAuthSessionUnavailable
 	}
 	oldSession, err := s.sessions.GetSessionForUser(ctx, userID, generation, oldSessionID)
-	if err != nil || oldSession == nil || (oldSession.State != model.FeishuAuthSessionPending && oldSession.State != model.FeishuAuthSessionSuperseded) || oldSession.OperationID == nil ||
+	if err != nil || oldSession == nil || (oldSession.State != model.FeishuAuthSessionPending && oldSession.State != model.FeishuAuthSessionFailed && oldSession.State != model.FeishuAuthSessionSuperseded) || oldSession.OperationID == nil ||
 		*oldSession.OperationID != operationID {
 		return nil, ErrAuthSessionUnavailable
 	}
@@ -1513,7 +1513,7 @@ func validateAuthSessionCLIArgv(argv []string) error {
 	if err := validateControlledCLIInput(argv, nil); err != nil {
 		return err
 	}
-	if len(argv) == 3 && argv[0] == "config" && argv[1] == "init" && argv[2] == "--new" {
+	if isCreateAppAuthSessionArgv(argv) {
 		return nil
 	}
 	if len(argv) != 5 || argv[0] != "auth" || argv[1] != "login" || argv[2] != "--json" || argv[3] != "--scope" {
@@ -1524,6 +1524,10 @@ func validateAuthSessionCLIArgv(argv []string) error {
 		return errControlledCLIInvalidInput
 	}
 	return nil
+}
+
+func isCreateAppAuthSessionArgv(argv []string) bool {
+	return len(argv) == 3 && argv[0] == "config" && argv[1] == "init" && argv[2] == "--new"
 }
 
 func decodeAuthSessionFinalEnvelope(raw []byte) error {
@@ -1547,7 +1551,8 @@ func decodeAuthSessionFinalEnvelope(raw []byte) error {
 
 // RunBlocking implements AuthSessionCLI on the same hardened process boundary as
 // business commands, while streaming at most one official URL before waiting for
-// the final JSON success envelope.
+// the command-specific completion evidence. Auth login returns a JSON envelope;
+// config init completes through the complete app configuration checked by runWorker.
 func (r *ControlledLarkCLIRunner) RunBlocking(
 	ctx context.Context,
 	home string,
@@ -1631,8 +1636,10 @@ func (r *ControlledLarkCLIRunner) RunBlocking(
 	if !streamState.observedURL() {
 		return fmt.Errorf("feishu: auth lark-cli URL missing: %w", errControlledCLIInvalidJSON)
 	}
-	if err := decodeAuthSessionFinalEnvelope(stdout.bytes); err != nil {
-		return fmt.Errorf("feishu: auth lark-cli final envelope rejected: %w", err)
+	if !isCreateAppAuthSessionArgv(argv) {
+		if err := decodeAuthSessionFinalEnvelope(stdout.bytes); err != nil {
+			return fmt.Errorf("feishu: auth lark-cli final envelope rejected: %w", err)
+		}
 	}
 	return nil
 }

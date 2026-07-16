@@ -1344,8 +1344,8 @@ type feishuOperationRecoveryBinding struct {
 
 // RefreshOperationSession atomically supersedes the source authorization
 // session, creates its replacement, and moves the waiting operation's durable
-// binding. The source is normally pending; the same transaction also admits a
-// legacy superseded source only when the operation still points to it exactly.
+// binding. The source is normally pending; the same transaction also admits an
+// exactly bound failed source and a legacy superseded source.
 // No partially refreshed operation can be committed if any tenant, state, or
 // session fence fails.
 func (s *feishuWorkspaceStore) RefreshOperationSession(
@@ -1381,7 +1381,7 @@ func (s *feishuWorkspaceStore) RefreshOperationSession(
 		var oldSession model.FeishuAuthSession
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("id = ? AND user_id = ? AND generation = ?", oldSessionID, userID, generation).
-			Where("state IN ?", []string{model.FeishuAuthSessionPending, model.FeishuAuthSessionSuperseded}).
+			Where("state IN ?", []string{model.FeishuAuthSessionPending, model.FeishuAuthSessionFailed, model.FeishuAuthSessionSuperseded}).
 			Take(&oldSession).Error; err != nil {
 			return err
 		}
@@ -1401,11 +1401,11 @@ func (s *feishuWorkspaceStore) RefreshOperationSession(
 			current.SessionID != oldSessionID || current.Phase != replacement.Phase {
 			return gorm.ErrRecordNotFound
 		}
-		if oldSession.State == model.FeishuAuthSessionSuperseded {
-			// The pre-atomic implementation could have created a second pending
-			// session without moving the operation summary to it. Before repairing
-			// that exact legacy source, fence every matching orphan: a live lease
-			// wins, while an unleased/expired one is retired in this transaction.
+		if oldSession.State != model.FeishuAuthSessionPending {
+			// A failed current session or pre-atomic legacy source can have a
+			// second pending session without the operation summary naming it.
+			// Fence every matching orphan: a live lease wins, while an
+			// unleased/expired one is retired in this transaction.
 			var orphans []model.FeishuAuthSession
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 				Where("user_id = ? AND generation = ? AND operation_id = ? AND phase = ? AND state = ?", userID, generation, operationID, replacement.Phase, model.FeishuAuthSessionPending).
@@ -1441,7 +1441,7 @@ func (s *feishuWorkspaceStore) RefreshOperationSession(
 		}
 		oldResult := tx.Model(&model.FeishuAuthSession{}).
 			Where("id = ? AND user_id = ? AND generation = ?", oldSessionID, userID, generation).
-			Where("state IN ?", []string{model.FeishuAuthSessionPending, model.FeishuAuthSessionSuperseded}).
+			Where("state IN ?", []string{model.FeishuAuthSessionPending, model.FeishuAuthSessionFailed, model.FeishuAuthSessionSuperseded}).
 			Updates(map[string]any{
 				"state": model.FeishuAuthSessionSuperseded, "completed_at": now.UTC(),
 				"lease_owner": "", "lease_until": nil,
