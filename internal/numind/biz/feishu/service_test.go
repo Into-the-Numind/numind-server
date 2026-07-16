@@ -1131,7 +1131,7 @@ func TestWorkspaceLifecycleResumeSucceededOperationWithoutAgentContinuationOnlyR
 	require.Zero(t, operations.confirmed)
 }
 
-func TestWorkspaceLifecycleResumeCancelledSucceededOperationOnlyReturnsSummary(t *testing.T) {
+func TestWorkspaceLifecycleResumeCancelledSucceededOperationCompensatesContinuation(t *testing.T) {
 	op := &model.FeishuOperation{
 		ID: "op-cancelled-after-success", UserID: 7, Generation: 2, State: model.FeishuOperationSucceeded,
 		AgentRunID: 43, ToolCallID: "tool-cancelled-after-success",
@@ -1143,7 +1143,7 @@ func TestWorkspaceLifecycleResumeCancelledSucceededOperationOnlyReturnsSummary(t
 	result, err := svc.Resume(context.Background(), 7, op.ID, ResumeActionCancelled)
 	require.NoError(t, err)
 	require.Equal(t, &OperationResult{OperationID: op.ID, State: model.FeishuOperationSucceeded}, result)
-	require.Zero(t, dispatcher.calls, "a cancellation acknowledgement must never restart a successful continuation")
+	require.Equal(t, 1, dispatcher.calls, "any acknowledgement of committed success must repair the exact Agent continuation")
 	require.Zero(t, operations.cancelled, "a completed operation must not be cancelled after its write succeeded")
 }
 
