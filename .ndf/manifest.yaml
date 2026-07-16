@@ -1,5 +1,37 @@
 schema_version: '2.0'
 features:
+- id: feishu-keychain-app-evidence
+  ndf_version: '3.0'
+  description: Accept the pinned lark-cli keychain-backed application evidence after successful personal Feishu app creation
+  classification_reason: 'Standard continuation: customer-reported third-party authorization failure at the credential evidence and encrypted HOME boundary; no API or DB change.'
+  last_updated_by: ai-s3-plan-complete
+  last_updated_at: '2026-07-16T12:00:00+08:00'
+  created_at: '2026-07-16T11:06:29+08:00'
+  track: standard
+  stage: S3
+  status: active
+  repos:
+    numind-server: /private/tmp/wt-feishu-keychain-app-evidence-numind-server
+  worktrees:
+    numind-server: /private/tmp/wt-feishu-keychain-app-evidence-numind-server
+  branches:
+    numind-server: feature/feishu-keychain-app-evidence
+  progress:
+    total_tasks: 4
+    completed_tasks: 0
+    reviewed_tasks: 0
+  artifacts:
+    requirement: requirements/feishu-keychain-app-evidence.md
+    proposal: proposals/feishu-keychain-app-evidence-proposal.md
+    design: docs/superpowers/specs/2026-07-16-feishu-keychain-app-evidence-design.md
+    plan: docs/superpowers/plans/2026-07-16-feishu-keychain-app-evidence.md
+  decisions:
+  - 'S0: dev logs show create-app session failed after official-page completion and before HOME sealing; resume only surfaced the terminal failure.'
+  - 'S1: pinned lark-cli 1.0.68 stores appSecret as a keychain reference, while Numind and its fake CLI fixture assumed plaintext.'
+  - 'S2: add a dedicated strict non-secret evidence parser; do not widen the legacy plaintext-secret reader. Prove the whole keychain HOME survives vault round-trip.'
+  - 'S3: customer regression must be the first code commit and must use the real 1.0.68 config shape.'
+  blockers: []
+
 - id: feishu-create-app-finalization
   ndf_version: '3.0'
   description: Correctly finalize personal Feishu app creation and safely retry an exactly bound failed authorization card
@@ -31,7 +63,7 @@ features:
   - 'S2: only a failed session exactly named by the current operation summary may create a replacement; user, generation, operation, phase, scopes and live-lease fences remain.'
   - 'S5: repro-first tests, task lint and task test passed; independent specification and code-quality reviews found no P0/P1.'
   - 'S6: ndf-done merged and pushed develop commit 46a45c2b; awaiting dev deployment and user validation.'
-  - 'S6 dev: image develop-fbc9aa6a deployed; numind-server-dev reported healthy and /healthz returned {status:ok}. Awaiting user validation of the existing failed card.'
+  - 'S6 dev: image develop-fbc9aa6a deployed; numind-server-dev reported healthy and /healthz returned {status:ok}. User validation then exposed a deeper pinned-CLI config contract mismatch; follow-up feishu-keychain-app-evidence owns the repair.'
   blockers: []
 
 - id: feishu-legacy-refresh-recovery
