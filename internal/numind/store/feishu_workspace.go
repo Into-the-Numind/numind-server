@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,7 +16,10 @@ import (
 	"numind-server/internal/pkg/model"
 )
 
-const feishuSucceededCreateProofLimit = 32
+const (
+	feishuSucceededCreateProofLimit  = 32
+	maxFeishuCLIVaultCiphertextBytes = 64 << 20
+)
 
 // ErrFeishuProofReservationUnavailable means a candidate cannot atomically
 // reserve the requested one-shot proof. Callers may safely retry creation only
@@ -54,6 +59,22 @@ type FeishuDeviceAuthReplacement struct {
 	Now                  time.Time
 }
 
+// FeishuDeviceAuthSuccess contains every fence required to atomically publish
+// a completed device-authorization HOME and terminalize its owning session.
+type FeishuDeviceAuthSuccess struct {
+	UserID                uint
+	Generation            uint64
+	SessionID             string
+	OperationID           string
+	LeaseOwner            string
+	ExpectedAppID         string
+	ExpectedWaitingState  string
+	Candidate             model.FeishuCLIVault
+	ExpectedVaultRevision uint64
+	Evidence              model.FeishuConnectionEvidence
+	Now                   time.Time
+}
+
 // FeishuDeviceAuthCleanupPage reports one bounded primary-key sweep page.
 type FeishuDeviceAuthCleanupPage struct {
 	NextSessionID string
@@ -84,6 +105,7 @@ type IFeishuWorkspaceStore interface {
 	RenewSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error)
 	UpdateSessionState(ctx context.Context, userID uint, generation uint64, id, owner, state string, now time.Time, completedAt *time.Time) error
 	FinalizeSessionCompleted(ctx context.Context, userID uint, generation uint64, id, owner, accountState string, connected bool, now time.Time, evidence model.FeishuConnectionEvidence) error
+	FinalizeDeviceAuthSuccess(ctx context.Context, input FeishuDeviceAuthSuccess) error
 	UpdateAccountConnectionState(ctx context.Context, userID uint, generation uint64, state string, connected bool, now time.Time) error
 	RecordCapabilityOutcome(ctx context.Context, userID uint, generation uint64, outcome model.FeishuCapabilityOutcome) error
 	CreateOrGetOperation(ctx context.Context, operation *model.FeishuOperation) (*model.FeishuOperation, error)
@@ -1126,6 +1148,156 @@ func (s *feishuWorkspaceStore) FinalizeSessionCompleted(
 			})
 		if sessionResult.Error != nil {
 			return fmt.Errorf("finalize feishu auth session: %w", sessionResult.Error)
+		}
+		if sessionResult.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		return nil
+	})
+}
+
+func validFeishuDeviceAuthSuccessInput(input FeishuDeviceAuthSuccess) bool {
+	if input.UserID == 0 || input.Generation == 0 || strings.TrimSpace(input.SessionID) == "" ||
+		strings.TrimSpace(input.LeaseOwner) == "" || input.Now.IsZero() ||
+		!validFeishuAppIDEvidence(input.ExpectedAppID) || input.Evidence.AppID != input.ExpectedAppID ||
+		!validFeishuCLIVersionEvidence(input.Evidence.CLIVersion) {
+		return false
+	}
+	if input.OperationID == "" {
+		if input.ExpectedWaitingState != "" {
+			return false
+		}
+	} else if strings.TrimSpace(input.OperationID) != input.OperationID ||
+		input.ExpectedWaitingState != model.FeishuOperationWaitingUserAuth {
+		return false
+	}
+	if input.ExpectedVaultRevision == ^uint64(0) || input.Candidate.UserID != input.UserID ||
+		input.Candidate.Generation != input.Generation || input.Candidate.Revision != input.ExpectedVaultRevision+1 ||
+		len(input.Candidate.Ciphertext) == 0 || len(input.Candidate.Ciphertext) > maxFeishuCLIVaultCiphertextBytes ||
+		!validFeishuResumeKeyVersion(input.Candidate.KeyVersion) {
+		return false
+	}
+	wantChecksum := fmt.Sprintf("%x", sha256.Sum256(input.Candidate.Ciphertext))
+	return len(input.Candidate.Checksum) == len(wantChecksum) &&
+		subtle.ConstantTimeCompare([]byte(input.Candidate.Checksum), []byte(wantChecksum)) == 1
+}
+
+// FinalizeDeviceAuthSuccess publishes the candidate vault and completes its
+// authorization state atomically. Its fixed lock order is account, session,
+// optional operation, then vault; every conditional miss rolls back all writes.
+func (s *feishuWorkspaceStore) FinalizeDeviceAuthSuccess(ctx context.Context, input FeishuDeviceAuthSuccess) error {
+	if !validFeishuDeviceAuthSuccessInput(input) {
+		return gorm.ErrRecordNotFound
+	}
+	now := input.Now.UTC()
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var account model.UserThirdPartyAccount
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ? AND provider = ?", input.UserID, "lark").
+			Take(&account).Error; err != nil {
+			return err
+		}
+		if !feishuAccountGenerationActive(&account, input.Generation) || account.AppID != input.ExpectedAppID {
+			return gorm.ErrRecordNotFound
+		}
+
+		var session model.FeishuAuthSession
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND user_id = ? AND generation = ?", input.SessionID, input.UserID, input.Generation).
+			Where("state = ? AND protocol_version = ? AND phase = ?", model.FeishuAuthSessionPending, 2, model.FeishuAuthPhaseUserAuth).
+			Where("lease_owner = ? AND lease_until > ?", input.LeaseOwner, now).
+			Take(&session).Error; err != nil {
+			return err
+		}
+		if !validFeishuDeviceAuthWaitingShape(&session) || !session.ExpiresAt.After(now) ||
+			session.ResumeExpiresAt == nil || !session.ResumeExpiresAt.After(now) {
+			return gorm.ErrRecordNotFound
+		}
+		if input.OperationID == "" {
+			if session.OperationID != nil {
+				return gorm.ErrRecordNotFound
+			}
+		} else if session.OperationID == nil || *session.OperationID != input.OperationID {
+			return gorm.ErrRecordNotFound
+		}
+
+		if input.OperationID != "" {
+			var operation model.FeishuOperation
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Where("id = ? AND user_id = ? AND generation = ? AND state = ?", input.OperationID, input.UserID, input.Generation, input.ExpectedWaitingState).
+				Take(&operation).Error; err != nil {
+				return err
+			}
+			var binding feishuOperationRecoveryBinding
+			if json.Unmarshal(operation.ResultSummaryJSON, &binding) != nil || binding.Status != input.ExpectedWaitingState ||
+				binding.SessionID != input.SessionID || binding.Phase != model.FeishuAuthPhaseUserAuth {
+				return gorm.ErrRecordNotFound
+			}
+		}
+
+		var currentVault model.FeishuCLIVault
+		vaultErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ?", input.UserID).
+			Take(&currentVault).Error
+		if input.ExpectedVaultRevision == 0 {
+			if vaultErr == nil {
+				return gorm.ErrRecordNotFound
+			}
+			if !errors.Is(vaultErr, gorm.ErrRecordNotFound) {
+				return vaultErr
+			}
+			candidate := input.Candidate
+			candidate.CreatedAt = time.Time{}
+			candidate.UpdatedAt = time.Time{}
+			if err := tx.Create(&candidate).Error; err != nil {
+				return fmt.Errorf("create finalized feishu CLI vault: %w", err)
+			}
+		} else {
+			if vaultErr != nil {
+				return vaultErr
+			}
+			if currentVault.Generation != input.Generation || currentVault.Revision != input.ExpectedVaultRevision {
+				return gorm.ErrRecordNotFound
+			}
+			vaultResult := tx.Model(&model.FeishuCLIVault{}).
+				Where("user_id = ? AND generation = ? AND revision = ?", input.UserID, input.Generation, input.ExpectedVaultRevision).
+				Updates(map[string]any{
+					"ciphertext": input.Candidate.Ciphertext, "key_version": input.Candidate.KeyVersion,
+					"checksum": input.Candidate.Checksum, "revision": input.Candidate.Revision,
+				})
+			if vaultResult.Error != nil {
+				return fmt.Errorf("publish finalized feishu CLI vault: %w", vaultResult.Error)
+			}
+			if vaultResult.RowsAffected != 1 {
+				return gorm.ErrRecordNotFound
+			}
+		}
+
+		accountResult := tx.Model(&model.UserThirdPartyAccount{}).
+			Where("user_id = ? AND provider = ? AND generation = ? AND app_id = ?", input.UserID, "lark", input.Generation, input.ExpectedAppID).
+			Where("connection_state <> ?", model.FeishuConnectionDisconnecting).
+			Updates(map[string]any{
+				"connected": true, "connected_at": now, "connection_state": model.FeishuConnectionConnected,
+				"app_id": input.Evidence.AppID, "lark_cli_version": input.Evidence.CLIVersion,
+			})
+		if accountResult.Error != nil {
+			return fmt.Errorf("finalize device authorization account: %w", accountResult.Error)
+		}
+		if accountResult.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+
+		sessionResult := tx.Model(&model.FeishuAuthSession{}).
+			Where("id = ? AND user_id = ? AND generation = ?", input.SessionID, input.UserID, input.Generation).
+			Where("state = ? AND protocol_version = ? AND phase = ?", model.FeishuAuthSessionPending, 2, model.FeishuAuthPhaseUserAuth).
+			Where("lease_owner = ? AND lease_until > ?", input.LeaseOwner, now).
+			Updates(map[string]any{
+				"state": model.FeishuAuthSessionCompleted, "completed_at": now,
+				"resume_credential_ciphertext": nil, "resume_key_version": nil, "resume_expires_at": nil,
+				"lease_owner": "", "lease_until": nil,
+			})
+		if sessionResult.Error != nil {
+			return fmt.Errorf("finalize device authorization session: %w", sessionResult.Error)
 		}
 		if sessionResult.RowsAffected != 1 {
 			return gorm.ErrRecordNotFound

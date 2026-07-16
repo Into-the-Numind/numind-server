@@ -526,6 +526,82 @@ func TestEncryptedCLIHomeVault_RuntimePermissionsCleanupAndRevisionCAS(t *testin
 	task2RequireNoRuntimeHomes(t, f.runtimeBase)
 }
 
+func TestEncryptedCLIHomeVault_WithHomeCandidateDoesNotPublish(t *testing.T) {
+	f := newTask2VaultFixture(t, 7, 1)
+
+	candidate, err := f.vault.WithHomeCandidate(
+		context.Background(),
+		f.userID,
+		f.generation,
+		func(home string) error {
+			task2RequireMode(t, home, 0o700)
+			return os.WriteFile(filepath.Join(home, "candidate.json"), []byte(`{"authorized":true}`), 0o600)
+		},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, candidate)
+	require.Equal(t, uint64(0), candidate.ExpectedRevision)
+	require.Equal(t, f.userID, candidate.Vault.UserID)
+	require.Equal(t, f.generation, candidate.Vault.Generation)
+	require.Equal(t, uint64(1), candidate.Vault.Revision)
+	require.Equal(t, f.keyVersion, candidate.Vault.KeyVersion)
+	require.NotEmpty(t, candidate.Vault.Ciphertext)
+	require.Equal(t, cliHomeCiphertextChecksum(candidate.Vault.Ciphertext), candidate.Vault.Checksum)
+	require.Zero(t, f.store.putCalls, "candidate creation must never publish through PutVaultCAS")
+	require.Empty(t, f.store.vaults, "candidate must remain in memory until the fenced store transaction")
+
+	archive, err := f.vault.openSnapshot(f.userID, f.generation, &candidate.Vault)
+	require.NoError(t, err)
+	extracted := t.TempDir()
+	require.NoError(t, unpackCLIHome(archive, extracted))
+	body, err := os.ReadFile(filepath.Join(extracted, "candidate.json"))
+	require.NoError(t, err)
+	require.JSONEq(t, `{"authorized":true}`, string(body))
+	task2RequireNoRuntimeHomes(t, f.runtimeBase)
+}
+
+func TestEncryptedCLIHomeVault_WithHomeCandidateCleansRuntimeHome(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		f := newTask2VaultFixture(t, 7, 1)
+		var runtimeHome string
+		candidate, err := f.vault.WithHomeCandidate(
+			context.Background(),
+			f.userID,
+			f.generation,
+			func(home string) error {
+				runtimeHome = home
+				return os.WriteFile(filepath.Join(home, "credential"), []byte("secret"), 0o600)
+			},
+		)
+		require.NoError(t, err)
+		require.NotNil(t, candidate)
+		require.NoDirExists(t, runtimeHome)
+		require.Zero(t, f.store.putCalls)
+		task2RequireNoRuntimeHomes(t, f.runtimeBase)
+	})
+
+	t.Run("callback error", func(t *testing.T) {
+		f := newTask2VaultFixture(t, 7, 1)
+		callbackErr := errors.New("completion failed")
+		var runtimeHome string
+		candidate, err := f.vault.WithHomeCandidate(
+			context.Background(),
+			f.userID,
+			f.generation,
+			func(home string) error {
+				runtimeHome = home
+				require.NoError(t, os.WriteFile(filepath.Join(home, "credential"), []byte("secret"), 0o600))
+				return callbackErr
+			},
+		)
+		require.ErrorIs(t, err, callbackErr)
+		require.Nil(t, candidate)
+		require.NoDirExists(t, runtimeHome)
+		require.Zero(t, f.store.putCalls)
+		task2RequireNoRuntimeHomes(t, f.runtimeBase)
+	})
+}
+
 func TestEncryptedCLIHomeVault_PreservesOfficialLarkKeychainFiles(t *testing.T) {
 	f := newTask2VaultFixture(t, 7, 1)
 	want := map[string][]byte{

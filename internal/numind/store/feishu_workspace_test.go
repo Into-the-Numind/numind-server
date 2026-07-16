@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -1871,6 +1872,189 @@ func newFeishuDeviceAuthSession(id string, userID uint, generation uint64, owner
 	leaseUntil := now.Add(time.Minute)
 	session.LeaseUntil = &leaseUntil
 	return session
+}
+
+type feishuDeviceAuthSuccessTestFixture struct {
+	store        *feishuWorkspaceStore
+	input        FeishuDeviceAuthSuccess
+	initialVault model.FeishuCLIVault
+	sessionID    string
+	operationID  string
+	summary      []byte
+}
+
+func newFeishuDeviceAuthSuccessTestFixture(t *testing.T, linkedOperation bool) feishuDeviceAuthSuccessTestFixture {
+	t.Helper()
+	ctx := context.Background()
+	store := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, store, 7, 3)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 123000000, time.UTC)
+	require.NoError(t, store.db.Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ?", 7, "lark").
+		Updates(map[string]any{
+			"connection_state": model.FeishuConnectionWaitingUserAuth,
+			"connected":        false,
+			"connected_at":     nil,
+			"lark_cli_version": "",
+		}).Error)
+
+	sessionID := "device-auth-success-session"
+	session := newFeishuDeviceAuthSession(sessionID, 7, 3, "completion-owner", now)
+	session.ResumeCredentialCiphertext = []byte("encrypted-device-code")
+	session.ResumeKeyVersion = "device-key-v2"
+	resumeExpiry := now.Add(5 * time.Minute)
+	session.ResumeExpiresAt = &resumeExpiry
+
+	operationID := ""
+	var summary []byte
+	expectedWaitingState := ""
+	if linkedOperation {
+		operation := newFeishuOperation("device-auth-success-operation", 7, 3, "device-auth-success-operation-key")
+		operation.State = model.FeishuOperationWaitingUserAuth
+		summary = []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"device-auth-success-session"}`)
+		operation.ResultSummaryJSON = append([]byte(nil), summary...)
+		require.NoError(t, store.db.Create(operation).Error)
+		operationID = operation.ID
+		expectedWaitingState = model.FeishuOperationWaitingUserAuth
+		session.OperationID = &operationID
+	}
+	require.NoError(t, store.CreateSession(ctx, session))
+
+	initialCiphertext := []byte("initial-vault-ciphertext")
+	initialVault := model.FeishuCLIVault{
+		UserID: 7, Generation: 3, Ciphertext: initialCiphertext, KeyVersion: "vault-key-v1",
+		Checksum: fmt.Sprintf("%x", sha256.Sum256(initialCiphertext)),
+	}
+	require.NoError(t, store.PutVaultCAS(ctx, &initialVault, 0))
+	require.Equal(t, uint64(1), initialVault.Revision)
+
+	candidateCiphertext := []byte("candidate-vault-ciphertext")
+	input := FeishuDeviceAuthSuccess{
+		UserID: 7, Generation: 3, SessionID: sessionID, OperationID: operationID,
+		LeaseOwner: "completion-owner", ExpectedAppID: "app-7",
+		ExpectedWaitingState: expectedWaitingState,
+		Candidate: model.FeishuCLIVault{
+			UserID: 7, Generation: 3, Ciphertext: candidateCiphertext, KeyVersion: "vault-key-v2",
+			Checksum: fmt.Sprintf("%x", sha256.Sum256(candidateCiphertext)), Revision: 2,
+		},
+		ExpectedVaultRevision: 1,
+		Evidence:              model.FeishuConnectionEvidence{AppID: "app-7", CLIVersion: "1.0.68"},
+		Now:                   now,
+	}
+	return feishuDeviceAuthSuccessTestFixture{
+		store: store, input: input, initialVault: initialVault,
+		sessionID: sessionID, operationID: operationID, summary: summary,
+	}
+}
+
+func requireFeishuDeviceAuthSuccessFixtureUnchanged(t *testing.T, fixture feishuDeviceAuthSuccessTestFixture) {
+	t.Helper()
+	ctx := context.Background()
+	vault, err := fixture.store.GetVault(ctx, fixture.input.UserID, fixture.input.Generation)
+	require.NoError(t, err)
+	require.Equal(t, fixture.initialVault.Revision, vault.Revision)
+	require.Equal(t, fixture.initialVault.Ciphertext, vault.Ciphertext)
+	require.Equal(t, fixture.initialVault.KeyVersion, vault.KeyVersion)
+
+	var account model.UserThirdPartyAccount
+	require.NoError(t, fixture.store.db.Where("user_id = ? AND provider = ?", fixture.input.UserID, "lark").Take(&account).Error)
+	require.False(t, account.Connected)
+	require.Nil(t, account.ConnectedAt)
+	require.Equal(t, model.FeishuConnectionWaitingUserAuth, account.ConnectionState)
+	require.Empty(t, account.LarkCLIVersion)
+
+	session, err := fixture.store.GetSessionForUser(ctx, fixture.input.UserID, fixture.input.Generation, fixture.sessionID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionPending, session.State)
+	require.NotEmpty(t, session.ResumeCredentialCiphertext)
+	require.NotEmpty(t, session.ResumeKeyVersion)
+	require.NotNil(t, session.ResumeExpiresAt)
+	require.Equal(t, "completion-owner", session.LeaseOwner)
+	require.NotNil(t, session.LeaseUntil)
+	require.Nil(t, session.CompletedAt)
+
+	if fixture.operationID != "" {
+		operation, operationErr := fixture.store.GetOperationForUser(ctx, fixture.input.UserID, fixture.input.Generation, fixture.operationID)
+		require.NoError(t, operationErr)
+		require.Equal(t, model.FeishuOperationWaitingUserAuth, operation.State)
+		require.JSONEq(t, string(fixture.summary), string(operation.ResultSummaryJSON))
+	}
+}
+
+func TestFeishuWorkspaceStore_FinalizeDeviceAuthSuccessPublishesAtomically(t *testing.T) {
+	for _, linkedOperation := range []bool{true, false} {
+		name := "manual"
+		if linkedOperation {
+			name = "linked operation"
+		}
+		t.Run(name, func(t *testing.T) {
+			fixture := newFeishuDeviceAuthSuccessTestFixture(t, linkedOperation)
+			require.NoError(t, fixture.store.FinalizeDeviceAuthSuccess(context.Background(), fixture.input))
+
+			vault, err := fixture.store.GetVault(context.Background(), fixture.input.UserID, fixture.input.Generation)
+			require.NoError(t, err)
+			require.Equal(t, fixture.input.Candidate.Revision, vault.Revision)
+			require.Equal(t, fixture.input.Candidate.Ciphertext, vault.Ciphertext)
+			require.Equal(t, fixture.input.Candidate.KeyVersion, vault.KeyVersion)
+			require.Equal(t, fixture.input.Candidate.Checksum, vault.Checksum)
+
+			var account model.UserThirdPartyAccount
+			require.NoError(t, fixture.store.db.Where("user_id = ? AND provider = ?", 7, "lark").Take(&account).Error)
+			require.True(t, account.Connected)
+			require.Equal(t, model.FeishuConnectionConnected, account.ConnectionState)
+			require.Equal(t, fixture.input.ExpectedAppID, account.AppID)
+			require.Equal(t, fixture.input.Evidence.CLIVersion, account.LarkCLIVersion)
+			require.NotNil(t, account.ConnectedAt)
+			require.WithinDuration(t, fixture.input.Now, *account.ConnectedAt, time.Millisecond)
+
+			session, err := fixture.store.GetSessionForUser(context.Background(), 7, 3, fixture.sessionID)
+			require.NoError(t, err)
+			require.Equal(t, model.FeishuAuthSessionCompleted, session.State)
+			require.NotNil(t, session.CompletedAt)
+			require.WithinDuration(t, fixture.input.Now, *session.CompletedAt, time.Millisecond)
+			require.Empty(t, session.ResumeCredentialCiphertext)
+			require.Empty(t, session.ResumeKeyVersion)
+			require.Nil(t, session.ResumeExpiresAt)
+			require.Empty(t, session.LeaseOwner)
+			require.Nil(t, session.LeaseUntil)
+
+			if fixture.operationID != "" {
+				operation, operationErr := fixture.store.GetOperationForUser(context.Background(), 7, 3, fixture.operationID)
+				require.NoError(t, operationErr)
+				require.Equal(t, model.FeishuOperationWaitingUserAuth, operation.State)
+				require.JSONEq(t, string(fixture.summary), string(operation.ResultSummaryJSON))
+			}
+		})
+	}
+}
+
+func TestFeishuWorkspaceStore_FinalizeDeviceAuthSuccessRejectsLateOwner(t *testing.T) {
+	fixture := newFeishuDeviceAuthSuccessTestFixture(t, true)
+	fixture.input.LeaseOwner = "late-owner"
+
+	err := fixture.store.FinalizeDeviceAuthSuccess(context.Background(), fixture.input)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	requireFeishuDeviceAuthSuccessFixtureUnchanged(t, fixture)
+}
+
+func TestFeishuWorkspaceStore_FinalizeDeviceAuthSuccessRollsBackVaultConflict(t *testing.T) {
+	fixture := newFeishuDeviceAuthSuccessTestFixture(t, true)
+	fixture.input.ExpectedVaultRevision = 0
+	fixture.input.Candidate.Revision = 1
+
+	err := fixture.store.FinalizeDeviceAuthSuccess(context.Background(), fixture.input)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	requireFeishuDeviceAuthSuccessFixtureUnchanged(t, fixture)
+}
+
+func TestFeishuWorkspaceStore_FinalizeDeviceAuthSuccessRejectsOversizeCandidateWithoutWrites(t *testing.T) {
+	fixture := newFeishuDeviceAuthSuccessTestFixture(t, true)
+	fixture.input.Candidate.Ciphertext = make([]byte, (64<<20)+1)
+	fixture.input.Candidate.Checksum = fmt.Sprintf("%x", sha256.Sum256(fixture.input.Candidate.Ciphertext))
+
+	err := fixture.store.FinalizeDeviceAuthSuccess(context.Background(), fixture.input)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	requireFeishuDeviceAuthSuccessFixtureUnchanged(t, fixture)
 }
 
 func TestFeishuWorkspaceDeviceAuthMigrationHasForwardAndRollback(t *testing.T) {

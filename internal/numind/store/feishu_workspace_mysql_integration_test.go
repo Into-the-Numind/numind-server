@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	_ "embed"
 	"fmt"
 	"os"
@@ -187,6 +188,116 @@ func requireMySQLDeviceAuthConcurrencyAndSweep(t *testing.T, firstDB *gorm.DB, d
 	var account model.UserThirdPartyAccount
 	require.NoError(t, firstDB.Where("user_id = ? AND provider = ?", userID, "lark").Take(&account).Error)
 	require.Equal(t, model.FeishuConnectionAppReady, account.ConnectionState)
+
+	// Exercise the completion transaction against real MySQL row locks and JSON
+	// columns. A stale expected revision must roll back every account/session
+	// mutation; the exact next revision then publishes atomically.
+	finalizeOperation := newFeishuOperation("mysql-finalize-operation", userID, 1, "mysql-finalize-operation-key")
+	finalizeOperation.State = model.FeishuOperationWaitingUserAuth
+	finalizeSummary := []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"mysql-finalize-session"}`)
+	finalizeOperation.ResultSummaryJSON = finalizeSummary
+	require.NoError(t, firstDB.Create(finalizeOperation).Error)
+	finalizeSession := newFeishuSession("mysql-finalize-session", userID, 1)
+	finalizeSession.ProtocolVersion = 2
+	finalizeSession.OperationID = &finalizeOperation.ID
+	finalizeSession.ScopeHash = strings.Repeat("c", 64)
+	require.NoError(t, first.CreateSession(ctx, finalizeSession))
+	claimed, err := first.ClaimSession(ctx, userID, 1, finalizeSession.ID, "mysql-finalize-starter", now, now.Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, claimed)
+	require.NoError(t, first.AttachDeviceAuthCredential(ctx, FeishuDeviceAuthCredentialAttach{
+		UserID: userID, Generation: 1, SessionID: finalizeSession.ID, LeaseOwner: "mysql-finalize-starter",
+		AppID: "app-mysql-device", Ciphertext: []byte("mysql-finalize-credential"), KeyVersion: "mysql-key-v2",
+		ResumeExpiry: now.Add(5 * time.Minute), ScopeHash: finalizeSession.ScopeHash, Now: now,
+	}))
+	attachedSession, err := first.GetSessionForUser(ctx, userID, 1, finalizeSession.ID)
+	require.NoError(t, err)
+	require.NotEmpty(t, attachedSession.ResumeCredentialCiphertext)
+	require.Empty(t, attachedSession.LeaseOwner, "credential attach must release the start lease")
+	require.Nil(t, attachedSession.LeaseUntil)
+	require.NoError(t, firstDB.Where("user_id = ? AND provider = ?", userID, "lark").Take(&account).Error)
+	require.False(t, account.Connected)
+	require.Equal(t, model.FeishuConnectionWaitingUserAuth, account.ConnectionState)
+	claimed, err = first.ClaimSession(ctx, userID, 1, finalizeSession.ID, "mysql-finalize-owner", now, now.Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, claimed, "completion must own a fresh lease after start credential attach")
+	initialVault := &model.FeishuCLIVault{
+		UserID: userID, Generation: 1, Ciphertext: []byte("mysql-finalize-initial"), KeyVersion: "mysql-vault-v1", Checksum: "initial",
+	}
+	require.NoError(t, first.PutVaultCAS(ctx, initialVault, 0))
+	candidateCiphertext := []byte("mysql-finalize-candidate")
+	finalizeInput := FeishuDeviceAuthSuccess{
+		UserID: userID, Generation: 1, SessionID: finalizeSession.ID, OperationID: finalizeOperation.ID,
+		LeaseOwner: "mysql-finalize-owner", ExpectedAppID: "app-mysql-device",
+		ExpectedWaitingState: model.FeishuOperationWaitingUserAuth,
+		Candidate: model.FeishuCLIVault{
+			UserID: userID, Generation: 1, Ciphertext: candidateCiphertext, KeyVersion: "mysql-vault-v2",
+			Checksum: fmt.Sprintf("%x", sha256.Sum256(candidateCiphertext)), Revision: 1,
+		},
+		ExpectedVaultRevision: 0,
+		Evidence:              model.FeishuConnectionEvidence{AppID: "app-mysql-device", CLIVersion: "1.0.68"},
+		Now:                   now,
+	}
+	finalizeBarrier := firstDB.Begin()
+	require.NoError(t, finalizeBarrier.Error)
+	barrierOpen := true
+	t.Cleanup(func() {
+		if barrierOpen {
+			_ = finalizeBarrier.Rollback().Error
+		}
+	})
+	var finalizeLockedAccount model.UserThirdPartyAccount
+	require.NoError(t, finalizeBarrier.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("user_id = ? AND provider = ?", userID, "lark").Take(&finalizeLockedAccount).Error)
+	finalizeDone := make(chan error, 1)
+	go func() { finalizeDone <- second.FinalizeDeviceAuthSuccess(ctx, finalizeInput) }()
+	require.Eventually(t, func() bool {
+		count, waitErr := mysqlAccountLockWaitCount(firstDB)
+		return waitErr == nil && count > 0
+	}, time.Second, 5*time.Millisecond, "FinalizeDeviceAuthSuccess must acquire the account lock before session/operation/vault")
+	require.NoError(t, finalizeBarrier.Rollback().Error)
+	barrierOpen = false
+	require.ErrorIs(t, <-finalizeDone, gorm.ErrRecordNotFound)
+	conflictVault, err := first.GetVault(ctx, userID, 1)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, conflictVault.Revision)
+	require.Equal(t, []byte("mysql-finalize-initial"), conflictVault.Ciphertext)
+	conflictSession, err := first.GetSessionForUser(ctx, userID, 1, finalizeSession.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionPending, conflictSession.State)
+	require.NotEmpty(t, conflictSession.ResumeCredentialCiphertext)
+	require.Equal(t, "mysql-finalize-owner", conflictSession.LeaseOwner)
+	require.NotNil(t, conflictSession.LeaseUntil)
+	require.Nil(t, conflictSession.CompletedAt)
+	require.NoError(t, firstDB.Where("user_id = ? AND provider = ?", userID, "lark").Take(&account).Error)
+	require.False(t, account.Connected)
+	require.Nil(t, account.ConnectedAt)
+	require.Equal(t, model.FeishuConnectionWaitingUserAuth, account.ConnectionState)
+	conflictOperation, err := first.GetOperationForUser(ctx, userID, 1, finalizeOperation.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingUserAuth, conflictOperation.State)
+	require.JSONEq(t, string(finalizeSummary), string(conflictOperation.ResultSummaryJSON))
+
+	finalizeInput.ExpectedVaultRevision = 1
+	finalizeInput.Candidate.Revision = 2
+	require.NoError(t, second.FinalizeDeviceAuthSuccess(ctx, finalizeInput))
+	publishedVault, err := first.GetVault(ctx, userID, 1)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, publishedVault.Revision)
+	require.Equal(t, candidateCiphertext, publishedVault.Ciphertext)
+	completedSession, err := first.GetSessionForUser(ctx, userID, 1, finalizeSession.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionCompleted, completedSession.State)
+	require.Empty(t, completedSession.ResumeCredentialCiphertext)
+	require.Empty(t, completedSession.LeaseOwner)
+	require.NoError(t, firstDB.Where("user_id = ? AND provider = ?", userID, "lark").Take(&account).Error)
+	require.True(t, account.Connected)
+	require.Equal(t, model.FeishuConnectionConnected, account.ConnectionState)
+	require.Equal(t, "1.0.68", account.LarkCLIVersion)
+	unchangedOperation, err := first.GetOperationForUser(ctx, userID, 1, finalizeOperation.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingUserAuth, unchangedOperation.State)
+	require.JSONEq(t, string(finalizeSummary), string(unchangedOperation.ResultSummaryJSON))
 
 	sweepSessions := make([]model.FeishuAuthSession, 0, 105)
 	for index := 0; index < 105; index++ {

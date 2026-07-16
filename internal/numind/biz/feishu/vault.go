@@ -42,6 +42,14 @@ type CLIHomeSnapshotStore interface {
 	PutVaultCAS(ctx context.Context, vault *model.FeishuCLIVault, expectedRevision uint64) error
 }
 
+// CLIHomeCandidate is a sealed HOME snapshot that has not been published. The
+// expected revision lets a higher-level transaction fence publication together
+// with the authorization session and account state that produced it.
+type CLIHomeCandidate struct {
+	Vault            model.FeishuCLIVault
+	ExpectedRevision uint64
+}
+
 type cliHomeCipherKeyring struct {
 	ciphers map[string]*pkgcrypto.Cipher
 }
@@ -206,26 +214,59 @@ func (v *EncryptedCLIHomeVault) WithHome(
 	userID uint,
 	generation uint64,
 	callback func(home string) (changed bool, err error),
-) (retErr error) {
+) error {
 	if callback == nil {
 		return errors.New("feishu CLI home vault: nil callback")
 	}
+	candidate, err := v.withHomeCandidate(ctx, userID, generation, callback)
+	if err != nil || candidate == nil {
+		return err
+	}
+	if err := v.snapshots.PutVaultCAS(ctx, &candidate.Vault, candidate.ExpectedRevision); err != nil {
+		return fmt.Errorf("feishu CLI home vault: persist snapshot revision: %w", err)
+	}
+	return nil
+}
+
+// WithHomeCandidate materializes the active HOME, lets callback mutate it, and
+// returns a sealed candidate without publishing it through PutVaultCAS. The
+// plaintext runtime HOME is removed before this method returns.
+func (v *EncryptedCLIHomeVault) WithHomeCandidate(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	callback func(home string) error,
+) (*CLIHomeCandidate, error) {
+	if callback == nil {
+		return nil, errors.New("feishu CLI home vault: nil candidate callback")
+	}
+	return v.withHomeCandidate(ctx, userID, generation, func(home string) (bool, error) {
+		return true, callback(home)
+	})
+}
+
+func (v *EncryptedCLIHomeVault) withHomeCandidate(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	callback func(home string) (changed bool, err error),
+) (candidate *CLIHomeCandidate, retErr error) {
 	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("feishu CLI home vault: context unavailable: %w", err)
+		return nil, fmt.Errorf("feishu CLI home vault: context unavailable: %w", err)
 	}
 
 	account, err := v.accounts.Get(ctx, userID, ProviderLark)
 	if err != nil {
-		return fmt.Errorf("feishu CLI home vault: read active account: %w", err)
+		return nil, fmt.Errorf("feishu CLI home vault: read active account: %w", err)
 	}
 	if account == nil || account.UserID != userID || account.Provider != ProviderLark ||
 		account.Generation != generation || account.ConnectionState == model.FeishuConnectionDisconnecting {
-		return fmt.Errorf("feishu CLI home vault: inactive account generation: %w", gorm.ErrRecordNotFound)
+		return nil, fmt.Errorf("feishu CLI home vault: inactive account generation: %w", gorm.ErrRecordNotFound)
 	}
 
 	snapshot, err := v.snapshots.GetVault(ctx, userID, generation)
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		return fmt.Errorf("feishu CLI home vault: read snapshot: %w", err)
+		return nil, fmt.Errorf("feishu CLI home vault: read snapshot: %w", err)
 	}
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		snapshot = nil
@@ -235,19 +276,20 @@ func (v *EncryptedCLIHomeVault) WithHome(
 	if snapshot != nil {
 		archive, err = v.openSnapshot(userID, generation, snapshot)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	if err := ensureCLIHomeRuntimeBase(v.runtimeBase); err != nil {
-		return err
+		return nil, err
 	}
 	home, err := os.MkdirTemp(v.runtimeBase, cliHomeRuntimePrefix)
 	if err != nil {
-		return fmt.Errorf("feishu CLI home vault: create temporary HOME: %w", err)
+		return nil, fmt.Errorf("feishu CLI home vault: create temporary HOME: %w", err)
 	}
 	defer func() {
 		if cleanupErr := os.RemoveAll(home); cleanupErr != nil {
+			candidate = nil
 			wrapped := fmt.Errorf("feishu CLI home vault: remove temporary HOME: %w", cleanupErr)
 			if retErr == nil {
 				retErr = wrapped
@@ -257,54 +299,54 @@ func (v *EncryptedCLIHomeVault) WithHome(
 		}
 	}()
 	if err := os.Chmod(home, 0o700); err != nil {
-		return fmt.Errorf("feishu CLI home vault: restrict temporary HOME: %w", err)
+		return nil, fmt.Errorf("feishu CLI home vault: restrict temporary HOME: %w", err)
 	}
 	if snapshot != nil {
 		if err := unpackCLIHome(archive, home); err != nil {
-			return fmt.Errorf("feishu CLI home vault: unpack snapshot: %w", err)
+			return nil, fmt.Errorf("feishu CLI home vault: unpack snapshot: %w", err)
 		}
 	}
 
 	changed, err := callback(home)
 	if err != nil {
-		return fmt.Errorf("feishu CLI home vault: callback failed: %w", err)
+		return nil, fmt.Errorf("feishu CLI home vault: callback failed: %w", err)
 	}
 	if !changed {
-		return nil
+		return nil, nil
 	}
 	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("feishu CLI home vault: context ended before sealing: %w", err)
+		return nil, fmt.Errorf("feishu CLI home vault: context ended before sealing: %w", err)
 	}
 
 	archive, err = packCLIHome(home)
 	if err != nil {
-		return fmt.Errorf("feishu CLI home vault: pack snapshot: %w", err)
+		return nil, fmt.Errorf("feishu CLI home vault: pack snapshot: %w", err)
 	}
 	aad := cliHomeAAD(userID, generation, v.keyVersion)
 	ciphertext, err := v.currentCipher.EncryptWithAAD(archive, aad)
 	if err != nil {
-		return fmt.Errorf("feishu CLI home vault: encrypt snapshot: %w", err)
+		return nil, fmt.Errorf("feishu CLI home vault: encrypt snapshot: %w", err)
 	}
 	if len(ciphertext) > maxCLIHomeCiphertextBytes {
-		return fmt.Errorf("feishu CLI home vault: encrypted snapshot exceeds %d bytes", maxCLIHomeCiphertextBytes)
+		return nil, fmt.Errorf("feishu CLI home vault: encrypted snapshot exceeds %d bytes", maxCLIHomeCiphertextBytes)
 	}
 
 	expectedRevision := uint64(0)
 	if snapshot != nil {
 		expectedRevision = snapshot.Revision
 	}
-	candidate := &model.FeishuCLIVault{
-		UserID:     userID,
-		Generation: generation,
-		Ciphertext: ciphertext,
-		KeyVersion: v.keyVersion,
-		Checksum:   cliHomeCiphertextChecksum(ciphertext),
-		Revision:   expectedRevision + 1,
+	candidate = &CLIHomeCandidate{
+		Vault: model.FeishuCLIVault{
+			UserID:     userID,
+			Generation: generation,
+			Ciphertext: ciphertext,
+			KeyVersion: v.keyVersion,
+			Checksum:   cliHomeCiphertextChecksum(ciphertext),
+			Revision:   expectedRevision + 1,
+		},
+		ExpectedRevision: expectedRevision,
 	}
-	if err := v.snapshots.PutVaultCAS(ctx, candidate, expectedRevision); err != nil {
-		return fmt.Errorf("feishu CLI home vault: persist snapshot revision: %w", err)
-	}
-	return nil
+	return candidate, nil
 }
 
 // WithRetiredHome materializes a retired snapshot only while the account is in
