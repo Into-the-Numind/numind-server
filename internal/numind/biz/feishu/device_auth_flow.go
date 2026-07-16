@@ -3,10 +3,12 @@ package feishu
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,7 +17,12 @@ import (
 	"numind-server/internal/pkg/model"
 )
 
-const deviceAuthManualBindingID = "manual"
+const (
+	deviceAuthManualBindingID       = "manual"
+	deviceAuthMaxCompletionTimeout  = 30 * time.Second
+	deviceAuthReconciliationTimeout = 5 * time.Second
+	deviceAuthMutationTimeout       = 5 * time.Second
+)
 
 var (
 	ErrDeviceAuthProcessing = errors.New("feishu authorization is processing")
@@ -133,7 +140,17 @@ func NewDeviceAuthFlow(deps DeviceAuthFlowDeps) (*DeviceAuthFlow, error) {
 	heartbeatInterval := positiveDurationOr(deps.HeartbeatInterval, authSessionDefaultHeartbeatInterval)
 	startTimeout := positiveDurationOr(deps.StartTimeout, authSessionDefaultStartTimeout)
 	completionTimeout := positiveDurationOr(deps.CompletionTimeout, authSessionDefaultStartTimeout)
-	if heartbeatInterval >= leaseDuration {
+	if completionTimeout > deviceAuthMaxCompletionTimeout {
+		completionTimeout = deviceAuthMaxCompletionTimeout
+	}
+	heartbeatCeiling := leaseDuration / 3
+	if heartbeatCeiling <= 0 {
+		return nil, fmt.Errorf("%w: lease duration is too small", ErrAuthSessionUnavailable)
+	}
+	if heartbeatInterval > heartbeatCeiling {
+		heartbeatInterval = heartbeatCeiling
+	}
+	if heartbeatInterval <= 0 || heartbeatInterval >= leaseDuration {
 		return nil, fmt.Errorf("%w: heartbeat must precede lease expiry", ErrAuthSessionUnavailable)
 	}
 	return &DeviceAuthFlow{
@@ -375,10 +392,473 @@ func classifyDeviceAuthStartError(err error) error {
 	return ErrAuthSessionUnavailable
 }
 
-// Completion, replacement, and cleanup are deliberately fail-closed until the
-// subsequent plan tasks add their state machines.
-func (f *DeviceAuthFlow) CompleteUserAuthorization(context.Context, uint, uint64, string) (*DeviceAuthCompletion, error) {
-	return nil, ErrDeviceAuthDependency
+// CompleteUserAuthorization consumes one encrypted device-code credential
+// under an exact renewable lease. Candidate HOME state remains unpublished
+// until the store atomically fences the account, session, operation, and vault.
+func (f *DeviceAuthFlow) CompleteUserAuthorization(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	sessionID string,
+) (*DeviceAuthCompletion, error) {
+	if f == nil || userID == 0 || generation == 0 || strings.TrimSpace(sessionID) == "" {
+		return nil, ErrAuthSessionUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	session, err := f.sessions.GetSessionForUser(ctx, userID, generation, sessionID)
+	if err != nil || session == nil {
+		return nil, ErrAuthSessionUnavailable
+	}
+	account, err := f.accounts.Get(ctx, userID, ProviderLark)
+	if err != nil || !validDeviceAuthCompletion(account, session, f.now().UTC()) {
+		return nil, ErrAuthSessionUnavailable
+	}
+
+	leaseToken := strings.TrimSpace(f.newLeaseToken())
+	if leaseToken == "" || len(leaseToken) > 128 {
+		return nil, ErrAuthSessionUnavailable
+	}
+	claimNow := f.now().UTC()
+	claimUntil := claimNow.Add(f.leaseDuration)
+	claimBudget := deviceAuthBoundedBudget(
+		deviceAuthMutationTimeout, claimNow, claimUntil, *session.ResumeExpiresAt,
+	)
+	if claimBudget <= 0 {
+		return nil, ErrDeviceAuthProcessing
+	}
+	claimCtx, cancelClaim := context.WithTimeout(context.WithoutCancel(ctx), claimBudget)
+	claimed, err := f.sessions.ClaimSession(
+		claimCtx, userID, generation, sessionID, leaseToken, claimNow, claimUntil,
+	)
+	cancelClaim()
+	if err != nil || !claimed {
+		return nil, ErrDeviceAuthProcessing
+	}
+
+	rereadNow := f.now().UTC()
+	rereadBudget := deviceAuthBoundedBudget(
+		deviceAuthMutationTimeout, rereadNow, claimUntil, *session.ResumeExpiresAt,
+	)
+	if rereadBudget <= 0 {
+		f.releaseOwnedCompletionLease(ctx, session, leaseToken, claimUntil)
+		return nil, ErrDeviceAuthConflict
+	}
+	rereadCtx, cancelReread := context.WithTimeout(context.WithoutCancel(ctx), rereadBudget)
+	currentAccount, accountErr := f.accounts.Get(rereadCtx, userID, ProviderLark)
+	durable, err := f.sessions.GetSessionForUser(rereadCtx, userID, generation, sessionID)
+	cancelReread()
+	durableNow := f.now().UTC()
+	if accountErr != nil || currentAccount == nil || currentAccount.AppID != account.AppID ||
+		err != nil || !validDeviceAuthCompletion(currentAccount, durable, durableNow) || durable.ID != sessionID ||
+		durable.LeaseOwner != leaseToken || durable.LeaseUntil == nil || !durable.LeaseUntil.After(durableNow) {
+		f.releaseOwnedCompletionLease(ctx, session, leaseToken, claimUntil)
+		return nil, ErrDeviceAuthConflict
+	}
+	oldLeaseUntil := durable.LeaseUntil.UTC()
+	renewNow := f.now().UTC()
+	renewBudget := deviceAuthBoundedBudget(deviceAuthMutationTimeout, renewNow, oldLeaseUntil)
+	if renewBudget <= 0 {
+		f.releaseOwnedCompletionLease(ctx, durable, leaseToken, oldLeaseUntil)
+		return nil, ErrDeviceAuthConflict
+	}
+	renewCtx, cancelRenew := context.WithTimeout(context.WithoutCancel(ctx), renewBudget)
+	refreshedLeaseUntil := renewNow.Add(f.leaseDuration)
+	renewed, renewErr := f.sessions.RenewSession(
+		renewCtx, durable.UserID, durable.Generation, durable.ID,
+		leaseToken, renewNow, refreshedLeaseUntil,
+	)
+	cancelRenew()
+	if renewErr != nil || !renewed {
+		f.releaseOwnedCompletionLease(ctx, durable, leaseToken, oldLeaseUntil)
+		return nil, ErrDeviceAuthConflict
+	}
+	refreshedLeaseUntil = refreshedLeaseUntil.UTC()
+	durable.LeaseUntil = &refreshedLeaseUntil
+	account = currentAccount
+	session = durable
+	ownerCtx, cancelOwner := context.WithCancel(context.WithoutCancel(ctx))
+	fence := newDeviceAuthLeaseFence(*session.LeaseUntil)
+	heartbeatDone := make(chan struct{})
+	go f.runDeviceAuthCompletionHeartbeat(ownerCtx, cancelOwner, session, leaseToken, fence, heartbeatDone)
+	defer func() {
+		cancelOwner()
+		<-heartbeatDone
+	}()
+
+	binding := DeviceAuthCredentialBinding{
+		UserID: session.UserID, Generation: session.Generation, AppID: account.AppID,
+		OperationID: deviceAuthOperationBindingID(session), SessionID: session.ID,
+		ScopeHash: session.ScopeHash, ResumeExpiresAt: session.ResumeExpiresAt.UTC(),
+	}
+	deviceCode, err := f.cipher.Open(binding, session.ResumeKeyVersion, session.ResumeCredentialCiphertext)
+	if err != nil {
+		return nil, f.failOwnedCompletion(ownerCtx, session, leaseToken, fence)
+	}
+
+	homeNow := f.now().UTC()
+	homeBudget := deviceAuthBoundedBudget(
+		f.completionTimeout+deviceAuthReconciliationTimeout,
+		homeNow,
+		*session.ResumeExpiresAt,
+	)
+	if homeBudget <= 0 || fence.lost() {
+		return nil, ErrDeviceAuthConflict
+	}
+	homeCtx, cancelHome := context.WithTimeout(ownerCtx, homeBudget)
+	var outcome DeviceAuthOutcome
+	evidenceAppID := ""
+	candidate, candidateErr := f.vault.WithHomeCandidate(
+		homeCtx, session.UserID, session.Generation,
+		func(home string) error {
+			outcome, evidenceAppID = f.completeInCandidateHome(
+				ownerCtx, account, session, fence, home, deviceCode,
+			)
+			return nil
+		},
+	)
+	cancelHome()
+	if candidateErr != nil {
+		if fence.lost() || ownerCtx.Err() != nil {
+			return nil, ErrDeviceAuthConflict
+		}
+		if releaseErr := f.releaseOwnedCompletion(ownerCtx, session, leaseToken, fence); releaseErr != nil {
+			return nil, releaseErr
+		}
+		return nil, ErrDeviceAuthDependency
+	}
+	if outcome == DeviceAuthCompleted && candidate == nil {
+		outcome = DeviceAuthProtocolFailure
+	}
+
+	mutationNow := f.now().UTC()
+	mutationDeadlines := []time.Time{fence.until()}
+	if outcome != DeviceAuthExpired {
+		mutationDeadlines = append(mutationDeadlines, *session.ResumeExpiresAt)
+	}
+	mutationBudget := deviceAuthBoundedBudget(deviceAuthMutationTimeout, mutationNow, mutationDeadlines...)
+	if mutationBudget <= 0 || fence.lost() {
+		return nil, ErrDeviceAuthConflict
+	}
+	mutationCtx, cancelMutation := context.WithTimeout(ownerCtx, mutationBudget)
+	defer cancelMutation()
+
+	switch outcome {
+	case DeviceAuthCompleted:
+		return f.commitDeviceAuthCandidate(
+			mutationCtx, account, session, leaseToken, evidenceAppID, candidate, mutationNow,
+		)
+	case DeviceAuthPending:
+		return f.releaseDeviceAuthOutcome(
+			mutationCtx, session, leaseToken, mutationNow, AuthorizationPending,
+		)
+	case DeviceAuthRejected:
+		return f.releaseDeviceAuthOutcome(
+			mutationCtx, session, leaseToken, mutationNow, AuthorizationRejected,
+		)
+	case DeviceAuthExpired:
+		return f.releaseDeviceAuthOutcome(
+			mutationCtx, session, leaseToken, mutationNow, AuthorizationExpired,
+		)
+	case DeviceAuthProtocolFailure:
+		if err := f.sessions.TerminalizeDeviceAuthSession(
+			mutationCtx, session.UserID, session.Generation, session.ID, leaseToken,
+			model.FeishuAuthSessionFailed, mutationNow,
+		); err != nil {
+			return nil, ErrDeviceAuthConflict
+		}
+		return nil, ErrAuthSessionUnavailable
+	default:
+		return nil, ErrDeviceAuthConflict
+	}
+}
+
+type deviceAuthLeaseFence struct {
+	mu         sync.RWMutex
+	leaseUntil time.Time
+	leaseLost  bool
+}
+
+func newDeviceAuthLeaseFence(leaseUntil time.Time) *deviceAuthLeaseFence {
+	return &deviceAuthLeaseFence{leaseUntil: leaseUntil.UTC()}
+}
+
+func (f *deviceAuthLeaseFence) renew(leaseUntil time.Time) {
+	f.mu.Lock()
+	f.leaseUntil = leaseUntil.UTC()
+	f.mu.Unlock()
+}
+
+func (f *deviceAuthLeaseFence) lose() {
+	f.mu.Lock()
+	f.leaseLost = true
+	f.mu.Unlock()
+}
+
+func (f *deviceAuthLeaseFence) until() time.Time {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.leaseUntil
+}
+
+func (f *deviceAuthLeaseFence) lost() bool {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.leaseLost
+}
+
+func (f *DeviceAuthFlow) runDeviceAuthCompletionHeartbeat(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	session *model.FeishuAuthSession,
+	leaseToken string,
+	fence *deviceAuthLeaseFence,
+	done chan<- struct{},
+) {
+	defer close(done)
+	ticker := time.NewTicker(f.heartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			now := f.now().UTC()
+			leaseUntil := now.Add(f.leaseDuration)
+			renewBudget := f.leaseDuration
+			if renewBudget > deviceAuthMutationTimeout {
+				renewBudget = deviceAuthMutationTimeout
+			}
+			renewCtx, cancelRenew := context.WithTimeout(ctx, renewBudget)
+			renewed, err := f.sessions.RenewSession(
+				renewCtx, session.UserID, session.Generation, session.ID,
+				leaseToken, now, leaseUntil,
+			)
+			cancelRenew()
+			if err != nil || !renewed {
+				fence.lose()
+				cancel()
+				return
+			}
+			fence.renew(leaseUntil)
+		}
+	}
+}
+
+func validDeviceAuthCompletion(
+	account *model.UserThirdPartyAccount,
+	session *model.FeishuAuthSession,
+	now time.Time,
+) bool {
+	if account == nil || session == nil || account.UserID == 0 || account.UserID != session.UserID ||
+		account.Provider != ProviderLark || account.Generation == 0 || account.Generation != session.Generation ||
+		!validAuthSessionAppID(account.AppID) || account.ConnectionState == model.FeishuConnectionDisconnecting ||
+		session.ProtocolVersion != 2 || session.Phase != model.FeishuAuthPhaseUserAuth ||
+		session.State != model.FeishuAuthSessionPending || session.CompletedAt != nil ||
+		!session.ExpiresAt.After(now) || session.ResumeExpiresAt == nil || !session.ResumeExpiresAt.After(now) ||
+		session.ResumeExpiresAt.After(session.ExpiresAt) || len(session.ResumeCredentialCiphertext) == 0 ||
+		session.ResumeKeyVersion == "" || len(session.ScopeHash) != 64 {
+		return false
+	}
+	var scopes []string
+	if json.Unmarshal(session.RequestedScopesJSON, &scopes) != nil {
+		return false
+	}
+	canonical, err := canonicalDeviceAuthScopes(scopes)
+	return err == nil && deviceAuthScopeHash(canonical) == session.ScopeHash &&
+		authSessionScopeJSONEqual(session.RequestedScopesJSON, mustMarshalAuthScopes(canonical))
+}
+
+func (f *DeviceAuthFlow) completeInCandidateHome(
+	ownerCtx context.Context,
+	account *model.UserThirdPartyAccount,
+	session *model.FeishuAuthSession,
+	fence *deviceAuthLeaseFence,
+	home string,
+	deviceCode string,
+) (DeviceAuthOutcome, string) {
+	now := f.now().UTC()
+	cliBudget := deviceAuthBoundedBudget(f.completionTimeout, now, *session.ResumeExpiresAt)
+	if cliBudget <= 0 {
+		return DeviceAuthExpired, ""
+	}
+	cliCtx, cancelCLI := context.WithTimeout(ownerCtx, cliBudget)
+	outcome, err := f.cli.CompleteUserAuth(cliCtx, home, deviceCode)
+	cancelCLI()
+	if err != nil {
+		outcome = DeviceAuthRetryableDependency
+	}
+	switch outcome {
+	case DeviceAuthPending, DeviceAuthRejected, DeviceAuthExpired, DeviceAuthProtocolFailure:
+		return outcome, ""
+	case DeviceAuthCompleted, DeviceAuthAmbiguous, DeviceAuthRetryableDependency:
+	default:
+		return DeviceAuthProtocolFailure, ""
+	}
+
+	reconcileNow := f.now().UTC()
+	reconcileBudget := deviceAuthBoundedBudget(
+		deviceAuthReconciliationTimeout, reconcileNow, *session.ResumeExpiresAt, fence.until(),
+	)
+	if reconcileBudget <= 0 || fence.lost() {
+		if !session.ResumeExpiresAt.After(reconcileNow) {
+			return DeviceAuthExpired, ""
+		}
+		return DeviceAuthAmbiguous, ""
+	}
+	reconcileCtx, cancelReconcile := context.WithTimeout(ownerCtx, reconcileBudget)
+	available, statusErr := f.cli.AuthStatus(reconcileCtx, home)
+	if statusErr != nil || !available {
+		cancelReconcile()
+		if !session.ResumeExpiresAt.After(f.now().UTC()) {
+			return DeviceAuthExpired, ""
+		}
+		return DeviceAuthPending, ""
+	}
+	appID, appErr := f.cli.AppIDFromHome(reconcileCtx, home)
+	cancelReconcile()
+	if appErr != nil {
+		if !session.ResumeExpiresAt.After(f.now().UTC()) {
+			return DeviceAuthExpired, ""
+		}
+		return DeviceAuthPending, ""
+	}
+	if appID != account.AppID {
+		if outcome == DeviceAuthCompleted {
+			return DeviceAuthProtocolFailure, ""
+		}
+		if !session.ResumeExpiresAt.After(f.now().UTC()) {
+			return DeviceAuthExpired, ""
+		}
+		return DeviceAuthPending, ""
+	}
+	return DeviceAuthCompleted, appID
+}
+
+func deviceAuthBoundedBudget(limit time.Duration, now time.Time, deadlines ...time.Time) time.Duration {
+	if limit <= 0 {
+		return 0
+	}
+	budget := limit
+	for _, deadline := range deadlines {
+		remaining := deadline.Sub(now)
+		if remaining < budget {
+			budget = remaining
+		}
+	}
+	return budget
+}
+
+func (f *DeviceAuthFlow) commitDeviceAuthCandidate(
+	ctx context.Context,
+	account *model.UserThirdPartyAccount,
+	session *model.FeishuAuthSession,
+	leaseToken string,
+	evidenceAppID string,
+	candidate *CLIHomeCandidate,
+	now time.Time,
+) (*DeviceAuthCompletion, error) {
+	operationID := ""
+	waitingState := ""
+	if session.OperationID != nil {
+		operationID = *session.OperationID
+		waitingState = model.FeishuOperationWaitingUserAuth
+	}
+	err := f.sessions.FinalizeDeviceAuthSuccess(ctx, store.FeishuDeviceAuthSuccess{
+		UserID: session.UserID, Generation: session.Generation, SessionID: session.ID,
+		OperationID: operationID, LeaseOwner: leaseToken, ExpectedAppID: account.AppID,
+		ExpectedWaitingState: waitingState, Candidate: candidate.Vault,
+		ExpectedVaultRevision: candidate.ExpectedRevision,
+		Evidence:              model.FeishuConnectionEvidence{AppID: evidenceAppID, CLIVersion: LarkCLIVersion},
+		Now:                   now,
+	})
+	if err != nil {
+		return nil, ErrDeviceAuthConflict
+	}
+	return &DeviceAuthCompletion{Completed: true}, nil
+}
+
+func (f *DeviceAuthFlow) releaseDeviceAuthOutcome(
+	ctx context.Context,
+	session *model.FeishuAuthSession,
+	leaseToken string,
+	now time.Time,
+	notice AuthorizationNoticeCode,
+) (*DeviceAuthCompletion, error) {
+	released, err := f.sessions.ReleaseDeviceAuthLease(
+		ctx, session.UserID, session.Generation, session.ID, leaseToken, now,
+	)
+	if err != nil || !released {
+		return nil, ErrDeviceAuthConflict
+	}
+	return &DeviceAuthCompletion{NoticeCode: notice}, nil
+}
+
+func (f *DeviceAuthFlow) releaseOwnedCompletion(
+	ownerCtx context.Context,
+	session *model.FeishuAuthSession,
+	leaseToken string,
+	fence *deviceAuthLeaseFence,
+) error {
+	now := f.now().UTC()
+	budget := deviceAuthBoundedBudget(
+		deviceAuthMutationTimeout, now, *session.ResumeExpiresAt, fence.until(),
+	)
+	if budget <= 0 || fence.lost() {
+		return ErrDeviceAuthConflict
+	}
+	mutationCtx, cancel := context.WithTimeout(ownerCtx, budget)
+	defer cancel()
+	released, err := f.sessions.ReleaseDeviceAuthLease(
+		mutationCtx, session.UserID, session.Generation, session.ID, leaseToken, now,
+	)
+	if err != nil || !released {
+		return ErrDeviceAuthConflict
+	}
+	return nil
+}
+
+func (f *DeviceAuthFlow) failOwnedCompletion(
+	ownerCtx context.Context,
+	session *model.FeishuAuthSession,
+	leaseToken string,
+	fence *deviceAuthLeaseFence,
+) error {
+	now := f.now().UTC()
+	budget := deviceAuthBoundedBudget(
+		deviceAuthMutationTimeout, now, *session.ResumeExpiresAt, fence.until(),
+	)
+	if budget <= 0 || fence.lost() {
+		return ErrDeviceAuthConflict
+	}
+	mutationCtx, cancel := context.WithTimeout(ownerCtx, budget)
+	defer cancel()
+	if err := f.sessions.TerminalizeDeviceAuthSession(
+		mutationCtx, session.UserID, session.Generation, session.ID, leaseToken,
+		model.FeishuAuthSessionFailed, now,
+	); err != nil {
+		return ErrDeviceAuthConflict
+	}
+	return ErrAuthSessionUnavailable
+}
+
+func (f *DeviceAuthFlow) releaseOwnedCompletionLease(
+	ctx context.Context,
+	session *model.FeishuAuthSession,
+	leaseToken string,
+	leaseUntil time.Time,
+) {
+	now := f.now().UTC()
+	budget := deviceAuthBoundedBudget(deviceAuthMutationTimeout, now, leaseUntil)
+	if budget <= 0 {
+		return
+	}
+	mutationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
+	defer cancel()
+	_, _ = f.sessions.ReleaseDeviceAuthLease(
+		mutationCtx, session.UserID, session.Generation, session.ID, leaseToken, now,
+	)
 }
 
 func (f *DeviceAuthFlow) RefreshUserAuthorization(context.Context, DeviceAuthRefreshRequest) (*DeviceAuthCompletion, error) {

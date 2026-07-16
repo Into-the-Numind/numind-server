@@ -38,17 +38,24 @@ func (f *deviceAuthFlowAccountStoreFake) EnsurePlaceholder(context.Context, uint
 }
 
 type deviceAuthFlowStoreFake struct {
-	mu             sync.Mutex
-	session        *model.FeishuAuthSession
-	claimCalls     int
-	claimErr       error
-	attach         *store.FeishuDeviceAuthCredentialAttach
-	attachErr      error
-	attachEntered  chan struct{}
-	attachRelease  <-chan struct{}
-	attachOnce     sync.Once
-	releaseCalls   int
-	terminalStates []string
+	mu                   sync.Mutex
+	session              *model.FeishuAuthSession
+	claimCalls           int
+	claimErr             error
+	claimEntered         chan struct{}
+	claimRelease         <-chan struct{}
+	claimWaitForContext  bool
+	claimContextDeadline time.Time
+	claimContextCanceled bool
+	claimOnce            sync.Once
+	attach               *store.FeishuDeviceAuthCredentialAttach
+	attachErr            error
+	attachEntered        chan struct{}
+	attachRelease        <-chan struct{}
+	attachOnce           sync.Once
+	releaseCalls         int
+	terminalStates       []string
+	replaceCalls         int
 }
 
 func cloneDeviceAuthFlowSession(session *model.FeishuAuthSession) *model.FeishuAuthSession {
@@ -82,20 +89,53 @@ func (f *deviceAuthFlowStoreFake) GetSessionForUser(_ context.Context, userID ui
 	return cloneDeviceAuthFlowSession(f.session), nil
 }
 
-func (f *deviceAuthFlowStoreFake) ClaimSession(_ context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error) {
+func (f *deviceAuthFlowStoreFake) ClaimSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.claimCalls++
 	if f.claimErr != nil {
+		f.mu.Unlock()
 		return false, f.claimErr
 	}
 	if f.session == nil || f.session.UserID != userID || f.session.Generation != generation || f.session.ID != id ||
 		f.session.State != model.FeishuAuthSessionPending || (f.session.LeaseUntil != nil && f.session.LeaseUntil.After(now)) {
+		f.mu.Unlock()
 		return false, nil
+	}
+	waitForContext := f.claimWaitForContext
+	if deadline, ok := ctx.Deadline(); ok {
+		f.claimContextDeadline = deadline
+	}
+	entered := f.claimEntered
+	release := f.claimRelease
+	if waitForContext {
+		f.mu.Unlock()
+		f.claimOnce.Do(func() {
+			if entered != nil {
+				close(entered)
+			}
+		})
+		<-ctx.Done()
+		f.mu.Lock()
+		f.claimContextCanceled = true
+		f.mu.Unlock()
+		return false, ctx.Err()
 	}
 	f.session.LeaseOwner = owner
 	value := leaseUntil.UTC()
 	f.session.LeaseUntil = &value
+	f.mu.Unlock()
+	f.claimOnce.Do(func() {
+		if entered != nil {
+			close(entered)
+		}
+	})
+	if release != nil {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+	}
 	return true, nil
 }
 
@@ -171,6 +211,9 @@ func (f *deviceAuthFlowStoreFake) TerminalizeDeviceAuthSession(_ context.Context
 }
 
 func (f *deviceAuthFlowStoreFake) ReplaceDeviceAuthSession(context.Context, store.FeishuDeviceAuthReplacement) (*model.FeishuAuthSession, error) {
+	f.mu.Lock()
+	f.replaceCalls++
+	f.mu.Unlock()
 	return nil, gorm.ErrRecordNotFound
 }
 
@@ -523,4 +566,809 @@ func TestDeviceAuthFlow_StartSeparatesManualAndOperationAAD(t *testing.T) {
 			require.Error(t, err, "manual and operation credentials must not share AAD")
 		})
 	}
+}
+
+type deviceAuthCompletionCLIFake struct {
+	mu                     sync.Mutex
+	outcome                DeviceAuthOutcome
+	completeErr            error
+	completeWaitForContext bool
+	completeHook           func()
+	completeCalls          int
+	completeContext        context.Context
+	completeHome           string
+	completeDeviceCode     string
+	authStatus             bool
+	authStatusErr          error
+	authStatusCalls        int
+	authStatusContext      context.Context
+	authStatusContextLive  bool
+	authStatusHome         string
+	appID                  string
+	appIDErr               error
+	appIDHook              func()
+	appIDCalls             int
+	appIDHome              string
+	events                 []string
+}
+
+func (f *deviceAuthCompletionCLIFake) StartUserAuth(context.Context, string, []string) (DeviceAuthStart, error) {
+	return DeviceAuthStart{}, errors.New("start is outside completion tests")
+}
+
+func (f *deviceAuthCompletionCLIFake) CompleteUserAuth(ctx context.Context, home, deviceCode string) (DeviceAuthOutcome, error) {
+	f.mu.Lock()
+	f.completeCalls++
+	f.completeContext = ctx
+	f.completeHome = home
+	f.completeDeviceCode = deviceCode
+	f.events = append(f.events, "complete")
+	waitForContext := f.completeWaitForContext
+	hook := f.completeHook
+	outcome := f.outcome
+	err := f.completeErr
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	if waitForContext {
+		<-ctx.Done()
+	}
+	return outcome, err
+}
+
+func (f *deviceAuthCompletionCLIFake) AuthStatus(ctx context.Context, home string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.authStatusCalls++
+	f.authStatusContext = ctx
+	f.authStatusContextLive = ctx.Err() == nil
+	f.authStatusHome = home
+	f.events = append(f.events, "auth_status")
+	return f.authStatus, f.authStatusErr
+}
+
+func (f *deviceAuthCompletionCLIFake) AppIDFromHome(_ context.Context, home string) (string, error) {
+	f.mu.Lock()
+	f.appIDCalls++
+	f.appIDHome = home
+	f.events = append(f.events, "app_id")
+	hook := f.appIDHook
+	appID := f.appID
+	err := f.appIDErr
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return appID, err
+}
+
+type deviceAuthCompletionVaultFake struct {
+	mu        sync.Mutex
+	calls     int
+	home      string
+	candidate *CLIHomeCandidate
+}
+
+func (*deviceAuthCompletionVaultFake) WithHome(context.Context, uint, uint64, func(string) (bool, error)) error {
+	return errors.New("read-only HOME is outside completion tests")
+}
+
+func (f *deviceAuthCompletionVaultFake) WithHomeCandidate(
+	ctx context.Context,
+	_ uint,
+	_ uint64,
+	callback func(string) error,
+) (*CLIHomeCandidate, error) {
+	home := "/tmp/device-auth-completion-home"
+	f.mu.Lock()
+	f.calls++
+	f.home = home
+	f.mu.Unlock()
+	if err := callback(home); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	candidate := *f.candidate
+	candidate.Vault.Ciphertext = append([]byte(nil), f.candidate.Vault.Ciphertext...)
+	return &candidate, nil
+}
+
+type deviceAuthCompletionStoreFake struct {
+	*deviceAuthFlowStoreFake
+	getCalls              int
+	blockPostClaimRead    bool
+	postClaimReadDelay    time.Duration
+	postClaimReadEntered  chan struct{}
+	postClaimReadOnce     sync.Once
+	postClaimReadCanceled bool
+	renewCalls            int
+	renewSignal           chan struct{}
+	renewFail             bool
+	renewErr              error
+	renewFailAfter        int
+	finalizeCalls         int
+	finalizeInput         *store.FeishuDeviceAuthSuccess
+	finalizeContextLive   bool
+	finalizeErr           error
+	finalizeLoseOwner     bool
+	finalizeEntered       chan struct{}
+	finalizeRelease       <-chan struct{}
+	finalizeOnce          sync.Once
+	published             *model.FeishuCLIVault
+}
+
+func (f *deviceAuthCompletionStoreFake) GetSessionForUser(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	id string,
+) (*model.FeishuAuthSession, error) {
+	f.mu.Lock()
+	f.getCalls++
+	block := f.blockPostClaimRead && f.getCalls == 2
+	delay := time.Duration(0)
+	if f.getCalls == 2 {
+		delay = f.postClaimReadDelay
+	}
+	entered := f.postClaimReadEntered
+	f.mu.Unlock()
+	if block {
+		f.postClaimReadOnce.Do(func() {
+			if entered != nil {
+				close(entered)
+			}
+		})
+		select {
+		case <-ctx.Done():
+			f.mu.Lock()
+			f.postClaimReadCanceled = true
+			f.mu.Unlock()
+			return nil, ctx.Err()
+		case <-time.After(300 * time.Millisecond):
+			return nil, errors.New("post-claim read exceeded safety window")
+		}
+	}
+	if delay > 0 {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return f.deviceAuthFlowStoreFake.GetSessionForUser(ctx, userID, generation, id)
+}
+
+func (f *deviceAuthCompletionStoreFake) RenewSession(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	id, owner string,
+	now, leaseUntil time.Time,
+) (bool, error) {
+	f.mu.Lock()
+	attempt := f.renewCalls + 1
+	renewFail := f.renewFail || (f.renewFailAfter > 0 && attempt > f.renewFailAfter)
+	renewErr := f.renewErr
+	f.mu.Unlock()
+	renewed, err := false, error(nil)
+	if renewErr != nil {
+		err = renewErr
+	} else if !renewFail {
+		renewed, err = f.deviceAuthFlowStoreFake.RenewSession(ctx, userID, generation, id, owner, now, leaseUntil)
+	}
+	f.mu.Lock()
+	f.renewCalls++
+	signal := f.renewSignal
+	f.mu.Unlock()
+	if signal != nil {
+		select {
+		case signal <- struct{}{}:
+		default:
+		}
+	}
+	return renewed, err
+}
+
+func (f *deviceAuthCompletionStoreFake) FinalizeDeviceAuthSuccess(
+	ctx context.Context,
+	input store.FeishuDeviceAuthSuccess,
+) error {
+	f.finalizeOnce.Do(func() {
+		if f.finalizeEntered != nil {
+			close(f.finalizeEntered)
+		}
+	})
+	if f.finalizeRelease != nil {
+		select {
+		case <-f.finalizeRelease:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.finalizeCalls++
+	f.finalizeContextLive = ctx.Err() == nil
+	copyInput := input
+	copyInput.Candidate.Ciphertext = append([]byte(nil), input.Candidate.Ciphertext...)
+	f.finalizeInput = &copyInput
+	if f.finalizeLoseOwner && f.session != nil {
+		f.session.LeaseOwner = "new-owner"
+	}
+	if f.finalizeErr != nil {
+		return f.finalizeErr
+	}
+	if f.session == nil || f.session.LeaseOwner != input.LeaseOwner ||
+		f.session.LeaseUntil == nil || !f.session.LeaseUntil.After(input.Now) {
+		return gorm.ErrRecordNotFound
+	}
+	published := input.Candidate
+	published.Ciphertext = append([]byte(nil), input.Candidate.Ciphertext...)
+	f.published = &published
+	f.session.State = model.FeishuAuthSessionCompleted
+	f.session.ResumeCredentialCiphertext = nil
+	f.session.ResumeKeyVersion = ""
+	f.session.ResumeExpiresAt = nil
+	f.session.LeaseOwner = ""
+	f.session.LeaseUntil = nil
+	return nil
+}
+
+type deviceAuthCompletionDispatcherFake struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (f *deviceAuthCompletionDispatcherFake) DispatchResume(_ context.Context, _ uint, operationID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, operationID)
+	return nil
+}
+
+type deviceAuthCompletionFixture struct {
+	now        time.Time
+	account    *model.UserThirdPartyAccount
+	session    *model.FeishuAuthSession
+	store      *deviceAuthCompletionStoreFake
+	vault      *deviceAuthCompletionVaultFake
+	cli        *deviceAuthCompletionCLIFake
+	dispatcher *deviceAuthCompletionDispatcherFake
+	flow       *DeviceAuthFlow
+}
+
+func newDeviceAuthCompletionFixture(t *testing.T) deviceAuthCompletionFixture {
+	t.Helper()
+	now := time.Date(2026, 7, 17, 7, 0, 0, 0, time.UTC)
+	operationID := "operation-device-complete"
+	scopes := []string{"docx:document:readonly"}
+	resumeExpiry := now.Add(5 * time.Minute)
+	account := &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, AppID: "cli_app_7", Generation: 3,
+		ConnectionState: model.FeishuConnectionWaitingUserAuth,
+	}
+	session := &model.FeishuAuthSession{
+		ID: "00000000-0000-4000-8000-000000000072", UserID: 7, Generation: 3,
+		OperationID: &operationID, Phase: model.FeishuAuthPhaseUserAuth,
+		RequestedScopesJSON: []byte(`["docx:document:readonly"]`),
+		State:               model.FeishuAuthSessionPending, ProtocolVersion: 2,
+		ScopeHash: deviceAuthScopeHash(scopes), ResumeExpiresAt: &resumeExpiry,
+		ExpiresAt: now.Add(10 * time.Minute),
+	}
+	credentialCipher := newDeviceAuthFlowCredentialCipher(t)
+	ciphertext, keyVersion, err := credentialCipher.Seal(DeviceAuthCredentialBinding{
+		UserID: session.UserID, Generation: session.Generation, AppID: account.AppID,
+		OperationID: operationID, SessionID: session.ID, ScopeHash: session.ScopeHash,
+		ResumeExpiresAt: resumeExpiry,
+	}, "opaque-completion-device-code")
+	require.NoError(t, err)
+	session.ResumeCredentialCiphertext = ciphertext
+	session.ResumeKeyVersion = keyVersion
+	storeFake := &deviceAuthCompletionStoreFake{deviceAuthFlowStoreFake: &deviceAuthFlowStoreFake{session: cloneDeviceAuthFlowSession(session)}}
+	candidateCiphertext := []byte("sealed-device-auth-candidate")
+	vault := &deviceAuthCompletionVaultFake{candidate: &CLIHomeCandidate{
+		Vault: model.FeishuCLIVault{
+			UserID: 7, Generation: 3, Ciphertext: candidateCiphertext, KeyVersion: "v1",
+			Checksum: fmt.Sprintf("%x", sha256.Sum256(candidateCiphertext)), Revision: 5,
+		},
+		ExpectedRevision: 4,
+	}}
+	cli := &deviceAuthCompletionCLIFake{outcome: DeviceAuthPending, appID: account.AppID}
+	dispatcher := &deviceAuthCompletionDispatcherFake{}
+	flow, err := NewDeviceAuthFlow(DeviceAuthFlowDeps{
+		Accounts: &deviceAuthFlowAccountStoreFake{account: account}, Sessions: storeFake,
+		Vault: vault, CLI: cli, Cipher: credentialCipher,
+		Dispatcher: dispatcher, Owner: "device-auth-completion-test",
+		Now: func() time.Time { return now }, NewLeaseToken: func() string { return "device-auth-completion-lease" },
+		LeaseDuration: time.Minute, SessionDuration: 10 * time.Minute,
+		HeartbeatInterval: 20 * time.Second, CompletionTimeout: 30 * time.Second,
+	})
+	require.NoError(t, err)
+	return deviceAuthCompletionFixture{
+		now: now, account: account, session: session, store: storeFake, vault: vault,
+		cli: cli, dispatcher: dispatcher, flow: flow,
+	}
+}
+
+func TestDeviceAuthFlow_CompletePendingRetainsCredential(t *testing.T) {
+	for _, testCase := range []struct {
+		name    string
+		outcome DeviceAuthOutcome
+		notice  AuthorizationNoticeCode
+	}{
+		{name: "pending", outcome: DeviceAuthPending, notice: AuthorizationPending},
+		{name: "rejected is typed only until Task 8", outcome: DeviceAuthRejected, notice: AuthorizationRejected},
+		{name: "expired is typed only until Task 8", outcome: DeviceAuthExpired, notice: AuthorizationExpired},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			fixture := newDeviceAuthCompletionFixture(t)
+			fixture.cli.outcome = testCase.outcome
+
+			result, err := fixture.flow.CompleteUserAuthorization(
+				context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+			)
+			require.NoError(t, err)
+			require.Equal(t, testCase.notice, result.NoticeCode)
+			require.False(t, result.Completed)
+			fixture.store.mu.Lock()
+			require.Equal(t, 1, fixture.store.releaseCalls)
+			require.NotEmpty(t, fixture.store.session.ResumeCredentialCiphertext)
+			require.NotEmpty(t, fixture.store.session.ResumeKeyVersion)
+			require.NotNil(t, fixture.store.session.ResumeExpiresAt)
+			require.Zero(t, fixture.store.replaceCalls, "Task 8 owns terminal replacement")
+			fixture.store.mu.Unlock()
+			fixture.dispatcher.mu.Lock()
+			require.Empty(t, fixture.dispatcher.calls, "Task 9 owns durable dispatch")
+			fixture.dispatcher.mu.Unlock()
+		})
+	}
+}
+
+func TestDeviceAuthFlow_CompleteConcurrentOwnerReturnsProcessing(t *testing.T) {
+	fixture := newDeviceAuthCompletionFixture(t)
+	leaseUntil := fixture.now.Add(time.Minute)
+	fixture.store.session.LeaseOwner = "other-completion-owner"
+	fixture.store.session.LeaseUntil = &leaseUntil
+
+	result, err := fixture.flow.CompleteUserAuthorization(
+		context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+	)
+	require.ErrorIs(t, err, ErrDeviceAuthProcessing)
+	require.Nil(t, result)
+	fixture.cli.mu.Lock()
+	require.Zero(t, fixture.cli.completeCalls)
+	fixture.cli.mu.Unlock()
+}
+
+func TestDeviceAuthFlow_CompleteClaimUsesDetachedBoundedContext(t *testing.T) {
+	fixture := newDeviceAuthCompletionFixture(t)
+	fixture.flow.leaseDuration = 60 * time.Millisecond
+	fixture.flow.heartbeatInterval = 10 * time.Millisecond
+	fixture.store.claimWaitForContext = true
+	fixture.store.claimEntered = make(chan struct{})
+	started := time.Now()
+
+	result, err := fixture.flow.CompleteUserAuthorization(
+		context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+	)
+
+	require.ErrorIs(t, err, ErrDeviceAuthProcessing)
+	require.Nil(t, result)
+	require.Less(t, time.Since(started), time.Second, "claim must not inherit an unbounded caller context")
+	fixture.store.mu.Lock()
+	require.True(t, fixture.store.claimContextCanceled, "claim must exit through its own deadline")
+	require.False(t, fixture.store.claimContextDeadline.IsZero(), "claim must receive a strict deadline")
+	require.LessOrEqual(t, fixture.store.claimContextDeadline.Sub(started), 100*time.Millisecond)
+	fixture.store.mu.Unlock()
+	fixture.cli.mu.Lock()
+	require.Zero(t, fixture.cli.completeCalls)
+	fixture.cli.mu.Unlock()
+}
+
+func TestDeviceAuthFlow_CompleteClaimBudgetUsesEarliestDeadline(t *testing.T) {
+	for _, testCase := range []struct {
+		name         string
+		lease        time.Duration
+		resumeExpiry time.Duration
+		expected     time.Duration
+	}{
+		{name: "five second ceiling", lease: time.Minute, resumeExpiry: 5 * time.Minute, expected: 5 * time.Second},
+		{name: "lease expiry", lease: 80 * time.Millisecond, resumeExpiry: 5 * time.Minute, expected: 80 * time.Millisecond},
+		{name: "credential expiry", lease: time.Minute, resumeExpiry: 120 * time.Millisecond, expected: 120 * time.Millisecond},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			fixture := newDeviceAuthCompletionFixture(t)
+			fixture.flow.leaseDuration = testCase.lease
+			fixture.flow.heartbeatInterval = min(10*time.Millisecond, testCase.lease/3)
+			resumeExpiry := fixture.now.Add(testCase.resumeExpiry)
+			fixture.session.ResumeExpiresAt = &resumeExpiry
+			fixture.store.session.ResumeExpiresAt = &resumeExpiry
+			fixture.store.renewFail = true
+			started := time.Now()
+
+			result, err := fixture.flow.CompleteUserAuthorization(
+				context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+			)
+
+			require.ErrorIs(t, err, ErrDeviceAuthConflict)
+			require.Nil(t, result)
+			fixture.store.mu.Lock()
+			remaining := fixture.store.claimContextDeadline.Sub(started)
+			fixture.store.mu.Unlock()
+			require.InDelta(t, testCase.expected.Seconds(), remaining.Seconds(), 0.05,
+				"claim deadline must be min(5s, lease expiry, credential expiry)")
+			fixture.cli.mu.Lock()
+			require.Zero(t, fixture.cli.completeCalls)
+			fixture.cli.mu.Unlock()
+		})
+	}
+}
+
+func TestDeviceAuthFlow_CompletePostClaimRereadIsDetachedAndBounded(t *testing.T) {
+	fixture := newDeviceAuthCompletionFixture(t)
+	fixture.flow.leaseDuration = 60 * time.Millisecond
+	fixture.flow.heartbeatInterval = 10 * time.Millisecond
+	fixture.store.blockPostClaimRead = true
+	fixture.store.postClaimReadEntered = make(chan struct{})
+	started := time.Now()
+
+	result, err := fixture.flow.CompleteUserAuthorization(
+		context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+	)
+	require.ErrorIs(t, err, ErrDeviceAuthConflict)
+	require.Nil(t, result)
+	require.Less(t, time.Since(started), time.Second)
+	fixture.cli.mu.Lock()
+	require.Zero(t, fixture.cli.completeCalls)
+	fixture.cli.mu.Unlock()
+	fixture.store.mu.Lock()
+	require.True(t, fixture.store.postClaimReadCanceled, "post-claim reads must exit through the shared bounded context")
+	require.Equal(t, 1, fixture.store.releaseCalls)
+	fixture.store.mu.Unlock()
+}
+
+func TestDeviceAuthFlow_CompleteSuccessPublishesCandidateAtomically(t *testing.T) {
+	fixture := newDeviceAuthCompletionFixture(t)
+	fixture.cli.outcome = DeviceAuthCompleted
+	fixture.cli.authStatus = true
+
+	result, err := fixture.flow.CompleteUserAuthorization(
+		context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+	)
+	require.NoError(t, err)
+	require.True(t, result.Completed)
+	require.Empty(t, result.NoticeCode)
+	fixture.store.mu.Lock()
+	require.Equal(t, 1, fixture.store.finalizeCalls)
+	require.NotNil(t, fixture.store.finalizeInput)
+	require.Equal(t, fixture.vault.candidate.ExpectedRevision, fixture.store.finalizeInput.ExpectedVaultRevision)
+	require.Equal(t, fixture.vault.candidate.Vault, fixture.store.finalizeInput.Candidate)
+	require.Equal(t, fixture.account.AppID, fixture.store.finalizeInput.ExpectedAppID)
+	require.Equal(t, LarkCLIVersion, fixture.store.finalizeInput.Evidence.CLIVersion)
+	require.Equal(t, model.FeishuAuthSessionCompleted, fixture.store.session.State)
+	require.NotNil(t, fixture.store.published)
+	fixture.store.mu.Unlock()
+	fixture.dispatcher.mu.Lock()
+	require.Empty(t, fixture.dispatcher.calls, "Task 9 owns durable dispatch after completion")
+	fixture.dispatcher.mu.Unlock()
+	fixture.cli.mu.Lock()
+	require.Equal(t, "opaque-completion-device-code", fixture.cli.completeDeviceCode)
+	require.Equal(t, []string{"complete", "auth_status", "app_id"}, fixture.cli.events)
+	fixture.cli.mu.Unlock()
+
+	t.Run("app identity mismatch cannot publish", func(t *testing.T) {
+		mismatch := newDeviceAuthCompletionFixture(t)
+		mismatch.cli.outcome = DeviceAuthCompleted
+		mismatch.cli.authStatus = true
+		mismatch.cli.appID = "different_app"
+
+		result, err := mismatch.flow.CompleteUserAuthorization(
+			context.Background(), mismatch.session.UserID, mismatch.session.Generation, mismatch.session.ID,
+		)
+		require.Error(t, err)
+		require.Nil(t, result)
+		mismatch.store.mu.Lock()
+		require.Nil(t, mismatch.store.published)
+		mismatch.store.mu.Unlock()
+	})
+}
+
+func TestDeviceAuthFlow_CompleteAppIDEvidenceTimeoutRetainsCredential(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		expire bool
+		notice AuthorizationNoticeCode
+	}{
+		{name: "credential remains live", notice: AuthorizationPending},
+		{name: "credential expires during evidence read", expire: true, notice: AuthorizationExpired},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			fixture := newDeviceAuthCompletionFixture(t)
+			fixture.cli.outcome = DeviceAuthCompleted
+			fixture.cli.authStatus = true
+			fixture.cli.appIDErr = context.DeadlineExceeded
+			if testCase.expire {
+				fixture.flow.leaseDuration = 10 * time.Minute
+				currentNow := fixture.now
+				fixture.flow.now = func() time.Time { return currentNow }
+				fixture.cli.appIDHook = func() { currentNow = fixture.session.ResumeExpiresAt.UTC() }
+			}
+
+			result, err := fixture.flow.CompleteUserAuthorization(
+				context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+			)
+			require.NoError(t, err)
+			require.Equal(t, testCase.notice, result.NoticeCode)
+			require.False(t, result.Completed)
+			fixture.store.mu.Lock()
+			require.Equal(t, 1, fixture.store.releaseCalls)
+			require.Empty(t, fixture.store.terminalStates)
+			require.Zero(t, fixture.store.finalizeCalls)
+			require.Nil(t, fixture.store.published)
+			require.NotEmpty(t, fixture.store.session.ResumeCredentialCiphertext)
+			require.NotEmpty(t, fixture.store.session.ResumeKeyVersion)
+			require.NotNil(t, fixture.store.session.ResumeExpiresAt)
+			fixture.store.mu.Unlock()
+		})
+	}
+}
+
+func TestNewDeviceAuthFlow_ClampsHeartbeatToLeaseThirdAndRejectsTinyLease(t *testing.T) {
+	fixture := newDeviceAuthCompletionFixture(t)
+	newFlow := func(leaseDuration, heartbeatInterval time.Duration) (*DeviceAuthFlow, error) {
+		return NewDeviceAuthFlow(DeviceAuthFlowDeps{
+			Accounts: &deviceAuthFlowAccountStoreFake{account: fixture.account}, Sessions: fixture.store,
+			Vault: fixture.vault, CLI: fixture.cli, Cipher: newDeviceAuthFlowCredentialCipher(t),
+			Dispatcher: fixture.dispatcher, Owner: "device-auth-heartbeat-gate",
+			LeaseDuration: leaseDuration, HeartbeatInterval: heartbeatInterval,
+		})
+	}
+
+	t.Run("clamp", func(t *testing.T) {
+		clamped, err := newFlow(time.Minute, 50*time.Second)
+		require.NoError(t, err)
+		require.Equal(t, 20*time.Second, clamped.heartbeatInterval)
+	})
+
+	t.Run("production defaults unchanged", func(t *testing.T) {
+		defaulted, err := newFlow(0, 0)
+		require.NoError(t, err)
+		require.Equal(t, authSessionDefaultLeaseDuration, defaulted.leaseDuration)
+		require.Equal(t, authSessionDefaultHeartbeatInterval, defaulted.heartbeatInterval)
+	})
+
+	t.Run("tiny lease", func(t *testing.T) {
+		tiny, err := newFlow(2*time.Nanosecond, time.Nanosecond)
+		require.ErrorIs(t, err, ErrAuthSessionUnavailable)
+		require.Nil(t, tiny)
+	})
+}
+
+func TestDeviceAuthFlow_CompleteAmbiguousReconcilesAuthStatus(t *testing.T) {
+	fixture := newDeviceAuthCompletionFixture(t)
+	fixture.cli.outcome = DeviceAuthAmbiguous
+	fixture.cli.authStatus = true
+
+	result, err := fixture.flow.CompleteUserAuthorization(
+		context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+	)
+	require.NoError(t, err)
+	require.True(t, result.Completed)
+	fixture.vault.mu.Lock()
+	require.Equal(t, 1, fixture.vault.calls, "completion and reconciliation must share one candidate HOME")
+	home := fixture.vault.home
+	fixture.vault.mu.Unlock()
+	fixture.cli.mu.Lock()
+	require.Equal(t, []string{"complete", "auth_status", "app_id"}, fixture.cli.events)
+	require.Equal(t, home, fixture.cli.completeHome)
+	require.Equal(t, home, fixture.cli.authStatusHome)
+	require.Equal(t, home, fixture.cli.appIDHome)
+	fixture.cli.mu.Unlock()
+}
+
+func TestDeviceAuthFlow_CompleteLateOwnerCannotPublish(t *testing.T) {
+	fixture := newDeviceAuthCompletionFixture(t)
+	fixture.cli.outcome = DeviceAuthCompleted
+	fixture.cli.authStatus = true
+	fixture.store.finalizeLoseOwner = true
+
+	result, err := fixture.flow.CompleteUserAuthorization(
+		context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+	)
+	require.ErrorIs(t, err, ErrDeviceAuthConflict)
+	require.Nil(t, result)
+	fixture.store.mu.Lock()
+	require.Nil(t, fixture.store.published)
+	require.Equal(t, model.FeishuAuthSessionPending, fixture.store.session.State)
+	require.NotEmpty(t, fixture.store.session.ResumeCredentialCiphertext)
+	fixture.store.mu.Unlock()
+
+	t.Run("heartbeat fence loss cancels CLI", func(t *testing.T) {
+		lost := newDeviceAuthCompletionFixture(t)
+		lost.flow.leaseDuration = 500 * time.Millisecond
+		lost.flow.heartbeatInterval = 10 * time.Millisecond
+		lost.store.renewFailAfter = 1
+		lost.cli.outcome = DeviceAuthAmbiguous
+		lost.cli.completeWaitForContext = true
+
+		result, err := lost.flow.CompleteUserAuthorization(
+			context.Background(), lost.session.UserID, lost.session.Generation, lost.session.ID,
+		)
+		require.ErrorIs(t, err, ErrDeviceAuthConflict)
+		require.Nil(t, result)
+		lost.cli.mu.Lock()
+		require.ErrorIs(t, lost.cli.completeContext.Err(), context.Canceled)
+		lost.cli.mu.Unlock()
+		lost.store.mu.Lock()
+		require.Zero(t, lost.store.finalizeCalls)
+		require.Nil(t, lost.store.published)
+		lost.store.mu.Unlock()
+	})
+}
+
+func TestDeviceAuthFlow_CompleteRenewsOwnedLeaseBeforeCLI(t *testing.T) {
+	fixture := newDeviceAuthCompletionFixture(t)
+	const (
+		leaseDuration     = 600 * time.Millisecond
+		heartbeatInterval = 200 * time.Millisecond
+		postClaimDelay    = 425 * time.Millisecond
+	)
+	logicalStart := fixture.now
+	wallStart := time.Now()
+	fixture.flow.now = func() time.Time {
+		return logicalStart.Add(time.Since(wallStart))
+	}
+	fixture.flow.leaseDuration = leaseDuration
+	fixture.flow.heartbeatInterval = heartbeatInterval
+	fixture.store.postClaimReadDelay = postClaimDelay
+	fixture.cli.outcome = DeviceAuthPending
+
+	var (
+		renewCallsBeforeCLI int
+		leaseUntilAtCLI     time.Time
+		leaseLiveAtCLI      bool
+	)
+	fixture.cli.completeHook = func() {
+		now := fixture.flow.now()
+		fixture.store.mu.Lock()
+		renewCallsBeforeCLI = fixture.store.renewCalls
+		if fixture.store.session.LeaseUntil != nil {
+			leaseUntilAtCLI = fixture.store.session.LeaseUntil.UTC()
+			leaseLiveAtCLI = leaseUntilAtCLI.After(now)
+		}
+		fixture.store.mu.Unlock()
+	}
+
+	result, err := fixture.flow.CompleteUserAuthorization(
+		context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+	)
+	require.NoError(t, err)
+	require.False(t, result.Completed)
+	require.GreaterOrEqual(t, renewCallsBeforeCLI, 1,
+		"a successful exact-owner renewal must fence the lease before the one-shot CLI starts")
+	require.True(t, leaseLiveAtCLI, "CLI must start under a live refreshed lease")
+	require.True(t, leaseUntilAtCLI.After(logicalStart.Add(leaseDuration+postClaimDelay/2)),
+		"the lease visible to CLI must be newer than the original post-claim lease")
+}
+
+func TestDeviceAuthFlow_CompletePreCLIRenewFailureReleasesLease(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		renewErr error
+	}{
+		{name: "compare and swap miss"},
+		{name: "store error", renewErr: errors.New("renew unavailable")},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			fixture := newDeviceAuthCompletionFixture(t)
+			fixture.store.renewFail = testCase.renewErr == nil
+			fixture.store.renewErr = testCase.renewErr
+
+			result, err := fixture.flow.CompleteUserAuthorization(
+				context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+			)
+
+			require.ErrorIs(t, err, ErrDeviceAuthConflict)
+			require.Nil(t, result)
+			fixture.cli.mu.Lock()
+			require.Zero(t, fixture.cli.completeCalls, "CLI must not run without a synchronous exact-owner renewal")
+			fixture.cli.mu.Unlock()
+			fixture.store.mu.Lock()
+			require.Equal(t, 1, fixture.store.renewCalls)
+			require.Equal(t, 1, fixture.store.releaseCalls, "failed renewal must best-effort release the claimed lease")
+			require.Empty(t, fixture.store.session.LeaseOwner)
+			require.Nil(t, fixture.store.session.LeaseUntil)
+			fixture.store.mu.Unlock()
+		})
+	}
+}
+
+func TestDeviceAuthFlow_CompleteRenewsLeaseUntilFinalize(t *testing.T) {
+	fixture := newDeviceAuthCompletionFixture(t)
+	fixture.cli.outcome = DeviceAuthCompleted
+	fixture.cli.authStatus = true
+	fixture.flow.leaseDuration = 500 * time.Millisecond
+	fixture.flow.heartbeatInterval = 10 * time.Millisecond
+	fixture.store.renewSignal = make(chan struct{}, 1)
+	fixture.store.finalizeEntered = make(chan struct{})
+	finalizeRelease := make(chan struct{})
+	fixture.store.finalizeRelease = finalizeRelease
+	type completionResult struct {
+		value *DeviceAuthCompletion
+		err   error
+	}
+	done := make(chan completionResult, 1)
+	go func() {
+		value, err := fixture.flow.CompleteUserAuthorization(
+			context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+		)
+		done <- completionResult{value: value, err: err}
+	}()
+	select {
+	case <-fixture.store.finalizeEntered:
+	case <-time.After(time.Second):
+		t.Fatal("completion did not reach atomic finalize")
+	}
+	require.Eventually(t, func() bool {
+		fixture.store.mu.Lock()
+		defer fixture.store.mu.Unlock()
+		return fixture.store.renewCalls >= 2
+	}, time.Second, time.Millisecond, "lease heartbeat stopped before atomic finalize returned")
+	select {
+	case premature := <-done:
+		t.Fatalf("completion returned before finalize released: %#v", premature)
+	default:
+	}
+	close(finalizeRelease)
+	completed := <-done
+	require.NoError(t, completed.err)
+	require.True(t, completed.value.Completed)
+	fixture.store.mu.Lock()
+	require.GreaterOrEqual(t, fixture.store.renewCalls, 2)
+	fixture.store.mu.Unlock()
+}
+
+func TestDeviceAuthFlow_ReconcileUsesFreshContextAfterCLITimeout(t *testing.T) {
+	fixture := newDeviceAuthCompletionFixture(t)
+	fixture.flow.completionTimeout = 20 * time.Millisecond
+	fixture.cli.outcome = DeviceAuthAmbiguous
+	fixture.cli.completeWaitForContext = true
+	fixture.cli.authStatus = true
+	fixture.store.claimEntered = make(chan struct{})
+	claimRelease := make(chan struct{})
+	fixture.store.claimRelease = claimRelease
+	callerCtx, cancelCaller := context.WithCancel(context.Background())
+	type completionResult struct {
+		value *DeviceAuthCompletion
+		err   error
+	}
+	done := make(chan completionResult, 1)
+	go func() {
+		value, err := fixture.flow.CompleteUserAuthorization(
+			callerCtx, fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+		)
+		done <- completionResult{value: value, err: err}
+	}()
+	<-fixture.store.claimEntered
+	cancelCaller()
+	close(claimRelease)
+	completed := <-done
+	result, err := completed.value, completed.err
+	require.NoError(t, err)
+	require.True(t, result.Completed)
+	fixture.cli.mu.Lock()
+	require.ErrorIs(t, fixture.cli.completeContext.Err(), context.DeadlineExceeded)
+	require.True(t, fixture.cli.authStatusContextLive, "reconciliation must not reuse the expired CLI context")
+	require.NotEqual(t, fixture.cli.completeContext, fixture.cli.authStatusContext)
+	fixture.cli.mu.Unlock()
+	fixture.store.mu.Lock()
+	require.True(t, fixture.store.finalizeContextLive, "atomic mutation must use a fresh live context")
+	fixture.store.mu.Unlock()
 }
