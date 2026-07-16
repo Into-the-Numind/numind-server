@@ -4,11 +4,11 @@ features:
   ndf_version: '3.0'
   description: Accept the pinned lark-cli keychain-backed application evidence after successful personal Feishu app creation
   classification_reason: 'Standard continuation: customer-reported third-party authorization failure at the credential evidence and encrypted HOME boundary; no API or DB change.'
-  last_updated_by: ai-s3-plan-complete
-  last_updated_at: '2026-07-16T12:00:00+08:00'
+  last_updated_by: ai-s5-acceptance-complete
+  last_updated_at: '2026-07-16T12:35:00+08:00'
   created_at: '2026-07-16T11:06:29+08:00'
   track: standard
-  stage: S3
+  stage: S5
   status: active
   repos:
     numind-server: /private/tmp/wt-feishu-keychain-app-evidence-numind-server
@@ -18,18 +18,21 @@ features:
     numind-server: feature/feishu-keychain-app-evidence
   progress:
     total_tasks: 4
-    completed_tasks: 0
-    reviewed_tasks: 0
+    completed_tasks: 4
+    reviewed_tasks: 4
   artifacts:
     requirement: requirements/feishu-keychain-app-evidence.md
     proposal: proposals/feishu-keychain-app-evidence-proposal.md
     design: docs/superpowers/specs/2026-07-16-feishu-keychain-app-evidence-design.md
     plan: docs/superpowers/plans/2026-07-16-feishu-keychain-app-evidence.md
+    qa: docs/superpowers/qa/2026-07-16-feishu-keychain-app-evidence-s5-acceptance.md
   decisions:
   - 'S0: dev logs show create-app session failed after official-page completion and before HOME sealing; resume only surfaced the terminal failure.'
   - 'S1: pinned lark-cli 1.0.68 stores appSecret as a keychain reference, while Numind and its fake CLI fixture assumed plaintext.'
   - 'S2: add a dedicated strict non-secret evidence parser; do not widen the legacy plaintext-secret reader. Prove the whole keychain HOME survives vault round-trip.'
   - 'S3: customer regression must be the first code commit and must use the real 1.0.68 config shape.'
+  - 'S4: first code commit reproduced the official keychain object failure; implementation adds a dedicated strict non-secret parser plus encrypted HOME keychain round-trip coverage.'
+  - 'S5: focused, race, full Go tests and lint passed; independent specification/security and code-quality reviews both PASS with P0/P1/P2=0.'
   blockers: []
 
 - id: feishu-create-app-finalization
