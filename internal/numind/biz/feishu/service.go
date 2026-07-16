@@ -641,7 +641,13 @@ func (s *WorkspaceLifecycleService) RefreshAction(ctx context.Context, userID ui
 		)
 	case model.FeishuAuthSessionSuperseded:
 		if boundSession.ID == session.ID {
-			return nil, ErrWorkspaceLifecycleUnavailable
+			// Compatibility for the pre-atomic-refresh state: its operation
+			// summary still names the superseded source session. The downstream
+			// transaction rechecks this exact binding before minting a new link.
+			action, refreshErr = s.auth.RefreshOperationAction(
+				ctx, userID, account.Generation, sessionID, operation.ID, operation.State, operation.ResultSummaryJSON,
+			)
+			break
 		}
 		// A failed post-commit compensation may leave the browser's original
 		// card on a superseded ID. It can only repair the exact operation's

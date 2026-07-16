@@ -937,9 +937,10 @@ func (s *AuthSessionService) RefreshAction(
 	return s.start(ctx, request, true)
 }
 
-// RefreshOperationAction atomically swaps an operation's pending authorization
-// session before a replacement worker is allowed to run. Unlike manual refresh,
-// it never permits an operation summary to point at a superseded session.
+// RefreshOperationAction atomically swaps an operation authorization session
+// before a replacement worker is allowed to run. Besides the normal pending
+// source, it accepts the narrow legacy state where the operation summary still
+// points at its own superseded source session.
 func (s *AuthSessionService) RefreshOperationAction(
 	ctx context.Context,
 	userID uint,
@@ -952,7 +953,7 @@ func (s *AuthSessionService) RefreshOperationAction(
 		return nil, ErrAuthSessionUnavailable
 	}
 	oldSession, err := s.sessions.GetSessionForUser(ctx, userID, generation, oldSessionID)
-	if err != nil || oldSession == nil || oldSession.State != model.FeishuAuthSessionPending || oldSession.OperationID == nil ||
+	if err != nil || oldSession == nil || (oldSession.State != model.FeishuAuthSessionPending && oldSession.State != model.FeishuAuthSessionSuperseded) || oldSession.OperationID == nil ||
 		*oldSession.OperationID != operationID {
 		return nil, ErrAuthSessionUnavailable
 	}

@@ -1342,8 +1342,10 @@ type feishuOperationRecoveryBinding struct {
 	Phase     string `json:"phase"`
 }
 
-// RefreshOperationSession atomically supersedes the old authorization session,
-// creates its replacement, and moves the waiting operation's durable binding.
+// RefreshOperationSession atomically supersedes the source authorization
+// session, creates its replacement, and moves the waiting operation's durable
+// binding. The source is normally pending; the same transaction also admits a
+// legacy superseded source only when the operation still points to it exactly.
 // No partially refreshed operation can be committed if any tenant, state, or
 // session fence fails.
 func (s *feishuWorkspaceStore) RefreshOperationSession(
@@ -1378,7 +1380,8 @@ func (s *feishuWorkspaceStore) RefreshOperationSession(
 		}
 		var oldSession model.FeishuAuthSession
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("id = ? AND user_id = ? AND generation = ? AND state = ?", oldSessionID, userID, generation, model.FeishuAuthSessionPending).
+			Where("id = ? AND user_id = ? AND generation = ?", oldSessionID, userID, generation).
+			Where("state IN ?", []string{model.FeishuAuthSessionPending, model.FeishuAuthSessionSuperseded}).
 			Take(&oldSession).Error; err != nil {
 			return err
 		}
@@ -1403,7 +1406,8 @@ func (s *feishuWorkspaceStore) RefreshOperationSession(
 			return fmt.Errorf("create replacement feishu auth session: %w", err)
 		}
 		oldResult := tx.Model(&model.FeishuAuthSession{}).
-			Where("id = ? AND user_id = ? AND generation = ? AND state = ?", oldSessionID, userID, generation, model.FeishuAuthSessionPending).
+			Where("id = ? AND user_id = ? AND generation = ?", oldSessionID, userID, generation).
+			Where("state IN ?", []string{model.FeishuAuthSessionPending, model.FeishuAuthSessionSuperseded}).
 			Updates(map[string]any{
 				"state": model.FeishuAuthSessionSuperseded, "completed_at": now.UTC(),
 				"lease_owner": "", "lease_until": nil,
