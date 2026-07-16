@@ -377,6 +377,9 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 			if updateErr != nil || updated == nil || updated.UserID != userID || updated.Generation != account.Generation {
 				return nil, ErrWorkspaceLifecycleUnavailable
 			}
+			if _, finalizeErr := s.finalizeTerminalOperationIfNeeded(ctx, userID, updated); finalizeErr != nil {
+				return nil, finalizeErr
+			}
 			return lifecycleStoredOperationSummary(updated), nil
 		}
 		// Create-app and user-auth recovery are completed by the server-owned
@@ -400,6 +403,9 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 		updated, updateErr := s.workspace.GetOperationForUser(ctx, userID, account.Generation, operationID)
 		if updateErr != nil || updated == nil || updated.UserID != userID || updated.Generation != account.Generation {
 			return nil, ErrWorkspaceLifecycleUnavailable
+		}
+		if _, finalizeErr := s.finalizeTerminalOperationIfNeeded(ctx, userID, updated); finalizeErr != nil {
+			return nil, finalizeErr
 		}
 		return lifecycleStoredOperationSummary(updated), nil
 	case ResumeActionConfirmed:
@@ -467,14 +473,29 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 		}
 		result, cancelErr := s.operations.Cancel(ctx, userID, operationID)
 		if cancelErr != nil || result == nil {
+			updated, updateErr := s.workspace.GetOperationForUser(ctx, userID, account.Generation, operationID)
+			if updateErr != nil || updated == nil || updated.UserID != userID || updated.Generation != account.Generation {
+				return nil, ErrWorkspaceLifecycleUnavailable
+			}
+			settled, settleErr := s.settleCommittedOperation(ctx, userID, updated)
+			if settleErr != nil {
+				return nil, settleErr
+			}
+			if settled || updated.State == model.FeishuOperationExecuting {
+				return lifecycleStoredOperationSummary(updated), nil
+			}
 			return nil, ErrWorkspaceLifecycleUnavailable
 		}
-		if result.OperationID != operation.ID || result.State != model.FeishuOperationCancelled {
+		if result.OperationID != operation.ID {
 			return nil, ErrWorkspaceLifecycleUnavailable
 		}
 		operation.State = result.State
-		if err := s.finalizeTerminalOperationWait(ctx, userID, operation, externalaction.TerminalOutcomeCancelled); err != nil {
-			return nil, err
+		settled, settleErr := s.settleCommittedOperation(ctx, userID, operation)
+		if settleErr != nil {
+			return nil, settleErr
+		}
+		if !settled && result.State != model.FeishuOperationExecuting {
+			return nil, ErrWorkspaceLifecycleUnavailable
 		}
 		return lifecycleResultSummary(result), nil
 	default:
@@ -585,6 +606,38 @@ func (s *WorkspaceLifecycleService) finalizeTerminalOperationWait(
 		return ErrWorkspaceLifecycleUnavailable
 	}
 	return nil
+}
+
+func (s *WorkspaceLifecycleService) finalizeTerminalOperationIfNeeded(
+	ctx context.Context,
+	userID uint,
+	operation *model.FeishuOperation,
+) (bool, error) {
+	if operation == nil {
+		return false, ErrWorkspaceLifecycleUnavailable
+	}
+	outcome, ok := terminalOutcomeForOperationState(operation.State)
+	if !ok {
+		return false, nil
+	}
+	if err := s.finalizeTerminalOperationWait(ctx, userID, operation, outcome); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *WorkspaceLifecycleService) settleCommittedOperation(
+	ctx context.Context,
+	userID uint,
+	operation *model.FeishuOperation,
+) (bool, error) {
+	if operation != nil && operation.State == model.FeishuOperationSucceeded {
+		if err := s.compensateSucceededOperation(ctx, userID, operation); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return s.finalizeTerminalOperationIfNeeded(ctx, userID, operation)
 }
 
 func terminalOutcomeForOperationState(state string) (externalaction.TerminalOutcome, bool) {
