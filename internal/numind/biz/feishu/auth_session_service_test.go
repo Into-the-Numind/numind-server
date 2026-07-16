@@ -569,6 +569,50 @@ func TestAuthSessionService_RefreshOperationAtomicallyRebindsBeforeActivatingRep
 	close(oldRelease)
 }
 
+func TestAuthSessionService_RefreshOperationRepairsLegacySupersededBinding(t *testing.T) {
+	h := newAuthSessionHarness(t)
+	h.createAccount(model.FeishuConnectionAppReady)
+	release := make(chan struct{})
+	releaseWorker := releaseAuthSessionCLIFake(t, release)
+	h.cli.urls = []string{"https://open.feishu.cn/page/cli?user_code=LEGACY_REPAIRED"}
+	h.cli.releases = []<-chan struct{}{release}
+	service := h.newService("refresh-operation-legacy")
+	operation := &model.FeishuOperation{
+		ID: "operation-refresh-legacy", UserID: 7, Generation: 1, AgentRunID: 7, ToolCallID: "tool-refresh-legacy",
+		IdempotencyKey: "refresh-legacy", CommandPath: "docs document get", Domain: "docs", RiskLevel: string(RiskRead),
+		RequestCiphertext: []byte("encrypted-request"), KeyVersion: "v1", RequestFingerprint: "refresh-legacy-fingerprint",
+		State: model.FeishuOperationWaitingConnection,
+	}
+	require.NoError(t, h.db.Create(operation).Error)
+	old := &model.FeishuAuthSession{
+		ID: "00000000-0000-4000-8000-000000000099", UserID: 7, Generation: 1, OperationID: &operation.ID,
+		Phase: model.FeishuAuthPhaseCreateApp, RequestedScopesJSON: []byte(`["docx:document:readonly"]`),
+		State: model.FeishuAuthSessionSuperseded, ExpiresAt: h.now.Add(10 * time.Minute),
+	}
+	require.NoError(t, h.dataStore.FeishuWorkspace().CreateSession(h.ctx, old))
+	oldSummary, err := json.Marshal(persistedOperationSummary{
+		Status: model.FeishuOperationWaitingConnection, Phase: model.FeishuAuthPhaseCreateApp,
+		SessionID: old.ID, RecoveryKind: RecoveryCreateApp,
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.db.Model(&model.FeishuOperation{}).Where("id = ?", operation.ID).
+		Update("result_summary_json", oldSummary).Error)
+
+	action, err := service.RefreshOperationAction(
+		h.ctx, 7, 1, old.ID, operation.ID, model.FeishuOperationWaitingConnection, oldSummary,
+	)
+	require.NoError(t, err)
+	require.NotEqual(t, old.ID, action.SessionID)
+	require.Contains(t, action.URL, "LEGACY_REPAIRED")
+	storedOperation, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, operation.ID)
+	require.NoError(t, err)
+	storedSummary, err := decodeOperationSummary(storedOperation.ResultSummaryJSON)
+	require.NoError(t, err)
+	require.Equal(t, action.SessionID, storedSummary.SessionID)
+	require.NoError(t, service.Activate(h.ctx, action.SessionID))
+	releaseWorker()
+}
+
 func TestAuthSessionService_RefreshOperationRestoresOriginalBindingWhenReplacementCannotStart(t *testing.T) {
 	h := newAuthSessionHarness(t)
 	oldRelease := make(chan struct{})
