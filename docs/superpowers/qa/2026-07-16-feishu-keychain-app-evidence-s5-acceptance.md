@@ -2,9 +2,9 @@
 
 ## Customer regression
 
-- First code commit: `5beccf2b test(qa): reproduce feishu keychain app evidence failure`.
+- First code commit: `c2251d89 test(qa): reproduce feishu keychain app evidence failure`.
 - Before production changes, the focused test failed because the controlled completion probe rejected lark-cli 1.0.68's official keychain-reference object after successful config initialization.
-- After `92d32139 fix(feishu): accept keychain-backed app evidence`, the same test passes.
+- After `c7c623d2 fix(feishu): accept keychain-backed app evidence`, the same test passes.
 
 ## Automated verification
 
