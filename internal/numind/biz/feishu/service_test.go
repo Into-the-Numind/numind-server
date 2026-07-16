@@ -1126,10 +1126,36 @@ func TestWorkspaceLifecycleRefreshUsesCurrentGenerationAndReturnsNewLiveAction(t
 		State: model.FeishuAuthSessionPending,
 	}
 
-	action, err := svc.RefreshAction(context.Background(), 7, "session-1")
+	result, err := svc.RefreshAction(context.Background(), 7, "session-1")
 	require.NoError(t, err)
-	require.Equal(t, "session-1", action.SessionID)
+	require.NotNil(t, result.Action)
+	require.Nil(t, result.Terminal)
+	require.Equal(t, "session-1", result.Action.SessionID)
 	require.Equal(t, 1, auth.refreshCalls)
+}
+
+func TestWorkspaceLifecycleRefreshReturnsTerminalResultWithoutAuthRecovery(t *testing.T) {
+	operationID := "op-terminal-refresh"
+	op := &model.FeishuOperation{
+		ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationFailed,
+	}
+	svc, _, workspace, auth, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 2,
+	}, op)
+	workspace.activeSession = &model.FeishuAuthSession{
+		ID: "session-terminal", UserID: 7, Generation: 2, OperationID: &operationID,
+		Phase: model.FeishuAuthPhaseCreateApp, State: model.FeishuAuthSessionFailed,
+	}
+
+	result, err := svc.RefreshAction(context.Background(), 7, "session-terminal")
+
+	require.NoError(t, err)
+	require.Nil(t, result.Action)
+	require.Equal(t, &RefreshTerminalResult{OperationID: operationID, State: model.FeishuOperationFailed}, result.Terminal)
+	require.Zero(t, auth.refreshCalls, "terminal operations must never create another authorization worker")
+	require.Zero(t, dispatcher.calls)
+	require.Zero(t, operations.confirmed)
+	require.Zero(t, operations.cancelled)
 }
 
 func TestWorkspaceLifecycleRefreshRebindsOperationSessionBeforeResume(t *testing.T) {
@@ -1180,9 +1206,10 @@ func TestWorkspaceLifecycleRefreshRebindsOperationSessionBeforeResume(t *testing
 		return cloneOperationAction(auth.action), nil
 	}
 
-	action, err := svc.RefreshAction(context.Background(), 7, oldSessionID)
+	refreshResult, err := svc.RefreshAction(context.Background(), 7, oldSessionID)
 	require.NoError(t, err)
-	require.Equal(t, replacementSessionID, action.SessionID)
+	require.NotNil(t, refreshResult.Action)
+	require.Equal(t, replacementSessionID, refreshResult.Action.SessionID)
 	refreshedSummary, summaryErr := decodeOperationSummary(workspace.operation.ResultSummaryJSON)
 	require.NoError(t, summaryErr)
 	require.Equal(t, replacementSessionID, refreshedSummary.SessionID)
@@ -1226,9 +1253,10 @@ func TestWorkspaceLifecycleRefreshRepairsLegacySupersededBinding(t *testing.T) {
 		}, nil
 	}
 
-	action, err := svc.RefreshAction(context.Background(), 7, oldSessionID)
+	result, err := svc.RefreshAction(context.Background(), 7, oldSessionID)
 	require.NoError(t, err)
-	require.Equal(t, "session-legacy-repaired", action.SessionID)
+	require.NotNil(t, result.Action)
+	require.Equal(t, "session-legacy-repaired", result.Action.SessionID)
 	require.Equal(t, 1, auth.refreshCalls)
 }
 
@@ -1264,9 +1292,10 @@ func TestWorkspaceLifecycleRefreshRetriesCurrentFailedCreateAppSession(t *testin
 		}, nil
 	}
 
-	action, err := svc.RefreshAction(context.Background(), 7, failedSessionID)
+	result, err := svc.RefreshAction(context.Background(), 7, failedSessionID)
 	require.NoError(t, err)
-	require.Equal(t, "session-failed-retry", action.SessionID)
+	require.NotNil(t, result.Action)
+	require.Equal(t, "session-failed-retry", result.Action.SessionID)
 	require.Equal(t, 1, auth.refreshCalls)
 }
 
@@ -1310,9 +1339,10 @@ func TestWorkspaceLifecycleRefreshRecoversOriginalCardAfterFailedCompensation(t 
 		}, nil
 	}
 
-	action, err := svc.RefreshAction(context.Background(), 7, oldSessionID)
+	result, err := svc.RefreshAction(context.Background(), 7, oldSessionID)
 	require.NoError(t, err)
-	require.Equal(t, "session-recovered", action.SessionID)
+	require.NotNil(t, result.Action)
+	require.Equal(t, "session-recovered", result.Action.SessionID)
 	require.Equal(t, 1, auth.refreshCalls)
 }
 

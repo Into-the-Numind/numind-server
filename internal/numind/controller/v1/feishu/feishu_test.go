@@ -21,7 +21,7 @@ type lifecycleServiceFake struct {
 	connect *feishubiz.ConnectResult
 	status  *feishubiz.StatusResult
 	resume  *feishubiz.OperationResult
-	refresh *feishubiz.OperationAction
+	refresh *feishubiz.RefreshActionResult
 	unbound *feishubiz.UnbindResult
 	err     error
 
@@ -43,7 +43,7 @@ func (f *lifecycleServiceFake) Resume(_ context.Context, _ uint, operationID, ac
 	f.resumeID, f.resumeAction = operationID, action
 	return f.resume, f.err
 }
-func (f *lifecycleServiceFake) RefreshAction(_ context.Context, _ uint, sessionID string) (*feishubiz.OperationAction, error) {
+func (f *lifecycleServiceFake) RefreshAction(_ context.Context, _ uint, sessionID string) (*feishubiz.RefreshActionResult, error) {
 	f.refreshID = sessionID
 	return f.refresh, f.err
 }
@@ -174,10 +174,10 @@ func TestResumePublicActionOmitsInternalScopes(t *testing.T) {
 func TestRefreshUsesPathSessionOnlyAndUnbindReturnsRemoteAppDisclosure(t *testing.T) {
 	expiresAt := time.Date(2026, 7, 14, 12, 4, 0, 0, time.UTC)
 	service := &lifecycleServiceFake{
-		refresh: &feishubiz.OperationAction{
+		refresh: &feishubiz.RefreshActionResult{Action: &feishubiz.OperationAction{
 			Provider: "lark", OperationID: "operation-2", SessionID: "fresh", Phase: "app_scope",
 			URL: "https://open.feishu.cn/suite/passport/oauth/device", Scopes: []string{"base:record:update"}, ExpiresAt: expiresAt,
-		},
+		}},
 		unbound: &feishubiz.UnbindResult{State: "none", Connected: false, Message: "有数侧连接已删除；飞书侧个人自建应用仍保留，可在飞书开放平台自行删除"},
 	}
 	ctrl := NewController(service)
@@ -198,11 +198,13 @@ func TestRefreshUsesPathSessionOnlyAndUnbindReturnsRemoteAppDisclosure(t *testin
 		"code": 0,
 		"message": "",
 		"data": {
-			"operation_id": "operation-2",
-			"session_id": "fresh",
-			"phase": "app_scope",
-			"url": "https://open.feishu.cn/suite/passport/oauth/device",
-			"expires_at": "2026-07-14T12:04:00Z"
+			"action": {
+				"operation_id": "operation-2",
+				"session_id": "fresh",
+				"phase": "app_scope",
+				"url": "https://open.feishu.cn/suite/passport/oauth/device",
+				"expires_at": "2026-07-14T12:04:00Z"
+			}
 		}
 	}`, refresh.Body.String())
 	require.NotContains(t, refresh.Body.String(), `"scopes"`)
@@ -214,11 +216,39 @@ func TestRefreshUsesPathSessionOnlyAndUnbindReturnsRemoteAppDisclosure(t *testin
 	require.Equal(t, 1, service.unbindCalls)
 }
 
+func TestRefreshTerminalResultIsAllowlistedAndContainsNoAuthorizationMaterial(t *testing.T) {
+	service := &lifecycleServiceFake{refresh: &feishubiz.RefreshActionResult{
+		Terminal: &feishubiz.RefreshTerminalResult{OperationID: "operation-terminal", State: model.FeishuOperationFailed},
+	}}
+	ctrl := NewController(service)
+	r := gin.New()
+	r.POST("/v1/feishu/actions/:session_id/refresh", withUser(8), ctrl.RefreshAction)
+
+	response := httptest.NewRecorder()
+	r.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1/feishu/actions/stale-session/refresh", nil))
+
+	require.Equal(t, http.StatusOK, response.Code)
+	require.JSONEq(t, `{
+		"code": 0,
+		"message": "",
+		"data": {
+			"terminal": {
+				"operation_id": "operation-terminal",
+				"state": "failed"
+			}
+		}
+	}`, response.Body.String())
+	require.NotContains(t, response.Body.String(), `"action"`)
+	require.NotContains(t, response.Body.String(), `"url"`)
+	require.NotContains(t, response.Body.String(), `"scopes"`)
+	require.NotContains(t, response.Body.String(), "device_code")
+}
+
 func TestRefreshUnavailableResponseDoesNotLeakLiveAction(t *testing.T) {
 	service := &lifecycleServiceFake{
-		refresh: &feishubiz.OperationAction{
+		refresh: &feishubiz.RefreshActionResult{Action: &feishubiz.OperationAction{
 			Provider: "lark", SessionID: "fresh", URL: "https://open.feishu.cn/device?device_code=secret",
-		},
+		}},
 		err: feishubiz.ErrWorkspaceLifecycleUnavailable,
 	}
 	ctrl := NewController(service)

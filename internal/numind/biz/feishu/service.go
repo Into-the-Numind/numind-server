@@ -75,6 +75,22 @@ type ConnectResult struct {
 	Action *OperationAction `json:"action,omitempty"`
 }
 
+// RefreshActionResult is a tagged refresh response. Exactly one branch is
+// populated: Action for a new live URL, or Terminal when the historical
+// operation can no longer be refreshed safely.
+type RefreshActionResult struct {
+	Action   *OperationAction       `json:"action,omitempty"`
+	Terminal *RefreshTerminalResult `json:"terminal,omitempty"`
+}
+
+// RefreshTerminalResult deliberately contains no authorization material.
+// The browser only needs the exact operation identity and its stored state to
+// settle the stale external-action card without replaying the operation.
+type RefreshTerminalResult struct {
+	OperationID string `json:"operation_id"`
+	State       string `json:"state"`
+}
+
 // UnbindResult explicitly describes the local-only deletion guarantee.
 type UnbindResult struct {
 	State     string `json:"state"`
@@ -89,7 +105,7 @@ type IFeishuService interface {
 	Connect(context.Context, uint) (*ConnectResult, error)
 	Status(context.Context, uint) (*StatusResult, error)
 	Resume(context.Context, uint, string, string) (*OperationResult, error)
-	RefreshAction(context.Context, uint, string) (*OperationAction, error)
+	RefreshAction(context.Context, uint, string) (*RefreshActionResult, error)
 	Unbind(context.Context, uint) (*UnbindResult, error)
 }
 
@@ -320,6 +336,13 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 			if err := s.compensateSucceededOperation(ctx, userID, operation); err != nil {
 				return nil, err
 			}
+			return lifecycleStoredOperationSummary(operation), nil
+		}
+		switch operation.State {
+		case model.FeishuOperationExecuting,
+			model.FeishuOperationFailed,
+			model.FeishuOperationUnknown,
+			model.FeishuOperationCancelled:
 			return lifecycleStoredOperationSummary(operation), nil
 		}
 		if !recoveryWaitingState(operation.State) {
@@ -582,10 +605,10 @@ func lifecycleRecoveryPhase(operationState string) string {
 	}
 }
 
-// RefreshAction validates the caller's current generation before delegating to
-// AuthSessionService, which supersedes the old worker/session and returns a
-// newly-created live URL. It never accepts or returns a device code.
-func (s *WorkspaceLifecycleService) RefreshAction(ctx context.Context, userID uint, sessionID string) (*OperationAction, error) {
+// RefreshAction validates the caller's current generation before either
+// delegating to AuthSessionService for a new live URL or returning the linked
+// operation's stored terminal state. It never accepts or returns a device code.
+func (s *WorkspaceLifecycleService) RefreshAction(ctx context.Context, userID uint, sessionID string) (*RefreshActionResult, error) {
 	if s == nil || userID == 0 || strings.TrimSpace(sessionID) == "" {
 		return nil, ErrWorkspaceLifecycleInvalid
 	}
@@ -619,11 +642,20 @@ func (s *WorkspaceLifecycleService) RefreshAction(ctx context.Context, userID ui
 		if refreshErr != nil || action == nil || strings.TrimSpace(action.SessionID) == "" {
 			return nil, ErrWorkspaceLifecycleUnavailable
 		}
-		return cloneOperationAction(action), nil
+		return &RefreshActionResult{Action: cloneOperationAction(action)}, nil
+	}
+	if strings.TrimSpace(*session.OperationID) == "" {
+		return nil, ErrWorkspaceLifecycleUnavailable
 	}
 	operation, operationErr := s.workspace.GetOperationForUser(ctx, userID, account.Generation, *session.OperationID)
 	if operationErr != nil || operation == nil || operation.UserID != userID || operation.Generation != account.Generation {
 		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	if refreshTerminalOperationState(operation.State) {
+		return &RefreshActionResult{Terminal: &RefreshTerminalResult{
+			OperationID: operation.ID,
+			State:       operation.State,
+		}}, nil
 	}
 	boundSession, bindingErr := s.recoverySession(ctx, userID, account.Generation, operation)
 	if bindingErr != nil || boundSession == nil {
@@ -661,7 +693,19 @@ func (s *WorkspaceLifecycleService) RefreshAction(ctx context.Context, userID ui
 	if refreshErr != nil || action == nil || strings.TrimSpace(action.SessionID) == "" {
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
-	return cloneOperationAction(action), nil
+	return &RefreshActionResult{Action: cloneOperationAction(action)}, nil
+}
+
+func refreshTerminalOperationState(state string) bool {
+	switch state {
+	case model.FeishuOperationSucceeded,
+		model.FeishuOperationFailed,
+		model.FeishuOperationUnknown,
+		model.FeishuOperationCancelled:
+		return true
+	default:
+		return false
+	}
 }
 
 // Unbind first retires the active generation atomically. That database fence

@@ -66,6 +66,16 @@ type connectResponse struct {
 	Action *liveLifecycleActionResponse `json:"action,omitempty"`
 }
 
+type refreshTerminalResponse struct {
+	OperationID string `json:"operation_id"`
+	State       string `json:"state"`
+}
+
+type refreshActionResponse struct {
+	Action   *liveLifecycleActionResponse `json:"action,omitempty"`
+	Terminal *refreshTerminalResponse     `json:"terminal,omitempty"`
+}
+
 type operationResponse struct {
 	OperationID string                   `json:"operation_id"`
 	State       string                   `json:"state"`
@@ -133,7 +143,7 @@ func (h *Controller) RefreshAction(c *gin.Context) {
 		return
 	}
 	result, err := h.svc.RefreshAction(c.Request.Context(), user.ID, sessionID)
-	writeLifecycleResponse(c, err, publicLiveLifecycleAction(result))
+	writeLifecycleResponse(c, err, publicRefreshActionResponse(result))
 }
 
 // Unbind handles DELETE /v1/feishu/connection. The result explicitly says the
@@ -231,6 +241,20 @@ func publicLiveLifecycleAction(action *feishubiz.OperationAction) *liveLifecycle
 		URL:         action.URL,
 		ExpiresAt:   action.ExpiresAt,
 	}
+}
+
+func publicRefreshActionResponse(result *feishubiz.RefreshActionResult) *refreshActionResponse {
+	if result == nil {
+		return nil
+	}
+	response := &refreshActionResponse{Action: publicLiveLifecycleAction(result.Action)}
+	if result.Terminal != nil {
+		response.Terminal = &refreshTerminalResponse{
+			OperationID: result.Terminal.OperationID,
+			State:       result.Terminal.State,
+		}
+	}
+	return response
 }
 
 func writeLifecycleResponse(c *gin.Context, err error, data any) {
