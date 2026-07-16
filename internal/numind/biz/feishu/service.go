@@ -441,10 +441,14 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 		}
 		return lifecycleResultSummary(result), nil
 	case ResumeActionCancelled:
-		// Cancellation is idempotent after the write has succeeded, but it must
-		// never become a second continuation trigger. A user can retry
-		// user_completed/confirmed to compensate Task11 instead.
+		// Cancellation cannot undo a committed Feishu write. Once the operation
+		// succeeded, every acknowledgement is therefore a safe Task11 repair:
+		// the shared dispatcher returns the stored result and never replays the
+		// Feishu command.
 		if operation.State == model.FeishuOperationSucceeded {
+			if err := s.compensateSucceededOperation(ctx, userID, operation); err != nil {
+				return nil, err
+			}
 			return lifecycleStoredOperationSummary(operation), nil
 		}
 		// Operation.Cancel commits its terminal operation transition before this
