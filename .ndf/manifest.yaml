@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: Accept the pinned lark-cli keychain-backed application evidence after successful personal Feishu app creation
   classification_reason: 'Standard continuation: customer-reported third-party authorization failure at the credential evidence and encrypted HOME boundary; no API or DB change.'
-  last_updated_by: ai-s6-develop-merge-complete
-  last_updated_at: '2026-07-16T12:50:00+08:00'
+  last_updated_by: ai-s6-dev-deployed
+  last_updated_at: '2026-07-16T13:05:00+08:00'
   created_at: '2026-07-16T11:06:29+08:00'
   track: standard
   stage: S6
@@ -34,6 +34,7 @@ features:
   - 'S4: first code commit reproduced the official keychain object failure; implementation adds a dedicated strict non-secret parser plus encrypted HOME keychain round-trip coverage.'
   - 'S5: focused, race, full Go tests and lint passed; independent specification/security and code-quality reviews both PASS with P0/P1/P2=0.'
   - 'S6: ndf-done merged and pushed develop commit c26b210e; feature worktree and branch were removed. Awaiting dev deployment and real Feishu validation.'
+  - 'S6 dev: image develop-39b08383 deployed; container is healthy, /healthz returned {status:ok}, and pinned lark-cli reports 1.0.68. Awaiting a fresh real Feishu app-creation validation.'
   blockers: []
 
 - id: feishu-create-app-finalization
