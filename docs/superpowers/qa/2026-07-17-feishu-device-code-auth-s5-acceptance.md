@@ -104,3 +104,11 @@
 ## 结论
 
 AUTOMATED_PASS_WITH_BASELINE_EXCEPTION。功能代码可合并并部署 Dev；唯一全仓失败在原始 `develop` 同样存在，且目录不在 feature diff。Dev 真实飞书验收在部署后继续记录到本报告。
+
+## 托管技能修复 Dev 部署
+
+- `ndf-done` 已将修复合并并推送到 backend `develop`：`ef19dd85`。
+- Dev 运行镜像：`numind-server:develop-ef19dd85`；Docker 状态 `running` / `healthy`。
+- 外部 `GET /healthz` 返回 `code=0`、`status=ok`；部署后最近十分钟 panic/fatal/error 日志计数为 0。
+- 下一步人工门禁：用户重新发起同一飞书文档创建请求，完成新授权卡后确认原 Agent 能自动继续且不再出现
+  连续“执行出错”或本地 CLI/App Secret 指引。Prod 未部署、也未获得授权。
