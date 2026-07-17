@@ -530,3 +530,15 @@ func TestPlatformToolFactory_LarkPersonalWorkspaceBothOrNoneAndNoLegacyTools(t *
 		assert.False(t, exists, "registry must not expose %s", legacy)
 	}
 }
+
+func TestLarkPersonalWorkspace_BashExecRoutesFeishuToControlledTools(t *testing.T) {
+	tool := &bashExecTool{}
+	description := tool.Description()
+	assert.Contains(t, description, "飞书 Docs/Base/Wiki 必须通过 `lark_skill_read` + `lark_execute`")
+
+	result, err := tool.Execute(context.Background(), ToolInput(`{"command":"lark-cli docs +fetch"}`))
+	require.NoError(t, err)
+	assert.Contains(t, string(result), "LarkCLIRoute")
+	assert.Contains(t, string(result), "lark_execute")
+	assert.NotContains(t, string(result), "沙箱当前不可用", "route denial must happen before sandbox lookup")
+}

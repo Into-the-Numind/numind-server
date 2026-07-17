@@ -1,7 +1,7 @@
 // Package bashvalidator gates user-provided shell commands. It bundles the 8 Phase-0 V3
 // obfuscation checkers (extracted verbatim from cmd/agent-phase0-bash-validator/) plus the
-// 6 semantic dangerous-command checkers added by agent-security-hardening (semantic_validators.go)
-// — 14 validators total, see AllValidators().
+// 7 semantic command checkers in semantic_validators.go — 15 validators total,
+// see AllValidators().
 //
 // Used by internal/numind/biz/agent/tool_bash_exec.go (defensive gate) and by the
 // permission pipeline's PlatformHardRule (pre-execution gate) before sandbox.ExecCommand.
@@ -47,7 +47,7 @@ func denyResult(validatorID, reason, pattern string) Result {
 }
 
 // AllValidators returns all bash security validators in priority order:
-// the 8 Phase-0 obfuscation checkers + the 6 semantic dangerous-command checkers
+// the 8 Phase-0 obfuscation checkers + the 7 semantic command checkers
 // (agent-security-hardening BLK-3 / platform bans ①②③④).
 func AllValidators() []Validator {
 	return []Validator{
@@ -60,13 +60,14 @@ func AllValidators() []Validator {
 		NewProcEnvironValidator(),
 		NewBackslashOperatorValidator(),
 		NewBraceExpansionValidator(),
-		// 6 semantic dangerous-command checkers (agent-security-hardening)
+		// 7 semantic command checkers (agent-security-hardening + hosted Lark route)
 		NewDestructiveRemoveValidator(),
 		NewDiskDestructValidator(),
 		NewForkBombValidator(),
 		NewDownloadExecValidator(),
 		NewCredentialFileValidator(),
 		NewSSRFLiteralValidator(),
+		NewLarkCLIRouteValidator(),
 	}
 }
 

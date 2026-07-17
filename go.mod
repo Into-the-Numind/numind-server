@@ -52,6 +52,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/datatypes v1.2.7
 	gorm.io/driver/sqlite v1.6.0
+	mvdan.cc/sh/v3 v3.12.0
 )
 
 require (
