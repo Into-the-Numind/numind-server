@@ -252,6 +252,7 @@ func TestLarkPersonalWorkspace_ExecuteDerivesTenantAndIdempotencyFromContext(t *
 	assert.False(t, tool.IsReadOnly())
 	assert.False(t, tool.IsConcurrencySafe(nil))
 	assert.Contains(t, tool.Description(), "Docs/Base/Wiki")
+	assert.Contains(t, tool.Description(), "leading `lark-cli`")
 	assert.Contains(t, tool.Description(), "no shell")
 	assert.Contains(t, tool.Description(), "no IM")
 	_ = second
@@ -299,6 +300,7 @@ func TestLarkPersonalWorkspace_ExecuteRejectsUntrustedIdentityAndStrictJSON(t *t
 		"mixed case field":  `{"argv":["docs"],"Skill_Receipts":["r"]}`,
 		"trailing document": `{"argv":["docs"],"skill_receipts":["r"]} {}`,
 		"empty argv":        `{"argv":[],"skill_receipts":["r"]}`,
+		"prefix only":       `{"argv":["lark-cli"],"skill_receipts":["r"]}`,
 		"empty receipts":    `{"argv":["docs"],"skill_receipts":[]}`,
 	} {
 		t.Run(name, func(t *testing.T) {

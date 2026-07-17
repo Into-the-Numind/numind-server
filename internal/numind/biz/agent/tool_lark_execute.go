@@ -27,6 +27,7 @@ var _ FullTool = (*larkExecuteTool)(nil)
 func (t *larkExecuteTool) Name() string { return "lark_execute" }
 func (t *larkExecuteTool) Description() string {
 	return "Execute controlled lark-cli argv for Docs/Base/Wiki using opaque skill receipts. " +
+		"argv may copy the official skill command verbatim with a leading `lark-cli`, or omit that one executable token. " +
 		"Identity, authorization, scope, risk, and idempotency come only from server context. " +
 		"There is no shell execution and no IM/message capability."
 }
@@ -41,7 +42,7 @@ func (t *larkExecuteTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type":"object",
 		"properties":{
-			"argv":{"type":"array","minItems":1,"items":{"type":"string"},"description":"Controlled lark-cli argv; no shell."},
+			"argv":{"type":"array","minItems":1,"items":{"type":"string"},"description":"Controlled lark-cli argv; a single leading literal lark-cli from official skill examples is optional; no shell."},
 			"stdin_json":{"description":"Optional JSON value passed as stdin; null is normalized to absent."},
 			"skill_receipts":{"type":"array","minItems":1,"items":{"type":"string"},"description":"Opaque receipts returned by lark_skill_read."}
 		},
@@ -122,6 +123,18 @@ func decodeLarkExecuteInput(input ToolInput) (larkExecuteInput, error) {
 	argvRaw, ok := fields["argv"]
 	if !ok || json.Unmarshal(argvRaw, &decoded.Argv) != nil || len(decoded.Argv) == 0 {
 		return larkExecuteInput{}, fmt.Errorf("argv rejected")
+	}
+	// Official embedded skills intentionally show complete shell commands such as
+	// `lark-cli docs +create ...`. lark_execute is not a shell and the controlled
+	// catalog expects only command argv, so consume exactly this one pinned
+	// executable token at the trust boundary. Paths, aliases, env assignments,
+	// repeated prefixes, and every other first token remain untouched and are
+	// rejected by the catalog as before.
+	if decoded.Argv[0] == "lark-cli" {
+		decoded.Argv = decoded.Argv[1:]
+		if len(decoded.Argv) == 0 {
+			return larkExecuteInput{}, fmt.Errorf("argv rejected")
+		}
 	}
 	receiptsRaw, ok := fields["skill_receipts"]
 	if !ok || json.Unmarshal(receiptsRaw, &decoded.SkillReceipts) != nil || len(decoded.SkillReceipts) == 0 {
