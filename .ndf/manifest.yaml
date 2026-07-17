@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: Rotate the exposed DashScope credential, remove tracked plaintext copies, and restore the production AI-service registry without committing the replacement secret.
   classification_reason: 'Hotfix: no schema, API, external integration, payment, or permission logic change; three configuration surfaces and one regression test. User confirmed on 2026-07-16.'
-  last_updated_by: ai-h3-prod-runtime
-  last_updated_at: '2026-07-16T23:49:00+08:00'
+  last_updated_by: ai-h3-prod-vision-smoke
+  last_updated_at: '2026-07-17T14:29:00+08:00'
   created_at: '2026-07-16T23:22:00+08:00'
   track: hotfix
   stage: H3
@@ -17,7 +17,7 @@ features:
   decisions:
   - 'H1: committed a red regression test first; scrubbed the leaked DashScope values from tracked dev/local configuration and verified the test green. Production registry credentials were rotated in runtime storage; the replacement secret was never committed or logged.'
   - 'H2: go test ./..., go vet ./..., and golangci-lint run ./... each exited 0. Production user API restarted after registry rotation and health check returned healthy.'
-  - 'H3: ndf-done merged and pushed the non-secret source change to develop at 475bad2c. The production registry now holds the replacement credential for all three affected provider entries; user API restarted and is healthy. Awaiting human functional confirmation.'
+  - 'H3: ndf-done merged and pushed the non-secret source change to develop at 475bad2c. On 2026-07-17, the production runtime Vision credential was synchronized with the active registry credential, the user API was rebuilt with the existing image, healthz returned 200, and an SOP-shaped Qwen Vision smoke test returned HTTP 200 with a completion. Availability is restored. The incident remains active because the replacement credential was submitted through chat and must be rotated again through a secure channel.'
   blockers: []
 
 - id: feishu-device-code-auth
