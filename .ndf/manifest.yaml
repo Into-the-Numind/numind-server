@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: Align hosted per-user Feishu authorization with the pinned lark-cli split device-code protocol and resume the exact original Agent operation
   classification_reason: 'Standard: customer-reported third-party OAuth and durable write-resume boundary; affects authentication state machine, secure resume credentials, Agent guidance, real CLI fixtures, and more than 3 files.'
-  last_updated_by: ai-s4-task9
-  last_updated_at: '2026-07-17T13:01:23+08:00'
+  last_updated_by: ai-s4-task10
+  last_updated_at: '2026-07-17T13:21:09+08:00'
   created_at: '2026-07-16T18:53:00+08:00'
   track: standard
   stage: S4
@@ -13,7 +13,7 @@ features:
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/feishu-device-code-auth, numind-web-v3: feature/feishu-device-code-auth}
   worktrees: {numind-server: /private/tmp/wt-feishu-device-code-auth-numind-server, numind-web-v3: /private/tmp/wt-feishu-device-code-auth-numind-web-v3}
-  progress: {total_tasks: 19, completed_tasks: 9, reviewed_tasks: 9}
+  progress: {total_tasks: 19, completed_tasks: 10, reviewed_tasks: 10}
   artifacts:
     requirement: requirements/feishu-device-code-auth.md
     proposal: proposals/feishu-device-code-auth-proposal.md
@@ -34,6 +34,7 @@ features:
   - 'S4 Task 7: commit fa13fd24 completes protocol-v2 authorization with bounded detached claim/CLI/reconciliation/mutation contexts, exact-owner synchronous pre-CLI renewal, heartbeat fencing through atomic publication, and typed non-secret outcomes. Dual final review passed after covering blocked claim, slow durable reread, renewal false/error, transient AppID evidence, lease ratio, and late-owner boundaries.'
   - 'S4 Task 8: commit b1ff3f6a atomically replaces rejected, expired, migrated legacy, and explicitly refreshed device-auth sessions before exposing a new URL. Review expanded the task to cover real migrated v1 superseded rows, exact-owner v2 refresh, response-loss recovery from the old card via the operation current binding, deterministic replacement-start failures, and manual terminal secret clearing; final spec and atomicity reviews passed.'
   - 'S4 Task 9: commit 0a4bcebb dispatches the exact durable operation after authorization and safely retries completed sessions without re-running auth CLI or business writes. Review hardened true finalize/Agent response-loss tests, rebuilt instance B with a fresh Vault graph, bounded lifecycle dispatch, injected production allowlisted telemetry, and rejected non-canonical observer IDs to prevent log smuggling; final dual review passed.'
+  - 'S4 Task 10: commit eec2bd4c exposes recoverable authorization outcomes through stable 200 notices plus typed 409/503 and a scrubbed safe 500. Live replacement actions use an allowlisted URL projection without Provider/Scopes/secrets; the Task 8 terminal-to-notice gap was closed while the Task 9 durable lifecycle hook remained intact. Independent specification and security reviews passed.'
   blockers: []
 
 - id: agent-stream-start-order
