@@ -1424,7 +1424,7 @@ git commit -m "fix(feishu): show recoverable authorization status"
 
 - [ ] **Step 3: 运行 Playwright 并提交**
 
-Run: `npx playwright test e2e/feishu-personal-workspace.spec.ts --project=chromium --workers=1`
+Run: `npx playwright test e2e/feishu-personal-workspace.spec.ts --project=mocked --workers=1`
 
 Expected: PASS；trace 中没有 page reload、console error 或重复卡片。
 
@@ -1457,7 +1457,7 @@ git commit -m "test(feishu): verify live authorization continuation"
 
 Run: `npm run test:unit`
 
-Run: `npm run test:e2e -- e2e/feishu-personal-workspace.spec.ts --project=chromium --workers=1`
+Run: `npm run test:e2e -- e2e/feishu-personal-workspace.spec.ts --project=mocked --workers=1`
 
 Run: `npm run lint`
 
