@@ -106,8 +106,9 @@ func (r *agentRunner) RunStream(
 			}
 		}
 	}()
-	// Evict this run's vision-tool quota counters on every exit path.
+	// Evict this run's process-local tool guards on every exit path.
 	defer visionQuotaClearRun(runID)
+	defer larkExecuteRetryClearRun(runID)
 
 	// 0. Inject userID into context (tools like kbSearchTool read it).
 	ctx = middleware.NewContextWithUserID(ctx, req.UserID)

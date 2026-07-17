@@ -186,11 +186,7 @@ func (c *CommandCatalog) Normalize(argv []string, stdinJSON []byte) (*Normalized
 	if !ok {
 		return nil, deniedf("command path is not registered")
 	}
-	businessArgs, err := normalizeOfficialHostedFlags(argv[2:])
-	if err != nil {
-		return nil, err
-	}
-	parsed, err := parseCommandFlags(businessArgs, spec.flags)
+	parsed, err := parseCommandFlags(argv[2:], spec.flags)
 	if err != nil {
 		return nil, err
 	}
@@ -236,50 +232,10 @@ func (c *CommandCatalog) Normalize(argv []string, stdinJSON []byte) (*Normalized
 	}, nil
 }
 
-// normalizeOfficialHostedFlags accepts only the two harmless fixed flags that
-// official lark-cli skill examples may include in a complete business command.
-// The platform removes and re-appends their canonical values after validating
-// every business flag, so the model can neither choose an identity nor alter
-// the structured output contract.
-func normalizeOfficialHostedFlags(args []string) ([]string, error) {
-	result := make([]string, 0, len(args))
-	seen := map[string]bool{"as": false, "format": false}
-	for index := 0; index < len(args); index++ {
-		arg := args[index]
-		nameValue := strings.TrimPrefix(arg, "--")
-		name, value, hasEquals := strings.Cut(nameValue, "=")
-		if name != "as" && name != "format" {
-			result = append(result, arg)
-			continue
-		}
-		if !strings.HasPrefix(arg, "--") || arg == "--" {
-			result = append(result, arg)
-			continue
-		}
-		if seen[name] {
-			return nil, invalidf("duplicate platform flag --%s", name)
-		}
-		if !hasEquals {
-			if index+1 >= len(args) {
-				return nil, invalidf("platform flag --%s is missing its value", name)
-			}
-			index++
-			value = args[index]
-		}
-		expected := "user"
-		if name == "format" {
-			expected = "json"
-		}
-		if value != expected {
-			return nil, deniedf("platform flag --%s value is not allowed", name)
-		}
-		seen[name] = true
-	}
-	return result, nil
-}
-
 func parseCommandFlags(args []string, rules map[string]flagRule) (*parsedFlags, error) {
 	parsed := &parsedFlags{values: make(map[string][]string), argv: make([]string, 0, len(args))}
+	platformValues := map[string]string{"as": "user", "format": "json"}
+	platformSeen := make(map[string]bool, len(platformValues))
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if strings.ContainsRune(arg, 0) {
@@ -292,6 +248,26 @@ func parseCommandFlags(args []string, rules map[string]flagRule) (*parsedFlags, 
 		name, value, hasEquals := strings.Cut(nameValue, "=")
 		if name == "" {
 			return nil, invalidf("empty flag")
+		}
+		// Official skills may include these fixed flags at the top level. Parse
+		// them here, after the preceding business flag has already consumed its
+		// value, so literal content such as "--as=user" remains content.
+		if expected, platformOwned := platformValues[name]; platformOwned {
+			if platformSeen[name] {
+				return nil, invalidf("duplicate platform flag --%s", name)
+			}
+			if !hasEquals {
+				if i+1 >= len(args) {
+					return nil, invalidf("platform flag --%s is missing its value", name)
+				}
+				i++
+				value = args[i]
+			}
+			if value != expected {
+				return nil, deniedf("platform flag --%s value is not allowed", name)
+			}
+			platformSeen[name] = true
+			continue
 		}
 		rule, ok := rules[name]
 		if !ok {

@@ -542,6 +542,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 	defer func() {
 		if run != nil {
 			visionQuotaClearRun(run.ID)
+			larkExecuteRetryClearRun(run.ID)
 		}
 	}()
 

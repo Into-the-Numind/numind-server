@@ -494,9 +494,14 @@ func TestLarkPersonalWorkspace_ExecuteInvalidWaitingAndExecutorErrorsAreSafe(t *
 // finally asked the user for App credentials. Rejections need fixed,
 // non-secret, non-local-CLI recovery guidance.
 func TestLarkPersonalWorkspace_ExecuteRejectedCommandStopsLocalCLIRetries(t *testing.T) {
+	const runID = uint64(204)
+	larkExecuteRetryClearRun(runID)
+	t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+
 	executor := &fakeLarkExecutor{err: feishu.ErrOperationRequestRejected}
-	result, err := (&larkExecuteTool{executor: executor}).Execute(
-		larkPersonalWorkspaceContext(1, 204, "dev-run-204-rejected"),
+	tool := &larkExecuteTool{executor: executor}
+	result, err := tool.Execute(
+		larkPersonalWorkspaceContext(1, runID, "dev-run-204-rejected-1"),
 		ToolInput(`{"argv":["auth","status","--json"],"skill_receipts":["opaque-shared-receipt"]}`),
 	)
 	require.NoError(t, err)
@@ -506,6 +511,42 @@ func TestLarkPersonalWorkspace_ExecuteRejectedCommandStopsLocalCLIRetries(t *tes
 	assert.Contains(t, string(result), "最多修正并重试一次")
 	assert.NotContains(t, string(result), "请稍后重试")
 	assert.NotContains(t, string(result), "opaque-shared-receipt")
+
+	result, err = tool.Execute(
+		larkPersonalWorkspaceContext(1, runID, "dev-run-204-rejected-2"),
+		ToolInput(`{"argv":["docs","+create","--content","<title>联调</title>"],"skill_receipts":["opaque-shared-receipt","opaque-doc-receipt"]}`),
+	)
+	require.NoError(t, err)
+	assert.Contains(t, string(result), "已停止后续飞书命令")
+
+	result, err = tool.Execute(
+		larkPersonalWorkspaceContext(1, runID, "dev-run-204-rejected-3"),
+		ToolInput(`{"argv":["docs","+create","--content","<title>不应执行</title>"],"skill_receipts":["opaque-shared-receipt","opaque-doc-receipt"]}`),
+	)
+	require.NoError(t, err)
+	assert.Contains(t, string(result), "已停止后续飞书命令")
+	assert.Len(t, executor.snapshot(), 2, "the third call must be blocked before reaching the executor")
+
+	const otherRunID = uint64(205)
+	t.Cleanup(func() { larkExecuteRetryClearRun(otherRunID) })
+	result, err = tool.Execute(
+		larkPersonalWorkspaceContext(1, otherRunID, "other-run-first-rejection"),
+		ToolInput(`{"argv":["docs","+create","--content","<title>另一个任务</title>"],"skill_receipts":["opaque-shared-receipt","opaque-doc-receipt"]}`),
+	)
+	require.NoError(t, err)
+	assert.Contains(t, string(result), "最多修正并重试一次")
+	assert.NotContains(t, string(result), "已停止后续飞书命令")
+	assert.Len(t, executor.snapshot(), 3, "an exhausted run must not consume another run's correction budget")
+
+	larkExecuteRetryClearRun(runID)
+	result, err = tool.Execute(
+		larkPersonalWorkspaceContext(1, runID, "cleared-run-first-rejection"),
+		ToolInput(`{"argv":["docs","+create","--content","<title>清理后新执行段</title>"],"skill_receipts":["opaque-shared-receipt","opaque-doc-receipt"]}`),
+	)
+	require.NoError(t, err)
+	assert.Contains(t, string(result), "最多修正并重试一次")
+	assert.NotContains(t, string(result), "已停止后续飞书命令")
+	assert.Len(t, executor.snapshot(), 4, "run cleanup must restore a fresh correction budget")
 }
 
 func TestLarkPersonalWorkspace_ExecuteTerminalStatesNeverFakeSuccess(t *testing.T) {

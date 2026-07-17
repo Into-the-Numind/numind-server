@@ -161,6 +161,27 @@ func TestCommandCatalog_NormalizesOfficialFixedHostedFlags(t *testing.T) {
 			"--format", "json", "--as", "user",
 		}, got.Argv)
 	}
+
+	for _, testCase := range []struct {
+		argv    []string
+		content string
+	}{
+		{argv: []string{"docs", "+create", "--content", "--as=user"}, content: "--as=user"},
+		{argv: []string{"docs", "+create", "--content=--format=json"}, content: "--format=json"},
+	} {
+		got, err := catalog.Normalize(testCase.argv, nil)
+		require.NoError(t, err)
+		require.Contains(t, got.Argv, testCase.content)
+		require.Equal(t, []string{"--format", "json", "--as", "user"}, got.Argv[len(got.Argv)-4:])
+	}
+
+	for _, argv := range [][]string{
+		{"docs", "+create", "--content", "x", "--as", "user", "--as=user"},
+		{"docs", "+create", "--content", "x", "--format=json", "--format", "json"},
+	} {
+		_, err := catalog.Normalize(argv, nil)
+		require.ErrorIs(t, err, ErrCommandInvalidArgument)
+	}
 }
 
 func TestCommandCatalog_DeniesStdinAndFileIndirection(t *testing.T) {

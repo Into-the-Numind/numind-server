@@ -120,6 +120,7 @@ const (
 	larkWorkspaceErrorInvalidExecuteInput
 	larkWorkspaceErrorIdentity
 	larkWorkspaceErrorExecuteRejected
+	larkWorkspaceErrorExecuteRetryExhausted
 	larkWorkspaceErrorExecute
 	larkWorkspaceErrorInvalidResult
 	larkWorkspaceErrorInvalidWait
@@ -141,6 +142,8 @@ func larkWorkspaceSoftError(code larkWorkspaceErrorCode) (ToolResult, error) {
 		message = "无法验证当前飞书工作区操作身份。"
 	case larkWorkspaceErrorExecuteRejected:
 		message = "飞书命令或技能凭证无效，本次操作未执行。仅可直接执行 Docs/Base/Wiki 业务命令，并同时使用当前 lark-shared 与对应业务技能的 receipt；最多修正并重试一次。不要执行 auth/config/whoami，也不要要求用户提供 App ID/App Secret。"
+	case larkWorkspaceErrorExecuteRetryExhausted:
+		message = "飞书命令连续被拒绝，已停止后续飞书命令，本任务不会再调用执行器。不要继续重试、执行 auth/config/whoami，或要求用户提供 App ID/App Secret。请向用户说明本次操作未完成。"
 	case larkWorkspaceErrorExecute:
 		message = "飞书工作区操作暂时不可用，本次未执行。请停止重复调用，也不要改跑 auth/config/whoami 或要求用户提供 App ID/App Secret。"
 	case larkWorkspaceErrorInvalidResult:
