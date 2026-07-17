@@ -52,6 +52,9 @@ type aliBiz struct {
 	visionClient  *httpclient.Client
 }
 
+// SOPVisionModel is the fixed model used by the SOP image-recognition flow.
+const SOPVisionModel = "qwen3.5-flash"
+
 func NewAliBiz(ds store.IStore) AliBiz {
 	return &aliBiz{
 		ds: ds,
@@ -376,32 +379,9 @@ func (a *aliBiz) QianwenVision(ctx context.Context, imageURL string, prompt stri
 	}
 
 	url := "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-	bodyMap := map[string]interface{}{
-		"model": model,
-		"messages": []map[string]interface{}{
-			{
-				"role": "user",
-				"content": []interface{}{
-					map[string]interface{}{
-						"type": "image_url",
-						"image_url": map[string]string{
-							"url": imageURL,
-						},
-					},
-					map[string]string{
-						"type": "text",
-						"text": prompt,
-					},
-				},
-			},
-		},
-		"stream": false,
-	}
-
-	// 针对 qwen3-vl 系列模型开启深度思考 (Thinking)
-	if strings.Contains(strings.ToLower(model), "qwen3-vl") {
-		bodyMap["enable_thinking"] = true
-		bodyMap["thinking_budget"] = 81920
+	bodyMap, err := buildVisionRequestBody(imageURL, prompt, model)
+	if err != nil {
+		return "", nil, err
 	}
 
 	bodyBytes, err := json.Marshal(bodyMap)
@@ -484,6 +464,46 @@ func (a *aliBiz) QianwenVision(ctx context.Context, imageURL string, prompt stri
 	}
 
 	return visionContent, result.Usage, nil
+}
+
+func buildVisionRequestBody(imageURL string, prompt string, model string) (map[string]interface{}, error) {
+	if model == "" {
+		return nil, fmt.Errorf("视觉模型不能为空")
+	}
+
+	bodyMap := map[string]interface{}{
+		"model": model,
+		"messages": []map[string]interface{}{
+			{
+				"role": "user",
+				"content": []interface{}{
+					map[string]interface{}{
+						"type": "image_url",
+						"image_url": map[string]string{
+							"url": imageURL,
+						},
+					},
+					map[string]string{
+						"type": "text",
+						"text": prompt,
+					},
+				},
+			},
+		},
+		"stream": false,
+	}
+
+	switch {
+	case model == SOPVisionModel:
+		// Qwen3.5 混合思考模型默认开启思考；SOP 图片识别明确使用非思考模式。
+		bodyMap["enable_thinking"] = false
+	case strings.Contains(strings.ToLower(model), "qwen3-vl"):
+		// Preserve the existing Qwen3-VL behavior for non-SOP callers.
+		bodyMap["enable_thinking"] = true
+		bodyMap["thinking_budget"] = 81920
+	}
+
+	return bodyMap, nil
 }
 
 // QianwenVisionStream 调用视觉模型读取图片并进行流式回答 (OpenAI 兼容模式)
