@@ -1450,7 +1450,7 @@ func TestAuthSessionService_CreateAppAndOfficialAppApprovalPhases(t *testing.T) 
 	}
 }
 
-func TestAuthSessionService_ConcurrentAppApprovalHasSingleLeaseWinner(t *testing.T) {
+func TestAuthSessionService_ConcurrentAppApprovalDispatchesOnce(t *testing.T) {
 	h := newAuthSessionHarness(t)
 	h.createAccount(model.FeishuConnectionConnected)
 	serviceA := h.newService("approval-instance-a")
@@ -1476,9 +1476,15 @@ func TestAuthSessionService_ConcurrentAppApprovalHasSingleLeaseWinner(t *testing
 	for approvalErr := range errs {
 		if approvalErr == nil {
 			successes++
+			continue
 		}
+		require.ErrorIs(t, approvalErr, ErrAuthSessionUnavailable)
 	}
-	require.Equal(t, 1, successes)
+	// Both requests may acknowledge success when the second read observes the
+	// already-completed session. That is the public idempotent retry contract,
+	// not a second lease win. The durable dispatcher assertion below is the
+	// observable at-most-once invariant.
+	require.GreaterOrEqual(t, successes, 1)
 	require.Equal(t, []string{"operation-approval-race"}, h.dispatcher.snapshot())
 	stored, err := h.dataStore.FeishuWorkspace().GetSessionForUser(h.ctx, 7, 1, action.SessionID)
 	require.NoError(t, err)
