@@ -163,12 +163,95 @@ func TestResumePublicActionOmitsInternalScopes(t *testing.T) {
 				"operation_id": "operation-3",
 				"session_id": "session-3",
 				"phase": "user_auth",
+				"url": "https://open.feishu.cn/suite/passport/oauth/device",
 				"expires_at": "2026-07-14T12:05:00Z"
 			}
 		}
 	}`, response.Body.String())
 	require.NotContains(t, response.Body.String(), `"scopes"`)
-	require.NotContains(t, response.Body.String(), `"url"`)
+	require.Contains(t, response.Body.String(), `"url"`)
+}
+
+func TestFeishuResumeAuthorizationHTTPMatrix(t *testing.T) {
+	expiresAt := time.Date(2026, 7, 17, 8, 45, 0, 0, time.UTC)
+	liveAction := &feishubiz.OperationAction{
+		Provider: "lark-internal", OperationID: "operation-auth", SessionID: "session-live", Phase: "user_auth",
+		URL: "https://open.feishu.cn/authorize/live-link", Scopes: []string{"wiki:node:create"}, ExpiresAt: expiresAt,
+	}
+	tests := []struct {
+		name       string
+		body       string
+		result     *feishubiz.OperationResult
+		err        error
+		wantStatus int
+		wantJSON   string
+	}{
+		{
+			name: "pending", body: `{"action":"user_completed"}`, wantStatus: http.StatusOK,
+			result:   &feishubiz.OperationResult{OperationID: "operation-auth", State: model.FeishuOperationWaitingUserAuth, NoticeCode: feishubiz.AuthorizationPending},
+			wantJSON: `{"code":0,"message":"","data":{"operation_id":"operation-auth","state":"waiting_user_auth","notice_code":"authorization_pending"}}`,
+		},
+		{
+			name: "processing", body: `{"action":"user_completed"}`, wantStatus: http.StatusOK,
+			result:   &feishubiz.OperationResult{OperationID: "operation-auth", State: model.FeishuOperationWaitingUserAuth, NoticeCode: feishubiz.AuthorizationProcessing},
+			wantJSON: `{"code":0,"message":"","data":{"operation_id":"operation-auth","state":"waiting_user_auth","notice_code":"authorization_processing"}}`,
+		},
+		{
+			name: "rejected", body: `{"action":"user_completed"}`, wantStatus: http.StatusOK,
+			result:   &feishubiz.OperationResult{OperationID: "operation-auth", State: model.FeishuOperationWaitingUserAuth, NoticeCode: feishubiz.AuthorizationRejected, Action: liveAction},
+			wantJSON: `{"code":0,"message":"","data":{"operation_id":"operation-auth","state":"waiting_user_auth","notice_code":"authorization_rejected","action":{"operation_id":"operation-auth","session_id":"session-live","phase":"user_auth","url":"https://open.feishu.cn/authorize/live-link","expires_at":"2026-07-17T08:45:00Z"}}}`,
+		},
+		{
+			name: "expired", body: `{"action":"user_completed"}`, wantStatus: http.StatusOK,
+			result:   &feishubiz.OperationResult{OperationID: "operation-auth", State: model.FeishuOperationWaitingUserAuth, NoticeCode: feishubiz.AuthorizationExpired, Action: liveAction},
+			wantJSON: `{"code":0,"message":"","data":{"operation_id":"operation-auth","state":"waiting_user_auth","notice_code":"authorization_expired","action":{"operation_id":"operation-auth","session_id":"session-live","phase":"user_auth","url":"https://open.feishu.cn/authorize/live-link","expires_at":"2026-07-17T08:45:00Z"}}}`,
+		},
+		{
+			name: "updated", body: `{"action":"user_completed"}`, wantStatus: http.StatusOK,
+			result:   &feishubiz.OperationResult{OperationID: "operation-auth", State: model.FeishuOperationWaitingUserAuth, NoticeCode: feishubiz.AuthorizationUpdated, Action: liveAction},
+			wantJSON: `{"code":0,"message":"","data":{"operation_id":"operation-auth","state":"waiting_user_auth","notice_code":"authorization_updated","action":{"operation_id":"operation-auth","session_id":"session-live","phase":"user_auth","url":"https://open.feishu.cn/authorize/live-link","expires_at":"2026-07-17T08:45:00Z"}}}`,
+		},
+		{
+			name: "success", body: `{"action":"user_completed"}`, wantStatus: http.StatusOK,
+			result:   &feishubiz.OperationResult{OperationID: "operation-auth", State: model.FeishuOperationSucceeded},
+			wantJSON: `{"code":0,"message":"","data":{"operation_id":"operation-auth","state":"succeeded"}}`,
+		},
+		{name: "invalid", body: `{"action":"unexpected"}`, err: feishubiz.ErrWorkspaceLifecycleInvalid, wantStatus: http.StatusBadRequest},
+		{name: "not found", body: `{"action":"user_completed"}`, err: feishubiz.ErrWorkspaceLifecycleNotFound, wantStatus: http.StatusNotFound},
+		{name: "conflict", body: `{"action":"user_completed"}`, err: feishubiz.ErrWorkspaceLifecycleConflict, wantStatus: http.StatusConflict},
+		{name: "dependency", body: `{"action":"user_completed"}`, err: feishubiz.ErrWorkspaceLifecycleDependency, wantStatus: http.StatusServiceUnavailable},
+		{name: "invariant", body: `{"action":"user_completed"}`, err: errors.New("raw invariant token=secret home=/tmp/private"), wantStatus: http.StatusInternalServerError},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			service := &lifecycleServiceFake{resume: tc.result, err: tc.err}
+			ctrl := NewController(service)
+			router := gin.New()
+			router.POST("/v1/feishu/operations/:id/resume", withUser(8), ctrl.ResumeOperation)
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1/feishu/operations/operation-auth/resume", strings.NewReader(tc.body)))
+
+			require.Equal(t, tc.wantStatus, response.Code)
+			if tc.wantJSON != "" {
+				require.JSONEq(t, tc.wantJSON, response.Body.String())
+			}
+			assertLifecycleResponseContainsNoInternalMaterial(t, response.Body.String())
+			if tc.wantStatus == http.StatusConflict {
+				require.Contains(t, response.Body.String(), "飞书授权状态已更新，请使用最新步骤")
+			}
+			if tc.wantStatus == http.StatusServiceUnavailable {
+				require.Contains(t, response.Body.String(), "飞书授权服务暂时不可用，请稍后重试")
+			}
+		})
+	}
+}
+
+func assertLifecycleResponseContainsNoInternalMaterial(t *testing.T, body string) {
+	t.Helper()
+	lowerBody := strings.ToLower(body)
+	for _, forbidden := range []string{"device_code", "scope", "app_id", "credential", "token", "home", "argv", "lark-internal"} {
+		require.NotContains(t, lowerBody, forbidden)
+	}
 }
 
 func TestRefreshUsesPathSessionOnlyAndUnbindReturnsRemoteAppDisclosure(t *testing.T) {

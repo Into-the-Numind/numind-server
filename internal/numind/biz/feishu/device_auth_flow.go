@@ -1146,6 +1146,10 @@ func (f *DeviceAuthFlow) replaceOwnedSession(
 		waitingState != model.FeishuOperationWaitingUserAuth {
 		return nil, ErrDeviceAuthConflict
 	}
+	notice, ok := authorizationNoticeForReplacement(terminalState)
+	if !ok {
+		return nil, ErrDeviceAuthConflict
+	}
 	var scopes []string
 	if json.Unmarshal(oldSession.RequestedScopesJSON, &scopes) != nil {
 		return nil, ErrDeviceAuthConflict
@@ -1199,7 +1203,20 @@ func (f *DeviceAuthFlow) replaceOwnedSession(
 	// Requested scopes are recovered only from the canonical durable session;
 	// they are not reflected back through the refresh/completion response.
 	action.Scopes = nil
-	return &DeviceAuthCompletion{Action: action}, nil
+	return &DeviceAuthCompletion{NoticeCode: notice, Action: action}, nil
+}
+
+func authorizationNoticeForReplacement(terminalState string) (AuthorizationNoticeCode, bool) {
+	switch terminalState {
+	case model.FeishuAuthSessionRejected:
+		return AuthorizationRejected, true
+	case model.FeishuAuthSessionExpired:
+		return AuthorizationExpired, true
+	case model.FeishuAuthSessionSuperseded:
+		return AuthorizationUpdated, true
+	default:
+		return "", false
+	}
 }
 
 // RefreshUserAuthorization atomically replaces an exact operation-linked

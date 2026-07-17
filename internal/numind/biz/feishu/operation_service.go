@@ -162,12 +162,13 @@ type ExecuteRequest struct {
 
 // OperationResult is a defensive, non-sensitive view of a persisted operation.
 type OperationResult struct {
-	OperationID string           `json:"operation_id"`
-	State       string           `json:"state"`
-	Data        json.RawMessage  `json:"data,omitempty"`
-	Action      *OperationAction `json:"action,omitempty"`
-	AgentRunID  uint64           `json:"-"`
-	ToolCallID  string           `json:"-"`
+	OperationID string                  `json:"operation_id"`
+	State       string                  `json:"state"`
+	Data        json.RawMessage         `json:"data,omitempty"`
+	Action      *OperationAction        `json:"action,omitempty"`
+	NoticeCode  AuthorizationNoticeCode `json:"notice_code,omitempty"`
+	AgentRunID  uint64                  `json:"-"`
+	ToolCallID  string                  `json:"-"`
 }
 
 // OperationCipherPurpose separates request and result ciphertext domains.

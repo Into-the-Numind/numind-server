@@ -38,21 +38,9 @@ type resumeRequest struct {
 	Action string `json:"action"`
 }
 
-// lifecycleActionResponse is the allowlisted public projection of an internal
-// OperationAction for non-live routes. Internal actions carry server-owned
-// recovery scopes; those scopes must never cross an HTTP boundary because the
-// client neither selects nor needs them. The transient URL is also excluded:
-// only the direct connect/refresh endpoints may return a live URL.
-type lifecycleActionResponse struct {
-	OperationID string    `json:"operation_id,omitempty"`
-	SessionID   string    `json:"session_id,omitempty"`
-	Phase       string    `json:"phase"`
-	ExpiresAt   time.Time `json:"expires_at,omitempty"`
-}
-
-// liveLifecycleActionResponse is the explicit allowlist for the two routes
-// that create or refresh a server-owned authorization worker. It adds only the
-// current live URL; recovery scopes and provider metadata remain private.
+// liveLifecycleActionResponse is the explicit allowlist for routes that create
+// or refresh a server-owned authorization worker. Recovery scopes and provider
+// metadata remain private.
 type liveLifecycleActionResponse struct {
 	OperationID string    `json:"operation_id,omitempty"`
 	SessionID   string    `json:"session_id,omitempty"`
@@ -77,10 +65,11 @@ type refreshActionResponse struct {
 }
 
 type operationResponse struct {
-	OperationID string                   `json:"operation_id"`
-	State       string                   `json:"state"`
-	Data        json.RawMessage          `json:"data,omitempty"`
-	Action      *lifecycleActionResponse `json:"action,omitempty"`
+	OperationID string                       `json:"operation_id"`
+	State       string                       `json:"state"`
+	Data        json.RawMessage              `json:"data,omitempty"`
+	Action      *liveLifecycleActionResponse `json:"action,omitempty"`
+	NoticeCode  string                       `json:"notice_code,omitempty"`
 }
 
 // Connect handles POST /v1/feishu/connect. The only accepted body is the
@@ -214,19 +203,8 @@ func publicOperationResponse(result *feishubiz.OperationResult) *operationRespon
 		OperationID: result.OperationID,
 		State:       result.State,
 		Data:        result.Data,
-		Action:      publicLifecycleAction(result.Action),
-	}
-}
-
-func publicLifecycleAction(action *feishubiz.OperationAction) *lifecycleActionResponse {
-	if action == nil {
-		return nil
-	}
-	return &lifecycleActionResponse{
-		OperationID: action.OperationID,
-		SessionID:   action.SessionID,
-		Phase:       action.Phase,
-		ExpiresAt:   action.ExpiresAt,
+		Action:      publicLiveLifecycleAction(result.Action),
+		NoticeCode:  string(result.NoticeCode),
 	}
 }
 
@@ -259,13 +237,17 @@ func publicRefreshActionResponse(result *feishubiz.RefreshActionResult) *refresh
 
 func writeLifecycleResponse(c *gin.Context, err error, data any) {
 	switch {
+	case err == nil:
+		core.WriteResponse(c, nil, data)
 	case errors.Is(err, feishubiz.ErrWorkspaceLifecycleNotFound):
 		core.WriteResponse(c, errno.ErrPageNotFound, nil)
 	case errors.Is(err, feishubiz.ErrWorkspaceLifecycleInvalid):
 		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
-	case errors.Is(err, feishubiz.ErrWorkspaceLifecycleUnavailable):
-		core.WriteResponse(c, errno.ErrInternalServer, nil)
+	case errors.Is(err, feishubiz.ErrWorkspaceLifecycleConflict):
+		core.WriteResponse(c, errno.ErrFeishuLifecycleConflict, nil)
+	case errors.Is(err, feishubiz.ErrWorkspaceLifecycleDependency):
+		core.WriteResponse(c, errno.ErrFeishuDependencyUnavailable, nil)
 	default:
-		core.WriteResponse(c, err, data)
+		core.WriteResponse(c, errno.ErrInternalServer, nil)
 	}
 }

@@ -28,8 +28,14 @@ var (
 	// ErrWorkspaceLifecycleInvalid is a safe public validation failure. It never
 	// includes client-supplied identifiers or command data.
 	ErrWorkspaceLifecycleInvalid = errors.New("feishu workspace lifecycle request rejected")
-	// ErrWorkspaceLifecycleUnavailable is used for dependency or persistence
-	// failures without exposing internal runner/vault details to HTTP callers.
+	// ErrWorkspaceLifecycleConflict reports a current lifecycle race for which
+	// no safe replacement action could be returned.
+	ErrWorkspaceLifecycleConflict = errors.New("feishu workspace lifecycle conflict")
+	// ErrWorkspaceLifecycleDependency reports a temporary CLI, Feishu, or
+	// persistence dependency failure that is safe for the caller to retry.
+	ErrWorkspaceLifecycleDependency = errors.New("feishu workspace lifecycle dependency unavailable")
+	// ErrWorkspaceLifecycleUnavailable is the fail-closed category for internal
+	// invariants and legacy lifecycle failures that cannot safely be classified.
 	ErrWorkspaceLifecycleUnavailable = errors.New("feishu workspace lifecycle unavailable")
 )
 
@@ -402,7 +408,22 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 			completion, completeErr := s.auth.CompleteUserAuthorization(
 				ctx, userID, account.Generation, session.ID,
 			)
+			if errors.Is(completeErr, ErrDeviceAuthProcessing) {
+				return lifecycleAuthorizationNoticeResult(operation, &DeviceAuthCompletion{NoticeCode: AuthorizationProcessing})
+			}
+			if errors.Is(completeErr, ErrDeviceAuthConflict) {
+				return nil, ErrWorkspaceLifecycleConflict
+			}
+			if errors.Is(completeErr, ErrDeviceAuthDependency) {
+				return nil, ErrWorkspaceLifecycleDependency
+			}
 			if completeErr != nil || completion == nil {
+				return nil, ErrWorkspaceLifecycleUnavailable
+			}
+			if completion.NoticeCode != "" || completion.Action != nil {
+				return lifecycleAuthorizationNoticeResult(operation, completion)
+			}
+			if !completion.Completed {
 				return nil, ErrWorkspaceLifecycleUnavailable
 			}
 			updated, updateErr := s.workspace.GetOperationForUser(ctx, userID, account.Generation, operationID)
@@ -1283,6 +1304,33 @@ func lifecycleStoredOperationSummary(source *model.FeishuOperation) *OperationRe
 		return nil
 	}
 	return &OperationResult{OperationID: source.ID, State: source.State}
+}
+
+func lifecycleAuthorizationNoticeResult(source *model.FeishuOperation, completion *DeviceAuthCompletion) (*OperationResult, error) {
+	if source == nil || completion == nil || source.State != model.FeishuOperationWaitingUserAuth || completion.Completed {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	result := &OperationResult{
+		OperationID: source.ID,
+		State:       source.State,
+		NoticeCode:  completion.NoticeCode,
+	}
+	switch completion.NoticeCode {
+	case AuthorizationPending, AuthorizationProcessing:
+		if completion.Action != nil {
+			return nil, ErrWorkspaceLifecycleUnavailable
+		}
+	case AuthorizationRejected, AuthorizationExpired, AuthorizationUpdated:
+		action := completion.Action
+		if action == nil || action.OperationID != source.ID || strings.TrimSpace(action.SessionID) == "" ||
+			action.Phase != model.FeishuAuthPhaseUserAuth || strings.TrimSpace(action.URL) == "" {
+			return nil, ErrWorkspaceLifecycleUnavailable
+		}
+		result.Action = cloneOperationAction(action)
+	default:
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	return result, nil
 }
 
 func lifecycleResultSummary(source *OperationResult) *OperationResult {

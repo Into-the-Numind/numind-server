@@ -1086,6 +1086,80 @@ func TestWorkspaceLifecycleResumeUserCompletedRequiresRecoverableWait(t *testing
 	require.Zero(t, dispatcher.calls, "an arbitrary operation must not be resumed by a browser acknowledgement")
 }
 
+func TestWorkspaceLifecycleResumeUserAuthorizationOutcomeMatrix(t *testing.T) {
+	expiresAt := time.Date(2026, 7, 17, 8, 30, 0, 0, time.UTC)
+	liveAction := &OperationAction{
+		Provider: ProviderLark, OperationID: "op-user-auth-outcome", SessionID: "session-replacement",
+		Phase:  model.FeishuAuthPhaseUserAuth,
+		URL:    "https://open.feishu.cn/suite/passport/oauth/device?user_code=LIVE",
+		Scopes: []string{"docx:document:create"}, ExpiresAt: expiresAt,
+	}
+	tests := []struct {
+		name          string
+		completion    *DeviceAuthCompletion
+		completionErr error
+		updatedState  string
+		wantNotice    AuthorizationNoticeCode
+		wantAction    bool
+		wantErr       error
+	}{
+		{name: "pending", completion: &DeviceAuthCompletion{NoticeCode: AuthorizationPending}, wantNotice: AuthorizationPending},
+		{name: "processing", completionErr: ErrDeviceAuthProcessing, wantNotice: AuthorizationProcessing},
+		{name: "rejected", completion: &DeviceAuthCompletion{NoticeCode: AuthorizationRejected, Action: liveAction}, wantNotice: AuthorizationRejected, wantAction: true},
+		{name: "expired", completion: &DeviceAuthCompletion{NoticeCode: AuthorizationExpired, Action: liveAction}, wantNotice: AuthorizationExpired, wantAction: true},
+		{name: "updated", completion: &DeviceAuthCompletion{NoticeCode: AuthorizationUpdated, Action: liveAction}, wantNotice: AuthorizationUpdated, wantAction: true},
+		{name: "success", completion: &DeviceAuthCompletion{Completed: true}, updatedState: model.FeishuOperationSucceeded},
+		{name: "conflict", completionErr: ErrDeviceAuthConflict, wantErr: ErrWorkspaceLifecycleConflict},
+		{name: "dependency", completionErr: ErrDeviceAuthDependency, wantErr: ErrWorkspaceLifecycleDependency},
+		{name: "invariant", completionErr: errors.New("raw invariant with token=secret"), wantErr: ErrWorkspaceLifecycleUnavailable},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			operationID := "op-user-auth-outcome"
+			op := &model.FeishuOperation{
+				ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth,
+				ResultSummaryJSON: lifecycleRecoverySummary(t, model.FeishuOperationWaitingUserAuth, "session-user-auth-outcome", model.FeishuAuthPhaseUserAuth, RecoveryUserScope),
+			}
+			svc, _, workspace, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+				UserID: 7, Provider: ProviderLark, Generation: 2,
+			}, op)
+			workspace.activeSession = &model.FeishuAuthSession{
+				ID: "session-user-auth-outcome", UserID: 7, Generation: 2, OperationID: &operationID,
+				Phase: model.FeishuAuthPhaseUserAuth, State: model.FeishuAuthSessionPending,
+			}
+			auth.completeUserAuth = func(_ context.Context, userID uint, generation uint64, sessionID string) (*DeviceAuthCompletion, error) {
+				require.Equal(t, uint(7), userID)
+				require.Equal(t, uint64(2), generation)
+				require.Equal(t, "session-user-auth-outcome", sessionID)
+				if tc.updatedState != "" {
+					workspace.operation.State = tc.updatedState
+				}
+				return tc.completion, tc.completionErr
+			}
+
+			result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionUserCompleted)
+			if tc.wantErr != nil {
+				require.Nil(t, result)
+				require.ErrorIs(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, operationID, result.OperationID)
+			expectedState := model.FeishuOperationWaitingUserAuth
+			if tc.updatedState != "" {
+				expectedState = tc.updatedState
+			}
+			require.Equal(t, expectedState, result.State)
+			require.Equal(t, tc.wantNotice, result.NoticeCode)
+			if tc.wantAction {
+				require.Equal(t, liveAction, result.Action)
+			} else {
+				require.Nil(t, result.Action)
+			}
+		})
+	}
+}
+
 func TestWorkspaceLifecycleResumeUserCompletedObservesExecutingAndTerminalStates(t *testing.T) {
 	states := []string{
 		model.FeishuOperationExecuting,

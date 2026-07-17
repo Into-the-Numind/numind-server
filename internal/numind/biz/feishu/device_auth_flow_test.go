@@ -1053,7 +1053,7 @@ func TestDeviceAuthFlow_CompleteRejectedTerminalizesBeforeReplacement(t *testing
 	require.Equal(t, "00000000-0000-4000-8000-000000000073", result.Action.SessionID)
 	require.Contains(t, result.Action.URL, "REPLACEMENT")
 	require.Empty(t, result.Action.Scopes, "replacement responses must not echo durable scopes")
-	require.Empty(t, result.NoticeCode, "the terminal attempt must not be exposed before its replacement")
+	require.Equal(t, AuthorizationRejected, result.NoticeCode)
 
 	fixture.store.mu.Lock()
 	defer fixture.store.mu.Unlock()
@@ -1082,6 +1082,7 @@ func TestDeviceAuthFlow_CompleteExpiredReturnsLiveReplacement(t *testing.T) {
 	require.True(t, result.Action.ExpiresAt.After(fixture.now))
 	require.Contains(t, result.Action.URL, "REPLACEMENT")
 	require.Empty(t, result.Action.Scopes)
+	require.Equal(t, AuthorizationExpired, result.NoticeCode)
 
 	fixture.store.mu.Lock()
 	defer fixture.store.mu.Unlock()
@@ -1168,6 +1169,7 @@ func TestDeviceAuthFlow_RefreshLegacyPendingSupersedesAndRebinds(t *testing.T) {
 	require.Equal(t, *fixture.session.OperationID, result.Action.OperationID)
 	require.Contains(t, result.Action.URL, "REPLACEMENT")
 	require.Empty(t, result.Action.Scopes)
+	require.Equal(t, AuthorizationUpdated, result.NoticeCode)
 
 	fixture.store.mu.Lock()
 	defer fixture.store.mu.Unlock()
@@ -1193,13 +1195,14 @@ func TestDeviceAuthFlow_RefreshCurrentV2ReplacementFencesLeaseAndTerminalSources
 		state          string
 		credential     bool
 		terminalState  string
+		notice         AuthorizationNoticeCode
 		expiredSession bool
 		expectedClaims int
 	}{
-		{name: "pending pre-start", state: model.FeishuAuthSessionPending, terminalState: model.FeishuAuthSessionSuperseded, expectedClaims: 2},
-		{name: "pending full credential", state: model.FeishuAuthSessionPending, credential: true, terminalState: model.FeishuAuthSessionSuperseded, expectedClaims: 2},
-		{name: "rejected terminal", state: model.FeishuAuthSessionRejected, terminalState: model.FeishuAuthSessionRejected, expiredSession: true, expectedClaims: 1},
-		{name: "expired terminal", state: model.FeishuAuthSessionExpired, terminalState: model.FeishuAuthSessionExpired, expiredSession: true, expectedClaims: 1},
+		{name: "pending pre-start", state: model.FeishuAuthSessionPending, terminalState: model.FeishuAuthSessionSuperseded, notice: AuthorizationUpdated, expectedClaims: 2},
+		{name: "pending full credential", state: model.FeishuAuthSessionPending, credential: true, terminalState: model.FeishuAuthSessionSuperseded, notice: AuthorizationUpdated, expectedClaims: 2},
+		{name: "rejected terminal", state: model.FeishuAuthSessionRejected, terminalState: model.FeishuAuthSessionRejected, notice: AuthorizationRejected, expiredSession: true, expectedClaims: 1},
+		{name: "expired terminal", state: model.FeishuAuthSessionExpired, terminalState: model.FeishuAuthSessionExpired, notice: AuthorizationExpired, expiredSession: true, expectedClaims: 1},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			fixture := newDeviceAuthCompletionFixture(t)
@@ -1222,6 +1225,7 @@ func TestDeviceAuthFlow_RefreshCurrentV2ReplacementFencesLeaseAndTerminalSources
 			require.NoError(t, err)
 			require.NotNil(t, result.Action)
 			require.Contains(t, result.Action.URL, "REPLACEMENT")
+			require.Equal(t, testCase.notice, result.NoticeCode)
 			fixture.store.mu.Lock()
 			defer fixture.store.mu.Unlock()
 			require.Equal(t, testCase.terminalState, fixture.store.session.State)
@@ -1595,7 +1599,7 @@ func TestDeviceAuthFlow_CompleteAppIDEvidenceTimeoutRetainsCredential(t *testing
 			)
 			require.NoError(t, err)
 			if testCase.expire {
-				require.Empty(t, result.NoticeCode)
+				require.Equal(t, testCase.notice, result.NoticeCode)
 				require.NotNil(t, result.Action)
 				require.NotEqual(t, fixture.session.ID, result.Action.SessionID)
 			} else {

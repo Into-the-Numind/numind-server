@@ -21,6 +21,14 @@ var (
 	// ErrLarkCallFailed 飞书开放平台接口调用失败（上游错误，用 SetMessage 附细节）。
 	// HTTP 502（Bad Gateway，区分本服务自身错误与上游飞书错误）。
 	ErrLarkCallFailed = &Errno{HTTP: 502, Code: "Lark.CallFailed", Message: "飞书接口调用失败"}
+
+	// ErrFeishuLifecycleConflict means the authorization state changed without
+	// a safe live replacement action in this response.
+	ErrFeishuLifecycleConflict = &Errno{HTTP: 409, Code: "Conflict.FeishuLifecycle", Message: "飞书授权状态已更新，请使用最新步骤"}
+
+	// ErrFeishuDependencyUnavailable is a stable retryable response for the
+	// CLI, Feishu API, or persistence dependencies behind authorization.
+	ErrFeishuDependencyUnavailable = &Errno{HTTP: 503, Code: "ServiceUnavailable.Feishu", Message: "飞书授权服务暂时不可用，请稍后重试"}
 )
 
 // 注：device-code 方案（G2-authorize）移除了 redirect-OAuth callback，原
