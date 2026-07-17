@@ -173,6 +173,7 @@ func TestLarkPersonalWorkspace_SkillReadPublishesHostedPolicy(t *testing.T) {
 	assert.Contains(t, output.HostedPolicy, "自动生成授权卡片")
 	assert.Contains(t, output.HostedPolicy, "lark-shared")
 	assert.Contains(t, output.HostedPolicy, "对应业务技能")
+	assert.Contains(t, output.HostedPolicy, "最多修正并重试一次")
 }
 
 func TestLarkPersonalWorkspace_SkillReadStrictInputAndSafeFailures(t *testing.T) {
@@ -485,6 +486,7 @@ func TestLarkPersonalWorkspace_ExecuteInvalidWaitingAndExecutorErrorsAreSafe(t *
 		ToolInput(`{"argv":["docs","+fetch"],"skill_receipts":["receipt-raw"]}`),
 	)
 	requireSafeLarkSoftError(t, result, err, internalErr.Error(), "receipt-raw", "+fetch", "/private/home")
+	assert.Contains(t, string(result), "停止重复调用")
 }
 
 // Customer regression (Dev run 204): a rejected hosted command was projected
@@ -501,6 +503,7 @@ func TestLarkPersonalWorkspace_ExecuteRejectedCommandStopsLocalCLIRetries(t *tes
 	assert.Contains(t, string(result), "不要执行 auth/config/whoami")
 	assert.Contains(t, string(result), "不要要求用户提供 App ID/App Secret")
 	assert.Contains(t, string(result), "Docs/Base/Wiki")
+	assert.Contains(t, string(result), "最多修正并重试一次")
 	assert.NotContains(t, string(result), "请稍后重试")
 	assert.NotContains(t, string(result), "opaque-shared-receipt")
 }

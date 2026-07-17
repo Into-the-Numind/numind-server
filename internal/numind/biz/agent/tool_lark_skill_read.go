@@ -51,15 +51,23 @@ func (t *larkSkillReadTool) InputSchema() json.RawMessage {
 }
 
 type larkSkillReadOutput struct {
-	OK         bool     `json:"ok"`
-	Skill      string   `json:"skill"`
-	Path       string   `json:"path"`
-	Content    string   `json:"content"`
-	References []string `json:"references"`
-	Cursor     string   `json:"cursor"`
-	Receipt    string   `json:"receipt"`
-	CLIVersion string   `json:"cli_version"`
+	OK           bool     `json:"ok"`
+	Skill        string   `json:"skill"`
+	Path         string   `json:"path"`
+	HostedPolicy string   `json:"hosted_policy"`
+	Content      string   `json:"content"`
+	References   []string `json:"references"`
+	Cursor       string   `json:"cursor"`
+	Receipt      string   `json:"receipt"`
+	CLIVersion   string   `json:"cli_version"`
 }
+
+const larkHostedExecutionPolicy = "有数托管规则（优先于下方针对本地电脑的 CLI 说明）：" +
+	"不要执行 auth/config/whoami/qrcode，也不要要求用户提供 App ID/App Secret。" +
+	"直接调用 lark_execute 执行 Docs/Base/Wiki 业务命令；连接或权限不足时，平台会自动生成授权卡片。" +
+	"skill_receipts 必须同时包含当前 run 的 lark-shared receipt 和对应业务技能 receipt。" +
+	"官方命令中的固定 --as user 与 --format json 可以保留，平台会安全规范化。" +
+	"如果命令被拒绝，只修正业务命令或 receipts，最多修正并重试一次；不要改跑本地初始化命令。"
 
 func (t *larkSkillReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	if t == nil || t.executor == nil || ctx == nil || RunIDFromContext(ctx) == 0 {
@@ -87,14 +95,15 @@ func (t *larkSkillReadTool) Execute(ctx context.Context, input ToolInput) (ToolR
 		return larkWorkspaceSoftError(larkWorkspaceErrorSkillRead)
 	}
 	output, err := json.Marshal(larkSkillReadOutput{
-		OK:         true,
-		Skill:      page.Skill,
-		Path:       page.Path,
-		Content:    page.Content,
-		References: append([]string(nil), page.References...),
-		Cursor:     page.Cursor,
-		Receipt:    page.Receipt,
-		CLIVersion: feishu.LarkCLIVersion,
+		OK:           true,
+		Skill:        page.Skill,
+		Path:         page.Path,
+		HostedPolicy: larkHostedExecutionPolicy,
+		Content:      page.Content,
+		References:   append([]string(nil), page.References...),
+		Cursor:       page.Cursor,
+		Receipt:      page.Receipt,
+		CLIVersion:   feishu.LarkCLIVersion,
 	})
 	if err != nil {
 		return larkWorkspaceSoftError(larkWorkspaceErrorSkillRead)
@@ -110,6 +119,7 @@ const (
 	larkWorkspaceErrorSkillRead
 	larkWorkspaceErrorInvalidExecuteInput
 	larkWorkspaceErrorIdentity
+	larkWorkspaceErrorExecuteRejected
 	larkWorkspaceErrorExecute
 	larkWorkspaceErrorInvalidResult
 	larkWorkspaceErrorInvalidWait
@@ -129,8 +139,10 @@ func larkWorkspaceSoftError(code larkWorkspaceErrorCode) (ToolResult, error) {
 		message = "飞书工作区参数无效，请仅使用 argv、stdin_json、skill_receipts。"
 	case larkWorkspaceErrorIdentity:
 		message = "无法验证当前飞书工作区操作身份。"
+	case larkWorkspaceErrorExecuteRejected:
+		message = "飞书命令或技能凭证无效，本次操作未执行。仅可直接执行 Docs/Base/Wiki 业务命令，并同时使用当前 lark-shared 与对应业务技能的 receipt；最多修正并重试一次。不要执行 auth/config/whoami，也不要要求用户提供 App ID/App Secret。"
 	case larkWorkspaceErrorExecute:
-		message = "执行飞书工作区操作暂时失败，请稍后重试。"
+		message = "飞书工作区操作暂时不可用，本次未执行。请停止重复调用，也不要改跑 auth/config/whoami 或要求用户提供 App ID/App Secret。"
 	case larkWorkspaceErrorInvalidResult:
 		message = "飞书工作区操作返回无效，请稍后重试。"
 	case larkWorkspaceErrorInvalidWait:

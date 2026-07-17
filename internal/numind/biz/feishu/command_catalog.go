@@ -186,7 +186,11 @@ func (c *CommandCatalog) Normalize(argv []string, stdinJSON []byte) (*Normalized
 	if !ok {
 		return nil, deniedf("command path is not registered")
 	}
-	parsed, err := parseCommandFlags(argv[2:], spec.flags)
+	businessArgs, err := normalizeOfficialHostedFlags(argv[2:])
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := parseCommandFlags(businessArgs, spec.flags)
 	if err != nil {
 		return nil, err
 	}
@@ -230,6 +234,48 @@ func (c *CommandCatalog) Normalize(argv []string, stdinJSON []byte) (*Normalized
 		StdinJSON:             nil,
 		ReplaySafeOnAuthError: risk == RiskRead,
 	}, nil
+}
+
+// normalizeOfficialHostedFlags accepts only the two harmless fixed flags that
+// official lark-cli skill examples may include in a complete business command.
+// The platform removes and re-appends their canonical values after validating
+// every business flag, so the model can neither choose an identity nor alter
+// the structured output contract.
+func normalizeOfficialHostedFlags(args []string) ([]string, error) {
+	result := make([]string, 0, len(args))
+	seen := map[string]bool{"as": false, "format": false}
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		nameValue := strings.TrimPrefix(arg, "--")
+		name, value, hasEquals := strings.Cut(nameValue, "=")
+		if name != "as" && name != "format" {
+			result = append(result, arg)
+			continue
+		}
+		if !strings.HasPrefix(arg, "--") || arg == "--" {
+			result = append(result, arg)
+			continue
+		}
+		if seen[name] {
+			return nil, invalidf("duplicate platform flag --%s", name)
+		}
+		if !hasEquals {
+			if index+1 >= len(args) {
+				return nil, invalidf("platform flag --%s is missing its value", name)
+			}
+			index++
+			value = args[index]
+		}
+		expected := "user"
+		if name == "format" {
+			expected = "json"
+		}
+		if value != expected {
+			return nil, deniedf("platform flag --%s value is not allowed", name)
+		}
+		seen[name] = true
+	}
+	return result, nil
 }
 
 func parseCommandFlags(args []string, rules map[string]flagRule) (*parsedFlags, error) {

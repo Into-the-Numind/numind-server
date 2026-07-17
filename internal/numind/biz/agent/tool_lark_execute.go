@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -89,7 +90,13 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 		StdinJSON:      append(json.RawMessage(nil), decoded.StdinJSON...),
 		SkillReceipts:  append([]string(nil), decoded.SkillReceipts...),
 	})
-	if err != nil || result == nil || strings.TrimSpace(result.OperationID) == "" || strings.TrimSpace(result.State) == "" {
+	if err != nil {
+		if errors.Is(err, feishu.ErrOperationRequestRejected) {
+			return larkWorkspaceSoftError(larkWorkspaceErrorExecuteRejected)
+		}
+		return larkWorkspaceSoftError(larkWorkspaceErrorExecute)
+	}
+	if result == nil || strings.TrimSpace(result.OperationID) == "" || strings.TrimSpace(result.State) == "" {
 		return larkWorkspaceSoftError(larkWorkspaceErrorExecute)
 	}
 
