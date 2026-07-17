@@ -20,7 +20,7 @@ const (
 
 func TestControlledLarkCLIRunner_StartUserAuthStrictFixture(t *testing.T) {
 	home := controlledTestHome(t)
-	const fixture = `{"ok":true,"identity":"user","data":{"device_code":"secret-device-code","verification_url":"https://open.feishu.cn/suite/passport/oauth/device?user_code=SAFE-CODE","expires_in":600}}`
+	const fixture = `{"verification_url":"https://open.feishu.cn/suite/passport/oauth/device?user_code=SAFE-CODE","device_code":"secret-device-code","expires_in":600,"hint":"agent guidance"}`
 	bin := writeControlledFakeBinary(t, fmt.Sprintf(`
 printf '%%s\000' "$@" > "$HOME/device-auth-start-argv"
 printf '%%s' %s
@@ -91,11 +91,9 @@ func TestControlledLarkCLIRunner_CompleteUserAuthOutcomeMatrix(t *testing.T) {
 		exitCode int
 		want     DeviceAuthOutcome
 	}{
-		{name: "success", stdout: `{"ok":true,"identity":"user","data":{}}`, want: DeviceAuthCompleted},
-		{name: "pending", stdout: `{"ok":false,"identity":"user","error":{"type":"authorization","subtype":"authorization_pending"}}`, exitCode: 3, want: DeviceAuthPending},
-		{name: "access denied", stdout: `{"ok":false,"identity":"user","error":{"type":"authorization","subtype":"access_denied"}}`, exitCode: 3, want: DeviceAuthRejected},
-		{name: "expired token", stdout: `{"ok":false,"identity":"user","error":{"type":"authorization","subtype":"expired_token"}}`, exitCode: 3, want: DeviceAuthExpired},
-		{name: "unknown subtype fails closed", stdout: `{"ok":false,"identity":"user","error":{"type":"authorization","subtype":"slow_down"}}`, exitCode: 3, want: DeviceAuthProtocolFailure},
+		{name: "success", stdout: `{"event":"authorization_complete","user_open_id":"ou_test","user_name":"tester","scope":"offline_access","requested":["offline_access"],"newly_granted":["offline_access"],"already_granted":[],"missing":[],"granted":["offline_access"]}`, want: DeviceAuthCompleted},
+		{name: "nonzero completion requires home reconciliation", stdout: `{"ok":false,"error":{"type":"authentication","subtype":"unknown"}}`, exitCode: 3, want: DeviceAuthAmbiguous},
+		{name: "unknown successful event fails closed", stdout: `{"event":"unknown","user_open_id":"ou_test","user_name":"tester","scope":"offline_access","requested":["offline_access"],"newly_granted":[],"already_granted":["offline_access"],"missing":[],"granted":["offline_access"]}`, want: DeviceAuthProtocolFailure},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -134,6 +132,17 @@ sleep 2
 		runner := controlledRunner(bin)
 		runner.timeout = 100 * time.Millisecond
 		outcome, err := runner.CompleteUserAuth(context.Background(), home, deviceAuthTestCode)
+		require.NoError(t, err)
+		require.Equal(t, DeviceAuthAmbiguous, outcome)
+	})
+
+	t.Run("nonzero exit with truncated output requires home reconciliation", func(t *testing.T) {
+		home := controlledTestHome(t)
+		bin := writeControlledFakeBinary(t, fmt.Sprintf(`
+dd if=/dev/zero bs=65536 count=%d >&2 2>/dev/null
+exit 3
+`, ControlledLarkCLIMaxStderrBytes/(64<<10)+1))
+		outcome, err := controlledRunner(bin).CompleteUserAuth(context.Background(), home, deviceAuthTestCode)
 		require.NoError(t, err)
 		require.Equal(t, DeviceAuthAmbiguous, outcome)
 	})
@@ -211,16 +220,14 @@ func TestControlledLarkCLIRunner_RejectsMalformedDeviceAuthOutput(t *testing.T) 
 			name   string
 			stdout string
 		}{
-			{name: "duplicate envelope", stdout: `{"ok":true,"identity":"user","data":{"device_code":"secret-device-code","verification_url":"https://open.feishu.cn/suite/passport/oauth/device?user_code=SAFE-CODE","expires_in":600}} {"ok":true}`},
-			{name: "duplicate field", stdout: `{"ok":true,"ok":true,"identity":"user","data":{"device_code":"secret-device-code","verification_url":"https://open.feishu.cn/suite/passport/oauth/device?user_code=SAFE-CODE","expires_in":600}}`},
-			{name: "unknown envelope field", stdout: `{"ok":true,"identity":"user","extra":true,"data":{"device_code":"secret-device-code","verification_url":"https://open.feishu.cn/suite/passport/oauth/device?user_code=SAFE-CODE","expires_in":600}}`},
-			{name: "unknown data field", stdout: `{"ok":true,"identity":"user","data":{"device_code":"secret-device-code","verification_url":"https://open.feishu.cn/suite/passport/oauth/device?user_code=SAFE-CODE","expires_in":600,"extra":true}}`},
-			{name: "bad URL", stdout: `{"ok":true,"identity":"user","data":{"device_code":"secret-device-code","verification_url":"http://evil.invalid/device","expires_in":600}}`},
-			{name: "extra URL query key", stdout: `{"ok":true,"identity":"user","data":{"device_code":"secret-device-code","verification_url":"https://open.feishu.cn/suite/passport/oauth/device?user_code=SAFE-CODE&redirect_uri=https%3A%2F%2Fevil.invalid","expires_in":600}}`},
-			{name: "zero expiry", stdout: `{"ok":true,"identity":"user","data":{"device_code":"secret-device-code","verification_url":"https://open.feishu.cn/suite/passport/oauth/device?user_code=SAFE-CODE","expires_in":0}}`},
-			{name: "oversized expiry", stdout: `{"ok":true,"identity":"user","data":{"device_code":"secret-device-code","verification_url":"https://open.feishu.cn/suite/passport/oauth/device?user_code=SAFE-CODE","expires_in":721}}`},
-			{name: "overflowing expiry", stdout: `{"ok":true,"identity":"user","data":{"device_code":"secret-device-code","verification_url":"https://open.feishu.cn/suite/passport/oauth/device?user_code=SAFE-CODE","expires_in":9223372036854775807}}`},
-			{name: "wrong identity", stdout: `{"ok":true,"identity":"bot","data":{"device_code":"secret-device-code","verification_url":"https://open.feishu.cn/suite/passport/oauth/device?user_code=SAFE-CODE","expires_in":600}}`},
+			{name: "trailing object", stdout: `{"device_code":"secret-device-code","verification_url":"https://open.feishu.cn/suite/passport/oauth/device?user_code=SAFE-CODE","expires_in":600,"hint":"safe"} {"extra":true}`},
+			{name: "duplicate field", stdout: `{"device_code":"secret-device-code","device_code":"secret-device-code","verification_url":"https://open.feishu.cn/suite/passport/oauth/device?user_code=SAFE-CODE","expires_in":600,"hint":"safe"}`},
+			{name: "unknown field", stdout: `{"device_code":"secret-device-code","verification_url":"https://open.feishu.cn/suite/passport/oauth/device?user_code=SAFE-CODE","expires_in":600,"hint":"safe","extra":true}`},
+			{name: "bad URL", stdout: `{"device_code":"secret-device-code","verification_url":"http://evil.invalid/device","expires_in":600,"hint":"safe"}`},
+			{name: "extra URL query key", stdout: `{"device_code":"secret-device-code","verification_url":"https://open.feishu.cn/suite/passport/oauth/device?user_code=SAFE-CODE&redirect_uri=https%3A%2F%2Fevil.invalid","expires_in":600,"hint":"safe"}`},
+			{name: "zero expiry", stdout: `{"device_code":"secret-device-code","verification_url":"https://open.feishu.cn/suite/passport/oauth/device?user_code=SAFE-CODE","expires_in":0,"hint":"safe"}`},
+			{name: "oversized expiry", stdout: `{"device_code":"secret-device-code","verification_url":"https://open.feishu.cn/suite/passport/oauth/device?user_code=SAFE-CODE","expires_in":721,"hint":"safe"}`},
+			{name: "overflowing expiry", stdout: `{"device_code":"secret-device-code","verification_url":"https://open.feishu.cn/suite/passport/oauth/device?user_code=SAFE-CODE","expires_in":9223372036854775807,"hint":"safe"}`},
 		}
 		for _, test := range tests {
 			t.Run(test.name, func(t *testing.T) {
@@ -240,15 +247,14 @@ func TestControlledLarkCLIRunner_RejectsMalformedDeviceAuthOutput(t *testing.T) 
 			stdout   string
 			exitCode int
 		}{
-			{name: "duplicate envelope", stdout: `{"ok":true,"identity":"user","data":{}} {"ok":true}`},
-			{name: "duplicate field", stdout: `{"ok":true,"ok":true,"identity":"user","data":{}}`},
-			{name: "unknown envelope field", stdout: `{"ok":true,"identity":"user","extra":true,"data":{}}`},
-			{name: "unknown data field", stdout: `{"ok":true,"identity":"user","data":{"token":"must-not-be-accepted"}}`},
-			{name: "wrong identity", stdout: `{"ok":true,"identity":"bot","data":{}}`},
-			{name: "arbitrary prose is not pending", stdout: `{"ok":false,"identity":"user","error":{"type":"authorization","subtype":"unknown","message":"authorization_pending"}}`},
-			{name: "known subtype with unknown data", stdout: `{"ok":false,"identity":"user","data":{"unexpected":true},"error":{"type":"authorization","subtype":"authorization_pending"}}`, exitCode: 3},
-			{name: "known subtype with wrong error type", stdout: `{"ok":false,"identity":"user","error":{"type":"api","subtype":"authorization_pending"}}`, exitCode: 3},
-			{name: "known subtype with wrong nested identity", stdout: `{"ok":false,"identity":"user","error":{"type":"authorization","subtype":"authorization_pending","identity":"bot"}}`, exitCode: 3},
+			{name: "trailing object", stdout: `{"event":"authorization_complete"} {"extra":true}`},
+			{name: "duplicate field", stdout: `{"event":"authorization_complete","event":"authorization_complete"}`},
+			{name: "unknown field", stdout: `{"event":"authorization_complete","extra":true}`},
+			{name: "secret field", stdout: `{"event":"authorization_complete","token":"must-not-be-accepted"}`},
+			{name: "missing required identity evidence", stdout: `{"event":"authorization_complete","scope":"offline_access","requested":[],"newly_granted":[],"already_granted":[],"missing":[],"granted":["offline_access"]}`},
+			{name: "missing permission evidence fields", stdout: `{"event":"authorization_complete","user_open_id":"ou_test","user_name":"tester"}`},
+			{name: "missing requested scope", stdout: `{"event":"authorization_complete","user_open_id":"ou_test","user_name":"tester","scope":"offline_access","requested":["offline_access"],"newly_granted":[],"already_granted":[],"missing":["offline_access"],"granted":["offline_access"]}`},
+			{name: "requested classification mismatch", stdout: `{"event":"authorization_complete","user_open_id":"ou_test","user_name":"tester","scope":"offline_access","requested":["offline_access"],"newly_granted":[],"already_granted":[],"missing":[],"granted":["offline_access"]}`},
 		}
 		for _, test := range tests {
 			t.Run(test.name, func(t *testing.T) {
@@ -267,7 +273,7 @@ func TestControlledLarkCLIRunner_RejectsMalformedDeviceAuthOutput(t *testing.T) 
 			body string
 		}{
 			{name: "stdout", body: fmt.Sprintf("dd if=/dev/zero bs=65536 count=%d 2>/dev/null", deviceAuthCLIMaxJSONBytes/(64<<10)+1)},
-			{name: "stderr", body: fmt.Sprintf("dd if=/dev/zero bs=65536 count=%d >&2 2>/dev/null\nprintf '{\\\"ok\\\":true,\\\"identity\\\":\\\"user\\\",\\\"data\\\":{}}'", ControlledLarkCLIMaxStderrBytes/(64<<10)+1)},
+			{name: "stderr", body: fmt.Sprintf("dd if=/dev/zero bs=65536 count=%d >&2 2>/dev/null\nprintf '{\\\"event\\\":\\\"authorization_complete\\\"}'", ControlledLarkCLIMaxStderrBytes/(64<<10)+1)},
 		}
 		for _, test := range tests {
 			t.Run(test.name, func(t *testing.T) {
