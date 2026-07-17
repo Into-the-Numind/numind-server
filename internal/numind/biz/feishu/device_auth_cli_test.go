@@ -72,6 +72,21 @@ func TestControlledLarkCLIRunner_StartUserAuthAcceptsPinnedCLI1068Output(t *test
 	}, start)
 }
 
+// Regression: the real Feishu v1.0.68 device endpoint returns the accounts
+// verification host/path plus both flow_id and user_code. Treating the older
+// open.feishu.cn page shape as the only valid URL turns a successful CLI start
+// into an Internal server error before the browser can authorize.
+func TestControlledLarkCLIRunner_StartUserAuthAcceptsRealFeishu1068VerificationURL(t *testing.T) {
+	home := controlledTestHome(t)
+	const verificationURL = "https://accounts.feishu.cn/oauth/v1/device/verify?flow_id=opaque-flow&user_code=SAFE-CODE"
+	const fixture = `{"verification_url":"https://accounts.feishu.cn/oauth/v1/device/verify?flow_id=opaque-flow&user_code=SAFE-CODE","device_code":"secret-device-code","expires_in":600,"hint":"agent guidance"}`
+	bin := writeControlledFakeBinary(t, fmt.Sprintf("printf '%%s' %s", shellQuoteForControlledTest(fixture)))
+
+	start, err := controlledRunner(bin).StartUserAuth(context.Background(), home, []string{"offline_access"})
+	require.NoError(t, err)
+	require.Equal(t, verificationURL, start.VerificationURL)
+}
+
 // Regression: the resumed v1.0.68 command also emits a command-specific
 // authorization_complete object rather than a generic envelope.
 func TestControlledLarkCLIRunner_CompleteUserAuthAcceptsPinnedCLI1068Output(t *testing.T) {

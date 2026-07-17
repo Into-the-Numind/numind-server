@@ -16,7 +16,7 @@
 | Go repository race | `task test` | BASELINE_FAILURE | 仅未改动的 `internal/numind/biz/sandbox` SkillsDir 测试竞态失败；在原始 `develop` 上用同包命令独立复现 |
 | Vue lint | `npm run lint` | PASS | 0 errors；7 个既有且不在 feature diff 内的 warnings |
 | Vue type-check | `npm run type-check` | PASS | |
-| Vue unit | `npm run test:unit` | PASS | 96/96 files；1104 passed、11 skipped、3 todo |
+| Vue unit | `npm run test:unit` | PASS | 96/96 files；1114 passed、11 skipped、3 todo |
 | Feishu E2E | `npx playwright test e2e/feishu-personal-workspace.spec.ts --project=mocked --workers=1` | PASS | 5/5；桌面、移动端、过期、终态、历史缺链接场景 |
 | Diff hygiene | `git diff --check` + `git status --short` | PASS | 两个 worktree 均干净 |
 
@@ -51,10 +51,25 @@
 
 ## 独立审查
 
-- Specification review：PASS，P0/P1/P2 = 0。
-- Quality review：PASS_WITH_CONCERNS，P0/P1 = 0；仅有 3 个既有 Playwright harness P2，不阻塞功能。
+- Specification review：PASS，P0/P1/P2/P3 = 0。
+- Quality review：PASS，P0/P1/P2/P3 = 0。
+
+## Dev 故障诊断后的协议修正
+
+- 真实 Dev 调用确认 lark-cli v1.0.68 当前返回
+  `accounts.feishu.cn/oauth/v1/device/verify`，而不是旧版
+  `open.feishu.cn/suite/passport/oauth/device`。原后端因此把 CLI 成功结果误判为协议错误并返回
+  `Internal server error`。
+- 后端现同时支持新旧官方协议，但分别严格校验 host、path 和 query；不记录、不重建、不回显
+  device code 或完整 URL。
+- 前端 API 与 Agent Store 复用同一个 phase-aware 校验器：`accounts.*` 只允许
+  `user_auth`，且必须为固定 path、恰好一个 `flow_id` 和一个 `user_code`；错误 path、缺失、
+  额外或重复参数全部 fail closed。`open.*` 保留既有多阶段兼容策略。
+- 客户回归 commit 顺序符合 RED → GREEN：后端 `35014cba` → `87c69e40`；前端
+  `7cbaf4e` → `9ea6bd8`，安全收紧追加 `4665fcf` → `3a6e984`。
+- 修正后验证：后端关键回归与 lint PASS；前端聚焦 82/82、全量 1114 tests、lint、
+  type-check、production build、Playwright 5/5 全部 PASS；双 reviewer 均 PASS 且无 findings。
 
 ## 结论
 
 AUTOMATED_PASS_WITH_BASELINE_EXCEPTION。功能代码可合并并部署 Dev；唯一全仓失败在原始 `develop` 同样存在，且目录不在 feature diff。Dev 真实飞书验收在部署后继续记录到本报告。
-
