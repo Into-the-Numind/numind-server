@@ -788,7 +788,17 @@ func (f *DeviceAuthFlow) completeInCandidateHome(
 		return DeviceAuthExpired, ""
 	}
 	cliCtx, cancelCLI := context.WithTimeout(ownerCtx, cliBudget)
-	outcome, err := f.cli.CompleteUserAuth(cliCtx, home, deviceCode)
+	var expectedScopes []string
+	if json.Unmarshal(session.RequestedScopesJSON, &expectedScopes) != nil {
+		cancelCLI()
+		return DeviceAuthProtocolFailure, ""
+	}
+	expectedScopes, scopeErr := canonicalDeviceAuthScopes(expectedScopes)
+	if scopeErr != nil {
+		cancelCLI()
+		return DeviceAuthProtocolFailure, ""
+	}
+	outcome, err := f.cli.CompleteUserAuth(cliCtx, home, deviceCode, expectedScopes)
 	cancelCLI()
 	if err != nil {
 		outcome = DeviceAuthRetryableDependency
@@ -796,7 +806,17 @@ func (f *DeviceAuthFlow) completeInCandidateHome(
 	switch outcome {
 	case DeviceAuthPending, DeviceAuthRejected, DeviceAuthExpired, DeviceAuthProtocolFailure:
 		return outcome, ""
-	case DeviceAuthCompleted, DeviceAuthAmbiguous, DeviceAuthRetryableDependency:
+	case DeviceAuthAmbiguous, DeviceAuthRetryableDependency:
+		// Auth status and AppID prove only that some user token exists for the
+		// expected application. They do not prove that the durable scopes for
+		// this authorization attempt were granted; an older token in the HOME
+		// could satisfy both checks. Without structured granted-scope evidence,
+		// keep the session pending and never publish the candidate HOME.
+		if !session.ResumeExpiresAt.After(f.now().UTC()) {
+			return DeviceAuthExpired, ""
+		}
+		return DeviceAuthPending, ""
+	case DeviceAuthCompleted:
 	default:
 		return DeviceAuthProtocolFailure, ""
 	}

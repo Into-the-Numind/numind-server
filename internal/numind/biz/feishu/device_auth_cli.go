@@ -30,7 +30,7 @@ var (
 // authorization and its existing recovery evidence checks.
 type DeviceAuthCLI interface {
 	StartUserAuth(context.Context, string, []string) (DeviceAuthStart, error)
-	CompleteUserAuth(context.Context, string, string) (DeviceAuthOutcome, error)
+	CompleteUserAuth(context.Context, string, string, []string) (DeviceAuthOutcome, error)
 	AuthStatus(context.Context, string) (bool, error)
 	AppIDFromHome(context.Context, string) (string, error)
 }
@@ -133,8 +133,11 @@ func (r *ControlledLarkCLIRunner) CompleteUserAuth(
 	ctx context.Context,
 	home string,
 	deviceCode string,
+	expectedScopes []string,
 ) (DeviceAuthOutcome, error) {
-	if !validDeviceAuthDeviceCode(deviceCode) || validateControlledCLIHome(home) != nil {
+	canonicalExpected, scopeErr := canonicalAuthScopes(expectedScopes)
+	if !validDeviceAuthDeviceCode(deviceCode) || validateControlledCLIHome(home) != nil ||
+		scopeErr != nil || len(canonicalExpected) == 0 {
 		return DeviceAuthProtocolFailure, nil
 	}
 	if _, err := r.binaryPath(); err != nil {
@@ -144,7 +147,7 @@ func (r *ControlledLarkCLIRunner) CompleteUserAuth(
 	result, runErr := r.runDeviceAuthProcess(ctx, home, []string{
 		"auth", "login", "--device-code", deviceCode, "--json",
 	})
-	return classifyDeviceAuthCompletionResult(result, runErr), nil
+	return classifyDeviceAuthCompletionResultForScopes(result, runErr, canonicalExpected), nil
 }
 
 // runDeviceAuthProcess executes the two auth-login commands without applying
@@ -219,8 +222,40 @@ func classifyDeviceAuthCompletionResult(result *CLIResult, runErr error) DeviceA
 	var completion strictDeviceAuthCompletionData
 	if decodeStrictDeviceAuthObject(result.Stdout, &completion) != nil ||
 		completion.Event != "authorization_complete" ||
+		strings.TrimSpace(completion.UserOpenID) == "" || completion.UserName == nil {
+		return DeviceAuthProtocolFailure
+	}
+	// lark-cli v1.0.68 persists the --no-wait requested-scope cache inside
+	// HOME. Numind intentionally discards that temporary start HOME, so a
+	// successful split completion can contain requested=[] while still carrying
+	// trustworthy final granted scopes. The generic classifier cannot prove the
+	// durable request; force its caller to reconcile with session-owned scopes.
+	if len(completion.Requested) == 0 && validDeviceAuthCompletionWithoutRequestedCache(completion) {
+		return DeviceAuthAmbiguous
+	}
+	if !validDeviceAuthCompletionScopes(completion) {
+		return DeviceAuthProtocolFailure
+	}
+	return DeviceAuthCompleted
+}
+
+func classifyDeviceAuthCompletionResultForScopes(
+	result *CLIResult,
+	runErr error,
+	expectedScopes []string,
+) DeviceAuthOutcome {
+	outcome := classifyDeviceAuthCompletionResult(result, runErr)
+	if outcome != DeviceAuthCompleted && outcome != DeviceAuthAmbiguous {
+		return outcome
+	}
+	if result == nil || result.ExitCode != 0 || !deviceAuthStructuredCompletionSafe(result, runErr) {
+		return outcome
+	}
+	var completion strictDeviceAuthCompletionData
+	if decodeStrictDeviceAuthObject(result.Stdout, &completion) != nil ||
+		completion.Event != "authorization_complete" ||
 		strings.TrimSpace(completion.UserOpenID) == "" || completion.UserName == nil ||
-		!validDeviceAuthCompletionScopes(completion) {
+		!validDeviceAuthCompletionForExpectedScopes(completion, expectedScopes) {
 		return DeviceAuthProtocolFailure
 	}
 	return DeviceAuthCompleted
@@ -318,6 +353,71 @@ func validDeviceAuthCompletionScopes(data strictDeviceAuthCompletionData) bool {
 		}
 	}
 	return len(classified) == len(requestedSet)
+}
+
+func validDeviceAuthCompletionWithoutRequestedCache(data strictDeviceAuthCompletionData) bool {
+	if data.Scope == "" || data.Requested == nil || data.NewlyGranted == nil ||
+		data.AlreadyGranted == nil || data.Missing == nil || data.Granted == nil ||
+		len(data.Requested) != 0 || len(data.NewlyGranted) != 0 ||
+		len(data.AlreadyGranted) != 0 || len(data.Missing) != 0 || len(data.Granted) == 0 {
+		return false
+	}
+	granted, err := canonicalAuthScopes(data.Granted)
+	if err != nil || len(granted) != len(data.Granted) {
+		return false
+	}
+	scope, err := canonicalAuthScopes(strings.Fields(data.Scope))
+	if err != nil || len(scope) != len(granted) {
+		return false
+	}
+	for index := range granted {
+		if granted[index] != scope[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func validDeviceAuthCompletionForExpectedScopes(
+	data strictDeviceAuthCompletionData,
+	expectedScopes []string,
+) bool {
+	expected, err := canonicalAuthScopes(expectedScopes)
+	if err != nil || len(expected) == 0 {
+		return false
+	}
+	if len(data.Requested) == 0 {
+		if !validDeviceAuthCompletionWithoutRequestedCache(data) {
+			return false
+		}
+	} else {
+		if !validDeviceAuthCompletionScopes(data) {
+			return false
+		}
+		requested, requestedErr := canonicalAuthScopes(data.Requested)
+		if requestedErr != nil || len(requested) != len(expected) {
+			return false
+		}
+		for index := range expected {
+			if requested[index] != expected[index] {
+				return false
+			}
+		}
+	}
+	granted, err := canonicalAuthScopes(data.Granted)
+	if err != nil {
+		return false
+	}
+	grantedSet := make(map[string]struct{}, len(granted))
+	for _, scope := range granted {
+		grantedSet[scope] = struct{}{}
+	}
+	for _, scope := range expected {
+		if _, ok := grantedSet[scope]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func validDeviceAuthVerificationURL(value string) bool {
