@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: Align hosted per-user Feishu authorization with the pinned lark-cli split device-code protocol and resume the exact original Agent operation
   classification_reason: 'Standard: customer-reported third-party OAuth and durable write-resume boundary; affects authentication state machine, secure resume credentials, Agent guidance, real CLI fixtures, and more than 3 files.'
-  last_updated_by: ai-s4-task17
-  last_updated_at: '2026-07-17T17:10:51+08:00'
+  last_updated_by: ai-s4-task18
+  last_updated_at: '2026-07-17T17:14:32+08:00'
   created_at: '2026-07-16T18:53:00+08:00'
   track: standard
   stage: S4
@@ -13,7 +13,7 @@ features:
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/feishu-device-code-auth, numind-web-v3: feature/feishu-device-code-auth}
   worktrees: {numind-server: /private/tmp/wt-feishu-device-code-auth-numind-server, numind-web-v3: /private/tmp/wt-feishu-device-code-auth-numind-web-v3}
-  progress: {total_tasks: 19, completed_tasks: 17, reviewed_tasks: 17}
+  progress: {total_tasks: 19, completed_tasks: 18, reviewed_tasks: 18}
   artifacts:
     requirement: requirements/feishu-device-code-auth.md
     proposal: proposals/feishu-device-code-auth-proposal.md
@@ -42,6 +42,7 @@ features:
   - 'S4 Task 15: frontend commit 1aa9cbe makes the customer RED green with an exact runtime response allowlist, same-card replacement, notice-only retention, duplicate-click coalescing, navigation and same-operation session fences, transport-error preservation, and terminal notice cleanup. The validator distinguishes official live user-auth replacements from URL-less next external steps: replacement notices require a complete official URL, while a notice-free action is accepted only for the exact create_app/waiting_connection, app_scope/waiting_app_scope, user_auth/waiting_user_auth, or confirmation/waiting_confirmation mapping. Independent reviews closed top-level secret-field acceptance, impossible state/action combinations, a same-epoch stale-session overwrite, and the real backend URL-less confirmation contract. Focused API/store tests pass 72/72; lint has zero errors and type-check passes.'
   - 'S4 Task 16: frontend commit ca96b46 renders all five authorization notices from fixed local Chinese copy, regenerates replacement QR codes, blocks duplicate lifecycle actions while processing, and isolates transport busy/error state by operation, session, request version, route epoch, and component lifetime. Review replaced a whole-card nested live region with one atomic polite status announcement, removed duplicate missing-link copy, and fenced late rejected requests across route changes. Existing native buttons/links, mobile wrapping, official URL bytes, and Numind tokens remain intact. Independent specification and quality reviews passed; focused component tests pass 69/69, lint has zero errors, and type-check passes.'
   - 'S4 Task 17: frontend commits 2c82a26, 583725f, and a538287 prove replacement authorization and the original Agent continuation complete on one page without reload, duplicate cards, ordinary /answer calls, or browser errors; historical URL-less cards refresh in place. Review found that terminal reconciliation discarded streamed reasoning while converting the last bubble to final_answer, so the implementation now preserves reasoning with a unit regression. The real mocked Playwright project is isolated onto its own non-mock Vite server and the plan command was corrected in backend commit e2421bbe. Final spec review PASS; quality review PASS_WITH_CONCERNS with only three non-blocking P2 test-harness hardening suggestions. Playwright passes 15/15 across three review runs, streaming unit tests pass 61/61, and lint/type-check pass.'
+  - 'S4 Task 18: full frontend quality convergence passed with 96/96 test files and 1104 tests, the isolated mocked Playwright contract 5/5, type-check, and zero ESLint errors. The seven repository warnings are pre-existing and outside the feature diff; both worktree and index are clean and no formatter-owned changes escaped the feature file set. Independent spec review PASS and quality review PASS_WITH_CONCERNS with only the same three non-blocking P2 harness suggestions (dedicated config, stricter fetch lifecycle, and unknown-API guard). No additional hardening commit was needed after a538287.'
   blockers: []
 
 - id: agent-stream-start-order
