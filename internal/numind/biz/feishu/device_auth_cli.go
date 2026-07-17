@@ -14,10 +14,11 @@ import (
 )
 
 const (
-	deviceAuthCLIMaxJSONBytes  = 1 << 20
-	deviceAuthCLIMaxURLBytes   = 8 << 10
-	deviceAuthCLIMaxExpiresIn  = 12 * time.Minute
-	deviceAuthVerificationPath = "/suite/passport/oauth/device"
+	deviceAuthCLIMaxJSONBytes   = 1 << 20
+	deviceAuthCLIMaxURLBytes    = 8 << 10
+	deviceAuthCLIMaxExpiresIn   = 12 * time.Minute
+	deviceAuthLegacyVerifyPath  = "/suite/passport/oauth/device"
+	deviceAuthAccountVerifyPath = "/oauth/v1/device/verify"
 )
 
 var (
@@ -325,17 +326,32 @@ func validDeviceAuthVerificationURL(value string) bool {
 	}
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Fragment != "" ||
-		parsed.Port() != "" || parsed.Path != deviceAuthVerificationPath {
+		parsed.Port() != "" {
 		return false
 	}
-	switch strings.ToLower(parsed.Hostname()) {
+	host := strings.ToLower(parsed.Hostname())
+	switch host {
 	case "open.feishu.cn", "open.larksuite.com":
+		if parsed.Path != deviceAuthLegacyVerifyPath {
+			return false
+		}
+	case "accounts.feishu.cn", "accounts.larksuite.com":
+		if parsed.Path != deviceAuthAccountVerifyPath {
+			return false
+		}
 	default:
 		return false
 	}
 	values, err := url.ParseQuery(parsed.RawQuery)
-	if err != nil || len(values) != 1 || len(values["user_code"]) != 1 || values.Get("user_code") == "" ||
+	if err != nil || len(values["user_code"]) != 1 || values.Get("user_code") == "" ||
 		strings.ContainsRune(values.Get("user_code"), 0) {
+		return false
+	}
+	if strings.HasPrefix(host, "accounts.") {
+		return len(values) == 2 && len(values["flow_id"]) == 1 && values.Get("flow_id") != "" &&
+			!strings.ContainsRune(values.Get("flow_id"), 0)
+	}
+	if len(values) != 1 {
 		return false
 	}
 	return true
