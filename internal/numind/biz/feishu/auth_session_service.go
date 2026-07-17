@@ -1413,6 +1413,22 @@ func (s *AuthSessionService) CompleteAppApproval(
 	return s.completeOwned(ctx, session, leaseToken, now, true, true, "")
 }
 
+// CompleteUserAuthorization delegates protocol-v2 completion to the durable
+// device flow. The flow owns session fencing, candidate publication, and the
+// exact-operation dispatch; this service does not reconstruct transient URL or
+// device-code state.
+func (s *AuthSessionService) CompleteUserAuthorization(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	sessionID string,
+) (*DeviceAuthCompletion, error) {
+	if s == nil || s.deviceAuth == nil {
+		return nil, ErrAuthSessionUnavailable
+	}
+	return s.deviceAuth.CompleteUserAuthorization(ctx, userID, generation, sessionID)
+}
+
 func validAuthSessionAppID(appID string) bool {
 	if appID == "" || len(appID) > 64 || strings.TrimSpace(appID) != appID {
 		return false

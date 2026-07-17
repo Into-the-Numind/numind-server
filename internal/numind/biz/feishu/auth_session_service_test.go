@@ -2,8 +2,10 @@ package feishu
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -43,6 +45,9 @@ type authSessionCLIFake struct {
 	activeRuns      int
 	deviceCodes     []string
 	deviceExpiresIn time.Duration
+	completeOutcome DeviceAuthOutcome
+	completeErr     error
+	completeCalls   int
 }
 
 func releaseAuthSessionCLIFake(t *testing.T, release chan struct{}) func() {
@@ -150,7 +155,13 @@ func (f *authSessionCLIFake) StartUserAuth(_ context.Context, _ string, scopes [
 }
 
 func (f *authSessionCLIFake) CompleteUserAuth(context.Context, string, string) (DeviceAuthOutcome, error) {
-	return DeviceAuthProtocolFailure, errors.New("completion is outside auth-session start tests")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.completeCalls++
+	if f.completeOutcome == "" && f.completeErr == nil {
+		return DeviceAuthProtocolFailure, errors.New("completion is outside auth-session start tests")
+	}
+	return f.completeOutcome, f.completeErr
 }
 
 func (f *authSessionCLIFake) AuthStatus(context.Context, string) (bool, error) {
@@ -206,8 +217,30 @@ func (f *authSessionVaultFake) WithHome(
 	return err
 }
 
-func (f *authSessionVaultFake) WithHomeCandidate(context.Context, uint, uint64, func(string) error) (*CLIHomeCandidate, error) {
-	return nil, errors.New("completion candidate is outside auth-session start tests")
+func (f *authSessionVaultFake) WithHomeCandidate(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	callback func(string) error,
+) (*CLIHomeCandidate, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := callback("/tmp/auth-session-candidate-home"); err != nil {
+		return nil, err
+	}
+	ciphertext := []byte("sealed-auth-session-candidate")
+	f.mu.Lock()
+	f.calls++
+	f.changed = append(f.changed, true)
+	f.mu.Unlock()
+	return &CLIHomeCandidate{
+		Vault: model.FeishuCLIVault{
+			UserID: userID, Generation: generation, Ciphertext: ciphertext, KeyVersion: "v1",
+			Checksum: fmt.Sprintf("%x", sha256.Sum256(ciphertext)), Revision: 1,
+		},
+		ExpectedRevision: 0,
+	}, nil
 }
 
 func (f *authSessionVaultFake) snapshot() (int, []bool) {
@@ -310,38 +343,6 @@ func (s *authSessionRefreshClaimFailureStore) RestoreOperationSessionRefresh(
 	return s.AuthSessionStore.RestoreOperationSessionRefresh(
 		ctx, userID, generation, oldSessionID, replacementSessionID, operationID, waitingState, oldSummary, now,
 	)
-}
-
-// authSessionUpdateBarrierStore holds the start path after its last durable
-// state write and before local worker registration. It models the only window
-// where RetireGeneration can commit before StopGenerationAndWait snapshots the
-// local registry.
-type authSessionUpdateBarrierStore struct {
-	AuthSessionStore
-	arrived chan<- struct{}
-	release <-chan struct{}
-	once    sync.Once
-}
-
-func (s *authSessionUpdateBarrierStore) UpdateAccountConnectionState(
-	ctx context.Context,
-	userID uint,
-	generation uint64,
-	state string,
-	connected bool,
-	now time.Time,
-) error {
-	if err := s.AuthSessionStore.UpdateAccountConnectionState(ctx, userID, generation, state, connected, now); err != nil {
-		return err
-	}
-	s.once.Do(func() {
-		s.arrived <- struct{}{}
-		select {
-		case <-s.release:
-		case <-ctx.Done():
-		}
-	})
-	return nil
 }
 
 func (s *authSessionCompleteBeforeClaimStore) ClaimSession(
@@ -528,6 +529,25 @@ func waitAuthDispatch(t *testing.T, dispatcher *authSessionDispatcherFake) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for operation resume dispatch")
 	}
+}
+
+func createWaitingDeviceAuthOperation(
+	t *testing.T,
+	h *authSessionHarness,
+	operationID string,
+	sessionID string,
+) {
+	t.Helper()
+	summary, err := json.Marshal(persistedOperationSummary{
+		Status: model.FeishuOperationWaitingUserAuth, Phase: model.FeishuAuthPhaseUserAuth, SessionID: sessionID,
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.db.Create(&model.FeishuOperation{
+		ID: operationID, UserID: 7, Generation: 1, IdempotencyKey: operationID,
+		CommandPath: "docs +fetch", Domain: SkillDomainDocs, RiskLevel: string(RiskRead),
+		RequestCiphertext: []byte("opaque-request"), KeyVersion: "v1", RequestFingerprint: strings.Repeat("a", 64),
+		State: model.FeishuOperationWaitingUserAuth, ResultSummaryJSON: summary,
+	}).Error)
 }
 
 func TestAuthSessionService_ManualConnectRequestsOfflineAccessOnly(t *testing.T) {
@@ -1136,41 +1156,17 @@ func TestAuthSessionService_StopGenerationAndWaitJoinsRetiredWorkerBeforeReturni
 	h := newAuthSessionHarness(t)
 	h.createAccount(model.FeishuConnectionAppReady)
 	h.cli.urls = []string{"https://open.feishu.cn/suite/passport/oauth/device?user_code=STOP"}
-	hold := make(chan struct{})
-	h.cli.holdAfterCancel = hold
-	cancelObserved := make(chan struct{}, 1)
-	h.cli.cancelObserved = cancelObserved
 	service := h.newService("stop-join-owner")
 
-	_, err := service.ConnectManual(h.ctx, 7)
+	action, err := service.ConnectManual(h.ctx, 7)
 	require.NoError(t, err)
-
-	waiter, ok := any(service).(interface {
-		StopGenerationAndWait(context.Context, uint, uint64) error
-	})
-	require.True(t, ok, "authorization teardown must expose a joinable generation stop")
-
-	stopDone := make(chan error, 1)
-	go func() {
-		stopDone <- waiter.StopGenerationAndWait(context.Background(), 7, 1)
-	}()
-	select {
-	case <-cancelObserved:
-	case <-time.After(time.Second):
-		t.Fatal("generation stop did not cancel the retired worker")
-	}
-	select {
-	case err := <-stopDone:
-		t.Fatalf("generation stop returned before retired worker and temporary HOME exited: %v", err)
-	case <-time.After(100 * time.Millisecond):
-	}
-	close(hold)
-	select {
-	case err := <-stopDone:
-		require.NoError(t, err)
-	case <-time.After(time.Second):
-		t.Fatal("generation stop did not join the retired worker")
-	}
+	require.NotNil(t, action)
+	require.Zero(t, h.cli.ActiveRuns(), "split user auth start must not leave a local worker to join")
+	require.NoError(t, service.StopGenerationAndWait(context.Background(), 7, 1))
+	service.workerMu.Lock()
+	require.Empty(t, service.workers)
+	require.Empty(t, service.starts)
+	service.workerMu.Unlock()
 }
 
 func TestAuthSessionService_StopGenerationReclaimsRetiredTombstoneAfterAllStartsJoin(t *testing.T) {
@@ -1209,39 +1205,22 @@ func TestAuthSessionService_RetireBeforeLateWorkerRegistrationCannotStartRetired
 	h := newAuthSessionHarness(t)
 	h.createAccount(model.FeishuConnectionAppReady)
 	h.cli.urls = []string{"https://open.feishu.cn/suite/passport/oauth/device?user_code=LATE"}
-	arrived := make(chan struct{}, 1)
-	release := make(chan struct{})
-	service := h.newServiceWithSessions("late-register-owner", &authSessionUpdateBarrierStore{
-		AuthSessionStore: h.dataStore.FeishuWorkspace(), arrived: arrived, release: release,
-	})
-
-	resultCh := make(chan *OperationAction, 1)
-	errCh := make(chan error, 1)
-	go func() {
-		result, err := service.ConnectManual(h.ctx, 7)
-		resultCh <- result
-		errCh <- err
-	}()
-	select {
-	case <-arrived:
-	case <-time.After(time.Second):
-		t.Fatal("manual connect did not reach the worker-registration barrier")
-	}
+	service := h.newService("late-register-owner")
+	action, err := service.ConnectManual(h.ctx, 7)
+	require.NoError(t, err)
+	require.NotNil(t, action)
+	require.Zero(t, h.cli.ActiveRuns())
 	retiredGeneration, _, err := h.dataStore.ThirdPartyAccounts().RetireGeneration(h.ctx, 7, ProviderLark)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, retiredGeneration)
 	require.NoError(t, service.StopGenerationAndWait(context.Background(), 7, retiredGeneration))
-	close(release)
-
-	select {
-	case err := <-errCh:
-		require.ErrorIs(t, err, ErrAuthSessionUnavailable)
-	case <-time.After(time.Second):
-		t.Fatal("late worker registration did not stop")
-	}
-	require.Nil(t, <-resultCh)
+	_, err = service.StartRecovery(h.ctx, RecoveryRequest{
+		UserID: 7, Generation: retiredGeneration, OperationID: "retired-late-start",
+		Kind: RecoveryUserScope, Scopes: []string{"docx:document:readonly"},
+	})
+	require.ErrorIs(t, err, ErrAuthSessionUnavailable)
 	argv, _ := h.cli.snapshot()
-	require.Empty(t, argv, "a late retired worker must never reach lark-cli")
+	require.Len(t, argv, 1, "a retired generation must never reach lark-cli again")
 }
 
 func TestAuthSessionService_ManualConnectCreatesAppBeforeOfflineAuthorization(t *testing.T) {
@@ -1347,14 +1326,15 @@ func TestAuthSessionService_CreateAppPersistsOnlyProvenStatusMetadata(t *testing
 func TestAuthSessionService_ManualChainAllowsURLAfterFinalizeWindow(t *testing.T) {
 	h := newAuthSessionHarness(t)
 	createRelease := make(chan struct{})
-	userRelease := make(chan struct{})
 	delayedURL := "https://open.feishu.cn/suite/passport/oauth/device?user_code=DELAYED_MANUAL_USER"
 	h.cli.urls = []string{
 		"https://open.feishu.cn/page/cli?user_code=DELAYED_MANUAL_CREATE",
 		delayedURL,
 	}
-	h.cli.releases = []<-chan struct{}{createRelease, userRelease}
+	h.cli.releases = []<-chan struct{}{createRelease}
 	h.cli.urlDelays = []time.Duration{0, authSessionFinalizeTimeout + 100*time.Millisecond}
+	h.cli.completeOutcome = DeviceAuthCompleted
+	h.cli.status = true
 	service := h.newService("worker-manual-delayed-chain")
 	service.startTimeout = authSessionFinalizeTimeout + 2*time.Second
 
@@ -1369,22 +1349,18 @@ func TestAuthSessionService_ManualChainAllowsURLAfterFinalizeWindow(t *testing.T
 			model.FeishuAuthPhaseUserAuth, model.FeishuAuthSessionPending).
 			Order("created_at DESC").Take(&userSession).Error == nil
 	}, 2*time.Second, 10*time.Millisecond)
-	require.Eventually(t, func() bool {
-		return service.urls.get(authSessionRegistryKey(&userSession), h.now) == delayedURL
-	}, authSessionFinalizeTimeout+3*time.Second, 20*time.Millisecond,
-		"manual chaining must remain alive for StartTimeout even when the URL arrives after finalize overhead")
-
 	userAction, err := service.ConnectManual(h.ctx, 7)
 	require.NoError(t, err)
 	require.Equal(t, userSession.ID, userAction.SessionID)
 	require.Equal(t, delayedURL, userAction.URL)
 	argv, _ := h.cli.snapshot()
 	require.Len(t, argv, 2)
-	close(userRelease)
-	require.Eventually(t, func() bool {
-		account, getErr := h.dataStore.ThirdPartyAccounts().Get(h.ctx, 7, ProviderLark)
-		return getErr == nil && account.Connected
-	}, 3*time.Second, 10*time.Millisecond)
+	completion, err := service.CompleteUserAuthorization(h.ctx, 7, 1, userSession.ID)
+	require.NoError(t, err)
+	require.True(t, completion.Completed)
+	account, err := h.dataStore.ThirdPartyAccounts().Get(h.ctx, 7, ProviderLark)
+	require.NoError(t, err)
+	require.True(t, account.Connected)
 }
 
 func TestAuthSessionService_OperationUsesExactCanonicalScopes(t *testing.T) {
@@ -1543,9 +1519,10 @@ func TestAuthSessionService_CompletedAppApprovalRetriesFailedDispatchIdempotentl
 func TestAuthSessionService_WorkerSealsBeforeCompletingAndDispatching(t *testing.T) {
 	h := newAuthSessionHarness(t)
 	h.createAccount(model.FeishuConnectionConnected)
-	release := make(chan struct{})
 	h.cli.urls = []string{"https://open.feishu.cn/suite/passport/oauth/device?user_code=WORKER"}
-	h.cli.release = release
+	h.cli.completeOutcome = DeviceAuthCompleted
+	h.cli.status = true
+	h.cli.appID = "cli_app"
 	service := h.newService("worker-success")
 	request := RecoveryRequest{
 		UserID: 7, Generation: 1, OperationID: "operation-success", Kind: RecoveryUserScope,
@@ -1553,13 +1530,15 @@ func TestAuthSessionService_WorkerSealsBeforeCompletingAndDispatching(t *testing
 	}
 	action, err := service.StartRecovery(h.ctx, request)
 	require.NoError(t, err)
+	createWaitingDeviceAuthOperation(t, h, request.OperationID, action.SessionID)
 	require.NoError(t, service.Activate(h.ctx, action.SessionID))
-	close(release)
-	waitAuthDispatch(t, h.dispatcher)
+	completion, err := service.CompleteUserAuthorization(h.ctx, 7, 1, action.SessionID)
+	require.NoError(t, err)
+	require.True(t, completion.Completed)
 
 	calls, changed := h.vault.snapshot()
-	require.Equal(t, 1, calls)
-	require.Equal(t, []bool{true}, changed, "successful CLI HOME must be sealed before dispatch")
+	require.Equal(t, 2, calls)
+	require.Equal(t, []bool{false, true}, changed, "successful CLI HOME must be sealed before dispatch")
 	stored, err := h.dataStore.FeishuWorkspace().GetSessionForUser(h.ctx, 7, 1, action.SessionID)
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuAuthSessionCompleted, stored.State)
@@ -1568,6 +1547,8 @@ func TestAuthSessionService_WorkerSealsBeforeCompletingAndDispatching(t *testing
 	restartedAction, err := h.newService("worker-restarted").StartRecovery(h.ctx, request)
 	require.NoError(t, err)
 	require.Nil(t, restartedAction, "a restarted service must observe durable completion")
+	require.Equal(t, []string{"operation-success"}, h.dispatcher.snapshot(),
+		"OperationService.Resume owns continuation after StartRecovery observes completed auth")
 	argv, _ := h.cli.snapshot()
 	require.Len(t, argv, 1, "durable completion must not launch the same login again")
 }
@@ -1576,6 +1557,9 @@ func TestAuthSessionService_OperationWorkerWaitsForPersistedWaitingActivation(t 
 	h := newAuthSessionHarness(t)
 	h.createAccount(model.FeishuConnectionConnected)
 	h.cli.urls = []string{"https://open.feishu.cn/suite/passport/oauth/device?user_code=FAST"}
+	h.cli.completeOutcome = DeviceAuthCompleted
+	h.cli.status = true
+	h.cli.appID = "cli_app"
 	service := h.newService("worker-fast")
 
 	action, err := service.StartRecovery(h.ctx, RecoveryRequest{
@@ -1590,8 +1574,11 @@ func TestAuthSessionService_OperationWorkerWaitsForPersistedWaitingActivation(t 
 	require.Equal(t, model.FeishuAuthSessionPending, stored.State)
 	require.Empty(t, h.dispatcher.snapshot(), "fast CLI success must not resume before operation waiting is durable")
 
+	createWaitingDeviceAuthOperation(t, h, "operation-fast", action.SessionID)
 	require.NoError(t, service.Activate(h.ctx, action.SessionID))
-	waitAuthDispatch(t, h.dispatcher)
+	completion, err := service.CompleteUserAuthorization(h.ctx, 7, 1, action.SessionID)
+	require.NoError(t, err)
+	require.True(t, completion.Completed)
 	stored, err = h.dataStore.FeishuWorkspace().GetSessionForUser(h.ctx, 7, 1, action.SessionID)
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuAuthSessionCompleted, stored.State)
@@ -1618,6 +1605,9 @@ func TestAuthSessionService_CompletedUserIntentDoesNotSynchronouslyRedispatch(t 
 	h := newAuthSessionHarness(t)
 	h.createAccount(model.FeishuConnectionConnected)
 	h.cli.urls = []string{"https://open.feishu.cn/suite/passport/oauth/device?user_code=RETRY_DISPATCH"}
+	h.cli.completeOutcome = DeviceAuthCompleted
+	h.cli.status = true
+	h.cli.appID = "cli_app"
 	h.dispatcher.errs = []error{errors.New("temporary dispatch failure"), nil}
 	service := h.newService("worker-dispatch-retry")
 	request := RecoveryRequest{
@@ -1626,18 +1616,21 @@ func TestAuthSessionService_CompletedUserIntentDoesNotSynchronouslyRedispatch(t 
 	}
 	action, err := service.StartRecovery(h.ctx, request)
 	require.NoError(t, err)
+	createWaitingDeviceAuthOperation(t, h, request.OperationID, action.SessionID)
 	require.NoError(t, service.Activate(h.ctx, action.SessionID))
-	waitAuthDispatch(t, h.dispatcher)
+	completion, err := service.CompleteUserAuthorization(h.ctx, 7, 1, action.SessionID)
+	require.ErrorIs(t, err, ErrAuthSessionUnavailable)
+	require.Nil(t, completion)
 	require.Eventually(t, func() bool {
 		stored, getErr := h.dataStore.FeishuWorkspace().GetSessionForUser(h.ctx, 7, 1, action.SessionID)
 		return getErr == nil && stored.State == model.FeishuAuthSessionCompleted
 	}, time.Second, 10*time.Millisecond)
 
-	restartedAction, err := h.newService("worker-dispatch-compensation").StartRecovery(h.ctx, request)
+	retried, err := h.newService("worker-dispatch-compensation").CompleteUserAuthorization(h.ctx, 7, 1, action.SessionID)
 	require.NoError(t, err)
-	require.Nil(t, restartedAction)
-	require.Equal(t, []string{"operation-dispatch-retry"}, h.dispatcher.snapshot(),
-		"the caller's Operation.Resume must continue replay instead of re-entering through the dispatcher")
+	require.True(t, retried.Completed)
+	require.Equal(t, []string{"operation-dispatch-retry", "operation-dispatch-retry"}, h.dispatcher.snapshot(),
+		"completed authorization must compensate a lost dispatcher response without restarting auth")
 	argv, _ := h.cli.snapshot()
 	require.Len(t, argv, 1, "dispatch compensation must not restart authorization")
 }
@@ -1664,11 +1657,11 @@ func TestAuthSessionService_ExpiredClaimRaceObservesCompletionAndCompensatesDisp
 		UserID: 7, Generation: 1, OperationID: operationID, Kind: RecoveryUserScope,
 		Scopes: []string{"docx:document:readonly"},
 	})
-	require.NoError(t, err)
+	require.ErrorIs(t, err, ErrAuthSessionUnavailable)
 	require.Nil(t, action)
-	require.Empty(t, h.dispatcher.snapshot(), "the current Operation.Resume owns replay after observing completion")
+	require.Empty(t, h.dispatcher.snapshot())
 	argv, statusCalls := h.cli.snapshot()
-	require.Empty(t, argv)
+	require.Len(t, argv, 1, "an expired legacy session is replaced by one protocol-v2 start attempt")
 	require.Zero(t, statusCalls, "the losing claimant must trust the fresh completed row and not inspect vault")
 }
 
@@ -1688,37 +1681,23 @@ func TestAuthSessionService_ExpiredLeaseRecoveryChecksVaultThenCompletesOrSupers
 				State:               model.FeishuAuthSessionPending, LeaseOwner: "dead-worker", LeaseUntil: &expired,
 				ExpiresAt: expired,
 			}).Error)
-			if !status {
-				release := make(chan struct{})
-				h.cli.urls = []string{"https://open.feishu.cn/suite/passport/oauth/device?user_code=FRESH"}
-				h.cli.release = release
-				defer close(release)
-			}
-
 			service := h.newService("recovery-worker")
 			action, err := service.StartRecovery(h.ctx, RecoveryRequest{
 				UserID: 7, Generation: 1, OperationID: operationID, Kind: RecoveryUserScope,
 				Scopes: []string{"docx:document:readonly"},
 			})
-			require.NoError(t, err)
+			require.ErrorIs(t, err, ErrAuthSessionUnavailable)
+			require.Nil(t, action)
 			_, statusCalls := h.cli.snapshot()
-			require.Equal(t, 1, statusCalls, "expired lease must use recovery-only auth status inside vault")
+			require.Zero(t, statusCalls, "legacy user-auth sessions require the explicit durable refresh path")
 			calls, changed := h.vault.snapshot()
-			require.GreaterOrEqual(t, calls, 1)
-			require.False(t, changed[0], "auth status is read-only and must not reseal HOME")
+			require.Equal(t, 1, calls)
+			require.Equal(t, []bool{false}, changed)
 
 			old, err := h.dataStore.FeishuWorkspace().GetSessionForUser(h.ctx, 7, 1, "00000000-0000-4000-8000-999999999999")
 			require.NoError(t, err)
-			if status {
-				require.Nil(t, action)
-				require.Equal(t, model.FeishuAuthSessionCompleted, old.State)
-				require.Empty(t, h.dispatcher.snapshot())
-			} else {
-				require.NotNil(t, action)
-				require.NotEqual(t, old.ID, action.SessionID)
-				require.Equal(t, model.FeishuAuthSessionSuperseded, old.State)
-				require.NoError(t, service.Activate(h.ctx, action.SessionID))
-			}
+			require.Equal(t, model.FeishuAuthSessionPending, old.State)
+			require.Empty(t, h.dispatcher.snapshot())
 		})
 	}
 }
@@ -1784,10 +1763,9 @@ func TestAuthSessionService_ExpiredRecoveryErrorSupersedesAndReleasesLease(t *te
 			require.ErrorIs(t, err, ErrAuthSessionUnavailable)
 			stored, getErr := h.dataStore.FeishuWorkspace().GetSessionForUser(h.ctx, 7, 1, session.ID)
 			require.NoError(t, getErr)
-			require.Equal(t, model.FeishuAuthSessionSuperseded, stored.State)
-			require.Empty(t, stored.LeaseOwner)
-			require.Nil(t, stored.LeaseUntil)
-			require.Empty(t, service.actionFor(stored, []string{"docx:document:readonly"}).URL)
+			require.Equal(t, model.FeishuAuthSessionPending, stored.State)
+			require.Equal(t, "dead-worker", stored.LeaseOwner)
+			require.NotNil(t, stored.LeaseUntil)
 		})
 	}
 }

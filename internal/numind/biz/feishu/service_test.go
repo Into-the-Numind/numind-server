@@ -274,6 +274,7 @@ type lifecycleAuthFake struct {
 	recoverOperation         func(context.Context, uint, uint64, string, string, string, []byte) (*OperationAction, error)
 	completeAppApprovalCalls []lifecycleAppApprovalCall
 	completeAppApproval      func(context.Context, uint, uint64, string) error
+	completeUserAuth         func(context.Context, uint, uint64, string) (*DeviceAuthCompletion, error)
 	stopped                  []uint64
 	action                   *OperationAction
 	stopWait                 func(context.Context) error
@@ -328,6 +329,18 @@ func (f *lifecycleAuthFake) CompleteAppApproval(ctx context.Context, userID uint
 		return f.completeAppApproval(ctx, userID, generation, sessionID)
 	}
 	return nil
+}
+
+func (f *lifecycleAuthFake) CompleteUserAuthorization(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	sessionID string,
+) (*DeviceAuthCompletion, error) {
+	if f.completeUserAuth != nil {
+		return f.completeUserAuth(ctx, userID, generation, sessionID)
+	}
+	return &DeviceAuthCompletion{NoticeCode: AuthorizationPending}, nil
 }
 
 func (f *lifecycleAuthFake) StopGenerationAndWait(ctx context.Context, _ uint, generation uint64) error {
@@ -807,6 +820,57 @@ func TestWorkspaceLifecycleResumeUsesSharedDispatcherForUserCompleted(t *testing
 	require.Equal(t, 1, dispatcher.calls)
 	require.Zero(t, operations.confirmed)
 	require.Zero(t, operations.cancelled)
+}
+
+func TestWorkspaceLifecycleResumeCompletedDispatchIsDetachedWithHardCeiling(t *testing.T) {
+	operationID := "op-detached-dispatch"
+	op := &model.FeishuOperation{
+		ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth,
+		ResultSummaryJSON: lifecycleRecoverySummary(t, model.FeishuOperationWaitingUserAuth, "session-detached", model.FeishuAuthPhaseUserAuth, RecoveryUserScope),
+	}
+	svc, _, workspace, _, dispatcher, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 2,
+	}, op)
+	workspace.activeSession = &model.FeishuAuthSession{
+		ID: "session-detached", UserID: 7, Generation: 2, OperationID: &operationID,
+		Phase: model.FeishuAuthPhaseUserAuth, State: model.FeishuAuthSessionCompleted,
+	}
+
+	type dispatchObservation struct {
+		deadline    time.Time
+		hasDeadline bool
+		err         error
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	observed := make(chan dispatchObservation, 1)
+	dispatcher.dispatch = func(ctx context.Context, _ uint, _ string) error {
+		deadline, hasDeadline := ctx.Deadline()
+		close(entered)
+		<-release
+		observed <- dispatchObservation{deadline: deadline, hasDeadline: hasDeadline, err: ctx.Err()}
+		return nil
+	}
+
+	callerCtx, cancelCaller := context.WithCancel(context.Background())
+	resultCh := make(chan *OperationResult, 1)
+	errCh := make(chan error, 1)
+	startedAt := time.Now()
+	go func() {
+		result, err := svc.Resume(callerCtx, 7, operationID, ResumeActionUserCompleted)
+		resultCh <- result
+		errCh <- err
+	}()
+	<-entered // all durable reads required to choose the completed branch have finished
+	cancelCaller()
+	close(release)
+
+	observation := <-observed
+	require.True(t, observation.hasDeadline, "the outer lifecycle dispatcher needs its own hard ceiling")
+	require.WithinDuration(t, startedAt.Add(authSessionCLIHardCeiling), observation.deadline, time.Second)
+	require.NoError(t, observation.err, "caller cancellation after the durable read must not cancel dispatch")
+	require.NoError(t, <-errCh)
+	require.Equal(t, operationID, (<-resultCh).OperationID)
 }
 
 func TestWorkspaceLifecycleResumeUserCompletedFinalizesTerminalAgentWaits(t *testing.T) {

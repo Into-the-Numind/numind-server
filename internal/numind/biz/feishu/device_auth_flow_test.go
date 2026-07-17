@@ -759,26 +759,27 @@ func (f *deviceAuthCompletionVaultFake) WithHomeCandidate(
 
 type deviceAuthCompletionStoreFake struct {
 	*deviceAuthFlowStoreFake
-	getCalls              int
-	blockPostClaimRead    bool
-	postClaimReadDelay    time.Duration
-	postClaimReadEntered  chan struct{}
-	postClaimReadOnce     sync.Once
-	postClaimReadCanceled bool
-	renewCalls            int
-	renewSignal           chan struct{}
-	renewFail             bool
-	renewErr              error
-	renewFailAfter        int
-	finalizeCalls         int
-	finalizeInput         *store.FeishuDeviceAuthSuccess
-	finalizeContextLive   bool
-	finalizeErr           error
-	finalizeLoseOwner     bool
-	finalizeEntered       chan struct{}
-	finalizeRelease       <-chan struct{}
-	finalizeOnce          sync.Once
-	published             *model.FeishuCLIVault
+	getCalls               int
+	blockPostClaimRead     bool
+	postClaimReadDelay     time.Duration
+	postClaimReadEntered   chan struct{}
+	postClaimReadOnce      sync.Once
+	postClaimReadCanceled  bool
+	renewCalls             int
+	renewSignal            chan struct{}
+	renewFail              bool
+	renewErr               error
+	renewFailAfter         int
+	finalizeCalls          int
+	finalizeInput          *store.FeishuDeviceAuthSuccess
+	finalizeContextLive    bool
+	finalizeErr            error
+	finalizeErrAfterCommit error
+	finalizeLoseOwner      bool
+	finalizeEntered        chan struct{}
+	finalizeRelease        <-chan struct{}
+	finalizeOnce           sync.Once
+	published              *model.FeishuCLIVault
 }
 
 func (f *deviceAuthCompletionStoreFake) GetSessionForUser(
@@ -892,24 +893,52 @@ func (f *deviceAuthCompletionStoreFake) FinalizeDeviceAuthSuccess(
 	published.Ciphertext = append([]byte(nil), input.Candidate.Ciphertext...)
 	f.published = &published
 	f.session.State = model.FeishuAuthSessionCompleted
+	completedAt := input.Now.UTC()
+	f.session.CompletedAt = &completedAt
 	f.session.ResumeCredentialCiphertext = nil
 	f.session.ResumeKeyVersion = ""
 	f.session.ResumeExpiresAt = nil
 	f.session.LeaseOwner = ""
 	f.session.LeaseUntil = nil
+	if f.finalizeErrAfterCommit != nil {
+		return f.finalizeErrAfterCommit
+	}
 	return nil
 }
 
 type deviceAuthCompletionDispatcherFake struct {
 	mu    sync.Mutex
 	calls []string
+	errs  []error
 }
 
 func (f *deviceAuthCompletionDispatcherFake) DispatchResume(_ context.Context, _ uint, operationID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, operationID)
+	if len(f.errs) > 0 {
+		err := f.errs[0]
+		f.errs = f.errs[1:]
+		return err
+	}
 	return nil
+}
+
+type deviceAuthObservationCapture struct {
+	mu     sync.Mutex
+	events []DeviceAuthObservation
+}
+
+func (c *deviceAuthObservationCapture) ObserveDeviceAuth(event DeviceAuthObservation) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.events = append(c.events, event)
+}
+
+func (c *deviceAuthObservationCapture) snapshot() []DeviceAuthObservation {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]DeviceAuthObservation(nil), c.events...)
 }
 
 type deviceAuthCompletionFixture struct {
@@ -1427,7 +1456,7 @@ func TestDeviceAuthFlow_CompleteSuccessPublishesCandidateAtomically(t *testing.T
 	require.NotNil(t, fixture.store.published)
 	fixture.store.mu.Unlock()
 	fixture.dispatcher.mu.Lock()
-	require.Empty(t, fixture.dispatcher.calls, "Task 9 owns durable dispatch after completion")
+	require.Equal(t, []string{*fixture.session.OperationID}, fixture.dispatcher.calls)
 	fixture.dispatcher.mu.Unlock()
 	fixture.cli.mu.Lock()
 	require.Equal(t, "opaque-completion-device-code", fixture.cli.completeDeviceCode)
@@ -1449,6 +1478,95 @@ func TestDeviceAuthFlow_CompleteSuccessPublishesCandidateAtomically(t *testing.T
 		require.Nil(t, mismatch.store.published)
 		mismatch.store.mu.Unlock()
 	})
+}
+
+func TestDeviceAuthFlow_CompleteCommittedResponseLossIsIdempotent(t *testing.T) {
+	fixture := newDeviceAuthCompletionFixture(t)
+	fixture.cli.outcome = DeviceAuthCompleted
+	fixture.cli.authStatus = true
+	fixture.store.finalizeErrAfterCommit = errors.New("finalize response was lost")
+
+	first, err := fixture.flow.CompleteUserAuthorization(
+		context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+	)
+	require.ErrorIs(t, err, ErrDeviceAuthConflict)
+	require.Nil(t, first)
+	fixture.dispatcher.mu.Lock()
+	require.Empty(t, fixture.dispatcher.calls, "a lost finalize response must not dispatch from the uncertain first attempt")
+	fixture.dispatcher.mu.Unlock()
+
+	second, err := fixture.flow.CompleteUserAuthorization(
+		context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+	)
+	require.NoError(t, err)
+	require.True(t, second.Completed)
+	fixture.cli.mu.Lock()
+	require.Equal(t, 1, fixture.cli.completeCalls, "committed authorization must never call the auth CLI again")
+	fixture.cli.mu.Unlock()
+	fixture.store.mu.Lock()
+	require.Equal(t, 1, fixture.store.finalizeCalls, "committed authorization must never finalize twice")
+	fixture.store.mu.Unlock()
+	fixture.dispatcher.mu.Lock()
+	require.Equal(t, []string{*fixture.session.OperationID}, fixture.dispatcher.calls)
+	fixture.dispatcher.mu.Unlock()
+}
+
+func TestDeviceAuthFlow_CompletedSessionDispatchesStoredOperationOnce(t *testing.T) {
+	fixture := newDeviceAuthCompletionFixture(t)
+	completedAt := fixture.now.Add(-time.Second)
+	fixture.store.session.State = model.FeishuAuthSessionCompleted
+	fixture.store.session.CompletedAt = &completedAt
+	fixture.store.session.ResumeCredentialCiphertext = nil
+	fixture.store.session.ResumeKeyVersion = ""
+	fixture.store.session.ResumeExpiresAt = nil
+
+	result, err := fixture.flow.CompleteUserAuthorization(
+		context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+	)
+	require.NoError(t, err)
+	require.True(t, result.Completed)
+	fixture.dispatcher.mu.Lock()
+	require.Equal(t, []string{*fixture.session.OperationID}, fixture.dispatcher.calls)
+	fixture.dispatcher.mu.Unlock()
+	fixture.cli.mu.Lock()
+	require.Zero(t, fixture.cli.completeCalls)
+	fixture.cli.mu.Unlock()
+	fixture.store.mu.Lock()
+	require.Zero(t, fixture.store.finalizeCalls)
+	fixture.store.mu.Unlock()
+}
+
+func TestDeviceAuthFlow_ObservabilityNeverContainsCredentialOrBusinessContent(t *testing.T) {
+	fixture := newDeviceAuthCompletionFixture(t)
+	fixture.cli.outcome = DeviceAuthCompleted
+	fixture.cli.authStatus = true
+	fixture.cli.completeDeviceCode = ""
+	observer := &deviceAuthObservationCapture{}
+	secretValues := []string{
+		"opaque-completion-device-code",
+		"https://open.feishu.cn/suite/passport/oauth/device?user_code=PRIVATE",
+		"/tmp/device-auth-completion-home",
+		"token-private-value",
+		"app-secret-private-value",
+		"Docs Base Wiki private business content",
+	}
+	fixture.dispatcher.errs = []error{fmt.Errorf(
+		"dispatch failed: %s %s %s %s", secretValues[1], secretValues[3], secretValues[4], secretValues[5],
+	)}
+	fixture.flow.observer = observer
+
+	result, err := fixture.flow.CompleteUserAuthorization(
+		context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+	)
+	require.ErrorIs(t, err, ErrAuthSessionUnavailable)
+	require.Nil(t, result)
+	flattened, marshalErr := json.Marshal(observer.snapshot())
+	require.NoError(t, marshalErr)
+	flattened = append(flattened, []byte(err.Error())...)
+	for _, secret := range secretValues {
+		require.NotContains(t, string(flattened), secret)
+	}
+	require.NotEmpty(t, observer.snapshot(), "start/complete protocol must emit allowlisted observations")
 }
 
 func TestDeviceAuthFlow_CompleteAppIDEvidenceTimeoutRetainsCredential(t *testing.T) {

@@ -139,6 +139,7 @@ type WorkspaceLifecycleAuth interface {
 	RefreshOperationAction(context.Context, uint, uint64, string, string, string, []byte) (*OperationAction, error)
 	RecoverOperationRefreshAction(context.Context, uint, uint64, string, string, string, []byte) (*OperationAction, error)
 	CompleteAppApproval(context.Context, uint, uint64, string) error
+	CompleteUserAuthorization(context.Context, uint, uint64, string) (*DeviceAuthCompletion, error)
 	StopGenerationAndWait(context.Context, uint, uint64) error
 }
 
@@ -382,32 +383,43 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 			}
 			return lifecycleStoredOperationSummary(updated), nil
 		}
-		// Create-app and user-auth recovery are completed by the server-owned
-		// auth worker. A premature browser acknowledgement simply returns the
-		// durable waiting state; it never reconstructs a URL or starts a second
-		// worker. Once a completed session is observed, the shared dispatcher is
-		// safe to retry after a worker-side dispatch interruption.
+		if session.State == model.FeishuAuthSessionCompleted {
+			dispatchCtx, dispatchCancel := authSessionDispatchContext(ctx)
+			defer dispatchCancel()
+			if err := s.dispatcher.DispatchResume(dispatchCtx, userID, operationID); err != nil {
+				return nil, ErrWorkspaceLifecycleUnavailable
+			}
+			updated, updateErr := s.workspace.GetOperationForUser(ctx, userID, account.Generation, operationID)
+			if updateErr != nil || updated == nil || updated.UserID != userID || updated.Generation != account.Generation {
+				return nil, ErrWorkspaceLifecycleUnavailable
+			}
+			if _, finalizeErr := s.finalizeTerminalOperationIfNeeded(ctx, userID, updated); finalizeErr != nil {
+				return nil, finalizeErr
+			}
+			return lifecycleStoredOperationSummary(updated), nil
+		}
+		if session.Phase == model.FeishuAuthPhaseUserAuth {
+			completion, completeErr := s.auth.CompleteUserAuthorization(
+				ctx, userID, account.Generation, session.ID,
+			)
+			if completeErr != nil || completion == nil {
+				return nil, ErrWorkspaceLifecycleUnavailable
+			}
+			updated, updateErr := s.workspace.GetOperationForUser(ctx, userID, account.Generation, operationID)
+			if updateErr != nil || updated == nil || updated.UserID != userID || updated.Generation != account.Generation {
+				return nil, ErrWorkspaceLifecycleUnavailable
+			}
+			if _, finalizeErr := s.finalizeTerminalOperationIfNeeded(ctx, userID, updated); finalizeErr != nil {
+				return nil, finalizeErr
+			}
+			return lifecycleStoredOperationSummary(updated), nil
+		}
+		// Create-app remains owned by its blocking server worker. A pending
+		// acknowledgement does not reconstruct or restart that worker.
 		if session.State == model.FeishuAuthSessionPending {
 			return lifecycleStoredOperationSummary(operation), nil
 		}
-		if session.State != model.FeishuAuthSessionCompleted {
-			return nil, ErrWorkspaceLifecycleUnavailable
-		}
-		// The exact Task12 dispatcher performs OperationService.Resume and, only
-		// on success, the durable Task11 tool-result continuation. It is shared
-		// with the auth worker, so concurrent user/worker callbacks cannot invoke
-		// the original CLI command a second time.
-		if err := s.dispatcher.DispatchResume(ctx, userID, operationID); err != nil {
-			return nil, ErrWorkspaceLifecycleUnavailable
-		}
-		updated, updateErr := s.workspace.GetOperationForUser(ctx, userID, account.Generation, operationID)
-		if updateErr != nil || updated == nil || updated.UserID != userID || updated.Generation != account.Generation {
-			return nil, ErrWorkspaceLifecycleUnavailable
-		}
-		if _, finalizeErr := s.finalizeTerminalOperationIfNeeded(ctx, userID, updated); finalizeErr != nil {
-			return nil, finalizeErr
-		}
-		return lifecycleStoredOperationSummary(updated), nil
+		return nil, ErrWorkspaceLifecycleUnavailable
 	case ResumeActionConfirmed:
 		// A confirmation may have durably completed its one Feishu write before
 		// the Task11 handoff was interrupted. Retrying the same acknowledgement

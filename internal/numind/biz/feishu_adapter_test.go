@@ -151,6 +151,88 @@ func TestBuildFeishuService_DeviceAuthCompositionFailsClosed(t *testing.T) {
 	})
 }
 
+func TestBuildFeishuService_ComposesAllowlistedDeviceAuthObserver(t *testing.T) {
+	deps := newFeishuCompositionDeps(t)
+	var captured feishu.DeviceAuthObserver
+	deps.deviceAuthFactory = func(flowDeps feishu.DeviceAuthFlowDeps) (*feishu.DeviceAuthFlow, error) {
+		captured = flowDeps.Observer
+		return feishu.NewDeviceAuthFlow(flowDeps)
+	}
+
+	composition, err := buildFeishuService(deps)
+	require.NoError(t, err)
+	require.NotNil(t, composition)
+	require.NotNil(t, captured, "production composition must not silently discard device-auth observations")
+
+	type logEntry struct {
+		message string
+		fields  []interface{}
+	}
+	var entries []logEntry
+	observer := productionDeviceAuthObserver{sink: func(message string, fields ...interface{}) {
+		entries = append(entries, logEntry{message: message, fields: append([]interface{}(nil), fields...)})
+	}}
+	operationID := "00000000-0000-4000-8000-000000000007"
+	sessionID := "00000000-0000-4000-8000-000000000008"
+	observer.ObserveDeviceAuth(feishu.DeviceAuthObservation{
+		UserID: 7, Generation: 3, OperationID: operationID, SessionID: sessionID,
+		Phase: "dispatch", OutcomeClass: "succeeded", CLIVersion: feishu.LarkCLIVersion, Duration: 12 * time.Millisecond,
+	})
+	observer.ObserveDeviceAuth(feishu.DeviceAuthObservation{
+		UserID: 7, Phase: "raw-secret-phase", OutcomeClass: "token-private-value", CLIVersion: "private-cli-output",
+	})
+	observer.ObserveDeviceAuth(feishu.DeviceAuthObservation{
+		UserID: 7, Phase: "dispatch", OutcomeClass: "token-private-value", CLIVersion: feishu.LarkCLIVersion,
+	})
+	observer.ObserveDeviceAuth(feishu.DeviceAuthObservation{
+		UserID: 7, Phase: "dispatch", OutcomeClass: "succeeded", CLIVersion: "private-cli-output",
+	})
+	require.Len(t, entries, 1, "invalid phases, outcomes, and CLI versions must be dropped before the production sink")
+	require.Equal(t, "feishu device authorization", entries[0].message)
+	require.Equal(t, []interface{}{
+		"user_id", uint(7), "generation", uint64(3), "operation_id", operationID, "session_id", sessionID,
+		"phase", "dispatch", "outcome_class", "succeeded", "cli_version", feishu.LarkCLIVersion,
+		"duration", 12 * time.Millisecond,
+	}, entries[0].fields)
+	flattened, err := json.Marshal(entries)
+	require.NoError(t, err)
+	require.NotContains(t, string(flattened), "token-private-value")
+	require.NotContains(t, string(flattened), "private-cli-output")
+}
+
+func TestProductionDeviceAuthObserver_DropsNonCanonicalIdentifiers(t *testing.T) {
+	entries := 0
+	observer := productionDeviceAuthObserver{sink: func(string, ...interface{}) { entries++ }}
+	valid := feishu.DeviceAuthObservation{
+		UserID: 7, Generation: 3, Phase: "dispatch", OutcomeClass: "succeeded", CLIVersion: feishu.LarkCLIVersion,
+	}
+
+	withPrivateOperationID := valid
+	withPrivateOperationID.OperationID = "token-private-value"
+	observer.ObserveDeviceAuth(withPrivateOperationID)
+	withPrivateSessionID := valid
+	withPrivateSessionID.SessionID = "Docs Base Wiki private content"
+	observer.ObserveDeviceAuth(withPrivateSessionID)
+	for _, invalidID := range []string{
+		" 00000000-0000-4000-8000-000000000017 ",
+		"urn:uuid:00000000-0000-4000-8000-000000000017",
+		"{00000000-0000-4000-8000-000000000017}",
+		"00000000-0000-4000-8000-000000000017-too-long",
+	} {
+		invalid := valid
+		invalid.OperationID = invalidID
+		observer.ObserveDeviceAuth(invalid)
+	}
+
+	require.Zero(t, entries, "non-UUID identifiers must drop the entire event before the logger")
+	observer.ObserveDeviceAuth(valid)
+	withCanonicalIDs := valid
+	withCanonicalIDs.OperationID = "00000000-0000-4000-8000-000000000017"
+	withCanonicalIDs.SessionID = "00000000-0000-4000-8000-000000000018"
+	observer.ObserveDeviceAuth(withCanonicalIDs)
+	require.Equal(t, 2, entries, "empty identifiers and canonical UUIDs remain observable")
+}
+
 func TestBuildFeishuService_KeyRotationReadsHistoricalVault(t *testing.T) {
 	deps := newFeishuCompositionDeps(t)
 	deps.keyVersion = "v2"

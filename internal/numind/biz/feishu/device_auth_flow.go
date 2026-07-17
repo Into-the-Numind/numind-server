@@ -78,6 +78,25 @@ type DeviceAuthCompletion struct {
 	Action     *OperationAction
 }
 
+// DeviceAuthObservation is a strict allowlist for authorization telemetry.
+// It intentionally cannot carry scopes, URLs, HOME paths, credentials, raw
+// errors, or operation content.
+type DeviceAuthObservation struct {
+	UserID       uint          `json:"user_id"`
+	Generation   uint64        `json:"generation"`
+	OperationID  string        `json:"operation_id,omitempty"`
+	SessionID    string        `json:"session_id,omitempty"`
+	Phase        string        `json:"phase"`
+	OutcomeClass string        `json:"outcome_class"`
+	CLIVersion   string        `json:"cli_version,omitempty"`
+	Duration     time.Duration `json:"duration"`
+}
+
+// DeviceAuthObserver receives only the allowlisted DeviceAuthObservation.
+type DeviceAuthObserver interface {
+	ObserveDeviceAuth(DeviceAuthObservation)
+}
+
 type DeviceAuthFlowDeps struct {
 	Accounts          AuthSessionAccountStore
 	Sessions          DeviceAuthStore
@@ -94,6 +113,7 @@ type DeviceAuthFlowDeps struct {
 	HeartbeatInterval time.Duration
 	StartTimeout      time.Duration
 	CompletionTimeout time.Duration
+	Observer          DeviceAuthObserver
 }
 
 // DeviceAuthFlow owns only the restart-safe split user-authorization protocol.
@@ -112,6 +132,7 @@ type DeviceAuthFlow struct {
 	heartbeatInterval time.Duration
 	startTimeout      time.Duration
 	completionTimeout time.Duration
+	observer          DeviceAuthObserver
 	liveURLs          *authSessionURLRegistry
 }
 
@@ -159,6 +180,7 @@ func NewDeviceAuthFlow(deps DeviceAuthFlowDeps) (*DeviceAuthFlow, error) {
 		cipher: deps.Cipher, dispatcher: deps.Dispatcher, now: now, newID: newID,
 		newLeaseToken: newLeaseToken, leaseDuration: leaseDuration, sessionDuration: sessionDuration,
 		heartbeatInterval: heartbeatInterval, startTimeout: startTimeout, completionTimeout: completionTimeout,
+		observer: deps.Observer,
 		liveURLs: newAuthSessionURLRegistry(),
 	}, nil
 }
@@ -181,10 +203,18 @@ func (f *DeviceAuthFlow) startUserAuthorization(
 	session *model.FeishuAuthSession,
 	scopes []string,
 	preservePendingOnFailure bool,
-) (*OperationAction, error) {
+) (action *OperationAction, retErr error) {
 	if f == nil {
 		return nil, ErrAuthSessionUnavailable
 	}
+	startedAt := f.now().UTC()
+	defer func() {
+		outcome := "succeeded"
+		if retErr != nil {
+			outcome = deviceAuthErrorOutcome(retErr)
+		}
+		f.observeDeviceAuth(session, "start", outcome, "", f.now().UTC().Sub(startedAt))
+	}()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -212,11 +242,14 @@ func (f *DeviceAuthFlow) startUserAuthorization(
 		ctx, session.UserID, session.Generation, session.ID, leaseToken, now, now.Add(f.leaseDuration),
 	)
 	if err != nil {
+		f.observeDeviceAuth(session, "lease_claim", "dependency", "", 0)
 		return nil, ErrDeviceAuthProcessing
 	}
 	if !claimed {
+		f.observeDeviceAuth(session, "lease_claim", "contended", "", 0)
 		return nil, ErrDeviceAuthProcessing
 	}
+	f.observeDeviceAuth(session, "lease_claim", "claimed", "", 0)
 	durableNow := f.now().UTC()
 	durable, err := f.sessions.GetSessionForUser(ctx, session.UserID, session.Generation, session.ID)
 	if err != nil || durable == nil || durable.ID != session.ID ||
@@ -417,10 +450,21 @@ func (f *DeviceAuthFlow) CompleteUserAuthorization(
 	userID uint,
 	generation uint64,
 	sessionID string,
-) (*DeviceAuthCompletion, error) {
+) (completion *DeviceAuthCompletion, retErr error) {
 	if f == nil || userID == 0 || generation == 0 || strings.TrimSpace(sessionID) == "" {
 		return nil, ErrAuthSessionUnavailable
 	}
+	startedAt := f.now().UTC()
+	var observedSession *model.FeishuAuthSession
+	defer func() {
+		outcome := "succeeded"
+		if retErr != nil {
+			outcome = deviceAuthErrorOutcome(retErr)
+		} else if completion != nil && completion.NoticeCode != "" {
+			outcome = string(completion.NoticeCode)
+		}
+		f.observeDeviceAuth(observedSession, "complete", outcome, LarkCLIVersion, f.now().UTC().Sub(startedAt))
+	}()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -428,8 +472,15 @@ func (f *DeviceAuthFlow) CompleteUserAuthorization(
 	if err != nil || session == nil {
 		return nil, ErrAuthSessionUnavailable
 	}
+	observedSession = session
 	account, err := f.accounts.Get(ctx, userID, ProviderLark)
-	if err != nil || !validDeviceAuthCompletion(account, session, f.now().UTC()) {
+	if err != nil || account == nil {
+		return nil, ErrAuthSessionUnavailable
+	}
+	if session.State == model.FeishuAuthSessionCompleted {
+		return f.dispatchCompletedDeviceAuth(ctx, account, session)
+	}
+	if !validDeviceAuthCompletion(account, session, f.now().UTC()) {
 		return nil, ErrAuthSessionUnavailable
 	}
 
@@ -451,8 +502,14 @@ func (f *DeviceAuthFlow) CompleteUserAuthorization(
 	)
 	cancelClaim()
 	if err != nil || !claimed {
+		outcome := "contended"
+		if err != nil {
+			outcome = "dependency"
+		}
+		f.observeDeviceAuth(session, "lease_claim", outcome, "", 0)
 		return nil, ErrDeviceAuthProcessing
 	}
+	f.observeDeviceAuth(session, "lease_claim", "claimed", "", 0)
 
 	rereadNow := f.now().UTC()
 	rereadBudget := deviceAuthBoundedBudget(
@@ -488,6 +545,7 @@ func (f *DeviceAuthFlow) CompleteUserAuthorization(
 	)
 	cancelRenew()
 	if renewErr != nil || !renewed {
+		f.observeDeviceAuth(session, "lease_renew", "lost", "", 0)
 		f.releaseOwnedCompletionLease(ctx, durable, leaseToken, oldLeaseUntil)
 		return nil, ErrDeviceAuthConflict
 	}
@@ -537,6 +595,7 @@ func (f *DeviceAuthFlow) CompleteUserAuthorization(
 	)
 	cancelHome()
 	if candidateErr != nil {
+		f.observeDeviceAuth(session, "candidate", "conflict", "", 0)
 		if fence.lost() || ownerCtx.Err() != nil {
 			return nil, ErrDeviceAuthConflict
 		}
@@ -676,6 +735,7 @@ func (f *DeviceAuthFlow) runDeviceAuthCompletionHeartbeat(
 			)
 			cancelRenew()
 			if err != nil || !renewed {
+				f.observeDeviceAuth(session, "lease_renew", "lost", "", 0)
 				fence.lose()
 				cancel()
 				return
@@ -813,9 +873,110 @@ func (f *DeviceAuthFlow) commitDeviceAuthCandidate(
 		Now:                   now,
 	})
 	if err != nil {
+		f.observeDeviceAuth(session, "candidate", "conflict", "", 0)
 		return nil, ErrDeviceAuthConflict
 	}
+	durable, durableErr := f.sessions.GetSessionForUser(ctx, session.UserID, session.Generation, session.ID)
+	if durableErr != nil || durable == nil {
+		return nil, ErrAuthSessionUnavailable
+	}
+	currentAccount, accountErr := f.accounts.Get(ctx, session.UserID, ProviderLark)
+	if accountErr != nil || currentAccount == nil {
+		return nil, ErrAuthSessionUnavailable
+	}
+	return f.dispatchCompletedDeviceAuth(ctx, currentAccount, durable)
+}
+
+func (f *DeviceAuthFlow) dispatchCompletedDeviceAuth(
+	ctx context.Context,
+	account *model.UserThirdPartyAccount,
+	session *model.FeishuAuthSession,
+) (*DeviceAuthCompletion, error) {
+	if f == nil || account == nil || session == nil || account.UserID == 0 ||
+		account.UserID != session.UserID || account.Provider != ProviderLark ||
+		account.Generation == 0 || account.Generation != session.Generation ||
+		account.ConnectionState == model.FeishuConnectionDisconnecting ||
+		session.ProtocolVersion != 2 || session.Phase != model.FeishuAuthPhaseUserAuth ||
+		session.State != model.FeishuAuthSessionCompleted || session.CompletedAt == nil ||
+		len(session.ResumeCredentialCiphertext) != 0 || session.ResumeKeyVersion != "" || session.ResumeExpiresAt != nil {
+		return nil, ErrAuthSessionUnavailable
+	}
+	if session.OperationID == nil {
+		return &DeviceAuthCompletion{Completed: true}, nil
+	}
+	operationID := strings.TrimSpace(*session.OperationID)
+	if operationID == "" || operationID != *session.OperationID {
+		return nil, ErrAuthSessionUnavailable
+	}
+	operation, err := f.sessions.GetOperationForUser(
+		ctx, session.UserID, session.Generation, operationID,
+	)
+	if err != nil || !validCompletedDeviceAuthOperation(operation, session) {
+		return nil, ErrAuthSessionUnavailable
+	}
+	dispatchCtx, cancelDispatch := authSessionDispatchContext(ctx)
+	defer cancelDispatch()
+	if err := f.dispatcher.DispatchResume(dispatchCtx, session.UserID, operationID); err != nil {
+		f.observeDeviceAuth(session, "dispatch", "retry", "", 0)
+		return nil, ErrAuthSessionUnavailable
+	}
+	f.observeDeviceAuth(session, "dispatch", "succeeded", "", 0)
 	return &DeviceAuthCompletion{Completed: true}, nil
+}
+
+func validCompletedDeviceAuthOperation(operation *model.FeishuOperation, session *model.FeishuAuthSession) bool {
+	if operation == nil || session == nil || session.OperationID == nil || operation.ID != *session.OperationID ||
+		operation.UserID != session.UserID || operation.Generation != session.Generation {
+		return false
+	}
+	switch operation.State {
+	case model.FeishuOperationWaitingUserAuth:
+		summary, err := decodeOperationSummary(operation.ResultSummaryJSON)
+		return err == nil && summary.Status == model.FeishuOperationWaitingUserAuth &&
+			summary.SessionID == session.ID && summary.Phase == model.FeishuAuthPhaseUserAuth
+	case model.FeishuOperationExecuting, model.FeishuOperationSucceeded, model.FeishuOperationFailed,
+		model.FeishuOperationUnknown, model.FeishuOperationCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+func (f *DeviceAuthFlow) observeDeviceAuth(
+	session *model.FeishuAuthSession,
+	phase string,
+	outcomeClass string,
+	cliVersion string,
+	duration time.Duration,
+) {
+	if f == nil || f.observer == nil {
+		return
+	}
+	event := DeviceAuthObservation{
+		Phase: phase, OutcomeClass: outcomeClass, CLIVersion: cliVersion, Duration: duration,
+	}
+	if session != nil {
+		event.UserID = session.UserID
+		event.Generation = session.Generation
+		event.SessionID = session.ID
+		if session.OperationID != nil {
+			event.OperationID = *session.OperationID
+		}
+	}
+	f.observer.ObserveDeviceAuth(event)
+}
+
+func deviceAuthErrorOutcome(err error) string {
+	switch {
+	case errors.Is(err, ErrDeviceAuthProcessing):
+		return "processing"
+	case errors.Is(err, ErrDeviceAuthConflict):
+		return "conflict"
+	case errors.Is(err, ErrDeviceAuthDependency):
+		return "dependency"
+	default:
+		return "unavailable"
+	}
 }
 
 func (f *DeviceAuthFlow) releaseDeviceAuthOutcome(
@@ -1018,8 +1179,10 @@ func (f *DeviceAuthFlow) replaceOwnedSession(
 		Now: f.now().UTC(),
 	})
 	if err != nil || stored == nil {
+		f.observeDeviceAuth(oldSession, "replacement", "conflict", "", 0)
 		return nil, ErrDeviceAuthConflict
 	}
+	f.observeDeviceAuth(oldSession, "replacement", "succeeded", "", 0)
 	f.liveURLs.remove(authSessionRegistryKey(oldSession))
 	if startParent == nil {
 		startParent = context.Background()

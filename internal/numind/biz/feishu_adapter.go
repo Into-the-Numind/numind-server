@@ -17,8 +17,10 @@ import (
 	"numind-server/internal/numind/biz/feishu"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/crypto"
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 
+	"github.com/google/uuid"
 	"github.com/spf13/viper"
 )
 
@@ -81,6 +83,73 @@ type feishuCompositionDeps struct {
 	// deviceAuthFactory is a fail-closed composition seam. Production always
 	// uses NewDeviceAuthFlow; tests can prove a nil flow is never published.
 	deviceAuthFactory func(feishu.DeviceAuthFlowDeps) (*feishu.DeviceAuthFlow, error)
+}
+
+type deviceAuthObservationSink func(string, ...interface{})
+
+// productionDeviceAuthObserver is the only bridge from device authorization
+// observations to the application logger. It validates every enum-like field
+// again at the sink boundary so future callers cannot turn the telemetry seam
+// into a raw logging channel.
+type productionDeviceAuthObserver struct {
+	sink deviceAuthObservationSink
+}
+
+func newProductionDeviceAuthObserver() productionDeviceAuthObserver {
+	return productionDeviceAuthObserver{sink: log.Infow}
+}
+
+func (o productionDeviceAuthObserver) ObserveDeviceAuth(event feishu.DeviceAuthObservation) {
+	if o.sink == nil || !validDeviceAuthObservationPhase(event.Phase) ||
+		!validDeviceAuthObservationOutcome(event.OutcomeClass) ||
+		(event.CLIVersion != "" && event.CLIVersion != feishu.LarkCLIVersion) ||
+		!validDeviceAuthObservationID(event.OperationID) || !validDeviceAuthObservationID(event.SessionID) {
+		return
+	}
+	duration := event.Duration
+	if duration < 0 {
+		duration = 0
+	}
+	o.sink("feishu device authorization",
+		"user_id", event.UserID,
+		"generation", event.Generation,
+		"operation_id", event.OperationID,
+		"session_id", event.SessionID,
+		"phase", event.Phase,
+		"outcome_class", event.OutcomeClass,
+		"cli_version", event.CLIVersion,
+		"duration", duration,
+	)
+}
+
+func validDeviceAuthObservationID(value string) bool {
+	if value == "" {
+		return true
+	}
+	parsed, err := uuid.Parse(value)
+	return err == nil && parsed.String() == strings.ToLower(value)
+}
+
+func validDeviceAuthObservationPhase(phase string) bool {
+	switch phase {
+	case "start", "complete", "lease_claim", "lease_renew", "candidate", "replacement", "dispatch":
+		return true
+	default:
+		return false
+	}
+}
+
+func validDeviceAuthObservationOutcome(outcome string) bool {
+	switch outcome {
+	case "succeeded", "unavailable", "processing", "conflict", "dependency",
+		"claimed", "contended", "lost", "retry",
+		string(feishu.AuthorizationPending), string(feishu.AuthorizationProcessing),
+		string(feishu.AuthorizationRejected), string(feishu.AuthorizationExpired),
+		string(feishu.AuthorizationUpdated):
+		return true
+	default:
+		return false
+	}
 }
 
 // buildFeishuService composes the flag-gated personal workspace graph. It
@@ -199,7 +268,7 @@ func buildFeishuService(deps feishuCompositionDeps) (*feishuPersonalWorkspace, e
 	deviceAuthFlow, err := deviceAuthFactory(feishu.DeviceAuthFlowDeps{
 		Accounts: deps.dataStore.ThirdPartyAccounts(), Sessions: deps.dataStore.FeishuWorkspace(),
 		Vault: vault, CLI: runner, Cipher: deviceAuthCipher, Dispatcher: dispatcher,
-		Owner: deps.authOwner,
+		Owner: deps.authOwner, Observer: newProductionDeviceAuthObserver(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("feishu: build device authorization flow: %w", err)

@@ -102,9 +102,14 @@ func newPersonalWorkspaceIntegrationAuthService(
 	owner string,
 ) *AuthSessionService {
 	t.Helper()
+	vault, err := NewEncryptedCLIHomeVault(
+		h.dataStore.ThirdPartyAccounts(), h.dataStore.FeishuWorkspace(),
+		h.cipher.currentCipher, h.cipher.currentVersion, t.TempDir(),
+	)
+	require.NoError(t, err)
 	deviceAuth, err := NewDeviceAuthFlow(DeviceAuthFlowDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Sessions: h.dataStore.FeishuWorkspace(),
-		Vault: h.vault, CLI: cli, Cipher: newDeviceAuthFlowCredentialCipher(t), Dispatcher: dispatcher,
+		Vault: vault, CLI: cli, Cipher: newDeviceAuthFlowCredentialCipher(t), Dispatcher: dispatcher,
 		Owner: owner + "-device-auth", Now: h.service.now,
 		LeaseDuration: time.Minute, SessionDuration: 10 * time.Minute,
 		HeartbeatInterval: 30 * time.Second, StartTimeout: time.Second, CompletionTimeout: 30 * time.Second,
@@ -112,7 +117,7 @@ func newPersonalWorkspaceIntegrationAuthService(
 	require.NoError(t, err)
 	auth, err := NewAuthSessionService(AuthSessionServiceDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Sessions: h.dataStore.FeishuWorkspace(),
-		Vault: h.vault, CLI: cli, DeviceAuth: deviceAuth, Dispatcher: dispatcher, Owner: owner,
+		Vault: vault, CLI: cli, DeviceAuth: deviceAuth, Dispatcher: dispatcher, Owner: owner,
 		Now: h.service.now, LeaseDuration: time.Minute, SessionDuration: 10 * time.Minute,
 		HeartbeatInterval: 30 * time.Second, StartTimeout: time.Second,
 	})
@@ -123,16 +128,16 @@ func newPersonalWorkspaceIntegrationAuthService(
 func TestPersonalWorkspaceIntegration_PhaseRecoveriesSurviveCoordinatorRestarts(t *testing.T) {
 	h := newOperationHarness(t)
 	createRelease := make(chan struct{})
-	initialUserRelease := make(chan struct{})
 	releaseCreate := releaseAuthSessionCLIFake(t, createRelease)
-	releaseInitialUser := releaseAuthSessionCLIFake(t, initialUserRelease)
 	cli := &authSessionCLIFake{
-		appID: "cli_personal_workspace",
+		appID:           "cli_personal_workspace",
+		completeOutcome: DeviceAuthCompleted,
+		status:          true,
 		urls: []string{
 			"https://open.feishu.cn/page/cli?user_code=CREATE_PERSONAL",
 			"https://open.feishu.cn/suite/passport/oauth/device?user_code=INITIAL_USER_SCOPE",
 		},
-		releases: []<-chan struct{}{createRelease, initialUserRelease},
+		releases: []<-chan struct{}{createRelease},
 	}
 	dispatcher := &reentrantOperationResumeDispatcher{}
 	authBeforeCreate := newPersonalWorkspaceIntegrationAuthService(t, h, cli, dispatcher, "personal-workspace-create")
@@ -199,9 +204,17 @@ func TestPersonalWorkspaceIntegration_PhaseRecoveriesSurviveCoordinatorRestarts(
 	userDispatchRelease := make(chan struct{})
 	releaseUserDispatch := releaseAuthSessionCLIFake(t, userDispatchRelease)
 	userDispatchEntered := dispatcher.blockNextDispatch(userDispatchRelease)
-	releaseInitialUser()
+	initialUserCompleted := make(chan error, 1)
+	go func() {
+		_, completeErr := authAfterCreate.CompleteUserAuthorization(
+			h.ctx, 7, 1, initialUserAuthSession.ID,
+		)
+		initialUserCompleted <- completeErr
+	}()
 	select {
 	case <-userDispatchEntered:
+	case completeErr := <-initialUserCompleted:
+		t.Fatalf("initial user authorization returned before dispatch: %v", completeErr)
 	case <-time.After(time.Second):
 		t.Fatal("user authorization completion did not reach the restart boundary")
 	}
@@ -209,6 +222,7 @@ func TestPersonalWorkspaceIntegration_PhaseRecoveriesSurviveCoordinatorRestarts(
 	afterInitialUserAuthRestart := newPersonalWorkspaceIntegrationOperationService(t, h, authAfterUserAuth)
 	setPersonalWorkspaceIntegrationDispatcher(dispatcher, afterInitialUserAuthRestart)
 	releaseUserDispatch()
+	require.NoError(t, <-initialUserCompleted)
 
 	var appScopeSession model.FeishuAuthSession
 	require.Eventually(t, func() bool {
@@ -258,11 +272,11 @@ func TestPersonalWorkspaceIntegration_PhaseRecoveriesSurviveCoordinatorRestarts(
 func TestPersonalWorkspaceIntegration_UserScopeRecoveryReplaysExactRequestAfterRestart(t *testing.T) {
 	h := newOperationHarness(t)
 	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_personal_workspace")
-	userRelease := make(chan struct{})
-	releaseUser := releaseAuthSessionCLIFake(t, userRelease)
 	cli := &authSessionCLIFake{
-		urls:     []string{"https://open.feishu.cn/suite/passport/oauth/device?user_code=RECOVER_USER_SCOPE"},
-		releases: []<-chan struct{}{userRelease},
+		urls:            []string{"https://open.feishu.cn/suite/passport/oauth/device?user_code=RECOVER_USER_SCOPE"},
+		completeOutcome: DeviceAuthCompleted,
+		status:          true,
+		appID:           "cli_personal_workspace",
 	}
 	dispatcher := &reentrantOperationResumeDispatcher{}
 	authBeforeRestart := newPersonalWorkspaceIntegrationAuthService(t, h, cli, dispatcher, "personal-workspace-user-scope")
@@ -282,9 +296,17 @@ func TestPersonalWorkspaceIntegration_UserScopeRecoveryReplaysExactRequestAfterR
 	userDispatchRelease := make(chan struct{})
 	releaseUserDispatch := releaseAuthSessionCLIFake(t, userDispatchRelease)
 	userDispatchEntered := dispatcher.blockNextDispatch(userDispatchRelease)
-	releaseUser()
+	userCompleted := make(chan error, 1)
+	go func() {
+		_, completeErr := authBeforeRestart.CompleteUserAuthorization(
+			h.ctx, 7, 1, waiting.Action.SessionID,
+		)
+		userCompleted <- completeErr
+	}()
 	select {
 	case <-userDispatchEntered:
+	case completeErr := <-userCompleted:
+		t.Fatalf("user-scope authorization returned before dispatch: %v", completeErr)
 	case <-time.After(time.Second):
 		t.Fatal("user-scope completion did not reach the restart boundary")
 	}
@@ -292,6 +314,7 @@ func TestPersonalWorkspaceIntegration_UserScopeRecoveryReplaysExactRequestAfterR
 	afterUserScopeRestart := newPersonalWorkspaceIntegrationOperationService(t, h, authAfterRestart)
 	setPersonalWorkspaceIntegrationDispatcher(dispatcher, afterUserScopeRestart)
 	releaseUserDispatch()
+	require.NoError(t, <-userCompleted)
 
 	var completed model.FeishuOperation
 	require.Eventually(t, func() bool {
@@ -311,69 +334,80 @@ func TestPersonalWorkspaceIntegration_UserScopeRecoveryReplaysExactRequestAfterR
 func TestPersonalWorkspaceIntegration_UserAuthResumeSurvivesServiceRestart(t *testing.T) {
 	h := newOperationHarness(t)
 	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_personal_workspace")
-	vault, err := NewEncryptedCLIHomeVault(
+	type instanceAResult struct {
+		waiting     *OperationResult
+		runner      *operationRunnerFake
+		runtimeBase string
+	}
+	startInstanceA := func() instanceAResult {
+		vaultA, err := NewEncryptedCLIHomeVault(
+			h.dataStore.ThirdPartyAccounts(), h.dataStore.FeishuWorkspace(),
+			h.cipher.currentCipher, h.cipher.currentVersion, t.TempDir(),
+		)
+		require.NoError(t, err)
+		instanceARelease := make(chan struct{})
+		releaseInstanceA := releaseAuthSessionCLIFake(t, instanceARelease)
+		instanceACLI := &authSessionCLIFake{
+			urls:    []string{"https://open.feishu.cn/suite/passport/oauth/device?user_code=INSTANCE_A"},
+			release: instanceARelease,
+		}
+		instanceADispatcher := &personalWorkspaceRestartDispatcher{}
+		instanceADeviceAuth, err := NewDeviceAuthFlow(DeviceAuthFlowDeps{
+			Accounts: h.dataStore.ThirdPartyAccounts(), Sessions: h.dataStore.FeishuWorkspace(),
+			Vault: vaultA, CLI: instanceACLI, Cipher: newDeviceAuthFlowCredentialCipher(t), Dispatcher: instanceADispatcher,
+			Owner: "instance-a-device-auth", Now: h.service.now,
+			LeaseDuration: time.Minute, SessionDuration: 10 * time.Minute,
+			HeartbeatInterval: 30 * time.Second, StartTimeout: time.Second, CompletionTimeout: 30 * time.Second,
+		})
+		require.NoError(t, err)
+		instanceAAuth, err := NewAuthSessionService(AuthSessionServiceDeps{
+			Accounts: h.dataStore.ThirdPartyAccounts(), Sessions: h.dataStore.FeishuWorkspace(),
+			Vault: vaultA, CLI: instanceACLI, DeviceAuth: instanceADeviceAuth,
+			Dispatcher: instanceADispatcher, Owner: "instance-a",
+			Now: h.service.now, LeaseDuration: time.Minute, SessionDuration: 10 * time.Minute,
+			HeartbeatInterval: 30 * time.Second, StartTimeout: time.Second,
+		})
+		require.NoError(t, err)
+		instanceARunner := &operationRunnerFake{steps: []operationRunnerStep{
+			{result: userScopeRequiredCLIResult(), err: errors.New("user permission has not been granted")},
+		}}
+		instanceAOperations := newPersonalWorkspaceRestartOperationService(t, h, instanceAAuth, vaultA, instanceARunner)
+		instanceADispatcher.setService(instanceAOperations)
+		waiting, executeErr := instanceAOperations.Execute(h.ctx, operationDocsFetchRequest(907, "tool-device-auth-restart"))
+		require.NoError(t, executeErr)
+		require.Equal(t, model.FeishuOperationWaitingUserAuth, waiting.State)
+		require.NotNil(t, waiting.Action)
+		require.Equal(t, waiting.OperationID, waiting.Action.OperationID)
+		assert.Zero(t, instanceACLI.ActiveRuns(),
+			"split user authorization start must not depend on an instance-local blocking worker")
+		releaseInstanceA()
+		return instanceAResult{waiting: waiting, runner: instanceARunner, runtimeBase: vaultA.RuntimeBase()}
+	}
+	instanceA := startInstanceA()
+	waiting := instanceA.waiting
+	instanceARunner := instanceA.runner
+
+	// A hard process loss cannot gracefully stop its graph first: doing so would
+	// replace the restart boundary with a teardown boundary. The helper scope
+	// deliberately drops every strong reference to A's vault/auth/dispatcher;
+	// only the durable waiting result and a read-only runner counter escape.
+	vaultB, err := NewEncryptedCLIHomeVault(
 		h.dataStore.ThirdPartyAccounts(), h.dataStore.FeishuWorkspace(),
 		h.cipher.currentCipher, h.cipher.currentVersion, t.TempDir(),
 	)
 	require.NoError(t, err)
+	require.NotEqual(t, instanceA.runtimeBase, vaultB.RuntimeBase(),
+		"instance B must reconstruct its vault with a fresh process-local runtime base")
 
-	instanceARelease := make(chan struct{})
-	releaseAuthSessionCLIFake(t, instanceARelease)
-	instanceACLI := &authSessionCLIFake{
-		urls:    []string{"https://open.feishu.cn/suite/passport/oauth/device?user_code=INSTANCE_A"},
-		release: instanceARelease,
+	instanceBCLI := &authSessionCLIFake{
+		completeOutcome: DeviceAuthCompleted,
+		status:          true,
+		appID:           "cli_personal_workspace",
 	}
-	instanceADispatcher := &personalWorkspaceRestartDispatcher{}
-	instanceADeviceAuth, err := NewDeviceAuthFlow(DeviceAuthFlowDeps{
-		Accounts: h.dataStore.ThirdPartyAccounts(), Sessions: h.dataStore.FeishuWorkspace(),
-		Vault: vault, CLI: instanceACLI, Cipher: newDeviceAuthFlowCredentialCipher(t), Dispatcher: instanceADispatcher,
-		Owner: "instance-a-device-auth", Now: h.service.now,
-		LeaseDuration: time.Minute, SessionDuration: 10 * time.Minute,
-		HeartbeatInterval: 30 * time.Second, StartTimeout: time.Second, CompletionTimeout: 30 * time.Second,
-	})
-	require.NoError(t, err)
-	instanceAAuth, err := NewAuthSessionService(AuthSessionServiceDeps{
-		Accounts: h.dataStore.ThirdPartyAccounts(), Sessions: h.dataStore.FeishuWorkspace(),
-		Vault: vault, CLI: instanceACLI, DeviceAuth: instanceADeviceAuth,
-		Dispatcher: instanceADispatcher, Owner: "instance-a",
-		Now: h.service.now, LeaseDuration: time.Minute, SessionDuration: 10 * time.Minute,
-		HeartbeatInterval: 30 * time.Second, StartTimeout: time.Second,
-	})
-	require.NoError(t, err)
-	instanceAAuthForCleanup := instanceAAuth
-	t.Cleanup(func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		if stopErr := instanceAAuthForCleanup.StopGenerationAndWait(stopCtx, 7, 1); stopErr != nil {
-			t.Errorf("join instance A authorization worker: %v", stopErr)
-		}
-	})
-	instanceARunner := &operationRunnerFake{steps: []operationRunnerStep{
-		{result: userScopeRequiredCLIResult(), err: errors.New("user permission has not been granted")},
-	}}
-	instanceAOperations := newPersonalWorkspaceRestartOperationService(t, h, instanceAAuth, vault, instanceARunner)
-	instanceADispatcher.setService(instanceAOperations)
-
-	waiting, err := instanceAOperations.Execute(h.ctx, operationDocsFetchRequest(907, "tool-device-auth-restart"))
-	require.NoError(t, err)
-	require.Equal(t, model.FeishuOperationWaitingUserAuth, waiting.State)
-	require.NotNil(t, waiting.Action)
-	require.Equal(t, waiting.OperationID, waiting.Action.OperationID)
-	assert.Zero(t, instanceACLI.ActiveRuns(),
-		"split user authorization start must not depend on an instance-local blocking worker")
-
-	// A hard process loss cannot gracefully stop its worker first: doing so
-	// would persist a failed session and replace the restart boundary with a
-	// teardown boundary. From here on instance A's auth service, worker, URL
-	// registry, CLI, and dispatcher are deliberately unused; the unconditional
-	// cleanup above joins its goroutine only after instance B has attempted the
-	// durable recovery.
-
-	instanceBCLI := &authSessionCLIFake{}
 	instanceBDispatcher := &personalWorkspaceRestartDispatcher{}
 	instanceBDeviceAuth, err := NewDeviceAuthFlow(DeviceAuthFlowDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Sessions: h.dataStore.FeishuWorkspace(),
-		Vault: vault, CLI: instanceBCLI, Cipher: newDeviceAuthFlowCredentialCipher(t), Dispatcher: instanceBDispatcher,
+		Vault: vaultB, CLI: instanceBCLI, Cipher: newDeviceAuthFlowCredentialCipher(t), Dispatcher: instanceBDispatcher,
 		Owner: "instance-b-device-auth", Now: h.service.now,
 		LeaseDuration: time.Minute, SessionDuration: 10 * time.Minute,
 		HeartbeatInterval: 30 * time.Second, StartTimeout: time.Second, CompletionTimeout: 30 * time.Second,
@@ -381,7 +415,7 @@ func TestPersonalWorkspaceIntegration_UserAuthResumeSurvivesServiceRestart(t *te
 	require.NoError(t, err)
 	instanceBAuth, err := NewAuthSessionService(AuthSessionServiceDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Sessions: h.dataStore.FeishuWorkspace(),
-		Vault: vault, CLI: instanceBCLI, DeviceAuth: instanceBDeviceAuth,
+		Vault: vaultB, CLI: instanceBCLI, DeviceAuth: instanceBDeviceAuth,
 		Dispatcher: instanceBDispatcher, Owner: "instance-b",
 		Now: h.service.now, LeaseDuration: time.Minute, SessionDuration: 10 * time.Minute,
 		HeartbeatInterval: 30 * time.Second, StartTimeout: time.Second,
@@ -398,7 +432,7 @@ func TestPersonalWorkspaceIntegration_UserAuthResumeSurvivesServiceRestart(t *te
 	instanceBRunner := &operationRunnerFake{steps: []operationRunnerStep{{
 		result: operationOKResult(`{"document_id":"completed-after-service-restart"}`),
 	}}}
-	instanceBOperations := newPersonalWorkspaceRestartOperationService(t, h, instanceBAuth, vault, instanceBRunner)
+	instanceBOperations := newPersonalWorkspaceRestartOperationService(t, h, instanceBAuth, vaultB, instanceBRunner)
 	instanceBDispatcher.setService(instanceBOperations)
 	instanceBLifecycle, err := NewWorkspaceLifecycleService(WorkspaceLifecycleDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Workspace: h.dataStore.FeishuWorkspace(),
@@ -424,14 +458,40 @@ func TestPersonalWorkspaceIntegration_UserAuthResumeSurvivesServiceRestart(t *te
 	}
 }
 
+func TestPersonalWorkspaceIntegration_DispatcherRestartReadsStoredResult(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_personal_workspace")
+	h.runner.steps = []operationRunnerStep{{
+		result: operationOKResult(`{"document_id":"durable-dispatch-result"}`),
+	}}
+	completed, err := h.service.Execute(h.ctx, operationDocsFetchRequest(908, "tool-dispatch-restart"))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, completed.State)
+
+	restartRunner := &operationRunnerFake{steps: []operationRunnerStep{{
+		err: errors.New("stored result must not invoke a business CLI after restart"),
+	}}}
+	restarted := newPersonalWorkspaceRestartOperationService(t, h, h.recovery, h.vault, restartRunner)
+	dispatcher := &personalWorkspaceRestartDispatcher{}
+	dispatcher.setService(restarted)
+
+	require.NoError(t, dispatcher.DispatchResume(h.ctx, 7, completed.OperationID))
+	stored, err := restarted.Resume(h.ctx, 7, completed.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, stored.State)
+	require.Equal(t, []string{completed.OperationID}, dispatcher.snapshot())
+	restartCalls, _ := restartRunner.snapshot()
+	require.Zero(t, restartCalls, "succeeded dispatch must read the encrypted stored result without replay")
+}
+
 func TestPersonalWorkspaceIntegration_RevokedRefreshRecoversOriginalOperationAfterRestart(t *testing.T) {
 	h := newOperationHarness(t)
 	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_personal_workspace")
-	userRelease := make(chan struct{})
-	releaseUser := releaseAuthSessionCLIFake(t, userRelease)
 	cli := &authSessionCLIFake{
-		urls:     []string{"https://open.feishu.cn/suite/passport/oauth/device?user_code=REAUTH_REVOKED"},
-		releases: []<-chan struct{}{userRelease},
+		urls:            []string{"https://open.feishu.cn/suite/passport/oauth/device?user_code=REAUTH_REVOKED"},
+		completeOutcome: DeviceAuthCompleted,
+		status:          true,
+		appID:           "cli_personal_workspace",
 	}
 	dispatcher := &reentrantOperationResumeDispatcher{}
 	authBeforeRestart := newPersonalWorkspaceIntegrationAuthService(t, h, cli, dispatcher, "personal-workspace-reauth")
@@ -454,9 +514,17 @@ func TestPersonalWorkspaceIntegration_RevokedRefreshRecoversOriginalOperationAft
 	userDispatchRelease := make(chan struct{})
 	releaseUserDispatch := releaseAuthSessionCLIFake(t, userDispatchRelease)
 	userDispatchEntered := dispatcher.blockNextDispatch(userDispatchRelease)
-	releaseUser()
+	userCompleted := make(chan error, 1)
+	go func() {
+		_, completeErr := authBeforeRestart.CompleteUserAuthorization(
+			h.ctx, 7, 1, waiting.Action.SessionID,
+		)
+		userCompleted <- completeErr
+	}()
 	select {
 	case <-userDispatchEntered:
+	case completeErr := <-userCompleted:
+		t.Fatalf("reauthorization returned before dispatch: %v", completeErr)
 	case <-time.After(time.Second):
 		t.Fatal("reauthorization completion did not reach the restart boundary")
 	}
@@ -464,6 +532,7 @@ func TestPersonalWorkspaceIntegration_RevokedRefreshRecoversOriginalOperationAft
 	afterReauthRestart := newPersonalWorkspaceIntegrationOperationService(t, h, authAfterRestart)
 	setPersonalWorkspaceIntegrationDispatcher(dispatcher, afterReauthRestart)
 	releaseUserDispatch()
+	require.NoError(t, <-userCompleted)
 	require.Eventually(t, func() bool {
 		operation, getErr := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, waiting.OperationID)
 		return getErr == nil && operation.State == model.FeishuOperationSucceeded
