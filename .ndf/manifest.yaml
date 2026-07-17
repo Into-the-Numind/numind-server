@@ -46,15 +46,15 @@ features:
   ndf_version: '3.0'
   description: Align hosted per-user Feishu authorization with the pinned lark-cli split device-code protocol and resume the exact original Agent operation
   classification_reason: 'Standard: customer-reported third-party OAuth and durable write-resume boundary; affects authentication state machine, secure resume credentials, Agent guidance, real CLI fixtures, and more than 3 files.'
-  last_updated_by: ai-s5-protocol-repair
-  last_updated_at: '2026-07-17T23:16:00+08:00'
+  last_updated_by: ai-s6-dev-merge
+  last_updated_at: '2026-07-17T23:20:00+08:00'
   created_at: '2026-07-16T18:53:00+08:00'
   track: standard
-  stage: S5
+  stage: S6
   status: active
   repos: [numind-server, numind-web-v3]
-  branches: {numind-server: feature/feishu-device-code-auth, numind-web-v3: feature/feishu-device-code-auth}
-  worktrees: {numind-server: /private/tmp/wt-feishu-device-code-auth-numind-server, numind-web-v3: /private/tmp/wt-feishu-device-code-auth-numind-web-v3}
+  branches: {numind-server: develop, numind-web-v3: develop}
+  worktrees: {numind-server: '(removed by ndf-done)', numind-web-v3: '(removed by ndf-done)'}
   progress: {total_tasks: 19, completed_tasks: 19, reviewed_tasks: 19}
   artifacts:
     requirement: requirements/feishu-device-code-auth.md
@@ -89,6 +89,7 @@ features:
   - 'S4 Task 19: final dual-repository read-only audit passes and allows S4 to S5. Backend exact four-package gates and lint pass; frontend targeted 141 tests, full 1104 tests, mocked Playwright 5/5, lint, and type-check pass. The approval concurrency fixture was aligned with the locked completed-session redispatch contract in commits 48880c94/3c48397b and passes count=200 plus race count=20 while durable dispatcher tests still prove one business run/auth CLI/finalize/Agent acceptance. Commit 9ad276e5 prevents process-cancellation readiness failures from cascading orphan children and passes isolated count=50 plus a fresh four-package run. Both customer RED commits are first, both worktrees are clean, and the final security audit found no config_prod, secret, router, IM, raw API, or shell-boundary expansion. Spec review PASS; quality review PASS_WITH_CONCERNS only for the three non-blocking frontend harness P2 suggestions.'
   - 'S5 automated acceptance passed and authorizes merge plus Dev deployment. Backend full non-race tests, Feishu-related race packages, and lint pass; frontend 1104 unit tests, 5 Playwright contracts, lint, and type-check pass. The repository-wide task test race failure is isolated to unchanged sandbox SkillsDir tests and reproduces identically on the original develop branch, so it is recorded as a baseline exception rather than a feature regression. QA: docs/superpowers/qa/2026-07-17-feishu-device-code-auth-s5-acceptance.md. Real Docs/Base/Wiki acceptance remains the post-deploy Dev step.'
   - 'S5 Dev diagnosis correction: lark-cli v1.0.68 currently emits accounts.feishu.cn/oauth/v1/device/verify with exact flow_id and user_code parameters. Customer RED commits 35014cba/7cbaf4e/4665fcf precede fixes 87c69e40/9ea6bd8/3a6e984. Backend and shared phase-aware frontend validators now accept the exact new and legacy official contracts while failing closed on wrong path/query. Backend regression/lint, frontend 1114 unit tests, build, lint/type-check, Playwright 5/5, and both independent reviews pass with no findings.'
+  - 'S6: ndf-done merged both feature branches into local develop and removed both worktrees/branches. GitHub was temporarily unreachable over TLS, so the atomic operation used --no-push; local develop is the deployment source and the pending origin pushes remain part of this S6 handoff.'
   blockers: []
 
 - id: agent-stream-start-order
