@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: Align hosted per-user Feishu authorization with the pinned lark-cli split device-code protocol and resume the exact original Agent operation
   classification_reason: 'Standard: customer-reported third-party OAuth and durable write-resume boundary; affects authentication state machine, secure resume credentials, Agent guidance, real CLI fixtures, and more than 3 files.'
-  last_updated_by: ai-s5-verification
-  last_updated_at: '2026-07-17T17:43:49+08:00'
+  last_updated_by: ai-s5-acceptance
+  last_updated_at: '2026-07-17T17:57:50+08:00'
   created_at: '2026-07-16T18:53:00+08:00'
   track: standard
   stage: S5
@@ -19,6 +19,7 @@ features:
     proposal: proposals/feishu-device-code-auth-proposal.md
     spec: docs/superpowers/specs/2026-07-16-feishu-device-code-auth-design.md
     plan: docs/superpowers/plans/2026-07-16-feishu-device-code-auth.md
+    qa: docs/superpowers/qa/2026-07-17-feishu-device-code-auth-s5-acceptance.md
   decisions:
   - 'S0: dev run 195 proved app creation succeeded but user authorization did not. Pinned lark-cli requires a no-wait URL/device-code start followed by a later device-code continuation; the platform still assumes one blocking JSON process.'
   - 'S1: customer selected server-owned split device flow. Start returns URL plus an encrypted exact-session resume credential; confirm completes with device-code, fenced-publishes HOME, then resumes the persisted operation at most once. ADR: .ndf/decisions/feishu-device-code-auth/0001-split-device-flow.md.'
@@ -44,6 +45,7 @@ features:
   - 'S4 Task 17: frontend commits 2c82a26, 583725f, and a538287 prove replacement authorization and the original Agent continuation complete on one page without reload, duplicate cards, ordinary /answer calls, or browser errors; historical URL-less cards refresh in place. Review found that terminal reconciliation discarded streamed reasoning while converting the last bubble to final_answer, so the implementation now preserves reasoning with a unit regression. The real mocked Playwright project is isolated onto its own non-mock Vite server and the plan command was corrected in backend commit e2421bbe. Final spec review PASS; quality review PASS_WITH_CONCERNS with only three non-blocking P2 test-harness hardening suggestions. Playwright passes 15/15 across three review runs, streaming unit tests pass 61/61, and lint/type-check pass.'
   - 'S4 Task 18: full frontend quality convergence passed with 96/96 test files and 1104 tests, the isolated mocked Playwright contract 5/5, type-check, and zero ESLint errors. The seven repository warnings are pre-existing and outside the feature diff; both worktree and index are clean and no formatter-owned changes escaped the feature file set. Independent spec review PASS and quality review PASS_WITH_CONCERNS with only the same three non-blocking P2 harness suggestions (dedicated config, stricter fetch lifecycle, and unknown-API guard). No additional hardening commit was needed after a538287.'
   - 'S4 Task 19: final dual-repository read-only audit passes and allows S4 to S5. Backend exact four-package gates and lint pass; frontend targeted 141 tests, full 1104 tests, mocked Playwright 5/5, lint, and type-check pass. The approval concurrency fixture was aligned with the locked completed-session redispatch contract in commits 48880c94/3c48397b and passes count=200 plus race count=20 while durable dispatcher tests still prove one business run/auth CLI/finalize/Agent acceptance. Commit 9ad276e5 prevents process-cancellation readiness failures from cascading orphan children and passes isolated count=50 plus a fresh four-package run. Both customer RED commits are first, both worktrees are clean, and the final security audit found no config_prod, secret, router, IM, raw API, or shell-boundary expansion. Spec review PASS; quality review PASS_WITH_CONCERNS only for the three non-blocking frontend harness P2 suggestions.'
+  - 'S5 automated acceptance passed and authorizes merge plus Dev deployment. Backend full non-race tests, Feishu-related race packages, and lint pass; frontend 1104 unit tests, 5 Playwright contracts, lint, and type-check pass. The repository-wide task test race failure is isolated to unchanged sandbox SkillsDir tests and reproduces identically on the original develop branch, so it is recorded as a baseline exception rather than a feature regression. QA: docs/superpowers/qa/2026-07-17-feishu-device-code-auth-s5-acceptance.md. Real Docs/Base/Wiki acceptance remains the post-deploy Dev step.'
   blockers: []
 
 - id: agent-stream-start-order
