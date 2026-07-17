@@ -1993,7 +1993,7 @@ func TestNewDeviceAuthFlow_ClampsHeartbeatToLeaseThirdAndRejectsTinyLease(t *tes
 	})
 }
 
-func TestDeviceAuthFlow_CompleteAmbiguousReconcilesAuthStatus(t *testing.T) {
+func TestDeviceAuthFlow_CompleteAmbiguousWithoutGrantedScopeEvidenceStaysPending(t *testing.T) {
 	fixture := newDeviceAuthCompletionFixture(t)
 	fixture.cli.outcome = DeviceAuthAmbiguous
 	fixture.cli.authStatus = true
@@ -2002,18 +2002,24 @@ func TestDeviceAuthFlow_CompleteAmbiguousReconcilesAuthStatus(t *testing.T) {
 		context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
 	)
 	require.NoError(t, err)
-	require.True(t, result.Completed)
+	require.False(t, result.Completed)
+	require.Equal(t, AuthorizationPending, result.NoticeCode)
 	fixture.vault.mu.Lock()
-	require.Equal(t, 1, fixture.vault.calls, "completion and reconciliation must share one candidate HOME")
+	require.Equal(t, 1, fixture.vault.calls)
 	home := fixture.vault.home
 	fixture.vault.mu.Unlock()
 	fixture.cli.mu.Lock()
-	require.Equal(t, []string{"complete", "auth_status", "app_id"}, fixture.cli.events)
+	require.Equal(t, []string{"complete"}, fixture.cli.events)
 	require.Equal(t, home, fixture.cli.completeHome)
 	require.Equal(t, []string{"docx:document:readonly"}, fixture.cli.completeExpectedScopes)
-	require.Equal(t, home, fixture.cli.authStatusHome)
-	require.Equal(t, home, fixture.cli.appIDHome)
+	require.Zero(t, fixture.cli.authStatusCalls)
+	require.Zero(t, fixture.cli.appIDCalls)
 	fixture.cli.mu.Unlock()
+	fixture.store.mu.Lock()
+	require.Nil(t, fixture.store.published)
+	require.Equal(t, model.FeishuAuthSessionPending, fixture.store.session.State)
+	require.NotEmpty(t, fixture.store.session.ResumeCredentialCiphertext)
+	fixture.store.mu.Unlock()
 }
 
 func TestDeviceAuthFlow_CompleteLateOwnerCannotPublish(t *testing.T) {
@@ -2178,7 +2184,7 @@ func TestDeviceAuthFlow_CompleteRenewsLeaseUntilFinalize(t *testing.T) {
 	fixture.store.mu.Unlock()
 }
 
-func TestDeviceAuthFlow_ReconcileUsesFreshContextAfterCLITimeout(t *testing.T) {
+func TestDeviceAuthFlow_CLITimeoutWithoutGrantedScopeEvidenceStaysPending(t *testing.T) {
 	fixture := newDeviceAuthCompletionFixture(t)
 	fixture.flow.completionTimeout = 20 * time.Millisecond
 	fixture.cli.outcome = DeviceAuthAmbiguous
@@ -2205,13 +2211,16 @@ func TestDeviceAuthFlow_ReconcileUsesFreshContextAfterCLITimeout(t *testing.T) {
 	completed := <-done
 	result, err := completed.value, completed.err
 	require.NoError(t, err)
-	require.True(t, result.Completed)
+	require.False(t, result.Completed)
+	require.Equal(t, AuthorizationPending, result.NoticeCode)
 	fixture.cli.mu.Lock()
 	require.ErrorIs(t, fixture.cli.completeContext.Err(), context.DeadlineExceeded)
-	require.True(t, fixture.cli.authStatusContextLive, "reconciliation must not reuse the expired CLI context")
-	require.NotEqual(t, fixture.cli.completeContext, fixture.cli.authStatusContext)
+	require.Zero(t, fixture.cli.authStatusCalls)
+	require.Zero(t, fixture.cli.appIDCalls)
 	fixture.cli.mu.Unlock()
 	fixture.store.mu.Lock()
-	require.True(t, fixture.store.finalizeContextLive, "atomic mutation must use a fresh live context")
+	require.Nil(t, fixture.store.published)
+	require.Equal(t, model.FeishuAuthSessionPending, fixture.store.session.State)
+	require.NotEmpty(t, fixture.store.session.ResumeCredentialCiphertext)
 	fixture.store.mu.Unlock()
 }

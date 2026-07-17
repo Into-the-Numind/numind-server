@@ -806,7 +806,17 @@ func (f *DeviceAuthFlow) completeInCandidateHome(
 	switch outcome {
 	case DeviceAuthPending, DeviceAuthRejected, DeviceAuthExpired, DeviceAuthProtocolFailure:
 		return outcome, ""
-	case DeviceAuthCompleted, DeviceAuthAmbiguous, DeviceAuthRetryableDependency:
+	case DeviceAuthAmbiguous, DeviceAuthRetryableDependency:
+		// Auth status and AppID prove only that some user token exists for the
+		// expected application. They do not prove that the durable scopes for
+		// this authorization attempt were granted; an older token in the HOME
+		// could satisfy both checks. Without structured granted-scope evidence,
+		// keep the session pending and never publish the candidate HOME.
+		if !session.ResumeExpiresAt.After(f.now().UTC()) {
+			return DeviceAuthExpired, ""
+		}
+		return DeviceAuthPending, ""
+	case DeviceAuthCompleted:
 	default:
 		return DeviceAuthProtocolFailure, ""
 	}

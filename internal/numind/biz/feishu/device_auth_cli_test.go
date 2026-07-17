@@ -135,6 +135,24 @@ func TestControlledLarkCLIRunner_CompleteUserAuthAcceptsOfficialNoWaitCacheLossW
 	require.Equal(t, DeviceAuthProtocolFailure, underGranted)
 }
 
+func TestControlledLarkCLIRunner_CompleteUserAuthBindsCachedRequestToDurableScopes(t *testing.T) {
+	home := controlledTestHome(t)
+	const fixture = `{"event":"authorization_complete","user_open_id":"ou_test","user_name":"tester","scope":"docx:document:readonly offline_access","requested":["docx:document:readonly"],"newly_granted":["docx:document:readonly"],"already_granted":[],"missing":[],"granted":["docx:document:readonly","offline_access"]}`
+	bin := writeControlledFakeBinary(t, controlledDeviceAuthCompleteScript(deviceAuthTestCode, fixture, 0))
+
+	superset, err := controlledRunner(bin).CompleteUserAuth(
+		context.Background(), home, deviceAuthTestCode, []string{"docx:document:readonly"},
+	)
+	require.NoError(t, err)
+	require.Equal(t, DeviceAuthCompleted, superset)
+
+	mismatched, err := controlledRunner(bin).CompleteUserAuth(
+		context.Background(), home, deviceAuthTestCode, []string{"offline_access"},
+	)
+	require.NoError(t, err)
+	require.Equal(t, DeviceAuthProtocolFailure, mismatched)
+}
+
 func TestControlledLarkCLIRunner_CompleteUserAuthOutcomeMatrix(t *testing.T) {
 	tests := []struct {
 		name     string
