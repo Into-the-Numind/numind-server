@@ -55,6 +55,35 @@ printf '%%s' %s
 	})
 }
 
+// Regression: lark-cli v1.0.68 auth login --no-wait --json emits a
+// command-specific object, not the generic {ok,identity,data} envelope used by
+// business commands.
+func TestControlledLarkCLIRunner_StartUserAuthAcceptsPinnedCLI1068Output(t *testing.T) {
+	home := controlledTestHome(t)
+	const fixture = `{"verification_url":"https://open.feishu.cn/suite/passport/oauth/device?user_code=SAFE-CODE","device_code":"secret-device-code","expires_in":600,"hint":"agent guidance"}`
+	bin := writeControlledFakeBinary(t, fmt.Sprintf("printf '%%s' %s", shellQuoteForControlledTest(fixture)))
+
+	start, err := controlledRunner(bin).StartUserAuth(context.Background(), home, []string{"offline_access"})
+	require.NoError(t, err)
+	require.Equal(t, DeviceAuthStart{
+		VerificationURL: deviceAuthTestURL,
+		DeviceCode:      deviceAuthTestCode,
+		ExpiresIn:       10 * time.Minute,
+	}, start)
+}
+
+// Regression: the resumed v1.0.68 command also emits a command-specific
+// authorization_complete object rather than a generic envelope.
+func TestControlledLarkCLIRunner_CompleteUserAuthAcceptsPinnedCLI1068Output(t *testing.T) {
+	home := controlledTestHome(t)
+	const fixture = `{"event":"authorization_complete","user_open_id":"ou_test","user_name":"tester","scope":"offline_access","requested":["offline_access"],"newly_granted":["offline_access"],"already_granted":[],"missing":[],"granted":["offline_access"]}`
+	bin := writeControlledFakeBinary(t, controlledDeviceAuthCompleteScript(deviceAuthTestCode, fixture, 0))
+
+	outcome, err := controlledRunner(bin).CompleteUserAuth(context.Background(), home, deviceAuthTestCode)
+	require.NoError(t, err)
+	require.Equal(t, DeviceAuthCompleted, outcome)
+}
+
 func TestControlledLarkCLIRunner_CompleteUserAuthOutcomeMatrix(t *testing.T) {
 	tests := []struct {
 		name     string
