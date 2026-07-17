@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: Align hosted per-user Feishu authorization with the pinned lark-cli split device-code protocol and resume the exact original Agent operation
   classification_reason: 'Standard: customer-reported third-party OAuth and durable write-resume boundary; affects authentication state machine, secure resume credentials, Agent guidance, real CLI fixtures, and more than 3 files.'
-  last_updated_by: ai-s4-task15
-  last_updated_at: '2026-07-17T16:23:30+08:00'
+  last_updated_by: ai-s4-task16
+  last_updated_at: '2026-07-17T16:40:30+08:00'
   created_at: '2026-07-16T18:53:00+08:00'
   track: standard
   stage: S4
@@ -13,7 +13,7 @@ features:
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/feishu-device-code-auth, numind-web-v3: feature/feishu-device-code-auth}
   worktrees: {numind-server: /private/tmp/wt-feishu-device-code-auth-numind-server, numind-web-v3: /private/tmp/wt-feishu-device-code-auth-numind-web-v3}
-  progress: {total_tasks: 19, completed_tasks: 15, reviewed_tasks: 15}
+  progress: {total_tasks: 19, completed_tasks: 16, reviewed_tasks: 16}
   artifacts:
     requirement: requirements/feishu-device-code-auth.md
     proposal: proposals/feishu-device-code-auth-proposal.md
@@ -40,6 +40,7 @@ features:
   - 'S4 Task 13: commit 06d6a08a completes backend crash, transaction, response-loss, dispatcher, two-instance, tenant, tamper, secret-scan, and Docs/Base/Wiki recovery coverage without changing production code. The pinned CLI has no wiki update verb, so the honest Wiki update fixture persists and replays wiki node-get, parses its obj_token, then persists and replays a separate docs update with exact read/write scopes; four full canonical argv oracles prove order and token provenance. Independent reviews passed after replacing partial argv comparisons and the earlier read-only Wiki shortcut. Focused/full Feishu gates, Feishu/store race, and lint pass; the repository-wide race phase remains blocked only by the pre-existing sandbox SkillsDir test race whose files are unchanged by this feature.'
   - 'S4 Task 14: frontend commit 3c5c40b is the first and only numind-web-v3 feature commit and preserves a focused customer RED for same-card authorization recovery. The test proves the existing store already keeps one operation card, adopts the new session, and stays pending, but drops the replacement URL and authorization_expired notice; the full file has 41 passing tests and only this intentional failure. Independent specification and quality reviews passed after try/finally store disposal removed timer pollution. The user explicitly owns and skipped the temporary Playwright diagnosis step; final mocked and real acceptance remain required.'
   - 'S4 Task 15: frontend commit 1aa9cbe makes the customer RED green with an exact runtime response allowlist, same-card replacement, notice-only retention, duplicate-click coalescing, navigation and same-operation session fences, transport-error preservation, and terminal notice cleanup. The validator distinguishes official live user-auth replacements from URL-less next external steps: replacement notices require a complete official URL, while a notice-free action is accepted only for the exact create_app/waiting_connection, app_scope/waiting_app_scope, user_auth/waiting_user_auth, or confirmation/waiting_confirmation mapping. Independent reviews closed top-level secret-field acceptance, impossible state/action combinations, a same-epoch stale-session overwrite, and the real backend URL-less confirmation contract. Focused API/store tests pass 72/72; lint has zero errors and type-check passes.'
+  - 'S4 Task 16: frontend commit ca96b46 renders all five authorization notices from fixed local Chinese copy, regenerates replacement QR codes, blocks duplicate lifecycle actions while processing, and isolates transport busy/error state by operation, session, request version, route epoch, and component lifetime. Review replaced a whole-card nested live region with one atomic polite status announcement, removed duplicate missing-link copy, and fenced late rejected requests across route changes. Existing native buttons/links, mobile wrapping, official URL bytes, and Numind tokens remain intact. Independent specification and quality reviews passed; focused component tests pass 69/69, lint has zero errors, and type-check passes.'
   blockers: []
 
 - id: agent-stream-start-order
