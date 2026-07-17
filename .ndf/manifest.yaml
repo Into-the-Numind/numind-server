@@ -4,12 +4,13 @@ features:
   ndf_version: '3.0'
   description: Switch SOP image recognition to qwen3.5-flash and explicitly disable thinking without changing the prompt or surrounding upload and billing flow.
   classification_reason: 'Hotfix: same DashScope provider and existing endpoint; no schema, API, new integration, payment, or permission logic change; two code files plus one regression test. User confirmed on 2026-07-17.'
-  last_updated_by: ai-h3-awaiting-prod
-  last_updated_at: '2026-07-17T15:11:00+08:00'
+  last_updated_by: ai-h3-prod-deployed
+  last_updated_at: '2026-07-17T15:18:00+08:00'
   created_at: '2026-07-17T14:57:43+08:00'
   track: hotfix
-  stage: H3
-  status: active
+  stage: completed
+  status: completed
+  completed_at: '2026-07-17T15:18:00+08:00'
   repos: [numind-server]
   branches: {numind-server: develop}
   worktrees: {numind-server: removed by ndf-done}
@@ -17,7 +18,8 @@ features:
   decisions:
   - 'H1: committed a red regression test first. The SOP route now supplies the qwen3.5-flash model constant; its Vision request body explicitly sets enable_thinking=false and omits thinking_budget. Existing Qwen3-VL callers retain their prior thinking configuration.'
   - 'H2: the focused regression, go test ./..., go vet ./..., and golangci-lint run ./... passed. A production-network, no-customer-data DashScope smoke request using qwen3.5-flash with enable_thinking=false returned HTTP 200 with a completion.'
-  - 'H3: ndf-done merged and pushed the hotfix to develop at 7a11467f; the feature worktree and branch were removed. Production deployment awaits explicit release authorization and version tag.'
+  - 'H3: ndf-done merged and pushed the hotfix to develop at 7a11467f; the feature worktree and branch were removed. Production deployment awaited explicit release authorization and version tag.'
+  - 'H3: with explicit user approval, production release v2.1.62 deployed image ccr.ccs.tencentyun.com/youshunumind/numind-server:v2.1.62-d3d64e63. The container and /healthz both reported healthy, and an exact DashScope Vision smoke request using qwen3.5-flash with enable_thinking=false returned HTTP 200 with a completion.'
   blockers: []
 
 - id: dashscope-key-rotation
