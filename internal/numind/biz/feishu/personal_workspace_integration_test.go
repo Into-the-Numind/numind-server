@@ -331,6 +331,183 @@ func TestPersonalWorkspaceIntegration_UserScopeRecoveryReplaysExactRequestAfterR
 	}
 }
 
+func TestPersonalWorkspaceIntegration_UserAuthRecoveryIsOperationIndependentAcrossDomains(t *testing.T) {
+	tests := []struct {
+		name      string
+		inputArgv []string
+		argv      []string
+		scopes    []string
+	}{
+		{
+			name:      "docs create",
+			inputArgv: []string{"docs", "+create", "--title", "Recovery report"},
+			argv:      []string{"docs", "+create", "--title", "Recovery report", "--format", "json", "--as", "user"},
+			scopes:    []string{"docx:document:create"},
+		},
+		{
+			name: "base read",
+			inputArgv: []string{
+				"base", "+record-get", "--base-token", "bascnABCDEFG123", "--table-id", "Tasks", "--record-id", "recABCDEFG123",
+			},
+			argv: []string{
+				"base", "+record-get", "--base-token", "bascnABCDEFG123", "--table-id", "Tasks", "--record-id", "recABCDEFG123",
+				"--format", "json", "--as", "user",
+			},
+			scopes: []string{"base:record:read"},
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			h := newOperationHarness(t)
+			h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_domain_independent")
+			cli := &authSessionCLIFake{
+				urls:            []string{"https://open.feishu.cn/suite/passport/oauth/device?user_code=DOMAIN_RECOVERY"},
+				completeOutcome: DeviceAuthCompleted,
+				status:          true,
+				appID:           "cli_domain_independent",
+			}
+			dispatcher := &reentrantOperationResumeDispatcher{}
+			auth := newPersonalWorkspaceIntegrationAuthService(t, h, cli, dispatcher, "domain-independent")
+			h.runner.steps = []operationRunnerStep{
+				{result: userScopeRequiredCLIResultFor(testCase.scopes), err: errors.New("user permission has not been granted")},
+				{result: operationOKResult(`{"ok":true}`)},
+			}
+
+			beforeRestart := newPersonalWorkspaceIntegrationOperationService(t, h, auth)
+			setPersonalWorkspaceIntegrationDispatcher(dispatcher, beforeRestart)
+			request := ExecuteRequest{
+				UserID: 7, AgentRunID: 950, ToolCallID: "tool-domain-recovery",
+				IdempotencyKey: "950:tool-domain-recovery",
+				Argv:           append([]string(nil), testCase.inputArgv...), SkillReceipts: []string{"shared", "doc", "base"},
+			}
+			waiting, err := beforeRestart.Execute(h.ctx, request)
+			require.NoError(t, err)
+			require.Equal(t, model.FeishuOperationWaitingUserAuth, waiting.State)
+			require.NotNil(t, waiting.Action)
+			storedWaiting, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, waiting.OperationID)
+			require.NoError(t, err)
+			for _, secret := range []string{"restart-safe-device-code", "DOMAIN_RECOVERY", "?user_code="} {
+				require.NotContains(t, string(storedWaiting.ResultSummaryJSON), secret,
+					"durable operation summaries must never persist device credentials or live URL queries")
+			}
+
+			// Mutating caller memory after persistence must not affect recovery.
+			request.Argv[0] = "im"
+			afterRestart := newPersonalWorkspaceIntegrationOperationService(t, h, auth)
+			setPersonalWorkspaceIntegrationDispatcher(dispatcher, afterRestart)
+			completed, err := auth.CompleteUserAuthorization(h.ctx, 7, 1, waiting.Action.SessionID)
+			require.NoError(t, err)
+			require.True(t, completed.Completed)
+
+			calls, invocations := h.runner.snapshot()
+			require.Equal(t, 2, calls)
+			require.Equal(t, testCase.argv, invocations[0], "initial execution must use the full canonical argv")
+			require.Equal(t, testCase.argv, invocations[1], "authorization must replay the full exact encrypted argv")
+		})
+	}
+
+	t.Run("wiki update resolves obj token before docs update", func(t *testing.T) {
+		h := newOperationHarness(t)
+		h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_wiki_update")
+		cli := &authSessionCLIFake{
+			urls: []string{
+				"https://open.feishu.cn/suite/passport/oauth/device?user_code=WIKI_RESOLVE",
+				"https://open.feishu.cn/suite/passport/oauth/device?user_code=WIKI_UPDATE",
+			},
+			completeOutcome: DeviceAuthCompleted,
+			status:          true,
+			appID:           "cli_wiki_update",
+		}
+		dispatcher := &reentrantOperationResumeDispatcher{}
+		auth := newPersonalWorkspaceIntegrationAuthService(t, h, cli, dispatcher, "wiki-update")
+		const resolvedObjToken = "doxcnWikiObject123"
+		h.runner.steps = []operationRunnerStep{
+			{result: userScopeRequiredCLIResultFor([]string{"wiki:node:retrieve"}), err: errors.New("wiki user scope missing")},
+			{result: operationOKResult(`{"obj_token":"` + resolvedObjToken + `","obj_type":"docx"}`)},
+			{result: reauthorizationRequiredCLIResult(), err: errors.New("docs authorization expired")},
+			{result: operationOKResult(`{"document_id":"` + resolvedObjToken + `","updated":true}`)},
+		}
+
+		nodeInput := []string{"wiki", "+node-get", "--node-token", "wikcnABCDEFG123"}
+		nodeArgv := []string{"wiki", "+node-get", "--node-token", "wikcnABCDEFG123", "--format", "json", "--as", "user"}
+		nodeCoordinator := newPersonalWorkspaceIntegrationOperationService(t, h, auth)
+		setPersonalWorkspaceIntegrationDispatcher(dispatcher, nodeCoordinator)
+		nodeWaiting, err := nodeCoordinator.Execute(h.ctx, ExecuteRequest{
+			UserID: 7, AgentRunID: 951, ToolCallID: "tool-wiki-node-get",
+			IdempotencyKey: "951:tool-wiki-node-get", Argv: nodeInput,
+			SkillReceipts: []string{"shared", "wiki"},
+		})
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuOperationWaitingUserAuth, nodeWaiting.State)
+		require.NotNil(t, nodeWaiting.Action)
+		require.Equal(t, []string{"wiki:node:retrieve"}, nodeWaiting.Action.Scopes)
+
+		afterNodeRestart := newPersonalWorkspaceIntegrationOperationService(t, h, auth)
+		setPersonalWorkspaceIntegrationDispatcher(dispatcher, afterNodeRestart)
+		nodeCompleted, err := auth.CompleteUserAuthorization(h.ctx, 7, 1, nodeWaiting.Action.SessionID)
+		require.NoError(t, err)
+		require.True(t, nodeCompleted.Completed)
+		nodeResult, err := afterNodeRestart.Resume(h.ctx, 7, nodeWaiting.OperationID)
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuOperationSucceeded, nodeResult.State)
+		var resolved struct {
+			ObjToken string `json:"obj_token"`
+			ObjType  string `json:"obj_type"`
+		}
+		require.NoError(t, json.Unmarshal(nodeResult.Data, &resolved))
+		require.Equal(t, resolvedObjToken, resolved.ObjToken)
+		require.Equal(t, "docx", resolved.ObjType)
+
+		const updateContent = "Recovered Wiki content"
+		updateInput := []string{
+			"docs", "+update", "--doc", resolved.ObjToken, "--command", "append", "--content", updateContent,
+		}
+		updateArgv := []string{
+			"docs", "+update", "--doc", resolvedObjToken, "--command", "append", "--content", updateContent,
+			"--format", "json", "--as", "user",
+		}
+		updateWaiting, err := afterNodeRestart.Execute(h.ctx, ExecuteRequest{
+			UserID: 7, AgentRunID: 952, ToolCallID: "tool-wiki-doc-update",
+			IdempotencyKey: "952:tool-wiki-doc-update", Argv: updateInput,
+			SkillReceipts: []string{"shared", "doc"},
+		})
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuOperationWaitingUserAuth, updateWaiting.State)
+		require.NotNil(t, updateWaiting.Action)
+		require.ElementsMatch(t,
+			[]string{"docx:document:write_only", "docx:document:readonly"},
+			updateWaiting.Action.Scopes,
+		)
+
+		afterUpdateRestart := newPersonalWorkspaceIntegrationOperationService(t, h, auth)
+		setPersonalWorkspaceIntegrationDispatcher(dispatcher, afterUpdateRestart)
+		updateCompleted, err := auth.CompleteUserAuthorization(h.ctx, 7, 1, updateWaiting.Action.SessionID)
+		require.NoError(t, err)
+		require.True(t, updateCompleted.Completed)
+		updateResult, err := afterUpdateRestart.Resume(h.ctx, 7, updateWaiting.OperationID)
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuOperationSucceeded, updateResult.State)
+
+		calls, invocations := h.runner.snapshot()
+		require.Equal(t, 4, calls)
+		require.Equal(t, nodeArgv, invocations[0])
+		require.Equal(t, nodeArgv, invocations[1])
+		require.Equal(t, updateArgv, invocations[2])
+		require.Equal(t, updateArgv, invocations[3])
+		require.Equal(t, resolved.ObjToken, invocations[2][3], "docs update token must come from node-get result")
+		for _, invocation := range invocations {
+			require.NotEqual(t, []string{"wiki", "+update"}, invocation[:2], "pinned lark-cli has no wiki update verb")
+		}
+
+		authArgv, _ := cli.snapshot()
+		require.Equal(t, [][]string{
+			{"auth", "login", "--scope", "wiki:node:retrieve", "--no-wait", "--json"},
+			{"auth", "login", "--scope", "docx:document:readonly docx:document:write_only", "--no-wait", "--json"},
+		}, authArgv)
+	})
+}
+
 func TestPersonalWorkspaceIntegration_UserAuthResumeSurvivesServiceRestart(t *testing.T) {
 	h := newOperationHarness(t)
 	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_personal_workspace")
@@ -545,12 +722,26 @@ func TestPersonalWorkspaceIntegration_RevokedRefreshRecoversOriginalOperationAft
 }
 
 func userScopeRequiredCLIResult() *CLIResult {
+	return userScopeRequiredCLIResultFor([]string{"docx:document:readonly"})
+}
+
+func reauthorizationRequiredCLIResult() *CLIResult {
+	return &CLIResult{
+		InvocationStarted: true,
+		ExitCode:          1,
+		Envelope: &CLIEnvelope{OK: false, Identity: "user", Error: &CLIError{
+			Type: "authentication", Subtype: "token_missing", Identity: "user",
+		}},
+	}
+}
+
+func userScopeRequiredCLIResultFor(scopes []string) *CLIResult {
 	return &CLIResult{
 		InvocationStarted: true,
 		ExitCode:          1,
 		Envelope: &CLIEnvelope{OK: false, Identity: "user", Error: &CLIError{
 			Type: "authorization", Subtype: "missing_scope", Code: json.RawMessage(`99991672`),
-			Identity: "user", MissingScopes: []string{"docx:document:readonly"},
+			Identity: "user", MissingScopes: append([]string(nil), scopes...),
 		}},
 	}
 }

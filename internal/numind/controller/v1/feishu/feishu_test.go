@@ -220,7 +220,11 @@ func TestFeishuResumeAuthorizationHTTPMatrix(t *testing.T) {
 		{name: "not found", body: `{"action":"user_completed"}`, err: feishubiz.ErrWorkspaceLifecycleNotFound, wantStatus: http.StatusNotFound},
 		{name: "conflict", body: `{"action":"user_completed"}`, err: feishubiz.ErrWorkspaceLifecycleConflict, wantStatus: http.StatusConflict},
 		{name: "dependency", body: `{"action":"user_completed"}`, err: feishubiz.ErrWorkspaceLifecycleDependency, wantStatus: http.StatusServiceUnavailable},
-		{name: "invariant", body: `{"action":"user_completed"}`, err: errors.New("raw invariant token=secret home=/tmp/private"), wantStatus: http.StatusInternalServerError},
+		{
+			name: "invariant", body: `{"action":"user_completed"}`,
+			err:        errors.New("raw invariant device_code=PRIVATE_DEVICE_CODE url=https://open.feishu.cn/device?user_code=PRIVATE_QUERY home=/tmp/private"),
+			wantStatus: http.StatusInternalServerError,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -236,6 +240,8 @@ func TestFeishuResumeAuthorizationHTTPMatrix(t *testing.T) {
 				require.JSONEq(t, tc.wantJSON, response.Body.String())
 			}
 			assertLifecycleResponseContainsNoInternalMaterial(t, response.Body.String())
+			require.NotContains(t, response.Body.String(), "PRIVATE_DEVICE_CODE")
+			require.NotContains(t, response.Body.String(), "PRIVATE_QUERY")
 			if tc.wantStatus == http.StatusConflict {
 				require.Contains(t, response.Body.String(), "飞书授权状态已更新，请使用最新步骤")
 			}

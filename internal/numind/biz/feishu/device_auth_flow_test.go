@@ -900,6 +900,7 @@ type deviceAuthCompletionVaultFake struct {
 	calls     int
 	home      string
 	candidate *CLIHomeCandidate
+	err       error
 }
 
 func (*deviceAuthCompletionVaultFake) WithHome(ctx context.Context, _ uint, _ uint64, callback func(string) (bool, error)) error {
@@ -923,6 +924,9 @@ func (f *deviceAuthCompletionVaultFake) WithHomeCandidate(
 	f.mu.Unlock()
 	if err := callback(home); err != nil {
 		return nil, err
+	}
+	if f.err != nil {
+		return nil, f.err
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -1659,6 +1663,158 @@ func TestDeviceAuthFlow_CompleteSuccessPublishesCandidateAtomically(t *testing.T
 		require.Nil(t, mismatch.store.published)
 		mismatch.store.mu.Unlock()
 	})
+}
+
+func TestDeviceAuthFlow_CompletionFailureBoundariesNeverPublishPartialCredential(t *testing.T) {
+	t.Run("CLI success followed by candidate failure remains retryable", func(t *testing.T) {
+		fixture := newDeviceAuthCompletionFixture(t)
+		fixture.cli.outcome = DeviceAuthCompleted
+		fixture.cli.authStatus = true
+		fixture.vault.err = errors.New("candidate snapshot failed")
+
+		result, err := fixture.flow.CompleteUserAuthorization(
+			context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+		)
+		require.ErrorIs(t, err, ErrDeviceAuthDependency)
+		require.Nil(t, result)
+		fixture.store.mu.Lock()
+		require.Nil(t, fixture.store.published)
+		require.Equal(t, model.FeishuAuthSessionPending, fixture.store.session.State)
+		require.NotEmpty(t, fixture.store.session.ResumeCredentialCiphertext)
+		require.Equal(t, 1, fixture.store.releaseCalls)
+		fixture.store.mu.Unlock()
+	})
+
+	t.Run("atomic transaction failure publishes neither vault nor completion", func(t *testing.T) {
+		fixture := newDeviceAuthCompletionFixture(t)
+		fixture.cli.outcome = DeviceAuthCompleted
+		fixture.cli.authStatus = true
+		fixture.store.finalizeErr = errors.New("transaction rolled back")
+
+		result, err := fixture.flow.CompleteUserAuthorization(
+			context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+		)
+		require.ErrorIs(t, err, ErrDeviceAuthConflict)
+		require.Nil(t, result)
+		fixture.store.mu.Lock()
+		require.Equal(t, 1, fixture.store.finalizeCalls)
+		require.Nil(t, fixture.store.published)
+		require.Equal(t, model.FeishuAuthSessionPending, fixture.store.session.State)
+		require.NotEmpty(t, fixture.store.session.ResumeCredentialCiphertext)
+		fixture.store.mu.Unlock()
+		fixture.dispatcher.mu.Lock()
+		require.Empty(t, fixture.dispatcher.calls)
+		fixture.dispatcher.mu.Unlock()
+	})
+
+	t.Run("tampered credential fails closed before CLI", func(t *testing.T) {
+		fixture := newDeviceAuthCompletionFixture(t)
+		fixture.store.session.ResumeCredentialCiphertext[0] ^= 0xff
+
+		result, err := fixture.flow.CompleteUserAuthorization(
+			context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+		)
+		require.ErrorIs(t, err, ErrAuthSessionUnavailable)
+		require.Nil(t, result)
+		fixture.cli.mu.Lock()
+		require.Zero(t, fixture.cli.completeCalls)
+		fixture.cli.mu.Unlock()
+		fixture.store.mu.Lock()
+		require.Equal(t, model.FeishuAuthSessionFailed, fixture.store.session.State)
+		require.Empty(t, fixture.store.session.ResumeCredentialCiphertext)
+		require.Nil(t, fixture.store.published)
+		fixture.store.mu.Unlock()
+	})
+}
+
+func TestDeviceAuthFlow_TwoInstancesFenceOneCompletionOwner(t *testing.T) {
+	fixture := newDeviceAuthCompletionFixture(t)
+	fixture.cli.outcome = DeviceAuthCompleted
+	fixture.cli.authStatus = true
+	fixture.store.finalizeEntered = make(chan struct{})
+	finalizeRelease := make(chan struct{})
+	fixture.store.finalizeRelease = finalizeRelease
+
+	second, err := NewDeviceAuthFlow(DeviceAuthFlowDeps{
+		Accounts: &deviceAuthFlowAccountStoreFake{account: fixture.account}, Sessions: fixture.store,
+		Vault: fixture.vault, CLI: fixture.cli, Cipher: fixture.flow.cipher, Dispatcher: fixture.dispatcher,
+		Owner: "device-auth-second-instance", Now: fixture.flow.now,
+		LeaseDuration: time.Minute, SessionDuration: 10 * time.Minute,
+		HeartbeatInterval: 20 * time.Second, StartTimeout: time.Second, CompletionTimeout: 30 * time.Second,
+	})
+	require.NoError(t, err)
+	type completionResult struct {
+		value *DeviceAuthCompletion
+		err   error
+	}
+	firstDone := make(chan completionResult, 1)
+	go func() {
+		value, completeErr := fixture.flow.CompleteUserAuthorization(
+			context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+		)
+		firstDone <- completionResult{value: value, err: completeErr}
+	}()
+	select {
+	case <-fixture.store.finalizeEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first instance did not reach atomic finalize")
+	}
+
+	contended, err := second.CompleteUserAuthorization(
+		context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+	)
+	require.ErrorIs(t, err, ErrDeviceAuthProcessing)
+	require.Nil(t, contended)
+	close(finalizeRelease)
+	first := <-firstDone
+	require.NoError(t, first.err)
+	require.True(t, first.value.Completed)
+	fixture.cli.mu.Lock()
+	require.Equal(t, 1, fixture.cli.completeCalls)
+	fixture.cli.mu.Unlock()
+}
+
+func TestDeviceAuthFlow_SessionLikeIDCannotCrossTenant(t *testing.T) {
+	fixture := newDeviceAuthCompletionFixture(t)
+	result, err := fixture.flow.CompleteUserAuthorization(
+		context.Background(), fixture.session.UserID+1, fixture.session.Generation, fixture.session.ID,
+	)
+	require.ErrorIs(t, err, ErrAuthSessionUnavailable)
+	require.Nil(t, result)
+	fixture.cli.mu.Lock()
+	require.Zero(t, fixture.cli.completeCalls)
+	fixture.cli.mu.Unlock()
+	fixture.store.mu.Lock()
+	require.Zero(t, fixture.store.claimCalls)
+	require.NotEmpty(t, fixture.store.session.ResumeCredentialCiphertext)
+	fixture.store.mu.Unlock()
+}
+
+func TestDeviceAuthFlow_DispatchInterruptionRetriesStoredCompletion(t *testing.T) {
+	fixture := newDeviceAuthCompletionFixture(t)
+	fixture.cli.outcome = DeviceAuthCompleted
+	fixture.cli.authStatus = true
+	fixture.dispatcher.errs = []error{errors.New("dispatcher interrupted")}
+
+	first, err := fixture.flow.CompleteUserAuthorization(
+		context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+	)
+	require.ErrorIs(t, err, ErrAuthSessionUnavailable)
+	require.Nil(t, first)
+	second, err := fixture.flow.CompleteUserAuthorization(
+		context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+	)
+	require.NoError(t, err)
+	require.True(t, second.Completed)
+	fixture.cli.mu.Lock()
+	require.Equal(t, 1, fixture.cli.completeCalls)
+	fixture.cli.mu.Unlock()
+	fixture.store.mu.Lock()
+	require.Equal(t, 1, fixture.store.finalizeCalls)
+	fixture.store.mu.Unlock()
+	fixture.dispatcher.mu.Lock()
+	require.Equal(t, []string{*fixture.session.OperationID, *fixture.session.OperationID}, fixture.dispatcher.calls)
+	fixture.dispatcher.mu.Unlock()
 }
 
 func TestDeviceAuthFlow_CompleteCommittedResponseLossIsIdempotent(t *testing.T) {
