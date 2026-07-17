@@ -14,14 +14,10 @@ import (
 )
 
 const (
-	deviceAuthCLIMaxJSONBytes     = 1 << 20
-	deviceAuthCLIMaxURLBytes      = 8 << 10
-	deviceAuthCLIMaxExpiresIn     = 12 * time.Minute
-	deviceAuthVerificationPath    = "/suite/passport/oauth/device"
-	deviceAuthIdentityUser        = "user"
-	deviceAuthSubtypePending      = "authorization_pending"
-	deviceAuthSubtypeAccessDenied = "access_denied"
-	deviceAuthSubtypeExpiredToken = "expired_token"
+	deviceAuthCLIMaxJSONBytes  = 1 << 20
+	deviceAuthCLIMaxURLBytes   = 8 << 10
+	deviceAuthCLIMaxExpiresIn  = 12 * time.Minute
+	deviceAuthVerificationPath = "/suite/passport/oauth/device"
 )
 
 var (
@@ -65,32 +61,23 @@ func (o DeviceAuthOutcome) String() string {
 	return string(o)
 }
 
-type strictDeviceAuthEnvelope struct {
-	OK       *bool                  `json:"ok"`
-	Identity string                 `json:"identity,omitempty"`
-	Data     json.RawMessage        `json:"data,omitempty"`
-	Error    *strictDeviceAuthError `json:"error,omitempty"`
-}
-
-// strictDeviceAuthError mirrors the bounded fields recognized by the pinned
-// CLI envelope. Classification below deliberately reads Subtype only.
-type strictDeviceAuthError struct {
-	Type                 string          `json:"type,omitempty"`
-	Subtype              string          `json:"subtype,omitempty"`
-	Code                 json.RawMessage `json:"code,omitempty"`
-	Message              string          `json:"message,omitempty"`
-	Identity             string          `json:"identity,omitempty"`
-	ConsoleURL           string          `json:"console_url,omitempty"`
-	MissingScopes        []string        `json:"missing_scopes,omitempty"`
-	PermissionViolations json.RawMessage `json:"permission_violations,omitempty"`
-	Details              json.RawMessage `json:"details,omitempty"`
-	Hint                 json.RawMessage `json:"hint,omitempty"`
-}
-
 type strictDeviceAuthStartData struct {
 	DeviceCode      string `json:"device_code"`
 	VerificationURL string `json:"verification_url"`
 	ExpiresIn       int64  `json:"expires_in"`
+	Hint            string `json:"hint"`
+}
+
+type strictDeviceAuthCompletionData struct {
+	Event          string   `json:"event"`
+	UserOpenID     string   `json:"user_open_id"`
+	UserName       *string  `json:"user_name"`
+	Scope          string   `json:"scope"`
+	Requested      []string `json:"requested"`
+	NewlyGranted   []string `json:"newly_granted"`
+	AlreadyGranted []string `json:"already_granted"`
+	Missing        []string `json:"missing"`
+	Granted        []string `json:"granted"`
 }
 
 // StartUserAuth starts the pinned short no-wait process and accepts only its
@@ -113,27 +100,23 @@ func (r *ControlledLarkCLIRunner) StartUserAuth(
 	argv := []string{
 		"auth", "login", "--scope", strings.Join(canonicalScopes, " "), "--no-wait", "--json",
 	}
-	result, runErr := r.Run(ctx, home, argv, nil)
+	result, runErr := r.runDeviceAuthProcess(ctx, home, argv)
 	if result == nil || !result.InvocationStarted {
 		return DeviceAuthStart{}, errDeviceAuthCLIDependency
 	}
 	if result.StdoutTruncated || result.StderrTruncated || len(result.Stdout) > deviceAuthCLIMaxJSONBytes {
 		return DeviceAuthStart{}, errDeviceAuthCLIProtocol
 	}
-	if runErr != nil && len(bytes.TrimSpace(result.Stdout)) == 0 {
+	if runErr != nil || result.ExitCode != 0 {
 		return DeviceAuthStart{}, errDeviceAuthCLIDependency
 	}
 
-	envelope, decodeErr := decodeStrictDeviceAuthEnvelope(result.Stdout)
-	if runErr != nil || result.ExitCode != 0 || decodeErr != nil || envelope.OK == nil || !*envelope.OK ||
-		envelope.Error != nil || !validDeviceAuthEnvelopeIdentity(envelope.Identity) {
-		return DeviceAuthStart{}, errDeviceAuthCLIProtocol
-	}
 	var data strictDeviceAuthStartData
-	if decodeStrictDeviceAuthData(envelope.Data, &data) != nil ||
+	if decodeStrictDeviceAuthObject(result.Stdout, &data) != nil ||
 		!validDeviceAuthDeviceCode(data.DeviceCode) ||
 		!validDeviceAuthVerificationURL(data.VerificationURL) ||
-		data.ExpiresIn <= 0 || data.ExpiresIn > int64(deviceAuthCLIMaxExpiresIn/time.Second) {
+		data.ExpiresIn <= 0 || data.ExpiresIn > int64(deviceAuthCLIMaxExpiresIn/time.Second) ||
+		len(data.Hint) > 64<<10 || !utf8.ValidString(data.Hint) || strings.ContainsRune(data.Hint, 0) {
 		return DeviceAuthStart{}, errDeviceAuthCLIProtocol
 	}
 	return DeviceAuthStart{
@@ -157,10 +140,46 @@ func (r *ControlledLarkCLIRunner) CompleteUserAuth(
 		return DeviceAuthProtocolFailure, nil
 	}
 
-	result, runErr := r.Run(ctx, home, []string{
+	result, runErr := r.runDeviceAuthProcess(ctx, home, []string{
 		"auth", "login", "--device-code", deviceCode, "--json",
-	}, nil)
+	})
 	return classifyDeviceAuthCompletionResult(result, runErr), nil
+}
+
+// runDeviceAuthProcess executes the two auth-login commands without applying
+// ControlledLarkCLIRunner.Run's generic business-command envelope parser.
+// lark-cli v1.0.68 intentionally gives auth login its own JSON contracts.
+func (r *ControlledLarkCLIRunner) runDeviceAuthProcess(
+	ctx context.Context,
+	home string,
+	argv []string,
+) (*CLIResult, error) {
+	result := &CLIResult{ExitCode: -1}
+	binary, err := r.binaryPath()
+	if err != nil {
+		return result, err
+	}
+	if err := validateControlledCLIHome(home); err != nil {
+		return result, err
+	}
+	if err := validateControlledCLIInput(argv, nil); err != nil {
+		return result, err
+	}
+	timeout := r.timeout
+	if timeout <= 0 || timeout > ControlledLarkCLITimeout {
+		timeout = ControlledLarkCLITimeout
+	}
+	result, waitErr, processErr := r.runProcess(ctx, binary, argv, nil, home, timeout)
+	if processErr != nil {
+		return result, processErr
+	}
+	if result.StdoutTruncated || result.StderrTruncated {
+		return result, errControlledCLIOutputLimit
+	}
+	if waitErr != nil {
+		return result, waitErr
+	}
+	return result, nil
 }
 
 func classifyDeviceAuthCompletionResult(result *CLIResult, runErr error) DeviceAuthOutcome {
@@ -179,38 +198,31 @@ func classifyDeviceAuthCompletionResult(result *CLIResult, runErr error) DeviceA
 		return DeviceAuthAmbiguous
 	}
 	if result.StdoutTruncated || result.StderrTruncated || len(result.Stdout) > deviceAuthCLIMaxJSONBytes {
+		// A non-zero process may have written the token before emitting a large
+		// diagnostic. Its candidate HOME is the only safe completion evidence.
+		if result.ExitCode != 0 {
+			return DeviceAuthAmbiguous
+		}
 		return DeviceAuthProtocolFailure
+	}
+	// In v1.0.68 typed command errors are written to stderr and collapse the
+	// provider's device-flow reason into localized prose. Do not classify that
+	// prose or mistake it for protocol evidence; reconcile the candidate HOME.
+	if result.ExitCode != 0 {
+		return DeviceAuthAmbiguous
 	}
 
-	envelope, decodeErr := decodeStrictDeviceAuthEnvelope(result.Stdout)
-	if decodeErr != nil || envelope.OK == nil || !validDeviceAuthEnvelopeIdentity(envelope.Identity) {
-		return DeviceAuthProtocolFailure
-	}
-	if *envelope.OK {
-		if !deviceAuthStructuredCompletionSafe(result, runErr) || envelope.Error != nil ||
-			decodeStrictDeviceAuthEmptyData(envelope.Data) != nil {
-			return DeviceAuthProtocolFailure
-		}
-		return DeviceAuthCompleted
-	}
 	if !deviceAuthStructuredCompletionSafe(result, runErr) {
 		return DeviceAuthAmbiguous
 	}
-	if decodeStrictDeviceAuthEmptyData(envelope.Data) != nil || envelope.Error == nil ||
-		envelope.Error.Type != "authorization" || envelope.Error.Subtype == "" ||
-		(envelope.Error.Identity != "" && envelope.Error.Identity != deviceAuthIdentityUser) {
+	var completion strictDeviceAuthCompletionData
+	if decodeStrictDeviceAuthObject(result.Stdout, &completion) != nil ||
+		completion.Event != "authorization_complete" ||
+		strings.TrimSpace(completion.UserOpenID) == "" || completion.UserName == nil ||
+		!validDeviceAuthCompletionScopes(completion) {
 		return DeviceAuthProtocolFailure
 	}
-	switch envelope.Error.Subtype {
-	case deviceAuthSubtypePending:
-		return DeviceAuthPending
-	case deviceAuthSubtypeAccessDenied:
-		return DeviceAuthRejected
-	case deviceAuthSubtypeExpiredToken:
-		return DeviceAuthExpired
-	default:
-		return DeviceAuthProtocolFailure
-	}
+	return DeviceAuthCompleted
 }
 
 func deviceAuthRunnerReturnedSafely(result *CLIResult, runErr error) bool {
@@ -240,25 +252,8 @@ func deviceAuthStructuredCompletionSafe(result *CLIResult, runErr error) bool {
 		result.ExitCode == exitErr.ExitCode()
 }
 
-func decodeStrictDeviceAuthEnvelope(raw []byte) (*strictDeviceAuthEnvelope, error) {
+func decodeStrictDeviceAuthObject(raw []byte, destination any) error {
 	if len(raw) == 0 || len(raw) > deviceAuthCLIMaxJSONBytes || rejectDuplicateDeviceAuthJSON(raw) != nil {
-		return nil, errDeviceAuthCLIProtocol
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	var envelope strictDeviceAuthEnvelope
-	if err := decoder.Decode(&envelope); err != nil {
-		return nil, errDeviceAuthCLIProtocol
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return nil, errDeviceAuthCLIProtocol
-	}
-	return &envelope, nil
-}
-
-func decodeStrictDeviceAuthData(raw json.RawMessage, destination any) error {
-	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return errDeviceAuthCLIProtocol
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
@@ -273,15 +268,55 @@ func decodeStrictDeviceAuthData(raw json.RawMessage, destination any) error {
 	return nil
 }
 
-func decodeStrictDeviceAuthEmptyData(raw json.RawMessage) error {
-	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return nil
+func validDeviceAuthCompletionScopes(data strictDeviceAuthCompletionData) bool {
+	if data.Scope == "" || data.Requested == nil || data.NewlyGranted == nil ||
+		data.AlreadyGranted == nil || data.Missing == nil || data.Granted == nil ||
+		len(data.Requested) == 0 || len(data.Granted) == 0 || len(data.Missing) != 0 {
+		return false
 	}
-	return decodeStrictDeviceAuthData(raw, &struct{}{})
-}
-
-func validDeviceAuthEnvelopeIdentity(identity string) bool {
-	return identity == deviceAuthIdentityUser
+	for _, values := range [][]string{data.Requested, data.NewlyGranted, data.AlreadyGranted, data.Missing, data.Granted} {
+		canonical, err := canonicalAuthScopes(values)
+		if err != nil || len(canonical) != len(values) {
+			return false
+		}
+	}
+	granted, err := canonicalAuthScopes(data.Granted)
+	if err != nil {
+		return false
+	}
+	scope, err := canonicalAuthScopes(strings.Fields(data.Scope))
+	if err != nil || len(granted) != len(scope) {
+		return false
+	}
+	for index := range granted {
+		if granted[index] != scope[index] {
+			return false
+		}
+	}
+	grantedSet := make(map[string]struct{}, len(granted))
+	for _, value := range granted {
+		grantedSet[value] = struct{}{}
+	}
+	requestedSet := make(map[string]struct{}, len(data.Requested))
+	for _, value := range data.Requested {
+		if _, ok := grantedSet[value]; !ok {
+			return false
+		}
+		requestedSet[value] = struct{}{}
+	}
+	classified := make(map[string]struct{}, len(data.NewlyGranted)+len(data.AlreadyGranted))
+	for _, values := range [][]string{data.NewlyGranted, data.AlreadyGranted} {
+		for _, value := range values {
+			if _, ok := requestedSet[value]; !ok {
+				return false
+			}
+			if _, duplicate := classified[value]; duplicate {
+				return false
+			}
+			classified[value] = struct{}{}
+		}
+	}
+	return len(classified) == len(requestedSet)
 }
 
 func validDeviceAuthVerificationURL(value string) bool {

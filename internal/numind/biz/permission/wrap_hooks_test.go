@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +14,7 @@ import (
 	einoschema "github.com/cloudwego/eino/schema"
 
 	"numind-server/internal/numind/biz/agent"
+	pkglog "numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 )
 
@@ -145,6 +148,40 @@ func TestWrap_PreToolCall_AllowForwardsToBase(t *testing.T) {
 	case <-sink:
 		t.Errorf("sink unexpectedly received detail on allow")
 	default:
+	}
+}
+
+// Regression: tool arguments can contain document bodies, signed receipts,
+// credentials, or other customer data. Dispatch telemetry must never serialize
+// the full input into application logs.
+func TestWrap_PreToolCall_DispatchLogDoesNotContainToolInput(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "permission.log")
+	pkglog.Init(&pkglog.Options{
+		DisableCaller: true, DisableStacktrace: true,
+		Level: "info", Format: "json", OutputPaths: []string{logPath},
+	})
+	t.Cleanup(func() { pkglog.Init(pkglog.NewOptions()) })
+
+	gate := NewPermissionGate(
+		WithValidators(&stubValidator{id: "Allow", result: Allow("Allow", DecisionReasonOther, "ok")}),
+	)
+	defer gate.Close()
+	wrapped := WrapHooks(nil, gate)
+	tool := &fakeEinoTool{name: "lark_execute"}
+	ctx := ctxWithAll(nil, 42, 1, map[string]agent.FullTool{"lark_execute": &fakeFullTool{name: "lark_execute"}})
+	const secretBody = "CUSTOMER-DOCUMENT-BODY-MUST-NOT-APPEAR"
+
+	_, err := wrapped.PreToolCall(ctx, tool, `{"argv":["docs","+create"],"content":"`+secretBody+`"}`)
+	if err != nil {
+		t.Fatalf("PreToolCall error: %v", err)
+	}
+	pkglog.Sync()
+	logged, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read dispatch log: %v", err)
+	}
+	if strings.Contains(string(logged), secretBody) {
+		t.Fatalf("dispatch log leaked customer tool input: %s", logged)
 	}
 }
 

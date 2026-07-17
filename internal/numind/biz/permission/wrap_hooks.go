@@ -77,8 +77,7 @@ func WrapHooks(base *agent.RunHooks, gate *PermissionGate) *agent.RunHooks {
 				}
 				log.Infow("WrapHooks.PreToolCall: dispatching tool execution",
 					"agent_run_id", req.AgentRunID,
-					"tool_name", toolName(ctx, t),
-					"input_json", effectiveInput)
+					"tool_name", toolName(ctx, t))
 				return forwardPre(ctx, base, t, effectiveInput)
 
 			default:
