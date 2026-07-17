@@ -268,7 +268,7 @@ func (ctrl *AliController) VisionAnalyze(c *gin.Context) {
 	// 9. 调用 Biz 层进行分析
 	analyzeCtx := c.Request.Context()
 	analyzeCtx = billing.WithBilling(analyzeCtx, user.ID, "ali_vision_analyze")
-	result, _, err := ctrl.aliBiz.QianwenVision(analyzeCtx, imageURL, prompt, "qwen3-vl-flash-2026-01-22")
+	result, _, err := ctrl.aliBiz.QianwenVision(analyzeCtx, imageURL, prompt, ali.SOPVisionModel)
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
