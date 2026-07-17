@@ -141,6 +141,40 @@ func TestLarkPersonalWorkspace_SkillReadSuccessUsesOnlyRunContext(t *testing.T) 
 	assert.Contains(t, tool.Description(), "controlled reference")
 }
 
+// Customer regression (Dev run 204): upstream skills describe a local CLI and
+// told the hosted Agent to run auth/config preflights and request App secrets.
+// The hosted boundary must explicitly override those instructions before the
+// model chooses a command, while leaving the signed skill content untouched.
+func TestLarkPersonalWorkspace_SkillReadPublishesHostedPolicy(t *testing.T) {
+	executor := &fakeSkillReadExecutor{result: &feishu.SkillReadPage{
+		Skill:   "lark-doc",
+		Path:    "skills/lark-doc/SKILL.md",
+		Content: "首次使用前执行 lark-cli auth login，并默认使用 --as user。",
+		Receipt: "opaque-doc-receipt",
+	}}
+
+	result, err := (&larkSkillReadTool{executor: executor}).Execute(
+		WithRunID(context.Background(), 204),
+		ToolInput(`{"skill":"lark-doc"}`),
+	)
+	require.NoError(t, err)
+
+	var output struct {
+		Content      string `json:"content"`
+		HostedPolicy string `json:"hosted_policy"`
+		Receipt      string `json:"receipt"`
+	}
+	require.NoError(t, json.Unmarshal(result, &output))
+	assert.Equal(t, executor.result.Content, output.Content, "signed upstream content must stay byte-for-byte intact")
+	assert.Equal(t, executor.result.Receipt, output.Receipt)
+	assert.Contains(t, output.HostedPolicy, "不要执行 auth/config/whoami")
+	assert.Contains(t, output.HostedPolicy, "不要要求用户提供 App ID/App Secret")
+	assert.Contains(t, output.HostedPolicy, "直接调用 lark_execute")
+	assert.Contains(t, output.HostedPolicy, "自动生成授权卡片")
+	assert.Contains(t, output.HostedPolicy, "lark-shared")
+	assert.Contains(t, output.HostedPolicy, "对应业务技能")
+}
+
 func TestLarkPersonalWorkspace_SkillReadStrictInputAndSafeFailures(t *testing.T) {
 	for name, input := range map[string]string{
 		"user identity":     `{"skill":"lark-doc","user_id":9}`,
@@ -451,6 +485,24 @@ func TestLarkPersonalWorkspace_ExecuteInvalidWaitingAndExecutorErrorsAreSafe(t *
 		ToolInput(`{"argv":["docs","+fetch"],"skill_receipts":["receipt-raw"]}`),
 	)
 	requireSafeLarkSoftError(t, result, err, internalErr.Error(), "receipt-raw", "+fetch", "/private/home")
+}
+
+// Customer regression (Dev run 204): a rejected hosted command was projected
+// as a generic transient error, so the model blindly retried auth/config and
+// finally asked the user for App credentials. Rejections need fixed,
+// non-secret, non-local-CLI recovery guidance.
+func TestLarkPersonalWorkspace_ExecuteRejectedCommandStopsLocalCLIRetries(t *testing.T) {
+	executor := &fakeLarkExecutor{err: feishu.ErrOperationRequestRejected}
+	result, err := (&larkExecuteTool{executor: executor}).Execute(
+		larkPersonalWorkspaceContext(1, 204, "dev-run-204-rejected"),
+		ToolInput(`{"argv":["auth","status","--json"],"skill_receipts":["opaque-shared-receipt"]}`),
+	)
+	require.NoError(t, err)
+	assert.Contains(t, string(result), "不要执行 auth/config/whoami")
+	assert.Contains(t, string(result), "不要要求用户提供 App ID/App Secret")
+	assert.Contains(t, string(result), "Docs/Base/Wiki")
+	assert.NotContains(t, string(result), "请稍后重试")
+	assert.NotContains(t, string(result), "opaque-shared-receipt")
 }
 
 func TestLarkPersonalWorkspace_ExecuteTerminalStatesNeverFakeSuccess(t *testing.T) {

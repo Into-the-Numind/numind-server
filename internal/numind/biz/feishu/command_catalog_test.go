@@ -142,6 +142,27 @@ func TestCommandCatalog_NormalizesEqualsSyntaxAndPreservesValues(t *testing.T) {
 	}, got.Argv)
 }
 
+// Customer regression (Dev run 204): the hosted tool promises that an Agent
+// may copy official lark-cli business commands verbatim, but the catalog
+// rejected the official fixed identity/output flags before an operation or
+// authorization card could be created.
+func TestCommandCatalog_NormalizesOfficialFixedHostedFlags(t *testing.T) {
+	t.Parallel()
+
+	catalog := NewCommandCatalog()
+	for _, argv := range [][]string{
+		{"docs", "+create", "--content", "<title>联调</title>", "--as", "user", "--format", "json"},
+		{"docs", "+create", "--as=user", "--content", "<title>联调</title>", "--format=json"},
+	} {
+		got, err := catalog.Normalize(argv, nil)
+		require.NoError(t, err)
+		require.Equal(t, []string{
+			"docs", "+create", "--content", "<title>联调</title>",
+			"--format", "json", "--as", "user",
+		}, got.Argv)
+	}
+}
+
 func TestCommandCatalog_DeniesStdinAndFileIndirection(t *testing.T) {
 	t.Parallel()
 
