@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -46,6 +47,32 @@ type fakeLarkExecutor struct {
 	requests []feishu.ExecuteRequest
 	result   *feishu.OperationResult
 	err      error
+}
+
+type gatedRejectedLarkExecutor struct {
+	mu        sync.Mutex
+	calls     int
+	gateAfter int
+	entered   chan struct{}
+	release   chan struct{}
+}
+
+func (f *gatedRejectedLarkExecutor) Execute(_ context.Context, _ feishu.ExecuteRequest) (*feishu.OperationResult, error) {
+	f.mu.Lock()
+	f.calls++
+	callNumber := f.calls
+	f.mu.Unlock()
+	if callNumber > f.gateAfter {
+		f.entered <- struct{}{}
+		<-f.release
+	}
+	return nil, feishu.ErrOperationRequestRejected
+}
+
+func (f *gatedRejectedLarkExecutor) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
 }
 
 func (f *fakeLarkExecutor) Execute(_ context.Context, request feishu.ExecuteRequest) (*feishu.OperationResult, error) {
@@ -547,6 +574,83 @@ func TestLarkPersonalWorkspace_ExecuteRejectedCommandStopsLocalCLIRetries(t *tes
 	assert.Contains(t, string(result), "最多修正并重试一次")
 	assert.NotContains(t, string(result), "已停止后续飞书命令")
 	assert.Len(t, executor.snapshot(), 4, "run cleanup must restore a fresh correction budget")
+}
+
+func TestLarkPersonalWorkspace_ExecuteCorrectionBudgetIsConcurrentAndResetsAfterSuccess(t *testing.T) {
+	t.Run("only one concurrent correction reaches executor", func(t *testing.T) {
+		const runID = uint64(206)
+		larkExecuteRetryClearRun(runID)
+		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+		executor := &gatedRejectedLarkExecutor{
+			gateAfter: 1,
+			entered:   make(chan struct{}, 3),
+			release:   make(chan struct{}),
+		}
+		tool := &larkExecuteTool{executor: executor}
+		_, err := tool.Execute(
+			larkPersonalWorkspaceContext(1, runID, "initial-rejection"),
+			ToolInput(`{"argv":["auth","status"],"skill_receipts":["shared"]}`),
+		)
+		require.NoError(t, err)
+
+		var wg sync.WaitGroup
+		wg.Add(3)
+		for index := 0; index < 3; index++ {
+			go func(index int) {
+				defer wg.Done()
+				_, executeErr := tool.Execute(
+					larkPersonalWorkspaceContext(1, runID, fmt.Sprintf("concurrent-correction-%d", index)),
+					ToolInput(`{"argv":["docs","+create","--content","<title>联调</title>"],"skill_receipts":["shared","doc"]}`),
+				)
+				assert.NoError(t, executeErr)
+			}(index)
+		}
+		select {
+		case <-executor.entered:
+		case <-time.After(time.Second):
+			t.Fatal("the single correction did not reach the executor")
+		}
+		close(executor.release)
+		wg.Wait()
+		assert.Equal(t, 2, executor.callCount(), "one initial call plus exactly one correction may reach the executor")
+	})
+
+	t.Run("successful correction restores a fresh budget", func(t *testing.T) {
+		const runID = uint64(207)
+		larkExecuteRetryClearRun(runID)
+		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+		executor := &fakeLarkExecutor{err: feishu.ErrOperationRequestRejected}
+		tool := &larkExecuteTool{executor: executor}
+		_, err := tool.Execute(
+			larkPersonalWorkspaceContext(1, runID, "initial-rejection"),
+			ToolInput(`{"argv":["auth","status"],"skill_receipts":["shared"]}`),
+		)
+		require.NoError(t, err)
+
+		executor.mu.Lock()
+		executor.err = nil
+		executor.result = &feishu.OperationResult{OperationID: "op-success", State: model.FeishuOperationSucceeded}
+		executor.mu.Unlock()
+		result, err := tool.Execute(
+			larkPersonalWorkspaceContext(1, runID, "successful-correction"),
+			ToolInput(`{"argv":["docs","+create","--content","<title>成功</title>"],"skill_receipts":["shared","doc"]}`),
+		)
+		require.NoError(t, err)
+		assert.Contains(t, string(result), `"ok":true`)
+
+		executor.mu.Lock()
+		executor.err = feishu.ErrOperationRequestRejected
+		executor.result = nil
+		executor.mu.Unlock()
+		result, err = tool.Execute(
+			larkPersonalWorkspaceContext(1, runID, "new-cycle-rejection"),
+			ToolInput(`{"argv":["docs","+create","--content","<title>新周期</title>"],"skill_receipts":["shared","doc"]}`),
+		)
+		require.NoError(t, err)
+		assert.Contains(t, string(result), "最多修正并重试一次")
+		assert.NotContains(t, string(result), "已停止后续飞书命令")
+		assert.Len(t, executor.snapshot(), 3)
+	})
 }
 
 func TestLarkPersonalWorkspace_ExecuteTerminalStatesNeverFakeSuccess(t *testing.T) {

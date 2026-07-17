@@ -1,12 +1,12 @@
 package agent
 
-import (
-	"sync"
-	"sync/atomic"
-)
+import "sync"
+
+type larkExecuteRetryPhase uint8
 
 const (
-	larkRetryReady int32 = iota
+	larkRetryReady larkExecuteRetryPhase = iota
+	larkRetryNormalInFlight
 	larkRetryCorrectionAvailable
 	larkRetryCorrectionInFlight
 	larkRetryExhausted
@@ -20,7 +20,8 @@ const (
 )
 
 type larkExecuteRetryState struct {
-	state atomic.Int32
+	mu    sync.Mutex
+	phase larkExecuteRetryPhase
 }
 
 // larkExecuteRetryRuns is process-local because one Agent run is executed by
@@ -31,20 +32,21 @@ var larkExecuteRetryRuns sync.Map // map[uint64]*larkExecuteRetryState
 func larkExecuteRetryBegin(runID uint64) (*larkExecuteRetryState, larkExecuteRetryAttempt, bool) {
 	value, _ := larkExecuteRetryRuns.LoadOrStore(runID, &larkExecuteRetryState{})
 	state := value.(*larkExecuteRetryState)
-	for {
-		switch state.state.Load() {
-		case larkRetryReady:
-			return state, larkExecuteNormalAttempt, true
-		case larkRetryCorrectionAvailable:
-			if state.state.CompareAndSwap(larkRetryCorrectionAvailable, larkRetryCorrectionInFlight) {
-				return state, larkExecuteCorrectionAttempt, true
-			}
-		case larkRetryCorrectionInFlight, larkRetryExhausted:
-			return state, larkExecuteCorrectionAttempt, false
-		default:
-			state.state.Store(larkRetryExhausted)
-			return state, larkExecuteCorrectionAttempt, false
-		}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	switch state.phase {
+	case larkRetryReady:
+		state.phase = larkRetryNormalInFlight
+		return state, larkExecuteNormalAttempt, true
+	case larkRetryCorrectionAvailable:
+		state.phase = larkRetryCorrectionInFlight
+		return state, larkExecuteCorrectionAttempt, true
+	case larkRetryNormalInFlight, larkRetryCorrectionInFlight, larkRetryExhausted:
+		return state, larkExecuteCorrectionAttempt, false
+	default:
+		state.phase = larkRetryExhausted
+		return state, larkExecuteCorrectionAttempt, false
 	}
 }
 
@@ -52,28 +54,45 @@ func larkExecuteRetryRejected(state *larkExecuteRetryState, attempt larkExecuteR
 	if state == nil {
 		return true
 	}
-	if attempt == larkExecuteCorrectionAttempt {
-		state.state.Store(larkRetryExhausted)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	switch {
+	case attempt == larkExecuteNormalAttempt && state.phase == larkRetryNormalInFlight:
+		state.phase = larkRetryCorrectionAvailable
+		return false
+	case attempt == larkExecuteCorrectionAttempt && state.phase == larkRetryCorrectionInFlight:
+		state.phase = larkRetryExhausted
+		return true
+	default:
+		state.phase = larkRetryExhausted
 		return true
 	}
-	if state.state.CompareAndSwap(larkRetryReady, larkRetryCorrectionAvailable) {
-		return false
-	}
-	// Two nominally non-concurrent tool calls overlapped. Fail closed after the
-	// two already-rejected executor calls rather than granting a third attempt.
-	state.state.Store(larkRetryExhausted)
-	return true
 }
 
-func larkExecuteRetryCompleted(state *larkExecuteRetryState) {
-	if state != nil {
-		state.state.Store(larkRetryReady)
+func larkExecuteRetryCompleted(state *larkExecuteRetryState, attempt larkExecuteRetryAttempt) {
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if (attempt == larkExecuteNormalAttempt && state.phase == larkRetryNormalInFlight) ||
+		(attempt == larkExecuteCorrectionAttempt && state.phase == larkRetryCorrectionInFlight) {
+		state.phase = larkRetryReady
 	}
 }
 
 func larkExecuteRetryFailed(state *larkExecuteRetryState, attempt larkExecuteRetryAttempt) {
-	if state != nil && attempt == larkExecuteCorrectionAttempt {
-		state.state.Store(larkRetryExhausted)
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	switch {
+	case attempt == larkExecuteNormalAttempt && state.phase == larkRetryNormalInFlight:
+		state.phase = larkRetryReady
+	case attempt == larkExecuteCorrectionAttempt && state.phase == larkRetryCorrectionInFlight:
+		state.phase = larkRetryExhausted
 	}
 }
 

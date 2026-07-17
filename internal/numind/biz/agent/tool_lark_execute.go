@@ -112,7 +112,7 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 	if isLarkWaitingState(result.State) {
 		waitingResult, waitingErr := larkWaitingYield(result, toolCallID)
 		if waitingErr != nil {
-			larkExecuteRetryCompleted(retryState)
+			larkExecuteRetryCompleted(retryState, retryAttempt)
 		} else {
 			larkExecuteRetryFailed(retryState, retryAttempt)
 		}
@@ -126,7 +126,7 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 		larkExecuteRetryFailed(retryState, retryAttempt)
 		return larkWorkspaceSoftError(larkWorkspaceErrorInvalidResult)
 	}
-	larkExecuteRetryCompleted(retryState)
+	larkExecuteRetryCompleted(retryState, retryAttempt)
 	output, err := json.Marshal(larkExecuteOutput{
 		OK:          result.State == model.FeishuOperationSucceeded,
 		State:       result.State,
