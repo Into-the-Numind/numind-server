@@ -257,6 +257,31 @@ func TestLarkPersonalWorkspace_ExecuteDerivesTenantAndIdempotencyFromContext(t *
 	_ = second
 }
 
+// Customer regression (Dev run 199): the official embedded lark skills show
+// complete commands beginning with `lark-cli`, so the model naturally preserves
+// that executable token in argv. The hosted tool boundary must accept exactly
+// that pinned prefix and pass only the command argv to the controlled catalog.
+func TestLarkPersonalWorkspace_ExecuteAcceptsOfficialLarkCLIPrefix(t *testing.T) {
+	executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+		OperationID: "op-create",
+		State:       model.FeishuOperationSucceeded,
+	}}
+	tool := &larkExecuteTool{executor: executor}
+	input := ToolInput(`{"argv":["lark-cli","docs","+create","--content","<title>验收</title>"],"skill_receipts":["receipt-doc","receipt-shared"]}`)
+
+	result, err := tool.Execute(larkPersonalWorkspaceContext(21, 199, "dev-run-199"), input)
+	require.NoError(t, err)
+	assert.NotContains(t, string(result), "ERROR")
+
+	requests := executor.snapshot()
+	require.Len(t, requests, 1)
+	assert.Equal(t,
+		[]string{"docs", "+create", "--content", "<title>验收</title>"},
+		requests[0].Argv,
+		"the executable belongs to the tool boundary, not the controlled command catalog",
+	)
+}
+
 func TestLarkPersonalWorkspace_ExecuteRejectsUntrustedIdentityAndStrictJSON(t *testing.T) {
 	for name, input := range map[string]string{
 		"user id":           `{"argv":["docs"],"skill_receipts":["r"],"user_id":99}`,
