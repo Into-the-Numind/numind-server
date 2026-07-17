@@ -46,16 +46,16 @@ features:
   ndf_version: '3.0'
   description: Align hosted per-user Feishu authorization with the pinned lark-cli split device-code protocol and resume the exact original Agent operation
   classification_reason: 'Standard: customer-reported third-party OAuth and durable write-resume boundary; affects authentication state machine, secure resume credentials, Agent guidance, real CLI fixtures, and more than 3 files.'
-  last_updated_by: ai-s6-device-completion-rollback
-  last_updated_at: '2026-07-18T01:05:00+08:00'
+  last_updated_by: ai-s5-device-completion-accepted
+  last_updated_at: '2026-07-18T01:35:00+08:00'
   created_at: '2026-07-16T18:53:00+08:00'
   track: standard
-  stage: S4
+  stage: S5
   status: active
   repos: [numind-server, numind-web-v3]
-  branches: {numind-server: develop, numind-web-v3: develop}
-  worktrees: {numind-server: '(removed by ndf-done)', numind-web-v3: '(removed by ndf-done)'}
-  progress: {total_tasks: 20, completed_tasks: 20, reviewed_tasks: 20}
+  branches: {numind-server: feature/feishu-device-code-auth, numind-web-v3: develop}
+  worktrees: {numind-server: /private/tmp/wt-feishu-device-code-auth-numind-server, numind-web-v3: '(removed by ndf-done)'}
+  progress: {total_tasks: 21, completed_tasks: 21, reviewed_tasks: 21}
   artifacts:
     requirement: requirements/feishu-device-code-auth.md
     proposal: proposals/feishu-device-code-auth-proposal.md
@@ -95,6 +95,8 @@ features:
   - 'S4 repair Task 20: customer RED d60a0c91 reproduces Dev run 204 local-CLI guidance and retry behavior; fixes 16c67422, 4dc5e055, and 82a68c4f add a separate hosted-policy overlay without changing signed skill content, safely parse official fixed --as user/--format json flags in business-argument context, return non-secret actionable rejection guidance, and enforce one correction attempt per run with a mutex-serialized fail-closed budget. Tests cover third-call pre-executor blocking, concurrent corrections, successful reset, cross-run isolation, finalizer cleanup, and flag-like literal content. Full go test ./..., task lint, targeted race count=20, specification review, and code-quality review all PASS with no P0/P1/P2 findings; S4 gate authorizes S5.'
   - 'S6 repair deployment: ndf-done merged and pushed the repaired backend to develop at ef19dd85 and removed its feature worktree/branch. Manual TCR release deployed numind-server:develop-ef19dd85 to Dev; external /healthz returned code 0/status ok, Docker reported running+healthy, and the first ten minutes contained zero panic/fatal/error log lines. Human re-authorization and one real Agent Docs create remain the S6 product gate; Prod is not authorized.'
   - 'S6 acceptance failed after the user completed the official Feishu page: the completion lease and CLI ran, then the session terminalized failed and resume returned 500. Official lark-cli v1.0.68 source proves --no-wait persists requested scopes only in HOME/cache/auth_login_scopes; Numind intentionally runs start in a non-published temporary HOME, so completion emits requested=[] even after storing a valid token. The strict adapter rejected that official success shape before candidate-HOME reconciliation. Roll back to S4 for a customer RED and exact durable-session-scope versus granted-scope validation. ADR: .ndf/decisions/feishu-device-code-auth/0002-ephemeral-home-scope-reconciliation.md.'
+  - 'S4 repair Task 21: customer RED d29103aa reproduces the official lark-cli v1.0.68 requested=[] completion being terminalized as protocol_failure. Fix ba684881 binds completion to canonical scopes from the durable session and accepts cacheless output only when every expected scope is present in the final granted set; cached requested scopes must exactly equal the durable request. Security follow-up 414498e6 closes review P1: ambiguous/retryable outcomes without granted-scope evidence remain Pending and can never publish an older candidate HOME merely because auth status and AppID match. Under-grant, cached/durable mismatch, malformed output, timeout, and dependency paths fail closed; legal granted supersets pass. Final specification and quality reviews PASS with no P0-P2 findings.'
+  - 'S5 repair acceptance: go test ./... passes, task lint passes, focused Feishu race tests pass, the full Feishu package passes, and the customer/security regressions pass repeatedly. The feature is authorized for ndf-done merge/push and Dev server deployment. The failed pre-fix authorization session cannot be reused because its resume credential was intentionally cleared; post-deploy human acceptance must start a fresh authorization link.'
   rollback: 'S6 -> S4 on 2026-07-18: implementation defect; direction and split-device architecture remain valid.'
   blockers: []
 
