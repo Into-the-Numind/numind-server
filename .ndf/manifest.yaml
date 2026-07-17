@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: Align hosted per-user Feishu authorization with the pinned lark-cli split device-code protocol and resume the exact original Agent operation
   classification_reason: 'Standard: customer-reported third-party OAuth and durable write-resume boundary; affects authentication state machine, secure resume credentials, Agent guidance, real CLI fixtures, and more than 3 files.'
-  last_updated_by: ai-s4-task12
-  last_updated_at: '2026-07-17T14:48:43+08:00'
+  last_updated_by: ai-s4-task13
+  last_updated_at: '2026-07-17T15:38:01+08:00'
   created_at: '2026-07-16T18:53:00+08:00'
   track: standard
   stage: S4
@@ -13,7 +13,7 @@ features:
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/feishu-device-code-auth, numind-web-v3: feature/feishu-device-code-auth}
   worktrees: {numind-server: /private/tmp/wt-feishu-device-code-auth-numind-server, numind-web-v3: /private/tmp/wt-feishu-device-code-auth-numind-web-v3}
-  progress: {total_tasks: 19, completed_tasks: 12, reviewed_tasks: 12}
+  progress: {total_tasks: 19, completed_tasks: 13, reviewed_tasks: 13}
   artifacts:
     requirement: requirements/feishu-device-code-auth.md
     proposal: proposals/feishu-device-code-auth-proposal.md
@@ -37,6 +37,7 @@ features:
   - 'S4 Task 10: commit eec2bd4c exposes recoverable authorization outcomes through stable 200 notices plus typed 409/503 and a scrubbed safe 500. Live replacement actions use an allowlisted URL projection without Provider/Scopes/secrets; the Task 8 terminal-to-notice gap was closed while the Task 9 durable lifecycle hook remained intact. Independent specification and security reviews passed.'
   - 'S4 Task 11: commit 9cb44580 adds one-page keyset credential cleanup with a mutex-protected in-memory cursor, bounded 20-row best-effort start/complete sweeps, and an independent five-second startup sweep after pinned lark-cli 1.0.68 verification. Cleanup failure keeps the whole feature closed before lifecycle publication; shared flow/vault/cipher/dispatcher composition and unchanged waiting operations were verified. Independent specification and concurrency/security reviews passed.'
   - 'S4 Task 12: commit 26b292ae routes every statically provable lark-cli execution away from bash_exec and through the hosted lark_execute boundary, while preserving non-executing mentions and excluding IM. Review replaced an incomplete custom lexer with mvdan.cc/sh/v3 v3.12.0 AST parsing, then closed sh/eval/xargs/find/redirect/subshell/function and oversized mixed-quote/escape bypasses. The bounded fallback is one-pass O(n) with O(1) extra state; dynamic variable/alias/symlink cases remain inside the credential-free, network-disabled sandbox. Specification and adversarial quality reviews passed after all Important findings were closed.'
+  - 'S4 Task 13: commit 06d6a08a completes backend crash, transaction, response-loss, dispatcher, two-instance, tenant, tamper, secret-scan, and Docs/Base/Wiki recovery coverage without changing production code. The pinned CLI has no wiki update verb, so the honest Wiki update fixture persists and replays wiki node-get, parses its obj_token, then persists and replays a separate docs update with exact read/write scopes; four full canonical argv oracles prove order and token provenance. Independent reviews passed after replacing partial argv comparisons and the earlier read-only Wiki shortcut. Focused/full Feishu gates, Feishu/store race, and lint pass; the repository-wide race phase remains blocked only by the pre-existing sandbox SkillsDir test race whose files are unchanged by this feature.'
   blockers: []
 
 - id: agent-stream-start-order
