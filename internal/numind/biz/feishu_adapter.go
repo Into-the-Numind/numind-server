@@ -12,15 +12,20 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"numind-server/internal/numind/biz/agent"
 	"numind-server/internal/numind/biz/feishu"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/crypto"
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 
+	"github.com/google/uuid"
 	"github.com/spf13/viper"
 )
+
+const feishuDeviceAuthStartupCleanupTimeout = 5 * time.Second
 
 // feishuPersonalWorkspace is complete only after every bridge endpoint has
 // been assigned. NewBiz injects it into the platform factory only after this
@@ -32,6 +37,7 @@ type feishuPersonalWorkspace struct {
 	skillReader        *feishu.SkillReader
 	operationService   *feishu.FeishuOperationService
 	authSessionService *feishu.AuthSessionService
+	deviceAuthFlow     *feishu.DeviceAuthFlow
 	// lifecycleService is the only HTTP-facing view of this graph. It uses the
 	// same auth instance, operation instance, and dispatcher below; it must not
 	// reconstruct a legacy orchestrator or an additional Agent resumer.
@@ -77,6 +83,76 @@ type feishuCompositionDeps struct {
 	// verifyVersion is a test seam. Production leaves it nil so the fixed
 	// ControlledLarkCLIRunner probe is always performed.
 	verifyVersion func(context.Context) error
+	// deviceAuthFactory is a fail-closed composition seam. Production always
+	// uses NewDeviceAuthFlow; tests can prove a nil flow is never published.
+	deviceAuthFactory func(feishu.DeviceAuthFlowDeps) (*feishu.DeviceAuthFlow, error)
+}
+
+type deviceAuthObservationSink func(string, ...interface{})
+
+// productionDeviceAuthObserver is the only bridge from device authorization
+// observations to the application logger. It validates every enum-like field
+// again at the sink boundary so future callers cannot turn the telemetry seam
+// into a raw logging channel.
+type productionDeviceAuthObserver struct {
+	sink deviceAuthObservationSink
+}
+
+func newProductionDeviceAuthObserver() productionDeviceAuthObserver {
+	return productionDeviceAuthObserver{sink: log.Infow}
+}
+
+func (o productionDeviceAuthObserver) ObserveDeviceAuth(event feishu.DeviceAuthObservation) {
+	if o.sink == nil || !validDeviceAuthObservationPhase(event.Phase) ||
+		!validDeviceAuthObservationOutcome(event.OutcomeClass) ||
+		(event.CLIVersion != "" && event.CLIVersion != feishu.LarkCLIVersion) ||
+		!validDeviceAuthObservationID(event.OperationID) || !validDeviceAuthObservationID(event.SessionID) {
+		return
+	}
+	duration := event.Duration
+	if duration < 0 {
+		duration = 0
+	}
+	o.sink("feishu device authorization",
+		"user_id", event.UserID,
+		"generation", event.Generation,
+		"operation_id", event.OperationID,
+		"session_id", event.SessionID,
+		"phase", event.Phase,
+		"outcome_class", event.OutcomeClass,
+		"cli_version", event.CLIVersion,
+		"duration", duration,
+	)
+}
+
+func validDeviceAuthObservationID(value string) bool {
+	if value == "" {
+		return true
+	}
+	parsed, err := uuid.Parse(value)
+	return err == nil && parsed.String() == strings.ToLower(value)
+}
+
+func validDeviceAuthObservationPhase(phase string) bool {
+	switch phase {
+	case "start", "complete", "lease_claim", "lease_renew", "candidate", "replacement", "dispatch":
+		return true
+	default:
+		return false
+	}
+}
+
+func validDeviceAuthObservationOutcome(outcome string) bool {
+	switch outcome {
+	case "succeeded", "unavailable", "processing", "conflict", "dependency",
+		"claimed", "contended", "lost", "retry",
+		string(feishu.AuthorizationPending), string(feishu.AuthorizationProcessing),
+		string(feishu.AuthorizationRejected), string(feishu.AuthorizationExpired),
+		string(feishu.AuthorizationUpdated):
+		return true
+	default:
+		return false
+	}
 }
 
 // buildFeishuService composes the flag-gated personal workspace graph. It
@@ -129,6 +205,10 @@ func buildFeishuService(deps feishuCompositionDeps) (*feishuPersonalWorkspace, e
 	operationCipher, err := feishu.NewOperationCipherKeyring(ciphers, deps.keyVersion)
 	if err != nil {
 		return nil, fmt.Errorf("feishu: build operation cipher keyring: %w", err)
+	}
+	deviceAuthCipher, err := feishu.NewDeviceAuthCredentialCipher(ciphers, deps.keyVersion)
+	if err != nil {
+		return nil, fmt.Errorf("feishu: build device authorization cipher: %w", err)
 	}
 	skillReader, err := feishu.NewSkillReader(deps.tokenKey)
 	if err != nil {
@@ -184,11 +264,33 @@ func buildFeishuService(deps feishuCompositionDeps) (*feishuPersonalWorkspace, e
 	}
 	resumer := agent.NewAgentRunResumer(deps.resumeStore, deps.studentRuns, deps.supervisor)
 	dispatcher := NewWorkspaceResumeDispatcher(operationService, resumer)
+	deviceAuthFactory := deps.deviceAuthFactory
+	if deviceAuthFactory == nil {
+		deviceAuthFactory = feishu.NewDeviceAuthFlow
+	}
+	deviceAuthFlow, err := deviceAuthFactory(feishu.DeviceAuthFlowDeps{
+		Accounts: deps.dataStore.ThirdPartyAccounts(), Sessions: deps.dataStore.FeishuWorkspace(),
+		Vault: vault, CLI: runner, Cipher: deviceAuthCipher, Dispatcher: dispatcher,
+		Owner: deps.authOwner, Observer: newProductionDeviceAuthObserver(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("feishu: build device authorization flow: %w", err)
+	}
+	if deviceAuthFlow == nil {
+		return nil, fmt.Errorf("feishu: build device authorization flow: unavailable")
+	}
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), feishuDeviceAuthStartupCleanupTimeout)
+	_, cleanupErr := deviceAuthFlow.CleanupExpiredCredentials(cleanupCtx, 100)
+	cleanupCancel()
+	if cleanupErr != nil {
+		return nil, fmt.Errorf("feishu: cleanup device authorization credentials: %w", cleanupErr)
+	}
 	authService, err = feishu.NewAuthSessionService(feishu.AuthSessionServiceDeps{
 		Accounts:           deps.dataStore.ThirdPartyAccounts(),
 		Sessions:           deps.dataStore.FeishuWorkspace(),
 		Vault:              vault,
 		CLI:                runner,
+		DeviceAuth:         deviceAuthFlow,
 		Dispatcher:         dispatcher,
 		Owner:              deps.authOwner,
 		VerifiedCLIVersion: feishu.LarkCLIVersion,
@@ -213,7 +315,7 @@ func buildFeishuService(deps feishuCompositionDeps) (*feishuPersonalWorkspace, e
 
 	return &feishuPersonalWorkspace{
 		runner: runner, vault: vault, catalog: catalog, skillReader: skillReader,
-		operationService: operationService, authSessionService: authService,
+		operationService: operationService, authSessionService: authService, deviceAuthFlow: deviceAuthFlow,
 		lifecycleService: lifecycleService,
 		resumer:          resumer, dispatcher: dispatcher, authWorkerDispatcher: dispatcher,
 		supervisor: deps.supervisor,
@@ -295,6 +397,17 @@ func verifyFeishuPersistedKeyVersions(dataStore store.IStore, ciphers map[string
 			if err := verifyFeishuPersistedKeyVersion(version, ciphers); err != nil {
 				return err
 			}
+		}
+	}
+	var resumeVersions []string
+	if err := dataStore.DB().Model(&model.FeishuAuthSession{}).
+		Where("resume_key_version IS NOT NULL AND resume_key_version <> ''").
+		Distinct().Pluck("resume_key_version", &resumeVersions).Error; err != nil {
+		return fmt.Errorf("persistent key version store unavailable")
+	}
+	for _, version := range resumeVersions {
+		if err := verifyFeishuPersistedKeyVersion(version, ciphers); err != nil {
+			return err
 		}
 	}
 	var resultBlobs []struct {

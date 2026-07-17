@@ -1,0 +1,60 @@
+# Feishu Split Device Authorization — S5 Acceptance
+
+## 验证环境
+
+- 后端：本地 feature worktree，Go race detector 开启
+- 前端：本地 feature worktree，Vue 3 + Chromium/Playwright
+- 浏览器：gstack launched Chromium；本地登录页可正常渲染且无首屏 console error
+
+## 自动化检查结果
+
+| 检查项 | 命令 | 结果 | 备注 |
+|--------|------|------|------|
+| Go lint | `PATH="$(go env GOPATH)/bin:$PATH" task lint` | PASS | 无 lint 错误 |
+| Go full non-race | `go test -tags sqlite_fts5 ./...` | PASS | 全仓通过 |
+| Go feature race | `go test -tags sqlite_fts5 -race ./internal/numind ./internal/numind/biz ./internal/numind/biz/agent ./internal/numind/controller/v1/agent` | PASS | 飞书接线、业务、Agent 与 controller 全部通过 |
+| Go repository race | `task test` | BASELINE_FAILURE | 仅未改动的 `internal/numind/biz/sandbox` SkillsDir 测试竞态失败；在原始 `develop` 上用同包命令独立复现 |
+| Vue lint | `npm run lint` | PASS | 0 errors；7 个既有且不在 feature diff 内的 warnings |
+| Vue type-check | `npm run type-check` | PASS | |
+| Vue unit | `npm run test:unit` | PASS | 96/96 files；1104 passed、11 skipped、3 todo |
+| Feishu E2E | `npx playwright test e2e/feishu-personal-workspace.spec.ts --project=mocked --workers=1` | PASS | 5/5；桌面、移动端、过期、终态、历史缺链接场景 |
+| Diff hygiene | `git diff --check` + `git status --short` | PASS | 两个 worktree 均干净 |
+
+## 浏览器 QA
+
+- gstack 输出：`numind-web-v3/.gstack/qa-reports/qa-report-127-0-0-1-2026-07-17.md`
+- 本地 Vite 登录页正常渲染，首屏无 console error；本地未启动后端，提交登录后的代理 500 属测试环境缺失，不计为 feature 回归。
+- 5 条 Playwright 浏览器契约证明：新链接、二维码、处理中、思考内容与正式回复在同一页面连续出现，不依赖刷新；同一 operation 只有一张卡片且不会调用普通 answer 路径。
+- 结论：无本功能 P0/P1/P2 浏览器回归。
+
+## 可观测性验证
+
+- 本功能没有新增 LLM 调用，Langfuse 为 N/A。
+- start、complete、lease、candidate、replacement 与 dispatch observer 的字段均为 allowlist；自动 secret scan 覆盖 URL query、device code、token、App Secret、HOME 与业务正文。
+
+## PRD 验收标准核对
+
+| 验收标准 | 结果 | 备注 |
+|----------|------|------|
+| 第一个代码 commit 是失败的客户复现测试 | PASS | 后端 `c11e1e83`，前端 `3c5c40b` |
+| start 使用固定 lark-cli 1.0.68 非阻塞协议并立即返回卡片 | PASS | 严格 fixture、argv 与短进程边界测试通过 |
+| 恢复凭据加密且绑定 exact user/generation/app/operation/session/scope/expiry | PASS | cipher AAD、篡改、轮换、跨用户测试通过 |
+| 凭据不进入 API、前端、LLM、日志、错误和普通 sandbox | PASS | allowlist projection、secret scan、shell boundary 测试通过 |
+| 点击继续完成 exact session、密封 HOME、connected 并清除凭据 | PASS | fenced publication、transaction rollback 与 terminal clearing 测试通过 |
+| 原 operation 自动恢复且业务写最多一次 | PASS | 重复、并发、响应丢失、双实例与 dispatcher recovery 测试通过 |
+| 过期、拒绝、异常与解密失败显示可恢复状态 | PASS | 200 notice、typed 409/503 与 scrubbed 500 测试通过 |
+| 重启与另一实例可继续有效 session | PASS | 新 instance 只共享 DB 与加密 Vault 的测试通过 |
+| Agent 只通过 `lark_execute` 操作飞书 | PASS | shell AST adversarial suite 与系统指引测试通过 |
+| Docs/Base/Wiki 编排与命令域无关 | PASS | create/read/update 的 durable fixtures 与 exact argv oracle 通过 |
+| 页面不刷新即可继续显示思考和正式回复 | PASS | Playwright 5/5 + reasoning reconciliation unit regression |
+| Dev 真实飞书首次授权、热路径和完整 CRUD | PENDING_DEV | 合并并部署 Dev 后执行，不在本地伪造外部成功 |
+
+## 独立审查
+
+- Specification review：PASS，P0/P1/P2 = 0。
+- Quality review：PASS_WITH_CONCERNS，P0/P1 = 0；仅有 3 个既有 Playwright harness P2，不阻塞功能。
+
+## 结论
+
+AUTOMATED_PASS_WITH_BASELINE_EXCEPTION。功能代码可合并并部署 Dev；唯一全仓失败在原始 `develop` 同样存在，且目录不在 feature diff。Dev 真实飞书验收在部署后继续记录到本报告。
+

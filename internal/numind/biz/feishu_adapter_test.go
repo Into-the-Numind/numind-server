@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"numind-server/internal/numind/biz/agent"
 	"numind-server/internal/numind/biz/feishu"
@@ -35,6 +36,7 @@ func newFeishuCompositionDeps(t *testing.T) feishuCompositionDeps {
 	require.NoError(t, db.AutoMigrate(
 		&model.UserThirdPartyAccount{},
 		&model.FeishuCLIVault{},
+		&model.FeishuAuthSession{},
 		&model.FeishuOperation{},
 	))
 	ds := store.NewTestStore(db)
@@ -54,6 +56,39 @@ func newFeishuCompositionDeps(t *testing.T) feishuCompositionDeps {
 		supervisor:    agent.NewExternalContinuationSupervisor(agent.ExternalContinuationLimit),
 		verifyVersion: func(context.Context) error { return nil },
 	}
+}
+
+type feishuCompositionWorkspaceStore struct {
+	store.IFeishuWorkspaceStore
+	sweep func(context.Context, time.Time, string, int) (store.FeishuDeviceAuthCleanupPage, error)
+}
+
+func (s *feishuCompositionWorkspaceStore) SweepDeviceAuthCredentials(
+	ctx context.Context,
+	before time.Time,
+	afterSessionID string,
+	scanLimit int,
+) (store.FeishuDeviceAuthCleanupPage, error) {
+	if s.sweep != nil {
+		return s.sweep(ctx, before, afterSessionID, scanLimit)
+	}
+	return s.IFeishuWorkspaceStore.SweepDeviceAuthCredentials(ctx, before, afterSessionID, scanLimit)
+}
+
+type feishuCompositionStore struct {
+	store.IStore
+	workspace store.IFeishuWorkspaceStore
+}
+
+func (s *feishuCompositionStore) FeishuWorkspace() store.IFeishuWorkspaceStore { return s.workspace }
+
+func wrapFeishuCompositionSweep(
+	deps *feishuCompositionDeps,
+	sweep func(context.Context, time.Time, string, int) (store.FeishuDeviceAuthCleanupPage, error),
+) *feishuCompositionWorkspaceStore {
+	workspace := &feishuCompositionWorkspaceStore{IFeishuWorkspaceStore: deps.dataStore.FeishuWorkspace(), sweep: sweep}
+	deps.dataStore = &feishuCompositionStore{IStore: deps.dataStore, workspace: workspace}
+	return workspace
 }
 
 func feishuCompositionKey(seed byte) string {
@@ -83,6 +118,18 @@ func prepareHistoricalCompositionVault(t *testing.T, deps feishuCompositionDeps,
 	}))
 }
 
+func prepareHistoricalCompositionAuthSession(t *testing.T, deps feishuCompositionDeps, keyVersion string) {
+	t.Helper()
+	resumeExpiry := time.Date(2026, 7, 17, 6, 0, 0, 0, time.UTC)
+	require.NoError(t, deps.dataStore.DB().Create(&model.FeishuAuthSession{
+		ID: "00000000-0000-4000-8000-000000000071", UserID: 7, Generation: 1,
+		Phase: model.FeishuAuthPhaseUserAuth, RequestedScopesJSON: []byte(`["docx:document:readonly"]`),
+		State: model.FeishuAuthSessionPending, ProtocolVersion: 2,
+		ResumeCredentialCiphertext: []byte("historical-device-code"), ResumeKeyVersion: keyVersion,
+		ResumeExpiresAt: &resumeExpiry, ScopeHash: strings.Repeat("a", 64), ExpiresAt: resumeExpiry,
+	}).Error)
+}
+
 type compositionReceiptVerifier struct{}
 
 func (compositionReceiptVerifier) VerifyRequired([]string, uint64, string) error { return nil }
@@ -109,11 +156,222 @@ func TestBuildFeishuService_ComposesCompleteWorkspaceBeforePublishing(t *testing
 	require.NotNil(t, composition.skillReader)
 	require.NotNil(t, composition.operationService)
 	require.NotNil(t, composition.authSessionService)
+	require.NotNil(t, composition.deviceAuthFlow)
 	require.NotNil(t, composition.resumer)
 	require.NotNil(t, composition.dispatcher)
 	require.NotNil(t, composition.lifecycleService, "Task13 must publish the same Task12 graph to HTTP")
 	require.Same(t, composition.dispatcher, composition.authWorkerDispatcher)
 	require.NotNil(t, composition.supervisor)
+}
+
+func TestBuildFeishuService_DeviceAuthCompositionFailsClosed(t *testing.T) {
+	t.Run("missing cipher", func(t *testing.T) {
+		deps := newFeishuCompositionDeps(t)
+		deps.cipherKeys = nil
+		composition, err := buildFeishuService(deps)
+		require.Error(t, err)
+		require.Nil(t, composition)
+	})
+
+	t.Run("missing flow", func(t *testing.T) {
+		deps := newFeishuCompositionDeps(t)
+		deps.deviceAuthFactory = func(feishu.DeviceAuthFlowDeps) (*feishu.DeviceAuthFlow, error) {
+			return nil, nil
+		}
+		composition, err := buildFeishuService(deps)
+		require.Error(t, err)
+		require.Nil(t, composition)
+	})
+}
+
+func TestFeishuAdapter_DeviceAuthStartupCleanupFailsClosed(t *testing.T) {
+	deps := newFeishuCompositionDeps(t)
+	cleanupCalls := 0
+	wrapFeishuCompositionSweep(&deps, func(_ context.Context, _ time.Time, cursor string, limit int) (store.FeishuDeviceAuthCleanupPage, error) {
+		cleanupCalls++
+		require.Empty(t, cursor)
+		require.Equal(t, 100, limit)
+		return store.FeishuDeviceAuthCleanupPage{}, errors.New("credential cleanup unavailable")
+	})
+
+	composition, err := buildFeishuService(deps)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "cleanup device authorization credentials")
+	require.Nil(t, composition, "no lifecycle/tool surface may be published after startup cleanup fails")
+	require.Equal(t, 1, cleanupCalls)
+}
+
+func TestFeishuAdapter_DeviceAuthStartupCleanupUsesFiveSecondBudget(t *testing.T) {
+	deps := newFeishuCompositionDeps(t)
+	var cleanupCtx context.Context
+	var cleanupDeadline time.Time
+	var hasDeadline bool
+	wrapFeishuCompositionSweep(&deps, func(ctx context.Context, _ time.Time, cursor string, limit int) (store.FeishuDeviceAuthCleanupPage, error) {
+		cleanupCtx = ctx
+		cleanupDeadline, hasDeadline = ctx.Deadline()
+		require.Empty(t, cursor)
+		require.Equal(t, 100, limit)
+		return store.FeishuDeviceAuthCleanupPage{Done: true}, nil
+	})
+	startedAt := time.Now()
+
+	composition, err := buildFeishuService(deps)
+	require.NoError(t, err)
+	require.NotNil(t, composition)
+	require.True(t, hasDeadline)
+	require.WithinDuration(t, startedAt.Add(5*time.Second), cleanupDeadline, 500*time.Millisecond)
+	require.ErrorIs(t, cleanupCtx.Err(), context.Canceled, "the independent startup budget must be released after cleanup")
+}
+
+func TestFeishuAdapter_DeviceAuthStartupCleanupPreservesWaitingOperation(t *testing.T) {
+	deps := newFeishuCompositionDeps(t)
+	operationID := "00000000-0000-4000-8000-000000000091"
+	sessionID := "00000000-0000-4000-8000-000000000092"
+	expiredAt := time.Now().UTC().Add(-time.Minute)
+	recoverySummary := []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"00000000-0000-4000-8000-000000000092","recovery_kind":"user_scope","recovery_scopes":["docx:document:readonly"]}`)
+	require.NoError(t, deps.dataStore.DB().Create(&model.FeishuOperation{
+		ID: operationID, UserID: 7, Generation: 1, State: model.FeishuOperationWaitingUserAuth,
+		AgentRunID: 1, ToolCallID: "cleanup-wait", IdempotencyKey: "cleanup-wait",
+		CommandPath: "docs +fetch", Domain: "docs", RiskLevel: "read",
+		RequestCiphertext: []byte("encrypted-request"), KeyVersion: deps.keyVersion,
+		RequestFingerprint: strings.Repeat("b", 64), ResultSummaryJSON: recoverySummary,
+	}).Error)
+	require.NoError(t, deps.dataStore.DB().Create(&model.FeishuAuthSession{
+		ID: sessionID, UserID: 7, Generation: 1, OperationID: &operationID,
+		Phase: model.FeishuAuthPhaseUserAuth, State: model.FeishuAuthSessionPending,
+		RequestedScopesJSON: []byte(`["docx:document:readonly"]`), ProtocolVersion: 2,
+		ResumeCredentialCiphertext: []byte("encrypted-device-code"), ResumeKeyVersion: deps.keyVersion,
+		ResumeExpiresAt: &expiredAt, ScopeHash: strings.Repeat("a", 64), ExpiresAt: expiredAt,
+	}).Error)
+
+	composition, err := buildFeishuService(deps)
+	require.NoError(t, err)
+	require.NotNil(t, composition)
+	var operation model.FeishuOperation
+	require.NoError(t, deps.dataStore.DB().Where("id = ?", operationID).Take(&operation).Error)
+	require.Equal(t, model.FeishuOperationWaitingUserAuth, operation.State)
+	var session model.FeishuAuthSession
+	require.NoError(t, deps.dataStore.DB().Where("id = ?", sessionID).Take(&session).Error)
+	require.Empty(t, session.ResumeCredentialCiphertext)
+	require.Empty(t, session.ResumeKeyVersion)
+	require.Nil(t, session.ResumeExpiresAt)
+	require.Empty(t, session.LeaseOwner)
+	require.Nil(t, session.LeaseUntil)
+}
+
+func TestFeishuAdapter_DeviceAuthCompositionSharesVaultAndDispatcher(t *testing.T) {
+	deps := newFeishuCompositionDeps(t)
+	var order []string
+	deps.verifyVersion = func(context.Context) error {
+		order = append(order, "verify-pinned-"+feishu.LarkCLIVersion)
+		return nil
+	}
+	workspace := wrapFeishuCompositionSweep(&deps, func(_ context.Context, _ time.Time, _ string, _ int) (store.FeishuDeviceAuthCleanupPage, error) {
+		order = append(order, "cleanup")
+		return store.FeishuDeviceAuthCleanupPage{Done: true}, nil
+	})
+	var captured feishu.DeviceAuthFlowDeps
+	var builtFlow *feishu.DeviceAuthFlow
+	deps.deviceAuthFactory = func(flowDeps feishu.DeviceAuthFlowDeps) (*feishu.DeviceAuthFlow, error) {
+		captured = flowDeps
+		var err error
+		builtFlow, err = feishu.NewDeviceAuthFlow(flowDeps)
+		return builtFlow, err
+	}
+
+	composition, err := buildFeishuService(deps)
+	require.NoError(t, err)
+	require.NotNil(t, composition)
+	require.Equal(t, []string{"verify-pinned-" + feishu.LarkCLIVersion, "cleanup"}, order)
+	require.Same(t, builtFlow, composition.deviceAuthFlow)
+	require.Same(t, composition.vault, captured.Vault)
+	require.Same(t, composition.dispatcher, captured.Dispatcher)
+	require.Same(t, composition.authWorkerDispatcher, captured.Dispatcher)
+	require.Same(t, workspace, captured.Sessions)
+	require.NotNil(t, captured.Cipher)
+	require.NotNil(t, composition.lifecycleService, "the lifecycle is exposed only after version validation and cleanup")
+}
+
+func TestBuildFeishuService_ComposesAllowlistedDeviceAuthObserver(t *testing.T) {
+	deps := newFeishuCompositionDeps(t)
+	var captured feishu.DeviceAuthObserver
+	deps.deviceAuthFactory = func(flowDeps feishu.DeviceAuthFlowDeps) (*feishu.DeviceAuthFlow, error) {
+		captured = flowDeps.Observer
+		return feishu.NewDeviceAuthFlow(flowDeps)
+	}
+
+	composition, err := buildFeishuService(deps)
+	require.NoError(t, err)
+	require.NotNil(t, composition)
+	require.NotNil(t, captured, "production composition must not silently discard device-auth observations")
+
+	type logEntry struct {
+		message string
+		fields  []interface{}
+	}
+	var entries []logEntry
+	observer := productionDeviceAuthObserver{sink: func(message string, fields ...interface{}) {
+		entries = append(entries, logEntry{message: message, fields: append([]interface{}(nil), fields...)})
+	}}
+	operationID := "00000000-0000-4000-8000-000000000007"
+	sessionID := "00000000-0000-4000-8000-000000000008"
+	observer.ObserveDeviceAuth(feishu.DeviceAuthObservation{
+		UserID: 7, Generation: 3, OperationID: operationID, SessionID: sessionID,
+		Phase: "dispatch", OutcomeClass: "succeeded", CLIVersion: feishu.LarkCLIVersion, Duration: 12 * time.Millisecond,
+	})
+	observer.ObserveDeviceAuth(feishu.DeviceAuthObservation{
+		UserID: 7, Phase: "raw-secret-phase", OutcomeClass: "token-private-value", CLIVersion: "private-cli-output",
+	})
+	observer.ObserveDeviceAuth(feishu.DeviceAuthObservation{
+		UserID: 7, Phase: "dispatch", OutcomeClass: "token-private-value", CLIVersion: feishu.LarkCLIVersion,
+	})
+	observer.ObserveDeviceAuth(feishu.DeviceAuthObservation{
+		UserID: 7, Phase: "dispatch", OutcomeClass: "succeeded", CLIVersion: "private-cli-output",
+	})
+	require.Len(t, entries, 1, "invalid phases, outcomes, and CLI versions must be dropped before the production sink")
+	require.Equal(t, "feishu device authorization", entries[0].message)
+	require.Equal(t, []interface{}{
+		"user_id", uint(7), "generation", uint64(3), "operation_id", operationID, "session_id", sessionID,
+		"phase", "dispatch", "outcome_class", "succeeded", "cli_version", feishu.LarkCLIVersion,
+		"duration", 12 * time.Millisecond,
+	}, entries[0].fields)
+	flattened, err := json.Marshal(entries)
+	require.NoError(t, err)
+	require.NotContains(t, string(flattened), "token-private-value")
+	require.NotContains(t, string(flattened), "private-cli-output")
+}
+
+func TestProductionDeviceAuthObserver_DropsNonCanonicalIdentifiers(t *testing.T) {
+	entries := 0
+	observer := productionDeviceAuthObserver{sink: func(string, ...interface{}) { entries++ }}
+	valid := feishu.DeviceAuthObservation{
+		UserID: 7, Generation: 3, Phase: "dispatch", OutcomeClass: "succeeded", CLIVersion: feishu.LarkCLIVersion,
+	}
+
+	withPrivateOperationID := valid
+	withPrivateOperationID.OperationID = "token-private-value"
+	observer.ObserveDeviceAuth(withPrivateOperationID)
+	withPrivateSessionID := valid
+	withPrivateSessionID.SessionID = "Docs Base Wiki private content"
+	observer.ObserveDeviceAuth(withPrivateSessionID)
+	for _, invalidID := range []string{
+		" 00000000-0000-4000-8000-000000000017 ",
+		"urn:uuid:00000000-0000-4000-8000-000000000017",
+		"{00000000-0000-4000-8000-000000000017}",
+		"00000000-0000-4000-8000-000000000017-too-long",
+	} {
+		invalid := valid
+		invalid.OperationID = invalidID
+		observer.ObserveDeviceAuth(invalid)
+	}
+
+	require.Zero(t, entries, "non-UUID identifiers must drop the entire event before the logger")
+	observer.ObserveDeviceAuth(valid)
+	withCanonicalIDs := valid
+	withCanonicalIDs.OperationID = "00000000-0000-4000-8000-000000000017"
+	withCanonicalIDs.SessionID = "00000000-0000-4000-8000-000000000018"
+	observer.ObserveDeviceAuth(withCanonicalIDs)
+	require.Equal(t, 2, entries, "empty identifiers and canonical UUIDs remain observable")
 }
 
 func TestBuildFeishuService_KeyRotationReadsHistoricalVault(t *testing.T) {
@@ -142,6 +400,33 @@ func TestBuildFeishuService_MissingHistoricalKeyFailsClosedBeforePublication(t *
 	deps.tokenKey = feishuCompositionKey(9)
 	deps.cipherKeys = []feishuCipherKeyringEntry{feishuCompositionKeyringEntry("v2", feishuCompositionKey(2))}
 	prepareHistoricalCompositionVault(t, deps, "v1", feishuCompositionKey(1))
+
+	composition, err := buildFeishuService(deps)
+	require.Error(t, err)
+	require.Nil(t, composition)
+}
+
+func TestBuildFeishuService_KeyRotationRetainsHistoricalAuthSessionKey(t *testing.T) {
+	deps := newFeishuCompositionDeps(t)
+	deps.keyVersion = "v2"
+	deps.tokenKey = feishuCompositionKey(9)
+	deps.cipherKeys = []feishuCipherKeyringEntry{
+		feishuCompositionKeyringEntry("v1", feishuCompositionKey(1)),
+		feishuCompositionKeyringEntry("v2", feishuCompositionKey(2)),
+	}
+	prepareHistoricalCompositionAuthSession(t, deps, "v1")
+
+	composition, err := buildFeishuService(deps)
+	require.NoError(t, err)
+	require.NotNil(t, composition)
+}
+
+func TestBuildFeishuService_MissingHistoricalAuthSessionKeyFailsClosedBeforePublication(t *testing.T) {
+	deps := newFeishuCompositionDeps(t)
+	deps.keyVersion = "v2"
+	deps.tokenKey = feishuCompositionKey(9)
+	deps.cipherKeys = []feishuCipherKeyringEntry{feishuCompositionKeyringEntry("v2", feishuCompositionKey(2))}
+	prepareHistoricalCompositionAuthSession(t, deps, "v1")
 
 	composition, err := buildFeishuService(deps)
 	require.Error(t, err)

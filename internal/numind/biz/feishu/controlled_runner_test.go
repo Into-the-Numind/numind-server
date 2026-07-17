@@ -42,6 +42,20 @@ func controlledRunner(binary string) *ControlledLarkCLIRunner {
 	return &ControlledLarkCLIRunner{binary: binary}
 }
 
+// controlledDeviceAuthCompleteScript validates the real secret-bearing argv in
+// the child process, but persists only a redacted snapshot for test assertions.
+// A mismatch exits without echoing argv or the secret into test output.
+func controlledDeviceAuthCompleteScript(deviceCode, stdout string, exitCode int) string {
+	return fmt.Sprintf(`
+if [ "$#" -ne 5 ] || [ "$1" != "auth" ] || [ "$2" != "login" ] || [ "$3" != "--device-code" ] || [ "$4" != %s ] || [ "$5" != "--json" ]; then
+  exit 97
+fi
+printf 'auth\000login\000--device-code\000[REDACTED]\000--json\000' > "$HOME/device-auth-argv-redacted"
+printf '%%s' %s
+exit %d
+`, shellQuoteForControlledTest(deviceCode), shellQuoteForControlledTest(stdout), exitCode)
+}
+
 func TestControlledLarkCLIRunner_VerifyVersionAcceptsOnlyPinnedVersion(t *testing.T) {
 	accepted := []string{
 		"1.0.68",
@@ -485,8 +499,9 @@ func TestControlledLarkCLIRunner_RunContextCancellationKillsWholeProcessGroup(t 
 printf started > "$HOME/started"
 (sleep 0.25; touch "$1") &
 wait
-`)
+	`)
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	done := make(chan struct{})
 	var result *CLIResult
 	var runErr error
@@ -494,7 +509,10 @@ wait
 		result, runErr = controlledRunner(bin).Run(ctx, home, []string{marker}, nil)
 		close(done)
 	}()
-	waitForControlledFile(t, filepath.Join(home, "started"), time.Second)
+	// Process startup can exceed one second on a loaded CI host. Keep this below
+	// the runner's 30-second ceiling, and let Cleanup cancel the process group if
+	// the readiness assertion fails so repeated runs cannot accumulate orphans.
+	waitForControlledFile(t, filepath.Join(home, "started"), 5*time.Second)
 	cancel()
 	select {
 	case <-done:

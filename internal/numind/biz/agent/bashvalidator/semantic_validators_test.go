@@ -1,6 +1,10 @@
 package bashvalidator
 
-import "testing"
+import (
+	"strconv"
+	"strings"
+	"testing"
+)
 
 // runValidatorCases runs a validator against a table of {cmd, wantDeny} and reports the
 // direction (Deny vs Allow) for each — the double-sided "不误伤" proof.
@@ -194,6 +198,164 @@ func TestSSRFLiteralValidator(t *testing.T) {
 		{`curl https://localhost.example.com/`, false}, // external domain starting with "localhost"
 		{`curl https://api.example.com/?cb=127.0.0.1`, false},
 	})
+}
+
+func TestLarkCLIRouteValidator(t *testing.T) {
+	runValidatorCases(t, NewLarkCLIRouteValidator(), []struct {
+		cmd      string
+		wantDeny bool
+	}{
+		// Direct and absolute command paths.
+		{`lark-cli docs +create`, true},
+		{`/usr/local/bin/lark-cli auth status`, true},
+		{`'lark-cli' wiki +get`, true},
+		{`/usr/local/bin/"lark-cli" base +list`, true},
+		{`lark\-cli docs +fetch`, true},
+		// Supported shell wrappers, including options and absolute wrapper paths.
+		{`sudo lark-cli docs +fetch`, true},
+		{`sudo -u root lark-cli docs +fetch`, true},
+		{`sudo --user=root -- lark-cli docs +fetch`, true},
+		{`command lark-cli docs +fetch`, true},
+		{`command -- lark-cli docs +fetch`, true},
+		{`exec lark-cli docs +fetch`, true},
+		{`exec -a workspace lark-cli docs +fetch`, true},
+		{`env X=1 lark-cli docs +fetch`, true},
+		{`env -i X=1 lark-cli docs +fetch`, true},
+		{`env "X=space separated" lark-cli docs +fetch`, true},
+		{`/usr/bin/env X=1 /usr/local/bin/lark-cli docs +fetch`, true},
+		{`/usr/bin/env -S "lark-cli docs +fetch"`, true},
+		{`env --chdir /tmp lark-cli docs +fetch`, true},
+		{`nohup lark-cli docs +fetch`, true},
+		{`nohup -- lark-cli docs +fetch`, true},
+		{`time lark-cli docs +fetch`, true},
+		{`/usr/bin/time -f %E /usr/local/bin/lark-cli docs +fetch`, true},
+		{`sudo -u root env -i command -- /usr/local/bin/lark-cli docs +fetch`, true},
+		// Every executable segment must be checked.
+		{`echo ok; lark-cli whoami`, true},
+		{`echo ok && /usr/local/bin/lark-cli whoami`, true},
+		// Mentions and similarly named helpers are not executions.
+		{`echo lark-cli`, false},
+		{`rg lark-cli README.md`, false},
+		{`my-lark-cli-helper`, false},
+		{`echo "safe; lark-cli whoami"`, false},
+		{`echo 'safe && lark-cli whoami'`, false},
+		{`printf 'lark-cli docs +fetch'`, false},
+		{`command -v lark-cli`, false},
+	})
+}
+
+func TestLarkCLIRouteValidatorShellASTBypasses(t *testing.T) {
+	runValidatorCases(t, NewLarkCLIRouteValidator(), []struct {
+		cmd      string
+		wantDeny bool
+	}{
+		{`sh -c 'lark-cli docs +fetch'`, true},
+		{`bash -lc '/usr/local/bin/lark-cli auth status'`, true},
+		{`>/tmp/lark-output lark-cli docs +fetch`, true},
+		{`(lark-cli docs +fetch)`, true},
+		{`printf '%s\n' doc | xargs lark-cli docs +fetch`, true},
+		{`find . -type f -exec lark-cli docs +fetch {} \;`, true},
+		{`find . -type f -execdir /usr/local/bin/lark-cli docs +fetch {} +`, true},
+		{`eval 'lark-cli docs +fetch'`, true},
+		{`eval -- 'lark-cli whoami'`, true},
+		{`sync_docs() { lark-cli docs +fetch; }`, true},
+	})
+}
+
+func TestLarkCLIRouteValidatorStaticTextAndDynamicBoundary(t *testing.T) {
+	runValidatorCases(t, NewLarkCLIRouteValidator(), []struct {
+		cmd      string
+		wantDeny bool
+	}{
+		{`echo ok # ; lark-cli docs +fetch`, false},
+		{"cat <<'EOF'\nlark-cli docs +fetch\nEOF", false},
+		// Dynamic command names, aliases, and symlink targets cannot be proven from
+		// static syntax. They remain isolated by the bash sandbox and are not treated
+		// as exact lark-cli executions by this validator.
+		{`cmd=lark-cli; "$cmd" docs +fetch`, false},
+		{`alias fly='lark-cli'; fly docs +fetch`, false},
+		{`ln -s /usr/local/bin/lark-cli /tmp/fly; /tmp/fly docs +fetch`, false},
+		{`my-lark-cli-helper docs +fetch`, false},
+		{`bash --norc lark-cli`, false},
+		{`sh -c 'echo safe' lark-cli`, false},
+		{`printf '%s\n' doc | xargs echo lark-cli`, false},
+		{`find . -name lark-cli -print`, false},
+		{`eval 'echo lark-cli'`, false},
+		{`eval -- 'echo lark-cli'`, false},
+		{`eval -- 'my-lark-cli-helper whoami'`, false},
+		{`eval -n 'lark-cli whoami'`, false},
+	})
+}
+
+func TestLarkCLIRouteValidatorLimitsAndParseFailure(t *testing.T) {
+	validator := NewLarkCLIRouteValidator()
+	for name, tc := range map[string]struct {
+		cmd      string
+		wantDeny bool
+	}{
+		"malformed suspicious command fails closed": {`lark-cli 'unterminated`, true},
+		"malformed similar helper stays allowed":    {`my-lark-cli-helper 'unterminated`, false},
+		"oversized suspicious command fails closed": {strings.Repeat("x", 64<<10) + `; lark-cli whoami`, true},
+		"oversized escaped command fails closed":    {strings.Repeat("x", 64<<10) + `; lark\-cli whoami`, true},
+		"oversized similar helper stays allowed":    {strings.Repeat("x", 64<<10) + `; my-lark-cli-helper whoami`, false},
+		"oversized quoted text stays allowed":       {`echo ` + strings.Repeat("x", 64<<10) + ` 'lark-cli whoami'`, false},
+		"oversized safe command stays allowed":      {`echo ` + strings.Repeat("x", 64<<10), false},
+		"over fallback fully escaped command fails closed": {
+			strings.Repeat("x", 256<<10) + `; l\a\r\k\-\c\l\i whoami`, true,
+		},
+		"over fallback mixed quoted command fails closed": {
+			strings.Repeat("x", 256<<10) + `; l"ar"k-cli whoami`, true,
+		},
+		"over fallback escaped similar helper stays allowed": {
+			strings.Repeat("x", 256<<10) + `; my-l\a\r\k\-\c\l\i-helper whoami`, false,
+		},
+		"over fallback quoted mention stays allowed": {
+			`echo ` + strings.Repeat("x", 256<<10) + ` 'lark-cli whoami'`, false,
+		},
+		"over fallback fully escaped mention stays allowed": {
+			`echo ` + strings.Repeat("x", 256<<10) + ` l\a\r\k\-\c\l\i`, false,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			result := validator.Validate(tc.cmd)
+			gotDeny := result.Decision == Deny
+			if gotDeny != tc.wantDeny {
+				t.Fatalf("Validate command: got Deny=%v, want Deny=%v", gotDeny, tc.wantDeny)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		payload  string
+		wantDeny bool
+	}{
+		{`lark-cli whoami`, true},
+		{`echo safe`, false},
+	} {
+		cmd := tc.payload
+		for range 12 {
+			cmd = "sh -c " + strconv.Quote(cmd)
+		}
+		result := validator.Validate(cmd)
+		gotDeny := result.Decision == Deny
+		if gotDeny != tc.wantDeny {
+			t.Fatalf("Validate deeply nested payload: got Deny=%v, want Deny=%v", gotDeny, tc.wantDeny)
+		}
+	}
+}
+
+func TestLarkCLIRouteValidatorRegisteredAsFifteenthRule(t *testing.T) {
+	validators := AllValidators()
+	if len(validators) != 15 {
+		t.Fatalf("AllValidators count = %d, want 15", len(validators))
+	}
+	if validators[14].ID() != "LarkCLIRoute" {
+		t.Fatalf("validator 15 = %q, want LarkCLIRoute", validators[14].ID())
+	}
+	allow, reason := Validate(`echo ok; lark-cli whoami`)
+	if allow || !strings.Contains(reason, "LarkCLIRoute") || !strings.Contains(reason, "lark_execute") {
+		t.Fatalf("registered route validator result = allow:%v reason:%q", allow, reason)
+	}
 }
 
 // TestSemanticValidators_RegisteredInPipeline confirms the top-level Validate (the gate

@@ -28,8 +28,14 @@ var (
 	// ErrWorkspaceLifecycleInvalid is a safe public validation failure. It never
 	// includes client-supplied identifiers or command data.
 	ErrWorkspaceLifecycleInvalid = errors.New("feishu workspace lifecycle request rejected")
-	// ErrWorkspaceLifecycleUnavailable is used for dependency or persistence
-	// failures without exposing internal runner/vault details to HTTP callers.
+	// ErrWorkspaceLifecycleConflict reports a current lifecycle race for which
+	// no safe replacement action could be returned.
+	ErrWorkspaceLifecycleConflict = errors.New("feishu workspace lifecycle conflict")
+	// ErrWorkspaceLifecycleDependency reports a temporary CLI, Feishu, or
+	// persistence dependency failure that is safe for the caller to retry.
+	ErrWorkspaceLifecycleDependency = errors.New("feishu workspace lifecycle dependency unavailable")
+	// ErrWorkspaceLifecycleUnavailable is the fail-closed category for internal
+	// invariants and legacy lifecycle failures that cannot safely be classified.
 	ErrWorkspaceLifecycleUnavailable = errors.New("feishu workspace lifecycle unavailable")
 )
 
@@ -139,6 +145,7 @@ type WorkspaceLifecycleAuth interface {
 	RefreshOperationAction(context.Context, uint, uint64, string, string, string, []byte) (*OperationAction, error)
 	RecoverOperationRefreshAction(context.Context, uint, uint64, string, string, string, []byte) (*OperationAction, error)
 	CompleteAppApproval(context.Context, uint, uint64, string) error
+	CompleteUserAuthorization(context.Context, uint, uint64, string) (*DeviceAuthCompletion, error)
 	StopGenerationAndWait(context.Context, uint, uint64) error
 }
 
@@ -382,32 +389,58 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 			}
 			return lifecycleStoredOperationSummary(updated), nil
 		}
-		// Create-app and user-auth recovery are completed by the server-owned
-		// auth worker. A premature browser acknowledgement simply returns the
-		// durable waiting state; it never reconstructs a URL or starts a second
-		// worker. Once a completed session is observed, the shared dispatcher is
-		// safe to retry after a worker-side dispatch interruption.
+		if session.State == model.FeishuAuthSessionCompleted {
+			dispatchCtx, dispatchCancel := authSessionDispatchContext(ctx)
+			defer dispatchCancel()
+			if err := s.dispatcher.DispatchResume(dispatchCtx, userID, operationID); err != nil {
+				return nil, ErrWorkspaceLifecycleUnavailable
+			}
+			updated, updateErr := s.workspace.GetOperationForUser(ctx, userID, account.Generation, operationID)
+			if updateErr != nil || updated == nil || updated.UserID != userID || updated.Generation != account.Generation {
+				return nil, ErrWorkspaceLifecycleUnavailable
+			}
+			if _, finalizeErr := s.finalizeTerminalOperationIfNeeded(ctx, userID, updated); finalizeErr != nil {
+				return nil, finalizeErr
+			}
+			return lifecycleStoredOperationSummary(updated), nil
+		}
+		if session.Phase == model.FeishuAuthPhaseUserAuth {
+			completion, completeErr := s.auth.CompleteUserAuthorization(
+				ctx, userID, account.Generation, session.ID,
+			)
+			if errors.Is(completeErr, ErrDeviceAuthProcessing) {
+				return lifecycleAuthorizationNoticeResult(operation, &DeviceAuthCompletion{NoticeCode: AuthorizationProcessing})
+			}
+			if errors.Is(completeErr, ErrDeviceAuthConflict) {
+				return nil, ErrWorkspaceLifecycleConflict
+			}
+			if errors.Is(completeErr, ErrDeviceAuthDependency) {
+				return nil, ErrWorkspaceLifecycleDependency
+			}
+			if completeErr != nil || completion == nil {
+				return nil, ErrWorkspaceLifecycleUnavailable
+			}
+			if completion.NoticeCode != "" || completion.Action != nil {
+				return lifecycleAuthorizationNoticeResult(operation, completion)
+			}
+			if !completion.Completed {
+				return nil, ErrWorkspaceLifecycleUnavailable
+			}
+			updated, updateErr := s.workspace.GetOperationForUser(ctx, userID, account.Generation, operationID)
+			if updateErr != nil || updated == nil || updated.UserID != userID || updated.Generation != account.Generation {
+				return nil, ErrWorkspaceLifecycleUnavailable
+			}
+			if _, finalizeErr := s.finalizeTerminalOperationIfNeeded(ctx, userID, updated); finalizeErr != nil {
+				return nil, finalizeErr
+			}
+			return lifecycleStoredOperationSummary(updated), nil
+		}
+		// Create-app remains owned by its blocking server worker. A pending
+		// acknowledgement does not reconstruct or restart that worker.
 		if session.State == model.FeishuAuthSessionPending {
 			return lifecycleStoredOperationSummary(operation), nil
 		}
-		if session.State != model.FeishuAuthSessionCompleted {
-			return nil, ErrWorkspaceLifecycleUnavailable
-		}
-		// The exact Task12 dispatcher performs OperationService.Resume and, only
-		// on success, the durable Task11 tool-result continuation. It is shared
-		// with the auth worker, so concurrent user/worker callbacks cannot invoke
-		// the original CLI command a second time.
-		if err := s.dispatcher.DispatchResume(ctx, userID, operationID); err != nil {
-			return nil, ErrWorkspaceLifecycleUnavailable
-		}
-		updated, updateErr := s.workspace.GetOperationForUser(ctx, userID, account.Generation, operationID)
-		if updateErr != nil || updated == nil || updated.UserID != userID || updated.Generation != account.Generation {
-			return nil, ErrWorkspaceLifecycleUnavailable
-		}
-		if _, finalizeErr := s.finalizeTerminalOperationIfNeeded(ctx, userID, updated); finalizeErr != nil {
-			return nil, finalizeErr
-		}
-		return lifecycleStoredOperationSummary(updated), nil
+		return nil, ErrWorkspaceLifecycleUnavailable
 	case ResumeActionConfirmed:
 		// A confirmation may have durably completed its one Feishu write before
 		// the Task11 handoff was interrupted. Retrying the same acknowledgement
@@ -726,10 +759,21 @@ func (s *WorkspaceLifecycleService) RefreshAction(ctx context.Context, userID ui
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
 	if session.OperationID == nil {
-		if session.State != model.FeishuAuthSessionPending {
+		var action *OperationAction
+		var refreshErr error
+		switch session.State {
+		case model.FeishuAuthSessionPending:
+			action, refreshErr = s.auth.RefreshAction(ctx, userID, account.Generation, sessionID)
+		case model.FeishuAuthSessionRejected, model.FeishuAuthSessionExpired:
+			if session.Phase != model.FeishuAuthPhaseUserAuth || session.ProtocolVersion != 2 ||
+				len(session.ResumeCredentialCiphertext) != 0 || session.ResumeKeyVersion != "" ||
+				session.ResumeExpiresAt != nil || session.LeaseOwner != "" || session.LeaseUntil != nil {
+				return nil, ErrWorkspaceLifecycleNotFound
+			}
+			action, refreshErr = s.auth.ConnectManual(ctx, userID)
+		default:
 			return nil, ErrWorkspaceLifecycleNotFound
 		}
-		action, refreshErr := s.auth.RefreshAction(ctx, userID, account.Generation, sessionID)
 		if refreshErr != nil || action == nil || strings.TrimSpace(action.SessionID) == "" {
 			return nil, ErrWorkspaceLifecycleUnavailable
 		}
@@ -772,32 +816,47 @@ func (s *WorkspaceLifecycleService) RefreshAction(ctx context.Context, userID ui
 	}
 	var action *OperationAction
 	var refreshErr error
-	switch session.State {
-	case model.FeishuAuthSessionPending, model.FeishuAuthSessionFailed:
-		if boundSession.ID != session.ID {
-			return nil, ErrWorkspaceLifecycleUnavailable
-		}
+	if session.Phase == model.FeishuAuthPhaseUserAuth && boundSession.ID != session.ID &&
+		(session.State == model.FeishuAuthSessionRejected || session.State == model.FeishuAuthSessionExpired ||
+			session.State == model.FeishuAuthSessionSuperseded) {
 		action, refreshErr = s.auth.RefreshOperationAction(
-			ctx, userID, account.Generation, sessionID, operation.ID, operation.State, operation.ResultSummaryJSON,
+			ctx, userID, account.Generation, boundSession.ID, operation.ID, operation.State, operation.ResultSummaryJSON,
 		)
-	case model.FeishuAuthSessionSuperseded:
-		if boundSession.ID == session.ID {
-			// Compatibility for the pre-atomic-refresh state: its operation
-			// summary still names the superseded source session. The downstream
-			// transaction rechecks this exact binding before minting a new link.
+	} else {
+		switch session.State {
+		case model.FeishuAuthSessionPending, model.FeishuAuthSessionFailed:
+			if boundSession.ID != session.ID {
+				return nil, ErrWorkspaceLifecycleUnavailable
+			}
 			action, refreshErr = s.auth.RefreshOperationAction(
 				ctx, userID, account.Generation, sessionID, operation.ID, operation.State, operation.ResultSummaryJSON,
 			)
-			break
+		case model.FeishuAuthSessionSuperseded:
+			if boundSession.ID == session.ID {
+				// Compatibility for the pre-atomic-refresh state: its operation
+				// summary still names the superseded source session. The downstream
+				// transaction rechecks this exact binding before minting a new link.
+				action, refreshErr = s.auth.RefreshOperationAction(
+					ctx, userID, account.Generation, sessionID, operation.ID, operation.State, operation.ResultSummaryJSON,
+				)
+				break
+			}
+			// A failed post-commit compensation may leave the browser's original
+			// card on a superseded ID. It can only repair the exact operation's
+			// current replacement; it cannot refresh arbitrary historical sessions.
+			action, refreshErr = s.auth.RecoverOperationRefreshAction(
+				ctx, userID, account.Generation, sessionID, operation.ID, operation.State, operation.ResultSummaryJSON,
+			)
+		case model.FeishuAuthSessionRejected, model.FeishuAuthSessionExpired:
+			if session.Phase != model.FeishuAuthPhaseUserAuth || boundSession.ID != session.ID {
+				return nil, ErrWorkspaceLifecycleNotFound
+			}
+			action, refreshErr = s.auth.RefreshOperationAction(
+				ctx, userID, account.Generation, sessionID, operation.ID, operation.State, operation.ResultSummaryJSON,
+			)
+		default:
+			return nil, ErrWorkspaceLifecycleNotFound
 		}
-		// A failed post-commit compensation may leave the browser's original
-		// card on a superseded ID. It can only repair the exact operation's
-		// current replacement; it cannot refresh arbitrary historical sessions.
-		action, refreshErr = s.auth.RecoverOperationRefreshAction(
-			ctx, userID, account.Generation, sessionID, operation.ID, operation.State, operation.ResultSummaryJSON,
-		)
-	default:
-		return nil, ErrWorkspaceLifecycleNotFound
 	}
 	if refreshErr != nil || action == nil || strings.TrimSpace(action.SessionID) == "" {
 		return nil, ErrWorkspaceLifecycleUnavailable
@@ -1245,6 +1304,33 @@ func lifecycleStoredOperationSummary(source *model.FeishuOperation) *OperationRe
 		return nil
 	}
 	return &OperationResult{OperationID: source.ID, State: source.State}
+}
+
+func lifecycleAuthorizationNoticeResult(source *model.FeishuOperation, completion *DeviceAuthCompletion) (*OperationResult, error) {
+	if source == nil || completion == nil || source.State != model.FeishuOperationWaitingUserAuth || completion.Completed {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	result := &OperationResult{
+		OperationID: source.ID,
+		State:       source.State,
+		NoticeCode:  completion.NoticeCode,
+	}
+	switch completion.NoticeCode {
+	case AuthorizationPending, AuthorizationProcessing:
+		if completion.Action != nil {
+			return nil, ErrWorkspaceLifecycleUnavailable
+		}
+	case AuthorizationRejected, AuthorizationExpired, AuthorizationUpdated:
+		action := completion.Action
+		if action == nil || action.OperationID != source.ID || strings.TrimSpace(action.SessionID) == "" ||
+			action.Phase != model.FeishuAuthPhaseUserAuth || strings.TrimSpace(action.URL) == "" {
+			return nil, ErrWorkspaceLifecycleUnavailable
+		}
+		result.Action = cloneOperationAction(action)
+	default:
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	return result, nil
 }
 
 func lifecycleResultSummary(source *OperationResult) *OperationResult {

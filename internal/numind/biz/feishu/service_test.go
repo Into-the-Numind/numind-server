@@ -274,6 +274,7 @@ type lifecycleAuthFake struct {
 	recoverOperation         func(context.Context, uint, uint64, string, string, string, []byte) (*OperationAction, error)
 	completeAppApprovalCalls []lifecycleAppApprovalCall
 	completeAppApproval      func(context.Context, uint, uint64, string) error
+	completeUserAuth         func(context.Context, uint, uint64, string) (*DeviceAuthCompletion, error)
 	stopped                  []uint64
 	action                   *OperationAction
 	stopWait                 func(context.Context) error
@@ -328,6 +329,18 @@ func (f *lifecycleAuthFake) CompleteAppApproval(ctx context.Context, userID uint
 		return f.completeAppApproval(ctx, userID, generation, sessionID)
 	}
 	return nil
+}
+
+func (f *lifecycleAuthFake) CompleteUserAuthorization(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	sessionID string,
+) (*DeviceAuthCompletion, error) {
+	if f.completeUserAuth != nil {
+		return f.completeUserAuth(ctx, userID, generation, sessionID)
+	}
+	return &DeviceAuthCompletion{NoticeCode: AuthorizationPending}, nil
 }
 
 func (f *lifecycleAuthFake) StopGenerationAndWait(ctx context.Context, _ uint, generation uint64) error {
@@ -809,6 +822,57 @@ func TestWorkspaceLifecycleResumeUsesSharedDispatcherForUserCompleted(t *testing
 	require.Zero(t, operations.cancelled)
 }
 
+func TestWorkspaceLifecycleResumeCompletedDispatchIsDetachedWithHardCeiling(t *testing.T) {
+	operationID := "op-detached-dispatch"
+	op := &model.FeishuOperation{
+		ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth,
+		ResultSummaryJSON: lifecycleRecoverySummary(t, model.FeishuOperationWaitingUserAuth, "session-detached", model.FeishuAuthPhaseUserAuth, RecoveryUserScope),
+	}
+	svc, _, workspace, _, dispatcher, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 2,
+	}, op)
+	workspace.activeSession = &model.FeishuAuthSession{
+		ID: "session-detached", UserID: 7, Generation: 2, OperationID: &operationID,
+		Phase: model.FeishuAuthPhaseUserAuth, State: model.FeishuAuthSessionCompleted,
+	}
+
+	type dispatchObservation struct {
+		deadline    time.Time
+		hasDeadline bool
+		err         error
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	observed := make(chan dispatchObservation, 1)
+	dispatcher.dispatch = func(ctx context.Context, _ uint, _ string) error {
+		deadline, hasDeadline := ctx.Deadline()
+		close(entered)
+		<-release
+		observed <- dispatchObservation{deadline: deadline, hasDeadline: hasDeadline, err: ctx.Err()}
+		return nil
+	}
+
+	callerCtx, cancelCaller := context.WithCancel(context.Background())
+	resultCh := make(chan *OperationResult, 1)
+	errCh := make(chan error, 1)
+	startedAt := time.Now()
+	go func() {
+		result, err := svc.Resume(callerCtx, 7, operationID, ResumeActionUserCompleted)
+		resultCh <- result
+		errCh <- err
+	}()
+	<-entered // all durable reads required to choose the completed branch have finished
+	cancelCaller()
+	close(release)
+
+	observation := <-observed
+	require.True(t, observation.hasDeadline, "the outer lifecycle dispatcher needs its own hard ceiling")
+	require.WithinDuration(t, startedAt.Add(authSessionCLIHardCeiling), observation.deadline, time.Second)
+	require.NoError(t, observation.err, "caller cancellation after the durable read must not cancel dispatch")
+	require.NoError(t, <-errCh)
+	require.Equal(t, operationID, (<-resultCh).OperationID)
+}
+
 func TestWorkspaceLifecycleResumeUserCompletedFinalizesTerminalAgentWaits(t *testing.T) {
 	tests := []struct {
 		state   string
@@ -1020,6 +1084,80 @@ func TestWorkspaceLifecycleResumeUserCompletedRequiresRecoverableWait(t *testing
 	_, err := svc.Resume(context.Background(), 7, "op-1", ResumeActionUserCompleted)
 	require.ErrorIs(t, err, ErrWorkspaceLifecycleInvalid)
 	require.Zero(t, dispatcher.calls, "an arbitrary operation must not be resumed by a browser acknowledgement")
+}
+
+func TestWorkspaceLifecycleResumeUserAuthorizationOutcomeMatrix(t *testing.T) {
+	expiresAt := time.Date(2026, 7, 17, 8, 30, 0, 0, time.UTC)
+	liveAction := &OperationAction{
+		Provider: ProviderLark, OperationID: "op-user-auth-outcome", SessionID: "session-replacement",
+		Phase:  model.FeishuAuthPhaseUserAuth,
+		URL:    "https://open.feishu.cn/suite/passport/oauth/device?user_code=LIVE",
+		Scopes: []string{"docx:document:create"}, ExpiresAt: expiresAt,
+	}
+	tests := []struct {
+		name          string
+		completion    *DeviceAuthCompletion
+		completionErr error
+		updatedState  string
+		wantNotice    AuthorizationNoticeCode
+		wantAction    bool
+		wantErr       error
+	}{
+		{name: "pending", completion: &DeviceAuthCompletion{NoticeCode: AuthorizationPending}, wantNotice: AuthorizationPending},
+		{name: "processing", completionErr: ErrDeviceAuthProcessing, wantNotice: AuthorizationProcessing},
+		{name: "rejected", completion: &DeviceAuthCompletion{NoticeCode: AuthorizationRejected, Action: liveAction}, wantNotice: AuthorizationRejected, wantAction: true},
+		{name: "expired", completion: &DeviceAuthCompletion{NoticeCode: AuthorizationExpired, Action: liveAction}, wantNotice: AuthorizationExpired, wantAction: true},
+		{name: "updated", completion: &DeviceAuthCompletion{NoticeCode: AuthorizationUpdated, Action: liveAction}, wantNotice: AuthorizationUpdated, wantAction: true},
+		{name: "success", completion: &DeviceAuthCompletion{Completed: true}, updatedState: model.FeishuOperationSucceeded},
+		{name: "conflict", completionErr: ErrDeviceAuthConflict, wantErr: ErrWorkspaceLifecycleConflict},
+		{name: "dependency", completionErr: ErrDeviceAuthDependency, wantErr: ErrWorkspaceLifecycleDependency},
+		{name: "invariant", completionErr: errors.New("raw invariant with token=secret"), wantErr: ErrWorkspaceLifecycleUnavailable},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			operationID := "op-user-auth-outcome"
+			op := &model.FeishuOperation{
+				ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth,
+				ResultSummaryJSON: lifecycleRecoverySummary(t, model.FeishuOperationWaitingUserAuth, "session-user-auth-outcome", model.FeishuAuthPhaseUserAuth, RecoveryUserScope),
+			}
+			svc, _, workspace, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+				UserID: 7, Provider: ProviderLark, Generation: 2,
+			}, op)
+			workspace.activeSession = &model.FeishuAuthSession{
+				ID: "session-user-auth-outcome", UserID: 7, Generation: 2, OperationID: &operationID,
+				Phase: model.FeishuAuthPhaseUserAuth, State: model.FeishuAuthSessionPending,
+			}
+			auth.completeUserAuth = func(_ context.Context, userID uint, generation uint64, sessionID string) (*DeviceAuthCompletion, error) {
+				require.Equal(t, uint(7), userID)
+				require.Equal(t, uint64(2), generation)
+				require.Equal(t, "session-user-auth-outcome", sessionID)
+				if tc.updatedState != "" {
+					workspace.operation.State = tc.updatedState
+				}
+				return tc.completion, tc.completionErr
+			}
+
+			result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionUserCompleted)
+			if tc.wantErr != nil {
+				require.Nil(t, result)
+				require.ErrorIs(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, operationID, result.OperationID)
+			expectedState := model.FeishuOperationWaitingUserAuth
+			if tc.updatedState != "" {
+				expectedState = tc.updatedState
+			}
+			require.Equal(t, expectedState, result.State)
+			require.Equal(t, tc.wantNotice, result.NoticeCode)
+			if tc.wantAction {
+				require.Equal(t, liveAction, result.Action)
+			} else {
+				require.Nil(t, result.Action)
+			}
+		})
+	}
 }
 
 func TestWorkspaceLifecycleResumeUserCompletedObservesExecutingAndTerminalStates(t *testing.T) {
@@ -1689,6 +1827,101 @@ func TestWorkspaceLifecycleRefreshRecoversOriginalCardAfterFailedCompensation(t 
 	require.NotNil(t, result.Action)
 	require.Equal(t, "session-recovered", result.Action.SessionID)
 	require.Equal(t, 1, auth.refreshCalls)
+}
+
+func TestWorkspaceLifecycleRefreshHistoricalDeviceCardUsesCurrentBoundSession(t *testing.T) {
+	for _, historicalState := range []string{
+		model.FeishuAuthSessionRejected,
+		model.FeishuAuthSessionExpired,
+		model.FeishuAuthSessionSuperseded,
+	} {
+		t.Run(historicalState, func(t *testing.T) {
+			operationID := "op-device-response-loss-" + historicalState
+			oldSessionID := "session-device-old-" + historicalState
+			currentSessionID := "session-device-current-" + historicalState
+			op := &model.FeishuOperation{
+				ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth,
+				ResultSummaryJSON: lifecycleRecoverySummary(
+					t, model.FeishuOperationWaitingUserAuth, currentSessionID,
+					model.FeishuAuthPhaseUserAuth, RecoveryUserScope,
+				),
+			}
+			svc, _, workspace, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+				UserID: 7, Provider: ProviderLark, Generation: 2,
+			}, op)
+			workspace.getSession = func(_ context.Context, userID uint, generation uint64, sessionID string) (*model.FeishuAuthSession, error) {
+				if userID != 7 || generation != 2 {
+					return nil, gorm.ErrRecordNotFound
+				}
+				switch sessionID {
+				case oldSessionID:
+					return &model.FeishuAuthSession{
+						ID: oldSessionID, UserID: 7, Generation: 2, OperationID: &operationID,
+						Phase: model.FeishuAuthPhaseUserAuth, State: historicalState, ProtocolVersion: 2,
+					}, nil
+				case currentSessionID:
+					return &model.FeishuAuthSession{
+						ID: currentSessionID, UserID: 7, Generation: 2, OperationID: &operationID,
+						Phase: model.FeishuAuthPhaseUserAuth, State: model.FeishuAuthSessionPending, ProtocolVersion: 2,
+					}, nil
+				default:
+					return nil, gorm.ErrRecordNotFound
+				}
+			}
+			auth.refreshOperation = func(_ context.Context, userID uint, generation uint64, sessionID, gotOperationID, waitingState string, summary []byte) (*OperationAction, error) {
+				require.Equal(t, uint(7), userID)
+				require.EqualValues(t, 2, generation)
+				require.Equal(t, currentSessionID, sessionID,
+					"the stale browser card may refresh only the exact currently-bound device session")
+				require.Equal(t, operationID, gotOperationID)
+				require.Equal(t, model.FeishuOperationWaitingUserAuth, waitingState)
+				decoded, err := decodeOperationSummary(summary)
+				require.NoError(t, err)
+				require.Equal(t, currentSessionID, decoded.SessionID)
+				return &OperationAction{
+					Provider: ProviderLark, SessionID: "session-device-live-" + historicalState,
+					OperationID: operationID, Phase: model.FeishuAuthPhaseUserAuth,
+					URL: "https://open.feishu.cn/suite/passport/oauth/device?user_code=RECOVERED",
+				}, nil
+			}
+			auth.recoverOperation = func(context.Context, uint, uint64, string, string, string, []byte) (*OperationAction, error) {
+				t.Fatal("device user-auth recovery must not use legacy RestoreOperationSessionRefresh")
+				return nil, nil
+			}
+
+			result, err := svc.RefreshAction(context.Background(), 7, oldSessionID)
+			require.NoError(t, err)
+			require.NotNil(t, result.Action)
+			require.Equal(t, "session-device-live-"+historicalState, result.Action.SessionID)
+		})
+	}
+}
+
+func TestWorkspaceLifecycleRefreshManualTerminalStartsFreshDeviceAuthorization(t *testing.T) {
+	for _, state := range []string{model.FeishuAuthSessionRejected, model.FeishuAuthSessionExpired} {
+		t.Run(state, func(t *testing.T) {
+			oldSessionID := "manual-terminal-" + state
+			svc, _, workspace, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+				UserID: 7, Provider: ProviderLark, Generation: 2,
+			}, nil)
+			workspace.activeSession = &model.FeishuAuthSession{
+				ID: oldSessionID, UserID: 7, Generation: 2, Phase: model.FeishuAuthPhaseUserAuth,
+				State: state, ProtocolVersion: 2,
+			}
+			auth.action = &OperationAction{
+				Provider: ProviderLark, SessionID: "manual-live-" + state,
+				Phase: model.FeishuAuthPhaseUserAuth,
+				URL:   "https://open.feishu.cn/suite/passport/oauth/device?user_code=MANUAL_NEW",
+			}
+
+			result, err := svc.RefreshAction(context.Background(), 7, oldSessionID)
+			require.NoError(t, err)
+			require.NotNil(t, result.Action)
+			require.Equal(t, "manual-live-"+state, result.Action.SessionID)
+			require.Equal(t, 1, auth.connectCalls)
+			require.Zero(t, auth.refreshCalls)
+		})
+	}
 }
 
 func TestWorkspaceLifecycleRefreshMapsAtomicRefreshFailureToUnavailable(t *testing.T) {

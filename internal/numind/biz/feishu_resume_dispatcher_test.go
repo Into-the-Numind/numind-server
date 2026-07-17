@@ -83,6 +83,115 @@ type task11LeaseFake struct {
 	accepted map[string]agent.ExternalToolResult
 }
 
+// durableDispatcherOperationState models the database fence owned by the real
+// operation service. Fresh service instances share the stored terminal result;
+// only the instance that wins the durable claim executes the authorization CLI
+// and final publication path.
+type durableDispatcherOperationState struct {
+	mu            sync.Mutex
+	result        *feishu.OperationResult
+	stored        *feishu.OperationResult
+	businessRuns  int
+	authCLICalls  int
+	finalizeCalls int
+}
+
+type durableDispatcherOperationService struct {
+	state *durableDispatcherOperationState
+}
+
+func newDurableDispatcherOperationState(result *feishu.OperationResult) *durableDispatcherOperationState {
+	return &durableDispatcherOperationState{result: cloneDispatcherOperationResult(result)}
+}
+
+func (s *durableDispatcherOperationState) newService() *durableDispatcherOperationService {
+	return &durableDispatcherOperationService{state: s}
+}
+
+func (s *durableDispatcherOperationState) businessRunCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.businessRuns
+}
+
+func (s *durableDispatcherOperationState) authCLICallCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.authCLICalls
+}
+
+func (s *durableDispatcherOperationState) finalizeCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.finalizeCalls
+}
+
+func (s *durableDispatcherOperationService) Resume(context.Context, uint, string) (*feishu.OperationResult, error) {
+	s.state.mu.Lock()
+	defer s.state.mu.Unlock()
+	if s.state.stored == nil {
+		s.state.businessRuns++
+		s.state.authCLICalls++
+		s.state.finalizeCalls++
+		s.state.stored = cloneDispatcherOperationResult(s.state.result)
+	}
+	return cloneDispatcherOperationResult(s.state.stored), nil
+}
+
+func cloneDispatcherOperationResult(result *feishu.OperationResult) *feishu.OperationResult {
+	if result == nil {
+		return nil
+	}
+	clone := *result
+	clone.Data = append(json.RawMessage(nil), result.Data...)
+	return &clone
+}
+
+type durableResponseLossAgentState struct {
+	mu           sync.Mutex
+	attempts     int
+	lostResponse bool
+	accepted     map[string]agent.ExternalToolResult
+}
+
+type durableResponseLossAgentResumer struct {
+	state *durableResponseLossAgentState
+}
+
+func newDurableResponseLossAgentState() *durableResponseLossAgentState {
+	return &durableResponseLossAgentState{accepted: make(map[string]agent.ExternalToolResult)}
+}
+
+func (s *durableResponseLossAgentState) newResumer() *durableResponseLossAgentResumer {
+	return &durableResponseLossAgentResumer{state: s}
+}
+
+func (r *durableResponseLossAgentResumer) Resume(_ context.Context, result agent.ExternalToolResult) error {
+	r.state.mu.Lock()
+	defer r.state.mu.Unlock()
+	r.state.attempts++
+	if _, exists := r.state.accepted[result.OperationID]; exists {
+		return nil
+	}
+	result.Result = append(json.RawMessage(nil), result.Result...)
+	r.state.accepted[result.OperationID] = result
+	if !r.state.lostResponse {
+		r.state.lostResponse = true
+		return errors.New("synthetic Agent response loss after durable acceptance")
+	}
+	return nil
+}
+
+func (s *durableResponseLossAgentState) snapshot() (int, []agent.ExternalToolResult) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	accepted := make([]agent.ExternalToolResult, 0, len(s.accepted))
+	for _, result := range s.accepted {
+		accepted = append(accepted, result)
+	}
+	return s.attempts, accepted
+}
+
 func (f *task11LeaseFake) Resume(_ context.Context, result agent.ExternalToolResult) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -256,6 +365,30 @@ func TestWorkspaceResumeDispatcher_ResumerErrorRemainsRetryable(t *testing.T) {
 	require.NoError(t, dispatcher.DispatchResume(context.Background(), 7, "operation-retryable"))
 	require.Equal(t, 2, operations.callCount())
 	require.Len(t, resumer.snapshot(), 2)
+}
+
+func TestWorkspaceResumeDispatcher_ResponseLossAcrossFreshInstancesUsesDurableClaims(t *testing.T) {
+	operationState := newDurableDispatcherOperationState(&feishu.OperationResult{
+		OperationID: "operation-response-loss",
+		State:       model.FeishuOperationSucceeded,
+		Data:        json.RawMessage(`{"document_id":"doc-response-loss"}`),
+		AgentRunID:  47,
+		ToolCallID:  "tool-response-loss",
+	})
+	agentState := newDurableResponseLossAgentState()
+
+	instanceA := NewWorkspaceResumeDispatcher(operationState.newService(), agentState.newResumer())
+	require.Error(t, instanceA.DispatchResume(context.Background(), 7, "operation-response-loss"),
+		"the first Agent acceptance commits before its response is lost")
+
+	instanceB := NewWorkspaceResumeDispatcher(operationState.newService(), agentState.newResumer())
+	require.NoError(t, instanceB.DispatchResume(context.Background(), 7, "operation-response-loss"))
+	require.Equal(t, 1, operationState.businessRunCount())
+	require.Equal(t, 1, operationState.authCLICallCount())
+	require.Equal(t, 1, operationState.finalizeCount())
+	attempts, accepted := agentState.snapshot()
+	require.Equal(t, 2, attempts)
+	require.Len(t, accepted, 1, "the durable Agent claim accepts the result exactly once")
 }
 
 func TestWorkspaceResumeDispatcher_SeparateInstancesRelyOnTask11Lease(t *testing.T) {
