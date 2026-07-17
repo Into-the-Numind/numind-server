@@ -2369,6 +2369,56 @@ func TestFeishuWorkspaceStore_ReplaceDeviceAuthSessionRebindsExactOperation(t *t
 		require.Nil(t, storedLegacyOld.LeaseUntil)
 	})
 
+	for _, credentialShape := range []string{"pre-start", "full credential"} {
+		t.Run("owned v2 pending source is superseded with "+credentialShape, func(t *testing.T) {
+			v2Store := newFeishuWorkspaceTestStore(t)
+			createFeishuAccount(t, v2Store, 10, 2)
+			v2Operation := newFeishuOperation("device-v2-operation-"+credentialShape, 10, 2, "device-v2-key-"+credentialShape)
+			require.NoError(t, v2Store.db.Create(v2Operation).Error)
+			v2Old := newFeishuDeviceAuthSession("device-v2-old-"+credentialShape, 10, 2, "v2-owner", now)
+			v2Old.OperationID = &v2Operation.ID
+			if credentialShape == "full credential" {
+				v2Old.ResumeCredentialCiphertext = []byte("encrypted-v2-device-code")
+				v2Old.ResumeKeyVersion = "key-v2"
+				resumeExpiry := now.Add(5 * time.Minute)
+				v2Old.ResumeExpiresAt = &resumeExpiry
+			}
+			require.NoError(t, v2Store.CreateSession(ctx, v2Old))
+			v2OldSummary := []byte(fmt.Sprintf(
+				`{"status":"waiting_user_auth","phase":"user_auth","session_id":%q}`,
+				v2Old.ID,
+			))
+			require.NoError(t, v2Store.db.Model(&model.FeishuOperation{}).Where("id = ?", v2Operation.ID).Updates(map[string]any{
+				"state": model.FeishuOperationWaitingUserAuth, "result_summary_json": v2OldSummary,
+			}).Error)
+			v2Replacement := newFeishuSession("device-v2-new-"+credentialShape, 10, 2)
+			v2Replacement.ProtocolVersion = 2
+			v2Replacement.OperationID = &v2Operation.ID
+			v2Replacement.ScopeHash = v2Old.ScopeHash
+			v2NewSummary := []byte(fmt.Sprintf(
+				`{"status":"waiting_user_auth","phase":"user_auth","session_id":%q}`,
+				v2Replacement.ID,
+			))
+
+			storedReplacement, err := v2Store.ReplaceDeviceAuthSession(ctx, FeishuDeviceAuthReplacement{
+				UserID: 10, Generation: 2, OldSessionID: v2Old.ID, LeaseOwner: "v2-owner",
+				TerminalState: model.FeishuAuthSessionSuperseded, NewSession: v2Replacement,
+				OperationID: v2Operation.ID, ExpectedWaitingState: model.FeishuOperationWaitingUserAuth,
+				OldSummary: v2OldSummary, NewSummary: v2NewSummary, Now: now,
+			})
+			require.NoError(t, err)
+			require.Equal(t, v2Replacement.ID, storedReplacement.ID)
+			storedOld, err := v2Store.GetSessionForUser(ctx, 10, 2, v2Old.ID)
+			require.NoError(t, err)
+			require.Equal(t, model.FeishuAuthSessionSuperseded, storedOld.State)
+			require.Empty(t, storedOld.ResumeCredentialCiphertext)
+			require.Empty(t, storedOld.ResumeKeyVersion)
+			require.Nil(t, storedOld.ResumeExpiresAt)
+			require.Empty(t, storedOld.LeaseOwner)
+			require.Nil(t, storedOld.LeaseUntil)
+		})
+	}
+
 }
 
 func TestFeishuWorkspaceStore_SweepDeviceAuthCredentialsUsesBoundedKeysetPage(t *testing.T) {

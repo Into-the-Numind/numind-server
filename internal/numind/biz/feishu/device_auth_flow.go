@@ -44,6 +44,7 @@ const (
 // completion, replacement, and fenced-publication phases.
 type DeviceAuthStore interface {
 	GetSessionForUser(context.Context, uint, uint64, string) (*model.FeishuAuthSession, error)
+	GetOperationForUser(context.Context, uint, uint64, string) (*model.FeishuOperation, error)
 	ClaimSession(context.Context, uint, uint64, string, string, time.Time, time.Time) (bool, error)
 	RenewSession(context.Context, uint, uint64, string, string, time.Time, time.Time) (bool, error)
 	AttachDeviceAuthCredential(context.Context, store.FeishuDeviceAuthCredentialAttach) error
@@ -171,6 +172,16 @@ func (f *DeviceAuthFlow) StartUserAuthorization(
 	session *model.FeishuAuthSession,
 	scopes []string,
 ) (*OperationAction, error) {
+	return f.startUserAuthorization(ctx, account, session, scopes, false)
+}
+
+func (f *DeviceAuthFlow) startUserAuthorization(
+	ctx context.Context,
+	account *model.UserThirdPartyAccount,
+	session *model.FeishuAuthSession,
+	scopes []string,
+	preservePendingOnFailure bool,
+) (*OperationAction, error) {
 	if f == nil {
 		return nil, ErrAuthSessionUnavailable
 	}
@@ -218,12 +229,12 @@ func (f *DeviceAuthFlow) StartUserAuthorization(
 
 	start, err := f.startCLIInReadOnlyHome(ctx, session, canonicalScopes, durableNow)
 	if err != nil {
-		f.releaseOrFailOwnedStart(ctx, session, leaseToken, err)
+		f.releaseOrFailOwnedStart(ctx, session, leaseToken, err, preservePendingOnFailure)
 		return nil, classifyDeviceAuthStartError(err)
 	}
 	expiresAt, err := earliestDeviceAuthExpiry(f.now().UTC(), session.ExpiresAt, start.ExpiresIn)
 	if err != nil {
-		f.releaseOrFailOwnedStart(ctx, session, leaseToken, err)
+		f.releaseOrFailOwnedStart(ctx, session, leaseToken, err, preservePendingOnFailure)
 		return nil, ErrAuthSessionUnavailable
 	}
 	binding := DeviceAuthCredentialBinding{
@@ -233,7 +244,7 @@ func (f *DeviceAuthFlow) StartUserAuthorization(
 	}
 	ciphertext, keyVersion, err := f.cipher.Seal(binding, start.DeviceCode)
 	if err != nil {
-		f.releaseOrFailOwnedStart(ctx, session, leaseToken, errDeviceAuthCLIProtocol)
+		f.releaseOrFailOwnedStart(ctx, session, leaseToken, errDeviceAuthCLIProtocol, preservePendingOnFailure)
 		return nil, ErrAuthSessionUnavailable
 	}
 	err = f.sessions.AttachDeviceAuthCredential(ctx, store.FeishuDeviceAuthCredentialAttach{
@@ -372,8 +383,14 @@ func (f *DeviceAuthFlow) releaseOwnedStartLease(ctx context.Context, session *mo
 	)
 }
 
-func (f *DeviceAuthFlow) releaseOrFailOwnedStart(ctx context.Context, session *model.FeishuAuthSession, leaseToken string, startErr error) {
-	if errors.Is(startErr, errDeviceAuthCLIProtocol) || errors.Is(startErr, errDeviceAuthCredentialRejected) {
+func (f *DeviceAuthFlow) releaseOrFailOwnedStart(
+	ctx context.Context,
+	session *model.FeishuAuthSession,
+	leaseToken string,
+	startErr error,
+	preservePendingOnFailure bool,
+) {
+	if !preservePendingOnFailure && (errors.Is(startErr, errDeviceAuthCLIProtocol) || errors.Is(startErr, errDeviceAuthCredentialRejected)) {
 		terminalCtx, cancel := authSessionDetachedContext(ctx)
 		defer cancel()
 		_ = f.sessions.TerminalizeDeviceAuthSession(
@@ -554,12 +571,34 @@ func (f *DeviceAuthFlow) CompleteUserAuthorization(
 			mutationCtx, session, leaseToken, mutationNow, AuthorizationPending,
 		)
 	case DeviceAuthRejected:
-		return f.releaseDeviceAuthOutcome(
-			mutationCtx, session, leaseToken, mutationNow, AuthorizationRejected,
+		if session.OperationID == nil {
+			return f.terminalizeManualDeviceAuthOutcome(
+				mutationCtx, session, leaseToken, mutationNow,
+				model.FeishuAuthSessionRejected, AuthorizationRejected,
+			)
+		}
+		oldSummary, newSummary, summaryErr := f.ownedOperationReplacementSummaries(mutationCtx, session, mutationNow)
+		if summaryErr != nil {
+			return nil, ErrDeviceAuthConflict
+		}
+		return f.replaceOwnedSession(
+			mutationCtx, ctx, account, session, leaseToken, model.FeishuAuthSessionRejected,
+			model.FeishuOperationWaitingUserAuth, oldSummary, newSummary,
 		)
 	case DeviceAuthExpired:
-		return f.releaseDeviceAuthOutcome(
-			mutationCtx, session, leaseToken, mutationNow, AuthorizationExpired,
+		if session.OperationID == nil {
+			return f.terminalizeManualDeviceAuthOutcome(
+				mutationCtx, session, leaseToken, mutationNow,
+				model.FeishuAuthSessionExpired, AuthorizationExpired,
+			)
+		}
+		oldSummary, newSummary, summaryErr := f.ownedOperationReplacementSummaries(mutationCtx, session, mutationNow)
+		if summaryErr != nil {
+			return nil, ErrDeviceAuthConflict
+		}
+		return f.replaceOwnedSession(
+			mutationCtx, ctx, account, session, leaseToken, model.FeishuAuthSessionExpired,
+			model.FeishuOperationWaitingUserAuth, oldSummary, newSummary,
 		)
 	case DeviceAuthProtocolFailure:
 		if err := f.sessions.TerminalizeDeviceAuthSession(
@@ -795,6 +834,27 @@ func (f *DeviceAuthFlow) releaseDeviceAuthOutcome(
 	return &DeviceAuthCompletion{NoticeCode: notice}, nil
 }
 
+func (f *DeviceAuthFlow) terminalizeManualDeviceAuthOutcome(
+	ctx context.Context,
+	session *model.FeishuAuthSession,
+	leaseToken string,
+	now time.Time,
+	terminalState string,
+	notice AuthorizationNoticeCode,
+) (*DeviceAuthCompletion, error) {
+	if session == nil || session.OperationID != nil ||
+		(terminalState != model.FeishuAuthSessionRejected && terminalState != model.FeishuAuthSessionExpired) {
+		return nil, ErrDeviceAuthConflict
+	}
+	if err := f.sessions.TerminalizeDeviceAuthSession(
+		ctx, session.UserID, session.Generation, session.ID, leaseToken, terminalState, now,
+	); err != nil {
+		return nil, ErrDeviceAuthConflict
+	}
+	f.liveURLs.remove(authSessionRegistryKey(session))
+	return &DeviceAuthCompletion{NoticeCode: notice}, nil
+}
+
 func (f *DeviceAuthFlow) releaseOwnedCompletion(
 	ownerCtx context.Context,
 	session *model.FeishuAuthSession,
@@ -861,8 +921,260 @@ func (f *DeviceAuthFlow) releaseOwnedCompletionLease(
 	)
 }
 
-func (f *DeviceAuthFlow) RefreshUserAuthorization(context.Context, DeviceAuthRefreshRequest) (*DeviceAuthCompletion, error) {
-	return nil, ErrDeviceAuthDependency
+func (f *DeviceAuthFlow) deviceAuthReplacementSummaries(
+	oldSession *model.FeishuAuthSession,
+	oldSummary []byte,
+	now time.Time,
+) ([]byte, []byte, error) {
+	if oldSession == nil || oldSession.OperationID == nil {
+		return nil, nil, ErrAuthSessionUnavailable
+	}
+	if len(oldSummary) == 0 {
+		return nil, nil, ErrAuthSessionUnavailable
+	}
+	summary, err := decodeOperationSummary(oldSummary)
+	if err != nil || summary.Status != model.FeishuOperationWaitingUserAuth ||
+		summary.Phase != model.FeishuAuthPhaseUserAuth || summary.SessionID != oldSession.ID {
+		return nil, nil, ErrAuthSessionUnavailable
+	}
+	summary.SessionID = f.newID()
+	if strings.TrimSpace(summary.SessionID) == "" || summary.SessionID == oldSession.ID {
+		return nil, nil, ErrAuthSessionUnavailable
+	}
+	expiresAt := now.UTC().Add(f.sessionDuration)
+	if summary.ExpiresAt != nil {
+		summary.ExpiresAt = &expiresAt
+	}
+	newSummary, err := json.Marshal(summary)
+	if err != nil {
+		return nil, nil, ErrAuthSessionUnavailable
+	}
+	return append([]byte(nil), oldSummary...), newSummary, nil
+}
+
+func (f *DeviceAuthFlow) ownedOperationReplacementSummaries(
+	ctx context.Context,
+	oldSession *model.FeishuAuthSession,
+	now time.Time,
+) ([]byte, []byte, error) {
+	if oldSession == nil || oldSession.OperationID == nil {
+		return nil, nil, ErrAuthSessionUnavailable
+	}
+	operation, err := f.sessions.GetOperationForUser(
+		ctx, oldSession.UserID, oldSession.Generation, *oldSession.OperationID,
+	)
+	if err != nil || operation == nil || operation.ID != *oldSession.OperationID ||
+		operation.State != model.FeishuOperationWaitingUserAuth {
+		return nil, nil, ErrAuthSessionUnavailable
+	}
+	return f.deviceAuthReplacementSummaries(oldSession, operation.ResultSummaryJSON, now)
+}
+
+func (f *DeviceAuthFlow) replaceOwnedSession(
+	mutationCtx context.Context,
+	startParent context.Context,
+	account *model.UserThirdPartyAccount,
+	oldSession *model.FeishuAuthSession,
+	leaseToken string,
+	terminalState string,
+	waitingState string,
+	oldSummary []byte,
+	newSummary []byte,
+) (*DeviceAuthCompletion, error) {
+	if account == nil || oldSession == nil || oldSession.OperationID == nil ||
+		waitingState != model.FeishuOperationWaitingUserAuth {
+		return nil, ErrDeviceAuthConflict
+	}
+	var scopes []string
+	if json.Unmarshal(oldSession.RequestedScopesJSON, &scopes) != nil {
+		return nil, ErrDeviceAuthConflict
+	}
+	canonicalScopes, err := canonicalDeviceAuthScopes(scopes)
+	if err != nil || !authSessionScopeJSONEqual(oldSession.RequestedScopesJSON, mustMarshalAuthScopes(canonicalScopes)) {
+		return nil, ErrDeviceAuthConflict
+	}
+	newSummaryValue, err := decodeOperationSummary(newSummary)
+	if err != nil || newSummaryValue.Status != waitingState || newSummaryValue.Phase != model.FeishuAuthPhaseUserAuth ||
+		strings.TrimSpace(newSummaryValue.SessionID) == "" || newSummaryValue.SessionID == oldSession.ID {
+		return nil, ErrDeviceAuthConflict
+	}
+	operationID := *oldSession.OperationID
+	replacementExpiresAt := f.now().UTC().Add(f.sessionDuration)
+	if newSummaryValue.ExpiresAt != nil {
+		replacementExpiresAt = newSummaryValue.ExpiresAt.UTC()
+	}
+	replacement := &model.FeishuAuthSession{
+		ID: newSummaryValue.SessionID, UserID: oldSession.UserID, Generation: oldSession.Generation,
+		OperationID: &operationID, Phase: model.FeishuAuthPhaseUserAuth,
+		RequestedScopesJSON: mustMarshalAuthScopes(canonicalScopes), State: model.FeishuAuthSessionPending,
+		ExpiresAt: replacementExpiresAt, ProtocolVersion: 2,
+		ScopeHash: deviceAuthScopeHash(canonicalScopes),
+	}
+	stored, err := f.sessions.ReplaceDeviceAuthSession(mutationCtx, store.FeishuDeviceAuthReplacement{
+		UserID: oldSession.UserID, Generation: oldSession.Generation, OldSessionID: oldSession.ID,
+		LeaseOwner: leaseToken, TerminalState: terminalState, NewSession: replacement,
+		OperationID: operationID, ExpectedWaitingState: waitingState,
+		OldSummary: append([]byte(nil), oldSummary...), NewSummary: append([]byte(nil), newSummary...),
+		Now: f.now().UTC(),
+	})
+	if err != nil || stored == nil {
+		return nil, ErrDeviceAuthConflict
+	}
+	f.liveURLs.remove(authSessionRegistryKey(oldSession))
+	if startParent == nil {
+		startParent = context.Background()
+	}
+	startCtx, cancelStart := context.WithTimeout(context.WithoutCancel(startParent), f.startTimeout)
+	defer cancelStart()
+	action, err := f.startUserAuthorization(startCtx, account, stored, canonicalScopes, true)
+	if err != nil {
+		return nil, err
+	}
+	if action == nil || action.SessionID != stored.ID || action.OperationID != operationID {
+		return nil, ErrDeviceAuthConflict
+	}
+	// Requested scopes are recovered only from the canonical durable session;
+	// they are not reflected back through the refresh/completion response.
+	action.Scopes = nil
+	return &DeviceAuthCompletion{Action: action}, nil
+}
+
+// RefreshUserAuthorization atomically replaces an exact operation-linked
+// legacy or terminal device session with a credential-free v2 attempt.
+func (f *DeviceAuthFlow) RefreshUserAuthorization(
+	ctx context.Context,
+	request DeviceAuthRefreshRequest,
+) (*DeviceAuthCompletion, error) {
+	if f == nil || request.UserID == 0 || request.Generation == 0 ||
+		strings.TrimSpace(request.OldSessionID) == "" || strings.TrimSpace(request.OperationID) == "" ||
+		request.WaitingState != model.FeishuOperationWaitingUserAuth {
+		return nil, ErrAuthSessionUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	now := f.now().UTC()
+	oldSession, err := f.sessions.GetSessionForUser(ctx, request.UserID, request.Generation, request.OldSessionID)
+	if err != nil || oldSession == nil || oldSession.Phase != model.FeishuAuthPhaseUserAuth ||
+		oldSession.OperationID == nil || *oldSession.OperationID != request.OperationID ||
+		(oldSession.CompletedAt != nil && oldSession.State == model.FeishuAuthSessionPending) {
+		return nil, ErrAuthSessionUnavailable
+	}
+	var scopes []string
+	if json.Unmarshal(oldSession.RequestedScopesJSON, &scopes) != nil {
+		return nil, ErrAuthSessionUnavailable
+	}
+	canonicalScopes, err := canonicalDeviceAuthScopes(scopes)
+	if err != nil || !authSessionScopeJSONEqual(oldSession.RequestedScopesJSON, mustMarshalAuthScopes(canonicalScopes)) {
+		return nil, ErrAuthSessionUnavailable
+	}
+	requiresClaim, terminalState, validSource := deviceAuthRefreshSource(oldSession, canonicalScopes, now)
+	if !validSource {
+		return nil, ErrAuthSessionUnavailable
+	}
+	summary, err := decodeOperationSummary(request.OperationSummary)
+	if err != nil || summary.Status != request.WaitingState || summary.Phase != oldSession.Phase ||
+		summary.SessionID != oldSession.ID || phaseForRecovery(summary.RecoveryKind) != oldSession.Phase ||
+		(len(summary.RecoveryScopes) > 0 && !authSessionScopeJSONEqual(
+			mustMarshalAuthScopes(summary.RecoveryScopes), mustMarshalAuthScopes(canonicalScopes),
+		)) {
+		return nil, ErrAuthSessionUnavailable
+	}
+	account, err := f.accounts.Get(ctx, request.UserID, ProviderLark)
+	if err != nil || account == nil || account.UserID != request.UserID || account.Generation != request.Generation ||
+		account.Provider != ProviderLark || !validAuthSessionAppID(account.AppID) ||
+		account.ConnectionState == model.FeishuConnectionDisconnecting {
+		return nil, ErrAuthSessionUnavailable
+	}
+	leaseToken := ""
+	claimUntil := time.Time{}
+	if requiresClaim {
+		leaseToken = strings.TrimSpace(f.newLeaseToken())
+		if leaseToken == "" || len(leaseToken) > 128 {
+			return nil, ErrAuthSessionUnavailable
+		}
+		claimNow := f.now().UTC()
+		claimUntil = claimNow.Add(f.leaseDuration)
+		claimBudget := deviceAuthBoundedBudget(deviceAuthMutationTimeout, claimNow, claimUntil, oldSession.ExpiresAt)
+		if claimBudget <= 0 {
+			return nil, ErrDeviceAuthProcessing
+		}
+		claimCtx, cancelClaim := context.WithTimeout(context.WithoutCancel(ctx), claimBudget)
+		claimed, claimErr := f.sessions.ClaimSession(
+			claimCtx, request.UserID, request.Generation, request.OldSessionID,
+			leaseToken, claimNow, claimUntil,
+		)
+		cancelClaim()
+		if claimErr != nil || !claimed {
+			return nil, ErrDeviceAuthProcessing
+		}
+	}
+	oldSummary, newSummary, err := f.deviceAuthReplacementSummaries(oldSession, request.OperationSummary, f.now().UTC())
+	if err != nil {
+		if requiresClaim {
+			f.releaseOwnedCompletionLease(ctx, oldSession, leaseToken, claimUntil)
+		}
+		return nil, ErrAuthSessionUnavailable
+	}
+	mutationNow := f.now().UTC()
+	mutationBudget := deviceAuthMutationTimeout
+	if requiresClaim {
+		mutationBudget = deviceAuthBoundedBudget(deviceAuthMutationTimeout, mutationNow, claimUntil, oldSession.ExpiresAt)
+	}
+	if mutationBudget <= 0 {
+		if requiresClaim {
+			f.releaseOwnedCompletionLease(ctx, oldSession, leaseToken, claimUntil)
+		}
+		return nil, ErrDeviceAuthConflict
+	}
+	mutationCtx, cancelMutation := context.WithTimeout(context.WithoutCancel(ctx), mutationBudget)
+	result, replaceErr := f.replaceOwnedSession(
+		mutationCtx, ctx, account, oldSession, leaseToken, terminalState,
+		request.WaitingState, oldSummary, newSummary,
+	)
+	cancelMutation()
+	if requiresClaim && errors.Is(replaceErr, ErrDeviceAuthConflict) {
+		f.releaseOwnedCompletionLease(ctx, oldSession, leaseToken, claimUntil)
+	}
+	return result, replaceErr
+}
+
+func deviceAuthRefreshSource(
+	session *model.FeishuAuthSession,
+	canonicalScopes []string,
+	now time.Time,
+) (bool, string, bool) {
+	if session == nil || session.Phase != model.FeishuAuthPhaseUserAuth || len(canonicalScopes) == 0 {
+		return false, "", false
+	}
+	hasCiphertext := len(session.ResumeCredentialCiphertext) > 0
+	hasKey := session.ResumeKeyVersion != ""
+	hasExpiry := session.ResumeExpiresAt != nil
+	credentialFree := !hasCiphertext && !hasKey && !hasExpiry
+	credentialComplete := hasCiphertext && hasKey && hasExpiry
+	switch session.ProtocolVersion {
+	case 1:
+		if !credentialFree || session.ScopeHash != "" {
+			return false, "", false
+		}
+		switch session.State {
+		case model.FeishuAuthSessionPending:
+			return true, model.FeishuAuthSessionSuperseded, session.ExpiresAt.After(now)
+		case model.FeishuAuthSessionSuperseded:
+			return false, model.FeishuAuthSessionSuperseded, session.LeaseOwner == "" && session.LeaseUntil == nil
+		}
+	case 2:
+		if session.ScopeHash != deviceAuthScopeHash(canonicalScopes) || (!credentialFree && !credentialComplete) {
+			return false, "", false
+		}
+		switch session.State {
+		case model.FeishuAuthSessionPending:
+			return true, model.FeishuAuthSessionSuperseded, session.ExpiresAt.After(now)
+		case model.FeishuAuthSessionRejected, model.FeishuAuthSessionExpired:
+			return false, session.State, credentialFree && session.LeaseOwner == "" && session.LeaseUntil == nil
+		}
+	}
+	return false, "", false
 }
 
 func (f *DeviceAuthFlow) CleanupExpiredCredentials(context.Context, int) (int64, error) {

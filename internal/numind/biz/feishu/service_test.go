@@ -1691,6 +1691,101 @@ func TestWorkspaceLifecycleRefreshRecoversOriginalCardAfterFailedCompensation(t 
 	require.Equal(t, 1, auth.refreshCalls)
 }
 
+func TestWorkspaceLifecycleRefreshHistoricalDeviceCardUsesCurrentBoundSession(t *testing.T) {
+	for _, historicalState := range []string{
+		model.FeishuAuthSessionRejected,
+		model.FeishuAuthSessionExpired,
+		model.FeishuAuthSessionSuperseded,
+	} {
+		t.Run(historicalState, func(t *testing.T) {
+			operationID := "op-device-response-loss-" + historicalState
+			oldSessionID := "session-device-old-" + historicalState
+			currentSessionID := "session-device-current-" + historicalState
+			op := &model.FeishuOperation{
+				ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth,
+				ResultSummaryJSON: lifecycleRecoverySummary(
+					t, model.FeishuOperationWaitingUserAuth, currentSessionID,
+					model.FeishuAuthPhaseUserAuth, RecoveryUserScope,
+				),
+			}
+			svc, _, workspace, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+				UserID: 7, Provider: ProviderLark, Generation: 2,
+			}, op)
+			workspace.getSession = func(_ context.Context, userID uint, generation uint64, sessionID string) (*model.FeishuAuthSession, error) {
+				if userID != 7 || generation != 2 {
+					return nil, gorm.ErrRecordNotFound
+				}
+				switch sessionID {
+				case oldSessionID:
+					return &model.FeishuAuthSession{
+						ID: oldSessionID, UserID: 7, Generation: 2, OperationID: &operationID,
+						Phase: model.FeishuAuthPhaseUserAuth, State: historicalState, ProtocolVersion: 2,
+					}, nil
+				case currentSessionID:
+					return &model.FeishuAuthSession{
+						ID: currentSessionID, UserID: 7, Generation: 2, OperationID: &operationID,
+						Phase: model.FeishuAuthPhaseUserAuth, State: model.FeishuAuthSessionPending, ProtocolVersion: 2,
+					}, nil
+				default:
+					return nil, gorm.ErrRecordNotFound
+				}
+			}
+			auth.refreshOperation = func(_ context.Context, userID uint, generation uint64, sessionID, gotOperationID, waitingState string, summary []byte) (*OperationAction, error) {
+				require.Equal(t, uint(7), userID)
+				require.EqualValues(t, 2, generation)
+				require.Equal(t, currentSessionID, sessionID,
+					"the stale browser card may refresh only the exact currently-bound device session")
+				require.Equal(t, operationID, gotOperationID)
+				require.Equal(t, model.FeishuOperationWaitingUserAuth, waitingState)
+				decoded, err := decodeOperationSummary(summary)
+				require.NoError(t, err)
+				require.Equal(t, currentSessionID, decoded.SessionID)
+				return &OperationAction{
+					Provider: ProviderLark, SessionID: "session-device-live-" + historicalState,
+					OperationID: operationID, Phase: model.FeishuAuthPhaseUserAuth,
+					URL: "https://open.feishu.cn/suite/passport/oauth/device?user_code=RECOVERED",
+				}, nil
+			}
+			auth.recoverOperation = func(context.Context, uint, uint64, string, string, string, []byte) (*OperationAction, error) {
+				t.Fatal("device user-auth recovery must not use legacy RestoreOperationSessionRefresh")
+				return nil, nil
+			}
+
+			result, err := svc.RefreshAction(context.Background(), 7, oldSessionID)
+			require.NoError(t, err)
+			require.NotNil(t, result.Action)
+			require.Equal(t, "session-device-live-"+historicalState, result.Action.SessionID)
+		})
+	}
+}
+
+func TestWorkspaceLifecycleRefreshManualTerminalStartsFreshDeviceAuthorization(t *testing.T) {
+	for _, state := range []string{model.FeishuAuthSessionRejected, model.FeishuAuthSessionExpired} {
+		t.Run(state, func(t *testing.T) {
+			oldSessionID := "manual-terminal-" + state
+			svc, _, workspace, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+				UserID: 7, Provider: ProviderLark, Generation: 2,
+			}, nil)
+			workspace.activeSession = &model.FeishuAuthSession{
+				ID: oldSessionID, UserID: 7, Generation: 2, Phase: model.FeishuAuthPhaseUserAuth,
+				State: state, ProtocolVersion: 2,
+			}
+			auth.action = &OperationAction{
+				Provider: ProviderLark, SessionID: "manual-live-" + state,
+				Phase: model.FeishuAuthPhaseUserAuth,
+				URL:   "https://open.feishu.cn/suite/passport/oauth/device?user_code=MANUAL_NEW",
+			}
+
+			result, err := svc.RefreshAction(context.Background(), 7, oldSessionID)
+			require.NoError(t, err)
+			require.NotNil(t, result.Action)
+			require.Equal(t, "manual-live-"+state, result.Action.SessionID)
+			require.Equal(t, 1, auth.connectCalls)
+			require.Zero(t, auth.refreshCalls)
+		})
+	}
+}
+
 func TestWorkspaceLifecycleRefreshMapsAtomicRefreshFailureToUnavailable(t *testing.T) {
 	operationID := "op-refresh-rebind-failure"
 	oldSessionID := "session-old"

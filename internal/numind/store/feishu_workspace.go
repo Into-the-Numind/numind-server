@@ -917,7 +917,9 @@ func replaceableFeishuDeviceAuthSource(old *model.FeishuAuthSession, input Feish
 			return false
 		}
 		if old.ProtocolVersion == 2 {
-			return (input.TerminalState == model.FeishuAuthSessionRejected || input.TerminalState == model.FeishuAuthSessionExpired) && validFeishuDeviceAuthShape(old)
+			return (input.TerminalState == model.FeishuAuthSessionRejected ||
+				input.TerminalState == model.FeishuAuthSessionExpired ||
+				input.TerminalState == model.FeishuAuthSessionSuperseded) && validFeishuDeviceAuthShape(old)
 		}
 		return old.ProtocolVersion == 1 && input.TerminalState == model.FeishuAuthSessionSuperseded && !feishuSessionHasResumeCredential(old)
 	case model.FeishuAuthSessionRejected, model.FeishuAuthSessionExpired:

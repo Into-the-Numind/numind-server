@@ -773,6 +773,123 @@ func TestAuthSessionService_RefreshOperationRepairsLegacySupersededBinding(t *te
 	releaseWorker()
 }
 
+func TestAuthSessionService_RefreshLegacyUserAuthUsesAtomicDeviceReplacement(t *testing.T) {
+	h := newAuthSessionHarness(t)
+	h.createAccount(model.FeishuConnectionAppReady)
+	h.cli.urls = []string{
+		"https://open.feishu.cn/suite/passport/oauth/device?user_code=LEGACY_DEVICE_REPLACED",
+	}
+	service := h.newService("refresh-legacy-user-auth")
+	operation := &model.FeishuOperation{
+		ID: "operation-refresh-legacy-user-auth", UserID: 7, Generation: 1,
+		AgentRunID: 7, ToolCallID: "tool-refresh-legacy-user-auth",
+		IdempotencyKey: "refresh-legacy-user-auth", CommandPath: "docs document get",
+		Domain: "docs", RiskLevel: string(RiskRead), RequestCiphertext: []byte("encrypted-request"),
+		KeyVersion: "v1", RequestFingerprint: "refresh-legacy-user-auth-fingerprint",
+		State: model.FeishuOperationWaitingUserAuth,
+	}
+	require.NoError(t, h.db.Create(operation).Error)
+	legacy := &model.FeishuAuthSession{
+		ID: "00000000-0000-4000-8000-000000000198", UserID: 7, Generation: 1,
+		OperationID: &operation.ID, Phase: model.FeishuAuthPhaseUserAuth,
+		RequestedScopesJSON: []byte(`["docx:document:readonly"]`),
+		State:               model.FeishuAuthSessionPending, ProtocolVersion: 1,
+		ExpiresAt: h.now.Add(10 * time.Minute),
+	}
+	require.NoError(t, h.dataStore.FeishuWorkspace().CreateSession(h.ctx, legacy))
+	oldSummary, err := json.Marshal(persistedOperationSummary{
+		Status: model.FeishuOperationWaitingUserAuth, Phase: model.FeishuAuthPhaseUserAuth,
+		SessionID: legacy.ID, RecoveryKind: RecoveryUserScope,
+		RecoveryScopes: []string{"docx:document:readonly"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.db.Model(&model.FeishuOperation{}).Where("id = ?", operation.ID).
+		Update("result_summary_json", oldSummary).Error)
+
+	action, err := service.RefreshOperationAction(
+		h.ctx, 7, 1, legacy.ID, operation.ID, model.FeishuOperationWaitingUserAuth, oldSummary,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, action)
+	require.Equal(t, "00000000-0000-4000-8000-999999999999", action.SessionID)
+	require.Equal(t, operation.ID, action.OperationID)
+	require.Contains(t, action.URL, "LEGACY_DEVICE_REPLACED")
+	require.Empty(t, action.Scopes)
+	storedOld, err := h.dataStore.FeishuWorkspace().GetSessionForUser(h.ctx, 7, 1, legacy.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionSuperseded, storedOld.State)
+	storedNew, err := h.dataStore.FeishuWorkspace().GetSessionForUser(h.ctx, 7, 1, action.SessionID)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, storedNew.ProtocolVersion)
+	require.NotEmpty(t, storedNew.ResumeCredentialCiphertext)
+	storedOperation, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, operation.ID)
+	require.NoError(t, err)
+	storedSummary, err := decodeOperationSummary(storedOperation.ResultSummaryJSON)
+	require.NoError(t, err)
+	require.Equal(t, action.SessionID, storedSummary.SessionID)
+	argv, _ := h.cli.snapshot()
+	require.Equal(t,
+		[]string{"auth", "login", "--scope", "docx:document:readonly", "--no-wait", "--json"},
+		argv[0],
+	)
+	require.Empty(t, h.dispatcher.snapshot(), "Task 9 owns resume dispatch")
+}
+
+func TestAuthSessionService_RefreshMigratedSupersededUserAuthUsesDeviceReplacement(t *testing.T) {
+	h := newAuthSessionHarness(t)
+	h.createAccount(model.FeishuConnectionAppReady)
+	h.cli.urls = []string{
+		"https://open.feishu.cn/suite/passport/oauth/device?user_code=MIGRATED_SUPERSEDED",
+	}
+	service := h.newService("refresh-migrated-superseded-user-auth")
+	operation := &model.FeishuOperation{
+		ID: "operation-refresh-migrated-superseded", UserID: 7, Generation: 1,
+		AgentRunID: 7, ToolCallID: "tool-refresh-migrated-superseded",
+		IdempotencyKey: "refresh-migrated-superseded", CommandPath: "docs document get",
+		Domain: "docs", RiskLevel: string(RiskRead), RequestCiphertext: []byte("encrypted-request"),
+		KeyVersion: "v1", RequestFingerprint: "refresh-migrated-superseded-fingerprint",
+		State: model.FeishuOperationWaitingUserAuth,
+	}
+	require.NoError(t, h.db.Create(operation).Error)
+	legacy := &model.FeishuAuthSession{
+		ID: "00000000-0000-4000-8000-000000000199", UserID: 7, Generation: 1,
+		OperationID: &operation.ID, Phase: model.FeishuAuthPhaseUserAuth,
+		RequestedScopesJSON: []byte(`["docx:document:readonly"]`),
+		State:               model.FeishuAuthSessionSuperseded, ProtocolVersion: 1,
+		ExpiresAt: h.now.Add(-time.Minute),
+	}
+	require.NoError(t, h.dataStore.FeishuWorkspace().CreateSession(h.ctx, legacy))
+	oldSummary, err := json.Marshal(persistedOperationSummary{
+		Status: model.FeishuOperationWaitingUserAuth, Phase: model.FeishuAuthPhaseUserAuth,
+		SessionID: legacy.ID, RecoveryKind: RecoveryUserScope,
+		RecoveryScopes: []string{"docx:document:readonly"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.db.Model(&model.FeishuOperation{}).Where("id = ?", operation.ID).
+		Update("result_summary_json", oldSummary).Error)
+
+	action, err := service.RefreshOperationAction(
+		h.ctx, 7, 1, legacy.ID, operation.ID, model.FeishuOperationWaitingUserAuth, oldSummary,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, action)
+	require.Equal(t, "00000000-0000-4000-8000-999999999999", action.SessionID)
+	require.Contains(t, action.URL, "MIGRATED_SUPERSEDED")
+	storedOld, err := h.dataStore.FeishuWorkspace().GetSessionForUser(h.ctx, 7, 1, legacy.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionSuperseded, storedOld.State)
+	storedNew, err := h.dataStore.FeishuWorkspace().GetSessionForUser(h.ctx, 7, 1, action.SessionID)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, storedNew.ProtocolVersion)
+	require.NotEmpty(t, storedNew.ResumeCredentialCiphertext)
+	argv, _ := h.cli.snapshot()
+	require.Len(t, argv, 1, "legacy user auth must never start the blocking worker")
+	require.Equal(t,
+		[]string{"auth", "login", "--scope", "docx:document:readonly", "--no-wait", "--json"},
+		argv[0],
+	)
+}
+
 func TestAuthSessionService_RefreshOperationRetriesCurrentFailedBinding(t *testing.T) {
 	h := newAuthSessionHarness(t)
 	h.createAccount(model.FeishuConnectionAppReady)

@@ -973,8 +973,27 @@ func (s *AuthSessionService) RefreshOperationAction(
 		return nil, ErrAuthSessionUnavailable
 	}
 	oldSession, err := s.sessions.GetSessionForUser(ctx, userID, generation, oldSessionID)
-	if err != nil || oldSession == nil || (oldSession.State != model.FeishuAuthSessionPending && oldSession.State != model.FeishuAuthSessionFailed && oldSession.State != model.FeishuAuthSessionSuperseded) || oldSession.OperationID == nil ||
+	if err != nil || oldSession == nil || (oldSession.State != model.FeishuAuthSessionPending && oldSession.State != model.FeishuAuthSessionFailed && oldSession.State != model.FeishuAuthSessionSuperseded && oldSession.State != model.FeishuAuthSessionRejected && oldSession.State != model.FeishuAuthSessionExpired) || oldSession.OperationID == nil ||
 		*oldSession.OperationID != operationID {
+		return nil, ErrAuthSessionUnavailable
+	}
+	deviceRefresh := oldSession.Phase == model.FeishuAuthPhaseUserAuth &&
+		((oldSession.ProtocolVersion == 1 && (oldSession.State == model.FeishuAuthSessionPending || oldSession.State == model.FeishuAuthSessionSuperseded)) ||
+			(oldSession.ProtocolVersion == 2 && (oldSession.State == model.FeishuAuthSessionPending || oldSession.State == model.FeishuAuthSessionRejected || oldSession.State == model.FeishuAuthSessionExpired)))
+	if deviceRefresh {
+		completion, refreshErr := s.deviceAuth.RefreshUserAuthorization(ctx, DeviceAuthRefreshRequest{
+			UserID: userID, Generation: generation, OldSessionID: oldSessionID,
+			OperationID: operationID, WaitingState: waitingState,
+			OperationSummary: append([]byte(nil), operationSummary...),
+		})
+		if refreshErr != nil || completion == nil || completion.Action == nil {
+			return nil, ErrAuthSessionUnavailable
+		}
+		s.stopSession(userID, generation, oldSessionID)
+		s.urls.remove(authSessionRegistryKey(oldSession))
+		return completion.Action, nil
+	}
+	if oldSession.State == model.FeishuAuthSessionRejected || oldSession.State == model.FeishuAuthSessionExpired {
 		return nil, ErrAuthSessionUnavailable
 	}
 	var scopes []string

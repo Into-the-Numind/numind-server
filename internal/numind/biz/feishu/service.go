@@ -726,10 +726,21 @@ func (s *WorkspaceLifecycleService) RefreshAction(ctx context.Context, userID ui
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
 	if session.OperationID == nil {
-		if session.State != model.FeishuAuthSessionPending {
+		var action *OperationAction
+		var refreshErr error
+		switch session.State {
+		case model.FeishuAuthSessionPending:
+			action, refreshErr = s.auth.RefreshAction(ctx, userID, account.Generation, sessionID)
+		case model.FeishuAuthSessionRejected, model.FeishuAuthSessionExpired:
+			if session.Phase != model.FeishuAuthPhaseUserAuth || session.ProtocolVersion != 2 ||
+				len(session.ResumeCredentialCiphertext) != 0 || session.ResumeKeyVersion != "" ||
+				session.ResumeExpiresAt != nil || session.LeaseOwner != "" || session.LeaseUntil != nil {
+				return nil, ErrWorkspaceLifecycleNotFound
+			}
+			action, refreshErr = s.auth.ConnectManual(ctx, userID)
+		default:
 			return nil, ErrWorkspaceLifecycleNotFound
 		}
-		action, refreshErr := s.auth.RefreshAction(ctx, userID, account.Generation, sessionID)
 		if refreshErr != nil || action == nil || strings.TrimSpace(action.SessionID) == "" {
 			return nil, ErrWorkspaceLifecycleUnavailable
 		}
@@ -772,32 +783,47 @@ func (s *WorkspaceLifecycleService) RefreshAction(ctx context.Context, userID ui
 	}
 	var action *OperationAction
 	var refreshErr error
-	switch session.State {
-	case model.FeishuAuthSessionPending, model.FeishuAuthSessionFailed:
-		if boundSession.ID != session.ID {
-			return nil, ErrWorkspaceLifecycleUnavailable
-		}
+	if session.Phase == model.FeishuAuthPhaseUserAuth && boundSession.ID != session.ID &&
+		(session.State == model.FeishuAuthSessionRejected || session.State == model.FeishuAuthSessionExpired ||
+			session.State == model.FeishuAuthSessionSuperseded) {
 		action, refreshErr = s.auth.RefreshOperationAction(
-			ctx, userID, account.Generation, sessionID, operation.ID, operation.State, operation.ResultSummaryJSON,
+			ctx, userID, account.Generation, boundSession.ID, operation.ID, operation.State, operation.ResultSummaryJSON,
 		)
-	case model.FeishuAuthSessionSuperseded:
-		if boundSession.ID == session.ID {
-			// Compatibility for the pre-atomic-refresh state: its operation
-			// summary still names the superseded source session. The downstream
-			// transaction rechecks this exact binding before minting a new link.
+	} else {
+		switch session.State {
+		case model.FeishuAuthSessionPending, model.FeishuAuthSessionFailed:
+			if boundSession.ID != session.ID {
+				return nil, ErrWorkspaceLifecycleUnavailable
+			}
 			action, refreshErr = s.auth.RefreshOperationAction(
 				ctx, userID, account.Generation, sessionID, operation.ID, operation.State, operation.ResultSummaryJSON,
 			)
-			break
+		case model.FeishuAuthSessionSuperseded:
+			if boundSession.ID == session.ID {
+				// Compatibility for the pre-atomic-refresh state: its operation
+				// summary still names the superseded source session. The downstream
+				// transaction rechecks this exact binding before minting a new link.
+				action, refreshErr = s.auth.RefreshOperationAction(
+					ctx, userID, account.Generation, sessionID, operation.ID, operation.State, operation.ResultSummaryJSON,
+				)
+				break
+			}
+			// A failed post-commit compensation may leave the browser's original
+			// card on a superseded ID. It can only repair the exact operation's
+			// current replacement; it cannot refresh arbitrary historical sessions.
+			action, refreshErr = s.auth.RecoverOperationRefreshAction(
+				ctx, userID, account.Generation, sessionID, operation.ID, operation.State, operation.ResultSummaryJSON,
+			)
+		case model.FeishuAuthSessionRejected, model.FeishuAuthSessionExpired:
+			if session.Phase != model.FeishuAuthPhaseUserAuth || boundSession.ID != session.ID {
+				return nil, ErrWorkspaceLifecycleNotFound
+			}
+			action, refreshErr = s.auth.RefreshOperationAction(
+				ctx, userID, account.Generation, sessionID, operation.ID, operation.State, operation.ResultSummaryJSON,
+			)
+		default:
+			return nil, ErrWorkspaceLifecycleNotFound
 		}
-		// A failed post-commit compensation may leave the browser's original
-		// card on a superseded ID. It can only repair the exact operation's
-		// current replacement; it cannot refresh arbitrary historical sessions.
-		action, refreshErr = s.auth.RecoverOperationRefreshAction(
-			ctx, userID, account.Generation, sessionID, operation.ID, operation.State, operation.ResultSummaryJSON,
-		)
-	default:
-		return nil, ErrWorkspaceLifecycleNotFound
 	}
 	if refreshErr != nil || action == nil || strings.TrimSpace(action.SessionID) == "" {
 		return nil, ErrWorkspaceLifecycleUnavailable

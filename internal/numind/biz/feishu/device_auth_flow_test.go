@@ -38,24 +38,31 @@ func (f *deviceAuthFlowAccountStoreFake) EnsurePlaceholder(context.Context, uint
 }
 
 type deviceAuthFlowStoreFake struct {
-	mu                   sync.Mutex
-	session              *model.FeishuAuthSession
-	claimCalls           int
-	claimErr             error
-	claimEntered         chan struct{}
-	claimRelease         <-chan struct{}
-	claimWaitForContext  bool
-	claimContextDeadline time.Time
-	claimContextCanceled bool
-	claimOnce            sync.Once
-	attach               *store.FeishuDeviceAuthCredentialAttach
-	attachErr            error
-	attachEntered        chan struct{}
-	attachRelease        <-chan struct{}
-	attachOnce           sync.Once
-	releaseCalls         int
-	terminalStates       []string
-	replaceCalls         int
+	mu                    sync.Mutex
+	session               *model.FeishuAuthSession
+	operation             *model.FeishuOperation
+	claimCalls            int
+	claimSessionIDs       []string
+	claimErr              error
+	claimEntered          chan struct{}
+	claimRelease          <-chan struct{}
+	claimWaitForContext   bool
+	claimContextDeadline  time.Time
+	claimContextCanceled  bool
+	claimOnce             sync.Once
+	attach                *store.FeishuDeviceAuthCredentialAttach
+	attachErr             error
+	attachEntered         chan struct{}
+	attachRelease         <-chan struct{}
+	attachOnce            sync.Once
+	releaseCalls          int
+	terminalStates        []string
+	replaceCalls          int
+	replacement           *model.FeishuAuthSession
+	replaceInput          *store.FeishuDeviceAuthReplacement
+	replaceErr            error
+	releaseCallsAtReplace int
+	replaceOwnerLive      bool
 }
 
 func cloneDeviceAuthFlowSession(session *model.FeishuAuthSession) *model.FeishuAuthSession {
@@ -83,21 +90,45 @@ func cloneDeviceAuthFlowSession(session *model.FeishuAuthSession) *model.FeishuA
 func (f *deviceAuthFlowStoreFake) GetSessionForUser(_ context.Context, userID uint, generation uint64, id string) (*model.FeishuAuthSession, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.session == nil || f.session.UserID != userID || f.session.Generation != generation || f.session.ID != id {
+	session := f.sessionForIDLocked(id)
+	if session == nil || session.UserID != userID || session.Generation != generation {
 		return nil, gorm.ErrRecordNotFound
 	}
-	return cloneDeviceAuthFlowSession(f.session), nil
+	return cloneDeviceAuthFlowSession(session), nil
+}
+
+func (f *deviceAuthFlowStoreFake) GetOperationForUser(_ context.Context, userID uint, generation uint64, id string) (*model.FeishuOperation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.operation == nil || f.operation.ID != id || f.operation.UserID != userID || f.operation.Generation != generation {
+		return nil, gorm.ErrRecordNotFound
+	}
+	operation := *f.operation
+	operation.ResultSummaryJSON = append([]byte(nil), f.operation.ResultSummaryJSON...)
+	return &operation, nil
+}
+
+func (f *deviceAuthFlowStoreFake) sessionForIDLocked(id string) *model.FeishuAuthSession {
+	if f.session != nil && f.session.ID == id {
+		return f.session
+	}
+	if f.replacement != nil && f.replacement.ID == id {
+		return f.replacement
+	}
+	return nil
 }
 
 func (f *deviceAuthFlowStoreFake) ClaimSession(ctx context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error) {
 	f.mu.Lock()
 	f.claimCalls++
+	f.claimSessionIDs = append(f.claimSessionIDs, id)
 	if f.claimErr != nil {
 		f.mu.Unlock()
 		return false, f.claimErr
 	}
-	if f.session == nil || f.session.UserID != userID || f.session.Generation != generation || f.session.ID != id ||
-		f.session.State != model.FeishuAuthSessionPending || (f.session.LeaseUntil != nil && f.session.LeaseUntil.After(now)) {
+	session := f.sessionForIDLocked(id)
+	if session == nil || session.UserID != userID || session.Generation != generation ||
+		session.State != model.FeishuAuthSessionPending || (session.LeaseUntil != nil && session.LeaseUntil.After(now)) {
 		f.mu.Unlock()
 		return false, nil
 	}
@@ -120,9 +151,9 @@ func (f *deviceAuthFlowStoreFake) ClaimSession(ctx context.Context, userID uint,
 		f.mu.Unlock()
 		return false, ctx.Err()
 	}
-	f.session.LeaseOwner = owner
+	session.LeaseOwner = owner
 	value := leaseUntil.UTC()
-	f.session.LeaseUntil = &value
+	session.LeaseUntil = &value
 	f.mu.Unlock()
 	f.claimOnce.Do(func() {
 		if entered != nil {
@@ -142,12 +173,13 @@ func (f *deviceAuthFlowStoreFake) ClaimSession(ctx context.Context, userID uint,
 func (f *deviceAuthFlowStoreFake) RenewSession(_ context.Context, userID uint, generation uint64, id, owner string, now, leaseUntil time.Time) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.session == nil || f.session.UserID != userID || f.session.Generation != generation || f.session.ID != id ||
-		f.session.LeaseOwner != owner || f.session.LeaseUntil == nil || !f.session.LeaseUntil.After(now) {
+	session := f.sessionForIDLocked(id)
+	if session == nil || session.UserID != userID || session.Generation != generation ||
+		session.LeaseOwner != owner || session.LeaseUntil == nil || !session.LeaseUntil.After(now) {
 		return false, nil
 	}
 	value := leaseUntil.UTC()
-	f.session.LeaseUntil = &value
+	session.LeaseUntil = &value
 	return true, nil
 }
 
@@ -172,16 +204,17 @@ func (f *deviceAuthFlowStoreFake) AttachDeviceAuthCredential(ctx context.Context
 	if f.attachErr != nil {
 		return f.attachErr
 	}
-	if f.session == nil || f.session.LeaseOwner != input.LeaseOwner {
+	session := f.sessionForIDLocked(input.SessionID)
+	if session == nil || session.LeaseOwner != input.LeaseOwner {
 		return gorm.ErrRecordNotFound
 	}
-	f.session.ResumeCredentialCiphertext = append([]byte(nil), input.Ciphertext...)
-	f.session.ResumeKeyVersion = input.KeyVersion
+	session.ResumeCredentialCiphertext = append([]byte(nil), input.Ciphertext...)
+	session.ResumeKeyVersion = input.KeyVersion
 	expiresAt := input.ResumeExpiry.UTC()
-	f.session.ResumeExpiresAt = &expiresAt
-	f.session.ScopeHash = input.ScopeHash
-	f.session.LeaseOwner = ""
-	f.session.LeaseUntil = nil
+	session.ResumeExpiresAt = &expiresAt
+	session.ScopeHash = input.ScopeHash
+	session.LeaseOwner = ""
+	session.LeaseUntil = nil
 	return nil
 }
 
@@ -189,11 +222,12 @@ func (f *deviceAuthFlowStoreFake) ReleaseDeviceAuthLease(_ context.Context, user
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.releaseCalls++
-	if f.session == nil || f.session.UserID != userID || f.session.Generation != generation || f.session.ID != id || f.session.LeaseOwner != owner {
+	session := f.sessionForIDLocked(id)
+	if session == nil || session.UserID != userID || session.Generation != generation || session.LeaseOwner != owner {
 		return false, nil
 	}
-	f.session.LeaseOwner = ""
-	f.session.LeaseUntil = nil
+	session.LeaseOwner = ""
+	session.LeaseUntil = nil
 	return true, nil
 }
 
@@ -205,16 +239,47 @@ func (f *deviceAuthFlowStoreFake) TerminalizeDeviceAuthSession(_ context.Context
 	}
 	f.terminalStates = append(f.terminalStates, state)
 	f.session.State = state
+	completedAt := time.Now().UTC()
+	f.session.CompletedAt = &completedAt
+	f.session.ResumeCredentialCiphertext = nil
+	f.session.ResumeKeyVersion = ""
+	f.session.ResumeExpiresAt = nil
 	f.session.LeaseOwner = ""
 	f.session.LeaseUntil = nil
 	return nil
 }
 
-func (f *deviceAuthFlowStoreFake) ReplaceDeviceAuthSession(context.Context, store.FeishuDeviceAuthReplacement) (*model.FeishuAuthSession, error) {
+func (f *deviceAuthFlowStoreFake) ReplaceDeviceAuthSession(_ context.Context, input store.FeishuDeviceAuthReplacement) (*model.FeishuAuthSession, error) {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.replaceCalls++
-	f.mu.Unlock()
-	return nil, gorm.ErrRecordNotFound
+	f.releaseCallsAtReplace = f.releaseCalls
+	copyInput := input
+	copyInput.OldSummary = append([]byte(nil), input.OldSummary...)
+	copyInput.NewSummary = append([]byte(nil), input.NewSummary...)
+	copyInput.NewSession = cloneDeviceAuthFlowSession(input.NewSession)
+	f.replaceInput = &copyInput
+	old := f.sessionForIDLocked(input.OldSessionID)
+	f.replaceOwnerLive = old != nil && old.LeaseOwner == input.LeaseOwner && old.LeaseUntil != nil && old.LeaseUntil.After(input.Now)
+	if f.replaceErr != nil {
+		return nil, f.replaceErr
+	}
+	terminalSource := old != nil && old.LeaseOwner == "" && old.LeaseUntil == nil &&
+		((old.ProtocolVersion == 1 && old.State == model.FeishuAuthSessionSuperseded && input.TerminalState == old.State) ||
+			(old.ProtocolVersion == 2 && (old.State == model.FeishuAuthSessionRejected || old.State == model.FeishuAuthSessionExpired) && input.TerminalState == old.State))
+	if old == nil || (!f.replaceOwnerLive && !terminalSource) || input.NewSession == nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+	old.State = input.TerminalState
+	completedAt := input.Now.UTC()
+	old.CompletedAt = &completedAt
+	old.ResumeCredentialCiphertext = nil
+	old.ResumeKeyVersion = ""
+	old.ResumeExpiresAt = nil
+	old.LeaseOwner = ""
+	old.LeaseUntil = nil
+	f.replacement = cloneDeviceAuthFlowSession(input.NewSession)
+	return cloneDeviceAuthFlowSession(f.replacement), nil
 }
 
 func (f *deviceAuthFlowStoreFake) FinalizeDeviceAuthSuccess(context.Context, store.FeishuDeviceAuthSuccess) error {
@@ -570,6 +635,11 @@ func TestDeviceAuthFlow_StartSeparatesManualAndOperationAAD(t *testing.T) {
 
 type deviceAuthCompletionCLIFake struct {
 	mu                     sync.Mutex
+	start                  DeviceAuthStart
+	startErr               error
+	startCalls             int
+	startContext           context.Context
+	startScopes            [][]string
 	outcome                DeviceAuthOutcome
 	completeErr            error
 	completeWaitForContext bool
@@ -592,8 +662,13 @@ type deviceAuthCompletionCLIFake struct {
 	events                 []string
 }
 
-func (f *deviceAuthCompletionCLIFake) StartUserAuth(context.Context, string, []string) (DeviceAuthStart, error) {
-	return DeviceAuthStart{}, errors.New("start is outside completion tests")
+func (f *deviceAuthCompletionCLIFake) StartUserAuth(ctx context.Context, _ string, scopes []string) (DeviceAuthStart, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.startCalls++
+	f.startContext = ctx
+	f.startScopes = append(f.startScopes, append([]string(nil), scopes...))
+	return f.start, f.startErr
 }
 
 func (f *deviceAuthCompletionCLIFake) CompleteUserAuth(ctx context.Context, home, deviceCode string) (DeviceAuthOutcome, error) {
@@ -650,8 +725,12 @@ type deviceAuthCompletionVaultFake struct {
 	candidate *CLIHomeCandidate
 }
 
-func (*deviceAuthCompletionVaultFake) WithHome(context.Context, uint, uint64, func(string) (bool, error)) error {
-	return errors.New("read-only HOME is outside completion tests")
+func (*deviceAuthCompletionVaultFake) WithHome(ctx context.Context, _ uint, _ uint64, callback func(string) (bool, error)) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, err := callback("/tmp/device-auth-replacement-home")
+	return err
 }
 
 func (f *deviceAuthCompletionVaultFake) WithHomeCandidate(
@@ -871,7 +950,14 @@ func newDeviceAuthCompletionFixture(t *testing.T) deviceAuthCompletionFixture {
 	require.NoError(t, err)
 	session.ResumeCredentialCiphertext = ciphertext
 	session.ResumeKeyVersion = keyVersion
-	storeFake := &deviceAuthCompletionStoreFake{deviceAuthFlowStoreFake: &deviceAuthFlowStoreFake{session: cloneDeviceAuthFlowSession(session)}}
+	storeFake := &deviceAuthCompletionStoreFake{deviceAuthFlowStoreFake: &deviceAuthFlowStoreFake{
+		session: cloneDeviceAuthFlowSession(session),
+		operation: &model.FeishuOperation{
+			ID: operationID, UserID: session.UserID, Generation: session.Generation,
+			State:             model.FeishuOperationWaitingUserAuth,
+			ResultSummaryJSON: []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"00000000-0000-4000-8000-000000000072"}`),
+		},
+	}}
 	candidateCiphertext := []byte("sealed-device-auth-candidate")
 	vault := &deviceAuthCompletionVaultFake{candidate: &CLIHomeCandidate{
 		Vault: model.FeishuCLIVault{
@@ -880,15 +966,22 @@ func newDeviceAuthCompletionFixture(t *testing.T) deviceAuthCompletionFixture {
 		},
 		ExpectedRevision: 4,
 	}}
-	cli := &deviceAuthCompletionCLIFake{outcome: DeviceAuthPending, appID: account.AppID}
+	cli := &deviceAuthCompletionCLIFake{
+		start: DeviceAuthStart{
+			VerificationURL: "https://open.feishu.cn/suite/passport/oauth/device?user_code=REPLACEMENT",
+			DeviceCode:      "opaque-replacement-device-code", ExpiresIn: 3 * time.Minute,
+		},
+		outcome: DeviceAuthPending, appID: account.AppID,
+	}
 	dispatcher := &deviceAuthCompletionDispatcherFake{}
 	flow, err := NewDeviceAuthFlow(DeviceAuthFlowDeps{
 		Accounts: &deviceAuthFlowAccountStoreFake{account: account}, Sessions: storeFake,
 		Vault: vault, CLI: cli, Cipher: credentialCipher,
 		Dispatcher: dispatcher, Owner: "device-auth-completion-test",
-		Now: func() time.Time { return now }, NewLeaseToken: func() string { return "device-auth-completion-lease" },
+		Now: func() time.Time { return now }, NewID: func() string { return "00000000-0000-4000-8000-000000000073" },
+		NewLeaseToken: func() string { return "device-auth-completion-lease" },
 		LeaseDuration: time.Minute, SessionDuration: 10 * time.Minute,
-		HeartbeatInterval: 20 * time.Second, CompletionTimeout: 30 * time.Second,
+		HeartbeatInterval: 20 * time.Second, StartTimeout: time.Second, CompletionTimeout: 30 * time.Second,
 	})
 	require.NoError(t, err)
 	return deviceAuthCompletionFixture{
@@ -898,37 +991,315 @@ func newDeviceAuthCompletionFixture(t *testing.T) deviceAuthCompletionFixture {
 }
 
 func TestDeviceAuthFlow_CompletePendingRetainsCredential(t *testing.T) {
+	fixture := newDeviceAuthCompletionFixture(t)
+	fixture.cli.outcome = DeviceAuthPending
+
+	result, err := fixture.flow.CompleteUserAuthorization(
+		context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+	)
+	require.NoError(t, err)
+	require.Equal(t, AuthorizationPending, result.NoticeCode)
+	require.False(t, result.Completed)
+	fixture.store.mu.Lock()
+	require.Equal(t, 1, fixture.store.releaseCalls)
+	require.NotEmpty(t, fixture.store.session.ResumeCredentialCiphertext)
+	require.NotEmpty(t, fixture.store.session.ResumeKeyVersion)
+	require.NotNil(t, fixture.store.session.ResumeExpiresAt)
+	require.Zero(t, fixture.store.replaceCalls)
+	fixture.store.mu.Unlock()
+	fixture.dispatcher.mu.Lock()
+	require.Empty(t, fixture.dispatcher.calls, "Task 9 owns durable dispatch")
+	fixture.dispatcher.mu.Unlock()
+}
+
+func TestDeviceAuthFlow_CompleteRejectedTerminalizesBeforeReplacement(t *testing.T) {
+	fixture := newDeviceAuthCompletionFixture(t)
+	fixture.cli.outcome = DeviceAuthRejected
+
+	result, err := fixture.flow.CompleteUserAuthorization(
+		context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, result.Action)
+	require.Equal(t, "00000000-0000-4000-8000-000000000073", result.Action.SessionID)
+	require.Contains(t, result.Action.URL, "REPLACEMENT")
+	require.Empty(t, result.Action.Scopes, "replacement responses must not echo durable scopes")
+	require.Empty(t, result.NoticeCode, "the terminal attempt must not be exposed before its replacement")
+
+	fixture.store.mu.Lock()
+	defer fixture.store.mu.Unlock()
+	require.Equal(t, 1, fixture.store.replaceCalls)
+	require.Zero(t, fixture.store.releaseCallsAtReplace, "complete must retain its lease through replacement")
+	require.True(t, fixture.store.replaceOwnerLive)
+	require.Equal(t, "device-auth-completion-lease", fixture.store.replaceInput.LeaseOwner)
+	require.Equal(t, model.FeishuAuthSessionRejected, fixture.store.replaceInput.TerminalState)
+	require.Equal(t, model.FeishuAuthSessionRejected, fixture.store.session.State)
+	require.Empty(t, fixture.store.session.ResumeCredentialCiphertext)
+	require.Empty(t, fixture.store.session.ResumeKeyVersion)
+	require.Nil(t, fixture.store.session.ResumeExpiresAt)
+}
+
+func TestDeviceAuthFlow_CompleteExpiredReturnsLiveReplacement(t *testing.T) {
+	fixture := newDeviceAuthCompletionFixture(t)
+	fixture.cli.outcome = DeviceAuthExpired
+
+	result, err := fixture.flow.CompleteUserAuthorization(
+		context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, result.Action)
+	require.Equal(t, *fixture.session.OperationID, result.Action.OperationID)
+	require.Equal(t, model.FeishuAuthPhaseUserAuth, result.Action.Phase)
+	require.True(t, result.Action.ExpiresAt.After(fixture.now))
+	require.Contains(t, result.Action.URL, "REPLACEMENT")
+	require.Empty(t, result.Action.Scopes)
+
+	fixture.store.mu.Lock()
+	defer fixture.store.mu.Unlock()
+	require.Equal(t, 1, fixture.store.replaceCalls)
+	require.Zero(t, fixture.store.releaseCallsAtReplace)
+	require.True(t, fixture.store.replaceOwnerLive)
+	require.Equal(t, "device-auth-completion-lease", fixture.store.replaceInput.LeaseOwner)
+	require.Equal(t, model.FeishuAuthSessionExpired, fixture.store.replaceInput.TerminalState)
+	require.JSONEq(t,
+		`{"status":"waiting_user_auth","phase":"user_auth","session_id":"00000000-0000-4000-8000-000000000073"}`,
+		string(fixture.store.replaceInput.NewSummary),
+	)
+}
+
+func TestDeviceAuthFlow_CompleteManualTerminalizesRejectedAndExpired(t *testing.T) {
 	for _, testCase := range []struct {
 		name    string
 		outcome DeviceAuthOutcome
+		state   string
 		notice  AuthorizationNoticeCode
 	}{
-		{name: "pending", outcome: DeviceAuthPending, notice: AuthorizationPending},
-		{name: "rejected is typed only until Task 8", outcome: DeviceAuthRejected, notice: AuthorizationRejected},
-		{name: "expired is typed only until Task 8", outcome: DeviceAuthExpired, notice: AuthorizationExpired},
+		{name: "rejected", outcome: DeviceAuthRejected, state: model.FeishuAuthSessionRejected, notice: AuthorizationRejected},
+		{name: "expired", outcome: DeviceAuthExpired, state: model.FeishuAuthSessionExpired, notice: AuthorizationExpired},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			fixture := newDeviceAuthCompletionFixture(t)
 			fixture.cli.outcome = testCase.outcome
+			fixture.session.OperationID = nil
+			fixture.store.session.OperationID = nil
+			ciphertext, keyVersion, err := fixture.flow.cipher.Seal(DeviceAuthCredentialBinding{
+				UserID: fixture.session.UserID, Generation: fixture.session.Generation, AppID: fixture.account.AppID,
+				OperationID: deviceAuthManualBindingID, SessionID: fixture.session.ID,
+				ScopeHash: fixture.session.ScopeHash, ResumeExpiresAt: fixture.session.ResumeExpiresAt.UTC(),
+			}, "manual-device-code")
+			require.NoError(t, err)
+			fixture.session.ResumeCredentialCiphertext = ciphertext
+			fixture.session.ResumeKeyVersion = keyVersion
+			fixture.store.session.ResumeCredentialCiphertext = append([]byte(nil), ciphertext...)
+			fixture.store.session.ResumeKeyVersion = keyVersion
+			fixture.flow.liveURLs.put(
+				authSessionRegistryKey(fixture.session),
+				"https://open.feishu.cn/suite/passport/oauth/device?user_code=MANUAL_OLD",
+				fixture.now.Add(time.Minute),
+			)
 
 			result, err := fixture.flow.CompleteUserAuthorization(
 				context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
 			)
 			require.NoError(t, err)
+			require.Nil(t, result.Action)
 			require.Equal(t, testCase.notice, result.NoticeCode)
-			require.False(t, result.Completed)
+			require.Empty(t, fixture.flow.liveURLs.get(authSessionRegistryKey(fixture.session), fixture.now))
 			fixture.store.mu.Lock()
-			require.Equal(t, 1, fixture.store.releaseCalls)
-			require.NotEmpty(t, fixture.store.session.ResumeCredentialCiphertext)
-			require.NotEmpty(t, fixture.store.session.ResumeKeyVersion)
-			require.NotNil(t, fixture.store.session.ResumeExpiresAt)
-			require.Zero(t, fixture.store.replaceCalls, "Task 8 owns terminal replacement")
-			fixture.store.mu.Unlock()
-			fixture.dispatcher.mu.Lock()
-			require.Empty(t, fixture.dispatcher.calls, "Task 9 owns durable dispatch")
-			fixture.dispatcher.mu.Unlock()
+			defer fixture.store.mu.Unlock()
+			require.Equal(t, testCase.state, fixture.store.session.State)
+			require.Empty(t, fixture.store.session.ResumeCredentialCiphertext)
+			require.Empty(t, fixture.store.session.ResumeKeyVersion)
+			require.Nil(t, fixture.store.session.ResumeExpiresAt)
+			require.Empty(t, fixture.store.session.LeaseOwner)
+			require.Nil(t, fixture.store.session.LeaseUntil)
+			require.Zero(t, fixture.store.releaseCalls)
+			require.Zero(t, fixture.store.replaceCalls)
 		})
 	}
+}
+
+func TestDeviceAuthFlow_RefreshLegacyPendingSupersedesAndRebinds(t *testing.T) {
+	fixture := newDeviceAuthCompletionFixture(t)
+	fixture.store.session.ProtocolVersion = 1
+	fixture.store.session.ScopeHash = ""
+	fixture.store.session.ResumeCredentialCiphertext = nil
+	fixture.store.session.ResumeKeyVersion = ""
+	fixture.store.session.ResumeExpiresAt = nil
+	oldSummary := []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"00000000-0000-4000-8000-000000000072","recovery_kind":"user_scope","recovery_scopes":["docx:document:readonly"]}`)
+
+	result, err := fixture.flow.RefreshUserAuthorization(context.Background(), DeviceAuthRefreshRequest{
+		UserID: fixture.session.UserID, Generation: fixture.session.Generation,
+		OldSessionID: fixture.session.ID, OperationID: *fixture.session.OperationID,
+		WaitingState: model.FeishuOperationWaitingUserAuth, OperationSummary: oldSummary,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result.Action)
+	require.Equal(t, "00000000-0000-4000-8000-000000000073", result.Action.SessionID)
+	require.Equal(t, *fixture.session.OperationID, result.Action.OperationID)
+	require.Contains(t, result.Action.URL, "REPLACEMENT")
+	require.Empty(t, result.Action.Scopes)
+
+	fixture.store.mu.Lock()
+	defer fixture.store.mu.Unlock()
+	require.GreaterOrEqual(t, fixture.store.claimCalls, 2)
+	require.Equal(t, fixture.session.ID, fixture.store.claimSessionIDs[0],
+		"legacy refresh must first claim the exact old session")
+	require.Equal(t, model.FeishuAuthSessionSuperseded, fixture.store.session.State)
+	require.Equal(t, model.FeishuAuthSessionSuperseded, fixture.store.replaceInput.TerminalState)
+	require.True(t, fixture.store.replaceOwnerLive)
+	require.EqualValues(t, 2, fixture.store.replacement.ProtocolVersion)
+	require.Equal(t, deviceAuthScopeHash([]string{"docx:document:readonly"}), fixture.store.replacement.ScopeHash)
+	require.JSONEq(t, string(oldSummary), string(fixture.store.replaceInput.OldSummary))
+	newSummary, decodeErr := decodeOperationSummary(fixture.store.replaceInput.NewSummary)
+	require.NoError(t, decodeErr)
+	require.Equal(t, fixture.store.replacement.ID, newSummary.SessionID)
+	require.Equal(t, RecoveryUserScope, newSummary.RecoveryKind)
+	require.Equal(t, []string{"docx:document:readonly"}, newSummary.RecoveryScopes)
+}
+
+func TestDeviceAuthFlow_RefreshCurrentV2ReplacementFencesLeaseAndTerminalSources(t *testing.T) {
+	for _, testCase := range []struct {
+		name           string
+		state          string
+		credential     bool
+		terminalState  string
+		expiredSession bool
+		expectedClaims int
+	}{
+		{name: "pending pre-start", state: model.FeishuAuthSessionPending, terminalState: model.FeishuAuthSessionSuperseded, expectedClaims: 2},
+		{name: "pending full credential", state: model.FeishuAuthSessionPending, credential: true, terminalState: model.FeishuAuthSessionSuperseded, expectedClaims: 2},
+		{name: "rejected terminal", state: model.FeishuAuthSessionRejected, terminalState: model.FeishuAuthSessionRejected, expiredSession: true, expectedClaims: 1},
+		{name: "expired terminal", state: model.FeishuAuthSessionExpired, terminalState: model.FeishuAuthSessionExpired, expiredSession: true, expectedClaims: 1},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			fixture := newDeviceAuthCompletionFixture(t)
+			fixture.store.session.State = testCase.state
+			if !testCase.credential {
+				fixture.store.session.ResumeCredentialCiphertext = nil
+				fixture.store.session.ResumeKeyVersion = ""
+				fixture.store.session.ResumeExpiresAt = nil
+			}
+			if testCase.expiredSession {
+				fixture.store.session.ExpiresAt = fixture.now.Add(-time.Minute)
+			}
+			oldSummary := []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"00000000-0000-4000-8000-000000000072","recovery_kind":"user_scope","recovery_scopes":["docx:document:readonly"]}`)
+
+			result, err := fixture.flow.RefreshUserAuthorization(context.Background(), DeviceAuthRefreshRequest{
+				UserID: fixture.session.UserID, Generation: fixture.session.Generation,
+				OldSessionID: fixture.session.ID, OperationID: *fixture.session.OperationID,
+				WaitingState: model.FeishuOperationWaitingUserAuth, OperationSummary: oldSummary,
+			})
+			require.NoError(t, err)
+			require.NotNil(t, result.Action)
+			require.Contains(t, result.Action.URL, "REPLACEMENT")
+			fixture.store.mu.Lock()
+			defer fixture.store.mu.Unlock()
+			require.Equal(t, testCase.terminalState, fixture.store.session.State)
+			require.Equal(t, testCase.terminalState, fixture.store.replaceInput.TerminalState)
+			require.Equal(t, testCase.expectedClaims, fixture.store.claimCalls)
+			require.Equal(t, model.FeishuAuthSessionPending, fixture.store.replacement.State)
+			require.NotEmpty(t, fixture.store.replacement.ResumeCredentialCiphertext)
+		})
+	}
+
+	t.Run("pending source with live lease fails closed", func(t *testing.T) {
+		fixture := newDeviceAuthCompletionFixture(t)
+		fixture.store.session.ResumeCredentialCiphertext = nil
+		fixture.store.session.ResumeKeyVersion = ""
+		fixture.store.session.ResumeExpiresAt = nil
+		fixture.store.session.LeaseOwner = "another-live-owner"
+		leaseUntil := fixture.now.Add(time.Minute)
+		fixture.store.session.LeaseUntil = &leaseUntil
+		oldSummary := []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"00000000-0000-4000-8000-000000000072","recovery_kind":"user_scope","recovery_scopes":["docx:document:readonly"]}`)
+
+		result, err := fixture.flow.RefreshUserAuthorization(context.Background(), DeviceAuthRefreshRequest{
+			UserID: fixture.session.UserID, Generation: fixture.session.Generation,
+			OldSessionID: fixture.session.ID, OperationID: *fixture.session.OperationID,
+			WaitingState: model.FeishuOperationWaitingUserAuth, OperationSummary: oldSummary,
+		})
+		require.ErrorIs(t, err, ErrDeviceAuthProcessing)
+		require.Nil(t, result)
+		fixture.store.mu.Lock()
+		defer fixture.store.mu.Unlock()
+		require.Zero(t, fixture.store.replaceCalls)
+		require.Equal(t, "another-live-owner", fixture.store.session.LeaseOwner)
+	})
+}
+
+func TestDeviceAuthFlow_ReplacementStartFailureKeepsReclaimableSession(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		startErr  error
+		expected  error
+		badResult bool
+		breakSeal bool
+	}{
+		{name: "dependency", startErr: errDeviceAuthCLIDependency, expected: ErrDeviceAuthDependency},
+		{name: "deterministic protocol error", startErr: errDeviceAuthCLIProtocol, expected: ErrAuthSessionUnavailable},
+		{name: "deterministic parser result", expected: ErrAuthSessionUnavailable, badResult: true},
+		{name: "deterministic crypto seal error", expected: ErrAuthSessionUnavailable, breakSeal: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			fixture := newDeviceAuthCompletionFixture(t)
+			fixture.cli.outcome = DeviceAuthRejected
+			fixture.cli.startErr = testCase.startErr
+			if testCase.badResult {
+				fixture.cli.start.VerificationURL = "http://attacker.invalid/device"
+			}
+			if testCase.breakSeal {
+				fixture.cli.completeHook = func() {
+					fixture.flow.cipher = &DeviceAuthCredentialCipher{}
+				}
+			}
+
+			result, err := fixture.flow.CompleteUserAuthorization(
+				context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+			)
+			require.ErrorIs(t, err, testCase.expected)
+			require.Nil(t, result)
+			fixture.store.mu.Lock()
+			defer fixture.store.mu.Unlock()
+			require.Equal(t, model.FeishuAuthSessionRejected, fixture.store.session.State)
+			require.Empty(t, fixture.store.session.ResumeCredentialCiphertext)
+			require.Empty(t, fixture.store.session.ResumeKeyVersion)
+			require.Nil(t, fixture.store.session.ResumeExpiresAt)
+			require.NotNil(t, fixture.store.replacement)
+			require.Equal(t, model.FeishuAuthSessionPending, fixture.store.replacement.State)
+			require.Empty(t, fixture.store.replacement.LeaseOwner)
+			require.Nil(t, fixture.store.replacement.LeaseUntil)
+			require.Empty(t, fixture.store.replacement.ResumeCredentialCiphertext)
+			require.Empty(t, fixture.store.replacement.ResumeKeyVersion)
+			require.Nil(t, fixture.store.replacement.ResumeExpiresAt)
+		})
+	}
+}
+
+func TestDeviceAuthFlow_ReplacementNeverRevivesOldCredential(t *testing.T) {
+	fixture := newDeviceAuthCompletionFixture(t)
+	fixture.cli.outcome = DeviceAuthExpired
+	fixture.cli.startErr = errDeviceAuthCLIDependency
+	oldCiphertext := append([]byte(nil), fixture.store.session.ResumeCredentialCiphertext...)
+	fixture.flow.liveURLs.put(
+		authSessionRegistryKey(fixture.session),
+		"https://open.feishu.cn/suite/passport/oauth/device?user_code=OLD",
+		fixture.now.Add(time.Minute),
+	)
+
+	result, err := fixture.flow.CompleteUserAuthorization(
+		context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+	)
+	require.ErrorIs(t, err, ErrDeviceAuthDependency)
+	require.Nil(t, result)
+	require.Empty(t, fixture.flow.liveURLs.get(authSessionRegistryKey(fixture.session), fixture.now),
+		"a terminal attempt must never retain a reusable old URL")
+	fixture.store.mu.Lock()
+	defer fixture.store.mu.Unlock()
+	require.NotEmpty(t, oldCiphertext)
+	require.Empty(t, fixture.store.session.ResumeCredentialCiphertext)
+	require.NotEqual(t, oldCiphertext, fixture.store.session.ResumeCredentialCiphertext)
+	require.Empty(t, fixture.store.replacement.ResumeCredentialCiphertext)
+	require.Equal(t, model.FeishuAuthSessionPending, fixture.store.replacement.State)
 }
 
 func TestDeviceAuthFlow_CompleteConcurrentOwnerReturnsProcessing(t *testing.T) {
@@ -1105,16 +1476,30 @@ func TestDeviceAuthFlow_CompleteAppIDEvidenceTimeoutRetainsCredential(t *testing
 				context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
 			)
 			require.NoError(t, err)
-			require.Equal(t, testCase.notice, result.NoticeCode)
-			require.False(t, result.Completed)
+			if testCase.expire {
+				require.Empty(t, result.NoticeCode)
+				require.NotNil(t, result.Action)
+				require.NotEqual(t, fixture.session.ID, result.Action.SessionID)
+			} else {
+				require.Equal(t, testCase.notice, result.NoticeCode)
+				require.False(t, result.Completed)
+			}
 			fixture.store.mu.Lock()
-			require.Equal(t, 1, fixture.store.releaseCalls)
+			if testCase.expire {
+				require.Zero(t, fixture.store.releaseCallsAtReplace)
+				require.Equal(t, model.FeishuAuthSessionExpired, fixture.store.session.State)
+				require.Empty(t, fixture.store.session.ResumeCredentialCiphertext)
+				require.Empty(t, fixture.store.session.ResumeKeyVersion)
+				require.Nil(t, fixture.store.session.ResumeExpiresAt)
+			} else {
+				require.Equal(t, 1, fixture.store.releaseCalls)
+				require.NotEmpty(t, fixture.store.session.ResumeCredentialCiphertext)
+				require.NotEmpty(t, fixture.store.session.ResumeKeyVersion)
+				require.NotNil(t, fixture.store.session.ResumeExpiresAt)
+			}
 			require.Empty(t, fixture.store.terminalStates)
 			require.Zero(t, fixture.store.finalizeCalls)
 			require.Nil(t, fixture.store.published)
-			require.NotEmpty(t, fixture.store.session.ResumeCredentialCiphertext)
-			require.NotEmpty(t, fixture.store.session.ResumeKeyVersion)
-			require.NotNil(t, fixture.store.session.ResumeExpiresAt)
 			fixture.store.mu.Unlock()
 		})
 	}
