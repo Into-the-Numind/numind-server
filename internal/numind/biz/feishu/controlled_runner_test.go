@@ -499,8 +499,9 @@ func TestControlledLarkCLIRunner_RunContextCancellationKillsWholeProcessGroup(t 
 printf started > "$HOME/started"
 (sleep 0.25; touch "$1") &
 wait
-`)
+	`)
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	done := make(chan struct{})
 	var result *CLIResult
 	var runErr error
@@ -508,7 +509,10 @@ wait
 		result, runErr = controlledRunner(bin).Run(ctx, home, []string{marker}, nil)
 		close(done)
 	}()
-	waitForControlledFile(t, filepath.Join(home, "started"), time.Second)
+	// Process startup can exceed one second on a loaded CI host. Keep this below
+	// the runner's 30-second ceiling, and let Cleanup cancel the process group if
+	// the readiness assertion fails so repeated runs cannot accumulate orphans.
+	waitForControlledFile(t, filepath.Join(home, "started"), 5*time.Second)
 	cancel()
 	select {
 	case <-done:
