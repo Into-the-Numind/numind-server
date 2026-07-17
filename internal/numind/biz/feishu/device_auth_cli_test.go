@@ -99,6 +99,22 @@ func TestControlledLarkCLIRunner_CompleteUserAuthAcceptsPinnedCLI1068Output(t *t
 	require.Equal(t, DeviceAuthCompleted, outcome)
 }
 
+// Regression: Numind deliberately discards the temporary HOME used by the
+// --no-wait start. lark-cli v1.0.68 stores its requested-scope cache only in
+// that HOME, so a successful later --device-code call emits requested=[] even
+// though its final granted scopes and user identity are valid. This official
+// shape must reach candidate-HOME reconciliation instead of terminalizing the
+// durable session and returning HTTP 500.
+func TestClassifyDeviceAuthCompletionResult_OfficialNoWaitCacheLossRequiresReconciliation(t *testing.T) {
+	result := &CLIResult{
+		InvocationStarted: true,
+		ExitCode:          0,
+		Stdout: []byte(`{"event":"authorization_complete","user_open_id":"ou_test","user_name":"tester","scope":"offline_access","requested":[],"newly_granted":[],"already_granted":[],"missing":[],"granted":["offline_access"]}`),
+	}
+
+	require.Equal(t, DeviceAuthAmbiguous, classifyDeviceAuthCompletionResult(result, nil))
+}
+
 func TestControlledLarkCLIRunner_CompleteUserAuthOutcomeMatrix(t *testing.T) {
 	tests := []struct {
 		name     string
