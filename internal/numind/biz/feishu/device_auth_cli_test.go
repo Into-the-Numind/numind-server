@@ -94,7 +94,7 @@ func TestControlledLarkCLIRunner_CompleteUserAuthAcceptsPinnedCLI1068Output(t *t
 	const fixture = `{"event":"authorization_complete","user_open_id":"ou_test","user_name":"tester","scope":"offline_access","requested":["offline_access"],"newly_granted":["offline_access"],"already_granted":[],"missing":[],"granted":["offline_access"]}`
 	bin := writeControlledFakeBinary(t, controlledDeviceAuthCompleteScript(deviceAuthTestCode, fixture, 0))
 
-	outcome, err := controlledRunner(bin).CompleteUserAuth(context.Background(), home, deviceAuthTestCode)
+	outcome, err := controlledRunner(bin).CompleteUserAuth(context.Background(), home, deviceAuthTestCode, []string{"offline_access"})
 	require.NoError(t, err)
 	require.Equal(t, DeviceAuthCompleted, outcome)
 }
@@ -109,10 +109,30 @@ func TestClassifyDeviceAuthCompletionResult_OfficialNoWaitCacheLossRequiresRecon
 	result := &CLIResult{
 		InvocationStarted: true,
 		ExitCode:          0,
-		Stdout: []byte(`{"event":"authorization_complete","user_open_id":"ou_test","user_name":"tester","scope":"offline_access","requested":[],"newly_granted":[],"already_granted":[],"missing":[],"granted":["offline_access"]}`),
+		Stdout:            []byte(`{"event":"authorization_complete","user_open_id":"ou_test","user_name":"tester","scope":"offline_access","requested":[],"newly_granted":[],"already_granted":[],"missing":[],"granted":["offline_access"]}`),
 	}
 
 	require.Equal(t, DeviceAuthAmbiguous, classifyDeviceAuthCompletionResult(result, nil))
+}
+
+func TestControlledLarkCLIRunner_CompleteUserAuthAcceptsOfficialNoWaitCacheLossWithDurableScopes(t *testing.T) {
+	home := controlledTestHome(t)
+	const fixture = `{"event":"authorization_complete","user_open_id":"ou_test","user_name":"tester","scope":"docx:document docx:document:readonly offline_access","requested":[],"newly_granted":[],"already_granted":[],"missing":[],"granted":["docx:document","docx:document:readonly","offline_access"]}`
+	bin := writeControlledFakeBinary(t, controlledDeviceAuthCompleteScript(deviceAuthTestCode, fixture, 0))
+
+	outcome, err := controlledRunner(bin).CompleteUserAuth(
+		context.Background(), home, deviceAuthTestCode,
+		[]string{"docx:document", "docx:document:readonly", "offline_access"},
+	)
+	require.NoError(t, err)
+	require.Equal(t, DeviceAuthCompleted, outcome)
+
+	underGranted, err := controlledRunner(bin).CompleteUserAuth(
+		context.Background(), home, deviceAuthTestCode,
+		[]string{"docx:document", "docx:document:readonly", "offline_access", "drive:drive"},
+	)
+	require.NoError(t, err)
+	require.Equal(t, DeviceAuthProtocolFailure, underGranted)
 }
 
 func TestControlledLarkCLIRunner_CompleteUserAuthOutcomeMatrix(t *testing.T) {
@@ -131,7 +151,7 @@ func TestControlledLarkCLIRunner_CompleteUserAuthOutcomeMatrix(t *testing.T) {
 			home := controlledTestHome(t)
 			bin := writeControlledFakeBinary(t, controlledDeviceAuthCompleteScript(deviceAuthTestCode, test.stdout, test.exitCode))
 
-			outcome, err := controlledRunner(bin).CompleteUserAuth(context.Background(), home, deviceAuthTestCode)
+			outcome, err := controlledRunner(bin).CompleteUserAuth(context.Background(), home, deviceAuthTestCode, []string{"offline_access"})
 			require.NoError(t, err)
 			require.Equal(t, test.want, outcome)
 			snapshot, readErr := os.ReadFile(filepath.Join(home, "device-auth-argv-redacted"))
@@ -149,7 +169,7 @@ sleep 2
 `)
 		runner := controlledRunner(bin)
 		runner.timeout = 30 * time.Millisecond
-		outcome, err := runner.CompleteUserAuth(context.Background(), home, deviceAuthTestCode)
+		outcome, err := runner.CompleteUserAuth(context.Background(), home, deviceAuthTestCode, []string{"offline_access"})
 		require.NoError(t, err)
 		require.Equal(t, DeviceAuthAmbiguous, outcome)
 	})
@@ -162,7 +182,7 @@ sleep 2
 `, ControlledLarkCLIMaxStderrBytes/(64<<10)+1))
 		runner := controlledRunner(bin)
 		runner.timeout = 100 * time.Millisecond
-		outcome, err := runner.CompleteUserAuth(context.Background(), home, deviceAuthTestCode)
+		outcome, err := runner.CompleteUserAuth(context.Background(), home, deviceAuthTestCode, []string{"offline_access"})
 		require.NoError(t, err)
 		require.Equal(t, DeviceAuthAmbiguous, outcome)
 	})
@@ -173,7 +193,7 @@ sleep 2
 dd if=/dev/zero bs=65536 count=%d >&2 2>/dev/null
 exit 3
 `, ControlledLarkCLIMaxStderrBytes/(64<<10)+1))
-		outcome, err := controlledRunner(bin).CompleteUserAuth(context.Background(), home, deviceAuthTestCode)
+		outcome, err := controlledRunner(bin).CompleteUserAuth(context.Background(), home, deviceAuthTestCode, []string{"offline_access"})
 		require.NoError(t, err)
 		require.Equal(t, DeviceAuthAmbiguous, outcome)
 	})
@@ -205,7 +225,7 @@ exit 3
 	t.Run("process start failure is retryable dependency", func(t *testing.T) {
 		home := controlledTestHome(t)
 		runner := controlledRunner(filepath.Join(t.TempDir(), "missing-lark-cli"))
-		outcome, err := runner.CompleteUserAuth(context.Background(), home, deviceAuthTestCode)
+		outcome, err := runner.CompleteUserAuth(context.Background(), home, deviceAuthTestCode, []string{"offline_access"})
 		require.NoError(t, err)
 		require.Equal(t, DeviceAuthRetryableDependency, outcome)
 	})
@@ -225,7 +245,7 @@ func TestControlledLarkCLIRunner_DeviceCodeNeverAppearsInError(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			home := controlledTestHome(t)
 			bin := writeControlledFakeBinary(t, test.body)
-			outcome, err := controlledRunner(bin).CompleteUserAuth(context.Background(), home, secret)
+			outcome, err := controlledRunner(bin).CompleteUserAuth(context.Background(), home, secret, []string{"offline_access"})
 			require.NotContains(t, outcome.String(), secret)
 			if err != nil {
 				require.NotContains(t, err.Error(), secret)
@@ -239,7 +259,7 @@ func TestControlledLarkCLIRunner_DeviceCodeNeverAppearsInError(t *testing.T) {
 	home := controlledTestHome(t)
 	marker := filepath.Join(home, "must-not-start")
 	bin := writeControlledFakeBinary(t, fmt.Sprintf("touch %s", shellQuoteForControlledTest(marker)))
-	outcome, err := controlledRunner(bin).CompleteUserAuth(context.Background(), home, "")
+	outcome, err := controlledRunner(bin).CompleteUserAuth(context.Background(), home, "", []string{"offline_access"})
 	require.NoError(t, err)
 	require.Equal(t, DeviceAuthProtocolFailure, outcome)
 	require.NoFileExists(t, marker)
@@ -291,7 +311,7 @@ func TestControlledLarkCLIRunner_RejectsMalformedDeviceAuthOutput(t *testing.T) 
 			t.Run(test.name, func(t *testing.T) {
 				home := controlledTestHome(t)
 				bin := writeControlledFakeBinary(t, controlledDeviceAuthCompleteScript(deviceAuthTestCode, test.stdout, test.exitCode))
-				outcome, err := controlledRunner(bin).CompleteUserAuth(context.Background(), home, deviceAuthTestCode)
+				outcome, err := controlledRunner(bin).CompleteUserAuth(context.Background(), home, deviceAuthTestCode, []string{"offline_access"})
 				require.NoError(t, err)
 				require.Equal(t, DeviceAuthProtocolFailure, outcome)
 			})
@@ -310,7 +330,7 @@ func TestControlledLarkCLIRunner_RejectsMalformedDeviceAuthOutput(t *testing.T) 
 			t.Run(test.name, func(t *testing.T) {
 				home := controlledTestHome(t)
 				bin := writeControlledFakeBinary(t, test.body)
-				outcome, err := controlledRunner(bin).CompleteUserAuth(context.Background(), home, deviceAuthTestCode)
+				outcome, err := controlledRunner(bin).CompleteUserAuth(context.Background(), home, deviceAuthTestCode, []string{"offline_access"})
 				require.NoError(t, err)
 				require.Equal(t, DeviceAuthProtocolFailure, outcome)
 			})

@@ -788,7 +788,17 @@ func (f *DeviceAuthFlow) completeInCandidateHome(
 		return DeviceAuthExpired, ""
 	}
 	cliCtx, cancelCLI := context.WithTimeout(ownerCtx, cliBudget)
-	outcome, err := f.cli.CompleteUserAuth(cliCtx, home, deviceCode)
+	var expectedScopes []string
+	if json.Unmarshal(session.RequestedScopesJSON, &expectedScopes) != nil {
+		cancelCLI()
+		return DeviceAuthProtocolFailure, ""
+	}
+	expectedScopes, scopeErr := canonicalDeviceAuthScopes(expectedScopes)
+	if scopeErr != nil {
+		cancelCLI()
+		return DeviceAuthProtocolFailure, ""
+	}
+	outcome, err := f.cli.CompleteUserAuth(cliCtx, home, deviceCode, expectedScopes)
 	cancelCLI()
 	if err != nil {
 		outcome = DeviceAuthRetryableDependency

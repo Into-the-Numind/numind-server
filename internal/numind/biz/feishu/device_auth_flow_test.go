@@ -370,7 +370,7 @@ func (f *deviceAuthFlowCLIFake) StartUserAuth(ctx context.Context, _ string, sco
 	return f.start, f.startErr
 }
 
-func (f *deviceAuthFlowCLIFake) CompleteUserAuth(context.Context, string, string) (DeviceAuthOutcome, error) {
+func (f *deviceAuthFlowCLIFake) CompleteUserAuth(context.Context, string, string, []string) (DeviceAuthOutcome, error) {
 	return DeviceAuthProtocolFailure, errors.New("not implemented in start fake")
 }
 
@@ -825,6 +825,7 @@ type deviceAuthCompletionCLIFake struct {
 	completeContext        context.Context
 	completeHome           string
 	completeDeviceCode     string
+	completeExpectedScopes []string
 	authStatus             bool
 	authStatusErr          error
 	authStatusCalls        int
@@ -848,12 +849,13 @@ func (f *deviceAuthCompletionCLIFake) StartUserAuth(ctx context.Context, _ strin
 	return f.start, f.startErr
 }
 
-func (f *deviceAuthCompletionCLIFake) CompleteUserAuth(ctx context.Context, home, deviceCode string) (DeviceAuthOutcome, error) {
+func (f *deviceAuthCompletionCLIFake) CompleteUserAuth(ctx context.Context, home, deviceCode string, expectedScopes []string) (DeviceAuthOutcome, error) {
 	f.mu.Lock()
 	f.completeCalls++
 	f.completeContext = ctx
 	f.completeHome = home
 	f.completeDeviceCode = deviceCode
+	f.completeExpectedScopes = append([]string(nil), expectedScopes...)
 	f.events = append(f.events, "complete")
 	waitForContext := f.completeWaitForContext
 	hook := f.completeHook
@@ -2008,6 +2010,7 @@ func TestDeviceAuthFlow_CompleteAmbiguousReconcilesAuthStatus(t *testing.T) {
 	fixture.cli.mu.Lock()
 	require.Equal(t, []string{"complete", "auth_status", "app_id"}, fixture.cli.events)
 	require.Equal(t, home, fixture.cli.completeHome)
+	require.Equal(t, []string{"docx:document:readonly"}, fixture.cli.completeExpectedScopes)
 	require.Equal(t, home, fixture.cli.authStatusHome)
 	require.Equal(t, home, fixture.cli.appIDHome)
 	fixture.cli.mu.Unlock()

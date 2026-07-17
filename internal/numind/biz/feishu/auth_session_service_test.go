@@ -154,7 +154,7 @@ func (f *authSessionCLIFake) StartUserAuth(_ context.Context, _ string, scopes [
 	return DeviceAuthStart{VerificationURL: url, DeviceCode: deviceCode, ExpiresIn: expiresIn}, f.runErr
 }
 
-func (f *authSessionCLIFake) CompleteUserAuth(context.Context, string, string) (DeviceAuthOutcome, error) {
+func (f *authSessionCLIFake) CompleteUserAuth(context.Context, string, string, []string) (DeviceAuthOutcome, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.completeCalls++
