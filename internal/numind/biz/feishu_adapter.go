@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"numind-server/internal/numind/biz/agent"
 	"numind-server/internal/numind/biz/feishu"
@@ -23,6 +24,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/spf13/viper"
 )
+
+const feishuDeviceAuthStartupCleanupTimeout = 5 * time.Second
 
 // feishuPersonalWorkspace is complete only after every bridge endpoint has
 // been assigned. NewBiz injects it into the platform factory only after this
@@ -275,6 +278,12 @@ func buildFeishuService(deps feishuCompositionDeps) (*feishuPersonalWorkspace, e
 	}
 	if deviceAuthFlow == nil {
 		return nil, fmt.Errorf("feishu: build device authorization flow: unavailable")
+	}
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), feishuDeviceAuthStartupCleanupTimeout)
+	_, cleanupErr := deviceAuthFlow.CleanupExpiredCredentials(cleanupCtx, 100)
+	cleanupCancel()
+	if cleanupErr != nil {
+		return nil, fmt.Errorf("feishu: cleanup device authorization credentials: %w", cleanupErr)
 	}
 	authService, err = feishu.NewAuthSessionService(feishu.AuthSessionServiceDeps{
 		Accounts:           deps.dataStore.ThirdPartyAccounts(),

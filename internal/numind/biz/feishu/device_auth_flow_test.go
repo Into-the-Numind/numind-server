@@ -63,6 +63,14 @@ type deviceAuthFlowStoreFake struct {
 	replaceErr            error
 	releaseCallsAtReplace int
 	replaceOwnerLive      bool
+	sweepCalls            []deviceAuthFlowSweepCall
+	sweep                 func(context.Context, time.Time, string, int) (store.FeishuDeviceAuthCleanupPage, error)
+}
+
+type deviceAuthFlowSweepCall struct {
+	Before time.Time
+	Cursor string
+	Limit  int
 }
 
 func cloneDeviceAuthFlowSession(session *model.FeishuAuthSession) *model.FeishuAuthSession {
@@ -286,6 +294,22 @@ func (f *deviceAuthFlowStoreFake) FinalizeDeviceAuthSuccess(context.Context, sto
 	return gorm.ErrRecordNotFound
 }
 
+func (f *deviceAuthFlowStoreFake) SweepDeviceAuthCredentials(
+	ctx context.Context,
+	before time.Time,
+	afterSessionID string,
+	scanLimit int,
+) (store.FeishuDeviceAuthCleanupPage, error) {
+	f.mu.Lock()
+	f.sweepCalls = append(f.sweepCalls, deviceAuthFlowSweepCall{Before: before, Cursor: afterSessionID, Limit: scanLimit})
+	sweep := f.sweep
+	f.mu.Unlock()
+	if sweep != nil {
+		return sweep(ctx, before, afterSessionID, scanLimit)
+	}
+	return store.FeishuDeviceAuthCleanupPage{Done: true}, nil
+}
+
 type deviceAuthFlowVaultFake struct {
 	mu      sync.Mutex
 	calls   int
@@ -414,6 +438,159 @@ func newDeviceAuthFlowStartFixture(t *testing.T, operationID string) deviceAuthF
 		now: now, account: account, session: session, store: storeFake, vault: vault,
 		cli: cli, cipher: cipher, flow: flow, scopes: scopes,
 	}
+}
+
+func TestDeviceAuthFlow_CleanupExpiredCredentialsAdvancesBoundedCursor(t *testing.T) {
+	fixture := newDeviceAuthFlowStartFixture(t, "")
+	fixture.store.sweep = func(_ context.Context, before time.Time, cursor string, limit int) (store.FeishuDeviceAuthCleanupPage, error) {
+		require.Equal(t, fixture.now, before)
+		require.Equal(t, 100, limit)
+		switch cursor {
+		case "":
+			return store.FeishuDeviceAuthCleanupPage{NextSessionID: "session-100", Scanned: 100, Cleared: 3}, nil
+		case "session-100":
+			return store.FeishuDeviceAuthCleanupPage{NextSessionID: "session-200", Scanned: 100, Cleared: 2}, nil
+		case "session-200":
+			return store.FeishuDeviceAuthCleanupPage{NextSessionID: "session-250", Scanned: 50, Cleared: 1, Done: true}, nil
+		default:
+			t.Fatalf("unexpected cleanup cursor %q", cursor)
+			return store.FeishuDeviceAuthCleanupPage{}, nil
+		}
+	}
+
+	for _, wantCleared := range []int64{3, 2, 1, 3} {
+		cleared, err := fixture.flow.CleanupExpiredCredentials(context.Background(), 100)
+		require.NoError(t, err)
+		require.Equal(t, wantCleared, cleared)
+	}
+
+	fixture.store.mu.Lock()
+	defer fixture.store.mu.Unlock()
+	require.Equal(t, []deviceAuthFlowSweepCall{
+		{Before: fixture.now, Cursor: "", Limit: 100},
+		{Before: fixture.now, Cursor: "session-100", Limit: 100},
+		{Before: fixture.now, Cursor: "session-200", Limit: 100},
+		{Before: fixture.now, Cursor: "", Limit: 100},
+	}, fixture.store.sweepCalls, "each invocation must scan exactly one page and Done must reset the next cycle")
+}
+
+func TestDeviceAuthFlow_CleanupExpiredCredentialsSerializesCursor(t *testing.T) {
+	fixture := newDeviceAuthFlowStartFixture(t, "")
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondEntered := make(chan struct{})
+	var once sync.Once
+	fixture.store.sweep = func(_ context.Context, _ time.Time, cursor string, _ int) (store.FeishuDeviceAuthCleanupPage, error) {
+		if cursor == "" {
+			once.Do(func() { close(firstEntered) })
+			<-releaseFirst
+			return store.FeishuDeviceAuthCleanupPage{NextSessionID: "session-next"}, nil
+		}
+		close(secondEntered)
+		return store.FeishuDeviceAuthCleanupPage{NextSessionID: "session-done", Done: true}, nil
+	}
+
+	errs := make(chan error, 2)
+	go func() { _, err := fixture.flow.CleanupExpiredCredentials(context.Background(), 100); errs <- err }()
+	select {
+	case <-firstEntered:
+	case <-time.After(time.Second):
+		t.Fatal("the first bounded sweep was not invoked")
+	}
+	go func() { _, err := fixture.flow.CleanupExpiredCredentials(context.Background(), 100); errs <- err }()
+	select {
+	case <-secondEntered:
+		t.Fatal("a concurrent sweep observed the stale cursor before the first page completed")
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(releaseFirst)
+	select {
+	case <-secondEntered:
+	case <-time.After(time.Second):
+		t.Fatal("the second bounded sweep did not advance from the first cursor")
+	}
+	require.NoError(t, <-errs)
+	require.NoError(t, <-errs)
+
+	fixture.store.mu.Lock()
+	defer fixture.store.mu.Unlock()
+	require.Equal(t, []string{"", "session-next"}, []string{
+		fixture.store.sweepCalls[0].Cursor,
+		fixture.store.sweepCalls[1].Cursor,
+	})
+}
+
+func TestDeviceAuthFlow_CleanupExpiredCredentialsRejectsRegressingCursor(t *testing.T) {
+	fixture := newDeviceAuthFlowStartFixture(t, "")
+	fixture.store.sweep = func(_ context.Context, _ time.Time, cursor string, _ int) (store.FeishuDeviceAuthCleanupPage, error) {
+		if cursor == "" {
+			return store.FeishuDeviceAuthCleanupPage{NextSessionID: "session-200"}, nil
+		}
+		return store.FeishuDeviceAuthCleanupPage{NextSessionID: "session-100"}, nil
+	}
+	_, err := fixture.flow.CleanupExpiredCredentials(context.Background(), 100)
+	require.NoError(t, err)
+	_, err = fixture.flow.CleanupExpiredCredentials(context.Background(), 100)
+	require.ErrorIs(t, err, ErrDeviceAuthDependency)
+}
+
+func TestDeviceAuthFlow_CleanupExpiredCredentialsIsBestEffortForStartAndComplete(t *testing.T) {
+	t.Run("start", func(t *testing.T) {
+		fixture := newDeviceAuthFlowStartFixture(t, "")
+		fixture.store.sweep = func(context.Context, time.Time, string, int) (store.FeishuDeviceAuthCleanupPage, error) {
+			return store.FeishuDeviceAuthCleanupPage{}, errors.New("cleanup unavailable")
+		}
+		action, err := fixture.flow.StartUserAuthorization(context.Background(), fixture.account, fixture.session, fixture.scopes)
+		require.NoError(t, err)
+		require.NotNil(t, action)
+		fixture.store.mu.Lock()
+		defer fixture.store.mu.Unlock()
+		require.Len(t, fixture.store.sweepCalls, 1)
+		require.Equal(t, 20, fixture.store.sweepCalls[0].Limit)
+	})
+
+	t.Run("complete", func(t *testing.T) {
+		fixture := newDeviceAuthCompletionFixture(t)
+		fixture.cli.outcome = DeviceAuthPending
+		fixture.store.sweep = func(context.Context, time.Time, string, int) (store.FeishuDeviceAuthCleanupPage, error) {
+			return store.FeishuDeviceAuthCleanupPage{}, errors.New("cleanup unavailable")
+		}
+		result, err := fixture.flow.CompleteUserAuthorization(
+			context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+		)
+		require.NoError(t, err)
+		require.Equal(t, AuthorizationPending, result.NoticeCode)
+		fixture.store.mu.Lock()
+		defer fixture.store.mu.Unlock()
+		require.Len(t, fixture.store.sweepCalls, 1)
+		require.Equal(t, 20, fixture.store.sweepCalls[0].Limit)
+	})
+
+	t.Run("busy cleanup does not block start", func(t *testing.T) {
+		fixture := newDeviceAuthFlowStartFixture(t, "")
+		cleanupEntered := make(chan struct{})
+		releaseCleanup := make(chan struct{})
+		fixture.store.sweep = func(context.Context, time.Time, string, int) (store.FeishuDeviceAuthCleanupPage, error) {
+			close(cleanupEntered)
+			<-releaseCleanup
+			return store.FeishuDeviceAuthCleanupPage{Done: true}, nil
+		}
+		cleanupDone := make(chan error, 1)
+		go func() {
+			_, err := fixture.flow.CleanupExpiredCredentials(context.Background(), 100)
+			cleanupDone <- err
+		}()
+		<-cleanupEntered
+
+		action, err := fixture.flow.StartUserAuthorization(context.Background(), fixture.account, fixture.session, fixture.scopes)
+		require.NoError(t, err)
+		require.NotNil(t, action)
+		close(releaseCleanup)
+		require.NoError(t, <-cleanupDone)
+		fixture.store.mu.Lock()
+		defer fixture.store.mu.Unlock()
+		require.Len(t, fixture.store.sweepCalls, 1, "best-effort start must skip a busy cleanup cursor")
+	})
 }
 
 func newDeviceAuthFlowCredentialCipher(t *testing.T) *DeviceAuthCredentialCipher {

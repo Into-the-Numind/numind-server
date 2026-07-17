@@ -52,6 +52,7 @@ type DeviceAuthStore interface {
 	TerminalizeDeviceAuthSession(context.Context, uint, uint64, string, string, string, time.Time) error
 	ReplaceDeviceAuthSession(context.Context, store.FeishuDeviceAuthReplacement) (*model.FeishuAuthSession, error)
 	FinalizeDeviceAuthSuccess(context.Context, store.FeishuDeviceAuthSuccess) error
+	SweepDeviceAuthCredentials(context.Context, time.Time, string, int) (store.FeishuDeviceAuthCleanupPage, error)
 }
 
 // DeviceAuthHomeVault exposes the read-only start materialization and the
@@ -134,6 +135,8 @@ type DeviceAuthFlow struct {
 	completionTimeout time.Duration
 	observer          DeviceAuthObserver
 	liveURLs          *authSessionURLRegistry
+	cleanupMu         sync.Mutex
+	cleanupCursor     string
 }
 
 func NewDeviceAuthFlow(deps DeviceAuthFlowDeps) (*DeviceAuthFlow, error) {
@@ -194,6 +197,7 @@ func (f *DeviceAuthFlow) StartUserAuthorization(
 	session *model.FeishuAuthSession,
 	scopes []string,
 ) (*OperationAction, error) {
+	f.cleanupExpiredCredentialsBestEffort(ctx)
 	return f.startUserAuthorization(ctx, account, session, scopes, false)
 }
 
@@ -468,6 +472,7 @@ func (f *DeviceAuthFlow) CompleteUserAuthorization(
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	f.cleanupExpiredCredentialsBestEffort(ctx)
 	session, err := f.sessions.GetSessionForUser(ctx, userID, generation, sessionID)
 	if err != nil || session == nil {
 		return nil, ErrAuthSessionUnavailable
@@ -1357,6 +1362,45 @@ func deviceAuthRefreshSource(
 	return false, "", false
 }
 
-func (f *DeviceAuthFlow) CleanupExpiredCredentials(context.Context, int) (int64, error) {
-	return 0, ErrDeviceAuthDependency
+// CleanupExpiredCredentials clears one bounded keyset page and advances an
+// in-memory cursor for the next invocation. Done resets the cursor so a later
+// invocation begins a new sweep; one call never drains the full table.
+func (f *DeviceAuthFlow) CleanupExpiredCredentials(ctx context.Context, scanLimit int) (int64, error) {
+	if f == nil || f.sessions == nil {
+		return 0, ErrDeviceAuthDependency
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	f.cleanupMu.Lock()
+	defer f.cleanupMu.Unlock()
+	return f.cleanupExpiredCredentialsLocked(ctx, scanLimit)
+}
+
+func (f *DeviceAuthFlow) cleanupExpiredCredentialsBestEffort(ctx context.Context) {
+	if f == nil || f.sessions == nil || !f.cleanupMu.TryLock() {
+		return
+	}
+	defer f.cleanupMu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_, _ = f.cleanupExpiredCredentialsLocked(ctx, 20)
+}
+
+func (f *DeviceAuthFlow) cleanupExpiredCredentialsLocked(ctx context.Context, scanLimit int) (int64, error) {
+	page, err := f.sessions.SweepDeviceAuthCredentials(ctx, f.now().UTC(), f.cleanupCursor, scanLimit)
+	if err != nil {
+		return 0, ErrDeviceAuthDependency
+	}
+	if page.Done {
+		f.cleanupCursor = ""
+	} else {
+		next := strings.TrimSpace(page.NextSessionID)
+		if next == "" || next <= f.cleanupCursor {
+			return 0, ErrDeviceAuthDependency
+		}
+		f.cleanupCursor = next
+	}
+	return int64(page.Cleared), nil
 }
