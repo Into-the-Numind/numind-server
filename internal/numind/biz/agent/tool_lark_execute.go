@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -79,6 +80,10 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 	if !ok || userID == 0 || runID == 0 || strings.TrimSpace(toolCallID) == "" {
 		return larkWorkspaceSoftError(larkWorkspaceErrorIdentity)
 	}
+	retryState, retryAttempt, allowed := larkExecuteRetryBegin(runID)
+	if !allowed {
+		return larkWorkspaceSoftError(larkWorkspaceErrorExecuteRetryExhausted)
+	}
 
 	result, err := t.executor.Execute(ctx, feishu.ExecuteRequest{
 		UserID:         userID,
@@ -89,19 +94,39 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 		StdinJSON:      append(json.RawMessage(nil), decoded.StdinJSON...),
 		SkillReceipts:  append([]string(nil), decoded.SkillReceipts...),
 	})
-	if err != nil || result == nil || strings.TrimSpace(result.OperationID) == "" || strings.TrimSpace(result.State) == "" {
+	if err != nil {
+		if errors.Is(err, feishu.ErrOperationRequestRejected) {
+			if larkExecuteRetryRejected(retryState, retryAttempt) {
+				return larkWorkspaceSoftError(larkWorkspaceErrorExecuteRetryExhausted)
+			}
+			return larkWorkspaceSoftError(larkWorkspaceErrorExecuteRejected)
+		}
+		larkExecuteRetryFailed(retryState, retryAttempt)
+		return larkWorkspaceSoftError(larkWorkspaceErrorExecute)
+	}
+	if result == nil || strings.TrimSpace(result.OperationID) == "" || strings.TrimSpace(result.State) == "" {
+		larkExecuteRetryFailed(retryState, retryAttempt)
 		return larkWorkspaceSoftError(larkWorkspaceErrorExecute)
 	}
 
 	if isLarkWaitingState(result.State) {
-		return larkWaitingYield(result, toolCallID)
+		waitingResult, waitingErr := larkWaitingYield(result, toolCallID)
+		if waitingErr != nil {
+			larkExecuteRetryCompleted(retryState, retryAttempt)
+		} else {
+			larkExecuteRetryFailed(retryState, retryAttempt)
+		}
+		return waitingResult, waitingErr
 	}
 	if !isLarkTerminalState(result.State) {
+		larkExecuteRetryFailed(retryState, retryAttempt)
 		return larkWorkspaceSoftError(larkWorkspaceErrorInvalidResult)
 	}
 	if len(result.Data) > 0 && !json.Valid(result.Data) {
+		larkExecuteRetryFailed(retryState, retryAttempt)
 		return larkWorkspaceSoftError(larkWorkspaceErrorInvalidResult)
 	}
+	larkExecuteRetryCompleted(retryState, retryAttempt)
 	output, err := json.Marshal(larkExecuteOutput{
 		OK:          result.State == model.FeishuOperationSucceeded,
 		State:       result.State,

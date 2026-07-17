@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -46,6 +47,32 @@ type fakeLarkExecutor struct {
 	requests []feishu.ExecuteRequest
 	result   *feishu.OperationResult
 	err      error
+}
+
+type gatedRejectedLarkExecutor struct {
+	mu        sync.Mutex
+	calls     int
+	gateAfter int
+	entered   chan struct{}
+	release   chan struct{}
+}
+
+func (f *gatedRejectedLarkExecutor) Execute(_ context.Context, _ feishu.ExecuteRequest) (*feishu.OperationResult, error) {
+	f.mu.Lock()
+	f.calls++
+	callNumber := f.calls
+	f.mu.Unlock()
+	if callNumber > f.gateAfter {
+		f.entered <- struct{}{}
+		<-f.release
+	}
+	return nil, feishu.ErrOperationRequestRejected
+}
+
+func (f *gatedRejectedLarkExecutor) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
 }
 
 func (f *fakeLarkExecutor) Execute(_ context.Context, request feishu.ExecuteRequest) (*feishu.OperationResult, error) {
@@ -139,6 +166,41 @@ func TestLarkPersonalWorkspace_SkillReadSuccessUsesOnlyRunContext(t *testing.T) 
 	assert.True(t, tool.IsConcurrencySafe(nil))
 	assert.Contains(t, tool.Description(), "lark-shared")
 	assert.Contains(t, tool.Description(), "controlled reference")
+}
+
+// Customer regression (Dev run 204): upstream skills describe a local CLI and
+// told the hosted Agent to run auth/config preflights and request App secrets.
+// The hosted boundary must explicitly override those instructions before the
+// model chooses a command, while leaving the signed skill content untouched.
+func TestLarkPersonalWorkspace_SkillReadPublishesHostedPolicy(t *testing.T) {
+	executor := &fakeSkillReadExecutor{result: &feishu.SkillReadPage{
+		Skill:   "lark-doc",
+		Path:    "skills/lark-doc/SKILL.md",
+		Content: "首次使用前执行 lark-cli auth login，并默认使用 --as user。",
+		Receipt: "opaque-doc-receipt",
+	}}
+
+	result, err := (&larkSkillReadTool{executor: executor}).Execute(
+		WithRunID(context.Background(), 204),
+		ToolInput(`{"skill":"lark-doc"}`),
+	)
+	require.NoError(t, err)
+
+	var output struct {
+		Content      string `json:"content"`
+		HostedPolicy string `json:"hosted_policy"`
+		Receipt      string `json:"receipt"`
+	}
+	require.NoError(t, json.Unmarshal(result, &output))
+	assert.Equal(t, executor.result.Content, output.Content, "signed upstream content must stay byte-for-byte intact")
+	assert.Equal(t, executor.result.Receipt, output.Receipt)
+	assert.Contains(t, output.HostedPolicy, "不要执行 auth/config/whoami")
+	assert.Contains(t, output.HostedPolicy, "不要要求用户提供 App ID/App Secret")
+	assert.Contains(t, output.HostedPolicy, "直接调用 lark_execute")
+	assert.Contains(t, output.HostedPolicy, "自动生成授权卡片")
+	assert.Contains(t, output.HostedPolicy, "lark-shared")
+	assert.Contains(t, output.HostedPolicy, "对应业务技能")
+	assert.Contains(t, output.HostedPolicy, "最多修正并重试一次")
 }
 
 func TestLarkPersonalWorkspace_SkillReadStrictInputAndSafeFailures(t *testing.T) {
@@ -451,6 +513,144 @@ func TestLarkPersonalWorkspace_ExecuteInvalidWaitingAndExecutorErrorsAreSafe(t *
 		ToolInput(`{"argv":["docs","+fetch"],"skill_receipts":["receipt-raw"]}`),
 	)
 	requireSafeLarkSoftError(t, result, err, internalErr.Error(), "receipt-raw", "+fetch", "/private/home")
+	assert.Contains(t, string(result), "停止重复调用")
+}
+
+// Customer regression (Dev run 204): a rejected hosted command was projected
+// as a generic transient error, so the model blindly retried auth/config and
+// finally asked the user for App credentials. Rejections need fixed,
+// non-secret, non-local-CLI recovery guidance.
+func TestLarkPersonalWorkspace_ExecuteRejectedCommandStopsLocalCLIRetries(t *testing.T) {
+	const runID = uint64(204)
+	larkExecuteRetryClearRun(runID)
+	t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+
+	executor := &fakeLarkExecutor{err: feishu.ErrOperationRequestRejected}
+	tool := &larkExecuteTool{executor: executor}
+	result, err := tool.Execute(
+		larkPersonalWorkspaceContext(1, runID, "dev-run-204-rejected-1"),
+		ToolInput(`{"argv":["auth","status","--json"],"skill_receipts":["opaque-shared-receipt"]}`),
+	)
+	require.NoError(t, err)
+	assert.Contains(t, string(result), "不要执行 auth/config/whoami")
+	assert.Contains(t, string(result), "不要要求用户提供 App ID/App Secret")
+	assert.Contains(t, string(result), "Docs/Base/Wiki")
+	assert.Contains(t, string(result), "最多修正并重试一次")
+	assert.NotContains(t, string(result), "请稍后重试")
+	assert.NotContains(t, string(result), "opaque-shared-receipt")
+
+	result, err = tool.Execute(
+		larkPersonalWorkspaceContext(1, runID, "dev-run-204-rejected-2"),
+		ToolInput(`{"argv":["docs","+create","--content","<title>联调</title>"],"skill_receipts":["opaque-shared-receipt","opaque-doc-receipt"]}`),
+	)
+	require.NoError(t, err)
+	assert.Contains(t, string(result), "已停止后续飞书命令")
+
+	result, err = tool.Execute(
+		larkPersonalWorkspaceContext(1, runID, "dev-run-204-rejected-3"),
+		ToolInput(`{"argv":["docs","+create","--content","<title>不应执行</title>"],"skill_receipts":["opaque-shared-receipt","opaque-doc-receipt"]}`),
+	)
+	require.NoError(t, err)
+	assert.Contains(t, string(result), "已停止后续飞书命令")
+	assert.Len(t, executor.snapshot(), 2, "the third call must be blocked before reaching the executor")
+
+	const otherRunID = uint64(205)
+	t.Cleanup(func() { larkExecuteRetryClearRun(otherRunID) })
+	result, err = tool.Execute(
+		larkPersonalWorkspaceContext(1, otherRunID, "other-run-first-rejection"),
+		ToolInput(`{"argv":["docs","+create","--content","<title>另一个任务</title>"],"skill_receipts":["opaque-shared-receipt","opaque-doc-receipt"]}`),
+	)
+	require.NoError(t, err)
+	assert.Contains(t, string(result), "最多修正并重试一次")
+	assert.NotContains(t, string(result), "已停止后续飞书命令")
+	assert.Len(t, executor.snapshot(), 3, "an exhausted run must not consume another run's correction budget")
+
+	larkExecuteRetryClearRun(runID)
+	result, err = tool.Execute(
+		larkPersonalWorkspaceContext(1, runID, "cleared-run-first-rejection"),
+		ToolInput(`{"argv":["docs","+create","--content","<title>清理后新执行段</title>"],"skill_receipts":["opaque-shared-receipt","opaque-doc-receipt"]}`),
+	)
+	require.NoError(t, err)
+	assert.Contains(t, string(result), "最多修正并重试一次")
+	assert.NotContains(t, string(result), "已停止后续飞书命令")
+	assert.Len(t, executor.snapshot(), 4, "run cleanup must restore a fresh correction budget")
+}
+
+func TestLarkPersonalWorkspace_ExecuteCorrectionBudgetIsConcurrentAndResetsAfterSuccess(t *testing.T) {
+	t.Run("only one concurrent correction reaches executor", func(t *testing.T) {
+		const runID = uint64(206)
+		larkExecuteRetryClearRun(runID)
+		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+		executor := &gatedRejectedLarkExecutor{
+			gateAfter: 1,
+			entered:   make(chan struct{}, 3),
+			release:   make(chan struct{}),
+		}
+		tool := &larkExecuteTool{executor: executor}
+		_, err := tool.Execute(
+			larkPersonalWorkspaceContext(1, runID, "initial-rejection"),
+			ToolInput(`{"argv":["auth","status"],"skill_receipts":["shared"]}`),
+		)
+		require.NoError(t, err)
+
+		var wg sync.WaitGroup
+		wg.Add(3)
+		for index := 0; index < 3; index++ {
+			go func(index int) {
+				defer wg.Done()
+				_, executeErr := tool.Execute(
+					larkPersonalWorkspaceContext(1, runID, fmt.Sprintf("concurrent-correction-%d", index)),
+					ToolInput(`{"argv":["docs","+create","--content","<title>联调</title>"],"skill_receipts":["shared","doc"]}`),
+				)
+				assert.NoError(t, executeErr)
+			}(index)
+		}
+		select {
+		case <-executor.entered:
+		case <-time.After(time.Second):
+			t.Fatal("the single correction did not reach the executor")
+		}
+		close(executor.release)
+		wg.Wait()
+		assert.Equal(t, 2, executor.callCount(), "one initial call plus exactly one correction may reach the executor")
+	})
+
+	t.Run("successful correction restores a fresh budget", func(t *testing.T) {
+		const runID = uint64(207)
+		larkExecuteRetryClearRun(runID)
+		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+		executor := &fakeLarkExecutor{err: feishu.ErrOperationRequestRejected}
+		tool := &larkExecuteTool{executor: executor}
+		_, err := tool.Execute(
+			larkPersonalWorkspaceContext(1, runID, "initial-rejection"),
+			ToolInput(`{"argv":["auth","status"],"skill_receipts":["shared"]}`),
+		)
+		require.NoError(t, err)
+
+		executor.mu.Lock()
+		executor.err = nil
+		executor.result = &feishu.OperationResult{OperationID: "op-success", State: model.FeishuOperationSucceeded}
+		executor.mu.Unlock()
+		result, err := tool.Execute(
+			larkPersonalWorkspaceContext(1, runID, "successful-correction"),
+			ToolInput(`{"argv":["docs","+create","--content","<title>成功</title>"],"skill_receipts":["shared","doc"]}`),
+		)
+		require.NoError(t, err)
+		assert.Contains(t, string(result), `"ok":true`)
+
+		executor.mu.Lock()
+		executor.err = feishu.ErrOperationRequestRejected
+		executor.result = nil
+		executor.mu.Unlock()
+		result, err = tool.Execute(
+			larkPersonalWorkspaceContext(1, runID, "new-cycle-rejection"),
+			ToolInput(`{"argv":["docs","+create","--content","<title>新周期</title>"],"skill_receipts":["shared","doc"]}`),
+		)
+		require.NoError(t, err)
+		assert.Contains(t, string(result), "最多修正并重试一次")
+		assert.NotContains(t, string(result), "已停止后续飞书命令")
+		assert.Len(t, executor.snapshot(), 3)
+	})
 }
 
 func TestLarkPersonalWorkspace_ExecuteTerminalStatesNeverFakeSuccess(t *testing.T) {

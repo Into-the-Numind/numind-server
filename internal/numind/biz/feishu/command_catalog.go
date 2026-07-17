@@ -234,6 +234,8 @@ func (c *CommandCatalog) Normalize(argv []string, stdinJSON []byte) (*Normalized
 
 func parseCommandFlags(args []string, rules map[string]flagRule) (*parsedFlags, error) {
 	parsed := &parsedFlags{values: make(map[string][]string), argv: make([]string, 0, len(args))}
+	platformValues := map[string]string{"as": "user", "format": "json"}
+	platformSeen := make(map[string]bool, len(platformValues))
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if strings.ContainsRune(arg, 0) {
@@ -246,6 +248,26 @@ func parseCommandFlags(args []string, rules map[string]flagRule) (*parsedFlags, 
 		name, value, hasEquals := strings.Cut(nameValue, "=")
 		if name == "" {
 			return nil, invalidf("empty flag")
+		}
+		// Official skills may include these fixed flags at the top level. Parse
+		// them here, after the preceding business flag has already consumed its
+		// value, so literal content such as "--as=user" remains content.
+		if expected, platformOwned := platformValues[name]; platformOwned {
+			if platformSeen[name] {
+				return nil, invalidf("duplicate platform flag --%s", name)
+			}
+			if !hasEquals {
+				if i+1 >= len(args) {
+					return nil, invalidf("platform flag --%s is missing its value", name)
+				}
+				i++
+				value = args[i]
+			}
+			if value != expected {
+				return nil, deniedf("platform flag --%s value is not allowed", name)
+			}
+			platformSeen[name] = true
+			continue
 		}
 		rule, ok := rules[name]
 		if !ok {

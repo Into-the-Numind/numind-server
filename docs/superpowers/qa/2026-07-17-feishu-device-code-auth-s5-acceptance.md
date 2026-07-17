@@ -83,6 +83,24 @@
 - 下一门禁是用户在飞书官方页面完成本次授权。之后继续验证原 Agent 自动恢复，以及
   Docs/Base/Wiki create/read/update 的真实业务闭环。
 
+## Dev run 204 托管技能冲突修复
+
+- 真实 Dev run 204 在飞书 device session 已过期后连续发起四次 `lark_execute`，但没有创建任何
+  Feishu operation 或 auth-session 记录。根因不是飞书服务波动，而是上游官方技能中的本地电脑
+  CLI 指引（`auth` / `config` / `whoami` / 手工凭证）与有数托管执行边界冲突；通用错误文案又诱导
+  Agent 盲目重试。
+- 客户 RED `d60a0c91` 固化该回归。托管工具现在通过独立 `hosted_policy` 明确优先规则，不改写签名
+  skill 原文；Agent 直接执行 Docs/Base/Wiki，连接或权限不足由平台自动生成授权卡，不再索要
+  App ID/App Secret。
+- CommandCatalog 在业务参数解析上下文中兼容官方固定 `--as user` / `--format json`，仍由平台重建
+  固定身份与 JSON 输出。正文值恰为 `--as=user` 或 `--format=json` 时会原样保留；重复 flag、bot
+  身份及非 JSON 输出继续 fail closed。
+- 同一 Agent run 首次命令拒绝后只允许一次纠正。第二次仍被拒绝即进入 exhausted，第三次在触达
+  executor 前阻断；mutex 状态机同时封住并发窗口。不同 run 相互隔离，正常完成会复位，Run 与
+  RunStream 退出都会清理状态。
+- 修复验证：`go test ./...` PASS；`task lint` PASS；Agent/Feishu 完整包 PASS；新增并发纠正竞态
+  测试在 `-race -count=20` 下 PASS；规格审查和代码质量审查均 PASS，无 P0/P1/P2。
+
 ## 结论
 
 AUTOMATED_PASS_WITH_BASELINE_EXCEPTION。功能代码可合并并部署 Dev；唯一全仓失败在原始 `develop` 同样存在，且目录不在 feature diff。Dev 真实飞书验收在部署后继续记录到本报告。
