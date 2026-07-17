@@ -47,7 +47,8 @@
 | Agent 只通过 `lark_execute` 操作飞书 | PASS | shell AST adversarial suite 与系统指引测试通过 |
 | Docs/Base/Wiki 编排与命令域无关 | PASS | create/read/update 的 durable fixtures 与 exact argv oracle 通过 |
 | 页面不刷新即可继续显示思考和正式回复 | PASS | Playwright 5/5 + reasoning reconciliation unit regression |
-| Dev 真实飞书首次授权、热路径和完整 CRUD | PENDING_DEV | 合并并部署 Dev 后执行，不在本地伪造外部成功 |
+| Dev 真实连接开始与官方授权链接生成 | PASS | HTTP 200 / code=0；返回 accounts.feishu.cn 新协议链接，不再出现 Internal server error |
+| Dev 真实飞书首次授权、热路径和完整 CRUD | PENDING_USER_AUTH | 需用户在刚生成的飞书官方页面完成授权后继续 |
 
 ## 独立审查
 
@@ -69,6 +70,18 @@
   `7cbaf4e` → `9ea6bd8`，安全收紧追加 `4665fcf` → `3a6e984`。
 - 修正后验证：后端关键回归与 lint PASS；前端聚焦 82/82、全量 1114 tests、lint、
   type-check、production build、Playwright 5/5 全部 PASS；双 reviewer 均 PASS 且无 findings。
+
+## Dev 部署与真实连接验证
+
+- 后端 Dev 镜像：`numind-server:develop-919060ed`，健康检查 PASS。
+- 前端 Dev 镜像：`numind-web-v3:develop-2498fbd`，健康检查 PASS。
+- 登录真实 Dev 账号后，`POST /api/v1/feishu/connect` 返回 HTTP 200、`code=0`、
+  `state=waiting_user_auth`、`phase=user_auth`，并带有 live URL。
+- 为避免泄露一次性授权信息，验收只记录 URL 结构：host 为 `accounts.feishu.cn`，path 为
+  `/oauth/v1/device/verify`，query key 恰为 `flow_id`、`user_code`；没有记录参数值或完整链接。
+- 页面 console error 为 0；部署后两个容器的 panic/fatal/error 计数均为 0。
+- 下一门禁是用户在飞书官方页面完成本次授权。之后继续验证原 Agent 自动恢复，以及
+  Docs/Base/Wiki create/read/update 的真实业务闭环。
 
 ## 结论
 
