@@ -109,6 +109,8 @@ func TestControlledScopePreflight_RejectsAmbiguousCLIContracts(t *testing.T) {
 		{name: "unknown_field", output: `{"ok":true,"granted":["docx:document:readonly"],"missing":[],"debug":"secret"}`},
 		{name: "trailing_value", output: `{"ok":true,"granted":["docx:document:readonly"],"missing":[]} {}`},
 		{name: "missing_array", output: `{"ok":true,"granted":["docx:document:readonly"]}`},
+		{name: "null_error", output: `{"ok":true,"error":null,"granted":["docx:document:readonly"],"missing":[]}`},
+		{name: "null_suggestion", output: `{"ok":true,"granted":["docx:document:readonly"],"missing":[],"suggestion":null}`},
 		{name: "unknown_auth_state", output: `{"ok":false,"error":"expired","missing":["docx:document:readonly"]}`, exit: 1},
 		{name: "auth_state_with_granted", output: `{"ok":false,"error":"no_token","granted":null,"missing":["docx:document:readonly"]}`, exit: 1},
 		{name: "overlap", output: `{"ok":false,"granted":["docx:document:readonly"],"missing":["docx:document:readonly"]}`, exit: 1},

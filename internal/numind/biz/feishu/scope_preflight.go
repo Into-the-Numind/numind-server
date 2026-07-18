@@ -160,10 +160,10 @@ func decodeScopePreflight(raw []byte) (*scopePreflightPayload, error) {
 	decoder.DisallowUnknownFields()
 	var wire struct {
 		OK         *bool           `json:"ok"`
-		AuthError  *string         `json:"error,omitempty"`
+		AuthError  json.RawMessage `json:"error"`
 		Granted    json.RawMessage `json:"granted"`
 		Missing    json.RawMessage `json:"missing"`
-		Suggestion *string         `json:"suggestion,omitempty"`
+		Suggestion json.RawMessage `json:"suggestion"`
 	}
 	if err := decoder.Decode(&wire); err != nil {
 		return nil, fmt.Errorf("feishu: decode scope preflight JSON: %w", errControlledCLIInvalidJSON)
@@ -179,12 +179,18 @@ func decodeScopePreflight(raw []byte) (*scopePreflightPayload, error) {
 	if err != nil {
 		return nil, fmt.Errorf("feishu: scope preflight missing list rejected: %w", errControlledCLIInvalidJSON)
 	}
-	authError := ""
+	authError, authErrorPresent, err := decodeScopePreflightOptionalString(wire.AuthError)
+	if err != nil {
+		return nil, fmt.Errorf("feishu: scope preflight auth state rejected: %w", errControlledCLIInvalidJSON)
+	}
+	suggestion, suggestionPresent, err := decodeScopePreflightOptionalString(wire.Suggestion)
+	if err != nil {
+		return nil, fmt.Errorf("feishu: scope preflight suggestion rejected: %w", errControlledCLIInvalidJSON)
+	}
 	granted := []string{}
-	if wire.AuthError != nil {
-		authError = *wire.AuthError
+	if authErrorPresent {
 		if *wire.OK || (authError != "not_logged_in" && authError != "no_token") ||
-			len(wire.Granted) != 0 || wire.Suggestion != nil {
+			len(wire.Granted) != 0 || suggestionPresent {
 			return nil, fmt.Errorf("feishu: scope preflight auth state rejected: %w", errControlledCLIInvalidJSON)
 		}
 	} else if len(wire.Granted) == 0 {
@@ -195,8 +201,12 @@ func decodeScopePreflight(raw []byte) (*scopePreflightPayload, error) {
 			return nil, fmt.Errorf("feishu: scope preflight granted list rejected: %w", errControlledCLIInvalidJSON)
 		}
 	}
+	var suggestionValue *string
+	if suggestionPresent {
+		suggestionValue = &suggestion
+	}
 	return &scopePreflightPayload{
-		OK: *wire.OK, AuthError: authError, Granted: granted, Missing: missing, Suggestion: wire.Suggestion,
+		OK: *wire.OK, AuthError: authError, Granted: granted, Missing: missing, Suggestion: suggestionValue,
 	}, nil
 }
 
@@ -213,6 +223,18 @@ func decodeScopePreflightList(raw json.RawMessage) ([]string, error) {
 		return nil, errControlledCLIInvalidJSON
 	}
 	return values, nil
+}
+
+func decodeScopePreflightOptionalString(raw json.RawMessage) (string, bool, error) {
+	if len(raw) == 0 {
+		return "", false, nil
+	}
+	trimmed := bytes.TrimSpace(raw)
+	var value string
+	if bytes.Equal(trimmed, []byte("null")) || json.Unmarshal(trimmed, &value) != nil {
+		return "", false, errControlledCLIInvalidJSON
+	}
+	return value, true, nil
 }
 
 func (p *ControlledScopePreflight) validatePartition(
