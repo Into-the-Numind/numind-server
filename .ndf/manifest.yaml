@@ -46,16 +46,16 @@ features:
   ndf_version: '3.0'
   description: Align hosted per-user Feishu authorization with the pinned lark-cli split device-code protocol and resume the exact original Agent operation
   classification_reason: 'Standard: customer-reported third-party OAuth and durable write-resume boundary; affects authentication state machine, secure resume credentials, Agent guidance, real CLI fixtures, and more than 3 files.'
-  last_updated_by: ai-s6-mysql-json-cas-dev-accepted
-  last_updated_at: '2026-07-18T16:51:00+08:00'
+  last_updated_by: ai-s6-docs-read-stderr-regression
+  last_updated_at: '2026-07-18T17:10:49+08:00'
   created_at: '2026-07-16T18:53:00+08:00'
   track: standard
-  stage: S6
+  stage: S4
   status: active
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: develop, numind-web-v3: develop}
   worktrees: {numind-server: '(removed by ndf-done)', numind-web-v3: '(removed by ndf-done)'}
-  progress: {total_tasks: 22, completed_tasks: 22, reviewed_tasks: 22}
+  progress: {total_tasks: 23, completed_tasks: 22, reviewed_tasks: 22}
   artifacts:
     requirement: requirements/feishu-device-code-auth.md
     proposal: proposals/feishu-device-code-auth-proposal.md
@@ -102,7 +102,8 @@ features:
   - 'S4 repair Task 22: customer RED df35fc50 adds a real MySQL integration gate and fails both the successful claim lifecycle and exact terminalization on the old JSON-column = string CAS. Fix 454dd51f centralizes the dialect-aware exact pending-action fence across claim, release, reclaim, touch, complete, and terminalize; MySQL compares CAST(JSON AS BINARY) to a bound binary parameter while SQLite retains TEXT equality. Refactor bf0e14e5 removes the deprecated BINARY operator form. The same disposable Dev MySQL gate turned green twice after the fix, including the final CAST form (35.04s); targeted SQLite tests pass count=20, target race passes, full go test ./... passes on a fresh rerun, and task lint passes. Dual specification/concurrency and quality reviews PASS with P0/P1/P2=0. The earlier full-suite URL-stream timeout is an unrelated timing flake: its isolated test passes 20/20 and the fresh full suite passes.'
   - 'S5 repair acceptance authorizes ndf-done and Dev deployment. The Dev run 206 authorization session and Feishu operation are already completed/succeeded; after deployment, the correct product acceptance is to click the same old card again so the persisted result resumes Agent run 206 without another Feishu write. The mysqlintegration gate currently remains opt-in through build tag plus disposable DSN and was executed manually against real Dev MySQL for this release; automatic release wiring is a recorded non-blocking follow-up.'
   - 'S6 repair deployment and acceptance: ndf-done merged and pushed develop at bdfb2c8c, then manual TCR release deployed numind-server:develop-bdfb2c8c to Dev. Container image identity matches, Docker reports running+healthy, public health returns code 0/status ok, and critical log count is zero. Automated product acceptance logged in with the configured E2E account and POSTed user_completed to the exact previously-failed operation fb970f07-cef7-4178-9c9a-5ba2b8bf2301: HTTP 200/code 0/state succeeded. The persisted Agent run 206 then reached terminated/completed, cleared pending_external_action_json, retained no cancellation marker, and grew from seven to nine turns. The Feishu operation attempt_count remained 2, so acceptance consumed the already-created document result without a duplicate Feishu write. Dev S6 is accepted; Prod remains unauthorized.'
-  rollback: 'S6 -> S4 on 2026-07-18: implementation defect; direction and split-device architecture remain valid.'
+  - 'S6 Docs-read acceptance failed on Dev run 209: three real docs +fetch operations exited in about 100 ms with state failed and no recovery card. A read-only replay against the exact encrypted user HOME proved lark-cli 1.0.68 exits 3 and writes the structured authorization/missing_scope envelope to stderr, with docx:document:readonly as the exact missing scope. ControlledLarkCLIRunner only decoded stdout and returned on the non-zero wait error, so the classifier never saw the fixed tuple and the Agent received only a generic failed state. Roll back to S4 for a customer RED covering strict stderr-envelope recovery and the newly observed code-less fixed tuple. ADR: .ndf/decisions/feishu-device-code-auth/0004-structured-stderr-envelope.md.'
+  rollback: 'S6 -> S4 on 2026-07-18: real Docs read exposed a fixed-version structured stderr contract that the runner did not decode; product direction and split-device architecture remain valid.'
   blockers: []
 
 - id: agent-stream-start-order
