@@ -150,10 +150,16 @@ func (r *ControlledLarkCLIRunner) Run(
 	}
 
 	envelopeBytes := result.Stdout
-	if waitErr != nil && len(result.Stdout) == 0 && len(result.Stderr) > 0 {
+	if shouldDecodeControlledCLIStderr(result, waitErr) {
 		envelopeBytes = result.Stderr
 	}
 	envelope, decodeErr := decodeControlledCLIEnvelope(envelopeBytes)
+	if decodeErr == nil && len(result.Stdout) > 0 && len(result.Stderr) > 0 {
+		if _, stderrErr := decodeControlledCLIEnvelope(result.Stderr); stderrErr == nil {
+			envelope = nil
+			decodeErr = fmt.Errorf("feishu: lark-cli returned ambiguous envelopes: %w", errControlledCLIInvalidJSON)
+		}
+	}
 	if decodeErr == nil {
 		result.Envelope = envelope
 	}
@@ -167,6 +173,11 @@ func (r *ControlledLarkCLIRunner) Run(
 		return result, fmt.Errorf("feishu: lark-cli operation failed: %w", errControlledCLIBusiness)
 	}
 	return result, nil
+}
+
+func shouldDecodeControlledCLIStderr(result *CLIResult, waitErr error) bool {
+	return waitErr != nil && result != nil && result.ExitCode > 0 &&
+		len(result.Stdout) == 0 && len(result.Stderr) > 0
 }
 
 // Logout removes the current user login from one already-isolated temporary

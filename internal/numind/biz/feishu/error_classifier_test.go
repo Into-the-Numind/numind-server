@@ -94,6 +94,13 @@ func TestErrorClassifier_CodeLessMissingScopeKeepsCatalogAndWriteFences(t *testi
 	require.Equal(t, RecoveryNone, startedWrite.Recovery)
 	require.Equal(t, model.FeishuOperationUnknown, startedWrite.TerminalState)
 	require.Equal(t, PublicCodeUnknownResult, startedWrite.PublicCode)
+
+	startedCreate := classifier.ClassifyEnvelope(
+		codeLess("docx:document:create"), docsCreateScopes(), RiskWrite, true,
+	)
+	require.Equal(t, RecoveryNone, startedCreate.Recovery)
+	require.Equal(t, model.FeishuOperationUnknown, startedCreate.TerminalState)
+	require.Equal(t, PublicCodeUnknownResult, startedCreate.PublicCode)
 }
 
 func TestErrorClassifier_SyntheticAppScopeContractsDoNotProveStartedWrites(t *testing.T) {

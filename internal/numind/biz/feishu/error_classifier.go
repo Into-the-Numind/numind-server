@@ -196,10 +196,12 @@ func (c *ErrorClassifier) Classify(
 		if evidence == permissionEvidenceApp {
 			recovery = RecoveryAppScope
 		}
-		// Only the user-level Docs create tuple has a checked-in real S2
-		// observation proving pre-request rejection. App evidence on the same
-		// tuple remains a synthetic contract until separately observed.
-		sourceProven := evidence == permissionEvidenceNone && equalScopeSet(scopes, []string{"docx:document:create"})
+		// Only the coded user-level Docs create tuple has a checked-in real S2
+		// observation proving pre-request rejection. Code-less and app-evidence
+		// variants remain unproven and must not replay a started write.
+		sourceProven := hasCode && code == "99991672" &&
+			evidence == permissionEvidenceNone &&
+			equalScopeSet(scopes, []string{"docx:document:create"})
 		return recoveryClassification(recovery, scopes, sourceProven, risk, invocationStarted, PublicCodeScopeRequired)
 	case semanticAppScope:
 		scopes, valid := c.normalizeMissingScopes(cliErr.MissingScopes, expectedScopeSet)

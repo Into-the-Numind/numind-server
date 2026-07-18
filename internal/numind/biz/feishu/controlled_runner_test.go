@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -481,6 +482,7 @@ func TestControlledLarkCLIRunner_RunNonZeroStructuredStderrPreservesEnvelope(t *
 
 func TestControlledLarkCLIRunner_StructuredStderrFallbackFailsClosedOnAmbiguity(t *testing.T) {
 	const stderr = `{"ok":false,"identity":"user","error":{"type":"authorization","subtype":"missing_scope","missing_scopes":["docx:document:readonly"],"identity":"user"}}`
+	const stdoutEnvelope = `{"ok":false,"identity":"user","error":{"type":"authorization","subtype":"missing_scope","code":"99991672","missing_scopes":["docx:document:create"],"identity":"user"}}`
 	tests := []struct {
 		name   string
 		stdout string
@@ -488,6 +490,7 @@ func TestControlledLarkCLIRunner_StructuredStderrFallbackFailsClosedOnAmbiguity(
 		exit   int
 	}{
 		{name: "non-empty stdout wins", stdout: "not-json", stderr: stderr, exit: 3},
+		{name: "two valid envelopes", stdout: stdoutEnvelope, stderr: stderr, exit: 3},
 		{name: "concatenated stderr", stderr: stderr + stderr, exit: 3},
 		{name: "zero exit never falls back", stderr: stderr, exit: 0},
 	}
@@ -509,6 +512,22 @@ func TestControlledLarkCLIRunner_StructuredStderrFallbackFailsClosedOnAmbiguity(
 				t.Fatalf("ambiguous stderr was trusted as a classifier envelope: %+v", result.Envelope)
 			}
 		})
+	}
+}
+
+func TestShouldDecodeControlledCLIStderrRequiresPositiveExit(t *testing.T) {
+	waitErr := exec.ErrWaitDelay
+	result := &CLIResult{ExitCode: 0, Stdout: nil, Stderr: []byte(`{"ok":false}`)}
+	if shouldDecodeControlledCLIStderr(result, waitErr) {
+		t.Fatal("exit-zero wait failure must not trust stderr as a business envelope")
+	}
+	result.ExitCode = -1
+	if shouldDecodeControlledCLIStderr(result, waitErr) {
+		t.Fatal("signal or unknown exit must not trust stderr as a business envelope")
+	}
+	result.ExitCode = 3
+	if !shouldDecodeControlledCLIStderr(result, waitErr) {
+		t.Fatal("explicit non-zero exit with stderr-only output should preserve its business envelope")
 	}
 }
 

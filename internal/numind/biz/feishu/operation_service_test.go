@@ -1213,6 +1213,41 @@ func TestOperationService_StartedWriteTimeoutIsUnknownAndNeverRetried(t *testing
 	require.NotContains(t, string(stored.ResultSummaryJSON), "timeout")
 }
 
+func TestOperationService_CodeLessStartedDocsCreateIsUnknownAndNeverAuthorizedOrRetried(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	h.runner.steps = []operationRunnerStep{{
+		result: &CLIResult{
+			InvocationStarted: true,
+			ExitCode:          3,
+			Envelope: &CLIEnvelope{OK: false, Identity: "user", Error: &CLIError{
+				Type:          "authorization",
+				Subtype:       "missing_scope",
+				Identity:      "user",
+				MissingScopes: []string{"docx:document:create"},
+			}},
+		},
+		err: errors.New("structured code-less scope failure"),
+	}}
+	req := ExecuteRequest{
+		UserID: 7, AgentRunID: 140, ToolCallID: "tc-code-less-create",
+		IdempotencyKey: "140:tc-code-less-create",
+		Argv:           []string{"docs", "+create", "--title", "报告"},
+		SkillReceipts:  []string{"shared-receipt", "doc-receipt"},
+	}
+
+	got, err := h.service.Execute(h.ctx, req)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationUnknown, got.State)
+	calls, _ := h.runner.snapshot()
+	require.Equal(t, 1, calls)
+	require.Empty(t, h.recovery.snapshot())
+
+	stored, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, got.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationUnknown, stored.State)
+}
+
 func TestOperationService_StructuredRecoveryUsesExactScopesAndSealsVault(t *testing.T) {
 	h := newOperationHarness(t)
 	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
