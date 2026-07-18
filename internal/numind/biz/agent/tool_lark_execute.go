@@ -75,6 +75,9 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 	}
 	retryState, retryAttempt, allowed := larkExecuteRetryBegin(runID)
 	if !allowed {
+		if larkExecuteRetryBlockedByTerminal(retryState) {
+			return larkWorkspaceSoftError(larkWorkspaceErrorExecuteStopped)
+		}
 		return larkWorkspaceSoftError(larkWorkspaceErrorExecuteRetryExhausted)
 	}
 
@@ -120,7 +123,11 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 		larkExecuteRetryFailed(retryState, retryAttempt)
 		return larkWorkspaceSoftError(larkWorkspaceErrorInvalidResult)
 	}
-	larkExecuteRetryCompleted(retryState, retryAttempt)
+	if result.State == model.FeishuOperationSucceeded {
+		larkExecuteRetryCompleted(retryState, retryAttempt)
+	} else {
+		larkExecuteRetryTerminalOutcome(retryState, retryAttempt, result.Failure)
+	}
 	return ToolResult(output), nil
 }
 

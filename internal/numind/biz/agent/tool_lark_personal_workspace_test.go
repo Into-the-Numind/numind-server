@@ -228,11 +228,14 @@ func TestLarkPersonalWorkspace_SkillReadPublishesHostedPolicy(t *testing.T) {
 	assert.Equal(t, executor.result.Receipt, output.Receipt)
 	assert.Contains(t, output.HostedPolicy, "不要执行 auth/config/whoami")
 	assert.Contains(t, output.HostedPolicy, "不要要求用户提供 App ID/App Secret")
-	assert.Contains(t, output.HostedPolicy, "直接调用 lark_execute")
-	assert.Contains(t, output.HostedPolicy, "自动生成授权卡片")
+	assert.Contains(t, output.HostedPolicy, "不要每次先检查权限")
+	assert.Contains(t, output.HostedPolicy, "只读 scope check")
+	assert.Contains(t, output.HostedPolicy, "lark_inspect")
+	assert.Contains(t, output.HostedPolicy, "生成授权卡片")
 	assert.Contains(t, output.HostedPolicy, "lark-shared")
 	assert.Contains(t, output.HostedPolicy, "对应业务技能")
-	assert.Contains(t, output.HostedPolicy, "最多修正并重试一次")
+	assert.Contains(t, output.HostedPolicy, "只可修正")
+	assert.Contains(t, output.HostedPolicy, "unknown_result 必须立即停止")
 }
 
 // Customer regression (Dev run 211): a fresh conversation only had a document
@@ -729,8 +732,11 @@ func TestLarkPersonalWorkspace_ExecuteCorrectionBudgetIsConcurrentAndResetsAfter
 }
 
 func TestLarkPersonalWorkspace_ExecuteTerminalStatesNeverFakeSuccess(t *testing.T) {
-	for _, state := range []string{model.FeishuOperationFailed, model.FeishuOperationUnknown, model.FeishuOperationCancelled} {
+	for index, state := range []string{model.FeishuOperationFailed, model.FeishuOperationUnknown, model.FeishuOperationCancelled} {
 		t.Run(state, func(t *testing.T) {
+			runID := uint64(800 + index)
+			larkExecuteRetryClearRun(runID)
+			t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
 			code, category := feishu.PublicCodeFailed, "failed"
 			if state == model.FeishuOperationUnknown {
 				code, category = feishu.PublicCodeUnknownResult, "unknown_result"
@@ -743,7 +749,7 @@ func TestLarkPersonalWorkspace_ExecuteTerminalStatesNeverFakeSuccess(t *testing.
 				Failure: &feishu.OperationFailure{Code: code, Category: category, BusinessStarted: true},
 			}}
 			result, err := (&larkExecuteTool{executor: executor}).Execute(
-				larkPersonalWorkspaceContext(7, 8, "tc-8"),
+				larkPersonalWorkspaceContext(7, runID, "tc-8"),
 				ToolInput(`{"argv":["docs"],"skill_receipts":["receipt"]}`),
 			)
 			require.NoError(t, err)
@@ -756,6 +762,86 @@ func TestLarkPersonalWorkspace_ExecuteTerminalStatesNeverFakeSuccess(t *testing.
 			assert.Equal(t, state, output.State)
 		})
 	}
+}
+
+func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *testing.T) {
+	t.Run("unknown started write stops the run", func(t *testing.T) {
+		const runID = uint64(811)
+		larkExecuteRetryClearRun(runID)
+		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+		executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+			OperationID: "op-unknown", State: model.FeishuOperationUnknown,
+			Failure: &feishu.OperationFailure{
+				Code: feishu.PublicCodeUnknownResult, Category: "unknown_result", BusinessStarted: true,
+			},
+		}}
+		tool := &larkExecuteTool{executor: executor}
+		first, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "write-1"),
+			ToolInput(`{"argv":["docs","+create","--title","A"],"skill_receipts":["shared","doc"]}`),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(first), `"category":"unknown_result"`)
+		second, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "write-2"),
+			ToolInput(`{"argv":["docs","+create","--title","B"],"skill_receipts":["shared","doc"]}`),
+		)
+		requireSafeLarkSoftError(t, second, err)
+		require.Contains(t, string(second), "不可自动重试")
+		require.Len(t, executor.snapshot(), 1)
+	})
+
+	t.Run("validation permits one correction then success resets", func(t *testing.T) {
+		const runID = uint64(812)
+		larkExecuteRetryClearRun(runID)
+		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+		executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+			OperationID: "op-validation", State: model.FeishuOperationFailed,
+			Failure: &feishu.OperationFailure{
+				Code: feishu.PublicCodeValidationError, Category: "validation", BusinessStarted: true,
+			},
+		}}
+		tool := &larkExecuteTool{executor: executor}
+		first, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "read-invalid"),
+			ToolInput(`{"argv":["docs","+fetch","--doc","bad"],"skill_receipts":["shared","doc"]}`),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(first), `"category":"validation"`)
+		executor.mu.Lock()
+		executor.result = &feishu.OperationResult{
+			OperationID: "op-corrected", State: model.FeishuOperationSucceeded,
+			Data: json.RawMessage(`{"document_id":"doc-1"}`),
+		}
+		executor.mu.Unlock()
+		corrected, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "read-corrected"),
+			ToolInput(`{"argv":["docs","+fetch","--doc","doc-1"],"skill_receipts":["shared","doc"]}`),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(corrected), `"ok":true`)
+
+		executor.mu.Lock()
+		executor.result = &feishu.OperationResult{
+			OperationID: "op-not-found", State: model.FeishuOperationFailed,
+			Failure: &feishu.OperationFailure{
+				Code: feishu.PublicCodeNotFound, Category: "not_found", BusinessStarted: true,
+			},
+		}
+		executor.mu.Unlock()
+		notFound, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "read-new-cycle"),
+			ToolInput(`{"argv":["docs","+fetch","--doc","missing"],"skill_receipts":["shared","doc"]}`),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(notFound), `"category":"not_found"`)
+		blocked, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "read-blind-retry"),
+			ToolInput(`{"argv":["docs","+fetch","--doc","other"],"skill_receipts":["shared","doc"]}`),
+		)
+		requireSafeLarkSoftError(t, blocked, err)
+		require.Len(t, executor.snapshot(), 3)
+	})
 }
 
 func TestLarkPersonalWorkspace_ExecuteRejectsNonTerminalNonWaitingStates(t *testing.T) {

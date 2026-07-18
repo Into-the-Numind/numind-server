@@ -1,6 +1,10 @@
 package agent
 
-import "sync"
+import (
+	"sync"
+
+	"numind-server/internal/numind/biz/feishu"
+)
 
 type larkExecuteRetryPhase uint8
 
@@ -20,8 +24,10 @@ const (
 )
 
 type larkExecuteRetryState struct {
-	mu    sync.Mutex
-	phase larkExecuteRetryPhase
+	mu           sync.Mutex
+	phase        larkExecuteRetryPhase
+	terminalStop bool
+	lastCategory string
 }
 
 // larkExecuteRetryRuns is process-local because one Agent run is executed by
@@ -34,6 +40,9 @@ func larkExecuteRetryBegin(runID uint64) (*larkExecuteRetryState, larkExecuteRet
 	state := value.(*larkExecuteRetryState)
 	state.mu.Lock()
 	defer state.mu.Unlock()
+	if state.terminalStop {
+		return state, larkExecuteCorrectionAttempt, false
+	}
 
 	switch state.phase {
 	case larkRetryReady:
@@ -48,6 +57,15 @@ func larkExecuteRetryBegin(runID uint64) (*larkExecuteRetryState, larkExecuteRet
 		state.phase = larkRetryExhausted
 		return state, larkExecuteCorrectionAttempt, false
 	}
+}
+
+func larkExecuteRetryBlockedByTerminal(state *larkExecuteRetryState) bool {
+	if state == nil {
+		return false
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.terminalStop
 }
 
 func larkExecuteRetryRejected(state *larkExecuteRetryState, attempt larkExecuteRetryAttempt) bool {
@@ -80,6 +98,29 @@ func larkExecuteRetryCompleted(state *larkExecuteRetryState, attempt larkExecute
 		(attempt == larkExecuteCorrectionAttempt && state.phase == larkRetryCorrectionInFlight) {
 		state.phase = larkRetryReady
 	}
+}
+
+func larkExecuteRetryTerminalOutcome(
+	state *larkExecuteRetryState,
+	attempt larkExecuteRetryAttempt,
+	failure *feishu.OperationFailure,
+) {
+	if state == nil || failure == nil {
+		larkExecuteRetryFailed(state, attempt)
+		return
+	}
+	if failure.Category == "validation" || failure.Retryable {
+		state.mu.Lock()
+		state.lastCategory = failure.Category
+		state.mu.Unlock()
+		_ = larkExecuteRetryRejected(state, attempt)
+		return
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.lastCategory = failure.Category
+	state.terminalStop = true
+	state.phase = larkRetryExhausted
 }
 
 func larkExecuteRetryFailed(state *larkExecuteRetryState, attempt larkExecuteRetryAttempt) {
