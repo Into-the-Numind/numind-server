@@ -46,15 +46,15 @@ features:
   ndf_version: '3.0'
   description: Align hosted per-user Feishu authorization with the pinned lark-cli split device-code protocol and resume the exact original Agent operation
   classification_reason: 'Standard: customer-reported third-party OAuth and durable write-resume boundary; affects authentication state machine, secure resume credentials, Agent guidance, real CLI fixtures, and more than 3 files.'
-  last_updated_by: ai-s5-docs-read-stderr-acceptance
-  last_updated_at: '2026-07-18T18:03:00+08:00'
+  last_updated_by: ai-s6-docs-read-stderr-dev
+  last_updated_at: '2026-07-18T18:12:06+08:00'
   created_at: '2026-07-16T18:53:00+08:00'
   track: standard
-  stage: S5
+  stage: S6
   status: active
   repos: [numind-server, numind-web-v3]
-  branches: {numind-server: feature/feishu-device-code-auth, numind-web-v3: develop}
-  worktrees: {numind-server: /private/tmp/wt-feishu-device-code-auth-numind-server, numind-web-v3: '(removed by ndf-done)'}
+  branches: {numind-server: develop, numind-web-v3: develop}
+  worktrees: {numind-server: '(removed by ndf-done)', numind-web-v3: '(removed by ndf-done)'}
   progress: {total_tasks: 23, completed_tasks: 23, reviewed_tasks: 23}
   artifacts:
     requirement: requirements/feishu-device-code-auth.md
@@ -105,6 +105,7 @@ features:
   - 'S6 Docs-read acceptance failed on Dev run 209: three real docs +fetch operations exited in about 100 ms with state failed and no recovery card. A read-only replay against the exact encrypted user HOME proved lark-cli 1.0.68 exits 3 and writes the structured authorization/missing_scope envelope to stderr, with docx:document:readonly as the exact missing scope. ControlledLarkCLIRunner only decoded stdout and returned on the non-zero wait error, so the classifier never saw the fixed tuple and the Agent received only a generic failed state. Roll back to S4 for a customer RED covering strict stderr-envelope recovery and the newly observed code-less fixed tuple. ADR: .ndf/decisions/feishu-device-code-auth/0004-structured-stderr-envelope.md.'
   - 'S4 repair Task 23: customer RED e36d2806 reproduces the real lark-cli 1.0.68 exit-3, stdout-empty, code-less docs-read missing_scope stderr contract and the old generic failure. Fixes 8d0526db/daea8ba8 preserve the single complete stderr envelope only for explicit positive exits, classify exact Catalog-owned read scopes into user authorization, reject dual envelopes, and keep code-less started writes Unknown with no authorization or replay. Full go test ./..., isolated Feishu race, task lint, specification review, and quality review all PASS with P0/P1/P2=0.'
   - 'S5 repair acceptance authorizes ndf-done and Dev server deployment. The customer RED is first in the repair commit chain; full repository tests, the complete Feishu package, isolated Feishu race, lint, diff hygiene, exact stderr-only read recovery, dual-envelope rejection, and code-less started-write no-replay all pass. Both independent reviewers report PASS with P0/P1/P2=0. Post-deploy real acceptance requires a fresh Docs read: the first call should present one docx:document:readonly authorization card, continue the exact original read after approval, and a second read should complete without authorization.'
+  - 'S6 Docs-read repair deployment: ndf-done merged and pushed develop at 6481ae2f, then the manual TCR release deployed numind-server:develop-6481ae2f to Dev. The container runs the exact image, is healthy, reports lark-cli 1.0.68, healthz returns code 0/status ok, and critical logs are zero. Automated real acceptance started Agent run 210 in the same historical session: after one lark_execute the operation entered waiting_user_auth instead of failed, with exactly one attempt and requested_scopes_json=[docx:document:readonly]. The SSE emitted one live user_auth action and terminated waiting_for_user_choice; no blind lark_execute retry occurred. Human approval and the post-approval first/second read checks remain the final Dev gate. Prod remains unauthorized.'
   rollback: 'S6 -> S4 on 2026-07-18: real Docs read exposed a fixed-version structured stderr contract that the runner did not decode; product direction and split-device architecture remain valid.'
   blockers: []
 

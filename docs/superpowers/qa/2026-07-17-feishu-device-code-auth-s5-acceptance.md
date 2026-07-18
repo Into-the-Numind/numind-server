@@ -128,3 +128,17 @@ AUTOMATED_PASS_WITH_BASELINE_EXCEPTION。功能代码可合并并部署 Dev；�
 - 独立规格审查与代码质量审查均为 PASS，P0/P1/P2 = 0。
 - 结论：S5 AUTOMATED_PASS，可合并并部署 Dev。真实产品验收必须重新发起一次文档读取：首次应只申请
   `docx:document:readonly`，批准后自动继续原读取；再次读取不应重复授权。Prod 未授权。
+
+## 文档读取修复 Dev 部署与真实前半程验收
+
+- `ndf-done` 已合并并推送 backend `develop`，合并提交为 `6481ae2f`；feature worktree 与本地分支均已清理。
+- Dev 运行镜像为 `numind-server:develop-6481ae2f`，容器状态 `running` / `healthy`；固定 CLI 版本仍为
+  1.0.68；`GET /healthz` 返回 `code=0` / `status=ok`；部署后 critical log count 为 0。
+- 自动化使用同一测试账号和 run 209 的历史会话发起新的只读验收 run 210。Agent 完成技能读取后只调用一次
+  `lark_execute`，随即发出一张 live `user_auth` 外部动作卡，并以 `waiting_for_user_choice` 暂停；没有再出现
+  三次 `failed` 或盲目重试。
+- Dev MySQL 的持久证据为：command path `docs +fetch`、risk `read`、operation state `waiting_user_auth`、
+  attempt count `1`、auth phase `user_auth`、requested scopes 精确为 `["docx:document:readonly"]`、session state
+  `pending`。未记录授权 URL 或凭据值。
+- 真实前半程验收 PASS。最后人工门禁：用户完成这张卡片的飞书官方授权；系统应自动继续同一读取并返回正文，
+  随后第二次读取不得再次要求授权。Prod 未部署、也未获得授权。
