@@ -880,7 +880,7 @@ func (s *agentRunStore) transitionExternalToolResumeLease(
 // same driver. SQLite fixtures store the column as TEXT and use direct equality.
 func whereExactPendingExternalAction(db *gorm.DB, expected datatypes.JSON) *gorm.DB {
 	if db != nil && strings.EqualFold(db.Dialector.Name(), "mysql") {
-		return db.Where("BINARY CAST(pending_external_action_json AS CHAR) = BINARY ?", string(expected))
+		return db.Where("CAST(pending_external_action_json AS BINARY) = CAST(? AS BINARY)", string(expected))
 	}
 	return db.Where("pending_external_action_json = ?", string(expected))
 }
