@@ -15,7 +15,7 @@ import (
 // before docs +update is invoked. The old runtime skipped this contract and
 // learned about the permission only after starting a write process.
 func TestControlledScopePreflight_RealDocsUpdateMissingWriteScope(t *testing.T) {
-	const output = `{"ok":false,"granted":["docx:document:readonly"],"missing":["docx:document:write_only"],"suggestion":"not returned to callers"}`
+	const output = `{"ok":false,"granted":["docx:document:readonly"],"missing":["docx:document:write_only"],"suggestion":"lark-cli auth login --scope \"docx:document:write_only\""}`
 	body := fmt.Sprintf(`
 if [ "$#" -ne 5 ] || [ "$1" != "auth" ] || [ "$2" != "check" ] || [ "$3" != "--scope" ] || [ "$4" != "docx:document:readonly docx:document:write_only" ] || [ "$5" != "--json" ]; then
   exit 97
@@ -32,6 +32,26 @@ exit 1
 	require.NoError(t, err)
 	require.Equal(t, []string{"docx:document:readonly"}, got.Granted)
 	require.Equal(t, []string{"docx:document:write_only"}, got.Missing)
+}
+
+func TestControlledScopePreflight_OfficialAuthStateNegatives(t *testing.T) {
+	for _, authError := range []string{"not_logged_in", "no_token"} {
+		t.Run(authError, func(t *testing.T) {
+			output := fmt.Sprintf(
+				`{"ok":false,"error":%q,"missing":["docx:document:readonly"]}`,
+				authError,
+			)
+			body := fmt.Sprintf("printf '%%s' %s\nexit 1", shellQuoteForControlledTest(output))
+			preflight := NewControlledScopePreflight(controlledRunner(writeControlledFakeBinary(t, body)))
+
+			got, err := preflight.Check(
+				context.Background(), controlledTestHome(t), []string{"docx:document:readonly"},
+			)
+			require.NoError(t, err)
+			require.Empty(t, got.Granted)
+			require.Equal(t, []string{"docx:document:readonly"}, got.Missing)
+		})
+	}
 }
 
 func TestControlledScopePreflight_RealGrantedReadScope(t *testing.T) {
@@ -89,7 +109,8 @@ func TestControlledScopePreflight_RejectsAmbiguousCLIContracts(t *testing.T) {
 		{name: "unknown_field", output: `{"ok":true,"granted":["docx:document:readonly"],"missing":[],"debug":"secret"}`},
 		{name: "trailing_value", output: `{"ok":true,"granted":["docx:document:readonly"],"missing":[]} {}`},
 		{name: "missing_array", output: `{"ok":true,"granted":["docx:document:readonly"]}`},
-		{name: "null_array", output: `{"ok":true,"granted":["docx:document:readonly"],"missing":null}`},
+		{name: "unknown_auth_state", output: `{"ok":false,"error":"expired","missing":["docx:document:readonly"]}`, exit: 1},
+		{name: "auth_state_with_granted", output: `{"ok":false,"error":"no_token","granted":null,"missing":["docx:document:readonly"]}`, exit: 1},
 		{name: "overlap", output: `{"ok":false,"granted":["docx:document:readonly"],"missing":["docx:document:readonly"]}`, exit: 1},
 		{name: "incomplete_partition", output: `{"ok":false,"granted":[],"missing":[]}`, exit: 1},
 		{name: "unrequested_scope", output: `{"ok":false,"granted":[],"missing":["docx:document:write_only"]}`, exit: 1},
