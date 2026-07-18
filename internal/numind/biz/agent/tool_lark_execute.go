@@ -27,7 +27,7 @@ var _ FullTool = (*larkExecuteTool)(nil)
 
 func (t *larkExecuteTool) Name() string { return "lark_execute" }
 func (t *larkExecuteTool) Description() string {
-	return "Execute controlled lark-cli argv for Docs/Base/Wiki using opaque skill receipts. " +
+	return "Execute controlled lark-cli argv for Docs/Base/Wiki/Drive using opaque skill receipts. " +
 		"argv may copy the official skill command verbatim with a leading `lark-cli`, or omit that one executable token. " +
 		"Identity, authorization, scope, risk, and idempotency come only from server context. " +
 		"There is no shell execution and no IM/message capability."

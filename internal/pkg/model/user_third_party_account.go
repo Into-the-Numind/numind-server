@@ -39,7 +39,7 @@ type UserThirdPartyAccount struct {
 	LarkCLIVersion string `gorm:"size:32" json:"lark_cli_version,omitempty"`
 	// GrantedScopesJSON 是最近已知授权 scope 缓存，不作为权限判断的唯一依据。
 	GrantedScopesJSON datatypes.JSON `gorm:"type:json" json:"granted_scopes_json,omitempty"`
-	// CapabilityStateJSON 缓存 Docs/Base/Wiki 最近已知能力状态。
+	// CapabilityStateJSON 缓存 Docs/Base/Wiki/Drive 最近已知能力状态。
 	CapabilityStateJSON datatypes.JSON `gorm:"type:json" json:"capability_state_json,omitempty"`
 	// LastSuccessAt 是最近一次飞书业务操作成功时间。
 	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`

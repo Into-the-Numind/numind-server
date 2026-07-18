@@ -2591,3 +2591,25 @@ func TestNewWorkspaceLifecycleServiceRejectsIncompleteGraph(t *testing.T) {
 	require.Error(t, err)
 	require.False(t, errors.Is(err, ErrWorkspaceLifecycleNotFound))
 }
+
+func TestWorkspaceLifecycleStatusProjectsDriveDiscoveryCapability(t *testing.T) {
+	capabilities := defaultWorkspaceCapabilities()
+	require.Contains(t, capabilities, "drive")
+	require.Equal(t, model.FeishuCapabilityUnknown, capabilities["drive"].State)
+
+	legacyStatus := workspaceStatusFromAccount(&model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 2,
+		CapabilityStateJSON: []byte(`{"docs":{"state":"available"},"base":{"state":"needs_user_scope"},"wiki":{"state":"resource_denied"}}`),
+	})
+	require.Equal(t, model.FeishuCapabilityAvailable, legacyStatus.Capabilities["docs"].State)
+	require.Equal(t, model.FeishuCapabilityNeedsUserScope, legacyStatus.Capabilities["base"].State)
+	require.Equal(t, model.FeishuCapabilityResourceDenied, legacyStatus.Capabilities["wiki"].State)
+	require.Equal(t, model.FeishuCapabilityUnknown, legacyStatus.Capabilities["drive"].State)
+
+	status := workspaceStatusFromAccount(&model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 3,
+		CapabilityStateJSON: []byte(`{"docs":{"state":"available"},"drive":{"state":"available"}}`),
+	})
+	require.Equal(t, model.FeishuCapabilityAvailable, status.Capabilities["docs"].State)
+	require.Equal(t, model.FeishuCapabilityAvailable, status.Capabilities["drive"].State)
+}

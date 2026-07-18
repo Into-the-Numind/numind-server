@@ -237,7 +237,7 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		)
 		metadata = append(metadata,
 			ToolMetadata{ToolName: "lark_skill_read", DisplayName: "读取飞书技能", Description: "Read one controlled page from the official embedded lark-cli skills.", Source: "platform", RiskLevel: "safe", Category: "飞书"},
-			ToolMetadata{ToolName: "lark_execute", DisplayName: "执行飞书工作区操作", Description: "Execute controlled Docs/Base/Wiki argv with verified skill receipts.", Source: "platform", RiskLevel: "moderate", Category: "飞书"},
+			ToolMetadata{ToolName: "lark_execute", DisplayName: "执行飞书工作区操作", Description: "Execute controlled Docs/Base/Wiki/Drive argv with verified skill receipts.", Source: "platform", RiskLevel: "moderate", Category: "飞书"},
 		)
 	}
 	return tools, metadata, nil

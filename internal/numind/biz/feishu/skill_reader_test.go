@@ -279,6 +279,24 @@ func TestSkillReceipt_ExpiryDomainRequirementsAndDuplicates(t *testing.T) {
 	require.Error(t, h.reader.Verify(receipts["lark-doc"], 77, "lark-doc", LarkCLIVersion))
 }
 
+// Customer regression (Dev run 211): title-only discovery needs the official
+// Drive skill and an exact same-run shared+drive receipt pair.
+func TestSkillReader_DriveDiscoverySkillAndReceiptDomain(t *testing.T) {
+	t.Parallel()
+
+	h := newSkillReaderHarness(t, skillReaderOptions{})
+	for _, skill := range []string{"lark-shared", "lark-drive"} {
+		h.writeResource(skill, "SKILL.md", "# "+skill, true)
+	}
+	shared, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 211, Skill: "lark-shared"})
+	require.NoError(t, err)
+	drive, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 211, Skill: "lark-drive"})
+	require.NoError(t, err)
+	require.NoError(t, h.reader.VerifyRequired([]string{shared.Receipt, drive.Receipt}, 211, "drive"))
+	require.Error(t, h.reader.VerifyRequired([]string{shared.Receipt}, 211, "drive"))
+	require.Error(t, h.reader.VerifyRequired([]string{shared.Receipt, drive.Receipt, drive.Receipt}, 211, "drive"))
+}
+
 func TestSkillReceipt_KeyDerivationAndTokenShapeFailClosed(t *testing.T) {
 	t.Parallel()
 

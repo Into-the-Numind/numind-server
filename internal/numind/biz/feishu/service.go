@@ -1245,7 +1245,7 @@ func workspaceStatusFromAccount(account *model.UserThirdPartyAccount) *StatusRes
 		LastSuccessAt *time.Time `json:"last_success_at"`
 	}
 	if len(account.CapabilityStateJSON) > 0 && json.Unmarshal(account.CapabilityStateJSON, &raw) == nil {
-		for _, domain := range []string{"docs", "base", "wiki"} {
+		for _, domain := range []string{"docs", "base", "wiki", "drive"} {
 			if value, found := raw[domain]; found && validCapabilityState(value.State) {
 				status.Capabilities[domain] = CapabilityStatus{State: value.State, LastSuccessAt: value.LastSuccessAt}
 			}
@@ -1256,9 +1256,10 @@ func workspaceStatusFromAccount(account *model.UserThirdPartyAccount) *StatusRes
 
 func defaultWorkspaceCapabilities() map[string]CapabilityStatus {
 	return map[string]CapabilityStatus{
-		"docs": {State: model.FeishuCapabilityUnknown},
-		"base": {State: model.FeishuCapabilityUnknown},
-		"wiki": {State: model.FeishuCapabilityUnknown},
+		"docs":  {State: model.FeishuCapabilityUnknown},
+		"base":  {State: model.FeishuCapabilityUnknown},
+		"wiki":  {State: model.FeishuCapabilityUnknown},
+		"drive": {State: model.FeishuCapabilityUnknown},
 	}
 }
 

@@ -39,6 +39,8 @@ const (
 	SkillDomainBase = "base"
 	// SkillDomainWiki requires lark-shared and lark-wiki.
 	SkillDomainWiki = "wiki"
+	// SkillDomainDrive requires lark-shared and lark-drive.
+	SkillDomainDrive = "drive"
 	// SkillDomainWikiContent requires shared, Wiki, and Docs receipts because
 	// Wiki node content is manipulated through Docs commands.
 	SkillDomainWikiContent = "wiki_content"
@@ -310,6 +312,8 @@ func (r *SkillReader) VerifyRequired(receipts []string, runID uint64, domain str
 		required = map[string]struct{}{"lark-shared": {}, "lark-base": {}}
 	case SkillDomainWiki:
 		required = map[string]struct{}{"lark-shared": {}, "lark-wiki": {}}
+	case SkillDomainDrive:
+		required = map[string]struct{}{"lark-shared": {}, "lark-drive": {}}
 	case SkillDomainWikiContent:
 		required = map[string]struct{}{"lark-shared": {}, "lark-wiki": {}, "lark-doc": {}}
 	default:
@@ -404,7 +408,7 @@ func decodeSkillCLIResource(raw []byte) (*skillCLIResource, error) {
 
 func allowedSkill(skill string) bool {
 	switch skill {
-	case "lark-shared", "lark-doc", "lark-base", "lark-wiki":
+	case "lark-shared", "lark-doc", "lark-base", "lark-wiki", "lark-drive":
 		return true
 	default:
 		return false

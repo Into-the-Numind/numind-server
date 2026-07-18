@@ -1311,7 +1311,7 @@ func (s *feishuWorkspaceStore) FinalizeDeviceAuthSuccess(ctx context.Context, in
 // RecordCapabilityOutcome persists only catalog-derived, classified outcome
 // metadata for the active generation. It never receives scopes, identifiers,
 // raw CLI data, or credentials. The account row lock prevents concurrent Docs,
-// Base, and Wiki commands from dropping each other's last-known state.
+// Base, Wiki, and Drive commands from dropping each other's last-known state.
 func (s *feishuWorkspaceStore) RecordCapabilityOutcome(
 	ctx context.Context,
 	userID uint,
@@ -1377,8 +1377,8 @@ func decodeFeishuCapabilityStates(raw []byte) map[string]feishuStoredCapabilityS
 	if len(raw) > 0 && json.Unmarshal(raw, &decoded) != nil {
 		decoded = make(map[string]feishuStoredCapabilityState)
 	}
-	clean := make(map[string]feishuStoredCapabilityState, 3)
-	for _, domain := range []string{"docs", "base", "wiki"} {
+	clean := make(map[string]feishuStoredCapabilityState, 4)
+	for _, domain := range []string{"docs", "base", "wiki", "drive"} {
 		state, found := decoded[domain]
 		if !found || !validFeishuCapabilityState(state.State) {
 			continue
@@ -1393,7 +1393,7 @@ func decodeFeishuCapabilityStates(raw []byte) map[string]feishuStoredCapabilityS
 }
 
 func validFeishuCapabilityDomain(domain string) bool {
-	return domain == "docs" || domain == "base" || domain == "wiki"
+	return domain == "docs" || domain == "base" || domain == "wiki" || domain == "drive"
 }
 
 func validFeishuCapabilityState(state string) bool {

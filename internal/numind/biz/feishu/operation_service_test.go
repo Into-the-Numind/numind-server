@@ -743,6 +743,14 @@ func operationDocsFetchRequest(runID uint64, toolCallID string) ExecuteRequest {
 	}
 }
 
+func operationDriveSearchRequest(userID uint, runID uint64, toolCallID, query string) ExecuteRequest {
+	return ExecuteRequest{
+		UserID: userID, AgentRunID: runID, ToolCallID: toolCallID, IdempotencyKey: fmt.Sprintf("%d:%s", runID, toolCallID),
+		Argv:          []string{"drive", "+search", "--query", query, "--only-title", "--doc-types", "docx,wiki,bitable"},
+		SkillReceipts: []string{"shared", "drive"},
+	}
+}
+
 func operationDocsCreateRequest(userID uint, runID uint64, toolCallID, title string, content *string) ExecuteRequest {
 	argv := []string{"docs", "+create", "--title", title}
 	if content != nil {
@@ -921,6 +929,7 @@ func TestOperationService_StrictInputAndServerOwnedReceiptDomain(t *testing.T) {
 		{name: "docs", domain: SkillDomainDocs, argv: []string{"docs", "+fetch", "--doc", "doxcnABCDEFG123"}},
 		{name: "base", domain: SkillDomainBase, argv: []string{"base", "+base-get", "--base-token", "bascnABCDEFG123"}},
 		{name: "wiki", domain: SkillDomainWiki, argv: []string{"wiki", "+node-get", "--node-token", "wikcnABCDEFG123"}},
+		{name: "drive", domain: "drive", argv: []string{"drive", "+search", "--query", "有数飞书二次连接测试", "--only-title", "--doc-types", "docx,wiki,bitable"}},
 	} {
 		t.Run("server domain "+testCase.name, func(t *testing.T) {
 			h := newOperationHarness(t)
@@ -963,6 +972,37 @@ func TestOperationService_StrictInputAndServerOwnedReceiptDomain(t *testing.T) {
 			_, err := h.service.Execute(h.ctx, req)
 			require.ErrorIs(t, err, ErrOperationRequestRejected)
 		})
+	}
+}
+
+func TestOperationService_DriveDiscoveryStaysInsideCurrentUserAccount(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli-user-seven")
+	h.createAccount(8, model.FeishuConnectionConnected, 1, "cli-user-eight")
+	h.runner.steps = []operationRunnerStep{
+		{result: operationOKResult(`{"results":[{"title":"A"}]}`)},
+		{result: operationOKResult(`{"results":[{"title":"B"}]}`)},
+	}
+
+	first, err := h.service.Execute(h.ctx, operationDriveSearchRequest(7, 211, "drive-user-seven", "A"))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, first.State)
+	second, err := h.service.Execute(h.ctx, operationDriveSearchRequest(8, 212, "drive-user-eight", "B"))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, second.State)
+
+	var operations []model.FeishuOperation
+	require.NoError(t, h.db.Where("domain = ?", SkillDomainDrive).Order("user_id ASC").Find(&operations).Error)
+	require.Len(t, operations, 2)
+	require.Equal(t, uint(7), operations[0].UserID)
+	require.Equal(t, uint64(211), operations[0].AgentRunID)
+	require.Equal(t, uint(8), operations[1].UserID)
+	require.Equal(t, uint64(212), operations[1].AgentRunID)
+
+	for _, userID := range []uint{7, 8} {
+		account, getErr := h.dataStore.ThirdPartyAccounts().Get(h.ctx, userID, ProviderLark)
+		require.NoError(t, getErr)
+		require.JSONEq(t, `{"drive":{"state":"available","last_success_at":"2026-07-13T12:00:00Z"}}`, string(account.CapabilityStateJSON))
 	}
 }
 

@@ -439,6 +439,27 @@
       ]
     },
     {
+      "path": "drive +search",
+      "domain": "drive",
+      "scopes": [
+        "search:docs:read"
+      ],
+      "risk": "read",
+      "requires_cli_yes": false,
+      "limits": {
+        "page_size": 20,
+        "query_runes": 30,
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--doc-types",
+        "--only-title",
+        "--page-size",
+        "--page-token",
+        "--query"
+      ]
+    },
+    {
       "path": "wiki +node-create",
       "domain": "wiki",
       "scopes": [
@@ -514,6 +535,26 @@
       "allowed_flags": [
         "--description",
         "--name"
+      ]
+    },
+    {
+      "path": "wiki +space-list",
+      "domain": "wiki",
+      "scopes": [
+        "wiki:space:retrieve"
+      ],
+      "risk": "read",
+      "requires_cli_yes": false,
+      "limits": {
+        "page_size": 50,
+        "pages": 10,
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--page-all",
+        "--page-limit",
+        "--page-size",
+        "--page-token"
       ]
     }
   ]

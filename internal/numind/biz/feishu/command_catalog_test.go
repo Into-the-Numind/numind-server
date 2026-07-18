@@ -48,9 +48,12 @@ func TestCommandCatalog_AllowedPathsAndExactContracts(t *testing.T) {
 		{name: "record batch update", argv: []string{"base", "+record-batch-update", "--base-token", "bascnABCDEFG123", "--table-id", "Tasks", "--json", `{"record_id_list":["recABCDEFG123"],"patch":{"Status":"Done"}}`}, path: "base +record-batch-update", domain: "base", risk: RiskWrite, scopes: []string{"base:record:update"}},
 
 		{name: "wiki space create", argv: []string{"wiki", "+space-create", "--name", "Sales"}, path: "wiki +space-create", domain: "wiki", risk: RiskWrite, scopes: []string{"wiki:space:write_only"}},
+		{name: "wiki space list", argv: []string{"wiki", "+space-list", "--page-size", "20"}, path: "wiki +space-list", domain: "wiki", risk: RiskRead, scopes: []string{"wiki:space:retrieve"}, replay: true},
 		{name: "wiki node create", argv: []string{"wiki", "+node-create", "--space-id", "my_library", "--title", "Playbook"}, path: "wiki +node-create", domain: "wiki", risk: RiskWrite, scopes: []string{"wiki:node:create", "wiki:node:read", "wiki:space:read"}},
 		{name: "wiki node get", argv: []string{"wiki", "+node-get", "--node-token", "wikcnABCDEFG123"}, path: "wiki +node-get", domain: "wiki", risk: RiskRead, scopes: []string{"wiki:node:retrieve"}, replay: true},
 		{name: "wiki node list", argv: []string{"wiki", "+node-list", "--space-id", "my_library"}, path: "wiki +node-list", domain: "wiki", risk: RiskRead, scopes: []string{"wiki:node:retrieve"}, replay: true},
+
+		{name: "drive title search", argv: []string{"drive", "+search", "--query", "有数飞书二次连接测试", "--only-title", "--doc-types", "docx,wiki,bitable", "--page-size", "20"}, path: "drive +search", domain: "drive", risk: RiskRead, scopes: []string{"search:docs:read"}, replay: true},
 	}
 
 	catalog := NewCommandCatalog()
@@ -68,6 +71,97 @@ func TestCommandCatalog_AllowedPathsAndExactContracts(t *testing.T) {
 			require.Equal(t, []string{"--format", "json", "--as", "user"}, got.Argv[len(got.Argv)-4:])
 			require.Nil(t, got.StdinJSON)
 		})
+	}
+}
+
+func TestCommandCatalog_DriveDiscoveryIsStrictlyReadOnlyAndBounded(t *testing.T) {
+	t.Parallel()
+
+	catalog := NewCommandCatalog()
+	for _, argv := range [][]string{
+		{"drive", "+search", "--query", ""},
+		{"drive", "+search", "--query", "报告", "--doc-types", "docx"},
+		{"drive", "+search", "--query", "报告", "--only-title"},
+		{"drive", "+search", "--query", "1234567890123456789012345678901"},
+		{"drive", "+search", "--query", "报告", "--only-title", "--doc-types", "doc"},
+		{"drive", "+search", "--query", "报告", "--doc-types", "docx,file"},
+		{"drive", "+search", "--query", "报告", "--page-size", "21"},
+		{"drive", "+search", "--query", "报告", "--page-all"},
+		{"drive", "+upload", "--file", "report.docx"},
+		{"drive", "+delete", "--file-token", "doxcnABCDEFG123"},
+	} {
+		_, err := catalog.Normalize(argv, nil)
+		require.Error(t, err, "%v", argv)
+	}
+}
+
+func TestCommandCatalog_DriveSearchUsesUnicodeCodePointsAndRejectsControls(t *testing.T) {
+	t.Parallel()
+
+	catalog := NewCommandCatalog()
+	validQueries := []string{
+		strings.Repeat("中", 30),
+		strings.Repeat("😀", 30),
+	}
+	for _, query := range validQueries {
+		_, err := catalog.Normalize([]string{"drive", "+search", "--query", query, "--only-title", "--doc-types", "docx"}, nil)
+		require.NoError(t, err)
+	}
+	invalidQueries := []string{
+		strings.Repeat("中", 31),
+		strings.Repeat("😀", 31),
+		"报告\n标题",
+		"报告\r标题",
+		"报告\t标题",
+		"报告\u0085标题",
+		string([]byte{'a', 0xff, 'b'}),
+	}
+	for _, query := range invalidQueries {
+		_, err := catalog.Normalize([]string{"drive", "+search", "--query", query, "--only-title", "--doc-types", "docx"}, nil)
+		require.Error(t, err)
+	}
+}
+
+func TestCommandCatalog_DiscoveryPageTokensAreOpaqueButBounded(t *testing.T) {
+	t.Parallel()
+
+	catalog := NewCommandCatalog()
+	for _, token := range []string{"a", "abc=", "a/b+c==", strings.Repeat("x", 1024)} {
+		_, err := catalog.Normalize([]string{"drive", "+search", "--query", "报告", "--only-title", "--doc-types", "docx", "--page-token", token}, nil)
+		require.NoError(t, err, token)
+		_, err = catalog.Normalize([]string{"wiki", "+space-list", "--page-token", token}, nil)
+		require.NoError(t, err, token)
+	}
+	for _, token := range []string{"", "@file", "-", "bad\ntoken", strings.Repeat("x", 1025), string([]byte{0xff})} {
+		_, err := catalog.Normalize([]string{"drive", "+search", "--query", "报告", "--only-title", "--doc-types", "docx", "--page-token", token}, nil)
+		require.Error(t, err, token)
+		_, err = catalog.Normalize([]string{"wiki", "+space-list", "--page-token", token}, nil)
+		require.Error(t, err, token)
+	}
+}
+
+func TestCommandCatalog_WikiSpaceListPagingContract(t *testing.T) {
+	t.Parallel()
+
+	catalog := NewCommandCatalog()
+	for _, argv := range [][]string{
+		{"wiki", "+space-list"},
+		{"wiki", "+space-list", "--page-all", "--page-limit", "5", "--page-size", "50"},
+		{"wiki", "+space-list", "--page-token", "a/b+c==", "--page-size", "1"},
+	} {
+		_, err := catalog.Normalize(argv, nil)
+		require.NoError(t, err, "%v", argv)
+	}
+	for _, argv := range [][]string{
+		{"wiki", "+space-list", "--page-token", "a/b+c==", "--page-all"},
+		{"wiki", "+space-list", "--page-limit", "5"},
+		{"wiki", "+space-list", "--page-all", "--page-limit", "0"},
+		{"wiki", "+space-list", "--page-all", "--page-limit", "11"},
+		{"wiki", "+space-list", "--page-size", "0"},
+		{"wiki", "+space-list", "--page-size", "51"},
+	} {
+		_, err := catalog.Normalize(argv, nil)
+		require.Error(t, err, "%v", argv)
 	}
 }
 
