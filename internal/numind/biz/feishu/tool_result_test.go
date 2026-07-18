@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/stretchr/testify/require"
 	"numind-server/internal/pkg/model"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestMarshalLarkToolResult_SuccessAndActionableFailure(t *testing.T) {
