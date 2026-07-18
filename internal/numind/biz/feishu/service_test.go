@@ -2591,3 +2591,15 @@ func TestNewWorkspaceLifecycleServiceRejectsIncompleteGraph(t *testing.T) {
 	require.Error(t, err)
 	require.False(t, errors.Is(err, ErrWorkspaceLifecycleNotFound))
 }
+
+func TestWorkspaceLifecycleStatusProjectsDriveDiscoveryCapability(t *testing.T) {
+	capabilities := defaultWorkspaceCapabilities()
+	require.Contains(t, capabilities, "drive")
+	require.Equal(t, model.FeishuCapabilityUnknown, capabilities["drive"].State)
+
+	status := workspaceStatusFromAccount(&model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 3,
+		CapabilityStateJSON: []byte(`{"drive":{"state":"available"}}`),
+	})
+	require.Equal(t, model.FeishuCapabilityAvailable, status.Capabilities["drive"].State)
+}

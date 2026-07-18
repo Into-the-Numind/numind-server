@@ -48,9 +48,12 @@ func TestCommandCatalog_AllowedPathsAndExactContracts(t *testing.T) {
 		{name: "record batch update", argv: []string{"base", "+record-batch-update", "--base-token", "bascnABCDEFG123", "--table-id", "Tasks", "--json", `{"record_id_list":["recABCDEFG123"],"patch":{"Status":"Done"}}`}, path: "base +record-batch-update", domain: "base", risk: RiskWrite, scopes: []string{"base:record:update"}},
 
 		{name: "wiki space create", argv: []string{"wiki", "+space-create", "--name", "Sales"}, path: "wiki +space-create", domain: "wiki", risk: RiskWrite, scopes: []string{"wiki:space:write_only"}},
+		{name: "wiki space list", argv: []string{"wiki", "+space-list", "--page-size", "20"}, path: "wiki +space-list", domain: "wiki", risk: RiskRead, scopes: []string{"wiki:space:retrieve"}, replay: true},
 		{name: "wiki node create", argv: []string{"wiki", "+node-create", "--space-id", "my_library", "--title", "Playbook"}, path: "wiki +node-create", domain: "wiki", risk: RiskWrite, scopes: []string{"wiki:node:create", "wiki:node:read", "wiki:space:read"}},
 		{name: "wiki node get", argv: []string{"wiki", "+node-get", "--node-token", "wikcnABCDEFG123"}, path: "wiki +node-get", domain: "wiki", risk: RiskRead, scopes: []string{"wiki:node:retrieve"}, replay: true},
 		{name: "wiki node list", argv: []string{"wiki", "+node-list", "--space-id", "my_library"}, path: "wiki +node-list", domain: "wiki", risk: RiskRead, scopes: []string{"wiki:node:retrieve"}, replay: true},
+
+		{name: "drive title search", argv: []string{"drive", "+search", "--query", "有数飞书二次连接测试", "--only-title", "--doc-types", "docx,wiki,bitable", "--page-size", "20"}, path: "drive +search", domain: "drive", risk: RiskRead, scopes: []string{"search:docs:read"}, replay: true},
 	}
 
 	catalog := NewCommandCatalog()
@@ -68,6 +71,24 @@ func TestCommandCatalog_AllowedPathsAndExactContracts(t *testing.T) {
 			require.Equal(t, []string{"--format", "json", "--as", "user"}, got.Argv[len(got.Argv)-4:])
 			require.Nil(t, got.StdinJSON)
 		})
+	}
+}
+
+func TestCommandCatalog_DriveDiscoveryIsStrictlyReadOnlyAndBounded(t *testing.T) {
+	t.Parallel()
+
+	catalog := NewCommandCatalog()
+	for _, argv := range [][]string{
+		{"drive", "+search", "--query", ""},
+		{"drive", "+search", "--query", "1234567890123456789012345678901"},
+		{"drive", "+search", "--query", "报告", "--doc-types", "docx,file"},
+		{"drive", "+search", "--query", "报告", "--page-size", "21"},
+		{"drive", "+search", "--query", "报告", "--page-all"},
+		{"drive", "+upload", "--file", "report.docx"},
+		{"drive", "+delete", "--file-token", "doxcnABCDEFG123"},
+	} {
+		_, err := catalog.Normalize(argv, nil)
+		require.Error(t, err, "%v", argv)
 	}
 }
 

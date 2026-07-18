@@ -25,6 +25,14 @@ type deviceAuthFlowAccountStoreFake struct {
 	account *model.UserThirdPartyAccount
 }
 
+// Customer regression (Dev run 211): resource discovery introduces one exact
+// read scope which must be accepted by the durable split authorization flow.
+func TestCanonicalDeviceAuthScopes_AcceptsDriveDiscoveryScope(t *testing.T) {
+	canonical, err := canonicalDeviceAuthScopes([]string{"search:docs:read"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"search:docs:read"}, canonical)
+}
+
 func (f *deviceAuthFlowAccountStoreFake) Get(context.Context, uint, string) (*model.UserThirdPartyAccount, error) {
 	if f.account == nil {
 		return nil, gorm.ErrRecordNotFound

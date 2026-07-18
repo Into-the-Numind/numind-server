@@ -2700,3 +2700,19 @@ func TestFeishuWorkspaceStore_CreateOrGetPendingSessionSeparatesProtocolVersions
 	_, err = s.GetSessionForUser(ctx, 7, 3, malformed.ID)
 	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
 }
+
+// Customer regression (Dev run 211): a successful Drive title search must not
+// be discarded by the fixed capability JSON domain allowlist.
+func TestFeishuWorkspaceStore_RecordsDriveDiscoveryCapability(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 3)
+	now := time.Date(2026, 7, 18, 11, 30, 0, 0, time.UTC)
+
+	require.NoError(t, s.RecordCapabilityOutcome(ctx, 7, 3, model.FeishuCapabilityOutcome{
+		Domain: "drive", State: model.FeishuCapabilityAvailable, SucceededAt: &now, CLIVersion: "1.0.68",
+	}))
+	var account model.UserThirdPartyAccount
+	require.NoError(t, s.db.WithContext(ctx).Where("user_id = ? AND provider = ?", 7, "lark").Take(&account).Error)
+	require.JSONEq(t, `{"drive":{"state":"available","last_success_at":"2026-07-18T11:30:00Z"}}`, string(account.CapabilityStateJSON))
+}

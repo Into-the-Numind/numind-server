@@ -203,6 +203,36 @@ func TestLarkPersonalWorkspace_SkillReadPublishesHostedPolicy(t *testing.T) {
 	assert.Contains(t, output.HostedPolicy, "最多修正并重试一次")
 }
 
+// Customer regression (Dev run 211): a fresh conversation only had a document
+// title. The Agent correctly tried to load lark-drive and search by title, but
+// the hosted schema rejected that skill before any Feishu operation existed.
+func TestLarkPersonalWorkspace_FreshConversationCanDiscoverByTitle(t *testing.T) {
+	tool := &larkSkillReadTool{executor: &fakeSkillReadExecutor{result: &feishu.SkillReadPage{
+		Skill: "lark-drive", Path: "skills/lark-drive/SKILL.md", Receipt: "opaque-drive-receipt",
+	}}}
+
+	var schema struct {
+		Properties map[string]struct {
+			Enum []string `json:"enum"`
+		} `json:"properties"`
+	}
+	require.NoError(t, json.Unmarshal(tool.InputSchema(), &schema))
+	assert.Contains(t, schema.Properties["skill"].Enum, "lark-drive")
+	assert.Contains(t, tool.Description(), "lark-drive")
+	assert.Contains(t, (&larkExecuteTool{}).Description(), "Drive")
+
+	result, err := tool.Execute(WithRunID(context.Background(), 211), ToolInput(`{"skill":"lark-drive"}`))
+	require.NoError(t, err)
+	var output struct {
+		HostedPolicy string `json:"hosted_policy"`
+	}
+	require.NoError(t, json.Unmarshal(result, &output))
+	assert.Contains(t, output.HostedPolicy, "drive +search")
+	assert.Contains(t, output.HostedPolicy, "唯一精确匹配")
+	assert.Contains(t, output.HostedPolicy, "多个精确匹配")
+	assert.Contains(t, output.HostedPolicy, "没有精确匹配")
+}
+
 func TestLarkPersonalWorkspace_SkillReadStrictInputAndSafeFailures(t *testing.T) {
 	for name, input := range map[string]string{
 		"user identity":     `{"skill":"lark-doc","user_id":9}`,

@@ -921,6 +921,7 @@ func TestOperationService_StrictInputAndServerOwnedReceiptDomain(t *testing.T) {
 		{name: "docs", domain: SkillDomainDocs, argv: []string{"docs", "+fetch", "--doc", "doxcnABCDEFG123"}},
 		{name: "base", domain: SkillDomainBase, argv: []string{"base", "+base-get", "--base-token", "bascnABCDEFG123"}},
 		{name: "wiki", domain: SkillDomainWiki, argv: []string{"wiki", "+node-get", "--node-token", "wikcnABCDEFG123"}},
+		{name: "drive", domain: "drive", argv: []string{"drive", "+search", "--query", "有数飞书二次连接测试", "--only-title"}},
 	} {
 		t.Run("server domain "+testCase.name, func(t *testing.T) {
 			h := newOperationHarness(t)
