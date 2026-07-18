@@ -48,6 +48,11 @@ const (
 	skillReaderTokenVersion  = 1
 	skillReaderMaxTokenBytes = 4096
 	skillReaderMaxPathBytes  = 512
+	// Reference metadata is emitted beside the bounded content page. Keep both
+	// count and aggregate bytes bounded so the final tool envelope cannot grow
+	// with every link in a multi-megabyte embedded resource.
+	skillReaderMaxReferences     = 64
+	skillReaderMaxReferenceBytes = 16 << 10
 
 	skillCursorKind  = "skill_cursor"
 	skillReceiptKind = "skill_receipt"
@@ -449,7 +454,19 @@ func declaredSkillReferences(content string) []string {
 		references = append(references, reference)
 	}
 	sort.Strings(references)
-	return references
+	bounded := make([]string, 0, min(len(references), skillReaderMaxReferences))
+	totalBytes := 0
+	for _, reference := range references {
+		if len(bounded) >= skillReaderMaxReferences {
+			break
+		}
+		if totalBytes+len(reference) > skillReaderMaxReferenceBytes {
+			continue
+		}
+		bounded = append(bounded, reference)
+		totalBytes += len(reference)
+	}
+	return bounded
 }
 
 func containsExactString(values []string, expected string) bool {

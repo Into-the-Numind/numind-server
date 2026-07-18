@@ -15,8 +15,8 @@ import (
 //
 // 决策：通过 wrap Eino InvokableTool 的方式实现 L0 处理 — InvokableRun 返回的字符串
 // 就是 Eino 写入 messages 数组的 content。当 V2 启用时，我们拦截原工具输出：
-//   - lark_skill_read → 原样返回。该工具自身有严格分页上限，且其短期
-//     receipt 必须与技能正文原子交付，不能藏进 persisted-output 文件尾部
+//   - 可信 lark_skill_read → 在最终封装硬上限内原子返回。其短期 receipt
+//     必须与技能正文一起交付，不能藏进 persisted-output 文件尾部
 //   - len(output) <= ToolArtifactSizeLimit → 原样返回，行为与 V1 完全一致
 //   - 超阈值 → 调 compactv2.ProcessToolResult 写盘 + 元数据入库，返回
 //     `<persisted-output ref="UUID" tool="..." size="...">PREVIEW...</persisted-output>` 引用
@@ -47,13 +47,15 @@ func wrapToolWithV2ArtifactProcessing(
 	artifactStore store.IAgentToolArtifactStore,
 	dataDir string,
 ) einotool.InvokableTool {
-	// SkillReader already bounds each response to 32 KiB and mints a receipt only
-	// after the final page. Generic artifact persistence keeps only the leading
-	// 16 KiB in the model-visible preview, which separates that receipt from the
-	// instructions it proves were delivered. Keep this one controlled tool
-	// atomic; every ordinary large tool result still uses the V2 artifact path.
-	if toolName == "lark_skill_read" {
-		return inner
+	// Generic artifact persistence is triggered above 16 KiB and leaves only a
+	// 1 KiB model-visible preview. That separates a final-page skill receipt from
+	// the instructions it proves were delivered. Only the server-owned concrete
+	// lark skill adapter gets a bounded atomic path; a same-named external/mock
+	// tool remains on the ordinary artifact path.
+	if adapter, ok := inner.(*fullToolEinoAdapter); ok {
+		if _, trusted := adapter.ft.(*larkSkillReadTool); trusted {
+			return &boundedAtomicSkillTool{inner: inner}
+		}
 	}
 	return &v2ArtifactWrappedTool{
 		inner:    inner,
@@ -64,6 +66,34 @@ func wrapToolWithV2ArtifactProcessing(
 			DataDir: dataDir,
 		},
 	}
+}
+
+// larkSkillReadAtomicOutputLimit bounds the complete JSON envelope delivered
+// to the model, not only SkillReadPage.Content. It leaves room for the 32 KiB
+// content page, fixed hosted policy, bounded references, cursor, and receipt.
+const larkSkillReadAtomicOutputLimit = 64 << 10
+
+type boundedAtomicSkillTool struct {
+	inner einotool.InvokableTool
+}
+
+var _ einotool.InvokableTool = (*boundedAtomicSkillTool)(nil)
+
+func (w *boundedAtomicSkillTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
+	return w.inner.Info(ctx)
+}
+
+func (w *boundedAtomicSkillTool) InvokableRun(ctx context.Context, args string, opts ...einotool.Option) (string, error) {
+	output, err := w.inner.InvokableRun(ctx, args, opts...)
+	if err != nil {
+		return output, err
+	}
+	if len(output) <= larkSkillReadAtomicOutputLimit {
+		return output, nil
+	}
+	log.Warnw("boundedAtomicSkillTool: rejecting oversized skill envelope", "size", len(output))
+	softError, _ := larkWorkspaceSoftError(larkWorkspaceErrorSkillRead)
+	return string(softError), nil
 }
 
 type v2ArtifactWrappedTool struct {
