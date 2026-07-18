@@ -3328,6 +3328,129 @@ func TestOperationService_StartedWriteIndeterminateFailuresAreUnknownWithoutRetr
 	}
 }
 
+func TestOperationService_WritePreflightIsSharedAcrossDocsBaseAndWiki(t *testing.T) {
+	tests := []struct {
+		name   string
+		argv   []string
+		scopes []string
+	}{
+		{
+			name: "docs create", argv: []string{"docs", "+create", "--title", "Report"},
+			scopes: []string{"docx:document:create"},
+		},
+		{
+			name: "base record update",
+			argv: []string{
+				"base", "+record-batch-update", "--base-token", "bascnABCDEFG123", "--table-id", "Tasks",
+				"--json", `{"record_id_list":["recABCDEFG123"],"patch":{"Status":"Done"}}`,
+			},
+			scopes: []string{"base:record:update"},
+		},
+		{
+			name:   "wiki node create",
+			argv:   []string{"wiki", "+node-create", "--space-id", "my_library", "--title", "Playbook"},
+			scopes: []string{"wiki:node:create", "wiki:node:read", "wiki:space:read"},
+		},
+	}
+	for index, test := range tests {
+		t.Run(test.name+" missing", func(t *testing.T) {
+			h := newOperationHarness(t)
+			h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+			h.preflight.steps = []operationScopePreflightStep{{result: &ScopeCheckResult{
+				Missing: append([]string(nil), test.scopes...),
+			}}}
+			request := ExecuteRequest{
+				UserID: 7, AgentRunID: uint64(900 + index), ToolCallID: "domain-missing",
+				IdempotencyKey: fmt.Sprintf("%d:domain-missing", 900+index),
+				Argv:           append([]string(nil), test.argv...), SkillReceipts: []string{"shared", "domain"},
+			}
+			got, err := h.service.Execute(h.ctx, request)
+			require.NoError(t, err)
+			require.Equal(t, model.FeishuOperationWaitingUserAuth, got.State)
+			require.Equal(t, test.scopes, got.Action.Scopes)
+			businessCalls, _ := h.runner.snapshot()
+			require.Zero(t, businessCalls)
+			preflightCalls, scopes := h.preflight.snapshot()
+			require.Equal(t, 1, preflightCalls)
+			require.Equal(t, [][]string{test.scopes}, scopes)
+		})
+
+		t.Run(test.name+" granted", func(t *testing.T) {
+			h := newOperationHarness(t)
+			h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+			request := ExecuteRequest{
+				UserID: 7, AgentRunID: uint64(910 + index), ToolCallID: "domain-granted",
+				IdempotencyKey: fmt.Sprintf("%d:domain-granted", 910+index),
+				Argv:           append([]string(nil), test.argv...), SkillReceipts: []string{"shared", "domain"},
+			}
+			got, err := h.service.Execute(h.ctx, request)
+			require.NoError(t, err)
+			require.Equal(t, model.FeishuOperationSucceeded, got.State)
+			businessCalls, _ := h.runner.snapshot()
+			require.Equal(t, 1, businessCalls)
+			preflightCalls, scopes := h.preflight.snapshot()
+			require.Equal(t, 1, preflightCalls)
+			require.Equal(t, [][]string{test.scopes}, scopes)
+		})
+	}
+}
+
+func TestOperationService_ConnectionsAreSharedAcrossAgentRunsAndIsolatedAcrossUsers(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 3, "cli_user_7")
+	h.createAccount(8, model.FeishuConnectionConnected, 5, "cli_user_8")
+	h.runner.steps = []operationRunnerStep{
+		{result: operationOKResult(`{"document_id":"a"}`)},
+		{result: operationOKResult(`{"document_id":"b"}`)},
+		{result: operationOKResult(`{"document_id":"c"}`)},
+	}
+	var mu sync.Mutex
+	var homes []struct {
+		userID     uint
+		generation uint64
+	}
+	h.vault.afterRun = func(userID uint, generation uint64, _ bool) error {
+		mu.Lock()
+		homes = append(homes, struct {
+			userID     uint
+			generation uint64
+		}{userID: userID, generation: generation})
+		mu.Unlock()
+		return nil
+	}
+
+	requests := []ExecuteRequest{
+		operationDocsFetchRequest(1001, "agent-a"),
+		operationDocsFetchRequest(1002, "agent-b"),
+		operationDocsFetchRequest(1003, "same-definition-other-user"),
+	}
+	requests[2].UserID = 8
+	for _, request := range requests {
+		result, err := h.service.Execute(h.ctx, request)
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuOperationSucceeded, result.State)
+	}
+
+	var operations []model.FeishuOperation
+	require.NoError(t, h.db.Order("agent_run_id asc").Find(&operations).Error)
+	require.Len(t, operations, 3)
+	require.Equal(t, uint(7), operations[0].UserID)
+	require.Equal(t, uint64(3), operations[0].Generation)
+	require.Equal(t, uint(7), operations[1].UserID)
+	require.Equal(t, uint64(3), operations[1].Generation, "two Agents owned by one user share the account generation")
+	require.Equal(t, uint(8), operations[2].UserID)
+	require.Equal(t, uint64(5), operations[2].Generation, "the same Agent behavior under another user uses another account")
+	mu.Lock()
+	require.Equal(t, []struct {
+		userID     uint
+		generation uint64
+	}{{7, 3}, {7, 3}, {8, 5}}, homes)
+	mu.Unlock()
+	domains, runs := h.receipts.snapshot()
+	require.Equal(t, []string{"docs", "docs", "docs"}, domains)
+	require.Equal(t, []uint64{1001, 1002, 1003}, runs)
+}
+
 func TestOperationService_OKEnvelopeWithoutValidDataFailsClosed(t *testing.T) {
 	for _, testCase := range []struct {
 		name     string
