@@ -99,6 +99,23 @@ func TestSkillReader_OnlyExposesDeclaredReferencesNamespace(t *testing.T) {
 	require.Empty(t, h.invocations(), "non-reference namespaces must fail before CLI start")
 }
 
+func TestDeclaredSkillReferences_BoundsCountAndTotalBytes(t *testing.T) {
+	t.Parallel()
+
+	var content strings.Builder
+	for i := 0; i < 200; i++ {
+		fmt.Fprintf(&content, "[ref](references/%03d-%s.md)\n", i, strings.Repeat("x", 200))
+	}
+
+	references := declaredSkillReferences(content.String())
+	require.LessOrEqual(t, len(references), skillReaderMaxReferences)
+	totalBytes := 0
+	for _, reference := range references {
+		totalBytes += len(reference)
+	}
+	require.LessOrEqual(t, totalBytes, skillReaderMaxReferenceBytes)
+}
+
 func TestSkillReader_UndeclaredReferenceAndResponseMismatchFailClosed(t *testing.T) {
 	t.Parallel()
 

@@ -26,6 +26,7 @@ import (
 	"gorm.io/gorm/logger"
 
 	"numind-server/internal/numind/biz/compactv2"
+	"numind-server/internal/numind/biz/feishu"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/model"
 )
@@ -191,6 +192,80 @@ func TestWrapToolWithV2ArtifactProcessing_LargeOutput_ReturnsPersistedRef(t *tes
 	assert.Equal(t, uint64(99), rows[0].AgentRunID)
 	assert.Equal(t, "file_read", rows[0].ToolName)
 	assert.Equal(t, int64(50*1024), rows[0].SizeBytes)
+}
+
+// Customer regression (Dev runs 212/213/215): lark-drive's controlled skill
+// response is about 28 KiB, so the generic 16 KiB V2 artifact wrapper replaced
+// the response with a persisted-output preview. The receipt lives after the
+// skill content and was therefore unavailable to the model; the model copied a
+// payload-shaped but invalid signature and every valid Drive search was rejected
+// before a Feishu operation could be created. Skill reads are already bounded by
+// SkillReaderPageBytes and must remain inline so instructions and receipts are
+// delivered atomically.
+func TestWrapToolWithV2ArtifactProcessing_LargeLarkSkillRead_PreservesAtomicReceipt(t *testing.T) {
+	s := newRunnerTestArtifactStore(t)
+	dataDir := t.TempDir()
+	receipt := "signed-drive-receipt"
+	fullTool := &larkSkillReadTool{executor: &fakeSkillReadExecutor{result: &feishu.SkillReadPage{
+		Skill:   "lark-drive",
+		Path:    "skills/lark-drive/SKILL.md",
+		Content: strings.Repeat("D", 28*1024),
+		Receipt: receipt,
+	}}}
+	inner := adaptFullToEinoTool(fullTool, nil)
+
+	wrapped := wrapToolWithV2ArtifactProcessing(inner, "lark_skill_read", 215, s, dataDir)
+	out, err := wrapped.InvokableRun(WithRunID(context.Background(), 215), `{"skill":"lark-drive"}`)
+
+	require.NoError(t, err)
+	assert.Contains(t, out, receipt)
+	assert.Contains(t, out, strings.Repeat("D", 28*1024))
+	assert.NotContains(t, out, `<persisted-output`)
+	rows, listErr := s.ListExpiredBefore(context.Background(),
+		time.Now().Add(100*24*time.Hour), 100)
+	require.NoError(t, listErr)
+	assert.Empty(t, rows, "a bounded skill read must not hide its receipt in an artifact")
+}
+
+func TestWrapToolWithV2ArtifactProcessing_SpoofedLarkSkillNameStillPersists(t *testing.T) {
+	s := newRunnerTestArtifactStore(t)
+	dataDir := t.TempDir()
+	inner := &mockInvokableTool{name: "lark_skill_read", out: strings.Repeat("S", 50*1024)}
+
+	wrapped := wrapToolWithV2ArtifactProcessing(inner, "lark_skill_read", 216, s, dataDir)
+	out, err := wrapped.InvokableRun(context.Background(), `{}`)
+
+	require.NoError(t, err)
+	assert.Contains(t, out, `<persisted-output`)
+	rows, listErr := s.ListExpiredBefore(context.Background(), time.Now().Add(100*24*time.Hour), 100)
+	require.NoError(t, listErr)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "lark_skill_read", rows[0].ToolName)
+}
+
+func TestWrapToolWithV2ArtifactProcessing_OversizedTrustedSkillFailsClosed(t *testing.T) {
+	s := newRunnerTestArtifactStore(t)
+	dataDir := t.TempDir()
+	receipt := "must-not-leak"
+	fullTool := &larkSkillReadTool{executor: &fakeSkillReadExecutor{result: &feishu.SkillReadPage{
+		Skill:   "lark-drive",
+		Path:    "skills/lark-drive/SKILL.md",
+		Content: strings.Repeat("O", 96*1024),
+		Receipt: receipt,
+	}}}
+	inner := adaptFullToEinoTool(fullTool, nil)
+
+	wrapped := wrapToolWithV2ArtifactProcessing(inner, "lark_skill_read", 217, s, dataDir)
+	out, err := wrapped.InvokableRun(WithRunID(context.Background(), 217), `{"skill":"lark-drive"}`)
+
+	require.NoError(t, err)
+	assert.Contains(t, out, "读取飞书技能暂时失败")
+	assert.NotContains(t, out, receipt)
+	assert.NotContains(t, out, strings.Repeat("O", 1024))
+	assert.NotContains(t, out, `<persisted-output`)
+	rows, listErr := s.ListExpiredBefore(context.Background(), time.Now().Add(100*24*time.Hour), 100)
+	require.NoError(t, listErr)
+	assert.Empty(t, rows)
 }
 
 // TestWrapToolWithV2ArtifactProcessing_InnerToolError_Passthrough — case 3
