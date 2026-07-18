@@ -44,7 +44,7 @@ type InspectionResult struct {
 	CommandPath     string            `json:"command_path,omitempty"`
 	Domain          string            `json:"domain,omitempty"`
 	Risk            RiskLevel         `json:"risk,omitempty"`
-	Ready           bool              `json:"ready,omitempty"`
+	Ready           *bool             `json:"ready,omitempty"`
 	GrantedScopes   []string          `json:"granted_scopes,omitempty"`
 	MissingScopes   []string          `json:"missing_scopes,omitempty"`
 }
@@ -136,9 +136,10 @@ func (s *FeishuOperationService) inspectCommand(
 	if !inspectionScopePartition(normalized.Scopes, granted, missing) {
 		return nil, ErrInspectionUnavailable
 	}
+	ready := len(missing) == 0
 	return &InspectionResult{
 		Mode: InspectionModeCommand, CommandPath: normalized.Path, Domain: normalized.Domain,
-		Risk: normalized.Risk, Ready: len(missing) == 0,
+		Risk: normalized.Risk, Ready: &ready,
 		GrantedScopes: granted, MissingScopes: missing,
 	}, nil
 }

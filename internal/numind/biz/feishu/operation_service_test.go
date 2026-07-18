@@ -909,6 +909,26 @@ func TestOperationService_StaleNotStartedSnapshotCannotLeaseTerminalOperation(t 
 	require.Nil(t, stored.LeaseUntil)
 }
 
+func TestOperationService_LegacyUnknownSummaryPreservesStartedWriteEvidence(t *testing.T) {
+	h := newOperationHarness(t)
+	for name, summary := range map[string][]byte{
+		"malformed":    []byte(`{"unexpected":true}`),
+		"stale status": []byte(`{"status":"failed","public_code":"feishu_failed","business_started":false}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := h.service.resultFromOperation(&model.FeishuOperation{
+				ID: "legacy-unknown", State: model.FeishuOperationUnknown,
+				RiskLevel: string(RiskWrite), ResultSummaryJSON: summary,
+			})
+			require.NoError(t, err)
+			require.NotNil(t, got.Failure)
+			require.Equal(t, PublicCodeUnknownResult, got.Failure.Code)
+			require.True(t, got.Failure.BusinessStarted)
+			require.False(t, got.Failure.Retryable)
+		})
+	}
+}
+
 func TestOperationService_StrictInputAndServerOwnedReceiptDomain(t *testing.T) {
 	t.Run("normalize happens before receipt verification", func(t *testing.T) {
 		h := newOperationHarness(t)

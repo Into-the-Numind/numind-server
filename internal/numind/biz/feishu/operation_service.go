@@ -1742,7 +1742,8 @@ func (s *FeishuOperationService) resultFromOperation(operation *model.FeishuOper
 	}
 	if terminalOperationState(operation.State) {
 		summary, err := decodeOperationSummary(operation.ResultSummaryJSON)
-		if err != nil || summary.Status != operation.State {
+		legacyOrStaleSummary := err != nil || summary.Status != operation.State
+		if legacyOrStaleSummary {
 			// Legacy rows and a terminal transition won by another process may not
 			// carry the current summary schema. Return only a conservative stable
 			// failure; never infer that a business call started or expose DB fields.
@@ -1751,7 +1752,7 @@ func (s *FeishuOperationService) resultFromOperation(operation *model.FeishuOper
 		publicCode := summary.PublicCode
 		if operation.State == model.FeishuOperationUnknown {
 			publicCode = PublicCodeUnknownResult
-			if err != nil || summary.Status != operation.State {
+			if legacyOrStaleSummary {
 				summary.BusinessStarted = true
 			}
 		}

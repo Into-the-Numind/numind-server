@@ -62,9 +62,10 @@ func TestOperationService_InspectCommandUsesCatalogReceiptsAndReadOnlyPreflight(
 		SkillReceipts: []string{"shared-receipt", "doc-receipt"},
 	})
 	require.NoError(t, err)
+	ready := false
 	require.Equal(t, &InspectionResult{
 		Mode: InspectionModeCommand, CommandPath: "docs +update", Domain: "docs", Risk: RiskWrite,
-		Ready: false, GrantedScopes: []string{"docx:document:readonly"},
+		Ready: &ready, GrantedScopes: []string{"docx:document:readonly"},
 		MissingScopes: []string{"docx:document:write_only"},
 	}, got)
 	preflightCalls, _ := h.preflight.snapshot()
@@ -81,6 +82,7 @@ func TestOperationService_InspectCommandUsesCatalogReceiptsAndReadOnlyPreflight(
 	for _, secret := range []string{"doxcnABCDEFG123", "before", "after", "receipt", "cli_secret_app", "user_id", "generation"} {
 		require.NotContains(t, string(encoded), secret)
 	}
+	require.Contains(t, string(encoded), `"ready":false`)
 }
 
 func TestOperationService_InspectCommandRejectsUnsafeBoundaries(t *testing.T) {

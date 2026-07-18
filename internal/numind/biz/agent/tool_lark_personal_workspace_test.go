@@ -870,8 +870,10 @@ func TestLarkPersonalWorkspace_ExecuteRejectsNonTerminalNonWaitingStates(t *test
 }
 
 func TestLarkPersonalWorkspace_InspectUsesCurrentIdentityAndNeverExecutesBusiness(t *testing.T) {
+	ready := false
 	inspector := &fakeLarkInspector{result: &feishu.InspectionResult{
 		Mode: feishu.InspectionModeCommand, CommandPath: "docs +update", Domain: "docs", Risk: feishu.RiskWrite,
+		Ready:         &ready,
 		GrantedScopes: []string{"docx:document:readonly"}, MissingScopes: []string{"docx:document:write_only"},
 	}}
 	tool := &larkInspectTool{inspector: inspector}
@@ -886,6 +888,7 @@ func TestLarkPersonalWorkspace_InspectUsesCurrentIdentityAndNeverExecutesBusines
 	require.NoError(t, err)
 	require.JSONEq(t, `{
 		"mode":"command","command_path":"docs +update","domain":"docs","risk":"write",
+		"ready":false,
 		"granted_scopes":["docx:document:readonly"],"missing_scopes":["docx:document:write_only"]
 	}`, string(result))
 	requests := inspector.snapshot()
