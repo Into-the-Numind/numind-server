@@ -18,7 +18,7 @@ func TestOperationConfirmationRequester_HighRiskWaitsForDurableConfirmation(t *t
 	service, err := NewFeishuOperationService(OperationServiceDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: h.dataStore.FeishuWorkspace(),
 		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: h.recovery,
-		Confirmation: requester, Vault: h.vault, Runner: h.runner, Cipher: h.cipher,
+		Confirmation: requester, Vault: h.vault, Preflight: h.preflight, Runner: h.runner, Cipher: h.cipher,
 		Now: h.service.now, LeaseDuration: time.Minute,
 	})
 	require.NoError(t, err)

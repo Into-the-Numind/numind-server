@@ -306,6 +306,7 @@ type OperationServiceDeps struct {
 	Recovery                       RecoveryStarter
 	Confirmation                   ConfirmationRequester
 	Vault                          OperationHomeVault
+	Preflight                      ScopePreflight
 	Runner                         OperationRunner
 	Cipher                         *OperationCipherKeyring
 	Now                            func() time.Time
@@ -327,6 +328,7 @@ type FeishuOperationService struct {
 	recovery                       RecoveryStarter
 	confirmation                   ConfirmationRequester
 	vault                          OperationHomeVault
+	preflight                      ScopePreflight
 	runner                         OperationRunner
 	cipher                         *OperationCipherKeyring
 	classifier                     *ErrorClassifier
@@ -548,7 +550,8 @@ func (r *executionRegistry) stopGenerationAndWait(ctx context.Context, userID ui
 // NewFeishuOperationService validates all mandatory operation dependencies.
 func NewFeishuOperationService(deps OperationServiceDeps) (*FeishuOperationService, error) {
 	if deps.Accounts == nil || deps.Operations == nil || deps.Catalog == nil || deps.Receipts == nil ||
-		deps.Recovery == nil || deps.Confirmation == nil || deps.Vault == nil || deps.Runner == nil || deps.Cipher == nil {
+		deps.Recovery == nil || deps.Confirmation == nil || deps.Vault == nil || deps.Preflight == nil ||
+		deps.Runner == nil || deps.Cipher == nil {
 		return nil, errors.New("feishu operation service dependencies rejected")
 	}
 	if deps.VerifiedCLIVersion != "" && deps.VerifiedCLIVersion != LarkCLIVersion {
@@ -572,7 +575,7 @@ func NewFeishuOperationService(deps OperationServiceDeps) (*FeishuOperationServi
 	return &FeishuOperationService{
 		accounts: deps.Accounts, operations: deps.Operations, catalog: deps.Catalog,
 		receipts: deps.Receipts, recovery: deps.Recovery, confirmation: deps.Confirmation,
-		vault: deps.Vault, runner: deps.Runner, cipher: deps.Cipher,
+		vault: deps.Vault, preflight: deps.Preflight, runner: deps.Runner, cipher: deps.Cipher,
 		classifier: NewErrorClassifier(), now: now, leaseDuration: leaseDuration,
 		executionGateHeartbeatInterval: heartbeatInterval,
 		verifiedCLIVersion:             deps.VerifiedCLIVersion,
@@ -1290,6 +1293,18 @@ func (s *FeishuOperationService) executeClaimed(
 		}
 		return s.startRecoveryAndWait(ctx, operation, leaseOwner, persisted, kind, persisted.Scopes, waitingState, priorRecoverySignature, publicCode, "")
 	}
+	if writeLikeRisk(persisted.Risk) {
+		check, err := s.checkScopesBeforeWrite(ctx, operation, persisted, executionGate)
+		if err != nil {
+			return s.commitTerminal(ctx, operation, leaseOwner, model.FeishuOperationFailed, PublicCodeTemporaryError, nil, false)
+		}
+		if len(check.Missing) > 0 {
+			return s.startRecoveryAndWait(
+				ctx, operation, leaseOwner, persisted, RecoveryUserScope, check.Missing,
+				model.FeishuOperationWaitingUserAuth, priorRecoverySignature, PublicCodeScopeRequired, "",
+			)
+		}
+	}
 
 	if persisted.Risk == RiskHigh && !proofUsable && !confirmed {
 		action, err := s.confirmation.RequestConfirmation(ctx, operation.ID, ConfirmationSummary{
@@ -1363,6 +1378,49 @@ func (s *FeishuOperationService) executeClaimed(
 		return s.commitTerminal(ctx, operation, leaseOwner, terminal, classification.PublicCode, nil, started)
 	}
 	return s.commitTerminal(ctx, operation, leaseOwner, model.FeishuOperationFailed, PublicCodeFailed, nil, false)
+}
+
+func (s *FeishuOperationService) checkScopesBeforeWrite(
+	ctx context.Context,
+	operation *model.FeishuOperation,
+	persisted persistedOperationRequest,
+	executionGate *executionGateGuard,
+) (*ScopeCheckResult, error) {
+	if s == nil || s.preflight == nil || operation == nil || !writeLikeRisk(persisted.Risk) {
+		return nil, ErrOperationUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runCtx := ctx
+	if executionGate != nil {
+		runCtx = executionGate.ctx
+	}
+	var check *ScopeCheckResult
+	var checkErr error
+	vaultErr := s.vault.WithHome(runCtx, operation.UserID, operation.Generation, func(home string) (bool, error) {
+		if executionGate != nil {
+			if err := executionGate.renew(); err != nil {
+				return false, ErrOperationUnavailable
+			}
+		}
+		if err := runCtx.Err(); err != nil {
+			return false, ErrOperationUnavailable
+		}
+		checkCtx, cancel := context.WithTimeout(runCtx, ControlledLarkCLIVersionTimeout)
+		defer cancel()
+		check, checkErr = s.preflight.Check(checkCtx, home, append([]string(nil), persisted.Scopes...))
+		return false, nil
+	})
+	if vaultErr != nil {
+		return nil, vaultErr
+	}
+	if checkErr != nil || check == nil {
+		return nil, ErrOperationUnavailable
+	}
+	return &ScopeCheckResult{
+		Granted: append([]string(nil), check.Granted...), Missing: append([]string(nil), check.Missing...),
+	}, nil
 }
 
 // createOrGetOperation makes proof reservation and consumer creation one

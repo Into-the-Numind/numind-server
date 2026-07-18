@@ -255,6 +255,7 @@ func buildFeishuService(deps feishuCompositionDeps) (*feishuPersonalWorkspace, e
 		Recovery:           recovery,
 		Confirmation:       confirmation,
 		Vault:              vault,
+		Preflight:          feishu.NewControlledScopePreflight(runner),
 		Runner:             runner,
 		Cipher:             operationCipher,
 		VerifiedCLIVersion: feishu.LarkCLIVersion,

@@ -60,7 +60,7 @@ func newPersonalWorkspaceIntegrationOperationService(
 	service, err := NewFeishuOperationService(OperationServiceDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: h.dataStore.FeishuWorkspace(),
 		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: recovery,
-		Confirmation: h.confirmation, Vault: h.vault, Runner: h.runner, Cipher: h.cipher,
+		Confirmation: h.confirmation, Vault: h.vault, Preflight: h.preflight, Runner: h.runner, Cipher: h.cipher,
 		Now: h.service.now, LeaseDuration: time.Minute,
 	})
 	require.NoError(t, err)
@@ -78,7 +78,7 @@ func newPersonalWorkspaceRestartOperationService(
 	service, err := NewFeishuOperationService(OperationServiceDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: h.dataStore.FeishuWorkspace(),
 		Catalog: NewCommandCatalog(), Receipts: &operationReceiptFake{}, Recovery: recovery,
-		Confirmation: &operationConfirmationFake{}, Vault: vault, Runner: runner, Cipher: h.cipher,
+		Confirmation: &operationConfirmationFake{}, Vault: vault, Preflight: h.preflight, Runner: runner, Cipher: h.cipher,
 		Now: h.service.now, LeaseDuration: time.Minute,
 	})
 	require.NoError(t, err)
