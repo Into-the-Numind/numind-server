@@ -165,6 +165,7 @@ type OperationResult struct {
 	OperationID string                  `json:"operation_id"`
 	State       string                  `json:"state"`
 	Data        json.RawMessage         `json:"data,omitempty"`
+	Failure     *OperationFailure       `json:"failure,omitempty"`
 	Action      *OperationAction        `json:"action,omitempty"`
 	NoticeCode  AuthorizationNoticeCode `json:"notice_code,omitempty"`
 	AgentRunID  uint64                  `json:"-"`
@@ -295,6 +296,7 @@ type persistedOperationSummary struct {
 	RecoveryKind      RecoveryKind `json:"recovery_kind,omitempty"`
 	RecoveryScopes    []string     `json:"recovery_scopes,omitempty"`
 	RecoverySignature string       `json:"recovery_signature,omitempty"`
+	BusinessStarted   bool         `json:"business_started,omitempty"`
 }
 
 // OperationServiceDeps wires only small one-way Feishu interfaces.
@@ -306,6 +308,7 @@ type OperationServiceDeps struct {
 	Recovery                       RecoveryStarter
 	Confirmation                   ConfirmationRequester
 	Vault                          OperationHomeVault
+	Preflight                      ScopePreflight
 	Runner                         OperationRunner
 	Cipher                         *OperationCipherKeyring
 	Now                            func() time.Time
@@ -327,6 +330,7 @@ type FeishuOperationService struct {
 	recovery                       RecoveryStarter
 	confirmation                   ConfirmationRequester
 	vault                          OperationHomeVault
+	preflight                      ScopePreflight
 	runner                         OperationRunner
 	cipher                         *OperationCipherKeyring
 	classifier                     *ErrorClassifier
@@ -548,7 +552,8 @@ func (r *executionRegistry) stopGenerationAndWait(ctx context.Context, userID ui
 // NewFeishuOperationService validates all mandatory operation dependencies.
 func NewFeishuOperationService(deps OperationServiceDeps) (*FeishuOperationService, error) {
 	if deps.Accounts == nil || deps.Operations == nil || deps.Catalog == nil || deps.Receipts == nil ||
-		deps.Recovery == nil || deps.Confirmation == nil || deps.Vault == nil || deps.Runner == nil || deps.Cipher == nil {
+		deps.Recovery == nil || deps.Confirmation == nil || deps.Vault == nil || deps.Preflight == nil ||
+		deps.Runner == nil || deps.Cipher == nil {
 		return nil, errors.New("feishu operation service dependencies rejected")
 	}
 	if deps.VerifiedCLIVersion != "" && deps.VerifiedCLIVersion != LarkCLIVersion {
@@ -572,7 +577,7 @@ func NewFeishuOperationService(deps OperationServiceDeps) (*FeishuOperationServi
 	return &FeishuOperationService{
 		accounts: deps.Accounts, operations: deps.Operations, catalog: deps.Catalog,
 		receipts: deps.Receipts, recovery: deps.Recovery, confirmation: deps.Confirmation,
-		vault: deps.Vault, runner: deps.Runner, cipher: deps.Cipher,
+		vault: deps.Vault, preflight: deps.Preflight, runner: deps.Runner, cipher: deps.Cipher,
 		classifier: NewErrorClassifier(), now: now, leaseDuration: leaseDuration,
 		executionGateHeartbeatInterval: heartbeatInterval,
 		verifiedCLIVersion:             deps.VerifiedCLIVersion,
@@ -1290,6 +1295,18 @@ func (s *FeishuOperationService) executeClaimed(
 		}
 		return s.startRecoveryAndWait(ctx, operation, leaseOwner, persisted, kind, persisted.Scopes, waitingState, priorRecoverySignature, publicCode, "")
 	}
+	if writeLikeRisk(persisted.Risk) {
+		check, err := s.checkScopesBeforeWrite(ctx, operation, persisted, executionGate)
+		if err != nil {
+			return s.commitTerminal(ctx, operation, leaseOwner, model.FeishuOperationFailed, PublicCodeTemporaryError, nil, false)
+		}
+		if len(check.Missing) > 0 {
+			return s.startRecoveryAndWait(
+				ctx, operation, leaseOwner, persisted, RecoveryUserScope, check.Missing,
+				model.FeishuOperationWaitingUserAuth, priorRecoverySignature, PublicCodeScopeRequired, "",
+			)
+		}
+	}
 
 	if persisted.Risk == RiskHigh && !proofUsable && !confirmed {
 		action, err := s.confirmation.RequestConfirmation(ctx, operation.ID, ConfirmationSummary{
@@ -1332,6 +1349,15 @@ func (s *FeishuOperationService) executeClaimed(
 		}
 
 		classification := s.classifyInvocation(result, runErr, vaultErr, persisted.Scopes, persisted.Risk)
+		if started && writeLikeRisk(persisted.Risk) {
+			// Scope preflight is the only safe authorization recovery boundary for
+			// writes. Once the business process starts, even a structured CLI error
+			// cannot prove that Feishu observed no side effect, so never replay it.
+			return s.commitTerminal(
+				ctx, operation, leaseOwner, model.FeishuOperationUnknown,
+				PublicCodeUnknownResult, nil, true,
+			)
+		}
 		if classification.RetryRead && invocation+1 < maxInvocations {
 			continue
 		}
@@ -1363,6 +1389,49 @@ func (s *FeishuOperationService) executeClaimed(
 		return s.commitTerminal(ctx, operation, leaseOwner, terminal, classification.PublicCode, nil, started)
 	}
 	return s.commitTerminal(ctx, operation, leaseOwner, model.FeishuOperationFailed, PublicCodeFailed, nil, false)
+}
+
+func (s *FeishuOperationService) checkScopesBeforeWrite(
+	ctx context.Context,
+	operation *model.FeishuOperation,
+	persisted persistedOperationRequest,
+	executionGate *executionGateGuard,
+) (*ScopeCheckResult, error) {
+	if s == nil || s.preflight == nil || operation == nil || !writeLikeRisk(persisted.Risk) {
+		return nil, ErrOperationUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runCtx := ctx
+	if executionGate != nil {
+		runCtx = executionGate.ctx
+	}
+	var check *ScopeCheckResult
+	var checkErr error
+	vaultErr := s.vault.WithHome(runCtx, operation.UserID, operation.Generation, func(home string) (bool, error) {
+		if executionGate != nil {
+			if err := executionGate.renew(); err != nil {
+				return false, ErrOperationUnavailable
+			}
+		}
+		if err := runCtx.Err(); err != nil {
+			return false, ErrOperationUnavailable
+		}
+		checkCtx, cancel := context.WithTimeout(runCtx, ControlledLarkCLIVersionTimeout)
+		defer cancel()
+		check, checkErr = s.preflight.Check(checkCtx, home, append([]string(nil), persisted.Scopes...))
+		return false, nil
+	})
+	if vaultErr != nil {
+		return nil, vaultErr
+	}
+	if checkErr != nil || check == nil {
+		return nil, ErrOperationUnavailable
+	}
+	return &ScopeCheckResult{
+		Granted: append([]string(nil), check.Granted...), Missing: append([]string(nil), check.Missing...),
+	}, nil
 }
 
 // createOrGetOperation makes proof reservation and consumer creation one
@@ -1545,17 +1614,17 @@ func (s *FeishuOperationService) commitTerminal(
 ) (*OperationResult, error) {
 	now := s.now().UTC()
 	fields := map[string]any{"finished_at": now, "error_type": "", "error_subtype": "", "error_code": ""}
-	summary := persistedOperationSummary{Status: state, PublicCode: publicCode}
+	summary := persistedOperationSummary{Status: state, PublicCode: publicCode, BusinessStarted: invocationStarted}
 	if state == model.FeishuOperationSucceeded {
 		owner := OperationCipherOwner{UserID: operation.UserID, Generation: operation.Generation, OperationID: operation.ID}
 		ciphertext, _, err := s.sealOperationBlob(OperationCipherPurposeResult, owner, append([]byte(nil), data...))
 		if err != nil {
 			if invocationStarted && writeLikeRisk(RiskLevel(operation.RiskLevel)) {
 				state = model.FeishuOperationUnknown
-				summary = persistedOperationSummary{Status: state, PublicCode: PublicCodeUnknownResult}
+				summary = persistedOperationSummary{Status: state, PublicCode: PublicCodeUnknownResult, BusinessStarted: invocationStarted}
 			} else {
 				state = model.FeishuOperationFailed
-				summary = persistedOperationSummary{Status: state, PublicCode: PublicCodeFailed}
+				summary = persistedOperationSummary{Status: state, PublicCode: PublicCodeFailed, BusinessStarted: invocationStarted}
 			}
 		} else {
 			fields["result_ciphertext"] = ciphertext
@@ -1585,6 +1654,7 @@ func (s *FeishuOperationService) commitTerminal(
 		if invocationStarted && writeLikeRisk(RiskLevel(operation.RiskLevel)) {
 			result := baseOperationResult(operation)
 			result.State = model.FeishuOperationUnknown
+			result.Failure = newOperationFailure(PublicCodeUnknownResult, result.State, true, RiskLevel(operation.RiskLevel), nil)
 			return result, nil
 		}
 		return nil, ErrOperationUnavailable
@@ -1677,6 +1747,30 @@ func (s *FeishuOperationService) resultFromOperation(operation *model.FeishuOper
 		if summary.ExpiresAt != nil {
 			result.Action.ExpiresAt = summary.ExpiresAt.UTC()
 		}
+		return result, nil
+	}
+	if terminalOperationState(operation.State) {
+		summary, err := decodeOperationSummary(operation.ResultSummaryJSON)
+		legacyOrStaleSummary := err != nil || summary.Status != operation.State
+		if legacyOrStaleSummary {
+			// Legacy rows and a terminal transition won by another process may not
+			// carry the current summary schema. Return only a conservative stable
+			// failure; never infer that a business call started or expose DB fields.
+			summary = persistedOperationSummary{Status: operation.State, PublicCode: PublicCodeFailed}
+		}
+		publicCode := summary.PublicCode
+		if operation.State == model.FeishuOperationUnknown {
+			publicCode = PublicCodeUnknownResult
+			if legacyOrStaleSummary {
+				summary.BusinessStarted = true
+			}
+		}
+		if operation.State == model.FeishuOperationCancelled {
+			publicCode = PublicCodeCancelled
+		}
+		result.Failure = newOperationFailure(
+			publicCode, operation.State, summary.BusinessStarted, RiskLevel(operation.RiskLevel), summary.RecoveryScopes,
+		)
 	}
 	return result, nil
 }

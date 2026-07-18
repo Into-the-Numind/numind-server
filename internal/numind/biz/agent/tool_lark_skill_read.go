@@ -64,7 +64,8 @@ type larkSkillReadOutput struct {
 
 const larkHostedExecutionPolicy = "有数托管规则（优先于下方针对本地电脑的 CLI 说明）：" +
 	"不要执行 auth/config/whoami/qrcode，也不要要求用户提供 App ID/App Secret。" +
-	"直接调用 lark_execute 执行 Docs/Base/Wiki/Drive 业务命令；连接或权限不足时，平台会自动生成授权卡片。" +
+	"先执行 Docs/Base/Wiki/Drive 业务命令，不要每次先检查权限；写操作由平台在真正写入前自动做只读 scope check，连接或权限不足时平台会生成授权卡片并恢复原任务。" +
+	"只有用户明确询问连接状态，或 lark_execute 已返回结构化失败时才调用 lark_inspect。" +
 	"skill_receipts 必须同时包含当前 run 的 lark-shared receipt 和对应业务技能 receipt。" +
 	"用户只提供资源标题而没有 URL/token 时，先读取 lark-drive，再执行 drive +search --query <标题> --only-title --doc-types docx,wiki,bitable；" +
 	"如果结果 has_more=true，必须保持相同 query/only-title/doc-types/page-size，用 page_token 继续搜索，按 URL/token 去重，最多 5 页或 100 条；只有穷尽分页后才能判断唯一、多个或没有精确匹配。达到上限仍有更多结果时，不得宣称唯一或未找到，应让用户缩小标题范围或提供链接。" +
@@ -73,7 +74,8 @@ const larkHostedExecutionPolicy = "有数托管规则（优先于下方针对本
 	"非 wiki 结果随后读取目标业务技能并换用目标 exact receipts：docx 用 shared+doc，bitable 用 shared+base；Drive receipt 不得带入后续业务命令。" +
 	"多个精确匹配时列出候选让用户选择；没有精确匹配时说明未找到并请求链接，不要猜测 token，也不要说成连接未就绪。" +
 	"官方命令中的固定 --as user 与 --format json 可以保留，平台会安全规范化。" +
-	"如果命令被拒绝，只修正业务命令或 receipts，最多修正并重试一次；不要改跑本地初始化命令。"
+	"policy_rejected 或 validation 只可修正业务命令/receipts 一次；not_found 或 resource_denied 应向用户确认资源，不要自动重试；unknown_result 必须立即停止，禁止换参数重复写入。" +
+	"rate_limited/temporary 仅在结构化结果 retryable=true 时最多重试一次；不要改跑本地初始化命令。"
 
 func (t *larkSkillReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	if t == nil || t.executor == nil || ctx == nil || RunIDFromContext(ctx) == 0 {
@@ -130,6 +132,10 @@ const (
 	larkWorkspaceErrorExecute
 	larkWorkspaceErrorInvalidResult
 	larkWorkspaceErrorInvalidWait
+	larkWorkspaceErrorInvalidInspectInput
+	larkWorkspaceErrorInspectRejected
+	larkWorkspaceErrorInspect
+	larkWorkspaceErrorExecuteStopped
 )
 
 // larkWorkspaceSoftError returns only fixed, reviewed messages. It deliberately
@@ -156,6 +162,14 @@ func larkWorkspaceSoftError(code larkWorkspaceErrorCode) (ToolResult, error) {
 		message = "飞书工作区操作返回无效，请稍后重试。"
 	case larkWorkspaceErrorInvalidWait:
 		message = "飞书工作区等待状态无效，请稍后重试。"
+	case larkWorkspaceErrorInvalidInspectInput:
+		message = "飞书检查参数无效：connection 模式只使用 mode；command 模式必须提供 argv 和当前技能 receipt。"
+	case larkWorkspaceErrorInspectRejected:
+		message = "飞书检查命令或技能凭证不符合平台策略；只可检查 Docs/Base/Wiki/Drive 业务命令。"
+	case larkWorkspaceErrorInspect:
+		message = "暂时无法完成飞书工作区检查；不要改用 auth/config/whoami。"
+	case larkWorkspaceErrorExecuteStopped:
+		message = "上一项飞书操作返回不可自动重试的结构化结果，本任务已停止后续飞书业务执行。不要换参数重复写入；请根据结果向用户说明或等待用户提供新信息。"
 	}
 	output, _ := json.Marshal(map[string]string{"error": "ERROR: " + message})
 	return ToolResult(output), nil

@@ -58,13 +58,6 @@ type larkExecuteInput struct {
 	SkillReceipts []string
 }
 
-type larkExecuteOutput struct {
-	OK          bool            `json:"ok"`
-	State       string          `json:"state"`
-	OperationID string          `json:"operation_id"`
-	Data        json.RawMessage `json:"data,omitempty"`
-}
-
 func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	if t == nil || t.executor == nil || ctx == nil {
 		return larkWorkspaceSoftError(larkWorkspaceErrorUnavailable)
@@ -82,6 +75,9 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 	}
 	retryState, retryAttempt, allowed := larkExecuteRetryBegin(runID)
 	if !allowed {
+		if larkExecuteRetryBlockedByTerminal(retryState) {
+			return larkWorkspaceSoftError(larkWorkspaceErrorExecuteStopped)
+		}
 		return larkWorkspaceSoftError(larkWorkspaceErrorExecuteRetryExhausted)
 	}
 
@@ -122,19 +118,15 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 		larkExecuteRetryFailed(retryState, retryAttempt)
 		return larkWorkspaceSoftError(larkWorkspaceErrorInvalidResult)
 	}
-	if len(result.Data) > 0 && !json.Valid(result.Data) {
+	output, err := feishu.MarshalLarkToolResult(result)
+	if err != nil {
 		larkExecuteRetryFailed(retryState, retryAttempt)
 		return larkWorkspaceSoftError(larkWorkspaceErrorInvalidResult)
 	}
-	larkExecuteRetryCompleted(retryState, retryAttempt)
-	output, err := json.Marshal(larkExecuteOutput{
-		OK:          result.State == model.FeishuOperationSucceeded,
-		State:       result.State,
-		OperationID: result.OperationID,
-		Data:        append(json.RawMessage(nil), result.Data...),
-	})
-	if err != nil {
-		return larkWorkspaceSoftError(larkWorkspaceErrorInvalidResult)
+	if result.State == model.FeishuOperationSucceeded {
+		larkExecuteRetryCompleted(retryState, retryAttempt)
+	} else {
+		larkExecuteRetryTerminalOutcome(retryState, retryAttempt, result.Failure)
 	}
 	return ToolResult(output), nil
 }

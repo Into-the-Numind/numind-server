@@ -36,6 +36,8 @@ const (
 	PublicCodeResourceDenied     = "feishu_resource_denied"
 	PublicCodeRateLimited        = "feishu_rate_limited"
 	PublicCodeTemporaryError     = "feishu_temporary_error"
+	PublicCodeValidationError    = "feishu_validation_error"
+	PublicCodeNotFound           = "feishu_not_found"
 	PublicCodeUnknownResult      = "feishu_unknown_result"
 	PublicCodeFailed             = "feishu_operation_failed"
 	PublicCodeCancelled          = "feishu_operation_cancelled"
@@ -189,6 +191,14 @@ func (c *ErrorClassifier) Classify(
 	switch semantic {
 	case semanticMissingScope:
 		scopes, valid := c.normalizeMissingScopes(cliErr.MissingScopes, expectedScopeSet)
+		if !valid && risk == RiskRead && len(cliErr.MissingScopes) == 0 {
+			scopes = make([]string, 0, len(expectedScopeSet))
+			for scope := range expectedScopeSet {
+				scopes = append(scopes, scope)
+			}
+			sort.Strings(scopes)
+			valid = true
+		}
 		if !valid {
 			return failClosedClassification(risk, invocationStarted)
 		}
@@ -196,13 +206,10 @@ func (c *ErrorClassifier) Classify(
 		if evidence == permissionEvidenceApp {
 			recovery = RecoveryAppScope
 		}
-		// Only the coded user-level Docs create tuple has a checked-in real S2
-		// observation proving pre-request rejection. Code-less and app-evidence
-		// variants remain unproven and must not replay a started write.
-		sourceProven := hasCode && code == "99991672" &&
-			evidence == permissionEvidenceNone &&
-			equalScopeSet(scopes, []string{"docx:document:create"})
-		return recoveryClassification(recovery, scopes, sourceProven, risk, invocationStarted, PublicCodeScopeRequired)
+		// Missing-scope recovery for writes is owned exclusively by the preflight
+		// boundary. A business process that already started is never replay-safe,
+		// including the previously observed Docs-create code 99991672 tuple.
+		return recoveryClassification(recovery, scopes, false, risk, invocationStarted, PublicCodeScopeRequired)
 	case semanticAppScope:
 		scopes, valid := c.normalizeMissingScopes(cliErr.MissingScopes, expectedScopeSet)
 		if !valid || evidence != permissionEvidenceApp {
@@ -243,14 +250,23 @@ func (c *ErrorClassifier) Classify(
 			return failClosedClassification(risk, invocationStarted)
 		}
 		return transientClassification(risk, invocationStarted, PublicCodeTemporaryError)
-	case semanticValidation, semanticNotFound:
+	case semanticValidation:
 		if !emptyClassifierEvidence(cliErr, evidence) {
 			return failClosedClassification(risk, invocationStarted)
 		}
 		return Classification{
 			Recovery:      RecoveryNone,
 			TerminalState: model.FeishuOperationFailed,
-			PublicCode:    PublicCodeFailed,
+			PublicCode:    PublicCodeValidationError,
+		}
+	case semanticNotFound:
+		if !emptyClassifierEvidence(cliErr, evidence) {
+			return failClosedClassification(risk, invocationStarted)
+		}
+		return Classification{
+			Recovery:      RecoveryNone,
+			TerminalState: model.FeishuOperationFailed,
+			PublicCode:    PublicCodeNotFound,
 		}
 	default:
 		return failClosedClassification(risk, invocationStarted)
@@ -357,20 +373,6 @@ func (c *ErrorClassifier) normalizeMissingScopes(scopes []string, expectedScopes
 
 func scopeSetKey(scopes []string) string {
 	return strings.Join(scopes, "\x00")
-}
-
-func equalScopeSet(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	rightCopy := append([]string(nil), right...)
-	sort.Strings(rightCopy)
-	for index := range left {
-		if left[index] != rightCopy[index] {
-			return false
-		}
-	}
-	return true
 }
 
 type permissionEvidence uint8

@@ -2455,7 +2455,7 @@ func TestWorkspaceLifecycleUnbindJoinsExecutingCLIAndRuntimeHomeBeforeLocalDelet
 	operationService, err := NewFeishuOperationService(OperationServiceDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: h.dataStore.FeishuWorkspace(),
 		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: h.recovery,
-		Confirmation: h.confirmation, Vault: vault, Runner: runner, Cipher: h.cipher,
+		Confirmation: h.confirmation, Vault: vault, Preflight: h.preflight, Runner: runner, Cipher: h.cipher,
 		Now: h.service.now, LeaseDuration: time.Minute,
 	})
 	require.NoError(t, err)

@@ -49,6 +49,38 @@ type fakeLarkExecutor struct {
 	err      error
 }
 
+type fakeLarkInspector struct {
+	mu       sync.Mutex
+	requests []feishu.InspectionRequest
+	result   *feishu.InspectionResult
+	err      error
+}
+
+func (f *fakeLarkInspector) Inspect(_ context.Context, request feishu.InspectionRequest) (*feishu.InspectionResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	request.Argv = append([]string(nil), request.Argv...)
+	request.SkillReceipts = append([]string(nil), request.SkillReceipts...)
+	f.requests = append(f.requests, request)
+	if f.result == nil {
+		return nil, f.err
+	}
+	clone := *f.result
+	clone.GrantedScopes = append([]string(nil), f.result.GrantedScopes...)
+	clone.MissingScopes = append([]string(nil), f.result.MissingScopes...)
+	clone.Capabilities = make(map[string]string, len(f.result.Capabilities))
+	for key, value := range f.result.Capabilities {
+		clone.Capabilities[key] = value
+	}
+	return &clone, f.err
+}
+
+func (f *fakeLarkInspector) snapshot() []feishu.InspectionRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]feishu.InspectionRequest(nil), f.requests...)
+}
+
 type gatedRejectedLarkExecutor struct {
 	mu        sync.Mutex
 	calls     int
@@ -196,11 +228,14 @@ func TestLarkPersonalWorkspace_SkillReadPublishesHostedPolicy(t *testing.T) {
 	assert.Equal(t, executor.result.Receipt, output.Receipt)
 	assert.Contains(t, output.HostedPolicy, "不要执行 auth/config/whoami")
 	assert.Contains(t, output.HostedPolicy, "不要要求用户提供 App ID/App Secret")
-	assert.Contains(t, output.HostedPolicy, "直接调用 lark_execute")
-	assert.Contains(t, output.HostedPolicy, "自动生成授权卡片")
+	assert.Contains(t, output.HostedPolicy, "不要每次先检查权限")
+	assert.Contains(t, output.HostedPolicy, "只读 scope check")
+	assert.Contains(t, output.HostedPolicy, "lark_inspect")
+	assert.Contains(t, output.HostedPolicy, "生成授权卡片")
 	assert.Contains(t, output.HostedPolicy, "lark-shared")
 	assert.Contains(t, output.HostedPolicy, "对应业务技能")
-	assert.Contains(t, output.HostedPolicy, "最多修正并重试一次")
+	assert.Contains(t, output.HostedPolicy, "只可修正")
+	assert.Contains(t, output.HostedPolicy, "unknown_result 必须立即停止")
 }
 
 // Customer regression (Dev run 211): a fresh conversation only had a document
@@ -368,6 +403,7 @@ func TestLarkPersonalWorkspace_ExecuteAcceptsOfficialLarkCLIPrefix(t *testing.T)
 	executor := &fakeLarkExecutor{result: &feishu.OperationResult{
 		OperationID: "op-create",
 		State:       model.FeishuOperationSucceeded,
+		Data:        json.RawMessage(`{"document_id":"doc-created"}`),
 	}}
 	tool := &larkExecuteTool{executor: executor}
 	input := ToolInput(`{"argv":["lark-cli","docs","+create","--content","<title>验收</title>"],"skill_receipts":["receipt-doc","receipt-shared"]}`)
@@ -669,7 +705,9 @@ func TestLarkPersonalWorkspace_ExecuteCorrectionBudgetIsConcurrentAndResetsAfter
 
 		executor.mu.Lock()
 		executor.err = nil
-		executor.result = &feishu.OperationResult{OperationID: "op-success", State: model.FeishuOperationSucceeded}
+		executor.result = &feishu.OperationResult{
+			OperationID: "op-success", State: model.FeishuOperationSucceeded, Data: json.RawMessage(`{"ok":true}`),
+		}
 		executor.mu.Unlock()
 		result, err := tool.Execute(
 			larkPersonalWorkspaceContext(1, runID, "successful-correction"),
@@ -694,11 +732,24 @@ func TestLarkPersonalWorkspace_ExecuteCorrectionBudgetIsConcurrentAndResetsAfter
 }
 
 func TestLarkPersonalWorkspace_ExecuteTerminalStatesNeverFakeSuccess(t *testing.T) {
-	for _, state := range []string{model.FeishuOperationFailed, model.FeishuOperationUnknown, model.FeishuOperationCancelled} {
+	for index, state := range []string{model.FeishuOperationFailed, model.FeishuOperationUnknown, model.FeishuOperationCancelled} {
 		t.Run(state, func(t *testing.T) {
-			executor := &fakeLarkExecutor{result: &feishu.OperationResult{OperationID: "op-1", State: state}}
+			runID := uint64(800 + index)
+			larkExecuteRetryClearRun(runID)
+			t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+			code, category := feishu.PublicCodeFailed, "failed"
+			if state == model.FeishuOperationUnknown {
+				code, category = feishu.PublicCodeUnknownResult, "unknown_result"
+			}
+			if state == model.FeishuOperationCancelled {
+				code, category = feishu.PublicCodeCancelled, "cancelled"
+			}
+			executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+				OperationID: "op-1", State: state,
+				Failure: &feishu.OperationFailure{Code: code, Category: category, BusinessStarted: true},
+			}}
 			result, err := (&larkExecuteTool{executor: executor}).Execute(
-				larkPersonalWorkspaceContext(7, 8, "tc-8"),
+				larkPersonalWorkspaceContext(7, runID, "tc-8"),
 				ToolInput(`{"argv":["docs"],"skill_receipts":["receipt"]}`),
 			)
 			require.NoError(t, err)
@@ -711,6 +762,111 @@ func TestLarkPersonalWorkspace_ExecuteTerminalStatesNeverFakeSuccess(t *testing.
 			assert.Equal(t, state, output.State)
 		})
 	}
+}
+
+func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *testing.T) {
+	t.Run("durable external unknown arms stop before continuation", func(t *testing.T) {
+		const runID = uint64(810)
+		larkExecuteRetryClearRun(runID)
+		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+		externalResult, err := feishu.MarshalLarkToolResult(&feishu.OperationResult{
+			OperationID: "op-resumed-unknown", State: model.FeishuOperationUnknown,
+			Failure: &feishu.OperationFailure{
+				Code: feishu.PublicCodeUnknownResult, Category: "unknown_result", BusinessStarted: true,
+			},
+		})
+		require.NoError(t, err)
+		require.True(t, larkExecuteRetrySeedExternalResult(runID, externalResult))
+
+		executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+			OperationID: "must-not-run", State: model.FeishuOperationSucceeded, Data: json.RawMessage(`{"ok":true}`),
+		}}
+		result, err := (&larkExecuteTool{executor: executor}).Execute(
+			larkPersonalWorkspaceContext(7, runID, "write-after-resume"),
+			ToolInput(`{"argv":["docs","+create","--title","duplicate"],"skill_receipts":["shared","doc"]}`),
+		)
+		requireSafeLarkSoftError(t, result, err)
+		require.Contains(t, string(result), "不可自动重试")
+		require.Empty(t, executor.snapshot())
+	})
+
+	t.Run("unknown started write stops the run", func(t *testing.T) {
+		const runID = uint64(811)
+		larkExecuteRetryClearRun(runID)
+		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+		executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+			OperationID: "op-unknown", State: model.FeishuOperationUnknown,
+			Failure: &feishu.OperationFailure{
+				Code: feishu.PublicCodeUnknownResult, Category: "unknown_result", BusinessStarted: true,
+			},
+		}}
+		tool := &larkExecuteTool{executor: executor}
+		first, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "write-1"),
+			ToolInput(`{"argv":["docs","+create","--title","A"],"skill_receipts":["shared","doc"]}`),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(first), `"category":"unknown_result"`)
+		second, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "write-2"),
+			ToolInput(`{"argv":["docs","+create","--title","B"],"skill_receipts":["shared","doc"]}`),
+		)
+		requireSafeLarkSoftError(t, second, err)
+		require.Contains(t, string(second), "不可自动重试")
+		require.Len(t, executor.snapshot(), 1)
+	})
+
+	t.Run("validation permits one correction then success resets", func(t *testing.T) {
+		const runID = uint64(812)
+		larkExecuteRetryClearRun(runID)
+		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+		executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+			OperationID: "op-validation", State: model.FeishuOperationFailed,
+			Failure: &feishu.OperationFailure{
+				Code: feishu.PublicCodeValidationError, Category: "validation", BusinessStarted: true,
+			},
+		}}
+		tool := &larkExecuteTool{executor: executor}
+		first, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "read-invalid"),
+			ToolInput(`{"argv":["docs","+fetch","--doc","bad"],"skill_receipts":["shared","doc"]}`),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(first), `"category":"validation"`)
+		executor.mu.Lock()
+		executor.result = &feishu.OperationResult{
+			OperationID: "op-corrected", State: model.FeishuOperationSucceeded,
+			Data: json.RawMessage(`{"document_id":"doc-1"}`),
+		}
+		executor.mu.Unlock()
+		corrected, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "read-corrected"),
+			ToolInput(`{"argv":["docs","+fetch","--doc","doc-1"],"skill_receipts":["shared","doc"]}`),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(corrected), `"ok":true`)
+
+		executor.mu.Lock()
+		executor.result = &feishu.OperationResult{
+			OperationID: "op-not-found", State: model.FeishuOperationFailed,
+			Failure: &feishu.OperationFailure{
+				Code: feishu.PublicCodeNotFound, Category: "not_found", BusinessStarted: true,
+			},
+		}
+		executor.mu.Unlock()
+		notFound, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "read-new-cycle"),
+			ToolInput(`{"argv":["docs","+fetch","--doc","missing"],"skill_receipts":["shared","doc"]}`),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(notFound), `"category":"not_found"`)
+		blocked, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "read-blind-retry"),
+			ToolInput(`{"argv":["docs","+fetch","--doc","other"],"skill_receipts":["shared","doc"]}`),
+		)
+		requireSafeLarkSoftError(t, blocked, err)
+		require.Len(t, executor.snapshot(), 3)
+	})
 }
 
 func TestLarkPersonalWorkspace_ExecuteRejectsNonTerminalNonWaitingStates(t *testing.T) {
@@ -738,15 +894,87 @@ func TestLarkPersonalWorkspace_ExecuteRejectsNonTerminalNonWaitingStates(t *test
 	}
 }
 
+func TestLarkPersonalWorkspace_InspectUsesCurrentIdentityAndNeverExecutesBusiness(t *testing.T) {
+	ready := false
+	inspector := &fakeLarkInspector{result: &feishu.InspectionResult{
+		Mode: feishu.InspectionModeCommand, CommandPath: "docs +update", Domain: "docs", Risk: feishu.RiskWrite,
+		Ready:         &ready,
+		GrantedScopes: []string{"docx:document:readonly"}, MissingScopes: []string{"docx:document:write_only"},
+	}}
+	tool := &larkInspectTool{inspector: inspector}
+	result, err := tool.Execute(
+		larkPersonalWorkspaceContext(29, 601, "inspect-1"),
+		ToolInput(`{
+			"mode":"command",
+			"argv":["lark-cli","docs","+update","--doc","doxcnSECRET123","--command","append","--content","secret body"],
+			"skill_receipts":["receipt-shared","receipt-doc"]
+		}`),
+	)
+	require.NoError(t, err)
+	require.JSONEq(t, `{
+		"mode":"command","command_path":"docs +update","domain":"docs","risk":"write",
+		"ready":false,
+		"granted_scopes":["docx:document:readonly"],"missing_scopes":["docx:document:write_only"]
+	}`, string(result))
+	requests := inspector.snapshot()
+	require.Len(t, requests, 1)
+	require.Equal(t, uint(29), requests[0].UserID)
+	require.EqualValues(t, 601, requests[0].AgentRunID)
+	require.Equal(t, "docs", requests[0].Argv[0])
+	require.NotContains(t, string(result), "doxcnSECRET123")
+	require.NotContains(t, string(result), "secret body")
+	require.True(t, tool.IsReadOnly())
+	require.False(t, tool.IsConcurrencySafe(nil))
+}
+
+func TestLarkPersonalWorkspace_InspectConnectionAndStrictBoundaries(t *testing.T) {
+	inspector := &fakeLarkInspector{result: &feishu.InspectionResult{
+		Mode: feishu.InspectionModeConnection, ConnectionState: model.FeishuConnectionConnected,
+		Capabilities: map[string]string{"docs": model.FeishuCapabilityAvailable},
+	}}
+	tool := &larkInspectTool{inspector: inspector}
+	result, err := tool.Execute(
+		larkPersonalWorkspaceContext(30, 602, "inspect-connection"), ToolInput(`{"mode":"connection"}`),
+	)
+	require.NoError(t, err)
+	require.Contains(t, string(result), `"connection_state":"connected"`)
+	require.Len(t, inspector.snapshot(), 1)
+
+	for name, input := range map[string]string{
+		"unknown mode":            `{"mode":"auth"}`,
+		"connection argv":         `{"mode":"connection","argv":["docs"]}`,
+		"connection receipts":     `{"mode":"connection","skill_receipts":["r"]}`,
+		"command missing argv":    `{"mode":"command","skill_receipts":["r"]}`,
+		"command missing receipt": `{"mode":"command","argv":["docs"]}`,
+		"prefix only":             `{"mode":"command","argv":["lark-cli"],"skill_receipts":["r"]}`,
+		"injected identity":       `{"mode":"connection","user_id":7}`,
+		"duplicate mode":          `{"mode":"connection","mode":"command"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			before := len(inspector.snapshot())
+			got, executeErr := tool.Execute(
+				larkPersonalWorkspaceContext(30, 602, "inspect-invalid"), ToolInput(input),
+			)
+			requireSafeLarkSoftError(t, got, executeErr, "user_id")
+			require.Len(t, inspector.snapshot(), before)
+		})
+	}
+
+	got, err := tool.Execute(context.Background(), ToolInput(`{"mode":"connection"}`))
+	requireSafeLarkSoftError(t, got, err)
+}
+
 func TestPlatformToolFactory_LarkPersonalWorkspaceBothOrNoneAndNoLegacyTools(t *testing.T) {
 	reader := &fakeSkillReadExecutor{}
+	inspector := &fakeLarkInspector{}
 	executor := &fakeLarkExecutor{}
 	legacyNames := []string{"lark_create_doc", "lark_read_bitable", "lark_send_message", "feishu_connect"}
 
 	for name, configure := range map[string]func(ToolFactory){
-		"none":         func(ToolFactory) {},
-		"reader only":  func(f ToolFactory) { SetFactoryLarkWorkspaceExecutors(f, reader, nil) },
-		"execute only": func(f ToolFactory) { SetFactoryLarkWorkspaceExecutors(f, nil, executor) },
+		"none":           func(ToolFactory) {},
+		"reader only":    func(f ToolFactory) { SetFactoryLarkWorkspaceExecutors(f, reader, nil, nil) },
+		"inspector only": func(f ToolFactory) { SetFactoryLarkWorkspaceExecutors(f, nil, inspector, nil) },
+		"execute only":   func(f ToolFactory) { SetFactoryLarkWorkspaceExecutors(f, nil, nil, executor) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			factory := NewPlatformToolFactory(nil, nil)
@@ -756,30 +984,34 @@ func TestPlatformToolFactory_LarkPersonalWorkspaceBothOrNoneAndNoLegacyTools(t *
 			assert.Len(t, tools, 19)
 			assert.Len(t, metadata, 19)
 			for _, tool := range tools {
-				assert.NotContains(t, append(legacyNames, "lark_skill_read", "lark_execute"), tool.Name())
+				assert.NotContains(t, append(legacyNames, "lark_skill_read", "lark_inspect", "lark_execute"), tool.Name())
 			}
 		})
 	}
-	assert.NotPanics(t, func() { SetFactoryLarkWorkspaceExecutors(nil, reader, executor) })
+	assert.NotPanics(t, func() { SetFactoryLarkWorkspaceExecutors(nil, reader, inspector, executor) })
 
 	factory := NewPlatformToolFactory(nil, nil)
-	SetFactoryLarkWorkspaceExecutors(factory, reader, executor)
+	SetFactoryLarkWorkspaceExecutors(factory, reader, inspector, executor)
 	pf := factory.(*platformToolFactory)
 	pf.larkProviderOverride = &fakeLarkProvider{api: &fakeLarkAPI{}}
 	pf.feishuConnectorOverride = &fakeConnector{step: &feishu.ConnectStep{Phase: feishu.ConnectPhaseDone}}
 	tools, metadata, err := factory.LoadTools(context.Background())
 	require.NoError(t, err)
-	require.Len(t, tools, 21, "19 base tools plus exactly two controlled Lark tools")
-	require.Len(t, metadata, 21)
+	require.Len(t, tools, 22, "19 base tools plus exactly three controlled Lark tools")
+	require.Len(t, metadata, 22)
 	assert.Equal(t, "lark_skill_read", tools[19].Name())
-	assert.Equal(t, "lark_execute", tools[20].Name())
+	assert.Equal(t, "lark_inspect", tools[20].Name())
+	assert.Equal(t, "lark_execute", tools[21].Name())
 	assert.Equal(t, "lark_skill_read", metadata[19].ToolName)
 	assert.Equal(t, "safe", metadata[19].RiskLevel)
 	assert.Equal(t, "飞书", metadata[19].Category)
-	assert.Equal(t, "lark_execute", metadata[20].ToolName)
-	assert.Equal(t, "moderate", metadata[20].RiskLevel)
+	assert.Equal(t, "lark_inspect", metadata[20].ToolName)
+	assert.Equal(t, "safe", metadata[20].RiskLevel)
 	assert.Equal(t, "飞书", metadata[20].Category)
-	assert.Contains(t, metadata[20].Description, "Drive")
+	assert.Equal(t, "lark_execute", metadata[21].ToolName)
+	assert.Equal(t, "moderate", metadata[21].RiskLevel)
+	assert.Equal(t, "飞书", metadata[21].Category)
+	assert.Contains(t, metadata[21].Description, "Drive")
 	for _, legacy := range legacyNames {
 		for _, tool := range tools {
 			assert.NotEqual(t, legacy, tool.Name(), "legacy factory registration must stay removed")
@@ -790,6 +1022,8 @@ func TestPlatformToolFactory_LarkPersonalWorkspaceBothOrNoneAndNoLegacyTools(t *
 	require.NoError(t, registry.RegisterFactory(factory))
 	require.NoError(t, registry.LoadAll(context.Background()))
 	_, ok := registry.GetTool("lark_skill_read")
+	assert.True(t, ok)
+	_, ok = registry.GetTool("lark_inspect")
 	assert.True(t, ok)
 	_, ok = registry.GetTool("lark_execute")
 	assert.True(t, ok)

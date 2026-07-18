@@ -199,6 +199,54 @@ type operationRunnerFake struct {
 	authStatus int
 }
 
+type operationScopePreflightStep struct {
+	result *ScopeCheckResult
+	err    error
+}
+
+// operationScopePreflightFake grants every requested catalog scope by default.
+// Tests can script missing scopes or protocol failures without changing the
+// business runner fixture.
+type operationScopePreflightFake struct {
+	mu     sync.Mutex
+	steps  []operationScopePreflightStep
+	calls  int
+	scopes [][]string
+}
+
+func (f *operationScopePreflightFake) Check(
+	_ context.Context,
+	_ string,
+	scopes []string,
+) (*ScopeCheckResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	index := f.calls
+	f.calls++
+	f.scopes = append(f.scopes, append([]string(nil), scopes...))
+	if index < len(f.steps) {
+		step := f.steps[index]
+		if step.result == nil {
+			return nil, step.err
+		}
+		return &ScopeCheckResult{
+			Granted: append([]string(nil), step.result.Granted...),
+			Missing: append([]string(nil), step.result.Missing...),
+		}, step.err
+	}
+	return &ScopeCheckResult{Granted: append([]string(nil), scopes...)}, nil
+}
+
+func (f *operationScopePreflightFake) snapshot() (int, [][]string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	result := make([][]string, len(f.scopes))
+	for index := range f.scopes {
+		result[index] = append([]string(nil), f.scopes[index]...)
+	}
+	return f.calls, result
+}
+
 func (f *operationRunnerFake) Run(_ context.Context, _ string, argv []string, stdinJSON []byte) (*CLIResult, error) {
 	f.mu.Lock()
 	index := f.calls
@@ -620,6 +668,7 @@ type operationHarness struct {
 	recovery     *operationRecoveryFake
 	confirmation *operationConfirmationFake
 	runner       *operationRunnerFake
+	preflight    *operationScopePreflightFake
 	vault        *operationVaultFake
 	cipher       *OperationCipherKeyring
 	service      *FeishuOperationService
@@ -653,6 +702,7 @@ func newOperationHarness(t *testing.T) *operationHarness {
 		ExpiresAt: time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC),
 	}}
 	runner := &operationRunnerFake{steps: []operationRunnerStep{{result: operationOKResult(`{"document_id":"doc1"}`)}}}
+	preflight := &operationScopePreflightFake{}
 	vault := &operationVaultFake{}
 	cipher := newOperationTestCipherKeyring(t, "v1")
 	service, err := NewFeishuOperationService(OperationServiceDeps{
@@ -663,6 +713,7 @@ func newOperationHarness(t *testing.T) *operationHarness {
 		Recovery:      recovery,
 		Confirmation:  confirmation,
 		Vault:         vault,
+		Preflight:     preflight,
 		Runner:        runner,
 		Cipher:        cipher,
 		Now:           func() time.Time { return time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC) },
@@ -672,7 +723,7 @@ func newOperationHarness(t *testing.T) *operationHarness {
 	return &operationHarness{
 		t: t, ctx: context.Background(), db: db, dataStore: dataStore,
 		receipts: receipts, recovery: recovery, confirmation: confirmation,
-		runner: runner, vault: vault, cipher: cipher, service: service,
+		runner: runner, preflight: preflight, vault: vault, cipher: cipher, service: service,
 	}
 }
 
@@ -681,7 +732,7 @@ func newHarnessOperationService(t *testing.T, h *operationHarness, operations Op
 	service, err := NewFeishuOperationService(OperationServiceDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: operations,
 		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: h.recovery,
-		Confirmation: h.confirmation, Vault: h.vault, Runner: h.runner, Cipher: h.cipher,
+		Confirmation: h.confirmation, Vault: h.vault, Preflight: h.preflight, Runner: h.runner, Cipher: h.cipher,
 		Now: h.service.now, LeaseDuration: time.Minute,
 	})
 	require.NoError(t, err)
@@ -701,7 +752,8 @@ func newHarnessOperationServiceWithRuntime(
 		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: operations,
 		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: h.recovery,
 		Confirmation: h.confirmation, Vault: h.vault, Runner: runner, Cipher: h.cipher,
-		Now: now, LeaseDuration: time.Minute,
+		Preflight: h.preflight,
+		Now:       now, LeaseDuration: time.Minute,
 		ExecutionGateHeartbeatInterval: heartbeatInterval,
 	})
 	require.NoError(t, err)
@@ -839,7 +891,7 @@ func TestOperationService_StaleNotStartedSnapshotCannotLeaseTerminalOperation(t 
 	service, err := NewFeishuOperationService(OperationServiceDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: racingStore,
 		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: h.recovery,
-		Confirmation: h.confirmation, Vault: h.vault, Runner: h.runner, Cipher: h.cipher,
+		Confirmation: h.confirmation, Vault: h.vault, Preflight: h.preflight, Runner: h.runner, Cipher: h.cipher,
 		Now: h.service.now, LeaseDuration: time.Minute,
 	})
 	require.NoError(t, err)
@@ -855,6 +907,26 @@ func TestOperationService_StaleNotStartedSnapshotCannotLeaseTerminalOperation(t 
 	require.Equal(t, model.FeishuOperationFailed, stored.State)
 	require.Empty(t, stored.LeaseOwner)
 	require.Nil(t, stored.LeaseUntil)
+}
+
+func TestOperationService_LegacyUnknownSummaryPreservesStartedWriteEvidence(t *testing.T) {
+	h := newOperationHarness(t)
+	for name, summary := range map[string][]byte{
+		"malformed":    []byte(`{"unexpected":true}`),
+		"stale status": []byte(`{"status":"failed","public_code":"feishu_failed","business_started":false}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := h.service.resultFromOperation(&model.FeishuOperation{
+				ID: "legacy-unknown", State: model.FeishuOperationUnknown,
+				RiskLevel: string(RiskWrite), ResultSummaryJSON: summary,
+			})
+			require.NoError(t, err)
+			require.NotNil(t, got.Failure)
+			require.Equal(t, PublicCodeUnknownResult, got.Failure.Code)
+			require.True(t, got.Failure.BusinessStarted)
+			require.False(t, got.Failure.Retryable)
+		})
+	}
 }
 
 func TestOperationService_StrictInputAndServerOwnedReceiptDomain(t *testing.T) {
@@ -1165,7 +1237,7 @@ func TestOperationService_CompletedAuthRecoveryContinuesWithoutRecursiveDispatch
 	service, err := NewFeishuOperationService(OperationServiceDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: h.dataStore.FeishuWorkspace(),
 		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: authService,
-		Confirmation: h.confirmation, Vault: h.vault, Runner: h.runner, Cipher: h.cipher,
+		Confirmation: h.confirmation, Vault: h.vault, Preflight: h.preflight, Runner: h.runner, Cipher: h.cipher,
 		Now: h.service.now, LeaseDuration: time.Minute,
 	})
 	require.NoError(t, err)
@@ -1288,7 +1360,7 @@ func TestOperationService_CodeLessStartedDocsCreateIsUnknownAndNeverAuthorizedOr
 	require.Equal(t, model.FeishuOperationUnknown, stored.State)
 }
 
-func TestOperationService_StructuredRecoveryUsesExactScopesAndSealsVault(t *testing.T) {
+func TestOperationService_StartedWriteMissingScopeNeverEntersRecovery(t *testing.T) {
 	h := newOperationHarness(t)
 	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
 	h.recovery.action = &OperationAction{
@@ -1315,20 +1387,14 @@ func TestOperationService_StructuredRecoveryUsesExactScopesAndSealsVault(t *test
 
 	got, err := h.service.Execute(h.ctx, req)
 	require.NoError(t, err)
-	require.Equal(t, model.FeishuOperationWaitingUserAuth, got.State)
-	require.Equal(t, ProviderLark, got.Action.Provider)
-	require.Equal(t, "user_auth", got.Action.Phase)
-	require.Equal(t, []string{"docx:document:create"}, got.Action.Scopes)
-	require.Equal(t, "https://verification.example/sensitive", got.Action.URL)
-	calls := h.recovery.snapshot()
-	require.Len(t, calls, 1)
-	require.Equal(t, RecoveryUserScope, calls[0].Kind)
-	require.Equal(t, []string{"docx:document:create"}, calls[0].Scopes)
-	require.Equal(t, []bool{true}, h.vault.changed)
+	require.Equal(t, model.FeishuOperationUnknown, got.State)
+	require.Nil(t, got.Action)
+	require.Empty(t, h.recovery.snapshot())
+	require.Equal(t, []bool{false, true}, h.vault.changed, "preflight is read-only; the business invocation seals")
 
 	stored, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, got.OperationID)
 	require.NoError(t, err)
-	require.Equal(t, model.FeishuOperationWaitingUserAuth, stored.State)
+	require.Equal(t, model.FeishuOperationUnknown, stored.State)
 	require.Empty(t, stored.LeaseOwner)
 	require.Nil(t, stored.LeaseUntil)
 	require.NotContains(t, string(stored.ResultSummaryJSON), "verification.example")
@@ -1400,7 +1466,7 @@ func TestOperationService_CreateAppAndReauthRecoveriesUseCatalogScopes(t *testin
 			req := ExecuteRequest{
 				UserID: 7, AgentRunID: runID, ToolCallID: toolCallID,
 				IdempotencyKey: fmt.Sprintf("%d:%s", runID, toolCallID),
-				Argv:           []string{"docs", "+create", "--title", "报告"}, SkillReceipts: []string{"shared", "doc"},
+				Argv:           []string{"docs", "+fetch", "--doc", "doxcnABCDEFG123"}, SkillReceipts: []string{"shared", "doc"},
 			}
 
 			got, err := h.service.Execute(h.ctx, req)
@@ -1409,7 +1475,7 @@ func TestOperationService_CreateAppAndReauthRecoveriesUseCatalogScopes(t *testin
 			calls := h.recovery.snapshot()
 			require.Len(t, calls, 1)
 			require.Equal(t, testCase.kind, calls[0].Kind)
-			require.Equal(t, []string{"docx:document:create"}, calls[0].Scopes)
+			require.Equal(t, []string{"docx:document:readonly"}, calls[0].Scopes)
 			require.Equal(t, calls[0].Scopes, got.Action.Scopes)
 		})
 	}
@@ -1484,6 +1550,9 @@ func TestOperationService_HighRiskOnlyCreatesConfirmationWaiting(t *testing.T) {
 	require.Len(t, h.confirmation.calls, 1)
 	require.Equal(t, RiskHigh, h.confirmation.calls[0].Risk)
 	require.False(t, h.confirmation.calls[0].RequiresCLIYes)
+	preflightCalls, preflightScopes := h.preflight.snapshot()
+	require.Equal(t, 1, preflightCalls)
+	require.Equal(t, [][]string{{"docx:document:write_only", "docx:document:readonly"}}, preflightScopes)
 
 	stored, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, got.OperationID)
 	require.NoError(t, err)
@@ -1530,6 +1599,95 @@ func TestOperationService_HighRiskOnlyCreatesConfirmationWaiting(t *testing.T) {
 		require.NoError(t, h.db.Model(&model.FeishuOperationExecutionGate{}).Count(&gateCount).Error)
 		require.Zero(t, gateCount)
 	})
+}
+
+func TestOperationService_DocsUpdateMissingScopeIsFoundBeforeBusinessInvocation(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	h.preflight.steps = []operationScopePreflightStep{{result: &ScopeCheckResult{
+		Granted: []string{"docx:document:readonly"}, Missing: []string{"docx:document:write_only"},
+	}}}
+
+	got, err := h.service.Execute(h.ctx, operationDocsAppendRequest(7, 181, "preflight-missing", "doxcnABCDEFG123"))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingUserAuth, got.State)
+	require.Equal(t, []string{"docx:document:write_only"}, got.Action.Scopes)
+	preflightCalls, scopes := h.preflight.snapshot()
+	require.Equal(t, 1, preflightCalls)
+	require.Equal(t, [][]string{{"docx:document:write_only", "docx:document:readonly"}}, scopes)
+	businessCalls, _ := h.runner.snapshot()
+	require.Zero(t, businessCalls)
+
+	stored, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, got.OperationID)
+	require.NoError(t, err)
+	require.Empty(t, stored.ResultCiphertext)
+	require.NotContains(t, string(stored.ResultSummaryJSON), "suggestion")
+}
+
+func TestOperationService_WritePreflightRecoveryResumesExactlyOnce(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	h.preflight.steps = []operationScopePreflightStep{
+		{result: &ScopeCheckResult{Granted: []string{"docx:document:readonly"}, Missing: []string{"docx:document:write_only"}}},
+		{result: &ScopeCheckResult{Granted: []string{"docx:document:readonly", "docx:document:write_only"}}},
+	}
+	waiting, err := h.service.Execute(h.ctx, operationDocsAppendRequest(7, 182, "preflight-resume", "doxcnABCDEFG123"))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingUserAuth, waiting.State)
+	h.recovery.action = nil // The durable authorization phase has completed.
+
+	completed, err := h.service.Resume(h.ctx, 7, waiting.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, completed.State)
+	preflightCalls, _ := h.preflight.snapshot()
+	require.Equal(t, 2, preflightCalls)
+	businessCalls, _ := h.runner.snapshot()
+	require.Equal(t, 1, businessCalls)
+
+	idempotent, err := h.service.Resume(h.ctx, 7, waiting.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, idempotent.State)
+	preflightCalls, _ = h.preflight.snapshot()
+	require.Equal(t, 2, preflightCalls)
+	businessCalls, _ = h.runner.snapshot()
+	require.Equal(t, 1, businessCalls)
+}
+
+func TestOperationService_RepeatedMissingWriteScopeFailsWithoutBusinessInvocation(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	missing := &ScopeCheckResult{
+		Granted: []string{"docx:document:readonly"}, Missing: []string{"docx:document:write_only"},
+	}
+	h.preflight.steps = []operationScopePreflightStep{{result: missing}, {result: missing}}
+	waiting, err := h.service.Execute(h.ctx, operationDocsAppendRequest(7, 183, "preflight-still-missing", "doxcnABCDEFG123"))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingUserAuth, waiting.State)
+	h.recovery.action = nil
+
+	failed, err := h.service.Resume(h.ctx, 7, waiting.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationFailed, failed.State)
+	preflightCalls, _ := h.preflight.snapshot()
+	require.Equal(t, 2, preflightCalls)
+	businessCalls, _ := h.runner.snapshot()
+	require.Zero(t, businessCalls)
+}
+
+func TestOperationService_WritePreflightProtocolFailureNeverStartsBusiness(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	h.preflight.steps = []operationScopePreflightStep{{err: errors.New("malformed scope response with secret")}}
+
+	failed, err := h.service.Execute(h.ctx, operationDocsAppendRequest(7, 184, "preflight-failed", "doxcnABCDEFG123"))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationFailed, failed.State)
+	businessCalls, _ := h.runner.snapshot()
+	require.Zero(t, businessCalls)
+	stored, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, failed.OperationID)
+	require.NoError(t, err)
+	require.Contains(t, string(stored.ResultSummaryJSON), PublicCodeTemporaryError)
+	require.NotContains(t, string(stored.ResultSummaryJSON), "secret")
 }
 
 func TestOperationService_ConfirmationDecisionExecutesExactlyOnceOrCancelsWithoutRunner(t *testing.T) {
@@ -1710,7 +1868,7 @@ func TestOperationService_ExecutingIntermediateUpdateInvalidatesCreateProof(t *t
 	service, err := NewFeishuOperationService(OperationServiceDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: barrierStore,
 		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: h.recovery,
-		Confirmation: h.confirmation, Vault: h.vault, Runner: h.runner, Cipher: h.cipher,
+		Confirmation: h.confirmation, Vault: h.vault, Preflight: h.preflight, Runner: h.runner, Cipher: h.cipher,
 		Now: h.service.now, LeaseDuration: time.Minute,
 	})
 	require.NoError(t, err)
@@ -2169,7 +2327,7 @@ func TestOperationService_StaleOverwriteCannotStartRunnerAfterAnotherServiceTake
 		service, err := NewFeishuOperationService(OperationServiceDeps{
 			Accounts: h.dataStore.ThirdPartyAccounts(), Operations: h.dataStore.FeishuWorkspace(),
 			Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: h.recovery,
-			Confirmation: h.confirmation, Vault: h.vault, Runner: h.runner, Cipher: h.cipher,
+			Confirmation: h.confirmation, Vault: h.vault, Preflight: h.preflight, Runner: h.runner, Cipher: h.cipher,
 			Now: now, LeaseDuration: time.Minute,
 		})
 		require.NoError(t, err)
@@ -2330,7 +2488,7 @@ func TestOperationService_ExecutionGateHeartbeatLossCancelsActiveRunner(t *testi
 	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
 	renewed := make(chan struct{}, 8)
 	trackingStore := &renewalTrackingOperationStore{
-		IFeishuWorkspaceStore: h.dataStore.FeishuWorkspace(), failAt: 2, renewed: renewed,
+		IFeishuWorkspaceStore: h.dataStore.FeishuWorkspace(), failAt: 3, renewed: renewed,
 	}
 	runner := &contextBlockingOperationRunner{started: make(chan struct{}, 1)}
 	service := newHarnessOperationServiceWithRuntime(
@@ -2450,7 +2608,7 @@ func TestOperationService_ConcurrentDistinctOverwritesAtomicallyConsumeOneProof(
 	service, err := NewFeishuOperationService(OperationServiceDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: barrierStore,
 		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: h.recovery,
-		Confirmation: h.confirmation, Vault: h.vault, Runner: h.runner, Cipher: h.cipher,
+		Confirmation: h.confirmation, Vault: h.vault, Preflight: h.preflight, Runner: h.runner, Cipher: h.cipher,
 		Now: h.service.now, LeaseDuration: time.Minute,
 	})
 	require.NoError(t, err)
@@ -2561,7 +2719,7 @@ func TestOperationService_ResumeCannotTrustUnboundEncryptedProof(t *testing.T) {
 	service, err := NewFeishuOperationService(OperationServiceDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: storeWithoutBinding,
 		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: h.recovery,
-		Confirmation: h.confirmation, Vault: h.vault, Runner: h.runner, Cipher: h.cipher,
+		Confirmation: h.confirmation, Vault: h.vault, Preflight: h.preflight, Runner: h.runner, Cipher: h.cipher,
 		Now: h.service.now, LeaseDuration: time.Minute,
 	})
 	require.NoError(t, err)
@@ -2625,7 +2783,7 @@ func TestOperationService_RepeatedOverwriteUsesPersistedProofWhenCandidateWindow
 	service, err := NewFeishuOperationService(OperationServiceDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: proofStore,
 		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: h.recovery,
-		Confirmation: h.confirmation, Vault: h.vault, Runner: h.runner, Cipher: h.cipher,
+		Confirmation: h.confirmation, Vault: h.vault, Preflight: h.preflight, Runner: h.runner, Cipher: h.cipher,
 		Now: h.service.now, LeaseDuration: time.Minute,
 	})
 	require.NoError(t, err)
@@ -2880,7 +3038,7 @@ func TestOperationService_ResumeReplaysEncryptedRequestAndStopsRepeatedRecovery(
 		ExitCode:          1,
 		Envelope: &CLIEnvelope{OK: false, Identity: "user", Error: &CLIError{
 			Type: "authorization", Subtype: "missing_scope", Code: json.RawMessage(`99991672`),
-			Identity: "user", MissingScopes: []string{"docx:document:create"},
+			Identity: "user", MissingScopes: []string{"docx:document:readonly"},
 		}},
 	}
 	h.runner.steps = []operationRunnerStep{
@@ -2890,14 +3048,14 @@ func TestOperationService_ResumeReplaysEncryptedRequestAndStopsRepeatedRecovery(
 	req := ExecuteRequest{
 		UserID: 7, AgentRunID: 19, ToolCallID: "tc-repeat-recovery",
 		IdempotencyKey: "19:tc-repeat-recovery",
-		Argv:           []string{"docs", "+create", "--title", "original-title"},
+		Argv:           []string{"docs", "+fetch", "--doc", "doxcnOriginalToken123"},
 		SkillReceipts:  []string{"shared-receipt", "doc-receipt"},
 	}
 
 	waiting, err := h.service.Execute(h.ctx, req)
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationWaitingUserAuth, waiting.State)
-	req.Argv[3] = "mutated-after-persist"
+	req.Argv[3] = "doxcnMutatedAfterPersist123"
 
 	restartedService := newHarnessOperationService(t, h, h.dataStore.FeishuWorkspace())
 	resumed, err := restartedService.Resume(h.ctx, 7, waiting.OperationID)
@@ -2906,8 +3064,8 @@ func TestOperationService_ResumeReplaysEncryptedRequestAndStopsRepeatedRecovery(
 	calls, argv := h.runner.snapshot()
 	require.Equal(t, 2, calls)
 	require.Equal(t, argv[0], argv[1])
-	require.Contains(t, argv[1], "original-title")
-	require.NotContains(t, argv[1], "mutated-after-persist")
+	require.Contains(t, argv[1], "doxcnOriginalToken123")
+	require.NotContains(t, argv[1], "doxcnMutatedAfterPersist123")
 	require.Len(t, h.recovery.snapshot(), 2, "same recovery signature must fail instead of opening a third session")
 
 	stored, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, waiting.OperationID)
@@ -2963,7 +3121,7 @@ func TestOperationService_TerminalResultIsEncryptedIdempotentAndDefensivelyCopie
 	v2Service, err := NewFeishuOperationService(OperationServiceDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: h.dataStore.FeishuWorkspace(),
 		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: h.recovery,
-		Confirmation: h.confirmation, Vault: h.vault, Runner: h.runner,
+		Confirmation: h.confirmation, Vault: h.vault, Preflight: h.preflight, Runner: h.runner,
 		Cipher: newOperationTestCipherKeyring(t, "v2"), Now: func() time.Time { return time.Date(2026, 7, 13, 12, 1, 0, 0, time.UTC) },
 	})
 	require.NoError(t, err)
@@ -3104,7 +3262,9 @@ func TestOperationService_GenerationBumpAfterRunnerStartCannotCommitOrSeal(t *te
 	h.vault.afterRun = func(userID uint, generation uint64, changed bool) error {
 		require.Equal(t, uint(7), userID)
 		require.EqualValues(t, 1, generation)
-		require.True(t, changed)
+		if !changed {
+			return nil // the scope preflight never changes or seals the HOME
+		}
 		require.NoError(t, h.db.Model(&model.UserThirdPartyAccount{}).
 			Where("user_id = ? AND provider = ?", userID, ProviderLark).
 			Update("generation", 2).Error)
@@ -3144,7 +3304,7 @@ func TestOperationService_RunnerNotStartedDoesNotSealVault(t *testing.T) {
 	got, err := h.service.Execute(h.ctx, req)
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationFailed, got.State)
-	require.Equal(t, []bool{false}, h.vault.changed)
+	require.Equal(t, []bool{false, false}, h.vault.changed, "preflight and failed process start are both read-only")
 	require.Zero(t, h.vault.sealed)
 }
 
@@ -3180,6 +3340,129 @@ func TestOperationService_StartedWriteIndeterminateFailuresAreUnknownWithoutRetr
 			require.Equal(t, 1, calls)
 		})
 	}
+}
+
+func TestOperationService_WritePreflightIsSharedAcrossDocsBaseAndWiki(t *testing.T) {
+	tests := []struct {
+		name   string
+		argv   []string
+		scopes []string
+	}{
+		{
+			name: "docs create", argv: []string{"docs", "+create", "--title", "Report"},
+			scopes: []string{"docx:document:create"},
+		},
+		{
+			name: "base record update",
+			argv: []string{
+				"base", "+record-batch-update", "--base-token", "bascnABCDEFG123", "--table-id", "Tasks",
+				"--json", `{"record_id_list":["recABCDEFG123"],"patch":{"Status":"Done"}}`,
+			},
+			scopes: []string{"base:record:update"},
+		},
+		{
+			name:   "wiki node create",
+			argv:   []string{"wiki", "+node-create", "--space-id", "my_library", "--title", "Playbook"},
+			scopes: []string{"wiki:node:create", "wiki:node:read", "wiki:space:read"},
+		},
+	}
+	for index, test := range tests {
+		t.Run(test.name+" missing", func(t *testing.T) {
+			h := newOperationHarness(t)
+			h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+			h.preflight.steps = []operationScopePreflightStep{{result: &ScopeCheckResult{
+				Missing: append([]string(nil), test.scopes...),
+			}}}
+			request := ExecuteRequest{
+				UserID: 7, AgentRunID: uint64(900 + index), ToolCallID: "domain-missing",
+				IdempotencyKey: fmt.Sprintf("%d:domain-missing", 900+index),
+				Argv:           append([]string(nil), test.argv...), SkillReceipts: []string{"shared", "domain"},
+			}
+			got, err := h.service.Execute(h.ctx, request)
+			require.NoError(t, err)
+			require.Equal(t, model.FeishuOperationWaitingUserAuth, got.State)
+			require.Equal(t, test.scopes, got.Action.Scopes)
+			businessCalls, _ := h.runner.snapshot()
+			require.Zero(t, businessCalls)
+			preflightCalls, scopes := h.preflight.snapshot()
+			require.Equal(t, 1, preflightCalls)
+			require.Equal(t, [][]string{test.scopes}, scopes)
+		})
+
+		t.Run(test.name+" granted", func(t *testing.T) {
+			h := newOperationHarness(t)
+			h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+			request := ExecuteRequest{
+				UserID: 7, AgentRunID: uint64(910 + index), ToolCallID: "domain-granted",
+				IdempotencyKey: fmt.Sprintf("%d:domain-granted", 910+index),
+				Argv:           append([]string(nil), test.argv...), SkillReceipts: []string{"shared", "domain"},
+			}
+			got, err := h.service.Execute(h.ctx, request)
+			require.NoError(t, err)
+			require.Equal(t, model.FeishuOperationSucceeded, got.State)
+			businessCalls, _ := h.runner.snapshot()
+			require.Equal(t, 1, businessCalls)
+			preflightCalls, scopes := h.preflight.snapshot()
+			require.Equal(t, 1, preflightCalls)
+			require.Equal(t, [][]string{test.scopes}, scopes)
+		})
+	}
+}
+
+func TestOperationService_ConnectionsAreSharedAcrossAgentRunsAndIsolatedAcrossUsers(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 3, "cli_user_7")
+	h.createAccount(8, model.FeishuConnectionConnected, 5, "cli_user_8")
+	h.runner.steps = []operationRunnerStep{
+		{result: operationOKResult(`{"document_id":"a"}`)},
+		{result: operationOKResult(`{"document_id":"b"}`)},
+		{result: operationOKResult(`{"document_id":"c"}`)},
+	}
+	var mu sync.Mutex
+	var homes []struct {
+		userID     uint
+		generation uint64
+	}
+	h.vault.afterRun = func(userID uint, generation uint64, _ bool) error {
+		mu.Lock()
+		homes = append(homes, struct {
+			userID     uint
+			generation uint64
+		}{userID: userID, generation: generation})
+		mu.Unlock()
+		return nil
+	}
+
+	requests := []ExecuteRequest{
+		operationDocsFetchRequest(1001, "agent-a"),
+		operationDocsFetchRequest(1002, "agent-b"),
+		operationDocsFetchRequest(1003, "same-definition-other-user"),
+	}
+	requests[2].UserID = 8
+	for _, request := range requests {
+		result, err := h.service.Execute(h.ctx, request)
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuOperationSucceeded, result.State)
+	}
+
+	var operations []model.FeishuOperation
+	require.NoError(t, h.db.Order("agent_run_id asc").Find(&operations).Error)
+	require.Len(t, operations, 3)
+	require.Equal(t, uint(7), operations[0].UserID)
+	require.Equal(t, uint64(3), operations[0].Generation)
+	require.Equal(t, uint(7), operations[1].UserID)
+	require.Equal(t, uint64(3), operations[1].Generation, "two Agents owned by one user share the account generation")
+	require.Equal(t, uint(8), operations[2].UserID)
+	require.Equal(t, uint64(5), operations[2].Generation, "the same Agent behavior under another user uses another account")
+	mu.Lock()
+	require.Equal(t, []struct {
+		userID     uint
+		generation uint64
+	}{{7, 3}, {7, 3}, {8, 5}}, homes)
+	mu.Unlock()
+	domains, runs := h.receipts.snapshot()
+	require.Equal(t, []string{"docs", "docs", "docs"}, domains)
+	require.Equal(t, []uint64{1001, 1002, 1003}, runs)
 }
 
 func TestOperationService_OKEnvelopeWithoutValidDataFailsClosed(t *testing.T) {
@@ -3221,25 +3504,21 @@ func TestOperationService_ConcurrentResumeUsesUniqueOwnersAndOneReplay(t *testin
 	service, err := NewFeishuOperationService(OperationServiceDeps{
 		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: recorded,
 		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: h.recovery,
-		Confirmation: h.confirmation, Vault: h.vault, Runner: h.runner, Cipher: h.cipher,
+		Confirmation: h.confirmation, Vault: h.vault, Preflight: h.preflight, Runner: h.runner, Cipher: h.cipher,
 		Now: func() time.Time { return time.Date(2026, 7, 13, 12, 2, 0, 0, time.UTC) }, LeaseDuration: time.Minute,
 	})
 	require.NoError(t, err)
 	h.recovery.action = nil
 	h.recovery.actions = []*OperationAction{{Provider: ProviderLark, Phase: "user_auth", SessionID: "session-concurrent"}}
-	missingScope := &CLIResult{
-		InvocationStarted: true, ExitCode: 1,
-		Envelope: &CLIEnvelope{OK: false, Identity: "user", Error: &CLIError{
-			Type: "authorization", Subtype: "missing_scope", Code: json.RawMessage(`99991672`),
-			Identity: "user", MissingScopes: []string{"docx:document:create"},
-		}},
+	h.preflight.steps = []operationScopePreflightStep{
+		{result: &ScopeCheckResult{Missing: []string{"docx:document:create"}}},
+		{result: &ScopeCheckResult{Granted: []string{"docx:document:create"}}},
 	}
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
-	h.runner.steps = []operationRunnerStep{
-		{result: missingScope, err: errors.New("missing scope")},
-		{result: operationOKResult(`{"document_id":"resumed-once"}`), started: started, release: release},
-	}
+	h.runner.steps = []operationRunnerStep{{
+		result: operationOKResult(`{"document_id":"resumed-once"}`), started: started, release: release,
+	}}
 	req := ExecuteRequest{
 		UserID: 7, AgentRunID: 28, ToolCallID: "tc-concurrent-resume",
 		IdempotencyKey: "28:tc-concurrent-resume", Argv: []string{"docs", "+create", "--title", "报告"},
@@ -3279,7 +3558,7 @@ func TestOperationService_ConcurrentResumeUsesUniqueOwnersAndOneReplay(t *testin
 		require.Contains(t, []string{model.FeishuOperationExecuting, model.FeishuOperationSucceeded}, result.State)
 	}
 	calls, _ := h.runner.snapshot()
-	require.Equal(t, 2, calls)
+	require.Equal(t, 1, calls)
 	stored, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, waiting.OperationID)
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationSucceeded, stored.State)

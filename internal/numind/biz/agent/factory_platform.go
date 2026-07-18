@@ -25,9 +25,10 @@ type platformToolFactory struct {
 	skillPool     sandbox.SkillPool     // retained for forward compat (run_python uses sandbox.Pool, not SkillPool; load_skill does not need sandbox)
 	creditService credit.ICreditService // agent-mode-billing T9: image_gen explicit Reserve/Reconcile; nil = no billing (tests)
 
-	// lark workspace dependencies are injected as a complete pair. LoadTools
-	// fails closed to no Lark workspace tools when either side is absent.
+	// lark workspace dependencies are injected as one complete set. LoadTools
+	// fails closed to no Lark workspace tools when any side is absent.
 	larkSkillReader SkillReadExecutor
+	larkInspector   LarkInspector
 	larkExecutor    LarkExecutor
 
 	// larkProviderOverride is a test-only seam (feishu-integration T10): when set,
@@ -51,19 +52,21 @@ func SetFactoryCreditService(f ToolFactory, cs credit.ICreditService) {
 }
 
 // SetFactoryLarkWorkspaceExecutors injects the controlled skill reader and
-// operation executor used by lark_skill_read and lark_execute. The pair is
-// all-or-nothing: passing either dependency as nil clears both registrations.
-func SetFactoryLarkWorkspaceExecutors(f ToolFactory, reader SkillReadExecutor, executor LarkExecutor) {
+// inspector/operation executor used by lark_skill_read, lark_inspect and
+// lark_execute. The set is all-or-nothing: any nil clears all registrations.
+func SetFactoryLarkWorkspaceExecutors(f ToolFactory, reader SkillReadExecutor, inspector LarkInspector, executor LarkExecutor) {
 	pf, ok := f.(*platformToolFactory)
 	if !ok {
 		return
 	}
-	if reader == nil || executor == nil {
+	if reader == nil || inspector == nil || executor == nil {
 		pf.larkSkillReader = nil
+		pf.larkInspector = nil
 		pf.larkExecutor = nil
 		return
 	}
 	pf.larkSkillReader = reader
+	pf.larkInspector = inspector
 	pf.larkExecutor = executor
 }
 
@@ -230,13 +233,15 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		)
 	}
 
-	if f.larkSkillReader != nil && f.larkExecutor != nil {
+	if f.larkSkillReader != nil && f.larkInspector != nil && f.larkExecutor != nil {
 		tools = append(tools,
 			&larkSkillReadTool{executor: f.larkSkillReader},
+			&larkInspectTool{inspector: f.larkInspector},
 			&larkExecuteTool{executor: f.larkExecutor},
 		)
 		metadata = append(metadata,
 			ToolMetadata{ToolName: "lark_skill_read", DisplayName: "读取飞书技能", Description: "Read one controlled page from the official embedded lark-cli skills.", Source: "platform", RiskLevel: "safe", Category: "飞书"},
+			ToolMetadata{ToolName: "lark_inspect", DisplayName: "检查飞书工作区", Description: "Inspect current-user connection or command readiness without a business operation.", Source: "platform", RiskLevel: "safe", Category: "飞书"},
 			ToolMetadata{ToolName: "lark_execute", DisplayName: "执行飞书工作区操作", Description: "Execute controlled Docs/Base/Wiki/Drive argv with verified skill receipts.", Source: "platform", RiskLevel: "moderate", Category: "飞书"},
 		)
 	}

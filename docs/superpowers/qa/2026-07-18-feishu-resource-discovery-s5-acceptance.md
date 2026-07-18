@@ -68,3 +68,22 @@ ALL_PASS。允许合并到 `develop` 并部署 Dev。真实用户标题读取与
 
 ## 失败项修复要求
 无。
+
+## Agent-led Runtime S5 最终验收（2026-07-18）
+
+本节取代上方历史迭代的 S5 结论，覆盖用户确认的 Option B：Agent 选择业务动作，平台统一负责当前用户隔离、固定命令目录、写前权限预检、授权恢复、确认、幂等、结构化结果与防重。
+
+| 检查项 | 命令 | 结果 |
+|--------|------|------|
+| 核心包 | `go test ./internal/numind/biz/feishu ./internal/numind/biz/agent ./internal/numind/biz -count=1` | PASS |
+| Go lint | `PATH="$(go env GOPATH)/bin:$PATH" task lint` | PASS |
+| 全仓测试 | `go test ./... -count=1` | PASS |
+| 关键竞态 | `go test -race ./internal/numind/biz/feishu ./internal/numind/biz/agent ./internal/numind/store -count=1` | PASS |
+| Diff hygiene | `git diff --check` | PASS |
+| 固定 CLI | `lark-cli --version` | PASS，`1.0.68` |
+| 规格复审 | independent read-only reviewer | PASS，P0/P1/P2 = 0 |
+| 安全与质量复审 | independent read-only reviewer | PASS，P0/P1/P2 = 0 |
+
+审查先发现两项 P1，并按 RED-first 闭环：`feb8d87c` 复现“已启动写操作进入授权恢复重放”和“外部授权续跑后的 unknown 未继承防重状态”；`f091cba3` 修复后，任何已启动写操作失败均进入 `unknown_result` 且不可重放，持久化外部终态会在 continuation 首次模型调用前恢复同一 run 的停止/修正预算。`99991672` 的旧安全重放推断已删除。
+
+最终结论：ALL_PASS。允许执行 `ndf-done`，合并并推送 `develop`，随后部署 Dev。若真实 Dev 账户仍缺少 `docx:document:write_only`，一次用户授权是外部同意步骤，不属于代码或部署阻塞。

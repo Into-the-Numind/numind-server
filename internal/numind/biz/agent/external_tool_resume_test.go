@@ -1014,6 +1014,7 @@ func TestExternalToolResume_ContinuesOriginalToolCallWithoutUserInput(t *testing
 	assert.Contains(t, req.ToolNames, "custom_resume_tool")
 	assert.NotContains(t, req.ToolNames, "web_search")
 	assert.True(t, req.ContinueWithoutUserInput)
+	assert.JSONEq(t, `{"ok":true,"state":"succeeded","operation_id":"op-1"}`, string(req.ExternalContinuationResult))
 	assert.Empty(t, req.Input)
 	require.GreaterOrEqual(t, len(msgs), 4)
 	assistantCall := msgs[len(msgs)-2]
