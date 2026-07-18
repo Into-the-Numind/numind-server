@@ -4,24 +4,28 @@ features:
   ndf_version: '3.0'
   description: Accept the exact pinned lark-cli successful null missing-scope contract so authorization resumes the original Agent operation.
   classification_reason: 'Standard: no schema/API/integration change and a small file set, but this changes a high-risk third-party permission and write-resume boundary.'
-  last_updated_by: ai-s3-fast-plan
-  last_updated_at: '2026-07-18T23:55:00+08:00'
+  last_updated_by: ai-s5-acceptance
+  last_updated_at: '2026-07-19T00:06:00+08:00'
   created_at: '2026-07-18T23:48:00+08:00'
   track: standard
-  stage: S3
+  stage: S5
   status: active
   repos: [numind-server]
   branches: {numind-server: feature/feishu-scope-preflight-null}
   worktrees: {numind-server: /private/tmp/wt-feishu-scope-preflight-null-numind-server}
-  progress: {total_tasks: 4, completed_tasks: 1, reviewed_tasks: 0}
+  progress: {total_tasks: 4, completed_tasks: 4, reviewed_tasks: 2}
   artifacts:
     requirement: requirements/feishu-scope-preflight-null.md
     proposal: proposals/feishu-scope-preflight-null-proposal.md
     spec: docs/superpowers/specs/2026-07-18-feishu-scope-preflight-null-design.md
     plan: docs/superpowers/plans/2026-07-18-feishu-scope-preflight-null.md
+    qa: docs/superpowers/qa/2026-07-19-feishu-scope-preflight-null-s5-acceptance.md
   decisions:
   - 'S0-S2: Dev operation 23fb5145 proved authorization succeeded and no write started; pinned CLI source proves successful auth check emits a present null missing slice. The customer approved exact shape-aware parsing and fast Standard execution.'
   - 'S3: four-task RED-first plan preserves fail-closed parsing, existing operation idempotency, full quality gates, atomic merge, and Dev deployment.'
+  - 'S4: customer RED efd85714 reproduces the exact successful missing:null rejection. Fix 90b20426 preserves field presence, accepts only official null empty-slice shapes, recognizes exact no-token/not-logged-in negatives, and retains complete partition, exit, suggestion, unknown-field, and operation exactly-once fences.'
+  - 'S4 hardening: 8df99c38 rejects explicit null optional fields; 2b36f812 adds a raw case-sensitive key allowlist so Go case-folded OK/GRANTED/MISSING collisions cannot override the official lowercase contract. Final spec and quality reviews PASS with P0/P1/P2=0.'
+  - 'S5: full go test, lint, focused Feishu race, isolated timing-race repeats, exact official CLI contracts, diff hygiene, and dual reviews pass. Repository-wide task test still exposes the pre-existing sandbox test-fixture race in mutable SkillsDir/seccomp globals; no sandbox file changed and the affected Feishu race gates pass. Authorized for merge and Dev deployment.'
   blockers: []
 
 - id: feishu-resource-discovery
