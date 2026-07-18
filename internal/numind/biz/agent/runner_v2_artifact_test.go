@@ -193,6 +193,35 @@ func TestWrapToolWithV2ArtifactProcessing_LargeOutput_ReturnsPersistedRef(t *tes
 	assert.Equal(t, int64(50*1024), rows[0].SizeBytes)
 }
 
+// Customer regression (Dev runs 212/213/215): lark-drive's controlled skill
+// response is about 28 KiB, so the generic 16 KiB V2 artifact wrapper replaced
+// the response with a persisted-output preview. The receipt lives after the
+// skill content and was therefore unavailable to the model; the model copied a
+// payload-shaped but invalid signature and every valid Drive search was rejected
+// before a Feishu operation could be created. Skill reads are already bounded by
+// SkillReaderPageBytes and must remain inline so instructions and receipts are
+// delivered atomically.
+func TestWrapToolWithV2ArtifactProcessing_LargeLarkSkillRead_PreservesAtomicReceipt(t *testing.T) {
+	s := newRunnerTestArtifactStore(t)
+	dataDir := t.TempDir()
+	receipt := "signed-drive-receipt"
+	largeOutput := `{"ok":true,"skill":"lark-drive","content":"` +
+		strings.Repeat("D", 28*1024) + `","receipt":"` + receipt + `"}`
+	inner := &mockInvokableTool{name: "lark_skill_read", out: largeOutput}
+
+	wrapped := wrapToolWithV2ArtifactProcessing(inner, "lark_skill_read", 215, s, dataDir)
+	out, err := wrapped.InvokableRun(context.Background(), `{"skill":"lark-drive"}`)
+
+	require.NoError(t, err)
+	assert.Equal(t, largeOutput, out)
+	assert.Contains(t, out, receipt)
+	assert.NotContains(t, out, `<persisted-output`)
+	rows, listErr := s.ListExpiredBefore(context.Background(),
+		time.Now().Add(100*24*time.Hour), 100)
+	require.NoError(t, listErr)
+	assert.Empty(t, rows, "a bounded skill read must not hide its receipt in an artifact")
+}
+
 // TestWrapToolWithV2ArtifactProcessing_InnerToolError_Passthrough — case 3
 // 内层工具返回 error → wrapper 透传 error，不调 ProcessToolResult。
 func TestWrapToolWithV2ArtifactProcessing_InnerToolError_Passthrough(t *testing.T) {
