@@ -4,15 +4,15 @@ features:
   ndf_version: '3.0'
   description: Let every Agent discover the current user's Feishu Docs/Wiki/Base resources by title through a safe read-only Drive search boundary.
   classification_reason: 'Standard: no schema or API change, but it expands third-party command and permission allowlists across more than three files and must preserve per-user isolation.'
-  last_updated_by: ai-s5-receipt-repair-accepted
-  last_updated_at: '2026-07-18T20:11:39+08:00'
+  last_updated_by: ai-s6-receipt-repair-dev-accepted
+  last_updated_at: '2026-07-18T20:20:30+08:00'
   created_at: '2026-07-18T18:39:26+08:00'
   track: standard
-  stage: S5
+  stage: S6
   status: active
   repos: [numind-server]
-  branches: {numind-server: feature/feishu-resource-discovery}
-  worktrees: {numind-server: /private/tmp/wt-feishu-resource-discovery-numind-server}
+  branches: {numind-server: develop}
+  worktrees: {numind-server: removed by ndf-done}
   progress: {total_tasks: 7, completed_tasks: 7, reviewed_tasks: 7}
   artifacts:
     requirement: requirements/feishu-resource-discovery.md
@@ -33,6 +33,7 @@ features:
   - 'S6 acceptance failed on Dev runs 212, 213, and automated reproduction 215. The Agent supplied the exact canonical drive +search argv and same-run lark-shared+lark-drive receipts, but both attempts were rejected before any Feishu operation was created. This proves an internal catalog/receipt-boundary defect rather than a connection, network, permission, or Agent-routing problem. Roll back to S4 for a production-shape customer RED and stage-specific fail-closed repair.'
   - 'S4 repair: customer RED 8d8a9d04 proves the generic >16 KiB artifact path hid the final lark-drive receipt; e1f3ab07 adds adversarial same-name, oversized-envelope, and reference-bound REDs. The fix keeps only the private server-owned lark_skill_read adapter atomic, caps its complete JSON envelope at 64 KiB, bounds references to 64 entries/16 KiB, and leaves every other large result on the artifact path. Receipt HMAC, TTL, run, skill, and CLI-version checks are unchanged.'
   - 'S5 repair acceptance PASS: go test ./..., lint, Agent race, impacted SkillReader race, isolated CLI timing race tests, diff hygiene, and both independent reviews pass with P0/P1/P2=0. A full Feishu race run under concurrent full-suite load hit three pre-existing fixed-timeout tests; all three passed immediately in isolation and no race report occurred.'
+  - 'S6 repair deployment PASS: ndf-done merged and pushed develop at aff1b048; Dev runs image develop-aff1b048 as running+healthy with public health code 0/status ok, lark-cli 1.0.68, and zero critical startup-log matches. Automated Dev run 216 used the exact bounded drive +search argv with same-run receipts and reached a Lark external authorization action instead of policy rejection, proving the receipt and command boundary now accepts the request. The user may need to grant search:docs:read once before the resumed operation can return document content. Prod is not deployed.'
   rollback: 'S6 -> S4 on 2026-07-18: exact title discovery is rejected inside the server-owned command/receipt boundary before Feishu access.'
   blockers: []
 
