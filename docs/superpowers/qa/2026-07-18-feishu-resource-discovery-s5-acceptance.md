@@ -42,5 +42,29 @@
 ## 结论
 ALL_PASS。允许合并到 `develop` 并部署 Dev。真实用户标题读取与可能出现的一次增量授权作为部署后的产品验收，不阻塞合并。
 
+## Dev 失败后的 S4 修复验收
+
+首次 Dev 验收的 runs 212/213/215 证明：`lark-drive` 技能的完整工具结果约 28 KiB，超过通用 16 KiB artifact 触发阈值后，模型只能看到 1 KiB preview，位于结果尾部的签名 receipt 被隐藏。命令因此在服务器策略边界被拒绝，尚未访问飞书。
+
+修复保持安全校验不变，并增加以下边界：
+
+- 只有服务端私有具体 `lark_skill_read` 工具可原子返回技能正文与 receipt；仅名称相同的工具仍走普通 artifact 路径。
+- 完整 JSON envelope 上限为 64 KiB，超限返回固定 soft error，不回显正文或 receipt。
+- references 最多 64 条、合计最多 16 KiB；技能正文仍按 32 KiB 分页。
+- 普通大工具输出的持久化、1 KiB preview 和读取方式完全不变。
+
+| 修复检查项 | 命令 | 结果 |
+|------------|------|------|
+| 客户场景与对抗回归 | `go test ./internal/numind/biz/agent ./internal/numind/biz/feishu -run 'TestWrapToolWithV2ArtifactProcessing_...|TestDeclaredSkillReferences_...' -count=1` | PASS |
+| 全仓测试 | `go test ./... -count=1` | PASS |
+| Go lint | `PATH="$(go env GOPATH)/bin:$PATH" task lint` | PASS |
+| Agent race | `go test -race ./internal/numind/biz/agent -count=1` | PASS |
+| SkillReader race | `go test -race ./internal/numind/biz/feishu -run 'TestSkillReader|TestDeclaredSkillReferences' -count=1` | PASS |
+| CLI timing tests isolated race | `go test -race ./internal/numind/biz/feishu -run 'TestControlledLarkCLIRunner_(AuthSessionStreamsURLBeforeBlockingCompletion|AuthSessionCancellationKillsProcessGroup|VerifyVersionAcceptsOnlyPinnedVersion)' -count=1` | PASS |
+| 规格复审 | independent reviewer | PASS，P0/P1/P2=0 |
+| 质量复审 | independent reviewer | PASS，P0/P1/P2=0 |
+
+说明：完整 Feishu race 与全仓测试并行运行时，三个使用固定 3–5 秒墙钟超时的既有 CLI 测试超时；没有 race detector 报告。系统负载恢复后将这三个测试单独以 race 模式重跑，全部通过。受本修复影响的 SkillReader race 集也全部通过。
+
 ## 失败项修复要求
 无。
