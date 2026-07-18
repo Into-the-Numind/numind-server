@@ -4,16 +4,16 @@ features:
   ndf_version: '3.0'
   description: Give every Agent a Codex-style Feishu runtime where the Agent chooses business actions and the platform enforces user isolation, scope preflight, authorization, and write idempotency.
   classification_reason: 'Standard: no schema or HTTP API change, but this redesigns high-risk third-party permission, Agent tool-result, authorization-resume, and write-safety behavior across more than three files.'
-  last_updated_by: ai-s4-agent-led-runtime-implementation
-  last_updated_at: '2026-07-18T22:30:00+08:00'
+  last_updated_by: ai-s5-agent-led-runtime-acceptance
+  last_updated_at: '2026-07-18T23:07:43+08:00'
   created_at: '2026-07-18T18:39:26+08:00'
   track: standard
-  stage: S4
+  stage: S5
   status: active
   repos: [numind-server]
   branches: {numind-server: feature/feishu-resource-discovery}
   worktrees: {numind-server: /private/tmp/wt-feishu-resource-discovery-numind-server}
-  progress: {total_tasks: 8, completed_tasks: 7, reviewed_tasks: 0}
+  progress: {total_tasks: 8, completed_tasks: 8, reviewed_tasks: 2}
   artifacts:
     requirement: requirements/feishu-agent-led-runtime.md
     proposal: proposals/feishu-agent-led-runtime-proposal.md
@@ -38,6 +38,8 @@ features:
   - 'S2 direction reset: direct Dev evidence proved docs +update returned authorization/missing_scope for docx:document:write_only, while a real fixed-version auth check safely partitions granted readonly and missing write_only before business invocation. User confirmed Agent-led/platform-guardrail option B. The prior inference-based replay fix failed quality review because catalog scopes alone cannot prove a started write had no side effect; it will be reverted. ADR: .ndf/decisions/feishu-resource-discovery/0001-agent-led-runtime.md.'
   - 'S3: eight-task TDD plan locks a strict fixed-version scope checker, pre-write operation ordering, safe actionable terminal results, current-user lark_inspect, category-aware retry guard, cross-domain/multi-Agent isolation, full quality gates and real Dev acceptance. User authorized fully automatic execution through Dev.'
   - 'S4 implementation: fixed lark-cli 1.0.68 auth-check parsing is fail-closed; every write/high-risk command preflights exact catalog scopes before confirmation/business execution; live and resumed Agent results share one redacted schema; lark_inspect is current-user/read-only; category-aware run guards stop blind retries; Docs/Base/Wiki and multi-Agent/multi-user boundaries are covered.'
+  - 'S4 review hardening: RED feb8d87c proves both post-start permission recovery and external-continuation retry could duplicate a write. Fix f091cba3 makes every started write failure unknown, removes the 99991672 replay inference, strictly decodes durable terminal results, and restores the same-run stop before the resumed model call.'
+  - 'S5 Agent-led runtime acceptance PASS at 51f2ed71. Lint, go test ./..., Feishu/Agent/store race, diff hygiene, lark-cli 1.0.68, and two independent read-only reviews pass with P0/P1/P2=0. Authorized for atomic merge and Dev deployment; real user consent remains an external post-deploy gate only if the exact missing scope is not yet granted.'
   rollback: 'S6 -> S2 on 2026-07-18: product direction changed from per-error repair to a generic Agent-led runtime with pre-write scope preflight and structured outcomes.'
   blockers: []
 
