@@ -1,5 +1,31 @@
 schema_version: '2.0'
 features:
+- id: feishu-resource-discovery
+  ndf_version: '3.0'
+  description: Let every Agent discover the current user's Feishu Docs/Wiki/Base resources by title through a safe read-only Drive search boundary.
+  classification_reason: 'Standard: no schema or API change, but it expands third-party command and permission allowlists across more than three files and must preserve per-user isolation.'
+  last_updated_by: ai-s3-autonomous
+  last_updated_at: '2026-07-18T18:55:00+08:00'
+  created_at: '2026-07-18T18:39:26+08:00'
+  track: standard
+  stage: S3
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: feature/feishu-resource-discovery}
+  worktrees: {numind-server: /private/tmp/wt-feishu-resource-discovery-numind-server}
+  progress: {total_tasks: 7, completed_tasks: 0, reviewed_tasks: 0}
+  artifacts:
+    requirement: requirements/feishu-resource-discovery.md
+    proposal: proposals/feishu-resource-discovery-proposal.md
+    spec: docs/superpowers/specs/2026-07-18-feishu-resource-discovery-design.md
+    plan: docs/superpowers/plans/2026-07-18-feishu-resource-discovery.md
+  decisions:
+  - 'S0: Dev run 211 never created a Feishu operation; lark-drive skill read, drive +search, and wiki +space-list were rejected by the platform catalog before any Feishu request.'
+  - 'S1: connection remains current-user scoped and horizontally available to every Agent. Phase one exposes only Drive title search plus Wiki space discovery; all Drive writes and IM remain denied.'
+  - 'S2: add exact shared+drive receipts, drive +search with search:docs:read and bounded title-search flags, wiki +space-list with wiki:space:retrieve, execute-first authorization, and drive capability projection.'
+  - 'S3: seven-task RED-first backend plan approved under the user’s explicit autonomous-to-Dev authorization.'
+  blockers: []
+
 - id: sop-vision-qwen35-nonthinking
   ndf_version: '3.0'
   description: Switch SOP image recognition to qwen3.5-flash and explicitly disable thinking without changing the prompt or surrounding upload and billing flow.
