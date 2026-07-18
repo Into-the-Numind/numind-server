@@ -27,7 +27,7 @@ var _ FullTool = (*bashExecTool)(nil)
 
 func (t *bashExecTool) Name() string { return "bash_exec" }
 func (t *bashExecTool) Description() string {
-	return "Execute a shell command inside an isolated Docker sandbox. Returns stdout, stderr, exit code. 飞书 Docs/Base/Wiki 必须通过 `lark_skill_read` + `lark_execute`。"
+	return "Execute a shell command inside an isolated Docker sandbox. Returns stdout, stderr, exit code. 飞书 Docs/Base/Wiki/Drive 必须通过 `lark_skill_read` + `lark_execute`。"
 }
 func (t *bashExecTool) UserFacingName() string        { return "代码执行" }
 func (t *bashExecTool) NarrationVerb() string         { return "执行" }

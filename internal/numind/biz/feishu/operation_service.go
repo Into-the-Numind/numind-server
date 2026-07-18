@@ -1641,7 +1641,7 @@ func (s *FeishuOperationService) capabilityOutcome(
 }
 
 func supportedCapabilityDomain(domain string) bool {
-	return domain == "docs" || domain == "base" || domain == "wiki"
+	return domain == "docs" || domain == "base" || domain == "wiki" || domain == SkillDomainDrive
 }
 
 func operationFinalizeContext(ctx context.Context) (context.Context, context.CancelFunc) {

@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -24,6 +25,8 @@ const (
 	CommandCatalogMaxWikiPageSize = 50
 	// CommandCatalogMaxWikiPages prevents page-all from becoming unbounded.
 	CommandCatalogMaxWikiPages = 10
+	// CommandCatalogMaxDriveSearchPageSize follows Search v2's fixed ceiling.
+	CommandCatalogMaxDriveSearchPageSize = 20
 	// CommandCatalogMaxRecordWriteBatch is the no-confirmation write threshold.
 	CommandCatalogMaxRecordWriteBatch = 20
 	// CommandCatalogCLIRecordWriteBatchMax is lark-cli 1.0.68's hard ceiling.
@@ -115,9 +118,14 @@ var baseScopes = map[string][]string{
 
 var wikiScopes = map[string][]string{
 	"wiki +space-create": {"wiki:space:write_only"},
+	"wiki +space-list":   {"wiki:space:retrieve"},
 	"wiki +node-create":  {"wiki:node:create", "wiki:node:read", "wiki:space:read"},
 	"wiki +node-get":     {"wiki:node:retrieve"},
 	"wiki +node-list":    {"wiki:node:retrieve"},
+}
+
+var driveScopes = map[string][]string{
+	"drive +search": {"search:docs:read"},
 }
 
 type flagRule struct {
@@ -163,6 +171,7 @@ func NewCommandCatalog() *CommandCatalog {
 	c.addDocsSpecs()
 	c.addBaseSpecs()
 	c.addWikiSpecs()
+	c.addDriveSpecs()
 	return c
 }
 
@@ -838,6 +847,26 @@ func (c *CommandCatalog) addWikiSpecs() {
 	opaque := valueRule(normalizeOpaqueToken("node-token"))
 
 	c.register(commandSpec{
+		path: "wiki +space-list", domain: "wiki", action: "space-list", risk: RiskRead, scopes: wikiScopes["wiki +space-list"],
+		flags: map[string]flagRule{
+			"page-all":   boolRule(),
+			"page-limit": valueRule(normalizeInt("page-limit", 1, CommandCatalogMaxWikiPages)),
+			"page-size":  valueRule(normalizeInt("page-size", 1, CommandCatalogMaxWikiPageSize)),
+			"page-token": valueRule(normalizePageToken),
+		},
+		limits: map[string]int{"page_size": CommandCatalogMaxWikiPageSize, "pages": CommandCatalogMaxWikiPages, "stdout_bytes": CommandCatalogMaxStdoutBytes},
+		validate: func(p *parsedFlags) (RiskLevel, error) {
+			if p.has("page-token") && p.has("page-all") {
+				return "", invalidf("page-token and page-all are mutually exclusive")
+			}
+			if p.has("page-limit") && !p.has("page-all") {
+				return "", invalidf("page-limit requires page-all")
+			}
+			return RiskRead, nil
+		},
+	})
+
+	c.register(commandSpec{
 		path: "wiki +space-create", domain: "wiki", action: "space-create", risk: RiskWrite, scopes: wikiScopes["wiki +space-create"],
 		flags: map[string]flagRule{
 			"name":        valueRule(normalizeInlineText("name", commandCatalogMaxNameBytes, false)),
@@ -903,6 +932,26 @@ func (c *CommandCatalog) addWikiSpecs() {
 			}
 			if p.has("page-limit") && !p.has("page-all") {
 				return "", invalidf("page-limit requires page-all")
+			}
+			return RiskRead, nil
+		},
+	})
+}
+
+func (c *CommandCatalog) addDriveSpecs() {
+	c.register(commandSpec{
+		path: "drive +search", domain: SkillDomainDrive, action: "search", risk: RiskRead, scopes: driveScopes["drive +search"],
+		flags: map[string]flagRule{
+			"query":      valueRule(normalizeDriveSearchQuery),
+			"only-title": boolRule(),
+			"doc-types":  valueRule(normalizeDriveSearchDocTypes),
+			"page-size":  valueRule(normalizeInt("page-size", 1, CommandCatalogMaxDriveSearchPageSize)),
+			"page-token": valueRule(normalizePageToken),
+		},
+		limits: map[string]int{"page_size": CommandCatalogMaxDriveSearchPageSize, "query_runes": 30, "stdout_bytes": CommandCatalogMaxStdoutBytes},
+		validate: func(p *parsedFlags) (RiskLevel, error) {
+			if err := requireNonEmptyFlags(p, "query", "only-title", "doc-types"); err != nil {
+				return "", err
 			}
 			return RiskRead, nil
 		},
@@ -1034,6 +1083,50 @@ func normalizeEnum(label string, allowed ...string) func(string) (string, error)
 		}
 		return value, nil
 	}
+}
+
+func normalizeDriveSearchQuery(value string) (string, error) {
+	normalized, err := normalizeInlineText("query", commandCatalogMaxTitleBytes, false)(value)
+	if err != nil || utf8.RuneCountInString(normalized) > 30 {
+		return "", invalidf("query is empty, invalid, or longer than 30 characters")
+	}
+	for _, r := range normalized {
+		if unicode.IsControl(r) {
+			return "", invalidf("query contains unsupported control characters")
+		}
+	}
+	return normalized, nil
+}
+
+func normalizeDriveSearchDocTypes(value string) (string, error) {
+	allowed := map[string]struct{}{"docx": {}, "wiki": {}, "bitable": {}}
+	parts := strings.Split(value, ",")
+	if len(parts) == 0 || len(parts) > len(allowed) {
+		return "", invalidf("doc-types has an unsupported value")
+	}
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		if _, ok := allowed[part]; !ok {
+			return "", invalidf("doc-types has an unsupported value")
+		}
+		if _, duplicate := seen[part]; duplicate {
+			return "", invalidf("doc-types contains duplicate values")
+		}
+		seen[part] = struct{}{}
+	}
+	return strings.Join(parts, ","), nil
+}
+
+func normalizePageToken(value string) (string, error) {
+	if value == "" || len(value) > 1024 || !utf8.ValidString(value) || value == "-" || strings.HasPrefix(value, "@") {
+		return "", invalidf("page-token is invalid or too large")
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return "", invalidf("page-token contains unsupported control characters")
+		}
+	}
+	return value, nil
 }
 
 func normalizeInt(label string, minValue, maxValue int) func(string) (string, error) {

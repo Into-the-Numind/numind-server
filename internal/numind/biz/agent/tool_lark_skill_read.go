@@ -25,8 +25,8 @@ var _ FullTool = (*larkSkillReadTool)(nil)
 
 func (t *larkSkillReadTool) Name() string { return "lark_skill_read" }
 func (t *larkSkillReadTool) Description() string {
-	return "Read only the four official embedded lark-cli skills (lark-shared, lark-doc, " +
-		"lark-base, lark-wiki) through a controlled reference/cursor. No raw path, user identity, " +
+	return "Read only the five official embedded lark-cli skills (lark-shared, lark-doc, " +
+		"lark-base, lark-wiki, lark-drive) through a controlled reference/cursor. No raw path, user identity, " +
 		"connection, or credential is accepted."
 }
 func (t *larkSkillReadTool) UserFacingName() string { return "读取飞书技能" }
@@ -41,7 +41,7 @@ func (t *larkSkillReadTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type":"object",
 		"properties":{
-			"skill":{"type":"string","enum":["lark-shared","lark-doc","lark-base","lark-wiki"]},
+			"skill":{"type":"string","enum":["lark-shared","lark-doc","lark-base","lark-wiki","lark-drive"]},
 			"reference":{"type":"string","description":"Controlled reference returned by a prior skill page."},
 			"cursor":{"type":"string","description":"Opaque cursor returned by a prior skill page."}
 		},
@@ -64,8 +64,14 @@ type larkSkillReadOutput struct {
 
 const larkHostedExecutionPolicy = "有数托管规则（优先于下方针对本地电脑的 CLI 说明）：" +
 	"不要执行 auth/config/whoami/qrcode，也不要要求用户提供 App ID/App Secret。" +
-	"直接调用 lark_execute 执行 Docs/Base/Wiki 业务命令；连接或权限不足时，平台会自动生成授权卡片。" +
+	"直接调用 lark_execute 执行 Docs/Base/Wiki/Drive 业务命令；连接或权限不足时，平台会自动生成授权卡片。" +
 	"skill_receipts 必须同时包含当前 run 的 lark-shared receipt 和对应业务技能 receipt。" +
+	"用户只提供资源标题而没有 URL/token 时，先读取 lark-drive，再执行 drive +search --query <标题> --only-title --doc-types docx,wiki,bitable；" +
+	"如果结果 has_more=true，必须保持相同 query/only-title/doc-types/page-size，用 page_token 继续搜索，按 URL/token 去重，最多 5 页或 100 条；只有穷尽分页后才能判断唯一、多个或没有精确匹配。达到上限仍有更多结果时，不得宣称唯一或未找到，应让用户缩小标题范围或提供链接。" +
+	"精确匹配优先使用结果的原始 title；若只能使用 title_highlighted，先剥离 <h>/<hb> 高亮标签再比较。唯一精确匹配时按结果类型和 URL 路由到 Docs/Base/Wiki；" +
+	"结果 URL 是 /wiki/ 时，先用 shared+wiki 执行 wiki +node-get --node-token <URL>，再按 obj_type/obj_token 路由：仅 docx 可换 shared+doc 后 docs fetch、bitable 可换 shared+base 后 base 读取；其余 obj_type（doc、sheet、mindnote、slides、file）本期不支持。" +
+	"非 wiki 结果随后读取目标业务技能并换用目标 exact receipts：docx 用 shared+doc，bitable 用 shared+base；Drive receipt 不得带入后续业务命令。" +
+	"多个精确匹配时列出候选让用户选择；没有精确匹配时说明未找到并请求链接，不要猜测 token，也不要说成连接未就绪。" +
 	"官方命令中的固定 --as user 与 --format json 可以保留，平台会安全规范化。" +
 	"如果命令被拒绝，只修正业务命令或 receipts，最多修正并重试一次；不要改跑本地初始化命令。"
 
@@ -141,7 +147,7 @@ func larkWorkspaceSoftError(code larkWorkspaceErrorCode) (ToolResult, error) {
 	case larkWorkspaceErrorIdentity:
 		message = "无法验证当前飞书工作区操作身份。"
 	case larkWorkspaceErrorExecuteRejected:
-		message = "飞书命令或技能凭证无效，本次操作未执行。仅可直接执行 Docs/Base/Wiki 业务命令，并同时使用当前 lark-shared 与对应业务技能的 receipt；最多修正并重试一次。不要执行 auth/config/whoami，也不要要求用户提供 App ID/App Secret。"
+		message = "飞书命令或技能凭证不符合平台策略，本次操作尚未访问飞书，也不代表连接异常。仅可直接执行 Docs/Base/Wiki/Drive 业务命令，并同时使用当前 lark-shared 与对应业务技能的 receipt；最多修正并重试一次。不要执行 auth/config/whoami，也不要要求用户提供 App ID/App Secret。"
 	case larkWorkspaceErrorExecuteRetryExhausted:
 		message = "飞书命令连续被拒绝，已停止后续飞书命令，本任务不会再调用执行器。不要继续重试、执行 auth/config/whoami，或要求用户提供 App ID/App Secret。请向用户说明本次操作未完成。"
 	case larkWorkspaceErrorExecute:

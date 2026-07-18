@@ -82,7 +82,7 @@ type ErrorClassifier struct {
 }
 
 // NewErrorClassifier builds a fixed lark-cli 1.0.68 contract classifier. Scope
-// validation is derived from the exact Docs/Base/Wiki command catalog rather
+// validation is derived from the exact Docs/Base/Wiki/Drive command catalog rather
 // than from a model-supplied declaration.
 func NewErrorClassifier() *ErrorClassifier {
 	manifest := NewCommandCatalog().manifest()

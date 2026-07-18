@@ -2707,6 +2707,9 @@ func TestFeishuWorkspaceStore_RecordsDriveDiscoveryCapability(t *testing.T) {
 	ctx := context.Background()
 	s := newFeishuWorkspaceTestStore(t)
 	createFeishuAccount(t, s, 7, 3)
+	require.NoError(t, s.db.Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ?", 7, "lark").
+		Update("capability_state_json", []byte(`{"docs":{"state":"available"},"base":{"state":"needs_user_scope"},"wiki":{"state":"resource_denied"}}`)).Error)
 	now := time.Date(2026, 7, 18, 11, 30, 0, 0, time.UTC)
 
 	require.NoError(t, s.RecordCapabilityOutcome(ctx, 7, 3, model.FeishuCapabilityOutcome{
@@ -2714,5 +2717,10 @@ func TestFeishuWorkspaceStore_RecordsDriveDiscoveryCapability(t *testing.T) {
 	}))
 	var account model.UserThirdPartyAccount
 	require.NoError(t, s.db.WithContext(ctx).Where("user_id = ? AND provider = ?", 7, "lark").Take(&account).Error)
-	require.JSONEq(t, `{"drive":{"state":"available","last_success_at":"2026-07-18T11:30:00Z"}}`, string(account.CapabilityStateJSON))
+	require.JSONEq(t, `{
+		"docs":{"state":"available"},
+		"base":{"state":"needs_user_scope"},
+		"wiki":{"state":"resource_denied"},
+		"drive":{"state":"available","last_success_at":"2026-07-18T11:30:00Z"}
+	}`, string(account.CapabilityStateJSON))
 }

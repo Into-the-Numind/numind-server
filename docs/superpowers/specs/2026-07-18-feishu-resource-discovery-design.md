@@ -12,6 +12,7 @@
 4. 所有命令经过固定目录规范化，不执行 shell，不接受任意 API。
 5. Drive 本期只读；不得注册上传、复制、移动、删除、权限或评论写操作。
 6. 授权继续 execute-first：先尝试业务命令，精确识别 missing scope 后才生成最小授权卡片。
+7. agent_run_id 在平台全局唯一，并与 request context 的 user_id 同源创建；receipt 继续绑定 run，operation/account/capability 同时以 user_id + generation 隔离。
 
 ## 3. 能力设计
 
@@ -41,16 +42,18 @@ replay_safe_on_auth_error: true
 | flag | 约束 |
 |---|---|
 | `--query` | 必填、非空、UTF-8、无控制字符、最多 30 Unicode code points |
-| `--only-title` | boolean，只接受出现一次或 `=true` |
-| `--doc-types` | 逗号分隔、去重，允许 `doc,docx,wiki,bitable`，最多 4 类 |
+| `--only-title` | 必填 boolean，只接受出现一次或 `=true`；缺失即拒绝，禁止扩大成正文全文搜索 |
+| `--doc-types` | 必填，逗号分隔，仅允许 `docx,wiki,bitable`，最多 3 类且重复值直接拒绝；不开放现有 Docs 读取链无法消费的 legacy `doc` |
 | `--page-size` | 1..20 |
-| `--page-token` | 8..128 的既有 opaque token 规则 |
+| `--page-token` | endpoint-specific opaque string；1..1024 bytes、合法 UTF-8、无控制字符、无 file/stdin indirection；允许官方 cursor 可能使用的 `+`、`/`、`=` |
 
-平台继续接受且移除官方示例里的固定 `--format json --as user`，最终只追加一次固定值。位置参数、空 query、未知 flag、`--page-all`、其他 Drive verb 全部拒绝。
+平台继续接受且移除官方示例里的固定 `--format json --as user`，最终只追加一次固定值。位置参数、空 query、缺少 `--only-title`、缺少 `--doc-types`、未知/不支持类型、未知 flag、`--page-all`、其他 Drive verb 全部拒绝。
 
 ### 3.3 Wiki 空间发现
 
 注册 `wiki +space-list`：domain=`wiki`、action=`space-list`、risk=`read`、scope=`wiki:space:retrieve`。
+
+该命令不是标题读取的必经步骤；它是现有 `wiki +node-list` 的官方只读前置能力。用户要求浏览/读取某个知识空间的节点、但未提供数字 space_id 时，必须先列出当前用户可访问的空间；Drive 标题搜索不能替代空间层级导航。仅在该用户故事实际发生时执行，因此不会给普通 Docs 标题读取预先申请 Wiki scope。
 
 允许 `--page-size` 1..50、`--page-token`、`--page-all`、`--page-limit` 1..10；`page-token` 与 `page-all` 互斥，`page-limit` 仅能和 `page-all` 同用。无限 `page-limit=0` 不进入托管目录。
 
@@ -65,12 +68,13 @@ replay_safe_on_auth_error: true
 
 `lark_skill_read` 每页返回的 hosted policy 增加：
 
-1. 只有资源标题、没有 URL/token 时，先读 lark-drive 并执行 `drive +search --query <title> --only-title`。
-2. 剥离搜索结果高亮后做标题精确匹配。
-3. 一个精确匹配：按返回类型/URL 路由到 Docs/Base/Wiki。
-4. 多个精确匹配：列出标题、类型、URL，让用户选择；不擅自读取。
-5. 零精确匹配：明确未找到并请求链接；不把目录拒绝或零结果说成连接未就绪。
-6. 命令目录拒绝是不可重试的本轮输入/平台策略错误；最多修正一次，不执行 auth/config/whoami。
+1. 只有资源标题、没有 URL/token 时，先读 lark-drive 并执行 `drive +search --query <title> --only-title --doc-types docx,wiki,bitable`（可按明确资源类型使用受支持子集）。
+2. 只要 `has_more=true`，保持完全相同的 query/only-title/doc-types/page-size 并使用 page_token 继续，按 URL/token 去重；最多 5 页或 100 条。达到上限仍有更多结果时，不得宣称唯一或零命中，要求用户缩小范围或提供链接。
+3. 分页穷尽后，优先用原始 title；仅有 title_highlighted 时剥离 `<h>/<hb>` 后做标题精确匹配。
+4. 一个精确匹配：非 wiki URL 按类型路由并切换 exact receipts（docx=shared+doc，bitable=shared+base）。`/wiki/` URL 必须先用 shared+wiki 执行 `wiki +node-get`，再按 obj_type/obj_token 路由：仅 docx 换 shared+doc 后 fetch、bitable 换 shared+base 后读取；其余 obj_type（doc、sheet、mindnote、slides、file）本期明确不支持。Drive receipt 不得带入后续命令。
+5. 多个精确匹配：列出标题、类型、URL，让用户选择；不擅自读取。
+6. 零精确匹配：明确未找到并请求链接；不把目录拒绝或零结果说成连接未就绪。
+7. 命令目录拒绝是不可重试的本轮输入/平台策略错误；最多修正一次，不执行 auth/config/whoami。
 
 ## 4. 错误语义
 
@@ -94,6 +98,7 @@ replay_safe_on_auth_error: true
 - Skill receipt 单测：Drive exact set、跨 run、重复、多余 receipt 拒绝。
 - Agent tool 单测：schema/description/hosted policy 与错误文案。
 - Operation/store/service 单测：drive capability 可记录/读取、canonical scope 接受。
+- 用户隔离集成：同一平台 Agent 入口以两个 user/run 执行 Drive search，operation 与 capability 分别落到各自 account；跨 run receipt 拒绝沿用 SkillReader 现有回归。
 - 全量：`go test ./...`、`task lint`；必要的 Feishu package race gate。
 
 ## 7. 非目标
@@ -102,4 +107,3 @@ replay_safe_on_auth_error: true
 - IM、联系人、Sheets 内容能力。
 - 按 Agent 单独保存飞书连接。
 - 新 API、新表、新前端页面。
-

@@ -353,7 +353,7 @@ func canonicalDeviceAuthScopes(scopes []string) ([]string, error) {
 		return nil, ErrAuthSessionUnavailable
 	}
 	allowed := map[string]struct{}{"offline_access": {}}
-	for _, catalogScopes := range []map[string][]string{docsScopes, baseScopes, wikiScopes} {
+	for _, catalogScopes := range []map[string][]string{docsScopes, baseScopes, wikiScopes, driveScopes} {
 		for _, commandScopes := range catalogScopes {
 			for _, scope := range commandScopes {
 				allowed[scope] = struct{}{}

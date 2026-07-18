@@ -231,6 +231,16 @@ func TestLarkPersonalWorkspace_FreshConversationCanDiscoverByTitle(t *testing.T)
 	assert.Contains(t, output.HostedPolicy, "唯一精确匹配")
 	assert.Contains(t, output.HostedPolicy, "多个精确匹配")
 	assert.Contains(t, output.HostedPolicy, "没有精确匹配")
+	assert.Contains(t, output.HostedPolicy, "title_highlighted")
+	assert.Contains(t, output.HostedPolicy, "剥离 <h>/<hb>")
+	assert.Contains(t, output.HostedPolicy, "最多 5 页或 100 条")
+	assert.Contains(t, output.HostedPolicy, "达到上限仍有更多结果")
+	assert.Contains(t, output.HostedPolicy, "wiki +node-get")
+	assert.Contains(t, output.HostedPolicy, "obj_type/obj_token")
+	assert.Contains(t, output.HostedPolicy, "doc、sheet、mindnote、slides、file")
+	assert.Contains(t, output.HostedPolicy, "Drive receipt 不得带入后续业务命令")
+	assert.Contains(t, output.HostedPolicy, "shared+doc")
+	assert.Contains(t, output.HostedPolicy, "shared+base")
 }
 
 func TestLarkPersonalWorkspace_SkillReadStrictInputAndSafeFailures(t *testing.T) {
@@ -769,6 +779,7 @@ func TestPlatformToolFactory_LarkPersonalWorkspaceBothOrNoneAndNoLegacyTools(t *
 	assert.Equal(t, "lark_execute", metadata[20].ToolName)
 	assert.Equal(t, "moderate", metadata[20].RiskLevel)
 	assert.Equal(t, "飞书", metadata[20].Category)
+	assert.Contains(t, metadata[20].Description, "Drive")
 	for _, legacy := range legacyNames {
 		for _, tool := range tools {
 			assert.NotEqual(t, legacy, tool.Name(), "legacy factory registration must stay removed")
@@ -791,7 +802,7 @@ func TestPlatformToolFactory_LarkPersonalWorkspaceBothOrNoneAndNoLegacyTools(t *
 func TestLarkPersonalWorkspace_BashExecRoutesFeishuToControlledTools(t *testing.T) {
 	tool := &bashExecTool{}
 	description := tool.Description()
-	assert.Contains(t, description, "飞书 Docs/Base/Wiki 必须通过 `lark_skill_read` + `lark_execute`")
+	assert.Contains(t, description, "飞书 Docs/Base/Wiki/Drive 必须通过 `lark_skill_read` + `lark_execute`")
 
 	result, err := tool.Execute(context.Background(), ToolInput(`{"command":"lark-cli docs +fetch"}`))
 	require.NoError(t, err)

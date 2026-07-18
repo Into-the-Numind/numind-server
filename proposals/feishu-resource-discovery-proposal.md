@@ -15,6 +15,7 @@
 - 复用全局注入的 `lark_skill_read` / `lark_execute`，无需改 Agent 定义或工具绑定。
 - 复用 `SkillReader` 的 run 绑定 receipt、`CommandCatalog` 的固定白名单和 `FeishuOperationService` 的用户隔离、增量授权、只读安全重放。
 - 复用固定 lark-cli 1.0.68 的 `drive +search` 与 `wiki +space-list`。
+- `wiki +space-list` 仅服务知识空间层级浏览：现有 node-list 必须先拿数字 space_id；普通标题读取不调用它，也不预申请其 scope。
 
 ### 技术风险
 - 扩大命令白名单可能意外开放 Drive 写能力：只注册 `drive +search`，严格限制 flags、类型、30 字符 query 和 20 条分页。
@@ -40,13 +41,14 @@
 
 ### 验收标准
 - [ ] `lark_skill_read` 可读取官方 `lark-drive` 主技能并签发仅绑定当前 run 的 receipt。
-- [ ] `drive +search --query <title> --only-title` 被固定目录接受，规范化为 `--format json --as user`，domain=`drive`、risk=`read`、scope=`search:docs:read`。
+- [ ] `drive +search --query <title> --only-title --doc-types docx,wiki,bitable` 被固定目录接受，规范化为 `--format json --as user`，domain=`drive`、risk=`read`、scope=`search:docs:read`；缺少标题限制或包含 legacy doc 均拒绝。
 - [ ] query 超过 30 Unicode code points、未知 flags、Drive 写命令、IM 命令全部 fail closed。
 - [ ] `wiki +space-list` 被接受，scope=`wiki:space:retrieve`，分页上限受控。
 - [ ] Drive 命令要求且只接受同一 run 的 lark-shared + lark-drive receipts。
 - [ ] 新 scope 能进入既有 app-scope/user-scope 增量授权恢复流程，成功结果可记录 drive capability。
 - [ ] 所有 Agent 继续从执行上下文获取当前 user_id；Agent 定义中不新增飞书凭据或连接 ID。
 - [ ] 托管策略指导：仅标题时先 Drive 搜索；唯一精确匹配后路由；多匹配请用户选择；零匹配不盲猜。
+- [ ] 标题搜索必须翻页穷尽（最多 5 页/100 条）后才能判断唯一/多/零；Wiki URL 先解析 obj_type/obj_token，再路由到 Docs 或 Base。
 - [ ] 客户失败复现测试先 RED，修复后全量 Go 测试与 lint 通过。
 - [ ] develop 合并推送、Dev server 部署、健康检查和固定版本 CLI 检查通过。
 
@@ -66,4 +68,3 @@
 - 布局要求：无新增 UI。
 - 交互模式：首次缺 scope 时显示现有授权卡片；完成后恢复原操作。
 - 状态处理：沿用现有 processing / waiting / terminal 状态。
-

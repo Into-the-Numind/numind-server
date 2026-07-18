@@ -4,16 +4,16 @@ features:
   ndf_version: '3.0'
   description: Let every Agent discover the current user's Feishu Docs/Wiki/Base resources by title through a safe read-only Drive search boundary.
   classification_reason: 'Standard: no schema or API change, but it expands third-party command and permission allowlists across more than three files and must preserve per-user isolation.'
-  last_updated_by: ai-s3-autonomous
-  last_updated_at: '2026-07-18T18:55:00+08:00'
+  last_updated_by: ai-s4-dual-review-pass
+  last_updated_at: '2026-07-18T20:05:00+08:00'
   created_at: '2026-07-18T18:39:26+08:00'
   track: standard
-  stage: S3
+  stage: S4
   status: active
   repos: [numind-server]
   branches: {numind-server: feature/feishu-resource-discovery}
   worktrees: {numind-server: /private/tmp/wt-feishu-resource-discovery-numind-server}
-  progress: {total_tasks: 7, completed_tasks: 0, reviewed_tasks: 0}
+  progress: {total_tasks: 7, completed_tasks: 5, reviewed_tasks: 5}
   artifacts:
     requirement: requirements/feishu-resource-discovery.md
     proposal: proposals/feishu-resource-discovery-proposal.md
@@ -24,6 +24,9 @@ features:
   - 'S1: connection remains current-user scoped and horizontally available to every Agent. Phase one exposes only Drive title search plus Wiki space discovery; all Drive writes and IM remain denied.'
   - 'S2: add exact shared+drive receipts, drive +search with search:docs:read and bounded title-search flags, wiki +space-list with wiki:space:retrieve, execute-first authorization, and drive capability projection.'
   - 'S3: seven-task RED-first backend plan approved under the user’s explicit autonomous-to-Dev authorization.'
+  - 'S4: customer RED b6d36250 proves the title-only path was rejected before Feishu. The atomic implementation exposes lark-drive, allows only bounded title search plus Wiki space discovery, adds exact scopes/receipts/capability projection, and keeps every operation bound to the current user and generation.'
+  - 'S4 hardening: search requires only-title and supported doc-types; 30 Unicode code points, control characters, opaque cursors, five-page/100-result pagination, exact-title highlighting, Wiki obj_type routing, and unsupported types fail closed. Drive writes and IM remain denied.'
+  - 'S4 final dual review PASS with P0/P1/P2=0. Agent/Feishu/store focused suites, full go test ./..., lint, and Feishu/store race gates pass.'
   blockers: []
 
 - id: sop-vision-qwen35-nonthinking
