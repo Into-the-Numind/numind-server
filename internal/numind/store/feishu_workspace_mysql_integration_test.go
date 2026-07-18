@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,11 +16,13 @@ import (
 
 	drivermysql "github.com/go-sql-driver/mysql"
 	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
 
+	"numind-server/internal/pkg/externalaction"
 	"numind-server/internal/pkg/model"
 )
 
@@ -125,6 +128,69 @@ func TestFeishuWorkspaceMySQLIntegration_MigrationAutoMigrateAndLocks(t *testing
 	}
 	require.ErrorIs(t, workspace.PutVaultCAS(context.Background(), stale, 1), gorm.ErrRecordNotFound)
 	requireMySQLDeviceAuthConcurrencyAndSweep(t, db, driverConfig.FormatDSN(), userID+1)
+	requireMySQLExternalResumeJSONCAS(t, db, userID+2)
+}
+
+// Regression: Dev MySQL stores pending_external_action_json as native JSON.
+// Binding the driver-returned bytes as a SQL string in `json_column = ?`
+// compares different MySQL types and affects zero rows, even though SQLite's
+// TEXT fixture passes. Exercise every success/terminal CAS against real MySQL.
+func requireMySQLExternalResumeJSONCAS(t *testing.T, db *gorm.DB, userID uint) {
+	t.Helper()
+	ctx := context.Background()
+	const pending = `{"provider":"feishu","operation_id":"mysql-json-op","session_id":"mysql-json-auth","tool_call_id":"mysql-json-tool","phase":"user_auth","expires_at":"2026-07-18T09:30:00Z"}`
+	newRun := func(sessionID string) *model.AgentRun {
+		endedAt := time.Now().Add(-time.Minute)
+		return &model.AgentRun{
+			UserID: userID, SessionID: sessionID, Status: "terminated", StateReason: "waiting_for_user_choice",
+			Messages:  datatypes.JSON(`[{"role":"user","content":"mysql json cas"}]`),
+			StartedAt: time.Now().Add(-time.Minute), EndedAt: &endedAt,
+			PendingExternalActionJSON: datatypes.JSON(pending),
+		}
+	}
+
+	t.Run("claim release reclaim touch and complete", func(t *testing.T) {
+		run := newRun("mysql-json-cas-success")
+		store := newAgentRunStore(db)
+		require.NoError(t, store.Create(ctx, run))
+		lease := store.(IExternalToolResumeLease)
+		result := json.RawMessage(`{"document":{"document_id":"mysql-doc"}}`)
+
+		firstToken, claimed, err := lease.ClaimExternalToolResume(
+			ctx, run.ID, "mysql-json-op", "mysql-json-tool", result,
+		)
+		require.NoError(t, err)
+		require.True(t, claimed)
+		require.NotEmpty(t, firstToken)
+		require.NoError(t, lease.ReleaseExternalToolResume(ctx, run.ID, "mysql-json-op", "mysql-json-tool", firstToken))
+
+		secondToken, claimed, err := lease.ClaimExternalToolResume(
+			ctx, run.ID, "mysql-json-op", "mysql-json-tool", result,
+		)
+		require.NoError(t, err)
+		require.True(t, claimed)
+		require.NotEmpty(t, secondToken)
+		require.NoError(t, lease.TouchExternalToolResume(ctx, run.ID, "mysql-json-op", "mysql-json-tool", secondToken))
+		require.NoError(t, lease.CompleteExternalToolResume(ctx, run.ID, "mysql-json-op", "mysql-json-tool", secondToken))
+
+		got, err := store.Get(ctx, run.ID)
+		require.NoError(t, err)
+		require.Equal(t, "running", got.Status)
+		require.Equal(t, "running", got.StateReason)
+		require.Empty(t, got.PendingExternalActionJSON)
+	})
+
+	t.Run("terminalize exact wait", func(t *testing.T) {
+		run := newRun("mysql-json-cas-terminal")
+		store := newAgentRunStore(db)
+		require.NoError(t, store.Create(ctx, run))
+		finalizer := store.(IExternalToolWaitFinalizer)
+		finalized, err := finalizer.FinalizeExternalToolWait(
+			ctx, userID, run.ID, "mysql-json-op", "mysql-json-tool", externalaction.TerminalOutcomeCancelled,
+		)
+		require.NoError(t, err)
+		require.True(t, finalized)
+	})
 }
 
 func requireMySQLDeviceAuthConcurrencyAndSweep(t *testing.T, firstDB *gorm.DB, dsn string, userID uint) {

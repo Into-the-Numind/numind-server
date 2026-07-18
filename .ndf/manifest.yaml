@@ -46,16 +46,16 @@ features:
   ndf_version: '3.0'
   description: Align hosted per-user Feishu authorization with the pinned lark-cli split device-code protocol and resume the exact original Agent operation
   classification_reason: 'Standard: customer-reported third-party OAuth and durable write-resume boundary; affects authentication state machine, secure resume credentials, Agent guidance, real CLI fixtures, and more than 3 files.'
-  last_updated_by: ai-s6-mysql-json-cas-rollback
-  last_updated_at: '2026-07-18T16:18:00+08:00'
+  last_updated_by: ai-s5-mysql-json-cas-accepted
+  last_updated_at: '2026-07-18T16:43:00+08:00'
   created_at: '2026-07-16T18:53:00+08:00'
   track: standard
-  stage: S4
+  stage: S5
   status: active
   repos: [numind-server, numind-web-v3]
-  branches: {numind-server: develop, numind-web-v3: develop}
-  worktrees: {numind-server: '(removed by ndf-done)', numind-web-v3: '(removed by ndf-done)'}
-  progress: {total_tasks: 21, completed_tasks: 21, reviewed_tasks: 21}
+  branches: {numind-server: feature/feishu-device-code-auth, numind-web-v3: develop}
+  worktrees: {numind-server: /private/tmp/wt-feishu-device-code-auth-numind-server, numind-web-v3: '(removed by ndf-done)'}
+  progress: {total_tasks: 22, completed_tasks: 22, reviewed_tasks: 22}
   artifacts:
     requirement: requirements/feishu-device-code-auth.md
     proposal: proposals/feishu-device-code-auth-proposal.md
@@ -99,6 +99,8 @@ features:
   - 'S5 repair acceptance: go test ./... passes, task lint passes, focused Feishu race tests pass, the full Feishu package passes, and the customer/security regressions pass repeatedly. The feature is authorized for ndf-done merge/push and Dev server deployment. The failed pre-fix authorization session cannot be reused because its resume credential was intentionally cleared; post-deploy human acceptance must start a fresh authorization link.'
   - 'S6 repair deployment: ndf-done merged and pushed the repair to develop at fcb3b88d and removed its feature worktree/branch. The manual TCR release deployed numind-server:develop-fcb3b88d to Dev. Container image identity matches, Docker reports running+healthy, lark-cli remains pinned at 1.0.68, the public health endpoint returns code 0/status ok, and the first ten minutes contain zero panic/fatal/protocol_failure log lines. Human acceptance must use a fresh authorization link, click the official Feishu page, then click continue and confirm the original Docs create resumes. Prod remains unauthorized.'
   - 'S6 acceptance failed on Dev run 206 after authorization and the Docs create both succeeded. Durable evidence: auth session completed, operation succeeded with encrypted result, but Agent result dispatch returned retry and the resume API returned 500. The exact ClaimExternalToolResume UPDATE affected zero rows while the run remained terminated/waiting_for_user_choice with its pending identity intact. A read-only Dev MySQL experiment proved the cause: JSON-column = driver string is false, CAST(JSON-column AS CHAR) = the same driver string is true. SQLite TEXT unit tests masked this production-dialect mismatch. Roll back to S4 for a MySQL-first customer RED and a shared exact JSON CAS predicate across every external-resume transition. ADR: .ndf/decisions/feishu-device-code-auth/0003-mysql-json-cas.md.'
+  - 'S4 repair Task 22: customer RED df35fc50 adds a real MySQL integration gate and fails both the successful claim lifecycle and exact terminalization on the old JSON-column = string CAS. Fix 454dd51f centralizes the dialect-aware exact pending-action fence across claim, release, reclaim, touch, complete, and terminalize; MySQL compares CAST(JSON AS BINARY) to a bound binary parameter while SQLite retains TEXT equality. Refactor bf0e14e5 removes the deprecated BINARY operator form. The same disposable Dev MySQL gate turned green twice after the fix, including the final CAST form (35.04s); targeted SQLite tests pass count=20, target race passes, full go test ./... passes on a fresh rerun, and task lint passes. Dual specification/concurrency and quality reviews PASS with P0/P1/P2=0. The earlier full-suite URL-stream timeout is an unrelated timing flake: its isolated test passes 20/20 and the fresh full suite passes.'
+  - 'S5 repair acceptance authorizes ndf-done and Dev deployment. The Dev run 206 authorization session and Feishu operation are already completed/succeeded; after deployment, the correct product acceptance is to click the same old card again so the persisted result resumes Agent run 206 without another Feishu write. The mysqlintegration gate currently remains opt-in through build tag plus disposable DSN and was executed manually against real Dev MySQL for this release; automatic release wiring is a recorded non-blocking follow-up.'
   rollback: 'S6 -> S4 on 2026-07-18: implementation defect; direction and split-device architecture remain valid.'
   blockers: []
 

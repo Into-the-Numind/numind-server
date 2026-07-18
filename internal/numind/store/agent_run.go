@@ -493,21 +493,23 @@ func (s *agentRunStore) finalizeExternalToolWaitOnce(
 			return fmt.Errorf("agentRunStore.FinalizeExternalToolWait(id=%d): terminal metadata: %w", runID, err)
 		}
 		now := time.Now().UTC()
-		result := tx.Model(&model.AgentRun{}).
-			Where("id = ? AND user_id = ? AND status = ? AND state_reason = ? AND is_deleted = ? AND pending_external_action_json = ?",
-				runID, userID, run.Status, run.StateReason, false, string(run.PendingExternalActionJSON)).
-			Updates(map[string]any{
-				"messages":                     datatypes.JSON(messages),
-				"pending_external_action_json": nil,
-				"pending_external_action_at":   nil,
-				"pending_question_json":        nil,
-				"pending_question_at":          nil,
-				"status":                       "terminated",
-				"state_reason":                 "aborted_tools",
-				"ended_at":                     now,
-				"cancellation_requested_at":    now,
-				"terminal_metadata":            datatypes.JSON(metadata),
-			})
+		result := whereExactPendingExternalAction(
+			tx.Model(&model.AgentRun{}).
+				Where("id = ? AND user_id = ? AND status = ? AND state_reason = ? AND is_deleted = ?",
+					runID, userID, run.Status, run.StateReason, false),
+			run.PendingExternalActionJSON,
+		).Updates(map[string]any{
+			"messages":                     datatypes.JSON(messages),
+			"pending_external_action_json": nil,
+			"pending_external_action_at":   nil,
+			"pending_question_json":        nil,
+			"pending_question_at":          nil,
+			"status":                       "terminated",
+			"state_reason":                 "aborted_tools",
+			"ended_at":                     now,
+			"cancellation_requested_at":    now,
+			"terminal_metadata":            datatypes.JSON(metadata),
+		})
 		if result.Error != nil {
 			return fmt.Errorf("agentRunStore.FinalizeExternalToolWait update(id=%d): %w", runID, result.Error)
 		}
@@ -694,12 +696,13 @@ func (s *agentRunStore) resumeExternalToolOnce(
 			)
 		}
 
-		result := tx.Model(&model.AgentRun{}).
-			Where(
-				"id = ? AND status = ? AND state_reason = ? AND cancellation_requested_at IS NULL AND is_deleted = ? AND pending_external_action_json = ?",
-				runID, run.Status, run.StateReason, false, string(run.PendingExternalActionJSON),
-			).
-			Updates(updates)
+		result := whereExactPendingExternalAction(
+			tx.Model(&model.AgentRun{}).Where(
+				"id = ? AND status = ? AND state_reason = ? AND cancellation_requested_at IS NULL AND is_deleted = ?",
+				runID, run.Status, run.StateReason, false,
+			),
+			run.PendingExternalActionJSON,
+		).Updates(updates)
 		if result.Error != nil {
 			return fmt.Errorf("agentRunStore.ResumeExternalTool update(id=%d): %w", runID, result.Error)
 		}
@@ -772,10 +775,12 @@ func (s *agentRunStore) TouchExternalToolResume(ctx context.Context, runID uint6
 	if err != nil || pending.OperationID != operationID || pending.ToolCallID != toolCallID {
 		return fmt.Errorf("agentRunStore touch external resume(id=%d): identity mismatch", runID)
 	}
-	res := s.db.WithContext(ctx).Model(&model.AgentRun{}).
-		Where("id = ? AND status = ? AND state_reason = ? AND cancellation_requested_at IS NULL AND is_deleted = ? AND pending_external_action_json = ?",
-			runID, "running", externalResumeStartingPrefix+leaseToken, false, string(run.PendingExternalActionJSON)).
-		Update("pending_external_action_at", time.Now())
+	res := whereExactPendingExternalAction(
+		s.db.WithContext(ctx).Model(&model.AgentRun{}).
+			Where("id = ? AND status = ? AND state_reason = ? AND cancellation_requested_at IS NULL AND is_deleted = ?",
+				runID, "running", externalResumeStartingPrefix+leaseToken, false),
+		run.PendingExternalActionJSON,
+	).Update("pending_external_action_at", time.Now())
 	if res.Error != nil {
 		return fmt.Errorf("agentRunStore touch external resume(id=%d): %w", runID, res.Error)
 	}
@@ -850,12 +855,13 @@ func (s *agentRunStore) transitionExternalToolResumeLease(
 			updates["state_reason"] = externalResumeStateReady
 			updates["ended_at"] = endedAt
 		}
-		result := tx.Model(&model.AgentRun{}).
-			Where(
-				"id = ? AND status = ? AND state_reason = ? AND cancellation_requested_at IS NULL AND is_deleted = ? AND pending_external_action_json = ?",
-				runID, "running", expectedState, false, string(run.PendingExternalActionJSON),
-			).
-			Updates(updates)
+		result := whereExactPendingExternalAction(
+			tx.Model(&model.AgentRun{}).Where(
+				"id = ? AND status = ? AND state_reason = ? AND cancellation_requested_at IS NULL AND is_deleted = ?",
+				runID, "running", expectedState, false,
+			),
+			run.PendingExternalActionJSON,
+		).Updates(updates)
 		if result.Error != nil {
 			return fmt.Errorf("agentRunStore transition external resume update(id=%d): %w", runID, result.Error)
 		}
@@ -864,6 +870,19 @@ func (s *agentRunStore) transitionExternalToolResumeLease(
 		}
 		return nil
 	})
+}
+
+// whereExactPendingExternalAction keeps the external-resume compare-and-swap
+// fence exact across the two supported test/runtime storage types. Dev and
+// production MySQL store the value as native JSON; comparing that JSON value
+// directly with a driver-bound SQL string is always false. Casting the column
+// to its binary textual representation matches the exact bytes returned by the
+// same driver. SQLite fixtures store the column as TEXT and use direct equality.
+func whereExactPendingExternalAction(db *gorm.DB, expected datatypes.JSON) *gorm.DB {
+	if db != nil && strings.EqualFold(db.Dialector.Name(), "mysql") {
+		return db.Where("CAST(pending_external_action_json AS BINARY) = CAST(? AS BINARY)", string(expected))
+	}
+	return db.Where("pending_external_action_json = ?", string(expected))
 }
 
 func canonicalExternalToolResult(raw json.RawMessage) (json.RawMessage, error) {
