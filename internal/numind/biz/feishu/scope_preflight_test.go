@@ -52,6 +52,29 @@ printf '%%s' %s
 	require.Empty(t, got.Missing)
 }
 
+// Customer regression (Dev operation 23fb5145-2a01-4e22-affc-c84718a1628e):
+// after the user granted the final Docs write scope, pinned lark-cli 1.0.68
+// encoded its nil missing slice as JSON null. Null is the official successful
+// predicate answer here, not an ambiguous partition or a missing field.
+func TestControlledScopePreflight_RealGrantedDocsUpdateScopesWithNullMissing(t *testing.T) {
+	const output = `{"granted":["docx:document:readonly","docx:document:write_only"],"missing":null,"ok":true}`
+	body := fmt.Sprintf(`
+if [ "$#" -ne 5 ] || [ "$1" != "auth" ] || [ "$2" != "check" ] || [ "$3" != "--scope" ] || [ "$4" != "docx:document:readonly docx:document:write_only" ] || [ "$5" != "--json" ]; then
+  exit 97
+fi
+printf '%%s' %s
+`, shellQuoteForControlledTest(output))
+	preflight := NewControlledScopePreflight(controlledRunner(writeControlledFakeBinary(t, body)))
+
+	got, err := preflight.Check(context.Background(), controlledTestHome(t), []string{
+		"docx:document:write_only",
+		"docx:document:readonly",
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"docx:document:readonly", "docx:document:write_only"}, got.Granted)
+	require.Empty(t, got.Missing)
+}
+
 func TestControlledScopePreflight_RejectsAmbiguousCLIContracts(t *testing.T) {
 	tests := []struct {
 		name   string
