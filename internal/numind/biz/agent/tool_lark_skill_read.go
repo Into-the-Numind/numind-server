@@ -130,6 +130,9 @@ const (
 	larkWorkspaceErrorExecute
 	larkWorkspaceErrorInvalidResult
 	larkWorkspaceErrorInvalidWait
+	larkWorkspaceErrorInvalidInspectInput
+	larkWorkspaceErrorInspectRejected
+	larkWorkspaceErrorInspect
 )
 
 // larkWorkspaceSoftError returns only fixed, reviewed messages. It deliberately
@@ -156,6 +159,12 @@ func larkWorkspaceSoftError(code larkWorkspaceErrorCode) (ToolResult, error) {
 		message = "飞书工作区操作返回无效，请稍后重试。"
 	case larkWorkspaceErrorInvalidWait:
 		message = "飞书工作区等待状态无效，请稍后重试。"
+	case larkWorkspaceErrorInvalidInspectInput:
+		message = "飞书检查参数无效：connection 模式只使用 mode；command 模式必须提供 argv 和当前技能 receipt。"
+	case larkWorkspaceErrorInspectRejected:
+		message = "飞书检查命令或技能凭证不符合平台策略；只可检查 Docs/Base/Wiki/Drive 业务命令。"
+	case larkWorkspaceErrorInspect:
+		message = "暂时无法完成飞书工作区检查；不要改用 auth/config/whoami。"
 	}
 	output, _ := json.Marshal(map[string]string{"error": "ERROR: " + message})
 	return ToolResult(output), nil

@@ -801,7 +801,7 @@ func NewBiz(ds store.IStore) *biz {
 				// an explicit configuration, cleanup, or pinned-version failure.
 				log.Errorw("feishu-integration: personal workspace wiring failed; feature disabled this process", "error", workspaceErr)
 			} else if workspace != nil {
-				agent.SetFactoryLarkWorkspaceExecutors(platformFactory, workspace.skillReader, workspace.operationService)
+				agent.SetFactoryLarkWorkspaceExecutors(platformFactory, workspace.skillReader, workspace.operationService, workspace.operationService)
 				b.publishFeishuPersonalWorkspace(workspace, resumeStore)
 				log.Infow("feishu-integration: personal workspace wired")
 			}

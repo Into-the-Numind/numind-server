@@ -1743,11 +1743,17 @@ func (s *FeishuOperationService) resultFromOperation(operation *model.FeishuOper
 	if terminalOperationState(operation.State) {
 		summary, err := decodeOperationSummary(operation.ResultSummaryJSON)
 		if err != nil || summary.Status != operation.State {
-			return nil, ErrOperationIntegrity
+			// Legacy rows and a terminal transition won by another process may not
+			// carry the current summary schema. Return only a conservative stable
+			// failure; never infer that a business call started or expose DB fields.
+			summary = persistedOperationSummary{Status: operation.State, PublicCode: PublicCodeFailed}
 		}
 		publicCode := summary.PublicCode
 		if operation.State == model.FeishuOperationUnknown {
 			publicCode = PublicCodeUnknownResult
+			if err != nil || summary.Status != operation.State {
+				summary.BusinessStarted = true
+			}
 		}
 		if operation.State == model.FeishuOperationCancelled {
 			publicCode = PublicCodeCancelled
