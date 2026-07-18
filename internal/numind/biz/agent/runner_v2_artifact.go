@@ -15,6 +15,8 @@ import (
 //
 // 决策：通过 wrap Eino InvokableTool 的方式实现 L0 处理 — InvokableRun 返回的字符串
 // 就是 Eino 写入 messages 数组的 content。当 V2 启用时，我们拦截原工具输出：
+//   - lark_skill_read → 原样返回。该工具自身有严格分页上限，且其短期
+//     receipt 必须与技能正文原子交付，不能藏进 persisted-output 文件尾部
 //   - len(output) <= ToolArtifactSizeLimit → 原样返回，行为与 V1 完全一致
 //   - 超阈值 → 调 compactv2.ProcessToolResult 写盘 + 元数据入库，返回
 //     `<persisted-output ref="UUID" tool="..." size="...">PREVIEW...</persisted-output>` 引用
@@ -45,6 +47,14 @@ func wrapToolWithV2ArtifactProcessing(
 	artifactStore store.IAgentToolArtifactStore,
 	dataDir string,
 ) einotool.InvokableTool {
+	// SkillReader already bounds each response to 32 KiB and mints a receipt only
+	// after the final page. Generic artifact persistence keeps only the leading
+	// 16 KiB in the model-visible preview, which separates that receipt from the
+	// instructions it proves were delivered. Keep this one controlled tool
+	// atomic; every ordinary large tool result still uses the V2 artifact path.
+	if toolName == "lark_skill_read" {
+		return inner
+	}
 	return &v2ArtifactWrappedTool{
 		inner:    inner,
 		toolName: toolName,
