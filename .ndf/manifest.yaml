@@ -4,15 +4,15 @@ features:
   ndf_version: '3.0'
   description: Let every Agent discover the current user's Feishu Docs/Wiki/Base resources by title through a safe read-only Drive search boundary.
   classification_reason: 'Standard: no schema or API change, but it expands third-party command and permission allowlists across more than three files and must preserve per-user isolation.'
-  last_updated_by: ai-s6-dev-deployed
-  last_updated_at: '2026-07-18T20:20:00+08:00'
+  last_updated_by: ai-s6-title-read-failed
+  last_updated_at: '2026-07-18T20:40:00+08:00'
   created_at: '2026-07-18T18:39:26+08:00'
   track: standard
-  stage: S6
+  stage: S4
   status: active
   repos: [numind-server]
-  branches: {numind-server: develop}
-  worktrees: {numind-server: removed by ndf-done}
+  branches: {numind-server: feature/feishu-resource-discovery}
+  worktrees: {numind-server: /private/tmp/wt-feishu-resource-discovery-numind-server}
   progress: {total_tasks: 7, completed_tasks: 7, reviewed_tasks: 7}
   artifacts:
     requirement: requirements/feishu-resource-discovery.md
@@ -30,6 +30,8 @@ features:
   - 'S4 final dual review PASS with P0/P1/P2=0. Agent/Feishu/store focused suites, full go test ./..., lint, and Feishu/store race gates pass.'
   - 'S5 automated acceptance PASS. Full repository tests, Feishu/store race, lint, fixed lark-cli 1.0.68 dry-run contracts, skill availability, diff hygiene, and both independent reviews pass. The feature is authorized for ndf-done and Dev deployment; real user title read remains the post-deploy product check.'
   - 'S6: ndf-done merged and pushed develop at 7052f2ce, removed the feature worktree/branch, and the manual TCR release deployed numind-server:develop-7052f2ce to Dev. Public health returns code 0/status ok; Docker reports running+healthy; the container runs lark-cli 1.0.68; critical deployment-log matches are zero. Real user title read and any one-time search:docs:read authorization are ready for product acceptance. Prod is not deployed.'
+  - 'S6 acceptance failed on Dev runs 212, 213, and automated reproduction 215. The Agent supplied the exact canonical drive +search argv and same-run lark-shared+lark-drive receipts, but both attempts were rejected before any Feishu operation was created. This proves an internal catalog/receipt-boundary defect rather than a connection, network, permission, or Agent-routing problem. Roll back to S4 for a production-shape customer RED and stage-specific fail-closed repair.'
+  rollback: 'S6 -> S4 on 2026-07-18: exact title discovery is rejected inside the server-owned command/receipt boundary before Feishu access.'
   blockers: []
 
 - id: sop-vision-qwen35-nonthinking
