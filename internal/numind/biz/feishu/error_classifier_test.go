@@ -67,6 +67,30 @@ func TestErrorClassifier_RealCodeLessDocsReadMissingScopeStartsUserRecovery(t *t
 	require.Equal(t, PublicCodeScopeRequired, got.PublicCode)
 }
 
+// Customer regression (Dev run 220): lark-cli 1.0.68 reports a Docs update
+// scope failure on stderr with the fixed authorization/missing_scope tuple but
+// omits error.missing_scopes. The command catalog remains the authority for the
+// bounded recovery scope set; the human-readable error message is never parsed.
+func TestErrorClassifier_RealDocsUpdateMissingScopeWithoutScopeListStartsRecovery(t *testing.T) {
+	envelope := &CLIEnvelope{
+		OK:       false,
+		Identity: "user",
+		Error: &CLIError{
+			Type:    "authorization",
+			Subtype: "missing_scope",
+		},
+	}
+	expected := []string{"docx:document:write_only", "docx:document:readonly"}
+
+	got := NewErrorClassifier().ClassifyEnvelope(envelope, expected, RiskWrite, true)
+	require.Equal(t, RecoveryUserScope, got.Recovery)
+	require.Equal(t, expected, got.MissingScopes)
+	require.True(t, got.ProvenNoSideEffect)
+	require.False(t, got.RetryRead)
+	require.Empty(t, got.TerminalState)
+	require.Equal(t, PublicCodeScopeRequired, got.PublicCode)
+}
+
 func TestErrorClassifier_CodeLessMissingScopeKeepsCatalogAndWriteFences(t *testing.T) {
 	classifier := NewErrorClassifier()
 	codeLess := func(scopes ...string) *CLIEnvelope {
