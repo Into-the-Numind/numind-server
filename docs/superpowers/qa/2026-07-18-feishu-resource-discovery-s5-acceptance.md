@@ -87,3 +87,16 @@ ALL_PASS。允许合并到 `develop` 并部署 Dev。真实用户标题读取与
 审查先发现两项 P1，并按 RED-first 闭环：`feb8d87c` 复现“已启动写操作进入授权恢复重放”和“外部授权续跑后的 unknown 未继承防重状态”；`f091cba3` 修复后，任何已启动写操作失败均进入 `unknown_result` 且不可重放，持久化外部终态会在 continuation 首次模型调用前恢复同一 run 的停止/修正预算。`99991672` 的旧安全重放推断已删除。
 
 最终结论：ALL_PASS。允许执行 `ndf-done`，合并并推送 `develop`，随后部署 Dev。若真实 Dev 账户仍缺少 `docx:document:write_only`，一次用户授权是外部同意步骤，不属于代码或部署阻塞。
+
+## S6 Dev 部署证据（2026-07-18）
+
+- `ndf-done`：PASS。功能分支合并到 `develop`，推送提交 `3d3707d5`，worktree 与本地功能分支已删除。
+- TCR 镜像：`ccr.ccs.tencentyun.com/youshunumind/numind-server:develop-3d3707d5`。
+- 镜像摘要：`sha256:d6cf649350165d4dbc1f579676bb061fb80f906363b710f2c4f407e90c9e915c`。
+- Dev 容器：`numind-server-dev`，状态 `running`，健康状态 `healthy`。
+- 公开健康检查：`{"code":0,"message":"","data":{"status":"ok"}}`。
+- 容器内 CLI：`lark-cli version 1.0.68`。
+- 最近 10 分钟关键启动错误匹配：`0`。
+- Prod：未部署。
+
+部署结论：PASS。代码、合并、推送和 Dev 部署已完成。真实飞书写入验收如触发 `docx:document:write_only` 缺失，只剩用户在授权卡片上的一次外部同意；平台会在同一操作上自动续跑且不会重复写入。
