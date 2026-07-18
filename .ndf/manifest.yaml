@@ -1,5 +1,29 @@
 schema_version: '2.0'
 features:
+- id: feishu-scope-preflight-null
+  ndf_version: '3.0'
+  description: Accept the exact pinned lark-cli successful null missing-scope contract so authorization resumes the original Agent operation.
+  classification_reason: 'Standard: no schema/API/integration change and a small file set, but this changes a high-risk third-party permission and write-resume boundary.'
+  last_updated_by: ai-s3-fast-plan
+  last_updated_at: '2026-07-18T23:55:00+08:00'
+  created_at: '2026-07-18T23:48:00+08:00'
+  track: standard
+  stage: S3
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: feature/feishu-scope-preflight-null}
+  worktrees: {numind-server: /private/tmp/wt-feishu-scope-preflight-null-numind-server}
+  progress: {total_tasks: 4, completed_tasks: 1, reviewed_tasks: 0}
+  artifacts:
+    requirement: requirements/feishu-scope-preflight-null.md
+    proposal: proposals/feishu-scope-preflight-null-proposal.md
+    spec: docs/superpowers/specs/2026-07-18-feishu-scope-preflight-null-design.md
+    plan: docs/superpowers/plans/2026-07-18-feishu-scope-preflight-null.md
+  decisions:
+  - 'S0-S2: Dev operation 23fb5145 proved authorization succeeded and no write started; pinned CLI source proves successful auth check emits a present null missing slice. The customer approved exact shape-aware parsing and fast Standard execution.'
+  - 'S3: four-task RED-first plan preserves fail-closed parsing, existing operation idempotency, full quality gates, atomic merge, and Dev deployment.'
+  blockers: []
+
 - id: feishu-resource-discovery
   ndf_version: '3.0'
   description: Give every Agent a Codex-style Feishu runtime where the Agent chooses business actions and the platform enforces user isolation, scope preflight, authorization, and write idempotency.
