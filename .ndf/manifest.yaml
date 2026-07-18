@@ -4,16 +4,16 @@ features:
   ndf_version: '3.0'
   description: Give every Agent a Codex-style Feishu runtime where the Agent chooses business actions and the platform enforces user isolation, scope preflight, authorization, and write idempotency.
   classification_reason: 'Standard: no schema or HTTP API change, but this redesigns high-risk third-party permission, Agent tool-result, authorization-resume, and write-safety behavior across more than three files.'
-  last_updated_by: ai-s3-agent-led-runtime-plan
-  last_updated_at: '2026-07-18T21:48:00+08:00'
+  last_updated_by: ai-s4-agent-led-runtime-implementation
+  last_updated_at: '2026-07-18T22:30:00+08:00'
   created_at: '2026-07-18T18:39:26+08:00'
   track: standard
-  stage: S3
+  stage: S4
   status: active
   repos: [numind-server]
   branches: {numind-server: feature/feishu-resource-discovery}
   worktrees: {numind-server: /private/tmp/wt-feishu-resource-discovery-numind-server}
-  progress: {total_tasks: 8, completed_tasks: 0, reviewed_tasks: 0}
+  progress: {total_tasks: 8, completed_tasks: 7, reviewed_tasks: 0}
   artifacts:
     requirement: requirements/feishu-agent-led-runtime.md
     proposal: proposals/feishu-agent-led-runtime-proposal.md
@@ -37,6 +37,7 @@ features:
   - 'S6 Docs CRUD acceptance failed on customer run 220 and controlled reproduction 221. Drive search and docs fetch succeeded, then six canonical docs +update invocations started and ended in unknown/feishu_unknown_result within about 100 ms. The catalog accepted the canonical str_replace and append argv and created operations, proving the failure is after policy normalization and before a valid controlled JSON envelope is available. Later auth/status, bot identity, and doc-format variants were separate Agent mis-retries correctly rejected by policy. Roll back to S4 to capture fixed-version CLI process evidence, add a customer RED, and repair the result boundary without weakening unknown-write safety.'
   - 'S2 direction reset: direct Dev evidence proved docs +update returned authorization/missing_scope for docx:document:write_only, while a real fixed-version auth check safely partitions granted readonly and missing write_only before business invocation. User confirmed Agent-led/platform-guardrail option B. The prior inference-based replay fix failed quality review because catalog scopes alone cannot prove a started write had no side effect; it will be reverted. ADR: .ndf/decisions/feishu-resource-discovery/0001-agent-led-runtime.md.'
   - 'S3: eight-task TDD plan locks a strict fixed-version scope checker, pre-write operation ordering, safe actionable terminal results, current-user lark_inspect, category-aware retry guard, cross-domain/multi-Agent isolation, full quality gates and real Dev acceptance. User authorized fully automatic execution through Dev.'
+  - 'S4 implementation: fixed lark-cli 1.0.68 auth-check parsing is fail-closed; every write/high-risk command preflights exact catalog scopes before confirmation/business execution; live and resumed Agent results share one redacted schema; lark_inspect is current-user/read-only; category-aware run guards stop blind retries; Docs/Base/Wiki and multi-Agent/multi-user boundaries are covered.'
   rollback: 'S6 -> S2 on 2026-07-18: product direction changed from per-error repair to a generic Agent-led runtime with pre-write scope preflight and structured outcomes.'
   blockers: []
 
