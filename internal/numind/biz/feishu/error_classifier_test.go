@@ -81,14 +81,19 @@ func TestErrorClassifier_RealDocsUpdateMissingScopeWithoutScopeListStartsRecover
 		},
 	}
 	expected := []string{"docx:document:write_only", "docx:document:readonly"}
+	normalizedExpected := []string{"docx:document:readonly", "docx:document:write_only"}
 
 	got := NewErrorClassifier().ClassifyEnvelope(envelope, expected, RiskWrite, true)
 	require.Equal(t, RecoveryUserScope, got.Recovery)
-	require.Equal(t, expected, got.MissingScopes)
+	require.Equal(t, normalizedExpected, got.MissingScopes)
 	require.True(t, got.ProvenNoSideEffect)
 	require.False(t, got.RetryRead)
 	require.Empty(t, got.TerminalState)
 	require.Equal(t, PublicCodeScopeRequired, got.PublicCode)
+
+	notDocsUpdate := NewErrorClassifier().ClassifyEnvelope(envelope, docsReadScopes(), RiskRead, true)
+	require.Equal(t, RecoveryNone, notDocsUpdate.Recovery)
+	require.Equal(t, model.FeishuOperationFailed, notDocsUpdate.TerminalState)
 }
 
 func TestErrorClassifier_CodeLessMissingScopeKeepsCatalogAndWriteFences(t *testing.T) {

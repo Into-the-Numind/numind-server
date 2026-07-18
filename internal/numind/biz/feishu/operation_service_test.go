@@ -1335,6 +1335,47 @@ func TestOperationService_StructuredRecoveryUsesExactScopesAndSealsVault(t *test
 	require.NotContains(t, string(stored.ResultSummaryJSON), "raw CLI")
 }
 
+func TestOperationService_RealDocsUpdateMissingScopeStartsAuthorization(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	h.recovery.action = &OperationAction{SessionID: "session-docs-update-scope"}
+	h.runner.steps = []operationRunnerStep{{
+		result: &CLIResult{
+			InvocationStarted: true,
+			ExitCode:          3,
+			Envelope: &CLIEnvelope{OK: false, Identity: "user", Error: &CLIError{
+				Type: "authorization", Subtype: "missing_scope",
+			}},
+		},
+		err: errors.New("structured lark-cli 1.0.68 scope failure"),
+	}}
+	req := ExecuteRequest{
+		UserID: 7, AgentRunID: 150, ToolCallID: "tc-docs-update-scope",
+		IdempotencyKey: "150:tc-docs-update-scope",
+		Argv: []string{
+			"docs", "+update", "--doc", "doxcnABCDEFG123", "--command", "str_replace",
+			"--pattern", "当前状态：待验证", "--content", "当前状态：更新成功",
+		},
+		SkillReceipts: []string{"shared-receipt", "doc-receipt"},
+	}
+
+	got, err := h.service.Execute(h.ctx, req)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingUserAuth, got.State)
+	require.NotNil(t, got.Action)
+	require.Equal(t, "user_auth", got.Action.Phase)
+	require.Equal(t, []string{"docx:document:readonly", "docx:document:write_only"}, got.Action.Scopes)
+
+	calls := h.recovery.snapshot()
+	require.Len(t, calls, 1)
+	require.Equal(t, RecoveryUserScope, calls[0].Kind)
+	require.Equal(t, got.Action.Scopes, calls[0].Scopes)
+	stored, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, got.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingUserAuth, stored.State)
+	require.EqualValues(t, 1, stored.AttemptCount)
+}
+
 func TestOperationService_AppScopeRecoveryPassesConsoleURLTransientlyOnly(t *testing.T) {
 	h := newOperationHarness(t)
 	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")

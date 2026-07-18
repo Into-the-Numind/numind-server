@@ -189,6 +189,13 @@ func (c *ErrorClassifier) Classify(
 	switch semantic {
 	case semanticMissingScope:
 		scopes, valid := c.normalizeMissingScopes(cliErr.MissingScopes, expectedScopeSet)
+		inferredFixedDocsUpdate := false
+		if !valid {
+			scopes, inferredFixedDocsUpdate = c.inferFixedDocsUpdateMissingScopes(
+				cliErr, expectedScopes, evidence, hasCode,
+			)
+			valid = inferredFixedDocsUpdate
+		}
 		if !valid {
 			return failClosedClassification(risk, invocationStarted)
 		}
@@ -199,7 +206,7 @@ func (c *ErrorClassifier) Classify(
 		// Only the coded user-level Docs create tuple has a checked-in real S2
 		// observation proving pre-request rejection. Code-less and app-evidence
 		// variants remain unproven and must not replay a started write.
-		sourceProven := hasCode && code == "99991672" &&
+		sourceProven := inferredFixedDocsUpdate || hasCode && code == "99991672" &&
 			evidence == permissionEvidenceNone &&
 			equalScopeSet(scopes, []string{"docx:document:create"})
 		return recoveryClassification(recovery, scopes, sourceProven, risk, invocationStarted, PublicCodeScopeRequired)
@@ -255,6 +262,31 @@ func (c *ErrorClassifier) Classify(
 	default:
 		return failClosedClassification(risk, invocationStarted)
 	}
+}
+
+// inferFixedDocsUpdateMissingScopes handles one sanitized, observed lark-cli
+// 1.0.68 contract: docs +update can return authorization/missing_scope without
+// error.missing_scopes. Only the exact catalog-owned Docs update scope set is
+// inferred. No message or other human-readable field is consulted, and every
+// other absent/invalid scope shape continues to fail closed.
+func (c *ErrorClassifier) inferFixedDocsUpdateMissingScopes(
+	cliErr *CLIError,
+	expectedScopes []string,
+	evidence permissionEvidence,
+	hasCode bool,
+) ([]string, bool) {
+	if c == nil || cliErr == nil || len(cliErr.MissingScopes) != 0 || hasCode ||
+		evidence != permissionEvidenceNone || cliErr.ConsoleURL != "" {
+		return nil, false
+	}
+	normalized, valid := normalizeExpectedScopeSet(expectedScopes, c.allowedScopes)
+	if !valid || !equalScopeSet(normalized, []string{
+		"docx:document:write_only",
+		"docx:document:readonly",
+	}) {
+		return nil, false
+	}
+	return normalized, true
 }
 
 // ClassifyTransport recognizes cancellation/deadline and net.Error using
