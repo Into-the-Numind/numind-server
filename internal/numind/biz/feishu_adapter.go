@@ -75,6 +75,9 @@ type feishuCompositionDeps struct {
 	resumeStore store.IExternalToolResumeLease
 	supervisor  *agent.ExternalContinuationSupervisor
 	runner      *feishu.ControlledLarkCLIRunner
+	// scopePreflight is a test seam. Production always derives the strict
+	// fixed-version adapter from runner.
+	scopePreflight feishu.ScopePreflight
 	// receiptVerifier is a test seam for exercising operation persistence
 	// without invoking the controlled skill reader. Production always uses the
 	// SkillReader built from tokenKey.
@@ -247,6 +250,10 @@ func buildFeishuService(deps feishuCompositionDeps) (*feishuPersonalWorkspace, e
 	if deps.receiptVerifier != nil {
 		receiptVerifier = deps.receiptVerifier
 	}
+	scopePreflight := deps.scopePreflight
+	if scopePreflight == nil {
+		scopePreflight = feishu.NewControlledScopePreflight(runner)
+	}
 	operationService, err := feishu.NewFeishuOperationService(feishu.OperationServiceDeps{
 		Accounts:           deps.dataStore.ThirdPartyAccounts(),
 		Operations:         deps.dataStore.FeishuWorkspace(),
@@ -255,7 +262,7 @@ func buildFeishuService(deps feishuCompositionDeps) (*feishuPersonalWorkspace, e
 		Recovery:           recovery,
 		Confirmation:       confirmation,
 		Vault:              vault,
-		Preflight:          feishu.NewControlledScopePreflight(runner),
+		Preflight:          scopePreflight,
 		Runner:             runner,
 		Cipher:             operationCipher,
 		VerifiedCLIVersion: feishu.LarkCLIVersion,

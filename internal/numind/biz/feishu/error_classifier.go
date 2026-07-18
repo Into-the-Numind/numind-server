@@ -36,6 +36,8 @@ const (
 	PublicCodeResourceDenied     = "feishu_resource_denied"
 	PublicCodeRateLimited        = "feishu_rate_limited"
 	PublicCodeTemporaryError     = "feishu_temporary_error"
+	PublicCodeValidationError    = "feishu_validation_error"
+	PublicCodeNotFound           = "feishu_not_found"
 	PublicCodeUnknownResult      = "feishu_unknown_result"
 	PublicCodeFailed             = "feishu_operation_failed"
 	PublicCodeCancelled          = "feishu_operation_cancelled"
@@ -189,6 +191,14 @@ func (c *ErrorClassifier) Classify(
 	switch semantic {
 	case semanticMissingScope:
 		scopes, valid := c.normalizeMissingScopes(cliErr.MissingScopes, expectedScopeSet)
+		if !valid && risk == RiskRead && len(cliErr.MissingScopes) == 0 {
+			scopes = make([]string, 0, len(expectedScopeSet))
+			for scope := range expectedScopeSet {
+				scopes = append(scopes, scope)
+			}
+			sort.Strings(scopes)
+			valid = true
+		}
 		if !valid {
 			return failClosedClassification(risk, invocationStarted)
 		}
@@ -243,14 +253,23 @@ func (c *ErrorClassifier) Classify(
 			return failClosedClassification(risk, invocationStarted)
 		}
 		return transientClassification(risk, invocationStarted, PublicCodeTemporaryError)
-	case semanticValidation, semanticNotFound:
+	case semanticValidation:
 		if !emptyClassifierEvidence(cliErr, evidence) {
 			return failClosedClassification(risk, invocationStarted)
 		}
 		return Classification{
 			Recovery:      RecoveryNone,
 			TerminalState: model.FeishuOperationFailed,
-			PublicCode:    PublicCodeFailed,
+			PublicCode:    PublicCodeValidationError,
+		}
+	case semanticNotFound:
+		if !emptyClassifierEvidence(cliErr, evidence) {
+			return failClosedClassification(risk, invocationStarted)
+		}
+		return Classification{
+			Recovery:      RecoveryNone,
+			TerminalState: model.FeishuOperationFailed,
+			PublicCode:    PublicCodeNotFound,
 		}
 	default:
 		return failClosedClassification(risk, invocationStarted)

@@ -144,6 +144,11 @@ func cloneDispatcherOperationResult(result *feishu.OperationResult) *feishu.Oper
 	}
 	clone := *result
 	clone.Data = append(json.RawMessage(nil), result.Data...)
+	if result.Failure != nil {
+		failure := *result.Failure
+		failure.RequiredScopes = append([]string(nil), result.Failure.RequiredScopes...)
+		clone.Failure = &failure
+	}
 	return &clone
 }
 
@@ -230,23 +235,21 @@ func TestWorkspaceResumeDispatcher_SucceededOperationBackfillsOriginalToolResult
 	require.Equal(t, 1, operations.callCount())
 	got := resumer.snapshot()
 	require.Len(t, got, 1)
-	require.Equal(t, agent.ExternalToolResult{
-		RunID:       41,
-		ToolCallID:  "tool-1",
-		OperationID: "operation-1",
-		Result:      json.RawMessage(`{"document_id":"doc-1"}`),
-	}, got[0])
+	require.EqualValues(t, 41, got[0].RunID)
+	require.Equal(t, "tool-1", got[0].ToolCallID)
+	require.Equal(t, "operation-1", got[0].OperationID)
+	require.JSONEq(t, `{
+		"ok":true,"state":"succeeded","operation_id":"operation-1",
+		"data":{"document_id":"doc-1"}
+	}`, string(got[0].Result))
 }
 
-func TestWorkspaceResumeDispatcher_NonSucceededOperationNeverBackfillsSuccess(t *testing.T) {
+func TestWorkspaceResumeDispatcher_WaitingDoesNotBackfillAndFailuresBackfillSafely(t *testing.T) {
 	for _, state := range []string{
 		model.FeishuOperationWaitingConnection,
 		model.FeishuOperationWaitingAppScope,
 		model.FeishuOperationWaitingUserAuth,
 		model.FeishuOperationWaitingConfirmation,
-		model.FeishuOperationFailed,
-		model.FeishuOperationUnknown,
-		model.FeishuOperationCancelled,
 	} {
 		t.Run(state, func(t *testing.T) {
 			operations := &dispatcherOperationFake{result: &feishu.OperationResult{
@@ -260,6 +263,30 @@ func TestWorkspaceResumeDispatcher_NonSucceededOperationNeverBackfillsSuccess(t 
 
 			require.NoError(t, NewWorkspaceResumeDispatcher(operations, resumer).DispatchResume(context.Background(), 7, "operation-terminal-"+state))
 			require.Empty(t, resumer.snapshot())
+		})
+	}
+
+	for _, test := range []struct {
+		state, code, category string
+	}{
+		{model.FeishuOperationFailed, feishu.PublicCodeNotFound, "not_found"},
+		{model.FeishuOperationUnknown, feishu.PublicCodeUnknownResult, "unknown_result"},
+		{model.FeishuOperationCancelled, feishu.PublicCodeCancelled, "cancelled"},
+	} {
+		t.Run(test.state, func(t *testing.T) {
+			operationID := "operation-terminal-" + test.state
+			operations := &dispatcherOperationFake{result: &feishu.OperationResult{
+				OperationID: operationID, State: test.state, AgentRunID: 42, ToolCallID: "tool-terminal",
+				Failure: &feishu.OperationFailure{
+					Code: test.code, Category: test.category, BusinessStarted: true,
+				},
+			}}
+			resumer := &dispatcherAgentResumerFake{}
+			require.NoError(t, NewWorkspaceResumeDispatcher(operations, resumer).DispatchResume(context.Background(), 7, operationID))
+			results := resumer.snapshot()
+			require.Len(t, results, 1)
+			require.Contains(t, string(results[0].Result), `"category":"`+test.category+`"`)
+			require.NotContains(t, string(results[0].Result), "must_not")
 		})
 	}
 }

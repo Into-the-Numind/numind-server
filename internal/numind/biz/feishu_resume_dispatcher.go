@@ -2,7 +2,6 @@ package biz
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -47,8 +46,8 @@ func NewWorkspaceResumeDispatcher(operations operationResumeService, agentResume
 	}
 }
 
-// DispatchResume advances one existing operation and, only after it succeeds,
-// backfills the original external tool call. Concurrent callbacks for the same
+// DispatchResume advances one existing operation and, after any terminal
+// outcome, backfills the original external tool call. Concurrent callbacks for the same
 // operation share one in-process attempt; Task11's durable tokenized lease
 // makes retries and callbacks from other application instances idempotent.
 func (d *WorkspaceResumeDispatcher) DispatchResume(ctx context.Context, userID uint, operationID string) error {
@@ -97,18 +96,32 @@ func (d *WorkspaceResumeDispatcher) dispatch(ctx context.Context, userID uint, o
 	if result == nil {
 		return fmt.Errorf("resume feishu operation: empty result")
 	}
-	if result.State != model.FeishuOperationSucceeded {
+	switch result.State {
+	case model.FeishuOperationWaitingConnection,
+		model.FeishuOperationWaitingAppScope,
+		model.FeishuOperationWaitingUserAuth,
+		model.FeishuOperationWaitingConfirmation:
 		return nil
+	case model.FeishuOperationSucceeded,
+		model.FeishuOperationFailed,
+		model.FeishuOperationUnknown,
+		model.FeishuOperationCancelled:
+		// handled below
+	default:
+		return fmt.Errorf("resume feishu operation: invalid state")
 	}
-	if result.OperationID != operationID || result.AgentRunID == 0 || strings.TrimSpace(result.ToolCallID) == "" ||
-		len(result.Data) == 0 || !json.Valid(result.Data) {
-		return fmt.Errorf("resume feishu operation: succeeded result is invalid")
+	if result.OperationID != operationID || result.AgentRunID == 0 || strings.TrimSpace(result.ToolCallID) == "" {
+		return fmt.Errorf("resume feishu operation: terminal result identity is invalid")
+	}
+	toolResult, err := feishu.MarshalLarkToolResult(result)
+	if err != nil {
+		return fmt.Errorf("resume feishu operation: terminal result is invalid: %w", err)
 	}
 	if err := d.agentResumer.Resume(ctx, agent.ExternalToolResult{
 		RunID:       result.AgentRunID,
 		ToolCallID:  result.ToolCallID,
 		OperationID: result.OperationID,
-		Result:      append(json.RawMessage(nil), result.Data...),
+		Result:      toolResult,
 	}); err != nil {
 		return fmt.Errorf("resume agent run: %w", err)
 	}

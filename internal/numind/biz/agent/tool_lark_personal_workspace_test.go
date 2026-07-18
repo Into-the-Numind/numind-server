@@ -368,6 +368,7 @@ func TestLarkPersonalWorkspace_ExecuteAcceptsOfficialLarkCLIPrefix(t *testing.T)
 	executor := &fakeLarkExecutor{result: &feishu.OperationResult{
 		OperationID: "op-create",
 		State:       model.FeishuOperationSucceeded,
+		Data:        json.RawMessage(`{"document_id":"doc-created"}`),
 	}}
 	tool := &larkExecuteTool{executor: executor}
 	input := ToolInput(`{"argv":["lark-cli","docs","+create","--content","<title>验收</title>"],"skill_receipts":["receipt-doc","receipt-shared"]}`)
@@ -669,7 +670,9 @@ func TestLarkPersonalWorkspace_ExecuteCorrectionBudgetIsConcurrentAndResetsAfter
 
 		executor.mu.Lock()
 		executor.err = nil
-		executor.result = &feishu.OperationResult{OperationID: "op-success", State: model.FeishuOperationSucceeded}
+		executor.result = &feishu.OperationResult{
+			OperationID: "op-success", State: model.FeishuOperationSucceeded, Data: json.RawMessage(`{"ok":true}`),
+		}
 		executor.mu.Unlock()
 		result, err := tool.Execute(
 			larkPersonalWorkspaceContext(1, runID, "successful-correction"),
@@ -696,7 +699,17 @@ func TestLarkPersonalWorkspace_ExecuteCorrectionBudgetIsConcurrentAndResetsAfter
 func TestLarkPersonalWorkspace_ExecuteTerminalStatesNeverFakeSuccess(t *testing.T) {
 	for _, state := range []string{model.FeishuOperationFailed, model.FeishuOperationUnknown, model.FeishuOperationCancelled} {
 		t.Run(state, func(t *testing.T) {
-			executor := &fakeLarkExecutor{result: &feishu.OperationResult{OperationID: "op-1", State: state}}
+			code, category := feishu.PublicCodeFailed, "failed"
+			if state == model.FeishuOperationUnknown {
+				code, category = feishu.PublicCodeUnknownResult, "unknown_result"
+			}
+			if state == model.FeishuOperationCancelled {
+				code, category = feishu.PublicCodeCancelled, "cancelled"
+			}
+			executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+				OperationID: "op-1", State: state,
+				Failure: &feishu.OperationFailure{Code: code, Category: category, BusinessStarted: true},
+			}}
 			result, err := (&larkExecuteTool{executor: executor}).Execute(
 				larkPersonalWorkspaceContext(7, 8, "tc-8"),
 				ToolInput(`{"argv":["docs"],"skill_receipts":["receipt"]}`),

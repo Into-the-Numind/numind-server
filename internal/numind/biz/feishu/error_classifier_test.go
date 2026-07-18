@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"sync"
 	"testing"
 
@@ -215,6 +216,36 @@ func TestErrorClassifier_FixedConnectionAndReauthContracts(t *testing.T) {
 	}
 }
 
+func TestErrorClassifier_ReadMissingScopeWithoutListUsesExactCatalogScopes(t *testing.T) {
+	classifier := NewErrorClassifier()
+	for _, test := range []struct {
+		name   string
+		scopes []string
+	}{
+		{name: "docs", scopes: []string{"docx:document:write_only", "docx:document:readonly"}},
+		{name: "base", scopes: []string{"base:record:create", "base:record:update"}},
+		{name: "wiki", scopes: []string{"wiki:node:create", "wiki:node:read", "wiki:space:read"}},
+		{name: "drive", scopes: []string{"search:docs:read"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			envelope := &CLIEnvelope{OK: false, Identity: "user", Error: &CLIError{
+				Type: "authorization", Subtype: "missing_scope", Identity: "user",
+			}}
+			got := classifier.ClassifyEnvelope(envelope, test.scopes, RiskRead, true)
+			expected := append([]string(nil), test.scopes...)
+			sort.Strings(expected)
+			require.Equal(t, RecoveryUserScope, got.Recovery)
+			require.Equal(t, expected, got.MissingScopes)
+			require.Equal(t, PublicCodeScopeRequired, got.PublicCode)
+
+			startedWrite := classifier.ClassifyEnvelope(envelope, test.scopes, RiskWrite, true)
+			require.Equal(t, RecoveryNone, startedWrite.Recovery)
+			require.Equal(t, model.FeishuOperationUnknown, startedWrite.TerminalState)
+			require.Equal(t, PublicCodeUnknownResult, startedWrite.PublicCode)
+		})
+	}
+}
+
 func TestErrorClassifier_SyntheticRefreshTokenContractsDoNotProveStartedWrites(t *testing.T) {
 	t.Parallel()
 
@@ -297,13 +328,16 @@ func TestErrorClassifier_KnownValidationAndNotFoundFailDeterministically(t *test
 	t.Parallel()
 
 	classifier := NewErrorClassifier()
-	for _, fixture := range []string{"fixed-validation.json", "fixed-not-found.json"} {
-		got := classifier.ClassifyEnvelope(loadErrorClassifierFixture(t, fixture), docsCreateScopes(), RiskWrite, true)
+	for _, test := range []struct{ fixture, public string }{
+		{fixture: "fixed-validation.json", public: PublicCodeValidationError},
+		{fixture: "fixed-not-found.json", public: PublicCodeNotFound},
+	} {
+		got := classifier.ClassifyEnvelope(loadErrorClassifierFixture(t, test.fixture), docsCreateScopes(), RiskWrite, true)
 		require.Equal(t, RecoveryNone, got.Recovery)
 		require.False(t, got.ProvenNoSideEffect)
 		require.False(t, got.RetryRead)
 		require.Equal(t, model.FeishuOperationFailed, got.TerminalState)
-		require.Equal(t, PublicCodeFailed, got.PublicCode)
+		require.Equal(t, test.public, got.PublicCode)
 	}
 }
 

@@ -165,6 +165,7 @@ type OperationResult struct {
 	OperationID string                  `json:"operation_id"`
 	State       string                  `json:"state"`
 	Data        json.RawMessage         `json:"data,omitempty"`
+	Failure     *OperationFailure       `json:"failure,omitempty"`
 	Action      *OperationAction        `json:"action,omitempty"`
 	NoticeCode  AuthorizationNoticeCode `json:"notice_code,omitempty"`
 	AgentRunID  uint64                  `json:"-"`
@@ -295,6 +296,7 @@ type persistedOperationSummary struct {
 	RecoveryKind      RecoveryKind `json:"recovery_kind,omitempty"`
 	RecoveryScopes    []string     `json:"recovery_scopes,omitempty"`
 	RecoverySignature string       `json:"recovery_signature,omitempty"`
+	BusinessStarted   bool         `json:"business_started,omitempty"`
 }
 
 // OperationServiceDeps wires only small one-way Feishu interfaces.
@@ -1603,17 +1605,17 @@ func (s *FeishuOperationService) commitTerminal(
 ) (*OperationResult, error) {
 	now := s.now().UTC()
 	fields := map[string]any{"finished_at": now, "error_type": "", "error_subtype": "", "error_code": ""}
-	summary := persistedOperationSummary{Status: state, PublicCode: publicCode}
+	summary := persistedOperationSummary{Status: state, PublicCode: publicCode, BusinessStarted: invocationStarted}
 	if state == model.FeishuOperationSucceeded {
 		owner := OperationCipherOwner{UserID: operation.UserID, Generation: operation.Generation, OperationID: operation.ID}
 		ciphertext, _, err := s.sealOperationBlob(OperationCipherPurposeResult, owner, append([]byte(nil), data...))
 		if err != nil {
 			if invocationStarted && writeLikeRisk(RiskLevel(operation.RiskLevel)) {
 				state = model.FeishuOperationUnknown
-				summary = persistedOperationSummary{Status: state, PublicCode: PublicCodeUnknownResult}
+				summary = persistedOperationSummary{Status: state, PublicCode: PublicCodeUnknownResult, BusinessStarted: invocationStarted}
 			} else {
 				state = model.FeishuOperationFailed
-				summary = persistedOperationSummary{Status: state, PublicCode: PublicCodeFailed}
+				summary = persistedOperationSummary{Status: state, PublicCode: PublicCodeFailed, BusinessStarted: invocationStarted}
 			}
 		} else {
 			fields["result_ciphertext"] = ciphertext
@@ -1643,6 +1645,7 @@ func (s *FeishuOperationService) commitTerminal(
 		if invocationStarted && writeLikeRisk(RiskLevel(operation.RiskLevel)) {
 			result := baseOperationResult(operation)
 			result.State = model.FeishuOperationUnknown
+			result.Failure = newOperationFailure(PublicCodeUnknownResult, result.State, true, RiskLevel(operation.RiskLevel), nil)
 			return result, nil
 		}
 		return nil, ErrOperationUnavailable
@@ -1735,6 +1738,23 @@ func (s *FeishuOperationService) resultFromOperation(operation *model.FeishuOper
 		if summary.ExpiresAt != nil {
 			result.Action.ExpiresAt = summary.ExpiresAt.UTC()
 		}
+		return result, nil
+	}
+	if terminalOperationState(operation.State) {
+		summary, err := decodeOperationSummary(operation.ResultSummaryJSON)
+		if err != nil || summary.Status != operation.State {
+			return nil, ErrOperationIntegrity
+		}
+		publicCode := summary.PublicCode
+		if operation.State == model.FeishuOperationUnknown {
+			publicCode = PublicCodeUnknownResult
+		}
+		if operation.State == model.FeishuOperationCancelled {
+			publicCode = PublicCodeCancelled
+		}
+		result.Failure = newOperationFailure(
+			publicCode, operation.State, summary.BusinessStarted, RiskLevel(operation.RiskLevel), summary.RecoveryScopes,
+		)
 	}
 	return result, nil
 }

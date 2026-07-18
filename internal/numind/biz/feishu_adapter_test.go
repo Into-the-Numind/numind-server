@@ -44,17 +44,18 @@ func newFeishuCompositionDeps(t *testing.T) feishuCompositionDeps {
 	require.True(t, ok)
 	tokenKey := feishuCompositionKey(0)
 	return feishuCompositionDeps{
-		enabled:       true,
-		dataStore:     ds,
-		tokenKey:      tokenKey,
-		cipherKeys:    []feishuCipherKeyringEntry{feishuCompositionKeyringEntry("test-v1", tokenKey)},
-		keyVersion:    "test-v1",
-		runtimeBase:   filepath.Join(t.TempDir(), "runtime"),
-		authOwner:     "test-feishu-auth-worker",
-		studentRuns:   agent.NewStudentRunService(nil, ds.AgentRuns(), ds.AgentDefinitions(), nil, nil, nil),
-		resumeStore:   resumeStore,
-		supervisor:    agent.NewExternalContinuationSupervisor(agent.ExternalContinuationLimit),
-		verifyVersion: func(context.Context) error { return nil },
+		enabled:        true,
+		dataStore:      ds,
+		tokenKey:       tokenKey,
+		cipherKeys:     []feishuCipherKeyringEntry{feishuCompositionKeyringEntry("test-v1", tokenKey)},
+		keyVersion:     "test-v1",
+		runtimeBase:    filepath.Join(t.TempDir(), "runtime"),
+		authOwner:      "test-feishu-auth-worker",
+		studentRuns:    agent.NewStudentRunService(nil, ds.AgentRuns(), ds.AgentDefinitions(), nil, nil, nil),
+		resumeStore:    resumeStore,
+		supervisor:     agent.NewExternalContinuationSupervisor(agent.ExternalContinuationLimit),
+		verifyVersion:  func(context.Context) error { return nil },
+		scopePreflight: compositionScopePreflight{},
 	}
 }
 
@@ -133,6 +134,12 @@ func prepareHistoricalCompositionAuthSession(t *testing.T, deps feishuCompositio
 type compositionReceiptVerifier struct{}
 
 func (compositionReceiptVerifier) VerifyRequired([]string, uint64, string) error { return nil }
+
+type compositionScopePreflight struct{}
+
+func (compositionScopePreflight) Check(_ context.Context, _ string, scopes []string) (*feishu.ScopeCheckResult, error) {
+	return &feishu.ScopeCheckResult{Granted: append([]string(nil), scopes...)}, nil
+}
 
 func TestBuildFeishuService_FeatureFlagOffReturnsNil(t *testing.T) {
 	composition, err := buildFeishuService(feishuCompositionDeps{enabled: false})
@@ -472,7 +479,10 @@ func TestBuildFeishuService_KeyRotationReadsHistoricalSucceededOperation(t *test
 	require.Len(t, backfills, 1)
 	require.Equal(t, uint64(91), backfills[0].RunID)
 	require.Equal(t, "call-historical", backfills[0].ToolCallID)
-	require.JSONEq(t, `{"document_id":"historical"}`, string(backfills[0].Result))
+	require.JSONEq(t, `{
+		"ok":true,"state":"succeeded","operation_id":"`+operationID+`",
+		"data":{"document_id":"historical"}
+	}`, string(backfills[0].Result))
 }
 
 func TestBuildFeishuService_MissingRetainedResultKeyFailsClosedBeforePublication(t *testing.T) {
@@ -527,7 +537,10 @@ func TestBuildFeishuService_MissingRetainedResultKeyFailsClosedBeforePublication
 	require.Len(t, backfills, 1)
 	require.Equal(t, uint64(91), backfills[0].RunID)
 	require.Equal(t, "call-rotated", backfills[0].ToolCallID)
-	require.JSONEq(t, `{"document_id":"rotated"}`, string(backfills[0].Result))
+	require.JSONEq(t, `{
+		"ok":true,"state":"succeeded","operation_id":"`+operationID+`",
+		"data":{"document_id":"rotated"}
+	}`, string(backfills[0].Result))
 }
 
 func TestBuildFeishuService_InvalidRetainedResultBlobFailsClosedBeforePublication(t *testing.T) {
