@@ -479,6 +479,39 @@ func TestControlledLarkCLIRunner_RunNonZeroStructuredStderrPreservesEnvelope(t *
 	}
 }
 
+func TestControlledLarkCLIRunner_StructuredStderrFallbackFailsClosedOnAmbiguity(t *testing.T) {
+	const stderr = `{"ok":false,"identity":"user","error":{"type":"authorization","subtype":"missing_scope","missing_scopes":["docx:document:readonly"],"identity":"user"}}`
+	tests := []struct {
+		name   string
+		stdout string
+		stderr string
+		exit   int
+	}{
+		{name: "non-empty stdout wins", stdout: "not-json", stderr: stderr, exit: 3},
+		{name: "concatenated stderr", stderr: stderr + stderr, exit: 3},
+		{name: "zero exit never falls back", stderr: stderr, exit: 0},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			home := controlledTestHome(t)
+			body := fmt.Sprintf("printf '%%s' %s\nprintf '%%s' %s >&2\nexit %d",
+				shellQuoteForControlledTest(testCase.stdout), shellQuoteForControlledTest(testCase.stderr), testCase.exit)
+			result, err := controlledRunner(writeControlledFakeBinary(t, body)).Run(
+				context.Background(), home, []string{"docs", "+fetch"}, nil,
+			)
+			if err == nil {
+				t.Fatal("ambiguous or non-business stream shape unexpectedly succeeded")
+			}
+			if result == nil || !result.InvocationStarted {
+				t.Fatalf("started invocation evidence lost: %+v", result)
+			}
+			if result.Envelope != nil {
+				t.Fatalf("ambiguous stderr was trusted as a classifier envelope: %+v", result.Envelope)
+			}
+		})
+	}
+}
+
 func TestControlledLarkCLIRunner_RunBoundsStdoutAndStderrSeparately(t *testing.T) {
 	tests := []struct {
 		name         string

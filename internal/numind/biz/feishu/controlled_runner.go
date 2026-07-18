@@ -149,7 +149,11 @@ func (r *ControlledLarkCLIRunner) Run(
 		return result, fmt.Errorf("feishu: lark-cli output rejected: %w", errControlledCLIOutputLimit)
 	}
 
-	envelope, decodeErr := decodeControlledCLIEnvelope(result.Stdout)
+	envelopeBytes := result.Stdout
+	if waitErr != nil && len(result.Stdout) == 0 && len(result.Stderr) > 0 {
+		envelopeBytes = result.Stderr
+	}
+	envelope, decodeErr := decodeControlledCLIEnvelope(envelopeBytes)
 	if decodeErr == nil {
 		result.Envelope = envelope
 	}
