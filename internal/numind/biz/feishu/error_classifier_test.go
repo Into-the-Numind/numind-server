@@ -46,6 +46,27 @@ func TestErrorClassifier_RealS2MissingScopeIsReplayable(t *testing.T) {
 	require.Equal(t, PublicCodeScopeRequired, got.PublicCode)
 }
 
+func TestErrorClassifier_RealCodeLessDocsReadMissingScopeStartsUserRecovery(t *testing.T) {
+	envelope := &CLIEnvelope{
+		OK:       false,
+		Identity: "user",
+		Error: &CLIError{
+			Type:          "authorization",
+			Subtype:       "missing_scope",
+			Identity:      "user",
+			MissingScopes: []string{"docx:document:readonly"},
+		},
+	}
+
+	got := NewErrorClassifier().ClassifyEnvelope(envelope, docsReadScopes(), RiskRead, true)
+	require.Equal(t, RecoveryUserScope, got.Recovery)
+	require.Equal(t, []string{"docx:document:readonly"}, got.MissingScopes)
+	require.False(t, got.ProvenNoSideEffect)
+	require.False(t, got.RetryRead)
+	require.Empty(t, got.TerminalState)
+	require.Equal(t, PublicCodeScopeRequired, got.PublicCode)
+}
+
 func TestErrorClassifier_SyntheticAppScopeContractsDoNotProveStartedWrites(t *testing.T) {
 	t.Parallel()
 

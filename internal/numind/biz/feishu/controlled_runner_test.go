@@ -448,6 +448,37 @@ func TestControlledLarkCLIRunner_RunNonZeroPreservesEnvelopeExitAndBoundedStderr
 	}
 }
 
+func TestControlledLarkCLIRunner_RunNonZeroStructuredStderrPreservesEnvelope(t *testing.T) {
+	home := controlledTestHome(t)
+	const stderr = `{"ok":false,"identity":"user","error":{"type":"authorization","subtype":"missing_scope","message":"sensitive resource detail","hint":"sensitive login guidance","missing_scopes":["docx:document:readonly"],"identity":"user"}}`
+	bin := writeControlledFakeBinary(t, fmt.Sprintf("printf '%%s' %s >&2\nexit 3", shellQuoteForControlledTest(stderr)))
+
+	result, err := controlledRunner(bin).Run(context.Background(), home, []string{"docs", "+fetch"}, nil)
+	if err == nil {
+		t.Fatal("non-zero exit with a structured stderr error must still fail the invocation")
+	}
+	if strings.Contains(err.Error(), "sensitive resource detail") || strings.Contains(err.Error(), "sensitive login guidance") {
+		t.Fatalf("structured stderr details leaked into returned error: %v", err)
+	}
+	if result == nil || !result.InvocationStarted || result.ExitCode != 3 {
+		t.Fatalf("non-zero stderr result metadata lost: %+v", result)
+	}
+	if len(result.Stdout) != 0 || string(result.Stderr) != stderr {
+		t.Fatalf("bounded stream evidence changed: stdout=%q stderr=%q", result.Stdout, result.Stderr)
+	}
+	if result.Envelope == nil || result.Envelope.Error == nil {
+		t.Fatalf("structured stderr envelope was not preserved: %+v", result.Envelope)
+	}
+	cliErr := result.Envelope.Error
+	if result.Envelope.Identity != "user" || cliErr.Identity != "user" ||
+		cliErr.Type != "authorization" || cliErr.Subtype != "missing_scope" {
+		t.Fatalf("classifier identity fields changed: envelope=%+v error=%+v", result.Envelope, cliErr)
+	}
+	if len(cliErr.MissingScopes) != 1 || cliErr.MissingScopes[0] != "docx:document:readonly" {
+		t.Fatalf("missing scope evidence changed: %+v", cliErr.MissingScopes)
+	}
+}
+
 func TestControlledLarkCLIRunner_RunBoundsStdoutAndStderrSeparately(t *testing.T) {
 	tests := []struct {
 		name         string
