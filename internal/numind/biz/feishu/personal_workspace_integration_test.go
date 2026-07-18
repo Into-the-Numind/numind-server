@@ -740,16 +740,6 @@ func userScopeRequiredCLIResult() *CLIResult {
 	return userScopeRequiredCLIResultFor([]string{"docx:document:readonly"})
 }
 
-func reauthorizationRequiredCLIResult() *CLIResult {
-	return &CLIResult{
-		InvocationStarted: true,
-		ExitCode:          1,
-		Envelope: &CLIEnvelope{OK: false, Identity: "user", Error: &CLIError{
-			Type: "authentication", Subtype: "token_missing", Identity: "user",
-		}},
-	}
-}
-
 func userScopeRequiredCLIResultFor(scopes []string) *CLIResult {
 	return &CLIResult{
 		InvocationStarted: true,

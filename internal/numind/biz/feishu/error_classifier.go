@@ -375,20 +375,6 @@ func scopeSetKey(scopes []string) string {
 	return strings.Join(scopes, "\x00")
 }
 
-func equalScopeSet(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	rightCopy := append([]string(nil), right...)
-	sort.Strings(rightCopy)
-	for index := range left {
-		if left[index] != rightCopy[index] {
-			return false
-		}
-	}
-	return true
-}
-
 type permissionEvidence uint8
 
 const (
