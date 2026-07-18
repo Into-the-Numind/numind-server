@@ -4,15 +4,15 @@ features:
   ndf_version: '3.0'
   description: Accept the exact pinned lark-cli successful null missing-scope contract so authorization resumes the original Agent operation.
   classification_reason: 'Standard: no schema/API/integration change and a small file set, but this changes a high-risk third-party permission and write-resume boundary.'
-  last_updated_by: ai-s5-acceptance
-  last_updated_at: '2026-07-19T00:06:00+08:00'
+  last_updated_by: ai-s6-dev-deployment
+  last_updated_at: '2026-07-19T00:13:00+08:00'
   created_at: '2026-07-18T23:48:00+08:00'
   track: standard
-  stage: S5
+  stage: S6
   status: active
   repos: [numind-server]
-  branches: {numind-server: feature/feishu-scope-preflight-null}
-  worktrees: {numind-server: /private/tmp/wt-feishu-scope-preflight-null-numind-server}
+  branches: {numind-server: develop}
+  worktrees: {numind-server: removed by ndf-done}
   progress: {total_tasks: 4, completed_tasks: 4, reviewed_tasks: 2}
   artifacts:
     requirement: requirements/feishu-scope-preflight-null.md
@@ -26,6 +26,7 @@ features:
   - 'S4: customer RED efd85714 reproduces the exact successful missing:null rejection. Fix 90b20426 preserves field presence, accepts only official null empty-slice shapes, recognizes exact no-token/not-logged-in negatives, and retains complete partition, exit, suggestion, unknown-field, and operation exactly-once fences.'
   - 'S4 hardening: 8df99c38 rejects explicit null optional fields; 2b36f812 adds a raw case-sensitive key allowlist so Go case-folded OK/GRANTED/MISSING collisions cannot override the official lowercase contract. Final spec and quality reviews PASS with P0/P1/P2=0.'
   - 'S5: full go test, lint, focused Feishu race, isolated timing-race repeats, exact official CLI contracts, diff hygiene, and dual reviews pass. Repository-wide task test still exposes the pre-existing sandbox test-fixture race in mutable SkillsDir/seccomp globals; no sandbox file changed and the affected Feishu race gates pass. Authorized for merge and Dev deployment.'
+  - 'S6: ndf-done merged and pushed develop at bfee9e0c and removed the feature worktree/branch. Manual TCR release deployed numind-server:develop-bfee9e0c (digest sha256:4f3d178997aed9d5c7a9c56b508b277312c75fca816a3ad87016cc83c331f63d) to Dev. Container is running+healthy, public health returns code 0/status ok, lark-cli is 1.0.68, and critical startup/preflight rejection log matches are zero. Real post-authorization Docs update remains the human product gate; Prod is not deployed.'
   blockers: []
 
 - id: feishu-resource-discovery
