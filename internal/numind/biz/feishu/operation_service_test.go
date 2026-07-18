@@ -1360,7 +1360,7 @@ func TestOperationService_CodeLessStartedDocsCreateIsUnknownAndNeverAuthorizedOr
 	require.Equal(t, model.FeishuOperationUnknown, stored.State)
 }
 
-func TestOperationService_StructuredRecoveryUsesExactScopesAndSealsVault(t *testing.T) {
+func TestOperationService_StartedWriteMissingScopeNeverEntersRecovery(t *testing.T) {
 	h := newOperationHarness(t)
 	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
 	h.recovery.action = &OperationAction{
@@ -1387,20 +1387,14 @@ func TestOperationService_StructuredRecoveryUsesExactScopesAndSealsVault(t *test
 
 	got, err := h.service.Execute(h.ctx, req)
 	require.NoError(t, err)
-	require.Equal(t, model.FeishuOperationWaitingUserAuth, got.State)
-	require.Equal(t, ProviderLark, got.Action.Provider)
-	require.Equal(t, "user_auth", got.Action.Phase)
-	require.Equal(t, []string{"docx:document:create"}, got.Action.Scopes)
-	require.Equal(t, "https://verification.example/sensitive", got.Action.URL)
-	calls := h.recovery.snapshot()
-	require.Len(t, calls, 1)
-	require.Equal(t, RecoveryUserScope, calls[0].Kind)
-	require.Equal(t, []string{"docx:document:create"}, calls[0].Scopes)
+	require.Equal(t, model.FeishuOperationUnknown, got.State)
+	require.Nil(t, got.Action)
+	require.Empty(t, h.recovery.snapshot())
 	require.Equal(t, []bool{false, true}, h.vault.changed, "preflight is read-only; the business invocation seals")
 
 	stored, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, got.OperationID)
 	require.NoError(t, err)
-	require.Equal(t, model.FeishuOperationWaitingUserAuth, stored.State)
+	require.Equal(t, model.FeishuOperationUnknown, stored.State)
 	require.Empty(t, stored.LeaseOwner)
 	require.Nil(t, stored.LeaseUntil)
 	require.NotContains(t, string(stored.ResultSummaryJSON), "verification.example")

@@ -765,6 +765,31 @@ func TestLarkPersonalWorkspace_ExecuteTerminalStatesNeverFakeSuccess(t *testing.
 }
 
 func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *testing.T) {
+	t.Run("durable external unknown arms stop before continuation", func(t *testing.T) {
+		const runID = uint64(810)
+		larkExecuteRetryClearRun(runID)
+		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+		externalResult, err := feishu.MarshalLarkToolResult(&feishu.OperationResult{
+			OperationID: "op-resumed-unknown", State: model.FeishuOperationUnknown,
+			Failure: &feishu.OperationFailure{
+				Code: feishu.PublicCodeUnknownResult, Category: "unknown_result", BusinessStarted: true,
+			},
+		})
+		require.NoError(t, err)
+		require.True(t, larkExecuteRetrySeedExternalResult(runID, externalResult))
+
+		executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+			OperationID: "must-not-run", State: model.FeishuOperationSucceeded, Data: json.RawMessage(`{"ok":true}`),
+		}}
+		result, err := (&larkExecuteTool{executor: executor}).Execute(
+			larkPersonalWorkspaceContext(7, runID, "write-after-resume"),
+			ToolInput(`{"argv":["docs","+create","--title","duplicate"],"skill_receipts":["shared","doc"]}`),
+		)
+		requireSafeLarkSoftError(t, result, err)
+		require.Contains(t, string(result), "不可自动重试")
+		require.Empty(t, executor.snapshot())
+	})
+
 	t.Run("unknown started write stops the run", func(t *testing.T) {
 		const runID = uint64(811)
 		larkExecuteRetryClearRun(runID)
