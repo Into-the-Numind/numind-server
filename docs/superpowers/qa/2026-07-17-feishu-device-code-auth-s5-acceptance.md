@@ -112,3 +112,19 @@ AUTOMATED_PASS_WITH_BASELINE_EXCEPTION。功能代码可合并并部署 Dev；�
 - 外部 `GET /healthz` 返回 `code=0`、`status=ok`；部署后最近十分钟 panic/fatal/error 日志计数为 0。
 - 下一步人工门禁：用户重新发起同一飞书文档创建请求，完成新授权卡后确认原 Agent 能自动继续且不再出现
   连续“执行出错”或本地 CLI/App Secret 指引。Prod 未部署、也未获得授权。
+
+## Dev run 209 文档读取错误修复验收
+
+- Dev run 209 的三次 `docs +fetch` 并非连接丢失或飞书服务波动。对同一加密 HOME 的只读脱敏重放证明：
+  固定版本 lark-cli 1.0.68 在缺少读取权限时以退出码 3 结束，stdout 为空，并把完整的 code-less
+  `authorization/missing_scope` envelope 写入 stderr；精确缺失 scope 为 `docx:document:readonly`。
+- 客户 RED `e36d2806` 先于修复，复现了 runner 丢失 stderr envelope、classifier 无法生成增量授权的旧行为。
+  修复 `8d0526db` 保留严格的 stderr-only envelope 并识别真实 code-less tuple；安全收紧 `daea8ba8`
+  只允许明确正退出码使用 stderr，拒绝 stdout/stderr 双 envelope，并确保无 code 的已开始写操作进入
+  Unknown、不会授权或重放。
+- 自动验收：`go test ./...` PASS；`go test -race ./internal/numind/biz/feishu -count=1` PASS；
+  `PATH="$(go env GOPATH)/bin:$PATH" task lint` PASS；飞书完整包与所有定向客户/安全回归 PASS；
+  `git diff --check` PASS。
+- 独立规格审查与代码质量审查均为 PASS，P0/P1/P2 = 0。
+- 结论：S5 AUTOMATED_PASS，可合并并部署 Dev。真实产品验收必须重新发起一次文档读取：首次应只申请
+  `docx:document:readonly`，批准后自动继续原读取；再次读取不应重复授权。Prod 未授权。

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -445,6 +446,88 @@ func TestControlledLarkCLIRunner_RunNonZeroPreservesEnvelopeExitAndBoundedStderr
 	}
 	if string(result.Stdout) != stdout || string(result.Stderr) != stderr {
 		t.Fatalf("raw bounded streams lost: stdout=%q stderr=%q", result.Stdout, result.Stderr)
+	}
+}
+
+func TestControlledLarkCLIRunner_RunNonZeroStructuredStderrPreservesEnvelope(t *testing.T) {
+	home := controlledTestHome(t)
+	const stderr = `{"ok":false,"identity":"user","error":{"type":"authorization","subtype":"missing_scope","message":"sensitive resource detail","hint":"sensitive login guidance","missing_scopes":["docx:document:readonly"],"identity":"user"}}`
+	bin := writeControlledFakeBinary(t, fmt.Sprintf("printf '%%s' %s >&2\nexit 3", shellQuoteForControlledTest(stderr)))
+
+	result, err := controlledRunner(bin).Run(context.Background(), home, []string{"docs", "+fetch"}, nil)
+	if err == nil {
+		t.Fatal("non-zero exit with a structured stderr error must still fail the invocation")
+	}
+	if strings.Contains(err.Error(), "sensitive resource detail") || strings.Contains(err.Error(), "sensitive login guidance") {
+		t.Fatalf("structured stderr details leaked into returned error: %v", err)
+	}
+	if result == nil || !result.InvocationStarted || result.ExitCode != 3 {
+		t.Fatalf("non-zero stderr result metadata lost: %+v", result)
+	}
+	if len(result.Stdout) != 0 || string(result.Stderr) != stderr {
+		t.Fatalf("bounded stream evidence changed: stdout=%q stderr=%q", result.Stdout, result.Stderr)
+	}
+	if result.Envelope == nil || result.Envelope.Error == nil {
+		t.Fatalf("structured stderr envelope was not preserved: %+v", result.Envelope)
+	}
+	cliErr := result.Envelope.Error
+	if result.Envelope.Identity != "user" || cliErr.Identity != "user" ||
+		cliErr.Type != "authorization" || cliErr.Subtype != "missing_scope" {
+		t.Fatalf("classifier identity fields changed: envelope=%+v error=%+v", result.Envelope, cliErr)
+	}
+	if len(cliErr.MissingScopes) != 1 || cliErr.MissingScopes[0] != "docx:document:readonly" {
+		t.Fatalf("missing scope evidence changed: %+v", cliErr.MissingScopes)
+	}
+}
+
+func TestControlledLarkCLIRunner_StructuredStderrFallbackFailsClosedOnAmbiguity(t *testing.T) {
+	const stderr = `{"ok":false,"identity":"user","error":{"type":"authorization","subtype":"missing_scope","missing_scopes":["docx:document:readonly"],"identity":"user"}}`
+	const stdoutEnvelope = `{"ok":false,"identity":"user","error":{"type":"authorization","subtype":"missing_scope","code":"99991672","missing_scopes":["docx:document:create"],"identity":"user"}}`
+	tests := []struct {
+		name   string
+		stdout string
+		stderr string
+		exit   int
+	}{
+		{name: "non-empty stdout wins", stdout: "not-json", stderr: stderr, exit: 3},
+		{name: "two valid envelopes", stdout: stdoutEnvelope, stderr: stderr, exit: 3},
+		{name: "concatenated stderr", stderr: stderr + stderr, exit: 3},
+		{name: "zero exit never falls back", stderr: stderr, exit: 0},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			home := controlledTestHome(t)
+			body := fmt.Sprintf("printf '%%s' %s\nprintf '%%s' %s >&2\nexit %d",
+				shellQuoteForControlledTest(testCase.stdout), shellQuoteForControlledTest(testCase.stderr), testCase.exit)
+			result, err := controlledRunner(writeControlledFakeBinary(t, body)).Run(
+				context.Background(), home, []string{"docs", "+fetch"}, nil,
+			)
+			if err == nil {
+				t.Fatal("ambiguous or non-business stream shape unexpectedly succeeded")
+			}
+			if result == nil || !result.InvocationStarted {
+				t.Fatalf("started invocation evidence lost: %+v", result)
+			}
+			if result.Envelope != nil {
+				t.Fatalf("ambiguous stderr was trusted as a classifier envelope: %+v", result.Envelope)
+			}
+		})
+	}
+}
+
+func TestShouldDecodeControlledCLIStderrRequiresPositiveExit(t *testing.T) {
+	waitErr := exec.ErrWaitDelay
+	result := &CLIResult{ExitCode: 0, Stdout: nil, Stderr: []byte(`{"ok":false}`)}
+	if shouldDecodeControlledCLIStderr(result, waitErr) {
+		t.Fatal("exit-zero wait failure must not trust stderr as a business envelope")
+	}
+	result.ExitCode = -1
+	if shouldDecodeControlledCLIStderr(result, waitErr) {
+		t.Fatal("signal or unknown exit must not trust stderr as a business envelope")
+	}
+	result.ExitCode = 3
+	if !shouldDecodeControlledCLIStderr(result, waitErr) {
+		t.Fatal("explicit non-zero exit with stderr-only output should preserve its business envelope")
 	}
 }
 

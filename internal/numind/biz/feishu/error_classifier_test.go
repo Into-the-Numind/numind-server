@@ -46,6 +46,63 @@ func TestErrorClassifier_RealS2MissingScopeIsReplayable(t *testing.T) {
 	require.Equal(t, PublicCodeScopeRequired, got.PublicCode)
 }
 
+func TestErrorClassifier_RealCodeLessDocsReadMissingScopeStartsUserRecovery(t *testing.T) {
+	envelope := &CLIEnvelope{
+		OK:       false,
+		Identity: "user",
+		Error: &CLIError{
+			Type:          "authorization",
+			Subtype:       "missing_scope",
+			Identity:      "user",
+			MissingScopes: []string{"docx:document:readonly"},
+		},
+	}
+
+	got := NewErrorClassifier().ClassifyEnvelope(envelope, docsReadScopes(), RiskRead, true)
+	require.Equal(t, RecoveryUserScope, got.Recovery)
+	require.Equal(t, []string{"docx:document:readonly"}, got.MissingScopes)
+	require.False(t, got.ProvenNoSideEffect)
+	require.False(t, got.RetryRead)
+	require.Empty(t, got.TerminalState)
+	require.Equal(t, PublicCodeScopeRequired, got.PublicCode)
+}
+
+func TestErrorClassifier_CodeLessMissingScopeKeepsCatalogAndWriteFences(t *testing.T) {
+	classifier := NewErrorClassifier()
+	codeLess := func(scopes ...string) *CLIEnvelope {
+		return &CLIEnvelope{
+			OK:       false,
+			Identity: "user",
+			Error: &CLIError{
+				Type: "authorization", Subtype: "missing_scope", Identity: "user",
+				MissingScopes: append([]string(nil), scopes...),
+			},
+		}
+	}
+
+	unknownScope := classifier.ClassifyEnvelope(
+		codeLess("drive:file:write"), docsReadScopes(), RiskRead, true,
+	)
+	require.Equal(t, RecoveryNone, unknownScope.Recovery)
+	require.Equal(t, model.FeishuOperationFailed, unknownScope.TerminalState)
+	require.Equal(t, PublicCodeFailed, unknownScope.PublicCode)
+
+	startedWrite := classifier.ClassifyEnvelope(
+		codeLess("docx:document:readonly"),
+		[]string{"docx:document:write_only", "docx:document:readonly"}, RiskWrite, true,
+	)
+	require.Equal(t, RecoveryNone, startedWrite.Recovery)
+	require.Equal(t, model.FeishuOperationUnknown, startedWrite.TerminalState)
+	require.Equal(t, PublicCodeUnknownResult, startedWrite.PublicCode)
+
+	startedCreate := classifier.ClassifyEnvelope(
+		codeLess("docx:document:create"), docsCreateScopes(), RiskWrite, true,
+	)
+	require.Equal(t, RecoveryNone, startedCreate.Recovery)
+	require.Equal(t, model.FeishuOperationUnknown, startedCreate.TerminalState)
+	require.Equal(t, PublicCodeUnknownResult, startedCreate.PublicCode)
+}
+
 func TestErrorClassifier_SyntheticAppScopeContractsDoNotProveStartedWrites(t *testing.T) {
 	t.Parallel()
 
