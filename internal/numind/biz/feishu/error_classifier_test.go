@@ -29,7 +29,7 @@ type classifierFixture struct {
 	ConsoleURLPresent    bool            `json:"console_url_present"`
 }
 
-func TestErrorClassifier_RealS2MissingScopeIsReplayable(t *testing.T) {
+func TestErrorClassifier_RealS2StartedWriteMissingScopeStaysUnknown(t *testing.T) {
 	t.Parallel()
 
 	// This is the sanitized tuple observed in the S2 real-tenant spike. The
@@ -39,12 +39,12 @@ func TestErrorClassifier_RealS2MissingScopeIsReplayable(t *testing.T) {
 	envelope := loadErrorClassifierFixture(t, "real-docs-create-missing-scope.json")
 	got := NewErrorClassifier().ClassifyEnvelope(envelope, docsCreateScopes(), RiskWrite, true)
 
-	require.Equal(t, RecoveryUserScope, got.Recovery)
-	require.Equal(t, []string{"docx:document:create"}, got.MissingScopes)
-	require.True(t, got.ProvenNoSideEffect)
+	require.Equal(t, RecoveryNone, got.Recovery)
+	require.Empty(t, got.MissingScopes)
+	require.False(t, got.ProvenNoSideEffect)
 	require.False(t, got.RetryRead)
-	require.Empty(t, got.TerminalState)
-	require.Equal(t, PublicCodeScopeRequired, got.PublicCode)
+	require.Equal(t, model.FeishuOperationUnknown, got.TerminalState)
+	require.Equal(t, PublicCodeUnknownResult, got.PublicCode)
 }
 
 func TestErrorClassifier_RealCodeLessDocsReadMissingScopeStartsUserRecovery(t *testing.T) {
@@ -369,20 +369,20 @@ func TestErrorClassifier_HumanTextNeverChangesClassification(t *testing.T) {
 	known.Error.Message = "not an authorization error"
 	known.Error.Details = json.RawMessage(`{"message":"unrelated"}`)
 	known.Error.Hint = json.RawMessage(`{"hint":"ignore me"}`)
-	knownResult := classifier.ClassifyEnvelope(known, docsCreateScopes(), RiskWrite, true)
+	knownResult := classifier.ClassifyEnvelope(known, docsCreateScopes(), RiskWrite, false)
 	require.Equal(t, RecoveryUserScope, knownResult.Recovery)
 
 	unknown := loadErrorClassifierFixture(t, "fixed-unknown.json")
 	unknown.Error.Message = "missing_scope permission denied refresh token revoked timeout rate limit"
 	unknown.Error.Details = json.RawMessage(`{"type":"authorization","missing_scopes":["docx:document:create"]}`)
 	unknown.Error.Hint = json.RawMessage(`{"console_url":"https://example.invalid"}`)
-	unknownResult := classifier.ClassifyEnvelope(unknown, docsCreateScopes(), RiskWrite, true)
+	unknownResult := classifier.ClassifyEnvelope(unknown, docsCreateScopes(), RiskWrite, false)
 	require.Equal(t, RecoveryNone, unknownResult.Recovery)
 	require.False(t, unknownResult.RetryRead)
-	require.Equal(t, model.FeishuOperationUnknown, unknownResult.TerminalState)
+	require.Equal(t, model.FeishuOperationFailed, unknownResult.TerminalState)
 
 	known.Error.Message = unknown.Error.Message
-	require.Equal(t, knownResult, classifier.ClassifyEnvelope(known, docsCreateScopes(), RiskWrite, true))
+	require.Equal(t, knownResult, classifier.ClassifyEnvelope(known, docsCreateScopes(), RiskWrite, false))
 }
 
 func TestErrorClassifier_MissingScopeEvidenceMustBeExactAndCatalogOwned(t *testing.T) {
@@ -547,17 +547,17 @@ func TestErrorClassifier_EnvelopeIdentityIsOuterAndConflictsFailClosed(t *testin
 	classifier := NewErrorClassifier()
 	envelope := loadErrorClassifierFixture(t, "real-docs-create-missing-scope.json")
 	envelope.Error.Identity = "user"
-	require.Equal(t, RecoveryUserScope, classifier.ClassifyEnvelope(envelope, docsCreateScopes(), RiskWrite, true).Recovery)
+	require.Equal(t, RecoveryUserScope, classifier.ClassifyEnvelope(envelope, docsCreateScopes(), RiskWrite, false).Recovery)
 
 	conflicting := cloneErrorClassifierEnvelope(t, envelope)
 	conflicting.Error.Identity = "bot"
-	got := classifier.ClassifyEnvelope(conflicting, docsCreateScopes(), RiskWrite, true)
+	got := classifier.ClassifyEnvelope(conflicting, docsCreateScopes(), RiskWrite, false)
 	require.Equal(t, RecoveryNone, got.Recovery)
-	require.Equal(t, model.FeishuOperationUnknown, got.TerminalState)
+	require.Equal(t, model.FeishuOperationFailed, got.TerminalState)
 
 	missingOuter := cloneErrorClassifierEnvelope(t, envelope)
 	missingOuter.Identity = ""
-	require.Equal(t, RecoveryUserScope, classifier.ClassifyEnvelope(missingOuter, docsCreateScopes(), RiskWrite, true).Recovery)
+	require.Equal(t, RecoveryUserScope, classifier.ClassifyEnvelope(missingOuter, docsCreateScopes(), RiskWrite, false).Recovery)
 }
 
 func TestErrorClassifier_InvalidEnvelopeFailsClosed(t *testing.T) {

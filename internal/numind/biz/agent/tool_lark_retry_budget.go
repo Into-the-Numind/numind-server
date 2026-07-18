@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"sync"
 
 	"numind-server/internal/numind/biz/feishu"
@@ -34,6 +35,32 @@ type larkExecuteRetryState struct {
 // one process at a time. Durable external-action resume starts a new execution
 // leg and no longer belongs to the rejected-command correction loop.
 var larkExecuteRetryRuns sync.Map // map[uint64]*larkExecuteRetryState
+
+// larkExecuteRetrySeedExternalResult restores the run guard from the durable,
+// server-produced result before an external continuation reaches the model.
+// Non-Feishu or malformed results leave the guard untouched.
+func larkExecuteRetrySeedExternalResult(runID uint64, raw json.RawMessage) bool {
+	if runID == 0 {
+		return false
+	}
+	failure, ok := feishu.DecodeLarkTerminalFailure(raw)
+	if !ok {
+		return false
+	}
+	value, _ := larkExecuteRetryRuns.LoadOrStore(runID, &larkExecuteRetryState{})
+	state := value.(*larkExecuteRetryState)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.lastCategory = failure.Category
+	if failure.Category == "validation" || failure.Retryable {
+		state.phase = larkRetryCorrectionAvailable
+		state.terminalStop = false
+		return true
+	}
+	state.phase = larkRetryExhausted
+	state.terminalStop = true
+	return true
+}
 
 func larkExecuteRetryBegin(runID uint64) (*larkExecuteRetryState, larkExecuteRetryAttempt, bool) {
 	value, _ := larkExecuteRetryRuns.LoadOrStore(runID, &larkExecuteRetryState{})

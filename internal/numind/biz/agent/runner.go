@@ -113,6 +113,10 @@ type RunRequest struct {
 	// by every adapter clone. It enters immediately before the first provider
 	// call and completes only after the first model response. Never model-set.
 	ExternalContinuationGate *externalContinuationGate
+	// ExternalContinuationResult is the exact durable tool result which caused
+	// this server-only continuation. It is never model-set or logged. The runner
+	// uses it to restore provider-specific retry fencing before the first model call.
+	ExternalContinuationResult json.RawMessage
 }
 
 // displayUserText returns the text to PERSIST/DISPLAY as the user turn: DisplayInput
@@ -584,6 +588,9 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 		if err := r.runStore.Create(ctx, run); err != nil {
 			return nil, fmt.Errorf("AgentRunner.Run: %w", err)
 		}
+	}
+	if len(req.ExternalContinuationResult) != 0 {
+		larkExecuteRetrySeedExternalResult(run.ID, req.ExternalContinuationResult)
 	}
 
 	// 1.1. #8 narration-layer: register CloseRun defer IMMEDIATELY after run.ID

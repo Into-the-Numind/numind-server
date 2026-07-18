@@ -36,6 +36,29 @@ func TestMarshalLarkToolResult_SuccessAndActionableFailure(t *testing.T) {
 	require.NotContains(t, string(failure), "im:message")
 }
 
+func TestDecodeLarkTerminalFailure_StrictDurableBoundary(t *testing.T) {
+	raw, err := MarshalLarkToolResult(&OperationResult{
+		OperationID: "op-unknown", State: model.FeishuOperationUnknown,
+		Failure: newOperationFailure(PublicCodeUnknownResult, model.FeishuOperationUnknown, true, RiskWrite, nil),
+	})
+	require.NoError(t, err)
+	failure, ok := DecodeLarkTerminalFailure(raw)
+	require.True(t, ok)
+	require.Equal(t, "unknown_result", failure.Category)
+	require.True(t, failure.BusinessStarted)
+
+	for _, invalid := range []string{
+		`{"ok":false,"state":"unknown","operation_id":"op","failure":{"code":"feishu_unknown_result","category":"unknown_result","retryable":false,"business_started":true},"extra":true}`,
+		`{"ok":false,"state":"unknown","operation_id":"op","failure":{"code":"feishu_unknown_result","category":"validation","retryable":false,"business_started":true}}`,
+		`{"ok":true,"state":"unknown","operation_id":"op","failure":{"code":"feishu_unknown_result","category":"unknown_result","retryable":false,"business_started":true}}`,
+		string(raw) + `{}`,
+	} {
+		got, accepted := DecodeLarkTerminalFailure(json.RawMessage(invalid))
+		require.False(t, accepted)
+		require.Nil(t, got)
+	}
+}
+
 func TestMarshalLarkToolResult_RejectsUnsafeOrAmbiguousResults(t *testing.T) {
 	tests := []*OperationResult{
 		nil,

@@ -1349,6 +1349,15 @@ func (s *FeishuOperationService) executeClaimed(
 		}
 
 		classification := s.classifyInvocation(result, runErr, vaultErr, persisted.Scopes, persisted.Risk)
+		if started && writeLikeRisk(persisted.Risk) {
+			// Scope preflight is the only safe authorization recovery boundary for
+			// writes. Once the business process starts, even a structured CLI error
+			// cannot prove that Feishu observed no side effect, so never replay it.
+			return s.commitTerminal(
+				ctx, operation, leaseOwner, model.FeishuOperationUnknown,
+				PublicCodeUnknownResult, nil, true,
+			)
+		}
 		if classification.RetryRead && invocation+1 < maxInvocations {
 			continue
 		}

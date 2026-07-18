@@ -118,6 +118,9 @@ func (r *agentRunner) RunStream(
 	if err != nil {
 		return nil, fmt.Errorf("AgentRunner.RunStream load run: %w", err)
 	}
+	if len(req.ExternalContinuationResult) != 0 {
+		larkExecuteRetrySeedExternalResult(run.ID, req.ExternalContinuationResult)
+	}
 
 	// answer-resume-lifecycle / issue4: capture the pre-yield transcript so the
 	// streaming resume leg APPENDS to leg 1 instead of clobbering it (mirrors

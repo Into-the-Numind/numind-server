@@ -1,8 +1,10 @@
 package feishu
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"sort"
 
 	"numind-server/internal/pkg/model"
@@ -126,6 +128,39 @@ func MarshalLarkToolResult(result *OperationResult) (json.RawMessage, error) {
 		return nil, errors.New("feishu tool result encoding failed")
 	}
 	return json.RawMessage(encoded), nil
+}
+
+// DecodeLarkTerminalFailure validates a durable external tool result using the
+// same closed schema and semantics as MarshalLarkToolResult. Agent continuation
+// guards use only this redacted evidence; arbitrary external-tool JSON cannot
+// arm or relax Feishu retry state.
+func DecodeLarkTerminalFailure(raw json.RawMessage) (*OperationFailure, bool) {
+	if len(raw) == 0 || len(raw) > 16*1024 {
+		return nil, false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var envelope larkToolResultEnvelope
+	if err := decoder.Decode(&envelope); err != nil {
+		return nil, false
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return nil, false
+	}
+	if envelope.OK || len(envelope.Data) != 0 ||
+		!validStableIdentifier(envelope.OperationID, operationMaxOperationIDBytes) ||
+		!validOperationFailure(envelope.State, envelope.Failure) {
+		return nil, false
+	}
+	switch envelope.State {
+	case model.FeishuOperationFailed, model.FeishuOperationUnknown, model.FeishuOperationCancelled:
+		failure := *envelope.Failure
+		failure.RequiredScopes = append([]string(nil), envelope.Failure.RequiredScopes...)
+		return &failure, true
+	default:
+		return nil, false
+	}
 }
 
 func validOperationFailure(state string, failure *OperationFailure) bool {

@@ -369,9 +369,17 @@ func TestPersonalWorkspaceIntegration_UserAuthRecoveryIsOperationIndependentAcro
 			}
 			dispatcher := &reentrantOperationResumeDispatcher{}
 			auth := newPersonalWorkspaceIntegrationAuthService(t, h, cli, dispatcher, "domain-independent")
-			h.runner.steps = []operationRunnerStep{
-				{result: userScopeRequiredCLIResultFor(testCase.scopes), err: errors.New("user permission has not been granted")},
-				{result: operationOKResult(`{"ok":true}`)},
+			if testCase.name == "docs create" {
+				h.preflight.steps = []operationScopePreflightStep{
+					{result: &ScopeCheckResult{Missing: append([]string(nil), testCase.scopes...)}},
+					{result: &ScopeCheckResult{Granted: append([]string(nil), testCase.scopes...)}},
+				}
+				h.runner.steps = []operationRunnerStep{{result: operationOKResult(`{"ok":true}`)}}
+			} else {
+				h.runner.steps = []operationRunnerStep{
+					{result: userScopeRequiredCLIResultFor(testCase.scopes), err: errors.New("user permission has not been granted")},
+					{result: operationOKResult(`{"ok":true}`)},
+				}
 			}
 
 			beforeRestart := newPersonalWorkspaceIntegrationOperationService(t, h, auth)
@@ -401,9 +409,14 @@ func TestPersonalWorkspaceIntegration_UserAuthRecoveryIsOperationIndependentAcro
 			require.True(t, completed.Completed)
 
 			calls, invocations := h.runner.snapshot()
-			require.Equal(t, 2, calls)
-			require.Equal(t, testCase.argv, invocations[0], "initial execution must use the full canonical argv")
-			require.Equal(t, testCase.argv, invocations[1], "authorization must replay the full exact encrypted argv")
+			if testCase.name == "docs create" {
+				require.Equal(t, 1, calls, "write preflight must recover before any business invocation")
+				require.Equal(t, testCase.argv, invocations[0])
+			} else {
+				require.Equal(t, 2, calls)
+				require.Equal(t, testCase.argv, invocations[0], "initial execution must use the full canonical argv")
+				require.Equal(t, testCase.argv, invocations[1], "authorization must replay the full exact encrypted argv")
+			}
 		})
 	}
 
@@ -425,7 +438,6 @@ func TestPersonalWorkspaceIntegration_UserAuthRecoveryIsOperationIndependentAcro
 		h.runner.steps = []operationRunnerStep{
 			{result: userScopeRequiredCLIResultFor([]string{"wiki:node:retrieve"}), err: errors.New("wiki user scope missing")},
 			{result: operationOKResult(`{"obj_token":"` + resolvedObjToken + `","obj_type":"docx"}`)},
-			{result: reauthorizationRequiredCLIResult(), err: errors.New("docs authorization expired")},
 			{result: operationOKResult(`{"document_id":"` + resolvedObjToken + `","updated":true}`)},
 		}
 
@@ -467,6 +479,10 @@ func TestPersonalWorkspaceIntegration_UserAuthRecoveryIsOperationIndependentAcro
 			"docs", "+update", "--doc", resolvedObjToken, "--command", "append", "--content", updateContent,
 			"--format", "json", "--as", "user",
 		}
+		h.preflight.steps = []operationScopePreflightStep{
+			{result: &ScopeCheckResult{Missing: []string{"docx:document:readonly", "docx:document:write_only"}}},
+			{result: &ScopeCheckResult{Granted: []string{"docx:document:readonly", "docx:document:write_only"}}},
+		}
 		updateWaiting, err := afterNodeRestart.Execute(h.ctx, ExecuteRequest{
 			UserID: 7, AgentRunID: 952, ToolCallID: "tool-wiki-doc-update",
 			IdempotencyKey: "952:tool-wiki-doc-update", Argv: updateInput,
@@ -490,11 +506,10 @@ func TestPersonalWorkspaceIntegration_UserAuthRecoveryIsOperationIndependentAcro
 		require.Equal(t, model.FeishuOperationSucceeded, updateResult.State)
 
 		calls, invocations := h.runner.snapshot()
-		require.Equal(t, 4, calls)
+		require.Equal(t, 3, calls)
 		require.Equal(t, nodeArgv, invocations[0])
 		require.Equal(t, nodeArgv, invocations[1])
 		require.Equal(t, updateArgv, invocations[2])
-		require.Equal(t, updateArgv, invocations[3])
 		require.Equal(t, resolved.ObjToken, invocations[2][3], "docs update token must come from node-get result")
 		for _, invocation := range invocations {
 			require.NotEqual(t, []string{"wiki", "+update"}, invocation[:2], "pinned lark-cli has no wiki update verb")

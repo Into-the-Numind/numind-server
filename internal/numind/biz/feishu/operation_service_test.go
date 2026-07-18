@@ -1466,7 +1466,7 @@ func TestOperationService_CreateAppAndReauthRecoveriesUseCatalogScopes(t *testin
 			req := ExecuteRequest{
 				UserID: 7, AgentRunID: runID, ToolCallID: toolCallID,
 				IdempotencyKey: fmt.Sprintf("%d:%s", runID, toolCallID),
-				Argv:           []string{"docs", "+create", "--title", "报告"}, SkillReceipts: []string{"shared", "doc"},
+				Argv:           []string{"docs", "+fetch", "--doc", "doxcnABCDEFG123"}, SkillReceipts: []string{"shared", "doc"},
 			}
 
 			got, err := h.service.Execute(h.ctx, req)
@@ -1475,7 +1475,7 @@ func TestOperationService_CreateAppAndReauthRecoveriesUseCatalogScopes(t *testin
 			calls := h.recovery.snapshot()
 			require.Len(t, calls, 1)
 			require.Equal(t, testCase.kind, calls[0].Kind)
-			require.Equal(t, []string{"docx:document:create"}, calls[0].Scopes)
+			require.Equal(t, []string{"docx:document:readonly"}, calls[0].Scopes)
 			require.Equal(t, calls[0].Scopes, got.Action.Scopes)
 		})
 	}
@@ -3038,7 +3038,7 @@ func TestOperationService_ResumeReplaysEncryptedRequestAndStopsRepeatedRecovery(
 		ExitCode:          1,
 		Envelope: &CLIEnvelope{OK: false, Identity: "user", Error: &CLIError{
 			Type: "authorization", Subtype: "missing_scope", Code: json.RawMessage(`99991672`),
-			Identity: "user", MissingScopes: []string{"docx:document:create"},
+			Identity: "user", MissingScopes: []string{"docx:document:readonly"},
 		}},
 	}
 	h.runner.steps = []operationRunnerStep{
@@ -3048,14 +3048,14 @@ func TestOperationService_ResumeReplaysEncryptedRequestAndStopsRepeatedRecovery(
 	req := ExecuteRequest{
 		UserID: 7, AgentRunID: 19, ToolCallID: "tc-repeat-recovery",
 		IdempotencyKey: "19:tc-repeat-recovery",
-		Argv:           []string{"docs", "+create", "--title", "original-title"},
+		Argv:           []string{"docs", "+fetch", "--doc", "doxcnOriginalToken123"},
 		SkillReceipts:  []string{"shared-receipt", "doc-receipt"},
 	}
 
 	waiting, err := h.service.Execute(h.ctx, req)
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationWaitingUserAuth, waiting.State)
-	req.Argv[3] = "mutated-after-persist"
+	req.Argv[3] = "doxcnMutatedAfterPersist123"
 
 	restartedService := newHarnessOperationService(t, h, h.dataStore.FeishuWorkspace())
 	resumed, err := restartedService.Resume(h.ctx, 7, waiting.OperationID)
@@ -3064,8 +3064,8 @@ func TestOperationService_ResumeReplaysEncryptedRequestAndStopsRepeatedRecovery(
 	calls, argv := h.runner.snapshot()
 	require.Equal(t, 2, calls)
 	require.Equal(t, argv[0], argv[1])
-	require.Contains(t, argv[1], "original-title")
-	require.NotContains(t, argv[1], "mutated-after-persist")
+	require.Contains(t, argv[1], "doxcnOriginalToken123")
+	require.NotContains(t, argv[1], "doxcnMutatedAfterPersist123")
 	require.Len(t, h.recovery.snapshot(), 2, "same recovery signature must fail instead of opening a third session")
 
 	stored, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, waiting.OperationID)
@@ -3510,19 +3510,15 @@ func TestOperationService_ConcurrentResumeUsesUniqueOwnersAndOneReplay(t *testin
 	require.NoError(t, err)
 	h.recovery.action = nil
 	h.recovery.actions = []*OperationAction{{Provider: ProviderLark, Phase: "user_auth", SessionID: "session-concurrent"}}
-	missingScope := &CLIResult{
-		InvocationStarted: true, ExitCode: 1,
-		Envelope: &CLIEnvelope{OK: false, Identity: "user", Error: &CLIError{
-			Type: "authorization", Subtype: "missing_scope", Code: json.RawMessage(`99991672`),
-			Identity: "user", MissingScopes: []string{"docx:document:create"},
-		}},
+	h.preflight.steps = []operationScopePreflightStep{
+		{result: &ScopeCheckResult{Missing: []string{"docx:document:create"}}},
+		{result: &ScopeCheckResult{Granted: []string{"docx:document:create"}}},
 	}
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
-	h.runner.steps = []operationRunnerStep{
-		{result: missingScope, err: errors.New("missing scope")},
-		{result: operationOKResult(`{"document_id":"resumed-once"}`), started: started, release: release},
-	}
+	h.runner.steps = []operationRunnerStep{{
+		result: operationOKResult(`{"document_id":"resumed-once"}`), started: started, release: release,
+	}}
 	req := ExecuteRequest{
 		UserID: 7, AgentRunID: 28, ToolCallID: "tc-concurrent-resume",
 		IdempotencyKey: "28:tc-concurrent-resume", Argv: []string{"docs", "+create", "--title", "报告"},
@@ -3562,7 +3558,7 @@ func TestOperationService_ConcurrentResumeUsesUniqueOwnersAndOneReplay(t *testin
 		require.Contains(t, []string{model.FeishuOperationExecuting, model.FeishuOperationSucceeded}, result.State)
 	}
 	calls, _ := h.runner.snapshot()
-	require.Equal(t, 2, calls)
+	require.Equal(t, 1, calls)
 	stored, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, waiting.OperationID)
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationSucceeded, stored.State)
