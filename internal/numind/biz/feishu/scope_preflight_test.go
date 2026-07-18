@@ -107,6 +107,8 @@ func TestControlledScopePreflight_RejectsAmbiguousCLIContracts(t *testing.T) {
 		{name: "stderr", output: `{"ok":true,"granted":["docx:document:readonly"],"missing":[]}`, stderr: "warning"},
 		{name: "duplicate_field", output: `{"ok":true,"ok":true,"granted":["docx:document:readonly"],"missing":[]}`},
 		{name: "unknown_field", output: `{"ok":true,"granted":["docx:document:readonly"],"missing":[],"debug":"secret"}`},
+		{name: "uppercase_field", output: `{"OK":true,"granted":["docx:document:readonly"],"missing":[]}`},
+		{name: "case_collision", output: `{"ok":false,"OK":true,"granted":[],"GRANTED":["docx:document:readonly"],"missing":["docx:document:readonly"],"MISSING":null}`},
 		{name: "trailing_value", output: `{"ok":true,"granted":["docx:document:readonly"],"missing":[]} {}`},
 		{name: "missing_array", output: `{"ok":true,"granted":["docx:document:readonly"]}`},
 		{name: "null_error", output: `{"ok":true,"error":null,"granted":["docx:document:readonly"],"missing":[]}`},

@@ -153,7 +153,7 @@ type scopePreflightPayload struct {
 }
 
 func decodeScopePreflight(raw []byte) (*scopePreflightPayload, error) {
-	if len(raw) == 0 || rejectDuplicateDeviceAuthJSON(raw) != nil {
+	if len(raw) == 0 || rejectDuplicateDeviceAuthJSON(raw) != nil || rejectScopePreflightFieldNames(raw) != nil {
 		return nil, fmt.Errorf("feishu: scope preflight JSON rejected: %w", errControlledCLIInvalidJSON)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
@@ -208,6 +208,22 @@ func decodeScopePreflight(raw []byte) (*scopePreflightPayload, error) {
 	return &scopePreflightPayload{
 		OK: *wire.OK, AuthError: authError, Granted: granted, Missing: missing, Suggestion: suggestionValue,
 	}, nil
+}
+
+func rejectScopePreflightFieldNames(raw []byte) error {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || fields == nil {
+		return errControlledCLIInvalidJSON
+	}
+	allowed := map[string]struct{}{
+		"ok": {}, "error": {}, "granted": {}, "missing": {}, "suggestion": {},
+	}
+	for field := range fields {
+		if _, ok := allowed[field]; !ok {
+			return errControlledCLIInvalidJSON
+		}
+	}
+	return nil
 }
 
 // decodeScopePreflightList preserves the distinction made by the pinned CLI:
