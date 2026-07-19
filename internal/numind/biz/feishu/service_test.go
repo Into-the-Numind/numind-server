@@ -1025,6 +1025,54 @@ func TestWorkspaceLifecycleResumeCompletedAuthFinalizesTerminalStateCreatedDurin
 	}
 }
 
+func TestWorkspaceLifecycleResumeCompletedAuthorizationReturnsStoredUnknownAfterDispatcherFinalizes(t *testing.T) {
+	operationID := "op-base-auth-completed-unknown"
+	op := &model.FeishuOperation{
+		ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth,
+		AgentRunID: 236, ToolCallID: "tool-base-create",
+		ResultSummaryJSON: lifecycleRecoverySummary(
+			t, model.FeishuOperationWaitingUserAuth, "session-base-auth-completed",
+			model.FeishuAuthPhaseUserAuth, RecoveryUserScope,
+		),
+	}
+	svc, _, workspace, _, dispatcher, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 2,
+	}, op)
+	workspace.activeSession = &model.FeishuAuthSession{
+		ID: "session-base-auth-completed", UserID: 7, Generation: 2, OperationID: &operationID,
+		Phase: model.FeishuAuthPhaseUserAuth, State: model.FeishuAuthSessionCompleted,
+	}
+	waits := svc.agentWaits.(*lifecycleAgentWaitFake)
+	durableFinalizations := 0
+	waits.finalize = func(
+		_ context.Context, _ uint, _ uint64, _ string, _ string, outcome externalaction.TerminalOutcome,
+	) (bool, error) {
+		require.Equal(t, externalaction.TerminalOutcomeUnknown, outcome)
+		if durableFinalizations == 0 {
+			durableFinalizations++
+			return true, nil
+		}
+		return false, nil
+	}
+	dispatcher.dispatch = func(ctx context.Context, userID uint, gotOperationID string) error {
+		require.Equal(t, uint(7), userID)
+		require.Equal(t, operationID, gotOperationID)
+		workspace.operation.State = model.FeishuOperationUnknown
+		_, err := waits.FinalizeExternalToolWait(
+			ctx, userID, op.AgentRunID, operationID, op.ToolCallID, externalaction.TerminalOutcomeUnknown,
+		)
+		return err
+	}
+
+	result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionUserCompleted)
+
+	require.NoError(t, err, "a terminal business result must not become lifecycle unavailable/HTTP 500")
+	require.Equal(t, &OperationResult{OperationID: operationID, State: model.FeishuOperationUnknown}, result)
+	require.Equal(t, 1, dispatcher.calls, "the completed authorization must dispatch the write exactly once")
+	require.Equal(t, 1, durableFinalizations, "dispatcher and lifecycle compensation share one durable finalization")
+	require.Len(t, waits.calls, 2, "the second lifecycle finalization is an idempotent no-op")
+}
+
 func TestWorkspaceLifecycleResumeKeepsPendingUserAuthWaitingWithoutDispatch(t *testing.T) {
 	operationID := "op-user-auth"
 	op := &model.FeishuOperation{

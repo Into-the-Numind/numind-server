@@ -1,5 +1,37 @@
 schema_version: '2.0'
 features:
+- id: feishu-base-resume-outcome
+  ndf_version: '3.0'
+  description: Finalize non-success Feishu operations without turning successful authorization into HTTP 500, while preserving no-replay safety and safe diagnostics.
+  classification_reason: 'Standard: no schema/API/new integration change, but third-party authorization, durable Agent resume, and security observability are high-risk and span more than three files; user confirmed fast Standard through Dev on 2026-07-20.'
+  last_updated_by: ai-s5-acceptance
+  last_updated_at: '2026-07-20T00:44:06+08:00'
+  created_at: '2026-07-20T00:20:00+08:00'
+  track: standard
+  stage: S5
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: feature/feishu-base-resume-outcome}
+  worktrees: {numind-server: /private/tmp/wt-feishu-base-resume-outcome-numind-server}
+  progress: {total_tasks: 4, completed_tasks: 4, reviewed_tasks: 3, current_task: 'S5 complete; atomic merge and Dev deployment'}
+  artifacts:
+    requirement: requirements/feishu-base-resume-outcome.md
+    proposal: proposals/feishu-base-resume-outcome-proposal.md
+    spec: docs/superpowers/specs/2026-07-20-feishu-base-resume-outcome-design.md
+    plan: docs/superpowers/plans/2026-07-20-feishu-base-resume-outcome.md
+    qa: docs/superpowers/qa/2026-07-20-feishu-base-resume-outcome-s5-acceptance.md
+  decisions:
+  - 'S0: Dev customer reproduced Base authorization success followed by operation unknown and HTTP 500. Fast Standard through Dev is authorized; Prod is excluded.'
+  - 'S1: Root cause is terminal outcome routing, not authorization, command schema, or official declared scopes. Preserve no-replay for writes; reject cosmetic 200-only handling and blind retries.'
+  - 'S2: succeeded resumes the exact Agent tool call; failed/unknown/cancelled use durable terminal finalization. Add credential-free structured operation observations without changing business decisions.'
+  - 'S3: four serial RED-GREEN tasks cover customer reproduction, terminal routing, safe diagnostics, full gates, atomic merge and Dev deployment.'
+  - 'S4 RED: first feature commit 60cd6169 reproduces the exact unknown-write path invoking Agent continuation and returning an infrastructure error.'
+  - 'S4 GREEN: dispatcher now sends only succeeded operations to Agent continuation; failed/unknown/cancelled use the durable terminal finalizer. Safe operation observations retain only fixed classification, risk, identity, exit and timing fields; write replay remains forbidden.'
+  - 'S4 review revision: operation diagnostics now retain only fixed failure-source classes plus classifier-approved CLI type/subtype/code tuples, with the production sink independently checking the same tuple. Dispatcher handoff distinguishes continuation/finalizer success and retry. Cross-instance terminal response loss finalizes once; completed authorization returns stored unknown without HTTP 500 and lifecycle compensation remains an idempotent no-op.'
+  - 'S4 final review: three independent checks covering task atomicity, specification compliance, and code quality/security all PASS with P0/P1/P2=0 after lifecycle, cross-instance, tuple allowlist, failure-source, and handoff coverage was added.'
+  - 'S5 acceptance: focused customer regression, Feishu tests, targeted race, lint, and diff hygiene PASS. Full serial suite passes the Feishu scope and all other packages except two pre-existing xhsscript analytics tests that fail identically on clean develop; the baseline exception is recorded in the QA report.'
+  blockers: []
+
 - id: feishu-auth-confirmation-stability
   ndf_version: '3.0'
   description: Make manual Feishu authorization confirmation wait long enough, preserve exact user/app/device/operation/Agent binding, and emit safe actionable diagnostics.

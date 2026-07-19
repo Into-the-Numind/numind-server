@@ -315,6 +315,7 @@ type OperationServiceDeps struct {
 	Now                            func() time.Time
 	LeaseDuration                  time.Duration
 	ExecutionGateHeartbeatInterval time.Duration
+	Observer                       OperationObserver
 	// VerifiedCLIVersion is set by the one composition root only after the
 	// controlled --version probe succeeded. Empty preserves metadata omission
 	// for isolated tests; any other release is rejected.
@@ -338,7 +339,33 @@ type FeishuOperationService struct {
 	leaseDuration                  time.Duration
 	executionGateHeartbeatInterval time.Duration
 	verifiedCLIVersion             string
+	observer                       OperationObserver
 	executions                     *executionRegistry
+}
+
+// OperationObservation is the credential-free execution evidence that may
+// cross into production logs. It cannot carry argv, scopes, HOME paths,
+// provider output, URLs, tokens, or user content.
+type OperationObservation struct {
+	UserID            uint
+	Generation        uint64
+	OperationID       string
+	Phase             string
+	OutcomeClass      string
+	Risk              RiskLevel
+	InvocationStarted bool
+	ExitCode          int
+	CLIVersion        string
+	Duration          time.Duration
+	CLIErrorType      string
+	CLIErrorSubtype   string
+	CLIErrorCode      string
+	FailureSource     string
+}
+
+// OperationObserver receives only the fixed OperationObservation vocabulary.
+type OperationObserver interface {
+	ObserveOperation(OperationObservation)
 }
 
 type executionGateGuard struct {
@@ -581,6 +608,7 @@ func NewFeishuOperationService(deps OperationServiceDeps) (*FeishuOperationServi
 		classifier: NewErrorClassifier(), now: now, leaseDuration: leaseDuration,
 		executionGateHeartbeatInterval: heartbeatInterval,
 		verifiedCLIVersion:             deps.VerifiedCLIVersion,
+		observer:                       deps.Observer,
 		executions:                     newExecutionRegistry(),
 	}, nil
 }
@@ -1333,14 +1361,21 @@ func (s *FeishuOperationService) executeClaimed(
 		maxInvocations = 2
 	}
 	for invocation := 0; invocation < maxInvocations; invocation++ {
+		invocationStartedAt := s.now().UTC()
 		result, runErr, vaultErr := s.invokeOnce(operation, persisted, confirmed, executionGate)
 		started := result != nil && result.InvocationStarted
 		if vaultErr == nil && runErr == nil && result != nil && started && result.Envelope != nil &&
 			result.Envelope.OK && json.Valid(result.Envelope.Data) {
+			s.observeInvocation(operation, persisted.Risk, result, nil, nil, "succeeded", invocationStartedAt)
 			return s.commitTerminal(ctx, operation, leaseOwner, model.FeishuOperationSucceeded, "", result.Envelope.Data, true)
 		}
 
 		classification := s.classifyInvocation(result, runErr, vaultErr, persisted.Scopes, persisted.Risk)
+		outcomeClass := classification.PublicCode
+		if outcomeClass == "" {
+			outcomeClass = PublicCodeFailed
+		}
+		s.observeInvocation(operation, persisted.Risk, result, runErr, vaultErr, outcomeClass, invocationStartedAt)
 		if started && writeLikeRisk(persisted.Risk) {
 			// Scope preflight is the only safe authorization recovery boundary for
 			// writes. Once the business process starts, even a structured CLI error
@@ -1381,6 +1416,73 @@ func (s *FeishuOperationService) executeClaimed(
 		return s.commitTerminal(ctx, operation, leaseOwner, terminal, classification.PublicCode, nil, started)
 	}
 	return s.commitTerminal(ctx, operation, leaseOwner, model.FeishuOperationFailed, PublicCodeFailed, nil, false)
+}
+
+func (s *FeishuOperationService) observeInvocation(
+	operation *model.FeishuOperation,
+	risk RiskLevel,
+	result *CLIResult,
+	runErr error,
+	vaultErr error,
+	outcomeClass string,
+	startedAt time.Time,
+) {
+	if s == nil || s.observer == nil || operation == nil {
+		return
+	}
+	duration := s.now().UTC().Sub(startedAt)
+	if duration < 0 {
+		duration = 0
+	}
+	observation := OperationObservation{
+		UserID: operation.UserID, Generation: operation.Generation, OperationID: operation.ID,
+		Phase: "invoke", OutcomeClass: outcomeClass, Risk: risk,
+		ExitCode: -1, CLIVersion: s.verifiedCLIVersion, Duration: duration,
+	}
+	if result != nil {
+		observation.InvocationStarted = result.InvocationStarted
+		observation.ExitCode = result.ExitCode
+	}
+	observation.FailureSource = operationFailureSource(result, runErr, vaultErr, outcomeClass)
+	if result != nil && result.Envelope != nil && result.Envelope.Error != nil {
+		cliErr := result.Envelope.Error
+		code, present, valid := normalizeClassifierCode(cliErr.Code)
+		if valid && (!present || code != "") &&
+			ValidOperationDiagnosticTuple(outcomeClass, cliErr.Type, cliErr.Subtype, code) {
+			observation.CLIErrorType = cliErr.Type
+			observation.CLIErrorSubtype = cliErr.Subtype
+			observation.CLIErrorCode = code
+		}
+	}
+	s.observer.ObserveOperation(observation)
+}
+
+func operationFailureSource(result *CLIResult, runErr, vaultErr error, outcomeClass string) string {
+	if outcomeClass == "succeeded" {
+		return ""
+	}
+	if vaultErr != nil {
+		return "vault"
+	}
+	if result != nil && result.Envelope != nil && !result.Envelope.OK && result.Envelope.Error != nil {
+		return "structured_cli_error"
+	}
+	if errors.Is(runErr, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	if errors.Is(runErr, errControlledCLIInvalidJSON) {
+		return "malformed_output"
+	}
+	if errors.Is(runErr, errControlledCLIOutputLimit) {
+		return "output_limit"
+	}
+	if runErr != nil {
+		return "transport"
+	}
+	if result == nil || !result.InvocationStarted {
+		return "not_started"
+	}
+	return "unclassified"
 }
 
 func (s *FeishuOperationService) checkScopesBeforeWrite(

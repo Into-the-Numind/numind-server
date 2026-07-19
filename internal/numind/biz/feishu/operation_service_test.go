@@ -674,6 +674,23 @@ type operationHarness struct {
 	service      *FeishuOperationService
 }
 
+type operationObservationCapture struct {
+	mu     sync.Mutex
+	events []OperationObservation
+}
+
+func (c *operationObservationCapture) ObserveOperation(event OperationObservation) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.events = append(c.events, event)
+}
+
+func (c *operationObservationCapture) snapshot() []OperationObservation {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]OperationObservation(nil), c.events...)
+}
+
 func newOperationHarness(t *testing.T) *operationHarness {
 	t.Helper()
 	// t.Name() is reused by `go test -count=N`. Give every harness an isolated
@@ -882,6 +899,66 @@ func TestOperationService_ConnectedHotPathSkipsAuthStatus(t *testing.T) {
 	require.Equal(t, LarkCLIVersion, account.LarkCLIVersion)
 	require.NotNil(t, account.LastSuccessAt)
 	require.JSONEq(t, `{"docs":{"state":"available","last_success_at":"2026-07-13T12:00:00Z"}}`, string(account.CapabilityStateJSON))
+}
+
+func TestOperationService_UnknownWriteEmitsSafeUnderlyingClassificationWithoutReplay(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	capture := &operationObservationCapture{}
+	h.service.observer = capture
+	h.service.verifiedCLIVersion = LarkCLIVersion
+	h.runner.steps = []operationRunnerStep{{
+		result: &CLIResult{InvocationStarted: true, ExitCode: 1, Envelope: &CLIEnvelope{
+			OK: false, Identity: "user", Error: &CLIError{
+				Type: "api", Subtype: "validation_error", Code: json.RawMessage(`400`),
+				Identity: "user", Message: "private Base field content must never be logged",
+			},
+		}},
+		err: errors.New("private transport wrapper must never be logged"),
+	}}
+
+	got, err := h.service.Execute(h.ctx, operationDocsCreateRequest(7, 902, "tc-base-like-write", "private title", nil))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationUnknown, got.State)
+	calls, _ := h.runner.snapshot()
+	require.Equal(t, 1, calls, "a started write remains non-replayable")
+
+	events := capture.snapshot()
+	require.Len(t, events, 1)
+	require.Equal(t, OperationObservation{
+		UserID: 7, Generation: 1, OperationID: got.OperationID,
+		Phase: "invoke", OutcomeClass: PublicCodeValidationError, Risk: RiskWrite,
+		InvocationStarted: true, ExitCode: 1, CLIVersion: LarkCLIVersion,
+		CLIErrorType: "api", CLIErrorSubtype: "validation_error", CLIErrorCode: "400",
+		FailureSource: "structured_cli_error",
+	}, events[0])
+	encoded, marshalErr := json.Marshal(events)
+	require.NoError(t, marshalErr)
+	require.NotContains(t, string(encoded), "private Base field content")
+	require.NotContains(t, string(encoded), "private transport wrapper")
+	require.NotContains(t, string(encoded), "private title")
+}
+
+func TestOperationFailureSourceUsesFixedCredentialFreeClasses(t *testing.T) {
+	require.Equal(t, "", operationFailureSource(operationOKResult(`{}`), nil, nil, "succeeded"))
+	require.Equal(t, "structured_cli_error", operationFailureSource(&CLIResult{
+		InvocationStarted: true,
+		Envelope:          &CLIEnvelope{OK: false, Error: &CLIError{Type: "api", Subtype: "validation_error"}},
+	}, errors.New("private"), nil, PublicCodeValidationError))
+	require.Equal(t, "timeout", operationFailureSource(&CLIResult{InvocationStarted: true}, context.DeadlineExceeded, nil, PublicCodeUnknownResult))
+	require.Equal(t, "malformed_output", operationFailureSource(&CLIResult{InvocationStarted: true}, errControlledCLIInvalidJSON, nil, PublicCodeUnknownResult))
+	require.Equal(t, "output_limit", operationFailureSource(&CLIResult{InvocationStarted: true}, errControlledCLIOutputLimit, nil, PublicCodeUnknownResult))
+	require.Equal(t, "transport", operationFailureSource(&CLIResult{InvocationStarted: true}, errors.New("private network"), nil, PublicCodeUnknownResult))
+	require.Equal(t, "vault", operationFailureSource(nil, nil, errors.New("private vault"), PublicCodeFailed))
+	require.Equal(t, "not_started", operationFailureSource(nil, nil, nil, PublicCodeFailed))
+}
+
+func TestValidOperationDiagnosticTupleRequiresFixedClassifierMatch(t *testing.T) {
+	require.True(t, ValidOperationDiagnosticTuple(PublicCodeValidationError, "api", "validation_error", "400"))
+	require.True(t, ValidOperationDiagnosticTuple(PublicCodeConnectionRequired, "config", "not_configured", ""))
+	require.False(t, ValidOperationDiagnosticTuple(PublicCodeUnknownResult, "api", "validation_error", "400"))
+	require.False(t, ValidOperationDiagnosticTuple(PublicCodeValidationError, "api", "private-content", "400"))
+	require.False(t, ValidOperationDiagnosticTuple(PublicCodeValidationError, "api", "validation_error", "private-content"))
 }
 
 func TestOperationService_StaleNotStartedSnapshotCannotLeaseTerminalOperation(t *testing.T) {

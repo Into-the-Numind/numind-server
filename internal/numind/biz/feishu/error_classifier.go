@@ -83,6 +83,44 @@ type ErrorClassifier struct {
 	tuples            map[classifierTuple]classifierSemantic
 }
 
+// ValidOperationDiagnosticTuple accepts only fixed-version classifier tuples
+// whose semantic matches the already-redacted public outcome. The operation
+// observer and outer log sink both use it so arbitrary CLI strings cannot
+// become a logging channel.
+func ValidOperationDiagnosticTuple(outcome, typeName, subtype, code string) bool {
+	classifier := NewErrorClassifier()
+	semantic, ok := classifier.tuples[classifierTuple{
+		typeName: typeName,
+		subtype:  subtype,
+		code:     code,
+		hasCode:  code != "",
+	}]
+	return ok && operationDiagnosticPublicCode(semantic) == outcome
+}
+
+func operationDiagnosticPublicCode(semantic classifierSemantic) string {
+	switch semantic {
+	case semanticCreateApp:
+		return PublicCodeConnectionRequired
+	case semanticMissingScope, semanticAppScope:
+		return PublicCodeScopeRequired
+	case semanticReauth:
+		return PublicCodeReauthRequired
+	case semanticResourceACL:
+		return PublicCodeResourceDenied
+	case semanticRateLimit:
+		return PublicCodeRateLimited
+	case semanticUpstream:
+		return PublicCodeTemporaryError
+	case semanticValidation:
+		return PublicCodeValidationError
+	case semanticNotFound:
+		return PublicCodeNotFound
+	default:
+		return ""
+	}
+}
+
 // NewErrorClassifier builds a fixed lark-cli 1.0.68 contract classifier. Scope
 // validation is derived from the exact Docs/Base/Wiki/Drive command catalog rather
 // than from a model-supplied declaration.

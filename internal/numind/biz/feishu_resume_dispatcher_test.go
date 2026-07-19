@@ -9,6 +9,7 @@ import (
 
 	"numind-server/internal/numind/biz/agent"
 	"numind-server/internal/numind/biz/feishu"
+	"numind-server/internal/pkg/externalaction"
 	"numind-server/internal/pkg/model"
 
 	"github.com/stretchr/testify/require"
@@ -50,9 +51,37 @@ func (f *dispatcherOperationFake) callCount() int {
 }
 
 type dispatcherAgentResumerFake struct {
-	mu      sync.Mutex
-	results []agent.ExternalToolResult
-	err     error
+	mu            sync.Mutex
+	results       []agent.ExternalToolResult
+	finalizations []dispatcherFinalization
+	err           error
+	finalizeErr   error
+	finalized     bool
+}
+
+type dispatcherFinalization struct {
+	userID      uint
+	runID       uint64
+	operationID string
+	toolCallID  string
+	outcome     externalaction.TerminalOutcome
+}
+
+type dispatcherOperationObserverFake struct {
+	mu     sync.Mutex
+	events []feishu.OperationObservation
+}
+
+func (f *dispatcherOperationObserverFake) ObserveOperation(event feishu.OperationObservation) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.events = append(f.events, event)
+}
+
+func (f *dispatcherOperationObserverFake) snapshot() []feishu.OperationObservation {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]feishu.OperationObservation(nil), f.events...)
 }
 
 func (f *dispatcherAgentResumerFake) Resume(_ context.Context, result agent.ExternalToolResult) error {
@@ -62,10 +91,53 @@ func (f *dispatcherAgentResumerFake) Resume(_ context.Context, result agent.Exte
 	return f.err
 }
 
+func (f *dispatcherAgentResumerFake) FinalizeExternalToolWait(
+	_ context.Context,
+	userID uint,
+	runID uint64,
+	operationID string,
+	toolCallID string,
+	outcome externalaction.TerminalOutcome,
+) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.finalizations = append(f.finalizations, dispatcherFinalization{
+		userID: userID, runID: runID, operationID: operationID, toolCallID: toolCallID, outcome: outcome,
+	})
+	return f.finalized, f.finalizeErr
+}
+
+func TestWorkspaceResumeDispatcher_TerminalFinalizationNoopIsSuccessAndErrorRemainsRetryable(t *testing.T) {
+	operationID := "operation-terminal-finalizer"
+	operations := &dispatcherOperationFake{result: &feishu.OperationResult{
+		OperationID: operationID,
+		State:       model.FeishuOperationUnknown,
+		AgentRunID:  48,
+		ToolCallID:  "tool-terminal-finalizer",
+	}}
+
+	resumer := &dispatcherAgentResumerFake{finalized: false}
+	dispatcher := NewWorkspaceResumeDispatcher(operations, resumer)
+	require.NoError(t, dispatcher.DispatchResume(context.Background(), 7, operationID),
+		"a durable already-finalized no-op is a successful terminal handoff")
+
+	resumer.finalizeErr = errors.New("temporary finalizer failure")
+	require.Error(t, dispatcher.DispatchResume(context.Background(), 7, operationID),
+		"a storage/finalizer failure must remain retryable")
+	require.Empty(t, resumer.snapshot())
+	require.Len(t, resumer.finalizationSnapshot(), 2)
+}
+
 func (f *dispatcherAgentResumerFake) snapshot() []agent.ExternalToolResult {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]agent.ExternalToolResult(nil), f.results...)
+}
+
+func (f *dispatcherAgentResumerFake) finalizationSnapshot() []dispatcherFinalization {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]dispatcherFinalization(nil), f.finalizations...)
 }
 
 func (f *dispatcherAgentResumerFake) setError(err error) {
@@ -163,6 +235,49 @@ type durableResponseLossAgentResumer struct {
 	state *durableResponseLossAgentState
 }
 
+type durableTerminalFinalizerState struct {
+	mu       sync.Mutex
+	attempts int
+	commits  int
+	lost     bool
+}
+
+type durableTerminalFinalizer struct {
+	state *durableTerminalFinalizerState
+}
+
+func (f *durableTerminalFinalizer) Resume(context.Context, agent.ExternalToolResult) error {
+	return errors.New("terminal operation must never enter continuation")
+}
+
+func (f *durableTerminalFinalizer) FinalizeExternalToolWait(
+	_ context.Context,
+	_ uint,
+	_ uint64,
+	_ string,
+	_ string,
+	_ externalaction.TerminalOutcome,
+) (bool, error) {
+	f.state.mu.Lock()
+	defer f.state.mu.Unlock()
+	f.state.attempts++
+	if f.state.commits > 0 {
+		return false, nil
+	}
+	f.state.commits++
+	if !f.state.lost {
+		f.state.lost = true
+		return true, errors.New("synthetic response loss after durable terminal commit")
+	}
+	return true, nil
+}
+
+func (s *durableTerminalFinalizerState) snapshot() (attempts, commits int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.attempts, s.commits
+}
+
 func newDurableResponseLossAgentState() *durableResponseLossAgentState {
 	return &durableResponseLossAgentState{accepted: make(map[string]agent.ExternalToolResult)}
 }
@@ -187,6 +302,12 @@ func (r *durableResponseLossAgentResumer) Resume(_ context.Context, result agent
 	return nil
 }
 
+func (r *durableResponseLossAgentResumer) FinalizeExternalToolWait(
+	context.Context, uint, uint64, string, string, externalaction.TerminalOutcome,
+) (bool, error) {
+	return false, nil
+}
+
 func (s *durableResponseLossAgentState) snapshot() (int, []agent.ExternalToolResult) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -208,6 +329,12 @@ func (f *task11LeaseFake) Resume(_ context.Context, result agent.ExternalToolRes
 		f.accepted[result.OperationID] = result
 	}
 	return nil
+}
+
+func (f *task11LeaseFake) FinalizeExternalToolWait(
+	context.Context, uint, uint64, string, string, externalaction.TerminalOutcome,
+) (bool, error) {
+	return false, nil
 }
 
 func (f *task11LeaseFake) snapshot() (int, []agent.ExternalToolResult) {
@@ -244,7 +371,7 @@ func TestWorkspaceResumeDispatcher_SucceededOperationBackfillsOriginalToolResult
 	}`, string(got[0].Result))
 }
 
-func TestWorkspaceResumeDispatcher_WaitingDoesNotBackfillAndFailuresBackfillSafely(t *testing.T) {
+func TestWorkspaceResumeDispatcher_WaitingDoesNotBackfillAndFailuresFinalizeSafely(t *testing.T) {
 	for _, state := range []string{
 		model.FeishuOperationWaitingConnection,
 		model.FeishuOperationWaitingAppScope,
@@ -268,10 +395,11 @@ func TestWorkspaceResumeDispatcher_WaitingDoesNotBackfillAndFailuresBackfillSafe
 
 	for _, test := range []struct {
 		state, code, category string
+		outcome               externalaction.TerminalOutcome
 	}{
-		{model.FeishuOperationFailed, feishu.PublicCodeNotFound, "not_found"},
-		{model.FeishuOperationUnknown, feishu.PublicCodeUnknownResult, "unknown_result"},
-		{model.FeishuOperationCancelled, feishu.PublicCodeCancelled, "cancelled"},
+		{model.FeishuOperationFailed, feishu.PublicCodeNotFound, "not_found", externalaction.TerminalOutcomeFailed},
+		{model.FeishuOperationUnknown, feishu.PublicCodeUnknownResult, "unknown_result", externalaction.TerminalOutcomeUnknown},
+		{model.FeishuOperationCancelled, feishu.PublicCodeCancelled, "cancelled", externalaction.TerminalOutcomeCancelled},
 	} {
 		t.Run(test.state, func(t *testing.T) {
 			operationID := "operation-terminal-" + test.state
@@ -283,10 +411,11 @@ func TestWorkspaceResumeDispatcher_WaitingDoesNotBackfillAndFailuresBackfillSafe
 			}}
 			resumer := &dispatcherAgentResumerFake{}
 			require.NoError(t, NewWorkspaceResumeDispatcher(operations, resumer).DispatchResume(context.Background(), 7, operationID))
-			results := resumer.snapshot()
-			require.Len(t, results, 1)
-			require.Contains(t, string(results[0].Result), `"category":"`+test.category+`"`)
-			require.NotContains(t, string(results[0].Result), "must_not")
+			require.Empty(t, resumer.snapshot())
+			require.Equal(t, []dispatcherFinalization{{
+				userID: 7, runID: 42, operationID: operationID,
+				toolCallID: "tool-terminal", outcome: test.outcome,
+			}}, resumer.finalizationSnapshot())
 		})
 	}
 }
@@ -418,6 +547,27 @@ func TestWorkspaceResumeDispatcher_ResponseLossAcrossFreshInstancesUsesDurableCl
 	require.Len(t, accepted, 1, "the durable Agent claim accepts the result exactly once")
 }
 
+func TestWorkspaceResumeDispatcher_TerminalResponseLossAcrossFreshInstancesFinalizesOnce(t *testing.T) {
+	operationID := "operation-terminal-response-loss"
+	operations := &dispatcherOperationFake{result: &feishu.OperationResult{
+		OperationID: operationID, State: model.FeishuOperationUnknown,
+		AgentRunID: 49, ToolCallID: "tool-terminal-response-loss",
+	}}
+	state := &durableTerminalFinalizerState{}
+
+	first := NewWorkspaceResumeDispatcher(operations, &durableTerminalFinalizer{state: state})
+	require.Error(t, first.DispatchResume(context.Background(), 7, operationID),
+		"the first durable commit succeeds before its response is lost")
+
+	second := NewWorkspaceResumeDispatcher(operations, &durableTerminalFinalizer{state: state})
+	require.NoError(t, second.DispatchResume(context.Background(), 7, operationID),
+		"a fresh instance observes the durable finalization as a successful no-op")
+	attempts, commits := state.snapshot()
+	require.Equal(t, 2, attempts)
+	require.Equal(t, 1, commits)
+	require.Equal(t, 2, operations.callCount())
+}
+
 func TestWorkspaceResumeDispatcher_SeparateInstancesRelyOnTask11Lease(t *testing.T) {
 	operations := &dispatcherOperationFake{result: &feishu.OperationResult{
 		OperationID: "operation-cross-instance",
@@ -443,4 +593,39 @@ func TestWorkspaceResumeDispatcher_OperationFailureDoesNotInvokeAgentResumer(t *
 	err := NewWorkspaceResumeDispatcher(operations, resumer).DispatchResume(context.Background(), 7, "operation-error")
 	require.Error(t, err)
 	require.Empty(t, resumer.snapshot())
+}
+
+func TestWorkspaceResumeDispatcher_UnknownWriteDoesNotResumeAgentOrReturnInfrastructureError(t *testing.T) {
+	operationID := "operation-base-create-unknown"
+	operations := &dispatcherOperationFake{result: &feishu.OperationResult{
+		OperationID: operationID,
+		State:       model.FeishuOperationUnknown,
+		AgentRunID:  236,
+		ToolCallID:  "tool-base-create",
+		Failure: &feishu.OperationFailure{
+			Code:            feishu.PublicCodeUnknownResult,
+			Category:        "unknown_result",
+			BusinessStarted: true,
+		},
+	}}
+	// Agent continuation rejects the terminal write result. The authorization
+	// acknowledgement must not expose that expected business terminal as HTTP
+	// 500, and must not call the model-continuation path at all.
+	resumer := &dispatcherAgentResumerFake{err: errors.New("terminal result cannot continue the agent")}
+	observer := &dispatcherOperationObserverFake{}
+
+	err := NewWorkspaceResumeDispatcher(operations, resumer, observer).DispatchResume(
+		context.Background(), 7, operationID,
+	)
+
+	require.NoError(t, err)
+	require.Empty(t, resumer.snapshot())
+	require.Equal(t, []dispatcherFinalization{{
+		userID: 7, runID: 236, operationID: operationID,
+		toolCallID: "tool-base-create", outcome: externalaction.TerminalOutcomeUnknown,
+	}}, resumer.finalizationSnapshot())
+	require.Equal(t, []feishu.OperationObservation{{
+		UserID: 7, OperationID: operationID, Phase: "handoff",
+		OutcomeClass: "terminal_finalized", ExitCode: -1,
+	}}, observer.snapshot())
 }
