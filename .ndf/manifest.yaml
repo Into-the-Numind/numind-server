@@ -31,22 +31,22 @@ features:
   ndf_version: '3.0'
   description: Simplify the Agent runtime UI and make the sole input stop control cancel the actual run as well as the browser stream.
   classification_reason: 'Standard: no schema/API/integration change, but more than three frontend source and regression files change and the Agent run cancellation contract must be preserved.'
-  last_updated_by: ai-s4-complete
-  last_updated_at: '2026-07-19T22:55:00+08:00'
+  last_updated_by: ai-s5-complete
+  last_updated_at: '2026-07-19T23:12:00+08:00'
   created_at: '2026-07-19T21:46:53+08:00'
   track: standard
-  stage: S4
+  stage: S5
   status: active
   repos: [numind-web-v3]
   branches: {numind-web-v3: feature/agent-runtime-ui-simplify}
   worktrees: {numind-web-v3: /private/tmp/wt-agent-runtime-ui-simplify-numind-web-v3}
-  progress: {total_tasks: 5, completed_tasks: 2, reviewed_tasks: 2, current_task: 'T3: remove duplicate stop and input estimate'}
+  progress: {total_tasks: 5, completed_tasks: 5, reviewed_tasks: 5, current_task: 'S6: ndf-done, deploy Dev, runtime acceptance'}
   artifacts:
     requirement: requirements/agent-runtime-ui-simplify.md
     proposal: proposals/agent-runtime-ui-simplify-proposal.md
     spec: docs/superpowers/specs/2026-07-19-agent-runtime-ui-simplify-design.md
     plan: docs/superpowers/plans/2026-07-19-agent-runtime-ui-simplify.md
-    qa: null
+    qa: .ndf/features/agent-runtime-ui-simplify/qa-report.md
   decisions:
   - 'S0: User authorized fast Standard through Dev. The input stop control must abort the local SSE and call the existing run-cancel API before the redundant header cancel button is removed. Input estimate display is hidden only; backend billing and reconciliation semantics are unchanged.'
   - 'S1: Chosen scope keeps one input stop control, combining existing client SSE abort and existing server run cancellation. No new endpoint, billing rule, or permission rule is introduced. The existing stale streaming E2E is replaced with a real button and cancel-request assertion.'
@@ -57,6 +57,7 @@ features:
   - 'S3 review revision 3: agent-streaming is excluded from the default VITE_AGENT_MOCK=true e2e project and runs only in the VITE_AGENT_MOCK=false 5174 mocked-browser contract, removing a second contradictory execution path.'
   - 'S3 gate: independent atomicity review PASS. All cancellation, mock isolation, fallback, duplicate-post, estimate, and visual-contract test boundaries are independently buildable and serially ordered.'
   - 'S4 T1-T2: first committed RED browser regression proved the input stop emitted only a local AbortController action and never POSTed /cancel. GREEN routes both input areas through one guard that covers SSE, polling fallback, and restored active runs. On stop it immediately closes local SSE/narration/polling, then calls the existing server cancel; a 5xx keeps the active run and restores the retry stop control after cancelling resets. Dual independent reviews PASS; full mocked agent-streaming Playwright suite exit 0 (7 passed, 1 expected skipped).'
+  - 'S5 T3-T5: removed the Header cancel props/template/CSS and all InputArea estimate props/debounce/request/display; preserved the one input stop route. FirstRun has only welcome copy. The interrupted-scroll control is a 32px arrow-only circle with title/aria/focus ring. Two final reviewers PASS after fixing browser absence assertion timing and a stale skipped integration selector. QA gates: targeted components 5/5, mocked agent-streaming 8 passed + 1 expected skip, lint 0 errors (7 pre-existing warnings), vue-tsc clean.'
   blockers: []
 
 - id: lark-skill-reader-tolerance
