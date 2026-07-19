@@ -1,5 +1,29 @@
 schema_version: '2.0'
 features:
+- id: agent-runtime-ui-simplify
+  ndf_version: '3.0'
+  description: Simplify the Agent runtime UI and make the sole input stop control cancel the actual run as well as the browser stream.
+  classification_reason: 'Standard: no schema/API/integration change, but more than three frontend source and regression files change and the Agent run cancellation contract must be preserved.'
+  last_updated_by: ai-s0-requirement
+  last_updated_at: '2026-07-19T21:46:53+08:00'
+  created_at: '2026-07-19T21:46:53+08:00'
+  track: standard
+  stage: S0
+  status: active
+  repos: [numind-web-v3]
+  branches: {numind-web-v3: feature/agent-runtime-ui-simplify}
+  worktrees: {numind-web-v3: /private/tmp/wt-agent-runtime-ui-simplify-numind-web-v3}
+  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
+  artifacts:
+    requirement: requirements/agent-runtime-ui-simplify.md
+    proposal: null
+    spec: null
+    plan: null
+    qa: null
+  decisions:
+  - 'S0: User authorized fast Standard through Dev. The input stop control must abort the local SSE and call the existing run-cancel API before the redundant header cancel button is removed. Input estimate display is hidden only; backend billing and reconciliation semantics are unchanged.'
+  blockers: []
+
 - id: lark-skill-reader-tolerance
   ndf_version: '3.0'
   description: Preserve LLM-led Feishu planning while moving deterministic skill cursor handling, exact reference-field repair, and recoverable invalid-input semantics behind the trusted tool boundary.
