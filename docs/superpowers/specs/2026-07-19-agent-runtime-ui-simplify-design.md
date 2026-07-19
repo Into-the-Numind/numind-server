@@ -39,12 +39,18 @@ sequenceDiagram
 
   U->>I: 点击方形停止键
   I->>V: emit('stop')
+  V->>SSE: stop()，立即关闭本地 SSE
+  V->>V: 停止 narration/polling
   V->>S: cancelCurrent() [当前 run 存在]
   S->>API: POST /v1/agent-runs/:id/cancel
-  API-->>S: 取消成功
-  S->>S: currentRun.status = cancelled
-  V->>SSE: stop()，关闭本地 SSE
-  V->>V: 停止 narration/polling，显示已取消反馈
+  alt 取消成功
+    API-->>S: 取消成功
+    S->>S: currentRun.status = cancelled
+    V->>V: 显示已取消反馈
+  else 取消失败
+    API-->>V: 请求失败
+    V->>V: 显示失败提示；保留 active run 与重试停止键
+  end
 ```
 
 ### 3.1 `AgentInputArea.vue`
@@ -58,9 +64,9 @@ sequenceDiagram
 
 - 删除 `handleEstimateRequest` 及两个 `estimate`/`estimate-request` 绑定。
 - 新增唯一 `handleStop()`，取代两处直接 `@stop="stopStream"`：
-  1. 若已从 `stream_start` 取得 `store.currentRun`，先调用既有 `runCtrl.cancel()`。
-  2. 取消成功后，调用 `stopStream()`、停止 narration 与 polling，并展示既有“已取消任务”提示。
-  3. 取消接口失败时，显示错误提示且不伪造 `cancelled` 状态；保留本地 stream 和停止键，以便用户重试真实取消而非落入无入口的运行态。
+  1. 只要已有 `store.currentRun`，同步调用 `stopStream()` 并停止 narration/polling，保证点击后的本地生成与轮询立即停止，避免取消请求卡住时唯一入口消失而流继续输出。
+  2. 随后调用既有 `runCtrl.cancel()`；成功时展示既有“已取消任务”提示。
+  3. 取消接口失败时，显示错误提示且不伪造 `cancelled` 状态；保留 active run，待 `store.cancelling` 复位后重新显示输入停止键，以便用户重试真实取消。
   4. 在 `stream_start` 到达前没有可靠 `run_id`，发送按钮保持禁用。收到 `stream_start` 后，或重载取得可取消的 current run 后，才显示真实停止键。这避免提供明知无法兑现的停止操作。
   5. `store.cancelling` 是停止键可用性的组成部分，处理器也同步 guard；双击或连续键盘激活至多发出一次取消请求。
 - 移除 `AgentChatHeader` 的 run/cancelling/cancel props 和 `@cancel` 绑定。

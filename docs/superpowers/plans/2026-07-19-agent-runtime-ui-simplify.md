@@ -40,12 +40,12 @@
 **步骤：**
 
 1. 为输入停止键增加由父层传入的 `canStop` 状态：`currentRun` 为 pending/running 且 `!store.cancelling` 时显示，即使 SSE 已回退轮询或重载恢复；尚无 run ID 时只显示禁用发送按钮。
-2. 在运行页新增 `handleStop()`：同步 guard `store.cancelling`，已有 current run 时先 await `runCtrl.cancel()`；成功才停止本地 SSE、narration 与 polling，并展示取消反馈。
-3. 对取消错误显示真实错误，不改变当前 run 为 cancelled，也不关闭流，保留重试入口。
+2. 在运行页新增 `handleStop()`：同步 guard `store.cancelling`，已有 current run 时立即停止本地 SSE、narration 与 polling，再 await `runCtrl.cancel()`；成功后展示取消反馈。
+3. 对取消错误显示真实错误，不改变当前 run 为 cancelled；本地流已按用户动作关闭，active run 与停止键在 cancelling 复位后保留，以便重试。
 4. 将两个输入区的 `@stop` 绑定至该处理器，令 Task 1 的成功、取消失败和连续点击测试变绿。
 5. 增加两个明确 browser cases：(a) sessionStorage 恢复 `currentRun=running` 且 `isStreaming=false` 时，输入区显示同一 stop 并能取消；(b) cancel route 保持 pending，程序化连续派发两次点击，断言仅有一个 POST。
 
-**验收：** 点击输入停止键恰好请求一次 `/cancel`，run 进入 `cancelled`，输入恢复；SSE 回退轮询的 active run 仍有同一停止键；取消失败不产生假成功、SSE/重试入口保留；连续点击只发一次请求。
+**验收：** 点击输入停止键恰好请求一次 `/cancel`，run 进入 `cancelled`，输入恢复；SSE 回退轮询的 active run 仍有同一停止键；取消失败不产生假成功、本地流立即关闭且重试入口保留；连续点击只发一次请求。
 
 ## Task 3 — 删除重复停止与积分预估
 
