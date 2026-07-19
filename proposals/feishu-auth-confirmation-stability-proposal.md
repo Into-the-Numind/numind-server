@@ -41,7 +41,7 @@
 - [ ] 默认授权 session 与飞书设备授权链接均为 10 分钟。
 - [ ] 官方 CLI 仍以其固定 5 秒间隔轮询，无 Numind 侧改频。
 - [ ] 后端 CLI 完成窗口为 30 秒，前端仅 resume 请求为 60 秒。
-- [ ] 后端主动确认处理最多 50 秒，所有 claim/reread/renew/CLI/reconcile/finalize/dispatch 都继承该 deadline；即使触发最慢 5 秒的持久化收尾，仍先于浏览器 60 秒上限返回。
+- [x] 后端主动确认处理最多 50 秒，所有 claim/reread/renew/CLI/reconcile/finalize/dispatch 都继承该 deadline；即使触发最慢 5 秒的持久化收尾，仍先于浏览器 60 秒上限返回。
 - [ ] 成功后同一调用立即 dispatch 原 Agent operation。
 - [ ] 用户、generation、operation、session、phase、app、scope、device credential 与 Agent run/tool link 均 fail-closed；任何 operation-bound session 必须同时有合法 run/tool，手动连接只能使用 OperationID=nil。
 - [ ] 日志可区分 CLI pending timeout/network/read/parse/slow-down/protocol 及 reconciliation/dispatch 阶段，且不泄漏凭据。
