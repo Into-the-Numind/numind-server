@@ -4,11 +4,11 @@ features:
   ndf_version: '3.0'
   description: Preserve LLM-led Feishu planning while moving deterministic skill cursor handling, exact reference-field repair, and recoverable invalid-input semantics behind the trusted tool boundary.
   classification_reason: 'Standard: no schema/API/new integration change and a small file set, but this changes the security boundary for Agent-readable embedded Feishu instructions.'
-  last_updated_by: ai-s1
-  last_updated_at: '2026-07-19T15:42:00+08:00'
+  last_updated_by: ai-s2
+  last_updated_at: '2026-07-19T15:50:00+08:00'
   created_at: '2026-07-19T15:33:58+08:00'
   track: standard
-  stage: S1
+  stage: S2
   status: active
   repos: [numind-server]
   branches: {numind-server: feature/lark-skill-reader-tolerance}
@@ -17,9 +17,11 @@ features:
   artifacts:
     requirement: requirements/lark-skill-reader-tolerance.md
     proposal: proposals/lark-skill-reader-tolerance-proposal.md
+    spec: docs/superpowers/specs/2026-07-19-lark-skill-reader-tolerance-design.md
   decisions:
   - 'S0: customer chose to preserve the current Codex-style LLM judgment architecture. The trusted platform will handle only deterministic skill pagination, exact reference/cursor field repair, and recoverable error semantics without widening the five-skill or declared-reference boundary. Fast Standard is authorized through Dev.'
   - 'S1: selected LLM-led planning with platform-owned skill mechanics. A field-only patch leaves cursor and error instability; deterministic server routing would remove the LLM judgment the customer wants. New model calls expose only skill/reference while compatibility and security stay server-side.'
+  - 'S2: exact repair first distinguishes valid signed cursors, then accepts only safe Markdown reference shapes and still resolves them inside the current skill declared set. The tool aggregates at most two pages, checks the complete 64-KiB JSON envelope, hides cursor, and treats only first-call invalid model input as recoverable.'
   blockers: []
 
 - id: lark-stable-execution
