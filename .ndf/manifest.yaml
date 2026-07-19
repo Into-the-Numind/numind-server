@@ -4,15 +4,15 @@ features:
   ndf_version: '3.0'
   description: Move Feishu execution identity, policy, recovery, and retry decisions behind the trusted platform boundary so every Agent can use stable business argv without model-carried receipts.
   classification_reason: 'Standard: no schema/API/new integration change, but this alters the high-risk Feishu authorization boundary and user-visible Agent recovery behavior across backend and frontend.'
-  last_updated_by: ai-s5-final-review
-  last_updated_at: '2026-07-19T14:16:00+08:00'
+  last_updated_by: ai-s6-dev-deployment
+  last_updated_at: '2026-07-19T14:29:00+08:00'
   created_at: '2026-07-19T12:43:19+08:00'
   track: standard
-  stage: S5
+  stage: S6
   status: active
   repos: [numind-server, numind-web-v3]
-  branches: {numind-server: feature/lark-stable-execution, numind-web-v3: feature/lark-stable-execution}
-  worktrees: {numind-server: /private/tmp/wt-lark-stable-execution-numind-server, numind-web-v3: /private/tmp/wt-lark-stable-execution-numind-web-v3}
+  branches: {numind-server: develop, numind-web-v3: develop}
+  worktrees: {numind-server: removed by ndf-done, numind-web-v3: removed by ndf-done}
   progress: {total_tasks: 6, completed_tasks: 6, reviewed_tasks: 2}
   artifacts:
     requirement: requirements/lark-stable-execution.md
@@ -31,6 +31,7 @@ features:
   - 'S5 acceptance PASS: backend full tests, lint and Agent/Feishu race pass; frontend 96 test files/1116 tests, lint, type-check and the mocked browser recovery acceptance pass. Platform-owned identity/catalog/scope/confirmation/idempotency and per-user generation fences remain enforced; legacy receipts are ignored and no longer model-visible.'
   - 'S5 review hardening: customer REDs proved terminal Lark envelopes could render false-green, safe validation could render false-red, correction exhaustion could remain recoverable, and malformed argv could bypass the one-correction budget. Closed-schema decoding, a shared correction classifier, fixed polling/SSE progress text, deterministic correction_exhausted, and strict decoder budget participation close each path without weakening current-user/catalog/scope/confirmation/idempotency or unknown-write fences.'
   - 'S5 final dual review PASS with P0/P1/P2=0. Backend go test ./..., task lint, Agent/Feishu race, focused correction tests and diff hygiene pass; frontend 96 files/1116 tests, lint/type-check, and mocked Playwright 2/2 pass. Both independent reviewers authorize atomic merge and backend-first Dev deployment.'
+  - 'S6: ndf-done atomically merged and pushed numind-server develop at 61be3c5f and numind-web-v3 develop at 2aa8f87, then removed both feature worktrees and local branches. Manual TCR releases deployed server image develop-61be3c5f (digest sha256:eda1e84aee2f6b44c95ac04ade712af20a7e6850a18fe13f475ad282ad408fbd) and web image develop-2aa8f87 (digest sha256:3e9c56fa076dedd7ef688fcc3d5672915f1ea168bf872e3934237b758c01704b) to Dev. Both containers are running+healthy; public backend health returns code 0/status ok, frontend health returns HTTP 200, critical startup log matches are zero, and pinned lark-cli remains 1.0.68. Real Agent Feishu acceptance is ready; Prod is untouched.'
   blockers: []
 
 - id: lark-skill-reference-resolution
