@@ -18,6 +18,7 @@ func makeDockerPool(t *testing.T) (*agentSandboxPool, *MockDockerClient) {
 	cfg.PoolMin = 2
 	cfg.PoolMaxWaitMs = 3000
 	cfg.COSUploadConcurrency = 2
+	cfg.SkillsRoot = t.TempDir()
 	mock := NewMockDockerClient()
 	p := NewPool(cfg, mock, nil).(*agentSandboxPool)
 	waitForSize(t, p, 2, 3*time.Second)
@@ -25,11 +26,11 @@ func makeDockerPool(t *testing.T) (*agentSandboxPool, *MockDockerClient) {
 	return p, mock
 }
 
-// makeSkillDir creates a fake skill directory structure in a temp dir and
-// configures the pool's SkillsRoot to point there.
+// makeSkillDir creates a fake skill directory under the pool's SkillsRoot,
+// which is configured before NewPool starts its background workers.
 func makeSkillDir(t *testing.T, p *agentSandboxPool, skillName string) {
 	t.Helper()
-	root := t.TempDir()
+	root := p.cfg.SkillsRoot
 	skillDir := filepath.Join(root, skillName)
 	if err := os.MkdirAll(filepath.Join(skillDir, "helpers"), 0o755); err != nil {
 		t.Fatalf("makeSkillDir mkdir: %v", err)
@@ -38,7 +39,6 @@ func makeSkillDir(t *testing.T, p *agentSandboxPool, skillName string) {
 	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# "+skillName), 0o644); err != nil {
 		t.Fatalf("makeSkillDir SKILL.md: %v", err)
 	}
-	p.cfg.SkillsRoot = root
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -53,7 +53,6 @@ func TestAcquireForSkill_DisabledPool_ErrSandboxDisabled(t *testing.T) {
 
 func TestAcquireForSkill_SkillNotFound_ErrSkillNotFound(t *testing.T) {
 	p, _ := makeDockerPool(t)
-	p.cfg.SkillsRoot = t.TempDir() // empty dir — no skills
 	_, err := p.AcquireForSkill(context.Background(), "nonexistent-skill", 0)
 	if !errors.Is(err, ErrSkillNotFound) {
 		t.Errorf("AcquireForSkill missing skill = %v; want ErrSkillNotFound", err)
