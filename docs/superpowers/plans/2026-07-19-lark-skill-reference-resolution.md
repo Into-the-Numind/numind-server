@@ -10,7 +10,7 @@
 - Files: `internal/numind/biz/feishu/skill_reader.go`, `internal/numind/biz/feishu/skill_reader_test.go`.
 - Add a pure resolver that accepts existing canonical references or one safe basename; derive candidates only from `declaredSkillReferences`; require exactly one basename match.
 - Canonicalize before cursor validation and CLI invocation so shorthand and canonical spelling bind the same resource.
-- Add regressions for zero match, ambiguity, traversal/absolute/backslash/Unicode/path-like shorthand, cross-skill isolation, canonical compatibility and cursor continuation.
+- Add regressions for root-level and nested unique basename success; zero match and ambiguity; traversal/absolute/backslash/Unicode/NUL/overlong/path-like shorthand rejection; cross-skill isolation; canonical compatibility; shorthand/canonical cursor continuation; and cursor rejection when switching to another resource or skill.
 - Acceptance: all SkillReader tests pass; reference-resource command is never invoked for invalid or ambiguous input; no new resource class becomes readable.
 
 ## Task 3 — Quality, atomic merge and Dev deployment
