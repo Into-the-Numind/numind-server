@@ -4,16 +4,16 @@ features:
   ndf_version: '3.0'
   description: Make manual Feishu authorization confirmation wait long enough, preserve exact user/app/device/operation/Agent binding, and emit safe actionable diagnostics.
   classification_reason: 'Standard: no schema/API/new integration change, but this spans backend and frontend and changes high-risk third-party authorization and Agent-resume timing.'
-  last_updated_by: ai-s6-release
-  last_updated_at: '2026-07-19T23:40:00+08:00'
+  last_updated_by: ai-s6-dev-deployed
+  last_updated_at: '2026-07-19T23:45:00+08:00'
   created_at: '2026-07-19T22:17:31+08:00'
   track: standard
   stage: S6
   status: active
   repos: [numind-server, numind-web-v3]
-  branches: {numind-server: feature/feishu-auth-confirmation-stability, numind-web-v3: feature/feishu-auth-confirmation-stability}
-  worktrees: {numind-server: /private/tmp/wt-feishu-auth-confirmation-stability-numind-server, numind-web-v3: /private/tmp/wt-feishu-auth-confirmation-stability-numind-web-v3}
-  progress: {total_tasks: 5, completed_tasks: 5, reviewed_tasks: 2, current_task: 'Atomic merge and push to develop'}
+  branches: {numind-server: develop, numind-web-v3: develop}
+  worktrees: {}
+  progress: {total_tasks: 5, completed_tasks: 5, reviewed_tasks: 2, current_task: 'Await human Dev acceptance; production is out of scope'}
   artifacts:
     requirement: requirements/feishu-auth-confirmation-stability.md
     proposal: proposals/feishu-auth-confirmation-stability-proposal.md
@@ -30,6 +30,8 @@ features:
   - 'S4 review revision: a detached 50-second active server deadline now bounds claim, reread, renew, CLI, reconciliation, finalization and synchronous original-operation dispatch; the browser 60-second limit retains headroom for the slowest 5-second durable cleanup and HTTP/network return. Operation-bound authorization now requires both a valid AgentRunID and ToolCallID; manual connection remains OperationID=nil.'
   - 'S4 dual review: specification and quality reviewers both PASS with P0/P1/P2=0 after the 50+5+5 second boundary revision.'
   - 'S5 acceptance: server full serial suite, Feishu package, focused race, lint, Vue lint/typecheck/unit, and six Playwright Feishu lifecycle scenarios all PASS. A parallel-load lease timing flake passed ten isolated repetitions and the final serial full suite.'
+  - 'S6 merge: ndf-done atomically merged and pushed server develop c1f7a6c1 and web develop aba8f73, then removed both feature worktrees and local feature branches.'
+  - 'S6 Dev deployment: backend c1f7a6c1 and frontend aba8f73 deployed healthy. Public checks returned backend healthz status ok, frontend health healthy, and frontend root HTTP 200. Awaiting the mandatory human Dev acceptance gate; no Prod authorization was inferred.'
   blockers: []
 
 - id: agent-runtime-ui-simplify
