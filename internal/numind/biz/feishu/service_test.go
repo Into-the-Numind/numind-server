@@ -1208,6 +1208,70 @@ func TestWorkspaceLifecycleResumeUserAuthorizationOutcomeMatrix(t *testing.T) {
 	}
 }
 
+func TestWorkspaceLifecycleResumeExpiredPendingUserAuthorizationRefreshesWithoutCompletion(t *testing.T) {
+	now := time.Now().UTC()
+	operationID := "op-expired-user-auth"
+	sessionID := "session-expired-user-auth"
+	oldSummary := lifecycleRecoverySummary(
+		t, model.FeishuOperationWaitingUserAuth, sessionID, model.FeishuAuthPhaseUserAuth, RecoveryUserScope,
+	)
+	op := &model.FeishuOperation{
+		ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth,
+		ResultSummaryJSON: oldSummary,
+	}
+	svc, _, workspace, auth, dispatcher, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 2,
+	}, op)
+	workspace.activeSession = &model.FeishuAuthSession{
+		ID: sessionID, UserID: 7, Generation: 2, OperationID: &operationID,
+		Phase: model.FeishuAuthPhaseUserAuth, State: model.FeishuAuthSessionPending,
+		ProtocolVersion: 2, RequestedScopesJSON: []byte(`["base:record:read"]`),
+		ScopeHash:                  deviceAuthScopeHash([]string{"base:record:read"}),
+		ResumeCredentialCiphertext: []byte("encrypted-device-code"), ResumeKeyVersion: "key-v2",
+		ResumeExpiresAt: func() *time.Time { value := now.Add(-time.Minute); return &value }(),
+		ExpiresAt:       now.Add(-time.Second),
+	}
+	liveAction := &OperationAction{
+		Provider: ProviderLark, OperationID: operationID, SessionID: "session-expired-user-auth-replacement",
+		Phase:  model.FeishuAuthPhaseUserAuth,
+		URL:    "https://open.feishu.cn/suite/passport/oauth/device?user_code=REPLACEMENT",
+		Scopes: []string{"base:record:read"}, ExpiresAt: time.Now().UTC().Add(10 * time.Minute),
+	}
+	completeCalls := 0
+	auth.completeUserAuth = func(context.Context, uint, uint64, string) (*DeviceAuthCompletion, error) {
+		completeCalls++
+		return nil, errors.New("expired session must not enter CLI completion")
+	}
+	auth.refreshOperation = func(
+		_ context.Context,
+		userID uint,
+		generation uint64,
+		gotSessionID string,
+		gotOperationID string,
+		waitingState string,
+		summary []byte,
+	) (*OperationAction, error) {
+		require.Equal(t, uint(7), userID)
+		require.Equal(t, uint64(2), generation)
+		require.Equal(t, sessionID, gotSessionID)
+		require.Equal(t, operationID, gotOperationID)
+		require.Equal(t, model.FeishuOperationWaitingUserAuth, waitingState)
+		require.JSONEq(t, string(oldSummary), string(summary))
+		return liveAction, nil
+	}
+
+	result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionUserCompleted)
+
+	require.NoError(t, err)
+	require.Equal(t, 0, completeCalls, "an expired pending session must be replaced before CLI completion")
+	require.Equal(t, 1, auth.refreshCalls)
+	require.Zero(t, dispatcher.calls, "refreshing the card must not replay the Base command")
+	require.Equal(t, operationID, result.OperationID)
+	require.Equal(t, model.FeishuOperationWaitingUserAuth, result.State)
+	require.Equal(t, AuthorizationExpired, result.NoticeCode)
+	require.Equal(t, liveAction, result.Action)
+}
+
 func TestWorkspaceLifecycleResumeUserCompletedObservesExecutingAndTerminalStates(t *testing.T) {
 	states := []string{
 		model.FeishuOperationExecuting,

@@ -2419,6 +2419,195 @@ func TestFeishuWorkspaceStore_ReplaceDeviceAuthSessionRebindsExactOperation(t *t
 		})
 	}
 
+	for _, testCase := range []struct {
+		name             string
+		withCredential   bool
+		withExpiredLease bool
+	}{
+		{name: "credential-free without lease"},
+		{name: "full credential without lease", withCredential: true},
+		{name: "credential-free with expired complete lease", withExpiredLease: true},
+		{name: "full credential with expired complete lease", withCredential: true, withExpiredLease: true},
+	} {
+		t.Run("expired v2 pending source is replaced atomically "+testCase.name, func(t *testing.T) {
+			expiredStore := newFeishuWorkspaceTestStore(t)
+			createFeishuAccount(t, expiredStore, 11, 4)
+			expiredOperation := newFeishuOperation("device-expired-operation-"+testCase.name, 11, 4, "device-expired-key-"+testCase.name)
+			require.NoError(t, expiredStore.db.Create(expiredOperation).Error)
+			expiredOld := newFeishuDeviceAuthSession("device-expired-old-"+testCase.name, 11, 4, "", now)
+			expiredOld.OperationID = &expiredOperation.ID
+			expiredOld.ExpiresAt = now.Add(-time.Second)
+			expiredOld.LeaseOwner = ""
+			expiredOld.LeaseUntil = nil
+			if testCase.withCredential {
+				expiredOld.ResumeCredentialCiphertext = []byte("encrypted-expired-device-code")
+				expiredOld.ResumeKeyVersion = "key-v2"
+				resumeExpiry := now.Add(-time.Second)
+				expiredOld.ResumeExpiresAt = &resumeExpiry
+			}
+			if testCase.withExpiredLease {
+				expiredOld.LeaseOwner = "expired-owner"
+				leaseUntil := now.Add(-time.Second)
+				expiredOld.LeaseUntil = &leaseUntil
+			}
+			require.NoError(t, expiredStore.CreateSession(ctx, expiredOld))
+			expiredOldSummary := []byte(fmt.Sprintf(
+				`{"status":"waiting_user_auth","phase":"user_auth","session_id":%q}`,
+				expiredOld.ID,
+			))
+			require.NoError(t, expiredStore.db.Model(&model.FeishuOperation{}).Where("id = ?", expiredOperation.ID).Updates(map[string]any{
+				"state": model.FeishuOperationWaitingUserAuth, "result_summary_json": expiredOldSummary,
+			}).Error)
+			expiredReplacement := newFeishuSession("device-expired-new-"+testCase.name, 11, 4)
+			expiredReplacement.ProtocolVersion = 2
+			expiredReplacement.OperationID = &expiredOperation.ID
+			expiredReplacement.ScopeHash = expiredOld.ScopeHash
+			expiredNewSummary := []byte(fmt.Sprintf(
+				`{"status":"waiting_user_auth","phase":"user_auth","session_id":%q}`,
+				expiredReplacement.ID,
+			))
+
+			storedReplacement, err := expiredStore.ReplaceDeviceAuthSession(ctx, FeishuDeviceAuthReplacement{
+				UserID: 11, Generation: 4, OldSessionID: expiredOld.ID,
+				TerminalState: model.FeishuAuthSessionExpired, NewSession: expiredReplacement,
+				OperationID: expiredOperation.ID, ExpectedWaitingState: model.FeishuOperationWaitingUserAuth,
+				OldSummary: expiredOldSummary, NewSummary: expiredNewSummary, Now: now,
+			})
+			require.NoError(t, err)
+			require.Equal(t, expiredReplacement.ID, storedReplacement.ID)
+			storedExpired, err := expiredStore.GetSessionForUser(ctx, 11, 4, expiredOld.ID)
+			require.NoError(t, err)
+			require.Equal(t, model.FeishuAuthSessionExpired, storedExpired.State)
+			require.NotNil(t, storedExpired.CompletedAt)
+			require.Empty(t, storedExpired.ResumeCredentialCiphertext)
+			require.Empty(t, storedExpired.ResumeKeyVersion)
+			require.Nil(t, storedExpired.ResumeExpiresAt)
+			require.Empty(t, storedExpired.LeaseOwner)
+			require.Nil(t, storedExpired.LeaseUntil)
+			storedOperation, err := expiredStore.GetOperationForUser(ctx, 11, 4, expiredOperation.ID)
+			require.NoError(t, err)
+			require.JSONEq(t, string(expiredNewSummary), string(storedOperation.ResultSummaryJSON))
+
+			secondReplacement := newFeishuSession("device-expired-second-"+testCase.name, 11, 4)
+			secondReplacement.ProtocolVersion = 2
+			secondReplacement.OperationID = &expiredOperation.ID
+			secondReplacement.ScopeHash = expiredOld.ScopeHash
+			_, err = expiredStore.ReplaceDeviceAuthSession(ctx, FeishuDeviceAuthReplacement{
+				UserID: 11, Generation: 4, OldSessionID: expiredOld.ID,
+				TerminalState: model.FeishuAuthSessionExpired, NewSession: secondReplacement,
+				OperationID: expiredOperation.ID, ExpectedWaitingState: model.FeishuOperationWaitingUserAuth,
+				OldSummary: expiredOldSummary, NewSummary: []byte(`{"status":"waiting_user_auth"}`), Now: now,
+			})
+			require.ErrorIs(t, err, gorm.ErrRecordNotFound, "one expired source may create at most one replacement")
+			_, err = expiredStore.GetSessionForUser(ctx, 11, 4, secondReplacement.ID)
+			require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+		})
+	}
+
+	for _, testCase := range []struct {
+		name       string
+		ciphertext []byte
+		keyVersion string
+		withExpiry bool
+	}{
+		{name: "missing ciphertext", keyVersion: "key-v2", withExpiry: true},
+		{name: "missing key version", ciphertext: []byte("partial-ciphertext"), withExpiry: true},
+		{name: "missing resume expiry", ciphertext: []byte("partial-ciphertext"), keyVersion: "key-v2"},
+	} {
+		t.Run("expired v2 pending source rejects partial credential "+testCase.name, func(t *testing.T) {
+			guardedStore := newFeishuWorkspaceTestStore(t)
+			createFeishuAccount(t, guardedStore, 13, 6)
+			guardedOperation := newFeishuOperation("device-partial-operation-"+testCase.name, 13, 6, "device-partial-key-"+testCase.name)
+			require.NoError(t, guardedStore.db.Create(guardedOperation).Error)
+			guardedOld := newFeishuDeviceAuthSession("device-partial-old-"+testCase.name, 13, 6, "", now)
+			guardedOld.OperationID = &guardedOperation.ID
+			guardedOld.ExpiresAt = now.Add(-time.Second)
+			guardedOld.LeaseOwner = ""
+			guardedOld.LeaseUntil = nil
+			guardedOld.ResumeCredentialCiphertext = testCase.ciphertext
+			guardedOld.ResumeKeyVersion = testCase.keyVersion
+			if testCase.withExpiry {
+				resumeExpiry := now.Add(-time.Second)
+				guardedOld.ResumeExpiresAt = &resumeExpiry
+			}
+			require.NoError(t, guardedStore.CreateSession(ctx, guardedOld))
+			guardedOldSummary := []byte(fmt.Sprintf(
+				`{"status":"waiting_user_auth","phase":"user_auth","session_id":%q}`,
+				guardedOld.ID,
+			))
+			require.NoError(t, guardedStore.db.Model(&model.FeishuOperation{}).Where("id = ?", guardedOperation.ID).Updates(map[string]any{
+				"state": model.FeishuOperationWaitingUserAuth, "result_summary_json": guardedOldSummary,
+			}).Error)
+			guardedReplacement := newFeishuSession("device-partial-new-"+testCase.name, 13, 6)
+			guardedReplacement.ProtocolVersion = 2
+			guardedReplacement.OperationID = &guardedOperation.ID
+			guardedReplacement.ScopeHash = guardedOld.ScopeHash
+
+			_, err := guardedStore.ReplaceDeviceAuthSession(ctx, FeishuDeviceAuthReplacement{
+				UserID: 13, Generation: 6, OldSessionID: guardedOld.ID,
+				TerminalState: model.FeishuAuthSessionExpired, NewSession: guardedReplacement,
+				OperationID: guardedOperation.ID, ExpectedWaitingState: model.FeishuOperationWaitingUserAuth,
+				OldSummary: guardedOldSummary, NewSummary: []byte(`{"status":"waiting_user_auth"}`), Now: now,
+			})
+			require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+			_, err = guardedStore.GetSessionForUser(ctx, 13, 6, guardedReplacement.ID)
+			require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+			storedGuarded, err := guardedStore.GetSessionForUser(ctx, 13, 6, guardedOld.ID)
+			require.NoError(t, err)
+			require.Equal(t, model.FeishuAuthSessionPending, storedGuarded.State)
+		})
+	}
+
+	for _, testCase := range []struct {
+		name       string
+		leaseOwner string
+		leaseUntil *time.Time
+	}{
+		{name: "live complete lease", leaseOwner: "live-owner", leaseUntil: func() *time.Time { value := now.Add(time.Minute); return &value }()},
+		{name: "owner without lease expiry", leaseOwner: "half-owner"},
+		{name: "lease expiry without owner", leaseUntil: func() *time.Time { value := now.Add(-time.Second); return &value }()},
+	} {
+		t.Run("expired v2 pending source rejects "+testCase.name, func(t *testing.T) {
+			guardedStore := newFeishuWorkspaceTestStore(t)
+			createFeishuAccount(t, guardedStore, 12, 5)
+			guardedOperation := newFeishuOperation("device-guarded-operation-"+testCase.name, 12, 5, "device-guarded-key-"+testCase.name)
+			require.NoError(t, guardedStore.db.Create(guardedOperation).Error)
+			guardedOld := newFeishuDeviceAuthSession("device-guarded-old-"+testCase.name, 12, 5, "", now)
+			guardedOld.OperationID = &guardedOperation.ID
+			guardedOld.ExpiresAt = now.Add(-time.Second)
+			guardedOld.LeaseOwner = testCase.leaseOwner
+			guardedOld.LeaseUntil = testCase.leaseUntil
+			require.NoError(t, guardedStore.CreateSession(ctx, guardedOld))
+			guardedOldSummary := []byte(fmt.Sprintf(
+				`{"status":"waiting_user_auth","phase":"user_auth","session_id":%q}`,
+				guardedOld.ID,
+			))
+			require.NoError(t, guardedStore.db.Model(&model.FeishuOperation{}).Where("id = ?", guardedOperation.ID).Updates(map[string]any{
+				"state": model.FeishuOperationWaitingUserAuth, "result_summary_json": guardedOldSummary,
+			}).Error)
+			guardedReplacement := newFeishuSession("device-guarded-new-"+testCase.name, 12, 5)
+			guardedReplacement.ProtocolVersion = 2
+			guardedReplacement.OperationID = &guardedOperation.ID
+			guardedReplacement.ScopeHash = guardedOld.ScopeHash
+
+			_, err := guardedStore.ReplaceDeviceAuthSession(ctx, FeishuDeviceAuthReplacement{
+				UserID: 12, Generation: 5, OldSessionID: guardedOld.ID,
+				TerminalState: model.FeishuAuthSessionExpired, NewSession: guardedReplacement,
+				OperationID: guardedOperation.ID, ExpectedWaitingState: model.FeishuOperationWaitingUserAuth,
+				OldSummary: guardedOldSummary, NewSummary: []byte(`{"status":"waiting_user_auth"}`), Now: now,
+			})
+			require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+			_, err = guardedStore.GetSessionForUser(ctx, 12, 5, guardedReplacement.ID)
+			require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+			storedGuarded, err := guardedStore.GetSessionForUser(ctx, 12, 5, guardedOld.ID)
+			require.NoError(t, err)
+			require.Equal(t, model.FeishuAuthSessionPending, storedGuarded.State)
+			storedGuardedOperation, err := guardedStore.GetOperationForUser(ctx, 12, 5, guardedOperation.ID)
+			require.NoError(t, err)
+			require.JSONEq(t, string(guardedOldSummary), string(storedGuardedOperation.ResultSummaryJSON))
+		})
+	}
+
 }
 
 func TestFeishuWorkspaceStore_SweepDeviceAuthCredentialsUsesBoundedKeysetPage(t *testing.T) {
