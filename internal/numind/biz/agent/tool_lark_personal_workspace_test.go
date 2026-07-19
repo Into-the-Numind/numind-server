@@ -656,6 +656,8 @@ func TestLarkPersonalWorkspace_ExecuteRejectedCommandStopsLocalCLIRetries(t *tes
 	assert.Contains(t, string(result), "不要要求用户提供 App ID/App Secret")
 	assert.Contains(t, string(result), "Docs/Base/Wiki")
 	assert.Contains(t, string(result), "最多修正并重试一次")
+	assert.Contains(t, string(result), `"code":"command_rejected"`)
+	assert.Contains(t, string(result), `"recoverable":true`)
 	assert.NotContains(t, string(result), "请稍后重试")
 	assert.NotContains(t, string(result), "opaque-shared-receipt")
 
@@ -665,6 +667,8 @@ func TestLarkPersonalWorkspace_ExecuteRejectedCommandStopsLocalCLIRetries(t *tes
 	)
 	require.NoError(t, err)
 	assert.Contains(t, string(result), "已停止后续飞书命令")
+	assert.Contains(t, string(result), `"code":"correction_exhausted"`)
+	assert.Contains(t, string(result), `"recoverable":false`)
 
 	result, err = tool.Execute(
 		larkPersonalWorkspaceContext(1, runID, "dev-run-204-rejected-3"),

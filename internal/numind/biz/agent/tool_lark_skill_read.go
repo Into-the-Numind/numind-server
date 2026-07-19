@@ -140,35 +140,56 @@ const (
 // errors, and secrets cannot be interpolated into model-visible output.
 func larkWorkspaceSoftError(code larkWorkspaceErrorCode) (ToolResult, error) {
 	message := "飞书工作区操作当前不可用，请稍后重试。"
+	publicCode := "workspace_unavailable"
+	recoverable := false
+	retryable := false
 	switch code {
 	case larkWorkspaceErrorInvalidSkillInput:
 		message = "飞书技能参数无效，请仅使用 skill、reference、cursor。"
+		publicCode, recoverable = "invalid_skill_input", true
 	case larkWorkspaceErrorSkillRead:
 		message = "读取飞书技能暂时失败，请稍后重试。"
+		publicCode = "skill_read_unavailable"
 	case larkWorkspaceErrorInvalidExecuteInput:
-		message = "飞书工作区参数无效，请仅使用 argv、stdin_json、skill_receipts。"
+		message = "飞书工作区参数无效，请仅使用 argv、stdin_json。"
+		publicCode, recoverable = "invalid_execute_input", true
 	case larkWorkspaceErrorIdentity:
 		message = "无法验证当前飞书工作区操作身份。"
+		publicCode = "identity_unavailable"
 	case larkWorkspaceErrorExecuteRejected:
-		message = "飞书命令或技能凭证不符合平台策略，本次操作尚未访问飞书，也不代表连接异常。仅可直接执行 Docs/Base/Wiki/Drive 业务命令，并同时使用当前 lark-shared 与对应业务技能的 receipt；最多修正并重试一次。不要执行 auth/config/whoami，也不要要求用户提供 App ID/App Secret。"
+		message = "飞书业务命令不符合平台策略，本次尚未访问飞书，也不代表连接异常。请按技能说明修正 Docs/Base/Wiki/Drive 命令；最多修正并重试一次。不要执行 auth/config/whoami，也不要要求用户提供 App ID/App Secret。"
+		publicCode, recoverable = "command_rejected", true
 	case larkWorkspaceErrorExecuteRetryExhausted:
 		message = "飞书命令连续被拒绝，已停止后续飞书命令，本任务不会再调用执行器。不要继续重试、执行 auth/config/whoami，或要求用户提供 App ID/App Secret。请向用户说明本次操作未完成。"
+		publicCode = "correction_exhausted"
 	case larkWorkspaceErrorExecute:
 		message = "飞书工作区操作暂时不可用，本次未执行。请停止重复调用，也不要改跑 auth/config/whoami 或要求用户提供 App ID/App Secret。"
+		publicCode = "workspace_unavailable"
 	case larkWorkspaceErrorInvalidResult:
 		message = "飞书工作区操作返回无效，请稍后重试。"
+		publicCode = "invalid_result"
 	case larkWorkspaceErrorInvalidWait:
 		message = "飞书工作区等待状态无效，请稍后重试。"
+		publicCode = "invalid_wait"
 	case larkWorkspaceErrorInvalidInspectInput:
-		message = "飞书检查参数无效：connection 模式只使用 mode；command 模式必须提供 argv 和当前技能 receipt。"
+		message = "飞书检查参数无效：connection 模式只使用 mode；command 模式必须提供 argv。"
+		publicCode, recoverable = "invalid_inspect_input", true
 	case larkWorkspaceErrorInspectRejected:
-		message = "飞书检查命令或技能凭证不符合平台策略；只可检查 Docs/Base/Wiki/Drive 业务命令。"
+		message = "飞书检查命令不符合平台策略；只可检查 Docs/Base/Wiki/Drive 业务命令。"
+		publicCode, recoverable = "inspect_rejected", true
 	case larkWorkspaceErrorInspect:
 		message = "暂时无法完成飞书工作区检查；不要改用 auth/config/whoami。"
+		publicCode = "inspect_unavailable"
 	case larkWorkspaceErrorExecuteStopped:
 		message = "上一项飞书操作返回不可自动重试的结构化结果，本任务已停止后续飞书业务执行。不要换参数重复写入；请根据结果向用户说明或等待用户提供新信息。"
+		publicCode = "execution_stopped"
 	}
-	output, _ := json.Marshal(map[string]string{"error": "ERROR: " + message})
+	output, _ := json.Marshal(map[string]any{
+		"error":       "ERROR: " + message,
+		"code":        publicCode,
+		"recoverable": recoverable,
+		"retryable":   retryable,
+	})
 	return ToolResult(output), nil
 }
 

@@ -343,6 +343,53 @@ defaults:
 		"a soft-error tool result MUST narrate StateError so the UI shows failure (✗), matching what the model tells the user")
 }
 
+func TestAdaptFullToEinoTool_RecoverableSoftErrorEmitsProgress(t *testing.T) {
+	prov, err := narration.NewProvider(narration.Config{YAMLBytes: []byte(`
+tools:
+  lark_execute:
+    verb: "操作"
+    use_template: "操作中"
+    result_template: "完成"
+    error_template: "出错"
+defaults:
+  verb: "处理"
+  use_template: "处理中"
+  result_template: "完成"
+  error_template: "出错"
+`)})
+	require.NoError(t, err)
+	ft := &fakeFullTool{name: "lark_execute", out: []byte(`{"error":"ERROR: command rejected","code":"command_rejected","recoverable":true,"retryable":false}`)}
+	eino := adaptFullToEinoTool(ft, &RunHooks{NarrationProvider: prov})
+	ch := make(chan stream.Event, 8)
+	ctx := narration.WithCollector(WithRunID(context.Background(), 226))
+	ctx = WithStreamState(ctx, &StreamSessionState{Ch: ch, RunID: 226})
+
+	_, err = eino.InvokableRun(ctx, `{"argv":["drive","+search"]}`)
+	require.NoError(t, err)
+
+	var sawProgress, sawError bool
+	for _, ev := range narration.CollectorFrom(ctx).Events() {
+		if ev.State == narration.StateProgress {
+			sawProgress = true
+			assert.Equal(t, "正在调整执行方式", ev.Message)
+		}
+		if ev.State == narration.StateError {
+			sawError = true
+		}
+	}
+	assert.True(t, sawProgress)
+	assert.False(t, sawError, "a safe correction must not be narrated as terminal failure")
+
+	var payload stream.ToolCallErrorPayload
+	for len(ch) > 0 {
+		ev := <-ch
+		if ev.Type == stream.EventToolCallError {
+			require.NoError(t, json.Unmarshal(ev.Data, &payload))
+		}
+	}
+	assert.True(t, payload.Recoverable)
+}
+
 // TestSoftToolErrorMessage locks the detector's false-positive safety: it matches
 // ONLY a dedicated "error" field with the "ERROR: " prefix, never a successful
 // result whose content merely contains the text "ERROR:".

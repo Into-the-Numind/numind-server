@@ -129,7 +129,7 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 					// not into the narration Reason field (which is for a short identifier).
 					// Soft deny intentionally omits tool_call_* SSE (no Execute ran), exactly
 					// like a hard reject.
-					a.emitNarration(ctx, narration.StateRejected, toolCallID, input, nil, nil, "")
+					a.emitNarration(ctx, narration.StateRejected, toolCallID, input, nil, nil, "", "")
 					return msg, nil // tool-result fed back to the model → loop continues
 				}
 				// tripped: fall through to the hard-terminate path below.
@@ -140,13 +140,13 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 		}
 		if action != HookActionContinue {
 			// EMIT REJECTED: short-circuit before Execute; no use/result/error follow.
-			a.emitNarration(ctx, narration.StateRejected, toolCallID, input, nil, nil, "")
+			a.emitNarration(ctx, narration.StateRejected, toolCallID, input, nil, nil, "", "")
 			return "", fmt.Errorf("tool execution stopped by hook: action=%d", action)
 		}
 	}
 
 	// EMIT USE: after PreToolCall Continue, before Execute (S0 D2 timing contract).
-	a.emitNarration(ctx, narration.StateUse, toolCallID, input, nil, nil, "")
+	a.emitNarration(ctx, narration.StateUse, toolCallID, input, nil, nil, "", "")
 
 	// EMIT SSE tool_call_start. The active streaming path (runner_runstream.go's
 	// streamScanToolCallChecker) scans only MODEL OUTPUT and never emits
@@ -222,9 +222,9 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 			streamState.PendingYield = &p
 		}
 	} else if effectiveErr != nil {
-		a.emitNarration(ctx, narration.StateError, toolCallID, input, nil, effectiveErr, "")
-		a.emitStreamToolError(ctx, toolCallID, effectiveErr, durationMs)
-	} else if softMsg, isSoft := softToolErrorMessage(output); isSoft {
+		a.emitNarration(ctx, narration.StateError, toolCallID, input, nil, effectiveErr, "", "")
+		a.emitStreamToolError(ctx, toolCallID, effectiveErr, durationMs, false)
+	} else if softInfo, isSoft := softToolErrorInfo(output); isSoft {
 		// SOFT ERROR: nil Go error, but the JSON body carries the "ERROR: " contract
 		// (softToolError / each tool's returnSoftError) — e.g. an image_gen timeout.
 		// The model reads the error and self-corrects, so the loop continues (return
@@ -236,9 +236,14 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 		if sd := SoftDenyFromCtx(ctx); sd != nil {
 			sd.OnSuccess()
 		}
-		softErr := errors.New(softMsg)
-		a.emitNarration(ctx, narration.StateError, toolCallID, input, nil, softErr, "")
-		a.emitStreamToolError(ctx, toolCallID, softErr, durationMs)
+		softErr := errors.New(softInfo.Message)
+		if softInfo.Recoverable {
+			a.emitNarration(ctx, narration.StateProgress, toolCallID, input, nil, softErr, "", "正在调整执行方式")
+			a.emitStreamToolError(ctx, toolCallID, softErr, durationMs, true)
+		} else {
+			a.emitNarration(ctx, narration.StateError, toolCallID, input, nil, softErr, "", "")
+			a.emitStreamToolError(ctx, toolCallID, softErr, durationMs, false)
+		}
 	} else {
 		// Successful tool execution = the agent made progress: reset the soft-deny
 		// anti-loop streak (consecutive + same-fp) so a healthy run that bounces off a
@@ -246,7 +251,7 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 		if sd := SoftDenyFromCtx(ctx); sd != nil {
 			sd.OnSuccess()
 		}
-		a.emitNarration(ctx, narration.StateResult, toolCallID, input, result, nil, "")
+		a.emitNarration(ctx, narration.StateResult, toolCallID, input, result, nil, "", "")
 		a.emitStreamToolResult(ctx, toolCallID, output, durationMs)
 		// Collect ALL tool-generated artifacts (images + documents/HTML) so the run
 		// finalizer can embed them in the PERSISTED final answer. The transient SSE
@@ -295,7 +300,7 @@ func (a *fullToolEinoAdapter) invokeToolGuarded(ctx context.Context, input ToolI
 //
 // The `reason` parameter is reserved for #6 permission-pipeline to populate
 // the rejection reason; v1 always passes "" (S1-D21). Do not remove or rename.
-func (a *fullToolEinoAdapter) emitNarration(ctx context.Context, st narration.State, toolCallID string, input ToolInput, result ToolResult, execErr error, reason string) {
+func (a *fullToolEinoAdapter) emitNarration(ctx context.Context, st narration.State, toolCallID string, input ToolInput, result ToolResult, execErr error, reason, overrideMessage string) {
 	if a.hooks == nil || a.hooks.NarrationProvider == nil {
 		return
 	}
@@ -309,11 +314,12 @@ func (a *fullToolEinoAdapter) emitNarration(ctx context.Context, st narration.St
 	// Emit then routes to an unsubscribed runID=0 bucket and the event is harmlessly
 	// dropped — both run paths always inject WithRunID before any tool executes.
 	a.hooks.NarrationProvider.Emit(ctx, RunIDFromContext(ctx), a.ft.Name(), st, narration.EmitPayload{
-		ToolCallID: toolCallID,
-		Input:      json.RawMessage(obsInput),
-		Result:     json.RawMessage(result),
-		Err:        execErr,
-		Reason:     reason,
+		ToolCallID:      toolCallID,
+		Input:           json.RawMessage(obsInput),
+		Result:          json.RawMessage(result),
+		Err:             execErr,
+		Reason:          reason,
+		OverrideMessage: overrideMessage,
 	})
 }
 
@@ -372,14 +378,15 @@ func (a *fullToolEinoAdapter) emitStreamToolResult(ctx context.Context, toolCall
 }
 
 // emitStreamToolError emits tool_call_error when the tool (or its post-hook) failed.
-func (a *fullToolEinoAdapter) emitStreamToolError(ctx context.Context, toolCallID string, err error, durationMs int64) {
+func (a *fullToolEinoAdapter) emitStreamToolError(ctx context.Context, toolCallID string, err error, durationMs int64, recoverable bool) {
 	msg := ""
 	if err != nil {
 		msg = err.Error()
 	}
 	a.emitStream(ctx, stream.EventToolCallError, stream.ToolCallErrorPayload{
-		ToolCallID: toolCallID,
-		Error:      truncateRunes(msg, 500),
-		DurationMs: durationMs,
+		ToolCallID:  toolCallID,
+		Error:       truncateRunes(msg, 500),
+		DurationMs:  durationMs,
+		Recoverable: recoverable,
 	})
 }

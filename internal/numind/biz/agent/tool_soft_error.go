@@ -40,18 +40,29 @@ func softToolError(tool, format string, args ...any) (ToolResult, error) {
 // content/body fields would risk false-positiving a tool that legitimately returns
 // text starting with "ERROR:" (a fetched web page, a read file, bash output).
 func softToolErrorMessage(output string) (string, bool) {
+	info, ok := softToolErrorInfo(output)
+	return info.Message, ok
+}
+
+type softToolErrorDetails struct {
+	Message     string
+	Recoverable bool
+}
+
+func softToolErrorInfo(output string) (softToolErrorDetails, bool) {
 	s := strings.TrimSpace(output)
 	if !strings.HasPrefix(s, "{") {
-		return "", false
+		return softToolErrorDetails{}, false
 	}
 	var obj struct {
-		Error string `json:"error"`
+		Error       string `json:"error"`
+		Recoverable bool   `json:"recoverable"`
 	}
 	if err := json.Unmarshal([]byte(s), &obj); err != nil {
-		return "", false
+		return softToolErrorDetails{}, false
 	}
 	if strings.HasPrefix(obj.Error, "ERROR: ") {
-		return obj.Error, true
+		return softToolErrorDetails{Message: obj.Error, Recoverable: obj.Recoverable}, true
 	}
-	return "", false
+	return softToolErrorDetails{}, false
 }
