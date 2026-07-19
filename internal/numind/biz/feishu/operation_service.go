@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -29,8 +28,6 @@ const (
 	operationMaxToolCallIDBytes   = 128
 	operationMaxIdempotencyBytes  = 191
 	operationMaxOperationIDBytes  = 64
-	operationMaxReceiptBytes      = 4096
-	operationMaxReceiptCount      = 4
 	operationDefaultLeaseDuration = 90 * time.Second
 	operationFinalizeTimeout      = 5 * time.Second
 	// Each execution-gate lease window is renewed by the heartbeat and again
@@ -2059,38 +2056,6 @@ func validStableIdentifier(value string, maxBytes int) bool {
 		}
 	}
 	return true
-}
-
-func validateOperationReceipts(receipts []string) error {
-	if len(receipts) == 0 || len(receipts) > operationMaxReceiptCount {
-		return ErrOperationRequestRejected
-	}
-	for _, receipt := range receipts {
-		if receipt == "" || len(receipt) > operationMaxReceiptBytes || strings.TrimSpace(receipt) != receipt || strings.IndexByte(receipt, 0) >= 0 {
-			return ErrOperationRequestRejected
-		}
-	}
-	return nil
-}
-
-func operationReceiptDomain(command *NormalizedCommand) string {
-	if command.Domain == SkillDomainDocs {
-		for index, argument := range command.Argv {
-			if argument != "--doc" || index+1 >= len(command.Argv) {
-				continue
-			}
-			docRef := command.Argv[index+1]
-			if !strings.Contains(docRef, "://") &&
-				(strings.HasPrefix(docRef, "wikcn") || strings.HasPrefix(docRef, "wikc")) {
-				return SkillDomainWikiContent
-			}
-			parsed, err := url.Parse(docRef)
-			if err == nil && parsed.Scheme == "https" && strings.HasPrefix(parsed.EscapedPath(), "/wiki/") {
-				return SkillDomainWikiContent
-			}
-		}
-	}
-	return command.Domain
 }
 
 func operationFingerprint(canonical []byte) string {

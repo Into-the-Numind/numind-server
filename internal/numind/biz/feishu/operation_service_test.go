@@ -929,8 +929,8 @@ func TestOperationService_LegacyUnknownSummaryPreservesStartedWriteEvidence(t *t
 	}
 }
 
-func TestOperationService_StrictInputAndServerOwnedReceiptDomain(t *testing.T) {
-	t.Run("normalize happens before receipt verification", func(t *testing.T) {
+func TestOperationService_StrictInputAndPlatformOwnedPolicy(t *testing.T) {
+	t.Run("normalize rejects forbidden commands before any operation", func(t *testing.T) {
 		h := newOperationHarness(t)
 		req := operationDocsFetchRequest(9, "tc-invalid")
 		req.Argv = []string{"im", "send"}
@@ -943,16 +943,17 @@ func TestOperationService_StrictInputAndServerOwnedReceiptDomain(t *testing.T) {
 		require.Zero(t, count)
 	})
 
-	t.Run("wiki content requires three-skill domain", func(t *testing.T) {
+	t.Run("legacy receipt verifier cannot block wiki content", func(t *testing.T) {
 		h := newOperationHarness(t)
 		h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+		h.receipts.err = errors.New("legacy verifier unavailable")
 		req := operationDocsFetchRequest(10, "tc-wiki")
 		req.Argv = []string{"docs", "+fetch", "--doc", "https://acme.feishu.cn/wiki/wikcnABCDEFG123"}
 		_, err := h.service.Execute(h.ctx, req)
 		require.NoError(t, err)
 		domains, runs := h.receipts.snapshot()
-		require.Equal(t, []string{SkillDomainWikiContent}, domains)
-		require.Equal(t, []uint64{10}, runs)
+		require.Empty(t, domains)
+		require.Empty(t, runs)
 	})
 
 	for index, testCase := range []struct {
@@ -972,10 +973,12 @@ func TestOperationService_StrictInputAndServerOwnedReceiptDomain(t *testing.T) {
 			req.IdempotencyKey = fmt.Sprintf("%d:%s", runID, req.ToolCallID)
 			req.Argv = testCase.argv
 
+			h.receipts.err = errors.New("legacy verifier unavailable")
 			_, err := h.service.Execute(h.ctx, req)
 			require.NoError(t, err)
-			domains, _ := h.receipts.snapshot()
-			require.Equal(t, []string{SkillDomainWikiContent}, domains)
+			domains, runs := h.receipts.snapshot()
+			require.Empty(t, domains)
+			require.Empty(t, runs)
 		})
 	}
 
@@ -989,8 +992,9 @@ func TestOperationService_StrictInputAndServerOwnedReceiptDomain(t *testing.T) {
 		}
 		_, err := h.service.Execute(h.ctx, req)
 		require.NoError(t, err)
-		domains, _ := h.receipts.snapshot()
-		require.Equal(t, []string{SkillDomainDocs}, domains)
+		domains, runs := h.receipts.snapshot()
+		require.Empty(t, domains)
+		require.Empty(t, runs)
 	})
 
 	for _, testCase := range []struct {
@@ -1010,21 +1014,28 @@ func TestOperationService_StrictInputAndServerOwnedReceiptDomain(t *testing.T) {
 			req.Argv = testCase.argv
 			_, err := h.service.Execute(h.ctx, req)
 			require.NoError(t, err)
-			domains, _ := h.receipts.snapshot()
-			require.Equal(t, []string{testCase.domain}, domains)
+			domains, runs := h.receipts.snapshot()
+			require.Empty(t, domains)
+			require.Empty(t, runs)
+			var operation model.FeishuOperation
+			require.NoError(t, h.db.Order("created_at desc").First(&operation).Error)
+			require.Equal(t, testCase.domain, operation.Domain)
 		})
 	}
 
-	t.Run("invalid receipt never creates operation", func(t *testing.T) {
+	t.Run("legacy receipt verifier failure is ignored", func(t *testing.T) {
 		h := newOperationHarness(t)
+		h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
 		h.receipts.err = errors.New("invalid receipt detail")
-		_, err := h.service.Execute(h.ctx, operationDocsFetchRequest(101, "tc-receipt-invalid"))
-		require.ErrorIs(t, err, ErrOperationRequestRejected)
+		result, err := h.service.Execute(h.ctx, operationDocsFetchRequest(101, "tc-receipt-invalid"))
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuOperationSucceeded, result.State)
 		var count int64
 		require.NoError(t, h.db.Model(&model.FeishuOperation{}).Count(&count).Error)
-		require.Zero(t, count)
-		_, accountErr := h.dataStore.ThirdPartyAccounts().Get(h.ctx, 7, ProviderLark)
-		require.ErrorIs(t, accountErr, gorm.ErrRecordNotFound)
+		require.EqualValues(t, 1, count)
+		domains, runs := h.receipts.snapshot()
+		require.Empty(t, domains)
+		require.Empty(t, runs)
 	})
 
 	for _, testCase := range []struct {
@@ -3461,8 +3472,8 @@ func TestOperationService_ConnectionsAreSharedAcrossAgentRunsAndIsolatedAcrossUs
 	}{{7, 3}, {7, 3}, {8, 5}}, homes)
 	mu.Unlock()
 	domains, runs := h.receipts.snapshot()
-	require.Equal(t, []string{"docs", "docs", "docs"}, domains)
-	require.Equal(t, []uint64{1001, 1002, 1003}, runs)
+	require.Empty(t, domains, "model-carried receipts are not consulted for any Agent run")
+	require.Empty(t, runs, "current-user isolation is enforced by the account and operation stores")
 }
 
 func TestOperationService_OKEnvelopeWithoutValidDataFailsClosed(t *testing.T) {
