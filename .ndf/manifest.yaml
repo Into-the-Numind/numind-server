@@ -4,21 +4,22 @@ features:
   ndf_version: '3.0'
   description: Resolve safe shorthand names for declared lark-cli skill references without exposing raw paths or weakening the embedded-resource boundary.
   classification_reason: 'Standard: no schema/API/new integration change and a small file set, but this changes the security boundary for controlled Agent-readable internal resources.'
-  last_updated_by: ai-s4-green
-  last_updated_at: '2026-07-19T12:02:00+08:00'
+  last_updated_by: ai-s5-acceptance
+  last_updated_at: '2026-07-19T11:44:07+08:00'
   created_at: '2026-07-19T11:10:53+08:00'
   track: standard
-  stage: S4
+  stage: S5
   status: active
   repos: [numind-server]
   branches: {numind-server: feature/lark-skill-reference-resolution}
   worktrees: {numind-server: /private/tmp/wt-lark-skill-reference-resolution-numind-server}
-  progress: {total_tasks: 3, completed_tasks: 2, reviewed_tasks: 0}
+  progress: {total_tasks: 3, completed_tasks: 3, reviewed_tasks: 2}
   artifacts:
     requirement: requirements/lark-skill-reference-resolution.md
     proposal: proposals/lark-skill-reference-resolution-proposal.md
     spec: docs/superpowers/specs/2026-07-19-lark-skill-reference-resolution-design.md
     plan: docs/superpowers/plans/2026-07-19-lark-skill-reference-resolution.md
+    qa: docs/superpowers/qa/2026-07-19-lark-skill-reference-resolution-s5-acceptance.md
   decisions:
   - 'S0: customer confirmed the platform must preserve the declared-reference allowlist while removing the requirement that the Agent spell the complete internal references/... path. The customer authorized a fast Standard through Dev deployment.'
   - 'S1: selected unique basename resolution inside the current skill declared-reference set. Removing validation is unsafe; a separate stable reference-ID registry is unnecessary for this focused repair.'
@@ -27,6 +28,8 @@ features:
   - 'S4 Task 1 RED: the customer-shaped basename request fails before production changes with feishu skill request rejected; the regression permanently records the expected canonical path and exact controlled CLI invocation.'
   - 'S4 Task 2 GREEN: safe ASCII basenames resolve only to one current-skill declared reference and become canonical before cursor validation or CLI execution. Zero/ambiguous/cross-skill/path-like inputs fail closed; canonical compatibility and cursor binding are regression-covered.'
   - 'S4 review hardening: ambiguity detection scans every valid declared link, including duplicates beyond the 64-item/16-KiB metadata cap, while only the bounded exposed set remains eligible for reading. This preserves metadata limits and fail-closed uniqueness.'
+  - 'S4 final dual review PASS with P0/P1/P2=0. The resolver remains current-skill scoped, fail-closed, canonical before cursor/CLI use, and does not expand the bounded readable set.'
+  - 'S5 acceptance PASS: go test ./..., lint, focused repeated tests, Feishu race, diff hygiene, and both independent reviews pass. Repository-wide task test still exposes only the pre-existing sandbox SkillsDir test-fixture race; no sandbox file changed and the Feishu package passes in the same race run. Authorized for ndf-done and Dev deployment.'
   blockers: []
 
 - id: feishu-scope-preflight-null
