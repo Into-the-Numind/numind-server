@@ -1,5 +1,25 @@
 schema_version: '2.0'
 features:
+- id: lark-skill-reference-resolution
+  ndf_version: '3.0'
+  description: Resolve safe shorthand names for declared lark-cli skill references without exposing raw paths or weakening the embedded-resource boundary.
+  classification_reason: 'Standard: no schema/API/new integration change and a small file set, but this changes the security boundary for controlled Agent-readable internal resources.'
+  last_updated_by: ai-s0-requirement
+  last_updated_at: '2026-07-19T11:14:00+08:00'
+  created_at: '2026-07-19T11:10:53+08:00'
+  track: standard
+  stage: S0
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: feature/lark-skill-reference-resolution}
+  worktrees: {numind-server: /private/tmp/wt-lark-skill-reference-resolution-numind-server}
+  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
+  artifacts:
+    requirement: requirements/lark-skill-reference-resolution.md
+  decisions:
+  - 'S0: customer confirmed the platform must preserve the declared-reference allowlist while removing the requirement that the Agent spell the complete internal references/... path. The customer authorized a fast Standard through Dev deployment.'
+  blockers: []
+
 - id: feishu-scope-preflight-null
   ndf_version: '3.0'
   description: Accept the exact pinned lark-cli successful null missing-scope contract so authorization resumes the original Agent operation.
