@@ -131,23 +131,23 @@ func larkExecuteRetryTerminalOutcome(
 	state *larkExecuteRetryState,
 	attempt larkExecuteRetryAttempt,
 	failure *feishu.OperationFailure,
-) {
+) (correctionExhausted bool) {
 	if state == nil || failure == nil {
 		larkExecuteRetryFailed(state, attempt)
-		return
+		return true
 	}
 	if larkFailureAllowsCorrection(failure) {
 		state.mu.Lock()
 		state.lastCategory = failure.Category
 		state.mu.Unlock()
-		_ = larkExecuteRetryRejected(state, attempt)
-		return
+		return larkExecuteRetryRejected(state, attempt)
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	state.lastCategory = failure.Category
 	state.terminalStop = true
 	state.phase = larkRetryExhausted
+	return false
 }
 
 func larkFailureAllowsCorrection(failure *feishu.OperationFailure) bool {

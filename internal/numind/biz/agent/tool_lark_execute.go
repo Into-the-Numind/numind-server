@@ -122,8 +122,8 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 	}
 	if result.State == model.FeishuOperationSucceeded {
 		larkExecuteRetryCompleted(retryState, retryAttempt)
-	} else {
-		larkExecuteRetryTerminalOutcome(retryState, retryAttempt, result.Failure)
+	} else if larkExecuteRetryTerminalOutcome(retryState, retryAttempt, result.Failure) {
+		return larkWorkspaceSoftError(larkWorkspaceErrorExecuteRetryExhausted)
 	}
 	return ToolResult(output), nil
 }
