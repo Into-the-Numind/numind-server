@@ -8,6 +8,7 @@ import (
 
 	"numind-server/internal/numind/biz/agent"
 	"numind-server/internal/numind/biz/feishu"
+	"numind-server/internal/pkg/externalaction"
 	"numind-server/internal/pkg/model"
 )
 
@@ -17,6 +18,7 @@ type operationResumeService interface {
 
 type agentExternalResultResumer interface {
 	Resume(context.Context, agent.ExternalToolResult) error
+	FinalizeExternalToolWait(context.Context, uint, uint64, string, string, externalaction.TerminalOutcome) (bool, error)
 }
 
 type workspaceResumeCall struct {
@@ -102,11 +104,22 @@ func (d *WorkspaceResumeDispatcher) dispatch(ctx context.Context, userID uint, o
 		model.FeishuOperationWaitingUserAuth,
 		model.FeishuOperationWaitingConfirmation:
 		return nil
-	case model.FeishuOperationSucceeded,
-		model.FeishuOperationFailed,
-		model.FeishuOperationUnknown,
-		model.FeishuOperationCancelled:
+	case model.FeishuOperationSucceeded:
 		// handled below
+	case model.FeishuOperationFailed, model.FeishuOperationUnknown, model.FeishuOperationCancelled:
+		if result.OperationID != operationID || result.AgentRunID == 0 || strings.TrimSpace(result.ToolCallID) == "" {
+			return fmt.Errorf("resume feishu operation: terminal result identity is invalid")
+		}
+		outcome, ok := terminalAgentOutcome(result.State)
+		if !ok {
+			return fmt.Errorf("resume feishu operation: invalid terminal state")
+		}
+		if _, err := d.agentResumer.FinalizeExternalToolWait(
+			ctx, userID, result.AgentRunID, result.OperationID, result.ToolCallID, outcome,
+		); err != nil {
+			return fmt.Errorf("finalize agent external wait: %w", err)
+		}
+		return nil
 	default:
 		return fmt.Errorf("resume feishu operation: invalid state")
 	}
@@ -126,4 +139,17 @@ func (d *WorkspaceResumeDispatcher) dispatch(ctx context.Context, userID uint, o
 		return fmt.Errorf("resume agent run: %w", err)
 	}
 	return nil
+}
+
+func terminalAgentOutcome(state string) (externalaction.TerminalOutcome, bool) {
+	switch state {
+	case model.FeishuOperationFailed:
+		return externalaction.TerminalOutcomeFailed, true
+	case model.FeishuOperationUnknown:
+		return externalaction.TerminalOutcomeUnknown, true
+	case model.FeishuOperationCancelled:
+		return externalaction.TerminalOutcomeCancelled, true
+	default:
+		return "", false
+	}
 }

@@ -9,6 +9,7 @@ import (
 
 	"numind-server/internal/numind/biz/agent"
 	"numind-server/internal/numind/biz/feishu"
+	"numind-server/internal/pkg/externalaction"
 	"numind-server/internal/pkg/model"
 
 	"github.com/stretchr/testify/require"
@@ -50,9 +51,20 @@ func (f *dispatcherOperationFake) callCount() int {
 }
 
 type dispatcherAgentResumerFake struct {
-	mu      sync.Mutex
-	results []agent.ExternalToolResult
-	err     error
+	mu            sync.Mutex
+	results       []agent.ExternalToolResult
+	finalizations []dispatcherFinalization
+	err           error
+	finalizeErr   error
+	finalized     bool
+}
+
+type dispatcherFinalization struct {
+	userID      uint
+	runID       uint64
+	operationID string
+	toolCallID  string
+	outcome     externalaction.TerminalOutcome
 }
 
 func (f *dispatcherAgentResumerFake) Resume(_ context.Context, result agent.ExternalToolResult) error {
@@ -62,10 +74,53 @@ func (f *dispatcherAgentResumerFake) Resume(_ context.Context, result agent.Exte
 	return f.err
 }
 
+func (f *dispatcherAgentResumerFake) FinalizeExternalToolWait(
+	_ context.Context,
+	userID uint,
+	runID uint64,
+	operationID string,
+	toolCallID string,
+	outcome externalaction.TerminalOutcome,
+) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.finalizations = append(f.finalizations, dispatcherFinalization{
+		userID: userID, runID: runID, operationID: operationID, toolCallID: toolCallID, outcome: outcome,
+	})
+	return f.finalized, f.finalizeErr
+}
+
+func TestWorkspaceResumeDispatcher_TerminalFinalizationNoopIsSuccessAndErrorRemainsRetryable(t *testing.T) {
+	operationID := "operation-terminal-finalizer"
+	operations := &dispatcherOperationFake{result: &feishu.OperationResult{
+		OperationID: operationID,
+		State:       model.FeishuOperationUnknown,
+		AgentRunID:  48,
+		ToolCallID:  "tool-terminal-finalizer",
+	}}
+
+	resumer := &dispatcherAgentResumerFake{finalized: false}
+	dispatcher := NewWorkspaceResumeDispatcher(operations, resumer)
+	require.NoError(t, dispatcher.DispatchResume(context.Background(), 7, operationID),
+		"a durable already-finalized no-op is a successful terminal handoff")
+
+	resumer.finalizeErr = errors.New("temporary finalizer failure")
+	require.Error(t, dispatcher.DispatchResume(context.Background(), 7, operationID),
+		"a storage/finalizer failure must remain retryable")
+	require.Empty(t, resumer.snapshot())
+	require.Len(t, resumer.finalizationSnapshot(), 2)
+}
+
 func (f *dispatcherAgentResumerFake) snapshot() []agent.ExternalToolResult {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]agent.ExternalToolResult(nil), f.results...)
+}
+
+func (f *dispatcherAgentResumerFake) finalizationSnapshot() []dispatcherFinalization {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]dispatcherFinalization(nil), f.finalizations...)
 }
 
 func (f *dispatcherAgentResumerFake) setError(err error) {
@@ -187,6 +242,12 @@ func (r *durableResponseLossAgentResumer) Resume(_ context.Context, result agent
 	return nil
 }
 
+func (r *durableResponseLossAgentResumer) FinalizeExternalToolWait(
+	context.Context, uint, uint64, string, string, externalaction.TerminalOutcome,
+) (bool, error) {
+	return false, nil
+}
+
 func (s *durableResponseLossAgentState) snapshot() (int, []agent.ExternalToolResult) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -208,6 +269,12 @@ func (f *task11LeaseFake) Resume(_ context.Context, result agent.ExternalToolRes
 		f.accepted[result.OperationID] = result
 	}
 	return nil
+}
+
+func (f *task11LeaseFake) FinalizeExternalToolWait(
+	context.Context, uint, uint64, string, string, externalaction.TerminalOutcome,
+) (bool, error) {
+	return false, nil
 }
 
 func (f *task11LeaseFake) snapshot() (int, []agent.ExternalToolResult) {
@@ -244,7 +311,7 @@ func TestWorkspaceResumeDispatcher_SucceededOperationBackfillsOriginalToolResult
 	}`, string(got[0].Result))
 }
 
-func TestWorkspaceResumeDispatcher_WaitingDoesNotBackfillAndFailuresBackfillSafely(t *testing.T) {
+func TestWorkspaceResumeDispatcher_WaitingDoesNotBackfillAndFailuresFinalizeSafely(t *testing.T) {
 	for _, state := range []string{
 		model.FeishuOperationWaitingConnection,
 		model.FeishuOperationWaitingAppScope,
@@ -268,10 +335,11 @@ func TestWorkspaceResumeDispatcher_WaitingDoesNotBackfillAndFailuresBackfillSafe
 
 	for _, test := range []struct {
 		state, code, category string
+		outcome               externalaction.TerminalOutcome
 	}{
-		{model.FeishuOperationFailed, feishu.PublicCodeNotFound, "not_found"},
-		{model.FeishuOperationUnknown, feishu.PublicCodeUnknownResult, "unknown_result"},
-		{model.FeishuOperationCancelled, feishu.PublicCodeCancelled, "cancelled"},
+		{model.FeishuOperationFailed, feishu.PublicCodeNotFound, "not_found", externalaction.TerminalOutcomeFailed},
+		{model.FeishuOperationUnknown, feishu.PublicCodeUnknownResult, "unknown_result", externalaction.TerminalOutcomeUnknown},
+		{model.FeishuOperationCancelled, feishu.PublicCodeCancelled, "cancelled", externalaction.TerminalOutcomeCancelled},
 	} {
 		t.Run(test.state, func(t *testing.T) {
 			operationID := "operation-terminal-" + test.state
@@ -283,10 +351,11 @@ func TestWorkspaceResumeDispatcher_WaitingDoesNotBackfillAndFailuresBackfillSafe
 			}}
 			resumer := &dispatcherAgentResumerFake{}
 			require.NoError(t, NewWorkspaceResumeDispatcher(operations, resumer).DispatchResume(context.Background(), 7, operationID))
-			results := resumer.snapshot()
-			require.Len(t, results, 1)
-			require.Contains(t, string(results[0].Result), `"category":"`+test.category+`"`)
-			require.NotContains(t, string(results[0].Result), "must_not")
+			require.Empty(t, resumer.snapshot())
+			require.Equal(t, []dispatcherFinalization{{
+				userID: 7, runID: 42, operationID: operationID,
+				toolCallID: "tool-terminal", outcome: test.outcome,
+			}}, resumer.finalizationSnapshot())
 		})
 	}
 }
@@ -469,4 +538,8 @@ func TestWorkspaceResumeDispatcher_UnknownWriteDoesNotResumeAgentOrReturnInfrast
 
 	require.NoError(t, err)
 	require.Empty(t, resumer.snapshot())
+	require.Equal(t, []dispatcherFinalization{{
+		userID: 7, runID: 236, operationID: operationID,
+		toolCallID: "tool-base-create", outcome: externalaction.TerminalOutcomeUnknown,
+	}}, resumer.finalizationSnapshot())
 }
