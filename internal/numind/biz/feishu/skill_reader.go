@@ -195,8 +195,22 @@ func (r *SkillReader) Read(ctx context.Context, request SkillReadRequest) (*Skil
 	if r == nil || ctx == nil || request.AgentRunID == 0 || !allowedSkill(request.Skill) {
 		return nil, ErrSkillReadInvalid
 	}
-	if request.Reference != "" && !validSkillReference(request.Reference) {
+	if request.Reference != "" && !validSkillReferenceInput(request.Reference) {
 		return nil, ErrSkillReadInvalid
+	}
+
+	var references []string
+	if request.Reference != "" {
+		main, err := r.readResource(ctx, request.Skill, "")
+		if err != nil {
+			return nil, err
+		}
+		references = declaredSkillReferences(main.Content)
+		canonicalReference, ok := resolveSkillReference(main.Content, references, request.Reference)
+		if !ok {
+			return nil, ErrSkillReadInvalid
+		}
+		request.Reference = canonicalReference
 	}
 
 	offset := int64(0)
@@ -213,17 +227,6 @@ func (r *SkillReader) Read(ctx context.Context, request SkillReadRequest) (*Skil
 		expectedDigest = payload.Digest
 	}
 
-	var references []string
-	if request.Reference != "" {
-		main, err := r.readResource(ctx, request.Skill, "")
-		if err != nil {
-			return nil, err
-		}
-		references = declaredSkillReferences(main.Content)
-		if !containsExactString(references, request.Reference) {
-			return nil, ErrSkillReadInvalid
-		}
-	}
 	resource, err := r.readResource(ctx, request.Skill, request.Reference)
 	if err != nil {
 		return nil, err
@@ -439,6 +442,61 @@ func validSkillReference(reference string) bool {
 		return false
 	}
 	return true
+}
+
+// validSkillReferenceInput accepts either one existing canonical references/
+// path or one path-free basename. Basenames are only selectors; Read resolves
+// them against the current skill's declared reference set before any reference
+// resource is opened.
+func validSkillReferenceInput(reference string) bool {
+	return validSkillReference(reference) || validSkillReferenceBasename(reference)
+}
+
+func validSkillReferenceBasename(reference string) bool {
+	if reference == "" || len(reference) > skillReaderMaxPathBytes || !utf8.ValidString(reference) || strings.IndexByte(reference, 0) >= 0 || strings.ContainsAny(reference, `/\`) || reference == "." || reference == ".." {
+		return false
+	}
+	for _, char := range reference {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '-' || char == '_' || char == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// resolveSkillReference maps a safe basename to exactly one reference declared
+// by the current main skill. It never searches another skill or the OS
+// filesystem. Canonical paths retain their exact-match behavior.
+func resolveSkillReference(mainContent string, exposedReferences []string, requested string) (string, bool) {
+	if validSkillReference(requested) {
+		if containsExactString(exposedReferences, requested) {
+			return requested, true
+		}
+		return "", false
+	}
+	if !validSkillReferenceBasename(requested) {
+		return "", false
+	}
+
+	match := ""
+	for _, link := range markdownLinkPattern.FindAllStringSubmatch(mainContent, -1) {
+		if len(link) != 2 || !validSkillReference(link[1]) {
+			continue
+		}
+		reference := link[1]
+		if path.Base(reference) != requested {
+			continue
+		}
+		if match != "" && match != reference {
+			return "", false
+		}
+		match = reference
+	}
+	if match == "" || !containsExactString(exposedReferences, match) {
+		return "", false
+	}
+	return match, true
 }
 
 func declaredSkillReferences(content string) []string {

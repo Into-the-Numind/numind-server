@@ -56,6 +56,161 @@ func TestSkillReader_UsesExactControlledCLIAndDeclaredReferences(t *testing.T) {
 	require.Equal(t, "references/fetch.md", again.References[0])
 }
 
+func TestSkillReader_ResolvesDeclaredReferenceBasename(t *testing.T) {
+	t.Parallel()
+
+	h := newSkillReaderHarness(t, skillReaderOptions{})
+	h.writeResource(
+		"lark-doc",
+		"SKILL.md",
+		"# Doc\n[Update](references/style/lark-doc-update.md)",
+		true,
+	)
+	h.writeResource(
+		"lark-doc",
+		"references/style/lark-doc-update.md",
+		"update reference",
+		false,
+	)
+
+	page, err := h.reader.Read(h.context(), SkillReadRequest{
+		AgentRunID: 224,
+		Skill:      "lark-doc",
+		Reference:  "lark-doc-update.md",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "references/style/lark-doc-update.md", page.Path)
+	require.Equal(t, "update reference", page.Content)
+	require.Equal(t, []string{
+		"HOME=unset|4|skills|read|lark-doc|--json",
+		"HOME=unset|5|skills|read|lark-doc|references/style/lark-doc-update.md|--json",
+	}, h.invocations())
+}
+
+func TestSkillReader_ReferenceBasenameResolutionFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	t.Run("root-level unique basename", func(t *testing.T) {
+		t.Parallel()
+		h := newSkillReaderHarness(t, skillReaderOptions{})
+		h.writeResource("lark-doc", "SKILL.md", "[Fetch](references/fetch.md)", true)
+		h.writeResource("lark-doc", "references/fetch.md", "fetch", false)
+
+		page, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 1, Skill: "lark-doc", Reference: "fetch.md"})
+		require.NoError(t, err)
+		require.Equal(t, "references/fetch.md", page.Path)
+	})
+
+	t.Run("undeclared basename", func(t *testing.T) {
+		t.Parallel()
+		h := newSkillReaderHarness(t, skillReaderOptions{})
+		h.writeResource("lark-doc", "SKILL.md", "[Allowed](references/allowed.md)", true)
+
+		_, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 2, Skill: "lark-doc", Reference: "missing.md"})
+		require.ErrorIs(t, err, ErrSkillReadInvalid)
+		require.Len(t, h.invocations(), 1, "only the fixed main skill may be read to derive the allowlist")
+	})
+
+	t.Run("ambiguous basename", func(t *testing.T) {
+		t.Parallel()
+		h := newSkillReaderHarness(t, skillReaderOptions{})
+		h.writeResource(
+			"lark-doc",
+			"SKILL.md",
+			"[A](references/a/shared.md)\n[B](references/b/shared.md)",
+			true,
+		)
+
+		_, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 3, Skill: "lark-doc", Reference: "shared.md"})
+		require.ErrorIs(t, err, ErrSkillReadInvalid)
+		require.Len(t, h.invocations(), 1, "ambiguity must fail before either reference is opened")
+	})
+
+	t.Run("ambiguous basename hidden beyond metadata cap", func(t *testing.T) {
+		t.Parallel()
+		h := newSkillReaderHarness(t, skillReaderOptions{})
+		var main strings.Builder
+		main.WriteString("[A](references/a/shared.md)\n")
+		for index := 0; index < skillReaderMaxReferences+5; index++ {
+			fmt.Fprintf(&main, "[Middle](references/middle/%03d.md)\n", index)
+		}
+		main.WriteString("[Z](references/z/shared.md)\n")
+		h.writeResource("lark-doc", "SKILL.md", main.String(), true)
+		h.writeResource("lark-doc", "references/a/shared.md", "must not be selected", false)
+
+		_, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 33, Skill: "lark-doc", Reference: "shared.md"})
+		require.ErrorIs(t, err, ErrSkillReadInvalid)
+		require.Len(t, h.invocations(), 1, "a duplicate beyond metadata bounds must still make the basename ambiguous")
+	})
+
+	t.Run("does not search another skill", func(t *testing.T) {
+		t.Parallel()
+		h := newSkillReaderHarness(t, skillReaderOptions{})
+		h.writeResource("lark-doc", "SKILL.md", "[Doc](references/doc.md)", true)
+		h.writeResource("lark-base", "SKILL.md", "[Shared](references/shared.md)", true)
+
+		_, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 4, Skill: "lark-doc", Reference: "shared.md"})
+		require.ErrorIs(t, err, ErrSkillReadInvalid)
+		require.Equal(t, []string{"HOME=unset|4|skills|read|lark-doc|--json"}, h.invocations())
+	})
+}
+
+func TestSkillReader_ReferenceBasenameCursorBindsCanonicalResource(t *testing.T) {
+	t.Parallel()
+
+	h := newSkillReaderHarness(t, skillReaderOptions{pageBytes: 12})
+	h.writeResource(
+		"lark-doc",
+		"SKILL.md",
+		"[Update](references/style/lark-doc-update.md)\n[Other](references/other.md)",
+		true,
+	)
+	h.writeResource("lark-doc", "references/style/lark-doc-update.md", strings.Repeat("update-", 12), false)
+	h.writeResource("lark-doc", "references/other.md", strings.Repeat("other-", 12), false)
+	h.writeResource("lark-base", "SKILL.md", "[Update](references/lark-doc-update.md)", true)
+	h.writeResource("lark-base", "references/lark-doc-update.md", strings.Repeat("base-", 12), false)
+
+	first, err := h.reader.Read(h.context(), SkillReadRequest{
+		AgentRunID: 5,
+		Skill:      "lark-doc",
+		Reference:  "lark-doc-update.md",
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, first.Cursor)
+
+	_, err = h.reader.Read(h.context(), SkillReadRequest{
+		AgentRunID: 5,
+		Skill:      "lark-doc",
+		Reference:  "references/style/lark-doc-update.md",
+		Cursor:     first.Cursor,
+	})
+	require.NoError(t, err, "canonical spelling must continue a shorthand-created cursor")
+
+	_, err = h.reader.Read(h.context(), SkillReadRequest{
+		AgentRunID: 5,
+		Skill:      "lark-doc",
+		Reference:  "lark-doc-update.md",
+		Cursor:     first.Cursor,
+	})
+	require.NoError(t, err, "shorthand spelling must continue its canonical cursor")
+
+	_, err = h.reader.Read(h.context(), SkillReadRequest{
+		AgentRunID: 5,
+		Skill:      "lark-doc",
+		Reference:  "other.md",
+		Cursor:     first.Cursor,
+	})
+	require.ErrorIs(t, err, ErrSkillReadInvalid)
+
+	_, err = h.reader.Read(h.context(), SkillReadRequest{
+		AgentRunID: 5,
+		Skill:      "lark-base",
+		Reference:  "lark-doc-update.md",
+		Cursor:     first.Cursor,
+	})
+	require.ErrorIs(t, err, ErrSkillReadInvalid)
+}
+
 func TestSkillReader_InvalidRequestDoesNotStartCLI(t *testing.T) {
 	t.Parallel()
 
@@ -71,6 +226,11 @@ func TestSkillReader_InvalidRequestDoesNotStartCLI(t *testing.T) {
 		{AgentRunID: 1, Skill: "lark-doc", Reference: "references//x.md"},
 		{AgentRunID: 1, Skill: "lark-doc", Reference: "./references/x.md"},
 		{AgentRunID: 1, Skill: "lark-doc", Reference: "references/x\x00.md"},
+		{AgentRunID: 1, Skill: "lark-doc", Reference: "nested/x.md"},
+		{AgentRunID: 1, Skill: "lark-doc", Reference: `x\y.md`},
+		{AgentRunID: 1, Skill: "lark-doc", Reference: "x\x00.md"},
+		{AgentRunID: 1, Skill: "lark-doc", Reference: "更新.md"},
+		{AgentRunID: 1, Skill: "lark-doc", Reference: strings.Repeat("x", skillReaderMaxPathBytes+1)},
 		{AgentRunID: 1, Skill: "lark-doc", Cursor: "malformed"},
 	}
 	for _, request := range tests {
@@ -189,7 +349,9 @@ func TestSkillReader_PaginationUTF8DriftAndReceiptBinding(t *testing.T) {
 	require.Len(t, h.invocations(), before, "cursor bound to another skill must fail before CLI start")
 	_, err = h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 90, Skill: "lark-doc", Reference: "references/fetch.md", Cursor: first.Cursor})
 	require.Error(t, err)
-	require.Len(t, h.invocations(), before, "cursor bound to main cannot be reused for a reference")
+	require.Len(t, h.invocations(), before+1, "reference resolution may read only the fixed main skill before rejection")
+	require.Equal(t, "HOME=unset|4|skills|read|lark-doc|--json", h.invocations()[before])
+	before = len(h.invocations())
 	tamperedCursor := tamperSkillToken(first.Cursor)
 	_, err = h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 90, Skill: "lark-doc", Cursor: tamperedCursor})
 	require.Error(t, err)
