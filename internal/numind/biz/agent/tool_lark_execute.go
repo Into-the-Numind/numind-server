@@ -60,11 +60,6 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 	if t == nil || t.executor == nil || ctx == nil {
 		return larkWorkspaceSoftError(larkWorkspaceErrorUnavailable)
 	}
-	decoded, err := decodeLarkExecuteInput(input)
-	if err != nil {
-		return larkWorkspaceSoftError(larkWorkspaceErrorInvalidExecuteInput)
-	}
-
 	userID, ok := middleware.UserIDFromCtx(ctx)
 	runID := RunIDFromContext(ctx)
 	toolCallID := ToolCallIDFromContext(ctx)
@@ -77,6 +72,13 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 			return larkWorkspaceSoftError(larkWorkspaceErrorExecuteStopped)
 		}
 		return larkWorkspaceSoftError(larkWorkspaceErrorExecuteRetryExhausted)
+	}
+	decoded, err := decodeLarkExecuteInput(input)
+	if err != nil {
+		if larkExecuteRetryRejected(retryState, retryAttempt) {
+			return larkWorkspaceSoftError(larkWorkspaceErrorExecuteRetryExhausted)
+		}
+		return larkWorkspaceSoftError(larkWorkspaceErrorInvalidExecuteInput)
 	}
 
 	result, err := t.executor.Execute(ctx, feishu.ExecuteRequest{
