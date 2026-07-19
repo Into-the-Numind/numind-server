@@ -4,11 +4,11 @@ features:
   ndf_version: '3.0'
   description: Resolve safe shorthand names for declared lark-cli skill references without exposing raw paths or weakening the embedded-resource boundary.
   classification_reason: 'Standard: no schema/API/new integration change and a small file set, but this changes the security boundary for controlled Agent-readable internal resources.'
-  last_updated_by: ai-s0-requirement
-  last_updated_at: '2026-07-19T11:14:00+08:00'
+  last_updated_by: ai-s1-proposal
+  last_updated_at: '2026-07-19T11:19:00+08:00'
   created_at: '2026-07-19T11:10:53+08:00'
   track: standard
-  stage: S0
+  stage: S1
   status: active
   repos: [numind-server]
   branches: {numind-server: feature/lark-skill-reference-resolution}
@@ -16,8 +16,10 @@ features:
   progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
   artifacts:
     requirement: requirements/lark-skill-reference-resolution.md
+    proposal: proposals/lark-skill-reference-resolution-proposal.md
   decisions:
   - 'S0: customer confirmed the platform must preserve the declared-reference allowlist while removing the requirement that the Agent spell the complete internal references/... path. The customer authorized a fast Standard through Dev deployment.'
+  - 'S1: selected unique basename resolution inside the current skill declared-reference set. Removing validation is unsafe; a separate stable reference-ID registry is unnecessary for this focused repair.'
   blockers: []
 
 - id: feishu-scope-preflight-null
