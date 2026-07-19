@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"numind-server/internal/numind/biz/agent/stream"
+	"numind-server/internal/numind/biz/feishu"
 	"numind-server/internal/numind/biz/narration"
 	"numind-server/internal/pkg/log"
 )
@@ -224,6 +225,23 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 	} else if effectiveErr != nil {
 		a.emitNarration(ctx, narration.StateError, toolCallID, input, nil, effectiveErr, "", "")
 		a.emitStreamToolError(ctx, toolCallID, effectiveErr, durationMs, false)
+	} else if failure, isLarkFailure := larkTerminalFailure(a.ft.Name(), output); isLarkFailure {
+		// lark_execute returns its redacted terminal business envelope to the model
+		// with a nil Go error so the Agent can explain the result or perform the one
+		// server-authorized transient retry. It is still NOT a successful tool call:
+		// unknown writes and hard failures must never become a green checkmark.
+		if sd := SoftDenyFromCtx(ctx); sd != nil {
+			sd.OnSuccess()
+		}
+		if failure.Retryable {
+			retryErr := errors.New("飞书工作区暂时不可用，正在安全重试")
+			a.emitNarration(ctx, narration.StateProgress, toolCallID, input, nil, retryErr, "", "正在重试飞书操作")
+			a.emitStreamToolError(ctx, toolCallID, retryErr, durationMs, true)
+		} else {
+			terminalErr := errors.New("飞书工作区操作未完成")
+			a.emitNarration(ctx, narration.StateError, toolCallID, input, nil, terminalErr, "", "")
+			a.emitStreamToolError(ctx, toolCallID, terminalErr, durationMs, false)
+		}
 	} else if softInfo, isSoft := softToolErrorInfo(output); isSoft {
 		// SOFT ERROR: nil Go error, but the JSON body carries the "ERROR: " contract
 		// (softToolError / each tool's returnSoftError) — e.g. an image_gen timeout.
@@ -271,6 +289,13 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 		return output, effectiveErr
 	}
 	return output, nil
+}
+
+func larkTerminalFailure(toolName, output string) (*feishu.OperationFailure, bool) {
+	if toolName != "lark_execute" {
+		return nil, false
+	}
+	return feishu.DecodeLarkTerminalFailure(json.RawMessage(output))
 }
 
 // invokeToolGuarded runs the underlying tool's Execute with a panic guard. A panic
