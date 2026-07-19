@@ -4,16 +4,16 @@ features:
   ndf_version: '3.0'
   description: Move Feishu execution identity, policy, recovery, and retry decisions behind the trusted platform boundary so every Agent can use stable business argv without model-carried receipts.
   classification_reason: 'Standard: no schema/API/new integration change, but this alters the high-risk Feishu authorization boundary and user-visible Agent recovery behavior across backend and frontend.'
-  last_updated_by: ai-s3-plan
-  last_updated_at: '2026-07-19T13:23:00+08:00'
+  last_updated_by: ai-s4-implementation
+  last_updated_at: '2026-07-19T13:10:00+08:00'
   created_at: '2026-07-19T12:43:19+08:00'
   track: standard
-  stage: S3
+  stage: S4
   status: active
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/lark-stable-execution, numind-web-v3: feature/lark-stable-execution}
   worktrees: {numind-server: /private/tmp/wt-lark-stable-execution-numind-server, numind-web-v3: /private/tmp/wt-lark-stable-execution-numind-web-v3}
-  progress: {total_tasks: 6, completed_tasks: 0, reviewed_tasks: 0}
+  progress: {total_tasks: 6, completed_tasks: 4, reviewed_tasks: 0}
   artifacts:
     requirement: requirements/lark-stable-execution.md
     proposal: proposals/lark-stable-execution-proposal.md
@@ -25,6 +25,9 @@ features:
   - 'S1: selected the complete platform-owned execution contract. A receipt-only patch leaves misleading errors; a process-local receipt cache fails multi-instance/restart stability. Legacy receipt fields are compatibility-only and no longer authorize execution.'
   - 'S2: model-facing execute/inspect schemas carry only business intent; legacy receipt fields are accepted but ignored. Catalog/current-user/scope/confirmation/idempotency remain authoritative. Explicit recoverable soft errors become progress, while real and unknown-write failures remain terminal red errors.'
   - 'S3: six serial TDD tasks lock customer REDs in both repositories, platform-owned execution, structured recoverability, frontend truthful states, full security/quality gates, atomic merge, and backend-first Dev deployment.'
+  - 'S4 Task 1 RED: missing and malformed model-carried receipts fail before reaching the Feishu executor, permanently reproducing the customer instability.'
+  - 'S4 Tasks 2-3 GREEN: execute/inspect now accept business intent only while trusted current-user, catalog, scope, confirmation and idempotency controls remain authoritative. Legacy receipt fields are accepted but ignored, and explicit recoverable corrections carry a fixed code plus recoverable metadata.'
+  - 'S4 Task 4 RED/GREEN: Playwright reproduced a completed run that still showed a red execution error. Vue now maps recoverable corrections to progress, keeps real errors red, and the browser acceptance ends successfully with no false error.'
   blockers: []
 
 - id: lark-skill-reference-resolution
