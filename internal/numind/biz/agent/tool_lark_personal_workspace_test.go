@@ -395,6 +395,52 @@ func TestLarkPersonalWorkspace_ExecuteDerivesTenantAndIdempotencyFromContext(t *
 	_ = second
 }
 
+// Customer regression (Dev run 226): lark_skill_read succeeded, then the Agent
+// copied the long model-visible receipt incorrectly twice. Both lark_execute
+// calls were rejected before an operation existed, even though the business argv
+// was valid. Receipts are not user auth or command policy and must not be carried
+// by the model; the trusted platform derives those controls from context+catalog.
+func TestLarkExecuteDoesNotRequireModelCarriedReceipts(t *testing.T) {
+	executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+		OperationID: "op-search",
+		State:       model.FeishuOperationSucceeded,
+		Data:        json.RawMessage(`{"items":[]}`),
+	}}
+	tool := &larkExecuteTool{executor: executor}
+	argv := `["drive","+search","--query","有数飞书二次连接测试","--only-title","--doc-types","docx,wiki,bitable"]`
+
+	withoutReceipt, err := tool.Execute(
+		larkPersonalWorkspaceContext(21, 226, "search-without-receipt"),
+		ToolInput(`{"argv":`+argv+`}`),
+	)
+	require.NoError(t, err)
+	assert.NotContains(t, string(withoutReceipt), "ERROR")
+
+	legacyMalformedReceipt, err := tool.Execute(
+		larkPersonalWorkspaceContext(21, 227, "search-legacy-receipt"),
+		ToolInput(`{"argv":`+argv+`,"skill_receipts":{"copied":"incorrectly"}}`),
+	)
+	require.NoError(t, err)
+	assert.NotContains(t, string(legacyMalformedReceipt), "ERROR")
+
+	requests := executor.snapshot()
+	require.Len(t, requests, 2, "both valid business commands must reach the trusted executor")
+	assert.Equal(t, requests[0].Argv, requests[1].Argv)
+	assert.Empty(t, requests[0].SkillReceipts)
+	assert.Empty(t, requests[1].SkillReceipts, "legacy receipt values are compatibility-only")
+
+	schema := string(tool.InputSchema())
+	assert.NotContains(t, schema, "skill_receipts", "new model calls must not see an internal receipt field")
+	assert.Contains(t, schema, `"required":["argv"]`)
+
+	injected, err := tool.Execute(
+		larkPersonalWorkspaceContext(21, 228, "identity-injection"),
+		ToolInput(`{"argv":["docs","+fetch","--doc","doc-1"],"user_id":99}`),
+	)
+	requireSafeLarkSoftError(t, injected, err)
+	assert.Len(t, executor.snapshot(), 2, "identity injection must still fail before the executor")
+}
+
 // Customer regression (Dev run 199): the official embedded lark skills show
 // complete commands beginning with `lark-cli`, so the model naturally preserves
 // that executable token in argv. The hosted tool boundary must accept exactly
