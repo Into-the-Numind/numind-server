@@ -237,7 +237,7 @@ func TestLarkPersonalWorkspace_SkillReadSuccessUsesOnlyRunContext(t *testing.T) 
 // field, not a model decision. New schemas must hide it, and a rejected skill
 // input must be a recoverable correction rather than a terminal red failure.
 func TestLarkPersonalWorkspace_SkillReadCursorIsCompatibilityOnlyAndInvalidIsRecoverable(t *testing.T) {
-	executor := &fakeSkillReadExecutor{err: feishu.ErrSkillReadInvalid}
+	executor := &fakeSkillReadExecutor{err: fmt.Errorf("wrapped invalid skill input: %w", feishu.ErrSkillReadInvalid)}
 	tool := &larkSkillReadTool{executor: executor}
 
 	schema := string(tool.InputSchema())
@@ -417,6 +417,24 @@ func TestLarkPersonalWorkspace_SkillReadRejectsOversizedEscapedEnvelope(t *testi
 		ToolInput(`{"skill":"lark-doc"}`),
 	)
 	requireSafeLarkSoftError(t, result, err, content[:1024])
+	assert.Contains(t, string(result), `"code":"skill_read_unavailable"`)
+	assert.NotContains(t, string(result), `"cursor"`)
+	assert.Len(t, executor.snapshot(), 1)
+}
+
+func TestLarkPersonalWorkspace_SkillReadRejectsOversizedReferencesEnvelope(t *testing.T) {
+	content := "tiny-content-must-not-leak"
+	reference := "reference-must-not-leak-" + strings.Repeat("R", larkSkillReadAtomicOutputLimit)
+	executor := &fakeSkillReadExecutor{result: &feishu.SkillReadPage{
+		Skill: "lark-doc", Path: "SKILL.md", Content: content,
+		References: []string{reference},
+	}}
+
+	result, err := (&larkSkillReadTool{executor: executor}).Execute(
+		WithRunID(context.Background(), 237),
+		ToolInput(`{"skill":"lark-doc"}`),
+	)
+	requireSafeLarkSoftError(t, result, err, content, "reference-must-not-leak", reference[:1024])
 	assert.Contains(t, string(result), `"code":"skill_read_unavailable"`)
 	assert.NotContains(t, string(result), `"cursor"`)
 	assert.Len(t, executor.snapshot(), 1)

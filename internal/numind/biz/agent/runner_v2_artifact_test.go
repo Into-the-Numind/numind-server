@@ -302,6 +302,25 @@ func TestWrapToolWithV2ArtifactProcessing_OversizedTrustedSkillFailsClosed(t *te
 	assert.Empty(t, rows)
 }
 
+func TestBoundedAtomicSkillTool_OversizedInnerOutputFailsClosed(t *testing.T) {
+	secretMarker := "wrapper-secret-must-not-leak"
+	inner := &mockInvokableTool{
+		name: "lark_skill_read",
+		out:  secretMarker + strings.Repeat("O", larkSkillReadAtomicOutputLimit),
+	}
+	wrapped := &boundedAtomicSkillTool{inner: inner}
+
+	out, err := wrapped.InvokableRun(context.Background(), `{}`)
+
+	require.NoError(t, err)
+	assert.Contains(t, out, `"code":"skill_read_unavailable"`)
+	assert.Contains(t, out, "读取飞书技能暂时失败")
+	assert.NotContains(t, out, secretMarker)
+	assert.NotContains(t, out, `<persisted-output`)
+	assert.LessOrEqual(t, len(out), larkSkillReadAtomicOutputLimit)
+	assert.Equal(t, 1, inner.invoked)
+}
+
 // TestWrapToolWithV2ArtifactProcessing_InnerToolError_Passthrough — case 3
 // 内层工具返回 error → wrapper 透传 error，不调 ProcessToolResult。
 func TestWrapToolWithV2ArtifactProcessing_InnerToolError_Passthrough(t *testing.T) {
