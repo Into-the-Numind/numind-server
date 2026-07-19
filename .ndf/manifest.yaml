@@ -4,11 +4,11 @@ features:
   ndf_version: '3.0'
   description: Move Feishu execution identity, policy, recovery, and retry decisions behind the trusted platform boundary so every Agent can use stable business argv without model-carried receipts.
   classification_reason: 'Standard: no schema/API/new integration change, but this alters the high-risk Feishu authorization boundary and user-visible Agent recovery behavior across backend and frontend.'
-  last_updated_by: ai-s2-design
-  last_updated_at: '2026-07-19T13:15:00+08:00'
+  last_updated_by: ai-s3-plan
+  last_updated_at: '2026-07-19T13:23:00+08:00'
   created_at: '2026-07-19T12:43:19+08:00'
   track: standard
-  stage: S2
+  stage: S3
   status: active
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/lark-stable-execution, numind-web-v3: feature/lark-stable-execution}
@@ -24,6 +24,7 @@ features:
   - 'S0: customer confirmed the platform supports many user-created Agents, all using the current user own Feishu account. The chosen direction is Agent intent plus platform-owned identity, policy, permission, recovery, and idempotency; fast Standard is authorized through Dev.'
   - 'S1: selected the complete platform-owned execution contract. A receipt-only patch leaves misleading errors; a process-local receipt cache fails multi-instance/restart stability. Legacy receipt fields are compatibility-only and no longer authorize execution.'
   - 'S2: model-facing execute/inspect schemas carry only business intent; legacy receipt fields are accepted but ignored. Catalog/current-user/scope/confirmation/idempotency remain authoritative. Explicit recoverable soft errors become progress, while real and unknown-write failures remain terminal red errors.'
+  - 'S3: six serial TDD tasks lock customer REDs in both repositories, platform-owned execution, structured recoverability, frontend truthful states, full security/quality gates, atomic merge, and backend-first Dev deployment.'
   blockers: []
 
 - id: lark-skill-reference-resolution
