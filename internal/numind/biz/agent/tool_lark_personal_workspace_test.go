@@ -467,6 +467,7 @@ func TestLarkPersonalWorkspace_ExecuteAcceptsOfficialLarkCLIPrefix(t *testing.T)
 }
 
 func TestLarkPersonalWorkspace_ExecuteRejectsUntrustedIdentityAndStrictJSON(t *testing.T) {
+	nextRunID := uint64(7000)
 	for name, input := range map[string]string{
 		"user id":           `{"argv":["docs"],"skill_receipts":["r"],"user_id":99}`,
 		"run id":            `{"argv":["docs"],"skill_receipts":["r"],"run_id":99}`,
@@ -485,10 +486,16 @@ func TestLarkPersonalWorkspace_ExecuteRejectsUntrustedIdentityAndStrictJSON(t *t
 		"empty argv":        `{"argv":[],"skill_receipts":["r"]}`,
 		"prefix only":       `{"argv":["lark-cli"],"skill_receipts":["r"]}`,
 	} {
+		runID := nextRunID
+		nextRunID++
 		t.Run(name, func(t *testing.T) {
+			larkExecuteRetryClearRun(runID)
+			t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
 			executor := &fakeLarkExecutor{}
-			result, err := (&larkExecuteTool{executor: executor}).Execute(larkPersonalWorkspaceContext(7, 8, "tc-8"), ToolInput(input))
+			result, err := (&larkExecuteTool{executor: executor}).Execute(larkPersonalWorkspaceContext(7, runID, "tc-8"), ToolInput(input))
 			requireSafeLarkSoftError(t, result, err, "evil", "secret", "/tmp/x")
+			require.Contains(t, string(result), `"code":"invalid_execute_input"`)
+			require.Contains(t, string(result), `"recoverable":true`)
 			assert.Empty(t, executor.snapshot(), "rejected model input must never reach the operation executor")
 		})
 	}
@@ -610,6 +617,9 @@ func TestLarkPersonalWorkspace_ExecuteReloadedActionWithoutURLStillYields(t *tes
 }
 
 func TestLarkPersonalWorkspace_ExecuteInvalidWaitingAndExecutorErrorsAreSafe(t *testing.T) {
+	const runID = uint64(8)
+	larkExecuteRetryClearRun(runID)
+	t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
 	invalidWaiting := &fakeLarkExecutor{result: &feishu.OperationResult{
 		OperationID: "op-sensitive",
 		State:       model.FeishuOperationWaitingUserAuth,
@@ -619,7 +629,7 @@ func TestLarkPersonalWorkspace_ExecuteInvalidWaitingAndExecutorErrorsAreSafe(t *
 		},
 	}}
 	result, err := (&larkExecuteTool{executor: invalidWaiting}).Execute(
-		larkPersonalWorkspaceContext(7, 8, "tc-8"),
+		larkPersonalWorkspaceContext(7, runID, "tc-8"),
 		ToolInput(`{"argv":["docs","+fetch"],"skill_receipts":["secret-receipt"]}`),
 	)
 	requireSafeLarkSoftError(t, result, err, "op-sensitive", "secret.example", "secret-receipt", "+fetch")
@@ -629,7 +639,7 @@ func TestLarkPersonalWorkspace_ExecuteInvalidWaitingAndExecutorErrorsAreSafe(t *
 	internalErr := errors.New("runner leaked argv docs +fetch receipt-raw at /private/home")
 	failing := &fakeLarkExecutor{err: internalErr}
 	result, err = (&larkExecuteTool{executor: failing}).Execute(
-		larkPersonalWorkspaceContext(7, 8, "tc-8"),
+		larkPersonalWorkspaceContext(7, runID, "tc-8"),
 		ToolInput(`{"argv":["docs","+fetch"],"skill_receipts":["receipt-raw"]}`),
 	)
 	requireSafeLarkSoftError(t, result, err, internalErr.Error(), "receipt-raw", "+fetch", "/private/home")
