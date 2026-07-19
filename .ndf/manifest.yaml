@@ -4,11 +4,11 @@ features:
   ndf_version: '3.0'
   description: Simplify the Agent runtime UI and make the sole input stop control cancel the actual run as well as the browser stream.
   classification_reason: 'Standard: no schema/API/integration change, but more than three frontend source and regression files change and the Agent run cancellation contract must be preserved.'
-  last_updated_by: ai-s1-proposal
-  last_updated_at: '2026-07-19T21:52:00+08:00'
+  last_updated_by: ai-s2-design
+  last_updated_at: '2026-07-19T22:05:00+08:00'
   created_at: '2026-07-19T21:46:53+08:00'
   track: standard
-  stage: S1
+  stage: S2
   status: active
   repos: [numind-web-v3]
   branches: {numind-web-v3: feature/agent-runtime-ui-simplify}
@@ -17,12 +17,13 @@ features:
   artifacts:
     requirement: requirements/agent-runtime-ui-simplify.md
     proposal: proposals/agent-runtime-ui-simplify-proposal.md
-    spec: null
+    spec: docs/superpowers/specs/2026-07-19-agent-runtime-ui-simplify-design.md
     plan: null
     qa: null
   decisions:
   - 'S0: User authorized fast Standard through Dev. The input stop control must abort the local SSE and call the existing run-cancel API before the redundant header cancel button is removed. Input estimate display is hidden only; backend billing and reconciliation semantics are unchanged.'
   - 'S1: Chosen scope keeps one input stop control, combining existing client SSE abort and existing server run cancellation. No new endpoint, billing rule, or permission rule is introduced. The existing stale streaming E2E is replaced with a real button and cancel-request assertion.'
+  - 'S2: Rejected abort-only and dual-button variants. The one input stop control invokes the existing run-cancel API plus client stream cleanup. It remains disabled until stream_start establishes a trustworthy run ID; cancellation failure never fabricates a cancelled state. User pre-authorized this locked design through Dev.'
   blockers: []
 
 - id: lark-skill-reader-tolerance
