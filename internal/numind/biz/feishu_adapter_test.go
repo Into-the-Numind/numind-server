@@ -386,6 +386,48 @@ func TestProductionDeviceAuthObserver_DropsNonCanonicalIdentifiers(t *testing.T)
 	require.Equal(t, 2, entries, "empty identifiers and canonical UUIDs remain observable")
 }
 
+func TestProductionOperationObserver_AllowsOnlyFixedCredentialFreeFields(t *testing.T) {
+	type logEntry struct {
+		message string
+		fields  []interface{}
+	}
+	var entries []logEntry
+	observer := productionOperationObserver{sink: func(message string, fields ...interface{}) {
+		entries = append(entries, logEntry{message: message, fields: append([]interface{}(nil), fields...)})
+	}}
+	operationID := "00000000-0000-4000-8000-000000000027"
+	valid := feishu.OperationObservation{
+		UserID: 7, Generation: 3, OperationID: operationID,
+		Phase: "invoke", OutcomeClass: feishu.PublicCodeValidationError, Risk: feishu.RiskWrite,
+		InvocationStarted: true, ExitCode: 1, CLIVersion: feishu.LarkCLIVersion, Duration: 5 * time.Second,
+	}
+	observer.ObserveOperation(valid)
+
+	invalidOutcome := valid
+	invalidOutcome.OutcomeClass = "token-private-value"
+	observer.ObserveOperation(invalidOutcome)
+	invalidID := valid
+	invalidID.OperationID = "private Base content"
+	observer.ObserveOperation(invalidID)
+	invalidVersion := valid
+	invalidVersion.CLIVersion = "private-cli-output"
+	observer.ObserveOperation(invalidVersion)
+
+	require.Len(t, entries, 1)
+	require.Equal(t, "feishu business operation", entries[0].message)
+	require.Equal(t, []interface{}{
+		"user_id", uint(7), "generation", uint64(3), "operation_id", operationID,
+		"phase", "invoke", "outcome_class", feishu.PublicCodeValidationError,
+		"risk", feishu.RiskWrite, "invocation_started", true, "exit_code", 1,
+		"cli_version", feishu.LarkCLIVersion, "duration", 5 * time.Second,
+	}, entries[0].fields)
+	flattened, err := json.Marshal(entries)
+	require.NoError(t, err)
+	require.NotContains(t, string(flattened), "token-private-value")
+	require.NotContains(t, string(flattened), "private Base content")
+	require.NotContains(t, string(flattened), "private-cli-output")
+}
+
 func TestBuildFeishuService_KeyRotationReadsHistoricalVault(t *testing.T) {
 	deps := newFeishuCompositionDeps(t)
 	deps.keyVersion = "v2"

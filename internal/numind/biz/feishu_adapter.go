@@ -93,6 +93,62 @@ type feishuCompositionDeps struct {
 
 type deviceAuthObservationSink func(string, ...interface{})
 
+type operationObservationSink func(string, ...interface{})
+
+type productionOperationObserver struct {
+	sink operationObservationSink
+}
+
+func newProductionOperationObserver() productionOperationObserver {
+	return productionOperationObserver{sink: log.Infow}
+}
+
+func (o productionOperationObserver) ObserveOperation(event feishu.OperationObservation) {
+	if o.sink == nil || event.UserID == 0 || event.Generation == 0 ||
+		!validDeviceAuthObservationID(event.OperationID) || event.OperationID == "" ||
+		event.Phase != "invoke" || !validOperationObservationOutcome(event.OutcomeClass) ||
+		!validOperationObservationRisk(event.Risk) ||
+		(event.CLIVersion != "" && event.CLIVersion != feishu.LarkCLIVersion) ||
+		event.ExitCode < -1 || event.ExitCode > 255 {
+		return
+	}
+	duration := event.Duration
+	if duration < 0 {
+		duration = 0
+	}
+	o.sink("feishu business operation",
+		"user_id", event.UserID,
+		"generation", event.Generation,
+		"operation_id", event.OperationID,
+		"phase", event.Phase,
+		"outcome_class", event.OutcomeClass,
+		"risk", event.Risk,
+		"invocation_started", event.InvocationStarted,
+		"exit_code", event.ExitCode,
+		"cli_version", event.CLIVersion,
+		"duration", duration,
+	)
+}
+
+func validOperationObservationRisk(risk feishu.RiskLevel) bool {
+	return risk == feishu.RiskRead || risk == feishu.RiskWrite || risk == feishu.RiskHigh
+}
+
+func validOperationObservationOutcome(outcome string) bool {
+	switch outcome {
+	case "succeeded",
+		feishu.PublicCodeConnectionRequired, feishu.PublicCodeScopeRequired,
+		feishu.PublicCodeReauthRequired, feishu.PublicCodeResourceDenied,
+		feishu.PublicCodeRateLimited, feishu.PublicCodeTemporaryError,
+		feishu.PublicCodeValidationError, feishu.PublicCodeNotFound,
+		feishu.PublicCodeUnknownResult, feishu.PublicCodeFailed,
+		feishu.PublicCodeCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
 // productionDeviceAuthObserver is the only bridge from device authorization
 // observations to the application logger. It validates every enum-like field
 // again at the sink boundary so future callers cannot turn the telemetry seam
@@ -274,6 +330,7 @@ func buildFeishuService(deps feishuCompositionDeps) (*feishuPersonalWorkspace, e
 		Runner:             runner,
 		Cipher:             operationCipher,
 		VerifiedCLIVersion: feishu.LarkCLIVersion,
+		Observer:           newProductionOperationObserver(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("feishu: build operation service: %w", err)
