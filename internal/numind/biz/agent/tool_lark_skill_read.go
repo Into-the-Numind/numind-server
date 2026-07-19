@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 
 	"numind-server/internal/numind/biz/feishu"
@@ -25,9 +26,9 @@ var _ FullTool = (*larkSkillReadTool)(nil)
 
 func (t *larkSkillReadTool) Name() string { return "lark_skill_read" }
 func (t *larkSkillReadTool) Description() string {
-	return "Read only the five official embedded lark-cli skills (lark-shared, lark-doc, " +
-		"lark-base, lark-wiki, lark-drive) through a controlled reference/cursor. No raw path, user identity, " +
-		"connection, or credential is accepted."
+	return "Read complete instructions from only the five official embedded lark-cli skills (lark-shared, " +
+		"lark-doc, lark-base, lark-wiki, lark-drive). Select the skill and an optional controlled reference; " +
+		"the platform handles pagination. No raw path, user identity, connection, or credential is accepted."
 }
 func (t *larkSkillReadTool) UserFacingName() string { return "读取飞书技能" }
 func (t *larkSkillReadTool) NarrationVerb() string  { return "读取飞书技能" }
@@ -42,8 +43,7 @@ func (t *larkSkillReadTool) InputSchema() json.RawMessage {
 		"type":"object",
 		"properties":{
 			"skill":{"type":"string","enum":["lark-shared","lark-doc","lark-base","lark-wiki","lark-drive"]},
-			"reference":{"type":"string","description":"Controlled reference returned by a prior skill page."},
-			"cursor":{"type":"string","description":"Opaque cursor returned by a prior skill page."}
+			"reference":{"type":"string","description":"Optional reference declared by the selected skill; a unique Markdown filename is accepted."}
 		},
 		"required":["skill"],
 		"additionalProperties":false
@@ -57,9 +57,10 @@ type larkSkillReadOutput struct {
 	HostedPolicy string   `json:"hosted_policy"`
 	Content      string   `json:"content"`
 	References   []string `json:"references"`
-	Cursor       string   `json:"cursor"`
 	CLIVersion   string   `json:"cli_version"`
 }
+
+const larkSkillReadMaxPages = 2
 
 const larkHostedExecutionPolicy = "有数托管规则（优先于下方针对本地电脑的 CLI 说明）：" +
 	"不要执行 auth/config/whoami/qrcode，也不要要求用户提供 App ID/App Secret。" +
@@ -96,24 +97,58 @@ func (t *larkSkillReadTool) Execute(ctx context.Context, input ToolInput) (ToolR
 		return larkWorkspaceSoftError(larkWorkspaceErrorInvalidSkillInput)
 	}
 
-	page, err := t.executor.Read(ctx, request)
-	if err != nil || page == nil {
-		return larkWorkspaceSoftError(larkWorkspaceErrorSkillRead)
+	var (
+		resultSkill      string
+		resultPath       string
+		resultReferences []string
+		content          strings.Builder
+		seenCursors      = make(map[string]struct{}, larkSkillReadMaxPages)
+	)
+	for pageIndex := 0; pageIndex < larkSkillReadMaxPages; pageIndex++ {
+		page, readErr := t.executor.Read(ctx, request)
+		if readErr != nil || page == nil {
+			if pageIndex == 0 && errors.Is(readErr, feishu.ErrSkillReadInvalid) {
+				return larkWorkspaceSoftError(larkWorkspaceErrorInvalidSkillInput)
+			}
+			return larkWorkspaceSoftError(larkWorkspaceErrorSkillRead)
+		}
+		if pageIndex == 0 {
+			if page.Skill != request.Skill {
+				return larkWorkspaceSoftError(larkWorkspaceErrorSkillRead)
+			}
+			resultSkill = page.Skill
+			resultPath = page.Path
+			resultReferences = append([]string(nil), page.References...)
+		} else if page.Skill != resultSkill || page.Path != resultPath || !slices.Equal(page.References, resultReferences) {
+			return larkWorkspaceSoftError(larkWorkspaceErrorSkillRead)
+		}
+
+		_, _ = content.WriteString(page.Content)
+		output, marshalErr := json.Marshal(larkSkillReadOutput{
+			OK:           true,
+			Skill:        resultSkill,
+			Path:         resultPath,
+			HostedPolicy: larkHostedExecutionPolicy,
+			Content:      content.String(),
+			References:   append([]string(nil), resultReferences...),
+			CLIVersion:   feishu.LarkCLIVersion,
+		})
+		if marshalErr != nil || len(output) > larkSkillReadAtomicOutputLimit {
+			return larkWorkspaceSoftError(larkWorkspaceErrorSkillRead)
+		}
+		if page.Cursor == "" {
+			return ToolResult(output), nil
+		}
+		if _, duplicate := seenCursors[page.Cursor]; duplicate || pageIndex+1 >= larkSkillReadMaxPages {
+			return larkWorkspaceSoftError(larkWorkspaceErrorSkillRead)
+		}
+		seenCursors[page.Cursor] = struct{}{}
+		request.Cursor = page.Cursor
+		if request.Reference == "" && page.Path != "SKILL.md" {
+			request.Reference = page.Path
+		}
 	}
-	output, err := json.Marshal(larkSkillReadOutput{
-		OK:           true,
-		Skill:        page.Skill,
-		Path:         page.Path,
-		HostedPolicy: larkHostedExecutionPolicy,
-		Content:      page.Content,
-		References:   append([]string(nil), page.References...),
-		Cursor:       page.Cursor,
-		CLIVersion:   feishu.LarkCLIVersion,
-	})
-	if err != nil {
-		return larkWorkspaceSoftError(larkWorkspaceErrorSkillRead)
-	}
-	return ToolResult(output), nil
+	return larkWorkspaceSoftError(larkWorkspaceErrorSkillRead)
 }
 
 type larkWorkspaceErrorCode uint8
@@ -145,7 +180,7 @@ func larkWorkspaceSoftError(code larkWorkspaceErrorCode) (ToolResult, error) {
 	retryable := false
 	switch code {
 	case larkWorkspaceErrorInvalidSkillInput:
-		message = "飞书技能参数无效，请仅使用 skill、reference、cursor。"
+		message = "飞书技能参数无效，请重新选择 skill 或当前技能声明的 reference。"
 		publicCode, recoverable = "invalid_skill_input", true
 	case larkWorkspaceErrorSkillRead:
 		message = "读取飞书技能暂时失败，请稍后重试。"
