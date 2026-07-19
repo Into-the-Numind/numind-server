@@ -915,6 +915,54 @@ func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *tes
 		requireSafeLarkSoftError(t, blocked, err)
 		require.Len(t, executor.snapshot(), 3)
 	})
+
+	for _, testCase := range []struct {
+		name     string
+		runID    uint64
+		failure  *feishu.OperationFailure
+		category string
+	}{
+		{
+			name: "second validation exhausts correction budget", runID: 813, category: "validation",
+			failure: &feishu.OperationFailure{
+				Code: feishu.PublicCodeValidationError, Category: "validation", BusinessStarted: false,
+			},
+		},
+		{
+			name: "second temporary failure exhausts retry budget", runID: 814, category: "temporary",
+			failure: &feishu.OperationFailure{
+				Code: feishu.PublicCodeTemporaryError, Category: "temporary", Retryable: true, BusinessStarted: false,
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			larkExecuteRetryClearRun(testCase.runID)
+			t.Cleanup(func() { larkExecuteRetryClearRun(testCase.runID) })
+			executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+				OperationID: "op-first-" + testCase.category,
+				State:       model.FeishuOperationFailed,
+				Failure:     testCase.failure,
+			}}
+			tool := &larkExecuteTool{executor: executor}
+			first, err := tool.Execute(
+				larkPersonalWorkspaceContext(7, testCase.runID, "first-"+testCase.category),
+				ToolInput(`{"argv":["docs","+fetch","--doc","first"]}`),
+			)
+			require.NoError(t, err)
+			require.Contains(t, string(first), `"category":"`+testCase.category+`"`)
+
+			executor.mu.Lock()
+			executor.result.OperationID = "op-second-" + testCase.category
+			executor.mu.Unlock()
+			second, err := tool.Execute(
+				larkPersonalWorkspaceContext(7, testCase.runID, "second-"+testCase.category),
+				ToolInput(`{"argv":["docs","+fetch","--doc","second"]}`),
+			)
+			requireSafeLarkSoftError(t, second, err)
+			require.Contains(t, string(second), `"code":"correction_exhausted"`)
+			require.Len(t, executor.snapshot(), 2)
+		})
+	}
 }
 
 func TestLarkPersonalWorkspace_ExecuteRejectsNonTerminalNonWaitingStates(t *testing.T) {
