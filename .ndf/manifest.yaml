@@ -4,15 +4,15 @@ features:
   ndf_version: '3.0'
   description: Preserve LLM-led Feishu planning while moving deterministic skill cursor handling, exact reference-field repair, and recoverable invalid-input semantics behind the trusted tool boundary.
   classification_reason: 'Standard: no schema/API/new integration change and a small file set, but this changes the security boundary for Agent-readable embedded Feishu instructions.'
-  last_updated_by: ai-s5-qa
-  last_updated_at: '2026-07-19T16:42:48+08:00'
+  last_updated_by: ai-s6-dev-deployment
+  last_updated_at: '2026-07-19T16:53:36+08:00'
   created_at: '2026-07-19T15:33:58+08:00'
   track: standard
-  stage: S5
+  stage: S6
   status: active
   repos: [numind-server]
-  branches: {numind-server: feature/lark-skill-reader-tolerance}
-  worktrees: {numind-server: /private/tmp/wt-lark-skill-reader-tolerance-numind-server}
+  branches: {numind-server: develop}
+  worktrees: {numind-server: removed by ndf-done}
   progress: {total_tasks: 5, completed_tasks: 5, reviewed_tasks: 2}
   artifacts:
     requirement: requirements/lark-skill-reader-tolerance.md
@@ -31,6 +31,7 @@ features:
   - 'S4 review hardening: wrapped invalid sentinels lock errors.Is semantics; oversized References metadata is included in the complete-envelope limit; a direct boundedAtomicSkillTool test proves the independent 64-KiB wrapper defense. Dual specification and quality reviews finish PASS with P0/P1/P2=0.'
   - 'S5 gate hardening: repository task test exposed a historical sandbox test-fixture race caused by changing SkillsRoot after worker startup. A test-only fix initializes the root before NewPool; the sandbox package passes race three consecutive times and production sandbox behavior is unchanged.'
   - 'S5 acceptance PASS: exact task test, go test ./..., full sqlite_fts5 race, coverage, task lint, focused Agent/Feishu tests and diff hygiene pass. The LLM still plans Feishu business operations; platform-owned pagination and exact field repair remain inside the five-skill/current-declared-reference boundary. Authorized for atomic merge and Dev deployment; Prod remains untouched.'
+  - 'S6: ndf-done atomically merged and pushed numind-server develop at b18e115d, then removed the feature worktree and local branch. Manual TCR release deployed numind-server:develop-b18e115d (digest sha256:c106c85a415fd5d731d85f9da4bf491898c989101918d749ebb374561b23e4ae) to Dev. The container is running+healthy, public health returns code 0/status ok, critical startup log matches are zero, and pinned lark-cli remains 1.0.68. Real Agent Feishu acceptance is ready; Prod is untouched.'
   blockers: []
 
 - id: lark-stable-execution
