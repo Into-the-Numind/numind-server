@@ -100,9 +100,11 @@ sequenceDiagram
 在修改业务代码前，更新 `e2e/agent-streaming.spec.ts` 的中断场景，使其：
 
 1. 使用实际 `.send-btn--stop[aria-label="终止"]`，而不是已不存在的 `.abort-bar`；替换同文件全部 `.abort-bar` 零匹配假绿断言。
-2. 通过 `page.addInitScript` 将 `/stream` 响应替换为收到 `AbortSignal` 前不关闭的 `ReadableStream`，先发 `stream_start` 确立 run，再使 stop 按钮可见。
-3. mock `POST /v1/agent-runs/2/cancel` 并捕获精确 URL 与请求方法。
-4. 断言点击后取消请求只发生一次、输入恢复可编辑、且页面不出现发送失败；另断言 5xx 时没有 cancelled 系统消息、流与停止键保留可重试。
+2. 将 `agent-streaming.spec.ts` 纳入 Playwright `mocked` 项目，使用端口 5174 的 `VITE_AGENT_MOCK=false` 页面；`page.addInitScript` 设置测试 token，route 覆盖 Agent bootstrap、support contact、运行状态及取消接口，避免登录或本地 mock 掩盖真实 HTTP。
+3. 通过 `page.addInitScript` 将 `/stream` 响应替换为收到 `AbortSignal` 前不关闭的 `ReadableStream`，先发 `stream_start` 确立 run，再使 stop 按钮可见。
+4. mock `POST /v1/agent-runs/2/cancel` 并捕获精确 URL 与请求方法。
+5. 断言点击后取消请求只发生一次、输入恢复可编辑、且页面不出现发送失败；另断言 5xx 时没有 cancelled 系统消息、流与停止键保留可重试。
+6. 使用 reload 恢复的 active run 验证 `isStreaming=false` 时输入区仍显示同一 stop；取消 pending 时程序化连续触发两次 click，断言只发一个 POST。
 
 该测试应先失败，因为现有停止键不会发出取消请求。
 
