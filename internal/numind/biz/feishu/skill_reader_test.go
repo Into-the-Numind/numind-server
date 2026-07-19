@@ -87,6 +87,44 @@ func TestSkillReader_ResolvesDeclaredReferenceBasename(t *testing.T) {
 	}, h.invocations())
 }
 
+// Customer regression (Dev run 227): the Agent selected the correct declared
+// Drive/Docs references but placed each reference in the legacy cursor field.
+// This is an unambiguous field-placement mistake, not an attempt to bypass the
+// current-skill declared-reference boundary.
+func TestSkillReader_RepairsDeclaredMarkdownReferencePlacedInCursor(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		skill     string
+		reference string
+	}{
+		{skill: "lark-drive", reference: "references/lark-drive-search.md"},
+		{skill: "lark-doc", reference: "references/lark-doc-fetch.md"},
+	} {
+		testCase := testCase
+		t.Run(testCase.skill, func(t *testing.T) {
+			t.Parallel()
+
+			h := newSkillReaderHarness(t, skillReaderOptions{})
+			h.writeResource(testCase.skill, "SKILL.md", "[Read]("+testCase.reference+")", true)
+			h.writeResource(testCase.skill, testCase.reference, "controlled reference", false)
+
+			page, err := h.reader.Read(h.context(), SkillReadRequest{
+				AgentRunID: 227,
+				Skill:      testCase.skill,
+				Cursor:     testCase.reference,
+			})
+			require.NoError(t, err)
+			require.Equal(t, testCase.reference, page.Path)
+			require.Equal(t, "controlled reference", page.Content)
+			require.Equal(t, []string{
+				"HOME=unset|4|skills|read|" + testCase.skill + "|--json",
+				"HOME=unset|5|skills|read|" + testCase.skill + "|" + testCase.reference + "|--json",
+			}, h.invocations())
+		})
+	}
+}
+
 func TestSkillReader_ReferenceBasenameResolutionFailsClosed(t *testing.T) {
 	t.Parallel()
 

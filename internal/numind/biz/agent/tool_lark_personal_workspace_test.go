@@ -199,6 +199,54 @@ func TestLarkPersonalWorkspace_SkillReadSuccessUsesOnlyRunContext(t *testing.T) 
 	assert.Contains(t, tool.Description(), "controlled reference")
 }
 
+// Customer regression (Dev run 227): cursor is a rolling-compatibility wire
+// field, not a model decision. New schemas must hide it, and a rejected skill
+// input must be a recoverable correction rather than a terminal red failure.
+func TestLarkPersonalWorkspace_SkillReadCursorIsCompatibilityOnlyAndInvalidIsRecoverable(t *testing.T) {
+	executor := &fakeSkillReadExecutor{err: feishu.ErrSkillReadInvalid}
+	tool := &larkSkillReadTool{executor: executor}
+
+	schema := string(tool.InputSchema())
+	assert.NotContains(t, schema, `"cursor"`, "new model calls must not manage internal pagination")
+	assert.Contains(t, schema, `"reference"`)
+
+	result, err := tool.Execute(
+		WithRunID(context.Background(), 227),
+		ToolInput(`{"skill":"lark-doc","cursor":"legacy-opaque-cursor"}`),
+	)
+	require.NoError(t, err)
+	requests := executor.snapshot()
+	require.Len(t, requests, 1, "the hidden legacy field must remain wire-compatible during rolling deployment")
+	assert.Equal(t, "legacy-opaque-cursor", requests[0].Cursor)
+
+	var output struct {
+		Code        string `json:"code"`
+		Recoverable bool   `json:"recoverable"`
+		Retryable   bool   `json:"retryable"`
+	}
+	require.NoError(t, json.Unmarshal(result, &output))
+	assert.Equal(t, "invalid_skill_input", output.Code)
+	assert.True(t, output.Recoverable)
+	assert.False(t, output.Retryable)
+	assert.NotContains(t, string(result), "legacy-opaque-cursor")
+}
+
+func TestLarkPersonalWorkspace_SkillReadDependencyFailureRemainsTerminal(t *testing.T) {
+	result, err := (&larkSkillReadTool{executor: &fakeSkillReadExecutor{err: feishu.ErrSkillReadFailed}}).Execute(
+		WithRunID(context.Background(), 228),
+		ToolInput(`{"skill":"lark-doc"}`),
+	)
+	require.NoError(t, err)
+
+	var output struct {
+		Code        string `json:"code"`
+		Recoverable bool   `json:"recoverable"`
+	}
+	require.NoError(t, json.Unmarshal(result, &output))
+	assert.Equal(t, "skill_read_unavailable", output.Code)
+	assert.False(t, output.Recoverable)
+}
+
 // Customer regression (Dev run 204): upstream skills describe a local CLI and
 // told the hosted Agent to run auth/config preflights and request App secrets.
 // The hosted boundary must explicitly override those instructions before the
