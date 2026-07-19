@@ -4,16 +4,16 @@ features:
   ndf_version: '3.0'
   description: Make manual Feishu authorization confirmation wait long enough, preserve exact user/app/device/operation/Agent binding, and emit safe actionable diagnostics.
   classification_reason: 'Standard: no schema/API/new integration change, but this spans backend and frontend and changes high-risk third-party authorization and Agent-resume timing.'
-  last_updated_by: ai-s5-acceptance
-  last_updated_at: '2026-07-19T23:38:00+08:00'
+  last_updated_by: ai-s6-release
+  last_updated_at: '2026-07-19T23:40:00+08:00'
   created_at: '2026-07-19T22:17:31+08:00'
   track: standard
-  stage: S5
+  stage: S6
   status: active
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/feishu-auth-confirmation-stability, numind-web-v3: feature/feishu-auth-confirmation-stability}
   worktrees: {numind-server: /private/tmp/wt-feishu-auth-confirmation-stability-numind-server, numind-web-v3: /private/tmp/wt-feishu-auth-confirmation-stability-numind-web-v3}
-  progress: {total_tasks: 5, completed_tasks: 5, reviewed_tasks: 2, current_task: 'S5 acceptance complete; ready for atomic merge and Dev deployment'}
+  progress: {total_tasks: 5, completed_tasks: 5, reviewed_tasks: 2, current_task: 'Atomic merge and push to develop'}
   artifacts:
     requirement: requirements/feishu-auth-confirmation-stability.md
     proposal: proposals/feishu-auth-confirmation-stability-proposal.md
