@@ -182,7 +182,6 @@ func TestLarkPersonalWorkspace_SkillReadSuccessUsesOnlyRunContext(t *testing.T) 
 		Content    string   `json:"content"`
 		References []string `json:"references"`
 		Cursor     string   `json:"cursor"`
-		Receipt    string   `json:"receipt"`
 		CLIVersion string   `json:"cli_version"`
 	}
 	require.NoError(t, json.Unmarshal(result, &output))
@@ -192,8 +191,8 @@ func TestLarkPersonalWorkspace_SkillReadSuccessUsesOnlyRunContext(t *testing.T) 
 	assert.Equal(t, executor.result.Content, output.Content, "raw content must JSON round-trip without corruption")
 	assert.Equal(t, executor.result.References, output.References)
 	assert.Equal(t, executor.result.Cursor, output.Cursor)
-	assert.Equal(t, executor.result.Receipt, output.Receipt)
 	assert.Equal(t, "1.0.68", output.CLIVersion)
+	assert.NotContains(t, string(result), `"receipt"`, "internal receipts must not be model-visible")
 	assert.True(t, tool.IsReadOnly())
 	assert.True(t, tool.IsConcurrencySafe(nil))
 	assert.Contains(t, tool.Description(), "lark-shared")
@@ -221,19 +220,19 @@ func TestLarkPersonalWorkspace_SkillReadPublishesHostedPolicy(t *testing.T) {
 	var output struct {
 		Content      string `json:"content"`
 		HostedPolicy string `json:"hosted_policy"`
-		Receipt      string `json:"receipt"`
 	}
 	require.NoError(t, json.Unmarshal(result, &output))
 	assert.Equal(t, executor.result.Content, output.Content, "signed upstream content must stay byte-for-byte intact")
-	assert.Equal(t, executor.result.Receipt, output.Receipt)
+	assert.NotContains(t, string(result), `"receipt"`)
 	assert.Contains(t, output.HostedPolicy, "不要执行 auth/config/whoami")
 	assert.Contains(t, output.HostedPolicy, "不要要求用户提供 App ID/App Secret")
 	assert.Contains(t, output.HostedPolicy, "不要每次先检查权限")
 	assert.Contains(t, output.HostedPolicy, "只读 scope check")
 	assert.Contains(t, output.HostedPolicy, "lark_inspect")
 	assert.Contains(t, output.HostedPolicy, "生成授权卡片")
-	assert.Contains(t, output.HostedPolicy, "lark-shared")
-	assert.Contains(t, output.HostedPolicy, "对应业务技能")
+	assert.Contains(t, output.HostedPolicy, "技能读取只提供命令说明")
+	assert.Contains(t, output.HostedPolicy, "身份、权限与恢复由平台负责")
+	assert.NotContains(t, output.HostedPolicy, "skill_receipts")
 	assert.Contains(t, output.HostedPolicy, "只可修正")
 	assert.Contains(t, output.HostedPolicy, "unknown_result 必须立即停止")
 }
@@ -273,9 +272,9 @@ func TestLarkPersonalWorkspace_FreshConversationCanDiscoverByTitle(t *testing.T)
 	assert.Contains(t, output.HostedPolicy, "wiki +node-get")
 	assert.Contains(t, output.HostedPolicy, "obj_type/obj_token")
 	assert.Contains(t, output.HostedPolicy, "doc、sheet、mindnote、slides、file")
-	assert.Contains(t, output.HostedPolicy, "Drive receipt 不得带入后续业务命令")
-	assert.Contains(t, output.HostedPolicy, "shared+doc")
-	assert.Contains(t, output.HostedPolicy, "shared+base")
+	assert.Contains(t, output.HostedPolicy, "docx 用 lark-doc")
+	assert.Contains(t, output.HostedPolicy, "bitable 用 lark-base")
+	assert.NotContains(t, output.HostedPolicy, "receipt")
 }
 
 func TestLarkPersonalWorkspace_SkillReadStrictInputAndSafeFailures(t *testing.T) {
@@ -369,7 +368,7 @@ func TestLarkPersonalWorkspace_ExecuteDerivesTenantAndIdempotencyFromContext(t *
 	assert.Equal(t, "501:synthetic-a", requests[0].IdempotencyKey)
 	assert.Equal(t, []string{"docs", "+fetch", "--doc", "doc-1"}, requests[0].Argv)
 	assert.JSONEq(t, `{"value":"line\nquoted: \"yes\""}`, string(requests[0].StdinJSON))
-	assert.Equal(t, []string{"receipt-doc", "receipt-shared"}, requests[0].SkillReceipts)
+	assert.Empty(t, requests[0].SkillReceipts, "receipts must not cross the Agent execution boundary")
 	assert.Equal(t, uint(22), requests[1].UserID, "a second tenant must derive its own identity from context")
 	assert.Equal(t, "502:synthetic-b", requests[1].IdempotencyKey)
 	assert.Nil(t, requests[1].StdinJSON, "stdin_json:null must normalize to nil")
@@ -393,6 +392,52 @@ func TestLarkPersonalWorkspace_ExecuteDerivesTenantAndIdempotencyFromContext(t *
 	assert.Contains(t, tool.Description(), "no shell")
 	assert.Contains(t, tool.Description(), "no IM")
 	_ = second
+}
+
+// Customer regression (Dev run 226): lark_skill_read succeeded, then the Agent
+// copied the long model-visible receipt incorrectly twice. Both lark_execute
+// calls were rejected before an operation existed, even though the business argv
+// was valid. Receipts are not user auth or command policy and must not be carried
+// by the model; the trusted platform derives those controls from context+catalog.
+func TestLarkExecuteDoesNotRequireModelCarriedReceipts(t *testing.T) {
+	executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+		OperationID: "op-search",
+		State:       model.FeishuOperationSucceeded,
+		Data:        json.RawMessage(`{"items":[]}`),
+	}}
+	tool := &larkExecuteTool{executor: executor}
+	argv := `["drive","+search","--query","有数飞书二次连接测试","--only-title","--doc-types","docx,wiki,bitable"]`
+
+	withoutReceipt, err := tool.Execute(
+		larkPersonalWorkspaceContext(21, 226, "search-without-receipt"),
+		ToolInput(`{"argv":`+argv+`}`),
+	)
+	require.NoError(t, err)
+	assert.NotContains(t, string(withoutReceipt), "ERROR")
+
+	legacyMalformedReceipt, err := tool.Execute(
+		larkPersonalWorkspaceContext(21, 227, "search-legacy-receipt"),
+		ToolInput(`{"argv":`+argv+`,"skill_receipts":{"copied":"incorrectly"}}`),
+	)
+	require.NoError(t, err)
+	assert.NotContains(t, string(legacyMalformedReceipt), "ERROR")
+
+	requests := executor.snapshot()
+	require.Len(t, requests, 2, "both valid business commands must reach the trusted executor")
+	assert.Equal(t, requests[0].Argv, requests[1].Argv)
+	assert.Empty(t, requests[0].SkillReceipts)
+	assert.Empty(t, requests[1].SkillReceipts, "legacy receipt values are compatibility-only")
+
+	schema := string(tool.InputSchema())
+	assert.NotContains(t, schema, "skill_receipts", "new model calls must not see an internal receipt field")
+	assert.Contains(t, schema, `"required":["argv"]`)
+
+	injected, err := tool.Execute(
+		larkPersonalWorkspaceContext(21, 228, "identity-injection"),
+		ToolInput(`{"argv":["docs","+fetch","--doc","doc-1"],"user_id":99}`),
+	)
+	requireSafeLarkSoftError(t, injected, err)
+	assert.Len(t, executor.snapshot(), 2, "identity injection must still fail before the executor")
 }
 
 // Customer regression (Dev run 199): the official embedded lark skills show
@@ -422,6 +467,7 @@ func TestLarkPersonalWorkspace_ExecuteAcceptsOfficialLarkCLIPrefix(t *testing.T)
 }
 
 func TestLarkPersonalWorkspace_ExecuteRejectsUntrustedIdentityAndStrictJSON(t *testing.T) {
+	nextRunID := uint64(7000)
 	for name, input := range map[string]string{
 		"user id":           `{"argv":["docs"],"skill_receipts":["r"],"user_id":99}`,
 		"run id":            `{"argv":["docs"],"skill_receipts":["r"],"run_id":99}`,
@@ -439,12 +485,17 @@ func TestLarkPersonalWorkspace_ExecuteRejectsUntrustedIdentityAndStrictJSON(t *t
 		"trailing document": `{"argv":["docs"],"skill_receipts":["r"]} {}`,
 		"empty argv":        `{"argv":[],"skill_receipts":["r"]}`,
 		"prefix only":       `{"argv":["lark-cli"],"skill_receipts":["r"]}`,
-		"empty receipts":    `{"argv":["docs"],"skill_receipts":[]}`,
 	} {
+		runID := nextRunID
+		nextRunID++
 		t.Run(name, func(t *testing.T) {
+			larkExecuteRetryClearRun(runID)
+			t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
 			executor := &fakeLarkExecutor{}
-			result, err := (&larkExecuteTool{executor: executor}).Execute(larkPersonalWorkspaceContext(7, 8, "tc-8"), ToolInput(input))
+			result, err := (&larkExecuteTool{executor: executor}).Execute(larkPersonalWorkspaceContext(7, runID, "tc-8"), ToolInput(input))
 			requireSafeLarkSoftError(t, result, err, "evil", "secret", "/tmp/x")
+			require.Contains(t, string(result), `"code":"invalid_execute_input"`)
+			require.Contains(t, string(result), `"recoverable":true`)
 			assert.Empty(t, executor.snapshot(), "rejected model input must never reach the operation executor")
 		})
 	}
@@ -566,6 +617,9 @@ func TestLarkPersonalWorkspace_ExecuteReloadedActionWithoutURLStillYields(t *tes
 }
 
 func TestLarkPersonalWorkspace_ExecuteInvalidWaitingAndExecutorErrorsAreSafe(t *testing.T) {
+	const runID = uint64(8)
+	larkExecuteRetryClearRun(runID)
+	t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
 	invalidWaiting := &fakeLarkExecutor{result: &feishu.OperationResult{
 		OperationID: "op-sensitive",
 		State:       model.FeishuOperationWaitingUserAuth,
@@ -575,7 +629,7 @@ func TestLarkPersonalWorkspace_ExecuteInvalidWaitingAndExecutorErrorsAreSafe(t *
 		},
 	}}
 	result, err := (&larkExecuteTool{executor: invalidWaiting}).Execute(
-		larkPersonalWorkspaceContext(7, 8, "tc-8"),
+		larkPersonalWorkspaceContext(7, runID, "tc-8"),
 		ToolInput(`{"argv":["docs","+fetch"],"skill_receipts":["secret-receipt"]}`),
 	)
 	requireSafeLarkSoftError(t, result, err, "op-sensitive", "secret.example", "secret-receipt", "+fetch")
@@ -585,7 +639,7 @@ func TestLarkPersonalWorkspace_ExecuteInvalidWaitingAndExecutorErrorsAreSafe(t *
 	internalErr := errors.New("runner leaked argv docs +fetch receipt-raw at /private/home")
 	failing := &fakeLarkExecutor{err: internalErr}
 	result, err = (&larkExecuteTool{executor: failing}).Execute(
-		larkPersonalWorkspaceContext(7, 8, "tc-8"),
+		larkPersonalWorkspaceContext(7, runID, "tc-8"),
 		ToolInput(`{"argv":["docs","+fetch"],"skill_receipts":["receipt-raw"]}`),
 	)
 	requireSafeLarkSoftError(t, result, err, internalErr.Error(), "receipt-raw", "+fetch", "/private/home")
@@ -612,6 +666,8 @@ func TestLarkPersonalWorkspace_ExecuteRejectedCommandStopsLocalCLIRetries(t *tes
 	assert.Contains(t, string(result), "不要要求用户提供 App ID/App Secret")
 	assert.Contains(t, string(result), "Docs/Base/Wiki")
 	assert.Contains(t, string(result), "最多修正并重试一次")
+	assert.Contains(t, string(result), `"code":"command_rejected"`)
+	assert.Contains(t, string(result), `"recoverable":true`)
 	assert.NotContains(t, string(result), "请稍后重试")
 	assert.NotContains(t, string(result), "opaque-shared-receipt")
 
@@ -621,6 +677,8 @@ func TestLarkPersonalWorkspace_ExecuteRejectedCommandStopsLocalCLIRetries(t *tes
 	)
 	require.NoError(t, err)
 	assert.Contains(t, string(result), "已停止后续飞书命令")
+	assert.Contains(t, string(result), `"code":"correction_exhausted"`)
+	assert.Contains(t, string(result), `"recoverable":false`)
 
 	result, err = tool.Execute(
 		larkPersonalWorkspaceContext(1, runID, "dev-run-204-rejected-3"),
@@ -765,6 +823,34 @@ func TestLarkPersonalWorkspace_ExecuteTerminalStatesNeverFakeSuccess(t *testing.
 }
 
 func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *testing.T) {
+	t.Run("second malformed input exhausts correction budget without executor", func(t *testing.T) {
+		const runID = uint64(809)
+		larkExecuteRetryClearRun(runID)
+		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+		executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+			OperationID: "must-not-run", State: model.FeishuOperationSucceeded,
+			Data: json.RawMessage(`{"ok":true}`),
+		}}
+		tool := &larkExecuteTool{executor: executor}
+
+		first, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "malformed-1"),
+			ToolInput(`{"argv":[]}`),
+		)
+		requireSafeLarkSoftError(t, first, err)
+		require.Contains(t, string(first), `"code":"invalid_execute_input"`)
+		require.Contains(t, string(first), `"recoverable":true`)
+
+		second, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "malformed-2"),
+			ToolInput(`{"argv":[]}`),
+		)
+		requireSafeLarkSoftError(t, second, err)
+		require.Contains(t, string(second), `"code":"correction_exhausted"`)
+		require.Contains(t, string(second), `"recoverable":false`)
+		require.Empty(t, executor.snapshot())
+	})
+
 	t.Run("durable external unknown arms stop before continuation", func(t *testing.T) {
 		const runID = uint64(810)
 		larkExecuteRetryClearRun(runID)
@@ -867,6 +953,54 @@ func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *tes
 		requireSafeLarkSoftError(t, blocked, err)
 		require.Len(t, executor.snapshot(), 3)
 	})
+
+	for _, testCase := range []struct {
+		name     string
+		runID    uint64
+		failure  *feishu.OperationFailure
+		category string
+	}{
+		{
+			name: "second validation exhausts correction budget", runID: 813, category: "validation",
+			failure: &feishu.OperationFailure{
+				Code: feishu.PublicCodeValidationError, Category: "validation", BusinessStarted: false,
+			},
+		},
+		{
+			name: "second temporary failure exhausts retry budget", runID: 814, category: "temporary",
+			failure: &feishu.OperationFailure{
+				Code: feishu.PublicCodeTemporaryError, Category: "temporary", Retryable: true, BusinessStarted: false,
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			larkExecuteRetryClearRun(testCase.runID)
+			t.Cleanup(func() { larkExecuteRetryClearRun(testCase.runID) })
+			executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+				OperationID: "op-first-" + testCase.category,
+				State:       model.FeishuOperationFailed,
+				Failure:     testCase.failure,
+			}}
+			tool := &larkExecuteTool{executor: executor}
+			first, err := tool.Execute(
+				larkPersonalWorkspaceContext(7, testCase.runID, "first-"+testCase.category),
+				ToolInput(`{"argv":["docs","+fetch","--doc","first"]}`),
+			)
+			require.NoError(t, err)
+			require.Contains(t, string(first), `"category":"`+testCase.category+`"`)
+
+			executor.mu.Lock()
+			executor.result.OperationID = "op-second-" + testCase.category
+			executor.mu.Unlock()
+			second, err := tool.Execute(
+				larkPersonalWorkspaceContext(7, testCase.runID, "second-"+testCase.category),
+				ToolInput(`{"argv":["docs","+fetch","--doc","second"]}`),
+			)
+			requireSafeLarkSoftError(t, second, err)
+			require.Contains(t, string(second), `"code":"correction_exhausted"`)
+			require.Len(t, executor.snapshot(), 2)
+		})
+	}
 }
 
 func TestLarkPersonalWorkspace_ExecuteRejectsNonTerminalNonWaitingStates(t *testing.T) {
@@ -941,14 +1075,12 @@ func TestLarkPersonalWorkspace_InspectConnectionAndStrictBoundaries(t *testing.T
 	require.Len(t, inspector.snapshot(), 1)
 
 	for name, input := range map[string]string{
-		"unknown mode":            `{"mode":"auth"}`,
-		"connection argv":         `{"mode":"connection","argv":["docs"]}`,
-		"connection receipts":     `{"mode":"connection","skill_receipts":["r"]}`,
-		"command missing argv":    `{"mode":"command","skill_receipts":["r"]}`,
-		"command missing receipt": `{"mode":"command","argv":["docs"]}`,
-		"prefix only":             `{"mode":"command","argv":["lark-cli"],"skill_receipts":["r"]}`,
-		"injected identity":       `{"mode":"connection","user_id":7}`,
-		"duplicate mode":          `{"mode":"connection","mode":"command"}`,
+		"unknown mode":         `{"mode":"auth"}`,
+		"connection argv":      `{"mode":"connection","argv":["docs"]}`,
+		"command missing argv": `{"mode":"command","skill_receipts":["r"]}`,
+		"prefix only":          `{"mode":"command","argv":["lark-cli"],"skill_receipts":["r"]}`,
+		"injected identity":    `{"mode":"connection","user_id":7}`,
+		"duplicate mode":       `{"mode":"connection","mode":"command"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			before := len(inspector.snapshot())

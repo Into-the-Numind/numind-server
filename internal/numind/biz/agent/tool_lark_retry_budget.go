@@ -52,7 +52,7 @@ func larkExecuteRetrySeedExternalResult(runID uint64, raw json.RawMessage) bool 
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	state.lastCategory = failure.Category
-	if failure.Category == "validation" || failure.Retryable {
+	if larkFailureAllowsCorrection(failure) {
 		state.phase = larkRetryCorrectionAvailable
 		state.terminalStop = false
 		return true
@@ -131,23 +131,27 @@ func larkExecuteRetryTerminalOutcome(
 	state *larkExecuteRetryState,
 	attempt larkExecuteRetryAttempt,
 	failure *feishu.OperationFailure,
-) {
+) (correctionExhausted bool) {
 	if state == nil || failure == nil {
 		larkExecuteRetryFailed(state, attempt)
-		return
+		return true
 	}
-	if failure.Category == "validation" || failure.Retryable {
+	if larkFailureAllowsCorrection(failure) {
 		state.mu.Lock()
 		state.lastCategory = failure.Category
 		state.mu.Unlock()
-		_ = larkExecuteRetryRejected(state, attempt)
-		return
+		return larkExecuteRetryRejected(state, attempt)
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	state.lastCategory = failure.Category
 	state.terminalStop = true
 	state.phase = larkRetryExhausted
+	return false
+}
+
+func larkFailureAllowsCorrection(failure *feishu.OperationFailure) bool {
+	return failure != nil && (failure.Category == "validation" || failure.Retryable)
 }
 
 func larkExecuteRetryFailed(state *larkExecuteRetryState, attempt larkExecuteRetryAttempt) {

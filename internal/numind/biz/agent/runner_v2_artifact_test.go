@@ -195,22 +195,18 @@ func TestWrapToolWithV2ArtifactProcessing_LargeOutput_ReturnsPersistedRef(t *tes
 }
 
 // Customer regression (Dev runs 212/213/215): lark-drive's controlled skill
-// response is about 28 KiB, so the generic 16 KiB V2 artifact wrapper replaced
-// the response with a persisted-output preview. The receipt lives after the
-// skill content and was therefore unavailable to the model; the model copied a
-// payload-shaped but invalid signature and every valid Drive search was rejected
-// before a Feishu operation could be created. Skill reads are already bounded by
-// SkillReaderPageBytes and must remain inline so instructions and receipts are
-// delivered atomically.
-func TestWrapToolWithV2ArtifactProcessing_LargeLarkSkillRead_PreservesAtomicReceipt(t *testing.T) {
+// response is about 28 KiB, so the generic 16 KiB V2 artifact wrapper used to
+// replace the instructions with a persisted-output preview. Skill reads remain
+// bounded by SkillReaderPageBytes and inline so the Agent receives the complete
+// command guide. Internal receipts are intentionally no longer model-visible.
+func TestWrapToolWithV2ArtifactProcessing_LargeLarkSkillRead_PreservesAtomicInstructions(t *testing.T) {
 	s := newRunnerTestArtifactStore(t)
 	dataDir := t.TempDir()
-	receipt := "signed-drive-receipt"
 	fullTool := &larkSkillReadTool{executor: &fakeSkillReadExecutor{result: &feishu.SkillReadPage{
 		Skill:   "lark-drive",
 		Path:    "skills/lark-drive/SKILL.md",
 		Content: strings.Repeat("D", 28*1024),
-		Receipt: receipt,
+		Receipt: "must-not-be-model-visible",
 	}}}
 	inner := adaptFullToEinoTool(fullTool, nil)
 
@@ -218,13 +214,14 @@ func TestWrapToolWithV2ArtifactProcessing_LargeLarkSkillRead_PreservesAtomicRece
 	out, err := wrapped.InvokableRun(WithRunID(context.Background(), 215), `{"skill":"lark-drive"}`)
 
 	require.NoError(t, err)
-	assert.Contains(t, out, receipt)
+	assert.NotContains(t, out, "must-not-be-model-visible")
+	assert.NotContains(t, out, `"receipt"`)
 	assert.Contains(t, out, strings.Repeat("D", 28*1024))
 	assert.NotContains(t, out, `<persisted-output`)
 	rows, listErr := s.ListExpiredBefore(context.Background(),
 		time.Now().Add(100*24*time.Hour), 100)
 	require.NoError(t, listErr)
-	assert.Empty(t, rows, "a bounded skill read must not hide its receipt in an artifact")
+	assert.Empty(t, rows, "a bounded skill read must keep its instructions inline")
 }
 
 func TestWrapToolWithV2ArtifactProcessing_SpoofedLarkSkillNameStillPersists(t *testing.T) {

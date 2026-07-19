@@ -27,7 +27,7 @@ var _ FullTool = (*larkExecuteTool)(nil)
 
 func (t *larkExecuteTool) Name() string { return "lark_execute" }
 func (t *larkExecuteTool) Description() string {
-	return "Execute controlled lark-cli argv for Docs/Base/Wiki/Drive using opaque skill receipts. " +
+	return "Execute controlled lark-cli argv for Docs/Base/Wiki/Drive. " +
 		"argv may copy the official skill command verbatim with a leading `lark-cli`, or omit that one executable token. " +
 		"Identity, authorization, scope, risk, and idempotency come only from server context. " +
 		"There is no shell execution and no IM/message capability."
@@ -44,29 +44,22 @@ func (t *larkExecuteTool) InputSchema() json.RawMessage {
 		"type":"object",
 		"properties":{
 			"argv":{"type":"array","minItems":1,"items":{"type":"string"},"description":"Controlled lark-cli argv; a single leading literal lark-cli from official skill examples is optional; no shell."},
-			"stdin_json":{"description":"Optional JSON value passed as stdin; null is normalized to absent."},
-			"skill_receipts":{"type":"array","minItems":1,"items":{"type":"string"},"description":"Opaque receipts returned by lark_skill_read."}
+			"stdin_json":{"description":"Optional JSON value passed as stdin; null is normalized to absent."}
 		},
-		"required":["argv","skill_receipts"],
+		"required":["argv"],
 		"additionalProperties":false
 	}`)
 }
 
 type larkExecuteInput struct {
-	Argv          []string
-	StdinJSON     json.RawMessage
-	SkillReceipts []string
+	Argv      []string
+	StdinJSON json.RawMessage
 }
 
 func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	if t == nil || t.executor == nil || ctx == nil {
 		return larkWorkspaceSoftError(larkWorkspaceErrorUnavailable)
 	}
-	decoded, err := decodeLarkExecuteInput(input)
-	if err != nil {
-		return larkWorkspaceSoftError(larkWorkspaceErrorInvalidExecuteInput)
-	}
-
 	userID, ok := middleware.UserIDFromCtx(ctx)
 	runID := RunIDFromContext(ctx)
 	toolCallID := ToolCallIDFromContext(ctx)
@@ -80,6 +73,13 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 		}
 		return larkWorkspaceSoftError(larkWorkspaceErrorExecuteRetryExhausted)
 	}
+	decoded, err := decodeLarkExecuteInput(input)
+	if err != nil {
+		if larkExecuteRetryRejected(retryState, retryAttempt) {
+			return larkWorkspaceSoftError(larkWorkspaceErrorExecuteRetryExhausted)
+		}
+		return larkWorkspaceSoftError(larkWorkspaceErrorInvalidExecuteInput)
+	}
 
 	result, err := t.executor.Execute(ctx, feishu.ExecuteRequest{
 		UserID:         userID,
@@ -88,7 +88,6 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 		IdempotencyKey: fmt.Sprintf("%d:%s", runID, toolCallID),
 		Argv:           append([]string(nil), decoded.Argv...),
 		StdinJSON:      append(json.RawMessage(nil), decoded.StdinJSON...),
-		SkillReceipts:  append([]string(nil), decoded.SkillReceipts...),
 	})
 	if err != nil {
 		if errors.Is(err, feishu.ErrOperationRequestRejected) {
@@ -125,8 +124,8 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 	}
 	if result.State == model.FeishuOperationSucceeded {
 		larkExecuteRetryCompleted(retryState, retryAttempt)
-	} else {
-		larkExecuteRetryTerminalOutcome(retryState, retryAttempt, result.Failure)
+	} else if larkExecuteRetryTerminalOutcome(retryState, retryAttempt, result.Failure) {
+		return larkWorkspaceSoftError(larkWorkspaceErrorExecuteRetryExhausted)
 	}
 	return ToolResult(output), nil
 }
@@ -153,10 +152,11 @@ func decodeLarkExecuteInput(input ToolInput) (larkExecuteInput, error) {
 			return larkExecuteInput{}, fmt.Errorf("argv rejected")
 		}
 	}
-	receiptsRaw, ok := fields["skill_receipts"]
-	if !ok || json.Unmarshal(receiptsRaw, &decoded.SkillReceipts) != nil || len(decoded.SkillReceipts) == 0 {
-		return larkExecuteInput{}, fmt.Errorf("skill receipts rejected")
-	}
+	// Rolling-upgrade compatibility only: old conversations may still include
+	// skill_receipts. The value is deliberately not parsed or copied. Receipts are
+	// not user identity, Feishu authorization, command policy, scope evidence, or
+	// idempotency proof; asking an LLM to reproduce them made valid commands fail.
+	// Every security decision remains server-owned below the tool boundary.
 	if stdinRaw, ok := fields["stdin_json"]; ok && !bytes.Equal(bytes.TrimSpace(stdinRaw), []byte("null")) {
 		decoded.StdinJSON = append(json.RawMessage(nil), stdinRaw...)
 	}

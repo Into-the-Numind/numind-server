@@ -47,7 +47,7 @@ func TestOperationService_InspectConnectionReturnsOnlySafeCurrentUserState(t *te
 	require.Equal(t, model.FeishuConnectionNone, missing.ConnectionState)
 }
 
-func TestOperationService_InspectCommandUsesCatalogReceiptsAndReadOnlyPreflight(t *testing.T) {
+func TestOperationService_InspectCommandUsesCatalogAndReadOnlyPreflight(t *testing.T) {
 	h := newOperationHarness(t)
 	h.createAccount(7, model.FeishuConnectionConnected, 2, "cli_secret_app")
 	h.preflight.steps = []operationScopePreflightStep{{result: &ScopeCheckResult{
@@ -95,7 +95,6 @@ func TestOperationService_InspectCommandRejectsUnsafeBoundaries(t *testing.T) {
 		{UserID: 7, AgentRunID: 103, Mode: InspectionModeCommand, Argv: []string{"im", "send"}, SkillReceipts: []string{"r"}},
 		{UserID: 7, AgentRunID: 103, Mode: InspectionModeCommand, Argv: []string{"drive", "+write"}, SkillReceipts: []string{"r"}},
 		{UserID: 7, AgentRunID: 0, Mode: InspectionModeCommand, Argv: []string{"docs", "+fetch"}, SkillReceipts: []string{"r"}},
-		{UserID: 7, AgentRunID: 103, Mode: InspectionModeCommand, Argv: []string{"docs", "+fetch"}},
 		{UserID: 7, AgentRunID: 103, Mode: InspectionModeConnection, Argv: []string{"docs"}},
 	}
 	for _, request := range tests {
@@ -109,7 +108,7 @@ func TestOperationService_InspectCommandRejectsUnsafeBoundaries(t *testing.T) {
 	require.Zero(t, businessCalls)
 }
 
-func TestOperationService_InspectCommandRejectsDisconnectedAndCrossRunReceipts(t *testing.T) {
+func TestOperationService_InspectCommandIgnoresLegacyReceiptsAndRejectsDisconnected(t *testing.T) {
 	h := newOperationHarness(t)
 	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
 	h.receipts.err = context.Canceled
@@ -119,10 +118,13 @@ func TestOperationService_InspectCommandRejectsDisconnectedAndCrossRunReceipts(t
 		SkillReceipts: []string{"other-run-receipt"},
 	}
 	got, err := h.service.Inspect(context.Background(), request)
-	require.ErrorIs(t, err, ErrInspectionRejected)
-	require.Nil(t, got)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, "drive +search", got.CommandPath)
+	domains, runs := h.receipts.snapshot()
+	require.Empty(t, domains)
+	require.Empty(t, runs)
 
-	h.receipts.err = nil
 	require.NoError(t, h.db.Model(&model.UserThirdPartyAccount{}).
 		Where("user_id = ? AND provider = ?", 7, ProviderLark).
 		Updates(map[string]any{"connection_state": model.FeishuConnectionNone, "connected": false}).Error)
@@ -130,5 +132,5 @@ func TestOperationService_InspectCommandRejectsDisconnectedAndCrossRunReceipts(t
 	require.ErrorIs(t, err, ErrInspectionUnavailable)
 	require.Nil(t, got)
 	preflightCalls, _ := h.preflight.snapshot()
-	require.Zero(t, preflightCalls)
+	require.Equal(t, 1, preflightCalls)
 }

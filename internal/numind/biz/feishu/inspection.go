@@ -28,10 +28,11 @@ const (
 // InspectionRequest contains only model-selectable mode/business argv plus
 // server-context identities supplied by the Agent tool boundary.
 type InspectionRequest struct {
-	UserID        uint
-	AgentRunID    uint64
-	Mode          string
-	Argv          []string
+	UserID     uint
+	AgentRunID uint64
+	Mode       string
+	Argv       []string
+	// Deprecated: accepted from old in-process callers and ignored.
 	SkillReceipts []string
 }
 
@@ -58,12 +59,12 @@ func (s *FeishuOperationService) Inspect(ctx context.Context, request Inspection
 	}
 	switch request.Mode {
 	case InspectionModeConnection:
-		if request.AgentRunID == 0 || len(request.Argv) != 0 || len(request.SkillReceipts) != 0 {
+		if request.AgentRunID == 0 || len(request.Argv) != 0 {
 			return nil, ErrInspectionRejected
 		}
 		return s.inspectConnection(ctx, request.UserID)
 	case InspectionModeCommand:
-		if request.AgentRunID == 0 || len(request.Argv) == 0 || validateOperationReceipts(request.SkillReceipts) != nil {
+		if request.AgentRunID == 0 || len(request.Argv) == 0 {
 			return nil, ErrInspectionRejected
 		}
 		return s.inspectCommand(ctx, request)
@@ -108,11 +109,6 @@ func (s *FeishuOperationService) inspectCommand(
 ) (*InspectionResult, error) {
 	normalized, err := s.catalog.Normalize(append([]string(nil), request.Argv...), nil)
 	if err != nil {
-		return nil, ErrInspectionRejected
-	}
-	if err := s.receipts.VerifyRequired(
-		append([]string(nil), request.SkillReceipts...), request.AgentRunID, operationReceiptDomain(normalized),
-	); err != nil {
 		return nil, ErrInspectionRejected
 	}
 	account, err := s.accounts.Get(ctx, request.UserID, ProviderLark)

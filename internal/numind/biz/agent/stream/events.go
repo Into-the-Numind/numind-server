@@ -186,9 +186,10 @@ type ToolCallResultPayload struct {
 
 // ToolCallErrorPayload is emitted when a tool call fails.
 type ToolCallErrorPayload struct {
-	ToolCallID string `json:"tool_call_id"`
-	Error      string `json:"error"`
-	DurationMs int64  `json:"duration_ms"`
+	ToolCallID  string `json:"tool_call_id"`
+	Error       string `json:"error"`
+	DurationMs  int64  `json:"duration_ms"`
+	Recoverable bool   `json:"recoverable,omitempty"`
 }
 
 // StepDonePayload marks the end of one ReAct iteration.

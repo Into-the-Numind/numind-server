@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -29,8 +28,6 @@ const (
 	operationMaxToolCallIDBytes   = 128
 	operationMaxIdempotencyBytes  = 191
 	operationMaxOperationIDBytes  = 64
-	operationMaxReceiptBytes      = 4096
-	operationMaxReceiptCount      = 4
 	operationDefaultLeaseDuration = 90 * time.Second
 	operationFinalizeTimeout      = 5 * time.Second
 	// Each execution-gate lease window is renewed by the heartbeat and again
@@ -57,8 +54,9 @@ var (
 	ErrOperationUnavailable = errors.New("feishu operation unavailable")
 )
 
-// ReceiptVerifier proves that the Agent received the fixed-version skills for
-// the server-selected command domain.
+// ReceiptVerifier is retained only as a source-compatible dependency type for
+// older composition roots. OperationService no longer calls it: model-carried
+// skill receipts are not an execution authorization primitive.
 type ReceiptVerifier interface {
 	VerifyRequired(receipts []string, runID uint64, domain string) error
 }
@@ -148,8 +146,8 @@ type OperationAction struct {
 	ExpiresAt   time.Time `json:"expires_at,omitempty"`
 }
 
-// ExecuteRequest is model-supplied only for IDs, raw allowlisted argv, and
-// opaque skill receipts. Risk, scopes, domain, and normalized argv are derived.
+// ExecuteRequest contains server-context IDs and raw allowlisted business argv.
+// Risk, scopes, domain, normalized argv, identity, and authorization are derived.
 type ExecuteRequest struct {
 	UserID         uint
 	AgentRunID     uint64
@@ -157,7 +155,9 @@ type ExecuteRequest struct {
 	IdempotencyKey string
 	Argv           []string
 	StdinJSON      json.RawMessage
-	SkillReceipts  []string
+	// SkillReceipts is retained only so old in-process callers compile during the
+	// rolling transition. Execute deliberately ignores it; it is not security input.
+	SkillReceipts []string
 }
 
 // OperationResult is a defensive, non-sensitive view of a persisted operation.
@@ -301,9 +301,10 @@ type persistedOperationSummary struct {
 
 // OperationServiceDeps wires only small one-way Feishu interfaces.
 type OperationServiceDeps struct {
-	Accounts                       OperationAccountStore
-	Operations                     OperationStore
-	Catalog                        *CommandCatalog
+	Accounts   OperationAccountStore
+	Operations OperationStore
+	Catalog    *CommandCatalog
+	// Deprecated: accepted for rolling source compatibility but never consulted.
 	Receipts                       ReceiptVerifier
 	Recovery                       RecoveryStarter
 	Confirmation                   ConfirmationRequester
@@ -326,7 +327,6 @@ type FeishuOperationService struct {
 	accounts                       OperationAccountStore
 	operations                     OperationStore
 	catalog                        *CommandCatalog
-	receipts                       ReceiptVerifier
 	recovery                       RecoveryStarter
 	confirmation                   ConfirmationRequester
 	vault                          OperationHomeVault
@@ -551,7 +551,7 @@ func (r *executionRegistry) stopGenerationAndWait(ctx context.Context, userID ui
 
 // NewFeishuOperationService validates all mandatory operation dependencies.
 func NewFeishuOperationService(deps OperationServiceDeps) (*FeishuOperationService, error) {
-	if deps.Accounts == nil || deps.Operations == nil || deps.Catalog == nil || deps.Receipts == nil ||
+	if deps.Accounts == nil || deps.Operations == nil || deps.Catalog == nil ||
 		deps.Recovery == nil || deps.Confirmation == nil || deps.Vault == nil || deps.Preflight == nil ||
 		deps.Runner == nil || deps.Cipher == nil {
 		return nil, errors.New("feishu operation service dependencies rejected")
@@ -576,7 +576,7 @@ func NewFeishuOperationService(deps OperationServiceDeps) (*FeishuOperationServi
 	}
 	return &FeishuOperationService{
 		accounts: deps.Accounts, operations: deps.Operations, catalog: deps.Catalog,
-		receipts: deps.Receipts, recovery: deps.Recovery, confirmation: deps.Confirmation,
+		recovery: deps.Recovery, confirmation: deps.Confirmation,
 		vault: deps.Vault, preflight: deps.Preflight, runner: deps.Runner, cipher: deps.Cipher,
 		classifier: NewErrorClassifier(), now: now, leaseDuration: leaseDuration,
 		executionGateHeartbeatInterval: heartbeatInterval,
@@ -771,14 +771,6 @@ func (s *FeishuOperationService) Execute(ctx context.Context, request ExecuteReq
 	if err != nil {
 		return nil, ErrOperationRequestRejected
 	}
-	if err := validateOperationReceipts(request.SkillReceipts); err != nil {
-		return nil, err
-	}
-	receiptDomain := operationReceiptDomain(normalized)
-	if err := s.receipts.VerifyRequired(append([]string(nil), request.SkillReceipts...), request.AgentRunID, receiptDomain); err != nil {
-		return nil, ErrOperationRequestRejected
-	}
-
 	account, err := s.loadOrCreateAccount(ctx, request.UserID)
 	if err != nil {
 		return nil, err
@@ -2065,38 +2057,6 @@ func validStableIdentifier(value string, maxBytes int) bool {
 		}
 	}
 	return true
-}
-
-func validateOperationReceipts(receipts []string) error {
-	if len(receipts) == 0 || len(receipts) > operationMaxReceiptCount {
-		return ErrOperationRequestRejected
-	}
-	for _, receipt := range receipts {
-		if receipt == "" || len(receipt) > operationMaxReceiptBytes || strings.TrimSpace(receipt) != receipt || strings.IndexByte(receipt, 0) >= 0 {
-			return ErrOperationRequestRejected
-		}
-	}
-	return nil
-}
-
-func operationReceiptDomain(command *NormalizedCommand) string {
-	if command.Domain == SkillDomainDocs {
-		for index, argument := range command.Argv {
-			if argument != "--doc" || index+1 >= len(command.Argv) {
-				continue
-			}
-			docRef := command.Argv[index+1]
-			if !strings.Contains(docRef, "://") &&
-				(strings.HasPrefix(docRef, "wikcn") || strings.HasPrefix(docRef, "wikc")) {
-				return SkillDomainWikiContent
-			}
-			parsed, err := url.Parse(docRef)
-			if err == nil && parsed.Scheme == "https" && strings.HasPrefix(parsed.EscapedPath(), "/wiki/") {
-				return SkillDomainWikiContent
-			}
-		}
-	}
-	return command.Domain
 }
 
 func operationFingerprint(canonical []byte) string {
