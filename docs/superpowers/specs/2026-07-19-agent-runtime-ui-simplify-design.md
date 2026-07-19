@@ -51,7 +51,8 @@ sequenceDiagram
 
 - 删除 `estimate` prop、`estimate-request` emit、500ms debounce 及预估展示/CSS。
 - 输入变化不再调用 `estimateRun`；附件上传、字数提示、发送和停止行为不变。
-- 运行中继续显示 `Square` 图标停止键，保留 `aria-label` 与 `title`。
+- 当前 run 为 `pending`/`running` 且不在取消中时显示 `Square` 图标停止键，而非只依赖 `isStreaming`。这覆盖 SSE 409 回退轮询、刷新后的状态轮询和仍在运行的历史会话。
+- 尚未收到 `stream_start`、没有可信 `run_id` 的短暂请求窗口不显示可用的停止键；发送按钮保持禁用，避免提供无法取消的假操作。
 
 ### 3.2 `AgentChatView.vue`
 
@@ -60,7 +61,8 @@ sequenceDiagram
   1. 若已从 `stream_start` 取得 `store.currentRun`，先调用既有 `runCtrl.cancel()`。
   2. 取消成功后，调用 `stopStream()`、停止 narration 与 polling，并展示既有“已取消任务”提示。
   3. 取消接口失败时，显示错误提示且不伪造 `cancelled` 状态；保留本地 stream 和停止键，以便用户重试真实取消而非落入无入口的运行态。
-  4. 在 `stream_start` 到达前没有可靠 `run_id`，仅可中止尚未绑定的浏览器请求；停止键在该极短窗口禁用，并以 `title` 告知正在建立任务。收到 `stream_start` 后才允许真实取消。这避免提供明知无法兑现的停止操作。
+  4. 在 `stream_start` 到达前没有可靠 `run_id`，发送按钮保持禁用。收到 `stream_start` 后，或重载取得可取消的 current run 后，才显示真实停止键。这避免提供明知无法兑现的停止操作。
+  5. `store.cancelling` 是停止键可用性的组成部分，处理器也同步 guard；双击或连续键盘激活至多发出一次取消请求。
 - 移除 `AgentChatHeader` 的 run/cancelling/cancel props 和 `@cancel` 绑定。
 
 ### 3.3 `AgentChatHeader.vue`
@@ -84,9 +86,10 @@ sequenceDiagram
 | 场景 | 处理 |
 | --- | --- |
 | 未运行/已结束 | 无停止键，不发取消请求。 |
-| 正在建立 SSE、尚未收到 `stream_start` | 停止键禁用，避免无 run_id 的假取消；用户可等待极短绑定窗口。 |
-| `stream_start` 后正在运行 | 停止键可用；取消 API 成功后 run 转 `cancelled`、流停止、输入恢复。 |
-| 取消 API 失败 | 维持服务端真实 run 状态，显示错误通知；不会显示“已取消”。 |
+| 正在建立 SSE、尚未收到 `stream_start` | 发送按钮禁用，停止键不出现，避免无 run_id 的假取消。 |
+| `stream_start` 后、SSE 409 回退轮询中，或重载后的 pending/running run | 输入区停止键可用；取消 API 成功后 run 转 `cancelled`、流停止、输入恢复。 |
+| 取消中 | 停止键禁用且处理器 guard，至多一条取消请求在飞行。 |
+| 取消 API 失败 | 维持服务端真实 run 状态和 SSE，显示错误通知并保留停止键重试；不会显示“已取消”。 |
 | 只读历史 | 不显示输入区与停止入口。 |
 | 取消完成 | 发送按钮恢复；既有 `cancelCurrent()` 系统消息作为持久会话记录。 |
 
@@ -96,18 +99,19 @@ sequenceDiagram
 
 在修改业务代码前，更新 `e2e/agent-streaming.spec.ts` 的中断场景，使其：
 
-1. 使用实际 `.send-btn--stop[aria-label="终止"]`，而不是已不存在的 `.abort-bar`。
-2. mock `POST /v1/agent-runs/2/cancel` 并捕获请求。
-3. 断言点击后取消请求只发生一次，输入恢复可编辑，且页面不出现发送失败。
+1. 使用实际 `.send-btn--stop[aria-label="终止"]`，而不是已不存在的 `.abort-bar`；替换同文件全部 `.abort-bar` 零匹配假绿断言。
+2. 通过 `page.addInitScript` 将 `/stream` 响应替换为收到 `AbortSignal` 前不关闭的 `ReadableStream`，先发 `stream_start` 确立 run，再使 stop 按钮可见。
+3. mock `POST /v1/agent-runs/2/cancel` 并捕获精确 URL 与请求方法。
+4. 断言点击后取消请求只发生一次、输入恢复可编辑、且页面不出现发送失败；另断言 5xx 时没有 cancelled 系统消息、流与停止键保留可重试。
 
 该测试应先失败，因为现有停止键不会发出取消请求。
 
 ### 成功回归
 
-- E2E 验证输入预估文案不出现且无 estimate API 请求。
+- `AgentInputArea` 单元测试以 fake timer 验证输入后不再 emit `estimate-request`；mock 模式不会产生真实网络请求，不能以网络计数证明该点。
 - E2E 验证欢迎区没有 emoji+名称 pill，但欢迎语存在。
 - `AgentChatHeader.spec.ts` 验证不再存在“取消任务”及 cancel emit。
-- E2E 或组件断言“新内容”文字不存在、圆形箭头按钮仍带 `aria-label="回到底部"`。
+- `AgentFirstRun.spec.ts` 与 `AgentMessageList.spec.ts` 验证 identity/text 消失、圆形箭头无文本节点且带 `aria-label="回到底部"`；消息列表测试 mock interrupted scroll state。视觉 QA 验证 32px 圆形与 `:focus-visible`。
 - 运行 `npm run lint`、`npm run type-check` 和聚焦 Playwright。
 
 ## 6. 安全与兼容性
