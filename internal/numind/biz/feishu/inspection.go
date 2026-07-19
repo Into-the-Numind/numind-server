@@ -28,10 +28,11 @@ const (
 // InspectionRequest contains only model-selectable mode/business argv plus
 // server-context identities supplied by the Agent tool boundary.
 type InspectionRequest struct {
-	UserID        uint
-	AgentRunID    uint64
-	Mode          string
-	Argv          []string
+	UserID     uint
+	AgentRunID uint64
+	Mode       string
+	Argv       []string
+	// Deprecated: accepted from old in-process callers and ignored.
 	SkillReceipts []string
 }
 

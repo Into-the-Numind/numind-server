@@ -54,8 +54,9 @@ var (
 	ErrOperationUnavailable = errors.New("feishu operation unavailable")
 )
 
-// ReceiptVerifier proves that the Agent received the fixed-version skills for
-// the server-selected command domain.
+// ReceiptVerifier is retained only as a source-compatible dependency type for
+// older composition roots. OperationService no longer calls it: model-carried
+// skill receipts are not an execution authorization primitive.
 type ReceiptVerifier interface {
 	VerifyRequired(receipts []string, runID uint64, domain string) error
 }
@@ -300,9 +301,10 @@ type persistedOperationSummary struct {
 
 // OperationServiceDeps wires only small one-way Feishu interfaces.
 type OperationServiceDeps struct {
-	Accounts                       OperationAccountStore
-	Operations                     OperationStore
-	Catalog                        *CommandCatalog
+	Accounts   OperationAccountStore
+	Operations OperationStore
+	Catalog    *CommandCatalog
+	// Deprecated: accepted for rolling source compatibility but never consulted.
 	Receipts                       ReceiptVerifier
 	Recovery                       RecoveryStarter
 	Confirmation                   ConfirmationRequester
@@ -325,7 +327,6 @@ type FeishuOperationService struct {
 	accounts                       OperationAccountStore
 	operations                     OperationStore
 	catalog                        *CommandCatalog
-	receipts                       ReceiptVerifier
 	recovery                       RecoveryStarter
 	confirmation                   ConfirmationRequester
 	vault                          OperationHomeVault
@@ -550,7 +551,7 @@ func (r *executionRegistry) stopGenerationAndWait(ctx context.Context, userID ui
 
 // NewFeishuOperationService validates all mandatory operation dependencies.
 func NewFeishuOperationService(deps OperationServiceDeps) (*FeishuOperationService, error) {
-	if deps.Accounts == nil || deps.Operations == nil || deps.Catalog == nil || deps.Receipts == nil ||
+	if deps.Accounts == nil || deps.Operations == nil || deps.Catalog == nil ||
 		deps.Recovery == nil || deps.Confirmation == nil || deps.Vault == nil || deps.Preflight == nil ||
 		deps.Runner == nil || deps.Cipher == nil {
 		return nil, errors.New("feishu operation service dependencies rejected")
@@ -575,7 +576,7 @@ func NewFeishuOperationService(deps OperationServiceDeps) (*FeishuOperationServi
 	}
 	return &FeishuOperationService{
 		accounts: deps.Accounts, operations: deps.Operations, catalog: deps.Catalog,
-		receipts: deps.Receipts, recovery: deps.Recovery, confirmation: deps.Confirmation,
+		recovery: deps.Recovery, confirmation: deps.Confirmation,
 		vault: deps.Vault, preflight: deps.Preflight, runner: deps.Runner, cipher: deps.Cipher,
 		classifier: NewErrorClassifier(), now: now, leaseDuration: leaseDuration,
 		executionGateHeartbeatInterval: heartbeatInterval,
