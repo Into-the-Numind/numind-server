@@ -42,7 +42,7 @@
 - 快照中的 `external_action` 不含 URL，不能覆盖同 operation 已收到的 live URL，也不能由前端拼接 URL。
 - 同一 run 连续授权的快照消息 ID 可能相同，必须为新 operation 生成独立本地 ID，避免 Vue key 冲突。
 - 过期 pending session 可能尚有完整加密 device code，也可能已经由清理器清空；两种合法形态都要支持，部分损坏形态必须拒绝。
-- 并发刷新只能一个成功；活动 lease 必须拒绝 replacement。
+- 同一个 source session 并发刷新只能一个事务成功；活动 lease 必须拒绝 replacement，完整但已过期的 lease 可被原子回收。
 
 ### 涉及仓库
 - [x] numind-server
@@ -65,18 +65,20 @@
 - [ ] 第一张卡保留完成态，第二张卡为待处理态；重复轮询不重复插入。
 - [ ] 迟到快照、切换会话和同 operation 的无 URL 快照不能污染新会话或降级已有 live URL。
 - [ ] 对服务器判断已过期、仍为 pending、无活动 lease、精确绑定 waiting operation 的 v2 session，刷新返回 200 和新 action。
+- [ ] 对刚由快照恢复、尚未过期但无 URL 的 pending 卡片，现有刷新路径仍返回 200 和新 action。
 - [ ] replacement 在一个事务内完成旧 session=expired、旧凭据清理、新 credential-free session 创建、account 更新、operation 重绑。
 - [ ] 未过期 pending、活动 lease、部分凭据、错误用户/generation/operation/summary/scopes/hash 全部 fail closed。
-- [ ] 两个并发刷新最多一个提交 replacement。
+- [ ] 同一个 source session 最多提交一次 replacement；最终 operation 只绑定一个权威 session。
 - [ ] 不调用 Agent `/answer`，不重放 Base/Docs/Wiki 业务命令。
 - [ ] “链接刚过期后点击继续”的相邻路径不会再暴露无意义 500。
+- [ ] 第二张卡出现时旧的 active tool spinner 已收口，不同时向用户展示“等待授权”和“仍在执行”。
 
 ### 边界情况
 - snapshot 中连续授权使用相同合成 message id。
 - snapshot 响应到达前用户切换会话或 run 已终态。
 - 同 operation live SSE 已携带合法 URL，随后轮询返回无 URL snapshot。
 - 清理器已清 device credential 但保留 pending，或清理尚未发生仍有完整 credential。
-- 两个浏览器同时刷新同一过期卡片。
+- 两个浏览器同时刷新同一过期卡片，以及拿旧卡刷新当前 replacement 的既有恢复语义。
 
 ### 权限规则
 - 仅当前登录用户、当前飞书连接 generation、当前 operation 绑定的 session 可刷新。

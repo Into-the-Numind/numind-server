@@ -4,24 +4,27 @@ features:
   ndf_version: '3.0'
   description: Show consecutive Feishu authorization cards without reload and atomically refresh expired-but-pending operation-bound device sessions.
   classification_reason: 'Standard: no schema/API/new integration change, but the customer bug spans backend and frontend and changes high-risk third-party authorization state handling across more than three files; the user confirmed fast Standard through Dev on 2026-07-20.'
-  last_updated_by: ai-s2
-  last_updated_at: '2026-07-20T01:40:00+08:00'
+  last_updated_by: ai-s3
+  last_updated_at: '2026-07-20T01:46:00+08:00'
   created_at: '2026-07-20T01:23:25+08:00'
   track: standard
-  stage: S2
+  stage: S3
   status: active
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/feishu-sequential-auth-refresh, numind-web-v3: feature/feishu-sequential-auth-refresh}
   worktrees: {numind-server: /private/tmp/wt-feishu-sequential-auth-refresh-numind-server, numind-web-v3: /private/tmp/wt-feishu-sequential-auth-refresh-numind-web-v3}
-  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0, current_task: 'S2 technical design locked'}
+  progress: {total_tasks: 7, completed_tasks: 0, reviewed_tasks: 0, current_task: 'T1 backend customer RED'}
   artifacts:
     requirement: requirements/feishu-sequential-auth-refresh.md
     proposal: proposals/feishu-sequential-auth-refresh-proposal.md
     spec: docs/superpowers/specs/2026-07-20-feishu-sequential-auth-refresh-design.md
+    plan: docs/superpowers/plans/2026-07-20-feishu-sequential-auth-refresh.md
   decisions:
   - 'S0: Dev evidence proves two linked customer bugs: resumed-run polling omits a durable second external_action card, and expired-but-still-pending protocol-v2 user authorization is rejected by refresh and surfaced as HTTP 500. User authorized fast Standard through Dev; Prod is excluded.'
   - 'S1: Chosen paired state-aware repair reuses the existing snapshot, refresh API, atomic replacement transaction, and strict identity/scope/lease fences. Rejected cosmetic error remapping and sensitive URL persistence; manual refresh remains explicit and no business command is replayed.'
   - 'S2: Frontend reconciles a second durable external_action by run plus operation without restoring URLs or overwriting live state. Backend treats only exact expired pending v2 sources without live leases as atomic expired replacements; all identity, scope, summary, credential-shape, no-replay, and concurrency fences remain fail closed.'
+  - 'S3: Seven serial tasks cover backend expired-pending RED/GREEN first, frontend sequential-action RED/GREEN second, full gates and dual review, local browser QA, atomic merge, and backend-first Dev deployment.'
+  - 'S3 gate: independent design review and atomicity review both PASS at 9/10-equivalent quality after preserving unexpired pending refresh, defining expired-lease and per-source concurrency semantics, splitting S4/S5/S6 tasks, and requiring all hard gates to exit 0.'
   blockers: []
 
 - id: feishu-base-resume-outcome

@@ -68,16 +68,15 @@ refresh 只更换授权 session。它不得调用原 Base 命令、不得创建�
 ```text
 state == pending
 AND ExpiresAt <= serverNow
-AND no live lease
+AND lease is absent or its complete owner/until pair has expired
 AND exact operation/session/scope binding
 AND credential shape is either complete or credential-free
 ```
 
-它的 replacement terminal state 为 `expired`，notice 为 `authorization_expired`，不需要先 claim worker lease。
+它的 replacement terminal state 为 `expired`，notice 为 `authorization_expired`，不需要先 claim worker lease。现有“尚未过期 pending → claim 精确 lease → superseded replacement”路径必须保持不变，因为刚从快照恢复的卡片没有 URL，但 session 通常仍未过期；用户此时点击刷新必须返回 200 新 URL。
 
 以下仍拒绝：
 
-- pending 且尚未过期；
 - pending 且 lease 仍存活；
 - lease owner / lease until 只有一半；
 - credential ciphertext/key/expiry 只有一部分；
@@ -88,7 +87,9 @@ AND credential shape is either complete or credential-free
 扩展现有 `ReplaceDeviceAuthSession` 的 pending 分支，允许两种且仅两种 CAS 来源：
 
 1. 现有的 live exact lease owner；
-2. 新增的服务器已过期 pending v2，且 `lease_owner='' AND lease_until IS NULL`。
+2. 新增的服务器已过期 pending v2，且 lease 为以下安全形态之一：
+   - `lease_owner='' AND lease_until IS NULL`；
+   - owner 与 until 成对完整，且 `lease_until <= serverNow`。
 
 事务内顺序保持：
 
@@ -101,11 +102,11 @@ AND credential shape is either complete or credential-free
 7. operation summary 原子改绑新 session；
 8. commit 后启动新 device authorization，返回新 action。
 
-任何一步冲突均 rollback。两个并发刷新只能一个事务完成；失败方不得生成第二个持久 replacement。
+任何一步冲突均 rollback。同一个 source session 只能被一个事务替换；并发 loser 必须冲突或转入现有 stale-card 恢复语义，不能让同一 source 提交两次。生命周期层允许后来拿着旧卡的请求按现有规则刷新“当前绑定的 replacement”，因此本次不承诺多标签页在整个 operation 生命周期中永远只有一个 replacement，而是承诺每个 source 至多替换一次、最终 operation 只绑定一个权威 session。
 
 ### 4.3 相邻继续路径
 
-对“链接已过期后点击我已完成，继续”的 operation-bound路径补回归保护：不得泄漏内部 500。若现有生命周期能够返回 replacement action，则复用同一 expired replacement；若客户端动作已陈旧，则返回固定、安全、可刷新状态，不伪造授权完成。
+对“链接已过期后点击我已完成，继续”的 operation-bound 路径写死行为：`ResumeActionUserCompleted` 在调用 CLI completion 前识别服务器已过期的 pending user-auth session，委托同一个 `RefreshOperationAction` 原子 replacement，并返回 HTTP 200、`state=waiting_user_auth`、`notice_code=authorization_expired` 与新 action。它不得伪造授权完成，也不得返回内部 500。
 
 ## 5. API 契约
 
@@ -151,12 +152,14 @@ Content-Length: 0
 - 同 run 的合成 message id 不造成 Vue key 冲突。
 - route/session 切换后的迟到 snapshot 与 refresh response 不污染新会话。
 - Playwright 证明无需 reload 出现第二卡；点击 refresh 发送空 body、不调用 `/answer`，返回后显示 URL。
+- 进入第二次 `waiting_for_user_choice` 后不保留误导性的 active tool spinner。
 
 ### 6.3 后端回归
 
 - expired pending：credential-free 与完整 credential 均成功；旧 secret 清空、old=expired、operation 重绑。
-- 未过期、live lease、部分 credential、错误 binding/scope/hash/user/generation 全拒绝。
-- 两个并发 refresh 仅一个 replacement commit。
+- 未过期 pending 保持现有 claim + superseded replacement 成功路径；live lease、部分 credential、错误 binding/scope/hash/user/generation 全拒绝。
+- 针对同一个 source session 的两个并发 refresh 仅一个 replacement commit。
+- 刚从 snapshot 恢复、尚未过期但没有 URL 的 pending 卡片，点击 refresh 继续走现有 superseded replacement 并返回 200。
 - lifecycle/controller 返回 200 新 action，不再是 500。
 - 不执行 Base business argv。
 
