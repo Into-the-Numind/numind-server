@@ -224,6 +224,43 @@ func TestWrapToolWithV2ArtifactProcessing_LargeLarkSkillRead_PreservesAtomicInst
 	assert.Empty(t, rows, "a bounded skill read must keep its instructions inline")
 }
 
+func TestWrapToolWithV2ArtifactProcessing_AggregatedLarkSkillReadStaysCompleteAndInline(t *testing.T) {
+	s := newRunnerTestArtifactStore(t)
+	dataDir := t.TempDir()
+	references := []string{"references/lark-doc-fetch.md"}
+	firstContent := strings.Repeat("A", 20*1024)
+	secondContent := strings.Repeat("B", 20*1024)
+	executor := &scriptedSkillReadExecutor{steps: []scriptedSkillReadStep{
+		{result: &feishu.SkillReadPage{
+			Skill: "lark-doc", Path: "references/lark-doc-fetch.md", Content: firstContent,
+			References: references, Cursor: "opaque-internal-cursor", Receipt: "must-not-leak-first",
+		}},
+		{result: &feishu.SkillReadPage{
+			Skill: "lark-doc", Path: "references/lark-doc-fetch.md", Content: secondContent,
+			References: references, Receipt: "must-not-leak-second",
+		}},
+	}}
+	inner := adaptFullToEinoTool(&larkSkillReadTool{executor: executor}, nil)
+
+	wrapped := wrapToolWithV2ArtifactProcessing(inner, "lark_skill_read", 227, s, dataDir)
+	out, err := wrapped.InvokableRun(
+		WithRunID(context.Background(), 227),
+		`{"skill":"lark-doc","reference":"references/lark-doc-fetch.md"}`,
+	)
+
+	require.NoError(t, err)
+	assert.Contains(t, out, firstContent)
+	assert.Contains(t, out, secondContent)
+	assert.NotContains(t, out, "opaque-internal-cursor")
+	assert.NotContains(t, out, "must-not-leak")
+	assert.NotContains(t, out, `<persisted-output`)
+	assert.LessOrEqual(t, len(out), larkSkillReadAtomicOutputLimit)
+	assert.Len(t, executor.snapshot(), 2)
+	rows, listErr := s.ListExpiredBefore(context.Background(), time.Now().Add(100*24*time.Hour), 100)
+	require.NoError(t, listErr)
+	assert.Empty(t, rows, "the complete bounded guide must stay atomically model-visible")
+}
+
 func TestWrapToolWithV2ArtifactProcessing_SpoofedLarkSkillNameStillPersists(t *testing.T) {
 	s := newRunnerTestArtifactStore(t)
 	dataDir := t.TempDir()
@@ -263,6 +300,25 @@ func TestWrapToolWithV2ArtifactProcessing_OversizedTrustedSkillFailsClosed(t *te
 	rows, listErr := s.ListExpiredBefore(context.Background(), time.Now().Add(100*24*time.Hour), 100)
 	require.NoError(t, listErr)
 	assert.Empty(t, rows)
+}
+
+func TestBoundedAtomicSkillTool_OversizedInnerOutputFailsClosed(t *testing.T) {
+	secretMarker := "wrapper-secret-must-not-leak"
+	inner := &mockInvokableTool{
+		name: "lark_skill_read",
+		out:  secretMarker + strings.Repeat("O", larkSkillReadAtomicOutputLimit),
+	}
+	wrapped := &boundedAtomicSkillTool{inner: inner}
+
+	out, err := wrapped.InvokableRun(context.Background(), `{}`)
+
+	require.NoError(t, err)
+	assert.Contains(t, out, `"code":"skill_read_unavailable"`)
+	assert.Contains(t, out, "读取飞书技能暂时失败")
+	assert.NotContains(t, out, secretMarker)
+	assert.NotContains(t, out, `<persisted-output`)
+	assert.LessOrEqual(t, len(out), larkSkillReadAtomicOutputLimit)
+	assert.Equal(t, 1, inner.invoked)
 }
 
 // TestWrapToolWithV2ArtifactProcessing_InnerToolError_Passthrough — case 3

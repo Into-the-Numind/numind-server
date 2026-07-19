@@ -15,8 +15,8 @@ import (
 //
 // 决策：通过 wrap Eino InvokableTool 的方式实现 L0 处理 — InvokableRun 返回的字符串
 // 就是 Eino 写入 messages 数组的 content。当 V2 启用时，我们拦截原工具输出：
-//   - 可信 lark_skill_read → 在最终封装硬上限内原子返回，避免命令说明与
-//     references/cursor 被 persisted-output 预览截断
+//   - 可信 lark_skill_read → 在最终封装硬上限内原子返回，避免完整命令说明与
+//     references 被 persisted-output 预览截断
 //   - len(output) <= ToolArtifactSizeLimit → 原样返回，行为与 V1 完全一致
 //   - 超阈值 → 调 compactv2.ProcessToolResult 写盘 + 元数据入库，返回
 //     `<persisted-output ref="UUID" tool="..." size="...">PREVIEW...</persisted-output>` 引用
@@ -69,8 +69,9 @@ func wrapToolWithV2ArtifactProcessing(
 }
 
 // larkSkillReadAtomicOutputLimit bounds the complete JSON envelope delivered
-// to the model, not only SkillReadPage.Content. It leaves room for the 32 KiB
-// content page, fixed hosted policy, bounded references, and cursor.
+// to the model, not only aggregated SkillReadPage.Content. The trusted skill
+// tool applies this same limit while it follows internal cursors; this wrapper
+// remains an independent final-envelope defense.
 const larkSkillReadAtomicOutputLimit = 64 << 10
 
 type boundedAtomicSkillTool struct {

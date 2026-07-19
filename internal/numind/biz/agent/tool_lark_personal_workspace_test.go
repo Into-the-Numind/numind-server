@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,6 +23,40 @@ type fakeSkillReadExecutor struct {
 	requests []feishu.SkillReadRequest
 	result   *feishu.SkillReadPage
 	err      error
+}
+
+type scriptedSkillReadStep struct {
+	result *feishu.SkillReadPage
+	err    error
+}
+
+type scriptedSkillReadExecutor struct {
+	mu       sync.Mutex
+	requests []feishu.SkillReadRequest
+	steps    []scriptedSkillReadStep
+}
+
+func (f *scriptedSkillReadExecutor) Read(_ context.Context, request feishu.SkillReadRequest) (*feishu.SkillReadPage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	callIndex := len(f.requests)
+	f.requests = append(f.requests, request)
+	if callIndex >= len(f.steps) {
+		return nil, feishu.ErrSkillReadFailed
+	}
+	step := f.steps[callIndex]
+	if step.result == nil {
+		return nil, step.err
+	}
+	clone := *step.result
+	clone.References = append([]string(nil), step.result.References...)
+	return &clone, step.err
+}
+
+func (f *scriptedSkillReadExecutor) snapshot() []feishu.SkillReadRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]feishu.SkillReadRequest(nil), f.requests...)
 }
 
 func (f *fakeSkillReadExecutor) Read(_ context.Context, request feishu.SkillReadRequest) (*feishu.SkillReadPage, error) {
@@ -156,10 +191,9 @@ func requireSafeLarkSoftError(t *testing.T, result ToolResult, err error, forbid
 func TestLarkPersonalWorkspace_SkillReadSuccessUsesOnlyRunContext(t *testing.T) {
 	executor := &fakeSkillReadExecutor{result: &feishu.SkillReadPage{
 		Skill:      "lark-doc",
-		Path:       "skills/lark-doc/SKILL.md",
+		Path:       "references/docs.md",
 		Content:    "line 1\nquoted: \"safe\"",
 		References: []string{"references/docs.md"},
-		Cursor:     "next-cursor",
 		Receipt:    "opaque-receipt",
 	}}
 	tool := &larkSkillReadTool{executor: executor}
@@ -181,7 +215,6 @@ func TestLarkPersonalWorkspace_SkillReadSuccessUsesOnlyRunContext(t *testing.T) 
 		Path       string   `json:"path"`
 		Content    string   `json:"content"`
 		References []string `json:"references"`
-		Cursor     string   `json:"cursor"`
 		CLIVersion string   `json:"cli_version"`
 	}
 	require.NoError(t, json.Unmarshal(result, &output))
@@ -190,13 +223,221 @@ func TestLarkPersonalWorkspace_SkillReadSuccessUsesOnlyRunContext(t *testing.T) 
 	assert.Equal(t, executor.result.Path, output.Path)
 	assert.Equal(t, executor.result.Content, output.Content, "raw content must JSON round-trip without corruption")
 	assert.Equal(t, executor.result.References, output.References)
-	assert.Equal(t, executor.result.Cursor, output.Cursor)
 	assert.Equal(t, "1.0.68", output.CLIVersion)
+	assert.NotContains(t, string(result), `"cursor"`, "platform-owned pagination must not be model-visible")
 	assert.NotContains(t, string(result), `"receipt"`, "internal receipts must not be model-visible")
 	assert.True(t, tool.IsReadOnly())
 	assert.True(t, tool.IsConcurrencySafe(nil))
 	assert.Contains(t, tool.Description(), "lark-shared")
 	assert.Contains(t, tool.Description(), "controlled reference")
+	assert.Contains(t, tool.Description(), "platform handles pagination")
+}
+
+// Customer regression (Dev run 227): cursor is a rolling-compatibility wire
+// field, not a model decision. New schemas must hide it, and a rejected skill
+// input must be a recoverable correction rather than a terminal red failure.
+func TestLarkPersonalWorkspace_SkillReadCursorIsCompatibilityOnlyAndInvalidIsRecoverable(t *testing.T) {
+	executor := &fakeSkillReadExecutor{err: fmt.Errorf("wrapped invalid skill input: %w", feishu.ErrSkillReadInvalid)}
+	tool := &larkSkillReadTool{executor: executor}
+
+	schema := string(tool.InputSchema())
+	assert.NotContains(t, schema, `"cursor"`, "new model calls must not manage internal pagination")
+	assert.Contains(t, schema, `"reference"`)
+
+	result, err := tool.Execute(
+		WithRunID(context.Background(), 227),
+		ToolInput(`{"skill":"lark-doc","cursor":"legacy-opaque-cursor"}`),
+	)
+	require.NoError(t, err)
+	requests := executor.snapshot()
+	require.Len(t, requests, 1, "the hidden legacy field must remain wire-compatible during rolling deployment")
+	assert.Equal(t, "legacy-opaque-cursor", requests[0].Cursor)
+
+	var output struct {
+		Code        string `json:"code"`
+		Recoverable bool   `json:"recoverable"`
+		Retryable   bool   `json:"retryable"`
+	}
+	require.NoError(t, json.Unmarshal(result, &output))
+	assert.Equal(t, "invalid_skill_input", output.Code)
+	assert.True(t, output.Recoverable)
+	assert.False(t, output.Retryable)
+	assert.NotContains(t, string(result), "legacy-opaque-cursor")
+}
+
+func TestLarkPersonalWorkspace_SkillReadDependencyFailureRemainsTerminal(t *testing.T) {
+	result, err := (&larkSkillReadTool{executor: &fakeSkillReadExecutor{err: feishu.ErrSkillReadFailed}}).Execute(
+		WithRunID(context.Background(), 228),
+		ToolInput(`{"skill":"lark-doc"}`),
+	)
+	require.NoError(t, err)
+
+	var output struct {
+		Code        string `json:"code"`
+		Recoverable bool   `json:"recoverable"`
+	}
+	require.NoError(t, json.Unmarshal(result, &output))
+	assert.Equal(t, "skill_read_unavailable", output.Code)
+	assert.False(t, output.Recoverable)
+}
+
+func TestLarkPersonalWorkspace_SkillReadAggregatesPagesInternally(t *testing.T) {
+	references := []string{"references/lark-doc-fetch.md"}
+	executor := &scriptedSkillReadExecutor{steps: []scriptedSkillReadStep{
+		{result: &feishu.SkillReadPage{
+			Skill: "lark-doc", Path: "references/lark-doc-fetch.md", Content: "first-",
+			References: references, Cursor: "opaque-next", Receipt: "must-not-leak-first",
+		}},
+		{result: &feishu.SkillReadPage{
+			Skill: "lark-doc", Path: "references/lark-doc-fetch.md", Content: "second",
+			References: references, Receipt: "must-not-leak-second",
+		}},
+	}}
+
+	result, err := (&larkSkillReadTool{executor: executor}).Execute(
+		WithRunID(context.Background(), 227),
+		ToolInput(`{"skill":"lark-doc","cursor":"references/lark-doc-fetch.md"}`),
+	)
+	require.NoError(t, err)
+	assert.NotContains(t, string(result), "ERROR")
+	assert.NotContains(t, string(result), `"cursor"`)
+	assert.NotContains(t, string(result), `"receipt"`)
+	assert.NotContains(t, string(result), "must-not-leak")
+
+	var output struct {
+		Content    string   `json:"content"`
+		Path       string   `json:"path"`
+		References []string `json:"references"`
+	}
+	require.NoError(t, json.Unmarshal(result, &output))
+	assert.Equal(t, "first-second", output.Content)
+	assert.Equal(t, "references/lark-doc-fetch.md", output.Path)
+	assert.Equal(t, references, output.References)
+
+	requests := executor.snapshot()
+	require.Len(t, requests, 2)
+	assert.Equal(t, feishu.SkillReadRequest{
+		AgentRunID: 227,
+		Skill:      "lark-doc",
+		Cursor:     "references/lark-doc-fetch.md",
+	}, requests[0])
+	assert.Equal(t, feishu.SkillReadRequest{
+		AgentRunID: 227,
+		Skill:      "lark-doc",
+		Reference:  "references/lark-doc-fetch.md",
+		Cursor:     "opaque-next",
+	}, requests[1], "the trusted canonical path must bind the internal continuation")
+}
+
+func TestLarkPersonalWorkspace_SkillReadPaginationFailsClosedWithoutPartialContent(t *testing.T) {
+	base := &feishu.SkillReadPage{
+		Skill:      "lark-doc",
+		Path:       "references/lark-doc-fetch.md",
+		Content:    "partial-secret",
+		References: []string{"references/lark-doc-fetch.md"},
+		Cursor:     "cursor-one",
+	}
+	clonePage := func() *feishu.SkillReadPage {
+		clone := *base
+		clone.References = append([]string(nil), base.References...)
+		return &clone
+	}
+
+	for name, steps := range map[string][]scriptedSkillReadStep{
+		"repeated cursor": {
+			{result: clonePage()},
+			{result: clonePage()},
+		},
+		"third page required": {
+			{result: clonePage()},
+			{result: func() *feishu.SkillReadPage { page := clonePage(); page.Cursor = "cursor-two"; return page }()},
+			{result: func() *feishu.SkillReadPage { page := clonePage(); page.Cursor = ""; return page }()},
+		},
+		"second page invalid": {
+			{result: clonePage()},
+			{err: feishu.ErrSkillReadInvalid},
+		},
+		"skill drift": {
+			{result: clonePage()},
+			{result: func() *feishu.SkillReadPage {
+				page := clonePage()
+				page.Skill = "lark-base"
+				page.Cursor = ""
+				return page
+			}()},
+		},
+		"path drift": {
+			{result: clonePage()},
+			{result: func() *feishu.SkillReadPage {
+				page := clonePage()
+				page.Path = "references/other.md"
+				page.Cursor = ""
+				return page
+			}()},
+		},
+		"references drift": {
+			{result: clonePage()},
+			{result: func() *feishu.SkillReadPage {
+				page := clonePage()
+				page.References = []string{"references/other.md"}
+				page.Cursor = ""
+				return page
+			}()},
+		},
+	} {
+		name, steps := name, steps
+		t.Run(name, func(t *testing.T) {
+			executor := &scriptedSkillReadExecutor{steps: steps}
+			result, err := (&larkSkillReadTool{executor: executor}).Execute(
+				WithRunID(context.Background(), 235),
+				ToolInput(`{"skill":"lark-doc","reference":"references/lark-doc-fetch.md"}`),
+			)
+			requireSafeLarkSoftError(t, result, err, "partial-secret", "cursor-one", "cursor-two")
+
+			var output struct {
+				Code        string `json:"code"`
+				Recoverable bool   `json:"recoverable"`
+			}
+			require.NoError(t, json.Unmarshal(result, &output))
+			assert.Equal(t, "skill_read_unavailable", output.Code)
+			assert.False(t, output.Recoverable)
+			assert.LessOrEqual(t, len(executor.snapshot()), larkSkillReadMaxPages)
+		})
+	}
+}
+
+func TestLarkPersonalWorkspace_SkillReadRejectsOversizedEscapedEnvelope(t *testing.T) {
+	content := strings.Repeat("\\\"", 24*1024)
+	executor := &fakeSkillReadExecutor{result: &feishu.SkillReadPage{
+		Skill: "lark-doc", Path: "SKILL.md", Content: content,
+	}}
+
+	result, err := (&larkSkillReadTool{executor: executor}).Execute(
+		WithRunID(context.Background(), 236),
+		ToolInput(`{"skill":"lark-doc"}`),
+	)
+	requireSafeLarkSoftError(t, result, err, content[:1024])
+	assert.Contains(t, string(result), `"code":"skill_read_unavailable"`)
+	assert.NotContains(t, string(result), `"cursor"`)
+	assert.Len(t, executor.snapshot(), 1)
+}
+
+func TestLarkPersonalWorkspace_SkillReadRejectsOversizedReferencesEnvelope(t *testing.T) {
+	content := "tiny-content-must-not-leak"
+	reference := "reference-must-not-leak-" + strings.Repeat("R", larkSkillReadAtomicOutputLimit)
+	executor := &fakeSkillReadExecutor{result: &feishu.SkillReadPage{
+		Skill: "lark-doc", Path: "SKILL.md", Content: content,
+		References: []string{reference},
+	}}
+
+	result, err := (&larkSkillReadTool{executor: executor}).Execute(
+		WithRunID(context.Background(), 237),
+		ToolInput(`{"skill":"lark-doc"}`),
+	)
+	requireSafeLarkSoftError(t, result, err, content, "reference-must-not-leak", reference[:1024])
+	assert.Contains(t, string(result), `"code":"skill_read_unavailable"`)
+	assert.NotContains(t, string(result), `"cursor"`)
+	assert.Len(t, executor.snapshot(), 1)
 }
 
 // Customer regression (Dev run 204): upstream skills describe a local CLI and

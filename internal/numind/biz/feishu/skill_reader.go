@@ -195,6 +195,7 @@ func (r *SkillReader) Read(ctx context.Context, request SkillReadRequest) (*Skil
 	if r == nil || ctx == nil || request.AgentRunID == 0 || !allowedSkill(request.Skill) {
 		return nil, ErrSkillReadInvalid
 	}
+	request = r.normalizeLegacyReferenceCursor(request)
 	if request.Reference != "" && !validSkillReferenceInput(request.Reference) {
 		return nil, ErrSkillReadInvalid
 	}
@@ -293,6 +294,25 @@ func (r *SkillReader) Read(ctx context.Context, request SkillReadRequest) (*Skil
 		}
 	}
 	return page, nil
+}
+
+// normalizeLegacyReferenceCursor repairs one exact rolling-deployment mistake:
+// an official Markdown reference was placed in the legacy cursor field while
+// reference was empty. A valid signed cursor always keeps its original meaning;
+// any repaired value still has to resolve uniquely inside the current skill's
+// declared reference set before a reference resource can be read.
+func (r *SkillReader) normalizeLegacyReferenceCursor(request SkillReadRequest) SkillReadRequest {
+	if request.Reference != "" || request.Cursor == "" {
+		return request
+	}
+	if _, err := r.decodeToken(request.Cursor, skillCursorKind); err == nil {
+		return request
+	}
+	if validSkillReferenceInput(request.Cursor) && strings.HasSuffix(request.Cursor, ".md") {
+		request.Reference = request.Cursor
+		request.Cursor = ""
+	}
+	return request
 }
 
 // Verify validates a receipt against one run, skill, and CLI version.

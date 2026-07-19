@@ -87,6 +87,178 @@ func TestSkillReader_ResolvesDeclaredReferenceBasename(t *testing.T) {
 	}, h.invocations())
 }
 
+// Customer regression (Dev run 227): the Agent selected the correct declared
+// Drive/Docs references but placed each reference in the legacy cursor field.
+// This is an unambiguous field-placement mistake, not an attempt to bypass the
+// current-skill declared-reference boundary.
+func TestSkillReader_RepairsDeclaredMarkdownReferencePlacedInCursor(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		skill     string
+		reference string
+	}{
+		{skill: "lark-drive", reference: "references/lark-drive-search.md"},
+		{skill: "lark-doc", reference: "references/lark-doc-fetch.md"},
+	} {
+		testCase := testCase
+		t.Run(testCase.skill, func(t *testing.T) {
+			t.Parallel()
+
+			h := newSkillReaderHarness(t, skillReaderOptions{})
+			h.writeResource(testCase.skill, "SKILL.md", "[Read]("+testCase.reference+")", true)
+			h.writeResource(testCase.skill, testCase.reference, "controlled reference", false)
+
+			page, err := h.reader.Read(h.context(), SkillReadRequest{
+				AgentRunID: 227,
+				Skill:      testCase.skill,
+				Cursor:     testCase.reference,
+			})
+			require.NoError(t, err)
+			require.Equal(t, testCase.reference, page.Path)
+			require.Equal(t, "controlled reference", page.Content)
+			require.Equal(t, []string{
+				"HOME=unset|4|skills|read|" + testCase.skill + "|--json",
+				"HOME=unset|5|skills|read|" + testCase.skill + "|" + testCase.reference + "|--json",
+			}, h.invocations())
+		})
+	}
+}
+
+func TestSkillReader_CursorReferenceRepairFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	t.Run("unique basename remains current-skill scoped", func(t *testing.T) {
+		t.Parallel()
+		h := newSkillReaderHarness(t, skillReaderOptions{})
+		h.writeResource("lark-doc", "SKILL.md", "[Fetch](references/nested/lark-doc-fetch.md)", true)
+		h.writeResource("lark-doc", "references/nested/lark-doc-fetch.md", "fetch", false)
+
+		page, err := h.reader.Read(h.context(), SkillReadRequest{
+			AgentRunID: 228,
+			Skill:      "lark-doc",
+			Cursor:     "lark-doc-fetch.md",
+		})
+		require.NoError(t, err)
+		require.Equal(t, "references/nested/lark-doc-fetch.md", page.Path)
+		require.Equal(t, "fetch", page.Content)
+	})
+
+	t.Run("undeclared reference reads only fixed main skill", func(t *testing.T) {
+		t.Parallel()
+		h := newSkillReaderHarness(t, skillReaderOptions{})
+		h.writeResource("lark-doc", "SKILL.md", "[Allowed](references/allowed.md)", true)
+
+		_, err := h.reader.Read(h.context(), SkillReadRequest{
+			AgentRunID: 229,
+			Skill:      "lark-doc",
+			Cursor:     "references/not-declared.md",
+		})
+		require.ErrorIs(t, err, ErrSkillReadInvalid)
+		require.Equal(t, []string{"HOME=unset|4|skills|read|lark-doc|--json"}, h.invocations())
+	})
+
+	t.Run("ambiguous basename never selects a resource", func(t *testing.T) {
+		t.Parallel()
+		h := newSkillReaderHarness(t, skillReaderOptions{})
+		h.writeResource(
+			"lark-doc",
+			"SKILL.md",
+			"[A](references/a/shared.md)\n[B](references/b/shared.md)",
+			true,
+		)
+
+		_, err := h.reader.Read(h.context(), SkillReadRequest{
+			AgentRunID: 230,
+			Skill:      "lark-doc",
+			Cursor:     "shared.md",
+		})
+		require.ErrorIs(t, err, ErrSkillReadInvalid)
+		require.Equal(t, []string{"HOME=unset|4|skills|read|lark-doc|--json"}, h.invocations())
+	})
+
+	t.Run("does not search another skill", func(t *testing.T) {
+		t.Parallel()
+		h := newSkillReaderHarness(t, skillReaderOptions{})
+		h.writeResource("lark-doc", "SKILL.md", "[Doc](references/doc.md)", true)
+		h.writeResource("lark-base", "SKILL.md", "[Shared](references/shared.md)", true)
+
+		_, err := h.reader.Read(h.context(), SkillReadRequest{
+			AgentRunID: 231,
+			Skill:      "lark-doc",
+			Cursor:     "shared.md",
+		})
+		require.ErrorIs(t, err, ErrSkillReadInvalid)
+		require.Equal(t, []string{"HOME=unset|4|skills|read|lark-doc|--json"}, h.invocations())
+	})
+
+	t.Run("reference plus cursor is never swapped", func(t *testing.T) {
+		t.Parallel()
+		h := newSkillReaderHarness(t, skillReaderOptions{})
+		h.writeResource("lark-doc", "SKILL.md", "[Allowed](references/allowed.md)", true)
+		h.writeResource("lark-doc", "references/allowed.md", "must not be opened", false)
+
+		_, err := h.reader.Read(h.context(), SkillReadRequest{
+			AgentRunID: 232,
+			Skill:      "lark-doc",
+			Reference:  "references/allowed.md",
+			Cursor:     "references/also-a-reference.md",
+		})
+		require.ErrorIs(t, err, ErrSkillReadInvalid)
+		require.Equal(t, []string{"HOME=unset|4|skills|read|lark-doc|--json"}, h.invocations())
+	})
+
+	for name, cursor := range map[string]string{
+		"parent traversal":  "../escape.md",
+		"absolute path":     "/tmp/escape.md",
+		"noncanonical path": "nested/escape.md",
+		"backslash":         `references\escape.md`,
+		"nul":               "escape\x00.md",
+		"unicode":           "读取.md",
+		"too long":          strings.Repeat("x", skillReaderMaxPathBytes) + ".md",
+	} {
+		name, cursor := name, cursor
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			h := newSkillReaderHarness(t, skillReaderOptions{})
+			h.writeResource("lark-doc", "SKILL.md", "[Allowed](references/allowed.md)", true)
+
+			_, err := h.reader.Read(h.context(), SkillReadRequest{
+				AgentRunID: 233,
+				Skill:      "lark-doc",
+				Cursor:     cursor,
+			})
+			require.ErrorIs(t, err, ErrSkillReadInvalid)
+			require.Empty(t, h.invocations(), "unsafe cursor-reference input must fail before CLI start")
+		})
+	}
+}
+
+func TestSkillReader_ValidSignedCursorIsNeverReinterpretedAsReference(t *testing.T) {
+	t.Parallel()
+
+	h := newSkillReaderHarness(t, skillReaderOptions{pageBytes: 8})
+	content := strings.Repeat("page-", 8)
+	h.writeResource("lark-doc", "SKILL.md", content, true)
+
+	first, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 234, Skill: "lark-doc"})
+	require.NoError(t, err)
+	require.NotEmpty(t, first.Cursor)
+
+	second, err := h.reader.Read(h.context(), SkillReadRequest{
+		AgentRunID: 234,
+		Skill:      "lark-doc",
+		Cursor:     first.Cursor,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, second.Content)
+	require.Equal(t, "SKILL.md", second.Path)
+	require.Equal(t, []string{
+		"HOME=unset|4|skills|read|lark-doc|--json",
+		"HOME=unset|4|skills|read|lark-doc|--json",
+	}, h.invocations(), "a real cursor must continue the main resource without a reference lookup")
+}
+
 func TestSkillReader_ReferenceBasenameResolutionFailsClosed(t *testing.T) {
 	t.Parallel()
 

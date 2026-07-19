@@ -1,5 +1,38 @@
 schema_version: '2.0'
 features:
+- id: lark-skill-reader-tolerance
+  ndf_version: '3.0'
+  description: Preserve LLM-led Feishu planning while moving deterministic skill cursor handling, exact reference-field repair, and recoverable invalid-input semantics behind the trusted tool boundary.
+  classification_reason: 'Standard: no schema/API/new integration change and a small file set, but this changes the security boundary for Agent-readable embedded Feishu instructions.'
+  last_updated_by: ai-s5-qa
+  last_updated_at: '2026-07-19T16:42:48+08:00'
+  created_at: '2026-07-19T15:33:58+08:00'
+  track: standard
+  stage: S5
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: feature/lark-skill-reader-tolerance}
+  worktrees: {numind-server: /private/tmp/wt-lark-skill-reader-tolerance-numind-server}
+  progress: {total_tasks: 5, completed_tasks: 5, reviewed_tasks: 2}
+  artifacts:
+    requirement: requirements/lark-skill-reader-tolerance.md
+    proposal: proposals/lark-skill-reader-tolerance-proposal.md
+    spec: docs/superpowers/specs/2026-07-19-lark-skill-reader-tolerance-design.md
+    plan: docs/superpowers/plans/2026-07-19-lark-skill-reader-tolerance.md
+    qa: docs/superpowers/qa/2026-07-19-lark-skill-reader-tolerance-s5-acceptance.md
+  decisions:
+  - 'S0: customer chose to preserve the current Codex-style LLM judgment architecture. The trusted platform will handle only deterministic skill pagination, exact reference/cursor field repair, and recoverable error semantics without widening the five-skill or declared-reference boundary. Fast Standard is authorized through Dev.'
+  - 'S1: selected LLM-led planning with platform-owned skill mechanics. A field-only patch leaves cursor and error instability; deterministic server routing would remove the LLM judgment the customer wants. New model calls expose only skill/reference while compatibility and security stay server-side.'
+  - 'S2: exact repair first distinguishes valid signed cursors, then accepts only safe Markdown reference shapes and still resolves them inside the current skill declared set. The tool aggregates at most two pages, checks the complete 64-KiB JSON envelope, hides cursor, and treats only first-call invalid model input as recoverable.'
+  - 'S3: five serial TDD tasks lock the Dev run 227 RED first, current-skill-only cursor/reference normalization, hidden cursor plus bounded two-page aggregation with exact page metadata, a separate atomic-wrapper alignment unit, dual review, atomic merge, and Dev deployment.'
+  - 'S3 gate: independent atomicity review PASS after requiring exact Skill/Path/References page equality and splitting the V2 wrapper alignment from the core paginator. Dependencies are linear and every task is independently buildable.'
+  - 'S4 Task 1 RED: commit 492a9818 permanently reproduces both Dev run 227 cursor=reference rejections, the model-visible cursor schema, and the incorrect terminal classification for ErrSkillReadInvalid.'
+  - 'S4 Tasks 2-4 GREEN: signed cursors are distinguished before exact Markdown reference repair; repaired values still resolve only inside the current skill declared set. New schemas hide cursor, old wire input remains accepted, the platform aggregates at most two exact-metadata pages under the shared 64-KiB envelope, and only first-call invalid model input is recoverable.'
+  - 'S4 review hardening: wrapped invalid sentinels lock errors.Is semantics; oversized References metadata is included in the complete-envelope limit; a direct boundedAtomicSkillTool test proves the independent 64-KiB wrapper defense. Dual specification and quality reviews finish PASS with P0/P1/P2=0.'
+  - 'S5 gate hardening: repository task test exposed a historical sandbox test-fixture race caused by changing SkillsRoot after worker startup. A test-only fix initializes the root before NewPool; the sandbox package passes race three consecutive times and production sandbox behavior is unchanged.'
+  - 'S5 acceptance PASS: exact task test, go test ./..., full sqlite_fts5 race, coverage, task lint, focused Agent/Feishu tests and diff hygiene pass. The LLM still plans Feishu business operations; platform-owned pagination and exact field repair remain inside the five-skill/current-declared-reference boundary. Authorized for atomic merge and Dev deployment; Prod remains untouched.'
+  blockers: []
+
 - id: lark-stable-execution
   ndf_version: '3.0'
   description: Move Feishu execution identity, policy, recovery, and retry decisions behind the trusted platform boundary so every Agent can use stable business argv without model-carried receipts.
