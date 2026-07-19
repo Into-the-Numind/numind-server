@@ -813,6 +813,34 @@ func TestLarkPersonalWorkspace_ExecuteTerminalStatesNeverFakeSuccess(t *testing.
 }
 
 func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *testing.T) {
+	t.Run("second malformed input exhausts correction budget without executor", func(t *testing.T) {
+		const runID = uint64(809)
+		larkExecuteRetryClearRun(runID)
+		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+		executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+			OperationID: "must-not-run", State: model.FeishuOperationSucceeded,
+			Data: json.RawMessage(`{"ok":true}`),
+		}}
+		tool := &larkExecuteTool{executor: executor}
+
+		first, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "malformed-1"),
+			ToolInput(`{"argv":[]}`),
+		)
+		requireSafeLarkSoftError(t, first, err)
+		require.Contains(t, string(first), `"code":"invalid_execute_input"`)
+		require.Contains(t, string(first), `"recoverable":true`)
+
+		second, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "malformed-2"),
+			ToolInput(`{"argv":[]}`),
+		)
+		requireSafeLarkSoftError(t, second, err)
+		require.Contains(t, string(second), `"code":"correction_exhausted"`)
+		require.Contains(t, string(second), `"recoverable":false`)
+		require.Empty(t, executor.snapshot())
+	})
+
 	t.Run("durable external unknown arms stop before continuation", func(t *testing.T) {
 		const runID = uint64(810)
 		larkExecuteRetryClearRun(runID)
