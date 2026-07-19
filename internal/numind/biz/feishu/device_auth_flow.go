@@ -18,10 +18,12 @@ import (
 )
 
 const (
-	deviceAuthManualBindingID       = "manual"
-	deviceAuthMaxCompletionTimeout  = 30 * time.Second
-	deviceAuthReconciliationTimeout = 5 * time.Second
-	deviceAuthMutationTimeout       = 5 * time.Second
+	deviceAuthManualBindingID          = "manual"
+	deviceAuthDefaultCompletionTimeout = 30 * time.Second
+	deviceAuthMaxCompletionTimeout     = 30 * time.Second
+	deviceAuthConfirmationTimeout      = 50 * time.Second
+	deviceAuthReconciliationTimeout    = 5 * time.Second
+	deviceAuthMutationTimeout          = 5 * time.Second
 )
 
 var (
@@ -119,24 +121,25 @@ type DeviceAuthFlowDeps struct {
 
 // DeviceAuthFlow owns only the restart-safe split user-authorization protocol.
 type DeviceAuthFlow struct {
-	accounts          AuthSessionAccountStore
-	sessions          DeviceAuthStore
-	vault             DeviceAuthHomeVault
-	cli               DeviceAuthCLI
-	cipher            *DeviceAuthCredentialCipher
-	dispatcher        OperationResumeDispatcher
-	now               func() time.Time
-	newID             func() string
-	newLeaseToken     func() string
-	leaseDuration     time.Duration
-	sessionDuration   time.Duration
-	heartbeatInterval time.Duration
-	startTimeout      time.Duration
-	completionTimeout time.Duration
-	observer          DeviceAuthObserver
-	liveURLs          *authSessionURLRegistry
-	cleanupMu         sync.Mutex
-	cleanupCursor     string
+	accounts            AuthSessionAccountStore
+	sessions            DeviceAuthStore
+	vault               DeviceAuthHomeVault
+	cli                 DeviceAuthCLI
+	cipher              *DeviceAuthCredentialCipher
+	dispatcher          OperationResumeDispatcher
+	now                 func() time.Time
+	newID               func() string
+	newLeaseToken       func() string
+	leaseDuration       time.Duration
+	sessionDuration     time.Duration
+	heartbeatInterval   time.Duration
+	startTimeout        time.Duration
+	completionTimeout   time.Duration
+	confirmationTimeout time.Duration
+	observer            DeviceAuthObserver
+	liveURLs            *authSessionURLRegistry
+	cleanupMu           sync.Mutex
+	cleanupCursor       string
 }
 
 func NewDeviceAuthFlow(deps DeviceAuthFlowDeps) (*DeviceAuthFlow, error) {
@@ -164,7 +167,7 @@ func NewDeviceAuthFlow(deps DeviceAuthFlowDeps) (*DeviceAuthFlow, error) {
 	sessionDuration := positiveDurationOr(deps.SessionDuration, authSessionDefaultDuration)
 	heartbeatInterval := positiveDurationOr(deps.HeartbeatInterval, authSessionDefaultHeartbeatInterval)
 	startTimeout := positiveDurationOr(deps.StartTimeout, authSessionDefaultStartTimeout)
-	completionTimeout := positiveDurationOr(deps.CompletionTimeout, authSessionDefaultStartTimeout)
+	completionTimeout := positiveDurationOr(deps.CompletionTimeout, deviceAuthDefaultCompletionTimeout)
 	if completionTimeout > deviceAuthMaxCompletionTimeout {
 		completionTimeout = deviceAuthMaxCompletionTimeout
 	}
@@ -183,8 +186,9 @@ func NewDeviceAuthFlow(deps DeviceAuthFlowDeps) (*DeviceAuthFlow, error) {
 		cipher: deps.Cipher, dispatcher: deps.Dispatcher, now: now, newID: newID,
 		newLeaseToken: newLeaseToken, leaseDuration: leaseDuration, sessionDuration: sessionDuration,
 		heartbeatInterval: heartbeatInterval, startTimeout: startTimeout, completionTimeout: completionTimeout,
-		observer: deps.Observer,
-		liveURLs: newAuthSessionURLRegistry(),
+		confirmationTimeout: deviceAuthConfirmationTimeout,
+		observer:            deps.Observer,
+		liveURLs:            newAuthSessionURLRegistry(),
 	}, nil
 }
 
@@ -458,6 +462,14 @@ func (f *DeviceAuthFlow) CompleteUserAuthorization(
 	if f == nil || userID == 0 || generation == 0 || strings.TrimSpace(sessionID) == "" {
 		return nil, ErrAuthSessionUnavailable
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestCtx, cancelRequest := context.WithTimeout(
+		context.WithoutCancel(ctx), f.confirmationTimeout,
+	)
+	defer cancelRequest()
+	ctx = requestCtx
 	startedAt := f.now().UTC()
 	var observedSession *model.FeishuAuthSession
 	defer func() {
@@ -469,9 +481,6 @@ func (f *DeviceAuthFlow) CompleteUserAuthorization(
 		}
 		f.observeDeviceAuth(observedSession, "complete", outcome, LarkCLIVersion, f.now().UTC().Sub(startedAt))
 	}()
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	f.cleanupExpiredCredentialsBestEffort(ctx)
 	session, err := f.sessions.GetSessionForUser(ctx, userID, generation, sessionID)
 	if err != nil || session == nil {
@@ -488,6 +497,16 @@ func (f *DeviceAuthFlow) CompleteUserAuthorization(
 	if !validDeviceAuthCompletion(account, session, f.now().UTC()) {
 		return nil, ErrAuthSessionUnavailable
 	}
+	if session.OperationID != nil {
+		operation, operationErr := f.sessions.GetOperationForUser(
+			ctx, session.UserID, session.Generation, *session.OperationID,
+		)
+		if operationErr != nil || !validPendingDeviceAuthOperation(operation, session) {
+			f.observeDeviceAuth(session, "binding", "rejected", "", 0)
+			return nil, ErrAuthSessionUnavailable
+		}
+		f.observeDeviceAuth(session, "binding", "verified", "", 0)
+	}
 
 	leaseToken := strings.TrimSpace(f.newLeaseToken())
 	if leaseToken == "" || len(leaseToken) > 128 {
@@ -501,7 +520,7 @@ func (f *DeviceAuthFlow) CompleteUserAuthorization(
 	if claimBudget <= 0 {
 		return nil, ErrDeviceAuthProcessing
 	}
-	claimCtx, cancelClaim := context.WithTimeout(context.WithoutCancel(ctx), claimBudget)
+	claimCtx, cancelClaim := context.WithTimeout(ctx, claimBudget)
 	claimed, err := f.sessions.ClaimSession(
 		claimCtx, userID, generation, sessionID, leaseToken, claimNow, claimUntil,
 	)
@@ -524,7 +543,7 @@ func (f *DeviceAuthFlow) CompleteUserAuthorization(
 		f.releaseOwnedCompletionLease(ctx, session, leaseToken, claimUntil)
 		return nil, ErrDeviceAuthConflict
 	}
-	rereadCtx, cancelReread := context.WithTimeout(context.WithoutCancel(ctx), rereadBudget)
+	rereadCtx, cancelReread := context.WithTimeout(ctx, rereadBudget)
 	currentAccount, accountErr := f.accounts.Get(rereadCtx, userID, ProviderLark)
 	durable, err := f.sessions.GetSessionForUser(rereadCtx, userID, generation, sessionID)
 	cancelReread()
@@ -542,7 +561,7 @@ func (f *DeviceAuthFlow) CompleteUserAuthorization(
 		f.releaseOwnedCompletionLease(ctx, durable, leaseToken, oldLeaseUntil)
 		return nil, ErrDeviceAuthConflict
 	}
-	renewCtx, cancelRenew := context.WithTimeout(context.WithoutCancel(ctx), renewBudget)
+	renewCtx, cancelRenew := context.WithTimeout(ctx, renewBudget)
 	refreshedLeaseUntil := renewNow.Add(f.leaseDuration)
 	renewed, renewErr := f.sessions.RenewSession(
 		renewCtx, durable.UserID, durable.Generation, durable.ID,
@@ -558,7 +577,7 @@ func (f *DeviceAuthFlow) CompleteUserAuthorization(
 	durable.LeaseUntil = &refreshedLeaseUntil
 	account = currentAccount
 	session = durable
-	ownerCtx, cancelOwner := context.WithCancel(context.WithoutCancel(ctx))
+	ownerCtx, cancelOwner := context.WithCancel(ctx)
 	fence := newDeviceAuthLeaseFence(*session.LeaseUntil)
 	heartbeatDone := make(chan struct{})
 	go f.runDeviceAuthCompletionHeartbeat(ownerCtx, cancelOwner, session, leaseToken, fence, heartbeatDone)
@@ -798,15 +817,19 @@ func (f *DeviceAuthFlow) completeInCandidateHome(
 		cancelCLI()
 		return DeviceAuthProtocolFailure, ""
 	}
+	cliStartedAt := f.now().UTC()
 	outcome, err := f.cli.CompleteUserAuth(cliCtx, home, deviceCode, expectedScopes)
 	cancelCLI()
 	if err != nil {
 		outcome = DeviceAuthRetryableDependency
 	}
+	f.observeDeviceAuth(session, "cli_complete", outcome.String(), LarkCLIVersion, f.now().UTC().Sub(cliStartedAt))
 	switch outcome {
 	case DeviceAuthPending, DeviceAuthRejected, DeviceAuthExpired, DeviceAuthProtocolFailure:
 		return outcome, ""
-	case DeviceAuthAmbiguous, DeviceAuthRetryableDependency:
+	case DeviceAuthAmbiguous, DeviceAuthRetryableDependency,
+		DeviceAuthPollingPendingTimeout, DeviceAuthPollingNetworkFailure,
+		DeviceAuthPollingReadFailure, DeviceAuthPollingParseFailure, DeviceAuthPollingSlowDown:
 		// Auth status and AppID prove only that some user token exists for the
 		// expected application. They do not prove that the durable scopes for
 		// this authorization attempt were granted; an older token in the HOME
@@ -834,21 +857,29 @@ func (f *DeviceAuthFlow) completeInCandidateHome(
 	reconcileCtx, cancelReconcile := context.WithTimeout(ownerCtx, reconcileBudget)
 	available, statusErr := f.cli.AuthStatus(reconcileCtx, home)
 	if statusErr != nil || !available {
+		statusOutcome := "unavailable"
+		if statusErr != nil {
+			statusOutcome = "dependency"
+		}
+		f.observeDeviceAuth(session, "reconcile_status", statusOutcome, LarkCLIVersion, 0)
 		cancelReconcile()
 		if !session.ResumeExpiresAt.After(f.now().UTC()) {
 			return DeviceAuthExpired, ""
 		}
 		return DeviceAuthPending, ""
 	}
+	f.observeDeviceAuth(session, "reconcile_status", "available", LarkCLIVersion, 0)
 	appID, appErr := f.cli.AppIDFromHome(reconcileCtx, home)
 	cancelReconcile()
 	if appErr != nil {
+		f.observeDeviceAuth(session, "reconcile_app", "dependency", LarkCLIVersion, 0)
 		if !session.ResumeExpiresAt.After(f.now().UTC()) {
 			return DeviceAuthExpired, ""
 		}
 		return DeviceAuthPending, ""
 	}
 	if appID != account.AppID {
+		f.observeDeviceAuth(session, "reconcile_app", "mismatch", LarkCLIVersion, 0)
 		if outcome == DeviceAuthCompleted {
 			return DeviceAuthProtocolFailure, ""
 		}
@@ -857,7 +888,32 @@ func (f *DeviceAuthFlow) completeInCandidateHome(
 		}
 		return DeviceAuthPending, ""
 	}
+	f.observeDeviceAuth(session, "reconcile_app", "matched", LarkCLIVersion, 0)
 	return DeviceAuthCompleted, appID
+}
+
+// validPendingDeviceAuthOperation re-establishes the complete durable link
+// before the opaque device code is decrypted or lark-cli is invoked. Legacy
+// manual operations may carry neither Agent field; an Agent operation must
+// carry both, and a partially populated link is always corruption.
+func validPendingDeviceAuthOperation(
+	operation *model.FeishuOperation,
+	session *model.FeishuAuthSession,
+) bool {
+	if operation == nil || session == nil || session.OperationID == nil ||
+		operation.ID != *session.OperationID || operation.UserID != session.UserID ||
+		operation.Generation != session.Generation ||
+		operation.State != model.FeishuOperationWaitingUserAuth {
+		return false
+	}
+	if operation.AgentRunID == 0 ||
+		!validStableIdentifier(operation.ToolCallID, operationMaxToolCallIDBytes) {
+		return false
+	}
+	summary, err := decodeOperationSummary(operation.ResultSummaryJSON)
+	return err == nil && summary.Status == model.FeishuOperationWaitingUserAuth &&
+		summary.SessionID == session.ID && summary.Phase == model.FeishuAuthPhaseUserAuth &&
+		phaseForRecovery(summary.RecoveryKind) == model.FeishuAuthPhaseUserAuth
 }
 
 func deviceAuthBoundedBudget(limit time.Duration, now time.Time, deadlines ...time.Time) time.Duration {
@@ -939,7 +995,10 @@ func (f *DeviceAuthFlow) dispatchCompletedDeviceAuth(
 	if err != nil || !validCompletedDeviceAuthOperation(operation, session) {
 		return nil, ErrAuthSessionUnavailable
 	}
-	dispatchCtx, cancelDispatch := authSessionDispatchContext(ctx)
+	// Preserve CompleteUserAuthorization's detached 50-second deadline instead
+	// of widening this final step to the generic 12-minute recovery ceiling.
+	// This makes the server return before the browser's scoped 60-second limit.
+	dispatchCtx, cancelDispatch := context.WithCancel(ctx)
 	defer cancelDispatch()
 	if err := f.dispatcher.DispatchResume(dispatchCtx, session.UserID, operationID); err != nil {
 		f.observeDeviceAuth(session, "dispatch", "retry", "", 0)
@@ -951,7 +1010,8 @@ func (f *DeviceAuthFlow) dispatchCompletedDeviceAuth(
 
 func validCompletedDeviceAuthOperation(operation *model.FeishuOperation, session *model.FeishuAuthSession) bool {
 	if operation == nil || session == nil || session.OperationID == nil || operation.ID != *session.OperationID ||
-		operation.UserID != session.UserID || operation.Generation != session.Generation {
+		operation.UserID != session.UserID || operation.Generation != session.Generation ||
+		operation.AgentRunID == 0 || !validStableIdentifier(operation.ToolCallID, operationMaxToolCallIDBytes) {
 		return false
 	}
 	switch operation.State {
@@ -1095,8 +1155,17 @@ func (f *DeviceAuthFlow) releaseOwnedCompletionLease(
 	leaseToken string,
 	leaseUntil time.Time,
 ) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	now := f.now().UTC()
 	budget := deviceAuthBoundedBudget(deviceAuthMutationTimeout, now, leaseUntil)
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining < budget {
+			budget = remaining
+		}
+	}
 	if budget <= 0 {
 		return
 	}
@@ -1216,7 +1285,17 @@ func (f *DeviceAuthFlow) replaceOwnedSession(
 	if startParent == nil {
 		startParent = context.Background()
 	}
-	startCtx, cancelStart := context.WithTimeout(context.WithoutCancel(startParent), f.startTimeout)
+	startBudget := f.startTimeout
+	if deadline, ok := startParent.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining < startBudget {
+			startBudget = remaining
+		}
+	}
+	if startBudget <= 0 {
+		return nil, ErrDeviceAuthConflict
+	}
+	startCtx, cancelStart := context.WithTimeout(context.WithoutCancel(startParent), startBudget)
 	defer cancelStart()
 	action, err := f.startUserAuthorization(startCtx, account, stored, canonicalScopes, true)
 	if err != nil {

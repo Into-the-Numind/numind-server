@@ -1098,21 +1098,31 @@ func (f *deviceAuthCompletionStoreFake) FinalizeDeviceAuthSuccess(
 }
 
 type deviceAuthCompletionDispatcherFake struct {
-	mu    sync.Mutex
-	calls []string
-	errs  []error
+	mu                sync.Mutex
+	calls             []string
+	errs              []error
+	deadlineRemaining []time.Duration
+	blockUntilDone    bool
 }
 
-func (f *deviceAuthCompletionDispatcherFake) DispatchResume(_ context.Context, _ uint, operationID string) error {
+func (f *deviceAuthCompletionDispatcherFake) DispatchResume(ctx context.Context, _ uint, operationID string) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.calls = append(f.calls, operationID)
-	if len(f.errs) > 0 {
-		err := f.errs[0]
-		f.errs = f.errs[1:]
-		return err
+	if deadline, ok := ctx.Deadline(); ok {
+		f.deadlineRemaining = append(f.deadlineRemaining, time.Until(deadline))
 	}
-	return nil
+	blockUntilDone := f.blockUntilDone
+	var dispatchErr error
+	if len(f.errs) > 0 {
+		dispatchErr = f.errs[0]
+		f.errs = f.errs[1:]
+	}
+	f.mu.Unlock()
+	if blockUntilDone {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return dispatchErr
 }
 
 type deviceAuthObservationCapture struct {
@@ -1174,8 +1184,9 @@ func newDeviceAuthCompletionFixture(t *testing.T) deviceAuthCompletionFixture {
 		session: cloneDeviceAuthFlowSession(session),
 		operation: &model.FeishuOperation{
 			ID: operationID, UserID: session.UserID, Generation: session.Generation,
+			AgentRunID: 701, ToolCallID: "tool-device-complete",
 			State:             model.FeishuOperationWaitingUserAuth,
-			ResultSummaryJSON: []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"00000000-0000-4000-8000-000000000072"}`),
+			ResultSummaryJSON: []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"00000000-0000-4000-8000-000000000072","recovery_kind":"user_scope","recovery_scopes":["docx:document:readonly"]}`),
 		},
 	}}
 	candidateCiphertext := []byte("sealed-device-auth-candidate")
@@ -1207,6 +1218,41 @@ func newDeviceAuthCompletionFixture(t *testing.T) deviceAuthCompletionFixture {
 	return deviceAuthCompletionFixture{
 		now: now, account: account, session: session, store: storeFake, vault: vault,
 		cli: cli, dispatcher: dispatcher, flow: flow,
+	}
+}
+
+func TestDeviceAuthFlow_DefaultConfirmationWindowMatchesBrowserContract(t *testing.T) {
+	require.Equal(t, 10*time.Minute, authSessionDefaultDuration)
+	require.Equal(t, 10*time.Minute, deviceAuthCLIMaxExpiresIn)
+	require.Equal(t, 30*time.Second, deviceAuthDefaultCompletionTimeout)
+	require.Equal(t, 30*time.Second, deviceAuthMaxCompletionTimeout)
+	require.Equal(t, 50*time.Second, deviceAuthConfirmationTimeout)
+}
+
+func TestDeviceAuthFlow_CompleteRejectsMissingOriginalAgentBindingBeforeCLI(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		runID uint64
+		tool  string
+	}{
+		{name: "partial link", runID: 701},
+		{name: "missing link"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newDeviceAuthCompletionFixture(t)
+			fixture.store.operation.AgentRunID = test.runID
+			fixture.store.operation.ToolCallID = test.tool
+
+			result, err := fixture.flow.CompleteUserAuthorization(
+				context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+			)
+
+			require.Nil(t, result)
+			require.ErrorIs(t, err, ErrAuthSessionUnavailable)
+			fixture.cli.mu.Lock()
+			require.Zero(t, fixture.cli.completeCalls, "a missing Agent binding must fail before lark-cli")
+			fixture.cli.mu.Unlock()
+		})
 	}
 }
 
@@ -1283,7 +1329,7 @@ func TestDeviceAuthFlow_CompleteExpiredReturnsLiveReplacement(t *testing.T) {
 	require.Equal(t, "device-auth-completion-lease", fixture.store.replaceInput.LeaseOwner)
 	require.Equal(t, model.FeishuAuthSessionExpired, fixture.store.replaceInput.TerminalState)
 	require.JSONEq(t,
-		`{"status":"waiting_user_auth","phase":"user_auth","session_id":"00000000-0000-4000-8000-000000000073"}`,
+		`{"status":"waiting_user_auth","phase":"user_auth","session_id":"00000000-0000-4000-8000-000000000073","recovery_kind":"user_scope","recovery_scopes":["docx:document:readonly"]}`,
 		string(fixture.store.replaceInput.NewSummary),
 	)
 }
@@ -1652,6 +1698,9 @@ func TestDeviceAuthFlow_CompleteSuccessPublishesCandidateAtomically(t *testing.T
 	fixture.store.mu.Unlock()
 	fixture.dispatcher.mu.Lock()
 	require.Equal(t, []string{*fixture.session.OperationID}, fixture.dispatcher.calls)
+	require.Len(t, fixture.dispatcher.deadlineRemaining, 1)
+	require.Positive(t, fixture.dispatcher.deadlineRemaining[0])
+	require.LessOrEqual(t, fixture.dispatcher.deadlineRemaining[0], deviceAuthConfirmationTimeout)
 	fixture.dispatcher.mu.Unlock()
 	fixture.cli.mu.Lock()
 	require.Equal(t, "opaque-completion-device-code", fixture.cli.completeDeviceCode)
@@ -1673,6 +1722,33 @@ func TestDeviceAuthFlow_CompleteSuccessPublishesCandidateAtomically(t *testing.T
 		require.Nil(t, mismatch.store.published)
 		mismatch.store.mu.Unlock()
 	})
+}
+
+func TestDeviceAuthFlow_ConfirmationDeadlineBoundsSynchronousDispatch(t *testing.T) {
+	fixture := newDeviceAuthCompletionFixture(t)
+	fixture.flow.confirmationTimeout = 50 * time.Millisecond
+	fixture.cli.outcome = DeviceAuthCompleted
+	fixture.cli.authStatus = true
+	fixture.dispatcher.blockUntilDone = true
+	started := time.Now()
+
+	result, err := fixture.flow.CompleteUserAuthorization(
+		context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+	)
+
+	require.Nil(t, result)
+	require.ErrorIs(t, err, ErrAuthSessionUnavailable)
+	require.Less(t, time.Since(started), 500*time.Millisecond,
+		"the confirmation request must not outlive its server-side budget")
+	fixture.store.mu.Lock()
+	require.Equal(t, model.FeishuAuthSessionCompleted, fixture.store.session.State,
+		"successful authorization remains durable for idempotent resume")
+	fixture.store.mu.Unlock()
+	fixture.dispatcher.mu.Lock()
+	require.Equal(t, []string{*fixture.session.OperationID}, fixture.dispatcher.calls)
+	require.Len(t, fixture.dispatcher.deadlineRemaining, 1)
+	require.Positive(t, fixture.dispatcher.deadlineRemaining[0])
+	fixture.dispatcher.mu.Unlock()
 }
 
 func TestDeviceAuthFlow_CompletionFailureBoundariesNeverPublishPartialCredential(t *testing.T) {
@@ -1913,7 +1989,22 @@ func TestDeviceAuthFlow_ObservabilityNeverContainsCredentialOrBusinessContent(t 
 	for _, secret := range secretValues {
 		require.NotContains(t, string(flattened), secret)
 	}
-	require.NotEmpty(t, observer.snapshot(), "start/complete protocol must emit allowlisted observations")
+	events := observer.snapshot()
+	require.NotEmpty(t, events, "start/complete protocol must emit allowlisted observations")
+	require.Contains(t, events, DeviceAuthObservation{
+		UserID: 7, Generation: 3, OperationID: "operation-device-complete",
+		SessionID: fixture.session.ID, Phase: "binding", OutcomeClass: "verified",
+	})
+	require.Contains(t, events, DeviceAuthObservation{
+		UserID: 7, Generation: 3, OperationID: "operation-device-complete",
+		SessionID: fixture.session.ID, Phase: "reconcile_status", OutcomeClass: "available",
+		CLIVersion: LarkCLIVersion,
+	})
+	require.Contains(t, events, DeviceAuthObservation{
+		UserID: 7, Generation: 3, OperationID: "operation-device-complete",
+		SessionID: fixture.session.ID, Phase: "reconcile_app", OutcomeClass: "matched",
+		CLIVersion: LarkCLIVersion,
+	})
 }
 
 func TestDeviceAuthFlow_CompleteAppIDEvidenceTimeoutRetainsCredential(t *testing.T) {

@@ -5,12 +5,13 @@
 1. 授权 session 与 provider device link 均以 10 分钟为上限。
 2. 不改 lark-cli；其 device flow 保持每 5 秒一次查询。
 3. 用户点击继续后，浏览器只调用现有 operation resume API，超时 60 秒。
-4. 后端 CLI completion 最长 55 秒，给 HTTP 返回预留 5 秒。
+4. 后端 CLI completion 保持最长 30 秒，使前后置绑定/存储操作、Agent 恢复和 HTTP 返回仍能被 60 秒浏览器窗口覆盖。
 5. 成功提交后立即调用现有 durable dispatcher，禁止人为延迟和自动确认。
+6. 整次后端确认建立 detached 50 秒主动处理 deadline；内部 claim、reread、renew、CLI、reconcile、mutation 和 dispatch 只能缩短，不能扩展该 deadline。另为最慢 5 秒的持久化收尾及 HTTP/网络返回各预留约 5 秒。
 
 ## 2. 时序
 
-`点击继续 → 校验当前用户/account generation/operation/session/phase/Agent link → 解密精确绑定的 device code → 官方 CLI 最多轮询 55 秒 → 校验结构化 scopes + HOME auth status + app ID → 原子提交 vault/session/account → 立即 dispatch 原 operation → HTTP 返回`。
+`点击继续 → 校验当前用户/account generation/operation/session/phase/Agent link → 解密精确绑定的 device code → 官方 CLI 最多轮询 30 秒 → 校验结构化 scopes + HOME auth status + app ID → 原子提交 vault/session/account → 立即 dispatch 原 operation → HTTP 返回`。
 
 浏览器 60 秒上限只覆盖这个请求，不改变其他 API 的 30 秒默认值。
 
@@ -20,7 +21,7 @@
 - DeviceAuthCredentialBinding 的 AAD 继续绑定 user、generation、app、operation、session、scope hash 和 resume expiry。
 - 完成前重新读取 current account，并核对 app 与 generation。
 - operation summary 必须与 waiting state、session ID、phase、recovery kind 完全一致。
-- Agent operation 必须同时具有合法 AgentRunID 和 ToolCallID；两者缺一即拒绝。最终 dispatcher 继续使用 operation/run/tool tuple 的 durable exactly-once 校验。
+- 任何 operation-bound session 必须同时具有合法 AgentRunID 和 ToolCallID；两者缺一或同时为空都拒绝。手动连接没有 operation，使用 OperationID=nil。最终 dispatcher 继续使用 operation/run/tool tuple 的 durable exactly-once 校验。
 - 任一不一致都不发布 candidate HOME，不恢复 Agent。
 
 ## 4. 安全诊断
@@ -41,10 +42,11 @@
 
 ## 5. 失败语义
 
-- 55 秒内未得到完成证据：释放 lease 并返回 authorization_pending，允许用户再次点击。
+- 30 秒内未得到完成证据：释放 lease 并返回 authorization_pending，允许用户再次点击；浏览器不会再与后端同时在 30 秒超时。
 - 网络/read/parse/slow-down：同样保持 pending，但日志保留准确分类。
 - 协议或绑定不一致：fail closed，不发布凭据。
 - 已完成但 dispatch 暂时失败：保持 durable completed，后续同一操作可幂等补偿，不重新执行飞书写入。
+- 无论授权和原操作执行处在哪一步，50 秒主动处理 deadline 加最慢 5 秒持久化收尾仍先于浏览器 60 秒上限；dispatch 超时记录 retry，durable completed/session/operation 状态仍允许同一操作幂等补偿。
 
 ## 6. 拒绝方案
 
