@@ -1174,6 +1174,7 @@ func newDeviceAuthCompletionFixture(t *testing.T) deviceAuthCompletionFixture {
 		session: cloneDeviceAuthFlowSession(session),
 		operation: &model.FeishuOperation{
 			ID: operationID, UserID: session.UserID, Generation: session.Generation,
+			AgentRunID: 701, ToolCallID: "tool-device-complete",
 			State:             model.FeishuOperationWaitingUserAuth,
 			ResultSummaryJSON: []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"00000000-0000-4000-8000-000000000072"}`),
 		},
@@ -1208,6 +1209,27 @@ func newDeviceAuthCompletionFixture(t *testing.T) deviceAuthCompletionFixture {
 		now: now, account: account, session: session, store: storeFake, vault: vault,
 		cli: cli, dispatcher: dispatcher, flow: flow,
 	}
+}
+
+func TestDeviceAuthFlow_DefaultConfirmationWindowMatchesBrowserContract(t *testing.T) {
+	require.Equal(t, 10*time.Minute, authSessionDefaultDuration)
+	require.Equal(t, 10*time.Minute, deviceAuthCLIMaxExpiresIn)
+	require.Equal(t, 55*time.Second, deviceAuthMaxCompletionTimeout)
+}
+
+func TestDeviceAuthFlow_CompleteRejectsPartialOriginalAgentBindingBeforeCLI(t *testing.T) {
+	fixture := newDeviceAuthCompletionFixture(t)
+	fixture.store.operation.ToolCallID = ""
+
+	result, err := fixture.flow.CompleteUserAuthorization(
+		context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+	)
+
+	require.Nil(t, result)
+	require.ErrorIs(t, err, ErrAuthSessionUnavailable)
+	fixture.cli.mu.Lock()
+	require.Zero(t, fixture.cli.completeCalls, "a corrupt Agent binding must fail before lark-cli")
+	fixture.cli.mu.Unlock()
 }
 
 func TestDeviceAuthFlow_CompletePendingRetainsCredential(t *testing.T) {

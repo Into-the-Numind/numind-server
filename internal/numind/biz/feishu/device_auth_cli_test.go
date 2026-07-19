@@ -249,6 +249,38 @@ exit 3
 	})
 }
 
+func TestClassifyDeviceAuthCompletionResult_PreservesSafePollingDiagnosis(t *testing.T) {
+	tests := []struct {
+		name   string
+		stderr string
+		want   DeviceAuthOutcome
+	}{
+		{name: "ordinary pending timeout", want: DeviceAuthOutcome("polling_pending_timeout")},
+		{
+			name: "provider network warning",
+			stderr: "[lark-cli] [WARN] device-flow: poll network error: redacted upstream detail\n",
+			want: DeviceAuthOutcome("polling_network_failure"),
+		},
+		{
+			name: "provider read warning",
+			stderr: "[lark-cli] [WARN] device-flow: poll read error: redacted upstream detail\n",
+			want: DeviceAuthOutcome("polling_read_failure"),
+		},
+		{
+			name: "provider parse warning",
+			stderr: "[lark-cli] [WARN] device-flow: poll parse error: redacted upstream detail\n",
+			want: DeviceAuthOutcome("polling_parse_failure"),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := &CLIResult{InvocationStarted: true, ExitCode: -1, Stderr: []byte(test.stderr)}
+			require.Equal(t, test.want, classifyDeviceAuthCompletionResult(result, context.DeadlineExceeded))
+		})
+	}
+}
+
 func TestControlledLarkCLIRunner_DeviceCodeNeverAppearsInError(t *testing.T) {
 	secret := "device-secret-MUST-NEVER-LEAK"
 	tests := []struct {
