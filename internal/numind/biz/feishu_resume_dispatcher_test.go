@@ -444,3 +444,29 @@ func TestWorkspaceResumeDispatcher_OperationFailureDoesNotInvokeAgentResumer(t *
 	require.Error(t, err)
 	require.Empty(t, resumer.snapshot())
 }
+
+func TestWorkspaceResumeDispatcher_UnknownWriteDoesNotResumeAgentOrReturnInfrastructureError(t *testing.T) {
+	operationID := "operation-base-create-unknown"
+	operations := &dispatcherOperationFake{result: &feishu.OperationResult{
+		OperationID: operationID,
+		State:       model.FeishuOperationUnknown,
+		AgentRunID:  236,
+		ToolCallID:  "tool-base-create",
+		Failure: &feishu.OperationFailure{
+			Code:            feishu.PublicCodeUnknownResult,
+			Category:        "unknown_result",
+			BusinessStarted: true,
+		},
+	}}
+	// Agent continuation rejects the terminal write result. The authorization
+	// acknowledgement must not expose that expected business terminal as HTTP
+	// 500, and must not call the model-continuation path at all.
+	resumer := &dispatcherAgentResumerFake{err: errors.New("terminal result cannot continue the agent")}
+
+	err := NewWorkspaceResumeDispatcher(operations, resumer).DispatchResume(
+		context.Background(), 7, operationID,
+	)
+
+	require.NoError(t, err)
+	require.Empty(t, resumer.snapshot())
+}
