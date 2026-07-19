@@ -283,7 +283,10 @@ func (f *deviceAuthFlowStoreFake) ReplaceDeviceAuthSession(_ context.Context, in
 	terminalSource := old != nil && old.LeaseOwner == "" && old.LeaseUntil == nil &&
 		((old.ProtocolVersion == 1 && old.State == model.FeishuAuthSessionSuperseded && input.TerminalState == old.State) ||
 			(old.ProtocolVersion == 2 && (old.State == model.FeishuAuthSessionRejected || old.State == model.FeishuAuthSessionExpired) && input.TerminalState == old.State))
-	if old == nil || (!f.replaceOwnerLive && !terminalSource) || input.NewSession == nil {
+	expiredPendingSource := old != nil && old.ProtocolVersion == 2 && old.State == model.FeishuAuthSessionPending &&
+		old.CompletedAt == nil && !old.ExpiresAt.After(input.Now) && input.TerminalState == model.FeishuAuthSessionExpired &&
+		deviceAuthExpiredPendingLeaseSafe(old, input.Now)
+	if old == nil || (!f.replaceOwnerLive && !terminalSource && !expiredPendingSource) || input.NewSession == nil {
 		return nil, gorm.ErrRecordNotFound
 	}
 	old.State = input.TerminalState

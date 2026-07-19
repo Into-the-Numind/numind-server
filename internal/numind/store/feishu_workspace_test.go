@@ -2610,6 +2610,75 @@ func TestFeishuWorkspaceStore_ReplaceDeviceAuthSessionRebindsExactOperation(t *t
 
 }
 
+func TestFeishuWorkspaceStore_ReplaceExpiredPendingDeviceAuthSessionCommitsOnceConcurrently(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 21, 7)
+	now := time.Now().UTC()
+	operation := newFeishuOperation("device-expired-concurrent-operation", 21, 7, "device-expired-concurrent-key")
+	require.NoError(t, s.db.Create(operation).Error)
+	old := newFeishuDeviceAuthSession("device-expired-concurrent-old", 21, 7, "", now)
+	old.OperationID = &operation.ID
+	old.ExpiresAt = now.Add(-time.Second)
+	old.LeaseOwner = ""
+	old.LeaseUntil = nil
+	require.NoError(t, s.CreateSession(ctx, old))
+	oldSummary := []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"device-expired-concurrent-old"}`)
+	require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", operation.ID).Updates(map[string]any{
+		"state": model.FeishuOperationWaitingUserAuth, "result_summary_json": oldSummary,
+	}).Error)
+
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for index := 0; index < 2; index++ {
+		index := index
+		go func() {
+			<-start
+			replacement := newFeishuSession(fmt.Sprintf("device-expired-concurrent-new-%d", index), 21, 7)
+			replacement.ProtocolVersion = 2
+			replacement.OperationID = &operation.ID
+			replacement.ScopeHash = old.ScopeHash
+			newSummary := []byte(fmt.Sprintf(
+				`{"status":"waiting_user_auth","phase":"user_auth","session_id":%q}`,
+				replacement.ID,
+			))
+			_, err := s.ReplaceDeviceAuthSession(ctx, FeishuDeviceAuthReplacement{
+				UserID: 21, Generation: 7, OldSessionID: old.ID,
+				TerminalState: model.FeishuAuthSessionExpired, NewSession: replacement,
+				OperationID: operation.ID, ExpectedWaitingState: model.FeishuOperationWaitingUserAuth,
+				OldSummary: oldSummary, NewSummary: newSummary, Now: now,
+			})
+			results <- err
+		}()
+	}
+	close(start)
+
+	successes := 0
+	failures := 0
+	for index := 0; index < 2; index++ {
+		err := <-results
+		if err == nil {
+			successes++
+		} else {
+			require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+			failures++
+		}
+	}
+	require.Equal(t, 1, successes)
+	require.Equal(t, 1, failures)
+
+	var replacements int64
+	require.NoError(t, s.db.Model(&model.FeishuAuthSession{}).
+		Where("id IN ?", []string{"device-expired-concurrent-new-0", "device-expired-concurrent-new-1"}).
+		Count(&replacements).Error)
+	require.EqualValues(t, 1, replacements)
+	storedOld, err := s.GetSessionForUser(ctx, 21, 7, old.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionExpired, storedOld.State)
+	require.Empty(t, storedOld.ResumeCredentialCiphertext)
+	require.Empty(t, storedOld.LeaseOwner)
+}
+
 func TestFeishuWorkspaceStore_SweepDeviceAuthCredentialsUsesBoundedKeysetPage(t *testing.T) {
 	ctx := context.Background()
 	s := newFeishuWorkspaceTestStore(t)
