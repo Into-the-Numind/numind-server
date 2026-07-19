@@ -460,7 +460,10 @@ func TestAdaptFullToEinoTool_RetryableLarkFailureEmitsRecoverableProgress(t *tes
 
 	var sawProgress, sawResult, sawError bool
 	for _, event := range narration.CollectorFrom(ctx).Events() {
-		sawProgress = sawProgress || event.State == narration.StateProgress
+		if event.State == narration.StateProgress {
+			sawProgress = true
+			assert.Equal(t, "正在调整执行方式", event.Message)
+		}
 		sawResult = sawResult || event.State == narration.StateResult
 		sawError = sawError || event.State == narration.StateError
 	}
@@ -492,7 +495,10 @@ func TestAdaptFullToEinoTool_ValidationLarkFailureEmitsRecoverableProgress(t *te
 
 	var sawProgress, sawResult, sawError bool
 	for _, event := range narration.CollectorFrom(ctx).Events() {
-		sawProgress = sawProgress || event.State == narration.StateProgress
+		if event.State == narration.StateProgress {
+			sawProgress = true
+			assert.Equal(t, "正在调整执行方式", event.Message)
+		}
 		sawResult = sawResult || event.State == narration.StateResult
 		sawError = sawError || event.State == narration.StateError
 	}
