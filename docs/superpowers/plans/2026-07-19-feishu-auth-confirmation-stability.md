@@ -3,19 +3,19 @@
 ## Task 1 — 客户故障 RED
 
 - 前端 API 测试锁定 resume 必须传 60 秒 scoped timeout，现状因缺失配置失败。
-- 后端测试锁定 10 分钟 session、55 秒 completion、10 分钟 device link 上限和损坏 Agent link 的拒绝，现状失败。
+- 后端测试锁定 10 分钟 session、45 秒 CLI completion、10 分钟 device link 上限和损坏 Agent link 的拒绝，现状失败。
 - 两仓库分别以 `test(qa)` 提交 RED，满足客户 bug 回归规则。
 
 ## Task 2 — 时限对齐
 
-- 后端默认 session 改为 10 分钟、device provider expiry 上限改为 10 分钟、completion cap 改为 55 秒。
+- 后端默认 session 改为 10 分钟、device provider expiry 上限改为 10 分钟、completion cap 改为 45 秒。
 - 前端仅 `resumeFeishuOperation` 传 `{ timeout: 60_000 }`。
 
 ## Task 3 — 严格绑定与立即恢复
 
 - 在 completion claim 前验证 operation/session/user/generation/state/phase/summary 与 Agent run/tool link 完整性。
 - 保留 AAD、account app/generation re-read、scope hash、candidate HOME、atomic finalize 和 dispatcher exactly-once。
-- 成功 finalize 后直接 dispatch，不增加 sleep、timer 或 worker。
+- 成功 finalize 后直接 dispatch，不增加 sleep、timer 或 worker；45 秒 CLI + 5 秒 reconciliation + 5 秒 mutation/dispatch 仍给 60 秒浏览器上限保留约 5 秒返回余量。
 
 ## Task 4 — 可诊断日志
 

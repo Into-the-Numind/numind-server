@@ -18,10 +18,11 @@ import (
 )
 
 const (
-	deviceAuthManualBindingID       = "manual"
-	deviceAuthMaxCompletionTimeout  = 30 * time.Second
-	deviceAuthReconciliationTimeout = 5 * time.Second
-	deviceAuthMutationTimeout       = 5 * time.Second
+	deviceAuthManualBindingID          = "manual"
+	deviceAuthDefaultCompletionTimeout = 45 * time.Second
+	deviceAuthMaxCompletionTimeout     = 45 * time.Second
+	deviceAuthReconciliationTimeout    = 5 * time.Second
+	deviceAuthMutationTimeout          = 5 * time.Second
 )
 
 var (
@@ -164,7 +165,7 @@ func NewDeviceAuthFlow(deps DeviceAuthFlowDeps) (*DeviceAuthFlow, error) {
 	sessionDuration := positiveDurationOr(deps.SessionDuration, authSessionDefaultDuration)
 	heartbeatInterval := positiveDurationOr(deps.HeartbeatInterval, authSessionDefaultHeartbeatInterval)
 	startTimeout := positiveDurationOr(deps.StartTimeout, authSessionDefaultStartTimeout)
-	completionTimeout := positiveDurationOr(deps.CompletionTimeout, authSessionDefaultStartTimeout)
+	completionTimeout := positiveDurationOr(deps.CompletionTimeout, deviceAuthDefaultCompletionTimeout)
 	if completionTimeout > deviceAuthMaxCompletionTimeout {
 		completionTimeout = deviceAuthMaxCompletionTimeout
 	}
@@ -488,6 +489,16 @@ func (f *DeviceAuthFlow) CompleteUserAuthorization(
 	if !validDeviceAuthCompletion(account, session, f.now().UTC()) {
 		return nil, ErrAuthSessionUnavailable
 	}
+	if session.OperationID != nil {
+		operation, operationErr := f.sessions.GetOperationForUser(
+			ctx, session.UserID, session.Generation, *session.OperationID,
+		)
+		if operationErr != nil || !validPendingDeviceAuthOperation(operation, session) {
+			f.observeDeviceAuth(session, "binding", "rejected", "", 0)
+			return nil, ErrAuthSessionUnavailable
+		}
+		f.observeDeviceAuth(session, "binding", "verified", "", 0)
+	}
 
 	leaseToken := strings.TrimSpace(f.newLeaseToken())
 	if leaseToken == "" || len(leaseToken) > 128 {
@@ -798,15 +809,19 @@ func (f *DeviceAuthFlow) completeInCandidateHome(
 		cancelCLI()
 		return DeviceAuthProtocolFailure, ""
 	}
+	cliStartedAt := f.now().UTC()
 	outcome, err := f.cli.CompleteUserAuth(cliCtx, home, deviceCode, expectedScopes)
 	cancelCLI()
 	if err != nil {
 		outcome = DeviceAuthRetryableDependency
 	}
+	f.observeDeviceAuth(session, "cli_complete", outcome.String(), LarkCLIVersion, f.now().UTC().Sub(cliStartedAt))
 	switch outcome {
 	case DeviceAuthPending, DeviceAuthRejected, DeviceAuthExpired, DeviceAuthProtocolFailure:
 		return outcome, ""
-	case DeviceAuthAmbiguous, DeviceAuthRetryableDependency:
+	case DeviceAuthAmbiguous, DeviceAuthRetryableDependency,
+		DeviceAuthPollingPendingTimeout, DeviceAuthPollingNetworkFailure,
+		DeviceAuthPollingReadFailure, DeviceAuthPollingParseFailure, DeviceAuthPollingSlowDown:
 		// Auth status and AppID prove only that some user token exists for the
 		// expected application. They do not prove that the durable scopes for
 		// this authorization attempt were granted; an older token in the HOME
@@ -834,21 +849,29 @@ func (f *DeviceAuthFlow) completeInCandidateHome(
 	reconcileCtx, cancelReconcile := context.WithTimeout(ownerCtx, reconcileBudget)
 	available, statusErr := f.cli.AuthStatus(reconcileCtx, home)
 	if statusErr != nil || !available {
+		statusOutcome := "unavailable"
+		if statusErr != nil {
+			statusOutcome = "dependency"
+		}
+		f.observeDeviceAuth(session, "reconcile_status", statusOutcome, LarkCLIVersion, 0)
 		cancelReconcile()
 		if !session.ResumeExpiresAt.After(f.now().UTC()) {
 			return DeviceAuthExpired, ""
 		}
 		return DeviceAuthPending, ""
 	}
+	f.observeDeviceAuth(session, "reconcile_status", "available", LarkCLIVersion, 0)
 	appID, appErr := f.cli.AppIDFromHome(reconcileCtx, home)
 	cancelReconcile()
 	if appErr != nil {
+		f.observeDeviceAuth(session, "reconcile_app", "dependency", LarkCLIVersion, 0)
 		if !session.ResumeExpiresAt.After(f.now().UTC()) {
 			return DeviceAuthExpired, ""
 		}
 		return DeviceAuthPending, ""
 	}
 	if appID != account.AppID {
+		f.observeDeviceAuth(session, "reconcile_app", "mismatch", LarkCLIVersion, 0)
 		if outcome == DeviceAuthCompleted {
 			return DeviceAuthProtocolFailure, ""
 		}
@@ -857,7 +880,34 @@ func (f *DeviceAuthFlow) completeInCandidateHome(
 		}
 		return DeviceAuthPending, ""
 	}
+	f.observeDeviceAuth(session, "reconcile_app", "matched", LarkCLIVersion, 0)
 	return DeviceAuthCompleted, appID
+}
+
+// validPendingDeviceAuthOperation re-establishes the complete durable link
+// before the opaque device code is decrypted or lark-cli is invoked. Legacy
+// manual operations may carry neither Agent field; an Agent operation must
+// carry both, and a partially populated link is always corruption.
+func validPendingDeviceAuthOperation(
+	operation *model.FeishuOperation,
+	session *model.FeishuAuthSession,
+) bool {
+	if operation == nil || session == nil || session.OperationID == nil ||
+		operation.ID != *session.OperationID || operation.UserID != session.UserID ||
+		operation.Generation != session.Generation ||
+		operation.State != model.FeishuOperationWaitingUserAuth {
+		return false
+	}
+	if operation.AgentRunID == 0 && strings.TrimSpace(operation.ToolCallID) == "" {
+		// Manual/legacy operations deliberately have no Agent continuation.
+	} else if operation.AgentRunID == 0 ||
+		!validStableIdentifier(operation.ToolCallID, operationMaxToolCallIDBytes) {
+		return false
+	}
+	summary, err := decodeOperationSummary(operation.ResultSummaryJSON)
+	return err == nil && summary.Status == model.FeishuOperationWaitingUserAuth &&
+		summary.SessionID == session.ID && summary.Phase == model.FeishuAuthPhaseUserAuth &&
+		phaseForRecovery(summary.RecoveryKind) == model.FeishuAuthPhaseUserAuth
 }
 
 func deviceAuthBoundedBudget(limit time.Duration, now time.Time, deadlines ...time.Time) time.Duration {

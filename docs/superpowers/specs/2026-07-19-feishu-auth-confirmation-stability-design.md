@@ -5,12 +5,12 @@
 1. 授权 session 与 provider device link 均以 10 分钟为上限。
 2. 不改 lark-cli；其 device flow 保持每 5 秒一次查询。
 3. 用户点击继续后，浏览器只调用现有 operation resume API，超时 60 秒。
-4. 后端 CLI completion 最长 55 秒，给 HTTP 返回预留 5 秒。
+4. 后端 CLI completion 最长 45 秒，为 reconciliation、原子提交、Agent 恢复和 HTTP 返回预留 15 秒。
 5. 成功提交后立即调用现有 durable dispatcher，禁止人为延迟和自动确认。
 
 ## 2. 时序
 
-`点击继续 → 校验当前用户/account generation/operation/session/phase/Agent link → 解密精确绑定的 device code → 官方 CLI 最多轮询 55 秒 → 校验结构化 scopes + HOME auth status + app ID → 原子提交 vault/session/account → 立即 dispatch 原 operation → HTTP 返回`。
+`点击继续 → 校验当前用户/account generation/operation/session/phase/Agent link → 解密精确绑定的 device code → 官方 CLI 最多轮询 45 秒 → 校验结构化 scopes + HOME auth status + app ID → 原子提交 vault/session/account → 立即 dispatch 原 operation → HTTP 返回`。
 
 浏览器 60 秒上限只覆盖这个请求，不改变其他 API 的 30 秒默认值。
 
@@ -41,7 +41,7 @@
 
 ## 5. 失败语义
 
-- 55 秒内未得到完成证据：释放 lease 并返回 authorization_pending，允许用户再次点击。
+- 45 秒内未得到完成证据：释放 lease 并返回 authorization_pending，允许用户再次点击。
 - 网络/read/parse/slow-down：同样保持 pending，但日志保留准确分类。
 - 协议或绑定不一致：fail closed，不发布凭据。
 - 已完成但 dispatch 暂时失败：保持 durable completed，后续同一操作可幂等补偿，不重新执行飞书写入。

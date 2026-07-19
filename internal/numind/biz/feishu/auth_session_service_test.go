@@ -540,11 +540,13 @@ func createWaitingDeviceAuthOperation(
 	t.Helper()
 	summary, err := json.Marshal(persistedOperationSummary{
 		Status: model.FeishuOperationWaitingUserAuth, Phase: model.FeishuAuthPhaseUserAuth, SessionID: sessionID,
+		RecoveryKind: RecoveryUserScope, RecoveryScopes: []string{"docx:document:readonly"},
 	})
 	require.NoError(t, err)
 	require.NoError(t, h.db.Create(&model.FeishuOperation{
-		ID: operationID, UserID: 7, Generation: 1, IdempotencyKey: operationID,
-		CommandPath: "docs +fetch", Domain: SkillDomainDocs, RiskLevel: string(RiskRead),
+		ID: operationID, UserID: 7, Generation: 1, AgentRunID: 700, ToolCallID: "tool-" + operationID,
+		IdempotencyKey: operationID,
+		CommandPath:    "docs +fetch", Domain: SkillDomainDocs, RiskLevel: string(RiskRead),
 		RequestCiphertext: []byte("opaque-request"), KeyVersion: "v1", RequestFingerprint: strings.Repeat("a", 64),
 		State: model.FeishuOperationWaitingUserAuth, ResultSummaryJSON: summary,
 	}).Error)

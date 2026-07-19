@@ -22,7 +22,7 @@ features:
     qa: null
   decisions:
   - 'S0: Customer confirmed fast Standard through Dev. Authorization task and Feishu link remain valid for 10 minutes; manual continue remains mandatory; official CLI polling remains 5 seconds; frontend waits at most 60 seconds; success immediately resumes the original Agent task.'
-  - 'S1: Selected a scoped 60-second resume request with a 55-second backend completion budget. Rejected global timeout widening, automatic confirmation, and a forked CLI. Existing encrypted binding and durable exactly-once resume remain authoritative.'
+  - 'S1: Selected a scoped 60-second resume request with a 45-second CLI completion budget, leaving bounded reconciliation, commit, dispatch, and HTTP-return headroom. Rejected global timeout widening, automatic confirmation, and a forked CLI. Existing encrypted binding and durable exactly-once resume remain authoritative.'
   - 'S2: Completion revalidates user, generation, operation, session, phase, app, scope hash, encrypted device credential and Agent run/tool link. Safe fixed diagnostic classes distinguish pending timeout, network/read/parse/slow-down, reconciliation and dispatch without logging credentials.'
   - 'S3: Five serial RED-GREEN tasks cover customer timeout reproduction, aligned 10-minute lifetime, scoped 55/60-second waits, binding integrity, safe diagnostics, full quality gates, atomic merge and backend-first Dev deployment.'
   blockers: []

@@ -327,6 +327,11 @@ func TestBuildFeishuService_ComposesAllowlistedDeviceAuthObserver(t *testing.T) 
 		Phase: "dispatch", OutcomeClass: "succeeded", CLIVersion: feishu.LarkCLIVersion, Duration: 12 * time.Millisecond,
 	})
 	observer.ObserveDeviceAuth(feishu.DeviceAuthObservation{
+		UserID: 7, Generation: 3, OperationID: operationID, SessionID: sessionID,
+		Phase: "cli_complete", OutcomeClass: string(feishu.DeviceAuthPollingNetworkFailure),
+		CLIVersion: feishu.LarkCLIVersion, Duration: 45 * time.Second,
+	})
+	observer.ObserveDeviceAuth(feishu.DeviceAuthObservation{
 		UserID: 7, Phase: "raw-secret-phase", OutcomeClass: "token-private-value", CLIVersion: "private-cli-output",
 	})
 	observer.ObserveDeviceAuth(feishu.DeviceAuthObservation{
@@ -335,7 +340,7 @@ func TestBuildFeishuService_ComposesAllowlistedDeviceAuthObserver(t *testing.T) 
 	observer.ObserveDeviceAuth(feishu.DeviceAuthObservation{
 		UserID: 7, Phase: "dispatch", OutcomeClass: "succeeded", CLIVersion: "private-cli-output",
 	})
-	require.Len(t, entries, 1, "invalid phases, outcomes, and CLI versions must be dropped before the production sink")
+	require.Len(t, entries, 2, "only fixed safe phases, outcomes, and CLI versions may reach the production sink")
 	require.Equal(t, "feishu device authorization", entries[0].message)
 	require.Equal(t, []interface{}{
 		"user_id", uint(7), "generation", uint64(3), "operation_id", operationID, "session_id", sessionID,

@@ -179,7 +179,7 @@ func TestControlledLarkCLIRunner_CompleteUserAuthOutcomeMatrix(t *testing.T) {
 		})
 	}
 
-	t.Run("timeout after start is ambiguous", func(t *testing.T) {
+	t.Run("timeout after start preserves pending diagnosis", func(t *testing.T) {
 		home := controlledTestHome(t)
 		bin := writeControlledFakeBinary(t, `
 printf 'started' > "$HOME/device-auth-started"
@@ -189,7 +189,7 @@ sleep 2
 		runner.timeout = 30 * time.Millisecond
 		outcome, err := runner.CompleteUserAuth(context.Background(), home, deviceAuthTestCode, []string{"offline_access"})
 		require.NoError(t, err)
-		require.Equal(t, DeviceAuthAmbiguous, outcome)
+		require.Equal(t, DeviceAuthPollingPendingTimeout, outcome)
 	})
 
 	t.Run("timeout wins over truncated output", func(t *testing.T) {
@@ -202,7 +202,7 @@ sleep 2
 		runner.timeout = 100 * time.Millisecond
 		outcome, err := runner.CompleteUserAuth(context.Background(), home, deviceAuthTestCode, []string{"offline_access"})
 		require.NoError(t, err)
-		require.Equal(t, DeviceAuthAmbiguous, outcome)
+		require.Equal(t, DeviceAuthPollingPendingTimeout, outcome)
 	})
 
 	t.Run("nonzero exit with truncated output requires home reconciliation", func(t *testing.T) {
@@ -257,19 +257,24 @@ func TestClassifyDeviceAuthCompletionResult_PreservesSafePollingDiagnosis(t *tes
 	}{
 		{name: "ordinary pending timeout", want: DeviceAuthOutcome("polling_pending_timeout")},
 		{
-			name: "provider network warning",
+			name:   "provider network warning",
 			stderr: "[lark-cli] [WARN] device-flow: poll network error: redacted upstream detail\n",
-			want: DeviceAuthOutcome("polling_network_failure"),
+			want:   DeviceAuthOutcome("polling_network_failure"),
 		},
 		{
-			name: "provider read warning",
+			name:   "provider read warning",
 			stderr: "[lark-cli] [WARN] device-flow: poll read error: redacted upstream detail\n",
-			want: DeviceAuthOutcome("polling_read_failure"),
+			want:   DeviceAuthOutcome("polling_read_failure"),
 		},
 		{
-			name: "provider parse warning",
+			name:   "provider parse warning",
 			stderr: "[lark-cli] [WARN] device-flow: poll parse error: redacted upstream detail\n",
-			want: DeviceAuthOutcome("polling_parse_failure"),
+			want:   DeviceAuthOutcome("polling_parse_failure"),
+		},
+		{
+			name:   "provider slow down",
+			stderr: "[lark-cli] device-flow: slow_down, interval increased to 10s\n",
+			want:   DeviceAuthOutcome("polling_slow_down"),
 		},
 	}
 

@@ -138,7 +138,8 @@ func validDeviceAuthObservationID(value string) bool {
 
 func validDeviceAuthObservationPhase(phase string) bool {
 	switch phase {
-	case "start", "complete", "lease_claim", "lease_renew", "candidate", "replacement", "dispatch":
+	case "start", "complete", "lease_claim", "lease_renew", "candidate", "replacement", "dispatch",
+		"binding", "cli_complete", "reconcile_status", "reconcile_app":
 		return true
 	default:
 		return false
@@ -148,7 +149,14 @@ func validDeviceAuthObservationPhase(phase string) bool {
 func validDeviceAuthObservationOutcome(outcome string) bool {
 	switch outcome {
 	case "succeeded", "unavailable", "processing", "conflict", "dependency",
-		"claimed", "contended", "lost", "retry",
+		"claimed", "contended", "lost", "retry", "verified",
+		"available", "matched", "mismatch",
+		string(feishu.DeviceAuthCompleted), string(feishu.DeviceAuthPending),
+		string(feishu.DeviceAuthRejected), string(feishu.DeviceAuthExpired),
+		string(feishu.DeviceAuthRetryableDependency), string(feishu.DeviceAuthProtocolFailure),
+		string(feishu.DeviceAuthAmbiguous), string(feishu.DeviceAuthPollingPendingTimeout),
+		string(feishu.DeviceAuthPollingNetworkFailure), string(feishu.DeviceAuthPollingReadFailure),
+		string(feishu.DeviceAuthPollingParseFailure), string(feishu.DeviceAuthPollingSlowDown),
 		string(feishu.AuthorizationPending), string(feishu.AuthorizationProcessing),
 		string(feishu.AuthorizationRejected), string(feishu.AuthorizationExpired),
 		string(feishu.AuthorizationUpdated):

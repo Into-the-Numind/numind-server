@@ -1176,7 +1176,7 @@ func newDeviceAuthCompletionFixture(t *testing.T) deviceAuthCompletionFixture {
 			ID: operationID, UserID: session.UserID, Generation: session.Generation,
 			AgentRunID: 701, ToolCallID: "tool-device-complete",
 			State:             model.FeishuOperationWaitingUserAuth,
-			ResultSummaryJSON: []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"00000000-0000-4000-8000-000000000072"}`),
+			ResultSummaryJSON: []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"00000000-0000-4000-8000-000000000072","recovery_kind":"user_scope","recovery_scopes":["docx:document:readonly"]}`),
 		},
 	}}
 	candidateCiphertext := []byte("sealed-device-auth-candidate")
@@ -1214,7 +1214,8 @@ func newDeviceAuthCompletionFixture(t *testing.T) deviceAuthCompletionFixture {
 func TestDeviceAuthFlow_DefaultConfirmationWindowMatchesBrowserContract(t *testing.T) {
 	require.Equal(t, 10*time.Minute, authSessionDefaultDuration)
 	require.Equal(t, 10*time.Minute, deviceAuthCLIMaxExpiresIn)
-	require.Equal(t, 55*time.Second, deviceAuthMaxCompletionTimeout)
+	require.Equal(t, 45*time.Second, deviceAuthDefaultCompletionTimeout)
+	require.Equal(t, 45*time.Second, deviceAuthMaxCompletionTimeout)
 }
 
 func TestDeviceAuthFlow_CompleteRejectsPartialOriginalAgentBindingBeforeCLI(t *testing.T) {
@@ -1305,7 +1306,7 @@ func TestDeviceAuthFlow_CompleteExpiredReturnsLiveReplacement(t *testing.T) {
 	require.Equal(t, "device-auth-completion-lease", fixture.store.replaceInput.LeaseOwner)
 	require.Equal(t, model.FeishuAuthSessionExpired, fixture.store.replaceInput.TerminalState)
 	require.JSONEq(t,
-		`{"status":"waiting_user_auth","phase":"user_auth","session_id":"00000000-0000-4000-8000-000000000073"}`,
+		`{"status":"waiting_user_auth","phase":"user_auth","session_id":"00000000-0000-4000-8000-000000000073","recovery_kind":"user_scope","recovery_scopes":["docx:document:readonly"]}`,
 		string(fixture.store.replaceInput.NewSummary),
 	)
 }
@@ -1935,7 +1936,22 @@ func TestDeviceAuthFlow_ObservabilityNeverContainsCredentialOrBusinessContent(t 
 	for _, secret := range secretValues {
 		require.NotContains(t, string(flattened), secret)
 	}
-	require.NotEmpty(t, observer.snapshot(), "start/complete protocol must emit allowlisted observations")
+	events := observer.snapshot()
+	require.NotEmpty(t, events, "start/complete protocol must emit allowlisted observations")
+	require.Contains(t, events, DeviceAuthObservation{
+		UserID: 7, Generation: 3, OperationID: "operation-device-complete",
+		SessionID: fixture.session.ID, Phase: "binding", OutcomeClass: "verified",
+	})
+	require.Contains(t, events, DeviceAuthObservation{
+		UserID: 7, Generation: 3, OperationID: "operation-device-complete",
+		SessionID: fixture.session.ID, Phase: "reconcile_status", OutcomeClass: "available",
+		CLIVersion: LarkCLIVersion,
+	})
+	require.Contains(t, events, DeviceAuthObservation{
+		UserID: 7, Generation: 3, OperationID: "operation-device-complete",
+		SessionID: fixture.session.ID, Phase: "reconcile_app", OutcomeClass: "matched",
+		CLIVersion: LarkCLIVersion,
+	})
 }
 
 func TestDeviceAuthFlow_CompleteAppIDEvidenceTimeoutRetainsCredential(t *testing.T) {

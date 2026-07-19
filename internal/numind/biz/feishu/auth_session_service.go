@@ -26,7 +26,7 @@ import (
 
 const (
 	authSessionDefaultLeaseDuration     = 2 * time.Minute
-	authSessionDefaultDuration          = 12 * time.Minute
+	authSessionDefaultDuration          = 10 * time.Minute
 	authSessionDefaultHeartbeatInterval = 30 * time.Second
 	authSessionDefaultStartTimeout      = 30 * time.Second
 	authSessionCLIHardCeiling           = 12 * time.Minute

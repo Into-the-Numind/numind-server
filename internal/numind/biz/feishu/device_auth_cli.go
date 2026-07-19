@@ -16,7 +16,7 @@ import (
 const (
 	deviceAuthCLIMaxJSONBytes   = 1 << 20
 	deviceAuthCLIMaxURLBytes    = 8 << 10
-	deviceAuthCLIMaxExpiresIn   = 12 * time.Minute
+	deviceAuthCLIMaxExpiresIn   = 10 * time.Minute
 	deviceAuthLegacyVerifyPath  = "/suite/passport/oauth/device"
 	deviceAuthAccountVerifyPath = "/oauth/v1/device/verify"
 )
@@ -48,13 +48,18 @@ type DeviceAuthStart struct {
 type DeviceAuthOutcome string
 
 const (
-	DeviceAuthCompleted           DeviceAuthOutcome = "completed"
-	DeviceAuthPending             DeviceAuthOutcome = "pending"
-	DeviceAuthRejected            DeviceAuthOutcome = "rejected"
-	DeviceAuthExpired             DeviceAuthOutcome = "expired"
-	DeviceAuthRetryableDependency DeviceAuthOutcome = "retryable_dependency"
-	DeviceAuthProtocolFailure     DeviceAuthOutcome = "protocol_failure"
-	DeviceAuthAmbiguous           DeviceAuthOutcome = "ambiguous"
+	DeviceAuthCompleted             DeviceAuthOutcome = "completed"
+	DeviceAuthPending               DeviceAuthOutcome = "pending"
+	DeviceAuthRejected              DeviceAuthOutcome = "rejected"
+	DeviceAuthExpired               DeviceAuthOutcome = "expired"
+	DeviceAuthRetryableDependency   DeviceAuthOutcome = "retryable_dependency"
+	DeviceAuthProtocolFailure       DeviceAuthOutcome = "protocol_failure"
+	DeviceAuthAmbiguous             DeviceAuthOutcome = "ambiguous"
+	DeviceAuthPollingPendingTimeout DeviceAuthOutcome = "polling_pending_timeout"
+	DeviceAuthPollingNetworkFailure DeviceAuthOutcome = "polling_network_failure"
+	DeviceAuthPollingReadFailure    DeviceAuthOutcome = "polling_read_failure"
+	DeviceAuthPollingParseFailure   DeviceAuthOutcome = "polling_parse_failure"
+	DeviceAuthPollingSlowDown       DeviceAuthOutcome = "polling_slow_down"
 )
 
 // String returns only the fixed, non-secret outcome label.
@@ -195,7 +200,15 @@ func classifyDeviceAuthCompletionResult(result *CLIResult, runErr error) DeviceA
 	}
 	// A timeout or caller cancellation after cmd.Start always leaves the HOME
 	// outcome ambiguous, even when a stream limit was reached concurrently.
-	if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
+	if errors.Is(runErr, context.DeadlineExceeded) {
+		if result.StdoutTruncated || result.StderrTruncated ||
+			len(result.Stdout) >= ControlledLarkCLIMaxStdoutBytes ||
+			len(result.Stderr) >= ControlledLarkCLIMaxStderrBytes {
+			return DeviceAuthAmbiguous
+		}
+		return classifyDeviceAuthPollingTimeout(result.Stderr)
+	}
+	if errors.Is(runErr, context.Canceled) {
 		return DeviceAuthAmbiguous
 	}
 	if !deviceAuthRunnerReturnedSafely(result, runErr) {
@@ -237,6 +250,24 @@ func classifyDeviceAuthCompletionResult(result *CLIResult, runErr error) DeviceA
 		return DeviceAuthProtocolFailure
 	}
 	return DeviceAuthCompleted
+}
+
+// classifyDeviceAuthPollingTimeout converts only fixed official lark-cli
+// warning prefixes into safe diagnostic classes. Raw stderr never leaves this
+// boundary, and these classes never authorize or publish candidate HOME state.
+func classifyDeviceAuthPollingTimeout(stderr []byte) DeviceAuthOutcome {
+	switch {
+	case bytes.Contains(stderr, []byte("[lark-cli] [WARN] device-flow: poll network error:")):
+		return DeviceAuthPollingNetworkFailure
+	case bytes.Contains(stderr, []byte("[lark-cli] [WARN] device-flow: poll read error:")):
+		return DeviceAuthPollingReadFailure
+	case bytes.Contains(stderr, []byte("[lark-cli] [WARN] device-flow: poll parse error:")):
+		return DeviceAuthPollingParseFailure
+	case bytes.Contains(stderr, []byte("[lark-cli] device-flow: slow_down, interval increased to ")):
+		return DeviceAuthPollingSlowDown
+	default:
+		return DeviceAuthPollingPendingTimeout
+	}
 }
 
 func classifyDeviceAuthCompletionResultForScopes(
