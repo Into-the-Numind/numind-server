@@ -233,7 +233,7 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 		if sd := SoftDenyFromCtx(ctx); sd != nil {
 			sd.OnSuccess()
 		}
-		if failure.Retryable {
+		if larkFailureAllowsCorrection(failure) {
 			retryErr := errors.New("飞书工作区暂时不可用，正在安全重试")
 			a.emitNarration(ctx, narration.StateProgress, toolCallID, input, nil, retryErr, "", "正在重试飞书操作")
 			a.emitStreamToolError(ctx, toolCallID, retryErr, durationMs, true)
