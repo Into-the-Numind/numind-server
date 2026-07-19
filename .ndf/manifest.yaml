@@ -4,15 +4,15 @@ features:
   ndf_version: '3.0'
   description: Resolve safe shorthand names for declared lark-cli skill references without exposing raw paths or weakening the embedded-resource boundary.
   classification_reason: 'Standard: no schema/API/new integration change and a small file set, but this changes the security boundary for controlled Agent-readable internal resources.'
-  last_updated_by: ai-s5-acceptance
-  last_updated_at: '2026-07-19T11:44:07+08:00'
+  last_updated_by: ai-s6-dev-deployment
+  last_updated_at: '2026-07-19T11:50:17+08:00'
   created_at: '2026-07-19T11:10:53+08:00'
   track: standard
-  stage: S5
+  stage: S6
   status: active
   repos: [numind-server]
-  branches: {numind-server: feature/lark-skill-reference-resolution}
-  worktrees: {numind-server: /private/tmp/wt-lark-skill-reference-resolution-numind-server}
+  branches: {numind-server: develop}
+  worktrees: {numind-server: removed by ndf-done}
   progress: {total_tasks: 3, completed_tasks: 3, reviewed_tasks: 2}
   artifacts:
     requirement: requirements/lark-skill-reference-resolution.md
@@ -30,6 +30,7 @@ features:
   - 'S4 review hardening: ambiguity detection scans every valid declared link, including duplicates beyond the 64-item/16-KiB metadata cap, while only the bounded exposed set remains eligible for reading. This preserves metadata limits and fail-closed uniqueness.'
   - 'S4 final dual review PASS with P0/P1/P2=0. The resolver remains current-skill scoped, fail-closed, canonical before cursor/CLI use, and does not expand the bounded readable set.'
   - 'S5 acceptance PASS: go test ./..., lint, focused repeated tests, Feishu race, diff hygiene, and both independent reviews pass. Repository-wide task test still exposes only the pre-existing sandbox SkillsDir test-fixture race; no sandbox file changed and the Feishu package passes in the same race run. Authorized for ndf-done and Dev deployment.'
+  - 'S6: ndf-done merged and pushed develop at c4848a11 and removed the feature worktree/branch. Manual TCR release deployed numind-server:develop-c4848a11 (digest sha256:b3fd236c0bee73df8d8c38c6bcea7d6a29f1a98bdaeceb02b25bba696429999c) to Dev. Container is running+healthy, public health returns code 0/status ok, lark-cli is 1.0.68, and critical startup/skill-rejection log matches are zero. Real Agent task execution is ready for product acceptance; Prod is not deployed.'
   blockers: []
 
 - id: feishu-scope-preflight-null
