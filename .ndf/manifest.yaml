@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: Finalize non-success Feishu operations without turning successful authorization into HTTP 500, while preserving no-replay safety and safe diagnostics.
   classification_reason: 'Standard: no schema/API/new integration change, but third-party authorization, durable Agent resume, and security observability are high-risk and span more than three files; user confirmed fast Standard through Dev on 2026-07-20.'
-  last_updated_by: ai-s4-implementation-complete
-  last_updated_at: '2026-07-20T00:55:00+08:00'
+  last_updated_by: ai-s4-review-revision
+  last_updated_at: '2026-07-20T01:20:00+08:00'
   created_at: '2026-07-20T00:20:00+08:00'
   track: standard
   stage: S4
@@ -26,6 +26,7 @@ features:
   - 'S3: four serial RED-GREEN tasks cover customer reproduction, terminal routing, safe diagnostics, full gates, atomic merge and Dev deployment.'
   - 'S4 RED: first feature commit 60cd6169 reproduces the exact unknown-write path invoking Agent continuation and returning an infrastructure error.'
   - 'S4 GREEN: dispatcher now sends only succeeded operations to Agent continuation; failed/unknown/cancelled use the durable terminal finalizer. Safe operation observations retain only fixed classification, risk, identity, exit and timing fields; write replay remains forbidden.'
+  - 'S4 review revision: operation diagnostics now retain only fixed failure-source classes plus classifier-approved CLI type/subtype/code tuples, with the production sink independently checking the same tuple. Dispatcher handoff distinguishes continuation/finalizer success and retry. Cross-instance terminal response loss finalizes once; completed authorization returns stored unknown without HTTP 500 and lifecycle compensation remains an idempotent no-op.'
   blockers: []
 
 - id: feishu-auth-confirmation-stability

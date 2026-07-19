@@ -42,8 +42,11 @@ DeviceAuthFlow 的后台/HTTP completion 都通过同一 dispatcher，避免只�
 - outcome_class：固定枚举
 - risk、CLI version、duration
 - CLI error type/subtype/code：仅当来自完整结构化 envelope，且每段通过长度/字符 allowlist；不得包含 message/details/hint/permission evidence。
+- failure_source：固定为 `structured_cli_error/timeout/malformed_output/output_limit/transport/vault/not_started/unclassified` 之一；成功必须为空。
 
 production sink 再次校验 UUID、枚举、风险、CLI 版本和 tuple 字符集后才写日志。禁止 argv、stdin、scopes、HOME、token、URL、stdout、stderr、文档/Base 内容。
+
+handoff observation 使用同一 DTO 的独立 `phase=handoff` 分支，只允许 `continuation_succeeded/continuation_retry/terminal_finalized/terminal_finalize_retry`，此时 generation、risk、CLI 和错误字段必须为空。
 
 write-like invocation 即使结构化错误可分类，也仍提交 `unknown` 且不重放；observation 只用于排查，不能改变安全决策。
 

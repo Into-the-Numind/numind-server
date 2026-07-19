@@ -67,6 +67,23 @@ type dispatcherFinalization struct {
 	outcome     externalaction.TerminalOutcome
 }
 
+type dispatcherOperationObserverFake struct {
+	mu     sync.Mutex
+	events []feishu.OperationObservation
+}
+
+func (f *dispatcherOperationObserverFake) ObserveOperation(event feishu.OperationObservation) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.events = append(f.events, event)
+}
+
+func (f *dispatcherOperationObserverFake) snapshot() []feishu.OperationObservation {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]feishu.OperationObservation(nil), f.events...)
+}
+
 func (f *dispatcherAgentResumerFake) Resume(_ context.Context, result agent.ExternalToolResult) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -216,6 +233,49 @@ type durableResponseLossAgentState struct {
 
 type durableResponseLossAgentResumer struct {
 	state *durableResponseLossAgentState
+}
+
+type durableTerminalFinalizerState struct {
+	mu       sync.Mutex
+	attempts int
+	commits  int
+	lost     bool
+}
+
+type durableTerminalFinalizer struct {
+	state *durableTerminalFinalizerState
+}
+
+func (f *durableTerminalFinalizer) Resume(context.Context, agent.ExternalToolResult) error {
+	return errors.New("terminal operation must never enter continuation")
+}
+
+func (f *durableTerminalFinalizer) FinalizeExternalToolWait(
+	_ context.Context,
+	_ uint,
+	_ uint64,
+	_ string,
+	_ string,
+	_ externalaction.TerminalOutcome,
+) (bool, error) {
+	f.state.mu.Lock()
+	defer f.state.mu.Unlock()
+	f.state.attempts++
+	if f.state.commits > 0 {
+		return false, nil
+	}
+	f.state.commits++
+	if !f.state.lost {
+		f.state.lost = true
+		return true, errors.New("synthetic response loss after durable terminal commit")
+	}
+	return true, nil
+}
+
+func (s *durableTerminalFinalizerState) snapshot() (attempts, commits int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.attempts, s.commits
 }
 
 func newDurableResponseLossAgentState() *durableResponseLossAgentState {
@@ -487,6 +547,27 @@ func TestWorkspaceResumeDispatcher_ResponseLossAcrossFreshInstancesUsesDurableCl
 	require.Len(t, accepted, 1, "the durable Agent claim accepts the result exactly once")
 }
 
+func TestWorkspaceResumeDispatcher_TerminalResponseLossAcrossFreshInstancesFinalizesOnce(t *testing.T) {
+	operationID := "operation-terminal-response-loss"
+	operations := &dispatcherOperationFake{result: &feishu.OperationResult{
+		OperationID: operationID, State: model.FeishuOperationUnknown,
+		AgentRunID: 49, ToolCallID: "tool-terminal-response-loss",
+	}}
+	state := &durableTerminalFinalizerState{}
+
+	first := NewWorkspaceResumeDispatcher(operations, &durableTerminalFinalizer{state: state})
+	require.Error(t, first.DispatchResume(context.Background(), 7, operationID),
+		"the first durable commit succeeds before its response is lost")
+
+	second := NewWorkspaceResumeDispatcher(operations, &durableTerminalFinalizer{state: state})
+	require.NoError(t, second.DispatchResume(context.Background(), 7, operationID),
+		"a fresh instance observes the durable finalization as a successful no-op")
+	attempts, commits := state.snapshot()
+	require.Equal(t, 2, attempts)
+	require.Equal(t, 1, commits)
+	require.Equal(t, 2, operations.callCount())
+}
+
 func TestWorkspaceResumeDispatcher_SeparateInstancesRelyOnTask11Lease(t *testing.T) {
 	operations := &dispatcherOperationFake{result: &feishu.OperationResult{
 		OperationID: "operation-cross-instance",
@@ -531,8 +612,9 @@ func TestWorkspaceResumeDispatcher_UnknownWriteDoesNotResumeAgentOrReturnInfrast
 	// acknowledgement must not expose that expected business terminal as HTTP
 	// 500, and must not call the model-continuation path at all.
 	resumer := &dispatcherAgentResumerFake{err: errors.New("terminal result cannot continue the agent")}
+	observer := &dispatcherOperationObserverFake{}
 
-	err := NewWorkspaceResumeDispatcher(operations, resumer).DispatchResume(
+	err := NewWorkspaceResumeDispatcher(operations, resumer, observer).DispatchResume(
 		context.Background(), 7, operationID,
 	)
 
@@ -542,4 +624,8 @@ func TestWorkspaceResumeDispatcher_UnknownWriteDoesNotResumeAgentOrReturnInfrast
 		userID: 7, runID: 236, operationID: operationID,
 		toolCallID: "tool-base-create", outcome: externalaction.TerminalOutcomeUnknown,
 	}}, resumer.finalizationSnapshot())
+	require.Equal(t, []feishu.OperationObservation{{
+		UserID: 7, OperationID: operationID, Phase: "handoff",
+		OutcomeClass: "terminal_finalized", ExitCode: -1,
+	}}, observer.snapshot())
 }

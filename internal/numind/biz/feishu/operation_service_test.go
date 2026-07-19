@@ -929,12 +929,36 @@ func TestOperationService_UnknownWriteEmitsSafeUnderlyingClassificationWithoutRe
 		UserID: 7, Generation: 1, OperationID: got.OperationID,
 		Phase: "invoke", OutcomeClass: PublicCodeValidationError, Risk: RiskWrite,
 		InvocationStarted: true, ExitCode: 1, CLIVersion: LarkCLIVersion,
+		CLIErrorType: "api", CLIErrorSubtype: "validation_error", CLIErrorCode: "400",
+		FailureSource: "structured_cli_error",
 	}, events[0])
 	encoded, marshalErr := json.Marshal(events)
 	require.NoError(t, marshalErr)
 	require.NotContains(t, string(encoded), "private Base field content")
 	require.NotContains(t, string(encoded), "private transport wrapper")
 	require.NotContains(t, string(encoded), "private title")
+}
+
+func TestOperationFailureSourceUsesFixedCredentialFreeClasses(t *testing.T) {
+	require.Equal(t, "", operationFailureSource(operationOKResult(`{}`), nil, nil, "succeeded"))
+	require.Equal(t, "structured_cli_error", operationFailureSource(&CLIResult{
+		InvocationStarted: true,
+		Envelope:          &CLIEnvelope{OK: false, Error: &CLIError{Type: "api", Subtype: "validation_error"}},
+	}, errors.New("private"), nil, PublicCodeValidationError))
+	require.Equal(t, "timeout", operationFailureSource(&CLIResult{InvocationStarted: true}, context.DeadlineExceeded, nil, PublicCodeUnknownResult))
+	require.Equal(t, "malformed_output", operationFailureSource(&CLIResult{InvocationStarted: true}, errControlledCLIInvalidJSON, nil, PublicCodeUnknownResult))
+	require.Equal(t, "output_limit", operationFailureSource(&CLIResult{InvocationStarted: true}, errControlledCLIOutputLimit, nil, PublicCodeUnknownResult))
+	require.Equal(t, "transport", operationFailureSource(&CLIResult{InvocationStarted: true}, errors.New("private network"), nil, PublicCodeUnknownResult))
+	require.Equal(t, "vault", operationFailureSource(nil, nil, errors.New("private vault"), PublicCodeFailed))
+	require.Equal(t, "not_started", operationFailureSource(nil, nil, nil, PublicCodeFailed))
+}
+
+func TestValidOperationDiagnosticTupleRequiresFixedClassifierMatch(t *testing.T) {
+	require.True(t, ValidOperationDiagnosticTuple(PublicCodeValidationError, "api", "validation_error", "400"))
+	require.True(t, ValidOperationDiagnosticTuple(PublicCodeConnectionRequired, "config", "not_configured", ""))
+	require.False(t, ValidOperationDiagnosticTuple(PublicCodeUnknownResult, "api", "validation_error", "400"))
+	require.False(t, ValidOperationDiagnosticTuple(PublicCodeValidationError, "api", "private-content", "400"))
+	require.False(t, ValidOperationDiagnosticTuple(PublicCodeValidationError, "api", "validation_error", "private-content"))
 }
 
 func TestOperationService_StaleNotStartedSnapshotCannotLeaseTerminalOperation(t *testing.T) {

@@ -400,6 +400,7 @@ func TestProductionOperationObserver_AllowsOnlyFixedCredentialFreeFields(t *test
 		UserID: 7, Generation: 3, OperationID: operationID,
 		Phase: "invoke", OutcomeClass: feishu.PublicCodeValidationError, Risk: feishu.RiskWrite,
 		InvocationStarted: true, ExitCode: 1, CLIVersion: feishu.LarkCLIVersion, Duration: 5 * time.Second,
+		FailureSource: "structured_cli_error",
 	}
 	observer.ObserveOperation(valid)
 
@@ -420,12 +421,54 @@ func TestProductionOperationObserver_AllowsOnlyFixedCredentialFreeFields(t *test
 		"phase", "invoke", "outcome_class", feishu.PublicCodeValidationError,
 		"risk", feishu.RiskWrite, "invocation_started", true, "exit_code", 1,
 		"cli_version", feishu.LarkCLIVersion, "duration", 5 * time.Second,
+		"cli_error_type", "", "cli_error_subtype", "", "cli_error_code", "",
+		"failure_source", "structured_cli_error",
 	}, entries[0].fields)
 	flattened, err := json.Marshal(entries)
 	require.NoError(t, err)
 	require.NotContains(t, string(flattened), "token-private-value")
 	require.NotContains(t, string(flattened), "private Base content")
 	require.NotContains(t, string(flattened), "private-cli-output")
+}
+
+func TestProductionOperationObserver_ValidatesDiagnosticTupleAndHandoff(t *testing.T) {
+	var entries [][]interface{}
+	observer := productionOperationObserver{sink: func(_ string, fields ...interface{}) {
+		entries = append(entries, append([]interface{}(nil), fields...))
+	}}
+	operationID := "00000000-0000-4000-8000-000000000028"
+	observer.ObserveOperation(feishu.OperationObservation{
+		UserID: 7, Generation: 3, OperationID: operationID,
+		Phase: "invoke", OutcomeClass: feishu.PublicCodeValidationError, Risk: feishu.RiskWrite,
+		InvocationStarted: true, ExitCode: 1, CLIVersion: feishu.LarkCLIVersion,
+		CLIErrorType: "api", CLIErrorSubtype: "validation_error", CLIErrorCode: "400",
+		FailureSource: "structured_cli_error",
+	})
+	observer.ObserveOperation(feishu.OperationObservation{
+		UserID: 7, OperationID: operationID, Phase: "handoff",
+		OutcomeClass: "terminal_finalized", ExitCode: -1,
+	})
+
+	invalidTuple := feishu.OperationObservation{
+		UserID: 7, Generation: 3, OperationID: operationID,
+		Phase: "invoke", OutcomeClass: feishu.PublicCodeValidationError, Risk: feishu.RiskWrite,
+		InvocationStarted: true, ExitCode: 1, CLIVersion: feishu.LarkCLIVersion,
+		CLIErrorType: "api", CLIErrorSubtype: "private-content", CLIErrorCode: "400",
+		FailureSource: "structured_cli_error",
+	}
+	observer.ObserveOperation(invalidTuple)
+	invalidHandoff := feishu.OperationObservation{
+		UserID: 7, OperationID: operationID, Phase: "handoff",
+		OutcomeClass: "private-content", ExitCode: -1,
+	}
+	observer.ObserveOperation(invalidHandoff)
+
+	require.Len(t, entries, 2)
+	encoded, err := json.Marshal(entries)
+	require.NoError(t, err)
+	require.Contains(t, string(encoded), "validation_error")
+	require.Contains(t, string(encoded), "terminal_finalized")
+	require.NotContains(t, string(encoded), "private-content")
 }
 
 func TestBuildFeishuService_KeyRotationReadsHistoricalVault(t *testing.T) {

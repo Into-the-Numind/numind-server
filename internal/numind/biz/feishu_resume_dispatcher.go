@@ -32,6 +32,7 @@ type workspaceResumeCall struct {
 type WorkspaceResumeDispatcher struct {
 	operations   operationResumeService
 	agentResumer agentExternalResultResumer
+	observer     feishu.OperationObserver
 
 	mu       sync.Mutex
 	inFlight map[string]*workspaceResumeCall
@@ -41,9 +42,17 @@ type WorkspaceResumeDispatcher struct {
 // NewWorkspaceResumeDispatcher constructs the shared authorization and
 // confirmation completion dispatcher. Missing dependencies fail closed when
 // DispatchResume is called, so a half-built composition cannot backfill a run.
-func NewWorkspaceResumeDispatcher(operations operationResumeService, agentResumer agentExternalResultResumer) *WorkspaceResumeDispatcher {
+func NewWorkspaceResumeDispatcher(
+	operations operationResumeService,
+	agentResumer agentExternalResultResumer,
+	observers ...feishu.OperationObserver,
+) *WorkspaceResumeDispatcher {
+	var observer feishu.OperationObserver
+	if len(observers) == 1 {
+		observer = observers[0]
+	}
 	return &WorkspaceResumeDispatcher{
-		operations: operations, agentResumer: agentResumer,
+		operations: operations, agentResumer: agentResumer, observer: observer,
 		inFlight: make(map[string]*workspaceResumeCall),
 	}
 }
@@ -117,8 +126,10 @@ func (d *WorkspaceResumeDispatcher) dispatch(ctx context.Context, userID uint, o
 		if _, err := d.agentResumer.FinalizeExternalToolWait(
 			ctx, userID, result.AgentRunID, result.OperationID, result.ToolCallID, outcome,
 		); err != nil {
+			d.observeHandoff(userID, result.OperationID, "terminal_finalize_retry")
 			return fmt.Errorf("finalize agent external wait: %w", err)
 		}
+		d.observeHandoff(userID, result.OperationID, "terminal_finalized")
 		return nil
 	default:
 		return fmt.Errorf("resume feishu operation: invalid state")
@@ -136,9 +147,21 @@ func (d *WorkspaceResumeDispatcher) dispatch(ctx context.Context, userID uint, o
 		OperationID: result.OperationID,
 		Result:      toolResult,
 	}); err != nil {
+		d.observeHandoff(userID, result.OperationID, "continuation_retry")
 		return fmt.Errorf("resume agent run: %w", err)
 	}
+	d.observeHandoff(userID, result.OperationID, "continuation_succeeded")
 	return nil
+}
+
+func (d *WorkspaceResumeDispatcher) observeHandoff(userID uint, operationID, outcome string) {
+	if d == nil || d.observer == nil {
+		return
+	}
+	d.observer.ObserveOperation(feishu.OperationObservation{
+		UserID: userID, OperationID: operationID, Phase: "handoff",
+		OutcomeClass: outcome, ExitCode: -1,
+	})
 }
 
 func terminalAgentOutcome(state string) (externalaction.TerminalOutcome, bool) {

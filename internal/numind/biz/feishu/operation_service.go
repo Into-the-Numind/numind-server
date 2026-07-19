@@ -357,6 +357,10 @@ type OperationObservation struct {
 	ExitCode          int
 	CLIVersion        string
 	Duration          time.Duration
+	CLIErrorType      string
+	CLIErrorSubtype   string
+	CLIErrorCode      string
+	FailureSource     string
 }
 
 // OperationObserver receives only the fixed OperationObservation vocabulary.
@@ -1362,7 +1366,7 @@ func (s *FeishuOperationService) executeClaimed(
 		started := result != nil && result.InvocationStarted
 		if vaultErr == nil && runErr == nil && result != nil && started && result.Envelope != nil &&
 			result.Envelope.OK && json.Valid(result.Envelope.Data) {
-			s.observeInvocation(operation, persisted.Risk, result, "succeeded", invocationStartedAt)
+			s.observeInvocation(operation, persisted.Risk, result, nil, nil, "succeeded", invocationStartedAt)
 			return s.commitTerminal(ctx, operation, leaseOwner, model.FeishuOperationSucceeded, "", result.Envelope.Data, true)
 		}
 
@@ -1371,7 +1375,7 @@ func (s *FeishuOperationService) executeClaimed(
 		if outcomeClass == "" {
 			outcomeClass = PublicCodeFailed
 		}
-		s.observeInvocation(operation, persisted.Risk, result, outcomeClass, invocationStartedAt)
+		s.observeInvocation(operation, persisted.Risk, result, runErr, vaultErr, outcomeClass, invocationStartedAt)
 		if started && writeLikeRisk(persisted.Risk) {
 			// Scope preflight is the only safe authorization recovery boundary for
 			// writes. Once the business process starts, even a structured CLI error
@@ -1418,6 +1422,8 @@ func (s *FeishuOperationService) observeInvocation(
 	operation *model.FeishuOperation,
 	risk RiskLevel,
 	result *CLIResult,
+	runErr error,
+	vaultErr error,
 	outcomeClass string,
 	startedAt time.Time,
 ) {
@@ -1437,7 +1443,46 @@ func (s *FeishuOperationService) observeInvocation(
 		observation.InvocationStarted = result.InvocationStarted
 		observation.ExitCode = result.ExitCode
 	}
+	observation.FailureSource = operationFailureSource(result, runErr, vaultErr, outcomeClass)
+	if result != nil && result.Envelope != nil && result.Envelope.Error != nil {
+		cliErr := result.Envelope.Error
+		code, present, valid := normalizeClassifierCode(cliErr.Code)
+		if valid && (!present || code != "") &&
+			ValidOperationDiagnosticTuple(outcomeClass, cliErr.Type, cliErr.Subtype, code) {
+			observation.CLIErrorType = cliErr.Type
+			observation.CLIErrorSubtype = cliErr.Subtype
+			observation.CLIErrorCode = code
+		}
+	}
 	s.observer.ObserveOperation(observation)
+}
+
+func operationFailureSource(result *CLIResult, runErr, vaultErr error, outcomeClass string) string {
+	if outcomeClass == "succeeded" {
+		return ""
+	}
+	if vaultErr != nil {
+		return "vault"
+	}
+	if result != nil && result.Envelope != nil && !result.Envelope.OK && result.Envelope.Error != nil {
+		return "structured_cli_error"
+	}
+	if errors.Is(runErr, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	if errors.Is(runErr, errControlledCLIInvalidJSON) {
+		return "malformed_output"
+	}
+	if errors.Is(runErr, errControlledCLIOutputLimit) {
+		return "output_limit"
+	}
+	if runErr != nil {
+		return "transport"
+	}
+	if result == nil || !result.InvocationStarted {
+		return "not_started"
+	}
+	return "unclassified"
 }
 
 func (s *FeishuOperationService) checkScopesBeforeWrite(
