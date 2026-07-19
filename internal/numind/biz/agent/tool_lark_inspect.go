@@ -40,8 +40,7 @@ func (t *larkInspectTool) InputSchema() json.RawMessage {
 		"type":"object",
 		"properties":{
 			"mode":{"type":"string","enum":["connection","command"]},
-			"argv":{"type":"array","minItems":1,"items":{"type":"string"}},
-			"skill_receipts":{"type":"array","minItems":1,"items":{"type":"string"}}
+			"argv":{"type":"array","minItems":1,"items":{"type":"string"}}
 		},
 		"required":["mode"],
 		"additionalProperties":false
@@ -95,15 +94,9 @@ func decodeLarkInspectInput(input ToolInput) (feishu.InspectionRequest, error) {
 		if _, hasArgv := fields["argv"]; hasArgv {
 			return feishu.InspectionRequest{}, errors.New("connection argv rejected")
 		}
-		if _, hasReceipts := fields["skill_receipts"]; hasReceipts {
-			return feishu.InspectionRequest{}, errors.New("connection receipts rejected")
-		}
 	case feishu.InspectionModeCommand:
 		argvRaw, hasArgv := fields["argv"]
-		receiptsRaw, hasReceipts := fields["skill_receipts"]
-		if !hasArgv || !hasReceipts || json.Unmarshal(argvRaw, &request.Argv) != nil ||
-			json.Unmarshal(receiptsRaw, &request.SkillReceipts) != nil ||
-			len(request.Argv) == 0 || len(request.SkillReceipts) == 0 {
+		if !hasArgv || json.Unmarshal(argvRaw, &request.Argv) != nil || len(request.Argv) == 0 {
 			return feishu.InspectionRequest{}, errors.New("command inspection rejected")
 		}
 		if request.Argv[0] == "lark-cli" {

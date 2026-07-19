@@ -148,8 +148,8 @@ type OperationAction struct {
 	ExpiresAt   time.Time `json:"expires_at,omitempty"`
 }
 
-// ExecuteRequest is model-supplied only for IDs, raw allowlisted argv, and
-// opaque skill receipts. Risk, scopes, domain, and normalized argv are derived.
+// ExecuteRequest contains server-context IDs and raw allowlisted business argv.
+// Risk, scopes, domain, normalized argv, identity, and authorization are derived.
 type ExecuteRequest struct {
 	UserID         uint
 	AgentRunID     uint64
@@ -157,7 +157,9 @@ type ExecuteRequest struct {
 	IdempotencyKey string
 	Argv           []string
 	StdinJSON      json.RawMessage
-	SkillReceipts  []string
+	// SkillReceipts is retained only so old in-process callers compile during the
+	// rolling transition. Execute deliberately ignores it; it is not security input.
+	SkillReceipts []string
 }
 
 // OperationResult is a defensive, non-sensitive view of a persisted operation.
@@ -771,14 +773,6 @@ func (s *FeishuOperationService) Execute(ctx context.Context, request ExecuteReq
 	if err != nil {
 		return nil, ErrOperationRequestRejected
 	}
-	if err := validateOperationReceipts(request.SkillReceipts); err != nil {
-		return nil, err
-	}
-	receiptDomain := operationReceiptDomain(normalized)
-	if err := s.receipts.VerifyRequired(append([]string(nil), request.SkillReceipts...), request.AgentRunID, receiptDomain); err != nil {
-		return nil, ErrOperationRequestRejected
-	}
-
 	account, err := s.loadOrCreateAccount(ctx, request.UserID)
 	if err != nil {
 		return nil, err

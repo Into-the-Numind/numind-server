@@ -58,7 +58,6 @@ type larkSkillReadOutput struct {
 	Content      string   `json:"content"`
 	References   []string `json:"references"`
 	Cursor       string   `json:"cursor"`
-	Receipt      string   `json:"receipt"`
 	CLIVersion   string   `json:"cli_version"`
 }
 
@@ -66,15 +65,14 @@ const larkHostedExecutionPolicy = "有数托管规则（优先于下方针对本
 	"不要执行 auth/config/whoami/qrcode，也不要要求用户提供 App ID/App Secret。" +
 	"先执行 Docs/Base/Wiki/Drive 业务命令，不要每次先检查权限；写操作由平台在真正写入前自动做只读 scope check，连接或权限不足时平台会生成授权卡片并恢复原任务。" +
 	"只有用户明确询问连接状态，或 lark_execute 已返回结构化失败时才调用 lark_inspect。" +
-	"skill_receipts 必须同时包含当前 run 的 lark-shared receipt 和对应业务技能 receipt。" +
 	"用户只提供资源标题而没有 URL/token 时，先读取 lark-drive，再执行 drive +search --query <标题> --only-title --doc-types docx,wiki,bitable；" +
 	"如果结果 has_more=true，必须保持相同 query/only-title/doc-types/page-size，用 page_token 继续搜索，按 URL/token 去重，最多 5 页或 100 条；只有穷尽分页后才能判断唯一、多个或没有精确匹配。达到上限仍有更多结果时，不得宣称唯一或未找到，应让用户缩小标题范围或提供链接。" +
 	"精确匹配优先使用结果的原始 title；若只能使用 title_highlighted，先剥离 <h>/<hb> 高亮标签再比较。唯一精确匹配时按结果类型和 URL 路由到 Docs/Base/Wiki；" +
 	"结果 URL 是 /wiki/ 时，先用 shared+wiki 执行 wiki +node-get --node-token <URL>，再按 obj_type/obj_token 路由：仅 docx 可换 shared+doc 后 docs fetch、bitable 可换 shared+base 后 base 读取；其余 obj_type（doc、sheet、mindnote、slides、file）本期不支持。" +
-	"非 wiki 结果随后读取目标业务技能并换用目标 exact receipts：docx 用 shared+doc，bitable 用 shared+base；Drive receipt 不得带入后续业务命令。" +
+	"非 wiki 结果随后读取目标业务技能：docx 用 lark-doc，bitable 用 lark-base。技能读取只提供命令说明；身份、权限与恢复由平台负责。" +
 	"多个精确匹配时列出候选让用户选择；没有精确匹配时说明未找到并请求链接，不要猜测 token，也不要说成连接未就绪。" +
 	"官方命令中的固定 --as user 与 --format json 可以保留，平台会安全规范化。" +
-	"policy_rejected 或 validation 只可修正业务命令/receipts 一次；not_found 或 resource_denied 应向用户确认资源，不要自动重试；unknown_result 必须立即停止，禁止换参数重复写入。" +
+	"policy_rejected 或 validation 只可修正业务命令一次；not_found 或 resource_denied 应向用户确认资源，不要自动重试；unknown_result 必须立即停止，禁止换参数重复写入。" +
 	"rate_limited/temporary 仅在结构化结果 retryable=true 时最多重试一次；不要改跑本地初始化命令。"
 
 func (t *larkSkillReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
@@ -110,7 +108,6 @@ func (t *larkSkillReadTool) Execute(ctx context.Context, input ToolInput) (ToolR
 		Content:      page.Content,
 		References:   append([]string(nil), page.References...),
 		Cursor:       page.Cursor,
-		Receipt:      page.Receipt,
 		CLIVersion:   feishu.LarkCLIVersion,
 	})
 	if err != nil {

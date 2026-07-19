@@ -58,12 +58,12 @@ func (s *FeishuOperationService) Inspect(ctx context.Context, request Inspection
 	}
 	switch request.Mode {
 	case InspectionModeConnection:
-		if request.AgentRunID == 0 || len(request.Argv) != 0 || len(request.SkillReceipts) != 0 {
+		if request.AgentRunID == 0 || len(request.Argv) != 0 {
 			return nil, ErrInspectionRejected
 		}
 		return s.inspectConnection(ctx, request.UserID)
 	case InspectionModeCommand:
-		if request.AgentRunID == 0 || len(request.Argv) == 0 || validateOperationReceipts(request.SkillReceipts) != nil {
+		if request.AgentRunID == 0 || len(request.Argv) == 0 {
 			return nil, ErrInspectionRejected
 		}
 		return s.inspectCommand(ctx, request)
@@ -108,11 +108,6 @@ func (s *FeishuOperationService) inspectCommand(
 ) (*InspectionResult, error) {
 	normalized, err := s.catalog.Normalize(append([]string(nil), request.Argv...), nil)
 	if err != nil {
-		return nil, ErrInspectionRejected
-	}
-	if err := s.receipts.VerifyRequired(
-		append([]string(nil), request.SkillReceipts...), request.AgentRunID, operationReceiptDomain(normalized),
-	); err != nil {
 		return nil, ErrInspectionRejected
 	}
 	account, err := s.accounts.Get(ctx, request.UserID, ProviderLark)

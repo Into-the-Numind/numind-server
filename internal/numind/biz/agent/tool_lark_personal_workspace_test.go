@@ -182,7 +182,6 @@ func TestLarkPersonalWorkspace_SkillReadSuccessUsesOnlyRunContext(t *testing.T) 
 		Content    string   `json:"content"`
 		References []string `json:"references"`
 		Cursor     string   `json:"cursor"`
-		Receipt    string   `json:"receipt"`
 		CLIVersion string   `json:"cli_version"`
 	}
 	require.NoError(t, json.Unmarshal(result, &output))
@@ -192,8 +191,8 @@ func TestLarkPersonalWorkspace_SkillReadSuccessUsesOnlyRunContext(t *testing.T) 
 	assert.Equal(t, executor.result.Content, output.Content, "raw content must JSON round-trip without corruption")
 	assert.Equal(t, executor.result.References, output.References)
 	assert.Equal(t, executor.result.Cursor, output.Cursor)
-	assert.Equal(t, executor.result.Receipt, output.Receipt)
 	assert.Equal(t, "1.0.68", output.CLIVersion)
+	assert.NotContains(t, string(result), `"receipt"`, "internal receipts must not be model-visible")
 	assert.True(t, tool.IsReadOnly())
 	assert.True(t, tool.IsConcurrencySafe(nil))
 	assert.Contains(t, tool.Description(), "lark-shared")
@@ -221,19 +220,19 @@ func TestLarkPersonalWorkspace_SkillReadPublishesHostedPolicy(t *testing.T) {
 	var output struct {
 		Content      string `json:"content"`
 		HostedPolicy string `json:"hosted_policy"`
-		Receipt      string `json:"receipt"`
 	}
 	require.NoError(t, json.Unmarshal(result, &output))
 	assert.Equal(t, executor.result.Content, output.Content, "signed upstream content must stay byte-for-byte intact")
-	assert.Equal(t, executor.result.Receipt, output.Receipt)
+	assert.NotContains(t, string(result), `"receipt"`)
 	assert.Contains(t, output.HostedPolicy, "不要执行 auth/config/whoami")
 	assert.Contains(t, output.HostedPolicy, "不要要求用户提供 App ID/App Secret")
 	assert.Contains(t, output.HostedPolicy, "不要每次先检查权限")
 	assert.Contains(t, output.HostedPolicy, "只读 scope check")
 	assert.Contains(t, output.HostedPolicy, "lark_inspect")
 	assert.Contains(t, output.HostedPolicy, "生成授权卡片")
-	assert.Contains(t, output.HostedPolicy, "lark-shared")
-	assert.Contains(t, output.HostedPolicy, "对应业务技能")
+	assert.Contains(t, output.HostedPolicy, "技能读取只提供命令说明")
+	assert.Contains(t, output.HostedPolicy, "身份、权限与恢复由平台负责")
+	assert.NotContains(t, output.HostedPolicy, "skill_receipts")
 	assert.Contains(t, output.HostedPolicy, "只可修正")
 	assert.Contains(t, output.HostedPolicy, "unknown_result 必须立即停止")
 }
@@ -273,9 +272,9 @@ func TestLarkPersonalWorkspace_FreshConversationCanDiscoverByTitle(t *testing.T)
 	assert.Contains(t, output.HostedPolicy, "wiki +node-get")
 	assert.Contains(t, output.HostedPolicy, "obj_type/obj_token")
 	assert.Contains(t, output.HostedPolicy, "doc、sheet、mindnote、slides、file")
-	assert.Contains(t, output.HostedPolicy, "Drive receipt 不得带入后续业务命令")
-	assert.Contains(t, output.HostedPolicy, "shared+doc")
-	assert.Contains(t, output.HostedPolicy, "shared+base")
+	assert.Contains(t, output.HostedPolicy, "docx 用 lark-doc")
+	assert.Contains(t, output.HostedPolicy, "bitable 用 lark-base")
+	assert.NotContains(t, output.HostedPolicy, "receipt")
 }
 
 func TestLarkPersonalWorkspace_SkillReadStrictInputAndSafeFailures(t *testing.T) {
@@ -369,7 +368,7 @@ func TestLarkPersonalWorkspace_ExecuteDerivesTenantAndIdempotencyFromContext(t *
 	assert.Equal(t, "501:synthetic-a", requests[0].IdempotencyKey)
 	assert.Equal(t, []string{"docs", "+fetch", "--doc", "doc-1"}, requests[0].Argv)
 	assert.JSONEq(t, `{"value":"line\nquoted: \"yes\""}`, string(requests[0].StdinJSON))
-	assert.Equal(t, []string{"receipt-doc", "receipt-shared"}, requests[0].SkillReceipts)
+	assert.Empty(t, requests[0].SkillReceipts, "receipts must not cross the Agent execution boundary")
 	assert.Equal(t, uint(22), requests[1].UserID, "a second tenant must derive its own identity from context")
 	assert.Equal(t, "502:synthetic-b", requests[1].IdempotencyKey)
 	assert.Nil(t, requests[1].StdinJSON, "stdin_json:null must normalize to nil")
@@ -485,7 +484,6 @@ func TestLarkPersonalWorkspace_ExecuteRejectsUntrustedIdentityAndStrictJSON(t *t
 		"trailing document": `{"argv":["docs"],"skill_receipts":["r"]} {}`,
 		"empty argv":        `{"argv":[],"skill_receipts":["r"]}`,
 		"prefix only":       `{"argv":["lark-cli"],"skill_receipts":["r"]}`,
-		"empty receipts":    `{"argv":["docs"],"skill_receipts":[]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			executor := &fakeLarkExecutor{}
@@ -987,14 +985,12 @@ func TestLarkPersonalWorkspace_InspectConnectionAndStrictBoundaries(t *testing.T
 	require.Len(t, inspector.snapshot(), 1)
 
 	for name, input := range map[string]string{
-		"unknown mode":            `{"mode":"auth"}`,
-		"connection argv":         `{"mode":"connection","argv":["docs"]}`,
-		"connection receipts":     `{"mode":"connection","skill_receipts":["r"]}`,
-		"command missing argv":    `{"mode":"command","skill_receipts":["r"]}`,
-		"command missing receipt": `{"mode":"command","argv":["docs"]}`,
-		"prefix only":             `{"mode":"command","argv":["lark-cli"],"skill_receipts":["r"]}`,
-		"injected identity":       `{"mode":"connection","user_id":7}`,
-		"duplicate mode":          `{"mode":"connection","mode":"command"}`,
+		"unknown mode":         `{"mode":"auth"}`,
+		"connection argv":      `{"mode":"connection","argv":["docs"]}`,
+		"command missing argv": `{"mode":"command","skill_receipts":["r"]}`,
+		"prefix only":          `{"mode":"command","argv":["lark-cli"],"skill_receipts":["r"]}`,
+		"injected identity":    `{"mode":"connection","user_id":7}`,
+		"duplicate mode":       `{"mode":"connection","mode":"command"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			before := len(inspector.snapshot())
