@@ -1,5 +1,25 @@
 schema_version: '2.0'
 features:
+- id: feishu-sequential-auth-refresh
+  ndf_version: '3.0'
+  description: Show consecutive Feishu authorization cards without reload and atomically refresh expired-but-pending operation-bound device sessions.
+  classification_reason: 'Standard: no schema/API/new integration change, but the customer bug spans backend and frontend and changes high-risk third-party authorization state handling across more than three files; the user confirmed fast Standard through Dev on 2026-07-20.'
+  last_updated_by: ai-s0
+  last_updated_at: '2026-07-20T01:30:00+08:00'
+  created_at: '2026-07-20T01:23:25+08:00'
+  track: standard
+  stage: S0
+  status: active
+  repos: [numind-server, numind-web-v3]
+  branches: {numind-server: feature/feishu-sequential-auth-refresh, numind-web-v3: feature/feishu-sequential-auth-refresh}
+  worktrees: {numind-server: /private/tmp/wt-feishu-sequential-auth-refresh-numind-server, numind-web-v3: /private/tmp/wt-feishu-sequential-auth-refresh-numind-web-v3}
+  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0, current_task: 'S0 requirement recorded'}
+  artifacts:
+    requirement: requirements/feishu-sequential-auth-refresh.md
+  decisions:
+  - 'S0: Dev evidence proves two linked customer bugs: resumed-run polling omits a durable second external_action card, and expired-but-still-pending protocol-v2 user authorization is rejected by refresh and surfaced as HTTP 500. User authorized fast Standard through Dev; Prod is excluded.'
+  blockers: []
+
 - id: feishu-base-resume-outcome
   ndf_version: '3.0'
   description: Finalize non-success Feishu operations without turning successful authorization into HTTP 500, while preserving no-replay safety and safe diagnostics.
