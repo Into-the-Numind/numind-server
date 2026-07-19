@@ -1,5 +1,32 @@
 schema_version: '2.0'
 features:
+- id: feishu-auth-confirmation-stability
+  ndf_version: '3.0'
+  description: Make manual Feishu authorization confirmation wait long enough, preserve exact user/app/device/operation/Agent binding, and emit safe actionable diagnostics.
+  classification_reason: 'Standard: no schema/API/new integration change, but this spans backend and frontend and changes high-risk third-party authorization and Agent-resume timing.'
+  last_updated_by: ai-s3-plan
+  last_updated_at: '2026-07-19T23:20:00+08:00'
+  created_at: '2026-07-19T22:17:31+08:00'
+  track: standard
+  stage: S3
+  status: active
+  repos: [numind-server, numind-web-v3]
+  branches: {numind-server: feature/feishu-auth-confirmation-stability, numind-web-v3: feature/feishu-auth-confirmation-stability}
+  worktrees: {numind-server: /private/tmp/wt-feishu-auth-confirmation-stability-numind-server, numind-web-v3: /private/tmp/wt-feishu-auth-confirmation-stability-numind-web-v3}
+  progress: {total_tasks: 5, completed_tasks: 0, reviewed_tasks: 0, current_task: 'Task 1 RED: customer timeout and binding regression'}
+  artifacts:
+    requirement: requirements/feishu-auth-confirmation-stability.md
+    proposal: proposals/feishu-auth-confirmation-stability-proposal.md
+    spec: docs/superpowers/specs/2026-07-19-feishu-auth-confirmation-stability-design.md
+    plan: docs/superpowers/plans/2026-07-19-feishu-auth-confirmation-stability.md
+    qa: null
+  decisions:
+  - 'S0: Customer confirmed fast Standard through Dev. Authorization task and Feishu link remain valid for 10 minutes; manual continue remains mandatory; official CLI polling remains 5 seconds; frontend waits at most 60 seconds; success immediately resumes the original Agent task.'
+  - 'S1: Selected a scoped 60-second resume request with a 55-second backend completion budget. Rejected global timeout widening, automatic confirmation, and a forked CLI. Existing encrypted binding and durable exactly-once resume remain authoritative.'
+  - 'S2: Completion revalidates user, generation, operation, session, phase, app, scope hash, encrypted device credential and Agent run/tool link. Safe fixed diagnostic classes distinguish pending timeout, network/read/parse/slow-down, reconciliation and dispatch without logging credentials.'
+  - 'S3: Five serial RED-GREEN tasks cover customer timeout reproduction, aligned 10-minute lifetime, scoped 55/60-second waits, binding integrity, safe diagnostics, full quality gates, atomic merge and backend-first Dev deployment.'
+  blockers: []
+
 - id: agent-runtime-ui-simplify
   ndf_version: '3.0'
   description: Simplify the Agent runtime UI and make the sole input stop control cancel the actual run as well as the browser stream.
