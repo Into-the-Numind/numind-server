@@ -4,16 +4,16 @@ features:
   ndf_version: '3.0'
   description: Show consecutive Feishu authorization cards without reload and atomically refresh expired-but-pending operation-bound device sessions.
   classification_reason: 'Standard: no schema/API/new integration change, but the customer bug spans backend and frontend and changes high-risk third-party authorization state handling across more than three files; the user confirmed fast Standard through Dev on 2026-07-20.'
-  last_updated_by: ai-s3
-  last_updated_at: '2026-07-20T01:46:00+08:00'
+  last_updated_by: ai-s4
+  last_updated_at: '2026-07-20T02:00:00+08:00'
   created_at: '2026-07-20T01:23:25+08:00'
   track: standard
-  stage: S3
+  stage: S4
   status: active
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/feishu-sequential-auth-refresh, numind-web-v3: feature/feishu-sequential-auth-refresh}
   worktrees: {numind-server: /private/tmp/wt-feishu-sequential-auth-refresh-numind-server, numind-web-v3: /private/tmp/wt-feishu-sequential-auth-refresh-numind-web-v3}
-  progress: {total_tasks: 7, completed_tasks: 0, reviewed_tasks: 0, current_task: 'T1 backend customer RED'}
+  progress: {total_tasks: 7, completed_tasks: 0, reviewed_tasks: 0, current_task: 'T1 backend customer RED in progress'}
   artifacts:
     requirement: requirements/feishu-sequential-auth-refresh.md
     proposal: proposals/feishu-sequential-auth-refresh-proposal.md
