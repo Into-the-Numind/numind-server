@@ -27,6 +27,11 @@
 - spec-compliance：PASS，0 P0/P1。确认 Header 无取消 props/emit/template，预估请求链移除，欢迎区仅保留 welcome heading，圆形箭头有 `aria-label`、title、hover 与 focus-visible。
 - code-quality：PASS，0 P0/P1。审查期间提出两项 P2 测试可靠性问题，均已修复：浏览器 absence 断言先等待 textarea 挂载并使用 `toHaveCount(0)`；已跳过的 dev integration 不再引用已删除的 header credits selector。
 
-## S6 Dev 验收计划
+## S6 Dev 部署与运行时验收
 
-执行 `ndf-done` 合并后部署用户端 Dev；确认部署健康，再在 Dev 运行页复核：输入后无预估、运行时无顶部取消、首屏无身份 pill、新内容为圆形下箭头，并在真实 Agent run 中点击输入停止键确认任务停止。
+- `ndf-done` 已合并并推送前端 `develop`：merge commit `fbb2cce`；feature worktree 和本地分支均已清理。
+- `bash scripts/cicd/release.sh dev --deploy-only` 已将镜像 `ccr.ccs.tencentyun.com/youshunumind/numind-web-v3:develop-fbb2cce` 部署至 Dev。
+- Dev 容器健康、部署机本地 `/health`、公开 `http://49.233.219.254:9200/health` 均返回 `healthy`。
+- 已使用测试账号进入 Dev 的真实 Agent 运行页并点击输入停止键：`POST /v1/agent-runs/:id/cancel` 两次均返回 HTTP 200 / `code: 0`，页面显示“已取消任务”。
+
+真实 run 的服务器终态未能作为“running → cancelled”取证：两次分别使用会议纪要助手和 Web 调研助手，均在约 1–2 秒内被 Dev 上游模型以 `model_error` 结束为 `failed`（`credits_used: 0`），早于取消后的状态轮询。这是 Dev 模型可用性限制，不是本次前端调用链失败；浏览器契约测试已永久覆盖精确 cancel POST、成功/失败/悬挂取消及本地 stream abort。等待用户在 Dev 的人工确认；本次未申请或执行生产发布。
