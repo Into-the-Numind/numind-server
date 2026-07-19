@@ -56,6 +56,37 @@ func TestSkillReader_UsesExactControlledCLIAndDeclaredReferences(t *testing.T) {
 	require.Equal(t, "references/fetch.md", again.References[0])
 }
 
+func TestSkillReader_ResolvesDeclaredReferenceBasename(t *testing.T) {
+	t.Parallel()
+
+	h := newSkillReaderHarness(t, skillReaderOptions{})
+	h.writeResource(
+		"lark-doc",
+		"SKILL.md",
+		"# Doc\n[Update](references/style/lark-doc-update.md)",
+		true,
+	)
+	h.writeResource(
+		"lark-doc",
+		"references/style/lark-doc-update.md",
+		"update reference",
+		false,
+	)
+
+	page, err := h.reader.Read(h.context(), SkillReadRequest{
+		AgentRunID: 224,
+		Skill:      "lark-doc",
+		Reference:  "lark-doc-update.md",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "references/style/lark-doc-update.md", page.Path)
+	require.Equal(t, "update reference", page.Content)
+	require.Equal(t, []string{
+		"HOME=unset|4|skills|read|lark-doc|--json",
+		"HOME=unset|5|skills|read|lark-doc|references/style/lark-doc-update.md|--json",
+	}, h.invocations())
+}
+
 func TestSkillReader_InvalidRequestDoesNotStartCLI(t *testing.T) {
 	t.Parallel()
 
