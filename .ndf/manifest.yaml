@@ -1,5 +1,25 @@
 schema_version: '2.0'
 features:
+- id: lark-skill-reader-tolerance
+  ndf_version: '3.0'
+  description: Preserve LLM-led Feishu planning while moving deterministic skill cursor handling, exact reference-field repair, and recoverable invalid-input semantics behind the trusted tool boundary.
+  classification_reason: 'Standard: no schema/API/new integration change and a small file set, but this changes the security boundary for Agent-readable embedded Feishu instructions.'
+  last_updated_by: ai-s0
+  last_updated_at: '2026-07-19T15:35:31+08:00'
+  created_at: '2026-07-19T15:33:58+08:00'
+  track: standard
+  stage: S0
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: feature/lark-skill-reader-tolerance}
+  worktrees: {numind-server: /private/tmp/wt-lark-skill-reader-tolerance-numind-server}
+  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0}
+  artifacts:
+    requirement: requirements/lark-skill-reader-tolerance.md
+  decisions:
+  - 'S0: customer chose to preserve the current Codex-style LLM judgment architecture. The trusted platform will handle only deterministic skill pagination, exact reference/cursor field repair, and recoverable error semantics without widening the five-skill or declared-reference boundary. Fast Standard is authorized through Dev.'
+  blockers: []
+
 - id: lark-stable-execution
   ndf_version: '3.0'
   description: Move Feishu execution identity, policy, recovery, and retry decisions behind the trusted platform boundary so every Agent can use stable business argv without model-carried receipts.
