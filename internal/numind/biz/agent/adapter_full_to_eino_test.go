@@ -390,6 +390,94 @@ defaults:
 	assert.True(t, payload.Recoverable)
 }
 
+func TestAdaptFullToEinoTool_LarkTerminalFailureNeverEmitsFalseSuccess(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		output string
+	}{
+		{
+			name:   "unknown started write",
+			output: `{"ok":false,"state":"unknown","operation_id":"op-unknown","failure":{"code":"feishu_unknown_result","category":"unknown_result","retryable":false,"business_started":true}}`,
+		},
+		{
+			name:   "hard operation failure",
+			output: `{"ok":false,"state":"failed","operation_id":"op-failed","failure":{"code":"feishu_operation_failed","category":"failed","retryable":false,"business_started":false}}`,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			prov, err := narration.NewProvider(narration.Config{YAMLBytes: []byte(narrationFixtureYAML)})
+			require.NoError(t, err)
+			ft := &fakeFullTool{name: "lark_execute", out: []byte(testCase.output)}
+			eino := adaptFullToEinoTool(ft, &RunHooks{NarrationProvider: prov})
+			ch := make(chan stream.Event, 8)
+			ctx := narration.WithCollector(WithRunID(context.Background(), 227))
+			ctx = WithStreamState(ctx, &StreamSessionState{Ch: ch, RunID: 227})
+
+			out, err := eino.InvokableRun(ctx, `{"argv":["docs","+update"]}`)
+			require.NoError(t, err, "the redacted failure result must still reach the model")
+			assert.JSONEq(t, testCase.output, out)
+
+			var sawResult, sawError bool
+			for _, event := range narration.CollectorFrom(ctx).Events() {
+				sawResult = sawResult || event.State == narration.StateResult
+				sawError = sawError || event.State == narration.StateError
+			}
+			assert.False(t, sawResult, "a terminal Feishu failure must never render as green success")
+			assert.True(t, sawError)
+
+			var sawStreamResult bool
+			var errorPayload *stream.ToolCallErrorPayload
+			for len(ch) > 0 {
+				event := <-ch
+				if event.Type == stream.EventToolCallResult {
+					sawStreamResult = true
+				}
+				if event.Type == stream.EventToolCallError {
+					var payload stream.ToolCallErrorPayload
+					require.NoError(t, json.Unmarshal(event.Data, &payload))
+					errorPayload = &payload
+				}
+			}
+			assert.False(t, sawStreamResult)
+			if assert.NotNil(t, errorPayload) {
+				assert.False(t, errorPayload.Recoverable)
+			}
+		})
+	}
+}
+
+func TestAdaptFullToEinoTool_RetryableLarkFailureEmitsRecoverableProgress(t *testing.T) {
+	prov, err := narration.NewProvider(narration.Config{YAMLBytes: []byte(narrationFixtureYAML)})
+	require.NoError(t, err)
+	ft := &fakeFullTool{name: "lark_execute", out: []byte(`{"ok":false,"state":"failed","operation_id":"op-temporary","failure":{"code":"feishu_temporary_error","category":"temporary","retryable":true,"business_started":false}}`)}
+	eino := adaptFullToEinoTool(ft, &RunHooks{NarrationProvider: prov})
+	ch := make(chan stream.Event, 8)
+	ctx := narration.WithCollector(WithRunID(context.Background(), 228))
+	ctx = WithStreamState(ctx, &StreamSessionState{Ch: ch, RunID: 228})
+
+	_, err = eino.InvokableRun(ctx, `{"argv":["docs","+fetch"]}`)
+	require.NoError(t, err)
+
+	var sawProgress, sawResult, sawError bool
+	for _, event := range narration.CollectorFrom(ctx).Events() {
+		sawProgress = sawProgress || event.State == narration.StateProgress
+		sawResult = sawResult || event.State == narration.StateResult
+		sawError = sawError || event.State == narration.StateError
+	}
+	assert.True(t, sawProgress)
+	assert.False(t, sawResult)
+	assert.False(t, sawError)
+
+	var payload stream.ToolCallErrorPayload
+	for len(ch) > 0 {
+		event := <-ch
+		if event.Type == stream.EventToolCallError {
+			require.NoError(t, json.Unmarshal(event.Data, &payload))
+		}
+	}
+	assert.True(t, payload.Recoverable)
+}
+
 // TestSoftToolErrorMessage locks the detector's false-positive safety: it matches
 // ONLY a dedicated "error" field with the "ERROR: " prefix, never a successful
 // result whose content merely contains the text "ERROR:".
