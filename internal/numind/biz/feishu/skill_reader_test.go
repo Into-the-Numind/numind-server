@@ -126,6 +126,23 @@ func TestSkillReader_ReferenceBasenameResolutionFailsClosed(t *testing.T) {
 		require.Len(t, h.invocations(), 1, "ambiguity must fail before either reference is opened")
 	})
 
+	t.Run("ambiguous basename hidden beyond metadata cap", func(t *testing.T) {
+		t.Parallel()
+		h := newSkillReaderHarness(t, skillReaderOptions{})
+		var main strings.Builder
+		main.WriteString("[A](references/a/shared.md)\n")
+		for index := 0; index < skillReaderMaxReferences+5; index++ {
+			fmt.Fprintf(&main, "[Middle](references/middle/%03d.md)\n", index)
+		}
+		main.WriteString("[Z](references/z/shared.md)\n")
+		h.writeResource("lark-doc", "SKILL.md", main.String(), true)
+		h.writeResource("lark-doc", "references/a/shared.md", "must not be selected", false)
+
+		_, err := h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 33, Skill: "lark-doc", Reference: "shared.md"})
+		require.ErrorIs(t, err, ErrSkillReadInvalid)
+		require.Len(t, h.invocations(), 1, "a duplicate beyond metadata bounds must still make the basename ambiguous")
+	})
+
 	t.Run("does not search another skill", func(t *testing.T) {
 		t.Parallel()
 		h := newSkillReaderHarness(t, skillReaderOptions{})
@@ -332,7 +349,9 @@ func TestSkillReader_PaginationUTF8DriftAndReceiptBinding(t *testing.T) {
 	require.Len(t, h.invocations(), before, "cursor bound to another skill must fail before CLI start")
 	_, err = h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 90, Skill: "lark-doc", Reference: "references/fetch.md", Cursor: first.Cursor})
 	require.Error(t, err)
-	require.Len(t, h.invocations(), before, "cursor bound to main cannot be reused for a reference")
+	require.Len(t, h.invocations(), before+1, "reference resolution may read only the fixed main skill before rejection")
+	require.Equal(t, "HOME=unset|4|skills|read|lark-doc|--json", h.invocations()[before])
+	before = len(h.invocations())
 	tamperedCursor := tamperSkillToken(first.Cursor)
 	_, err = h.reader.Read(h.context(), SkillReadRequest{AgentRunID: 90, Skill: "lark-doc", Cursor: tamperedCursor})
 	require.Error(t, err)

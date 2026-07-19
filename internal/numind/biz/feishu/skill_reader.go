@@ -206,7 +206,7 @@ func (r *SkillReader) Read(ctx context.Context, request SkillReadRequest) (*Skil
 			return nil, err
 		}
 		references = declaredSkillReferences(main.Content)
-		canonicalReference, ok := resolveSkillReference(references, request.Reference)
+		canonicalReference, ok := resolveSkillReference(main.Content, references, request.Reference)
 		if !ok {
 			return nil, ErrSkillReadInvalid
 		}
@@ -468,9 +468,9 @@ func validSkillReferenceBasename(reference string) bool {
 // resolveSkillReference maps a safe basename to exactly one reference declared
 // by the current main skill. It never searches another skill or the OS
 // filesystem. Canonical paths retain their exact-match behavior.
-func resolveSkillReference(references []string, requested string) (string, bool) {
+func resolveSkillReference(mainContent string, exposedReferences []string, requested string) (string, bool) {
 	if validSkillReference(requested) {
-		if containsExactString(references, requested) {
+		if containsExactString(exposedReferences, requested) {
 			return requested, true
 		}
 		return "", false
@@ -480,16 +480,23 @@ func resolveSkillReference(references []string, requested string) (string, bool)
 	}
 
 	match := ""
-	for _, reference := range references {
+	for _, link := range markdownLinkPattern.FindAllStringSubmatch(mainContent, -1) {
+		if len(link) != 2 || !validSkillReference(link[1]) {
+			continue
+		}
+		reference := link[1]
 		if path.Base(reference) != requested {
 			continue
 		}
-		if match != "" {
+		if match != "" && match != reference {
 			return "", false
 		}
 		match = reference
 	}
-	return match, match != ""
+	if match == "" || !containsExactString(exposedReferences, match) {
+		return "", false
+	}
+	return match, true
 }
 
 func declaredSkillReferences(content string) []string {
