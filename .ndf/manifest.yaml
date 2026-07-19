@@ -4,16 +4,16 @@ features:
   ndf_version: '3.0'
   description: Simplify the Agent runtime UI and make the sole input stop control cancel the actual run as well as the browser stream.
   classification_reason: 'Standard: no schema/API/integration change, but more than three frontend source and regression files change and the Agent run cancellation contract must be preserved.'
-  last_updated_by: ai-s3-plan-revision-3
-  last_updated_at: '2026-07-19T22:42:00+08:00'
+  last_updated_by: ai-s4-start
+  last_updated_at: '2026-07-19T22:48:00+08:00'
   created_at: '2026-07-19T21:46:53+08:00'
   track: standard
-  stage: S3
+  stage: S4
   status: active
   repos: [numind-web-v3]
   branches: {numind-web-v3: feature/agent-runtime-ui-simplify}
   worktrees: {numind-web-v3: /private/tmp/wt-agent-runtime-ui-simplify-numind-web-v3}
-  progress: {total_tasks: 5, completed_tasks: 0, reviewed_tasks: 0}
+  progress: {total_tasks: 5, completed_tasks: 0, reviewed_tasks: 0, current_task: 'T1 RED: input stop must cancel server run'}
   artifacts:
     requirement: requirements/agent-runtime-ui-simplify.md
     proposal: proposals/agent-runtime-ui-simplify-proposal.md
@@ -28,6 +28,7 @@ features:
   - 'S3 review revision: input stop now covers active runs during SSE, 409 fallback polling, and reload; it guards cancelling to prevent duplicate posts. The RED E2E uses a browser-owned non-closing ReadableStream, all obsolete abort-bar assertions are removed, estimate removal has a fake-timer component test, and exact FirstRun/MessageList tests cover compact accessible rendering.'
   - 'S3 review revision 2: agent-streaming runs as a mocked-browser contract on VITE_AGENT_MOCK=false port 5174, with an init-script token and all dependencies route mocked, so POST cancel is observable. Separate reload/polling and pending-double-click browser cases verify the single input stop remains available outside SSE and issues at most one cancel request.'
   - 'S3 review revision 3: agent-streaming is excluded from the default VITE_AGENT_MOCK=true e2e project and runs only in the VITE_AGENT_MOCK=false 5174 mocked-browser contract, removing a second contradictory execution path.'
+  - 'S3 gate: independent atomicity review PASS. All cancellation, mock isolation, fallback, duplicate-post, estimate, and visual-contract test boundaries are independently buildable and serially ordered.'
   blockers: []
 
 - id: lark-skill-reader-tolerance
