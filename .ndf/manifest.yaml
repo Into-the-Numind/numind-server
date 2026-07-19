@@ -4,16 +4,16 @@ features:
   ndf_version: '3.0'
   description: Finalize non-success Feishu operations without turning successful authorization into HTTP 500, while preserving no-replay safety and safe diagnostics.
   classification_reason: 'Standard: no schema/API/new integration change, but third-party authorization, durable Agent resume, and security observability are high-risk and span more than three files; user confirmed fast Standard through Dev on 2026-07-20.'
-  last_updated_by: ai-s5-acceptance
-  last_updated_at: '2026-07-20T00:44:06+08:00'
+  last_updated_by: ai-s6-dev-deployed
+  last_updated_at: '2026-07-20T00:53:00+08:00'
   created_at: '2026-07-20T00:20:00+08:00'
   track: standard
-  stage: S5
+  stage: S6
   status: active
   repos: [numind-server]
-  branches: {numind-server: feature/feishu-base-resume-outcome}
-  worktrees: {numind-server: /private/tmp/wt-feishu-base-resume-outcome-numind-server}
-  progress: {total_tasks: 4, completed_tasks: 4, reviewed_tasks: 3, current_task: 'S5 complete; atomic merge and Dev deployment'}
+  branches: {numind-server: develop}
+  worktrees: {}
+  progress: {total_tasks: 4, completed_tasks: 4, reviewed_tasks: 3, current_task: 'Await human Dev acceptance; production is out of scope'}
   artifacts:
     requirement: requirements/feishu-base-resume-outcome.md
     proposal: proposals/feishu-base-resume-outcome-proposal.md
@@ -30,6 +30,8 @@ features:
   - 'S4 review revision: operation diagnostics now retain only fixed failure-source classes plus classifier-approved CLI type/subtype/code tuples, with the production sink independently checking the same tuple. Dispatcher handoff distinguishes continuation/finalizer success and retry. Cross-instance terminal response loss finalizes once; completed authorization returns stored unknown without HTTP 500 and lifecycle compensation remains an idempotent no-op.'
   - 'S4 final review: three independent checks covering task atomicity, specification compliance, and code quality/security all PASS with P0/P1/P2=0 after lifecycle, cross-instance, tuple allowlist, failure-source, and handoff coverage was added.'
   - 'S5 acceptance: focused customer regression, Feishu tests, targeted race, lint, and diff hygiene PASS. Full serial suite passes the Feishu scope and all other packages except two pre-existing xhsscript analytics tests that fail identically on clean develop; the baseline exception is recorded in the QA report.'
+  - 'S6 merge: ndf-done atomically merged and pushed numind-server develop at a35381b6, then removed the feature worktree and local feature branch.'
+  - 'S6 Dev deployment: server image develop-a35381b6 (digest sha256:271b543fe985c995c619350409480b2a16ae628afa349766599829d46b96f58e) deployed healthy. Public health returns code 0/status ok, container is running/healthy on the expected image, startup logs contain no panic/fatal/Feishu initialization error, and pinned lark-cli remains 1.0.68. Await human Dev acceptance; Prod is untouched.'
   blockers: []
 
 - id: feishu-auth-confirmation-stability
