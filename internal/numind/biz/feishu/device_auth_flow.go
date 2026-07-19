@@ -19,8 +19,9 @@ import (
 
 const (
 	deviceAuthManualBindingID          = "manual"
-	deviceAuthDefaultCompletionTimeout = 45 * time.Second
-	deviceAuthMaxCompletionTimeout     = 45 * time.Second
+	deviceAuthDefaultCompletionTimeout = 30 * time.Second
+	deviceAuthMaxCompletionTimeout     = 30 * time.Second
+	deviceAuthConfirmationTimeout      = 50 * time.Second
 	deviceAuthReconciliationTimeout    = 5 * time.Second
 	deviceAuthMutationTimeout          = 5 * time.Second
 )
@@ -120,24 +121,25 @@ type DeviceAuthFlowDeps struct {
 
 // DeviceAuthFlow owns only the restart-safe split user-authorization protocol.
 type DeviceAuthFlow struct {
-	accounts          AuthSessionAccountStore
-	sessions          DeviceAuthStore
-	vault             DeviceAuthHomeVault
-	cli               DeviceAuthCLI
-	cipher            *DeviceAuthCredentialCipher
-	dispatcher        OperationResumeDispatcher
-	now               func() time.Time
-	newID             func() string
-	newLeaseToken     func() string
-	leaseDuration     time.Duration
-	sessionDuration   time.Duration
-	heartbeatInterval time.Duration
-	startTimeout      time.Duration
-	completionTimeout time.Duration
-	observer          DeviceAuthObserver
-	liveURLs          *authSessionURLRegistry
-	cleanupMu         sync.Mutex
-	cleanupCursor     string
+	accounts            AuthSessionAccountStore
+	sessions            DeviceAuthStore
+	vault               DeviceAuthHomeVault
+	cli                 DeviceAuthCLI
+	cipher              *DeviceAuthCredentialCipher
+	dispatcher          OperationResumeDispatcher
+	now                 func() time.Time
+	newID               func() string
+	newLeaseToken       func() string
+	leaseDuration       time.Duration
+	sessionDuration     time.Duration
+	heartbeatInterval   time.Duration
+	startTimeout        time.Duration
+	completionTimeout   time.Duration
+	confirmationTimeout time.Duration
+	observer            DeviceAuthObserver
+	liveURLs            *authSessionURLRegistry
+	cleanupMu           sync.Mutex
+	cleanupCursor       string
 }
 
 func NewDeviceAuthFlow(deps DeviceAuthFlowDeps) (*DeviceAuthFlow, error) {
@@ -184,8 +186,9 @@ func NewDeviceAuthFlow(deps DeviceAuthFlowDeps) (*DeviceAuthFlow, error) {
 		cipher: deps.Cipher, dispatcher: deps.Dispatcher, now: now, newID: newID,
 		newLeaseToken: newLeaseToken, leaseDuration: leaseDuration, sessionDuration: sessionDuration,
 		heartbeatInterval: heartbeatInterval, startTimeout: startTimeout, completionTimeout: completionTimeout,
-		observer: deps.Observer,
-		liveURLs: newAuthSessionURLRegistry(),
+		confirmationTimeout: deviceAuthConfirmationTimeout,
+		observer:            deps.Observer,
+		liveURLs:            newAuthSessionURLRegistry(),
 	}, nil
 }
 
@@ -459,6 +462,14 @@ func (f *DeviceAuthFlow) CompleteUserAuthorization(
 	if f == nil || userID == 0 || generation == 0 || strings.TrimSpace(sessionID) == "" {
 		return nil, ErrAuthSessionUnavailable
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestCtx, cancelRequest := context.WithTimeout(
+		context.WithoutCancel(ctx), f.confirmationTimeout,
+	)
+	defer cancelRequest()
+	ctx = requestCtx
 	startedAt := f.now().UTC()
 	var observedSession *model.FeishuAuthSession
 	defer func() {
@@ -470,9 +481,6 @@ func (f *DeviceAuthFlow) CompleteUserAuthorization(
 		}
 		f.observeDeviceAuth(observedSession, "complete", outcome, LarkCLIVersion, f.now().UTC().Sub(startedAt))
 	}()
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	f.cleanupExpiredCredentialsBestEffort(ctx)
 	session, err := f.sessions.GetSessionForUser(ctx, userID, generation, sessionID)
 	if err != nil || session == nil {
@@ -512,7 +520,7 @@ func (f *DeviceAuthFlow) CompleteUserAuthorization(
 	if claimBudget <= 0 {
 		return nil, ErrDeviceAuthProcessing
 	}
-	claimCtx, cancelClaim := context.WithTimeout(context.WithoutCancel(ctx), claimBudget)
+	claimCtx, cancelClaim := context.WithTimeout(ctx, claimBudget)
 	claimed, err := f.sessions.ClaimSession(
 		claimCtx, userID, generation, sessionID, leaseToken, claimNow, claimUntil,
 	)
@@ -535,7 +543,7 @@ func (f *DeviceAuthFlow) CompleteUserAuthorization(
 		f.releaseOwnedCompletionLease(ctx, session, leaseToken, claimUntil)
 		return nil, ErrDeviceAuthConflict
 	}
-	rereadCtx, cancelReread := context.WithTimeout(context.WithoutCancel(ctx), rereadBudget)
+	rereadCtx, cancelReread := context.WithTimeout(ctx, rereadBudget)
 	currentAccount, accountErr := f.accounts.Get(rereadCtx, userID, ProviderLark)
 	durable, err := f.sessions.GetSessionForUser(rereadCtx, userID, generation, sessionID)
 	cancelReread()
@@ -553,7 +561,7 @@ func (f *DeviceAuthFlow) CompleteUserAuthorization(
 		f.releaseOwnedCompletionLease(ctx, durable, leaseToken, oldLeaseUntil)
 		return nil, ErrDeviceAuthConflict
 	}
-	renewCtx, cancelRenew := context.WithTimeout(context.WithoutCancel(ctx), renewBudget)
+	renewCtx, cancelRenew := context.WithTimeout(ctx, renewBudget)
 	refreshedLeaseUntil := renewNow.Add(f.leaseDuration)
 	renewed, renewErr := f.sessions.RenewSession(
 		renewCtx, durable.UserID, durable.Generation, durable.ID,
@@ -569,7 +577,7 @@ func (f *DeviceAuthFlow) CompleteUserAuthorization(
 	durable.LeaseUntil = &refreshedLeaseUntil
 	account = currentAccount
 	session = durable
-	ownerCtx, cancelOwner := context.WithCancel(context.WithoutCancel(ctx))
+	ownerCtx, cancelOwner := context.WithCancel(ctx)
 	fence := newDeviceAuthLeaseFence(*session.LeaseUntil)
 	heartbeatDone := make(chan struct{})
 	go f.runDeviceAuthCompletionHeartbeat(ownerCtx, cancelOwner, session, leaseToken, fence, heartbeatDone)
@@ -898,9 +906,7 @@ func validPendingDeviceAuthOperation(
 		operation.State != model.FeishuOperationWaitingUserAuth {
 		return false
 	}
-	if operation.AgentRunID == 0 && strings.TrimSpace(operation.ToolCallID) == "" {
-		// Manual/legacy operations deliberately have no Agent continuation.
-	} else if operation.AgentRunID == 0 ||
+	if operation.AgentRunID == 0 ||
 		!validStableIdentifier(operation.ToolCallID, operationMaxToolCallIDBytes) {
 		return false
 	}
@@ -989,7 +995,10 @@ func (f *DeviceAuthFlow) dispatchCompletedDeviceAuth(
 	if err != nil || !validCompletedDeviceAuthOperation(operation, session) {
 		return nil, ErrAuthSessionUnavailable
 	}
-	dispatchCtx, cancelDispatch := authSessionDispatchContext(ctx)
+	// Preserve CompleteUserAuthorization's detached 50-second deadline instead
+	// of widening this final step to the generic 12-minute recovery ceiling.
+	// This makes the server return before the browser's scoped 60-second limit.
+	dispatchCtx, cancelDispatch := context.WithCancel(ctx)
 	defer cancelDispatch()
 	if err := f.dispatcher.DispatchResume(dispatchCtx, session.UserID, operationID); err != nil {
 		f.observeDeviceAuth(session, "dispatch", "retry", "", 0)
@@ -1001,7 +1010,8 @@ func (f *DeviceAuthFlow) dispatchCompletedDeviceAuth(
 
 func validCompletedDeviceAuthOperation(operation *model.FeishuOperation, session *model.FeishuAuthSession) bool {
 	if operation == nil || session == nil || session.OperationID == nil || operation.ID != *session.OperationID ||
-		operation.UserID != session.UserID || operation.Generation != session.Generation {
+		operation.UserID != session.UserID || operation.Generation != session.Generation ||
+		operation.AgentRunID == 0 || !validStableIdentifier(operation.ToolCallID, operationMaxToolCallIDBytes) {
 		return false
 	}
 	switch operation.State {
@@ -1145,8 +1155,17 @@ func (f *DeviceAuthFlow) releaseOwnedCompletionLease(
 	leaseToken string,
 	leaseUntil time.Time,
 ) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	now := f.now().UTC()
 	budget := deviceAuthBoundedBudget(deviceAuthMutationTimeout, now, leaseUntil)
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining < budget {
+			budget = remaining
+		}
+	}
 	if budget <= 0 {
 		return
 	}
@@ -1266,7 +1285,17 @@ func (f *DeviceAuthFlow) replaceOwnedSession(
 	if startParent == nil {
 		startParent = context.Background()
 	}
-	startCtx, cancelStart := context.WithTimeout(context.WithoutCancel(startParent), f.startTimeout)
+	startBudget := f.startTimeout
+	if deadline, ok := startParent.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining < startBudget {
+			startBudget = remaining
+		}
+	}
+	if startBudget <= 0 {
+		return nil, ErrDeviceAuthConflict
+	}
+	startCtx, cancelStart := context.WithTimeout(context.WithoutCancel(startParent), startBudget)
 	defer cancelStart()
 	action, err := f.startUserAuthorization(startCtx, account, stored, canonicalScopes, true)
 	if err != nil {

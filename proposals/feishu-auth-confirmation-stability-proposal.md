@@ -1,7 +1,7 @@
 # 飞书授权确认稳定性 — 提案
 
 ## §1 方案概述 [客户可见]
-只延长飞书“继续”这一个前端请求到 60 秒，后端最多用 45 秒调用官方 CLI，并为校验、提交和 HTTP 返回保留 15 秒。授权任务和飞书链接统一为 10 分钟。服务器继续使用官方 CLI 的 5 秒查询节奏；一旦确认成功，立即提交连接并恢复原 Agent，不增加额外等待或自动确认。
+只延长飞书“继续”这一个前端请求到 60 秒。后端保留最多 30 秒的官方 CLI 查询窗口，并用统一的 50 秒主动处理预算覆盖前置绑定核对、原子提交和 Agent 恢复；另为最慢 5 秒的持久化收尾及 HTTP/网络返回各保留约 5 秒。授权任务和飞书链接统一为 10 分钟。服务器继续使用官方 CLI 的 5 秒查询节奏；一旦确认成功，立即提交连接并恢复原 Agent，不增加额外等待或自动确认。
 
 现有的用户、应用、设备码、操作和会话绑定继续保留；新增原 Agent 运行与工具调用链接的完整性检查。日志只记录固定分类和非敏感标识，能区分等待、网络、读取、解析、协议、应用不一致和恢复调度，不记录 URL、设备码、Token、权限正文或 HOME 路径。
 
@@ -17,7 +17,7 @@
 - 复用 DeviceAuthObservation 的安全白名单日志边界。
 
 ### 技术风险
-- 60 秒浏览器等待仍需给校验、提交和 HTTP 返回留余量：CLI 上限设为 45 秒。
+- 60 秒浏览器等待必须覆盖前置校验、CLI、提交、原操作恢复和 HTTP 返回：服务器建立独立的 50 秒主动处理 deadline，CLI 保持 30 秒上限，dispatch 不再扩展为 12 分钟，并为最慢 5 秒的持久化收尾及 HTTP/网络返回预留余量。
 - CLI 超时可能掩盖网络/解析问题：从固定 stderr 前缀提取安全诊断分类，绝不记录原文。
 - 并发重复点击：继续沿用 session lease、generation fence 和 exactly-once dispatcher。
 
@@ -40,9 +40,10 @@
 ### 验收标准
 - [ ] 默认授权 session 与飞书设备授权链接均为 10 分钟。
 - [ ] 官方 CLI 仍以其固定 5 秒间隔轮询，无 Numind 侧改频。
-- [ ] 后端 CLI 完成窗口为 45 秒，前端仅 resume 请求为 60 秒。
+- [ ] 后端 CLI 完成窗口为 30 秒，前端仅 resume 请求为 60 秒。
+- [ ] 后端主动确认处理最多 50 秒，所有 claim/reread/renew/CLI/reconcile/finalize/dispatch 都继承该 deadline；即使触发最慢 5 秒的持久化收尾，仍先于浏览器 60 秒上限返回。
 - [ ] 成功后同一调用立即 dispatch 原 Agent operation。
-- [ ] 用户、generation、operation、session、phase、app、scope、device credential 与 Agent run/tool link 均 fail-closed。
+- [ ] 用户、generation、operation、session、phase、app、scope、device credential 与 Agent run/tool link 均 fail-closed；任何 operation-bound session 必须同时有合法 run/tool，手动连接只能使用 OperationID=nil。
 - [ ] 日志可区分 CLI pending timeout/network/read/parse/slow-down/protocol 及 reconciliation/dispatch 阶段，且不泄漏凭据。
 
 ### 边界情况

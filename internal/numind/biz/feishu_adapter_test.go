@@ -329,7 +329,7 @@ func TestBuildFeishuService_ComposesAllowlistedDeviceAuthObserver(t *testing.T) 
 	observer.ObserveDeviceAuth(feishu.DeviceAuthObservation{
 		UserID: 7, Generation: 3, OperationID: operationID, SessionID: sessionID,
 		Phase: "cli_complete", OutcomeClass: string(feishu.DeviceAuthPollingNetworkFailure),
-		CLIVersion: feishu.LarkCLIVersion, Duration: 45 * time.Second,
+		CLIVersion: feishu.LarkCLIVersion, Duration: 30 * time.Second,
 	})
 	observer.ObserveDeviceAuth(feishu.DeviceAuthObservation{
 		UserID: 7, Phase: "raw-secret-phase", OutcomeClass: "token-private-value", CLIVersion: "private-cli-output",
