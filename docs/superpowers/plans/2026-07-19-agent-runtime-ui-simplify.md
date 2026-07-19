@@ -16,7 +16,7 @@
 
 **步骤：**
 
-1. 将 `agent-streaming.spec.ts` 加入 `mocked` Playwright project，使其在 5174 的 `VITE_AGENT_MOCK=false` 页面运行且不依赖 `auth.setup`。
+1. 将 `agent-streaming.spec.ts` 加入 `mocked` Playwright project，并在默认 `e2e` project 的 `testIgnore` 排除该文件，使它只在 5174 的 `VITE_AGENT_MOCK=false` 页面运行且不依赖 `auth.setup`。
 2. 每个 browser case 用 `page.addInitScript` 设置测试 token，并 route mock Agent bootstrap、support contact、get run、stream 与 cancel，使取消路径是可观察的真实 `fetch`。
 3. 使用 `page.addInitScript` mock 一个先发 `stream_start`、在 `AbortSignal` 前永不关闭的浏览器 `ReadableStream`，确保 stop 按钮稳定可见而非因 `route.fulfill` EOF 消失。
 4. 让 Scenario 2 mock `POST /v1/agent-runs/2/cancel`，记录请求次数、方法与精确 URL，并返回成功取消响应。
