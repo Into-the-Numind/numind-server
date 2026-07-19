@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: Resolve safe shorthand names for declared lark-cli skill references without exposing raw paths or weakening the embedded-resource boundary.
   classification_reason: 'Standard: no schema/API/new integration change and a small file set, but this changes the security boundary for controlled Agent-readable internal resources.'
-  last_updated_by: ai-s4-red
-  last_updated_at: '2026-07-19T11:38:00+08:00'
+  last_updated_by: ai-s4-green
+  last_updated_at: '2026-07-19T11:49:00+08:00'
   created_at: '2026-07-19T11:10:53+08:00'
   track: standard
   stage: S4
@@ -13,7 +13,7 @@ features:
   repos: [numind-server]
   branches: {numind-server: feature/lark-skill-reference-resolution}
   worktrees: {numind-server: /private/tmp/wt-lark-skill-reference-resolution-numind-server}
-  progress: {total_tasks: 3, completed_tasks: 1, reviewed_tasks: 0}
+  progress: {total_tasks: 3, completed_tasks: 2, reviewed_tasks: 0}
   artifacts:
     requirement: requirements/lark-skill-reference-resolution.md
     proposal: proposals/lark-skill-reference-resolution-proposal.md
@@ -25,6 +25,7 @@ features:
   - 'S2: shorthand accepts one safe ASCII basename and resolves only within the current main skill declared-reference set. Zero or multiple matches fail closed; canonical paths, cursors, receipts, CLI envelopes, and OS-file isolation remain strict.'
   - 'S3: three serial TDD tasks cover a customer RED, a pure fail-closed canonical resolver with adversarial cases, and full review/quality/atomic merge/Dev deployment.'
   - 'S4 Task 1 RED: the customer-shaped basename request fails before production changes with feishu skill request rejected; the regression permanently records the expected canonical path and exact controlled CLI invocation.'
+  - 'S4 Task 2 GREEN: safe ASCII basenames resolve only to one current-skill declared reference and become canonical before cursor validation or CLI execution. Zero/ambiguous/cross-skill/path-like inputs fail closed; canonical compatibility and cursor binding are regression-covered.'
   blockers: []
 
 - id: feishu-scope-preflight-null
