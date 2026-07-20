@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -33,6 +34,44 @@ func TestAggregateToolEvents_GroupsByToolCallID(t *testing.T) {
 	assert.Equal(t, "tc-2", groups[1].ToolCallID)
 	assert.Equal(t, "error", groups[1].CurrentState)
 	assert.Equal(t, "配额不足", groups[1].ErrorMessage) // reason preferred over message
+}
+
+// Customer regression (Dev run 252): after the first authorization, successful
+// Base create/list calls existed only as UI narration. A second authorization
+// yield rebuilt provider history without those results, so the model created a
+// second Base and repeated a field write.
+func TestBuildTranscriptTurns_PreservesSafeLarkResultsForNextAuthorization(t *testing.T) {
+	base := time.Now()
+	steps := []stepEntry{
+		{Content: "创建多维表格", Reasoning: "先创建并读取表", TS: base},
+		{Content: "继续创建字段", Reasoning: "已经拿到 base token", TS: base.Add(3 * time.Millisecond)},
+	}
+	events := []narration.Event{
+		{
+			RunID: 252, ToolCallID: "tc-base-create", ToolName: "lark_execute",
+			State: narration.StateResult, Message: "操作完成", Timestamp: base.Add(time.Millisecond),
+			InternalInput:  json.RawMessage(`{"argv":["base","+base-create","--name","验收"]}`),
+			InternalResult: json.RawMessage(`{"ok":true,"state":"succeeded","data":{"base_token":"bas_1"}}`),
+		},
+	}
+
+	turns := buildTranscriptTurns("创建 Base", steps, events, "", "")
+	require.Len(t, turns, 6)
+	assert.Equal(t, "tool_group", turns[2]["role"])
+	assert.Equal(t, "assistant", turns[3]["role"])
+	calls, ok := turns[3]["tool_calls"].([]map[string]any)
+	require.True(t, ok)
+	require.Len(t, calls, 1)
+	function := calls[0]["function"].(map[string]any)
+	assert.Equal(t, "lark_execute", function["name"])
+	assert.Equal(t, `{}`, function["arguments"], "model-supplied argv must never be persisted for replay")
+	assert.Equal(t, "tool", turns[4]["role"])
+	assert.Equal(t, "tc-base-create", turns[4]["tool_call_id"])
+	assert.JSONEq(t,
+		`{"ok":true,"state":"succeeded","data":{"base_token":"bas_1"}}`,
+		turns[4]["content"].(string),
+	)
+	assert.Equal(t, "assistant", turns[5]["role"])
 }
 
 func TestAggregateToolEvents_Empty(t *testing.T) {

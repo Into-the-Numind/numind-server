@@ -1322,6 +1322,46 @@ func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *tes
 		require.Len(t, executor.snapshot(), 1)
 	})
 
+	t.Run("unknown write permits bounded read verification but never another write", func(t *testing.T) {
+		const runID = uint64(815)
+		larkExecuteRetryClearRun(runID)
+		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+		executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+			OperationID: "op-unknown-field", State: model.FeishuOperationUnknown,
+			Failure: &feishu.OperationFailure{
+				Code: feishu.PublicCodeUnknownResult, Category: "unknown_result", BusinessStarted: true,
+			},
+		}}
+		tool := &larkExecuteTool{executor: executor}
+		unknown, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "field-create-unknown"),
+			ToolInput(`{"argv":["base","+field-create","--base-token","bas_1","--table-id","tbl_1","--json","{\"name\":\"测试备注\",\"type\":\"text\"}"]}`),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(unknown), `"category":"unknown_result"`)
+
+		executor.mu.Lock()
+		executor.result = &feishu.OperationResult{
+			OperationID: "op-field-list", State: model.FeishuOperationSucceeded,
+			Data: json.RawMessage(`{"items":[{"name":"测试备注","type":"text"}]}`),
+		}
+		executor.mu.Unlock()
+		verified, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "field-list-verification"),
+			ToolInput(`{"argv":["base","+field-list","--base-token","bas_1","--table-id","tbl_1"]}`),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(verified), `"ok":true`)
+
+		blockedWrite, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "field-create-duplicate"),
+			ToolInput(`{"argv":["base","+field-create","--base-token","bas_1","--table-id","tbl_1","--json","{\"name\":\"测试备注\",\"type\":\"text\"}"]}`),
+		)
+		requireSafeLarkSoftError(t, blockedWrite, err)
+		require.Contains(t, string(blockedWrite), "不可自动重试")
+		require.Len(t, executor.snapshot(), 2, "verification may read but must never replay the ambiguous write")
+	})
+
 	t.Run("validation permits one correction then success resets", func(t *testing.T) {
 		const runID = uint64(812)
 		larkExecuteRetryClearRun(runID)

@@ -560,6 +560,7 @@ func TestStudentQuery_SessionSnapshot_MessageTransform(t *testing.T) {
 
 	snap, err := svc.GetSessionSnapshot(context.Background(), 11, run.SessionID)
 	require.NoError(t, err)
+	assert.Equal(t, run.SessionID, snap.SessionID, "live polling needs an explicit snapshot identity")
 
 	// Messages must be []agentMessage, not raw JSON.
 	rawMsgs, ok := snap.Messages.([]agentMessage)
