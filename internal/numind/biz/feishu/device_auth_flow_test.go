@@ -1332,7 +1332,7 @@ func TestDeviceAuthFlow_CompleteExpiredReturnsLiveReplacement(t *testing.T) {
 	require.Equal(t, "device-auth-completion-lease", fixture.store.replaceInput.LeaseOwner)
 	require.Equal(t, model.FeishuAuthSessionExpired, fixture.store.replaceInput.TerminalState)
 	require.JSONEq(t,
-		`{"status":"waiting_user_auth","phase":"user_auth","session_id":"00000000-0000-4000-8000-000000000073","recovery_kind":"user_scope","recovery_scopes":["docx:document:readonly"]}`,
+		`{"status":"waiting_user_auth","phase":"user_auth","session_id":"00000000-0000-4000-8000-000000000073","recovery_kind":"user_scope","recovery_scopes":["docx:document:readonly"],"superseded_session_ids":["00000000-0000-4000-8000-000000000072"]}`,
 		string(fixture.store.replaceInput.NewSummary),
 	)
 }

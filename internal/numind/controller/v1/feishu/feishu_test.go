@@ -25,11 +25,12 @@ type lifecycleServiceFake struct {
 	unbound *feishubiz.UnbindResult
 	err     error
 
-	connectCalls int
-	resumeID     string
-	resumeAction string
-	refreshID    string
-	unbindCalls  int
+	connectCalls  int
+	resumeID      string
+	resumeSession string
+	resumeAction  string
+	refreshID     string
+	unbindCalls   int
 }
 
 func (f *lifecycleServiceFake) Connect(_ context.Context, _ uint) (*feishubiz.ConnectResult, error) {
@@ -39,8 +40,8 @@ func (f *lifecycleServiceFake) Connect(_ context.Context, _ uint) (*feishubiz.Co
 func (f *lifecycleServiceFake) Status(context.Context, uint) (*feishubiz.StatusResult, error) {
 	return f.status, f.err
 }
-func (f *lifecycleServiceFake) Resume(_ context.Context, _ uint, operationID, action string) (*feishubiz.OperationResult, error) {
-	f.resumeID, f.resumeAction = operationID, action
+func (f *lifecycleServiceFake) Resume(_ context.Context, _ uint, operationID, sessionID, action string) (*feishubiz.OperationResult, error) {
+	f.resumeID, f.resumeSession, f.resumeAction = operationID, sessionID, action
 	return f.resume, f.err
 }
 func (f *lifecycleServiceFake) RefreshAction(_ context.Context, _ uint, sessionID string) (*feishubiz.RefreshActionResult, error) {
@@ -151,8 +152,9 @@ func TestResumePublicActionOmitsInternalScopes(t *testing.T) {
 	r.POST("/v1/feishu/operations/:id/resume", withUser(8), ctrl.ResumeOperation)
 
 	response := httptest.NewRecorder()
-	r.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1/feishu/operations/operation-3/resume", strings.NewReader(`{"action":"user_completed"}`)))
+	r.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1/feishu/operations/operation-3/resume", strings.NewReader(`{"action":"user_completed","session_id":"session-card-3"}`)))
 	require.Equal(t, http.StatusOK, response.Code)
+	require.Equal(t, "session-card-3", service.resumeSession)
 	require.JSONEq(t, `{
 		"code": 0,
 		"message": "",

@@ -65,9 +65,8 @@ func (f *dispatcherAgentResumerFake) HandoffExternalToolWait(
 	_ context.Context,
 	_ uint,
 	_ uint64,
-	_, _ string,
+	action externalaction.Payload,
 	_ []string,
-	action agent.ExternalActionPayload,
 ) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -422,13 +421,20 @@ func TestWorkspaceResumeDispatcher_WaitingDoesNotBackfillAndFailuresFinalizeSafe
 		model.FeishuOperationWaitingConfirmation,
 	} {
 		t.Run(state, func(t *testing.T) {
-			operations := &dispatcherOperationFake{result: &feishu.OperationResult{
+			result := &feishu.OperationResult{
 				OperationID: "operation-terminal-" + state,
 				State:       state,
 				Data:        json.RawMessage(`{"must_not":"backfill"}`),
 				AgentRunID:  42,
 				ToolCallID:  "tool-terminal",
-			}}
+			}
+			if state != model.FeishuOperationWaitingConfirmation {
+				result.Action = &feishu.OperationAction{
+					Provider: feishu.ProviderLark, OperationID: result.OperationID,
+					SessionID: "session-" + state, Phase: state, ExpiresAt: time.Now().Add(time.Hour),
+				}
+			}
+			operations := &dispatcherOperationFake{result: result}
 			resumer := &dispatcherAgentResumerFake{}
 
 			require.NoError(t, NewWorkspaceResumeDispatcher(operations, resumer).DispatchResume(context.Background(), 7, "operation-terminal-"+state))

@@ -4,16 +4,16 @@ features:
   ndf_version: '3.0'
   description: Make first-time and incremental Feishu binding a session-fenced, restart-safe, continuous user journey from app creation through user authorization back to the original Agent task.
   classification_reason: 'Standard: the customer P0 crosses Feishu authorization, Agent durable external-action state, existing HTTP contract, frontend lifecycle reconciliation, and browser UX across more than three files and two repositories.'
-  last_updated_by: ai-s3
-  last_updated_at: '2026-07-20T21:21:00+08:00'
+  last_updated_by: ai-s4
+  last_updated_at: '2026-07-20T22:15:00+08:00'
   created_at: '2026-07-20T20:35:19+08:00'
   track: standard
-  stage: S3
+  stage: S4
   status: active
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/feishu-binding-continuity, numind-web-v3: feature/feishu-binding-continuity}
   worktrees: {numind-server: /private/tmp/wt-feishu-binding-continuity-numind-server, numind-web-v3: /private/tmp/wt-feishu-binding-continuity-numind-web-v3}
-  progress: {total_tasks: 8, completed_tasks: 0, reviewed_tasks: 3, current_task: 'S3 atomicity PASS; begin backend RED'}
+  progress: {total_tasks: 8, completed_tasks: 3, reviewed_tasks: 3, current_task: 'Implement frontend exact-session acknowledgement and response fencing'}
   artifacts:
     requirement: requirements/feishu-binding-continuity.md
     proposal: proposals/feishu-binding-continuity-proposal.md

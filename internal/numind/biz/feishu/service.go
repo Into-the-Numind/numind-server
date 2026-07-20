@@ -110,7 +110,7 @@ type UnbindResult struct {
 type IFeishuService interface {
 	Connect(context.Context, uint) (*ConnectResult, error)
 	Status(context.Context, uint) (*StatusResult, error)
-	Resume(context.Context, uint, string, string) (*OperationResult, error)
+	Resume(context.Context, uint, string, string, string) (*OperationResult, error)
 	RefreshAction(context.Context, uint, string) (*RefreshActionResult, error)
 	Unbind(context.Context, uint) (*UnbindResult, error)
 }
@@ -178,6 +178,7 @@ type WorkspaceLifecycleExecutions interface {
 // error and makes the Agent run terminal.
 type WorkspaceLifecycleAgentWaits interface {
 	FinalizeExternalToolWait(context.Context, uint, uint64, string, string, externalaction.TerminalOutcome) (bool, error)
+	HandoffExternalToolWait(context.Context, uint, uint64, externalaction.Payload, []string) (bool, error)
 }
 
 // WorkspaceLifecycleTeardown runs only a fixed logout command after the
@@ -325,7 +326,7 @@ func (s *WorkspaceLifecycleService) Connect(ctx context.Context, userID uint) (*
 // Resume processes one of the three fixed browser actions. The operation is
 // first loaded through the caller's current account generation, making stale
 // and cross-user IDs indistinguishable from a missing resource.
-func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, operationID, action string) (*OperationResult, error) {
+func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, operationID, sessionID, action string) (*OperationResult, error) {
 	if s == nil || userID == 0 || strings.TrimSpace(operationID) == "" || !validResumeAction(action) {
 		return nil, ErrWorkspaceLifecycleInvalid
 	}
@@ -342,6 +343,9 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 	}
 	if operation == nil || operation.UserID != userID || operation.Generation != account.Generation {
 		return nil, ErrWorkspaceLifecycleNotFound
+	}
+	if currentSessionID, waiting := lifecycleOperationSessionID(operation); waiting && strings.TrimSpace(sessionID) != currentSessionID {
+		return lifecycleCurrentOperationObservation(operation)
 	}
 
 	switch action {
@@ -440,6 +444,9 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 					strings.TrimSpace(action.SessionID) == "" || action.Phase != model.FeishuAuthPhaseUserAuth {
 					return nil, ErrWorkspaceLifecycleUnavailable
 				}
+				if err := s.handoffRefreshedOperationAction(ctx, userID, operation, action); err != nil {
+					return nil, err
+				}
 				return lifecycleAuthorizationNoticeResult(operation, &DeviceAuthCompletion{
 					NoticeCode: AuthorizationExpired,
 					Action:     action,
@@ -461,6 +468,11 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 				return nil, ErrWorkspaceLifecycleUnavailable
 			}
 			if completion.NoticeCode != "" || completion.Action != nil {
+				if completion.Action != nil {
+					if err := s.handoffRefreshedOperationAction(ctx, userID, operation, completion.Action); err != nil {
+						return nil, err
+					}
+				}
 				return lifecycleAuthorizationNoticeResult(operation, completion)
 			}
 			if !completion.Completed {
@@ -908,7 +920,41 @@ func (s *WorkspaceLifecycleService) RefreshAction(ctx context.Context, userID ui
 	if refreshErr != nil || action == nil || strings.TrimSpace(action.SessionID) == "" {
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
+	if err := s.handoffRefreshedOperationAction(ctx, userID, operation, action); err != nil {
+		return nil, err
+	}
 	return &RefreshActionResult{Action: cloneOperationAction(action)}, nil
+}
+
+func (s *WorkspaceLifecycleService) handoffRefreshedOperationAction(
+	ctx context.Context,
+	userID uint,
+	operation *model.FeishuOperation,
+	action *OperationAction,
+) error {
+	if s == nil || operation == nil || action == nil || userID == 0 || operation.UserID != userID {
+		return ErrWorkspaceLifecycleUnavailable
+	}
+	if operation.AgentRunID == 0 && strings.TrimSpace(operation.ToolCallID) == "" {
+		return nil
+	}
+	if operation.AgentRunID == 0 || strings.TrimSpace(operation.ToolCallID) == "" || action.OperationID != operation.ID ||
+		strings.TrimSpace(action.SessionID) == "" || strings.TrimSpace(action.Phase) == "" || action.ExpiresAt.IsZero() {
+		return ErrWorkspaceLifecycleUnavailable
+	}
+	summary, err := decodeOperationSummary(operation.ResultSummaryJSON)
+	if err != nil || summary.Status != operation.State || summary.Phase != action.Phase {
+		return ErrWorkspaceLifecycleUnavailable
+	}
+	summary = advanceOperationSession(summary, action.SessionID)
+	transitioned, err := s.agentWaits.HandoffExternalToolWait(ctx, userID, operation.AgentRunID, externalaction.Payload{
+		Provider: ProviderLark, OperationID: operation.ID, SessionID: action.SessionID,
+		ToolCallID: operation.ToolCallID, Phase: action.Phase, ExpiresAt: action.ExpiresAt,
+	}, summary.SupersededSessionIDs)
+	if err != nil || !transitioned {
+		return ErrWorkspaceLifecycleUnavailable
+	}
+	return nil
 }
 
 func refreshTerminalOperationState(state string) bool {
@@ -1352,6 +1398,47 @@ func lifecycleStoredOperationSummary(source *model.FeishuOperation) *OperationRe
 		return nil
 	}
 	return &OperationResult{OperationID: source.ID, State: source.State}
+}
+
+// lifecycleOperationSessionID resolves the browser acknowledgement fence from
+// the operation itself. No auth-session lookup or worker action is performed.
+func lifecycleOperationSessionID(source *model.FeishuOperation) (string, bool) {
+	if source == nil || (!recoveryWaitingState(source.State) && source.State != model.FeishuOperationWaitingConfirmation) {
+		return "", false
+	}
+	summary, err := decodeOperationSummary(source.ResultSummaryJSON)
+	if err != nil || summary.Status != source.State || strings.TrimSpace(summary.SessionID) == "" {
+		if source.State == model.FeishuOperationWaitingConfirmation {
+			return "", false
+		}
+		return "", true
+	}
+	return summary.SessionID, true
+}
+
+// lifecycleCurrentOperationObservation is the read-only response for a stale
+// or rolling-upgrade browser card. The current opaque session identity may be
+// rendered, but its transient URL and scopes are intentionally absent.
+func lifecycleCurrentOperationObservation(source *model.FeishuOperation) (*OperationResult, error) {
+	if source == nil {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	summary, err := decodeOperationSummary(source.ResultSummaryJSON)
+	if err != nil || summary.Status != source.State || strings.TrimSpace(summary.SessionID) == "" || strings.TrimSpace(summary.Phase) == "" {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	result := &OperationResult{
+		OperationID: source.ID,
+		State:       source.State,
+		NoticeCode:  AuthorizationUpdated,
+		Action: &OperationAction{
+			Provider: ProviderLark, OperationID: source.ID, SessionID: summary.SessionID, Phase: summary.Phase,
+		},
+	}
+	if summary.ExpiresAt != nil {
+		result.Action.ExpiresAt = summary.ExpiresAt.UTC()
+	}
+	return result, nil
 }
 
 func lifecycleAuthorizationNoticeResult(source *model.FeishuOperation, completion *DeviceAuthCompletion) (*OperationResult, error) {

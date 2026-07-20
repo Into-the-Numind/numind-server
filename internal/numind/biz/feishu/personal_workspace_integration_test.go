@@ -634,7 +634,7 @@ func TestPersonalWorkspaceIntegration_UserAuthResumeSurvivesServiceRestart(t *te
 	})
 	require.NoError(t, err)
 
-	result, err := instanceBLifecycle.Resume(h.ctx, 7, waiting.OperationID, ResumeActionUserCompleted)
+	result, err := instanceBLifecycle.Resume(h.ctx, 7, waiting.OperationID, waiting.Action.SessionID, ResumeActionUserCompleted)
 	if assert.NoError(t, err) && assert.NotNil(t, result) {
 		assert.Equal(t, model.FeishuOperationSucceeded, result.State)
 		assert.Equal(t, waiting.OperationID, result.OperationID)

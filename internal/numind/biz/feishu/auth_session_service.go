@@ -1029,7 +1029,7 @@ func (s *AuthSessionService) RefreshOperationAction(
 		Phase: phase, RequestedScopesJSON: mustMarshalAuthScopes(plannedScopes), State: model.FeishuAuthSessionPending,
 		ExpiresAt: now.Add(s.sessionDuration),
 	}
-	summary.SessionID = replacement.ID
+	summary = advanceOperationSession(summary, replacement.ID)
 	expiresAt := replacement.ExpiresAt.UTC()
 	summary.ExpiresAt = &expiresAt
 	replacementSummary, err := json.Marshal(summary)
@@ -1108,8 +1108,7 @@ func (s *AuthSessionService) RecoverOperationRefreshAction(
 		// a live worker lease. The caller can retry after that lease resolves.
 		return nil, ErrAuthSessionUnavailable
 	}
-	oldSummary := currentSummary
-	oldSummary.SessionID = oldSessionID
+	oldSummary := restoreOperationSession(currentSummary, oldSessionID)
 	expiresAt := oldSession.ExpiresAt.UTC()
 	oldSummary.ExpiresAt = &expiresAt
 	encodedOldSummary, err := json.Marshal(oldSummary)

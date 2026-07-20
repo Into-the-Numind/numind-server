@@ -30,6 +30,7 @@ const (
 	operationMaxOperationIDBytes  = 64
 	operationDefaultLeaseDuration = 90 * time.Second
 	operationFinalizeTimeout      = 5 * time.Second
+	operationSessionLineageLimit  = 32
 	// Each execution-gate lease window is renewed by the heartbeat and again
 	// immediately before every runner invocation. Expiry is the crash fallback.
 	operationExecutionGateLeaseDuration     = 120 * time.Second
@@ -204,6 +205,9 @@ type OperationResult struct {
 	NoticeCode  AuthorizationNoticeCode `json:"notice_code,omitempty"`
 	AgentRunID  uint64                  `json:"-"`
 	ToolCallID  string                  `json:"-"`
+	// SupersededSessionIDs is an internal handoff fence. It is never returned
+	// to browsers and contains identifiers only, never authorization material.
+	SupersededSessionIDs []string `json:"-"`
 }
 
 // OperationCipherPurpose separates request and result ciphertext domains.
@@ -323,15 +327,16 @@ type persistedOperationRequest struct {
 }
 
 type persistedOperationSummary struct {
-	Status            string       `json:"status"`
-	PublicCode        string       `json:"public_code,omitempty"`
-	Phase             string       `json:"phase,omitempty"`
-	SessionID         string       `json:"session_id,omitempty"`
-	ExpiresAt         *time.Time   `json:"expires_at,omitempty"`
-	RecoveryKind      RecoveryKind `json:"recovery_kind,omitempty"`
-	RecoveryScopes    []string     `json:"recovery_scopes,omitempty"`
-	RecoverySignature string       `json:"recovery_signature,omitempty"`
-	BusinessStarted   bool         `json:"business_started,omitempty"`
+	Status               string       `json:"status"`
+	PublicCode           string       `json:"public_code,omitempty"`
+	Phase                string       `json:"phase,omitempty"`
+	SessionID            string       `json:"session_id,omitempty"`
+	ExpiresAt            *time.Time   `json:"expires_at,omitempty"`
+	RecoveryKind         RecoveryKind `json:"recovery_kind,omitempty"`
+	RecoveryScopes       []string     `json:"recovery_scopes,omitempty"`
+	RecoverySignature    string       `json:"recovery_signature,omitempty"`
+	BusinessStarted      bool         `json:"business_started,omitempty"`
+	SupersededSessionIDs []string     `json:"superseded_session_ids,omitempty"`
 }
 
 // OperationServiceDeps wires only small one-way Feishu interfaces.
@@ -941,6 +946,7 @@ func (s *FeishuOperationService) Resume(ctx context.Context, userID uint, operat
 		}
 		if action != nil {
 			result := baseOperationResult(operation)
+			result.SupersededSessionIDs = append([]string(nil), summary.SupersededSessionIDs...)
 			result.Action = cloneOperationAction(action)
 			result.Action.Provider = ProviderLark
 			result.Action.OperationID = operation.ID
@@ -1688,9 +1694,12 @@ func (s *FeishuOperationService) startRecoveryAndWait(
 	action.OperationID = operation.ID
 	action.Phase = phaseForRecovery(kind)
 	action.Scopes = append([]string(nil), scopes...)
+	priorSummary, _ := decodeOperationSummary(operation.ResultSummaryJSON)
+	priorSummary = advanceOperationSession(priorSummary, action.SessionID)
 	summary := persistedOperationSummary{
-		Status: waitingState, PublicCode: publicCode, Phase: action.Phase, SessionID: action.SessionID,
+		Status: waitingState, PublicCode: publicCode, Phase: action.Phase, SessionID: priorSummary.SessionID,
 		RecoveryKind: kind, RecoveryScopes: append([]string(nil), scopes...), RecoverySignature: signature,
+		SupersededSessionIDs: append([]string(nil), priorSummary.SupersededSessionIDs...),
 	}
 	if !action.ExpiresAt.IsZero() {
 		expires := action.ExpiresAt.UTC()
@@ -1706,6 +1715,7 @@ func (s *FeishuOperationService) startRecoveryAndWait(
 	}
 	result := baseOperationResult(operation)
 	result.State = waitingState
+	result.SupersededSessionIDs = append([]string(nil), summary.SupersededSessionIDs...)
 	result.Action = cloneOperationAction(action)
 	return result, nil
 }
@@ -1895,6 +1905,7 @@ func (s *FeishuOperationService) resultFromOperation(operation *model.FeishuOper
 			Provider: ProviderLark, OperationID: operation.ID, SessionID: summary.SessionID,
 			Phase: summary.Phase, Scopes: append([]string(nil), summary.RecoveryScopes...),
 		}
+		result.SupersededSessionIDs = append([]string(nil), summary.SupersededSessionIDs...)
 		if summary.ExpiresAt != nil {
 			result.Action.ExpiresAt = summary.ExpiresAt.UTC()
 		}
@@ -2309,6 +2320,46 @@ func cloneOperationAction(action *OperationAction) *OperationAction {
 	return &clone
 }
 
+func advanceOperationSession(summary persistedOperationSummary, nextSessionID string) persistedOperationSummary {
+	nextSessionID = strings.TrimSpace(nextSessionID)
+	lineage := make([]string, 0, operationSessionLineageLimit)
+	seen := map[string]struct{}{}
+	appendSession := func(sessionID string) {
+		sessionID = strings.TrimSpace(sessionID)
+		if sessionID == "" || sessionID == nextSessionID {
+			return
+		}
+		if _, ok := seen[sessionID]; ok {
+			return
+		}
+		seen[sessionID] = struct{}{}
+		lineage = append(lineage, sessionID)
+	}
+	for _, sessionID := range summary.SupersededSessionIDs {
+		appendSession(sessionID)
+	}
+	appendSession(summary.SessionID)
+	if len(lineage) > operationSessionLineageLimit {
+		lineage = append([]string(nil), lineage[len(lineage)-operationSessionLineageLimit:]...)
+	}
+	summary.SessionID = nextSessionID
+	summary.SupersededSessionIDs = lineage
+	return summary
+}
+
+func restoreOperationSession(summary persistedOperationSummary, restoredSessionID string) persistedOperationSummary {
+	restoredSessionID = strings.TrimSpace(restoredSessionID)
+	lineage := make([]string, 0, len(summary.SupersededSessionIDs))
+	for _, sessionID := range summary.SupersededSessionIDs {
+		if strings.TrimSpace(sessionID) != "" && sessionID != restoredSessionID {
+			lineage = append(lineage, sessionID)
+		}
+	}
+	summary.SessionID = restoredSessionID
+	summary.SupersededSessionIDs = lineage
+	return summary
+}
+
 func decodeOperationSummary(raw []byte) (persistedOperationSummary, error) {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
@@ -2321,5 +2372,6 @@ func decodeOperationSummary(raw []byte) (persistedOperationSummary, error) {
 		return persistedOperationSummary{}, ErrOperationIntegrity
 	}
 	summary.RecoveryScopes = append([]string(nil), summary.RecoveryScopes...)
+	summary.SupersededSessionIDs = append([]string(nil), summary.SupersededSessionIDs...)
 	return summary, nil
 }

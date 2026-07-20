@@ -375,6 +375,33 @@ func (r *AgentRunResumer) Resume(ctx context.Context, result ExternalToolResult)
 	return r.resume(ctx, result, false)
 }
 
+// HandoffExternalToolWait advances the durable card for a still-suspended run.
+// It never starts the Agent or stores the live authorization URL.
+func (r *AgentRunResumer) HandoffExternalToolWait(
+	ctx context.Context,
+	userID uint,
+	runID uint64,
+	action externalaction.Payload,
+	supersededSessionIDs []string,
+) (bool, error) {
+	if r == nil || r.store == nil || userID == 0 || runID == 0 {
+		return false, fmt.Errorf("AgentRunResumer.HandoffExternalToolWait: resumer is not configured")
+	}
+	transitioner, ok := r.store.(store.IExternalActionTransitioner)
+	if !ok {
+		return false, fmt.Errorf("AgentRunResumer.HandoffExternalToolWait: store does not support external action handoff")
+	}
+	payloadJSON, err := json.Marshal(action)
+	if err != nil {
+		return false, fmt.Errorf("AgentRunResumer.HandoffExternalToolWait: marshal action: %w", err)
+	}
+	transitioned, err := transitioner.TransitionPendingExternalAction(ctx, userID, runID, payloadJSON, supersededSessionIDs)
+	if err != nil {
+		return false, fmt.Errorf("AgentRunResumer.HandoffExternalToolWait: transition action: %w", err)
+	}
+	return transitioned, nil
+}
+
 // FinalizeExternalToolWait ends one exact Feishu external wait without starting
 // a model continuation. It is intentionally separate from Resume: a cancelled
 // or unknown operation must append its fixed tool error and make the original

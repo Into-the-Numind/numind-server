@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -311,6 +312,55 @@ func TestAgentRunStore_UpdatePendingQuestion_NotFound(t *testing.T) {
 	err := s.UpdatePendingQuestion(context.Background(), 9999, []byte(`{}`))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "9999")
+}
+
+func TestAgentRunStore_TransitionPendingExternalActionUsesExactSessionLineage(t *testing.T) {
+	s := newTestAgentRunStoreFull(t)
+	transitioner := s.(IExternalActionTransitioner)
+	ctx := context.Background()
+	run := &model.AgentRun{
+		UserID: 438, Status: "running", Messages: datatypes.JSON(`[]`), StartedAt: time.Now(),
+	}
+	require.NoError(t, s.Create(ctx, run))
+	oldPayload := []byte(`{"provider":"lark","operation_id":"operation-user-438","session_id":"create-app-old","tool_call_id":"lark-call-438","phase":"create_app","expires_at":"2026-07-20T13:00:00Z"}`)
+	require.NoError(t, s.(IExternalActionWriter).UpdatePendingExternalAction(ctx, run.ID, oldPayload))
+	require.NoError(t, s.UpdateState(ctx, run.ID, "terminated", "waiting_for_user_choice", nil))
+	newPayload := []byte(`{"provider":"lark","operation_id":"operation-user-438","session_id":"user-auth-new","tool_call_id":"lark-call-438","phase":"user_auth","expires_at":"2026-07-20T14:00:00Z"}`)
+
+	transitioned, err := transitioner.TransitionPendingExternalAction(ctx, 438, run.ID, newPayload, []string{"create-app-old"})
+	require.NoError(t, err)
+	require.True(t, transitioned)
+	got, err := s.Get(ctx, run.ID)
+	require.NoError(t, err)
+	require.JSONEq(t, string(newPayload), string(got.PendingExternalActionJSON))
+	require.NotContains(t, string(got.PendingExternalActionJSON), "superseded")
+
+	transitioned, err = transitioner.TransitionPendingExternalAction(ctx, 438, run.ID, newPayload, []string{"create-app-old"})
+	require.NoError(t, err)
+	require.True(t, transitioned, "same replacement is an idempotent success")
+
+	unrelated := []byte(`{"provider":"lark","operation_id":"operation-user-438","session_id":"unrelated","tool_call_id":"lark-call-438","phase":"user_auth","expires_at":"2026-07-20T15:00:00Z"}`)
+	transitioned, err = transitioner.TransitionPendingExternalAction(ctx, 438, run.ID, unrelated, []string{"some-other-session"})
+	require.NoError(t, err)
+	require.False(t, transitioned)
+	got, err = s.Get(ctx, run.ID)
+	require.NoError(t, err)
+	require.JSONEq(t, string(newPayload), string(got.PendingExternalActionJSON))
+}
+
+func TestAgentRunStore_TransitionPendingExternalActionRejectsUnboundedLineage(t *testing.T) {
+	s := newTestAgentRunStoreFull(t)
+	lineage := make([]string, maxExternalActionSessionLineage+1)
+	for index := range lineage {
+		lineage[index] = fmt.Sprintf("session-%d", index)
+	}
+	transitioned, err := s.(IExternalActionTransitioner).TransitionPendingExternalAction(
+		context.Background(), 438, 1,
+		[]byte(`{"provider":"lark","operation_id":"op","session_id":"next","tool_call_id":"call","phase":"user_auth","expires_at":"2026-07-20T15:00:00Z"}`),
+		lineage,
+	)
+	require.Error(t, err)
+	require.False(t, transitioned)
 }
 
 func TestAgentRunStore_ClearPendingQuestion(t *testing.T) {
