@@ -4,16 +4,16 @@ features:
   ndf_version: '3.0'
   description: Remove Feishu business confirmation entirely, auto-migrate legacy confirmation waits, and prevent stale authorization cards from submitting the wrong lifecycle action.
   classification_reason: 'Standard: no schema or new API/integration, but the customer bug spans backend, frontend, durable Agent wait state, and external-write safety policy across more than three files. Customer approved fast Standard through Dev with focused regression and mandatory quality gates only.'
-  last_updated_by: ai-s5
-  last_updated_at: '2026-07-20T14:04:00+08:00'
+  last_updated_by: ai-s6-dev-deployed
+  last_updated_at: '2026-07-20T14:54:59+08:00'
   created_at: '2026-07-20T13:20:00+08:00'
   track: standard
-  stage: S5
+  stage: S6
   status: active
   repos: [numind-server, numind-web-v3]
-  branches: {numind-server: feature/feishu-action-transition, numind-web-v3: feature/feishu-action-transition}
-  worktrees: {numind-server: /private/tmp/wt-feishu-action-transition-numind-server, numind-web-v3: /private/tmp/wt-feishu-action-transition-numind-web-v3}
-  progress: {total_tasks: 6, completed_tasks: 6, reviewed_tasks: 6, current_task: 'S5 complete; ready for atomic merge and backend-first Dev deployment'}
+  branches: {numind-server: develop, numind-web-v3: develop}
+  worktrees: {}
+  progress: {total_tasks: 6, completed_tasks: 6, reviewed_tasks: 6, current_task: 'Await human Dev acceptance of direct Feishu execution without a business-confirmation card; production is out of scope.'}
   artifacts:
     requirement: requirements/feishu-action-transition.md
     proposal: proposals/feishu-action-transition-proposal.md
@@ -32,6 +32,8 @@ features:
   - 'S4 RED/GREEN: both repositories preserve customer RED-first commits. Production no longer injects a business-confirmation requester; high-risk catalog commands execute through the existing gate with server-owned --yes, while historical waiting_confirmation rows and stale user_auth/confirmed callbacks resume idempotently from the encrypted request.'
   - 'S4 review repair: independent reviewers found advanced-state Parameter verification, expired legacy observation, transient migration retry, obsolete cancelled tests, and terminal-copy gaps. Additional RED commits 03eec56d and 77e6799 reproduce them; GREEN commits 1a5e17e9, a29e6e5, and 6485d39 close every P1/P2. Final spec and quality reviews both PASS with P0/P1/P2=0.'
   - 'S5 gates: full ordinary Go suite passed before final review repair; post-repair affected Go packages and task lint pass. Frontend 138 targeted unit tests, lint, typecheck, production build, and the narrow no-reload legacy-confirmation Playwright pass. Broad race/coverage/E2E were intentionally excluded by the customer-approved fast Standard scope.'
+  - 'S6 merge: ndf-done atomically merged and pushed numind-server develop at 5e5d0cbd and numind-web-v3 develop at 68667d3, then removed both feature worktrees and local feature branches.'
+  - 'S6 Dev deployment: backend image develop-5e5d0cbd (digest sha256:57395cca187c91f330ac5c70b7a4607202aadf9725622ed5474443e993c0aca9) and frontend image develop-68667d3 (digest sha256:641b41a92dc040a4f99eab4bc5a06e0a0c722f1d388991dcf82d1fbf26ca2868) are deployed. Public server /healthz, web /health, and web /api/healthz proxy checks pass; both exact-image containers are healthy, startup logs contain no critical error, and runtime lark-cli is 1.0.68. Production remains untouched.'
   blockers: []
 
 - id: feishu-final-answer-visibility
