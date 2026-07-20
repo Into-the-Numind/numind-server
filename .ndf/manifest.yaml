@@ -1,5 +1,25 @@
 schema_version: '2.0'
 features:
+- id: feishu-final-answer-visibility
+  ndf_version: '3.0'
+  description: Keep detached Feishu continuation results at the live timeline tail and remove every user-visible frontend timer.
+  classification_reason: 'Hotfix: frontend-only customer bug and display cleanup; no schema, API, external integration, payment, or permission change, with at most three implementation/test files. User explicitly confirmed Hotfix on 2026-07-20.'
+  last_updated_by: ai-h1
+  last_updated_at: '2026-07-20T11:05:00+08:00'
+  created_at: '2026-07-20T11:05:00+08:00'
+  track: hotfix
+  stage: H1
+  status: active
+  repos: [numind-web-v3]
+  branches: {numind-web-v3: fix/feishu-final-answer-visibility}
+  worktrees: {numind-web-v3: /private/tmp/wt-feishu-final-answer-visibility-numind-web-v3}
+  progress: {total_tasks: 3, completed_tasks: 0, reviewed_tasks: 0, current_task: 'Write and commit customer RED regressions before implementation'}
+  artifacts: {}
+  decisions:
+  - 'H1 diagnosis: Dev run 242 completed and the browser fetched final_output before reload. Live reconciliation replaced a pre-authorization assistant bubble in place, placing the final answer above later tool steps; snapshot reload rebuilt canonical order. Existing tests asserted presence but not timeline order or viewport visibility.'
+  - 'Scope: remove only user-visible timing displays. Internal request deadlines, authorization expiry enforcement, polling cadence, stored timestamps, and operational logs remain unchanged.'
+  blockers: []
+
 - id: feishu-sequential-auth-refresh
   ndf_version: '3.0'
   description: Show consecutive Feishu authorization cards without reload and atomically refresh expired-but-pending operation-bound device sessions.
