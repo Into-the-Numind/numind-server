@@ -4,26 +4,31 @@ features:
   ndf_version: '3.0'
   description: Make first-time and incremental Feishu binding a session-fenced, restart-safe, continuous user journey from app creation through user authorization back to the original Agent task.
   classification_reason: 'Standard: the customer P0 crosses Feishu authorization, Agent durable external-action state, existing HTTP contract, frontend lifecycle reconciliation, and browser UX across more than three files and two repositories.'
-  last_updated_by: ai-s2
-  last_updated_at: '2026-07-20T21:17:08+08:00'
+  last_updated_by: ai-s3
+  last_updated_at: '2026-07-20T21:21:00+08:00'
   created_at: '2026-07-20T20:35:19+08:00'
   track: standard
-  stage: S2
+  stage: S3
   status: active
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/feishu-binding-continuity, numind-web-v3: feature/feishu-binding-continuity}
   worktrees: {numind-server: /private/tmp/wt-feishu-binding-continuity-numind-server, numind-web-v3: /private/tmp/wt-feishu-binding-continuity-numind-web-v3}
-  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0, current_task: 'S2 design locked under standing approval; create implementation plan'}
+  progress: {total_tasks: 8, completed_tasks: 0, reviewed_tasks: 3, current_task: 'S3 atomicity PASS; begin backend RED'}
   artifacts:
     requirement: requirements/feishu-binding-continuity.md
     proposal: proposals/feishu-binding-continuity-proposal.md
     spec: docs/superpowers/specs/2026-07-20-feishu-binding-continuity-design.md
+    plan: docs/superpowers/plans/2026-07-20-feishu-binding-continuity.md
   decisions:
   - 'S0: fix the universal binding journey, not user 438: every browser acknowledgement is exact-session-bound, every server phase transition durably updates the Agent pending action, and stale/repeated/restarted clients converge to the latest safe action.'
   - 'S0: the UI exposes one current actionable step, turns superseded cards into history, explains the next action in user language, and returns to the original Agent task without refresh or resubmission.'
   - 'S1: user selected the universal closure: durable nonterminal action handoff, exact browser session acknowledgement, stale-client self-healing, and a single current actionable card; no schema, endpoint, OAuth, or connection-center rewrite.'
   - 'S2: operation summaries retain a bounded superseded-session lineage so crash replay can move Agent pending actions forward without allowing delayed dispatchers to move them backward; stale or missing browser sessions are zero-side-effect reads returning the current action.'
   - 'S2 API lock: existing resume endpoint accepts session_id beside the fixed action. Missing session is rolling-safe but read-only; exact current session is required for every mutation. Responses and endpoints remain backward compatible.'
+  - 'S3: eight serial tasks preserve mandatory RED-first history in both repositories, implement backend lineage/CAS before the locked API and frontend, then keep S4 review, S5 local QA, and S6 merge/Dev deployment as separate atomic stages.'
+  - 'S3 atomicity review repaired all P1 findings: complete lifecycle caller inventory, safe observation outcomes, four-part frontend response fencing, exactly-once continuation assertion, correct chronological RED check, and separate S4/S5/S6 tasks.'
+  - 'S3 second review narrowed durable handoff to the three authorization waiting states, kept legacy confirmation compatibility, and made every changed integration/observer file part of its owning task commit.'
+  - 'S3 final repair makes the first backend RED compile and fail on the intended missing handoff assertion by declaring and locking the fake handoff recorder. S3 exits with no known P0/P1.'
   blockers: []
 - id: artifact-transient-read-recovery
   ndf_version: '3.0'
