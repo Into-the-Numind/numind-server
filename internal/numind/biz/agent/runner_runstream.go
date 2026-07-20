@@ -11,7 +11,6 @@ import (
 	"time"
 
 	einotool "github.com/cloudwego/eino/components/tool"
-	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/flow/agent/react"
 	"github.com/cloudwego/eino/schema"
 	"github.com/google/uuid"
@@ -518,9 +517,7 @@ func (r *agentRunner) RunStream(
 
 	einoAgent, err := react.NewAgent(queryCtx, &react.AgentConfig{
 		ToolCallingModel: einoAdapter,
-		ToolsConfig: compose.ToolsNodeConfig{
-			Tools: einoTools,
-		},
+		ToolsConfig:      agentToolsNodeConfig(einoTools),
 		// Kept > budget.DefaultLimits().MaxTurns (=100) so termination reason
 		// flows through our budget gate instead of eino's generic GraphRunError.
 		// See runner.go for the full rationale; raised 30 → 120 on 2026-05-29

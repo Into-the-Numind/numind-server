@@ -44,6 +44,28 @@ type displayAttachment struct {
 	Filename string
 }
 
+const unknownToolRecoveryResult = "[The requested tool is not available for this Agent. Do not retry it or assume it ran. Continue using only the tools in the current tool list. If the task cannot be completed safely with those tools, explain the limitation or ask the user.]"
+
+// agentToolsNodeConfig keeps hallucinated or stale tool calls inside the ReAct
+// loop as model-visible tool results. Without an UnknownToolsHandler, Eino
+// promotes a missing tool name to NodeRunError and terminates the entire Agent
+// run before the model can choose an enabled alternative.
+func agentToolsNodeConfig(tools []einotool.BaseTool) compose.ToolsNodeConfig {
+	return compose.ToolsNodeConfig{
+		Tools:               tools,
+		UnknownToolsHandler: recoverUnknownToolCall,
+	}
+}
+
+// recoverUnknownToolCall intentionally ignores both the hallucinated name and
+// its arguments. The model already has the attempted call in context, while
+// reflecting model-generated arguments into the result would create an
+// unnecessary content/logging surface. This handler does not grant permission,
+// execute a fallback, or replay a write.
+func recoverUnknownToolCall(_ context.Context, _, _ string) (string, error) {
+	return unknownToolRecoveryResult, nil
+}
+
 func (r *agentRunner) persistExternalAction(ctx context.Context, runID uint64, action ExternalActionPayload) ([]byte, error) {
 	writer, ok := r.runStore.(store.IExternalActionWriter)
 	if !ok {
@@ -1139,9 +1161,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 
 	einoAgent, err := react.NewAgent(queryCtx, &react.AgentConfig{
 		ToolCallingModel: einoAdapter,
-		ToolsConfig: compose.ToolsNodeConfig{
-			Tools: einoTools,
-		},
+		ToolsConfig:      agentToolsNodeConfig(einoTools),
 		// MaxStep is eino's per-graph node-traversal cap. Kept > budget's
 		// MaxTurns (now 100) so the authoritative termination reason flows
 		// through our budget gate (TerminalMaxTurns) rather than eino's
