@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -65,6 +67,22 @@ func TestNewRegistry_ValidSkillsDir_LoadsAll(t *testing.T) {
 	}
 	assert.True(t, names["skill-a"])
 	assert.True(t, names["skill-b"])
+}
+
+func TestProductionRegistry_ContainsExactlyGlobalPlatformSkills(t *testing.T) {
+	_, current, _, ok := runtime.Caller(0)
+	require.True(t, ok)
+	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(current), "..", "..", "..", "..", ".."))
+
+	reg, err := skills.NewRegistry(filepath.Join(repoRoot, "skills"))
+	require.NoError(t, err)
+
+	got := make([]string, 0, len(reg.List()))
+	for _, manifest := range reg.List() {
+		got = append(got, manifest.Name)
+	}
+	sort.Strings(got)
+	assert.Equal(t, []string{"docx-author", "pdf-from-html", "pptx-author", "xlsx-author"}, got)
 }
 
 // TestNewRegistry_MissingManifest_SkipsDir verifies that a directory without a

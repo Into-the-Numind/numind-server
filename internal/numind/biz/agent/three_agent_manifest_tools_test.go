@@ -51,11 +51,11 @@ func TestThreeAgentDefinitionManifest_CoversEveryPlatformToolExplicitly(t *testi
 		sort.Strings(actualNames)
 		assert.Equal(t, platformNames, actualNames, "%s must explicitly enable or disable every current platform tool/category", entry.Key)
 
-		wantEnabled := []string{"ask_user_question", "get_current_date", "lark_execute", "lark_inspect", "lark_skill_read"}
-		if entry.Key == "agent-1" {
-			wantEnabled = append(wantEnabled, "xhs_note_list")
-		} else {
-			wantEnabled = append(wantEnabled, "file_read")
+		wantEnabled := make([]string, 0, len(platformNames)-1)
+		for _, name := range platformNames {
+			if name != "document_generate" {
+				wantEnabled = append(wantEnabled, name)
+			}
 		}
 		sort.Strings(wantEnabled)
 		var gotEnabled []string
@@ -65,6 +65,7 @@ func TestThreeAgentDefinitionManifest_CoversEveryPlatformToolExplicitly(t *testi
 			}
 		}
 		sort.Strings(gotEnabled)
-		assert.Equal(t, wantEnabled, gotEnabled, "%s enabled tools must be least privilege", entry.Key)
+		assert.Equal(t, wantEnabled, gotEnabled, "%s must expose every current usable platform tool", entry.Key)
+		assert.False(t, entry.ToolFlags["document_generate"], "%s must keep the hard-disabled stub off", entry.Key)
 	}
 }

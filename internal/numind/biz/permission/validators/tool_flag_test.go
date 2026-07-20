@@ -98,7 +98,7 @@ func TestToolFlag_InertForCategoryKeyConfig(t *testing.T) {
 	}
 }
 
-func TestToolFlag_ToolDisabled_Deny(t *testing.T) {
+func TestToolFlag_ToolDisabled_PassthroughUnderGlobalPolicy(t *testing.T) {
 	flags, _ := datatypes.JSON([]byte(`{"bash_exec": false}`)).MarshalJSON()
 	s := &fakeAgentDefinitionStore{
 		definition: &model.AgentDefinition{
@@ -113,11 +113,8 @@ func TestToolFlag_ToolDisabled_Deny(t *testing.T) {
 		InputJSON:         `{}`,
 	}
 	got := v.Validate(context.Background(), req)
-	if got.Behavior != permission.BehaviorDeny {
-		t.Errorf("want deny for disabled tool, got %q", got.Behavior)
-	}
-	if got.DecisionReason != permission.DecisionReasonRule {
-		t.Errorf("want reason=rule, got %q", got.DecisionReason)
+	if got.Behavior != permission.BehaviorPassthrough {
+		t.Errorf("tool_flags must not deny globally available tools, got %q", got.Behavior)
 	}
 }
 
@@ -127,17 +124,17 @@ func TestToolFlag_ToolDisabled_Deny(t *testing.T) {
 // "代码沙箱" wrote {"code_sandbox": false} yet bash_exec kept running (the validator
 // looked up flags["bash_exec"], found nothing, and passed through). A disabled risk
 // category must DENY the tools it gates.
-func TestToolFlag_CategoryDisabled_Denies(t *testing.T) {
+func TestToolFlag_CategoryDisabled_PassthroughUnderGlobalPolicy(t *testing.T) {
 	flags, _ := datatypes.JSON([]byte(`{"code_sandbox": false, "media": false, "dangerous": false}`)).MarshalJSON()
 	s := &fakeAgentDefinitionStore{
 		definition: &model.AgentDefinition{ID: 1, ToolFlags: datatypes.JSON(flags)},
 	}
 	v := NewToolFlag(s)
 
-	// bash_exec is gated by code_sandbox/dangerous → disabled category DENIES it.
+	// Historical category values are compatibility metadata and cannot deny tools.
 	req := permission.PermissionRequest{AgentDefinitionID: 1, Tool: newFakeTool("bash_exec"), InputJSON: `{}`}
-	if got := v.Validate(context.Background(), req); got.Behavior != permission.BehaviorDeny {
-		t.Errorf("bash_exec: a disabled risk category must DENY, got %q", got.Behavior)
+	if got := v.Validate(context.Background(), req); got.Behavior != permission.BehaviorPassthrough {
+		t.Errorf("bash_exec: disabled legacy category must passthrough, got %q", got.Behavior)
 	}
 
 	// image_gen is NO LONGER category-gated (2026-06-17): 文生图永远可用，即便 media=false。
@@ -157,15 +154,15 @@ func TestToolFlag_CategoryDisabled_Denies(t *testing.T) {
 // an agent created before this fix has tool-name keys (bash_exec:true) in its flags.
 // If the parent later disables the category, the category-deny must win over the
 // stale per-tool true (so the UI toggle always takes effect regardless of merge/replace).
-func TestToolFlag_CategoryDisabled_OverridesStaleToolKey(t *testing.T) {
+func TestToolFlag_MixedLegacyFlags_PassthroughUnderGlobalPolicy(t *testing.T) {
 	flags, _ := datatypes.JSON([]byte(`{"bash_exec": true, "code_sandbox": false}`)).MarshalJSON()
 	s := &fakeAgentDefinitionStore{
 		definition: &model.AgentDefinition{ID: 1, ToolFlags: datatypes.JSON(flags)},
 	}
 	v := NewToolFlag(s)
 	req := permission.PermissionRequest{AgentDefinitionID: 1, Tool: newFakeTool("bash_exec"), InputJSON: `{}`}
-	if got := v.Validate(context.Background(), req); got.Behavior != permission.BehaviorDeny {
-		t.Errorf("disabled category must override a stale per-tool true, got %q", got.Behavior)
+	if got := v.Validate(context.Background(), req); got.Behavior != permission.BehaviorPassthrough {
+		t.Errorf("legacy category and direct flags must not deny tools, got %q", got.Behavior)
 	}
 }
 

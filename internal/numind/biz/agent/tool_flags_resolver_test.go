@@ -93,10 +93,11 @@ func TestToolNamesFromFlags_DirectToolName_OverridesBaseline(t *testing.T) {
 	got := sortedNames(names)
 	assert.Contains(t, got, "kb_search", "other baseline tools unaffected")
 	assert.NotContains(t, got, "web_search", "explicit false disables baseline tool")
-	assert.True(t, enforceExplicitToolAllowlist(raw), "direct tool flags require server-side strict enforcement")
+	assert.False(t, enforceExplicitToolAllowlist(raw), "tool_flags are compatibility hints and never a runtime allowlist")
 }
 
-func TestToolNamesFromFlags_CategoryOnlyKeepsFullOpenCompatibility(t *testing.T) {
+func TestToolNamesFromFlags_NoFlagsShapeEnablesRuntimeAllowlist(t *testing.T) {
+	assert.False(t, enforceExplicitToolAllowlist([]byte(`{"web_search":false,"bash_exec":false}`)))
 	assert.False(t, enforceExplicitToolAllowlist([]byte(`{"code_sandbox":false,"media":false,"dangerous":false}`)))
 	assert.False(t, enforceExplicitToolAllowlist(nil))
 	assert.False(t, enforceExplicitToolAllowlist([]byte(`not-json`)))
