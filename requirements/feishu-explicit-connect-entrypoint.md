@@ -18,7 +18,9 @@
 2. `lark_connect` 使用当前用户、Agent run 和 tool call 身份创建幂等的 connection-only operation；未连接时 yield 当前外部动作，连接后返回成功。
 3. `lark_inspect` 保持只读；普通业务请求仍先 `lark_execute`，不被连接入口劫持。
 4. 设置页点击入口发出 `POST /v1/feishu/connect`，显示服务器返回的官方飞书链接和“我已完成，继续”动作，并可重试/刷新状态。
-5. 客户复现测试由 RED 变 GREEN；Go/Vue 全量静态检查和关键 Playwright 路径通过。
+5. “我已完成，继续”确认当前 `session_id`，不得再次启动连接；刷新后缺少临时 URL 时先恢复同一授权步骤。
+6. Agent 显式连接、设置页连接和真实飞书业务触发的授权在同一账号 generation 内最多只有一个 bootstrap worker；进程在 session 创建前退出时，超时占位可安全接管。
+7. 客户复现测试由 RED 变 GREEN；Go/Vue 全量静态检查和关键 Playwright 路径通过。
 
 ## 非目标
 

@@ -4,17 +4,17 @@ features:
   ndf_version: '3.0'
   description: Make explicit Feishu connect intents deterministic in Agent and Settings while preserving incremental scopes and durable authorization recovery.
   classification_reason: 'Standard: customer P0 crosses Agent tools, encrypted Feishu operation semantics, three Agent manifests, settings UX, and regression/browser tests in two repositories.'
-  last_updated_by: ai-s3-plan
-  last_updated_at: '2026-07-20T23:25:00+08:00'
-  last_verified: '2026-07-20T23:25:00+08:00'
+  last_updated_by: ai-s5-qa
+  last_updated_at: '2026-07-21T00:15:00+08:00'
+  last_verified: '2026-07-21T00:15:00+08:00'
   created_at: '2026-07-20T22:55:00+08:00'
   track: standard
-  stage: S3
+  stage: S5
   status: active
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/feishu-explicit-connect-entrypoint, numind-web-v3: feature/feishu-explicit-connect-entrypoint}
   worktrees: {numind-server: /private/tmp/wt-feishu-explicit-connect-entrypoint-numind-server, numind-web-v3: /private/tmp/wt-feishu-explicit-connect-entrypoint-numind-web-v3}
-  progress: {total_tasks: 7, completed_tasks: 1, reviewed_tasks: 0, current_task: 'Implement connection-only operation, lark_connect, and Settings live action'}
+  progress: {total_tasks: 8, completed_tasks: 8, reviewed_tasks: 8, current_task: 'Atomic merge, Dev deployment, and runtime health verification'}
   artifacts:
     requirement: requirements/feishu-explicit-connect-entrypoint.md
     proposal: proposals/feishu-explicit-connect-entrypoint-proposal.md
@@ -25,6 +25,8 @@ features:
   - 'S1: selected a dedicated modern lark_connect plus direct Settings lifecycle CTA; rejected prompt-only, side-effectful inspect, and fake business operations.'
   - 'S2: Agent connect is a durable encrypted connection-only operation that reuses exact external-action continuation and never invokes a business CLI command.'
   - 'S3: preserve RED-first commits, implement server semantics before tool registration and Settings UX, then complete review, QA, atomic merge and Dev deployment.'
+  - 'S4: dual review passed with zero P0/P1; exact-session UX, single-owner bootstrap fencing, rolling compatibility, and terminal-card convergence are approved.'
+  - 'S5: feature gates passed: Feishu/Store packages, Vue 1145 tests, Playwright 11 paths, lint and type-check; the sole full-Go failure reproduces unchanged on develop in unrelated xhsscript analytics tests.'
   blockers: []
 - id: feishu-binding-continuity
   ndf_version: '3.0'
