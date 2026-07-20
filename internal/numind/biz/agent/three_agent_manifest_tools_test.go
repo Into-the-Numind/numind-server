@@ -18,7 +18,8 @@ import (
 func TestThreeAgentDefinitionManifest_CoversEveryPlatformToolExplicitly(t *testing.T) {
 	db := newFactoryTestDB(t)
 	factory := NewPlatformToolFactory(nil, store.NewTestStore(db))
-	SetFactoryLarkWorkspaceExecutors(factory, &fakeSkillReadExecutor{}, &fakeLarkInspector{}, &fakeLarkExecutor{})
+	executor := &fakeLarkExecutor{}
+	SetFactoryLarkWorkspaceExecutors(factory, &fakeSkillReadExecutor{}, &fakeLarkInspector{}, executor, executor)
 	_, metadata, err := factory.LoadTools(context.Background())
 	require.NoError(t, err)
 
@@ -51,7 +52,7 @@ func TestThreeAgentDefinitionManifest_CoversEveryPlatformToolExplicitly(t *testi
 		sort.Strings(actualNames)
 		assert.Equal(t, platformNames, actualNames, "%s must explicitly enable or disable every current platform tool/category", entry.Key)
 
-		wantEnabled := []string{"ask_user_question", "get_current_date", "lark_execute", "lark_inspect", "lark_skill_read"}
+		wantEnabled := []string{"ask_user_question", "get_current_date", "lark_connect", "lark_execute", "lark_inspect", "lark_skill_read"}
 		if entry.Key == "agent-1" {
 			wantEnabled = append(wantEnabled, "xhs_note_list")
 		} else {

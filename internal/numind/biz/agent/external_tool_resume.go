@@ -995,10 +995,10 @@ func externalJSONEqual(left, right []byte) (bool, error) {
 
 // turnsToExternalResumeHistoryMessages preserves the tool result required by
 // provider protocols. Persisted UI transcripts do not necessarily contain the
-// original assistant tool-call message, so a fixed minimal lark_execute call is
-// reconstructed immediately before an orphan tool result. It carries only the
-// original call ID and empty arguments; persisted argv is never replayed or
-// exposed to the model.
+// original assistant tool-call message, so a fixed minimal call is reconstructed
+// immediately before an orphan tool result. The original safe tool name is kept
+// when present (including lark_connect); historical rows without it fall back to
+// lark_execute. Only the call ID and empty arguments are retained.
 func turnsToExternalResumeHistoryMessages(turns []map[string]any, targetToolCallID string) ([]*schema.Message, error) {
 	toolNames := make(map[string]string)
 	toolReasoning := make(map[string]string)
@@ -1051,7 +1051,7 @@ func turnsToExternalResumeHistoryMessages(turns []map[string]any, targetToolCall
 				return nil, fmt.Errorf("external resume transcript tool turn %d is invalid", index)
 			}
 			toolName := toolNames[toolCallID]
-			if toolCallID == targetToolCallID {
+			if toolCallID == targetToolCallID && toolName == "" {
 				toolName = "lark_execute"
 			}
 			if toolName == "" {

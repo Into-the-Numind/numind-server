@@ -78,10 +78,12 @@ func (f *fakeSkillReadExecutor) snapshot() []feishu.SkillReadRequest {
 }
 
 type fakeLarkExecutor struct {
-	mu       sync.Mutex
-	requests []feishu.ExecuteRequest
-	result   *feishu.OperationResult
-	err      error
+	mu              sync.Mutex
+	requests        []feishu.ExecuteRequest
+	connectRequests []feishu.ConnectOperationRequest
+	result          *feishu.OperationResult
+	connectResult   *feishu.OperationResult
+	err             error
 }
 
 type fakeLarkInspector struct {
@@ -189,6 +191,33 @@ func (f *fakeLarkExecutor) Execute(_ context.Context, request feishu.ExecuteRequ
 		clone.Action = &action
 	}
 	return &clone, f.err
+}
+
+func (f *fakeLarkExecutor) Connect(_ context.Context, request feishu.ConnectOperationRequest) (*feishu.OperationResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.connectRequests = append(f.connectRequests, request)
+	result := f.connectResult
+	if result == nil {
+		result = &feishu.OperationResult{
+			OperationID: "connect-operation", State: model.FeishuOperationSucceeded,
+			Data: json.RawMessage(`{"connected":true}`), AgentRunID: request.AgentRunID, ToolCallID: request.ToolCallID,
+		}
+	}
+	clone := *result
+	clone.Data = append(json.RawMessage(nil), result.Data...)
+	if result.Action != nil {
+		action := *result.Action
+		action.Scopes = append([]string(nil), result.Action.Scopes...)
+		clone.Action = &action
+	}
+	return &clone, f.err
+}
+
+func (f *fakeLarkExecutor) connectSnapshot() []feishu.ConnectOperationRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]feishu.ConnectOperationRequest(nil), f.connectRequests...)
 }
 
 func (f *fakeLarkExecutor) snapshot() []feishu.ExecuteRequest {
@@ -864,6 +893,46 @@ func TestLarkPersonalWorkspace_ExecuteWaitingYieldsDurableExternalAction(t *test
 			assert.Contains(t, string(persistent), "synthetic-context-call")
 		})
 	}
+}
+
+func TestLarkPersonalWorkspace_ExplicitConnectYieldsCurrentDurableAction(t *testing.T) {
+	expiresAt := time.Date(2026, 7, 20, 16, 0, 0, 0, time.UTC)
+	connector := &fakeLarkExecutor{connectResult: &feishu.OperationResult{
+		OperationID: "connect-operation-1", State: model.FeishuOperationWaitingConnection,
+		Action: &feishu.OperationAction{
+			Provider: "lark", OperationID: "connect-operation-1", SessionID: "connect-session-1",
+			Phase: model.FeishuAuthPhaseCreateApp, URL: "https://open.feishu.cn/connect?state=opaque",
+			ExpiresAt: expiresAt,
+		},
+	}}
+	tool := &larkConnectTool{connector: connector}
+
+	result, err := tool.Execute(larkPersonalWorkspaceContext(438, 903, "tc-connect-1"), ToolInput(`{}`))
+	require.Nil(t, result)
+	var yielded *yieldError
+	require.ErrorAs(t, err, &yielded)
+	require.NotNil(t, yielded.Payload.ExternalAction)
+	require.Equal(t, "connect-operation-1", yielded.Payload.ExternalAction.OperationID)
+	require.Equal(t, "connect-session-1", yielded.Payload.ExternalAction.SessionID)
+	require.Equal(t, "tc-connect-1", yielded.Payload.ExternalAction.ToolCallID)
+	require.Equal(t, expiresAt, yielded.Payload.ExternalAction.ExpiresAt)
+
+	requests := connector.connectSnapshot()
+	require.Len(t, requests, 1)
+	require.EqualValues(t, 438, requests[0].UserID)
+	require.EqualValues(t, 903, requests[0].AgentRunID)
+	require.Equal(t, "903:tc-connect-1", requests[0].IdempotencyKey)
+	require.Contains(t, tool.Description(), "explicitly asks")
+}
+
+func TestLarkPersonalWorkspace_ExplicitConnectRejectsModelSuppliedFields(t *testing.T) {
+	connector := &fakeLarkExecutor{}
+	result, err := (&larkConnectTool{connector: connector}).Execute(
+		larkPersonalWorkspaceContext(438, 904, "tc-connect-invalid"),
+		ToolInput(`{"app_id":"cli_secret","scopes":["im:message"]}`),
+	)
+	requireSafeLarkSoftError(t, result, err, "cli_secret", "im:message")
+	require.Empty(t, connector.connectSnapshot())
 }
 
 func TestLarkPersonalWorkspace_ExecuteReloadedActionWithoutURLStillYields(t *testing.T) {
@@ -1763,9 +1832,9 @@ func TestPlatformToolFactory_LarkPersonalWorkspaceBothOrNoneAndNoLegacyTools(t *
 
 	for name, configure := range map[string]func(ToolFactory){
 		"none":           func(ToolFactory) {},
-		"reader only":    func(f ToolFactory) { SetFactoryLarkWorkspaceExecutors(f, reader, nil, nil) },
-		"inspector only": func(f ToolFactory) { SetFactoryLarkWorkspaceExecutors(f, nil, inspector, nil) },
-		"execute only":   func(f ToolFactory) { SetFactoryLarkWorkspaceExecutors(f, nil, nil, executor) },
+		"reader only":    func(f ToolFactory) { SetFactoryLarkWorkspaceExecutors(f, reader, nil, nil, nil) },
+		"inspector only": func(f ToolFactory) { SetFactoryLarkWorkspaceExecutors(f, nil, inspector, nil, nil) },
+		"execute only":   func(f ToolFactory) { SetFactoryLarkWorkspaceExecutors(f, nil, nil, executor, executor) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			factory := NewPlatformToolFactory(nil, nil)
@@ -1779,30 +1848,34 @@ func TestPlatformToolFactory_LarkPersonalWorkspaceBothOrNoneAndNoLegacyTools(t *
 			}
 		})
 	}
-	assert.NotPanics(t, func() { SetFactoryLarkWorkspaceExecutors(nil, reader, inspector, executor) })
+	assert.NotPanics(t, func() { SetFactoryLarkWorkspaceExecutors(nil, reader, inspector, executor, executor) })
 
 	factory := NewPlatformToolFactory(nil, nil)
-	SetFactoryLarkWorkspaceExecutors(factory, reader, inspector, executor)
+	SetFactoryLarkWorkspaceExecutors(factory, reader, inspector, executor, executor)
 	pf := factory.(*platformToolFactory)
 	pf.larkProviderOverride = &fakeLarkProvider{api: &fakeLarkAPI{}}
 	pf.feishuConnectorOverride = &fakeConnector{step: &feishu.ConnectStep{Phase: feishu.ConnectPhaseDone}}
 	tools, metadata, err := factory.LoadTools(context.Background())
 	require.NoError(t, err)
-	require.Len(t, tools, 22, "19 base tools plus exactly three controlled Lark tools")
-	require.Len(t, metadata, 22)
+	require.Len(t, tools, 23, "19 base tools plus exactly four controlled Lark tools")
+	require.Len(t, metadata, 23)
 	assert.Equal(t, "lark_skill_read", tools[19].Name())
 	assert.Equal(t, "lark_inspect", tools[20].Name())
-	assert.Equal(t, "lark_execute", tools[21].Name())
+	assert.Equal(t, "lark_connect", tools[21].Name())
+	assert.Equal(t, "lark_execute", tools[22].Name())
 	assert.Equal(t, "lark_skill_read", metadata[19].ToolName)
 	assert.Equal(t, "safe", metadata[19].RiskLevel)
 	assert.Equal(t, "飞书", metadata[19].Category)
 	assert.Equal(t, "lark_inspect", metadata[20].ToolName)
 	assert.Equal(t, "safe", metadata[20].RiskLevel)
 	assert.Equal(t, "飞书", metadata[20].Category)
-	assert.Equal(t, "lark_execute", metadata[21].ToolName)
+	assert.Equal(t, "lark_connect", metadata[21].ToolName)
 	assert.Equal(t, "moderate", metadata[21].RiskLevel)
 	assert.Equal(t, "飞书", metadata[21].Category)
-	assert.Contains(t, metadata[21].Description, "Drive")
+	assert.Equal(t, "lark_execute", metadata[22].ToolName)
+	assert.Equal(t, "moderate", metadata[22].RiskLevel)
+	assert.Equal(t, "飞书", metadata[22].Category)
+	assert.Contains(t, metadata[22].Description, "Drive")
 	for _, legacy := range legacyNames {
 		for _, tool := range tools {
 			assert.NotEqual(t, legacy, tool.Name(), "legacy factory registration must stay removed")
@@ -1818,6 +1891,8 @@ func TestPlatformToolFactory_LarkPersonalWorkspaceBothOrNoneAndNoLegacyTools(t *
 	assert.True(t, ok)
 	_, ok = registry.GetTool("lark_execute")
 	assert.True(t, ok)
+	_, ok = registry.GetTool("lark_connect")
+	assert.True(t, ok)
 	for _, legacy := range legacyNames {
 		_, exists := registry.GetTool(legacy)
 		assert.False(t, exists, "registry must not expose %s", legacy)
@@ -1831,7 +1906,7 @@ func TestPlatformToolFactory_RegistersExplicitLarkConnectEntrypoint(t *testing.T
 	inspector := &fakeLarkInspector{}
 	executor := &fakeLarkExecutor{}
 	factory := NewPlatformToolFactory(nil, nil)
-	SetFactoryLarkWorkspaceExecutors(factory, reader, inspector, executor)
+	SetFactoryLarkWorkspaceExecutors(factory, reader, inspector, executor, executor)
 
 	tools, metadata, err := factory.LoadTools(context.Background())
 	require.NoError(t, err)

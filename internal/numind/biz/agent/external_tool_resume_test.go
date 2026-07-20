@@ -1085,6 +1085,24 @@ func TestExternalResumeHistory_RebuildsProviderValidToolPair(t *testing.T) {
 	assert.Equal(t, `{"ok":true}`, result.Content)
 }
 
+func TestExternalResumeHistory_PreservesExplicitConnectToolName(t *testing.T) {
+	turns := []map[string]any{
+		{"role": "user", "content": "帮我连接飞书"},
+		{"role": "assistant", "content": "", "tool_calls": []any{map[string]any{
+			"id": "tc-connect", "function": map[string]any{"name": "lark_connect", "arguments": `{}`},
+		}}},
+		{"role": "tool", "content": `{"ok":true,"state":"succeeded","operation_id":"op-connect"}`, "tool_call_id": "tc-connect"},
+	}
+
+	history, err := turnsToExternalResumeHistoryMessages(turns, "tc-connect")
+	require.NoError(t, err)
+	require.Len(t, history, 3)
+	require.Len(t, history[1].ToolCalls, 1)
+	assert.Equal(t, "lark_connect", history[1].ToolCalls[0].Function.Name)
+	assert.Equal(t, "lark_connect", history[2].ToolName)
+	assert.JSONEq(t, `{}`, history[1].ToolCalls[0].Function.Arguments)
+}
+
 func TestExternalResumeHistory_PreservesThinkingContextForSyntheticToolCall(t *testing.T) {
 	turns := []map[string]any{
 		{"role": "user", "content": "读取飞书多维表格名称和数据表"},

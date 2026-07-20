@@ -1022,6 +1022,13 @@ func toolNamesFromFlags(toolFlagsJSON []byte) []string {
 		// disables a baseline tool.
 		enabled[key] = on
 	}
+	// Rolling compatibility for Feishu-enabled definitions created before the
+	// deterministic explicit-connect tool existed. Missing means inherit the
+	// Feishu capability set; an explicit false remains authoritative.
+	if _, declared := flags["lark_connect"]; !declared &&
+		(flags["lark_execute"] || flags["lark_inspect"] || flags["lark_skill_read"]) {
+		enabled["lark_connect"] = true
+	}
 
 	return mapKeysWhereTrue(enabled)
 }

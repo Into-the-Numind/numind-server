@@ -65,6 +65,7 @@ const larkSkillReadMaxPages = 2
 const larkHostedExecutionPolicy = "有数托管规则（优先于下方针对本地电脑的 CLI 说明）：" +
 	"不要执行 auth/config/whoami/qrcode，也不要要求用户提供 App ID/App Secret。" +
 	"先执行 Docs/Base/Wiki/Drive 业务命令，不要每次先检查权限；写操作由平台在真正写入前自动做只读 scope check，连接或权限不足时平台会生成授权卡片并恢复原任务。" +
+	"用户明确要求连接、重新连接或授权飞书且没有业务任务时，必须立即调用 lark_connect；不要只检查状态后让用户再描述任务。" +
 	"只有用户明确询问连接状态，或 lark_execute 已返回结构化失败时才调用 lark_inspect。" +
 	"用户只提供资源标题而没有 URL/token 时，先读取 lark-drive，再执行 drive +search --query <标题> --only-title --doc-types docx,wiki,bitable；" +
 	"如果结果 has_more=true，必须保持相同 query/only-title/doc-types/page-size，用 page_token 继续搜索，按 URL/token 去重，最多 5 页或 100 条；只有穷尽分页后才能判断唯一、多个或没有精确匹配。达到上限仍有更多结果时，不得宣称唯一或未找到，应让用户缩小标题范围或提供链接。" +
