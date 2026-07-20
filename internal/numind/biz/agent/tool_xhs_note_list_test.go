@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -296,6 +297,7 @@ func TestXhsNoteList_CursorCanonicalRoundTrip(t *testing.T) {
 		Version:       xhsNoteListCursorVersion,
 		AfterID:       12,
 		SnapshotMaxID: 99,
+		SnapshotTotal: 87,
 		FilterSHA256:  left.filterSHA256,
 		Projection:    "full",
 	}
@@ -307,4 +309,29 @@ func TestXhsNoteList_CursorCanonicalRoundTrip(t *testing.T) {
 	reencoded, err := encodeXhsNoteListCursor(*got)
 	require.NoError(t, err)
 	assert.Equal(t, encoded, reencoded)
+}
+
+func TestXhsNoteList_CursorRejectsSignedPayloadTampering(t *testing.T) {
+	filter, err := normalizeXhsNoteListInput(json.RawMessage(`{"projection":"index"}`))
+	require.NoError(t, err)
+	original := xhsNoteListCursor{
+		Version: xhsNoteListCursorVersion, AfterID: 12, SnapshotMaxID: 99, SnapshotTotal: 87,
+		FilterSHA256: filter.filterSHA256, Projection: "index",
+	}
+	encoded, err := encodeXhsNoteListCursor(original)
+	require.NoError(t, err)
+
+	payload, err := json.Marshal(xhsNoteListCursor{
+		Version: xhsNoteListCursorVersion, AfterID: 98, SnapshotMaxID: 99, SnapshotTotal: 87,
+		FilterSHA256: filter.filterSHA256, Projection: "index",
+	})
+	require.NoError(t, err)
+	tampered := base64.RawURLEncoding.EncodeToString(payload)
+	if dot := strings.IndexByte(encoded, '.'); dot >= 0 {
+		tampered += encoded[dot:]
+	}
+
+	_, err = decodeXhsNoteListCursor(tampered)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "signature")
 }

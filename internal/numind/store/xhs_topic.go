@@ -43,12 +43,13 @@ type XhsSnapshotFilter struct {
 
 // XhsSnapshotQuery describes one page in a stable, ascending keyset scan.
 // SnapshotMaxID zero starts a new snapshot; subsequent pages must reuse the
-// returned SnapshotMaxID and advance AfterID to NextAfterID.
+// returned SnapshotMaxID/SnapshotTotal and advance AfterID to NextAfterID.
 type XhsSnapshotQuery struct {
 	Filter        XhsSnapshotFilter
 	Projection    XhsSnapshotProjection
 	AfterID       uint64
 	SnapshotMaxID uint64
+	SnapshotTotal int64
 	Limit         int
 }
 
@@ -256,9 +257,13 @@ func (s *xhsStore) ListSnapshot(ctx context.Context, userID uint, query XhsSnaps
 	if query.SnapshotMaxID > 0 && query.AfterID > query.SnapshotMaxID {
 		return nil, fmt.Errorf("ListSnapshot: after_id exceeds snapshot_max_id")
 	}
+	if query.SnapshotMaxID > 0 && query.AfterID > 0 && query.SnapshotTotal < 1 {
+		return nil, fmt.Errorf("ListSnapshot: continuation requires snapshot_total")
+	}
 
+	newSnapshot := query.SnapshotMaxID == 0
 	snapshotMaxID := query.SnapshotMaxID
-	if snapshotMaxID == 0 {
+	if newSnapshot {
 		var maxRow struct {
 			MaxID uint64 `gorm:"column:max_id"`
 		}
@@ -273,6 +278,7 @@ func (s *xhsStore) ListSnapshot(ctx context.Context, userID uint, query XhsSnaps
 	page := &XhsSnapshotPage{
 		Notes:         []model.XhsTopicNote{},
 		SnapshotMaxID: snapshotMaxID,
+		SnapshotTotal: query.SnapshotTotal,
 		NextAfterID:   query.AfterID,
 	}
 	if snapshotMaxID == 0 {
@@ -283,8 +289,10 @@ func (s *xhsStore) ListSnapshot(ctx context.Context, userID uint, query XhsSnaps
 		return xhsSnapshotBaseQuery(s.db.WithContext(ctx), userID, query.Filter).
 			Where("id <= ?", snapshotMaxID)
 	}
-	if err := bounded().Count(&page.SnapshotTotal).Error; err != nil {
-		return nil, fmt.Errorf("ListSnapshot count: %w", err)
+	if newSnapshot {
+		if err := bounded().Count(&page.SnapshotTotal).Error; err != nil {
+			return nil, fmt.Errorf("ListSnapshot count: %w", err)
+		}
 	}
 
 	columns := []string{"id", "xhs_note_id", "collected_at"}

@@ -475,7 +475,8 @@ func TestLarkPersonalWorkspace_SkillReadPublishesHostedPolicy(t *testing.T) {
 	assert.Contains(t, output.HostedPolicy, "身份、权限与恢复由平台负责")
 	assert.NotContains(t, output.HostedPolicy, "skill_receipts")
 	assert.Contains(t, output.HostedPolicy, "只可修正")
-	assert.Contains(t, output.HostedPolicy, "unknown_result 必须立即停止")
+	assert.Contains(t, output.HostedPolicy, "unknown_result 必须立即停止后续写入")
+	assert.Contains(t, output.HostedPolicy, "只读的查询核对")
 }
 
 // Customer regression (Dev run 211): a fresh conversation only had a document
@@ -1166,6 +1167,47 @@ func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *tes
 		requireSafeLarkSoftError(t, second, err)
 		require.Contains(t, string(second), "不可自动重试")
 		require.Len(t, executor.snapshot(), 1)
+	})
+
+	t.Run("unknown started write allows one or more catalog reads for reconciliation but still blocks writes", func(t *testing.T) {
+		const runID = uint64(815)
+		larkExecuteRetryClearRun(runID)
+		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+		executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+			OperationID: "op-unknown-reconcile", State: model.FeishuOperationUnknown,
+			Failure: &feishu.OperationFailure{
+				Code: feishu.PublicCodeUnknownResult, Category: "unknown_result", BusinessStarted: true,
+			},
+		}}
+		tool := &larkExecuteTool{executor: executor}
+
+		unknown, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "write-unknown"),
+			ToolInput(`{"argv":["docs","+create","--title","A"]}`),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(unknown), `"category":"unknown_result"`)
+
+		executor.mu.Lock()
+		executor.result = &feishu.OperationResult{
+			OperationID: "op-read-reconcile", State: model.FeishuOperationSucceeded,
+			Data: json.RawMessage(`{"document_id":"doxcnABCDEFG123","markers":["managed/v1"]}`),
+		}
+		executor.mu.Unlock()
+		reconciled, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "read-reconcile"),
+			ToolInput(`{"argv":["docs","+fetch","--doc","doxcnABCDEFG123"]}`),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(reconciled), `"document_id":"doxcnABCDEFG123"`)
+
+		blocked, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "write-replay"),
+			ToolInput(`{"argv":["docs","+create","--title","B"]}`),
+		)
+		requireSafeLarkSoftError(t, blocked, err)
+		require.Contains(t, string(blocked), "不可自动重试")
+		require.Len(t, executor.snapshot(), 2, "only the original write and catalog-proven reconciliation read may execute")
 	})
 
 	t.Run("validation permits one correction then success resets", func(t *testing.T) {

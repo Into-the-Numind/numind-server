@@ -1,8 +1,8 @@
 # 三 Agent 飞书内容生产流水线实施计划
 
-> Stage: S3 · Track: Standard · Date: 2026-07-20  
-> Spec: `docs/superpowers/specs/2026-07-20-three-agent-feishu-pipeline-design.md`  
-> Prompt SSOT: `docs/superpowers/specs/2026-07-20-three-agent-feishu-pipeline-authoritative-prompts.md`  
+> Stage: S3 · Track: Standard · Date: 2026-07-20
+> Spec: `docs/superpowers/specs/2026-07-20-three-agent-feishu-pipeline-design.md`
+> Prompt SSOT: `docs/superpowers/specs/2026-07-20-three-agent-feishu-pipeline-authoritative-prompts.md`
 > Repositories: `numind-server`（实现）+ `numind-web-v3`（零代码回归证明）
 
 ## 1. 实施原则

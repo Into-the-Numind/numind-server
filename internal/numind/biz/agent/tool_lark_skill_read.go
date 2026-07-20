@@ -75,7 +75,7 @@ const larkHostedExecutionPolicy = "有数托管规则（优先于下方针对本
 	"没有精确匹配时说明未找到并请求链接，不要猜测 token，也不要说成连接未就绪。" +
 	"lark_execute 必须串行：一次只调用一个并等待结构化结果后再决定下一步，禁止在同一轮并发调用或在前一个结果返回前重复同一命令。" +
 	"官方命令中的固定 --as user 与 --format json 可以保留，平台会安全规范化。" +
-	"policy_rejected 或 validation 只可修正业务命令一次；not_found 或 resource_denied 应向用户确认资源，不要自动重试；unknown_result 必须立即停止，禁止换参数重复写入。" +
+	"policy_rejected 或 validation 只可修正业务命令一次；not_found 或 resource_denied 应向用户确认资源，不要自动重试；unknown_result 必须立即停止后续写入，禁止换参数重复写入，但可使用命令目录证明为只读的查询核对业务键或受管标记。" +
 	"rate_limited/temporary 仅在结构化结果 retryable=true 时最多重试一次；不要改跑本地初始化命令。"
 
 func (t *larkSkillReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {

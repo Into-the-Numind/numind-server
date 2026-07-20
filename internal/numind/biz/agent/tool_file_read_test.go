@@ -44,11 +44,12 @@ func TestFileRead_LangfuseContainsOnlySafePaginationMetadata(t *testing.T) {
 	require.Contains(t, string(result), secretContent, "tool result remains functionally unchanged")
 	created := findPipelineSpanEvent(t, *events, "span-create", "tool.file_read.execute")
 	updated := findPipelineSpanUpdate(t, *events, created.ID)
-	assert.Equal(t, map[string]any{
-		"mime_type": "text/plain", "offset": 0, "limit_bytes": fileReadDefaultLimitBytes,
-	}, created.Input)
+	assert.Equal(t, map[string]any{}, created.Input)
 	output, ok := updated.Output.(map[string]any)
 	require.True(t, ok)
+	assert.Equal(t, "text/plain", output["mime_type"])
+	assert.Equal(t, 0, output["offset"])
+	assert.Equal(t, fileReadDefaultLimitBytes, output["limit_bytes"])
 	assert.Equal(t, len(secretContent), output["returned_bytes"])
 	assert.Equal(t, false, output["has_more"])
 	assert.Equal(t, pipelineToolTraceNoError, output["error_class"])
@@ -75,12 +76,44 @@ func TestFileRead_LangfuseErrorUsesFixedClassWithoutRawParserError(t *testing.T)
 	result, err := tool.Execute(ctx, ToolInput(input))
 
 	require.NoError(t, err, "parser failures remain model-correctable soft errors")
-	require.Contains(t, string(result), secretError)
+	require.NotContains(t, string(result), secretError)
+	require.Contains(t, string(result), `"error":"ERROR: parse_failed"`)
 	created := findPipelineSpanEvent(t, *events, "span-create", "tool.file_read.execute")
 	updated := findPipelineSpanUpdate(t, *events, created.ID)
 	assert.Equal(t, "ERROR", updated.Level)
 	assert.Equal(t, "parse_error", updated.StatusMessage)
 	assert.NotContains(t, pipelineEventsJSON(t, *events), secretError)
+}
+
+func TestFileReadTool_Execute_RejectsUnmanagedURLBeforeNetwork(t *testing.T) {
+	headCalled := false
+	tool := &fileReadTool{
+		textParser: &mockFileParser{content: "must not run"},
+		headFn: func(string) (*http.Response, error) {
+			headCalled = true
+			return nil, errors.New("must not reach network")
+		},
+		presignFn: func(context.Context, string, string, int64) (string, error) {
+			return "", errors.New("must not presign")
+		},
+	}
+	input, err := json.Marshal(fileReadInput{
+		FileURL: "http://169.254.169.254/latest/meta-data?next=/agent-attachments/123/secret.txt",
+	})
+	require.NoError(t, err)
+
+	events := capturePipelineLangfuseEvents(t)
+	ctx := middleware.NewContextWithUserID(langfuse.WithTrace(context.Background(), "file-preflight-trace"), 123)
+	result, err := tool.Execute(ctx, input)
+
+	require.NoError(t, err)
+	assert.False(t, headCalled)
+	assert.Contains(t, string(result), `"error":"ERROR: unmanaged_file_url"`)
+	assert.NotContains(t, string(result), "169.254.169.254")
+	created := findPipelineSpanEvent(t, *events, "span-create", "tool.file_read.execute")
+	updated := findPipelineSpanUpdate(t, *events, created.ID)
+	assert.Equal(t, "preflight_error", updated.StatusMessage)
+	assert.NotContains(t, pipelineEventsJSON(t, *events), "169.254.169.254")
 }
 
 func (m *mockFileParser) Parse(_ context.Context, _, _ string) (string, int, bool, error) {
@@ -275,7 +308,7 @@ func TestFileReadTool_Execute_UnsupportedMIME(t *testing.T) {
 	if err := json.Unmarshal(res, &out); err != nil {
 		t.Fatalf("invalid json: %v", err)
 	}
-	if !strings.Contains(out.Content, "ERROR: unsupported MIME type") {
+	if out.Content != "ERROR: unsupported_mime" {
 		t.Errorf("expected soft error in content, got: %s", out.Content)
 	}
 }
@@ -303,7 +336,7 @@ func TestFileReadTool_Execute_UserIDMismatch_ReturnsSoftError(t *testing.T) {
 	if err := json.Unmarshal(res, &out); err != nil {
 		t.Fatalf("invalid json: %v", err)
 	}
-	if !strings.Contains(out.Content, "ERROR: file not owned by current user") {
+	if out.Content != "ERROR: file_not_owned" {
 		t.Errorf("expected soft error in content about ownership, got: %s", out.Content)
 	}
 }
@@ -320,7 +353,7 @@ func TestFileReadTool_Execute_URLFormatInvalid_ReturnsSoftError(t *testing.T) {
 	if err := json.Unmarshal(res, &out); err != nil {
 		t.Fatalf("invalid json: %v", err)
 	}
-	if !strings.Contains(out.Content, "ERROR:") || !strings.Contains(out.Content, "agent-") {
+	if out.Content != "ERROR: unmanaged_file_url" {
 		t.Errorf("expected soft error mentioning agent- path format, got: %s", out.Content)
 	}
 }
@@ -336,7 +369,7 @@ func TestFileReadTool_Execute_EmptyFileURL_ReturnsSoftError(t *testing.T) {
 	if err := json.Unmarshal(res, &out); err != nil {
 		t.Fatalf("invalid json: %v", err)
 	}
-	if !strings.Contains(out.Content, "ERROR: file_url is required") {
+	if out.Content != "ERROR: file_url_required" {
 		t.Errorf("expected soft error about missing file_url, got: %s", out.Content)
 	}
 }
@@ -351,7 +384,7 @@ func TestFileReadTool_Execute_BadInputJSON_ReturnsSoftError(t *testing.T) {
 	if err := json.Unmarshal(res, &out); err != nil {
 		t.Fatalf("invalid json: %v", err)
 	}
-	if !strings.Contains(out.Content, "ERROR: invalid input JSON") {
+	if out.Content != "ERROR: invalid_input_json" {
 		t.Errorf("expected soft error about invalid JSON, got: %s", out.Content)
 	}
 }
@@ -370,7 +403,7 @@ func TestFileReadTool_Execute_Unauthenticated_ReturnsSoftError(t *testing.T) {
 	if err := json.Unmarshal(res, &out); err != nil {
 		t.Fatalf("invalid json: %v", err)
 	}
-	if !strings.Contains(out.Content, "ERROR: user not authenticated") {
+	if out.Content != "ERROR: unauthenticated" {
 		t.Errorf("expected soft error about authentication, got: %s", out.Content)
 	}
 }
@@ -550,7 +583,7 @@ func TestFileReadTool_Execute_UTF8BoundaryOffsetAndLimitValidation(t *testing.T)
 	}
 	var soft fileReadOutput
 	_ = json.Unmarshal(result, &soft)
-	if !strings.Contains(soft.Error, "UTF-8") {
+	if soft.Error != "ERROR: invalid_utf8_boundary" {
 		t.Fatalf("expected UTF-8 boundary soft error, got %+v", soft)
 	}
 
@@ -635,7 +668,7 @@ func TestFileReadTool_Execute_OffsetEndAndReadTokenChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = json.Unmarshal(result, &soft)
-	if !strings.Contains(soft.Error, "read_token is required") {
+	if soft.Error != "ERROR: read_token_required" {
 		t.Fatalf("continuation without read_token must be rejected: %+v", soft)
 	}
 }
@@ -670,7 +703,7 @@ func TestFileReadTool_Execute_HeadHTTPError(t *testing.T) {
 	if err := json.Unmarshal(res, &out); err != nil {
 		t.Fatalf("invalid json: %v", err)
 	}
-	if !strings.Contains(out.Content, "ERROR: HEAD returned HTTP status 404") {
+	if out.Content != "ERROR: head_http_error" {
 		t.Errorf("expected soft error in content, got: %s", out.Content)
 	}
 }
@@ -690,7 +723,7 @@ func TestFileReadTool_Execute_ParserError(t *testing.T) {
 	if err := json.Unmarshal(res, &out); err != nil {
 		t.Fatalf("invalid json: %v", err)
 	}
-	if !strings.Contains(out.Content, "ERROR: parse error: parse failed") {
+	if out.Content != "ERROR: parse_failed" {
 		t.Errorf("expected soft error in content, got: %s", out.Content)
 	}
 }
@@ -725,6 +758,8 @@ func TestExtractUserIDFromURL(t *testing.T) {
 		{"valid-attachments", "https://cdn.example.com/agent-attachments/42/file.pdf", 42, false},
 		{"valid-outputs", "https://cdn.example.com/agent-outputs/42/20260529-x.txt", 42, false},
 		{"valid-outputs-deep", "https://b.cos.ap-x.myqcloud.com/agent-outputs/7/sub/dir/file.csv", 7, false},
+		{"segment-only-in-query", "http://169.254.169.254/meta?next=/agent-attachments/42/file.pdf", 0, true},
+		{"segment-only-in-fragment", "http://127.0.0.1/meta#/agent-outputs/42/file.pdf", 0, true},
 		{"no-segment", "https://cdn.example.com/uploads/file.pdf", 0, true},
 		{"zero-id-attachments", "https://cdn.example.com/agent-attachments/0/file.pdf", 0, false},
 		{"zero-id-outputs", "https://cdn.example.com/agent-outputs/0/file.pdf", 0, false},
@@ -894,11 +929,10 @@ func TestFileReadTool_Execute_COSURL_UsesPresignedURL(t *testing.T) {
 	}
 }
 
-// TestFileReadTool_Execute_NonCOSURL_BypassesPresign confirms public URLs
-// (admin-pasted shareable links, e.g.) skip the presign path. This guard
-// prevents anyone accidentally tightening the presign to "all URLs" and
-// breaking public-URL use cases.
-func TestFileReadTool_Execute_NonCOSURL_BypassesPresign(t *testing.T) {
+// TestFileReadTool_Execute_NonCOSURLIsRejected confirms production file_read
+// only accepts platform-managed COS objects. This prevents a user-controlled
+// URL from turning the server-side HEAD/parser fetch into SSRF.
+func TestFileReadTool_Execute_NonCOSURLIsRejected(t *testing.T) {
 	srv := newHeadServer(t, 200, "application/pdf", 1024)
 
 	presignCalled := false
@@ -914,15 +948,16 @@ func TestFileReadTool_Execute_NonCOSURL_BypassesPresign(t *testing.T) {
 		presignFn:      presign,
 	}
 
-	// httptest URL is NOT a COS URL — must skip presign.
+	// httptest URL is NOT a managed COS URL — reject before HEAD or presign.
 	input, _ := json.Marshal(fileReadInput{FileURL: baseURL(srv.URL)})
-	_, err := tool.Execute(ctxUser123(), ToolInput(input))
+	result, err := tool.Execute(ctxUser123(), ToolInput(input))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if presignCalled {
 		t.Error("presignFn must NOT be called for non-COS URLs")
 	}
+	assert.Contains(t, string(result), `"error":"ERROR: unmanaged_file_url"`)
 }
 
 // TestFileReadTool_Execute_COSURL_PresignFails surfaces presign errors as soft reject instead of ErrAIProviderError.
@@ -945,7 +980,7 @@ func TestFileReadTool_Execute_COSURL_PresignFails(t *testing.T) {
 	if err := json.Unmarshal(res, &out); err != nil {
 		t.Fatalf("invalid json: %v", err)
 	}
-	if !strings.Contains(out.Content, "ERROR: presign COS URL (HEAD) failed: cos creds missing") {
+	if !strings.Contains(out.Content, "ERROR: presign_failed") || strings.Contains(out.Content, "cos creds missing") {
 		t.Errorf("expected soft error in content, got: %s", out.Content)
 	}
 }
@@ -979,7 +1014,7 @@ func TestFileReadTool_Execute_COSURL_GetSignFails(t *testing.T) {
 	if err := json.Unmarshal(res, &out); err != nil {
 		t.Fatalf("invalid json: %v", err)
 	}
-	if !strings.Contains(out.Content, "ERROR: presign COS URL (GET) failed: cos GET sign rate-limited") {
+	if !strings.Contains(out.Content, "ERROR: presign_failed") || strings.Contains(out.Content, "rate-limited") {
 		t.Errorf("expected soft error in content, got: %s", out.Content)
 	}
 }

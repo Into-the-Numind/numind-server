@@ -3,6 +3,8 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -14,10 +16,20 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/spf13/viper"
+
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
 )
+
+var xhsNoteListFallbackCursorKey = func() []byte {
+	key := make([]byte, sha256.Size)
+	if _, err := rand.Read(key); err != nil {
+		panic("xhs_note_list: cannot initialize cursor signing key")
+	}
+	return key
+}()
 
 const (
 	xhsNoteListSchemaVersion = "xhs-note-list/v1"
@@ -42,6 +54,7 @@ type xhsNoteListCursor struct {
 	Version       int    `json:"v"`
 	AfterID       uint64 `json:"after_id"`
 	SnapshotMaxID uint64 `json:"snapshot_max_id"`
+	SnapshotTotal int64  `json:"snapshot_total"`
 	FilterSHA256  string `json:"filter_sha256"`
 	Projection    string `json:"projection"`
 }
@@ -177,6 +190,7 @@ func (t *xhsNoteListTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 	if normalized.cursor != nil {
 		query.AfterID = normalized.cursor.AfterID
 		query.SnapshotMaxID = normalized.cursor.SnapshotMaxID
+		query.SnapshotTotal = normalized.cursor.SnapshotTotal
 	}
 
 	page, err := t.store.ListSnapshot(ctx, userID, query)
@@ -220,6 +234,7 @@ func (t *xhsNoteListTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 			Version:       xhsNoteListCursorVersion,
 			AfterID:       page.NextAfterID,
 			SnapshotMaxID: page.SnapshotMaxID,
+			SnapshotTotal: page.SnapshotTotal,
 			FilterSHA256:  normalized.filterSHA256,
 			Projection:    string(normalized.projection),
 		})
@@ -387,14 +402,31 @@ func encodeXhsNoteListCursor(cursor xhsNoteListCursor) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return base64.RawURLEncoding.EncodeToString(encoded), nil
+	payload := base64.RawURLEncoding.EncodeToString(encoded)
+	mac := hmac.New(sha256.New, xhsNoteListCursorSigningKey())
+	_, _ = mac.Write([]byte(payload))
+	signature := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return payload + "." + signature, nil
 }
 
 func decodeXhsNoteListCursor(raw string) (*xhsNoteListCursor, error) {
 	if len(raw) > xhsNoteListMaxCursorLen {
 		return nil, fmt.Errorf("cursor is too long")
 	}
-	decoded, err := base64.RawURLEncoding.DecodeString(raw)
+	payload, signature, ok := strings.Cut(raw, ".")
+	if !ok || payload == "" || signature == "" || strings.Contains(signature, ".") {
+		return nil, fmt.Errorf("invalid cursor signature")
+	}
+	providedMAC, err := base64.RawURLEncoding.DecodeString(signature)
+	if err != nil {
+		return nil, fmt.Errorf("invalid cursor signature")
+	}
+	expectedMAC := hmac.New(sha256.New, xhsNoteListCursorSigningKey())
+	_, _ = expectedMAC.Write([]byte(payload))
+	if !hmac.Equal(providedMAC, expectedMAC.Sum(nil)) {
+		return nil, fmt.Errorf("invalid cursor signature")
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(payload)
 	if err != nil {
 		return nil, fmt.Errorf("invalid cursor encoding")
 	}
@@ -407,7 +439,7 @@ func decodeXhsNoteListCursor(raw string) (*xhsNoteListCursor, error) {
 	if err := ensureJSONEOF(decoder); err != nil {
 		return nil, fmt.Errorf("invalid cursor payload")
 	}
-	if cursor.Version != xhsNoteListCursorVersion || cursor.SnapshotMaxID == 0 || cursor.AfterID == 0 || cursor.AfterID > cursor.SnapshotMaxID {
+	if cursor.Version != xhsNoteListCursorVersion || cursor.SnapshotMaxID == 0 || cursor.SnapshotTotal < 1 || cursor.AfterID == 0 || cursor.AfterID > cursor.SnapshotMaxID {
 		return nil, fmt.Errorf("invalid cursor state")
 	}
 	if cursor.Projection != string(store.XhsSnapshotProjectionIndex) && cursor.Projection != string(store.XhsSnapshotProjectionFull) {
@@ -420,6 +452,18 @@ func decodeXhsNoteListCursor(raw string) (*xhsNoteListCursor, error) {
 		return nil, fmt.Errorf("invalid cursor filter fingerprint")
 	}
 	return &cursor, nil
+}
+
+func xhsNoteListCursorSigningKey() []byte {
+	secret := strings.TrimSpace(viper.GetString("jwt.secret"))
+	if secret == "" {
+		// Unit tests and narrowly composed tools may run without application
+		// configuration. A process-random key keeps those cursors tamper-evident;
+		// production always derives a stable, domain-separated key from jwt.secret.
+		return xhsNoteListFallbackCursorKey
+	}
+	digest := sha256.Sum256([]byte("numind/xhs-note-list/cursor/v1\x00" + secret))
+	return digest[:]
 }
 
 func xhsIndexItem(note model.XhsTopicNote) xhsNoteListIndexItem {

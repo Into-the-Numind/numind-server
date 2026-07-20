@@ -2,13 +2,55 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/langfuse"
 )
+
+func TestTracing_OCRRedactsSignedURLAndRecognizedText(t *testing.T) {
+	original := langfuse.C
+	testClient := langfuse.NewTestClient()
+	langfuse.C = testClient
+	defer func() { langfuse.C = original }()
+
+	var events []*langfuse.IngestionEvent
+	testClient.InstallEventHook(func(event *langfuse.IngestionEvent) {
+		events = append(events, event)
+	})
+	secretURL := "https://bucket.cos.example/secret.png?q-signature=must-not-leak"
+	secretText := "private customer OCR content"
+	handler := Tracing(Deps{Logger: &mockLogger{}})(Handler(
+		func(_ context.Context, _ *registry.ResolvedRoute, _ interface{}) (interface{}, error) {
+			return &aiservice.OCRResponse{
+				Text: secretText, Provider: "baidu",
+				Words: []aiservice.OCRWord{{Word: "private"}, {Word: "customer"}},
+			}, nil
+		},
+	))
+	ctx := langfuse.WithTrace(context.Background(), "ocr-redaction-trace")
+
+	_, err := handler(ctx, buildTestRoute("ocr"), aiservice.OCRRequest{ImageURL: secretURL, ImageFormat: "png"})
+	require.NoError(t, err)
+	encoded, err := json.Marshal(events)
+	require.NoError(t, err)
+	payload := string(encoded)
+	assert.NotContains(t, payload, secretURL)
+	assert.NotContains(t, payload, "q-signature")
+	assert.NotContains(t, payload, secretText)
+	assert.NotContains(t, payload, `"word":"private"`)
+	assert.Contains(t, payload, `"image_source":"url"`)
+	assert.Contains(t, payload, `"text_bytes":`)
+	assert.Contains(t, payload, `"word_count":2`)
+	assert.True(t, strings.Contains(payload, "span-create") && strings.Contains(payload, "span-update"))
+}
 
 // TestTracing_SuccessPath verifies that the middleware forwards the response
 // from next unchanged when Langfuse is not initialised (C == nil).

@@ -1,7 +1,7 @@
 # 三 Agent 飞书内容生产流水线 — 提案 + PRD
 
-> Stage: S1 · Track: standard · Repos: numind-server（代码）+ numind-web-v3（审查后确认无代码改动） · Date: 2026-07-20  
-> Predecessor: `requirements/three-agent-feishu-pipeline.md`（S0，commit `71590114`）  
+> Stage: S1 · Track: standard · Repos: numind-server（代码）+ numind-web-v3（审查后确认无代码改动） · Date: 2026-07-20
+> Predecessor: `requirements/three-agent-feishu-pipeline.md`（S0，commit `71590114`）
 > 权威业务规则：产品负责人提供的 Prompt 1 / Prompt 2 / Prompt 3 完整代码块
 
 ---

@@ -22,6 +22,7 @@ type larkExecuteRetryAttempt uint8
 const (
 	larkExecuteNormalAttempt larkExecuteRetryAttempt = iota
 	larkExecuteCorrectionAttempt
+	larkExecuteReconciliationRead
 )
 
 type larkExecuteRetryState struct {
@@ -62,12 +63,15 @@ func larkExecuteRetrySeedExternalResult(runID uint64, raw json.RawMessage) bool 
 	return true
 }
 
-func larkExecuteRetryBegin(runID uint64) (*larkExecuteRetryState, larkExecuteRetryAttempt, bool) {
+func larkExecuteRetryBegin(runID uint64, allowTerminalRead bool) (*larkExecuteRetryState, larkExecuteRetryAttempt, bool) {
 	value, _ := larkExecuteRetryRuns.LoadOrStore(runID, &larkExecuteRetryState{})
 	state := value.(*larkExecuteRetryState)
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	if state.terminalStop {
+		if allowTerminalRead {
+			return state, larkExecuteReconciliationRead, true
+		}
 		return state, larkExecuteCorrectionAttempt, false
 	}
 
@@ -101,6 +105,9 @@ func larkExecuteRetryRejected(state *larkExecuteRetryState, attempt larkExecuteR
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
+	if attempt == larkExecuteReconciliationRead {
+		return false
+	}
 
 	switch {
 	case attempt == larkExecuteNormalAttempt && state.phase == larkRetryNormalInFlight:
@@ -116,7 +123,7 @@ func larkExecuteRetryRejected(state *larkExecuteRetryState, attempt larkExecuteR
 }
 
 func larkExecuteRetryCompleted(state *larkExecuteRetryState, attempt larkExecuteRetryAttempt) {
-	if state == nil {
+	if state == nil || attempt == larkExecuteReconciliationRead {
 		return
 	}
 	state.mu.Lock()
@@ -132,6 +139,9 @@ func larkExecuteRetryTerminalOutcome(
 	attempt larkExecuteRetryAttempt,
 	failure *feishu.OperationFailure,
 ) (correctionExhausted bool) {
+	if attempt == larkExecuteReconciliationRead {
+		return false
+	}
 	if state == nil || failure == nil {
 		larkExecuteRetryFailed(state, attempt)
 		return true
@@ -155,7 +165,7 @@ func larkFailureAllowsCorrection(failure *feishu.OperationFailure) bool {
 }
 
 func larkExecuteRetryFailed(state *larkExecuteRetryState, attempt larkExecuteRetryAttempt) {
-	if state == nil {
+	if state == nil || attempt == larkExecuteReconciliationRead {
 		return
 	}
 	state.mu.Lock()

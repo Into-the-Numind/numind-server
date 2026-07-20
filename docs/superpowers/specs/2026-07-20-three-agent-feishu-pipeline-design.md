@@ -1,8 +1,8 @@
 # 三 Agent 飞书内容生产流水线技术设计
 
-> Stage: S2 · Track: Standard · Date: 2026-07-20  
-> Predecessor: `proposals/three-agent-feishu-pipeline-proposal.md`（S1，commit `4d144ce7`）  
-> 业务 Prompt SSOT: `2026-07-20-three-agent-feishu-pipeline-authoritative-prompts.md`  
+> Stage: S2 · Track: Standard · Date: 2026-07-20
+> Predecessor: `proposals/three-agent-feishu-pipeline-proposal.md`（S1，commit `4d144ce7`）
+> 业务 Prompt SSOT: `2026-07-20-three-agent-feishu-pipeline-authoritative-prompts.md`
 > Prompt SSOT SHA-256: `fc2bea1b8e05ddd285975120d0b7b401a56ed69683f90a63a4fa30f907dc66f5`
 
 ## 1. 设计结论

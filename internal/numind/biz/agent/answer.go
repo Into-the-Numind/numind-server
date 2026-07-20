@@ -167,15 +167,16 @@ func (s *StudentRunService) buildAnswerResumeRequest(ctx context.Context, run *m
 	resumeHistory = append(resumeHistory, turnsToHistoryMessages(turns)...)
 	toolFlags := resolveToolFlags(context.WithoutCancel(ctx), s, run.AgentDefinitionID)
 	return RunRequest{
-		UserID:            run.UserID,
-		SessionID:         run.SessionID,
-		Input:             userMsg,
-		History:           resumeHistory,
-		ToolNames:         toolNamesFromFlags(toolFlags),
-		AgentDefinitionID: run.AgentDefinitionID,
-		EnableMemory:      true,
-		ExistingRunID:     run.ID,
-		IsTest:            run.IsTest,
+		UserID:               run.UserID,
+		SessionID:            run.SessionID,
+		Input:                userMsg,
+		History:              resumeHistory,
+		ToolNames:            toolNamesFromFlags(toolFlags),
+		EnforceToolAllowlist: enforceExplicitToolAllowlist(toolFlags),
+		AgentDefinitionID:    run.AgentDefinitionID,
+		EnableMemory:         true,
+		ExistingRunID:        run.ID,
+		IsTest:               run.IsTest,
 	}, nil
 }
 

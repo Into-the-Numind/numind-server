@@ -66,15 +66,16 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 	if !ok || userID == 0 || runID == 0 || strings.TrimSpace(toolCallID) == "" {
 		return larkWorkspaceSoftError(larkWorkspaceErrorIdentity)
 	}
-	retryState, retryAttempt, allowed := larkExecuteRetryBegin(runID)
+	decoded, decodeErr := decodeLarkExecuteInput(input)
+	allowTerminalRead := decodeErr == nil && larkExecuteInputIsCatalogRead(decoded)
+	retryState, retryAttempt, allowed := larkExecuteRetryBegin(runID, allowTerminalRead)
 	if !allowed {
 		if larkExecuteRetryBlockedByTerminal(retryState) {
 			return larkWorkspaceSoftError(larkWorkspaceErrorExecuteStopped)
 		}
 		return larkWorkspaceSoftError(larkWorkspaceErrorExecuteRetryExhausted)
 	}
-	decoded, err := decodeLarkExecuteInput(input)
-	if err != nil {
+	if decodeErr != nil {
 		if larkExecuteRetryRejected(retryState, retryAttempt) {
 			return larkWorkspaceSoftError(larkWorkspaceErrorExecuteRetryExhausted)
 		}
@@ -128,6 +129,13 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 		return larkWorkspaceSoftError(larkWorkspaceErrorExecuteRetryExhausted)
 	}
 	return ToolResult(output), nil
+}
+
+var larkExecuteCommandCatalog = feishu.NewCommandCatalog()
+
+func larkExecuteInputIsCatalogRead(input larkExecuteInput) bool {
+	normalized, err := larkExecuteCommandCatalog.Normalize(input.Argv, input.StdinJSON)
+	return err == nil && normalized.Risk == feishu.RiskRead
 }
 
 func decodeLarkExecuteInput(input ToolInput) (larkExecuteInput, error) {

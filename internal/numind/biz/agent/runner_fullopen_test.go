@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -57,4 +58,28 @@ func TestFullOpen_RegistryFilter(t *testing.T) {
 	if open["use_skill"] || open["read_skill"] {
 		t.Error("use_skill/read_skill were merged into load_skill and must not be registered")
 	}
+}
+
+func TestSelectToolsForRun_StrictAllowlistExcludesFullOpenTools(t *testing.T) {
+	registry := newStaticRegistry(
+		&stubFullTool{name: "xhs_note_list"},
+		&stubFullTool{name: "file_read"},
+		&stubFullTool{name: "web_search"},
+		&stubFullTool{name: "bash_exec"},
+	)
+
+	strict := selectToolsForRun(registry, []string{"file_read"}, true)
+	strictNames := make([]string, 0, len(strict))
+	for _, tool := range strict {
+		strictNames = append(strictNames, tool.Name())
+	}
+	require.Equal(t, []string{"file_read"}, strictNames)
+
+	compat := selectToolsForRun(registry, nil, false)
+	compatNames := make([]string, 0, len(compat))
+	for _, tool := range compat {
+		compatNames = append(compatNames, tool.Name())
+	}
+	sort.Strings(compatNames)
+	require.Equal(t, []string{"bash_exec", "file_read", "web_search", "xhs_note_list"}, compatNames)
 }

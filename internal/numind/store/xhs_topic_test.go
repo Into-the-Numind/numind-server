@@ -105,6 +105,7 @@ func TestXhsSnapshot_StableKeysetPaginationAndUserIsolation(t *testing.T) {
 			Projection:    XhsSnapshotProjectionIndex,
 			AfterID:       after,
 			SnapshotMaxID: first.SnapshotMaxID,
+			SnapshotTotal: first.SnapshotTotal,
 			Limit:         100,
 		})
 		require.NoError(t, pageErr)
@@ -192,6 +193,7 @@ func TestXhsSnapshot_ProjectionColumnsAndLimitPlusOne(t *testing.T) {
 		Projection:    XhsSnapshotProjectionFull,
 		AfterID:       full.NextAfterID,
 		SnapshotMaxID: full.SnapshotMaxID,
+		SnapshotTotal: full.SnapshotTotal,
 		Limit:         2,
 	})
 	require.NoError(t, err)
@@ -227,11 +229,13 @@ func TestXhsSnapshot_EmptyDeletedRowAndInputBoundaries(t *testing.T) {
 		Projection:    XhsSnapshotProjectionIndex,
 		AfterID:       first.NextAfterID,
 		SnapshotMaxID: first.SnapshotMaxID,
+		SnapshotTotal: first.SnapshotTotal,
 		Limit:         100,
 	})
 	require.NoError(t, err)
 	require.Len(t, remaining.Notes, 1)
 	assert.Equal(t, rows[2].ID, remaining.Notes[0].ID)
+	assert.Equal(t, first.SnapshotTotal, remaining.SnapshotTotal, "snapshot total must remain fixed even if a row is deleted between pages")
 
 	_, err = s.ListSnapshot(ctx, 9, XhsSnapshotQuery{Projection: XhsSnapshotProjectionIndex, Limit: 0})
 	require.Error(t, err)
