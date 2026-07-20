@@ -976,6 +976,44 @@ func TestLarkPersonalWorkspace_ExecuteRejectedCommandStopsLocalCLIRetries(t *tes
 	assert.Len(t, executor.snapshot(), 4, "run cleanup must restore a fresh correction budget")
 }
 
+// Customer regression (Dev run 248): two pre-execution command rejections
+// exhausted the run before the model's next, valid correction could reach the
+// executor. Correctable commands get five total attempts; success on the fifth
+// attempt must still execute and reset the run budget.
+func TestLarkPersonalWorkspace_ExecuteAllowsFiveCorrectableAttempts(t *testing.T) {
+	const runID = uint64(248)
+	larkExecuteRetryClearRun(runID)
+	t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+
+	executor := &fakeLarkExecutor{err: feishu.ErrOperationRequestRejected}
+	tool := &larkExecuteTool{executor: executor}
+	for attempt := 1; attempt < 5; attempt++ {
+		result, err := tool.Execute(
+			larkPersonalWorkspaceContext(1, runID, fmt.Sprintf("correctable-%d", attempt)),
+			ToolInput(`{"argv":["base","+base-create","--name","联调","--table-name","任务列表"]}`),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(result), `"code":"command_rejected"`, "attempt %d must remain correctable", attempt)
+		require.Contains(t, string(result), `"recoverable":true`)
+	}
+
+	executor.mu.Lock()
+	executor.err = nil
+	executor.result = &feishu.OperationResult{
+		OperationID: "op-corrected-fifth", State: model.FeishuOperationSucceeded,
+		Data: json.RawMessage(`{"base_token":"base-created"}`),
+	}
+	executor.mu.Unlock()
+
+	result, err := tool.Execute(
+		larkPersonalWorkspaceContext(1, runID, "corrected-fifth"),
+		ToolInput(`{"argv":["base","+base-create","--name","联调"]}`),
+	)
+	require.NoError(t, err)
+	require.Contains(t, string(result), `"ok":true`)
+	require.Len(t, executor.snapshot(), 5, "all five attempts must reach the executor")
+}
+
 func TestLarkPersonalWorkspace_ExecuteCorrectionBudgetIsConcurrentAndResetsAfterSuccess(t *testing.T) {
 	t.Run("only one concurrent correction reaches executor", func(t *testing.T) {
 		const runID = uint64(206)
