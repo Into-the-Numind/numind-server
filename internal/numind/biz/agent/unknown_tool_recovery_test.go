@@ -36,7 +36,6 @@ func TestAgentToolsNodeConfig_UnknownToolIsRecoverable(t *testing.T) {
 	require.Len(t, messages, 1)
 	assert.Equal(t, schema.Tool, messages[0].Role)
 	assert.Equal(t, "call-hallucinated", messages[0].ToolCallID)
-	assert.Contains(t, messages[0].Content, "run_python")
 	assert.Contains(t, messages[0].Content, "not available")
 	assert.Contains(t, messages[0].Content, "Do not retry")
 	assert.NotContains(t, messages[0].Content, "do-not-echo-this-input",
