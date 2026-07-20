@@ -34,22 +34,25 @@ features:
   ndf_version: '3.0'
   description: Keep hallucinated or stale unavailable tool calls recoverable inside both Agent Runner paths instead of terminating the run.
   classification_reason: 'Hotfix: no schema, API, external integration, payment, or permission change; three Agent files only. User confirmed the recovery behavior after Dev run 268.'
-  last_updated_by: ai-h2
-  last_updated_at: '2026-07-20T21:44:36+08:00'
-  last_verified: '2026-07-20T21:44:36+08:00'
+  last_updated_by: ai-h3-dev-accepted
+  last_updated_at: '2026-07-20T21:57:00+08:00'
+  last_verified: '2026-07-20T21:57:00+08:00'
   created_at: '2026-07-20T21:35:51+08:00'
   track: hotfix
-  stage: H2
+  stage: H3
   status: active
   repos: [numind-server]
-  branches: {numind-server: fix/unknown-tool-recovery}
-  worktrees: {numind-server: /private/tmp/wt-unknown-tool-recovery-numind-server}
-  progress: {total_tasks: 3, completed_tasks: 2, reviewed_tasks: 1, current_task: 'Merge atomically, deploy backend to Dev, and rerun Agent 3 append'}
-  artifacts: {}
+  branches: {numind-server: develop}
+  worktrees: {}
+  progress: {total_tasks: 3, completed_tasks: 3, reviewed_tasks: 1, current_task: 'Dev accepted; Prod intentionally untouched pending separate authorization'}
+  deployed: 'dev server develop-787ffa1f (registry sha256:1d66a7e946d2b8f34755698e59af2c2fd5ed7c8534663b1c1e176bc03d098c86; runtime sha256:62b2d7869368951c03df6a1681d91cfb1ead576cc051b1e16e9648cab40f30f6)'
+  artifacts:
+    acceptance: .ndf/decisions/unknown-tool-recovery/0001-h3-dev-acceptance.md
   decisions:
   - 'H1 diagnosis: run_python exists and is tested platform-wide, but all three pipeline definitions intentionally set run_python=false. Dev run 268 hallucinated that disabled tool and Eino returned a fatal unknown-tool NodeRunError before any write.'
   - 'H1 fix: both streaming and non-streaming Runner paths share Eino UnknownToolsHandler. It returns bounded model guidance, ignores tool arguments, executes nothing, grants no permission, and never replays a write.'
   - 'H2 verification: RED-first commit is preserved; focused Agent and race tests, full go test ./..., task lint, YAML/diff hygiene, and self-review pass with P0/P1/P2=0. All three pipeline definitions still set run_python=false.'
+  - 'H3: merged as 787ffa1f, pushed, deployed exact Dev image, and passed public/container health. Real Agent 3 run 271 generated its own round ID, appended R3, retained R1/R2, completed, and emitted only canonical safe metrics.'
   blockers: []
 - id: artifact-transient-read-recovery
   ndf_version: '3.0'
@@ -89,8 +92,8 @@ features:
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: develop, numind-web-v3: develop}
   worktrees: {}
-  progress: {total_tasks: 7, completed_tasks: 7, reviewed_tasks: 7, current_task: 'Dev accepted; decide residual unknown-tool recovery P1 before any Prod action'}
-  deployed: 'dev server develop-07dd9247; web unchanged'
+  progress: {total_tasks: 7, completed_tasks: 7, reviewed_tasks: 7, current_task: 'Dev accepted with residual P1 resolved; await user decision on any later release stage'}
+  deployed: 'dev server develop-787ffa1f; web unchanged'
   artifacts:
     requirement: requirements/three-agent-feishu-pipeline.md
     proposal: proposals/three-agent-feishu-pipeline-proposal.md
@@ -124,6 +127,7 @@ features:
   - 'S5 acceptance: feature scope ALL_PASS. Full Go suite and lint, Vue lint/type-check/1129 unit tests, 13 focused Feishu browser contracts, desktop read-only browser smoke, and safe pipeline/Langfuse metrics all pass. Three unrelated develop baseline findings are isolated in the QA report; no real Agent run or customer Feishu write occurred.'
   - 'S6 real Dev acceptance: Agent 1 run 259 created five complete Base rows and run 262 skipped all five; Agent 2 run 266 updated the same profile Doc with two fully-read sources; Agent 3 runs 267/269/270 created R1, appended R2, and precisely replaced only R1 while retaining R2. Safe metrics contain only schema/agent/count/mode/status.'
   - 'S6 residual P1: run 268 hallucinated disabled tool run_python while generating a random round_id; Eino treats an unknown tool as fatal before any write. User-specified round_id made run 269 pass, but a platform UnknownToolsHandler Hotfix is recommended before Prod. Run 270 used a deliberately noncanonical replace_named_round metric marker and correctly degraded observability to unavailable; the canonical contract remains replace-round.'
+  - 'S6 P1 resolved: Hotfix 787ffa1f adds a non-executing UnknownToolsHandler to streaming and non-streaming Runner paths without enabling run_python. Actual Eino regression coverage proves missing tools return bounded retry guidance without reflecting arguments; Dev run 271 independently generated a round ID and appended R3 while retaining R1/R2.'
   blockers: []
 - id: feishu-minimal-unknown-fence
   ndf_version: '3.0'
