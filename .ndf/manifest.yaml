@@ -1,5 +1,30 @@
 schema_version: '2.0'
 features:
+- id: lark-auth-resume-stall
+  ndf_version: '3.0'
+  description: Preserve thinking-model context across Feishu authorization resume and keep parallel lark_execute calls recoverable instead of terminal-red.
+  classification_reason: 'User explicitly selected Hotfix for speed. Scope is backend-only with no schema, API, external capability, payment, or permission change; all root-cause files are included despite exceeding the default file-count guideline.'
+  last_updated_by: ai-h2
+  last_updated_at: '2026-07-20T17:01:00+08:00'
+  created_at: '2026-07-20T16:39:30+08:00'
+  track: hotfix
+  stage: H2
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: fix/lark-auth-resume-stall}
+  worktrees: {numind-server: /private/tmp/wt-lark-auth-resume-stall-numind-server}
+  progress: {total_tasks: 3, completed_tasks: 3, reviewed_tasks: 1, current_task: 'Verified; ready for atomic merge and Dev deployment'}
+  artifacts: {}
+  decisions:
+  - 'Dev run 250 proves Feishu authorization and base +base-get succeeded. Detached Agent resume then failed with provider HTTP 400 because transcript reconstruction dropped reasoning_content required by the thinking model.'
+  - 'The same run emitted base-get and table-list concurrently. The single-flight guard correctly blocked the second executor call but mislabeled it correction_exhausted, creating a red user-visible failure and risking a locked retry state.'
+  - 'Customer RED commit 49e014c6 reproduces both failures before production code changes.'
+  - 'H1 GREEN: detached history preserves persisted assistant reasoning and attaches it to reconstructed provider tool-call envelopes; original tool arguments remain stripped. Same-run concurrent lark_execute calls now return a fixed recoverable command_in_flight result without entering the executor or consuming the five-attempt budget.'
+  - 'Focused Agent and Feishu package tests pass, including the exact customer regressions.'
+  - 'H2 verification: full go test ./..., task lint, focused regressions, and git diff --check pass. Review found and removed a time-of-check race by returning the retry block reason atomically from the guarded state transition. Final review reports P0/P1/P2=0.'
+  last_verified: '2026-07-20T17:01:00+08:00'
+  blockers: []
+
 - id: lark-five-correction-attempts
   ndf_version: '3.0'
   description: Allow five correctable Lark command attempts, expose safe catalog validation hints, and retain immediate stops for non-retryable or uncertain operations.

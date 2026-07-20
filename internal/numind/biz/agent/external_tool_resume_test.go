@@ -1085,6 +1085,28 @@ func TestExternalResumeHistory_RebuildsProviderValidToolPair(t *testing.T) {
 	assert.Equal(t, `{"ok":true}`, result.Content)
 }
 
+func TestExternalResumeHistory_PreservesThinkingContextForSyntheticToolCall(t *testing.T) {
+	turns := []map[string]any{
+		{"role": "user", "content": "读取飞书多维表格名称和数据表"},
+		{
+			"role":      "assistant",
+			"content":   "拿到 base_token。现在同时获取多维表格名称和数据表列表。",
+			"reasoning": "已经完成授权，下一步调用 lark_execute 读取 Base 信息。",
+		},
+		{"role": "tool", "content": `{"ok":true,"state":"succeeded"}`, "tool_call_id": "tc-base-get"},
+	}
+
+	history, err := turnsToExternalResumeHistoryMessages(turns, "tc-base-get")
+	require.NoError(t, err)
+	require.Len(t, history, 4)
+	assert.Equal(t, "已经完成授权，下一步调用 lark_execute 读取 Base 信息。", history[1].ReasoningContent,
+		"persisted assistant reasoning must survive detached continuation reconstruction")
+	require.Len(t, history[2].ToolCalls, 1)
+	assert.Equal(t, "tc-base-get", history[2].ToolCalls[0].ID)
+	assert.Equal(t, "已经完成授权，下一步调用 lark_execute 读取 Base 信息。", history[2].ReasoningContent,
+		"thinking providers require reasoning_content on the reconstructed assistant tool call")
+}
+
 func TestExternalResumeHistory_StripsPersistedSecretToolArguments(t *testing.T) {
 	turns := []map[string]any{
 		{"role": "user", "content": "写飞书"},

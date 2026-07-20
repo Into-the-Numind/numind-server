@@ -973,10 +973,12 @@ func externalJSONEqual(left, right []byte) (bool, error) {
 // exposed to the model.
 func turnsToExternalResumeHistoryMessages(turns []map[string]any, targetToolCallID string) ([]*schema.Message, error) {
 	toolNames := make(map[string]string)
+	toolReasoning := make(map[string]string)
 	for _, turn := range turns {
 		if role, _ := turn["role"].(string); role != "assistant" {
 			continue
 		}
+		reasoning, _ := turn["reasoning"].(string)
 		calls, _ := turn["tool_calls"].([]any)
 		for _, rawCall := range calls {
 			call, _ := rawCall.(map[string]any)
@@ -986,10 +988,12 @@ func turnsToExternalResumeHistoryMessages(turns []map[string]any, targetToolCall
 			id, name = strings.TrimSpace(id), strings.TrimSpace(name)
 			if id != "" && isSafeExternalResumeToolName(name) {
 				toolNames[id] = name
+				toolReasoning[id] = reasoning
 			}
 		}
 	}
 	out := make([]*schema.Message, 0, len(turns)+1)
+	lastAssistantReasoning := ""
 	for index, turn := range turns {
 		role, ok := turn["role"].(string)
 		if !ok || strings.TrimSpace(role) == "" {
@@ -997,14 +1001,19 @@ func turnsToExternalResumeHistoryMessages(turns []map[string]any, targetToolCall
 		}
 		switch role {
 		case "user":
+			lastAssistantReasoning = ""
 			content := strings.TrimSpace(historyTurnText(turn["content"]))
 			if content != "" {
 				out = append(out, schema.UserMessage(content))
 			}
 		case "assistant":
 			content := historyTurnText(turn["content"])
+			reasoning, _ := turn["reasoning"].(string)
+			lastAssistantReasoning = reasoning
 			if strings.TrimSpace(content) != "" {
-				out = append(out, schema.AssistantMessage(content, nil))
+				message := schema.AssistantMessage(content, nil)
+				message.ReasoningContent = reasoning
+				out = append(out, message)
 			}
 		case "tool":
 			toolCallID, _ := turn["tool_call_id"].(string)
@@ -1020,14 +1029,22 @@ func turnsToExternalResumeHistoryMessages(turns []map[string]any, targetToolCall
 			if toolName == "" {
 				continue
 			}
-			out = append(out, schema.AssistantMessage("", []schema.ToolCall{{
+			callMessage := schema.AssistantMessage("", []schema.ToolCall{{
 				ID:   toolCallID,
 				Type: "function",
 				Function: schema.FunctionCall{
 					Name:      toolName,
 					Arguments: `{}`,
 				},
-			}}))
+			}})
+			callMessage.ReasoningContent = toolReasoning[toolCallID]
+			if callMessage.ReasoningContent == "" {
+				// UI persistence may omit the original assistant tool-call envelope.
+				// The nearest preceding assistant reasoning belongs to that orphan
+				// result and must be round-tripped for thinking-mode providers.
+				callMessage.ReasoningContent = lastAssistantReasoning
+			}
+			out = append(out, callMessage)
 			out = append(out, schema.ToolMessage(content, toolCallID, schema.WithToolName(toolName)))
 		case "tool_group":
 			// UI narration only; it is not a provider protocol message.

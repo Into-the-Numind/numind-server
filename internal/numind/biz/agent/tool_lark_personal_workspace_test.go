@@ -124,6 +124,35 @@ type gatedRejectedLarkExecutor struct {
 	release   chan struct{}
 }
 
+type gatedSuccessLarkExecutor struct {
+	mu      sync.Mutex
+	calls   int
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (f *gatedSuccessLarkExecutor) Execute(_ context.Context, _ feishu.ExecuteRequest) (*feishu.OperationResult, error) {
+	f.mu.Lock()
+	f.calls++
+	callNumber := f.calls
+	f.mu.Unlock()
+	if callNumber == 1 {
+		close(f.entered)
+		<-f.release
+	}
+	return &feishu.OperationResult{
+		OperationID: fmt.Sprintf("op-%d", callNumber),
+		State:       model.FeishuOperationSucceeded,
+		Data:        json.RawMessage(`{"ok":true}`),
+	}, nil
+}
+
+func (f *gatedSuccessLarkExecutor) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
 func (f *gatedRejectedLarkExecutor) Execute(_ context.Context, _ feishu.ExecuteRequest) (*feishu.OperationResult, error) {
 	f.mu.Lock()
 	f.calls++
@@ -1123,6 +1152,58 @@ func TestLarkPersonalWorkspace_ExecuteCorrectionBudgetIsConcurrentAndResetsAfter
 		assert.NotContains(t, string(result), "已停止后续飞书命令")
 		assert.Len(t, executor.snapshot(), 3)
 	})
+}
+
+func TestLarkPersonalWorkspace_ParallelCommandIsRecoverableAndDoesNotConsumeRetryBudget(t *testing.T) {
+	const runID = uint64(811)
+	larkExecuteRetryClearRun(runID)
+	t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+	executor := &gatedSuccessLarkExecutor{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	tool := &larkExecuteTool{executor: executor}
+
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		result, err := tool.Execute(
+			larkPersonalWorkspaceContext(1, runID, "base-get"),
+			ToolInput(`{"argv":["base","+base-get","base-token"]}`),
+		)
+		assert.NoError(t, err)
+		assert.Contains(t, string(result), `"ok":true`)
+	}()
+
+	select {
+	case <-executor.entered:
+	case <-time.After(time.Second):
+		t.Fatal("the first lark_execute call did not enter the executor")
+	}
+
+	blocked, err := tool.Execute(
+		larkPersonalWorkspaceContext(1, runID, "table-list"),
+		ToolInput(`{"argv":["base","+table-list","base-token"]}`),
+	)
+	require.NoError(t, err)
+	require.Contains(t, string(blocked), `"code":"command_in_flight"`)
+	require.Contains(t, string(blocked), `"recoverable":true`)
+	assert.Equal(t, 1, executor.callCount(), "parallel call must wait outside the executor")
+
+	close(executor.release)
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("the first lark_execute call did not finish after release")
+	}
+
+	next, err := tool.Execute(
+		larkPersonalWorkspaceContext(1, runID, "table-list-after-base-get"),
+		ToolInput(`{"argv":["base","+table-list","base-token"]}`),
+	)
+	require.NoError(t, err)
+	require.Contains(t, string(next), `"ok":true`)
+	assert.Equal(t, 2, executor.callCount(), "the blocked parallel call must not consume the correction budget or lock the run")
 }
 
 func TestLarkPersonalWorkspace_ExecuteTerminalStatesNeverFakeSuccess(t *testing.T) {
