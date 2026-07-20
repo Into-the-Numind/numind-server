@@ -220,18 +220,20 @@ func TestReadArtifact_LimitZeroDefaultsTo16K(t *testing.T) {
 }
 
 // TestReadArtifact_UUIDNotFound — case 5
-// 传一个不存在的 UUID → 返回 error（spec §设计要点边界："artifact not found"）。
+// 传一个不存在的 UUID → 返回 model-visible not_found，不把整个 Agent run
+// 升级成 model_error。
 func TestReadArtifact_UUIDNotFound(t *testing.T) {
 	s := newTestArtifactStore(t)
 	dataDir := t.TempDir()
 	rs := &fakeRunStore{runs: map[uint64]*model.AgentRun{}}
 
 	tool := NewReadArtifactTool(s, rs, dataDir, userIDExtractor(42, true))
-	_, err := tool.InvokableRun(context.Background(),
+	result, err := tool.InvokableRun(context.Background(),
 		`{"artifact_id":"non-existent-uuid"}`)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not found",
-		"未知 UUID 应当返回 'not found' error 让 LLM 知道引用失效")
+	require.NoError(t, err)
+	output := parseOutput(t, result)
+	assert.Equal(t, "not_found", output.Note)
+	assert.Contains(t, output.Content, "Retry this exact read once")
 }
 
 // TestReadArtifact_TransientVisibilityMissIsRecoverable reproduces Dev run
@@ -260,7 +262,7 @@ func TestReadArtifact_TransientVisibilityMissIsRecoverable(t *testing.T) {
 	require.NoError(t, err, "transient artifact visibility miss must not terminate the Agent run")
 	firstOutput := parseOutput(t, first)
 	assert.Equal(t, "not_found", firstOutput.Note)
-	assert.Empty(t, firstOutput.Content)
+	assert.Contains(t, firstOutput.Content, "Retry this exact read once")
 
 	second, err := tool.InvokableRun(context.Background(), args)
 	require.NoError(t, err)

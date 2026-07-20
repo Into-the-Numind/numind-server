@@ -108,9 +108,10 @@ func (t *ReadArtifactTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 //
 // 错误返回策略（important — 决定 LLM 上下文 vs reAct 错误处理）：
 //   - 输入 JSON 无效 / artifact_id 缺失 → 返回 error（reAct 视为工具失败，让 LLM 改）
-//   - artifact 不存在 → 返回 error（同上）
+//   - artifact 暂时/永久不存在 → 返回**正常 output**（note=not_found），允许模型至多重试一次；
+//     Eino 会把普通 tool error 升级成整个 run 的 model_error，因此这里不能返回 Go error
 //   - artifact 过期 / 跨用户 / 磁盘丢失 → 返回**正常 output**（content 字段是说明文本）
-//     这是为了让 LLM 把它当成正常 tool result 上下文里有"为什么读不到"，而不是被 reAct 当错误重试。
+//     这是为了让 LLM 把它当成正常 tool result 上下文里有"为什么读不到"，而不是终止整个 run。
 func (t *ReadArtifactTool) InvokableRun(ctx context.Context, args string, _ ...einotool.Option) (string, error) {
 	var in ReadArtifactInput
 	if err := json.Unmarshal([]byte(args), &in); err != nil {
@@ -127,7 +128,10 @@ func (t *ReadArtifactTool) InvokableRun(ctx context.Context, args string, _ ...e
 	art, err := t.store.Get(ctx, in.ArtifactID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "", fmt.Errorf("read_tool_artifact: artifact not found (uuid=%s)", in.ArtifactID)
+			return marshalReadOutput(ReadArtifactOutput{
+				Content: "[Artifact is not available yet. Retry this exact read once; if it remains unavailable, continue from the persisted-output preview without assuming unseen content.]",
+				Note:    "not_found",
+			}), nil
 		}
 		return "", fmt.Errorf("read_tool_artifact: store.Get failed: %w", err)
 	}
