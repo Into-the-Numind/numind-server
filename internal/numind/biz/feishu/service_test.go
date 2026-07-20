@@ -1193,7 +1193,7 @@ func TestWorkspaceLifecycleResumeUserCompletedRequiresRecoverableWait(t *testing
 	require.Zero(t, dispatcher.calls, "an arbitrary operation must not be resumed by a browser acknowledgement")
 }
 
-func TestWorkspaceLifecycleResumeStaleAuthorizationAcknowledgementRecoversLegacyConfirmation(t *testing.T) {
+func TestWorkspaceLifecycleResumeLegacyConfirmationWithoutSessionFailsClosed(t *testing.T) {
 	op := &model.FeishuOperation{
 		ID: "op-legacy-confirmation", UserID: 7, Generation: 2,
 		State: model.FeishuOperationWaitingConfirmation, AgentRunID: 81, ToolCallID: "tool-legacy-confirmation",
@@ -1204,9 +1204,9 @@ func TestWorkspaceLifecycleResumeStaleAuthorizationAcknowledgementRecoversLegacy
 
 	result, err := resumeCurrentForTest(context.Background(), 7, op.ID, svc, ResumeActionUserCompleted)
 
-	require.NoError(t, err)
-	require.Equal(t, &OperationResult{OperationID: op.ID, State: model.FeishuOperationWaitingConfirmation}, result)
-	require.Equal(t, 1, dispatcher.calls, "the server state must override the stale card phase")
+	require.ErrorIs(t, err, ErrWorkspaceLifecycleUnavailable)
+	require.Nil(t, result)
+	require.Zero(t, dispatcher.calls, "an unfenced legacy card must never resume an operation")
 	require.Zero(t, operations.confirmed, "the browser acknowledgement must not reconstruct command input")
 }
 

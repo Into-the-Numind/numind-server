@@ -344,8 +344,13 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 	if operation == nil || operation.UserID != userID || operation.Generation != account.Generation {
 		return nil, ErrWorkspaceLifecycleNotFound
 	}
-	if currentSessionID, waiting := lifecycleOperationSessionID(operation); waiting && strings.TrimSpace(sessionID) != currentSessionID {
-		return lifecycleCurrentOperationObservation(operation)
+	if currentSessionID, waiting := lifecycleOperationSessionID(operation); waiting {
+		if strings.TrimSpace(currentSessionID) == "" {
+			return nil, ErrWorkspaceLifecycleUnavailable
+		}
+		if strings.TrimSpace(sessionID) != currentSessionID {
+			return lifecycleCurrentOperationObservation(operation)
+		}
 	}
 
 	switch action {
@@ -1408,9 +1413,6 @@ func lifecycleOperationSessionID(source *model.FeishuOperation) (string, bool) {
 	}
 	summary, err := decodeOperationSummary(source.ResultSummaryJSON)
 	if err != nil || summary.Status != source.State || strings.TrimSpace(summary.SessionID) == "" {
-		if source.State == model.FeishuOperationWaitingConfirmation {
-			return "", false
-		}
 		return "", true
 	}
 	return summary.SessionID, true
