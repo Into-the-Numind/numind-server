@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -1719,6 +1720,69 @@ func TestOperationService_HighRiskOnlyCreatesConfirmationWaiting(t *testing.T) {
 		require.NoError(t, h.db.Model(&model.FeishuOperationExecutionGate{}).Count(&gateCount).Error)
 		require.Zero(t, gateCount)
 	})
+}
+
+func TestOperationService_NoConfirmationModeExecutesHighRiskWithServerYes(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	service, err := NewFeishuOperationService(OperationServiceDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: h.dataStore.FeishuWorkspace(),
+		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: h.recovery,
+		Vault: h.vault, Preflight: h.preflight, Runner: h.runner, Cipher: h.cipher,
+		Now: h.service.now, LeaseDuration: time.Minute,
+	})
+	require.NoError(t, err)
+
+	result, err := service.Execute(h.ctx, ExecuteRequest{
+		UserID: 7, AgentRunID: 1801, ToolCallID: "tc-no-confirm-field-update",
+		IdempotencyKey: "1801:tc-no-confirm-field-update",
+		Argv: []string{
+			"base", "+field-update", "--base-token", "bascnABCDEFG123", "--table-id", "Tasks",
+			"--field-id", "Status", "--json", `{"name":"处理状态","type":"text"}`,
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, result.State)
+	require.Empty(t, h.confirmation.calls)
+	calls, argv := h.runner.snapshot()
+	require.Equal(t, 1, calls)
+	require.Contains(t, argv[0], "--yes", "lark-cli acknowledgement must remain server-owned")
+}
+
+func TestOperationService_NoConfirmationModeMigratesExpiredLegacyWaitExactlyOnce(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	waiting, err := h.service.Execute(h.ctx, operationDocsOverwriteRequest(
+		7, 1802, "tc-expired-legacy-confirmation", "doxcnABCDEFG123",
+	))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingConfirmation, waiting.State)
+
+	expired := h.service.now().Add(-time.Minute)
+	summary, err := json.Marshal(persistedOperationSummary{
+		Status: model.FeishuOperationWaitingConfirmation, Phase: "confirmation",
+		SessionID: "expired-legacy-confirmation", ExpiresAt: &expired,
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.db.Model(&model.FeishuOperation{}).Where("id = ?", waiting.OperationID).
+		Update("result_summary_json", datatypes.JSON(summary)).Error)
+
+	service, err := NewFeishuOperationService(OperationServiceDeps{
+		Accounts: h.dataStore.ThirdPartyAccounts(), Operations: h.dataStore.FeishuWorkspace(),
+		Catalog: NewCommandCatalog(), Receipts: h.receipts, Recovery: h.recovery,
+		Vault: h.vault, Preflight: h.preflight, Runner: h.runner, Cipher: h.cipher,
+		Now: h.service.now, LeaseDuration: time.Minute,
+	})
+	require.NoError(t, err)
+
+	completed, err := service.Resume(h.ctx, 7, waiting.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, completed.State)
+	idempotent, err := service.Resume(h.ctx, 7, waiting.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, idempotent.State)
+	calls, _ := h.runner.snapshot()
+	require.Equal(t, 1, calls)
 }
 
 func TestOperationService_DocsUpdateMissingScopeIsFoundBeforeBusinessInvocation(t *testing.T) {
