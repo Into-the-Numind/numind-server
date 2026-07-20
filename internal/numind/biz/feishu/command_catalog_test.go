@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -23,12 +24,14 @@ func TestCommandCatalog_AllowedPathsAndExactContracts(t *testing.T) {
 		risk   RiskLevel
 		scopes []string
 		replay bool
+		local  bool
 	}{
 		{name: "docs create", argv: []string{"docs", "+create", "--title", "Sales report"}, path: "docs +create", domain: "docs", risk: RiskWrite, scopes: []string{"docx:document:create"}},
 		{name: "docs fetch", argv: []string{"docs", "+fetch", "--doc", "doxcnABCDEFG123"}, path: "docs +fetch", domain: "docs", risk: RiskRead, scopes: []string{"docx:document:readonly"}, replay: true},
 		{name: "docs update", argv: []string{"docs", "+update", "--doc", "doxcnABCDEFG123", "--command", "append", "--content", "hello"}, path: "docs +update", domain: "docs", risk: RiskWrite, scopes: []string{"docx:document:write_only", "docx:document:readonly"}},
 
 		{name: "base create", argv: []string{"base", "+base-create", "--name", "Pipeline"}, path: "base +base-create", domain: "base", risk: RiskWrite, scopes: []string{"base:app:create", "base:table:read", "base:table:create", "base:table:update", "base:table:delete"}},
+		{name: "base url resolve", argv: []string{"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh"}, path: "base +url-resolve", domain: "base", risk: RiskRead, replay: true, local: true},
 		{name: "base get", argv: []string{"base", "+base-get", "--base-token", "bascnABCDEFG123"}, path: "base +base-get", domain: "base", risk: RiskRead, scopes: []string{"base:app:read"}, replay: true},
 		{name: "table list", argv: []string{"base", "+table-list", "--base-token", "bascnABCDEFG123"}, path: "base +table-list", domain: "base", risk: RiskRead, scopes: []string{"base:table:read"}, replay: true},
 		{name: "table get", argv: []string{"base", "+table-get", "--base-token", "bascnABCDEFG123", "--table-id", "tblABCDEFG123"}, path: "base +table-get", domain: "base", risk: RiskRead, scopes: []string{"base:table:read"}, replay: true},
@@ -67,10 +70,97 @@ func TestCommandCatalog_AllowedPathsAndExactContracts(t *testing.T) {
 			require.Equal(t, tt.risk, got.Risk)
 			require.Equal(t, tt.scopes, got.Scopes)
 			require.Equal(t, tt.replay, got.ReplaySafeOnAuthError)
+			require.Equal(t, tt.local, got.LocalOnly)
 			require.Equal(t, tt.path == "base +field-update", got.RequiresCLIYes)
 			require.Equal(t, []string{"--format", "json", "--as", "user"}, got.Argv[len(got.Argv)-4:])
 			require.Nil(t, got.StdinJSON)
 		})
+	}
+}
+
+// Customer regression (Dev run 246): the official lark-base skill requires
+// +url-resolve for a full Base URL, but the hosted catalog rejected it before
+// the local, read-only resolver could run.
+func TestCommandCatalog_BaseURLResolveIsLocalReadOnlyAndStrict(t *testing.T) {
+	t.Parallel()
+
+	const baseURL = "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh?table=tblABCDEFG123"
+	got, err := NewCommandCatalog().Normalize([]string{"base", "+url-resolve", "--url", baseURL}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, RiskRead, got.Risk)
+	assert.Empty(t, got.Scopes, "local URL parsing must not request Feishu scopes")
+	assert.True(t, got.ReplaySafeOnAuthError)
+	assert.True(t, got.LocalOnly)
+	assert.Equal(t, []string{"base", "+url-resolve", "--url", baseURL, "--format", "json", "--as", "user"}, got.Argv)
+
+	for _, argv := range [][]string{
+		{"base", "+url-resolve", "--url", "ZiXObjsGvahtyAscDJ1cjlRnnLh"},
+		{"base", "+url-resolve", "--url", "http://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh"},
+		{"base", "+url-resolve", "--url", "https://evil.example/base/ZiXObjsGvahtyAscDJ1cjlRnnLh"},
+		{"base", "+url-resolve", "--url", "https://user@scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh"},
+		{"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn:443/base/ZiXObjsGvahtyAscDJ1cjlRnnLh"},
+		{"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/docx/ZiXObjsGvahtyAscDJ1cjlRnnLh"},
+		{"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/wiki/ZiXObjsGvahtyAscDJ1cjlRnnLh"},
+		{"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh?table=not-a-table"},
+		{"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh?table=tblABCDEFG123&table=tblHIJKLMN123"},
+		{"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh?record=not-a-record"},
+		{"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh?record=recABCDEFG123&record=recHIJKLMN123"},
+		{"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh", "--dry-run"},
+	} {
+		_, err := NewCommandCatalog().Normalize(argv, nil)
+		require.Error(t, err, "%v", argv)
+	}
+}
+
+func TestCommandCatalog_LocalBaseURLResolveMatchesOfficialDataContract(t *testing.T) {
+	t.Parallel()
+
+	got, err := NewCommandCatalog().resolveLocal([]string{
+		"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh?table=tblABCDEFG123&view=vewABCDEFG123&record=recABCDEFG123",
+		"--format", "json", "--as", "user",
+	})
+	require.NoError(t, err)
+	require.JSONEq(t, `{
+		"base_token":"ZiXObjsGvahtyAscDJ1cjlRnnLh",
+		"hint":{"next_step":"use +record-list to list records in the resolved table"},
+		"input_type":"base_url",
+		"resource_type":"bitable",
+		"table_id":"tblABCDEFG123",
+		"view_id":"vewABCDEFG123",
+		"record_id":"recABCDEFG123"
+	}`, string(got))
+
+	baseOnly, err := NewCommandCatalog().resolveLocal([]string{
+		"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh",
+	})
+	require.NoError(t, err)
+	require.JSONEq(t, `{
+		"base_token":"ZiXObjsGvahtyAscDJ1cjlRnnLh",
+		"hint":{"next_step":"use +table-list to list tables in the resolved Base"},
+		"input_type":"base_url",
+		"resource_type":"bitable"
+	}`, string(baseOnly))
+	assert.NotContains(t, string(baseOnly), "+base-block-list", "local guidance must only reference hosted commands")
+
+	_, err = NewCommandCatalog().resolveLocal([]string{"docs", "+fetch", "--doc", "doxcnABCDEFG123"})
+	require.ErrorIs(t, err, ErrCommandDenied)
+}
+
+func TestHostedCommandContract_UsesCatalogAsSingleSourceOfTruth(t *testing.T) {
+	t.Parallel()
+
+	contract := HostedCommandContract("lark-base")
+	assert.Contains(t, contract, "精确清单")
+	assert.Contains(t, contract, "base +url-resolve")
+	assert.Contains(t, contract, "base +field-update")
+	assert.NotContains(t, contract, "base +record-delete")
+	assert.NotContains(t, contract, "docs +fetch")
+
+	manifest := NewCommandCatalog().manifest()
+	for _, entry := range manifest.Commands {
+		if entry.Domain == "base" {
+			assert.Contains(t, contract, entry.Path)
+		}
 	}
 }
 

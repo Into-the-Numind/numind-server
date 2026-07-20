@@ -328,6 +328,20 @@
       ]
     },
     {
+      "path": "base +url-resolve",
+      "domain": "base",
+      "scopes": null,
+      "risk": "read",
+      "local_only": true,
+      "requires_cli_yes": false,
+      "limits": {
+        "stdout_bytes": 4194304
+      },
+      "allowed_flags": [
+        "--url"
+      ]
+    },
+    {
       "path": "base +view-get",
       "domain": "base",
       "scopes": [

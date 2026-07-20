@@ -71,7 +71,9 @@ const larkHostedExecutionPolicy = "有数托管规则（优先于下方针对本
 	"精确匹配优先使用结果的原始 title；若只能使用 title_highlighted，先剥离 <h>/<hb> 高亮标签再比较。唯一精确匹配时按结果类型和 URL 路由到 Docs/Base/Wiki；" +
 	"结果 URL 是 /wiki/ 时，先用 shared+wiki 执行 wiki +node-get --node-token <URL>，再按 obj_type/obj_token 路由：仅 docx 可换 shared+doc 后 docs fetch、bitable 可换 shared+base 后 base 读取；其余 obj_type（doc、sheet、mindnote、slides、file）本期不支持。" +
 	"非 wiki 结果随后读取目标业务技能：docx 用 lark-doc，bitable 用 lark-base。技能读取只提供命令说明；身份、权限与恢复由平台负责。" +
-	"多个精确匹配时列出候选让用户选择；没有精确匹配时说明未找到并请求链接，不要猜测 token，也不要说成连接未就绪。" +
+	"多个精确匹配时列出候选让用户选择，每个编号候选必须保留标题、类型和完整原始 URL，不得只展示 token 后缀；用户随后按编号选择时必须使用对话中保留的完整 URL。如果当前上下文只剩 token 后缀，必须重新执行相同的受限搜索恢复完整 URL，禁止猜测或拼接地址。" +
+	"没有精确匹配时说明未找到并请求链接，不要猜测 token，也不要说成连接未就绪。" +
+	"lark_execute 必须串行：一次只调用一个并等待结构化结果后再决定下一步，禁止在同一轮并发调用或在前一个结果返回前重复同一命令。" +
 	"官方命令中的固定 --as user 与 --format json 可以保留，平台会安全规范化。" +
 	"policy_rejected 或 validation 只可修正业务命令一次；not_found 或 resource_denied 应向用户确认资源，不要自动重试；unknown_result 必须立即停止，禁止换参数重复写入。" +
 	"rate_limited/temporary 仅在结构化结果 retryable=true 时最多重试一次；不要改跑本地初始化命令。"
@@ -124,11 +126,12 @@ func (t *larkSkillReadTool) Execute(ctx context.Context, input ToolInput) (ToolR
 		}
 
 		_, _ = content.WriteString(page.Content)
+		hostedPolicy := larkHostedExecutionPolicy + feishu.HostedCommandContract(resultSkill)
 		output, marshalErr := json.Marshal(larkSkillReadOutput{
 			OK:           true,
 			Skill:        resultSkill,
 			Path:         resultPath,
-			HostedPolicy: larkHostedExecutionPolicy,
+			HostedPolicy: hostedPolicy,
 			Content:      content.String(),
 			References:   append([]string(nil), resultReferences...),
 			CLIVersion:   feishu.LarkCLIVersion,

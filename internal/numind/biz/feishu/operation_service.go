@@ -278,6 +278,7 @@ type persistedOperationRequest struct {
 	Domain                  string          `json:"domain"`
 	Action                  string          `json:"action"`
 	Risk                    RiskLevel       `json:"risk"`
+	LocalOnly               bool            `json:"local_only,omitempty"`
 	RequiresCLIYes          bool            `json:"requires_cli_yes"`
 	ReplaySafeOnAuthError   bool            `json:"replay_safe_on_auth_error"`
 	Scopes                  []string        `json:"scopes"`
@@ -1030,7 +1031,7 @@ func (s *FeishuOperationService) reclaimExpiredExecution(
 	owner := uuid.NewString()
 	gateHeld := false
 	var gateGuard *executionGateGuard
-	if account.ConnectionState == model.FeishuConnectionConnected && persisted.Risk == RiskRead {
+	if account.ConnectionState == model.FeishuConnectionConnected && persisted.Risk == RiskRead && !persisted.LocalOnly {
 		executionCtx, finishStart, joinedStart, startErr := s.beginExecutionStart(ctx, operation)
 		if startErr != nil {
 			return nil, startErr
@@ -1062,7 +1063,7 @@ func (s *FeishuOperationService) reclaimExpiredExecution(
 			return nil, ErrOperationUnavailable
 		}
 		account = currentAccount
-		if account.ConnectionState != model.FeishuConnectionConnected {
+		if account.ConnectionState != model.FeishuConnectionConnected && !persisted.LocalOnly {
 			gateGuard.stopAndWait()
 			gateGuard = nil
 			s.releaseExecutionGateDetached(ctx, operation, owner)
@@ -1177,7 +1178,7 @@ func (s *FeishuOperationService) claimAndExecute(
 			return nil, ErrOperationUnavailable
 		}
 		account = currentAccount
-		if account.ConnectionState != model.FeishuConnectionConnected {
+		if account.ConnectionState != model.FeishuConnectionConnected && !persisted.LocalOnly {
 			gateGuard.stopAndWait()
 			gateGuard = nil
 			s.releaseExecutionGateDetached(ctx, operation, owner)
@@ -1218,6 +1219,9 @@ func (s *FeishuOperationService) claimAndExecute(
 }
 
 func operationRequiresExecutionGate(account *model.UserThirdPartyAccount, persisted persistedOperationRequest) bool {
+	if persisted.LocalOnly {
+		return false
+	}
 	if account == nil || account.ConnectionState != model.FeishuConnectionConnected {
 		return false
 	}
@@ -1303,7 +1307,7 @@ func (s *FeishuOperationService) executeClaimed(
 	confirmed bool,
 	executionGate *executionGateGuard,
 ) (*OperationResult, error) {
-	if account.ConnectionState != model.FeishuConnectionConnected {
+	if account.ConnectionState != model.FeishuConnectionConnected && !persisted.LocalOnly {
 		kind := RecoveryCreateApp
 		waitingState := model.FeishuOperationWaitingConnection
 		publicCode := PublicCodeConnectionRequired
@@ -1314,6 +1318,13 @@ func (s *FeishuOperationService) executeClaimed(
 			publicCode = PublicCodeReauthRequired
 		}
 		return s.startRecoveryAndWait(ctx, operation, leaseOwner, persisted, kind, persisted.Scopes, waitingState, priorRecoverySignature, publicCode, "")
+	}
+	if persisted.LocalOnly {
+		data, err := s.catalog.resolveLocal(persisted.Argv)
+		if err != nil {
+			return s.commitTerminal(ctx, operation, leaseOwner, model.FeishuOperationFailed, PublicCodeFailed, nil, false)
+		}
+		return s.commitTerminal(ctx, operation, leaseOwner, model.FeishuOperationSucceeded, "", data, false)
 	}
 	if writeLikeRisk(persisted.Risk) {
 		check, err := s.checkScopesBeforeWrite(ctx, operation, persisted, executionGate)
@@ -1782,6 +1793,9 @@ func (s *FeishuOperationService) capabilityOutcome(
 	if s == nil || operation == nil || !supportedCapabilityDomain(operation.Domain) {
 		return nil
 	}
+	if spec, ok := s.catalog.specs[operation.CommandPath]; ok && spec.localOnly {
+		return nil
+	}
 	state := ""
 	switch {
 	case operationState == model.FeishuOperationSucceeded:
@@ -1905,6 +1919,10 @@ func (s *FeishuOperationService) openPersistedRequest(operation *model.FeishuOpe
 		!validPersistedCreateProof(persisted) {
 		return persistedOperationRequest{}, ErrOperationIntegrity
 	}
+	spec, cataloged := s.catalog.specs[persisted.CommandPath]
+	if !cataloged || persisted.LocalOnly != spec.localOnly {
+		return persistedOperationRequest{}, ErrOperationIntegrity
+	}
 	persisted.Argv = append([]string(nil), persisted.Argv...)
 	persisted.Scopes = append([]string(nil), persisted.Scopes...)
 	persisted.StdinJSON = append(json.RawMessage(nil), persisted.StdinJSON...)
@@ -1973,7 +1991,7 @@ func persistedRequestFromNormalized(request ExecuteRequest, normalized *Normaliz
 	return persistedOperationRequest{
 		AgentRunID: request.AgentRunID, ToolCallID: request.ToolCallID, IdempotencyKey: request.IdempotencyKey,
 		CommandPath: normalized.Path, Domain: normalized.Domain, Action: normalized.Action, Risk: normalized.Risk,
-		RequiresCLIYes: normalized.RequiresCLIYes, ReplaySafeOnAuthError: normalized.ReplaySafeOnAuthError,
+		LocalOnly: normalized.LocalOnly, RequiresCLIYes: normalized.RequiresCLIYes, ReplaySafeOnAuthError: normalized.ReplaySafeOnAuthError,
 		Scopes: append([]string(nil), normalized.Scopes...), Argv: append([]string(nil), normalized.Argv...),
 		StdinJSON: append(json.RawMessage(nil), normalized.StdinJSON...),
 	}

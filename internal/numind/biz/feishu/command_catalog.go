@@ -75,10 +75,13 @@ const (
 // operation layer. Argv contains no binary path and always ends in JSON output
 // plus the platform-owned user identity.
 type NormalizedCommand struct {
-	Path           string
-	Domain         string
-	Action         string
-	Risk           RiskLevel
+	Path   string
+	Domain string
+	Action string
+	Risk   RiskLevel
+	// LocalOnly is true only for catalog-proven commands that never access the
+	// Feishu API and therefore do not require a connected personal workspace.
+	LocalOnly      bool
 	RequiresCLIYes bool
 	Scopes         []string
 	Argv           []string
@@ -153,6 +156,7 @@ type commandSpec struct {
 	domain         string
 	action         string
 	risk           RiskLevel
+	localOnly      bool
 	requiresCLIYes bool
 	scopes         []string
 	flags          map[string]flagRule
@@ -233,6 +237,7 @@ func (c *CommandCatalog) Normalize(argv []string, stdinJSON []byte) (*Normalized
 		Domain:                spec.domain,
 		Action:                spec.action,
 		Risk:                  risk,
+		LocalOnly:             spec.localOnly,
 		RequiresCLIYes:        spec.requiresCLIYes,
 		Scopes:                append([]string(nil), spec.scopes...),
 		Argv:                  normalizedArgv,
@@ -486,6 +491,7 @@ func validateDocsUpdate(p *parsedFlags) (RiskLevel, error) {
 
 func (c *CommandCatalog) addBaseSpecs() {
 	baseToken := valueRule(normalizeSupportedRef("base-token", map[string]bool{"base": true, "bitable": true}, true))
+	baseURL := valueRule(normalizeBaseURL)
 	idOrName := valueRule(normalizeIDOrName)
 	recordID := valueRule(normalizePrefixedID("record-id", "rec"))
 	jsonPayload := valueRule(normalizeJSON("JSON", CommandCatalogMaxJSONBytes))
@@ -520,6 +526,9 @@ func (c *CommandCatalog) addBaseSpecs() {
 		},
 	})
 
+	urlResolve := simpleBaseSpec("base +url-resolve", "url-resolve", RiskRead, nil, map[string]flagRule{"url": baseURL}, []string{"url"})
+	urlResolve.localOnly = true
+	c.register(urlResolve)
 	c.register(simpleBaseSpec("base +base-get", "base-get", RiskRead, baseScopes["base +base-get"], map[string]flagRule{"base-token": baseToken}, []string{"base-token"}))
 	c.register(simpleBaseListSpec("base +table-list", "table-list", baseScopes["base +table-list"], map[string]flagRule{"base-token": baseToken, "limit": readLimit, "offset": offset}, []string{"base-token"}))
 	c.register(simpleBaseSpec("base +table-get", "table-get", RiskRead, baseScopes["base +table-get"], map[string]flagRule{"base-token": baseToken, "table-id": idOrName}, []string{"base-token", "table-id"}))
@@ -969,6 +978,7 @@ type catalogManifestEntry struct {
 	Domain         string         `json:"domain"`
 	Scopes         []string       `json:"scopes"`
 	Risk           RiskLevel      `json:"risk"`
+	LocalOnly      bool           `json:"local_only,omitempty"`
 	RequiresCLIYes bool           `json:"requires_cli_yes"`
 	Limits         map[string]int `json:"limits"`
 	AllowedFlags   []string       `json:"allowed_flags"`
@@ -988,7 +998,7 @@ func (c *CommandCatalog) manifest() catalogManifest {
 		}
 		entries = append(entries, catalogManifestEntry{
 			Path: spec.path, Domain: spec.domain, Scopes: append([]string(nil), spec.scopes...),
-			Risk: spec.risk, RequiresCLIYes: spec.requiresCLIYes, Limits: limits, AllowedFlags: flags,
+			Risk: spec.risk, LocalOnly: spec.localOnly, RequiresCLIYes: spec.requiresCLIYes, Limits: limits, AllowedFlags: flags,
 		})
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
@@ -1002,6 +1012,96 @@ func (c *CommandCatalog) manifest() catalogManifest {
 		},
 		Commands: entries,
 	}
+}
+
+// HostedCommandContract returns the exact command paths and flags that the
+// hosted Agent may execute for one embedded official skill. It is generated
+// from the same catalog used at execution time so skill guidance cannot drift
+// into documenting commands the platform will reject.
+func HostedCommandContract(skill string) string {
+	domain := map[string]string{
+		"lark-doc":   "docs",
+		"lark-base":  "base",
+		"lark-wiki":  "wiki",
+		"lark-drive": SkillDomainDrive,
+	}[skill]
+	includeAll := skill == "lark-shared"
+	if domain == "" && !includeAll {
+		return ""
+	}
+
+	entries := NewCommandCatalog().manifest().Commands
+	lines := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !includeAll && entry.Domain != domain {
+			continue
+		}
+		line := entry.Path
+		if len(entry.AllowedFlags) > 0 {
+			line += " 可用参数：" + strings.Join(entry.AllowedFlags, ",")
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "有数当前实际可执行命令（精确清单；官方技能中出现但未列出的命令或参数不可执行）：" + strings.Join(lines, "；") + "。"
+}
+
+type localBaseURLResult struct {
+	BaseToken string `json:"base_token"`
+	Hint      struct {
+		NextStep string `json:"next_step"`
+	} `json:"hint"`
+	InputType    string `json:"input_type"`
+	ResourceType string `json:"resource_type"`
+	TableID      string `json:"table_id,omitempty"`
+	ViewID       string `json:"view_id,omitempty"`
+	RecordID     string `json:"record_id,omitempty"`
+}
+
+func (c *CommandCatalog) resolveLocal(argv []string) (json.RawMessage, error) {
+	normalized, err := c.Normalize(append([]string(nil), argv...), nil)
+	if err != nil || !normalized.LocalOnly || normalized.Path != "base +url-resolve" {
+		return nil, ErrCommandDenied
+	}
+	var rawURL string
+	for index := 2; index+1 < len(normalized.Argv); index++ {
+		if normalized.Argv[index] == "--url" {
+			rawURL = normalized.Argv[index+1]
+			break
+		}
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, ErrCommandInvalidArgument
+	}
+	parts := strings.Split(strings.TrimPrefix(parsed.EscapedPath(), "/"), "/")
+	if len(parts) != 2 {
+		return nil, ErrCommandInvalidArgument
+	}
+	token, err := url.PathUnescape(parts[1])
+	if err != nil {
+		return nil, ErrCommandInvalidArgument
+	}
+	query, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil {
+		return nil, ErrCommandInvalidArgument
+	}
+	result := localBaseURLResult{
+		BaseToken: token, InputType: "base_url", ResourceType: "bitable",
+		TableID: query.Get("table"), ViewID: query.Get("view"), RecordID: query.Get("record"),
+	}
+	if result.TableID == "" {
+		result.Hint.NextStep = "use +table-list to list tables in the resolved Base"
+	} else {
+		result.Hint.NextStep = "use +record-list to list records in the resolved table"
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return nil, ErrCommandInvalidArgument
+	}
+	return encoded, nil
 }
 
 func valueRule(normalize func(string) (string, error)) flagRule {
@@ -1236,6 +1336,56 @@ func normalizeSupportedRef(label string, allowedKinds map[string]bool, extractTo
 		}
 		return value, nil
 	}
+}
+
+func normalizeSupportedURL(label string, allowedKinds map[string]bool) func(string) (string, error) {
+	normalize := normalizeSupportedRef(label, allowedKinds, false)
+	return func(value string) (string, error) {
+		if !strings.Contains(value, "://") {
+			return "", invalidf("%s must be a complete URL", label)
+		}
+		return normalize(value)
+	}
+}
+
+func normalizeBaseURL(value string) (string, error) {
+	normalized, err := normalizeSupportedURL("base URL", map[string]bool{"base": true, "bitable": true})(value)
+	if err != nil {
+		return "", err
+	}
+	parsed, err := url.Parse(normalized)
+	if err != nil {
+		return "", invalidf("base URL is invalid")
+	}
+	query, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil {
+		return "", invalidf("base URL query is invalid")
+	}
+	if values, exists := query["table"]; exists {
+		if len(values) != 1 {
+			return "", invalidf("base URL table is ambiguous")
+		}
+		if _, err := normalizePrefixedID("table-id", "tbl")(values[0]); err != nil {
+			return "", err
+		}
+	}
+	if values, exists := query["view"]; exists {
+		if len(values) != 1 {
+			return "", invalidf("base URL view is ambiguous")
+		}
+		if _, err := normalizeOpaqueToken("view-id")(values[0]); err != nil {
+			return "", err
+		}
+	}
+	if values, exists := query["record"]; exists {
+		if len(values) != 1 {
+			return "", invalidf("base URL record is ambiguous")
+		}
+		if _, err := normalizePrefixedID("record-id", "rec")(values[0]); err != nil {
+			return "", err
+		}
+	}
+	return normalized, nil
 }
 
 func supportedFeishuHost(host string) bool {
