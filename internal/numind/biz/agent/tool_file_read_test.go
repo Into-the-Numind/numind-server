@@ -15,8 +15,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"numind-server/internal/numind/biz/agent/attachment"
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/middleware"
+	"numind-server/internal/pkg/model"
 )
 
 // ─── mock fileParser ────────────────────────────────────────────────────────
@@ -26,6 +28,7 @@ type mockFileParser struct {
 	pageCount int
 	truncated bool
 	err       error
+	calls     int
 }
 
 func TestFileRead_LangfuseContainsOnlySafePaginationMetadata(t *testing.T) {
@@ -117,6 +120,7 @@ func TestFileReadTool_Execute_RejectsUnmanagedURLBeforeNetwork(t *testing.T) {
 }
 
 func (m *mockFileParser) Parse(_ context.Context, _, _ string) (string, int, bool, error) {
+	m.calls++
 	return m.content, m.pageCount, m.truncated, m.err
 }
 
@@ -176,6 +180,107 @@ func TestFileReadTool_Execute_HappyPDF(t *testing.T) {
 	}
 	if out.Truncated {
 		t.Error("expected truncated=false")
+	}
+}
+
+func TestFileReadTool_AttachmentIDPagesCanonicalCacheWithoutNetworkOrParser(t *testing.T) {
+	content := strings.Repeat("中文A", 64)
+	sum := sha256.Sum256([]byte(content))
+	att := &model.AgentAttachment{
+		ID: 901, UserID: 123,
+		URL:      "https://bucket.cos.ap-chengdu.myqcloud.com/agent-attachments/123/customer.md",
+		Filename: "customer.md", MimeType: "text/markdown", Size: 1234,
+		Modality: attachment.ModalityText, FallbackReady: true,
+		ParsedContent: &content, ParsedContentSHA256: fmt.Sprintf("sha256:%x", sum),
+		ParsedContentByteSize: int64(len(content)),
+	}
+	store := newStubStore(att)
+	parser := &mockFileParser{content: "must not parse"}
+	headCalled := false
+	tool := &fileReadTool{
+		attachmentStore: store,
+		textParser:      parser,
+		headFn: func(string) (*http.Response, error) {
+			headCalled = true
+			return nil, errors.New("must not HEAD cached attachment")
+		},
+	}
+
+	limit := 17
+	var rebuilt strings.Builder
+	offset := 0
+	readToken := ""
+	for {
+		input, err := json.Marshal(fileReadInput{
+			AttachmentID: att.ID, Offset: &offset, LimitBytes: &limit, ReadToken: readToken,
+		})
+		require.NoError(t, err)
+		result, err := tool.Execute(ctxUser123(), input)
+		require.NoError(t, err)
+		var out fileReadOutput
+		require.NoError(t, json.Unmarshal(result, &out))
+		require.Empty(t, out.Error)
+		rebuilt.WriteString(out.Content)
+		if !out.HasMore {
+			break
+		}
+		offset = out.NextOffset
+		readToken = out.ReadToken
+	}
+
+	assert.Equal(t, content, rebuilt.String())
+	assert.Zero(t, parser.calls)
+	assert.False(t, headCalled)
+}
+
+func TestFileReadTool_LegacyUploadURLResolvesCanonicalCache(t *testing.T) {
+	content := "cached customer profile"
+	att := &model.AgentAttachment{
+		ID: 902, UserID: 123,
+		URL:      "https://bucket.cos.ap-chengdu.myqcloud.com/agent-attachments/123/profile.txt",
+		Filename: "profile.txt", MimeType: "text/plain", Size: int64(len(content)),
+		Modality: attachment.ModalityText, FallbackReady: true, ParsedContent: &content,
+	}
+	store := newStubStore(att)
+	parser := &mockFileParser{content: "must not parse"}
+	headCalled := false
+	tool := &fileReadTool{
+		attachmentStore: store, textParser: parser,
+		headFn: func(string) (*http.Response, error) {
+			headCalled = true
+			return nil, errors.New("must not HEAD cached attachment")
+		},
+	}
+
+	input, _ := json.Marshal(fileReadInput{FileURL: att.URL})
+	result, err := tool.Execute(ctxUser123(), input)
+	require.NoError(t, err)
+	var out fileReadOutput
+	require.NoError(t, json.Unmarshal(result, &out))
+	assert.Equal(t, content, out.Content)
+	assert.Zero(t, parser.calls)
+	assert.False(t, headCalled)
+}
+
+func TestFileReadTool_ManagedCacheStatusAndOwnershipAreSoftErrors(t *testing.T) {
+	parseErr := "secret provider detail"
+	pending := &model.AgentAttachment{ID: 903, UserID: 123, Filename: "pending.docx"}
+	failed := &model.AgentAttachment{ID: 904, UserID: 123, Filename: "failed.docx", FallbackReady: true, FallbackError: &parseErr}
+	tool := &fileReadTool{attachmentStore: newStubStore(pending, failed)}
+
+	for _, tc := range []struct {
+		id   uint64
+		want string
+	}{
+		{pending.ID, "file_processing"},
+		{failed.ID, "parse_failed"},
+		{999999, "file_not_owned_or_missing"},
+	} {
+		input, _ := json.Marshal(fileReadInput{AttachmentID: tc.id})
+		result, err := tool.Execute(ctxUser123(), input)
+		require.NoError(t, err)
+		assert.Contains(t, string(result), tc.want)
+		assert.NotContains(t, string(result), parseErr)
 	}
 }
 
@@ -358,7 +463,7 @@ func TestFileReadTool_Execute_URLFormatInvalid_ReturnsSoftError(t *testing.T) {
 	}
 }
 
-func TestFileReadTool_Execute_EmptyFileURL_ReturnsSoftError(t *testing.T) {
+func TestFileReadTool_Execute_MissingAttachmentReference_ReturnsSoftError(t *testing.T) {
 	tool := &fileReadTool{headFn: http.Head}
 	input, _ := json.Marshal(fileReadInput{FileURL: ""})
 	res, err := tool.Execute(ctxUser123(), ToolInput(input))
@@ -369,8 +474,8 @@ func TestFileReadTool_Execute_EmptyFileURL_ReturnsSoftError(t *testing.T) {
 	if err := json.Unmarshal(res, &out); err != nil {
 		t.Fatalf("invalid json: %v", err)
 	}
-	if out.Content != "ERROR: file_url_required" {
-		t.Errorf("expected soft error about missing file_url, got: %s", out.Content)
+	if out.Content != "ERROR: attachment_reference_required" {
+		t.Errorf("expected soft error about missing attachment reference, got: %s", out.Content)
 	}
 }
 
@@ -680,7 +785,7 @@ func TestFileReadTool_InputSchemaContainsResumableFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	properties := schema["properties"].(map[string]any)
-	for _, field := range []string{"offset", "limit_bytes", "read_token"} {
+	for _, field := range []string{"attachment_id", "offset", "limit_bytes", "read_token"} {
 		if _, ok := properties[field]; !ok {
 			t.Fatalf("InputSchema missing %s", field)
 		}

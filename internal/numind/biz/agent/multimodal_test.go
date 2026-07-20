@@ -84,9 +84,12 @@ func (s *stubAttachmentStore) GetByIDAndUser(_ context.Context, id uint64, userI
 }
 
 func (s *stubAttachmentStore) GetByURLAndUser(_ context.Context, rawURL string, userID uint) (*model.AgentAttachment, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	for _, att := range s.rows {
 		if att.UserID == userID && att.URL == rawURL {
-			return att, nil
+			cp := *att
+			return &cp, nil
 		}
 	}
 	return nil, errors.New("not found")
@@ -119,6 +122,24 @@ func (s *stubAttachmentStore) UpdateFallback(_ context.Context, id uint64, field
 	if v, ok := fields["fallback_error"]; ok {
 		if str, ok := v.(string); ok {
 			att.FallbackError = &str
+		}
+	}
+	if v, ok := fields["parsed_content"]; ok {
+		if str, ok := v.(string); ok {
+			att.ParsedContent = &str
+		}
+	}
+	if v, ok := fields["parsed_content_sha256"]; ok {
+		if str, ok := v.(string); ok {
+			att.ParsedContentSHA256 = str
+		}
+	}
+	if v, ok := fields["parsed_content_byte_size"]; ok {
+		switch n := v.(type) {
+		case int64:
+			att.ParsedContentByteSize = n
+		case int:
+			att.ParsedContentByteSize = int64(n)
 		}
 	}
 	return nil

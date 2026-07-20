@@ -161,7 +161,7 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		NewWebSearchToolFromConfig(),
 		NewWebFetchTool(),
 		NewAskUserQuestionTool(),
-		NewFileReadTool(&documentParserImpl{}, &imageParserImpl{}, &textParserImpl{}),
+		NewFileReadToolWithStore(&documentParserImpl{}, &imageParserImpl{}, &textParserImpl{}, attStore),
 		// V1.5 multimodal vision tools (task 1.4):
 		// RequiresVision=false: these tools internally call a vision specialist model
 		// (qwen3-vl-plus via profile.AttachmentVisionDescribe), so the main LLM does

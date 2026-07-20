@@ -14,17 +14,20 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/middleware"
+	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/util"
 )
 
 // fileReadInput is the JSON input for the file_read tool.
 type fileReadInput struct {
-	FileURL    string `json:"file_url"`
-	Prompt     string `json:"prompt,omitempty"`
-	Offset     *int   `json:"offset,omitempty"`
-	LimitBytes *int   `json:"limit_bytes,omitempty"`
-	ReadToken  string `json:"read_token,omitempty"`
+	AttachmentID uint64 `json:"attachment_id,omitempty"`
+	FileURL      string `json:"file_url"`
+	Prompt       string `json:"prompt,omitempty"`
+	Offset       *int   `json:"offset,omitempty"`
+	LimitBytes   *int   `json:"limit_bytes,omitempty"`
+	ReadToken    string `json:"read_token,omitempty"`
 }
 
 // fileReadOutput is the JSON output returned by the file_read tool.
@@ -57,9 +60,10 @@ type fileParser interface {
 // Parsers are injected at construction (T7 wires defaults via NewFileReadTool).
 type fileReadTool struct {
 	BaseTool
-	documentParser fileParser // application/pdf + office docs (docx/doc/pptx/xlsx/rtf), local parse
-	imageParser    fileParser // image/*  (OCR)
-	textParser     fileParser // text/plain, text/markdown
+	documentParser  fileParser // application/pdf + office docs (docx/doc/pptx/xlsx/rtf), local parse
+	imageParser     fileParser // image/*  (OCR)
+	textParser      fileParser // text/plain, text/markdown
+	attachmentStore store.IAgentAttachmentStore
 	// headFn is the HTTP HEAD function; swapped in tests to avoid network calls.
 	headFn func(url string) (*http.Response, error)
 	// headRequestFn is the production HEAD path. It carries the run context,
@@ -82,12 +86,20 @@ type fileReadTool struct {
 // doc handles application/pdf + office documents (local parse); img handles
 // images via OCR; txt handles plain text / markdown.
 func NewFileReadTool(doc, img, txt fileParser) FullTool {
+	return NewFileReadToolWithStore(doc, img, txt, nil)
+}
+
+// NewFileReadToolWithStore constructs the production file_read. Managed
+// uploads use attStore as the canonical parsed-content cache; nil preserves the
+// legacy URL parsing path for isolated tests and compatibility callers.
+func NewFileReadToolWithStore(doc, img, txt fileParser, attStore store.IAgentAttachmentStore) FullTool {
 	return &fileReadTool{
-		documentParser: doc,
-		imageParser:    img,
-		textParser:     txt,
-		headRequestFn:  managedFileHEAD,
-		presignFn:      util.GenerateSignedURLForMethod,
+		documentParser:  doc,
+		imageParser:     img,
+		textParser:      txt,
+		attachmentStore: attStore,
+		headRequestFn:   managedFileHEAD,
+		presignFn:       util.GenerateSignedURLForMethod,
 	}
 }
 
@@ -95,10 +107,10 @@ var _ FullTool = (*fileReadTool)(nil)
 
 func (t *fileReadTool) Name() string { return "file_read" }
 func (t *fileReadTool) Description() string {
-	return "Read the contents of an uploaded file by URL. Supports PDF, Word " +
+	return "Read the contents of an uploaded file by attachment ID (preferred) or URL. Supports PDF, Word " +
 		"(.docx/.doc), Excel (.xlsx/.xls), PowerPoint (.pptx/.ppt), RTF, images " +
 		"(OCR), and plain text / markdown. " +
-		"Input: { file_url: string, prompt?: string, offset?: integer, limit_bytes?: integer, read_token?: string }. " +
+		"Input: { attachment_id?: integer, file_url?: string, prompt?: string, offset?: integer, limit_bytes?: integer, read_token?: string }. " +
 		"Returns UTF-8-safe resumable pages with next_offset, has_more, and a content read_token."
 }
 func (t *fileReadTool) UserFacingName() string      { return "读取文件" }
@@ -226,13 +238,13 @@ func (t *fileReadTool) InputSchema() json.RawMessage {
 		"type": "object",
 		"additionalProperties": false,
 		"properties": {
+			"attachment_id": {"type": "integer", "minimum": 1, "description": "Current user's uploaded attachment ID. Prefer this over file_url when available."},
 			"file_url": {"type": "string", "format": "uri", "description": "URL of the uploaded file to read (e.g. an agent attachment)."},
 			"prompt":   {"type": "string", "description": "Optional instruction describing what to extract from the file."},
 			"offset": {"type": "integer", "minimum": 0, "default": 0, "description": "UTF-8 byte offset in the normalized parsed text."},
 			"limit_bytes": {"type": "integer", "minimum": 1, "maximum": 65536, "default": 65536},
 			"read_token": {"type": "string", "description": "Return the previous page's content fingerprint when continuing."}
-		},
-		"required": ["file_url"]
+		}
 	}`)
 }
 
@@ -258,8 +270,8 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	if err := json.Unmarshal(input, &in); err != nil {
 		return t.returnSoftError("", "invalid_input_json")
 	}
-	if in.FileURL == "" {
-		return t.returnSoftError("", "file_url_required")
+	if in.AttachmentID == 0 && in.FileURL == "" {
+		return t.returnSoftError("", "attachment_reference_required")
 	}
 	fileName := safeFileName(in.FileURL)
 	offset := 0
@@ -285,12 +297,36 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	if !ok || ctxUserID == 0 {
 		return t.returnSoftError(fileName, "unauthenticated")
 	}
+
+	// Preferred managed-upload path: resolve an opaque attachment ID with a
+	// user-scoped query and page the persisted canonical content. No URL HEAD,
+	// presign, download, OCR, or DocumentParser call occurs on this path.
+	if in.AttachmentID > 0 {
+		if t.attachmentStore == nil {
+			return t.returnSoftError(fileName, "attachment_store_unavailable")
+		}
+		managed, getErr := t.attachmentStore.GetByIDAndUser(ctx, in.AttachmentID, ctxUserID)
+		if getErr != nil {
+			return t.returnSoftError(fileName, "file_not_owned_or_missing")
+		}
+		return t.readCachedAttachment(ctx, managed, in, spanOutput, &spanErrorClass)
+	}
+
 	urlUserID, err := extractUserIDFromURL(in.FileURL)
 	if err != nil {
 		return t.returnSoftError(fileName, "unmanaged_file_url")
 	}
 	if ctxUserID != urlUserID {
 		return t.returnSoftError(fileName, "file_not_owned")
+	}
+
+	// Rolling compatibility: old clients send only the upload URL. Resolve it
+	// to the same user-scoped row before considering the legacy network parser.
+	// A lookup miss is expected for agent-outputs and pre-DB objects.
+	if t.attachmentStore != nil {
+		if managed, getErr := t.attachmentStore.GetByURLAndUser(ctx, in.FileURL, ctxUserID); getErr == nil {
+			return t.readCachedAttachment(ctx, managed, in, spanOutput, &spanErrorClass)
+		}
 	}
 
 	// Translate private COS URLs into time-bounded presigned URLs. TWO signed
@@ -387,20 +423,102 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		return t.returnSoftError(fileName, "incomplete_parser_output")
 	}
 
+	return t.paginateContent(fileName, mimeType, byteSize, pageCount, content, in, spanOutput, &spanErrorClass)
+}
+
+func (t *fileReadTool) readCachedAttachment(
+	ctx context.Context,
+	att *model.AgentAttachment,
+	in fileReadInput,
+	spanOutput map[string]any,
+	spanErrorClass *string,
+) (ToolResult, error) {
+	fileName := att.Filename
+	if fileName == "" {
+		fileName = safeFileName(att.URL)
+	}
+	spanOutput["cache_hit"] = true
+	spanOutput["attachment_id"] = att.ID
+	spanOutput["mime_type"] = att.MimeType
+
+	if !att.FallbackReady {
+		*spanErrorClass = "file_processing"
+		return t.returnSoftError(fileName, "file_processing")
+	}
+	if att.FallbackError != nil && *att.FallbackError != "" {
+		*spanErrorClass = "parse_error"
+		return t.returnSoftError(fileName, "parse_failed")
+	}
+
+	var content string
+	if att.ParsedContent != nil {
+		content = *att.ParsedContent
+	} else if att.TextFallback != nil {
+		// Rolling compatibility for a successfully processed row created before
+		// the parsed_content migration. Persist the already-produced text once;
+		// never download or parse the source again.
+		content = *att.TextFallback
+		normalized := strings.ToValidUTF8(content, "\uFFFD")
+		sum := sha256.Sum256([]byte(normalized))
+		now := time.Now()
+		if err := t.attachmentStore.UpdateFallback(ctx, att.ID, map[string]interface{}{
+			"parsed_content":           normalized,
+			"parsed_content_sha256":    fmt.Sprintf("sha256:%x", sum),
+			"parsed_content_byte_size": int64(len(normalized)),
+			"parsed_at":                now,
+		}); err != nil {
+			*spanErrorClass = "cache_persist_error"
+			return t.returnSoftError(fileName, "cache_persist_failed")
+		}
+	} else {
+		*spanErrorClass = "parse_error"
+		return t.returnSoftError(fileName, "parse_failed")
+	}
+
+	*spanErrorClass = pipelineToolTraceNoError
+	spanOutput["offset"] = valueOrZero(in.Offset)
+	spanOutput["limit_bytes"] = valueOrDefault(in.LimitBytes, fileReadDefaultLimitBytes)
+	return t.paginateContent(fileName, att.MimeType, int(att.Size), att.ParsedPageCount, content, in, spanOutput, spanErrorClass)
+}
+
+func valueOrZero(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
+func valueOrDefault(value *int, fallback int) int {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
+func (t *fileReadTool) paginateContent(
+	fileName, mimeType string,
+	byteSize, pageCount int,
+	content string,
+	in fileReadInput,
+	spanOutput map[string]any,
+	spanErrorClass *string,
+) (ToolResult, error) {
+	offset := valueOrZero(in.Offset)
+	limitBytes := valueOrDefault(in.LimitBytes, fileReadDefaultLimitBytes)
 	normalizedContent := strings.ToValidUTF8(content, "\uFFFD")
 	contentHash := sha256.Sum256([]byte(normalizedContent))
 	readToken := fmt.Sprintf("sha256:%x", contentHash)
 	if in.ReadToken != "" && in.ReadToken != readToken {
-		spanErrorClass = "stale_read_token"
+		*spanErrorClass = "stale_read_token"
 		return t.returnSoftError(fileName, "stale_read_token")
 	}
 	contentByteSize := len(normalizedContent)
 	if offset > contentByteSize {
-		spanErrorClass = "offset_out_of_range"
+		*spanErrorClass = "offset_out_of_range"
 		return t.returnSoftError(fileName, "offset_out_of_range")
 	}
 	if offset < contentByteSize && !utf8.RuneStart(normalizedContent[offset]) {
-		spanErrorClass = "invalid_utf8_boundary"
+		*spanErrorClass = "invalid_utf8_boundary"
 		return t.returnSoftError(fileName, "invalid_utf8_boundary")
 	}
 
@@ -412,14 +530,12 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		end--
 	}
 	if end == offset && offset < contentByteSize {
-		spanErrorClass = "limit_too_small"
+		*spanErrorClass = "limit_too_small"
 		return t.returnSoftError(fileName, "limit_too_small")
 	}
 	pageContent := normalizedContent[offset:end]
 	hasMore := end < contentByteSize
 
-	// FileName comes from the canonical URL (not the presigned one), so the
-	// user sees "report.pdf" instead of a long query-string-decorated key.
 	out, _ := json.Marshal(fileReadOutput{
 		FileName:        fileName,
 		MimeType:        mimeType,

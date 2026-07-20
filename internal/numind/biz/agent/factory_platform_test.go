@@ -110,6 +110,9 @@ func TestPlatformToolFactory_LoadTools_WithDS_22Tools(t *testing.T) {
 	for i, want := range baseExpected {
 		assert.Equal(t, want, tools[i].Name(), "tool[%d] name", i)
 	}
+	fileReader, ok := tools[8].(*fileReadTool)
+	require.True(t, ok)
+	require.NotNil(t, fileReader.attachmentStore, "production factory must wire the canonical attachment cache")
 
 	// Verify memory tools are appended at indices 19 and 20.
 	assert.Equal(t, "memory_write", tools[19].Name(), "tools[19] should be memory_write")
