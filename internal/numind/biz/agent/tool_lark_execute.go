@@ -75,10 +75,17 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 	}
 	decoded, err := decodeLarkExecuteInput(input)
 	if err != nil {
-		if larkExecuteRetryRejected(retryState, retryAttempt) {
-			return larkWorkspaceSoftError(larkWorkspaceErrorExecuteRetryExhausted)
+		exhausted := larkExecuteRetryRejected(retryState, retryAttempt)
+		attempts, remaining := larkExecuteRetryProgress(retryState)
+		if exhausted {
+			return larkWorkspaceCorrectionExhausted("lark_execute 只接受有效的 argv 与 stdin_json")
 		}
-		return larkWorkspaceSoftError(larkWorkspaceErrorInvalidExecuteInput)
+		return larkWorkspaceCorrectableCommandError(
+			"invalid_execute_input",
+			"飞书工作区参数无效；lark_execute 只接受有效的 argv 与 stdin_json。",
+			attempts,
+			remaining,
+		)
 	}
 
 	result, err := t.executor.Execute(ctx, feishu.ExecuteRequest{
@@ -91,10 +98,26 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 	})
 	if err != nil {
 		if errors.Is(err, feishu.ErrOperationRequestRejected) {
-			if larkExecuteRetryRejected(retryState, retryAttempt) {
-				return larkWorkspaceSoftError(larkWorkspaceErrorExecuteRetryExhausted)
+			hint, hasHint := feishu.SafeOperationRequestValidation(err)
+			exhausted := larkExecuteRetryRejected(retryState, retryAttempt)
+			attempts, remaining := larkExecuteRetryProgress(retryState)
+			if exhausted {
+				return larkWorkspaceCorrectionExhausted(hint)
 			}
-			return larkWorkspaceSoftError(larkWorkspaceErrorExecuteRejected)
+			if hasHint {
+				return larkWorkspaceCorrectableCommandError(
+					"command_validation",
+					"飞书命令参数校验失败："+hint+"。本次尚未访问飞书，请按该原因修正命令。",
+					attempts,
+					remaining,
+				)
+			}
+			return larkWorkspaceCorrectableCommandError(
+				"command_rejected",
+				"飞书业务命令不符合平台策略，本次尚未访问飞书，也不代表连接异常。请按技能说明修正 Docs/Base/Wiki/Drive 命令；不要执行 auth/config/whoami，也不要要求用户提供 App ID/App Secret。",
+				attempts,
+				remaining,
+			)
 		}
 		larkExecuteRetryFailed(retryState, retryAttempt)
 		return larkWorkspaceSoftError(larkWorkspaceErrorExecute)

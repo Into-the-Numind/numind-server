@@ -54,6 +54,40 @@ var (
 	ErrOperationUnavailable = errors.New("feishu operation unavailable")
 )
 
+// operationRequestValidation carries only a catalog-produced, credential-free
+// correction hint. Error deliberately remains the generic rejection sentinel;
+// callers must opt in through SafeOperationRequestValidation instead of
+// accidentally logging or returning the hint from an ordinary error path.
+type operationRequestValidation struct {
+	hint string
+}
+
+func (e *operationRequestValidation) Error() string { return ErrOperationRequestRejected.Error() }
+func (e *operationRequestValidation) Unwrap() error { return ErrOperationRequestRejected }
+
+// SafeOperationRequestValidation returns a bounded catalog validation hint.
+// Catalog invalid-argument messages contain only reviewed labels and flag
+// names, never argv values, tokens, URLs, paths, provider output, or secrets.
+func SafeOperationRequestValidation(err error) (string, bool) {
+	var validation *operationRequestValidation
+	if !errors.As(err, &validation) || validation == nil || validation.hint == "" || len(validation.hint) > 256 {
+		return "", false
+	}
+	return validation.hint, true
+}
+
+func newOperationRequestValidation(err error) error {
+	if !errors.Is(err, ErrCommandInvalidArgument) {
+		return ErrOperationRequestRejected
+	}
+	prefix := ErrCommandInvalidArgument.Error() + ": "
+	hint := strings.TrimPrefix(err.Error(), prefix)
+	if hint == "" || hint == err.Error() || len(hint) > 256 {
+		return ErrOperationRequestRejected
+	}
+	return &operationRequestValidation{hint: hint}
+}
+
 // ReceiptVerifier is retained only as a source-compatible dependency type for
 // older composition roots. OperationService no longer calls it: model-carried
 // skill receipts are not an execution authorization primitive.
@@ -798,7 +832,7 @@ func (s *FeishuOperationService) Execute(ctx context.Context, request ExecuteReq
 	}
 	normalized, err := s.catalog.Normalize(append([]string(nil), request.Argv...), append([]byte(nil), request.StdinJSON...))
 	if err != nil {
-		return nil, ErrOperationRequestRejected
+		return nil, newOperationRequestValidation(err)
 	}
 	account, err := s.loadOrCreateAccount(ctx, request.UserID)
 	if err != nil {

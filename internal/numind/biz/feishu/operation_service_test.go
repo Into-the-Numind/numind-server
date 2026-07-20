@@ -1008,6 +1008,21 @@ func TestOperationService_LegacyUnknownSummaryPreservesStartedWriteEvidence(t *t
 }
 
 func TestOperationService_StrictInputAndPlatformOwnedPolicy(t *testing.T) {
+	t.Run("catalog validation exposes safe correction hint before any operation", func(t *testing.T) {
+		h := newOperationHarness(t)
+		req := operationDocsFetchRequest(248, "tc-base-schema")
+		req.Argv = []string{"base", "+base-create", "--name", "联调", "--table-name", "任务列表"}
+		_, err := h.service.Execute(h.ctx, req)
+		require.ErrorIs(t, err, ErrOperationRequestRejected)
+		hint, ok := SafeOperationRequestValidation(err)
+		require.True(t, ok)
+		require.Equal(t, "table-name and fields must be supplied together", hint)
+
+		var count int64
+		require.NoError(t, h.db.Model(&model.FeishuOperation{}).Count(&count).Error)
+		require.Zero(t, count, "catalog rejection must not create or execute a Feishu operation")
+	})
+
 	t.Run("normalize rejects forbidden commands before any operation", func(t *testing.T) {
 		h := newOperationHarness(t)
 		req := operationDocsFetchRequest(9, "tc-invalid")

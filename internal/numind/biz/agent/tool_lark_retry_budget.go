@@ -7,6 +7,8 @@ import (
 	"numind-server/internal/numind/biz/feishu"
 )
 
+const larkExecuteMaxCorrectableAttempts = 5
+
 type larkExecuteRetryPhase uint8
 
 const (
@@ -25,10 +27,11 @@ const (
 )
 
 type larkExecuteRetryState struct {
-	mu           sync.Mutex
-	phase        larkExecuteRetryPhase
-	terminalStop bool
-	lastCategory string
+	mu                  sync.Mutex
+	phase               larkExecuteRetryPhase
+	correctableFailures uint8
+	terminalStop        bool
+	lastCategory        string
 }
 
 // larkExecuteRetryRuns is process-local because one Agent run is executed by
@@ -53,6 +56,7 @@ func larkExecuteRetrySeedExternalResult(runID uint64, raw json.RawMessage) bool 
 	defer state.mu.Unlock()
 	state.lastCategory = failure.Category
 	if larkFailureAllowsCorrection(failure) {
+		state.correctableFailures = 1
 		state.phase = larkRetryCorrectionAvailable
 		state.terminalStop = false
 		return true
@@ -102,17 +106,33 @@ func larkExecuteRetryRejected(state *larkExecuteRetryState, attempt larkExecuteR
 	state.mu.Lock()
 	defer state.mu.Unlock()
 
-	switch {
-	case attempt == larkExecuteNormalAttempt && state.phase == larkRetryNormalInFlight:
-		state.phase = larkRetryCorrectionAvailable
-		return false
-	case attempt == larkExecuteCorrectionAttempt && state.phase == larkRetryCorrectionInFlight:
-		state.phase = larkRetryExhausted
-		return true
-	default:
+	validAttempt := (attempt == larkExecuteNormalAttempt && state.phase == larkRetryNormalInFlight) ||
+		(attempt == larkExecuteCorrectionAttempt && state.phase == larkRetryCorrectionInFlight)
+	if !validAttempt {
 		state.phase = larkRetryExhausted
 		return true
 	}
+	state.correctableFailures++
+	if state.correctableFailures >= larkExecuteMaxCorrectableAttempts {
+		state.phase = larkRetryExhausted
+		return true
+	}
+	state.phase = larkRetryCorrectionAvailable
+	return false
+}
+
+func larkExecuteRetryProgress(state *larkExecuteRetryState) (attempts, remaining int) {
+	if state == nil {
+		return larkExecuteMaxCorrectableAttempts, 0
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	attempts = int(state.correctableFailures)
+	remaining = larkExecuteMaxCorrectableAttempts - attempts
+	if remaining < 0 {
+		remaining = 0
+	}
+	return attempts, remaining
 }
 
 func larkExecuteRetryCompleted(state *larkExecuteRetryState, attempt larkExecuteRetryAttempt) {
@@ -124,6 +144,8 @@ func larkExecuteRetryCompleted(state *larkExecuteRetryState, attempt larkExecute
 	if (attempt == larkExecuteNormalAttempt && state.phase == larkRetryNormalInFlight) ||
 		(attempt == larkExecuteCorrectionAttempt && state.phase == larkRetryCorrectionInFlight) {
 		state.phase = larkRetryReady
+		state.correctableFailures = 0
+		state.lastCategory = ""
 	}
 }
 

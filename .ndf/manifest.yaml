@@ -1,5 +1,28 @@
 schema_version: '2.0'
 features:
+- id: lark-five-correction-attempts
+  ndf_version: '3.0'
+  description: Allow five correctable Lark command attempts, expose safe catalog validation hints, and retain immediate stops for non-retryable or uncertain operations.
+  classification_reason: 'User explicitly required Hotfix for speed. Scope is backend-only with no schema, API, or external capability expansion; existing execution safety boundaries remain closed.'
+  last_updated_by: ai-h2
+  last_updated_at: '2026-07-20T16:05:49+08:00'
+  created_at: '2026-07-20T15:40:27+08:00'
+  track: hotfix
+  stage: H2
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: fix/lark-five-correction-attempts}
+  worktrees: {numind-server: /private/tmp/wt-lark-five-correction-attempts-numind-server}
+  progress: {total_tasks: 3, completed_tasks: 2, reviewed_tasks: 0, current_task: 'Review the bounded retry and safe validation changes'}
+  artifacts: {}
+  decisions:
+  - 'H1 diagnosis: Dev run 248 had zero feishu_operation rows. A Base table-name/fields pairing error was collapsed to generic command_rejected; the second rejection exhausted the run and blocked a later valid command before normalization.'
+  - 'Customer requirement: correctable failures receive five total attempts, any success resets the counter, and non-retryable or uncertain writes still stop immediately.'
+  - 'Customer RED commit 6f2e20d4 proves attempt two currently returns correction_exhausted and prevents a valid fifth correction from reaching the executor.'
+  - 'H1 GREEN: pre-execution policy/validation failures and explicitly retryable terminal failures share a five-attempt run budget; success resets it, concurrent calls remain single-flight, and non-retryable or uncertain writes retain immediate terminal stops. Catalog invalid-argument hints are bounded and credential-free; policy denials remain generic.'
+  - 'H1 gates: affected Agent and Feishu packages pass, the full Go suite passes, task lint passes, and git diff --check passes.'
+  blockers: []
+
 - id: feishu-action-transition
   ndf_version: '3.0'
   description: Remove Feishu business confirmation entirely, auto-migrate legacy confirmation waits, and prevent stale authorization cards from submitting the wrong lifecycle action.
