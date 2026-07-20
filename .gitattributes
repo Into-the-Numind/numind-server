@@ -1,0 +1,3 @@
+# Generated prompt snapshots preserve the authoritative Markdown bytes, including
+# deliberate two-space hard line breaks and terminal blank lines from the user SSOT.
+docs/agent-definitions/three-agent-feishu-pipeline/agent-*-system-prompt.md -whitespace
