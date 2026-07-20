@@ -3969,4 +3969,21 @@ func cloneTestOperationAction(action *OperationAction) *OperationAction {
 	return &clone
 }
 
+func TestOperationSessionLineageIsUniqueBoundedAndRestorable(t *testing.T) {
+	summary := persistedOperationSummary{SessionID: "session-0"}
+	for index := 1; index <= operationSessionLineageLimit+8; index++ {
+		summary = advanceOperationSession(summary, fmt.Sprintf("session-%d", index))
+	}
+	require.Len(t, summary.SupersededSessionIDs, operationSessionLineageLimit)
+	require.Equal(t, "session-40", summary.SessionID)
+	require.Equal(t, "session-8", summary.SupersededSessionIDs[0])
+	require.Equal(t, "session-39", summary.SupersededSessionIDs[len(summary.SupersededSessionIDs)-1])
+
+	summary = advanceOperationSession(summary, "session-40")
+	require.Len(t, summary.SupersededSessionIDs, operationSessionLineageLimit)
+	restored := restoreOperationSession(summary, "session-39")
+	require.Equal(t, "session-39", restored.SessionID)
+	require.NotContains(t, restored.SupersededSessionIDs, "session-39")
+}
+
 var _ = errors.New

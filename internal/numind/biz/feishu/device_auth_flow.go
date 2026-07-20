@@ -1196,10 +1196,11 @@ func (f *DeviceAuthFlow) deviceAuthReplacementSummaries(
 		summary.Phase != model.FeishuAuthPhaseUserAuth || summary.SessionID != oldSession.ID {
 		return nil, nil, ErrAuthSessionUnavailable
 	}
-	summary.SessionID = f.newID()
-	if strings.TrimSpace(summary.SessionID) == "" || summary.SessionID == oldSession.ID {
+	nextSessionID := f.newID()
+	if strings.TrimSpace(nextSessionID) == "" || nextSessionID == oldSession.ID {
 		return nil, nil, ErrAuthSessionUnavailable
 	}
+	summary = advanceOperationSession(summary, nextSessionID)
 	expiresAt := now.UTC().Add(f.sessionDuration)
 	if summary.ExpiresAt != nil {
 		summary.ExpiresAt = &expiresAt

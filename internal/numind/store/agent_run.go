@@ -87,6 +87,14 @@ type IExternalActionWriter interface {
 	UpdatePendingExternalAction(ctx context.Context, runID uint64, payloadJSON []byte) error
 }
 
+// IExternalActionTransitioner moves one suspended Agent run from an old
+// Feishu authorization session to the operation's current session. The
+// allowlisted lineage makes retries idempotent while preventing an unrelated
+// or delayed operation from replacing the card.
+type IExternalActionTransitioner interface {
+	TransitionPendingExternalAction(ctx context.Context, userID uint, runID uint64, nextPayloadJSON []byte, supersededSessionIDs []string) (transitioned bool, err error)
+}
+
 // IExternalToolWaitFinalizer is the narrow terminal counterpart to the
 // tokenized success-resume lease. It ends one exact external wait using the
 // durable user/run/operation/tool-call identity; it never scans or changes
@@ -349,6 +357,93 @@ func (s *agentRunStore) UpdatePendingExternalAction(ctx context.Context, id uint
 		return fmt.Errorf("agentRunStore.UpdatePendingExternalAction: no row matched id=%d", id)
 	}
 	return nil
+}
+
+const maxExternalActionSessionLineage = 32
+
+// TransitionPendingExternalAction atomically performs an exact identity CAS
+// on a suspended run. It stores only the canonical externalaction payload; the
+// temporary lineage is operation-owned and never copied into Agent state.
+func (s *agentRunStore) TransitionPendingExternalAction(
+	ctx context.Context,
+	userID uint,
+	runID uint64,
+	nextPayloadJSON []byte,
+	supersededSessionIDs []string,
+) (bool, error) {
+	if s == nil || s.db == nil || userID == 0 || runID == 0 || len(supersededSessionIDs) > maxExternalActionSessionLineage {
+		return false, fmt.Errorf("agentRunStore.TransitionPendingExternalAction: invalid transition")
+	}
+	canonicalNext, err := externalaction.CanonicalJSON(nextPayloadJSON)
+	if err != nil {
+		return false, fmt.Errorf("agentRunStore.TransitionPendingExternalAction: invalid payload: %w", err)
+	}
+	next, err := externalaction.Parse(canonicalNext)
+	if err != nil {
+		return false, fmt.Errorf("agentRunStore.TransitionPendingExternalAction: invalid canonical payload: %w", err)
+	}
+	allowedSessions := make(map[string]struct{}, len(supersededSessionIDs))
+	for _, sessionID := range supersededSessionIDs {
+		sessionID = strings.TrimSpace(sessionID)
+		if sessionID == "" || sessionID == next.SessionID {
+			continue
+		}
+		allowedSessions[sessionID] = struct{}{}
+	}
+
+	transitioned := false
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var run model.AgentRun
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND user_id = ?", runID, userID).
+			First(&run).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return fmt.Errorf("agentRunStore.TransitionPendingExternalAction load(id=%d): %w", runID, err)
+		}
+		if run.Status != "terminated" || run.StateReason != "waiting_for_user_choice" ||
+			run.CancellationRequestedAt != nil || run.IsDeleted || !hasJSONValue(run.PendingExternalActionJSON) {
+			return nil
+		}
+		current, parseErr := externalaction.Parse(run.PendingExternalActionJSON)
+		if parseErr != nil {
+			return fmt.Errorf("agentRunStore.TransitionPendingExternalAction current payload: %w", parseErr)
+		}
+		if current.Provider != next.Provider || current.OperationID != next.OperationID || current.ToolCallID != next.ToolCallID {
+			return fmt.Errorf("agentRunStore.TransitionPendingExternalAction: external identity mismatch")
+		}
+		if current.SessionID == next.SessionID {
+			transitioned = true
+			return nil
+		}
+		if _, ok := allowedSessions[current.SessionID]; !ok {
+			return nil
+		}
+		now := time.Now()
+		result := whereExactPendingExternalAction(
+			tx.Model(&model.AgentRun{}).Where(
+				"id = ? AND user_id = ? AND status = ? AND state_reason = ? AND cancellation_requested_at IS NULL AND is_deleted = ?",
+				runID, userID, "terminated", "waiting_for_user_choice", false,
+			),
+			run.PendingExternalActionJSON,
+		).Updates(map[string]any{
+			"pending_external_action_json": datatypes.JSON(canonicalNext),
+			"pending_external_action_at":   now,
+		})
+		if result.Error != nil {
+			return fmt.Errorf("agentRunStore.TransitionPendingExternalAction update(id=%d): %w", runID, result.Error)
+		}
+		if result.RowsAffected != 1 {
+			return errExternalResumeLostClaim
+		}
+		transitioned = true
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return transitioned, nil
 }
 
 const (

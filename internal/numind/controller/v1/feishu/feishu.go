@@ -35,7 +35,8 @@ type connectRequest struct {
 }
 
 type resumeRequest struct {
-	Action string `json:"action"`
+	Action    string `json:"action"`
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // liveLifecycleActionResponse is the explicit allowlist for routes that create
@@ -114,7 +115,7 @@ func (h *Controller) ResumeOperation(c *gin.Context) {
 		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
 		return
 	}
-	result, err := h.svc.Resume(c.Request.Context(), user.ID, operationID, request.Action)
+	result, err := h.svc.Resume(c.Request.Context(), user.ID, operationID, request.SessionID, request.Action)
 	writeLifecycleResponse(c, err, publicOperationResponse(result))
 }
 

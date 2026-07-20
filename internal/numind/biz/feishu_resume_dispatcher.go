@@ -21,6 +21,10 @@ type agentExternalResultResumer interface {
 	FinalizeExternalToolWait(context.Context, uint, uint64, string, string, externalaction.TerminalOutcome) (bool, error)
 }
 
+type agentExternalActionHandoffer interface {
+	HandoffExternalToolWait(context.Context, uint, uint64, externalaction.Payload, []string) (bool, error)
+}
+
 type workspaceResumeCall struct {
 	done chan struct{}
 	err  error
@@ -110,8 +114,32 @@ func (d *WorkspaceResumeDispatcher) dispatch(ctx context.Context, userID uint, o
 	switch result.State {
 	case model.FeishuOperationWaitingConnection,
 		model.FeishuOperationWaitingAppScope,
-		model.FeishuOperationWaitingUserAuth,
-		model.FeishuOperationWaitingConfirmation:
+		model.FeishuOperationWaitingUserAuth:
+		if result.OperationID != operationID || result.AgentRunID == 0 || strings.TrimSpace(result.ToolCallID) == "" ||
+			result.Action == nil || result.Action.OperationID != operationID || strings.TrimSpace(result.Action.SessionID) == "" ||
+			strings.TrimSpace(result.Action.Phase) == "" || result.Action.ExpiresAt.IsZero() {
+			d.observeHandoff(userID, operationID, "action_handoff_retry")
+			return fmt.Errorf("resume feishu operation: waiting action identity is invalid")
+		}
+		handoffer, ok := d.agentResumer.(agentExternalActionHandoffer)
+		if !ok {
+			d.observeHandoff(userID, operationID, "action_handoff_retry")
+			return fmt.Errorf("resume feishu operation: agent action handoff is unavailable")
+		}
+		transitioned, handoffErr := handoffer.HandoffExternalToolWait(ctx, userID, result.AgentRunID, externalaction.Payload{
+			Provider: feishu.ProviderLark, OperationID: operationID, SessionID: result.Action.SessionID,
+			ToolCallID: result.ToolCallID, Phase: result.Action.Phase, ExpiresAt: result.Action.ExpiresAt,
+		}, result.SupersededSessionIDs)
+		if handoffErr != nil || !transitioned {
+			d.observeHandoff(userID, operationID, "action_handoff_retry")
+			if handoffErr != nil {
+				return fmt.Errorf("handoff agent external wait: %w", handoffErr)
+			}
+			return fmt.Errorf("handoff agent external wait: pending action changed")
+		}
+		d.observeHandoff(userID, operationID, "action_handoff_succeeded")
+		return nil
+	case model.FeishuOperationWaitingConfirmation:
 		return nil
 	case model.FeishuOperationSucceeded:
 		// handled below

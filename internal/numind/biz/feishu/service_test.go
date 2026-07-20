@@ -391,8 +391,16 @@ type lifecycleAgentWaitCall struct {
 }
 
 type lifecycleAgentWaitFake struct {
-	calls    []lifecycleAgentWaitCall
-	finalize func(context.Context, uint, uint64, string, string, externalaction.TerminalOutcome) (bool, error)
+	calls           []lifecycleAgentWaitCall
+	finalize        func(context.Context, uint, uint64, string, string, externalaction.TerminalOutcome) (bool, error)
+	handoffs        []externalaction.Payload
+	handoffLineages [][]string
+}
+
+func (f *lifecycleAgentWaitFake) HandoffExternalToolWait(_ context.Context, _ uint, _ uint64, action externalaction.Payload, lineage []string) (bool, error) {
+	f.handoffs = append(f.handoffs, action)
+	f.handoffLineages = append(f.handoffLineages, append([]string(nil), lineage...))
+	return true, nil
 }
 
 func (f *lifecycleAgentWaitFake) FinalizeExternalToolWait(ctx context.Context, userID uint, runID uint64, operationID, toolCallID string, outcome externalaction.TerminalOutcome) (bool, error) {
@@ -619,6 +627,20 @@ func newLifecycleService(t *testing.T, account *model.UserThirdPartyAccount, ope
 	return svc, accounts, workspace, auth, dispatcher, operations, teardown
 }
 
+func resumeCurrentForTest(ctx context.Context, userID uint, operationID string, svc *WorkspaceLifecycleService, action string) (*OperationResult, error) {
+	sessionID := ""
+	if svc != nil && svc.accounts != nil && svc.workspace != nil {
+		if account, err := svc.currentAccount(ctx, userID); err == nil && account != nil {
+			if operation, getErr := svc.workspace.GetOperationForUser(ctx, userID, account.Generation, operationID); getErr == nil {
+				if currentSessionID, waiting := lifecycleOperationSessionID(operation); waiting {
+					sessionID = currentSessionID
+				}
+			}
+		}
+	}
+	return svc.Resume(ctx, userID, operationID, sessionID, action)
+}
+
 // seedLifecycleExternalWait uses the production Agent-run store so lifecycle
 // tests exercise the actual cross-store terminalization contract rather than
 // only a hand-written interface fake.
@@ -814,10 +836,47 @@ func TestWorkspaceLifecycleResumeUsesSharedDispatcherForUserCompleted(t *testing
 		Phase: model.FeishuAuthPhaseUserAuth, State: model.FeishuAuthSessionCompleted,
 	}
 
-	result, err := svc.Resume(context.Background(), 7, "op-1", ResumeActionUserCompleted)
+	result, err := resumeCurrentForTest(context.Background(), 7, "op-1", svc, ResumeActionUserCompleted)
 	require.NoError(t, err)
 	require.Equal(t, "op-1", result.OperationID)
 	require.Equal(t, 1, dispatcher.calls)
+	require.Zero(t, operations.confirmed)
+	require.Zero(t, operations.cancelled)
+}
+
+func TestWorkspaceLifecycleResumeStaleCardOnlyObservesCurrentAuthorizationStep(t *testing.T) {
+	operationID := "operation-user-438"
+	expiresAt := time.Now().Add(time.Hour).UTC()
+	summary := persistedOperationSummary{
+		Status: model.FeishuOperationWaitingUserAuth, SessionID: "user-auth-new",
+		Phase: model.FeishuAuthPhaseUserAuth, RecoveryKind: RecoveryUserScope,
+		SupersededSessionIDs: []string{"create-app-old"}, ExpiresAt: &expiresAt,
+	}
+	summaryJSON, err := json.Marshal(summary)
+	require.NoError(t, err)
+	op := &model.FeishuOperation{
+		ID: operationID, UserID: 438, Generation: 1, State: model.FeishuOperationWaitingUserAuth,
+		AgentRunID: 261, ToolCallID: "lark-call-438", ResultSummaryJSON: summaryJSON,
+	}
+	svc, _, _, auth, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 438, Provider: ProviderLark, Generation: 1,
+	}, op)
+	completeCalled := false
+	auth.completeUserAuth = func(context.Context, uint, uint64, string) (*DeviceAuthCompletion, error) {
+		completeCalled = true
+		return nil, errors.New("stale card must not poll current authorization")
+	}
+
+	result, err := svc.Resume(context.Background(), 438, operationID, "create-app-old", ResumeActionUserCompleted)
+
+	require.NoError(t, err)
+	require.Equal(t, AuthorizationUpdated, result.NoticeCode)
+	require.Equal(t, model.FeishuOperationWaitingUserAuth, result.State)
+	require.NotNil(t, result.Action)
+	require.Equal(t, "user-auth-new", result.Action.SessionID)
+	require.Empty(t, result.Action.URL)
+	require.False(t, completeCalled)
+	require.Zero(t, dispatcher.calls)
 	require.Zero(t, operations.confirmed)
 	require.Zero(t, operations.cancelled)
 }
@@ -857,7 +916,7 @@ func TestWorkspaceLifecycleResumeCompletedDispatchIsDetachedWithHardCeiling(t *t
 	errCh := make(chan error, 1)
 	startedAt := time.Now()
 	go func() {
-		result, err := svc.Resume(callerCtx, 7, operationID, ResumeActionUserCompleted)
+		result, err := resumeCurrentForTest(callerCtx, 7, operationID, svc, ResumeActionUserCompleted)
 		resultCh <- result
 		errCh <- err
 	}()
@@ -893,7 +952,7 @@ func TestWorkspaceLifecycleResumeUserCompletedFinalizesTerminalAgentWaits(t *tes
 				UserID: 7, Provider: ProviderLark, Generation: 2,
 			}, op)
 
-			result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionUserCompleted)
+			result, err := resumeCurrentForTest(context.Background(), 7, operationID, svc, ResumeActionUserCompleted)
 
 			require.NoError(t, err)
 			require.Equal(t, &OperationResult{OperationID: operationID, State: tc.state}, result)
@@ -930,13 +989,13 @@ func TestWorkspaceLifecycleResumeCompletesOwnedAppScopeThenReplaysExactlyOnce(t 
 		return dispatcher.DispatchResume(ctx, userID, operationID)
 	}
 
-	result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionUserCompleted)
+	result, err := resumeCurrentForTest(context.Background(), 7, operationID, svc, ResumeActionUserCompleted)
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationSucceeded, result.State)
 	require.Equal(t, []lifecycleAppApprovalCall{{userID: 7, generation: 2, sessionID: "session-app-scope"}}, auth.completeAppApprovalCalls)
 	require.Equal(t, 1, dispatcher.calls, "app approval must use the one Task12 dispatcher")
 
-	result, err = svc.Resume(context.Background(), 7, operationID, ResumeActionUserCompleted)
+	result, err = resumeCurrentForTest(context.Background(), 7, operationID, svc, ResumeActionUserCompleted)
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationSucceeded, result.State)
 	require.Len(t, auth.completeAppApprovalCalls, 1, "a duplicate acknowledgement must not repeat the CLI write path")
@@ -972,7 +1031,7 @@ func TestWorkspaceLifecycleResumeAppScopeFinalizesTerminalStateCreatedDuringHand
 				return nil
 			}
 
-			result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionUserCompleted)
+			result, err := resumeCurrentForTest(context.Background(), 7, operationID, svc, ResumeActionUserCompleted)
 
 			require.NoError(t, err)
 			require.Equal(t, &OperationResult{OperationID: operationID, State: tc.state}, result)
@@ -1013,7 +1072,7 @@ func TestWorkspaceLifecycleResumeCompletedAuthFinalizesTerminalStateCreatedDurin
 				return nil
 			}
 
-			result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionUserCompleted)
+			result, err := resumeCurrentForTest(context.Background(), 7, operationID, svc, ResumeActionUserCompleted)
 
 			require.NoError(t, err)
 			require.Equal(t, &OperationResult{OperationID: operationID, State: tc.state}, result)
@@ -1064,7 +1123,7 @@ func TestWorkspaceLifecycleResumeCompletedAuthorizationReturnsStoredUnknownAfter
 		return err
 	}
 
-	result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionUserCompleted)
+	result, err := resumeCurrentForTest(context.Background(), 7, operationID, svc, ResumeActionUserCompleted)
 
 	require.NoError(t, err, "a terminal business result must not become lifecycle unavailable/HTTP 500")
 	require.Equal(t, &OperationResult{OperationID: operationID, State: model.FeishuOperationUnknown}, result)
@@ -1088,7 +1147,7 @@ func TestWorkspaceLifecycleResumeKeepsPendingUserAuthWaitingWithoutDispatch(t *t
 		ExpiresAt: time.Now().Add(time.Minute),
 	}
 
-	result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionUserCompleted)
+	result, err := resumeCurrentForTest(context.Background(), 7, operationID, svc, ResumeActionUserCompleted)
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationWaitingUserAuth, result.State)
 	require.Nil(t, result.Action, "a pending session must not reconstruct or persist an authorization URL")
@@ -1110,7 +1169,7 @@ func TestWorkspaceLifecycleResumeRejectsUnrelatedAppScopeSession(t *testing.T) {
 		Phase: model.FeishuAuthPhaseAppScope, State: model.FeishuAuthSessionPending,
 	}
 
-	_, err := svc.Resume(context.Background(), 7, operationID, ResumeActionUserCompleted)
+	_, err := resumeCurrentForTest(context.Background(), 7, operationID, svc, ResumeActionUserCompleted)
 	require.ErrorIs(t, err, ErrWorkspaceLifecycleUnavailable)
 	require.Empty(t, auth.completeAppApprovalCalls)
 	require.Zero(t, dispatcher.calls)
@@ -1125,16 +1184,35 @@ func lifecycleRecoverySummary(t *testing.T, status, sessionID, phase string, kin
 	return encoded
 }
 
+func lifecycleWaitingSummary(t *testing.T, state, sessionID string) []byte {
+	t.Helper()
+	phase := ""
+	kind := RecoveryNone
+	switch state {
+	case model.FeishuOperationWaitingConnection:
+		phase, kind = model.FeishuAuthPhaseCreateApp, RecoveryCreateApp
+	case model.FeishuOperationWaitingAppScope:
+		phase, kind = model.FeishuAuthPhaseAppScope, RecoveryAppScope
+	case model.FeishuOperationWaitingUserAuth:
+		phase, kind = model.FeishuAuthPhaseUserAuth, RecoveryUserScope
+	case model.FeishuOperationWaitingConfirmation:
+		phase = "confirmation"
+	default:
+		t.Fatalf("unsupported waiting state %q", state)
+	}
+	return lifecycleRecoverySummary(t, state, sessionID, phase, kind)
+}
+
 func TestWorkspaceLifecycleResumeUserCompletedRequiresRecoverableWait(t *testing.T) {
 	op := &model.FeishuOperation{ID: "op-1", UserID: 7, Generation: 2, State: model.FeishuOperationNotStarted}
 	svc, _, _, _, dispatcher, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 2}, op)
 
-	_, err := svc.Resume(context.Background(), 7, "op-1", ResumeActionUserCompleted)
+	_, err := resumeCurrentForTest(context.Background(), 7, "op-1", svc, ResumeActionUserCompleted)
 	require.ErrorIs(t, err, ErrWorkspaceLifecycleInvalid)
 	require.Zero(t, dispatcher.calls, "an arbitrary operation must not be resumed by a browser acknowledgement")
 }
 
-func TestWorkspaceLifecycleResumeStaleAuthorizationAcknowledgementRecoversLegacyConfirmation(t *testing.T) {
+func TestWorkspaceLifecycleResumeLegacyConfirmationWithoutSessionFailsClosed(t *testing.T) {
 	op := &model.FeishuOperation{
 		ID: "op-legacy-confirmation", UserID: 7, Generation: 2,
 		State: model.FeishuOperationWaitingConfirmation, AgentRunID: 81, ToolCallID: "tool-legacy-confirmation",
@@ -1143,11 +1221,11 @@ func TestWorkspaceLifecycleResumeStaleAuthorizationAcknowledgementRecoversLegacy
 		UserID: 7, Provider: ProviderLark, Generation: 2,
 	}, op)
 
-	result, err := svc.Resume(context.Background(), 7, op.ID, ResumeActionUserCompleted)
+	result, err := resumeCurrentForTest(context.Background(), 7, op.ID, svc, ResumeActionUserCompleted)
 
-	require.NoError(t, err)
-	require.Equal(t, &OperationResult{OperationID: op.ID, State: model.FeishuOperationWaitingConfirmation}, result)
-	require.Equal(t, 1, dispatcher.calls, "the server state must override the stale card phase")
+	require.ErrorIs(t, err, ErrWorkspaceLifecycleUnavailable)
+	require.Nil(t, result)
+	require.Zero(t, dispatcher.calls, "an unfenced legacy card must never resume an operation")
 	require.Zero(t, operations.confirmed, "the browser acknowledgement must not reconstruct command input")
 }
 
@@ -1202,7 +1280,7 @@ func TestWorkspaceLifecycleResumeUserAuthorizationOutcomeMatrix(t *testing.T) {
 				return tc.completion, tc.completionErr
 			}
 
-			result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionUserCompleted)
+			result, err := resumeCurrentForTest(context.Background(), 7, operationID, svc, ResumeActionUserCompleted)
 			if tc.wantErr != nil {
 				require.Nil(t, result)
 				require.ErrorIs(t, err, tc.wantErr)
@@ -1277,7 +1355,7 @@ func TestWorkspaceLifecycleResumeExpiredPendingUserAuthorizationRefreshesWithout
 		return liveAction, nil
 	}
 
-	result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionUserCompleted)
+	result, err := resumeCurrentForTest(context.Background(), 7, operationID, svc, ResumeActionUserCompleted)
 
 	require.NoError(t, err)
 	require.Equal(t, 0, completeCalls, "an expired pending session must be replaced before CLI completion")
@@ -1303,7 +1381,7 @@ func TestWorkspaceLifecycleResumeUserCompletedObservesExecutingAndTerminalStates
 				UserID: 7, Provider: ProviderLark, Generation: 2,
 			}, op)
 
-			result, err := svc.Resume(context.Background(), 7, op.ID, ResumeActionUserCompleted)
+			result, err := resumeCurrentForTest(context.Background(), 7, op.ID, svc, ResumeActionUserCompleted)
 
 			require.NoError(t, err)
 			require.Equal(t, &OperationResult{OperationID: op.ID, State: state}, result)
@@ -1316,7 +1394,10 @@ func TestWorkspaceLifecycleResumeUserCompletedObservesExecutingAndTerminalStates
 }
 
 func TestWorkspaceLifecycleResumeConfirmationActionsAreIdempotentAfterStateAdvance(t *testing.T) {
-	op := &model.FeishuOperation{ID: "op-1", UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth}
+	op := &model.FeishuOperation{
+		ID: "op-1", UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth,
+		ResultSummaryJSON: lifecycleWaitingSummary(t, model.FeishuOperationWaitingUserAuth, "session-idempotent"),
+	}
 	svc, _, _, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 2}, op)
 
 	for _, state := range []string{
@@ -1326,7 +1407,10 @@ func TestWorkspaceLifecycleResumeConfirmationActionsAreIdempotentAfterStateAdvan
 		model.FeishuOperationWaitingUserAuth,
 	} {
 		op.State = state
-		result, err := svc.Resume(context.Background(), 7, "op-1", ResumeActionConfirmed)
+		if recoveryWaitingState(state) {
+			op.ResultSummaryJSON = lifecycleWaitingSummary(t, state, "session-idempotent")
+		}
+		result, err := resumeCurrentForTest(context.Background(), 7, "op-1", svc, ResumeActionConfirmed)
 		require.NoError(t, err)
 		require.Equal(t, &OperationResult{OperationID: "op-1", State: state}, result)
 		require.Zero(t, dispatcher.calls, "an already advanced operation must not be dispatched again")
@@ -1334,13 +1418,14 @@ func TestWorkspaceLifecycleResumeConfirmationActionsAreIdempotentAfterStateAdvan
 	}
 
 	op.State = model.FeishuOperationWaitingConfirmation
-	result, err := svc.Resume(context.Background(), 7, "op-1", ResumeActionConfirmed)
+	op.ResultSummaryJSON = lifecycleWaitingSummary(t, op.State, "session-idempotent")
+	result, err := resumeCurrentForTest(context.Background(), 7, "op-1", svc, ResumeActionConfirmed)
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationExecuting, result.State)
 	require.Equal(t, 1, operations.confirmed)
 
 	op.State = model.FeishuOperationNotStarted
-	_, err = svc.Resume(context.Background(), 7, "op-1", ResumeActionConfirmed)
+	_, err = resumeCurrentForTest(context.Background(), 7, "op-1", svc, ResumeActionConfirmed)
 	require.ErrorIs(t, err, ErrWorkspaceLifecycleInvalid)
 }
 
@@ -1359,6 +1444,7 @@ func TestWorkspaceLifecycleResumeConfirmedFinalizesTerminalExecutionResult(t *te
 			op := &model.FeishuOperation{
 				ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingConfirmation,
 				AgentRunID: uint64(70 + index), ToolCallID: fmt.Sprintf("tool-confirm-result-%d", index),
+				ResultSummaryJSON: lifecycleWaitingSummary(t, model.FeishuOperationWaitingConfirmation, "session-confirm-result"),
 			}
 			svc, _, workspace, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
 				UserID: 7, Provider: ProviderLark, Generation: 2,
@@ -1368,7 +1454,7 @@ func TestWorkspaceLifecycleResumeConfirmedFinalizesTerminalExecutionResult(t *te
 				return &OperationResult{OperationID: id, State: tc.state}, nil
 			}
 
-			result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionConfirmed)
+			result, err := resumeCurrentForTest(context.Background(), 7, operationID, svc, ResumeActionConfirmed)
 
 			require.NoError(t, err)
 			require.Equal(t, &OperationResult{OperationID: operationID, State: tc.state}, result)
@@ -1404,7 +1490,7 @@ func TestWorkspaceLifecycleResumeTerminalConfirmationActionsRepairAgentWait(t *t
 				UserID: 7, Provider: ProviderLark, Generation: 2,
 			}, op)
 
-			result, err := svc.Resume(context.Background(), 7, operationID, tc.action)
+			result, err := resumeCurrentForTest(context.Background(), 7, operationID, svc, tc.action)
 
 			require.NoError(t, err)
 			require.Equal(t, &OperationResult{OperationID: operationID, State: tc.state}, result)
@@ -1423,6 +1509,7 @@ func TestWorkspaceLifecycleResumeConfirmedRetriesSucceededContinuationWithoutRee
 	op := &model.FeishuOperation{
 		ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingConfirmation,
 		AgentRunID: 41, ToolCallID: "tool-confirmed-continuation",
+		ResultSummaryJSON: lifecycleWaitingSummary(t, model.FeishuOperationWaitingConfirmation, "session-confirmed-continuation"),
 	}
 	svc, _, workspace, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
 		UserID: 7, Provider: ProviderLark, Generation: 2,
@@ -1438,20 +1525,20 @@ func TestWorkspaceLifecycleResumeConfirmedRetriesSucceededContinuationWithoutRee
 		return &OperationResult{OperationID: id, State: model.FeishuOperationSucceeded}, nil
 	}
 
-	result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionConfirmed)
+	result, err := resumeCurrentForTest(context.Background(), 7, operationID, svc, ResumeActionConfirmed)
 	require.Nil(t, result)
 	require.ErrorIs(t, err, ErrWorkspaceLifecycleUnavailable)
 	require.Equal(t, 1, operations.confirmed)
 	require.Equal(t, 1, dispatcher.calls)
 	require.Equal(t, model.FeishuOperationSucceeded, workspace.operation.State)
 
-	result, err = svc.Resume(context.Background(), 7, operationID, ResumeActionConfirmed)
+	result, err = resumeCurrentForTest(context.Background(), 7, operationID, svc, ResumeActionConfirmed)
 	require.NoError(t, err)
 	require.Equal(t, &OperationResult{OperationID: operationID, State: model.FeishuOperationSucceeded}, result)
 	require.Equal(t, 1, operations.confirmed, "retry must not execute the confirmed Feishu operation again")
 	require.Equal(t, 2, dispatcher.calls, "retry must use the same Task12 dispatcher for durable compensation")
 
-	result, err = svc.Resume(context.Background(), 7, operationID, ResumeActionConfirmed)
+	result, err = resumeCurrentForTest(context.Background(), 7, operationID, svc, ResumeActionConfirmed)
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationSucceeded, result.State)
 	require.Equal(t, 1, operations.confirmed, "repeated confirmation remains operation-idempotent")
@@ -1469,14 +1556,14 @@ func TestWorkspaceLifecycleResumeUserCompletedRetriesSucceededContinuation(t *te
 	}, op)
 	dispatcher.results = []error{errors.New("task11 continuation was not claimed"), nil}
 
-	result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionUserCompleted)
+	result, err := resumeCurrentForTest(context.Background(), 7, operationID, svc, ResumeActionUserCompleted)
 	require.Nil(t, result)
 	require.ErrorIs(t, err, ErrWorkspaceLifecycleUnavailable)
 	require.Equal(t, 1, dispatcher.calls)
 	require.Zero(t, operations.confirmed)
 	require.Zero(t, operations.cancelled)
 
-	result, err = svc.Resume(context.Background(), 7, operationID, ResumeActionUserCompleted)
+	result, err = resumeCurrentForTest(context.Background(), 7, operationID, svc, ResumeActionUserCompleted)
 	require.NoError(t, err)
 	require.Equal(t, &OperationResult{OperationID: operationID, State: model.FeishuOperationSucceeded}, result)
 	require.Equal(t, 2, dispatcher.calls)
@@ -1490,7 +1577,7 @@ func TestWorkspaceLifecycleResumeSucceededOperationWithoutAgentContinuationOnlyR
 		UserID: 7, Provider: ProviderLark, Generation: 2,
 	}, op)
 
-	result, err := svc.Resume(context.Background(), 7, op.ID, ResumeActionUserCompleted)
+	result, err := resumeCurrentForTest(context.Background(), 7, op.ID, svc, ResumeActionUserCompleted)
 	require.NoError(t, err)
 	require.Equal(t, &OperationResult{OperationID: op.ID, State: model.FeishuOperationSucceeded}, result)
 	require.Zero(t, dispatcher.calls, "an operation with no original tool call has no Agent continuation to dispatch")
@@ -1506,7 +1593,7 @@ func TestWorkspaceLifecycleResumeCancelledSucceededOperationCompensatesContinuat
 		UserID: 7, Provider: ProviderLark, Generation: 2,
 	}, op)
 
-	result, err := svc.Resume(context.Background(), 7, op.ID, ResumeActionCancelled)
+	result, err := resumeCurrentForTest(context.Background(), 7, op.ID, svc, ResumeActionCancelled)
 	require.NoError(t, err)
 	require.Equal(t, &OperationResult{OperationID: op.ID, State: model.FeishuOperationSucceeded}, result)
 	require.Equal(t, 1, dispatcher.calls, "any acknowledgement of committed success must repair the exact Agent continuation")
@@ -1529,6 +1616,7 @@ func TestWorkspaceLifecycleResumeCancelledSettlesConcurrentTerminalResult(t *tes
 			op := &model.FeishuOperation{
 				ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingConfirmation,
 				AgentRunID: uint64(110 + index), ToolCallID: fmt.Sprintf("tool-cancel-race-result-%d", index),
+				ResultSummaryJSON: lifecycleWaitingSummary(t, model.FeishuOperationWaitingConfirmation, "session-cancel-race-result"),
 			}
 			svc, _, _, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
 				UserID: 7, Provider: ProviderLark, Generation: 2,
@@ -1537,7 +1625,7 @@ func TestWorkspaceLifecycleResumeCancelledSettlesConcurrentTerminalResult(t *tes
 				return &OperationResult{OperationID: id, State: tc.state}, nil
 			}
 
-			result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionCancelled)
+			result, err := resumeCurrentForTest(context.Background(), 7, operationID, svc, ResumeActionCancelled)
 
 			require.NoError(t, err)
 			require.Equal(t, &OperationResult{OperationID: operationID, State: tc.state}, result)
@@ -1571,6 +1659,7 @@ func TestWorkspaceLifecycleResumeCancelledReloadsConcurrentTerminalAfterCancelEr
 			op := &model.FeishuOperation{
 				ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingConfirmation,
 				AgentRunID: uint64(120 + index), ToolCallID: fmt.Sprintf("tool-cancel-race-error-%d", index),
+				ResultSummaryJSON: lifecycleWaitingSummary(t, model.FeishuOperationWaitingConfirmation, "session-cancel-race-error"),
 			}
 			svc, _, workspace, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
 				UserID: 7, Provider: ProviderLark, Generation: 2,
@@ -1580,7 +1669,7 @@ func TestWorkspaceLifecycleResumeCancelledReloadsConcurrentTerminalAfterCancelEr
 				return nil, errors.New("concurrent terminal transition")
 			}
 
-			result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionCancelled)
+			result, err := resumeCurrentForTest(context.Background(), 7, operationID, svc, ResumeActionCancelled)
 
 			require.NoError(t, err)
 			require.Equal(t, &OperationResult{OperationID: operationID, State: tc.state}, result)
@@ -1603,6 +1692,7 @@ func TestWorkspaceLifecycleResumeCancelledRetriesTerminalAgentWaitWithoutReCance
 	op := &model.FeishuOperation{
 		ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingConfirmation,
 		AgentRunID: 44, ToolCallID: "tool-cancelled-terminal-wait-retry",
+		ResultSummaryJSON: lifecycleWaitingSummary(t, model.FeishuOperationWaitingConfirmation, "session-cancelled-terminal-wait"),
 	}
 	svc, _, workspace, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
 		UserID: 7, Provider: ProviderLark, Generation: 2,
@@ -1624,7 +1714,7 @@ func TestWorkspaceLifecycleResumeCancelledRetriesTerminalAgentWaitWithoutReCance
 	// Cancel has committed, but terminating the Agent's external wait has not.
 	// The retry must compensate that exact wait instead of rejecting the now
 	// terminal operation and leaving the frontend stuck in a running state.
-	result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionCancelled)
+	result, err := resumeCurrentForTest(context.Background(), 7, operationID, svc, ResumeActionCancelled)
 	require.Nil(t, result)
 	require.ErrorIs(t, err, ErrWorkspaceLifecycleUnavailable)
 	require.Equal(t, model.FeishuOperationCancelled, workspace.operation.State)
@@ -1632,7 +1722,7 @@ func TestWorkspaceLifecycleResumeCancelledRetriesTerminalAgentWaitWithoutReCance
 	require.Len(t, agentWaits.calls, 1)
 	require.Equal(t, externalaction.TerminalOutcomeCancelled, agentWaits.calls[0].outcome)
 
-	result, err = svc.Resume(context.Background(), 7, operationID, ResumeActionCancelled)
+	result, err = resumeCurrentForTest(context.Background(), 7, operationID, svc, ResumeActionCancelled)
 	require.NoError(t, err)
 	require.Equal(t, &OperationResult{OperationID: operationID, State: model.FeishuOperationCancelled}, result)
 	require.Equal(t, 1, operations.cancelled, "retry must not call Operation.Cancel or execute a CLI command again")
@@ -1649,7 +1739,7 @@ func TestWorkspaceLifecycleResumeCancelledRetriesTerminalAgentWaitWithoutReCance
 		UserID: 7, Provider: ProviderLark, Generation: 2,
 	}, unknown)
 	unknownWaits := unknownSvc.agentWaits.(*lifecycleAgentWaitFake)
-	result, err = unknownSvc.Resume(context.Background(), 7, unknown.ID, ResumeActionCancelled)
+	result, err = resumeCurrentForTest(context.Background(), 7, unknown.ID, unknownSvc, ResumeActionCancelled)
 	require.NoError(t, err)
 	require.Equal(t, &OperationResult{OperationID: unknown.ID, State: model.FeishuOperationUnknown}, result)
 	require.Len(t, unknownWaits.calls, 1)
@@ -1662,7 +1752,7 @@ func TestWorkspaceLifecycleResumeCollapsesCrossUserToNotFound(t *testing.T) {
 	svc, _, workspace, _, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 8, Provider: ProviderLark, Generation: 1}, nil)
 	workspace.operationErr = gorm.ErrRecordNotFound
 
-	_, err := svc.Resume(context.Background(), 8, "op-owned-by-7", ResumeActionUserCompleted)
+	_, err := resumeCurrentForTest(context.Background(), 8, "op-owned-by-7", svc, ResumeActionUserCompleted)
 	require.ErrorIs(t, err, ErrWorkspaceLifecycleNotFound)
 }
 
@@ -1672,7 +1762,7 @@ func TestWorkspaceLifecycleResumeMapsOperationReadFailureToUnavailableWithoutDis
 	}, nil)
 	workspace.operationErr = errors.New("simulated operation store outage")
 
-	result, err := svc.Resume(context.Background(), 7, "op-1", ResumeActionUserCompleted)
+	result, err := resumeCurrentForTest(context.Background(), 7, "op-1", svc, ResumeActionUserCompleted)
 	require.Nil(t, result)
 	require.ErrorIs(t, err, ErrWorkspaceLifecycleUnavailable)
 	require.NotErrorIs(t, err, ErrWorkspaceLifecycleNotFound)
@@ -1840,10 +1930,46 @@ func TestWorkspaceLifecycleRefreshRebindsOperationSessionBeforeResume(t *testing
 	require.Equal(t, replacementSessionID, refreshedSummary.SessionID)
 	require.Equal(t, &replacementExpiry, refreshedSummary.ExpiresAt)
 
-	result, err := svc.Resume(context.Background(), 7, operationID, ResumeActionUserCompleted)
+	result, err := resumeCurrentForTest(context.Background(), 7, operationID, svc, ResumeActionUserCompleted)
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationWaitingConnection, result.State)
 	require.Zero(t, dispatcher.calls, "a pending replacement session must not dispatch the operation")
+}
+
+func TestWorkspaceLifecycleRefreshHandsAgentCardToReplacementSession(t *testing.T) {
+	operationID := "op-refresh-agent-card"
+	oldSessionID := "session-refresh-old"
+	newSessionID := "session-refresh-new"
+	expiresAt := time.Now().Add(time.Hour).UTC()
+	op := &model.FeishuOperation{
+		ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth,
+		AgentRunID: 91, ToolCallID: "tool-refresh-agent-card",
+		ResultSummaryJSON: lifecycleRecoverySummary(t, model.FeishuOperationWaitingUserAuth, oldSessionID, model.FeishuAuthPhaseUserAuth, RecoveryUserScope),
+	}
+	svc, _, workspace, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 2,
+	}, op)
+	workspace.activeSession = &model.FeishuAuthSession{
+		ID: oldSessionID, UserID: 7, Generation: 2, OperationID: &operationID,
+		Phase: model.FeishuAuthPhaseUserAuth, State: model.FeishuAuthSessionPending,
+	}
+	auth.refreshOperation = func(context.Context, uint, uint64, string, string, string, []byte) (*OperationAction, error) {
+		return &OperationAction{
+			Provider: ProviderLark, OperationID: operationID, SessionID: newSessionID,
+			Phase: model.FeishuAuthPhaseUserAuth, URL: "https://open.feishu.cn/authorize/new", ExpiresAt: expiresAt,
+		}, nil
+	}
+
+	result, err := svc.RefreshAction(context.Background(), 7, oldSessionID)
+
+	require.NoError(t, err)
+	require.Equal(t, newSessionID, result.Action.SessionID)
+	waits := svc.agentWaits.(*lifecycleAgentWaitFake)
+	require.Equal(t, []externalaction.Payload{{
+		Provider: ProviderLark, OperationID: operationID, SessionID: newSessionID,
+		ToolCallID: "tool-refresh-agent-card", Phase: model.FeishuAuthPhaseUserAuth, ExpiresAt: expiresAt,
+	}}, waits.handoffs)
+	require.Equal(t, [][]string{{oldSessionID}}, waits.handoffLineages)
 }
 
 func TestWorkspaceLifecycleRefreshRepairsLegacySupersededBinding(t *testing.T) {
@@ -2185,7 +2311,7 @@ func TestWorkspaceLifecycleResumeAndRefreshMapAccountStoreFailureToUnavailable(t
 	}, &model.FeishuOperation{ID: "op-1", UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth})
 	accounts.getErr = errors.New("simulated account store outage")
 
-	_, err := svc.Resume(context.Background(), 7, "op-1", ResumeActionUserCompleted)
+	_, err := resumeCurrentForTest(context.Background(), 7, "op-1", svc, ResumeActionUserCompleted)
 	require.ErrorIs(t, err, ErrWorkspaceLifecycleUnavailable)
 	require.Zero(t, dispatcher.calls)
 
