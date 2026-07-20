@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"numind-server/internal/pkg/middleware"
 )
@@ -349,9 +351,9 @@ func TestFileReadTool_Execute_AgentOutputsURL_ReadsSuccessfully(t *testing.T) {
 }
 
 func TestFileReadTool_Execute_Truncated(t *testing.T) {
-	srv := newHeadServer(t, 200, "text/plain", int64(fileReadMaxBytes+1))
+	srv := newHeadServer(t, 200, "text/plain", int64(fileReadDefaultLimitBytes+1))
 
-	parser := &mockFileParser{content: "some content", truncated: true}
+	parser := &mockFileParser{content: strings.Repeat("x", fileReadDefaultLimitBytes+1)}
 	tool := &fileReadTool{textParser: parser, headFn: http.Head}
 
 	input, _ := json.Marshal(fileReadInput{FileURL: baseURL(srv.URL)})
@@ -365,7 +367,234 @@ func TestFileReadTool_Execute_Truncated(t *testing.T) {
 		t.Fatalf("result is not valid JSON: %v", err)
 	}
 	if !out.Truncated {
-		t.Error("expected truncated=true when parser reports truncation")
+		t.Error("expected truncated=true when normalized content has another page")
+	}
+	if !out.HasMore || out.Truncated != out.HasMore {
+		t.Error("truncated must equal has_more")
+	}
+}
+
+func TestFileReadTool_Execute_Exact64KiBIsTerminal(t *testing.T) {
+	srv := newHeadServer(t, 200, "text/plain", int64(fileReadDefaultLimitBytes))
+	parser := &mockFileParser{content: strings.Repeat("x", fileReadDefaultLimitBytes)}
+	tool := &fileReadTool{textParser: parser, headFn: http.Head}
+	input, _ := json.Marshal(fileReadInput{FileURL: baseURL(srv.URL)})
+	result, err := tool.Execute(ctxUser123(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out fileReadOutput
+	_ = json.Unmarshal(result, &out)
+	if out.ReturnedBytes != fileReadDefaultLimitBytes || out.HasMore || out.Truncated || out.NextOffset != fileReadDefaultLimitBytes {
+		t.Fatalf("exact 64 KiB must be one terminal page: %+v", out)
+	}
+}
+
+func TestFileReadTool_Execute_ResumableReassemblesCompleteMixedUTF8(t *testing.T) {
+	srv := newHeadServer(t, 200, "text/plain", 400*1024)
+	content := strings.Repeat("中文🙂-agent-file-read\n", 18*1024)
+	parser := &mockFileParser{content: content}
+	tool := &fileReadTool{textParser: parser, headFn: http.Head}
+	fileURL := baseURL(srv.URL)
+
+	offset := 0
+	readToken := ""
+	var rebuilt strings.Builder
+	for pageNumber := 0; ; pageNumber++ {
+		if pageNumber > 20 {
+			t.Fatal("pagination did not terminate")
+		}
+		limit := fileReadDefaultLimitBytes
+		input, err := json.Marshal(fileReadInput{FileURL: fileURL, Offset: &offset, LimitBytes: &limit, ReadToken: readToken})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := tool.Execute(ctxUser123(), input)
+		if err != nil {
+			t.Fatalf("page %d failed: %v", pageNumber, err)
+		}
+		var out fileReadOutput
+		if err := json.Unmarshal(result, &out); err != nil {
+			t.Fatal(err)
+		}
+		if !utf8.ValidString(out.Content) {
+			t.Fatalf("page %d contains invalid UTF-8", pageNumber)
+		}
+		if out.Offset != offset || out.ReturnedBytes != len(out.Content) {
+			t.Fatalf("page %d offsets inconsistent: %+v", pageNumber, out)
+		}
+		if pageNumber == 0 {
+			readToken = out.ReadToken
+		} else if out.ReadToken != readToken {
+			t.Fatalf("read token changed across pages")
+		}
+		rebuilt.WriteString(out.Content)
+		offset = out.NextOffset
+		if !out.HasMore {
+			if out.Truncated {
+				t.Fatal("terminal page must have truncated=false")
+			}
+			break
+		}
+	}
+
+	if rebuilt.String() != content {
+		t.Fatalf("reassembled content mismatch: got %d bytes want %d", rebuilt.Len(), len(content))
+	}
+	wantHash := sha256.Sum256([]byte(content))
+	wantToken := fmt.Sprintf("sha256:%x", wantHash)
+	if readToken != wantToken {
+		t.Fatalf("read_token=%q want %q", readToken, wantToken)
+	}
+}
+
+func TestFileReadTool_Execute_UTF8BoundaryOffsetAndLimitValidation(t *testing.T) {
+	srv := newHeadServer(t, 200, "text/plain", 9)
+	parser := &mockFileParser{content: "A你🙂B"}
+	tool := &fileReadTool{textParser: parser, headFn: http.Head}
+	fileURL := baseURL(srv.URL)
+	for _, multiByteRune := range []string{"é", "你", "🙂"} {
+		parser.content = "A" + multiByteRune + "B"
+		boundaryLimit := 2 // lands inside each 2/3/4-byte rune after the ASCII prefix.
+		boundaryOffset := 0
+		boundaryInput, _ := json.Marshal(fileReadInput{FileURL: fileURL, Offset: &boundaryOffset, LimitBytes: &boundaryLimit})
+		boundaryResult, boundaryErr := tool.Execute(ctxUser123(), boundaryInput)
+		if boundaryErr != nil {
+			t.Fatal(boundaryErr)
+		}
+		var boundaryPage fileReadOutput
+		_ = json.Unmarshal(boundaryResult, &boundaryPage)
+		if boundaryPage.Content != "A" || boundaryPage.NextOffset != 1 || !utf8.ValidString(boundaryPage.Content) {
+			t.Fatalf("rune %q was split: %+v", multiByteRune, boundaryPage)
+		}
+	}
+	parser.content = "A你🙂B"
+
+	limit := 5 // byte 5 lands inside the four-byte emoji; end must retreat to byte 4.
+	zero := 0
+	input, _ := json.Marshal(fileReadInput{FileURL: fileURL, Offset: &zero, LimitBytes: &limit})
+	result, err := tool.Execute(ctxUser123(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first fileReadOutput
+	_ = json.Unmarshal(result, &first)
+	if first.Content != "A你" || first.ReturnedBytes != 4 || first.NextOffset != 4 || !first.HasMore {
+		t.Fatalf("unexpected rune-safe first page: %+v", first)
+	}
+
+	badOffset := 2 // middle of 你.
+	input, _ = json.Marshal(fileReadInput{FileURL: fileURL, Offset: &badOffset, LimitBytes: &limit, ReadToken: first.ReadToken})
+	result, err = tool.Execute(ctxUser123(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var soft fileReadOutput
+	_ = json.Unmarshal(result, &soft)
+	if !strings.Contains(soft.Error, "UTF-8") {
+		t.Fatalf("expected UTF-8 boundary soft error, got %+v", soft)
+	}
+
+	for _, invalid := range []int{0, fileReadMaxLimitBytes + 1} {
+		input, _ = json.Marshal(fileReadInput{FileURL: fileURL, LimitBytes: &invalid})
+		result, err = tool.Execute(ctxUser123(), input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = json.Unmarshal(result, &soft)
+		if soft.Error == "" {
+			t.Fatalf("limit_bytes=%d should be a soft error", invalid)
+		}
+	}
+
+	one := 1
+	input, _ = json.Marshal(fileReadInput{FileURL: fileURL, Offset: &zero, LimitBytes: &one})
+	result, err = tool.Execute(ctxUser123(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = json.Unmarshal(result, &first)
+	if first.Content != "A" || first.ReturnedBytes != 1 {
+		t.Fatalf("limit_bytes=1 must remain valid for ASCII: %+v", first)
+	}
+}
+
+func TestFileReadTool_Execute_OffsetEndAndReadTokenChange(t *testing.T) {
+	srv := newHeadServer(t, 200, "text/plain", 6)
+	parser := &mockFileParser{content: "abcdef"}
+	tool := &fileReadTool{textParser: parser, headFn: http.Head}
+	fileURL := baseURL(srv.URL)
+	limit := 3
+	zero := 0
+	input, _ := json.Marshal(fileReadInput{FileURL: fileURL, Offset: &zero, LimitBytes: &limit})
+	result, err := tool.Execute(ctxUser123(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first fileReadOutput
+	_ = json.Unmarshal(result, &first)
+
+	atEnd := len(parser.content)
+	input, _ = json.Marshal(fileReadInput{FileURL: fileURL, Offset: &atEnd, LimitBytes: &limit, ReadToken: first.ReadToken})
+	result, err = tool.Execute(ctxUser123(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var terminal fileReadOutput
+	_ = json.Unmarshal(result, &terminal)
+	if terminal.Content != "" || terminal.HasMore || terminal.NextOffset != atEnd {
+		t.Fatalf("offset==content_bytes must be a clean terminal page: %+v", terminal)
+	}
+
+	beyond := len(parser.content) + 1
+	input, _ = json.Marshal(fileReadInput{FileURL: fileURL, Offset: &beyond, LimitBytes: &limit, ReadToken: first.ReadToken})
+	result, err = tool.Execute(ctxUser123(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var soft fileReadOutput
+	_ = json.Unmarshal(result, &soft)
+	if !strings.Contains(soft.Error, "offset") {
+		t.Fatalf("offset beyond content must be a soft error: %+v", soft)
+	}
+
+	parser.content = "abcXYZ" // same URL changed between pages.
+	continuation := first.NextOffset
+	input, _ = json.Marshal(fileReadInput{FileURL: fileURL, Offset: &continuation, LimitBytes: &limit, ReadToken: first.ReadToken})
+	result, err = tool.Execute(ctxUser123(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = json.Unmarshal(result, &soft)
+	if !strings.Contains(soft.Error, "read_token") {
+		t.Fatalf("changed content must reject continuation: %+v", soft)
+	}
+
+	input, _ = json.Marshal(fileReadInput{FileURL: fileURL, Offset: &continuation, LimitBytes: &limit})
+	result, err = tool.Execute(ctxUser123(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = json.Unmarshal(result, &soft)
+	if !strings.Contains(soft.Error, "read_token is required") {
+		t.Fatalf("continuation without read_token must be rejected: %+v", soft)
+	}
+}
+
+func TestFileReadTool_InputSchemaContainsResumableFields(t *testing.T) {
+	tool := &fileReadTool{}
+	var schema map[string]any
+	if err := json.Unmarshal(tool.InputSchema(), &schema); err != nil {
+		t.Fatal(err)
+	}
+	properties := schema["properties"].(map[string]any)
+	for _, field := range []string{"offset", "limit_bytes", "read_token"} {
+		if _, ok := properties[field]; !ok {
+			t.Fatalf("InputSchema missing %s", field)
+		}
+	}
+	if properties["limit_bytes"].(map[string]any)["maximum"] != float64(fileReadMaxLimitBytes) {
+		t.Fatalf("limit_bytes maximum must be %d", fileReadMaxLimitBytes)
 	}
 }
 

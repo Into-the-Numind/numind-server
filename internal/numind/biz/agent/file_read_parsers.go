@@ -60,9 +60,12 @@ func (p *documentParserImpl) Parse(ctx context.Context, fileURL, _ string) (stri
 	if resp.StatusCode >= 400 {
 		return "", 0, false, fmt.Errorf("document fetch: HTTP %d", resp.StatusCode)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, docFetchMaxBytes))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, docFetchMaxBytes+1))
 	if err != nil {
 		return "", 0, false, fmt.Errorf("read body: %w", err)
+	}
+	if len(data) > docFetchMaxBytes {
+		return "", 0, false, fmt.Errorf("document exceeds 20 MiB download limit")
 	}
 
 	// Filename drives DocumentParser's extension dispatch; strip query/fragment.
@@ -75,11 +78,7 @@ func (p *documentParserImpl) Parse(ctx context.Context, fileURL, _ string) (stri
 	if err != nil {
 		return "", 0, false, err
 	}
-	truncated := len(text) > fileReadMaxBytes
-	if truncated {
-		text = text[:fileReadMaxBytes]
-	}
-	return text, 0, truncated, nil
+	return text, 0, false, nil
 }
 
 // imageParserImpl uses aiservice.OCR to extract text from images.
@@ -104,16 +103,11 @@ func (p *imageParserImpl) Parse(ctx context.Context, fileURL, _ string) (string,
 		return "", 0, false, fmt.Errorf("aiservice.OCR: %w", err)
 	}
 
-	content := resp.Text
-	truncated := len(content) > fileReadMaxBytes
-	if truncated {
-		content = content[:fileReadMaxBytes]
-	}
-	return content, 0, truncated, nil
+	return resp.Text, 0, false, nil
 }
 
-// textParserImpl reads text/plain or text/markdown content directly via HTTP GET,
-// capping the download at fileReadMaxBytes+1 bytes to detect truncation.
+// textParserImpl reads text/plain or text/markdown content directly via HTTP GET.
+// The 20 MiB + 1 read detects and rejects oversized sources without truncation.
 type textParserImpl struct{}
 
 func (p *textParserImpl) Parse(ctx context.Context, fileURL, _ string) (string, int, bool, error) {
@@ -142,15 +136,12 @@ func (p *textParserImpl) Parse(ctx context.Context, fileURL, _ string) (string, 
 		return "", 0, false, fmt.Errorf("text parser: HTTP %d", resp.StatusCode)
 	}
 
-	// Read at most fileReadMaxBytes+1 bytes so we can detect truncation.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(fileReadMaxBytes)+1))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(docFetchMaxBytes)+1))
 	if err != nil {
 		return "", 0, false, fmt.Errorf("read body: %w", err)
 	}
-
-	truncated := len(body) > fileReadMaxBytes
-	if truncated {
-		body = body[:fileReadMaxBytes]
+	if len(body) > docFetchMaxBytes {
+		return "", 0, false, fmt.Errorf("text file exceeds 20 MiB download limit")
 	}
-	return string(body), 0, truncated, nil
+	return string(body), 0, false, nil
 }

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/middleware"
@@ -18,18 +20,27 @@ import (
 
 // fileReadInput is the JSON input for the file_read tool.
 type fileReadInput struct {
-	FileURL string `json:"file_url"`
-	Prompt  string `json:"prompt,omitempty"`
+	FileURL    string `json:"file_url"`
+	Prompt     string `json:"prompt,omitempty"`
+	Offset     *int   `json:"offset,omitempty"`
+	LimitBytes *int   `json:"limit_bytes,omitempty"`
+	ReadToken  string `json:"read_token,omitempty"`
 }
 
 // fileReadOutput is the JSON output returned by the file_read tool.
 type fileReadOutput struct {
-	FileName  string `json:"file_name"`
-	MimeType  string `json:"mime_type"`
-	Content   string `json:"content"`
-	PageCount int    `json:"page_count,omitempty"`
-	ByteSize  int    `json:"byte_size"`
-	Truncated bool   `json:"truncated"`
+	FileName        string `json:"file_name"`
+	MimeType        string `json:"mime_type"`
+	Content         string `json:"content"`
+	PageCount       int    `json:"page_count,omitempty"`
+	ByteSize        int    `json:"byte_size"`
+	ContentByteSize int    `json:"content_byte_size"`
+	Offset          int    `json:"offset"`
+	ReturnedBytes   int    `json:"returned_bytes"`
+	NextOffset      int    `json:"next_offset"`
+	HasMore         bool   `json:"has_more"`
+	ReadToken       string `json:"read_token"`
+	Truncated       bool   `json:"truncated"`
 	// Error is set ONLY on the soft-error path (returnSoftError), mirroring the
 	// dedicated "error" field of web_search/web_fetch/image_gen so the Eino adapter's
 	// soft-error detector (softToolErrorMessage) narrates StateError, not a false
@@ -83,8 +94,8 @@ func (t *fileReadTool) Description() string {
 	return "Read the contents of an uploaded file by URL. Supports PDF, Word " +
 		"(.docx/.doc), Excel (.xlsx/.xls), PowerPoint (.pptx/.ppt), RTF, images " +
 		"(OCR), and plain text / markdown. " +
-		"Input: { file_url: string, prompt?: string }. " +
-		"Returns: { file_name, mime_type, content, page_count?, byte_size, truncated }."
+		"Input: { file_url: string, prompt?: string, offset?: integer, limit_bytes?: integer, read_token?: string }. " +
+		"Returns UTF-8-safe resumable pages with next_offset, has_more, and a content read_token."
 }
 func (t *fileReadTool) UserFacingName() string      { return "读取文件" }
 func (t *fileReadTool) NarrationVerb() string       { return "读取文件" }
@@ -92,8 +103,10 @@ func (t *fileReadTool) IsReadOnly() bool            { return true }
 func (t *fileReadTool) IsSearchOrReadCommand() bool { return true }
 func (t *fileReadTool) AlwaysLoad() bool            { return true }
 
-// fileReadMaxBytes is the maximum content size returned per file read.
-const fileReadMaxBytes = 200 * 1024
+const (
+	fileReadDefaultLimitBytes = 64 * 1024
+	fileReadMaxLimitBytes     = 64 * 1024
+)
 
 // attachmentPathRE matches /agent-attachments/<userID>/ OR /agent-outputs/<userID>/
 // in a URL path. Both prefixes are user-owned: agent-attachments holds files the
@@ -186,9 +199,13 @@ func (t *fileReadTool) returnSoftError(fileName, format string, args ...any) (To
 func (t *fileReadTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
+		"additionalProperties": false,
 		"properties": {
 			"file_url": {"type": "string", "format": "uri", "description": "URL of the uploaded file to read (e.g. an agent attachment)."},
-			"prompt":   {"type": "string", "description": "Optional instruction describing what to extract from the file."}
+			"prompt":   {"type": "string", "description": "Optional instruction describing what to extract from the file."},
+			"offset": {"type": "integer", "minimum": 0, "default": 0, "description": "UTF-8 byte offset in the normalized parsed text."},
+			"limit_bytes": {"type": "integer", "minimum": 1, "maximum": 65536, "default": 65536},
+			"read_token": {"type": "string", "description": "Return the previous page's content fingerprint when continuing."}
 		},
 		"required": ["file_url"]
 	}`)
@@ -210,6 +227,23 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	}
 	if in.FileURL == "" {
 		return t.returnSoftError("", "file_url is required")
+	}
+	offset := 0
+	if in.Offset != nil {
+		offset = *in.Offset
+	}
+	if offset < 0 {
+		return t.returnSoftError(path.Base(in.FileURL), "offset must be non-negative")
+	}
+	limitBytes := fileReadDefaultLimitBytes
+	if in.LimitBytes != nil {
+		limitBytes = *in.LimitBytes
+	}
+	if limitBytes < 1 || limitBytes > fileReadMaxLimitBytes {
+		return t.returnSoftError(path.Base(in.FileURL), "limit_bytes must be between 1 and %d", fileReadMaxLimitBytes)
+	}
+	if offset > 0 && in.ReadToken == "" {
+		return t.returnSoftError(path.Base(in.FileURL), "read_token is required when offset is greater than 0")
 	}
 
 	// Verify the file belongs to the requesting user.
@@ -287,40 +321,76 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	// and would 403 against bare private COS URLs OR HEAD-signed URLs.
 	var content string
 	var pageCount int
-	var truncated bool
+	var parserTruncated bool
 
 	switch {
 	case isDocumentReadable(mimeType, in.FileURL):
 		if t.documentParser == nil {
 			return t.returnSoftError(path.Base(in.FileURL), "document parser not configured")
 		}
-		content, pageCount, truncated, err = t.documentParser.Parse(ctx, fetchURL, in.Prompt)
+		content, pageCount, parserTruncated, err = t.documentParser.Parse(ctx, fetchURL, in.Prompt)
 	case strings.HasPrefix(mimeType, "image/"):
 		if t.imageParser == nil {
 			return t.returnSoftError(path.Base(in.FileURL), "image parser not configured")
 		}
-		content, _, truncated, err = t.imageParser.Parse(ctx, fetchURL, in.Prompt)
+		content, _, parserTruncated, err = t.imageParser.Parse(ctx, fetchURL, in.Prompt)
 	case mimeType == "text/plain" || mimeType == "text/markdown":
 		if t.textParser == nil {
 			return t.returnSoftError(path.Base(in.FileURL), "text parser not configured")
 		}
-		content, _, truncated, err = t.textParser.Parse(ctx, fetchURL, in.Prompt)
+		content, _, parserTruncated, err = t.textParser.Parse(ctx, fetchURL, in.Prompt)
 	default:
 		return t.returnSoftError(path.Base(in.FileURL), "unsupported MIME type %q (supported: PDF, Word/Excel/PowerPoint, images, plain text)", mimeType)
 	}
 	if err != nil {
 		return t.returnSoftError(path.Base(in.FileURL), "parse error: %v", err)
 	}
+	if parserTruncated {
+		return t.returnSoftError(path.Base(in.FileURL), "parser returned incomplete content; restart after the source parser is fixed")
+	}
+
+	normalizedContent := strings.ToValidUTF8(content, "\uFFFD")
+	contentHash := sha256.Sum256([]byte(normalizedContent))
+	readToken := fmt.Sprintf("sha256:%x", contentHash)
+	if in.ReadToken != "" && in.ReadToken != readToken {
+		return t.returnSoftError(path.Base(in.FileURL), "read_token does not match current file content; restart from offset 0")
+	}
+	contentByteSize := len(normalizedContent)
+	if offset > contentByteSize {
+		return t.returnSoftError(path.Base(in.FileURL), "offset %d exceeds content_byte_size %d", offset, contentByteSize)
+	}
+	if offset < contentByteSize && !utf8.RuneStart(normalizedContent[offset]) {
+		return t.returnSoftError(path.Base(in.FileURL), "offset %d is not a UTF-8 rune boundary", offset)
+	}
+
+	end := offset + limitBytes
+	if end > contentByteSize {
+		end = contentByteSize
+	}
+	for end > offset && end < contentByteSize && !utf8.RuneStart(normalizedContent[end]) {
+		end--
+	}
+	if end == offset && offset < contentByteSize {
+		return t.returnSoftError(path.Base(in.FileURL), "limit_bytes is too small to include the next UTF-8 rune")
+	}
+	pageContent := normalizedContent[offset:end]
+	hasMore := end < contentByteSize
 
 	// FileName comes from the canonical URL (not the presigned one), so the
 	// user sees "report.pdf" instead of a long query-string-decorated key.
 	out, _ := json.Marshal(fileReadOutput{
-		FileName:  path.Base(in.FileURL),
-		MimeType:  mimeType,
-		Content:   content,
-		PageCount: pageCount,
-		ByteSize:  byteSize,
-		Truncated: truncated,
+		FileName:        path.Base(in.FileURL),
+		MimeType:        mimeType,
+		Content:         pageContent,
+		PageCount:       pageCount,
+		ByteSize:        byteSize,
+		ContentByteSize: contentByteSize,
+		Offset:          offset,
+		ReturnedBytes:   len(pageContent),
+		NextOffset:      end,
+		HasMore:         hasMore,
+		ReadToken:       readToken,
+		Truncated:       hasMore,
 	})
 	return ToolResult(out), nil
 }

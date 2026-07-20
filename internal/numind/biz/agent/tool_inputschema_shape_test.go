@@ -86,7 +86,7 @@ func TestToolInputSchemas_MatchExecuteContract(t *testing.T) {
 		{"kb_search", (&kbSearchTool{}).InputSchema(),
 			[]string{"query", "doc_ids"}, []string{"query"}},
 		{"file_read", (&fileReadTool{}).InputSchema(),
-			[]string{"file_url", "prompt"}, []string{"file_url"}},
+			[]string{"file_url", "prompt", "offset", "limit_bytes", "read_token"}, []string{"file_url"}},
 
 		// ── Task 4: image / data / gen ──
 		{"analyze_image", (&analyzeImageTool{}).InputSchema(),
