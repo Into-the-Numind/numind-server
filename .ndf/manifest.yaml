@@ -4,16 +4,16 @@ features:
   ndf_version: '3.0'
   description: Show consecutive Feishu authorization cards without reload and atomically refresh expired-but-pending operation-bound device sessions.
   classification_reason: 'Standard: no schema/API/new integration change, but the customer bug spans backend and frontend and changes high-risk third-party authorization state handling across more than three files; the user confirmed fast Standard through Dev on 2026-07-20.'
-  last_updated_by: ai-s6
-  last_updated_at: '2026-07-20T03:08:00+08:00'
+  last_updated_by: ai-s6-dev-deployed
+  last_updated_at: '2026-07-20T08:44:08+08:00'
   created_at: '2026-07-20T01:23:25+08:00'
   track: standard
   stage: S6
   status: active
   repos: [numind-server, numind-web-v3]
-  branches: {numind-server: feature/feishu-sequential-auth-refresh, numind-web-v3: feature/feishu-sequential-auth-refresh}
-  worktrees: {numind-server: /private/tmp/wt-feishu-sequential-auth-refresh-numind-server, numind-web-v3: /private/tmp/wt-feishu-sequential-auth-refresh-numind-web-v3}
-  progress: {total_tasks: 7, completed_tasks: 6, reviewed_tasks: 6, current_task: 'T7 atomic merge and backend-first Dev deployment'}
+  branches: {numind-server: develop, numind-web-v3: develop}
+  worktrees: {}
+  progress: {total_tasks: 7, completed_tasks: 7, reviewed_tasks: 7, current_task: 'Dev deployed and healthy; await human acceptance. Production is out of scope.'}
   artifacts:
     requirement: requirements/feishu-sequential-auth-refresh.md
     proposal: proposals/feishu-sequential-auth-refresh-proposal.md
@@ -29,6 +29,8 @@ features:
   - 'S4 RED/GREEN: server commits 51bdabdd/1a614080 reproduce and fix expired-but-pending protocol-v2 user authorization refresh with exact transactional binding, credential/lease fail-closed matrices, no Base replay, and same-source concurrency. Web commits b36b2ac/16ca715 reproduce and fix the missing second external_action card without reload, preserve transient URL safety, and fence route, live-event, stale-snapshot, and overlapping-snapshot races.'
   - 'S4 gates: canonical UTC go test ./... and task lint pass; frontend 1120 unit tests, lint, type-check, and all seven Feishu Playwright scenarios pass. Independent final specification and quality/security reviewers both PASS with P0/P1/P2=0. The feature commit order in both repos remains customer RED before GREEN.'
   - 'S5 acceptance: canonical UTC ordinary, full race, and coverage commands pass independently; frontend full unit/lint/typecheck and all seven Feishu Playwright scenarios pass. Visual trace proves page load count remains one while the completed first card and pending second card coexist. Two unrelated baseline issues reproduce on clean develop and are isolated in the QA report; feature scope is ALL_PASS.'
+  - 'S6 merge: ndf-done atomically merged and pushed numind-server b251650f and numind-web-v3 1320257 to develop, then removed both feature worktrees and local feature branches.'
+  - 'S6 Dev deployment: server image develop-b251650f (digest sha256:1216becfb16f640a271d42d5f3af2b76881b0eeabbb319b3b856736109377ed9) and web image develop-1320257 (digest sha256:0f480784691b3c483203675fc7dafb703e4307cdc52c04a06a6bab63ed9756b2) are deployed. Public server, frontend, and frontend-proxy health checks pass; both containers are healthy and no critical startup error is present. Production remains untouched.'
   blockers: []
 
 - id: feishu-base-resume-outcome
