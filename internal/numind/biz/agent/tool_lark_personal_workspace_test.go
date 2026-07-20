@@ -1824,6 +1824,30 @@ func TestPlatformToolFactory_LarkPersonalWorkspaceBothOrNoneAndNoLegacyTools(t *
 	}
 }
 
+// Customer regression: an explicit “连接飞书” request must have a deterministic
+// connection tool. A read-only lark_inspect result cannot start authorization.
+func TestPlatformToolFactory_RegistersExplicitLarkConnectEntrypoint(t *testing.T) {
+	reader := &fakeSkillReadExecutor{}
+	inspector := &fakeLarkInspector{}
+	executor := &fakeLarkExecutor{}
+	factory := NewPlatformToolFactory(nil, nil)
+	SetFactoryLarkWorkspaceExecutors(factory, reader, inspector, executor)
+
+	tools, metadata, err := factory.LoadTools(context.Background())
+	require.NoError(t, err)
+
+	toolNames := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		toolNames = append(toolNames, tool.Name())
+	}
+	metadataNames := make([]string, 0, len(metadata))
+	for _, item := range metadata {
+		metadataNames = append(metadataNames, item.ToolName)
+	}
+	assert.Contains(t, toolNames, "lark_connect")
+	assert.Contains(t, metadataNames, "lark_connect")
+}
+
 func TestLarkPersonalWorkspace_BashExecRoutesFeishuToControlledTools(t *testing.T) {
 	tool := &bashExecTool{}
 	description := tool.Description()
