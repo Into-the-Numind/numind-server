@@ -7,12 +7,10 @@ import (
 	"numind-server/internal/numind/store"
 )
 
-type ToolFlag struct {
-	skillStore store.IAgentDefinitionStore
-}
+type ToolFlag struct{}
 
-func NewToolFlag(s store.IAgentDefinitionStore) permission.Validator {
-	return &ToolFlag{skillStore: s}
+func NewToolFlag(_ store.IAgentDefinitionStore) permission.Validator {
+	return &ToolFlag{}
 }
 
 func (v *ToolFlag) ID() string { return "ToolFlag" }

@@ -73,7 +73,7 @@ func TestApplyDefinitionToolPolicy_DirectFlagsCannotRestrictGlobalTools(t *testi
 	require.Equal(t, []string{"bash_exec", "web_search"}, req.ToolNames)
 }
 
-func TestApplyDefinitionToolPolicy_CategoryOnlyKeepsLegacyCallerPolicy(t *testing.T) {
+func TestApplyDefinitionToolPolicy_CategoryFlagsCannotEnableAllowlist(t *testing.T) {
 	req := RunRequest{ToolNames: []string{"bash_exec"}}
 	ad := &model.AgentDefinition{ToolFlags: datatypes.JSON(`{"code_sandbox":false}`)}
 

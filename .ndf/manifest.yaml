@@ -4,16 +4,16 @@ features:
   ndf_version: '3.0'
   description: Make every existing and future Agent receive every registered usable platform tool except the hard-disabled document_generate, while exposing exactly four platform file-authoring skills globally and retaining bound-only tenant skills.
   classification_reason: 'Standard: changes the cross-cutting Agent runtime authorization contract across Run/RunStream/resume, permission validation, official definitions, and future Agent defaults; security-sensitive and more than three files.'
-  last_updated_by: ai-s3
-  last_updated_at: '2026-07-20T23:45:00+08:00'
+  last_updated_by: ai-s4-local-review
+  last_updated_at: '2026-07-20T23:42:00+08:00'
   created_at: '2026-07-20T23:27:12+08:00'
   track: standard
-  stage: S3
+  stage: S5
   status: active
   repos: [numind-server]
   branches: {numind-server: feature/global-agent-full-tools}
   worktrees: {numind-server: /private/tmp/wt-global-agent-full-tools-numind-server}
-  progress: {total_tasks: 7, completed_tasks: 0, reviewed_tasks: 0, current_task: 'Task 1 RED-first global selection contract'}
+  progress: {total_tasks: 7, completed_tasks: 5, reviewed_tasks: 5, current_task: 'Task 6 S5 full verification'}
   artifacts:
     requirement: requirements/global-agent-full-tools.md
     proposal: proposals/global-agent-full-tools-proposal.md
@@ -24,6 +24,7 @@ features:
   - 'S1: tool_flags stays in storage/API for compatibility but stops restricting registration or execution; runtime safety continues in ownership, OAuth, permission, confirmation, sandbox, quota, and billing layers.'
   - 'S2: four disk platform skills are globally discoverable/loadable, while tenant-created and marketplace skills remain current-Agent-bound and tenant-isolated.'
   - 'S3: seven serial tasks preserve RED-first tests, two local S4 review passes, full S5 gates, and exact-image S6 Dev deployment; Prod is out of scope.'
+  - 'S4 local dual review PASS: Run/RunStream/Create/Answer/external-resume converge on Registry+IsEnabled; document_generate stays hard-disabled; all non-ToolFlag permission, tenant, OAuth, sandbox, confirmation, quota, and billing boundaries remain; four disk skills are global and DB/market skills remain bound-only. P0=0/P1=0; three stale P2 tests/comments repaired.'
   blockers: []
 - id: feishu-binding-continuity
   ndf_version: '3.0'

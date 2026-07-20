@@ -72,12 +72,7 @@ func TestToolFlag_ToolEnabled_Passthrough(t *testing.T) {
 	}
 }
 
-// TestToolFlag_FullOpenCategoryConfig_Passthrough guards the full-open default:
-// when the frontend stores its risk-CATEGORY keys all ENABLED (code_sandbox / media
-// / enable_skills = true), no tool is denied — bash_exec/image_gen pass because their
-// gating category is true, and load_skill/run_python/get_current_date are not gated
-// at all. (The complementary deny path — a category set false — is covered by
-// TestToolFlag_CategoryDisabled_Denies.)
+// Historical category keys are compatibility metadata under the global policy.
 func TestToolFlag_InertForCategoryKeyConfig(t *testing.T) {
 	flags, _ := datatypes.JSON([]byte(`{"code_sandbox": true, "media": true, "enable_skills": true}`)).MarshalJSON()
 	s := &fakeAgentDefinitionStore{
@@ -118,12 +113,7 @@ func TestToolFlag_ToolDisabled_PassthroughUnderGlobalPolicy(t *testing.T) {
 	}
 }
 
-// TestToolFlag_CategoryDisabled_Denies reproduces the broken-toggle bug: the
-// AgentAdvancedEdit UI stores risk-CATEGORY keys (code_sandbox / media / dangerous),
-// but the validator only ever checked raw tool names — so a parent disabling
-// "代码沙箱" wrote {"code_sandbox": false} yet bash_exec kept running (the validator
-// looked up flags["bash_exec"], found nothing, and passed through). A disabled risk
-// category must DENY the tools it gates.
+// Category false values from historical Agent definitions no longer restrict tools.
 func TestToolFlag_CategoryDisabled_PassthroughUnderGlobalPolicy(t *testing.T) {
 	flags, _ := datatypes.JSON([]byte(`{"code_sandbox": false, "media": false, "dangerous": false}`)).MarshalJSON()
 	s := &fakeAgentDefinitionStore{
@@ -150,10 +140,7 @@ func TestToolFlag_CategoryDisabled_PassthroughUnderGlobalPolicy(t *testing.T) {
 	}
 }
 
-// TestToolFlag_CategoryDisabled_OverridesStaleToolKey guards the legacy-data path:
-// an agent created before this fix has tool-name keys (bash_exec:true) in its flags.
-// If the parent later disables the category, the category-deny must win over the
-// stale per-tool true (so the UI toggle always takes effect regardless of merge/replace).
+// Mixed category/direct legacy values are equally non-authoritative.
 func TestToolFlag_MixedLegacyFlags_PassthroughUnderGlobalPolicy(t *testing.T) {
 	flags, _ := datatypes.JSON([]byte(`{"bash_exec": true, "code_sandbox": false}`)).MarshalJSON()
 	s := &fakeAgentDefinitionStore{

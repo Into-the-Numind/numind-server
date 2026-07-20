@@ -56,7 +56,7 @@ func WithStore(s store.IAgentPermissionStore) Option {
 	return func(g *PermissionGate) { g.permStore = s }
 }
 
-// WithSkillStore 注入 IAgentDefinitionStore（用于 ToolFlag 验证；与 runner.WithSkillStore 一致）。
+// WithSkillStore 保留装配兼容；ToolFlag 已不再读取 AgentDefinition 工具开关。
 func WithSkillStore(s store.IAgentDefinitionStore) Option {
 	return func(g *PermissionGate) { g.skillStore = s }
 }
