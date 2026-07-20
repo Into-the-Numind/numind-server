@@ -3,6 +3,7 @@ package attachment
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"image"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/sync/semaphore"
 	"gorm.io/gorm"
@@ -72,6 +74,7 @@ const (
 	ModalityPDF      = "pdf"
 	ModalityAudio    = "audio"
 	ModalityDocument = "document" // office docs: docx/doc/pptx/xlsx/rtf (local text extraction)
+	ModalityText     = "text"     // plain text / markdown (local extraction)
 	ModalityUnknown  = "unknown"
 
 	// DetectModality helpers
@@ -79,6 +82,8 @@ const (
 	mimePDF         = "application/pdf"
 	mimeAudioPrefix = "audio/"
 	mimeMP3         = "audio/mpeg"
+	mimeTextPlain   = "text/plain"
+	mimeTextMD      = "text/markdown"
 )
 
 // documentMIMEs is the set of office-document MIME types routed to the document
@@ -109,6 +114,8 @@ func DetectModality(mimeType string) string {
 		return ModalityPDF
 	case strings.HasPrefix(mimeType, mimeAudioPrefix), mimeType == mimeMP3:
 		return ModalityAudio
+	case mimeType == mimeTextPlain, mimeType == mimeTextMD:
+		return ModalityText
 	default:
 		if _, ok := documentMIMEs[mimeType]; ok {
 			return ModalityDocument
@@ -189,6 +196,12 @@ const (
 	// Document (office) size limit for local extraction; matches the agent
 	// attachment upload cap (biz/attachment/upload.go MaxUploadSize = 20MB).
 	maxDocumentBytes int64 = 20 * 1024 * 1024 // 20MB
+
+	// text_fallback remains a MySQL TEXT compatibility column. Canonical full
+	// content lives in parsed_content LONGTEXT; keep the wrapper below the
+	// 65,535-byte TEXT ceiling so a large successful parse cannot fail solely
+	// because of the legacy field.
+	maxTextFallbackBytes = 60 * 1024
 
 	// docDownloadTimeout bounds the HTTP GET when fetching a document's bytes.
 	docDownloadTimeout = 60 * time.Second
@@ -449,7 +462,7 @@ func (p *fallbackPool) generateOnce(ctx context.Context, att *model.AgentAttachm
 		return p.generatePDF(ctx, att)
 	case ModalityAudio:
 		return p.generateAudio(ctx, att)
-	case ModalityDocument:
+	case ModalityDocument, ModalityText:
 		return p.generateDocument(ctx, att)
 	default:
 		return fmt.Errorf("unsupported modality: %s", att.Modality)
@@ -493,11 +506,12 @@ func (p *fallbackPool) generateDocument(ctx context.Context, att *model.AgentAtt
 
 	fallbackText := composeDocumentFallback(att.Filename, filesizeKB, text)
 	completed := time.Now()
-	if err := p.store.UpdateFallback(ctx, att.ID, map[string]interface{}{
-		"text_fallback":         fallbackText,
-		"fallback_ready":        true,
-		"fallback_completed_at": completed,
-	}); err != nil {
+	fields := canonicalParsedContentFields(text, 0, completed)
+	fields["text_fallback"] = boundedTextFallback(fallbackText)
+	fields["fallback_ready"] = true
+	fields["fallback_error"] = nil
+	fields["fallback_completed_at"] = completed
+	if err := p.store.UpdateFallback(ctx, att.ID, fields); err != nil {
 		return fmt.Errorf("generateDocument UpdateFallback: %w", err)
 	}
 	return nil
@@ -615,16 +629,17 @@ func (p *fallbackPool) generateImage(ctx context.Context, att *model.AgentAttach
 		OCRText:           ocrText,
 	}
 	fallbackText := composeImageFallback(td)
+	canonicalText := composeCanonicalImageText(visDesc, ocrText)
 
 	// ── Persist ─────────────────────────────────────────────────────────────
 	completed := time.Now()
-	fields := map[string]interface{}{
-		"ocr_text":              nilIfEmpty(ocrText),
-		"vision_description":    nilIfEmpty(visDesc),
-		"text_fallback":         fallbackText,
-		"fallback_ready":        true,
-		"fallback_completed_at": completed,
-	}
+	fields := canonicalParsedContentFields(canonicalText, 0, completed)
+	fields["ocr_text"] = nilIfEmpty(ocrText)
+	fields["vision_description"] = nilIfEmpty(visDesc)
+	fields["text_fallback"] = boundedTextFallback(fallbackText)
+	fields["fallback_ready"] = true
+	fields["fallback_error"] = nil
+	fields["fallback_completed_at"] = completed
 	if err := p.store.UpdateFallback(ctx, att.ID, fields); err != nil {
 		return fmt.Errorf("generateImage UpdateFallback: %w", err)
 	}
@@ -678,11 +693,12 @@ func (p *fallbackPool) generatePDF(ctx context.Context, att *model.AgentAttachme
 
 	fallbackText := composePDFFallback(att.Filename, filesizeKB, extractedText)
 	completed := time.Now()
-	if err := p.store.UpdateFallback(ctx, att.ID, map[string]interface{}{
-		"text_fallback":         fallbackText,
-		"fallback_ready":        true,
-		"fallback_completed_at": completed,
-	}); err != nil {
+	fields := canonicalParsedContentFields(extractedText, 0, completed)
+	fields["text_fallback"] = boundedTextFallback(fallbackText)
+	fields["fallback_ready"] = true
+	fields["fallback_error"] = nil
+	fields["fallback_completed_at"] = completed
+	if err := p.store.UpdateFallback(ctx, att.ID, fields); err != nil {
 		return fmt.Errorf("generatePDF UpdateFallback: %w", err)
 	}
 	return nil
@@ -714,11 +730,12 @@ func (p *fallbackPool) generateAudio(ctx context.Context, att *model.AgentAttach
 
 	fallbackText := composeAudioFallback(att.Filename, durationSec, transcript)
 	completed := time.Now()
-	if err := p.store.UpdateFallback(ctx, att.ID, map[string]interface{}{
-		"text_fallback":         fallbackText,
-		"fallback_ready":        true,
-		"fallback_completed_at": completed,
-	}); err != nil {
+	fields := canonicalParsedContentFields(transcript, 0, completed)
+	fields["text_fallback"] = boundedTextFallback(fallbackText)
+	fields["fallback_ready"] = true
+	fields["fallback_error"] = nil
+	fields["fallback_completed_at"] = completed
+	if err := p.store.UpdateFallback(ctx, att.ID, fields); err != nil {
 		return fmt.Errorf("generateAudio UpdateFallback: %w", err)
 	}
 	return nil
@@ -736,6 +753,43 @@ func nilIfEmpty(s string) interface{} {
 		return nil
 	}
 	return s
+}
+
+// canonicalParsedContentFields returns the atomic DB update fragment shared
+// by every successful modality. Normalization happens once here so persisted
+// byte size and the file_read continuation token can never disagree.
+func canonicalParsedContentFields(content string, pageCount int, completed time.Time) map[string]interface{} {
+	normalized := strings.ToValidUTF8(content, "\uFFFD")
+	sum := sha256.Sum256([]byte(normalized))
+	return map[string]interface{}{
+		"parsed_content":           normalized,
+		"parsed_content_sha256":    fmt.Sprintf("sha256:%x", sum),
+		"parsed_content_byte_size": int64(len(normalized)),
+		"parsed_page_count":        pageCount,
+		"parsed_at":                completed,
+	}
+}
+
+func composeCanonicalImageText(visionDescription, ocrText string) string {
+	sections := make([]string, 0, 2)
+	if visionDescription != "" {
+		sections = append(sections, "画面描述：\n"+visionDescription)
+	}
+	if ocrText != "" {
+		sections = append(sections, "OCR提取的文字：\n"+ocrText)
+	}
+	return strings.Join(sections, "\n\n")
+}
+
+func boundedTextFallback(text string) string {
+	if len(text) <= maxTextFallbackBytes {
+		return text
+	}
+	end := maxTextFallbackBytes
+	for end > 0 && !utf8.RuneStart(text[end]) {
+		end--
+	}
+	return text[:end]
 }
 
 // audioFormatFromMIME extracts a short format hint from a MIME type string.

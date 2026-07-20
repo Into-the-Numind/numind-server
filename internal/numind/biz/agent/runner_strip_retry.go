@@ -5,7 +5,7 @@ package agent
 // Also provides the attachment-reminder system-prompt text (task 1.3 deferral):
 // when RunRequest.AttachmentHasFallback is true, runner.Run injects
 // attachmentReminderText into segment 5 ("System reminders") of the system
-// prompt so that text-only models know the images were converted to text.
+// prompt so the model reads referenced uploads before answering.
 //
 // This file implements the Layer 4 defensive fallback for multimodal capability
 // mismatches. When the upstream LLM returns a "model does not support image"
@@ -30,19 +30,18 @@ import (
 
 // attachmentReminderText is injected into system prompt segment 5 ("System
 // reminders") when RunRequest.AttachmentHasFallback is true. It tells the
-// text-only model that any images/PDFs in the user message have been converted
-// to text descriptions and should be answered from those descriptions.
+// model that uploaded content remains behind the file_read tool.
 //
 // This constant is package-internal; it is surfaced through runner.go where
 // runner.Run appends it to toolsSectionPlaceholder conditionally.
 //
 // Note: the body text must remain semantically consistent with
 // multimodal.go::BuildAttachmentReminderSegment — both describe the same
-// situation (attachments converted to text). This constant adds surrounding
+// situation (attachments represented by file_read references). This constant adds surrounding
 // newlines for system-prompt formatting; BuildAttachmentReminderSegment omits
 // them (callers handle their own spacing). Any wording change must be mirrored
 // in both places.
-const attachmentReminderText = "\n【附件说明】用户上传的图片/PDF 已转为文字描述。请基于描述内容回答用户问题。\n"
+const attachmentReminderText = "\n【附件说明】用户上传了附件。请先调用 file_read（优先使用 attachment_id）读取所需内容，再回答用户问题。\n"
 
 // stripImagesFromMessages walks the message list and replaces each image-type
 // MessagePart with a single placeholder text part. Image parts are NOT dropped —

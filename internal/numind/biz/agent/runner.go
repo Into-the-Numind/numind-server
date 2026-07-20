@@ -922,7 +922,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 
 	// Task 1.5 (task 1.3 deferral): inject attachment reminder into segment 5
 	// ("System reminders") when at least one attachment was routed through the
-	// text-fallback path. The caller (student_run_lifecycle.go) sets
+	// managed file_read reference path. The caller (student_run_lifecycle.go) sets
 	// AttachmentHasFallback via HasFallbackAttachments(msgs) after calling
 	// buildAgentInputForModel, so we don't need to re-check here.
 	if req.AttachmentHasFallback {

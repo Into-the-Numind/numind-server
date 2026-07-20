@@ -7,9 +7,14 @@ package attachment_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -81,13 +86,69 @@ func TestModalityDetection(t *testing.T) {
 		{"audio/wav", att.ModalityAudio},
 		{"audio/m4a", att.ModalityAudio},
 		{"application/octet-stream", att.ModalityUnknown},
-		{"text/plain", att.ModalityUnknown},
+		{"text/plain", att.ModalityText},
+		{"text/markdown", att.ModalityText},
 		{"", att.ModalityUnknown},
 	}
 	for _, tc := range cases {
 		got := att.DetectModality(tc.mimeType)
 		assert.Equal(t, tc.want, got, "mime=%q", tc.mimeType)
 	}
+}
+
+func TestGenerateTextPersistsCanonicalParsedContent(t *testing.T) {
+	const content = "客户画像：\n一线城市新手妈妈"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(content))
+	}))
+	defer server.Close()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+	row := &model.AgentAttachment{
+		UserID: 7, URL: server.URL + "/profile.txt", Filename: "profile.txt",
+		MimeType: "text/plain", Size: int64(len(content)), Modality: att.ModalityText,
+	}
+	require.NoError(t, s.Create(ctx, row))
+	require.NoError(t, att.NewFallbackService(s).GenerateNow(ctx, row))
+
+	got, err := s.GetByID(ctx, row.ID)
+	require.NoError(t, err)
+	require.True(t, got.FallbackReady)
+	require.Nil(t, got.FallbackError)
+	require.NotNil(t, got.ParsedContent)
+	assert.Equal(t, content, *got.ParsedContent)
+	assert.Equal(t, int64(len(content)), got.ParsedContentByteSize)
+	sum := sha256.Sum256([]byte(content))
+	assert.Equal(t, fmt.Sprintf("sha256:%x", sum), got.ParsedContentSHA256)
+	require.NotNil(t, got.ParsedAt)
+	require.NotNil(t, got.TextFallback)
+	assert.Contains(t, *got.TextFallback, content)
+}
+
+func TestGenerateLargeTextKeepsFullCanonicalContentAndBoundsLegacyFallback(t *testing.T) {
+	content := strings.Repeat("中", 25_000) // 75 KiB UTF-8, beyond MySQL TEXT.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(content))
+	}))
+	defer server.Close()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+	row := &model.AgentAttachment{
+		UserID: 7, URL: server.URL + "/large.txt", Filename: "large.txt",
+		MimeType: "text/plain", Size: int64(len(content)), Modality: att.ModalityText,
+	}
+	require.NoError(t, s.Create(ctx, row))
+	require.NoError(t, att.NewFallbackService(s).GenerateNow(ctx, row))
+
+	got, err := s.GetByID(ctx, row.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.ParsedContent)
+	assert.Equal(t, content, *got.ParsedContent)
+	require.NotNil(t, got.TextFallback)
+	assert.Less(t, len(*got.TextFallback), 65_535)
+	assert.True(t, utf8.ValidString(*got.TextFallback))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -318,6 +379,24 @@ func TestStore_GetByIDAndUser_Ownership(t *testing.T) {
 	assert.Contains(t, err.Error(), "GetByIDAndUser")
 }
 
+func TestStore_GetByURLAndUser_Ownership(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	row := &model.AgentAttachment{
+		UserID: 88, URL: "https://bucket.cos.ap-chengdu.myqcloud.com/agent-attachments/88/a.docx",
+		Filename: "a.docx", MimeType: "application/octet-stream", Modality: att.ModalityDocument,
+	}
+	require.NoError(t, s.Create(ctx, row))
+
+	got, err := s.GetByURLAndUser(ctx, row.URL, 88)
+	require.NoError(t, err)
+	require.Equal(t, row.ID, got.ID)
+
+	_, err = s.GetByURLAndUser(ctx, row.URL, 89)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "GetByURLAndUser")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // captureStore is a test double that wraps a real IAgentAttachmentStore
 // and records UpdateFallback calls.
@@ -336,6 +415,9 @@ func (c *captureStore) GetByID(ctx context.Context, id uint64) (*model.AgentAtta
 }
 func (c *captureStore) GetByIDAndUser(ctx context.Context, id uint64, userID uint) (*model.AgentAttachment, error) {
 	return c.inner.GetByIDAndUser(ctx, id, userID)
+}
+func (c *captureStore) GetByURLAndUser(ctx context.Context, rawURL string, userID uint) (*model.AgentAttachment, error) {
+	return c.inner.GetByURLAndUser(ctx, rawURL, userID)
 }
 func (c *captureStore) UpdateFallback(ctx context.Context, id uint64, fields map[string]interface{}) error {
 	c.updates = append(c.updates, fields)

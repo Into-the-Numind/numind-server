@@ -96,7 +96,7 @@ func composeErrorFallback(filename, modality, errMsg string) string {
 		return fmt.Sprintf("[PDF：%s，文本提取失败：%s]", filename, errMsg)
 	case ModalityAudio:
 		return fmt.Sprintf("[音频：%s，语音转文字失败：%s]", filename, errMsg)
-	case ModalityDocument:
+	case ModalityDocument, ModalityText:
 		return fmt.Sprintf("[文档：%s，文本提取失败：%s]", filename, errMsg)
 	default:
 		return fmt.Sprintf("[文件：%s，处理失败：%s]", filename, errMsg)

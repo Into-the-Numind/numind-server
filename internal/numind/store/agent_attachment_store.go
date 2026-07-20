@@ -23,6 +23,11 @@ type IAgentAttachmentStore interface {
 	// Returns gorm.ErrRecordNotFound if not found or if the owner does not match.
 	GetByIDAndUser(ctx context.Context, id uint64, userID uint) (*model.AgentAttachment, error)
 
+	// GetByURLAndUser resolves a legacy URL-only request to its persisted
+	// attachment while enforcing ownership. Returns gorm.ErrRecordNotFound when
+	// no row matches; callers may then use the controlled agent-output fallback.
+	GetByURLAndUser(ctx context.Context, rawURL string, userID uint) (*model.AgentAttachment, error)
+
 	// UpdateFallback writes fallback-related fields atomically.
 	// Uses a map to avoid the GORM bool zero-value gotcha (database.md §6).
 	UpdateFallback(ctx context.Context, id uint64, fields map[string]interface{}) error
@@ -76,6 +81,18 @@ func (s *agentAttachmentStore) GetByIDAndUser(ctx context.Context, id uint64, us
 		Where("id = ? AND user_id = ?", id, userID).
 		First(&att).Error; err != nil {
 		return nil, fmt.Errorf("agentAttachmentStore.GetByIDAndUser id=%d user=%d: %w", id, userID, err)
+	}
+	return &att, nil
+}
+
+// GetByURLAndUser resolves a canonical upload URL and enforces ownership.
+func (s *agentAttachmentStore) GetByURLAndUser(ctx context.Context, rawURL string, userID uint) (*model.AgentAttachment, error) {
+	var att model.AgentAttachment
+	if err := s.db.WithContext(ctx).
+		Where("user_id = ? AND url = ?", userID, rawURL).
+		Order("id DESC").
+		First(&att).Error; err != nil {
+		return nil, fmt.Errorf("agentAttachmentStore.GetByURLAndUser user=%d: %w", userID, err)
 	}
 	return &att, nil
 }
