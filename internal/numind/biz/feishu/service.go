@@ -498,6 +498,13 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 			}
 			return lifecycleStoredOperationSummary(operation), nil
 		}
+		// A legacy confirmation callback may race with the automatic migration.
+		// Once another request has moved the same encrypted operation forward,
+		// observing its current state is the only idempotent response: dispatching
+		// or confirming again could replay a Feishu write.
+		if operation.State == model.FeishuOperationExecuting || recoveryWaitingState(operation.State) {
+			return lifecycleStoredOperationSummary(operation), nil
+		}
 		if operation.State != model.FeishuOperationWaitingConfirmation {
 			return nil, ErrWorkspaceLifecycleInvalid
 		}

@@ -922,10 +922,10 @@ func (s *FeishuOperationService) Resume(ctx context.Context, userID uint, operat
 	return s.claimAndExecute(ctx, account, operation, persisted, priorSignature, false)
 }
 
-// Confirm advances exactly one high-risk operation from its persisted
-// waiting_confirmation state. The browser cannot supply argv or an override:
-// the encrypted request is re-opened only after user/generation ownership and
-// the state transition are checked under the existing operation lease.
+// Confirm is retained for rolling-upgrade compatibility with persisted
+// waiting_confirmation operations. Production no longer injects a confirmation
+// requester, so the method aliases Resume and re-opens only the original
+// encrypted request after the existing ownership and generation checks.
 func (s *FeishuOperationService) Confirm(ctx context.Context, userID uint, operationID string) (*OperationResult, error) {
 	if s != nil && s.confirmation == nil {
 		return s.Resume(ctx, userID, operationID)
@@ -1146,9 +1146,9 @@ func (s *FeishuOperationService) claimAndExecute(
 	gateHeld := false
 	var gateGuard *executionGateGuard
 	proofUsable := false
-	// High-risk operations intentionally do not hold the business CLI gate while
-	// waiting for a human. Once confirmed, however, their real invocation must
-	// acquire the same account-wide gate as every other CLI write.
+	// A legacy requester may still leave a high-risk operation waiting outside
+	// the business CLI gate. Production has no requester, so every connected
+	// operation acquires the same account-wide gate before invoking the CLI.
 	if operationRequiresExecutionGate(account, persisted, s.confirmation != nil) || confirmed ||
 		operation.State == model.FeishuOperationWaitingConfirmation {
 		executionCtx, finishStart, joinedStart, startErr := s.beginExecutionStart(ctx, operation)
@@ -1550,7 +1550,7 @@ func (s *FeishuOperationService) checkScopesBeforeWrite(
 // createOrGetOperation makes proof reservation and consumer creation one
 // transaction. If another distinct operation already consumed the proof, the
 // request is resealed without proof metadata and follows the normal high-risk
-// confirmation path.
+// execution path.
 func (s *FeishuOperationService) createOrGetOperation(
 	ctx context.Context,
 	candidate *model.FeishuOperation,
