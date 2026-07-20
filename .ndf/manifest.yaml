@@ -1,5 +1,33 @@
 schema_version: '2.0'
 features:
+- id: feishu-multi-auth-continuity
+  ndf_version: '3.0'
+  description: Keep sequential Feishu authorization, progress narration, intermediate tool state, and ambiguous-write verification continuous and truthful without reload.
+  classification_reason: 'Standard: customer bug spans backend/front-end durable continuation and high-risk external-write safety across more than three files. User authorized fast Standard through Dev with necessary regressions and mandatory quality gates only.'
+  last_updated_by: ai-s5
+  last_updated_at: '2026-07-20T18:06:03+08:00'
+  created_at: '2026-07-20T17:43:42+08:00'
+  track: standard
+  stage: S5
+  status: active
+  repos: [numind-server, numind-web-v3]
+  branches: {numind-server: feature/feishu-multi-auth-continuity, numind-web-v3: feature/feishu-multi-auth-continuity}
+  worktrees: {numind-server: /private/tmp/wt-feishu-multi-auth-continuity-numind-server, numind-web-v3: /private/tmp/wt-feishu-multi-auth-continuity-numind-web-v3}
+  progress: {total_tasks: 7, completed_tasks: 6, reviewed_tasks: 1, current_task: 'Merge, deploy, and verify Dev'}
+  artifacts:
+    requirement: requirements/feishu-multi-auth-continuity.md
+    proposal: proposals/feishu-multi-auth-continuity-proposal.md
+    spec: docs/superpowers/specs/2026-07-20-feishu-multi-auth-continuity-design.md
+    plan: docs/superpowers/plans/2026-07-20-feishu-multi-auth-continuity.md
+    qa: docs/superpowers/qa/2026-07-20-feishu-multi-auth-continuity.md
+  decisions:
+  - 'S0: Dev run 252 and browser/network evidence identify four linked causes: the snapshot omits top-level session_id and is discarded by live polling; in-place narration does not trigger follow-scroll; explicit tool errors are rewritten green on run completion; provider history drops successful intermediate lark_execute results across a second authorization yield, causing duplicate writes and an eventual unknown_result.'
+  - 'S1: retain the existing LLM-led architecture and existing authorization/refresh APIs. Reject URL persistence, page reload, blanket success repainting, unknown-write replay, and a new deterministic workflow layer.'
+  - 'S2: use an explicit snapshot identity plus rolling fallback; one-shot operation-bound URL recovery; monotonic presentation follow signal; bounded provider-safe lark_execute result persistence with stripped arguments; and at most three catalog-proven read-only verification calls while the unknown-write fence remains closed.'
+  - 'S3: customer RED commits precede production changes in both repositories; focused regression plus mandatory lint/type gates only; backend-first Dev deployment; production excluded.'
+  - 'S4: self-review found and closed the cross-worker unknown-result gap: durable transcript seeding preserves the strongest write fence while still allowing bounded catalog-proven reads. One-time URLs and model argv are not persisted; explicit tool failures remain truthful.'
+  - 'S5: 137 focused frontend tests pass; affected Go packages and persistence/authorization regressions pass; Go lint, Vue lint, Vue type-check, and diff checks pass. Real multi-card interaction is intentionally reserved for the user Dev acceptance requested in this expedited Standard run.'
+  blockers: []
 - id: lark-auth-resume-stall
   ndf_version: '3.0'
   description: Preserve thinking-model context across Feishu authorization resume and keep parallel lark_execute calls recoverable instead of terminal-red.
