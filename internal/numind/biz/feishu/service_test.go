@@ -1184,6 +1184,25 @@ func lifecycleRecoverySummary(t *testing.T, status, sessionID, phase string, kin
 	return encoded
 }
 
+func lifecycleWaitingSummary(t *testing.T, state, sessionID string) []byte {
+	t.Helper()
+	phase := ""
+	kind := RecoveryNone
+	switch state {
+	case model.FeishuOperationWaitingConnection:
+		phase, kind = model.FeishuAuthPhaseCreateApp, RecoveryCreateApp
+	case model.FeishuOperationWaitingAppScope:
+		phase, kind = model.FeishuAuthPhaseAppScope, RecoveryAppScope
+	case model.FeishuOperationWaitingUserAuth:
+		phase, kind = model.FeishuAuthPhaseUserAuth, RecoveryUserScope
+	case model.FeishuOperationWaitingConfirmation:
+		phase = "confirmation"
+	default:
+		t.Fatalf("unsupported waiting state %q", state)
+	}
+	return lifecycleRecoverySummary(t, state, sessionID, phase, kind)
+}
+
 func TestWorkspaceLifecycleResumeUserCompletedRequiresRecoverableWait(t *testing.T) {
 	op := &model.FeishuOperation{ID: "op-1", UserID: 7, Generation: 2, State: model.FeishuOperationNotStarted}
 	svc, _, _, _, dispatcher, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 2}, op)
@@ -1375,7 +1394,10 @@ func TestWorkspaceLifecycleResumeUserCompletedObservesExecutingAndTerminalStates
 }
 
 func TestWorkspaceLifecycleResumeConfirmationActionsAreIdempotentAfterStateAdvance(t *testing.T) {
-	op := &model.FeishuOperation{ID: "op-1", UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth}
+	op := &model.FeishuOperation{
+		ID: "op-1", UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth,
+		ResultSummaryJSON: lifecycleWaitingSummary(t, model.FeishuOperationWaitingUserAuth, "session-idempotent"),
+	}
 	svc, _, _, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 2}, op)
 
 	for _, state := range []string{
@@ -1385,6 +1407,9 @@ func TestWorkspaceLifecycleResumeConfirmationActionsAreIdempotentAfterStateAdvan
 		model.FeishuOperationWaitingUserAuth,
 	} {
 		op.State = state
+		if recoveryWaitingState(state) {
+			op.ResultSummaryJSON = lifecycleWaitingSummary(t, state, "session-idempotent")
+		}
 		result, err := resumeCurrentForTest(context.Background(), 7, "op-1", svc, ResumeActionConfirmed)
 		require.NoError(t, err)
 		require.Equal(t, &OperationResult{OperationID: "op-1", State: state}, result)
@@ -1393,6 +1418,7 @@ func TestWorkspaceLifecycleResumeConfirmationActionsAreIdempotentAfterStateAdvan
 	}
 
 	op.State = model.FeishuOperationWaitingConfirmation
+	op.ResultSummaryJSON = lifecycleWaitingSummary(t, op.State, "session-idempotent")
 	result, err := resumeCurrentForTest(context.Background(), 7, "op-1", svc, ResumeActionConfirmed)
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationExecuting, result.State)
@@ -1418,6 +1444,7 @@ func TestWorkspaceLifecycleResumeConfirmedFinalizesTerminalExecutionResult(t *te
 			op := &model.FeishuOperation{
 				ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingConfirmation,
 				AgentRunID: uint64(70 + index), ToolCallID: fmt.Sprintf("tool-confirm-result-%d", index),
+				ResultSummaryJSON: lifecycleWaitingSummary(t, model.FeishuOperationWaitingConfirmation, "session-confirm-result"),
 			}
 			svc, _, workspace, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
 				UserID: 7, Provider: ProviderLark, Generation: 2,
@@ -1482,6 +1509,7 @@ func TestWorkspaceLifecycleResumeConfirmedRetriesSucceededContinuationWithoutRee
 	op := &model.FeishuOperation{
 		ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingConfirmation,
 		AgentRunID: 41, ToolCallID: "tool-confirmed-continuation",
+		ResultSummaryJSON: lifecycleWaitingSummary(t, model.FeishuOperationWaitingConfirmation, "session-confirmed-continuation"),
 	}
 	svc, _, workspace, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
 		UserID: 7, Provider: ProviderLark, Generation: 2,
@@ -1588,6 +1616,7 @@ func TestWorkspaceLifecycleResumeCancelledSettlesConcurrentTerminalResult(t *tes
 			op := &model.FeishuOperation{
 				ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingConfirmation,
 				AgentRunID: uint64(110 + index), ToolCallID: fmt.Sprintf("tool-cancel-race-result-%d", index),
+				ResultSummaryJSON: lifecycleWaitingSummary(t, model.FeishuOperationWaitingConfirmation, "session-cancel-race-result"),
 			}
 			svc, _, _, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
 				UserID: 7, Provider: ProviderLark, Generation: 2,
@@ -1630,6 +1659,7 @@ func TestWorkspaceLifecycleResumeCancelledReloadsConcurrentTerminalAfterCancelEr
 			op := &model.FeishuOperation{
 				ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingConfirmation,
 				AgentRunID: uint64(120 + index), ToolCallID: fmt.Sprintf("tool-cancel-race-error-%d", index),
+				ResultSummaryJSON: lifecycleWaitingSummary(t, model.FeishuOperationWaitingConfirmation, "session-cancel-race-error"),
 			}
 			svc, _, workspace, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
 				UserID: 7, Provider: ProviderLark, Generation: 2,
@@ -1662,6 +1692,7 @@ func TestWorkspaceLifecycleResumeCancelledRetriesTerminalAgentWaitWithoutReCance
 	op := &model.FeishuOperation{
 		ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingConfirmation,
 		AgentRunID: 44, ToolCallID: "tool-cancelled-terminal-wait-retry",
+		ResultSummaryJSON: lifecycleWaitingSummary(t, model.FeishuOperationWaitingConfirmation, "session-cancelled-terminal-wait"),
 	}
 	svc, _, workspace, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
 		UserID: 7, Provider: ProviderLark, Generation: 2,
