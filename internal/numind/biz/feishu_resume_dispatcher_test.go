@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"numind-server/internal/numind/biz/agent"
 	"numind-server/internal/numind/biz/feishu"
@@ -51,12 +52,33 @@ func (f *dispatcherOperationFake) callCount() int {
 }
 
 type dispatcherAgentResumerFake struct {
-	mu            sync.Mutex
-	results       []agent.ExternalToolResult
-	finalizations []dispatcherFinalization
-	err           error
-	finalizeErr   error
-	finalized     bool
+	mu              sync.Mutex
+	results         []agent.ExternalToolResult
+	finalizations   []dispatcherFinalization
+	handoffSessions []string
+	err             error
+	finalizeErr     error
+	finalized       bool
+}
+
+func (f *dispatcherAgentResumerFake) HandoffExternalToolWait(
+	_ context.Context,
+	_ uint,
+	_ uint64,
+	_, _ string,
+	_ []string,
+	action agent.ExternalActionPayload,
+) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.handoffSessions = append(f.handoffSessions, action.SessionID)
+	return true, nil
+}
+
+func (f *dispatcherAgentResumerFake) handoffSnapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.handoffSessions...)
 }
 
 type dispatcherFinalization struct {
@@ -369,6 +391,27 @@ func TestWorkspaceResumeDispatcher_SucceededOperationBackfillsOriginalToolResult
 		"ok":true,"state":"succeeded","operation_id":"operation-1",
 		"data":{"document_id":"doc-1"}
 	}`, string(got[0].Result))
+}
+
+func TestWorkspaceResumeDispatcherHandsCreateAppForwardToUserAuth(t *testing.T) {
+	operations := &dispatcherOperationFake{result: &feishu.OperationResult{
+		OperationID: "operation-user-438",
+		State:       model.FeishuOperationWaitingUserAuth,
+		AgentRunID:  261,
+		ToolCallID:  "lark-call-438",
+		Action: &feishu.OperationAction{
+			Provider:    feishu.ProviderLark,
+			OperationID: "operation-user-438",
+			SessionID:   "user-auth-new",
+			Phase:       model.FeishuAuthPhaseUserAuth,
+			ExpiresAt:   time.Now().Add(time.Hour),
+		},
+	}}
+	resumer := &dispatcherAgentResumerFake{}
+
+	require.NoError(t, NewWorkspaceResumeDispatcher(operations, resumer).
+		DispatchResume(context.Background(), 438, "operation-user-438"))
+	require.Equal(t, []string{"user-auth-new"}, resumer.handoffSnapshot())
 }
 
 func TestWorkspaceResumeDispatcher_WaitingDoesNotBackfillAndFailuresFinalizeSafely(t *testing.T) {
