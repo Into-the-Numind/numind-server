@@ -505,7 +505,8 @@ func TestLarkPersonalWorkspace_SkillReadPublishesHostedPolicy(t *testing.T) {
 	assert.NotContains(t, output.HostedPolicy, "skill_receipts")
 	assert.Contains(t, output.HostedPolicy, "最多允许 5 次总尝试")
 	assert.Contains(t, output.HostedPolicy, "不能原样重复")
-	assert.Contains(t, output.HostedPolicy, "unknown_result 必须立即停止")
+	assert.Contains(t, output.HostedPolicy, "unknown_result 必须立即停止所有写入")
+	assert.Contains(t, output.HostedPolicy, "只读 list/get/fetch 命令核验结果")
 }
 
 // Customer regression (Dev run 211): a fresh conversation only had a document
@@ -1296,6 +1297,44 @@ func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *tes
 		require.Empty(t, executor.snapshot())
 	})
 
+	t.Run("durable transcript keeps unknown write fenced after successful verification", func(t *testing.T) {
+		const runID = uint64(816)
+		larkExecuteRetryClearRun(runID)
+		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+		unknown, err := feishu.MarshalLarkToolResult(&feishu.OperationResult{
+			OperationID: "op-durable-unknown", State: model.FeishuOperationUnknown,
+			Failure: &feishu.OperationFailure{
+				Code: feishu.PublicCodeUnknownResult, Category: "unknown_result", BusinessStarted: true,
+			},
+		})
+		require.NoError(t, err)
+		transcript, err := json.Marshal([]map[string]any{
+			{"role": "tool", "tool_call_id": "write-unknown", "content": string(unknown)},
+			{"role": "tool", "tool_call_id": "verification-read", "content": `{"ok":true,"state":"succeeded","operation_id":"op-read","data":{"items":[]}}`},
+		})
+		require.NoError(t, err)
+		require.True(t, larkExecuteRetrySeedTranscript(runID, transcript))
+		validation, err := feishu.MarshalLarkToolResult(&feishu.OperationResult{
+			OperationID: "op-later-validation", State: model.FeishuOperationFailed,
+			Failure: &feishu.OperationFailure{
+				Code: feishu.PublicCodeValidationError, Category: "validation", BusinessStarted: false,
+			},
+		})
+		require.NoError(t, err)
+		require.True(t, larkExecuteRetrySeedExternalResult(runID, validation))
+
+		executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+			OperationID: "must-not-run", State: model.FeishuOperationSucceeded, Data: json.RawMessage(`{"ok":true}`),
+		}}
+		result, err := (&larkExecuteTool{executor: executor}).Execute(
+			larkPersonalWorkspaceContext(7, runID, "write-after-worker-change"),
+			ToolInput(`{"argv":["base","+field-create","--base-token","bascnABCDEFG123","--table-id","tblABCDEFG123","--json","{\"name\":\"测试备注\",\"type\":\"text\"}"]}`),
+		)
+		requireSafeLarkSoftError(t, result, err)
+		require.Contains(t, string(result), "不可自动重试")
+		require.Empty(t, executor.snapshot())
+	})
+
 	t.Run("unknown started write stops the run", func(t *testing.T) {
 		const runID = uint64(811)
 		larkExecuteRetryClearRun(runID)
@@ -1335,7 +1374,7 @@ func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *tes
 		tool := &larkExecuteTool{executor: executor}
 		unknown, err := tool.Execute(
 			larkPersonalWorkspaceContext(7, runID, "field-create-unknown"),
-			ToolInput(`{"argv":["base","+field-create","--base-token","bas_1","--table-id","tbl_1","--json","{\"name\":\"测试备注\",\"type\":\"text\"}"]}`),
+			ToolInput(`{"argv":["base","+field-create","--base-token","bascnABCDEFG123","--table-id","tblABCDEFG123","--json","{\"name\":\"测试备注\",\"type\":\"text\"}"]}`),
 		)
 		require.NoError(t, err)
 		require.Contains(t, string(unknown), `"category":"unknown_result"`)
@@ -1348,14 +1387,14 @@ func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *tes
 		executor.mu.Unlock()
 		verified, err := tool.Execute(
 			larkPersonalWorkspaceContext(7, runID, "field-list-verification"),
-			ToolInput(`{"argv":["base","+field-list","--base-token","bas_1","--table-id","tbl_1"]}`),
+			ToolInput(`{"argv":["base","+field-list","--base-token","bascnABCDEFG123","--table-id","tblABCDEFG123"]}`),
 		)
 		require.NoError(t, err)
 		require.Contains(t, string(verified), `"ok":true`)
 
 		blockedWrite, err := tool.Execute(
 			larkPersonalWorkspaceContext(7, runID, "field-create-duplicate"),
-			ToolInput(`{"argv":["base","+field-create","--base-token","bas_1","--table-id","tbl_1","--json","{\"name\":\"测试备注\",\"type\":\"text\"}"]}`),
+			ToolInput(`{"argv":["base","+field-create","--base-token","bascnABCDEFG123","--table-id","tblABCDEFG123","--json","{\"name\":\"测试备注\",\"type\":\"text\"}"]}`),
 		)
 		requireSafeLarkSoftError(t, blockedWrite, err)
 		require.Contains(t, string(blockedWrite), "不可自动重试")

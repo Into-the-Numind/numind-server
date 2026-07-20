@@ -173,8 +173,9 @@ func truncateRunes(s string, n int) string {
 // V1.5 compact-dead-schema-cleanup — CompactSummary 字段（legacy V1）已删；
 // 前端 resume flow 不再依赖此字段（之前永远是空串）。
 type SessionSnapshot struct {
-	Run      RunSummary  `json:"run"`
-	Messages interface{} `json:"messages"` // frontend-shaped AgentMessage array
+	SessionID string      `json:"session_id"`
+	Run       RunSummary  `json:"run"`
+	Messages  interface{} `json:"messages"` // frontend-shaped AgentMessage array
 }
 
 // StudentQueryService handles the student-facing read + session-management endpoints.
@@ -291,7 +292,8 @@ func (s *StudentQueryService) GetSessionSnapshot(ctx context.Context, userID uin
 	runSummary := *summaries[0]
 
 	snap := &SessionSnapshot{
-		Run: runSummary,
+		SessionID: sessionID,
+		Run:       runSummary,
 	}
 
 	// Concatenate all messages chronologically (ListBySession yields DESC, so process in reverse)

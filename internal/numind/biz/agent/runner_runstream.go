@@ -118,6 +118,7 @@ func (r *agentRunner) RunStream(
 	if err != nil {
 		return nil, fmt.Errorf("AgentRunner.RunStream load run: %w", err)
 	}
+	larkExecuteRetrySeedTranscript(run.ID, json.RawMessage(run.Messages))
 	if len(req.ExternalContinuationResult) != 0 {
 		larkExecuteRetrySeedExternalResult(run.ID, req.ExternalContinuationResult)
 	}

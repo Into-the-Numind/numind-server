@@ -8,6 +8,7 @@ import (
 )
 
 const larkExecuteMaxCorrectableAttempts = 5
+const larkExecuteMaxUnknownVerificationReads = 3
 
 type larkExecuteRetryPhase uint8
 
@@ -16,6 +17,7 @@ const (
 	larkRetryNormalInFlight
 	larkRetryCorrectionAvailable
 	larkRetryCorrectionInFlight
+	larkRetryVerificationInFlight
 	larkRetryExhausted
 )
 
@@ -24,6 +26,7 @@ type larkExecuteRetryAttempt uint8
 const (
 	larkExecuteNormalAttempt larkExecuteRetryAttempt = iota
 	larkExecuteCorrectionAttempt
+	larkExecuteVerificationAttempt
 )
 
 type larkExecuteRetryBlockReason uint8
@@ -41,6 +44,7 @@ type larkExecuteRetryState struct {
 	correctableFailures uint8
 	terminalStop        bool
 	lastCategory        string
+	verificationReads   uint8
 }
 
 // larkExecuteRetryRuns is process-local because one Agent run is executed by
@@ -63,6 +67,12 @@ func larkExecuteRetrySeedExternalResult(runID uint64, raw json.RawMessage) bool 
 	state := value.(*larkExecuteRetryState)
 	state.mu.Lock()
 	defer state.mu.Unlock()
+	// An unknown business write is the strongest durable fence. A later
+	// continuation failure (for example, a scope check) must never downgrade it
+	// back into a correctable state and accidentally permit a duplicate write.
+	if state.terminalStop && state.lastCategory == "unknown_result" {
+		return true
+	}
 	state.lastCategory = failure.Category
 	if larkFailureAllowsCorrection(failure) {
 		state.correctableFailures = 1
@@ -75,12 +85,59 @@ func larkExecuteRetrySeedExternalResult(runID uint64, raw json.RawMessage) bool 
 	return true
 }
 
-func larkExecuteRetryBegin(runID uint64) (*larkExecuteRetryState, larkExecuteRetryAttempt, larkExecuteRetryBlockReason, bool) {
+// larkExecuteRetrySeedTranscript restores the durable unknown-result fence when
+// a continuation is picked up by another process (or after a restart). A later
+// successful verification read must not erase the ambiguity of the original
+// write: reads may continue, but another write remains blocked for this run.
+//
+// Only the server-produced, closed Feishu result schema can arm the fence. The
+// transcript can therefore make execution more restrictive, never less safe.
+func larkExecuteRetrySeedTranscript(runID uint64, raw json.RawMessage) bool {
+	if runID == 0 || len(raw) == 0 {
+		return false
+	}
+	var turns []map[string]any
+	if err := json.Unmarshal(raw, &turns); err != nil {
+		return false
+	}
+	for _, turn := range turns {
+		role, _ := turn["role"].(string)
+		content, _ := turn["content"].(string)
+		if role != "tool" || content == "" {
+			continue
+		}
+		failure, ok := feishu.DecodeLarkTerminalFailure(json.RawMessage(content))
+		if !ok || failure.Category != "unknown_result" {
+			continue
+		}
+		value, _ := larkExecuteRetryRuns.LoadOrStore(runID, &larkExecuteRetryState{})
+		state := value.(*larkExecuteRetryState)
+		state.mu.Lock()
+		state.lastCategory = failure.Category
+		state.phase = larkRetryExhausted
+		state.terminalStop = true
+		state.mu.Unlock()
+		return true
+	}
+	return false
+}
+
+func larkExecuteRetryBegin(runID uint64, catalogRead bool) (*larkExecuteRetryState, larkExecuteRetryAttempt, larkExecuteRetryBlockReason, bool) {
 	value, _ := larkExecuteRetryRuns.LoadOrStore(runID, &larkExecuteRetryState{})
 	state := value.(*larkExecuteRetryState)
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	if state.terminalStop {
+		if state.lastCategory == "unknown_result" && catalogRead {
+			if state.phase == larkRetryVerificationInFlight {
+				return state, larkExecuteVerificationAttempt, larkRetryBlockedInFlight, false
+			}
+			if state.verificationReads < larkExecuteMaxUnknownVerificationReads {
+				state.verificationReads++
+				state.phase = larkRetryVerificationInFlight
+				return state, larkExecuteVerificationAttempt, larkRetryNotBlocked, true
+			}
+		}
 		return state, larkExecuteCorrectionAttempt, larkRetryBlockedTerminal, false
 	}
 
@@ -148,6 +205,9 @@ func larkExecuteRetryCompleted(state *larkExecuteRetryState, attempt larkExecute
 		state.phase = larkRetryReady
 		state.correctableFailures = 0
 		state.lastCategory = ""
+		state.verificationReads = 0
+	} else if attempt == larkExecuteVerificationAttempt && state.phase == larkRetryVerificationInFlight {
+		state.phase = larkRetryExhausted
 	}
 }
 
@@ -188,6 +248,8 @@ func larkExecuteRetryFailed(state *larkExecuteRetryState, attempt larkExecuteRet
 	case attempt == larkExecuteNormalAttempt && state.phase == larkRetryNormalInFlight:
 		state.phase = larkRetryReady
 	case attempt == larkExecuteCorrectionAttempt && state.phase == larkRetryCorrectionInFlight:
+		state.phase = larkRetryExhausted
+	case attempt == larkExecuteVerificationAttempt && state.phase == larkRetryVerificationInFlight:
 		state.phase = larkRetryExhausted
 	}
 }

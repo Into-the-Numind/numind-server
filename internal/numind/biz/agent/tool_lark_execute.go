@@ -66,7 +66,9 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 	if !ok || userID == 0 || runID == 0 || strings.TrimSpace(toolCallID) == "" {
 		return larkWorkspaceSoftError(larkWorkspaceErrorIdentity)
 	}
-	retryState, retryAttempt, blockedReason, allowed := larkExecuteRetryBegin(runID)
+	decoded, decodeErr := decodeLarkExecuteInput(input)
+	catalogRead := decodeErr == nil && feishu.IsCatalogReadCommand(decoded.Argv, decoded.StdinJSON)
+	retryState, retryAttempt, blockedReason, allowed := larkExecuteRetryBegin(runID, catalogRead)
 	if !allowed {
 		switch blockedReason {
 		case larkRetryBlockedTerminal:
@@ -77,8 +79,7 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 			return larkWorkspaceSoftError(larkWorkspaceErrorExecuteRetryExhausted)
 		}
 	}
-	decoded, err := decodeLarkExecuteInput(input)
-	if err != nil {
+	if decodeErr != nil {
 		exhausted := larkExecuteRetryRejected(retryState, retryAttempt)
 		attempts, remaining := larkExecuteRetryProgress(retryState)
 		if exhausted {

@@ -72,6 +72,24 @@ func TestBuildTranscriptTurns_PreservesSafeLarkResultsForNextAuthorization(t *te
 		turns[4]["content"].(string),
 	)
 	assert.Equal(t, "assistant", turns[5]["role"])
+
+	// Exercise the real persistence boundary: JSON turns are decoded back into
+	// []map[string]any before the next authorization continuation rebuilds the
+	// provider protocol history.
+	encoded, err := json.Marshal(turns)
+	require.NoError(t, err)
+	var decoded []map[string]any
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+	history, err := turnsToExternalResumeHistoryMessages(decoded, "")
+	require.NoError(t, err)
+	foundResult := false
+	for _, message := range history {
+		if message.Content == turns[4]["content"].(string) {
+			foundResult = true
+			break
+		}
+	}
+	assert.True(t, foundResult, "the next authorization leg must receive the successful Base result")
 }
 
 func TestAggregateToolEvents_Empty(t *testing.T) {
