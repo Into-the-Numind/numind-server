@@ -318,6 +318,24 @@ func TestStore_GetByIDAndUser_Ownership(t *testing.T) {
 	assert.Contains(t, err.Error(), "GetByIDAndUser")
 }
 
+func TestStore_GetByURLAndUser_Ownership(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	row := &model.AgentAttachment{
+		UserID: 88, URL: "https://bucket.cos.ap-chengdu.myqcloud.com/agent-attachments/88/a.docx",
+		Filename: "a.docx", MimeType: "application/octet-stream", Modality: att.ModalityDocument,
+	}
+	require.NoError(t, s.Create(ctx, row))
+
+	got, err := s.GetByURLAndUser(ctx, row.URL, 88)
+	require.NoError(t, err)
+	require.Equal(t, row.ID, got.ID)
+
+	_, err = s.GetByURLAndUser(ctx, row.URL, 89)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "GetByURLAndUser")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // captureStore is a test double that wraps a real IAgentAttachmentStore
 // and records UpdateFallback calls.
@@ -336,6 +354,9 @@ func (c *captureStore) GetByID(ctx context.Context, id uint64) (*model.AgentAtta
 }
 func (c *captureStore) GetByIDAndUser(ctx context.Context, id uint64, userID uint) (*model.AgentAttachment, error) {
 	return c.inner.GetByIDAndUser(ctx, id, userID)
+}
+func (c *captureStore) GetByURLAndUser(ctx context.Context, rawURL string, userID uint) (*model.AgentAttachment, error) {
+	return c.inner.GetByURLAndUser(ctx, rawURL, userID)
 }
 func (c *captureStore) UpdateFallback(ctx context.Context, id uint64, fields map[string]interface{}) error {
 	c.updates = append(c.updates, fields)

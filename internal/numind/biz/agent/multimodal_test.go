@@ -83,6 +83,15 @@ func (s *stubAttachmentStore) GetByIDAndUser(_ context.Context, id uint64, userI
 	return &cp, nil
 }
 
+func (s *stubAttachmentStore) GetByURLAndUser(_ context.Context, rawURL string, userID uint) (*model.AgentAttachment, error) {
+	for _, att := range s.rows {
+		if att.UserID == userID && att.URL == rawURL {
+			return att, nil
+		}
+	}
+	return nil, errors.New("not found")
+}
+
 func (s *stubAttachmentStore) Create(_ context.Context, att *model.AgentAttachment) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

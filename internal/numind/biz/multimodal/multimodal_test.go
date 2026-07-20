@@ -38,6 +38,10 @@ func (f *fakeAttStore) GetByIDAndUser(_ context.Context, id uint64, _ uint) (*mo
 	}
 	return nil, errors.New("not found")
 }
+
+func (f *fakeAttStore) GetByURLAndUser(_ context.Context, _ string, _ uint) (*model.AgentAttachment, error) {
+	return nil, errors.New("not found")
+}
 func (f *fakeAttStore) UpdateFallback(_ context.Context, _ uint64, _ map[string]interface{}) error {
 	return nil
 }

@@ -55,6 +55,23 @@ type AgentAttachment struct {
 	// TextFallback is still set to a degraded message in that case.
 	FallbackError *string `gorm:"type:text" json:"fallback_error,omitempty"`
 
+	// ParsedContent is the canonical normalized UTF-8 content produced exactly
+	// once by the upload fallback worker. Unlike TextFallback it contains no
+	// model-facing wrapper and is paged by file_read without re-downloading the
+	// source object. Historical rows may contain the legacy wrapped fallback
+	// after migration backfill.
+	ParsedContent *string `gorm:"type:longtext" json:"-"`
+
+	// ParsedContentSHA256 is the stable file_read continuation token in the
+	// form "sha256:<64 lowercase hex>". The content itself is never logged.
+	ParsedContentSHA256 string `gorm:"size:71" json:"-"`
+
+	// ParsedContentByteSize stores len([]byte(ParsedContent)); ParsedPageCount
+	// remains zero when the parser cannot provide a reliable page count.
+	ParsedContentByteSize int64      `gorm:"default:0" json:"-"`
+	ParsedPageCount       int        `gorm:"default:0" json:"-"`
+	ParsedAt              *time.Time `json:"-"`
+
 	FallbackStartedAt   *time.Time `json:"fallback_started_at,omitempty"`
 	FallbackCompletedAt *time.Time `json:"fallback_completed_at,omitempty"`
 
