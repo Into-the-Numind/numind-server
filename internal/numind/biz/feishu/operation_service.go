@@ -580,7 +580,7 @@ func (r *executionRegistry) stopGenerationAndWait(ctx context.Context, userID ui
 // NewFeishuOperationService validates all mandatory operation dependencies.
 func NewFeishuOperationService(deps OperationServiceDeps) (*FeishuOperationService, error) {
 	if deps.Accounts == nil || deps.Operations == nil || deps.Catalog == nil ||
-		deps.Recovery == nil || deps.Confirmation == nil || deps.Vault == nil || deps.Preflight == nil ||
+		deps.Recovery == nil || deps.Vault == nil || deps.Preflight == nil ||
 		deps.Runner == nil || deps.Cipher == nil {
 		return nil, errors.New("feishu operation service dependencies rejected")
 	}
@@ -879,7 +879,7 @@ func (s *FeishuOperationService) Resume(ctx context.Context, userID uint, operat
 	if terminalOperationState(operation.State) {
 		return s.resultFromOperation(operation)
 	}
-	if operation.State == model.FeishuOperationWaitingConfirmation {
+	if operation.State == model.FeishuOperationWaitingConfirmation && s.confirmation != nil {
 		return s.resultFromOperation(operation)
 	}
 
@@ -922,11 +922,14 @@ func (s *FeishuOperationService) Resume(ctx context.Context, userID uint, operat
 	return s.claimAndExecute(ctx, account, operation, persisted, priorSignature, false)
 }
 
-// Confirm advances exactly one high-risk operation from its persisted
-// waiting_confirmation state. The browser cannot supply argv or an override:
-// the encrypted request is re-opened only after user/generation ownership and
-// the state transition are checked under the existing operation lease.
+// Confirm is retained for rolling-upgrade compatibility with persisted
+// waiting_confirmation operations. Production no longer injects a confirmation
+// requester, so the method aliases Resume and re-opens only the original
+// encrypted request after the existing ownership and generation checks.
 func (s *FeishuOperationService) Confirm(ctx context.Context, userID uint, operationID string) (*OperationResult, error) {
+	if s != nil && s.confirmation == nil {
+		return s.Resume(ctx, userID, operationID)
+	}
 	if userID == 0 || !validStableIdentifier(operationID, operationMaxOperationIDBytes) {
 		return nil, ErrOperationRequestRejected
 	}
@@ -1133,7 +1136,7 @@ func (s *FeishuOperationService) claimAndExecute(
 	confirmed bool,
 ) (*OperationResult, error) {
 	if terminalOperationState(operation.State) || operation.State == model.FeishuOperationExecuting ||
-		(operation.State == model.FeishuOperationWaitingConfirmation && !confirmed) {
+		(operation.State == model.FeishuOperationWaitingConfirmation && !confirmed && s.confirmation != nil) {
 		return s.resultFromOperation(operation)
 	}
 	if confirmed && operation.State != model.FeishuOperationWaitingConfirmation {
@@ -1143,10 +1146,11 @@ func (s *FeishuOperationService) claimAndExecute(
 	gateHeld := false
 	var gateGuard *executionGateGuard
 	proofUsable := false
-	// High-risk operations intentionally do not hold the business CLI gate while
-	// waiting for a human. Once confirmed, however, their real invocation must
-	// acquire the same account-wide gate as every other CLI write.
-	if operationRequiresExecutionGate(account, persisted) || confirmed {
+	// A legacy requester may still leave a high-risk operation waiting outside
+	// the business CLI gate. Production has no requester, so every connected
+	// operation acquires the same account-wide gate before invoking the CLI.
+	if operationRequiresExecutionGate(account, persisted, s.confirmation != nil) || confirmed ||
+		operation.State == model.FeishuOperationWaitingConfirmation {
 		executionCtx, finishStart, joinedStart, startErr := s.beginExecutionStart(ctx, operation)
 		if startErr != nil {
 			return nil, startErr
@@ -1218,14 +1222,18 @@ func (s *FeishuOperationService) claimAndExecute(
 	return s.executeClaimed(ctx, account, operation, owner, persisted, priorRecoverySignature, proofUsable, confirmed, gateGuard)
 }
 
-func operationRequiresExecutionGate(account *model.UserThirdPartyAccount, persisted persistedOperationRequest) bool {
+func operationRequiresExecutionGate(
+	account *model.UserThirdPartyAccount,
+	persisted persistedOperationRequest,
+	confirmationEnabled bool,
+) bool {
 	if persisted.LocalOnly {
 		return false
 	}
 	if account == nil || account.ConnectionState != model.FeishuConnectionConnected {
 		return false
 	}
-	return persisted.Risk != RiskHigh || persisted.SameRunEmptyCreateProof
+	return !confirmationEnabled || persisted.Risk != RiskHigh || persisted.SameRunEmptyCreateProof
 }
 
 func (s *FeishuOperationService) waitForExecutionGate(
@@ -1339,7 +1347,7 @@ func (s *FeishuOperationService) executeClaimed(
 		}
 	}
 
-	if persisted.Risk == RiskHigh && !proofUsable && !confirmed {
+	if s.confirmation != nil && persisted.Risk == RiskHigh && !proofUsable && !confirmed {
 		action, err := s.confirmation.RequestConfirmation(ctx, operation.ID, ConfirmationSummary{
 			CommandPath: persisted.CommandPath, Domain: persisted.Domain, Action: persisted.Action,
 			Risk: persisted.Risk, RequiresCLIYes: persisted.RequiresCLIYes,
@@ -1542,7 +1550,7 @@ func (s *FeishuOperationService) checkScopesBeforeWrite(
 // createOrGetOperation makes proof reservation and consumer creation one
 // transaction. If another distinct operation already consumed the proof, the
 // request is resealed without proof metadata and follows the normal high-risk
-// confirmation path.
+// execution path.
 func (s *FeishuOperationService) createOrGetOperation(
 	ctx context.Context,
 	candidate *model.FeishuOperation,
@@ -1590,7 +1598,7 @@ func (s *FeishuOperationService) invokeOnce(
 			return false, ErrOperationUnavailable
 		}
 		argv := append([]string(nil), persisted.Argv...)
-		if confirmed && persisted.RequiresCLIYes {
+		if (confirmed || s.confirmation == nil) && persisted.RequiresCLIYes {
 			argv = append(argv, "--yes")
 		}
 		runCtx, cancel := context.WithTimeout(executionGate.ctx, ControlledLarkCLITimeout)

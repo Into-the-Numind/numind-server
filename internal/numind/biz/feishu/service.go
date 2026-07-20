@@ -371,6 +371,26 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 			}
 			return lifecycleStoredOperationSummary(operation), nil
 		}
+		if operation.State == model.FeishuOperationWaitingConfirmation {
+			// Rolling-upgrade compatibility only. New operation services no longer
+			// create this state, but an authorization card from an older server may
+			// still acknowledge after the durable operation has advanced. Resume the
+			// encrypted operation through the shared dispatcher; never interpret the
+			// stale browser phase as business input.
+			dispatchCtx, dispatchCancel := authSessionDispatchContext(ctx)
+			defer dispatchCancel()
+			if err := s.dispatcher.DispatchResume(dispatchCtx, userID, operationID); err != nil {
+				return nil, ErrWorkspaceLifecycleUnavailable
+			}
+			updated, updateErr := s.workspace.GetOperationForUser(ctx, userID, account.Generation, operationID)
+			if updateErr != nil || updated == nil || updated.UserID != userID || updated.Generation != account.Generation {
+				return nil, ErrWorkspaceLifecycleUnavailable
+			}
+			if _, finalizeErr := s.finalizeTerminalOperationIfNeeded(ctx, userID, updated); finalizeErr != nil {
+				return nil, finalizeErr
+			}
+			return lifecycleStoredOperationSummary(updated), nil
+		}
 		if !recoveryWaitingState(operation.State) {
 			return nil, ErrWorkspaceLifecycleInvalid
 		}
@@ -476,6 +496,13 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 			if err := s.finalizeTerminalOperationWait(ctx, userID, operation, outcome); err != nil {
 				return nil, err
 			}
+			return lifecycleStoredOperationSummary(operation), nil
+		}
+		// A legacy confirmation callback may race with the automatic migration.
+		// Once another request has moved the same encrypted operation forward,
+		// observing its current state is the only idempotent response: dispatching
+		// or confirming again could replay a Feishu write.
+		if operation.State == model.FeishuOperationExecuting || recoveryWaitingState(operation.State) {
 			return lifecycleStoredOperationSummary(operation), nil
 		}
 		if operation.State != model.FeishuOperationWaitingConfirmation {

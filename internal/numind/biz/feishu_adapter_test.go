@@ -693,15 +693,18 @@ func TestBuildFeishuService_KeyRotationNewOperationWriteUsesCurrentVersion(t *te
 
 	composition, err := buildFeishuService(deps)
 	require.NoError(t, err)
-	result, err := composition.operationService.Execute(context.Background(), feishu.ExecuteRequest{
+	_, err = composition.operationService.Execute(context.Background(), feishu.ExecuteRequest{
 		UserID: 7, AgentRunID: 92, ToolCallID: "call-current", IdempotencyKey: "92:call-current",
 		Argv:          []string{"docs", "+update", "--doc", "doxcnABCDEFG123", "--command", "overwrite", "--content", "current"},
 		SkillReceipts: []string{"test-receipt"},
 	})
-	require.NoError(t, err)
-	require.Equal(t, model.FeishuOperationWaitingConfirmation, result.State)
-	stored, err := deps.dataStore.FeishuWorkspace().GetOperationForUser(context.Background(), 7, 1, result.OperationID)
-	require.NoError(t, err)
+	// Production deliberately has no business-confirmation requester anymore,
+	// so a connected write proceeds to the controlled runner immediately. The
+	// composition test has no real lark-cli binary; the invocation therefore
+	// fails closed after the encrypted operation has been persisted.
+	require.ErrorIs(t, err, feishu.ErrOperationUnavailable)
+	var stored model.FeishuOperation
+	require.NoError(t, deps.dataStore.DB().Where("user_id = ? AND idempotency_key = ?", 7, "92:call-current").First(&stored).Error)
 	require.Equal(t, "v2", stored.KeyVersion)
 }
 

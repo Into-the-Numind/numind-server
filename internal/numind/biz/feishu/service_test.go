@@ -1134,6 +1134,23 @@ func TestWorkspaceLifecycleResumeUserCompletedRequiresRecoverableWait(t *testing
 	require.Zero(t, dispatcher.calls, "an arbitrary operation must not be resumed by a browser acknowledgement")
 }
 
+func TestWorkspaceLifecycleResumeStaleAuthorizationAcknowledgementRecoversLegacyConfirmation(t *testing.T) {
+	op := &model.FeishuOperation{
+		ID: "op-legacy-confirmation", UserID: 7, Generation: 2,
+		State: model.FeishuOperationWaitingConfirmation, AgentRunID: 81, ToolCallID: "tool-legacy-confirmation",
+	}
+	svc, _, _, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 2,
+	}, op)
+
+	result, err := svc.Resume(context.Background(), 7, op.ID, ResumeActionUserCompleted)
+
+	require.NoError(t, err)
+	require.Equal(t, &OperationResult{OperationID: op.ID, State: model.FeishuOperationWaitingConfirmation}, result)
+	require.Equal(t, 1, dispatcher.calls, "the server state must override the stale card phase")
+	require.Zero(t, operations.confirmed, "the browser acknowledgement must not reconstruct command input")
+}
+
 func TestWorkspaceLifecycleResumeUserAuthorizationOutcomeMatrix(t *testing.T) {
 	expiresAt := time.Date(2026, 7, 17, 8, 30, 0, 0, time.UTC)
 	liveAction := &OperationAction{
@@ -1298,20 +1315,33 @@ func TestWorkspaceLifecycleResumeUserCompletedObservesExecutingAndTerminalStates
 	}
 }
 
-func TestWorkspaceLifecycleResumeConfirmationActionsRequireWaitingConfirmation(t *testing.T) {
+func TestWorkspaceLifecycleResumeConfirmationActionsAreIdempotentAfterStateAdvance(t *testing.T) {
 	op := &model.FeishuOperation{ID: "op-1", UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth}
 	svc, _, _, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 2}, op)
 
-	_, err := svc.Resume(context.Background(), 7, "op-1", ResumeActionConfirmed)
-	require.ErrorIs(t, err, ErrWorkspaceLifecycleInvalid)
-	require.Zero(t, dispatcher.calls)
-	require.Zero(t, operations.confirmed)
+	for _, state := range []string{
+		model.FeishuOperationExecuting,
+		model.FeishuOperationWaitingConnection,
+		model.FeishuOperationWaitingAppScope,
+		model.FeishuOperationWaitingUserAuth,
+	} {
+		op.State = state
+		result, err := svc.Resume(context.Background(), 7, "op-1", ResumeActionConfirmed)
+		require.NoError(t, err)
+		require.Equal(t, &OperationResult{OperationID: "op-1", State: state}, result)
+		require.Zero(t, dispatcher.calls, "an already advanced operation must not be dispatched again")
+		require.Zero(t, operations.confirmed, "an already advanced operation must not replay the CLI")
+	}
 
 	op.State = model.FeishuOperationWaitingConfirmation
 	result, err := svc.Resume(context.Background(), 7, "op-1", ResumeActionConfirmed)
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationExecuting, result.State)
 	require.Equal(t, 1, operations.confirmed)
+
+	op.State = model.FeishuOperationNotStarted
+	_, err = svc.Resume(context.Background(), 7, "op-1", ResumeActionConfirmed)
+	require.ErrorIs(t, err, ErrWorkspaceLifecycleInvalid)
 }
 
 func TestWorkspaceLifecycleResumeConfirmedFinalizesTerminalExecutionResult(t *testing.T) {
