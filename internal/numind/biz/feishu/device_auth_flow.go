@@ -647,7 +647,7 @@ func (f *DeviceAuthFlow) CompleteUserAuthorization(
 	switch outcome {
 	case DeviceAuthCompleted:
 		return f.commitDeviceAuthCandidate(
-			mutationCtx, account, session, leaseToken, evidenceAppID, candidate, mutationNow,
+			mutationCtx, ctx, account, session, leaseToken, evidenceAppID, candidate, mutationNow,
 		)
 	case DeviceAuthPending:
 		return f.releaseDeviceAuthOutcome(
@@ -931,7 +931,8 @@ func deviceAuthBoundedBudget(limit time.Duration, now time.Time, deadlines ...ti
 }
 
 func (f *DeviceAuthFlow) commitDeviceAuthCandidate(
-	ctx context.Context,
+	mutationCtx context.Context,
+	dispatchCtx context.Context,
 	account *model.UserThirdPartyAccount,
 	session *model.FeishuAuthSession,
 	leaseToken string,
@@ -945,7 +946,7 @@ func (f *DeviceAuthFlow) commitDeviceAuthCandidate(
 		operationID = *session.OperationID
 		waitingState = model.FeishuOperationWaitingUserAuth
 	}
-	err := f.sessions.FinalizeDeviceAuthSuccess(ctx, store.FeishuDeviceAuthSuccess{
+	err := f.sessions.FinalizeDeviceAuthSuccess(mutationCtx, store.FeishuDeviceAuthSuccess{
 		UserID: session.UserID, Generation: session.Generation, SessionID: session.ID,
 		OperationID: operationID, LeaseOwner: leaseToken, ExpectedAppID: account.AppID,
 		ExpectedWaitingState: waitingState, Candidate: candidate.Vault,
@@ -957,15 +958,18 @@ func (f *DeviceAuthFlow) commitDeviceAuthCandidate(
 		f.observeDeviceAuth(session, "candidate", "conflict", "", 0)
 		return nil, ErrDeviceAuthConflict
 	}
-	durable, durableErr := f.sessions.GetSessionForUser(ctx, session.UserID, session.Generation, session.ID)
+	// The five-second mutation budget ends at the atomic commit. Reloading the
+	// durable state and resuming the original task use the request's remaining
+	// confirmation budget so a valid continuation is not cut off at five seconds.
+	durable, durableErr := f.sessions.GetSessionForUser(dispatchCtx, session.UserID, session.Generation, session.ID)
 	if durableErr != nil || durable == nil {
 		return nil, ErrAuthSessionUnavailable
 	}
-	currentAccount, accountErr := f.accounts.Get(ctx, session.UserID, ProviderLark)
+	currentAccount, accountErr := f.accounts.Get(dispatchCtx, session.UserID, ProviderLark)
 	if accountErr != nil || currentAccount == nil {
 		return nil, ErrAuthSessionUnavailable
 	}
-	return f.dispatchCompletedDeviceAuth(ctx, currentAccount, durable)
+	return f.dispatchCompletedDeviceAuth(dispatchCtx, currentAccount, durable)
 }
 
 func (f *DeviceAuthFlow) dispatchCompletedDeviceAuth(

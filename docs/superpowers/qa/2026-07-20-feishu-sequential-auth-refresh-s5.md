@@ -43,6 +43,33 @@
 
 `task test` 将普通、race、coverage 三轮全仓测试连续运行时，两次尝试分别在不同阶段出现非确定性失败；三个构成命令随后在同一 worktree、同一 UTC 环境分别运行均为退出码 0，Feishu 包在所有轮次始终通过。因此记录为既有全仓组合压力基线，不把无关修复混入本 feature。
 
+## Dev 失败回归补充（09:27）
+
+首轮 Dev 验收又暴露了两条独立路径，均已使用对应生产请求与浏览器行为定位，而非根据通用 `Internal server error` 猜测：
+
+1. 飞书授权、账号匹配和凭据原子提交均成功，但授权后的 Base/Agent continuation 错误继承了仅供数据库 mutation 使用的 5 秒上下文；约 4.9 秒的业务调用越过该 deadline 后被安全标记为 unknown，并向浏览器返回 500。
+2. 成功路径中服务端约 10 秒后完成，浏览器也轮询到 completed；但授权暂停时的阶段性 assistant bubble 已被前端误转为 `final_answer`，真正终答随后被错误去重，只有 reload snapshot 才能显示。
+
+永久回归提交顺序：
+
+- Server RED `9936ec73` → GREEN `df6eeaee`：5 秒只覆盖 `FinalizeDeviceAuthSuccess`，提交后的 durable reread、飞书操作与原 Agent 恢复使用原 50 秒确认预算；用户、Agent、operation、app、generation、session、lease、幂等与 unknown-write 禁止重放边界均未放宽。
+- Web RED `45622a6` → GREEN `5fae1c2`：首个 RED 同时包含 Vitest 与有限 SSE Playwright；waiting/queued 状态不再生成最终回复，首次真实 active→terminal 状态可纠正旧临时答案，迟到的 status/reconcile 响应由统一单调序号丢弃。
+
+补充验收结果：
+
+| 检查项 | 结果 | 备注 |
+|--------|------|------|
+| Go 全仓普通测试 | PASS | `TZ=UTC go test ./... -count=1` |
+| Feishu race | PASS | 单独运行 `TZ=UTC go test -race ./internal/numind/biz/feishu -count=1`；并发抢占机器资源时固定 5 秒 CLI 测试曾超时，隔离重跑 77.769 秒通过 |
+| Go lint / Feishu biz | PASS | `task lint` 与完整 Feishu biz 92.596 秒通过 |
+| Vue unit | PASS | 99 files；1124 passed、11 skipped、3 todo |
+| Vue lint / typecheck / production build | PASS | lint 0 error（7 个既有 warning）；typecheck 与 Vite production build 通过 |
+| Feishu Playwright | PASS | 8/8；新增有限 SSE 关闭、仅 GET status 续跑并无需 reload 显示终答 |
+| 竞态回归 | PASS | duplicate terminal、empty final、overlapping status、status/reconcile cross-path 全通过 |
+| 独立复审 | PASS | P0/P1/P2 = 0；提交链符合 customer RED before GREEN |
+
+本补充修复未新增 API、schema、自动确认、业务命令重放或凭据暴露；Prod 仍未改动。
+
 ## Dev 验收提示词
 
 在新对话使用唯一名称，避免与此前已部分执行的写操作混淆：

@@ -1738,6 +1738,30 @@ func TestDeviceAuthFlow_CompleteSuccessPublishesCandidateAtomically(t *testing.T
 	})
 }
 
+// Customer regression (Dev operation 063fb753, 2026-07-20): authorization
+// completed successfully, but the original Base operation and Agent handoff
+// inherited the five-second DB mutation context. A 4.9-second business call
+// therefore crossed that deadline during vault/finalization work and surfaced
+// as HTTP 500 even though the browser's confirmation contract allows 50s.
+func TestDeviceAuthFlow_CompletedAuthorizationDispatchUsesConfirmationBudget(t *testing.T) {
+	fixture := newDeviceAuthCompletionFixture(t)
+	fixture.cli.outcome = DeviceAuthCompleted
+	fixture.cli.authStatus = true
+
+	result, err := fixture.flow.CompleteUserAuthorization(
+		context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+	)
+
+	require.NoError(t, err)
+	require.True(t, result.Completed)
+	fixture.dispatcher.mu.Lock()
+	defer fixture.dispatcher.mu.Unlock()
+	require.Len(t, fixture.dispatcher.deadlineRemaining, 1)
+	require.Greater(t, fixture.dispatcher.deadlineRemaining[0], deviceAuthMutationTimeout,
+		"the post-commit Agent/Feishu continuation must use the remaining 50s confirmation budget, not the 5s DB mutation budget")
+	require.LessOrEqual(t, fixture.dispatcher.deadlineRemaining[0], deviceAuthConfirmationTimeout)
+}
+
 func TestDeviceAuthFlow_ConfirmationDeadlineBoundsSynchronousDispatch(t *testing.T) {
 	fixture := newDeviceAuthCompletionFixture(t)
 	fixture.flow.confirmationTimeout = 50 * time.Millisecond
