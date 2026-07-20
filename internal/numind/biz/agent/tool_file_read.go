@@ -64,6 +64,7 @@ type fileReadTool struct {
 	imageParser     fileParser // image/*  (OCR)
 	textParser      fileParser // text/plain, text/markdown
 	attachmentStore store.IAgentAttachmentStore
+	cacheWait       time.Duration
 	// headFn is the HTTP HEAD function; swapped in tests to avoid network calls.
 	headFn func(url string) (*http.Response, error)
 	// headRequestFn is the production HEAD path. It carries the run context,
@@ -98,6 +99,7 @@ func NewFileReadToolWithStore(doc, img, txt fileParser, attStore store.IAgentAtt
 		imageParser:     img,
 		textParser:      txt,
 		attachmentStore: attStore,
+		cacheWait:       1500 * time.Millisecond,
 		headRequestFn:   managedFileHEAD,
 		presignFn:       util.GenerateSignedURLForMethod,
 	}
@@ -309,7 +311,7 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		if getErr != nil {
 			return t.returnSoftError(fileName, "file_not_owned_or_missing")
 		}
-		return t.readCachedAttachment(ctx, managed, in, spanOutput, &spanErrorClass)
+		return t.readCachedAttachment(ctx, ctxUserID, managed, in, spanOutput, &spanErrorClass)
 	}
 
 	urlUserID, err := extractUserIDFromURL(in.FileURL)
@@ -325,7 +327,7 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	// A lookup miss is expected for agent-outputs and pre-DB objects.
 	if t.attachmentStore != nil {
 		if managed, getErr := t.attachmentStore.GetByURLAndUser(ctx, in.FileURL, ctxUserID); getErr == nil {
-			return t.readCachedAttachment(ctx, managed, in, spanOutput, &spanErrorClass)
+			return t.readCachedAttachment(ctx, ctxUserID, managed, in, spanOutput, &spanErrorClass)
 		}
 	}
 
@@ -428,11 +430,13 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 
 func (t *fileReadTool) readCachedAttachment(
 	ctx context.Context,
+	userID uint,
 	att *model.AgentAttachment,
 	in fileReadInput,
 	spanOutput map[string]any,
 	spanErrorClass *string,
 ) (ToolResult, error) {
+	att = t.waitForCachedAttachment(ctx, userID, att)
 	fileName := att.Filename
 	if fileName == "" {
 		fileName = safeFileName(att.URL)
@@ -479,6 +483,41 @@ func (t *fileReadTool) readCachedAttachment(
 	spanOutput["offset"] = valueOrZero(in.Offset)
 	spanOutput["limit_bytes"] = valueOrDefault(in.LimitBytes, fileReadDefaultLimitBytes)
 	return t.paginateContent(fileName, att.MimeType, int(att.Size), att.ParsedPageCount, content, in, spanOutput, spanErrorClass)
+}
+
+// waitForCachedAttachment absorbs the normal upload→worker race without doing
+// any parsing in file_read. Production waits at most 1.5s; direct unit-test
+// constructions default to zero and remain immediate.
+func (t *fileReadTool) waitForCachedAttachment(
+	ctx context.Context,
+	userID uint,
+	att *model.AgentAttachment,
+) *model.AgentAttachment {
+	if att.FallbackReady || t.cacheWait <= 0 || t.attachmentStore == nil {
+		return att
+	}
+	timer := time.NewTimer(t.cacheWait)
+	defer timer.Stop()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	latest := att
+	for {
+		select {
+		case <-ctx.Done():
+			return latest
+		case <-timer.C:
+			return latest
+		case <-ticker.C:
+			fresh, err := t.attachmentStore.GetByIDAndUser(ctx, att.ID, userID)
+			if err != nil {
+				continue
+			}
+			latest = fresh
+			if fresh.FallbackReady {
+				return fresh
+			}
+		}
+	}
 }
 
 func valueOrZero(value *int) int {

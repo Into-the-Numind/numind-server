@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
@@ -282,6 +283,30 @@ func TestFileReadTool_ManagedCacheStatusAndOwnershipAreSoftErrors(t *testing.T) 
 		assert.Contains(t, string(result), tc.want)
 		assert.NotContains(t, string(result), parseErr)
 	}
+}
+
+func TestFileReadTool_WaitsBrieflyForUploadWorkerWithoutParsing(t *testing.T) {
+	pending := &model.AgentAttachment{ID: 905, UserID: 123, Filename: "soon.txt", MimeType: "text/plain"}
+	store := newStubStore(pending)
+	parser := &mockFileParser{content: "must not parse"}
+	tool := &fileReadTool{attachmentStore: store, textParser: parser, cacheWait: 500 * time.Millisecond}
+
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		content := "worker cached content"
+		store.mu.Lock()
+		store.rows[pending.ID].ParsedContent = &content
+		store.rows[pending.ID].FallbackReady = true
+		store.mu.Unlock()
+	}()
+
+	input, _ := json.Marshal(fileReadInput{AttachmentID: pending.ID})
+	result, err := tool.Execute(ctxUser123(), input)
+	require.NoError(t, err)
+	var out fileReadOutput
+	require.NoError(t, json.Unmarshal(result, &out))
+	assert.Equal(t, "worker cached content", out.Content)
+	assert.Zero(t, parser.calls)
 }
 
 // TestFileReadTool_Execute_Docx is the file_read-layer regression for the docx
