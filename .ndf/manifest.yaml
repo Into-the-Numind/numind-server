@@ -4,20 +4,21 @@ features:
   ndf_version: '3.0'
   description: Build three user-isolated Agents that turn internal XHS captures into a Feishu Base, customer materials into a reusable Feishu profile document, and both artifacts into a customer-specific Feishu topic-planning document.
   classification_reason: 'Standard: the feature adds Agent access to the current user XHS library and spans Agent orchestration, Feishu authorization/Base/Doc operations, multi-user permission boundaries, prompts, and end-to-end tests across more than three files and likely two repositories.'
-  last_updated_by: ai-s2-design
-  last_updated_at: '2026-07-20T16:18:13+08:00'
+  last_updated_by: ai-s3-plan
+  last_updated_at: '2026-07-20T16:44:28+08:00'
   created_at: '2026-07-20T15:45:30+08:00'
   track: standard
-  stage: S2
+  stage: S3
   status: active
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/three-agent-feishu-pipeline, numind-web-v3: feature/three-agent-feishu-pipeline}
   worktrees: {numind-server: /private/tmp/wt-three-agent-feishu-pipeline-numind-server, numind-web-v3: /private/tmp/wt-three-agent-feishu-pipeline-numind-web-v3}
-  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0, current_task: 'Await human confirmation of the S2 technical design before S3 implementation planning'}
+  progress: {total_tasks: 7, completed_tasks: 0, reviewed_tasks: 0, current_task: 'Task 1: begin RED tests for user-scoped XHS stable snapshot reads'}
   artifacts:
     requirement: requirements/three-agent-feishu-pipeline.md
     proposal: proposals/three-agent-feishu-pipeline-proposal.md
     spec: docs/superpowers/specs/2026-07-20-three-agent-feishu-pipeline-design.md
+    plan: docs/superpowers/plans/three-agent-feishu-pipeline-plan.md
   decisions:
   - 'S0: one Numind user owns one shared Feishu viral-material Base and may manage many customer-specific profile and topic-planning Docs; different users remain fully isolated.'
   - 'S0: no customer-management or Feishu-target settings UI is added. Agents resolve current context first, ask only when required, then search, reuse, or create in the current user Feishu account.'
@@ -27,6 +28,8 @@ features:
   - 'S2: xhs_note_list uses current-user-only stable keyset snapshots with index/full projections and limit 100; Base is the completion SOT, new rows batch-create at up to 20 and differing reanalysis results update one record at a time with record-upsert.'
   - 'S2: resumable file_read uses UTF-8-safe 64 KiB chunks and a content fingerprint; Agent 2 overwrites only a marked managed profile Doc, while Agent 3 appends or precisely str_replace updates marked rounds because controlled block deletion is unavailable.'
   - 'S2: the three complete user-provided business Prompts are preserved as a hashed SSOT. Only the confirmed missing output fields are patched: Agent 1 borrow/do-not-copy and Agent 3 selection reason.'
+  - 'S3: seven serial RED/GREEN tasks implement current-user XHS snapshot reads, xhs_note_list, resumable bounded file_read, deterministic three-Agent prompts with exact tool flags, safe Langfuse/final metrics, executable fake-tool workflow contracts, and full gates.'
+  - 'S3 gate: independent atomicity review PASS with P0/P1/P2=0 after adding exact Create/Patch/history/tool-flag readback, byte-exact prompt composition, stream/non-stream final metadata, and focused Agent 1/2/3 workflow tests.'
   blockers: []
 
 - id: feishu-action-transition
