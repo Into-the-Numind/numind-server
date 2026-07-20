@@ -75,7 +75,7 @@ const larkHostedExecutionPolicy = "有数托管规则（优先于下方针对本
 	"没有精确匹配时说明未找到并请求链接，不要猜测 token，也不要说成连接未就绪。" +
 	"lark_execute 必须串行：一次只调用一个并等待结构化结果后再决定下一步，禁止在同一轮并发调用或在前一个结果返回前重复同一命令。" +
 	"官方命令中的固定 --as user 与 --format json 可以保留，平台会安全规范化。" +
-	"policy_rejected 或 validation 只可修正业务命令一次；not_found 或 resource_denied 应向用户确认资源，不要自动重试；unknown_result 必须立即停止，禁止换参数重复写入。" +
+	"policy_rejected 或 validation 最多允许 5 次总尝试；每次必须根据结构化原因修正业务命令，不能原样重复；not_found 或 resource_denied 应向用户确认资源，不要自动重试；unknown_result 必须立即停止，禁止换参数重复写入。" +
 	"rate_limited/temporary 仅在结构化结果 retryable=true 时最多重试一次；不要改跑本地初始化命令。"
 
 func (t *larkSkillReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
@@ -195,7 +195,7 @@ func larkWorkspaceSoftError(code larkWorkspaceErrorCode) (ToolResult, error) {
 		message = "无法验证当前飞书工作区操作身份。"
 		publicCode = "identity_unavailable"
 	case larkWorkspaceErrorExecuteRejected:
-		message = "飞书业务命令不符合平台策略，本次尚未访问飞书，也不代表连接异常。请按技能说明修正 Docs/Base/Wiki/Drive 命令；最多修正并重试一次。不要执行 auth/config/whoami，也不要要求用户提供 App ID/App Secret。"
+		message = "飞书业务命令不符合平台策略，本次尚未访问飞书，也不代表连接异常。请按技能说明修正 Docs/Base/Wiki/Drive 命令；最多允许 5 次总尝试。不要执行 auth/config/whoami，也不要要求用户提供 App ID/App Secret。"
 		publicCode, recoverable = "command_rejected", true
 	case larkWorkspaceErrorExecuteRetryExhausted:
 		message = "飞书命令连续被拒绝，已停止后续飞书命令，本任务不会再调用执行器。不要继续重试、执行 auth/config/whoami，或要求用户提供 App ID/App Secret。请向用户说明本次操作未完成。"
@@ -227,6 +227,48 @@ func larkWorkspaceSoftError(code larkWorkspaceErrorCode) (ToolResult, error) {
 		"code":        publicCode,
 		"recoverable": recoverable,
 		"retryable":   retryable,
+	})
+	return ToolResult(output), nil
+}
+
+func larkWorkspaceCorrectableCommandError(code, message string, attempts, remaining int) (ToolResult, error) {
+	if code == "" {
+		code = "command_rejected"
+	}
+	if message == "" {
+		message = "飞书业务命令不符合平台策略，请按当前技能说明修正命令。"
+	}
+	output, _ := json.Marshal(map[string]any{
+		"error":              "ERROR: " + message,
+		"code":               code,
+		"category":           "validation",
+		"stage":              "pre_execution",
+		"attempt":            attempts,
+		"max_attempts":       larkExecuteMaxCorrectableAttempts,
+		"remaining_attempts": remaining,
+		"feishu_called":      false,
+		"recoverable":        true,
+		"retryable":          false,
+	})
+	return ToolResult(output), nil
+}
+
+func larkWorkspaceCorrectionExhausted(hint string) (ToolResult, error) {
+	message := "飞书命令连续 5 次未通过执行前校验，已停止当前任务后续的飞书命令。"
+	if hint != "" {
+		message += "最后一次校验原因：" + hint + "。"
+	}
+	output, _ := json.Marshal(map[string]any{
+		"error":              "ERROR: " + message,
+		"code":               "correction_exhausted",
+		"category":           "validation",
+		"stage":              "pre_execution",
+		"attempt":            larkExecuteMaxCorrectableAttempts,
+		"max_attempts":       larkExecuteMaxCorrectableAttempts,
+		"remaining_attempts": 0,
+		"feishu_called":      false,
+		"recoverable":        false,
+		"retryable":          false,
 	})
 	return ToolResult(output), nil
 }
