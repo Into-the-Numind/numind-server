@@ -17,6 +17,8 @@ import (
 // 就是 Eino 写入 messages 数组的 content。当 V2 启用时，我们拦截原工具输出：
 //   - 可信 lark_skill_read → 在最终封装硬上限内原子返回，避免完整命令说明与
 //     references 被 persisted-output 预览截断
+//   - 可信 file_read → 在 384 KiB 完整 JSON envelope 硬上限内原子返回，避免
+//     64 KiB 内容页被通用 16 KiB artifact preview 二次截断
 //   - len(output) <= ToolArtifactSizeLimit → 原样返回，行为与 V1 完全一致
 //   - 超阈值 → 调 compactv2.ProcessToolResult 写盘 + 元数据入库，返回
 //     `<persisted-output ref="UUID" tool="..." size="...">PREVIEW...</persisted-output>` 引用
@@ -49,12 +51,15 @@ func wrapToolWithV2ArtifactProcessing(
 ) einotool.InvokableTool {
 	// Generic artifact persistence is triggered above 16 KiB and leaves only a
 	// 1 KiB model-visible preview. That can separate later instruction pages or
-	// controlled references from the main guide. Only the server-owned concrete
-	// lark skill adapter gets a bounded atomic path; a same-named external/mock
-	// tool remains on the ordinary artifact path.
+	// controlled references from the main guide. Only server-owned concrete
+	// adapters get bounded atomic paths; same-named external/mock tools remain on
+	// the ordinary artifact path.
 	if adapter, ok := inner.(*fullToolEinoAdapter); ok {
-		if _, trusted := adapter.ft.(*larkSkillReadTool); trusted {
+		switch adapter.ft.(type) {
+		case *larkSkillReadTool:
 			return &boundedAtomicSkillTool{inner: inner}
+		case *fileReadTool:
+			return &boundedAtomicFileReadTool{inner: inner}
 		}
 	}
 	return &v2ArtifactWrappedTool{
@@ -73,6 +78,12 @@ func wrapToolWithV2ArtifactProcessing(
 // tool applies this same limit while it follows internal cursors; this wrapper
 // remains an independent final-envelope defense.
 const larkSkillReadAtomicOutputLimit = 64 << 10
+
+// fileReadAtomicOutputLimit bounds the complete model-visible JSON envelope,
+// not only its content field. A normal file_read page is at most 64 KiB; the
+// larger envelope ceiling leaves room for JSON escaping and metadata while
+// still preventing an unexpected implementation from flooding model context.
+const fileReadAtomicOutputLimit = 384 << 10
 
 type boundedAtomicSkillTool struct {
 	inner einotool.InvokableTool
@@ -94,6 +105,33 @@ func (w *boundedAtomicSkillTool) InvokableRun(ctx context.Context, args string, 
 	}
 	log.Warnw("boundedAtomicSkillTool: rejecting oversized skill envelope", "size", len(output))
 	softError, _ := larkWorkspaceSoftError(larkWorkspaceErrorSkillRead)
+	return string(softError), nil
+}
+
+type boundedAtomicFileReadTool struct {
+	inner einotool.InvokableTool
+}
+
+var _ einotool.InvokableTool = (*boundedAtomicFileReadTool)(nil)
+
+func (w *boundedAtomicFileReadTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
+	return w.inner.Info(ctx)
+}
+
+func (w *boundedAtomicFileReadTool) InvokableRun(ctx context.Context, args string, opts ...einotool.Option) (string, error) {
+	output, err := w.inner.InvokableRun(ctx, args, opts...)
+	if err != nil {
+		return output, err
+	}
+	if len(output) <= fileReadAtomicOutputLimit {
+		return output, nil
+	}
+	log.Warnw("boundedAtomicFileReadTool: rejecting oversized file envelope", "size", len(output))
+	softError, _ := (&fileReadTool{}).returnSoftError(
+		"",
+		"file_read output exceeds %d-byte atomic delivery limit; retry with a smaller limit_bytes",
+		fileReadAtomicOutputLimit,
+	)
 	return string(softError), nil
 }
 

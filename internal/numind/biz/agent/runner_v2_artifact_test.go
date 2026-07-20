@@ -9,6 +9,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -192,6 +193,66 @@ func TestWrapToolWithV2ArtifactProcessing_LargeOutput_ReturnsPersistedRef(t *tes
 	assert.Equal(t, uint64(99), rows[0].AgentRunID)
 	assert.Equal(t, "file_read", rows[0].ToolName)
 	assert.Equal(t, int64(50*1024), rows[0].SizeBytes)
+}
+
+func TestArtifactTrustedFileRead_PreservesCompleteBoundedEnvelopeInline(t *testing.T) {
+	s := newRunnerTestArtifactStore(t)
+	dataDir := t.TempDir()
+	srv := newHeadServer(t, 200, "text/plain", int64(fileReadMaxLimitBytes))
+	page := strings.Repeat("F", fileReadMaxLimitBytes)
+	fullTool := &fileReadTool{
+		textParser: &mockFileParser{content: page},
+	}
+	inner := adaptFullToEinoTool(fullTool, nil)
+	args, err := json.Marshal(fileReadInput{FileURL: baseURL(srv.URL)})
+	require.NoError(t, err)
+
+	wrapped := wrapToolWithV2ArtifactProcessing(inner, "file_read", 301, s, dataDir)
+	out, err := wrapped.InvokableRun(ctxUser123(), string(args))
+
+	require.NoError(t, err)
+	assert.Contains(t, out, page)
+	assert.NotContains(t, out, `<persisted-output`)
+	assert.LessOrEqual(t, len(out), fileReadAtomicOutputLimit)
+	rows, listErr := s.ListExpiredBefore(context.Background(), time.Now().Add(100*24*time.Hour), 100)
+	require.NoError(t, listErr)
+	assert.Empty(t, rows, "trusted bounded file_read output must remain atomically model-visible")
+}
+
+func TestArtifactSpoofedFileReadNameStillUsesGenericPersistence(t *testing.T) {
+	s := newRunnerTestArtifactStore(t)
+	dataDir := t.TempDir()
+	inner := &mockInvokableTool{name: "file_read", out: strings.Repeat("S", 50*1024)}
+
+	wrapped := wrapToolWithV2ArtifactProcessing(inner, "file_read", 302, s, dataDir)
+	out, err := wrapped.InvokableRun(context.Background(), `{}`)
+
+	require.NoError(t, err)
+	assert.Contains(t, out, `<persisted-output`)
+	rows, listErr := s.ListExpiredBefore(context.Background(), time.Now().Add(100*24*time.Hour), 100)
+	require.NoError(t, listErr)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "file_read", rows[0].ToolName)
+}
+
+func TestBoundedAtomicFileReadTool_OversizedEnvelopeFailsClosed(t *testing.T) {
+	secretMarker := "oversized-file-envelope-must-not-leak"
+	inner := &mockInvokableTool{
+		name: "file_read",
+		out:  secretMarker + strings.Repeat("O", fileReadAtomicOutputLimit),
+	}
+	wrapped := &boundedAtomicFileReadTool{inner: inner}
+
+	out, err := wrapped.InvokableRun(context.Background(), `{}`)
+
+	require.NoError(t, err)
+	message, soft := softToolErrorMessage(out)
+	assert.True(t, soft)
+	assert.Contains(t, message, "file_read output exceeds")
+	assert.NotContains(t, out, secretMarker)
+	assert.NotContains(t, out, `<persisted-output`)
+	assert.LessOrEqual(t, len(out), fileReadAtomicOutputLimit)
+	assert.Equal(t, 1, inner.invoked)
 }
 
 // Customer regression (Dev runs 212/213/215): lark-drive's controlled skill
