@@ -20,6 +20,27 @@ features:
   - 'S0: fix the universal binding journey, not user 438: every browser acknowledgement is exact-session-bound, every server phase transition durably updates the Agent pending action, and stale/repeated/restarted clients converge to the latest safe action.'
   - 'S0: the UI exposes one current actionable step, turns superseded cards into history, explains the next action in user language, and returns to the original Agent task without refresh or resubmission.'
   blockers: []
+- id: artifact-transient-read-recovery
+  ndf_version: '3.0'
+  description: Keep an immediate read_tool_artifact visibility miss recoverable instead of terminating the entire Agent run.
+  classification_reason: 'Hotfix: no schema, API, external integration, payment, or permission change; only the compactv2 artifact reader and tests change. Found during three-agent S6 Dev acceptance.'
+  last_updated_by: ai-h2
+  last_updated_at: '2026-07-20T20:41:30+08:00'
+  last_verified: '2026-07-20T20:41:30+08:00'
+  created_at: '2026-07-20T20:33:19+08:00'
+  track: hotfix
+  stage: H2
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: fix/artifact-transient-read-recovery}
+  worktrees: {numind-server: /private/tmp/wt-artifact-transient-read-recovery-numind-server}
+  progress: {total_tasks: 3, completed_tasks: 2, reviewed_tasks: 1, current_task: 'Merge atomically, deploy backend to Dev, and repeat Agent 2 acceptance'}
+  artifacts: {}
+  decisions:
+  - 'H1 diagnosis: Dev run 263 created a persisted 30,828-byte lark_execute artifact and row; the immediate read returned record-not-found and terminated the run, while run 264 read the same UUID moments later.'
+  - 'H1 fix: record-not-found becomes a normal note=not_found result with one-retry guidance. Success, expiry, disk-missing, malformed-input, store-error, and cross-user boundaries remain unchanged.'
+  - 'H2 verification: focused compactv2 and Agent tests, focused race coverage, full go test ./..., task lint, and diff hygiene pass. Self-review found P0/P1/P2=0; the first commit remains the RED customer regression.'
+  blockers: []
 - id: three-agent-feishu-pipeline
   ndf_version: '3.0'
   description: Build three user-isolated Agents that turn internal XHS captures into a Feishu Base, customer materials into a reusable Feishu profile document, and both artifacts into a customer-specific Feishu topic-planning document.
