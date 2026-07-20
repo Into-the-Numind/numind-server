@@ -330,10 +330,6 @@ func buildFeishuService(deps feishuCompositionDeps) (*feishuPersonalWorkspace, e
 	if err != nil {
 		return nil, fmt.Errorf("feishu: build skill reader: %w", err)
 	}
-	confirmation, err := feishu.NewOperationConfirmationRequester(deps.dataStore)
-	if err != nil {
-		return nil, fmt.Errorf("feishu: build confirmation requester: %w", err)
-	}
 	catalog := feishu.NewCommandCatalog()
 
 	// authService is deliberately assigned only after OperationService has its
@@ -374,7 +370,6 @@ func buildFeishuService(deps feishuCompositionDeps) (*feishuPersonalWorkspace, e
 		Catalog:            catalog,
 		Receipts:           receiptVerifier,
 		Recovery:           recovery,
-		Confirmation:       confirmation,
 		Vault:              vault,
 		Preflight:          scopePreflight,
 		Runner:             runner,
