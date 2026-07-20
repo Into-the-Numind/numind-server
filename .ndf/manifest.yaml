@@ -4,8 +4,9 @@ features:
   ndf_version: '3.0'
   description: Keep sequential Feishu authorization, progress narration, intermediate tool state, and ambiguous-write verification continuous and truthful without reload.
   classification_reason: 'Standard: customer bug spans backend/front-end durable continuation and high-risk external-write safety across more than three files. User authorized fast Standard through Dev with necessary regressions and mandatory quality gates only.'
-  last_updated_by: ai-s6
-  last_updated_at: '2026-07-20T18:08:00+08:00'
+  last_updated_by: ai-s6-dev-deployed
+  last_updated_at: '2026-07-20T18:18:00+08:00'
+  last_verified: '2026-07-20T18:18:00+08:00'
   created_at: '2026-07-20T17:43:42+08:00'
   track: standard
   stage: S6
@@ -13,7 +14,8 @@ features:
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/feishu-multi-auth-continuity, numind-web-v3: feature/feishu-multi-auth-continuity}
   worktrees: {numind-server: /private/tmp/wt-feishu-multi-auth-continuity-numind-server, numind-web-v3: /private/tmp/wt-feishu-multi-auth-continuity-numind-web-v3}
-  progress: {total_tasks: 7, completed_tasks: 6, reviewed_tasks: 1, current_task: 'Atomic merge and backend-first Dev deployment'}
+  progress: {total_tasks: 7, completed_tasks: 7, reviewed_tasks: 1, current_task: 'Await human Dev multi-authorization acceptance'}
+  deployed: 'dev server develop-c83d24d9 (sha256:b067b5d6725ce512441892ad2cf1b3b0af08f1fc899bc89d35a2630d26eda03b); web develop-647b0b1 (sha256:9b04a125b682fd964304f056117f6c405c8f9dafdb7e051377fc240e0241bcb5)'
   artifacts:
     requirement: requirements/feishu-multi-auth-continuity.md
     proposal: proposals/feishu-multi-auth-continuity-proposal.md
@@ -28,6 +30,7 @@ features:
   - 'S4: self-review found and closed the cross-worker unknown-result gap: durable transcript seeding preserves the strongest write fence while still allowing bounded catalog-proven reads. One-time URLs and model argv are not persisted; explicit tool failures remain truthful.'
   - 'S5: 137 focused frontend tests pass; affected Go packages and persistence/authorization regressions pass; Go lint, Vue lint, Vue type-check, and diff checks pass. Real multi-card interaction is intentionally reserved for the user Dev acceptance requested in this expedited Standard run.'
   - 'S6: all automated gates are green and both repositories are ready for atomic merge; deploy backend before frontend so the rolling-compatible snapshot contract is available first.'
+  - 'S6 Dev deployment: ndf-done atomically merged and pushed server develop c83d24d9 and web develop 647b0b1, then removed both worktrees and feature branches. Backend-first TCR releases deployed the exact images above. Public server /healthz and web /api/healthz return code 0/status ok; web /health returns healthy. Real sequential authorization remains the human product gate; Prod is untouched.'
   blockers: []
 - id: lark-auth-resume-stall
   ndf_version: '3.0'
