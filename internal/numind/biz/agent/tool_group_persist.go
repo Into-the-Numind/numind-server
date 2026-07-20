@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"numind-server/internal/numind/biz/feishu"
 	"numind-server/internal/numind/biz/narration"
 )
 
@@ -54,7 +55,7 @@ func aggregateToolEvents(events []narration.Event) []persistedToolCall {
 		if len(ev.InternalInput) > 0 {
 			agg.InternalInput = append(json.RawMessage(nil), ev.InternalInput...)
 		}
-		if ev.State == narration.StateResult && len(ev.InternalResult) > 0 {
+		if len(ev.InternalResult) > 0 {
 			agg.InternalResult = append(json.RawMessage(nil), ev.InternalResult...)
 		}
 		agg.CurrentState = string(ev.State)
@@ -165,15 +166,23 @@ func buildTranscriptTurns(
 
 const maxPersistedResumeToolResultBytes = 64 << 10
 
-// providerSafeToolTurns preserves only successful lark_execute results needed
-// by a later provider continuation. Model-supplied argv is deliberately replaced
-// by an empty object, so durable history can inform the model without becoming a
-// replay channel. UI narration stays in the adjacent tool_group turn.
+// providerSafeToolTurns preserves successful lark_execute results and the one
+// trusted unknown-result envelope needed to restore an exact-command fence.
+// Model-supplied argv is deliberately replaced by an empty object, so durable
+// history can inform the model without becoming a replay channel. UI narration
+// stays in the adjacent tool_group turn.
 func providerSafeToolTurns(group []persistedToolCall) []map[string]any {
 	var turns []map[string]any
 	for _, call := range group {
-		if call.ToolName != "lark_execute" || call.CurrentState != string(narration.StateResult) ||
-			call.ToolCallID == "" || len(call.InternalResult) == 0 || !json.Valid(call.InternalResult) {
+		if call.ToolName != "lark_execute" || call.ToolCallID == "" ||
+			len(call.InternalResult) == 0 || !json.Valid(call.InternalResult) {
+			continue
+		}
+		isSuccess := call.CurrentState == string(narration.StateResult)
+		failure, isTerminalFailure := feishu.DecodeLarkTerminalFailure(call.InternalResult)
+		isDurableUnknown := call.CurrentState == string(narration.StateError) && isTerminalFailure &&
+			failure.Category == "unknown_result" && failure.WriteFenceKey != ""
+		if !isSuccess && !isDurableUnknown {
 			continue
 		}
 		result := compactPersistedResumeToolResult(call.InternalResult)

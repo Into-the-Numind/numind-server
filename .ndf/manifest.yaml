@@ -1,5 +1,32 @@
 schema_version: '2.0'
 features:
+- id: feishu-minimal-unknown-fence
+  ndf_version: '3.0'
+  description: Reduce ambiguous Feishu write protection from a run-global stop to an exact-command fence while keeping verification and unrelated work live.
+  classification_reason: 'Standard: customer bug changes third-party write-safety and durable Agent continuation across more than three backend files. User explicitly requested immediate implementation and the smallest possible safety-lock scope.'
+  last_updated_by: ai-s4
+  last_updated_at: '2026-07-20T19:05:00+08:00'
+  created_at: '2026-07-20T18:50:42+08:00'
+  track: standard
+  stage: S4
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: feature/feishu-minimal-unknown-fence}
+  worktrees: {numind-server: /private/tmp/wt-feishu-minimal-unknown-fence-numind-server}
+  progress: {total_tasks: 6, completed_tasks: 4, reviewed_tasks: 1, current_task: 'Commit reviewed GREEN implementation and prepare S5 delivery gates'}
+  artifacts:
+    requirement: requirements/feishu-minimal-unknown-fence.md
+    proposal: proposals/feishu-minimal-unknown-fence-proposal.md
+    spec: docs/superpowers/specs/2026-07-20-feishu-minimal-unknown-fence-design.md
+    plan: docs/superpowers/plans/2026-07-20-feishu-minimal-unknown-fence.md
+  decisions:
+  - 'S0: Dev run 255 proves the current run-global terminal stop blocks alternate read verification and unrelated Base work after an ambiguous Docs update. The first customer regression is committed RED as 2a74c967.'
+  - 'S1: choose an exact normalized-command ambiguity fence. Reject both blind replay and a resource/domain/run-wide lock; retain every upstream identity, authorization, scope, catalog, idempotency, and serialization boundary.'
+  - 'S2: persist only a closed-schema SHA-256 fingerprint for business-started unknown results. Reads and different commands always remain eligible; legacy unknown results without a trusted fingerprint cannot arm a broader fallback lock.'
+  - 'S3: update result schema, retry state, durable narration/transcript evidence, hosted policy, and focused tests; run mandatory lint; merge and deploy backend-only to Dev.'
+  - 'S4 GREEN: run-global terminalStop and three-read cap are removed. A closed-schema SHA-256 digest fences only an exact ambiguous write; ordinary failed reads and every different operation reset to ready. Trusted unknown evidence survives provider continuation without argv/content persistence, while legacy unknown rows without a digest cannot arm a broad lock.'
+  - 'S4 review: Run 255 RED is GREEN; exact replay remains blocked; different writes, alternate reads, legacy continuation, five-attempt correction exhaustion, internal-only persistence, strict result decoding, and concurrent access race coverage pass. No identity, scope, catalog, shell, credential, idempotency, or serialization boundary changed.'
+  blockers: []
 - id: feishu-multi-auth-continuity
   ndf_version: '3.0'
   description: Keep sequential Feishu authorization, progress narration, intermediate tool state, and ambiguous-write verification continuous and truthful without reload.

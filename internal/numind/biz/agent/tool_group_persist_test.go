@@ -92,6 +92,41 @@ func TestBuildTranscriptTurns_PreservesSafeLarkResultsForNextAuthorization(t *te
 	assert.True(t, foundResult, "the next authorization leg must receive the successful Base result")
 }
 
+// An ambiguous write can be followed by a later authorization handled on a
+// different worker. Persist only the closed server fingerprint so the exact
+// replay stays fenced without retaining the original command or freezing the
+// rest of the run.
+func TestBuildTranscriptTurns_PreservesOnlyOpaqueUnknownWriteFence(t *testing.T) {
+	const fenceKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	base := time.Now()
+	events := []narration.Event{
+		{
+			RunID: 255, ToolCallID: "tc-doc-update", ToolName: "lark_execute",
+			State: narration.StateUse, Message: "处理中", Timestamp: base,
+			InternalInput: json.RawMessage(`{"argv":["docs","+update","--content","secret body"]}`),
+		},
+		{
+			RunID: 255, ToolCallID: "tc-doc-update", ToolName: "lark_execute",
+			State: narration.StateError, Message: "操作未完成", Timestamp: base.Add(time.Millisecond),
+			InternalResult: json.RawMessage(`{"ok":false,"state":"unknown","operation_id":"op-unknown","failure":{"code":"feishu_unknown_result","category":"unknown_result","retryable":false,"business_started":true,"write_fence_key":"` + fenceKey + `"}}`),
+		},
+	}
+
+	turns := buildTranscriptTurns(
+		"更新文档", []stepEntry{{Content: "正在更新", TS: base.Add(-time.Millisecond)}},
+		events, "", "",
+	)
+	require.Len(t, turns, 5)
+	encoded, err := json.Marshal(turns)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), "secret body")
+	assert.Contains(t, string(encoded), fenceKey)
+
+	larkExecuteRetryClearRun(255)
+	t.Cleanup(func() { larkExecuteRetryClearRun(255) })
+	require.True(t, larkExecuteRetrySeedTranscript(255, encoded))
+}
+
 func TestAggregateToolEvents_Empty(t *testing.T) {
 	assert.Nil(t, aggregateToolEvents(nil))
 	assert.Nil(t, aggregateToolEvents([]narration.Event{}))
