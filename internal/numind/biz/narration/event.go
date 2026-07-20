@@ -40,6 +40,12 @@ type Event struct {
 	Message    string    `json:"message"`
 	Reason     string    `json:"reason,omitempty"`
 	Timestamp  time.Time `json:"timestamp"`
+	// InternalInput/InternalResult are run-scoped persistence evidence only. They
+	// never cross the narration JSON boundary or reach the browser. The Agent
+	// transcript finalizer uses successful lark_execute results to preserve
+	// provider protocol history across consecutive authorization yields.
+	InternalInput  json.RawMessage `json:"-"`
+	InternalResult json.RawMessage `json:"-"`
 }
 
 // EmitPayload is what callers (adapter) pass to Provider.Emit.

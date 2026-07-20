@@ -101,16 +101,18 @@ func (t *Translator) Translate(ctx context.Context, payload EmitPayload, toolNam
 	}
 
 	return Event{
-		RunID:      payload.RunID,
-		ToolCallID: payload.ToolCallID,
-		ToolName:   toolName,
-		State:      state,
-		Verb:       verb,
-		Detail:     detail,
-		Icon:       iconForState(state),
-		Message:    message,
-		Reason:     payload.Reason,
-		Timestamp:  nowFunc(),
+		RunID:          payload.RunID,
+		ToolCallID:     payload.ToolCallID,
+		ToolName:       toolName,
+		State:          state,
+		Verb:           verb,
+		Detail:         detail,
+		Icon:           iconForState(state),
+		Message:        message,
+		Reason:         payload.Reason,
+		Timestamp:      nowFunc(),
+		InternalInput:  append(json.RawMessage(nil), payload.Input...),
+		InternalResult: append(json.RawMessage(nil), payload.Result...),
 	}
 }
 

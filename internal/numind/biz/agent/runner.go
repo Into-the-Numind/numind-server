@@ -589,6 +589,11 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 			return nil, fmt.Errorf("AgentRunner.Run: %w", err)
 		}
 	}
+	// Rebuild the unknown-write fence from durable history before considering
+	// this leg's result. This survives worker/process changes between multiple
+	// authorization cards and prevents a successful read from clearing an older
+	// ambiguous write.
+	larkExecuteRetrySeedTranscript(run.ID, json.RawMessage(run.Messages))
 	if len(req.ExternalContinuationResult) != 0 {
 		larkExecuteRetrySeedExternalResult(run.ID, req.ExternalContinuationResult)
 	}

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"time"
 
 	"numind-server/internal/numind/biz/narration"
@@ -20,9 +21,11 @@ type persistedToolCall struct {
 	// intentionally NOT populated on persist: the live preview comes from the
 	// transient tool_call_result SSE event (the raw tool output), which narration
 	// events do not carry. On reload the timeline is conveyed via Events instead.
-	Preview      string            `json:"preview,omitempty"`
-	ErrorMessage string            `json:"error_message,omitempty"`
-	Events       []narration.Event `json:"events"`
+	Preview        string            `json:"preview,omitempty"`
+	ErrorMessage   string            `json:"error_message,omitempty"`
+	Events         []narration.Event `json:"events"`
+	InternalInput  json.RawMessage   `json:"-"`
+	InternalResult json.RawMessage   `json:"-"`
 }
 
 // aggregateToolEvents folds an ordered narration event stream into per-tool-call
@@ -48,6 +51,12 @@ func aggregateToolEvents(events []narration.Event) []persistedToolCall {
 			agg.ToolName = ev.ToolName
 		}
 		agg.Events = append(agg.Events, ev)
+		if len(ev.InternalInput) > 0 {
+			agg.InternalInput = append(json.RawMessage(nil), ev.InternalInput...)
+		}
+		if ev.State == narration.StateResult && len(ev.InternalResult) > 0 {
+			agg.InternalResult = append(json.RawMessage(nil), ev.InternalResult...)
+		}
 		agg.CurrentState = string(ev.State)
 		if ev.State == narration.StateError || ev.State == narration.StateRejected {
 			// Last terminal error wins. The current tool lifecycle emits exactly one
@@ -123,12 +132,15 @@ func buildTranscriptTurns(
 		}
 		if len(group) > 0 {
 			turns = append(turns, map[string]any{"role": "tool_group", "tool_calls": group})
+			turns = append(turns, providerSafeToolTurns(group)...)
 		}
 	}
 	// Defensive: any tool aggregates not attributed to a step (shouldn't happen —
 	// every tool follows some assistant step) trail as a final tool_group.
 	if toolIdx < len(aggs) {
-		turns = append(turns, map[string]any{"role": "tool_group", "tool_calls": aggs[toolIdx:]})
+		remaining := aggs[toolIdx:]
+		turns = append(turns, map[string]any{"role": "tool_group", "tool_calls": remaining})
+		turns = append(turns, providerSafeToolTurns(remaining)...)
 	}
 
 	// Reconcile the final answer onto the trailing assistant turn (or append one
@@ -149,6 +161,53 @@ func buildTranscriptTurns(
 		}
 	}
 	return turns
+}
+
+const maxPersistedResumeToolResultBytes = 64 << 10
+
+// providerSafeToolTurns preserves only successful lark_execute results needed
+// by a later provider continuation. Model-supplied argv is deliberately replaced
+// by an empty object, so durable history can inform the model without becoming a
+// replay channel. UI narration stays in the adjacent tool_group turn.
+func providerSafeToolTurns(group []persistedToolCall) []map[string]any {
+	var turns []map[string]any
+	for _, call := range group {
+		if call.ToolName != "lark_execute" || call.CurrentState != string(narration.StateResult) ||
+			call.ToolCallID == "" || len(call.InternalResult) == 0 || !json.Valid(call.InternalResult) {
+			continue
+		}
+		result := compactPersistedResumeToolResult(call.InternalResult)
+		turns = append(turns,
+			map[string]any{
+				"role":    "assistant",
+				"content": "",
+				"tool_calls": []map[string]any{{
+					"id":       call.ToolCallID,
+					"type":     "function",
+					"function": map[string]any{"name": "lark_execute", "arguments": `{}`},
+				}},
+			},
+			map[string]any{
+				"role": "tool", "tool_call_id": call.ToolCallID,
+				"content": string(result),
+			},
+		)
+	}
+	return turns
+}
+
+func compactPersistedResumeToolResult(raw json.RawMessage) json.RawMessage {
+	if len(raw) <= maxPersistedResumeToolResultBytes {
+		var compacted []byte
+		compacted = append(compacted, raw...)
+		return json.RawMessage(compacted)
+	}
+	preview, _ := json.Marshal(map[string]any{
+		"ok":             true,
+		"state":          "result_truncated",
+		"result_preview": truncateRunes(string(raw), 16000),
+	})
+	return json.RawMessage(preview)
 }
 
 // assistantTurn builds an assistant turn map, omitting the reasoning key when
