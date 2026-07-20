@@ -742,6 +742,24 @@ func validateOfficialConsoleURL(raw string) error {
 	return nil
 }
 
+// canonicalAppScopeConsoleURL rebuilds only the narrow official approval route
+// from the current generation's durable, non-secret app id. The original
+// classifier URL and any query data remain transient and are never persisted.
+func canonicalAppScopeConsoleURL(appID string) (string, error) {
+	if !validAuthSessionAppID(appID) {
+		return "", ErrAuthSessionUnavailable
+	}
+	result := (&url.URL{
+		Scheme: "https",
+		Host:   "open.feishu.cn",
+		Path:   "/app/" + appID + "/auth",
+	}).String()
+	if err := validateOfficialConsoleURL(result); err != nil {
+		return "", ErrAuthSessionUnavailable
+	}
+	return result, nil
+}
+
 func validateOfficialWorkerURL(raw, phase string) error {
 	parsed, err := parseOfficialLarkURL(raw)
 	if err != nil {
@@ -1018,6 +1036,20 @@ func (s *AuthSessionService) RefreshOperationAction(
 		return nil, ErrAuthSessionUnavailable
 	}
 	now := s.now().UTC()
+	consoleURL := ""
+	if phase == model.FeishuAuthPhaseAppScope {
+		consoleURL = s.urls.get(authSessionRegistryKey(oldSession), now)
+		if consoleURL == "" {
+			account, accountErr := s.accounts.Get(ctx, userID, ProviderLark)
+			if accountErr != nil || account == nil || account.Generation != generation {
+				return nil, ErrAuthSessionUnavailable
+			}
+			consoleURL, err = canonicalAppScopeConsoleURL(account.AppID)
+			if err != nil {
+				return nil, ErrAuthSessionUnavailable
+			}
+		}
+	}
 	connectionState := model.FeishuConnectionWaitingUserAuth
 	if phase == model.FeishuAuthPhaseCreateApp {
 		connectionState = model.FeishuConnectionCreatingApp
@@ -1042,7 +1074,6 @@ func (s *AuthSessionService) RefreshOperationAction(
 	if err != nil || stored == nil {
 		return nil, ErrAuthSessionUnavailable
 	}
-	consoleURL := s.urls.get(authSessionRegistryKey(oldSession), now)
 	s.stopSession(userID, generation, oldSessionID)
 	s.urls.remove(authSessionRegistryKey(oldSession))
 	if phase == model.FeishuAuthPhaseAppScope {
@@ -1171,11 +1202,8 @@ func refreshRecoveryKind(session *model.FeishuAuthSession) (RecoveryKind, error)
 			return RecoveryReauth, nil
 		}
 		return RecoveryUserScope, nil
-	// App-scope console URLs are transient classifier evidence. Recreating a
-	// URL without that evidence would either persist it or guess a broad flow,
-	// both of which violate the fail-closed contract.
 	case model.FeishuAuthPhaseAppScope:
-		return RecoveryNone, ErrAuthSessionUnavailable
+		return RecoveryAppScope, nil
 	default:
 		return RecoveryNone, ErrAuthSessionUnavailable
 	}

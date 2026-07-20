@@ -751,6 +751,49 @@ func TestAuthSessionService_RefreshOperationAtomicallyRebindsBeforeActivatingRep
 	close(oldRelease)
 }
 
+func TestAuthSessionService_RefreshAppScopeReconstructsCanonicalURLAfterRestart(t *testing.T) {
+	h := newAuthSessionHarness(t)
+	h.createAccount(model.FeishuConnectionWaitingAppApproval)
+	operation := &model.FeishuOperation{
+		ID: "operation-refresh-app-scope", UserID: 7, Generation: 1, AgentRunID: 7,
+		ToolCallID: "tool-refresh-app-scope", IdempotencyKey: "refresh-app-scope",
+		CommandPath: "docs document get", Domain: "docs", RiskLevel: string(RiskRead),
+		RequestCiphertext: []byte("encrypted-request"), KeyVersion: "v1",
+		RequestFingerprint: "refresh-app-scope-fingerprint", State: model.FeishuOperationWaitingAppScope,
+	}
+	require.NoError(t, h.db.Create(operation).Error)
+	old := &model.FeishuAuthSession{
+		ID: "00000000-0000-4000-8000-000000000088", UserID: 7, Generation: 1,
+		OperationID: &operation.ID, Phase: model.FeishuAuthPhaseAppScope,
+		RequestedScopesJSON: []byte(`["docx:document:readonly"]`),
+		State:               model.FeishuAuthSessionPending, ExpiresAt: h.now.Add(10 * time.Minute),
+	}
+	require.NoError(t, h.dataStore.FeishuWorkspace().CreateSession(h.ctx, old))
+	oldSummary, err := json.Marshal(persistedOperationSummary{
+		Status: model.FeishuOperationWaitingAppScope, Phase: model.FeishuAuthPhaseAppScope,
+		SessionID: old.ID, RecoveryKind: RecoveryAppScope,
+		RecoveryScopes: []string{"docx:document:readonly"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.db.Model(&model.FeishuOperation{}).Where("id = ?", operation.ID).
+		Update("result_summary_json", oldSummary).Error)
+
+	// A fresh service has no in-memory copy of the classifier URL. It must use
+	// the current generation's non-secret app id to rebuild the narrow official
+	// approval route instead of persisting or guessing the original URL.
+	action, err := h.newService("refresh-app-scope-after-restart").RefreshOperationAction(
+		h.ctx, 7, 1, old.ID, operation.ID, model.FeishuOperationWaitingAppScope, oldSummary,
+	)
+
+	require.NoError(t, err)
+	require.NotEqual(t, old.ID, action.SessionID)
+	require.Equal(t, "https://open.feishu.cn/app/cli_app/auth", action.URL)
+	storedOperation, getErr := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, operation.ID)
+	require.NoError(t, getErr)
+	require.NotContains(t, string(storedOperation.ResultSummaryJSON), "open.feishu.cn")
+	require.NotContains(t, string(storedOperation.ResultSummaryJSON), "console")
+}
+
 func TestAuthSessionService_RefreshOperationRepairsLegacySupersededBinding(t *testing.T) {
 	h := newAuthSessionHarness(t)
 	h.createAccount(model.FeishuConnectionAppReady)
