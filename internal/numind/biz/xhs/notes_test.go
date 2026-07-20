@@ -52,6 +52,10 @@ func (m *crudMockStore) ListNotes(_ context.Context, userID uint, filter store.X
 	return matched[offset:end], total, nil
 }
 
+func (m *crudMockStore) ListSnapshot(context.Context, uint, store.XhsSnapshotQuery) (*store.XhsSnapshotPage, error) {
+	return nil, nil
+}
+
 func (m *crudMockStore) ListPendingEnrich(context.Context, int) ([]model.XhsTopicNote, error) {
 	return nil, nil
 }

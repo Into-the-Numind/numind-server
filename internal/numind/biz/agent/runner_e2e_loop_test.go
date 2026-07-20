@@ -184,6 +184,27 @@ func TestRunner_RealReAct_HappyPath(t *testing.T) {
 	require.NotNil(t, got.EndedAt)
 }
 
+func TestPipelineMetrics_NonStreamRunnerRecordsCompletedFinalAnswer(t *testing.T) {
+	final := "完成\n<!-- numind-pipeline-report/v1 agent=agent-1 {\"processed\":5,\"skipped\":2,\"remaining\":1,\"failed\":0} -->"
+	withMockChatFn(t, successChatFn(final))
+	events := capturePipelineLangfuseEvents(t)
+	skillStore := newMemorySkillStore(1, 501, "")
+	skillStore.fixed.Name = pipelineAgent1Name
+	store := newMockStore()
+	runner, toolName := newReActRunner(store, WithSkillStore(skillStore))
+	req := newReActRequest(toolName, "run pipeline")
+	req.AgentDefinitionID = 501
+
+	result, err := runner.Run(context.Background(), req)
+
+	require.NoError(t, err)
+	assert.Equal(t, TerminalCompleted, result.TerminalReason)
+	metadata := findPipelineTraceMetadata(t, *events)
+	assert.Equal(t, "agent-1", metadata["agent"])
+	assert.Equal(t, "5", metadata["processed"])
+	assert.Equal(t, "0", metadata["failed"])
+}
+
 // TestRunner_PTL_TerminatesFast verifies the V1.5 compact-v1-removal behavior:
 // a prompt_too_long error from the LLM terminates the run with
 // TerminalPromptTooLong (no retry). V1's collapse+reactive_compact recovery

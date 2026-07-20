@@ -73,7 +73,7 @@ func TestPlatformToolFactory_LoadTools(t *testing.T) {
 	}
 }
 
-func TestPlatformToolFactory_LoadTools_WithDS_8Tools(t *testing.T) {
+func TestPlatformToolFactory_LoadTools_WithDS_22Tools(t *testing.T) {
 	db := newFactoryTestDB(t)
 	ds := store.NewTestStore(db)
 	f := NewPlatformToolFactory(nil, ds)
@@ -81,9 +81,9 @@ func TestPlatformToolFactory_LoadTools_WithDS_8Tools(t *testing.T) {
 	require.NoError(t, err)
 	// V1.5 + v2 marketplace + Track 4: base count is now 19 (11 + load_skill + 4 create
 	// + create_docx + chart + run_python; learner_data_query removed for IDOR); with ds,
-	// memory_write + memory_read are appended → total 21.
-	assert.Len(t, tools, 21, "non-nil ds should produce 21 tools (19 base + memory_write + memory_read)")
-	assert.Len(t, metadata, 21, "non-nil ds should produce 21 metadata entries")
+	// memory_write + memory_read + current-user xhs_note_list are appended → total 22.
+	assert.Len(t, tools, 22, "non-nil ds should produce 22 tools (19 base + memory tools + xhs_note_list)")
+	assert.Len(t, metadata, 22, "non-nil ds should produce 22 metadata entries")
 
 	// Verify the first 19 are unchanged.
 	baseExpected := []string{
@@ -114,6 +114,9 @@ func TestPlatformToolFactory_LoadTools_WithDS_8Tools(t *testing.T) {
 	// Verify memory tools are appended at indices 19 and 20.
 	assert.Equal(t, "memory_write", tools[19].Name(), "tools[19] should be memory_write")
 	assert.Equal(t, "memory_read", tools[20].Name(), "tools[20] should be memory_read")
+	assert.Equal(t, "xhs_note_list", tools[21].Name(), "tools[21] should be xhs_note_list")
+	assert.True(t, tools[21].IsReadOnly())
+	assert.True(t, tools[21].IsSearchOrReadCommand())
 }
 
 func TestPlatformToolFactory_LoadTools_WithDS_Metadata14(t *testing.T) {
@@ -122,8 +125,8 @@ func TestPlatformToolFactory_LoadTools_WithDS_Metadata14(t *testing.T) {
 	f := NewPlatformToolFactory(nil, ds)
 	_, metadata, err := f.LoadTools(context.Background())
 	require.NoError(t, err)
-	// V1.5 + v2 marketplace + Track 4 + BE-2: total is 21 (19 base + memory_write + memory_read).
-	require.Len(t, metadata, 21)
+	// V1.5 + v2 marketplace + Track 4 + BE-2 + XHS: total is 22.
+	require.Len(t, metadata, 22)
 
 	// memory_write metadata at index 19.
 	mw := metadata[19]
@@ -140,6 +143,13 @@ func TestPlatformToolFactory_LoadTools_WithDS_Metadata14(t *testing.T) {
 	assert.Equal(t, "platform", mr.Source)
 	assert.Equal(t, "记忆", mr.Category)
 	assert.Equal(t, "", mr.RiskLevel, "memory_read has no risk level")
+
+	xhs := metadata[21]
+	assert.Equal(t, "xhs_note_list", xhs.ToolName)
+	assert.Equal(t, "读取小红书选题库", xhs.DisplayName)
+	assert.Equal(t, "platform", xhs.Source)
+	assert.Equal(t, "小红书", xhs.Category)
+	assert.Equal(t, "safe", xhs.RiskLevel)
 }
 
 // TestPlatformToolFactory_LoadTools_IncludesSimpleCreateTools verifies that all 4 task-4.2

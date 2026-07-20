@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,26 +11,36 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
+	"unicode/utf8"
 
-	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/util"
 )
 
 // fileReadInput is the JSON input for the file_read tool.
 type fileReadInput struct {
-	FileURL string `json:"file_url"`
-	Prompt  string `json:"prompt,omitempty"`
+	FileURL    string `json:"file_url"`
+	Prompt     string `json:"prompt,omitempty"`
+	Offset     *int   `json:"offset,omitempty"`
+	LimitBytes *int   `json:"limit_bytes,omitempty"`
+	ReadToken  string `json:"read_token,omitempty"`
 }
 
 // fileReadOutput is the JSON output returned by the file_read tool.
 type fileReadOutput struct {
-	FileName  string `json:"file_name"`
-	MimeType  string `json:"mime_type"`
-	Content   string `json:"content"`
-	PageCount int    `json:"page_count,omitempty"`
-	ByteSize  int    `json:"byte_size"`
-	Truncated bool   `json:"truncated"`
+	FileName        string `json:"file_name"`
+	MimeType        string `json:"mime_type"`
+	Content         string `json:"content"`
+	PageCount       int    `json:"page_count,omitempty"`
+	ByteSize        int    `json:"byte_size"`
+	ContentByteSize int    `json:"content_byte_size"`
+	Offset          int    `json:"offset"`
+	ReturnedBytes   int    `json:"returned_bytes"`
+	NextOffset      int    `json:"next_offset"`
+	HasMore         bool   `json:"has_more"`
+	ReadToken       string `json:"read_token"`
+	Truncated       bool   `json:"truncated"`
 	// Error is set ONLY on the soft-error path (returnSoftError), mirroring the
 	// dedicated "error" field of web_search/web_fetch/image_gen so the Eino adapter's
 	// soft-error detector (softToolErrorMessage) narrates StateError, not a false
@@ -51,6 +62,10 @@ type fileReadTool struct {
 	textParser     fileParser // text/plain, text/markdown
 	// headFn is the HTTP HEAD function; swapped in tests to avoid network calls.
 	headFn func(url string) (*http.Response, error)
+	// headRequestFn is the production HEAD path. It carries the run context,
+	// enforces a timeout, and refuses redirects so a managed COS URL cannot
+	// redirect the server into a private network. Tests may keep using headFn.
+	headRequestFn func(context.Context, string) (*http.Response, error)
 	// presignFn signs a COS object key for transient anonymous fetch, BOUND TO
 	// AN HTTP METHOD. Tencent COS signs (method, URI, expiry, …) — a URL signed
 	// for GET will get 403 if requested with HEAD. file_read therefore signs
@@ -71,7 +86,7 @@ func NewFileReadTool(doc, img, txt fileParser) FullTool {
 		documentParser: doc,
 		imageParser:    img,
 		textParser:     txt,
-		headFn:         http.Head,
+		headRequestFn:  managedFileHEAD,
 		presignFn:      util.GenerateSignedURLForMethod,
 	}
 }
@@ -83,8 +98,8 @@ func (t *fileReadTool) Description() string {
 	return "Read the contents of an uploaded file by URL. Supports PDF, Word " +
 		"(.docx/.doc), Excel (.xlsx/.xls), PowerPoint (.pptx/.ppt), RTF, images " +
 		"(OCR), and plain text / markdown. " +
-		"Input: { file_url: string, prompt?: string }. " +
-		"Returns: { file_name, mime_type, content, page_count?, byte_size, truncated }."
+		"Input: { file_url: string, prompt?: string, offset?: integer, limit_bytes?: integer, read_token?: string }. " +
+		"Returns UTF-8-safe resumable pages with next_offset, has_more, and a content read_token."
 }
 func (t *fileReadTool) UserFacingName() string      { return "读取文件" }
 func (t *fileReadTool) NarrationVerb() string       { return "读取文件" }
@@ -92,8 +107,10 @@ func (t *fileReadTool) IsReadOnly() bool            { return true }
 func (t *fileReadTool) IsSearchOrReadCommand() bool { return true }
 func (t *fileReadTool) AlwaysLoad() bool            { return true }
 
-// fileReadMaxBytes is the maximum content size returned per file read.
-const fileReadMaxBytes = 200 * 1024
+const (
+	fileReadDefaultLimitBytes = 64 * 1024
+	fileReadMaxLimitBytes     = 64 * 1024
+)
 
 // attachmentPathRE matches /agent-attachments/<userID>/ OR /agent-outputs/<userID>/
 // in a URL path. Both prefixes are user-owned: agent-attachments holds files the
@@ -111,28 +128,49 @@ var attachmentPathRE = regexp.MustCompile(`/agent-(?:attachments|outputs)/(\d+)/
 //	https://numind-dev-xxx.cos.ap-chengdu.myqcloud.com/agent-attachments/1/x.pdf
 //	  → captured group: "agent-attachments/1/x.pdf"
 //
-// Non-COS URLs (httptest fixtures, public CDN links pasted by an admin, etc.)
-// will NOT match — Execute treats them as pass-through and skips presigning.
-var cosURLPathRE = regexp.MustCompile(`^https?://[^/]+\.cos\.[^/]+\.myqcloud\.com/(.+)$`)
+// Non-COS URLs do not match. Production (presignFn configured) rejects them;
+// tests may set presignFn=nil to exercise local httptest fixtures.
+var cosHostnameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*\.cos\.[a-z0-9-]+\.myqcloud\.com$`)
 
 // extractCOSObjectKey returns the COS object key for a COS bucket URL and a
 // boolean indicating whether the URL was recognized as COS. The recognized
 // form matches cosURLPathRE — bucket.cos.region.myqcloud.com hosts.
 func extractCOSObjectKey(fileURL string) (string, bool) {
-	m := cosURLPathRE.FindStringSubmatch(fileURL)
-	if len(m) < 2 {
+	u, err := url.ParseRequestURI(fileURL)
+	if err != nil || u.Scheme != "https" || u.User != nil || !cosHostnameRE.MatchString(strings.ToLower(u.Hostname())) {
 		return "", false
 	}
-	// The captured path is percent-encoded in the URL. Readable object keys may
-	// carry UTF-8 (e.g. %E6%9C%AC for a Chinese name); decode back to the raw key
-	// the COS SDK expects before presigning (it re-encodes internally, so passing
-	// the encoded form would double-encode → 404). PathUnescape on a pure-ASCII key
-	// (no '%') is an identity, so legacy keys are unaffected; on a malformed escape
-	// keep the original (best-effort).
-	if decoded, err := url.PathUnescape(m[1]); err == nil {
-		return decoded, true
+	objectKey := strings.TrimPrefix(u.Path, "/")
+	if objectKey == "" || path.Clean("/"+objectKey) != "/"+objectKey {
+		return "", false
 	}
-	return m[1], true
+	return objectKey, true
+}
+
+func managedFileHEAD(ctx context.Context, rawURL string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, rawURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build HEAD request: %w", err)
+	}
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	return client.Do(req)
+}
+
+func safeFileName(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	name := path.Base(u.Path)
+	if name == "." || name == "/" {
+		return ""
+	}
+	return name
 }
 
 // isDocumentReadable reports whether a file should be routed to the local
@@ -186,9 +224,13 @@ func (t *fileReadTool) returnSoftError(fileName, format string, args ...any) (To
 func (t *fileReadTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
+		"additionalProperties": false,
 		"properties": {
 			"file_url": {"type": "string", "format": "uri", "description": "URL of the uploaded file to read (e.g. an agent attachment)."},
-			"prompt":   {"type": "string", "description": "Optional instruction describing what to extract from the file."}
+			"prompt":   {"type": "string", "description": "Optional instruction describing what to extract from the file."},
+			"offset": {"type": "integer", "minimum": 0, "default": 0, "description": "UTF-8 byte offset in the normalized parsed text."},
+			"limit_bytes": {"type": "integer", "minimum": 1, "maximum": 65536, "default": 65536},
+			"read_token": {"type": "string", "description": "Return the previous page's content fingerprint when continuing."}
 		},
 		"required": ["file_url"]
 	}`)
@@ -204,38 +246,51 @@ func (t *fileReadTool) InputSchema() json.RawMessage {
 // Codex `RespondToModel` (codex-rs/tools/src/function_call_error.rs) and Claude
 // Code `ValidationResult` (FileReadTool.ts) patterns.
 func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
+	// Open the safe span before validation/network preflight so rejected SSRF,
+	// ownership, signing, and HEAD attempts remain observable. Raw input is never
+	// attached; only bounded scalar metadata is added to the terminal output.
+	span := startSafePipelineToolSpan(ctx, "tool.file_read.execute", map[string]any{})
+	spanOutput := map[string]any{"returned_bytes": 0, "has_more": false}
+	spanErrorClass := "preflight_error"
+	defer func() { span.End(spanOutput, spanErrorClass) }()
+
 	var in fileReadInput
 	if err := json.Unmarshal(input, &in); err != nil {
-		return t.returnSoftError("", "invalid input JSON: %s", err.Error())
+		return t.returnSoftError("", "invalid_input_json")
 	}
 	if in.FileURL == "" {
-		return t.returnSoftError("", "file_url is required")
+		return t.returnSoftError("", "file_url_required")
+	}
+	fileName := safeFileName(in.FileURL)
+	offset := 0
+	if in.Offset != nil {
+		offset = *in.Offset
+	}
+	if offset < 0 {
+		return t.returnSoftError(fileName, "invalid_offset")
+	}
+	limitBytes := fileReadDefaultLimitBytes
+	if in.LimitBytes != nil {
+		limitBytes = *in.LimitBytes
+	}
+	if limitBytes < 1 || limitBytes > fileReadMaxLimitBytes {
+		return t.returnSoftError(fileName, "invalid_limit")
+	}
+	if offset > 0 && in.ReadToken == "" {
+		return t.returnSoftError(fileName, "read_token_required")
 	}
 
 	// Verify the file belongs to the requesting user.
 	ctxUserID, ok := middleware.UserIDFromCtx(ctx)
 	if !ok || ctxUserID == 0 {
-		return t.returnSoftError(path.Base(in.FileURL), "user not authenticated")
+		return t.returnSoftError(fileName, "unauthenticated")
 	}
 	urlUserID, err := extractUserIDFromURL(in.FileURL)
 	if err != nil {
-		return t.returnSoftError(path.Base(in.FileURL), "%s", err.Error())
+		return t.returnSoftError(fileName, "unmanaged_file_url")
 	}
 	if ctxUserID != urlUserID {
-		return t.returnSoftError(path.Base(in.FileURL), "file not owned by current user")
-	}
-
-	// Langfuse span for the full tool execution.
-	var spanID string
-	var traceID string
-	if tc := langfuse.FromContext(ctx); tc != nil {
-		spanID = langfuse.SpanID()
-		traceID = tc.TraceID
-		langfuse.CreateSpan(tc.TraceID, spanID, "tool.file_read.execute",
-			langfuse.WithSpanParent(tc.ParentObservationID),
-			langfuse.WithSpanInput(in),
-		)
-		defer func() { langfuse.EndSpan(traceID, spanID) }()
+		return t.returnSoftError(fileName, "file_not_owned")
 	}
 
 	// Translate private COS URLs into time-bounded presigned URLs. TWO signed
@@ -243,36 +298,43 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	// GET (downstream fetch by qwen-long, OCR, text http.Get). Tencent COS
 	// signing is METHOD-BOUND — a GET URL hit with HEAD returns 403
 	// "SignatureDoesNotMatch". The customer-facing canonical URL (in.FileURL)
-	// is preserved for filename / output. Non-COS URLs short-circuit (admin-
-	// pasted public links must keep working with a single URL pass-through).
+	// is preserved for filename / output. Production rejects non-COS URLs so
+	// an attachment-looking path on an attacker-controlled host cannot SSRF.
 	headURL := in.FileURL
 	fetchURL := in.FileURL // for parsers (GET-style downstream fetch)
-	if objectKey, ok := extractCOSObjectKey(in.FileURL); ok && t.presignFn != nil {
+	objectKey, isManagedCOS := extractCOSObjectKey(in.FileURL)
+	if t.presignFn != nil && !isManagedCOS {
+		return t.returnSoftError(fileName, "unmanaged_file_url")
+	}
+	if isManagedCOS && t.presignFn != nil {
 		// 1h validity is comfortably longer than any single tool call.
 		signedHead, signErr := t.presignFn(ctx, http.MethodHead, objectKey, 3600)
 		if signErr != nil {
-			return t.returnSoftError(path.Base(in.FileURL), "presign COS URL (HEAD) failed: %v", signErr)
+			return t.returnSoftError(fileName, "presign_failed")
 		}
 		signedGet, signErr := t.presignFn(ctx, http.MethodGet, objectKey, 3600)
 		if signErr != nil {
-			return t.returnSoftError(path.Base(in.FileURL), "presign COS URL (GET) failed: %v", signErr)
+			return t.returnSoftError(fileName, "presign_failed")
 		}
 		headURL = signedHead
 		fetchURL = signedGet
 	}
 
 	// HEAD the file to detect content type and byte size without downloading.
-	headFn := t.headFn
-	if headFn == nil {
-		headFn = http.Head
+	var headResp *http.Response
+	if t.headRequestFn != nil {
+		headResp, err = t.headRequestFn(ctx, headURL)
+	} else if t.headFn != nil {
+		headResp, err = t.headFn(headURL)
+	} else {
+		headResp, err = managedFileHEAD(ctx, headURL)
 	}
-	headResp, err := headFn(headURL)
 	if err != nil {
-		return t.returnSoftError(path.Base(in.FileURL), "HEAD request failed: %v", err)
+		return t.returnSoftError(fileName, "head_failed")
 	}
 	defer headResp.Body.Close()
-	if headResp.StatusCode >= 400 {
-		return t.returnSoftError(path.Base(in.FileURL), "HEAD returned HTTP status %d", headResp.StatusCode)
+	if headResp.StatusCode < 200 || headResp.StatusCode >= 300 {
+		return t.returnSoftError(fileName, "head_http_error")
 	}
 
 	mimeType := headResp.Header.Get("Content-Type")
@@ -280,6 +342,10 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		mimeType = strings.TrimSpace(mimeType[:idx])
 	}
 	byteSize := int(headResp.ContentLength)
+	spanOutput["mime_type"] = mimeType
+	spanOutput["offset"] = offset
+	spanOutput["limit_bytes"] = limitBytes
+	spanErrorClass = pipelineToolTraceNoError
 
 	// Dispatch to the appropriate parser by MIME type.
 	// Parsers receive fetchURL (GET-signed) — they each issue their own
@@ -287,50 +353,102 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	// and would 403 against bare private COS URLs OR HEAD-signed URLs.
 	var content string
 	var pageCount int
-	var truncated bool
+	var parserTruncated bool
 
 	switch {
 	case isDocumentReadable(mimeType, in.FileURL):
 		if t.documentParser == nil {
-			return t.returnSoftError(path.Base(in.FileURL), "document parser not configured")
+			spanErrorClass = "configuration_error"
+			return t.returnSoftError(fileName, "parser_not_configured")
 		}
-		content, pageCount, truncated, err = t.documentParser.Parse(ctx, fetchURL, in.Prompt)
+		content, pageCount, parserTruncated, err = t.documentParser.Parse(ctx, fetchURL, in.Prompt)
 	case strings.HasPrefix(mimeType, "image/"):
 		if t.imageParser == nil {
-			return t.returnSoftError(path.Base(in.FileURL), "image parser not configured")
+			spanErrorClass = "configuration_error"
+			return t.returnSoftError(fileName, "parser_not_configured")
 		}
-		content, _, truncated, err = t.imageParser.Parse(ctx, fetchURL, in.Prompt)
+		content, _, parserTruncated, err = t.imageParser.Parse(ctx, fetchURL, in.Prompt)
 	case mimeType == "text/plain" || mimeType == "text/markdown":
 		if t.textParser == nil {
-			return t.returnSoftError(path.Base(in.FileURL), "text parser not configured")
+			spanErrorClass = "configuration_error"
+			return t.returnSoftError(fileName, "parser_not_configured")
 		}
-		content, _, truncated, err = t.textParser.Parse(ctx, fetchURL, in.Prompt)
+		content, _, parserTruncated, err = t.textParser.Parse(ctx, fetchURL, in.Prompt)
 	default:
-		return t.returnSoftError(path.Base(in.FileURL), "unsupported MIME type %q (supported: PDF, Word/Excel/PowerPoint, images, plain text)", mimeType)
+		spanErrorClass = "unsupported_mime"
+		return t.returnSoftError(fileName, "unsupported_mime")
 	}
 	if err != nil {
-		return t.returnSoftError(path.Base(in.FileURL), "parse error: %v", err)
+		spanErrorClass = "parse_error"
+		return t.returnSoftError(fileName, "parse_failed")
 	}
+	if parserTruncated {
+		spanErrorClass = "incomplete_parser_output"
+		return t.returnSoftError(fileName, "incomplete_parser_output")
+	}
+
+	normalizedContent := strings.ToValidUTF8(content, "\uFFFD")
+	contentHash := sha256.Sum256([]byte(normalizedContent))
+	readToken := fmt.Sprintf("sha256:%x", contentHash)
+	if in.ReadToken != "" && in.ReadToken != readToken {
+		spanErrorClass = "stale_read_token"
+		return t.returnSoftError(fileName, "stale_read_token")
+	}
+	contentByteSize := len(normalizedContent)
+	if offset > contentByteSize {
+		spanErrorClass = "offset_out_of_range"
+		return t.returnSoftError(fileName, "offset_out_of_range")
+	}
+	if offset < contentByteSize && !utf8.RuneStart(normalizedContent[offset]) {
+		spanErrorClass = "invalid_utf8_boundary"
+		return t.returnSoftError(fileName, "invalid_utf8_boundary")
+	}
+
+	end := offset + limitBytes
+	if end > contentByteSize {
+		end = contentByteSize
+	}
+	for end > offset && end < contentByteSize && !utf8.RuneStart(normalizedContent[end]) {
+		end--
+	}
+	if end == offset && offset < contentByteSize {
+		spanErrorClass = "limit_too_small"
+		return t.returnSoftError(fileName, "limit_too_small")
+	}
+	pageContent := normalizedContent[offset:end]
+	hasMore := end < contentByteSize
 
 	// FileName comes from the canonical URL (not the presigned one), so the
 	// user sees "report.pdf" instead of a long query-string-decorated key.
 	out, _ := json.Marshal(fileReadOutput{
-		FileName:  path.Base(in.FileURL),
-		MimeType:  mimeType,
-		Content:   content,
-		PageCount: pageCount,
-		ByteSize:  byteSize,
-		Truncated: truncated,
+		FileName:        fileName,
+		MimeType:        mimeType,
+		Content:         pageContent,
+		PageCount:       pageCount,
+		ByteSize:        byteSize,
+		ContentByteSize: contentByteSize,
+		Offset:          offset,
+		ReturnedBytes:   len(pageContent),
+		NextOffset:      end,
+		HasMore:         hasMore,
+		ReadToken:       readToken,
+		Truncated:       hasMore,
 	})
+	spanOutput["returned_bytes"] = len(pageContent)
+	spanOutput["has_more"] = hasMore
 	return ToolResult(out), nil
 }
 
 // extractUserIDFromURL extracts the user ID from a URL path of the form
 // /agent-attachments/<userID>/... or /agent-outputs/<userID>/...
 func extractUserIDFromURL(fileURL string) (uint, error) {
-	m := attachmentPathRE.FindStringSubmatch(fileURL)
+	u, err := url.Parse(fileURL)
+	if err != nil {
+		return 0, fmt.Errorf("invalid file URL")
+	}
+	m := attachmentPathRE.FindStringSubmatch(u.Path)
 	if len(m) < 2 {
-		return 0, fmt.Errorf("URL must contain /agent-attachments/<userID>/ or /agent-outputs/<userID>/ path segment (got %q) — file_read only accepts URLs to your uploaded files or files you generated via create_text/create_csv/create_html/create_json/run_python in this conversation", fileURL)
+		return 0, fmt.Errorf("file URL is not a managed agent object")
 	}
 	id, err := strconv.ParseUint(m[1], 10, 32)
 	if err != nil {

@@ -220,6 +220,7 @@ func (r *agentRunner) RunStream(
 		if err := agentTenantAccess(ctx, r.userStore, req.UserID, ad); err != nil {
 			return nil, err
 		}
+		applyDefinitionToolPolicy(&req, ad)
 
 		if r.skillBindingService != nil {
 			var bindErr error
@@ -406,18 +407,9 @@ func (r *agentRunner) RunStream(
 
 	var einoTools []einotool.BaseTool
 	toolMap := make(map[string]FullTool)
-	// open-tools-skill-as-guidance: full-open registration (mirrors runner.go Run).
-	// Every agent gets every registry tool enabled under a fully-enabled config;
-	// IsEnabled drops hard stubs (document_generate). Skills no longer gate tools;
-	// the dead UseSkillTurnScope deny + the allowed_tools union are gone. load_skill
-	// flows through here too (IsEnabled=EnableSkills); it reads the per-run turn state
-	// from ctx, serving DB-bound + disk platform skills with no binding gate.
+	// Use the same compatibility/strict authorization policy as Run.
 	if r.registry != nil {
-		fullCfg := FullyEnabledToolConfig()
-		for _, ft := range r.registry.ListAllTools() {
-			if !ft.IsEnabled(fullCfg) {
-				continue
-			}
+		for _, ft := range selectToolsForRun(r.registry, req.ToolNames, req.EnforceToolAllowlist) {
 			base := adaptFullToEinoTool(ft, effectiveHooks)
 			if useCompactV2 {
 				base = wrapToolWithV2ArtifactProcessing(base, ft.Name(), run.ID, r.artifactStore, r.artifactDir)
@@ -431,8 +423,7 @@ func (r *agentRunner) RunStream(
 	}
 	queryCtx = WithFullToolMap(queryCtx, toolMap)
 
-	// 6. Short-circuit when no tools resolved (same as Run; nil/empty registry only —
-	// full-open registers from the registry, not req.ToolNames).
+	// 6. Short-circuit when no tools resolve under the selected authorization policy.
 	if len(einoTools) == 0 {
 		if req.ContinueWithoutUserInput {
 			if req.ExternalContinuationGate == nil {

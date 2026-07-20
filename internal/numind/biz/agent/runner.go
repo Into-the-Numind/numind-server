@@ -75,7 +75,11 @@ type RunRequest struct {
 	// onto the user turn so a reloaded session renders attachment chips. Empty ⇒ no chips.
 	DisplayAttachments []displayAttachment
 	ToolNames          []string
-	Hooks              *RunHooks
+	// EnforceToolAllowlist makes ToolNames a server-side authorization boundary.
+	// It is enabled for AgentDefinitions with direct per-tool flags; legacy
+	// category-only definitions retain the historical full-open behavior.
+	EnforceToolAllowlist bool
+	Hooks                *RunHooks
 	// AgentDefinitionID 为 0 时 fall through（使用 #2 mock 行为，不注入 Skill）。
 	// 非 0 时 runner.Run 通过 skillStore.GetByIDIncludeInactive 装载 agent 定义，
 	// 并按 advanced_mode 选 GeneratedSkillBody 或 CustomSkillBody 组装 SystemPrompt。
@@ -681,6 +685,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 		if err := agentTenantAccess(ctx, r.userStore, req.UserID, ad); err != nil {
 			return nil, err
 		}
+		applyDefinitionToolPolicy(&req, ad)
 
 		// v2 #2 agent-mode-v2-skill-invocation: 查 Agent binding 列表。
 		// BindingService.ListByAgent 已 join 返回 sort_order asc 的 *活跃* Skill 列表。
@@ -964,20 +969,10 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 
 	var einoTools []einotool.BaseTool
 	toolMap := make(map[string]FullTool)
-	// open-tools-skill-as-guidance: full-open registration. Every agent gets every
-	// registered tool that is enabled under a fully-enabled config — the IsEnabled
-	// filter drops hard stubs (document_generate returns false unconditionally) while
-	// keeping sandbox/skill/image tools (their IsEnabled reads a ToolConfig flag we set
-	// true here). Skills no longer gate tools; the old req.ToolNames whitelist + the
-	// dead UseSkillTurnScope deny are gone. load_skill flows through here too
-	// (IsEnabled=EnableSkills); it reads the per-run turn state from ctx, so it serves
-	// both DB-bound skills (when present) and disk platform skills with no binding gate.
+	// Existing category-only definitions remain full-open for compatibility.
+	// Definitions with direct per-tool flags use a strict server-side allowlist.
 	if r.registry != nil {
-		fullCfg := FullyEnabledToolConfig()
-		for _, ft := range r.registry.ListAllTools() {
-			if !ft.IsEnabled(fullCfg) {
-				continue
-			}
+		for _, ft := range selectToolsForRun(r.registry, req.ToolNames, req.EnforceToolAllowlist) {
 			base := adaptFullToEinoTool(ft, effectiveHooks)
 			if useCompactV2 {
 				// V2 路径：包一层 L0 artifact 处理。InvokableRun 返回 output 若超过阈值，
@@ -1621,6 +1616,9 @@ func (r *agentRunner) finalizeRun(
 			"agent_run_id", run.ID)
 	} else if err := r.runStore.UpdateState(finalizeCtx, run.ID, "terminated", string(st.TerminalReason), &endedAt); err != nil {
 		log.Warnw("AgentRunner.Run UpdateState failed", "agent_run_id", run.ID, "error", err)
+	}
+	if st.TerminalReason == TerminalCompleted {
+		r.recordPipelineRunMetricsForDefinition(finalizeCtx, req.AgentDefinitionID, assistantContent)
 	}
 
 	// #6 permission-pipeline: non-blocking read of sink → fill RunResult.PermissionDenial.

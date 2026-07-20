@@ -203,16 +203,20 @@ func Tracing(deps Deps) Middleware {
 					}
 				} else {
 					if err != nil {
+						publicError := err.Error()
+						if route.ServiceType == "ocr" {
+							publicError = "ocr_error"
+						}
 						langfuse.EndSpan(tc.TraceID, observationID,
 							langfuse.WithSpanOutput(map[string]interface{}{
-								"error":    err.Error(),
+								"error":    publicError,
 								"metadata": meta,
 							}),
-							langfuse.WithSpanError(err.Error()),
+							langfuse.WithSpanError(publicError),
 						)
 					} else {
 						langfuse.EndSpan(tc.TraceID, observationID,
-							langfuse.WithSpanOutput(map[string]interface{}{"response": resp, "metadata": meta}),
+							langfuse.WithSpanOutput(safeOutput(resp, meta)),
 						)
 					}
 				}
@@ -276,6 +280,15 @@ func safeInput(req interface{}) map[string]interface{} {
 	if req == nil {
 		return map[string]interface{}{}
 	}
+	switch value := req.(type) {
+	case aiservice.OCRRequest:
+		return safeOCRInput(value)
+	case *aiservice.OCRRequest:
+		if value == nil {
+			return map[string]interface{}{}
+		}
+		return safeOCRInput(*value)
+	}
 	// Try JSON marshal to check if it's safe; if not, return type name only
 	data, err := json.Marshal(req)
 	if err != nil {
@@ -295,6 +308,16 @@ func safeOutput(resp interface{}, meta map[string]interface{}) map[string]interf
 	if resp == nil {
 		return out
 	}
+	switch value := resp.(type) {
+	case aiservice.OCRResponse:
+		out["response"] = safeOCROutput(value)
+		return out
+	case *aiservice.OCRResponse:
+		if value != nil {
+			out["response"] = safeOCROutput(*value)
+		}
+		return out
+	}
 	data, err := json.Marshal(resp)
 	if err != nil {
 		out["type"] = fmt.Sprintf("%T", resp)
@@ -308,6 +331,28 @@ func safeOutput(resp interface{}, meta map[string]interface{}) map[string]interf
 		out["raw"] = string(data)
 	}
 	return out
+}
+
+func safeOCRInput(req aiservice.OCRRequest) map[string]interface{} {
+	source := "none"
+	if req.ImageURL != "" {
+		source = "url"
+	} else if len(req.ImageBytes) > 0 {
+		source = "bytes"
+	}
+	return map[string]interface{}{
+		"image_source": source,
+		"image_format": req.ImageFormat,
+		"image_bytes":  len(req.ImageBytes),
+	}
+}
+
+func safeOCROutput(resp aiservice.OCRResponse) map[string]interface{} {
+	return map[string]interface{}{
+		"provider":   resp.Provider,
+		"text_bytes": len(resp.Text),
+		"word_count": len(resp.Words),
+	}
 }
 
 // appendCachedUsageGenOption appends the usage GenOption for a generation,

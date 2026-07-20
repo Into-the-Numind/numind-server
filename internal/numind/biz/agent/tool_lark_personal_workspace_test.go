@@ -1507,6 +1507,54 @@ func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *tes
 		require.Len(t, executor.snapshot(), 2, "verification may read but must never replay the ambiguous write")
 	})
 
+	t.Run("unknown started write allows reconciliation and different writes but blocks exact replay", func(t *testing.T) {
+		const runID = uint64(815)
+		larkExecuteRetryClearRun(runID)
+		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+		executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+			OperationID: "op-unknown-reconcile", State: model.FeishuOperationUnknown,
+			Failure: &feishu.OperationFailure{
+				Code: feishu.PublicCodeUnknownResult, Category: "unknown_result", BusinessStarted: true,
+			},
+		}}
+		tool := &larkExecuteTool{executor: executor}
+
+		unknown, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "write-unknown"),
+			ToolInput(`{"argv":["docs","+create","--title","A"]}`),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(unknown), `"category":"unknown_result"`)
+
+		executor.mu.Lock()
+		executor.result = &feishu.OperationResult{
+			OperationID: "op-read-reconcile", State: model.FeishuOperationSucceeded,
+			Data: json.RawMessage(`{"document_id":"doxcnABCDEFG123","markers":["managed/v1"]}`),
+		}
+		executor.mu.Unlock()
+		reconciled, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "read-reconcile"),
+			ToolInput(`{"argv":["docs","+fetch","--doc","doxcnABCDEFG123"]}`),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(reconciled), `"document_id":"doxcnABCDEFG123"`)
+
+		differentWrite, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "write-replay"),
+			ToolInput(`{"argv":["docs","+create","--title","B"]}`),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(differentWrite), `"ok":true`)
+
+		blocked, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "write-exact-replay"),
+			ToolInput(`{"argv":["docs","+create","--title","A"]}`),
+		)
+		requireSafeLarkSoftError(t, blocked, err)
+		require.Contains(t, string(blocked), "完全相同")
+		require.Len(t, executor.snapshot(), 3, "reads and different writes may continue, but the exact ambiguous write must remain fenced")
+	})
+
 	t.Run("validation permits one correction then success resets", func(t *testing.T) {
 		const runID = uint64(812)
 		larkExecuteRetryClearRun(runID)

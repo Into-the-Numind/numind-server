@@ -1,5 +1,50 @@
 schema_version: '2.0'
 features:
+- id: three-agent-feishu-pipeline
+  ndf_version: '3.0'
+  description: Build three user-isolated Agents that turn internal XHS captures into a Feishu Base, customer materials into a reusable Feishu profile document, and both artifacts into a customer-specific Feishu topic-planning document.
+  classification_reason: 'Standard: the feature adds Agent access to the current user XHS library and spans Agent orchestration, Feishu authorization/Base/Doc operations, multi-user permission boundaries, prompts, and end-to-end tests across more than three files and likely two repositories.'
+  last_updated_by: ai-s5-local-acceptance
+  last_updated_at: '2026-07-20T19:19:35+08:00'
+  created_at: '2026-07-20T15:45:30+08:00'
+  track: standard
+  stage: S6
+  status: active
+  repos: [numind-server, numind-web-v3]
+  branches: {numind-server: feature/three-agent-feishu-pipeline, numind-web-v3: feature/three-agent-feishu-pipeline}
+  worktrees: {numind-server: /private/tmp/wt-three-agent-feishu-pipeline-numind-server, numind-web-v3: /private/tmp/wt-three-agent-feishu-pipeline-numind-web-v3}
+  progress: {total_tasks: 7, completed_tasks: 7, reviewed_tasks: 7, current_task: 'S6 atomic merge and isolated Dev acceptance'}
+  artifacts:
+    requirement: requirements/three-agent-feishu-pipeline.md
+    proposal: proposals/three-agent-feishu-pipeline-proposal.md
+    spec: docs/superpowers/specs/2026-07-20-three-agent-feishu-pipeline-design.md
+    plan: docs/superpowers/plans/three-agent-feishu-pipeline-plan.md
+    qa: docs/superpowers/qa/2026-07-20-three-agent-feishu-pipeline-s5-acceptance.md
+  decisions:
+  - 'S0: one Numind user owns one shared Feishu viral-material Base and may manage many customer-specific profile and topic-planning Docs; different users remain fully isolated.'
+  - 'S0: no customer-management or Feishu-target settings UI is added. Agents resolve current context first, ask only when required, then search, reuse, or create in the current user Feishu account.'
+  - 'S0: Agent 1 automatically processes unanalysed XHS captures without manual selection; historical reanalysis requires an explicit natural-language scope.'
+  - 'S1 scope decision: configure three AgentDefinitions only for the current organization through the existing Agent Builder; do not upgrade skill_template or auto-provision other organizations.'
+  - 'S1 recommended architecture: prompt-driven orchestration with one current-user xhs_note_list tool (limit up to 100), resumable file_read pagination, existing Lark authorization/Docs/Base tools, and the Feishu Base as Agent 1 checkpoint/SOT.'
+  - 'S2: xhs_note_list uses current-user-only stable keyset snapshots with index/full projections and limit 100; Base is the completion SOT, new rows batch-create at up to 20 and differing reanalysis results update one record at a time with record-upsert.'
+  - 'S2: resumable file_read uses UTF-8-safe 64 KiB chunks and a content fingerprint; Agent 2 overwrites only a marked managed profile Doc, while Agent 3 appends or precisely str_replace updates marked rounds because controlled block deletion is unavailable.'
+  - 'S2: the three complete user-provided business Prompts are preserved as a hashed SSOT. Only the confirmed missing output fields are patched: Agent 1 borrow/do-not-copy and Agent 3 selection reason.'
+  - 'S3: seven serial RED/GREEN tasks implement current-user XHS snapshot reads, xhs_note_list, resumable bounded file_read, deterministic three-Agent prompts with exact tool flags, safe Langfuse/final metrics, executable fake-tool workflow contracts, and full gates.'
+  - 'S3 gate: independent atomicity review PASS with P0/P1/P2=0 after adding exact Create/Patch/history/tool-flag readback, byte-exact prompt composition, stream/non-stream final metadata, and focused Agent 1/2/3 workflow tests.'
+  - 'S4 Task 3: file_read now parses complete sources up to 20 MiB and returns UTF-8-safe pages of at most 64 KiB with stable content fingerprints; continuation rejects missing/stale tokens and invalid rune-boundary offsets instead of silently truncating content.'
+  - 'S4 Task 4: only the trusted concrete file_read adapter bypasses generic artifact preview, with a 384 KiB complete-envelope ceiling; same-named mocks still persist normally and oversized trusted output fails closed as a soft error.'
+  - 'S4 Task 5: three versioned AgentDefinition artifacts deterministically compose runtime contracts with the hashed user Prompt SSOT; Agent 2 is byte-identical and only the two authorized Agent 1/3 template patches exist. Every current platform tool/category is explicitly true or false and Create/Patch/history tenant isolation is executable.'
+  - 'S4 Task 6: XHS and file-read spans expose only bounded operational metadata, parser spans no longer contain URLs, and a strict final-marker parser sends the same scalar whitelist to logs and Langfuse for stream/non-stream completion; malformed markers degrade to unavailable without changing run results.'
+  - 'S4 Task 7 gates: 24 formal-prompt runner workflows cover Agent 1 243-note checkpoint resume plus incremental/duplicate/partial/unknown-write behavior, Agent 2 complete upload/Feishu reads plus target/auth/marker ambiguity, Agent 3 nine-field source/blue-V/subject contracts plus create/append/exact-round replacement/reconciliation, and a real persisted ask-user yield. Focused packages, race, go test ./..., task lint, web lint/type-check, diff hygiene, and config_prod exclusion pass.'
+  - 'S4 Task 1 RED/GREEN: added a current-user-only XHS stable keyset snapshot store with index/full projections, limit 100, literal LIKE escaping, combined ID/time filters, limit+1 pagination, insertion upper-bound stability, deletion tolerance, and all existing XHS test fakes kept interface-complete.'
+  - 'S4 Task 2 RED/GREEN: registered xhs_note_list only when a real datastore is present; strict schema excludes user_id, defaults and caps limit at 100, binds canonical filters/projection into a stable cursor, emits index/full Prompt 1 inputs with null/presence semantics, strips comment identities and deeper replies, and returns validation as soft errors while preserving infrastructure failures.'
+  - 'S4 first dual review found four P0 security/runtime authorization gaps, eight P1 workflow/content issues, and five P2 hardening/performance issues. Review repair now restricts file_read to owned COS URLs with fixed errors and safe OCR traces, enforces direct per-tool flags in Run/RunStream/resume, permits only catalog-proven reconciliation reads after unknown writes, stabilizes and signs XHS cursors, and upgrades all workflow tests to formal prompts/schemas/commands with 243-note checkpoint resume and pre-write managed-target reads. Reparse caching remains an explicit performance deferral.'
+  - 'S4 second dual review found no P0 but exposed six remaining contract/hardening gaps. Repair makes loaded AgentDefinition flags authoritative inside Run/RunStream, sizes parser stdout for worst-case JSON escaping, requires Agent 1 complete 34-field Base records plus 0/1/>1 target resolution, enforces exact Agent 2/3 visible markers/modules/enums, and replaces simulated authorization with the real persisted Feishu external-action continuation path.'
+  - 'S4 final Spec re-review found Agent 1 raw-field lineage, missing-target confirmation, and Agent 3 non-persona subject-check gaps. Repair now value-checks every written raw field against a preceding xhs_note_list(full) source, asks before any Base search when target is missing, requires explicit confirmed titles for 0/1/>1 resolution, and jointly validates topic category with the fixed subject-check rule.'
+  - 'S4 final schema review then caught a raw/Base note-type mismatch and document-wide rather than per-topic validation. Repair now maps production normal/video/null into 图文/视频/信息不足 with three tests, and validates every formal topic independently for all nine fields, taxonomy, path, reference type, and subject rule.'
+  - 'S4 final dual review PASS: independent Spec and Quality/Security reviewers both report P0=0/P1=0/P2=0 at 7800476f. Full backend, race, lint, frontend lint/type-check/unit, diff hygiene, and config_prod exclusion gates pass; feature advances to S5 local acceptance.'
+  - 'S5 acceptance: feature scope ALL_PASS. Full Go suite and lint, Vue lint/type-check/1129 unit tests, 13 focused Feishu browser contracts, desktop read-only browser smoke, and safe pipeline/Langfuse metrics all pass. Three unrelated develop baseline findings are isolated in the QA report; no real Agent run or customer Feishu write occurred.'
+  blockers: []
 - id: feishu-minimal-unknown-fence
   ndf_version: '3.0'
   description: Reduce ambiguous Feishu write protection from a run-global stop to an exact-command fence while keeping verification and unrelated work live.

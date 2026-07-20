@@ -22,6 +22,46 @@ type XhsNoteFilter struct {
 	Keyword      string // 标题/正文模糊匹配，空 = 不过滤
 }
 
+// XhsSnapshotProjection controls which XHS columns are loaded for an Agent scan.
+type XhsSnapshotProjection string
+
+const (
+	// XhsSnapshotProjectionIndex returns only the stable business key and collection time.
+	XhsSnapshotProjectionIndex XhsSnapshotProjection = "index"
+	// XhsSnapshotProjectionFull returns the raw fields required by the tagging Agent.
+	XhsSnapshotProjectionFull XhsSnapshotProjection = "full"
+)
+
+// XhsSnapshotFilter is the validated AND filter used by the Agent keyset scan.
+// Nil time bounds are open; CollectedFrom is inclusive and CollectedTo exclusive.
+type XhsSnapshotFilter struct {
+	XhsNoteIDs    []string
+	Keyword       string
+	CollectedFrom *time.Time
+	CollectedTo   *time.Time
+}
+
+// XhsSnapshotQuery describes one page in a stable, ascending keyset scan.
+// SnapshotMaxID zero starts a new snapshot; subsequent pages must reuse the
+// returned SnapshotMaxID/SnapshotTotal and advance AfterID to NextAfterID.
+type XhsSnapshotQuery struct {
+	Filter        XhsSnapshotFilter
+	Projection    XhsSnapshotProjection
+	AfterID       uint64
+	SnapshotMaxID uint64
+	SnapshotTotal int64
+	Limit         int
+}
+
+// XhsSnapshotPage is one stable page of current-user XHS notes.
+type XhsSnapshotPage struct {
+	Notes         []model.XhsTopicNote
+	SnapshotMaxID uint64
+	SnapshotTotal int64
+	NextAfterID   uint64
+	HasMore       bool
+}
+
 // IXhsTopicStore 定义小红书选题库（xhs_topic_note）的数据库操作接口。
 // 多数方法均带 user 隔离，确保多租户私有累积选题库互不可见。
 //
@@ -39,6 +79,8 @@ type IXhsTopicStore interface {
 	UpsertByUserNote(ctx context.Context, n *model.XhsTopicNote) (hashChanged bool, err error)
 	// ListNotes 分页查询某用户的选题库，支持 note_type/enrich_status/keyword 过滤。
 	ListNotes(ctx context.Context, userID uint, filter XhsNoteFilter, offset, limit int) ([]model.XhsTopicNote, int64, error)
+	// ListSnapshot 按 id ASC 读取当前用户的稳定快照页，供 Agent 工具使用。
+	ListSnapshot(ctx context.Context, userID uint, query XhsSnapshotQuery) (*XhsSnapshotPage, error)
 	// ListPendingEnrich 扫描 enrich_status='pending' 的待富化队列（跨用户，富化流水线用）。
 	// 不分页、不返回 total，按 crawled_at 升序（先来先富化）返回至多 limit 条。
 	ListPendingEnrich(ctx context.Context, limit int) ([]model.XhsTopicNote, error)
@@ -199,6 +241,110 @@ func (s *xhsStore) ListNotes(ctx context.Context, userID uint, filter XhsNoteFil
 	}
 
 	return list, total, nil
+}
+
+// ListSnapshot 按稳定的 id 上界和 keyset 游标读取当前用户的 XHS 笔记。
+func (s *xhsStore) ListSnapshot(ctx context.Context, userID uint, query XhsSnapshotQuery) (*XhsSnapshotPage, error) {
+	if query.Limit < 1 || query.Limit > 100 {
+		return nil, fmt.Errorf("ListSnapshot: limit must be between 1 and 100")
+	}
+	if query.Projection != XhsSnapshotProjectionIndex && query.Projection != XhsSnapshotProjectionFull {
+		return nil, fmt.Errorf("ListSnapshot: unsupported projection %q", query.Projection)
+	}
+	if query.Filter.CollectedFrom != nil && query.Filter.CollectedTo != nil && !query.Filter.CollectedFrom.Before(*query.Filter.CollectedTo) {
+		return nil, fmt.Errorf("ListSnapshot: collected_from must be before collected_to")
+	}
+	if query.SnapshotMaxID > 0 && query.AfterID > query.SnapshotMaxID {
+		return nil, fmt.Errorf("ListSnapshot: after_id exceeds snapshot_max_id")
+	}
+	if query.SnapshotMaxID > 0 && query.AfterID > 0 && query.SnapshotTotal < 1 {
+		return nil, fmt.Errorf("ListSnapshot: continuation requires snapshot_total")
+	}
+
+	newSnapshot := query.SnapshotMaxID == 0
+	snapshotMaxID := query.SnapshotMaxID
+	if newSnapshot {
+		var maxRow struct {
+			MaxID uint64 `gorm:"column:max_id"`
+		}
+		if err := xhsSnapshotBaseQuery(s.db.WithContext(ctx), userID, query.Filter).
+			Select("COALESCE(MAX(id), 0) AS max_id").
+			Scan(&maxRow).Error; err != nil {
+			return nil, fmt.Errorf("ListSnapshot max: %w", err)
+		}
+		snapshotMaxID = maxRow.MaxID
+	}
+
+	page := &XhsSnapshotPage{
+		Notes:         []model.XhsTopicNote{},
+		SnapshotMaxID: snapshotMaxID,
+		SnapshotTotal: query.SnapshotTotal,
+		NextAfterID:   query.AfterID,
+	}
+	if snapshotMaxID == 0 {
+		return page, nil
+	}
+
+	bounded := func() *gorm.DB {
+		return xhsSnapshotBaseQuery(s.db.WithContext(ctx), userID, query.Filter).
+			Where("id <= ?", snapshotMaxID)
+	}
+	if newSnapshot {
+		if err := bounded().Count(&page.SnapshotTotal).Error; err != nil {
+			return nil, fmt.Errorf("ListSnapshot count: %w", err)
+		}
+	}
+
+	columns := []string{"id", "xhs_note_id", "collected_at"}
+	if query.Projection == XhsSnapshotProjectionFull {
+		columns = []string{
+			"id", "xhs_note_id", "note_type", "title", "content", "video_transcript",
+			"like_count", "collect_count", "comment_count", "comments", "note_url", "collected_at",
+		}
+	}
+
+	var notes []model.XhsTopicNote
+	if err := bounded().
+		Select(columns).
+		Where("id > ?", query.AfterID).
+		Order("id ASC").
+		Limit(query.Limit + 1).
+		Find(&notes).Error; err != nil {
+		return nil, fmt.Errorf("ListSnapshot find: %w", err)
+	}
+
+	if len(notes) > query.Limit {
+		page.HasMore = true
+		notes = notes[:query.Limit]
+	}
+	page.Notes = notes
+	if len(notes) > 0 {
+		page.NextAfterID = notes[len(notes)-1].ID
+	}
+	return page, nil
+}
+
+func xhsSnapshotBaseQuery(db *gorm.DB, userID uint, filter XhsSnapshotFilter) *gorm.DB {
+	query := db.Model(&model.XhsTopicNote{}).Where("user_id = ?", userID)
+	if len(filter.XhsNoteIDs) > 0 {
+		query = query.Where("xhs_note_id IN ?", filter.XhsNoteIDs)
+	}
+	if keyword := strings.TrimSpace(filter.Keyword); keyword != "" {
+		like := "%" + escapeXhsLikeLiteral(keyword) + "%"
+		query = query.Where("(title LIKE ? ESCAPE '!' OR content LIKE ? ESCAPE '!')", like, like)
+	}
+	if filter.CollectedFrom != nil {
+		query = query.Where("collected_at >= ?", *filter.CollectedFrom)
+	}
+	if filter.CollectedTo != nil {
+		query = query.Where("collected_at < ?", *filter.CollectedTo)
+	}
+	return query
+}
+
+func escapeXhsLikeLiteral(value string) string {
+	replacer := strings.NewReplacer("!", "!!", "%", "!%", "_", "!_")
+	return replacer.Replace(value)
 }
 
 // GetNote 按 (user_id, id) 获取单条笔记。

@@ -882,7 +882,8 @@ func (s *StudentRunService) buildExternalResumeRequest(
 	return RunRequest{
 		UserID: run.UserID, SessionID: run.SessionID, History: resumeHistory,
 		ToolNames: toolNamesFromFlags(toolFlags), AgentDefinitionID: run.AgentDefinitionID,
-		EnableMemory: true, ExistingRunID: run.ID, IsTest: run.IsTest,
+		EnforceToolAllowlist: enforceExplicitToolAllowlist(toolFlags),
+		EnableMemory:         true, ExistingRunID: run.ID, IsTest: run.IsTest,
 		ContinueWithoutUserInput:   true,
 		ExternalContinuationResult: append(json.RawMessage(nil), result.Result...),
 	}, nil

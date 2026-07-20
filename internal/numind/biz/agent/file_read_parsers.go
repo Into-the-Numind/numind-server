@@ -12,7 +12,6 @@ import (
 
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/profile"
-	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/parser"
 )
 
@@ -35,17 +34,15 @@ const docFetchMaxBytes = 20 * 1024 * 1024
 // zero-cost, and cross-border-free.
 type documentParserImpl struct{}
 
-func (p *documentParserImpl) Parse(ctx context.Context, fileURL, _ string) (string, int, bool, error) {
-	var spanID, traceID string
-	if tc := langfuse.FromContext(ctx); tc != nil {
-		spanID = langfuse.SpanID()
-		traceID = tc.TraceID
-		langfuse.CreateSpan(traceID, spanID, "tool.file_read.document",
-			langfuse.WithSpanParent(tc.ParentObservationID),
-			langfuse.WithSpanInput(map[string]any{"file_url": fileURL}),
-		)
-		defer func() { langfuse.EndSpan(traceID, spanID) }()
-	}
+func (p *documentParserImpl) Parse(ctx context.Context, fileURL, _ string) (content string, pageCount int, truncated bool, err error) {
+	span := startSafePipelineToolSpan(ctx, "tool.file_read.document", map[string]any{"parser_kind": "document"})
+	defer func() {
+		errorClass := pipelineToolTraceNoError
+		if err != nil {
+			errorClass = "parser_error"
+		}
+		span.End(map[string]any{"returned_bytes": len(content)}, errorClass)
+	}()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
 	if err != nil {
@@ -60,9 +57,12 @@ func (p *documentParserImpl) Parse(ctx context.Context, fileURL, _ string) (stri
 	if resp.StatusCode >= 400 {
 		return "", 0, false, fmt.Errorf("document fetch: HTTP %d", resp.StatusCode)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, docFetchMaxBytes))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, docFetchMaxBytes+1))
 	if err != nil {
 		return "", 0, false, fmt.Errorf("read body: %w", err)
+	}
+	if len(data) > docFetchMaxBytes {
+		return "", 0, false, fmt.Errorf("document exceeds 20 MiB download limit")
 	}
 
 	// Filename drives DocumentParser's extension dispatch; strip query/fragment.
@@ -75,58 +75,47 @@ func (p *documentParserImpl) Parse(ctx context.Context, fileURL, _ string) (stri
 	if err != nil {
 		return "", 0, false, err
 	}
-	truncated := len(text) > fileReadMaxBytes
-	if truncated {
-		text = text[:fileReadMaxBytes]
-	}
-	return text, 0, truncated, nil
+	return text, 0, false, nil
 }
 
 // imageParserImpl uses aiservice.OCR to extract text from images.
 type imageParserImpl struct{}
 
-func (p *imageParserImpl) Parse(ctx context.Context, fileURL, _ string) (string, int, bool, error) {
-	var spanID, traceID string
-	if tc := langfuse.FromContext(ctx); tc != nil {
-		spanID = langfuse.SpanID()
-		traceID = tc.TraceID
-		langfuse.CreateSpan(traceID, spanID, "tool.file_read.ocr",
-			langfuse.WithSpanParent(tc.ParentObservationID),
-			langfuse.WithSpanInput(map[string]any{"file_url": fileURL}),
-		)
-		defer func() { langfuse.EndSpan(traceID, spanID) }()
-	}
+var fileReadOCRFn = aiservice.OCR
 
-	resp, err := aiservice.OCR(ctx, profile.OcrBaidu, aiservice.OCRRequest{
+func (p *imageParserImpl) Parse(ctx context.Context, fileURL, _ string) (content string, pageCount int, truncated bool, err error) {
+	span := startSafePipelineToolSpan(ctx, "tool.file_read.ocr", map[string]any{"parser_kind": "ocr"})
+	defer func() {
+		errorClass := pipelineToolTraceNoError
+		if err != nil {
+			errorClass = "parser_error"
+		}
+		span.End(map[string]any{"returned_bytes": len(content)}, errorClass)
+	}()
+
+	resp, err := fileReadOCRFn(ctx, profile.OcrBaidu, aiservice.OCRRequest{
 		ImageURL: fileURL,
 	})
 	if err != nil {
 		return "", 0, false, fmt.Errorf("aiservice.OCR: %w", err)
 	}
 
-	content := resp.Text
-	truncated := len(content) > fileReadMaxBytes
-	if truncated {
-		content = content[:fileReadMaxBytes]
-	}
-	return content, 0, truncated, nil
+	return resp.Text, 0, false, nil
 }
 
-// textParserImpl reads text/plain or text/markdown content directly via HTTP GET,
-// capping the download at fileReadMaxBytes+1 bytes to detect truncation.
+// textParserImpl reads text/plain or text/markdown content directly via HTTP GET.
+// The 20 MiB + 1 read detects and rejects oversized sources without truncation.
 type textParserImpl struct{}
 
-func (p *textParserImpl) Parse(ctx context.Context, fileURL, _ string) (string, int, bool, error) {
-	var spanID, traceID string
-	if tc := langfuse.FromContext(ctx); tc != nil {
-		spanID = langfuse.SpanID()
-		traceID = tc.TraceID
-		langfuse.CreateSpan(traceID, spanID, "tool.file_read.direct",
-			langfuse.WithSpanParent(tc.ParentObservationID),
-			langfuse.WithSpanInput(map[string]any{"file_url": fileURL}),
-		)
-		defer func() { langfuse.EndSpan(traceID, spanID) }()
-	}
+func (p *textParserImpl) Parse(ctx context.Context, fileURL, _ string) (content string, pageCount int, truncated bool, err error) {
+	span := startSafePipelineToolSpan(ctx, "tool.file_read.direct", map[string]any{"parser_kind": "direct"})
+	defer func() {
+		errorClass := pipelineToolTraceNoError
+		if err != nil {
+			errorClass = "parser_error"
+		}
+		span.End(map[string]any{"returned_bytes": len(content)}, errorClass)
+	}()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
 	if err != nil {
@@ -142,15 +131,12 @@ func (p *textParserImpl) Parse(ctx context.Context, fileURL, _ string) (string, 
 		return "", 0, false, fmt.Errorf("text parser: HTTP %d", resp.StatusCode)
 	}
 
-	// Read at most fileReadMaxBytes+1 bytes so we can detect truncation.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(fileReadMaxBytes)+1))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(docFetchMaxBytes)+1))
 	if err != nil {
 		return "", 0, false, fmt.Errorf("read body: %w", err)
 	}
-
-	truncated := len(body) > fileReadMaxBytes
-	if truncated {
-		body = body[:fileReadMaxBytes]
+	if len(body) > docFetchMaxBytes {
+		return "", 0, false, fmt.Errorf("text file exceeds 20 MiB download limit")
 	}
-	return string(body), 0, truncated, nil
+	return string(body), 0, false, nil
 }

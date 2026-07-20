@@ -197,8 +197,8 @@ func TestPlatformFactory_DoesNotRegisterLegacyFeishuConnect(t *testing.T) {
 
 	tools, metadata, err := f.LoadTools(context.Background())
 	require.NoError(t, err)
-	assert.Len(t, tools, 21)
-	assert.Len(t, metadata, 21)
+	assert.Len(t, tools, 22)
+	assert.Len(t, metadata, 22)
 
 	got := map[string]bool{}
 	for _, tl := range tools {
@@ -217,7 +217,7 @@ func TestPlatformFactory_NoFeishuConnect_WhenConnectorAbsent(t *testing.T) {
 
 	tools, _, err := f.LoadTools(context.Background())
 	require.NoError(t, err)
-	assert.Len(t, tools, 21, "legacy provider must not register old lark tools")
+	assert.Len(t, tools, 22, "legacy provider must not register old lark tools")
 	for _, tl := range tools {
 		assert.NotEqual(t, "feishu_connect", tl.Name())
 	}

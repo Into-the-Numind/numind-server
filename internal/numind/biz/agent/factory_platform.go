@@ -142,7 +142,7 @@ func (f *platformToolFactory) DisplayName() string { return "平台内置工具"
 //	create_png_chart                                    (V1.5 output-skills task 4.3)
 //	run_python                                          (V1.5 output-skills task 4.9)
 //
-// When f.ds is non-nil, memory_write + memory_read are appended.
+// When f.ds is non-nil, memory_write + memory_read + xhs_note_list are appended.
 //
 // When both controlled Lark workspace dependencies are injected,
 // lark_skill_read and lark_execute are appended. Partial injection registers
@@ -226,10 +226,12 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		tools = append(tools,
 			NewMemoryWriteTool(np),
 			NewMemoryReadTool(np),
+			NewXhsNoteListTool(f.ds.Xhs()),
 		)
 		metadata = append(metadata,
 			ToolMetadata{ToolName: "memory_write", DisplayName: "记忆写入", Description: "Write a long-term memory entry for the learner.", Source: "platform", Category: "记忆", RiskLevel: "moderate"},
 			ToolMetadata{ToolName: "memory_read", DisplayName: "记忆读取", Description: "Read learner's long-term memory by key or kind.", Source: "platform", Category: "记忆"},
+			ToolMetadata{ToolName: "xhs_note_list", DisplayName: "读取小红书选题库", Description: "Read the current authenticated user's captured Xiaohongshu notes with a stable cursor.", Source: "platform", Category: "小红书", RiskLevel: "safe", InputSchema: (&xhsNoteListTool{}).InputSchema()},
 		)
 	}
 

@@ -375,6 +375,7 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 		DisplayInput:          strPtr(req.Message),
 		DisplayAttachments:    displayAtts,
 		ToolNames:             toolNames,
+		EnforceToolAllowlist:  enforceExplicitToolAllowlist(ad.ToolFlags),
 		AgentDefinitionID:     req.AgentDefinitionID,
 		EnableMemory:          true,
 		ExistingRunID:         preRun.ID,
@@ -689,10 +690,12 @@ func (s *StudentRunService) RunStream(ctx context.Context, userID uint, req Crea
 	}
 
 	toolNames := toolNamesFromFlags(nil) // tool flags resolved from the loaded run's definition below
+	enforceToolAllowlist := false
 	if s.skillStore != nil {
 		ad, adErr := s.skillStore.GetByIDIncludeInactive(ctx, run.AgentDefinitionID)
 		if adErr == nil {
 			toolNames = toolNamesFromFlags(ad.ToolFlags)
+			enforceToolAllowlist = enforceExplicitToolAllowlist(ad.ToolFlags)
 		}
 	}
 
@@ -703,6 +706,7 @@ func (s *StudentRunService) RunStream(ctx context.Context, userID uint, req Crea
 		DisplayInput:          strPtr(req.Message),
 		DisplayAttachments:    displayAtts,
 		ToolNames:             toolNames,
+		EnforceToolAllowlist:  enforceToolAllowlist,
 		AgentDefinitionID:     run.AgentDefinitionID,
 		EnableMemory:          true,
 		ExistingRunID:         runID,

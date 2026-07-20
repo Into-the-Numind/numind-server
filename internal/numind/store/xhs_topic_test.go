@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -41,6 +43,214 @@ func newXhsNote(userID uint, noteID, hash string) *model.XhsTopicNote {
 		Content:      "测试正文",
 		EnrichStatus: model.XhsEnrichPending,
 	}
+}
+
+func newXhsSnapshotNote(userID uint, i int, collectedAt time.Time) model.XhsTopicNote {
+	transcript := fmt.Sprintf("视频文字稿-%03d", i)
+	return model.XhsTopicNote{
+		UserID:          userID,
+		XhsNoteID:       fmt.Sprintf("xhs-%03d", i),
+		ContentHash:     fmt.Sprintf("hash-%d-%03d", userID, i),
+		NoteType:        model.XhsNoteTypeVideo,
+		Title:           fmt.Sprintf("标题-%03d", i),
+		Content:         fmt.Sprintf("正文-%03d", i),
+		VideoTranscript: &transcript,
+		LikeCount:       i,
+		CollectCount:    i + 1,
+		CommentCount:    i + 2,
+		Comments:        []byte(fmt.Sprintf(`[{"text":"评论-%03d"}]`, i)),
+		NoteURL:         fmt.Sprintf("https://example.test/note/%03d", i),
+		AuthorName:      "不属于 Agent 投影",
+		AITopicAngle:    "不读取已有富化字段",
+		EnrichStatus:    model.XhsEnrichDone,
+		CollectedAt:     &collectedAt,
+		CrawledAt:       collectedAt,
+	}
+}
+
+func TestXhsSnapshot_StableKeysetPaginationAndUserIsolation(t *testing.T) {
+	db := newXhsTestDB(t)
+	s := &xhsStore{db: db}
+	ctx := context.Background()
+	baseTime := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+
+	rows := make([]model.XhsTopicNote, 0, 246)
+	for i := 1; i <= 243; i++ {
+		rows = append(rows, newXhsSnapshotNote(101, i, baseTime.Add(time.Duration(i)*time.Minute)))
+	}
+	for i := 1; i <= 3; i++ {
+		rows = append(rows, newXhsSnapshotNote(202, i, baseTime.Add(time.Duration(i)*time.Minute)))
+	}
+	require.NoError(t, db.CreateInBatches(rows, 100).Error)
+
+	query := XhsSnapshotQuery{Projection: XhsSnapshotProjectionIndex, Limit: 100}
+	first, err := s.ListSnapshot(ctx, 101, query)
+	require.NoError(t, err)
+	require.Len(t, first.Notes, 100)
+	assert.EqualValues(t, 243, first.SnapshotTotal)
+	assert.True(t, first.HasMore)
+	assert.Equal(t, first.Notes[99].ID, first.NextAfterID)
+	require.NotZero(t, first.SnapshotMaxID)
+
+	// A note captured after page 1 must be left for the next snapshot.
+	late := newXhsSnapshotNote(101, 999, baseTime.Add(999*time.Minute))
+	require.NoError(t, db.Create(&late).Error)
+	assert.Greater(t, late.ID, first.SnapshotMaxID)
+
+	gotIDs := make([]uint64, 0, 243)
+	gotIDs = append(gotIDs, noteIDs(first.Notes)...)
+	after := first.NextAfterID
+	for first.HasMore {
+		page, pageErr := s.ListSnapshot(ctx, 101, XhsSnapshotQuery{
+			Projection:    XhsSnapshotProjectionIndex,
+			AfterID:       after,
+			SnapshotMaxID: first.SnapshotMaxID,
+			SnapshotTotal: first.SnapshotTotal,
+			Limit:         100,
+		})
+		require.NoError(t, pageErr)
+		gotIDs = append(gotIDs, noteIDs(page.Notes)...)
+		first = page
+		after = page.NextAfterID
+	}
+
+	require.Len(t, gotIDs, 243)
+	for i := 1; i < len(gotIDs); i++ {
+		assert.Greater(t, gotIDs[i], gotIDs[i-1], "IDs must be strictly increasing without duplicates")
+	}
+	assert.NotContains(t, gotIDs, late.ID)
+}
+
+func TestXhsSnapshot_CombinedFiltersAndLiteralLikeEscaping(t *testing.T) {
+	db := newXhsTestDB(t)
+	s := &xhsStore{db: db}
+	ctx := context.Background()
+	from := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	to := from.Add(48 * time.Hour)
+
+	matching := newXhsSnapshotNote(7, 1, from.Add(time.Hour))
+	matching.XhsNoteID = "wanted"
+	matching.Title = `literal 100%_\\marker`
+	outsideTime := newXhsSnapshotNote(7, 2, to)
+	outsideTime.XhsNoteID = "outside-time"
+	outsideTime.Content = `literal 100%_\\marker`
+	wrongKeyword := newXhsSnapshotNote(7, 3, from.Add(time.Hour))
+	wrongKeyword.XhsNoteID = "wrong-keyword"
+	wrongKeyword.Title = "literal 100-percent"
+	otherUser := newXhsSnapshotNote(8, 4, from.Add(time.Hour))
+	otherUser.XhsNoteID = "wanted"
+	otherUser.Title = matching.Title
+	require.NoError(t, db.Create([]*model.XhsTopicNote{&matching, &outsideTime, &wrongKeyword, &otherUser}).Error)
+
+	page, err := s.ListSnapshot(ctx, 7, XhsSnapshotQuery{
+		Projection: XhsSnapshotProjectionFull,
+		Filter: XhsSnapshotFilter{
+			XhsNoteIDs:    []string{"wanted", "outside-time", "wrong-keyword"},
+			Keyword:       `100%_\\marker`,
+			CollectedFrom: &from,
+			CollectedTo:   &to,
+		},
+		Limit: 100,
+	})
+	require.NoError(t, err)
+	require.Len(t, page.Notes, 1)
+	assert.Equal(t, "wanted", page.Notes[0].XhsNoteID)
+	assert.EqualValues(t, 1, page.SnapshotTotal)
+	assert.False(t, page.HasMore)
+}
+
+func TestXhsSnapshot_ProjectionColumnsAndLimitPlusOne(t *testing.T) {
+	db := newXhsTestDB(t)
+	s := &xhsStore{db: db}
+	ctx := context.Background()
+	collected := time.Date(2026, 7, 20, 8, 0, 0, 0, time.UTC)
+	rows := []model.XhsTopicNote{
+		newXhsSnapshotNote(42, 1, collected),
+		newXhsSnapshotNote(42, 2, collected.Add(time.Minute)),
+		newXhsSnapshotNote(42, 3, collected.Add(2*time.Minute)),
+	}
+	require.NoError(t, db.Create(&rows).Error)
+
+	index, err := s.ListSnapshot(ctx, 42, XhsSnapshotQuery{Projection: XhsSnapshotProjectionIndex, Limit: 2})
+	require.NoError(t, err)
+	require.Len(t, index.Notes, 2)
+	assert.True(t, index.HasMore)
+	assert.Equal(t, "", index.Notes[0].Title)
+	assert.Equal(t, "", index.Notes[0].Content)
+	assert.Equal(t, "", index.Notes[0].AuthorName)
+	assert.NotNil(t, index.Notes[0].CollectedAt)
+
+	full, err := s.ListSnapshot(ctx, 42, XhsSnapshotQuery{Projection: XhsSnapshotProjectionFull, Limit: 2})
+	require.NoError(t, err)
+	require.Len(t, full.Notes, 2)
+	assert.Equal(t, "标题-001", full.Notes[0].Title)
+	assert.Equal(t, "正文-001", full.Notes[0].Content)
+	assert.Equal(t, "视频文字稿-001", *full.Notes[0].VideoTranscript)
+	assert.Equal(t, "", full.Notes[0].AuthorName, "full projection must not expose unrelated author fields")
+	assert.Equal(t, "", full.Notes[0].AITopicAngle, "full projection must not expose existing enrichment")
+
+	last, err := s.ListSnapshot(ctx, 42, XhsSnapshotQuery{
+		Projection:    XhsSnapshotProjectionFull,
+		AfterID:       full.NextAfterID,
+		SnapshotMaxID: full.SnapshotMaxID,
+		SnapshotTotal: full.SnapshotTotal,
+		Limit:         2,
+	})
+	require.NoError(t, err)
+	require.Len(t, last.Notes, 1)
+	assert.False(t, last.HasMore)
+	assert.Equal(t, last.Notes[0].ID, last.NextAfterID)
+}
+
+func TestXhsSnapshot_EmptyDeletedRowAndInputBoundaries(t *testing.T) {
+	db := newXhsTestDB(t)
+	s := &xhsStore{db: db}
+	ctx := context.Background()
+	collected := time.Date(2026, 7, 20, 8, 0, 0, 0, time.UTC)
+
+	empty, err := s.ListSnapshot(ctx, 9, XhsSnapshotQuery{Projection: XhsSnapshotProjectionIndex, Limit: 100})
+	require.NoError(t, err)
+	assert.Empty(t, empty.Notes)
+	assert.Zero(t, empty.SnapshotMaxID)
+	assert.Zero(t, empty.SnapshotTotal)
+	assert.False(t, empty.HasMore)
+
+	rows := []model.XhsTopicNote{
+		newXhsSnapshotNote(9, 1, collected),
+		newXhsSnapshotNote(9, 2, collected.Add(time.Minute)),
+		newXhsSnapshotNote(9, 3, collected.Add(2*time.Minute)),
+	}
+	require.NoError(t, db.Create(&rows).Error)
+	first, err := s.ListSnapshot(ctx, 9, XhsSnapshotQuery{Projection: XhsSnapshotProjectionIndex, Limit: 1})
+	require.NoError(t, err)
+	require.True(t, first.HasMore)
+	require.NoError(t, db.Delete(&model.XhsTopicNote{}, rows[1].ID).Error)
+	remaining, err := s.ListSnapshot(ctx, 9, XhsSnapshotQuery{
+		Projection:    XhsSnapshotProjectionIndex,
+		AfterID:       first.NextAfterID,
+		SnapshotMaxID: first.SnapshotMaxID,
+		SnapshotTotal: first.SnapshotTotal,
+		Limit:         100,
+	})
+	require.NoError(t, err)
+	require.Len(t, remaining.Notes, 1)
+	assert.Equal(t, rows[2].ID, remaining.Notes[0].ID)
+	assert.Equal(t, first.SnapshotTotal, remaining.SnapshotTotal, "snapshot total must remain fixed even if a row is deleted between pages")
+
+	_, err = s.ListSnapshot(ctx, 9, XhsSnapshotQuery{Projection: XhsSnapshotProjectionIndex, Limit: 0})
+	require.Error(t, err)
+	_, err = s.ListSnapshot(ctx, 9, XhsSnapshotQuery{Projection: XhsSnapshotProjectionIndex, Limit: 101})
+	require.Error(t, err)
+	_, err = s.ListSnapshot(ctx, 9, XhsSnapshotQuery{Projection: XhsSnapshotProjection("bogus"), Limit: 1})
+	require.Error(t, err)
+}
+
+func noteIDs(notes []model.XhsTopicNote) []uint64 {
+	ids := make([]uint64, len(notes))
+	for i := range notes {
+		ids[i] = notes[i].ID
+	}
+	return ids
 }
 
 func TestUpsertNote_NewRecord_ReturnsChanged(t *testing.T) {

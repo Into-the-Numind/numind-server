@@ -26,7 +26,14 @@ import (
 // 移植自 SOP PdfController，支持 Python 增强解析和文本清洗
 type DocumentParser struct{}
 
-const documentParserOutputLimit = 2 * 1024 * 1024
+const (
+	// Extracted text is bounded independently from the compressed upload size.
+	// JSON can encode one input byte as a six-byte \\u00xx escape. Bound stdout
+	// for that worst case plus envelope headroom so valid 20 MiB extracted text
+	// is never truncated into malformed JSON while process output stays bounded.
+	documentParserContentLimit = 20 * 1024 * 1024
+	documentParserOutputLimit  = 6*documentParserContentLimit + 1024*1024
+)
 
 func NewDocumentParser() *DocumentParser {
 	return &DocumentParser{}
@@ -192,8 +199,14 @@ func (p *DocumentParser) runPythonParser(ctx context.Context, data []byte, ext s
 		}
 		return "", 0, fmt.Errorf("python script execution failed: %v, stderr: %s", err, stderr.String())
 	}
+	if stdout.truncated {
+		return "", 0, fmt.Errorf("python parser output exceeds bounded stdout limit")
+	}
 
-	// 解析输出的 JSON
+	return decodePythonParserOutput([]byte(stdout.String()))
+}
+
+func decodePythonParserOutput(payload []byte) (string, int, error) {
 	var result struct {
 		Success   bool   `json:"success"`
 		Content   string `json:"content"`
@@ -201,12 +214,15 @@ func (p *DocumentParser) runPythonParser(ctx context.Context, data []byte, ext s
 		Error     string `json:"error"`
 	}
 
-	if err := json.Unmarshal([]byte(stdout.String()), &result); err != nil {
+	if err := json.Unmarshal(payload, &result); err != nil {
 		return "", 0, fmt.Errorf("failed to parse python output: %w", err)
 	}
 
 	if !result.Success {
 		return "", 0, fmt.Errorf("python extraction error: %s", result.Error)
+	}
+	if len(result.Content) > documentParserContentLimit {
+		return "", 0, fmt.Errorf("python extracted content exceeds 20 MiB limit")
 	}
 
 	return result.Content, result.PageCount, nil

@@ -24,6 +24,7 @@ type larkExecuteRetryAttempt uint8
 const (
 	larkExecuteNormalAttempt larkExecuteRetryAttempt = iota
 	larkExecuteCorrectionAttempt
+	larkExecuteReconciliationRead
 )
 
 type larkExecuteRetryBlockReason uint8
@@ -156,6 +157,9 @@ func larkExecuteRetryRejected(state *larkExecuteRetryState, attempt larkExecuteR
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
+	if attempt == larkExecuteReconciliationRead {
+		return false
+	}
 
 	validAttempt := (attempt == larkExecuteNormalAttempt && state.phase == larkRetryNormalInFlight) ||
 		(attempt == larkExecuteCorrectionAttempt && state.phase == larkRetryCorrectionInFlight)
@@ -187,7 +191,7 @@ func larkExecuteRetryProgress(state *larkExecuteRetryState) (attempts, remaining
 }
 
 func larkExecuteRetryCompleted(state *larkExecuteRetryState, attempt larkExecuteRetryAttempt) {
-	if state == nil {
+	if state == nil || attempt == larkExecuteReconciliationRead {
 		return
 	}
 	state.mu.Lock()
@@ -205,6 +209,9 @@ func larkExecuteRetryTerminalOutcome(
 	attempt larkExecuteRetryAttempt,
 	failure *feishu.OperationFailure,
 ) (correctionExhausted bool) {
+	if attempt == larkExecuteReconciliationRead {
+		return false
+	}
 	if state == nil || failure == nil {
 		larkExecuteRetryFailed(state, attempt)
 		return true
