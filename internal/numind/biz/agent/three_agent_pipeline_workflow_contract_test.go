@@ -906,7 +906,7 @@ func fullStep(ids []string) pipelineModelStep {
 	items := make([]map[string]any, 0, len(ids))
 	for _, id := range ids {
 		items = append(items, map[string]any{
-			"id": 1001, "xhs_note_id": id, "collected_at": "2026-07-20T08:00:00+08:00", "note_type": "图文",
+			"id": 1001, "xhs_note_id": id, "collected_at": "2026-07-20T08:00:00+08:00", "note_type": model.XhsNoteTypeNormal,
 			"title": "标题 " + id, "content": "正文", "video_transcript": nil,
 			"like_count": 1200, "collect_count": 300, "comment_count": 88, "comment_texts": []string{},
 			"note_url": "https://xhs.example/" + id,
@@ -1148,7 +1148,7 @@ func compareAgent1RawFields(record, raw map[string]any) error {
 	expected := map[string]any{
 		"小红书笔记ID": raw["xhs_note_id"],
 		"有数笔记ID":  raw["id"],
-		"笔记类型":    rawOrDefault(raw["note_type"], "信息不足"),
+		"笔记类型":    agent1BaseNoteType(raw["note_type"]),
 		"笔记标题":    rawOrDefault(raw["title"], "信息不足"),
 		"笔记正文":    rawOrDefault(raw["content"], "信息不足"),
 		"视频文字稿":   rawOrDefault(raw["video_transcript"], "信息不足"),
@@ -1165,6 +1165,17 @@ func compareAgent1RawFields(record, raw map[string]any) error {
 		}
 	}
 	return nil
+}
+
+func agent1BaseNoteType(value any) string {
+	switch fmt.Sprint(value) {
+	case model.XhsNoteTypeNormal:
+		return "图文"
+	case model.XhsNoteTypeVideo:
+		return "视频"
+	default:
+		return "信息不足"
+	}
 }
 
 func rawOrDefault(value any, fallback string) any {
@@ -1194,6 +1205,36 @@ func TestAgent1RawLineageValidatorRejectsFabricatedCapturedFields(t *testing.T) 
 		larkStep(baseUpsertRecordArgv(write, "recLineageABC123"), `{"ok":true}`),
 	}
 	require.ErrorContains(t, validateAgent1RawLineage(steps), "raw field 点赞数")
+}
+
+func TestAgent1RawLineageValidatorMapsProductionNoteTypes(t *testing.T) {
+	tests := []struct {
+		name     string
+		rawType  any
+		baseType string
+	}{
+		{name: "normal", rawType: model.XhsNoteTypeNormal, baseType: "图文"},
+		{name: "video", rawType: model.XhsNoteTypeVideo, baseType: "视频"},
+		{name: "null", rawType: nil, baseType: "信息不足"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			id := "n-type-" + tc.name
+			source := fullStep([]string{id})
+			var output map[string]any
+			require.NoError(t, json.Unmarshal([]byte(source.Result), &output))
+			items := output["items"].([]any)
+			items[0].(map[string]any)["note_type"] = tc.rawType
+			source.Result = jsonString(output)
+			record := completeAgent1Record(id)
+			record["笔记类型"] = tc.baseType
+			steps := []pipelineModelStep{
+				source,
+				larkStep(baseUpsertRecordArgv(record, "recTypeABC123"), `{"ok":true}`),
+			}
+			require.NoError(t, validateAgent1RawLineage(steps))
+		})
+	}
 }
 
 func baseUpsertRecordArgv(record map[string]any, recordID string) []string {
@@ -1371,28 +1412,28 @@ func validateTopicContent(content string) error {
 	if strings.Count(content, "｜开始]") != strings.Count(content, "｜结束]") || strings.Count(content, "｜开始]") == 0 {
 		return fmt.Errorf("Agent 3 round markers must be paired")
 	}
-	for _, field := range topicNineFields() {
-		if !strings.Contains(content, field+"：") {
-			return fmt.Errorf("Agent 3 round is missing %s", field)
-		}
+	topics := strings.Split(content, "### 选题 ")[1:]
+	if len(topics) == 0 {
+		return fmt.Errorf("Agent 3 round contains no formal topics")
 	}
-	for _, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimSpace(strings.TrimPrefix(line, "-"))
-		if strings.HasPrefix(trimmed, "生成路径：") {
-			value := strings.TrimPrefix(trimmed, "生成路径：")
-			if value != "向内求" && value != "向外求" {
-				return fmt.Errorf("Agent 3 generation path is outside the fixed enum")
+	for _, topic := range topics {
+		for _, field := range topicNineFields() {
+			if topicFieldValue(topic, field) == "" {
+				return fmt.Errorf("Agent 3 topic is missing %s", field)
 			}
 		}
-		if strings.HasPrefix(trimmed, "参考类型：") {
-			value := strings.TrimPrefix(trimmed, "参考类型：")
-			if value != "结构+内容" && value != "仅参考结构" && value != "无，独立生成" {
-				return fmt.Errorf("Agent 3 reference type is outside the fixed enum")
-			}
-		}
-	}
-	for _, topic := range strings.Split(content, "### 选题 ")[1:] {
 		category := topicFieldValue(topic, "归属小类")
+		if !validTopicCategory(category) {
+			return fmt.Errorf("Agent 3 topic category is outside the formal taxonomy")
+		}
+		generationPath := topicFieldValue(topic, "生成路径")
+		if generationPath != "向内求" && generationPath != "向外求" {
+			return fmt.Errorf("Agent 3 generation path is outside the fixed enum")
+		}
+		referenceType := topicFieldValue(topic, "参考类型")
+		if referenceType != "结构+内容" && referenceType != "仅参考结构" && referenceType != "无，独立生成" {
+			return fmt.Errorf("Agent 3 reference type is outside the fixed enum")
+		}
 		subject := topicFieldValue(topic, "主语自检")
 		if strings.HasPrefix(category, "人设型-") {
 			if subject == "" || subject == "-" {
@@ -1403,6 +1444,40 @@ func validateTopicContent(content string) error {
 		}
 	}
 	return nil
+}
+
+func validTopicCategory(category string) bool {
+	if category == "垂直人群泛话题" || category == "其他" {
+		return true
+	}
+	allowed := map[string]map[string]bool{
+		"人设型":   {"来路": true, "信念": true, "代价": true, "日常": true, "价值观": true, "其他": true},
+		"泛流量型":  {"选哪个": true, "要花多少": true, "是不是现在": true, "有什么坑": true, "其他": true},
+		"精准":    {"爆款型": true, "痛点型": true, "深度型": true, "案例型": true, "其他": true},
+		"精准选题":  {"爆款型": true, "痛点型": true, "深度型": true, "案例型": true, "其他": true},
+		"硬广":    {"产品型": true, "好评型": true, "其他": true},
+		"硬广营销类": {"产品型": true, "好评型": true, "其他": true},
+	}
+	parts := strings.SplitN(category, "-", 2)
+	return len(parts) == 2 && allowed[parts[0]][parts[1]]
+}
+
+func TestValidateTopicContentRejectsIncompleteOrUnknownTopic(t *testing.T) {
+	valid := topicRoundContent(pipelineRoundNew, 1)
+	tests := []struct {
+		name    string
+		content string
+		error   string
+	}{
+		{name: "no topic", content: strings.ReplaceAll(valid, "### 选题 ", "### 方向 "), error: "no formal topics"},
+		{name: "missing category", content: strings.Replace(valid, "- 归属小类：人设型-信念\n", "", 1), error: "missing 归属小类"},
+		{name: "unknown category", content: strings.Replace(valid, "人设型-信念", "未知型-随意", 1), error: "formal taxonomy"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			require.ErrorContains(t, validateTopicContent(tc.content), tc.error)
+		})
+	}
 }
 
 func topicFieldValue(topic, field string) string {
