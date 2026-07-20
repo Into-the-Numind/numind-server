@@ -4,25 +4,27 @@ features:
   ndf_version: '3.0'
   description: Parse each uploaded Agent attachment once, persist canonical normalized content, and make file_read the single paged model-facing read path keyed by current-user attachment IDs.
   classification_reason: 'Standard: changes DB schema, upload/fallback processing, Agent input semantics, tool contract, frontend request wiring, and current-user authorization across both server and web repositories.'
-  last_updated_by: ai-s2
-  last_updated_at: '2026-07-21T00:30:00+08:00'
+  last_updated_by: ai-s3
+  last_updated_at: '2026-07-21T00:36:00+08:00'
   created_at: '2026-07-20T23:59:18+08:00'
   track: standard
-  stage: S2
+  stage: S3
   status: active
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/attachment-single-parse-file-read, numind-web-v3: feature/attachment-single-parse-file-read}
   worktrees: {numind-server: /private/tmp/wt-attachment-single-parse-file-read-numind-server, numind-web-v3: /private/tmp/wt-attachment-single-parse-file-read-numind-web-v3}
-  progress: {total_tasks: 8, completed_tasks: 3, reviewed_tasks: 0, current_task: 'S3 atomic implementation plan'}
+  progress: {total_tasks: 8, completed_tasks: 3, reviewed_tasks: 0, current_task: 'Task 1 RED/GREEN schema and store'}
   artifacts:
     requirement: requirements/attachment-single-parse-file-read.md
     proposal: proposals/attachment-single-parse-file-read-proposal.md
     spec: docs/superpowers/specs/2026-07-20-attachment-single-parse-file-read-design.md
+    plan: docs/superpowers/plans/2026-07-20-attachment-single-parse-file-read.md
   decisions:
   - 'S0: the observed defect is duplicate computation rather than duplicate model context: fallback generation parses after upload, while file_read downloads and parses again on every page.'
   - 'S0: retain file_read as the sole model-facing full-content interface; persist canonical raw parsed content separately from wrapped text_fallback and send attachment IDs from the frontend.'
   - 'S1: backend-first rolling release keeps URL compatibility; normal clients send current-user attachment IDs and only ID-less upload results use the legacy URL field.'
   - 'S2: parsed_content and its stable SHA-256 token are separate from wrapped text_fallback; fallback_ready/error remain the single processing state, and file_read never performs network/parser work on a cache hit.'
+  - 'S3: eight serial tasks preserve backend RED/GREEN before frontend RED/GREEN, two local review passes, complete repository gates, backend-first rolling deployment, and exact-image Dev verification.'
   blockers: []
 - id: global-agent-full-tools
   ndf_version: '3.0'
