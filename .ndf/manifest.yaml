@@ -6322,8 +6322,8 @@ features:
   ndf_version: '3.0'
   description: 'Dev 客户回归：官方 lark-base 技能要求执行 base +url-resolve，但托管命令目录未开放该本地只读命令；同名资源候选只暴露 token 后缀且 lark_execute 可被模型并发重试，导致平台策略连续拒绝。'
   classification_reason: 'Hotfix: 无 DB、无新增 API、无新外部服务；修复既有飞书托管命令契约与 Agent 执行稳定性，不扩大业务能力或安全边界。'
-  last_updated_by: ai-h3
-  last_updated_at: '2026-07-20T12:45:00+0800'
+  last_updated_by: ai-h3-review
+  last_updated_at: '2026-07-20T12:41:52+0800'
   created_at: '2026-07-20T12:01:36+0800'
   track: hotfix
   stage: H3
@@ -6331,8 +6331,9 @@ features:
   repos: [numind-server]
   branches: {numind-server: fix/feishu-hosted-command-contract}
   worktrees: {numind-server: /private/tmp/wt-feishu-hosted-command-contract-numind-server}
-  progress: {total_tasks: 3, completed_tasks: 2, reviewed_tasks: 0}
+  progress: {total_tasks: 3, completed_tasks: 3, reviewed_tasks: 3}
   decisions:
   - 'H1 (ai 2026-07-20): 采用平台命令目录作为 Agent 可执行命令单一真相源；允许官方 CLI 的 base +url-resolve，但仅接受安全的完整 Feishu/Lark Base/bitable HTTPS URL、零 Feishu scope、只读可重放。Agent 必须保留同名候选完整原始 URL、只有后缀时重搜不得猜测，并串行调用 lark_execute。客户 bug 回归测试先行提交 c2c4af81。'
   - 'H2 (ai 2026-07-20): 实现 catalog 生成的按技能精确命令/参数契约；新增严格 HTTPS Base/bitable URL 本地解析，拒绝 token、非官方 host、凭据/端口、非 Base 路径和额外参数；LocalOnly 元数据经加密持久化且重新按 catalog 校验，使未连接用户也可先解析 URL，真实业务命令才触发对应授权。官方 CLI 实机解析成功。实现提交 711fcc3d。'
+  - 'H3 (ai 2026-07-20): 实机发现官方 CLI 即使执行 URL 解析也依赖 CLI HOME，因此改为服务端确定性 LocalOnly 解析器，完全不启动 CLI/凭据仓库/飞书 API，也不触发授权或写入虚假 capability 状态；输出兼容 base_token/table_id/view_id/record_id，并且下一步提示只引用实际托管命令。恢复路径重新按 catalog 校验加密请求，LLM 无法伪造 LocalOnly。RED-first c2c4af81；实现 711fcc3d/e39e168e/a873bb37；定向回归、feishu+agent、go test ./...、task lint 全绿；独立 reviewer 终审 PASS。'
   blockers: []
