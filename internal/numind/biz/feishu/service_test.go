@@ -1315,20 +1315,33 @@ func TestWorkspaceLifecycleResumeUserCompletedObservesExecutingAndTerminalStates
 	}
 }
 
-func TestWorkspaceLifecycleResumeConfirmationActionsRequireWaitingConfirmation(t *testing.T) {
+func TestWorkspaceLifecycleResumeConfirmationActionsAreIdempotentAfterStateAdvance(t *testing.T) {
 	op := &model.FeishuOperation{ID: "op-1", UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth}
 	svc, _, _, _, dispatcher, operations, _ := newLifecycleService(t, &model.UserThirdPartyAccount{UserID: 7, Provider: ProviderLark, Generation: 2}, op)
 
-	_, err := svc.Resume(context.Background(), 7, "op-1", ResumeActionConfirmed)
-	require.ErrorIs(t, err, ErrWorkspaceLifecycleInvalid)
-	require.Zero(t, dispatcher.calls)
-	require.Zero(t, operations.confirmed)
+	for _, state := range []string{
+		model.FeishuOperationExecuting,
+		model.FeishuOperationWaitingConnection,
+		model.FeishuOperationWaitingAppScope,
+		model.FeishuOperationWaitingUserAuth,
+	} {
+		op.State = state
+		result, err := svc.Resume(context.Background(), 7, "op-1", ResumeActionConfirmed)
+		require.NoError(t, err)
+		require.Equal(t, &OperationResult{OperationID: "op-1", State: state}, result)
+		require.Zero(t, dispatcher.calls, "an already advanced operation must not be dispatched again")
+		require.Zero(t, operations.confirmed, "an already advanced operation must not replay the CLI")
+	}
 
 	op.State = model.FeishuOperationWaitingConfirmation
 	result, err := svc.Resume(context.Background(), 7, "op-1", ResumeActionConfirmed)
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationExecuting, result.State)
 	require.Equal(t, 1, operations.confirmed)
+
+	op.State = model.FeishuOperationNotStarted
+	_, err = svc.Resume(context.Background(), 7, "op-1", ResumeActionConfirmed)
+	require.ErrorIs(t, err, ErrWorkspaceLifecycleInvalid)
 }
 
 func TestWorkspaceLifecycleResumeConfirmedFinalizesTerminalExecutionResult(t *testing.T) {
