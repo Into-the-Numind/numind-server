@@ -4,16 +4,16 @@ features:
   ndf_version: '3.0'
   description: Allow five correctable Lark command attempts, expose safe catalog validation hints, and retain immediate stops for non-retryable or uncertain operations.
   classification_reason: 'User explicitly required Hotfix for speed. Scope is backend-only with no schema, API, or external capability expansion; existing execution safety boundaries remain closed.'
-  last_updated_by: ai-h3
-  last_updated_at: '2026-07-20T16:08:00+08:00'
+  last_updated_by: ai-h3-dev-deployed
+  last_updated_at: '2026-07-20T16:18:00+08:00'
   created_at: '2026-07-20T15:40:27+08:00'
   track: hotfix
   stage: H3
-  status: active
+  status: completed
   repos: [numind-server]
   branches: {numind-server: fix/lark-five-correction-attempts}
   worktrees: {numind-server: /private/tmp/wt-lark-five-correction-attempts-numind-server}
-  progress: {total_tasks: 3, completed_tasks: 2, reviewed_tasks: 1, current_task: 'Merge, push, and deploy the reviewed hotfix to Dev'}
+  progress: {total_tasks: 3, completed_tasks: 3, reviewed_tasks: 1, current_task: 'Completed and deployed to Dev'}
   artifacts: {}
   decisions:
   - 'H1 diagnosis: Dev run 248 had zero feishu_operation rows. A Base table-name/fields pairing error was collapsed to generic command_rejected; the second rejection exhausted the run and blocked a later valid command before normalization.'
@@ -22,6 +22,8 @@ features:
   - 'H1 GREEN: pre-execution policy/validation failures and explicitly retryable terminal failures share a five-attempt run budget; success resets it, concurrent calls remain single-flight, and non-retryable or uncertain writes retain immediate terminal stops. Catalog invalid-argument hints are bounded and credential-free; policy denials remain generic.'
   - 'H1 gates: affected Agent and Feishu packages pass, the full Go suite passes, task lint passes, and git diff --check passes.'
   - 'H2 review: PASS with P0/P1/P2=0. The five-attempt budget is run-scoped and single-flight, successful execution resets it, catalog hints cannot expose argv values or credentials, and all uncertain/started-write terminal guards remain unchanged.'
+  - 'H3 merge: ndf-done atomically merged and pushed numind-server develop at b6ca7640, then removed the feature worktree and local branch.'
+  - 'H3 Dev deployment: backend image develop-b6ca7640 (digest sha256:e9f9c468108313d89782978aa4d822ccc33ca4d0b8e66c03febaf8968683c614) is running healthy. Public /healthz passes, startup logs show no new critical failure, and runtime lark-cli remains 1.0.68.'
   blockers: []
 
 - id: feishu-action-transition
