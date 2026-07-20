@@ -7,7 +7,10 @@ package attachment_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -81,13 +84,44 @@ func TestModalityDetection(t *testing.T) {
 		{"audio/wav", att.ModalityAudio},
 		{"audio/m4a", att.ModalityAudio},
 		{"application/octet-stream", att.ModalityUnknown},
-		{"text/plain", att.ModalityUnknown},
+		{"text/plain", att.ModalityText},
+		{"text/markdown", att.ModalityText},
 		{"", att.ModalityUnknown},
 	}
 	for _, tc := range cases {
 		got := att.DetectModality(tc.mimeType)
 		assert.Equal(t, tc.want, got, "mime=%q", tc.mimeType)
 	}
+}
+
+func TestGenerateTextPersistsCanonicalParsedContent(t *testing.T) {
+	const content = "客户画像：\n一线城市新手妈妈"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(content))
+	}))
+	defer server.Close()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+	row := &model.AgentAttachment{
+		UserID: 7, URL: server.URL + "/profile.txt", Filename: "profile.txt",
+		MimeType: "text/plain", Size: int64(len(content)), Modality: att.ModalityText,
+	}
+	require.NoError(t, s.Create(ctx, row))
+	require.NoError(t, att.NewFallbackService(s).GenerateNow(ctx, row))
+
+	got, err := s.GetByID(ctx, row.ID)
+	require.NoError(t, err)
+	require.True(t, got.FallbackReady)
+	require.Nil(t, got.FallbackError)
+	require.NotNil(t, got.ParsedContent)
+	assert.Equal(t, content, *got.ParsedContent)
+	assert.Equal(t, int64(len(content)), got.ParsedContentByteSize)
+	sum := sha256.Sum256([]byte(content))
+	assert.Equal(t, fmt.Sprintf("sha256:%x", sum), got.ParsedContentSHA256)
+	require.NotNil(t, got.ParsedAt)
+	require.NotNil(t, got.TextFallback)
+	assert.Contains(t, *got.TextFallback, content)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

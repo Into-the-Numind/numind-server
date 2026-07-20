@@ -253,6 +253,8 @@ func pendingFallbackTextFor(att *model.AgentAttachment) string {
 		prefix = "音频"
 	case attachment.ModalityDocument:
 		prefix = "文档"
+	case attachment.ModalityText:
+		prefix = "文本"
 	default:
 		prefix = "附件"
 	}
