@@ -6318,3 +6318,20 @@ features:
   - 'S3 review-fix (ai 2026-06-19): 解决 8 条设计评审发现(4 P0 + 4 P1),零新增 task(全并入既有 T1-T8 scope)。#1 P0 静默 prefix fallback→新增 startup assertNativeAdaptersRegistered(查 llm_provider is_active=true 原生行,lookupProviderExact 缺注册即 log.Fatalw 拒启;dmxapi fallback 不再可掩盖)+ 两步激活(T8 迁移插行 is_active=0 不切路由,激活=确认 /healthz/ai 后手动 flip)→T4/T8。#2 P0 computeRevenue 漏 write bucket→sell 侧也按 3-bucket carve,新增 SellCacheCreationInputPricePerMTok 列→D3/T1/T2。#3 P0 Anthropic SSE token 捕获→改 max() 防御式逐 chunk 捕获(非仅 message_start)+ output_tokens 取 last-largest 不求和 + post-stream 无 usage 则显式 PromptTokens=0+WARN→5B/T5。#4 P0 Gemini key-in-URL 泄漏→fullURL 仅上线、redactGeminiURL→key=REDACTED 用于所有 error/log/trace→5C/T4/T6。#5 P1 PromptCachePolicy 3 SELECT 漏改→显式 checklist + 三路径集成测试→5E/T3。#6 P1 Gemini functionResponse 名恢复→无状态反扫 req.Messages 匹配 ToolCallID(非 ephemeral map,跨 turn 安全)→5C/T6。#7 P1 billing.TokenUsage.Normalize 不提升 CacheCreationTokens→刻意 no-op(Claude top-level,适配器直写)+ 显式 4 处 copy site→5D/T1/T2。#8 P1 prompt_cache_policy 存量行 NULL→GORM not null;default off + 迁移 NOT NULL DEFAULT + backfill UPDATE→5E/5F/T3。taskCount 仍 9。'
   - 'S4-S6 (ai 2026-06-19): T1-T8 由 dynamic workflow 实现(各 TDD+双 Sonnet 评审;T5/T6/T8 各 2 轮修复),主 session 独立复核 go build/test/lint 全绿(cmd/numind 6 个失败为 pre-existing skill 表 DDL 漂移,本 feature 未碰)+ 审计 pricing delegation/computeRevenue 3-bucket/startup assertion/native 注册/迁移惰性行 zero-regression 全过。S6 dev 部署 + 5 迁移 SSH 应用 + 两步激活(原生行 is_active=1 + 手动设 DMXAPI key[config 无 native 凭据 SyncProviderCredentials 不覆盖] + route54→claude-native + route45→gemini-native + policy claude_ephemeral/gemini_implicit)+ /healthz/ai 列出两原生适配器。S5 真路由验证(SOP template 5 node14 改 4662 字符长前缀):**Claude 缓存创建 call1 cache_creation=20738 cost=105(45.625 溢价)/ 读取 cache_read=20726 cost=16(2.482 折扣,省 ~74%)/ 混合桶 cost=41 三桶 math 全对**;**Gemini 隐式缓存 cachedContentTokenCount=12269(预热 2-3 调用后命中,best-effort)**;DeepSeek 走未改 OAI-compat 路径 cache_creation=0(零回归)+ Batch A 前缀缓存仍工作;toggle=off → cache_creation=0(不付创建溢价)。可靠性:24/24 交替负载 + 4/4 长空闲(340s)后成功。**踩坑**:早先 Claude(11:53-12:01)/Gemini(12:30)短时连续失败 "no chunks received",经穷尽取证(直连 DMXAPI urllib+keep-alive+流式全成功、连接复用/陈旧连接/鉴权/缓存读取路径逐一证伪、fresh 进程无法复现)定性为 **DMXAPI 上游瞬时退化**(大 54KB 前缀+20K-token Opus/Gemini 调用比小探测更敏感),系统优雅降级(报错+reservation 退款无超扣无崩溃)非代码 bug;诊断用临时插桩已 soft-reset 移除(仅留 gemini 种子名修正 commit 215ce31f)。种子修正:gemini-native 价格 model gemini-3.1-pro→gemini-3.1-pro-preview(对齐真实 route provider_model_id,否则计费查空落基价)。clean 版重新部署 dev。下一步 ndf-done 合 develop;prod 未上(agent/SOP 原生缓存路由属 dev 验证态,prod 走独立 release line + config_prod 默认 OFF)。'
   blockers: []
+- id: feishu-hosted-command-contract
+  ndf_version: '3.0'
+  description: 'Dev 客户回归：官方 lark-base 技能要求执行 base +url-resolve，但托管命令目录未开放该本地只读命令；同名资源候选只暴露 token 后缀且 lark_execute 可被模型并发重试，导致平台策略连续拒绝。'
+  classification_reason: 'Hotfix: 无 DB、无新增 API、无新外部服务；修复既有飞书托管命令契约与 Agent 执行稳定性，不扩大业务能力或安全边界。'
+  last_updated_by: ai-h2
+  last_updated_at: '2026-07-20T12:20:00+0800'
+  created_at: '2026-07-20T12:01:36+0800'
+  track: hotfix
+  stage: H2
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: fix/feishu-hosted-command-contract}
+  worktrees: {numind-server: /private/tmp/wt-feishu-hosted-command-contract-numind-server}
+  progress: {total_tasks: 3, completed_tasks: 1, reviewed_tasks: 0}
+  decisions:
+  - 'H1 (ai 2026-07-20): 采用平台命令目录作为 Agent 可执行命令单一真相源；允许官方 CLI 的 base +url-resolve，但仅接受安全的完整 Feishu/Lark Base/bitable HTTPS URL、零 Feishu scope、只读可重放。Agent 必须保留同名候选完整原始 URL、只有后缀时重搜不得猜测，并串行调用 lark_execute。客户 bug 回归测试先行提交 c2c4af81。'
+  blockers: []
