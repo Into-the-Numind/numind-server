@@ -276,6 +276,9 @@ type pipelineWorkflowScenario struct {
 
 func runScriptedPipelineWorkflow(t *testing.T, scenario pipelineWorkflowScenario) ([]pipelineWorkflowCall, map[string]string) {
 	t.Helper()
+	if scenario.agent == 1 {
+		require.NoError(t, validateAgent1RawLineage(scenario.steps))
+	}
 	prompt := loadPipelineSystemPrompt(t, scenario.agent)
 	toolNames := uniquePipelineToolNames(scenario.steps)
 	recorder := &pipelineWorkflowRecorder{expected: scenario.steps, prompt: prompt, expectedToolNames: toolNames}
@@ -505,7 +508,15 @@ func TestThreeAgentPipelineWorkflow_Agent1Matrix(t *testing.T) {
 func TestThreeAgentPipelineWorkflow_Agent1BaseTargetResolution(t *testing.T) {
 	scenarios := []pipelineWorkflowScenario{
 		{
-			name: "zero exact Base creates the 34-field workspace", agent: 1, agentID: 7121, input: "开始打标",
+			name: "missing Base target asks for exact file name before search", agent: 1, agentID: 7120, input: "开始打标",
+			steps: []pipelineModelStep{
+				askStep("请确认要保存到哪个飞书文件，以及对应的精确文件名", `{"status":"waiting"}`),
+			},
+			final: marker1(0, 0, 0, 0), wantMetadata: metrics1(0, 0, 0, 0),
+			check: noCallContaining("drive\",\"+search", "base\",\"+base-create", "base\",\"+field-list"),
+		},
+		{
+			name: "zero exact Base creates the 34-field workspace", agent: 1, agentID: 7121, input: "保存到精确文件名“爆款素材分析库”，开始打标",
 			steps: []pipelineModelStep{
 				skillStep("lark-drive"),
 				larkStep(driveSearchArgvWithType("爆款素材分析库", "bitable"), `{"matches":[]}`),
@@ -519,7 +530,7 @@ func TestThreeAgentPipelineWorkflow_Agent1BaseTargetResolution(t *testing.T) {
 			},
 		},
 		{
-			name: "one exact Base is reused after schema inspection", agent: 1, agentID: 7122, input: "开始打标",
+			name: "one exact Base is reused after schema inspection", agent: 1, agentID: 7122, input: "保存到精确文件名“爆款素材分析库”，开始打标",
 			steps: []pipelineModelStep{
 				larkStep(driveSearchArgvWithType("爆款素材分析库", "bitable"), `{"matches":[{"base_token":"bascnABCDEFG123","table_id":"tblABCDEFG123"}]}`),
 				larkStep(baseFieldListArgv(), jsonString(map[string]any{"fields": baseFieldDefinitions(), "has_more": false})),
@@ -531,7 +542,7 @@ func TestThreeAgentPipelineWorkflow_Agent1BaseTargetResolution(t *testing.T) {
 			},
 		},
 		{
-			name: "multiple exact Bases ask for disambiguation without a write", agent: 1, agentID: 7123, input: "开始打标",
+			name: "multiple exact Bases ask for disambiguation without a write", agent: 1, agentID: 7123, input: "保存到精确文件名“爆款素材分析库”，开始打标",
 			steps: []pipelineModelStep{
 				larkStep(driveSearchArgvWithType("爆款素材分析库", "bitable"), `{"matches":["b1","b2"]}`),
 				askStep("找到 2 个同名爆款素材分析库，请选择本次目标", `{"status":"waiting"}`),
@@ -894,7 +905,12 @@ func fileStep(name string, offset int, token, result string) pipelineModelStep {
 func fullStep(ids []string) pipelineModelStep {
 	items := make([]map[string]any, 0, len(ids))
 	for _, id := range ids {
-		items = append(items, map[string]any{"xhs_note_id": id, "title": "标题 " + id, "content": "正文", "note_url": "https://xhs.example/" + id})
+		items = append(items, map[string]any{
+			"id": 1001, "xhs_note_id": id, "collected_at": "2026-07-20T08:00:00+08:00", "note_type": "图文",
+			"title": "标题 " + id, "content": "正文", "video_transcript": nil,
+			"like_count": 1200, "collect_count": 300, "comment_count": 88, "comment_texts": []string{},
+			"note_url": "https://xhs.example/" + id,
+		})
 	}
 	return step("xhs_note_list", jsonString(map[string]any{"projection": "full", "limit": 100, "xhs_note_ids": ids}), jsonString(map[string]any{"items": items, "has_more": false}))
 }
@@ -1040,7 +1056,7 @@ func validateCompleteAgent1Record(record map[string]any) error {
 	}
 	for _, field := range wantFields {
 		value, ok := record[field]
-		if !ok || value == nil || (fmt.Sprint(value) == "") {
+		if !ok || value == nil || (fmt.Sprint(value) == "" && field != "采集时间") {
 			return fmt.Errorf("Agent 1 completed record is missing %s", field)
 		}
 	}
@@ -1048,6 +1064,140 @@ func validateCompleteAgent1Record(record map[string]any) error {
 		return fmt.Errorf("Agent 1 completed record has invalid checkpoint fields")
 	}
 	return nil
+}
+
+func validateAgent1RawLineage(steps []pipelineModelStep) error {
+	rawByID := make(map[string]map[string]any)
+	for _, workflowStep := range steps {
+		if workflowStep.Tool == "xhs_note_list" && strings.Contains(workflowStep.Args, `"projection":"full"`) {
+			var output struct {
+				Items []map[string]any `json:"items"`
+			}
+			if err := json.Unmarshal([]byte(workflowStep.Result), &output); err != nil {
+				return fmt.Errorf("invalid Agent 1 full fixture: %w", err)
+			}
+			for _, item := range output.Items {
+				id, _ := item["xhs_note_id"].(string)
+				if id == "" {
+					return fmt.Errorf("Agent 1 full fixture is missing xhs_note_id")
+				}
+				rawByID[id] = item
+			}
+			continue
+		}
+		if workflowStep.Tool != "lark_execute" {
+			continue
+		}
+		decoded, err := decodeLarkExecuteInput(ToolInput(workflowStep.Args))
+		if err != nil || len(decoded.Argv) < 2 || decoded.Argv[0] != "base" ||
+			(decoded.Argv[1] != "+record-batch-create" && decoded.Argv[1] != "+record-upsert") {
+			continue
+		}
+		records, err := agent1RecordsFromWrite(decoded.Argv)
+		if err != nil {
+			return err
+		}
+		for _, record := range records {
+			id, _ := record["小红书笔记ID"].(string)
+			raw, ok := rawByID[id]
+			if !ok {
+				return fmt.Errorf("Agent 1 write %s has no preceding full source", id)
+			}
+			if err := compareAgent1RawFields(record, raw); err != nil {
+				return fmt.Errorf("Agent 1 write %s: %w", id, err)
+			}
+		}
+	}
+	return nil
+}
+
+func agent1RecordsFromWrite(argv []string) ([]map[string]any, error) {
+	payload, ok := argvValue(argv, "--json")
+	if !ok {
+		return nil, fmt.Errorf("Agent 1 write is missing --json")
+	}
+	if argv[1] == "+record-upsert" {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(payload), &record); err != nil {
+			return nil, err
+		}
+		return []map[string]any{record}, nil
+	}
+	var batch struct {
+		Fields []string `json:"fields"`
+		Rows   [][]any  `json:"rows"`
+	}
+	if err := json.Unmarshal([]byte(payload), &batch); err != nil {
+		return nil, err
+	}
+	records := make([]map[string]any, 0, len(batch.Rows))
+	for _, row := range batch.Rows {
+		if len(row) != len(batch.Fields) {
+			return nil, fmt.Errorf("Agent 1 batch row width mismatch")
+		}
+		record := make(map[string]any, len(row))
+		for index, field := range batch.Fields {
+			record[field] = row[index]
+		}
+		records = append(records, record)
+	}
+	return records, nil
+}
+
+func compareAgent1RawFields(record, raw map[string]any) error {
+	expected := map[string]any{
+		"小红书笔记ID": raw["xhs_note_id"],
+		"有数笔记ID":  raw["id"],
+		"笔记类型":    rawOrDefault(raw["note_type"], "信息不足"),
+		"笔记标题":    rawOrDefault(raw["title"], "信息不足"),
+		"笔记正文":    rawOrDefault(raw["content"], "信息不足"),
+		"视频文字稿":   rawOrDefault(raw["video_transcript"], "信息不足"),
+		"点赞数":     raw["like_count"],
+		"收藏数":     raw["collect_count"],
+		"评论数":     raw["comment_count"],
+		"评论区文本":   commentTextsOrDefault(raw["comment_texts"]),
+		"原文链接":    rawOrDefault(raw["note_url"], "未提供"),
+		"采集时间":    rawOrDefault(raw["collected_at"], ""),
+	}
+	for field, want := range expected {
+		if fmt.Sprint(record[field]) != fmt.Sprint(want) {
+			return fmt.Errorf("raw field %s = %v, want source-derived %v", field, record[field], want)
+		}
+	}
+	return nil
+}
+
+func rawOrDefault(value any, fallback string) any {
+	if value == nil || fmt.Sprint(value) == "" {
+		return fallback
+	}
+	return value
+}
+
+func commentTextsOrDefault(value any) string {
+	items, _ := value.([]any)
+	if len(items) == 0 {
+		return "信息不足"
+	}
+	texts := make([]string, 0, len(items))
+	for _, item := range items {
+		texts = append(texts, fmt.Sprint(item))
+	}
+	return strings.Join(texts, "\n")
+}
+
+func TestAgent1RawLineageValidatorRejectsFabricatedCapturedFields(t *testing.T) {
+	write := completeAgent1Record("n-lineage")
+	write["点赞数"] = 9999
+	steps := []pipelineModelStep{
+		fullStep([]string{"n-lineage"}),
+		larkStep(baseUpsertRecordArgv(write, "recLineageABC123"), `{"ok":true}`),
+	}
+	require.ErrorContains(t, validateAgent1RawLineage(steps), "raw field 点赞数")
+}
+
+func baseUpsertRecordArgv(record map[string]any, recordID string) []string {
+	return []string{"base", "+record-upsert", "--base-token", pipelineBaseToken, "--table-id", pipelineTableID, "--record-id", recordID, "--json", jsonString(record)}
 }
 
 func validateAgent1BaseCreate(argv []string) error {
@@ -1241,7 +1391,28 @@ func validateTopicContent(content string) error {
 			}
 		}
 	}
+	for _, topic := range strings.Split(content, "### 选题 ")[1:] {
+		category := topicFieldValue(topic, "归属小类")
+		subject := topicFieldValue(topic, "主语自检")
+		if strings.HasPrefix(category, "人设型-") {
+			if subject == "" || subject == "-" {
+				return fmt.Errorf("Agent 3 persona topic must name the checked subject")
+			}
+		} else if subject != "-" {
+			return fmt.Errorf("Agent 3 non-persona topic subject check must be '-'")
+		}
+	}
 	return nil
+}
+
+func topicFieldValue(topic, field string) string {
+	prefix := "- " + field + "："
+	for _, line := range strings.Split(topic, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), prefix))
+		}
+	}
+	return ""
 }
 
 func topicsDocumentContent(customer, round string) string {
@@ -1275,7 +1446,7 @@ func topicRoundContent(round string, number int) string {
 - 参考来源链接：https://xhs.example/n2
 - 参考类型：仅参考结构
 - 变形说明：仅借局部手法；可借鉴：反常识开头；不可照搬：客户结果数字
-- 主语自检：顾问本人
+- 主语自检：-
 
 本轮规避重点：不使用不达标来源，不虚构客户事实。
 六大类：人设型 1；精准选题 1；其他 0。
