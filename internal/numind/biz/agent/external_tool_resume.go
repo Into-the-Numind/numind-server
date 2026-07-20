@@ -1003,7 +1003,21 @@ func turnsToExternalResumeHistoryMessages(turns []map[string]any, targetToolCall
 	toolNames := make(map[string]string)
 	toolReasoning := make(map[string]string)
 	for _, turn := range turns {
-		if role, _ := turn["role"].(string); role != "assistant" {
+		role, _ := turn["role"].(string)
+		if role == "tool_group" {
+			calls, _ := turn["tool_calls"].([]any)
+			for _, rawCall := range calls {
+				call, _ := rawCall.(map[string]any)
+				id, _ := call["tool_call_id"].(string)
+				name, _ := call["tool_name"].(string)
+				id, name = strings.TrimSpace(id), strings.TrimSpace(name)
+				if id != "" && isSafeExternalResumeToolName(name) {
+					toolNames[id] = name
+				}
+			}
+			continue
+		}
+		if role != "assistant" {
 			continue
 		}
 		reasoning, _ := turn["reasoning"].(string)
@@ -1051,8 +1065,10 @@ func turnsToExternalResumeHistoryMessages(turns []map[string]any, targetToolCall
 				return nil, fmt.Errorf("external resume transcript tool turn %d is invalid", index)
 			}
 			toolName := toolNames[toolCallID]
-			if toolCallID == targetToolCallID && toolName == "" {
-				toolName = "lark_execute"
+			if toolCallID == targetToolCallID {
+				if !isFeishuExternalResumeToolName(toolName) {
+					toolName = "lark_execute"
+				}
 			}
 			if toolName == "" {
 				continue
@@ -1095,4 +1111,8 @@ func isSafeExternalResumeToolName(name string) bool {
 		return false
 	}
 	return true
+}
+
+func isFeishuExternalResumeToolName(name string) bool {
+	return name == "lark_execute" || name == "lark_connect"
 }

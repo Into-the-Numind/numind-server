@@ -56,6 +56,9 @@ var (
 	// ErrOperationUnavailable is a safe dependency/persistence failure. Raw CLI
 	// errors and stderr are never wrapped into this sentinel.
 	ErrOperationUnavailable = errors.New("feishu operation unavailable")
+	// ErrOperationConnectionInProgress prevents multiple Agent/Settings entries
+	// from creating parallel personal-app authorization workers.
+	ErrOperationConnectionInProgress = errors.New("feishu connection already in progress")
 )
 
 // operationRequestValidation carries only a catalog-produced, credential-free
@@ -882,7 +885,7 @@ func (s *FeishuOperationService) Connect(ctx context.Context, request ConnectOpe
 	}
 	normalized := &NormalizedCommand{
 		Path: connectionOnlyCommandPath, Domain: connectionOnlyDomain, Action: connectionOnlyAction,
-		Risk: RiskRead, Scopes: []string{}, Argv: []string{"workspace", "connect"},
+		Risk: RiskRead, Scopes: []string{"offline_access"}, Argv: []string{"workspace", "connect"},
 		ReplaySafeOnAuthError: true,
 	}
 	persisted := persistedRequestFromNormalized(executeIdentity, normalized)
@@ -918,6 +921,9 @@ func (s *FeishuOperationService) createAndStartOperation(
 	}
 	stored, err := s.createOrGetOperation(ctx, candidate, &persisted, owner)
 	if err != nil {
+		if errors.Is(err, ErrOperationConnectionInProgress) {
+			return nil, ErrOperationConnectionInProgress
+		}
 		return nil, ErrOperationUnavailable
 	}
 	if !sameImmutableOperation(stored, candidate) {
@@ -1652,6 +1658,19 @@ func (s *FeishuOperationService) createOrGetOperation(
 	persisted *persistedOperationRequest,
 	owner OperationCipherOwner,
 ) (*model.FeishuOperation, error) {
+	if persisted.ConnectionOnly {
+		connectionStore, ok := s.operations.(interface {
+			CreateOrGetConnectionOperation(context.Context, *model.FeishuOperation) (*model.FeishuOperation, error)
+		})
+		if !ok {
+			return nil, ErrOperationUnavailable
+		}
+		stored, err := connectionStore.CreateOrGetConnectionOperation(ctx, candidate)
+		if errors.Is(err, store.ErrFeishuConnectionOperationInProgress) {
+			return nil, ErrOperationConnectionInProgress
+		}
+		return stored, err
+	}
 	if !persisted.SameRunEmptyCreateProof {
 		return s.operations.CreateOrGetOperation(ctx, candidate)
 	}
@@ -2284,7 +2303,7 @@ func validConnectionOnlyRequest(request persistedOperationRequest) bool {
 	return request.ConnectionOnly && request.CommandPath == connectionOnlyCommandPath &&
 		request.Domain == connectionOnlyDomain && request.Action == connectionOnlyAction &&
 		request.Risk == RiskRead && !request.LocalOnly && !request.RequiresCLIYes &&
-		request.ReplaySafeOnAuthError && len(request.Scopes) == 0 &&
+		request.ReplaySafeOnAuthError && len(request.Scopes) == 1 && request.Scopes[0] == "offline_access" &&
 		len(request.StdinJSON) == 0 && len(request.Argv) == 2 &&
 		request.Argv[0] == "workspace" && request.Argv[1] == "connect" &&
 		!request.SameRunEmptyCreateProof && request.CreateProofOperationID == ""

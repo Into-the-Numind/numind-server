@@ -935,6 +935,17 @@ func TestLarkPersonalWorkspace_ExplicitConnectRejectsModelSuppliedFields(t *test
 	require.Empty(t, connector.connectSnapshot())
 }
 
+func TestLarkPersonalWorkspace_ExplicitConnectReportsExistingFlowWithoutRetrying(t *testing.T) {
+	connector := &fakeLarkExecutor{err: feishu.ErrOperationConnectionInProgress}
+	result, err := (&larkConnectTool{connector: connector}).Execute(
+		larkPersonalWorkspaceContext(438, 905, "tc-connect-busy"), ToolInput(`{}`),
+	)
+	require.NoError(t, err)
+	require.Contains(t, string(result), `"code":"connection_in_progress"`)
+	require.Contains(t, string(result), `"retryable":false`)
+	require.NotContains(t, string(result), "app_id")
+}
+
 func TestLarkPersonalWorkspace_ExecuteReloadedActionWithoutURLStillYields(t *testing.T) {
 	expiresAt := time.Date(2026, 7, 13, 12, 30, 0, 0, time.UTC)
 	live := ExternalActionPayload{

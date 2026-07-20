@@ -824,6 +824,94 @@ func TestWorkspaceLifecycleConnectUsesOnlyManualOfflineAccessFlow(t *testing.T) 
 	require.Equal(t, 1, auth.connectCalls)
 }
 
+func TestWorkspaceLifecycleConnectJoinsOnlyExplicitConnectionOperation(t *testing.T) {
+	operationID := "connection-op-1"
+	svc, _, workspace, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 1, ConnectionState: model.FeishuConnectionWaitingUserAuth,
+	}, &model.FeishuOperation{
+		ID: operationID, UserID: 7, Generation: 1, CommandPath: connectionOnlyCommandPath,
+		State: model.FeishuOperationWaitingUserAuth,
+	})
+	workspace.activeSession = &model.FeishuAuthSession{
+		ID: "connection-session-1", UserID: 7, Generation: 1, OperationID: &operationID,
+		Phase: model.FeishuAuthPhaseUserAuth, State: model.FeishuAuthSessionPending,
+		ExpiresAt: time.Now().Add(time.Minute),
+	}
+
+	result, err := svc.Connect(context.Background(), 7)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuConnectionWaitingUserAuth, result.State)
+	require.Equal(t, operationID, result.Action.OperationID)
+	require.Empty(t, result.Action.URL)
+	require.Zero(t, auth.connectCalls)
+
+	workspace.operation.CommandPath = "docs document get"
+	_, err = svc.Connect(context.Background(), 7)
+	require.ErrorIs(t, err, ErrWorkspaceLifecycleConflict,
+		"Settings must never take over a business-scope Agent authorization")
+}
+
+func TestWorkspaceLifecycleContinueManualUserAuthorizationSettlesExactSession(t *testing.T) {
+	svc, accounts, workspace, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 1, ConnectionState: model.FeishuConnectionWaitingUserAuth,
+	}, nil)
+	workspace.activeSession = &model.FeishuAuthSession{
+		ID: "manual-session-1", UserID: 7, Generation: 1,
+		Phase: model.FeishuAuthPhaseUserAuth, ProtocolVersion: 2,
+		State: model.FeishuAuthSessionPending, ExpiresAt: time.Now().Add(time.Minute),
+	}
+	auth.completeUserAuth = func(_ context.Context, userID uint, generation uint64, sessionID string) (*DeviceAuthCompletion, error) {
+		require.EqualValues(t, 7, userID)
+		require.EqualValues(t, 1, generation)
+		require.Equal(t, "manual-session-1", sessionID)
+		accounts.account.ConnectionState = model.FeishuConnectionConnected
+		accounts.account.Connected = true
+		return &DeviceAuthCompletion{Completed: true}, nil
+	}
+
+	result, err := svc.ContinueConnect(context.Background(), 7, "manual-session-1")
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuConnectionConnected, result.State)
+	require.Nil(t, result.Action)
+}
+
+func TestWorkspaceLifecycleContinueManualCreateAppDoesNotSpawnDuplicateWorker(t *testing.T) {
+	svc, _, workspace, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 1, ConnectionState: model.FeishuConnectionCreatingApp,
+	}, nil)
+	workspace.activeSession = &model.FeishuAuthSession{
+		ID: "manual-create-1", UserID: 7, Generation: 1,
+		Phase: model.FeishuAuthPhaseCreateApp, State: model.FeishuAuthSessionPending,
+		ExpiresAt: time.Now().Add(time.Minute),
+	}
+
+	result, err := svc.ContinueConnect(context.Background(), 7, "manual-create-1")
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuConnectionCreatingApp, result.State)
+	require.Nil(t, result.Action, "an early acknowledgement must preserve the browser's current live URL")
+	require.Zero(t, auth.connectCalls)
+}
+
+func TestWorkspaceLifecycleStatusDoesNotExposeBusinessAuthorizationToSettings(t *testing.T) {
+	operationID := "business-op-1"
+	svc, _, workspace, _, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 1, ConnectionState: model.FeishuConnectionWaitingUserAuth,
+	}, &model.FeishuOperation{
+		ID: operationID, UserID: 7, Generation: 1, CommandPath: "docs document create",
+		State: model.FeishuOperationWaitingUserAuth,
+	})
+	workspace.activeSession = &model.FeishuAuthSession{
+		ID: "business-session-1", UserID: 7, Generation: 1, OperationID: &operationID,
+		Phase: model.FeishuAuthPhaseUserAuth, State: model.FeishuAuthSessionPending,
+		ExpiresAt: time.Now().Add(time.Minute),
+	}
+
+	status, err := svc.Status(context.Background(), 7)
+	require.NoError(t, err)
+	require.Nil(t, status.ActiveAction)
+	require.True(t, status.InAgentFlow)
+}
+
 func TestWorkspaceLifecycleResumeUsesSharedDispatcherForUserCompleted(t *testing.T) {
 	operationID := "op-1"
 	op := &model.FeishuOperation{

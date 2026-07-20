@@ -921,7 +921,8 @@ func TestOperationService_ExplicitConnectUsesDurableRecoveryWithoutBusinessCLI(t
 	require.NotNil(t, waiting.Action)
 	require.Equal(t, waiting.OperationID, waiting.Action.OperationID)
 	require.Equal(t, "connect-session-1", waiting.Action.SessionID)
-	require.Empty(t, waiting.Action.Scopes, "explicit connection must not pre-request business scopes")
+	require.Equal(t, []string{"offline_access"}, waiting.Action.Scopes,
+		"explicit connection may request only the fixed identity scope, never business scopes")
 	calls, _ := h.runner.snapshot()
 	require.Zero(t, calls, "connection-only operations must not invent a CLI business command")
 	preflightCalls, _ := h.preflight.snapshot()
@@ -931,10 +932,38 @@ func TestOperationService_ExplicitConnectUsesDurableRecoveryWithoutBusinessCLI(t
 	require.NoError(t, err)
 	require.Equal(t, waiting.OperationID, again.OperationID, "same Agent tool call must remain idempotent")
 
+	_, err = h.service.Connect(h.ctx, ConnectOperationRequest{
+		UserID: 7, AgentRunID: 902, ToolCallID: "tc-explicit-connect-concurrent",
+		IdempotencyKey: "902:tc-explicit-connect-concurrent",
+	})
+	require.ErrorIs(t, err, ErrOperationConnectionInProgress,
+		"a different Agent call must not create a second app/session worker")
+	require.Len(t, h.recovery.snapshot(), 1)
+
+	userAuthAction := &OperationAction{
+		Provider: ProviderLark, Phase: model.FeishuAuthPhaseUserAuth,
+		SessionID: "connect-session-2", URL: "https://accounts.feishu.cn/oauth/v1/device/verify?flow_id=opaque&user_code=opaque",
+		ExpiresAt: h.service.now().Add(5 * time.Minute),
+	}
+	h.recovery.actions = []*OperationAction{nil, userAuthAction}
+	require.NoError(t, h.db.Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ?", 7, ProviderLark).
+		Updates(map[string]any{"connection_state": model.FeishuConnectionAppReady, "connected": false}).Error)
+	userAuth, err := h.service.Resume(h.ctx, 7, waiting.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingUserAuth, userAuth.State)
+	require.NotNil(t, userAuth.Action)
+	require.Equal(t, "connect-session-2", userAuth.Action.SessionID)
+	require.Equal(t, []string{"offline_access"}, userAuth.Action.Scopes)
+	for _, recoveryCall := range h.recovery.snapshot() {
+		require.Equal(t, []string{"offline_access"}, recoveryCall.Scopes)
+	}
+
 	require.NoError(t, h.db.Model(&model.UserThirdPartyAccount{}).
 		Where("user_id = ? AND provider = ?", 7, ProviderLark).
 		Updates(map[string]any{"connection_state": model.FeishuConnectionConnected, "connected": true}).Error)
 	h.recovery.action = nil
+	h.recovery.actions = nil
 	completed, err := h.service.Resume(h.ctx, 7, waiting.OperationID)
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationSucceeded, completed.State)

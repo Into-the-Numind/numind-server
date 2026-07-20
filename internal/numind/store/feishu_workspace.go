@@ -17,14 +17,20 @@ import (
 )
 
 const (
-	feishuSucceededCreateProofLimit  = 32
-	maxFeishuCLIVaultCiphertextBytes = 64 << 20
+	feishuSucceededCreateProofLimit     = 32
+	maxFeishuCLIVaultCiphertextBytes    = 64 << 20
+	feishuConnectionBootstrapStaleAfter = 2 * time.Minute
 )
 
 // ErrFeishuProofReservationUnavailable means a candidate cannot atomically
 // reserve the requested one-shot proof. Callers may safely retry creation only
 // after removing the proof exemption from the encrypted request.
 var ErrFeishuProofReservationUnavailable = errors.New("feishu operation proof reservation unavailable")
+
+// ErrFeishuConnectionOperationInProgress means the current account generation
+// already has one connection bootstrap owner (Agent or Settings). A caller must
+// join/observe that flow instead of creating another personal app worker.
+var ErrFeishuConnectionOperationInProgress = errors.New("feishu connection operation already in progress")
 
 var errFeishuAuthSessionInvalidProtocolShape = errors.New("invalid feishu auth session protocol shape")
 
@@ -261,6 +267,59 @@ func (s *feishuWorkspaceStore) CreateOrGetPendingSession(
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
+		var activeConnections []model.FeishuOperation
+		activeErr := tx.Where(
+			"user_id = ? AND generation = ? AND command_path = ? AND state IN ?",
+			session.UserID, session.Generation, "workspace connect", feishuConnectionOperationActiveStates(),
+		).Order("created_at ASC, id ASC").Find(&activeConnections).Error
+		if activeErr != nil {
+			return activeErr
+		}
+		for index := range activeConnections {
+			activeConnection := &activeConnections[index]
+			if session.OperationID != nil && *session.OperationID == activeConnection.ID {
+				continue
+			}
+			blocks, fenceErr := feishuConnectionOperationBlocks(tx, activeConnection, time.Now().UTC())
+			if fenceErr != nil {
+				return fenceErr
+			}
+			if blocks {
+				return ErrFeishuConnectionOperationInProgress
+			}
+		}
+		if session.OperationID != nil {
+			var connectionOperation model.FeishuOperation
+			connectionErr := tx.Where("id = ? AND user_id = ? AND generation = ? AND command_path = ?",
+				*session.OperationID, session.UserID, session.Generation, "workspace connect").Take(&connectionOperation).Error
+			if connectionErr == nil && !containsFeishuOperationState(feishuConnectionOperationActiveStates(), connectionOperation.State) {
+				return ErrFeishuConnectionOperationInProgress
+			}
+			if connectionErr != nil && !errors.Is(connectionErr, gorm.ErrRecordNotFound) {
+				return connectionErr
+			}
+		}
+		// Exact-session reuse was handled above. Any other pending recovery is
+		// the current generation's bootstrap owner, regardless of whether it
+		// came from Settings, lark_connect, or a real business operation.
+		var pendingOwners []model.FeishuAuthSession
+		pendingErr := tx.Where(
+			"user_id = ? AND generation = ? AND state = ?",
+			session.UserID, session.Generation, model.FeishuAuthSessionPending,
+		).Order("created_at ASC, id ASC").Find(&pendingOwners).Error
+		if pendingErr != nil {
+			return pendingErr
+		}
+		for index := range pendingOwners {
+			pendingOwner := &pendingOwners[index]
+			if feishuAuthProtocolUpgradeCanCoexist(pendingOwner, session, time.Now().UTC()) {
+				// A lease-free v1 row is inert rolling-upgrade state. Keep it
+				// pending for the existing durable refresh/race contract, while
+				// allowing v2 to become the newest active protocol owner.
+				continue
+			}
+			return ErrFeishuConnectionOperationInProgress
+		}
 		// Operation recovery completion is durable: after the worker dispatches a
 		// resume, another service instance must observe the completed intent rather
 		// than opening the same authorization flow again. Manual intents are
@@ -342,6 +401,15 @@ func equalRequestedScopes(left, right []byte) bool {
 		}
 	}
 	return true
+}
+
+func feishuAuthProtocolUpgradeCanCoexist(current, candidate *model.FeishuAuthSession, now time.Time) bool {
+	return current != nil && candidate != nil && current.OperationID != nil && candidate.OperationID != nil &&
+		*current.OperationID == *candidate.OperationID && current.Phase == candidate.Phase &&
+		normalizedFeishuAuthProtocolVersion(current.ProtocolVersion) == 1 &&
+		normalizedFeishuAuthProtocolVersion(candidate.ProtocolVersion) == 2 &&
+		equalRequestedScopes(current.RequestedScopesJSON, candidate.RequestedScopesJSON) &&
+		(current.LeaseUntil == nil || !current.LeaseUntil.After(now))
 }
 
 // GetSessionForUser returns a session only when ID, tenant, and generation all match.
@@ -1527,6 +1595,169 @@ func (s *feishuWorkspaceStore) CreateOrGetOperation(ctx context.Context, operati
 		return nil, fmt.Errorf("create or get feishu operation: %w", err)
 	}
 	return stored, nil
+}
+
+// CreateOrGetConnectionOperation serializes the connection bootstrap through
+// the account row. Exact retries remain idempotent; a different Agent call or
+// an in-progress Settings flow is rejected before any operation/session worker
+// can be created.
+func (s *feishuWorkspaceStore) CreateOrGetConnectionOperation(ctx context.Context, operation *model.FeishuOperation) (*model.FeishuOperation, error) {
+	if operation == nil || operation.CommandPath != "workspace connect" {
+		return nil, ErrFeishuConnectionOperationInProgress
+	}
+	var stored *model.FeishuOperation
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var account model.UserThirdPartyAccount
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ? AND provider = ?", operation.UserID, "lark").
+			Take(&account).Error; err != nil {
+			return err
+		}
+		if !feishuAccountGenerationActive(&account, operation.Generation) {
+			return gorm.ErrRecordNotFound
+		}
+
+		var exact model.FeishuOperation
+		exactErr := tx.Where("user_id = ? AND idempotency_key = ?", operation.UserID, operation.IdempotencyKey).
+			Take(&exact).Error
+		if exactErr == nil {
+			stored = &exact
+			return nil
+		}
+		if !errors.Is(exactErr, gorm.ErrRecordNotFound) {
+			return exactErr
+		}
+
+		var activeConnections []model.FeishuOperation
+		activeErr := tx.Where(
+			"user_id = ? AND generation = ? AND command_path = ? AND state IN ?",
+			operation.UserID, operation.Generation, "workspace connect", feishuConnectionOperationActiveStates(),
+		).Order("created_at ASC, id ASC").Find(&activeConnections).Error
+		if activeErr != nil {
+			return activeErr
+		}
+		for index := range activeConnections {
+			blocks, fenceErr := feishuConnectionOperationBlocks(tx, &activeConnections[index], time.Now().UTC())
+			if fenceErr != nil {
+				return fenceErr
+			}
+			if blocks {
+				return ErrFeishuConnectionOperationInProgress
+			}
+		}
+		var pendingSession model.FeishuAuthSession
+		pendingErr := tx.Where(
+			"user_id = ? AND generation = ? AND state = ?",
+			operation.UserID, operation.Generation, model.FeishuAuthSessionPending,
+		).Order("created_at ASC, id ASC").Take(&pendingSession).Error
+		if pendingErr == nil {
+			return ErrFeishuConnectionOperationInProgress
+		}
+		if !errors.Is(pendingErr, gorm.ErrRecordNotFound) {
+			return pendingErr
+		}
+		if err := tx.Create(operation).Error; err != nil {
+			return err
+		}
+		stored = operation
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, ErrFeishuConnectionOperationInProgress) {
+			return nil, ErrFeishuConnectionOperationInProgress
+		}
+		return nil, fmt.Errorf("create or get feishu connection operation: %w", err)
+	}
+	return stored, nil
+}
+
+func feishuConnectionOperationActiveStates() []string {
+	return []string{
+		model.FeishuOperationNotStarted,
+		model.FeishuOperationExecuting,
+		model.FeishuOperationWaitingConnection,
+		model.FeishuOperationWaitingAppScope,
+		model.FeishuOperationWaitingUserAuth,
+		model.FeishuOperationWaitingConfirmation,
+	}
+}
+
+func containsFeishuOperationState(states []string, candidate string) bool {
+	for _, state := range states {
+		if state == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+// feishuConnectionOperationBlocks protects the normal operation→session gap,
+// but atomically retires a crash orphan after a bounded window. A pending
+// session always wins, and a concurrent claim/update wins through the final
+// conditional UPDATE.
+func feishuConnectionOperationBlocks(tx *gorm.DB, operation *model.FeishuOperation, now time.Time) (bool, error) {
+	if tx == nil || operation == nil {
+		return true, gorm.ErrInvalidData
+	}
+	stale := false
+	switch operation.State {
+	case model.FeishuOperationNotStarted:
+		stale = !operation.CreatedAt.IsZero() && !operation.CreatedAt.After(now.Add(-feishuConnectionBootstrapStaleAfter))
+	case model.FeishuOperationExecuting:
+		stale = operation.LeaseUntil == nil || !operation.LeaseUntil.After(now)
+	case model.FeishuOperationWaitingConnection,
+		model.FeishuOperationWaitingAppScope,
+		model.FeishuOperationWaitingUserAuth,
+		model.FeishuOperationWaitingConfirmation:
+		anchor := operation.UpdatedAt
+		if anchor.IsZero() {
+			anchor = operation.CreatedAt
+		}
+		stale = !anchor.IsZero() && !anchor.After(now.Add(-feishuConnectionBootstrapStaleAfter))
+	default:
+		return true, nil
+	}
+	if !stale {
+		return true, nil
+	}
+	var boundSessions []model.FeishuAuthSession
+	if err := tx.Where("user_id = ? AND generation = ? AND operation_id = ? AND state IN ?",
+		operation.UserID, operation.Generation, operation.ID,
+		[]string{model.FeishuAuthSessionPending, model.FeishuAuthSessionCompleted}).
+		Order("updated_at DESC, id DESC").Find(&boundSessions).Error; err != nil {
+		return true, err
+	}
+	for index := range boundSessions {
+		session := &boundSessions[index]
+		if session.State == model.FeishuAuthSessionPending {
+			return true, nil
+		}
+		anchor := session.UpdatedAt
+		if session.CompletedAt != nil {
+			anchor = session.CompletedAt.UTC()
+		}
+		if !anchor.IsZero() && anchor.After(now.Add(-feishuConnectionBootstrapStaleAfter)) {
+			return true, nil
+		}
+	}
+	query := tx.Model(&model.FeishuOperation{}).
+		Where("id = ? AND user_id = ? AND generation = ? AND state = ?",
+			operation.ID, operation.UserID, operation.Generation, operation.State)
+	if operation.State == model.FeishuOperationNotStarted {
+		query = query.Where("created_at <= ?", now.Add(-feishuConnectionBootstrapStaleAfter))
+	} else if operation.State == model.FeishuOperationExecuting {
+		query = query.Where("lease_until IS NULL OR lease_until <= ?", now)
+	} else {
+		query = query.Where("updated_at <= ?", now.Add(-feishuConnectionBootstrapStaleAfter))
+	}
+	result := query.Updates(map[string]any{
+		"state": model.FeishuOperationCancelled, "finished_at": now,
+		"lease_owner": "", "lease_until": nil,
+	})
+	if result.Error != nil {
+		return true, result.Error
+	}
+	return result.RowsAffected != 1, nil
 }
 
 // CreateOrGetOperationWithProof creates a consumer and reserves its proof in

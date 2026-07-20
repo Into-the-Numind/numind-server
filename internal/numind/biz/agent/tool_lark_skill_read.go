@@ -173,6 +173,7 @@ const (
 	larkWorkspaceErrorInspect
 	larkWorkspaceErrorExecuteStopped
 	larkWorkspaceErrorExecuteInFlight
+	larkWorkspaceErrorConnectionInProgress
 )
 
 // larkWorkspaceSoftError returns only fixed, reviewed messages. It deliberately
@@ -226,6 +227,9 @@ func larkWorkspaceSoftError(code larkWorkspaceErrorCode) (ToolResult, error) {
 	case larkWorkspaceErrorExecuteInFlight:
 		message = "已有一项飞书工作区操作正在执行。请等待当前工具结果返回后，再按顺序执行下一项 lark_execute；不要并行调用。"
 		publicCode, recoverable, retryable = "command_in_flight", true, true
+	case larkWorkspaceErrorConnectionInProgress:
+		message = "飞书连接已在进行中。请继续当前页面或已有授权卡片，不要重复创建连接；完成后原任务会自动继续。"
+		publicCode, recoverable = "connection_in_progress", true
 	}
 	output, _ := json.Marshal(map[string]any{
 		"error":       "ERROR: " + message,

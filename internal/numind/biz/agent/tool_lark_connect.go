@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -57,6 +58,9 @@ func (t *larkConnectTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 		UserID: userID, AgentRunID: runID, ToolCallID: toolCallID,
 		IdempotencyKey: fmt.Sprintf("%d:%s", runID, toolCallID),
 	})
+	if errors.Is(err, feishu.ErrOperationConnectionInProgress) {
+		return larkWorkspaceSoftError(larkWorkspaceErrorConnectionInProgress)
+	}
 	if err != nil || result == nil || strings.TrimSpace(result.OperationID) == "" || strings.TrimSpace(result.State) == "" {
 		return larkWorkspaceSoftError(larkWorkspaceErrorExecute)
 	}
