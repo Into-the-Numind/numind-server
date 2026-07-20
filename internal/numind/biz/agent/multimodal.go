@@ -16,7 +16,6 @@ import (
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
-	"numind-server/internal/pkg/util"
 )
 
 // ---------------------------------------------------------------------------
@@ -28,14 +27,6 @@ const (
 	// fallback to become ready. Actual wait may include jitter added by
 	// attachment.FallbackService.WaitReady.
 	fallbackPollInterval = 100 * time.Millisecond
-
-	// fallbackMaxWait is the maximum total time buildAgentInputForModel will
-	// wait for a pending fallback before injecting the "pending" placeholder.
-	fallbackMaxWait = 1500 * time.Millisecond
-
-	// presignExpiry is the signed-URL validity duration for inline COS
-	// attachments. A single agent turn completes well within 15 minutes.
-	presignExpiry = 15 * time.Minute
 )
 
 // ErrFallbackTimeout is returned by waitForFallback when the attachment's
@@ -212,36 +203,6 @@ func pendingFallbackTextFor(att *model.AgentAttachment) string {
 		prefix = "附件"
 	}
 	return fmt.Sprintf("[%s：%s，描述生成中，请稍后重试或切换到多模态模型]", prefix, att.Filename)
-}
-
-// ---------------------------------------------------------------------------
-// presignAttachmentURL
-// ---------------------------------------------------------------------------
-
-// presignAttachmentURL signs the COS object key extracted from att.URL.
-// Signing is bound to http.MethodGet with presignExpiry validity.
-//
-// If att.URL is not a COS URL (e.g. test fixture), the original URL is
-// returned unchanged (non-COS URLs are public by construction).
-//
-// Returns the original URL unchanged when COS is not enabled.
-func presignAttachmentURL(ctx context.Context, att *model.AgentAttachment) (string, error) {
-	if !util.IsCOSEnabled() {
-		// COS not configured (local dev or test) — return URL as-is.
-		return att.URL, nil
-	}
-
-	objectKey, isCOS := extractCOSObjectKey(att.URL)
-	if !isCOS {
-		// Not a COS URL — return unchanged (CDN / test fixture).
-		return att.URL, nil
-	}
-
-	signed, err := util.GenerateSignedURL(ctx, objectKey, int64(presignExpiry.Seconds()))
-	if err != nil {
-		return "", fmt.Errorf("presignAttachmentURL att=%d: %w", att.ID, err)
-	}
-	return signed, nil
 }
 
 // ---------------------------------------------------------------------------
