@@ -1207,6 +1207,32 @@ func TestOperationService_NeverConnectedCreatesPlaceholderWithoutOverwritingExis
 	})
 }
 
+func TestOperationService_LocalBaseURLResolveDoesNotRequireConnectionOrAuthorization(t *testing.T) {
+	h := newOperationHarness(t)
+	h.runner.steps = []operationRunnerStep{{result: operationOKResult(`{"base_token":"ZiXObjsGvahtyAscDJ1cjlRnnLh","table_id":"tblABCDEFG123"}`)}}
+	request := ExecuteRequest{
+		UserID: 7, AgentRunID: 246, ToolCallID: "base-url-resolve", IdempotencyKey: "246:base-url-resolve",
+		Argv: []string{"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh?table=tblABCDEFG123"},
+	}
+
+	got, err := h.service.Execute(h.ctx, request)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, got.State)
+	require.JSONEq(t, `{"base_token":"ZiXObjsGvahtyAscDJ1cjlRnnLh","table_id":"tblABCDEFG123"}`, string(got.Data))
+	require.Empty(t, h.recovery.snapshot(), "local URL parsing must never start an authorization flow")
+	require.Empty(t, h.preflight.calls, "local URL parsing must never inspect Feishu scopes")
+	calls, argv := h.runner.snapshot()
+	require.Equal(t, 1, calls)
+	require.Equal(t, []string{
+		"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh?table=tblABCDEFG123",
+		"--format", "json", "--as", "user",
+	}, argv[0])
+
+	account, err := h.dataStore.ThirdPartyAccounts().Get(h.ctx, 7, ProviderLark)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuConnectionNone, account.ConnectionState)
+}
+
 func TestOperationService_DisconnectingGenerationRejectsNewAgentOperation(t *testing.T) {
 	h := newOperationHarness(t)
 	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli-app")
@@ -3677,6 +3703,24 @@ func TestOperationService_ExpiredExecutingLeaseReclaimsOnlyReads(t *testing.T) {
 		stored, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, op.ID)
 		require.NoError(t, err)
 		require.EqualValues(t, 2, stored.AttemptCount)
+	})
+
+	t.Run("expired local resolver replays without connection", func(t *testing.T) {
+		h := newOperationHarness(t)
+		h.createAccount(7, model.FeishuConnectionNone, 1, "")
+		h.runner.steps = []operationRunnerStep{{result: operationOKResult(`{"base_token":"ZiXObjsGvahtyAscDJ1cjlRnnLh"}`)}}
+		req := ExecuteRequest{
+			UserID: 7, AgentRunID: 247, ToolCallID: "tc-expired-local", IdempotencyKey: "247:tc-expired-local",
+			Argv: []string{"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh"},
+		}
+		op := h.insertExecutingOperation(req, h.service.now().Add(-time.Second))
+
+		got, err := h.service.Resume(h.ctx, 7, op.ID)
+		require.NoError(t, err)
+		require.Equal(t, model.FeishuOperationSucceeded, got.State)
+		calls, _ := h.runner.snapshot()
+		require.Equal(t, 1, calls)
+		require.Empty(t, h.recovery.snapshot())
 	})
 
 	t.Run("expired write becomes unknown without replay", func(t *testing.T) {

@@ -24,13 +24,14 @@ func TestCommandCatalog_AllowedPathsAndExactContracts(t *testing.T) {
 		risk   RiskLevel
 		scopes []string
 		replay bool
+		local  bool
 	}{
 		{name: "docs create", argv: []string{"docs", "+create", "--title", "Sales report"}, path: "docs +create", domain: "docs", risk: RiskWrite, scopes: []string{"docx:document:create"}},
 		{name: "docs fetch", argv: []string{"docs", "+fetch", "--doc", "doxcnABCDEFG123"}, path: "docs +fetch", domain: "docs", risk: RiskRead, scopes: []string{"docx:document:readonly"}, replay: true},
 		{name: "docs update", argv: []string{"docs", "+update", "--doc", "doxcnABCDEFG123", "--command", "append", "--content", "hello"}, path: "docs +update", domain: "docs", risk: RiskWrite, scopes: []string{"docx:document:write_only", "docx:document:readonly"}},
 
 		{name: "base create", argv: []string{"base", "+base-create", "--name", "Pipeline"}, path: "base +base-create", domain: "base", risk: RiskWrite, scopes: []string{"base:app:create", "base:table:read", "base:table:create", "base:table:update", "base:table:delete"}},
-		{name: "base url resolve", argv: []string{"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh"}, path: "base +url-resolve", domain: "base", risk: RiskRead, replay: true},
+		{name: "base url resolve", argv: []string{"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh"}, path: "base +url-resolve", domain: "base", risk: RiskRead, replay: true, local: true},
 		{name: "base get", argv: []string{"base", "+base-get", "--base-token", "bascnABCDEFG123"}, path: "base +base-get", domain: "base", risk: RiskRead, scopes: []string{"base:app:read"}, replay: true},
 		{name: "table list", argv: []string{"base", "+table-list", "--base-token", "bascnABCDEFG123"}, path: "base +table-list", domain: "base", risk: RiskRead, scopes: []string{"base:table:read"}, replay: true},
 		{name: "table get", argv: []string{"base", "+table-get", "--base-token", "bascnABCDEFG123", "--table-id", "tblABCDEFG123"}, path: "base +table-get", domain: "base", risk: RiskRead, scopes: []string{"base:table:read"}, replay: true},
@@ -69,6 +70,7 @@ func TestCommandCatalog_AllowedPathsAndExactContracts(t *testing.T) {
 			require.Equal(t, tt.risk, got.Risk)
 			require.Equal(t, tt.scopes, got.Scopes)
 			require.Equal(t, tt.replay, got.ReplaySafeOnAuthError)
+			require.Equal(t, tt.local, got.LocalOnly)
 			require.Equal(t, tt.path == "base +field-update", got.RequiresCLIYes)
 			require.Equal(t, []string{"--format", "json", "--as", "user"}, got.Argv[len(got.Argv)-4:])
 			require.Nil(t, got.StdinJSON)
@@ -88,6 +90,7 @@ func TestCommandCatalog_BaseURLResolveIsLocalReadOnlyAndStrict(t *testing.T) {
 	assert.Equal(t, RiskRead, got.Risk)
 	assert.Empty(t, got.Scopes, "local URL parsing must not request Feishu scopes")
 	assert.True(t, got.ReplaySafeOnAuthError)
+	assert.True(t, got.LocalOnly)
 	assert.Equal(t, []string{"base", "+url-resolve", "--url", baseURL, "--format", "json", "--as", "user"}, got.Argv)
 
 	for _, argv := range [][]string{
