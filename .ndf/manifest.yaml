@@ -4,16 +4,16 @@ features:
   ndf_version: '3.0'
   description: Keep sequential Feishu authorization, progress narration, intermediate tool state, and ambiguous-write verification continuous and truthful without reload.
   classification_reason: 'Standard: customer bug spans backend/front-end durable continuation and high-risk external-write safety across more than three files. User authorized fast Standard through Dev with necessary regressions and mandatory quality gates only.'
-  last_updated_by: ai-s5
-  last_updated_at: '2026-07-20T18:06:03+08:00'
+  last_updated_by: ai-s6
+  last_updated_at: '2026-07-20T18:08:00+08:00'
   created_at: '2026-07-20T17:43:42+08:00'
   track: standard
-  stage: S5
+  stage: S6
   status: active
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/feishu-multi-auth-continuity, numind-web-v3: feature/feishu-multi-auth-continuity}
   worktrees: {numind-server: /private/tmp/wt-feishu-multi-auth-continuity-numind-server, numind-web-v3: /private/tmp/wt-feishu-multi-auth-continuity-numind-web-v3}
-  progress: {total_tasks: 7, completed_tasks: 6, reviewed_tasks: 1, current_task: 'Merge, deploy, and verify Dev'}
+  progress: {total_tasks: 7, completed_tasks: 6, reviewed_tasks: 1, current_task: 'Atomic merge and backend-first Dev deployment'}
   artifacts:
     requirement: requirements/feishu-multi-auth-continuity.md
     proposal: proposals/feishu-multi-auth-continuity-proposal.md
@@ -27,6 +27,7 @@ features:
   - 'S3: customer RED commits precede production changes in both repositories; focused regression plus mandatory lint/type gates only; backend-first Dev deployment; production excluded.'
   - 'S4: self-review found and closed the cross-worker unknown-result gap: durable transcript seeding preserves the strongest write fence while still allowing bounded catalog-proven reads. One-time URLs and model argv are not persisted; explicit tool failures remain truthful.'
   - 'S5: 137 focused frontend tests pass; affected Go packages and persistence/authorization regressions pass; Go lint, Vue lint, Vue type-check, and diff checks pass. Real multi-card interaction is intentionally reserved for the user Dev acceptance requested in this expedited Standard run.'
+  - 'S6: all automated gates are green and both repositories are ready for atomic merge; deploy backend before frontend so the rolling-compatible snapshot contract is available first.'
   blockers: []
 - id: lark-auth-resume-stall
   ndf_version: '3.0'
