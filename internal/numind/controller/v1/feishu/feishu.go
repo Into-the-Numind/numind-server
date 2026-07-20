@@ -31,7 +31,9 @@ func NewController(svc feishubiz.IFeishuService) *Controller {
 }
 
 type connectRequest struct {
-	Intent string `json:"intent"`
+	Intent    string `json:"intent"`
+	Action    string `json:"action,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
 }
 
 type resumeRequest struct {
@@ -73,9 +75,9 @@ type operationResponse struct {
 	NoticeCode  string                       `json:"notice_code,omitempty"`
 }
 
-// Connect handles POST /v1/feishu/connect. The only accepted body is the
-// explicit manual intent; scopes, argv, app ids, operation ids, and user ids
-// are rejected before the service is called.
+// Connect handles POST /v1/feishu/connect. A manual request either starts the
+// flow or acknowledges one exact manual session. Scopes, argv, credentials,
+// operation ids, URLs, and user ids are rejected before the service is called.
 func (h *Controller) Connect(c *gin.Context) {
 	user, ok := lifecycleUser(c)
 	if !ok {
@@ -86,7 +88,17 @@ func (h *Controller) Connect(c *gin.Context) {
 		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
 		return
 	}
-	result, err := h.svc.Connect(c.Request.Context(), user.ID)
+	var result *feishubiz.ConnectResult
+	var err error
+	switch {
+	case request.Action == "" && request.SessionID == "":
+		result, err = h.svc.Connect(c.Request.Context(), user.ID)
+	case request.Action == feishubiz.ResumeActionUserCompleted && strings.TrimSpace(request.SessionID) != "":
+		result, err = h.svc.ContinueConnect(c.Request.Context(), user.ID, request.SessionID)
+	default:
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
 	writeLifecycleResponse(c, err, publicConnectResponse(result))
 }
 

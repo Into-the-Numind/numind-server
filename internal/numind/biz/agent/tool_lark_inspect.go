@@ -24,7 +24,9 @@ var _ FullTool = (*larkInspectTool)(nil)
 
 func (t *larkInspectTool) Name() string { return "lark_inspect" }
 func (t *larkInspectTool) Description() string {
-	return "Inspect the current user's Feishu connection or one controlled Docs/Base/Wiki/Drive command without executing the business operation. Use only when the user asks about connection state or after a structured failure."
+	return "Read-only inspection of the current user's Feishu connection or one controlled Docs/Base/Wiki/Drive command. " +
+		"Use only when the user asks what the current connection state is or after a structured failure. " +
+		"If the user asks to connect, reconnect, authorize, or link Feishu, call lark_connect immediately instead of this tool."
 }
 func (t *larkInspectTool) UserFacingName() string { return "检查飞书工作区" }
 func (t *larkInspectTool) NarrationVerb() string  { return "检查飞书工作区" }

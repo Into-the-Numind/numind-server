@@ -18,7 +18,8 @@ import (
 func TestThreeAgentDefinitionManifest_CoversEveryPlatformToolExplicitly(t *testing.T) {
 	db := newFactoryTestDB(t)
 	factory := NewPlatformToolFactory(nil, store.NewTestStore(db))
-	SetFactoryLarkWorkspaceExecutors(factory, &fakeSkillReadExecutor{}, &fakeLarkInspector{}, &fakeLarkExecutor{})
+	executor := &fakeLarkExecutor{}
+	SetFactoryLarkWorkspaceExecutors(factory, &fakeSkillReadExecutor{}, &fakeLarkInspector{}, executor, executor)
 	_, metadata, err := factory.LoadTools(context.Background())
 	require.NoError(t, err)
 

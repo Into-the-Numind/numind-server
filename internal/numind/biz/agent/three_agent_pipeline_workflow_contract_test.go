@@ -281,7 +281,7 @@ func runScriptedPipelineWorkflow(t *testing.T, scenario pipelineWorkflowScenario
 	}
 	prompt := loadPipelineSystemPrompt(t, scenario.agent)
 	toolNames := uniquePipelineToolNames(scenario.steps)
-	allNames := []string{"ask_user_question", "file_read", "lark_execute", "lark_inspect", "lark_skill_read", "xhs_note_list"}
+	allNames := []string{"ask_user_question", "file_read", "lark_connect", "lark_execute", "lark_inspect", "lark_skill_read", "xhs_note_list"}
 	recorder := &pipelineWorkflowRecorder{expected: scenario.steps, prompt: prompt, expectedToolNames: allNames}
 	tools := make([]FullTool, 0, len(allNames))
 	for _, name := range allNames {

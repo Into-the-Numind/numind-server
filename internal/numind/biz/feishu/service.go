@@ -68,6 +68,7 @@ type StatusAction struct {
 type StatusResult struct {
 	State        string                      `json:"state"`
 	Connected    bool                        `json:"connected"`
+	InAgentFlow  bool                        `json:"in_agent_flow,omitempty"`
 	AppIDMasked  string                      `json:"app_id_masked,omitempty"`
 	CLIVersion   string                      `json:"cli_version,omitempty"`
 	Capabilities map[string]CapabilityStatus `json:"capabilities"`
@@ -109,6 +110,7 @@ type UnbindResult struct {
 // client-generated authorization URL.
 type IFeishuService interface {
 	Connect(context.Context, uint) (*ConnectResult, error)
+	ContinueConnect(context.Context, uint, string) (*ConnectResult, error)
 	Status(context.Context, uint) (*StatusResult, error)
 	Resume(context.Context, uint, string, string, string) (*OperationResult, error)
 	RefreshAction(context.Context, uint, string) (*RefreshActionResult, error)
@@ -297,6 +299,21 @@ func (s *WorkspaceLifecycleService) Status(ctx context.Context, userID uint) (*S
 		session.State != model.FeishuAuthSessionPending || !validAuthPhase(session.Phase) {
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
+	if session.OperationID != nil {
+		if strings.TrimSpace(*session.OperationID) == "" {
+			return nil, ErrWorkspaceLifecycleUnavailable
+		}
+		operation, operationErr := s.workspace.GetOperationForUser(ctx, userID, account.Generation, *session.OperationID)
+		if operationErr != nil || operation == nil || operation.UserID != userID || operation.Generation != account.Generation {
+			return nil, ErrWorkspaceLifecycleUnavailable
+		}
+		// Settings is a connection surface, not a generic business-scope action
+		// inbox. Never expose or take over Docs/Base/Wiki operation sessions here.
+		if operation.CommandPath != connectionOnlyCommandPath {
+			status.InAgentFlow = true
+			return status, nil
+		}
+	}
 	status.ActiveAction = &StatusAction{
 		SessionID: session.ID, Phase: session.Phase, ExpiresAt: session.ExpiresAt.UTC(), LinkAvailable: false,
 	}
@@ -312,6 +329,29 @@ func (s *WorkspaceLifecycleService) Connect(ctx context.Context, userID uint) (*
 	if s == nil || userID == 0 {
 		return nil, ErrWorkspaceLifecycleInvalid
 	}
+	// If an Agent already owns the current bootstrap, Settings must join its
+	// exact action instead of creating an operation-less worker in parallel.
+	// The transient URL is intentionally absent; the browser can refresh this
+	// session through the existing exact-session endpoint.
+	account, accountErr := s.accounts.Get(ctx, userID, ProviderLark)
+	if accountErr == nil && lifecycleAccountOwned(account, userID) {
+		session, sessionErr := s.workspace.FindActiveSessionForUser(ctx, userID, account.Generation)
+		if sessionErr == nil && session != nil && session.OperationID != nil && strings.TrimSpace(*session.OperationID) != "" {
+			operation, operationErr := s.workspace.GetOperationForUser(ctx, userID, account.Generation, *session.OperationID)
+			if operationErr != nil || operation == nil || operation.UserID != userID || operation.Generation != account.Generation {
+				return nil, ErrWorkspaceLifecycleUnavailable
+			}
+			if operation.CommandPath != connectionOnlyCommandPath {
+				return nil, ErrWorkspaceLifecycleConflict
+			}
+			return connectResultForSession(session), nil
+		}
+		if sessionErr != nil && !errors.Is(sessionErr, gorm.ErrRecordNotFound) {
+			return nil, ErrWorkspaceLifecycleUnavailable
+		}
+	} else if accountErr != nil && !errors.Is(accountErr, gorm.ErrRecordNotFound) {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
 	action, err := s.auth.ConnectManual(ctx, userID)
 	if err != nil {
 		return nil, ErrWorkspaceLifecycleUnavailable
@@ -321,6 +361,106 @@ func (s *WorkspaceLifecycleService) Connect(ctx context.Context, userID uint) (*
 		result.State = connectionStateForAction(action.Phase)
 	}
 	return result, nil
+}
+
+// ContinueConnect acknowledges one exact manual Settings action. It can never
+// complete or displace an Agent-bound session, and it never starts from a
+// browser-supplied scope, operation, credential, or URL.
+func (s *WorkspaceLifecycleService) ContinueConnect(ctx context.Context, userID uint, sessionID string) (*ConnectResult, error) {
+	if s == nil || userID == 0 || strings.TrimSpace(sessionID) == "" {
+		return nil, ErrWorkspaceLifecycleInvalid
+	}
+	account, err := s.currentAccount(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	session, err := s.workspace.GetSessionForUser(ctx, userID, account.Generation, sessionID)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrWorkspaceLifecycleNotFound
+	}
+	if err != nil || session == nil || session.UserID != userID || session.Generation != account.Generation ||
+		session.OperationID != nil || !validAuthPhase(session.Phase) {
+		return nil, ErrWorkspaceLifecycleNotFound
+	}
+
+	if session.State == model.FeishuAuthSessionCompleted {
+		current, currentErr := s.currentAccount(ctx, userID)
+		if currentErr != nil {
+			return nil, currentErr
+		}
+		if current.ConnectionState == model.FeishuConnectionConnected && current.Connected {
+			return &ConnectResult{State: model.FeishuConnectionConnected}, nil
+		}
+		// create_app completion automatically chains the fixed offline_access
+		// step. Re-entering ConnectManual only observes/reuses that manual step.
+		return s.connectManualResult(ctx, userID)
+	}
+	if session.State == model.FeishuAuthSessionRejected || session.State == model.FeishuAuthSessionExpired {
+		return s.connectManualResult(ctx, userID)
+	}
+	if session.State != model.FeishuAuthSessionPending {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	if session.Phase != model.FeishuAuthPhaseUserAuth {
+		return &ConnectResult{State: connectionStateForAction(session.Phase)}, nil
+	}
+	if session.ProtocolVersion != 2 {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	completion, completeErr := s.auth.CompleteUserAuthorization(ctx, userID, account.Generation, session.ID)
+	if errors.Is(completeErr, ErrDeviceAuthProcessing) {
+		return &ConnectResult{State: model.FeishuConnectionWaitingUserAuth}, nil
+	}
+	if errors.Is(completeErr, ErrDeviceAuthConflict) {
+		return nil, ErrWorkspaceLifecycleConflict
+	}
+	if errors.Is(completeErr, ErrDeviceAuthDependency) {
+		return nil, ErrWorkspaceLifecycleDependency
+	}
+	if completeErr != nil || completion == nil {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	if completion.Completed {
+		current, currentErr := s.currentAccount(ctx, userID)
+		if currentErr != nil || current.ConnectionState != model.FeishuConnectionConnected || !current.Connected {
+			return nil, ErrWorkspaceLifecycleUnavailable
+		}
+		return &ConnectResult{State: model.FeishuConnectionConnected}, nil
+	}
+	result := &ConnectResult{State: model.FeishuConnectionWaitingUserAuth}
+	if completion.Action != nil {
+		if completion.Action.OperationID != "" || strings.TrimSpace(completion.Action.SessionID) == "" ||
+			completion.Action.Phase != model.FeishuAuthPhaseUserAuth {
+			return nil, ErrWorkspaceLifecycleUnavailable
+		}
+		result.Action = cloneOperationAction(completion.Action)
+	}
+	return result, nil
+}
+
+func (s *WorkspaceLifecycleService) connectManualResult(ctx context.Context, userID uint) (*ConnectResult, error) {
+	action, err := s.auth.ConnectManual(ctx, userID)
+	if err != nil {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	result := &ConnectResult{Action: cloneOperationAction(action)}
+	if action != nil {
+		result.State = connectionStateForAction(action.Phase)
+	}
+	return result, nil
+}
+
+func connectResultForSession(session *model.FeishuAuthSession) *ConnectResult {
+	if session == nil {
+		return nil
+	}
+	action := &OperationAction{
+		Provider: ProviderLark, SessionID: session.ID, Phase: session.Phase, ExpiresAt: session.ExpiresAt.UTC(),
+	}
+	if session.OperationID != nil {
+		action.OperationID = *session.OperationID
+	}
+	return &ConnectResult{State: connectionStateForAction(session.Phase), Action: action}
 }
 
 // Resume processes one of the three fixed browser actions. The operation is

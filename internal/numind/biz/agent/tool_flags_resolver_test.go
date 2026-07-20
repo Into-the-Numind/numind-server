@@ -123,6 +123,20 @@ func TestToolNamesFromFlags_UnknownTool_PassesThrough(t *testing.T) {
 	assert.Contains(t, names, "future_tool_v2")
 }
 
+func TestToolNamesFromFlags_PreConnectFeishuDefinitionInheritsExplicitConnect(t *testing.T) {
+	names := toolNamesFromFlags([]byte(`{"lark_skill_read":true,"lark_inspect":true,"lark_execute":true}`))
+	assert.Contains(t, names, "lark_connect", "existing Feishu-enabled Agents must gain the deterministic connection entrypoint")
+
+	names = toolNamesFromFlags([]byte(`{"lark_inspect":true}`))
+	assert.NotContains(t, names, "lark_connect", "read-only inspection alone must not gain a mutating connection capability")
+
+	names = toolNamesFromFlags([]byte(`{"lark_skill_read":true}`))
+	assert.NotContains(t, names, "lark_connect", "skill documentation alone must not gain a mutating connection capability")
+
+	names = toolNamesFromFlags([]byte(`{"lark_execute":true,"lark_connect":false}`))
+	assert.NotContains(t, names, "lark_connect", "an explicit deny remains authoritative")
+}
+
 func TestToolNamesFromFlags_RealWorldBug_100001(t *testing.T) {
 	// Regression: dev agent #100001 had this exact ToolFlags shape after the
 	// user toggled 3 advanced categories. Before fix: short-circuit (0 tools).

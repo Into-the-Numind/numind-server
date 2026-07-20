@@ -995,15 +995,29 @@ func externalJSONEqual(left, right []byte) (bool, error) {
 
 // turnsToExternalResumeHistoryMessages preserves the tool result required by
 // provider protocols. Persisted UI transcripts do not necessarily contain the
-// original assistant tool-call message, so a fixed minimal lark_execute call is
-// reconstructed immediately before an orphan tool result. It carries only the
-// original call ID and empty arguments; persisted argv is never replayed or
-// exposed to the model.
+// original assistant tool-call message, so a fixed minimal call is reconstructed
+// immediately before an orphan tool result. The original safe tool name is kept
+// when present (including lark_connect); historical rows without it fall back to
+// lark_execute. Only the call ID and empty arguments are retained.
 func turnsToExternalResumeHistoryMessages(turns []map[string]any, targetToolCallID string) ([]*schema.Message, error) {
 	toolNames := make(map[string]string)
 	toolReasoning := make(map[string]string)
 	for _, turn := range turns {
-		if role, _ := turn["role"].(string); role != "assistant" {
+		role, _ := turn["role"].(string)
+		if role == "tool_group" {
+			calls, _ := turn["tool_calls"].([]any)
+			for _, rawCall := range calls {
+				call, _ := rawCall.(map[string]any)
+				id, _ := call["tool_call_id"].(string)
+				name, _ := call["tool_name"].(string)
+				id, name = strings.TrimSpace(id), strings.TrimSpace(name)
+				if id != "" && isSafeExternalResumeToolName(name) {
+					toolNames[id] = name
+				}
+			}
+			continue
+		}
+		if role != "assistant" {
 			continue
 		}
 		reasoning, _ := turn["reasoning"].(string)
@@ -1052,7 +1066,9 @@ func turnsToExternalResumeHistoryMessages(turns []map[string]any, targetToolCall
 			}
 			toolName := toolNames[toolCallID]
 			if toolCallID == targetToolCallID {
-				toolName = "lark_execute"
+				if !isFeishuExternalResumeToolName(toolName) {
+					toolName = "lark_execute"
+				}
 			}
 			if toolName == "" {
 				continue
@@ -1095,4 +1111,8 @@ func isSafeExternalResumeToolName(name string) bool {
 		return false
 	}
 	return true
+}
+
+func isFeishuExternalResumeToolName(name string) bool {
+	return name == "lark_execute" || name == "lark_connect"
 }

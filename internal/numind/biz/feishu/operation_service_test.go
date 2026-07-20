@@ -902,6 +902,92 @@ func TestOperationService_ConnectedHotPathSkipsAuthStatus(t *testing.T) {
 	require.JSONEq(t, `{"docs":{"state":"available","last_success_at":"2026-07-13T12:00:00Z"}}`, string(account.CapabilityStateJSON))
 }
 
+func TestOperationService_ExplicitConnectUsesDurableRecoveryWithoutBusinessCLI(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionNone, 1, "")
+	h.recovery.action = &OperationAction{
+		Provider: ProviderLark, Phase: model.FeishuAuthPhaseCreateApp,
+		SessionID: "connect-session-1", URL: "https://open.feishu.cn/connect?state=opaque",
+		ExpiresAt: h.service.now().Add(5 * time.Minute),
+	}
+	request := ConnectOperationRequest{
+		UserID: 7, AgentRunID: 901, ToolCallID: "tc-explicit-connect",
+		IdempotencyKey: "901:tc-explicit-connect",
+	}
+
+	waiting, err := h.service.Connect(h.ctx, request)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingConnection, waiting.State)
+	require.NotNil(t, waiting.Action)
+	require.Equal(t, waiting.OperationID, waiting.Action.OperationID)
+	require.Equal(t, "connect-session-1", waiting.Action.SessionID)
+	require.Equal(t, []string{"offline_access"}, waiting.Action.Scopes,
+		"explicit connection may request only the fixed identity scope, never business scopes")
+	calls, _ := h.runner.snapshot()
+	require.Zero(t, calls, "connection-only operations must not invent a CLI business command")
+	preflightCalls, _ := h.preflight.snapshot()
+	require.Zero(t, preflightCalls)
+
+	again, err := h.service.Connect(h.ctx, request)
+	require.NoError(t, err)
+	require.Equal(t, waiting.OperationID, again.OperationID, "same Agent tool call must remain idempotent")
+
+	_, err = h.service.Connect(h.ctx, ConnectOperationRequest{
+		UserID: 7, AgentRunID: 902, ToolCallID: "tc-explicit-connect-concurrent",
+		IdempotencyKey: "902:tc-explicit-connect-concurrent",
+	})
+	require.ErrorIs(t, err, ErrOperationConnectionInProgress,
+		"a different Agent call must not create a second app/session worker")
+	require.Len(t, h.recovery.snapshot(), 1)
+
+	userAuthAction := &OperationAction{
+		Provider: ProviderLark, Phase: model.FeishuAuthPhaseUserAuth,
+		SessionID: "connect-session-2", URL: "https://accounts.feishu.cn/oauth/v1/device/verify?flow_id=opaque&user_code=opaque",
+		ExpiresAt: h.service.now().Add(5 * time.Minute),
+	}
+	h.recovery.actions = []*OperationAction{nil, userAuthAction}
+	require.NoError(t, h.db.Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ?", 7, ProviderLark).
+		Updates(map[string]any{"connection_state": model.FeishuConnectionAppReady, "connected": false}).Error)
+	userAuth, err := h.service.Resume(h.ctx, 7, waiting.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingUserAuth, userAuth.State)
+	require.NotNil(t, userAuth.Action)
+	require.Equal(t, "connect-session-2", userAuth.Action.SessionID)
+	require.Equal(t, []string{"offline_access"}, userAuth.Action.Scopes)
+	for _, recoveryCall := range h.recovery.snapshot() {
+		require.Equal(t, []string{"offline_access"}, recoveryCall.Scopes)
+	}
+
+	require.NoError(t, h.db.Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ?", 7, ProviderLark).
+		Updates(map[string]any{"connection_state": model.FeishuConnectionConnected, "connected": true}).Error)
+	h.recovery.action = nil
+	h.recovery.actions = nil
+	completed, err := h.service.Resume(h.ctx, 7, waiting.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, completed.State)
+	require.JSONEq(t, `{"connected":true}`, string(completed.Data))
+	calls, _ = h.runner.snapshot()
+	require.Zero(t, calls, "completion must settle locally without running lark-cli")
+}
+
+func TestOperationService_ExplicitConnectAlreadyConnectedCompletesWithoutRecovery(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 4, "cli_existing")
+
+	completed, err := h.service.Connect(h.ctx, ConnectOperationRequest{
+		UserID: 7, AgentRunID: 902, ToolCallID: "tc-already-connected",
+		IdempotencyKey: "902:tc-already-connected",
+	})
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, completed.State)
+	require.JSONEq(t, `{"connected":true}`, string(completed.Data))
+	require.Empty(t, h.recovery.snapshot())
+	calls, _ := h.runner.snapshot()
+	require.Zero(t, calls)
+}
+
 func TestOperationService_UnknownWriteEmitsSafeUnderlyingClassificationWithoutReplay(t *testing.T) {
 	h := newOperationHarness(t)
 	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")

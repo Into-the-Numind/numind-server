@@ -30,6 +30,7 @@ type platformToolFactory struct {
 	larkSkillReader SkillReadExecutor
 	larkInspector   LarkInspector
 	larkExecutor    LarkExecutor
+	larkConnector   LarkConnector
 
 	// larkProviderOverride is a test-only seam (feishu-integration T10): when set,
 	// newLarkProvider returns it instead of building a Redis-backed feishu.Client
@@ -54,20 +55,22 @@ func SetFactoryCreditService(f ToolFactory, cs credit.ICreditService) {
 // SetFactoryLarkWorkspaceExecutors injects the controlled skill reader and
 // inspector/operation executor used by lark_skill_read, lark_inspect and
 // lark_execute. The set is all-or-nothing: any nil clears all registrations.
-func SetFactoryLarkWorkspaceExecutors(f ToolFactory, reader SkillReadExecutor, inspector LarkInspector, executor LarkExecutor) {
+func SetFactoryLarkWorkspaceExecutors(f ToolFactory, reader SkillReadExecutor, inspector LarkInspector, executor LarkExecutor, connector LarkConnector) {
 	pf, ok := f.(*platformToolFactory)
 	if !ok {
 		return
 	}
-	if reader == nil || inspector == nil || executor == nil {
+	if reader == nil || inspector == nil || executor == nil || connector == nil {
 		pf.larkSkillReader = nil
 		pf.larkInspector = nil
 		pf.larkExecutor = nil
+		pf.larkConnector = nil
 		return
 	}
 	pf.larkSkillReader = reader
 	pf.larkInspector = inspector
 	pf.larkExecutor = executor
+	pf.larkConnector = connector
 }
 
 // NewPlatformToolFactory returns a ToolFactory that loads all platform built-in tools.
@@ -235,15 +238,17 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		)
 	}
 
-	if f.larkSkillReader != nil && f.larkInspector != nil && f.larkExecutor != nil {
+	if f.larkSkillReader != nil && f.larkInspector != nil && f.larkExecutor != nil && f.larkConnector != nil {
 		tools = append(tools,
 			&larkSkillReadTool{executor: f.larkSkillReader},
 			&larkInspectTool{inspector: f.larkInspector},
+			&larkConnectTool{connector: f.larkConnector},
 			&larkExecuteTool{executor: f.larkExecutor},
 		)
 		metadata = append(metadata,
 			ToolMetadata{ToolName: "lark_skill_read", DisplayName: "读取飞书技能", Description: "Read one controlled page from the official embedded lark-cli skills.", Source: "platform", RiskLevel: "safe", Category: "飞书"},
-			ToolMetadata{ToolName: "lark_inspect", DisplayName: "检查飞书工作区", Description: "Inspect current-user connection or command readiness without a business operation.", Source: "platform", RiskLevel: "safe", Category: "飞书"},
+			ToolMetadata{ToolName: "lark_inspect", DisplayName: "检查飞书工作区", Description: "Read-only connection/command inspection; explicit connect intent must use lark_connect.", Source: "platform", RiskLevel: "safe", Category: "飞书"},
+			ToolMetadata{ToolName: "lark_connect", DisplayName: "连接飞书", Description: "Start or resume the current-user Feishu connection when explicitly requested, without inventing a business operation.", Source: "platform", RiskLevel: "moderate", Category: "飞书"},
 			ToolMetadata{ToolName: "lark_execute", DisplayName: "执行飞书工作区操作", Description: "Execute controlled Docs/Base/Wiki/Drive argv with platform-owned identity and policy.", Source: "platform", RiskLevel: "moderate", Category: "飞书"},
 		)
 	}

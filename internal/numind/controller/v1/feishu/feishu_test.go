@@ -26,6 +26,8 @@ type lifecycleServiceFake struct {
 	err     error
 
 	connectCalls  int
+	continueCalls int
+	continueID    string
 	resumeID      string
 	resumeSession string
 	resumeAction  string
@@ -35,6 +37,11 @@ type lifecycleServiceFake struct {
 
 func (f *lifecycleServiceFake) Connect(_ context.Context, _ uint) (*feishubiz.ConnectResult, error) {
 	f.connectCalls++
+	return f.connect, f.err
+}
+func (f *lifecycleServiceFake) ContinueConnect(_ context.Context, _ uint, sessionID string) (*feishubiz.ConnectResult, error) {
+	f.continueCalls++
+	f.continueID = sessionID
 	return f.connect, f.err
 }
 func (f *lifecycleServiceFake) Status(context.Context, uint) (*feishubiz.StatusResult, error) {
@@ -119,6 +126,33 @@ func TestConnectAcceptsOnlyManualIntent(t *testing.T) {
 		}
 	}`, valid.Body.String())
 	require.NotContains(t, valid.Body.String(), `"scopes"`)
+}
+
+func TestConnectCompletionRequiresExactManualSessionShape(t *testing.T) {
+	service := &lifecycleServiceFake{connect: &feishubiz.ConnectResult{State: model.FeishuConnectionConnected}}
+	ctrl := NewController(service)
+	r := gin.New()
+	r.POST("/v1/feishu/connect", withUser(42), ctrl.Connect)
+
+	for _, body := range []string{
+		`{"intent":"manual","action":"user_completed"}`,
+		`{"intent":"manual","session_id":"session-1"}`,
+		`{"intent":"manual","action":"confirmed","session_id":"session-1"}`,
+		`{"intent":"manual","action":"user_completed","session_id":"session-1","operation_id":"op-1"}`,
+	} {
+		response := httptest.NewRecorder()
+		r.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1/feishu/connect", strings.NewReader(body)))
+		require.Equal(t, http.StatusBadRequest, response.Code)
+	}
+	require.Zero(t, service.continueCalls)
+
+	valid := httptest.NewRecorder()
+	r.ServeHTTP(valid, httptest.NewRequest(http.MethodPost, "/v1/feishu/connect", strings.NewReader(
+		`{"intent":"manual","action":"user_completed","session_id":"session-1"}`,
+	)))
+	require.Equal(t, http.StatusOK, valid.Code)
+	require.Equal(t, 1, service.continueCalls)
+	require.Equal(t, "session-1", service.continueID)
 }
 
 func TestResumeAllowsOnlyFixedActionAndCollapsesCrossUserTo404(t *testing.T) {

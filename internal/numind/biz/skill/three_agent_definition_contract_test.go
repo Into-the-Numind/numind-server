@@ -104,7 +104,7 @@ func expectedThreeAgentFlags(_ string) map[string]bool {
 		"web_search", "web_fetch", "ask_user_question", "file_read", "analyze_image",
 		"annotate_image", "load_skill", "create_csv", "create_html", "create_json",
 		"create_text", "create_docx", "create_png_chart", "run_python", "memory_write",
-		"memory_read", "xhs_note_list", "lark_skill_read", "lark_inspect", "lark_execute",
+		"memory_read", "xhs_note_list", "lark_skill_read", "lark_inspect", "lark_connect", "lark_execute",
 		"code_sandbox", "media", "dangerous",
 	}
 	out := make(map[string]bool, len(all))

@@ -38,6 +38,9 @@ const (
 	operationExecutionGatePollInterval      = 100 * time.Millisecond
 	operationExecutionGateHeartbeatInterval = 30 * time.Second
 	operationExecutionGateOverhead          = 30 * time.Second
+	connectionOnlyCommandPath               = "workspace connect"
+	connectionOnlyDomain                    = "workspace"
+	connectionOnlyAction                    = "connect"
 )
 
 var (
@@ -53,6 +56,9 @@ var (
 	// ErrOperationUnavailable is a safe dependency/persistence failure. Raw CLI
 	// errors and stderr are never wrapped into this sentinel.
 	ErrOperationUnavailable = errors.New("feishu operation unavailable")
+	// ErrOperationConnectionInProgress prevents multiple Agent/Settings entries
+	// from creating parallel personal-app authorization workers.
+	ErrOperationConnectionInProgress = errors.New("feishu connection already in progress")
 )
 
 // operationRequestValidation carries only a catalog-produced, credential-free
@@ -195,6 +201,16 @@ type ExecuteRequest struct {
 	SkillReceipts []string
 }
 
+// ConnectOperationRequest starts the server-owned connection lifecycle without
+// inventing a Docs/Base/Wiki/Drive business command. Every field is derived
+// from the trusted Agent execution context.
+type ConnectOperationRequest struct {
+	UserID         uint
+	AgentRunID     uint64
+	ToolCallID     string
+	IdempotencyKey string
+}
+
 // OperationResult is a defensive, non-sensitive view of a persisted operation.
 type OperationResult struct {
 	OperationID string                  `json:"operation_id"`
@@ -324,6 +340,7 @@ type persistedOperationRequest struct {
 	StdinJSON               json.RawMessage `json:"stdin_json,omitempty"`
 	SameRunEmptyCreateProof bool            `json:"same_run_empty_create_proof,omitempty"`
 	CreateProofOperationID  string          `json:"create_proof_operation_id,omitempty"`
+	ConnectionOnly          bool            `json:"connection_only,omitempty"`
 }
 
 type persistedOperationSummary struct {
@@ -843,12 +860,47 @@ func (s *FeishuOperationService) Execute(ctx context.Context, request ExecuteReq
 	if err != nil {
 		return nil, err
 	}
-	operationID := uuid.NewString()
 	persisted := persistedRequestFromNormalized(request, normalized)
 	if proofOperationID := s.findSameRunEmptyCreateProof(ctx, account, normalized, request.AgentRunID); proofOperationID != "" {
 		persisted.SameRunEmptyCreateProof = true
 		persisted.CreateProofOperationID = proofOperationID
 	}
+	return s.createAndStartOperation(ctx, request, account, normalized, persisted)
+}
+
+// Connect creates a durable connection-only operation. It reuses the exact
+// operation/session continuation path but never asks the catalog or CLI to
+// execute a made-up business command.
+func (s *FeishuOperationService) Connect(ctx context.Context, request ConnectOperationRequest) (*OperationResult, error) {
+	executeIdentity := ExecuteRequest{
+		UserID: request.UserID, AgentRunID: request.AgentRunID,
+		ToolCallID: request.ToolCallID, IdempotencyKey: request.IdempotencyKey,
+	}
+	if err := validateExecuteRequestIdentity(executeIdentity); err != nil {
+		return nil, err
+	}
+	account, err := s.loadOrCreateAccount(ctx, request.UserID)
+	if err != nil {
+		return nil, err
+	}
+	normalized := &NormalizedCommand{
+		Path: connectionOnlyCommandPath, Domain: connectionOnlyDomain, Action: connectionOnlyAction,
+		Risk: RiskRead, Scopes: []string{"offline_access"}, Argv: []string{"workspace", "connect"},
+		ReplaySafeOnAuthError: true,
+	}
+	persisted := persistedRequestFromNormalized(executeIdentity, normalized)
+	persisted.ConnectionOnly = true
+	return s.createAndStartOperation(ctx, executeIdentity, account, normalized, persisted)
+}
+
+func (s *FeishuOperationService) createAndStartOperation(
+	ctx context.Context,
+	request ExecuteRequest,
+	account *model.UserThirdPartyAccount,
+	normalized *NormalizedCommand,
+	persisted persistedOperationRequest,
+) (*OperationResult, error) {
+	operationID := uuid.NewString()
 	plaintext, err := json.Marshal(persisted)
 	if err != nil {
 		return nil, ErrOperationIntegrity
@@ -869,6 +921,9 @@ func (s *FeishuOperationService) Execute(ctx context.Context, request ExecuteReq
 	}
 	stored, err := s.createOrGetOperation(ctx, candidate, &persisted, owner)
 	if err != nil {
+		if errors.Is(err, ErrOperationConnectionInProgress) {
+			return nil, ErrOperationConnectionInProgress
+		}
 		return nil, ErrOperationUnavailable
 	}
 	if !sameImmutableOperation(stored, candidate) {
@@ -1367,6 +1422,12 @@ func (s *FeishuOperationService) executeClaimed(
 		}
 		return s.startRecoveryAndWait(ctx, operation, leaseOwner, persisted, kind, persisted.Scopes, waitingState, priorRecoverySignature, publicCode, "")
 	}
+	if persisted.ConnectionOnly {
+		return s.commitTerminal(
+			ctx, operation, leaseOwner, model.FeishuOperationSucceeded, "",
+			json.RawMessage(`{"connected":true}`), false,
+		)
+	}
 	if persisted.LocalOnly {
 		data, err := s.catalog.resolveLocal(persisted.Argv)
 		if err != nil {
@@ -1597,6 +1658,19 @@ func (s *FeishuOperationService) createOrGetOperation(
 	persisted *persistedOperationRequest,
 	owner OperationCipherOwner,
 ) (*model.FeishuOperation, error) {
+	if persisted.ConnectionOnly {
+		connectionStore, ok := s.operations.(interface {
+			CreateOrGetConnectionOperation(context.Context, *model.FeishuOperation) (*model.FeishuOperation, error)
+		})
+		if !ok {
+			return nil, ErrOperationUnavailable
+		}
+		stored, err := connectionStore.CreateOrGetConnectionOperation(ctx, candidate)
+		if errors.Is(err, store.ErrFeishuConnectionOperationInProgress) {
+			return nil, ErrOperationConnectionInProgress
+		}
+		return stored, err
+	}
 	if !persisted.SameRunEmptyCreateProof {
 		return s.operations.CreateOrGetOperation(ctx, candidate)
 	}
@@ -1983,13 +2057,21 @@ func (s *FeishuOperationService) openPersistedRequest(operation *model.FeishuOpe
 	if persisted.AgentRunID != operation.AgentRunID || persisted.ToolCallID != operation.ToolCallID ||
 		persisted.IdempotencyKey != operation.IdempotencyKey || persisted.CommandPath != operation.CommandPath ||
 		persisted.Domain != operation.Domain || string(persisted.Risk) != operation.RiskLevel ||
-		len(persisted.Argv) == 0 || validateControlledCLIInput(persisted.Argv, persisted.StdinJSON) != nil ||
 		!validPersistedCreateProof(persisted) {
 		return persistedOperationRequest{}, ErrOperationIntegrity
 	}
-	spec, cataloged := s.catalog.specs[persisted.CommandPath]
-	if !cataloged || persisted.LocalOnly != spec.localOnly {
-		return persistedOperationRequest{}, ErrOperationIntegrity
+	if persisted.ConnectionOnly {
+		if !validConnectionOnlyRequest(persisted) {
+			return persistedOperationRequest{}, ErrOperationIntegrity
+		}
+	} else {
+		if len(persisted.Argv) == 0 || validateControlledCLIInput(persisted.Argv, persisted.StdinJSON) != nil {
+			return persistedOperationRequest{}, ErrOperationIntegrity
+		}
+		spec, cataloged := s.catalog.specs[persisted.CommandPath]
+		if !cataloged || persisted.LocalOnly != spec.localOnly {
+			return persistedOperationRequest{}, ErrOperationIntegrity
+		}
 	}
 	persisted.Argv = append([]string(nil), persisted.Argv...)
 	persisted.Scopes = append([]string(nil), persisted.Scopes...)
@@ -2215,6 +2297,16 @@ func validPersistedCreateProof(request persistedOperationRequest) bool {
 	return validStableIdentifier(request.CreateProofOperationID, operationMaxOperationIDBytes) &&
 		request.CommandPath == "docs +update" && request.Risk == RiskHigh && request.Action == "update" &&
 		operationArgValue(request.Argv, "--command") == "overwrite"
+}
+
+func validConnectionOnlyRequest(request persistedOperationRequest) bool {
+	return request.ConnectionOnly && request.CommandPath == connectionOnlyCommandPath &&
+		request.Domain == connectionOnlyDomain && request.Action == connectionOnlyAction &&
+		request.Risk == RiskRead && !request.LocalOnly && !request.RequiresCLIYes &&
+		request.ReplaySafeOnAuthError && len(request.Scopes) == 1 && request.Scopes[0] == "offline_access" &&
+		len(request.StdinJSON) == 0 && len(request.Argv) == 2 &&
+		request.Argv[0] == "workspace" && request.Argv[1] == "connect" &&
+		!request.SameRunEmptyCreateProof && request.CreateProofOperationID == ""
 }
 
 func sameImmutableOperation(stored, candidate *model.FeishuOperation) bool {

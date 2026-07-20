@@ -231,6 +231,267 @@ func TestFeishuWorkspaceStore_CreateOperationRejectsStaleAccountGenerationBefore
 	require.Zero(t, count, "stale generation must be rejected before any operation row is inserted")
 }
 
+func TestFeishuWorkspaceStore_ConnectionOperationHasOneBootstrapOwnerPerGeneration(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 1)
+
+	first := newFeishuOperation("connection-first", 7, 1, "connection-key-first")
+	first.CommandPath = "workspace connect"
+	stored, err := s.CreateOrGetConnectionOperation(ctx, first)
+	require.NoError(t, err)
+	require.Equal(t, first.ID, stored.ID)
+
+	retry, err := s.CreateOrGetConnectionOperation(ctx, first)
+	require.NoError(t, err)
+	require.Equal(t, first.ID, retry.ID)
+
+	second := newFeishuOperation("connection-second", 7, 1, "connection-key-second")
+	second.CommandPath = "workspace connect"
+	_, err = s.CreateOrGetConnectionOperation(ctx, second)
+	require.ErrorIs(t, err, ErrFeishuConnectionOperationInProgress)
+
+	require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", first.ID).
+		Update("state", model.FeishuOperationSucceeded).Error)
+	third := newFeishuOperation("connection-third", 7, 1, "connection-key-third")
+	third.CommandPath = "workspace connect"
+	stored, err = s.CreateOrGetConnectionOperation(ctx, third)
+	require.NoError(t, err)
+	require.Equal(t, third.ID, stored.ID)
+}
+
+func TestFeishuWorkspaceStore_ConnectionOperationRecoversCreatingStateWithoutOwner(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 1)
+	require.NoError(t, s.db.Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ?", 7, "lark").
+		Updates(map[string]any{"connection_state": model.FeishuConnectionCreatingApp, "connected": false}).Error)
+
+	candidate := newFeishuOperation("connection-agent", 7, 1, "connection-agent-key")
+	candidate.CommandPath = "workspace connect"
+	stored, err := s.CreateOrGetConnectionOperation(ctx, candidate)
+	require.NoError(t, err)
+	require.Equal(t, candidate.ID, stored.ID)
+}
+
+func TestFeishuWorkspaceStore_AgentAndSettingsBootstrapRaceHasOneWinner(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 9, 1)
+
+	connection := newFeishuOperation("connection-race", 9, 1, "connection-race-key")
+	connection.CommandPath = "workspace connect"
+	manual := newFeishuSession("manual-race", 9, 1)
+	manual.OperationID = nil
+	manual.RequestedScopesJSON = []byte(`["offline_access"]`)
+
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	go func() {
+		<-start
+		_, err := s.CreateOrGetConnectionOperation(ctx, connection)
+		results <- err
+	}()
+	go func() {
+		<-start
+		_, _, err := s.CreateOrGetPendingSession(ctx, manual)
+		results <- err
+	}()
+	close(start)
+
+	firstErr, secondErr := <-results, <-results
+	successes := 0
+	conflicts := 0
+	for _, err := range []error{firstErr, secondErr} {
+		if err == nil {
+			successes++
+		} else if errors.Is(err, ErrFeishuConnectionOperationInProgress) {
+			conflicts++
+		}
+	}
+	require.Equal(t, 1, successes)
+	require.Equal(t, 1, conflicts)
+
+	var operationCount int64
+	require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("command_path = ?", "workspace connect").Count(&operationCount).Error)
+	var sessionCount int64
+	require.NoError(t, s.db.Model(&model.FeishuAuthSession{}).Where("user_id = ? AND state = ?", 9, model.FeishuAuthSessionPending).Count(&sessionCount).Error)
+	require.EqualValues(t, 1, operationCount+sessionCount)
+}
+
+func TestFeishuWorkspaceStore_BusinessRecoveryCannotBypassConnectionBootstrap(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 10, 1)
+
+	connection := newFeishuOperation("connection-owner", 10, 1, "connection-owner-key")
+	connection.CommandPath = "workspace connect"
+	_, err := s.CreateOrGetConnectionOperation(ctx, connection)
+	require.NoError(t, err)
+
+	businessOperationID := "business-follower"
+	business := newFeishuSession("business-recovery", 10, 1)
+	business.OperationID = &businessOperationID
+	_, _, err = s.CreateOrGetPendingSession(ctx, business)
+	require.ErrorIs(t, err, ErrFeishuConnectionOperationInProgress)
+
+	connectionSession := newFeishuSession("connection-recovery", 10, 1)
+	connectionSession.OperationID = &connection.ID
+	connectionSession.RequestedScopesJSON = []byte(`["offline_access"]`)
+	stored, created, err := s.CreateOrGetPendingSession(ctx, connectionSession)
+	require.NoError(t, err)
+	require.True(t, created)
+	require.Equal(t, connectionSession.ID, stored.ID)
+
+	secondBusinessID := "business-follower-2"
+	secondBusiness := newFeishuSession("business-recovery-2", 10, 1)
+	secondBusiness.OperationID = &secondBusinessID
+	_, _, err = s.CreateOrGetPendingSession(ctx, secondBusiness)
+	require.ErrorIs(t, err, ErrFeishuConnectionOperationInProgress)
+}
+
+func TestFeishuWorkspaceStore_StaleConnectionBootstrapCanBeRecoveredAfterRestart(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		recover func(context.Context, *feishuWorkspaceStore) error
+	}{
+		{
+			name: "new Agent connection",
+			recover: func(ctx context.Context, s *feishuWorkspaceStore) error {
+				candidate := newFeishuOperation("connection-replacement", 11, 1, "connection-replacement-key")
+				candidate.CommandPath = "workspace connect"
+				_, err := s.CreateOrGetConnectionOperation(ctx, candidate)
+				return err
+			},
+		},
+		{
+			name: "Settings manual session",
+			recover: func(ctx context.Context, s *feishuWorkspaceStore) error {
+				manual := newFeishuSession("manual-replacement", 11, 1)
+				manual.OperationID = nil
+				manual.RequestedScopesJSON = []byte(`["offline_access"]`)
+				_, _, err := s.CreateOrGetPendingSession(ctx, manual)
+				return err
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			s := newFeishuWorkspaceTestStore(t)
+			createFeishuAccount(t, s, 11, 1)
+			orphan := newFeishuOperation("connection-orphan", 11, 1, "connection-orphan-key")
+			orphan.CommandPath = "workspace connect"
+			_, err := s.CreateOrGetConnectionOperation(ctx, orphan)
+			require.NoError(t, err)
+			staleAt := time.Now().UTC().Add(-feishuConnectionBootstrapStaleAfter - time.Minute)
+			require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", orphan.ID).
+				Updates(map[string]any{"created_at": staleAt, "updated_at": staleAt}).Error)
+
+			require.NoError(t, tc.recover(ctx, s))
+			var retired model.FeishuOperation
+			require.NoError(t, s.db.First(&retired, "id = ?", orphan.ID).Error)
+			require.Equal(t, model.FeishuOperationCancelled, retired.State)
+		})
+	}
+}
+
+func TestFeishuWorkspaceStore_ReauthAndAppReadyWithoutOwnerCanStartConnection(t *testing.T) {
+	for _, state := range []string{model.FeishuConnectionReauthRequired, model.FeishuConnectionAppReady} {
+		t.Run(state, func(t *testing.T) {
+			ctx := context.Background()
+			s := newFeishuWorkspaceTestStore(t)
+			createFeishuAccount(t, s, 12, 1)
+			require.NoError(t, s.db.Model(&model.UserThirdPartyAccount{}).
+				Where("user_id = ? AND provider = ?", 12, "lark").
+				Updates(map[string]any{"connection_state": state, "connected": false}).Error)
+			candidate := newFeishuOperation("connection-"+state, 12, 1, "connection-key-"+state)
+			candidate.CommandPath = "workspace connect"
+
+			stored, err := s.CreateOrGetConnectionOperation(ctx, candidate)
+			require.NoError(t, err)
+			require.Equal(t, candidate.ID, stored.ID)
+		})
+	}
+}
+
+func TestFeishuWorkspaceStore_StaleWaitingConnectionWithFailedSessionCanRecover(t *testing.T) {
+	for _, manualRecovery := range []bool{false, true} {
+		name := "Agent"
+		if manualRecovery {
+			name = "Settings"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			s := newFeishuWorkspaceTestStore(t)
+			createFeishuAccount(t, s, 13, 1)
+			orphan := newFeishuOperation("waiting-orphan", 13, 1, "waiting-orphan-key")
+			orphan.CommandPath = "workspace connect"
+			_, err := s.CreateOrGetConnectionOperation(ctx, orphan)
+			require.NoError(t, err)
+			staleAt := time.Now().UTC().Add(-feishuConnectionBootstrapStaleAfter - time.Minute)
+			require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", orphan.ID).Updates(map[string]any{
+				"state": model.FeishuOperationWaitingConnection, "created_at": staleAt, "updated_at": staleAt,
+			}).Error)
+			failed := newFeishuSession("failed-session", 13, 1)
+			failed.OperationID = &orphan.ID
+			failed.Phase = model.FeishuAuthPhaseCreateApp
+			failed.State = model.FeishuAuthSessionFailed
+			require.NoError(t, s.db.Create(failed).Error)
+
+			if manualRecovery {
+				manual := newFeishuSession("manual-after-failure", 13, 1)
+				manual.OperationID = nil
+				manual.RequestedScopesJSON = []byte(`["offline_access"]`)
+				_, _, err = s.CreateOrGetPendingSession(ctx, manual)
+			} else {
+				replacement := newFeishuOperation("agent-after-failure", 13, 1, "agent-after-failure-key")
+				replacement.CommandPath = "workspace connect"
+				_, err = s.CreateOrGetConnectionOperation(ctx, replacement)
+			}
+			require.NoError(t, err)
+			var retired model.FeishuOperation
+			require.NoError(t, s.db.First(&retired, "id = ?", orphan.ID).Error)
+			require.Equal(t, model.FeishuOperationCancelled, retired.State)
+		})
+	}
+}
+
+func TestFeishuWorkspaceStore_RecentCompletedSessionKeepsDispatchGraceBeforeTakeover(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 14, 1)
+	orphan := newFeishuOperation("dispatching-owner", 14, 1, "dispatching-owner-key")
+	orphan.CommandPath = "workspace connect"
+	_, err := s.CreateOrGetConnectionOperation(ctx, orphan)
+	require.NoError(t, err)
+	staleAt := time.Now().UTC().Add(-feishuConnectionBootstrapStaleAfter - time.Minute)
+	require.NoError(t, s.db.Model(&model.FeishuOperation{}).Where("id = ?", orphan.ID).Updates(map[string]any{
+		"state": model.FeishuOperationWaitingUserAuth, "created_at": staleAt, "updated_at": staleAt,
+	}).Error)
+	recentCompletion := time.Now().UTC()
+	completed := newFeishuSession("recent-completion", 14, 1)
+	completed.OperationID = &orphan.ID
+	completed.State = model.FeishuAuthSessionCompleted
+	completed.CompletedAt = &recentCompletion
+	require.NoError(t, s.db.Create(completed).Error)
+
+	replacement := newFeishuOperation("replacement-during-dispatch", 14, 1, "replacement-during-dispatch-key")
+	replacement.CommandPath = "workspace connect"
+	_, err = s.CreateOrGetConnectionOperation(ctx, replacement)
+	require.ErrorIs(t, err, ErrFeishuConnectionOperationInProgress)
+
+	oldCompletion := staleAt
+	require.NoError(t, s.db.Model(&model.FeishuAuthSession{}).Where("id = ?", completed.ID).Updates(map[string]any{
+		"completed_at": oldCompletion, "updated_at": oldCompletion,
+	}).Error)
+	_, err = s.CreateOrGetConnectionOperation(ctx, replacement)
+	require.NoError(t, err)
+	var retired model.FeishuOperation
+	require.NoError(t, s.db.First(&retired, "id = ?", orphan.ID).Error)
+	require.Equal(t, model.FeishuOperationCancelled, retired.State)
+}
+
 func TestFeishuWorkspaceStore_ListSucceededCreatesForRunIsBoundedAndDeterministic(t *testing.T) {
 	ctx := context.Background()
 	s := newFeishuWorkspaceTestStore(t)
