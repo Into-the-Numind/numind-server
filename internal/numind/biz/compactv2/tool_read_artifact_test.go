@@ -30,6 +30,23 @@ type fakeRunStore struct {
 	err  error
 }
 
+// transientMissArtifactStore reproduces Dev run 263: the artifact file and
+// metadata have been created, but the first immediate lookup observes a
+// transient record-not-found before the same UUID becomes readable.
+type transientMissArtifactStore struct {
+	ArtifactStore
+	missUUID string
+	getCalls int
+}
+
+func (s *transientMissArtifactStore) Get(ctx context.Context, artifactUUID string) (*model.AgentToolArtifact, error) {
+	s.getCalls++
+	if artifactUUID == s.missUUID && s.getCalls == 1 {
+		return nil, gorm.ErrRecordNotFound
+	}
+	return s.ArtifactStore.Get(ctx, artifactUUID)
+}
+
 func (f *fakeRunStore) Get(_ context.Context, id uint64) (*model.AgentRun, error) {
 	if f.err != nil {
 		return nil, f.err
@@ -215,6 +232,41 @@ func TestReadArtifact_UUIDNotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found",
 		"未知 UUID 应当返回 'not found' error 让 LLM 知道引用失效")
+}
+
+// TestReadArtifact_TransientVisibilityMissIsRecoverable reproduces Dev run
+// 263. A large lark_execute result was persisted successfully, the immediate
+// read_tool_artifact lookup returned record-not-found, and Eino promoted that
+// ordinary tool error to a fatal model_error for the whole Agent run. The same
+// artifact was readable moments later. A transient miss must therefore remain
+// model-visible and retryable instead of returning a Go error.
+func TestReadArtifact_TransientVisibilityMissIsRecoverable(t *testing.T) {
+	baseStore := newTestArtifactStore(t)
+	dataDir := t.TempDir()
+	runStore := &fakeRunStore{runs: map[uint64]*model.AgentRun{
+		263: {ID: 263, UserID: 42},
+	}}
+
+	body := []byte("persisted profile document")
+	art := makeArtifactOnDisk(t, baseStore, dataDir, 263, body)
+	storeWithMiss := &transientMissArtifactStore{
+		ArtifactStore: baseStore,
+		missUUID:      art.UUID,
+	}
+	tool := NewReadArtifactTool(storeWithMiss, runStore, dataDir, userIDExtractor(42, true))
+	args := fmt.Sprintf(`{"artifact_id":%q,"offset":0,"limit":1024}`, art.UUID)
+
+	first, err := tool.InvokableRun(context.Background(), args)
+	require.NoError(t, err, "transient artifact visibility miss must not terminate the Agent run")
+	firstOutput := parseOutput(t, first)
+	assert.Equal(t, "not_found", firstOutput.Note)
+	assert.Empty(t, firstOutput.Content)
+
+	second, err := tool.InvokableRun(context.Background(), args)
+	require.NoError(t, err)
+	secondOutput := parseOutput(t, second)
+	assert.Equal(t, string(body), secondOutput.Content)
+	assert.Equal(t, 2, storeWithMiss.getCalls)
 }
 
 // TestReadArtifact_ExpiredArtifact — case 6
