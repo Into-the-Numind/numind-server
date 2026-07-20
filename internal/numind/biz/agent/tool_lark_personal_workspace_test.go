@@ -1241,6 +1241,68 @@ func TestLarkPersonalWorkspace_ExecuteTerminalStatesNeverFakeSuccess(t *testing.
 }
 
 func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *testing.T) {
+	t.Run("run 255 unknown docs write cannot freeze verification or unrelated base work", func(t *testing.T) {
+		const runID = uint64(8255)
+		larkExecuteRetryClearRun(runID)
+		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+		executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+			OperationID: "op-doc-update-unknown", State: model.FeishuOperationUnknown,
+			Failure: &feishu.OperationFailure{
+				Code: feishu.PublicCodeUnknownResult, Category: "unknown_result", BusinessStarted: true,
+			},
+		}}
+		tool := &larkExecuteTool{executor: executor}
+
+		unknown, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "doc-update-unknown"),
+			ToolInput(`{"argv":["docs","+update","--doc","doxcnABCDEFG123","--command","append","--content","<p>项目介绍</p>"]}`),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(unknown), `"category":"unknown_result"`)
+
+		executor.mu.Lock()
+		executor.result = &feishu.OperationResult{
+			OperationID: "op-doc-fetch-failed", State: model.FeishuOperationFailed,
+			Failure: &feishu.OperationFailure{
+				Code: feishu.PublicCodeFailed, Category: "failed", BusinessStarted: true,
+			},
+		}
+		executor.mu.Unlock()
+		failedVerification, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "doc-fetch-failed"),
+			ToolInput(`{"argv":["docs","+fetch","--doc","doxcnABCDEFG123"]}`),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(failedVerification), `"category":"failed"`)
+
+		executor.mu.Lock()
+		executor.result = &feishu.OperationResult{
+			OperationID: "op-wiki-read", State: model.FeishuOperationSucceeded,
+			Data: json.RawMessage(`{"node_token":"wikcnABCDEFG123"}`),
+		}
+		executor.mu.Unlock()
+		alternateVerification, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "wiki-node-read"),
+			ToolInput(`{"argv":["wiki","+node-get","--node-token","wikcnABCDEFG123"]}`),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(alternateVerification), `"ok":true`)
+
+		executor.mu.Lock()
+		executor.result = &feishu.OperationResult{
+			OperationID: "op-base-create", State: model.FeishuOperationSucceeded,
+			Data: json.RawMessage(`{"app_token":"bascnABCDEFG123"}`),
+		}
+		executor.mu.Unlock()
+		unrelatedWrite, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "base-create"),
+			ToolInput(`{"argv":["base","+base-create","--name","项目任务","--table-name","任务列表"]}`),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(unrelatedWrite), `"ok":true`)
+		require.Len(t, executor.snapshot(), 4, "only the ambiguous write itself may be fenced")
+	})
+
 	t.Run("fifth malformed input exhausts correction budget without executor", func(t *testing.T) {
 		const runID = uint64(809)
 		larkExecuteRetryClearRun(runID)
