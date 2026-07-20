@@ -4,24 +4,26 @@ features:
   ndf_version: '3.0'
   description: Remove Feishu business confirmation entirely, auto-migrate legacy confirmation waits, and prevent stale authorization cards from submitting the wrong lifecycle action.
   classification_reason: 'Standard: no schema or new API/integration, but the customer bug spans backend, frontend, durable Agent wait state, and external-write safety policy across more than three files. Customer approved fast Standard through Dev with focused regression and mandatory quality gates only.'
-  last_updated_by: ai-s1
-  last_updated_at: '2026-07-20T13:30:00+08:00'
+  last_updated_by: ai-s2
+  last_updated_at: '2026-07-20T13:40:00+08:00'
   created_at: '2026-07-20T13:20:00+08:00'
   track: standard
-  stage: S1
+  stage: S2
   status: active
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/feishu-action-transition, numind-web-v3: feature/feishu-action-transition}
   worktrees: {numind-server: /private/tmp/wt-feishu-action-transition-numind-server, numind-web-v3: /private/tmp/wt-feishu-action-transition-numind-web-v3}
-  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0, current_task: 'S1 proposal approved'}
+  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0, current_task: 'S2 design approved'}
   artifacts:
     requirement: requirements/feishu-action-transition.md
     proposal: proposals/feishu-action-transition-proposal.md
+    spec: docs/superpowers/specs/2026-07-20-feishu-action-transition-design.md
   decisions:
   - 'S0: Dev logs for run 247 prove authorization completed and the Feishu operation advanced to waiting_confirmation, but the resume response and durable Agent wait retained the old user_auth action. The stale card then sent user_completed into a confirmation state and received InvalidParameter.'
   - 'Customer selected fast Standard through Dev. Full-repository and broad E2E suites are intentionally omitted; customer-facing RED regressions plus mandatory Go/Vue lint and type checks remain required.'
   - 'Scope revision: customer explicitly chose to disregard business-confirmation safety for now. No new operation may enter waiting_confirmation; all allowlisted commands execute after account, scope, permission, identity, and idempotency checks. Official Feishu authorization remains mandatory. Historical waiting_confirmation rows retain only migration compatibility.'
   - 'S1: selected deletion of the active confirmation stage with legacy-state compatibility. Rejected a frontend-only patch because it leaves the extra state transition, and rejected hard deletion of all legacy contracts because rolling clients and persisted operations require a bounded migration path.'
+  - 'S2: no new operation enters waiting_confirmation. RiskHigh remains a classification for unknown-result and retry safety, but no longer means human confirmation. Server-owned --yes, execution gates, encrypted request integrity, current-user/generation binding, scope preflight, and idempotency remain unchanged. Legacy confirmation rows resume directly.'
   blockers: []
 
 - id: feishu-final-answer-visibility
