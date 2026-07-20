@@ -1,5 +1,26 @@
 schema_version: '2.0'
 features:
+- id: feishu-action-transition
+  ndf_version: '3.0'
+  description: Replace stale Feishu action cards across lifecycle transitions and reserve explicit confirmation for destructive or high-impact commands.
+  classification_reason: 'Standard: no schema or new API/integration, but the customer bug spans backend, frontend, durable Agent wait state, and external-write safety policy across more than three files. Customer approved fast Standard through Dev with focused regression and mandatory quality gates only.'
+  last_updated_by: ai-s0
+  last_updated_at: '2026-07-20T13:20:00+08:00'
+  created_at: '2026-07-20T13:20:00+08:00'
+  track: standard
+  stage: S0
+  status: active
+  repos: [numind-server, numind-web-v3]
+  branches: {numind-server: feature/feishu-action-transition, numind-web-v3: feature/feishu-action-transition}
+  worktrees: {numind-server: /private/tmp/wt-feishu-action-transition-numind-server, numind-web-v3: /private/tmp/wt-feishu-action-transition-numind-web-v3}
+  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0, current_task: 'S0 requirement accepted'}
+  artifacts:
+    requirement: requirements/feishu-action-transition.md
+  decisions:
+  - 'S0: Dev logs for run 247 prove authorization completed and the Feishu operation advanced to waiting_confirmation, but the resume response and durable Agent wait retained the old user_auth action. The stale card then sent user_completed into a confirmation state and received InvalidParameter.'
+  - 'Customer selected fast Standard through Dev. Full-repository and broad E2E suites are intentionally omitted; customer-facing RED regressions plus mandatory Go/Vue lint and type checks remain required.'
+  blockers: []
+
 - id: feishu-final-answer-visibility
   ndf_version: '3.0'
   description: Keep detached Feishu continuation results at the live timeline tail and remove every user-visible frontend timer.
