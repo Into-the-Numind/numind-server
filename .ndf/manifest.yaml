@@ -4,22 +4,25 @@ features:
   ndf_version: '3.0'
   description: Build three user-isolated Agents that turn internal XHS captures into a Feishu Base, customer materials into a reusable Feishu profile document, and both artifacts into a customer-specific Feishu topic-planning document.
   classification_reason: 'Standard: the feature adds Agent access to the current user XHS library and spans Agent orchestration, Feishu authorization/Base/Doc operations, multi-user permission boundaries, prompts, and end-to-end tests across more than three files and likely two repositories.'
-  last_updated_by: ai-s0
-  last_updated_at: '2026-07-20T15:46:37+08:00'
+  last_updated_by: ai-s1-proposal
+  last_updated_at: '2026-07-20T16:02:13+08:00'
   created_at: '2026-07-20T15:45:30+08:00'
   track: standard
-  stage: S0
+  stage: S1
   status: active
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/three-agent-feishu-pipeline, numind-web-v3: feature/three-agent-feishu-pipeline}
   worktrees: {numind-server: /private/tmp/wt-three-agent-feishu-pipeline-numind-server, numind-web-v3: /private/tmp/wt-three-agent-feishu-pipeline-numind-web-v3}
-  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0, current_task: 'S0 requirement confirmation gate'}
+  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0, current_task: 'Await human confirmation of the S1 proposal before S2 technical design'}
   artifacts:
     requirement: requirements/three-agent-feishu-pipeline.md
+    proposal: proposals/three-agent-feishu-pipeline-proposal.md
   decisions:
   - 'S0: one Numind user owns one shared Feishu viral-material Base and may manage many customer-specific profile and topic-planning Docs; different users remain fully isolated.'
   - 'S0: no customer-management or Feishu-target settings UI is added. Agents resolve current context first, ask only when required, then search, reuse, or create in the current user Feishu account.'
   - 'S0: Agent 1 automatically processes unanalysed XHS captures without manual selection; historical reanalysis requires an explicit natural-language scope.'
+  - 'S1 scope decision: configure three AgentDefinitions only for the current organization through the existing Agent Builder; do not upgrade skill_template or auto-provision other organizations.'
+  - 'S1 recommended architecture: prompt-driven orchestration with one current-user xhs_note_list tool (limit up to 100), resumable file_read pagination, existing Lark authorization/Docs/Base tools, and the Feishu Base as Agent 1 checkpoint/SOT.'
   blockers: []
 
 - id: feishu-action-transition
