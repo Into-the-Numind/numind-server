@@ -1,8 +1,6 @@
 package agent
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"sync"
 
@@ -247,19 +245,7 @@ func larkExecuteRetryFailed(state *larkExecuteRetryState, _ larkExecuteRetryAtte
 // history remains the recovery boundary, while this guard prevents the one
 // accidental replay the platform can identify with certainty.
 func larkExecuteWriteFenceKey(command *feishu.NormalizedCommand) string {
-	if command == nil || command.Risk == feishu.RiskRead {
-		return ""
-	}
-	payload, err := json.Marshal(struct {
-		Path      string   `json:"path"`
-		Argv      []string `json:"argv"`
-		StdinJSON []byte   `json:"stdin_json,omitempty"`
-	}{Path: command.Path, Argv: command.Argv, StdinJSON: command.StdinJSON})
-	if err != nil {
-		return ""
-	}
-	digest := sha256.Sum256(payload)
-	return hex.EncodeToString(digest[:])
+	return feishu.ExactWriteFenceKey(command)
 }
 
 // addUnknownWriteFence requires state.mu to be held.

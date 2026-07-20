@@ -1451,6 +1451,8 @@ func TestOperationService_StartedWriteTimeoutIsUnknownAndNeverRetried(t *testing
 	got, err := h.service.Execute(h.ctx, req)
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationUnknown, got.State)
+	require.NotNil(t, got.Failure)
+	require.NotEmpty(t, got.Failure.WriteFenceKey)
 	calls, _ := h.runner.snapshot()
 	require.Equal(t, 1, calls)
 
@@ -1459,6 +1461,13 @@ func TestOperationService_StartedWriteTimeoutIsUnknownAndNeverRetried(t *testing
 	require.Equal(t, model.FeishuOperationUnknown, stored.State)
 	require.Empty(t, stored.ResultCiphertext)
 	require.NotContains(t, string(stored.ResultSummaryJSON), "timeout")
+
+	resumed, err := h.service.Resume(h.ctx, 7, got.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationUnknown, resumed.State)
+	require.NotNil(t, resumed.Failure)
+	require.Equal(t, got.Failure.WriteFenceKey, resumed.Failure.WriteFenceKey,
+		"authorization/process continuation must reconstruct the same exact-command fence")
 }
 
 func TestOperationService_CodeLessStartedDocsCreateIsUnknownAndNeverAuthorizedOrRetried(t *testing.T) {
@@ -3478,6 +3487,8 @@ func TestOperationService_GenerationBumpAfterRunnerStartCannotCommitOrSeal(t *te
 	got, err := h.service.Execute(h.ctx, req)
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationUnknown, got.State)
+	require.NotNil(t, got.Failure)
+	require.NotEmpty(t, got.Failure.WriteFenceKey, "a transition-race unknown must retain the exact-command fence")
 	require.Zero(t, h.vault.sealed)
 	var stored model.FeishuOperation
 	require.NoError(t, h.db.First(&stored, "id = ?", got.OperationID).Error)

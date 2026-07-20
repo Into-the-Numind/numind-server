@@ -110,3 +110,21 @@ func TestNewOperationFailure_RetryabilityIsRiskAware(t *testing.T) {
 	unknown := newOperationFailure(PublicCodeUnknownResult, model.FeishuOperationUnknown, true, RiskWrite, nil)
 	require.False(t, unknown.Retryable)
 }
+
+func TestExactWriteFenceKey_IsStableAndWriteSpecific(t *testing.T) {
+	catalog := NewCommandCatalog()
+	first, err := catalog.Normalize([]string{"docs", "+create", "--title", "A"}, nil)
+	require.NoError(t, err)
+	same, err := catalog.Normalize([]string{"docs", "+create", "--title", "A"}, nil)
+	require.NoError(t, err)
+	different, err := catalog.Normalize([]string{"docs", "+create", "--title", "B"}, nil)
+	require.NoError(t, err)
+	read, err := catalog.Normalize([]string{"docs", "+fetch", "--doc", "doxcnABCDEFG123"}, nil)
+	require.NoError(t, err)
+
+	key := ExactWriteFenceKey(first)
+	require.Len(t, key, 64)
+	require.Equal(t, key, ExactWriteFenceKey(same))
+	require.NotEqual(t, key, ExactWriteFenceKey(different))
+	require.Empty(t, ExactWriteFenceKey(read), "reads must never acquire an ambiguity fence")
+}

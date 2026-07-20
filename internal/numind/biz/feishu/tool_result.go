@@ -2,6 +2,8 @@ package feishu
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -221,4 +223,31 @@ func validWriteFenceKey(value string) bool {
 		}
 	}
 	return true
+}
+
+// ExactWriteFenceKey returns an opaque digest only for one catalog-normalized
+// write command. It deliberately excludes user/run identity because the fence
+// is stored inside one run's state, and includes the normalized argv so a
+// different operation remains executable. No plaintext command data is exposed.
+func ExactWriteFenceKey(command *NormalizedCommand) string {
+	if command == nil {
+		return ""
+	}
+	return exactWriteFenceKey(command.Path, command.Argv, command.StdinJSON, command.Risk)
+}
+
+func exactWriteFenceKey(path string, argv []string, stdinJSON []byte, risk RiskLevel) string {
+	if risk == RiskRead || path == "" || len(argv) == 0 {
+		return ""
+	}
+	payload, err := json.Marshal(struct {
+		Path      string   `json:"path"`
+		Argv      []string `json:"argv"`
+		StdinJSON []byte   `json:"stdin_json,omitempty"`
+	}{Path: path, Argv: argv, StdinJSON: stdinJSON})
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:])
 }
