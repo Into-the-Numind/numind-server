@@ -1218,19 +1218,25 @@ func TestOperationService_LocalBaseURLResolveDoesNotRequireConnectionOrAuthoriza
 	got, err := h.service.Execute(h.ctx, request)
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationSucceeded, got.State)
-	require.JSONEq(t, `{"base_token":"ZiXObjsGvahtyAscDJ1cjlRnnLh","table_id":"tblABCDEFG123"}`, string(got.Data))
+	require.JSONEq(t, `{
+		"base_token":"ZiXObjsGvahtyAscDJ1cjlRnnLh",
+		"hint":{"next_step":"use +record-list to list records in the resolved table"},
+		"input_type":"base_url",
+		"resource_type":"bitable",
+		"table_id":"tblABCDEFG123"
+	}`, string(got.Data))
 	require.Empty(t, h.recovery.snapshot(), "local URL parsing must never start an authorization flow")
 	require.Empty(t, h.preflight.calls, "local URL parsing must never inspect Feishu scopes")
-	calls, argv := h.runner.snapshot()
-	require.Equal(t, 1, calls)
-	require.Equal(t, []string{
-		"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh?table=tblABCDEFG123",
-		"--format", "json", "--as", "user",
-	}, argv[0])
+	calls, _ := h.runner.snapshot()
+	require.Zero(t, calls, "local URL parsing must not start lark-cli")
+	require.Empty(t, h.vault.changed, "local URL parsing must not materialize or persist CLI HOME")
 
 	account, err := h.dataStore.ThirdPartyAccounts().Get(h.ctx, 7, ProviderLark)
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuConnectionNone, account.ConnectionState)
+	require.Empty(t, account.CapabilityStateJSON, "local parsing does not prove Base API availability")
+	require.Nil(t, account.LastSuccessAt)
+	require.Empty(t, account.LarkCLIVersion)
 }
 
 func TestOperationService_DisconnectingGenerationRejectsNewAgentOperation(t *testing.T) {
@@ -1816,7 +1822,7 @@ func TestOperationService_ConfirmationDecisionExecutesExactlyOnceOrCancelsWithou
 		require.NoError(t, err)
 		require.Equal(t, model.FeishuOperationSucceeded, completed.State)
 		calls, _ := h.runner.snapshot()
-		require.Equal(t, 1, calls)
+		require.Zero(t, calls)
 
 		idempotent, err := h.service.Confirm(h.ctx, 7, waiting.OperationID)
 		require.NoError(t, err)
@@ -3719,7 +3725,7 @@ func TestOperationService_ExpiredExecutingLeaseReclaimsOnlyReads(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, model.FeishuOperationSucceeded, got.State)
 		calls, _ := h.runner.snapshot()
-		require.Equal(t, 1, calls)
+		require.Zero(t, calls)
 		require.Empty(t, h.recovery.snapshot())
 	})
 

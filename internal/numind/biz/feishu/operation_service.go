@@ -1031,7 +1031,7 @@ func (s *FeishuOperationService) reclaimExpiredExecution(
 	owner := uuid.NewString()
 	gateHeld := false
 	var gateGuard *executionGateGuard
-	if persisted.Risk == RiskRead && (account.ConnectionState == model.FeishuConnectionConnected || persisted.LocalOnly) {
+	if account.ConnectionState == model.FeishuConnectionConnected && persisted.Risk == RiskRead && !persisted.LocalOnly {
 		executionCtx, finishStart, joinedStart, startErr := s.beginExecutionStart(ctx, operation)
 		if startErr != nil {
 			return nil, startErr
@@ -1220,7 +1220,7 @@ func (s *FeishuOperationService) claimAndExecute(
 
 func operationRequiresExecutionGate(account *model.UserThirdPartyAccount, persisted persistedOperationRequest) bool {
 	if persisted.LocalOnly {
-		return account != nil
+		return false
 	}
 	if account == nil || account.ConnectionState != model.FeishuConnectionConnected {
 		return false
@@ -1318,6 +1318,13 @@ func (s *FeishuOperationService) executeClaimed(
 			publicCode = PublicCodeReauthRequired
 		}
 		return s.startRecoveryAndWait(ctx, operation, leaseOwner, persisted, kind, persisted.Scopes, waitingState, priorRecoverySignature, publicCode, "")
+	}
+	if persisted.LocalOnly {
+		data, err := s.catalog.resolveLocal(persisted.Argv)
+		if err != nil {
+			return s.commitTerminal(ctx, operation, leaseOwner, model.FeishuOperationFailed, PublicCodeFailed, nil, false)
+		}
+		return s.commitTerminal(ctx, operation, leaseOwner, model.FeishuOperationSucceeded, "", data, false)
 	}
 	if writeLikeRisk(persisted.Risk) {
 		check, err := s.checkScopesBeforeWrite(ctx, operation, persisted, executionGate)
@@ -1784,6 +1791,9 @@ func (s *FeishuOperationService) capabilityOutcome(
 	succeededAt *time.Time,
 ) *model.FeishuCapabilityOutcome {
 	if s == nil || operation == nil || !supportedCapabilityDomain(operation.Domain) {
+		return nil
+	}
+	if spec, ok := s.catalog.specs[operation.CommandPath]; ok && spec.localOnly {
 		return nil
 	}
 	state := ""

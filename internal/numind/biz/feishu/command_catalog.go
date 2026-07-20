@@ -491,7 +491,7 @@ func validateDocsUpdate(p *parsedFlags) (RiskLevel, error) {
 
 func (c *CommandCatalog) addBaseSpecs() {
 	baseToken := valueRule(normalizeSupportedRef("base-token", map[string]bool{"base": true, "bitable": true}, true))
-	baseURL := valueRule(normalizeSupportedURL("base URL", map[string]bool{"base": true, "bitable": true}))
+	baseURL := valueRule(normalizeBaseURL)
 	idOrName := valueRule(normalizeIDOrName)
 	recordID := valueRule(normalizePrefixedID("record-id", "rec"))
 	jsonPayload := valueRule(normalizeJSON("JSON", CommandCatalogMaxJSONBytes))
@@ -1048,6 +1048,56 @@ func HostedCommandContract(skill string) string {
 	return "有数当前实际可执行命令（精确清单；官方技能中出现但未列出的命令或参数不可执行）：" + strings.Join(lines, "；") + "。"
 }
 
+type localBaseURLResult struct {
+	BaseToken string `json:"base_token"`
+	Hint      struct {
+		NextStep string `json:"next_step"`
+	} `json:"hint"`
+	InputType    string `json:"input_type"`
+	ResourceType string `json:"resource_type"`
+	TableID      string `json:"table_id,omitempty"`
+}
+
+func (c *CommandCatalog) resolveLocal(argv []string) (json.RawMessage, error) {
+	normalized, err := c.Normalize(append([]string(nil), argv...), nil)
+	if err != nil || !normalized.LocalOnly || normalized.Path != "base +url-resolve" {
+		return nil, ErrCommandDenied
+	}
+	var rawURL string
+	for index := 2; index+1 < len(normalized.Argv); index++ {
+		if normalized.Argv[index] == "--url" {
+			rawURL = normalized.Argv[index+1]
+			break
+		}
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, ErrCommandInvalidArgument
+	}
+	parts := strings.Split(strings.TrimPrefix(parsed.EscapedPath(), "/"), "/")
+	if len(parts) != 2 {
+		return nil, ErrCommandInvalidArgument
+	}
+	token, err := url.PathUnescape(parts[1])
+	if err != nil {
+		return nil, ErrCommandInvalidArgument
+	}
+	query, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil {
+		return nil, ErrCommandInvalidArgument
+	}
+	result := localBaseURLResult{
+		BaseToken: token, InputType: "base_url", ResourceType: "bitable",
+		TableID: query.Get("table"),
+	}
+	result.Hint.NextStep = "use +record-list to list records in the resolved table"
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return nil, ErrCommandInvalidArgument
+	}
+	return encoded, nil
+}
+
 func valueRule(normalize func(string) (string, error)) flagRule {
 	return flagRule{normalize: normalize}
 }
@@ -1290,6 +1340,38 @@ func normalizeSupportedURL(label string, allowedKinds map[string]bool) func(stri
 		}
 		return normalize(value)
 	}
+}
+
+func normalizeBaseURL(value string) (string, error) {
+	normalized, err := normalizeSupportedURL("base URL", map[string]bool{"base": true, "bitable": true})(value)
+	if err != nil {
+		return "", err
+	}
+	parsed, err := url.Parse(normalized)
+	if err != nil {
+		return "", invalidf("base URL is invalid")
+	}
+	query, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil {
+		return "", invalidf("base URL query is invalid")
+	}
+	if values, exists := query["table"]; exists {
+		if len(values) != 1 {
+			return "", invalidf("base URL table is ambiguous")
+		}
+		if _, err := normalizePrefixedID("table-id", "tbl")(values[0]); err != nil {
+			return "", err
+		}
+	}
+	if values, exists := query["view"]; exists {
+		if len(values) != 1 {
+			return "", invalidf("base URL view is ambiguous")
+		}
+		if _, err := normalizeOpaqueToken("view-id")(values[0]); err != nil {
+			return "", err
+		}
+	}
+	return normalized, nil
 }
 
 func supportedFeishuHost(host string) bool {

@@ -101,11 +101,33 @@ func TestCommandCatalog_BaseURLResolveIsLocalReadOnlyAndStrict(t *testing.T) {
 		{"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn:443/base/ZiXObjsGvahtyAscDJ1cjlRnnLh"},
 		{"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/docx/ZiXObjsGvahtyAscDJ1cjlRnnLh"},
 		{"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/wiki/ZiXObjsGvahtyAscDJ1cjlRnnLh"},
+		{"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh?table=not-a-table"},
+		{"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh?table=tblABCDEFG123&table=tblHIJKLMN123"},
 		{"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh", "--dry-run"},
 	} {
 		_, err := NewCommandCatalog().Normalize(argv, nil)
 		require.Error(t, err, "%v", argv)
 	}
+}
+
+func TestCommandCatalog_LocalBaseURLResolveMatchesOfficialDataContract(t *testing.T) {
+	t.Parallel()
+
+	got, err := NewCommandCatalog().resolveLocal([]string{
+		"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh?table=tblABCDEFG123&view=vewABCDEFG123",
+		"--format", "json", "--as", "user",
+	})
+	require.NoError(t, err)
+	require.JSONEq(t, `{
+		"base_token":"ZiXObjsGvahtyAscDJ1cjlRnnLh",
+		"hint":{"next_step":"use +record-list to list records in the resolved table"},
+		"input_type":"base_url",
+		"resource_type":"bitable",
+		"table_id":"tblABCDEFG123"
+	}`, string(got))
+
+	_, err = NewCommandCatalog().resolveLocal([]string{"docs", "+fetch", "--doc", "doxcnABCDEFG123"})
+	require.ErrorIs(t, err, ErrCommandDenied)
 }
 
 func TestHostedCommandContract_UsesCatalogAsSingleSourceOfTruth(t *testing.T) {
