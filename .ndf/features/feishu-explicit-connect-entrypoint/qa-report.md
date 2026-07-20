@@ -47,3 +47,12 @@ N/A：本次不新增 LLM 调用；沿用既有 Feishu operation/session 状态�
 ## 结论
 
 **FEATURE_GATES_PASS**。全库唯一红项已在未含本 feature 的 `develop` 基线上复现，记录为既有 `xhsscript` 测试故障，不阻断本次飞书修复进入 Dev。
+
+## S6 Dev 部署与运行时验收
+
+- `ndf-done` 已合并、推送并清理两个 feature worktree/本地分支：后端 merge commit `37ffbf2a`，前端 merge commit `66a3ad0`。
+- Dev 后端运行精确镜像 `numind-server:develop-37ffbf2a`，registry digest `sha256:5140cf381e9e28c4493ab71635310672c4e7f200c1121133f923d5fbd4ada566`。
+- Dev 前端运行精确镜像 `numind-web-v3:develop-66a3ad0`，registry digest `sha256:2ef6cc8eb541f7cf6891ec8953562f4b0efd785cccfc97949e80d091be696377`。
+- 公开后端 `http://49.233.219.254:9091/healthz` 返回 `code: 0 / status: ok`；公开前端 `http://49.233.219.254:9200/health` 返回 `healthy`。
+- 两个容器最终状态均为 `running / healthy`；后端本次启动日志未发现 `panic` 或 `fatal`。
+- 功能停在 S6，等待用户 438 在 Dev 验收；未申请、未执行 Prod 发布。
