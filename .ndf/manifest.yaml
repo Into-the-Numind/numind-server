@@ -27,6 +27,7 @@ features:
   - 'S2: no new operation enters waiting_confirmation. RiskHigh remains a classification for unknown-result and retry safety, but no longer means human confirmation. Server-owned --yes, execution gates, encrypted request integrity, current-user/generation binding, scope preflight, and idempotency remain unchanged. Legacy confirmation rows resume directly.'
   - 'S3: six serial tasks preserve the customer RED-first history, then remove active confirmation generation, add legacy-state compatibility, remove the frontend confirmation interaction, run focused mandatory gates and dual review, and deploy backend-first to Dev.'
   - 'S3 review revision: split execution core, lifecycle compatibility, and frontend migration into atomic backend-first tasks; add expired legacy-state coverage, reuse existing official-authorization/concurrency/unknown/handoff matrices, and retain one narrow no-reload Playwright regression. Customer explicitly accepted restore-triggered execution of legacy confirmation rows.'
+  - 'S3 review revision 2: frontend store explicitly permits only expired legacy confirmation to reach the compatibility resume API; expired official authorization actions retain their current client guard. Independent plan review otherwise reports the DAG and scope closed.'
   blockers: []
 
 - id: feishu-final-answer-visibility

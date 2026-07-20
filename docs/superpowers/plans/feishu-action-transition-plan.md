@@ -77,6 +77,8 @@ T1 server RED → T2 execution GREEN → T3 lifecycle GREEN
 ### 涉及文件
 - `numind-web-v3/src/components/agent/FeishuActionCard.vue`
 - `numind-web-v3/src/components/agent/__tests__/FeishuActionCard.spec.ts`
+- `numind-web-v3/src/stores/agentChat.ts`
+- `numind-web-v3/src/stores/__tests__/agentChat-resume.spec.ts`
 - `numind-web-v3/e2e/feishu-personal-workspace.spec.ts`
 
 ### 验收条件
@@ -84,6 +86,7 @@ T1 server RED → T2 execution GREEN → T3 lifecycle GREEN
 - 定向 Vitest RED 转绿。
 - DOM 中无 confirmation 确认/取消按钮。
 - 同一 operation 的 legacy 自动恢复最多发出一次请求。
+- 仅 expired confirmation 绕过客户端过期 guard 并调用 lifecycle API；expired create_app/user_auth/app_scope 仍不得调用。
 - create_app、user_auth、app_scope 现有测试不回归。
 - 一个定向 Playwright 场景验证不刷新页面、无确认按钮且最终结果继续出现。
 

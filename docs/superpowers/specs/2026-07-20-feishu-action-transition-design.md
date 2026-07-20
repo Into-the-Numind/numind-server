@@ -78,6 +78,7 @@ waiting_confirmation --cancelled--------------------------> cancelled
 
 - `FeishuActionCard` 不再提供 confirmation 的确认/取消按钮和相关文案。
 - 对滚动升级期间收到的 legacy `phase=confirmation`，前端以“正在继续原任务”的非交互状态触发一次兼容 resume；同一 operation 使用现有 in-flight 去重，禁止重复请求。该行为意味着打开含历史确认卡片的原对话即可继续原命令，是客户在明确取消业务确认后接受的一次性迁移语义；浏览器仍不能修改命令。
+- 只有 legacy confirmation 可以绕过客户端的 expires_at 拦截；create_app、user_auth、app_scope 仍保持现有过期保护和刷新逻辑。
 - create_app、user_auth、app_scope 卡片和重新生成链接逻辑不变。
 - 不展示计时，不新增弹窗或新组件。
 
