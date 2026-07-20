@@ -4,20 +4,23 @@ features:
   ndf_version: '3.0'
   description: Keep detached Feishu continuation results at the live timeline tail and remove every user-visible frontend timer.
   classification_reason: 'Hotfix: frontend-only customer bug and display cleanup; no schema, API, external integration, payment, or permission change, with at most three implementation/test files. User explicitly confirmed Hotfix on 2026-07-20.'
-  last_updated_by: ai-h1
-  last_updated_at: '2026-07-20T11:05:00+08:00'
+  last_updated_by: ai-h3
+  last_updated_at: '2026-07-20T11:30:00+08:00'
   created_at: '2026-07-20T11:05:00+08:00'
   track: hotfix
-  stage: H1
+  stage: H3
   status: active
   repos: [numind-web-v3]
   branches: {numind-web-v3: fix/feishu-final-answer-visibility}
   worktrees: {numind-web-v3: /private/tmp/wt-feishu-final-answer-visibility-numind-web-v3}
-  progress: {total_tasks: 3, completed_tasks: 0, reviewed_tasks: 0, current_task: 'Write and commit customer RED regressions before implementation'}
+  progress: {total_tasks: 3, completed_tasks: 2, reviewed_tasks: 1, current_task: 'Atomic merge, push, and Dev deployment'}
   artifacts: {}
   decisions:
   - 'H1 diagnosis: Dev run 242 completed and the browser fetched final_output before reload. Live reconciliation replaced a pre-authorization assistant bubble in place, placing the final answer above later tool steps; snapshot reload rebuilt canonical order. Existing tests asserted presence but not timeline order or viewport visibility.'
   - 'Scope: remove only user-visible timing displays. Internal request deadlines, authorization expiry enforcement, polling cadence, stored timestamps, and operational logs remain unchanged.'
+  - 'H1 RED/GREEN: commit 6524b10 reproduces both the numeric Agent elapsed clock and an authoritative final answer inserted before the completed authorization card and detached tool result. Commit 75b6448 appends finals when later timeline items exist, preserves tail in-place upgrades and duplicate fences, and removes the elapsed clock from DOM and ARIA.'
+  - 'H2 gates: 1124 Vitest tests, Vue type-check, ESLint with zero errors, production build, targeted customer Playwright, and all nine Feishu lifecycle Playwright scenarios pass. Browser screenshots confirm the resumed state shows no numeric timer and the no-reload final answer is the absolute timeline tail.'
+  - 'H2 independent review: PASS with no P0/P1/P2 issues. Commit chain preserves the customer RED first, stays within three files, appends non-tail authoritative finals without duplicates, and removes numeric timing from visible DOM, title, ARIA, and hidden assistive text.'
   blockers: []
 
 - id: feishu-sequential-auth-refresh
