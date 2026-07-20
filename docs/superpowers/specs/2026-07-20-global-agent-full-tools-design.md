@@ -24,7 +24,7 @@ AgentToolRegistry.ListAllTools
 
 `applyDefinitionToolPolicy` 改为兼容性归一化：明确关闭 `EnforceToolAllowlist`，不再让定义覆盖调用方工具列表。`enforceExplicitToolAllowlist` 固定返回 false，避免 Create/Resume 路径继续携带严格授权语义。
 
-`toolNamesFromFlags` 改为返回平台默认能力提示集合，不让 false 缩减能力。它不是授权真相源；真正是否注册仍由 Registry 与 `IsEnabled` 决定。这样外部恢复等历史调用路径即使仍构造 ToolNames，也不会与统一策略矛盾。
+`toolNamesFromFlags` 暂时保留原有兼容解析结果，但它不再是授权真相源；真正是否注册只由 Registry 与 `IsEnabled` 决定。这样 Create/Answer/外部恢复等历史调用路径即使仍构造 ToolNames，也不能缩减工具集合，后续可无迁移删除这些兼容字段。
 
 ## 3. 权限契约
 

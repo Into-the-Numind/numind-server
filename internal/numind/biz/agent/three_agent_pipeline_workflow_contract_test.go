@@ -112,7 +112,7 @@ func (r *pipelineWorkflowRecorder) observeRequest(req aiservice.ChatRequest) {
 	if strings.Join(names, ",") == strings.Join(r.expectedToolNames, ",") {
 		r.toolSchemaObserved = true
 	} else if r.err == nil {
-		r.err = fmt.Errorf("model tool set = %v, want strict allowlist %v", names, r.expectedToolNames)
+		r.err = fmt.Errorf("model tool set = %v, want global registry set %v", names, r.expectedToolNames)
 	}
 }
 
@@ -281,8 +281,8 @@ func runScriptedPipelineWorkflow(t *testing.T, scenario pipelineWorkflowScenario
 	}
 	prompt := loadPipelineSystemPrompt(t, scenario.agent)
 	toolNames := uniquePipelineToolNames(scenario.steps)
-	recorder := &pipelineWorkflowRecorder{expected: scenario.steps, prompt: prompt, expectedToolNames: toolNames}
-	allNames := []string{"xhs_note_list", "file_read", "lark_skill_read", "lark_inspect", "lark_execute", "ask_user_question"}
+	allNames := []string{"ask_user_question", "file_read", "lark_execute", "lark_inspect", "lark_skill_read", "xhs_note_list"}
+	recorder := &pipelineWorkflowRecorder{expected: scenario.steps, prompt: prompt, expectedToolNames: allNames}
 	tools := make([]FullTool, 0, len(allNames))
 	for _, name := range allNames {
 		tools = append(tools, &pipelineWorkflowTool{name: name, recorder: recorder})
@@ -299,8 +299,7 @@ func runScriptedPipelineWorkflow(t *testing.T, scenario pipelineWorkflowScenario
 	result, err := runner.Run(context.Background(), RunRequest{
 		UserID: 1, AgentDefinitionID: scenario.agentID,
 		SessionID: fmt.Sprintf("pipeline-%d", scenario.agentID), Input: scenario.input,
-		// Deliberately stale/fail-open caller policy: the runner must derive the
-		// strict set from the definition it just loaded.
+		// Deliberately stale caller policy: it cannot restrict the global registry set.
 		ToolNames: allNames, EnforceToolAllowlist: false,
 	})
 	require.NoError(t, err)
@@ -311,7 +310,7 @@ func runScriptedPipelineWorkflow(t *testing.T, scenario pipelineWorkflowScenario
 	require.NoError(t, recordErr)
 	require.Equal(t, len(scenario.steps), consumed)
 	require.True(t, promptObserved, "the checked-in Agent %d prompt must reach the model (source bytes=%d, model bytes=%d)", scenario.agent, len(prompt), len(recorder.systemPrompt))
-	require.True(t, schemasObserved, "only explicitly allowed production-schema tools must reach the model")
+	require.True(t, schemasObserved, "every globally registered production-schema tool must reach the model")
 	require.Len(t, calls, len(scenario.steps))
 	metadata := findPipelineTraceMetadata(t, *events)
 	for key, value := range scenario.wantMetadata {
