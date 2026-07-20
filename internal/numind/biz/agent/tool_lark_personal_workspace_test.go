@@ -518,6 +518,31 @@ func TestLarkPersonalWorkspace_FreshConversationCanDiscoverByTitle(t *testing.T)
 	assert.NotContains(t, output.HostedPolicy, "receipt")
 }
 
+// Customer regression (Dev runs 245-246): an upstream skill documented a
+// command outside the hosted catalog, while ambiguous search choices exposed
+// only token suffixes. The model then guessed an invalid URL and retried the
+// rejected command concurrently.
+func TestLarkPersonalWorkspace_BaseSkillPublishesStableHostedContract(t *testing.T) {
+	tool := &larkSkillReadTool{executor: &fakeSkillReadExecutor{result: &feishu.SkillReadPage{
+		Skill: "lark-base", Path: "skills/lark-base/SKILL.md",
+	}}}
+
+	result, err := tool.Execute(WithRunID(context.Background(), 246), ToolInput(`{"skill":"lark-base"}`))
+	require.NoError(t, err)
+	var output struct {
+		HostedPolicy string `json:"hosted_policy"`
+	}
+	require.NoError(t, json.Unmarshal(result, &output))
+
+	assert.Contains(t, output.HostedPolicy, "精确清单")
+	assert.Contains(t, output.HostedPolicy, "base +url-resolve")
+	assert.Contains(t, output.HostedPolicy, "完整原始 URL")
+	assert.Contains(t, output.HostedPolicy, "不得只展示 token 后缀")
+	assert.Contains(t, output.HostedPolicy, "重新执行相同的受限搜索")
+	assert.Contains(t, output.HostedPolicy, "lark_execute 必须串行")
+	assert.NotContains(t, output.HostedPolicy, "base +record-delete")
+}
+
 func TestLarkPersonalWorkspace_SkillReadStrictInputAndSafeFailures(t *testing.T) {
 	for name, input := range map[string]string{
 		"user identity":     `{"skill":"lark-doc","user_id":9}`,
