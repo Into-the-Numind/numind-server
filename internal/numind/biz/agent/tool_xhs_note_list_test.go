@@ -16,6 +16,7 @@ import (
 	"gorm.io/gorm/logger"
 
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
 )
@@ -31,6 +32,57 @@ func newXhsNoteListTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	return db
+}
+
+func TestXhsNoteList_LangfuseContainsOnlySafePaginationMetadata(t *testing.T) {
+	db := newXhsNoteListTestDB(t)
+	seedAgentXhsNote(t, db, 11, 1)
+	tool := NewXhsNoteListTool(store.NewTestStore(db).Xhs()).(*xhsNoteListTool)
+	events := capturePipelineLangfuseEvents(t)
+	ctx := middleware.NewContextWithUserID(langfuse.WithTrace(context.Background(), "xhs-safe-trace"), 11)
+
+	result, err := tool.Execute(ctx, ToolInput(`{"projection":"full","limit":100,"keyword":"正文-1"}`))
+
+	require.NoError(t, err)
+	require.NotEmpty(t, result)
+	created := findPipelineSpanEvent(t, *events, "span-create", "tool.xhs_note_list.execute")
+	updated := findPipelineSpanUpdate(t, *events, created.ID)
+	assert.Equal(t, map[string]any{
+		"projection": "full", "filter_kinds": []string{"keyword"}, "limit": 100,
+	}, created.Input)
+	output, ok := updated.Output.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, 1, output["returned_count"])
+	assert.Equal(t, false, output["has_more"])
+	assert.Equal(t, pipelineToolTraceNoError, output["error_class"])
+	assert.Contains(t, output, "duration_ms")
+
+	encoded := pipelineEventsJSON(t, *events)
+	for _, secret := range []string{"标题-1", "正文-1", "评论-1", "回复-1", "note-1", "xiaohongshu.com"} {
+		assert.NotContains(t, encoded, secret)
+	}
+	for _, forbiddenKey := range []string{"xhs_note_id", "title", "content", "comment", "note_url"} {
+		assert.NotContains(t, encoded, `"`+forbiddenKey+`"`)
+	}
+}
+
+func TestXhsNoteList_LangfuseStoreErrorUsesFixedClass(t *testing.T) {
+	db := newXhsNoteListTestDB(t)
+	tool := NewXhsNoteListTool(store.NewTestStore(db).Xhs()).(*xhsNoteListTool)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	require.NoError(t, sqlDB.Close())
+	events := capturePipelineLangfuseEvents(t)
+	ctx := middleware.NewContextWithUserID(langfuse.WithTrace(context.Background(), "xhs-error-trace"), 11)
+
+	_, err = tool.Execute(ctx, ToolInput(`{"projection":"index"}`))
+
+	require.Error(t, err)
+	created := findPipelineSpanEvent(t, *events, "span-create", "tool.xhs_note_list.execute")
+	updated := findPipelineSpanUpdate(t, *events, created.ID)
+	assert.Equal(t, "ERROR", updated.Level)
+	assert.Equal(t, "store_error", updated.StatusMessage)
+	assert.NotContains(t, pipelineEventsJSON(t, *events), "database is closed")
 }
 
 func seedAgentXhsNote(t *testing.T, db *gorm.DB, userID uint, i int) model.XhsTopicNote {

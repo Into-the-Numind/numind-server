@@ -13,7 +13,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/util"
 )
@@ -259,19 +258,6 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		return t.returnSoftError(path.Base(in.FileURL), "file not owned by current user")
 	}
 
-	// Langfuse span for the full tool execution.
-	var spanID string
-	var traceID string
-	if tc := langfuse.FromContext(ctx); tc != nil {
-		spanID = langfuse.SpanID()
-		traceID = tc.TraceID
-		langfuse.CreateSpan(tc.TraceID, spanID, "tool.file_read.execute",
-			langfuse.WithSpanParent(tc.ParentObservationID),
-			langfuse.WithSpanInput(in),
-		)
-		defer func() { langfuse.EndSpan(traceID, spanID) }()
-	}
-
 	// Translate private COS URLs into time-bounded presigned URLs. TWO signed
 	// URLs are minted: one for HEAD (the cheap probe used here) and one for
 	// GET (downstream fetch by qwen-long, OCR, text http.Get). Tencent COS
@@ -314,6 +300,14 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		mimeType = strings.TrimSpace(mimeType[:idx])
 	}
 	byteSize := int(headResp.ContentLength)
+	span := startSafePipelineToolSpan(ctx, "tool.file_read.execute", map[string]any{
+		"mime_type":   mimeType,
+		"offset":      offset,
+		"limit_bytes": limitBytes,
+	})
+	spanOutput := map[string]any{"returned_bytes": 0, "has_more": false}
+	spanErrorClass := pipelineToolTraceNoError
+	defer func() { span.End(spanOutput, spanErrorClass) }()
 
 	// Dispatch to the appropriate parser by MIME type.
 	// Parsers receive fetchURL (GET-signed) — they each issue their own
@@ -326,26 +320,32 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	switch {
 	case isDocumentReadable(mimeType, in.FileURL):
 		if t.documentParser == nil {
+			spanErrorClass = "configuration_error"
 			return t.returnSoftError(path.Base(in.FileURL), "document parser not configured")
 		}
 		content, pageCount, parserTruncated, err = t.documentParser.Parse(ctx, fetchURL, in.Prompt)
 	case strings.HasPrefix(mimeType, "image/"):
 		if t.imageParser == nil {
+			spanErrorClass = "configuration_error"
 			return t.returnSoftError(path.Base(in.FileURL), "image parser not configured")
 		}
 		content, _, parserTruncated, err = t.imageParser.Parse(ctx, fetchURL, in.Prompt)
 	case mimeType == "text/plain" || mimeType == "text/markdown":
 		if t.textParser == nil {
+			spanErrorClass = "configuration_error"
 			return t.returnSoftError(path.Base(in.FileURL), "text parser not configured")
 		}
 		content, _, parserTruncated, err = t.textParser.Parse(ctx, fetchURL, in.Prompt)
 	default:
+		spanErrorClass = "unsupported_mime"
 		return t.returnSoftError(path.Base(in.FileURL), "unsupported MIME type %q (supported: PDF, Word/Excel/PowerPoint, images, plain text)", mimeType)
 	}
 	if err != nil {
+		spanErrorClass = "parse_error"
 		return t.returnSoftError(path.Base(in.FileURL), "parse error: %v", err)
 	}
 	if parserTruncated {
+		spanErrorClass = "incomplete_parser_output"
 		return t.returnSoftError(path.Base(in.FileURL), "parser returned incomplete content; restart after the source parser is fixed")
 	}
 
@@ -353,13 +353,16 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	contentHash := sha256.Sum256([]byte(normalizedContent))
 	readToken := fmt.Sprintf("sha256:%x", contentHash)
 	if in.ReadToken != "" && in.ReadToken != readToken {
+		spanErrorClass = "stale_read_token"
 		return t.returnSoftError(path.Base(in.FileURL), "read_token does not match current file content; restart from offset 0")
 	}
 	contentByteSize := len(normalizedContent)
 	if offset > contentByteSize {
+		spanErrorClass = "offset_out_of_range"
 		return t.returnSoftError(path.Base(in.FileURL), "offset %d exceeds content_byte_size %d", offset, contentByteSize)
 	}
 	if offset < contentByteSize && !utf8.RuneStart(normalizedContent[offset]) {
+		spanErrorClass = "invalid_utf8_boundary"
 		return t.returnSoftError(path.Base(in.FileURL), "offset %d is not a UTF-8 rune boundary", offset)
 	}
 
@@ -371,6 +374,7 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		end--
 	}
 	if end == offset && offset < contentByteSize {
+		spanErrorClass = "limit_too_small"
 		return t.returnSoftError(path.Base(in.FileURL), "limit_bytes is too small to include the next UTF-8 rune")
 	}
 	pageContent := normalizedContent[offset:end]
@@ -392,6 +396,8 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		ReadToken:       readToken,
 		Truncated:       hasMore,
 	})
+	spanOutput["returned_bytes"] = len(pageContent)
+	spanOutput["has_more"] = hasMore
 	return ToolResult(out), nil
 }
 

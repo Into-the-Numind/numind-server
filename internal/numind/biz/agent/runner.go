@@ -1617,6 +1617,9 @@ func (r *agentRunner) finalizeRun(
 	} else if err := r.runStore.UpdateState(finalizeCtx, run.ID, "terminated", string(st.TerminalReason), &endedAt); err != nil {
 		log.Warnw("AgentRunner.Run UpdateState failed", "agent_run_id", run.ID, "error", err)
 	}
+	if st.TerminalReason == TerminalCompleted {
+		r.recordPipelineRunMetricsForDefinition(finalizeCtx, req.AgentDefinitionID, assistantContent)
+	}
 
 	// #6 permission-pipeline: non-blocking read of sink → fill RunResult.PermissionDenial.
 	var permDetail *PermissionDenialDetail

@@ -160,6 +160,14 @@ func (t *xhsNoteListTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 	if validationErr != nil {
 		return t.returnSoftError("%v", validationErr)
 	}
+	span := startSafePipelineToolSpan(ctx, "tool.xhs_note_list.execute", map[string]any{
+		"projection":   string(normalized.projection),
+		"filter_kinds": xhsNoteListFilterKinds(normalized.filter),
+		"limit":        normalized.limit,
+	})
+	spanOutput := map[string]any{"returned_count": 0, "has_more": false}
+	spanErrorClass := pipelineToolTraceNoError
+	defer func() { span.End(spanOutput, spanErrorClass) }()
 
 	query := store.XhsSnapshotQuery{
 		Filter:     normalized.filter,
@@ -173,6 +181,7 @@ func (t *xhsNoteListTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 
 	page, err := t.store.ListSnapshot(ctx, userID, query)
 	if err != nil {
+		spanErrorClass = "store_error"
 		return nil, fmt.Errorf("xhs_note_list snapshot: %w", err)
 	}
 
@@ -215,15 +224,36 @@ func (t *xhsNoteListTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 			Projection:    string(normalized.projection),
 		})
 		if cursorErr != nil {
+			spanErrorClass = "cursor_encoding_error"
 			return nil, fmt.Errorf("xhs_note_list encode cursor: %w", cursorErr)
 		}
 		out.NextCursor = nextCursor
 	}
 	encoded, err := json.Marshal(out)
 	if err != nil {
+		spanErrorClass = "result_encoding_error"
 		return nil, fmt.Errorf("xhs_note_list marshal result: %w", err)
 	}
+	spanOutput["returned_count"] = len(items)
+	spanOutput["has_more"] = page.HasMore
 	return encoded, nil
+}
+
+func xhsNoteListFilterKinds(filter store.XhsSnapshotFilter) []string {
+	kinds := make([]string, 0, 4)
+	if len(filter.XhsNoteIDs) > 0 {
+		kinds = append(kinds, "xhs_note_ids")
+	}
+	if filter.Keyword != "" {
+		kinds = append(kinds, "keyword")
+	}
+	if filter.CollectedFrom != nil {
+		kinds = append(kinds, "collected_from")
+	}
+	if filter.CollectedTo != nil {
+		kinds = append(kinds, "collected_to")
+	}
+	return kinds
 }
 
 func normalizeXhsNoteListInput(input ToolInput) (*normalizedXhsNoteListInput, error) {

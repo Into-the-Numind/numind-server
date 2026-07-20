@@ -12,7 +12,6 @@ import (
 
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/profile"
-	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/parser"
 )
 
@@ -35,17 +34,15 @@ const docFetchMaxBytes = 20 * 1024 * 1024
 // zero-cost, and cross-border-free.
 type documentParserImpl struct{}
 
-func (p *documentParserImpl) Parse(ctx context.Context, fileURL, _ string) (string, int, bool, error) {
-	var spanID, traceID string
-	if tc := langfuse.FromContext(ctx); tc != nil {
-		spanID = langfuse.SpanID()
-		traceID = tc.TraceID
-		langfuse.CreateSpan(traceID, spanID, "tool.file_read.document",
-			langfuse.WithSpanParent(tc.ParentObservationID),
-			langfuse.WithSpanInput(map[string]any{"file_url": fileURL}),
-		)
-		defer func() { langfuse.EndSpan(traceID, spanID) }()
-	}
+func (p *documentParserImpl) Parse(ctx context.Context, fileURL, _ string) (content string, pageCount int, truncated bool, err error) {
+	span := startSafePipelineToolSpan(ctx, "tool.file_read.document", map[string]any{"parser_kind": "document"})
+	defer func() {
+		errorClass := pipelineToolTraceNoError
+		if err != nil {
+			errorClass = "parser_error"
+		}
+		span.End(map[string]any{"returned_bytes": len(content)}, errorClass)
+	}()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
 	if err != nil {
@@ -84,19 +81,19 @@ func (p *documentParserImpl) Parse(ctx context.Context, fileURL, _ string) (stri
 // imageParserImpl uses aiservice.OCR to extract text from images.
 type imageParserImpl struct{}
 
-func (p *imageParserImpl) Parse(ctx context.Context, fileURL, _ string) (string, int, bool, error) {
-	var spanID, traceID string
-	if tc := langfuse.FromContext(ctx); tc != nil {
-		spanID = langfuse.SpanID()
-		traceID = tc.TraceID
-		langfuse.CreateSpan(traceID, spanID, "tool.file_read.ocr",
-			langfuse.WithSpanParent(tc.ParentObservationID),
-			langfuse.WithSpanInput(map[string]any{"file_url": fileURL}),
-		)
-		defer func() { langfuse.EndSpan(traceID, spanID) }()
-	}
+var fileReadOCRFn = aiservice.OCR
 
-	resp, err := aiservice.OCR(ctx, profile.OcrBaidu, aiservice.OCRRequest{
+func (p *imageParserImpl) Parse(ctx context.Context, fileURL, _ string) (content string, pageCount int, truncated bool, err error) {
+	span := startSafePipelineToolSpan(ctx, "tool.file_read.ocr", map[string]any{"parser_kind": "ocr"})
+	defer func() {
+		errorClass := pipelineToolTraceNoError
+		if err != nil {
+			errorClass = "parser_error"
+		}
+		span.End(map[string]any{"returned_bytes": len(content)}, errorClass)
+	}()
+
+	resp, err := fileReadOCRFn(ctx, profile.OcrBaidu, aiservice.OCRRequest{
 		ImageURL: fileURL,
 	})
 	if err != nil {
@@ -110,17 +107,15 @@ func (p *imageParserImpl) Parse(ctx context.Context, fileURL, _ string) (string,
 // The 20 MiB + 1 read detects and rejects oversized sources without truncation.
 type textParserImpl struct{}
 
-func (p *textParserImpl) Parse(ctx context.Context, fileURL, _ string) (string, int, bool, error) {
-	var spanID, traceID string
-	if tc := langfuse.FromContext(ctx); tc != nil {
-		spanID = langfuse.SpanID()
-		traceID = tc.TraceID
-		langfuse.CreateSpan(traceID, spanID, "tool.file_read.direct",
-			langfuse.WithSpanParent(tc.ParentObservationID),
-			langfuse.WithSpanInput(map[string]any{"file_url": fileURL}),
-		)
-		defer func() { langfuse.EndSpan(traceID, spanID) }()
-	}
+func (p *textParserImpl) Parse(ctx context.Context, fileURL, _ string) (content string, pageCount int, truncated bool, err error) {
+	span := startSafePipelineToolSpan(ctx, "tool.file_read.direct", map[string]any{"parser_kind": "direct"})
+	defer func() {
+		errorClass := pipelineToolTraceNoError
+		if err != nil {
+			errorClass = "parser_error"
+		}
+		span.End(map[string]any{"returned_bytes": len(content)}, errorClass)
+	}()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
 	if err != nil {

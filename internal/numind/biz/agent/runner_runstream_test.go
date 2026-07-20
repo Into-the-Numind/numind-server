@@ -412,6 +412,30 @@ func TestRunStream_HappyPath(t *testing.T) {
 	assert.Equal(t, string(TerminalCompleted), got.StateReason)
 }
 
+func TestPipelineMetrics_StreamRunnerRecordsCompletedFinalAnswer(t *testing.T) {
+	final := "完成\n<!-- numind-pipeline-report/v1 agent=agent-3 {\"source_count\":2,\"output_mode\":\"append\"} -->"
+	withMockChatStreamFn(t, successStreamFn(final))
+	events := capturePipelineLangfuseEvents(t)
+	skillStore := newMemorySkillStore(1, 503, "")
+	skillStore.fixed.Name = pipelineAgent3Name
+	ms := newMockStore()
+	run := makeRunForStream(t, ms)
+	runner, toolName := newReActRunnerForStream(ms, WithSkillStore(skillStore))
+	ch := make(chan stream.Event, 256)
+
+	result, err := runner.RunStream(context.Background(), RunRequest{
+		UserID: 1, AgentDefinitionID: 503, Input: "run pipeline", ToolNames: []string{toolName},
+	}, run.ID, ch)
+	close(ch)
+
+	require.NoError(t, err)
+	assert.Equal(t, TerminalCompleted, result.TerminalReason)
+	metadata := findPipelineTraceMetadata(t, *events)
+	assert.Equal(t, "agent-3", metadata["agent"])
+	assert.Equal(t, "2", metadata["source_count"])
+	assert.Equal(t, "append", metadata["output_mode"])
+}
+
 // TestRunStream_LLMError verifies that when chatStreamFn returns an error
 // (regression for Hotfix 648d16d4 / ErrAIProviderTimeout):
 //  1. RunStream returns a non-nil error

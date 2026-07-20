@@ -2,10 +2,17 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"numind-server/internal/pkg/aiservice"
+	"numind-server/internal/pkg/langfuse"
 )
 
 // ─── textParserImpl tests ────────────────────────────────────────────────────
@@ -140,4 +147,73 @@ func TestParsersImplementInterface(t *testing.T) {
 	var _ fileParser = (*documentParserImpl)(nil)
 	var _ fileParser = (*imageParserImpl)(nil)
 	var _ fileParser = (*textParserImpl)(nil)
+}
+
+func TestFileReadParsers_LangfuseNeverCapturesPresignedURLsOrContent(t *testing.T) {
+	secretBody := "customer-source-body-must-not-be-traced"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(secretBody))
+	}))
+	t.Cleanup(srv.Close)
+	secretURL := srv.URL + "/private.txt?sign=presigned-secret-query"
+	events := capturePipelineLangfuseEvents(t)
+	ctx := langfuse.WithTrace(context.Background(), "parser-safe-trace")
+
+	directContent, _, _, err := (&textParserImpl{}).Parse(ctx, secretURL, "ignored-secret-prompt")
+	require.NoError(t, err)
+	require.Equal(t, secretBody, directContent)
+	documentContent, _, _, err := (&documentParserImpl{}).Parse(ctx, secretURL, "ignored-secret-prompt")
+	require.NoError(t, err)
+	require.Equal(t, secretBody, documentContent)
+
+	originalOCR := fileReadOCRFn
+	t.Cleanup(func() { fileReadOCRFn = originalOCR })
+	fileReadOCRFn = func(_ context.Context, _ string, req aiservice.OCRRequest) (*aiservice.OCRResponse, error) {
+		require.Equal(t, secretURL, req.ImageURL, "functional parser still receives the URL")
+		return &aiservice.OCRResponse{Text: secretBody}, nil
+	}
+	ocrContent, _, _, err := (&imageParserImpl{}).Parse(ctx, secretURL, "ignored-secret-prompt")
+	require.NoError(t, err)
+	require.Equal(t, secretBody, ocrContent)
+
+	for name, kind := range map[string]string{
+		"tool.file_read.direct": "direct", "tool.file_read.document": "document", "tool.file_read.ocr": "ocr",
+	} {
+		created := findPipelineSpanEvent(t, *events, "span-create", name)
+		assert.Equal(t, map[string]any{"parser_kind": kind}, created.Input)
+		updated := findPipelineSpanUpdate(t, *events, created.ID)
+		output, ok := updated.Output.(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, len(secretBody), output["returned_bytes"])
+		assert.Equal(t, pipelineToolTraceNoError, output["error_class"])
+	}
+
+	encoded := pipelineEventsJSON(t, *events)
+	for _, secret := range []string{srv.URL, "presigned-secret-query", secretBody, "ignored-secret-prompt"} {
+		assert.NotContains(t, encoded, secret)
+	}
+	assert.NotContains(t, encoded, `"file_url"`)
+}
+
+func TestImageParser_LangfuseErrorUsesFixedClass(t *testing.T) {
+	secretURL := "https://cos.example/private.png?token=secret-token"
+	secretError := "provider-secret-error-body"
+	originalOCR := fileReadOCRFn
+	t.Cleanup(func() { fileReadOCRFn = originalOCR })
+	fileReadOCRFn = func(context.Context, string, aiservice.OCRRequest) (*aiservice.OCRResponse, error) {
+		return nil, errors.New(secretError)
+	}
+	events := capturePipelineLangfuseEvents(t)
+	ctx := langfuse.WithTrace(context.Background(), "parser-error-trace")
+
+	_, _, _, err := (&imageParserImpl{}).Parse(ctx, secretURL, "")
+
+	require.Error(t, err)
+	created := findPipelineSpanEvent(t, *events, "span-create", "tool.file_read.ocr")
+	updated := findPipelineSpanUpdate(t, *events, created.ID)
+	assert.Equal(t, "parser_error", updated.StatusMessage)
+	assert.Equal(t, "ERROR", updated.Level)
+	encoded := pipelineEventsJSON(t, *events)
+	assert.NotContains(t, encoded, secretURL)
+	assert.NotContains(t, encoded, secretError)
 }

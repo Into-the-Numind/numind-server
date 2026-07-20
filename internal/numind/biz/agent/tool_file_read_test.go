@@ -12,6 +12,10 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/middleware"
 )
 
@@ -22,6 +26,61 @@ type mockFileParser struct {
 	pageCount int
 	truncated bool
 	err       error
+}
+
+func TestFileRead_LangfuseContainsOnlySafePaginationMetadata(t *testing.T) {
+	srv := newHeadServer(t, 200, "text/plain", 128)
+	secretContent := "customer-secret-file-content"
+	secretPrompt := "extract customer-secret-instruction"
+	tool := &fileReadTool{textParser: &mockFileParser{content: secretContent}, headFn: http.Head}
+	events := capturePipelineLangfuseEvents(t)
+	ctx := middleware.NewContextWithUserID(langfuse.WithTrace(context.Background(), "file-safe-trace"), 123)
+	input, err := json.Marshal(fileReadInput{FileURL: baseURL(srv.URL), Prompt: secretPrompt})
+	require.NoError(t, err)
+
+	result, err := tool.Execute(ctx, ToolInput(input))
+
+	require.NoError(t, err)
+	require.Contains(t, string(result), secretContent, "tool result remains functionally unchanged")
+	created := findPipelineSpanEvent(t, *events, "span-create", "tool.file_read.execute")
+	updated := findPipelineSpanUpdate(t, *events, created.ID)
+	assert.Equal(t, map[string]any{
+		"mime_type": "text/plain", "offset": 0, "limit_bytes": fileReadDefaultLimitBytes,
+	}, created.Input)
+	output, ok := updated.Output.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, len(secretContent), output["returned_bytes"])
+	assert.Equal(t, false, output["has_more"])
+	assert.Equal(t, pipelineToolTraceNoError, output["error_class"])
+	assert.Contains(t, output, "duration_ms")
+
+	encoded := pipelineEventsJSON(t, *events)
+	for _, secret := range []string{srv.URL, "test-file.pdf", secretPrompt, secretContent, "sha256:"} {
+		assert.NotContains(t, encoded, secret)
+	}
+	for _, forbiddenKey := range []string{"file_url", "prompt", "content", "read_token"} {
+		assert.NotContains(t, encoded, `"`+forbiddenKey+`"`)
+	}
+}
+
+func TestFileRead_LangfuseErrorUsesFixedClassWithoutRawParserError(t *testing.T) {
+	srv := newHeadServer(t, 200, "text/plain", 128)
+	secretError := "provider leaked customer-secret-error-body"
+	tool := &fileReadTool{textParser: &mockFileParser{err: errors.New(secretError)}, headFn: http.Head}
+	events := capturePipelineLangfuseEvents(t)
+	ctx := middleware.NewContextWithUserID(langfuse.WithTrace(context.Background(), "file-error-trace"), 123)
+	input, err := json.Marshal(fileReadInput{FileURL: baseURL(srv.URL)})
+	require.NoError(t, err)
+
+	result, err := tool.Execute(ctx, ToolInput(input))
+
+	require.NoError(t, err, "parser failures remain model-correctable soft errors")
+	require.Contains(t, string(result), secretError)
+	created := findPipelineSpanEvent(t, *events, "span-create", "tool.file_read.execute")
+	updated := findPipelineSpanUpdate(t, *events, created.ID)
+	assert.Equal(t, "ERROR", updated.Level)
+	assert.Equal(t, "parse_error", updated.StatusMessage)
+	assert.NotContains(t, pipelineEventsJSON(t, *events), secretError)
 }
 
 func (m *mockFileParser) Parse(_ context.Context, _, _ string) (string, int, bool, error) {

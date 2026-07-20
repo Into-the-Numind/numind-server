@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: Build three user-isolated Agents that turn internal XHS captures into a Feishu Base, customer materials into a reusable Feishu profile document, and both artifacts into a customer-specific Feishu topic-planning document.
   classification_reason: 'Standard: the feature adds Agent access to the current user XHS library and spans Agent orchestration, Feishu authorization/Base/Doc operations, multi-user permission boundaries, prompts, and end-to-end tests across more than three files and likely two repositories.'
-  last_updated_by: ai-s4-task5
-  last_updated_at: '2026-07-20T17:17:04+08:00'
+  last_updated_by: ai-s4-task6
+  last_updated_at: '2026-07-20T17:28:03+08:00'
   created_at: '2026-07-20T15:45:30+08:00'
   track: standard
   stage: S4
@@ -13,7 +13,7 @@ features:
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/three-agent-feishu-pipeline, numind-web-v3: feature/three-agent-feishu-pipeline}
   worktrees: {numind-server: /private/tmp/wt-three-agent-feishu-pipeline-numind-server, numind-web-v3: /private/tmp/wt-three-agent-feishu-pipeline-numind-web-v3}
-  progress: {total_tasks: 7, completed_tasks: 5, reviewed_tasks: 0, current_task: 'Task 6: add privacy-safe Langfuse tool spans and final pipeline metrics'}
+  progress: {total_tasks: 7, completed_tasks: 6, reviewed_tasks: 0, current_task: 'Task 7: add executable three-Agent workflow contracts, run full gates, and complete dual review'}
   artifacts:
     requirement: requirements/three-agent-feishu-pipeline.md
     proposal: proposals/three-agent-feishu-pipeline-proposal.md
@@ -33,6 +33,7 @@ features:
   - 'S4 Task 3: file_read now parses complete sources up to 20 MiB and returns UTF-8-safe pages of at most 64 KiB with stable content fingerprints; continuation rejects missing/stale tokens and invalid rune-boundary offsets instead of silently truncating content.'
   - 'S4 Task 4: only the trusted concrete file_read adapter bypasses generic artifact preview, with a 384 KiB complete-envelope ceiling; same-named mocks still persist normally and oversized trusted output fails closed as a soft error.'
   - 'S4 Task 5: three versioned AgentDefinition artifacts deterministically compose runtime contracts with the hashed user Prompt SSOT; Agent 2 is byte-identical and only the two authorized Agent 1/3 template patches exist. Every current platform tool/category is explicitly true or false and Create/Patch/history tenant isolation is executable.'
+  - 'S4 Task 6: XHS and file-read spans expose only bounded operational metadata, parser spans no longer contain URLs, and a strict final-marker parser sends the same scalar whitelist to logs and Langfuse for stream/non-stream completion; malformed markers degrade to unavailable without changing run results.'
   - 'S4 Task 1 RED/GREEN: added a current-user-only XHS stable keyset snapshot store with index/full projections, limit 100, literal LIKE escaping, combined ID/time filters, limit+1 pagination, insertion upper-bound stability, deletion tolerance, and all existing XHS test fakes kept interface-complete.'
   - 'S4 Task 2 RED/GREEN: registered xhs_note_list only when a real datastore is present; strict schema excludes user_id, defaults and caps limit at 100, binds canonical filters/projection into a stable cursor, emits index/full Prompt 1 inputs with null/presence semantics, strips comment identities and deeper replies, and returns validation as soft errors while preserving infrastructure failures.'
   blockers: []
