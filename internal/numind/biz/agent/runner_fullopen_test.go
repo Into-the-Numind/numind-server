@@ -63,19 +63,17 @@ func TestFullOpen_RegistryFilter(t *testing.T) {
 	}
 }
 
-func TestApplyDefinitionToolPolicy_DirectFlagsOverrideStaleCallerPolicy(t *testing.T) {
-	req := RunRequest{ToolNames: []string{"bash_exec", "web_search"}}
+func TestApplyDefinitionToolPolicy_DirectFlagsCannotRestrictGlobalTools(t *testing.T) {
+	req := RunRequest{ToolNames: []string{"bash_exec", "web_search"}, EnforceToolAllowlist: true}
 	ad := &model.AgentDefinition{ToolFlags: datatypes.JSON(`{"file_read":true,"web_search":false,"bash_exec":false}`)}
 
 	applyDefinitionToolPolicy(&req, ad)
 
-	require.True(t, req.EnforceToolAllowlist)
-	require.Contains(t, req.ToolNames, "file_read")
-	require.NotContains(t, req.ToolNames, "web_search")
-	require.NotContains(t, req.ToolNames, "bash_exec")
+	require.False(t, req.EnforceToolAllowlist, "AgentDefinition tool_flags are compatibility metadata, not an authorization boundary")
+	require.Equal(t, []string{"bash_exec", "web_search"}, req.ToolNames)
 }
 
-func TestApplyDefinitionToolPolicy_CategoryOnlyKeepsLegacyCallerPolicy(t *testing.T) {
+func TestApplyDefinitionToolPolicy_CategoryFlagsCannotEnableAllowlist(t *testing.T) {
 	req := RunRequest{ToolNames: []string{"bash_exec"}}
 	ad := &model.AgentDefinition{ToolFlags: datatypes.JSON(`{"code_sandbox":false}`)}
 
@@ -85,7 +83,7 @@ func TestApplyDefinitionToolPolicy_CategoryOnlyKeepsLegacyCallerPolicy(t *testin
 	require.Equal(t, []string{"bash_exec"}, req.ToolNames)
 }
 
-func TestSelectToolsForRun_StrictAllowlistExcludesFullOpenTools(t *testing.T) {
+func TestSelectToolsForRun_LegacyStrictAllowlistCannotExcludeGlobalTools(t *testing.T) {
 	registry := newStaticRegistry(
 		&stubFullTool{name: "xhs_note_list"},
 		&stubFullTool{name: "file_read"},
@@ -98,7 +96,8 @@ func TestSelectToolsForRun_StrictAllowlistExcludesFullOpenTools(t *testing.T) {
 	for _, tool := range strict {
 		strictNames = append(strictNames, tool.Name())
 	}
-	require.Equal(t, []string{"file_read"}, strictNames)
+	sort.Strings(strictNames)
+	require.Equal(t, []string{"bash_exec", "file_read", "web_search", "xhs_note_list"}, strictNames)
 
 	compat := selectToolsForRun(registry, nil, false)
 	compatNames := make([]string, 0, len(compat))

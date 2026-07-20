@@ -441,7 +441,7 @@ func TestPipelineMetrics_StreamRunnerRecordsCompletedFinalAnswer(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, TerminalCompleted, result.TerminalReason)
-	assert.Equal(t, []string{toolName}, modelToolNames, "RunStream must enforce loaded definition flags over stale caller policy")
+	assert.Equal(t, []string{toolName, "rogue_tool"}, modelToolNames, "RunStream must expose every usable registered tool despite legacy definition flags")
 	metadata := findPipelineTraceMetadata(t, *events)
 	assert.Equal(t, "agent-3", metadata["agent"])
 	assert.Equal(t, "2", metadata["source_count"])

@@ -1,36 +1,24 @@
 package agent
 
-import (
-	"encoding/json"
+import "numind-server/internal/pkg/model"
 
-	"numind-server/internal/pkg/model"
-)
-
-// applyDefinitionToolPolicy is the runner's trust-boundary backstop. Request
-// fields are assembled by several lifecycle paths and may be stale after a
-// partial lookup failure; the definition loaded by the runner is authoritative.
-// Legacy category-only definitions keep full-open compatibility, while any
-// direct tool flag always replaces caller-supplied policy with a strict list.
+// applyDefinitionToolPolicy normalizes legacy request fields to the platform-wide
+// tool policy. AgentDefinition.ToolFlags remains persisted for API compatibility,
+// but it is no longer an authorization boundary.
 func applyDefinitionToolPolicy(req *RunRequest, ad *model.AgentDefinition) {
-	if req == nil || ad == nil || !enforceExplicitToolAllowlist(ad.ToolFlags) {
+	if req == nil || ad == nil {
 		return
 	}
-	req.ToolNames = toolNamesFromFlags(ad.ToolFlags)
-	req.EnforceToolAllowlist = true
+	req.EnforceToolAllowlist = false
 }
 
 // selectToolsForRun is the single tool-registration policy shared by Run and
-// RunStream. Existing category-only Agent definitions keep the historical
-// full-open behavior. Definitions that contain any direct tool flag opt into a
-// strict server-side allowlist, so explicit false values cannot be bypassed by
-// the model or by prompt injection.
-func selectToolsForRun(registry AgentToolRegistry, allowedNames []string, enforceAllowlist bool) []FullTool {
+// RunStream. The legacy allowlist arguments remain for rolling compatibility,
+// but every Agent receives every registry tool enabled by the full platform
+// config. Hard-disabled tools opt out through IsEnabled.
+func selectToolsForRun(registry AgentToolRegistry, _ []string, _ bool) []FullTool {
 	if registry == nil {
 		return nil
-	}
-	allowed := make(map[string]struct{}, len(allowedNames))
-	for _, name := range allowedNames {
-		allowed[name] = struct{}{}
 	}
 	fullConfig := FullyEnabledToolConfig()
 	selected := make([]FullTool, 0)
@@ -38,40 +26,13 @@ func selectToolsForRun(registry AgentToolRegistry, allowedNames []string, enforc
 		if !tool.IsEnabled(fullConfig) {
 			continue
 		}
-		if enforceAllowlist {
-			if _, ok := allowed[tool.Name()]; !ok {
-				continue
-			}
-		}
 		selected = append(selected, tool)
 	}
 	return selected
 }
 
-// enforceExplicitToolAllowlist distinguishes legacy category-only definitions
-// from definitions that intentionally enumerate individual tool names. The
-// latter are security policy, not UI hints, and must be enforced by the runner.
-func enforceExplicitToolAllowlist(toolFlagsJSON []byte) bool {
-	if len(toolFlagsJSON) == 0 {
-		return false
-	}
-	var flags map[string]bool
-	if err := json.Unmarshal(toolFlagsJSON, &flags); err != nil {
-		return false
-	}
-	for key := range flags {
-		if !isKnownToolCategoryFlag(key) {
-			return true
-		}
-	}
+// enforceExplicitToolAllowlist is retained until all lifecycle callers drop the
+// legacy field. No ToolFlags JSON shape can restrict the platform tool set.
+func enforceExplicitToolAllowlist(_ []byte) bool {
 	return false
-}
-
-func isKnownToolCategoryFlag(name string) bool {
-	switch name {
-	case "code_sandbox", "media", "dangerous", "enable_skills":
-		return true
-	default:
-		return false
-	}
 }

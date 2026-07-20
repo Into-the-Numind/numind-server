@@ -406,7 +406,7 @@ func (r *agentRunner) RunStream(
 
 	var einoTools []einotool.BaseTool
 	toolMap := make(map[string]FullTool)
-	// Use the same compatibility/strict authorization policy as Run.
+	// Use the same platform-wide full-tool policy as Run.
 	if r.registry != nil {
 		for _, ft := range selectToolsForRun(r.registry, req.ToolNames, req.EnforceToolAllowlist) {
 			base := adaptFullToEinoTool(ft, effectiveHooks)

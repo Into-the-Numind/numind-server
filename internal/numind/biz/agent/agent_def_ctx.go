@@ -10,7 +10,7 @@ type agentDefCtxValue struct {
 }
 
 // WithAgentDefCtx 注入 agent_definition_id + parent_user_id 到 ctx。
-// runner.Run 在 skill lookup 成功后调；permission TenantAdminRuleValidator / ToolFlagValidator 用 AgentDefAndParentFromCtx 取出。
+// runner.Run 在 skill lookup 成功后调；permission TenantAdminRuleValidator 用 AgentDefAndParentFromCtx 取出。
 func WithAgentDefCtx(ctx context.Context, agentDefID uint64, parentUserID uint) context.Context {
 	return context.WithValue(ctx, agentDefCtxKey{}, &agentDefCtxValue{
 		AgentDefinitionID: agentDefID,

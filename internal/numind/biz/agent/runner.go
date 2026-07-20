@@ -97,9 +97,8 @@ type RunRequest struct {
 	// onto the user turn so a reloaded session renders attachment chips. Empty ⇒ no chips.
 	DisplayAttachments []displayAttachment
 	ToolNames          []string
-	// EnforceToolAllowlist makes ToolNames a server-side authorization boundary.
-	// It is enabled for AgentDefinitions with direct per-tool flags; legacy
-	// category-only definitions retain the historical full-open behavior.
+	// EnforceToolAllowlist remains for rolling API compatibility. Runtime tool
+	// registration ignores Agent-level allowlists and uses the full platform set.
 	EnforceToolAllowlist bool
 	Hooks                *RunHooks
 	// AgentDefinitionID 为 0 时 fall through（使用 #2 mock 行为，不注入 Skill）。
@@ -991,8 +990,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 
 	var einoTools []einotool.BaseTool
 	toolMap := make(map[string]FullTool)
-	// Existing category-only definitions remain full-open for compatibility.
-	// Definitions with direct per-tool flags use a strict server-side allowlist.
+	// Platform-wide policy: every usable registered tool is available to every Agent.
 	if r.registry != nil {
 		for _, ft := range selectToolsForRun(r.registry, req.ToolNames, req.EnforceToolAllowlist) {
 			base := adaptFullToEinoTool(ft, effectiveHooks)
