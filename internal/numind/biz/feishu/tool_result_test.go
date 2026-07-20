@@ -37,20 +37,27 @@ func TestMarshalLarkToolResult_SuccessAndActionableFailure(t *testing.T) {
 }
 
 func TestDecodeLarkTerminalFailure_StrictDurableBoundary(t *testing.T) {
+	const writeFenceKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	raw, err := MarshalLarkToolResult(&OperationResult{
 		OperationID: "op-unknown", State: model.FeishuOperationUnknown,
-		Failure: newOperationFailure(PublicCodeUnknownResult, model.FeishuOperationUnknown, true, RiskWrite, nil),
+		Failure: &OperationFailure{
+			Code: PublicCodeUnknownResult, Category: "unknown_result", BusinessStarted: true,
+			WriteFenceKey: writeFenceKey,
+		},
 	})
 	require.NoError(t, err)
 	failure, ok := DecodeLarkTerminalFailure(raw)
 	require.True(t, ok)
 	require.Equal(t, "unknown_result", failure.Category)
 	require.True(t, failure.BusinessStarted)
+	require.Equal(t, writeFenceKey, failure.WriteFenceKey)
 
 	for _, invalid := range []string{
 		`{"ok":false,"state":"unknown","operation_id":"op","failure":{"code":"feishu_unknown_result","category":"unknown_result","retryable":false,"business_started":true},"extra":true}`,
 		`{"ok":false,"state":"unknown","operation_id":"op","failure":{"code":"feishu_unknown_result","category":"validation","retryable":false,"business_started":true}}`,
 		`{"ok":true,"state":"unknown","operation_id":"op","failure":{"code":"feishu_unknown_result","category":"unknown_result","retryable":false,"business_started":true}}`,
+		`{"ok":false,"state":"unknown","operation_id":"op","failure":{"code":"feishu_unknown_result","category":"unknown_result","retryable":false,"business_started":true,"write_fence_key":"not-a-digest"}}`,
+		`{"ok":false,"state":"failed","operation_id":"op","failure":{"code":"feishu_failed","category":"failed","retryable":false,"business_started":true,"write_fence_key":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}`,
 		string(raw) + `{}`,
 	} {
 		got, accepted := DecodeLarkTerminalFailure(json.RawMessage(invalid))
@@ -78,6 +85,13 @@ func TestMarshalLarkToolResult_RejectsUnsafeOrAmbiguousResults(t *testing.T) {
 		{OperationID: "operation-unknown", State: model.FeishuOperationUnknown, Failure: &OperationFailure{
 			Code: PublicCodeTemporaryError, Category: "temporary", Retryable: true, BusinessStarted: true,
 		}},
+		{OperationID: "operation-unknown-bad-fence", State: model.FeishuOperationUnknown, Failure: &OperationFailure{
+			Code: PublicCodeUnknownResult, Category: "unknown_result", BusinessStarted: true, WriteFenceKey: "UPPERCASE",
+		}},
+		{OperationID: "operation-failed-with-fence", State: model.FeishuOperationFailed, Failure: &OperationFailure{
+			Code: PublicCodeFailed, Category: "failed", BusinessStarted: true,
+			WriteFenceKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		}},
 	}
 	for _, result := range tests {
 		encoded, err := MarshalLarkToolResult(result)
@@ -95,4 +109,22 @@ func TestNewOperationFailure_RetryabilityIsRiskAware(t *testing.T) {
 	require.True(t, notStartedWrite.Retryable)
 	unknown := newOperationFailure(PublicCodeUnknownResult, model.FeishuOperationUnknown, true, RiskWrite, nil)
 	require.False(t, unknown.Retryable)
+}
+
+func TestExactWriteFenceKey_IsStableAndWriteSpecific(t *testing.T) {
+	catalog := NewCommandCatalog()
+	first, err := catalog.Normalize([]string{"docs", "+create", "--title", "A"}, nil)
+	require.NoError(t, err)
+	same, err := catalog.Normalize([]string{"docs", "+create", "--title", "A"}, nil)
+	require.NoError(t, err)
+	different, err := catalog.Normalize([]string{"docs", "+create", "--title", "B"}, nil)
+	require.NoError(t, err)
+	read, err := catalog.Normalize([]string{"docs", "+fetch", "--doc", "doxcnABCDEFG123"}, nil)
+	require.NoError(t, err)
+
+	key := ExactWriteFenceKey(first)
+	require.Len(t, key, 64)
+	require.Equal(t, key, ExactWriteFenceKey(same))
+	require.NotEqual(t, key, ExactWriteFenceKey(different))
+	require.Empty(t, ExactWriteFenceKey(read), "reads must never acquire an ambiguity fence")
 }

@@ -246,14 +246,6 @@ func (c *CommandCatalog) Normalize(argv []string, stdinJSON []byte) (*Normalized
 	}, nil
 }
 
-// IsCatalogReadCommand is the fail-closed read-verification predicate used
-// after an ambiguous write. It grants no capability: the real execution still
-// passes through the same catalog, identity, scope and operation gates.
-func IsCatalogReadCommand(argv []string, stdinJSON []byte) bool {
-	command, err := NewCommandCatalog().Normalize(argv, stdinJSON)
-	return err == nil && command != nil && command.Risk == RiskRead
-}
-
 func parseCommandFlags(args []string, rules map[string]flagRule) (*parsedFlags, error) {
 	parsed := &parsedFlags{values: make(map[string][]string), argv: make([]string, 0, len(args))}
 	platformValues := map[string]string{"as": "user", "format": "json"}

@@ -1802,6 +1802,7 @@ func (s *FeishuOperationService) commitTerminal(
 			result := baseOperationResult(operation)
 			result.State = model.FeishuOperationUnknown
 			result.Failure = newOperationFailure(PublicCodeUnknownResult, result.State, true, RiskLevel(operation.RiskLevel), nil)
+			result.Failure.WriteFenceKey = s.writeFenceKeyFromOperation(operation)
 			return result, nil
 		}
 		return nil, ErrOperationUnavailable
@@ -1921,8 +1922,22 @@ func (s *FeishuOperationService) resultFromOperation(operation *model.FeishuOper
 		result.Failure = newOperationFailure(
 			publicCode, operation.State, summary.BusinessStarted, RiskLevel(operation.RiskLevel), summary.RecoveryScopes,
 		)
+		if operation.State == model.FeishuOperationUnknown && summary.BusinessStarted {
+			result.Failure.WriteFenceKey = s.writeFenceKeyFromOperation(operation)
+		}
 	}
 	return result, nil
+}
+
+func (s *FeishuOperationService) writeFenceKeyFromOperation(operation *model.FeishuOperation) string {
+	if s == nil || operation == nil {
+		return ""
+	}
+	persisted, err := s.openPersistedRequest(operation)
+	if err != nil {
+		return ""
+	}
+	return exactWriteFenceKey(persisted.CommandPath, persisted.Argv, persisted.StdinJSON, persisted.Risk)
 }
 
 func (s *FeishuOperationService) reloadResult(ctx context.Context, operation *model.FeishuOperation) (*OperationResult, error) {

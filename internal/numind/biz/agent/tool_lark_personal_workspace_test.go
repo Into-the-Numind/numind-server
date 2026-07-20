@@ -505,8 +505,9 @@ func TestLarkPersonalWorkspace_SkillReadPublishesHostedPolicy(t *testing.T) {
 	assert.NotContains(t, output.HostedPolicy, "skill_receipts")
 	assert.Contains(t, output.HostedPolicy, "最多允许 5 次总尝试")
 	assert.Contains(t, output.HostedPolicy, "不能原样重复")
-	assert.Contains(t, output.HostedPolicy, "unknown_result 必须立即停止所有写入")
-	assert.Contains(t, output.HostedPolicy, "只读 list/get/fetch 命令核验结果")
+	assert.Contains(t, output.HostedPolicy, "unknown_result 只禁止原样重复那一条结果不确定的写命令")
+	assert.Contains(t, output.HostedPolicy, "一次核验失败可改用其他合规只读方式")
+	assert.Contains(t, output.HostedPolicy, "不得阻止用户要求中的其他 Docs/Base/Wiki/Drive 操作")
 }
 
 // Customer regression (Dev run 211): a fresh conversation only had a document
@@ -1241,6 +1242,68 @@ func TestLarkPersonalWorkspace_ExecuteTerminalStatesNeverFakeSuccess(t *testing.
 }
 
 func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *testing.T) {
+	t.Run("run 255 unknown docs write cannot freeze verification or unrelated base work", func(t *testing.T) {
+		const runID = uint64(8255)
+		larkExecuteRetryClearRun(runID)
+		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+		executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+			OperationID: "op-doc-update-unknown", State: model.FeishuOperationUnknown,
+			Failure: &feishu.OperationFailure{
+				Code: feishu.PublicCodeUnknownResult, Category: "unknown_result", BusinessStarted: true,
+			},
+		}}
+		tool := &larkExecuteTool{executor: executor}
+
+		unknown, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "doc-update-unknown"),
+			ToolInput(`{"argv":["docs","+update","--doc","doxcnABCDEFG123","--command","append","--content","<p>项目介绍</p>"]}`),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(unknown), `"category":"unknown_result"`)
+
+		executor.mu.Lock()
+		executor.result = &feishu.OperationResult{
+			OperationID: "op-doc-fetch-failed", State: model.FeishuOperationFailed,
+			Failure: &feishu.OperationFailure{
+				Code: feishu.PublicCodeFailed, Category: "failed", BusinessStarted: true,
+			},
+		}
+		executor.mu.Unlock()
+		failedVerification, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "doc-fetch-failed"),
+			ToolInput(`{"argv":["docs","+fetch","--doc","doxcnABCDEFG123"]}`),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(failedVerification), `"category":"failed"`)
+
+		executor.mu.Lock()
+		executor.result = &feishu.OperationResult{
+			OperationID: "op-wiki-read", State: model.FeishuOperationSucceeded,
+			Data: json.RawMessage(`{"node_token":"wikcnABCDEFG123"}`),
+		}
+		executor.mu.Unlock()
+		alternateVerification, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "wiki-node-read"),
+			ToolInput(`{"argv":["wiki","+node-get","--node-token","wikcnABCDEFG123"]}`),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(alternateVerification), `"ok":true`)
+
+		executor.mu.Lock()
+		executor.result = &feishu.OperationResult{
+			OperationID: "op-base-create", State: model.FeishuOperationSucceeded,
+			Data: json.RawMessage(`{"app_token":"bascnABCDEFG123"}`),
+		}
+		executor.mu.Unlock()
+		unrelatedWrite, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "base-create"),
+			ToolInput(`{"argv":["base","+base-create","--name","项目任务","--table-name","任务列表"]}`),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(unrelatedWrite), `"ok":true`)
+		require.Len(t, executor.snapshot(), 4, "only the ambiguous write itself may be fenced")
+	})
+
 	t.Run("fifth malformed input exhausts correction budget without executor", func(t *testing.T) {
 		const runID = uint64(809)
 		larkExecuteRetryClearRun(runID)
@@ -1272,14 +1335,20 @@ func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *tes
 		require.Empty(t, executor.snapshot())
 	})
 
-	t.Run("durable external unknown arms stop before continuation", func(t *testing.T) {
+	t.Run("durable external unknown fences only its exact command", func(t *testing.T) {
 		const runID = uint64(810)
 		larkExecuteRetryClearRun(runID)
 		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+		argv := []string{"docs", "+create", "--title", "duplicate"}
+		command, err := feishu.NewCommandCatalog().Normalize(argv, nil)
+		require.NoError(t, err)
+		fenceKey := larkExecuteWriteFenceKey(command)
+		require.NotEmpty(t, fenceKey)
 		externalResult, err := feishu.MarshalLarkToolResult(&feishu.OperationResult{
 			OperationID: "op-resumed-unknown", State: model.FeishuOperationUnknown,
 			Failure: &feishu.OperationFailure{
 				Code: feishu.PublicCodeUnknownResult, Category: "unknown_result", BusinessStarted: true,
+				WriteFenceKey: fenceKey,
 			},
 		})
 		require.NoError(t, err)
@@ -1290,21 +1359,52 @@ func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *tes
 		}}
 		result, err := (&larkExecuteTool{executor: executor}).Execute(
 			larkPersonalWorkspaceContext(7, runID, "write-after-resume"),
-			ToolInput(`{"argv":["docs","+create","--title","duplicate"],"skill_receipts":["shared","doc"]}`),
+			ToolInput(`{"argv":["docs","+create","--title","duplicate"]}`),
 		)
 		requireSafeLarkSoftError(t, result, err)
-		require.Contains(t, string(result), "不可自动重试")
+		require.Contains(t, string(result), "完全相同")
 		require.Empty(t, executor.snapshot())
+	})
+
+	t.Run("legacy unknown without an exact fingerprint cannot freeze the run", func(t *testing.T) {
+		const runID = uint64(817)
+		larkExecuteRetryClearRun(runID)
+		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+		legacyUnknown, err := feishu.MarshalLarkToolResult(&feishu.OperationResult{
+			OperationID: "op-legacy-unknown", State: model.FeishuOperationUnknown,
+			Failure: &feishu.OperationFailure{
+				Code: feishu.PublicCodeUnknownResult, Category: "unknown_result", BusinessStarted: true,
+			},
+		})
+		require.NoError(t, err)
+		require.True(t, larkExecuteRetrySeedExternalResult(runID, legacyUnknown))
+
+		executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+			OperationID: "op-new-work", State: model.FeishuOperationSucceeded, Data: json.RawMessage(`{"ok":true}`),
+		}}
+		result, err := (&larkExecuteTool{executor: executor}).Execute(
+			larkPersonalWorkspaceContext(7, runID, "new-work-after-legacy-unknown"),
+			ToolInput(`{"argv":["base","+base-create","--name","继续任务","--table-name","任务列表"]}`),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(result), `"ok":true`)
+		require.Len(t, executor.snapshot(), 1)
 	})
 
 	t.Run("durable transcript keeps unknown write fenced after successful verification", func(t *testing.T) {
 		const runID = uint64(816)
 		larkExecuteRetryClearRun(runID)
 		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+		argv := []string{"base", "+field-create", "--base-token", "bascnABCDEFG123", "--table-id", "tblABCDEFG123", "--json", `{"name":"测试备注","type":"text"}`}
+		command, err := feishu.NewCommandCatalog().Normalize(argv, nil)
+		require.NoError(t, err)
+		fenceKey := larkExecuteWriteFenceKey(command)
+		require.NotEmpty(t, fenceKey)
 		unknown, err := feishu.MarshalLarkToolResult(&feishu.OperationResult{
 			OperationID: "op-durable-unknown", State: model.FeishuOperationUnknown,
 			Failure: &feishu.OperationFailure{
 				Code: feishu.PublicCodeUnknownResult, Category: "unknown_result", BusinessStarted: true,
+				WriteFenceKey: fenceKey,
 			},
 		})
 		require.NoError(t, err)
@@ -1331,11 +1431,11 @@ func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *tes
 			ToolInput(`{"argv":["base","+field-create","--base-token","bascnABCDEFG123","--table-id","tblABCDEFG123","--json","{\"name\":\"测试备注\",\"type\":\"text\"}"]}`),
 		)
 		requireSafeLarkSoftError(t, result, err)
-		require.Contains(t, string(result), "不可自动重试")
+		require.Contains(t, string(result), "完全相同")
 		require.Empty(t, executor.snapshot())
 	})
 
-	t.Run("unknown started write stops the run", func(t *testing.T) {
+	t.Run("unknown started write permits a different write but fences exact replay", func(t *testing.T) {
 		const runID = uint64(811)
 		larkExecuteRetryClearRun(runID)
 		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
@@ -1356,12 +1456,18 @@ func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *tes
 			larkPersonalWorkspaceContext(7, runID, "write-2"),
 			ToolInput(`{"argv":["docs","+create","--title","B"],"skill_receipts":["shared","doc"]}`),
 		)
-		requireSafeLarkSoftError(t, second, err)
-		require.Contains(t, string(second), "不可自动重试")
-		require.Len(t, executor.snapshot(), 1)
+		require.NoError(t, err)
+		require.Contains(t, string(second), `"category":"unknown_result"`)
+		replayed, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "write-1-replayed"),
+			ToolInput(`{"argv":["docs","+create","--title","A"],"skill_receipts":["shared","doc"]}`),
+		)
+		requireSafeLarkSoftError(t, replayed, err)
+		require.Contains(t, string(replayed), "完全相同")
+		require.Len(t, executor.snapshot(), 2)
 	})
 
-	t.Run("unknown write permits bounded read verification but never another write", func(t *testing.T) {
+	t.Run("unknown write permits read verification but never exact replay", func(t *testing.T) {
 		const runID = uint64(815)
 		larkExecuteRetryClearRun(runID)
 		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
@@ -1397,7 +1503,7 @@ func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *tes
 			ToolInput(`{"argv":["base","+field-create","--base-token","bascnABCDEFG123","--table-id","tblABCDEFG123","--json","{\"name\":\"测试备注\",\"type\":\"text\"}"]}`),
 		)
 		requireSafeLarkSoftError(t, blockedWrite, err)
-		require.Contains(t, string(blockedWrite), "不可自动重试")
+		require.Contains(t, string(blockedWrite), "完全相同")
 		require.Len(t, executor.snapshot(), 2, "verification may read but must never replay the ambiguous write")
 	})
 
@@ -1445,12 +1551,13 @@ func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *tes
 		)
 		require.NoError(t, err)
 		require.Contains(t, string(notFound), `"category":"not_found"`)
-		blocked, err := tool.Execute(
+		otherRead, err := tool.Execute(
 			larkPersonalWorkspaceContext(7, runID, "read-blind-retry"),
 			ToolInput(`{"argv":["docs","+fetch","--doc","other"],"skill_receipts":["shared","doc"]}`),
 		)
-		requireSafeLarkSoftError(t, blocked, err)
-		require.Len(t, executor.snapshot(), 3)
+		require.NoError(t, err)
+		require.Contains(t, string(otherRead), `"category":"not_found"`)
+		require.Len(t, executor.snapshot(), 4, "one terminal read result must not freeze later reads")
 	})
 
 	for _, testCase := range []struct {

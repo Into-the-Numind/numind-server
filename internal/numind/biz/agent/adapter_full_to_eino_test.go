@@ -418,12 +418,17 @@ func TestAdaptFullToEinoTool_LarkTerminalFailureNeverEmitsFalseSuccess(t *testin
 			assert.JSONEq(t, testCase.output, out)
 
 			var sawResult, sawError bool
+			var internalResult json.RawMessage
 			for _, event := range narration.CollectorFrom(ctx).Events() {
 				sawResult = sawResult || event.State == narration.StateResult
 				sawError = sawError || event.State == narration.StateError
+				if event.State == narration.StateError {
+					internalResult = append(json.RawMessage(nil), event.InternalResult...)
+				}
 			}
 			assert.False(t, sawResult, "a terminal Feishu failure must never render as green success")
 			assert.True(t, sawError)
+			assert.JSONEq(t, testCase.output, string(internalResult), "closed terminal evidence must survive internally for continuation")
 
 			var sawStreamResult bool
 			var errorPayload *stream.ToolCallErrorPayload

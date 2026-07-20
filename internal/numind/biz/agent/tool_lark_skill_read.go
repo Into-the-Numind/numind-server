@@ -75,7 +75,7 @@ const larkHostedExecutionPolicy = "有数托管规则（优先于下方针对本
 	"没有精确匹配时说明未找到并请求链接，不要猜测 token，也不要说成连接未就绪。" +
 	"lark_execute 必须串行：一次只调用一个并等待结构化结果后再决定下一步，禁止在同一轮并发调用或在前一个结果返回前重复同一命令。" +
 	"官方命令中的固定 --as user 与 --format json 可以保留，平台会安全规范化。" +
-	"policy_rejected 或 validation 最多允许 5 次总尝试；每次必须根据结构化原因修正业务命令，不能原样重复；not_found 或 resource_denied 应向用户确认资源，不要自动重试；unknown_result 必须立即停止所有写入，禁止换参数重复写入，但可用同一资源的 Catalog 只读 list/get/fetch 命令核验结果。" +
+	"policy_rejected 或 validation 每个连续纠错窗口最多允许 5 次总尝试；每次必须根据结构化原因修正业务命令，不能原样重复；not_found 或 resource_denied 应向用户确认资源，不要自动重试；unknown_result 只禁止原样重复那一条结果不确定的写命令。应优先使用 Catalog 只读 list/get/fetch 命令核验；一次核验失败可改用其他合规只读方式，且不得阻止用户要求中的其他 Docs/Base/Wiki/Drive 操作。未核验成功时必须如实说明，不能宣称写入成功。" +
 	"rate_limited/temporary 仅在结构化结果 retryable=true 时最多重试一次；不要改跑本地初始化命令。"
 
 func (t *larkSkillReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
@@ -220,7 +220,7 @@ func larkWorkspaceSoftError(code larkWorkspaceErrorCode) (ToolResult, error) {
 		message = "暂时无法完成飞书工作区检查；不要改用 auth/config/whoami。"
 		publicCode = "inspect_unavailable"
 	case larkWorkspaceErrorExecuteStopped:
-		message = "上一项飞书写操作返回不可自动重试的结构化结果，后续写入已停止。不要换参数重复写入；只可使用同一资源的 Catalog 只读 list/get/fetch 命令核验结果，然后据实向用户说明。"
+		message = "这条完全相同的飞书写命令此前返回 unknown_result，因此不再原样重复，以免重复写入。请用 Catalog 只读 list/get/fetch 命令核验；一次读取失败可换另一种合规只读方式。其他不同的飞书操作仍可继续。"
 		publicCode = "execution_stopped"
 	case larkWorkspaceErrorExecuteInFlight:
 		message = "已有一项飞书工作区操作正在执行。请等待当前工具结果返回后，再按顺序执行下一项 lark_execute；不要并行调用。"

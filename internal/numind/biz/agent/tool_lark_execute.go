@@ -67,8 +67,12 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 		return larkWorkspaceSoftError(larkWorkspaceErrorIdentity)
 	}
 	decoded, decodeErr := decodeLarkExecuteInput(input)
-	catalogRead := decodeErr == nil && feishu.IsCatalogReadCommand(decoded.Argv, decoded.StdinJSON)
-	retryState, retryAttempt, blockedReason, allowed := larkExecuteRetryBegin(runID, catalogRead)
+	var normalizedCommand *feishu.NormalizedCommand
+	if decodeErr == nil {
+		normalizedCommand, _ = feishu.NewCommandCatalog().Normalize(decoded.Argv, decoded.StdinJSON)
+	}
+	writeFenceKey := larkExecuteWriteFenceKey(normalizedCommand)
+	retryState, retryAttempt, blockedReason, allowed := larkExecuteRetryBegin(runID, writeFenceKey)
 	if !allowed {
 		switch blockedReason {
 		case larkRetryBlockedTerminal:
@@ -144,6 +148,17 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 	if !isLarkTerminalState(result.State) {
 		larkExecuteRetryFailed(retryState, retryAttempt)
 		return larkWorkspaceSoftError(larkWorkspaceErrorInvalidResult)
+	}
+	// The operation layer intentionally knows nothing about Agent-run replay
+	// state. Attach only the opaque exact-command digest at this final trusted
+	// boundary, without mutating a shared executor result.
+	if result.State == model.FeishuOperationUnknown && result.Failure != nil && writeFenceKey != "" {
+		resultClone := *result
+		failureClone := *result.Failure
+		failureClone.RequiredScopes = append([]string(nil), result.Failure.RequiredScopes...)
+		failureClone.WriteFenceKey = writeFenceKey
+		resultClone.Failure = &failureClone
+		result = &resultClone
 	}
 	output, err := feishu.MarshalLarkToolResult(result)
 	if err != nil {

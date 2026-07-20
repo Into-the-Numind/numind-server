@@ -239,7 +239,10 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 			a.emitStreamToolError(ctx, toolCallID, retryErr, durationMs, true)
 		} else {
 			terminalErr := errors.New("飞书工作区操作未完成")
-			a.emitNarration(ctx, narration.StateError, toolCallID, input, nil, terminalErr, "", "")
+			// Preserve the closed, redacted terminal envelope as internal-only
+			// continuation evidence. The browser still receives only the ordinary
+			// error narration; model argv and raw CLI output remain excluded.
+			a.emitNarration(ctx, narration.StateError, toolCallID, input, ToolResult(output), terminalErr, "", "")
 			a.emitStreamToolError(ctx, toolCallID, terminalErr, durationMs, false)
 		}
 	} else if softInfo, isSoft := softToolErrorInfo(output); isSoft {

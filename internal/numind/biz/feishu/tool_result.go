@@ -2,6 +2,8 @@ package feishu
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -19,6 +21,12 @@ type OperationFailure struct {
 	Retryable       bool     `json:"retryable"`
 	BusinessStarted bool     `json:"business_started"`
 	RequiredScopes  []string `json:"required_scopes,omitempty"`
+	// WriteFenceKey is an opaque server-generated digest for the exact
+	// normalized write command whose outcome is unknown. It contains no argv,
+	// resource token, content, credential, or user identity and is accepted only
+	// on a business-started unknown_result. Agent continuation uses it to retain
+	// the narrow fence without falling back to a run-wide stop.
+	WriteFenceKey string `json:"write_fence_key,omitempty"`
 }
 
 type larkToolResultEnvelope struct {
@@ -186,6 +194,12 @@ func validOperationFailure(state string, failure *OperationFailure) bool {
 	if state == model.FeishuOperationFailed && (failure.Code == PublicCodeUnknownResult || failure.Code == PublicCodeCancelled) {
 		return false
 	}
+	if failure.WriteFenceKey != "" {
+		if state != model.FeishuOperationUnknown || failure.Code != PublicCodeUnknownResult ||
+			!failure.BusinessStarted || !validWriteFenceKey(failure.WriteFenceKey) {
+			return false
+		}
+	}
 	normalized := normalizePublicFailureScopes(failure.RequiredScopes)
 	if len(normalized) != len(failure.RequiredScopes) {
 		return false
@@ -196,4 +210,44 @@ func validOperationFailure(state string, failure *OperationFailure) bool {
 		}
 	}
 	return true
+}
+
+func validWriteFenceKey(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for index := range value {
+		char := value[index]
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// ExactWriteFenceKey returns an opaque digest only for one catalog-normalized
+// write command. It deliberately excludes user/run identity because the fence
+// is stored inside one run's state, and includes the normalized argv so a
+// different operation remains executable. No plaintext command data is exposed.
+func ExactWriteFenceKey(command *NormalizedCommand) string {
+	if command == nil {
+		return ""
+	}
+	return exactWriteFenceKey(command.Path, command.Argv, command.StdinJSON, command.Risk)
+}
+
+func exactWriteFenceKey(path string, argv []string, stdinJSON []byte, risk RiskLevel) string {
+	if risk == RiskRead || path == "" || len(argv) == 0 {
+		return ""
+	}
+	payload, err := json.Marshal(struct {
+		Path      string   `json:"path"`
+		Argv      []string `json:"argv"`
+		StdinJSON []byte   `json:"stdin_json,omitempty"`
+	}{Path: path, Argv: argv, StdinJSON: stdinJSON})
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:])
 }
