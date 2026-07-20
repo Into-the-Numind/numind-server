@@ -13,7 +13,7 @@ features:
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/feishu-action-transition, numind-web-v3: feature/feishu-action-transition}
   worktrees: {numind-server: /private/tmp/wt-feishu-action-transition-numind-server, numind-web-v3: /private/tmp/wt-feishu-action-transition-numind-web-v3}
-  progress: {total_tasks: 5, completed_tasks: 0, reviewed_tasks: 0, current_task: 'T1 customer RED regressions'}
+  progress: {total_tasks: 6, completed_tasks: 0, reviewed_tasks: 1, current_task: 'T1 server customer RED regressions'}
   artifacts:
     requirement: requirements/feishu-action-transition.md
     proposal: proposals/feishu-action-transition-proposal.md
@@ -25,7 +25,8 @@ features:
   - 'Scope revision: customer explicitly chose to disregard business-confirmation safety for now. No new operation may enter waiting_confirmation; all allowlisted commands execute after account, scope, permission, identity, and idempotency checks. Official Feishu authorization remains mandatory. Historical waiting_confirmation rows retain only migration compatibility.'
   - 'S1: selected deletion of the active confirmation stage with legacy-state compatibility. Rejected a frontend-only patch because it leaves the extra state transition, and rejected hard deletion of all legacy contracts because rolling clients and persisted operations require a bounded migration path.'
   - 'S2: no new operation enters waiting_confirmation. RiskHigh remains a classification for unknown-result and retry safety, but no longer means human confirmation. Server-owned --yes, execution gates, encrypted request integrity, current-user/generation binding, scope preflight, and idempotency remain unchanged. Legacy confirmation rows resume directly.'
-  - 'S3: five serial tasks preserve the customer RED-first history, then remove active confirmation generation, add legacy-state compatibility, remove the frontend confirmation interaction, run focused mandatory gates and dual review, and deploy backend-first to Dev.'
+  - 'S3: six serial tasks preserve the customer RED-first history, then remove active confirmation generation, add legacy-state compatibility, remove the frontend confirmation interaction, run focused mandatory gates and dual review, and deploy backend-first to Dev.'
+  - 'S3 review revision: split execution core, lifecycle compatibility, and frontend migration into atomic backend-first tasks; add expired legacy-state coverage, reuse existing official-authorization/concurrency/unknown/handoff matrices, and retain one narrow no-reload Playwright regression. Customer explicitly accepted restore-triggered execution of legacy confirmation rows.'
   blockers: []
 
 - id: feishu-final-answer-visibility

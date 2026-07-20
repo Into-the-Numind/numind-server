@@ -77,7 +77,7 @@ waiting_confirmation --cancelled--------------------------> cancelled
 ## 5. 前端设计
 
 - `FeishuActionCard` 不再提供 confirmation 的确认/取消按钮和相关文案。
-- 对滚动升级期间收到的 legacy `phase=confirmation`，前端以“正在继续原任务”的非交互状态触发一次兼容 resume；同一 operation 使用现有 in-flight 去重，禁止重复请求。
+- 对滚动升级期间收到的 legacy `phase=confirmation`，前端以“正在继续原任务”的非交互状态触发一次兼容 resume；同一 operation 使用现有 in-flight 去重，禁止重复请求。该行为意味着打开含历史确认卡片的原对话即可继续原命令，是客户在明确取消业务确认后接受的一次性迁移语义；浏览器仍不能修改命令。
 - create_app、user_auth、app_scope 卡片和重新生成链接逻辑不变。
 - 不展示计时，不新增弹窗或新组件。
 
@@ -110,7 +110,9 @@ waiting_confirmation --cancelled--------------------------> cancelled
 1. 高风险/`RequiresCLIYes` 命令在 scope 满足后应直接调用 runner，旧实现会返回 confirmation。
 2. 历史 `waiting_confirmation` 通过 `Resume` 应直接执行且重复调用不重放。
 3. 旧 `user_completed` 卡片遇到历史确认态不应 InvalidParameter。
-4. 前端 legacy confirmation 不显示确认按钮，并只触发一次兼容 resume。
+4. 前端 legacy confirmation 不显示确认按钮，并只触发一次兼容 resume；过期时间不阻断迁移。
+5. 复用既有定向矩阵确认未连接、缺应用权限、缺用户权限及连续权限恢复仍只返回官方授权态；并发执行、unknown-result 和 terminal handoff 补偿仍保持最多一次语义。
+6. 一个窄范围 Playwright 场景验证页面不刷新、无确认按钮、最终结果继续出现。
 
 执行范围：上述定向测试、受影响 Go package 测试、`task lint`、前端定向 Vitest、`npm run lint`、`npm run type-check`。其余由客户在 Dev 手动验收。
 
