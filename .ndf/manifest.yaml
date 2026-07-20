@@ -2,7 +2,7 @@ schema_version: '2.0'
 features:
 - id: feishu-action-transition
   ndf_version: '3.0'
-  description: Replace stale Feishu action cards across lifecycle transitions and reserve explicit confirmation for destructive or high-impact commands.
+  description: Remove Feishu business confirmation entirely, auto-migrate legacy confirmation waits, and prevent stale authorization cards from submitting the wrong lifecycle action.
   classification_reason: 'Standard: no schema or new API/integration, but the customer bug spans backend, frontend, durable Agent wait state, and external-write safety policy across more than three files. Customer approved fast Standard through Dev with focused regression and mandatory quality gates only.'
   last_updated_by: ai-s0
   last_updated_at: '2026-07-20T13:20:00+08:00'
@@ -19,6 +19,7 @@ features:
   decisions:
   - 'S0: Dev logs for run 247 prove authorization completed and the Feishu operation advanced to waiting_confirmation, but the resume response and durable Agent wait retained the old user_auth action. The stale card then sent user_completed into a confirmation state and received InvalidParameter.'
   - 'Customer selected fast Standard through Dev. Full-repository and broad E2E suites are intentionally omitted; customer-facing RED regressions plus mandatory Go/Vue lint and type checks remain required.'
+  - 'Scope revision: customer explicitly chose to disregard business-confirmation safety for now. No new operation may enter waiting_confirmation; all allowlisted commands execute after account, scope, permission, identity, and idempotency checks. Official Feishu authorization remains mandatory. Historical waiting_confirmation rows retain only migration compatibility.'
   blockers: []
 
 - id: feishu-final-answer-visibility
