@@ -103,6 +103,8 @@ func TestCommandCatalog_BaseURLResolveIsLocalReadOnlyAndStrict(t *testing.T) {
 		{"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/wiki/ZiXObjsGvahtyAscDJ1cjlRnnLh"},
 		{"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh?table=not-a-table"},
 		{"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh?table=tblABCDEFG123&table=tblHIJKLMN123"},
+		{"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh?record=not-a-record"},
+		{"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh?record=recABCDEFG123&record=recHIJKLMN123"},
 		{"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh", "--dry-run"},
 	} {
 		_, err := NewCommandCatalog().Normalize(argv, nil)
@@ -114,7 +116,7 @@ func TestCommandCatalog_LocalBaseURLResolveMatchesOfficialDataContract(t *testin
 	t.Parallel()
 
 	got, err := NewCommandCatalog().resolveLocal([]string{
-		"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh?table=tblABCDEFG123&view=vewABCDEFG123",
+		"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh?table=tblABCDEFG123&view=vewABCDEFG123&record=recABCDEFG123",
 		"--format", "json", "--as", "user",
 	})
 	require.NoError(t, err)
@@ -123,8 +125,22 @@ func TestCommandCatalog_LocalBaseURLResolveMatchesOfficialDataContract(t *testin
 		"hint":{"next_step":"use +record-list to list records in the resolved table"},
 		"input_type":"base_url",
 		"resource_type":"bitable",
-		"table_id":"tblABCDEFG123"
+		"table_id":"tblABCDEFG123",
+		"view_id":"vewABCDEFG123",
+		"record_id":"recABCDEFG123"
 	}`, string(got))
+
+	baseOnly, err := NewCommandCatalog().resolveLocal([]string{
+		"base", "+url-resolve", "--url", "https://scnb8amlnnek.feishu.cn/base/ZiXObjsGvahtyAscDJ1cjlRnnLh",
+	})
+	require.NoError(t, err)
+	require.JSONEq(t, `{
+		"base_token":"ZiXObjsGvahtyAscDJ1cjlRnnLh",
+		"hint":{"next_step":"use +table-list to list tables in the resolved Base"},
+		"input_type":"base_url",
+		"resource_type":"bitable"
+	}`, string(baseOnly))
+	assert.NotContains(t, string(baseOnly), "+base-block-list", "local guidance must only reference hosted commands")
 
 	_, err = NewCommandCatalog().resolveLocal([]string{"docs", "+fetch", "--doc", "doxcnABCDEFG123"})
 	require.ErrorIs(t, err, ErrCommandDenied)

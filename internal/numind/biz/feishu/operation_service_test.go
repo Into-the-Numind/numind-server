@@ -1822,7 +1822,7 @@ func TestOperationService_ConfirmationDecisionExecutesExactlyOnceOrCancelsWithou
 		require.NoError(t, err)
 		require.Equal(t, model.FeishuOperationSucceeded, completed.State)
 		calls, _ := h.runner.snapshot()
-		require.Zero(t, calls)
+		require.Equal(t, 1, calls)
 
 		idempotent, err := h.service.Confirm(h.ctx, 7, waiting.OperationID)
 		require.NoError(t, err)

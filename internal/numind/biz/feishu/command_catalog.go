@@ -1056,6 +1056,8 @@ type localBaseURLResult struct {
 	InputType    string `json:"input_type"`
 	ResourceType string `json:"resource_type"`
 	TableID      string `json:"table_id,omitempty"`
+	ViewID       string `json:"view_id,omitempty"`
+	RecordID     string `json:"record_id,omitempty"`
 }
 
 func (c *CommandCatalog) resolveLocal(argv []string) (json.RawMessage, error) {
@@ -1088,9 +1090,13 @@ func (c *CommandCatalog) resolveLocal(argv []string) (json.RawMessage, error) {
 	}
 	result := localBaseURLResult{
 		BaseToken: token, InputType: "base_url", ResourceType: "bitable",
-		TableID: query.Get("table"),
+		TableID: query.Get("table"), ViewID: query.Get("view"), RecordID: query.Get("record"),
 	}
-	result.Hint.NextStep = "use +record-list to list records in the resolved table"
+	if result.TableID == "" {
+		result.Hint.NextStep = "use +table-list to list tables in the resolved Base"
+	} else {
+		result.Hint.NextStep = "use +record-list to list records in the resolved table"
+	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
 		return nil, ErrCommandInvalidArgument
@@ -1368,6 +1374,14 @@ func normalizeBaseURL(value string) (string, error) {
 			return "", invalidf("base URL view is ambiguous")
 		}
 		if _, err := normalizeOpaqueToken("view-id")(values[0]); err != nil {
+			return "", err
+		}
+	}
+	if values, exists := query["record"]; exists {
+		if len(values) != 1 {
+			return "", invalidf("base URL record is ambiguous")
+		}
+		if _, err := normalizePrefixedID("record-id", "rec")(values[0]); err != nil {
 			return "", err
 		}
 	}
