@@ -167,15 +167,8 @@ func (s *stubAttachmentStore) ListPendingFallback(_ context.Context, _ time.Time
 //
 // For "inline" assertions we use model keys whose conservative default is false
 // but we override the attachment modality so the test can verify the routing logic
-// directly. Since GetCapabilities returns conservative defaults for unknown keys,
-// we test both paths:
-//   - Unknown model key → conservative (all fallback)
-//   - Image attachment on a "known" model that accepts image inline → inline
-//     (we cannot seed the cache without a DB, so instead we verify the no-DB
-//     behaviour: unknown model → conservative → fallback path).
-//
-// The full end-to-end inline path is covered by the integration test
-// (task-1.3 dev verification), which uses a real DB with capability_json rows.
+// directly. Uploaded files are represented uniformly regardless of model
+// capability; no parsed body is injected before file_read is called.
 
 func TestBuildAgentInputForModel_NoAttachments(t *testing.T) {
 	ctx := context.Background()
@@ -209,9 +202,7 @@ func TestBuildAgentInputForModel_EmptyAttachmentSlice(t *testing.T) {
 	}
 }
 
-func TestBuildAgentInputForModel_UnknownModel_AllFallback(t *testing.T) {
-	// Unknown model → capability.GetCapabilities returns conservative defaults
-	// (all inline=false) → all attachments go through fallback path.
+func TestBuildAgentInputForModel_AllAttachmentsBecomeFileReadReferences(t *testing.T) {
 	ctx := context.Background()
 	store := newStubStore(
 		makeAtt(1, "image", true, "[图片：file.jpg，OCR文本…]"),
@@ -230,20 +221,27 @@ func TestBuildAgentInputForModel_UnknownModel_AllFallback(t *testing.T) {
 	if len(msg.Content.Parts) == 0 {
 		t.Fatalf("expected parts, got empty")
 	}
-	// Verify all parts are text (fallback path) — no image_url parts.
+	// Verify all parts are references — no inline body/image parts.
 	for _, p := range msg.Content.Parts {
 		if p.Type == aiservice.MessagePartTypeImageURL {
 			t.Errorf("unknown model should not produce image_url parts, got one")
 		}
 	}
-	// The fallback texts should be present.
+	// Both IDs and the tool instruction are present; old parsed fallback bodies are not.
 	combined := partsText(msg.Content.Parts)
-	if !strings.Contains(combined, "[图片：") && !strings.Contains(combined, "[PDF：") {
-		t.Errorf("expected fallback text blocks, got parts: %+v", msg.Content.Parts)
+	for _, want := range []string{"file_read", "attachment_id: 1", "attachment_id: 2"} {
+		if !strings.Contains(combined, want) {
+			t.Errorf("expected %q in attachment references, got parts: %+v", want, msg.Content.Parts)
+		}
+	}
+	for _, forbidden := range []string{"OCR文本", "全文…"} {
+		if strings.Contains(combined, forbidden) {
+			t.Errorf("parsed fallback body %q must not be injected: %s", forbidden, combined)
+		}
 	}
 }
 
-func TestBuildAgentInputForModel_FallbackReady_True_TextInjected(t *testing.T) {
+func TestBuildAgentInputForModel_ReadyContentIsNotInjected(t *testing.T) {
 	ctx := context.Background()
 	expected := "[图片：test.jpg，描述文字]"
 	att := makeAtt(10, "image", true, expected)
@@ -253,8 +251,11 @@ func TestBuildAgentInputForModel_FallbackReady_True_TextInjected(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	combined := partsText(msgs[0].Content.Parts)
-	if !strings.Contains(combined, expected) {
-		t.Errorf("expected fallback text %q in parts, got: %s", expected, combined)
+	if strings.Contains(combined, expected) {
+		t.Errorf("ready fallback text %q must stay behind file_read, got: %s", expected, combined)
+	}
+	if !strings.Contains(combined, "file_read") || !strings.Contains(combined, "attachment_id: 10") {
+		t.Errorf("expected managed file_read reference, got: %s", combined)
 	}
 }
 
@@ -283,9 +284,7 @@ func TestBuildAgentInputForModel_FallbackNotReady_Timeout_Placeholder(t *testing
 	}
 }
 
-func TestBuildAgentInputForModel_FallbackBecomesReady_WhilePolling(t *testing.T) {
-	// Simulates: attachment starts not-ready, becomes ready after 200ms.
-	// buildAgentInputForModel should wait and return the fallback text.
+func TestBuildAgentInputForModel_DoesNotWaitForFallback(t *testing.T) {
 	ctx := context.Background()
 	att := makeAtt(30, "image", false, "")
 	st := newStubStore(att)
@@ -310,12 +309,8 @@ func TestBuildAgentInputForModel_FallbackBecomesReady_WhilePolling(t *testing.T)
 		t.Fatalf("unexpected error: %v", err)
 	}
 	combined := partsText(msgs[0].Content.Parts)
-	if !strings.Contains(combined, "VLM描述完成") {
-		// Acceptable: the goroutine may have raced. If the combined text contains
-		// the filename placeholder that's also OK (race with short poll interval).
-		if !strings.Contains(combined, att.Filename) {
-			t.Errorf("expected either VLM text or placeholder, got: %s", combined)
-		}
+	if strings.Contains(combined, "VLM描述完成") || !strings.Contains(combined, "attachment_id: 30") {
+		t.Errorf("input must be an immediate reference without parsed body, got: %s", combined)
 	}
 }
 
@@ -328,7 +323,7 @@ func TestBuildAgentInputForModel_NilAttachmentSkipped(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	combined := partsText(msgs[0].Content.Parts)
-	if !strings.Contains(combined, "[图片：") {
+	if !strings.Contains(combined, "attachment_id: 40") {
 		t.Errorf("nil attachments should be skipped, valid one should appear, got: %s", combined)
 	}
 }

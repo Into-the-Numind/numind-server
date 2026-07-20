@@ -1,8 +1,7 @@
-// Package agent — multimodal routing helpers for buildAgentInputForModel (task 1.3).
+// Package agent — managed attachment reference helpers for Agent input.
 //
-// This file contains the capability-aware routing layer that decides whether each
-// attachment is sent to the LLM as an inline multimodal block (path A) or as
-// text fallback (path B), based on the active model's Capabilities.
+// Model input carries references only. Upload-time processing owns canonical
+// extraction, while file_read owns permissioned, resumable content delivery.
 package agent
 
 import (
@@ -15,7 +14,6 @@ import (
 	"numind-server/internal/numind/biz/agent/attachment"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"
-	"numind-server/internal/pkg/aiservice/capability"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/util"
@@ -46,18 +44,14 @@ const (
 var ErrFallbackTimeout = errors.New("multimodal: fallback not ready within timeout")
 
 // ---------------------------------------------------------------------------
-// buildAgentInputForModel — capability-aware routing
+// buildAgentInputForModel — reference-only routing
 // ---------------------------------------------------------------------------
 
-// buildAgentInputForModel constructs the LLM-facing user-message(s) from the
-// human's message plus any uploaded attachments. For each attachment:
-//
-//   - If the active model supports the attachment's modality inline (capability
-//     matrix from task 1.1), the attachment is sent as a multimodal MessagePart
-//     (path A — inline).
-//   - Otherwise the text_fallback field is used (path B — text fallback). If the
-//     fallback is not yet ready, the function waits up to fallbackMaxWait (1500ms,
-//     polling every 100ms) and falls back to a "pending" placeholder on timeout.
+// buildAgentInputForModel constructs the model-facing user message from the
+// human text plus managed attachment references. It intentionally never injects
+// TextFallback or ParsedContent. The model reads canonical content on demand
+// through file_read, which keeps large files out of context until needed and
+// guarantees pagination reuses the upload-time parse cache.
 //
 // The returned slice contains exactly one ChatMessage with role=user. System
 // prompts are NOT constructed here — that is the caller's responsibility.
@@ -70,8 +64,8 @@ func buildAgentInputForModel(
 	ctx context.Context,
 	userMessage string,
 	attachments []*model.AgentAttachment,
-	modelKey string,
-	attStore store.IAgentAttachmentStore,
+	_ string,
+	_ store.IAgentAttachmentStore,
 ) ([]aiservice.ChatMessage, error) {
 	// No attachments → single plain-text user message (fast path).
 	if len(attachments) == 0 {
@@ -81,15 +75,6 @@ func buildAgentInputForModel(
 				Content: aiservice.MessageContent{Text: userMessage},
 			},
 		}, nil
-	}
-
-	caps, capsErr := capability.GetCapabilities(modelKey)
-	if capsErr != nil {
-		// Unknown model or DB error: conservative defaults (all inline = false).
-		// GetCapabilities already returns the conservative default Capabilities
-		// pointer on error, so caps is never nil here.
-		log.Warnw("buildAgentInputForModel: capability lookup failed, using conservative defaults",
-			"model_key", modelKey, "error", capsErr)
 	}
 
 	var parts []aiservice.MessagePart
@@ -106,50 +91,10 @@ func buildAgentInputForModel(
 			continue
 		}
 
-		inline := false
-		switch att.Modality {
-		case attachment.ModalityImage:
-			inline = caps.AcceptsImageInline
-		case attachment.ModalityPDF:
-			inline = caps.AcceptsPDFInline
-		case attachment.ModalityAudio:
-			inline = caps.AcceptsAudioInline
-		case attachment.ModalityDocument:
-			// Office docs are always text-extracted locally (no inline form);
-			// route to the fallback path which injects the extracted text.
-		default:
-			// Unknown modality → conservatively route to fallback.
-			log.Warnw("buildAgentInputForModel: unknown modality, falling back",
-				"att_id", att.ID, "modality", att.Modality)
-		}
-
-		if inline {
-			// Path A: send as native multimodal inline block.
-			url, err := presignAttachmentURL(ctx, att)
-			if err != nil {
-				// Presign failure → degrade to path B (fallback).
-				log.Warnw("buildAgentInputForModel: presign failed, degrading to fallback",
-					"att_id", att.ID, "error", err)
-				inline = false
-			} else {
-				parts = append(parts, mkInlineBlock(att.Modality, url))
-			}
-		}
-
-		if !inline {
-			// Path B: use text fallback.
-			text, err := waitForFallback(ctx, att, attStore, fallbackMaxWait)
-			if err != nil {
-				// Timeout or ctx cancelled → inject pending placeholder.
-				log.Warnw("buildAgentInputForModel: fallback wait failed, injecting placeholder",
-					"att_id", att.ID, "error", err)
-				text = pendingFallbackTextFor(att)
-			}
-			parts = append(parts, aiservice.MessagePart{
-				Type: aiservice.MessagePartTypeText,
-				Text: text,
-			})
-		}
+		parts = append(parts, aiservice.MessagePart{
+			Type: aiservice.MessagePartTypeText,
+			Text: attachmentFileReadReference(att),
+		})
 	}
 
 	msg := aiservice.ChatMessage{
@@ -159,6 +104,14 @@ func buildAgentInputForModel(
 		},
 	}
 	return []aiservice.ChatMessage{msg}, nil
+}
+
+func attachmentFileReadReference(att *model.AgentAttachment) string {
+	return fmt.Sprintf(
+		"【附件引用】用户上传了文件。请立即调用 file_read 工具读取后再回答；优先传 attachment_id。\n"+
+			"- attachment_id: %d\n- filename: %s\n- mime_type: %s\n- file_url: %s",
+		att.ID, att.Filename, att.MimeType, att.URL,
+	)
 }
 
 // ---------------------------------------------------------------------------
@@ -350,7 +303,8 @@ func HasFallbackAttachments(msgs []aiservice.ChatMessage) bool {
 // In practice this is extremely unlikely in Chinese UI chat, but callers should
 // be aware that this is a best-effort heuristic, not a structural check.
 func looksLikeFallbackText(text string) bool {
-	return strings.HasPrefix(text, "[图片：") ||
+	return strings.HasPrefix(text, "【附件引用】") ||
+		strings.HasPrefix(text, "[图片：") ||
 		strings.HasPrefix(text, "[PDF：") ||
 		strings.HasPrefix(text, "[音频：") ||
 		strings.HasPrefix(text, "[文档：") ||
@@ -372,7 +326,7 @@ func BuildAttachmentReminderSegment(msgs []aiservice.ChatMessage) string {
 	if !HasFallbackAttachments(msgs) {
 		return ""
 	}
-	return "【附件说明】用户上传的图片/PDF/文档已转为文字描述。请基于描述内容回答用户问题。"
+	return "【附件说明】用户上传了附件。请先调用 file_read（优先使用 attachment_id）读取所需内容，再回答用户问题。"
 }
 
 // ---------------------------------------------------------------------------

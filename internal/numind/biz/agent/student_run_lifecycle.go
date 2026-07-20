@@ -34,7 +34,7 @@ type StudentRunService struct {
 	pricingCalc     pricing.ICalculator
 	narrationProv   *narration.Provider
 	narrationBuf    *NarrationBuffer
-	attachmentStore store.IAgentAttachmentStore // task 1.3: capability-aware routing
+	attachmentStore store.IAgentAttachmentStore // managed file_read references + canonical parse cache
 	streamLock      *stream.SubscriptionLock    // T07: SSE single-subscriber guard
 	userStore       userByIDGetter              // b2b2c-student-agent-access: wired via WithUserStore; nil → parent-only access
 }
@@ -65,8 +65,8 @@ func NewStudentRunService(
 	}
 }
 
-// WithAttachmentStore wires the IAgentAttachmentStore so that capability-aware
-// routing (task 1.3) can load AgentAttachment entities for fallback polling.
+// WithAttachmentStore wires the IAgentAttachmentStore so managed attachment
+// IDs can be ownership-checked and represented as file_read references.
 // Call this at biz.go wiring time alongside WithNarrationProvider.
 func (s *StudentRunService) WithAttachmentStore(attStore store.IAgentAttachmentStore) *StudentRunService {
 	s.attachmentStore = attStore
@@ -219,11 +219,9 @@ type CreateRunRequest struct {
 	SessionID         string   `json:"session_id,omitempty"` // empty → new session
 	Message           string   `json:"input_text"`           // empty allowed when an attachment is present (attachment-only send); validated by hasNoSendable
 	AttachmentURLs    []string `json:"attachment_urls,omitempty"`
-	// AttachmentIDs is the task-1.3 field: the frontend sends DB row IDs for
-	// uploaded attachments so that buildAgentInputForModel can load the full
-	// AgentAttachment entity (incl. Modality, TextFallback, FallbackReady) and
-	// apply capability-aware routing. Takes precedence over AttachmentURLs when
-	// both are present.
+	// AttachmentIDs are the preferred identities for current-user uploaded
+	// attachments. AttachmentURLs remains a rolling compatibility field for
+	// rows whose upload result has no persisted ID; both fields can be merged.
 	AttachmentIDs []uint64 `json:"attachment_ids,omitempty"`
 	// ModelKey is the user-selected model identifier (from the model picker in
 	// the UI). When non-empty, buildAgentInputForModel uses it to determine
@@ -285,48 +283,15 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 		sessionID = uuid.New().String()
 	}
 
-	// Build the input: combine message + attachments using capability-aware routing
-	// (task 1.3). When AttachmentIDs is populated the system loads full AgentAttachment
-	// entities and routes inline vs fallback per the active model's capability matrix.
+	// Build the input as managed file_read references. Attachment bodies are not
+	// injected here; they remain behind the canonical paged tool interface.
 	//
 	// Legacy path: AttachmentURLs (no DB entity) → buildAgentInput (plain text hint).
-	// New path:    AttachmentIDs → buildAgentInputForModel → MessagesToInputString.
+	// New path:    AttachmentIDs → ownership check + file_read reference.
 	//
 	// Until runner.go (task 1.5) accepts InputMessages natively, the result is
 	// serialised to string via MessagesToInputString for RunRequest.Input.
-	var input string
-	var hasFallbackAttachments bool
-	// displayAtts are persisted onto the user turn for chip rendering (问题二); the
-	// composed `input` (which may carry the file_read hint) is no longer shown.
-	var displayAtts []displayAttachment
-	if len(req.AttachmentIDs) > 0 && s.attachmentStore != nil {
-		atts := loadAttachmentsByIDs(ctx, s.attachmentStore, req.AttachmentIDs, userID)
-		displayAtts = displayAttachmentsFromEntities(atts)
-		msgs, buildErr := buildAgentInputForModel(ctx, req.Message, atts, req.ModelKey, s.attachmentStore)
-		if buildErr != nil {
-			log.Warnw("StudentRunService.Create: buildAgentInputForModel failed, falling back",
-				"user_id", userID, "error", buildErr)
-			input = buildAgentInput(req.Message, req.AttachmentURLs)
-		} else {
-			// Task 1.5 (task 1.3 deferral): detect whether any attachment used the
-			// text-fallback path so that runner.Run can inject the attachment reminder
-			// into system prompt segment 5.
-			hasFallbackAttachments = HasFallbackAttachments(msgs)
-			input = MessagesToInputString(msgs)
-		}
-	} else {
-		// Legacy path: use plain URL list (no capability routing).
-		// buildAgentInput emits an explicit Chinese instruction telling the LLM to
-		// use the file_read tool. Without that instruction the LLM tends to ignore
-		// a bare URL list and reply "you didn't upload anything" — see bug-from-
-		// customer 2026-05-22 (#14-followup agent-attachment-flow).
-		if len(req.AttachmentIDs) > 0 && s.attachmentStore == nil {
-			log.Warnw("StudentRunService.Create: attachmentStore not configured, AttachmentIDs ignored",
-				"user_id", userID, "attachment_ids", req.AttachmentIDs)
-		}
-		input = buildAgentInput(req.Message, req.AttachmentURLs)
-		displayAtts = displayAttachmentsFromURLs(req.AttachmentURLs)
-	}
+	input, hasFallbackAttachments, displayAtts := s.composeAttachmentInput(ctx, userID, req)
 	// Never hand the runner a blank user turn: attachment-only sends are allowed, so a
 	// failed attachment load could leave input empty (hasNoSendable only gates the
 	// truly-nothing case at entry). Substitute a graceful read-failure instruction.
@@ -447,6 +412,63 @@ func buildAgentInput(message string, attachmentURLs []string) string {
 	return b.String()
 }
 
+// composeAttachmentInput is the single stream/non-stream attachment contract.
+// Managed IDs are resolved with ownership checks and represented as file_read
+// references; URL-only rows are retained solely for rolling compatibility.
+// When both are supplied, URLs already represented by a loaded ID are deduped.
+func (s *StudentRunService) composeAttachmentInput(
+	ctx context.Context,
+	userID uint,
+	req CreateRunRequest,
+) (input string, hasFileReadAttachments bool, displayAtts []displayAttachment) {
+	input = req.Message
+	seenURLs := make(map[string]struct{})
+
+	if len(req.AttachmentIDs) > 0 && s.attachmentStore != nil {
+		atts := loadAttachmentsByIDs(ctx, s.attachmentStore, req.AttachmentIDs, userID)
+		for _, att := range atts {
+			if att != nil && att.URL != "" {
+				seenURLs[att.URL] = struct{}{}
+			}
+		}
+		displayAtts = append(displayAtts, displayAttachmentsFromEntities(atts)...)
+		msgs, buildErr := buildAgentInputForModel(ctx, req.Message, atts, req.ModelKey, s.attachmentStore)
+		if buildErr != nil {
+			log.Warnw("composeAttachmentInput: managed reference build failed",
+				"user_id", userID, "error", buildErr)
+		} else {
+			input = MessagesToInputString(msgs)
+			hasFileReadAttachments = HasFallbackAttachments(msgs)
+		}
+	} else if len(req.AttachmentIDs) > 0 {
+		log.Warnw("composeAttachmentInput: attachmentStore not configured, AttachmentIDs ignored",
+			"user_id", userID, "attachment_ids", req.AttachmentIDs)
+	}
+
+	legacyURLs := make([]string, 0, len(req.AttachmentURLs))
+	for _, rawURL := range req.AttachmentURLs {
+		if rawURL == "" {
+			continue
+		}
+		if _, duplicate := seenURLs[rawURL]; duplicate {
+			continue
+		}
+		legacyURLs = append(legacyURLs, rawURL)
+	}
+	if len(legacyURLs) > 0 {
+		legacyHint := buildAgentInput("", legacyURLs)
+		if strings.TrimSpace(input) == "" {
+			input = legacyHint
+		} else {
+			input = strings.TrimSpace(input) + "\n" + legacyHint
+		}
+		displayAtts = append(displayAtts, displayAttachmentsFromURLs(legacyURLs)...)
+		hasFileReadAttachments = true
+	}
+
+	return input, hasFileReadAttachments, displayAtts
+}
+
 // displayAttachmentsFromEntities maps loaded attachment entities to the {url,filename}
 // display refs persisted onto the user turn for chip rendering (问题二).
 func displayAttachmentsFromEntities(atts []*model.AgentAttachment) []displayAttachment {
@@ -522,9 +544,8 @@ const emptyAttachmentInputFallback = "用户上传了附件，但系统暂时无
 // successfully. Callers that need strict all-or-nothing semantics should not
 // use this function.
 //
-// This is the biz-layer bridge for task 1.3: the HTTP handler binds
-// CreateRunRequest.AttachmentIDs from the frontend; this function resolves
-// them to full entities for buildAgentInputForModel.
+// The HTTP handler binds CreateRunRequest.AttachmentIDs from the frontend; this
+// function resolves them to current-user entities for safe references.
 func loadAttachmentsByIDs(
 	ctx context.Context,
 	attStore store.IAgentAttachmentStore,
@@ -660,29 +681,7 @@ func (s *StudentRunService) RunStream(ctx context.Context, userID uint, req Crea
 	}
 
 	// Build capability-aware input (same logic as Create).
-	var input string
-	var hasFallbackAttachments bool
-	var displayAtts []displayAttachment
-	if len(req.AttachmentIDs) > 0 && s.attachmentStore != nil {
-		atts := loadAttachmentsByIDs(ctx, s.attachmentStore, req.AttachmentIDs, userID)
-		displayAtts = displayAttachmentsFromEntities(atts)
-		msgs, buildErr := buildAgentInputForModel(ctx, req.Message, atts, req.ModelKey, s.attachmentStore)
-		if buildErr != nil {
-			log.Warnw("StudentRunService.RunStream: buildAgentInputForModel failed, falling back",
-				"user_id", userID, "error", buildErr)
-			input = buildAgentInput(req.Message, req.AttachmentURLs)
-		} else {
-			hasFallbackAttachments = HasFallbackAttachments(msgs)
-			input = MessagesToInputString(msgs)
-		}
-	} else {
-		if len(req.AttachmentIDs) > 0 && s.attachmentStore == nil {
-			log.Warnw("StudentRunService.RunStream: attachmentStore not configured, AttachmentIDs ignored",
-				"user_id", userID, "attachment_ids", req.AttachmentIDs)
-		}
-		input = buildAgentInput(req.Message, req.AttachmentURLs)
-		displayAtts = displayAttachmentsFromURLs(req.AttachmentURLs)
-	}
+	input, hasFallbackAttachments, displayAtts := s.composeAttachmentInput(ctx, userID, req)
 	// See Create: never hand the runner a blank user turn on an empty-composed
 	// attachment-only send.
 	if strings.TrimSpace(input) == "" {

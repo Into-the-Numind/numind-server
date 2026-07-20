@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/schema"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
@@ -615,6 +617,33 @@ func TestBuildAgentInput_SingleAttachment(t *testing.T) {
 	if !strings.Contains(got, "https://cos.example/agent-attachments/1/x.txt") {
 		t.Errorf("output must contain the URL; got %q", got)
 	}
+}
+
+func TestComposeAttachmentInput_UsesIDsWithoutInjectingParsedBodyAndKeepsURLFallback(t *testing.T) {
+	secretBody := "客户机密正文不应直接进入模型输入"
+	managed := &model.AgentAttachment{
+		ID: 42, UserID: 123,
+		URL:      "https://bucket.cos.ap-chengdu.myqcloud.com/agent-attachments/123/managed.docx",
+		Filename: "managed.docx", MimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		FallbackReady: true, ParsedContent: &secretBody, TextFallback: &secretBody,
+	}
+	svc := &StudentRunService{attachmentStore: newStubStore(managed)}
+	legacyURL := "https://bucket.cos.ap-chengdu.myqcloud.com/agent-attachments/123/legacy.txt"
+	input, hasRefs, display := svc.composeAttachmentInput(context.Background(), 123, CreateRunRequest{
+		Message: "分析资料", AttachmentIDs: []uint64{managed.ID},
+		// A rolling client may send the managed URL as well; it must be deduped.
+		AttachmentURLs: []string{managed.URL, legacyURL},
+	})
+
+	require.True(t, hasRefs)
+	assert.Contains(t, input, "attachment_id: 42")
+	assert.Contains(t, input, "file_read")
+	assert.Contains(t, input, legacyURL)
+	assert.NotContains(t, input, secretBody)
+	assert.Equal(t, 1, strings.Count(input, managed.URL), "managed URL must not be duplicated")
+	require.Len(t, display, 2)
+	assert.Equal(t, "managed.docx", display[0].Filename)
+	assert.Equal(t, "legacy.txt", display[1].Filename)
 }
 
 // TestLoadSessionHistory_ReturnsPriorTurnsChronological verifies the multi-turn
