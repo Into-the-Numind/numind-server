@@ -114,6 +114,9 @@ func (m *enrichMockStore) UpsertByUserNote(context.Context, *model.XhsTopicNote)
 func (m *enrichMockStore) ListNotes(context.Context, uint, store.XhsNoteFilter, int, int) ([]model.XhsTopicNote, int64, error) {
 	return nil, 0, nil
 }
+func (m *enrichMockStore) ListSnapshot(context.Context, uint, store.XhsSnapshotQuery) (*store.XhsSnapshotPage, error) {
+	return nil, nil
+}
 func (m *enrichMockStore) ListPendingEnrich(context.Context, int) ([]model.XhsTopicNote, error) {
 	return nil, nil
 }

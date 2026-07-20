@@ -58,6 +58,9 @@ func (m *mockXhsStore) UpsertByUserNote(_ context.Context, n *model.XhsTopicNote
 func (m *mockXhsStore) ListNotes(context.Context, uint, store.XhsNoteFilter, int, int) ([]model.XhsTopicNote, int64, error) {
 	return nil, 0, nil
 }
+func (m *mockXhsStore) ListSnapshot(context.Context, uint, store.XhsSnapshotQuery) (*store.XhsSnapshotPage, error) {
+	return nil, nil
+}
 func (m *mockXhsStore) ListPendingEnrich(context.Context, int) ([]model.XhsTopicNote, error) {
 	return nil, nil
 }
