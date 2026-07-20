@@ -98,7 +98,7 @@ func composeThreeAgentPrompt(runtimeContract, businessPrompt string) string {
 	return strings.TrimRight(runtimeContract, "\n") + threeAgentSeparator + businessPrompt
 }
 
-func expectedThreeAgentFlags(agentKey string) map[string]bool {
+func expectedThreeAgentFlags(_ string) map[string]bool {
 	all := []string{
 		"kb_search", "document_generate", "image_gen", "bash_exec", "get_current_date",
 		"web_search", "web_fetch", "ask_user_question", "file_read", "analyze_image",
@@ -107,21 +107,9 @@ func expectedThreeAgentFlags(agentKey string) map[string]bool {
 		"memory_read", "xhs_note_list", "lark_skill_read", "lark_inspect", "lark_execute",
 		"code_sandbox", "media", "dangerous",
 	}
-	enabled := map[string]bool{
-		"ask_user_question": true,
-		"get_current_date":  true,
-		"lark_skill_read":   true,
-		"lark_inspect":      true,
-		"lark_execute":      true,
-	}
-	if agentKey == "agent-1" {
-		enabled["xhs_note_list"] = true
-	} else {
-		enabled["file_read"] = true
-	}
 	out := make(map[string]bool, len(all))
 	for _, name := range all {
-		out[name] = enabled[name]
+		out[name] = name != "document_generate"
 	}
 	return out
 }
