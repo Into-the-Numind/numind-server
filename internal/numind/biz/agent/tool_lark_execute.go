@@ -66,12 +66,16 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 	if !ok || userID == 0 || runID == 0 || strings.TrimSpace(toolCallID) == "" {
 		return larkWorkspaceSoftError(larkWorkspaceErrorIdentity)
 	}
-	retryState, retryAttempt, allowed := larkExecuteRetryBegin(runID)
+	retryState, retryAttempt, blockedReason, allowed := larkExecuteRetryBegin(runID)
 	if !allowed {
-		if larkExecuteRetryBlockedByTerminal(retryState) {
+		switch blockedReason {
+		case larkRetryBlockedTerminal:
 			return larkWorkspaceSoftError(larkWorkspaceErrorExecuteStopped)
+		case larkRetryBlockedInFlight:
+			return larkWorkspaceSoftError(larkWorkspaceErrorExecuteInFlight)
+		default:
+			return larkWorkspaceSoftError(larkWorkspaceErrorExecuteRetryExhausted)
 		}
-		return larkWorkspaceSoftError(larkWorkspaceErrorExecuteRetryExhausted)
 	}
 	decoded, err := decodeLarkExecuteInput(input)
 	if err != nil {

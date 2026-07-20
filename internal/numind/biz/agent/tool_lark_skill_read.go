@@ -171,6 +171,7 @@ const (
 	larkWorkspaceErrorInspectRejected
 	larkWorkspaceErrorInspect
 	larkWorkspaceErrorExecuteStopped
+	larkWorkspaceErrorExecuteInFlight
 )
 
 // larkWorkspaceSoftError returns only fixed, reviewed messages. It deliberately
@@ -221,6 +222,9 @@ func larkWorkspaceSoftError(code larkWorkspaceErrorCode) (ToolResult, error) {
 	case larkWorkspaceErrorExecuteStopped:
 		message = "上一项飞书操作返回不可自动重试的结构化结果，本任务已停止后续飞书业务执行。不要换参数重复写入；请根据结果向用户说明或等待用户提供新信息。"
 		publicCode = "execution_stopped"
+	case larkWorkspaceErrorExecuteInFlight:
+		message = "已有一项飞书工作区操作正在执行。请等待当前工具结果返回后，再按顺序执行下一项 lark_execute；不要并行调用。"
+		publicCode, recoverable, retryable = "command_in_flight", true, true
 	}
 	output, _ := json.Marshal(map[string]any{
 		"error":       "ERROR: " + message,

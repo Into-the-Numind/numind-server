@@ -26,6 +26,15 @@ const (
 	larkExecuteCorrectionAttempt
 )
 
+type larkExecuteRetryBlockReason uint8
+
+const (
+	larkRetryNotBlocked larkExecuteRetryBlockReason = iota
+	larkRetryBlockedTerminal
+	larkRetryBlockedInFlight
+	larkRetryBlockedExhausted
+)
+
 type larkExecuteRetryState struct {
 	mu                  sync.Mutex
 	phase               larkExecuteRetryPhase
@@ -66,37 +75,30 @@ func larkExecuteRetrySeedExternalResult(runID uint64, raw json.RawMessage) bool 
 	return true
 }
 
-func larkExecuteRetryBegin(runID uint64) (*larkExecuteRetryState, larkExecuteRetryAttempt, bool) {
+func larkExecuteRetryBegin(runID uint64) (*larkExecuteRetryState, larkExecuteRetryAttempt, larkExecuteRetryBlockReason, bool) {
 	value, _ := larkExecuteRetryRuns.LoadOrStore(runID, &larkExecuteRetryState{})
 	state := value.(*larkExecuteRetryState)
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	if state.terminalStop {
-		return state, larkExecuteCorrectionAttempt, false
+		return state, larkExecuteCorrectionAttempt, larkRetryBlockedTerminal, false
 	}
 
 	switch state.phase {
 	case larkRetryReady:
 		state.phase = larkRetryNormalInFlight
-		return state, larkExecuteNormalAttempt, true
+		return state, larkExecuteNormalAttempt, larkRetryNotBlocked, true
 	case larkRetryCorrectionAvailable:
 		state.phase = larkRetryCorrectionInFlight
-		return state, larkExecuteCorrectionAttempt, true
-	case larkRetryNormalInFlight, larkRetryCorrectionInFlight, larkRetryExhausted:
-		return state, larkExecuteCorrectionAttempt, false
+		return state, larkExecuteCorrectionAttempt, larkRetryNotBlocked, true
+	case larkRetryNormalInFlight, larkRetryCorrectionInFlight:
+		return state, larkExecuteCorrectionAttempt, larkRetryBlockedInFlight, false
+	case larkRetryExhausted:
+		return state, larkExecuteCorrectionAttempt, larkRetryBlockedExhausted, false
 	default:
 		state.phase = larkRetryExhausted
-		return state, larkExecuteCorrectionAttempt, false
+		return state, larkExecuteCorrectionAttempt, larkRetryBlockedExhausted, false
 	}
-}
-
-func larkExecuteRetryBlockedByTerminal(state *larkExecuteRetryState) bool {
-	if state == nil {
-		return false
-	}
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	return state.terminalStop
 }
 
 func larkExecuteRetryRejected(state *larkExecuteRetryState, attempt larkExecuteRetryAttempt) bool {
