@@ -1453,12 +1453,24 @@ func deviceAuthRefreshSource(
 		}
 		switch session.State {
 		case model.FeishuAuthSessionPending:
-			return true, model.FeishuAuthSessionSuperseded, session.ExpiresAt.After(now)
+			if session.ExpiresAt.After(now) {
+				return true, model.FeishuAuthSessionSuperseded, true
+			}
+			return false, model.FeishuAuthSessionExpired, deviceAuthExpiredPendingLeaseSafe(session, now)
 		case model.FeishuAuthSessionRejected, model.FeishuAuthSessionExpired:
 			return false, session.State, credentialFree && session.LeaseOwner == "" && session.LeaseUntil == nil
 		}
 	}
 	return false, "", false
+}
+
+func deviceAuthExpiredPendingLeaseSafe(session *model.FeishuAuthSession, now time.Time) bool {
+	if session == nil || session.CompletedAt != nil {
+		return false
+	}
+	leaseFree := session.LeaseOwner == "" && session.LeaseUntil == nil
+	expiredCompleteLease := session.LeaseOwner != "" && session.LeaseUntil != nil && !session.LeaseUntil.After(now)
+	return leaseFree || expiredCompleteLease
 }
 
 // CleanupExpiredCredentials clears one bounded keyset page and advances an

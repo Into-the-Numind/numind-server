@@ -200,6 +200,7 @@ type WorkspaceLifecycleDeps struct {
 	Executions WorkspaceLifecycleExecutions
 	AgentWaits WorkspaceLifecycleAgentWaits
 	Teardown   WorkspaceLifecycleTeardown
+	Now        func() time.Time
 }
 
 // WorkspaceLifecycleService is the stateful personal-workspace HTTP service.
@@ -214,6 +215,7 @@ type WorkspaceLifecycleService struct {
 	executions     WorkspaceLifecycleExecutions
 	agentWaits     WorkspaceLifecycleAgentWaits
 	teardown       WorkspaceLifecycleTeardown
+	now            func() time.Time
 	cleanupTimeout time.Duration
 	// unbinds serializes destructive local teardown per user without holding a
 	// global mutex while a database, vault, or lark-cli dependency is running.
@@ -259,9 +261,14 @@ func NewWorkspaceLifecycleService(deps WorkspaceLifecycleDeps) (*WorkspaceLifecy
 	if deps.Accounts == nil || deps.Workspace == nil || deps.Auth == nil || deps.Dispatcher == nil || deps.Operations == nil || deps.Executions == nil || deps.AgentWaits == nil || deps.Teardown == nil {
 		return nil, fmt.Errorf("%w: incomplete workspace graph", ErrWorkspaceLifecycleUnavailable)
 	}
+	now := deps.Now
+	if now == nil {
+		now = time.Now
+	}
 	return &WorkspaceLifecycleService{
 		accounts: deps.Accounts, workspace: deps.Workspace, auth: deps.Auth,
 		dispatcher: deps.Dispatcher, operations: deps.Operations, executions: deps.Executions, agentWaits: deps.AgentWaits, teardown: deps.Teardown,
+		now:            now,
 		cleanupTimeout: workspaceLifecycleCleanupTimeout,
 		unbinds:        make(map[uint]*workspaceUnbindFlight),
 	}, nil
@@ -405,6 +412,19 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 			return lifecycleStoredOperationSummary(updated), nil
 		}
 		if session.Phase == model.FeishuAuthPhaseUserAuth {
+			if session.ProtocolVersion == 2 && session.State == model.FeishuAuthSessionPending && !session.ExpiresAt.After(s.now().UTC()) {
+				action, refreshErr := s.auth.RefreshOperationAction(
+					ctx, userID, account.Generation, session.ID, operation.ID, operation.State, operation.ResultSummaryJSON,
+				)
+				if refreshErr != nil || action == nil || action.OperationID != operation.ID ||
+					strings.TrimSpace(action.SessionID) == "" || action.Phase != model.FeishuAuthPhaseUserAuth {
+					return nil, ErrWorkspaceLifecycleUnavailable
+				}
+				return lifecycleAuthorizationNoticeResult(operation, &DeviceAuthCompletion{
+					NoticeCode: AuthorizationExpired,
+					Action:     action,
+				})
+			}
 			completion, completeErr := s.auth.CompleteUserAuthorization(
 				ctx, userID, account.Generation, session.ID,
 			)

@@ -283,7 +283,10 @@ func (f *deviceAuthFlowStoreFake) ReplaceDeviceAuthSession(_ context.Context, in
 	terminalSource := old != nil && old.LeaseOwner == "" && old.LeaseUntil == nil &&
 		((old.ProtocolVersion == 1 && old.State == model.FeishuAuthSessionSuperseded && input.TerminalState == old.State) ||
 			(old.ProtocolVersion == 2 && (old.State == model.FeishuAuthSessionRejected || old.State == model.FeishuAuthSessionExpired) && input.TerminalState == old.State))
-	if old == nil || (!f.replaceOwnerLive && !terminalSource) || input.NewSession == nil {
+	expiredPendingSource := old != nil && old.ProtocolVersion == 2 && old.State == model.FeishuAuthSessionPending &&
+		old.CompletedAt == nil && !old.ExpiresAt.After(input.Now) && input.TerminalState == model.FeishuAuthSessionExpired &&
+		deviceAuthExpiredPendingLeaseSafe(old, input.Now)
+	if old == nil || (!f.replaceOwnerLive && !terminalSource && !expiredPendingSource) || input.NewSession == nil {
 		return nil, gorm.ErrRecordNotFound
 	}
 	old.State = input.TerminalState
@@ -1438,6 +1441,8 @@ func TestDeviceAuthFlow_RefreshCurrentV2ReplacementFencesLeaseAndTerminalSources
 	}{
 		{name: "pending pre-start", state: model.FeishuAuthSessionPending, terminalState: model.FeishuAuthSessionSuperseded, notice: AuthorizationUpdated, expectedClaims: 2},
 		{name: "pending full credential", state: model.FeishuAuthSessionPending, credential: true, terminalState: model.FeishuAuthSessionSuperseded, notice: AuthorizationUpdated, expectedClaims: 2},
+		{name: "expired pending pre-start", state: model.FeishuAuthSessionPending, terminalState: model.FeishuAuthSessionExpired, notice: AuthorizationExpired, expiredSession: true, expectedClaims: 1},
+		{name: "expired pending full credential", state: model.FeishuAuthSessionPending, credential: true, terminalState: model.FeishuAuthSessionExpired, notice: AuthorizationExpired, expiredSession: true, expectedClaims: 1},
 		{name: "rejected terminal", state: model.FeishuAuthSessionRejected, terminalState: model.FeishuAuthSessionRejected, notice: AuthorizationRejected, expiredSession: true, expectedClaims: 1},
 		{name: "expired terminal", state: model.FeishuAuthSessionExpired, terminalState: model.FeishuAuthSessionExpired, notice: AuthorizationExpired, expiredSession: true, expectedClaims: 1},
 	} {
@@ -1451,6 +1456,10 @@ func TestDeviceAuthFlow_RefreshCurrentV2ReplacementFencesLeaseAndTerminalSources
 			}
 			if testCase.expiredSession {
 				fixture.store.session.ExpiresAt = fixture.now.Add(-time.Minute)
+				if testCase.state == model.FeishuAuthSessionPending && testCase.credential {
+					resumeExpiry := fixture.now.Add(-2 * time.Minute)
+					fixture.store.session.ResumeExpiresAt = &resumeExpiry
+				}
 			}
 			oldSummary := []byte(`{"status":"waiting_user_auth","phase":"user_auth","session_id":"00000000-0000-4000-8000-000000000072","recovery_kind":"user_scope","recovery_scopes":["docx:document:readonly"]}`)
 
@@ -1470,6 +1479,11 @@ func TestDeviceAuthFlow_RefreshCurrentV2ReplacementFencesLeaseAndTerminalSources
 			require.Equal(t, testCase.expectedClaims, fixture.store.claimCalls)
 			require.Equal(t, model.FeishuAuthSessionPending, fixture.store.replacement.State)
 			require.NotEmpty(t, fixture.store.replacement.ResumeCredentialCiphertext)
+			if testCase.state == model.FeishuAuthSessionPending && testCase.expiredSession {
+				require.NotContains(t, fixture.store.claimSessionIDs, fixture.session.ID,
+					"an expired pending source is replaced by CAS and must not be reclaimed")
+				require.Empty(t, fixture.store.replaceInput.LeaseOwner)
+			}
 		})
 	}
 

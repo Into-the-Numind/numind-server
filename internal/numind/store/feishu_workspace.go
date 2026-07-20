@@ -665,11 +665,20 @@ func (s *feishuWorkspaceStore) ReplaceDeviceAuthSession(
 		}
 
 		if old.State == model.FeishuAuthSessionPending {
-			result := tx.Model(&model.FeishuAuthSession{}).
+			update := tx.Model(&model.FeishuAuthSession{}).
 				Where("id = ? AND user_id = ? AND generation = ?", old.ID, input.UserID, input.Generation).
-				Where("state = ? AND protocol_version = ?", model.FeishuAuthSessionPending, old.ProtocolVersion).
-				Where("lease_owner = ? AND lease_until > ?", input.LeaseOwner, input.Now).
-				Updates(feishuTerminalAuthSessionUpdates(input.TerminalState, input.Now))
+				Where("state = ? AND protocol_version = ?", model.FeishuAuthSessionPending, old.ProtocolVersion)
+			if expiredFeishuDeviceAuthPendingSource(&old, input) {
+				update = update.Where("expires_at <= ?", input.Now)
+				if old.LeaseOwner == "" {
+					update = update.Where("lease_owner = ? AND lease_until IS NULL", "")
+				} else {
+					update = update.Where("lease_owner = ? AND lease_until = ? AND lease_until <= ?", old.LeaseOwner, old.LeaseUntil.UTC(), input.Now)
+				}
+			} else {
+				update = update.Where("lease_owner = ? AND lease_until > ?", input.LeaseOwner, input.Now)
+			}
+			result := update.Updates(feishuTerminalAuthSessionUpdates(input.TerminalState, input.Now))
 			if result.Error != nil {
 				return fmt.Errorf("terminalize replaced feishu device auth session: %w", result.Error)
 			}
@@ -912,6 +921,9 @@ func replaceableFeishuDeviceAuthSource(old *model.FeishuAuthSession, input Feish
 	}
 	switch old.State {
 	case model.FeishuAuthSessionPending:
+		if expiredFeishuDeviceAuthPendingSource(old, input) {
+			return true
+		}
 		owned := old.LeaseOwner == input.LeaseOwner && old.LeaseOwner != "" && old.LeaseUntil != nil && old.LeaseUntil.After(input.Now)
 		if !owned {
 			return false
@@ -929,6 +941,17 @@ func replaceableFeishuDeviceAuthSource(old *model.FeishuAuthSession, input Feish
 	default:
 		return false
 	}
+}
+
+func expiredFeishuDeviceAuthPendingSource(old *model.FeishuAuthSession, input FeishuDeviceAuthReplacement) bool {
+	if old == nil || old.State != model.FeishuAuthSessionPending || old.ProtocolVersion != 2 ||
+		old.Phase != model.FeishuAuthPhaseUserAuth || old.CompletedAt != nil || old.ExpiresAt.After(input.Now) ||
+		input.TerminalState != model.FeishuAuthSessionExpired || !validFeishuDeviceAuthShape(old) {
+		return false
+	}
+	leaseFree := old.LeaseOwner == "" && old.LeaseUntil == nil
+	expiredCompleteLease := old.LeaseOwner != "" && old.LeaseUntil != nil && !old.LeaseUntil.After(input.Now)
+	return leaseFree || expiredCompleteLease
 }
 
 func feishuTerminalAuthSessionUpdates(state string, now time.Time) map[string]any {

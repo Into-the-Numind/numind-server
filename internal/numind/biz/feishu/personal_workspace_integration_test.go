@@ -630,6 +630,7 @@ func TestPersonalWorkspaceIntegration_UserAuthResumeSurvivesServiceRestart(t *te
 		Accounts: h.dataStore.ThirdPartyAccounts(), Workspace: h.dataStore.FeishuWorkspace(),
 		Auth: instanceBAuth, Dispatcher: instanceBDispatcher, Operations: instanceBOperations,
 		Executions: instanceBOperations, AgentWaits: &lifecycleAgentWaitFake{}, Teardown: &lifecycleTeardownFake{},
+		Now: h.service.now,
 	})
 	require.NoError(t, err)
 
