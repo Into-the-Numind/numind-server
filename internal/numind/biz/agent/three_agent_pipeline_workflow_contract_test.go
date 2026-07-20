@@ -13,19 +13,31 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
 
 	"numind-server/internal/numind/biz/feishu"
 	"numind-server/internal/pkg/aiservice"
+	"numind-server/internal/pkg/model"
 )
 
 const (
-	pipelineBaseToken = "bascnABCDEFG123"
-	pipelineTableID   = "tblABCDEFG123"
-	pipelineProfile   = "doxcnProfileABC123"
-	pipelineTopics    = "doxcnTopicsABC123"
+	pipelineBaseToken    = "bascnABCDEFG123"
+	pipelineTableID      = "tblABCDEFG123"
+	pipelineProfile      = "doxcnProfileABC123"
+	pipelineTopics       = "doxcnTopicsABC123"
+	profileManagedBegin  = "[有数AI受管区：客户画像｜契约 profile/v1｜开始]"
+	profileManagedEnd    = "[有数AI受管区：客户画像｜契约 profile/v1｜结束]"
+	topicsManagedHeader  = "[有数AI受管文档：选题规划｜契约 topics/v1]"
+	pipelineRoundOld     = "R20260719T083000Z-111111"
+	pipelineRoundNew     = "R20260720T083000Z-a1b2c3"
+	pipelineRoundCreate  = "R20260720T090000Z-b2c3d4"
+	pipelineRoundFixed   = "R20260720T091500Z-c3d4e5"
+	pipelineRoundUnknown = "R20260720T093000Z-d4e5f6"
 )
 
 type pipelineWorkflowCall struct {
@@ -155,6 +167,30 @@ func validatePipelineToolInput(tool, raw string) error {
 		if _, err = feishu.NewCommandCatalog().Normalize(decoded.Argv, decoded.StdinJSON); err != nil {
 			return fmt.Errorf("command outside production catalog: %w", err)
 		}
+		if len(decoded.Argv) >= 2 && decoded.Argv[0] == "base" && (decoded.Argv[1] == "+record-batch-create" || decoded.Argv[1] == "+record-upsert") {
+			if err = validateCompleteAgent1Write(decoded.Argv); err != nil {
+				return err
+			}
+		}
+		if len(decoded.Argv) >= 2 && decoded.Argv[0] == "base" && decoded.Argv[1] == "+base-create" {
+			if err = validateAgent1BaseCreate(decoded.Argv); err != nil {
+				return err
+			}
+		}
+		if len(decoded.Argv) >= 2 && decoded.Argv[0] == "docs" && (decoded.Argv[1] == "+create" || decoded.Argv[1] == "+update") {
+			if content, exists := argvValue(decoded.Argv, "--content"); exists {
+				if strings.Contains(content, profileManagedBegin) {
+					if err = validateProfileContent(content); err != nil {
+						return err
+					}
+				}
+				if strings.Contains(content, topicsManagedHeader) || strings.Contains(content, "[有数AI轮次：") {
+					if err = validateTopicContent(content); err != nil {
+						return err
+					}
+				}
+			}
+		}
 	case "lark_inspect":
 		request, err := decodeLarkInspectInput(input)
 		if err != nil {
@@ -254,12 +290,15 @@ func runScriptedPipelineWorkflow(t *testing.T, scenario pipelineWorkflowScenario
 	skillStore := newMemorySkillStore(1, scenario.agentID, "")
 	skillStore.fixed.Name = pipelineAgentName(scenario.agent)
 	skillStore.fixed.SystemPrompt = prompt
+	skillStore.fixed.ToolFlags = directPipelineToolFlags(allNames, toolNames)
 	runner := NewAgentRunner(newMockStore(), newStaticRegistry(tools...), WithSkillStore(skillStore))
 
 	result, err := runner.Run(context.Background(), RunRequest{
 		UserID: 1, AgentDefinitionID: scenario.agentID,
 		SessionID: fmt.Sprintf("pipeline-%d", scenario.agentID), Input: scenario.input,
-		ToolNames: toolNames, EnforceToolAllowlist: true,
+		// Deliberately stale/fail-open caller policy: the runner must derive the
+		// strict set from the definition it just loaded.
+		ToolNames: allNames, EnforceToolAllowlist: false,
 	})
 	require.NoError(t, err)
 	require.Equal(t, TerminalCompleted, result.TerminalReason)
@@ -276,6 +315,18 @@ func runScriptedPipelineWorkflow(t *testing.T, scenario pipelineWorkflowScenario
 		assert.Equal(t, value, metadata[key], "safe metric %s", key)
 	}
 	return calls, metadata
+}
+
+func directPipelineToolFlags(allNames, allowedNames []string) datatypes.JSON {
+	allowed := make(map[string]bool, len(allowedNames))
+	for _, name := range allowedNames {
+		allowed[name] = true
+	}
+	flags := make(map[string]bool, len(allNames))
+	for _, name := range allNames {
+		flags[name] = allowed[name]
+	}
+	return datatypes.JSON(jsonString(flags))
 }
 
 func loadPipelineSystemPrompt(t *testing.T, agentNumber int) string {
@@ -439,13 +490,54 @@ func TestThreeAgentPipelineWorkflow_Agent1Matrix(t *testing.T) {
 			steps: []pipelineModelStep{
 				fullStep([]string{"n9"}),
 				larkStep(baseCreateArgv([]string{"n9"}), `{"state":"unknown"}`),
-				larkStep(baseSearchArgv("n9"), `{"records":[{"小红书笔记ID":"n9","分析状态":"已完成"}]}`),
+				larkStep(baseSearchArgv("n9"), jsonString(map[string]any{"records": []any{completeAgent1Record("n9")}})),
 			},
 			final: marker1(1, 0, 0, 0), wantMetadata: metrics1(1, 0, 0, 0),
 			check: func(t *testing.T, calls []pipelineWorkflowCall) {
 				exactlyOneCallContaining("+record-batch-create")(t, calls)
 				assertOrder(t, calls, "+record-batch-create", "+record-search")
 			},
+		},
+	}
+	runPipelineScenarioMatrix(t, scenarios)
+}
+
+func TestThreeAgentPipelineWorkflow_Agent1BaseTargetResolution(t *testing.T) {
+	scenarios := []pipelineWorkflowScenario{
+		{
+			name: "zero exact Base creates the 34-field workspace", agent: 1, agentID: 7121, input: "开始打标",
+			steps: []pipelineModelStep{
+				skillStep("lark-drive"),
+				larkStep(driveSearchArgvWithType("爆款素材分析库", "bitable"), `{"matches":[]}`),
+				skillStep("lark-base"),
+				larkStep(baseCreateWorkspaceArgv(), `{"base_token":"bascnABCDEFG123","table_id":"tblABCDEFG123"}`),
+			},
+			final: marker1(0, 0, 0, 0), wantMetadata: metrics1(0, 0, 0, 0),
+			check: func(t *testing.T, calls []pipelineWorkflowCall) {
+				exactlyOneCallContaining("base\",\"+base-create")(t, calls)
+				assert.Contains(t, workflowCallsString(calls), `"--table-name","爆款素材"`)
+			},
+		},
+		{
+			name: "one exact Base is reused after schema inspection", agent: 1, agentID: 7122, input: "开始打标",
+			steps: []pipelineModelStep{
+				larkStep(driveSearchArgvWithType("爆款素材分析库", "bitable"), `{"matches":[{"base_token":"bascnABCDEFG123","table_id":"tblABCDEFG123"}]}`),
+				larkStep(baseFieldListArgv(), jsonString(map[string]any{"fields": baseFieldDefinitions(), "has_more": false})),
+			},
+			final: marker1(0, 0, 0, 0), wantMetadata: metrics1(0, 0, 0, 0),
+			check: func(t *testing.T, calls []pipelineWorkflowCall) {
+				exactlyOneCallContaining("base\",\"+field-list")(t, calls)
+				noCallContaining("base\",\"+base-create", "ask_user_question")(t, calls)
+			},
+		},
+		{
+			name: "multiple exact Bases ask for disambiguation without a write", agent: 1, agentID: 7123, input: "开始打标",
+			steps: []pipelineModelStep{
+				larkStep(driveSearchArgvWithType("爆款素材分析库", "bitable"), `{"matches":["b1","b2"]}`),
+				askStep("找到 2 个同名爆款素材分析库，请选择本次目标", `{"status":"waiting"}`),
+			},
+			final: marker1(0, 0, 0, 0), wantMetadata: metrics1(0, 0, 0, 0),
+			check: noCallContaining("base\",\"+base-create", "base\",\"+field-list", "+record-batch-create"),
 		},
 	}
 	runPipelineScenarioMatrix(t, scenarios)
@@ -474,13 +566,14 @@ func TestThreeAgentPipelineWorkflow_Agent2Matrix(t *testing.T) {
 				larkStep(docsFetchArgv("doxcnSourceABC123"), `{"content":"完整来源","scope":"full"}`),
 				skillStep("lark-drive"),
 				larkStep(driveSearchArgv("客户B-核心信息与人群画像"), `{"matches":[{"doc":"doxcnProfileABC123"}]}`),
-				larkStep(docsFetchArgv(pipelineProfile), `{"content":"<!-- numind-managed agent=agent-2 contract=customer-profile/v1 customer_key=客户B -->\n旧完整画像","scope":"full"}`),
+				larkStep(docsFetchArgv(pipelineProfile), jsonString(map[string]any{"content": profileContent("客户B"), "scope": "full"})),
 				larkStep(docsUpdateArgv(pipelineProfile, "overwrite", profileContent("客户B"), ""), `{"ok":true}`),
 			},
 			final: marker2(1, "update"), wantMetadata: metrics23(1, "update"),
 			check: func(t *testing.T, calls []pipelineWorkflowCall) {
 				assertOrder(t, calls, "doxcnProfileABC123\",\"--scope\",\"full", "overwrite")
 				exactlyOneCallContaining("overwrite")(t, calls)
+				assertProfileContract(t, workflowCallsString(calls))
 			},
 		},
 		{
@@ -506,21 +599,6 @@ func TestThreeAgentPipelineWorkflow_Agent2Matrix(t *testing.T) {
 			final: marker2(1, "unavailable"), wantMetadata: metrics23(1, "unavailable"), check: noCallContaining("docs\",\"+create", "overwrite"),
 		},
 		{
-			name: "official authorization recovery resumes the exact business read", agent: 2, agentID: 7205, input: "从飞书生成画像",
-			steps: []pipelineModelStep{
-				larkStep(docsFetchArgv("doxcnSourceAuth123"), `{"auth_required":true}`),
-				askStep("请完成飞书官方授权，完成后回复继续", `{"authorized":true}`),
-				larkStep(docsFetchArgv("doxcnSourceAuth123"), `{"content":"完整来源","scope":"full"}`),
-				larkStep(driveSearchArgv("客户E-核心信息与人群画像"), `{"matches":[]}`),
-				larkStep(docsCreateArgv("客户E-核心信息与人群画像", profileContent("客户E")), `{"ok":true}`),
-			},
-			final: marker2(1, "create"), wantMetadata: metrics23(1, "create"),
-			check: func(t *testing.T, calls []pipelineWorkflowCall) {
-				assert.Equal(t, calls[0].Args, calls[2].Args)
-				assertOrder(t, calls, "ask_user_question", "docs\",\"+create")
-			},
-		},
-		{
 			name: "unmanaged exact collision is not overwritten", agent: 2, agentID: 7206, input: "更新画像",
 			steps: []pipelineModelStep{
 				fileStep("brief.txt", 0, "", `{"has_more":false}`),
@@ -535,7 +613,7 @@ func TestThreeAgentPipelineWorkflow_Agent2Matrix(t *testing.T) {
 			steps: []pipelineModelStep{
 				fileStep("brief.txt", 0, "", `{"has_more":false}`),
 				larkStep(driveSearchArgv("客户G-核心信息与人群画像"), `{"matches":[{"doc":"doxcnDamagedABC"}]}`),
-				larkStep(docsFetchArgv("doxcnDamagedABC"), `{"content":"<!-- numind-managed damaged -->","scope":"full"}`),
+				larkStep(docsFetchArgv("doxcnDamagedABC"), jsonString(map[string]any{"content": profileManagedBegin + "\n缺少结束标记", "scope": "full"})),
 				askStep("目标文档受管标记损坏，请确认处理方式", `{"status":"waiting"}`),
 			},
 			final: marker2(1, "unavailable"), wantMetadata: metrics23(1, "unavailable"), check: noCallContaining("overwrite", "docs\",\"+create"),
@@ -554,7 +632,8 @@ func TestThreeAgentPipelineWorkflow_Agent2Matrix(t *testing.T) {
 }
 
 func TestThreeAgentPipelineWorkflow_Agent3Matrix(t *testing.T) {
-	fixture := topicRoundContent("R20260720T083000Z-a1b2c3")
+	fixture := topicRoundContent(pipelineRoundNew, 2)
+	fixedOld := strings.Replace(topicRoundContent(pipelineRoundFixed, 2), "多数咨询方案", "许多咨询方案", 1)
 	scenarios := []pipelineWorkflowScenario{
 		{
 			name: "qualified and partially-qualified sources produce a compliant nine-field round", agent: 3, agentID: 7301, input: "规划新一轮选题，账号不是蓝V，处于0-1阶段",
@@ -562,10 +641,10 @@ func TestThreeAgentPipelineWorkflow_Agent3Matrix(t *testing.T) {
 				skillStep("lark-base"),
 				larkStep(baseListArgv(), agent1SourceFixture()),
 				skillStep("lark-doc"),
-				larkStep(docsFetchArgv(pipelineProfile), `{"content":"客户处于0-1阶段；账号非蓝V；事实来自画像卡","scope":"full"}`),
+				larkStep(docsFetchArgv(pipelineProfile), jsonString(map[string]any{"content": profileContent("客户A") + "\n账号阶段：0-1\n蓝V：否", "scope": "full"})),
 				skillStep("lark-drive"),
 				larkStep(driveSearchArgv("客户A-选题规划"), `{"matches":[{"doc":"doxcnTopicsABC123"}]}`),
-				larkStep(docsFetchArgv(pipelineTopics), `{"content":"<!-- numind-managed agent=agent-3 contract=topic-plan/v1 customer_key=客户A -->\n旧轮次完整内容","scope":"full"}`),
+				larkStep(docsFetchArgv(pipelineTopics), jsonString(map[string]any{"content": topicsDocumentContent("客户A", pipelineRoundOld), "scope": "full"})),
 				larkStep(docsUpdateArgv(pipelineTopics, "append", fixture, ""), `{"ok":true}`),
 			},
 			final: marker3(2, "append"), wantMetadata: metrics23(2, "append"),
@@ -584,6 +663,9 @@ func TestThreeAgentPipelineWorkflow_Agent3Matrix(t *testing.T) {
 				assert.NotContains(t, joined, "主语自检：机构")
 				assert.Contains(t, joined, "主语自检：创始人本人")
 				assert.Contains(t, joined, "不足70条说明")
+				assert.Contains(t, joined, "生成路径：向外求")
+				assert.Contains(t, joined, "参考类型：结构+内容")
+				assert.Contains(t, joined, "参考类型：仅参考结构")
 				assertOrder(t, calls, "doxcnTopicsABC123\",\"--scope\",\"full", "append")
 			},
 		},
@@ -593,22 +675,22 @@ func TestThreeAgentPipelineWorkflow_Agent3Matrix(t *testing.T) {
 				fileStep("agent1.csv", 0, "", `{"has_more":false}`),
 				fileStep("agent2.docx", 0, "", `{"has_more":false}`),
 				larkStep(driveSearchArgv("客户H-选题规划"), `{"matches":[]}`),
-				larkStep(docsCreateArgv("客户H-选题规划", topicsDocumentContent("客户H", "R-new")), `{"ok":true}`),
+				larkStep(docsCreateArgv("客户H-选题规划", topicsDocumentContent("客户H", pipelineRoundCreate)), `{"ok":true}`),
 			},
 			final: marker3(2, "create"), wantMetadata: metrics23(2, "create"), check: exactlyOneCallContaining("docs\",\"+create"),
 		},
 		{
-			name: "specified existing round is replaced exactly", agent: 3, agentID: 7303, input: "修改 R-fixed 这一轮",
+			name: "specified existing round is replaced exactly", agent: 3, agentID: 7303, input: "修改 " + pipelineRoundFixed + " 这一轮",
 			steps: []pipelineModelStep{
 				larkStep(baseListArgv(), agent1SourceFixture()),
-				larkStep(docsFetchArgv(pipelineProfile), `{"content":"完整画像","scope":"full"}`),
-				larkStep(docsFetchArgv(pipelineTopics), `{"content":"<!-- numind-managed agent=agent-3 contract=topic-plan/v1 customer_key=客户A -->\n<!-- round:start id=R-old -->旧<!-- round:end id=R-old -->\n<!-- round:start id=R-fixed -->待替换<!-- round:end id=R-fixed -->","scope":"full"}`),
-				larkStep(docsUpdateArgv(pipelineTopics, "str_replace", topicRoundContent("R-fixed"), "<!-- round:start id=R-fixed -->待替换<!-- round:end id=R-fixed -->"), `{"ok":true}`),
+				larkStep(docsFetchArgv(pipelineProfile), jsonString(map[string]any{"content": profileContent("客户A"), "scope": "full"})),
+				larkStep(docsFetchArgv(pipelineTopics), jsonString(map[string]any{"content": topicsManagedHeader + "\n# 客户A 选题规划\n" + topicRoundContent(pipelineRoundOld, 1) + "\n" + fixedOld, "scope": "full"})),
+				larkStep(docsUpdateArgv(pipelineTopics, "str_replace", topicRoundContent(pipelineRoundFixed, 2), fixedOld), `{"ok":true}`),
 			},
 			final: marker3(2, "replace-round"), wantMetadata: metrics23(2, "replace-round"),
 			check: func(t *testing.T, calls []pipelineWorkflowCall) {
 				exactlyOneCallContaining("str_replace")(t, calls)
-				assert.Contains(t, calls[len(calls)-1].Args, "R-fixed")
+				assert.Contains(t, calls[len(calls)-1].Args, pipelineRoundFixed)
 				noCallContaining(`"append"`, "docs\",\"+create")(t, calls)
 			},
 		},
@@ -616,10 +698,10 @@ func TestThreeAgentPipelineWorkflow_Agent3Matrix(t *testing.T) {
 			name: "unknown append is reconciled through round marker after a pre-write full read", agent: 3, agentID: 7304, input: "追加一轮",
 			steps: []pipelineModelStep{
 				larkStep(baseListArgv(), agent1SourceFixture()),
-				larkStep(docsFetchArgv(pipelineProfile), `{"content":"完整画像","scope":"full"}`),
-				larkStep(docsFetchArgv(pipelineTopics), `{"content":"<!-- numind-managed agent=agent-3 contract=topic-plan/v1 customer_key=客户A -->\n旧轮次","scope":"full"}`),
-				larkStep(docsUpdateArgv(pipelineTopics, "append", topicRoundContent("R-unknown"), ""), `{"state":"unknown"}`),
-				larkStep(docsFetchArgv(pipelineTopics), `{"content":"<!-- round:start id=R-unknown -->已存在<!-- round:end id=R-unknown -->","scope":"full"}`),
+				larkStep(docsFetchArgv(pipelineProfile), jsonString(map[string]any{"content": profileContent("客户A"), "scope": "full"})),
+				larkStep(docsFetchArgv(pipelineTopics), jsonString(map[string]any{"content": topicsDocumentContent("客户A", pipelineRoundOld), "scope": "full"})),
+				larkStep(docsUpdateArgv(pipelineTopics, "append", topicRoundContent(pipelineRoundUnknown, 2), ""), `{"state":"unknown"}`),
+				larkStep(docsFetchArgv(pipelineTopics), jsonString(map[string]any{"content": topicsDocumentContent("客户A", pipelineRoundOld) + "\n" + topicRoundContent(pipelineRoundUnknown, 2), "scope": "full"})),
 			},
 			final: marker3(2, "append"), wantMetadata: metrics23(2, "append"),
 			check: func(t *testing.T, calls []pipelineWorkflowCall) {
@@ -631,7 +713,7 @@ func TestThreeAgentPipelineWorkflow_Agent3Matrix(t *testing.T) {
 			name: "unmanaged exact collision is never taken over", agent: 3, agentID: 7305, input: "规划选题",
 			steps: []pipelineModelStep{
 				larkStep(baseListArgv(), agent1SourceFixture()),
-				larkStep(docsFetchArgv(pipelineProfile), `{"content":"完整画像","scope":"full"}`),
+				larkStep(docsFetchArgv(pipelineProfile), jsonString(map[string]any{"content": profileContent("客户I"), "scope": "full"})),
 				larkStep(driveSearchArgv("客户I-选题规划"), `{"matches":[{"doc":"doxcnCollisionI12"}]}`),
 				larkStep(docsFetchArgv("doxcnCollisionI12"), `{"content":"无受管标记","scope":"full"}`),
 				askStep("同名文档无受管标记，请选择接管或改名", `{"status":"waiting"}`),
@@ -682,6 +764,87 @@ func TestThreeAgentPipelineWorkflow_RealAskQuestionYieldsAndPersists(t *testing.
 	require.NoError(t, err)
 	assert.Equal(t, string(TerminalWaitingForUserChoice), stored.StateReason)
 	assert.Contains(t, string(stored.PendingQuestionJSON), "请提供本轮客户的准确名称")
+}
+
+func TestThreeAgentPipelineWorkflow_OfficialFeishuAuthorizationResumesOriginalToolCall(t *testing.T) {
+	prompt := loadPipelineSystemPrompt(t, 2)
+	toolCallID := "agent2-auth-call"
+	operationID := "op-agent2-auth"
+	argv := docsFetchArgv("doxcnSourceAuth123")
+	original := chatFn
+	t.Cleanup(func() { chatFn = original })
+	chatFn = func(_ context.Context, _ string, req aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
+		promptObserved := false
+		for _, message := range req.Messages {
+			promptObserved = promptObserved || (message.Role == aiservice.MessageRoleSystem && pipelinePromptWasInjected(message.Content.Text, prompt))
+		}
+		require.True(t, promptObserved)
+		require.Len(t, req.Tools, 1)
+		require.Equal(t, "lark_execute", req.Tools[0].Function.Name)
+		return &aiservice.ChatResponse{
+			ToolCalls: []aiservice.ToolCall{{ID: toolCallID, Type: "function", Function: aiservice.ToolCallFunction{
+				Name: "lark_execute", Arguments: jsonString(map[string]any{"argv": argv}),
+			}}},
+			FinishReason: "tool_calls", Model: "test-model", Provider: "test",
+		}, nil
+	}
+	expiresAt := time.Now().UTC().Add(time.Hour)
+	executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+		OperationID: operationID, State: model.FeishuOperationWaitingUserAuth,
+		Action: &feishu.OperationAction{
+			Provider: "lark", OperationID: operationID, SessionID: "session-agent2-auth", Phase: "user_auth",
+			URL: "https://open.feishu.cn/open-apis/authen/v1/authorize?state=live-only", ExpiresAt: expiresAt,
+		},
+	}}
+	writer := &externalActionWriterStore{mockAgentRunStore: newMockStore()}
+	skills := newMemorySkillStore(1, 7299, "")
+	skills.fixed.Name = pipelineAgent2Name
+	skills.fixed.SystemPrompt = prompt
+	skills.fixed.ToolFlags = datatypes.JSON(`{"lark_execute":true,"ask_user_question":false}`)
+	runner := NewAgentRunner(writer, newStaticRegistry(&larkExecuteTool{executor: executor}), WithSkillStore(skills))
+
+	result, err := runner.Run(context.Background(), RunRequest{
+		UserID: 1, AgentDefinitionID: 7299, SessionID: "pipeline-real-auth", Input: "从飞书生成画像",
+		ToolNames: []string{"ask_user_question"}, EnforceToolAllowlist: false,
+	})
+	require.NoError(t, err)
+	require.Equal(t, TerminalWaitingForUserChoice, result.TerminalReason)
+	requests := executor.snapshot()
+	require.Len(t, requests, 1)
+	require.Equal(t, argv, requests[0].Argv)
+	actualToolCallID := requests[0].ToolCallID
+	require.NotEmpty(t, actualToolCallID)
+
+	stored, err := writer.Get(context.Background(), result.AgentRunID)
+	require.NoError(t, err)
+	require.Empty(t, stored.PendingQuestionJSON, "official authorization is an external action, not a model question")
+	require.NotEmpty(t, stored.PendingExternalActionJSON)
+	require.NotContains(t, string(stored.PendingExternalActionJSON), "live-only")
+	pending, err := ParsePendingExternalAction(stored.PendingExternalActionJSON)
+	require.NoError(t, err)
+	require.Equal(t, operationID, pending.OperationID)
+	require.Equal(t, actualToolCallID, pending.ToolCallID)
+
+	completed := json.RawMessage(`{"ok":true,"state":"succeeded","operation_id":"op-agent2-auth","data":{"content":"完整来源"}}`)
+	service := NewStudentRunService(nil, writer, skills, nil, nil, nil)
+	resume, err := service.buildExternalResumeRequest(context.Background(), stored, ExternalToolResult{
+		RunID: stored.ID, OperationID: operationID, ToolCallID: actualToolCallID, Result: completed,
+	})
+	require.NoError(t, err)
+	require.True(t, resume.ContinueWithoutUserInput)
+	require.Equal(t, stored.ID, resume.ExistingRunID)
+	require.Empty(t, resume.Input)
+	require.NotEmpty(t, resume.ExternalContinuationResult)
+	require.GreaterOrEqual(t, len(resume.History), 2)
+	assistantCall := resume.History[len(resume.History)-2]
+	toolResult := resume.History[len(resume.History)-1]
+	require.Equal(t, schema.Assistant, assistantCall.Role)
+	require.Len(t, assistantCall.ToolCalls, 1)
+	require.Equal(t, actualToolCallID, assistantCall.ToolCalls[0].ID)
+	require.Equal(t, "lark_execute", assistantCall.ToolCalls[0].Function.Name)
+	require.Equal(t, schema.Tool, toolResult.Role)
+	require.Equal(t, actualToolCallID, toolResult.ToolCallID)
+	require.JSONEq(t, string(completed), toolResult.Content)
 }
 
 func runPipelineScenarioMatrix(t *testing.T, scenarios []pipelineWorkflowScenario) {
@@ -789,15 +952,145 @@ func baseSearchArgv(keyword string) []string {
 func baseCreateArgv(ids []string) []string {
 	rows := make([][]any, 0, len(ids))
 	for _, id := range ids {
-		rows = append(rows, []any{id, "已完成"})
+		row := completeAgent1Record(id)
+		values := make([]any, 0, len(agent1FieldNames()))
+		for _, field := range agent1FieldNames() {
+			values = append(values, row[field])
+		}
+		rows = append(rows, values)
 	}
-	payload := jsonString(map[string]any{"fields": []string{"小红书笔记ID", "分析状态"}, "rows": rows})
+	payload := jsonString(map[string]any{"fields": agent1FieldNames(), "rows": rows})
 	return []string{"base", "+record-batch-create", "--base-token", pipelineBaseToken, "--table-id", pipelineTableID, "--json", payload}
 }
 
 func baseUpsertArgv(id, recordID string) []string {
-	payload := jsonString(map[string]any{"小红书笔记ID": id, "分析状态": "已完成"})
+	payload := jsonString(completeAgent1Record(id))
 	return []string{"base", "+record-upsert", "--base-token", pipelineBaseToken, "--table-id", pipelineTableID, "--record-id", recordID, "--json", payload}
+}
+
+func agent1FieldNames() []string {
+	return []string{
+		"小红书笔记ID", "有数笔记ID", "笔记类型", "笔记标题", "笔记正文", "视频文字稿",
+		"点赞数", "收藏数", "评论数", "评论区文本", "原文链接", "采集时间", "达标判定", "判定说明",
+		"原生赛道", "适配赛道", "人群画像", "标题钩子", "开头留人", "正文结构", "情绪调动点", "结尾CTA",
+		"主语身份", "六大类标签", "子类标签", "能否跨赛道", "跨赛道理由", "可借鉴部分", "不可照搬部分",
+		"推导链", "分析状态", "分析完成时间", "分析规则版本", "有数契约版本",
+	}
+}
+
+func completeAgent1Record(id string) map[string]any {
+	return map[string]any{
+		"小红书笔记ID": id, "有数笔记ID": 1001, "笔记类型": "图文", "笔记标题": "标题 " + id,
+		"笔记正文": "正文", "视频文字稿": "信息不足", "点赞数": 1200, "收藏数": 300, "评论数": 88,
+		"评论区文本": "信息不足", "原文链接": "https://xhs.example/" + id, "采集时间": "2026-07-20T08:00:00+08:00",
+		"达标判定": "达标", "判定说明": "结构完整且互动动机明确", "原生赛道": "知识服务",
+		"适配赛道": []string{"求职"}, "人群画像": "处于转型期的服务型创业者", "标题钩子": "反常识结论",
+		"开头留人": "先指出常见误区", "正文结构": "问题—原因—方法", "情绪调动点": "焦虑转为确定感",
+		"结尾CTA": "邀请讨论", "主语身份": "自己", "六大类标签": []string{"人设型"},
+		"子类标签": []string{"人设型-信念"}, "能否跨赛道": "能", "跨赛道理由": "冲突结构不依赖行业事实",
+		"可借鉴部分": "反常识标题与三段论结构", "不可照搬部分": "原作者人物与行业数据",
+		"推导链": "内容证据→结构拆解→跨赛道边界", "分析状态": "已完成",
+		"分析完成时间": "2026-07-20T08:30:00+08:00", "分析规则版本": "prompt-1/sha256:test-v1",
+		"有数契约版本": "xhs-viral-base/v1",
+	}
+}
+
+func validateCompleteAgent1Write(argv []string) error {
+	payload, ok := argvValue(argv, "--json")
+	if !ok {
+		return fmt.Errorf("Agent 1 write is missing --json")
+	}
+	wantFields := agent1FieldNames()
+	if argv[1] == "+record-batch-create" {
+		var batch struct {
+			Fields []string `json:"fields"`
+			Rows   [][]any  `json:"rows"`
+		}
+		if err := json.Unmarshal([]byte(payload), &batch); err != nil {
+			return fmt.Errorf("invalid Agent 1 batch payload: %w", err)
+		}
+		if !equalStrings(batch.Fields, wantFields) || len(batch.Rows) == 0 {
+			return fmt.Errorf("Agent 1 batch must contain the exact 34-field contract")
+		}
+		for _, row := range batch.Rows {
+			if len(row) != len(wantFields) {
+				return fmt.Errorf("Agent 1 row has %d fields, want 34", len(row))
+			}
+			mapped := make(map[string]any, len(wantFields))
+			for index, field := range wantFields {
+				mapped[field] = row[index]
+			}
+			if err := validateCompleteAgent1Record(mapped); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	var record map[string]any
+	if err := json.Unmarshal([]byte(payload), &record); err != nil {
+		return fmt.Errorf("invalid Agent 1 upsert payload: %w", err)
+	}
+	return validateCompleteAgent1Record(record)
+}
+
+func validateCompleteAgent1Record(record map[string]any) error {
+	wantFields := agent1FieldNames()
+	if len(record) != len(wantFields) {
+		return fmt.Errorf("Agent 1 completed record has %d fields, want 34", len(record))
+	}
+	for _, field := range wantFields {
+		value, ok := record[field]
+		if !ok || value == nil || (fmt.Sprint(value) == "") {
+			return fmt.Errorf("Agent 1 completed record is missing %s", field)
+		}
+	}
+	if record["分析状态"] != "已完成" || record["有数契约版本"] != "xhs-viral-base/v1" {
+		return fmt.Errorf("Agent 1 completed record has invalid checkpoint fields")
+	}
+	return nil
+}
+
+func validateAgent1BaseCreate(argv []string) error {
+	name, hasName := argvValue(argv, "--name")
+	tableName, hasTable := argvValue(argv, "--table-name")
+	rawFields, hasFields := argvValue(argv, "--fields")
+	if !hasName || !hasTable || !hasFields || name != "爆款素材分析库" || tableName != "爆款素材" {
+		return fmt.Errorf("Agent 1 Base target has invalid name or table")
+	}
+	var fields []map[string]any
+	if err := json.Unmarshal([]byte(rawFields), &fields); err != nil || len(fields) != 34 {
+		return fmt.Errorf("Agent 1 Base schema must contain 34 fields")
+	}
+	for index, fieldName := range agent1FieldNames() {
+		if fields[index]["name"] != fieldName || strings.TrimSpace(fmt.Sprint(fields[index]["type"])) == "" {
+			return fmt.Errorf("Agent 1 Base field %d does not match the contract", index+1)
+		}
+	}
+	if fields[0]["type"] != "text" {
+		return fmt.Errorf("Agent 1 business key must be the first text field")
+	}
+	return nil
+}
+
+func argvValue(argv []string, flag string) (string, bool) {
+	for index := 0; index+1 < len(argv); index++ {
+		if argv[index] == flag {
+			return argv[index+1], true
+		}
+	}
+	return "", false
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func docsFetchArgv(doc string) []string {
@@ -817,54 +1110,192 @@ func docsUpdateArgv(doc, command, content, pattern string) []string {
 }
 
 func driveSearchArgv(title string) []string {
-	return []string{"drive", "+search", "--query", title, "--only-title", "--doc-types", "docx", "--page-size", "20"}
+	return driveSearchArgvWithType(title, "docx")
+}
+
+func driveSearchArgvWithType(title, docType string) []string {
+	return []string{"drive", "+search", "--query", title, "--only-title", "--doc-types", docType, "--page-size", "20"}
+}
+
+func baseFieldListArgv() []string {
+	return []string{"base", "+field-list", "--base-token", pipelineBaseToken, "--table-id", pipelineTableID, "--limit", "100"}
+}
+
+func baseCreateWorkspaceArgv() []string {
+	return []string{"base", "+base-create", "--name", "爆款素材分析库", "--table-name", "爆款素材", "--fields", jsonString(baseFieldDefinitions())}
+}
+
+func baseFieldDefinitions() []map[string]any {
+	types := map[string]string{
+		"小红书笔记ID": "text", "有数笔记ID": "number", "笔记类型": "select", "笔记标题": "text", "笔记正文": "text",
+		"视频文字稿": "text", "点赞数": "number", "收藏数": "number", "评论数": "number", "评论区文本": "text",
+		"原文链接": "text", "采集时间": "datetime", "达标判定": "select", "判定说明": "text", "原生赛道": "text",
+		"适配赛道": "select", "人群画像": "text", "标题钩子": "text", "开头留人": "text", "正文结构": "text",
+		"情绪调动点": "text", "结尾CTA": "text", "主语身份": "select", "六大类标签": "select", "子类标签": "select",
+		"能否跨赛道": "select", "跨赛道理由": "text", "可借鉴部分": "text", "不可照搬部分": "text", "推导链": "text",
+		"分析状态": "select", "分析完成时间": "datetime", "分析规则版本": "text", "有数契约版本": "text",
+	}
+	multiple := map[string]bool{"适配赛道": true, "六大类标签": true, "子类标签": true}
+	options := map[string][]string{
+		"笔记类型":  {"图文", "视频", "信息不足"},
+		"达标判定":  {"达标", "部分达标", "不达标"},
+		"适配赛道":  {"房产", "留学", "移民", "保险", "求职", "雅思"},
+		"主语身份":  {"自己", "客户", "第三方", "泛人称"},
+		"六大类标签": {"人设型", "泛流量型", "垂直人群泛话题", "精准选题", "硬广营销类", "其他"},
+		"子类标签":  {"人设型-来路", "人设型-信念", "人设型-代价", "人设型-日常", "人设型-价值观", "人设型-其他", "泛流量型-选哪个", "泛流量型-要花多少", "泛流量型-是不是现在", "泛流量型-有什么坑", "泛流量型-其他", "垂直人群泛话题", "精准选题-爆款型", "精准选题-痛点型", "精准选题-深度型", "精准选题-案例型", "精准选题-其他", "硬广营销类-产品型", "硬广营销类-好评型", "硬广营销类-其他", "其他"},
+		"能否跨赛道": {"能", "部分能", "不能"},
+		"分析状态":  {"已完成", "失败待重试"},
+	}
+	fields := make([]map[string]any, 0, len(agent1FieldNames()))
+	for _, name := range agent1FieldNames() {
+		field := map[string]any{"name": name, "type": types[name]}
+		if multiple[name] {
+			field["multiple"] = true
+		}
+		if values := options[name]; len(values) > 0 {
+			fieldOptions := make([]map[string]string, 0, len(values))
+			for _, value := range values {
+				fieldOptions = append(fieldOptions, map[string]string{"name": value})
+			}
+			field["options"] = fieldOptions
+		}
+		switch name {
+		case "有数笔记ID", "点赞数", "收藏数", "评论数":
+			field["style"] = map[string]any{"precision": 0}
+		case "原文链接":
+			field["style"] = map[string]any{"url": true}
+		}
+		fields = append(fields, field)
+	}
+	return fields
 }
 
 func profileContent(customer string) string {
-	return fmt.Sprintf("# 客户核心信息与人群画像卡\n客户名称：%s\n<!-- numind-managed agent=agent-2 contract=customer-profile/v1 customer_key=%s -->\n## 一、客户基础信息\n完整\n## 二、客户定位\n完整\n## 三、核心人群画像\n完整\n## 四、案例素材\n完整\n## 五、产品与服务\n完整\n## 六、内容边界\n完整\n## 七、资料缺口与待确认\n完整", customer, customer)
+	return fmt.Sprintf(`%s
+# 客户核心信息与人群画像卡
+客户：%s
+本次更新：2026-07-20T08:30:00+08:00
+## 一、资料来源判断
+完整
+## 二、账号定位素材
+完整
+## 三、核心人群画像
+完整
+## 四、向内求素材库
+完整
+## 五、第三方素材说明
+完整
+## 六、深度看见候选点
+完整
+## 七、资料缺口清单
+完整
+%s`, profileManagedBegin, customer, profileManagedEnd)
+}
+
+func assertProfileContract(t *testing.T, content string) {
+	t.Helper()
+	assert.Contains(t, content, profileManagedBegin)
+	assert.Contains(t, content, profileManagedEnd)
+	for _, module := range []string{"资料来源判断", "账号定位素材", "核心人群画像", "向内求素材库", "第三方素材说明", "深度看见候选点", "资料缺口清单"} {
+		assert.Contains(t, content, module)
+	}
+}
+
+func validateProfileContent(content string) error {
+	if strings.Count(content, profileManagedBegin) != 1 || strings.Count(content, profileManagedEnd) != 1 ||
+		strings.Index(content, profileManagedBegin) > strings.Index(content, profileManagedEnd) {
+		return fmt.Errorf("Agent 2 profile markers must be unique and paired")
+	}
+	for _, module := range []string{"资料来源判断", "账号定位素材", "核心人群画像", "向内求素材库", "第三方素材说明", "深度看见候选点", "资料缺口清单"} {
+		if !strings.Contains(content, module) {
+			return fmt.Errorf("Agent 2 profile is missing module %s", module)
+		}
+	}
+	return nil
+}
+
+func validateTopicContent(content string) error {
+	if strings.Contains(content, topicsManagedHeader) && strings.Count(content, topicsManagedHeader) != 1 {
+		return fmt.Errorf("Agent 3 document header must be unique")
+	}
+	if strings.Count(content, "｜开始]") != strings.Count(content, "｜结束]") || strings.Count(content, "｜开始]") == 0 {
+		return fmt.Errorf("Agent 3 round markers must be paired")
+	}
+	for _, field := range topicNineFields() {
+		if !strings.Contains(content, field+"：") {
+			return fmt.Errorf("Agent 3 round is missing %s", field)
+		}
+	}
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(strings.TrimPrefix(line, "-"))
+		if strings.HasPrefix(trimmed, "生成路径：") {
+			value := strings.TrimPrefix(trimmed, "生成路径：")
+			if value != "向内求" && value != "向外求" {
+				return fmt.Errorf("Agent 3 generation path is outside the fixed enum")
+			}
+		}
+		if strings.HasPrefix(trimmed, "参考类型：") {
+			value := strings.TrimPrefix(trimmed, "参考类型：")
+			if value != "结构+内容" && value != "仅参考结构" && value != "无，独立生成" {
+				return fmt.Errorf("Agent 3 reference type is outside the fixed enum")
+			}
+		}
+	}
+	return nil
 }
 
 func topicsDocumentContent(customer, round string) string {
-	return fmt.Sprintf("# 选题规划\n<!-- numind-managed agent=agent-3 contract=topic-plan/v1 customer_key=%s -->\n%s", customer, topicRoundContent(round))
+	return fmt.Sprintf("%s\n# %s 选题规划\n%s", topicsManagedHeader, customer, topicRoundContent(round, 1))
 }
 
 func topicNineFields() []string {
 	return []string{"选题内容", "选择原因", "归属小类", "生成路径", "推导链", "参考来源链接", "参考类型", "变形说明", "主语自检"}
 }
 
-func topicRoundContent(round string) string {
-	return fmt.Sprintf(`<!-- round:start id=%s -->
-## 本轮选题
+func topicRoundContent(round string, number int) string {
+	return fmt.Sprintf(`[有数AI轮次：%s｜第 %d 轮｜开始]
+## 第 %d 轮｜2026-07-20｜0-1｜蓝V：否
 ### 选题 1
 - 选题内容：创始人亲述：为什么多数咨询方案落不了地
 - 选择原因：画像卡确认客户处于 0-1 阶段，适合以创始人本人建立信任
-- 归属小类：人设型-专业判断
-- 生成路径：画像事实 + 达标来源 n1 的冲突结构
+- 归属小类：人设型-信念
+- 生成路径：向外求
 - 推导链：客户事实 → 来源结构 → 新选题
 - 参考来源链接：https://xhs.example/n1
-- 参考类型：达标完整借鉴
+- 参考类型：结构+内容
 - 变形说明：只借结构，不借原行业事实
 - 主语自检：创始人本人
 
 ### 选题 2
 - 选题内容：顾问视角：服务型老板最容易忽略的一个交付节点
 - 选择原因：部分达标来源仍有可迁移的反常识开头
-- 归属小类：精准痛点-交付误区
-- 生成路径：画像事实 + 部分达标来源 n2，仅借局部手法
+- 归属小类：精准-痛点型
+- 生成路径：向外求
 - 推导链：客户交付事实 → 可借鉴：反常识开头 → 避开不可照搬：客户结果数字
 - 参考来源链接：https://xhs.example/n2
-- 参考类型：部分达标，仅借局部手法
-- 变形说明：可借鉴：反常识开头；不可照搬：客户结果数字
+- 参考类型：仅参考结构
+- 变形说明：仅借局部手法；可借鉴：反常识开头；不可照搬：客户结果数字
 - 主语自检：顾问本人
 
+本轮规避重点：不使用不达标来源，不虚构客户事实。
+六大类：人设型 1；精准选题 1；其他 0。
 该账号非蓝 V，本轮跳过硬广营销类选题。
 硬广营销类数量：0
 不足70条说明：当前仅有 2 条满足来源、画像、主语与合规约束的正式选题，不以不达标或缺字段素材凑数。
-<!-- round:end id=%s -->`, round, round)
+待确认清单：补充更多达标来源后扩充选题。
+[有数AI轮次：%s｜第 %d 轮｜结束]`, round, number, number, round, number)
 }
 
 func agent1SourceFixture() string {
-	return `{"records":[{"小红书笔记ID":"n1","达标判定":"达标","原文链接":"https://xhs.example/n1","必要标签":"完整","跨赛道结论":"可迁移"},{"小红书笔记ID":"n2","达标判定":"部分达标","可借鉴部分":"反常识开头","不可照搬部分":"客户结果数字","原文链接":"https://xhs.example/n2","必要标签":"完整","跨赛道结论":"局部迁移"},{"小红书笔记ID":"不达标来源-n3","达标判定":"不达标","原文链接":"https://xhs.example/n3"}]}`
+	n1 := completeAgent1Record("n1")
+	n2 := completeAgent1Record("n2")
+	n2["达标判定"] = "部分达标"
+	n2["能否跨赛道"] = "部分能"
+	n2["可借鉴部分"] = "反常识开头"
+	n2["不可照搬部分"] = "客户结果数字"
+	n3 := completeAgent1Record("不达标来源-n3")
+	n3["达标判定"] = "不达标"
+	return jsonString(map[string]any{"records": []any{n1, n2, n3}})
 }
 
 func noteIDs(from, through int) []string {

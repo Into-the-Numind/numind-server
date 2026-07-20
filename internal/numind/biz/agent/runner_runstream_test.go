@@ -23,6 +23,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
 
 	"numind-server/internal/numind/biz/agent/stream"
 	"numind-server/internal/pkg/aiservice"
@@ -414,22 +415,33 @@ func TestRunStream_HappyPath(t *testing.T) {
 
 func TestPipelineMetrics_StreamRunnerRecordsCompletedFinalAnswer(t *testing.T) {
 	final := "完成\n<!-- numind-pipeline-report/v1 agent=agent-3 {\"source_count\":2,\"output_mode\":\"append\"} -->"
-	withMockChatStreamFn(t, successStreamFn(final))
+	var modelToolNames []string
+	streamSuccess := successStreamFn(final)
+	withMockChatStreamFn(t, func(ctx context.Context, profile string, req aiservice.ChatRequest) (<-chan aiservice.ChatChunk, error) {
+		for _, tool := range req.Tools {
+			modelToolNames = append(modelToolNames, tool.Function.Name)
+		}
+		return streamSuccess(ctx, profile, req)
+	})
 	events := capturePipelineLangfuseEvents(t)
 	skillStore := newMemorySkillStore(1, 503, "")
 	skillStore.fixed.Name = pipelineAgent3Name
+	skillStore.fixed.ToolFlags = datatypes.JSON(`{"loop_test_noop":true,"rogue_tool":false}`)
 	ms := newMockStore()
 	run := makeRunForStream(t, ms)
-	runner, toolName := newReActRunnerForStream(ms, WithSkillStore(skillStore))
+	toolName := (&loopTestTool{}).Name()
+	runner := NewAgentRunner(ms, newStaticRegistry(&loopTestTool{}, &stubFullTool{name: "rogue_tool"}), WithSkillStore(skillStore))
 	ch := make(chan stream.Event, 256)
 
 	result, err := runner.RunStream(context.Background(), RunRequest{
-		UserID: 1, AgentDefinitionID: 503, Input: "run pipeline", ToolNames: []string{toolName},
+		UserID: 1, AgentDefinitionID: 503, Input: "run pipeline",
+		ToolNames: []string{toolName, "rogue_tool"}, EnforceToolAllowlist: false,
 	}, run.ID, ch)
 	close(ch)
 
 	require.NoError(t, err)
 	assert.Equal(t, TerminalCompleted, result.TerminalReason)
+	assert.Equal(t, []string{toolName}, modelToolNames, "RunStream must enforce loaded definition flags over stale caller policy")
 	metadata := findPipelineTraceMetadata(t, *events)
 	assert.Equal(t, "agent-3", metadata["agent"])
 	assert.Equal(t, "2", metadata["source_count"])

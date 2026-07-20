@@ -28,10 +28,11 @@ type DocumentParser struct{}
 
 const (
 	// Extracted text is bounded independently from the compressed upload size.
-	// The JSON envelope may escape quotes, slashes, and line breaks to roughly
-	// twice the content bytes, so stdout needs headroom above the content limit.
+	// JSON can encode one input byte as a six-byte \\u00xx escape. Bound stdout
+	// for that worst case plus envelope headroom so valid 20 MiB extracted text
+	// is never truncated into malformed JSON while process output stays bounded.
 	documentParserContentLimit = 20 * 1024 * 1024
-	documentParserOutputLimit  = 2*documentParserContentLimit + 1024*1024
+	documentParserOutputLimit  = 6*documentParserContentLimit + 1024*1024
 )
 
 func NewDocumentParser() *DocumentParser {

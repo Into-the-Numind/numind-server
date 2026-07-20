@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: Build three user-isolated Agents that turn internal XHS captures into a Feishu Base, customer materials into a reusable Feishu profile document, and both artifacts into a customer-specific Feishu topic-planning document.
   classification_reason: 'Standard: the feature adds Agent access to the current user XHS library and spans Agent orchestration, Feishu authorization/Base/Doc operations, multi-user permission boundaries, prompts, and end-to-end tests across more than three files and likely two repositories.'
-  last_updated_by: ai-s4-review-repair
-  last_updated_at: '2026-07-20T18:15:00+08:00'
+  last_updated_by: ai-s4-second-review-repair
+  last_updated_at: '2026-07-20T18:40:00+08:00'
   created_at: '2026-07-20T15:45:30+08:00'
   track: standard
   stage: S4
@@ -13,7 +13,7 @@ features:
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/three-agent-feishu-pipeline, numind-web-v3: feature/three-agent-feishu-pipeline}
   worktrees: {numind-server: /private/tmp/wt-three-agent-feishu-pipeline-numind-server, numind-web-v3: /private/tmp/wt-three-agent-feishu-pipeline-numind-web-v3}
-  progress: {total_tasks: 7, completed_tasks: 7, reviewed_tasks: 0, current_task: 'S4 review repair complete; rerun full gates and independent dual review'}
+  progress: {total_tasks: 7, completed_tasks: 7, reviewed_tasks: 0, current_task: 'S4 second review repair implemented; running full gates before independent re-review'}
   artifacts:
     requirement: requirements/three-agent-feishu-pipeline.md
     proposal: proposals/three-agent-feishu-pipeline-proposal.md
@@ -38,6 +38,7 @@ features:
   - 'S4 Task 1 RED/GREEN: added a current-user-only XHS stable keyset snapshot store with index/full projections, limit 100, literal LIKE escaping, combined ID/time filters, limit+1 pagination, insertion upper-bound stability, deletion tolerance, and all existing XHS test fakes kept interface-complete.'
   - 'S4 Task 2 RED/GREEN: registered xhs_note_list only when a real datastore is present; strict schema excludes user_id, defaults and caps limit at 100, binds canonical filters/projection into a stable cursor, emits index/full Prompt 1 inputs with null/presence semantics, strips comment identities and deeper replies, and returns validation as soft errors while preserving infrastructure failures.'
   - 'S4 first dual review found four P0 security/runtime authorization gaps, eight P1 workflow/content issues, and five P2 hardening/performance issues. Review repair now restricts file_read to owned COS URLs with fixed errors and safe OCR traces, enforces direct per-tool flags in Run/RunStream/resume, permits only catalog-proven reconciliation reads after unknown writes, stabilizes and signs XHS cursors, and upgrades all workflow tests to formal prompts/schemas/commands with 243-note checkpoint resume and pre-write managed-target reads. Reparse caching remains an explicit performance deferral.'
+  - 'S4 second dual review found no P0 but exposed six remaining contract/hardening gaps. Repair makes loaded AgentDefinition flags authoritative inside Run/RunStream, sizes parser stdout for worst-case JSON escaping, requires Agent 1 complete 34-field Base records plus 0/1/>1 target resolution, enforces exact Agent 2/3 visible markers/modules/enums, and replaces simulated authorization with the real persisted Feishu external-action continuation path.'
   blockers: []
 
 - id: feishu-action-transition

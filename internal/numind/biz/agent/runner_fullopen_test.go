@@ -6,6 +6,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
+
+	"numind-server/internal/pkg/model"
 )
 
 // TestFullOpen_RegistryFilter pins the open-tools-skill-as-guidance "full-open"
@@ -58,6 +61,28 @@ func TestFullOpen_RegistryFilter(t *testing.T) {
 	if open["use_skill"] || open["read_skill"] {
 		t.Error("use_skill/read_skill were merged into load_skill and must not be registered")
 	}
+}
+
+func TestApplyDefinitionToolPolicy_DirectFlagsOverrideStaleCallerPolicy(t *testing.T) {
+	req := RunRequest{ToolNames: []string{"bash_exec", "web_search"}}
+	ad := &model.AgentDefinition{ToolFlags: datatypes.JSON(`{"file_read":true,"web_search":false,"bash_exec":false}`)}
+
+	applyDefinitionToolPolicy(&req, ad)
+
+	require.True(t, req.EnforceToolAllowlist)
+	require.Contains(t, req.ToolNames, "file_read")
+	require.NotContains(t, req.ToolNames, "web_search")
+	require.NotContains(t, req.ToolNames, "bash_exec")
+}
+
+func TestApplyDefinitionToolPolicy_CategoryOnlyKeepsLegacyCallerPolicy(t *testing.T) {
+	req := RunRequest{ToolNames: []string{"bash_exec"}}
+	ad := &model.AgentDefinition{ToolFlags: datatypes.JSON(`{"code_sandbox":false}`)}
+
+	applyDefinitionToolPolicy(&req, ad)
+
+	require.False(t, req.EnforceToolAllowlist)
+	require.Equal(t, []string{"bash_exec"}, req.ToolNames)
 }
 
 func TestSelectToolsForRun_StrictAllowlistExcludesFullOpenTools(t *testing.T) {

@@ -680,6 +680,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 		if err := agentTenantAccess(ctx, r.userStore, req.UserID, ad); err != nil {
 			return nil, err
 		}
+		applyDefinitionToolPolicy(&req, ad)
 
 		// v2 #2 agent-mode-v2-skill-invocation: 查 Agent binding 列表。
 		// BindingService.ListByAgent 已 join 返回 sort_order asc 的 *活跃* Skill 列表。

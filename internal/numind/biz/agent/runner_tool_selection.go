@@ -1,6 +1,23 @@
 package agent
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"numind-server/internal/pkg/model"
+)
+
+// applyDefinitionToolPolicy is the runner's trust-boundary backstop. Request
+// fields are assembled by several lifecycle paths and may be stale after a
+// partial lookup failure; the definition loaded by the runner is authoritative.
+// Legacy category-only definitions keep full-open compatibility, while any
+// direct tool flag always replaces caller-supplied policy with a strict list.
+func applyDefinitionToolPolicy(req *RunRequest, ad *model.AgentDefinition) {
+	if req == nil || ad == nil || !enforceExplicitToolAllowlist(ad.ToolFlags) {
+		return
+	}
+	req.ToolNames = toolNamesFromFlags(ad.ToolFlags)
+	req.EnforceToolAllowlist = true
+}
 
 // selectToolsForRun is the single tool-registration policy shared by Run and
 // RunStream. Existing category-only Agent definitions keep the historical

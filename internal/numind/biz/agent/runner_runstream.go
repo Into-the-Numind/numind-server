@@ -219,6 +219,7 @@ func (r *agentRunner) RunStream(
 		if err := agentTenantAccess(ctx, r.userStore, req.UserID, ad); err != nil {
 			return nil, err
 		}
+		applyDefinitionToolPolicy(&req, ad)
 
 		if r.skillBindingService != nil {
 			var bindErr error

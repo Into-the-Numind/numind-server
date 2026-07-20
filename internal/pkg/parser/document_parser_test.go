@@ -26,6 +26,14 @@ func TestDocumentParserPythonEnvelopeAllowsMultiMiBExtractedText(t *testing.T) {
 	assert.Equal(t, payload, []byte(stdout.String()))
 }
 
+func TestDocumentParserOutputLimitCoversWorstCaseJSONEscaping(t *testing.T) {
+	content := strings.Repeat("\x00", 1024)
+	payload, err := json.Marshal(map[string]any{"success": true, "content": content})
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(payload), 6*len(content))
+	require.GreaterOrEqual(t, documentParserOutputLimit, 6*documentParserContentLimit+1024*1024)
+}
+
 func TestDecodePythonParserOutputRejectsOversizedExtractedText(t *testing.T) {
 	payload, err := json.Marshal(map[string]any{
 		"success": true, "content": strings.Repeat("x", documentParserContentLimit+1), "page_count": 1,
