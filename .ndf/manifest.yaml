@@ -4,16 +4,16 @@ features:
   ndf_version: '3.0'
   description: Show consecutive Feishu authorization cards without reload and atomically refresh expired-but-pending operation-bound device sessions.
   classification_reason: 'Standard: no schema/API/new integration change, but the customer bug spans backend and frontend and changes high-risk third-party authorization state handling across more than three files; the user confirmed fast Standard through Dev on 2026-07-20.'
-  last_updated_by: ai-s6-rollback
-  last_updated_at: '2026-07-20T08:56:41+08:00'
+  last_updated_by: ai-s6-merge
+  last_updated_at: '2026-07-20T09:34:00+08:00'
   created_at: '2026-07-20T01:23:25+08:00'
   track: standard
-  stage: S4
+  stage: S6
   status: active
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/feishu-sequential-auth-refresh, numind-web-v3: feature/feishu-sequential-auth-refresh}
   worktrees: {numind-server: /private/tmp/wt-feishu-sequential-auth-refresh-numind-server, numind-web-v3: /private/tmp/wt-feishu-sequential-auth-refresh-numind-web-v3}
-  progress: {total_tasks: 9, completed_tasks: 7, reviewed_tasks: 7, current_task: 'Reproduce and repair intermittent resume HTTP 500 plus successful-resume live UI stall.'}
+  progress: {total_tasks: 9, completed_tasks: 9, reviewed_tasks: 9, current_task: 'Atomically merge both repositories, push develop, and deploy backend-first to Dev.'}
   artifacts:
     requirement: requirements/feishu-sequential-auth-refresh.md
     proposal: proposals/feishu-sequential-auth-refresh-proposal.md
@@ -32,6 +32,9 @@ features:
   - 'S6 merge: ndf-done atomically merged and pushed numind-server b251650f and numind-web-v3 1320257 to develop, then removed both feature worktrees and local feature branches.'
   - 'S6 Dev deployment: server image develop-b251650f (digest sha256:1216becfb16f640a271d42d5f3af2b76881b0eeabbb319b3b856736109377ed9) and web image develop-1320257 (digest sha256:0f480784691b3c483203675fc7dafb703e4307cdc52c04a06a6bab63ed9756b2) are deployed. Public server, frontend, and frontend-proxy health checks pass; both containers are healthy and no critical startup error is present. Production remains untouched.'
   - 'S6 Dev acceptance failed on 2026-07-20: one authorization acknowledgement still returned HTTP 500; a separate successful acknowledgement completed server-side while the live browser remained on the completed authorization card until manual reload. Both customer paths require RED regression commits before repair.'
+  - 'S4 Dev-failure RED/GREEN: server commits 9936ec73/df6eeaee prove the post-commit Agent/Feishu continuation inherited the five-second DB mutation context and split it back onto the remaining 50-second confirmation context. Web commits 45622a6/5fae1c2 prove the waiting authorization leg promoted provisional assistant text to final_answer, then repair terminal reconciliation and fence overlapping status/reconcile responses.'
+  - 'S4 re-review: independent quality/security review PASS with P0/P1/P2=0 after adding empty-final, duplicate-terminal, overlapping-poll, and cross-path stale-reconcile coverage. The first customer commits in both repositories are failing Go/Playwright regressions before their GREEN implementations.'
+  - 'S5 re-acceptance: backend full ordinary suite, isolated Feishu race, lint and Feishu package pass; frontend 1124 unit tests, lint, typecheck, production build and all eight Feishu Playwright paths pass. Independent final review reports P0/P1/P2=0. The earlier race timeout reproduced only when two heavyweight Go suites contended concurrently and passed in 77.769s when isolated.'
   rollback: 'S6 -> S4 on 2026-07-20: implementation defects remain in intermittent authorization acknowledgement and post-authorization live observation; product direction and security model remain unchanged.'
   blockers: []
 
