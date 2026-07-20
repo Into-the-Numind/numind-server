@@ -1,5 +1,31 @@
 schema_version: '2.0'
 features:
+- id: feishu-explicit-connect-entrypoint
+  ndf_version: '3.0'
+  description: Make explicit Feishu connect intents deterministic in Agent and Settings while preserving incremental scopes and durable authorization recovery.
+  classification_reason: 'Standard: customer P0 crosses Agent tools, encrypted Feishu operation semantics, three Agent manifests, settings UX, and regression/browser tests in two repositories.'
+  last_updated_by: ai-s3-plan
+  last_updated_at: '2026-07-20T23:25:00+08:00'
+  last_verified: '2026-07-20T23:25:00+08:00'
+  created_at: '2026-07-20T22:55:00+08:00'
+  track: standard
+  stage: S3
+  status: active
+  repos: [numind-server, numind-web-v3]
+  branches: {numind-server: feature/feishu-explicit-connect-entrypoint, numind-web-v3: feature/feishu-explicit-connect-entrypoint}
+  worktrees: {numind-server: /private/tmp/wt-feishu-explicit-connect-entrypoint-numind-server, numind-web-v3: /private/tmp/wt-feishu-explicit-connect-entrypoint-numind-web-v3}
+  progress: {total_tasks: 7, completed_tasks: 1, reviewed_tasks: 0, current_task: 'Implement connection-only operation, lark_connect, and Settings live action'}
+  artifacts:
+    requirement: requirements/feishu-explicit-connect-entrypoint.md
+    proposal: proposals/feishu-explicit-connect-entrypoint-proposal.md
+    spec: docs/superpowers/specs/2026-07-20-feishu-explicit-connect-entrypoint-design.md
+    plan: docs/superpowers/plans/2026-07-20-feishu-explicit-connect-entrypoint.md
+  decisions:
+  - 'S0: explicit connect/reconnect/authorize starts now; asking connection status stays read-only; business tasks retain automatic incremental scope recovery.'
+  - 'S1: selected a dedicated modern lark_connect plus direct Settings lifecycle CTA; rejected prompt-only, side-effectful inspect, and fake business operations.'
+  - 'S2: Agent connect is a durable encrypted connection-only operation that reuses exact external-action continuation and never invokes a business CLI command.'
+  - 'S3: preserve RED-first commits, implement server semantics before tool registration and Settings UX, then complete review, QA, atomic merge and Dev deployment.'
+  blockers: []
 - id: feishu-binding-continuity
   ndf_version: '3.0'
   description: Make first-time and incremental Feishu binding a session-fenced, restart-safe, continuous user journey from app creation through user authorization back to the original Agent task.
