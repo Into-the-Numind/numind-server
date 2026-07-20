@@ -4,21 +4,22 @@ features:
   ndf_version: '3.0'
   description: Build three user-isolated Agents that turn internal XHS captures into a Feishu Base, customer materials into a reusable Feishu profile document, and both artifacts into a customer-specific Feishu topic-planning document.
   classification_reason: 'Standard: the feature adds Agent access to the current user XHS library and spans Agent orchestration, Feishu authorization/Base/Doc operations, multi-user permission boundaries, prompts, and end-to-end tests across more than three files and likely two repositories.'
-  last_updated_by: ai-s4-final-spec-repair
-  last_updated_at: '2026-07-20T19:05:00+08:00'
+  last_updated_by: ai-s4-final-dual-review-pass
+  last_updated_at: '2026-07-20T19:15:00+08:00'
   created_at: '2026-07-20T15:45:30+08:00'
   track: standard
-  stage: S4
+  stage: S5
   status: active
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/three-agent-feishu-pipeline, numind-web-v3: feature/three-agent-feishu-pipeline}
   worktrees: {numind-server: /private/tmp/wt-three-agent-feishu-pipeline-numind-server, numind-web-v3: /private/tmp/wt-three-agent-feishu-pipeline-numind-web-v3}
-  progress: {total_tasks: 7, completed_tasks: 7, reviewed_tasks: 1, current_task: 'Final schema-mapping and per-topic validator findings repaired; rerunning dual review'}
+  progress: {total_tasks: 7, completed_tasks: 7, reviewed_tasks: 7, current_task: 'S5 local automated acceptance'}
   artifacts:
     requirement: requirements/three-agent-feishu-pipeline.md
     proposal: proposals/three-agent-feishu-pipeline-proposal.md
     spec: docs/superpowers/specs/2026-07-20-three-agent-feishu-pipeline-design.md
     plan: docs/superpowers/plans/three-agent-feishu-pipeline-plan.md
+    qa: docs/superpowers/qa/2026-07-20-three-agent-feishu-pipeline-s5-acceptance.md
   decisions:
   - 'S0: one Numind user owns one shared Feishu viral-material Base and may manage many customer-specific profile and topic-planning Docs; different users remain fully isolated.'
   - 'S0: no customer-management or Feishu-target settings UI is added. Agents resolve current context first, ask only when required, then search, reuse, or create in the current user Feishu account.'
@@ -41,6 +42,7 @@ features:
   - 'S4 second dual review found no P0 but exposed six remaining contract/hardening gaps. Repair makes loaded AgentDefinition flags authoritative inside Run/RunStream, sizes parser stdout for worst-case JSON escaping, requires Agent 1 complete 34-field Base records plus 0/1/>1 target resolution, enforces exact Agent 2/3 visible markers/modules/enums, and replaces simulated authorization with the real persisted Feishu external-action continuation path.'
   - 'S4 final Spec re-review found Agent 1 raw-field lineage, missing-target confirmation, and Agent 3 non-persona subject-check gaps. Repair now value-checks every written raw field against a preceding xhs_note_list(full) source, asks before any Base search when target is missing, requires explicit confirmed titles for 0/1/>1 resolution, and jointly validates topic category with the fixed subject-check rule.'
   - 'S4 final schema review then caught a raw/Base note-type mismatch and document-wide rather than per-topic validation. Repair now maps production normal/video/null into 图文/视频/信息不足 with three tests, and validates every formal topic independently for all nine fields, taxonomy, path, reference type, and subject rule.'
+  - 'S4 final dual review PASS: independent Spec and Quality/Security reviewers both report P0=0/P1=0/P2=0 at 7800476f. Full backend, race, lint, frontend lint/type-check/unit, diff hygiene, and config_prod exclusion gates pass; feature advances to S5 local acceptance.'
   blockers: []
 
 - id: feishu-action-transition
