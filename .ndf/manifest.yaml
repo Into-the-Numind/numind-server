@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: Make every existing and future Agent receive every registered usable platform tool except the hard-disabled document_generate, while exposing exactly four platform file-authoring skills globally and retaining bound-only tenant skills.
   classification_reason: 'Standard: changes the cross-cutting Agent runtime authorization contract across Run/RunStream/resume, permission validation, official definitions, and future Agent defaults; security-sensitive and more than three files.'
-  last_updated_by: ai-s5
-  last_updated_at: '2026-07-20T23:50:00+08:00'
+  last_updated_by: ai-s6-dev-deployed
+  last_updated_at: '2026-07-20T23:57:00+08:00'
   created_at: '2026-07-20T23:27:12+08:00'
   track: standard
   stage: S6
@@ -13,7 +13,8 @@ features:
   repos: [numind-server]
   branches: {numind-server: feature/global-agent-full-tools}
   worktrees: {numind-server: /private/tmp/wt-global-agent-full-tools-numind-server}
-  progress: {total_tasks: 7, completed_tasks: 6, reviewed_tasks: 6, current_task: 'Task 7 ndf-done and Dev deployment'}
+  progress: {total_tasks: 7, completed_tasks: 7, reviewed_tasks: 7, current_task: 'Dev accepted; Prod intentionally untouched'}
+  deployed: 'dev server develop-e9990fef (runtime sha256:25887f1a6129d59a6c0d0c13fd2c74772e2b9b7ef5eb724b7d3bf5ee2b11f2fb)'
   artifacts:
     requirement: requirements/global-agent-full-tools.md
     proposal: proposals/global-agent-full-tools-proposal.md
@@ -21,6 +22,7 @@ features:
     plan: docs/superpowers/plans/2026-07-20-global-agent-full-tools.md
     s4_review: .ndf/decisions/global-agent-full-tools/0001-s4-local-review.md
     s5_verification: .ndf/decisions/global-agent-full-tools/0002-s5-verification.md
+    dev_acceptance: .ndf/decisions/global-agent-full-tools/0003-s6-dev-deployment.md
   decisions:
   - 'S0: all existing/future Agents receive every registry tool enabled by FullyEnabledToolConfig; document_generate remains the sole hard-disabled stub.'
   - 'S1: tool_flags stays in storage/API for compatibility but stops restricting registration or execution; runtime safety continues in ownership, OAuth, permission, confirmation, sandbox, quota, and billing layers.'
@@ -28,6 +30,7 @@ features:
   - 'S3: seven serial tasks preserve RED-first tests, two local S4 review passes, full S5 gates, and exact-image S6 Dev deployment; Prod is out of scope.'
   - 'S4 local dual review PASS: Run/RunStream/Create/Answer/external-resume converge on Registry+IsEnabled; document_generate stays hard-disabled; all non-ToolFlag permission, tenant, OAuth, sandbox, confirmation, quota, and billing boundaries remain; four disk skills are global and DB/market skills remain bound-only. P0=0/P1=0; three stale P2 tests/comments repaired.'
   - 'S5 ALL_PASS: focused Agent/permission tests, focused race, go test ./..., task lint (vet+golangci-lint), manifest invariant, platform-skill registry contract, and diff hygiene pass. Initial PATH-only lint launcher issue and one stale persisted-definition test contract were corrected and rerun green.'
+  - 'S6 Dev: ndf-done merged/pushed e9990fef; exact develop-e9990fef image is running healthy on numind-server-dev, public health passes, no panic/fatal startup logs, and the deploy lock released. Prod untouched.'
   blockers: []
 - id: feishu-binding-continuity
   ndf_version: '3.0'
