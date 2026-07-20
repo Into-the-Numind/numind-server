@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -122,6 +124,31 @@ func TestGenerateTextPersistsCanonicalParsedContent(t *testing.T) {
 	require.NotNil(t, got.ParsedAt)
 	require.NotNil(t, got.TextFallback)
 	assert.Contains(t, *got.TextFallback, content)
+}
+
+func TestGenerateLargeTextKeepsFullCanonicalContentAndBoundsLegacyFallback(t *testing.T) {
+	content := strings.Repeat("中", 25_000) // 75 KiB UTF-8, beyond MySQL TEXT.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(content))
+	}))
+	defer server.Close()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+	row := &model.AgentAttachment{
+		UserID: 7, URL: server.URL + "/large.txt", Filename: "large.txt",
+		MimeType: "text/plain", Size: int64(len(content)), Modality: att.ModalityText,
+	}
+	require.NoError(t, s.Create(ctx, row))
+	require.NoError(t, att.NewFallbackService(s).GenerateNow(ctx, row))
+
+	got, err := s.GetByID(ctx, row.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.ParsedContent)
+	assert.Equal(t, content, *got.ParsedContent)
+	require.NotNil(t, got.TextFallback)
+	assert.Less(t, len(*got.TextFallback), 65_535)
+	assert.True(t, utf8.ValidString(*got.TextFallback))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

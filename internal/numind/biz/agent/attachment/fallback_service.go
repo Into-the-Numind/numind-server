@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/sync/semaphore"
 	"gorm.io/gorm"
@@ -195,6 +196,12 @@ const (
 	// Document (office) size limit for local extraction; matches the agent
 	// attachment upload cap (biz/attachment/upload.go MaxUploadSize = 20MB).
 	maxDocumentBytes int64 = 20 * 1024 * 1024 // 20MB
+
+	// text_fallback remains a MySQL TEXT compatibility column. Canonical full
+	// content lives in parsed_content LONGTEXT; keep the wrapper below the
+	// 65,535-byte TEXT ceiling so a large successful parse cannot fail solely
+	// because of the legacy field.
+	maxTextFallbackBytes = 60 * 1024
 
 	// docDownloadTimeout bounds the HTTP GET when fetching a document's bytes.
 	docDownloadTimeout = 60 * time.Second
@@ -500,7 +507,7 @@ func (p *fallbackPool) generateDocument(ctx context.Context, att *model.AgentAtt
 	fallbackText := composeDocumentFallback(att.Filename, filesizeKB, text)
 	completed := time.Now()
 	fields := canonicalParsedContentFields(text, 0, completed)
-	fields["text_fallback"] = fallbackText
+	fields["text_fallback"] = boundedTextFallback(fallbackText)
 	fields["fallback_ready"] = true
 	fields["fallback_error"] = nil
 	fields["fallback_completed_at"] = completed
@@ -629,7 +636,7 @@ func (p *fallbackPool) generateImage(ctx context.Context, att *model.AgentAttach
 	fields := canonicalParsedContentFields(canonicalText, 0, completed)
 	fields["ocr_text"] = nilIfEmpty(ocrText)
 	fields["vision_description"] = nilIfEmpty(visDesc)
-	fields["text_fallback"] = fallbackText
+	fields["text_fallback"] = boundedTextFallback(fallbackText)
 	fields["fallback_ready"] = true
 	fields["fallback_error"] = nil
 	fields["fallback_completed_at"] = completed
@@ -687,7 +694,7 @@ func (p *fallbackPool) generatePDF(ctx context.Context, att *model.AgentAttachme
 	fallbackText := composePDFFallback(att.Filename, filesizeKB, extractedText)
 	completed := time.Now()
 	fields := canonicalParsedContentFields(extractedText, 0, completed)
-	fields["text_fallback"] = fallbackText
+	fields["text_fallback"] = boundedTextFallback(fallbackText)
 	fields["fallback_ready"] = true
 	fields["fallback_error"] = nil
 	fields["fallback_completed_at"] = completed
@@ -724,7 +731,7 @@ func (p *fallbackPool) generateAudio(ctx context.Context, att *model.AgentAttach
 	fallbackText := composeAudioFallback(att.Filename, durationSec, transcript)
 	completed := time.Now()
 	fields := canonicalParsedContentFields(transcript, 0, completed)
-	fields["text_fallback"] = fallbackText
+	fields["text_fallback"] = boundedTextFallback(fallbackText)
 	fields["fallback_ready"] = true
 	fields["fallback_error"] = nil
 	fields["fallback_completed_at"] = completed
@@ -772,6 +779,17 @@ func composeCanonicalImageText(visionDescription, ocrText string) string {
 		sections = append(sections, "OCR提取的文字：\n"+ocrText)
 	}
 	return strings.Join(sections, "\n\n")
+}
+
+func boundedTextFallback(text string) string {
+	if len(text) <= maxTextFallbackBytes {
+		return text
+	}
+	end := maxTextFallbackBytes
+	for end > 0 && !utf8.RuneStart(text[end]) {
+		end--
+	}
+	return text[:end]
 }
 
 // audioFormatFromMIME extracts a short format hint from a MIME type string.
