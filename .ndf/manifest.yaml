@@ -4,22 +4,23 @@ features:
   ndf_version: '3.0'
   description: Keep Agent reasoning, assistant text, tool activity, and terminal state truly realtime after external-action cards by attaching the browser to the continuing run event stream.
   classification_reason: 'Standard: adds an authenticated resumable run-events API, crosses the Agent runtime and Vue stream state machine, affects more than three files, and touches external-authorization continuation ownership.'
-  last_updated_by: ai-s3-reviewed
-  last_updated_at: '2026-07-21T14:12:00+08:00'
+  last_updated_by: ai-s4-dual-reviewed
+  last_updated_at: '2026-07-21T14:45:17+08:00'
   created_at: '2026-07-21T13:11:08+08:00'
   track: standard
-  stage: S4
+  stage: S5
   status: active
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/agent-post-card-realtime-stream, numind-web-v3: feature/agent-post-card-realtime-stream}
   worktrees: {numind-server: /private/tmp/wt-agent-post-card-realtime-stream-numind-server, numind-web-v3: /private/tmp/wt-agent-post-card-realtime-stream-numind-web-v3}
-  progress: {total_tasks: 7, completed_tasks: 0, reviewed_tasks: 1, current_task: 'T1/T2 customer regression RED commits'}
+  progress: {total_tasks: 7, completed_tasks: 6, reviewed_tasks: 6, current_task: 'T6 full regression and release gates'}
   artifacts:
     requirement: requirements/agent-post-card-realtime-stream.md
     proposal: proposals/agent-post-card-realtime-stream-proposal.md
     spec: docs/superpowers/specs/2026-07-21-agent-post-card-realtime-stream-design.md
     plan: docs/superpowers/plans/2026-07-21-agent-post-card-realtime-stream.md
     s3_review: .ndf/decisions/agent-post-card-realtime-stream/0001-s3-plan-review.md
+    s4_review: .ndf/decisions/agent-post-card-realtime-stream/0002-s4-dual-review.md
   decisions:
   - 'S0 root cause: external-action continuations intentionally drain and discard stream.Event values because no browser SSE response remains; frontend snapshot polling can only replay persisted completed steps.'
   - 'S0 acceptance: the normal path must stream post-card reasoning, text, tools, and terminal events without refresh; snapshots remain recovery-only.'
@@ -27,6 +28,7 @@ features:
   - 'S2: transport cursor is independent of continuation-local event seq; Redis is a bounded recoverable transport, while DB run/messages remain the final SOT and fallback.'
   - 'S3: seven serial tasks preserve a RED-first commit in each repository, backend-first rolling compatibility, dual review, timed Playwright, atomic merge, and Dev-only deployment.'
   - 'S3 review PASS: tasks are independently verifiable, dependencies are serial, both repositories preserve RED-first history, and S4/S5/S6 remain separate.'
+  - 'S4 dual review PASS after closing Redis atomicity/backpressure, terminal reliability, semantic pause-baseline, rebuilt-tab attach, durable continuation classification, and tenant enumeration findings.'
   blockers: []
 - id: attachment-single-parse-file-read
   ndf_version: '3.0'
