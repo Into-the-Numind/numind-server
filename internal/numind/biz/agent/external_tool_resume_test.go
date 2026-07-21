@@ -771,6 +771,65 @@ func TestExternalContinuationGate_StreamKeepsStreamingBoundaryAndCompletesOnFirs
 	assert.Equal(t, 1, streamCalls)
 }
 
+func TestExternalContinuationGate_CompletingLeaseDoesNotCancelRemainingProviderStream(t *testing.T) {
+	runStore := newMockStore()
+	run := &model.AgentRun{
+		UserID: 7, SessionID: "s", Status: "running", StateReason: "ext_resume:lease-1",
+		PendingExternalActionJSON: datatypes.JSON(`{"provider":"feishu","operation_id":"op-1","session_id":"auth-1","tool_call_id":"tc-9","phase":"user_auth","expires_at":"2026-07-13T09:30:00Z"}`),
+		StartedAt:                 time.Now(),
+	}
+	require.NoError(t, runStore.Create(context.Background(), run))
+	resumeStore := &externalResumeStoreStub{runStore: runStore, claimed: true, lease: "lease-1"}
+	gate := newExternalContinuationGate(
+		resumeStore,
+		ExternalToolResult{RunID: run.ID, OperationID: "op-1", ToolCallID: "tc-9"},
+		"lease-1",
+		make(chan error, 1),
+	)
+	adapter := &aiserviceAdapter{taskID: profile.AgentRun, usageStore: &sync.Map{}, externalContinuationGate: gate}
+
+	originalStream := chatStreamFn
+	t.Cleanup(func() { chatStreamFn = originalStream })
+	continueStream := make(chan struct{})
+	providerCancelled := make(chan struct{})
+	chatStreamFn = func(ctx context.Context, _ string, _ aiservice.ChatRequest) (<-chan aiservice.ChatChunk, error) {
+		chunks := make(chan aiservice.ChatChunk, 2)
+		go func() {
+			defer close(chunks)
+			chunks <- aiservice.ChatChunk{ReasoningDelta: "Let me"}
+			select {
+			case <-continueStream:
+				chunks <- aiservice.ChatChunk{Delta: " continue", IsFinal: true, FinishReason: "stop"}
+			case <-ctx.Done():
+				close(providerCancelled)
+			}
+		}()
+		return chunks, nil
+	}
+
+	sr, err := adapter.Stream(context.Background(), []*schema.Message{schema.UserMessage("continue")})
+	require.NoError(t, err)
+	t.Cleanup(func() { sr.Close() })
+
+	first, err := sr.Recv()
+	require.NoError(t, err)
+	assert.Equal(t, "Let me", first.ReasoningContent)
+	resumeStore.mu.Lock()
+	assert.Equal(t, 1, resumeStore.completes, "the external-result lease completes at the first provider chunk")
+	resumeStore.mu.Unlock()
+	select {
+	case <-providerCancelled:
+		t.Fatal("completing the external-result lease cancelled the still-active provider stream")
+	default:
+	}
+
+	close(continueStream)
+	final, err := sr.Recv()
+	require.NoError(t, err)
+	require.NotNil(t, final.ResponseMeta)
+	assert.Equal(t, "stop", final.ResponseMeta.FinishReason)
+}
+
 func (s *externalResumeStoreStub) ListExternalToolResumeCandidates(context.Context, time.Time, int) ([]model.AgentRun, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
