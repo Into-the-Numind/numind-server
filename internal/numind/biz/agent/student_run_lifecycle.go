@@ -36,6 +36,7 @@ type StudentRunService struct {
 	narrationBuf    *NarrationBuffer
 	attachmentStore store.IAgentAttachmentStore // managed file_read references + canonical parse cache
 	streamLock      *stream.SubscriptionLock    // T07: SSE single-subscriber guard
+	runEventBroker  stream.RunEventBroker       // bounded cross-instance replay for detached continuations
 	userStore       userByIDGetter              // b2b2c-student-agent-access: wired via WithUserStore; nil → parent-only access
 }
 
@@ -81,6 +82,68 @@ func (s *StudentRunService) WithAttachmentStore(attStore store.IAgentAttachmentS
 func (s *StudentRunService) WithUserStore(userStore store.UserStore) *StudentRunService {
 	s.userStore = userStore
 	return s
+}
+
+// WithRunEventBroker wires the recoverable SSE transport. The Agent execution
+// path remains valid when broker is nil or unavailable; DB snapshots are the
+// fallback and final source of truth.
+func (s *StudentRunService) WithRunEventBroker(broker stream.RunEventBroker) *StudentRunService {
+	s.runEventBroker = broker
+	return s
+}
+
+// PublishRunEvent is deliberately best-effort at call sites: transport loss
+// must never cancel model/tool execution or prevent finalizeRun persistence.
+func (s *StudentRunService) PublishRunEvent(ctx context.Context, runID uint64, event stream.Event) (string, error) {
+	if s == nil || s.runEventBroker == nil {
+		return "", stream.ErrRunEventBrokerUnavailable
+	}
+	return s.runEventBroker.Publish(ctx, runID, event)
+}
+
+// SubscribeRunEvents verifies database ownership before touching the shared
+// Redis transport. Redis keys are routing identifiers, never authorization.
+func (s *StudentRunService) SubscribeRunEvents(ctx context.Context, userID uint, runID uint64, after string) (<-chan stream.PublishedEvent, error) {
+	if s == nil || s.runStore == nil {
+		return nil, stream.ErrRunEventBrokerUnavailable
+	}
+	run, err := s.runStore.Get(ctx, runID)
+	if err != nil {
+		if isNotFoundErr(err) {
+			return nil, errno.ErrAgentRunNotFound
+		}
+		return nil, fmt.Errorf("StudentRunService.SubscribeRunEvents get: %w", err)
+	}
+	if run.UserID != userID {
+		// Do not reveal whether a guessed run ID exists under another account.
+		// The authenticated caller sees the same safe surface as an unknown run.
+		return nil, errno.ErrAgentRunNotFound
+	}
+	// If the authoritative run already ended, return a synthetic terminal even
+	// when Redis missed the original close frame during an outage or process
+	// restart. It intentionally has no transport cursor; the controller writes a
+	// data-only SSE frame and the frontend reconciles the final DB snapshot.
+	visibleStatus := frontendStatus(run.Status, run.StateReason)
+	if run.Status == "terminated" && visibleStatus != "running" && visibleStatus != "pending" {
+		reason := run.StateReason
+		if reason == "" {
+			reason = string(TerminalModelError)
+		}
+		event, encodeErr := stream.Encode(stream.EventTerminal, stream.TerminalPayload{
+			Reason: reason,
+		}, 0, runID, 0)
+		if encodeErr != nil {
+			return nil, fmt.Errorf("StudentRunService.SubscribeRunEvents terminal: %w", encodeErr)
+		}
+		terminal := make(chan stream.PublishedEvent, 1)
+		terminal <- stream.PublishedEvent{Event: event}
+		close(terminal)
+		return terminal, nil
+	}
+	if s.runEventBroker == nil {
+		return nil, stream.ErrRunEventBrokerUnavailable
+	}
+	return s.runEventBroker.Subscribe(ctx, runID, after)
 }
 
 // forwardNarration drains the narration provider's per-runID channel into the

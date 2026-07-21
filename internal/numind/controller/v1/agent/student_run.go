@@ -57,6 +57,8 @@ func RegisterStudentRunRoutes(authGroup *gin.RouterGroup, b biz.IBiz) {
 	// T07: SSE streaming endpoint — must be registered BEFORE /agent-runs/:id
 	// sub-routes to avoid path conflicts with the exact-match "/agent-runs/stream".
 	authGroup.POST("/agent-runs/stream", c.CreateStream)
+	// Resumable SSE attachment for detached external-action continuations.
+	authGroup.GET("/agent-runs/:id/events", c.SubscribeEvents)
 	authGroup.GET("/agent-runs/:id/narration", c.PollNarration)
 	authGroup.POST("/agent-runs/:id/cancel", c.Cancel)
 	// T4 ask_user_question answer endpoint (poll path) + issue4 streaming resume.
