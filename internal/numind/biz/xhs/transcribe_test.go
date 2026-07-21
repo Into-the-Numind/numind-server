@@ -5,6 +5,7 @@ import (
 	"math"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
@@ -137,6 +138,17 @@ func withMockExtractAudio(t *testing.T) {
 }
 
 // ── 验收 ① xhs 按实际秒扣 ─────────────────────────────────────────────────────
+
+func TestTranscribeVideo_TimeoutBudgetAllowsThirtyMinuteVideos(t *testing.T) {
+	assert.Equal(t, 5*time.Minute, asrVideoDownloadTimeout)
+	assert.Equal(t, 30*time.Minute, asrTranscribeTimeout)
+	assert.Less(t, asrVideoDownloadTimeout, asrTranscribeTimeout)
+	assert.Greater(t, enrichJobTimeout, asrTranscribeTimeout,
+		"外层富化 job 超时必须大于 ASR 子流程超时")
+	assert.Equal(t, 1800.0, asrReserveCapSeconds)
+	assert.Equal(t, int64(15), reserveCredits(0.008),
+		"30min × 0.008 积分/秒应向上取整为 15 积分")
+}
 
 func TestTranscribeVideo_ChargesActualSeconds(t *testing.T) {
 	viper.Reset()

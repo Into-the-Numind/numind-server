@@ -17,10 +17,10 @@ import (
 
 // 富化框架的默认参数（无对应 viper 配置时兜底）。
 const (
-	defaultEnrichWorkers = 5               // 富化 worker 数量
-	defaultEnrichQueue   = 256             // enrichQueue 缓冲容量
-	defaultFFmpegWorkers = 2               // ffmpeg/ASR 并发上限（视频转写本地资源密集）
-	enrichJobTimeout     = 5 * time.Minute // 单个富化 job 的 detached ctx 超时
+	defaultEnrichWorkers = 5                // 富化 worker 数量
+	defaultEnrichQueue   = 256              // enrichQueue 缓冲容量
+	defaultFFmpegWorkers = 2                // ffmpeg/ASR 并发上限（视频转写本地资源密集）
+	enrichJobTimeout     = 35 * time.Minute // 单个富化 job 的 detached ctx 超时，需覆盖 30min 视频转写
 )
 
 // enrichJob 是投递给富化 worker pool 的单元。
@@ -39,7 +39,7 @@ type enrichJob struct {
 //   - StartWorkers 拉起 N 个 worker（viper "xhs.enrich_workers"，默认 5）消费队列。
 //   - ffmpegSem 是本包内声明的 ffmpeg/ASR 并发信号量（默认 2），限制视频转写的本地
 //     资源占用（不引用 monitor 包的私有 sem，保持解耦）。
-//   - 每个 job 在独立的 detached ctx（5min 超时）中执行，从原 ctx 抽 userID 透传，
+//   - 每个 job 在独立的 detached ctx（35min 超时）中执行，从原 ctx 抽 userID 透传，
 //     避免请求 ctx 取消（HTTP 连接关闭）误杀后台富化。
 //   - 每个 job 用 defer recover 兜底 panic：单个 job 崩溃不影响 worker 与其它 job，
 //     并把该笔记置为 failed，不让它永久卡在 pending。
@@ -146,7 +146,7 @@ func (e *Enricher) worker() {
 // 任何 panic 都被 recover 捕获并把笔记置为 failed，避免单个 job 崩溃拖垮 worker
 // 或让笔记永久卡在 pending。
 func (e *Enricher) processJob(job enrichJob) {
-	// detached ctx：脱离请求 ctx（避免 HTTP 连接关闭取消后台富化），带 5min 超时，
+	// detached ctx：脱离请求 ctx（避免 HTTP 连接关闭取消后台富化），带 35min 超时，
 	// 并把 userID 透传进去供下游（aiservice 计费 / Langfuse trace）使用。
 	ctx, cancel := context.WithTimeout(context.Background(), enrichJobTimeout)
 	defer cancel()

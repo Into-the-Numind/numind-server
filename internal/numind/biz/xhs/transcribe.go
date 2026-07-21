@@ -31,9 +31,11 @@ const (
 	defaultASRCreditsPerSecond = 0.008
 	// asrReserveCapSeconds 是 Reserve 保守额的时长上限（秒）。视频时长未知时按此上限预扣，
 	// ASR 后按实际 DurationSeconds 多退少补（design §4.3）。
-	asrReserveCapSeconds = 600.0
-	// asrDownloadTimeout 是下载 CDN 直链 + 整体转写的子超时（在 job 的 5min detached ctx 内）。
-	asrDownloadTimeout = 90 * time.Second
+	asrReserveCapSeconds = 1800.0
+	// asrVideoDownloadTimeout 是单次视频文件下载超时。完整 ASR 流程仍由 asrTranscribeTimeout 控制。
+	asrVideoDownloadTimeout = 5 * time.Minute
+	// asrTranscribeTimeout 是下载 CDN 直链 + 整体转写的子超时（在 job 的 35min detached ctx 内）。
+	asrTranscribeTimeout = 30 * time.Minute
 )
 
 // errVideoLinkExpired 表示小红书 CDN 视频直链已失效（HTTP 4xx）。
@@ -114,8 +116,8 @@ func creditsForSeconds(seconds, rate float64) int64 {
 	return c
 }
 
-// reserveCredits 计算 Reserve 保守额 = min(估时, 600s) × 费率，向上取整（至少 1）。
-// 视频时长事先未知，按上限 600s 预扣，ASR 后按实际秒数 Reconcile 多退少补。
+// reserveCredits 计算 Reserve 保守额 = 30min × 费率，向上取整（至少 1）。
+// 视频时长事先未知，按转写上限预扣，ASR 后按实际秒数 Reconcile 多退少补。
 func reserveCredits(rate float64) int64 {
 	return creditsForSeconds(asrReserveCapSeconds, rate)
 }
@@ -140,8 +142,8 @@ func reserveCredits(rate float64) int64 {
 // 错误（ffmpeg/读文件失败）返回 error；业务降级（直链失效/余额不足/ASR 失败）不返回 error，
 // 以 Status 表达，避免阻塞整条富化（原始采集数据已落库）。
 func (e *Enricher) transcribeVideo(ctx context.Context, userID uint, note *model.XhsTopicNote) (transcribeOutcome, error) {
-	// 子超时：限制下载 + 转写整体时长（在 job 的 5min detached ctx 之内）。
-	ctx, cancel := context.WithTimeout(ctx, asrDownloadTimeout)
+	// 子超时：限制下载 + 转写整体时长（在 job 的 35min detached ctx 之内）。
+	ctx, cancel := context.WithTimeout(ctx, asrTranscribeTimeout)
 	defer cancel()
 
 	if err := ensureXhsTempDir(); err != nil {
@@ -298,7 +300,7 @@ func downloadVideoOnce(ctx context.Context, videoURL, destPath string) error {
 	req.Header.Set("Referer", "https://www.xiaohongshu.com/")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
-	client := &http.Client{Timeout: asrDownloadTimeout}
+	client := &http.Client{Timeout: asrVideoDownloadTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("downloadVideoFromURL: %w", err)
