@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 
@@ -55,6 +56,60 @@ func TestSubscribeRunEvents_EnforcesOwnerBeforeBroker(t *testing.T) {
 	broker.mu.Lock()
 	assert.Equal(t, 1, broker.subs)
 	broker.mu.Unlock()
+}
+
+func TestSubscribeRunEvents_ReturnsPersistedTerminalWhenBrokerMissedCloseFrame(t *testing.T) {
+	broker := &recordingPostCardBroker{}
+	runs := newLifecycleRunStore()
+	run := &model.AgentRun{
+		UserID:      7,
+		SessionID:   "persisted-terminal-session",
+		Status:      "terminated",
+		StateReason: string(TerminalCompleted),
+	}
+	require.NoError(t, runs.Create(context.Background(), run))
+	service := NewStudentRunService(nil, runs, nil, nil, nil, nil).WithRunEventBroker(broker)
+
+	events, err := service.SubscribeRunEvents(context.Background(), 7, run.ID, "9999-0")
+	require.NoError(t, err)
+	published, open := <-events
+	require.True(t, open)
+	assert.Empty(t, published.Cursor)
+	assert.Equal(t, stream.EventTerminal, published.Event.Type)
+	var payload stream.TerminalPayload
+	require.NoError(t, json.Unmarshal(published.Event.Data, &payload))
+	assert.Equal(t, string(TerminalCompleted), payload.Reason)
+	broker.mu.Lock()
+	assert.Zero(t, broker.subs, "persisted terminal must not wait on Redis")
+	broker.mu.Unlock()
+}
+
+func TestSubscribeRunEvents_DurableExternalContinuationStatesStayLive(t *testing.T) {
+	for _, tc := range []struct {
+		name, status, reason string
+	}{
+		{name: "ready", status: "terminated", reason: "external_resume_ready"},
+		{name: "leased", status: "running", reason: "ext_resume:lease-token"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			broker := &recordingPostCardBroker{}
+			runs := newLifecycleRunStore()
+			run := &model.AgentRun{
+				UserID:      7,
+				SessionID:   "durable-continuation-" + tc.name,
+				Status:      tc.status,
+				StateReason: tc.reason,
+			}
+			require.NoError(t, runs.Create(context.Background(), run))
+			service := NewStudentRunService(nil, runs, nil, nil, nil, nil).WithRunEventBroker(broker)
+
+			_, err := service.SubscribeRunEvents(context.Background(), 7, run.ID, "")
+			require.NoError(t, err)
+			broker.mu.Lock()
+			assert.Equal(t, 1, broker.subs, "durable continuation must attach to live broker")
+			broker.mu.Unlock()
+		})
+	}
 }
 
 type postCardRealtimeRunner struct{}

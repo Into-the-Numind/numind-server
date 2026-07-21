@@ -103,7 +103,41 @@ func TestSubscribeEvents_RejectsCrossUserBeforeBroker(t *testing.T) {
 
 	router.ServeHTTP(recorder, request)
 
-	assert.Equal(t, http.StatusForbidden, recorder.Code)
+	assert.Equal(t, http.StatusNotFound, recorder.Code)
+	broker.mu.Lock()
+	assert.Zero(t, broker.subscribe)
+	broker.mu.Unlock()
+}
+
+func TestSubscribeEvents_ForeignAndUnknownRunsHaveSameSafeSurface(t *testing.T) {
+	broker := &controllerRunEventBroker{}
+	db := newCtrlTestDB(t)
+	runID := seedCtrlRun(t, db, 7, "foreign-safe-surface")
+	ds := store.NewTestStore(db)
+	service := agentbiz.NewStudentRunService(nil, ds.AgentRuns(), nil, nil, nil, nil).
+		WithRunEventBroker(broker)
+	controller := &StudentRunController{runSvc: service}
+	router := gin.New()
+	otherUser := &model.User{}
+	otherUser.ID = 8
+	router.Use(func(c *gin.Context) {
+		c.Set("current_user", otherUser)
+		c.Next()
+	})
+	router.GET("/v1/agent-runs/:id/events", controller.SubscribeEvents)
+
+	requestRun := func(id uint64) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/v1/agent-runs/%d/events", id), nil)
+		router.ServeHTTP(recorder, request)
+		return recorder
+	}
+	foreign := requestRun(runID)
+	unknown := requestRun(runID + 999999)
+
+	assert.Equal(t, http.StatusNotFound, foreign.Code)
+	assert.Equal(t, unknown.Code, foreign.Code)
+	assert.JSONEq(t, unknown.Body.String(), foreign.Body.String())
 	broker.mu.Lock()
 	assert.Zero(t, broker.subscribe)
 	broker.mu.Unlock()

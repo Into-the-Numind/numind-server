@@ -212,7 +212,13 @@ func (h *StudentRunController) SubscribeEvents(c *gin.Context) {
 			if marshalErr != nil {
 				continue
 			}
-			if _, writeErr := fmt.Fprintf(w, "id: %s\ndata: %s\n\n", published.Cursor, data); writeErr != nil {
+			var writeErr error
+			if published.Cursor != "" {
+				_, writeErr = fmt.Fprintf(w, "id: %s\ndata: %s\n\n", published.Cursor, data)
+			} else {
+				_, writeErr = fmt.Fprintf(w, "data: %s\n\n", data)
+			}
+			if writeErr != nil {
 				return
 			}
 			w.Flush()

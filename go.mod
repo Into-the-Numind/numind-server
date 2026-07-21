@@ -29,6 +29,7 @@ require (
 
 require (
 	github.com/JohannesKaufmann/html-to-markdown v1.6.0
+	github.com/alicebob/miniredis/v2 v2.35.0
 	github.com/asg017/sqlite-vec-go-bindings v0.1.6
 	github.com/cloudwego/eino v0.8.13
 	github.com/disintegration/imaging v1.6.2
@@ -126,6 +127,7 @@ require (
 	github.com/ugorji/go/codec v1.3.0 // indirect
 	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
 	github.com/yargevad/filepathx v1.0.0 // indirect
+	github.com/yuin/gopher-lua v1.1.1 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
 	golang.org/x/arch v0.18.0 // indirect
 	golang.org/x/exp v0.0.0-20230713183714-613f0c0eb8a1 // indirect

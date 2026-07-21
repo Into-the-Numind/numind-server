@@ -115,7 +115,30 @@ func (s *StudentRunService) SubscribeRunEvents(ctx context.Context, userID uint,
 		return nil, fmt.Errorf("StudentRunService.SubscribeRunEvents get: %w", err)
 	}
 	if run.UserID != userID {
-		return nil, errno.ErrForbidden.SetMessage("access to another user's run is not allowed")
+		// Do not reveal whether a guessed run ID exists under another account.
+		// The authenticated caller sees the same safe surface as an unknown run.
+		return nil, errno.ErrAgentRunNotFound
+	}
+	// If the authoritative run already ended, return a synthetic terminal even
+	// when Redis missed the original close frame during an outage or process
+	// restart. It intentionally has no transport cursor; the controller writes a
+	// data-only SSE frame and the frontend reconciles the final DB snapshot.
+	visibleStatus := frontendStatus(run.Status, run.StateReason)
+	if run.Status == "terminated" && visibleStatus != "running" && visibleStatus != "pending" {
+		reason := run.StateReason
+		if reason == "" {
+			reason = string(TerminalModelError)
+		}
+		event, encodeErr := stream.Encode(stream.EventTerminal, stream.TerminalPayload{
+			Reason: reason,
+		}, 0, runID, 0)
+		if encodeErr != nil {
+			return nil, fmt.Errorf("StudentRunService.SubscribeRunEvents terminal: %w", encodeErr)
+		}
+		terminal := make(chan stream.PublishedEvent, 1)
+		terminal <- stream.PublishedEvent{Event: event}
+		close(terminal)
+		return terminal, nil
 	}
 	if s.runEventBroker == nil {
 		return nil, stream.ErrRunEventBrokerUnavailable
