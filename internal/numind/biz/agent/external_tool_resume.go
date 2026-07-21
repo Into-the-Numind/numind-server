@@ -669,6 +669,7 @@ type externalContinuationGate struct {
 	completedSuccessfully bool
 	finalErr              error
 	hbCancel              context.CancelFunc
+	providerCancel        context.CancelFunc
 	hbDone                chan struct{}
 	hbErr                 error
 	heartbeatInterval     time.Duration
@@ -711,18 +712,21 @@ func (g *externalContinuationGate) BeginCall(ctx context.Context) (bool, context
 		g.failBeforeStart(err)
 		return true, ctx, err
 	}
-	providerCtx, cancel := context.WithCancel(ctx)
+	providerCtx, cancelProvider := context.WithCancel(ctx)
+	heartbeatCtx, cancelHeartbeat := context.WithCancel(providerCtx)
 	done := make(chan struct{})
 	g.mu.Lock()
 	if g.finished {
 		finalErr := g.finalErr
 		g.mu.Unlock()
-		cancel()
+		cancelHeartbeat()
+		cancelProvider()
 		return true, providerCtx, finalErr
 	}
-	g.hbCancel, g.hbDone = cancel, done
+	g.providerCancel = cancelProvider
+	g.hbCancel, g.hbDone = cancelHeartbeat, done
 	g.mu.Unlock()
-	go g.runHeartbeat(providerCtx, cancel, done)
+	go g.runHeartbeat(heartbeatCtx, cancelProvider, done)
 	g.signalStarted(nil)
 	return true, providerCtx, nil
 }
@@ -770,6 +774,18 @@ func (g *externalContinuationGate) stopHeartbeat() error {
 }
 
 func (g *externalContinuationGate) Finish(ctx context.Context, callErr error) error {
+	return g.finish(ctx, callErr, true)
+}
+
+// FinishStreamingFirstChunk completes the durable external-result lease once
+// the provider has produced its first chunk, but deliberately leaves the
+// provider context alive. A streaming response is still in progress at that
+// point; cancelling it truncates the model output after the first token.
+func (g *externalContinuationGate) FinishStreamingFirstChunk(ctx context.Context, callErr error) error {
+	return g.finish(ctx, callErr, false)
+}
+
+func (g *externalContinuationGate) finish(ctx context.Context, callErr error, cancelProviderOnSuccess bool) error {
 	g.mu.Lock()
 	if g.finished {
 		err := g.finalErr
@@ -803,6 +819,14 @@ func (g *externalContinuationGate) Finish(ctx context.Context, callErr error) er
 	} else {
 		transitionErr = g.release(persistCtx)
 	}
+	if cancelProviderOnSuccess || callErr != nil || transitionErr != nil {
+		g.mu.Lock()
+		cancelProvider := g.providerCancel
+		g.mu.Unlock()
+		if cancelProvider != nil {
+			cancelProvider()
+		}
+	}
 	if callErr != nil || transitionErr != nil {
 		g.mu.Lock()
 		g.finalErr = errors.Join(errExternalContinuationFirstCall, callErr, transitionErr)
@@ -825,8 +849,12 @@ func (g *externalContinuationGate) Abort(cause error) error {
 		return err
 	}
 	g.finished = true
-	cancelProvider := g.hbCancel
+	cancelHeartbeat := g.hbCancel
+	cancelProvider := g.providerCancel
 	g.mu.Unlock()
+	if cancelHeartbeat != nil {
+		cancelHeartbeat()
+	}
 	if cancelProvider != nil {
 		cancelProvider()
 	}

@@ -333,7 +333,7 @@ func (a *aiserviceAdapter) Stream(ctx context.Context, in []*schema.Message, opt
 			if firstErr == nil {
 				firstErr = ctx.Err()
 			}
-			return a.externalContinuationGate.Finish(ctx, firstErr)
+			return a.externalContinuationGate.FinishStreamingFirstChunk(ctx, firstErr)
 		}
 	}
 	return wrapChannelAsStreamReader(ch, onFinalUsage, onFirst), nil

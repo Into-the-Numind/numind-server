@@ -6741,3 +6741,21 @@ features:
   - 'H2: 用户明确取消额外浏览器验收；保留硬门禁。Agent/Feishu/Store 定向回归、前端 68 项续跑测试、Go vet+golangci-lint、ESLint(0 errors)+vue-tsc 全绿。'
   - 'H3 deploy (ai 2026-07-21): ndf-done 已合并并推送 develop（server b1553ccd / web ead77fb），原 feature worktree/分支自动清理；使用隔离的干净 deploy worktree 发布，确保主仓库无关未提交改动未进入镜像。Dev 后端 develop-b1553ccd 与前端 develop-ead77fb 均 Release complete，脚本内置健康检查通过；按用户要求未做额外浏览器/业务验收。'
   blockers: []
+- id: external-resume-stream-context
+  ndf_version: '3.0'
+  description: '修复外部飞书操作续跑的模型流在首个片段后被租约完成逻辑取消，导致 Agent 只留下半句 reasoning 并被误判为正常完成。'
+  classification_reason: 'Hotfix: 无 DB schema、无新增 API、无新外部服务、仅修改 Agent 外部续跑 context 所有权与回归测试、非支付权限；属于 agent-card-resume-stability 的 dev 回归。'
+  last_updated_by: ai-h2
+  last_updated_at: '2026-07-21T11:44:43+0800'
+  created_at: '2026-07-21T11:38:34+0800'
+  track: hotfix
+  stage: H3
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: fix/external-resume-stream-context}
+  worktrees: {numind-server: /private/tmp/wt-external-resume-stream-context-numind-server}
+  progress: {total_tasks: 3, completed_tasks: 2, reviewed_tasks: 2, current_task: 'H3 ndf-done and Dev deployment'}
+  decisions:
+  - 'H1 (ai 2026-07-21): dev run 284 在 base +field-list 成功后，外部续跑于 11:32:57 启动，1.67 秒后仅持久化 reasoning="Let me" 却记录 terminal_reason=completed。代码证据显示 Stream 的 onFirst 回调调用 gate.Finish；Finish.stopHeartbeat 复用了 provider context 的 cancel，首片段即截断后续流。客户失败回归 test(qa) b79eb5bf 稳定 FAIL。'
+  - 'H2 (ai 2026-07-21): 把 provider cancel 与 heartbeat cancel 分离；流式首片段走 FinishStreamingFirstChunk，仅完成外部结果租约并停止心跳，不取消仍活动的 provider stream；Generate 同步路径、异常/租约迁移失败和 Abort 仍取消 provider。实现 1b1d493f。新增回归及既有租约/心跳定向测试通过，Agent 包完整测试通过，task lint（go vet + golangci-lint）通过。'
+  blockers: []
