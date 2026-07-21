@@ -1,5 +1,25 @@
 schema_version: '2.0'
 features:
+- id: agent-post-card-realtime-stream
+  ndf_version: '3.0'
+  description: Keep Agent reasoning, assistant text, tool activity, and terminal state truly realtime after external-action cards by attaching the browser to the continuing run event stream.
+  classification_reason: 'Standard: adds an authenticated resumable run-events API, crosses the Agent runtime and Vue stream state machine, affects more than three files, and touches external-authorization continuation ownership.'
+  last_updated_by: ai-s0
+  last_updated_at: '2026-07-21T13:15:00+08:00'
+  created_at: '2026-07-21T13:11:08+08:00'
+  track: standard
+  stage: S0
+  status: active
+  repos: [numind-server, numind-web-v3]
+  branches: {numind-server: feature/agent-post-card-realtime-stream, numind-web-v3: feature/agent-post-card-realtime-stream}
+  worktrees: {numind-server: /private/tmp/wt-agent-post-card-realtime-stream-numind-server, numind-web-v3: /private/tmp/wt-agent-post-card-realtime-stream-numind-web-v3}
+  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0, current_task: 'S0 requirement recorded'}
+  artifacts:
+    requirement: requirements/agent-post-card-realtime-stream.md
+  decisions:
+  - 'S0 root cause: external-action continuations intentionally drain and discard stream.Event values because no browser SSE response remains; frontend snapshot polling can only replay persisted completed steps.'
+  - 'S0 acceptance: the normal path must stream post-card reasoning, text, tools, and terminal events without refresh; snapshots remain recovery-only.'
+  blockers: []
 - id: attachment-single-parse-file-read
   ndf_version: '3.0'
   description: Parse each uploaded Agent attachment once, persist canonical normalized content, and make file_read the single paged model-facing read path keyed by current-user attachment IDs.
