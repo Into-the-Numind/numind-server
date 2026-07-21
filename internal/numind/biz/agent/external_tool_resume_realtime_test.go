@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"numind-server/internal/numind/biz/agent/stream"
+	"numind-server/internal/pkg/model"
 )
 
 // recordingPostCardBroker is the browser-facing transport seam required by the
@@ -17,6 +18,7 @@ import (
 type recordingPostCardBroker struct {
 	mu     sync.Mutex
 	events []stream.Event
+	subs   int
 }
 
 func (b *recordingPostCardBroker) Publish(_ context.Context, _ uint64, event stream.Event) (string, error) {
@@ -27,7 +29,32 @@ func (b *recordingPostCardBroker) Publish(_ context.Context, _ uint64, event str
 }
 
 func (b *recordingPostCardBroker) Subscribe(_ context.Context, _ uint64, _ string) (<-chan stream.PublishedEvent, error) {
-	return nil, nil
+	b.mu.Lock()
+	b.subs++
+	b.mu.Unlock()
+	ch := make(chan stream.PublishedEvent)
+	close(ch)
+	return ch, nil
+}
+
+func TestSubscribeRunEvents_EnforcesOwnerBeforeBroker(t *testing.T) {
+	broker := &recordingPostCardBroker{}
+	runs := newLifecycleRunStore()
+	run := &model.AgentRun{UserID: 7, SessionID: "owned-session"}
+	require.NoError(t, runs.Create(context.Background(), run))
+	service := NewStudentRunService(nil, runs, nil, nil, nil, nil).WithRunEventBroker(broker)
+
+	_, err := service.SubscribeRunEvents(context.Background(), 8, run.ID, "")
+	require.Error(t, err)
+	broker.mu.Lock()
+	assert.Zero(t, broker.subs, "cross-user request must be rejected before Redis")
+	broker.mu.Unlock()
+
+	_, err = service.SubscribeRunEvents(context.Background(), 7, run.ID, "")
+	require.NoError(t, err)
+	broker.mu.Lock()
+	assert.Equal(t, 1, broker.subs)
+	broker.mu.Unlock()
 }
 
 type postCardRealtimeRunner struct{}

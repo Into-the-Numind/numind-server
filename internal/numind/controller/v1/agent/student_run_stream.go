@@ -21,6 +21,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -152,6 +153,87 @@ func (h *StudentRunController) AnswerStream(c *gin.Context) {
 	})
 }
 
+// SubscribeEvents attaches the authenticated browser to a run's replayable
+// event transport after the original HTTP response ended at an external-action
+// card. Each client has its own cursor; events are never consumer-grouped.
+func (h *StudentRunController) SubscribeEvents(c *gin.Context) {
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+	runID, ok := mustParseRunID(c)
+	if !ok {
+		return
+	}
+	after := c.Query("after")
+	events, err := h.runSvc.SubscribeRunEvents(c.Request.Context(), user.ID, runID, after)
+	if err != nil {
+		if errors.Is(err, stream.ErrInvalidRunEventCursor) {
+			core.WriteResponse(c, errno.ErrBind.SetMessage("invalid event cursor"), nil)
+			return
+		}
+		if errors.Is(err, stream.ErrRunEventBrokerUnavailable) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"code":    "FailedOperation.AgentEventStreamUnavailable",
+				"message": "Agent event stream is temporarily unavailable.",
+			})
+			return
+		}
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	c.Status(http.StatusOK)
+	w := c.Writer
+	_, _ = fmt.Fprint(w, ":ok\n\n")
+	w.Flush()
+
+	pingTicker := time.NewTicker(ssePingInterval)
+	defer pingTicker.Stop()
+	for {
+		select {
+		case <-c.Request.Context().Done():
+			return
+		case <-pingTicker.C:
+			if _, writeErr := fmt.Fprint(w, ":ping\n\n"); writeErr != nil {
+				return
+			}
+			w.Flush()
+		case published, open := <-events:
+			if !open {
+				return
+			}
+			data, marshalErr := json.Marshal(published.Event)
+			if marshalErr != nil {
+				continue
+			}
+			if _, writeErr := fmt.Fprintf(w, "id: %s\ndata: %s\n\n", published.Cursor, data); writeErr != nil {
+				return
+			}
+			w.Flush()
+			if isFinalPublishedTerminal(published.Event) {
+				return
+			}
+		}
+	}
+}
+
+func isFinalPublishedTerminal(event stream.Event) bool {
+	if event.Type != stream.EventTerminal {
+		return false
+	}
+	var payload stream.TerminalPayload
+	if err := json.Unmarshal(event.Data, &payload); err != nil {
+		return true
+	}
+	return payload.Reason != string(agentbiz.TerminalWaitingForUserChoice)
+}
+
 // streamEvents runs the shared SSE pump: it switches the response to the SSE
 // protocol, flushes a first byte, spawns produce in a goroutine to feed the
 // event channel, and drains the channel to the client until terminal + channel
@@ -268,6 +350,12 @@ func (h *StudentRunController) streamEvents(c *gin.Context, runID uint64, produc
 				continue
 			}
 
+			cursor, publishErr := h.runSvc.PublishRunEvent(ctx, runID, ev)
+			if publishErr != nil {
+				log.C(ctx).Warnw("streamEvents: publish run event failed",
+					"run_id", runID, "event_type", ev.Type, "error", publishErr)
+			}
+
 			data, marshalErr := json.Marshal(ev)
 			if marshalErr != nil {
 				// P2 fix: log the marshal failure before skipping.
@@ -276,7 +364,13 @@ func (h *StudentRunController) streamEvents(c *gin.Context, runID uint64, produc
 				continue
 			}
 
-			if _, writeErr := fmt.Fprintf(w, "data: %s\n\n", data); writeErr != nil {
+			var writeErr error
+			if cursor != "" {
+				_, writeErr = fmt.Fprintf(w, "id: %s\ndata: %s\n\n", cursor, data)
+			} else {
+				_, writeErr = fmt.Fprintf(w, "data: %s\n\n", data)
+			}
+			if writeErr != nil {
 				disconnectReason = "write_error"
 				return
 			}

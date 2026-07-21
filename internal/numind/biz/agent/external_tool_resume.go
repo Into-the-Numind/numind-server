@@ -565,10 +565,17 @@ func (r *AgentRunResumer) callRunner(ctx context.Context, runReq RunRequest) (ru
 	drained := make(chan struct{})
 	go func() {
 		defer close(drained)
-		for range events {
-			// A detached external continuation has no live SSE response. Draining
-			// still lets RunStream collect and persist every assistant/reasoning
-			// step so the status observer can replay it from the session snapshot.
+		for event := range events {
+			// The original request ended at the external-action card, so publish
+			// every continuation event into the run-scoped replayable transport.
+			// A Redis failure is observational only: RunStream must still finish
+			// and persist the authoritative snapshot.
+			if _, publishErr := r.studentRuns.PublishRunEvent(bgCtx, runReq.ExistingRunID, event); publishErr != nil {
+				log.Warnw("detached Agent event publish failed",
+					"agent_run_id", runReq.ExistingRunID,
+					"event_type", event.Type,
+					"error", publishErr)
+			}
 		}
 	}()
 	defer func() {

@@ -36,6 +36,7 @@ type StudentRunService struct {
 	narrationBuf    *NarrationBuffer
 	attachmentStore store.IAgentAttachmentStore // managed file_read references + canonical parse cache
 	streamLock      *stream.SubscriptionLock    // T07: SSE single-subscriber guard
+	runEventBroker  stream.RunEventBroker       // bounded cross-instance replay for detached continuations
 	userStore       userByIDGetter              // b2b2c-student-agent-access: wired via WithUserStore; nil → parent-only access
 }
 
@@ -81,6 +82,45 @@ func (s *StudentRunService) WithAttachmentStore(attStore store.IAgentAttachmentS
 func (s *StudentRunService) WithUserStore(userStore store.UserStore) *StudentRunService {
 	s.userStore = userStore
 	return s
+}
+
+// WithRunEventBroker wires the recoverable SSE transport. The Agent execution
+// path remains valid when broker is nil or unavailable; DB snapshots are the
+// fallback and final source of truth.
+func (s *StudentRunService) WithRunEventBroker(broker stream.RunEventBroker) *StudentRunService {
+	s.runEventBroker = broker
+	return s
+}
+
+// PublishRunEvent is deliberately best-effort at call sites: transport loss
+// must never cancel model/tool execution or prevent finalizeRun persistence.
+func (s *StudentRunService) PublishRunEvent(ctx context.Context, runID uint64, event stream.Event) (string, error) {
+	if s == nil || s.runEventBroker == nil {
+		return "", stream.ErrRunEventBrokerUnavailable
+	}
+	return s.runEventBroker.Publish(ctx, runID, event)
+}
+
+// SubscribeRunEvents verifies database ownership before touching the shared
+// Redis transport. Redis keys are routing identifiers, never authorization.
+func (s *StudentRunService) SubscribeRunEvents(ctx context.Context, userID uint, runID uint64, after string) (<-chan stream.PublishedEvent, error) {
+	if s == nil || s.runStore == nil {
+		return nil, stream.ErrRunEventBrokerUnavailable
+	}
+	run, err := s.runStore.Get(ctx, runID)
+	if err != nil {
+		if isNotFoundErr(err) {
+			return nil, errno.ErrAgentRunNotFound
+		}
+		return nil, fmt.Errorf("StudentRunService.SubscribeRunEvents get: %w", err)
+	}
+	if run.UserID != userID {
+		return nil, errno.ErrForbidden.SetMessage("access to another user's run is not allowed")
+	}
+	if s.runEventBroker == nil {
+		return nil, stream.ErrRunEventBrokerUnavailable
+	}
+	return s.runEventBroker.Subscribe(ctx, runID, after)
 }
 
 // forwardNarration drains the narration provider's per-runID channel into the

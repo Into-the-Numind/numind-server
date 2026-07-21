@@ -14,6 +14,7 @@ import (
 	"numind-server/internal/numind/biz/agent/compliancegate"
 	"numind-server/internal/numind/biz/agent/search"
 	"numind-server/internal/numind/biz/agent/skills"
+	agentstream "numind-server/internal/numind/biz/agent/stream"
 	"numind-server/internal/numind/biz/ali"
 	announcementbiz "numind-server/internal/numind/biz/announcement"
 	"numind-server/internal/numind/biz/attachment"
@@ -789,7 +790,8 @@ func NewBiz(ds store.IStore) *biz {
 		pricingCalc,
 		narrationProv,
 		narrationBuf,
-	).WithUserStore(ds.Users()) // b2b2c-student-agent-access: resolve caller parent_user_id for tenant access
+	).WithUserStore(ds.Users()).
+		WithRunEventBroker(agentstream.NewRedisRunEventBroker(redispkg.GetClient())) // post-card realtime SSE across instances
 	if viper.GetBool("features.feishu_integration.enabled") {
 		if resumeStore, ok := ds.AgentRuns().(store.IExternalToolResumeLease); !ok {
 			log.Errorw("feishu-integration: agent run store lacks durable external resume support")
