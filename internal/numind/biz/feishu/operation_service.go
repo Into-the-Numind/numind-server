@@ -134,6 +134,7 @@ type OperationStore interface {
 	RetiredExecutionGateDrained(ctx context.Context, userID uint, retiredGeneration uint64, now time.Time) (bool, error)
 	IsOperationProofUsable(ctx context.Context, userID uint, generation uint64, agentRunID uint64, sourceOperationID, consumerOperationID string) (bool, error)
 	ListSucceededCreatesForRun(ctx context.Context, userID uint, generation uint64, agentRunID uint64) ([]model.FeishuOperation, error)
+	ListSucceededBaseCreatesForRun(ctx context.Context, userID uint, generation uint64, agentRunID uint64) ([]model.FeishuOperation, error)
 	GetOperationForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuOperation, error)
 	ClaimOperation(ctx context.Context, userID uint, generation uint64, id, owner string, expectedStates []string, now, leaseUntil time.Time) (bool, error)
 	TransitionOperation(ctx context.Context, userID uint, generation uint64, id, owner string, from []string, to string, now time.Time, fields map[string]any) error
@@ -861,6 +862,9 @@ func (s *FeishuOperationService) Execute(ctx context.Context, request ExecuteReq
 		return nil, err
 	}
 	persisted := persistedRequestFromNormalized(request, normalized)
+	if prior := s.findEquivalentSucceededBaseCreate(ctx, account, persisted); prior != nil {
+		return s.resultFromOperation(prior)
+	}
 	if proofOperationID := s.findSameRunEmptyCreateProof(ctx, account, normalized, request.AgentRunID); proofOperationID != "" {
 		persisted.SameRunEmptyCreateProof = true
 		persisted.CreateProofOperationID = proofOperationID
@@ -2148,6 +2152,56 @@ func persistedRequestFromNormalized(request ExecuteRequest, normalized *Normaliz
 }
 
 func canonicalIdempotencyRequest(request persistedOperationRequest) ([]byte, error) {
+	request.SameRunEmptyCreateProof = false
+	request.CreateProofOperationID = ""
+	return json.Marshal(request)
+}
+
+// findEquivalentSucceededBaseCreate prevents a model retry with a new tool-call
+// ID from creating a second empty Base in the same Agent run. The match is
+// intentionally narrow: same user/account generation/run and the exact
+// normalized base-create payload. Different names, schemas, runs, or users are
+// still independent operations.
+func (s *FeishuOperationService) findEquivalentSucceededBaseCreate(
+	ctx context.Context,
+	account *model.UserThirdPartyAccount,
+	request persistedOperationRequest,
+) *model.FeishuOperation {
+	if account == nil || request.CommandPath != "base +base-create" || request.AgentRunID == 0 {
+		return nil
+	}
+	candidates, err := s.operations.ListSucceededBaseCreatesForRun(
+		ctx, account.UserID, account.Generation, request.AgentRunID,
+	)
+	if err != nil {
+		return nil
+	}
+	target, err := canonicalSameRunCreateRequest(request)
+	if err != nil {
+		return nil
+	}
+	for index := range candidates {
+		candidate := &candidates[index]
+		if candidate.UserID != account.UserID || candidate.Generation != account.Generation ||
+			candidate.AgentRunID != request.AgentRunID || candidate.State != model.FeishuOperationSucceeded ||
+			candidate.CommandPath != request.CommandPath {
+			continue
+		}
+		prior, openErr := s.openPersistedRequest(candidate)
+		if openErr != nil {
+			continue
+		}
+		comparable, marshalErr := canonicalSameRunCreateRequest(prior)
+		if marshalErr == nil && subtle.ConstantTimeCompare(comparable, target) == 1 {
+			return candidate
+		}
+	}
+	return nil
+}
+
+func canonicalSameRunCreateRequest(request persistedOperationRequest) ([]byte, error) {
+	request.ToolCallID = ""
+	request.IdempotencyKey = ""
 	request.SameRunEmptyCreateProof = false
 	request.CreateProofOperationID = ""
 	return json.Marshal(request)

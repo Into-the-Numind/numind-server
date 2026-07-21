@@ -125,6 +125,7 @@ type IFeishuWorkspaceStore interface {
 	ReleaseRetiredTeardown(ctx context.Context, userID uint, retiredGeneration uint64, owner string, now time.Time) error
 	CompleteRetiredTeardown(ctx context.Context, userID uint, retiredGeneration, disconnectingGeneration uint64, owner string, now time.Time) (bool, error)
 	ListSucceededCreatesForRun(ctx context.Context, userID uint, generation uint64, agentRunID uint64) ([]model.FeishuOperation, error)
+	ListSucceededBaseCreatesForRun(ctx context.Context, userID uint, generation uint64, agentRunID uint64) ([]model.FeishuOperation, error)
 	IsOperationProofUsable(ctx context.Context, userID uint, generation uint64, agentRunID uint64, sourceOperationID, consumerOperationID string) (bool, error)
 	GetOperationForUser(ctx context.Context, userID uint, generation uint64, id string) (*model.FeishuOperation, error)
 	// ListTerminalOperationsForGeneration returns only the supplied terminal
@@ -2251,9 +2252,9 @@ func (s *feishuWorkspaceStore) CompleteRetiredTeardown(
 	return completed, err
 }
 
-// ListSucceededCreatesForRun returns a small, deterministic proof-candidate
+// ListSucceededCreatesForRun returns a small, deterministic create-candidate
 // set. Callers must still authenticate and inspect each encrypted request and
-// result; this query alone never proves that an overwrite is safe.
+// result; this query alone never proves equivalence or overwrite safety.
 func (s *feishuWorkspaceStore) ListSucceededCreatesForRun(
 	ctx context.Context,
 	userID uint,
@@ -2270,6 +2271,28 @@ func (s *feishuWorkspaceStore) ListSucceededCreatesForRun(
 		Limit(feishuSucceededCreateProofLimit).
 		Find(&operations).Error; err != nil {
 		return nil, fmt.Errorf("list succeeded feishu create operations: %w", err)
+	}
+	return operations, nil
+}
+
+// ListSucceededBaseCreatesForRun is separate from overwrite-proof candidates so
+// a run with many Base operations cannot evict document-create proofs (or vice
+// versa) from either bounded result set.
+func (s *feishuWorkspaceStore) ListSucceededBaseCreatesForRun(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	agentRunID uint64,
+) ([]model.FeishuOperation, error) {
+	var operations []model.FeishuOperation
+	if err := s.db.WithContext(ctx).
+		Where("user_id = ? AND generation = ? AND agent_run_id = ?", userID, generation, agentRunID).
+		Where("state = ? AND command_path = ?", model.FeishuOperationSucceeded, "base +base-create").
+		Order("created_at DESC").
+		Order("id DESC").
+		Limit(feishuSucceededCreateProofLimit).
+		Find(&operations).Error; err != nil {
+		return nil, fmt.Errorf("list succeeded feishu base create operations: %w", err)
 	}
 	return operations, nil
 }

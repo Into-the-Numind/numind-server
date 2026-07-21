@@ -524,7 +524,6 @@ func TestFeishuWorkspaceStore_ListSucceededCreatesForRunIsBoundedAndDeterministi
 		mutate(op)
 		require.NoError(t, s.db.Create(op).Error)
 	}
-
 	got, err := s.ListSucceededCreatesForRun(ctx, 7, 3, 77)
 	require.NoError(t, err)
 	require.Len(t, got, 32)
@@ -537,6 +536,25 @@ func TestFeishuWorkspaceStore_ListSucceededCreatesForRunIsBoundedAndDeterministi
 		require.Equal(t, model.FeishuOperationSucceeded, operation.State)
 		require.Contains(t, []string{"docs +create", "wiki +node-create"}, operation.CommandPath)
 	}
+}
+
+func TestFeishuWorkspaceStore_ListSucceededBaseCreatesForRunIsIsolated(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	for index, path := range []string{"base +base-create", "docs +create", "base +base-create"} {
+		op := newFeishuOperation(fmt.Sprintf("base-candidate-%d", index), 7, 3, fmt.Sprintf("base-key-%d", index))
+		op.AgentRunID = 77
+		op.State = model.FeishuOperationSucceeded
+		op.CommandPath = path
+		op.CreatedAt = time.Date(2026, 7, 21, 11, 0, index, 0, time.UTC)
+		require.NoError(t, s.db.Create(op).Error)
+	}
+
+	got, err := s.ListSucceededBaseCreatesForRun(ctx, 7, 3, 77)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	require.Equal(t, "base-candidate-2", got[0].ID)
+	require.Equal(t, "base-candidate-0", got[1].ID)
 }
 
 func TestFeishuWorkspaceStore_ProofReservationIsAtomicSingleUseAndIdempotent(t *testing.T) {

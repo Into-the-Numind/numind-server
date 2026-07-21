@@ -6720,3 +6720,22 @@ features:
   - 'H3 (ai 2026-07-20): 实机发现官方 CLI 即使执行 URL 解析也依赖 CLI HOME，因此改为服务端确定性 LocalOnly 解析器，完全不启动 CLI/凭据仓库/飞书 API，也不触发授权或写入虚假 capability 状态；输出兼容 base_token/table_id/view_id/record_id，并且下一步提示只引用实际托管命令。恢复路径重新按 catalog 校验加密请求，LLM 无法伪造 LocalOnly。RED-first c2c4af81；实现 711fcc3d/e39e168e/a873bb37；定向回归、feishu+agent、go test ./...、task lint 全绿；独立 reviewer 终审 PASS。'
   - 'H3 deploy (ai 2026-07-20): ndf-done 已合并并推送 develop 22a619ae，worktree/本地修复分支自动清理；后端 Dev 发布 develop-22a619ae 成功，外部 /healthz 返回 code=0/status=ok。'
   blockers: []
+- id: agent-card-resume-stability
+  ndf_version: '3.0'
+  description: '修复外部飞书卡片后 Agent 续跑卡死、thinking/正文不再展示，以及同一次运行重复创建空 Base。'
+  classification_reason: '用户指定 Hotfix 紧急处理；无 DB schema、无新增 API、无新外部服务、非支付权限。跨前后端运行时/快照/飞书幂等文件超过常规 Hotfix 上限，作为已确认紧急例外完整修复。'
+  last_updated_by: ai-h1
+  last_updated_at: '2026-07-21T11:16:00+0800'
+  created_at: '2026-07-21T10:59:02+0800'
+  track: hotfix
+  stage: H1
+  status: active
+  repos: [numind-server, numind-web-v3]
+  branches: {numind-server: fix/agent-card-resume-stability, numind-web-v3: fix/agent-card-resume-stability}
+  worktrees: {numind-server: /private/tmp/wt-agent-card-resume-stability-numind-server, numind-web-v3: /private/tmp/wt-agent-card-resume-stability-numind-web-v3}
+  progress: {total_tasks: 4, completed_tasks: 2, reviewed_tasks: 0, current_task: 'H1 implementation complete; running H2 gates and browser verification'}
+  decisions:
+  - 'H1: dev run 283 的两份 Base 与两次不同 operation/tool-call 一致；第一份为空、第二份写入成功，证明模型在续跑上下文丢失后重复创建。'
+  - 'H1: providerSafeToolTurns 的空 assistant 覆盖最近 reasoning，触发 thinking provider HTTP 400；外部卡片续跑同时走非流式 Run，浏览器只能收到工具 narration。'
+  - 'H1 emergency escape: 用户明确要求跳过先提交失败测试；修复后已补永久回归，覆盖空合成回合、内部流式续跑、快照续显和同 run Base 精确去重。'
+  blockers: []

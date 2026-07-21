@@ -133,7 +133,7 @@ func buildTranscriptTurns(
 		}
 		if len(group) > 0 {
 			turns = append(turns, map[string]any{"role": "tool_group", "tool_calls": group})
-			turns = append(turns, providerSafeToolTurns(group)...)
+			turns = append(turns, providerSafeToolTurns(group, s.Reasoning)...)
 		}
 	}
 	// Defensive: any tool aggregates not attributed to a step (shouldn't happen —
@@ -141,7 +141,7 @@ func buildTranscriptTurns(
 	if toolIdx < len(aggs) {
 		remaining := aggs[toolIdx:]
 		turns = append(turns, map[string]any{"role": "tool_group", "tool_calls": remaining})
-		turns = append(turns, providerSafeToolTurns(remaining)...)
+		turns = append(turns, providerSafeToolTurns(remaining, "")...)
 	}
 
 	// Reconcile the final answer onto the trailing assistant turn (or append one
@@ -171,7 +171,7 @@ const maxPersistedResumeToolResultBytes = 64 << 10
 // Model-supplied argv is deliberately replaced by an empty object, so durable
 // history can inform the model without becoming a replay channel. UI narration
 // stays in the adjacent tool_group turn.
-func providerSafeToolTurns(group []persistedToolCall) []map[string]any {
+func providerSafeToolTurns(group []persistedToolCall, reasoning string) []map[string]any {
 	var turns []map[string]any
 	for _, call := range group {
 		if call.ToolName != "lark_execute" || call.ToolCallID == "" ||
@@ -186,16 +186,20 @@ func providerSafeToolTurns(group []persistedToolCall) []map[string]any {
 			continue
 		}
 		result := compactPersistedResumeToolResult(call.InternalResult)
+		assistant := map[string]any{
+			"role":    "assistant",
+			"content": "",
+			"tool_calls": []map[string]any{{
+				"id":       call.ToolCallID,
+				"type":     "function",
+				"function": map[string]any{"name": "lark_execute", "arguments": `{}`},
+			}},
+		}
+		if reasoning != "" {
+			assistant["reasoning"] = reasoning
+		}
 		turns = append(turns,
-			map[string]any{
-				"role":    "assistant",
-				"content": "",
-				"tool_calls": []map[string]any{{
-					"id":       call.ToolCallID,
-					"type":     "function",
-					"function": map[string]any{"name": "lark_execute", "arguments": `{}`},
-				}},
-			},
+			assistant,
 			map[string]any{
 				"role": "tool", "tool_call_id": call.ToolCallID,
 				"content": string(result),

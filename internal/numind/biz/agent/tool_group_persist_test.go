@@ -59,6 +59,8 @@ func TestBuildTranscriptTurns_PreservesSafeLarkResultsForNextAuthorization(t *te
 	require.Len(t, turns, 6)
 	assert.Equal(t, "tool_group", turns[2]["role"])
 	assert.Equal(t, "assistant", turns[3]["role"])
+	assert.Equal(t, "先创建并读取表", turns[3]["reasoning"],
+		"synthetic tool-call envelope must retain thinking-provider context")
 	calls, ok := turns[3]["tool_calls"].([]map[string]any)
 	require.True(t, ok)
 	require.Len(t, calls, 1)
