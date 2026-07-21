@@ -833,6 +833,15 @@ func operationDocsCreateRequest(userID uint, runID uint64, toolCallID, title str
 	}
 }
 
+func operationBaseCreateRequest(userID uint, runID uint64, toolCallID, name string) ExecuteRequest {
+	return ExecuteRequest{
+		UserID: userID, AgentRunID: runID, ToolCallID: toolCallID,
+		IdempotencyKey: fmt.Sprintf("%d:%s", runID, toolCallID),
+		Argv:           []string{"base", "+base-create", "--name", name},
+		SkillReceipts:  []string{"shared", "base"},
+	}
+}
+
 func operationDocsOverwriteRequest(userID uint, runID uint64, toolCallID, docToken string) ExecuteRequest {
 	return ExecuteRequest{
 		UserID: userID, AgentRunID: runID, ToolCallID: toolCallID,
@@ -3422,6 +3431,28 @@ func TestOperationService_TerminalResultIsEncryptedIdempotentAndDefensivelyCopie
 	rotated, err := v2Service.Resume(h.ctx, 7, first.OperationID)
 	require.NoError(t, err)
 	require.JSONEq(t, `{"document_id":"doc1"}`, string(rotated.Data))
+}
+
+func TestOperationService_SameRunEquivalentBaseCreateReusesSucceededOperation(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	h.runner.steps = []operationRunnerStep{
+		{result: operationOKResult(`{"base_token":"bas_first","name":"爆款素材库"}`)},
+		{result: operationOKResult(`{"base_token":"bas_second","name":"另一个素材库"}`)},
+	}
+
+	first, err := h.service.Execute(h.ctx, operationBaseCreateRequest(7, 283, "tc-base-1", "爆款素材库"))
+	require.NoError(t, err)
+	duplicate, err := h.service.Execute(h.ctx, operationBaseCreateRequest(7, 283, "tc-base-2", "爆款素材库"))
+	require.NoError(t, err)
+	require.Equal(t, first.OperationID, duplicate.OperationID)
+	require.JSONEq(t, string(first.Data), string(duplicate.Data))
+
+	different, err := h.service.Execute(h.ctx, operationBaseCreateRequest(7, 283, "tc-base-3", "另一个素材库"))
+	require.NoError(t, err)
+	require.NotEqual(t, first.OperationID, different.OperationID)
+	calls, _ := h.runner.snapshot()
+	require.Equal(t, 2, calls, "only the exact same-run payload is deduplicated")
 }
 
 func TestOperationService_RejectsIdempotencyReuseWithDifferentCanonicalRequest(t *testing.T) {

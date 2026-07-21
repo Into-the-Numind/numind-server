@@ -13,6 +13,7 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
+	"numind-server/internal/numind/biz/agent/stream"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/externalaction"
 	"numind-server/internal/pkg/log"
@@ -156,6 +157,14 @@ type AgentRunResumer struct {
 	studentRuns      *StudentRunService
 	supervisor       *ExternalContinuationSupervisor
 	preflightTimeout time.Duration
+}
+
+// externalContinuationStreamingRunner is deliberately narrower than
+// AgentRunner. Production agentRunner opts in so detached card continuations
+// keep full step/reasoning persistence; lightweight lifecycle fakes and any
+// rolling wrapper that has not opted in retain the established Run fallback.
+type externalContinuationStreamingRunner interface {
+	RunExternalContinuationStream(context.Context, RunRequest, chan<- stream.Event) (*RunResult, error)
 }
 
 // ExternalResumeReclaimer makes durable completed external actions self-heal
@@ -547,7 +556,26 @@ func (r *AgentRunResumer) callRunner(ctx context.Context, runReq RunRequest) (ru
 		}
 	}()
 	bgCtx := middleware.NewContextWithUserID(ctx, runReq.UserID)
-	_, runErr = r.studentRuns.runner.Run(bgCtx, runReq)
+	streamingRunner, ok := r.studentRuns.runner.(externalContinuationStreamingRunner)
+	if !ok {
+		_, runErr = r.studentRuns.runner.Run(bgCtx, runReq)
+		return runErr
+	}
+	events := make(chan stream.Event, 256)
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for range events {
+			// A detached external continuation has no live SSE response. Draining
+			// still lets RunStream collect and persist every assistant/reasoning
+			// step so the status observer can replay it from the session snapshot.
+		}
+	}()
+	defer func() {
+		close(events)
+		<-drained
+	}()
+	_, runErr = streamingRunner.RunExternalContinuationStream(bgCtx, runReq, events)
 	return runErr
 }
 
@@ -590,8 +618,7 @@ func (r *AgentRunResumer) startClaimedContinuation(ctx, runnerParent context.Con
 				}
 			}
 		}()
-		bgCtx := middleware.NewContextWithUserID(runnerCtx, runReq.UserID)
-		_, runErr := r.studentRuns.runner.Run(bgCtx, runReq)
+		runErr := r.callRunner(runnerCtx, runReq)
 		if gate.Begun() && !gate.Finished() {
 			_ = gate.Finish(context.Background(), runErr)
 		}
@@ -1051,7 +1078,13 @@ func turnsToExternalResumeHistoryMessages(turns []map[string]any, targetToolCall
 		case "assistant":
 			content := historyTurnText(turn["content"])
 			reasoning, _ := turn["reasoning"].(string)
-			lastAssistantReasoning = reasoning
+			// providerSafeToolTurns writes an empty synthetic assistant envelope
+			// immediately before each durable tool result. That envelope must not
+			// erase the nearest real thinking context (dev run 283), otherwise a
+			// thinking provider rejects the resumed request with HTTP 400.
+			if strings.TrimSpace(reasoning) != "" {
+				lastAssistantReasoning = reasoning
+			}
 			if strings.TrimSpace(content) != "" {
 				message := schema.AssistantMessage(content, nil)
 				message.ReasoningContent = reasoning

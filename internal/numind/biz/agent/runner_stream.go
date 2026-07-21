@@ -612,7 +612,7 @@ func (r *agentRunner) persistYieldTranscript(ctx context.Context, runID uint64, 
 		turns = []map[string]any{{"role": "user", "content": userInput}}
 		if groups := aggregateToolEvents(narration.CollectorFrom(ctx).Events()); len(groups) > 0 {
 			turns = append(turns, map[string]any{"role": "tool_group", "tool_calls": groups})
-			turns = append(turns, providerSafeToolTurns(groups)...)
+			turns = append(turns, providerSafeToolTurns(groups, "")...)
 		}
 	}
 	// 问题二: carry the user's uploaded attachments onto the user turn so a session

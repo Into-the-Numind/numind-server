@@ -1141,6 +1141,65 @@ func TestExternalResumeHistory_PreservesThinkingContextForSyntheticToolCall(t *t
 		"thinking providers require reasoning_content on the reconstructed assistant tool call")
 }
 
+func TestExternalResumeHistory_EmptySyntheticAssistantDoesNotEraseThinkingContext(t *testing.T) {
+	turns := []map[string]any{
+		{"role": "user", "content": "创建并写入飞书多维表格"},
+		{
+			"role": "assistant", "content": "先创建 Base。",
+			"reasoning": "已确定表结构，调用 lark_execute 创建 Base。",
+		},
+		{
+			"role": "assistant", "content": "",
+			"tool_calls": []any{map[string]any{
+				"id": "tc-base-create", "type": "function",
+				"function": map[string]any{"name": "lark_execute", "arguments": `{}`},
+			}},
+		},
+		{"role": "tool", "content": `{"ok":true,"state":"succeeded"}`, "tool_call_id": "tc-base-create"},
+	}
+
+	history, err := turnsToExternalResumeHistoryMessages(turns, "tc-base-create")
+	require.NoError(t, err)
+	require.Len(t, history, 4)
+	require.Len(t, history[2].ToolCalls, 1)
+	assert.Equal(t, "已确定表结构，调用 lark_execute 创建 Base。", history[2].ReasoningContent)
+}
+
+type detachedStreamingOptInRunner struct {
+	runCalls    int
+	streamCalls int
+}
+
+func (r *detachedStreamingOptInRunner) Run(context.Context, RunRequest) (*RunResult, error) {
+	r.runCalls++
+	return nil, errors.New("non-stream path must not run")
+}
+
+func (r *detachedStreamingOptInRunner) RunStream(context.Context, RunRequest, uint64, chan<- stream.Event) (*RunResult, error) {
+	return nil, errors.New("public stream entry is not used directly")
+}
+
+func (r *detachedStreamingOptInRunner) RunExternalContinuationStream(
+	_ context.Context,
+	req RunRequest,
+	ch chan<- stream.Event,
+) (*RunResult, error) {
+	r.streamCalls++
+	ch <- stream.Event{}
+	return &RunResult{AgentRunID: req.ExistingRunID, TerminalReason: TerminalCompleted}, nil
+}
+
+func (r *detachedStreamingOptInRunner) Cancel(uint64) bool { return false }
+
+func TestExternalToolResume_ProductionOptInUsesDrainedStreamingRunner(t *testing.T) {
+	runner := &detachedStreamingOptInRunner{}
+	resumer := &AgentRunResumer{studentRuns: &StudentRunService{runner: runner}}
+	err := resumer.callRunner(context.Background(), RunRequest{UserID: 7, ExistingRunID: 283})
+	require.NoError(t, err)
+	assert.Zero(t, runner.runCalls)
+	assert.Equal(t, 1, runner.streamCalls)
+}
+
 func TestExternalResumeHistory_StripsPersistedSecretToolArguments(t *testing.T) {
 	turns := []map[string]any{
 		{"role": "user", "content": "写飞书"},

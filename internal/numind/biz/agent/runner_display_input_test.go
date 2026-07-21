@@ -152,3 +152,11 @@ func TestTransformMessages_UserAttachmentsParsed(t *testing.T) {
 	assert.Equal(t, "a.pdf", user.Attachments[0].Filename)
 	assert.Equal(t, "https://x/a.pdf", user.Attachments[0].URL)
 }
+
+func TestTransformMessages_AssistantCarriesOwningRunID(t *testing.T) {
+	raw := []byte(`[{"role":"user","content":"继续"},{"role":"assistant","content":"处理中","reasoning":"正在分析"}]`)
+	msgs := transformMessages(raw, 283, time.Time{}, nil, "running", "running")
+	require.Len(t, msgs, 2)
+	assert.Equal(t, "assistant", msgs[1].Type)
+	assert.EqualValues(t, 283, msgs[1].RunID)
+}

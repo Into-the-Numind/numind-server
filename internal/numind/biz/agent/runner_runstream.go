@@ -734,6 +734,17 @@ func (r *agentRunner) RunStream(
 	return r.finalizeRun(ctx, run, st, startTime, finalText, finalReasoning, nil, false, skillVer, isTrivial, req, permDenialSink, nil, sessionID, priorMessages)
 }
 
+// RunExternalContinuationStream opts the production runner into the detached
+// streaming path used after an external-action card. The caller owns and drains
+// ch; RunStream remains the single implementation of execution and persistence.
+func (r *agentRunner) RunExternalContinuationStream(
+	ctx context.Context,
+	req RunRequest,
+	ch chan<- stream.Event,
+) (*RunResult, error) {
+	return r.RunStream(ctx, req, req.ExistingRunID, ch)
+}
+
 // applyHookOverride checks if the effectiveHooks.Registry recorded a non-Continue
 // action and, if so, overrides st.TerminalReason via the LoopState machine.
 // This mirrors the hook-override block in Run() and was previously duplicated 3×

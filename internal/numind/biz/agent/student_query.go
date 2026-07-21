@@ -497,7 +497,7 @@ type agentMessage struct {
 	Attachments []messageAttachment `json:"attachments,omitempty"`
 	Markdown    string              `json:"markdown,omitempty"` // for type='assistant' | 'final_answer'
 	Reasoning   string              `json:"reasoning,omitempty"`
-	RunID       uint64              `json:"run_id,omitempty"` // for type='final_answer' | 'question_prompt'
+	RunID       uint64              `json:"run_id,omitempty"` // for run-owned assistant/final/interactive messages
 	// ToolCalls carries the persisted tool-call timeline for type='tool_group'.
 	// Shape is 1:1 with the frontend ToolCallAggregate so it renders untransformed.
 	ToolCalls []persistedToolCall `json:"tool_calls,omitempty"`
@@ -729,6 +729,7 @@ func transformMessages(raw []byte, runID uint64, startedAt time.Time, endedAt *t
 				msg.Type = "assistant"
 				msg.Markdown = content
 				msg.Reasoning = reasoning
+				msg.RunID = runID
 			}
 		case "tool_group":
 			// Replay the persisted tool-call timeline. Re-marshal the generic
