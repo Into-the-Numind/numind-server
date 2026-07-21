@@ -477,12 +477,6 @@ func (b *RedisRunEventBroker) runCriticalRetry(runID uint64, state *criticalRetr
 		event := state.event
 		state.mu.RUnlock()
 		if _, err := b.publish(b.ctx, runID, event, false); err == nil {
-			state.mu.RLock()
-			stillLatest := state.generation == generation
-			state.mu.RUnlock()
-			if stillLatest {
-				return
-			}
 			// A newer final terminal replaced the event during this attempt.
 			// Its own generation goroutine is responsible for delivery.
 			return
