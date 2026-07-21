@@ -6725,18 +6725,19 @@ features:
   description: '修复外部飞书卡片后 Agent 续跑卡死、thinking/正文不再展示，以及同一次运行重复创建空 Base。'
   classification_reason: '用户指定 Hotfix 紧急处理；无 DB schema、无新增 API、无新外部服务、非支付权限。跨前后端运行时/快照/飞书幂等文件超过常规 Hotfix 上限，作为已确认紧急例外完整修复。'
   last_updated_by: ai-h3
-  last_updated_at: '2026-07-21T11:21:00+0800'
+  last_updated_at: '2026-07-21T11:27:35+0800'
   created_at: '2026-07-21T10:59:02+0800'
   track: hotfix
-  stage: H3
-  status: active
+  stage: completed
+  status: completed
   repos: [numind-server, numind-web-v3]
-  branches: {numind-server: fix/agent-card-resume-stability, numind-web-v3: fix/agent-card-resume-stability}
-  worktrees: {numind-server: /private/tmp/wt-agent-card-resume-stability-numind-server, numind-web-v3: /private/tmp/wt-agent-card-resume-stability-numind-web-v3}
-  progress: {total_tasks: 4, completed_tasks: 3, reviewed_tasks: 3, current_task: 'H3 ndf-done and direct Dev deployment'}
+  branches: {numind-server: develop (merged via ndf-done b1553ccd), numind-web-v3: develop (merged via ndf-done ead77fb)}
+  worktrees: {numind-server: (removed by ndf-done), numind-web-v3: (removed by ndf-done)}
+  progress: {total_tasks: 4, completed_tasks: 4, reviewed_tasks: 3}
   decisions:
   - 'H1: dev run 283 的两份 Base 与两次不同 operation/tool-call 一致；第一份为空、第二份写入成功，证明模型在续跑上下文丢失后重复创建。'
   - 'H1: providerSafeToolTurns 的空 assistant 覆盖最近 reasoning，触发 thinking provider HTTP 400；外部卡片续跑同时走非流式 Run，浏览器只能收到工具 narration。'
   - 'H1 emergency escape: 用户明确要求跳过先提交失败测试；修复后已补永久回归，覆盖空合成回合、内部流式续跑、快照续显和同 run Base 精确去重。'
   - 'H2: 用户明确取消额外浏览器验收；保留硬门禁。Agent/Feishu/Store 定向回归、前端 68 项续跑测试、Go vet+golangci-lint、ESLint(0 errors)+vue-tsc 全绿。'
+  - 'H3 deploy (ai 2026-07-21): ndf-done 已合并并推送 develop（server b1553ccd / web ead77fb），原 feature worktree/分支自动清理；使用隔离的干净 deploy worktree 发布，确保主仓库无关未提交改动未进入镜像。Dev 后端 develop-b1553ccd 与前端 develop-ead77fb 均 Release complete，脚本内置健康检查通过；按用户要求未做额外浏览器/业务验收。'
   blockers: []
