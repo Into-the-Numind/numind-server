@@ -124,7 +124,9 @@ func TestSelectToolsForRun_DisabledSandboxRuntimeExcludesSandboxTools(t *testing
 		names = append(names, tool.Name())
 	}
 
-	require.NotContains(t, names, "create_docx", "Agent must not plan Word generation through a disabled sandbox runtime")
+	require.Contains(t, names, "create_docx", "standard Word generation is native and should not depend on sandbox runtime")
+	require.Contains(t, names, "create_xlsx", "standard Excel generation is native and should not depend on sandbox runtime")
+	require.Contains(t, names, "create_pptx", "standard PowerPoint generation is native and should not depend on sandbox runtime")
 	require.NotContains(t, names, "run_python", "Agent must not plan Python execution through a disabled sandbox runtime")
 	require.NotContains(t, names, "bash_exec", "Agent must not plan shell execution through a disabled sandbox runtime")
 	require.Contains(t, names, "create_html", "non-sandbox file generation should remain available")

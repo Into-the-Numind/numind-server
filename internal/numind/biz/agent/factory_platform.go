@@ -181,15 +181,14 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		// T4: when f.ds is wired, attach a marketplace snapshot reader so reference-
 		// pointer skills (marketplace_id>0) load the publisher's CURRENT snapshot.
 		f.newLoadSkillTool(),
-		// V1.5 output-skills task 4.2: simple file generation tools (Layer 1, no sandbox).
+		// Layer 1 file generation tools: standard formats without sandbox startup.
 		&createCSVTool{},
 		&createHTMLTool{},
 		&createJSONTool{},
 		&createTextTool{},
-		// agent-output-ux-followup3 BE-2: Markdown -> .docx deterministic fast path
-		// (sandboxed fixed script; NOT no-sandbox like the others — IsEnabled gates
-		// on EnableSandbox).
 		&createDocxTool{},
+		&createXLSXTool{},
+		&createPPTXTool{},
 		// V1.5 output-skills task 4.3: PNG chart tool (Layer 1, gonum/plot + go-chart/v2).
 		&createPNGChartTool{},
 		// V1.5 output-skills task 4.9: run_python (Layer 3, last-resort sandbox Python execution).
@@ -210,13 +209,14 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		{ToolName: "analyze_image", DisplayName: "图像分析", Description: "Analyze an image in detail using a vision specialist model.", Source: "platform", RiskLevel: "moderate", Category: "视觉"},
 		{ToolName: "annotate_image", DisplayName: "图像区域标注", Description: "Analyze specific regions within an image using a vision specialist model.", Source: "platform", RiskLevel: "moderate", Category: "视觉"},
 		{ToolName: LoadSkillToolName, DisplayName: "加载技能", Description: "Load a skill's guidance into the conversation — DB-bound business skills or disk platform skills (xlsx-author / docx-author / pptx-author / pdf-from-html). Pair with run_python to execute the code a structured-file skill teaches.", Source: "platform", RiskLevel: "safe", Category: "技能"},
-		// V1.5 output-skills task 4.2: simple file generation tools.
+		// Layer 1 file generation tools.
 		{ToolName: "create_csv", DisplayName: "生成 CSV 文件", Description: "Generate a CSV file from tabular data.", Source: "platform", RiskLevel: "safe", Category: "文件生成"},
 		{ToolName: "create_html", DisplayName: "生成 HTML 页面", Description: "Render an HTML page from content or a template.", Source: "platform", RiskLevel: "safe", Category: "文件生成"},
 		{ToolName: "create_json", DisplayName: "生成 JSON 文件", Description: "Serialize data to a JSON file.", Source: "platform", RiskLevel: "safe", Category: "文件生成"},
 		{ToolName: "create_text", DisplayName: "生成文本文件", Description: "Write plain text content to a .txt file.", Source: "platform", RiskLevel: "safe", Category: "文件生成"},
-		// agent-output-ux-followup3 BE-2: Markdown -> .docx deterministic fast path.
-		{ToolName: "create_docx", DisplayName: "生成 Word 文档（Markdown）", Description: "Generate a .docx Word document from Markdown (headings, paragraphs, lists, tables, inline images). For complex layouts use run_python + docx-author.", Source: "platform", RiskLevel: "safe", Category: "文件生成", RequiresSandbox: true},
+		{ToolName: "create_docx", DisplayName: "生成 Word 文档（Markdown）", Description: "Generate a standard .docx Word document from Markdown without using the sandbox. For complex layouts use load_skill(\"docx-author\") + run_python.", Source: "platform", RiskLevel: "safe", Category: "文件生成"},
+		{ToolName: "create_xlsx", DisplayName: "生成 Excel 工作簿", Description: "Generate a standard .xlsx workbook from rows/sheets without using the sandbox. For formulas, charts, templates, or advanced styling use load_skill(\"xlsx-author\") + run_python.", Source: "platform", RiskLevel: "safe", Category: "文件生成"},
+		{ToolName: "create_pptx", DisplayName: "生成 PowerPoint 演示文稿", Description: "Generate a standard .pptx deck from title/subtitle/bullet slides without using the sandbox. For branded templates, images, charts, or precise visual design use load_skill(\"pptx-author\") + run_python.", Source: "platform", RiskLevel: "safe", Category: "文件生成"},
 		// V1.5 output-skills task 4.3: PNG chart tool.
 		{ToolName: "create_png_chart", DisplayName: "图表生成（PNG）", Description: "Generate a static PNG chart from structured data.", Source: "platform", RiskLevel: "safe", Category: "可视化"},
 		// V1.5 output-skills task 4.9: run_python (Layer 3 last-resort).
