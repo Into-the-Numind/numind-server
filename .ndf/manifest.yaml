@@ -4,9 +4,9 @@ features:
   ndf_version: '3.0'
   description: Stabilize Agent sandbox-backed file/code tools so disabled runtimes do not expose create_docx/run_python/bash_exec and busy warm pools elastically refill instead of surfacing "sandbox unavailable" to users.
   classification_reason: 'Hotfix: no DB schema, no new API endpoint, no new external service, focused Agent/sandbox runtime fix, non-payment/non-permission business logic. User reported product-level sandbox/create_docx unavailable failures.'
-  last_updated_by: ai-h3-merged
-  last_updated_at: '2026-07-27T12:42:50+0800'
-  last_verified: '2026-07-27T12:40:24+0800'
+  last_updated_by: ai-h3-dev-deployed
+  last_updated_at: '2026-07-27T12:51:13+0800'
+  last_verified: '2026-07-27T12:51:13+0800'
   created_at: '2026-07-27T12:27:01+0800'
   track: hotfix
   stage: H3
@@ -14,15 +14,18 @@ features:
   repos: [numind-server]
   branches: {numind-server: develop}
   worktrees: {}
-  progress: {total_tasks: 3, completed_tasks: 3, reviewed_tasks: 1, current_task: 'Await Dev deployment and quick acceptance; Prod untouched'}
+  progress: {total_tasks: 3, completed_tasks: 3, reviewed_tasks: 1, current_task: 'Await user quick acceptance; Prod untouched'}
+  deployed: 'dev server develop-c1443129 (registry sha256:67aea96bec3b7e1c60f8c6a8cefa88cd6f0c821c73e8b95f0bd1c9dce80547a9; runtime image ccr.ccs.tencentyun.com/youshunumind/numind-server:develop-c1443129)'
   artifacts:
     h2_verification: .ndf/decisions/sandbox-tool-availability/0001-h2-verification.md
     h3_merge: .ndf/decisions/sandbox-tool-availability/0002-h3-merge.md
+    h3_dev_deployment: .ndf/decisions/sandbox-tool-availability/0003-h3-dev-deployment.md
   decisions:
   - 'H1: First commit 01dba615 reproduces two product failures: fixed warm-pool capacity makes a concurrent sandbox borrow return ErrPoolExhausted, and a disabled sandbox runtime still exposes create_docx/run_python/bash_exec for Agent planning.'
   - 'H1 fix: Borrow now requests an elastic refill whenever the warm queue is empty, excess spawned containers are destroyed instead of blocking the worker, and Agent tool selection filters sandbox-isolated exec tools when the process sandbox pool is disabled.'
   - 'H2 verification: focused red tests now pass, full go test ./... passes, and task lint passes after retrying with a reachable Go proxy; initial lint failure was a proxy.golang.org timeout while installing golangci-lint, not a code failure.'
   - 'H3 merge: ndf-done merged fix/sandbox-tool-availability into develop as d1482d1a, pushed origin/develop, deleted the hotfix worktree and local branch. Dev deployment and user quick acceptance remain pending; Prod untouched.'
+  - 'H3 Dev: deployed exact image develop-c1443129 to numind-server-dev; public /healthz returned ok; container inspect is running/healthy; startup logs show sandbox backend=docker pool_min=5 with sandbox-skill skills-v1.5.3. Prod untouched.'
   blockers: []
 - id: agent-post-card-realtime-stream
   ndf_version: '3.0'
