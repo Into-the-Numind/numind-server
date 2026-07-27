@@ -4,23 +4,26 @@ features:
   ndf_version: '3.0'
   description: Block Agent 3 from appending a profile customer's topic rounds into a fetched Feishu topic document that belongs to another customer or lacks the required customer title.
   classification_reason: 'Hotfix: customer-reported Dev bug, no DB schema, no new API endpoint, no new external service, limited to Agent Feishu Docs execution guard and tests, non-payment/non-permission business logic.'
-  last_updated_by: ai-h2-verified
-  last_updated_at: '2026-07-27T22:07:30+0800'
-  last_verified: '2026-07-27T22:07:30+0800'
+  last_updated_by: ai-h3-dev-deployed
+  last_updated_at: '2026-07-27T22:20:07+0800'
+  last_verified: '2026-07-27T22:20:07+0800'
   created_at: '2026-07-27T21:46:34+0800'
   track: hotfix
-  stage: H2
+  stage: H3
   status: active
   repos: [numind-server]
-  branches: {numind-server: fix/feishu-topic-context-mismatch}
+  branches: {numind-server: develop}
   worktrees: {numind-server: /private/tmp/wt-feishu-topic-context-mismatch-numind-server}
-  progress: {total_tasks: 3, completed_tasks: 2, reviewed_tasks: 0, current_task: 'H2 verified locally; ready for merge/deploy decision'}
+  progress: {total_tasks: 3, completed_tasks: 3, reviewed_tasks: 0, current_task: 'Dev deployed; origin push and NDF worktree cleanup pending due GitHub connectivity'}
+  deployed: 'dev server develop-9653409a (registry sha256:b0da5c69b06d41f17e180245e9f56e3886026a4d192ea246e2ff879f3922ec2b; runtime image ccr.ccs.tencentyun.com/youshunumind/numind-server:develop-9653409a)'
   artifacts:
     h2_verification: .ndf/decisions/feishu-topic-context-mismatch/0001-h2-verification.md
+    h3_dev_deployment: .ndf/decisions/feishu-topic-context-mismatch/0002-h3-dev-deployment.md
   decisions:
   - 'H1 RED: commit 7b8360d3 reproduces Agent 3 reading a Yvonne profile and then appending Yvonne topic content into a fetched emotional-consulting topic document.'
   - 'H1 fix: lark_execute now records customer identity from successful profile/topic fetches per run and rejects managed topic writes when the fetched target belongs to another customer or lacks a customer-specific title.'
   - 'H2 verification: focused customer regressions, full agent package, serial full Go suite, and task lint passed; an initial parallel full-suite run had an unrelated agent package flake that did not reproduce when rerun directly or serially.'
+  - 'H3 Dev: local develop merge 9653409a deployed to numind-server-dev; public /healthz returned ok and docker inspect reports runtime image develop-9653409a healthy. Origin push and ndf-done cleanup are pending because GitHub HTTPS was unreachable from the local machine.'
   blockers: []
 - id: standard-office-output-tools
   ndf_version: '3.0'
