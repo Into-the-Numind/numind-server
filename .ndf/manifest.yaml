@@ -4,24 +4,27 @@ features:
   ndf_version: '3.0'
   description: Fix Dev Agent sandbox failures seen by a single invited customer by preventing duplicate Biz-owned sandbox pools from deleting each other's warm containers.
   classification_reason: 'Hotfix: customer-reported product bug in Dev, no DB schema, no new API endpoint, no new external service, focused backend sandbox lifecycle and Biz wiring change, non-payment/non-permission business logic.'
-  last_updated_by: ai-h2-verified
-  last_updated_at: '2026-07-27T13:45:19+0800'
-  last_verified: '2026-07-27T13:45:19+0800'
+  last_updated_by: ai-h3-dev-deployed
+  last_updated_at: '2026-07-27T14:02:59+0800'
+  last_verified: '2026-07-27T14:02:59+0800'
   created_at: '2026-07-27T13:25:51+0800'
   track: hotfix
-  stage: H2
+  stage: H3
   status: active
   repos: [numind-server]
-  branches: {numind-server: fix/sandbox-dev-single-user-failure}
+  branches: {numind-server: develop}
   worktrees: {numind-server: /private/tmp/wt-sandbox-dev-single-user-failure-numind-server}
-  progress: {total_tasks: 3, completed_tasks: 2, reviewed_tasks: 1, current_task: 'Ready for H3 merge and Dev deployment'}
+  progress: {total_tasks: 3, completed_tasks: 3, reviewed_tasks: 1, current_task: 'Dev deployed; origin push and NDF worktree cleanup pending due GitHub connectivity'}
+  deployed: 'dev server develop-bb4f3d7a (registry sha256:b32c95662f8f520f62b3cef5d5e530a8f4cdcae5f13d90f44bba14cd942dc955; runtime image ccr.ccs.tencentyun.com/youshunumind/numind-server:develop-bb4f3d7a)'
   artifacts:
     h2_verification: .ndf/decisions/sandbox-dev-single-user-failure/0001-h2-verification.md
+    h3_dev_deployment: .ndf/decisions/sandbox-dev-single-user-failure/0002-h3-dev-deployment.md
   decisions:
   - 'H1 diagnosis: Dev run 313 hit a sandbox pool whose warm container IDs had already been destroyed by a second Biz-created peer pool in the same backend process; this explains a single-user failure without user-level concurrency.'
   - 'H1 RED: commit 9544c82c reproduces peer pool startup reaping live warm containers owned by another active pool.'
   - 'H1 fix: sandbox containers now carry owner and boot labels, startup cleanup preserves live same-boot peer pools, and user/admin controllers prefer the entrypoint-owned Biz instead of creating hidden extra sandbox pools.'
   - 'H2 verification: focused sandbox/Agent/document tests pass, full go test ./... passes after isolating one transient external-model 403 rerun, and task lint passes.'
+  - 'H3 Dev: deployed exact local develop image bb4f3d7a to numind-server-dev; public /healthz returned ok; runtime container is healthy; startup logs show one sandbox pool initialized and five idle sandbox containers with owner labels. Origin push/worktree cleanup remain pending because GitHub HTTPS push failed from the local machine.'
   blockers: []
 - id: sandbox-tool-availability
   ndf_version: '3.0'
