@@ -428,11 +428,11 @@ func TestPlatformFactory_DoesNotRegisterLegacyLarkTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadTools: %v", err)
 	}
-	if len(tools) != 22 {
-		t.Fatalf("expected 22 tools with legacy lark registrations removed and xhs_note_list enabled; got %d", len(tools))
+	if len(tools) != 24 {
+		t.Fatalf("expected 24 tools with legacy lark registrations removed and xhs_note_list enabled; got %d", len(tools))
 	}
-	if len(metadata) != 22 {
-		t.Fatalf("expected 22 metadata entries; got %d", len(metadata))
+	if len(metadata) != 24 {
+		t.Fatalf("expected 24 metadata entries; got %d", len(metadata))
 	}
 	got := map[string]bool{}
 	for _, tl := range tools {
@@ -446,7 +446,7 @@ func TestPlatformFactory_DoesNotRegisterLegacyLarkTools(t *testing.T) {
 }
 
 // TestPlatformFactory_NoLarkTools_WhenProviderAbsent verifies the count is
-// unchanged (21) when no provider is available (feature off / no Redis).
+// unchanged (24) when no provider is available (feature off / no Redis).
 func TestPlatformFactory_NoLarkTools_WhenProviderAbsent(t *testing.T) {
 	db := newFactoryTestDB(t)
 	ds := store.NewTestStore(db)
@@ -456,8 +456,8 @@ func TestPlatformFactory_NoLarkTools_WhenProviderAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadTools: %v", err)
 	}
-	if len(tools) != 22 {
-		t.Fatalf("expected 22 tools (no lark when provider absent, xhs_note_list present); got %d", len(tools))
+	if len(tools) != 24 {
+		t.Fatalf("expected 24 tools (no lark when provider absent, xhs_note_list present); got %d", len(tools))
 	}
 	for _, tl := range tools {
 		if tl.Name() == "lark_create_doc" || tl.Name() == "lark_send_message" || tl.Name() == "lark_read_bitable" {

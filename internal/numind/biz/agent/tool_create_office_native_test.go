@@ -63,6 +63,10 @@ func TestCreatePPTX_NativePackage_NoSandboxRequired(t *testing.T) {
 
 	require.Contains(t, entries, "[Content_Types].xml")
 	require.Contains(t, entries, "ppt/presentation.xml")
+	require.Contains(t, entries, "ppt/slideMasters/slideMaster1.xml")
+	require.Contains(t, entries, "ppt/slideLayouts/slideLayout1.xml")
+	require.Contains(t, entries, "ppt/theme/theme1.xml")
+	require.Contains(t, entries, "ppt/slides/_rels/slide1.xml.rels")
 	require.Contains(t, entries, "ppt/slides/slide1.xml")
 	assert.Contains(t, entries["ppt/slides/slide1.xml"], "增长复盘")
 	assert.Contains(t, entries["ppt/slides/slide1.xml"], "线索增长")

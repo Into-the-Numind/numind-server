@@ -3,7 +3,7 @@ package agent
 // OutputToolsPriorityAddendum 是 V1.5 Track 4 引入、2026-05-29 skill-progressive-loader
 // 重构后的固定段落，引导 LLM 按"简单 → 复杂 → 兜底"三层架构选择文件生成工具：
 //
-//	Layer 1 — Go 简单工具（无 sandbox 开销）：create_csv/html/json/text/png_chart
+//	Layer 1 — Go 标准格式工具（无 sandbox 开销）：create_csv/html/json/text/png_chart/docx/xlsx/pptx
 //	Layer 2 — Python skill（沙箱内运行，progressive disclosure 范式）：
 //	         先 load_skill 拿 SKILL.md 指南，再 run_python 执行真实代码
 //	Layer 3 — 兜底裸 Python（最后选项）：run_python（长尾 / 奇怪格式，无 skill 指南）
@@ -21,21 +21,23 @@ const OutputToolsPriorityAddendum = `
 
 When the user asks you to generate a file, prefer tools in this order:
 
-1. SIMPLE formats — use Go tools (Layer 1, fast, no sandbox):
+1. STANDARD formats — use Go tools (Layer 1, fast, no sandbox):
    - .csv → create_csv
    - .html → create_html
    - .json → create_json
    - .txt / .md → create_text
    - simple chart (.png, bar/line/pie/scatter) → create_png_chart
    - STANDARD .docx (headings, paragraphs, lists, tables, inline images) → create_docx (pass Markdown directly; faster and more reliable than writing python-docx by hand)
+   - STANDARD .xlsx (normal tables, multiple sheets, no formulas/charts/templates) → create_xlsx
+   - STANDARD .pptx (title/subtitle/bullet/notes slides, no branded template/images/charts) → create_pptx
 
 2. COMPLEX formats — use the skill workflow (Layer 2, Python in sandbox):
    STEP A: load_skill({"name": "<chosen>"}) to get the SKILL.md guidance.
    STEP B: run_python({"code": "<Python following the guidance>", "input_files": [...]}) to execute.
    Available skills:
-   - .xlsx → name="xlsx-author"
+   - .xlsx with formulas / charts / advanced styling / templates / large data processing → name="xlsx-author"
    - .docx with COMPLEX custom layout / precise styling ONLY → name="docx-author"  (for a standard document prefer create_docx above; if you generated an image earlier via image_gen, pass its COS URL in run_python input_files and embed it with doc.add_picture — never give the user a picture in chat but leave it out of the document)
-   - .pptx → name="pptx-author"
+   - .pptx with branded templates / complex layouts / images / charts / precise visual design → name="pptx-author"
    - .pdf  → name="pdf-from-html"
    IMPORTANT: do NOT skip STEP A — without the SKILL.md you will write wrong imports.
    IMPORTANT: run_python is STATELESS — each call is a fresh sandbox and files do NOT persist between calls. Build the WHOLE document in ONE run_python call; never reopen an output path from a previous call (e.g. Presentation("/workdir/output/x.pptx") will fail).
@@ -48,22 +50,24 @@ When the user asks you to generate a file, prefer tools in this order:
 
 当用户要求生成文件时，按以下顺序优先使用工具：
 
-1. 简单格式优先 Go 工具（瞬时返回，无 sandbox 开销）：
+1. 标准格式优先 Go 工具（瞬时返回，无 sandbox 开销）：
    - .csv → create_csv
    - .html → create_html
    - .json → create_json
    - .txt / .md → create_text
    - 简单图表 (.png，柱状 / 折线 / 饼图 / 散点) → create_png_chart
    - 普通 .docx（标题 / 段落 / 列表 / 表格 / 插图）→ create_docx（直接传 Markdown，比手写 python-docx 更快更稳）
+   - 普通 .xlsx（常规表格 / 多 sheet，不含公式、图表、模板、复杂样式）→ create_xlsx
+   - 普通 .pptx（标题 / 副标题 / 要点 / 备注页，不含品牌模板、图片、图表、精细设计）→ create_pptx
 
 2. 复杂格式按 skill 两步流执行（Python 沙箱）：
    步骤 A: load_skill({"name": "<选定>"}) 获取 SKILL.md 指南。
    步骤 B: run_python({"code": "<按指南写的真实代码>", "input_files": [...]}) 执行。
    ⚠️ run_python 无状态——每次调用是全新沙箱，文件不跨调用保留。整份文档必须一次 run_python 生成完；禁止重开上次调用写的输出路径（如 Presentation("/workdir/output/x.pptx") 会失败）。
    可用 skill:
-   - .xlsx → name="xlsx-author"
+   - 仅当 .xlsx 需要公式 / 图表 / 复杂样式 / 模板 / 大数据处理时 → name="xlsx-author"
    - 仅当 .docx 需要特殊版式 / 精细样式时 → name="docx-author"（普通文档请优先用上面的 create_docx；若你之前用 image_gen 生成过图片，把该图片的 COS URL 放进 run_python 的 input_files，并用 doc.add_picture 嵌入文档——不要只在聊天里给图却漏掉文档里的图）
-   - .pptx → name="pptx-author"
+   - 仅当 .pptx 需要品牌模板 / 复杂布局 / 图片 / 图表 / 精细视觉设计时 → name="pptx-author"
    - .pdf  → name="pdf-from-html"
    **重要**: 不要跳过步骤 A——不读 SKILL.md 直接写代码会用错 import。
 
@@ -83,7 +87,8 @@ const GeneratedFilePresentationAddendum = `
 # How Generated Files Are Presented
 
 When a file-generating tool (create_html / create_csv / create_json / create_text /
-create_png_chart / run_python / docx-author and other skills) returns a file URL:
+create_docx / create_xlsx / create_pptx / create_png_chart / run_python /
+docx-author and other skills) returns a file URL:
 
 - Do NOT write your own download link, download table, or file list for it.
 - The system automatically renders each generated file as a card (preview + download)
@@ -94,7 +99,8 @@ create_png_chart / run_python / docx-author and other skills) returns a file URL
 # 生成文件如何呈现
 
 当文件生成工具（create_html / create_csv / create_json / create_text /
-create_png_chart / run_python / docx-author 等 skill）返回文件 URL 时：
+create_docx / create_xlsx / create_pptx / create_png_chart / run_python /
+docx-author 等 skill）返回文件 URL 时：
 
 - 不要自己写下载链接、下载表格或文件列表。
 - 系统会自动把每个生成文件渲染成卡片（预览 + 下载）显示在你回答下方，你再重复贴

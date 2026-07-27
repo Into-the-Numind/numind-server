@@ -197,8 +197,8 @@ func TestPlatformFactory_DoesNotRegisterLegacyFeishuConnect(t *testing.T) {
 
 	tools, metadata, err := f.LoadTools(context.Background())
 	require.NoError(t, err)
-	assert.Len(t, tools, 22)
-	assert.Len(t, metadata, 22)
+	assert.Len(t, tools, 24)
+	assert.Len(t, metadata, 24)
 
 	got := map[string]bool{}
 	for _, tl := range tools {
@@ -209,7 +209,7 @@ func TestPlatformFactory_DoesNotRegisterLegacyFeishuConnect(t *testing.T) {
 
 // TestPlatformFactory_NoFeishuConnect_WhenConnectorAbsent verifies feishu_connect
 // is NOT registered when the connector cannot be built (flag off / no Redis),
-// even if the old lark provider seam is present — count stays at 21.
+// even if the old lark provider seam is present — count stays at 24.
 func TestPlatformFactory_NoFeishuConnect_WhenConnectorAbsent(t *testing.T) {
 	db := newFactoryTestDB(t)
 	ds := store.NewTestStore(db)
@@ -217,7 +217,7 @@ func TestPlatformFactory_NoFeishuConnect_WhenConnectorAbsent(t *testing.T) {
 
 	tools, _, err := f.LoadTools(context.Background())
 	require.NoError(t, err)
-	assert.Len(t, tools, 22, "legacy provider must not register old lark tools")
+	assert.Len(t, tools, 24, "legacy provider must not register old lark tools")
 	for _, tl := range tools {
 		assert.NotEqual(t, "feishu_connect", tl.Name())
 	}
