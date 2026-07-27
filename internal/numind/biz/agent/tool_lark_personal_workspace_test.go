@@ -86,6 +86,17 @@ type fakeLarkExecutor struct {
 	err             error
 }
 
+type scriptedLarkExecuteStep struct {
+	result *feishu.OperationResult
+	err    error
+}
+
+type scriptedLarkExecuteExecutor struct {
+	mu       sync.Mutex
+	requests []feishu.ExecuteRequest
+	steps    []scriptedLarkExecuteStep
+}
+
 type fakeLarkInspector struct {
 	mu       sync.Mutex
 	requests []feishu.InspectionRequest
@@ -193,6 +204,26 @@ func (f *fakeLarkExecutor) Execute(_ context.Context, request feishu.ExecuteRequ
 	return &clone, f.err
 }
 
+func (f *scriptedLarkExecuteExecutor) Execute(_ context.Context, request feishu.ExecuteRequest) (*feishu.OperationResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	request.Argv = append([]string(nil), request.Argv...)
+	request.StdinJSON = append(json.RawMessage(nil), request.StdinJSON...)
+	request.SkillReceipts = append([]string(nil), request.SkillReceipts...)
+	callIndex := len(f.requests)
+	f.requests = append(f.requests, request)
+	if callIndex >= len(f.steps) {
+		return nil, feishu.ErrOperationRequestRejected
+	}
+	step := f.steps[callIndex]
+	if step.result == nil {
+		return nil, step.err
+	}
+	clone := *step.result
+	clone.Data = append(json.RawMessage(nil), step.result.Data...)
+	return &clone, step.err
+}
+
 func (f *fakeLarkExecutor) Connect(_ context.Context, request feishu.ConnectOperationRequest) (*feishu.OperationResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -221,6 +252,14 @@ func (f *fakeLarkExecutor) connectSnapshot() []feishu.ConnectOperationRequest {
 }
 
 func (f *fakeLarkExecutor) snapshot() []feishu.ExecuteRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]feishu.ExecuteRequest, len(f.requests))
+	copy(out, f.requests)
+	return out
+}
+
+func (f *scriptedLarkExecuteExecutor) snapshot() []feishu.ExecuteRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]feishu.ExecuteRequest, len(f.requests))
@@ -719,6 +758,64 @@ func TestLarkPersonalWorkspace_ExecuteDerivesTenantAndIdempotencyFromContext(t *
 	assert.Contains(t, tool.Description(), "no shell")
 	assert.Contains(t, tool.Description(), "no IM")
 	_ = second
+}
+
+func TestLarkExecuteBlocksAgent3AppendWhenProfileAndTargetCustomersMismatch(t *testing.T) {
+	runID := uint64(731001)
+	larkExecuteRetryClearRun(runID)
+	t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+
+	executor := &scriptedLarkExecuteExecutor{steps: []scriptedLarkExecuteStep{
+		{result: &feishu.OperationResult{
+			OperationID: "op-profile-fetch",
+			State:       model.FeishuOperationSucceeded,
+			Data: json.RawMessage(jsonString(map[string]any{"document": map[string]any{
+				"document_id": pipelineProfile,
+				"content":     profileContent("Yvonne"),
+				"scope":       "full",
+			}})),
+		}},
+		{result: &feishu.OperationResult{
+			OperationID: "op-topics-fetch",
+			State:       model.FeishuOperationSucceeded,
+			Data: json.RawMessage(jsonString(map[string]any{"document": map[string]any{
+				"document_id": pipelineTopics,
+				"content": topicsManagedHeader + "\n# 情感咨询客户 选题规划\n" +
+					topicRoundContent(pipelineRoundOld, 1),
+				"scope": "full",
+			}})),
+		}},
+		{result: &feishu.OperationResult{
+			OperationID: "op-append-should-not-run",
+			State:       model.FeishuOperationSucceeded,
+			Data:        json.RawMessage(`{"revision_id":3}`),
+		}},
+	}}
+	tool := &larkExecuteTool{executor: executor}
+
+	profileFetch, err := tool.Execute(
+		larkPersonalWorkspaceContext(21, runID, "tc-profile-fetch"),
+		ToolInput(jsonString(map[string]any{"argv": docsFetchArgv(pipelineProfile)})),
+	)
+	require.NoError(t, err)
+	assert.NotContains(t, string(profileFetch), "ERROR")
+
+	targetFetch, err := tool.Execute(
+		larkPersonalWorkspaceContext(21, runID, "tc-topics-fetch"),
+		ToolInput(jsonString(map[string]any{"argv": docsFetchArgv(pipelineTopics)})),
+	)
+	require.NoError(t, err)
+	assert.NotContains(t, string(targetFetch), "ERROR")
+
+	blocked, err := tool.Execute(
+		larkPersonalWorkspaceContext(21, runID, "tc-append"),
+		ToolInput(jsonString(map[string]any{
+			"argv": docsUpdateArgv(pipelineTopics, "append", topicRoundContent(pipelineRoundNew, 2), ""),
+		})),
+	)
+	requireSafeLarkSoftError(t, blocked, err, "Yvonne", "情感咨询客户")
+	require.Contains(t, string(blocked), `"code":"topic_customer_mismatch"`)
+	assert.Len(t, executor.snapshot(), 2, "mismatched customer write must be blocked before Feishu execution")
 }
 
 // Customer regression (Dev run 226): lark_skill_read succeeded, then the Agent
