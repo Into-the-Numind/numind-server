@@ -13,6 +13,8 @@ var codeStreamingTools = map[string]struct{}{
 	"run_python":       {},
 	"create_html":      {},
 	"create_docx":      {},
+	"create_xlsx":      {},
+	"create_pptx":      {},
 	"create_csv":       {},
 	"create_json":      {},
 	"create_text":      {},

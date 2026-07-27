@@ -42,10 +42,10 @@ func TestPlatformToolFactory_LoadTools(t *testing.T) {
 	// (removed: IDOR — read any user's profile by LLM-supplied id) = 11.
 	// v2 marketplace: +1 load_skill.
 	// V1.5 Track 4 task 4.2/4.3/4.9: +4 create + 1 chart + 1 run_python = +6.
-	// agent-output-ux-followup3 BE-2: +1 create_docx.
-	// Total base tool count: 11 + 1 + 6 + 1 = 19.
-	assert.Len(t, tools, 19)
-	assert.Len(t, metadata, 19)
+	// Native standard Office tools: create_docx/create_xlsx/create_pptx = +3.
+	// Total base tool count: 11 + 1 + 6 + 3 = 21.
+	assert.Len(t, tools, 21)
+	assert.Len(t, metadata, 21)
 	expected := []string{
 		"kb_search",
 		"document_generate",
@@ -63,7 +63,9 @@ func TestPlatformToolFactory_LoadTools(t *testing.T) {
 		"create_html",
 		"create_json",
 		"create_text",
-		"create_docx", // agent-output-ux-followup3 BE-2
+		"create_docx",
+		"create_xlsx",
+		"create_pptx",
 		"create_png_chart",
 		"run_python",
 	}
@@ -79,13 +81,12 @@ func TestPlatformToolFactory_LoadTools_WithDS_22Tools(t *testing.T) {
 	f := NewPlatformToolFactory(nil, ds)
 	tools, metadata, err := f.LoadTools(context.Background())
 	require.NoError(t, err)
-	// V1.5 + v2 marketplace + Track 4: base count is now 19 (11 + load_skill + 4 create
-	// + create_docx + chart + run_python; learner_data_query removed for IDOR); with ds,
-	// memory_write + memory_read + current-user xhs_note_list are appended → total 22.
-	assert.Len(t, tools, 22, "non-nil ds should produce 22 tools (19 base + memory tools + xhs_note_list)")
-	assert.Len(t, metadata, 22, "non-nil ds should produce 22 metadata entries")
+	// Base count is now 21; with ds, memory_write + memory_read +
+	// current-user xhs_note_list are appended → total 24.
+	assert.Len(t, tools, 24, "non-nil ds should produce 24 tools (21 base + memory tools + xhs_note_list)")
+	assert.Len(t, metadata, 24, "non-nil ds should produce 24 metadata entries")
 
-	// Verify the first 19 are unchanged.
+	// Verify the first 21 are unchanged.
 	baseExpected := []string{
 		"kb_search",
 		"document_generate",
@@ -104,6 +105,8 @@ func TestPlatformToolFactory_LoadTools_WithDS_22Tools(t *testing.T) {
 		"create_json",
 		"create_text",
 		"create_docx",
+		"create_xlsx",
+		"create_pptx",
 		"create_png_chart",
 		"run_python",
 	}
@@ -114,12 +117,12 @@ func TestPlatformToolFactory_LoadTools_WithDS_22Tools(t *testing.T) {
 	require.True(t, ok)
 	require.NotNil(t, fileReader.attachmentStore, "production factory must wire the canonical attachment cache")
 
-	// Verify memory tools are appended at indices 19 and 20.
-	assert.Equal(t, "memory_write", tools[19].Name(), "tools[19] should be memory_write")
-	assert.Equal(t, "memory_read", tools[20].Name(), "tools[20] should be memory_read")
-	assert.Equal(t, "xhs_note_list", tools[21].Name(), "tools[21] should be xhs_note_list")
-	assert.True(t, tools[21].IsReadOnly())
-	assert.True(t, tools[21].IsSearchOrReadCommand())
+	// Verify memory tools are appended at indices 21 and 22.
+	assert.Equal(t, "memory_write", tools[21].Name(), "tools[21] should be memory_write")
+	assert.Equal(t, "memory_read", tools[22].Name(), "tools[22] should be memory_read")
+	assert.Equal(t, "xhs_note_list", tools[23].Name(), "tools[23] should be xhs_note_list")
+	assert.True(t, tools[23].IsReadOnly())
+	assert.True(t, tools[23].IsSearchOrReadCommand())
 }
 
 func TestPlatformToolFactory_LoadTools_WithDS_Metadata14(t *testing.T) {
@@ -128,26 +131,26 @@ func TestPlatformToolFactory_LoadTools_WithDS_Metadata14(t *testing.T) {
 	f := NewPlatformToolFactory(nil, ds)
 	_, metadata, err := f.LoadTools(context.Background())
 	require.NoError(t, err)
-	// V1.5 + v2 marketplace + Track 4 + BE-2 + XHS: total is 22.
-	require.Len(t, metadata, 22)
+	// V1.5 + v2 marketplace + Track 4 + native Office + XHS: total is 24.
+	require.Len(t, metadata, 24)
 
-	// memory_write metadata at index 19.
-	mw := metadata[19]
+	// memory_write metadata at index 21.
+	mw := metadata[21]
 	assert.Equal(t, "memory_write", mw.ToolName)
 	assert.Equal(t, "记忆写入", mw.DisplayName)
 	assert.Equal(t, "platform", mw.Source)
 	assert.Equal(t, "记忆", mw.Category)
 	assert.Equal(t, "moderate", mw.RiskLevel)
 
-	// memory_read metadata at index 20.
-	mr := metadata[20]
+	// memory_read metadata at index 22.
+	mr := metadata[22]
 	assert.Equal(t, "memory_read", mr.ToolName)
 	assert.Equal(t, "记忆读取", mr.DisplayName)
 	assert.Equal(t, "platform", mr.Source)
 	assert.Equal(t, "记忆", mr.Category)
 	assert.Equal(t, "", mr.RiskLevel, "memory_read has no risk level")
 
-	xhs := metadata[21]
+	xhs := metadata[23]
 	assert.Equal(t, "xhs_note_list", xhs.ToolName)
 	assert.Equal(t, "读取小红书选题库", xhs.DisplayName)
 	assert.Equal(t, "platform", xhs.Source)

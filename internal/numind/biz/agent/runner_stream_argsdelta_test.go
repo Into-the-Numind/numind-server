@@ -123,7 +123,7 @@ func TestConsumeEinoStream_NoArgsDeltaForNonCodeTool(t *testing.T) {
 
 // TestIsCodeStreamingTool pins the allowlist membership.
 func TestIsCodeStreamingTool(t *testing.T) {
-	in := []string{"run_python", "create_html", "create_docx", "create_csv", "create_json", "create_text", "create_png_chart"}
+	in := []string{"run_python", "create_html", "create_docx", "create_xlsx", "create_pptx", "create_csv", "create_json", "create_text", "create_png_chart"}
 	for _, n := range in {
 		assert.Truef(t, isCodeStreamingTool(n), "%s should be allowlisted", n)
 	}
