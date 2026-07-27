@@ -58,7 +58,10 @@ func installAdminRouters(g *gin.Engine) error {
 
 	billingCtrl := admin_billing.New(store.S)
 
-	b := biz.NewBiz(store.S)
+	b := biz.B
+	if b == nil {
+		b = biz.NewBiz(store.S)
+	}
 	sopCtrl := admin_sop.NewSopController(b.Sop())
 	adminCreditCtrl := admin_credit.New(b.Credit(), store.S)
 	adminMembershipSvc := membership.NewMembershipService(store.S.DB())

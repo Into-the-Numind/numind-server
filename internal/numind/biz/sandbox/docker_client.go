@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os/exec"
@@ -49,6 +50,16 @@ type DockerClient interface {
 // the startup reaper can find and destroy orphans left by a previous process
 // run. Format is "key=value" as docker --label / --filter label= expects.
 const SandboxContainerLabel = "numind.sandbox=1"
+
+// SandboxContainerOwnerLabelKey stores the owning numind-server container /
+// process identity. Startup cleanup uses it to avoid deleting sandbox
+// containers that belong to another live pool in the same Docker daemon.
+const SandboxContainerOwnerLabelKey = "numind.sandbox.owner"
+
+// SandboxContainerOwnerBootLabelKey stores this numind-server process boot id.
+// It lets a restarted process in the same Docker container reap stale children
+// from its previous boot while still keeping peer pools in the current boot.
+const SandboxContainerOwnerBootLabelKey = "numind.sandbox.owner_boot"
 
 // SpawnConfig is the set of docker run flags BuildSpawnConfig assembles
 // from SandboxConfig + V5 ADR Q2 hardening list (see security.go).
@@ -96,6 +107,7 @@ type InspectResult struct {
 	Status    string // "running" | "exited" | "dead" | ...
 	ExitCode  int
 	OOMKilled bool
+	Labels    map[string]string
 }
 
 // dockerBinary returns the docker CLI binary name; var so tests can override.
@@ -266,27 +278,36 @@ func (c *dockerCLIClient) Destroy(ctx context.Context, containerID string) error
 	return nil
 }
 
-// Inspect calls "docker inspect" with a Go template to extract the three
-// fields the Pool / hooks need.
+// Inspect calls "docker inspect" and extracts the fields the Pool / hooks need.
 func (c *dockerCLIClient) Inspect(ctx context.Context, containerID string) (InspectResult, error) {
 	cmd := exec.CommandContext(ctx, dockerBinary,
 		"inspect",
-		"--format", "{{.State.Status}} {{.State.ExitCode}} {{.State.OOMKilled}}",
+		"--format", "{{json .}}",
 		containerID,
 	)
 	out, err := cmd.Output()
 	if err != nil {
 		return InspectResult{}, fmt.Errorf("docker inspect: %w", err)
 	}
-	parts := strings.Fields(strings.TrimSpace(string(out)))
-	if len(parts) < 3 {
-		return InspectResult{}, fmt.Errorf("docker inspect: unexpected output %q", string(out))
+
+	var raw struct {
+		State struct {
+			Status    string `json:"Status"`
+			ExitCode  int    `json:"ExitCode"`
+			OOMKilled bool   `json:"OOMKilled"`
+		} `json:"State"`
+		Config struct {
+			Labels map[string]string `json:"Labels"`
+		} `json:"Config"`
 	}
-	exit, _ := strconv.Atoi(parts[1])
+	if err := json.Unmarshal(bytes.TrimSpace(out), &raw); err != nil {
+		return InspectResult{}, fmt.Errorf("docker inspect: decode: %w", err)
+	}
 	return InspectResult{
-		Status:    parts[0],
-		ExitCode:  exit,
-		OOMKilled: parts[2] == "true",
+		Status:    raw.State.Status,
+		ExitCode:  raw.State.ExitCode,
+		OOMKilled: raw.State.OOMKilled,
+		Labels:    raw.Config.Labels,
 	}, nil
 }
 

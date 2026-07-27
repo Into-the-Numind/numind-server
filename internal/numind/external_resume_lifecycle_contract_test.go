@@ -39,3 +39,18 @@ func TestProductionHTTPRoutesAndReclaimerShareOneBizInstance(t *testing.T) {
 		}
 	}
 }
+
+func TestProductionControllersReuseEntrypointBizWhenAvailable(t *testing.T) {
+	for _, name := range []string{
+		"admin_router.go",
+		"controller/v1/user/user.go",
+	} {
+		raw, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), "b := biz.B") {
+			t.Fatalf("%s must prefer the entrypoint-owned Biz instead of creating an independent sandbox pool", name)
+		}
+	}
+}

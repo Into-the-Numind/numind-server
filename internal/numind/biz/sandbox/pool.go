@@ -2,6 +2,9 @@ package sandbox
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -74,12 +77,14 @@ func NewPool(cfg SandboxConfig, dc DockerClient, logger Logger) Pool {
 		return &disabledPool{dc: dc}
 	}
 	p := &agentSandboxPool{
-		cfg:      cfg,
-		dc:       dc,
-		logger:   logger,
-		warm:     make(chan *Session, cfg.PoolMin*2),
-		closeCh:  make(chan struct{}),
-		spawnReq: make(chan struct{}, cfg.PoolMin*4),
+		cfg:         cfg,
+		dc:          dc,
+		logger:      logger,
+		ownerID:     defaultSandboxOwnerID(),
+		ownerBootID: currentSandboxOwnerBootID(),
+		warm:        make(chan *Session, cfg.PoolMin*2),
+		closeCh:     make(chan struct{}),
+		spawnReq:    make(chan struct{}, cfg.PoolMin*4),
 	}
 	go p.spawnWorker()
 	// Reap orphans from a previous process run, THEN prime the warm pool — both
@@ -127,6 +132,11 @@ type agentSandboxPool struct {
 	cfg    SandboxConfig
 	dc     DockerClient
 	logger Logger
+	// ownerID identifies the numind-server container/process that owns containers
+	// created by this pool. Multiple Biz instances in the same process share the
+	// same owner and must not reap each other's still-live warm containers.
+	ownerID     string
+	ownerBootID string
 
 	// warm holds ready-to-borrow sessions. Buffered to absorb spike
 	// spawns; size = PoolMin * 2.
@@ -235,7 +245,12 @@ func (p *agentSandboxPool) reapOrphans() {
 		return
 	}
 	reaped := 0
+	skippedLiveOwners := 0
 	for _, id := range ids {
+		if p.shouldKeepOwnedByLivePeer(ctx, id) {
+			skippedLiveOwners++
+			continue
+		}
 		if err := p.dc.Destroy(ctx, id); err != nil {
 			p.logger.Warnw("sandbox.Pool.reapOrphans: destroy failed", "container_id", id, "error", err)
 			continue
@@ -243,7 +258,23 @@ func (p *agentSandboxPool) reapOrphans() {
 		reaped++
 	}
 	p.logger.Infow("sandbox.Pool.reapOrphans: cleaned orphaned sandbox containers",
-		"found", len(ids), "reaped", reaped)
+		"found", len(ids), "reaped", reaped, "skipped_live_owners", skippedLiveOwners)
+}
+
+func (p *agentSandboxPool) shouldKeepOwnedByLivePeer(ctx context.Context, containerID string) bool {
+	inspect, err := p.dc.Inspect(ctx, containerID)
+	if err != nil {
+		return false
+	}
+	ownerID := inspect.Labels[SandboxContainerOwnerLabelKey]
+	if ownerID == "" {
+		return false
+	}
+	if ownerID == p.ownerID {
+		return inspect.Labels[SandboxContainerOwnerBootLabelKey] == p.ownerBootID
+	}
+	ownerInspect, err := p.dc.Inspect(ctx, ownerID)
+	return err == nil && ownerInspect.Status == "running"
 }
 
 // Return destroys the container and requests a spawn-replacement. Safe to
@@ -345,6 +376,8 @@ func (p *agentSandboxPool) spawnOne() bool {
 		seccompPath = ""
 	}
 	spawnCfg := BuildSpawnConfig(p.cfg, seccompPath)
+	spawnCfg.Labels = append(spawnCfg.Labels, SandboxContainerOwnerLabelKey+"="+p.ownerID)
+	spawnCfg.Labels = append(spawnCfg.Labels, SandboxContainerOwnerBootLabelKey+"="+p.ownerBootID)
 	if missing := ValidateSecurityChecklist(spawnCfg); len(missing) > 0 {
 		p.logger.Warnw("sandbox.Pool: security checklist missing items",
 			"missing", missing)
@@ -383,6 +416,47 @@ func (p *agentSandboxPool) spawnOne() bool {
 		_ = p.dc.Destroy(destroyCtx, id)
 		return false
 	}
+}
+
+func defaultSandboxOwnerID() string {
+	hostname, err := os.Hostname()
+	if err != nil || strings.TrimSpace(hostname) == "" {
+		hostname = fmt.Sprintf("pid-%d", os.Getpid())
+	}
+	return sanitizeDockerLabelValue(hostname)
+}
+
+var sandboxOwnerBootID = sanitizeDockerLabelValue(fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano()))
+
+func currentSandboxOwnerBootID() string {
+	return sandboxOwnerBootID
+}
+
+func sanitizeDockerLabelValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "unknown"
+	}
+	var b strings.Builder
+	b.Grow(len(value))
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	if b.Len() == 0 {
+		return "unknown"
+	}
+	return b.String()
 }
 
 func containsAny(haystack []string, needles []string) bool {

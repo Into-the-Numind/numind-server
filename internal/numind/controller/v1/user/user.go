@@ -14,7 +14,11 @@ type UserController struct {
 
 // New 创建一个 user controller.
 func New(ds store.IStore) *UserController {
-	return &UserController{b: biz.NewBiz(ds)}
+	b := biz.B
+	if b == nil {
+		b = biz.NewBiz(ds)
+	}
+	return &UserController{b: b}
 }
 
 // WithMembershipSvc attaches a MembershipService to the controller.

@@ -111,10 +111,20 @@ func (m *MockDockerClient) Destroy(_ context.Context, containerID string) error 
 func (m *MockDockerClient) Inspect(_ context.Context, containerID string) (InspectResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.containers[containerID]; !ok {
-		return InspectResult{Status: "exited", ExitCode: 0}, nil
+	labels := append([]string(nil), m.labels[containerID]...)
+	labelMap := make(map[string]string, len(labels))
+	for _, label := range labels {
+		key, value, ok := strings.Cut(label, "=")
+		if !ok {
+			labelMap[label] = ""
+			continue
+		}
+		labelMap[key] = value
 	}
-	return InspectResult{Status: "running", ExitCode: 0}, nil
+	if _, ok := m.containers[containerID]; !ok {
+		return InspectResult{Status: "exited", ExitCode: 0, Labels: labelMap}, nil
+	}
+	return InspectResult{Status: "running", ExitCode: 0, Labels: labelMap}, nil
 }
 
 // RegisterExecResult pre-cans a particular (containerID, cmd) tuple so
