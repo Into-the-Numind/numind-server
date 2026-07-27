@@ -1,5 +1,28 @@
 schema_version: '2.0'
 features:
+- id: sandbox-dev-single-user-failure
+  ndf_version: '3.0'
+  description: Fix Dev Agent sandbox failures seen by a single invited customer by preventing duplicate Biz-owned sandbox pools from deleting each other's warm containers.
+  classification_reason: 'Hotfix: customer-reported product bug in Dev, no DB schema, no new API endpoint, no new external service, focused backend sandbox lifecycle and Biz wiring change, non-payment/non-permission business logic.'
+  last_updated_by: ai-h2-verified
+  last_updated_at: '2026-07-27T13:45:19+0800'
+  last_verified: '2026-07-27T13:45:19+0800'
+  created_at: '2026-07-27T13:25:51+0800'
+  track: hotfix
+  stage: H2
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: fix/sandbox-dev-single-user-failure}
+  worktrees: {numind-server: /private/tmp/wt-sandbox-dev-single-user-failure-numind-server}
+  progress: {total_tasks: 3, completed_tasks: 2, reviewed_tasks: 1, current_task: 'Ready for H3 merge and Dev deployment'}
+  artifacts:
+    h2_verification: .ndf/decisions/sandbox-dev-single-user-failure/0001-h2-verification.md
+  decisions:
+  - 'H1 diagnosis: Dev run 313 hit a sandbox pool whose warm container IDs had already been destroyed by a second Biz-created peer pool in the same backend process; this explains a single-user failure without user-level concurrency.'
+  - 'H1 RED: commit 9544c82c reproduces peer pool startup reaping live warm containers owned by another active pool.'
+  - 'H1 fix: sandbox containers now carry owner and boot labels, startup cleanup preserves live same-boot peer pools, and user/admin controllers prefer the entrypoint-owned Biz instead of creating hidden extra sandbox pools.'
+  - 'H2 verification: focused sandbox/Agent/document tests pass, full go test ./... passes after isolating one transient external-model 403 rerun, and task lint passes.'
+  blockers: []
 - id: sandbox-tool-availability
   ndf_version: '3.0'
   description: Stabilize Agent sandbox-backed file/code tools so disabled runtimes do not expose create_docx/run_python/bash_exec and busy warm pools elastically refill instead of surfacing "sandbox unavailable" to users.
