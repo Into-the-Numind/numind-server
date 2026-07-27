@@ -1,5 +1,30 @@
 schema_version: '2.0'
 features:
+- id: standard-office-output-tools
+  ndf_version: '3.0'
+  description: Move standard Office file generation off the sandbox path by making create_docx a native backend tool and adding native standard create_xlsx/create_pptx tools, while keeping complex Office work on load_skill -> run_python.
+  classification_reason: 'Standard: changes the Agent platform tool contract, tool registration, system guidance, sandbox planning behavior, and Office artifact generation across more than three files. No DB schema or new HTTP endpoint.'
+  last_updated_by: ai-s3-planned
+  last_updated_at: '2026-07-27T15:23:11+0800'
+  created_at: '2026-07-27T15:20:10+0800'
+  track: standard
+  stage: S3
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: feature/standard-office-output-tools}
+  worktrees: {numind-server: /private/tmp/wt-standard-office-output-tools-numind-server}
+  progress: {total_tasks: 7, completed_tasks: 3, reviewed_tasks: 0, current_task: 'Implement native standard Office tools with tests'}
+  artifacts:
+    requirement: requirements/standard-office-output-tools.md
+    proposal: proposals/standard-office-output-tools-proposal.md
+    spec: docs/superpowers/specs/2026-07-27-standard-office-output-tools-design.md
+    plan: docs/superpowers/plans/2026-07-27-standard-office-output-tools.md
+  decisions:
+  - 'S0: Standard file generation should not consume sandbox capacity when the backend can deterministically generate the artifact itself.'
+  - 'S1: keep complex/long-tail Office work on load_skill -> run_python, but move standard docx/xlsx/pptx creation to native platform tools.'
+  - 'S2: implement minimal valid Office Open XML emitters in Go using archive/zip/xml only; avoid new external services and avoid running model-authored code.'
+  - 'S3: ship backend-only tests first, then native emitters, registry/prompt updates, full Go gates, NDF merge, and Dev deployment; Prod remains out of scope.'
+  blockers: []
 - id: sandbox-dev-single-user-failure
   ndf_version: '3.0'
   description: Fix Dev Agent sandbox failures seen by a single invited customer by preventing duplicate Biz-owned sandbox pools from deleting each other's warm containers.
