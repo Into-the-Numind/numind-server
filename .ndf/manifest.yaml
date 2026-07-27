@@ -4,16 +4,18 @@ features:
   ndf_version: '3.0'
   description: Move standard Office file generation off the sandbox path by making create_docx a native backend tool and adding native standard create_xlsx/create_pptx tools, while keeping complex Office work on load_skill -> run_python.
   classification_reason: 'Standard: changes the Agent platform tool contract, tool registration, system guidance, sandbox planning behavior, and Office artifact generation across more than three files. No DB schema or new HTTP endpoint.'
-  last_updated_by: ai-s5-verified
-  last_updated_at: '2026-07-27T15:49:01+0800'
+  last_updated_by: ai-s6-dev-deployed
+  last_updated_at: '2026-07-27T15:58:25+0800'
+  last_verified: '2026-07-27T15:58:25+0800'
   created_at: '2026-07-27T15:20:10+0800'
   track: standard
-  stage: S5
+  stage: S6
   status: active
   repos: [numind-server]
-  branches: {numind-server: feature/standard-office-output-tools}
-  worktrees: {numind-server: /private/tmp/wt-standard-office-output-tools-numind-server}
-  progress: {total_tasks: 7, completed_tasks: 5, reviewed_tasks: 1, current_task: 'Commit implementation, merge through ndf-done, then deploy to Dev'}
+  branches: {numind-server: develop}
+  worktrees: {}
+  progress: {total_tasks: 7, completed_tasks: 6, reviewed_tasks: 1, current_task: 'Dev deployed; user acceptance and Prod release decision pending'}
+  deployed: 'dev server develop-5424868c (registry sha256:70c983989c0be80dcc60144def6380b0b25b283e88e84ead51c741bab1be5e38; runtime image ccr.ccs.tencentyun.com/youshunumind/numind-server:develop-5424868c)'
   artifacts:
     requirement: requirements/standard-office-output-tools.md
     proposal: proposals/standard-office-output-tools-proposal.md
@@ -21,6 +23,7 @@ features:
     plan: docs/superpowers/plans/2026-07-27-standard-office-output-tools.md
     s4_review: .ndf/decisions/standard-office-output-tools/0001-s4-implementation-review.md
     s5_verification: .ndf/decisions/standard-office-output-tools/0002-s5-verification.md
+    dev_acceptance: .ndf/decisions/standard-office-output-tools/0003-s6-dev-deployment.md
   decisions:
   - 'S0: Standard file generation should not consume sandbox capacity when the backend can deterministically generate the artifact itself.'
   - 'S1: keep complex/long-tail Office work on load_skill -> run_python, but move standard docx/xlsx/pptx creation to native platform tools.'
@@ -28,6 +31,7 @@ features:
   - 'S3: ship backend-only tests first, then native emitters, registry/prompt updates, full Go gates, NDF merge, and Dev deployment; Prod remains out of scope.'
   - 'S4: implementation review passed; standard docx/xlsx/pptx now use native Go emitters, create_docx is no longer sandbox-isolated, and complex Office generation remains on load_skill -> run_python.'
   - 'S5: focused Agent tests, Agent package tests, skill contract tests, full go test ./..., and task lint passed.'
+  - 'S6 Dev: ndf-done merged/pushed develop 5424868c; image develop-5424868c is healthy on Dev; public healthz returns ok; runtime metadata marks create_docx/create_xlsx/create_pptx as requires_sandbox=false and run_python/bash_exec as requires_sandbox=true. Prod untouched.'
   blockers: []
 - id: sandbox-dev-single-user-failure
   ndf_version: '3.0'
