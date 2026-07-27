@@ -48,6 +48,7 @@ func (m *mockSandboxPool) Return(_ *sandbox.Session, _ int, _ string) error {
 func (m *mockSandboxPool) Close() error                       { return nil }
 func (m *mockSandboxPool) Size() int                          { return 0 }
 func (m *mockSandboxPool) DockerClient() sandbox.DockerClient { return m.dc }
+func (m *mockSandboxPool) IsEnabled() bool                    { return true }
 
 // ===========================================================================
 // mock IAgentSandboxSessionStore

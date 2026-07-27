@@ -57,6 +57,17 @@ func (m *SandboxHookManager) DockerClient() sandbox.DockerClient {
 	return m.pool.DockerClient()
 }
 
+// SandboxRuntimeEnabled reports whether sandbox-backed tools can be planned for
+// this process. It is intentionally cheaper than a Borrow health check: disabled
+// runtime is a stable config state, while transient pool exhaustion is handled by
+// Borrow's wait/elastic-spawn path.
+func (m *SandboxHookManager) SandboxRuntimeEnabled() bool {
+	if m == nil || m.pool == nil {
+		return false
+	}
+	return m.pool.IsEnabled()
+}
+
 // SandboxSessionFor returns the in-flight session for (runID, toolName), or
 // nil. Used by bash_exec.Execute via sandboxSessionForCurrentCall.
 func (m *SandboxHookManager) SandboxSessionFor(runID uint64, toolName string) *sandbox.Session {
