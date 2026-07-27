@@ -795,27 +795,92 @@ func TestLarkExecuteBlocksAgent3AppendWhenProfileAndTargetCustomersMismatch(t *t
 
 	profileFetch, err := tool.Execute(
 		larkPersonalWorkspaceContext(21, runID, "tc-profile-fetch"),
-		ToolInput(jsonString(map[string]any{"argv": docsFetchArgv(pipelineProfile)})),
+		ToolInput(jsonString(map[string]any{"argv": []string{"docs", "+fetch", "--doc", pipelineProfile}})),
 	)
 	require.NoError(t, err)
 	assert.NotContains(t, string(profileFetch), "ERROR")
 
 	targetFetch, err := tool.Execute(
 		larkPersonalWorkspaceContext(21, runID, "tc-topics-fetch"),
-		ToolInput(jsonString(map[string]any{"argv": docsFetchArgv(pipelineTopics)})),
+		ToolInput(jsonString(map[string]any{"argv": []string{"docs", "+fetch", "--doc", pipelineTopics}})),
 	)
 	require.NoError(t, err)
 	assert.NotContains(t, string(targetFetch), "ERROR")
+	stateValue, ok := larkTopicGuardRuns.Load(runID)
+	require.True(t, ok, "successful profile/topic fetches must arm the run guard")
+	state := stateValue.(*larkTopicGuardState)
+	state.mu.Lock()
+	assert.Equal(t, "Yvonne", state.profileCustomer)
+	assert.Equal(t, "情感咨询客户", state.topicsCustomers[pipelineTopics])
+	state.mu.Unlock()
 
 	blocked, err := tool.Execute(
 		larkPersonalWorkspaceContext(21, runID, "tc-append"),
 		ToolInput(jsonString(map[string]any{
-			"argv": docsUpdateArgv(pipelineTopics, "append", topicRoundContent(pipelineRoundNew, 2), ""),
+			"argv": []string{
+				"docs", "+update", "--doc", pipelineTopics, "--command", "append",
+				"--content", topicRoundContent(pipelineRoundNew, 2),
+			},
 		})),
 	)
 	requireSafeLarkSoftError(t, blocked, err, "Yvonne", "情感咨询客户")
 	require.Contains(t, string(blocked), `"code":"topic_customer_mismatch"`)
 	assert.Len(t, executor.snapshot(), 2, "mismatched customer write must be blocked before Feishu execution")
+}
+
+func TestLarkExecuteBlocksAgent3AppendWhenTargetTopicDocHasNoCustomerTitle(t *testing.T) {
+	runID := uint64(731002)
+	larkExecuteRetryClearRun(runID)
+	t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+
+	executor := &scriptedLarkExecuteExecutor{steps: []scriptedLarkExecuteStep{
+		{result: &feishu.OperationResult{
+			OperationID: "op-profile-fetch",
+			State:       model.FeishuOperationSucceeded,
+			Data: json.RawMessage(jsonString(map[string]any{"document": map[string]any{
+				"document_id": pipelineProfile,
+				"content":     profileContent("Yvonne"),
+			}})),
+		}},
+		{result: &feishu.OperationResult{
+			OperationID: "op-topics-fetch",
+			State:       model.FeishuOperationSucceeded,
+			Data: json.RawMessage(jsonString(map[string]any{"document": map[string]any{
+				"document_id": pipelineTopics,
+				"content":     topicsManagedHeader + "\n" + topicRoundContent(pipelineRoundOld, 1),
+			}})),
+		}},
+		{result: &feishu.OperationResult{
+			OperationID: "op-append-should-not-run",
+			State:       model.FeishuOperationSucceeded,
+			Data:        json.RawMessage(`{"revision_id":3}`),
+		}},
+	}}
+	tool := &larkExecuteTool{executor: executor}
+
+	_, err := tool.Execute(
+		larkPersonalWorkspaceContext(21, runID, "tc-profile-fetch"),
+		ToolInput(jsonString(map[string]any{"argv": []string{"docs", "+fetch", "--doc", pipelineProfile}})),
+	)
+	require.NoError(t, err)
+	_, err = tool.Execute(
+		larkPersonalWorkspaceContext(21, runID, "tc-topics-fetch"),
+		ToolInput(jsonString(map[string]any{"argv": []string{"docs", "+fetch", "--doc", pipelineTopics}})),
+	)
+	require.NoError(t, err)
+
+	blocked, err := tool.Execute(
+		larkPersonalWorkspaceContext(21, runID, "tc-append"),
+		ToolInput(jsonString(map[string]any{
+			"argv": []string{
+				"docs", "+update", "--doc", pipelineTopics, "--command", "append",
+				"--content", topicRoundContent(pipelineRoundNew, 2),
+			},
+		})),
+	)
+	requireSafeLarkSoftError(t, blocked, err, "Yvonne")
+	require.Contains(t, string(blocked), `"code":"topic_customer_mismatch"`)
+	assert.Len(t, executor.snapshot(), 2, "topic writes to customerless managed docs must be blocked before Feishu execution")
 }
 
 // Customer regression (Dev run 226): lark_skill_read succeeded, then the Agent
