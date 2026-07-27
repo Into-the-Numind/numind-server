@@ -51,6 +51,11 @@ type Pool interface {
 	// for sandbox.ExecCommand calls — without forcing callers to thread
 	// dc through factory wires.
 	DockerClient() DockerClient
+
+	// IsEnabled reports whether this pool represents a runtime that can
+	// actually borrow sandbox containers. Disabled pools return false so callers
+	// can avoid exposing sandbox-only tools to the Agent.
+	IsEnabled() bool
 }
 
 // NewPool constructs a Pool. If cfg.Backend == BackendDisabled (the
@@ -112,6 +117,7 @@ func (p *disabledPool) Return(_ *Session, _ int, _ string) error { return nil }
 func (p *disabledPool) Close() error                             { return nil }
 func (p *disabledPool) Size() int                                { return 0 }
 func (p *disabledPool) DockerClient() DockerClient               { return p.dc }
+func (p *disabledPool) IsEnabled() bool                          { return false }
 
 // ===========================================================================
 // agentSandboxPool (real Docker-backed pool)
@@ -137,6 +143,7 @@ type agentSandboxPool struct {
 var _ Pool = (*agentSandboxPool)(nil)
 
 func (p *agentSandboxPool) DockerClient() DockerClient { return p.dc }
+func (p *agentSandboxPool) IsEnabled() bool            { return true }
 
 // Borrow waits up to cfg.PoolMaxWaitMs for a warm container.
 // If none arrive in time, returns ErrPoolExhausted.
@@ -157,6 +164,10 @@ func (p *agentSandboxPool) Borrow(ctx context.Context) (*Session, error) {
 	defer timer.Stop()
 
 	for {
+		if len(p.warm) == 0 {
+			p.requestSpawn()
+		}
+
 		select {
 		case sess, ok := <-p.warm:
 			if !ok {
@@ -204,10 +215,7 @@ func (p *agentSandboxPool) discardDead(sess *Session) {
 	destroyCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = p.dc.Destroy(destroyCtx, sess.ContainerID)
-	select {
-	case p.spawnReq <- struct{}{}:
-	default:
-	}
+	p.requestSpawn()
 }
 
 // reapOrphans destroys sandbox containers left behind by a previous process
@@ -266,13 +274,17 @@ func (p *agentSandboxPool) Return(sess *Session, exitCode int, errMsg string) er
 	}
 
 	// Non-blocking spawn request. The worker will absorb the signal.
+	p.requestSpawn()
+	return nil
+}
+
+func (p *agentSandboxPool) requestSpawn() {
 	select {
 	case p.spawnReq <- struct{}{}:
 	default:
 		// channel is at capacity — pool is already plenty saturated;
 		// skip the spawn request.
 	}
-	return nil
 }
 
 // Close drains the warm pool and signals the worker to exit.
@@ -359,6 +371,13 @@ func (p *agentSandboxPool) spawnOne() bool {
 		return true
 	case <-p.closeCh:
 		// Pool closing — destroy the orphan container.
+		destroyCtx, dcancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer dcancel()
+		_ = p.dc.Destroy(destroyCtx, id)
+		return false
+	default:
+		// Demand spikes can enqueue more spawn requests than the warm channel can
+		// hold. Do not let the worker block forever holding an extra container.
 		destroyCtx, dcancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer dcancel()
 		_ = p.dc.Destroy(destroyCtx, id)

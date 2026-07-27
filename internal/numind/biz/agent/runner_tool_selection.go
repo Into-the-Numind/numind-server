@@ -21,14 +21,29 @@ func selectToolsForRun(registry AgentToolRegistry, _ []string, _ bool) []FullToo
 		return nil
 	}
 	fullConfig := FullyEnabledToolConfig()
+	sandboxEnabled := sandboxRuntimeEnabledForToolSelection()
 	selected := make([]FullTool, 0)
 	for _, tool := range registry.ListAllTools() {
 		if !tool.IsEnabled(fullConfig) {
 			continue
 		}
+		if IsSandboxIsolatedExecTool(tool.Name()) && !sandboxEnabled {
+			continue
+		}
 		selected = append(selected, tool)
 	}
 	return selected
+}
+
+func sandboxRuntimeEnabledForToolSelection() bool {
+	m := DefaultHookManager()
+	if m == nil {
+		// Unit tests and legacy runners can construct a registry without wiring
+		// the process-global sandbox hook. Production biz.NewBiz always installs
+		// one, so keep nil as backward-compatible "unknown, do not filter".
+		return true
+	}
+	return m.SandboxRuntimeEnabled()
 }
 
 // enforceExplicitToolAllowlist is retained until all lifecycle callers drop the
