@@ -118,6 +118,26 @@ func TestPool_BorrowScalesWhenWarmPoolBusy(t *testing.T) {
 	}
 }
 
+func TestNewPool_DoesNotReapLivePeerPoolContainers(t *testing.T) {
+	cfg := DefaultSandboxConfig
+	cfg.Backend = BackendDocker
+	cfg.PoolMin = 2
+	cfg.PoolMaxWaitMs = 500
+
+	mock := NewMockDockerClient()
+	first := NewPool(cfg, mock, nil)
+	t.Cleanup(func() { _ = first.Close() })
+	waitForSize(t, first, 2, 2*time.Second)
+
+	second := NewPool(cfg, mock, nil)
+	t.Cleanup(func() { _ = second.Close() })
+	waitForSize(t, second, 2, 2*time.Second)
+
+	if got := mock.CountAliveContainers(); got < 4 {
+		t.Fatalf("second pool reaped live containers owned by the first pool; alive=%d, want at least 4", got)
+	}
+}
+
 func TestPool_BorrowCtxCanceled(t *testing.T) {
 	cfg := DefaultSandboxConfig
 	cfg.Backend = BackendDocker
