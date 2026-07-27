@@ -266,5 +266,6 @@ func (state *larkExecuteRetryState) addUnknownWriteFence(key string) {
 func larkExecuteRetryClearRun(runID uint64) {
 	if runID != 0 {
 		larkExecuteRetryRuns.Delete(runID)
+		larkExecuteTopicGuardClearRun(runID)
 	}
 }

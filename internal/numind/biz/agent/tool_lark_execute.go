@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
+	"sync"
+	"unicode/utf8"
 
 	"numind-server/internal/numind/biz/feishu"
 	"numind-server/internal/pkg/middleware"
@@ -96,6 +99,19 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 			remaining,
 		)
 	}
+	if larkExecuteTopicGuardBlocks(runID, normalizedCommand) {
+		exhausted := larkExecuteRetryRejected(retryState, retryAttempt)
+		attempts, remaining := larkExecuteRetryProgress(retryState)
+		if exhausted {
+			return larkWorkspaceCorrectionExhausted("选题规划目标文档与已读取客户画像不一致")
+		}
+		return larkWorkspaceCorrectableCommandError(
+			"topic_customer_mismatch",
+			"选题规划目标文档与已读取客户画像不一致，本次尚未访问飞书。请重新读取目标选题文档，确认客户名称一致；若不一致，请询问用户提供正确链接或创建客户专属文档。",
+			attempts,
+			remaining,
+		)
+	}
 
 	result, err := t.executor.Execute(ctx, feishu.ExecuteRequest{
 		UserID:         userID,
@@ -148,6 +164,9 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 	if !isLarkTerminalState(result.State) {
 		larkExecuteRetryFailed(retryState, retryAttempt)
 		return larkWorkspaceSoftError(larkWorkspaceErrorInvalidResult)
+	}
+	if result.State == model.FeishuOperationSucceeded {
+		larkExecuteTopicGuardObserve(runID, normalizedCommand, result.Data)
 	}
 	// The operation layer intentionally knows nothing about Agent-run replay
 	// state. Attach only the opaque exact-command digest at this final trusted
@@ -248,4 +267,196 @@ func larkWaitingYield(result *feishu.OperationResult, toolCallID string) (ToolRe
 		ExpiresAt:   action.ExpiresAt,
 	}
 	return nil, &yieldError{Payload: YieldPayload{ExternalAction: &external}}
+}
+
+const (
+	larkTopicGuardProfileBegin = "[有数AI受管区：客户画像｜契约 profile/v1｜开始]"
+	larkTopicGuardTopicsPrefix = "[有数AI受管文档：选题规划｜契约 topics"
+)
+
+var (
+	larkTopicGuardRuns          sync.Map // map[uint64]*larkTopicGuardState
+	larkTopicGuardPlanningTitle = regexp.MustCompile(`(?m)^#\s+(.+?)\s+选题规划\s*$`)
+)
+
+type larkTopicGuardState struct {
+	mu              sync.Mutex
+	profileCustomer string
+	topicsDocuments map[string]struct{}
+	topicsCustomers map[string]string
+}
+
+func larkExecuteTopicGuardObserve(runID uint64, command *feishu.NormalizedCommand, data json.RawMessage) {
+	if runID == 0 || command == nil || command.Path != "docs +fetch" || len(data) == 0 || !json.Valid(data) {
+		return
+	}
+	docArg := larkTopicGuardArgValue(command.Argv, "--doc")
+	docID, content := larkTopicGuardFetchDocument(data)
+	if content == "" {
+		return
+	}
+	state := larkTopicGuardStateForRun(runID)
+	if customer := larkTopicGuardProfileCustomer(content); customer != "" {
+		state.mu.Lock()
+		state.profileCustomer = customer
+		state.mu.Unlock()
+	}
+	if strings.Contains(content, larkTopicGuardTopicsPrefix) {
+		state.mu.Lock()
+		larkTopicGuardRecordTopicDocument(state, docArg, docID)
+		customer := larkTopicGuardTopicsCustomer(content)
+		if docArg != "" {
+			larkTopicGuardRecordTopicCustomer(state, docArg, customer)
+		}
+		if docID != "" {
+			larkTopicGuardRecordTopicCustomer(state, docID, customer)
+		}
+		state.mu.Unlock()
+	}
+}
+
+func larkExecuteTopicGuardBlocks(runID uint64, command *feishu.NormalizedCommand) bool {
+	if runID == 0 || command == nil || command.Path != "docs +update" {
+		return false
+	}
+	updateCommand := larkTopicGuardArgValue(command.Argv, "--command")
+	if updateCommand != "append" && updateCommand != "str_replace" &&
+		updateCommand != "block_replace" && updateCommand != "overwrite" {
+		return false
+	}
+	content := larkTopicGuardArgValue(command.Argv, "--content")
+	if !strings.Contains(content, larkTopicGuardTopicsPrefix) && !strings.Contains(content, "[有数AI轮次：") {
+		return false
+	}
+	value, ok := larkTopicGuardRuns.Load(runID)
+	if !ok {
+		return false
+	}
+	state := value.(*larkTopicGuardState)
+	target := larkTopicGuardArgValue(command.Argv, "--doc")
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	profileCustomer := state.profileCustomer
+	_, targetFetched := state.topicsDocuments[target]
+	targetCustomer := state.topicsCustomers[target]
+	if profileCustomer == "" || !targetFetched {
+		return false
+	}
+	if targetCustomer == "" {
+		return true
+	}
+	return profileCustomer != targetCustomer
+}
+
+func larkExecuteTopicGuardClearRun(runID uint64) {
+	if runID != 0 {
+		larkTopicGuardRuns.Delete(runID)
+	}
+}
+
+func larkTopicGuardStateForRun(runID uint64) *larkTopicGuardState {
+	value, _ := larkTopicGuardRuns.LoadOrStore(runID, &larkTopicGuardState{})
+	return value.(*larkTopicGuardState)
+}
+
+// larkTopicGuardRecordTopicDocument requires state.mu to be held.
+func larkTopicGuardRecordTopicDocument(state *larkTopicGuardState, docArg, docID string) {
+	if state.topicsDocuments == nil {
+		state.topicsDocuments = make(map[string]struct{})
+	}
+	if docArg != "" {
+		state.topicsDocuments[docArg] = struct{}{}
+	}
+	if docID != "" {
+		state.topicsDocuments[docID] = struct{}{}
+	}
+}
+
+// larkTopicGuardRecordTopicCustomer requires state.mu to be held.
+func larkTopicGuardRecordTopicCustomer(state *larkTopicGuardState, doc string, customer string) {
+	if doc == "" || customer == "" {
+		return
+	}
+	if state.topicsCustomers == nil {
+		state.topicsCustomers = make(map[string]string)
+	}
+	state.topicsCustomers[doc] = customer
+}
+
+func larkTopicGuardFetchDocument(data json.RawMessage) (docID, content string) {
+	var nested struct {
+		Document struct {
+			DocumentID string `json:"document_id"`
+			Content    string `json:"content"`
+		} `json:"document"`
+		DocumentID string `json:"document_id"`
+		Content    string `json:"content"`
+	}
+	if err := json.Unmarshal(data, &nested); err != nil {
+		return "", ""
+	}
+	docID = strings.TrimSpace(nested.Document.DocumentID)
+	content = nested.Document.Content
+	if docID == "" {
+		docID = strings.TrimSpace(nested.DocumentID)
+	}
+	if content == "" {
+		content = nested.Content
+	}
+	if !utf8.ValidString(content) {
+		return "", ""
+	}
+	return docID, content
+}
+
+func larkTopicGuardProfileCustomer(content string) string {
+	if !strings.Contains(content, larkTopicGuardProfileBegin) {
+		return ""
+	}
+	for _, line := range strings.Split(content, "\n") {
+		if !strings.Contains(line, "客户名称") && !strings.HasPrefix(strings.TrimSpace(line), "客户") {
+			continue
+		}
+		if index := strings.Index(line, "："); index >= 0 {
+			return larkTopicGuardNormalizeCustomer(line[index+len("："):])
+		}
+		if index := strings.Index(line, ":"); index >= 0 {
+			return larkTopicGuardNormalizeCustomer(line[index+1:])
+		}
+	}
+	return ""
+}
+
+func larkTopicGuardTopicsCustomer(content string) string {
+	if !strings.Contains(content, larkTopicGuardTopicsPrefix) {
+		return ""
+	}
+	match := larkTopicGuardPlanningTitle.FindStringSubmatch(content)
+	if len(match) != 2 {
+		return ""
+	}
+	return larkTopicGuardNormalizeCustomer(match[1])
+}
+
+func larkTopicGuardNormalizeCustomer(value string) string {
+	value = strings.TrimSpace(strings.Trim(value, "*"))
+	for _, separator := range []string{"（", "(", "，", ",", "：", ":"} {
+		if index := strings.Index(value, separator); index >= 0 {
+			value = value[:index]
+		}
+	}
+	return strings.TrimSpace(strings.Trim(value, "*"))
+}
+
+func larkTopicGuardArgValue(argv []string, flag string) string {
+	for index := 0; index < len(argv); index++ {
+		if argv[index] == flag && index+1 < len(argv) {
+			return strings.TrimSpace(argv[index+1])
+		}
+		prefix := flag + "="
+		if strings.HasPrefix(argv[index], prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(argv[index], prefix))
+		}
+	}
+	return ""
 }
