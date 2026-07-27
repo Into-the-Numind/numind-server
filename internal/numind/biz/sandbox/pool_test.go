@@ -92,6 +92,32 @@ func TestPool_BorrowExhaustedTimeout(t *testing.T) {
 	}
 }
 
+func TestPool_BorrowScalesWhenWarmPoolBusy(t *testing.T) {
+	cfg := DefaultSandboxConfig
+	cfg.Backend = BackendDocker
+	cfg.PoolMin = 1
+	cfg.PoolMaxWaitMs = 500
+
+	mock := NewMockDockerClient()
+	p := NewPool(cfg, mock, nil)
+	t.Cleanup(func() { _ = p.Close() })
+
+	waitForSize(t, p, 1, 2*time.Second)
+
+	first, err := p.Borrow(context.Background())
+	if err != nil {
+		t.Fatalf("first Borrow err = %v", err)
+	}
+
+	second, err := p.Borrow(context.Background())
+	if err != nil {
+		t.Fatalf("second Borrow while warm pool is busy err = %v; want elastic spawn instead of sandbox unavailable", err)
+	}
+	if second.ContainerID == first.ContainerID {
+		t.Fatalf("second Borrow reused in-flight container %s", second.ContainerID)
+	}
+}
+
 func TestPool_BorrowCtxCanceled(t *testing.T) {
 	cfg := DefaultSandboxConfig
 	cfg.Backend = BackendDocker

@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/datatypes"
 
+	"numind-server/internal/numind/biz/sandbox"
 	"numind-server/internal/pkg/model"
 )
 
@@ -106,4 +107,25 @@ func TestSelectToolsForRun_LegacyStrictAllowlistCannotExcludeGlobalTools(t *test
 	}
 	sort.Strings(compatNames)
 	require.Equal(t, []string{"bash_exec", "file_read", "web_search", "xhs_note_list"}, compatNames)
+}
+
+func TestSelectToolsForRun_DisabledSandboxRuntimeExcludesSandboxTools(t *testing.T) {
+	reg := NewAgentToolRegistry(newMockDefStore(), newMockFacStore())
+	require.NoError(t, reg.RegisterFactory(NewPlatformToolFactory(nil, nil)))
+	require.NoError(t, reg.LoadAll(context.Background()))
+
+	disabledPool := sandbox.NewPool(sandbox.DefaultSandboxConfig, nil, nil)
+	SetDefaultHookManager(NewSandboxHookManager(disabledPool, &mockSandboxStore{}))
+	t.Cleanup(func() { SetDefaultHookManager(nil) })
+
+	selected := selectToolsForRun(reg, nil, false)
+	names := make([]string, 0, len(selected))
+	for _, tool := range selected {
+		names = append(names, tool.Name())
+	}
+
+	require.NotContains(t, names, "create_docx", "Agent must not plan Word generation through a disabled sandbox runtime")
+	require.NotContains(t, names, "run_python", "Agent must not plan Python execution through a disabled sandbox runtime")
+	require.NotContains(t, names, "bash_exec", "Agent must not plan shell execution through a disabled sandbox runtime")
+	require.Contains(t, names, "create_html", "non-sandbox file generation should remain available")
 }
