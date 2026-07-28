@@ -32,7 +32,7 @@ type CreateRequest struct {
 }
 
 // PatchRequest 包含更新 agent_definition 的可选字段（nil = 不变）。
-// 注意：advanced_mode / parent_user_id / is_active 不允许通过 Patch 修改。
+// 注意：advanced_mode / parent_user_id 不允许通过 Patch 修改。
 type PatchRequest struct {
 	Name           *string
 	Description    *string
@@ -42,6 +42,7 @@ type PatchRequest struct {
 	Starters       *[]string
 	ToolFlags      *map[string]bool
 	DailyCreditCap *uint
+	IsActive       *bool
 }
 
 // Service 定义 biz/skill 层的业务方法。
@@ -237,7 +238,7 @@ func (s *service) List(ctx context.Context, userID uint, includeInactive bool, p
 }
 
 // Patch 部分更新 AgentDefinition。
-// 拒绝修改 advanced_mode / parent_user_id / is_active（这些字段通过专用端点操作）。
+// 拒绝修改 advanced_mode / parent_user_id。
 // version+1；写 history。全程事务。
 func (s *service) Patch(ctx context.Context, userID uint, id uint64, req PatchRequest) (*model.AgentDefinition, error) {
 	if err := s.requireParentAccount(ctx, userID); err != nil {
@@ -293,6 +294,9 @@ func (s *service) Patch(ctx context.Context, userID uint, id uint64, req PatchRe
 	}
 	if req.DailyCreditCap != nil {
 		ad.DailyCreditCap = req.DailyCreditCap
+	}
+	if req.IsActive != nil {
+		ad.IsActive = *req.IsActive
 	}
 
 	ad.Version++
