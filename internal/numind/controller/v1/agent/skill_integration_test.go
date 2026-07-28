@@ -361,6 +361,30 @@ func TestPatch_HappyPath(t *testing.T) {
 	assert.Equal(t, created.Version+1, updated.Version)
 }
 
+// TestPatch_IsActive updates the publish-state backing field used by the configurator UI.
+func TestPatch_IsActive(t *testing.T) {
+	db := newTestDB(t)
+	seedUsers(t, db)
+	engine := newTestEngine(t, db)
+
+	_, createResp := doRequest(t, engine, http.MethodPost, "/v1/agent/skills", validCreateBody(), withParent())
+	var created model.AgentDefinition
+	require.NoError(t, json.Unmarshal(createResp.Data, &created))
+	path := "/v1/agent/skills/" + strconv.FormatUint(created.ID, 10)
+
+	statusDraft, respDraft := doRequest(t, engine, http.MethodPatch, path, map[string]interface{}{"is_active": false}, withParent())
+	require.Equal(t, http.StatusOK, statusDraft)
+	var draft model.AgentDefinition
+	require.NoError(t, json.Unmarshal(respDraft.Data, &draft))
+	assert.False(t, draft.IsActive)
+
+	statusPublished, respPublished := doRequest(t, engine, http.MethodPatch, path, map[string]interface{}{"is_active": true}, withParent())
+	require.Equal(t, http.StatusOK, statusPublished)
+	var published model.AgentDefinition
+	require.NoError(t, json.Unmarshal(respPublished.Data, &published))
+	assert.True(t, published.IsActive)
+}
+
 // TestPatch_NotFound returns 404 for unknown skill ID.
 func TestPatch_NotFound(t *testing.T) {
 	db := newTestDB(t)

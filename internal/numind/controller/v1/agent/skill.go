@@ -52,6 +52,7 @@ type PatchRequest struct {
 	Starters       *[]string        `json:"starters"`
 	ToolFlags      *map[string]bool `json:"tool_flags"`
 	DailyCreditCap *uint            `json:"daily_credit_cap"`
+	IsActive       *bool            `json:"is_active"`
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +171,7 @@ func (c *SkillController) Patch(ctx *gin.Context) {
 		Starters:       req.Starters,
 		ToolFlags:      req.ToolFlags,
 		DailyCreditCap: req.DailyCreditCap,
+		IsActive:       req.IsActive,
 	})
 	core.WriteResponse(ctx, err, ad)
 }
