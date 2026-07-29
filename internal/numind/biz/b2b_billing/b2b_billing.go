@@ -4,9 +4,10 @@
 // # Attribution strategy (post b2b-billing-action-month hotfix, 2026-06-01)
 //
 // Settlement is computed PER GRANT ACTION, attributed to the natural month the
-// action occurred. Amounts are recomputed from months via PriceForMonths (never
-// read from membership_event.amount_cents), robust against historical data bugs
-// (doubling-era amount=0 rows, annual stored as 12×¥99, etc.).
+// action occurred. Monthly amounts are recomputed from months via PriceForMonths
+// (never read from membership_event.amount_cents), robust against historical
+// data bugs (doubling-era amount=0 rows, annual stored as 12×¥99, etc.).
+// Weekly events are fixed-price single-period actions.
 //
 // This replaced the earlier subscription-state "Rule A / Rule B" approach, whose
 // Rule A "Case 1" attributed the cumulative subscription.total_months_purchased
@@ -17,7 +18,8 @@
 //
 // Action sources (see computeBilling for detail):
 //   - Real (non-migration) sub_granted / sub_renewed events, billed in their
-//     occurred_at month at PriceForMonths(event.months).
+//     occurred_at month at PriceForMonths(event.months) for monthly or fixed
+//     weekly price for weekly.
 //   - Migrated packages: the 2026-04-30 migration spread each original package
 //     into 1-month-per-event placeholders (a 12-month annual → 1 sub_granted + 11
 //     future sub_renewed). They are collapsed back into ONE action of N months
@@ -88,8 +90,8 @@ type GrantDetail struct {
 	ChildUserID   uint      `json:"child_user_id"`
 	ChildUsername string    `json:"child_username"`
 	ChildNickname string    `json:"child_nickname"` // populated for the parent self-service view; empty on the admin report
-	ProductType   string    `json:"product_type"`   // trial / monthly
-	Months        int       `json:"months"`         // grant batch size for monthly; 0 for trial
+	ProductType   string    `json:"product_type"`   // trial / weekly / monthly
+	Months        int       `json:"months"`         // grant batch size for monthly; 0 for trial/weekly
 	AmountCents   int64     `json:"amount_cents"`
 	GrantedAt     time.Time `json:"granted_at"`
 }
@@ -195,7 +197,8 @@ func (b *b2bBillingBiz) GetBillingReport(ctx context.Context, month string) (*B2
 // Three action sources:
 //
 //   - A. Real (non-migration) sub_granted / sub_renewed events whose occurred_at
-//     ∈ [start, end): one action each, PriceForMonths(event.months).
+//     ∈ [start, end): one action each. Monthly events use
+//     PriceForMonths(event.months); weekly events use WeeklyPriceCents.
 //   - B. Migrated packages: the 2026-04-30 credit_package → membership_event
 //     migration spread each original package into 1-month-per-event placeholders
 //     (a 12-month annual became 1 sub_granted + 11 future sub_renewed, all
@@ -234,10 +237,19 @@ func (b *b2bBillingBiz) computeBilling(ctx context.Context, start, end time.Time
 		if ev.Months != nil {
 			months = int(*ev.Months)
 		}
-		if months == 0 {
-			// Defensive: a sub_granted/sub_renewed always has months>=1 (write path
-			// guarantees it). Skip any data-quality zero so it never adds a ¥0 ghost
-			// row that would inflate grants_count.
+		amountCents := int64(0)
+		switch ev.ProductType {
+		case membershipModel.ProductTypeWeekly:
+			amountCents = membershipModel.WeeklyPriceCents
+		case membershipModel.ProductTypeMonthly:
+			if months == 0 {
+				// Defensive: a monthly sub_granted/sub_renewed always has months>=1
+				// (write path guarantees it). Skip any data-quality zero so it never
+				// adds a ¥0 ghost row that would inflate grants_count.
+				continue
+			}
+			amountCents = membershipModel.PriceForMonths(months)
+		default:
 			continue
 		}
 		events = append(events, grantEvent{
@@ -245,7 +257,7 @@ func (b *b2bBillingBiz) computeBilling(ctx context.Context, start, end time.Time
 			childUserID:   uint(ev.UserID),
 			productType:   ev.ProductType,
 			months:        months,
-			amountCents:   membershipModel.PriceForMonths(months),
+			amountCents:   amountCents,
 			grantedAt:     ev.OccurredAt,
 		})
 	}

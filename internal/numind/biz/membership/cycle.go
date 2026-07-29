@@ -11,12 +11,12 @@ import (
 	"numind-server/internal/pkg/errno"
 	creditmodel "numind-server/internal/pkg/model"
 	model "numind-server/internal/pkg/model/membership"
-	"numind-server/internal/pkg/util"
 )
 
 const (
-	// cycleCredits is the number of credits granted per monthly billing cycle.
-	cycleCredits = 2000
+	// cycleCredits is the legacy monthly default kept for older tests and
+	// callers; plan-specific code should use subscriptionCycleCredits.
+	cycleCredits = model.MonthlyCycleCredits
 )
 
 // DeductionResult describes how many credits were drawn from each pool during a
@@ -56,45 +56,18 @@ type DeductItem struct {
 }
 
 // ensureCurrentCycle lazily creates or fetches the credit cycle row for the
-// billing month that contains txNow, anchored on sub.CurrentStartedAt (§3.4).
+// billing period that contains txNow, anchored on sub.CurrentStartedAt (§3.4).
 //
 // Algorithm:
-//  1. Binary-search the number of complete months elapsed since CurrentStartedAt
-//     (monthsSinceStart) so that cycleStart ≤ txNow < cycleEnd.
-//  2. cycleStart = AnchorAddMonths(sub.CurrentStartedAt, monthsSinceStart)
-//  3. cycleEnd   = min(AnchorAddMonths(sub.CurrentStartedAt, monthsSinceStart+1), sub.ExpiresAt)
+//  1. Compute the current plan-specific cycle bounds.
+//     Monthly: anchored calendar months. Weekly: anchored 7-day periods.
 //  4. Defensive check: if txNow ≥ cycleEnd → subscription has effectively expired.
 //  5. INSERT … ON CONFLICT DO NOTHING (idempotent).
 //  6. SELECT FOR UPDATE on (user_id, cycleStart) and return the authoritative row.
 //
 // The function must be called inside an open transaction (tx).
 func (s *MembershipService) ensureCurrentCycle(ctx context.Context, tx *gorm.DB, sub *model.Subscription, txNow time.Time) (*model.CreditCycle, error) {
-	// Step 1: compute monthsSinceStart via simple linear search.
-	// In the worst case (12-month subscription) this loops at most 12 times.
-	anchor := sub.CurrentStartedAt
-	monthsSinceStart := 0
-	for {
-		nextStart := util.AnchorAddMonths(anchor, monthsSinceStart+1)
-		if !txNow.Before(nextStart) {
-			// txNow >= nextStart → not yet in this cycle, advance
-			monthsSinceStart++
-			// Safety: cap at TotalMonthsPurchased to avoid infinite loop on
-			// programming errors (shouldn't happen given defensive check below).
-			if monthsSinceStart >= sub.TotalMonthsPurchased {
-				break
-			}
-		} else {
-			break
-		}
-	}
-
-	// Step 2-3: compute cycle boundaries.
-	cycleStart := util.AnchorAddMonths(anchor, monthsSinceStart)
-	cycleEndRaw := util.AnchorAddMonths(anchor, monthsSinceStart+1)
-	cycleEnd := cycleEndRaw
-	if sub.ExpiresAt.Before(cycleEndRaw) {
-		cycleEnd = sub.ExpiresAt
-	}
+	cycleStart, cycleEnd := currentCycleBounds(sub, txNow)
 
 	// Step 4: defensive check.
 	if !txNow.Before(cycleEnd) {
@@ -103,13 +76,14 @@ func (s *MembershipService) ensureCurrentCycle(ctx context.Context, tx *gorm.DB,
 
 	// Step 5: INSERT … ON CONFLICT DO NOTHING.
 	now := time.Now().UTC()
+	credits := subscriptionCycleCredits(sub)
 	candidate := &model.CreditCycle{
 		UserID:           sub.UserID,
 		SubscriptionID:   sub.ID,
 		CycleStart:       cycleStart,
 		CycleEnd:         cycleEnd,
-		CreditsGranted:   cycleCredits,
-		CreditsRemaining: cycleCredits,
+		CreditsGranted:   credits,
+		CreditsRemaining: credits,
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}

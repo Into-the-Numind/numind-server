@@ -43,6 +43,8 @@ func newCycleTestDB(t *testing.T) *gorm.DB {
 			current_started_at     DATETIME NOT NULL,
 			expires_at             DATETIME NOT NULL,
 			total_months_purchased INTEGER NOT NULL,
+			plan_type              TEXT NOT NULL DEFAULT 'monthly',
+			cycle_credits          INTEGER NOT NULL DEFAULT 2000,
 			source                 TEXT NOT NULL DEFAULT 'b2b_grant',
 			granter_user_id        INTEGER,
 			created_at             DATETIME NOT NULL,
@@ -132,6 +134,25 @@ func insertSub(t *testing.T, db *gorm.DB, userID uint64, currentStartedAt, expir
 	return sub
 }
 
+func insertWeeklySub(t *testing.T, db *gorm.DB, userID uint64, currentStartedAt, expiresAt time.Time) *model.Subscription {
+	t.Helper()
+	now := time.Now().UTC()
+	sub := &model.Subscription{
+		UserID:               userID,
+		FirstStartedAt:       currentStartedAt,
+		CurrentStartedAt:     currentStartedAt,
+		ExpiresAt:            expiresAt,
+		TotalMonthsPurchased: 0,
+		PlanType:             model.ProductTypeWeekly,
+		CycleCredits:         model.WeeklyCycleCredits,
+		Source:               model.SourceB2BGrant,
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	}
+	require.NoError(t, db.Create(sub).Error)
+	return sub
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // TestEnsureCurrentCycle_FirstCall — creates cycle row on first call
 // ─────────────────────────────────────────────────────────────────────────────
@@ -170,6 +191,32 @@ func TestEnsureCurrentCycle_FirstCall(t *testing.T) {
 	var dbCycle model.CreditCycle
 	require.NoError(t, db.Where("user_id = ? AND cycle_start = ?", sub.UserID, start).Take(&dbCycle).Error)
 	assert.Equal(t, cycleCredits, dbCycle.CreditsGranted)
+}
+
+func TestEnsureCurrentCycle_WeeklyUsesSevenDayWindowAnd500Credits(t *testing.T) {
+	db := newCycleTestDB(t)
+	svc := NewMembershipService(db)
+	ctx := context.Background()
+
+	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	expires := time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC)
+	sub := insertWeeklySub(t, db, 11, start, expires)
+
+	txNow := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+
+	var cycle *model.CreditCycle
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var e error
+		cycle, e = svc.ensureCurrentCycle(ctx, tx, sub, txNow)
+		return e
+	})
+	require.NoError(t, err)
+	require.NotNil(t, cycle)
+
+	assert.Equal(t, time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC), cycle.CycleStart)
+	assert.Equal(t, time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC), cycle.CycleEnd)
+	assert.Equal(t, model.WeeklyCycleCredits, cycle.CreditsGranted)
+	assert.Equal(t, model.WeeklyCycleCredits, cycle.CreditsRemaining)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

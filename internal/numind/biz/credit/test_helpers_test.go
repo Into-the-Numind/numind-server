@@ -77,6 +77,8 @@ func newCreditTestDB(t *testing.T) *gorm.DB {
 			current_started_at     DATETIME NOT NULL,
 			expires_at             DATETIME NOT NULL,
 			total_months_purchased INTEGER NOT NULL,
+			plan_type              TEXT NOT NULL DEFAULT 'monthly',
+			cycle_credits          INTEGER NOT NULL DEFAULT 2000,
 			source                 TEXT NOT NULL DEFAULT 'b2b_grant',
 			granter_user_id        INTEGER,
 			created_at             DATETIME NOT NULL,

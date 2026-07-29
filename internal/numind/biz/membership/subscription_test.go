@@ -34,6 +34,15 @@ func newGrantSubReq(parentID, childID uint64, months int, now time.Time) biz.Gra
 	}
 }
 
+func newGrantWeeklyReq(parentID, childID uint64, now time.Time) biz.GrantWeeklySubscriptionRequest {
+	return biz.GrantWeeklySubscriptionRequest{
+		ParentUserID:  parentID,
+		UserID:        childID,
+		GranterUserID: ptr(parentID),
+		Now:           now,
+	}
+}
+
 // seedStaleCycles inserts a past subscription and stale credit_cycle rows for userID.
 // Directly inserts DB rows so the reopen scenario has stale cycles to clean up.
 func seedStaleCycles(t *testing.T, db *gorm.DB, svc *biz.MembershipService, parentID, userID uint64, now time.Time) {
@@ -103,6 +112,68 @@ func TestGrantSub_New(t *testing.T) {
 	assert.Equal(t, model.ProductTypeMonthly, evt.ProductType)
 	require.NotNil(t, evt.Months)
 	assert.Equal(t, uint8(3), *evt.Months)
+}
+
+func TestGrantWeekly_New(t *testing.T) {
+	db := newTestDB(t)
+	svc := biz.NewMembershipService(db)
+
+	now := ts(2026, 7, 1)
+	res, err := svc.GrantWeeklySubscription(t.Context(), newGrantWeeklyReq(1, 701, now))
+	require.NoError(t, err)
+	require.NotNil(t, res)
+
+	assert.Equal(t, "new", res.Scenario)
+	assert.Equal(t, now, res.FirstStartedAt)
+	assert.Equal(t, now, res.CurrentStartedAt)
+	assert.Equal(t, ts(2026, 7, 8), res.ExpiresAt)
+	assert.Equal(t, 0, res.TotalMonthsPurchased)
+
+	var sub model.Subscription
+	require.NoError(t, db.Where("user_id = ?", uint64(701)).Take(&sub).Error)
+	assert.Equal(t, model.ProductTypeWeekly, sub.PlanType)
+	assert.Equal(t, model.WeeklyCycleCredits, sub.CycleCredits)
+	assert.Equal(t, ts(2026, 7, 8), sub.ExpiresAt)
+
+	var evt model.MembershipEvent
+	require.NoError(t, db.Where("user_id = ?", uint64(701)).Take(&evt).Error)
+	assert.Equal(t, model.EventTypeSubGranted, evt.EventType)
+	assert.Equal(t, model.ProductTypeWeekly, evt.ProductType)
+	assert.Nil(t, evt.Months)
+	require.NotNil(t, evt.Quantity)
+	assert.Equal(t, uint16(1), *evt.Quantity)
+	assert.EqualValues(t, model.WeeklyPriceCents, evt.AmountCents)
+}
+
+func TestGrantWeekly_RenewExtendsSevenDays(t *testing.T) {
+	db := newTestDB(t)
+	svc := biz.NewMembershipService(db)
+
+	res1, err := svc.GrantWeeklySubscription(t.Context(), newGrantWeeklyReq(1, 702, ts(2026, 7, 1)))
+	require.NoError(t, err)
+	assert.Equal(t, ts(2026, 7, 8), res1.ExpiresAt)
+
+	res2, err := svc.GrantWeeklySubscription(t.Context(), newGrantWeeklyReq(1, 702, ts(2026, 7, 4)))
+	require.NoError(t, err)
+	assert.Equal(t, "renew", res2.Scenario)
+	assert.Equal(t, ts(2026, 7, 15), res2.ExpiresAt)
+
+	var renewed model.MembershipEvent
+	require.NoError(t, db.Where("user_id = ? AND event_type = ?", uint64(702), model.EventTypeSubRenewed).Take(&renewed).Error)
+	assert.Equal(t, model.ProductTypeWeekly, renewed.ProductType)
+	assert.EqualValues(t, model.WeeklyPriceCents, renewed.AmountCents)
+}
+
+func TestGrantWeekly_RejectsActiveMonthly(t *testing.T) {
+	db := newTestDB(t)
+	svc := biz.NewMembershipService(db)
+
+	_, err := svc.GrantOrRenewSubscription(t.Context(), newGrantSubReq(1, 703, 1, ts(2026, 7, 1)))
+	require.NoError(t, err)
+
+	_, err = svc.GrantWeeklySubscription(t.Context(), newGrantWeeklyReq(1, 703, ts(2026, 7, 2)))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errno.ErrInvalidParameter)
 }
 
 // ────────────────────────────────────────────────────────────

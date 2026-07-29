@@ -1,5 +1,32 @@
 schema_version: '2.0'
 features:
+- id: weekly-membership
+  ndf_version: '3.0'
+  description: Add a seven-day B2B weekly membership plan with RMB 25 price, 500 cycle credits, customer-management grant UI, and B2B billing reconciliation.
+  classification_reason: 'Standard: DB schema change, membership/billing business logic, existing API contract expansion, and user/admin frontend changes across three repositories; payment-adjacent finance reporting requires full gates.'
+  last_updated_by: ai-s5-verified
+  last_updated_at: '2026-07-29T13:32:00+0800'
+  created_at: '2026-07-29T13:09:24+0800'
+  track: standard
+  stage: S5
+  status: active
+  repos: [numind-server, numind-web-v3, numind-admin-web]
+  branches: {numind-server: feature/weekly-membership, numind-web-v3: feature/weekly-membership, numind-admin-web: feature/weekly-membership}
+  worktrees: {numind-server: /private/tmp/wt-weekly-membership-numind-server, numind-web-v3: /private/tmp/wt-weekly-membership-numind-web-v3, numind-admin-web: /private/tmp/wt-weekly-membership-numind-admin-web}
+  progress: {total_tasks: 11, completed_tasks: 9, reviewed_tasks: 0, current_task: 'Local verification passed; NDF merge and Dev deployment pending'}
+  artifacts:
+    requirement: requirements/weekly-membership.md
+    proposal: proposals/weekly-membership-proposal.md
+    spec: docs/superpowers/specs/2026-07-29-weekly-membership-design.md
+    plan: docs/superpowers/plans/2026-07-29-weekly-membership.md
+    s5_verification: .ndf/decisions/weekly-membership/0001-s5-verification.md
+  decisions:
+  - 'S0: weekly membership is a paid subscription plan, not a trial, because it has price, paid credits, expiry, renewal, and B2B finance settlement semantics.'
+  - 'S1: store plan_type and cycle_credits on subscription so existing monthly rows remain monthly by default while weekly rows can create 7-day/500-credit cycles.'
+  - 'S2: reject active weekly/monthly stacking in this release; same-plan weekly renewals extend expires_at by 7 days and expired rows can reopen as weekly.'
+  - 'S3: implement backend first for rolling compatibility, then user/admin frontend labels and controls, then full checks, NDF merge, and Dev-only deployment.'
+  - 'S4/S5: backend weekly subscription, 500-credit cycle, controller, B2B settlement, user grant modal/billing page, and admin billing labels implemented; focused tests, go test ./..., task lint, frontend lint/type-check all passed.'
+  blockers: []
 - id: feishu-expired-auth-cleanup
   ndf_version: '3.0'
   description: Stop expired Feishu pending authorization sessions from occupying the user's current connection flow, so Settings and Agent reconnects can produce a fresh authorization action.

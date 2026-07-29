@@ -45,8 +45,8 @@ type BalanceView struct {
 	// Zero when no trial is active.
 	TrialRemaining int64
 	// CycleRemaining is the credits_remaining from the current billing cycle.
-	// Zero when no sub is active; defaults to 2000 (INV-20) when sub is active
-	// but the cycle row has not yet been lazily created.
+	// Zero when no sub is active; defaults to the plan's cycle_credits when sub
+	// is active but the cycle row has not yet been lazily created.
 	CycleRemaining int64
 	// CycleEnd is the end of the current billing cycle; nil when no sub is active.
 	CycleEnd *time.Time
@@ -162,8 +162,8 @@ func (s *MembershipService) IsActiveMember(ctx context.Context, userID uint64, n
 //  1. Call GetMembershipState.
 //  2. TrialRemaining: from trial_grant.CreditsRemaining (only when TrialActive).
 //  3. CycleRemaining: only when SubActive.
-//     - Compute cycleStart/cycleEnd from sub.CurrentStartedAt + monthsSinceStart.
-//     - If no cycle row yet (INV-20) → default to cycleCredits (2000).
+//     - Compute cycleStart/cycleEnd from the subscription plan anchor.
+//     - If no cycle row yet (INV-20) → default to the plan's cycle credits.
 //     - If cycle row exists → use cycle.CreditsRemaining.
 //  4. BoosterTotal: from user_booster_balance.CreditsRemaining (0 if no row).
 //  5. BoosterUsable: 0 when BoosterFrozen (INV-19); otherwise BoosterTotal.
@@ -210,8 +210,8 @@ func (s *MembershipService) GetBalance(ctx context.Context, userID uint64, now t
 				t := cycle.CycleEnd
 				view.CycleEnd = &t
 			} else {
-				// INV-20: cycle not yet lazily created → default to monthly quota.
-				view.CycleRemaining = cycleCredits
+				// INV-20: cycle not yet lazily created → default to plan quota.
+				view.CycleRemaining = int64(subscriptionCycleCredits(sub))
 				view.CycleEnd = &cycleEnd
 			}
 		}
@@ -281,7 +281,7 @@ func (s *MembershipService) GetMembershipStateBatch(ctx context.Context, userIDs
 			if cycle != nil {
 				st.CycleRemaining = int64(cycle.CreditsRemaining)
 			} else {
-				st.CycleRemaining = cycleCredits // 2000 default
+				st.CycleRemaining = int64(subscriptionCycleCredits(sub))
 			}
 		}
 	}
@@ -326,6 +326,31 @@ func (s *MembershipService) GetMembershipStateBatch(ctx context.Context, userIDs
 func currentCycleBounds(sub *model.Subscription, now time.Time) (cycleStart, cycleEnd time.Time) {
 	anchor := sub.CurrentStartedAt
 
+	if subscriptionPlanType(sub) == model.ProductTypeWeekly {
+		periodsSinceStart := 0
+		for {
+			nextStart := anchor.AddDate(0, 0, model.WeeklyDurationDays*(periodsSinceStart+1))
+			if !now.Before(nextStart) {
+				periodsSinceStart++
+				// Weekly rows derive total periods from expires_at, not
+				// total_months_purchased. Cap the loop defensively at 10 years.
+				if periodsSinceStart >= 520 {
+					break
+				}
+				continue
+			}
+			break
+		}
+
+		cycleStart = anchor.AddDate(0, 0, model.WeeklyDurationDays*periodsSinceStart)
+		cycleEndRaw := anchor.AddDate(0, 0, model.WeeklyDurationDays*(periodsSinceStart+1))
+		cycleEnd = cycleEndRaw
+		if sub.ExpiresAt.Before(cycleEndRaw) {
+			cycleEnd = sub.ExpiresAt
+		}
+		return cycleStart, cycleEnd
+	}
+
 	monthsSinceStart := 0
 	for {
 		nextStart := util.AnchorAddMonths(anchor, monthsSinceStart+1)
@@ -346,4 +371,21 @@ func currentCycleBounds(sub *model.Subscription, now time.Time) (cycleStart, cyc
 		cycleEnd = sub.ExpiresAt
 	}
 	return cycleStart, cycleEnd
+}
+
+func subscriptionPlanType(sub *model.Subscription) string {
+	if sub == nil || sub.PlanType == "" {
+		return model.ProductTypeMonthly
+	}
+	return sub.PlanType
+}
+
+func subscriptionCycleCredits(sub *model.Subscription) int {
+	if sub != nil && sub.CycleCredits > 0 {
+		return sub.CycleCredits
+	}
+	if subscriptionPlanType(sub) == model.ProductTypeWeekly {
+		return model.WeeklyCycleCredits
+	}
+	return model.MonthlyCycleCredits
 }
