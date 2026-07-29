@@ -87,29 +87,27 @@ CREATE TABLE `agent_run` (
   `session_name` VARCHAR(255) NOT NULL DEFAULT '',
   `is_deleted` TINYINT(1) NOT NULL DEFAULT 0,
   `is_test` TINYINT(1) NOT NULL DEFAULT 0,
-  PRIMARY KEY (`id`),
-  CONSTRAINT `chk_ar_state_reason` CHECK (
-    `state_reason` IS NULL OR
-    `state_reason` IN (
-      'completed', 'blocking_limit', 'image_error', 'model_error',
-      'aborted_streaming', 'prompt_too_long', 'stop_hook_prevented',
-      'aborted_tools', 'hook_stopped', 'max_turns', 'error_max_budget',
-      'error_max_retries', 'next_turn', 'collapse_drain_retry',
-      'reactive_compact_retry', 'max_output_escalate', 'max_output_recovery',
-      'stop_hook_blocking', 'token_budget_continue', 'running',
-      'waiting_for_user_choice', 'permission_denied', 'context_exhausted',
-      'cancelled'
-    )
-  )
+  PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO `agent_run` (
   `id`, `session_id`, `user_id`, `status`, `state_reason`, `messages`,
   `started_at`, `created_at`, `updated_at`
-) VALUES (
-  1, 'synthetic-session', 101, 'terminated', 'completed', JSON_ARRAY(),
-  '2026-07-20 10:00:00.000', '2026-07-20 10:00:00.000', '2026-07-20 10:00:01.000'
-);
+) VALUES
+  (
+    1, 'synthetic-session', 101, 'terminated', 'completed', JSON_ARRAY(),
+    '2026-07-20 10:00:00.000', '2026-07-20 10:00:00.000', '2026-07-20 10:00:01.000'
+  ),
+  (
+    2, 'synthetic-running', 101, 'running', '', JSON_ARRAY(),
+    '2026-07-20 10:02:00.000', '2026-07-20 10:02:00.000', '2026-07-20 10:02:01.000'
+  ),
+  (
+    3, 'synthetic-zombie', 102, 'terminated', 'zombie_cleanup_2026_05_28', JSON_ARRAY(),
+    '2026-05-28 10:00:00.000', '2026-05-28 10:00:00.000', '2026-05-28 10:00:01.000'
+  );
+
+UPDATE `agent_run` SET `is_deleted` = 1 WHERE `id` = 3;
 
 CREATE TABLE `announcement` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,

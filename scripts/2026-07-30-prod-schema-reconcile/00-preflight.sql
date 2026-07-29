@@ -230,18 +230,22 @@ SELECT
   CAST(COUNT(*) AS CHAR),
   '0 unsupported state_reason rows'
 FROM agent_run
-WHERE state_reason IS NOT NULL
-  AND state_reason NOT IN (
-    'completed', 'blocking_limit', 'image_error', 'model_error',
-    'aborted_streaming', 'prompt_too_long', 'stop_hook_prevented',
-    'aborted_tools', 'hook_stopped', 'max_turns', 'error_max_budget',
-    'error_max_retries', 'next_turn', 'collapse_drain_retry',
-    'reactive_compact_retry', 'max_output_escalate', 'max_output_recovery',
-    'stop_hook_blocking', 'token_budget_continue', 'running',
-    'waiting_for_user_choice', 'permission_denied', 'context_exhausted',
-    'cancelled', 'external_resume_ready'
+WHERE NOT (
+  state_reason IS NULL
+  OR (state_reason = '' AND status = 'running')
+  OR state_reason IN (
+      'completed', 'blocking_limit', 'image_error', 'model_error',
+      'aborted_streaming', 'prompt_too_long', 'stop_hook_prevented',
+      'aborted_tools', 'hook_stopped', 'max_turns', 'error_max_budget',
+      'error_max_retries', 'next_turn', 'collapse_drain_retry',
+      'reactive_compact_retry', 'max_output_escalate', 'max_output_recovery',
+      'stop_hook_blocking', 'token_budget_continue', 'running',
+      'waiting_for_user_choice', 'permission_denied', 'context_exhausted',
+      'cancelled', 'external_resume_ready'
   )
-  AND LEFT(state_reason, 11) <> 'ext_resume:'
+  OR (state_reason = 'zombie_cleanup_2026_05_28' AND is_deleted = 1)
+  OR LEFT(state_reason, 11) = 'ext_resume:'
+)
 UNION ALL
 SELECT
   'skill_template_rows',

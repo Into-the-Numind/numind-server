@@ -273,6 +273,29 @@ WHERE TABLE_SCHEMA = DATABASE()
   AND INDEX_NAME = 'idx_ar_state_pending'
 UNION ALL
 SELECT
+  'agent_state_reason_rows',
+  IF(COUNT(*) = 0, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  '0 unsupported state_reason relationships'
+FROM agent_run
+WHERE NOT (
+  state_reason IS NULL
+  OR (state_reason = '' AND status = 'running')
+  OR state_reason IN (
+      'completed', 'blocking_limit', 'image_error', 'model_error',
+      'aborted_streaming', 'prompt_too_long', 'stop_hook_prevented',
+      'aborted_tools', 'hook_stopped', 'max_turns', 'error_max_budget',
+      'error_max_retries', 'next_turn', 'collapse_drain_retry',
+      'reactive_compact_retry', 'max_output_escalate', 'max_output_recovery',
+      'stop_hook_blocking', 'token_budget_continue', 'running',
+      'waiting_for_user_choice', 'permission_denied', 'context_exhausted',
+      'cancelled', 'external_resume_ready'
+  )
+  OR (state_reason = 'zombie_cleanup_2026_05_28' AND is_deleted = 1)
+  OR LEFT(state_reason, 11) = 'ext_resume:'
+)
+UNION ALL
+SELECT
   'agent_state_reason_constraint',
   IF(
     COUNT(*) = 1
@@ -295,7 +318,7 @@ SELECT
           ),
           256
         )
-      ) = '3ff1b9272063ecd57935884d4f47def2795f105385cf2d789e55ed7da1aad535',
+      ) = '7bac0f04b3cf2225cdd40a61fe086c4d1ed982bb3b082e96341818040878d100',
     'PASS',
     'FAIL'
   ),
@@ -326,7 +349,7 @@ SELECT
       'absent'
     )
   ),
-  'one exact external-resume constraint (sha 3ff1b927...)'
+  'one exact relational state constraint (sha 7bac0f04...)'
 FROM information_schema.TABLE_CONSTRAINTS constraints_meta
 JOIN information_schema.CHECK_CONSTRAINTS checks_meta
   ON checks_meta.CONSTRAINT_SCHEMA = constraints_meta.CONSTRAINT_SCHEMA

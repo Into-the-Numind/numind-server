@@ -96,6 +96,28 @@ BEGIN
   ) THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: incompatible agent_attachment parsed column state';
   END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM `agent_run`
+    WHERE NOT (
+      `state_reason` IS NULL
+      OR (`state_reason` = '' AND `status` = 'running')
+      OR `state_reason` IN (
+        'completed', 'blocking_limit', 'image_error', 'model_error',
+        'aborted_streaming', 'prompt_too_long', 'stop_hook_prevented',
+        'aborted_tools', 'hook_stopped', 'max_turns', 'error_max_budget',
+        'error_max_retries', 'next_turn', 'collapse_drain_retry',
+        'reactive_compact_retry', 'max_output_escalate', 'max_output_recovery',
+        'stop_hook_blocking', 'token_budget_continue', 'running',
+        'waiting_for_user_choice', 'permission_denied', 'context_exhausted',
+        'cancelled', 'external_resume_ready'
+      )
+      OR (`state_reason` = 'zombie_cleanup_2026_05_28' AND `is_deleted` = 1)
+      OR LEFT(`state_reason`, 11) = 'ext_resume:'
+    )
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: unsupported agent_run state_reason relationship';
+  END IF;
   IF (SELECT COUNT(*) FROM `llm_provider` WHERE `name` = 'ali-dashscope') <> 1 THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: ali-dashscope provider must exist exactly once';
   END IF;
@@ -452,8 +474,10 @@ BEGIN
   IF EXISTS (
     SELECT 1
     FROM `agent_run`
-    WHERE `state_reason` IS NOT NULL
-      AND `state_reason` NOT IN (
+    WHERE NOT (
+      `state_reason` IS NULL
+      OR (`state_reason` = '' AND `status` = 'running')
+      OR `state_reason` IN (
         'completed', 'blocking_limit', 'image_error', 'model_error',
         'aborted_streaming', 'prompt_too_long', 'stop_hook_prevented',
         'aborted_tools', 'hook_stopped', 'max_turns', 'error_max_budget',
@@ -463,7 +487,9 @@ BEGIN
         'waiting_for_user_choice', 'permission_denied', 'context_exhausted',
         'cancelled', 'external_resume_ready'
       )
-      AND LEFT(`state_reason`, 11) <> 'ext_resume:'
+      OR (`state_reason` = 'zombie_cleanup_2026_05_28' AND `is_deleted` = 1)
+      OR LEFT(`state_reason`, 11) = 'ext_resume:'
+    )
   ) THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: unsupported agent_run state_reason';
   END IF;
@@ -494,7 +520,7 @@ BEGIN
           )
         ),
         256
-      ) <> '3ff1b9272063ecd57935884d4f47def2795f105385cf2d789e55ed7da1aad535'
+      ) <> '7bac0f04b3cf2225cdd40a61fe086c4d1ed982bb3b082e96341818040878d100'
   ) THEN
     ALTER TABLE `agent_run` DROP CHECK `chk_ar_state_reason`;
   END IF;
@@ -509,6 +535,7 @@ BEGIN
     ALTER TABLE `agent_run`
       ADD CONSTRAINT `chk_ar_state_reason` CHECK (
         `state_reason` IS NULL OR
+        (`state_reason` = '' AND `status` = 'running') OR
         `state_reason` IN (
           'completed', 'blocking_limit', 'image_error', 'model_error',
           'aborted_streaming', 'prompt_too_long', 'stop_hook_prevented',
@@ -518,7 +545,9 @@ BEGIN
           'stop_hook_blocking', 'token_budget_continue', 'running',
           'waiting_for_user_choice', 'permission_denied', 'context_exhausted',
           'cancelled', 'external_resume_ready'
-        ) OR LEFT(`state_reason`, 11) = 'ext_resume:'
+        ) OR
+        (`state_reason` = 'zombie_cleanup_2026_05_28' AND `is_deleted` = 1) OR
+        LEFT(`state_reason`, 11) = 'ext_resume:'
       );
   END IF;
 END//

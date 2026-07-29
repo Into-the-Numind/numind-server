@@ -275,6 +275,18 @@ if mysql_query "UPDATE agent_run SET state_reason='not-a-runtime-state' WHERE id
   echo "ERROR: agent_run CHECK accepted an unsupported state" >&2
   exit 1
 fi
+if mysql_query "UPDATE agent_run SET state_reason='', status='terminated' WHERE id=1;" >/dev/null 2>&1; then
+  echo "ERROR: agent_run CHECK accepted an empty state outside a running row" >&2
+  exit 1
+fi
+if mysql_query "
+  UPDATE agent_run
+  SET state_reason='zombie_cleanup_2026_05_28', is_deleted=0
+  WHERE id=1;
+" >/dev/null 2>&1; then
+  echo "ERROR: agent_run CHECK accepted zombie cleanup on a visible row" >&2
+  exit 1
+fi
 mysql_query "UPDATE agent_run SET state_reason='completed' WHERE id=1;"
 
 # A same-name but overly broad CHECK must be detected and repaired exactly.
