@@ -488,12 +488,43 @@ func TestSkillArtifact_ImportTemplate_HappyPath(t *testing.T) {
 	var created model.Skill
 	require.NoError(t, json.Unmarshal(resp.Data, &created))
 	assert.Equal(t, "爆款分析师", created.Name)
+	assert.Equal(t, uint(100), created.ParentUserID)
+	assert.Equal(t, uint(100), created.OwnerUserID)
+	assert.Equal(t, "institution", created.Visibility)
 	assert.Equal(t, "imported_from_template", created.SourceType)
 	assert.Equal(t, "official", created.OriginType)
 	assert.NotZero(t, created.SourceTemplateID)
 	assert.Equal(t, uint(1), *created.SourceTemplateID)
+	assert.True(t, created.CanEdit)
 
 	// 3. 验证编译出的 BodyMd 中包含核心要素
 	assert.Contains(t, created.BodyMd, "分析小红书")
 	assert.Contains(t, created.BodyMd, "任务类型")
+
+	// 4. 同机构父账户可以看到，其他父账户不可见。
+	statusListOwner, respListOwner := doArtifactRequest(t, engine, http.MethodGet, "/v1/skills", nil, withUser(100))
+	require.Equal(t, http.StatusOK, statusListOwner)
+	var ownerList struct {
+		List  []model.Skill `json:"list"`
+		Total int           `json:"total"`
+	}
+	require.NoError(t, json.Unmarshal(respListOwner.Data, &ownerList))
+	require.Len(t, ownerList.List, 1)
+	assert.Equal(t, created.ID, ownerList.List[0].ID)
+	assert.Equal(t, "institution", ownerList.List[0].Visibility)
+	assert.True(t, ownerList.List[0].CanEdit)
+
+	statusOtherList, respOtherList := doArtifactRequest(t, engine, http.MethodGet, "/v1/skills", nil, withUser(300))
+	require.Equal(t, http.StatusOK, statusOtherList)
+	var otherList struct {
+		List  []model.Skill `json:"list"`
+		Total int           `json:"total"`
+	}
+	require.NoError(t, json.Unmarshal(respOtherList.Data, &otherList))
+	assert.Equal(t, 0, otherList.Total)
+	assert.Empty(t, otherList.List)
+
+	statusOtherGet, respOtherGet := doArtifactRequest(t, engine, http.MethodGet, "/v1/skills/"+strconv.Itoa(int(created.ID)), nil, withUser(300))
+	require.Equal(t, http.StatusNotFound, statusOtherGet)
+	assert.NotEqual(t, 0, respOtherGet.Code)
 }
