@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: Raise Feishu correctable command attempts to ten and make Agent-authored Base write guidance internally consistent and safely observable without server-side payload conversion.
   classification_reason: 'Standard: customer-reported Agent/Feishu write-contract defect spans tool schema, command safety policy, embedded guidance, pipeline prompt, diagnostics, and tests across more than three backend files.'
-  last_updated_by: ai-s6
-  last_updated_at: '2026-07-29T23:56:00+0800'
+  last_updated_by: ai-s6-dev-deployed
+  last_updated_at: '2026-07-30T00:41:06+0800'
   last_verified: '2026-07-29T23:54:54+0800'
   created_at: '2026-07-29T22:35:49+0800'
   track: standard
@@ -14,7 +14,8 @@ features:
   repos: [numind-server]
   branches: {numind-server: feature/feishu-write-command-guidance}
   worktrees: {numind-server: /private/tmp/wt-feishu-write-command-guidance-numind-server}
-  progress: {total_tasks: 6, completed_tasks: 6, reviewed_tasks: 6, current_task: 'S5 passed; entering S6 merge and Dev deployment'}
+  progress: {total_tasks: 6, completed_tasks: 6, reviewed_tasks: 6, current_task: 'Dev deployed and healthz smoke verified; user acceptance pending'}
+  deployed: 'dev server develop-ec097777 (registry digest sha256:4fccc0efcfe6db1242bec6c35334c1f192670be0e1aeed86db250edb399e7380); public /healthz returned ok'
   artifacts:
     requirement: requirements/feishu-write-command-guidance.md
     proposal: proposals/feishu-write-command-guidance-proposal.md
@@ -22,6 +23,7 @@ features:
     plan: docs/superpowers/plans/2026-07-29-feishu-write-command-guidance.md
     s4_review: .ndf/decisions/feishu-write-command-guidance/0001-s4-implementation-review.md
     s5_verification: .ndf/decisions/feishu-write-command-guidance/0002-s5-verification.md
+    s6_dev_deployment: .ndf/decisions/feishu-write-command-guidance/0003-s6-dev-deployment.md
   decisions:
   - 'S0: implement user-approved items 1-6; explicitly exclude the proposed user-facing summary copy change.'
   - 'S0: Agent remains responsible for authoring the complete inline --json payload; no server-side business payload conversion.'
@@ -31,6 +33,7 @@ features:
   - 'S4: the Agent authors one complete inline --json payload after reading the exact batch-create and CellValue references; stdin_json is removed from the model schema, non-null legacy input is rejected locally, correction attempts are capped at ten, and scalar-only spans expose no business payload.'
   - 'S4 review: local spec-compliance and code-quality reviews PASS after hardening untrusted diagnostic scalars and classifying durable authorization yields as expected control flow.'
   - 'S5: focused Run 359 regressions, owned packages, full backend suite, production-tag race suite, task lint, prompt digest, scope audit, and scalar-only Langfuse evidence all PASS.'
+  - 'S6 Dev: ndf-done merged/pushed develop ec097777; dev server image digest sha256:4fccc0efcfe6db1242bec6c35334c1f192670be0e1aeed86db250edb399e7380 deployed and public /healthz returned ok.'
   blockers: []
 - id: feishu-stability-recovery
   ndf_version: '3.0'
