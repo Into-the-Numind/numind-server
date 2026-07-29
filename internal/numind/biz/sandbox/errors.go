@@ -30,6 +30,16 @@ var ErrSessionReturned = errors.New("session already returned")
 // the container was OOM killed by the kernel.
 var ErrSandboxOOM = errors.New("sandbox container OOM killed")
 
+// Broker-facing errors intentionally contain no host path, container ID, or
+// daemon detail. Callers may map them to stable product copy.
+var (
+	ErrBrokerUnavailable       = errors.New("sandbox broker unavailable")
+	ErrSandboxPolicyDenied     = errors.New("sandbox request denied by broker policy")
+	ErrSandboxTimeout          = errors.New("sandbox operation timed out")
+	ErrBrokerResponseTooLarge  = errors.New("sandbox broker response exceeds limit")
+	ErrBrokerProtocolViolation = errors.New("sandbox broker protocol violation")
+)
+
 // ErrNotImplemented is returned by sandbox.WriteFile / ReadFile in v1
 // (file management deferred to follow-up).
 var ErrNotImplemented = errors.New("not implemented in v1")

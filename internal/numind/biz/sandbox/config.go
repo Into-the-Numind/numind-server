@@ -19,6 +19,11 @@ const (
 	// Requires bind-mounted /var/run/docker.sock and the docker CLI inside
 	// the numind-server container (dev Dockerfile WITH_DOCKER_CLI=true).
 	BackendDocker Backend = "docker"
+
+	// BackendBroker uses the constrained sandboxd Unix-socket API. The API
+	// process never receives either the host Docker socket or the dedicated
+	// Rootless Docker socket.
+	BackendBroker Backend = "broker"
 )
 
 // NetworkPolicy controls outbound network access for a sandbox container.
@@ -81,6 +86,18 @@ type SandboxConfig struct {
 	// COSUploadConcurrency controls how many CollectOutputs COS upload
 	// goroutines run in parallel. Defaults to 3.
 	COSUploadConcurrency int
+
+	// Broker transport limits. sandboxd independently enforces the same or
+	// stricter server-side ceilings; the client limits responses too so a
+	// malfunctioning peer cannot make the API allocate unbounded memory/disk.
+	BrokerSocket             string
+	BrokerMetadataMaxBytes   int
+	BrokerExecOutputMaxBytes int
+	BrokerCopyInMaxBytes     int
+	BrokerCopyOutMaxBytes    int
+	BrokerSingleFileMaxBytes int
+	BrokerMaxFiles           int
+	BrokerMaxConnections     int
 }
 
 // DefaultSandboxConfig is the prod-safe baseline: Backend=disabled.
@@ -113,6 +130,15 @@ var DefaultSandboxConfig = SandboxConfig{
 	OutputMaxSizeMB:          50,
 	OutputZipBombThresholdMB: 500,
 	COSUploadConcurrency:     3,
+
+	BrokerSocket:             DefaultBrokerSocket,
+	BrokerMetadataMaxBytes:   DefaultBrokerMetadataMaxBytes,
+	BrokerExecOutputMaxBytes: DefaultBrokerExecOutputMaxBytes,
+	BrokerCopyInMaxBytes:     DefaultBrokerCopyInMaxBytes,
+	BrokerCopyOutMaxBytes:    DefaultBrokerCopyOutMaxBytes,
+	BrokerSingleFileMaxBytes: DefaultBrokerSingleFileMaxBytes,
+	BrokerMaxFiles:           DefaultBrokerMaxFiles,
+	BrokerMaxConnections:     DefaultBrokerMaxConnections,
 }
 
 // viperLike is the subset of *viper.Viper the LoadFromViper helper needs.
@@ -219,6 +245,30 @@ func LoadFromViper(v viperLike) SandboxConfig {
 	}
 	if v.IsSet("sandbox.cos_upload_concurrency") {
 		cfg.COSUploadConcurrency = v.GetInt("sandbox.cos_upload_concurrency")
+	}
+	if v.IsSet("sandbox.broker_socket") {
+		cfg.BrokerSocket = v.GetString("sandbox.broker_socket")
+	}
+	if v.IsSet("sandbox.broker_metadata_max_bytes") {
+		cfg.BrokerMetadataMaxBytes = v.GetInt("sandbox.broker_metadata_max_bytes")
+	}
+	if v.IsSet("sandbox.broker_exec_output_max_bytes") {
+		cfg.BrokerExecOutputMaxBytes = v.GetInt("sandbox.broker_exec_output_max_bytes")
+	}
+	if v.IsSet("sandbox.broker_copy_in_max_bytes") {
+		cfg.BrokerCopyInMaxBytes = v.GetInt("sandbox.broker_copy_in_max_bytes")
+	}
+	if v.IsSet("sandbox.broker_copy_out_max_bytes") {
+		cfg.BrokerCopyOutMaxBytes = v.GetInt("sandbox.broker_copy_out_max_bytes")
+	}
+	if v.IsSet("sandbox.broker_single_file_max_bytes") {
+		cfg.BrokerSingleFileMaxBytes = v.GetInt("sandbox.broker_single_file_max_bytes")
+	}
+	if v.IsSet("sandbox.broker_max_files") {
+		cfg.BrokerMaxFiles = v.GetInt("sandbox.broker_max_files")
+	}
+	if v.IsSet("sandbox.broker_max_connections") {
+		cfg.BrokerMaxConnections = v.GetInt("sandbox.broker_max_connections")
 	}
 	return cfg
 }
