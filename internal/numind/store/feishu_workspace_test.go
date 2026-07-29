@@ -1365,6 +1365,23 @@ func TestFeishuWorkspaceStore_ExpiredPendingSessionDoesNotOwnCurrentConnectionSl
 	stored, err := s.CreateOrGetConnectionOperation(ctx, connection)
 	require.NoError(t, err, "an expired pending session must not block a fresh connection flow")
 	require.Equal(t, connection.ID, stored.ID)
+
+	createFeishuAccount(t, s, 8, 3)
+	expiredManual := newFeishuSession("expired-manual-session", 8, 3)
+	expiredManual.OperationID = nil
+	expiredManual.RequestedScopesJSON = []byte(`["offline_access"]`)
+	expiredManual.ExpiresAt = now.Add(-time.Minute)
+	expiredManual.CreatedAt = now.Add(-2 * time.Minute)
+	expiredManual.UpdatedAt = now.Add(-time.Minute)
+	require.NoError(t, s.CreateSession(ctx, expiredManual))
+
+	freshManual := newFeishuSession("fresh-manual-session", 8, 3)
+	freshManual.OperationID = nil
+	freshManual.RequestedScopesJSON = []byte(`["offline_access"]`)
+	manualStored, created, err := s.CreateOrGetPendingSession(ctx, freshManual)
+	require.NoError(t, err, "an expired manual session must not be reused for a fresh settings-page connect")
+	require.True(t, created)
+	require.Equal(t, freshManual.ID, manualStored.ID)
 }
 
 func TestFeishuWorkspaceStore_OperationLeaseRejectsStaleGeneration(t *testing.T) {

@@ -573,6 +573,7 @@ func (s *AuthSessionService) start(
 		ID: s.newID(), UserID: request.UserID, Generation: request.Generation,
 		OperationID: operationIDPointer, Phase: phase, RequestedScopesJSON: requestedScopesJSON,
 		State: model.FeishuAuthSessionPending, ExpiresAt: now.Add(s.sessionDuration),
+		CreatedAt: now, UpdatedAt: now,
 	}
 	if phase == model.FeishuAuthPhaseUserAuth {
 		candidate.ProtocolVersion = 2
@@ -1059,7 +1060,7 @@ func (s *AuthSessionService) RefreshOperationAction(
 	replacement := &model.FeishuAuthSession{
 		ID: s.newID(), UserID: userID, Generation: generation, OperationID: &operationID,
 		Phase: phase, RequestedScopesJSON: mustMarshalAuthScopes(plannedScopes), State: model.FeishuAuthSessionPending,
-		ExpiresAt: now.Add(s.sessionDuration),
+		ExpiresAt: now.Add(s.sessionDuration), CreatedAt: now, UpdatedAt: now,
 	}
 	summary = advanceOperationSession(summary, replacement.ID)
 	expiresAt := replacement.ExpiresAt.UTC()
