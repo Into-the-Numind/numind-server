@@ -11,11 +11,12 @@ import (
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
+	membershipmodel "numind-server/internal/pkg/model/membership"
 )
 
 // GrantMembershipRequest is the JSON body for POST /v1/users/children/:child_id/grant-membership.
 type GrantMembershipRequest struct {
-	ProductType string `json:"product_type" binding:"required,oneof=trial monthly"`
+	ProductType string `json:"product_type" binding:"required,oneof=trial weekly monthly"`
 	Months      int    `json:"months"       binding:"omitempty,min=0,max=12"`
 }
 
@@ -24,10 +25,10 @@ type GrantMembershipRequest struct {
 // Auth context: current user = parent (B2B2C account).
 // Path param:   :child_id = target child user ID.
 // Header:       Idempotency-Key (enforced by RequireIdempotencyKey middleware).
-// Body:         { product_type: "trial"|"monthly", months: 0-12 }.
+// Body:         { product_type: "trial"|"weekly"|"monthly", months: 0-12 }.
 //
 // Dispatches to MembershipService.GrantTrial (trial) or
-// MembershipService.GrantOrRenewSubscription (monthly).
+// MembershipService.GrantWeeklySubscription / GrantOrRenewSubscription.
 func (c *CreditController) GrantMembership(ctx *gin.Context) {
 	log.C(ctx).Infow("GrantMembership called")
 
@@ -56,6 +57,10 @@ func (c *CreditController) GrantMembership(ctx *gin.Context) {
 	// 4. Validate product-type-specific rules.
 	if req.ProductType == "trial" && req.Months > 0 {
 		core.WriteResponse(ctx, errno.ErrBind.SetMessage("trial 类型不接受 months 参数"), nil)
+		return
+	}
+	if req.ProductType == "weekly" && req.Months > 0 {
+		core.WriteResponse(ctx, errno.ErrBind.SetMessage("weekly 类型不接受 months 参数"), nil)
 		return
 	}
 	if req.ProductType == "monthly" && (req.Months < 1 || req.Months > 12) {
@@ -117,8 +122,38 @@ func (c *CreditController) GrantMembership(ctx *gin.Context) {
 			"expires_at":    res.TrialGrant.ExpiresAt,
 		})
 
+	case "weekly":
+		finalParentID := parentID
+		if parentID == childID64 && parent.ParentUserID == nil {
+			finalParentID = 0
+		}
+		res, err := c.membershipSvc.GrantWeeklySubscription(ctx, membership.GrantWeeklySubscriptionRequest{
+			ParentUserID:   finalParentID,
+			UserID:         childID64,
+			GranterUserID:  &parentID,
+			IdempotencyKey: idemKey,
+		})
+		if err != nil {
+			log.C(ctx).Errorw("GrantWeeklySubscription failed",
+				"parent_id", parentID,
+				"child_id", childID64,
+				"err", err)
+			core.WriteResponse(ctx, mapMembershipError(err), nil)
+			return
+		}
+		eventType := scenarioToEventType(res.Scenario)
+		core.WriteResponse(ctx, nil, gin.H{
+			"child_user_id": childID64,
+			"product_type":  "weekly",
+			"event_id":      res.EventID,
+			"event_type":    eventType,
+			"expires_at":    res.ExpiresAt,
+			"scenario":      res.Scenario,
+			"days":          membershipmodel.WeeklyDurationDays,
+		})
+
 	case "monthly":
-		var finalParentID uint64 = parentID
+		finalParentID := parentID
 		if parentID == childID64 && parent.ParentUserID == nil {
 			finalParentID = 0
 		}

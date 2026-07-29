@@ -90,6 +90,8 @@ func newB2BTestDB(t *testing.T) *gorm.DB {
 		current_started_at       DATETIME NOT NULL,
 		expires_at               DATETIME NOT NULL,
 		total_months_purchased   INTEGER NOT NULL,
+			plan_type              TEXT NOT NULL DEFAULT 'monthly',
+			cycle_credits          INTEGER NOT NULL DEFAULT 2000,
 		source                   TEXT NOT NULL,
 		granter_user_id          INTEGER,
 		created_at               DATETIME NOT NULL,
@@ -197,6 +199,37 @@ func insertSubRenewal(t *testing.T, db *gorm.DB, granterID, childID uint, months
 		GranterUserID:  &granterID64,
 		IdempotencyKey: &key,
 		OccurredAt:     occurredAt,
+	}
+	require.NoError(t, db.Create(ev).Error)
+}
+
+func insertWeeklyGrant(t *testing.T, db *gorm.DB, granterID, childID uint, grantedAt time.Time) {
+	t.Helper()
+	granterID64 := uint64(granterID)
+	expiresAt := grantedAt.AddDate(0, 0, membershipModel.WeeklyDurationDays)
+
+	res := db.Exec(
+		`INSERT INTO subscription (user_id, first_started_at, current_started_at, expires_at,
+			total_months_purchased, plan_type, cycle_credits, source, granter_user_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		childID, grantedAt, grantedAt, expiresAt, 0,
+		membershipModel.ProductTypeWeekly, membershipModel.WeeklyCycleCredits,
+		membershipModel.SourceB2BGrant, granterID64, grantedAt, grantedAt,
+	)
+	require.NoError(t, res.Error)
+
+	quantity := uint16(1)
+	key := fmt.Sprintf("uuid-weekly-%d-%d-%d", granterID, childID, grantedAt.UnixNano())
+	ev := &membershipModel.MembershipEvent{
+		UserID:         uint64(childID),
+		EventType:      membershipModel.EventTypeSubGranted,
+		ProductType:    membershipModel.ProductTypeWeekly,
+		Quantity:       &quantity,
+		AmountCents:    membershipModel.WeeklyPriceCents,
+		Source:         membershipModel.SourceB2BGrant,
+		GranterUserID:  &granterID64,
+		IdempotencyKey: &key,
+		OccurredAt:     grantedAt,
 	}
 	require.NoError(t, db.Create(ev).Error)
 }
@@ -604,6 +637,28 @@ func TestTrial_ExcludedFromOtherMonth(t *testing.T) {
 	r, err := biz.GetBillingReport(context.Background(), "2026-04")
 	require.NoError(t, err)
 	assert.Empty(t, r.ByParent)
+}
+
+func TestWeekly_BilledFromMembershipEvent(t *testing.T) {
+	db := newB2BTestDB(t)
+	ds := store.NewTestStore(db)
+	biz := New(ds)
+
+	parent := insertB2BUser(t, db, "user_moxiaopai")
+	user := insertB2BUser(t, db, "weekly_user")
+
+	may12 := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	insertWeeklyGrant(t, db, parent, user, may12)
+
+	r, err := biz.GetBillingReport(context.Background(), "2026-05")
+	require.NoError(t, err)
+	require.Len(t, r.ByParent, 1)
+	assert.Equal(t, 1, r.ByParent[0].GrantsCount)
+	assert.EqualValues(t, membershipModel.WeeklyPriceCents, r.ByParent[0].AmountCents)
+	require.Len(t, r.ByParent[0].Details, 1)
+	assert.Equal(t, membershipModel.ProductTypeWeekly, r.ByParent[0].Details[0].ProductType)
+	assert.Equal(t, 0, r.ByParent[0].Details[0].Months)
+	assert.EqualValues(t, membershipModel.WeeklyPriceCents, r.ByParent[0].Details[0].AmountCents)
 }
 
 // --------------------------------------------------------------------------

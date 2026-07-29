@@ -19,6 +19,7 @@ const (
 	EventTypeRefundLost = "refund_lost"
 
 	ProductTypeTrial   = "trial"
+	ProductTypeWeekly  = "weekly"
 	ProductTypeMonthly = "monthly"
 	ProductTypeBooster = "booster"
 )
@@ -35,12 +36,18 @@ const (
 //   - 1 month grant     = ¥99   (9900 fen)
 //   - N month grant     = N × ¥99  (2 ≤ N ≤ 11)
 //   - 12 month grant    = ¥949 (94900 fen)  — annual discount, NOT 12 × ¥99
+//   - Weekly grant      = ¥25   (2500 fen), 7 days, 500 credits
 //   - Trial grant       = ¥9.9  (990 fen)
 //   - Booster           = excluded from settlement (self-purchase by user)
 const (
 	MonthlyPriceCents = 9900  // ¥99 per month
 	AnnualPriceCents  = 94900 // ¥949 for a single 12-month batch grant
+	WeeklyPriceCents  = 2500  // ¥25 per 7-day weekly grant
 	TrialPriceCents   = 990   // ¥9.9 per trial grant
+
+	MonthlyCycleCredits = 2000
+	WeeklyCycleCredits  = 500
+	WeeklyDurationDays  = 7
 )
 
 // PriceForMonths returns the settlement amount in cents for a subscription

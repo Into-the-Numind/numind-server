@@ -42,6 +42,16 @@ type GrantSubscriptionRequest struct {
 	Now time.Time
 }
 
+// GrantWeeklySubscriptionRequest carries the parameters for a 7-day weekly
+// subscription grant (B2B2C path).
+type GrantWeeklySubscriptionRequest struct {
+	ParentUserID   uint64
+	UserID         uint64
+	GranterUserID  *uint64
+	IdempotencyKey *string
+	Now            time.Time
+}
+
 // GrantResult is returned on a successful (or idempotent replay) GrantOrRenewSubscription call.
 type GrantResult struct {
 	EventID              uint64
@@ -222,6 +232,156 @@ func (s *MembershipService) GrantOrRenewSubscription(ctx context.Context, req Gr
 	return &result, nil
 }
 
+// GrantWeeklySubscription opens, renews, or reopens a 7-day weekly subscription.
+//
+// Weekly is a paid subscription plan:
+//   - duration: 7 days
+//   - cycle credits: 500
+//   - amount: RMB 25
+//
+// Active monthly and weekly subscriptions are not stacked in this release. A
+// same-plan weekly renewal extends expires_at by 7 days from the current expiry.
+func (s *MembershipService) GrantWeeklySubscription(ctx context.Context, req GrantWeeklySubscriptionRequest) (*GrantResult, error) {
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	now = now.Truncate(time.Second)
+
+	if err := validateWeeklySubscriptionInput(req); err != nil {
+		return nil, err
+	}
+
+	if req.IdempotencyKey != nil && *req.IdempotencyKey != "" {
+		existing, err := s.store.Events().GetByIdempotencyKey(ctx, *req.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+		if existing != nil {
+			if existing.UserID != req.UserID {
+				return nil, errno.ErrIdempotencyKeyConflict
+			}
+			return s.replayGrantResult(ctx, existing)
+		}
+	}
+
+	var result GrantResult
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		sub, err := s.store.Subscriptions().GetForUpdate(ctx, tx, req.UserID)
+		if err != nil {
+			return err
+		}
+
+		var scenario string
+		switch {
+		case sub == nil:
+			scenario = "new"
+		case sub.ExpiresAt.After(now):
+			if subscriptionPlanType(sub) != model.ProductTypeWeekly {
+				return errno.ErrInvalidParameter.SetMessage("用户已有在期月度会员，暂不支持叠加周度会员")
+			}
+			scenario = "renew"
+		default:
+			scenario = "reopen"
+		}
+
+		eventTypeMap := map[string]string{
+			"new":    model.EventTypeSubGranted,
+			"renew":  model.EventTypeSubRenewed,
+			"reopen": model.EventTypeSubGranted,
+		}
+		eventType := eventTypeMap[scenario]
+
+		switch scenario {
+		case "new":
+			expiresAt := now.AddDate(0, 0, model.WeeklyDurationDays)
+			newSub := &model.Subscription{
+				UserID:               req.UserID,
+				FirstStartedAt:       now,
+				CurrentStartedAt:     now,
+				ExpiresAt:            expiresAt,
+				TotalMonthsPurchased: 0,
+				PlanType:             model.ProductTypeWeekly,
+				CycleCredits:         model.WeeklyCycleCredits,
+				Source:               model.SourceB2BGrant,
+				GranterUserID:        req.GranterUserID,
+				CreatedAt:            now,
+				UpdatedAt:            now,
+			}
+			if err := s.store.Subscriptions().Create(ctx, tx, newSub); err != nil {
+				if isUniqueViolation(err, "uniq_sub_user_id") {
+					return err
+				}
+				return err
+			}
+			sub = newSub
+
+		case "renew":
+			sub.ExpiresAt = sub.ExpiresAt.AddDate(0, 0, model.WeeklyDurationDays)
+			sub.PlanType = model.ProductTypeWeekly
+			sub.CycleCredits = model.WeeklyCycleCredits
+			sub.Source = model.SourceB2BGrant
+			sub.GranterUserID = req.GranterUserID
+			sub.UpdatedAt = now
+			if err := s.store.Subscriptions().Update(ctx, tx, sub); err != nil {
+				return err
+			}
+
+		case "reopen":
+			if err := s.store.CreditCycles().DeleteExpired(ctx, tx, req.UserID, now); err != nil {
+				return err
+			}
+			sub.CurrentStartedAt = now
+			sub.TotalMonthsPurchased = 0
+			sub.ExpiresAt = now.AddDate(0, 0, model.WeeklyDurationDays)
+			sub.PlanType = model.ProductTypeWeekly
+			sub.CycleCredits = model.WeeklyCycleCredits
+			sub.Source = model.SourceB2BGrant
+			sub.GranterUserID = req.GranterUserID
+			sub.UpdatedAt = now
+			if err := s.store.Subscriptions().Update(ctx, tx, sub); err != nil {
+				return err
+			}
+		}
+
+		quantity := uint16(1)
+		evt := &model.MembershipEvent{
+			UserID:         req.UserID,
+			EventType:      eventType,
+			ProductType:    model.ProductTypeWeekly,
+			Quantity:       &quantity,
+			AmountCents:    model.WeeklyPriceCents,
+			Source:         model.SourceB2BGrant,
+			GranterUserID:  req.GranterUserID,
+			IdempotencyKey: req.IdempotencyKey,
+			SubscriptionID: &sub.ID,
+			OccurredAt:     now,
+		}
+		if err := s.store.Events().Create(ctx, tx, evt); err != nil {
+			if isUniqueViolation(err, "uniq_event_idempotency_key") {
+				return errno.ErrIdempotencyKeyConflict
+			}
+			return err
+		}
+
+		result = GrantResult{
+			EventID:              evt.ID,
+			SubscriptionID:       sub.ID,
+			FirstStartedAt:       sub.FirstStartedAt,
+			CurrentStartedAt:     sub.CurrentStartedAt,
+			ExpiresAt:            sub.ExpiresAt,
+			TotalMonthsPurchased: sub.TotalMonthsPurchased,
+			Scenario:             scenario,
+			Replayed:             false,
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // replayGrantResult reconstructs a GrantResult from the existing event and the
 // current subscription state for idempotency replay.
 func (s *MembershipService) replayGrantResult(ctx context.Context, evt *model.MembershipEvent) (*GrantResult, error) {
@@ -273,6 +433,16 @@ func validateSubscriptionInput(req GrantSubscriptionRequest) error {
 		return errno.ErrInvalidParameter
 	}
 	if req.Months < 1 || req.Months > 12 {
+		return errno.ErrInvalidParameter
+	}
+	return nil
+}
+
+func validateWeeklySubscriptionInput(req GrantWeeklySubscriptionRequest) error {
+	if req.ParentUserID == req.UserID {
+		return errno.ErrMembershipSelfPurchaseDisabled
+	}
+	if req.UserID == 0 {
 		return errno.ErrInvalidParameter
 	}
 	return nil

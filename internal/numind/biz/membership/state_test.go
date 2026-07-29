@@ -50,6 +50,24 @@ func seedActiveSub(t *testing.T, db *gorm.DB, userID uint64, currentStartedAt, e
 	return sub
 }
 
+func seedActiveWeeklySub(t *testing.T, db *gorm.DB, userID uint64, currentStartedAt, expiresAt time.Time) *model.Subscription {
+	t.Helper()
+	sub := &model.Subscription{
+		UserID:               userID,
+		FirstStartedAt:       currentStartedAt,
+		CurrentStartedAt:     currentStartedAt,
+		ExpiresAt:            expiresAt,
+		TotalMonthsPurchased: 0,
+		PlanType:             model.ProductTypeWeekly,
+		CycleCredits:         model.WeeklyCycleCredits,
+		Source:               model.SourceB2BGrant,
+		CreatedAt:            currentStartedAt,
+		UpdatedAt:            currentStartedAt,
+	}
+	require.NoError(t, db.Create(sub).Error)
+	return sub
+}
+
 // seedBooster inserts a user_booster_balance row for userID.
 func seedBooster(t *testing.T, db *gorm.DB, userID uint64, creditsRemaining int64) {
 	t.Helper()
@@ -220,6 +238,26 @@ func TestGetBalance_NoCycleRowYet(t *testing.T) {
 	assert.Equal(t, int64(0), bal.TrialRemaining)
 	assert.Equal(t, int64(0), bal.BoosterTotal)
 	assert.Equal(t, int64(0), bal.BoosterUsable)
+}
+
+func TestGetBalance_WeeklyNoCycleRowYetDefaultsTo500(t *testing.T) {
+	db := newTestDB(t)
+	svc := biz.NewMembershipService(db)
+	ctx := context.Background()
+
+	now := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+	subStart := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	subExpires := time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC)
+	seedActiveWeeklySub(t, db, 9014, subStart, subExpires)
+
+	bal, err := svc.GetBalance(ctx, 9014, now)
+	require.NoError(t, err)
+	require.NotNil(t, bal)
+
+	assert.Equal(t, "pro", bal.MembershipState)
+	assert.Equal(t, int64(model.WeeklyCycleCredits), bal.CycleRemaining)
+	require.NotNil(t, bal.CycleEnd)
+	assert.Equal(t, subExpires, *bal.CycleEnd)
 }
 
 // TestGetBalance_BoosterFrozen tests INV-19: when neither trial nor sub is active,

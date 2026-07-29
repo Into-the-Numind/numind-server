@@ -27,6 +27,7 @@ import (
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
+	membershipmodel "numind-server/internal/pkg/model/membership"
 )
 
 // ---------------------------------------------------------------------------
@@ -51,6 +52,8 @@ func newMembershipTestDB(t *testing.T) *gorm.DB {
 			current_started_at     DATETIME NOT NULL,
 			expires_at             DATETIME NOT NULL,
 			total_months_purchased INTEGER NOT NULL,
+			plan_type              TEXT NOT NULL DEFAULT 'monthly',
+			cycle_credits          INTEGER NOT NULL DEFAULT 2000,
 			source                 TEXT NOT NULL DEFAULT 'b2b_grant',
 			granter_user_id        INTEGER,
 			created_at             DATETIME NOT NULL,
@@ -302,6 +305,53 @@ func TestGrantMembership_Monthly_NewSubscription(t *testing.T) {
 	assert.NotEmpty(t, env.Data.ExpiresAt)
 }
 
+func TestGrantMembership_Weekly_NewSubscription(t *testing.T) {
+	db := newMembershipTestDB(t)
+	seedChildUser(t, db, 1, 252)
+	svc := membership.NewMembershipService(db)
+	ctrl := makeGrantCtrl(db, svc)
+	r := newGrantRouter(t, ctrl, makeUser(1), "idem-weekly-001")
+
+	w := postGrant(t, r, 252, map[string]interface{}{
+		"product_type": "weekly",
+	})
+
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+
+	var env struct {
+		Code int `json:"code"`
+		Data struct {
+			ChildUserID uint64 `json:"child_user_id"`
+			ProductType string `json:"product_type"`
+			EventID     uint64 `json:"event_id"`
+			EventType   string `json:"event_type"`
+			ExpiresAt   string `json:"expires_at"`
+			Scenario    string `json:"scenario"`
+			Days        int    `json:"days"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&env))
+
+	assert.Equal(t, 0, env.Code)
+	assert.Equal(t, uint64(252), env.Data.ChildUserID)
+	assert.Equal(t, "weekly", env.Data.ProductType)
+	assert.Equal(t, "sub_granted", env.Data.EventType)
+	assert.Equal(t, "new", env.Data.Scenario)
+	assert.Equal(t, membershipmodel.WeeklyDurationDays, env.Data.Days)
+	assert.True(t, env.Data.EventID > 0, "event_id must be set")
+
+	expiresAt, err := time.Parse(time.RFC3339, env.Data.ExpiresAt)
+	require.NoError(t, err)
+	diff := expiresAt.Sub(time.Now().UTC())
+	assert.True(t, diff > 6*24*time.Hour && diff < 8*24*time.Hour,
+		"weekly must expire in ~7 days, got %v", diff)
+
+	var sub membershipmodel.Subscription
+	require.NoError(t, db.Where("user_id = ?", uint64(252)).Take(&sub).Error)
+	assert.Equal(t, membershipmodel.ProductTypeWeekly, sub.PlanType)
+	assert.Equal(t, membershipmodel.WeeklyCycleCredits, sub.CycleCredits)
+}
+
 // TestGrantMembership_Monthly_Renewal verifies a renewal (second grant while
 // subscription is still active) returns event_type="sub_renewed".
 func TestGrantMembership_Monthly_Renewal(t *testing.T) {
@@ -375,6 +425,19 @@ func TestGrantMembership_Monthly_MonthsZero_Returns400(t *testing.T) {
 	w := postGrant(t, r, 202, map[string]interface{}{
 		"product_type": "monthly",
 		"months":       0,
+	})
+
+	assert.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
+}
+
+func TestGrantMembership_Weekly_MonthsNonZero_Returns400(t *testing.T) {
+	db := newMembershipTestDB(t)
+	ctrl := makeGrantCtrl(db, membership.NewMembershipService(db))
+	r := newGrantRouter(t, ctrl, makeUser(1), "idem-val-weekly-001")
+
+	w := postGrant(t, r, 252, map[string]interface{}{
+		"product_type": "weekly",
+		"months":       1,
 	})
 
 	assert.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
