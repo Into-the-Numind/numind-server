@@ -44,14 +44,18 @@ T1..T17 ───────────────────────> T
 - 新增 `internal/numind/biz/sandbox/broker_protocol.go`
 - 新增 `internal/numind/biz/sandbox/broker_client.go`
 - 新增 `internal/numind/biz/sandbox/broker_client_test.go`
+- 修改 `go.mod`（将已锁定的 `golang.org/x/sys` 依赖标记为 direct）
 - 修改 `internal/numind/biz/sandbox/config.go`
 - 修改 `internal/numind/biz/sandbox/config_test.go`
 - 修改 `internal/numind/biz/sandbox/errors.go`
+- 修改 `internal/numind/biz/sandbox/pool.go`（关闭 broker idle connections）
 
 **实现**
 
 - `BackendBroker`、socket/metadata/连接/copy/输出/超时配置与spec默认值。
 - HTTP-over-Unix client完整实现`DockerClient`；opaque lease id替代Docker id。
+- 预热create显式发送`agent_run_id=0/sandbox_session_id=0`；提供
+  activate/heartbeat/persisting lease lifecycle接口，真实ID在任务借出后绑定。
 - strict JSON；请求模型中不存在image/mount/network/device/privileged/cap/cgroup字段。
 - capacity/unavailable/policy/OOM/timeout/size错误映射。
 - Copy使用有界stream，context取消关闭连接且不泄漏goroutine。
@@ -331,6 +335,8 @@ T1..T17 ───────────────────────> T
 - disabled→disabled Pool，docker→现有CLI，broker→Unix client。
 - broker不可达时Pool异步预热失败但NewBiz/API仍启动。
 - Agent/Skill/Document继续复用现有Pool/DockerClient路径。
+- SandboxHook创建审计行后调用activate绑定run/session；绑定失败立即销毁lease并
+  收口审计行，不能执行代码。
 
 **RED/验收**
 

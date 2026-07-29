@@ -35,6 +35,7 @@ features:
   - 'S3 review round 1: FAIL with 0 P0, 7 P1, 2 P2; plan was split into 18 independently buildable tasks, capacity evidence/formula became executable, and every task now has a closed file list.'
   - 'S3 review round 2: PASS with 0 P0, 0 P1, 0 P2; DAG is acyclic and all 18 tasks are independently buildable and verifiable.'
   - 'T1: broker protocol/config/client implemented without switching any environment; focused tests, race tests, go vet, and task lint pass.'
+  - 'T1 review round 1: both independent reviews FAIL (each 0 P0, 5 P1, 3 P2); warm-lease binding, mutation idempotency, lifecycle, bounded/cancellable streams, strict protocol decoding, file extraction, hard ceilings, and connection cleanup were hardened before re-review.'
   blockers: []
 - id: xhs-analytics-summary-tests
   ndf_version: '3.0'

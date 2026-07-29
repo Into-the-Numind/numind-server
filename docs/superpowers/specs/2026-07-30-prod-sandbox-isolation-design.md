@@ -163,12 +163,15 @@ Agent run 强制取消继续先写数据库的 `cancellation_requested_at`。管
 {
   "request_id": "uuid",
   "owner_id": "api-instance/boot-id",
-  "agent_run_id": 390,
-  "sandbox_session_id": 123
+  "agent_run_id": 0,
+  "sandbox_session_id": 0
 }
 ```
 
 调用方不能提供镜像或 Docker 参数。broker 使用服务端固定模板创建容器。
+预热容器创建时任务尚未发生，因此两个业务关联 ID 固定为 0；这不是缺失值，
+而是明确表示 `ready/unbound`。容器被真实任务借出后，必须通过下一节的
+`activate` 原子绑定真实 ID，之后不可改绑。
 
 响应：
 
@@ -184,7 +187,20 @@ Agent run 强制取消继续先写数据库的 `cancellation_requested_at`。管
 
 #### `POST /v1/leases/{id}/activate`
 
-Pool 把待命容器借给任务时调用。状态由 `ready` 变成 `active`，并开始 300 秒会话计时。
+Pool 把待命容器借给任务、且 `agent_sandbox_session` 审计行创建成功后调用：
+
+```json
+{
+  "request_id": "uuid",
+  "agent_run_id": 390,
+  "sandbox_session_id": 123
+}
+```
+
+状态由 `ready/unbound` 原子变成 `active/bound`，并开始 300 秒会话计时。
+两个 ID 必须都大于 0；同一 `request_id` 可重放，但已绑定 lease 不允许换绑到
+其他 run/session。若 activate 失败，API 立即归还/销毁该 lease，并把刚创建的审计
+行收口为 failed，不能继续执行用户代码。
 
 #### `POST /v1/leases/{id}/heartbeat`
 

@@ -40,9 +40,10 @@ type BrokerErrorResponse struct {
 }
 
 type BrokerCreateLeaseRequest struct {
-	RequestID   string `json:"request_id"`
-	OwnerID     string `json:"owner_id"`
-	OwnerBootID string `json:"owner_boot_id"`
+	RequestID        string `json:"request_id"`
+	OwnerID          string `json:"owner_id"`
+	AgentRunID       uint64 `json:"agent_run_id"`
+	SandboxSessionID uint64 `json:"sandbox_session_id"`
 }
 
 type BrokerCreateLeaseResponse struct {
@@ -57,6 +58,16 @@ type BrokerExecRequest struct {
 	Env       []string `json:"env,omitempty"`
 }
 
+type BrokerActivateRequest struct {
+	RequestID        string `json:"request_id"`
+	AgentRunID       uint64 `json:"agent_run_id"`
+	SandboxSessionID uint64 `json:"sandbox_session_id"`
+}
+
+type BrokerMutationRequest struct {
+	RequestID string `json:"request_id"`
+}
+
 type BrokerExecResponse struct {
 	Stdout   string        `json:"stdout,omitempty"`
 	Stderr   string        `json:"stderr,omitempty"`
@@ -65,11 +76,10 @@ type BrokerExecResponse struct {
 }
 
 type BrokerInspectResponse struct {
-	Status      string `json:"status"`
-	ExitCode    int    `json:"exit_code"`
-	OOMKilled   bool   `json:"oom_killed"`
-	OwnerID     string `json:"owner_id,omitempty"`
-	OwnerBootID string `json:"owner_boot_id,omitempty"`
+	Status    string `json:"status"`
+	ExitCode  int    `json:"exit_code"`
+	OOMKilled bool   `json:"oom_killed"`
+	OwnerID   string `json:"owner_id,omitempty"`
 }
 
 type BrokerMkdirRequest struct {

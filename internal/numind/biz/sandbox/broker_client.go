@@ -15,9 +15,11 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/sys/unix"
 )
 
 type brokerDockerClient struct {
@@ -26,10 +28,22 @@ type brokerDockerClient struct {
 	ownerID     string
 	ownerBootID string
 	http        *http.Client
+	transport   *http.Transport
 	logger      Logger
 }
 
 var _ DockerClient = (*brokerDockerClient)(nil)
+
+// BrokerLeaseLifecycle is implemented only by the constrained broker client.
+// Warm leases are created unbound; the Agent hook binds run/session IDs after
+// its durable audit row exists.
+type BrokerLeaseLifecycle interface {
+	Activate(ctx context.Context, leaseID string, agentRunID uint64, sandboxSessionID uint64) error
+	Heartbeat(ctx context.Context, leaseID string) error
+	MarkPersisting(ctx context.Context, leaseID string) error
+}
+
+var _ BrokerLeaseLifecycle = (*brokerDockerClient)(nil)
 
 // NewBrokerDockerClient creates a DockerClient-compatible client for sandboxd.
 // The returned client has no Docker CLI or socket access.
@@ -60,23 +74,27 @@ func NewBrokerDockerClient(cfg SandboxConfig, logger Logger) (DockerClient, erro
 		ownerID:     defaultSandboxOwnerID(),
 		ownerBootID: currentSandboxOwnerBootID(),
 		http:        &http.Client{Transport: transport},
+		transport:   transport,
 		logger:      logger,
 	}, nil
 }
 
 func validateBrokerClientLimits(cfg SandboxConfig) error {
-	values := map[string]int{
-		"metadata max bytes":    cfg.BrokerMetadataMaxBytes,
-		"exec output max bytes": cfg.BrokerExecOutputMaxBytes,
-		"copy-in max bytes":     cfg.BrokerCopyInMaxBytes,
-		"copy-out max bytes":    cfg.BrokerCopyOutMaxBytes,
-		"single-file max bytes": cfg.BrokerSingleFileMaxBytes,
-		"max files":             cfg.BrokerMaxFiles,
-		"max connections":       cfg.BrokerMaxConnections,
+	values := map[string]struct {
+		value int
+		max   int
+	}{
+		"metadata max bytes":    {cfg.BrokerMetadataMaxBytes, DefaultBrokerMetadataMaxBytes},
+		"exec output max bytes": {cfg.BrokerExecOutputMaxBytes, DefaultBrokerExecOutputMaxBytes},
+		"copy-in max bytes":     {cfg.BrokerCopyInMaxBytes, DefaultBrokerCopyInMaxBytes},
+		"copy-out max bytes":    {cfg.BrokerCopyOutMaxBytes, DefaultBrokerCopyOutMaxBytes},
+		"single-file max bytes": {cfg.BrokerSingleFileMaxBytes, DefaultBrokerSingleFileMaxBytes},
+		"max files":             {cfg.BrokerMaxFiles, DefaultBrokerMaxFiles},
+		"max connections":       {cfg.BrokerMaxConnections, DefaultBrokerMaxConnections},
 	}
-	for name, value := range values {
-		if value <= 0 {
-			return fmt.Errorf("%w: broker %s must be positive", ErrBrokerProtocolViolation, name)
+	for name, limit := range values {
+		if limit.value <= 0 || limit.value > limit.max {
+			return fmt.Errorf("%w: broker %s is outside the safe range", ErrBrokerProtocolViolation, name)
 		}
 	}
 	if cfg.BrokerSingleFileMaxBytes > cfg.BrokerCopyInMaxBytes ||
@@ -90,9 +108,10 @@ func (c *brokerDockerClient) Spawn(ctx context.Context, cfg SpawnConfig) (string
 	ownerID, ownerBootID := brokerOwnerFromLabels(cfg.Labels, c.ownerID, c.ownerBootID)
 	var out BrokerCreateLeaseResponse
 	err := c.doJSON(ctx, http.MethodPost, BrokerAPIPrefix+"/leases", BrokerCreateLeaseRequest{
-		RequestID:   uuid.NewString(),
-		OwnerID:     ownerID,
-		OwnerBootID: ownerBootID,
+		RequestID:        uuid.NewString(),
+		OwnerID:          brokerFullOwnerID(ownerID, ownerBootID),
+		AgentRunID:       0,
+		SandboxSessionID: 0,
 	}, &out, int64(c.cfg.BrokerMetadataMaxBytes))
 	if err != nil {
 		return "", err
@@ -101,6 +120,34 @@ func (c *brokerDockerClient) Spawn(ctx context.Context, cfg SpawnConfig) (string
 		return "", fmt.Errorf("%w: create lease returned an empty id", ErrBrokerProtocolViolation)
 	}
 	return out.LeaseID, nil
+}
+
+func (c *brokerDockerClient) Activate(
+	ctx context.Context,
+	leaseID string,
+	agentRunID uint64,
+	sandboxSessionID uint64,
+) error {
+	if agentRunID == 0 || sandboxSessionID == 0 {
+		return ErrSandboxPolicyDenied
+	}
+	return c.doNoContent(ctx, http.MethodPost, brokerLeasePath(leaseID)+"/activate", BrokerActivateRequest{
+		RequestID:        uuid.NewString(),
+		AgentRunID:       agentRunID,
+		SandboxSessionID: sandboxSessionID,
+	})
+}
+
+func (c *brokerDockerClient) Heartbeat(ctx context.Context, leaseID string) error {
+	return c.doNoContent(ctx, http.MethodPost, brokerLeasePath(leaseID)+"/heartbeat", BrokerMutationRequest{
+		RequestID: uuid.NewString(),
+	})
+}
+
+func (c *brokerDockerClient) MarkPersisting(ctx context.Context, leaseID string) error {
+	return c.doNoContent(ctx, http.MethodPost, brokerLeasePath(leaseID)+"/persisting", BrokerMutationRequest{
+		RequestID: uuid.NewString(),
+	})
 }
 
 func (c *brokerDockerClient) Exec(
@@ -131,7 +178,9 @@ func (c *brokerDockerClient) Exec(
 }
 
 func (c *brokerDockerClient) Destroy(ctx context.Context, leaseID string) error {
-	return c.doNoContent(ctx, http.MethodDelete, brokerLeasePath(leaseID), nil)
+	return c.doNoContent(ctx, http.MethodDelete, brokerLeasePath(leaseID), BrokerMutationRequest{
+		RequestID: uuid.NewString(),
+	})
 }
 
 func (c *brokerDockerClient) Inspect(ctx context.Context, leaseID string) (InspectResult, error) {
@@ -139,12 +188,12 @@ func (c *brokerDockerClient) Inspect(ctx context.Context, leaseID string) (Inspe
 	if err := c.doJSON(ctx, http.MethodGet, brokerLeasePath(leaseID), nil, &out, int64(c.cfg.BrokerMetadataMaxBytes)); err != nil {
 		return InspectResult{}, err
 	}
-	labels := map[string]string{SandboxContainerLabel[:len(SandboxContainerLabel)-2]: "1"}
+	labelKey, labelValue, _ := strings.Cut(SandboxContainerLabel, "=")
+	labels := map[string]string{labelKey: labelValue}
 	if out.OwnerID != "" {
-		labels[SandboxContainerOwnerLabelKey] = out.OwnerID
-	}
-	if out.OwnerBootID != "" {
-		labels[SandboxContainerOwnerBootLabelKey] = out.OwnerBootID
+		ownerID, ownerBootID := brokerSplitOwnerID(out.OwnerID)
+		labels[SandboxContainerOwnerLabelKey] = ownerID
+		labels[SandboxContainerOwnerBootLabelKey] = ownerBootID
 	}
 	return InspectResult{
 		Status:    out.Status,
@@ -162,11 +211,7 @@ func (c *brokerDockerClient) CopyToContainer(
 ) error {
 	requestPath := brokerLeasePath(leaseID) + "/files?path=" + url.QueryEscape(dstPath)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, brokerBaseURL()+requestPath,
-		&maxBytesReader{
-			reader: content,
-			remain: int64(c.cfg.BrokerSingleFileMaxBytes),
-			err:    ErrInputTooLarge,
-		})
+		newMaxBytesReadCloser(ctx, content, int64(c.cfg.BrokerSingleFileMaxBytes), ErrInputTooLarge))
 	if err != nil {
 		return fmt.Errorf("%w: build copy-in request", ErrBrokerProtocolViolation)
 	}
@@ -181,6 +226,9 @@ func (c *brokerDockerClient) CopyFromContainer(
 	srcPath string,
 	hostDstDir string,
 ) error {
+	if err := c.MarkPersisting(ctx, leaseID); err != nil {
+		return err
+	}
 	requestPath := brokerLeasePath(leaseID) + "/files?path=" + url.QueryEscape(srcPath)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, brokerBaseURL()+requestPath, nil)
 	if err != nil {
@@ -199,6 +247,7 @@ func (c *brokerDockerClient) CopyFromContainer(
 		return c.decodeBrokerError(resp)
 	}
 	return extractBrokerTar(
+		ctx,
 		resp.Body,
 		hostDstDir,
 		int64(c.cfg.BrokerCopyOutMaxBytes),
@@ -221,7 +270,8 @@ func (c *brokerDockerClient) ListByLabel(ctx context.Context, label string) ([]s
 	if label != SandboxContainerLabel {
 		return nil, ErrSandboxPolicyDenied
 	}
-	requestPath := BrokerAPIPrefix + "/leases?owner_id=" + url.QueryEscape(c.ownerID)
+	requestPath := BrokerAPIPrefix + "/leases?owner_id=" +
+		url.QueryEscape(brokerFullOwnerID(c.ownerID, c.ownerBootID))
 	var out BrokerListLeasesResponse
 	if err := c.doJSON(ctx, http.MethodGet, requestPath, nil, &out, int64(c.cfg.BrokerMetadataMaxBytes)); err != nil {
 		return nil, err
@@ -248,6 +298,9 @@ func (c *brokerDockerClient) doNoContent(ctx context.Context, method string, req
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	if method != http.MethodGet && method != http.MethodHead {
+		req.Header.Set("X-Numind-Request-ID", requestIDFromMutationBody(body))
+	}
 	return c.doRequestNoContent(req)
 }
 
@@ -260,7 +313,7 @@ func (c *brokerDockerClient) doRequestNoContent(req *http.Request) error {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return c.decodeBrokerError(resp)
 	}
-	_, err = readBounded(resp.Body, int64(c.cfg.BrokerMetadataMaxBytes))
+	_, err = readBounded(req.Context(), resp.Body, int64(c.cfg.BrokerMetadataMaxBytes))
 	return err
 }
 
@@ -290,6 +343,9 @@ func (c *brokerDockerClient) doJSON(
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	if method != http.MethodGet && method != http.MethodHead {
+		req.Header.Set("X-Numind-Request-ID", requestIDFromMutationBody(in))
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return c.transportError(ctx, err)
@@ -298,7 +354,7 @@ func (c *brokerDockerClient) doJSON(
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return c.decodeBrokerError(resp)
 	}
-	payload, err := readBounded(resp.Body, maxResponse)
+	payload, err := readBounded(ctx, resp.Body, maxResponse)
 	if err != nil {
 		return err
 	}
@@ -317,7 +373,7 @@ func (c *brokerDockerClient) doJSON(
 }
 
 func (c *brokerDockerClient) decodeBrokerError(resp *http.Response) error {
-	payload, err := readBounded(resp.Body, int64(c.cfg.BrokerMetadataMaxBytes))
+	payload, err := readBounded(resp.Request.Context(), resp.Body, int64(c.cfg.BrokerMetadataMaxBytes))
 	if err != nil {
 		return err
 	}
@@ -327,8 +383,10 @@ func (c *brokerDockerClient) decodeBrokerError(resp *http.Response) error {
 	if err := dec.Decode(&envelope); err != nil {
 		return fmt.Errorf("%w: HTTP %d", ErrBrokerProtocolViolation, resp.StatusCode)
 	}
-	sentinel := brokerErrorSentinel(envelope.Error.Code)
-	return fmt.Errorf("%w: code=%s", sentinel, envelope.Error.Code)
+	if dec.Decode(&struct{}{}) != io.EOF {
+		return ErrBrokerProtocolViolation
+	}
+	return brokerErrorSentinel(envelope.Error.Code)
 }
 
 func (c *brokerDockerClient) transportError(ctx context.Context, err error) error {
@@ -353,7 +411,7 @@ func brokerErrorSentinel(code BrokerErrorCode) error {
 	case BrokerErrorNotFound:
 		return ErrBrokerProtocolViolation
 	case BrokerErrorTimeout:
-		return ErrSandboxTimeout
+		return errors.Join(ErrSandboxTimeout, context.DeadlineExceeded)
 	case BrokerErrorOOM:
 		return ErrSandboxOOM
 	case BrokerErrorInputTooLarge:
@@ -392,13 +450,16 @@ func brokerLeasePath(leaseID string) string {
 	return BrokerAPIPrefix + "/leases/" + url.PathEscape(leaseID)
 }
 
-func readBounded(r io.Reader, max int64) ([]byte, error) {
+func readBounded(ctx context.Context, r io.Reader, max int64) ([]byte, error) {
 	if max <= 0 {
 		return nil, ErrBrokerResponseTooLarge
 	}
 	payload, err := io.ReadAll(io.LimitReader(r, max+1))
 	if err != nil {
-		return nil, fmt.Errorf("%w: read response", ErrBrokerProtocolViolation)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, ErrBrokerUnavailable
 	}
 	if int64(len(payload)) > max {
 		return nil, ErrBrokerResponseTooLarge
@@ -406,13 +467,33 @@ func readBounded(r io.Reader, max int64) ([]byte, error) {
 	return payload, nil
 }
 
-type maxBytesReader struct {
-	reader io.Reader
-	remain int64
-	err    error
+type maxBytesReadCloser struct {
+	reader    io.Reader
+	remain    int64
+	err       error
+	done      chan struct{}
+	closeOnce sync.Once
+	closeErr  error
 }
 
-func (r *maxBytesReader) Read(p []byte) (int, error) {
+func newMaxBytesReadCloser(ctx context.Context, reader io.Reader, remain int64, limitErr error) *maxBytesReadCloser {
+	body := &maxBytesReadCloser{
+		reader: reader,
+		remain: remain,
+		err:    limitErr,
+		done:   make(chan struct{}),
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = body.Close()
+		case <-body.done:
+		}
+	}()
+	return body
+}
+
+func (r *maxBytesReadCloser) Read(p []byte) (int, error) {
 	if r.remain > 0 {
 		if int64(len(p)) > r.remain {
 			p = p[:r.remain]
@@ -429,60 +510,103 @@ func (r *maxBytesReader) Read(p []byte) (int, error) {
 	return 0, err
 }
 
-func extractBrokerTar(r io.Reader, dest string, maxTotal int64, maxSingle int64, maxFiles int) error {
+func (r *maxBytesReadCloser) Close() error {
+	r.closeOnce.Do(func() {
+		close(r.done)
+		if closer, ok := r.reader.(io.Closer); ok {
+			r.closeErr = closer.Close()
+		}
+	})
+	return r.closeErr
+}
+
+func extractBrokerTar(
+	ctx context.Context,
+	r io.Reader,
+	dest string,
+	maxTotal int64,
+	maxSingle int64,
+	maxFiles int,
+) error {
 	if err := os.MkdirAll(dest, 0o700); err != nil {
-		return fmt.Errorf("broker output mkdir: %w", err)
+		return ErrBrokerUnavailable
 	}
+	rootFD, err := unix.Open(dest, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return stableBrokerFileError(err)
+	}
+	defer unix.Close(rootFD)
+
 	tr := tar.NewReader(io.LimitReader(r, maxTotal+(2<<20)+1))
 	var total int64
 	files := 0
 	entries := 0
 	for {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		hdr, err := tr.Next()
 		if err == io.EOF {
 			return nil
 		}
 		if err != nil {
-			return fmt.Errorf("%w: invalid output tar", ErrBrokerProtocolViolation)
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+			if errors.Is(err, io.ErrUnexpectedEOF) {
+				return ErrBrokerUnavailable
+			}
+			return ErrBrokerProtocolViolation
 		}
 		entries++
 		if entries > maxFiles*2+4 {
 			return ErrOutputTooLarge
 		}
-		cleanName, target, err := safeBrokerOutputPath(dest, hdr.Name)
+		parts, err := safeBrokerOutputParts(hdr.Name)
 		if err != nil {
 			return err
 		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o700); err != nil {
-				return fmt.Errorf("broker output mkdir %s: %w", cleanName, err)
+			dirFD, openErr := openBrokerDirAt(rootFD, parts, true)
+			if openErr != nil {
+				return stableBrokerFileError(openErr)
 			}
+			_ = unix.Close(dirFD)
 		case tar.TypeReg:
 			files++
 			if files > maxFiles || hdr.Size < 0 || hdr.Size > maxSingle || total+hdr.Size > maxTotal {
 				return ErrOutputTooLarge
 			}
 			total += hdr.Size
-			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-				return fmt.Errorf("broker output parent mkdir: %w", err)
-			}
-			if info, statErr := os.Lstat(target); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
-				return ErrSandboxPolicyDenied
-			} else if statErr != nil && !os.IsNotExist(statErr) {
-				return fmt.Errorf("broker output lstat: %w", statErr)
-			}
-			f, openErr := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+			parentFD, openErr := openBrokerDirAt(rootFD, parts[:len(parts)-1], true)
 			if openErr != nil {
-				return fmt.Errorf("broker output create: %w", openErr)
+				return stableBrokerFileError(openErr)
 			}
+			fd, openErr := unix.Openat(
+				parentFD,
+				parts[len(parts)-1],
+				unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW,
+				0o600,
+			)
+			_ = unix.Close(parentFD)
+			if openErr != nil {
+				return stableBrokerFileError(openErr)
+			}
+			f := os.NewFile(uintptr(fd), "broker-output")
 			_, copyErr := io.CopyN(f, tr, hdr.Size)
 			closeErr := f.Close()
 			if copyErr != nil {
-				return fmt.Errorf("%w: truncated output file", ErrBrokerProtocolViolation)
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return ctxErr
+				}
+				if errors.Is(copyErr, io.ErrUnexpectedEOF) {
+					return ErrBrokerUnavailable
+				}
+				return ErrBrokerProtocolViolation
 			}
 			if closeErr != nil {
-				return fmt.Errorf("broker output close: %w", closeErr)
+				return ErrBrokerUnavailable
 			}
 		default:
 			return ErrSandboxPolicyDenied
@@ -490,27 +614,85 @@ func extractBrokerTar(r io.Reader, dest string, maxTotal int64, maxSingle int64,
 	}
 }
 
-func safeBrokerOutputPath(dest string, name string) (string, string, error) {
+func safeBrokerOutputParts(name string) ([]string, error) {
 	clean := path.Clean(strings.TrimSpace(name))
 	if clean == "." || clean == "" || path.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, "../") {
-		return "", "", ErrSandboxPolicyDenied
+		return nil, ErrSandboxPolicyDenied
 	}
-	target := filepath.Join(dest, filepath.FromSlash(clean))
-	rel, err := filepath.Rel(dest, target)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", "", ErrSandboxPolicyDenied
-	}
-	current := dest
-	parts := strings.Split(filepath.FromSlash(clean), string(filepath.Separator))
-	for _, part := range parts[:len(parts)-1] {
-		current = filepath.Join(current, part)
-		info, statErr := os.Lstat(current)
-		if statErr == nil && info.Mode()&os.ModeSymlink != 0 {
-			return "", "", ErrSandboxPolicyDenied
-		}
-		if statErr != nil && !os.IsNotExist(statErr) {
-			return "", "", fmt.Errorf("broker output lstat: %w", statErr)
+	parts := strings.Split(clean, "/")
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." || strings.ContainsRune(part, 0) {
+			return nil, ErrSandboxPolicyDenied
 		}
 	}
-	return clean, target, nil
+	return parts, nil
+}
+
+func openBrokerDirAt(rootFD int, parts []string, create bool) (int, error) {
+	currentFD, err := unix.Dup(rootFD)
+	if err != nil {
+		return -1, err
+	}
+	for _, part := range parts {
+		if create {
+			if mkdirErr := unix.Mkdirat(currentFD, part, 0o700); mkdirErr != nil && !errors.Is(mkdirErr, unix.EEXIST) {
+				_ = unix.Close(currentFD)
+				return -1, mkdirErr
+			}
+		}
+		nextFD, openErr := unix.Openat(
+			currentFD,
+			part,
+			unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW,
+			0,
+		)
+		_ = unix.Close(currentFD)
+		if openErr != nil {
+			return -1, openErr
+		}
+		currentFD = nextFD
+	}
+	return currentFD, nil
+}
+
+func stableBrokerFileError(err error) error {
+	if errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR) || errors.Is(err, unix.EEXIST) {
+		return ErrSandboxPolicyDenied
+	}
+	return ErrBrokerUnavailable
+}
+
+func brokerFullOwnerID(ownerID string, ownerBootID string) string {
+	return ownerID + "/" + ownerBootID
+}
+
+func brokerSplitOwnerID(full string) (string, string) {
+	idx := strings.LastIndex(full, "/")
+	if idx <= 0 || idx == len(full)-1 {
+		return full, "unknown"
+	}
+	return full[:idx], full[idx+1:]
+}
+
+func requestIDFromMutationBody(body any) string {
+	switch req := body.(type) {
+	case BrokerCreateLeaseRequest:
+		return req.RequestID
+	case BrokerExecRequest:
+		return req.RequestID
+	case BrokerActivateRequest:
+		return req.RequestID
+	case BrokerMutationRequest:
+		return req.RequestID
+	case BrokerMkdirRequest:
+		return req.RequestID
+	default:
+		return uuid.NewString()
+	}
+}
+
+// Close releases idle Unix connections owned by this client.
+func (c *brokerDockerClient) Close() error {
+	c.transport.CloseIdleConnections()
+	return nil
 }

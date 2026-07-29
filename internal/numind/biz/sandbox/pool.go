@@ -119,7 +119,7 @@ func (p *disabledPool) Borrow(_ context.Context) (*Session, error) {
 	return nil, ErrSandboxDisabled
 }
 func (p *disabledPool) Return(_ *Session, _ int, _ string) error { return nil }
-func (p *disabledPool) Close() error                             { return nil }
+func (p *disabledPool) Close() error                             { return closeDockerClient(p.dc) }
 func (p *disabledPool) Size() int                                { return 0 }
 func (p *disabledPool) DockerClient() DockerClient               { return p.dc }
 func (p *disabledPool) IsEnabled() bool                          { return false }
@@ -340,9 +340,16 @@ func (p *agentSandboxPool) Close() error {
 			}
 			_ = p.dc.Destroy(destroyCtx, sess.ContainerID)
 		default:
-			return nil
+			return closeDockerClient(p.dc)
 		}
 	}
+}
+
+func closeDockerClient(dc DockerClient) error {
+	if closer, ok := dc.(interface{ Close() error }); ok {
+		return closer.Close()
+	}
+	return nil
 }
 
 // Size returns the current count of warm containers ready for Borrow.

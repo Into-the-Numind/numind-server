@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -59,7 +60,11 @@ func brokerTestConfig(socket string) SandboxConfig {
 func TestBrokerDockerClientImplementsContract(t *testing.T) {
 	var mu sync.Mutex
 	var createKeys []string
+	var createOwner string
+	var createAgentRunID uint64
+	var createSandboxSessionID uint64
 	var copiedIn []byte
+	var lifecycleCalls []string
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/leases", func(w http.ResponseWriter, r *http.Request) {
@@ -75,6 +80,9 @@ func TestBrokerDockerClientImplementsContract(t *testing.T) {
 			for k := range raw {
 				createKeys = append(createKeys, k)
 			}
+			createOwner, _ = raw["owner_id"].(string)
+			createAgentRunID = uint64(raw["agent_run_id"].(float64))
+			createSandboxSessionID = uint64(raw["sandbox_session_id"].(float64))
 			mu.Unlock()
 			writeBrokerJSONForTest(t, w, BrokerCreateLeaseResponse{
 				LeaseID: "lease-1",
@@ -122,6 +130,25 @@ func TestBrokerDockerClientImplementsContract(t *testing.T) {
 			http.Error(w, "method", http.StatusMethodNotAllowed)
 		}
 	})
+	for _, action := range []string{"activate", "heartbeat", "persisting"} {
+		action := action
+		mux.HandleFunc("/v1/leases/lease-1/"+action, func(w http.ResponseWriter, r *http.Request) {
+			assertMutationRequestIDForTest(t, r)
+			if action == "activate" {
+				var req BrokerActivateRequest
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Errorf("decode activate request: %v", err)
+				}
+				if req.AgentRunID != 11 || req.SandboxSessionID != 22 {
+					t.Errorf("activate ids = %d/%d", req.AgentRunID, req.SandboxSessionID)
+				}
+			}
+			mu.Lock()
+			lifecycleCalls = append(lifecycleCalls, action)
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		})
+	}
 	mux.HandleFunc("/v1/leases/lease-1/mkdir", func(w http.ResponseWriter, r *http.Request) {
 		var req BrokerMkdirRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
@@ -134,11 +161,11 @@ func TestBrokerDockerClientImplementsContract(t *testing.T) {
 		switch r.Method {
 		case http.MethodGet:
 			writeBrokerJSONForTest(t, w, BrokerInspectResponse{
-				Status:      "running",
-				OwnerID:     "api-owner",
-				OwnerBootID: "boot-1",
+				Status:  "running",
+				OwnerID: "api-owner/boot-1",
 			})
 		case http.MethodDelete:
+			assertMutationRequestIDForTest(t, r)
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			http.Error(w, "method", http.StatusMethodNotAllowed)
@@ -165,9 +192,22 @@ func TestBrokerDockerClientImplementsContract(t *testing.T) {
 	sort.Strings(createKeys)
 	gotKeys := append([]string(nil), createKeys...)
 	mu.Unlock()
-	wantKeys := []string{"owner_boot_id", "owner_id", "request_id"}
+	wantKeys := []string{"agent_run_id", "owner_id", "request_id", "sandbox_session_id"}
 	if strings.Join(gotKeys, ",") != strings.Join(wantKeys, ",") {
 		t.Fatalf("create request keys = %v; want only %v", gotKeys, wantKeys)
+	}
+	if createOwner != "api-owner/boot-1" || createAgentRunID != 0 || createSandboxSessionID != 0 {
+		t.Fatalf("create binding = owner:%q run:%d session:%d", createOwner, createAgentRunID, createSandboxSessionID)
+	}
+	lifecycle, ok := dc.(BrokerLeaseLifecycle)
+	if !ok {
+		t.Fatal("broker client does not expose lease lifecycle")
+	}
+	if err := lifecycle.Activate(context.Background(), id, 11, 22); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+	if err := lifecycle.Heartbeat(context.Background(), id); err != nil {
+		t.Fatalf("Heartbeat: %v", err)
 	}
 
 	execRes, err := dc.Exec(context.Background(), id, []string{"/bin/sh", "-c", "echo ok"}, ExecOpts{
@@ -214,6 +254,12 @@ func TestBrokerDockerClientImplementsContract(t *testing.T) {
 	if err := dc.Destroy(context.Background(), id); err != nil {
 		t.Fatalf("Destroy: %v", err)
 	}
+	mu.Lock()
+	gotLifecycleCalls := append([]string(nil), lifecycleCalls...)
+	mu.Unlock()
+	if strings.Join(gotLifecycleCalls, ",") != "activate,heartbeat,persisting" {
+		t.Fatalf("lifecycle calls = %v", gotLifecycleCalls)
+	}
 }
 
 func TestBrokerDockerClientMapsErrors(t *testing.T) {
@@ -221,12 +267,13 @@ func TestBrokerDockerClientMapsErrors(t *testing.T) {
 		name string
 		code BrokerErrorCode
 		want error
+		also error
 	}{
 		{name: "capacity", code: BrokerErrorCapacity, want: ErrPoolExhausted},
 		{name: "unavailable", code: BrokerErrorUnavailable, want: ErrBrokerUnavailable},
 		{name: "policy", code: BrokerErrorPolicyDenied, want: ErrSandboxPolicyDenied},
 		{name: "oom", code: BrokerErrorOOM, want: ErrSandboxOOM},
-		{name: "timeout", code: BrokerErrorTimeout, want: ErrSandboxTimeout},
+		{name: "timeout", code: BrokerErrorTimeout, want: ErrSandboxTimeout, also: context.DeadlineExceeded},
 		{name: "input-too-large", code: BrokerErrorInputTooLarge, want: ErrInputTooLarge},
 		{name: "output-too-large", code: BrokerErrorOutputTooLarge, want: ErrOutputTooLarge},
 	}
@@ -244,6 +291,9 @@ func TestBrokerDockerClientMapsErrors(t *testing.T) {
 			if !errors.Is(err, tt.want) {
 				t.Fatalf("Spawn error = %v; want errors.Is(%v)", err, tt.want)
 			}
+			if tt.also != nil && !errors.Is(err, tt.also) {
+				t.Fatalf("Spawn error = %v; want errors.Is(%v)", err, tt.also)
+			}
 			if strings.Contains(err.Error(), "internal detail") {
 				t.Fatalf("client error leaked broker detail: %v", err)
 			}
@@ -252,19 +302,36 @@ func TestBrokerDockerClientMapsErrors(t *testing.T) {
 }
 
 func TestBrokerDockerClientRejectsUnsafeOutputTar(t *testing.T) {
-	socket := startBrokerTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		tw := tar.NewWriter(w)
-		_ = tw.WriteHeader(&tar.Header{Name: "../../escape.txt", Mode: 0o644, Size: 1, Typeflag: tar.TypeReg})
-		_, _ = tw.Write([]byte("x"))
-		_ = tw.Close()
-	}))
-	dc, err := NewBrokerDockerClient(brokerTestConfig(socket), nil)
-	if err != nil {
-		t.Fatal(err)
+	tests := []tar.Header{
+		{Name: "../../escape.txt", Size: 1, Typeflag: tar.TypeReg},
+		{Name: "/absolute.txt", Size: 1, Typeflag: tar.TypeReg},
+		{Name: "link", Linkname: "../../escape", Typeflag: tar.TypeSymlink},
+		{Name: "hardlink", Linkname: "../../escape", Typeflag: tar.TypeLink},
+		{Name: "char-device", Typeflag: tar.TypeChar},
+		{Name: "block-device", Typeflag: tar.TypeBlock},
+		{Name: "fifo", Typeflag: tar.TypeFifo},
 	}
-	err = dc.CopyFromContainer(context.Background(), "lease-1", "/workdir/output/.", t.TempDir())
-	if !errors.Is(err, ErrSandboxPolicyDenied) {
-		t.Fatalf("CopyFromContainer err = %v; want policy denied", err)
+	for _, hdr := range tests {
+		hdr := hdr
+		t.Run(strconv.Itoa(int(hdr.Typeflag))+"-"+strings.ReplaceAll(hdr.Name, "/", "_"), func(t *testing.T) {
+			socket := startBrokerTestServer(t, brokerCopyOutHandler(t, func(tw *tar.Writer) {
+				if err := tw.WriteHeader(&hdr); err != nil {
+					t.Errorf("write tar header: %v", err)
+					return
+				}
+				if hdr.Size > 0 {
+					_, _ = tw.Write(bytes.Repeat([]byte("x"), int(hdr.Size)))
+				}
+			}))
+			dc, err := NewBrokerDockerClient(brokerTestConfig(socket), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = dc.CopyFromContainer(context.Background(), "lease-1", "/workdir/output/.", t.TempDir())
+			if !errors.Is(err, ErrSandboxPolicyDenied) {
+				t.Fatalf("CopyFromContainer err = %v; want policy denied", err)
+			}
+		})
 	}
 }
 
@@ -284,7 +351,11 @@ func TestBrokerDockerClientHonorsCancellation(t *testing.T) {
 		_, err := dc.Spawn(ctx, SpawnConfig{})
 		done <- err
 	}()
-	<-requestStarted
+	select {
+	case <-requestStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("broker request did not start")
+	}
 	cancel()
 	select {
 	case err := <-done:
@@ -293,6 +364,310 @@ func TestBrokerDockerClientHonorsCancellation(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("broker client did not stop after context cancellation")
+	}
+}
+
+func TestNewBrokerDockerClientRejectsUnsafeLimits(t *testing.T) {
+	maxInt := int(^uint(0) >> 1)
+	tests := []struct {
+		name   string
+		mutate func(*SandboxConfig)
+	}{
+		{name: "relative socket", mutate: func(cfg *SandboxConfig) { cfg.BrokerSocket = "sandboxd.sock" }},
+		{name: "metadata zero", mutate: func(cfg *SandboxConfig) { cfg.BrokerMetadataMaxBytes = 0 }},
+		{name: "metadata negative", mutate: func(cfg *SandboxConfig) { cfg.BrokerMetadataMaxBytes = -1 }},
+		{name: "metadata raised", mutate: func(cfg *SandboxConfig) { cfg.BrokerMetadataMaxBytes = DefaultBrokerMetadataMaxBytes + 1 }},
+		{name: "exec raised", mutate: func(cfg *SandboxConfig) { cfg.BrokerExecOutputMaxBytes = DefaultBrokerExecOutputMaxBytes + 1 }},
+		{name: "copy in raised", mutate: func(cfg *SandboxConfig) { cfg.BrokerCopyInMaxBytes = DefaultBrokerCopyInMaxBytes + 1 }},
+		{name: "copy out raised", mutate: func(cfg *SandboxConfig) { cfg.BrokerCopyOutMaxBytes = DefaultBrokerCopyOutMaxBytes + 1 }},
+		{name: "single raised", mutate: func(cfg *SandboxConfig) { cfg.BrokerSingleFileMaxBytes = DefaultBrokerSingleFileMaxBytes + 1 }},
+		{name: "files raised", mutate: func(cfg *SandboxConfig) { cfg.BrokerMaxFiles = DefaultBrokerMaxFiles + 1 }},
+		{name: "connections raised", mutate: func(cfg *SandboxConfig) { cfg.BrokerMaxConnections = DefaultBrokerMaxConnections + 1 }},
+		{name: "max int", mutate: func(cfg *SandboxConfig) { cfg.BrokerCopyOutMaxBytes = maxInt }},
+		{name: "single exceeds copy", mutate: func(cfg *SandboxConfig) {
+			cfg.BrokerSingleFileMaxBytes = 2
+			cfg.BrokerCopyInMaxBytes = 1
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := brokerTestConfig("/tmp/sandboxd-test.sock")
+			tt.mutate(&cfg)
+			_, err := NewBrokerDockerClient(cfg, nil)
+			if !errors.Is(err, ErrBrokerProtocolViolation) {
+				t.Fatalf("NewBrokerDockerClient err = %v; want protocol violation", err)
+			}
+		})
+	}
+
+	cfg := brokerTestConfig("/tmp/sandboxd-test.sock")
+	cfg.BrokerMetadataMaxBytes--
+	if _, err := NewBrokerDockerClient(cfg, nil); err != nil {
+		t.Fatalf("lowered limit rejected: %v", err)
+	}
+}
+
+func TestBrokerDockerClientRejectsMalformedResponses(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "unknown field", body: `{"lease_id":"lease-1","state":"ready","extra":true}`},
+		{name: "trailing json", body: `{"lease_id":"lease-1","state":"ready"} {"lease_id":"lease-2"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			socket := startBrokerTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			dc, err := NewBrokerDockerClient(brokerTestConfig(socket), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = dc.Spawn(context.Background(), SpawnConfig{})
+			if !errors.Is(err, ErrBrokerProtocolViolation) {
+				t.Fatalf("Spawn err = %v; want protocol violation", err)
+			}
+		})
+	}
+}
+
+func TestBrokerDockerClientDoesNotLeakUnknownErrorCode(t *testing.T) {
+	const secretCode = BrokerErrorCode("secret_internal_code")
+	socket := startBrokerTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		writeBrokerJSONForTest(t, w, BrokerErrorResponse{Error: BrokerErrorBody{Code: secretCode}})
+	}))
+	dc, err := NewBrokerDockerClient(brokerTestConfig(socket), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = dc.Spawn(context.Background(), SpawnConfig{})
+	if !errors.Is(err, ErrBrokerProtocolViolation) {
+		t.Fatalf("Spawn err = %v; want protocol violation", err)
+	}
+	if strings.Contains(err.Error(), string(secretCode)) {
+		t.Fatalf("unknown broker code leaked to caller: %v", err)
+	}
+}
+
+func TestBrokerDockerClientRejectsMalformedErrorResponses(t *testing.T) {
+	tests := []string{
+		`{"error":{"code":"capacity","extra":true}}`,
+		`{"error":{"code":"capacity"}} {"error":{"code":"oom"}}`,
+	}
+	for i, body := range tests {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			socket := startBrokerTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = io.WriteString(w, body)
+			}))
+			dc, err := NewBrokerDockerClient(brokerTestConfig(socket), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = dc.Spawn(context.Background(), SpawnConfig{})
+			if !errors.Is(err, ErrBrokerProtocolViolation) {
+				t.Fatalf("Spawn err = %v; want protocol violation", err)
+			}
+		})
+	}
+}
+
+func TestBrokerDockerClientRejectsInvalidActivationBinding(t *testing.T) {
+	dc, err := NewBrokerDockerClient(brokerTestConfig("/tmp/sandboxd-test.sock"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycle := dc.(BrokerLeaseLifecycle)
+	for _, ids := range [][2]uint64{{0, 1}, {1, 0}, {0, 0}} {
+		err := lifecycle.Activate(context.Background(), "lease-1", ids[0], ids[1])
+		if !errors.Is(err, ErrSandboxPolicyDenied) {
+			t.Fatalf("Activate(%d,%d) err = %v; want policy denied", ids[0], ids[1], err)
+		}
+	}
+}
+
+func TestBrokerDockerClientRejectsOversizedCopyIn(t *testing.T) {
+	socket := startBrokerTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	cfg := brokerTestConfig(socket)
+	cfg.BrokerCopyInMaxBytes = 4
+	cfg.BrokerSingleFileMaxBytes = 4
+	dc, err := NewBrokerDockerClient(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = dc.CopyToContainer(context.Background(), "lease-1", "/workdir/input.txt", strings.NewReader("12345"))
+	if !errors.Is(err, ErrInputTooLarge) {
+		t.Fatalf("CopyToContainer err = %v; want input too large", err)
+	}
+}
+
+func TestBrokerDockerClientClosesCopyInReaderOnCancel(t *testing.T) {
+	reader := newBlockingReadCloser()
+	socket := startBrokerTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	dc, err := NewBrokerDockerClient(brokerTestConfig(socket), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- dc.CopyToContainer(ctx, "lease-1", "/workdir/input.txt", reader)
+	}()
+	select {
+	case <-reader.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("copy-in reader was not read")
+	}
+	cancel()
+	select {
+	case <-reader.closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("copy-in reader was not closed after cancellation")
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("CopyToContainer err = %v; want context canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("CopyToContainer did not return after cancellation")
+	}
+}
+
+func TestBrokerDockerClientEnforcesCopyOutLimits(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*SandboxConfig)
+		write  func(*tar.Writer)
+	}{
+		{
+			name: "single file",
+			mutate: func(cfg *SandboxConfig) {
+				cfg.BrokerSingleFileMaxBytes = 3
+				cfg.BrokerCopyInMaxBytes = 3
+				cfg.BrokerCopyOutMaxBytes = 10
+			},
+			write: func(tw *tar.Writer) {
+				writeTarFileForTest(t, tw, "a.txt", "1234")
+			},
+		},
+		{
+			name: "total bytes",
+			mutate: func(cfg *SandboxConfig) {
+				cfg.BrokerSingleFileMaxBytes = 5
+				cfg.BrokerCopyInMaxBytes = 5
+				cfg.BrokerCopyOutMaxBytes = 5
+			},
+			write: func(tw *tar.Writer) {
+				writeTarFileForTest(t, tw, "a.txt", "123")
+				writeTarFileForTest(t, tw, "b.txt", "456")
+			},
+		},
+		{
+			name: "file count",
+			mutate: func(cfg *SandboxConfig) {
+				cfg.BrokerMaxFiles = 1
+			},
+			write: func(tw *tar.Writer) {
+				writeTarFileForTest(t, tw, "a.txt", "1")
+				writeTarFileForTest(t, tw, "b.txt", "2")
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			socket := startBrokerTestServer(t, brokerCopyOutHandler(t, tt.write))
+			cfg := brokerTestConfig(socket)
+			tt.mutate(&cfg)
+			dc, err := NewBrokerDockerClient(cfg, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = dc.CopyFromContainer(context.Background(), "lease-1", "/workdir/output/.", t.TempDir())
+			if !errors.Is(err, ErrOutputTooLarge) {
+				t.Fatalf("CopyFromContainer err = %v; want output too large", err)
+			}
+		})
+	}
+}
+
+func TestBrokerDockerClientCopyOutHonorsCancelAfterHeaders(t *testing.T) {
+	bodyStarted := make(chan struct{})
+	socket := startBrokerTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/persisting") {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		tw := tar.NewWriter(w)
+		_ = tw.WriteHeader(&tar.Header{Name: "result.txt", Size: 1024, Typeflag: tar.TypeReg})
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		close(bodyStarted)
+		<-r.Context().Done()
+	}))
+	dc, err := NewBrokerDockerClient(brokerTestConfig(socket), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- dc.CopyFromContainer(ctx, "lease-1", "/workdir/output/.", t.TempDir())
+	}()
+	select {
+	case <-bodyStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("copy-out body did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("CopyFromContainer err = %v; want context canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("CopyFromContainer did not stop after cancellation")
+	}
+}
+
+func TestBrokerDockerClientFileErrorsDoNotLeakHostPath(t *testing.T) {
+	socket := startBrokerTestServer(t, brokerCopyOutHandler(t, func(tw *tar.Writer) {
+		writeTarFileForTest(t, tw, "result.txt", "artifact")
+	}))
+	dc, err := NewBrokerDockerClient(brokerTestConfig(socket), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dst, "result.txt"), []byte("existing"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = dc.CopyFromContainer(context.Background(), "lease-1", "/workdir/output/.", dst)
+	if !errors.Is(err, ErrSandboxPolicyDenied) {
+		t.Fatalf("CopyFromContainer err = %v; want policy denied", err)
+	}
+	if strings.Contains(err.Error(), dst) {
+		t.Fatalf("host destination leaked in error: %v", err)
+	}
+}
+
+func TestDisabledPoolCloseClosesBrokerClient(t *testing.T) {
+	dc := &closableMockDockerClient{MockDockerClient: NewMockDockerClient()}
+	pool := &disabledPool{dc: dc}
+	if err := pool.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !dc.closed {
+		t.Fatal("pool did not close its DockerClient")
 	}
 }
 
@@ -318,4 +693,98 @@ func writeBrokerJSONForTest(t *testing.T, w http.ResponseWriter, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		t.Errorf("encode response: %v", err)
 	}
+}
+
+func assertMutationRequestIDForTest(t *testing.T, r *http.Request) {
+	t.Helper()
+	headerID := r.Header.Get("X-Numind-Request-ID")
+	if headerID == "" {
+		t.Error("mutation request missing X-Numind-Request-ID")
+	}
+	payload, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Errorf("read mutation request: %v", err)
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewReader(payload))
+	var raw map[string]any
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		t.Errorf("decode mutation request: %v", err)
+		return
+	}
+	if bodyID, _ := raw["request_id"].(string); bodyID == "" || bodyID != headerID {
+		t.Errorf("request id mismatch: header=%q body=%q", headerID, bodyID)
+	}
+}
+
+func brokerCopyOutHandler(t *testing.T, write func(*tar.Writer)) http.Handler {
+	t.Helper()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/persisting") {
+			assertMutationRequestIDForTest(t, r)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodGet || !strings.HasSuffix(r.URL.Path, "/files") {
+			http.Error(w, "unexpected route", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-tar")
+		tw := tar.NewWriter(w)
+		write(tw)
+		if err := tw.Close(); err != nil {
+			t.Errorf("close tar: %v", err)
+		}
+	})
+}
+
+func writeTarFileForTest(t *testing.T, tw *tar.Writer, name string, body string) {
+	t.Helper()
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     name,
+		Mode:     0o600,
+		Size:     int64(len(body)),
+		Typeflag: tar.TypeReg,
+	}); err != nil {
+		t.Errorf("write tar header: %v", err)
+		return
+	}
+	if _, err := io.WriteString(tw, body); err != nil {
+		t.Errorf("write tar body: %v", err)
+	}
+}
+
+type blockingReadCloser struct {
+	started   chan struct{}
+	closed    chan struct{}
+	startOnce sync.Once
+	closeOnce sync.Once
+}
+
+func newBlockingReadCloser() *blockingReadCloser {
+	return &blockingReadCloser{
+		started: make(chan struct{}),
+		closed:  make(chan struct{}),
+	}
+}
+
+func (r *blockingReadCloser) Read(_ []byte) (int, error) {
+	r.startOnce.Do(func() { close(r.started) })
+	<-r.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (r *blockingReadCloser) Close() error {
+	r.closeOnce.Do(func() { close(r.closed) })
+	return nil
+}
+
+type closableMockDockerClient struct {
+	*MockDockerClient
+	closed bool
+}
+
+func (c *closableMockDockerClient) Close() error {
+	c.closed = true
+	return nil
 }
