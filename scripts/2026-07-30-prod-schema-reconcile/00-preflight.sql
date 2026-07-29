@@ -167,6 +167,87 @@ WHERE TABLE_SCHEMA = DATABASE()
   )
 UNION ALL
 SELECT
+  'attachment_parsed_column_metadata',
+  IF(
+    COUNT(*) = COALESCE(SUM(
+      CASE COLUMN_NAME
+        WHEN 'parsed_content' THEN
+          COLUMN_TYPE = 'longtext'
+          AND IS_NULLABLE = 'YES'
+          AND COLUMN_DEFAULT IS NULL
+          AND EXTRA = ''
+          AND CHARACTER_SET_NAME = 'utf8mb4'
+          AND COLLATION_NAME = 'utf8mb4_unicode_ci'
+        WHEN 'parsed_content_sha256' THEN
+          COLUMN_TYPE = 'varchar(71)'
+          AND (
+            (IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = '')
+            OR (IS_NULLABLE = 'YES' AND COLUMN_DEFAULT IS NULL)
+          )
+          AND EXTRA = ''
+          AND CHARACTER_SET_NAME = 'utf8mb4'
+          AND COLLATION_NAME = 'utf8mb4_unicode_ci'
+        WHEN 'parsed_content_byte_size' THEN
+          COLUMN_TYPE = 'bigint'
+          AND COLUMN_DEFAULT = '0'
+          AND IS_NULLABLE IN ('YES', 'NO')
+          AND EXTRA = ''
+          AND CHARACTER_SET_NAME IS NULL
+          AND COLLATION_NAME IS NULL
+        WHEN 'parsed_page_count' THEN
+          COLUMN_TYPE IN ('int', 'bigint')
+          AND COLUMN_DEFAULT = '0'
+          AND (
+            (COLUMN_TYPE = 'int' AND IS_NULLABLE = 'NO')
+            OR (COLUMN_TYPE = 'bigint' AND IS_NULLABLE = 'YES')
+          )
+          AND EXTRA = ''
+          AND CHARACTER_SET_NAME IS NULL
+          AND COLLATION_NAME IS NULL
+        WHEN 'parsed_at' THEN
+          COLUMN_TYPE = 'datetime(3)'
+          AND IS_NULLABLE = 'YES'
+          AND COLUMN_DEFAULT IS NULL
+          AND EXTRA = ''
+          AND CHARACTER_SET_NAME IS NULL
+          AND COLLATION_NAME IS NULL
+        ELSE FALSE
+      END
+    ), 0),
+    'PASS',
+    'FAIL'
+  ),
+  CONCAT(
+    'present=', COUNT(*),
+    ',metadata_exact=', COALESCE(SUM(
+      CASE COLUMN_NAME
+        WHEN 'parsed_content' THEN
+          COLUMN_DEFAULT IS NULL AND EXTRA = ''
+          AND CHARACTER_SET_NAME = 'utf8mb4' AND COLLATION_NAME = 'utf8mb4_unicode_ci'
+        WHEN 'parsed_content_sha256' THEN
+          EXTRA = '' AND CHARACTER_SET_NAME = 'utf8mb4'
+          AND COLLATION_NAME = 'utf8mb4_unicode_ci'
+        WHEN 'parsed_content_byte_size' THEN
+          EXTRA = '' AND CHARACTER_SET_NAME IS NULL AND COLLATION_NAME IS NULL
+        WHEN 'parsed_page_count' THEN
+          EXTRA = '' AND CHARACTER_SET_NAME IS NULL AND COLLATION_NAME IS NULL
+        WHEN 'parsed_at' THEN
+          COLUMN_DEFAULT IS NULL AND EXTRA = ''
+          AND CHARACTER_SET_NAME IS NULL AND COLLATION_NAME IS NULL
+        ELSE FALSE
+      END
+    ), 0)
+  ),
+  'all present columns have exact final-or-legacy metadata'
+FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE()
+  AND TABLE_NAME = 'agent_attachment'
+  AND COLUMN_NAME IN (
+    'parsed_content', 'parsed_content_sha256', 'parsed_content_byte_size',
+    'parsed_page_count', 'parsed_at'
+  )
+UNION ALL
+SELECT
   'feishu_table_count',
   IF(COUNT(*) BETWEEN 0 AND 6, 'PASS', 'FAIL'),
   CAST(COUNT(*) AS CHAR),

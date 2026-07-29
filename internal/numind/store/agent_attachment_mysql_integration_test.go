@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
 	drivermysql "github.com/go-sql-driver/mysql"
@@ -15,19 +16,34 @@ import (
 )
 
 func TestAgentAttachmentStoreReadsLegacyNullableParsedFields(t *testing.T) {
+	const integrationDatabasePrefix = "numind_attachment_integration_"
+
 	dsn := os.Getenv("NUMIND_ATTACHMENT_MYSQL_DSN")
 	if dsn == "" {
 		t.Skip("NUMIND_ATTACHMENT_MYSQL_DSN is required for the MySQL 8 integration gate")
 	}
 	driverConfig, err := drivermysql.ParseDSN(dsn)
 	require.NoError(t, err)
+	require.Truef(
+		t,
+		strings.HasPrefix(driverConfig.DBName, integrationDatabasePrefix) &&
+			len(driverConfig.DBName) > len(integrationDatabasePrefix),
+		"refusing destructive integration setup outside a dedicated %s* database",
+		integrationDatabasePrefix,
+	)
 	db, err := gorm.Open(
 		mysql.Open(driverConfig.FormatDSN()),
 		&gorm.Config{Logger: logger.Default.LogMode(logger.Silent)},
 	)
 	require.NoError(t, err)
 
-	require.NoError(t, db.Exec("DROP TABLE IF EXISTS agent_attachment").Error)
+	var existingTableCount int64
+	require.NoError(t, db.Raw(`
+		SELECT COUNT(*)
+		FROM information_schema.TABLES
+		WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agent_attachment'
+	`).Scan(&existingTableCount).Error)
+	require.Zero(t, existingTableCount, "dedicated integration database must start empty")
 	t.Cleanup(func() { _ = db.Exec("DROP TABLE IF EXISTS agent_attachment").Error })
 	require.NoError(t, db.Exec(`
 		CREATE TABLE agent_attachment (

@@ -11,6 +11,7 @@ BEGIN
   DECLARE attachment_column_count INT DEFAULT 0;
   DECLARE attachment_final_exact_count INT DEFAULT 0;
   DECLARE attachment_legacy_exact_count INT DEFAULT 0;
+  DECLARE attachment_metadata_exact_count INT DEFAULT 0;
   DECLARE attachment_column_names TEXT DEFAULT '';
   DECLARE proof_table_count INT DEFAULT 0;
   DECLARE proof_fk_count INT DEFAULT 0;
@@ -60,6 +61,51 @@ BEGIN
         ELSE FALSE
       END
     ), 0),
+    COALESCE(SUM(
+      CASE COLUMN_NAME
+        WHEN 'parsed_content' THEN
+          COLUMN_TYPE = 'longtext'
+          AND IS_NULLABLE = 'YES'
+          AND COLUMN_DEFAULT IS NULL
+          AND EXTRA = ''
+          AND CHARACTER_SET_NAME = 'utf8mb4'
+          AND COLLATION_NAME = 'utf8mb4_unicode_ci'
+        WHEN 'parsed_content_sha256' THEN
+          COLUMN_TYPE = 'varchar(71)'
+          AND (
+            (IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = '')
+            OR (IS_NULLABLE = 'YES' AND COLUMN_DEFAULT IS NULL)
+          )
+          AND EXTRA = ''
+          AND CHARACTER_SET_NAME = 'utf8mb4'
+          AND COLLATION_NAME = 'utf8mb4_unicode_ci'
+        WHEN 'parsed_content_byte_size' THEN
+          COLUMN_TYPE = 'bigint'
+          AND COLUMN_DEFAULT = '0'
+          AND IS_NULLABLE IN ('YES', 'NO')
+          AND EXTRA = ''
+          AND CHARACTER_SET_NAME IS NULL
+          AND COLLATION_NAME IS NULL
+        WHEN 'parsed_page_count' THEN
+          COLUMN_TYPE IN ('int', 'bigint')
+          AND COLUMN_DEFAULT = '0'
+          AND (
+            (COLUMN_TYPE = 'int' AND IS_NULLABLE = 'NO')
+            OR (COLUMN_TYPE = 'bigint' AND IS_NULLABLE = 'YES')
+          )
+          AND EXTRA = ''
+          AND CHARACTER_SET_NAME IS NULL
+          AND COLLATION_NAME IS NULL
+        WHEN 'parsed_at' THEN
+          COLUMN_TYPE = 'datetime(3)'
+          AND IS_NULLABLE = 'YES'
+          AND COLUMN_DEFAULT IS NULL
+          AND EXTRA = ''
+          AND CHARACTER_SET_NAME IS NULL
+          AND COLLATION_NAME IS NULL
+        ELSE FALSE
+      END
+    ), 0),
     COALESCE(GROUP_CONCAT(
       COLUMN_NAME
       ORDER BY FIELD(
@@ -73,6 +119,7 @@ BEGIN
     attachment_column_count,
     attachment_final_exact_count,
     attachment_legacy_exact_count,
+    attachment_metadata_exact_count,
     attachment_column_names
   FROM information_schema.COLUMNS
   WHERE TABLE_SCHEMA = DATABASE()
@@ -85,6 +132,7 @@ BEGIN
     attachment_column_count = 0
     OR (
       attachment_column_count BETWEEN 1 AND 5
+      AND attachment_metadata_exact_count = attachment_column_count
       AND attachment_final_exact_count = attachment_column_count
       AND attachment_column_names = SUBSTRING_INDEX(
         'parsed_content,parsed_content_sha256,parsed_content_byte_size,parsed_page_count,parsed_at',
@@ -94,6 +142,7 @@ BEGIN
     )
     OR (
       attachment_column_count = 5
+      AND attachment_metadata_exact_count = 5
       AND attachment_legacy_exact_count = 5
     )
   ) THEN

@@ -256,6 +256,7 @@ func TestProdSchemaReconcileCoversDevHistoricalCompatibilityContracts(t *testing
 
 	for _, required := range []string{
 		"agent_attachment_complete_projection",
+		"attachment_parsed_column_metadata",
 		"feishu_proof_business_projection",
 		"character_set_name",
 		"collation_name",
@@ -274,6 +275,10 @@ func TestProdSchemaReconcileCoversDevHistoricalCompatibilityContracts(t *testing
 	}
 
 	for _, required := range []string{
+		"attachment_metadata_exact_count",
+		"character_set_name",
+		"collation_name",
+		"extra",
 		"zombie_cleanup_2026_05_28",
 		"status` = 'running'",
 		"is_deleted` = 1",
@@ -282,6 +287,22 @@ func TestProdSchemaReconcileCoversDevHistoricalCompatibilityContracts(t *testing
 	} {
 		if !strings.Contains(migration, required) {
 			t.Errorf("migration missing Dev compatibility repair %q", required)
+		}
+	}
+}
+
+func TestAgentAttachmentMySQLIntegrationRequiresDedicatedDatabase(t *testing.T) {
+	integrationTest := readRequiredRolloutFile(
+		t,
+		"../internal/numind/store/agent_attachment_mysql_integration_test.go",
+	)
+	for _, required := range []string{
+		"numind_attachment_integration_",
+		"refusing destructive integration setup outside a dedicated",
+		"dedicated integration database must start empty",
+	} {
+		if !strings.Contains(integrationTest, required) {
+			t.Errorf("attachment MySQL integration safety gate missing %q", required)
 		}
 	}
 }

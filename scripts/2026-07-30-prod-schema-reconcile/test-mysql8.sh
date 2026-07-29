@@ -382,6 +382,20 @@ if ! printf '%s\n' "$mixed_attachment_preflight" |
   exit 1
 fi
 mysql_query "ALTER TABLE agent_attachment MODIFY parsed_page_count BIGINT NULL DEFAULT 0;"
+mysql_query "
+ALTER TABLE agent_attachment
+  MODIFY parsed_at DATETIME(3) NULL DEFAULT CURRENT_TIMESTAMP(3);
+"
+wrong_attachment_metadata_preflight="$(mysql_stdin < "$PREFLIGHT")"
+if ! printf '%s\n' "$wrong_attachment_metadata_preflight" |
+  grep -q '^attachment_parsed_column_metadata'$'\tFAIL\t'; then
+  echo "ERROR: incompatible attachment default metadata unexpectedly passed preflight" >&2
+  exit 1
+fi
+mysql_query "
+ALTER TABLE agent_attachment
+  MODIFY parsed_at DATETIME(3) NULL DEFAULT NULL;
+"
 
 # Dev can already contain successful Feishu operations and proof-consumption
 # rows while both proof FKs are missing. Repair the exact zero-FK state without
@@ -420,6 +434,31 @@ before_proof_projection="$(
   printf '%s\n' "$proof_preflight" |
     awk -F '\t' '$1 == "feishu_proof_business_projection" { print $2 ":" $3 }'
 )"
+# Close the preflight/apply race: an orphan introduced after the read-only
+# check must still be rejected by the migration's own first assertion, and no
+# FK may have been added before that failure.
+mysql_query "
+UPDATE feishu_operation_proof_consumption
+SET source_operation_id='99999999-9999-9999-9999-999999999999';
+"
+if mysql_stdin < "$MIGRATION" >/dev/null 2>&1; then
+  echo "ERROR: migration accepted a proof orphan introduced after preflight" >&2
+  exit 1
+fi
+if [ "$(mysql_query "
+  SELECT COUNT(*)
+  FROM information_schema.TABLE_CONSTRAINTS
+  WHERE CONSTRAINT_SCHEMA=DATABASE()
+    AND TABLE_NAME='feishu_operation_proof_consumption'
+    AND CONSTRAINT_TYPE='FOREIGN KEY';
+")" != "0" ]; then
+  echo "ERROR: failed migration partially added proof foreign keys" >&2
+  exit 1
+fi
+mysql_query "
+UPDATE feishu_operation_proof_consumption
+SET source_operation_id='00000000-0000-0000-0000-000000000001';
+"
 mysql_stdin < "$MIGRATION" >/dev/null
 proof_verify="$(mysql_stdin < "$VERIFY")"
 assert_no_fail_rows "$proof_verify" "repaired proof verify"
