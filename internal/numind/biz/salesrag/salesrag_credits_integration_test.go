@@ -31,7 +31,9 @@ import (
 
 	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/biz/membership"
+	ragservice "numind-server/internal/numind/biz/salesrag/service"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
 	cb "numind-server/internal/pkg/contextbudget"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/known"
@@ -531,6 +533,26 @@ func TestSalesRAGBuildsEvidenceFragmentsWithoutSOPMetadata(t *testing.T) {
 	// SourceReference fallback when ID is empty.
 	assert.Equal(t, "vec-001", frags[0].SourceReference)
 	assert.NotEmpty(t, frags[2].SourceReference, "empty chunk ID must produce a non-empty SourceReference fallback")
+}
+
+// TestSalesRAGPromptFragmentsPreserveOCRTextForLLM reproduces the dev bug where
+// buildPromptMessagesV2 appended OCR text to the user message, but the later
+// ContextFragments path rendered only the raw query and overwrote ChatRequest.Messages.
+func TestSalesRAGPromptFragmentsPreserveOCRTextForLLM(t *testing.T) {
+	b := &salesRAGBiz{}
+	query := "目前客户的卡点是什么？"
+	ocrText := "客户：咋合作。。。。付费还是分成"
+	verdict := &ragservice.RetrievalVerdict{ChatMode: "free"}
+
+	messages := b.buildPromptMessagesV2(query, []string{ocrText}, verdict, "", "", "")
+	frags := buildSalesRAGPromptFragments(messages, nil)
+	rendered := aiservice.RenderContextFragments(frags)
+
+	require.NotEmpty(t, rendered)
+	userMessage := rendered[len(rendered)-1].Content.Text
+	assert.Contains(t, userMessage, query)
+	assert.Contains(t, userMessage, "【用户上传图片的OCR识别内容】")
+	assert.Contains(t, userMessage, ocrText)
 }
 
 // ============================================================================
