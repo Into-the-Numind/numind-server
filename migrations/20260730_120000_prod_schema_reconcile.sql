@@ -8,6 +8,11 @@ DROP PROCEDURE IF EXISTS `_prod_schema_reconcile_assert`;
 DELIMITER //
 CREATE PROCEDURE `_prod_schema_reconcile_assert`()
 BEGIN
+  DECLARE attachment_column_count INT DEFAULT 0;
+  DECLARE attachment_final_exact_count INT DEFAULT 0;
+  DECLARE attachment_legacy_exact_count INT DEFAULT 0;
+  DECLARE attachment_column_names TEXT DEFAULT '';
+
   IF (SELECT COUNT(*) FROM information_schema.TABLES
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'user') <> 1 THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: required user table missing';
@@ -23,6 +28,73 @@ BEGIN
   IF (SELECT COUNT(*) FROM information_schema.TABLES
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agent_run') <> 1 THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: required agent_run table missing';
+  END IF;
+  SELECT
+    COUNT(*),
+    COALESCE(SUM(
+      CASE COLUMN_NAME
+        WHEN 'parsed_content' THEN COLUMN_TYPE = 'longtext' AND IS_NULLABLE = 'YES'
+        WHEN 'parsed_content_sha256' THEN
+          COLUMN_TYPE = 'varchar(71)' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = ''
+        WHEN 'parsed_content_byte_size' THEN
+          COLUMN_TYPE = 'bigint' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = '0'
+        WHEN 'parsed_page_count' THEN
+          COLUMN_TYPE = 'int' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = '0'
+        WHEN 'parsed_at' THEN COLUMN_TYPE = 'datetime(3)' AND IS_NULLABLE = 'YES'
+        ELSE FALSE
+      END
+    ), 0),
+    COALESCE(SUM(
+      CASE COLUMN_NAME
+        WHEN 'parsed_content' THEN COLUMN_TYPE = 'longtext' AND IS_NULLABLE = 'YES'
+        WHEN 'parsed_content_sha256' THEN
+          COLUMN_TYPE = 'varchar(71)' AND IS_NULLABLE = 'YES' AND COLUMN_DEFAULT IS NULL
+        WHEN 'parsed_content_byte_size' THEN
+          COLUMN_TYPE = 'bigint' AND IS_NULLABLE = 'YES' AND COLUMN_DEFAULT = '0'
+        WHEN 'parsed_page_count' THEN
+          COLUMN_TYPE = 'bigint' AND IS_NULLABLE = 'YES' AND COLUMN_DEFAULT = '0'
+        WHEN 'parsed_at' THEN COLUMN_TYPE = 'datetime(3)' AND IS_NULLABLE = 'YES'
+        ELSE FALSE
+      END
+    ), 0),
+    COALESCE(GROUP_CONCAT(
+      COLUMN_NAME
+      ORDER BY FIELD(
+        COLUMN_NAME,
+        'parsed_content', 'parsed_content_sha256', 'parsed_content_byte_size',
+        'parsed_page_count', 'parsed_at'
+      )
+      SEPARATOR ','
+    ), '')
+  INTO
+    attachment_column_count,
+    attachment_final_exact_count,
+    attachment_legacy_exact_count,
+    attachment_column_names
+  FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'agent_attachment'
+    AND COLUMN_NAME IN (
+      'parsed_content', 'parsed_content_sha256', 'parsed_content_byte_size',
+      'parsed_page_count', 'parsed_at'
+    );
+  IF NOT (
+    attachment_column_count = 0
+    OR (
+      attachment_column_count BETWEEN 1 AND 5
+      AND attachment_final_exact_count = attachment_column_count
+      AND attachment_column_names = SUBSTRING_INDEX(
+        'parsed_content,parsed_content_sha256,parsed_content_byte_size,parsed_page_count,parsed_at',
+        ',',
+        attachment_column_count
+      )
+    )
+    OR (
+      attachment_column_count = 5
+      AND attachment_legacy_exact_count = 5
+    )
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: incompatible agent_attachment parsed column state';
   END IF;
   IF (SELECT COUNT(*) FROM `llm_provider` WHERE `name` = 'ali-dashscope') <> 1 THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: ali-dashscope provider must exist exactly once';

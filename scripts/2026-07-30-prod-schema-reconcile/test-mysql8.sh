@@ -160,6 +160,10 @@ assert_no_fail_rows "$preflight_output" "preflight"
 
 before_projection="$(mysql_query "$subscription_projection_sql")"
 before_attachment_projection="$(mysql_query "$attachment_projection_sql")"
+before_attachment_complete_projection="$(
+  printf '%s\n' "$preflight_output" |
+    awk -F '\t' '$1 == "agent_attachment_complete_projection" { print $2 ":" $3 }'
+)"
 before_agent_run_projection="$(mysql_query "$agent_run_projection_sql")"
 before_protected_checksums="$(mysql_query "$protected_checksum_sql")"
 before_new_table_count="$(mysql_query "
@@ -181,10 +185,16 @@ verify_first="$(mysql_stdin < "$VERIFY")"
 assert_no_fail_rows "$verify_first" "first verify"
 after_first_projection="$(mysql_query "$subscription_projection_sql")"
 after_first_attachment_projection="$(mysql_query "$attachment_projection_sql")"
+after_first_attachment_complete_projection="$(
+  printf '%s\n' "$verify_first" |
+    awk -F '\t' '$1 == "agent_attachment_complete_projection" { print $2 ":" $3 }'
+)"
 after_first_agent_run_projection="$(mysql_query "$agent_run_projection_sql")"
 after_first_protected_checksums="$(mysql_query "$protected_checksum_sql")"
 assert_equal "$before_projection" "$after_first_projection" "first-apply subscription projection"
 assert_equal "$before_attachment_projection" "$after_first_attachment_projection" "first-apply attachment projection"
+assert_equal "$before_attachment_complete_projection" "$after_first_attachment_complete_projection" \
+  "first-apply complete attachment projection"
 assert_equal "$before_agent_run_projection" "$after_first_agent_run_projection" "first-apply agent-run projection"
 assert_equal "$before_protected_checksums" "$after_first_protected_checksums" "first-apply protected checksums"
 
@@ -214,10 +224,16 @@ verify_second="$(mysql_stdin < "$VERIFY")"
 assert_no_fail_rows "$verify_second" "second verify"
 after_second_projection="$(mysql_query "$subscription_projection_sql")"
 after_second_attachment_projection="$(mysql_query "$attachment_projection_sql")"
+after_second_attachment_complete_projection="$(
+  printf '%s\n' "$verify_second" |
+    awk -F '\t' '$1 == "agent_attachment_complete_projection" { print $2 ":" $3 }'
+)"
 after_second_agent_run_projection="$(mysql_query "$agent_run_projection_sql")"
 after_second_protected_checksums="$(mysql_query "$protected_checksum_sql")"
 assert_equal "$before_projection" "$after_second_projection" "second-apply subscription projection"
 assert_equal "$before_attachment_projection" "$after_second_attachment_projection" "second-apply attachment projection"
+assert_equal "$before_attachment_complete_projection" "$after_second_attachment_complete_projection" \
+  "second-apply complete attachment projection"
 assert_equal "$before_agent_run_projection" "$after_second_agent_run_projection" "second-apply agent-run projection"
 assert_equal "$before_protected_checksums" "$after_second_protected_checksums" "second-apply protected checksums"
 
@@ -291,8 +307,69 @@ partial_verify="$(mysql_stdin < "$VERIFY")"
 assert_no_fail_rows "$partial_verify" "partial-state verify"
 assert_equal "$before_projection" "$(mysql_query "$subscription_projection_sql")" "partial-retry subscription projection"
 assert_equal "$before_attachment_projection" "$(mysql_query "$attachment_projection_sql")" "partial-retry attachment projection"
+partial_attachment_complete_projection="$(
+  printf '%s\n' "$partial_verify" |
+    awk -F '\t' '$1 == "agent_attachment_complete_projection" { print $2 ":" $3 }'
+)"
+assert_equal "$before_attachment_complete_projection" "$partial_attachment_complete_projection" \
+  "partial-retry complete attachment projection"
 assert_equal "$before_agent_run_projection" "$(mysql_query "$agent_run_projection_sql")" "partial-retry agent-run projection"
 assert_equal "$before_protected_checksums" "$(mysql_query "$protected_checksum_sql")" "partial-retry protected checksums"
+
+# Dev historically has a complete nullable parsed-content schema. Accept that
+# exact shape, preserve NULL values byte-for-byte, and never normalize it during
+# this rollout.
+mysql_query "
+ALTER TABLE agent_attachment
+  MODIFY parsed_content_sha256 VARCHAR(71) NULL DEFAULT NULL,
+  MODIFY parsed_content_byte_size BIGINT NULL DEFAULT 0,
+  MODIFY parsed_page_count BIGINT NULL DEFAULT 0;
+UPDATE agent_attachment
+SET parsed_content_sha256=NULL,
+    parsed_content_byte_size=NULL,
+    parsed_page_count=NULL
+WHERE id=1;
+"
+legacy_preflight="$(mysql_stdin < "$PREFLIGHT")"
+assert_no_fail_rows "$legacy_preflight" "legacy attachment preflight"
+if ! printf '%s\n' "$legacy_preflight" |
+  grep -q '^attachment_parsed_column_shapes'$'\tPASS\tlegacy_complete'; then
+  echo "ERROR: exact Dev attachment schema was not identified as legacy_complete" >&2
+  exit 1
+fi
+before_legacy_attachment_projection="$(
+  printf '%s\n' "$legacy_preflight" |
+    awk -F '\t' '$1 == "agent_attachment_complete_projection" { print $2 ":" $3 }'
+)"
+mysql_stdin < "$MIGRATION" >/dev/null
+legacy_verify="$(mysql_stdin < "$VERIFY")"
+assert_no_fail_rows "$legacy_verify" "legacy attachment verify"
+after_legacy_attachment_projection="$(
+  printf '%s\n' "$legacy_verify" |
+    awk -F '\t' '$1 == "agent_attachment_complete_projection" { print $2 ":" $3 }'
+)"
+assert_equal "$before_legacy_attachment_projection" "$after_legacy_attachment_projection" \
+  "legacy complete attachment projection"
+if [ "$(mysql_query "
+  SELECT COUNT(*) FROM agent_attachment
+  WHERE id=1
+    AND parsed_content_sha256 IS NULL
+    AND parsed_content_byte_size IS NULL
+    AND parsed_page_count IS NULL;
+")" != "1" ]; then
+  echo "ERROR: migration rewrote legacy nullable attachment values" >&2
+  exit 1
+fi
+
+# A mixed shape is neither the reviewed Dev legacy schema nor the final schema.
+mysql_query "ALTER TABLE agent_attachment MODIFY parsed_page_count INT NULL DEFAULT 0;"
+mixed_attachment_preflight="$(mysql_stdin < "$PREFLIGHT")"
+if ! printf '%s\n' "$mixed_attachment_preflight" |
+  grep -q '^attachment_parsed_column_shapes'$'\tFAIL\t'; then
+  echo "ERROR: mixed attachment schema unexpectedly passed preflight" >&2
+  exit 1
+fi
+mysql_query "ALTER TABLE agent_attachment MODIFY parsed_page_count BIGINT NULL DEFAULT 0;"
 
 # Wrong table/index/FK/config contracts and duplicate notification pairs must fail before apply.
 mysql_query "DROP TABLE document;"

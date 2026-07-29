@@ -78,7 +78,71 @@ UNION ALL
 SELECT
   'attachment_parsed_column_shapes',
   IF(
-    COUNT(*) = COALESCE(SUM(
+    COUNT(*) = 0
+      OR (
+        COUNT(*) BETWEEN 1 AND 5
+        AND GROUP_CONCAT(
+          COLUMN_NAME
+          ORDER BY FIELD(
+            COLUMN_NAME,
+            'parsed_content', 'parsed_content_sha256', 'parsed_content_byte_size',
+            'parsed_page_count', 'parsed_at'
+          )
+          SEPARATOR ','
+        ) = SUBSTRING_INDEX(
+          'parsed_content,parsed_content_sha256,parsed_content_byte_size,parsed_page_count,parsed_at',
+          ',',
+          COUNT(*)
+        )
+        AND COUNT(*) = COALESCE(SUM(
+          CASE COLUMN_NAME
+            WHEN 'parsed_content' THEN COLUMN_TYPE = 'longtext' AND IS_NULLABLE = 'YES'
+            WHEN 'parsed_content_sha256' THEN
+              COLUMN_TYPE = 'varchar(71)' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = ''
+            WHEN 'parsed_content_byte_size' THEN
+              COLUMN_TYPE = 'bigint' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = '0'
+            WHEN 'parsed_page_count' THEN
+              COLUMN_TYPE = 'int' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = '0'
+            WHEN 'parsed_at' THEN COLUMN_TYPE = 'datetime(3)' AND IS_NULLABLE = 'YES'
+            ELSE FALSE
+          END
+        ), 0)
+      )
+      OR (
+        COUNT(*) = 5
+        AND COUNT(*) = COALESCE(SUM(
+          CASE COLUMN_NAME
+            WHEN 'parsed_content' THEN COLUMN_TYPE = 'longtext' AND IS_NULLABLE = 'YES'
+            WHEN 'parsed_content_sha256' THEN
+              COLUMN_TYPE = 'varchar(71)' AND IS_NULLABLE = 'YES' AND COLUMN_DEFAULT IS NULL
+            WHEN 'parsed_content_byte_size' THEN
+              COLUMN_TYPE = 'bigint' AND IS_NULLABLE = 'YES' AND COLUMN_DEFAULT = '0'
+            WHEN 'parsed_page_count' THEN
+              COLUMN_TYPE = 'bigint' AND IS_NULLABLE = 'YES' AND COLUMN_DEFAULT = '0'
+            WHEN 'parsed_at' THEN COLUMN_TYPE = 'datetime(3)' AND IS_NULLABLE = 'YES'
+            ELSE FALSE
+          END
+        ), 0)
+      ),
+    'PASS',
+    'FAIL'
+  ),
+  CASE
+    WHEN COUNT(*) = 0 THEN 'absent'
+    WHEN COUNT(*) = 5 AND COUNT(*) = COALESCE(SUM(
+      CASE COLUMN_NAME
+        WHEN 'parsed_content' THEN COLUMN_TYPE = 'longtext' AND IS_NULLABLE = 'YES'
+        WHEN 'parsed_content_sha256' THEN
+          COLUMN_TYPE = 'varchar(71)' AND IS_NULLABLE = 'YES' AND COLUMN_DEFAULT IS NULL
+        WHEN 'parsed_content_byte_size' THEN
+          COLUMN_TYPE = 'bigint' AND IS_NULLABLE = 'YES' AND COLUMN_DEFAULT = '0'
+        WHEN 'parsed_page_count' THEN
+          COLUMN_TYPE = 'bigint' AND IS_NULLABLE = 'YES' AND COLUMN_DEFAULT = '0'
+        WHEN 'parsed_at' THEN COLUMN_TYPE = 'datetime(3)' AND IS_NULLABLE = 'YES'
+        ELSE FALSE
+      END
+    ), 0) THEN 'legacy_complete'
+    WHEN COUNT(*) BETWEEN 1 AND 5 AND COUNT(*) = COALESCE(SUM(
       CASE COLUMN_NAME
         WHEN 'parsed_content' THEN COLUMN_TYPE = 'longtext' AND IS_NULLABLE = 'YES'
         WHEN 'parsed_content_sha256' THEN
@@ -90,24 +154,10 @@ SELECT
         WHEN 'parsed_at' THEN COLUMN_TYPE = 'datetime(3)' AND IS_NULLABLE = 'YES'
         ELSE FALSE
       END
-    ), 0),
-    'PASS',
-    'FAIL'
-  ),
-  CONCAT('present=', COUNT(*), ',exact=', COALESCE(SUM(
-    CASE COLUMN_NAME
-      WHEN 'parsed_content' THEN COLUMN_TYPE = 'longtext' AND IS_NULLABLE = 'YES'
-      WHEN 'parsed_content_sha256' THEN
-        COLUMN_TYPE = 'varchar(71)' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = ''
-      WHEN 'parsed_content_byte_size' THEN
-        COLUMN_TYPE = 'bigint' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = '0'
-      WHEN 'parsed_page_count' THEN
-        COLUMN_TYPE = 'int' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = '0'
-      WHEN 'parsed_at' THEN COLUMN_TYPE = 'datetime(3)' AND IS_NULLABLE = 'YES'
-      ELSE FALSE
-    END
-  ), 0)),
-  'every present target column has the exact final shape'
+    ), 0) THEN CONCAT('final_prefix_', COUNT(*))
+    ELSE 'incompatible'
+  END,
+  'absent, ordered final prefix, full final, or legacy_complete'
 FROM information_schema.COLUMNS
 WHERE TABLE_SCHEMA = DATABASE()
   AND TABLE_NAME = 'agent_attachment'
@@ -722,6 +772,74 @@ SELECT
     256
   )
 FROM agent_run;
+
+-- Full attachment projection. Missing rollout columns are represented by the
+-- exact defaults that ADD COLUMN will give historical rows, so the before and
+-- after values are directly comparable without writing customer data.
+SET @aa_parsed_content_expr := IF(
+  (SELECT COUNT(*) FROM information_schema.COLUMNS
+   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agent_attachment'
+     AND COLUMN_NAME = 'parsed_content') = 1,
+  'IF(`parsed_content` IS NULL, ''parsed_content=N'', CONCAT(''parsed_content=V:'', OCTET_LENGTH(CAST(`parsed_content` AS BINARY)), '':'', SHA2(CAST(`parsed_content` AS BINARY), 256)))',
+  '''parsed_content=N'''
+);
+SET @aa_parsed_sha_expr := IF(
+  (SELECT COUNT(*) FROM information_schema.COLUMNS
+   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agent_attachment'
+     AND COLUMN_NAME = 'parsed_content_sha256') = 1,
+  'IF(`parsed_content_sha256` IS NULL, ''parsed_content_sha256=N'', CONCAT(''parsed_content_sha256=V:'', OCTET_LENGTH(CAST(`parsed_content_sha256` AS BINARY)), '':'', SHA2(CAST(`parsed_content_sha256` AS BINARY), 256)))',
+  '''parsed_content_sha256=V:0:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'''
+);
+SET @aa_parsed_byte_expr := IF(
+  (SELECT COUNT(*) FROM information_schema.COLUMNS
+   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agent_attachment'
+     AND COLUMN_NAME = 'parsed_content_byte_size') = 1,
+  'IF(`parsed_content_byte_size` IS NULL, ''parsed_content_byte_size=N'', CONCAT(''parsed_content_byte_size=V:'', OCTET_LENGTH(CAST(`parsed_content_byte_size` AS BINARY)), '':'', SHA2(CAST(`parsed_content_byte_size` AS BINARY), 256)))',
+  '''parsed_content_byte_size=V:1:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9'''
+);
+SET @aa_parsed_page_expr := IF(
+  (SELECT COUNT(*) FROM information_schema.COLUMNS
+   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agent_attachment'
+     AND COLUMN_NAME = 'parsed_page_count') = 1,
+  'IF(`parsed_page_count` IS NULL, ''parsed_page_count=N'', CONCAT(''parsed_page_count=V:'', OCTET_LENGTH(CAST(`parsed_page_count` AS BINARY)), '':'', SHA2(CAST(`parsed_page_count` AS BINARY), 256)))',
+  '''parsed_page_count=V:1:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9'''
+);
+SET @aa_parsed_at_expr := IF(
+  (SELECT COUNT(*) FROM information_schema.COLUMNS
+   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agent_attachment'
+     AND COLUMN_NAME = 'parsed_at') = 1,
+  'IF(`parsed_at` IS NULL, ''parsed_at=N'', CONCAT(''parsed_at=V:'', OCTET_LENGTH(CAST(`parsed_at` AS BINARY)), '':'', SHA2(CAST(`parsed_at` AS BINARY), 256)))',
+  '''parsed_at=N'''
+);
+SET @aa_complete_projection_sql := CONCAT(
+  'SELECT ''agent_attachment_complete_projection'' AS evidence_name, COUNT(*) AS row_count, ',
+  'COALESCE(SHA2(GROUP_CONCAT(SHA2(CONCAT_WS(''|'', ',
+  'CONCAT(''id=V:'', OCTET_LENGTH(CAST(`id` AS BINARY)), '':'', SHA2(CAST(`id` AS BINARY), 256)), ',
+  'CONCAT(''user_id=V:'', OCTET_LENGTH(CAST(`user_id` AS BINARY)), '':'', SHA2(CAST(`user_id` AS BINARY), 256)), ',
+  'IF(`url` IS NULL, ''url=N'', CONCAT(''url=V:'', OCTET_LENGTH(CAST(`url` AS BINARY)), '':'', SHA2(CAST(`url` AS BINARY), 256))), ',
+  'IF(`filename` IS NULL, ''filename=N'', CONCAT(''filename=V:'', OCTET_LENGTH(CAST(`filename` AS BINARY)), '':'', SHA2(CAST(`filename` AS BINARY), 256))), ',
+  'IF(`mime_type` IS NULL, ''mime_type=N'', CONCAT(''mime_type=V:'', OCTET_LENGTH(CAST(`mime_type` AS BINARY)), '':'', SHA2(CAST(`mime_type` AS BINARY), 256))), ',
+  'IF(`size` IS NULL, ''size=N'', CONCAT(''size=V:'', OCTET_LENGTH(CAST(`size` AS BINARY)), '':'', SHA2(CAST(`size` AS BINARY), 256))), ',
+  'IF(`modality` IS NULL, ''modality=N'', CONCAT(''modality=V:'', OCTET_LENGTH(CAST(`modality` AS BINARY)), '':'', SHA2(CAST(`modality` AS BINARY), 256))), ',
+  'IF(`width` IS NULL, ''width=N'', CONCAT(''width=V:'', OCTET_LENGTH(CAST(`width` AS BINARY)), '':'', SHA2(CAST(`width` AS BINARY), 256))), ',
+  'IF(`height` IS NULL, ''height=N'', CONCAT(''height=V:'', OCTET_LENGTH(CAST(`height` AS BINARY)), '':'', SHA2(CAST(`height` AS BINARY), 256))), ',
+  'IF(`ocr_text` IS NULL, ''ocr_text=N'', CONCAT(''ocr_text=V:'', OCTET_LENGTH(CAST(`ocr_text` AS BINARY)), '':'', SHA2(CAST(`ocr_text` AS BINARY), 256))), ',
+  'IF(`vision_description` IS NULL, ''vision_description=N'', CONCAT(''vision_description=V:'', OCTET_LENGTH(CAST(`vision_description` AS BINARY)), '':'', SHA2(CAST(`vision_description` AS BINARY), 256))), ',
+  'IF(`text_fallback` IS NULL, ''text_fallback=N'', CONCAT(''text_fallback=V:'', OCTET_LENGTH(CAST(`text_fallback` AS BINARY)), '':'', SHA2(CAST(`text_fallback` AS BINARY), 256))), ',
+  'IF(`fallback_ready` IS NULL, ''fallback_ready=N'', CONCAT(''fallback_ready=V:'', OCTET_LENGTH(CAST(`fallback_ready` AS BINARY)), '':'', SHA2(CAST(`fallback_ready` AS BINARY), 256))), ',
+  'IF(`fallback_error` IS NULL, ''fallback_error=N'', CONCAT(''fallback_error=V:'', OCTET_LENGTH(CAST(`fallback_error` AS BINARY)), '':'', SHA2(CAST(`fallback_error` AS BINARY), 256))), ',
+  @aa_parsed_content_expr, ', ', @aa_parsed_sha_expr, ', ',
+  @aa_parsed_byte_expr, ', ', @aa_parsed_page_expr, ', ', @aa_parsed_at_expr, ', ',
+  'IF(`fallback_started_at` IS NULL, ''fallback_started_at=N'', CONCAT(''fallback_started_at=V:'', OCTET_LENGTH(CAST(`fallback_started_at` AS BINARY)), '':'', SHA2(CAST(`fallback_started_at` AS BINARY), 256))), ',
+  'IF(`fallback_completed_at` IS NULL, ''fallback_completed_at=N'', CONCAT(''fallback_completed_at=V:'', OCTET_LENGTH(CAST(`fallback_completed_at` AS BINARY)), '':'', SHA2(CAST(`fallback_completed_at` AS BINARY), 256))), ',
+  'IF(`retry_count` IS NULL, ''retry_count=N'', CONCAT(''retry_count=V:'', OCTET_LENGTH(CAST(`retry_count` AS BINARY)), '':'', SHA2(CAST(`retry_count` AS BINARY), 256))), ',
+  'IF(`created_at` IS NULL, ''created_at=N'', CONCAT(''created_at=V:'', OCTET_LENGTH(CAST(`created_at` AS BINARY)), '':'', SHA2(CAST(`created_at` AS BINARY), 256)))',
+  '), 256) ORDER BY `id` SEPARATOR ''\n''), 256), SHA2('''', 256)) AS sha256 ',
+  'FROM `agent_attachment`'
+);
+PREPARE aa_complete_projection_stmt FROM @aa_complete_projection_sql;
+EXECUTE aa_complete_projection_stmt;
+DEALLOCATE PREPARE aa_complete_projection_stmt;
 
 CHECKSUM TABLE
   `user`, `trial_grant`, `credit_account`, `credit_cycle`,
