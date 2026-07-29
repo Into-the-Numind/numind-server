@@ -148,7 +148,7 @@ type SalesRAGBiz interface {
 
 	// ChatWithSession 基于会话的流式对话（保存聊天记录）
 	// chatMode: "sales" (销售话术模式) 或 "free" (自由讨论模式)
-	// ocrTexts: 图片OCR识别文字，仅用于知识库检索，不进AI prompt
+	// ocrTexts: 图片OCR识别文字，用于知识库检索并追加到最终 AI prompt
 	ChatWithSession(ctx context.Context, userID uint, sessionID uint, query string, ocrTexts []string, images []string, docIDs []uint, deepThinking bool, chatMode string, onEvent func(eventType string, data interface{}) error) error
 
 	// AnalyzeProfileMultiFiles 多文件综合分析生成客户档案
@@ -1128,6 +1128,21 @@ func buildSalesRAGUserFragment(id, userMessage string) cb.ContextFragment {
 	}
 }
 
+func buildSalesRAGPromptFragments(messages []map[string]interface{}, evidence []domain.KnowledgeChunk) []cb.ContextFragment {
+	if len(messages) < 2 {
+		return nil
+	}
+
+	sysMsgContent, _ := messages[0]["content"].(string)
+	userMsgContent, _ := messages[1]["content"].(string)
+
+	frags := make([]cb.ContextFragment, 0, 2+len(evidence))
+	frags = append(frags, buildSalesRAGSystemFragment("sys-0", sysMsgContent))
+	frags = append(frags, buildSalesRAGEvidenceFragments(evidence)...)
+	frags = append(frags, buildSalesRAGUserFragment("cur-msg", userMsgContent))
+	return frags
+}
+
 // RetrieveStream 流式检索知识并生成回答
 // 事件类型:
 // - "verdict": data 为 *service.RetrievalVerdict，检索结果
@@ -1277,25 +1292,11 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 		})
 	}
 
-	// Build ContextFragments for the context-budget middleware (spec §9.2 Task 10).
-	// Evidence chunks from verdict.Evidence carry score-based importance so the planner
-	// can prioritise high-relevance chunks under budget pressure.
-	// The system prompt and user query are also wrapped as typed fragments.
-	//
-	// P2-1 fix: the user fragment carries only the raw user query (promptQuery),
-	// NOT the full assembled user message that may include OCR text appended by
-	// buildPromptMessagesV2. OCR text is a retrieval aid, not the user's expressed
-	// intent, so it should not be tagged as SourceUser + Critical. The assembled
-	// messages slice (aiMessages) is still passed to the provider unchanged — this
-	// only affects how the context-budget middleware classifies fragments.
-	var salesragFragments []cb.ContextFragment
-	if len(messages) >= 2 {
-		sysMsgContent, _ := messages[0]["content"].(string)
-		salesragFragments = append(salesragFragments, buildSalesRAGSystemFragment("sys-0", sysMsgContent))
-		salesragFragments = append(salesragFragments, buildSalesRAGEvidenceFragments(verdict.Evidence)...)
-		// Use promptQuery (raw user text only, no OCR suffix) as the SourceUser fragment.
-		salesragFragments = append(salesragFragments, buildSalesRAGUserFragment("cur-msg", promptQuery))
-	}
+	// Build ContextFragments from the assembled prompt messages. ContextBudgetCredits
+	// renders these fragments and replaces ChatRequest.Messages, so the user
+	// fragment must preserve the exact user message produced by buildPromptMessagesV2,
+	// including OCR text from uploaded images.
+	salesragFragments := buildSalesRAGPromptFragments(messages, verdict.Evidence)
 
 	// Pre-stream errors (auth, routing) return synchronously via chatErr.
 	// Mid-stream errors surface via chunk.IsFinal && chunk.Err on the terminal
@@ -2196,7 +2197,7 @@ func (b *salesRAGBiz) GetCustomerProfile(ctx context.Context, userID uint, sessi
 
 // ChatWithSession 基于会话的流式对话（保存聊天记录）
 // chatMode: "sales" (销售话术模式) 或 "free" (自由讨论模式)
-// ocrTexts: 图片OCR识别文字，仅用于知识库检索，不进AI prompt
+// ocrTexts: 图片OCR识别文字，用于知识库检索并追加到最终 AI prompt
 func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionID uint, query string, ocrTexts []string, images []string, docIDs []uint, deepThinking bool, chatMode string, onEvent func(eventType string, data interface{}) error) error {
 	// 1. 验证会话并加载历史消息
 	session, err := b.sessionStore.GetSessionWithMessages(ctx, sessionID, userID)
