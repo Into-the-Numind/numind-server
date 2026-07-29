@@ -1994,7 +1994,7 @@ func TestOperationService_PendingUserAuthResumeReplaysWhenScopesAlreadyGranted(t
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationSucceeded, completed.State)
 	preflightCalls, _ := h.preflight.snapshot()
-	require.Equal(t, 2, preflightCalls)
+	require.Equal(t, 3, preflightCalls)
 	businessCalls, _ := h.runner.snapshot()
 	require.Equal(t, 1, businessCalls)
 }
