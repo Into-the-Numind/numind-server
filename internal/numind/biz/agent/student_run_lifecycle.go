@@ -384,7 +384,7 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 		SessionID:         sessionID,
 		AgentDefinitionID: req.AgentDefinitionID,
 		Status:            "running",
-		Messages:          datatypes.JSON([]byte("[]")),
+		Messages:          initialDisplayMessagesJSON(req.Message, displayAtts),
 		StartedAt:         startedAt,
 		// V1.5 compact-v1-removal — V1 包已删，所有新 run 默认走 V2 (maybeCompactV2)。
 		UseCompactV2: true,
@@ -556,6 +556,17 @@ func displayAttachmentsFromURLs(urls []string) []displayAttachment {
 	return out
 }
 
+func initialDisplayMessagesJSON(displayInput string, displayAtts []displayAttachment) datatypes.JSON {
+	turns := []map[string]any{{"role": "user", "content": displayInput}}
+	setUserTurnAttachments(turns, displayAtts)
+	raw, err := json.Marshal(turns)
+	if err != nil {
+		log.Warnw("initialDisplayMessagesJSON: marshal failed", "error", err)
+		return datatypes.JSON([]byte("[]"))
+	}
+	return datatypes.JSON(raw)
+}
+
 // strPtr returns a pointer to an independent COPY of s (the value parameter), so the
 // pointer never aliases a caller's struct field — safe to stash in RunRequest.DisplayInput
 // that an async run goroutine reads later.
@@ -671,6 +682,8 @@ func (s *StudentRunService) AcquireStreamLock(ctx context.Context, userID uint, 
 		}
 	}
 
+	_, _, displayAtts := s.composeAttachmentInput(ctx, userID, req)
+
 	// Pre-create the agent_run row synchronously (same pattern as Create).
 	// P1 fix (T07): use ad fields to populate preRun, matching Create()'s pattern.
 	// ad.ParentUserID is the parent account for this learner — not stored on
@@ -684,7 +697,7 @@ func (s *StudentRunService) AcquireStreamLock(ctx context.Context, userID uint, 
 		SessionID:         sessionID,
 		AgentDefinitionID: req.AgentDefinitionID,
 		Status:            "running",
-		Messages:          datatypes.JSON([]byte("[]")),
+		Messages:          initialDisplayMessagesJSON(req.Message, displayAtts),
 		StartedAt:         startedAt,
 		UseCompactV2:      true,       // always V2; see comment above
 		IsTest:            req.IsTest, // agent-mode-billing T10: persist 试聊审计标记

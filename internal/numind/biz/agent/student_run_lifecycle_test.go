@@ -646,6 +646,46 @@ func TestComposeAttachmentInput_UsesIDsWithoutInjectingParsedBodyAndKeepsURLFall
 	assert.Equal(t, "legacy.txt", display[1].Filename)
 }
 
+func TestAcquireStreamLock_PersistsInitialUserTurnWithAttachment(t *testing.T) {
+	runStore := newLifecycleRunStore()
+	skillStore := newLifecycleSkillStore()
+	skillStore.defs[7] = &model.AgentDefinition{ID: 7, ParentUserID: 123}
+	att := &model.AgentAttachment{
+		ID:       42,
+		UserID:   123,
+		URL:      "https://bucket.cos.ap-chengdu.myqcloud.com/agent-attachments/123/managed.docx",
+		Filename: "managed.docx",
+		MimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	}
+	svc := NewStudentRunService(&lifecycleRunner{}, runStore, skillStore, nil, nil, nil).
+		WithAttachmentStore(newStubStore(att))
+
+	runID, acquired, err := svc.AcquireStreamLock(context.Background(), 123, CreateRunRequest{
+		AgentDefinitionID: 7,
+		SessionID:         "refresh-mid-run",
+		Message:           "帮我总结",
+		AttachmentIDs:     []uint64{42},
+	})
+	require.NoError(t, err)
+	require.True(t, acquired)
+
+	run, err := runStore.Get(context.Background(), runID)
+	require.NoError(t, err)
+
+	var turns []map[string]any
+	require.NoError(t, json.Unmarshal(run.Messages, &turns))
+	require.Len(t, turns, 1, "running snapshot must already contain the user's bubble")
+	assert.Equal(t, "user", turns[0]["role"])
+	assert.Equal(t, "帮我总结", turns[0]["content"])
+	atts, ok := turns[0]["attachments"].([]any)
+	require.True(t, ok, "running snapshot must carry uploaded attachment chips")
+	require.Len(t, atts, 1)
+	att0, ok := atts[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "managed.docx", att0["filename"])
+	assert.Equal(t, att.URL, att0["url"])
+}
+
 // TestLoadSessionHistory_ReturnsPriorTurnsChronological verifies the multi-turn
 // context fix end-to-end at the biz layer: prior runs of the same session are
 // loaded, ordered chronologically, the current run is excluded, and tool/empty
