@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -172,6 +173,31 @@ func TestLangfuseLarkSkillReadContainsOnlySafeReferenceEvidence(t *testing.T) {
 	}
 }
 
+func TestLangfuseLarkSkillReadRejectsUntrustedReferenceWithoutLoggingIt(t *testing.T) {
+	const runID = uint64(365)
+	secretSkill := "customer-secret-skill"
+	secretReference := "customer-secret-reference.md"
+	events := capturePipelineLangfuseEvents(t)
+	ctx := WithRunID(langfuse.WithTrace(context.Background(), "run-359-invalid-skill-reference"), runID)
+
+	result, err := (&larkSkillReadTool{executor: &fakeSkillReadExecutor{err: feishu.ErrSkillReadInvalid}}).Execute(
+		ctx,
+		ToolInput(fmt.Sprintf(`{"skill":%q,"reference":%q}`, secretSkill, secretReference)),
+	)
+
+	require.NoError(t, err)
+	require.Contains(t, string(result), `"code":"invalid_skill_input"`)
+	created := findPipelineSpanEvent(t, *events, "span-create", "tool.lark_skill_read.execute")
+	assert.Equal(t, map[string]any{
+		"run_id":              runID,
+		"skill":               "invalid",
+		"requested_reference": "invalid",
+	}, created.Input)
+	encoded := pipelineEventsJSON(t, *events)
+	assert.NotContains(t, encoded, secretSkill)
+	assert.NotContains(t, encoded, secretReference)
+}
+
 func TestLarkExecuteLangfuseRecordsSafePreExecutionEvidence(t *testing.T) {
 	const (
 		traceRunID   = uint64(361)
@@ -295,4 +321,43 @@ func TestLarkExecuteLangfuseNeverRecordsStdinOrProviderErrors(t *testing.T) {
 		assert.Equal(t, "operation_error", output["error_class"])
 		assert.NotContains(t, pipelineEventsJSON(t, *events), secretError)
 	})
+}
+
+func TestLarkExecuteLangfuseTreatsDurableWaitAsExpectedControlFlow(t *testing.T) {
+	const runID = uint64(366)
+	larkExecuteRetryClearRun(runID)
+	t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+	events := capturePipelineLangfuseEvents(t)
+	ctx := middleware.NewContextWithUserID(
+		langfuse.WithTrace(context.Background(), "run-359-durable-wait"),
+		437,
+	)
+	ctx = WithToolCallID(WithRunID(ctx, runID), "run-359-durable-wait")
+	executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+		OperationID: "op-run-359-wait",
+		State:       model.FeishuOperationWaitingUserAuth,
+		Action: &feishu.OperationAction{
+			Provider:    "lark",
+			OperationID: "op-run-359-wait",
+			SessionID:   "session-run-359-wait",
+			Phase:       model.FeishuAuthPhaseUserAuth,
+			ExpiresAt:   time.Now().Add(time.Hour),
+		},
+	}}
+
+	result, err := (&larkExecuteTool{executor: executor}).Execute(
+		ctx,
+		ToolInput(`{"argv":["base","+record-list","--base-token","bascnABCDEFG123","--table-id","Tasks"]}`),
+	)
+
+	require.Nil(t, result)
+	var yielded *yieldError
+	require.ErrorAs(t, err, &yielded)
+	created := findPipelineSpanEvent(t, *events, "span-create", "tool.lark_execute.execute")
+	updated := findPipelineSpanUpdate(t, *events, created.ID)
+	output, ok := updated.Output.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, false, output["feishu_called"])
+	assert.Equal(t, pipelineToolTraceNoError, output["error_class"])
+	assert.Empty(t, updated.StatusMessage)
 }

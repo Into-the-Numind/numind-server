@@ -129,6 +129,7 @@ func TestCommandCatalog_Run359BatchCreateInlineContractAndSafeHints(t *testing.T
 	assert.Contains(t, command.Argv, string(payload), "the complete Agent-authored JSON remains one argv value")
 	assert.Equal(t, "base +record-batch-create", SafeCommandClass(batchArgv(string(payload))))
 	assert.Equal(t, "invalid", SafeCommandClass([]string{"base", "not-a-hosted-action", "bascnRUN359SECRET"}))
+	assert.Equal(t, "invalid", SafeCommandClass([]string{"customersecret", "+payload", "bascnRUN359SECRET"}))
 
 	tests := []struct {
 		name     string

@@ -101,11 +101,7 @@ func (t *larkSkillReadTool) Execute(ctx context.Context, input ToolInput) (ToolR
 	if err := decodeOptionalString(fields, "cursor", &request.Cursor); err != nil {
 		return larkWorkspaceSoftError(larkWorkspaceErrorInvalidSkillInput)
 	}
-	span := startSafePipelineToolSpan(ctx, "tool.lark_skill_read.execute", map[string]any{
-		"run_id":              request.AgentRunID,
-		"skill":               request.Skill,
-		"requested_reference": request.Reference,
-	})
+	var span *safePipelineToolSpan
 	spanOutput := map[string]any{
 		"ok":            false,
 		"resolved_path": "",
@@ -113,6 +109,16 @@ func (t *larkSkillReadTool) Execute(ctx context.Context, input ToolInput) (ToolR
 	}
 	spanErrorClass := "skill_read_error"
 	defer func() { span.End(spanOutput, spanErrorClass) }()
+	startSpan := func(skill, requestedReference string) {
+		if span != nil {
+			return
+		}
+		span = startSafePipelineToolSpan(ctx, "tool.lark_skill_read.execute", map[string]any{
+			"run_id":              request.AgentRunID,
+			"skill":               skill,
+			"requested_reference": requestedReference,
+		})
+	}
 
 	var (
 		resultSkill      string
@@ -124,6 +130,7 @@ func (t *larkSkillReadTool) Execute(ctx context.Context, input ToolInput) (ToolR
 	for pageIndex := 0; pageIndex < larkSkillReadMaxPages; pageIndex++ {
 		page, readErr := t.executor.Read(ctx, request)
 		if readErr != nil || page == nil {
+			startSpan("invalid", "invalid")
 			if pageIndex == 0 && errors.Is(readErr, feishu.ErrSkillReadInvalid) {
 				spanErrorClass = "invalid_skill_input"
 				return larkWorkspaceSoftError(larkWorkspaceErrorInvalidSkillInput)
@@ -133,9 +140,11 @@ func (t *larkSkillReadTool) Execute(ctx context.Context, input ToolInput) (ToolR
 		spanOutput["page_count"] = pageIndex + 1
 		if pageIndex == 0 {
 			if page.Skill != request.Skill {
+				startSpan("invalid", "invalid")
 				spanErrorClass = "invalid_skill_result"
 				return larkWorkspaceSoftError(larkWorkspaceErrorSkillRead)
 			}
+			startSpan(page.Skill, request.Reference)
 			resultSkill = page.Skill
 			resultPath = page.Path
 			resultReferences = append([]string(nil), page.References...)

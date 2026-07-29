@@ -1229,10 +1229,14 @@ func SafeCommandValidationHint(argv []string, err error) (string, bool) {
 // SafeCommandClass returns only a reviewed two-token command path. It never
 // includes flag names or values, so callers may use it in scalar diagnostics.
 func SafeCommandClass(argv []string) string {
-	if commandPath, ok := safeCatalogCommandPath(argv); ok {
-		return commandPath
+	commandPath, ok := safeCatalogCommandPath(argv)
+	if !ok {
+		return "invalid"
 	}
-	return "invalid"
+	if _, registered := NewCommandCatalog().specs[commandPath]; !registered {
+		return "invalid"
+	}
+	return commandPath
 }
 
 func normalizeDriveSearchDocTypes(value string) (string, error) {

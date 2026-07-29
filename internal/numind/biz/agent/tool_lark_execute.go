@@ -226,9 +226,9 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 		spanErrorClass = pipelineToolTraceNoError
 		waitingResult, waitingErr := larkWaitingYield(result, toolCallID)
 		if waitingErr != nil {
-			spanErrorClass = "invalid_wait"
 			larkExecuteRetryCompleted(retryState, retryAttempt)
 		} else {
+			spanErrorClass = "invalid_wait"
 			larkExecuteRetryFailed(retryState, retryAttempt)
 		}
 		return waitingResult, waitingErr
