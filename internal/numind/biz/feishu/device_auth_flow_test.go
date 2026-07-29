@@ -2202,7 +2202,7 @@ func TestDeviceAuthFlow_CompleteOfflineAccessNoopReconcilesExistingGrant(t *test
 	)
 	require.NoError(t, err)
 	require.True(t, result.Completed)
-	require.Equal(t, AuthorizationUpdated, result.NoticeCode)
+	require.Empty(t, result.NoticeCode)
 	fixture.cli.mu.Lock()
 	require.Equal(t, []string{"complete", "auth_status", "app_id"}, fixture.cli.events)
 	require.Equal(t, scopes, fixture.cli.completeExpectedScopes)
