@@ -41,8 +41,8 @@ Prod 升级包在 S6 Dev 真库只读 preflight 中发现 5 个阻断项。Dev �
 ## 已核对的 Dev 现状（只读）
 
 - `agent_attachment` 45 行；5 个解析字段存在，其中 SHA/大小/页数使用早期可空定义。
-- `agent_run` 389 行；10 行空 `state_reason`，2 行已删除旧记录使用
-  `zombie_cleanup_2026_05_28`。
+- `agent_run` 389 行；10 行空 `state_reason` 全部为 `status='running'`；
+  2 行 `zombie_cleanup_2026_05_28` 全部为 `status='terminated' AND is_deleted=1`。
 - `user_third_party_account` 5 行、`feishu_auth_session` 115 行；字段和索引正确，
   但字段物理顺序与一次性建表顺序不同。
 - `feishu_operation_proof_consumption` 3 行；两个目标外键缺失。

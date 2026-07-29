@@ -35,6 +35,10 @@ Files:
 
 - `scripts/2026-07-30-prod-schema-reconcile/00-preflight.sql`
 - `scripts/2026-07-30-prod-schema-reconcile/02-verify.sql`
+- `migrations/20260730_120000_prod_schema_reconcile.sql`
+- `internal/numind/helper.go`
+- `internal/numind/helper_agent_attachment_migration_test.go`
+- `internal/numind/store/agent_attachment_mysql_integration_test.go`
 - expected contract fixtures in tests/runbook
 
 Work:
@@ -63,12 +67,15 @@ Work:
 1. Represent absent, final prefixes, complete final, and complete Dev legacy
    as the only allowed preflight states.
 2. Verify accepts only complete final or complete legacy.
-3. Gate legacy rows with a real MySQL 8 GORM read test including NULL values.
+3. Lock the passed MySQL 8.4 + GORM v1.30 legacy NULL feasibility result into a
+   permanent opt-in integration test using the real store.
 4. Remove AgentAttachment from startup AutoMigrate and fail when the table is
    absent instead of silently creating/modifying it.
 5. Keep the migration additive-only; do not `MODIFY`, `UPDATE`, or backfill
    attachment rows.
 6. Hash all five parsed fields before/after both migrations and service startup.
+7. Put the attachment state matrix in both preflight and the migration's first
+   assertion, before any mutation.
 
 Verify:
 
@@ -92,6 +99,8 @@ Work:
    `zombie_cleanup_2026_05_28`.
 2. Recompute the normalized exact CHECK SHA.
 3. Preserve the `LEFT(state_reason, 11) = 'ext_resume:'` prefix test.
+4. Move the complete relational Agent row admissibility gate into the
+   migration's first assertion before any mutation.
 
 Verify:
 
@@ -117,6 +126,11 @@ Work:
 3. When zero, add both restrictive FKs in one atomic `ALTER TABLE`.
 4. When exact two, do nothing; any other state fails before apply.
 5. Hash every proof business column before/after both migrations and startup.
+
+Projection encoding for T3/T5 is fixed: each field is NULL-tagged or encoded as
+binary octet length plus SHA256, rows are hashed independently, and only ordered
+primary-key/row-hash pairs are aggregated. Missing new columns use their exact
+post-ADD defaults so before/after projections are comparable without DML.
 
 Verify:
 

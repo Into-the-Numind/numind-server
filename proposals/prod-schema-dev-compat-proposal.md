@@ -83,8 +83,8 @@ N/A，不新增 LLM 调用。
 - 同名但错误外键、部分外键、错误删除规则：失败。
 - 已存在孤儿 proof 行：失败。
 - 附件出现第三种字段组合：失败。
-- legacy 附件行的 SHA/大小/页数 NULL 扫描必须通过真实 MySQL + GORM 读取测试；
-  若不能读取则不得放行该 legacy 结构。
+- legacy 附件行的 SHA/大小/页数 NULL 已通过一次性真实 MySQL 8.4 + GORM
+  v1.30 读取可行性验证；实现中保留永久 integration regression gate。
 - 表多列、少列、错误类型或错误索引：失败。
 - migration 重跑：不得重复外键或配置行。
 

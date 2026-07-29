@@ -78,10 +78,11 @@ currently has zero attachment rows and missing columns, so it still receives
 the final shape.
 
 The row gate and test evidence cover legacy NULLs in SHA/byte-size/page-count.
-A real MySQL 8 + GORM store test must prove those NULLs scan into the current
-non-pointer Go model without error before the legacy schema can pass. If the
-test fails, the legacy shape is not accepted and the implementation must choose
-an explicit model/query compatibility change rather than a data backfill.
+A feasibility spike against MySQL 8.4, GORM v1.30, and the current non-pointer
+field shapes passed: NULL values scan as Go zero values without error. The
+implementation therefore supports the legacy schema without model changes or
+data backfill and adds the same scenario as a permanent opt-in MySQL integration
+test.
 
 Startup `AutoMigrate(&model.AgentAttachment{})` is removed. Startup only checks
 that the table exists and reports an explicit-migration error if it does not.
@@ -106,15 +107,20 @@ SHA is recomputed and verified exactly.
 ## 6. Feishu proof foreign keys
 
 Both SELECT-only preflight and the migration's first assertion block, before any
-mutation, enforce the following when
-`feishu_operation_proof_consumption` exists:
+mutation, enforce all three compatibility groups:
 
-1. existing FK state must be either zero constraints or the exact two final
-   restrictive constraints; a one-FK or wrong-FK state fails;
-2. every `source_operation_id` and `consumer_operation_id` must reference an
-   existing `feishu_operation.id`;
-3. both child columns and the parent ID must have identical type, charset, and
-   collation.
+1. attachment state is absent, a valid final prefix, complete final, or complete
+   legacy;
+2. every Agent row satisfies the relational final state rule;
+3. the following proof rules when
+   `feishu_operation_proof_consumption` exists:
+
+- existing FK state must be either zero constraints or the exact two final
+  restrictive constraints; a one-FK or wrong-FK state fails;
+- every `source_operation_id` and `consumer_operation_id` must reference an
+  existing `feishu_operation.id`;
+- both child columns and the parent ID must have identical type, charset, and
+  collation.
 
 When the table exists with zero FKs, one atomic `ALTER TABLE` adds both:
 
@@ -137,6 +143,24 @@ are absent or present:
   parsed-content fields per row;
 - `feishu_proof_business_projection`, hashing every business column of every
   proof row.
+
+Each field uses an unambiguous canonical token:
+
+- NULL: `<field-name>=N`;
+- non-NULL: `<field-name>=V:<octet-length>:<sha256-of-binary-value>`.
+
+The fixed-order field tokens are hashed per row. The aggregate contains only
+`<primary-key>:<row-sha>` entries ordered by primary key, so delimiters inside
+real values cannot collide and `GROUP_CONCAT` contains only bounded hashes.
+The scripts retain `group_concat_max_len=16777216` and assert the expected row
+count next to the aggregate.
+
+When parsed-content columns are absent or a final prefix is incomplete, the
+projection inserts the exact values that the reviewed `ADD COLUMN` operations
+will create for existing rows: NULL content/time, empty SHA, and zero sizes.
+The pre-apply virtual projection is therefore directly comparable to the
+post-apply real projection. An absent proof table is represented as zero rows
+and the SHA of an empty aggregate, matching the newly created empty table.
 
 Verify emits the same projections after apply. The isolated runner and Dev S6
 compare them before migration, after both migration executions, and after a
