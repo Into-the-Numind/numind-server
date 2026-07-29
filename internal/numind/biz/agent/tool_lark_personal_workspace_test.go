@@ -572,7 +572,7 @@ func TestLarkPersonalWorkspace_SkillReadPublishesHostedPolicy(t *testing.T) {
 	assert.Contains(t, output.HostedPolicy, "技能读取只提供命令说明")
 	assert.Contains(t, output.HostedPolicy, "身份、权限与恢复由平台负责")
 	assert.NotContains(t, output.HostedPolicy, "skill_receipts")
-	assert.Contains(t, output.HostedPolicy, "最多允许 5 次总尝试")
+	assert.Contains(t, output.HostedPolicy, fmt.Sprintf("最多允许 %d 次总尝试", larkExecuteMaxCorrectableAttempts))
 	assert.Contains(t, output.HostedPolicy, "不能原样重复")
 	assert.Contains(t, output.HostedPolicy, "unknown_result 只禁止原样重复那一条结果不确定的写命令")
 	assert.Contains(t, output.HostedPolicy, "一次核验失败可改用其他合规只读方式")
@@ -720,11 +720,11 @@ func TestLarkPersonalWorkspace_ExecuteDerivesTenantAndIdempotencyFromContext(t *
 		Data:        json.RawMessage(`{"document":{"id":"doc-1"},"count":2}`),
 	}}
 	tool := &larkExecuteTool{executor: executor}
-	input := ToolInput(`{"argv":["docs","+fetch","--doc","doc-1"],"stdin_json":{"value":"line\nquoted: \"yes\""},"skill_receipts":["receipt-doc","receipt-shared"]}`)
+	input := ToolInput(`{"argv":["docs","+fetch","--doc","doxcnABCDEFG123"],"skill_receipts":["receipt-doc","receipt-shared"]}`)
 
 	first, err := tool.Execute(larkPersonalWorkspaceContext(21, 501, "synthetic-a"), input)
 	require.NoError(t, err)
-	second, err := tool.Execute(larkPersonalWorkspaceContext(22, 502, "synthetic-b"), ToolInput(`{"argv":["wiki","+get","--node","n1"],"stdin_json":null,"skill_receipts":["receipt-wiki"]}`))
+	second, err := tool.Execute(larkPersonalWorkspaceContext(22, 502, "synthetic-b"), ToolInput(`{"argv":["wiki","+node-get","--node-token","wikcnABCDEFG123"],"stdin_json":null,"skill_receipts":["receipt-wiki"]}`))
 	require.NoError(t, err)
 
 	requests := executor.snapshot()
@@ -733,8 +733,8 @@ func TestLarkPersonalWorkspace_ExecuteDerivesTenantAndIdempotencyFromContext(t *
 	assert.Equal(t, uint64(501), requests[0].AgentRunID)
 	assert.Equal(t, "synthetic-a", requests[0].ToolCallID)
 	assert.Equal(t, "501:synthetic-a", requests[0].IdempotencyKey)
-	assert.Equal(t, []string{"docs", "+fetch", "--doc", "doc-1"}, requests[0].Argv)
-	assert.JSONEq(t, `{"value":"line\nquoted: \"yes\""}`, string(requests[0].StdinJSON))
+	assert.Equal(t, []string{"docs", "+fetch", "--doc", "doxcnABCDEFG123"}, requests[0].Argv)
+	assert.Nil(t, requests[0].StdinJSON)
 	assert.Empty(t, requests[0].SkillReceipts, "receipts must not cross the Agent execution boundary")
 	assert.Equal(t, uint(22), requests[1].UserID, "a second tenant must derive its own identity from context")
 	assert.Equal(t, "502:synthetic-b", requests[1].IdempotencyKey)
@@ -1035,7 +1035,7 @@ func TestLarkPersonalWorkspace_ExecuteWaitingYieldsDurableExternalAction(t *test
 			}}
 			result, err := (&larkExecuteTool{executor: executor}).Execute(
 				larkPersonalWorkspaceContext(7, 600, "synthetic-context-call"),
-				ToolInput(`{"argv":["docs"],"skill_receipts":["receipt"]}`),
+				ToolInput(`{"argv":["docs","+fetch","--doc","doxcnABCDEFG123"],"skill_receipts":["receipt"]}`),
 			)
 			assert.Nil(t, result)
 			var yielded *yieldError
@@ -1139,7 +1139,7 @@ func TestLarkPersonalWorkspace_ExecuteReloadedActionWithoutURLStillYields(t *tes
 	}}
 	result, err := (&larkExecuteTool{executor: executor}).Execute(
 		larkPersonalWorkspaceContext(7, 601, "reloaded-context-call"),
-		ToolInput(`{"argv":["docs"],"skill_receipts":["receipt"]}`),
+		ToolInput(`{"argv":["docs","+fetch","--doc","doxcnABCDEFG123"],"skill_receipts":["receipt"]}`),
 	)
 	assert.Nil(t, result)
 	var yielded *yieldError
@@ -1171,7 +1171,7 @@ func TestLarkPersonalWorkspace_ExecuteInvalidWaitingAndExecutorErrorsAreSafe(t *
 	}}
 	result, err := (&larkExecuteTool{executor: invalidWaiting}).Execute(
 		larkPersonalWorkspaceContext(7, runID, "tc-8"),
-		ToolInput(`{"argv":["docs","+fetch"],"skill_receipts":["secret-receipt"]}`),
+		ToolInput(`{"argv":["docs","+fetch","--doc","doxcnABCDEFG123"],"skill_receipts":["secret-receipt"]}`),
 	)
 	requireSafeLarkSoftError(t, result, err, "op-sensitive", "secret.example", "secret-receipt", "+fetch")
 	var yielded *yieldError
@@ -1181,7 +1181,7 @@ func TestLarkPersonalWorkspace_ExecuteInvalidWaitingAndExecutorErrorsAreSafe(t *
 	failing := &fakeLarkExecutor{err: internalErr}
 	result, err = (&larkExecuteTool{executor: failing}).Execute(
 		larkPersonalWorkspaceContext(7, runID, "tc-8"),
-		ToolInput(`{"argv":["docs","+fetch"],"skill_receipts":["receipt-raw"]}`),
+		ToolInput(`{"argv":["docs","+fetch","--doc","doxcnABCDEFG123"],"skill_receipts":["receipt-raw"]}`),
 	)
 	requireSafeLarkSoftError(t, result, err, internalErr.Error(), "receipt-raw", "+fetch", "/private/home")
 	assert.Contains(t, string(result), "停止重复调用")
@@ -1206,15 +1206,15 @@ func TestLarkPersonalWorkspace_ExecuteRejectedCommandStopsLocalCLIRetries(t *tes
 	assert.Contains(t, string(result), "不要执行 auth/config/whoami")
 	assert.Contains(t, string(result), "不要要求用户提供 App ID/App Secret")
 	assert.Contains(t, string(result), "Docs/Base/Wiki")
-	assert.Contains(t, string(result), `"max_attempts":5`)
+	assert.Contains(t, string(result), `"max_attempts":10`)
 	assert.Contains(t, string(result), `"attempt":1`)
-	assert.Contains(t, string(result), `"remaining_attempts":4`)
+	assert.Contains(t, string(result), `"remaining_attempts":9`)
 	assert.Contains(t, string(result), `"code":"command_rejected"`)
 	assert.Contains(t, string(result), `"recoverable":true`)
 	assert.NotContains(t, string(result), "请稍后重试")
 	assert.NotContains(t, string(result), "opaque-shared-receipt")
 
-	for attempt := 2; attempt < 5; attempt++ {
+	for attempt := 2; attempt < larkExecuteMaxCorrectableAttempts; attempt++ {
 		result, err = tool.Execute(
 			larkPersonalWorkspaceContext(1, runID, fmt.Sprintf("dev-run-204-rejected-%d", attempt)),
 			ToolInput(`{"argv":["docs","+create","--content","<title>联调</title>"],"skill_receipts":["opaque-shared-receipt","opaque-doc-receipt"]}`),
@@ -1226,21 +1226,21 @@ func TestLarkPersonalWorkspace_ExecuteRejectedCommandStopsLocalCLIRetries(t *tes
 	}
 
 	result, err = tool.Execute(
-		larkPersonalWorkspaceContext(1, runID, "dev-run-204-rejected-5"),
-		ToolInput(`{"argv":["docs","+create","--content","<title>第五次</title>"],"skill_receipts":["opaque-shared-receipt","opaque-doc-receipt"]}`),
+		larkPersonalWorkspaceContext(1, runID, "dev-run-204-rejected-10"),
+		ToolInput(`{"argv":["docs","+create","--content","<title>第十次</title>"],"skill_receipts":["opaque-shared-receipt","opaque-doc-receipt"]}`),
 	)
 	require.NoError(t, err)
 	assert.Contains(t, string(result), `"code":"correction_exhausted"`)
-	assert.Contains(t, string(result), `"attempt":5`)
+	assert.Contains(t, string(result), `"attempt":10`)
 	assert.Contains(t, string(result), `"recoverable":false`)
 
 	result, err = tool.Execute(
-		larkPersonalWorkspaceContext(1, runID, "dev-run-204-rejected-6"),
+		larkPersonalWorkspaceContext(1, runID, "dev-run-204-rejected-11"),
 		ToolInput(`{"argv":["docs","+create","--content","<title>不应执行</title>"],"skill_receipts":["opaque-shared-receipt","opaque-doc-receipt"]}`),
 	)
 	require.NoError(t, err)
 	assert.Contains(t, string(result), "已停止后续飞书命令")
-	assert.Len(t, executor.snapshot(), 5, "the sixth call must be blocked before reaching the executor")
+	assert.Len(t, executor.snapshot(), 9, "the local first rejection and eleventh call must not reach the executor")
 
 	const otherRunID = uint64(205)
 	t.Cleanup(func() { larkExecuteRetryClearRun(otherRunID) })
@@ -1249,9 +1249,9 @@ func TestLarkPersonalWorkspace_ExecuteRejectedCommandStopsLocalCLIRetries(t *tes
 		ToolInput(`{"argv":["docs","+create","--content","<title>另一个任务</title>"],"skill_receipts":["opaque-shared-receipt","opaque-doc-receipt"]}`),
 	)
 	require.NoError(t, err)
-	assert.Contains(t, string(result), `"max_attempts":5`)
+	assert.Contains(t, string(result), `"max_attempts":10`)
 	assert.NotContains(t, string(result), "已停止后续飞书命令")
-	assert.Len(t, executor.snapshot(), 6, "an exhausted run must not consume another run's correction budget")
+	assert.Len(t, executor.snapshot(), 10, "an exhausted run must not consume another run's correction budget")
 
 	larkExecuteRetryClearRun(runID)
 	result, err = tool.Execute(
@@ -1259,9 +1259,9 @@ func TestLarkPersonalWorkspace_ExecuteRejectedCommandStopsLocalCLIRetries(t *tes
 		ToolInput(`{"argv":["docs","+create","--content","<title>清理后新执行段</title>"],"skill_receipts":["opaque-shared-receipt","opaque-doc-receipt"]}`),
 	)
 	require.NoError(t, err)
-	assert.Contains(t, string(result), `"max_attempts":5`)
+	assert.Contains(t, string(result), `"max_attempts":10`)
 	assert.NotContains(t, string(result), "已停止后续飞书命令")
-	assert.Len(t, executor.snapshot(), 7, "run cleanup must restore a fresh correction budget")
+	assert.Len(t, executor.snapshot(), 11, "run cleanup must restore a fresh correction budget")
 }
 
 // Customer regression (Dev run 335): the model tried `drive +inspect` through
@@ -1290,19 +1290,19 @@ func TestLarkPersonalWorkspace_ExecuteGuidesInspectToolConfusionBeforeExecutor(t
 
 // Customer regression (Dev run 248): two pre-execution command rejections
 // exhausted the run before the model's next, valid correction could reach the
-// executor. Correctable commands get five total attempts; success on the fifth
+// executor. Correctable commands get ten total attempts; success on the tenth
 // attempt must still execute and reset the run budget.
-func TestLarkPersonalWorkspace_ExecuteAllowsFiveCorrectableAttempts(t *testing.T) {
+func TestLarkPersonalWorkspace_ExecuteAllowsTenCorrectableAttempts(t *testing.T) {
 	const runID = uint64(248)
 	larkExecuteRetryClearRun(runID)
 	t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
 
 	executor := &fakeLarkExecutor{err: feishu.ErrOperationRequestRejected}
 	tool := &larkExecuteTool{executor: executor}
-	for attempt := 1; attempt < 5; attempt++ {
+	for attempt := 1; attempt < larkExecuteMaxCorrectableAttempts; attempt++ {
 		result, err := tool.Execute(
 			larkPersonalWorkspaceContext(1, runID, fmt.Sprintf("correctable-%d", attempt)),
-			ToolInput(`{"argv":["base","+base-create","--name","联调","--table-name","任务列表"]}`),
+			ToolInput(`{"argv":["base","+base-create","--name","联调"]}`),
 		)
 		require.NoError(t, err)
 		require.Contains(t, string(result), `"code":"command_rejected"`, "attempt %d must remain correctable", attempt)
@@ -1312,18 +1312,18 @@ func TestLarkPersonalWorkspace_ExecuteAllowsFiveCorrectableAttempts(t *testing.T
 	executor.mu.Lock()
 	executor.err = nil
 	executor.result = &feishu.OperationResult{
-		OperationID: "op-corrected-fifth", State: model.FeishuOperationSucceeded,
+		OperationID: "op-corrected-tenth", State: model.FeishuOperationSucceeded,
 		Data: json.RawMessage(`{"base_token":"base-created"}`),
 	}
 	executor.mu.Unlock()
 
 	result, err := tool.Execute(
-		larkPersonalWorkspaceContext(1, runID, "corrected-fifth"),
+		larkPersonalWorkspaceContext(1, runID, "corrected-tenth"),
 		ToolInput(`{"argv":["base","+base-create","--name","联调"]}`),
 	)
 	require.NoError(t, err)
 	require.Contains(t, string(result), `"ok":true`)
-	require.Len(t, executor.snapshot(), 5, "all five attempts must reach the executor")
+	require.Len(t, executor.snapshot(), 10, "all ten attempts must reach the executor")
 }
 
 func TestLarkPersonalWorkspace_ExecuteCorrectionBudgetIsConcurrentAndResetsAfterSuccess(t *testing.T) {
@@ -1339,7 +1339,7 @@ func TestLarkPersonalWorkspace_ExecuteCorrectionBudgetIsConcurrentAndResetsAfter
 		tool := &larkExecuteTool{executor: executor}
 		_, err := tool.Execute(
 			larkPersonalWorkspaceContext(1, runID, "initial-rejection"),
-			ToolInput(`{"argv":["auth","status"],"skill_receipts":["shared"]}`),
+			ToolInput(`{"argv":["docs","+create","--title","初始拒绝"],"skill_receipts":["shared","doc"]}`),
 		)
 		require.NoError(t, err)
 
@@ -1390,7 +1390,7 @@ func TestLarkPersonalWorkspace_ExecuteCorrectionBudgetIsConcurrentAndResetsAfter
 		tool := &larkExecuteTool{executor: executor}
 		_, err := tool.Execute(
 			larkPersonalWorkspaceContext(1, runID, "initial-rejection"),
-			ToolInput(`{"argv":["auth","status"],"skill_receipts":["shared"]}`),
+			ToolInput(`{"argv":["docs","+create","--title","初始拒绝"],"skill_receipts":["shared","doc"]}`),
 		)
 		require.NoError(t, err)
 
@@ -1416,7 +1416,7 @@ func TestLarkPersonalWorkspace_ExecuteCorrectionBudgetIsConcurrentAndResetsAfter
 			ToolInput(`{"argv":["docs","+create","--content","<title>新周期</title>"],"skill_receipts":["shared","doc"]}`),
 		)
 		require.NoError(t, err)
-		assert.Contains(t, string(result), `"max_attempts":5`)
+		assert.Contains(t, string(result), `"max_attempts":10`)
 		assert.Contains(t, string(result), `"attempt":1`)
 		assert.NotContains(t, string(result), "已停止后续飞书命令")
 		assert.Len(t, executor.snapshot(), 3)
@@ -1438,7 +1438,7 @@ func TestLarkPersonalWorkspace_ParallelCommandIsRecoverableAndDoesNotConsumeRetr
 		defer close(firstDone)
 		result, err := tool.Execute(
 			larkPersonalWorkspaceContext(1, runID, "base-get"),
-			ToolInput(`{"argv":["base","+base-get","base-token"]}`),
+			ToolInput(`{"argv":["base","+base-get","--base-token","bascnABCDEFG123"]}`),
 		)
 		assert.NoError(t, err)
 		assert.Contains(t, string(result), `"ok":true`)
@@ -1452,7 +1452,7 @@ func TestLarkPersonalWorkspace_ParallelCommandIsRecoverableAndDoesNotConsumeRetr
 
 	blocked, err := tool.Execute(
 		larkPersonalWorkspaceContext(1, runID, "table-list"),
-		ToolInput(`{"argv":["base","+table-list","base-token"]}`),
+		ToolInput(`{"argv":["base","+table-list","--base-token","bascnABCDEFG123"]}`),
 	)
 	require.NoError(t, err)
 	require.Contains(t, string(blocked), `"code":"command_in_flight"`)
@@ -1468,7 +1468,7 @@ func TestLarkPersonalWorkspace_ParallelCommandIsRecoverableAndDoesNotConsumeRetr
 
 	next, err := tool.Execute(
 		larkPersonalWorkspaceContext(1, runID, "table-list-after-base-get"),
-		ToolInput(`{"argv":["base","+table-list","base-token"]}`),
+		ToolInput(`{"argv":["base","+table-list","--base-token","bascnABCDEFG123"]}`),
 	)
 	require.NoError(t, err)
 	require.Contains(t, string(next), `"ok":true`)
@@ -1494,7 +1494,7 @@ func TestLarkPersonalWorkspace_ExecuteTerminalStatesNeverFakeSuccess(t *testing.
 			}}
 			result, err := (&larkExecuteTool{executor: executor}).Execute(
 				larkPersonalWorkspaceContext(7, runID, "tc-8"),
-				ToolInput(`{"argv":["docs"],"skill_receipts":["receipt"]}`),
+				ToolInput(`{"argv":["docs","+fetch","--doc","doxcnABCDEFG123"],"skill_receipts":["receipt"]}`),
 			)
 			require.NoError(t, err)
 			var output struct {
@@ -1601,14 +1601,14 @@ func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *tes
 		executor.mu.Unlock()
 		unrelatedWrite, err := tool.Execute(
 			larkPersonalWorkspaceContext(7, runID, "base-create"),
-			ToolInput(`{"argv":["base","+base-create","--name","项目任务","--table-name","任务列表"]}`),
+			ToolInput(`{"argv":["base","+base-create","--name","项目任务"]}`),
 		)
 		require.NoError(t, err)
 		require.Contains(t, string(unrelatedWrite), `"ok":true`)
 		require.Len(t, executor.snapshot(), 4, "only the ambiguous write itself may be fenced")
 	})
 
-	t.Run("fifth malformed input exhausts correction budget without executor", func(t *testing.T) {
+	t.Run("tenth malformed input exhausts correction budget without executor", func(t *testing.T) {
 		const runID = uint64(809)
 		larkExecuteRetryClearRun(runID)
 		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
@@ -1618,7 +1618,7 @@ func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *tes
 		}}
 		tool := &larkExecuteTool{executor: executor}
 
-		for attempt := 1; attempt < 5; attempt++ {
+		for attempt := 1; attempt < larkExecuteMaxCorrectableAttempts; attempt++ {
 			result, err := tool.Execute(
 				larkPersonalWorkspaceContext(7, runID, fmt.Sprintf("malformed-%d", attempt)),
 				ToolInput(`{"argv":[]}`),
@@ -1629,13 +1629,13 @@ func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *tes
 			require.Contains(t, string(result), `"recoverable":true`)
 		}
 
-		fifth, err := tool.Execute(
-			larkPersonalWorkspaceContext(7, runID, "malformed-5"),
+		tenth, err := tool.Execute(
+			larkPersonalWorkspaceContext(7, runID, "malformed-10"),
 			ToolInput(`{"argv":[]}`),
 		)
-		requireSafeLarkSoftError(t, fifth, err)
-		require.Contains(t, string(fifth), `"code":"correction_exhausted"`)
-		require.Contains(t, string(fifth), `"recoverable":false`)
+		requireSafeLarkSoftError(t, tenth, err)
+		require.Contains(t, string(tenth), `"code":"correction_exhausted"`)
+		require.Contains(t, string(tenth), `"recoverable":false`)
 		require.Empty(t, executor.snapshot())
 	})
 
@@ -1688,7 +1688,7 @@ func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *tes
 		}}
 		result, err := (&larkExecuteTool{executor: executor}).Execute(
 			larkPersonalWorkspaceContext(7, runID, "new-work-after-legacy-unknown"),
-			ToolInput(`{"argv":["base","+base-create","--name","继续任务","--table-name","任务列表"]}`),
+			ToolInput(`{"argv":["base","+base-create","--name","继续任务"]}`),
 		)
 		require.NoError(t, err)
 		require.Contains(t, string(result), `"ok":true`)
@@ -1872,7 +1872,7 @@ func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *tes
 		tool := &larkExecuteTool{executor: executor}
 		first, err := tool.Execute(
 			larkPersonalWorkspaceContext(7, runID, "read-invalid"),
-			ToolInput(`{"argv":["docs","+fetch","--doc","bad"],"skill_receipts":["shared","doc"]}`),
+			ToolInput(`{"argv":["docs","+fetch","--doc","doxcnABCDEFG123"],"skill_receipts":["shared","doc"]}`),
 		)
 		require.NoError(t, err)
 		require.Contains(t, string(first), `"category":"validation"`)
@@ -1884,7 +1884,7 @@ func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *tes
 		executor.mu.Unlock()
 		corrected, err := tool.Execute(
 			larkPersonalWorkspaceContext(7, runID, "read-corrected"),
-			ToolInput(`{"argv":["docs","+fetch","--doc","doc-1"],"skill_receipts":["shared","doc"]}`),
+			ToolInput(`{"argv":["docs","+fetch","--doc","doxcnHIJKLMN123"],"skill_receipts":["shared","doc"]}`),
 		)
 		require.NoError(t, err)
 		require.Contains(t, string(corrected), `"ok":true`)
@@ -1899,13 +1899,13 @@ func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *tes
 		executor.mu.Unlock()
 		notFound, err := tool.Execute(
 			larkPersonalWorkspaceContext(7, runID, "read-new-cycle"),
-			ToolInput(`{"argv":["docs","+fetch","--doc","missing"],"skill_receipts":["shared","doc"]}`),
+			ToolInput(`{"argv":["docs","+fetch","--doc","doxcnMISSING123"],"skill_receipts":["shared","doc"]}`),
 		)
 		require.NoError(t, err)
 		require.Contains(t, string(notFound), `"category":"not_found"`)
 		otherRead, err := tool.Execute(
 			larkPersonalWorkspaceContext(7, runID, "read-blind-retry"),
-			ToolInput(`{"argv":["docs","+fetch","--doc","other"],"skill_receipts":["shared","doc"]}`),
+			ToolInput(`{"argv":["docs","+fetch","--doc","doxcnOTHERREAD123"],"skill_receipts":["shared","doc"]}`),
 		)
 		require.NoError(t, err)
 		require.Contains(t, string(otherRead), `"category":"not_found"`)
@@ -1919,13 +1919,13 @@ func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *tes
 		category string
 	}{
 		{
-			name: "fifth validation exhausts correction budget", runID: 813, category: "validation",
+			name: "tenth validation exhausts correction budget", runID: 813, category: "validation",
 			failure: &feishu.OperationFailure{
 				Code: feishu.PublicCodeValidationError, Category: "validation", BusinessStarted: false,
 			},
 		},
 		{
-			name: "fifth temporary failure exhausts retry budget", runID: 814, category: "temporary",
+			name: "tenth temporary failure exhausts retry budget", runID: 814, category: "temporary",
 			failure: &feishu.OperationFailure{
 				Code: feishu.PublicCodeTemporaryError, Category: "temporary", Retryable: true, BusinessStarted: false,
 			},
@@ -1940,7 +1940,7 @@ func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *tes
 				Failure:     testCase.failure,
 			}}
 			tool := &larkExecuteTool{executor: executor}
-			for attempt := 1; attempt < 5; attempt++ {
+			for attempt := 1; attempt < larkExecuteMaxCorrectableAttempts; attempt++ {
 				executor.mu.Lock()
 				executor.result.OperationID = fmt.Sprintf("op-%d-%s", attempt, testCase.category)
 				executor.mu.Unlock()
@@ -1953,15 +1953,15 @@ func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *tes
 			}
 
 			executor.mu.Lock()
-			executor.result.OperationID = "op-fifth-" + testCase.category
+			executor.result.OperationID = "op-tenth-" + testCase.category
 			executor.mu.Unlock()
-			fifth, err := tool.Execute(
-				larkPersonalWorkspaceContext(7, testCase.runID, "fifth-"+testCase.category),
+			tenth, err := tool.Execute(
+				larkPersonalWorkspaceContext(7, testCase.runID, "tenth-"+testCase.category),
 				ToolInput(`{"argv":["docs","+fetch","--doc","candidate"]}`),
 			)
-			requireSafeLarkSoftError(t, fifth, err)
-			require.Contains(t, string(fifth), `"code":"correction_exhausted"`)
-			require.Len(t, executor.snapshot(), 5)
+			requireSafeLarkSoftError(t, tenth, err)
+			require.Contains(t, string(tenth), `"code":"correction_exhausted"`)
+			require.Len(t, executor.snapshot(), 10)
 		})
 	}
 }

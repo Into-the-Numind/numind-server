@@ -7,7 +7,7 @@ import (
 	"numind-server/internal/numind/biz/feishu"
 )
 
-const larkExecuteMaxCorrectableAttempts = 5
+const larkExecuteMaxCorrectableAttempts = 10
 
 type larkExecuteRetryPhase uint8
 

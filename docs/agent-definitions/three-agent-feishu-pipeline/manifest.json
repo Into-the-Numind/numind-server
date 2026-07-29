@@ -14,7 +14,7 @@
       ],
       "runtime_contract_file": "docs/agent-definitions/three-agent-feishu-pipeline/agent-1-runtime-contract.md",
       "prompt_file": "docs/agent-definitions/three-agent-feishu-pipeline/agent-1-system-prompt.md",
-      "prompt_sha256": "f9005adb33d4db13a5380c9e7b4fe35c90b47ecda78c29e5703ba58e9ab51493",
+      "prompt_sha256": "06c9252252e932b0a194340886b1c900dd716ad89768383c40134409dbdabcf8",
       "ssot_sha256": "fc2bea1b8e05ddd285975120d0b7b401a56ed69683f90a63a4fa30f907dc66f5",
       "tool_flags": {
         "kb_search": true,

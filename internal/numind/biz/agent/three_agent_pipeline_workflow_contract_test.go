@@ -388,6 +388,7 @@ func TestThreeAgentPipelineWorkflow_Agent1Over100AndCheckpointResume(t *testing.
 			assert.Equal(t, 3, countCallsContaining(calls, `"projection":"index"`))
 			assert.Equal(t, 2, countCallsContaining(calls, "+record-batch-create"))
 			assertBatchLimits(t, calls, 20)
+			assertAgent1WriteReferencesBeforeBatch(t, calls)
 		},
 	}
 	runScriptedPipelineWorkflow(t, first)
@@ -411,6 +412,7 @@ func TestThreeAgentPipelineWorkflow_Agent1Over100AndCheckpointResume(t *testing.
 				assert.NotContains(t, fullAndWrites, `"`+completed+`"`)
 			}
 			assert.NotContains(t, fullAndWrites, "+record-batch-update")
+			assertAgent1WriteReferencesBeforeBatch(t, calls)
 		},
 	}
 	runScriptedPipelineWorkflow(t, resume)
@@ -433,9 +435,15 @@ func TestThreeAgentPipelineWorkflow_Agent1Matrix(t *testing.T) {
 				larkStep(baseListArgv(), `{"completed_keys":["n1"]}`),
 				step("xhs_note_list", `{"projection":"index","limit":100}`, `{"items":[{"xhs_note_id":"n1"},{"xhs_note_id":"n2"}],"has_more":false}`),
 				fullStep([]string{"n2"}),
+				skillReferenceStep("lark-base", "lark-base-record-batch-create.md"),
+				skillReferenceStep("lark-base", "lark-base-cell-value.md"),
 				larkStep(baseCreateArgv([]string{"n2"}), `{"record_ids":["recN2"]}`),
 			},
-			final: marker1(1, 1, 0, 0), wantMetadata: metrics1(1, 1, 0, 0), check: exactlyOneCallContaining("+record-batch-create"),
+			final: marker1(1, 1, 0, 0), wantMetadata: metrics1(1, 1, 0, 0),
+			check: func(t *testing.T, calls []pipelineWorkflowCall) {
+				exactlyOneCallContaining("+record-batch-create")(t, calls)
+				assertAgent1WriteReferencesBeforeBatch(t, calls)
+			},
 		},
 		{
 			name: "incomplete existing row uses one-record upsert", agent: 1, agentID: 7114, input: "继续打标",
@@ -478,6 +486,8 @@ func TestThreeAgentPipelineWorkflow_Agent1Matrix(t *testing.T) {
 			name: "partial success counts one failure without batch retry", agent: 1, agentID: 7117, input: "打标两条",
 			steps: []pipelineModelStep{
 				fullStep([]string{"n7", "n8"}),
+				skillReferenceStep("lark-base", "lark-base-record-batch-create.md"),
+				skillReferenceStep("lark-base", "lark-base-cell-value.md"),
 				larkStep(baseCreateArgv([]string{"n7"}), `{"record_ids":["recN7"]}`),
 				larkStep(baseCreateArgv([]string{"n8"}), `{"ok":false,"error":"write_failed"}`),
 			},
@@ -485,12 +495,15 @@ func TestThreeAgentPipelineWorkflow_Agent1Matrix(t *testing.T) {
 			check: func(t *testing.T, calls []pipelineWorkflowCall) {
 				assert.Equal(t, 2, countCallsContaining(calls, "+record-batch-create"))
 				noCallContaining("+record-batch-update")(t, calls)
+				assertAgent1WriteReferencesBeforeBatch(t, calls)
 			},
 		},
 		{
 			name: "unknown write is read-after-write reconciled and never replayed", agent: 1, agentID: 7118, input: "打标 n9",
 			steps: []pipelineModelStep{
 				fullStep([]string{"n9"}),
+				skillReferenceStep("lark-base", "lark-base-record-batch-create.md"),
+				skillReferenceStep("lark-base", "lark-base-cell-value.md"),
 				larkStep(baseCreateArgv([]string{"n9"}), `{"state":"unknown"}`),
 				larkStep(baseSearchArgv("n9"), jsonString(map[string]any{"records": []any{completeAgent1Record("n9")}})),
 			},
@@ -498,6 +511,7 @@ func TestThreeAgentPipelineWorkflow_Agent1Matrix(t *testing.T) {
 			check: func(t *testing.T, calls []pipelineWorkflowCall) {
 				exactlyOneCallContaining("+record-batch-create")(t, calls)
 				assertOrder(t, calls, "+record-batch-create", "+record-search")
+				assertAgent1WriteReferencesBeforeBatch(t, calls)
 			},
 		},
 	}
@@ -878,6 +892,10 @@ func skillStep(skill string) pipelineModelStep {
 	return step("lark_skill_read", jsonString(map[string]string{"skill": skill}), `{"ok":true}`)
 }
 
+func skillReferenceStep(skill, reference string) pipelineModelStep {
+	return step("lark_skill_read", jsonString(map[string]string{"skill": skill, "reference": reference}), `{"ok":true}`)
+}
+
 func larkStep(argv []string, result string) pipelineModelStep {
 	return step("lark_execute", jsonString(map[string]any{"argv": argv}), result)
 }
@@ -949,7 +967,10 @@ func indexSteps(ids []string) []pipelineModelStep {
 
 func batchCreateSteps(ids []string) []pipelineModelStep {
 	chunks := chunkStrings(ids, 20)
-	steps := make([]pipelineModelStep, 0, len(chunks))
+	steps := []pipelineModelStep{
+		skillReferenceStep("lark-base", "lark-base-record-batch-create.md"),
+		skillReferenceStep("lark-base", "lark-base-cell-value.md"),
+	}
 	for _, chunk := range chunks {
 		steps = append(steps, larkStep(baseCreateArgv(chunk), jsonString(map[string]any{"created": len(chunk)})))
 	}
@@ -1593,6 +1614,14 @@ func assertBatchLimits(t *testing.T, calls []pipelineWorkflowCall, maximum int) 
 		require.NoError(t, json.Unmarshal([]byte(decoded.Argv[jsonIndex]), &payload))
 		assert.LessOrEqual(t, len(payload.Rows), maximum)
 	}
+}
+
+func assertAgent1WriteReferencesBeforeBatch(t *testing.T, calls []pipelineWorkflowCall) {
+	t.Helper()
+	assert.Equal(t, 1, countCallsContaining(calls, "lark-base-record-batch-create.md"))
+	assert.Equal(t, 1, countCallsContaining(calls, "lark-base-cell-value.md"))
+	assertOrder(t, calls, "lark-base-record-batch-create.md", "+record-batch-create")
+	assertOrder(t, calls, "lark-base-cell-value.md", "+record-batch-create")
 }
 
 func marker1(processed, skipped, remaining, failed int) string {

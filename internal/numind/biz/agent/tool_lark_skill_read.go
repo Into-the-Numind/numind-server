@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
 	"strings"
@@ -62,7 +63,7 @@ type larkSkillReadOutput struct {
 
 const larkSkillReadMaxPages = 2
 
-const larkHostedExecutionPolicy = "有数托管规则（优先于下方针对本地电脑的 CLI 说明）：" +
+var larkHostedExecutionPolicy = "有数托管规则（优先于下方针对本地电脑的 CLI 说明）：" +
 	"不要执行 auth/config/whoami/qrcode，也不要要求用户提供 App ID/App Secret。" +
 	"先执行 Docs/Base/Wiki/Drive 业务命令，不要每次先检查权限；写操作由平台在真正写入前自动做只读 scope check，连接或权限不足时平台会生成授权卡片并恢复原任务。" +
 	"用户明确要求连接、重新连接或授权飞书且没有业务任务时，必须立即调用 lark_connect；不要只检查状态后让用户再描述任务。" +
@@ -76,7 +77,8 @@ const larkHostedExecutionPolicy = "有数托管规则（优先于下方针对本
 	"没有精确匹配时说明未找到并请求链接，不要猜测 token，也不要说成连接未就绪。" +
 	"lark_execute 必须串行：一次只调用一个并等待结构化结果后再决定下一步，禁止在同一轮并发调用或在前一个结果返回前重复同一命令。" +
 	"官方命令中的固定 --as user 与 --format json 可以保留，平台会安全规范化。" +
-	"policy_rejected 或 validation 每个连续纠错窗口最多允许 5 次总尝试；每次必须根据结构化原因修正业务命令，不能原样重复；not_found 或 resource_denied 应向用户确认资源，不要自动重试；unknown_result 只禁止原样重复那一条结果不确定的写命令。应优先使用 Catalog 只读 list/get/fetch 命令核验；一次核验失败可改用其他合规只读方式，且不得阻止用户要求中的其他 Docs/Base/Wiki/Drive 操作。未核验成功时必须如实说明，不能宣称写入成功。" +
+	"有数托管环境的 JSON 必须作为对应 --json 参数后的一个完整内联 argv；不支持 `stdin_json`、`@file`、`-` 或本地文件/stdin 间接引用。官方技能同时展示内联与 @file 时，只采用内联示例。" +
+	fmt.Sprintf("policy_rejected 或 validation 每个连续纠错窗口最多允许 %d 次总尝试；每次必须根据结构化原因修正业务命令，不能原样重复；not_found 或 resource_denied 应向用户确认资源，不要自动重试；unknown_result 只禁止原样重复那一条结果不确定的写命令。应优先使用 Catalog 只读 list/get/fetch 命令核验；一次核验失败可改用其他合规只读方式，且不得阻止用户要求中的其他 Docs/Base/Wiki/Drive 操作。未核验成功时必须如实说明，不能宣称写入成功。", larkExecuteMaxCorrectableAttempts) +
 	"rate_limited/temporary 仅在结构化结果 retryable=true 时最多重试一次；不要改跑本地初始化命令。"
 
 func (t *larkSkillReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
@@ -99,6 +101,24 @@ func (t *larkSkillReadTool) Execute(ctx context.Context, input ToolInput) (ToolR
 	if err := decodeOptionalString(fields, "cursor", &request.Cursor); err != nil {
 		return larkWorkspaceSoftError(larkWorkspaceErrorInvalidSkillInput)
 	}
+	var span *safePipelineToolSpan
+	spanOutput := map[string]any{
+		"ok":            false,
+		"resolved_path": "",
+		"page_count":    0,
+	}
+	spanErrorClass := "skill_read_error"
+	defer func() { span.End(spanOutput, spanErrorClass) }()
+	startSpan := func(skill, requestedReference string) {
+		if span != nil {
+			return
+		}
+		span = startSafePipelineToolSpan(ctx, "tool.lark_skill_read.execute", map[string]any{
+			"run_id":              request.AgentRunID,
+			"skill":               skill,
+			"requested_reference": requestedReference,
+		})
+	}
 
 	var (
 		resultSkill      string
@@ -110,19 +130,27 @@ func (t *larkSkillReadTool) Execute(ctx context.Context, input ToolInput) (ToolR
 	for pageIndex := 0; pageIndex < larkSkillReadMaxPages; pageIndex++ {
 		page, readErr := t.executor.Read(ctx, request)
 		if readErr != nil || page == nil {
+			startSpan("invalid", "invalid")
 			if pageIndex == 0 && errors.Is(readErr, feishu.ErrSkillReadInvalid) {
+				spanErrorClass = "invalid_skill_input"
 				return larkWorkspaceSoftError(larkWorkspaceErrorInvalidSkillInput)
 			}
 			return larkWorkspaceSoftError(larkWorkspaceErrorSkillRead)
 		}
+		spanOutput["page_count"] = pageIndex + 1
 		if pageIndex == 0 {
 			if page.Skill != request.Skill {
+				startSpan("invalid", "invalid")
+				spanErrorClass = "invalid_skill_result"
 				return larkWorkspaceSoftError(larkWorkspaceErrorSkillRead)
 			}
+			startSpan(page.Skill, request.Reference)
 			resultSkill = page.Skill
 			resultPath = page.Path
 			resultReferences = append([]string(nil), page.References...)
+			spanOutput["resolved_path"] = resultPath
 		} else if page.Skill != resultSkill || page.Path != resultPath || !slices.Equal(page.References, resultReferences) {
+			spanErrorClass = "invalid_skill_result"
 			return larkWorkspaceSoftError(larkWorkspaceErrorSkillRead)
 		}
 
@@ -138,12 +166,16 @@ func (t *larkSkillReadTool) Execute(ctx context.Context, input ToolInput) (ToolR
 			CLIVersion:   feishu.LarkCLIVersion,
 		})
 		if marshalErr != nil || len(output) > larkSkillReadAtomicOutputLimit {
+			spanErrorClass = "invalid_skill_result"
 			return larkWorkspaceSoftError(larkWorkspaceErrorSkillRead)
 		}
 		if page.Cursor == "" {
+			spanOutput["ok"] = true
+			spanErrorClass = pipelineToolTraceNoError
 			return ToolResult(output), nil
 		}
 		if _, duplicate := seenCursors[page.Cursor]; duplicate || pageIndex+1 >= larkSkillReadMaxPages {
+			spanErrorClass = "invalid_skill_pagination"
 			return larkWorkspaceSoftError(larkWorkspaceErrorSkillRead)
 		}
 		seenCursors[page.Cursor] = struct{}{}
@@ -152,6 +184,7 @@ func (t *larkSkillReadTool) Execute(ctx context.Context, input ToolInput) (ToolR
 			request.Reference = page.Path
 		}
 	}
+	spanErrorClass = "invalid_skill_pagination"
 	return larkWorkspaceSoftError(larkWorkspaceErrorSkillRead)
 }
 
@@ -192,13 +225,13 @@ func larkWorkspaceSoftError(code larkWorkspaceErrorCode) (ToolResult, error) {
 		message = "读取飞书技能暂时失败，请稍后重试。"
 		publicCode = "skill_read_unavailable"
 	case larkWorkspaceErrorInvalidExecuteInput:
-		message = "飞书工作区参数无效，请仅使用 argv、stdin_json。"
+		message = "飞书工作区参数无效，请仅使用 argv。"
 		publicCode, recoverable = "invalid_execute_input", true
 	case larkWorkspaceErrorIdentity:
 		message = "无法验证当前飞书工作区操作身份。"
 		publicCode = "identity_unavailable"
 	case larkWorkspaceErrorExecuteRejected:
-		message = "飞书业务命令不符合平台策略，本次尚未访问飞书，也不代表连接异常。请按技能说明修正 Docs/Base/Wiki/Drive 命令；最多允许 5 次总尝试。不要执行 auth/config/whoami，也不要要求用户提供 App ID/App Secret。"
+		message = fmt.Sprintf("飞书业务命令不符合平台策略，本次尚未访问飞书，也不代表连接异常。请按技能说明修正 Docs/Base/Wiki/Drive 命令；最多允许 %d 次总尝试。不要执行 auth/config/whoami，也不要要求用户提供 App ID/App Secret。", larkExecuteMaxCorrectableAttempts)
 		publicCode, recoverable = "command_rejected", true
 	case larkWorkspaceErrorExecuteRetryExhausted:
 		message = "飞书命令连续被拒绝，已停止后续飞书命令，本任务不会再调用执行器。不要继续重试、执行 auth/config/whoami，或要求用户提供 App ID/App Secret。请向用户说明本次操作未完成。"
@@ -263,7 +296,7 @@ func larkWorkspaceCorrectableCommandError(code, message string, attempts, remain
 }
 
 func larkWorkspaceCorrectionExhausted(hint string) (ToolResult, error) {
-	message := "飞书命令连续 5 次未通过执行前校验，已停止当前任务后续的飞书命令。"
+	message := fmt.Sprintf("飞书命令连续 %d 次未通过执行前校验，已停止当前任务后续的飞书命令。", larkExecuteMaxCorrectableAttempts)
 	if hint != "" {
 		message += "最后一次校验原因：" + hint + "。"
 	}

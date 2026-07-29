@@ -99,6 +99,72 @@ func TestSafeCommandValidationHint_GuidesInspectToolConfusionWithoutEchoingValue
 	assert.NotContains(t, hint, "Tasks")
 }
 
+func TestCommandCatalog_Run359BatchCreateInlineContractAndSafeHints(t *testing.T) {
+	t.Parallel()
+
+	catalog := NewCommandCatalog()
+	batchArgv := func(payload string) []string {
+		return []string{
+			"base", "+record-batch-create",
+			"--base-token", "bascnRUN359SECRET",
+			"--table-id", "Run359SecretTable",
+			"--json", payload,
+		}
+	}
+
+	fields := []string{"小红书笔记ID", "笔记标题", "完整分析"}
+	rows := make([][]any, 0, 8)
+	for index := 1; index <= 8; index++ {
+		rows = append(rows, []any{
+			fmt.Sprintf("xhs-%d", index),
+			fmt.Sprintf("标题 %d", index),
+			fmt.Sprintf("第 %d 条：%s", index, strings.Repeat("独立长分析", 256)),
+		})
+	}
+	payload, err := json.Marshal(map[string]any{"fields": fields, "rows": rows})
+	require.NoError(t, err)
+	command, err := catalog.Normalize(batchArgv(string(payload)), nil)
+	require.NoError(t, err)
+	assert.Equal(t, RiskWrite, command.Risk)
+	assert.Contains(t, command.Argv, string(payload), "the complete Agent-authored JSON remains one argv value")
+	assert.Equal(t, "base +record-batch-create", SafeCommandClass(batchArgv(string(payload))))
+	assert.Equal(t, "invalid", SafeCommandClass([]string{"base", "not-a-hosted-action", "bascnRUN359SECRET"}))
+	assert.Equal(t, "invalid", SafeCommandClass([]string{"customersecret", "+payload", "bascnRUN359SECRET"}))
+
+	tests := []struct {
+		name     string
+		argv     []string
+		stdin    []byte
+		wantHint string
+	}{
+		{name: "file indirection", argv: batchArgv("@batch-create.json"), wantHint: "uses indirection"},
+		{name: "stdin", argv: batchArgv(string(payload)), stdin: []byte(`{"secret":"stdin-run-359"}`), wantHint: "stdin is not supported"},
+		{name: "bad top level", argv: batchArgv(`[]`), wantHint: "invalid record batch create json"},
+		{name: "duplicate fields", argv: batchArgv(`{"fields":["标题","标题"],"rows":[["a","b"]]}`), wantHint: "duplicate"},
+		{name: "row width", argv: batchArgv(`{"fields":["标题","状态"],"rows":[["a"]]}`), wantHint: "row width"},
+		{name: "too many rows", argv: batchArgv(batchCreatePayload(201)), wantHint: "exceeds structural limits"},
+	}
+	for _, testCase := range tests {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			_, normalizeErr := catalog.Normalize(testCase.argv, testCase.stdin)
+			require.Error(t, normalizeErr)
+			hint, ok := SafeCommandValidationHint(testCase.argv, normalizeErr)
+			require.True(t, ok)
+			assert.Contains(t, hint, testCase.wantHint)
+			for _, secret := range []string{"bascnRUN359SECRET", "Run359SecretTable", "stdin-run-359", "独立长分析"} {
+				assert.NotContains(t, hint, secret)
+			}
+		})
+	}
+
+	for rows, wantRisk := range map[int]RiskLevel{21: RiskHigh, 200: RiskHigh} {
+		got, normalizeErr := catalog.Normalize(batchArgv(batchCreatePayload(rows)), nil)
+		require.NoError(t, normalizeErr)
+		assert.Equal(t, wantRisk, got.Risk)
+	}
+}
+
 // Customer regression (Dev run 246): the official lark-base skill requires
 // +url-resolve for a full Base URL, but the hosted catalog rejected it before
 // the local, read-only resolver could run.
