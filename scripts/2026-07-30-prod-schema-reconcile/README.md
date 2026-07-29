@@ -57,7 +57,7 @@ PASS: MySQL 8 exact, partial, negative-preflight, double-apply, constraints, and
 - 备份文件绝对路径、文件大小、SHA256；
 - 升级 SQL SHA256；
 - preflight、首次 verify、二次 verify 的完整输出；
-- 升级前后的历史订阅保护校验值；
+- 升级前后的全部老数据保护投影、扩展 checksum 与核心表行数；
 - Dev 产品验收结果。
 
 ### 2. 备份

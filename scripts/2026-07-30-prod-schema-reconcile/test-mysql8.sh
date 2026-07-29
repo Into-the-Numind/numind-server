@@ -291,6 +291,7 @@ mysql_query "CREATE INDEX uk_annread ON announcement_read (user_id, announcement
 mysql_query "ALTER TABLE survey_response ADD INDEX idx_sr_user (user_id), DROP INDEX uk_sr;"
 mysql_query "ALTER TABLE survey_answer DROP FOREIGN KEY fk_sa_question, MODIFY question_id BIGINT NOT NULL;"
 mysql_query "ALTER TABLE ai_service DROP INDEX model_key;"
+mysql_query "ALTER TABLE ai_service ADD UNIQUE INDEX model_key_prefix_only (model_key(10));"
 mysql_query "
 INSERT INTO announcement (id, title, content, created_by)
 VALUES (1, 'synthetic', 'synthetic', 101);

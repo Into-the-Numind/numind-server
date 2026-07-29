@@ -36,6 +36,28 @@ func stripSQLComments(sql string) string {
 	return strings.Join(kept, "\n")
 }
 
+const protectedRolloutTablePattern = `user|subscription|trial_grant|credit_account|credit_cycle|user_booster_balance|credit_reservation|credit_reservation_item|credit_transaction|membership_event|sop_run|sop_node_run|chatbot_message|chatbot_session|sales_message|sales_session|agent_run|agent_attachment`
+
+func protectedDMLPatterns(tablePattern string) []*regexp.Regexp {
+	qualifiedTable := `(?:` + "`?" + `[a-z_][a-z0-9_]*` + "`?" + `\s*\.\s*)?` +
+		"`?" + `(?:` + tablePattern + `)\b` + "`?"
+	return []*regexp.Regexp{
+		regexp.MustCompile(`(?is)\bupdate\s+(?:(?:low_priority|ignore)\s+)*` + qualifiedTable),
+		regexp.MustCompile(`(?is)\binsert\s+(?:(?:low_priority|delayed|high_priority|ignore)\s+)*(?:into\s+)?` + qualifiedTable),
+		regexp.MustCompile(`(?is)\breplace\s+(?:(?:low_priority|delayed)\s+)*(?:into\s+)?` + qualifiedTable),
+		regexp.MustCompile(`(?is)\bdelete\s+(?:(?:low_priority|quick|ignore)\s+)*[^;]*?` + qualifiedTable),
+	}
+}
+
+func containsProtectedDML(sql, tablePattern string) bool {
+	for _, pattern := range protectedDMLPatterns(tablePattern) {
+		if pattern.MatchString(sql) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestProdSchemaReconcileArtifactsExist(t *testing.T) {
 	required := []string{
 		prodSchemaReconcileMigration,
@@ -155,17 +177,8 @@ func TestProdSchemaReconcileForbidsDestructiveOrOutOfScopeSQL(t *testing.T) {
 		}
 	}
 
-	protectedTables := `(user|subscription|trial_grant|credit_account|credit_cycle|user_booster_balance|credit_reservation|credit_reservation_item|credit_transaction|membership_event|sop_run|sop_node_run|chatbot_message|chatbot_session|sales_message|sales_session|agent_run|agent_attachment)`
-	protectedDML := []*regexp.Regexp{
-		regexp.MustCompile(`(?is)\bupdate\s+` + "`?" + protectedTables + "`?" + `\b`),
-		regexp.MustCompile(`(?is)\binsert\s+into\s+` + "`?" + protectedTables + "`?" + `\b`),
-		regexp.MustCompile(`(?is)\breplace\s+into\s+` + "`?" + protectedTables + "`?" + `\b`),
-		regexp.MustCompile(`(?is)\bdelete(?:\s+[a-z_][a-z0-9_]*)?\s+from\s+` + "`?" + protectedTables + "`?" + `\b`),
-	}
-	for _, forbiddenDML := range protectedDML {
-		if forbiddenDML.MatchString(sql) {
-			t.Error("migration must not write protected customer, subscription, credit, attachment, or history tables")
-		}
+	if containsProtectedDML(sql, protectedRolloutTablePattern) {
+		t.Error("migration must not write protected customer, subscription, credit, attachment, or history tables")
 	}
 	if regexp.MustCompile(`(?i)'(?:sk-|lark_cli_|feishu_)[a-z0-9_-]{12,}'`).MatchString(sql) {
 		t.Error("migration appears to contain a hard-coded credential")
@@ -174,27 +187,21 @@ func TestProdSchemaReconcileForbidsDestructiveOrOutOfScopeSQL(t *testing.T) {
 
 func TestProdSchemaReconcileNeverWritesSubscriptionRows(t *testing.T) {
 	sql := strings.ToLower(stripSQLComments(readRequiredRolloutFile(t, prodSchemaReconcileMigration)))
-	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`(?is)\bupdate\s+` + "`?" + `subscription` + "`?" + `\b`),
-		regexp.MustCompile(`(?is)\binsert\s+into\s+` + "`?" + `subscription` + "`?" + `\b`),
-		regexp.MustCompile(`(?is)\breplace\s+into\s+` + "`?" + `subscription` + "`?" + `\b`),
-		regexp.MustCompile(`(?is)\bdelete(?:\s+[a-z_][a-z0-9_]*)?\s+from\s+` + "`?" + `subscription` + "`?" + `\b`),
-	}
-	for _, forbiddenDML := range patterns {
-		if forbiddenDML.MatchString(sql) {
-			t.Error("subscription rollout must be additive schema only and must not write historical rows")
-		}
+	if containsProtectedDML(sql, "subscription") {
+		t.Error("subscription rollout must be additive schema only and must not write historical rows")
 	}
 }
 
-func TestProdSchemaReconcileProtectedDMLGuardCatchesJoinedAndAliasedWrites(t *testing.T) {
-	pattern := regexp.MustCompile(`(?is)\bupdate\s+` + "`?" + `(subscription|user)` + "`?" + `\b`)
+func TestProdSchemaReconcileProtectedDMLGuardCatchesMySQLWriteForms(t *testing.T) {
 	for _, sql := range []string{
 		"UPDATE subscription s JOIN user u ON u.id=s.user_id SET s.user_id=9",
-		"UPDATE `user` AS u JOIN subscription s ON s.user_id=u.id SET u.username='changed'",
+		"UPDATE LOW_PRIORITY IGNORE `prod`.`user` AS u SET u.username='changed'",
+		"INSERT IGNORE INTO prod.trial_grant (id) VALUES (1)",
+		"REPLACE LOW_PRIORITY prod.membership_event (id) VALUES (1)",
+		"DELETE LOW_PRIORITY QUICK IGNORE s FROM prod.subscription AS s JOIN prod.user u ON u.id=s.user_id",
 	} {
-		if !pattern.MatchString(strings.ToLower(sql)) {
-			t.Fatalf("protected DML guard missed joined write: %s", sql)
+		if !containsProtectedDML(strings.ToLower(sql), protectedRolloutTablePattern) {
+			t.Fatalf("protected DML guard missed write: %s", sql)
 		}
 	}
 }
