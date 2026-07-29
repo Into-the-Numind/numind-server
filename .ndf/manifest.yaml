@@ -4,17 +4,17 @@ features:
   ndf_version: '3.0'
   description: Raise Feishu correctable command attempts to ten and make Agent-authored Base write guidance internally consistent and safely observable without server-side payload conversion.
   classification_reason: 'Standard: customer-reported Agent/Feishu write-contract defect spans tool schema, command safety policy, embedded guidance, pipeline prompt, diagnostics, and tests across more than three backend files.'
-  last_updated_by: ai-s5
-  last_updated_at: '2026-07-29T23:54:54+0800'
+  last_updated_by: ai-s6
+  last_updated_at: '2026-07-29T23:56:00+0800'
   last_verified: '2026-07-29T23:54:54+0800'
   created_at: '2026-07-29T22:35:49+0800'
   track: standard
-  stage: S5
+  stage: S6
   status: active
   repos: [numind-server]
   branches: {numind-server: feature/feishu-write-command-guidance}
   worktrees: {numind-server: /private/tmp/wt-feishu-write-command-guidance-numind-server}
-  progress: {total_tasks: 6, completed_tasks: 6, reviewed_tasks: 6, current_task: 'S5 local verification complete; merge and Dev deployment pending'}
+  progress: {total_tasks: 6, completed_tasks: 6, reviewed_tasks: 6, current_task: 'S5 passed; entering S6 merge and Dev deployment'}
   artifacts:
     requirement: requirements/feishu-write-command-guidance.md
     proposal: proposals/feishu-write-command-guidance-proposal.md
