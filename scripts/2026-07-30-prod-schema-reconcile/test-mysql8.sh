@@ -383,6 +383,95 @@ if ! printf '%s\n' "$mixed_attachment_preflight" |
 fi
 mysql_query "ALTER TABLE agent_attachment MODIFY parsed_page_count BIGINT NULL DEFAULT 0;"
 
+# Dev can already contain successful Feishu operations and proof-consumption
+# rows while both proof FKs are missing. Repair the exact zero-FK state without
+# changing those business rows.
+mysql_query "
+INSERT INTO feishu_operation (
+  id, user_id, generation, agent_run_id, tool_call_id, idempotency_key,
+  command_path, domain, risk_level, request_ciphertext, key_version,
+  request_fingerprint, state, attempt_count, created_at, updated_at
+) VALUES
+  (
+    '00000000-0000-0000-0000-000000000001', 101, 1, 1, 'tool-source', 'proof-source',
+    'drive.file.get', 'drive', 'read', X'00', 'test-v1',
+    REPEAT('a', 64), 'succeeded', 1, '2026-07-20 11:00:00.000', '2026-07-20 11:00:01.000'
+  ),
+  (
+    '00000000-0000-0000-0000-000000000002', 101, 1, 1, 'tool-consumer', 'proof-consumer',
+    'drive.file.copy', 'drive', 'write', X'01', 'test-v1',
+    REPEAT('b', 64), 'succeeded', 1, '2026-07-20 11:01:00.000', '2026-07-20 11:01:01.000'
+  );
+INSERT INTO feishu_operation_proof_consumption (
+  source_operation_id, consumer_operation_id, user_id, generation, agent_run_id, created_at
+) VALUES (
+  '00000000-0000-0000-0000-000000000001',
+  '00000000-0000-0000-0000-000000000002',
+  101, 1, 1, '2026-07-20 11:02:00.000'
+);
+ALTER TABLE feishu_operation_proof_consumption
+  DROP FOREIGN KEY fk_feishu_proof_source_operation,
+  DROP FOREIGN KEY fk_feishu_proof_consumer_operation,
+  MODIFY created_at DATETIME(3) NOT NULL AFTER source_operation_id;
+"
+proof_preflight="$(mysql_stdin < "$PREFLIGHT")"
+assert_no_fail_rows "$proof_preflight" "zero-FK populated proof preflight"
+before_proof_projection="$(
+  printf '%s\n' "$proof_preflight" |
+    awk -F '\t' '$1 == "feishu_proof_business_projection" { print $2 ":" $3 }'
+)"
+mysql_stdin < "$MIGRATION" >/dev/null
+proof_verify="$(mysql_stdin < "$VERIFY")"
+assert_no_fail_rows "$proof_verify" "repaired proof verify"
+after_proof_projection="$(
+  printf '%s\n' "$proof_verify" |
+    awk -F '\t' '$1 == "feishu_proof_business_projection" { print $2 ":" $3 }'
+)"
+assert_equal "$before_proof_projection" "$after_proof_projection" \
+  "Feishu proof business projection"
+
+# One FK is an interrupted/ambiguous state and must not be guessed.
+mysql_query "
+ALTER TABLE feishu_operation_proof_consumption
+  DROP FOREIGN KEY fk_feishu_proof_consumer_operation;
+"
+one_fk_preflight="$(mysql_stdin < "$PREFLIGHT")"
+if ! printf '%s\n' "$one_fk_preflight" |
+  grep -q '^feishu_proof_fk_contract'$'\tFAIL\t'; then
+  echo "ERROR: one-FK proof state unexpectedly passed preflight" >&2
+  exit 1
+fi
+mysql_query "
+ALTER TABLE feishu_operation_proof_consumption
+  DROP FOREIGN KEY fk_feishu_proof_source_operation;
+UPDATE feishu_operation_proof_consumption
+SET source_operation_id='99999999-9999-9999-9999-999999999999';
+"
+orphan_proof_preflight="$(mysql_stdin < "$PREFLIGHT")"
+if ! printf '%s\n' "$orphan_proof_preflight" |
+  grep -q '^feishu_proof_source_orphans'$'\tFAIL\t'; then
+  echo "ERROR: orphan proof source unexpectedly passed preflight" >&2
+  exit 1
+fi
+mysql_query "
+UPDATE feishu_operation_proof_consumption
+SET source_operation_id='00000000-0000-0000-0000-000000000001';
+ALTER TABLE feishu_operation_proof_consumption
+  MODIFY source_operation_id VARCHAR(36) NOT NULL;
+"
+wrong_proof_type_preflight="$(mysql_stdin < "$PREFLIGHT")"
+if ! printf '%s\n' "$wrong_proof_type_preflight" |
+  grep -q '^feishu_proof_column_compatibility'$'\tFAIL\t'; then
+  echo "ERROR: incompatible proof operation ID type unexpectedly passed preflight" >&2
+  exit 1
+fi
+mysql_query "
+ALTER TABLE feishu_operation_proof_consumption
+  MODIFY source_operation_id CHAR(36) NOT NULL;
+"
+mysql_stdin < "$MIGRATION" >/dev/null
+assert_no_fail_rows "$(mysql_stdin < "$VERIFY")" "restored proof verify"
+
 # Wrong table/index/FK/config contracts and duplicate notification pairs must fail before apply.
 mysql_query "DROP TABLE document;"
 mysql_query "CREATE TABLE document (id INT NOT NULL PRIMARY KEY) ENGINE=InnoDB;"

@@ -208,10 +208,10 @@ WHERE TABLE_SCHEMA = DATABASE()
   )
 UNION ALL
 SELECT
-  'new_product_tables_initially_empty',
-  IF(SUM(row_count) = 0, 'PASS', 'FAIL'),
+  'new_product_tables_existing_row_count',
+  'PASS',
   CAST(SUM(row_count) AS CHAR),
-  '0 before customer traffic'
+  'informational; existing rows are preserved'
 FROM (
   SELECT COUNT(*) AS row_count FROM document
   UNION ALL SELECT COUNT(*) FROM user_third_party_account
@@ -608,6 +608,43 @@ WHERE constraints_meta.CONSTRAINT_SCHEMA = DATABASE()
   AND constraints_meta.TABLE_NAME = 'feishu_operation_proof_consumption'
   AND constraints_meta.CONSTRAINT_TYPE = 'FOREIGN KEY';
 
+SELECT
+  'feishu_proof_column_compatibility' AS check_name,
+  IF(COUNT(*) = 2, 'PASS', 'FAIL') AS status,
+  CAST(COUNT(*) AS CHAR) AS observed,
+  '2 exact CHAR(36) operation references' AS expected
+FROM information_schema.COLUMNS proof_column
+JOIN information_schema.COLUMNS operation_column
+  ON operation_column.TABLE_SCHEMA = proof_column.TABLE_SCHEMA
+ AND operation_column.TABLE_NAME = 'feishu_operation'
+ AND operation_column.COLUMN_NAME = 'id'
+WHERE proof_column.TABLE_SCHEMA = DATABASE()
+  AND proof_column.TABLE_NAME = 'feishu_operation_proof_consumption'
+  AND proof_column.COLUMN_NAME IN ('source_operation_id', 'consumer_operation_id')
+  AND proof_column.COLUMN_TYPE = operation_column.COLUMN_TYPE
+  AND proof_column.CHARACTER_SET_NAME <=> operation_column.CHARACTER_SET_NAME
+  AND proof_column.COLLATION_NAME <=> operation_column.COLLATION_NAME
+UNION ALL
+SELECT
+  'feishu_proof_source_orphans',
+  IF(COUNT(*) = 0, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  '0'
+FROM feishu_operation_proof_consumption proof
+LEFT JOIN feishu_operation operation_row
+  ON operation_row.id = proof.source_operation_id
+WHERE operation_row.id IS NULL
+UNION ALL
+SELECT
+  'feishu_proof_consumer_orphans',
+  IF(COUNT(*) = 0, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  '0'
+FROM feishu_operation_proof_consumption proof
+LEFT JOIN feishu_operation operation_row
+  ON operation_row.id = proof.consumer_operation_id
+WHERE operation_row.id IS NULL;
+
 WITH expected AS (
   SELECT 'announcement_read' AS table_name, 'fk_annread_announcement' AS constraint_name,
          'announcement_id' AS column_name, 'announcement' AS referenced_table_name,
@@ -806,6 +843,29 @@ SELECT
     SHA2('', 256)
   ) AS sha256
 FROM agent_attachment;
+
+SELECT
+  'feishu_proof_business_projection' AS evidence_name,
+  COUNT(*) AS row_count,
+  COALESCE(
+    SHA2(
+      GROUP_CONCAT(
+        SHA2(CONCAT_WS(
+          '|',
+          CONCAT('source_operation_id=V:', OCTET_LENGTH(CAST(source_operation_id AS BINARY)), ':', SHA2(CAST(source_operation_id AS BINARY), 256)),
+          CONCAT('consumer_operation_id=V:', OCTET_LENGTH(CAST(consumer_operation_id AS BINARY)), ':', SHA2(CAST(consumer_operation_id AS BINARY), 256)),
+          CONCAT('user_id=V:', OCTET_LENGTH(CAST(user_id AS BINARY)), ':', SHA2(CAST(user_id AS BINARY), 256)),
+          CONCAT('generation=V:', OCTET_LENGTH(CAST(generation AS BINARY)), ':', SHA2(CAST(generation AS BINARY), 256)),
+          CONCAT('agent_run_id=V:', OCTET_LENGTH(CAST(agent_run_id AS BINARY)), ':', SHA2(CAST(agent_run_id AS BINARY), 256)),
+          CONCAT('created_at=V:', OCTET_LENGTH(CAST(created_at AS BINARY)), ':', SHA2(CAST(created_at AS BINARY), 256))
+        ), 256)
+        ORDER BY source_operation_id SEPARATOR '\n'
+      ),
+      256
+    ),
+    SHA2('', 256)
+  ) AS sha256
+FROM feishu_operation_proof_consumption;
 
 CHECKSUM TABLE
   `user`, `trial_grant`, `credit_account`, `credit_cycle`,

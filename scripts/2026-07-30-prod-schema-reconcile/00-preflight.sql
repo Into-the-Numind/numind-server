@@ -452,6 +452,7 @@ SELECT
     (SELECT COUNT(*) FROM information_schema.TABLES
      WHERE TABLE_SCHEMA = DATABASE()
        AND TABLE_NAME = 'feishu_operation_proof_consumption') = 0
+    OR COUNT(*) = 0
     OR (
       COUNT(*) = 2
       AND GROUP_CONCAT(
@@ -471,7 +472,7 @@ SELECT
     'FAIL'
   ) AS status,
   CONCAT('constraints=', COUNT(*)) AS observed,
-  'absent or exact two restrictive operation FKs' AS expected
+  'absent, zero FKs for atomic repair, or exact two restrictive operation FKs' AS expected
 FROM information_schema.TABLE_CONSTRAINTS constraints_meta
 JOIN information_schema.KEY_COLUMN_USAGE key_meta
   ON key_meta.CONSTRAINT_SCHEMA = constraints_meta.CONSTRAINT_SCHEMA
@@ -483,6 +484,54 @@ JOIN information_schema.REFERENTIAL_CONSTRAINTS ref_meta
 WHERE constraints_meta.CONSTRAINT_SCHEMA = DATABASE()
   AND constraints_meta.TABLE_NAME = 'feishu_operation_proof_consumption'
   AND constraints_meta.CONSTRAINT_TYPE = 'FOREIGN KEY';
+
+SET @proof_preflight_sql := IF(
+  (SELECT COUNT(*) FROM information_schema.TABLES
+   WHERE TABLE_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'feishu_operation_proof_consumption') = 0,
+  'SELECT ''feishu_proof_column_compatibility'' AS check_name, ''PASS'' AS status, ''absent'' AS observed, ''absent or 2 exact CHAR(36) operation references'' AS expected
+   UNION ALL SELECT ''feishu_proof_source_orphans'', ''PASS'', ''absent'', ''0''
+   UNION ALL SELECT ''feishu_proof_consumer_orphans'', ''PASS'', ''absent'', ''0''',
+  'SELECT
+     ''feishu_proof_column_compatibility'' AS check_name,
+     IF(COUNT(*) = 2, ''PASS'', ''FAIL'') AS status,
+     CAST(COUNT(*) AS CHAR) AS observed,
+     ''2 exact CHAR(36) operation references'' AS expected
+   FROM information_schema.COLUMNS proof_column
+   JOIN information_schema.COLUMNS operation_column
+     ON operation_column.TABLE_SCHEMA = proof_column.TABLE_SCHEMA
+    AND operation_column.TABLE_NAME = ''feishu_operation''
+    AND operation_column.COLUMN_NAME = ''id''
+   WHERE proof_column.TABLE_SCHEMA = DATABASE()
+     AND proof_column.TABLE_NAME = ''feishu_operation_proof_consumption''
+     AND proof_column.COLUMN_NAME IN (''source_operation_id'', ''consumer_operation_id'')
+     AND proof_column.COLUMN_TYPE = operation_column.COLUMN_TYPE
+     AND proof_column.CHARACTER_SET_NAME <=> operation_column.CHARACTER_SET_NAME
+     AND proof_column.COLLATION_NAME <=> operation_column.COLLATION_NAME
+   UNION ALL
+   SELECT
+     ''feishu_proof_source_orphans'',
+     IF(COUNT(*) = 0, ''PASS'', ''FAIL''),
+     CAST(COUNT(*) AS CHAR),
+     ''0''
+   FROM feishu_operation_proof_consumption proof
+   LEFT JOIN feishu_operation operation_row
+     ON operation_row.id = proof.source_operation_id
+   WHERE operation_row.id IS NULL
+   UNION ALL
+   SELECT
+     ''feishu_proof_consumer_orphans'',
+     IF(COUNT(*) = 0, ''PASS'', ''FAIL''),
+     CAST(COUNT(*) AS CHAR),
+     ''0''
+   FROM feishu_operation_proof_consumption proof
+   LEFT JOIN feishu_operation operation_row
+     ON operation_row.id = proof.consumer_operation_id
+   WHERE operation_row.id IS NULL'
+);
+PREPARE proof_preflight_stmt FROM @proof_preflight_sql;
+EXECUTE proof_preflight_stmt;
+DEALLOCATE PREPARE proof_preflight_stmt;
 
 SELECT
   'orphan_announcement_read_announcement' AS check_name,
@@ -844,6 +893,38 @@ SET @aa_complete_projection_sql := CONCAT(
 PREPARE aa_complete_projection_stmt FROM @aa_complete_projection_sql;
 EXECUTE aa_complete_projection_stmt;
 DEALLOCATE PREPARE aa_complete_projection_stmt;
+
+SET @proof_business_projection_sql := IF(
+  (SELECT COUNT(*) FROM information_schema.TABLES
+   WHERE TABLE_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'feishu_operation_proof_consumption') = 0,
+  'SELECT ''feishu_proof_business_projection'' AS evidence_name, 0 AS row_count, SHA2('''', 256) AS sha256',
+  'SELECT
+     ''feishu_proof_business_projection'' AS evidence_name,
+     COUNT(*) AS row_count,
+     COALESCE(
+       SHA2(
+         GROUP_CONCAT(
+           SHA2(CONCAT_WS(
+             ''|'',
+             CONCAT(''source_operation_id=V:'', OCTET_LENGTH(CAST(source_operation_id AS BINARY)), '':'', SHA2(CAST(source_operation_id AS BINARY), 256)),
+             CONCAT(''consumer_operation_id=V:'', OCTET_LENGTH(CAST(consumer_operation_id AS BINARY)), '':'', SHA2(CAST(consumer_operation_id AS BINARY), 256)),
+             CONCAT(''user_id=V:'', OCTET_LENGTH(CAST(user_id AS BINARY)), '':'', SHA2(CAST(user_id AS BINARY), 256)),
+             CONCAT(''generation=V:'', OCTET_LENGTH(CAST(generation AS BINARY)), '':'', SHA2(CAST(generation AS BINARY), 256)),
+             CONCAT(''agent_run_id=V:'', OCTET_LENGTH(CAST(agent_run_id AS BINARY)), '':'', SHA2(CAST(agent_run_id AS BINARY), 256)),
+             CONCAT(''created_at=V:'', OCTET_LENGTH(CAST(created_at AS BINARY)), '':'', SHA2(CAST(created_at AS BINARY), 256))
+           ), 256)
+           ORDER BY source_operation_id SEPARATOR ''\n''
+         ),
+         256
+       ),
+       SHA2('''', 256)
+     ) AS sha256
+   FROM feishu_operation_proof_consumption'
+);
+PREPARE proof_business_projection_stmt FROM @proof_business_projection_sql;
+EXECUTE proof_business_projection_stmt;
+DEALLOCATE PREPARE proof_business_projection_stmt;
 
 CHECKSUM TABLE
   `user`, `trial_grant`, `credit_account`, `credit_cycle`,

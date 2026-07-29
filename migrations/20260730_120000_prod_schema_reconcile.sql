@@ -12,6 +12,9 @@ BEGIN
   DECLARE attachment_final_exact_count INT DEFAULT 0;
   DECLARE attachment_legacy_exact_count INT DEFAULT 0;
   DECLARE attachment_column_names TEXT DEFAULT '';
+  DECLARE proof_table_count INT DEFAULT 0;
+  DECLARE proof_fk_count INT DEFAULT 0;
+  DECLARE proof_fk_contract TEXT DEFAULT '';
 
   IF (SELECT COUNT(*) FROM information_schema.TABLES
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'user') <> 1 THEN
@@ -117,6 +120,85 @@ BEGIN
     )
   ) THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: unsupported agent_run state_reason relationship';
+  END IF;
+  SELECT COUNT(*)
+  INTO proof_table_count
+  FROM information_schema.TABLES
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = CONCAT('feishu_', 'operation_proof_consumption');
+  IF proof_table_count = 1 THEN
+    SELECT
+      COUNT(*),
+      COALESCE(
+        GROUP_CONCAT(
+          CONCAT_WS(
+            '|', constraints_meta.CONSTRAINT_NAME, key_meta.COLUMN_NAME,
+            key_meta.REFERENCED_TABLE_NAME, key_meta.REFERENCED_COLUMN_NAME,
+            ref_meta.DELETE_RULE, ref_meta.UPDATE_RULE
+          )
+          ORDER BY constraints_meta.CONSTRAINT_NAME SEPARATOR '\n'
+        ),
+        ''
+      )
+    INTO proof_fk_count, proof_fk_contract
+    FROM information_schema.TABLE_CONSTRAINTS constraints_meta
+    JOIN information_schema.KEY_COLUMN_USAGE key_meta
+      ON key_meta.CONSTRAINT_SCHEMA = constraints_meta.CONSTRAINT_SCHEMA
+     AND key_meta.TABLE_NAME = constraints_meta.TABLE_NAME
+     AND key_meta.CONSTRAINT_NAME = constraints_meta.CONSTRAINT_NAME
+    JOIN information_schema.REFERENTIAL_CONSTRAINTS ref_meta
+      ON ref_meta.CONSTRAINT_SCHEMA = constraints_meta.CONSTRAINT_SCHEMA
+     AND ref_meta.CONSTRAINT_NAME = constraints_meta.CONSTRAINT_NAME
+    WHERE constraints_meta.CONSTRAINT_SCHEMA = DATABASE()
+      AND constraints_meta.TABLE_NAME = CONCAT('feishu_', 'operation_proof_consumption')
+      AND constraints_meta.CONSTRAINT_TYPE = 'FOREIGN KEY';
+    IF NOT (
+      proof_fk_count = 0
+      OR (
+        proof_fk_count = 2
+        AND proof_fk_contract = CONCAT(
+          'fk_feishu_proof_consumer_operation|consumer_operation_id|feishu_operation|id|RESTRICT|NO ACTION',
+          '\n',
+          'fk_feishu_proof_source_operation|source_operation_id|feishu_operation|id|RESTRICT|NO ACTION'
+        )
+      )
+    ) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: proof FK state must be zero or exact pair';
+    END IF;
+    IF (
+      SELECT COUNT(*)
+      FROM information_schema.COLUMNS proof_column
+      JOIN information_schema.COLUMNS operation_column
+        ON operation_column.TABLE_SCHEMA = proof_column.TABLE_SCHEMA
+       AND operation_column.TABLE_NAME = 'feishu_operation'
+       AND operation_column.COLUMN_NAME = 'id'
+      WHERE proof_column.TABLE_SCHEMA = DATABASE()
+        AND proof_column.TABLE_NAME = CONCAT('feishu_', 'operation_proof_consumption')
+        AND proof_column.COLUMN_NAME IN ('source_operation_id', 'consumer_operation_id')
+        AND proof_column.COLUMN_TYPE = operation_column.COLUMN_TYPE
+        AND proof_column.CHARACTER_SET_NAME <=> operation_column.CHARACTER_SET_NAME
+        AND proof_column.COLLATION_NAME <=> operation_column.COLLATION_NAME
+    ) <> 2 THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: proof operation ID columns are incompatible';
+    END IF;
+    IF EXISTS (
+      SELECT 1
+      FROM `feishu_operation_proof_consumption` proof
+      LEFT JOIN `feishu_operation` operation_row
+        ON operation_row.`id` = proof.`source_operation_id`
+      WHERE operation_row.`id` IS NULL
+    ) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: orphan proof source operation';
+    END IF;
+    IF EXISTS (
+      SELECT 1
+      FROM `feishu_operation_proof_consumption` proof
+      LEFT JOIN `feishu_operation` operation_row
+        ON operation_row.`id` = proof.`consumer_operation_id`
+      WHERE operation_row.`id` IS NULL
+    ) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: orphan proof consumer operation';
+    END IF;
   END IF;
   IF (SELECT COUNT(*) FROM `llm_provider` WHERE `name` = 'ali-dashscope') <> 1 THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: ali-dashscope provider must exist exactly once';
@@ -349,6 +431,31 @@ CREATE TABLE IF NOT EXISTS `feishu_operation_execution_gate` (
   PRIMARY KEY (`user_id`),
   KEY `idx_feishu_execution_gate_lease` (`lease_until`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
+
+-- Dev historically created the proof table before its two operation FKs were
+-- added. The opening assertion permits only zero or the exact final pair, so a
+-- single ALTER can repair the zero-FK state atomically without touching rows.
+DROP PROCEDURE IF EXISTS `_prod_schema_reconcile_proof_fk`;
+DELIMITER //
+CREATE PROCEDURE `_prod_schema_reconcile_proof_fk`()
+BEGIN
+  IF (
+    SELECT COUNT(*)
+    FROM information_schema.TABLE_CONSTRAINTS
+    WHERE CONSTRAINT_SCHEMA = DATABASE()
+      AND TABLE_NAME = CONCAT('feishu_', 'operation_proof_consumption')
+      AND CONSTRAINT_TYPE = 'FOREIGN KEY'
+  ) = 0 THEN
+    ALTER TABLE `feishu_operation_proof_consumption`
+      ADD CONSTRAINT `fk_feishu_proof_source_operation`
+        FOREIGN KEY (`source_operation_id`) REFERENCES `feishu_operation` (`id`) ON DELETE RESTRICT,
+      ADD CONSTRAINT `fk_feishu_proof_consumer_operation`
+        FOREIGN KEY (`consumer_operation_id`) REFERENCES `feishu_operation` (`id`) ON DELETE RESTRICT;
+  END IF;
+END//
+DELIMITER ;
+CALL `_prod_schema_reconcile_proof_fk`();
+DROP PROCEDURE IF EXISTS `_prod_schema_reconcile_proof_fk`;
 
 -- --------------------------------------------------------------------------
 -- Existing-table additive columns and indexes.
