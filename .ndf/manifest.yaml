@@ -1,5 +1,27 @@
 schema_version: '2.0'
 features:
+- id: feishu-expired-auth-cleanup
+  ndf_version: '3.0'
+  description: Stop expired Feishu pending authorization sessions from occupying the user's current connection flow, so Settings and Agent reconnects can produce a fresh authorization action.
+  classification_reason: 'Hotfix: customer-reported Dev bug, no DB schema, no new API endpoint, no new external service, limited to Feishu auth/session store semantics and tests, non-payment/non-permission business logic.'
+  last_updated_by: ai-h2-verified
+  last_updated_at: '2026-07-29T13:05:11+0800'
+  last_verified: '2026-07-29T13:05:11+0800'
+  created_at: '2026-07-29T12:49:54+0800'
+  track: hotfix
+  stage: H2
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: fix/feishu-expired-auth-cleanup}
+  worktrees: {numind-server: /private/tmp/wt-feishu-expired-auth-cleanup-numind-server}
+  progress: {total_tasks: 3, completed_tasks: 2, reviewed_tasks: 0, current_task: 'H2 verified locally; merge and Dev deploy pending'}
+  artifacts:
+    h2_verification: .ndf/decisions/feishu-expired-auth-cleanup/0001-h2-verification.md
+  decisions:
+  - 'H1 RED: commit 4055db69 reproduces an expired pending Feishu auth session being returned as the active action and blocking a fresh workspace connect.'
+  - 'H1 fix: expired pending sessions no longer appear in active-status or blocker queries; operation-linked recovery can still reuse its exact expired session, while manual settings reconnect skips expired exact sessions and creates a new one.'
+  - 'H2 verification: focused expired-session regression, Feishu store+biz tests, and task lint passed.'
+  blockers: []
 - id: feishu-topic-context-mismatch
   ndf_version: '3.0'
   description: Block Agent 3 from appending a profile customer's topic rounds into a fetched Feishu topic document that belongs to another customer or lacks the required customer title.

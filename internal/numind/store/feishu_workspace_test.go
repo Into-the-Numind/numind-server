@@ -1341,6 +1341,49 @@ func TestFeishuWorkspaceStore_CreateOrGetPendingSessionSerializesIntentAcrossIns
 	require.Equal(t, "session-manual", manualStored.ID, "manual intent must not alias an operation recovery")
 }
 
+func TestFeishuWorkspaceStore_ExpiredPendingSessionDoesNotOwnCurrentConnectionSlot(t *testing.T) {
+	ctx := context.Background()
+	s := newFeishuWorkspaceTestStore(t)
+	createFeishuAccount(t, s, 7, 3)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	operationID := "expired-business-operation"
+	expired := newFeishuSession("expired-business-session", 7, 3)
+	expired.OperationID = &operationID
+	expired.ExpiresAt = now.Add(-time.Minute)
+	expired.CreatedAt = now.Add(-2 * time.Minute)
+	expired.UpdatedAt = now.Add(-time.Minute)
+	require.NoError(t, s.CreateSession(ctx, expired))
+
+	_, err := s.FindActiveSessionForUser(ctx, 7, 3)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound,
+		"an expired pending session must not be presented as the current action")
+
+	connection := newFeishuOperation("fresh-connection-operation", 7, 3, "fresh-connection-key")
+	connection.CommandPath = "workspace connect"
+	connection.Domain = "workspace"
+	connection.RequestFingerprint = "fresh-connection-fingerprint"
+	stored, err := s.CreateOrGetConnectionOperation(ctx, connection)
+	require.NoError(t, err, "an expired pending session must not block a fresh connection flow")
+	require.Equal(t, connection.ID, stored.ID)
+
+	createFeishuAccount(t, s, 8, 3)
+	expiredManual := newFeishuSession("expired-manual-session", 8, 3)
+	expiredManual.OperationID = nil
+	expiredManual.RequestedScopesJSON = []byte(`["offline_access"]`)
+	expiredManual.ExpiresAt = now.Add(-time.Minute)
+	expiredManual.CreatedAt = now.Add(-2 * time.Minute)
+	expiredManual.UpdatedAt = now.Add(-time.Minute)
+	require.NoError(t, s.CreateSession(ctx, expiredManual))
+
+	freshManual := newFeishuSession("fresh-manual-session", 8, 3)
+	freshManual.OperationID = nil
+	freshManual.RequestedScopesJSON = []byte(`["offline_access"]`)
+	manualStored, created, err := s.CreateOrGetPendingSession(ctx, freshManual)
+	require.NoError(t, err, "an expired manual session must not be reused for a fresh settings-page connect")
+	require.True(t, created)
+	require.Equal(t, freshManual.ID, manualStored.ID)
+}
+
 func TestFeishuWorkspaceStore_OperationLeaseRejectsStaleGeneration(t *testing.T) {
 	ctx := context.Background()
 	s := newFeishuWorkspaceTestStore(t)

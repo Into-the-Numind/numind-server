@@ -261,10 +261,13 @@ func (s *feishuWorkspaceStore) CreateOrGetPendingSession(
 			return gorm.ErrRecordNotFound
 		}
 
+		now := feishuAuthSessionActivityCutoff(session)
 		existing, err := findMatchingAuthSession(tx, session, model.FeishuAuthSessionPending, "created_at ASC, id ASC")
 		if err == nil {
-			stored = existing
-			return nil
+			if session.OperationID != nil || existing.ExpiresAt.After(now) {
+				stored = existing
+				return nil
+			}
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
@@ -281,7 +284,7 @@ func (s *feishuWorkspaceStore) CreateOrGetPendingSession(
 			if session.OperationID != nil && *session.OperationID == activeConnection.ID {
 				continue
 			}
-			blocks, fenceErr := feishuConnectionOperationBlocks(tx, activeConnection, time.Now().UTC())
+			blocks, fenceErr := feishuConnectionOperationBlocks(tx, activeConnection, now)
 			if fenceErr != nil {
 				return fenceErr
 			}
@@ -305,15 +308,15 @@ func (s *feishuWorkspaceStore) CreateOrGetPendingSession(
 		// came from Settings, lark_connect, or a real business operation.
 		var pendingOwners []model.FeishuAuthSession
 		pendingErr := tx.Where(
-			"user_id = ? AND generation = ? AND state = ?",
-			session.UserID, session.Generation, model.FeishuAuthSessionPending,
+			"user_id = ? AND generation = ? AND state = ? AND expires_at > ?",
+			session.UserID, session.Generation, model.FeishuAuthSessionPending, now,
 		).Order("created_at ASC, id ASC").Find(&pendingOwners).Error
 		if pendingErr != nil {
 			return pendingErr
 		}
 		for index := range pendingOwners {
 			pendingOwner := &pendingOwners[index]
-			if feishuAuthProtocolUpgradeCanCoexist(pendingOwner, session, time.Now().UTC()) {
+			if feishuAuthProtocolUpgradeCanCoexist(pendingOwner, session, now) {
 				// A lease-free v1 row is inert rolling-upgrade state. Keep it
 				// pending for the existing durable refresh/race contract, while
 				// allowing v2 to become the newest active protocol owner.
@@ -404,6 +407,30 @@ func equalRequestedScopes(left, right []byte) bool {
 	return true
 }
 
+func feishuAuthSessionActivityCutoff(session *model.FeishuAuthSession) time.Time {
+	if session != nil {
+		if !session.CreatedAt.IsZero() {
+			return session.CreatedAt.UTC()
+		}
+		if !session.UpdatedAt.IsZero() {
+			return session.UpdatedAt.UTC()
+		}
+	}
+	return time.Now().UTC()
+}
+
+func feishuOperationActivityCutoff(operation *model.FeishuOperation) time.Time {
+	if operation != nil {
+		if !operation.CreatedAt.IsZero() {
+			return operation.CreatedAt.UTC()
+		}
+		if !operation.UpdatedAt.IsZero() {
+			return operation.UpdatedAt.UTC()
+		}
+	}
+	return time.Now().UTC()
+}
+
 func feishuAuthProtocolUpgradeCanCoexist(current, candidate *model.FeishuAuthSession, now time.Time) bool {
 	return current != nil && candidate != nil && current.OperationID != nil && candidate.OperationID != nil &&
 		*current.OperationID == *candidate.OperationID && current.Phase == candidate.Phase &&
@@ -424,17 +451,18 @@ func (s *feishuWorkspaceStore) GetSessionForUser(ctx context.Context, userID uin
 	return &session, nil
 }
 
-// FindActiveSessionForUser returns the most recently touched pending session
-// for a current account generation. It intentionally returns metadata only;
-// verification URLs and device codes are never persisted on this model.
+// FindActiveSessionForUser returns the most recently touched unexpired pending
+// session for a current account generation. It intentionally returns metadata
+// only; verification URLs and device codes are never persisted on this model.
 func (s *feishuWorkspaceStore) FindActiveSessionForUser(
 	ctx context.Context,
 	userID uint,
 	generation uint64,
 ) (*model.FeishuAuthSession, error) {
 	var session model.FeishuAuthSession
+	now := time.Now().UTC()
 	if err := s.db.WithContext(ctx).
-		Where("user_id = ? AND generation = ? AND state = ?", userID, generation, model.FeishuAuthSessionPending).
+		Where("user_id = ? AND generation = ? AND state = ? AND expires_at > ?", userID, generation, model.FeishuAuthSessionPending, now).
 		Order("updated_at DESC, id DESC").Take(&session).Error; err != nil {
 		return nil, err
 	}
@@ -1629,6 +1657,7 @@ func (s *feishuWorkspaceStore) CreateOrGetConnectionOperation(ctx context.Contex
 			return exactErr
 		}
 
+		now := feishuOperationActivityCutoff(operation)
 		var activeConnections []model.FeishuOperation
 		activeErr := tx.Where(
 			"user_id = ? AND generation = ? AND command_path = ? AND state IN ?",
@@ -1638,7 +1667,7 @@ func (s *feishuWorkspaceStore) CreateOrGetConnectionOperation(ctx context.Contex
 			return activeErr
 		}
 		for index := range activeConnections {
-			blocks, fenceErr := feishuConnectionOperationBlocks(tx, &activeConnections[index], time.Now().UTC())
+			blocks, fenceErr := feishuConnectionOperationBlocks(tx, &activeConnections[index], now)
 			if fenceErr != nil {
 				return fenceErr
 			}
@@ -1648,8 +1677,8 @@ func (s *feishuWorkspaceStore) CreateOrGetConnectionOperation(ctx context.Contex
 		}
 		var pendingSession model.FeishuAuthSession
 		pendingErr := tx.Where(
-			"user_id = ? AND generation = ? AND state = ?",
-			operation.UserID, operation.Generation, model.FeishuAuthSessionPending,
+			"user_id = ? AND generation = ? AND state = ? AND expires_at > ?",
+			operation.UserID, operation.Generation, model.FeishuAuthSessionPending, now,
 		).Order("created_at ASC, id ASC").Take(&pendingSession).Error
 		if pendingErr == nil {
 			return ErrFeishuConnectionOperationInProgress
@@ -1730,7 +1759,7 @@ func feishuConnectionOperationBlocks(tx *gorm.DB, operation *model.FeishuOperati
 	}
 	for index := range boundSessions {
 		session := &boundSessions[index]
-		if session.State == model.FeishuAuthSessionPending {
+		if session.State == model.FeishuAuthSessionPending && session.ExpiresAt.After(now) {
 			return true, nil
 		}
 		anchor := session.UpdatedAt
