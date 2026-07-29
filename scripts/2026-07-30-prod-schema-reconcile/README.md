@@ -23,7 +23,7 @@ Dev 数据，也不替换 Prod 用户、积分、订阅、SOP、聊天或智能�
 - 升级后核对：`scripts/2026-07-30-prod-schema-reconcile/02-verify.sql`
 - 隔离演练：`scripts/2026-07-30-prod-schema-reconcile/test-mysql8.sh`
 - 当前升级 SQL SHA256：
-  `1fc79e2951fa222fea51055842802113be56c0326e5884f7b712df6cc47fc186`
+  `44e4a6e3afd969f408cccd1997f9997272e2347c15c209581006954a2758aa58`
 
 上线使用的 Git tag、SQL 文件和上述 SHA256 必须完全对应。SQL 有任何修改，
 必须重新评审、重跑全部测试并更新这里的 SHA256。
@@ -40,7 +40,7 @@ scripts/2026-07-30-prod-schema-reconcile/test-mysql8.sh
 隔离演练必须显示：
 
 ```text
-PASS: MySQL 8 preflight, double apply, double verify, protected hash, and stable-key checks
+PASS: MySQL 8 exact, partial, negative-preflight, double-apply, constraints, and protected-data checks
 ```
 
 这一步使用临时 MySQL 8 容器和合成数据，不连接 Dev 或 Prod。
@@ -96,7 +96,8 @@ PASS: MySQL 8 preflight, double apply, double verify, protected hash, and stable
 
 - `agent_attachment_protected_projection`：只计算附件原字段，不包含本次新字段；
 - `agent_run_protected_projection`：只计算智能体运行原字段，不包含本次新字段；
-- 用户、积分、SOP、聊天、销售历史表的 `CHECKSUM TABLE ... EXTENDED`；
+- 用户、试用积分、订阅周期积分、加量包余额、会员事件、积分预扣/流水、
+  SOP、聊天、销售历史表的 `CHECKSUM TABLE ... EXTENDED`；
 - 每张核心业务表行数。
 
 上述行数、投影和 checksum 在首次执行、第二次执行后都必须完全一致。

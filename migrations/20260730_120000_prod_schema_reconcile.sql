@@ -391,7 +391,7 @@ BEGIN
         'waiting_for_user_choice', 'permission_denied', 'context_exhausted',
         'cancelled', 'external_resume_ready'
       )
-      AND `state_reason` NOT LIKE 'ext_resume:%'
+      AND LEFT(`state_reason`, 11) <> 'ext_resume:'
   ) THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: unsupported agent_run state_reason';
   END IF;
@@ -405,10 +405,24 @@ BEGIN
     WHERE tc.CONSTRAINT_SCHEMA = DATABASE()
       AND tc.TABLE_NAME = 'agent_run'
       AND tc.CONSTRAINT_NAME = 'chk_ar_state_reason'
-      AND (
-        cc.CHECK_CLAUSE NOT LIKE '%external_resume_ready%'
-        OR cc.CHECK_CLAUSE NOT LIKE '%ext\\_resume:%'
-      )
+      AND SHA2(
+        LOWER(
+          REGEXP_REPLACE(
+            REPLACE(
+              REPLACE(
+                REPLACE(cc.CHECK_CLAUSE, '_utf8mb4', ''),
+                '_utf8mb3',
+                ''
+              ),
+              '_latin1',
+              ''
+            ),
+            '[[:space:]]+',
+            ''
+          )
+        ),
+        256
+      ) <> '3ff1b9272063ecd57935884d4f47def2795f105385cf2d789e55ed7da1aad535'
   ) THEN
     ALTER TABLE `agent_run` DROP CHECK `chk_ar_state_reason`;
   END IF;
@@ -432,7 +446,7 @@ BEGIN
           'stop_hook_blocking', 'token_budget_continue', 'running',
           'waiting_for_user_choice', 'permission_denied', 'context_exhausted',
           'cancelled', 'external_resume_ready'
-        ) OR `state_reason` LIKE 'ext_resume:%'
+        ) OR LEFT(`state_reason`, 11) = 'ext_resume:'
       );
   END IF;
 END//

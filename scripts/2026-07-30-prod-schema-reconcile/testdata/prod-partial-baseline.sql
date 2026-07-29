@@ -299,6 +299,9 @@ INSERT INTO `skill` (
 
 CREATE TABLE `credit_account` (`id` BIGINT UNSIGNED PRIMARY KEY) ENGINE=InnoDB;
 CREATE TABLE `credit_cycle` (`id` BIGINT UNSIGNED PRIMARY KEY) ENGINE=InnoDB;
+CREATE TABLE `trial_grant` (`id` BIGINT UNSIGNED PRIMARY KEY) ENGINE=InnoDB;
+CREATE TABLE `user_booster_balance` (`id` BIGINT UNSIGNED PRIMARY KEY) ENGINE=InnoDB;
+CREATE TABLE `membership_event` (`id` BIGINT UNSIGNED PRIMARY KEY) ENGINE=InnoDB;
 CREATE TABLE `credit_reservation` (`id` BIGINT UNSIGNED PRIMARY KEY) ENGINE=InnoDB;
 CREATE TABLE `credit_reservation_item` (`id` BIGINT UNSIGNED PRIMARY KEY) ENGINE=InnoDB;
 CREATE TABLE `credit_transaction` (`id` BIGINT UNSIGNED PRIMARY KEY) ENGINE=InnoDB;
@@ -311,6 +314,9 @@ CREATE TABLE `sales_message` (`id` BIGINT UNSIGNED PRIMARY KEY) ENGINE=InnoDB;
 
 INSERT INTO `credit_account` VALUES (1);
 INSERT INTO `credit_cycle` VALUES (1);
+INSERT INTO `trial_grant` VALUES (1);
+INSERT INTO `user_booster_balance` VALUES (1);
+INSERT INTO `membership_event` VALUES (1);
 INSERT INTO `credit_reservation` VALUES (1);
 INSERT INTO `credit_reservation_item` VALUES (1);
 INSERT INTO `credit_transaction` VALUES (1);

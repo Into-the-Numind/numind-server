@@ -277,12 +277,14 @@ The runbook records before/after:
   only the two new columns;
 - ordered old-field projection hashes for attachment and agent-run rows,
   excluding only newly added columns;
-- extended table checksums for user, credit account/cycle/reservation/transaction,
-  SOP, chatbot, and sales history tables;
+- extended table checksums for user, trial grant, credit account/cycle,
+  booster balance, membership event, credit reservation/transaction, SOP,
+  chatbot, and sales history tables;
 - row counts of all newly created tables;
 - AI configuration rows affected by stable keys.
 
-The migration SQL contains no `UPDATE` or `DELETE` against protected customer
+The migration SQL contains no `INSERT`, `UPDATE`, `DELETE`, or `REPLACE` against
+protected customer, subscription, three-pool credit, attachment, or history
 tables. Subscription, attachment, and agent-run changes are additive schema only.
 
 ## 7. Runtime Configuration Dependency

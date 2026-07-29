@@ -63,6 +63,18 @@ func TestProdSchemaReconcileRunbookPinsCurrentMigrationSHA(t *testing.T) {
 	}
 }
 
+func TestProdSchemaReconcileRunbookRecordsCurrentMySQL8PassMarker(t *testing.T) {
+	const marker = "PASS: MySQL 8 exact, partial, negative-preflight, double-apply, constraints, and protected-data checks"
+	runner := readRequiredRolloutFile(t, filepath.Join(prodSchemaReconcileDir, "test-mysql8.sh"))
+	runbook := readRequiredRolloutFile(t, filepath.Join(prodSchemaReconcileDir, "README.md"))
+	if !strings.Contains(runner, marker) {
+		t.Fatalf("MySQL 8 runner must emit the documented pass marker")
+	}
+	if !strings.Contains(runbook, marker) {
+		t.Fatalf("runbook must record the current MySQL 8 pass marker")
+	}
+}
+
 func TestProdSchemaReconcileContainsFinalProductSchema(t *testing.T) {
 	sql := strings.ToLower(readRequiredRolloutFile(t, prodSchemaReconcileMigration))
 
@@ -117,7 +129,7 @@ func TestProdSchemaReconcileContainsFinalProductSchema(t *testing.T) {
 		"idx_ar_state_pending",
 		"chk_ar_state_reason",
 		"external_resume_ready",
-		"ext_resume:%",
+		"ext_resume:",
 	} {
 		if !strings.Contains(sql, constraint) {
 			t.Errorf("migration missing constraint/index %s", constraint)
@@ -143,57 +155,47 @@ func TestProdSchemaReconcileForbidsDestructiveOrOutOfScopeSQL(t *testing.T) {
 		}
 	}
 
-	if regexp.MustCompile(`(?i)\b(delete|update)\s+` + "`?" + `(user|credit_account|credit_cycle|credit_reservation|credit_reservation_item|credit_transaction|sop_run|sop_node_run|chatbot_message|chatbot_session|sales_message|sales_session|agent_run|agent_attachment)` + "`?" + `\b`).MatchString(sql) {
-		t.Error("migration must not DELETE/UPDATE protected customer, credit, attachment, or history tables")
+	protectedTables := `(user|subscription|trial_grant|credit_account|credit_cycle|user_booster_balance|credit_reservation|credit_reservation_item|credit_transaction|membership_event|sop_run|sop_node_run|chatbot_message|chatbot_session|sales_message|sales_session|agent_run|agent_attachment)`
+	protectedDML := []*regexp.Regexp{
+		regexp.MustCompile(`(?is)\bupdate\s+` + "`?" + protectedTables + "`?" + `\b`),
+		regexp.MustCompile(`(?is)\binsert\s+into\s+` + "`?" + protectedTables + "`?" + `\b`),
+		regexp.MustCompile(`(?is)\breplace\s+into\s+` + "`?" + protectedTables + "`?" + `\b`),
+		regexp.MustCompile(`(?is)\bdelete(?:\s+[a-z_][a-z0-9_]*)?\s+from\s+` + "`?" + protectedTables + "`?" + `\b`),
+	}
+	for _, forbiddenDML := range protectedDML {
+		if forbiddenDML.MatchString(sql) {
+			t.Error("migration must not write protected customer, subscription, credit, attachment, or history tables")
+		}
 	}
 	if regexp.MustCompile(`(?i)'(?:sk-|lark_cli_|feishu_)[a-z0-9_-]{12,}'`).MatchString(sql) {
 		t.Error("migration appears to contain a hard-coded credential")
 	}
 }
 
-func subscriptionUpdateAssignments(sql string) []string {
-	update := regexp.MustCompile(
-		`(?is)\bupdate\s+` + "`?" + `subscription` + "`?" +
-			`(?:\s+(?:as\s+)?[a-z_][a-z0-9_]*)?\s+set\s+(.+?)(?:\bwhere\b|$)`,
-	)
-	assignment := regexp.MustCompile(
-		`(?i)(?:^|,)\s*(?:[a-z_][a-z0-9_]*\.)?` + "`?" +
-			`([a-z_][a-z0-9_]*)` + "`?" + `\s*=`,
-	)
-	var columns []string
-	for _, statement := range strings.Split(sql, ";") {
-		matches := update.FindStringSubmatch(statement)
-		if len(matches) != 2 {
-			continue
-		}
-		for _, found := range assignment.FindAllStringSubmatch(matches[1], -1) {
-			if len(found) == 2 {
-				columns = append(columns, strings.ToLower(found[1]))
-			}
-		}
-	}
-	return columns
-}
-
-func TestProdSchemaReconcileSubscriptionWritesOnlyNewColumns(t *testing.T) {
+func TestProdSchemaReconcileNeverWritesSubscriptionRows(t *testing.T) {
 	sql := strings.ToLower(stripSQLComments(readRequiredRolloutFile(t, prodSchemaReconcileMigration)))
-	allowed := map[string]bool{"plan_type": true, "cycle_credits": true}
-	for _, column := range subscriptionUpdateAssignments(sql) {
-		if !allowed[column] {
-			t.Errorf("subscription UPDATE assigns non-rollout column %s", column)
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?is)\bupdate\s+` + "`?" + `subscription` + "`?" + `\b`),
+		regexp.MustCompile(`(?is)\binsert\s+into\s+` + "`?" + `subscription` + "`?" + `\b`),
+		regexp.MustCompile(`(?is)\breplace\s+into\s+` + "`?" + `subscription` + "`?" + `\b`),
+		regexp.MustCompile(`(?is)\bdelete(?:\s+[a-z_][a-z0-9_]*)?\s+from\s+` + "`?" + `subscription` + "`?" + `\b`),
+	}
+	for _, forbiddenDML := range patterns {
+		if forbiddenDML.MatchString(sql) {
+			t.Error("subscription rollout must be additive schema only and must not write historical rows")
 		}
 	}
 }
 
-func TestSubscriptionUpdateAssignmentScannerRejectsOldOrUnknownColumns(t *testing.T) {
-	sql := `
-		UPDATE subscription SET plan_type='monthly', user_id=9 WHERE id=1;
-		UPDATE subscription AS s SET s.cycle_credits=2000, s.unreviewed_column=1;
-	`
-	got := subscriptionUpdateAssignments(strings.ToLower(sql))
-	want := []string{"plan_type", "user_id", "cycle_credits", "unreviewed_column"}
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("assignment scanner got %v, want %v", got, want)
+func TestProdSchemaReconcileProtectedDMLGuardCatchesJoinedAndAliasedWrites(t *testing.T) {
+	pattern := regexp.MustCompile(`(?is)\bupdate\s+` + "`?" + `(subscription|user)` + "`?" + `\b`)
+	for _, sql := range []string{
+		"UPDATE subscription s JOIN user u ON u.id=s.user_id SET s.user_id=9",
+		"UPDATE `user` AS u JOIN subscription s ON s.user_id=u.id SET u.username='changed'",
+	} {
+		if !pattern.MatchString(strings.ToLower(sql)) {
+			t.Fatalf("protected DML guard missed joined write: %s", sql)
+		}
 	}
 }
 
@@ -222,6 +224,11 @@ func TestProdSchemaReconcilePreflightCoversFailClosedContracts(t *testing.T) {
 		"checksum table",
 		"agent_attachment_protected_projection",
 		"agent_run_protected_projection",
+		"trial_grant",
+		"user_booster_balance",
+		"membership_event",
+		"ai_service_model_key_unique_contract",
+		"_column_compatibility",
 	} {
 		if !strings.Contains(sql, required) {
 			t.Errorf("preflight missing fail-closed contract %q", required)

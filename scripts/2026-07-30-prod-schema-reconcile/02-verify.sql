@@ -241,19 +241,57 @@ SELECT
   'agent_state_reason_constraint',
   IF(
     COUNT(*) = 1
-      AND MAX(checks_meta.CHECK_CLAUSE) LIKE '%external_resume_ready%'
-      AND MAX(checks_meta.CHECK_CLAUSE) LIKE '%ext\\_resume:%',
+      AND MAX(
+        SHA2(
+          LOWER(
+            REGEXP_REPLACE(
+              REPLACE(
+                REPLACE(
+                  REPLACE(checks_meta.CHECK_CLAUSE, '_utf8mb4', ''),
+                  '_utf8mb3',
+                  ''
+                ),
+                '_latin1',
+                ''
+              ),
+              '[[:space:]]+',
+              ''
+            )
+          ),
+          256
+        )
+      ) = '3ff1b9272063ecd57935884d4f47def2795f105385cf2d789e55ed7da1aad535',
     'PASS',
     'FAIL'
   ),
   CONCAT(
     'count=', COUNT(*),
-    ',external=',
-    COALESCE(MAX(checks_meta.CHECK_CLAUSE) LIKE '%external_resume_ready%', 0),
-    ',prefix=',
-    COALESCE(MAX(checks_meta.CHECK_CLAUSE) LIKE '%ext\\_resume:%', 0)
+    ',sha=',
+    COALESCE(
+      MAX(
+        SHA2(
+          LOWER(
+            REGEXP_REPLACE(
+              REPLACE(
+                REPLACE(
+                  REPLACE(checks_meta.CHECK_CLAUSE, '_utf8mb4', ''),
+                  '_utf8mb3',
+                  ''
+                ),
+                '_latin1',
+                ''
+              ),
+              '[[:space:]]+',
+              ''
+            )
+          ),
+          256
+        )
+      ),
+      'absent'
+    )
   ),
-  'one constraint allowing external_resume_ready and ext_resume:%'
+  'one exact external-resume constraint (sha 3ff1b927...)'
 FROM information_schema.TABLE_CONSTRAINTS constraints_meta
 JOIN information_schema.CHECK_CONSTRAINTS checks_meta
   ON checks_meta.CONSTRAINT_SCHEMA = constraints_meta.CONSTRAINT_SCHEMA
@@ -404,6 +442,63 @@ SELECT
 FROM expected
 LEFT JOIN actual ON actual.table_name = expected.table_name
 ORDER BY expected.table_name;
+
+SELECT
+  'ai_service_model_key_unique_contract' AS check_name,
+  IF(COUNT(*) >= 1, 'PASS', 'FAIL') AS status,
+  CAST(COUNT(*) AS CHAR) AS observed,
+  'at least one exact UNIQUE(model_key)' AS expected
+FROM (
+  SELECT INDEX_NAME
+  FROM information_schema.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ai_service'
+  GROUP BY INDEX_NAME
+  HAVING MAX(NON_UNIQUE) = 0
+     AND GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ',') = 'model_key'
+) exact_indexes
+UNION ALL
+SELECT
+  'ai_service_route_model_provider_unique_contract',
+  IF(COUNT(*) >= 1, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  'at least one exact UNIQUE(model_id,provider_id)'
+FROM (
+  SELECT INDEX_NAME
+  FROM information_schema.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ai_service_route'
+  GROUP BY INDEX_NAME
+  HAVING MAX(NON_UNIQUE) = 0
+     AND GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ',') = 'model_id,provider_id'
+) exact_indexes
+UNION ALL
+SELECT
+  'task_profile_task_id_unique_contract',
+  IF(COUNT(*) >= 1, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  'at least one exact UNIQUE(task_id)'
+FROM (
+  SELECT INDEX_NAME
+  FROM information_schema.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'task_profile'
+  GROUP BY INDEX_NAME
+  HAVING MAX(NON_UNIQUE) = 0
+     AND GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ',') = 'task_id'
+) exact_indexes
+UNION ALL
+SELECT
+  'pricing_rule_lookup_unique_contract',
+  IF(COUNT(*) >= 1, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  'at least one exact UNIQUE(service_type,provider,model)'
+FROM (
+  SELECT INDEX_NAME
+  FROM information_schema.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pricing_rule'
+  GROUP BY INDEX_NAME
+  HAVING MAX(NON_UNIQUE) = 0
+     AND GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ',') =
+         'service_type,provider,model'
+) exact_indexes;
 
 SELECT
   'feishu_proof_fk_contract' AS check_name,
@@ -598,8 +693,27 @@ SELECT
 FROM agent_run;
 
 CHECKSUM TABLE
-  `user`, `credit_account`, `credit_cycle`,
+  `user`, `trial_grant`, `credit_account`, `credit_cycle`,
+  `user_booster_balance`, `membership_event`,
   `credit_reservation`, `credit_reservation_item`, `credit_transaction`,
   `sop_run`, `sop_node_run`, `chatbot_session`, `chatbot_message`,
   `sales_session`, `sales_message`
 EXTENDED;
+
+SELECT 'user' AS table_name, COUNT(*) AS row_count FROM user
+UNION ALL SELECT 'subscription', COUNT(*) FROM subscription
+UNION ALL SELECT 'trial_grant', COUNT(*) FROM trial_grant
+UNION ALL SELECT 'credit_account', COUNT(*) FROM credit_account
+UNION ALL SELECT 'credit_cycle', COUNT(*) FROM credit_cycle
+UNION ALL SELECT 'user_booster_balance', COUNT(*) FROM user_booster_balance
+UNION ALL SELECT 'membership_event', COUNT(*) FROM membership_event
+UNION ALL SELECT 'credit_reservation', COUNT(*) FROM credit_reservation
+UNION ALL SELECT 'credit_reservation_item', COUNT(*) FROM credit_reservation_item
+UNION ALL SELECT 'credit_transaction', COUNT(*) FROM credit_transaction
+UNION ALL SELECT 'sop_run', COUNT(*) FROM sop_run
+UNION ALL SELECT 'sop_node_run', COUNT(*) FROM sop_node_run
+UNION ALL SELECT 'chatbot_session', COUNT(*) FROM chatbot_session
+UNION ALL SELECT 'chatbot_message', COUNT(*) FROM chatbot_message
+UNION ALL SELECT 'sales_session', COUNT(*) FROM sales_session
+UNION ALL SELECT 'sales_message', COUNT(*) FROM sales_message
+UNION ALL SELECT 'agent_run', COUNT(*) FROM agent_run;

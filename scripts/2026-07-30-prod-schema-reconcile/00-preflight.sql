@@ -11,13 +11,14 @@ SELECT
 UNION ALL
 SELECT
   'required_base_tables',
-  IF(COUNT(*) = 17, 'PASS', 'FAIL'),
+  IF(COUNT(*) = 20, 'PASS', 'FAIL'),
   CAST(COUNT(*) AS CHAR),
-  '17'
+  '20'
 FROM information_schema.TABLES
 WHERE TABLE_SCHEMA = DATABASE()
   AND TABLE_NAME IN (
     'user', 'subscription', 'agent_attachment', 'agent_run',
+    'trial_grant', 'user_booster_balance', 'membership_event',
     'announcement', 'announcement_read', 'survey_question',
     'survey_response', 'survey_answer', 'llm_provider', 'ai_service',
     'ai_service_route', 'task_profile', 'task_profile_service',
@@ -190,7 +191,7 @@ WHERE state_reason IS NOT NULL
     'waiting_for_user_choice', 'permission_denied', 'context_exhausted',
     'cancelled', 'external_resume_ready'
   )
-  AND state_reason NOT LIKE 'ext\\_resume:%'
+  AND LEFT(state_reason, 11) <> 'ext_resume:'
 UNION ALL
 SELECT
   'skill_template_rows',
@@ -318,6 +319,63 @@ LEFT JOIN actual ON actual.table_name = expected.table_name
 ORDER BY expected.table_name;
 
 SELECT
+  'ai_service_model_key_unique_contract' AS check_name,
+  IF(COUNT(*) >= 1, 'PASS', 'FAIL') AS status,
+  CAST(COUNT(*) AS CHAR) AS observed,
+  'at least one exact UNIQUE(model_key)' AS expected
+FROM (
+  SELECT INDEX_NAME
+  FROM information_schema.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ai_service'
+  GROUP BY INDEX_NAME
+  HAVING MAX(NON_UNIQUE) = 0
+     AND GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ',') = 'model_key'
+) exact_indexes
+UNION ALL
+SELECT
+  'ai_service_route_model_provider_unique_contract',
+  IF(COUNT(*) >= 1, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  'at least one exact UNIQUE(model_id,provider_id)'
+FROM (
+  SELECT INDEX_NAME
+  FROM information_schema.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ai_service_route'
+  GROUP BY INDEX_NAME
+  HAVING MAX(NON_UNIQUE) = 0
+     AND GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ',') = 'model_id,provider_id'
+) exact_indexes
+UNION ALL
+SELECT
+  'task_profile_task_id_unique_contract',
+  IF(COUNT(*) >= 1, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  'at least one exact UNIQUE(task_id)'
+FROM (
+  SELECT INDEX_NAME
+  FROM information_schema.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'task_profile'
+  GROUP BY INDEX_NAME
+  HAVING MAX(NON_UNIQUE) = 0
+     AND GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ',') = 'task_id'
+) exact_indexes
+UNION ALL
+SELECT
+  'pricing_rule_lookup_unique_contract',
+  IF(COUNT(*) >= 1, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  'at least one exact UNIQUE(service_type,provider,model)'
+FROM (
+  SELECT INDEX_NAME
+  FROM information_schema.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pricing_rule'
+  GROUP BY INDEX_NAME
+  HAVING MAX(NON_UNIQUE) = 0
+     AND GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ',') =
+         'service_type,provider,model'
+) exact_indexes;
+
+SELECT
   'feishu_proof_fk_contract' AS check_name,
   IF(
     (SELECT COUNT(*) FROM information_schema.TABLES
@@ -441,6 +499,47 @@ FROM (
   GROUP BY announcement_id, user_id
   HAVING COUNT(*) > 1
 ) duplicate_survey_response;
+
+WITH expected AS (
+  SELECT 'fk_annread_announcement' AS constraint_name,
+         'announcement_read' AS child_table, 'announcement_id' AS child_column,
+         'announcement' AS parent_table, 'id' AS parent_column
+  UNION ALL SELECT 'fk_annread_user', 'announcement_read', 'user_id', 'user', 'id'
+  UNION ALL SELECT 'fk_sq_announcement', 'survey_question', 'announcement_id', 'announcement', 'id'
+  UNION ALL SELECT 'fk_sr_announcement', 'survey_response', 'announcement_id', 'announcement', 'id'
+  UNION ALL SELECT 'fk_sr_user', 'survey_response', 'user_id', 'user', 'id'
+  UNION ALL SELECT 'fk_sa_response', 'survey_answer', 'response_id', 'survey_response', 'id'
+  UNION ALL SELECT 'fk_sa_question', 'survey_answer', 'question_id', 'survey_question', 'id'
+)
+SELECT
+  CONCAT(expected.constraint_name, '_column_compatibility') AS check_name,
+  IF(
+    child_meta.COLUMN_TYPE = parent_meta.COLUMN_TYPE
+      AND COALESCE(child_meta.CHARACTER_SET_NAME, '<NULL>') =
+          COALESCE(parent_meta.CHARACTER_SET_NAME, '<NULL>')
+      AND COALESCE(child_meta.COLLATION_NAME, '<NULL>') =
+          COALESCE(parent_meta.COLLATION_NAME, '<NULL>'),
+    'PASS',
+    'FAIL'
+  ) AS status,
+  CONCAT_WS(
+    '|', child_meta.COLUMN_TYPE, COALESCE(child_meta.CHARACTER_SET_NAME, '<NULL>'),
+    COALESCE(child_meta.COLLATION_NAME, '<NULL>')
+  ) AS observed,
+  CONCAT_WS(
+    '|', parent_meta.COLUMN_TYPE, COALESCE(parent_meta.CHARACTER_SET_NAME, '<NULL>'),
+    COALESCE(parent_meta.COLLATION_NAME, '<NULL>')
+  ) AS expected
+FROM expected
+LEFT JOIN information_schema.COLUMNS child_meta
+  ON child_meta.TABLE_SCHEMA = DATABASE()
+ AND child_meta.TABLE_NAME = expected.child_table
+ AND child_meta.COLUMN_NAME = expected.child_column
+LEFT JOIN information_schema.COLUMNS parent_meta
+  ON parent_meta.TABLE_SCHEMA = DATABASE()
+ AND parent_meta.TABLE_NAME = expected.parent_table
+ AND parent_meta.COLUMN_NAME = expected.parent_column
+ORDER BY expected.constraint_name;
 
 WITH expected AS (
   SELECT 'announcement_read' AS table_name, 'fk_annread_announcement' AS constraint_name,
@@ -608,7 +707,8 @@ SELECT
 FROM agent_run;
 
 CHECKSUM TABLE
-  `user`, `credit_account`, `credit_cycle`,
+  `user`, `trial_grant`, `credit_account`, `credit_cycle`,
+  `user_booster_balance`, `membership_event`,
   `credit_reservation`, `credit_reservation_item`, `credit_transaction`,
   `sop_run`, `sop_node_run`, `chatbot_session`, `chatbot_message`,
   `sales_session`, `sales_message`
@@ -616,8 +716,11 @@ EXTENDED;
 
 SELECT 'user' AS table_name, COUNT(*) AS row_count FROM user
 UNION ALL SELECT 'subscription', COUNT(*) FROM subscription
+UNION ALL SELECT 'trial_grant', COUNT(*) FROM trial_grant
 UNION ALL SELECT 'credit_account', COUNT(*) FROM credit_account
 UNION ALL SELECT 'credit_cycle', COUNT(*) FROM credit_cycle
+UNION ALL SELECT 'user_booster_balance', COUNT(*) FROM user_booster_balance
+UNION ALL SELECT 'membership_event', COUNT(*) FROM membership_event
 UNION ALL SELECT 'credit_reservation', COUNT(*) FROM credit_reservation
 UNION ALL SELECT 'credit_reservation_item', COUNT(*) FROM credit_reservation_item
 UNION ALL SELECT 'credit_transaction', COUNT(*) FROM credit_transaction

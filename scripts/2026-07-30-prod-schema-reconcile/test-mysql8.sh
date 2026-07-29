@@ -124,7 +124,8 @@ SELECT CONCAT_WS(
 
 protected_checksum_sql="
 CHECKSUM TABLE
-  user, credit_account, credit_cycle, credit_reservation,
+  user, trial_grant, credit_account, credit_cycle, user_booster_balance,
+  membership_event, credit_reservation,
   credit_reservation_item, credit_transaction, sop_run, sop_node_run,
   chatbot_session, chatbot_message, sales_session, sales_message
 EXTENDED;
@@ -239,11 +240,34 @@ fi
 
 mysql_query "UPDATE agent_run SET state_reason='external_resume_ready' WHERE id=1;"
 mysql_query "UPDATE agent_run SET state_reason='ext_resume:synthetic' WHERE id=1;"
+if mysql_query "UPDATE agent_run SET state_reason='extXresume:synthetic' WHERE id=1;" >/dev/null 2>&1; then
+  echo "ERROR: agent_run CHECK treated '_' as a wildcard" >&2
+  exit 1
+fi
 if mysql_query "UPDATE agent_run SET state_reason='not-a-runtime-state' WHERE id=1;" >/dev/null 2>&1; then
   echo "ERROR: agent_run CHECK accepted an unsupported state" >&2
   exit 1
 fi
 mysql_query "UPDATE agent_run SET state_reason='completed' WHERE id=1;"
+
+# A same-name but overly broad CHECK must be detected and repaired exactly.
+mysql_query "
+ALTER TABLE agent_run
+  DROP CHECK chk_ar_state_reason,
+  ADD CONSTRAINT chk_ar_state_reason CHECK (state_reason IS NULL OR 1=1);
+"
+overbroad_verify="$(mysql_stdin < "$VERIFY")"
+if ! printf '%s\n' "$overbroad_verify" | grep -q '^agent_state_reason_constraint'$'\tFAIL\t'; then
+  echo "ERROR: verify accepted an overly broad agent state CHECK" >&2
+  exit 1
+fi
+mysql_stdin < "$MIGRATION" >/dev/null
+repaired_constraint_verify="$(mysql_stdin < "$VERIFY")"
+assert_no_fail_rows "$repaired_constraint_verify" "repaired agent constraint verify"
+if mysql_query "UPDATE agent_run SET state_reason='extXresume:synthetic' WHERE id=1;" >/dev/null 2>&1; then
+  echo "ERROR: repaired agent_run CHECK accepted wildcard-like state" >&2
+  exit 1
+fi
 
 # Simulate interruption after only some exact target tables were created.
 mysql_query "DROP TABLE feishu_operation_proof_consumption;"
@@ -259,11 +283,14 @@ assert_equal "$before_attachment_projection" "$(mysql_query "$attachment_project
 assert_equal "$before_agent_run_projection" "$(mysql_query "$agent_run_projection_sql")" "partial-retry agent-run projection"
 assert_equal "$before_protected_checksums" "$(mysql_query "$protected_checksum_sql")" "partial-retry protected checksums"
 
-# A wrong same-name table and duplicate notification pairs must fail before apply.
+# Wrong table/index/FK/config contracts and duplicate notification pairs must fail before apply.
 mysql_query "DROP TABLE document;"
 mysql_query "CREATE TABLE document (id INT NOT NULL PRIMARY KEY) ENGINE=InnoDB;"
 mysql_query "ALTER TABLE announcement_read ADD INDEX idx_annread_announcement (announcement_id), DROP INDEX uk_annread;"
+mysql_query "CREATE INDEX uk_annread ON announcement_read (user_id, announcement_id);"
 mysql_query "ALTER TABLE survey_response ADD INDEX idx_sr_user (user_id), DROP INDEX uk_sr;"
+mysql_query "ALTER TABLE survey_answer DROP FOREIGN KEY fk_sa_question, MODIFY question_id BIGINT NOT NULL;"
+mysql_query "ALTER TABLE ai_service DROP INDEX model_key;"
 mysql_query "
 INSERT INTO announcement (id, title, content, created_by)
 VALUES (1, 'synthetic', 'synthetic', 101);
@@ -279,6 +306,9 @@ if ! printf '%s\n' "$negative_preflight" | grep -q $'\tFAIL\t'; then
 fi
 for expected_failure in \
   document_schema_contract \
+  ai_service_model_key_unique_contract \
+  fk_sa_question_column_compatibility \
+  uk_annread_contract \
   duplicate_announcement_read_user_pair \
   duplicate_survey_response_user_pair; do
   if ! printf '%s\n' "$negative_preflight" | grep -q "^${expected_failure}"$'\tFAIL\t'; then
