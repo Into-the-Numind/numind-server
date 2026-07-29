@@ -1,5 +1,30 @@
 schema_version: '2.0'
 features:
+- id: remove-official-example-skill
+  ndf_version: '3.0'
+  description: Remove the seeded official example Skill so parent accounts no longer see the placeholder official card.
+  classification_reason: 'Standard: DB data migration affecting Skill visibility semantics; user-reported visible placeholder requires regression test and Dev migration.'
+  last_updated_by: ai-s5-verified
+  last_updated_at: '2026-07-29T14:45:00+0800'
+  created_at: '2026-07-29T14:35:00+0800'
+  track: standard
+  stage: S5
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: feature/remove-official-example-skill}
+  worktrees: {numind-server: /private/tmp/wt-remove-official-example-skill-numind-server}
+  progress: {total_tasks: 6, completed_tasks: 4, reviewed_tasks: 0, current_task: 'Merge and apply Dev migration'}
+  artifacts:
+    requirement: requirements/remove-official-example-skill.md
+    proposal: proposals/remove-official-example-skill-proposal.md
+    spec: docs/superpowers/specs/2026-07-29-remove-official-example-skill-design.md
+    plan: docs/superpowers/plans/2026-07-29-remove-official-example-skill.md
+    s5_verification: .ndf/decisions/remove-official-example-skill/0001-s5-verification.md
+  decisions:
+  - 'S0: 官方示例技能 is a seeded system Skill, not a template; previous template migration intentionally left it visible.'
+  - 'S4 RED: commit b98d437b reproduces the missing migration that should remove this placeholder official Skill.'
+  - 'S5: migration test, migrations package, go test ./..., task lint, diff hygiene, and temporary MySQL dry run passed.'
+  blockers: []
 - id: official-template-institution-scope
   ndf_version: '3.0'
   description: Remove official skill templates and make template imports create independent institution-scoped skills instead of globally visible official skills.
