@@ -34,12 +34,24 @@ The seven document/Feishu table fingerprints continue to include:
 
 `ORDINAL_POSITION` is removed from the column fingerprint and columns are sorted
 by `COLUMN_NAME`. Physical column order does not affect MySQL reads/writes by
-named columns and is not a product contract. Missing, extra, or differently
-typed columns still change the fingerprint and fail.
+named columns and is not a product contract. The fingerprint adds column
+`CHARACTER_SET_NAME` and `COLLATION_NAME`, plus index `COLLATION`, `IS_VISIBLE`,
+and `EXPRESSION`. Missing, extra, differently collated, invisible, descending,
+expression-based, prefixed, or differently typed contracts still fail.
 
 ## 4. Attachment compatibility
 
-The five parsed-content columns may be in exactly one of two complete shapes:
+Preflight accepts only the following complete state matrix:
+
+1. all five columns absent;
+2. a migration-produced final prefix, in this order:
+   `parsed_content` → `parsed_content_sha256` →
+   `parsed_content_byte_size` → `parsed_page_count` → `parsed_at`;
+3. the complete final shape;
+4. the complete verified Dev historical shape.
+
+Any other missing-column combination, final/legacy mixture, or third shape
+fails. Verify accepts only complete final or complete Dev historical shape.
 
 ### Final Prod shape
 
@@ -61,27 +73,41 @@ The five parsed-content columns may be in exactly one of two complete shapes:
 | `parsed_page_count` | `bigint NULL DEFAULT 0` |
 | `parsed_at` | `datetime(3) NULL` |
 
-The migration does not `MODIFY` these columns and does not backfill rows. A
-mixed or third shape fails. Prod currently has zero attachment rows and missing
-columns, so it still receives the final shape.
+The migration does not `MODIFY` these columns and does not backfill rows. Prod
+currently has zero attachment rows and missing columns, so it still receives
+the final shape.
+
+The row gate and test evidence cover legacy NULLs in SHA/byte-size/page-count.
+A real MySQL 8 + GORM store test must prove those NULLs scan into the current
+non-pointer Go model without error before the legacy schema can pass. If the
+test fails, the legacy shape is not accepted and the implementation must choose
+an explicit model/query compatibility change rather than a data backfill.
+
+Startup `AutoMigrate(&model.AgentAttachment{})` is removed. Startup only checks
+that the table exists and reports an explicit-migration error if it does not.
+The reviewed migration becomes the sole production schema writer for this
+table.
 
 ## 5. Agent state compatibility
 
 The exact final `chk_ar_state_reason` adds only:
 
-- `''`, because current Go creation paths can persist the string zero value
-  while a run is initially/routinely `running`;
+- `state_reason = '' AND status = 'running'`, because current Go creation paths
+  can persist the string zero value while a run is running;
 - `zombie_cleanup_2026_05_28`, the exact historical marker on two already
-  deleted Dev rows.
+  deleted Dev rows, only when `is_deleted = 1`.
 
 All existing terminal values, `external_resume_ready`, and the exact
 `LEFT(state_reason, 11) = 'ext_resume:'` prefix remain. Arbitrary
-`zombie_cleanup_*`, `extXresume:*`, or unknown values remain rejected. The
-normalized full CHECK clause SHA is recomputed and verified exactly.
+`zombie_cleanup_*`, active zombie rows, terminated empty rows, `extXresume:*`,
+or unknown values remain rejected. The normalized full relational CHECK clause
+SHA is recomputed and verified exactly.
 
 ## 6. Feishu proof foreign keys
 
-Before apply, when `feishu_operation_proof_consumption` exists:
+Both SELECT-only preflight and the migration's first assertion block, before any
+mutation, enforce the following when
+`feishu_operation_proof_consumption` exists:
 
 1. existing FK state must be either zero constraints or the exact two final
    restrictive constraints; a one-FK or wrong-FK state fails;
@@ -98,7 +124,27 @@ When the table exists with zero FKs, one atomic `ALTER TABLE` adds both:
 When both already exist exactly, migration is a no-op. The final verify requires
 both exact FKs.
 
-## 7. Test design
+Repeating the gates inside the migration closes the check/apply race and makes
+direct execution fail closed. A test inserts an orphan after preflight but
+before migration; migration must fail while the FK count remains zero.
+
+## 7. Protected row evidence
+
+Preflight emits dynamic projections that work whether the new tables/columns
+are absent or present:
+
+- `agent_attachment_complete_projection`, hashing old fields plus all five
+  parsed-content fields per row;
+- `feishu_proof_business_projection`, hashing every business column of every
+  proof row.
+
+Verify emits the same projections after apply. The isolated runner and Dev S6
+compare them before migration, after both migration executions, and after a
+full backend startup. This detects NULL-to-default normalization or any other
+hidden change. The existing old-field attachment and broad protected-table
+evidence remains.
+
+## 8. Test design
 
 The isolated MySQL 8 runner adds scenarios for:
 
@@ -109,11 +155,14 @@ The isolated MySQL 8 runner adds scenarios for:
   preserving rows;
 - one proof FK, orphan proof rows, wrong column types, a third attachment shape,
   arbitrary zombie state, and prefix-like external state failing.
+- real MySQL 8 GORM reads of legacy NULL attachment fields;
+- a static startup guard proving `AgentAttachment` is not passed to AutoMigrate;
+- full Dev backend startup with before/after complete projections.
 
 Existing exact, interrupted partial, malformed table/index/FK, double-apply,
 protected-data, full Go, lint, and real Prod read-only checks remain.
 
-## 8. Rollout
+## 9. Rollout
 
 1. Implement and review in the follow-up worktree.
 2. Run isolated MySQL 8 and full backend gates.
