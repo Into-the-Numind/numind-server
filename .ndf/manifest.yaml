@@ -4,28 +4,31 @@ features:
   ndf_version: '3.0'
   description: Remove official skill templates and make template imports create independent institution-scoped skills instead of globally visible official skills.
   classification_reason: 'Standard: changes skill visibility/permission semantics and data migration behavior for cross-tenant isolation; backend biz logic and migrations require full gates.'
-  last_updated_by: ai-s5-verified
-  last_updated_at: '2026-07-29T14:20:00+0800'
+  last_updated_by: ai-s6-dev-deployed
+  last_updated_at: '2026-07-29T14:31:00+0800'
   created_at: '2026-07-29T14:04:36+0800'
   track: standard
-  stage: S5
+  stage: S6
   status: active
   repos: [numind-server]
   branches: {numind-server: feature/official-template-institution-scope}
   worktrees: {numind-server: /private/tmp/wt-official-template-institution-scope-numind-server}
-  progress: {total_tasks: 8, completed_tasks: 7, reviewed_tasks: 0, current_task: 'Merge with ndf-done, then apply Dev migration'}
+  progress: {total_tasks: 8, completed_tasks: 8, reviewed_tasks: 0, current_task: 'Dev deployed and smoke verified; user acceptance pending'}
+  deployed: 'dev server develop-fd9ec5e5 (registry sha256:fd6ee5244598f0f8e74c1daa7104b99cace065e2e8adf87c00f285c8a62d2ed9); migration 20260729_141000_remove_official_skill_templates.sql applied to numind-dev'
   artifacts:
     requirement: requirements/official-template-institution-scope.md
     proposal: proposals/official-template-institution-scope-proposal.md
     spec: docs/superpowers/specs/2026-07-29-official-template-institution-scope-design.md
     plan: docs/superpowers/plans/2026-07-29-official-template-institution-scope.md
     s5_verification: .ndf/decisions/official-template-institution-scope/0001-s5-verification.md
+    s6_dev_deployment: .ndf/decisions/official-template-institution-scope/0002-s6-dev-deployment.md
   decisions:
   - 'S0: official templates are source/library records; concrete imported skills must belong to the importing institution.'
   - 'S1: remove all current skill_template rows while leaving system-level official skills untouched.'
   - 'S2: repair tenant-owned imported skills currently marked official by setting visibility=institution when parent_user_id <> 0.'
   - 'S3: implement backend migration, service behavior, focused regression tests, full Go gates, and NDF merge.'
   - 'S5: focused tests, go test ./..., task lint, diff hygiene, forward migration dry run, and rollback syntax verification passed.'
+  - 'S6 Dev: ndf-done merged/pushed develop fd9ec5e5; migration was applied to numind-dev; dev server image develop-fd9ec5e5 is healthy; official template API returns total=0 and imported template skills are institution-scoped.'
   blockers: []
 - id: weekly-membership
   ndf_version: '3.0'
