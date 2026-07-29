@@ -597,10 +597,12 @@ func dailyAnalytics(ctx context.Context, s *Service, from time.Time, days int) (
 		PaidOrders   int64
 		RevenueCents int64
 	}
-	err := s.ds.DB().WithContext(ctx).Model(&model.Order{}).
-		Select("DATE(created_at) AS bucket, COUNT(*) AS paid_orders, COALESCE(SUM(amount), 0) AS revenue_cents").
+	db := s.ds.DB().WithContext(ctx)
+	bucketExpression := analyticsDateBucketExpression(db.Dialector.Name())
+	err := db.Model(&model.Order{}).
+		Select(bucketExpression+" AS bucket, COUNT(*) AS paid_orders, COALESCE(SUM(amount), 0) AS revenue_cents").
 		Where("created_at >= ? AND product_type = ? AND pay_status = ?", from, model.ProductTypeXhsScriptPack, model.OrderStatusPaid).
-		Group("DATE(created_at)").
+		Group(bucketExpression).
 		Scan(&paidRows).Error
 	if err != nil {
 		return nil, err
@@ -628,13 +630,15 @@ func applyDailyTableCounts(ctx context.Context, s *Service, from time.Time, byDa
 		Bucket string
 		Count  int64
 	}
-	query := s.ds.DB().WithContext(ctx).Model(modelValue).
-		Select("DATE(created_at) AS bucket, COUNT(*) AS count").
+	db := s.ds.DB().WithContext(ctx)
+	bucketExpression := analyticsDateBucketExpression(db.Dialector.Name())
+	query := db.Model(modelValue).
+		Select(bucketExpression+" AS bucket, COUNT(*) AS count").
 		Where("created_at >= ?", from)
 	if clause != "" {
 		query = query.Where(clause, args...)
 	}
-	if err := query.Group("DATE(created_at)").Scan(&rows).Error; err != nil {
+	if err := query.Group(bucketExpression).Scan(&rows).Error; err != nil {
 		return err
 	}
 
@@ -644,6 +648,17 @@ func applyDailyTableCounts(ctx context.Context, s *Service, from time.Time, byDa
 		}
 	}
 	return nil
+}
+
+func analyticsDateBucketExpression(dialect string) string {
+	if dialect == "sqlite" {
+		// SQLite normalizes RFC3339 timestamps to UTC before DATE(), which moves
+		// China-local events from 00:00-07:59 into the previous day. Production
+		// MySQL stores DATETIME in the configured China-local session timezone,
+		// so keep its existing DATE(created_at) behavior unchanged.
+		return "DATE(created_at, '+8 hours')"
+	}
+	return "DATE(created_at)"
 }
 
 func recentAnalyticsErrors(ctx context.Context, s *Service, from time.Time) ([]AnalyticsErrorDTO, error) {
