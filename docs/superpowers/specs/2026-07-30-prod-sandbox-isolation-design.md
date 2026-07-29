@@ -494,6 +494,8 @@ broker 每 2 秒采样：
 - Skill 文件由用户 API 通过 broker CopyIn 写入 Sandbox tmpfs；不把 `/app/skills`
   直接 bind mount给 Sandbox。
 - 输入附件由用户 API 下载/读取后通过有界 stream传入；broker不能自行读取 COS。
+- broker client只接受有限内存 reader或可由 context 关闭的`io.PipeReader`；
+  generic `io.ReadCloser`和`*os.File`不作为“Close一定中断Read”的证明。
 - 输出经 broker stream回用户 API，再由现有 COS 代码上传；broker没有 COS密钥。
 - Rootless 用户权限负向测试必须覆盖：
   `/opt/numind/prod`、`/opt/numind/config`、证书目录、MySQL/Redis数据目录、

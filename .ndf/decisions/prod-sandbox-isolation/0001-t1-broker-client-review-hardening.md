@@ -42,8 +42,8 @@ safe configuration ceilings, and connection cleanup.
 13. Broker owner identity comes from the required stable deployment-slot
     setting `sandbox.broker_owner_id`; Docker hostname and caller labels cannot
     override it.
-14. Copy-in accepts only finite in-memory readers, `*io.PipeReader`, or
-    `*os.File`. A generic `io.ReadCloser` is not treated as proof that Close
+14. Copy-in accepts only finite in-memory readers or `*io.PipeReader`. Neither
+    a generic `io.ReadCloser` nor `*os.File` is treated as proof that Close
     interrupts a blocked Read.
 15. Inspect owner and owner-boot fields are required protocol response fields.
 16. Create expiry and list lease IDs are presence-aware required fields.

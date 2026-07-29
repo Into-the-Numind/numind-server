@@ -713,7 +713,7 @@ func isSafeBrokerCopyReader(reader io.Reader) bool {
 		return false
 	}
 	switch reader.(type) {
-	case *bytes.Buffer, *bytes.Reader, *strings.Reader, *io.PipeReader, *os.File:
+	case *bytes.Buffer, *bytes.Reader, *strings.Reader, *io.PipeReader:
 		return true
 	default:
 		return false

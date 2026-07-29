@@ -696,6 +696,25 @@ func TestBrokerDockerClientRejectsNopCloserAroundBlockingReader(t *testing.T) {
 	}
 }
 
+func TestBrokerDockerClientRejectsBlockingOSFile(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = reader.Close()
+		_ = writer.Close()
+	})
+	dc, err := NewBrokerDockerClient(brokerTestConfig("/tmp/sandboxd-test.sock"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = dc.CopyToContainer(context.Background(), "lease-1", "/workdir/input.txt", reader)
+	if !errors.Is(err, ErrSandboxPolicyDenied) {
+		t.Fatalf("CopyToContainer err = %v; want policy denied", err)
+	}
+}
+
 func TestBrokerDockerClientEnforcesCopyOutLimits(t *testing.T) {
 	tests := []struct {
 		name   string
