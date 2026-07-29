@@ -778,6 +778,7 @@ func NewBiz(ds store.IStore) *biz {
 	// [] forever and the learner UI sees no tool-call narration even when the
 	// run works end-to-end). narrationProv may be nil if YAML init failed
 	// earlier in this function; the bridge handles that gracefully.
+	agentAttachmentStore := ds.AgentAttachments()
 	narrationBuf := agent.NewNarrationBuffer(256, 30*time.Minute)
 	// Start the periodic GC so per-run narration entries are evicted ~30min after a
 	// run's last write; without this the buffer grows by one entry per run forever
@@ -791,6 +792,7 @@ func NewBiz(ds store.IStore) *biz {
 		narrationProv,
 		narrationBuf,
 	).WithUserStore(ds.Users()).
+		WithAttachmentStore(agentAttachmentStore).
 		WithRunEventBroker(agentstream.NewRedisRunEventBroker(redispkg.GetClient())) // post-card realtime SSE across instances
 	if viper.GetBool("features.feishu_integration.enabled") {
 		if resumeStore, ok := ds.AgentRuns().(store.IExternalToolResumeLease); !ok {
@@ -816,8 +818,8 @@ func NewBiz(ds store.IStore) *biz {
 	b.agentToolRegistry = agentToolRegistry
 
 	// V1.5 task 1.2: wire attachment fallback service + upload service with fallback.
-	b.attachFallbackSvc = agentatt.NewFallbackService(ds.AgentAttachments())
-	b.uploadSvc = attachment.NewUploadServiceWithFallback(ds.AgentAttachments(), b.attachFallbackSvc)
+	b.attachFallbackSvc = agentatt.NewFallbackService(agentAttachmentStore)
+	b.uploadSvc = attachment.NewUploadServiceWithFallback(agentAttachmentStore, b.attachFallbackSvc)
 
 	// 设置全局单例，供 middleware/cron 等无法注入 biz 的代码路径使用。
 	// 确保 store.S 已在 numind.go 中完成初始化后才调用 NewBiz。
