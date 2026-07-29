@@ -40,6 +40,9 @@ func TestDefaultSandboxConfig_Defaults(t *testing.T) {
 	if cfg.BrokerSocket != "/run/numind-sandbox/sandboxd.sock" {
 		t.Errorf("default BrokerSocket = %q", cfg.BrokerSocket)
 	}
+	if cfg.BrokerOwnerID != "" {
+		t.Errorf("default BrokerOwnerID = %q; want explicit empty fail-closed value", cfg.BrokerOwnerID)
+	}
 	if cfg.BrokerMetadataMaxBytes != 64<<10 {
 		t.Errorf("default BrokerMetadataMaxBytes = %d; want %d", cfg.BrokerMetadataMaxBytes, 64<<10)
 	}
@@ -134,6 +137,7 @@ func TestLoadFromViper_OverridesDefaults(t *testing.T) {
 		"sandbox.apparmor_profile":             "myprofile",
 		"sandbox.user_spec":                    "1234:1234",
 		"sandbox.broker_socket":                "/tmp/test-sandboxd.sock",
+		"sandbox.broker_owner_id":              "api-primary",
 		"sandbox.broker_metadata_max_bytes":    32768,
 		"sandbox.broker_exec_output_max_bytes": 1048576,
 		"sandbox.broker_copy_in_max_bytes":     2097152,
@@ -184,6 +188,9 @@ func TestLoadFromViper_OverridesDefaults(t *testing.T) {
 	}
 	if cfg.BrokerSocket != "/tmp/test-sandboxd.sock" {
 		t.Errorf("BrokerSocket = %q", cfg.BrokerSocket)
+	}
+	if cfg.BrokerOwnerID != "api-primary" {
+		t.Errorf("BrokerOwnerID = %q", cfg.BrokerOwnerID)
 	}
 	if cfg.BrokerMetadataMaxBytes != 32768 || cfg.BrokerExecOutputMaxBytes != 1048576 {
 		t.Errorf("broker response limits = metadata:%d exec:%d", cfg.BrokerMetadataMaxBytes, cfg.BrokerExecOutputMaxBytes)

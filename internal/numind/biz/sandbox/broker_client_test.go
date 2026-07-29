@@ -47,6 +47,7 @@ func brokerTestConfig(socket string) SandboxConfig {
 	cfg := DefaultSandboxConfig
 	cfg.Backend = BackendBroker
 	cfg.BrokerSocket = socket
+	cfg.BrokerOwnerID = "api-owner"
 	cfg.BrokerMetadataMaxBytes = 64 << 10
 	cfg.BrokerExecOutputMaxBytes = 4 << 20
 	cfg.BrokerCopyInMaxBytes = 100 << 20
@@ -87,8 +88,9 @@ func TestBrokerDockerClientImplementsContract(t *testing.T) {
 			createSandboxSessionID = uint64(raw["sandbox_session_id"].(float64))
 			mu.Unlock()
 			writeBrokerJSONForTest(t, w, BrokerCreateLeaseResponse{
-				LeaseID: "lease-1",
-				State:   "ready",
+				LeaseID:   "lease-1",
+				State:     "ready",
+				ExpiresAt: time.Now().Add(time.Minute),
 			})
 		case http.MethodGet:
 			if got := r.URL.Query().Get("owner_id"); got != "api-owner" {
@@ -186,8 +188,8 @@ func TestBrokerDockerClientImplementsContract(t *testing.T) {
 
 	spawnCfg := SpawnConfig{Labels: []string{
 		SandboxContainerLabel,
-		SandboxContainerOwnerLabelKey + "=api-owner",
-		SandboxContainerOwnerBootLabelKey + "=boot-1",
+		SandboxContainerOwnerLabelKey + "=caller-must-not-override-owner",
+		SandboxContainerOwnerBootLabelKey + "=caller-must-not-override-boot",
 	}, ImageTag: "must-not-cross-wire", Volumes: []string{"/host:/container"}}
 	id, err := dc.Spawn(context.Background(), spawnCfg)
 	if err != nil || id != "lease-1" {
@@ -382,6 +384,8 @@ func TestNewBrokerDockerClientRejectsUnsafeLimits(t *testing.T) {
 		mutate func(*SandboxConfig)
 	}{
 		{name: "relative socket", mutate: func(cfg *SandboxConfig) { cfg.BrokerSocket = "sandboxd.sock" }},
+		{name: "empty owner", mutate: func(cfg *SandboxConfig) { cfg.BrokerOwnerID = "" }},
+		{name: "unsafe owner", mutate: func(cfg *SandboxConfig) { cfg.BrokerOwnerID = "api/primary" }},
 		{name: "metadata zero", mutate: func(cfg *SandboxConfig) { cfg.BrokerMetadataMaxBytes = 0 }},
 		{name: "metadata negative", mutate: func(cfg *SandboxConfig) { cfg.BrokerMetadataMaxBytes = -1 }},
 		{name: "metadata raised", mutate: func(cfg *SandboxConfig) { cfg.BrokerMetadataMaxBytes = DefaultBrokerMetadataMaxBytes + 1 }},
@@ -425,6 +429,10 @@ func TestBrokerDockerClientRejectsMalformedResponses(t *testing.T) {
 		{name: "null", body: `null`},
 		{name: "empty object", body: `{}`},
 		{name: "wrong state", body: `{"lease_id":"lease-1","state":"active"}`},
+		{name: "missing expires", body: `{"lease_id":"lease-1","state":"ready"}`},
+		{name: "null expires", body: `{"lease_id":"lease-1","state":"ready","expires_at":null}`},
+		{name: "zero expires", body: `{"lease_id":"lease-1","state":"ready","expires_at":"0001-01-01T00:00:00Z"}`},
+		{name: "past expires", body: `{"lease_id":"lease-1","state":"ready","expires_at":"2020-01-01T00:00:00Z"}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -584,8 +592,14 @@ func TestBrokerDockerClientRejectsOversizedCopyIn(t *testing.T) {
 }
 
 func TestBrokerDockerClientClosesCopyInReaderOnCancel(t *testing.T) {
-	reader := newBlockingReadCloser()
+	reader, writer := io.Pipe()
+	t.Cleanup(func() {
+		_ = reader.Close()
+		_ = writer.Close()
+	})
+	requestStarted := make(chan struct{})
 	socket := startBrokerTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
 		_, _ = io.Copy(io.Discard, r.Body)
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -599,16 +613,11 @@ func TestBrokerDockerClientClosesCopyInReaderOnCancel(t *testing.T) {
 		done <- dc.CopyToContainer(ctx, "lease-1", "/workdir/input.txt", reader)
 	}()
 	select {
-	case <-reader.started:
+	case <-requestStarted:
 	case <-time.After(2 * time.Second):
-		t.Fatal("copy-in reader was not read")
+		t.Fatal("copy-in request did not start")
 	}
 	cancel()
-	select {
-	case <-reader.closed:
-	case <-time.After(2 * time.Second):
-		t.Fatal("copy-in reader was not closed after cancellation")
-	}
 	select {
 	case err := <-done:
 		if !errors.Is(err, context.Canceled) {
@@ -616,6 +625,19 @@ func TestBrokerDockerClientClosesCopyInReaderOnCancel(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("CopyToContainer did not return after cancellation")
+	}
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := writer.Write([]byte("must fail after reader close"))
+		writeDone <- err
+	}()
+	select {
+	case err := <-writeDone:
+		if !errors.Is(err, io.ErrClosedPipe) {
+			t.Fatalf("pipe writer err = %v; want closed pipe", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("copy-in pipe reader was not closed after cancellation")
 	}
 }
 
@@ -641,6 +663,35 @@ func TestBrokerDockerClientRejectsBlockingNonCloser(t *testing.T) {
 	select {
 	case <-reader.started:
 		t.Fatal("unsafe non-closer reader was read")
+	default:
+	}
+}
+
+func TestBrokerDockerClientRejectsNopCloserAroundBlockingReader(t *testing.T) {
+	reader := &blockingReader{started: make(chan struct{}), unblock: make(chan struct{})}
+	wrapped := io.NopCloser(reader)
+	dc, err := NewBrokerDockerClient(brokerTestConfig("/tmp/sandboxd-test.sock"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- dc.CopyToContainer(context.Background(), "lease-1", "/workdir/input.txt", wrapped)
+	}()
+	select {
+	case err = <-done:
+	case <-time.After(2 * time.Second):
+		close(reader.unblock)
+		t.Fatal("CopyToContainer read io.NopCloser-wrapped blocking input")
+	}
+	if !errors.Is(err, ErrSandboxPolicyDenied) {
+		close(reader.unblock)
+		t.Fatalf("CopyToContainer err = %v; want policy denied", err)
+	}
+	select {
+	case <-reader.started:
+		close(reader.unblock)
+		t.Fatal("io.NopCloser blocking reader was read")
 	default:
 	}
 }
@@ -787,7 +838,6 @@ func TestBrokerPoolCloseCancelsActiveUnixRequestAndClosesConnection(t *testing.T
 	}
 	createStarted := make(chan struct{})
 	requestCanceled := make(chan struct{})
-	releaseHandler := make(chan struct{})
 	connectionClosed := make(chan struct{})
 	var startOnce sync.Once
 	var cancelOnce sync.Once
@@ -798,12 +848,12 @@ func TestBrokerPoolCloseCancelsActiveUnixRequestAndClosesConnection(t *testing.T
 				writeBrokerJSONForTest(t, w, BrokerListLeasesResponse{LeaseIDs: []string{}})
 				return
 			}
-			startOnce.Do(func() { close(createStarted) })
-			select {
-			case <-r.Context().Done():
-				cancelOnce.Do(func() { close(requestCanceled) })
-			case <-releaseHandler:
+			if _, err := io.Copy(io.Discard, r.Body); err != nil {
+				return
 			}
+			startOnce.Do(func() { close(createStarted) })
+			<-r.Context().Done()
+			cancelOnce.Do(func() { close(requestCanceled) })
 		}),
 		ConnState: func(_ net.Conn, state http.ConnState) {
 			if state == http.StateClosed {
@@ -832,18 +882,18 @@ func TestBrokerPoolCloseCancelsActiveUnixRequestAndClosesConnection(t *testing.T
 	closeDone := make(chan error, 1)
 	go func() { closeDone <- pool.Close() }()
 	select {
+	case <-requestCanceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not observe active request cancellation")
+	}
+	select {
 	case err := <-closeDone:
 		if err != nil {
 			t.Fatalf("Close: %v", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("pool Close did not cancel active broker request")
+		t.Fatal("pool Close did not join canceled broker request")
 	}
-	select {
-	case <-requestCanceled:
-	default:
-	}
-	close(releaseHandler)
 	select {
 	case <-connectionClosed:
 	case <-time.After(2 * time.Second):
@@ -858,19 +908,64 @@ func TestBrokerDockerClientListsPreviousBootByStableOwner(t *testing.T) {
 		}
 		writeBrokerJSONForTest(t, w, BrokerListLeasesResponse{LeaseIDs: []string{"previous-boot-lease"}})
 	}))
-	dc, err := NewBrokerDockerClient(brokerTestConfig(socket), nil)
+	cfg := brokerTestConfig(socket)
+	cfg.BrokerOwnerID = "stable-api-owner"
+	dc, err := NewBrokerDockerClient(cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := dc.(*brokerDockerClient)
-	client.ownerID = "stable-api-owner"
-	client.ownerBootID = "current-boot"
 	ids, err := dc.ListByLabel(context.Background(), SandboxContainerLabel)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(ids) != 1 || ids[0] != "previous-boot-lease" {
 		t.Fatalf("ListByLabel = %v; want previous boot lease", ids)
+	}
+}
+
+func TestNewPoolUsesConfiguredBrokerOwnerIdentity(t *testing.T) {
+	cfg := brokerTestConfig("/tmp/nonexistent-sandboxd-test.sock")
+	cfg.BrokerOwnerID = "stable-api-primary"
+	cfg.PoolMin = 0
+	dc, err := NewBrokerDockerClient(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := NewPool(cfg, dc, nil)
+	agentPool := pool.(*agentSandboxPool)
+	if agentPool.ownerID != "stable-api-primary" {
+		t.Fatalf("pool owner = %q; want configured stable owner", agentPool.ownerID)
+	}
+	if agentPool.ownerBootID == "" {
+		t.Fatal("pool owner boot id is empty")
+	}
+	if err := pool.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBrokerDockerClientRejectsMalformedLeaseLists(t *testing.T) {
+	tests := []string{
+		`null`,
+		`{}`,
+		`{"lease_ids":null}`,
+		`{"lease_ids":[""]}`,
+		`{"lease_ids":["duplicate","duplicate"]}`,
+	}
+	for i, body := range tests {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			socket := startBrokerTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, body)
+			}))
+			dc, err := NewBrokerDockerClient(brokerTestConfig(socket), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = dc.ListByLabel(context.Background(), SandboxContainerLabel)
+			if !errors.Is(err, ErrBrokerProtocolViolation) {
+				t.Fatalf("ListByLabel err = %v; want protocol violation", err)
+			}
+		})
 	}
 }
 
@@ -957,13 +1052,6 @@ func writeTarFileForTest(t *testing.T, tw *tar.Writer, name string, body string)
 	}
 }
 
-type blockingReadCloser struct {
-	started   chan struct{}
-	closed    chan struct{}
-	startOnce sync.Once
-	closeOnce sync.Once
-}
-
 type blockingReader struct {
 	started chan struct{}
 	unblock chan struct{}
@@ -973,24 +1061,6 @@ func (r *blockingReader) Read(_ []byte) (int, error) {
 	close(r.started)
 	<-r.unblock
 	return 0, io.ErrClosedPipe
-}
-
-func newBlockingReadCloser() *blockingReadCloser {
-	return &blockingReadCloser{
-		started: make(chan struct{}),
-		closed:  make(chan struct{}),
-	}
-}
-
-func (r *blockingReadCloser) Read(_ []byte) (int, error) {
-	r.startOnce.Do(func() { close(r.started) })
-	<-r.closed
-	return 0, io.ErrClosedPipe
-}
-
-func (r *blockingReadCloser) Close() error {
-	r.closeOnce.Do(func() { close(r.closed) })
-	return nil
 }
 
 type closableMockDockerClient struct {

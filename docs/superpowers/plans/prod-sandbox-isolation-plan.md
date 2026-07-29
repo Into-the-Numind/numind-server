@@ -55,10 +55,13 @@ T1..T17 ───────────────────────> T
 
 - `BackendBroker`、socket/metadata/连接/copy/输出/超时配置与spec默认值。
 - HTTP-over-Unix client完整实现`DockerClient`；opaque lease id替代Docker id。
-- owner与owner_boot分字段传递；列表按稳定owner查询，确保重启后能发现上一次boot。
+- owner与owner_boot分字段传递；owner来自必填稳定部署槽位配置，不从hostname推导；
+  列表按稳定owner查询，确保重启后能发现上一次boot。
 - 预热create显式发送`agent_run_id=0/sandbox_session_id=0`；提供
   activate/heartbeat/persisting lease lifecycle接口，真实ID在任务借出后绑定。
-- strict JSON；请求模型中不存在image/mount/network/device/privileged/cap/cgroup字段。
+- strict JSON与必需语义；create expiry/state、inspect owner/status、list lease_ids
+  对缺失/null/非法值fail-closed；请求模型中不存在
+  image/mount/network/device/privileged/cap/cgroup字段。
 - capacity/unavailable/policy/OOM/timeout/size错误映射。
 - Copy使用有界stream，context取消关闭连接且不泄漏goroutine。
 
@@ -382,6 +385,8 @@ T1..T17 ───────────────────────> T
 - server只挂broker socket并group-add专用GID；无任一Docker socket/group。
 - admin无broker、无Docker socket/group。
 - broker backend使用现有`NUMIND_` env override；不修改`config_prod.yaml`。
+- server必须显式设置稳定且每副本唯一的`NUMIND_SANDBOX_BROKER_OWNER_ID`；
+  禁止从容器hostname推导，旧副本排空停止后才可复用同一部署槽位ID。
 - broker socket缺失时部署可按显式开关disabled；禁止误挂主socket。
 
 **RED/验收**

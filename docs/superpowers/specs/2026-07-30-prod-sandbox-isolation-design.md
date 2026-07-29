@@ -187,6 +187,9 @@ Agent run 强制取消继续先写数据库的 `cancellation_requested_at`。管
 }
 ```
 
+三个字段都是必填；`expires_at` 必须是非零且晚于接收时刻。缺失、`null`、过期或
+非 `ready` 响应全部按 broker 协议错误处理，不能进入预热池。
+
 容器达到 5 个时进入全局 FIFO，最多等待 30 秒。
 
 #### `POST /v1/leases/{id}/activate`
@@ -256,12 +259,16 @@ Pool 把待命容器借给任务、且 `agent_sandbox_session` 审计行创建�
 #### `GET /v1/leases/{id}`
 
 返回 broker 归一化后的 running/exited/OOM/exit code，不返回 Rootless container id。
+响应必须包含 `status`、`exit_code`、`oom_killed`、稳定 `owner_id` 和
+`owner_boot_id`；owner 两字段用于启动清理判断当前 boot 与历史 boot，不能省略。
 
 #### `GET /v1/leases?owner_id=...`
 
 只返回当前 peer + 稳定 owner 的全部 lease（包括不同 `owner_boot_id`），用于 API Pool
 启动时清理自己上一次 boot 的 orphan。
 不会暴露 Rootless daemon 的通用 container list。
+`lease_ids` 是必填数组；缺失、`null`、空 ID 或重复 ID 均按协议错误 fail-closed，
+不能被解释为“没有遗留任务”。
 
 #### `DELETE /v1/leases/{id}`
 
@@ -499,6 +506,7 @@ broker 每 2 秒采样：
 ```text
 NUMIND_SANDBOX_BACKEND=broker
 NUMIND_SANDBOX_BROKER_SOCKET=/run/numind-sandbox/sandboxd.sock
+NUMIND_SANDBOX_BROKER_OWNER_ID=numind-user-api-primary
 NUMIND_SANDBOX_POOL_MIN=1
 NUMIND_SANDBOX_POOL_MAX_WAIT_MS=30000
 NUMIND_SANDBOX_MEMORY_LIMIT_MB=512
@@ -508,6 +516,10 @@ NUMIND_SANDBOX_TIMEOUT_SECONDS=30
 NUMIND_SANDBOX_SESSION_TIMEOUT_SECONDS=300
 NUMIND_SANDBOX_OUTPUT_MAX_SIZE_MB=50
 ```
+
+`NUMIND_SANDBOX_BROKER_OWNER_ID` 是必填的稳定部署槽位 ID，不能从 Docker
+hostname/container ID 推导。每个同时运行的 API 副本使用不同且跨重建稳定的槽位
+（例如 `primary`/`secondary`）；复用槽位前必须先排空并停止旧副本。
 
 这些值由 Prod secrets/config 完整性检查器校验，但镜像 digest、Rootless socket 和
 cgroup 参数只在 broker 的 root-owned部署配置中定义，不能由 API 环境变量控制。

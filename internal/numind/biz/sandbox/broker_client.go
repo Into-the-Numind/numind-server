@@ -54,6 +54,10 @@ func NewBrokerDockerClient(cfg SandboxConfig, logger Logger) (DockerClient, erro
 	if strings.TrimSpace(cfg.BrokerSocket) == "" || !filepath.IsAbs(cfg.BrokerSocket) {
 		return nil, fmt.Errorf("%w: broker socket must be an absolute path", ErrBrokerProtocolViolation)
 	}
+	ownerID := strings.TrimSpace(cfg.BrokerOwnerID)
+	if ownerID == "" || len(ownerID) > 128 || sanitizeDockerLabelValue(ownerID) != ownerID {
+		return nil, fmt.Errorf("%w: broker owner id must be an explicit stable identifier", ErrBrokerProtocolViolation)
+	}
 	if err := validateBrokerClientLimits(cfg); err != nil {
 		return nil, err
 	}
@@ -71,12 +75,16 @@ func NewBrokerDockerClient(cfg SandboxConfig, logger Logger) (DockerClient, erro
 	return &brokerDockerClient{
 		cfg:         cfg,
 		socket:      socket,
-		ownerID:     defaultSandboxOwnerID(),
+		ownerID:     ownerID,
 		ownerBootID: currentSandboxOwnerBootID(),
 		http:        &http.Client{Transport: transport},
 		transport:   transport,
 		logger:      logger,
 	}, nil
+}
+
+func (c *brokerDockerClient) sandboxOwnerIdentity() (string, string) {
+	return c.ownerID, c.ownerBootID
 }
 
 func validateBrokerClientLimits(cfg SandboxConfig) error {
@@ -104,20 +112,24 @@ func validateBrokerClientLimits(cfg SandboxConfig) error {
 	return nil
 }
 
-func (c *brokerDockerClient) Spawn(ctx context.Context, cfg SpawnConfig) (string, error) {
-	ownerID, ownerBootID := brokerOwnerFromLabels(cfg.Labels, c.ownerID, c.ownerBootID)
-	var out BrokerCreateLeaseResponse
+func (c *brokerDockerClient) Spawn(ctx context.Context, _ SpawnConfig) (string, error) {
+	var out struct {
+		LeaseID   string     `json:"lease_id"`
+		State     string     `json:"state"`
+		ExpiresAt *time.Time `json:"expires_at"`
+	}
 	err := c.doJSON(ctx, http.MethodPost, BrokerAPIPrefix+"/leases", BrokerCreateLeaseRequest{
 		RequestID:        uuid.NewString(),
-		OwnerID:          ownerID,
-		OwnerBootID:      ownerBootID,
+		OwnerID:          c.ownerID,
+		OwnerBootID:      c.ownerBootID,
 		AgentRunID:       0,
 		SandboxSessionID: 0,
 	}, &out, int64(c.cfg.BrokerMetadataMaxBytes))
 	if err != nil {
 		return "", err
 	}
-	if strings.TrimSpace(out.LeaseID) == "" || out.State != "ready" {
+	if strings.TrimSpace(out.LeaseID) == "" || out.State != "ready" ||
+		out.ExpiresAt == nil || out.ExpiresAt.IsZero() || !out.ExpiresAt.After(time.Now()) {
 		return "", fmt.Errorf("%w: invalid create lease response", ErrBrokerProtocolViolation)
 	}
 	return out.LeaseID, nil
@@ -308,11 +320,26 @@ func (c *brokerDockerClient) ListByLabel(ctx context.Context, label string) ([]s
 		return nil, ErrSandboxPolicyDenied
 	}
 	requestPath := BrokerAPIPrefix + "/leases?owner_id=" + url.QueryEscape(c.ownerID)
-	var out BrokerListLeasesResponse
+	var out struct {
+		LeaseIDs *[]string `json:"lease_ids"`
+	}
 	if err := c.doJSON(ctx, http.MethodGet, requestPath, nil, &out, int64(c.cfg.BrokerMetadataMaxBytes)); err != nil {
 		return nil, err
 	}
-	return append([]string(nil), out.LeaseIDs...), nil
+	if out.LeaseIDs == nil {
+		return nil, ErrBrokerProtocolViolation
+	}
+	seen := make(map[string]struct{}, len(*out.LeaseIDs))
+	for _, leaseID := range *out.LeaseIDs {
+		if strings.TrimSpace(leaseID) == "" {
+			return nil, ErrBrokerProtocolViolation
+		}
+		if _, exists := seen[leaseID]; exists {
+			return nil, ErrBrokerProtocolViolation
+		}
+		seen[leaseID] = struct{}{}
+	}
+	return append([]string(nil), (*out.LeaseIDs)...), nil
 }
 
 func (c *brokerDockerClient) doNoContent(ctx context.Context, method string, requestPath string, body any) error {
@@ -457,23 +484,6 @@ func brokerErrorSentinel(code BrokerErrorCode) error {
 	default:
 		return ErrBrokerProtocolViolation
 	}
-}
-
-func brokerOwnerFromLabels(labels []string, defaultOwner string, defaultBoot string) (string, string) {
-	ownerID, ownerBootID := defaultOwner, defaultBoot
-	for _, label := range labels {
-		key, value, ok := strings.Cut(label, "=")
-		if !ok || strings.TrimSpace(value) == "" {
-			continue
-		}
-		switch key {
-		case SandboxContainerOwnerLabelKey:
-			ownerID = value
-		case SandboxContainerOwnerBootLabelKey:
-			ownerBootID = value
-		}
-	}
-	return ownerID, ownerBootID
 }
 
 func brokerBaseURL() string {
@@ -702,11 +712,8 @@ func isSafeBrokerCopyReader(reader io.Reader) bool {
 	if reader == nil {
 		return false
 	}
-	if _, ok := reader.(io.ReadCloser); ok {
-		return true
-	}
 	switch reader.(type) {
-	case *bytes.Buffer, *bytes.Reader, *strings.Reader:
+	case *bytes.Buffer, *bytes.Reader, *strings.Reader, *io.PipeReader, *os.File:
 		return true
 	default:
 		return false

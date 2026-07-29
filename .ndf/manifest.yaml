@@ -38,6 +38,8 @@ features:
   - 'T1 review round 1: both independent reviews FAIL (each 0 P0, 5 P1, 3 P2); warm-lease binding, mutation idempotency, lifecycle, bounded/cancellable streams, strict protocol decoding, file extraction, hard ceilings, and connection cleanup were hardened before re-review.'
   - 'T1 review round 2 quality: FAIL with 0 P0, 4 P1, 1 P2; pool shutdown joining, previous-boot listing, arbitrary blocking reader rejection, required response semantics, and zero-leak close coverage are being corrected.'
   - 'T1 review round 2 spec: FAIL with 0 P0, 5 P1, 1 P2 on the same committed snapshot; added ready-state, null/empty response, previous-boot, non-closer, and deterministic in-flight close regressions before round 3.'
+  - 'T1 review round 3 spec: FAIL with 0 P0, 2 P1, 1 P2; replaced hostname identity with an explicit deployment-slot owner, rejected generic ReadCloser wrappers, and made Inspect owner metadata required.'
+  - 'T1 review round 3 quality: FAIL with 0 P0, 2 P1, 2 P2; malformed lease lists and create expiry now fail closed, and active Unix shutdown must prove server-observed cancellation.'
   blockers: []
 - id: xhs-analytics-summary-tests
   ndf_version: '3.0'

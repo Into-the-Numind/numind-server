@@ -91,6 +91,7 @@ type SandboxConfig struct {
 	// stricter server-side ceilings; the client limits responses too so a
 	// malfunctioning peer cannot make the API allocate unbounded memory/disk.
 	BrokerSocket             string
+	BrokerOwnerID            string
 	BrokerMetadataMaxBytes   int
 	BrokerExecOutputMaxBytes int
 	BrokerCopyInMaxBytes     int
@@ -132,6 +133,7 @@ var DefaultSandboxConfig = SandboxConfig{
 	COSUploadConcurrency:     3,
 
 	BrokerSocket:             DefaultBrokerSocket,
+	BrokerOwnerID:            "",
 	BrokerMetadataMaxBytes:   DefaultBrokerMetadataMaxBytes,
 	BrokerExecOutputMaxBytes: DefaultBrokerExecOutputMaxBytes,
 	BrokerCopyInMaxBytes:     DefaultBrokerCopyInMaxBytes,
@@ -177,6 +179,7 @@ type viperLike interface {
 //	sandbox.seccomp_profile      → SeccompProfile
 //	sandbox.apparmor_profile     → AppArmorProfile
 //	sandbox.user_spec            → UserSpec
+//	sandbox.broker_owner_id      → BrokerOwnerID
 func LoadFromViper(v viperLike) SandboxConfig {
 	cfg := DefaultSandboxConfig
 	if v == nil {
@@ -248,6 +251,9 @@ func LoadFromViper(v viperLike) SandboxConfig {
 	}
 	if v.IsSet("sandbox.broker_socket") {
 		cfg.BrokerSocket = v.GetString("sandbox.broker_socket")
+	}
+	if v.IsSet("sandbox.broker_owner_id") {
+		cfg.BrokerOwnerID = v.GetString("sandbox.broker_owner_id")
 	}
 	if v.IsSet("sandbox.broker_metadata_max_bytes") {
 		cfg.BrokerMetadataMaxBytes = v.GetInt("sandbox.broker_metadata_max_bytes")

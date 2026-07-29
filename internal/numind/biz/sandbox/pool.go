@@ -61,6 +61,10 @@ type Pool interface {
 	IsEnabled() bool
 }
 
+type sandboxOwnerIdentityProvider interface {
+	sandboxOwnerIdentity() (ownerID string, ownerBootID string)
+}
+
 // NewPool constructs a Pool. If cfg.Backend == BackendDisabled (the
 // prod-safe default), it returns a no-op disabledPool whose Borrow always
 // returns ErrSandboxDisabled. Otherwise, it returns an agentSandboxPool
@@ -76,13 +80,18 @@ func NewPool(cfg SandboxConfig, dc DockerClient, logger Logger) Pool {
 	if cfg.Backend == BackendDisabled || dc == nil {
 		return &disabledPool{dc: dc}
 	}
+	ownerID := defaultSandboxOwnerID()
+	ownerBootID := currentSandboxOwnerBootID()
+	if provider, ok := dc.(sandboxOwnerIdentityProvider); ok {
+		ownerID, ownerBootID = provider.sandboxOwnerIdentity()
+	}
 	workCtx, workCancel := context.WithCancel(context.Background())
 	p := &agentSandboxPool{
 		cfg:         cfg,
 		dc:          dc,
 		logger:      logger,
-		ownerID:     defaultSandboxOwnerID(),
-		ownerBootID: currentSandboxOwnerBootID(),
+		ownerID:     ownerID,
+		ownerBootID: ownerBootID,
 		warm:        make(chan *Session, cfg.PoolMin*2),
 		closeCh:     make(chan struct{}),
 		closeDone:   make(chan struct{}),

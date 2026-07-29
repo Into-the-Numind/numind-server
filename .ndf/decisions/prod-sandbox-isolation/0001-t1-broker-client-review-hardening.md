@@ -39,6 +39,18 @@ safe configuration ceilings, and connection cleanup.
     `io.ReadCloser` streams; arbitrary blocking non-closers fail before I/O.
 12. Required response fields and normalized states are validated in addition
     to strict JSON syntax.
+13. Broker owner identity comes from the required stable deployment-slot
+    setting `sandbox.broker_owner_id`; Docker hostname and caller labels cannot
+    override it.
+14. Copy-in accepts only finite in-memory readers, `*io.PipeReader`, or
+    `*os.File`. A generic `io.ReadCloser` is not treated as proof that Close
+    interrupts a blocked Read.
+15. Inspect owner and owner-boot fields are required protocol response fields.
+16. Create expiry and list lease IDs are presence-aware required fields.
+    Missing, null, expired, empty, or duplicate values fail closed so malformed
+    broker responses cannot suppress orphan cleanup.
+17. The active Unix shutdown regression requires the server to observe request
+    cancellation before the pool close is allowed to pass.
 
 ## Verification
 

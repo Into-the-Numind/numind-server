@@ -50,7 +50,7 @@ type BrokerCreateLeaseRequest struct {
 type BrokerCreateLeaseResponse struct {
 	LeaseID   string    `json:"lease_id"`
 	State     string    `json:"state"`
-	ExpiresAt time.Time `json:"expires_at,omitempty"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 type BrokerExecRequest struct {
@@ -80,8 +80,8 @@ type BrokerInspectResponse struct {
 	Status      string `json:"status"`
 	ExitCode    int    `json:"exit_code"`
 	OOMKilled   bool   `json:"oom_killed"`
-	OwnerID     string `json:"owner_id,omitempty"`
-	OwnerBootID string `json:"owner_boot_id,omitempty"`
+	OwnerID     string `json:"owner_id"`
+	OwnerBootID string `json:"owner_boot_id"`
 }
 
 type BrokerMkdirRequest struct {
