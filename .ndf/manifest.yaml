@@ -4,20 +4,21 @@ features:
   ndf_version: '3.0'
   description: Make the reviewed Prod schema reconcile package accept the real Dev historical schema without rewriting any existing customer, credit, attachment, Agent, or Feishu business row.
   classification_reason: 'Standard: production migration gates, existing Feishu constraints, attachment schema compatibility, and Agent state constraints are high-risk database work across more than three files.'
-  last_updated_by: ai-s2
-  last_updated_at: '2026-07-30T04:44:00+0800'
+  last_updated_by: ai-s3
+  last_updated_at: '2026-07-30T04:58:00+0800'
   created_at: '2026-07-30T04:36:07+0800'
   track: standard
-  stage: S2
+  stage: S3
   status: active
   repos: [numind-server]
   branches: {numind-server: feature/prod-schema-dev-compat}
   worktrees: {numind-server: /private/tmp/wt-prod-schema-dev-compat-numind-server}
-  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0, current_task: 'S2 technical design complete'}
+  progress: {total_tasks: 6, completed_tasks: 0, reviewed_tasks: 0, current_task: 'S3 atomic implementation plan approved; T1 RED contracts next'}
   artifacts:
     requirement: requirements/prod-schema-dev-compat.md
     proposal: proposals/prod-schema-dev-compat-proposal.md
     spec: docs/superpowers/specs/2026-07-30-prod-schema-dev-compat-design.md
+    plan: docs/superpowers/plans/2026-07-30-prod-schema-dev-compat.md
   decisions:
   - 'Preserve all Dev business rows; compatibility is expressed in schema checks and additive constraints, not data cleanup.'
   - 'QA remains out of scope and Prod remains read-only until separate final authorization.'
@@ -25,6 +26,7 @@ features:
   - 'Ignore physical column order while preserving exact column, index, engine, collation, and row-format contracts.'
   - 'Accept only the exact final attachment shape or the fully verified Dev historical shape; never normalize existing attachment rows.'
   - 'Agent CHECK accepts the current empty state and exact historical zombie marker, while Feishu proof FKs are added only from a validated zero-FK state.'
+  - 'S2 final dual review PASS at 88c2323d: P0=0, P1=0, P2=0 after closing AutoMigrate, projection, relational CHECK, migration self-gate, state-matrix, NULL-scan, and task-ownership gaps.'
   blockers: []
 - id: prod-schema-reconcile
   ndf_version: '3.0'
