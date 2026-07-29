@@ -954,7 +954,7 @@ func TestOperationService_ExplicitConnectUsesDurableRecoveryWithoutBusinessCLI(t
 		SessionID: "connect-session-2", URL: "https://accounts.feishu.cn/oauth/v1/device/verify?flow_id=opaque&user_code=opaque",
 		ExpiresAt: h.service.now().Add(5 * time.Minute),
 	}
-	h.recovery.actions = []*OperationAction{nil, userAuthAction}
+	h.recovery.actions = []*OperationAction{userAuthAction}
 	require.NoError(t, h.db.Model(&model.UserThirdPartyAccount{}).
 		Where("user_id = ? AND provider = ?", 7, ProviderLark).
 		Updates(map[string]any{"connection_state": model.FeishuConnectionAppReady, "connected": false}).Error)
