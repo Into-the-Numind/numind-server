@@ -1,0 +1,745 @@
+-- Read-only preflight for the full Dev -> Prod schema reconcile.
+-- Output columns: check_name, status, observed, expected.
+
+SET SESSION group_concat_max_len = 16777216;
+
+SELECT
+  'mysql_major_version' AS check_name,
+  IF(SUBSTRING_INDEX(VERSION(), '.', 1) = '8', 'PASS', 'FAIL') AS status,
+  VERSION() AS observed,
+  '8.x' AS expected
+UNION ALL
+SELECT
+  'required_base_tables',
+  IF(COUNT(*) = 20, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  '20'
+FROM information_schema.TABLES
+WHERE TABLE_SCHEMA = DATABASE()
+  AND TABLE_NAME IN (
+    'user', 'subscription', 'agent_attachment', 'agent_run',
+    'trial_grant', 'user_booster_balance', 'membership_event',
+    'announcement', 'announcement_read', 'survey_question',
+    'survey_response', 'survey_answer', 'llm_provider', 'ai_service',
+    'ai_service_route', 'task_profile', 'task_profile_service',
+    'pricing_rule', 'skill', 'skill_template'
+  )
+UNION ALL
+SELECT
+  'user_id_type',
+  IF(COLUMN_TYPE = 'bigint unsigned', 'PASS', 'FAIL'),
+  COALESCE(COLUMN_TYPE, 'missing'),
+  'bigint unsigned'
+FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'user' AND COLUMN_NAME = 'id'
+UNION ALL
+SELECT
+  'ali_dashscope_provider_count',
+  IF(COUNT(*) = 1, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  '1'
+FROM llm_provider
+WHERE name = 'ali-dashscope'
+UNION ALL
+SELECT
+  'subscription_plan_type_column_count',
+  IF(
+    COUNT(*) = 0 OR (
+      COUNT(*) = 1
+      AND MAX(COLUMN_TYPE) = 'varchar(20)'
+      AND MAX(IS_NULLABLE) = 'NO'
+      AND MAX(COLUMN_DEFAULT) = 'monthly'
+    ),
+    'PASS',
+    'FAIL'
+  ),
+  CONCAT_WS('/', COUNT(*), MAX(COLUMN_TYPE), MAX(IS_NULLABLE), MAX(COLUMN_DEFAULT)),
+  'absent or 1/varchar(20)/NO/monthly'
+FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'subscription' AND COLUMN_NAME = 'plan_type'
+UNION ALL
+SELECT
+  'subscription_cycle_credits_column_count',
+  IF(
+    COUNT(*) = 0 OR (
+      COUNT(*) = 1
+      AND MAX(COLUMN_TYPE) = 'int'
+      AND MAX(IS_NULLABLE) = 'NO'
+      AND MAX(COLUMN_DEFAULT) = '2000'
+    ),
+    'PASS',
+    'FAIL'
+  ),
+  CONCAT_WS('/', COUNT(*), MAX(COLUMN_TYPE), MAX(IS_NULLABLE), MAX(COLUMN_DEFAULT)),
+  'absent or 1/int/NO/2000'
+FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'subscription' AND COLUMN_NAME = 'cycle_credits'
+UNION ALL
+SELECT
+  'attachment_parsed_column_shapes',
+  IF(
+    COUNT(*) = COALESCE(SUM(
+      CASE COLUMN_NAME
+        WHEN 'parsed_content' THEN COLUMN_TYPE = 'longtext' AND IS_NULLABLE = 'YES'
+        WHEN 'parsed_content_sha256' THEN
+          COLUMN_TYPE = 'varchar(71)' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = ''
+        WHEN 'parsed_content_byte_size' THEN
+          COLUMN_TYPE = 'bigint' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = '0'
+        WHEN 'parsed_page_count' THEN
+          COLUMN_TYPE = 'int' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = '0'
+        WHEN 'parsed_at' THEN COLUMN_TYPE = 'datetime(3)' AND IS_NULLABLE = 'YES'
+        ELSE FALSE
+      END
+    ), 0),
+    'PASS',
+    'FAIL'
+  ),
+  CONCAT('present=', COUNT(*), ',exact=', COALESCE(SUM(
+    CASE COLUMN_NAME
+      WHEN 'parsed_content' THEN COLUMN_TYPE = 'longtext' AND IS_NULLABLE = 'YES'
+      WHEN 'parsed_content_sha256' THEN
+        COLUMN_TYPE = 'varchar(71)' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = ''
+      WHEN 'parsed_content_byte_size' THEN
+        COLUMN_TYPE = 'bigint' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = '0'
+      WHEN 'parsed_page_count' THEN
+        COLUMN_TYPE = 'int' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = '0'
+      WHEN 'parsed_at' THEN COLUMN_TYPE = 'datetime(3)' AND IS_NULLABLE = 'YES'
+      ELSE FALSE
+    END
+  ), 0)),
+  'every present target column has the exact final shape'
+FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE()
+  AND TABLE_NAME = 'agent_attachment'
+  AND COLUMN_NAME IN (
+    'parsed_content', 'parsed_content_sha256', 'parsed_content_byte_size',
+    'parsed_page_count', 'parsed_at'
+  )
+UNION ALL
+SELECT
+  'feishu_table_count',
+  IF(COUNT(*) BETWEEN 0 AND 6, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  '0 through 6 exact tables are upgradeable'
+FROM information_schema.TABLES
+WHERE TABLE_SCHEMA = DATABASE()
+  AND TABLE_NAME IN (
+    'user_third_party_account', 'feishu_cli_vault', 'feishu_auth_session',
+    'feishu_operation', 'feishu_operation_proof_consumption',
+    'feishu_operation_execution_gate'
+  )
+UNION ALL
+SELECT
+  'agent_pending_external_column_shapes',
+  IF(
+    COUNT(*) = COALESCE(SUM(
+      CASE COLUMN_NAME
+        WHEN 'pending_external_action_json' THEN COLUMN_TYPE = 'json' AND IS_NULLABLE = 'YES'
+        WHEN 'pending_external_action_at' THEN COLUMN_TYPE = 'datetime(3)' AND IS_NULLABLE = 'YES'
+        ELSE FALSE
+      END
+    ), 0),
+    'PASS',
+    'FAIL'
+  ),
+  CONCAT('present=', COUNT(*), ',exact=', COALESCE(SUM(
+    CASE COLUMN_NAME
+      WHEN 'pending_external_action_json' THEN COLUMN_TYPE = 'json' AND IS_NULLABLE = 'YES'
+      WHEN 'pending_external_action_at' THEN COLUMN_TYPE = 'datetime(3)' AND IS_NULLABLE = 'YES'
+      ELSE FALSE
+    END
+  ), 0)),
+  'every present external-action column has the exact final shape'
+FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE()
+  AND TABLE_NAME = 'agent_run'
+  AND COLUMN_NAME IN ('pending_external_action_json', 'pending_external_action_at')
+UNION ALL
+SELECT
+  'agent_pending_index_shape',
+  IF(
+    COUNT(*) = 0 OR (
+      COUNT(*) = 2
+      AND GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ',') =
+          'state_reason,pending_question_at'
+      AND MAX(NON_UNIQUE) = 1
+    ),
+    'PASS',
+    'FAIL'
+  ),
+  CONCAT_WS('/', COUNT(*), GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ','), MAX(NON_UNIQUE)),
+  'absent or 2/state_reason,pending_question_at/1'
+FROM information_schema.STATISTICS
+WHERE TABLE_SCHEMA = DATABASE()
+  AND TABLE_NAME = 'agent_run'
+  AND INDEX_NAME = 'idx_ar_state_pending'
+UNION ALL
+SELECT
+  'agent_state_reason_upgradeable',
+  IF(COUNT(*) = 0, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  '0 unsupported state_reason rows'
+FROM agent_run
+WHERE state_reason IS NOT NULL
+  AND state_reason NOT IN (
+    'completed', 'blocking_limit', 'image_error', 'model_error',
+    'aborted_streaming', 'prompt_too_long', 'stop_hook_prevented',
+    'aborted_tools', 'hook_stopped', 'max_turns', 'error_max_budget',
+    'error_max_retries', 'next_turn', 'collapse_drain_retry',
+    'reactive_compact_retry', 'max_output_escalate', 'max_output_recovery',
+    'stop_hook_blocking', 'token_budget_continue', 'running',
+    'waiting_for_user_choice', 'permission_denied', 'context_exhausted',
+    'cancelled', 'external_resume_ready'
+  )
+  AND LEFT(state_reason, 11) <> 'ext_resume:'
+UNION ALL
+SELECT
+  'skill_template_rows',
+  IF(COUNT(*) = 0, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  '0'
+FROM skill_template
+UNION ALL
+SELECT
+  'tenant_official_template_import_rows',
+  IF(COUNT(*) = 0, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  '0'
+FROM skill
+WHERE visibility = 'official'
+  AND parent_user_id <> 0
+  AND source_type = 'imported_from_template'
+UNION ALL
+SELECT
+  'official_example_skill_rows',
+  IF(COUNT(*) IN (0, 1), 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  '0 or one exact project seed'
+FROM skill
+WHERE visibility = 'official'
+  AND parent_user_id = 0
+  AND owner_user_id = 0
+  AND name = '官方示例技能'
+  AND source_type = 'custom'
+UNION ALL
+SELECT
+  'qwen35_service_key_count',
+  IF(COUNT(*) IN (0, 1), 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  '0 before apply or 1 after apply'
+FROM ai_service
+WHERE model_key = 'qwen3.5-flash'
+UNION ALL
+SELECT
+  'attachment_vision_task_key_count',
+  IF(COUNT(*) IN (0, 1), 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  '0 before apply or 1 after apply'
+FROM task_profile
+WHERE task_id = 'attachment.vision_describe'
+UNION ALL
+SELECT
+  'qwen35_pricing_key_count',
+  IF(COUNT(*) IN (0, 1), 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  '0 before apply or 1 after apply'
+FROM pricing_rule
+WHERE service_type = 'llm_vision'
+  AND provider = 'ali-dashscope'
+  AND model = 'qwen3.5-flash';
+
+WITH expected AS (
+  SELECT 'document' AS table_name, 'a33468f2c8055a11a306b7d90fcc3cc44c94f60d9ec08ee2bdbfb2378f8c37ef' AS contract_sha
+  UNION ALL SELECT 'user_third_party_account', 'c9e1811858e3f6382732918f3bb249986464b35faf204f6fcf7e4d212f3a7a66'
+  UNION ALL SELECT 'feishu_cli_vault', 'f1fa27c683b067f39c92f81bcec6ff066b0d7737f13198e8d1a27be21f0ea862'
+  UNION ALL SELECT 'feishu_auth_session', 'c3136aa687179a7c64a8880794a1218b6a6825c29b3d563c1423d9dd9b10dcbb'
+  UNION ALL SELECT 'feishu_operation', 'ce97f5ca99c92804433daa4949065a84e666322f407c9ecdc4f03e6afce1b00b'
+  UNION ALL SELECT 'feishu_operation_proof_consumption', '2755c666ff38208b49e60d95204234d11d3764c2812ba284ac3426cca4202deb'
+  UNION ALL SELECT 'feishu_operation_execution_gate', 'f725db4d7f1868d1ec71009999ca259fb3e9cbfd6ca2556e2700334bc2d3c6e0'
+),
+actual AS (
+  SELECT
+    tables_meta.TABLE_NAME AS table_name,
+    SHA2(
+      CONCAT_WS(
+        '|',
+        tables_meta.ENGINE,
+        tables_meta.TABLE_COLLATION,
+        tables_meta.ROW_FORMAT,
+        (
+          SELECT SHA2(
+            GROUP_CONCAT(
+              CONCAT_WS(
+                '|', column_meta.ORDINAL_POSITION, column_meta.COLUMN_NAME,
+                column_meta.COLUMN_TYPE, column_meta.IS_NULLABLE,
+                COALESCE(column_meta.COLUMN_DEFAULT, '<NULL>'), column_meta.EXTRA
+              )
+              ORDER BY column_meta.ORDINAL_POSITION SEPARATOR '\n'
+            ),
+            256
+          )
+          FROM information_schema.COLUMNS column_meta
+          WHERE column_meta.TABLE_SCHEMA = DATABASE()
+            AND column_meta.TABLE_NAME = tables_meta.TABLE_NAME
+        ),
+        (
+          SELECT SHA2(
+            GROUP_CONCAT(
+              CONCAT_WS(
+                '|', index_meta.INDEX_NAME, index_meta.NON_UNIQUE,
+                index_meta.SEQ_IN_INDEX, index_meta.COLUMN_NAME,
+                COALESCE(index_meta.SUB_PART, '<NULL>'), index_meta.INDEX_TYPE
+              )
+              ORDER BY index_meta.INDEX_NAME, index_meta.SEQ_IN_INDEX SEPARATOR '\n'
+            ),
+            256
+          )
+          FROM information_schema.STATISTICS index_meta
+          WHERE index_meta.TABLE_SCHEMA = DATABASE()
+            AND index_meta.TABLE_NAME = tables_meta.TABLE_NAME
+        )
+      ),
+      256
+    ) AS contract_sha
+  FROM information_schema.TABLES tables_meta
+  WHERE tables_meta.TABLE_SCHEMA = DATABASE()
+    AND tables_meta.TABLE_NAME IN (
+      'document', 'user_third_party_account', 'feishu_cli_vault',
+      'feishu_auth_session', 'feishu_operation',
+      'feishu_operation_proof_consumption', 'feishu_operation_execution_gate'
+    )
+)
+SELECT
+  CONCAT(expected.table_name, '_schema_contract') AS check_name,
+  IF(actual.table_name IS NULL OR actual.contract_sha = expected.contract_sha, 'PASS', 'FAIL') AS status,
+  COALESCE(actual.contract_sha, 'absent') AS observed,
+  CONCAT('absent or ', expected.contract_sha) AS expected
+FROM expected
+LEFT JOIN actual ON actual.table_name = expected.table_name
+ORDER BY expected.table_name;
+
+SELECT
+  'ai_service_model_key_unique_contract' AS check_name,
+  IF(COUNT(*) >= 1, 'PASS', 'FAIL') AS status,
+  CAST(COUNT(*) AS CHAR) AS observed,
+  'at least one exact UNIQUE(model_key)' AS expected
+FROM (
+  SELECT INDEX_NAME
+  FROM information_schema.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ai_service'
+  GROUP BY INDEX_NAME
+  HAVING MAX(NON_UNIQUE) = 0
+     AND COUNT(*) = 1
+     AND SUM(SUB_PART IS NULL) = COUNT(*)
+     AND SUM(EXPRESSION IS NULL) = COUNT(*)
+     AND GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ',') = 'model_key'
+) exact_indexes
+UNION ALL
+SELECT
+  'ai_service_route_model_provider_unique_contract',
+  IF(COUNT(*) >= 1, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  'at least one exact UNIQUE(model_id,provider_id)'
+FROM (
+  SELECT INDEX_NAME
+  FROM information_schema.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ai_service_route'
+  GROUP BY INDEX_NAME
+  HAVING MAX(NON_UNIQUE) = 0
+     AND COUNT(*) = 2
+     AND SUM(SUB_PART IS NULL) = COUNT(*)
+     AND SUM(EXPRESSION IS NULL) = COUNT(*)
+     AND GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ',') = 'model_id,provider_id'
+) exact_indexes
+UNION ALL
+SELECT
+  'task_profile_task_id_unique_contract',
+  IF(COUNT(*) >= 1, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  'at least one exact UNIQUE(task_id)'
+FROM (
+  SELECT INDEX_NAME
+  FROM information_schema.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'task_profile'
+  GROUP BY INDEX_NAME
+  HAVING MAX(NON_UNIQUE) = 0
+     AND COUNT(*) = 1
+     AND SUM(SUB_PART IS NULL) = COUNT(*)
+     AND SUM(EXPRESSION IS NULL) = COUNT(*)
+     AND GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ',') = 'task_id'
+) exact_indexes
+UNION ALL
+SELECT
+  'pricing_rule_lookup_unique_contract',
+  IF(COUNT(*) >= 1, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  'at least one exact UNIQUE(service_type,provider,model)'
+FROM (
+  SELECT INDEX_NAME
+  FROM information_schema.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pricing_rule'
+  GROUP BY INDEX_NAME
+  HAVING MAX(NON_UNIQUE) = 0
+     AND COUNT(*) = 3
+     AND SUM(SUB_PART IS NULL) = COUNT(*)
+     AND SUM(EXPRESSION IS NULL) = COUNT(*)
+     AND GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ',') =
+         'service_type,provider,model'
+) exact_indexes;
+
+SELECT
+  'feishu_proof_fk_contract' AS check_name,
+  IF(
+    (SELECT COUNT(*) FROM information_schema.TABLES
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'feishu_operation_proof_consumption') = 0
+    OR (
+      COUNT(*) = 2
+      AND GROUP_CONCAT(
+        CONCAT_WS(
+          '|', constraints_meta.CONSTRAINT_NAME, key_meta.COLUMN_NAME,
+          key_meta.REFERENCED_TABLE_NAME, key_meta.REFERENCED_COLUMN_NAME,
+          ref_meta.DELETE_RULE, ref_meta.UPDATE_RULE
+        )
+        ORDER BY constraints_meta.CONSTRAINT_NAME SEPARATOR '\n'
+      ) = CONCAT(
+        'fk_feishu_proof_consumer_operation|consumer_operation_id|feishu_operation|id|RESTRICT|NO ACTION',
+        '\n',
+        'fk_feishu_proof_source_operation|source_operation_id|feishu_operation|id|RESTRICT|NO ACTION'
+      )
+    ),
+    'PASS',
+    'FAIL'
+  ) AS status,
+  CONCAT('constraints=', COUNT(*)) AS observed,
+  'absent or exact two restrictive operation FKs' AS expected
+FROM information_schema.TABLE_CONSTRAINTS constraints_meta
+JOIN information_schema.KEY_COLUMN_USAGE key_meta
+  ON key_meta.CONSTRAINT_SCHEMA = constraints_meta.CONSTRAINT_SCHEMA
+ AND key_meta.TABLE_NAME = constraints_meta.TABLE_NAME
+ AND key_meta.CONSTRAINT_NAME = constraints_meta.CONSTRAINT_NAME
+JOIN information_schema.REFERENTIAL_CONSTRAINTS ref_meta
+  ON ref_meta.CONSTRAINT_SCHEMA = constraints_meta.CONSTRAINT_SCHEMA
+ AND ref_meta.CONSTRAINT_NAME = constraints_meta.CONSTRAINT_NAME
+WHERE constraints_meta.CONSTRAINT_SCHEMA = DATABASE()
+  AND constraints_meta.TABLE_NAME = 'feishu_operation_proof_consumption'
+  AND constraints_meta.CONSTRAINT_TYPE = 'FOREIGN KEY';
+
+SELECT
+  'orphan_announcement_read_announcement' AS check_name,
+  IF(COUNT(*) = 0, 'PASS', 'FAIL') AS status,
+  CAST(COUNT(*) AS CHAR) AS observed,
+  '0' AS expected
+FROM announcement_read child
+LEFT JOIN announcement parent ON parent.id = child.announcement_id
+WHERE parent.id IS NULL
+UNION ALL
+SELECT
+  'orphan_announcement_read_user',
+  IF(COUNT(*) = 0, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  '0'
+FROM announcement_read child
+LEFT JOIN user parent ON parent.id = child.user_id
+WHERE parent.id IS NULL
+UNION ALL
+SELECT
+  'orphan_survey_question_announcement',
+  IF(COUNT(*) = 0, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  '0'
+FROM survey_question child
+LEFT JOIN announcement parent ON parent.id = child.announcement_id
+WHERE parent.id IS NULL
+UNION ALL
+SELECT
+  'orphan_survey_response_announcement',
+  IF(COUNT(*) = 0, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  '0'
+FROM survey_response child
+LEFT JOIN announcement parent ON parent.id = child.announcement_id
+WHERE parent.id IS NULL
+UNION ALL
+SELECT
+  'orphan_survey_response_user',
+  IF(COUNT(*) = 0, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  '0'
+FROM survey_response child
+LEFT JOIN user parent ON parent.id = child.user_id
+WHERE parent.id IS NULL
+UNION ALL
+SELECT
+  'orphan_survey_answer_response',
+  IF(COUNT(*) = 0, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  '0'
+FROM survey_answer child
+LEFT JOIN survey_response parent ON parent.id = child.response_id
+WHERE parent.id IS NULL
+UNION ALL
+SELECT
+  'orphan_survey_answer_question',
+  IF(COUNT(*) = 0, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  '0'
+FROM survey_answer child
+LEFT JOIN survey_question parent ON parent.id = child.question_id
+WHERE parent.id IS NULL
+UNION ALL
+SELECT
+  'duplicate_announcement_read_user_pair',
+  IF(COUNT(*) = 0, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  '0 duplicate groups'
+FROM (
+  SELECT announcement_id, user_id
+  FROM announcement_read
+  GROUP BY announcement_id, user_id
+  HAVING COUNT(*) > 1
+) duplicate_annread
+UNION ALL
+SELECT
+  'duplicate_survey_response_user_pair',
+  IF(COUNT(*) = 0, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  '0 duplicate groups'
+FROM (
+  SELECT announcement_id, user_id
+  FROM survey_response
+  GROUP BY announcement_id, user_id
+  HAVING COUNT(*) > 1
+) duplicate_survey_response;
+
+WITH expected AS (
+  SELECT 'fk_annread_announcement' AS constraint_name,
+         'announcement_read' AS child_table, 'announcement_id' AS child_column,
+         'announcement' AS parent_table, 'id' AS parent_column
+  UNION ALL SELECT 'fk_annread_user', 'announcement_read', 'user_id', 'user', 'id'
+  UNION ALL SELECT 'fk_sq_announcement', 'survey_question', 'announcement_id', 'announcement', 'id'
+  UNION ALL SELECT 'fk_sr_announcement', 'survey_response', 'announcement_id', 'announcement', 'id'
+  UNION ALL SELECT 'fk_sr_user', 'survey_response', 'user_id', 'user', 'id'
+  UNION ALL SELECT 'fk_sa_response', 'survey_answer', 'response_id', 'survey_response', 'id'
+  UNION ALL SELECT 'fk_sa_question', 'survey_answer', 'question_id', 'survey_question', 'id'
+)
+SELECT
+  CONCAT(expected.constraint_name, '_column_compatibility') AS check_name,
+  IF(
+    child_meta.COLUMN_TYPE = parent_meta.COLUMN_TYPE
+      AND COALESCE(child_meta.CHARACTER_SET_NAME, '<NULL>') =
+          COALESCE(parent_meta.CHARACTER_SET_NAME, '<NULL>')
+      AND COALESCE(child_meta.COLLATION_NAME, '<NULL>') =
+          COALESCE(parent_meta.COLLATION_NAME, '<NULL>'),
+    'PASS',
+    'FAIL'
+  ) AS status,
+  CONCAT_WS(
+    '|', child_meta.COLUMN_TYPE, COALESCE(child_meta.CHARACTER_SET_NAME, '<NULL>'),
+    COALESCE(child_meta.COLLATION_NAME, '<NULL>')
+  ) AS observed,
+  CONCAT_WS(
+    '|', parent_meta.COLUMN_TYPE, COALESCE(parent_meta.CHARACTER_SET_NAME, '<NULL>'),
+    COALESCE(parent_meta.COLLATION_NAME, '<NULL>')
+  ) AS expected
+FROM expected
+LEFT JOIN information_schema.COLUMNS child_meta
+  ON child_meta.TABLE_SCHEMA = DATABASE()
+ AND child_meta.TABLE_NAME = expected.child_table
+ AND child_meta.COLUMN_NAME = expected.child_column
+LEFT JOIN information_schema.COLUMNS parent_meta
+  ON parent_meta.TABLE_SCHEMA = DATABASE()
+ AND parent_meta.TABLE_NAME = expected.parent_table
+ AND parent_meta.COLUMN_NAME = expected.parent_column
+ORDER BY expected.constraint_name;
+
+WITH expected AS (
+  SELECT 'announcement_read' AS table_name, 'fk_annread_announcement' AS constraint_name,
+         'announcement_id' AS column_name, 'announcement' AS referenced_table_name,
+         'id' AS referenced_column_name, 'CASCADE' AS delete_rule, 'NO ACTION' AS update_rule
+  UNION ALL SELECT 'announcement_read', 'fk_annread_user', 'user_id', 'user', 'id', 'CASCADE', 'NO ACTION'
+  UNION ALL SELECT 'survey_question', 'fk_sq_announcement', 'announcement_id', 'announcement', 'id', 'CASCADE', 'NO ACTION'
+  UNION ALL SELECT 'survey_response', 'fk_sr_announcement', 'announcement_id', 'announcement', 'id', 'CASCADE', 'NO ACTION'
+  UNION ALL SELECT 'survey_response', 'fk_sr_user', 'user_id', 'user', 'id', 'CASCADE', 'NO ACTION'
+  UNION ALL SELECT 'survey_answer', 'fk_sa_response', 'response_id', 'survey_response', 'id', 'CASCADE', 'NO ACTION'
+  UNION ALL SELECT 'survey_answer', 'fk_sa_question', 'question_id', 'survey_question', 'id', 'CASCADE', 'NO ACTION'
+),
+actual AS (
+  SELECT
+    constraints_meta.TABLE_NAME AS table_name,
+    constraints_meta.CONSTRAINT_NAME AS constraint_name,
+    key_meta.COLUMN_NAME AS column_name,
+    key_meta.REFERENCED_TABLE_NAME AS referenced_table_name,
+    key_meta.REFERENCED_COLUMN_NAME AS referenced_column_name,
+    ref_meta.DELETE_RULE AS delete_rule,
+    ref_meta.UPDATE_RULE AS update_rule
+  FROM information_schema.TABLE_CONSTRAINTS constraints_meta
+  JOIN information_schema.KEY_COLUMN_USAGE key_meta
+    ON key_meta.CONSTRAINT_SCHEMA = constraints_meta.CONSTRAINT_SCHEMA
+   AND key_meta.TABLE_NAME = constraints_meta.TABLE_NAME
+   AND key_meta.CONSTRAINT_NAME = constraints_meta.CONSTRAINT_NAME
+  JOIN information_schema.REFERENTIAL_CONSTRAINTS ref_meta
+    ON ref_meta.CONSTRAINT_SCHEMA = constraints_meta.CONSTRAINT_SCHEMA
+   AND ref_meta.CONSTRAINT_NAME = constraints_meta.CONSTRAINT_NAME
+  WHERE constraints_meta.CONSTRAINT_SCHEMA = DATABASE()
+    AND constraints_meta.CONSTRAINT_NAME IN (
+      'fk_annread_announcement', 'fk_annread_user', 'fk_sq_announcement',
+      'fk_sr_announcement', 'fk_sr_user', 'fk_sa_response', 'fk_sa_question'
+    )
+)
+SELECT
+  CONCAT(expected.constraint_name, '_contract') AS check_name,
+  IF(
+    actual.constraint_name IS NULL OR (
+      actual.table_name = expected.table_name
+      AND actual.column_name = expected.column_name
+      AND actual.referenced_table_name = expected.referenced_table_name
+      AND actual.referenced_column_name = expected.referenced_column_name
+      AND actual.delete_rule = expected.delete_rule
+      AND actual.update_rule = expected.update_rule
+    ),
+    'PASS',
+    'FAIL'
+  ) AS status,
+  IF(actual.constraint_name IS NULL, 'absent', CONCAT_WS(
+    '|', actual.table_name, actual.column_name, actual.referenced_table_name,
+    actual.referenced_column_name, actual.delete_rule, actual.update_rule
+  )) AS observed,
+  CONCAT('absent or ', CONCAT_WS(
+    '|', expected.table_name, expected.column_name, expected.referenced_table_name,
+    expected.referenced_column_name, expected.delete_rule, expected.update_rule
+  )) AS expected
+FROM expected
+LEFT JOIN actual ON actual.constraint_name = expected.constraint_name
+ORDER BY expected.constraint_name;
+
+SELECT
+  'uk_annread_contract' AS check_name,
+  IF(
+    COUNT(*) = 0 OR (
+      COUNT(*) = 2
+      AND GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ',') = 'announcement_id,user_id'
+      AND MAX(NON_UNIQUE) = 0
+    ),
+    'PASS',
+    'FAIL'
+  ) AS status,
+  CONCAT_WS('/', COUNT(*), GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ','), MAX(NON_UNIQUE)) AS observed,
+  'absent or 2/announcement_id,user_id/0' AS expected
+FROM information_schema.STATISTICS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'announcement_read' AND INDEX_NAME = 'uk_annread'
+UNION ALL
+SELECT
+  'uk_sr_contract',
+  IF(
+    COUNT(*) = 0 OR (
+      COUNT(*) = 2
+      AND GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ',') = 'announcement_id,user_id'
+      AND MAX(NON_UNIQUE) = 0
+    ),
+    'PASS',
+    'FAIL'
+  ),
+  CONCAT_WS('/', COUNT(*), GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ','), MAX(NON_UNIQUE)),
+  'absent or 2/announcement_id,user_id/0'
+FROM information_schema.STATISTICS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'survey_response' AND INDEX_NAME = 'uk_sr';
+
+SELECT
+  'subscription_protected_projection' AS evidence_name,
+  COUNT(*) AS row_count,
+  SHA2(
+    GROUP_CONCAT(
+      CONCAT_WS(
+        '|',
+        id,
+        user_id,
+        DATE_FORMAT(first_started_at, '%Y-%m-%d %H:%i:%s'),
+        DATE_FORMAT(current_started_at, '%Y-%m-%d %H:%i:%s'),
+        DATE_FORMAT(expires_at, '%Y-%m-%d %H:%i:%s'),
+        total_months_purchased,
+        source,
+        IFNULL(granter_user_id, '<NULL>'),
+        DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s'),
+        DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s')
+      )
+      ORDER BY id SEPARATOR '\n'
+    ),
+    256
+  ) AS sha256
+FROM subscription;
+
+SELECT
+  'agent_attachment_protected_projection' AS evidence_name,
+  COUNT(*) AS row_count,
+  SHA2(
+    GROUP_CONCAT(
+      SHA2(CONCAT_WS(
+        '|',
+        id, user_id, COALESCE(url, '<NULL>'), COALESCE(filename, '<NULL>'),
+        COALESCE(mime_type, '<NULL>'), COALESCE(CAST(size AS CHAR), '<NULL>'),
+        COALESCE(modality, '<NULL>'), COALESCE(CAST(width AS CHAR), '<NULL>'),
+        COALESCE(CAST(height AS CHAR), '<NULL>'), COALESCE(ocr_text, '<NULL>'),
+        COALESCE(vision_description, '<NULL>'), COALESCE(text_fallback, '<NULL>'),
+        COALESCE(CAST(fallback_ready AS CHAR), '<NULL>'), COALESCE(fallback_error, '<NULL>'),
+        COALESCE(DATE_FORMAT(fallback_started_at, '%Y-%m-%d %H:%i:%s.%f'), '<NULL>'),
+        COALESCE(DATE_FORMAT(fallback_completed_at, '%Y-%m-%d %H:%i:%s.%f'), '<NULL>'),
+        COALESCE(CAST(retry_count AS CHAR), '<NULL>'),
+        COALESCE(DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s.%f'), '<NULL>')
+      ), 256)
+      ORDER BY id SEPARATOR '\n'
+    ),
+    256
+  ) AS sha256
+FROM agent_attachment
+UNION ALL
+SELECT
+  'agent_run_protected_projection',
+  COUNT(*),
+  SHA2(
+    GROUP_CONCAT(
+      SHA2(CONCAT_WS(
+        '|',
+        id, user_id, COALESCE(session_id, '<NULL>'), status,
+        COALESCE(state_reason, '<NULL>'), COALESCE(CAST(terminal_metadata AS CHAR), '<NULL>'),
+        CAST(messages AS CHAR), COALESCE(CAST(reservation_id AS CHAR), '<NULL>'),
+        DATE_FORMAT(started_at, '%Y-%m-%d %H:%i:%s.%f'),
+        COALESCE(DATE_FORMAT(ended_at, '%Y-%m-%d %H:%i:%s.%f'), '<NULL>'),
+        COALESCE(DATE_FORMAT(cancellation_requested_at, '%Y-%m-%d %H:%i:%s.%f'), '<NULL>'),
+        agent_definition_id, COALESCE(CAST(pending_question_json AS CHAR), '<NULL>'),
+        COALESCE(DATE_FORMAT(pending_question_at, '%Y-%m-%d %H:%i:%s.%f'), '<NULL>'),
+        DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s.%f'),
+        DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s.%f'),
+        use_compact_v2, is_pinned, session_name, is_deleted, is_test
+      ), 256)
+      ORDER BY id SEPARATOR '\n'
+    ),
+    256
+  )
+FROM agent_run;
+
+CHECKSUM TABLE
+  `user`, `trial_grant`, `credit_account`, `credit_cycle`,
+  `user_booster_balance`, `membership_event`,
+  `credit_reservation`, `credit_reservation_item`, `credit_transaction`,
+  `sop_run`, `sop_node_run`, `chatbot_session`, `chatbot_message`,
+  `sales_session`, `sales_message`
+EXTENDED;
+
+SELECT 'user' AS table_name, COUNT(*) AS row_count FROM user
+UNION ALL SELECT 'subscription', COUNT(*) FROM subscription
+UNION ALL SELECT 'trial_grant', COUNT(*) FROM trial_grant
+UNION ALL SELECT 'credit_account', COUNT(*) FROM credit_account
+UNION ALL SELECT 'credit_cycle', COUNT(*) FROM credit_cycle
+UNION ALL SELECT 'user_booster_balance', COUNT(*) FROM user_booster_balance
+UNION ALL SELECT 'membership_event', COUNT(*) FROM membership_event
+UNION ALL SELECT 'credit_reservation', COUNT(*) FROM credit_reservation
+UNION ALL SELECT 'credit_reservation_item', COUNT(*) FROM credit_reservation_item
+UNION ALL SELECT 'credit_transaction', COUNT(*) FROM credit_transaction
+UNION ALL SELECT 'sop_run', COUNT(*) FROM sop_run
+UNION ALL SELECT 'sop_node_run', COUNT(*) FROM sop_node_run
+UNION ALL SELECT 'chatbot_session', COUNT(*) FROM chatbot_session
+UNION ALL SELECT 'chatbot_message', COUNT(*) FROM chatbot_message
+UNION ALL SELECT 'sales_session', COUNT(*) FROM sales_session
+UNION ALL SELECT 'sales_message', COUNT(*) FROM sales_message
+UNION ALL SELECT 'agent_run', COUNT(*) FROM agent_run;

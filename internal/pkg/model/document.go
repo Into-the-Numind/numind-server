@@ -13,9 +13,9 @@ import "time"
 type Document struct {
 	ID uint64 `gorm:"primaryKey;autoIncrement" json:"id"`
 	// UserID 文档归属用户。(user_id, source_object_key) 唯一，保证同一源产物每用户只建一份档。
-	UserID uint `gorm:"not null;uniqueIndex:uniq_doc_user_source,priority:1;index:idx_doc_user_updated,priority:1" json:"user_id"`
+	UserID uint `gorm:"type:bigint unsigned;not null;uniqueIndex:uniq_doc_user_source,priority:1;index:idx_doc_user_updated,priority:1" json:"user_id"`
 	// ParentUserID B2B2C 上下文快照，v1 不用于共享/下发。
-	ParentUserID *uint `gorm:"column:parent_user_id" json:"parent_user_id,omitempty"`
+	ParentUserID *uint `gorm:"type:bigint unsigned;column:parent_user_id" json:"parent_user_id,omitempty"`
 	// SourceObjectKey COS object key（限 agent-outputs/{userID}/ 前缀），跨预签名 URL 稳定，作打开依据。
 	SourceObjectKey string `gorm:"size:512;not null;uniqueIndex:uniq_doc_user_source,priority:2" json:"source_object_key"`
 	// SourceRunID 弱关联 agent_run（无 FK，避免耦合）。

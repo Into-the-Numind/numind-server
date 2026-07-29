@@ -1,5 +1,37 @@
 schema_version: '2.0'
 features:
+- id: prod-schema-reconcile
+  ndf_version: '3.0'
+  description: Add only the schema and system configuration required by the full Dev-to-Prod product rollout while preserving every existing Prod customer and billing value.
+  classification_reason: 'Standard: new document and Feishu tables, subscription and attachment columns, vision-model routing, external integration, and billing-path compatibility are high-risk database changes spanning more than three files.'
+  last_updated_by: ai-s5
+  last_updated_at: '2026-07-30T04:20:07+0800'
+  last_verified: '2026-07-30T04:20:07+0800'
+  created_at: '2026-07-30T02:14:08+0800'
+  track: standard
+  stage: S5
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: feature/prod-schema-reconcile}
+  worktrees: {numind-server: /private/tmp/wt-prod-schema-reconcile-numind-server}
+  progress: {total_tasks: 6, completed_tasks: 6, reviewed_tasks: 6, current_task: 'S5 verification complete; S6 Dev database rehearsal and product smoke next'}
+  artifacts:
+    requirement: requirements/prod-schema-reconcile.md
+    proposal: proposals/prod-schema-reconcile-proposal.md
+    spec: docs/superpowers/specs/2026-07-30-prod-schema-reconcile-design.md
+    plan: docs/superpowers/plans/2026-07-30-prod-schema-reconcile.md
+    s5_verification: .ndf/decisions/prod-schema-reconcile/0001-s5-verification.md
+  decisions:
+  - 'Prod receives additive schema and system configuration only; Dev business data is never copied.'
+  - 'Historical subscription rows receive new monthly/2000 metadata without changing any pre-existing column.'
+  - 'Document and Feishu are enabled; meeting copilot, diarization, chatbot_query_rewrite, and universal_rewriter remain disabled.'
+  - 'Prod remains read-only until a separate final migration and deployment authorization.'
+  - 'Use a dedicated preflight/apply/verify migration package; do not replay all historical migrations or depend on startup AutoMigrate.'
+  - 'Application rollback retains additive schema; destructive down migrations are prohibited after customer traffic.'
+  - 'Implementation is six serial TDD tasks ending in a MySQL 8 double-apply rehearsal and Dev migration/deployment gate.'
+  - 'S4 final dual review PASS at 0a9040b2: both independent reviewers report P0=0, P1=0, P2=0.'
+  - 'S5 PASS: full Go tests, task lint, migration race tests, isolated MySQL 8 exact/partial/negative/double-apply rehearsal, and real Prod SELECT-only preflight all pass.'
+  blockers: []
 - id: prod-feature-build-flags
   ndf_version: '3.0'
   description: Compile the notification center and document system into the Prod user web image while keeping meeting copilot and meeting diarization disabled in Prod.
