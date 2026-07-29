@@ -76,6 +76,7 @@ func NewPool(cfg SandboxConfig, dc DockerClient, logger Logger) Pool {
 	if cfg.Backend == BackendDisabled || dc == nil {
 		return &disabledPool{dc: dc}
 	}
+	workCtx, workCancel := context.WithCancel(context.Background())
 	p := &agentSandboxPool{
 		cfg:         cfg,
 		dc:          dc,
@@ -84,22 +85,28 @@ func NewPool(cfg SandboxConfig, dc DockerClient, logger Logger) Pool {
 		ownerBootID: currentSandboxOwnerBootID(),
 		warm:        make(chan *Session, cfg.PoolMin*2),
 		closeCh:     make(chan struct{}),
+		closeDone:   make(chan struct{}),
 		spawnReq:    make(chan struct{}, cfg.PoolMin*4),
+		workCtx:     workCtx,
+		workCancel:  workCancel,
 	}
-	go p.spawnWorker()
+	p.workerWG.Add(1)
+	go func() {
+		defer p.workerWG.Done()
+		p.spawnWorker()
+	}()
 	// Reap orphans from a previous process run, THEN prime the warm pool — both
 	// async so NewPool doesn't block startup. Ordering matters: the reaper must
 	// finish before any spawnReq is sent, otherwise it could destroy the very
 	// containers we just primed. Running both in one goroutine guarantees that
 	// order without a lock. The current process has spawned nothing yet, so the
 	// reaper only ever touches genuine orphans.
+	p.workerWG.Add(1)
 	go func() {
+		defer p.workerWG.Done()
 		p.reapOrphans()
 		for i := 0; i < cfg.PoolMin; i++ {
-			select {
-			case p.spawnReq <- struct{}{}:
-			default:
-			}
+			p.requestSpawn()
 		}
 	}()
 	return p
@@ -145,9 +152,15 @@ type agentSandboxPool struct {
 	// another container. The spawnWorker consumes from this channel.
 	spawnReq chan struct{}
 	// closeCh is closed by Close to signal the worker to exit.
-	closeCh chan struct{}
-	closed  bool
-	mu      sync.Mutex
+	closeCh    chan struct{}
+	closeDone  chan struct{}
+	workCtx    context.Context
+	workCancel context.CancelFunc
+	workerWG   sync.WaitGroup
+	borrowWG   sync.WaitGroup
+	closed     bool
+	closeErr   error
+	mu         sync.Mutex
 }
 
 var _ Pool = (*agentSandboxPool)(nil)
@@ -166,6 +179,15 @@ func (p *agentSandboxPool) IsEnabled() bool            { return true }
 // candidates are discarded (destroyed + replacement requested) and the next
 // one is tried within the same deadline.
 func (p *agentSandboxPool) Borrow(ctx context.Context) (*Session, error) {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil, ErrSandboxDisabled
+	}
+	p.borrowWG.Add(1)
+	p.mu.Unlock()
+	defer p.borrowWG.Done()
+
 	timeout := time.Duration(p.cfg.PoolMaxWaitMs) * time.Millisecond
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -174,6 +196,9 @@ func (p *agentSandboxPool) Borrow(ctx context.Context) (*Session, error) {
 	defer timer.Stop()
 
 	for {
+		if p.isClosed() {
+			return nil, ErrSandboxDisabled
+		}
 		if len(p.warm) == 0 {
 			p.requestSpawn()
 		}
@@ -182,6 +207,12 @@ func (p *agentSandboxPool) Borrow(ctx context.Context) (*Session, error) {
 		case sess, ok := <-p.warm:
 			if !ok {
 				return nil, ErrSandboxDisabled // pool closed
+			}
+			if p.isClosed() {
+				destroyCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				_ = p.dc.Destroy(destroyCtx, sess.ContainerID)
+				cancel()
+				return nil, ErrSandboxDisabled
 			}
 			if !p.isAlive(sess.ContainerID) {
 				p.logger.Warnw("sandbox.Pool.Borrow: discarding dead warm container",
@@ -195,6 +226,8 @@ func (p *agentSandboxPool) Borrow(ctx context.Context) (*Session, error) {
 			return nil, ErrPoolExhausted
 		case <-ctx.Done():
 			return nil, ctx.Err()
+		case <-p.closeCh:
+			return nil, ErrSandboxDisabled
 		}
 	}
 }
@@ -233,7 +266,7 @@ func (p *agentSandboxPool) discardDead(sess *Session) {
 // a crashed or redeployed server would otherwise leak its warm containers
 // indefinitely. Best-effort: errors are logged, never fatal.
 func (p *agentSandboxPool) reapOrphans() {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(p.baseWorkContext(), 30*time.Second)
 	defer cancel()
 
 	ids, err := p.dc.ListByLabel(ctx, SandboxContainerLabel)
@@ -310,6 +343,9 @@ func (p *agentSandboxPool) Return(sess *Session, exitCode int, errMsg string) er
 }
 
 func (p *agentSandboxPool) requestSpawn() {
+	if p.isClosed() {
+		return
+	}
 	select {
 	case p.spawnReq <- struct{}{}:
 	default:
@@ -318,31 +354,42 @@ func (p *agentSandboxPool) requestSpawn() {
 	}
 }
 
-// Close drains the warm pool and signals the worker to exit.
+// Close cancels and waits for every pool worker before draining warm leases.
 func (p *agentSandboxPool) Close() error {
 	p.mu.Lock()
 	if p.closed {
+		done := p.closeDone
 		p.mu.Unlock()
-		return nil
+		<-done
+		p.mu.Lock()
+		err := p.closeErr
+		p.mu.Unlock()
+		return err
 	}
 	p.closed = true
 	close(p.closeCh)
+	p.workCancel()
 	p.mu.Unlock()
+
+	p.workerWG.Wait()
+	p.borrowWG.Wait()
+	close(p.warm)
 
 	// Drain warm pool synchronously (best-effort destroy).
 	destroyCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	for {
-		select {
-		case sess := <-p.warm:
-			if sess == nil {
-				continue
-			}
-			_ = p.dc.Destroy(destroyCtx, sess.ContainerID)
-		default:
-			return closeDockerClient(p.dc)
+	for sess := range p.warm {
+		if sess == nil {
+			continue
 		}
+		_ = p.dc.Destroy(destroyCtx, sess.ContainerID)
 	}
+	err := closeDockerClient(p.dc)
+	p.mu.Lock()
+	p.closeErr = err
+	p.mu.Unlock()
+	close(p.closeDone)
+	return err
 }
 
 func closeDockerClient(dc DockerClient) error {
@@ -373,7 +420,7 @@ func (p *agentSandboxPool) spawnWorker() {
 }
 
 func (p *agentSandboxPool) spawnOne() bool {
-	spawnCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	spawnCtx, cancel := context.WithTimeout(p.baseWorkContext(), 60*time.Second)
 	defer cancel()
 
 	seccompPath, err := ResolveSeccompPath()
@@ -406,6 +453,12 @@ func (p *agentSandboxPool) spawnOne() bool {
 		Config:      p.cfg,
 		BorrowedAt:  time.Now(),
 	}
+	if p.isClosed() {
+		destroyCtx, dcancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer dcancel()
+		_ = p.dc.Destroy(destroyCtx, id)
+		return false
+	}
 	select {
 	case p.warm <- sess:
 		return true
@@ -423,6 +476,19 @@ func (p *agentSandboxPool) spawnOne() bool {
 		_ = p.dc.Destroy(destroyCtx, id)
 		return false
 	}
+}
+
+func (p *agentSandboxPool) isClosed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.closed
+}
+
+func (p *agentSandboxPool) baseWorkContext() context.Context {
+	if p.workCtx != nil {
+		return p.workCtx
+	}
+	return context.Background()
 }
 
 func defaultSandboxOwnerID() string {

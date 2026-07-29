@@ -49,11 +49,13 @@ T1..T17 ───────────────────────> T
 - 修改 `internal/numind/biz/sandbox/config_test.go`
 - 修改 `internal/numind/biz/sandbox/errors.go`
 - 修改 `internal/numind/biz/sandbox/pool.go`（关闭 broker idle connections）
+- 修改 `internal/numind/biz/sandbox/pool_test.go`（in-flight spawn 关闭零泄漏）
 
 **实现**
 
 - `BackendBroker`、socket/metadata/连接/copy/输出/超时配置与spec默认值。
 - HTTP-over-Unix client完整实现`DockerClient`；opaque lease id替代Docker id。
+- owner与owner_boot分字段传递；列表按稳定owner查询，确保重启后能发现上一次boot。
 - 预热create显式发送`agent_run_id=0/sandbox_session_id=0`；提供
   activate/heartbeat/persisting lease lifecycle接口，真实ID在任务借出后绑定。
 - strict JSON；请求模型中不存在image/mount/network/device/privileged/cap/cgroup字段。

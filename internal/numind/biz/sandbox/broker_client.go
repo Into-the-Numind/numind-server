@@ -109,15 +109,16 @@ func (c *brokerDockerClient) Spawn(ctx context.Context, cfg SpawnConfig) (string
 	var out BrokerCreateLeaseResponse
 	err := c.doJSON(ctx, http.MethodPost, BrokerAPIPrefix+"/leases", BrokerCreateLeaseRequest{
 		RequestID:        uuid.NewString(),
-		OwnerID:          brokerFullOwnerID(ownerID, ownerBootID),
+		OwnerID:          ownerID,
+		OwnerBootID:      ownerBootID,
 		AgentRunID:       0,
 		SandboxSessionID: 0,
 	}, &out, int64(c.cfg.BrokerMetadataMaxBytes))
 	if err != nil {
 		return "", err
 	}
-	if strings.TrimSpace(out.LeaseID) == "" {
-		return "", fmt.Errorf("%w: create lease returned an empty id", ErrBrokerProtocolViolation)
+	if strings.TrimSpace(out.LeaseID) == "" || out.State != "ready" {
+		return "", fmt.Errorf("%w: invalid create lease response", ErrBrokerProtocolViolation)
 	}
 	return out.LeaseID, nil
 }
@@ -161,7 +162,12 @@ func (c *brokerDockerClient) Exec(
 		ctx, cancel = context.WithTimeout(ctx, opts.Timeout+5*time.Second)
 		defer cancel()
 	}
-	var out BrokerExecResponse
+	var out struct {
+		Stdout   string         `json:"stdout,omitempty"`
+		Stderr   string         `json:"stderr,omitempty"`
+		ExitCode *int           `json:"exit_code"`
+		Duration *time.Duration `json:"duration"`
+	}
 	maxResponse := int64(c.cfg.BrokerExecOutputMaxBytes)*6 + int64(c.cfg.BrokerMetadataMaxBytes)
 	err := c.doJSON(ctx, http.MethodPost, brokerLeasePath(leaseID)+"/exec", BrokerExecRequest{
 		RequestID: uuid.NewString(),
@@ -171,10 +177,18 @@ func (c *brokerDockerClient) Exec(
 	if err != nil {
 		return ExecResult{}, err
 	}
+	if out.ExitCode == nil || out.Duration == nil || *out.Duration < 0 {
+		return ExecResult{}, ErrBrokerProtocolViolation
+	}
 	if len(out.Stdout)+len(out.Stderr) > c.cfg.BrokerExecOutputMaxBytes {
 		return ExecResult{}, ErrBrokerResponseTooLarge
 	}
-	return ExecResult(out), nil
+	return ExecResult{
+		Stdout:   out.Stdout,
+		Stderr:   out.Stderr,
+		ExitCode: *out.ExitCode,
+		Duration: *out.Duration,
+	}, nil
 }
 
 func (c *brokerDockerClient) Destroy(ctx context.Context, leaseID string) error {
@@ -184,23 +198,42 @@ func (c *brokerDockerClient) Destroy(ctx context.Context, leaseID string) error 
 }
 
 func (c *brokerDockerClient) Inspect(ctx context.Context, leaseID string) (InspectResult, error) {
-	var out BrokerInspectResponse
+	var out struct {
+		Status      *string `json:"status"`
+		ExitCode    *int    `json:"exit_code"`
+		OOMKilled   *bool   `json:"oom_killed"`
+		OwnerID     string  `json:"owner_id,omitempty"`
+		OwnerBootID string  `json:"owner_boot_id,omitempty"`
+	}
 	if err := c.doJSON(ctx, http.MethodGet, brokerLeasePath(leaseID), nil, &out, int64(c.cfg.BrokerMetadataMaxBytes)); err != nil {
 		return InspectResult{}, err
 	}
+	if out.Status == nil || out.ExitCode == nil || out.OOMKilled == nil ||
+		!validBrokerInspectStatus(*out.Status) ||
+		strings.TrimSpace(out.OwnerID) == "" || strings.TrimSpace(out.OwnerBootID) == "" {
+		return InspectResult{}, ErrBrokerProtocolViolation
+	}
 	labelKey, labelValue, _ := strings.Cut(SandboxContainerLabel, "=")
-	labels := map[string]string{labelKey: labelValue}
-	if out.OwnerID != "" {
-		ownerID, ownerBootID := brokerSplitOwnerID(out.OwnerID)
-		labels[SandboxContainerOwnerLabelKey] = ownerID
-		labels[SandboxContainerOwnerBootLabelKey] = ownerBootID
+	labels := map[string]string{
+		labelKey:                          labelValue,
+		SandboxContainerOwnerLabelKey:     out.OwnerID,
+		SandboxContainerOwnerBootLabelKey: out.OwnerBootID,
 	}
 	return InspectResult{
-		Status:    out.Status,
-		ExitCode:  out.ExitCode,
-		OOMKilled: out.OOMKilled,
+		Status:    *out.Status,
+		ExitCode:  *out.ExitCode,
+		OOMKilled: *out.OOMKilled,
 		Labels:    labels,
 	}, nil
+}
+
+func validBrokerInspectStatus(status string) bool {
+	switch status {
+	case "running", "exited", "oom":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *brokerDockerClient) CopyToContainer(
@@ -209,9 +242,13 @@ func (c *brokerDockerClient) CopyToContainer(
 	dstPath string,
 	content io.Reader,
 ) error {
+	if !isSafeBrokerCopyReader(content) {
+		return ErrSandboxPolicyDenied
+	}
 	requestPath := brokerLeasePath(leaseID) + "/files?path=" + url.QueryEscape(dstPath)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, brokerBaseURL()+requestPath,
-		newMaxBytesReadCloser(ctx, content, int64(c.cfg.BrokerSingleFileMaxBytes), ErrInputTooLarge))
+	body := newMaxBytesReadCloser(ctx, content, int64(c.cfg.BrokerSingleFileMaxBytes), ErrInputTooLarge)
+	defer body.Close()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, brokerBaseURL()+requestPath, body)
 	if err != nil {
 		return fmt.Errorf("%w: build copy-in request", ErrBrokerProtocolViolation)
 	}
@@ -270,8 +307,7 @@ func (c *brokerDockerClient) ListByLabel(ctx context.Context, label string) ([]s
 	if label != SandboxContainerLabel {
 		return nil, ErrSandboxPolicyDenied
 	}
-	requestPath := BrokerAPIPrefix + "/leases?owner_id=" +
-		url.QueryEscape(brokerFullOwnerID(c.ownerID, c.ownerBootID))
+	requestPath := BrokerAPIPrefix + "/leases?owner_id=" + url.QueryEscape(c.ownerID)
 	var out BrokerListLeasesResponse
 	if err := c.doJSON(ctx, http.MethodGet, requestPath, nil, &out, int64(c.cfg.BrokerMetadataMaxBytes)); err != nil {
 		return nil, err
@@ -662,16 +698,19 @@ func stableBrokerFileError(err error) error {
 	return ErrBrokerUnavailable
 }
 
-func brokerFullOwnerID(ownerID string, ownerBootID string) string {
-	return ownerID + "/" + ownerBootID
-}
-
-func brokerSplitOwnerID(full string) (string, string) {
-	idx := strings.LastIndex(full, "/")
-	if idx <= 0 || idx == len(full)-1 {
-		return full, "unknown"
+func isSafeBrokerCopyReader(reader io.Reader) bool {
+	if reader == nil {
+		return false
 	}
-	return full[:idx], full[idx+1:]
+	if _, ok := reader.(io.ReadCloser); ok {
+		return true
+	}
+	switch reader.(type) {
+	case *bytes.Buffer, *bytes.Reader, *strings.Reader:
+		return true
+	default:
+		return false
+	}
 }
 
 func requestIDFromMutationBody(body any) string {

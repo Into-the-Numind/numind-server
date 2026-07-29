@@ -162,13 +162,17 @@ Agent run 强制取消继续先写数据库的 `cancellation_requested_at`。管
 ```json
 {
   "request_id": "uuid",
-  "owner_id": "api-instance/boot-id",
+  "owner_id": "api-instance",
+  "owner_boot_id": "boot-id",
   "agent_run_id": 0,
   "sandbox_session_id": 0
 }
 ```
 
 调用方不能提供镜像或 Docker 参数。broker 使用服务端固定模板创建容器。
+`owner_id` 是跨进程重启稳定的 API 实例标识，`owner_boot_id` 是本次进程启动标识；
+两者必须分字段保存。启动清理按稳定 `owner_id` 列出本次和历史 boot 的 lease，
+再用 `owner_boot_id` 区分当前进程与上一次启动遗留项。
 预热容器创建时任务尚未发生，因此两个业务关联 ID 固定为 0；这不是缺失值，
 而是明确表示 `ready/unbound`。容器被真实任务借出后，必须通过下一节的
 `activate` 原子绑定真实 ID，之后不可改绑。
@@ -255,7 +259,8 @@ Pool 把待命容器借给任务、且 `agent_sandbox_session` 审计行创建�
 
 #### `GET /v1/leases?owner_id=...`
 
-只返回当前 peer + owner 的 lease，用于 API Pool 启动时清理自己上一次 boot 的 orphan。
+只返回当前 peer + 稳定 owner 的全部 lease（包括不同 `owner_boot_id`），用于 API Pool
+启动时清理自己上一次 boot 的 orphan。
 不会暴露 Rootless daemon 的通用 container list。
 
 #### `DELETE /v1/leases/{id}`

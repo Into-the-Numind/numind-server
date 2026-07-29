@@ -30,6 +30,15 @@ safe configuration ceilings, and connection cleanup.
 8. Tar extraction uses descriptor-relative `openat` operations with
    `O_NOFOLLOW`; path traversal, links, device nodes, FIFOs, overwrites, and
    configured size/count overages fail closed.
+9. Stable owner and per-process owner boot ID remain separate protocol fields.
+   Startup listing filters by stable owner so a restarted API can find its
+   previous boot's leases.
+10. Pool shutdown cancels and joins all warm-up/spawn workers before draining
+    leases and closing the broker transport.
+11. Broker copy-in accepts finite in-memory readers or cancellable
+    `io.ReadCloser` streams; arbitrary blocking non-closers fail before I/O.
+12. Required response fields and normalized states are validated in addition
+    to strict JSON syntax.
 
 ## Verification
 

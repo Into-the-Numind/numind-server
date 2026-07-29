@@ -61,6 +61,7 @@ func TestBrokerDockerClientImplementsContract(t *testing.T) {
 	var mu sync.Mutex
 	var createKeys []string
 	var createOwner string
+	var createOwnerBoot string
 	var createAgentRunID uint64
 	var createSandboxSessionID uint64
 	var copiedIn []byte
@@ -81,6 +82,7 @@ func TestBrokerDockerClientImplementsContract(t *testing.T) {
 				createKeys = append(createKeys, k)
 			}
 			createOwner, _ = raw["owner_id"].(string)
+			createOwnerBoot, _ = raw["owner_boot_id"].(string)
 			createAgentRunID = uint64(raw["agent_run_id"].(float64))
 			createSandboxSessionID = uint64(raw["sandbox_session_id"].(float64))
 			mu.Unlock()
@@ -89,8 +91,8 @@ func TestBrokerDockerClientImplementsContract(t *testing.T) {
 				State:   "ready",
 			})
 		case http.MethodGet:
-			if got := r.URL.Query().Get("owner_id"); got == "" {
-				t.Error("list request missing owner_id")
+			if got := r.URL.Query().Get("owner_id"); got != "api-owner" {
+				t.Errorf("list owner_id = %q; want stable owner without boot id", got)
 			}
 			writeBrokerJSONForTest(t, w, BrokerListLeasesResponse{LeaseIDs: []string{"lease-old"}})
 		default:
@@ -161,8 +163,9 @@ func TestBrokerDockerClientImplementsContract(t *testing.T) {
 		switch r.Method {
 		case http.MethodGet:
 			writeBrokerJSONForTest(t, w, BrokerInspectResponse{
-				Status:  "running",
-				OwnerID: "api-owner/boot-1",
+				Status:      "running",
+				OwnerID:     "api-owner",
+				OwnerBootID: "boot-1",
 			})
 		case http.MethodDelete:
 			assertMutationRequestIDForTest(t, r)
@@ -177,6 +180,9 @@ func TestBrokerDockerClientImplementsContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBrokerDockerClient: %v", err)
 	}
+	client := dc.(*brokerDockerClient)
+	client.ownerID = "api-owner"
+	client.ownerBootID = "boot-1"
 
 	spawnCfg := SpawnConfig{Labels: []string{
 		SandboxContainerLabel,
@@ -192,12 +198,14 @@ func TestBrokerDockerClientImplementsContract(t *testing.T) {
 	sort.Strings(createKeys)
 	gotKeys := append([]string(nil), createKeys...)
 	mu.Unlock()
-	wantKeys := []string{"agent_run_id", "owner_id", "request_id", "sandbox_session_id"}
+	wantKeys := []string{"agent_run_id", "owner_boot_id", "owner_id", "request_id", "sandbox_session_id"}
 	if strings.Join(gotKeys, ",") != strings.Join(wantKeys, ",") {
 		t.Fatalf("create request keys = %v; want only %v", gotKeys, wantKeys)
 	}
-	if createOwner != "api-owner/boot-1" || createAgentRunID != 0 || createSandboxSessionID != 0 {
-		t.Fatalf("create binding = owner:%q run:%d session:%d", createOwner, createAgentRunID, createSandboxSessionID)
+	if createOwner != "api-owner" || createOwnerBoot != "boot-1" ||
+		createAgentRunID != 0 || createSandboxSessionID != 0 {
+		t.Fatalf("create binding = owner:%q boot:%q run:%d session:%d",
+			createOwner, createOwnerBoot, createAgentRunID, createSandboxSessionID)
 	}
 	lifecycle, ok := dc.(BrokerLeaseLifecycle)
 	if !ok {
@@ -414,6 +422,9 @@ func TestBrokerDockerClientRejectsMalformedResponses(t *testing.T) {
 	}{
 		{name: "unknown field", body: `{"lease_id":"lease-1","state":"ready","extra":true}`},
 		{name: "trailing json", body: `{"lease_id":"lease-1","state":"ready"} {"lease_id":"lease-2"}`},
+		{name: "null", body: `null`},
+		{name: "empty object", body: `{}`},
+		{name: "wrong state", body: `{"lease_id":"lease-1","state":"active"}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -427,6 +438,72 @@ func TestBrokerDockerClientRejectsMalformedResponses(t *testing.T) {
 			_, err = dc.Spawn(context.Background(), SpawnConfig{})
 			if !errors.Is(err, ErrBrokerProtocolViolation) {
 				t.Fatalf("Spawn err = %v; want protocol violation", err)
+			}
+		})
+	}
+}
+
+func TestBrokerDockerClientRejectsSemanticallyIncompleteResponses(t *testing.T) {
+	tests := []struct {
+		name   string
+		path   string
+		body   string
+		invoke func(DockerClient) error
+	}{
+		{
+			name: "exec null", path: "/v1/leases/lease-1/exec", body: `null`,
+			invoke: func(dc DockerClient) error {
+				_, err := dc.Exec(context.Background(), "lease-1", []string{"true"}, ExecOpts{})
+				return err
+			},
+		},
+		{
+			name: "exec empty", path: "/v1/leases/lease-1/exec", body: `{}`,
+			invoke: func(dc DockerClient) error {
+				_, err := dc.Exec(context.Background(), "lease-1", []string{"true"}, ExecOpts{})
+				return err
+			},
+		},
+		{
+			name: "inspect empty", path: "/v1/leases/lease-1", body: `{}`,
+			invoke: func(dc DockerClient) error {
+				_, err := dc.Inspect(context.Background(), "lease-1")
+				return err
+			},
+		},
+		{
+			name: "inspect invalid state", path: "/v1/leases/lease-1",
+			body: `{"status":"created","exit_code":0,"oom_killed":false,"owner_id":"api","owner_boot_id":"boot"}`,
+			invoke: func(dc DockerClient) error {
+				_, err := dc.Inspect(context.Background(), "lease-1")
+				return err
+			},
+		},
+		{
+			name: "inspect missing owner boot", path: "/v1/leases/lease-1",
+			body: `{"status":"running","exit_code":0,"oom_killed":false,"owner_id":"api"}`,
+			invoke: func(dc DockerClient) error {
+				_, err := dc.Inspect(context.Background(), "lease-1")
+				return err
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			socket := startBrokerTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != tt.path {
+					http.Error(w, "unexpected path", http.StatusNotFound)
+					return
+				}
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			dc, err := NewBrokerDockerClient(brokerTestConfig(socket), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = tt.invoke(dc)
+			if !errors.Is(err, ErrBrokerProtocolViolation) {
+				t.Fatalf("invoke err = %v; want protocol violation", err)
 			}
 		})
 	}
@@ -539,6 +616,32 @@ func TestBrokerDockerClientClosesCopyInReaderOnCancel(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("CopyToContainer did not return after cancellation")
+	}
+}
+
+func TestBrokerDockerClientRejectsBlockingNonCloser(t *testing.T) {
+	reader := &blockingReader{started: make(chan struct{}), unblock: make(chan struct{})}
+	dc, err := NewBrokerDockerClient(brokerTestConfig("/tmp/sandboxd-test.sock"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- dc.CopyToContainer(context.Background(), "lease-1", "/workdir/input.txt", reader)
+	}()
+	select {
+	case err = <-done:
+		if !errors.Is(err, ErrSandboxPolicyDenied) {
+			t.Fatalf("CopyToContainer err = %v; want policy denied", err)
+		}
+	case <-time.After(2 * time.Second):
+		close(reader.unblock)
+		t.Fatal("CopyToContainer read an unsafe non-closer")
+	}
+	select {
+	case <-reader.started:
+		t.Fatal("unsafe non-closer reader was read")
+	default:
 	}
 }
 
@@ -671,6 +774,106 @@ func TestDisabledPoolCloseClosesBrokerClient(t *testing.T) {
 	}
 }
 
+func TestBrokerPoolCloseCancelsActiveUnixRequestAndClosesConnection(t *testing.T) {
+	socketDir, err := os.MkdirTemp("/tmp", "sbd-close-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socket := filepath.Join(socketDir, "sandboxd.sock")
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createStarted := make(chan struct{})
+	requestCanceled := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	connectionClosed := make(chan struct{})
+	var startOnce sync.Once
+	var cancelOnce sync.Once
+	var closedOnce sync.Once
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				writeBrokerJSONForTest(t, w, BrokerListLeasesResponse{LeaseIDs: []string{}})
+				return
+			}
+			startOnce.Do(func() { close(createStarted) })
+			select {
+			case <-r.Context().Done():
+				cancelOnce.Do(func() { close(requestCanceled) })
+			case <-releaseHandler:
+			}
+		}),
+		ConnState: func(_ net.Conn, state http.ConnState) {
+			if state == http.StateClosed {
+				closedOnce.Do(func() { close(connectionClosed) })
+			}
+		},
+	}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() {
+		_ = srv.Close()
+		_ = ln.Close()
+	})
+
+	cfg := brokerTestConfig(socket)
+	cfg.PoolMin = 1
+	dc, err := NewBrokerDockerClient(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := NewPool(cfg, dc, nil)
+	select {
+	case <-createStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("broker create request did not start")
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- pool.Close() }()
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("pool Close did not cancel active broker request")
+	}
+	select {
+	case <-requestCanceled:
+	default:
+	}
+	close(releaseHandler)
+	select {
+	case <-connectionClosed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("broker Unix connection remained open")
+	}
+}
+
+func TestBrokerDockerClientListsPreviousBootByStableOwner(t *testing.T) {
+	socket := startBrokerTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("owner_id"); got != "stable-api-owner" {
+			t.Errorf("owner_id = %q; want stable owner without current boot", got)
+		}
+		writeBrokerJSONForTest(t, w, BrokerListLeasesResponse{LeaseIDs: []string{"previous-boot-lease"}})
+	}))
+	dc, err := NewBrokerDockerClient(brokerTestConfig(socket), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := dc.(*brokerDockerClient)
+	client.ownerID = "stable-api-owner"
+	client.ownerBootID = "current-boot"
+	ids, err := dc.ListByLabel(context.Background(), SandboxContainerLabel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != "previous-boot-lease" {
+		t.Fatalf("ListByLabel = %v; want previous boot lease", ids)
+	}
+}
+
 func TestBrokerDockerClientRejectsOversizedMetadata(t *testing.T) {
 	socket := startBrokerTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.CopyN(w, bytes.NewReader(bytes.Repeat([]byte("x"), 2048)), 2048)
@@ -759,6 +962,17 @@ type blockingReadCloser struct {
 	closed    chan struct{}
 	startOnce sync.Once
 	closeOnce sync.Once
+}
+
+type blockingReader struct {
+	started chan struct{}
+	unblock chan struct{}
+}
+
+func (r *blockingReader) Read(_ []byte) (int, error) {
+	close(r.started)
+	<-r.unblock
+	return 0, io.ErrClosedPipe
 }
 
 func newBlockingReadCloser() *blockingReadCloser {
