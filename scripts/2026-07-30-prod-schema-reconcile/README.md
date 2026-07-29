@@ -23,7 +23,7 @@ Dev 数据，也不替换 Prod 用户、积分、订阅、SOP、聊天或智能�
 - 升级后核对：`scripts/2026-07-30-prod-schema-reconcile/02-verify.sql`
 - 隔离演练：`scripts/2026-07-30-prod-schema-reconcile/test-mysql8.sh`
 - 当前升级 SQL SHA256：
-  `44e4a6e3afd969f408cccd1997f9997272e2347c15c209581006954a2758aa58`
+  `caf975555768df1e4677856422d2c15bcd91354b2c2358153ea759bd655a86c6`
 
 上线使用的 Git tag、SQL 文件和上述 SHA256 必须完全对应。SQL 有任何修改，
 必须重新评审、重跑全部测试并更新这里的 SHA256。
@@ -95,7 +95,11 @@ PASS: MySQL 8 exact, partial, negative-preflight, double-apply, constraints, and
 同时保存脚本输出的：
 
 - `agent_attachment_protected_projection`：只计算附件原字段，不包含本次新字段；
+- `agent_attachment_complete_projection`：计算附件全部业务字段；缺失的新字段按
+  新增字段将采用的默认值计算，因此升级前后必须完全一致；
 - `agent_run_protected_projection`：只计算智能体运行原字段，不包含本次新字段；
+- `feishu_proof_business_projection`：计算飞书操作凭证的全部业务字段，补外键前后
+  必须完全一致；
 - 用户、试用积分、订阅周期积分、加量包余额、会员事件、积分预扣/流水、
   SOP、聊天、销售历史表的 `CHECKSUM TABLE ... EXTENDED`；
 - 每张核心业务表行数。
