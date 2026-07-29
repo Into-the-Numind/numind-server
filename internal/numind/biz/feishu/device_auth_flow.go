@@ -834,11 +834,15 @@ func (f *DeviceAuthFlow) completeInCandidateHome(
 		// expected application. They do not prove that the durable scopes for
 		// this authorization attempt were granted; an older token in the HOME
 		// could satisfy both checks. Without structured granted-scope evidence,
-		// keep the session pending and never publish the candidate HOME.
-		if !session.ResumeExpiresAt.After(f.now().UTC()) {
-			return DeviceAuthExpired, ""
+		// keep business-scope sessions pending and never publish the candidate
+		// HOME. The fixed offline_access reauth path is narrower: matching
+		// auth status and AppID prove the user connection was restored.
+		if !deviceAuthCanReconcileExistingOfflineGrant(outcome, expectedScopes) {
+			if !session.ResumeExpiresAt.After(f.now().UTC()) {
+				return DeviceAuthExpired, ""
+			}
+			return DeviceAuthPending, ""
 		}
-		return DeviceAuthPending, ""
 	case DeviceAuthCompleted:
 	default:
 		return DeviceAuthProtocolFailure, ""
@@ -890,6 +894,20 @@ func (f *DeviceAuthFlow) completeInCandidateHome(
 	}
 	f.observeDeviceAuth(session, "reconcile_app", "matched", LarkCLIVersion, 0)
 	return DeviceAuthCompleted, appID
+}
+
+func deviceAuthCanReconcileExistingOfflineGrant(outcome DeviceAuthOutcome, expectedScopes []string) bool {
+	if len(expectedScopes) != 1 || expectedScopes[0] != "offline_access" {
+		return false
+	}
+	switch outcome {
+	case DeviceAuthAmbiguous, DeviceAuthRetryableDependency,
+		DeviceAuthPollingPendingTimeout, DeviceAuthPollingNetworkFailure,
+		DeviceAuthPollingReadFailure, DeviceAuthPollingParseFailure, DeviceAuthPollingSlowDown:
+		return true
+	default:
+		return false
+	}
 }
 
 // validPendingDeviceAuthOperation re-establishes the complete durable link

@@ -2159,6 +2159,64 @@ func TestDeviceAuthFlow_CompleteAmbiguousWithoutGrantedScopeEvidenceStaysPending
 	fixture.store.mu.Unlock()
 }
 
+func TestDeviceAuthFlow_CompleteOfflineAccessNoopReconcilesExistingGrant(t *testing.T) {
+	fixture := newDeviceAuthCompletionFixture(t)
+	scopes := []string{"offline_access"}
+	requestedScopes, err := json.Marshal(scopes)
+	require.NoError(t, err)
+	scopeHash := deviceAuthScopeHash(scopes)
+	resumeExpiry := fixture.now.Add(5 * time.Minute)
+	operationID := *fixture.session.OperationID
+	ciphertext, keyVersion, err := fixture.flow.cipher.Seal(DeviceAuthCredentialBinding{
+		UserID: fixture.session.UserID, Generation: fixture.session.Generation, AppID: fixture.account.AppID,
+		OperationID: operationID, SessionID: fixture.session.ID, ScopeHash: scopeHash,
+		ResumeExpiresAt: resumeExpiry,
+	}, "opaque-completion-device-code")
+	require.NoError(t, err)
+	summary, err := json.Marshal(persistedOperationSummary{
+		Status:         model.FeishuOperationWaitingUserAuth,
+		Phase:          model.FeishuAuthPhaseUserAuth,
+		SessionID:      fixture.session.ID,
+		RecoveryKind:   RecoveryReauth,
+		RecoveryScopes: scopes,
+	})
+	require.NoError(t, err)
+
+	fixture.session.RequestedScopesJSON = requestedScopes
+	fixture.session.ScopeHash = scopeHash
+	fixture.session.ResumeExpiresAt = &resumeExpiry
+	fixture.session.ResumeCredentialCiphertext = ciphertext
+	fixture.session.ResumeKeyVersion = keyVersion
+	fixture.store.session.RequestedScopesJSON = append([]byte(nil), requestedScopes...)
+	fixture.store.session.ScopeHash = scopeHash
+	fixture.store.session.ResumeExpiresAt = &resumeExpiry
+	fixture.store.session.ResumeCredentialCiphertext = append([]byte(nil), ciphertext...)
+	fixture.store.session.ResumeKeyVersion = keyVersion
+	fixture.store.operation.ResultSummaryJSON = summary
+	fixture.cli.outcome = DeviceAuthPollingPendingTimeout
+	fixture.cli.authStatus = true
+	fixture.cli.appID = fixture.account.AppID
+
+	result, err := fixture.flow.CompleteUserAuthorization(
+		context.Background(), fixture.session.UserID, fixture.session.Generation, fixture.session.ID,
+	)
+	require.NoError(t, err)
+	require.True(t, result.Completed)
+	require.Empty(t, result.NoticeCode)
+	fixture.cli.mu.Lock()
+	require.Equal(t, []string{"complete", "auth_status", "app_id"}, fixture.cli.events)
+	require.Equal(t, scopes, fixture.cli.completeExpectedScopes)
+	fixture.cli.mu.Unlock()
+	fixture.store.mu.Lock()
+	require.Equal(t, 1, fixture.store.finalizeCalls)
+	require.NotNil(t, fixture.store.published)
+	require.Equal(t, model.FeishuAuthSessionCompleted, fixture.store.session.State)
+	fixture.store.mu.Unlock()
+	fixture.dispatcher.mu.Lock()
+	require.Equal(t, []string{operationID}, fixture.dispatcher.calls)
+	fixture.dispatcher.mu.Unlock()
+}
+
 func TestDeviceAuthFlow_CompleteLateOwnerCannotPublish(t *testing.T) {
 	fixture := newDeviceAuthCompletionFixture(t)
 	fixture.cli.outcome = DeviceAuthCompleted
