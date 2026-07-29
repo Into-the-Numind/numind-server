@@ -1,5 +1,25 @@
 schema_version: '2.0'
 features:
+- id: prod-schema-dev-compat
+  ndf_version: '3.0'
+  description: Make the reviewed Prod schema reconcile package accept the real Dev historical schema without rewriting any existing customer, credit, attachment, Agent, or Feishu business row.
+  classification_reason: 'Standard: production migration gates, existing Feishu constraints, attachment schema compatibility, and Agent state constraints are high-risk database work across more than three files.'
+  last_updated_by: ai-s0
+  last_updated_at: '2026-07-30T04:39:00+0800'
+  created_at: '2026-07-30T04:36:07+0800'
+  track: standard
+  stage: S0
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: feature/prod-schema-dev-compat}
+  worktrees: {numind-server: /private/tmp/wt-prod-schema-dev-compat-numind-server}
+  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0, current_task: 'S0 requirement captured'}
+  artifacts:
+    requirement: requirements/prod-schema-dev-compat.md
+  decisions:
+  - 'Preserve all Dev business rows; compatibility is expressed in schema checks and additive constraints, not data cleanup.'
+  - 'QA remains out of scope and Prod remains read-only until separate final authorization.'
+  blockers: []
 - id: prod-schema-reconcile
   ndf_version: '3.0'
   description: Add only the schema and system configuration required by the full Dev-to-Prod product rollout while preserving every existing Prod customer and billing value.
