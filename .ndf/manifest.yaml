@@ -5,7 +5,7 @@ features:
   description: Run the Dev-proven Sandbox feature on the existing Prod host while isolating its Docker control plane, networks, secrets, mounts, and resource budget from customer-facing services and data.
   classification_reason: 'Standard: production host container-control security, a separate Sandbox runtime, build/deploy scripts, resource policy, and rollback verification span more than three files and are high risk.'
   last_updated_by: ai-s4-coding
-  last_updated_at: '2026-07-30T07:39:38+0800'
+  last_updated_at: '2026-07-30T07:54:29+0800'
   created_at: '2026-07-30T01:26:00+0800'
   track: standard
   stage: S4
@@ -13,13 +13,14 @@ features:
   repos: [numind-server]
   branches: {numind-server: feature/prod-sandbox-isolation}
   worktrees: {numind-server: /private/tmp/wt-prod-sandbox-isolation-numind-server}
-  progress: {total_tasks: 18, completed_tasks: 1, reviewed_tasks: 1, current_task: 'T2 SQLite lease journal and state machine implementation'}
+  progress: {total_tasks: 18, completed_tasks: 2, reviewed_tasks: 1, current_task: 'T2 SQLite lease journal dual review'}
   artifacts:
     requirement: requirements/prod-sandbox-isolation.md
     proposal: proposals/prod-sandbox-isolation-proposal.md
     spec: docs/superpowers/specs/2026-07-30-prod-sandbox-isolation-design.md
     plan: docs/superpowers/plans/prod-sandbox-isolation-plan.md
     t1_review: .ndf/decisions/prod-sandbox-isolation/0001-t1-broker-client-review-hardening.md
+    t2_journal: .ndf/decisions/prod-sandbox-isolation/0002-t2-lease-journal.md
     office_hours_design: /Users/zhiyuchen/.gstack/projects/Into-the-Numind-numind-server/zhiyuchen-feature-prod-sandbox-isolation-design-20260730-023436.md
   decisions:
   - 'Use the existing Prod cloud server rather than adding a separate cloud server.'
