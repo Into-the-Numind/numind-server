@@ -32,6 +32,7 @@ func (t *larkExecuteTool) Name() string { return "lark_execute" }
 func (t *larkExecuteTool) Description() string {
 	return "Execute controlled lark-cli argv for Docs/Base/Wiki/Drive. " +
 		"argv may copy the official skill command verbatim with a leading `lark-cli`, or omit that one executable token. " +
+		"JSON bodies must be one complete inline argv value after --json; stdin and file indirection are not supported. " +
 		"Identity, authorization, scope, risk, and idempotency come only from server context. " +
 		"There is no shell execution and no IM/message capability."
 }
@@ -46,8 +47,7 @@ func (t *larkExecuteTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type":"object",
 		"properties":{
-			"argv":{"type":"array","minItems":1,"items":{"type":"string"},"description":"Controlled lark-cli argv; a single leading literal lark-cli from official skill examples is optional; no shell."},
-			"stdin_json":{"description":"Optional JSON value passed as stdin; null is normalized to absent."}
+			"argv":{"type":"array","minItems":1,"items":{"type":"string"},"description":"Controlled lark-cli argv; a single leading literal lark-cli from official skill examples is optional; JSON bodies must be one complete inline value after --json; no shell, stdin, or file indirection."}
 		},
 		"required":["argv"],
 		"additionalProperties":false
@@ -58,6 +58,8 @@ type larkExecuteInput struct {
 	Argv      []string
 	StdinJSON json.RawMessage
 }
+
+var errLarkExecuteStdinUnsupported = errors.New("stdin_json unsupported")
 
 func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	if t == nil || t.executor == nil || ctx == nil {
@@ -73,42 +75,84 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 	var normalizedCommand *feishu.NormalizedCommand
 	var normalizeErr error
 	if decodeErr == nil {
-		normalizedCommand, normalizeErr = feishu.NewCommandCatalog().Normalize(decoded.Argv, decoded.StdinJSON)
+		normalizedCommand, normalizeErr = feishu.NewCommandCatalog().Normalize(decoded.Argv, nil)
 	}
+	commandClass := "invalid"
+	if decodeErr == nil {
+		commandClass = feishu.SafeCommandClass(decoded.Argv)
+	}
+	span := startSafePipelineToolSpan(ctx, "tool.lark_execute.execute", map[string]any{
+		"run_id":        runID,
+		"command_class": commandClass,
+	})
+	spanOutput := map[string]any{
+		"attempt":       0,
+		"max_attempts":  larkExecuteMaxCorrectableAttempts,
+		"feishu_called": false,
+	}
+	spanErrorClass := "pre_execution_error"
+	defer func() { span.End(spanOutput, spanErrorClass) }()
+
 	writeFenceKey := larkExecuteWriteFenceKey(normalizedCommand)
 	retryState, retryAttempt, blockedReason, allowed := larkExecuteRetryBegin(runID, writeFenceKey)
+	attemptsBeforeCall, _ := larkExecuteRetryProgress(retryState)
+	spanOutput["attempt"] = attemptsBeforeCall
+	if allowed && attemptsBeforeCall < larkExecuteMaxCorrectableAttempts {
+		spanOutput["attempt"] = attemptsBeforeCall + 1
+	}
 	if !allowed {
 		switch blockedReason {
 		case larkRetryBlockedTerminal:
+			spanErrorClass = "execution_stopped"
 			return larkWorkspaceSoftError(larkWorkspaceErrorExecuteStopped)
 		case larkRetryBlockedInFlight:
+			spanErrorClass = "command_in_flight"
 			return larkWorkspaceSoftError(larkWorkspaceErrorExecuteInFlight)
 		default:
+			spanErrorClass = "correction_exhausted"
 			return larkWorkspaceSoftError(larkWorkspaceErrorExecuteRetryExhausted)
 		}
 	}
 	if decodeErr != nil {
+		code := "invalid_execute_input"
+		message := "飞书工作区参数无效；lark_execute 只接受有效的 argv。"
+		hint := "lark_execute 只接受有效的 argv"
+		if errors.Is(decodeErr, errLarkExecuteStdinUnsupported) {
+			code = "unsupported_stdin_json"
+			message = "有数托管环境不支持 stdin_json；请把完整 JSON 作为 --json 后的一个内联 argv。"
+			hint = "有数托管环境不支持 stdin_json，请使用完整内联 --json"
+		}
 		exhausted := larkExecuteRetryRejected(retryState, retryAttempt)
 		attempts, remaining := larkExecuteRetryProgress(retryState)
+		spanOutput["attempt"] = attempts
+		spanErrorClass = code
 		if exhausted {
-			return larkWorkspaceCorrectionExhausted("lark_execute 只接受有效的 argv 与 stdin_json")
+			spanErrorClass = "correction_exhausted"
+			return larkWorkspaceCorrectionExhausted(hint)
 		}
 		return larkWorkspaceCorrectableCommandError(
-			"invalid_execute_input",
-			"飞书工作区参数无效；lark_execute 只接受有效的 argv 与 stdin_json。",
+			code,
+			message,
 			attempts,
 			remaining,
 		)
 	}
-	if hint, ok := larkExecuteLocalCatalogRejectionHint(decoded.Argv, normalizeErr); ok {
+	if hint, code, ok := larkExecuteLocalCatalogRejectionHint(decoded.Argv, normalizeErr); ok {
 		exhausted := larkExecuteRetryRejected(retryState, retryAttempt)
 		attempts, remaining := larkExecuteRetryProgress(retryState)
+		spanOutput["attempt"] = attempts
+		spanErrorClass = code
 		if exhausted {
+			spanErrorClass = "correction_exhausted"
 			return larkWorkspaceCorrectionExhausted(hint)
 		}
+		message := "飞书命令参数校验失败：" + hint + "。本次尚未访问飞书，请按该原因修正命令。"
+		if code == "command_rejected" {
+			message = "飞书业务命令不在托管目录内：" + hint + " 请使用技能列出的 Docs/Base/Wiki/Drive 业务命令。本次尚未访问飞书，也不代表连接异常。"
+		}
 		return larkWorkspaceCorrectableCommandError(
-			"command_rejected",
-			"飞书业务命令不在托管目录内："+hint+" 本次尚未访问飞书，也不代表连接异常。",
+			code,
+			message,
 			attempts,
 			remaining,
 		)
@@ -116,7 +160,10 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 	if larkExecuteTopicGuardBlocks(runID, normalizedCommand) {
 		exhausted := larkExecuteRetryRejected(retryState, retryAttempt)
 		attempts, remaining := larkExecuteRetryProgress(retryState)
+		spanOutput["attempt"] = attempts
+		spanErrorClass = "topic_customer_mismatch"
 		if exhausted {
+			spanErrorClass = "correction_exhausted"
 			return larkWorkspaceCorrectionExhausted("选题规划目标文档与已读取客户画像不一致")
 		}
 		return larkWorkspaceCorrectableCommandError(
@@ -133,17 +180,21 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 		ToolCallID:     toolCallID,
 		IdempotencyKey: fmt.Sprintf("%d:%s", runID, toolCallID),
 		Argv:           append([]string(nil), decoded.Argv...),
-		StdinJSON:      append(json.RawMessage(nil), decoded.StdinJSON...),
+		StdinJSON:      nil,
 	})
 	if err != nil {
 		if errors.Is(err, feishu.ErrOperationRequestRejected) {
 			hint, hasHint := feishu.SafeOperationRequestValidation(err)
 			exhausted := larkExecuteRetryRejected(retryState, retryAttempt)
 			attempts, remaining := larkExecuteRetryProgress(retryState)
+			spanOutput["attempt"] = attempts
+			spanErrorClass = "command_rejected"
 			if exhausted {
+				spanErrorClass = "correction_exhausted"
 				return larkWorkspaceCorrectionExhausted(hint)
 			}
 			if hasHint {
+				spanErrorClass = "command_validation"
 				return larkWorkspaceCorrectableCommandError(
 					"command_validation",
 					"飞书命令参数校验失败："+hint+"。本次尚未访问飞书，请按该原因修正命令。",
@@ -158,17 +209,24 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 				remaining,
 			)
 		}
+		spanOutput["feishu_called"] = "unknown"
+		spanErrorClass = "operation_error"
 		larkExecuteRetryFailed(retryState, retryAttempt)
 		return larkWorkspaceSoftError(larkWorkspaceErrorExecute)
 	}
 	if result == nil || strings.TrimSpace(result.OperationID) == "" || strings.TrimSpace(result.State) == "" {
+		spanOutput["feishu_called"] = "unknown"
+		spanErrorClass = "invalid_result"
 		larkExecuteRetryFailed(retryState, retryAttempt)
 		return larkWorkspaceSoftError(larkWorkspaceErrorExecute)
 	}
 
 	if isLarkWaitingState(result.State) {
+		spanOutput["feishu_called"] = false
+		spanErrorClass = pipelineToolTraceNoError
 		waitingResult, waitingErr := larkWaitingYield(result, toolCallID)
 		if waitingErr != nil {
+			spanErrorClass = "invalid_wait"
 			larkExecuteRetryCompleted(retryState, retryAttempt)
 		} else {
 			larkExecuteRetryFailed(retryState, retryAttempt)
@@ -176,11 +234,21 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 		return waitingResult, waitingErr
 	}
 	if !isLarkTerminalState(result.State) {
+		spanOutput["feishu_called"] = "unknown"
+		spanErrorClass = "invalid_result"
 		larkExecuteRetryFailed(retryState, retryAttempt)
 		return larkWorkspaceSoftError(larkWorkspaceErrorInvalidResult)
 	}
 	if result.State == model.FeishuOperationSucceeded {
+		spanOutput["feishu_called"] = normalizedCommand != nil && !normalizedCommand.LocalOnly
+		spanErrorClass = pipelineToolTraceNoError
 		larkExecuteTopicGuardObserve(runID, normalizedCommand, result.Data)
+	} else if result.Failure != nil {
+		spanOutput["feishu_called"] = result.Failure.BusinessStarted
+		spanErrorClass = larkExecuteTerminalTraceErrorClass(result.Failure.Category)
+	} else {
+		spanOutput["feishu_called"] = "unknown"
+		spanErrorClass = "terminal_failure"
 	}
 	// The operation layer intentionally knows nothing about Agent-run replay
 	// state. Attach only the opaque exact-command digest at this final trusted
@@ -195,26 +263,52 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 	}
 	output, err := feishu.MarshalLarkToolResult(result)
 	if err != nil {
+		spanErrorClass = "invalid_result"
 		larkExecuteRetryFailed(retryState, retryAttempt)
 		return larkWorkspaceSoftError(larkWorkspaceErrorInvalidResult)
 	}
 	if result.State == model.FeishuOperationSucceeded {
 		larkExecuteRetryCompleted(retryState, retryAttempt)
 	} else if larkExecuteRetryTerminalOutcome(retryState, retryAttempt, result.Failure) {
+		spanErrorClass = "correction_exhausted"
 		return larkWorkspaceSoftError(larkWorkspaceErrorExecuteRetryExhausted)
 	}
 	return ToolResult(output), nil
 }
 
-func larkExecuteLocalCatalogRejectionHint(argv []string, err error) (string, bool) {
-	if err == nil || !errors.Is(err, feishu.ErrCommandDenied) {
-		return "", false
+func larkExecuteTerminalTraceErrorClass(category string) string {
+	switch category {
+	case "connection_required",
+		"scope_required",
+		"reauth_required",
+		"validation",
+		"not_found",
+		"resource_denied",
+		"rate_limited",
+		"temporary",
+		"unknown_result",
+		"failed":
+		return category
+	default:
+		return "terminal_failure"
+	}
+}
+
+func larkExecuteLocalCatalogRejectionHint(argv []string, err error) (string, string, bool) {
+	if err == nil {
+		return "", "", false
 	}
 	hint, ok := feishu.SafeCommandValidationHint(argv, err)
-	if !ok || !strings.Contains(hint, "lark_inspect") {
-		return "", false
+	if !ok {
+		return "", "", false
 	}
-	return hint, true
+	if errors.Is(err, feishu.ErrCommandDenied) {
+		return hint, "command_rejected", true
+	}
+	if errors.Is(err, feishu.ErrCommandInvalidArgument) {
+		return hint, "command_validation", true
+	}
+	return "", "", false
 }
 
 func decodeLarkExecuteInput(input ToolInput) (larkExecuteInput, error) {
@@ -245,7 +339,7 @@ func decodeLarkExecuteInput(input ToolInput) (larkExecuteInput, error) {
 	// idempotency proof; asking an LLM to reproduce them made valid commands fail.
 	// Every security decision remains server-owned below the tool boundary.
 	if stdinRaw, ok := fields["stdin_json"]; ok && !bytes.Equal(bytes.TrimSpace(stdinRaw), []byte("null")) {
-		decoded.StdinJSON = append(json.RawMessage(nil), stdinRaw...)
+		return larkExecuteInput{}, errLarkExecuteStdinUnsupported
 	}
 	return decoded, nil
 }

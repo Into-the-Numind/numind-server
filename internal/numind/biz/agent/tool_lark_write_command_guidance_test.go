@@ -1,14 +1,19 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"numind-server/internal/numind/biz/feishu"
+	"numind-server/internal/pkg/langfuse"
+	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
 )
 
@@ -23,7 +28,7 @@ func TestLarkPersonalWorkspace_Run359WriteCommandContract(t *testing.T) {
 		require.Contains(t, schema, "complete inline")
 		require.Contains(t, larkHostedExecutionPolicy, "完整内联")
 		require.Contains(t, larkHostedExecutionPolicy, "不支持 `stdin_json`")
-		require.Contains(t, larkHostedExecutionPolicy, "不支持 `@file`")
+		require.Contains(t, larkHostedExecutionPolicy, "`@file`")
 	})
 
 	t.Run("ten failures exhaust and the eleventh call never reaches executor", func(t *testing.T) {
@@ -112,5 +117,182 @@ func TestLarkPersonalWorkspace_Run359WriteCommandContract(t *testing.T) {
 		require.Contains(t, string(result), `"code":"unsupported_stdin_json"`)
 		require.Contains(t, string(result), `"feishu_called":false`)
 		require.Empty(t, executor.snapshot())
+	})
+}
+
+func TestLangfuseLarkSkillReadContainsOnlySafeReferenceEvidence(t *testing.T) {
+	const (
+		runID           = uint64(359)
+		requested       = "lark-base-record-batch-create.md"
+		resolved        = "references/lark-base-record-batch-create.md"
+		secretContent   = "https://open.feishu.cn/base/customer-secret-note-body"
+		secretCursor    = "cursor-customer-secret"
+		secretReceipt   = "receipt-customer-secret"
+		secretReference = "references/customer-secret-never-log.md"
+	)
+	events := capturePipelineLangfuseEvents(t)
+	ctx := WithRunID(langfuse.WithTrace(context.Background(), "run-359-skill-reference"), runID)
+	tool := &larkSkillReadTool{executor: &fakeSkillReadExecutor{result: &feishu.SkillReadPage{
+		Skill:      "lark-base",
+		Path:       resolved,
+		Content:    secretContent,
+		References: []string{secretReference},
+		Receipt:    secretReceipt,
+	}}}
+
+	result, err := tool.Execute(ctx, ToolInput(fmt.Sprintf(
+		`{"skill":"lark-base","reference":%q,"cursor":%q}`,
+		requested,
+		secretCursor,
+	)))
+
+	require.NoError(t, err)
+	require.Contains(t, string(result), secretContent, "tool behavior must remain unchanged")
+	created := findPipelineSpanEvent(t, *events, "span-create", "tool.lark_skill_read.execute")
+	updated := findPipelineSpanUpdate(t, *events, created.ID)
+	assert.Equal(t, map[string]any{
+		"run_id":              runID,
+		"skill":               "lark-base",
+		"requested_reference": requested,
+	}, created.Input)
+	output, ok := updated.Output.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, true, output["ok"])
+	assert.Equal(t, resolved, output["resolved_path"])
+	assert.Equal(t, 1, output["page_count"])
+	assert.Equal(t, pipelineToolTraceNoError, output["error_class"])
+	assert.Contains(t, output, "duration_ms")
+
+	encoded := pipelineEventsJSON(t, *events)
+	for _, secret := range []string{secretContent, secretCursor, secretReceipt, secretReference} {
+		assert.NotContains(t, encoded, secret)
+	}
+	for _, forbiddenKey := range []string{"content", "cursor", "receipt", "references"} {
+		assert.NotContains(t, encoded, `"`+forbiddenKey+`"`)
+	}
+}
+
+func TestLarkExecuteLangfuseRecordsSafePreExecutionEvidence(t *testing.T) {
+	const (
+		traceRunID   = uint64(361)
+		noTraceRunID = uint64(362)
+		baseToken    = "bascnCustomerSecretABC123"
+		tableID      = "tblCustomerSecretABC123"
+		noteBody     = "customer-secret-note-body"
+	)
+	for _, runID := range []uint64{traceRunID, noTraceRunID} {
+		larkExecuteRetryClearRun(runID)
+		runID := runID
+		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+	}
+	payload, err := json.Marshal(map[string]any{
+		"fields": []string{"小红书笔记ID", "笔记正文", "完整分析"},
+		"rows":   [][]any{{"xhs-1", noteBody}},
+	})
+	require.NoError(t, err)
+	input, err := json.Marshal(map[string]any{"argv": []string{
+		"base", "+record-batch-create",
+		"--base-token", baseToken,
+		"--table-id", tableID,
+		"--json", string(payload),
+	}})
+	require.NoError(t, err)
+	executor := &fakeLarkExecutor{}
+	events := capturePipelineLangfuseEvents(t)
+	traceCtx := middleware.NewContextWithUserID(
+		langfuse.WithTrace(context.Background(), "run-359-execute-validation"),
+		437,
+	)
+	traceCtx = WithToolCallID(WithRunID(traceCtx, traceRunID), "run-359-safe-validation")
+
+	tracedResult, err := (&larkExecuteTool{executor: executor}).Execute(traceCtx, ToolInput(input))
+
+	require.NoError(t, err)
+	require.Contains(t, string(tracedResult), `"code":"command_validation"`)
+	require.Empty(t, executor.snapshot())
+	created := findPipelineSpanEvent(t, *events, "span-create", "tool.lark_execute.execute")
+	updated := findPipelineSpanUpdate(t, *events, created.ID)
+	assert.Equal(t, map[string]any{
+		"run_id":        traceRunID,
+		"command_class": "base +record-batch-create",
+	}, created.Input)
+	output, ok := updated.Output.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, 1, output["attempt"])
+	assert.Equal(t, 10, output["max_attempts"])
+	assert.Equal(t, false, output["feishu_called"])
+	assert.Equal(t, "command_validation", output["error_class"])
+
+	encoded := pipelineEventsJSON(t, *events)
+	for _, secret := range []string{baseToken, tableID, noteBody, string(payload)} {
+		assert.NotContains(t, encoded, secret)
+	}
+	for _, forbiddenKey := range []string{"argv", "stdin_json", "base_token", "table_id", "json"} {
+		assert.NotContains(t, encoded, `"`+forbiddenKey+`"`)
+	}
+
+	noTraceResult, err := (&larkExecuteTool{executor: &fakeLarkExecutor{}}).Execute(
+		larkPersonalWorkspaceContext(437, noTraceRunID, "run-359-no-trace-validation"),
+		ToolInput(input),
+	)
+	require.NoError(t, err)
+	assert.JSONEq(t, string(tracedResult), string(noTraceResult), "Langfuse absence must not change business behavior")
+}
+
+func TestLarkExecuteLangfuseNeverRecordsStdinOrProviderErrors(t *testing.T) {
+	t.Run("legacy stdin secret", func(t *testing.T) {
+		const runID = uint64(363)
+		larkExecuteRetryClearRun(runID)
+		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+		secret := "stdin-customer-secret"
+		events := capturePipelineLangfuseEvents(t)
+		ctx := middleware.NewContextWithUserID(
+			langfuse.WithTrace(context.Background(), "run-359-stdin-rejected"),
+			437,
+		)
+		ctx = WithToolCallID(WithRunID(ctx, runID), "run-359-stdin-rejected")
+		input, err := json.Marshal(map[string]any{
+			"argv": []string{
+				"base", "+record-list",
+				"--base-token", "bascnCustomerSecretABC123",
+				"--table-id", "tblCustomerSecretABC123",
+			},
+			"stdin_json": map[string]string{"secret": secret},
+		})
+		require.NoError(t, err)
+
+		result, err := (&larkExecuteTool{executor: &fakeLarkExecutor{}}).Execute(ctx, ToolInput(input))
+
+		require.NoError(t, err)
+		require.Contains(t, string(result), `"code":"unsupported_stdin_json"`)
+		assert.NotContains(t, pipelineEventsJSON(t, *events), secret)
+	})
+
+	t.Run("raw provider error", func(t *testing.T) {
+		const runID = uint64(364)
+		larkExecuteRetryClearRun(runID)
+		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+		secretError := "provider leaked customer-secret-error-body"
+		events := capturePipelineLangfuseEvents(t)
+		ctx := middleware.NewContextWithUserID(
+			langfuse.WithTrace(context.Background(), "run-359-provider-error"),
+			437,
+		)
+		ctx = WithToolCallID(WithRunID(ctx, runID), "run-359-provider-error")
+
+		result, err := (&larkExecuteTool{executor: &fakeLarkExecutor{err: errors.New(secretError)}}).Execute(
+			ctx,
+			ToolInput(`{"argv":["base","+record-list","--base-token","bascnCustomerSecretABC123","--table-id","tblCustomerSecretABC123"]}`),
+		)
+
+		require.NoError(t, err)
+		require.NotContains(t, string(result), secretError)
+		created := findPipelineSpanEvent(t, *events, "span-create", "tool.lark_execute.execute")
+		updated := findPipelineSpanUpdate(t, *events, created.ID)
+		output, ok := updated.Output.(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "unknown", output["feishu_called"])
+		assert.Equal(t, "operation_error", output["error_class"])
+		assert.NotContains(t, pipelineEventsJSON(t, *events), secretError)
 	})
 }

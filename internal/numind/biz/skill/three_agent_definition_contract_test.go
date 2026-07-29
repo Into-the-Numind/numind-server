@@ -187,6 +187,9 @@ func TestThreeAgentDefinitionContract(t *testing.T) {
 		"自动扫描当前用户的小红书选题库", "不要求用户手动勾选", "默认不重新分析已完成记录",
 		"小红书笔记ID", "分析状态=已完成", "分析规则版本", "每条笔记独立分析",
 		"可借鉴部分", "不可照搬部分", "只做分析与打标，不生成选题，不改写正文",
+		"lark-base-record-batch-create.md", "lark-base-cell-value.md",
+		"由你自己构造包含全部行和全部字段的完整内联 `--json`",
+		"不使用 `stdin_json`、`@file`、标准输入或后台格式转换",
 		"processed", "skipped", "remaining", "failed",
 	)
 	requireContainsAll(t, finalPrompts["agent-2"],

@@ -1226,6 +1226,15 @@ func SafeCommandValidationHint(argv []string, err error) (string, bool) {
 	return hint, true
 }
 
+// SafeCommandClass returns only a reviewed two-token command path. It never
+// includes flag names or values, so callers may use it in scalar diagnostics.
+func SafeCommandClass(argv []string) string {
+	if commandPath, ok := safeCatalogCommandPath(argv); ok {
+		return commandPath
+	}
+	return "invalid"
+}
+
 func normalizeDriveSearchDocTypes(value string) (string, error) {
 	allowed := map[string]struct{}{"docx": {}, "wiki": {}, "bitable": {}}
 	parts := strings.Split(value, ",")
@@ -1612,6 +1621,12 @@ func decodeStrictObject(raw string, target any) error {
 }
 
 func safeDeniedCommandHint(argv []string, err error) string {
+	if len(argv) > 0 {
+		switch argv[0] {
+		case "auth", "config", "whoami", "qrcode":
+			return "auth/config/whoami/qrcode 是本地初始化命令；不要执行 auth/config/whoami/qrcode，也不要要求用户提供 App ID/App Secret。应直接运行 Docs/Base/Wiki/Drive 业务命令，或在用户明确要求授权时调用 lark_connect。"
+		}
+	}
 	path, hasPath := safeCatalogCommandPath(argv)
 	if hasPath && strings.HasSuffix(path, " +inspect") {
 		return "lark_inspect is a separate tool, not a lark_execute command; call lark_inspect instead of " + path + "."
