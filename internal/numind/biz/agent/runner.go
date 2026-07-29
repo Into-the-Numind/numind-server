@@ -1080,10 +1080,12 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (result *RunResul
 		if uerr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalCompleted), &endedAt); uerr != nil {
 			log.Warnw("AgentRunner.Run UpdateState failed on short-circuit", "agent_run_id", run.ID, "error", uerr)
 		}
-		shortCircuitMessages, _ := json.Marshal(mergeResumeTranscript(priorMessages, []map[string]any{
+		shortTurns := []map[string]any{
 			{"role": "user", "content": req.displayUserText()},
 			{"role": "assistant", "content": req.Input},
-		}))
+		}
+		setUserTurnAttachments(shortTurns, req.DisplayAttachments)
+		shortCircuitMessages, _ := json.Marshal(mergeResumeTranscript(priorMessages, shortTurns))
 		if wErr := r.runStore.WriteTurn(ctx, run.ID, json.RawMessage(shortCircuitMessages)); wErr != nil {
 			log.Warnw("AgentRunner.Run WriteTurn failed on short-circuit", "agent_run_id", run.ID, "error", wErr)
 		}
