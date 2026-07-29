@@ -4,21 +4,22 @@ features:
   ndf_version: '3.0'
   description: Make the reviewed Prod schema reconcile package accept the real Dev historical schema without rewriting any existing customer, credit, attachment, Agent, or Feishu business row.
   classification_reason: 'Standard: production migration gates, existing Feishu constraints, attachment schema compatibility, and Agent state constraints are high-risk database work across more than three files.'
-  last_updated_by: ai-s4
-  last_updated_at: '2026-07-30T05:33:40+0800'
+  last_updated_by: ai-s5
+  last_updated_at: '2026-07-30T05:40:19+0800'
   created_at: '2026-07-30T04:36:07+0800'
   track: standard
-  stage: S4
+  stage: S5
   status: active
   repos: [numind-server]
   branches: {numind-server: feature/prod-schema-dev-compat}
   worktrees: {numind-server: /private/tmp/wt-prod-schema-dev-compat-numind-server}
-  progress: {total_tasks: 6, completed_tasks: 6, reviewed_tasks: 5, current_task: 'S4 final dual review after safety remediation'}
+  progress: {total_tasks: 6, completed_tasks: 6, reviewed_tasks: 6, current_task: 'S5 verification complete; merge then resume Dev S6 rehearsal'}
   artifacts:
     requirement: requirements/prod-schema-dev-compat.md
     proposal: proposals/prod-schema-dev-compat-proposal.md
     spec: docs/superpowers/specs/2026-07-30-prod-schema-dev-compat-design.md
     plan: docs/superpowers/plans/2026-07-30-prod-schema-dev-compat.md
+    verification: docs/superpowers/qa/2026-07-30-prod-schema-dev-compat-s5-acceptance.md
   decisions:
   - 'Preserve all Dev business rows; compatibility is expressed in schema checks and additive constraints, not data cleanup.'
   - 'QA remains out of scope and Prod remains read-only until separate final authorization.'
@@ -28,6 +29,7 @@ features:
   - 'Agent CHECK accepts the current empty state and exact historical zombie marker, while Feishu proof FKs are added only from a validated zero-FK state.'
   - 'S2 final dual review PASS at 88c2323d: P0=0, P1=0, P2=0 after closing AutoMigrate, projection, relational CHECK, migration self-gate, state-matrix, NULL-scan, and task-ownership gaps.'
   - 'S4 review remediation restricts the destructive MySQL integration setup to a dedicated temporary database, fingerprints complete attachment metadata, and tests the preflight/apply orphan race before any FK can be added.'
+  - 'S4 final dual review PASS at 05f911c5: both reviewers report P0=0, P1=0, P2=0; Prod and Dev remain read-only with zero preflight failures.'
   blockers: []
 - id: prod-schema-reconcile
   ndf_version: '3.0'
