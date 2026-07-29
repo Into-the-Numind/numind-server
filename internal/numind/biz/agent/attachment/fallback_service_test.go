@@ -1,5 +1,5 @@
-// TODO(post-1.2): inject aiservice mock interface to cover OCRFailVLMOK +
-// VLMFail_RetriesThenFinalError code paths. Currently these paths are only
+// TODO(post-1.2): inject aiservice mock interface to cover VLM retry/failure
+// code paths. Currently these paths are only
 // covered by the terminal-error path test (TestGenerate_Image_ErrorFallbackReady).
 // Adding coverage requires a mockable aiservice seam in fallbackPool (e.g.
 // optional chatFn/ocrFn fields set in tests). Tracked as tech debt.
@@ -158,7 +158,7 @@ func TestGenerateLargeTextKeepsFullCanonicalContentAndBoundsLegacyFallback(t *te
 func TestComposeImageFallback_AllVariants(t *testing.T) {
 	w, h := 800, 600
 
-	t.Run("both_vlm_and_ocr", func(t *testing.T) {
+	t.Run("vlm_text_only", func(t *testing.T) {
 		out := att.ComposeImageFallbackExported(att.ImageTemplateDataExported{
 			Filename:          "test.png",
 			Width:             &w,
@@ -171,11 +171,11 @@ func TestComposeImageFallback_AllVariants(t *testing.T) {
 		assert.Contains(t, out, "800x600")
 		assert.Contains(t, out, "画面描述")
 		assert.Contains(t, out, "A chart showing growth")
-		assert.Contains(t, out, "OCR提取的文字")
-		assert.Contains(t, out, "Revenue Q1 Q2 Q3")
+		assert.NotContains(t, out, "OCR提取的文字")
+		assert.NotContains(t, out, "Revenue Q1 Q2 Q3")
 	})
 
-	t.Run("vlm_only_no_ocr", func(t *testing.T) {
+	t.Run("vlm_only", func(t *testing.T) {
 		out := att.ComposeImageFallbackExported(att.ImageTemplateDataExported{
 			Filename:          "test.png",
 			FilesizeKB:        50,
@@ -187,7 +187,7 @@ func TestComposeImageFallback_AllVariants(t *testing.T) {
 		assert.NotContains(t, out, "OCR提取的文字")
 	})
 
-	t.Run("ocr_only_no_vlm", func(t *testing.T) {
+	t.Run("ocr_only_no_vlm_is_unavailable", func(t *testing.T) {
 		out := att.ComposeImageFallbackExported(att.ImageTemplateDataExported{
 			Filename:          "test.png",
 			FilesizeKB:        50,
@@ -195,8 +195,9 @@ func TestComposeImageFallback_AllVariants(t *testing.T) {
 			OCRText:           "Hello World",
 		})
 		assert.NotContains(t, out, "画面描述")
-		assert.Contains(t, out, "OCR提取的文字")
-		assert.Contains(t, out, "Hello World")
+		assert.NotContains(t, out, "OCR提取的文字")
+		assert.NotContains(t, out, "Hello World")
+		assert.Contains(t, out, "文字描述不可用")
 	})
 
 	t.Run("neither_vlm_nor_ocr", func(t *testing.T) {
@@ -287,7 +288,7 @@ func TestEnqueue_QueueFull_DegradesToSync(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TestGenerate_Image_OCRFailVLMOK (spec case 2) — uses mock aiservice
+// TestGenerate_Image_ErrorFallbackReady (spec case 2)
 // ─────────────────────────────────────────────────────────────────────────────
 
 // TestGenerate_Image_OKFallback verifies that when GenerateNow is called on an
@@ -301,7 +302,7 @@ func TestGenerate_Image_ErrorFallbackReady(t *testing.T) {
 	a := seedAtt(t, s, 1, att.ModalityImage)
 
 	svc := att.NewFallbackService(s)
-	// GenerateNow will fail because aiservice.OCR/Chat are not wired in tests,
+	// GenerateNow will fail because aiservice.Chat is not wired in tests,
 	// but after maxRetries the row must be marked ready.
 	// We can't call GenerateNow directly because it calls real aiservice.
 	// Instead verify the store API works correctly for the error-setting path.
