@@ -4,24 +4,30 @@ features:
   ndf_version: '3.0'
   description: Run the Dev-proven Sandbox feature on the existing Prod host while isolating its Docker control plane, networks, secrets, mounts, and resource budget from customer-facing services and data.
   classification_reason: 'Standard: production host container-control security, a separate Sandbox runtime, build/deploy scripts, resource policy, and rollback verification span more than three files and are high risk.'
-  last_updated_by: ai-s0
-  last_updated_at: '2026-07-30T01:33:43+0800'
+  last_updated_by: ai-s1
+  last_updated_at: '2026-07-30T02:34:36+0800'
   created_at: '2026-07-30T01:26:00+0800'
   track: standard
-  stage: S0
+  stage: S1
   status: active
   repos: [numind-server]
   branches: {numind-server: feature/prod-sandbox-isolation}
   worktrees: {numind-server: /private/tmp/wt-prod-sandbox-isolation-numind-server}
-  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0, current_task: 'S0 requirement captured; human continue-evaluation gate pending'}
+  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0, current_task: 'S1 Rootless Docker proposal drafted; human proposal-confirmation gate pending'}
   artifacts:
     requirement: requirements/prod-sandbox-isolation.md
+    proposal: proposals/prod-sandbox-isolation-proposal.md
+    office_hours_design: /Users/zhiyuchen/.gstack/projects/Into-the-Numind-numind-server/zhiyuchen-feature-prod-sandbox-isolation-design-20260730-023436.md
   decisions:
   - 'Use the existing Prod cloud server rather than adding a separate cloud server.'
   - 'Isolation must prevent the main API Sandbox control path from controlling or reaching production business containers and customer data.'
   - 'QA is out of scope; local verification and Dev acceptance remain required before a separate Prod authorization.'
+  - 'S1: use a dedicated non-login Linux user, a constrained sandboxd broker, and Rootless Docker; the main API receives only the broker socket and no raw Docker socket.'
+  - 'S1: keep pool_min=1, active_task_max=5, and total_container_max=5; standby counts toward total containers while 512 MiB remains a per-task ceiling rather than pre-allocation.'
+  - 'S1: allow five light tasks, but derive Prod parent memory.max from multi-day MemAvailable P1 while reserving 1.25 GiB for core services; 2.75 GiB parent and 2.25 GiB workload values are POC ceilings only.'
+  - 'S1: persist broker leases in a fsync SQLite journal, bound all RPC streams/bytes/connections, reserve a 256/384 MiB control slice plus 128 MiB parent headroom, and ship an API-independent idempotent reconciliation command.'
   blockers:
-  - 'S0 hard gate: product owner must confirm continuing to feasibility and proposal.'
+  - 'S1 hard gate: product owner must confirm the Rootless Docker proposal before S2 detailed design.'
 - id: xhs-analytics-summary-tests
   ndf_version: '3.0'
   description: Keep XHS Script daily analytics in the China calendar day during the 00:00-07:59 local window so deployment tests and daily product metrics do not report zeros.
