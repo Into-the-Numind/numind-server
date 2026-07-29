@@ -641,9 +641,30 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 			}
 			return lifecycleStoredOperationSummary(updated), nil
 		}
-		// Create-app remains owned by its blocking server worker. A pending
-		// acknowledgement does not reconstruct or restart that worker.
+		// Create-app normally remains owned by its blocking server worker. If a
+		// previous worker already persisted non-secret app identity evidence, the
+		// browser acknowledgement can safely advance the operation to user auth.
 		if session.State == model.FeishuAuthSessionPending {
+			if session.Phase == model.FeishuAuthPhaseCreateApp &&
+				operation.State == model.FeishuOperationWaitingConnection &&
+				operationHasCreateAppEvidence(account) {
+				dispatchCtx, dispatchCancel := authSessionDispatchContext(ctx)
+				defer dispatchCancel()
+				if err := s.dispatcher.DispatchResume(dispatchCtx, userID, operationID); err != nil {
+					return nil, ErrWorkspaceLifecycleUnavailable
+				}
+				updated, updateErr := s.workspace.GetOperationForUser(ctx, userID, account.Generation, operationID)
+				if updateErr != nil || updated == nil || updated.UserID != userID || updated.Generation != account.Generation {
+					return nil, ErrWorkspaceLifecycleUnavailable
+				}
+				if _, finalizeErr := s.finalizeTerminalOperationIfNeeded(ctx, userID, updated); finalizeErr != nil {
+					return nil, finalizeErr
+				}
+				if recoveryWaitingState(updated.State) {
+					return lifecycleCurrentOperationObservation(updated)
+				}
+				return lifecycleStoredOperationSummary(updated), nil
+			}
 			return lifecycleStoredOperationSummary(operation), nil
 		}
 		return nil, ErrWorkspaceLifecycleUnavailable
