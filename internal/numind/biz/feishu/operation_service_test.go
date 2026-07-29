@@ -1974,6 +1974,31 @@ func TestOperationService_WritePreflightRecoveryResumesExactlyOnce(t *testing.T)
 	require.Equal(t, 1, businessCalls)
 }
 
+func TestOperationService_PendingUserAuthResumeReplaysWhenScopesAlreadyGranted(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")
+	h.preflight.steps = []operationScopePreflightStep{
+		{result: &ScopeCheckResult{Granted: []string{"docx:document:readonly"}, Missing: []string{"docx:document:write_only"}}},
+		{result: &ScopeCheckResult{Granted: []string{"docx:document:readonly", "docx:document:write_only"}}},
+	}
+	h.recovery.action = &OperationAction{
+		Provider: ProviderLark, Phase: model.FeishuAuthPhaseUserAuth, SessionID: "session-still-pending",
+		Scopes: []string{"docx:document:write_only"}, ExpiresAt: time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC),
+	}
+
+	waiting, err := h.service.Execute(h.ctx, operationDocsAppendRequest(7, 185, "preflight-noop-auth", "doxcnABCDEFG123"))
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingUserAuth, waiting.State)
+
+	completed, err := h.service.Resume(h.ctx, 7, waiting.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, completed.State)
+	preflightCalls, _ := h.preflight.snapshot()
+	require.Equal(t, 3, preflightCalls)
+	businessCalls, _ := h.runner.snapshot()
+	require.Equal(t, 1, businessCalls)
+}
+
 func TestOperationService_RepeatedMissingWriteScopeFailsWithoutBusinessInvocation(t *testing.T) {
 	h := newOperationHarness(t)
 	h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")

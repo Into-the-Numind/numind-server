@@ -999,7 +999,7 @@ func (s *FeishuOperationService) Resume(ctx context.Context, userID uint, operat
 		if recoveryErr != nil {
 			return nil, ErrOperationUnavailable
 		}
-		if action != nil {
+		if action != nil && !s.currentGrantSatisfiesUserAuthRecovery(ctx, account, operation, persisted, summary) {
 			result := baseOperationResult(operation)
 			result.SupersededSessionIDs = append([]string(nil), summary.SupersededSessionIDs...)
 			result.Action = cloneOperationAction(action)
@@ -1015,6 +1015,62 @@ func (s *FeishuOperationService) Resume(ctx context.Context, userID uint, operat
 		}
 	}
 	return s.claimAndExecute(ctx, account, operation, persisted, priorSignature, false)
+}
+
+func (s *FeishuOperationService) currentGrantSatisfiesUserAuthRecovery(
+	ctx context.Context,
+	account *model.UserThirdPartyAccount,
+	operation *model.FeishuOperation,
+	persisted persistedOperationRequest,
+	summary persistedOperationSummary,
+) bool {
+	if s == nil || account == nil || operation == nil || s.preflight == nil || s.vault == nil ||
+		operation.State != model.FeishuOperationWaitingUserAuth ||
+		account.ConnectionState != model.FeishuConnectionConnected || !account.Connected ||
+		persisted.LocalOnly || len(persisted.Scopes) == 0 ||
+		summary.Phase != model.FeishuAuthPhaseUserAuth {
+		return false
+	}
+	switch summary.RecoveryKind {
+	case RecoveryUserScope, RecoveryReauth:
+	default:
+		return false
+	}
+	check, err := s.checkScopesForCurrentGrant(ctx, operation, persisted.Scopes)
+	return err == nil && check != nil && len(check.Missing) == 0
+}
+
+func (s *FeishuOperationService) checkScopesForCurrentGrant(
+	ctx context.Context,
+	operation *model.FeishuOperation,
+	scopes []string,
+) (*ScopeCheckResult, error) {
+	if s == nil || s.preflight == nil || operation == nil || len(scopes) == 0 {
+		return nil, ErrOperationUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var check *ScopeCheckResult
+	var checkErr error
+	vaultErr := s.vault.WithHome(ctx, operation.UserID, operation.Generation, func(home string) (bool, error) {
+		if err := ctx.Err(); err != nil {
+			return false, ErrOperationUnavailable
+		}
+		checkCtx, cancel := context.WithTimeout(ctx, ControlledLarkCLIVersionTimeout)
+		defer cancel()
+		check, checkErr = s.preflight.Check(checkCtx, home, append([]string(nil), scopes...))
+		return false, nil
+	})
+	if vaultErr != nil {
+		return nil, vaultErr
+	}
+	if checkErr != nil || check == nil {
+		return nil, ErrOperationUnavailable
+	}
+	return &ScopeCheckResult{
+		Granted: append([]string(nil), check.Granted...), Missing: append([]string(nil), check.Missing...),
+	}, nil
 }
 
 // Confirm is retained for rolling-upgrade compatibility with persisted

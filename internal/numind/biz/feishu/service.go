@@ -618,6 +618,15 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 						return nil, err
 					}
 				}
+				if completion.NoticeCode == AuthorizationPending && completion.Action == nil {
+					probed, advanced, probeErr := s.probePendingUserAuthOperation(ctx, userID, account.Generation, operation)
+					if probeErr != nil {
+						return nil, probeErr
+					}
+					if advanced {
+						return probed, nil
+					}
+				}
 				return lifecycleAuthorizationNoticeResult(operation, completion)
 			}
 			if !completion.Completed {
@@ -738,6 +747,47 @@ func (s *WorkspaceLifecycleService) Resume(ctx context.Context, userID uint, ope
 	default:
 		return nil, ErrWorkspaceLifecycleInvalid
 	}
+}
+
+func (s *WorkspaceLifecycleService) probePendingUserAuthOperation(
+	ctx context.Context,
+	userID uint,
+	generation uint64,
+	operation *model.FeishuOperation,
+) (*OperationResult, bool, error) {
+	if s == nil || s.dispatcher == nil || s.workspace == nil || operation == nil ||
+		operation.UserID != userID || operation.Generation != generation ||
+		operation.State != model.FeishuOperationWaitingUserAuth {
+		return nil, false, ErrWorkspaceLifecycleUnavailable
+	}
+	beforeSessionID, beforeWaiting := lifecycleOperationSessionID(operation)
+	if !beforeWaiting || strings.TrimSpace(beforeSessionID) == "" {
+		return nil, false, ErrWorkspaceLifecycleUnavailable
+	}
+	dispatchCtx, dispatchCancel := authSessionDispatchContext(ctx)
+	defer dispatchCancel()
+	if err := s.dispatcher.DispatchResume(dispatchCtx, userID, operation.ID); err != nil {
+		return nil, false, nil
+	}
+	updated, updateErr := s.workspace.GetOperationForUser(ctx, userID, generation, operation.ID)
+	if updateErr != nil || updated == nil || updated.UserID != userID || updated.Generation != generation {
+		return nil, false, ErrWorkspaceLifecycleUnavailable
+	}
+	afterSessionID, afterWaiting := lifecycleOperationSessionID(updated)
+	if updated.State == operation.State && (!afterWaiting || afterSessionID == beforeSessionID) {
+		return nil, false, nil
+	}
+	if afterWaiting {
+		result, err := lifecycleCurrentOperationObservation(updated)
+		if err != nil {
+			return nil, false, err
+		}
+		return result, true, nil
+	}
+	if _, settleErr := s.settleCommittedOperation(ctx, userID, updated); settleErr != nil {
+		return nil, false, settleErr
+	}
+	return lifecycleStoredOperationSummary(updated), true, nil
 }
 
 // compensateSucceededOperation retries only the durable Task11 continuation

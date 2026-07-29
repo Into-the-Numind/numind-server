@@ -1220,7 +1220,7 @@ func TestWorkspaceLifecycleResumeCompletedAuthorizationReturnsStoredUnknownAfter
 	require.Len(t, waits.calls, 2, "the second lifecycle finalization is an idempotent no-op")
 }
 
-func TestWorkspaceLifecycleResumeKeepsPendingUserAuthWaitingWithoutDispatch(t *testing.T) {
+func TestWorkspaceLifecycleResumeKeepsPendingUserAuthWaitingWhenProbeDoesNotAdvance(t *testing.T) {
 	operationID := "op-user-auth"
 	op := &model.FeishuOperation{
 		ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth,
@@ -1239,7 +1239,7 @@ func TestWorkspaceLifecycleResumeKeepsPendingUserAuthWaitingWithoutDispatch(t *t
 	require.NoError(t, err)
 	require.Equal(t, model.FeishuOperationWaitingUserAuth, result.State)
 	require.Nil(t, result.Action, "a pending session must not reconstruct or persist an authorization URL")
-	require.Zero(t, dispatcher.calls, "only the completed auth worker may resume the original operation")
+	require.Equal(t, 1, dispatcher.calls, "pending acknowledgement may probe once, but must keep waiting if the operation does not advance")
 }
 
 func TestWorkspaceLifecycleResumeRejectsUnrelatedAppScopeSession(t *testing.T) {
@@ -1389,6 +1389,41 @@ func TestWorkspaceLifecycleResumeUserAuthorizationOutcomeMatrix(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWorkspaceLifecycleResumePendingUserAuthProbesSatisfiedGrant(t *testing.T) {
+	operationID := "op-user-auth-noop"
+	sessionID := "session-user-auth-noop"
+	op := &model.FeishuOperation{
+		ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth,
+		ResultSummaryJSON: lifecycleRecoverySummary(t, model.FeishuOperationWaitingUserAuth, sessionID, model.FeishuAuthPhaseUserAuth, RecoveryUserScope),
+	}
+	svc, _, workspace, auth, dispatcher, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 2,
+		ConnectionState: model.FeishuConnectionConnected, Connected: true,
+	}, op)
+	workspace.activeSession = &model.FeishuAuthSession{
+		ID: sessionID, UserID: 7, Generation: 2, OperationID: &operationID,
+		Phase: model.FeishuAuthPhaseUserAuth, State: model.FeishuAuthSessionPending,
+	}
+	auth.completeUserAuth = func(_ context.Context, userID uint, generation uint64, gotSessionID string) (*DeviceAuthCompletion, error) {
+		require.Equal(t, uint(7), userID)
+		require.Equal(t, uint64(2), generation)
+		require.Equal(t, sessionID, gotSessionID)
+		return &DeviceAuthCompletion{NoticeCode: AuthorizationPending}, nil
+	}
+	dispatcher.dispatch = func(_ context.Context, userID uint, gotOperationID string) error {
+		require.Equal(t, uint(7), userID)
+		require.Equal(t, operationID, gotOperationID)
+		workspace.operation.State = model.FeishuOperationSucceeded
+		return nil
+	}
+
+	result, err := resumeCurrentForTest(context.Background(), 7, operationID, svc, ResumeActionUserCompleted)
+
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationSucceeded, result.State)
+	require.Equal(t, 1, dispatcher.calls)
 }
 
 func TestWorkspaceLifecycleResumeExpiredPendingUserAuthorizationRefreshesWithoutCompletion(t *testing.T) {
