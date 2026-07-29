@@ -64,13 +64,13 @@ type AgentAttachment struct {
 
 	// ParsedContentSHA256 is the stable file_read continuation token in the
 	// form "sha256:<64 lowercase hex>". The content itself is never logged.
-	ParsedContentSHA256 string `gorm:"size:71" json:"-"`
+	ParsedContentSHA256 string `gorm:"size:71;not null;default:''" json:"-"`
 
 	// ParsedContentByteSize stores len([]byte(ParsedContent)); ParsedPageCount
 	// remains zero when the parser cannot provide a reliable page count.
-	ParsedContentByteSize int64      `gorm:"default:0" json:"-"`
-	ParsedPageCount       int        `gorm:"default:0" json:"-"`
-	ParsedAt              *time.Time `json:"-"`
+	ParsedContentByteSize int64      `gorm:"type:bigint;not null;default:0" json:"-"`
+	ParsedPageCount       int        `gorm:"type:int;not null;default:0" json:"-"`
+	ParsedAt              *time.Time `gorm:"type:datetime(3)" json:"-"`
 
 	FallbackStartedAt   *time.Time `json:"fallback_started_at,omitempty"`
 	FallbackCompletedAt *time.Time `json:"fallback_completed_at,omitempty"`
