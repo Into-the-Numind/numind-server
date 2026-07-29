@@ -12,7 +12,7 @@ type imageTemplateData struct {
 	Height            *int
 	FilesizeKB        int64
 	VisionDescription string // may be empty
-	OCRText           string // may be empty
+	OCRText           string // deprecated; image fallback is VLM-only
 }
 
 // ImageTemplateDataExported is the exported alias of imageTemplateData for use
@@ -26,11 +26,7 @@ func ComposeImageFallbackExported(d imageTemplateData) string {
 }
 
 // composeImageFallback builds the text_fallback string for an image attachment.
-// The template respects spec §3:
-//   - Both VLM and OCR present → include both sections
-//   - Only OCR → skip VLM section
-//   - Only VLM → skip OCR section
-//   - Neither → degenerate "[图片：{filename}，文字描述不可用]"
+// Image fallback is intentionally VLM-only; legacy OCRText is ignored.
 func composeImageFallback(d imageTemplateData) string {
 	var dimStr string
 	if d.Width != nil && d.Height != nil {
@@ -44,10 +40,6 @@ func composeImageFallback(d imageTemplateData) string {
 
 	if d.VisionDescription != "" {
 		sections = append(sections, fmt.Sprintf("\n画面描述：\n%s", d.VisionDescription))
-	}
-
-	if d.OCRText != "" {
-		sections = append(sections, fmt.Sprintf("\nOCR提取的文字：\n%s", d.OCRText))
 	}
 
 	if len(sections) == 0 {

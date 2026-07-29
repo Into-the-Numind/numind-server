@@ -42,7 +42,7 @@ import (
 var cosURLPathRE = regexp.MustCompile(`^https?://[^/]+\.cos\.[^/]+\.myqcloud\.com/(.+)$`)
 
 // presignedExpiry is how long downstream providers have to fetch the asset.
-// 15 minutes covers retry chains (1s + 4s + 16s + VLM/OCR call times) with
+// 15 minutes covers retry chains (1s + 4s + 16s + VLM call times) with
 // plenty of headroom.
 const presignedExpiry int64 = 15 * 60
 
@@ -178,7 +178,6 @@ const (
 
 	// Per-modality single-call timeouts.
 	vlmTimeout = 60 * time.Second
-	ocrTimeout = 30 * time.Second
 	asrTimeout = 90 * time.Second
 	pdfTimeout = 90 * time.Second
 
@@ -186,9 +185,6 @@ const (
 	retryDelay1 = 1 * time.Second
 	retryDelay2 = 4 * time.Second
 	retryDelay3 = 16 * time.Second
-
-	// Large image threshold: skip VLM for files > 20MB (cost guard).
-	largeImageThreshold = 20 * 1024 * 1024 // 20MB in bytes
 
 	// PDF size limit for direct Bailian upload (MVP constraint).
 	maxPDFBytes = 10 * 1024 * 1024 // 10MB
@@ -350,7 +346,7 @@ func (p *fallbackPool) RecoverPending(ctx context.Context) error {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // processJob fetches the attachment row and calls generate with retry logic.
-// It injects a Langfuse trace so that VLM/OCR/ASR aiservice calls produce
+// It injects a Langfuse trace so that VLM/ASR aiservice calls produce
 // generation records in Langfuse (P0 fix: no more silent AI calls).
 func (p *fallbackPool) processJob(ctx context.Context, attID uint64) {
 	att, err := p.store.GetByID(ctx, attID)
@@ -544,15 +540,13 @@ func downloadBytes(ctx context.Context, url string, maxBytes int64) ([]byte, err
 // Modality-specific generators
 // ─────────────────────────────────────────────────────────────────────────────
 
-// generateImage handles the image modality:
-//  1. OCR via Baidu (soft failure — empty string on error is acceptable)
-//  2. VLM description via attachment.vision_describe (hard failure if >20MB skipped)
-//  3. Compose text_fallback from both
+// generateImage handles the image modality with a single VLM pass through the
+// attachment.vision_describe task profile.
 func (p *fallbackPool) generateImage(ctx context.Context, att *model.AgentAttachment) error {
 	filesizeKB := att.Size / 1024
 
 	// ── Presign URL for downstream providers ────────────────────────────────
-	// COS buckets are private; raw URLs return 403 to Ali VLM / Baidu OCR.
+	// COS buckets are private; raw URLs return 403 to Ali VLM.
 	// Generate a signed GET URL valid for 15 minutes (covers retries + LLM time).
 	imageURL := presignIfCOS(ctx, att.URL)
 
@@ -562,61 +556,41 @@ func (p *fallbackPool) generateImage(ctx context.Context, att *model.AgentAttach
 	// skip dimension extraction if already blank and leave Width/Height nil.
 	// (The controller can set them at upload time if it has the raw bytes.)
 
-	// ── OCR (soft failure) ──────────────────────────────────────────────────
-	var ocrText string
-	ocrCtx, ocrCancel := context.WithTimeout(ctx, ocrTimeout)
-	defer ocrCancel()
-
-	ocrResp, ocrErr := aiservice.OCR(ocrCtx, profile.OcrBaidu, aiservice.OCRRequest{
-		ImageURL: imageURL,
-	})
-	if ocrErr != nil {
-		// OCR failure is soft: log and continue with empty string.
-		log.Warnw("fallback OCR failed (soft)", "att_id", att.ID, "error", ocrErr)
-	} else if ocrResp != nil {
-		ocrText = ocrResp.Text
-	}
-
 	// ── VLM description ─────────────────────────────────────────────────────
 	var visDesc string
-	if att.Size > largeImageThreshold {
-		// Large image: skip VLM to avoid cost spike; use OCR-only template.
-		log.Infow("fallback: large image, skipping VLM", "att_id", att.ID, "size_mb", att.Size/1024/1024)
-	} else {
-		vlmCtx, vlmCancel := context.WithTimeout(ctx, vlmTimeout)
-		defer vlmCancel()
+	vlmCtx, vlmCancel := context.WithTimeout(ctx, vlmTimeout)
+	defer vlmCancel()
 
-		vlmResp, vlmErr := aiservice.Chat(vlmCtx, profile.AttachmentVisionDescribe, aiservice.ChatRequest{
-			Messages: []aiservice.ChatMessage{
-				{
-					Role:    aiservice.MessageRoleSystem,
-					Content: aiservice.MessageContent{Text: VLMSystemPrompt},
-				},
-				{
-					Role: aiservice.MessageRoleUser,
-					Content: aiservice.MessageContent{
-						Parts: []aiservice.MessagePart{
-							{
-								Type: aiservice.MessagePartTypeText,
-								Text: VLMUserPromptTemplate,
-							},
-							{
-								Type:     aiservice.MessagePartTypeImageURL,
-								ImageURL: &aiservice.ImageURL{URL: imageURL},
-							},
+	vlmResp, vlmErr := aiservice.Chat(vlmCtx, profile.AttachmentVisionDescribe, aiservice.ChatRequest{
+		Messages: []aiservice.ChatMessage{
+			{
+				Role:    aiservice.MessageRoleSystem,
+				Content: aiservice.MessageContent{Text: VLMSystemPrompt},
+			},
+			{
+				Role: aiservice.MessageRoleUser,
+				Content: aiservice.MessageContent{
+					Parts: []aiservice.MessagePart{
+						{
+							Type: aiservice.MessagePartTypeText,
+							Text: VLMUserPromptTemplate,
+						},
+						{
+							Type:     aiservice.MessagePartTypeImageURL,
+							ImageURL: &aiservice.ImageURL{URL: imageURL},
 						},
 					},
 				},
 			},
-			MaxTokens: 512,
-		})
-		if vlmErr != nil {
-			// VLM is a hard failure (we retry the whole attempt).
-			return fmt.Errorf("generateImage VLM: %w", vlmErr)
-		}
-		if vlmResp != nil {
-			visDesc = strings.TrimSpace(vlmResp.Content)
-		}
+		},
+		MaxTokens: 512,
+	})
+	if vlmErr != nil {
+		// VLM is a hard failure (we retry the whole attempt).
+		return fmt.Errorf("generateImage VLM: %w", vlmErr)
+	}
+	if vlmResp != nil {
+		visDesc = strings.TrimSpace(vlmResp.Content)
 	}
 
 	// ── Compose fallback text ────────────────────────────────────────────────
@@ -626,15 +600,14 @@ func (p *fallbackPool) generateImage(ctx context.Context, att *model.AgentAttach
 		Height:            att.Height,
 		FilesizeKB:        filesizeKB,
 		VisionDescription: visDesc,
-		OCRText:           ocrText,
 	}
 	fallbackText := composeImageFallback(td)
-	canonicalText := composeCanonicalImageText(visDesc, ocrText)
+	canonicalText := composeCanonicalImageText(visDesc)
 
 	// ── Persist ─────────────────────────────────────────────────────────────
 	completed := time.Now()
 	fields := canonicalParsedContentFields(canonicalText, 0, completed)
-	fields["ocr_text"] = nilIfEmpty(ocrText)
+	fields["ocr_text"] = nil
 	fields["vision_description"] = nilIfEmpty(visDesc)
 	fields["text_fallback"] = boundedTextFallback(fallbackText)
 	fields["fallback_ready"] = true
@@ -770,13 +743,10 @@ func canonicalParsedContentFields(content string, pageCount int, completed time.
 	}
 }
 
-func composeCanonicalImageText(visionDescription, ocrText string) string {
-	sections := make([]string, 0, 2)
+func composeCanonicalImageText(visionDescription string) string {
+	sections := make([]string, 0, 1)
 	if visionDescription != "" {
 		sections = append(sections, "画面描述：\n"+visionDescription)
-	}
-	if ocrText != "" {
-		sections = append(sections, "OCR提取的文字：\n"+ocrText)
 	}
 	return strings.Join(sections, "\n\n")
 }

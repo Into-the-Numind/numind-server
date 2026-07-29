@@ -1,5 +1,5 @@
-// TODO(post-1.2): inject aiservice mock interface to cover OCRFailVLMOK +
-// VLMFail_RetriesThenFinalError code paths. Currently these paths are only
+// TODO(post-1.2): inject aiservice mock interface to cover VLM retry/failure
+// code paths. Currently these paths are only
 // covered by the terminal-error path test (TestGenerate_Image_ErrorFallbackReady).
 // Adding coverage requires a mockable aiservice seam in fallbackPool (e.g.
 // optional chatFn/ocrFn fields set in tests). Tracked as tech debt.
@@ -288,7 +288,7 @@ func TestEnqueue_QueueFull_DegradesToSync(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TestGenerate_Image_OCRFailVLMOK (spec case 2) — uses mock aiservice
+// TestGenerate_Image_ErrorFallbackReady (spec case 2)
 // ─────────────────────────────────────────────────────────────────────────────
 
 // TestGenerate_Image_OKFallback verifies that when GenerateNow is called on an
@@ -302,7 +302,7 @@ func TestGenerate_Image_ErrorFallbackReady(t *testing.T) {
 	a := seedAtt(t, s, 1, att.ModalityImage)
 
 	svc := att.NewFallbackService(s)
-	// GenerateNow will fail because aiservice.OCR/Chat are not wired in tests,
+	// GenerateNow will fail because aiservice.Chat is not wired in tests,
 	// but after maxRetries the row must be marked ready.
 	// We can't call GenerateNow directly because it calls real aiservice.
 	// Instead verify the store API works correctly for the error-setting path.

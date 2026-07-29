@@ -1,6 +1,6 @@
 // Package attachment provides the async fallback generation service for agent
-// attachments. It generates textual descriptions (VLM), OCR text, and/or ASR
-// transcripts for uploaded files so that single-modal LLMs can reason about them.
+// attachments. It generates textual descriptions (VLM) and ASR transcripts for
+// uploaded files so that single-modal LLMs can reason about them.
 package attachment
 
 // VLMSystemPrompt is the system prompt for the attachment.vision_describe task.
