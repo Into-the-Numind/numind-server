@@ -11,6 +11,8 @@ Files:
 - `migrations/prod_schema_reconcile_test.go`
 - `scripts/2026-07-30-prod-schema-reconcile/test-mysql8.sh`
 - `scripts/2026-07-30-prod-schema-reconcile/testdata/prod-partial-baseline.sql`
+- `internal/numind/helper_agent_attachment_migration_test.go`
+- `internal/numind/store/agent_attachment_mysql_integration_test.go`
 
 Work:
 
@@ -35,10 +37,6 @@ Files:
 
 - `scripts/2026-07-30-prod-schema-reconcile/00-preflight.sql`
 - `scripts/2026-07-30-prod-schema-reconcile/02-verify.sql`
-- `migrations/20260730_120000_prod_schema_reconcile.sql`
-- `internal/numind/helper.go`
-- `internal/numind/helper_agent_attachment_migration_test.go`
-- `internal/numind/store/agent_attachment_mysql_integration_test.go`
 - expected contract fixtures in tests/runbook
 
 Work:
@@ -61,6 +59,11 @@ Files:
 
 - `scripts/2026-07-30-prod-schema-reconcile/00-preflight.sql`
 - `scripts/2026-07-30-prod-schema-reconcile/02-verify.sql`
+- `migrations/20260730_120000_prod_schema_reconcile.sql`
+- `scripts/2026-07-30-prod-schema-reconcile/test-mysql8.sh`
+- `internal/numind/helper.go`
+- `internal/numind/helper_agent_attachment_migration_test.go`
+- `internal/numind/store/agent_attachment_mysql_integration_test.go`
 
 Work:
 
