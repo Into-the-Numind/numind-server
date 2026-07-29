@@ -83,13 +83,9 @@ func SafeOperationRequestValidation(err error) (string, bool) {
 	return validation.hint, true
 }
 
-func newOperationRequestValidation(err error) error {
-	if !errors.Is(err, ErrCommandInvalidArgument) {
-		return ErrOperationRequestRejected
-	}
-	prefix := ErrCommandInvalidArgument.Error() + ": "
-	hint := strings.TrimPrefix(err.Error(), prefix)
-	if hint == "" || hint == err.Error() || len(hint) > 256 {
+func newOperationRequestValidation(argv []string, err error) error {
+	hint, ok := SafeCommandValidationHint(argv, err)
+	if !ok {
 		return ErrOperationRequestRejected
 	}
 	return &operationRequestValidation{hint: hint}
@@ -855,7 +851,7 @@ func (s *FeishuOperationService) Execute(ctx context.Context, request ExecuteReq
 	}
 	normalized, err := s.catalog.Normalize(append([]string(nil), request.Argv...), append([]byte(nil), request.StdinJSON...))
 	if err != nil {
-		return nil, newOperationRequestValidation(err)
+		return nil, newOperationRequestValidation(request.Argv, err)
 	}
 	account, err := s.loadOrCreateAccount(ctx, request.UserID)
 	if err != nil {

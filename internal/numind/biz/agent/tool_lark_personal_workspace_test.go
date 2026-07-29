@@ -567,6 +567,7 @@ func TestLarkPersonalWorkspace_SkillReadPublishesHostedPolicy(t *testing.T) {
 	assert.Contains(t, output.HostedPolicy, "不要每次先检查权限")
 	assert.Contains(t, output.HostedPolicy, "只读 scope check")
 	assert.Contains(t, output.HostedPolicy, "lark_inspect")
+	assert.Contains(t, output.HostedPolicy, "不是 lark_execute")
 	assert.Contains(t, output.HostedPolicy, "生成授权卡片")
 	assert.Contains(t, output.HostedPolicy, "技能读取只提供命令说明")
 	assert.Contains(t, output.HostedPolicy, "身份、权限与恢复由平台负责")
@@ -1263,6 +1264,30 @@ func TestLarkPersonalWorkspace_ExecuteRejectedCommandStopsLocalCLIRetries(t *tes
 	assert.Len(t, executor.snapshot(), 7, "run cleanup must restore a fresh correction budget")
 }
 
+// Customer regression (Dev run 335): the model tried `drive +inspect` through
+// lark_execute even though inspection is a separate hosted tool. This should be
+// corrected before it reaches the operation executor or Feishu.
+func TestLarkPersonalWorkspace_ExecuteGuidesInspectToolConfusionBeforeExecutor(t *testing.T) {
+	const runID = uint64(335)
+	larkExecuteRetryClearRun(runID)
+	t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+
+	executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+		OperationID: "must-not-run", State: model.FeishuOperationSucceeded,
+		Data: json.RawMessage(`{"ok":true}`),
+	}}
+	result, err := (&larkExecuteTool{executor: executor}).Execute(
+		larkPersonalWorkspaceContext(1, runID, "drive-inspect"),
+		ToolInput(`{"argv":["drive","+inspect","--url","https://example.feishu.cn/docx/SECRET"]}`),
+	)
+	requireSafeLarkSoftError(t, result, err, "SECRET", "example.feishu.cn")
+	assert.Contains(t, string(result), `"code":"command_rejected"`)
+	assert.Contains(t, string(result), `"feishu_called":false`)
+	assert.Contains(t, string(result), "lark_inspect")
+	assert.Contains(t, string(result), "drive +inspect")
+	assert.Empty(t, executor.snapshot())
+}
+
 // Customer regression (Dev run 248): two pre-execution command rejections
 // exhausted the run before the model's next, valid correction could reach the
 // executor. Correctable commands get five total attempts; success on the fifth
@@ -1481,6 +1506,43 @@ func TestLarkPersonalWorkspace_ExecuteTerminalStatesNeverFakeSuccess(t *testing.
 			assert.Equal(t, state, output.State)
 		})
 	}
+}
+
+func TestLarkExecuteRetryBudget_UnknownResultOnlyFencesExactWrite(t *testing.T) {
+	const runID = uint64(8315)
+	larkExecuteRetryClearRun(runID)
+	t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+
+	writeA, err := feishu.NewCommandCatalog().Normalize([]string{"docs", "+create", "--title", "A"}, nil)
+	require.NoError(t, err)
+	writeB, err := feishu.NewCommandCatalog().Normalize([]string{"docs", "+create", "--title", "B"}, nil)
+	require.NoError(t, err)
+	read, err := feishu.NewCommandCatalog().Normalize([]string{"docs", "+fetch", "--doc", "doxcnABCDEFG123"}, nil)
+	require.NoError(t, err)
+
+	fenceA := larkExecuteWriteFenceKey(writeA)
+	require.NotEmpty(t, fenceA)
+	state, attempt, blockedReason, allowed := larkExecuteRetryBegin(runID, fenceA)
+	require.True(t, allowed)
+	require.Equal(t, larkRetryNotBlocked, blockedReason)
+	exhausted := larkExecuteRetryTerminalOutcome(state, attempt, &feishu.OperationFailure{
+		Code: feishu.PublicCodeUnknownResult, Category: "unknown_result", BusinessStarted: true,
+	})
+	require.False(t, exhausted)
+
+	_, _, blockedReason, allowed = larkExecuteRetryBegin(runID, fenceA)
+	require.False(t, allowed)
+	require.Equal(t, larkRetryBlockedTerminal, blockedReason)
+
+	state, attempt, blockedReason, allowed = larkExecuteRetryBegin(runID, larkExecuteWriteFenceKey(read))
+	require.True(t, allowed)
+	require.Equal(t, larkRetryNotBlocked, blockedReason)
+	larkExecuteRetryCompleted(state, attempt)
+
+	state, attempt, blockedReason, allowed = larkExecuteRetryBegin(runID, larkExecuteWriteFenceKey(writeB))
+	require.True(t, allowed)
+	require.Equal(t, larkRetryNotBlocked, blockedReason)
+	larkExecuteRetryCompleted(state, attempt)
 }
 
 func TestLarkPersonalWorkspace_ExecuteStructuredOutcomesControlRunRetries(t *testing.T) {

@@ -1131,6 +1131,24 @@ func TestOperationService_StrictInputAndPlatformOwnedPolicy(t *testing.T) {
 		require.Zero(t, count)
 	})
 
+	t.Run("inspect path points agent to the separate inspection tool", func(t *testing.T) {
+		h := newOperationHarness(t)
+		req := operationDocsFetchRequest(335, "tc-drive-inspect")
+		req.Argv = []string{"drive", "+inspect", "--url", "https://example.feishu.cn/docx/SECRET"}
+		_, err := h.service.Execute(h.ctx, req)
+		require.ErrorIs(t, err, ErrOperationRequestRejected)
+		hint, ok := SafeOperationRequestValidation(err)
+		require.True(t, ok)
+		require.Contains(t, hint, "lark_inspect")
+		require.Contains(t, hint, "drive +inspect")
+		require.NotContains(t, hint, "SECRET")
+		require.NotContains(t, hint, "example.feishu.cn")
+
+		var count int64
+		require.NoError(t, h.db.Model(&model.FeishuOperation{}).Count(&count).Error)
+		require.Zero(t, count, "catalog rejection must not create or execute a Feishu operation")
+	})
+
 	t.Run("legacy receipt verifier cannot block wiki content", func(t *testing.T) {
 		h := newOperationHarness(t)
 		h.createAccount(7, model.FeishuConnectionConnected, 1, "cli_existing")

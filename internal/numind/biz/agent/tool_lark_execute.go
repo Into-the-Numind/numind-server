@@ -71,8 +71,9 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 	}
 	decoded, decodeErr := decodeLarkExecuteInput(input)
 	var normalizedCommand *feishu.NormalizedCommand
+	var normalizeErr error
 	if decodeErr == nil {
-		normalizedCommand, _ = feishu.NewCommandCatalog().Normalize(decoded.Argv, decoded.StdinJSON)
+		normalizedCommand, normalizeErr = feishu.NewCommandCatalog().Normalize(decoded.Argv, decoded.StdinJSON)
 	}
 	writeFenceKey := larkExecuteWriteFenceKey(normalizedCommand)
 	retryState, retryAttempt, blockedReason, allowed := larkExecuteRetryBegin(runID, writeFenceKey)
@@ -95,6 +96,19 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 		return larkWorkspaceCorrectableCommandError(
 			"invalid_execute_input",
 			"飞书工作区参数无效；lark_execute 只接受有效的 argv 与 stdin_json。",
+			attempts,
+			remaining,
+		)
+	}
+	if hint, ok := larkExecuteLocalCatalogRejectionHint(decoded.Argv, normalizeErr); ok {
+		exhausted := larkExecuteRetryRejected(retryState, retryAttempt)
+		attempts, remaining := larkExecuteRetryProgress(retryState)
+		if exhausted {
+			return larkWorkspaceCorrectionExhausted(hint)
+		}
+		return larkWorkspaceCorrectableCommandError(
+			"command_rejected",
+			"飞书业务命令不在托管目录内："+hint+" 本次尚未访问飞书，也不代表连接异常。",
 			attempts,
 			remaining,
 		)
@@ -190,6 +204,17 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 		return larkWorkspaceSoftError(larkWorkspaceErrorExecuteRetryExhausted)
 	}
 	return ToolResult(output), nil
+}
+
+func larkExecuteLocalCatalogRejectionHint(argv []string, err error) (string, bool) {
+	if err == nil || !errors.Is(err, feishu.ErrCommandDenied) {
+		return "", false
+	}
+	hint, ok := feishu.SafeCommandValidationHint(argv, err)
+	if !ok || !strings.Contains(hint, "lark_inspect") {
+		return "", false
+	}
+	return hint, true
 }
 
 func decodeLarkExecuteInput(input ToolInput) (larkExecuteInput, error) {

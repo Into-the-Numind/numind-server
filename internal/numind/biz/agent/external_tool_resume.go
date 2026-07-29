@@ -15,6 +15,7 @@ import (
 
 	"numind-server/internal/numind/biz/agent/stream"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/compliance_scope"
 	"numind-server/internal/pkg/externalaction"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
@@ -263,7 +264,8 @@ func (r *ExternalResumeReclaimer) Stop(ctx context.Context) error {
 }
 
 func (r *ExternalResumeReclaimer) scan(ctx context.Context) {
-	runs, err := r.store.ListExternalToolResumeCandidates(ctx, time.Now().Add(-30*time.Second), 100)
+	scanCtx := compliance_scope.WithSkipScope(ctx, "external_resume_reclaimer")
+	runs, err := r.store.ListExternalToolResumeCandidates(scanCtx, time.Now().Add(-30*time.Second), 100)
 	if err != nil {
 		if ctx.Err() == nil {
 			log.Warnw("external resume reclaimer scan failed", "error", err)

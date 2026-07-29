@@ -341,6 +341,33 @@ func TestErrorClassifier_KnownValidationAndNotFoundFailDeterministically(t *test
 	}
 }
 
+func TestErrorClassifier_FixedStructuredTuplesDoNotCollapseToGenericFailure(t *testing.T) {
+	t.Parallel()
+
+	classifier := NewErrorClassifier()
+	for _, test := range []struct {
+		fixture string
+		scopes  []string
+		risk    RiskLevel
+		public  string
+	}{
+		{fixture: "fixed-authentication-token-missing.json", scopes: docsCreateScopes(), risk: RiskWrite, public: PublicCodeReauthRequired},
+		{fixture: "fixed-resource-acl.json", scopes: docsCreateScopes(), risk: RiskWrite, public: PublicCodeResourceDenied},
+		{fixture: "fixed-validation.json", scopes: docsCreateScopes(), risk: RiskWrite, public: PublicCodeValidationError},
+		{fixture: "fixed-not-found.json", scopes: docsCreateScopes(), risk: RiskWrite, public: PublicCodeNotFound},
+		{fixture: "fixed-rate-limit.json", scopes: docsReadScopes(), risk: RiskRead, public: PublicCodeRateLimited},
+		{fixture: "fixed-upstream-5xx.json", scopes: docsReadScopes(), risk: RiskRead, public: PublicCodeTemporaryError},
+	} {
+		test := test
+		t.Run(test.fixture, func(t *testing.T) {
+			t.Parallel()
+			got := classifier.ClassifyEnvelope(loadErrorClassifierFixture(t, test.fixture), test.scopes, test.risk, true)
+			require.Equal(t, test.public, got.PublicCode)
+			require.NotEqual(t, PublicCodeFailed, got.PublicCode)
+		})
+	}
+}
+
 func TestErrorClassifier_UnknownTupleFailsClosed(t *testing.T) {
 	t.Parallel()
 
