@@ -1016,6 +1016,7 @@ func (s *FeishuOperationService) Resume(ctx context.Context, userID uint, operat
 			return nil, ErrOperationUnavailable
 		}
 	}
+	account = operationEffectiveAccount(account)
 	return s.claimAndExecute(ctx, account, operation, persisted, priorSignature, false)
 }
 
@@ -1030,8 +1031,24 @@ func createAppRecoveryAlreadyPrepared(account *model.UserThirdPartyAccount, summ
 		model.FeishuConnectionConnected:
 		return true
 	default:
-		return false
+		return operationHasCreateAppEvidence(account)
 	}
+}
+
+func operationEffectiveAccount(account *model.UserThirdPartyAccount) *model.UserThirdPartyAccount {
+	if !operationHasCreateAppEvidence(account) {
+		return account
+	}
+	copy := *account
+	copy.ConnectionState = model.FeishuConnectionAppReady
+	copy.Connected = false
+	return &copy
+}
+
+func operationHasCreateAppEvidence(account *model.UserThirdPartyAccount) bool {
+	return account != nil &&
+		account.ConnectionState == model.FeishuConnectionCreatingApp &&
+		validAuthSessionAppID(account.AppID)
 }
 
 func (s *FeishuOperationService) currentGrantSatisfiesUserAuthRecovery(
@@ -1483,6 +1500,7 @@ func (s *FeishuOperationService) executeClaimed(
 	confirmed bool,
 	executionGate *executionGateGuard,
 ) (*OperationResult, error) {
+	account = operationEffectiveAccount(account)
 	if account.ConnectionState != model.FeishuConnectionConnected && !persisted.LocalOnly {
 		kind := RecoveryCreateApp
 		waitingState := model.FeishuOperationWaitingConnection

@@ -1022,6 +1022,47 @@ func TestOperationService_ExplicitConnectCompletedCreateAppSkipsDuplicateCreateA
 		"a completed create-app recovery must not open a second create-app session")
 }
 
+func TestOperationService_ExplicitConnectCreateAppEvidenceContinuesToUserAuth(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionNone, 1, "")
+	h.recovery.action = &OperationAction{
+		Provider: ProviderLark, Phase: model.FeishuAuthPhaseCreateApp,
+		SessionID: "connect-create-app-evidence", URL: "https://open.feishu.cn/connect?state=create",
+		ExpiresAt: h.service.now().Add(5 * time.Minute),
+	}
+	waiting, err := h.service.Connect(h.ctx, ConnectOperationRequest{
+		UserID: 7, AgentRunID: 904, ToolCallID: "tc-connect-create-app-evidence",
+		IdempotencyKey: "904:tc-connect-create-app-evidence",
+	})
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingConnection, waiting.State)
+
+	require.NoError(t, h.db.Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ?", 7, ProviderLark).
+		Updates(map[string]any{
+			"connection_state": model.FeishuConnectionCreatingApp,
+			"connected":        false,
+			"app_id":           "cli_app_evidence",
+		}).Error)
+	h.recovery.action = &OperationAction{
+		Provider: ProviderLark, Phase: model.FeishuAuthPhaseUserAuth,
+		SessionID: "connect-user-auth-after-evidence",
+		URL:       "https://accounts.feishu.cn/oauth/v1/device/verify?flow_id=opaque",
+		ExpiresAt: h.service.now().Add(5 * time.Minute),
+	}
+
+	resumed, err := h.service.Resume(h.ctx, 7, waiting.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingUserAuth, resumed.State)
+	require.NotNil(t, resumed.Action)
+	require.Equal(t, model.FeishuAuthPhaseUserAuth, resumed.Action.Phase)
+	require.Equal(t, "connect-user-auth-after-evidence", resumed.Action.SessionID)
+	calls := h.recovery.snapshot()
+	require.Len(t, calls, 2)
+	require.Equal(t, RecoveryCreateApp, calls[0].Kind)
+	require.Equal(t, RecoveryReauth, calls[1].Kind)
+}
+
 func TestOperationService_ExplicitConnectAlreadyConnectedCompletesWithoutRecovery(t *testing.T) {
 	h := newOperationHarness(t)
 	h.createAccount(7, model.FeishuConnectionConnected, 4, "cli_existing")
