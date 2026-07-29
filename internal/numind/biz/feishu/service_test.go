@@ -1020,6 +1020,41 @@ func TestWorkspaceLifecycleResumeCompletedDispatchIsDetachedWithHardCeiling(t *t
 	require.Equal(t, operationID, (<-resultCh).OperationID)
 }
 
+func TestWorkspaceLifecycleResumeCreateAppEvidenceDispatchesPendingSession(t *testing.T) {
+	operationID := "op-create-app-evidence"
+	op := &model.FeishuOperation{
+		ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingConnection,
+		ResultSummaryJSON: lifecycleRecoverySummary(t, model.FeishuOperationWaitingConnection, "session-create-app-evidence", model.FeishuAuthPhaseCreateApp, RecoveryCreateApp),
+	}
+	svc, _, workspace, _, dispatcher, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 2,
+		ConnectionState: model.FeishuConnectionCreatingApp, AppID: "cli_app_evidence",
+	}, op)
+	workspace.activeSession = &model.FeishuAuthSession{
+		ID: "session-create-app-evidence", UserID: 7, Generation: 2, OperationID: &operationID,
+		Phase: model.FeishuAuthPhaseCreateApp, State: model.FeishuAuthSessionPending,
+		ExpiresAt: time.Now().Add(time.Minute),
+	}
+	dispatcher.dispatch = func(_ context.Context, _ uint, _ string) error {
+		workspace.operation.State = model.FeishuOperationWaitingUserAuth
+		workspace.operation.ResultSummaryJSON = lifecycleRecoverySummary(t, model.FeishuOperationWaitingUserAuth, "session-user-auth-after-evidence", model.FeishuAuthPhaseUserAuth, RecoveryReauth)
+		workspace.activeSession = &model.FeishuAuthSession{
+			ID: "session-user-auth-after-evidence", UserID: 7, Generation: 2, OperationID: &operationID,
+			Phase: model.FeishuAuthPhaseUserAuth, State: model.FeishuAuthSessionPending,
+			ExpiresAt: time.Now().Add(time.Minute),
+		}
+		return nil
+	}
+
+	result, err := resumeCurrentForTest(context.Background(), 7, operationID, svc, ResumeActionUserCompleted)
+
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingUserAuth, result.State)
+	require.NotNil(t, result.Action)
+	require.Equal(t, "session-user-auth-after-evidence", result.Action.SessionID)
+	require.Equal(t, 1, dispatcher.calls)
+}
+
 func TestWorkspaceLifecycleResumeUserCompletedFinalizesTerminalAgentWaits(t *testing.T) {
 	tests := []struct {
 		state   string
