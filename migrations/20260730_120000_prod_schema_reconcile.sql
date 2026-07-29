@@ -92,6 +92,22 @@ BEGIN
   ) THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: orphan survey_answer.question_id';
   END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM `announcement_read`
+    GROUP BY `announcement_id`, `user_id`
+    HAVING COUNT(*) > 1
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: duplicate announcement_read user pair';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM `survey_response`
+    GROUP BY `announcement_id`, `user_id`
+    HAVING COUNT(*) > 1
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: duplicate survey_response user pair';
+  END IF;
 END//
 DELIMITER ;
 CALL `_prod_schema_reconcile_assert`();
@@ -321,35 +337,6 @@ SET @ddl := IF(
 );
 PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
--- Only new parsed fields are backfilled. Existing attachment metadata is untouched.
-UPDATE `agent_attachment`
-SET `parsed_content` = `text_fallback`,
-    `parsed_content_sha256` = CONCAT('sha256:', SHA2(`text_fallback`, 256)),
-    `parsed_content_byte_size` = OCTET_LENGTH(`text_fallback`),
-    `parsed_at` = COALESCE(`fallback_completed_at`, `created_at`)
-WHERE `fallback_ready` = 1
-  AND `fallback_error` IS NULL
-  AND `text_fallback` IS NOT NULL
-  AND `parsed_content` IS NULL;
-
-UPDATE `agent_attachment`
-SET `parsed_content_sha256` = ''
-WHERE `parsed_content_sha256` IS NULL;
-
-UPDATE `agent_attachment`
-SET `parsed_content_byte_size` = 0
-WHERE `parsed_content_byte_size` IS NULL;
-
-UPDATE `agent_attachment`
-SET `parsed_page_count` = 0
-WHERE `parsed_page_count` IS NULL;
-
-ALTER TABLE `agent_attachment`
-  MODIFY COLUMN `parsed_content_sha256` VARCHAR(71) NOT NULL DEFAULT '',
-  MODIFY COLUMN `parsed_content_byte_size` BIGINT NOT NULL DEFAULT 0,
-  MODIFY COLUMN `parsed_page_count` INT NOT NULL DEFAULT 0,
-  MODIFY COLUMN `parsed_at` DATETIME(3) NULL;
-
 SET @has_column := (
   SELECT COUNT(*) FROM information_schema.COLUMNS
   WHERE TABLE_SCHEMA = @reconcile_db AND TABLE_NAME = 'agent_run'
@@ -385,6 +372,73 @@ SET @ddl := IF(
   'SELECT 1'
 );
 PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+DROP PROCEDURE IF EXISTS `_prod_schema_reconcile_agent_state`;
+DELIMITER //
+CREATE PROCEDURE `_prod_schema_reconcile_agent_state`()
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM `agent_run`
+    WHERE `state_reason` IS NOT NULL
+      AND `state_reason` NOT IN (
+        'completed', 'blocking_limit', 'image_error', 'model_error',
+        'aborted_streaming', 'prompt_too_long', 'stop_hook_prevented',
+        'aborted_tools', 'hook_stopped', 'max_turns', 'error_max_budget',
+        'error_max_retries', 'next_turn', 'collapse_drain_retry',
+        'reactive_compact_retry', 'max_output_escalate', 'max_output_recovery',
+        'stop_hook_blocking', 'token_budget_continue', 'running',
+        'waiting_for_user_choice', 'permission_denied', 'context_exhausted',
+        'cancelled', 'external_resume_ready'
+      )
+      AND `state_reason` NOT LIKE 'ext_resume:%'
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: unsupported agent_run state_reason';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.TABLE_CONSTRAINTS tc
+    JOIN information_schema.CHECK_CONSTRAINTS cc
+      ON cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA
+     AND cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
+    WHERE tc.CONSTRAINT_SCHEMA = DATABASE()
+      AND tc.TABLE_NAME = 'agent_run'
+      AND tc.CONSTRAINT_NAME = 'chk_ar_state_reason'
+      AND (
+        cc.CHECK_CLAUSE NOT LIKE '%external_resume_ready%'
+        OR cc.CHECK_CLAUSE NOT LIKE '%ext\\_resume:%'
+      )
+  ) THEN
+    ALTER TABLE `agent_run` DROP CHECK `chk_ar_state_reason`;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.TABLE_CONSTRAINTS
+    WHERE CONSTRAINT_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'agent_run'
+      AND CONSTRAINT_NAME = 'chk_ar_state_reason'
+  ) THEN
+    ALTER TABLE `agent_run`
+      ADD CONSTRAINT `chk_ar_state_reason` CHECK (
+        `state_reason` IS NULL OR
+        `state_reason` IN (
+          'completed', 'blocking_limit', 'image_error', 'model_error',
+          'aborted_streaming', 'prompt_too_long', 'stop_hook_prevented',
+          'aborted_tools', 'hook_stopped', 'max_turns', 'error_max_budget',
+          'error_max_retries', 'next_turn', 'collapse_drain_retry',
+          'reactive_compact_retry', 'max_output_escalate', 'max_output_recovery',
+          'stop_hook_blocking', 'token_budget_continue', 'running',
+          'waiting_for_user_choice', 'permission_denied', 'context_exhausted',
+          'cancelled', 'external_resume_ready'
+        ) OR `state_reason` LIKE 'ext_resume:%'
+      );
+  END IF;
+END//
+DELIMITER ;
+CALL `_prod_schema_reconcile_agent_state`();
+DROP PROCEDURE IF EXISTS `_prod_schema_reconcile_agent_state`;
 
 -- --------------------------------------------------------------------------
 -- Notification uniqueness and FK constraints.

@@ -71,10 +71,45 @@ CREATE TABLE `agent_run` (
   `user_id` BIGINT UNSIGNED NOT NULL,
   `status` VARCHAR(32) NOT NULL,
   `state_reason` VARCHAR(64) NULL,
+  `terminal_metadata` JSON NULL,
+  `messages` JSON NOT NULL,
+  `reservation_id` BIGINT UNSIGNED NULL,
+  `started_at` DATETIME(3) NOT NULL,
+  `ended_at` DATETIME(3) NULL,
+  `cancellation_requested_at` DATETIME(3) NULL,
+  `agent_definition_id` BIGINT UNSIGNED NOT NULL DEFAULT 0,
   `pending_question_json` JSON NULL,
   `pending_question_at` DATETIME(3) NULL,
-  PRIMARY KEY (`id`)
+  `created_at` DATETIME(3) NOT NULL,
+  `updated_at` DATETIME(3) NOT NULL,
+  `use_compact_v2` TINYINT(1) NOT NULL DEFAULT 0,
+  `is_pinned` TINYINT(1) NOT NULL DEFAULT 0,
+  `session_name` VARCHAR(255) NOT NULL DEFAULT '',
+  `is_deleted` TINYINT(1) NOT NULL DEFAULT 0,
+  `is_test` TINYINT(1) NOT NULL DEFAULT 0,
+  PRIMARY KEY (`id`),
+  CONSTRAINT `chk_ar_state_reason` CHECK (
+    `state_reason` IS NULL OR
+    `state_reason` IN (
+      'completed', 'blocking_limit', 'image_error', 'model_error',
+      'aborted_streaming', 'prompt_too_long', 'stop_hook_prevented',
+      'aborted_tools', 'hook_stopped', 'max_turns', 'error_max_budget',
+      'error_max_retries', 'next_turn', 'collapse_drain_retry',
+      'reactive_compact_retry', 'max_output_escalate', 'max_output_recovery',
+      'stop_hook_blocking', 'token_budget_continue', 'running',
+      'waiting_for_user_choice', 'permission_denied', 'context_exhausted',
+      'cancelled'
+    )
+  )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT INTO `agent_run` (
+  `id`, `session_id`, `user_id`, `status`, `state_reason`, `messages`,
+  `started_at`, `created_at`, `updated_at`
+) VALUES (
+  1, 'synthetic-session', 101, 'terminated', 'completed', JSON_ARRAY(),
+  '2026-07-20 10:00:00.000', '2026-07-20 10:00:00.000', '2026-07-20 10:00:01.000'
+);
 
 CREATE TABLE `announcement` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -273,3 +308,15 @@ CREATE TABLE `chatbot_session` (`id` BIGINT UNSIGNED PRIMARY KEY) ENGINE=InnoDB;
 CREATE TABLE `chatbot_message` (`id` BIGINT UNSIGNED PRIMARY KEY) ENGINE=InnoDB;
 CREATE TABLE `sales_session` (`id` BIGINT UNSIGNED PRIMARY KEY) ENGINE=InnoDB;
 CREATE TABLE `sales_message` (`id` BIGINT UNSIGNED PRIMARY KEY) ENGINE=InnoDB;
+
+INSERT INTO `credit_account` VALUES (1);
+INSERT INTO `credit_cycle` VALUES (1);
+INSERT INTO `credit_reservation` VALUES (1);
+INSERT INTO `credit_reservation_item` VALUES (1);
+INSERT INTO `credit_transaction` VALUES (1);
+INSERT INTO `sop_run` VALUES (1);
+INSERT INTO `sop_node_run` VALUES (1);
+INSERT INTO `chatbot_session` VALUES (1);
+INSERT INTO `chatbot_message` VALUES (1);
+INSERT INTO `sales_session` VALUES (1);
+INSERT INTO `sales_message` VALUES (1);

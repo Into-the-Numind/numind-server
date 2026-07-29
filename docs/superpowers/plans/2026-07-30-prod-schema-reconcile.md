@@ -1,8 +1,8 @@
 # Prod Schema Reconcile — Implementation Plan
 
-**Feature:** `prod-schema-reconcile`  
-**Track:** NDF Standard  
-**Stage:** S3  
+**Feature:** `prod-schema-reconcile`
+**Track:** NDF Standard
+**Stage:** S3
 **Rule:** Prod remains read-only throughout T01–T06.
 
 ## Task order
@@ -116,7 +116,9 @@ Baseline contains synthetic:
 
 - user rows;
 - two historical monthly subscriptions;
-- empty attachment/notification tables with the current Prod partial shape;
+- non-empty historical attachment and agent-run rows plus notification tables
+  with the current Prod partial shape;
+- the old agent-run state constraint without external-resume states;
 - old Qwen provider/service/route;
 - empty Skill seed tables.
 
@@ -124,17 +126,20 @@ Runner:
 
 1. creates an isolated MySQL 8 container/database;
 2. loads baseline;
-3. captures protected subscription projection;
+3. captures subscription, attachment, agent-run, and protected-table checksums;
 4. applies migration once and verifies;
 5. applies migration again and verifies;
-6. compares protected projection;
-7. removes only its named test container/volume.
+6. simulates an interrupted exact partial state and resumes it;
+7. verifies wrong same-name schema and duplicate notification rows fail preflight;
+8. compares every protected projection/checksum;
+9. removes only its named test container/volume.
 
 Verification:
 
 - local/build-host MySQL 8 double apply PASS;
-- all required final schemas/rows PASS;
-- old subscription projection unchanged.
+- exact and partial final schemas/rows PASS;
+- wrong schema and duplicate notification preflight FAIL;
+- every protected projection/checksum unchanged.
 
 Commit:
 

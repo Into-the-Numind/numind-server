@@ -1,8 +1,8 @@
 # Prod Schema Reconcile — Detailed Design
 
-**Feature:** `prod-schema-reconcile`  
-**Track:** NDF Standard  
-**Stage:** S2  
+**Feature:** `prod-schema-reconcile`
+**Track:** NDF Standard
+**Stage:** S2
 **Date:** 2026-07-30
 
 ## 1. Objective
@@ -98,6 +98,14 @@ schema:
 
 This prevents architecture-dependent Go `int` inference from turning page count
 into `BIGINT`.
+
+### D8 — Existing target structures fail closed
+
+An interrupted run may leave a subset of the new tables. Re-entry is allowed
+only when every existing table, column, index, and foreign key exactly matches
+the reviewed final contract. Missing whole tables or guarded columns are added.
+Same-name structures with a different type, default, order, target, or delete
+rule stop in preflight; the migration never reshapes or backfills them.
 
 ## 3. Artifacts
 
@@ -267,13 +275,15 @@ The runbook records before/after:
 
 - row count and ordered projection hash for all 102 subscription rows, excluding
   only the two new columns;
-- row counts for user, membership, credit account/cycle/reservation/transaction,
-  SOP, chatbot, sales, and agent history tables;
+- ordered old-field projection hashes for attachment and agent-run rows,
+  excluding only newly added columns;
+- extended table checksums for user, credit account/cycle/reservation/transaction,
+  SOP, chatbot, and sales history tables;
 - row counts of all newly created tables;
 - AI configuration rows affected by stable keys.
 
-The migration SQL itself contains no statement capable of changing the protected
-tables except the two new subscription columns.
+The migration SQL contains no `UPDATE` or `DELETE` against protected customer
+tables. Subscription, attachment, and agent-run changes are additive schema only.
 
 ## 7. Runtime Configuration Dependency
 

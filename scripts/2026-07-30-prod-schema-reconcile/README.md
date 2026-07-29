@@ -23,7 +23,7 @@ Dev 数据，也不替换 Prod 用户、积分、订阅、SOP、聊天或智能�
 - 升级后核对：`scripts/2026-07-30-prod-schema-reconcile/02-verify.sql`
 - 隔离演练：`scripts/2026-07-30-prod-schema-reconcile/test-mysql8.sh`
 - 当前升级 SQL SHA256：
-  `e701cac28dfc4c25b6c1930e151cdcdd4a4a08ecfb94a26a54359d37a921d9d7`
+  `1fc79e2951fa222fea51055842802113be56c0326e5884f7b712df6cc47fc186`
 
 上线使用的 Git tag、SQL 文件和上述 SHA256 必须完全对应。SQL 有任何修改，
 必须重新评审、重跑全部测试并更新这里的 SHA256。
@@ -81,7 +81,7 @@ PASS: MySQL 8 preflight, double apply, double verify, protected hash, and stable
 允许 Dev 已经存在本次目标表和字段，但输出中任何一行 `status=FAIL` 都要
 立即停止。把完整输出保存到本次上线证据目录。
 
-### 4. 保存历史订阅保护校验值
+### 4. 保存全部老数据保护校验值
 
 在升级前，对 `subscription` 的旧字段按主键排序后计算 SHA256。保护字段是：
 
@@ -92,6 +92,15 @@ PASS: MySQL 8 preflight, double apply, double verify, protected hash, and stable
 
 升级后的校验值必须与升级前完全相同。
 
+同时保存脚本输出的：
+
+- `agent_attachment_protected_projection`：只计算附件原字段，不包含本次新字段；
+- `agent_run_protected_projection`：只计算智能体运行原字段，不包含本次新字段；
+- 用户、积分、SOP、聊天、销售历史表的 `CHECKSUM TABLE ... EXTENDED`；
+- 每张核心业务表行数。
+
+上述行数、投影和 checksum 在首次执行、第二次执行后都必须完全一致。
+
 ### 5. 执行两次并核对
 
 顺序固定：
@@ -100,7 +109,7 @@ PASS: MySQL 8 preflight, double apply, double verify, protected hash, and stable
 2. 执行 `02-verify.sql`，所有检查必须是 `PASS`；
 3. 再执行一次同一份升级 SQL；
 4. 再执行一次 `02-verify.sql`，所有检查必须仍是 `PASS`；
-5. 重新计算历史订阅保护校验值，必须与升级前一致。
+5. 重新计算所有老数据保护校验值，必须与升级前一致。
 
 第二次执行用于证明脚本可以安全重试，不会重复创建配置或破坏数据。
 
@@ -147,20 +156,21 @@ Prod 此阶段仍然只读。上线前必须同时满足：
 获得最终授权后，顺序不能调整：
 
 1. 冻结本次相关代码和配置；
-2. 再跑一次只读 preflight，保存完整输出；
-3. 再核对 tag、镜像 digest 和升级 SQL SHA256；
-4. 创建 Prod 全库备份，记录大小和 SHA256，并验证可恢复；
-5. 保存历史订阅保护校验值和核心业务表行数；
-6. 执行一次升级 SQL；
-7. 执行 verify，所有检查必须是 `PASS`；
-8. 重新核对历史订阅保护校验值和核心业务表行数；
-9. 部署用户 API；
-10. 部署管理 API；
-11. 部署用户前端；
-12. 部署管理前端；
-13. 执行与 Dev 相同的产品验收；
-14. 观察 API 5xx、容器重启、数据库错误和关键任务失败；
-15. 保存最终证据并结束冻结。
+2. 创建 Prod 全库备份，记录大小和 SHA256，并验证可恢复；
+3. 进入短维护窗口，暂停用户 API 和管理 API 的数据库写入；
+4. 再跑一次只读 preflight，保存完整输出；
+5. 再核对 tag、镜像 digest 和升级 SQL SHA256；
+6. 保存全部老数据保护校验值和核心业务表行数；
+7. 执行一次升级 SQL；
+8. 执行 verify，所有检查必须是 `PASS`；
+9. 重新核对全部老数据保护校验值和核心业务表行数；
+10. 部署用户 API；
+11. 部署管理 API；
+12. 部署用户前端；
+13. 部署管理前端；
+14. 恢复流量并执行与 Dev 相同的产品验收；
+15. 观察 API 5xx、容器重启、数据库错误和关键任务失败；
+16. 保存最终证据并结束冻结。
 
 Prod 不需要为了证明可重试而实际执行第二次升级；双次执行证明来自隔离 MySQL
 和 Dev 演练。Prod 只执行一次，减少不必要操作。
@@ -172,7 +182,7 @@ Prod 不需要为了证明可重试而实际执行第二次升级；双次执行
 - preflight 或 verify 出现任何 `FAIL`；
 - SQL SHA256 与本手册或发布 tag 不一致；
 - 备份缺失、为空、SHA256 未记录或恢复验证失败；
-- 历史订阅保护校验值变化；
+- 任一老数据保护校验值或核心表行数变化；
 - 用户、积分、订阅、SOP、聊天、销售或智能体历史表行数异常；
 - 通知表存在孤儿数据，或 Ali/Qwen 稳定键重复；
 - 必需的运行密钥、飞书配置或 Sandbox 隔离未完成；

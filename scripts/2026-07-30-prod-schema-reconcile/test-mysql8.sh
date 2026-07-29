@@ -39,6 +39,18 @@ assert_no_fail_rows() {
   fi
 }
 
+assert_equal() {
+  local before="$1"
+  local after="$2"
+  local label="$3"
+  if [ "$before" != "$after" ]; then
+    echo "ERROR: $label changed" >&2
+    echo "before=$before" >&2
+    echo "after=$after" >&2
+    exit 1
+  fi
+}
+
 subscription_projection_sql="
 SELECT SHA2(
   GROUP_CONCAT(
@@ -55,6 +67,67 @@ SELECT SHA2(
   ),
   256
 ) FROM subscription;
+"
+
+attachment_projection_sql="
+SELECT CONCAT_WS(
+  ':',
+  COUNT(*),
+  SHA2(
+    GROUP_CONCAT(
+      SHA2(CONCAT_WS(
+        '|',
+        id, user_id, COALESCE(url, '<NULL>'), COALESCE(filename, '<NULL>'),
+        COALESCE(mime_type, '<NULL>'), COALESCE(CAST(size AS CHAR), '<NULL>'),
+        COALESCE(modality, '<NULL>'), COALESCE(CAST(width AS CHAR), '<NULL>'),
+        COALESCE(CAST(height AS CHAR), '<NULL>'), COALESCE(ocr_text, '<NULL>'),
+        COALESCE(vision_description, '<NULL>'), COALESCE(text_fallback, '<NULL>'),
+        COALESCE(CAST(fallback_ready AS CHAR), '<NULL>'), COALESCE(fallback_error, '<NULL>'),
+        COALESCE(DATE_FORMAT(fallback_started_at, '%Y-%m-%d %H:%i:%s.%f'), '<NULL>'),
+        COALESCE(DATE_FORMAT(fallback_completed_at, '%Y-%m-%d %H:%i:%s.%f'), '<NULL>'),
+        COALESCE(CAST(retry_count AS CHAR), '<NULL>'),
+        COALESCE(DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s.%f'), '<NULL>')
+      ), 256)
+      ORDER BY id SEPARATOR '\n'
+    ),
+    256
+  )
+) FROM agent_attachment;
+"
+
+agent_run_projection_sql="
+SELECT CONCAT_WS(
+  ':',
+  COUNT(*),
+  SHA2(
+    GROUP_CONCAT(
+      SHA2(CONCAT_WS(
+        '|',
+        id, user_id, COALESCE(session_id, '<NULL>'), status,
+        COALESCE(state_reason, '<NULL>'), COALESCE(CAST(terminal_metadata AS CHAR), '<NULL>'),
+        CAST(messages AS CHAR), COALESCE(CAST(reservation_id AS CHAR), '<NULL>'),
+        DATE_FORMAT(started_at, '%Y-%m-%d %H:%i:%s.%f'),
+        COALESCE(DATE_FORMAT(ended_at, '%Y-%m-%d %H:%i:%s.%f'), '<NULL>'),
+        COALESCE(DATE_FORMAT(cancellation_requested_at, '%Y-%m-%d %H:%i:%s.%f'), '<NULL>'),
+        agent_definition_id, COALESCE(CAST(pending_question_json AS CHAR), '<NULL>'),
+        COALESCE(DATE_FORMAT(pending_question_at, '%Y-%m-%d %H:%i:%s.%f'), '<NULL>'),
+        DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s.%f'),
+        DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s.%f'),
+        use_compact_v2, is_pinned, session_name, is_deleted, is_test
+      ), 256)
+      ORDER BY id SEPARATOR '\n'
+    ),
+    256
+  )
+) FROM agent_run;
+"
+
+protected_checksum_sql="
+CHECKSUM TABLE
+  user, credit_account, credit_cycle, credit_reservation,
+  credit_reservation_item, credit_transaction, sop_run, sop_node_run,
+  chatbot_session, chatbot_message, sales_session, sales_message
+EXTENDED;
 "
 
 docker run -d \
@@ -75,6 +148,7 @@ done
 if ! docker exec "$CONTAINER" mysql \
   -N -B -uroot -p"$TEST_PASSWORD" -e "SELECT 1" >/dev/null 2>&1; then
   echo "ERROR: isolated MySQL 8 did not become ready" >&2
+  docker logs "$CONTAINER" >&2 || true
   exit 1
 fi
 
@@ -84,6 +158,9 @@ preflight_output="$(mysql_stdin < "$PREFLIGHT")"
 assert_no_fail_rows "$preflight_output" "preflight"
 
 before_projection="$(mysql_query "$subscription_projection_sql")"
+before_attachment_projection="$(mysql_query "$attachment_projection_sql")"
+before_agent_run_projection="$(mysql_query "$agent_run_projection_sql")"
+before_protected_checksums="$(mysql_query "$protected_checksum_sql")"
 before_new_table_count="$(mysql_query "
 SELECT COUNT(*) FROM information_schema.TABLES
 WHERE TABLE_SCHEMA=DATABASE()
@@ -102,10 +179,13 @@ mysql_stdin < "$MIGRATION" >/dev/null
 verify_first="$(mysql_stdin < "$VERIFY")"
 assert_no_fail_rows "$verify_first" "first verify"
 after_first_projection="$(mysql_query "$subscription_projection_sql")"
-if [ "$after_first_projection" != "$before_projection" ]; then
-  echo "ERROR: first apply changed protected subscription projection" >&2
-  exit 1
-fi
+after_first_attachment_projection="$(mysql_query "$attachment_projection_sql")"
+after_first_agent_run_projection="$(mysql_query "$agent_run_projection_sql")"
+after_first_protected_checksums="$(mysql_query "$protected_checksum_sql")"
+assert_equal "$before_projection" "$after_first_projection" "first-apply subscription projection"
+assert_equal "$before_attachment_projection" "$after_first_attachment_projection" "first-apply attachment projection"
+assert_equal "$before_agent_run_projection" "$after_first_agent_run_projection" "first-apply agent-run projection"
+assert_equal "$before_protected_checksums" "$after_first_protected_checksums" "first-apply protected checksums"
 
 first_config_counts="$(mysql_query "
 SELECT CONCAT_WS(
@@ -121,10 +201,13 @@ mysql_stdin < "$MIGRATION" >/dev/null
 verify_second="$(mysql_stdin < "$VERIFY")"
 assert_no_fail_rows "$verify_second" "second verify"
 after_second_projection="$(mysql_query "$subscription_projection_sql")"
-if [ "$after_second_projection" != "$before_projection" ]; then
-  echo "ERROR: second apply changed protected subscription projection" >&2
-  exit 1
-fi
+after_second_attachment_projection="$(mysql_query "$attachment_projection_sql")"
+after_second_agent_run_projection="$(mysql_query "$agent_run_projection_sql")"
+after_second_protected_checksums="$(mysql_query "$protected_checksum_sql")"
+assert_equal "$before_projection" "$after_second_projection" "second-apply subscription projection"
+assert_equal "$before_attachment_projection" "$after_second_attachment_projection" "second-apply attachment projection"
+assert_equal "$before_agent_run_projection" "$after_second_agent_run_projection" "second-apply agent-run projection"
+assert_equal "$before_protected_checksums" "$after_second_protected_checksums" "second-apply protected checksums"
 
 second_config_counts="$(mysql_query "
 SELECT CONCAT_WS(
@@ -140,20 +223,72 @@ if [ "$first_config_counts" != "1/1/1" ] || [ "$second_config_counts" != "1/1/1"
   exit 1
 fi
 
-attachment_backfill="$(mysql_query "
-SELECT CONCAT_WS(
-  '/',
-  COUNT(*),
-  SUM(parsed_content='synthetic parsed text'),
-  SUM(parsed_content_sha256 LIKE 'sha256:%'),
-  SUM(parsed_content_byte_size=21)
-)
+attachment_new_values="$(mysql_query "
+SELECT COUNT(*)
 FROM agent_attachment
-WHERE id=1;
+WHERE parsed_content IS NOT NULL
+   OR parsed_content_sha256 <> ''
+   OR parsed_content_byte_size <> 0
+   OR parsed_page_count <> 0
+   OR parsed_at IS NOT NULL;
 ")"
-if [ "$attachment_backfill" != "1/1/1/1" ]; then
-  echo "ERROR: attachment canonical-content backfill mismatch: $attachment_backfill" >&2
+if [ "$attachment_new_values" != "0" ]; then
+  echo "ERROR: migration wrote new attachment values into historical rows" >&2
   exit 1
 fi
 
-echo "PASS: MySQL 8 preflight, double apply, double verify, protected hash, and stable-key checks"
+mysql_query "UPDATE agent_run SET state_reason='external_resume_ready' WHERE id=1;"
+mysql_query "UPDATE agent_run SET state_reason='ext_resume:synthetic' WHERE id=1;"
+if mysql_query "UPDATE agent_run SET state_reason='not-a-runtime-state' WHERE id=1;" >/dev/null 2>&1; then
+  echo "ERROR: agent_run CHECK accepted an unsupported state" >&2
+  exit 1
+fi
+mysql_query "UPDATE agent_run SET state_reason='completed' WHERE id=1;"
+
+# Simulate interruption after only some exact target tables were created.
+mysql_query "DROP TABLE feishu_operation_proof_consumption;"
+mysql_query "DROP TABLE feishu_auth_session;"
+mysql_query "DROP TABLE document;"
+partial_preflight="$(mysql_stdin < "$PREFLIGHT")"
+assert_no_fail_rows "$partial_preflight" "partial-state preflight"
+mysql_stdin < "$MIGRATION" >/dev/null
+partial_verify="$(mysql_stdin < "$VERIFY")"
+assert_no_fail_rows "$partial_verify" "partial-state verify"
+assert_equal "$before_projection" "$(mysql_query "$subscription_projection_sql")" "partial-retry subscription projection"
+assert_equal "$before_attachment_projection" "$(mysql_query "$attachment_projection_sql")" "partial-retry attachment projection"
+assert_equal "$before_agent_run_projection" "$(mysql_query "$agent_run_projection_sql")" "partial-retry agent-run projection"
+assert_equal "$before_protected_checksums" "$(mysql_query "$protected_checksum_sql")" "partial-retry protected checksums"
+
+# A wrong same-name table and duplicate notification pairs must fail before apply.
+mysql_query "DROP TABLE document;"
+mysql_query "CREATE TABLE document (id INT NOT NULL PRIMARY KEY) ENGINE=InnoDB;"
+mysql_query "ALTER TABLE announcement_read ADD INDEX idx_annread_announcement (announcement_id), DROP INDEX uk_annread;"
+mysql_query "ALTER TABLE survey_response ADD INDEX idx_sr_user (user_id), DROP INDEX uk_sr;"
+mysql_query "
+INSERT INTO announcement (id, title, content, created_by)
+VALUES (1, 'synthetic', 'synthetic', 101);
+INSERT INTO announcement_read (announcement_id, user_id, read_at)
+VALUES (1, 101, NOW()), (1, 101, NOW());
+INSERT INTO survey_response (announcement_id, user_id, submitted_at)
+VALUES (1, 101, NOW()), (1, 101, NOW());
+"
+negative_preflight="$(mysql_stdin < "$PREFLIGHT")"
+if ! printf '%s\n' "$negative_preflight" | grep -q $'\tFAIL\t'; then
+  echo "ERROR: invalid partial schema unexpectedly passed preflight" >&2
+  exit 1
+fi
+for expected_failure in \
+  document_schema_contract \
+  duplicate_announcement_read_user_pair \
+  duplicate_survey_response_user_pair; do
+  if ! printf '%s\n' "$negative_preflight" | grep -q "^${expected_failure}"$'\tFAIL\t'; then
+    echo "ERROR: preflight missed expected failure: $expected_failure" >&2
+    exit 1
+  fi
+done
+if [ "$(mysql_query "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='document';")" != "1" ]; then
+  echo "ERROR: read-only preflight changed the invalid document table" >&2
+  exit 1
+fi
+
+echo "PASS: MySQL 8 exact, partial, negative-preflight, double-apply, constraints, and protected-data checks"

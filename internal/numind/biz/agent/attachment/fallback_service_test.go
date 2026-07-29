@@ -40,7 +40,36 @@ func newTestDB(t *testing.T) *gorm.DB {
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&model.AgentAttachment{}))
+	// AgentAttachment uses MySQL's datetime(3) for ParsedAt. go-sqlite3 only
+	// recognizes plain DATETIME as a time column, so keep this unit-test schema
+	// explicit instead of asking SQLite to interpret the MySQL precision type.
+	require.NoError(t, db.Exec(`
+		CREATE TABLE agent_attachment (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id INTEGER NOT NULL,
+			url TEXT NOT NULL,
+			filename TEXT,
+			mime_type TEXT,
+			size INTEGER NOT NULL DEFAULT 0,
+			modality TEXT NOT NULL DEFAULT 'unknown',
+			width INTEGER,
+			height INTEGER,
+			ocr_text TEXT,
+			vision_description TEXT,
+			text_fallback TEXT,
+			fallback_ready INTEGER NOT NULL DEFAULT 0,
+			fallback_error TEXT,
+			parsed_content TEXT,
+			parsed_content_sha256 TEXT NOT NULL DEFAULT '',
+			parsed_content_byte_size INTEGER NOT NULL DEFAULT 0,
+			parsed_page_count INTEGER NOT NULL DEFAULT 0,
+			parsed_at DATETIME,
+			fallback_started_at DATETIME,
+			fallback_completed_at DATETIME,
+			retry_count INTEGER NOT NULL DEFAULT 0,
+			created_at DATETIME NOT NULL
+		)
+	`).Error)
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })

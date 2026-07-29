@@ -1,6 +1,8 @@
 package migrations
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -49,6 +51,15 @@ func TestProdSchemaReconcileArtifactsExist(t *testing.T) {
 		} else if info.Size() == 0 {
 			t.Errorf("required rollout artifact is empty: %s", path)
 		}
+	}
+}
+
+func TestProdSchemaReconcileRunbookPinsCurrentMigrationSHA(t *testing.T) {
+	migration := readRequiredRolloutFile(t, prodSchemaReconcileMigration)
+	runbook := readRequiredRolloutFile(t, filepath.Join(prodSchemaReconcileDir, "README.md"))
+	want := fmt.Sprintf("%x", sha256.Sum256([]byte(migration)))
+	if !strings.Contains(runbook, want) {
+		t.Fatalf("runbook must pin current migration SHA256 %s", want)
 	}
 }
 
@@ -104,6 +115,9 @@ func TestProdSchemaReconcileContainsFinalProductSchema(t *testing.T) {
 		"fk_sa_response",
 		"fk_sa_question",
 		"idx_ar_state_pending",
+		"chk_ar_state_reason",
+		"external_resume_ready",
+		"ext_resume:%",
 	} {
 		if !strings.Contains(sql, constraint) {
 			t.Errorf("migration missing constraint/index %s", constraint)
@@ -129,46 +143,57 @@ func TestProdSchemaReconcileForbidsDestructiveOrOutOfScopeSQL(t *testing.T) {
 		}
 	}
 
-	if regexp.MustCompile(`(?i)\b(delete|update)\s+` + "`?" + `(user|credit_account|credit_cycle|credit_reservation|credit_reservation_item|credit_transaction|sop_run|sop_node_run|chatbot_message|chatbot_session|sales_message|sales_session|agent_run)` + "`?" + `\b`).MatchString(sql) {
-		t.Error("migration must not DELETE/UPDATE protected customer, credit, or history tables")
+	if regexp.MustCompile(`(?i)\b(delete|update)\s+` + "`?" + `(user|credit_account|credit_cycle|credit_reservation|credit_reservation_item|credit_transaction|sop_run|sop_node_run|chatbot_message|chatbot_session|sales_message|sales_session|agent_run|agent_attachment)` + "`?" + `\b`).MatchString(sql) {
+		t.Error("migration must not DELETE/UPDATE protected customer, credit, attachment, or history tables")
 	}
 	if regexp.MustCompile(`(?i)'(?:sk-|lark_cli_|feishu_)[a-z0-9_-]{12,}'`).MatchString(sql) {
 		t.Error("migration appears to contain a hard-coded credential")
 	}
 }
 
-func TestProdSchemaReconcileSubscriptionWritesOnlyNewColumns(t *testing.T) {
-	sql := strings.ToLower(stripSQLComments(readRequiredRolloutFile(t, prodSchemaReconcileMigration)))
-	protected := []string{
-		"first_started_at",
-		"current_started_at",
-		"expires_at",
-		"total_months_purchased",
-		"source",
-		"granter_user_id",
-		"created_at",
-		"updated_at",
-	}
+func subscriptionUpdateAssignments(sql string) []string {
+	update := regexp.MustCompile(
+		`(?is)\bupdate\s+` + "`?" + `subscription` + "`?" +
+			`(?:\s+(?:as\s+)?[a-z_][a-z0-9_]*)?\s+set\s+(.+?)(?:\bwhere\b|$)`,
+	)
+	assignment := regexp.MustCompile(
+		`(?i)(?:^|,)\s*(?:[a-z_][a-z0-9_]*\.)?` + "`?" +
+			`([a-z_][a-z0-9_]*)` + "`?" + `\s*=`,
+	)
+	var columns []string
 	for _, statement := range strings.Split(sql, ";") {
-		if !strings.Contains(statement, "update `subscription`") &&
-			!strings.Contains(statement, "update subscription") {
+		matches := update.FindStringSubmatch(statement)
+		if len(matches) != 2 {
 			continue
 		}
-		setAt := strings.Index(statement, "set")
-		whereAt := strings.Index(statement, "where")
-		if setAt < 0 {
-			t.Errorf("subscription UPDATE has no SET clause: %s", strings.TrimSpace(statement))
-			continue
-		}
-		assignments := statement[setAt:]
-		if whereAt > setAt {
-			assignments = statement[setAt:whereAt]
-		}
-		for _, column := range protected {
-			if regexp.MustCompile(`\b` + regexp.QuoteMeta(column) + `\s*=`).MatchString(assignments) {
-				t.Errorf("subscription UPDATE must not assign protected column %s", column)
+		for _, found := range assignment.FindAllStringSubmatch(matches[1], -1) {
+			if len(found) == 2 {
+				columns = append(columns, strings.ToLower(found[1]))
 			}
 		}
+	}
+	return columns
+}
+
+func TestProdSchemaReconcileSubscriptionWritesOnlyNewColumns(t *testing.T) {
+	sql := strings.ToLower(stripSQLComments(readRequiredRolloutFile(t, prodSchemaReconcileMigration)))
+	allowed := map[string]bool{"plan_type": true, "cycle_credits": true}
+	for _, column := range subscriptionUpdateAssignments(sql) {
+		if !allowed[column] {
+			t.Errorf("subscription UPDATE assigns non-rollout column %s", column)
+		}
+	}
+}
+
+func TestSubscriptionUpdateAssignmentScannerRejectsOldOrUnknownColumns(t *testing.T) {
+	sql := `
+		UPDATE subscription SET plan_type='monthly', user_id=9 WHERE id=1;
+		UPDATE subscription AS s SET s.cycle_credits=2000, s.unreviewed_column=1;
+	`
+	got := subscriptionUpdateAssignments(strings.ToLower(sql))
+	want := []string{"plan_type", "user_id", "cycle_credits", "unreviewed_column"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("assignment scanner got %v, want %v", got, want)
 	}
 }
 
@@ -179,6 +204,28 @@ func TestProdSchemaReconcilePreflightIsReadOnly(t *testing.T) {
 	)))
 	if regexp.MustCompile(`(?m)\b(insert|update|delete|replace|alter|create|drop|truncate|rename|grant|revoke)\b`).MatchString(sql) {
 		t.Error("preflight must contain only read-only SQL")
+	}
+}
+
+func TestProdSchemaReconcilePreflightCoversFailClosedContracts(t *testing.T) {
+	sql := strings.ToLower(readRequiredRolloutFile(
+		t,
+		filepath.Join(prodSchemaReconcileDir, "00-preflight.sql"),
+	))
+	for _, required := range []string{
+		"_schema_contract",
+		"a33468f2c8055a11a306b7d90fcc3cc44c94f60d9ec08ee2bdbfb2378f8c37ef",
+		"feishu_proof_fk_contract",
+		"duplicate_announcement_read_user_pair",
+		"duplicate_survey_response_user_pair",
+		"agent_state_reason_upgradeable",
+		"checksum table",
+		"agent_attachment_protected_projection",
+		"agent_run_protected_projection",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("preflight missing fail-closed contract %q", required)
+		}
 	}
 }
 
