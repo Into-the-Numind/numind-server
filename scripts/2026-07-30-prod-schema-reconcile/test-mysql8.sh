@@ -188,6 +188,17 @@ assert_equal "$before_attachment_projection" "$after_first_attachment_projection
 assert_equal "$before_agent_run_projection" "$after_first_agent_run_projection" "first-apply agent-run projection"
 assert_equal "$before_protected_checksums" "$after_first_protected_checksums" "first-apply protected checksums"
 
+# Physical column order is not a runtime contract. Reorder one exact Feishu
+# column and require both schema gates to remain green.
+mysql_query "
+ALTER TABLE feishu_auth_session
+  MODIFY protocol_version TINYINT UNSIGNED NOT NULL DEFAULT 1 AFTER completed_at;
+"
+reordered_preflight="$(mysql_stdin < "$PREFLIGHT")"
+assert_no_fail_rows "$reordered_preflight" "reordered-column preflight"
+reordered_verify="$(mysql_stdin < "$VERIFY")"
+assert_no_fail_rows "$reordered_verify" "reordered-column verify"
+
 first_config_counts="$(mysql_query "
 SELECT CONCAT_WS(
   '/',

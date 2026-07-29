@@ -223,7 +223,7 @@ func TestProdSchemaReconcilePreflightCoversFailClosedContracts(t *testing.T) {
 	))
 	for _, required := range []string{
 		"_schema_contract",
-		"a33468f2c8055a11a306b7d90fcc3cc44c94f60d9ec08ee2bdbfb2378f8c37ef",
+		"ac58e234470d95c46cbefe91cb49a4ea7cdcac1c9391242884638839cadbf112",
 		"feishu_proof_fk_contract",
 		"duplicate_announcement_read_user_pair",
 		"duplicate_survey_response_user_pair",

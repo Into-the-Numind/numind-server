@@ -249,13 +249,13 @@ WHERE service_type = 'llm_vision'
   AND model = 'qwen3.5-flash';
 
 WITH expected AS (
-  SELECT 'document' AS table_name, 'a33468f2c8055a11a306b7d90fcc3cc44c94f60d9ec08ee2bdbfb2378f8c37ef' AS contract_sha
-  UNION ALL SELECT 'user_third_party_account', 'c9e1811858e3f6382732918f3bb249986464b35faf204f6fcf7e4d212f3a7a66'
-  UNION ALL SELECT 'feishu_cli_vault', 'f1fa27c683b067f39c92f81bcec6ff066b0d7737f13198e8d1a27be21f0ea862'
-  UNION ALL SELECT 'feishu_auth_session', 'c3136aa687179a7c64a8880794a1218b6a6825c29b3d563c1423d9dd9b10dcbb'
-  UNION ALL SELECT 'feishu_operation', 'ce97f5ca99c92804433daa4949065a84e666322f407c9ecdc4f03e6afce1b00b'
-  UNION ALL SELECT 'feishu_operation_proof_consumption', '2755c666ff38208b49e60d95204234d11d3764c2812ba284ac3426cca4202deb'
-  UNION ALL SELECT 'feishu_operation_execution_gate', 'f725db4d7f1868d1ec71009999ca259fb3e9cbfd6ca2556e2700334bc2d3c6e0'
+  SELECT 'document' AS table_name, 'ac58e234470d95c46cbefe91cb49a4ea7cdcac1c9391242884638839cadbf112' AS contract_sha
+  UNION ALL SELECT 'user_third_party_account', '11e886c79dd940c542976e0429f8626557f8fa7866e46cae7082b857ae08c855'
+  UNION ALL SELECT 'feishu_cli_vault', '5c0e5a61fdb941a74e6f0565f95ca3657dd012094d76b4d07f8f4665f45fed8b'
+  UNION ALL SELECT 'feishu_auth_session', '1c35a02a83342357259d4756ee47cb3dc34e7a0716b33521ccdee9c30ad56aad'
+  UNION ALL SELECT 'feishu_operation', 'd4a26b6f540244802bde403ad6533933485985f5b3ee6d1ff24e651ad96045bf'
+  UNION ALL SELECT 'feishu_operation_proof_consumption', 'ef5cee4f4c3c8276369137508da748513269b148dd994368733c44c0a16a20fe'
+  UNION ALL SELECT 'feishu_operation_execution_gate', '69484e7f811455d26e9db05f3184ed7790188502d9b9d9375232f900af66f75b'
 ),
 actual AS (
   SELECT
@@ -270,11 +270,13 @@ actual AS (
           SELECT SHA2(
             GROUP_CONCAT(
               CONCAT_WS(
-                '|', column_meta.ORDINAL_POSITION, column_meta.COLUMN_NAME,
+                '|', column_meta.COLUMN_NAME,
                 column_meta.COLUMN_TYPE, column_meta.IS_NULLABLE,
-                COALESCE(column_meta.COLUMN_DEFAULT, '<NULL>'), column_meta.EXTRA
+                COALESCE(column_meta.COLUMN_DEFAULT, '<NULL>'), column_meta.EXTRA,
+                COALESCE(column_meta.CHARACTER_SET_NAME, '<NULL>'),
+                COALESCE(column_meta.COLLATION_NAME, '<NULL>')
               )
-              ORDER BY column_meta.ORDINAL_POSITION SEPARATOR '\n'
+              ORDER BY column_meta.COLUMN_NAME SEPARATOR '\n'
             ),
             256
           )
@@ -287,8 +289,11 @@ actual AS (
             GROUP_CONCAT(
               CONCAT_WS(
                 '|', index_meta.INDEX_NAME, index_meta.NON_UNIQUE,
-                index_meta.SEQ_IN_INDEX, index_meta.COLUMN_NAME,
-                COALESCE(index_meta.SUB_PART, '<NULL>'), index_meta.INDEX_TYPE
+                index_meta.SEQ_IN_INDEX, COALESCE(index_meta.COLUMN_NAME, '<NULL>'),
+                COALESCE(index_meta.SUB_PART, '<NULL>'), index_meta.INDEX_TYPE,
+                COALESCE(index_meta.COLLATION, '<NULL>'),
+                index_meta.IS_VISIBLE,
+                COALESCE(index_meta.EXPRESSION, '<NULL>')
               )
               ORDER BY index_meta.INDEX_NAME, index_meta.SEQ_IN_INDEX SEPARATOR '\n'
             ),
