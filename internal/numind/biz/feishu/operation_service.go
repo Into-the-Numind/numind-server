@@ -991,23 +991,25 @@ func (s *FeishuOperationService) Resume(ctx context.Context, userID uint, operat
 			return nil, ErrOperationIntegrity
 		}
 		priorSignature = summary.RecoverySignature
-		action, recoveryErr := s.recovery.StartRecovery(ctx, RecoveryRequest{
-			UserID: operation.UserID, Generation: operation.Generation, OperationID: operation.ID,
-			AgentRunID: operation.AgentRunID, ToolCallID: operation.ToolCallID,
-			Kind: summary.RecoveryKind, Scopes: append([]string(nil), summary.RecoveryScopes...),
-		})
-		if recoveryErr != nil {
-			return nil, ErrOperationUnavailable
-		}
-		if action != nil && !s.currentGrantSatisfiesUserAuthRecovery(ctx, account, operation, persisted, summary) {
-			result := baseOperationResult(operation)
-			result.SupersededSessionIDs = append([]string(nil), summary.SupersededSessionIDs...)
-			result.Action = cloneOperationAction(action)
-			result.Action.Provider = ProviderLark
-			result.Action.OperationID = operation.ID
-			result.Action.Phase = summary.Phase
-			result.Action.Scopes = append([]string(nil), summary.RecoveryScopes...)
-			return result, nil
+		if !createAppRecoveryAlreadyPrepared(account, summary) {
+			action, recoveryErr := s.recovery.StartRecovery(ctx, RecoveryRequest{
+				UserID: operation.UserID, Generation: operation.Generation, OperationID: operation.ID,
+				AgentRunID: operation.AgentRunID, ToolCallID: operation.ToolCallID,
+				Kind: summary.RecoveryKind, Scopes: append([]string(nil), summary.RecoveryScopes...),
+			})
+			if recoveryErr != nil {
+				return nil, ErrOperationUnavailable
+			}
+			if action != nil && !s.currentGrantSatisfiesUserAuthRecovery(ctx, account, operation, persisted, summary) {
+				result := baseOperationResult(operation)
+				result.SupersededSessionIDs = append([]string(nil), summary.SupersededSessionIDs...)
+				result.Action = cloneOperationAction(action)
+				result.Action.Provider = ProviderLark
+				result.Action.OperationID = operation.ID
+				result.Action.Phase = summary.Phase
+				result.Action.Scopes = append([]string(nil), summary.RecoveryScopes...)
+				return result, nil
+			}
 		}
 		account, err = s.accounts.Get(ctx, userID, ProviderLark)
 		if err != nil || !validOperationAccount(account, userID) || account.Generation != operation.Generation {
@@ -1015,6 +1017,21 @@ func (s *FeishuOperationService) Resume(ctx context.Context, userID uint, operat
 		}
 	}
 	return s.claimAndExecute(ctx, account, operation, persisted, priorSignature, false)
+}
+
+func createAppRecoveryAlreadyPrepared(account *model.UserThirdPartyAccount, summary persistedOperationSummary) bool {
+	if account == nil || summary.RecoveryKind != RecoveryCreateApp {
+		return false
+	}
+	switch account.ConnectionState {
+	case model.FeishuConnectionAppReady,
+		model.FeishuConnectionWaitingUserAuth,
+		model.FeishuConnectionReauthRequired,
+		model.FeishuConnectionConnected:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *FeishuOperationService) currentGrantSatisfiesUserAuthRecovery(

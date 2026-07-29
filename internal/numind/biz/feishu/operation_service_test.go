@@ -954,7 +954,7 @@ func TestOperationService_ExplicitConnectUsesDurableRecoveryWithoutBusinessCLI(t
 		SessionID: "connect-session-2", URL: "https://accounts.feishu.cn/oauth/v1/device/verify?flow_id=opaque&user_code=opaque",
 		ExpiresAt: h.service.now().Add(5 * time.Minute),
 	}
-	h.recovery.actions = []*OperationAction{nil, userAuthAction}
+	h.recovery.actions = []*OperationAction{userAuthAction}
 	require.NoError(t, h.db.Model(&model.UserThirdPartyAccount{}).
 		Where("user_id = ? AND provider = ?", 7, ProviderLark).
 		Updates(map[string]any{"connection_state": model.FeishuConnectionAppReady, "connected": false}).Error)
@@ -979,6 +979,47 @@ func TestOperationService_ExplicitConnectUsesDurableRecoveryWithoutBusinessCLI(t
 	require.JSONEq(t, `{"connected":true}`, string(completed.Data))
 	calls, _ = h.runner.snapshot()
 	require.Zero(t, calls, "completion must settle locally without running lark-cli")
+}
+
+func TestOperationService_ExplicitConnectCompletedCreateAppSkipsDuplicateCreateAppRecovery(t *testing.T) {
+	h := newOperationHarness(t)
+	h.createAccount(7, model.FeishuConnectionNone, 1, "")
+	h.recovery.action = &OperationAction{
+		Provider: ProviderLark, Phase: model.FeishuAuthPhaseCreateApp,
+		SessionID: "connect-create-app", URL: "https://open.feishu.cn/connect?state=create",
+		ExpiresAt: h.service.now().Add(5 * time.Minute),
+	}
+	waiting, err := h.service.Connect(h.ctx, ConnectOperationRequest{
+		UserID: 7, AgentRunID: 903, ToolCallID: "tc-connect-create-app-completed",
+		IdempotencyKey: "903:tc-connect-create-app-completed",
+	})
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingConnection, waiting.State)
+
+	require.NoError(t, h.db.Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ?", 7, ProviderLark).
+		Updates(map[string]any{
+			"connection_state": model.FeishuConnectionAppReady,
+			"connected":        false,
+			"app_id":           "cli_app_ready",
+		}).Error)
+	h.recovery.action = &OperationAction{
+		Provider: ProviderLark, Phase: model.FeishuAuthPhaseUserAuth,
+		SessionID: "connect-user-auth", URL: "https://accounts.feishu.cn/oauth/v1/device/verify?flow_id=opaque",
+		ExpiresAt: h.service.now().Add(5 * time.Minute),
+	}
+
+	resumed, err := h.service.Resume(h.ctx, 7, waiting.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingUserAuth, resumed.State)
+	require.NotNil(t, resumed.Action)
+	require.Equal(t, model.FeishuAuthPhaseUserAuth, resumed.Action.Phase)
+	require.Equal(t, "connect-user-auth", resumed.Action.SessionID)
+	calls := h.recovery.snapshot()
+	require.Len(t, calls, 2)
+	require.Equal(t, RecoveryCreateApp, calls[0].Kind)
+	require.Equal(t, RecoveryReauth, calls[1].Kind,
+		"a completed create-app recovery must not open a second create-app session")
 }
 
 func TestOperationService_ExplicitConnectAlreadyConnectedCompletesWithoutRecovery(t *testing.T) {
