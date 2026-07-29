@@ -108,7 +108,7 @@ func (c *SkillArtifactController) ImportTemplate(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	// import-template 盖 official 可见性（机构级），仅父账户可执行。
+	// import-template 创建机构级独立 Skill，仅父账户可执行。
 	if !isParent {
 		core.WriteResponse(ctx, errno.ErrChildAccountForbidden, nil)
 		return

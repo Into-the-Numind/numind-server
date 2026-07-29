@@ -43,7 +43,7 @@ type CreateRequest struct {
 	SourceType       string   `json:"source_type" binding:"omitempty,oneof=custom generated imported_from_template imported_from_marketplace"`
 	SourceTemplateID *uint    `json:"source_template_id,omitempty"`
 	// Visibility 三级可见性入参（T4）。binding 只允许 'institution' / 'sub_user'——
-	// 'official' 故意不可绑定（仅 seed / import-template 路径设置）。空值时 service 按 isParent 决定默认值。
+	// 'official' 故意不可绑定（仅 admin / system seed 路径设置）。空值时 service 按 isParent 决定默认值。
 	Visibility string `json:"visibility" binding:"omitempty,oneof=institution sub_user"`
 }
 
@@ -501,9 +501,8 @@ func marshalTools(tools []string) (datatypes.JSON, error) {
 
 // ImportTemplate 一键从官方模板克隆/导入为本租户独立技能。
 //
-// T4：模板导入是 admin/seed 来源，盖 visibility='official'（contract item 6：
-// 仅 admin/seed/import-template 路径可设 'official'，普通 API Create 拒绝）。
-// 因此走内部 createWithVisibility 绕过 resolveCreateVisibility 的 'official' 拒绝守卫。
+// 模板只是来源记录；导入后的 concrete Skill 属于当前父账户机构，必须保持
+// visibility='institution'，避免租户导入内容变成全局 official。
 func (s *Service) ImportTemplate(ctx context.Context, parentUserID, createdBy uint, templateID uint64) (*model.Skill, error) {
 	if parentUserID == 0 {
 		return nil, errno.ErrPermissionDenied
@@ -547,13 +546,12 @@ func (s *Service) ImportTemplate(ctx context.Context, parentUserID, createdBy ui
 		SourceTemplateID: &tplID,
 	}
 
-	// import-template 是受信任路径，盖 'official'（绕过 API Create 的 official 拒绝守卫）。
-	// owner/parent 都设为导入方 parentUserID（机构持有）。
-	return s.createWithVisibility(ctx, parentUserID, parentUserID, createdBy, VisibilityOfficial, req)
+	// owner/parent 都设为导入方 parentUserID（机构持有），visibility 保持 institution。
+	return s.createWithVisibility(ctx, parentUserID, parentUserID, createdBy, VisibilityInstitution, req)
 }
 
-// createWithVisibility 是受信任的内部创建（ImportTemplate / 未来 admin seed 用），可显式设 visibility
-// （含 'official'，绕过 resolveCreateVisibility 的 API 守卫）。普通用户路径绝不可调用此方法。
+// createWithVisibility 是受信任的内部创建（ImportTemplate / 未来 admin seed 用），可显式设 visibility。
+// 普通用户路径绝不可调用此方法。
 func (s *Service) createWithVisibility(ctx context.Context, ownerUserID, instID, createdBy uint, visibility string, req CreateRequest) (*model.Skill, error) {
 	if ownerUserID == 0 || instID == 0 {
 		return nil, errno.ErrPermissionDenied
@@ -594,5 +592,6 @@ func (s *Service) createWithVisibility(ctx context.Context, ownerUserID, instID,
 	if err != nil {
 		return nil, err
 	}
+	sk.CanEdit = computeCanEdit(sk, createdBy, createdBy == instID)
 	return sk, nil
 }

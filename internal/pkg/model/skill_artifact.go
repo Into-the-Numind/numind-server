@@ -22,7 +22,7 @@ type Skill struct {
 	// 与 ParentUserID（=机构 id）区分：可见性 'sub_user' 按 OwnerUserID 收敛。
 	OwnerUserID uint `gorm:"type:int unsigned;not null;index:idx_skill_owner" json:"owner_user_id"`
 	// Visibility 三级可见性（T4 skill-3tier-visibility）：
-	//   'official'    → 所有机构所有用户可见（仅 admin seed / import-template 创建）
+	//   'official'    → 所有机构所有用户可见（仅 admin / system seed 创建）
 	//   'institution' → 机构内全员可见（parent_user_id 命中的父账户 + 全部子账户）；仅父账户可创建/设置
 	//   'sub_user'    → 仅 OwnerUserID 可见（子账户自建默认 / 父账户创建私有技能）
 	// DEFAULT='institution'（父账户自建默认）；子账户自建默认 'sub_user'（service 层决定）。
