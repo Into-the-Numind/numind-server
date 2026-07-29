@@ -243,6 +243,49 @@ func TestProdSchemaReconcilePreflightCoversFailClosedContracts(t *testing.T) {
 	}
 }
 
+func TestProdSchemaReconcileCoversDevHistoricalCompatibilityContracts(t *testing.T) {
+	preflight := strings.ToLower(readRequiredRolloutFile(
+		t,
+		filepath.Join(prodSchemaReconcileDir, "00-preflight.sql"),
+	))
+	verify := strings.ToLower(readRequiredRolloutFile(
+		t,
+		filepath.Join(prodSchemaReconcileDir, "02-verify.sql"),
+	))
+	migration := strings.ToLower(readRequiredRolloutFile(t, prodSchemaReconcileMigration))
+
+	for _, required := range []string{
+		"agent_attachment_complete_projection",
+		"feishu_proof_business_projection",
+		"character_set_name",
+		"collation_name",
+		"is_visible",
+		"expression",
+		"legacy_complete",
+		"octet_length",
+		"zombie_cleanup_2026_05_28",
+	} {
+		if !strings.Contains(preflight, required) {
+			t.Errorf("preflight missing Dev compatibility contract %q", required)
+		}
+		if !strings.Contains(verify, required) {
+			t.Errorf("verify missing Dev compatibility contract %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"zombie_cleanup_2026_05_28",
+		"status` = 'running'",
+		"is_deleted` = 1",
+		"_prod_schema_reconcile_proof_fk",
+		"alter table `feishu_operation_proof_consumption`",
+	} {
+		if !strings.Contains(migration, required) {
+			t.Errorf("migration missing Dev compatibility repair %q", required)
+		}
+	}
+}
+
 func TestProdSchemaReconcileModelTypesAreExplicit(t *testing.T) {
 	attachment := readRequiredRolloutFile(t, "../internal/pkg/model/agent_attachment.go")
 	for _, tag := range []string{
