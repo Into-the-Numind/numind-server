@@ -102,7 +102,7 @@ func NewBaiduOCRAdapter() *BaiduOCRAdapter {
 }
 
 // Name returns the adapter identifier.
-func (b *BaiduOCRAdapter) Name() string { return "baidu_ocr" }
+func (b *BaiduOCRAdapter) Name() string { return "baidu-ocr" }
 
 // ProviderType returns the provider category.
 func (b *BaiduOCRAdapter) ProviderType() string { return "baidu" }
