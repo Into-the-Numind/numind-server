@@ -900,6 +900,75 @@ func TestAuthSessionService_RefreshLegacyUserAuthUsesAtomicDeviceReplacement(t *
 	require.Empty(t, h.dispatcher.snapshot(), "Task 9 owns resume dispatch")
 }
 
+func TestAuthSessionService_RefreshConnectionOnlyReauthNoopEscalatesToCreateApp(t *testing.T) {
+	h := newAuthSessionHarness(t)
+	h.createAccount(model.FeishuConnectionWaitingUserAuth)
+	release := make(chan struct{})
+	releaseWorker := releaseAuthSessionCLIFake(t, release)
+	h.cli.urls = []string{"https://open.feishu.cn/page/cli?user_code=RECONNECT_CREATE_APP"}
+	h.cli.releases = []<-chan struct{}{release}
+	service := h.newService("refresh-connection-only-reauth-noop")
+	operation := &model.FeishuOperation{
+		ID: "operation-refresh-connection-noop", UserID: 7, Generation: 1,
+		AgentRunID: 7, ToolCallID: "tool-refresh-connection-noop",
+		IdempotencyKey: "refresh-connection-noop", CommandPath: connectionOnlyCommandPath,
+		Domain: connectionOnlyDomain, RiskLevel: string(RiskRead),
+		RequestCiphertext: []byte("encrypted-request"), KeyVersion: "v1",
+		RequestFingerprint: "refresh-connection-noop-fingerprint",
+		State:              model.FeishuOperationWaitingUserAuth,
+	}
+	require.NoError(t, h.db.Create(operation).Error)
+	old := &model.FeishuAuthSession{
+		ID: "00000000-0000-4000-8000-000000000298", UserID: 7, Generation: 1,
+		OperationID: &operation.ID, Phase: model.FeishuAuthPhaseUserAuth,
+		RequestedScopesJSON: []byte(`["offline_access"]`),
+		State:               model.FeishuAuthSessionPending, ProtocolVersion: 2,
+		ScopeHash: deviceAuthScopeHash([]string{"offline_access"}),
+		ExpiresAt: h.now.Add(10 * time.Minute),
+	}
+	require.NoError(t, h.dataStore.FeishuWorkspace().CreateSession(h.ctx, old))
+	oldSummary, err := json.Marshal(persistedOperationSummary{
+		Status: model.FeishuOperationWaitingUserAuth, Phase: model.FeishuAuthPhaseUserAuth,
+		SessionID: old.ID, RecoveryKind: RecoveryReauth,
+		RecoveryScopes: []string{"offline_access"},
+		SupersededSessionIDs: []string{
+			"00000000-0000-4000-8000-000000000297",
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.db.Model(&model.FeishuOperation{}).Where("id = ?", operation.ID).
+		Update("result_summary_json", oldSummary).Error)
+
+	action, err := service.RefreshOperationAction(
+		h.ctx, 7, 1, old.ID, operation.ID, model.FeishuOperationWaitingUserAuth, oldSummary,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, action)
+	require.Equal(t, operation.ID, action.OperationID)
+	require.Equal(t, model.FeishuAuthPhaseCreateApp, action.Phase)
+	require.Contains(t, action.URL, "RECONNECT_CREATE_APP")
+	storedOld, err := h.dataStore.FeishuWorkspace().GetSessionForUser(h.ctx, 7, 1, old.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthSessionSuperseded, storedOld.State)
+	storedNew, err := h.dataStore.FeishuWorkspace().GetSessionForUser(h.ctx, 7, 1, action.SessionID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuAuthPhaseCreateApp, storedNew.Phase)
+	require.Equal(t, model.FeishuAuthSessionPending, storedNew.State)
+	storedOperation, err := h.dataStore.FeishuWorkspace().GetOperationForUser(h.ctx, 7, 1, operation.ID)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingConnection, storedOperation.State)
+	storedSummary, err := decodeOperationSummary(storedOperation.ResultSummaryJSON)
+	require.NoError(t, err)
+	require.Equal(t, model.FeishuOperationWaitingConnection, storedSummary.Status)
+	require.Equal(t, model.FeishuAuthPhaseCreateApp, storedSummary.Phase)
+	require.Equal(t, RecoveryCreateApp, storedSummary.RecoveryKind)
+	require.Equal(t, action.SessionID, storedSummary.SessionID)
+	argv, _ := h.cli.snapshot()
+	require.Equal(t, []string{"config", "init", "--new"}, argv[0])
+	releaseWorker()
+}
+
 func TestAuthSessionService_RefreshMigratedSupersededUserAuthUsesDeviceReplacement(t *testing.T) {
 	h := newAuthSessionHarness(t)
 	h.createAccount(model.FeishuConnectionAppReady)

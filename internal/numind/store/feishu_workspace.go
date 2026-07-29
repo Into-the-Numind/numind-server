@@ -2455,8 +2455,9 @@ func (s *feishuWorkspaceStore) RefreshOperationSession(
 		return nil, gorm.ErrRecordNotFound
 	}
 	var nextBinding feishuOperationRecoveryBinding
-	if err := json.Unmarshal(replacementSummary, &nextBinding); err != nil || nextBinding.Status != waitingState ||
-		nextBinding.SessionID != replacement.ID || nextBinding.Phase != replacement.Phase {
+	if err := json.Unmarshal(replacementSummary, &nextBinding); err != nil ||
+		nextBinding.SessionID != replacement.ID || nextBinding.Phase != replacement.Phase ||
+		nextBinding.Status != feishuOperationWaitingStateForPhase(replacement.Phase) {
 		return nil, gorm.ErrRecordNotFound
 	}
 
@@ -2482,14 +2483,16 @@ func (s *feishuWorkspaceStore) RefreshOperationSession(
 			Take(&oldSession).Error; err != nil {
 			return err
 		}
-		if oldSession.OperationID == nil || *oldSession.OperationID != operationID || oldSession.Phase != replacement.Phase ||
+		phaseTransition := oldSession.Phase != replacement.Phase
+		if oldSession.OperationID == nil || *oldSession.OperationID != operationID ||
+			(phaseTransition && !refreshOperationSessionPhaseTransitionAllowed(waitingState, &oldSession, replacement)) ||
 			!equalRequestedScopes(oldSession.RequestedScopesJSON, replacement.RequestedScopesJSON) {
 			return gorm.ErrRecordNotFound
 		}
-		if oldSession.Phase == model.FeishuAuthPhaseUserAuth && !validFeishuAuthSessionCreationShape(replacement, 2) {
+		if replacement.Phase == model.FeishuAuthPhaseUserAuth && !validFeishuAuthSessionCreationShape(replacement, 2) {
 			return gorm.ErrRecordNotFound
 		}
-		if oldSession.ProtocolVersion == 2 && replacement.ScopeHash != oldSession.ScopeHash {
+		if oldSession.ProtocolVersion == 2 && replacement.Phase == model.FeishuAuthPhaseUserAuth && replacement.ScopeHash != oldSession.ScopeHash {
 			return gorm.ErrRecordNotFound
 		}
 		if (oldSession.State == model.FeishuAuthSessionRejected || oldSession.State == model.FeishuAuthSessionExpired) && oldSession.ProtocolVersion != 2 {
@@ -2512,7 +2515,10 @@ func (s *feishuWorkspaceStore) RefreshOperationSession(
 		}
 		var current feishuOperationRecoveryBinding
 		if err := json.Unmarshal(operation.ResultSummaryJSON, &current); err != nil || current.Status != waitingState ||
-			current.SessionID != oldSessionID || current.Phase != replacement.Phase {
+			current.SessionID != oldSessionID || current.Phase != oldSession.Phase {
+			return gorm.ErrRecordNotFound
+		}
+		if !refreshOperationSessionBindingTransitionAllowed(waitingState, current, nextBinding, &oldSession, replacement) {
 			return gorm.ErrRecordNotFound
 		}
 		if oldSession.State != model.FeishuAuthSessionPending {
@@ -2586,7 +2592,10 @@ func (s *feishuWorkspaceStore) RefreshOperationSession(
 
 		result := tx.Model(&model.FeishuOperation{}).
 			Where("id = ? AND user_id = ? AND generation = ? AND state = ?", operationID, userID, generation, waitingState).
-			Update("result_summary_json", append([]byte(nil), replacementSummary...))
+			Updates(map[string]any{
+				"state":               nextBinding.Status,
+				"result_summary_json": append([]byte(nil), replacementSummary...),
+			})
 		if result.Error != nil {
 			return fmt.Errorf("refresh feishu operation recovery session: %w", result.Error)
 		}
@@ -2735,6 +2744,50 @@ func (s *feishuWorkspaceStore) RestoreOperationSessionRefresh(
 func refreshableFeishuConnectionState(state string) bool {
 	return state == model.FeishuConnectionCreatingApp || state == model.FeishuConnectionWaitingAppApproval ||
 		state == model.FeishuConnectionWaitingUserAuth
+}
+
+func feishuOperationWaitingStateForPhase(phase string) string {
+	switch phase {
+	case model.FeishuAuthPhaseCreateApp:
+		return model.FeishuOperationWaitingConnection
+	case model.FeishuAuthPhaseAppScope:
+		return model.FeishuOperationWaitingAppScope
+	case model.FeishuAuthPhaseUserAuth:
+		return model.FeishuOperationWaitingUserAuth
+	default:
+		return ""
+	}
+}
+
+func refreshOperationSessionPhaseTransitionAllowed(waitingState string, oldSession, replacement *model.FeishuAuthSession) bool {
+	if oldSession == nil || replacement == nil {
+		return false
+	}
+	return waitingState == model.FeishuOperationWaitingUserAuth &&
+		oldSession.Phase == model.FeishuAuthPhaseUserAuth &&
+		oldSession.ProtocolVersion == 2 &&
+		oldSession.State == model.FeishuAuthSessionPending &&
+		replacement.Phase == model.FeishuAuthPhaseCreateApp &&
+		replacement.ScopeHash == "" &&
+		!feishuSessionHasResumeCredential(replacement)
+}
+
+func refreshOperationSessionBindingTransitionAllowed(
+	waitingState string,
+	current, next feishuOperationRecoveryBinding,
+	oldSession, replacement *model.FeishuAuthSession,
+) bool {
+	if oldSession == nil || replacement == nil ||
+		current.Status != waitingState || current.SessionID != oldSession.ID || current.Phase != oldSession.Phase ||
+		next.SessionID != replacement.ID || next.Phase != replacement.Phase ||
+		next.Status != feishuOperationWaitingStateForPhase(replacement.Phase) {
+		return false
+	}
+	if oldSession.Phase == replacement.Phase {
+		return next.Status == waitingState
+	}
+	return refreshOperationSessionPhaseTransitionAllowed(waitingState, oldSession, replacement) &&
+		next.Status == model.FeishuOperationWaitingConnection
 }
 
 // ListTerminalOperationsForGeneration returns the lifecycle-selected terminal

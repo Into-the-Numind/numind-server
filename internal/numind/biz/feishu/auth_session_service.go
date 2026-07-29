@@ -996,10 +996,23 @@ func (s *AuthSessionService) RefreshOperationAction(
 		*oldSession.OperationID != operationID {
 		return nil, ErrAuthSessionUnavailable
 	}
+	var scopes []string
+	if err := json.Unmarshal(oldSession.RequestedScopesJSON, &scopes); err != nil {
+		return nil, ErrAuthSessionUnavailable
+	}
+	canonicalScopes, err := canonicalAuthScopes(scopes)
+	if err != nil || !authSessionScopeJSONEqual(oldSession.RequestedScopesJSON, mustMarshalAuthScopes(canonicalScopes)) {
+		return nil, ErrAuthSessionUnavailable
+	}
+	summary, err := decodeOperationSummary(operationSummary)
+	if err != nil || summary.Status != waitingState || summary.SessionID != oldSessionID || summary.Phase != oldSession.Phase {
+		return nil, ErrAuthSessionUnavailable
+	}
+	escalateNoopReauth := shouldEscalateConnectionOnlyReauthNoop(oldSession, summary, waitingState, canonicalScopes)
 	deviceRefresh := oldSession.Phase == model.FeishuAuthPhaseUserAuth &&
 		((oldSession.ProtocolVersion == 1 && (oldSession.State == model.FeishuAuthSessionPending || oldSession.State == model.FeishuAuthSessionSuperseded)) ||
 			(oldSession.ProtocolVersion == 2 && (oldSession.State == model.FeishuAuthSessionPending || oldSession.State == model.FeishuAuthSessionRejected || oldSession.State == model.FeishuAuthSessionExpired)))
-	if deviceRefresh {
+	if deviceRefresh && !escalateNoopReauth {
 		completion, refreshErr := s.deviceAuth.RefreshUserAuthorization(ctx, DeviceAuthRefreshRequest{
 			UserID: userID, Generation: generation, OldSessionID: oldSessionID,
 			OperationID: operationID, WaitingState: waitingState,
@@ -1015,25 +1028,27 @@ func (s *AuthSessionService) RefreshOperationAction(
 	if oldSession.State == model.FeishuAuthSessionRejected || oldSession.State == model.FeishuAuthSessionExpired {
 		return nil, ErrAuthSessionUnavailable
 	}
-	var scopes []string
-	if err := json.Unmarshal(oldSession.RequestedScopesJSON, &scopes); err != nil {
-		return nil, ErrAuthSessionUnavailable
-	}
-	canonicalScopes, err := canonicalAuthScopes(scopes)
-	if err != nil || !authSessionScopeJSONEqual(oldSession.RequestedScopesJSON, mustMarshalAuthScopes(canonicalScopes)) {
-		return nil, ErrAuthSessionUnavailable
-	}
 	kind, err := refreshRecoveryKind(oldSession)
 	if err != nil {
 		return nil, ErrAuthSessionUnavailable
 	}
+	if escalateNoopReauth {
+		kind = RecoveryCreateApp
+	}
 	phase, argv, plannedScopes, err := authSessionPlan(kind, canonicalScopes)
-	if err != nil || phase != oldSession.Phase {
+	if err != nil || (!escalateNoopReauth && phase != oldSession.Phase) {
 		return nil, ErrAuthSessionUnavailable
 	}
-	summary, err := decodeOperationSummary(operationSummary)
-	if err != nil || summary.Status != waitingState || summary.SessionID != oldSessionID || summary.Phase != phase ||
-		phaseForRecovery(summary.RecoveryKind) != phase {
+	if phaseForRecovery(summary.RecoveryKind) != oldSession.Phase {
+		return nil, ErrAuthSessionUnavailable
+	}
+	if escalateNoopReauth {
+		summary.Status = model.FeishuOperationWaitingConnection
+		summary.Phase = model.FeishuAuthPhaseCreateApp
+		summary.RecoveryKind = RecoveryCreateApp
+		summary.RecoveryScopes = nil
+		summary.RecoverySignature = operationRecoverySignature(RecoveryCreateApp, nil)
+	} else if summary.Phase != phase {
 		return nil, ErrAuthSessionUnavailable
 	}
 	now := s.now().UTC()
@@ -1099,6 +1114,25 @@ func (s *AuthSessionService) RefreshOperationAction(
 		return nil, ErrAuthSessionUnavailable
 	}
 	return action, nil
+}
+
+func shouldEscalateConnectionOnlyReauthNoop(session *model.FeishuAuthSession, summary persistedOperationSummary, waitingState string, scopes []string) bool {
+	if session == nil || session.Phase != model.FeishuAuthPhaseUserAuth ||
+		session.ProtocolVersion != 2 || session.State != model.FeishuAuthSessionPending ||
+		waitingState != model.FeishuOperationWaitingUserAuth ||
+		summary.Status != model.FeishuOperationWaitingUserAuth ||
+		summary.Phase != model.FeishuAuthPhaseUserAuth ||
+		summary.RecoveryKind != RecoveryReauth ||
+		len(summary.SupersededSessionIDs) == 0 ||
+		len(scopes) != 1 || scopes[0] != "offline_access" {
+		return false
+	}
+	if len(summary.RecoveryScopes) > 0 && !authSessionScopeJSONEqual(
+		mustMarshalAuthScopes(summary.RecoveryScopes), mustMarshalAuthScopes(scopes),
+	) {
+		return false
+	}
+	return true
 }
 
 // RecoverOperationRefreshAction is the retry path for an original browser card
