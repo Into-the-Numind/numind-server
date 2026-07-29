@@ -5,7 +5,7 @@ features:
   description: Run the Dev-proven Sandbox feature on the existing Prod host while isolating its Docker control plane, networks, secrets, mounts, and resource budget from customer-facing services and data.
   classification_reason: 'Standard: production host container-control security, a separate Sandbox runtime, build/deploy scripts, resource policy, and rollback verification span more than three files and are high risk.'
   last_updated_by: ai-s3-plan
-  last_updated_at: '2026-07-30T06:42:00+0800'
+  last_updated_at: '2026-07-30T07:06:00+0800'
   created_at: '2026-07-30T01:26:00+0800'
   track: standard
   stage: S3
@@ -13,7 +13,7 @@ features:
   repos: [numind-server]
   branches: {numind-server: feature/prod-sandbox-isolation}
   worktrees: {numind-server: /private/tmp/wt-prod-sandbox-isolation-numind-server}
-  progress: {total_tasks: 8, completed_tasks: 0, reviewed_tasks: 0, current_task: 'S3 implementation plan drafted; independent atomicity review pending'}
+  progress: {total_tasks: 18, completed_tasks: 0, reviewed_tasks: 0, current_task: 'S3 plan revised from 8 broad tasks to 18 atomic tasks after independent review; re-review pending'}
   artifacts:
     requirement: requirements/prod-sandbox-isolation.md
     proposal: proposals/prod-sandbox-isolation-proposal.md
@@ -32,6 +32,7 @@ features:
   - 'S2: only the user API receives the constrained broker socket; admin uses a lightweight composition root and receives no Sandbox broker or Docker access.'
   - 'S2: preserve the existing Sandbox DockerClient product call paths via an HTTP-over-Unix broker client; broker owns the global five-slot lease journal, fixed container policy, pressure admission, bounded copies, and recovery.'
   - 'S2 human gate: product owner confirmed the detailed design in chat on 2026-07-30 and authorized implementation to continue; this is not Prod deployment authorization.'
+  - 'S3 review round 1: FAIL with 0 P0, 7 P1, 2 P2; plan was split into 18 independently buildable tasks, capacity evidence/formula became executable, and every task now has a closed file list.'
   blockers:
   - 'S3 gate: independent plan atomicity review must pass before S4 coding.'
 - id: xhs-analytics-summary-tests

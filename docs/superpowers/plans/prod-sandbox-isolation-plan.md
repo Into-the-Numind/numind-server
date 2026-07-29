@@ -2,492 +2,507 @@
 
 > Feature: `prod-sandbox-isolation`
 > NDF stage: S3
-> Source of truth:
-> `docs/superpowers/specs/2026-07-30-prod-sandbox-isolation-design.md`
-> Scope: `numind-server`
-> Prod deployment: explicitly excluded until a later product-owner authorization
+> Source: `docs/superpowers/specs/2026-07-30-prod-sandbox-isolation-design.md`
+> Repository: `numind-server`
+> Prod deployment remains blocked until separate product-owner authorization.
 
-## 1. 执行原则
+## 执行规则
 
-- 全部代码只在 `/private/tmp/wt-prod-sandbox-isolation-numind-server` 完成。
-- 每个 task 遵循 RED → GREEN → REFACTOR，完成后单独 commit。
-- 每个 task 完成时系统必须可编译，相关测试必须通过。
-- 不修改 `config_prod.yaml`。
-- 不新增 Prod 业务表 migration；lease journal 使用 Sandbox 独立 SQLite。
-- Dev 保留现有 `docker` backend作为回退，新增 `broker` backend用于同形态验收。
-- 用户 API 不获得 Docker socket；管理 API 不获得 Docker socket或 broker socket。
-- 所有任务串行执行，因为后续任务依赖前一任务锁定的协议/实现，不做重叠文件并行写。
+- 只在 feature worktree 修改；不修改 `config_prod.yaml`。
+- 每个 task RED → GREEN → REFACTOR，完成后必须可编译、可独立验证、单独 commit。
+- Tasks 串行执行；独立 reviewer逐 task做spec与质量审查。
+- 不新增 Prod 业务表 migration。lease journal只使用Sandbox专用SQLite。
+- 不新增LLM调用，因此不新增Langfuse generation；复用现有Agent run trace并补Sandbox metadata/metrics。
 
-## 2. 依赖图
+## 无环依赖图
 
 ```text
-T1 Broker 协议与客户端
-├── T3 Broker 服务
-└── T6 用户 API wiring
-
-T2 Lease journal
-└── T3 Broker 服务
-
-T3 Broker 服务
-├── T4 压力、恢复与可观测性
-├── T5 二进制与独立 reconcile
-└── T6 用户/管理运行角色
-
-T4 + T5 + T6
-└── T7 构建、Rootless provisioning 与部署链路
-
-T1..T7
-└── T8 安全合同与同形态集成测试
+T1 protocol/client ───────────────┐
+T2 journal ────────────────┐      │
+T3 runtime policy/stream ──┼──> T4 scheduler ──> T5 Unix transport
+                           │                         │
+T6 capacity formula ───────┼──> T7 pressure/readiness
+T2 + T3 ───────────────────┴──> T8 recovery
+T5 + T7 + T8 ─────────────────> T9 observability
+T5 + T7 + T8 + T9 ────────────> T10 sandboxd command
+T2 ────────────────────────────> T11 reconcile command
+T1 + T5 ───────────────────────> T12 user API wiring
+独立 ──────────────────────────> T13 admin composition
+T12 + T13 ─────────────────────> T14 deploy-role contract
+T10 + T11 ─────────────────────> T15 artifact build
+T6 ────────────────────────────> T16 Rootless provisioning
+T14 + T15 + T16 ───────────────> T17 deploy/rollback/runbook
+T1..T17 ───────────────────────> T18 integration/security gate
 ```
 
-该图无环。T1 与 T2 理论上可并行，但都将影响 T3 的核心接口；为避免协议与状态模型
-漂移，主 session 串行完成。
+## T1. Broker 协议、配置与 Unix client
 
-## T1. Broker 配置、协议与 Unix client
+**目标**：锁定 `/v1` 协议与错误合同；新增 `broker` backend，但不切环境。
 
-### 目标
+**文件**
 
-为现有 Sandbox Pool 增加 `broker` backend。先锁定版本化协议、错误合同和客户端，
-但不切换任何现有环境。
+- 新增 `internal/numind/biz/sandbox/broker_protocol.go`
+- 新增 `internal/numind/biz/sandbox/broker_client.go`
+- 新增 `internal/numind/biz/sandbox/broker_client_test.go`
+- 修改 `internal/numind/biz/sandbox/config.go`
+- 修改 `internal/numind/biz/sandbox/config_test.go`
+- 修改 `internal/numind/biz/sandbox/errors.go`
 
-### 涉及文件
+**实现**
 
-新增：
+- `BackendBroker`、socket/metadata/连接/copy/输出/超时配置与spec默认值。
+- HTTP-over-Unix client完整实现`DockerClient`；opaque lease id替代Docker id。
+- strict JSON；请求模型中不存在image/mount/network/device/privileged/cap/cgroup字段。
+- capacity/unavailable/policy/OOM/timeout/size错误映射。
+- Copy使用有界stream，context取消关闭连接且不泄漏goroutine。
 
-- `internal/numind/biz/sandbox/broker_protocol.go`
-- `internal/numind/biz/sandbox/broker_client.go`
-- `internal/numind/biz/sandbox/broker_client_test.go`
+**RED/验收**
 
-修改：
+- fake Unix server覆盖所有方法、错误、超限、取消、stream close。
+- `go test ./internal/numind/biz/sandbox -run 'Broker|Config' -race -count=1`
+- 原docker/disabled测试保持通过；主服务默认行为不变。
 
-- `internal/numind/biz/sandbox/config.go`
-- `internal/numind/biz/sandbox/config_test.go`
-- `internal/numind/biz/sandbox/errors.go`
+## T2. SQLite lease journal 与状态机
 
-### 实现
+**目标**：建立独立、崩溃可恢复、幂等的lease事实源。
 
-1. 新增 `BackendBroker`。
-2. 配置新增 socket、metadata、连接、copy、输出和超时上限；默认值与 S2 spec 一致。
-3. 定义 `/v1` request/response/error DTO；decoder strict unknown fields。
-4. 实现 HTTP-over-Unix client并满足 `DockerClient`：
-   - Spawn → create lease
-   - Exec → lease exec
-   - Destroy → delete lease
-   - Inspect → normalized inspect
-   - CopyTo/From → bounded stream
-   - ExecMkdir → constrained mkdir
-   - ListByLabel → owner-scoped lease list
-5. container id在 broker模式下为 opaque lease id，禁止依赖 Docker id格式。
-6. 映射容量、不可用、策略、OOM、超时、输入/输出过大错误。
-7. client取消 request时关闭 body/connection，不泄漏 goroutine。
+**文件**
 
-### RED
+- 新增 `internal/numind/sandboxbroker/journal.go`
+- 新增 `internal/numind/sandboxbroker/journal_test.go`
+- 新增 `internal/numind/sandboxbroker/lease.go`
+- 新增 `internal/numind/sandboxbroker/lease_test.go`
 
-- broker配置默认/override测试。
-- fake Unix server合同测试。
-- 超限、错误映射、取消和stream close测试。
-- 证明client request不包含 image/mount/network/privileged等字段。
+**driver/build决定**
 
-### 验收
+- 使用仓库已有 `github.com/mattn/go-sqlite3 v1.14.34`，不修改`go.mod/go.sum`。
+- T2即加入`CGO_ENABLED=1 go test`与reopen测试；T15再验证musl static artifact。
 
-- `go test ./internal/numind/biz/sandbox -count=1`
-- `go test ./internal/numind/biz/sandbox -run Broker -race -count=1`
-- 现有 docker/disabled backend测试不回归。
-- 本 task完成后主服务仍默认原行为，可编译。
+**实现**
 
-## T2. 持久 lease journal 与状态机
+- WAL、`synchronous=FULL`、busy timeout、单实例文件锁。
+- `lease` + append-only `lease_event`。
+- queued/creating/ready/active/output_persisting/destroying/terminated/recovery_pending。
+- 显式transition table、request_id unique/idempotent、stale/pending有界查询。
+- journal不保存文件、prompt、命令输出或密钥。
 
-### 目标
+**RED/验收**
 
-实现与 Prod 业务数据库完全独立的 SQLite lease事实源、幂等请求和合法状态迁移。
+- 合法/非法迁移、并发幂等、crash reopen、双实例锁、stale边界。
+- `CGO_ENABLED=1 go test ./internal/numind/sandboxbroker -run 'Journal|Lease' -race -count=1`
+- `go test`结束后重新打开文件并核对event与lease。
 
-### 涉及文件
+## T3. 固定 Rootless runtime policy 与流式文件原语
 
-新增：
+**目标**：形成唯一固定的Docker参数和常量内存Copy能力，不实现排队或HTTP。
 
-- `internal/numind/sandboxbroker/journal.go`
-- `internal/numind/sandboxbroker/journal_test.go`
-- `internal/numind/sandboxbroker/lease.go`
-- `internal/numind/sandboxbroker/lease_test.go`
+**文件**
 
-### 实现
+- 新增 `internal/numind/sandboxbroker/runtime.go`
+- 新增 `internal/numind/sandboxbroker/runtime_test.go`
+- 新增 `internal/numind/sandboxbroker/stream.go`
+- 新增 `internal/numind/sandboxbroker/stream_test.go`
+- 修改 `internal/numind/biz/sandbox/docker_client.go`
+- 修改 `internal/numind/biz/sandbox/docker_client_test.go`
 
-1. SQLite WAL、FULL synchronous、busy timeout、单进程文件锁。
-2. 创建 `lease` 与 append-only `lease_event` schema。
-3. 实现状态：
-   `queued/creating/ready/active/output_persisting/destroying/terminated/recovery_pending`。
-4. 用显式 transition table拒绝非法跳转。
-5. `request_id` unique，create/destroy/reconcile可重放。
-6. 提供按 owner、state、heartbeat和reconcile状态的有界查询。
-7. journal只保存数字业务关联ID，不保存用户内容、文件、prompt或密钥。
+**实现**
 
-### RED
+- 服务端固定digest、Seccomp checksum、512MiB/1CPU/64PIDs、30s/300s。
+- non-root、cap-drop ALL、cap-add empty、no-new-privileges、read-only、network none。
+- 固定`/workdir`、`/skills`、`/tmp` tmpfs与cgroup parent。
+- Docker CLI CopyTo/From改64KiB streaming，不再全量`io.ReadAll`/buffer tar。
+- Copy path canonicalization；拒绝absolute/`..`/symlink/hardlink/device。
+- Exec固定user/workdir/env allowlist，stdout+stderr总上限4MiB。
 
-- 所有合法/非法状态迁移table test。
-- 同 request id并发创建只产生一个lease。
-- crash reopen保留数据与event。
-- 两个writer进程/实例争用时第二个fail。
-- stale heartbeat和pending查询边界测试。
+**RED/验收**
 
-### 验收
+- SpawnConfig逐字段测试；任何可变危险参数都不存在。
+- 50/100/200MiB与10文件边界、tar攻击、慢reader/cancel。
+- `go test ./internal/numind/biz/sandbox ./internal/numind/sandboxbroker -run 'Runtime|Stream|Copy' -race -count=1`
 
-- `go test ./internal/numind/sandboxbroker -run 'Journal|Lease' -race -count=1`
-- SQLite文件mode与父目录权限可断言。
-- 本 task不依赖Docker，可单独编译和验证。
+## T4. 全局 FIFO lease scheduler 与五槽位
 
-## T3. sandboxd 核心服务、固定策略与全局五槽位
+**目标**：单broker全局限制ready+creating+active容器和active任务，兼容滚动双API。
 
-### 目标
+**文件**
 
-实现只监听 Unix socket 的 broker server，持有 Rootless Docker client，严格执行
-固定容器策略和全局 FIFO/五槽位。
-
-### 涉及文件
-
-新增：
-
-- `internal/numind/sandboxbroker/config.go`
-- `internal/numind/sandboxbroker/server.go`
-- `internal/numind/sandboxbroker/server_test.go`
-- `internal/numind/sandboxbroker/auth_linux.go`
-- `internal/numind/sandboxbroker/auth_linux_test.go`
-- `internal/numind/sandboxbroker/runtime.go`
-- `internal/numind/sandboxbroker/runtime_test.go`
-- `internal/numind/sandboxbroker/limits.go`
-- `internal/numind/sandboxbroker/limits_test.go`
-
-可能修改：
-
-- `internal/numind/biz/sandbox/docker_client.go`
-- `internal/numind/biz/sandbox/security.go`
-
-### 实现
-
-1. Unix socket目录/inode owner、mode、symlink检查。
-2. accept时读取 `SO_PEERCRED`，仅允许配置的API host UID。
-3. 无TCP listener。
-4. broker配置验证：
-   - 固定TCR image digest，不接受tag
-   - 固定Seccomp绝对路径和checksum
-   - 固定512MiB/1CPU/64PIDs/30s/300s
-   - network none、non-root、cap-drop ALL、no-new-privileges、read-only
-   - `/workdir`与`/skills`有界tmpfs
-   - 固定cgroup parent
-5. create lease使用全局FIFO：
-   - pool_min由API管理
-   - active最多5
-   - ready+active+creating总容器最多5
-   - 第6个最多等30秒
-   - context取消立即出队
-6. Activate/heartbeat/persisting/destroy状态写journal。
-7. Exec固定user/workdir/env allowlist，输出总计4MiB。
-8. CopyIn/Out使用64KiB buffer，校验路径、文件数、单文件和总字节。
-9. tar解包拒绝absolute、`..`、symlink、hardlink、device。
-10. response不暴露真实container id、host path或Docker错误细节。
-
-### RED
-
-- fake runtime驱动全部endpoint合同。
-- UID allow/deny与socket symlink/mode负向测试。
-- 恶意未知字段与所有禁止Docker字段测试。
-- 5槽位、FIFO公平、30秒超时、取消、rolling两个owner共享上限。
-- Exec/Copy所有spec上限与慢连接测试。
-- 固定SpawnConfig逐字段断言。
-
-### 验收
-
-- `go test ./internal/numind/sandboxbroker -run 'Server|Auth|Runtime|Limit' -race -count=1`
-- `go test ./internal/numind/biz/sandbox ./internal/numind/sandboxbroker -count=1`
-- `go vet ./internal/numind/biz/sandbox/... ./internal/numind/sandboxbroker/...`
-- 服务只存在Unix listener，禁止TCP配置。
-
-## T4. 压力准入、磁盘/cgroup readiness、恢复与指标
-
-### 目标
-
-当Sandbox消耗过高时先停止文件任务，保护正式业务；broker重启后在60秒内恢复或进入
-持久补偿，不无限卡死。
-
-### 涉及文件
-
-新增：
-
-- `internal/numind/sandboxbroker/pressure.go`
-- `internal/numind/sandboxbroker/pressure_test.go`
-- `internal/numind/sandboxbroker/readiness.go`
-- `internal/numind/sandboxbroker/readiness_test.go`
-- `internal/numind/sandboxbroker/recovery.go`
-- `internal/numind/sandboxbroker/recovery_test.go`
-- `internal/numind/sandboxbroker/metrics.go`
-- `internal/numind/sandboxbroker/metrics_test.go`
+- 新增 `internal/numind/sandboxbroker/scheduler.go`
+- 新增 `internal/numind/sandboxbroker/scheduler_test.go`
 
-修改：
-
-- `internal/numind/sandboxbroker/server.go`
+**实现**
 
-### 实现
+- total_container_max=5、active_task_max=5，ready计总容器不计active。
+- FIFO等待30秒；取消立即出队并释放计数。
+- active=5不补standby；destroy后仅唤醒FIFO头。
+- 两个owner共享同一计数；request_id重放不重复占slot。
 
-1. 读取host MemAvailable、workload cgroup memory/current/max/events、
-   data-root bytes/inodes。
-2. 启动时验证：
-   - cgroup v2与memory/cpu/pids/io controllers
-   - configured cgroup parent实际可用
-   - data-root为指定UUID的独立mount
-   - image digest存在
-3. 实现2秒采样、3次迟滞：
-   - workload 90% high停止准入
-   - 80%恢复
-   - 96% best-effort shed
-   - host <1.5GiB停止准入
-   - host <1.0GiB立即shed
-4. output_persisting给10秒排空。
-5. 启动recovery按journal+label有界对账：
-   - known live恢复/销毁
-   - unknown orphan销毁
-   - missing container进入recovery_pending
-   - 60秒后未收口项留持久补偿队列
-6. `/healthz`、`/readyz`、Unix-only Prometheus metrics。
-7. 日志字段完整但不记录文件内容、命令输出或密钥。
-
-### RED
-
-- fake metrics source覆盖high/recovery/shed所有阈值。
-- 验证实际workload max派生阈值，不写死POC值。
-- 单次<1GiB立即shed。
-- mount/UUID/cgroup/controller/image缺失均not ready。
-- recovery矩阵与60秒deadline。
-- metrics无高基数字段和敏感值。
-
-### 验收
-
-- `go test ./internal/numind/sandboxbroker -run 'Pressure|Readiness|Recovery|Metrics' -race -count=1`
-- 所有threshold使用实际发布max计算。
-- broker不可ready时核心API设计上仍可启动。
-
-## T5. sandboxd 与独立 reconcile 命令
-
-### 目标
-
-提供可部署进程和API停止时仍可运行的幂等补偿命令。
-
-### 涉及文件
-
-新增：
-
-- `cmd/numind-sandboxd/main.go`
-- `cmd/numind-sandbox-reconcile/main.go`
-- `internal/numind/sandboxreconcile/service.go`
-- `internal/numind/sandboxreconcile/service_test.go`
-
-修改：
-
-- `cmd/numind/main.go`或共享CLI bootstrap（仅在确有复用需要时）
-
-### 实现
-
-1. sandboxd解析独立配置，初始化journal、runtime、recovery和Unix server。
-2. SIGTERM先drain，再最长300秒等待，最后有审计地取消。
-3. reconcile只连接broker socket和Prod应用DB，不接Docker socket。
-4. 使用已有store/账本接口收口：
-   - sandbox session
-   - agent run cancellation/termination
-   - Reserve/Reconcile
-   - 可重试输出状态
-5. 不直接UPDATE用户余额；所有积分动作走现有ledger幂等接口。
-6. dry-run默认或显式flag，apply需要明确参数；输出汇总不输出密钥。
-
-### RED
-
-- signal/drain生命周期测试。
-- pending lease到session/run/ledger的状态矩阵。
-- 同一补偿运行两次结果相同，无重复扣/退。
-- API不可用的独立启动测试。
-- 缺broker socket/DB时fail-closed且错误可诊断。
-
-### 验收
-
-- `go test ./internal/numind/sandboxreconcile ./cmd/numind-sandboxd ./cmd/numind-sandbox-reconcile -race -count=1`
-- 两个命令均可构建。
-- reconcile测试证明不直接写用户余额字段。
-
-## T6. 用户 API broker wiring 与轻量管理端组合根
-
-### 目标
-
-只让用户 API使用broker；管理API不再初始化用户侧运行时或第二套Sandbox。
-
-### 涉及文件
-
-新增：
-
-- `internal/numind/biz/admin_biz.go`
-- `internal/numind/biz/admin_biz_test.go`
-
-修改：
-
-- `internal/numind/biz/biz.go`
-- `internal/numind/admin_router.go`
-- `internal/numind/admin_router_test.go`（或新增focused test）
-- `scripts/cicd/deploy-remote.sh`
-- `scripts/cicd/test-release-preflight.sh`
-
-### 实现
-
-1. 用户`NewBiz`按backend选择：
-   - disabled → disabled Pool
-   - docker →现有CLI client（Dev fallback）
-   - broker →Unix Broker client
-2. broker断开不阻止用户API启动；Sandbox工具软失败。
-3. 新增`NewAdminBiz`只构造SOP、Credit、Pricing、Monitor CRUD、Announcement。
-4. admin agent cancel传nil in-memory runner，继续写持久取消标志。
-5. 管理进程不创建Pool、不加载skills/narration/lark、不启动XHS/memory/seeder worker。
-6. deploy script：
-   - 仅server挂broker socket和group-add
-   - admin没有broker/socket/group
-   - 两者都没有主/Rootless Docker socket
-7. Prod env override走现有`NUMIND_` Viper合同，不修改`config_prod.yaml`。
-
-### RED
-
-- backend client选择table test。
-- broker不可达时API composition仍成功。
-- admin composition关键字段/runner为nil且无用户runtime构造调用。
-- shell preflight断言server/admin docker run flags。
-- 明确断言admin不含broker path、Docker group和Docker socket。
-
-### 验收
-
-- `go test ./internal/numind/biz ./internal/numind -run 'AdminBiz|SandboxBackend|Deploy' -race -count=1`
+**RED/验收**
+
+- 五轻任务成功、第六等待/接棒/超时；并发取消无slot/goroutine泄漏。
+- 两owner共享5；race下计数不超过5。
+- `go test ./internal/numind/sandboxbroker -run Scheduler -race -count=1`
+
+## T5. Unix transport、SO_PEERCRED 与 RPC limits
+
+**目标**：把T2–T4通过唯一Unix socket暴露，不监听TCP。
+
+**文件**
+
+- 新增 `internal/numind/sandboxbroker/config.go`
+- 新增 `internal/numind/sandboxbroker/server.go`
+- 新增 `internal/numind/sandboxbroker/server_test.go`
+- 新增 `internal/numind/sandboxbroker/auth_linux.go`
+- 新增 `internal/numind/sandboxbroker/auth_linux_test.go`
+- 新增 `internal/numind/sandboxbroker/limits.go`
+- 新增 `internal/numind/sandboxbroker/limits_test.go`
+
+**实现**
+
+- socket父目录/inode owner/mode/symlink校验，mode 0660。
+- accept时`SO_PEERCRED`仅允许配置API host UID；owner_id不作认证。
+- 仅Unix listener；strict decoder；metadata 64KiB、32连接、4全局copy stream、
+  每lease/方向1、100MiB/s聚合。
+- create/activate/heartbeat/persisting/exec/copy/mkdir/inspect/list/delete endpoints。
+- response只返回lease id和归一状态，不泄漏container id/host path。
+
+**RED/验收**
+
+- UID allow/deny、symlink/mode、未知字段、连接/stream/速率与全部endpoint合同。
+- 配置TCP地址或危险字段时启动失败。
+- `go test ./internal/numind/sandboxbroker -run 'Server|Auth|Limit' -race -count=1`
+
+## T6. Prod 容量公式与发布阻断
+
+**目标**：把7天/72小时证据和正式总内存公式做成受测代码，而非人工口算。
+
+**文件**
+
+- 新增 `internal/numind/sandboxbroker/capacity.go`
+- 新增 `internal/numind/sandboxbroker/capacity_test.go`
+- 新增 `scripts/cicd/calculate-sandbox-capacity.sh`
+- 新增 `scripts/cicd/test-sandbox-capacity.sh`
+
+**实现**
+
+- 输入至少7天历史，或明确标记72小时新采样；不足即阻断。
+- 计算同业务时段MemAvailable P1。
+- `parent_max=floor64MiB(min(2.75GiB, P1-1.25GiB))`。
+- `workload_max=parent_max-384MiB-128MiB`。
+- high=`min(2GiB,90%)`、recovery=80%、shed=96%。
+- parent<2GiB或workload<1.5GiB阻断。
+- 输出机器可读systemd values与人类可读证据摘要，不含敏感数据。
+
+**RED/验收**
+
+- P1、floor64、cap、保留量、低边界、历史时长、异常/缺样本测试。
+- `go test ./internal/numind/sandboxbroker -run Capacity -count=1`
+- `bash scripts/cicd/test-sandbox-capacity.sh`
+
+## T7. 压力准入与 readiness
+
+**目标**：按T6正式值保护核心业务，基础设施不满足时Sandbox fail-closed。
+
+**文件**
+
+- 新增 `internal/numind/sandboxbroker/pressure.go`
+- 新增 `internal/numind/sandboxbroker/pressure_test.go`
+- 新增 `internal/numind/sandboxbroker/readiness.go`
+- 新增 `internal/numind/sandboxbroker/readiness_test.go`
+
+**实现**
+
+- 2秒采样；workload high连续3次停准入、80%连续3次恢复、96%连续3次shed。
+- Host<1.5GiB连续3次停准入；<1.0GiB单次立即shed。
+- output_persisting最多10秒排空。
+- cgroup v2/controller/cgroup parent、data-root mount+UUID、disk bytes/inodes、
+  image digest readiness。
+- 70%告警，85%停准入；mount失败不退化根盘。
+
+**RED/验收**
+
+- 所有迟滞、单次紧急、实际max派生、mount/UUID/controller/image故障。
+- `go test ./internal/numind/sandboxbroker -run 'Pressure|Readiness' -race -count=1`
+
+## T8. Journal 与 Rootless container 恢复
+
+**目标**：broker重启后60秒内恢复或留下持久补偿，清理仅限专用daemon。
+
+**文件**
+
+- 新增 `internal/numind/sandboxbroker/recovery.go`
+- 新增 `internal/numind/sandboxbroker/recovery_test.go`
+
+**实现**
+
+- journal live+container存在：inspect后恢复/销毁stale。
+- journal live+container缺失：recovery_pending。
+- 固定label orphan：销毁；不扫描主Docker。
+- 60秒有界；未完成进入持久补偿，不无限期fail-closed。
+- container count可证明一致后才重新ready。
+
+**RED/验收**
+
+- 完整recovery矩阵、超时、daemon失败、重复运行幂等。
+- `go test ./internal/numind/sandboxbroker -run Recovery -race -count=1`
+
+## T9. Health、metrics 与无敏感日志
+
+**目标**：完成Unix-only health/readiness/Prometheus与结构化审计。
+
+**文件**
+
+- 新增 `internal/numind/sandboxbroker/metrics.go`
+- 新增 `internal/numind/sandboxbroker/metrics_test.go`
+- 新增 `internal/numind/sandboxbroker/audit.go`
+- 新增 `internal/numind/sandboxbroker/audit_test.go`
+- 修改 `internal/numind/sandboxbroker/server.go`
+
+**实现**
+
+- `/healthz` journal可用；`/readyz` runtime/pressure可接任务。
+- spec列出的lease/queue/reject/exec/copy/memory/disk/reconcile指标。
+- 日志包含request/lease/run/session/state/wait/termination，过滤文件、prompt、
+  env value、命令输出和密钥。
+- metrics不使用user/run/lease等高基数label。
+
+**RED/验收**
+
+- health/ready状态矩阵、指标字段、高基数/敏感字符串负向测试。
+- `go test ./internal/numind/sandboxbroker -run 'Metrics|Audit|Health' -race -count=1`
+
+## T10. `numind-sandboxd` 进程与 drain
+
+**目标**：提供单一可部署broker入口。
+
+**文件**
+
+- 新增 `cmd/numind-sandboxd/main.go`
+- 新增 `cmd/numind-sandboxd/main_test.go`
+
+**实现**
+
+- 读取独立非业务配置，初始化journal/runtime/scheduler/recovery/server。
+- SIGTERM先关闭准入，最长300秒drain，再审计取消。
+- 无Prod DB/COS/LLM/飞书配置和网络listener。
+
+**RED/验收**
+
+- startup依赖失败、signal/drain、deadline、第二实例测试。
+- `go test ./cmd/numind-sandboxd -race -count=1`
+- `go build ./cmd/numind-sandboxd`
+
+## T11. 独立 `numind-sandbox-reconcile`
+
+**目标**：主API不健康时仍可幂等收口session/run/积分账本。
+
+**文件**
+
+- 新增 `internal/numind/sandboxreconcile/service.go`
+- 新增 `internal/numind/sandboxreconcile/service_test.go`
+- 新增 `cmd/numind-sandbox-reconcile/main.go`
+- 新增 `cmd/numind-sandbox-reconcile/main_test.go`
+
+**实现**
+
+- 只接broker socket与应用DB，不接Docker socket。
+- dry-run默认；apply显式参数。
+- 调用现有store/ledger接口，不直接UPDATE用户余额。
+- session/run/Reserve-Reconcile/输出状态均幂等；输出无密钥。
+- 独立main自行读取既有CLI config helper，不修改`cmd/numind/main.go`。
+
+**RED/验收**
+
+- pending矩阵、双跑幂等、API停止、broker/DB缺失、无直接余额写。
+- `go test ./internal/numind/sandboxreconcile ./cmd/numind-sandbox-reconcile -race -count=1`
+
+## T12. 用户 API broker wiring 与软降级
+
+**目标**：只在用户API按backend选择client，broker故障不拖垮核心API。
+
+**文件**
+
+- 新增 `internal/numind/biz/sandbox/client_factory.go`
+- 新增 `internal/numind/biz/sandbox/client_factory_test.go`
+- 修改 `internal/numind/biz/biz.go`
+- 新增 `internal/numind/biz/sandbox_wiring_test.go`
+
+**实现**
+
+- disabled→disabled Pool，docker→现有CLI，broker→Unix client。
+- broker不可达时Pool异步预热失败但NewBiz/API仍启动。
+- Agent/Skill/Document继续复用现有Pool/DockerClient路径。
+
+**RED/验收**
+
+- backend table test、broker不可达、产品服务仍被构造。
+- `go test ./internal/numind/biz/sandbox ./internal/numind/biz -run 'ClientFactory|SandboxWiring' -race -count=1`
+
+## T13. 轻量管理端组合根
+
+**目标**：管理API不初始化第二套Sandbox或任何用户侧worker。
+
+**文件**
+
+- 新增 `internal/numind/biz/admin_biz.go`
+- 新增 `internal/numind/biz/admin_biz_test.go`
+- 修改 `internal/numind/admin_router.go`
+- 新增 `internal/numind/admin_router_sandbox_test.go`
+
+**实现**
+
+- `NewAdminBiz`只构造SOP、Credit、Pricing、Monitor CRUD、Announcement。
+- Agent admin cancel传nil runner，继续写持久取消标志。
+- 不构造Pool/Document runtime/Agent registry/Skills/Feishu workspace/narration/
+  XHS worker/memory worker/seeder。
+
+**RED/验收**
+
+- 依赖存在/nil矩阵；构造probe证明用户runtime factory零调用。
+- `go test ./internal/numind/biz ./internal/numind -run 'AdminBiz|Admin.*Sandbox' -race -count=1`
+
+## T14. Server/Admin 部署角色权限合同
+
+**目标**：部署命令精确保证只有用户API获得broker socket。
+
+**文件**
+
+- 修改 `scripts/cicd/deploy-remote.sh`
+- 修改 `scripts/cicd/test-release-preflight.sh`
+
+**实现**
+
+- server只挂broker socket并group-add专用GID；无任一Docker socket/group。
+- admin无broker、无Docker socket/group。
+- broker backend使用现有`NUMIND_` env override；不修改`config_prod.yaml`。
+- broker socket缺失时部署可按显式开关disabled；禁止误挂主socket。
+
+**RED/验收**
+
+- fake docker run精确断言server/admin flags与负向字符串。
 - `bash scripts/cicd/test-release-preflight.sh`
-- `git grep`证明`config_prod.yaml`未改。
-- admin启动日志不再出现Docker CLI、skills、narration、lark缺失告警。
+- `git diff -- config_prod.yaml`为空。
 
-## T7. 构建、Rootless provisioning、部署与回滚
+## T15. 可移植 artifact build
 
-### 目标
+**目标**：生成Prod host可执行sandboxd与容器内reconcile，API镜像仍无Docker CLI。
 
-把同机隔离变成可重复、fail-closed且可回滚的基础设施，不要求用户手工操作服务器。
+**文件**
 
-### 涉及文件
+- 修改 `Dockerfile`
+- 修改 `scripts/cicd/build-and-push.sh`
+- 新增 `scripts/cicd/test-sandbox-artifacts.sh`
 
-新增：
+**实现**
 
-- `deploy/sandbox/numind-sandbox-control.slice`
-- `deploy/sandbox/numind-sandbox-workload.slice`
-- `deploy/sandbox/numind-sandboxd.service`
-- `deploy/sandbox/numind-sandbox-data-root.mount`
-- `deploy/sandbox/sandboxd.env.example`
-- `scripts/cicd/provision-sandbox-host.sh`
-- `scripts/cicd/deploy-sandboxd-remote.sh`
-- `scripts/cicd/test-sandbox-provisioning.sh`
-- `docs/superpowers/runbooks/prod-sandbox-isolation.md`
+- Alpine/musl + sqlite静态构建sandboxd，`file`验证static。
+- reconcile留在server image内运行。
+- API Prod stage不安装Docker CLI。
+- 输出sandboxd SHA256供部署核对。
 
-修改：
+**RED/验收**
 
-- `Dockerfile`
-- `scripts/cicd/build-and-push.sh`
-- `scripts/cicd/release.sh`
-- `scripts/cicd/deploy-remote.sh`
-- `scripts/cicd/test-release-preflight.sh`
+- artifact脚本验证架构、static、checksum、两个命令可运行、API无docker。
+- `bash scripts/cicd/test-sandbox-artifacts.sh`
+- Docker build相关targets成功。
 
-### 实现
+## T16. Rootless、cgroup 与8GiB data-root provisioning
 
-1. 单独Alpine builder静态构建sandboxd（musl + sqlite），避免Prod host glibc漂移。
-2. server image包含reconcile命令；Prod API image仍不安装Docker CLI。
-3. provisioning幂等创建：
-   - non-login user/group/subuid/subgid
-   - slirp4netns/rootless prerequisites
-   - 8GiB ext4 image、UUID mount unit
-   - systemd parent/control/workload limits
-   - linger与Rootless daemon
-   - broker socket目录和ACL
-4. 脚本遇到不一致已有状态只报错，不覆盖。
-5. cgroup POC必须实证controller和实际container path；失败阻止启用。
-6. 部署：
-   - 解析/验证Sandbox image digest
-   - 保存旧broker binary/config
-   - drain、原子替换、health/ready
-   - broker失败恢复旧binary，用户API不升级
-7. rollback：
-   - backend disabled/旧API
-   - 300秒drain
-   - reconcile
-   - 旧broker恢复
-8. build机与部署机清理只删除未引用镜像，不删当前/回滚镜像或journal。
+**目标**：幂等建设同机隔离底座；任何不一致fail-closed。
 
-### RED
+**文件**
 
-- 所有shell脚本在fake root下运行的幂等/失败测试。
-- mount不是指定UUID时阻止daemon。
-- API/admin flags负向合同。
-- broker upgrade失败自动恢复旧binary。
-- rollback顺序与reconcile必须先于清理。
-- 构建结果用`file`证明sandboxd为host可运行静态binary。
+- 新增 `deploy/sandbox/numind-sandbox-control.slice`
+- 新增 `deploy/sandbox/numind-sandbox-workload.slice`
+- 新增 `deploy/sandbox/numind-sandboxd.service`
+- 新增 `deploy/sandbox/numind-sandbox-data-root.mount`
+- 新增 `deploy/sandbox/sandboxd.env.example`
+- 新增 `scripts/cicd/provision-sandbox-host.sh`
+- 新增 `scripts/cicd/test-sandbox-provisioning.sh`
 
-### 验收
+**实现**
 
-- `bash -n`所有新增/修改脚本。
+- non-login user/group/subuid/subgid、slirp4netns/rootless prerequisites、linger。
+- 8GiB ext4 image、UUID mount、专用Docker data-root。
+- 应用T6生成的parent/control/workload memory、4CPU、576Tasks。
+- 实证cgroup v2 delegation与memory/cpu/pids/io以及实际container path。
+- broker socket ACL；Rootless用户无Prod目录权限。
+- 已有状态不一致只报错，不覆盖。
+
+**RED/验收**
+
+- fake root幂等、mount UUID、controller、目录ACL、已有冲突测试。
+- `bash -n scripts/cicd/provision-sandbox-host.sh`
 - `bash scripts/cicd/test-sandbox-provisioning.sh`
+
+## T17. Broker发布、回滚、清理与runbook
+
+**目标**：在Dev/未来Prod可自动升级和回滚broker，不要求用户手工SSH。
+
+**文件**
+
+- 新增 `scripts/cicd/deploy-sandboxd-remote.sh`
+- 修改 `scripts/cicd/release.sh`
+- 修改 `scripts/cicd/deploy-remote.sh`
+- 修改 `scripts/cicd/test-release-preflight.sh`
+- 新增 `docs/superpowers/runbooks/prod-sandbox-isolation.md`
+
+**实现**
+
+- 校验Sandbox image digest、sandboxd binary checksum、cgroup/data-root/ready。
+- 保存旧binary/config；300秒drain；原子替换；失败自动恢复旧binary。
+- broker ready后才部署用户API；admin单独部署且无socket。
+- rollback：backend disabled/旧API→drain→reconcile→旧broker。
+- 清理仅未引用镜像；不删当前/回滚镜像、journal或data-root。
+- runbook只描述AI执行的自动化和证据，不把SSH命令甩给用户。
+
+**RED/验收**
+
+- fake remote覆盖成功、broker失败恢复、API失败回滚、reconcile顺序、清理保护。
+- `bash -n scripts/cicd/deploy-sandboxd-remote.sh scripts/cicd/release.sh scripts/cicd/deploy-remote.sh`
 - `bash scripts/cicd/test-release-preflight.sh`
-- Docker build target成功，API镜像内无Docker CLI，sandboxd checksum固定。
-- 不操作Prod；只在本地fixture和后续Dev执行。
 
-## T8. 安全合同、集成与回归总检
+## T18. 最终安全合同与集成门禁
 
-### 目标
+**目标**：只新增总检，不在本task混入实现修复。
 
-用可执行证据证明产品功能可用且隔离边界不能被绕过，为S5/S6准备。
+**文件**
 
-### 涉及文件
+- 新增 `internal/numind/sandboxbroker/integration_test.go`
+- 新增 `scripts/cicd/test-sandbox-isolation.sh`
+- 新增 `.ndf/features/prod-sandbox-isolation/security-contract.md`
 
-新增：
+**规则**
 
-- `scripts/cicd/test-sandbox-isolation.sh`
-- `internal/numind/sandboxbroker/integration_test.go`
-- `.ndf/features/prod-sandbox-isolation/security-contract.md`
+- 如果总检发现实现bug，暂停T18并新增明确文件清单的follow-up task/commit；T18
+  不允许开放修改T1–T17文件。
 
-可能修改：
+**覆盖**
 
-- 本计划前七项的测试文件，仅限修复集成发现的问题。
+- 五并发、第六FIFO、双owner全局5。
+- 512MiB/1CPU/64PIDs与父级动态ceiling。
+- user API不能访问两套Docker；admin不能访问broker/两套Docker。
+- Rootless用户不能读Prod secrets/data/certs/uploads/main Docker。
+- 所有危险broker字段/路径/tar/limit/慢连接拒绝。
+- daemon/broker/data-root/cgroup故障时核心API健康。
+- journal crash/orphan/recovery/reconcile/rollback。
 
-### 实现与测试矩阵
-
-1. 五个轻任务同时成功；第六个FIFO等待/超时。
-2. 两个API owner共享全局五槽位。
-3. 每任务512MiB/1CPU/64PIDs实际生效。
-4. workload父级ceiling与high/recovery/shed按实际max。
-5. 用户API访问主/Rootless Docker socket失败。
-6. admin访问broker和两套Docker socket失败。
-7. Rootless用户读取Prod secrets、data、cert、uploads、main Docker失败。
-8. bind/network/device/privileged/namespace/cap/cgroup/image恶意请求拒绝。
-9. Rootless daemon、broker、data-root、cgroup故障时核心API继续健康。
-10. journal crash、orphan、broker/API重启和reconcile。
-11. Exec/Copy/body/connection/stream/rate限制。
-12. `go test ./...`、`go test -race` focused、`task lint`。
-
-### 验收
+**验收**
 
 - `go test ./... -count=1`
 - `go test -race ./internal/numind/biz/sandbox ./internal/numind/sandboxbroker ./internal/numind/sandboxreconcile -count=1`
 - `task lint`
-- `bash scripts/cicd/test-sandbox-isolation.sh`
+- `bash scripts/cicd/test-sandbox-capacity.sh`
+- `bash scripts/cicd/test-sandbox-artifacts.sh`
 - `bash scripts/cicd/test-sandbox-provisioning.sh`
+- `bash scripts/cicd/test-sandbox-isolation.sh`
 - `bash scripts/cicd/test-release-preflight.sh`
-- 0 P0/P1安全合同失败。
-- 生成的证据不包含Prod密钥或用户文件内容。
+- 0 P0/P1；证据无Prod密钥/用户文件。
 
-## 3. S4 完成条件
+## S4 完成条件与后续
 
-- T1–T8全部完成并各自有commit。
-- 每项独立spec-compliance/code-quality review无P0。
-- manifest `completed_tasks=8`、`reviewed_tasks=8`。
-- `go test ./...`、focused race、`task lint`与所有shell合同测试通过。
-- 尚未部署Prod。
-
-## 4. 后续阶段
-
-- S5：本地/同形态容器自动验收。
-- S6：merge develop、部署Dev同形态broker，完成真实SOP、Agent、PPTX/DOCX/
-  XLSX/PDF、文档系统、飞书、五并发和broker故障降级验收。
-- S7：补齐Prod runtime secrets、只读预检、备份与最终执行清单；等待产品负责人
-  单独明确授权后才写入/部署Prod。
+- T1–T18全部独立commit并review，manifest completed/reviewed均为18。
+- S5本地同形态自动验收。
+- S6 merge develop并部署Dev，真实验收SOP、Agent、PPTX/DOCX/XLSX/PDF、
+  文档系统、飞书、5并发与broker故障降级。
+- S7补Prod配置/密钥、只读预检、备份和最终执行清单。
+- 只有产品负责人再次明确授权，才执行Prod写入和部署。
