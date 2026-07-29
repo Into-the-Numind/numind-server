@@ -4,23 +4,25 @@ features:
   ndf_version: '3.0'
   description: Add only the schema and system configuration required by the full Dev-to-Prod product rollout while preserving every existing Prod customer and billing value.
   classification_reason: 'Standard: new document and Feishu tables, subscription and attachment columns, vision-model routing, external integration, and billing-path compatibility are high-risk database changes spanning more than three files.'
-  last_updated_by: ai-s0
-  last_updated_at: '2026-07-30T04:15:00+0800'
+  last_updated_by: ai-s1
+  last_updated_at: '2026-07-30T03:21:00+0800'
   created_at: '2026-07-30T02:14:08+0800'
   track: standard
-  stage: S0
+  stage: S1
   status: active
   repos: [numind-server]
   branches: {numind-server: feature/prod-schema-reconcile}
   worktrees: {numind-server: /private/tmp/wt-prod-schema-reconcile-numind-server}
-  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0, current_task: 'S0 requirement and read-only Prod/Dev schema audit captured'}
+  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0, current_task: 'S1 additive idempotent reconcile proposal prepared; detailed S2 SQL design next'}
   artifacts:
     requirement: requirements/prod-schema-reconcile.md
+    proposal: proposals/prod-schema-reconcile-proposal.md
   decisions:
   - 'Prod receives additive schema and system configuration only; Dev business data is never copied.'
   - 'Historical subscription rows receive new monthly/2000 metadata without changing any pre-existing column.'
   - 'Document and Feishu are enabled; meeting copilot, diarization, chatbot_query_rewrite, and universal_rewriter remain disabled.'
   - 'Prod remains read-only until a separate final migration and deployment authorization.'
+  - 'Use a dedicated preflight/apply/verify migration package; do not replay all historical migrations or depend on startup AutoMigrate.'
   blockers: []
 - id: prod-feature-build-flags
   ndf_version: '3.0'
